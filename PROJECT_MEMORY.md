@@ -83,7 +83,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-21
-- Git Commit：首个 commit（Architecture Bootstrap Baseline）
+- Git Commit：0351341（Architecture Bootstrap Baseline）
 - Phase：Bootstrap 完成，Phase 0 未开启
 - State：仅有文档和元数据，无业务代码，未安装依赖
 - Notes：ADR-0001 ~ 0004 Accepted；ADR-0005、0006 Proposed；D-09 提案未批准
