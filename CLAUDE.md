@@ -14,9 +14,20 @@
 2. 本文件的硬性规则（§3）
 3. `PROJECT_STATUS.md` 的当前状态
 4. `PROJECT_MEMORY.md` 的长期上下文
-5. 聊天上下文
+5. 相关的 architecture / research 文档
+6. 聊天上下文
 
 **多个正式项目文档互相冲突时**：立即停止相关工作，输出 `ARCHITECTURE_DECISION_REQUIRED`（格式见 §7），不得自行选择一个版本。
+
+目标不是让 Claude 记住一切，而是让项目在 Claude 几乎什么都不记得时仍可恢复：**文档 + ADR + Git + 测试 = 持久记忆；聊天 = 临时协调。**
+
+### 决策权
+
+Raphael 是最终决策者。
+
+- Claude **可以**：分析、比较方案、推荐、实施已批准的决定、识别风险与矛盾、起草 ADR。
+- Claude **不可以**：替 Raphael 做架构决策；静默修改冻结契约、Research Constitution 或验证规则；把研究代码晋升为生产代码；**把含糊的回复解读为批准**。
+- 需要决定时，停在决策边界，用 Decision Packet（§9.2）提出。
 
 ---
 
@@ -101,6 +112,10 @@ CONTEXT_RECOVERY_REQUIRED
 3. 是否产生新的正式决策？是否需要 ADR？
 4. 是否改变了 Architecture Contract 或 Research Constitution？
 5. 修改代码时：运行测试、类型检查、lint，如实报告结果。
+6. 确认没有未经授权修改冻结契约，也没有修改无关文件（`git status` / `git diff`）。
+7. 适当时记录稳定恢复点（`PROJECT_MEMORY.md` §9 + Git commit）。
+
+**修改文件前先判断它的性质**：架构 / 契约 / 研究规则 / 项目状态 / 实现 / 历史文档，然后写入职责对应的文件（见 §8）。
 
 普通代码修改或普通 bug 修复：只更新代码与测试，**不更新 Memory**。
 正式架构决定：ADR + `PROJECT_MEMORY.md` 一句话摘要 + `PROJECT_STATUS.md` 当前状态，三者都要更新。
@@ -125,6 +140,10 @@ ARCHITECTURE_DECISION_REQUIRED
 
 ## 8. 项目文件维护规则
 
+### 通用
+- 优先更新已有文档，而不是新建文档。只有代表一个独立的长期职责时才新建；不得出现重复的状态文件、记忆文件、架构文档、路线图或宪法。
+- 不得把 `PROJECT_MEMORY.md` 当作杂物堆放处。
+
 ### PROJECT_STATUS.md（给 Raphael：现在到哪了？）
 - 固定 12 节结构；中文、简洁、无技术细节。
 - Phase 变化、阶段完成、出现 `ARCHITECTURE_DECISION_REQUIRED` 时必须更新。
@@ -137,3 +156,79 @@ ARCHITECTURE_DECISION_REQUIRED
 - 已进入 ADR 的决定只保留：ID + 一句话 + ADR 编号。
 - 大小：目标 < 200 行；超过 300 行必须执行 Memory Compaction（删除已完成、已进入 ADR/docs、已解决、重复的内容）；绝不超过 400 行。
 - 历史交给 Git / ADR / docs，不在 Memory 中堆积。
+
+---
+
+## 9. 与 Raphael 沟通
+
+### 9.1 HANDOFF（每次汇报的默认格式）
+
+不输出大段日志或长篇解释，除非 Raphael 明确要求。目标 < 50 行。
+
+```
+## HANDOFF
+
+STATUS: <READY | DONE | WAITING_FOR_RAPHAEL | BLOCKED>
+
+CURRENT_PHASE:
+<phase>
+
+COMPLETED:
+- item
+
+DECISIONS_REQUIRED:
+- D-XXX: short description        （没有则写 NONE）
+
+RECOMMENDATION:
+- concise recommendation
+
+CHANGES:
+- files / ADRs created or modified; important implementation changes
+
+RISKS:
+- only active risks
+
+FOLLOW-UP:
+- 发现但未执行的额外工作（没有则省略）
+
+NEXT_ACTION:
+- what Claude can do after approval
+
+ARCHITECTURE_DECISION_REQUIRED:
+YES | NO
+```
+
+### 9.2 DECISION PACKET（需要 Raphael 决定时）
+
+每个 Packet 只包含一个决定，不要把无关的决定混在一起。
+
+```
+## DECISION PACKET
+
+ID:
+QUESTION:              <一句话>
+WHY_IT_MATTERS:
+OPTIONS:
+A. ...
+B. ...
+RECOMMENDATION:
+IMPACT:
+BLOCKS:
+DEFAULT_IF_UNDECIDED:  <不决定时保持什么不变>
+```
+
+### 9.3 Raphael 的指令短语
+
+| 短语 | 含义 |
+|---|---|
+| 同意推荐方案 | 批准推荐方案 |
+| 选择 A / 选择 B / … | 批准对应选项 |
+| 暂缓 | 不实施该决定 |
+| 继续分析 | 提供更多分析，不实施 |
+| 开启 Phase X | 开始该 Phase，**前提是**文档中的进入条件全部满足；不满足则停止并报告缺少的条件 |
+
+含糊的回复不视为批准；不确定时询问，不要推断。
+
+### 9.4 不静默扩大范围
+
+任务中发现的额外有用工作不要自动执行，标记为 **FOLLOW-UP** 写入 HANDOFF。批准后才执行，除非它是完成已批准任务所必需的。
