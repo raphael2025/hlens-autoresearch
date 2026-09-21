@@ -37,8 +37,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Current Phase：Phase 0 之前（Architecture Bootstrap 完成）
 - Current Subphase：Phase 0 决策处理中
-- Current Objective：完成 D-03、D-05、D-09 的决定，使 Phase 0 可以开启
-- Current Blocker：C-1、C-2 冲突待 Raphael 决定；ADR-0005、ADR-0006 待批准；D-09 提案待审
+- Current Objective：批准 D-03、D-05，然后决定 D-09
+- Current Blocker：ADR-0005、ADR-0006 待批准；D-09 提案待审；Python 3.13 未授权安装
 - Next Milestone：Raphael 说"开启 Phase 0"
 
 ## 5. Active Decisions
@@ -48,7 +48,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - D-06：Python 3.13 + uv，与系统 Python 隔离；升级需独立评估实验 → ADR-0003
 - D-07：本地 Git 仓库；不改全局配置；远程未定 → ADR-0004
 - D-03：研究 / 生产边界（Artifact + Registry + Equivalence Gate）→ ADR-0005 **Proposed**
-- D-05：生命周期 v2（含 PAPER、REVALIDATION；RETIRED ≠ FAILED）→ ADR-0006 **Proposed**
+- D-05：生命周期 v2 → ADR-0006 **Proposed**
+- C-1（已定）：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；PRODUCTION_CANDIDATE = 已通过研究验证 + Paper Trading，待生产部署审查
+- C-2（已定）：PAPER = 单策略独立观察；ACTIVE = 组合 / Router 正式启用，带 execution_mode SIMULATED|LIVE（Phase 13 前仅 SIMULATED）；不设 LIVE 状态
 - D-09：阈值提案（Constitution + Validation Profile + Experiment Metadata 三层）→ `docs/research/proposals/d09-validation-threshold-proposal.md`，**未批准**
 
 ## 6. Active Constraints

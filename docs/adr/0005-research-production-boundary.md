@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（等待 Raphael 批准） |
+| 状态 | **Proposed**（等待 Raphael 批准 D-03） |
 | 日期 | 2026-09-21 |
-| 决策者 | Raphael（待定） |
+| 决策者 | Raphael（C-1 已于 2026-09-21 决定；整体批准待定） |
 | 起草者 | Claude Code |
 | 相关 Phase | Phase 0（契约）、Phase 5+（首次使用） |
 | 影响范围 | Contract / Lifecycle / Plane 边界 / 目录结构 |
@@ -21,7 +21,9 @@ Research Code → Experiment → Validation → Strategy Artifact → Strategy R
 
 本 ADR 定义链上每个概念，以及如何证明"生产策略对应一个经过验证的研究结果"。
 
-> ⚠️ **ARCHITECTURE_DECISION_REQUIRED（C-1）**：上面这条链中 **Paper Trading 在 Production Candidate 之前**，而 D-05 的生命周期（ADR-0006）中 **PRODUCTION_CANDIDATE 在 PAPER 之前**。两者是 Raphael 给出的两份规格，本 ADR **不选择**顺序，下文用"晋升顺序（待 C-1 决定）"表示。
+> **C-1 已决定（Raphael，2026-09-21，选项 B）**：Paper Trading 在 Production Candidate **之前**，与本链条一致；ADR-0006 已同步。
+> PRODUCTION_CANDIDATE = 已通过研究验证**且**已成功完成 Paper Trading，可以进入生产部署审查，但尚未进入生产。
+> ACTIVE = 被策略组合 / Router 正式启用，带 `execution_mode = SIMULATED | LIVE`（C-2，见 ADR-0006）。
 
 ## 提议的决策
 
@@ -33,12 +35,12 @@ flowchart LR
     EXP --> VAL[ValidationReport]
     VAL --> ART[Strategy Artifact - immutable, artifact_id]
     ART --> REG[(Strategy Registry - append-only)]
-    REG --> PROMO{Promotion - gated transitions}
-    PROMO --> PAPER[Paper Trading]
-    PROMO --> PC[Production Candidate]
-    PC --> PIMPL[Production Implementation - separate code]
-    PIMPL --> EQ{Equivalence Gate}
-    EQ --> PROD[Production]
+    REG --> PAPER[Paper Trading - isolated simulation]
+    PAPER --> PC[Production Candidate]
+    PC --> REVIEW{Production deployment review}
+    PIMPL[Production Implementation - separate code] --> EQ{Equivalence Gate}
+    EQ --> REVIEW
+    REVIEW --> ACTIVE[ACTIVE in portfolio / router - execution_mode]
     ART -. golden outputs .-> EQ
 ```
 
@@ -49,7 +51,7 @@ flowchart LR
 | **ValidationReport** | 按 Constitution + Validation Profile 的判定结果 | 绑定 `experiment_hash`、Constitution 版本、Profile 版本 |
 | **Strategy Artifact** | 一个策略"研究结论"的**不可变**打包 | 由 `artifact_id` 内容寻址；只能从通过验证的实验生成 |
 | **Strategy Registry** | Control Plane 中登记 Artifact 及其生命周期的追加式注册表 | 唯一的"什么策略可以被运行"的来源 |
-| **Promotion** | Registry 中一次受门控的状态转移 | 需要证据引用 + 规则检查 + 人工批准（指定转移） |
+| **Promotion** | Registry 中一次受门控的生命周期转移（状态机见 ADR-0006） | 需要证据引用 + 规则检查 + 人工批准（指定转移） |
 | **Revalidation** | 对已登记 Artifact 的重新验证 | 产生新 ValidationReport，不修改旧报告 |
 | **Production Implementation** | 生产运行时中的策略执行代码 | 与研究代码分离；必须通过 Equivalence Gate |
 
@@ -124,10 +126,11 @@ Revalidation 使用**登记时的** Profile 版本；是否同时报告新版本
 
 | ID | 问题 |
 |---|---|
-| **C-1** | Paper Trading 与 Production Candidate 的先后顺序（与 ADR-0006 冲突） |
+| **D-03** | 是否批准本 ADR |
 | Q-1 | 生产实现方案 A / B / C |
 | Q-2 | 研究与生产是否可以共用同一个"生产级 Provider"（例如同一个 Feature 实现），还是生产必须拥有独立副本 |
 | Q-3 | Revalidation 是否需要同时报告新 Profile 的结果（仅供参考，不影响判定） |
+| Q-7 | Paper Trading 运行在研究实现上，还是必须已经运行在通过 Equivalence Gate 的生产实现上（图中只确定：ACTIVE 之前必须通过 Equivalence Gate） |
 
 ## 后果
 

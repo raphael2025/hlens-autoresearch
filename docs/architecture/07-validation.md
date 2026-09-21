@@ -29,54 +29,61 @@ flowchart LR
 
 每个门（gate）输出结构化检查结果（check_id、指标、阈值、是否通过），写入 ValidationReport。
 
-## 3. Experiment / Validation Lifecycle（D6，冻结草案）
+## 3. Experiment / Validation Lifecycle（D6）
+
+> 状态：**v2 草案，对应 ADR-0006（Proposed）**。C-1、C-2 已由 Raphael 于 2026-09-21 决定；整体待 D-05 批准。权威定义以 ADR-0006 为准。
 
 研究对象（Hypothesis、Strategy、Feature 组合等）的晋升状态机：
 
 ```mermaid
 stateDiagram-v2
     [*] --> IDEA
-    IDEA --> CANDIDATE : pre-registered as ExperimentSpec
-    CANDIDATE --> VALIDATION : run completed
+    IDEA --> CANDIDATE : pre-registered
+    CANDIDATE --> VALIDATION : run completed and reproducible
     VALIDATION --> OOS : in-sample gates passed
-    OOS --> PRODUCTION_CANDIDATE : sealed OOS passed
-    PRODUCTION_CANDIDATE --> ACTIVE : human approval + re-implementation review
-    ACTIVE --> DEGRADED : live or paper metrics breach monitor thresholds
-    DEGRADED --> ACTIVE : recovery confirmed by monitor rules
-    DEGRADED --> RETIRED
-    ACTIVE --> RETIRED
+    OOS --> PAPER : sealed OOS passed, Strategy Artifact registered
+    PAPER --> PRODUCTION_CANDIDATE : paper trading acceptance passed
+    PRODUCTION_CANDIDATE --> ACTIVE : production deployment review approved
+    ACTIVE --> DEGRADED : monitor threshold breached
+    DEGRADED --> REVALIDATION : required
+    REVALIDATION --> ACTIVE : revalidation passed + human approval
+    REVALIDATION --> RETIRED : revalidation failed
+    ACTIVE --> RETIRED : human decision with reason
+    PAPER --> RETIRED : human decision with reason
 
     IDEA --> REJECTED : not falsifiable or duplicate
-    CANDIDATE --> FAILED : run errored or not reproducible
+    CANDIDATE --> FAILED : errored or not reproducible
     VALIDATION --> REJECTED : gate failed
     OOS --> REJECTED : OOS failed
-    PRODUCTION_CANDIDATE --> REJECTED : human veto
+    PAPER --> REJECTED : paper trading acceptance failed
+    PRODUCTION_CANDIDATE --> REJECTED : deployment review veto
 
-    REJECTED --> FailureRegistry
-    FAILED --> FailureRegistry
-    RETIRED --> FailureRegistry : retirement reason recorded
-    FailureRegistry --> [*]
+    REJECTED --> [*]
+    FAILED --> [*]
+    RETIRED --> [*]
 ```
 
-| 状态 | 含义 | 进入条件 |
-|---|---|---|
-| IDEA | 未登记的想法 | 任意来源 |
-| CANDIDATE | 已预登记为 ExperimentSpec | Hypothesis 可证伪 + Spec 完整 |
-| VALIDATION | 正在经过样本内门 | Run COMPLETED 且可复现 |
-| OOS | 进入封存样本外检验 | 样本内门全部通过 |
-| PRODUCTION_CANDIDATE | 研究结论成立，等待生产化 | OOS 通过 |
-| ACTIVE | 生产中（纸面或实盘，按 Phase） | 人工批准 + 重新实现审查 |
-| DEGRADED | 表现劣化，监控中 | 监控阈值被突破 |
-| RETIRED | 退役 | 人工或规则 |
-| REJECTED | 验证未通过或被否决 | 任一门失败 / 人工否决 |
-| FAILED | 技术失败 | 运行错误 / 不可复现 |
+| 状态 | 含义 |
+|---|---|
+| IDEA | 未登记的想法 |
+| CANDIDATE | 已预登记为 ExperimentSpec |
+| VALIDATION | 正在经过样本内验证门 |
+| OOS | 正在经过封存样本外检验 |
+| PAPER | 单策略的独立观察与模拟验证，尚未进入组合 / Router |
+| PRODUCTION_CANDIDATE | 已通过研究验证**且**已通过 Paper Trading 验收；可进入生产部署审查，尚未进入生产 |
+| ACTIVE | 被策略组合 / Router 正式启用；带 `execution_mode = SIMULATED \| LIVE` |
+| DEGRADED | 监控阈值被突破，等待重新验证 |
+| REVALIDATION | 正在重新验证 |
+| RETIRED | 正常退役（≠ FAILED） |
+| REJECTED | 验证未通过或被否决 |
+| FAILED | 技术失败：运行错误 / 不可复现 |
 
 **规则**
-- 只允许图中列出的转移。
-- REJECTED / FAILED 为终态；想要重试 = 创建**新的** CANDIDATE（新版本），旧记录保留并计入 trial count。
+- 只允许图中列出的转移；DEGRADED 永远不能直接转为 ACTIVE，必须经过 REVALIDATION。
+- `LIVE` 不是生命周期状态，而是 ACTIVE 的 `execution_mode`。Phase 13 之前只允许 `SIMULATED`；`LIVE` 需要独立 Risk Gate + 明确的授权记录。
+- REJECTED、FAILED、RETIRED 为终态；重试 = 新版本的新 CANDIDATE，旧记录保留并计入尝试次数。
+- 每次转移与 `execution_mode` 变更都只追加、可审计。
 - OOS 数据对每个假设族只"开封"一次；开封记录不可撤销。
-
-> DEGRADED → ACTIVE 回转、RETIRED 是否进入 Failure Registry 等细节待确认，见待决事项 **D-05**。
 
 ## 4. Failure Registry
 

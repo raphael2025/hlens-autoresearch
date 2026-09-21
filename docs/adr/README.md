@@ -30,9 +30,9 @@
 | D-09 | **Constitution 数值**。TBD-1 至 TBD-5（OOS 长度、最小样本、基准、参数稳定性、成本压力）。 | 需用户批准 | → 提案 `docs/research/proposals/d09-validation-threshold-proposal.md`（未批准） |
 | D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1 |
 
-## 新发现的冲突（ARCHITECTURE_DECISION_REQUIRED）
+## 冲突记录
 
-| ID | 冲突 | 涉及 |
-|---|---|---|
-| C-1 | D-03 边界链为 Paper Trading → Production Candidate；D-05 生命周期为 PRODUCTION_CANDIDATE → PAPER。两份 Raphael 规格顺序相反 | ADR-0005、ADR-0006 |
-| C-2 | D-05 规则 5（Phase 13 前 ACTIVE 仅为模拟）使 PAPER 与 ACTIVE 的区别不明确 | ADR-0006 §3 |
+| ID | 冲突 | 涉及 | 状态 |
+|---|---|---|---|
+| C-1 | D-03 边界链为 Paper Trading → Production Candidate；D-05 生命周期为 PRODUCTION_CANDIDATE → PAPER。两份 Raphael 规格顺序相反 | ADR-0005、ADR-0006 | ✅ 2026-09-21 Raphael 选 B：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE |
+| C-2 | D-05 规则 5（Phase 13 前 ACTIVE 仅为模拟）使 PAPER 与 ACTIVE 的区别不明确 | ADR-0006 | ✅ 2026-09-21 Raphael 选 A：PAPER = 单策略独立观察；ACTIVE = 组合 / Router 正式启用，带 execution_mode；不设 LIVE 状态 |
