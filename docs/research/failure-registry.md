@@ -1,0 +1,39 @@
+# Failure Registry
+
+| 字段 | 值 |
+|---|---|
+| 状态 | 空（Architecture Bootstrap） |
+| 性质 | **追加式（append-only），永不删除** |
+
+失败实验是研究资产。它们防止重复犯错、提供负面知识，并为多重检验提供真实的 trial count。
+
+## 记录字段（见 07-validation.md §4）
+
+| 字段 | 说明 |
+|---|---|
+| `subject_ref` | 失败对象 `kind:name@version` |
+| `terminal_state` | REJECTED / FAILED / RETIRED |
+| `reason_code` | 例：`LEAKAGE_DETECTED`、`NOT_SIGNIFICANT_AFTER_MTC`、`OOS_DECAY`、`COST_KILLED`、`PARAM_UNSTABLE`、`STATE_CONCENTRATED`、`NOT_REPRODUCIBLE`、`DATA_QUALITY`、`HUMAN_VETO` |
+| `gate_id` | 失败的验证门 |
+| `evidence` | ExperimentRun / ValidationReport 引用 |
+| `hypothesis_family` | 所属假设族（用于 trial count） |
+| `lessons` | 可检索的教训 |
+| `recorded_at` | UTC |
+
+## 规则
+
+- 任何 Agent 或人都不得删除条目；更正只能追加新条目引用旧条目。
+- 新假设在登记前应检索本注册表，避免重复已失败的方向（除非明确声明为复现检查）。
+- "重试" = 新版本的新 CANDIDATE；旧失败保留且计入 trial count。
+
+## 失败模式分类统计
+
+| reason_code | 次数 |
+|---|---|
+| — | 0 |
+
+## 条目
+
+| subject_ref | terminal_state | reason_code | gate | evidence | recorded_at |
+|---|---|---|---|---|---|
+| — | — | — | — | — | — |

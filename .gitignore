@@ -1,0 +1,28 @@
+# Data never enters version control (see docs/architecture/03-data.md)
+data/*
+!data/README.md
+
+# Secrets
+.env
+.env.*
+*.pem
+*.key
+secrets/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.egg-info/
+
+# Node
+node_modules/
+dist/
+
+# Local research scratch
+*.duckdb
+*.duckdb.wal
+.ipynb_checkpoints/

@@ -1,0 +1,157 @@
+# 02 — Domain Model
+
+> 本文件定义**冻结的领域契约**。实现位于 `core/domain/` 与 `core/contracts/`（尚未创建代码）。修改需 ADR。
+
+## 1. 统一标识与版本化
+
+每个可版本化对象（Versioned Artifact）具有：
+
+| 字段 | 说明 |
+|---|---|
+| `kind` | 对象类型（`feature`、`state`、`event`、`outcome`、`strategy`、`risk`、`dataset`、`experiment`…） |
+| `name` | 稳定的人类可读名，`snake_case` |
+| `version` | SemVer；**语义变化 = major**，参数默认值变化 = minor，非语义修复 = patch |
+| `content_hash` | 规格（spec）的规范化 JSON 的 SHA-256；同 hash = 同语义 |
+| `schema_version` | 该对象所遵循的契约版本 |
+| `created_at` | UTC |
+| `lineage` | 上游对象引用列表 |
+
+引用格式：`{kind}:{name}@{version}`，例如 `feature:realized_vol_1h@1.2.0`。
+**已发布版本不可变**（immutable）；修改 = 新版本。
+
+## 2. 核心实体
+
+```mermaid
+classDiagram
+    class Instrument {
+        +venue
+        +symbol
+        +type
+        +base
+        +quote
+    }
+    class Dataset {
+        +snapshot_id
+        +zone
+        +time_range
+    }
+    class FeatureSpec {
+        +name_at_version
+        +inputs
+        +params
+        +available_lag
+    }
+    class StateSpec {
+        +name_at_version
+        +features
+        +state_space
+    }
+    class EventSpec {
+        +name_at_version
+        +trigger
+        +states
+        +features
+    }
+    class OutcomeSpec {
+        +name_at_version
+        +horizon
+        +label_fn
+    }
+    class KnowledgeItem {
+        +source
+        +claim
+        +evidence_level
+        +license
+    }
+    class Hypothesis {
+        +statement
+        +conditions
+        +expected_effect
+        +origin
+    }
+    class StrategySpec {
+        +name_at_version
+        +signals
+        +params
+        +constraints
+    }
+    class RiskPolicy {
+        +name_at_version
+        +limits
+        +sizing
+    }
+    class ExperimentSpec {
+        +hypothesis
+        +repro_tuple
+    }
+    class ExperimentRun {
+        +status
+        +metrics
+        +artifacts
+    }
+    class ValidationReport {
+        +constitution_version
+        +checks
+        +verdict
+    }
+    class LifecycleRecord {
+        +subject
+        +state
+        +transitions
+    }
+    class FailureRecord {
+        +subject
+        +reason_code
+        +evidence
+    }
+
+    Dataset --> FeatureSpec : input
+    FeatureSpec --> StateSpec
+    FeatureSpec --> EventSpec
+    StateSpec --> EventSpec
+    KnowledgeItem --> Hypothesis : informs
+    Hypothesis --> ExperimentSpec
+    StrategySpec --> ExperimentSpec
+    RiskPolicy --> ExperimentSpec
+    OutcomeSpec --> ExperimentSpec
+    ExperimentSpec --> ExperimentRun
+    ExperimentRun --> ValidationReport
+    ValidationReport --> LifecycleRecord
+    ValidationReport --> FailureRecord
+```
+
+| 实体 | 定义 | 关键不变量 |
+|---|---|---|
+| **Instrument** | 可交易标的（交易所 + 符号 + 合约类型） | 跨 venue 符号必须规范化映射 |
+| **Dataset** | 某一 Zone 的数据快照 | 必须有不可变 `snapshot_id` |
+| **Representation** | 原始数据到研究可用形式的变换（bar、tick 聚合、订单簿快照、成交量钟…） | 声明其时间语义 |
+| **FeatureSpec** | 从 Representation 计算的时间序列量 | 必须声明 `available_lag`；禁止使用未来数据 |
+| **StateSpec** | 市场状态的定义（离散或连续状态空间） | 状态在 `t` 时只依赖 `≤ t` 的信息 |
+| **EventSpec** | 状态/特征上的离散事件（突破、状态切换、交互） | 事件时间 = 可被观测的时间 |
+| **OutcomeSpec** | 事件/信号之后的结果标签（前向收益、回撤、触达） | Outcome 只能作为标签，**永不**作为输入 |
+| **KnowledgeItem** | 从公开来源提取的主张 + 出处 | 必须有出处、许可、证据等级 |
+| **Hypothesis** | 可证伪的陈述：在条件 C 下，X 导致 Y | 必须可映射为 ExperimentSpec |
+| **StrategySpec** | 信号 → 仓位的规则 | 参数空间必须声明（用于多重检验计数） |
+| **RiskPolicy** | 仓位、止损、敞口、杠杆限制 | 独立于策略版本化 |
+| **ExperimentSpec / Run** | 见 06-experiment.md | 可复现 |
+| **ValidationReport** | 按 Constitution 执行的检查结果 | 绑定 Constitution 版本 |
+| **LifecycleRecord** | 研究对象的晋升状态 | 只能按状态机转移 |
+| **FailureRecord** | 失败/拒绝的记录 | 永不删除 |
+| **ResearchMemory** | 以上所有记录的可检索集合 | 追加式（append-only） |
+
+## 3. 契约规则
+
+1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
+2. 每个契约包含 `schema_version`。
+3. **兼容性**：minor 只能添加可选字段；删除/重命名/语义变化 = major + ADR + 迁移脚本。
+4. 契约不引用任何具体技术类型（DataFrame、SQLAlchemy 模型、LLM SDK 对象）。数据集合在契约中以 `DatasetRef` / Arrow Schema 描述。
+5. `core/errors/` 定义领域错误分类（数据缺失、契约违反、泄漏检测、复现失败…），供 Failure Registry 使用 `reason_code`。
+
+## 4. 目录映射
+
+| 路径 | 内容 |
+|---|---|
+| `core/domain/` | 实体、值对象、不变量 |
+| `core/contracts/` | Provider 接口、跨 Plane DTO、JSON Schema 导出 |
+| `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
+| `core/errors/` | 错误分类 |

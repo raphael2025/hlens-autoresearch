@@ -1,0 +1,11 @@
+# Architecture Bootstrap placeholder.
+# 仅包含项目元数据；刻意不声明依赖、构建后端或工具配置。
+# Python 版本由 ADR-0003 固定（3.13 + uv）；依赖将在 Phase 0 开启后填写。
+
+[project]
+name = "hlens-autoresearch"
+version = "0.0.0"
+description = "Modular, pluggable, verifiable automated research infrastructure for crypto markets."
+readme = "README.md"
+requires-python = "==3.13.*"
+dependencies = []
