@@ -13,7 +13,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, Kind, Ref, VersionedSpec
+from core.domain.base import Contract, FrozenMapping, Kind, Ref, VersionedSpec
 
 __all__ = [
     "BenchmarkParams",
@@ -131,7 +131,9 @@ class LifecycleParams(Contract):
 
     paper_period: timedelta
     paper_acceptance_rule: str = Field(min_length=1)
-    degradation_thresholds: dict[str, float] = Field(default_factory=dict)
+    degradation_thresholds: FrozenMapping[str, float] = Field(
+        default_factory=dict, validate_default=True
+    )
 
 
 class Provenance(Contract):
@@ -159,7 +161,9 @@ class ValidationProfile(VersionedSpec):
     parameter_stability: ParameterStabilityParams
     cost_stress: CostStressParams
     lifecycle: LifecycleParams
-    inconclusive_bands: dict[str, float] = Field(default_factory=dict)
+    inconclusive_bands: FrozenMapping[str, float] = Field(
+        default_factory=dict, validate_default=True
+    )
     provenance: Provenance = Provenance()
 
     @model_validator(mode="after")
@@ -167,3 +171,12 @@ class ValidationProfile(VersionedSpec):
         if self.status is ProfileStatus.FROZEN and self.provenance.calibration_report is None:
             raise ValueError("冻结的 Profile 必须引用校准报告（Constitution C-A8）")
         return self
+
+    @classmethod
+    def _non_semantic_fields(cls) -> set[str]:
+        """`status` 是操作状态，不属于内容身份；`provenance` **保留**在哈希内（ADR-0008 决策 3）。
+
+        因此内容相同的 `draft` 与 `frozen` 版本 `content_hash()` 相等，
+        `ReproducibilityTuple.validation_profile_hash` 指向的就是这个值。
+        """
+        return super()._non_semantic_fields() | {"status"}

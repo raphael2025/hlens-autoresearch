@@ -1,0 +1,91 @@
+{
+  "contract_schema_version": "1.0.0",
+  "generated_from_commit": "066b22d",
+  "legacy_content_hash": "b652eeeb0e4324d6ca8b05bed9644ea30c09b4a56cda9c5e7f53145c250e5084",
+  "legacy_excluded_fields": [
+    "content_hash",
+    "created_at"
+  ],
+  "model": "ExperimentSpec",
+  "note": "v1 ExperimentSpec：strategy/risk/outcome 与 repro 并列存放",
+  "payload": {
+    "created_at": "2024-01-01T00:00:00Z",
+    "kind": "experiment",
+    "lineage": [],
+    "name": "e_vector",
+    "outcome": {
+      "kind": "outcome",
+      "name": "o_vector",
+      "schema_version": "1.0.0",
+      "version": "1.0.0"
+    },
+    "repro": {
+      "code_commit": "066b22d0000000000000000000000000000000ab",
+      "constitution_version": "0.2.0-draft",
+      "cost_model_ref": {
+        "kind": "cost_model",
+        "name": "cost_vector",
+        "schema_version": "1.0.0",
+        "version": "1.0.0"
+      },
+      "dataset_snapshots": [
+        {
+          "schema_version": "1.0.0",
+          "snapshot_id": "snap-0001",
+          "table": "binance_btcusdt_1h",
+          "time_range_end": "2024-01-31T00:00:00Z",
+          "time_range_start": "2024-01-01T00:00:00Z",
+          "zone": "canonical"
+        }
+      ],
+      "environment_lock": "lock-sha256:bbbbbbbbbbbbbbbb",
+      "hypothesis_ref": {
+        "kind": "hypothesis",
+        "name": "h_vector",
+        "schema_version": "1.0.0",
+        "version": "1.0.0"
+      },
+      "llm_calls": [],
+      "param_search_space": {
+        "window": [
+          12,
+          24,
+          48
+        ]
+      },
+      "params": {
+        "threshold": 1.5,
+        "window": 24
+      },
+      "plugin_versions": {
+        "backtest_ref@1.0.0": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "profile_selection": {
+        "research_class": "swing",
+        "rule_version": "1.0.0"
+      },
+      "schema_version": "1.0.0",
+      "seeds": [
+        7,
+        11
+      ],
+      "split_spec": "train/validation/sealed-oos",
+      "validation_profile_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "validation_profile_version": "vp:vector_scope@1.0.0"
+    },
+    "risk_policy": {
+      "kind": "risk",
+      "name": "r_vector",
+      "schema_version": "1.0.0",
+      "version": "1.0.0"
+    },
+    "schema_version": "1.0.0",
+    "strategy": {
+      "kind": "strategy",
+      "name": "s_vector",
+      "schema_version": "1.0.0",
+      "version": "1.0.0"
+    },
+    "version": "1.0.0"
+  }
+}

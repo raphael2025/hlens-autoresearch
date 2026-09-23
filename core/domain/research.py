@@ -10,7 +10,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, Kind, Ref, UtcDatetime, VersionedSpec
+from core.domain.base import Contract, FrozenMapping, Kind, Ref, UtcDatetime, VersionedSpec
 from core.domain.specs import DatasetRef
 from core.errors import ReasonCode
 
@@ -99,17 +99,19 @@ class ReproducibilityTuple(Contract):
     hypothesis_ref: Ref
     dataset_snapshots: tuple[DatasetRef, ...] = Field(min_length=1)
     code_commit: str = Field(min_length=7)
-    plugin_versions: dict[str, str] = Field(default_factory=dict)
-    params: dict[str, str | int | float | bool] = Field(default_factory=dict)
-    param_search_space: dict[str, tuple[str | int | float | bool, ...]] = Field(
-        default_factory=dict
+    plugin_versions: FrozenMapping[str, str] = Field(default_factory=dict, validate_default=True)
+    params: FrozenMapping[str, str | int | float | bool] = Field(
+        default_factory=dict, validate_default=True
+    )
+    param_search_space: FrozenMapping[str, tuple[str | int | float | bool, ...]] = Field(
+        default_factory=dict, validate_default=True
     )
     seeds: tuple[int, ...] = ()
     environment_lock: str = Field(min_length=1)
     constitution_version: str = Field(min_length=1)
     validation_profile_version: str = Field(min_length=1)
     validation_profile_hash: str = Field(min_length=1)
-    profile_selection: dict[str, str] = Field(default_factory=dict)
+    profile_selection: FrozenMapping[str, str] = Field(default_factory=dict, validate_default=True)
     split_spec: str = Field(min_length=1)
     cost_model_ref: Ref
     llm_calls: tuple[LlmCall, ...] = ()

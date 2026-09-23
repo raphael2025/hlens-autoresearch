@@ -10,7 +10,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, Kind, Ref, UtcDatetime, VersionedSpec
+from core.domain.base import Contract, FrozenMapping, Kind, Ref, UtcDatetime, VersionedSpec
 
 __all__ = [
     "DatasetRef",
@@ -81,7 +81,9 @@ class RepresentationSpec(VersionedSpec):
     kind: Kind = Kind.REPRESENTATION
     method: str = Field(min_length=1)
     inputs: tuple[DatasetRef, ...] = Field(min_length=1)
-    params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    params: FrozenMapping[str, str | int | float | bool] = Field(
+        default_factory=dict, validate_default=True
+    )
     event_time_semantics: str = Field(min_length=1)
     available_lag: timedelta = timedelta(0)
 
@@ -102,7 +104,9 @@ class FeatureSpec(VersionedSpec):
     kind: Kind = Kind.FEATURE
     definition: str
     inputs: tuple[Ref | DatasetRef, ...]
-    params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    params: FrozenMapping[str, str | int | float | bool] = Field(
+        default_factory=dict, validate_default=True
+    )
     available_lag: timedelta
     deterministic: bool = True
 
@@ -162,9 +166,11 @@ class StrategySpec(VersionedSpec):
 
     kind: Kind = Kind.STRATEGY
     signals: tuple[Ref, ...] = Field(min_length=1)
-    params: dict[str, str | int | float | bool] = Field(default_factory=dict)
-    param_search_space: dict[str, tuple[str | int | float | bool, ...]] = Field(
-        default_factory=dict
+    params: FrozenMapping[str, str | int | float | bool] = Field(
+        default_factory=dict, validate_default=True
+    )
+    param_search_space: FrozenMapping[str, tuple[str | int | float | bool, ...]] = Field(
+        default_factory=dict, validate_default=True
     )
     risk_policy: Ref | None = None
     applicable_instruments: tuple[Instrument, ...] = ()
@@ -181,4 +187,6 @@ class RiskPolicy(VersionedSpec):
 
     kind: Kind = Kind.RISK
     rules: tuple[str, ...] = Field(min_length=1)
-    params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    params: FrozenMapping[str, str | int | float | bool] = Field(
+        default_factory=dict, validate_default=True
+    )

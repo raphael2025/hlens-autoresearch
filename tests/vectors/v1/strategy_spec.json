@@ -1,0 +1,51 @@
+{
+  "contract_schema_version": "1.0.0",
+  "generated_from_commit": "066b22d",
+  "legacy_content_hash": "9aa431048f58c5fb998130a3aa01be37fe74b46a7b0e640cb0e69ef7f0fb9b7e",
+  "legacy_excluded_fields": [
+    "content_hash",
+    "created_at"
+  ],
+  "model": "StrategySpec",
+  "note": "普通 VersionedSpec：含 params 与 param_search_space 映射字段",
+  "payload": {
+    "applicable_instruments": [],
+    "created_at": "2024-01-01T00:00:00Z",
+    "kind": "strategy",
+    "lineage": [],
+    "name": "s_vector",
+    "param_search_space": {
+      "mode": [
+        "long_only",
+        "both"
+      ],
+      "window": [
+        12,
+        24,
+        48
+      ]
+    },
+    "params": {
+      "inverted": false,
+      "mode": "long_only",
+      "threshold": 1.5,
+      "window": 24
+    },
+    "risk_policy": {
+      "kind": "risk",
+      "name": "r_vector",
+      "schema_version": "1.0.0",
+      "version": "1.0.0"
+    },
+    "schema_version": "1.0.0",
+    "signals": [
+      {
+        "kind": "feature",
+        "name": "f_realized_vol",
+        "schema_version": "1.0.0",
+        "version": "1.0.0"
+      }
+    ],
+    "version": "1.0.0"
+  }
+}

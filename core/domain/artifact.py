@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, Kind, Ref, VersionedSpec
+from core.domain.base import Contract, FrozenMapping, Kind, Ref, VersionedSpec
 from core.domain.specs import Instrument
 
 __all__ = ["DeploymentRecord", "EquivalenceCheck", "GoldenOutputs", "StrategyArtifact"]
@@ -32,7 +32,7 @@ class StrategyArtifact(VersionedSpec):
 
     kind: Kind = Kind.ARTIFACT
     strategy_spec: Ref
-    dependencies: dict[str, str] = Field(default_factory=dict)
+    dependencies: FrozenMapping[str, str] = Field(default_factory=dict, validate_default=True)
     research_code_commit: str = Field(min_length=7)
     research_code_tree_hash: str = Field(min_length=7)
     experiment_hashes: tuple[str, ...] = Field(min_length=1)

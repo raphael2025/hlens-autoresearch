@@ -19,6 +19,17 @@
 引用格式：`{kind}:{name}@{version}`，例如 `feature:realized_vol_1h@1.2.0`。
 **已发布版本不可变**（immutable）；修改 = 新版本。
 
+### 1.1 载荷的只读表示（ADR-0008）
+
+契约中的映射字段对外只暴露 `collections.abc.Mapping` 语义：没有 `__setitem__` / `__delitem__`，
+也没有 `update` / `pop` / `popitem` / `clear` / `setdefault` / `|=`。构造时复制输入并递归冻结内层
+（嵌套映射 → 只读视图，嵌套序列 → `tuple`），因此与调用方保留的原引用不共享状态；
+默认值与显式传值走同一条校验路径。JSON wire shape 与 JSON Schema 仍为 `object`。
+
+**诚实边界**：这是**契约使用层面**的只读性，用于阻止误用与意外修改，**不**承诺抵御同进程内
+直接操作内部属性的恶意 Python；深拷贝也不等于不可变。Python 的 `hash()` 与本项目的
+`content_hash` 是两件不同的事，不得混用。
+
 ## 2. 核心实体
 
 ```mermaid
@@ -147,6 +158,34 @@ classDiagram
 3. **兼容性**：minor 只能添加可选字段；删除/重命名/语义变化 = major + ADR + 迁移脚本。
 4. 契约不引用任何具体技术类型（DataFrame、SQLAlchemy 模型、LLM SDK 对象）。数据集合在契约中以 `DatasetRef` / Arrow Schema 描述。
 5. `core/errors/` 定义领域错误分类（数据缺失、契约违反、泄漏检测、复现失败…），供 Failure Registry 使用 `reason_code`。
+
+### 3.1 内容哈希的载荷定义（ADR-0008）
+
+`content_hash` = **规范化 JSON 的 SHA-256**，规范化约定如下（固定测试向量在 `tests/vectors/`）：
+
+| 项 | 约定 |
+|---|---|
+| 键排序 | `sort_keys=True` —— 映射的插入顺序不影响哈希 |
+| 分隔符 | `(",", ":")`，无多余空白 |
+| 非 ASCII | `ensure_ascii=False`，原样保留 |
+| 非法数值 | `allow_nan=False` —— NaN / ±Infinity 直接报错，**不得**先转成 null 再参与哈希 |
+| 未知类型 | 直接抛 `TypeError`，**没有**静默 `str()` 兜底 |
+| 模型输入 | 先经明确的 JSON 适配（`model_dump(mode="json")`），再规范化 |
+
+这是 v2 明确的 Python/JSON 规范，**不**宣称跨语言浮点规范化保证；未来非 Python 实现必须通过
+上述固定向量与数值一致性评估。
+
+哈希载荷采用**逐模型显式排除表**，基类默认只排除 `created_at`：
+
+| 模型 | 排除字段 | 说明 |
+|---|---|---|
+| `Contract`（默认） | `created_at` | —— |
+| `ValidationProfile` | `created_at`、`status` | `status` 是操作状态；`provenance` **保留**在哈希内 |
+| 其余模型 | 沿用默认 | —— |
+
+**不存在**全局的 `*_id` / `recorded_at` / `occurred_at` 排除规则：`run_id`、`subject`、授权与
+审计时间都可能是语义。`ReproducibilityTuple.validation_profile_hash` 即"按上述载荷计算的
+`ValidationProfile` 内容哈希"，因此内容相同的 `draft` 与 `frozen` 版本哈希相等。
 
 ## 4. 目录映射
 

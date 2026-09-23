@@ -17,7 +17,7 @@ from enum import StrEnum
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, Ref, UtcDatetime
+from core.domain.base import Contract, FrozenMapping, Ref, UtcDatetime
 from core.errors import LifecycleViolation
 
 __all__ = [
@@ -139,7 +139,7 @@ class RiskGateRecord(Contract):
 
     gate_id: str = Field(min_length=1)
     passed: bool
-    limits: dict[str, str] = Field(default_factory=dict)
+    limits: FrozenMapping[str, str] = Field(default_factory=dict, validate_default=True)
     checked_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
 
 

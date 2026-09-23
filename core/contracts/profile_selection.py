@@ -10,7 +10,7 @@ from datetime import UTC, datetime
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, Kind, Ref, UtcDatetime, VersionedSpec
+from core.domain.base import Contract, FrozenMapping, Kind, Ref, UtcDatetime, VersionedSpec
 from core.domain.research import GateResult, LlmCall
 from core.errors import ProfileViolation
 
@@ -88,7 +88,9 @@ class ExperimentMetadata(Contract):
     trial_index: int = Field(gt=0)
     family_trial_count: int = Field(gt=0)
     declared_research_class: str = Field(min_length=1)
-    realized_holding_stats: dict[str, float] = Field(default_factory=dict)
+    realized_holding_stats: FrozenMapping[str, float] = Field(
+        default_factory=dict, validate_default=True
+    )
     gate_results: tuple[GateResult, ...] = ()
     oos_unsealing: OosUnsealing | None = None
     llm_calls: tuple[LlmCall, ...] = ()

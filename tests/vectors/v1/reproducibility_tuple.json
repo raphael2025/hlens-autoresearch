@@ -1,0 +1,65 @@
+{
+  "contract_schema_version": "1.0.0",
+  "generated_from_commit": "066b22d",
+  "legacy_content_hash": "847da60263c0c76daf46e23e571a92df702d5d9af27d6faa8684ab832d18e7e3",
+  "legacy_excluded_fields": [
+    "content_hash",
+    "created_at"
+  ],
+  "model": "ReproducibilityTuple",
+  "note": "复现元组：v1 覆盖面（不含 strategy/risk/outcome 引用）",
+  "payload": {
+    "code_commit": "066b22d0000000000000000000000000000000ab",
+    "constitution_version": "0.2.0-draft",
+    "cost_model_ref": {
+      "kind": "cost_model",
+      "name": "cost_vector",
+      "schema_version": "1.0.0",
+      "version": "1.0.0"
+    },
+    "dataset_snapshots": [
+      {
+        "schema_version": "1.0.0",
+        "snapshot_id": "snap-0001",
+        "table": "binance_btcusdt_1h",
+        "time_range_end": "2024-01-31T00:00:00Z",
+        "time_range_start": "2024-01-01T00:00:00Z",
+        "zone": "canonical"
+      }
+    ],
+    "environment_lock": "lock-sha256:bbbbbbbbbbbbbbbb",
+    "hypothesis_ref": {
+      "kind": "hypothesis",
+      "name": "h_vector",
+      "schema_version": "1.0.0",
+      "version": "1.0.0"
+    },
+    "llm_calls": [],
+    "param_search_space": {
+      "window": [
+        12,
+        24,
+        48
+      ]
+    },
+    "params": {
+      "threshold": 1.5,
+      "window": 24
+    },
+    "plugin_versions": {
+      "backtest_ref@1.0.0": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    },
+    "profile_selection": {
+      "research_class": "swing",
+      "rule_version": "1.0.0"
+    },
+    "schema_version": "1.0.0",
+    "seeds": [
+      7,
+      11
+    ],
+    "split_spec": "train/validation/sealed-oos",
+    "validation_profile_hash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "validation_profile_version": "vp:vector_scope@1.0.0"
+  }
+}
