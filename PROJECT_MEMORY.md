@@ -86,7 +86,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-23
-- Git Commit：f93f65a（ADR-0005 / 0006 Accepted + 一致性同步）
+- Git Commit：95b6b4b（ADR-0007 Accepted + 宪法重组 + 一致性同步）
 - Phase：Bootstrap 完成，Phase 0 未开启；生命周期与研究 / 生产边界已冻结
 - State：仅有文档和元数据，无业务代码，未安装依赖
 - Notes：ADR-0001 ~ 0007 Accepted；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放
