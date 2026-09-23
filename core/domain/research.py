@@ -11,13 +11,15 @@ from enum import StrEnum
 from pydantic import Field, model_validator
 
 from core.domain.base import (
+    ContentHash,
     Contract,
     FrozenMapping,
     Kind,
+    PluginKey,
     Ref,
+    RefKey,
     UtcDatetime,
     VersionedSpec,
-    validate_plugin_version_hashes,
     validate_ref_keyed_hashes,
 )
 from core.domain.selection import ProfileSelection
@@ -121,8 +123,10 @@ class ReproducibilityTuple(Contract):
     outcome_ref: Ref | None
     dataset_snapshots: tuple[DatasetRef, ...] = Field(min_length=1)
     code_commit: str = Field(min_length=7)
-    plugin_versions: FrozenMapping[str, str] = Field(default_factory=dict, validate_default=True)
-    dependency_hashes: FrozenMapping[str, str]
+    plugin_versions: FrozenMapping[PluginKey, ContentHash] = Field(
+        default_factory=dict, validate_default=True
+    )
+    dependency_hashes: FrozenMapping[RefKey, ContentHash]
     params: FrozenMapping[str, str | int | float | bool] = Field(
         default_factory=dict, validate_default=True
     )
@@ -162,7 +166,6 @@ class ReproducibilityTuple(Contract):
         （ADR-0009 §6），本契约不声称已验证完整依赖图。
         """
         validate_ref_keyed_hashes(self.dependency_hashes, "dependency_hashes")
-        validate_plugin_version_hashes(self.plugin_versions, "plugin_versions")
         required = {
             str(ref)
             for ref in (

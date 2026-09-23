@@ -117,6 +117,9 @@ def test_production_packages_do_not_import_research() -> None:
         assert not leaked, f"{path.relative_to(REPO)} 直接引用了研究代码"
 
 
-@pytest.mark.parametrize("package", ["core", "core/domain", "core/contracts", "core/lifecycle"])
+@pytest.mark.parametrize(
+    "package",
+    ["core", "core/domain", "core/contracts", "core/lifecycle", "core/compat"],
+)
 def test_core_packages_are_importable(package: str) -> None:
     assert (REPO / package / "__init__.py").exists()

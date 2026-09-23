@@ -16,7 +16,8 @@
 ## 2. Current Architecture
 
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
-- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`；模型只接受同 major，`1.x` 走 `core/compat/v1.py` 只读入口
+- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`（**尚未发布**：未合并 main、无 tag、无远程、无 v2 数据登记）；
+  模型只接受同 major，`1.x` 走 `core/compat/v1.py` 只读入口
 - Freeze Contracts, Evolve Implementations
 - 四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）
@@ -38,7 +39,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：B1、B2 已实施并各留一个 commit；契约 2.0.0 已发布
+- Current Subphase：B1、B2 已实施并经 Codex 验收；ADR-0010 纠偏已实施；契约仍为未发布的 2.0.0
 - Current Objective：等待 Codex 验收 B1/B2，再决定是否授权 B3 与 Phase 0 关闭复审
 - Current Blocker：B3 未授权（生命周期审批等遗漏）；Constitution 1.0.0 仍待 Raphael 亲自批准
 - Next Milestone：B1/B2 验收 → B3 决定 → Constitution 获批 → Phase 0 关闭
@@ -57,6 +58,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - D-09 数值（TBD-1 ~ TBD-5）：**未批准**，Phase 4 校准后冻结为 Profile 参数；Constitution 中不得出现数值阈值；提案见 `docs/research/proposals/d09-validation-threshold-proposal.md`
 - ADR-0008：契约映射载荷只读、逐模型内容哈希边界与 v1 只读兼容；2026-09-23 Accepted，B1 已实施。
 - ADR-0009：完整实验规格身份、运行标识与直接依赖内容绑定；实际 seeds 保留在实验哈希中；2026-09-23 Accepted，B2 已实施。
+- ADR-0010：`model_copy(update=...)` 重新走完整校验（`model_construct` 明确不受支持）、唯一 ASCII
+  SemVer 2.0.0 语法、v1 只读入口的顶层 shape gate、JSON Schema 表达键值格式；2026-09-23 Accepted 并实施。
 - 契约 2.0.0 已随 B2 发布：v1 与 v2 的 `content_hash` / `experiment_hash` **不可比较**；v1 只读路径 =
   `schemas/v1/`（35 份快照）+ `tests/vectors/v1/`（固定载荷与旧哈希）+ `core/compat/v1.py`。
   读取 v1 不赋予任何 v2 登记 / 晋升资格。
@@ -85,7 +88,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Constitution 仍是草案：批准前不能判定任何实验
 - 契约层只校验直接引用的内容绑定；传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、
   Registry 存在性均为未实现的 Runner / Registry 义务（06-experiment.md §7）
-- `LlmCall` 仍只存哈希，"完整输入输出"仍是未关闭缺口
+- `LlmCall` 仍只存哈希，"完整输入输出"仍是未关闭缺口（B3）
+- v1 只读 gate 只做顶层形状检查，不是完整 JSON Schema 递归校验
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
 
 ## 8. Important Historical Context
@@ -99,11 +103,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-23
-- Git Commit：B2 提交（phase/0 分支 HEAD）；上一个恢复点 `4f83e18`（B1 只读载荷）
-- Phase：Phase 0；B1/B2 已实施，契约 2.0.0 已发布，等待 Codex 验收与关闭复审
-- State：core 契约、状态机、只读载荷、完整实验身份、v1 只读兼容入口均已实现；
-  443 测试、ruff check、ruff format --check、mypy strict 全绿；
+- Git Commit：ADR-0010 纠偏提交（phase/0 分支 HEAD）；上一恢复点 `4e0f6e3`（B2）、`4f83e18`（B1）
+- Phase：Phase 0；B1/B2 + ADR-0010 已实施，契约 2.0.0 仍未发布，等待 Codex 复验与关闭复审
+- State：core 契约、状态机、只读载荷、完整实验身份、规范版本语法、v1 只读兼容入口均已实现；
+  545 测试、ruff check、ruff format --check、mypy strict 全绿；
   Schema current 36 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0）；
   无 Feature / Strategy / Backtest / Runner / Registry / 存储实现
-- Notes：ADR-0001 ~ 0009 Accepted；B3 未授权；Constitution 0.2.0-draft 待批准为 1.0.0；
+- Notes：ADR-0001 ~ 0010 Accepted；B3 未授权；Constitution 0.2.0-draft 待批准为 1.0.0；
   D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；未合并 main、未创建 tag

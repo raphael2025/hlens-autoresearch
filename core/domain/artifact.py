@@ -9,10 +9,12 @@ from __future__ import annotations
 from pydantic import Field, model_validator
 
 from core.domain.base import (
+    ContentHash,
     Contract,
     FrozenMapping,
     Kind,
     Ref,
+    RefKey,
     VersionedSpec,
     validate_ref_keyed_hashes,
 )
@@ -41,7 +43,7 @@ class StrategyArtifact(VersionedSpec):
     strategy_spec: Ref
     #: `kind:name@semver → SHA-256 内容哈希`（ADR-0009 §5）。键带 kind，避免 Feature /
     #: State 等同名对象混淆。**完整传递依赖闭包**由未来 Registry / 打包器解析并检查。
-    dependencies: FrozenMapping[str, str]
+    dependencies: FrozenMapping[RefKey, ContentHash]
     research_code_commit: str = Field(min_length=7)
     research_code_tree_hash: str = Field(min_length=7)
     experiment_hashes: tuple[str, ...] = Field(min_length=1)

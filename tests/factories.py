@@ -38,6 +38,7 @@ from core.domain.research import (
 )
 from core.domain.selection import ProfileSelection
 from core.domain.specs import DatasetRef, Zone
+from core.lifecycle.strategy import LifecycleHistory
 
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
 
@@ -289,6 +290,12 @@ def strategy_artifact(**overrides: object) -> StrategyArtifact:
     }
     payload.update(overrides)
     return StrategyArtifact(**payload)  # type: ignore[arg-type]
+
+
+def lifecycle_history(**overrides: object) -> LifecycleHistory:
+    payload: dict[str, object] = {"subject": strategy_ref(), "transitions": ()}
+    payload.update(overrides)
+    return LifecycleHistory(**payload)  # type: ignore[arg-type]
 
 
 def frozen_profile() -> ValidationProfile:

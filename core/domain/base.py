@@ -26,16 +26,22 @@ from pydantic import (
 __all__ = [
     "CONTRACT_SCHEMA_MAJOR",
     "CONTRACT_SCHEMA_VERSION",
+    "PLUGIN_KEY_PATTERN",
+    "REF_KEY_PATTERN",
+    "SEMVER_PATTERN",
     "SHA256_PATTERN",
     "Contract",
+    "ContentHash",
     "FrozenMapping",
     "Kind",
+    "PluginKey",
     "Ref",
+    "RefKey",
     "UtcDatetime",
     "VersionedSpec",
     "canonical_json",
     "content_hash",
-    "validate_plugin_version_hashes",
+    "parse_semver",
     "validate_ref_keyed_hashes",
 ]
 
@@ -46,15 +52,55 @@ CONTRACT_SCHEMA_VERSION = "2.0.0"
 #: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
 CONTRACT_SCHEMA_MAJOR = 2
 
-SEMVER_PATTERN = r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$"
+# ---------------------------------------------------------------------------------------
+# 规范版本语法（ADR-0010 §D-14）
+#
+# 全项目**唯一**的版本语法 = 完整 SemVer 2.0.0，且只接受 ASCII：
+# 刻意不用 `\d`（在 Python 中会匹配 Unicode 数字，例如 `١`），一律用显式 `[0-9]`。
+# core 的 major/minor/patch 禁止前导零；prerelease 的数字标识符同样禁止前导零，
+# 也不允许空标识符；build metadata（`+...`）被正确支持。
+# ---------------------------------------------------------------------------------------
+
+#: 数字标识符：0 或不带前导零的正整数。
+_NUM_ID = r"(?:0|[1-9][0-9]*)"
+#: prerelease 标识符：数字标识符，或含字母 / 连字符的字母数字标识符（不得为空）。
+_PRE_ID = r"(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)"
+#: build metadata 标识符：非空字母数字连字符。
+_BUILD_ID = r"[0-9a-zA-Z-]+"
+_PRERELEASE = rf"(?:-{_PRE_ID}(?:\.{_PRE_ID})*)?"
+_BUILD = rf"(?:\+{_BUILD_ID}(?:\.{_BUILD_ID})*)?"
+
+#: `major.minor.patch`，无前导零。
+SEMVER_CORE_PATTERN = rf"{_NUM_ID}\.{_NUM_ID}\.{_NUM_ID}"
+#: 版本号主体（不带锚点），供拼接进复合键的 pattern 使用。
+_VERSION_BODY = rf"{SEMVER_CORE_PATTERN}{_PRERELEASE}{_BUILD}"
+#: 完整 SemVer 2.0.0（带锚点）。全部为非捕获组，可安全用于 Pydantic / JSON Schema。
+SEMVER_PATTERN = rf"^{_VERSION_BODY}$"
+
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
+_NAME_BODY = r"[a-z][a-z0-9_]*"
 #: 内容哈希一律是 64 位小写十六进制 SHA-256。
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
-REF_PATTERN = re.compile(r"^(?P<kind>[a-z_]+):(?P<name>[a-z][a-z0-9_]*)@(?P<version>.+)$")
-_SEMVER_RE = re.compile(SEMVER_PATTERN)
+
+REF_PATTERN = re.compile(rf"^(?P<kind>[a-z_]+):(?P<name>{_NAME_BODY})@(?P<version>.+)$")
+#: 解析用：与 `SEMVER_PATTERN` 由同一组件拼成，只是多了命名捕获组。
+#: major 必须从**这里**读取，不得用宽松的 `int(value.split(".")[0])`。
+_SEMVER_PARSE_RE = re.compile(
+    rf"^(?P<major>{_NUM_ID})\.(?P<minor>{_NUM_ID})\.(?P<patch>{_NUM_ID}){_PRERELEASE}{_BUILD}$"
+)
 _SHA256_RE = re.compile(SHA256_PATTERN)
-#: `plugin_versions` 的键：`name@semver`（06-experiment.md §2）。
-_PLUGIN_KEY_RE = re.compile(rf"^(?P<name>[a-z][a-z0-9_]*)@(?P<version>{SEMVER_PATTERN[1:-1]})$")
+
+
+def parse_semver(value: str) -> re.Match[str]:
+    """按唯一的规范 SemVer 语法解析；不合法直接报错。
+
+    调用方从返回的 `Match` 读取 `major` / `minor` / `patch` 分组，
+    避免"校验用一套、解析用另一套"的漂移（ADR-0010 §D-14）。
+    """
+    match = _SEMVER_PARSE_RE.fullmatch(value)
+    if match is None:
+        raise ValueError(f"非法版本号：{value!r}；必须是 ASCII 的完整 SemVer 2.0.0")
+    return match
 
 
 def _require_utc(value: datetime) -> datetime:
@@ -85,6 +131,23 @@ class Kind(StrEnum):
     ARTIFACT = "artifact"
     PROFILE = "profile"
     PROFILE_SELECTION_RULE = "profile_selection_rule"
+
+
+#: 复合键的机读 pattern（ADR-0010 §D-16）。**运行时校验与导出的 JSON Schema 用的是同一个
+#: 字符串**：键类型直接标注在字段上，Pydantic 既用它校验、又把它写进 `patternProperties`，
+#: 因此不存在"运行时一套、Schema 另一套"的漂移。
+_KIND_ALTERNATION = "|".join(sorted(kind.value for kind in Kind))
+#: `plugin_versions` 的键：`name@semver`（06-experiment.md §2）。
+PLUGIN_KEY_PATTERN = rf"^{_NAME_BODY}@{_VERSION_BODY}$"
+#: 依赖表的键：`Ref` 的规范串 `kind:name@semver`，kind 必须是已知取值。
+REF_KEY_PATTERN = rf"^(?:{_KIND_ALTERNATION}):{_NAME_BODY}@{_VERSION_BODY}$"
+
+_REF_KEY_RE = re.compile(REF_KEY_PATTERN)
+
+#: 标注类型：直接把格式约束带进字段声明。
+PluginKey = Annotated[str, Field(pattern=PLUGIN_KEY_PATTERN)]
+RefKey = Annotated[str, Field(pattern=REF_KEY_PATTERN)]
+ContentHash = Annotated[str, Field(pattern=SHA256_PATTERN)]
 
 
 def _to_builtin(value: Any) -> Any:
@@ -156,6 +219,18 @@ class FrozenMapping[K, V](Mapping[K, V]):
         return cls(value)
 
     @classmethod
+    def __get_pydantic_json_schema__(cls, schema: Any, handler: Any) -> Any:
+        """键有格式约束时，补上 `additionalProperties: false`。
+
+        Pydantic 会把受约束的键写成 `patternProperties`，但默认不禁止其它键；
+        运行时是禁止的，所以这里把 Schema 收紧到与运行时一致（ADR-0010 §D-16）。
+        """
+        json_schema: dict[str, Any] = handler(schema)
+        if "patternProperties" in json_schema:
+            json_schema.setdefault("additionalProperties", False)
+        return json_schema
+
+    @classmethod
     def __get_pydantic_core_schema__(cls, source_type: Any, handler: GetCoreSchemaHandler) -> Any:
         """以 `dict[K, V]` 为校验与序列化基础：JSON wire shape 与 Schema 保持 `object`。"""
         args = get_args(source_type)
@@ -199,15 +274,34 @@ class Contract(BaseModel):
         payload = self.model_dump(mode="json", exclude=self._non_semantic_fields())
         return content_hash(payload)
 
+    def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
+        """复制契约；**带 `update` 时重新走完整校验**（ADR-0010 §D-13）。
+
+        Pydantic 原生的 `model_copy(update=...)` 直接写入 `__dict__`，会绕过全部校验：
+        可以塞进可写 `dict`、与调用方共享别名、错误的 `kind`、缺失的依赖绑定或空 `run_id`。
+        这里改为重新构造并校验同一具体模型类型，使公开的复制更新路径与正常构造等价。
+
+        无 `update` 的普通 / 深复制保持 Pydantic 行为（输入已经是校验过的实例）。
+
+        **边界**：`model_construct()` 是 Pydantic 面向**可信数据**的低层逃生口，
+        它仍然不做校验；本项目不把它当作受支持的外部载荷入口，也不声称它是安全的。
+        """
+        if not update:
+            return super().model_copy(deep=deep)
+        payload: dict[str, Any] = {**self.__dict__, **dict(update)}
+        return type(self).model_validate(payload)
+
     @field_validator("schema_version")
     @classmethod
     def _supported_major(cls, value: str) -> str:
-        """未知 major 一律拒绝；同 major 的更高 minor 可以读取（ADR-0008 §6、ADR-0009 §7）。
+        """未知 major 一律拒绝（ADR-0008 §6、ADR-0009 §7、ADR-0010 §D-14）。
 
+        同 major 的更高 minor **版本号可识别**，但这不是前向兼容承诺：
+        载荷里出现当前实现未知的字段仍然 fail closed（`extra="forbid"`）。
         旧 major 的载荷只能经 `core.compat` 的只读入口读取，不能作为本版本的模型使用，
         也不因此获得登记 / 晋升资格。
         """
-        major = int(value.split(".", 1)[0])
+        major = int(parse_semver(value).group("major"))
         if major != CONTRACT_SCHEMA_MAJOR:
             raise ValueError(
                 f"不支持的契约 major：{value}（当前为 {CONTRACT_SCHEMA_VERSION}）；"
@@ -264,36 +358,17 @@ class VersionedSpec(Contract):
         return Ref(kind=self.kind, name=self.name, version=self.version)
 
 
-def _require_sha256(label: str, key: str, value: str) -> None:
-    if _SHA256_RE.match(value) is None:
-        raise ValueError(f"{label}[{key!r}] 必须是 64 位小写十六进制 SHA-256 内容哈希：{value!r}")
-
-
-def validate_plugin_version_hashes(mapping: Mapping[str, str], label: str) -> None:
-    """`name@semver → content_hash`（ADR-0009 §5；06-experiment.md §2）。"""
-    for key, value in mapping.items():
-        if _PLUGIN_KEY_RE.match(key) is None:
-            raise ValueError(f"{label} 的键必须是 name@semver 规范串：{key!r}")
-        _require_sha256(label, key, value)
-
-
 def validate_ref_keyed_hashes(mapping: Mapping[str, str], label: str) -> dict[str, Ref]:
     """`kind:name@semver → content_hash`；返回解析后的引用表。
 
-    键必须是 `Ref` 的**规范字符串**（`str(ref)`），避免 Feature / State 等同名对象混淆。
+    键值的**格式**由字段上的 `RefKey` / `ContentHash` 标注类型负责（同一 pattern 也进了
+    JSON Schema）。这里只做解析与形式复核，供覆盖规则使用。
     """
     parsed: dict[str, Ref] = {}
     for key, value in mapping.items():
-        match = REF_PATTERN.match(key)
-        if (
-            match is None
-            or match.group("kind") not in set(Kind)
-            or (_SEMVER_RE.match(match.group("version")) is None)
-        ):
+        if _REF_KEY_RE.fullmatch(key) is None:
             raise ValueError(f"{label} 的键必须是 kind:name@semver 规范串：{key!r}")
-        ref = Ref.parse(key)
-        if str(ref) != key:  # pragma: no cover - REF_PATTERN 已保证规范形式
-            raise ValueError(f"{label} 的键不是规范形式：{key!r}")
-        _require_sha256(label, key, value)
-        parsed[key] = ref
+        if _SHA256_RE.fullmatch(value) is None:
+            raise ValueError(f"{label}[{key!r}] 必须是 64 位小写十六进制 SHA-256：{value!r}")
+        parsed[key] = Ref.parse(key)
     return parsed

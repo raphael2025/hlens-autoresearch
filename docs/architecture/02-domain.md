@@ -204,7 +204,7 @@ classDiagram
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
-当前 `CONTRACT_SCHEMA_VERSION = 2.0.0`。模型校验**只接受同 major**（`2.x`，更高 minor 可读取），
+当前 `CONTRACT_SCHEMA_VERSION = 2.0.0`。模型校验**只接受同 major**（`2.x`），
 其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
 
 | 资产 | 位置 |
@@ -217,6 +217,30 @@ classDiagram
 读取 v1 返回的是 `LegacyV1Record`，**不是** `Contract` 子类：它不能作为 v2 模型使用，
 不会被补造缺失的绑定，也不因此取得 v2 的登记 / 晋升资格。v1 与 v2 的 `content_hash` /
 `experiment_hash` **不可比较**。
+
+v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-15）：用已提交的
+`schemas/v1/<Model>.schema.json` 检查 `required` 齐全、未知顶层字段被拒，快照缺失时
+**fail closed**。这**不是完整的 JSON Schema 递归校验**，不校验嵌套结构与取值。
+
+**"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.1.0` 这样的版本号
+**可被识别**，但这不是前向兼容承诺——载荷里出现当前实现未知字段仍然 fail closed
+（`extra="forbid"`）。不得声称任意未来 minor 都能读。
+
+### 3.4 受支持的构造路径（ADR-0010 §D-13）
+
+| 入口 | 是否校验 |
+|---|---|
+| 构造函数、`model_validate` / `model_validate_json` | ✅ 完整校验 |
+| `model_copy(update=...)` | ✅ 重新走完整校验，返回同一具体模型类型 |
+| `model_copy()` / `model_copy(deep=True)` | ✅ 输入本身已是校验过的实例 |
+| `model_construct()` | ❌ **不校验**。这是 Pydantic 面向可信数据的低层逃生口；它不是受支持的外部载荷入口，本项目不为它提供任何安全承诺 |
+
+### 3.5 规范版本语法（ADR-0010 §D-14）
+
+全项目唯一：**ASCII 的完整 SemVer 2.0.0**。只用 `[0-9]`（禁止会匹配 Unicode 数字的 `\d`）；
+`major.minor.patch` 与 prerelease 的数字标识符禁止前导零；支持 build metadata；
+标识符不得为空。`schema_version`、`Ref.version`、`VersionedSpec.version`、
+`plugin_versions` 的键与依赖键共用同一套组件；major 从已验证的正则分组读取。
 
 ## 4. 目录映射
 

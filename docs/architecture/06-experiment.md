@@ -124,4 +124,5 @@ Run 的状态机（执行层面）与研究对象的 Lifecycle 状态机（晋�
 | `run.repro` ↔ Spec 一致性 | 契约层拿不到 Spec 实例，无法交叉校验 `run.repro.experiment_hash` |
 | **trial 计数** | `trial_index` / `family_trial_count` 目前是自报值；权威账本尚未实现，不得描述为已强制防护（R11） |
 | **Registry 存在性与唯一性** | 引用对象是否已登记、同 `name@version` 不同内容的拒绝（ADR-0008 决策 7） |
+| **Profile 必须已 frozen** | 绑定进实验的 `ValidationProfile` 必须处于 `status = frozen`（Constitution C-A5）。契约层拿不到 Profile 实例——元组里只有版本与内容哈希——因此**由 Runner / Registry 在绑定时校验**：`draft` 或 `superseded` 的 Profile 不得进入任何实验绑定。本轮没有实现这项校验 |
 | Artifact 依赖闭包 | `StrategyArtifact.dependencies` 只强制绑定直接的 `strategy_spec`；完整闭包由打包器解析 |

@@ -15,6 +15,7 @@
 | [0007](0007-validation-architecture-three-layers.md) | 三层验证架构与两步冻结（D-09 结构部分） | Accepted（2026-09-23） |
 | [0008](0008-contract-payload-immutability.md) | 契约载荷的只读表示与内容哈希载荷定义 | Accepted（2026-09-23，Codex 依授权批准方案 A） |
 | [0009](0009-experiment-identity-binding.md) | 实验规格身份、运行标识与依赖内容绑定 | Accepted（2026-09-23，Codex 依授权批准方案 A） |
+| [0010](0010-contract-construction-and-canonical-versioning.md) | 契约构造路径、规范版本语法、v1 顶层 shape gate 与 Schema 格式表达 | Accepted（2026-09-23，Codex 验收 B1/B2 后裁决） |
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -34,6 +35,10 @@
 | D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1 |
 | D-11 | ✅ **已决定（ADR-0008）** 契约只读载荷与哈希边界；下一次未发布的 2.0.0 与旧版本只读兼容。 | 方案 A | Phase 0；Accepted，B1 已实施 |
 | D-12 | ✅ **已决定（ADR-0009）** 实验身份与复现绑定；种子、运行标识和直接依赖内容覆盖。 | 方案 A | Phase 0；Accepted，B2 已实施（契约 2.0.0 已发布） |
+| D-13 | ✅ **已决定（ADR-0010）** `model_copy(update=...)` 必须重新走完整校验；`model_construct` 明确为不受支持的可信数据逃生口。 | Codex 裁决 | Phase 0；Accepted，已实施 |
+| D-14 | ✅ **已决定（ADR-0010）** 唯一、ASCII、完整 SemVer 2.0.0 语法；major 从已验证的正则分组读取。 | Codex 裁决 | Phase 0；Accepted，已实施 |
+| D-15 | ✅ **已决定（ADR-0010）** v1 只读入口增加基于已提交快照的顶层 shape gate，快照缺失 fail closed。 | Codex 裁决 | Phase 0；Accepted，已实施 |
+| D-16 | ✅ **已决定（ADR-0010）** 三类映射字段的键值格式必须出现在导出的 JSON Schema 中，且与运行时同源。 | Codex 裁决 | Phase 0；Accepted，已实施 |
 
 ## 冲突记录
 
