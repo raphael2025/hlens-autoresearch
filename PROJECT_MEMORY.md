@@ -11,10 +11,11 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：Architecture Bootstrap 已完成；Phase 0 尚未开启
+- 当前阶段：Phase 0（Research Constitution）实现完成，待宪法批准
 
 ## 2. Current Architecture
 
+- 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
 - Freeze Contracts, Evolve Implementations
 - 四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）
@@ -37,9 +38,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Current Phase：Phase 0 之前（Architecture Bootstrap 完成）
 - Current Subphase：Phase 0 决策处理中
-- Current Objective：开启 Phase 0（需授权安装 Python 3.13）
-- Current Blocker：Python 3.13 未授权安装；Raphael 尚未说"开启 Phase 0"
-- Next Milestone：Raphael 说"开启 Phase 0"
+- Current Objective：完成 Phase 0（契约 / 状态机已实现；宪法待批准为 1.0.0）
+- Current Blocker：Constitution 1.0.0 待 Raphael 批准（Phase 0 唯一未满足的验收标准）
+- Next Milestone：Constitution 获批 → Phase 0 关闭 → Phase 0.5 / Phase 1
 
 ## 5. Active Decisions
 
@@ -68,9 +69,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 7. Current Known Risks
 
+- pypi.org 的索引域名在本机被网络阻断（files.pythonhosted.org 可达）：依赖安装很慢，离线安装需用 uv.lock 中的精确版本
 - WSL 内存约 15 GiB：大数据集需分区和流式处理
 - Docker 未安装：Phase 1 之后的本地服务依赖它（D-02）
-- uv 中尚未安装 Python 3.13（需在 Phase 0 开启时授权安装）
 - 外部数据盘未挂载：`~/BTC` → `/mnt/wsl/PHYSICALDRIVE1p1/BTC` 当前不可访问
 - Git 没有全局提交身份：提交使用一次性 `-c` 参数，长期做法待定
 - Constitution 仍是草案：批准前不能判定任何实验

@@ -65,7 +65,9 @@ class Kind(StrEnum):
 
 def canonical_json(payload: Any) -> str:
     """规范化 JSON：排序键、无多余空白、非 ASCII 原样保留。"""
-    return json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str)
+    return json.dumps(
+        payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False, default=str
+    )
 
 
 def content_hash(payload: Any) -> str:

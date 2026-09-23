@@ -56,7 +56,9 @@ EXPECTED_TRANSITIONS = {
 }
 
 
-def _transition(from_state: S, to_state: S, approved_by: str | None = "raphael") -> LifecycleTransition:
+def _transition(
+    from_state: S, to_state: S, approved_by: str | None = "raphael"
+) -> LifecycleTransition:
     return LifecycleTransition(
         subject=SUBJECT,
         from_state=from_state,

@@ -101,7 +101,9 @@ class ReproducibilityTuple(Contract):
     code_commit: str = Field(min_length=7)
     plugin_versions: dict[str, str] = Field(default_factory=dict)
     params: dict[str, str | int | float | bool] = Field(default_factory=dict)
-    param_search_space: dict[str, tuple[str | int | float | bool, ...]] = Field(default_factory=dict)
+    param_search_space: dict[str, tuple[str | int | float | bool, ...]] = Field(
+        default_factory=dict
+    )
     seeds: tuple[int, ...] = ()
     environment_lock: str = Field(min_length=1)
     constitution_version: str = Field(min_length=1)
@@ -202,7 +204,8 @@ class ValidationReport(Contract):
 
     @model_validator(mode="after")
     def _verdict_consistent(self) -> ValidationReport:
-        if any(gate.verdict is Verdict.FAIL for gate in self.gates) and self.verdict is Verdict.PASS:
+        has_failing_gate = any(gate.verdict is Verdict.FAIL for gate in self.gates)
+        if has_failing_gate and self.verdict is Verdict.PASS:
             raise ValueError("存在 FAIL 的门时，整体判定不得为 PASS")
         return self
 

@@ -163,7 +163,9 @@ class StrategySpec(VersionedSpec):
     kind: Kind = Kind.STRATEGY
     signals: tuple[Ref, ...] = Field(min_length=1)
     params: dict[str, str | int | float | bool] = Field(default_factory=dict)
-    param_search_space: dict[str, tuple[str | int | float | bool, ...]] = Field(default_factory=dict)
+    param_search_space: dict[str, tuple[str | int | float | bool, ...]] = Field(
+        default_factory=dict
+    )
     risk_policy: Ref | None = None
     applicable_instruments: tuple[Instrument, ...] = ()
 

@@ -27,7 +27,9 @@ def test_constitution_contains_no_numeric_thresholds() -> None:
     body = "\n".join(lines)
     for pattern in [r"TBD-\d", r"[≥≤<>]\s*\d", r"\d+\s*(个月|笔|次交易)"]:
         match = re.search(pattern, body)
-        assert match is None, f"Constitution 出现数值阈值：{body[max(0, match.start() - 40):match.end() + 20]!r}"
+        if match is not None:
+            context = body[max(0, match.start() - 40) : match.end() + 20]
+            pytest.fail(f"Constitution 出现数值阈值：{context!r}")
 
 
 def test_retired_never_enters_failure_registry() -> None:
