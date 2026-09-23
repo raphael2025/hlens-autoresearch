@@ -1,0 +1,96 @@
+{
+  "$defs": {
+    "EquivalenceCheck": {
+      "additionalProperties": false,
+      "description": "生产实现与 golden outputs 的一致性检查（ADR-0005 §5）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "artifact_id": {
+          "minLength": 1,
+          "title": "Artifact Id",
+          "type": "string"
+        },
+        "production_code_hash": {
+          "minLength": 7,
+          "title": "Production Code Hash",
+          "type": "string"
+        },
+        "signals_match": {
+          "title": "Signals Match",
+          "type": "boolean"
+        },
+        "positions_match": {
+          "title": "Positions Match",
+          "type": "boolean"
+        },
+        "tolerance": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Tolerance"
+        }
+      },
+      "required": [
+        "artifact_id",
+        "production_code_hash",
+        "signals_match",
+        "positions_match"
+      ],
+      "title": "EquivalenceCheck",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "生产部署记录：可追溯链的终点（ADR-0005 §4）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "deployment_id": {
+      "minLength": 1,
+      "title": "Deployment Id",
+      "type": "string"
+    },
+    "artifact_id": {
+      "minLength": 1,
+      "title": "Artifact Id",
+      "type": "string"
+    },
+    "production_code_hash": {
+      "minLength": 7,
+      "title": "Production Code Hash",
+      "type": "string"
+    },
+    "config_hash": {
+      "minLength": 1,
+      "title": "Config Hash",
+      "type": "string"
+    },
+    "equivalence": {
+      "$ref": "#/$defs/EquivalenceCheck"
+    }
+  },
+  "required": [
+    "deployment_id",
+    "artifact_id",
+    "production_code_hash",
+    "config_hash",
+    "equivalence"
+  ],
+  "title": "DeploymentRecord",
+  "type": "object"
+}

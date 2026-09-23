@@ -54,7 +54,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -86,7 +86,7 @@
   "description": "REJECTED / FAILED 的追加式记录（07-validation.md §4.1）。RETIRED 不在此处。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
       "title": "Schema Version",
       "type": "string"

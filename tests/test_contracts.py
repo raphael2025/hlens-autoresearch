@@ -145,7 +145,11 @@ def test_created_at_is_not_part_of_content_hash() -> None:
 
 
 def test_committed_schemas_match_contracts(tmp_path: Path) -> None:
-    """仓库中的 schemas/ 必须与当前契约一致（契约变更必须可见于 diff）。"""
+    """仓库中的 **current** schemas/ 必须与当前契约一致（契约变更必须可见于 diff）。
+
+    `schemas/` 顶层是当前 major；`schemas/<major>/` 是历史只读快照，
+    **不参与**本一致性检查，也不会被当前导出覆盖（10-migration.md §3.1）。
+    """
     repo_schemas = Path(__file__).resolve().parents[1] / "schemas"
     assert repo_schemas.exists(), "缺少导出的 JSON Schema：运行 python -m core.contracts.registry"
     fresh = export_json_schemas(tmp_path)
@@ -155,6 +159,11 @@ def test_committed_schemas_match_contracts(tmp_path: Path) -> None:
         expected = json.loads(path.read_text(encoding="utf-8"))
         actual = json.loads((repo_schemas / f"{name}.schema.json").read_text(encoding="utf-8"))
         assert actual == expected, f"{name} 的 Schema 已过期，请重新导出"
+
+    legacy = repo_schemas / "v1"
+    assert legacy.is_dir(), "v1 只读快照缺失（10-migration.md §3 要求保留至少一个 major）"
+    assert legacy not in {p.parent for p in fresh.values()}, "当前导出不得写入历史快照目录"
+    assert any(legacy.glob("*.schema.json")), "v1 快照目录为空"
 
 
 def test_documented_core_entities_all_have_contracts() -> None:

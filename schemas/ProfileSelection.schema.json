@@ -1,0 +1,126 @@
+{
+  "$defs": {
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "ProfileSelectionKey": {
+      "additionalProperties": false,
+      "description": "选择输入：标的、周期、预登记的研究类别。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "venue": {
+          "minLength": 1,
+          "title": "Venue",
+          "type": "string"
+        },
+        "symbol": {
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        },
+        "timeframe": {
+          "minLength": 1,
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "research_class": {
+          "minLength": 1,
+          "title": "Research Class",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue",
+        "symbol",
+        "timeframe",
+        "research_class"
+      ],
+      "title": "ProfileSelectionKey",
+      "type": "object"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "实验实际使用的 Profile 选择依据（ADR-0009 §5）。\n\n必须同时给出**唯一的规则引用**、**该规则的内容哈希**与**选择输入**：\n只有规则版本不足以在事后重建\"当时按哪条规则、按什么输入选中了哪个 Profile\"。\n取消空默认值——缺绑定的实验不得进入 Validation。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "selection_rule": {
+      "$ref": "#/$defs/Ref"
+    },
+    "selection_rule_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Selection Rule Hash",
+      "type": "string"
+    },
+    "key": {
+      "$ref": "#/$defs/ProfileSelectionKey"
+    }
+  },
+  "required": [
+    "selection_rule",
+    "selection_rule_hash",
+    "key"
+  ],
+  "title": "ProfileSelection",
+  "type": "object"
+}

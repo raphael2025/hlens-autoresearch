@@ -5,7 +5,7 @@
       "description": "单个验证门的结构化结果（07-validation.md §2）。\n\n`threshold_source` 指向 Validation Profile 中的字段路径：阈值不得写死在流水线里。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -66,7 +66,7 @@
       "description": "LLM 调用记录：LLM 只产出数据，永不裁决（09-security.md §3）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -107,7 +107,7 @@
       "description": "封存样本外的开封记录（Constitution C-S2）；不可撤销。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -141,7 +141,7 @@
       "description": "选择输入：标的、周期、预登记的研究类别。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -190,7 +190,7 @@
   "description": "每个实验实际使用的规则版本与配置（06-experiment.md §3）。\n\n追加式、不可修改；与 ValidationReport 一起构成审计证据。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
       "title": "Schema Version",
       "type": "string"

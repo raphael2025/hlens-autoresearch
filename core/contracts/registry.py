@@ -13,6 +13,7 @@ from typing import TYPE_CHECKING
 from core.contracts.profile_selection import (
     ExperimentMetadata,
     OosUnsealing,
+    ProfileSelection,
     ProfileSelectionKey,
     ProfileSelectionRule,
     SelectionEntry,
@@ -91,6 +92,7 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     # 三层验证架构
     ValidationProfile,
     ProfileSelectionKey,
+    ProfileSelection,
     SelectionEntry,
     ProfileSelectionRule,
     OosUnsealing,

@@ -1,0 +1,39 @@
+{
+  "additionalProperties": false,
+  "description": "实盘前的独立 Risk Gate 检查（与 RiskProvider 分离）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "gate_id": {
+      "minLength": 1,
+      "title": "Gate Id",
+      "type": "string"
+    },
+    "passed": {
+      "title": "Passed",
+      "type": "boolean"
+    },
+    "limits": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Limits",
+      "type": "object"
+    },
+    "checked_at": {
+      "format": "date-time",
+      "title": "Checked At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "gate_id",
+    "passed"
+  ],
+  "title": "RiskGateRecord",
+  "type": "object"
+}

@@ -11,11 +11,12 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：Phase 0（Research Constitution）；已有实现，独立审查发现关闭阻塞，修复方案待批准
+- 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 已实施，等待验收与关闭复审
 
 ## 2. Current Architecture
 
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
+- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`；模型只接受同 major，`1.x` 走 `core/compat/v1.py` 只读入口
 - Freeze Contracts, Evolve Implementations
 - 四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）
@@ -37,10 +38,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：ADR-0008 / 0009 已 Accepted；Opus 串行实施 B1/B2
-- Current Objective：完成契约只读载荷、完整实验身份和 v2 兼容验收，再进行 Phase 0 关闭复审
-- Current Blocker：ADR-0008 / 0009 尚未实施完成；Constitution 1.0.0 仍待 Raphael 亲自批准
-- Next Milestone：修复方案获批 → 实施与复审 → Constitution 获批 → Phase 0 关闭
+- Current Subphase：B1、B2 已实施并各留一个 commit；契约 2.0.0 已发布
+- Current Objective：等待 Codex 验收 B1/B2，再决定是否授权 B3 与 Phase 0 关闭复审
+- Current Blocker：B3 未授权（生命周期审批等遗漏）；Constitution 1.0.0 仍待 Raphael 亲自批准
+- Next Milestone：B1/B2 验收 → B3 决定 → Constitution 获批 → Phase 0 关闭
 
 ## 5. Active Decisions
 
@@ -54,8 +55,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - C-2（已定）：PAPER = 单策略独立观察；ACTIVE = 组合 / Router 正式启用，带 execution_mode SIMULATED|LIVE（Phase 13 前仅 SIMULATED）；不设 LIVE 状态
 - D-09 结构（H-1、H-2 已接受）：三层 = Constitution（不可变原则）/ Validation Profile（版本化阈值，被实验使用后不可变）/ Experiment Metadata（每个实验的 Profile 版本与配置）；两步冻结 = Phase 0 冻结原则与架构、Phase 4 校准后冻结初始 Profile 参数 → ADR-0007 **Accepted**；Constitution 已重组为 0.2.0-draft（纯原则），Profile 概念契约在 07-validation.md §5，Experiment Metadata 在 06-experiment.md §3
 - D-09 数值（TBD-1 ~ TBD-5）：**未批准**，Phase 4 校准后冻结为 Profile 参数；Constitution 中不得出现数值阈值；提案见 `docs/research/proposals/d09-validation-threshold-proposal.md`
-- ADR-0008：契约映射载荷只读、逐模型内容哈希边界与 v1 只读兼容；与 ADR-0009 共同交付未发布的契约 2.0.0；2026-09-23 Accepted。
-- ADR-0009：完整实验规格身份、运行标识与直接依赖内容绑定；实际 seeds 保留在实验哈希中；2026-09-23 Accepted。
+- ADR-0008：契约映射载荷只读、逐模型内容哈希边界与 v1 只读兼容；2026-09-23 Accepted，B1 已实施。
+- ADR-0009：完整实验规格身份、运行标识与直接依赖内容绑定；实际 seeds 保留在实验哈希中；2026-09-23 Accepted，B2 已实施。
+- 契约 2.0.0 已随 B2 发布：v1 与 v2 的 `content_hash` / `experiment_hash` **不可比较**；v1 只读路径 =
+  `schemas/v1/`（35 份快照）+ `tests/vectors/v1/`（固定载荷与旧哈希）+ `core/compat/v1.py`。
+  读取 v1 不赋予任何 v2 登记 / 晋升资格。
 
 ## 6. Active Constraints
 
@@ -79,6 +83,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 外部数据盘未挂载：`~/BTC` → `/mnt/wsl/PHYSICALDRIVE1p1/BTC` 当前不可访问
 - Git 没有全局提交身份：提交使用一次性 `-c` 参数，长期做法待定
 - Constitution 仍是草案：批准前不能判定任何实验
+- 契约层只校验直接引用的内容绑定；传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、
+  Registry 存在性均为未实现的 Runner / Registry 义务（06-experiment.md §7）
+- `LlmCall` 仍只存哈希，"完整输入输出"仍是未关闭缺口
+- 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
 
 ## 8. Important Historical Context
 
@@ -91,7 +99,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-23
-- Git Commit：0328523（Phase 0 实现完成：契约 + 状态机 + 测试 + lint/type 全绿）
-- Phase：Phase 0 实现完成，等待宪法批准；生命周期、研究 / 生产边界、三层验证架构已冻结
-- State：core 契约与状态机已实现；126 测试、ruff、mypy strict 全绿；无 Feature / Strategy / Backtest 实现
-- Notes：ADR-0001 ~ 0007 Accepted；Constitution 0.2.0-draft 待批准为 1.0.0；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放
+- Git Commit：B2 提交（phase/0 分支 HEAD）；上一个恢复点 `4f83e18`（B1 只读载荷）
+- Phase：Phase 0；B1/B2 已实施，契约 2.0.0 已发布，等待 Codex 验收与关闭复审
+- State：core 契约、状态机、只读载荷、完整实验身份、v1 只读兼容入口均已实现；
+  443 测试、ruff check、ruff format --check、mypy strict 全绿；
+  Schema current 36 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0）；
+  无 Feature / Strategy / Backtest / Runner / Registry / 存储实现
+- Notes：ADR-0001 ~ 0009 Accepted；B3 未授权；Constitution 0.2.0-draft 待批准为 1.0.0；
+  D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；未合并 main、未创建 tag

@@ -26,16 +26,28 @@ from core.contracts.validation_profile import (
     ValidationProfile,
     WalkForwardParams,
 )
+from core.domain.artifact import GoldenOutputs, StrategyArtifact
 from core.domain.base import Kind, Ref
 from core.domain.research import (
+    ExperimentRun,
+    ExperimentSpec,
     GateResult,
     ReproducibilityTuple,
     ValidationReport,
     Verdict,
 )
+from core.domain.selection import ProfileSelection
 from core.domain.specs import DatasetRef, Zone
 
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
+
+#: 测试用的假内容哈希：形状必须合法（64 位小写十六进制），取值无语义。
+HASH_A = "a" * 64
+HASH_B = "b" * 64
+HASH_C = "c" * 64
+HASH_D = "d" * 64
+HASH_E = "e" * 64
+HASH_RULE = "f" * 64
 
 
 def dataset_ref() -> DatasetRef:
@@ -52,20 +64,82 @@ def hypothesis_ref(version: str = "1.0.0") -> Ref:
     return Ref(kind=Kind.HYPOTHESIS, name="h_example", version=version)
 
 
-def repro_tuple(**overrides: object) -> ReproducibilityTuple:
+def strategy_ref(name: str = "s_example", version: str = "1.0.0") -> Ref:
+    return Ref(kind=Kind.STRATEGY, name=name, version=version)
+
+
+def risk_ref(name: str = "r_example", version: str = "1.0.0") -> Ref:
+    return Ref(kind=Kind.RISK, name=name, version=version)
+
+
+def outcome_ref(name: str = "o_example", version: str = "1.0.0") -> Ref:
+    return Ref(kind=Kind.OUTCOME, name=name, version=version)
+
+
+def cost_model_ref(name: str = "cost_v1", version: str = "1.0.0") -> Ref:
+    return Ref(kind=Kind.COST_MODEL, name=name, version=version)
+
+
+def selection_rule_ref(version: str = "1.0.0") -> Ref:
+    return Ref(kind=Kind.PROFILE_SELECTION_RULE, name="test_rule", version=version)
+
+
+def profile_selection(**overrides: object) -> ProfileSelection:
     payload: dict[str, object] = {
+        "selection_rule": selection_rule_ref(),
+        "selection_rule_hash": HASH_RULE,
+        "key": selection_key(),
+    }
+    payload.update(overrides)
+    return ProfileSelection(**payload)  # type: ignore[arg-type]
+
+
+def dependency_hashes(*refs: Ref, **extra: str) -> dict[str, str]:
+    """把直接引用映射成 `kind:name@version → content_hash`（ADR-0009 §5 的覆盖规则）。"""
+    fixed = (HASH_A, HASH_B, HASH_C, HASH_D, HASH_E)
+    mapping = {str(ref): fixed[index % len(fixed)] for index, ref in enumerate(refs)}
+    mapping.update(extra)
+    return mapping
+
+
+def repro_tuple(**overrides: object) -> ReproducibilityTuple:
+    """默认构造一个**完整绑定**的复现元组：直接引用全部出现在 dependency_hashes 中。"""
+    refs: dict[str, Ref | None] = {
         "hypothesis_ref": hypothesis_ref(),
+        "strategy_ref": strategy_ref(),
+        "risk_policy_ref": risk_ref(),
+        "outcome_ref": outcome_ref(),
+        "cost_model_ref": cost_model_ref(),
+    }
+    for name in refs:
+        if name in overrides:
+            refs[name] = overrides[name]  # type: ignore[assignment]
+
+    payload: dict[str, object] = {
+        **refs,
         "dataset_snapshots": (dataset_ref(),),
         "code_commit": "0123456789abcdef",
+        "dependency_hashes": dependency_hashes(*(r for r in refs.values() if r is not None)),
         "environment_lock": "lock-hash",
         "constitution_version": "0.2.0-draft",
         "validation_profile_version": "vp:test_scope@1.0.0",
         "validation_profile_hash": "profile-hash",
+        "profile_selection": profile_selection(),
         "split_spec": "train/validation/sealed-oos",
-        "cost_model_ref": Ref(kind=Kind.COST_MODEL, name="cost_v1", version="1.0.0"),
     }
     payload.update(overrides)
     return ReproducibilityTuple(**payload)  # type: ignore[arg-type]
+
+
+def experiment_spec(**overrides: object) -> ExperimentSpec:
+    payload: dict[str, object] = {
+        "name": "e_example",
+        "version": "1.0.0",
+        "created_at": T0,
+        "repro": repro_tuple(),
+    }
+    payload.update(overrides)
+    return ExperimentSpec(**payload)  # type: ignore[arg-type]
 
 
 def validation_profile(**overrides: object) -> ValidationProfile:
@@ -165,7 +239,8 @@ def gate_result(verdict: Verdict = Verdict.PASS, *, with_threshold: bool = True)
 def validation_report(verdict: Verdict = Verdict.PASS, **overrides: object) -> ValidationReport:
     payload: dict[str, object] = {
         "report_id": "rep-1",
-        "subject": Ref(kind=Kind.STRATEGY, name="s_example", version="1.0.0"),
+        "run_id": "run-1",
+        "subject": strategy_ref(),
         "experiment_hash": "exp-hash",
         "constitution_version": "0.2.0-draft",
         "validation_profile_version": "vp:test_scope@1.0.0",
@@ -175,6 +250,45 @@ def validation_report(verdict: Verdict = Verdict.PASS, **overrides: object) -> V
     }
     payload.update(overrides)
     return ValidationReport(**payload)  # type: ignore[arg-type]
+
+
+def experiment_run(**overrides: object) -> ExperimentRun:
+    payload: dict[str, object] = {
+        "run_id": "run-1",
+        "experiment": Ref(kind=Kind.EXPERIMENT, name="e_example", version="1.0.0"),
+        "repro": repro_tuple(),
+    }
+    payload.update(overrides)
+    return ExperimentRun(**payload)  # type: ignore[arg-type]
+
+
+def golden_outputs() -> GoldenOutputs:
+    return GoldenOutputs(
+        dataset_snapshot_id="snap-1",
+        signals_uri="s3://bucket/signals",
+        signals_hash=HASH_A,
+        positions_uri="s3://bucket/positions",
+        positions_hash=HASH_B,
+    )
+
+
+def strategy_artifact(**overrides: object) -> StrategyArtifact:
+    spec_ref = overrides.get("strategy_spec", strategy_ref())
+    assert isinstance(spec_ref, Ref)
+    payload: dict[str, object] = {
+        "name": "a_example",
+        "version": "1.0.0",
+        "created_at": T0,
+        "strategy_spec": spec_ref,
+        "dependencies": dependency_hashes(spec_ref),
+        "research_code_commit": "0123456789abcdef",
+        "research_code_tree_hash": "0123456789abcdef",
+        "experiment_hashes": ("exp-hash",),
+        "validation_reports": ("rep-1",),
+        "golden_outputs": golden_outputs(),
+    }
+    payload.update(overrides)
+    return StrategyArtifact(**payload)  # type: ignore[arg-type]
 
 
 def frozen_profile() -> ValidationProfile:

@@ -20,10 +20,13 @@ from pydantic import (
     Field,
     GetCoreSchemaHandler,
     PlainSerializer,
+    field_validator,
 )
 
 __all__ = [
+    "CONTRACT_SCHEMA_MAJOR",
     "CONTRACT_SCHEMA_VERSION",
+    "SHA256_PATTERN",
     "Contract",
     "FrozenMapping",
     "Kind",
@@ -32,14 +35,26 @@ __all__ = [
     "VersionedSpec",
     "canonical_json",
     "content_hash",
+    "validate_plugin_version_hashes",
+    "validate_ref_keyed_hashes",
 ]
 
 #: 本次发布的契约 Schema 版本（SemVer）。破坏性变更 = major + ADR。
-CONTRACT_SCHEMA_VERSION = "1.0.0"
+#: 2.0.0 由 ADR-0008 与 ADR-0009 共同定义；与 1.x 的内容哈希**不可比较**。
+CONTRACT_SCHEMA_VERSION = "2.0.0"
+
+#: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
+CONTRACT_SCHEMA_MAJOR = 2
 
 SEMVER_PATTERN = r"^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$"
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
+#: 内容哈希一律是 64 位小写十六进制 SHA-256。
+SHA256_PATTERN = r"^[0-9a-f]{64}$"
 REF_PATTERN = re.compile(r"^(?P<kind>[a-z_]+):(?P<name>[a-z][a-z0-9_]*)@(?P<version>.+)$")
+_SEMVER_RE = re.compile(SEMVER_PATTERN)
+_SHA256_RE = re.compile(SHA256_PATTERN)
+#: `plugin_versions` 的键：`name@semver`（06-experiment.md §2）。
+_PLUGIN_KEY_RE = re.compile(rf"^(?P<name>[a-z][a-z0-9_]*)@(?P<version>{SEMVER_PATTERN[1:-1]})$")
 
 
 def _require_utc(value: datetime) -> datetime:
@@ -184,6 +199,22 @@ class Contract(BaseModel):
         payload = self.model_dump(mode="json", exclude=self._non_semantic_fields())
         return content_hash(payload)
 
+    @field_validator("schema_version")
+    @classmethod
+    def _supported_major(cls, value: str) -> str:
+        """未知 major 一律拒绝；同 major 的更高 minor 可以读取（ADR-0008 §6、ADR-0009 §7）。
+
+        旧 major 的载荷只能经 `core.compat` 的只读入口读取，不能作为本版本的模型使用，
+        也不因此获得登记 / 晋升资格。
+        """
+        major = int(value.split(".", 1)[0])
+        if major != CONTRACT_SCHEMA_MAJOR:
+            raise ValueError(
+                f"不支持的契约 major：{value}（当前为 {CONTRACT_SCHEMA_VERSION}）；"
+                "旧 major 请使用 core.compat 的只读入口"
+            )
+        return value
+
     @classmethod
     def _non_semantic_fields(cls) -> set[str]:
         """内容哈希的排除表：**逐模型显式声明**（ADR-0008 决策 3）。
@@ -231,3 +262,38 @@ class VersionedSpec(Contract):
     @property
     def ref(self) -> Ref:
         return Ref(kind=self.kind, name=self.name, version=self.version)
+
+
+def _require_sha256(label: str, key: str, value: str) -> None:
+    if _SHA256_RE.match(value) is None:
+        raise ValueError(f"{label}[{key!r}] 必须是 64 位小写十六进制 SHA-256 内容哈希：{value!r}")
+
+
+def validate_plugin_version_hashes(mapping: Mapping[str, str], label: str) -> None:
+    """`name@semver → content_hash`（ADR-0009 §5；06-experiment.md §2）。"""
+    for key, value in mapping.items():
+        if _PLUGIN_KEY_RE.match(key) is None:
+            raise ValueError(f"{label} 的键必须是 name@semver 规范串：{key!r}")
+        _require_sha256(label, key, value)
+
+
+def validate_ref_keyed_hashes(mapping: Mapping[str, str], label: str) -> dict[str, Ref]:
+    """`kind:name@semver → content_hash`；返回解析后的引用表。
+
+    键必须是 `Ref` 的**规范字符串**（`str(ref)`），避免 Feature / State 等同名对象混淆。
+    """
+    parsed: dict[str, Ref] = {}
+    for key, value in mapping.items():
+        match = REF_PATTERN.match(key)
+        if (
+            match is None
+            or match.group("kind") not in set(Kind)
+            or (_SEMVER_RE.match(match.group("version")) is None)
+        ):
+            raise ValueError(f"{label} 的键必须是 kind:name@semver 规范串：{key!r}")
+        ref = Ref.parse(key)
+        if str(ref) != key:  # pragma: no cover - REF_PATTERN 已保证规范形式
+            raise ValueError(f"{label} 的键不是规范形式：{key!r}")
+        _require_sha256(label, key, value)
+        parsed[key] = ref
+    return parsed

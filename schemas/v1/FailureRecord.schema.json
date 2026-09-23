@@ -1,0 +1,161 @@
+{
+  "$defs": {
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "ReasonCode": {
+      "description": "终态记录使用的原因码。\n\nREJECTED / FAILED 写入 Failure Registry；RETIRED 使用退役记录（07-validation.md §4.2）。",
+      "enum": [
+        "DATA_QUALITY",
+        "INSUFFICIENT_DATA",
+        "LEAKAGE_DETECTED",
+        "LOOKAHEAD_INPUT",
+        "OUTCOME_USED_AS_INPUT",
+        "NOT_SIGNIFICANT_AFTER_MTC",
+        "INSUFFICIENT_EFFECTIVE_SAMPLE",
+        "BENCHMARK_NOT_BEATEN",
+        "PARAM_UNSTABLE",
+        "STATE_CONCENTRATED",
+        "COST_KILLED",
+        "OOS_DECAY",
+        "NOT_REPRODUCIBLE",
+        "RUN_ERRORED",
+        "CONTRACT_VIOLATION",
+        "PROFILE_VIOLATION",
+        "LIFECYCLE_VIOLATION",
+        "HUMAN_VETO",
+        "DUPLICATE",
+        "NOT_FALSIFIABLE"
+      ],
+      "title": "ReasonCode",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "REJECTED / FAILED 的追加式记录（07-validation.md §4.1）。RETIRED 不在此处。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject_ref": {
+      "$ref": "#/$defs/Ref"
+    },
+    "terminal_state": {
+      "title": "Terminal State",
+      "type": "string"
+    },
+    "reason_code": {
+      "$ref": "#/$defs/ReasonCode"
+    },
+    "gate_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Gate Id"
+    },
+    "evidence": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "hypothesis_family_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Hypothesis Family Id"
+    },
+    "lessons": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Lessons"
+    },
+    "recorded_at": {
+      "format": "date-time",
+      "title": "Recorded At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject_ref",
+    "terminal_state",
+    "reason_code"
+  ],
+  "title": "FailureRecord",
+  "type": "object"
+}

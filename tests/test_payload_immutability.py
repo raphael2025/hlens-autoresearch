@@ -17,11 +17,11 @@ from pathlib import Path
 from typing import Any, Literal
 
 import pytest
-from pydantic import Field
+from pydantic import Field, ValidationError
 
 from core.contracts.profile_selection import ExperimentMetadata
 from core.contracts.validation_profile import LifecycleParams, Provenance, ValidationProfile
-from core.domain.artifact import GoldenOutputs, StrategyArtifact
+from core.domain.artifact import StrategyArtifact
 from core.domain.base import (
     Contract,
     FrozenMapping,
@@ -100,79 +100,91 @@ def _experiment_metadata(**kw: Any) -> ExperimentMetadata:
     )
 
 
-def _artifact(**kw: Any) -> StrategyArtifact:
-    return StrategyArtifact(
-        name="a_example",
-        version="1.0.0",
-        strategy_spec=Ref(kind=Kind.STRATEGY, name="s_example", version="1.0.0"),
-        research_code_commit="0123456789abcdef",
-        research_code_tree_hash="0123456789abcdef",
-        experiment_hashes=("exp-hash",),
-        validation_reports=("rep-1",),
-        golden_outputs=GoldenOutputs(
-            dataset_snapshot_id="snap-1",
-            signals_uri="s3://x/signals",
-            signals_hash=SHA,
-            positions_uri="s3://x/positions",
-            positions_hash=SHA,
-        ),
-        **kw,
-    )
-
-
 def _risk_gate(**kw: Any) -> RiskGateRecord:
     return RiskGateRecord(gate_id="RG1", passed=True, **kw)
 
 
-#: ADR-0008 背景列出的 14 个映射字段：(标签, 构造器, 字段名, 代表性取值)
-MAPPING_FIELDS: tuple[tuple[str, Callable[..., Contract], str, Mapping[str, Any]], ...] = (
-    ("RepresentationSpec.params", _representation, "params", {"window": 24}),
-    ("FeatureSpec.params", _feature, "params", {"window": 24}),
-    ("StrategySpec.params", _strategy, "params", {"window": 24}),
-    ("StrategySpec.param_search_space", _strategy, "param_search_space", {"window": (12, 24)}),
-    ("RiskPolicy.params", _risk_policy, "params", {"max_leverage": 2}),
+#: B2 起这两个映射字段是必填的（内容绑定不得缺省），因此没有"空默认值"路径。
+_DEPENDENCY_HASHES = factories.dependency_hashes(
+    factories.hypothesis_ref(),
+    factories.strategy_ref(),
+    factories.risk_ref(),
+    factories.outcome_ref(),
+    factories.cost_model_ref(),
+)
+_ARTIFACT_DEPENDENCIES = factories.dependency_hashes(factories.strategy_ref())
+
+
+#: 14 个映射字段：(标签, 构造器, 字段名, 代表性取值, 是否存在空默认值)。
+#: ADR-0008 原列出的 `ReproducibilityTuple.profile_selection` 在 ADR-0009 中已改为结构化
+#: 契约，其位置由新增的 `dependency_hashes` 接替，数量仍为 14。
+MAPPING_FIELDS: tuple[tuple[str, Callable[..., Contract], str, Mapping[str, Any], bool], ...] = (
+    ("RepresentationSpec.params", _representation, "params", {"window": 24}, True),
+    ("FeatureSpec.params", _feature, "params", {"window": 24}, True),
+    ("StrategySpec.params", _strategy, "params", {"window": 24}, True),
+    (
+        "StrategySpec.param_search_space",
+        _strategy,
+        "param_search_space",
+        {"window": (12, 24)},
+        True,
+    ),
+    ("RiskPolicy.params", _risk_policy, "params", {"max_leverage": 2}, True),
     (
         "ReproducibilityTuple.plugin_versions",
         factories.repro_tuple,
         "plugin_versions",
         {"backtest_ref@1.0.0": SHA},
+        True,
     ),
-    ("ReproducibilityTuple.params", factories.repro_tuple, "params", {"window": 24}),
+    ("ReproducibilityTuple.params", factories.repro_tuple, "params", {"window": 24}, True),
     (
         "ReproducibilityTuple.param_search_space",
         factories.repro_tuple,
         "param_search_space",
         {"window": (12, 24)},
+        True,
     ),
     (
-        "ReproducibilityTuple.profile_selection",
+        "ReproducibilityTuple.dependency_hashes",
         factories.repro_tuple,
-        "profile_selection",
-        {"rule_version": "1.0.0"},
+        "dependency_hashes",
+        _DEPENDENCY_HASHES,
+        False,
     ),
     (
         "LifecycleParams.degradation_thresholds",
         _lifecycle_params,
         "degradation_thresholds",
         {"sharpe_drop": 0.5},
+        True,
     ),
     (
         "ValidationProfile.inconclusive_bands",
         factories.validation_profile,
         "inconclusive_bands",
         {"multiple_testing_threshold": 0.05},
+        True,
     ),
     (
         "ExperimentMetadata.realized_holding_stats",
         _experiment_metadata,
         "realized_holding_stats",
         {"median_hours": 12.0},
+        True,
     ),
-    ("StrategyArtifact.dependencies", _artifact, "dependencies", {"feature:f_example@1.0.0": SHA}),
-    ("RiskGateRecord.limits", _risk_gate, "limits", {"max_notional": "1000"}),
+    (
+        "StrategyArtifact.dependencies",
+        factories.strategy_artifact,
+        "dependencies",
+        _ARTIFACT_DEPENDENCIES,
+        False,
+    ),
+    ("RiskGateRecord.limits", _risk_gate, "limits", {"max_notional": "1000"}, True),
 )
 
-FIELD_IDS = tuple(label for label, _, _, _ in MAPPING_FIELDS)
+FIELD_IDS = tuple(entry[0] for entry in MAPPING_FIELDS)
+_ARGS = ("label", "builder", "field", "value", "has_empty_default")
 
 
 def _inplace_or(mapping: Any) -> object:
@@ -197,9 +209,13 @@ def _built(builder: Callable[..., Contract], field: str, value: Mapping[str, Any
     return builder(**{field: dict(value)})
 
 
-@pytest.mark.parametrize(("label", "builder", "field", "value"), MAPPING_FIELDS, ids=FIELD_IDS)
+@pytest.mark.parametrize(_ARGS, MAPPING_FIELDS, ids=FIELD_IDS)
 def test_mapping_field_is_read_only_mapping(
-    label: str, builder: Callable[..., Contract], field: str, value: Mapping[str, Any]
+    label: str,
+    builder: Callable[..., Contract],
+    field: str,
+    value: Mapping[str, Any],
+    has_empty_default: bool,
 ) -> None:
     """显式传值时，对外只暴露 `collections.abc.Mapping` 语义。"""
     obtained = getattr(_built(builder, field, value), field)
@@ -208,11 +224,23 @@ def test_mapping_field_is_read_only_mapping(
     assert dict(obtained) == dict(value)
 
 
-@pytest.mark.parametrize(("label", "builder", "field", "value"), MAPPING_FIELDS, ids=FIELD_IDS)
+@pytest.mark.parametrize(_ARGS, MAPPING_FIELDS, ids=FIELD_IDS)
 def test_mapping_field_default_is_read_only_mapping(
-    label: str, builder: Callable[..., Contract], field: str, value: Mapping[str, Any]
+    label: str,
+    builder: Callable[..., Contract],
+    field: str,
+    value: Mapping[str, Any],
+    has_empty_default: bool,
 ) -> None:
-    """默认值与显式传值走同一校验路径（ADR-0008 决策 1）。"""
+    """默认值与显式传值走同一校验路径（ADR-0008 决策 1）。
+
+    内容绑定字段（`dependency_hashes` / `dependencies`）在 ADR-0009 中是**必填**的：
+    它们没有空默认值，缺省即拒绝，而不是悄悄得到一个空映射。
+    """
+    if not has_empty_default:
+        with pytest.raises(ValidationError):
+            builder(**{field: {}})
+        return
     obtained = getattr(builder(), field)
     assert isinstance(obtained, Mapping), f"{label} 默认值必须是 Mapping"
     assert not isinstance(obtained, MutableMapping), f"{label} 默认值不得可写"
@@ -220,12 +248,13 @@ def test_mapping_field_default_is_read_only_mapping(
 
 
 @pytest.mark.parametrize("mutation", sorted(MUTATIONS), ids=sorted(MUTATIONS))
-@pytest.mark.parametrize(("label", "builder", "field", "value"), MAPPING_FIELDS, ids=FIELD_IDS)
+@pytest.mark.parametrize(_ARGS, MAPPING_FIELDS, ids=FIELD_IDS)
 def test_mapping_field_rejects_every_mutation_entry(
     label: str,
     builder: Callable[..., Contract],
     field: str,
     value: Mapping[str, Any],
+    has_empty_default: bool,
     mutation: str,
 ) -> None:
     contract = _built(builder, field, value)
@@ -236,9 +265,13 @@ def test_mapping_field_rejects_every_mutation_entry(
     assert dict(getattr(contract, field)) == before, f"{label} 被 {mutation} 改变了"
 
 
-@pytest.mark.parametrize(("label", "builder", "field", "value"), MAPPING_FIELDS, ids=FIELD_IDS)
+@pytest.mark.parametrize(_ARGS, MAPPING_FIELDS, ids=FIELD_IDS)
 def test_mapping_field_survives_json_round_trip_read_only(
-    label: str, builder: Callable[..., Contract], field: str, value: Mapping[str, Any]
+    label: str,
+    builder: Callable[..., Contract],
+    field: str,
+    value: Mapping[str, Any],
+    has_empty_default: bool,
 ) -> None:
     """JSON 往返后：wire shape 仍是 object、内容与哈希一致、仍然只读。"""
     contract = _built(builder, field, value)
@@ -253,9 +286,13 @@ def test_mapping_field_survives_json_round_trip_read_only(
         operator.setitem(obtained, "injected", "x")
 
 
-@pytest.mark.parametrize(("label", "builder", "field", "value"), MAPPING_FIELDS, ids=FIELD_IDS)
+@pytest.mark.parametrize(_ARGS, MAPPING_FIELDS, ids=FIELD_IDS)
 def test_mapping_field_breaks_input_and_output_aliases(
-    label: str, builder: Callable[..., Contract], field: str, value: Mapping[str, Any]
+    label: str,
+    builder: Callable[..., Contract],
+    field: str,
+    value: Mapping[str, Any],
+    has_empty_default: bool,
 ) -> None:
     """构造输入与导出结果都不得与契约内部共享可写状态。"""
     source = dict(value)
@@ -271,9 +308,13 @@ def test_mapping_field_breaks_input_and_output_aliases(
     assert dict(getattr(contract, field)) == before, f"{label} 与导出结果共享状态"
 
 
-@pytest.mark.parametrize(("label", "builder", "field", "value"), MAPPING_FIELDS, ids=FIELD_IDS)
+@pytest.mark.parametrize(_ARGS, MAPPING_FIELDS, ids=FIELD_IDS)
 def test_mapping_field_json_schema_stays_object(
-    label: str, builder: Callable[..., Contract], field: str, value: Mapping[str, Any]
+    label: str,
+    builder: Callable[..., Contract],
+    field: str,
+    value: Mapping[str, Any],
+    has_empty_default: bool,
 ) -> None:
     model = type(_built(builder, field, value))
     modes: tuple[Literal["validation", "serialization"], ...] = ("validation", "serialization")

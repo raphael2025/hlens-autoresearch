@@ -1,0 +1,205 @@
+{
+  "$defs": {
+    "DatasetRef": {
+      "additionalProperties": false,
+      "description": "某个 Zone 的不可变数据快照引用（03-data.md §3）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "zone": {
+          "$ref": "#/$defs/Zone"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "time_range_start": {
+          "format": "date-time",
+          "title": "Time Range Start",
+          "type": "string"
+        },
+        "time_range_end": {
+          "format": "date-time",
+          "title": "Time Range End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "zone",
+        "table",
+        "snapshot_id",
+        "time_range_start",
+        "time_range_end"
+      ],
+      "title": "DatasetRef",
+      "type": "object"
+    },
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    },
+    "Zone": {
+      "description": "数据分层（03-data.md §3）。",
+      "enum": [
+        "raw",
+        "canonical",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "research_dataset"
+      ],
+      "title": "Zone",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "原始数据到研究可用形式的变换（bar、tick 聚合、订单簿快照、成交量钟…）。\n\n必须声明自身的时间语义：`event_time` 的取值方式与可用延迟。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/Kind",
+      "default": "representation"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Version",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "lineage": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Ref"
+      },
+      "title": "Lineage",
+      "type": "array"
+    },
+    "method": {
+      "minLength": 1,
+      "title": "Method",
+      "type": "string"
+    },
+    "inputs": {
+      "items": {
+        "$ref": "#/$defs/DatasetRef"
+      },
+      "minItems": 1,
+      "title": "Inputs",
+      "type": "array"
+    },
+    "params": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          }
+        ]
+      },
+      "title": "Params",
+      "type": "object"
+    },
+    "event_time_semantics": {
+      "minLength": 1,
+      "title": "Event Time Semantics",
+      "type": "string"
+    },
+    "available_lag": {
+      "default": "PT0S",
+      "format": "duration",
+      "title": "Available Lag",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "method",
+    "inputs",
+    "event_time_semantics"
+  ],
+  "title": "RepresentationSpec",
+  "type": "object"
+}

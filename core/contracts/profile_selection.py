@@ -12,30 +12,37 @@ from pydantic import Field, model_validator
 
 from core.domain.base import Contract, FrozenMapping, Kind, Ref, UtcDatetime, VersionedSpec
 from core.domain.research import GateResult, LlmCall
+from core.domain.selection import ProfileSelection, ProfileSelectionKey
 from core.errors import ProfileViolation
 
 __all__ = [
     "ExperimentMetadata",
     "OosUnsealing",
+    "ProfileSelection",
     "ProfileSelectionKey",
     "ProfileSelectionRule",
     "SelectionEntry",
 ]
 
-
-class ProfileSelectionKey(Contract):
-    """选择输入：标的、周期、预登记的研究类别。"""
-
-    venue: str = Field(min_length=1)
-    symbol: str = Field(min_length=1)
-    timeframe: str = Field(min_length=1)
-    research_class: str = Field(min_length=1)
+#: `ProfileSelectionKey` / `ProfileSelection` 的定义在 `core.domain.selection`
+#: （避免与复现元组形成循环导入）；此处重导出，Schema 名称与对外引用路径保持稳定。
 
 
 class SelectionEntry(Contract):
     key: ProfileSelectionKey
     profile: Ref
     profile_version: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _profile_is_consistent(self) -> SelectionEntry:
+        if self.profile.kind is not Kind.PROFILE:
+            raise ValueError("profile 必须指向 profile")
+        if self.profile.version != self.profile_version:
+            raise ValueError(
+                f"profile_version（{self.profile_version}）与 profile 引用的版本"
+                f"（{self.profile.version}）不一致"
+            )
+        return self
 
 
 class ProfileSelectionRule(VersionedSpec):

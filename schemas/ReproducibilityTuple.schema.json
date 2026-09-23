@@ -5,7 +5,7 @@
       "description": "某个 Zone 的不可变数据快照引用（03-data.md §3）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -70,7 +70,7 @@
       "description": "LLM 调用记录：LLM 只产出数据，永不裁决（09-security.md §3）。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -106,12 +106,82 @@
       "title": "LlmCall",
       "type": "object"
     },
+    "ProfileSelection": {
+      "additionalProperties": false,
+      "description": "实验实际使用的 Profile 选择依据（ADR-0009 §5）。\n\n必须同时给出**唯一的规则引用**、**该规则的内容哈希**与**选择输入**：\n只有规则版本不足以在事后重建\"当时按哪条规则、按什么输入选中了哪个 Profile\"。\n取消空默认值——缺绑定的实验不得进入 Validation。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "selection_rule": {
+          "$ref": "#/$defs/Ref"
+        },
+        "selection_rule_hash": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Selection Rule Hash",
+          "type": "string"
+        },
+        "key": {
+          "$ref": "#/$defs/ProfileSelectionKey"
+        }
+      },
+      "required": [
+        "selection_rule",
+        "selection_rule_hash",
+        "key"
+      ],
+      "title": "ProfileSelection",
+      "type": "object"
+    },
+    "ProfileSelectionKey": {
+      "additionalProperties": false,
+      "description": "选择输入：标的、周期、预登记的研究类别。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "venue": {
+          "minLength": 1,
+          "title": "Venue",
+          "type": "string"
+        },
+        "symbol": {
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        },
+        "timeframe": {
+          "minLength": 1,
+          "title": "Timeframe",
+          "type": "string"
+        },
+        "research_class": {
+          "minLength": 1,
+          "title": "Research Class",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue",
+        "symbol",
+        "timeframe",
+        "research_class"
+      ],
+      "title": "ProfileSelectionKey",
+      "type": "object"
+    },
     "Ref": {
       "additionalProperties": false,
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -154,16 +224,46 @@
     }
   },
   "additionalProperties": false,
-  "description": "复现元组（06-experiment.md §2，冻结）。缺任一项则不得进入 Validation。",
+  "description": "复现元组（06-experiment.md §2，冻结）。缺任一项则不得进入 Validation。\n\nADR-0009 §1：策略 / 风控 / Outcome 引用在元组**之内**，因此引用不同策略的实验\n不再得到相同的 `experiment_hash`。三个引用均**必须显式提供**，不适用时明确填 `null`，\n不以缺省掩盖遗漏。\n\nADR-0009 §2：实际 `seeds` 保留在元组与哈希内。相同完整规格（含相同 seeds）重复运行\n得到同一 `experiment_hash`（复现检查）；不同 seeds = 新的不可变规格变体 = 新哈希，\n族内关联由 `hypothesis_family_id` 与 trial 计数承担。**不引入**任何种子派生 DSL。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
       "title": "Schema Version",
       "type": "string"
     },
     "hypothesis_ref": {
       "$ref": "#/$defs/Ref"
+    },
+    "strategy_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "risk_policy_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "outcome_ref": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ref"
+        },
+        {
+          "type": "null"
+        }
+      ]
     },
     "dataset_snapshots": {
       "items": {
@@ -183,6 +283,13 @@
         "type": "string"
       },
       "title": "Plugin Versions",
+      "type": "object"
+    },
+    "dependency_hashes": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Dependency Hashes",
       "type": "object"
     },
     "params": {
@@ -257,11 +364,7 @@
       "type": "string"
     },
     "profile_selection": {
-      "additionalProperties": {
-        "type": "string"
-      },
-      "title": "Profile Selection",
-      "type": "object"
+      "$ref": "#/$defs/ProfileSelection"
     },
     "split_spec": {
       "minLength": 1,
@@ -282,12 +385,17 @@
   },
   "required": [
     "hypothesis_ref",
+    "strategy_ref",
+    "risk_policy_ref",
+    "outcome_ref",
     "dataset_snapshots",
     "code_commit",
+    "dependency_hashes",
     "environment_lock",
     "constitution_version",
     "validation_profile_version",
     "validation_profile_hash",
+    "profile_selection",
     "split_spec",
     "cost_model_ref"
   ],

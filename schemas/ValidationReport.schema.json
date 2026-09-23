@@ -5,7 +5,7 @@
       "description": "单个验证门的结构化结果（07-validation.md §2）。\n\n`threshold_source` 指向 Validation Profile 中的字段路径：阈值不得写死在流水线里。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -88,7 +88,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "1.0.0",
+          "default": "2.0.0",
           "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
           "title": "Schema Version",
           "type": "string"
@@ -126,10 +126,10 @@
     }
   },
   "additionalProperties": false,
-  "description": "按 Constitution + Validation Profile 执行的判定结果。",
+  "description": "按 Constitution + Validation Profile 执行的判定结果。\n\n`run_id` 与 `experiment_hash` 同时存在，形成 spec ↔ run ↔ report 的可核验链\n（ADR-0009 §5）。`report_id` 是外部赋予的标识，**不是**结果内容身份；\n结果内容身份应由未来内容寻址的结果 manifest 提供，不在本轮实现（ADR-0009 §4）。\n`run_id` 与 `report_id` 都**没有**被排除出内容哈希。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
       "title": "Schema Version",
       "type": "string"
@@ -137,6 +137,11 @@
     "report_id": {
       "minLength": 1,
       "title": "Report Id",
+      "type": "string"
+    },
+    "run_id": {
+      "minLength": 1,
+      "title": "Run Id",
       "type": "string"
     },
     "subject": {
@@ -181,6 +186,7 @@
   },
   "required": [
     "report_id",
+    "run_id",
     "subject",
     "experiment_hash",
     "constitution_version",

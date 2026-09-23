@@ -1,6 +1,7 @@
 # 02 — Domain Model
 
-> 本文件定义**冻结的领域契约**。实现位于 `core/domain/` 与 `core/contracts/`（尚未创建代码）。修改需 ADR。
+> 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.0.0`（ADR-0008 + ADR-0009 共同定义）。
 
 ## 1. 统一标识与版本化
 
@@ -145,8 +146,8 @@ classDiagram
 | **Hypothesis** | 可证伪的陈述：在条件 C 下，X 导致 Y | 必须可映射为 ExperimentSpec |
 | **StrategySpec** | 信号 → 仓位的规则 | 参数空间必须声明（用于多重检验计数） |
 | **RiskPolicy** | 仓位、止损、敞口、杠杆限制 | 独立于策略版本化 |
-| **ExperimentSpec / Run** | 见 06-experiment.md | 可复现 |
-| **ValidationReport** | 按 Constitution + Validation Profile 执行的检查结果 | 绑定 Constitution 版本**与 Profile 版本**（ADR-0007） |
+| **ExperimentSpec / Run** | 见 06-experiment.md | 可复现；策略 / 风控 / Outcome 只存放在复现元组内，Spec 上只有派生只读引用（ADR-0009） |
+| **ValidationReport** | 按 Constitution + Validation Profile 执行的检查结果 | 绑定 Constitution 版本**与 Profile 版本**（ADR-0007）；同时绑定 `run_id` **与** `experiment_hash`（ADR-0009） |
 | **LifecycleRecord** | 研究对象的晋升状态 | 只能按状态机转移 |
 | **FailureRecord** | 失败/拒绝的记录 | 永不删除 |
 | **ResearchMemory** | 以上所有记录的可检索集合 | 追加式（append-only） |
@@ -187,6 +188,36 @@ classDiagram
 审计时间都可能是语义。`ReproducibilityTuple.validation_profile_hash` 即"按上述载荷计算的
 `ValidationProfile` 内容哈希"，因此内容相同的 `draft` 与 `frozen` 版本哈希相等。
 
+### 3.2 身份键的书面格式（ADR-0009）
+
+| 位置 | 键格式 | 值 |
+|---|---|---|
+| `ReproducibilityTuple.dependency_hashes` | `kind:name@semver`（`Ref` 的规范串） | 64 位小写十六进制 SHA-256 |
+| `StrategyArtifact.dependencies` | `kind:name@semver` | 同上 |
+| `ReproducibilityTuple.plugin_versions` | `name@semver` | 同上 |
+
+依赖键带 `kind`，因此 `feature:x@1.0.0` 与 `strategy:x@1.0.0` 不会互相冒充。
+`dependency_hashes` 必须覆盖 `hypothesis_ref` / `strategy_ref` / `risk_policy_ref` /
+`outcome_ref` / `cost_model_ref` 中所有**非空**引用；`StrategyArtifact.dependencies` 必须
+覆盖其直接的 `strategy_spec`。这只是**必要条件**，传递依赖闭包由 Runner / Registry 负责
+（06-experiment.md §7）。
+
+### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
+
+当前 `CONTRACT_SCHEMA_VERSION = 2.0.0`。模型校验**只接受同 major**（`2.x`，更高 minor 可读取），
+其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
+
+| 资产 | 位置 |
+|---|---|
+| 当前 Schema（36 份） | `schemas/*.schema.json` |
+| v1 Schema 快照（35 份，只读） | `schemas/v1/` |
+| v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
+| v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
+
+读取 v1 返回的是 `LegacyV1Record`，**不是** `Contract` 子类：它不能作为 v2 模型使用，
+不会被补造缺失的绑定，也不因此取得 v2 的登记 / 晋升资格。v1 与 v2 的 `content_hash` /
+`experiment_hash` **不可比较**。
+
 ## 4. 目录映射
 
 | 路径 | 内容 |
@@ -195,3 +226,4 @@ classDiagram
 | `core/contracts/` | Provider 接口、跨 Plane DTO、JSON Schema 导出 |
 | `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
 | `core/errors/` | 错误分类 |
+| `core/compat/` | 历史契约 major 的**只读**读取入口（不是迁移服务） |

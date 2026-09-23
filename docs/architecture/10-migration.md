@@ -27,6 +27,34 @@
 
 数据表 Schema 演化依赖 Iceberg 原生 schema evolution；Feature 语义变化必须发布新 Feature 版本而不是就地修改。
 
+### 3.1 契约 major 的具体路径（已实施：v1 → v2）
+
+契约 `1.0.0 → 2.0.0` 由 [ADR-0008](../adr/0008-contract-payload-immutability.md) 与
+[ADR-0009](../adr/0009-experiment-identity-binding.md) 共同定义，是本项目第一次 major 变更。
+"旧版本读取器保留至少一个 major"的具体落点：
+
+| 资产 | 路径 | 性质 |
+|---|---|---|
+| 当前 Schema | `schemas/*.schema.json`（36 份，`schema_version` 默认 `2.0.0`） | 由 `python -m core.contracts.registry` 导出 |
+| v1 Schema 快照 | `schemas/v1/*.schema.json`（35 份，默认 `1.0.0`） | **只读、只增不改**；当前导出只写 `schemas/` 顶层，不会覆盖它 |
+| v1 固定载荷 + 旧哈希向量 | `tests/vectors/v1/*.json` | 用 v1 代码（commit `066b22d`）生成，时间固定，不依赖 `now` |
+| v1 可执行只读入口 | `core/compat/v1.py` 的 `read_v1()` | 返回 `LegacyV1Record` |
+
+规则：
+
+1. **未知 major 拒绝。** 模型校验只接受当前 major（`2.x`，更高 minor 可读取）；
+   v1 只读入口只接受 `1.x`。
+2. **不重算、不覆盖。** 旧载荷按 v1 当时的排除表与规范化规则计算旧哈希，
+   **不得**用 v2 算法重算后赋值。
+3. **读取 ≠ 晋升。** `LegacyV1Record` 不是 `Contract`，不能作为 v2 模型、登记或晋升的输入。
+   缺 `dependency_hashes` / `run_id` / 结构化 `profile_selection` 绑定的旧实验若要晋升，
+   必须按 v2 路径重新登记并重新验证。
+4. **哈希不可比较。** v2 的 `experiment_hash` 覆盖面更宽（含策略 / 风控 / Outcome 引用与
+   直接依赖内容绑定），且 `ValidationProfile.status` 已退出哈希载荷。
+5. 本路径**没有**数据库、没有在线迁移服务、不引入 `jsonschema` 依赖。
+   仓库内未发现持久化的实验 / Run / Profile / 报告数据；外部历史数据的存在性
+   **证据不足**，因此不宣称迁移路径已在真实数据上验证过。
+
 ## 4. 复现性在迁移中的保障
 
 - 旧实验永远可以按其复现元组中记录的版本重跑（或至少可读取其产物）。

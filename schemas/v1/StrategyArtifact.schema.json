@@ -1,0 +1,250 @@
+{
+  "$defs": {
+    "GoldenOutputs": {
+      "additionalProperties": false,
+      "description": "固定数据快照上的参考信号 / 仓位序列，用于 Equivalence Gate。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "dataset_snapshot_id": {
+          "minLength": 1,
+          "title": "Dataset Snapshot Id",
+          "type": "string"
+        },
+        "signals_uri": {
+          "minLength": 1,
+          "title": "Signals Uri",
+          "type": "string"
+        },
+        "signals_hash": {
+          "minLength": 1,
+          "title": "Signals Hash",
+          "type": "string"
+        },
+        "positions_uri": {
+          "minLength": 1,
+          "title": "Positions Uri",
+          "type": "string"
+        },
+        "positions_hash": {
+          "minLength": 1,
+          "title": "Positions Hash",
+          "type": "string"
+        }
+      },
+      "required": [
+        "dataset_snapshot_id",
+        "signals_uri",
+        "signals_hash",
+        "positions_uri",
+        "positions_hash"
+      ],
+      "title": "GoldenOutputs",
+      "type": "object"
+    },
+    "Instrument": {
+      "additionalProperties": false,
+      "description": "可交易标的。跨 venue 的符号必须规范化映射。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "instrument_type": {
+          "$ref": "#/$defs/InstrumentType"
+        },
+        "base": {
+          "title": "Base",
+          "type": "string"
+        },
+        "quote": {
+          "title": "Quote",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue",
+        "symbol",
+        "instrument_type",
+        "base",
+        "quote"
+      ],
+      "title": "Instrument",
+      "type": "object"
+    },
+    "InstrumentType": {
+      "enum": [
+        "spot",
+        "perpetual",
+        "future",
+        "option"
+      ],
+      "title": "InstrumentType",
+      "type": "string"
+    },
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "不可变、内容寻址的策略结论打包（ADR-0005 §2）。\n\n任何参数、依赖或代码变化 = 新 Artifact = 需重新验证。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/Kind",
+      "default": "artifact"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Version",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "lineage": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Ref"
+      },
+      "title": "Lineage",
+      "type": "array"
+    },
+    "strategy_spec": {
+      "$ref": "#/$defs/Ref"
+    },
+    "dependencies": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "title": "Dependencies",
+      "type": "object"
+    },
+    "research_code_commit": {
+      "minLength": 7,
+      "title": "Research Code Commit",
+      "type": "string"
+    },
+    "research_code_tree_hash": {
+      "minLength": 7,
+      "title": "Research Code Tree Hash",
+      "type": "string"
+    },
+    "experiment_hashes": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Experiment Hashes",
+      "type": "array"
+    },
+    "validation_reports": {
+      "items": {
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Validation Reports",
+      "type": "array"
+    },
+    "golden_outputs": {
+      "$ref": "#/$defs/GoldenOutputs"
+    },
+    "applicable_instruments": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Instrument"
+      },
+      "title": "Applicable Instruments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "strategy_spec",
+    "research_code_commit",
+    "research_code_tree_hash",
+    "experiment_hashes",
+    "validation_reports",
+    "golden_outputs"
+  ],
+  "title": "StrategyArtifact",
+  "type": "object"
+}

@@ -3,7 +3,7 @@
   "description": "实盘授权记录（ADR-0006 §2）。",
   "properties": {
     "schema_version": {
-      "default": "1.0.0",
+      "default": "2.0.0",
       "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
       "title": "Schema Version",
       "type": "string"

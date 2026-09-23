@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, FrozenMapping, Kind, Ref, VersionedSpec
+from core.domain.base import (
+    Contract,
+    FrozenMapping,
+    Kind,
+    Ref,
+    VersionedSpec,
+    validate_ref_keyed_hashes,
+)
 from core.domain.specs import Instrument
 
 __all__ = ["DeploymentRecord", "EquivalenceCheck", "GoldenOutputs", "StrategyArtifact"]
@@ -32,7 +39,9 @@ class StrategyArtifact(VersionedSpec):
 
     kind: Kind = Kind.ARTIFACT
     strategy_spec: Ref
-    dependencies: FrozenMapping[str, str] = Field(default_factory=dict, validate_default=True)
+    #: `kind:name@semver → SHA-256 内容哈希`（ADR-0009 §5）。键带 kind，避免 Feature /
+    #: State 等同名对象混淆。**完整传递依赖闭包**由未来 Registry / 打包器解析并检查。
+    dependencies: FrozenMapping[str, str]
     research_code_commit: str = Field(min_length=7)
     research_code_tree_hash: str = Field(min_length=7)
     experiment_hashes: tuple[str, ...] = Field(min_length=1)
@@ -48,6 +57,13 @@ class StrategyArtifact(VersionedSpec):
     def _strategy_kind(self) -> StrategyArtifact:
         if self.strategy_spec.kind is not Kind.STRATEGY:
             raise ValueError("strategy_spec 必须指向 strategy")
+        return self
+
+    @model_validator(mode="after")
+    def _direct_strategy_spec_is_bound(self) -> StrategyArtifact:
+        validate_ref_keyed_hashes(self.dependencies, "dependencies")
+        if str(self.strategy_spec) not in self.dependencies:
+            raise ValueError(f"dependencies 必须绑定直接引用的 {self.strategy_spec} 的内容哈希")
         return self
 
 
