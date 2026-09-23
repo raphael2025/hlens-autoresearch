@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed** |
+| 状态 | **Accepted**（2026-09-23；Raphael 授权 Codex 作项目技术裁决，Codex 批准方案 A） |
 | 日期 | 2026-09-23 |
-| 决策者 | Raphael（待批准） |
+| 决策者 | Codex（依据 Raphael 2026-09-23 的项目技术决策授权） |
 | 起草者 | Claude Code（Opus）起草；Codex 文档审查整理 |
 | 相关 Phase | Phase 0 |
 | 影响范围 | Contract |

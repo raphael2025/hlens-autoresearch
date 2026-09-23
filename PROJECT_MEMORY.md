@@ -37,9 +37,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：Opus 已完成两轮复核；ADR-0008 / 0009 为 Proposed，待 Raphael 批准
-- Current Objective：解决 Phase 0 关闭阻塞，再进行宪法批准与关闭复审
-- Current Blocker：基础契约完整性问题；ADR-0008 / 0009 待批准与实施；Constitution 1.0.0 仍待 Raphael 批准
+- Current Subphase：ADR-0008 / 0009 已 Accepted；Opus 串行实施 B1/B2
+- Current Objective：完成契约只读载荷、完整实验身份和 v2 兼容验收，再进行 Phase 0 关闭复审
+- Current Blocker：ADR-0008 / 0009 尚未实施完成；Constitution 1.0.0 仍待 Raphael 亲自批准
 - Next Milestone：修复方案获批 → 实施与复审 → Constitution 获批 → Phase 0 关闭
 
 ## 5. Active Decisions
@@ -54,6 +54,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - C-2（已定）：PAPER = 单策略独立观察；ACTIVE = 组合 / Router 正式启用，带 execution_mode SIMULATED|LIVE（Phase 13 前仅 SIMULATED）；不设 LIVE 状态
 - D-09 结构（H-1、H-2 已接受）：三层 = Constitution（不可变原则）/ Validation Profile（版本化阈值，被实验使用后不可变）/ Experiment Metadata（每个实验的 Profile 版本与配置）；两步冻结 = Phase 0 冻结原则与架构、Phase 4 校准后冻结初始 Profile 参数 → ADR-0007 **Accepted**；Constitution 已重组为 0.2.0-draft（纯原则），Profile 概念契约在 07-validation.md §5，Experiment Metadata 在 06-experiment.md §3
 - D-09 数值（TBD-1 ~ TBD-5）：**未批准**，Phase 4 校准后冻结为 Profile 参数；Constitution 中不得出现数值阈值；提案见 `docs/research/proposals/d09-validation-threshold-proposal.md`
+- ADR-0008：契约映射载荷只读、逐模型内容哈希边界与 v1 只读兼容；与 ADR-0009 共同交付未发布的契约 2.0.0；2026-09-23 Accepted。
+- ADR-0009：完整实验规格身份、运行标识与直接依赖内容绑定；实际 seeds 保留在实验哈希中；2026-09-23 Accepted。
 
 ## 6. Active Constraints
 
@@ -67,7 +69,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 不修改旧项目与外部数据
 - Claude 不替 Raphael 做架构决策
 - Git：main 为稳定基线，实现工作走 `phase/*` 分支，合并进 main 需 Raphael 批准；无远程仓库（细节见 CLAUDE.md §10）
-- Raphael 于 2026-09-23 指定：Codex 只负责控制 Claude Code、审查与文档；编码和测试实现交给 WSL Claude Code 的 Opus 模型，架构决定仍由 Raphael 批准。
+- Raphael 于 2026-09-23 指定：Codex 决定项目方向、技术栈、架构、功能、逻辑与文档并控制 Claude Code；编码和测试实现交给 WSL Claude Code 的 Opus 模型。Constitution 原则、实盘/风险预算、环境安装、历史数据删除与 main 合并仍由 Raphael 亲自批准。
 
 ## 7. Current Known Risks
 

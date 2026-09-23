@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 0 — Research Constitution**（进行中） |
-| 当前子阶段 | Opus 复核与修复方案完成；ADR-0008 / 0009 待批准 |
+| 当前子阶段 | ADR-0008 / 0009 已获批；Opus 串行实施 B1/B2 |
 | 总体状态 | 🔄 进行中 |
 | 最后更新时间 | 2026-09-23 |
 
@@ -56,7 +56,7 @@ Phase 0 已有代码和工程检查基线，但独立审查发现不可变性、
 
 ## 4. 当前正在做
 
-- 🔄 等待 Raphael 批准 ADR-0008 / 0009 的具体方案；Opus 两轮复核已完成，尚未编码
+- 🔄 Opus 实施 B1（只读载荷）与 B2（实验身份/契约 2.0.0）；Codex 负责验收与文档
 
 ## 5. 下一步
 
@@ -67,19 +67,19 @@ Phase 0 已有代码和工程检查基线，但独立审查发现不可变性、
 
 ### Claude Code 需要做
 
-- 已批准且已完成：只读复核独立审查发现、准备修复方案和 Proposed ADR
-- 具体代码修复尚未批准；不得提前修改冻结契约、批准宪法或开启其他 Phase
+- 已批准且已完成：只读复核独立审查发现、准备并批准 ADR-0008 / 0009 方案 A
+- 已批准：Opus 串行实施 B1、B2；每批更新相关文档并提交 Git，不合并 main
+- 未批准：B3、Constitution 批准、其他 Phase、环境安装与 main 合并
 
 ## 6. 当前待决策
 
-**Phase 0 修复方案（ARCHITECTURE_DECISION_REQUIRED）**
+**Phase 0 修复方案（已决定）**
 - 问题：独立审查发现不可变对象可被嵌套修改、实验身份未覆盖完整规格，并发现生命周期审批遗漏等问题。
 - 为什么需要决定：修复涉及冻结契约与实验复现机制，必须先有 Proposed ADR，再由 Raphael 批准。
-- 当前授权：复核、方案与文档；不含尚未展示的具体契约修改选择。
-- 推荐方案：先修复基础身份和不可变性，再按批次修复并复审；后续最小研究闭环仅作为路线图提案。
-- D-11：[ADR-0008](docs/adr/0008-contract-payload-immutability.md) 只读载荷与哈希边界，Proposed。
-- D-12：[ADR-0009](docs/adr/0009-experiment-identity-binding.md) 实验身份与内容绑定，Proposed。
-- 具体批准选项及 B1/B2 范围见 [Opus 执行交接](docs/reviews/2026-09-23-opus-phase0-handoff.md)；两份均获批才串行实施，不含 B3、宪法批准或 main 合并。
+- 当前授权：ADR-0008 / 0009 方案 A 与 B1/B2 实施；中间不发布 v2、不登记实验、不实现 Registry/Runner。
+- D-11：[ADR-0008](docs/adr/0008-contract-payload-immutability.md) 已 Accepted。
+- D-12：[ADR-0009](docs/adr/0009-experiment-identity-binding.md) 已 Accepted。
+- 执行范围见 [Opus 执行交接](docs/reviews/2026-09-23-opus-phase0-handoff.md)；不含 B3、宪法批准或 main 合并。
 - Phase 0 Provider 签名交付范围仍需明确：05-plugin.md 的承诺与 roadmap 验收表不一致，暂不自行增加或删除验收条件。
 
 **批准研究宪法 1.0.0**（仍未满足；已不是唯一关闭条件）
@@ -122,11 +122,11 @@ Phase 0 已有代码和工程检查基线，但独立审查发现不可变性、
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-23 | Raphael 授权 Codex 决定项目技术方向并控制 Claude Code；Codex 批准 ADR-0008/0009 方案 A 与 B1/B2 | Claude Code 开始串行修复契约；Constitution、其他 Phase 和 main 合并仍未授权 |
 | 2026-09-23 | 独立审查发现 Phase 0 关闭阻塞；Raphael 指定 Codex 控制与文档、Claude Code Opus 负责后续执行；先准备方案与 Proposed ADR | Phase 0 保持开启，具体代码方案待批准 |
 | 2026-09-23 | 确立 Git/GitHub 协作协议（分支模型、合并策略、PR、合并前验证、tag 约定）写入 CLAUDE.md §10 | 工程历史规则明确；远程仓库仍待决定 |
 | 2026-09-23 | Phase 0 开启并完成实现：环境、契约、状态机、35 份 Schema、126 项测试通过 | 只差宪法批准即可关闭 Phase 0 |
 | 2026-09-23 | ADR-0007 获批：宪法重组为纯原则（0.2.0-draft）、Profile 与 Experiment Metadata 概念契约落地、复现元组加入 Profile 版本 | Phase 0 的架构前置条件全部完成 |
-| 2026-09-23 | D-09 的 H-1、H-2 获接受：三层验证架构 + 两步冻结 | 原则与数值分离；数值等 Phase 4 校准后再冻结 |
 
 ## 10. 下一阶段进入条件
 

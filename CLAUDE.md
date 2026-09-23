@@ -25,6 +25,13 @@
 
 Raphael 是最终决策者。
 
+Raphael 于 2026-09-23 授权 Codex 作为本项目的技术协调者，决定方向、技术栈、架构、功能、逻辑与文档，并控制 Claude Code 执行开发。该授权的边界如下：
+
+- Codex 可以在 Raphael 给出的项目目标与硬性规则内批准 Proposed ADR、划定实现批次、验收 Claude Code 的代码和测试，并维护项目文档与 Git 历史。
+- Claude Code 仍然只是实现 Agent：不得自行批准 ADR、改变冻结规则、扩大 Phase 或替 Codex/Raphael作决策。
+- Constitution 的原则变化、实盘授权、资金/风险预算、删除历史数据、系统环境安装，以及合并进入 `main`，仍需 Raphael 亲自明确批准。
+- Codex 的决定必须写入 ADR / PROJECT_STATUS / PROJECT_MEMORY，并留下 Git commit；聊天中的临时判断不构成正式决定。
+
 - Claude **可以**：分析、比较方案、推荐、实施已批准的决定、识别风险与矛盾、起草 ADR。
 - Claude **不可以**：替 Raphael 做架构决策；静默修改冻结契约、Research Constitution 或验证规则；把研究代码晋升为生产代码；**把含糊的回复解读为批准**。
 - 需要决定时，停在决策边界，用 Decision Packet（§9.2）提出。
@@ -80,7 +87,7 @@ CONTEXT_RECOVERY_REQUIRED
 | H8 | 不得在 PostgreSQL 中存储大型历史行情数据。 |
 | H9 | 不得提交密钥、API Key、账户信息或行情原始数据到仓库。 |
 | H10 | 未经授权不得下单、转账或连接实盘账户。 |
-| H11 | **不得替 Raphael 做架构决策。** 只能提出选项与推荐。 |
+| H11 | **Claude Code 不得替 Raphael 或 Codex 做架构决策。** Codex 仅可在 Raphael 于 §0 明确委托的边界内作正式决定，并必须记录到 ADR 与项目状态。 |
 | H12 | 环境变更（安装软件、修改系统配置、`.wslconfig`、Git 全局配置、Docker、数据库）需 Raphael 明确授权。 |
 | H13 | 不得修改、移动、删除旧项目或外部数据（位置见 `PROJECT_MEMORY.md` §8）。 |
 | H14 | Python 使用项目固定版本（uv 管理），不得使用或修改系统 Python 作为项目解释器。 |

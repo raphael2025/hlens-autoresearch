@@ -13,8 +13,8 @@
 | [0005](0005-research-production-boundary.md) | Research / Production Boundary（D-03） | Accepted（2026-09-23） |
 | [0006](0006-strategy-lifecycle.md) | Strategy Lifecycle v2（D-05） | Accepted（2026-09-23）；取代 ADR-0002 第 5 条 |
 | [0007](0007-validation-architecture-three-layers.md) | 三层验证架构与两步冻结（D-09 结构部分） | Accepted（2026-09-23） |
-| [0008](0008-contract-payload-immutability.md) | 契约载荷的只读表示与内容哈希载荷定义 | Proposed（2026-09-23，待 Raphael 批准） |
-| [0009](0009-experiment-identity-binding.md) | 实验规格身份、运行标识与依赖内容绑定 | Proposed（2026-09-23，待 Raphael 批准） |
+| [0008](0008-contract-payload-immutability.md) | 契约载荷的只读表示与内容哈希载荷定义 | Accepted（2026-09-23，Codex 依授权批准方案 A） |
+| [0009](0009-experiment-identity-binding.md) | 实验规格身份、运行标识与依赖内容绑定 | Accepted（2026-09-23，Codex 依授权批准方案 A） |
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -32,8 +32,8 @@
 | D-08 | **市场与执行范围**。覆盖哪些交易所 / 标的 / 频率（现货、永续、期权、链上）？Phase 13 是否包含实盘，由谁授权，风险预算上限？ | 需用户定义 | Phase 1 / 13 |
 | D-09 | **Constitution 数值**。TBD-1 至 TBD-5。结构部分（H-1、H-2）已定 → ADR-0007 Accepted；**数值仍未批准**，将在 Phase 4 校准后按 Profile 版本冻结。 | 需用户批准 | → 提案 `docs/research/proposals/d09-validation-threshold-proposal.md`（未批准） |
 | D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1 |
-| D-11 | **契约只读载荷与哈希边界**。独立审查 R01/R09；下一次未发布的 2.0.0 与旧版本只读兼容。 | ADR-0008 方案 A / 要求修改 / 暂缓 | Phase 0；Proposed，待批准 |
-| D-12 | **实验身份与复现绑定**。独立审查 R02/R05；种子、运行标识和直接依赖内容覆盖。 | ADR-0009 方案 A / 要求修改 / 暂缓 | Phase 0；Proposed，待批准 |
+| D-11 | ✅ **已决定（ADR-0008）** 契约只读载荷与哈希边界；下一次未发布的 2.0.0 与旧版本只读兼容。 | 方案 A | Phase 0；Accepted，执行 B1/B2 |
+| D-12 | ✅ **已决定（ADR-0009）** 实验身份与复现绑定；种子、运行标识和直接依赖内容覆盖。 | 方案 A | Phase 0；Accepted，执行 B1/B2 |
 
 ## 冲突记录
 
