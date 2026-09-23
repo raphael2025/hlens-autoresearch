@@ -88,6 +88,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Date：2026-09-23
 - Git Commit：0328523（Phase 0 实现完成：契约 + 状态机 + 测试 + lint/type 全绿）
-- Phase：Bootstrap 完成，Phase 0 未开启；生命周期与研究 / 生产边界已冻结
+- Phase：Phase 0 实现完成，等待宪法批准；生命周期、研究 / 生产边界、三层验证架构已冻结
 - State：core 契约与状态机已实现；126 测试、ruff、mypy strict 全绿；无 Feature / Strategy / Backtest 实现
 - Notes：ADR-0001 ~ 0007 Accepted；Constitution 0.2.0-draft 待批准为 1.0.0；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放
