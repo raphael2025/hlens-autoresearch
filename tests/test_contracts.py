@@ -13,21 +13,21 @@ import pytest
 from pydantic import ValidationError
 
 from core.contracts.registry import CONTRACT_MODELS, export_json_schemas
-from core.domain.base import CONTRACT_SCHEMA_VERSION, Kind, Ref, content_hash
+from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, Kind, Ref, content_hash
 from core.domain.research import Verdict
 from core.domain.specs import FeatureSpec, OutcomeSpec, StrategySpec
 from tests import factories
 
 
 @pytest.mark.parametrize("model", CONTRACT_MODELS, ids=lambda m: m.__name__)
-def test_every_contract_is_frozen_and_strict(model: type) -> None:
+def test_every_contract_is_frozen_and_strict(model: type[Contract]) -> None:
     config = model.model_config
     assert config.get("frozen") is True, f"{model.__name__} 必须不可变"
     assert config.get("extra") == "forbid", f"{model.__name__} 必须禁止未声明字段"
 
 
 @pytest.mark.parametrize("model", CONTRACT_MODELS, ids=lambda m: m.__name__)
-def test_every_contract_declares_schema_version(model: type) -> None:
+def test_every_contract_declares_schema_version(model: type[Contract]) -> None:
     assert "schema_version" in model.model_fields, f"{model.__name__} 必须带 schema_version"
     assert model.model_fields["schema_version"].default == CONTRACT_SCHEMA_VERSION
 
@@ -57,10 +57,14 @@ def test_content_hash_is_order_independent_but_value_sensitive() -> None:
 
 
 def test_published_versions_are_immutable() -> None:
-    spec = OutcomeSpec(name="fwd_return", version="1.0.0", horizon=timedelta(hours=4),
-                       label_definition="forward return")
+    spec = OutcomeSpec(
+        name="fwd_return",
+        version="1.0.0",
+        horizon=timedelta(hours=4),
+        label_definition="forward return",
+    )
     with pytest.raises(ValidationError):
-        spec.version = "1.0.1"  # type: ignore[misc]
+        spec.version = "1.0.1"
 
 
 def test_feature_rejects_negative_available_lag() -> None:
@@ -130,8 +134,12 @@ def test_report_cannot_pass_with_failing_gate() -> None:
 
 
 def test_created_at_is_not_part_of_content_hash() -> None:
-    spec = OutcomeSpec(name="fwd_return", version="1.0.0", horizon=timedelta(hours=4),
-                       label_definition="forward return")
+    spec = OutcomeSpec(
+        name="fwd_return",
+        version="1.0.0",
+        horizon=timedelta(hours=4),
+        label_definition="forward return",
+    )
     later = spec.model_copy(update={"created_at": datetime(2030, 1, 1, tzinfo=UTC)})
     assert spec.content_hash() == later.content_hash()
 

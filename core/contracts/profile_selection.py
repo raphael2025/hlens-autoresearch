@@ -100,5 +100,7 @@ class ExperimentMetadata(Contract):
         if self.trial_index > self.family_trial_count:
             raise ValueError("trial_index 不得大于 family_trial_count（失败尝试也必须计数）")
         if self.declared_research_class != self.profile_selection_key.research_class:
-            raise ValueError("预登记的研究类别与 Profile 选择输入不一致（不得换到更宽松的 Profile）")
+            raise ValueError(
+                "预登记的研究类别与 Profile 选择输入不一致（不得换到更宽松的 Profile）"
+            )
         return self

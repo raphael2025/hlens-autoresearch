@@ -39,8 +39,14 @@ def _metadata(**overrides: object) -> ExperimentMetadata:
 def test_profile_requires_all_five_threshold_groups() -> None:
     """缺任何一类门槛的 Profile 无效（Constitution C-A7）。"""
     full = factories.validation_profile()
-    for missing in ["data_split", "sample_size", "significance", "benchmark",
-                    "parameter_stability", "cost_stress"]:
+    for missing in [
+        "data_split",
+        "sample_size",
+        "significance",
+        "benchmark",
+        "parameter_stability",
+        "cost_stress",
+    ]:
         payload = full.model_dump()
         payload.pop(missing)
         with pytest.raises(ValidationError):
@@ -52,7 +58,7 @@ def test_frozen_profile_is_immutable_and_needs_calibration() -> None:
     frozen = factories.frozen_profile()
     assert frozen.status is ProfileStatus.FROZEN
     with pytest.raises(ValidationError):
-        frozen.significance = frozen.significance  # type: ignore[misc]
+        frozen.significance = frozen.significance
     with pytest.raises(ValidationError):
         factories.validation_profile(status="frozen")  # 无 provenance.calibration_report
 

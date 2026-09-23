@@ -25,10 +25,12 @@ from core.lifecycle.strategy import (
     ExecutionMode,
     ExecutionModeChange,
     LifecycleHistory,
-    LifecycleState as S,
     LifecycleTransition,
     RiskGateRecord,
     validate_transition,
+)
+from core.lifecycle.strategy import (
+    LifecycleState as S,
 )
 
 SUBJECT = Ref(kind=Kind.STRATEGY, name="s_example", version="1.0.0")
@@ -98,8 +100,13 @@ def test_paper_precedes_production_candidate() -> None:
 
 
 def test_human_approval_required_for_gated_transitions() -> None:
-    for pair in [(S.OOS, S.PAPER), (S.PRODUCTION_CANDIDATE, S.ACTIVE), (S.REVALIDATION, S.ACTIVE),
-                 (S.ACTIVE, S.RETIRED), (S.PAPER, S.RETIRED)]:
+    for pair in [
+        (S.OOS, S.PAPER),
+        (S.PRODUCTION_CANDIDATE, S.ACTIVE),
+        (S.REVALIDATION, S.ACTIVE),
+        (S.ACTIVE, S.RETIRED),
+        (S.PAPER, S.RETIRED),
+    ]:
         with pytest.raises(LifecycleViolation):
             validate_transition(*pair, approved_by=None)
         validate_transition(*pair, approved_by="raphael")
