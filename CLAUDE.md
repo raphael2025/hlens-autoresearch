@@ -185,6 +185,14 @@ RECOMMENDATION:
 CHANGES:
 - files / ADRs created or modified; important implementation changes
 
+GIT_STATE:
+- branch / HEAD / base branch
+- working tree: clean | N modified
+- pushed | unpushed (N commits ahead) | no remote
+- PR: #号 + 状态（无则 none）
+- CI: 状态（无则 not configured）
+- last known good: commit 或 tag
+
 RISKS:
 - only active risks
 
@@ -232,3 +240,61 @@ DEFAULT_IF_UNDECIDED:  <不决定时保持什么不变>
 ### 9.4 不静默扩大范围
 
 任务中发现的额外有用工作不要自动执行，标记为 **FOLLOW-UP** 写入 HANDOFF。批准后才执行，除非它是完成已批准任务所必需的。
+
+---
+
+## 10. Git / GitHub 工作流
+
+Git 是项目的**持久工程历史**；仓库状态必须随时明确无歧义。
+
+### 10.1 分支模型
+
+| 分支 | 用途 | 规则 |
+|---|---|---|
+| `main` | 稳定、已审阅、可恢复的基线 | **常规实现工作不得直接提交到 main** |
+| `phase/<n>` | 当前 Phase 的集成分支（如 `phase/0.5`） | Phase 开启时创建，关闭并合并后保留 |
+| `feature/*`、`fix/*`、`test/*` | 短命任务分支，仅在确有必要时创建 | 合并回当前 phase 分支后即可删除 |
+
+不创建不必要的分支。文档 / 状态同步这类零散改动可直接提交到当前 phase 分支。
+
+### 10.2 合并策略
+
+1. 任务分支 → 当前 phase 分支。
+2. phase 分支 → `main`：**仅当该 Phase 的验收标准全部满足**（见 roadmap）。
+3. 以下内容合并进 `main` **必须有 Raphael 的明确批准**：架构决定、ADR、Research Constitution、Lifecycle、验证架构、研究 / 生产边界。
+4. Claude 可以自动准备 commit 与 PR，但**不得代替 Raphael 做架构决定**，也不得静默合并进 `main`。
+
+### 10.3 Commit 策略
+
+- 小而有意义；commit message 描述**实际改动**，不写"进度"类空提交。
+- 每个完成的任务都要留下一个可恢复的 commit。
+- 提交身份用一次性参数传入（ADR-0004），不写任何 Git 配置。
+
+### 10.4 Pull Request
+
+非平凡改动创建 PR，正文包含：改动摘要、测试结果、文档同步情况、架构影响、需要 Raphael 决定的事项、base 分支。
+
+### 10.5 合并前验证（必须实际运行）
+
+```bash
+uv run pytest                    # 含架构边界测试与文档一致性测试
+uv run ruff check .
+uv run ruff format --check .
+uv run mypy
+```
+
+**没有真正运行过的检查，不得声称通过。** 任一失败则不合并。
+
+### 10.6 Tag 约定
+
+- `phase-<n>-complete`：某 Phase 验收标准全部满足并合并进 `main` 时（如 `phase-0-complete`）。
+- `baseline-<slug>`：其他值得作为恢复点的稳定里程碑。
+- Tag 一律轻量、只加不改；**Raphael 批准后才创建**。
+
+### 10.7 安全红线
+
+禁止：force push；改写已发布历史；无理由删除分支；静默合并进 `main`；修改全局 Git 配置；用 `--no-verify` 跳过检查。
+
+### 10.8 状态报告
+
+每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。当前仓库**没有远程**：远程托管位置待 Raphael 决定（ADR-0004 遗留项），在此之前 PR 与 CI 部分填 `none` / `not configured`。

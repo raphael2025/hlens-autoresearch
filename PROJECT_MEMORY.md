@@ -66,6 +66,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 环境变更（安装、系统配置、Docker、数据库、全局 Git 配置）需 Raphael 授权
 - 不修改旧项目与外部数据
 - Claude 不替 Raphael 做架构决策
+- Git：main 为稳定基线，实现工作走 `phase/*` 分支，合并进 main 需 Raphael 批准；无远程仓库（细节见 CLAUDE.md §10）
 
 ## 7. Current Known Risks
 

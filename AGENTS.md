@@ -28,7 +28,11 @@ Research Agent 的一切产出都是**数据**（Hypothesis / ExperimentSpec）�
 - 修改 `core/` 的任务不得与其他任务并行。
 - 每次提交说明：所属 Phase、触及的契约（若有）、测试结果、关联 ADR。
 
-## 4. 交付格式
+## 4. Git 工作流
+
+分支模型、合并策略、PR 要求、合并前验证与 tag 约定见 [CLAUDE.md](CLAUDE.md) §10。要点：不直接在 `main` 上做实现工作；合并进 `main` 需 Raphael 批准；声称通过的检查必须真正运行过。
+
+## 5. 交付格式
 
 每个任务完成时报告：
 - 改动文件列表
