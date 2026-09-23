@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（等待 Raphael 批准本 ADR） |
+| 状态 | **Accepted**（2026-09-23，Raphael 批准） |
 | 日期 | 2026-09-23 |
-| 决策者 | Raphael（H-1、H-2 已于 2026-09-23 接受；本 ADR 的实施细节待批准） |
+| 决策者 | Raphael |
 | 起草者 | Claude Code |
 | 相关 Phase | Phase 0（结构冻结）、Phase 4（参数校准与冻结） |
 | 影响范围 | Research Constitution / Validation / Contract / 复现性 |
@@ -61,15 +61,15 @@ D-09 提案（`docs/research/proposals/d09-validation-threshold-proposal.md`）�
 
 ### 4. 接受本 ADR 后需要的修改
 
-以下修改在批准后执行，**现在不做**：
+已于 2026-09-23 批准后执行（Phase 0 将把概念契约落成代码）：
 
 | 目标 | 修改 |
 |---|---|
-| `docs/research/constitution.md` | 重组为纯原则；移出 TBD-1 ~ TBD-5（改为"由 Profile 定义"）；加入 Profile 绑定与选择规则；版本升到 1.0.0 时需 Raphael 批准 |
-| `docs/architecture/06-experiment.md` | 复现元组增加 `validation_profile_version`（与既有 `constitution_version` 并列）——属于冻结内容的变更，由本 ADR 授权 |
-| `core/contracts/` | 新增 `ValidationProfile` 契约与 `ProfileSelectionRule`；`ValidationReport` 绑定 Profile 版本 |
-| `docs/architecture/07-validation.md` | 各验证门的阈值来源改为引用 Profile |
-| Phase 4 交付物 | 增加校准报告与初始 Profile 版本 |
+| `docs/research/constitution.md` | ✅ 已重组为纯原则（0.2.0-draft）；TBD-1 ~ TBD-5 已移出；已加入第二章三层结构与 Profile 绑定规则。升到 1.0.0 需 Raphael 在 Phase 0 批准 |
+| `docs/architecture/06-experiment.md` | ✅ 复现元组已增加 `validation_profile_version` 与 `profile_selection`；已增加 Experiment Metadata 概念契约 |
+| `core/contracts/` | Phase 0 实现：`ValidationProfile`、`ProfileSelectionRule`、`ExperimentMetadata`；`ValidationReport` 绑定 Profile 版本。概念契约见 07-validation.md §5 与 06-experiment.md §3 |
+| `docs/architecture/07-validation.md` | ✅ 已加入 §5 Validation Profile 概念契约；门的阈值来源改为引用 Profile |
+| Phase 4 交付物 | ✅ roadmap 已加入校准报告与初始 Profile 冻结（Step 2） |
 
 ### 5. 不在本 ADR 范围内
 

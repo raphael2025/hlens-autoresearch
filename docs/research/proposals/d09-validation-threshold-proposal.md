@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **部分接受**：H-1（三层结构）与 H-2（两步冻结）已于 2026-09-23 被 Raphael 接受 → [ADR-0007](../../adr/0007-validation-architecture-three-layers.md)（Proposed）。**§C 的数值仍未批准**，正式 Constitution 未修改。 |
+| 状态 | **部分接受**：H-1（三层结构）与 H-2（两步冻结）已于 2026-09-23 被 Raphael 接受 → [ADR-0007](../../adr/0007-validation-architecture-three-layers.md)（**Accepted**，2026-09-23）。**§C 的数值仍未批准**；Constitution 已按结构重组，但未写入任何数值。 |
 | 日期 | 2026-09-21 |
 | 起草者 | Claude Code |
 | 决策者 | Raphael |
@@ -64,6 +64,8 @@
 ---
 
 ## B. 建议的 Validation Profile 结构
+
+> 已落成正式概念契约：[07-validation.md §5](../../architecture/07-validation.md)。以下为提案原文，保留作为依据。
 
 Profile ID 示例：`vp:btcusdt-1h-swing@0.1.0`
 
@@ -224,7 +226,7 @@ Profile ID 示例：`vp:btcusdt-1h-swing@0.1.0`
 
 | ID | 问题 | 建议 |
 |---|---|---|
-| ~~H-1~~ | ✅ **已接受（2026-09-23）** 三层结构 → ADR-0007（Proposed） | — |
+| ~~H-1~~ | ✅ **已接受（2026-09-23）** 三层结构 → ADR-0007 Accepted | — |
 | ~~H-2~~ | ✅ **已接受（2026-09-23）** 两步冻结：Phase 0 冻结原则与架构；Phase 4 校准后冻结初始 Profile 参数 → ADR-0007 | — |
 | H-3 | 历史封存区在认知上可能已被旧研究"看过"。是否把它定义为"弱封存"，并把 PAPER 前向期作为最强证据？ | 接受，并在报告中注明 |
 | H-4 | 封存 OOS 边界日期，以及轮换规则（多久或开封多少次后轮换） | 待定 |

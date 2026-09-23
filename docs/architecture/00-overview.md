@@ -58,7 +58,7 @@ HLENS-AutoResearch 是**研究基础设施**，其产品是"经过验证的研�
 | D5 | Plugin Architecture | [05-plugin.md §2](05-plugin.md) |
 | D6 | Experiment / Validation Lifecycle | [07-validation.md §3](07-validation.md) |
 | D7 | Plane 边界与 Promotion | [01-system.md §3](01-system.md) |
-| D8 | Experiment Run 状态机 | [06-experiment.md §4](06-experiment.md) |
+| D8 | Experiment Run 状态机 | [06-experiment.md §5](06-experiment.md) |
 | D9 | Validation Pipeline | [07-validation.md §2](07-validation.md) |
 | D10 | Roadmap 依赖图 | [research/roadmap.md](../research/roadmap.md) |
 | D11 | 部署阶段演进 | [08-deployment.md §2](08-deployment.md) |
@@ -72,12 +72,14 @@ HLENS-AutoResearch 是**研究基础设施**，其产品是"经过验证的研�
 - Domain 实体与标识/版本化规则（02-domain.md）
 - 数据分层与时间语义（03-data.md §3–4）
 - Provider 接口的**语义**（05-plugin.md §3）
-- 实验复现元组（06-experiment.md §2）
+- 实验复现元组（06-experiment.md §2，含 Validation Profile 版本）
+- 三层验证架构：Validation Profile 契约与选择规则（07-validation.md §5，ADR-0007）
 - Lifecycle 状态机（07-validation.md §3）
-- Validation Constitution（research/constitution.md）
+- Validation Constitution 的**原则**（research/constitution.md）
 
 ### 可替换（通过 Provider / Infrastructure Adapter）
 
+- Validation Profile 的**参数值**（版本化；Phase 4 校准后冻结，之后只能发布新版本）
 - 具体 LLM、回测引擎、计算引擎（DuckDB / Polars）、Iceberg Catalog 实现
 - 对象存储实现（本地 FS / MinIO / S3 / R2）
 - 消息总线实现（NATS JetStream 为默认）

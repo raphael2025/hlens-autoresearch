@@ -91,6 +91,7 @@ classDiagram
     }
     class ValidationReport {
         +constitution_version
+        +validation_profile_version
         +checks
         +verdict
     }
@@ -134,7 +135,7 @@ classDiagram
 | **StrategySpec** | 信号 → 仓位的规则 | 参数空间必须声明（用于多重检验计数） |
 | **RiskPolicy** | 仓位、止损、敞口、杠杆限制 | 独立于策略版本化 |
 | **ExperimentSpec / Run** | 见 06-experiment.md | 可复现 |
-| **ValidationReport** | 按 Constitution 执行的检查结果 | 绑定 Constitution 版本 |
+| **ValidationReport** | 按 Constitution + Validation Profile 执行的检查结果 | 绑定 Constitution 版本**与 Profile 版本**（ADR-0007） |
 | **LifecycleRecord** | 研究对象的晋升状态 | 只能按状态机转移 |
 | **FailureRecord** | 失败/拒绝的记录 | 永不删除 |
 | **ResearchMemory** | 以上所有记录的可检索集合 | 追加式（append-only） |
