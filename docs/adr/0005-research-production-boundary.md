@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（等待 Raphael 批准 D-03） |
-| 日期 | 2026-09-21 |
-| 决策者 | Raphael（C-1 已于 2026-09-21 决定；整体批准待定） |
+| 状态 | **Accepted**（2026-09-23，Raphael 批准 D-03） |
+| 日期 | 起草 2026-09-21；批准 2026-09-23 |
+| 决策者 | Raphael |
 | 起草者 | Claude Code |
 | 相关 Phase | Phase 0（契约）、Phase 5+（首次使用） |
 | 影响范围 | Contract / Lifecycle / Plane 边界 / 目录结构 |
@@ -25,7 +25,7 @@ Research Code → Experiment → Validation → Strategy Artifact → Strategy R
 > PRODUCTION_CANDIDATE = 已通过研究验证**且**已成功完成 Paper Trading，可以进入生产部署审查，但尚未进入生产。
 > ACTIVE = 被策略组合 / Router 正式启用，带 `execution_mode = SIMULATED | LIVE`（C-2，见 ADR-0006）。
 
-## 提议的决策
+## 决策
 
 ### 1. 核心概念
 
@@ -122,11 +122,12 @@ Revalidation 使用**登记时的** Profile 版本；是否同时报告新版本
 | `plugins/` | 生产级 Provider（被研究与生产共同使用的，需版本化 + 一致性测试） |
 | Registry / Artifact 存储 | Control Plane（PostgreSQL）+ 对象存储，**不在 Git 中** |
 
-## 需要 Raphael 决定
+## 仍未决定的细节（不在本次批准范围内）
+
+批准本 ADR 不代表以下问题已有答案；它们在对应 Phase 之前提出 Decision Packet。
 
 | ID | 问题 |
 |---|---|
-| **D-03** | 是否批准本 ADR |
 | Q-1 | 生产实现方案 A / B / C |
 | Q-2 | 研究与生产是否可以共用同一个"生产级 Provider"（例如同一个 Feature 实现），还是生产必须拥有独立副本 |
 | Q-3 | Revalidation 是否需要同时报告新 Profile 的结果（仅供参考，不影响判定） |

@@ -7,12 +7,15 @@
 
 失败实验是研究资产。它们防止重复犯错、提供负面知识，并为多重检验提供真实的 trial count。
 
-## 记录字段（见 07-validation.md §4）
+**范围（ADR-0006）**：本注册表只记录 **REJECTED / FAILED**（从未成立的对象）。
+**RETIRED ≠ FAILED**：曾经成立并被启用、之后停止使用的对象写入**退役记录**（见 [07-validation.md §4.2](../architecture/07-validation.md)），不在此处登记。
+
+## 记录字段（见 07-validation.md §4.1）
 
 | 字段 | 说明 |
 |---|---|
 | `subject_ref` | 失败对象 `kind:name@version` |
-| `terminal_state` | REJECTED / FAILED / RETIRED |
+| `terminal_state` | REJECTED / FAILED |
 | `reason_code` | 例：`LEAKAGE_DETECTED`、`NOT_SIGNIFICANT_AFTER_MTC`、`OOS_DECAY`、`COST_KILLED`、`PARAM_UNSTABLE`、`STATE_CONCENTRATED`、`NOT_REPRODUCIBLE`、`DATA_QUALITY`、`HUMAN_VETO` |
 | `gate_id` | 失败的验证门 |
 | `evidence` | ExperimentRun / ValidationReport 引用 |

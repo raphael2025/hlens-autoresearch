@@ -31,7 +31,7 @@ flowchart LR
 
 ## 3. Experiment / Validation Lifecycle（D6）
 
-> 状态：**v2 草案，对应 ADR-0006（Proposed）**。C-1、C-2 已由 Raphael 于 2026-09-21 决定；整体待 D-05 批准。权威定义以 ADR-0006 为准。
+> 状态：**已冻结**，对应 [ADR-0006](../adr/0006-strategy-lifecycle.md)（Accepted，2026-09-23，取代 ADR-0002 第 5 条）。修改需新 ADR。
 
 研究对象（Hypothesis、Strategy、Feature 组合等）的晋升状态机：
 
@@ -85,17 +85,39 @@ stateDiagram-v2
 - 每次转移与 `execution_mode` 变更都只追加、可审计。
 - OOS 数据对每个假设族只"开封"一次；开封记录不可撤销。
 
-## 4. Failure Registry
+## 4. 终态记录：Failure Registry 与退役记录
 
-记录所有 REJECTED / FAILED / RETIRED 对象：
+终态分成两类，**不混用**（ADR-0006 §3 第 2 条）：
+
+| 终态 | 记录位置 | 含义 |
+|---|---|---|
+| REJECTED / FAILED | Failure Registry | 从未成立：验证未通过、被否决，或技术失败 / 不可复现 |
+| RETIRED | 退役记录（生命周期历史的一部分） | 曾经成立并被启用，现在停止使用 |
+
+### 4.1 Failure Registry
+
+记录所有 REJECTED / FAILED 对象：
 
 | 字段 | 说明 |
 |---|---|
 | `subject_ref` | 对象引用 |
-| `terminal_state` | REJECTED / FAILED / RETIRED |
+| `terminal_state` | REJECTED / FAILED |
 | `reason_code` | 来自 `core/errors` 分类（如 `LEAKAGE_DETECTED`、`NOT_SIGNIFICANT_AFTER_MTC`、`OOS_DECAY`、`NOT_REPRODUCIBLE`、`COST_KILLED`） |
 | `gate_id` | 失败的门 |
 | `evidence` | ValidationReport / Run 引用 |
 | `lessons` | 人工或自动总结（可检索，供 Research Memory 使用） |
 
-Failure Registry 是**追加式**的；它本身是研究资产（见 research/failure-registry.md）。
+### 4.2 退役记录（Retirement Record）
+
+RETIRED 对象写入退役记录，**不写入 Failure Registry**：
+
+| 字段 | 说明 |
+|---|---|
+| `subject_ref` | 对象引用 |
+| `retirement_reason` | 退役原因（被替代、市场结构变化、劣化后重新验证未通过、人工决定…） |
+| `evidence` | 相关 Revalidation 报告 / 监控证据引用 |
+| `active_period` | 曾经 ACTIVE 的时间区间与 `execution_mode` |
+| `lessons` | 可检索的总结 |
+| `recorded_at` | UTC |
+
+两类记录都是**追加式**的，都属于 Research Memory 的可检索内容（见 research/failure-registry.md）。

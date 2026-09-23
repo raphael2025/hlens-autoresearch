@@ -2,13 +2,13 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（等待 Raphael 批准 D-05） |
-| 日期 | 2026-09-21 |
-| 决策者 | Raphael（C-1、C-2 已于 2026-09-21 决定；整体批准待定） |
+| 状态 | **Accepted**（2026-09-23，Raphael 批准 D-05）；取代 ADR-0002 第 5 条 |
+| 日期 | 起草 2026-09-21；批准 2026-09-23 |
+| 决策者 | Raphael |
 | 起草者 | Claude Code |
 | 相关 Phase | Phase 0（状态机契约） |
 | 影响范围 | Lifecycle / Contract |
-| 是否破坏兼容 | 是：Accepted 后取代 07-validation.md §3 的旧草案（ADR-0002 第 5 条） |
+| 是否破坏兼容 | 是：取代 07-validation.md §3 的旧草案（ADR-0002 第 5 条） |
 
 ## 背景
 
@@ -34,7 +34,7 @@ IDEA → CANDIDATE → VALIDATION → OOS → PAPER → PRODUCTION_CANDIDATE →
 | **C-1** | 选 **B**：PAPER 在 PRODUCTION_CANDIDATE **之前**。PRODUCTION_CANDIDATE = 已通过研究验证**且**已成功完成要求的 Paper Trading，可以进入生产部署审查，但尚未进入生产。**不得**解释为"纸面交易的候选"。 |
 | **C-2** | 选 **A（原选项 X）**：PAPER = 单策略的独立观察与模拟验证；ACTIVE = 被策略组合 / Router 正式启用，并带 `execution_mode = SIMULATED \| LIVE`。**不设独立的 LIVE 生命周期状态。** |
 
-## 提议的状态机
+## 状态机
 
 ```mermaid
 stateDiagram-v2
@@ -77,7 +77,7 @@ stateDiagram-v2
 | ACTIVE | 被策略组合 / Router 正式启用；带 `execution_mode` |
 | DEGRADED | 监控阈值被突破；等待重新验证 |
 | REVALIDATION | 正在重新验证（ADR-0005 §6） |
-| RETIRED | 正常退役：曾经有效，现在不再使用 |
+| RETIRED | 正常退役：曾经有效，现在不再使用（进入退役记录，**不进入 Failure Registry**） |
 | REJECTED | 验证未通过或被否决（Failure Registry） |
 | FAILED | 技术失败：运行错误 / 不可复现（Failure Registry） |
 
@@ -97,17 +97,16 @@ stateDiagram-v2
 3. REJECTED、FAILED、RETIRED 是终态。重试 = 新版本的新 CANDIDATE；旧记录保留，并计入尝试次数。
 4. **只追加、可审计**：每次转移追加一条记录（from、to、时间、触发者、证据引用、批准人），永不修改或删除。
 5. **Phase 13 之前禁止真实生产交易**：此前 ACTIVE 只能是 `execution_mode = SIMULATED`。
-6. 需要人工批准的转移（草案）：进入 PAPER、PRODUCTION_CANDIDATE → ACTIVE（生产部署审查）、REVALIDATION → ACTIVE、任何状态 → RETIRED。
+6. 需要人工批准的转移（本次批准生效；具体调整见 Q-4）：进入 PAPER、PRODUCTION_CANDIDATE → ACTIVE（生产部署审查）、REVALIDATION → ACTIVE、任何状态 → RETIRED。
 
-## 需要 Raphael 决定
+## 仍未决定的细节（不在本次批准范围内）
 
 | ID | 问题 |
 |---|---|
-| **D-05** | 是否批准本 ADR |
 | Q-4 | §3 第 6 条的人工批准点是否合适（特别是 OOS → PAPER 是否需要人工批准） |
 | Q-5 | ACTIVE → RETIRED、PAPER → RETIRED 是否允许人工直接执行（草案：允许，需记录原因） |
 | Q-6 | 劣化监控阈值、Paper Trading 验收标准与观察期长度：放入 Validation Profile（见 D-09 提案），还是单独定义 |
 
 ## 后果
 
-- Accepted 后：同步 `docs/architecture/07-validation.md` §4 与 `docs/research/failure-registry.md`（RETIRED 不再进入 Failure Registry），并在 ADR-0002 标注第 5 条已被取代。
+- 已于批准时同步：`docs/architecture/07-validation.md` §3 / §4、`docs/research/failure-registry.md`（RETIRED 不进入 Failure Registry），并在 ADR-0002 标注第 5 条被取代。
