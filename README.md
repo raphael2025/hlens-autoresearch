@@ -70,4 +70,15 @@ hlens-autoresearch/
 ## 开发环境
 
 - Python 3.13，由 [uv](https://docs.astral.sh/uv/) 管理，与系统 Python 隔离（[ADR-0003](docs/adr/0003-python-version-and-uv.md)）。
-- 依赖尚未声明；将在 Phase 0 开启后加入 `pyproject.toml`。
+- 依赖保持最小：`pydantic`（契约）+ `pytest` / `ruff` / `mypy`（工程基线）。
+
+```bash
+uv sync                                   # 创建 .venv 并安装依赖
+uv run pytest                             # 测试
+uv run ruff check . && uv run ruff format --check .   # lint
+uv run mypy                               # 类型检查
+uv run python -m core.contracts.registry  # 重新导出 schemas/
+```
+
+`schemas/` 中的 JSON Schema 由契约生成并随仓库提交：契约变更必须在 diff 中可见，
+`tests/test_contracts.py` 会检查两者是否一致。

@@ -47,6 +47,7 @@
       "description": "可版本化对象的类型（02-domain.md §1）。",
       "enum": [
         "dataset",
+        "representation",
         "feature",
         "state",
         "event",

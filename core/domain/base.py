@@ -47,6 +47,7 @@ class Kind(StrEnum):
     """可版本化对象的类型（02-domain.md §1）。"""
 
     DATASET = "dataset"
+    REPRESENTATION = "representation"
     FEATURE = "feature"
     STATE = "state"
     EVENT = "event"

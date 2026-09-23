@@ -19,6 +19,7 @@ __all__ = [
     "Instrument",
     "InstrumentType",
     "OutcomeSpec",
+    "RepresentationSpec",
     "RiskPolicy",
     "StateSpec",
     "StrategySpec",
@@ -68,6 +69,26 @@ class DatasetRef(Contract):
     def _ordered_range(self) -> DatasetRef:
         if self.time_range_end < self.time_range_start:
             raise ValueError("time_range_end 不得早于 time_range_start")
+        return self
+
+
+class RepresentationSpec(VersionedSpec):
+    """原始数据到研究可用形式的变换（bar、tick 聚合、订单簿快照、成交量钟…）。
+
+    必须声明自身的时间语义：`event_time` 的取值方式与可用延迟。
+    """
+
+    kind: Kind = Kind.REPRESENTATION
+    method: str = Field(min_length=1)
+    inputs: tuple[DatasetRef, ...] = Field(min_length=1)
+    params: dict[str, str | int | float | bool] = Field(default_factory=dict)
+    event_time_semantics: str = Field(min_length=1)
+    available_lag: timedelta = timedelta(0)
+
+    @model_validator(mode="after")
+    def _non_negative_lag(self) -> RepresentationSpec:
+        if self.available_lag < timedelta(0):
+            raise ValueError("available_lag 不得为负（会构成未来函数）")
         return self
 
 

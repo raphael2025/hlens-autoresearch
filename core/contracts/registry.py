@@ -43,6 +43,7 @@ from core.domain.specs import (
     FeatureSpec,
     Instrument,
     OutcomeSpec,
+    RepresentationSpec,
     RiskPolicy,
     StateSpec,
     StrategySpec,
@@ -67,6 +68,7 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     Instrument,
     DatasetRef,
     # 研究对象规格
+    RepresentationSpec,
     FeatureSpec,
     StateSpec,
     EventSpec,

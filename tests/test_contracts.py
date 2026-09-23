@@ -147,3 +147,31 @@ def test_committed_schemas_match_contracts(tmp_path: Path) -> None:
         expected = json.loads(path.read_text(encoding="utf-8"))
         actual = json.loads((repo_schemas / f"{name}.schema.json").read_text(encoding="utf-8"))
         assert actual == expected, f"{name} 的 Schema 已过期，请重新导出"
+
+
+def test_documented_core_entities_all_have_contracts() -> None:
+    """02-domain.md §2 列出的核心实体都必须有契约（Phase 0 验收标准）。"""
+    from core.contracts.registry import CONTRACT_MODELS
+
+    names = {model.__name__ for model in CONTRACT_MODELS}
+    documented_to_contract = {
+        "Instrument": "Instrument",
+        "Dataset": "DatasetRef",
+        "Representation": "RepresentationSpec",
+        "FeatureSpec": "FeatureSpec",
+        "StateSpec": "StateSpec",
+        "EventSpec": "EventSpec",
+        "OutcomeSpec": "OutcomeSpec",
+        "KnowledgeItem": "KnowledgeItem",
+        "Hypothesis": "Hypothesis",
+        "StrategySpec": "StrategySpec",
+        "RiskPolicy": "RiskPolicy",
+        "ExperimentSpec": "ExperimentSpec",
+        "ExperimentRun": "ExperimentRun",
+        "ValidationReport": "ValidationReport",
+        # LifecycleRecord 由 LifecycleHistory + LifecycleTransition 表达
+        "LifecycleRecord": "LifecycleHistory",
+        "FailureRecord": "FailureRecord",
+    }
+    missing = {doc: impl for doc, impl in documented_to_contract.items() if impl not in names}
+    assert not missing, f"以下文档实体缺少契约：{missing}"

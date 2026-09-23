@@ -1,5 +1,48 @@
 {
   "$defs": {
+    "DatasetRef": {
+      "additionalProperties": false,
+      "description": "某个 Zone 的不可变数据快照引用（03-data.md §3）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "zone": {
+          "$ref": "#/$defs/Zone"
+        },
+        "table": {
+          "title": "Table",
+          "type": "string"
+        },
+        "snapshot_id": {
+          "minLength": 1,
+          "title": "Snapshot Id",
+          "type": "string"
+        },
+        "time_range_start": {
+          "format": "date-time",
+          "title": "Time Range Start",
+          "type": "string"
+        },
+        "time_range_end": {
+          "format": "date-time",
+          "title": "Time Range End",
+          "type": "string"
+        }
+      },
+      "required": [
+        "zone",
+        "table",
+        "snapshot_id",
+        "time_range_start",
+        "time_range_end"
+      ],
+      "title": "DatasetRef",
+      "type": "object"
+    },
     "Kind": {
       "description": "可版本化对象的类型（02-domain.md §1）。",
       "enum": [
@@ -53,10 +96,24 @@
       ],
       "title": "Ref",
       "type": "object"
+    },
+    "Zone": {
+      "description": "数据分层（03-data.md §3）。",
+      "enum": [
+        "raw",
+        "canonical",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "research_dataset"
+      ],
+      "title": "Zone",
+      "type": "string"
     }
   },
   "additionalProperties": false,
-  "description": "仓位、止损、敞口、杠杆等约束；独立于策略版本化。",
+  "description": "原始数据到研究可用形式的变换（bar、tick 聚合、订单簿快照、成交量钟…）。\n\n必须声明自身的时间语义：`event_time` 的取值方式与可用延迟。",
   "properties": {
     "schema_version": {
       "default": "1.0.0",
@@ -66,7 +123,7 @@
     },
     "kind": {
       "$ref": "#/$defs/Kind",
-      "default": "risk"
+      "default": "representation"
     },
     "name": {
       "pattern": "^[a-z][a-z0-9_]*$",
@@ -91,12 +148,17 @@
       "title": "Lineage",
       "type": "array"
     },
-    "rules": {
+    "method": {
+      "minLength": 1,
+      "title": "Method",
+      "type": "string"
+    },
+    "inputs": {
       "items": {
-        "type": "string"
+        "$ref": "#/$defs/DatasetRef"
       },
       "minItems": 1,
-      "title": "Rules",
+      "title": "Inputs",
       "type": "array"
     },
     "params": {
@@ -118,13 +180,26 @@
       },
       "title": "Params",
       "type": "object"
+    },
+    "event_time_semantics": {
+      "minLength": 1,
+      "title": "Event Time Semantics",
+      "type": "string"
+    },
+    "available_lag": {
+      "default": "PT0S",
+      "format": "duration",
+      "title": "Available Lag",
+      "type": "string"
     }
   },
   "required": [
     "name",
     "version",
-    "rules"
+    "method",
+    "inputs",
+    "event_time_semantics"
   ],
-  "title": "RiskPolicy",
+  "title": "RepresentationSpec",
   "type": "object"
 }
