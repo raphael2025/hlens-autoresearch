@@ -1,0 +1,138 @@
+{
+  "$defs": {
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "LifecycleState": {
+      "enum": [
+        "IDEA",
+        "CANDIDATE",
+        "VALIDATION",
+        "OOS",
+        "PAPER",
+        "PRODUCTION_CANDIDATE",
+        "ACTIVE",
+        "DEGRADED",
+        "REVALIDATION",
+        "RETIRED",
+        "REJECTED",
+        "FAILED"
+      ],
+      "title": "LifecycleState",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次生命周期转移记录：只追加，永不修改（ADR-0006 §3 第 4 条）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject": {
+      "$ref": "#/$defs/Ref"
+    },
+    "from_state": {
+      "$ref": "#/$defs/LifecycleState"
+    },
+    "to_state": {
+      "$ref": "#/$defs/LifecycleState"
+    },
+    "reason": {
+      "minLength": 1,
+      "title": "Reason",
+      "type": "string"
+    },
+    "evidence": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Evidence",
+      "type": "array"
+    },
+    "triggered_by": {
+      "minLength": 1,
+      "title": "Triggered By",
+      "type": "string"
+    },
+    "approved_by": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Approved By"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject",
+    "from_state",
+    "to_state",
+    "reason",
+    "triggered_by"
+  ],
+  "title": "LifecycleTransition",
+  "type": "object"
+}

@@ -1,0 +1,40 @@
+{
+  "additionalProperties": false,
+  "description": "选择输入：标的、周期、预登记的研究类别。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "venue": {
+      "minLength": 1,
+      "title": "Venue",
+      "type": "string"
+    },
+    "symbol": {
+      "minLength": 1,
+      "title": "Symbol",
+      "type": "string"
+    },
+    "timeframe": {
+      "minLength": 1,
+      "title": "Timeframe",
+      "type": "string"
+    },
+    "research_class": {
+      "minLength": 1,
+      "title": "Research Class",
+      "type": "string"
+    }
+  },
+  "required": [
+    "venue",
+    "symbol",
+    "timeframe",
+    "research_class"
+  ],
+  "title": "ProfileSelectionKey",
+  "type": "object"
+}

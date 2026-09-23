@@ -1,0 +1,224 @@
+{
+  "$defs": {
+    "AuthorizationRecord": {
+      "additionalProperties": false,
+      "description": "实盘授权记录（ADR-0006 §2）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "authorized_by": {
+          "minLength": 1,
+          "title": "Authorized By",
+          "type": "string"
+        },
+        "risk_budget": {
+          "minLength": 1,
+          "title": "Risk Budget",
+          "type": "string"
+        },
+        "valid_until": {
+          "format": "date-time",
+          "title": "Valid Until",
+          "type": "string"
+        },
+        "authorized_at": {
+          "format": "date-time",
+          "title": "Authorized At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "authorized_by",
+        "risk_budget",
+        "valid_until"
+      ],
+      "title": "AuthorizationRecord",
+      "type": "object"
+    },
+    "ExecutionMode": {
+      "description": "ACTIVE 的属性，不是生命周期状态（ADR-0006 §2）。",
+      "enum": [
+        "SIMULATED",
+        "LIVE"
+      ],
+      "title": "ExecutionMode",
+      "type": "string"
+    },
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "LifecycleState": {
+      "enum": [
+        "IDEA",
+        "CANDIDATE",
+        "VALIDATION",
+        "OOS",
+        "PAPER",
+        "PRODUCTION_CANDIDATE",
+        "ACTIVE",
+        "DEGRADED",
+        "REVALIDATION",
+        "RETIRED",
+        "REJECTED",
+        "FAILED"
+      ],
+      "title": "LifecycleState",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    },
+    "RiskGateRecord": {
+      "additionalProperties": false,
+      "description": "实盘前的独立 Risk Gate 检查（与 RiskProvider 分离）。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "gate_id": {
+          "minLength": 1,
+          "title": "Gate Id",
+          "type": "string"
+        },
+        "passed": {
+          "title": "Passed",
+          "type": "boolean"
+        },
+        "limits": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "title": "Limits",
+          "type": "object"
+        },
+        "checked_at": {
+          "format": "date-time",
+          "title": "Checked At",
+          "type": "string"
+        }
+      },
+      "required": [
+        "gate_id",
+        "passed"
+      ],
+      "title": "RiskGateRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "`execution_mode` 变更的独立审计事件。\n\n切到 LIVE 需要：对象处于 ACTIVE、通过 Risk Gate、有授权记录，且运行环境已开放实盘\n（Phase 13 之前 `live_execution_enabled` 为 False）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "subject": {
+      "$ref": "#/$defs/Ref"
+    },
+    "state": {
+      "$ref": "#/$defs/LifecycleState"
+    },
+    "from_mode": {
+      "$ref": "#/$defs/ExecutionMode"
+    },
+    "to_mode": {
+      "$ref": "#/$defs/ExecutionMode"
+    },
+    "risk_gate": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/RiskGateRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "authorization": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/AuthorizationRecord"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "live_execution_enabled": {
+      "default": false,
+      "title": "Live Execution Enabled",
+      "type": "boolean"
+    },
+    "occurred_at": {
+      "format": "date-time",
+      "title": "Occurred At",
+      "type": "string"
+    }
+  },
+  "required": [
+    "subject",
+    "state",
+    "from_mode",
+    "to_mode"
+  ],
+  "title": "ExecutionModeChange",
+  "type": "object"
+}

@@ -1,0 +1,221 @@
+{
+  "$defs": {
+    "Instrument": {
+      "additionalProperties": false,
+      "description": "可交易标的。跨 venue 的符号必须规范化映射。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "venue": {
+          "title": "Venue",
+          "type": "string"
+        },
+        "symbol": {
+          "title": "Symbol",
+          "type": "string"
+        },
+        "instrument_type": {
+          "$ref": "#/$defs/InstrumentType"
+        },
+        "base": {
+          "title": "Base",
+          "type": "string"
+        },
+        "quote": {
+          "title": "Quote",
+          "type": "string"
+        }
+      },
+      "required": [
+        "venue",
+        "symbol",
+        "instrument_type",
+        "base",
+        "quote"
+      ],
+      "title": "Instrument",
+      "type": "object"
+    },
+    "InstrumentType": {
+      "enum": [
+        "spot",
+        "perpetual",
+        "future",
+        "option"
+      ],
+      "title": "InstrumentType",
+      "type": "string"
+    },
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "1.0.0",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "信号 → 目标仓位的声明式规格。\n\n参数空间必须声明，用于多重检验的尝试次数计算（Constitution C-T1）。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "kind": {
+      "$ref": "#/$defs/Kind",
+      "default": "strategy"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Version",
+      "type": "string"
+    },
+    "created_at": {
+      "format": "date-time",
+      "title": "Created At",
+      "type": "string"
+    },
+    "lineage": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Ref"
+      },
+      "title": "Lineage",
+      "type": "array"
+    },
+    "signals": {
+      "items": {
+        "$ref": "#/$defs/Ref"
+      },
+      "minItems": 1,
+      "title": "Signals",
+      "type": "array"
+    },
+    "params": {
+      "additionalProperties": {
+        "anyOf": [
+          {
+            "type": "string"
+          },
+          {
+            "type": "integer"
+          },
+          {
+            "type": "number"
+          },
+          {
+            "type": "boolean"
+          }
+        ]
+      },
+      "title": "Params",
+      "type": "object"
+    },
+    "param_search_space": {
+      "additionalProperties": {
+        "items": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "number"
+            },
+            {
+              "type": "boolean"
+            }
+          ]
+        },
+        "type": "array"
+      },
+      "title": "Param Search Space",
+      "type": "object"
+    },
+    "risk_policy": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/Ref"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "applicable_instruments": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Instrument"
+      },
+      "title": "Applicable Instruments",
+      "type": "array"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "signals"
+  ],
+  "title": "StrategySpec",
+  "type": "object"
+}

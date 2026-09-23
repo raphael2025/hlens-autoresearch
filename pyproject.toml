@@ -1,6 +1,5 @@
-# Architecture Bootstrap placeholder.
-# 仅包含项目元数据；刻意不声明依赖、构建后端或工具配置。
-# Python 版本由 ADR-0003 固定（3.13 + uv）；依赖将在 Phase 0 开启后填写。
+# Python 版本由 ADR-0003 固定（3.13 + uv），与系统 Python 隔离。
+# 依赖保持最小：契约（pydantic）+ 工程基线（pytest / ruff / mypy）。
 
 [project]
 name = "hlens-autoresearch"
@@ -8,4 +7,32 @@ version = "0.0.0"
 description = "Modular, pluggable, verifiable automated research infrastructure for crypto markets."
 readme = "README.md"
 requires-python = "==3.13.*"
-dependencies = []
+dependencies = [
+    "pydantic>=2.9",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.3",
+    "ruff>=0.7",
+    "mypy>=1.13",
+]
+
+[tool.uv]
+package = false
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+files = ["core", "tests"]

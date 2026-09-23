@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "固定数据快照上的参考信号 / 仓位序列，用于 Equivalence Gate。",
+  "properties": {
+    "schema_version": {
+      "default": "1.0.0",
+      "pattern": "^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "dataset_snapshot_id": {
+      "minLength": 1,
+      "title": "Dataset Snapshot Id",
+      "type": "string"
+    },
+    "signals_uri": {
+      "minLength": 1,
+      "title": "Signals Uri",
+      "type": "string"
+    },
+    "signals_hash": {
+      "minLength": 1,
+      "title": "Signals Hash",
+      "type": "string"
+    },
+    "positions_uri": {
+      "minLength": 1,
+      "title": "Positions Uri",
+      "type": "string"
+    },
+    "positions_hash": {
+      "minLength": 1,
+      "title": "Positions Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "dataset_snapshot_id",
+    "signals_uri",
+    "signals_hash",
+    "positions_uri",
+    "positions_hash"
+  ],
+  "title": "GoldenOutputs",
+  "type": "object"
+}

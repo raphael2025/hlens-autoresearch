@@ -8,18 +8,18 @@
 | 项 | 值 |
 |---|---|
 | 项目版本 | 0.0.0 |
-| 当前 Phase | Phase 0 之前（Architecture Bootstrap 已完成） |
-| 当前子阶段 | Phase 0 全部前置决策已完成，等待安装授权与开启指令 |
-| 总体状态 | 🔄 准备开启 Phase 0 |
+| 当前 Phase | **Phase 0 — Research Constitution**（进行中） |
+| 当前子阶段 | 契约与状态机实现、测试 |
+| 总体状态 | 🔄 进行中 |
 | 最后更新时间 | 2026-09-23 |
 
-Phase 0 的架构决策已全部完成；只差授权安装 Python 3.13 和你的一句"开启 Phase 0"。
+Phase 0 已开启：环境、契约、状态机、测试正在实现中。
 
 ## 2. 当前进度
 
 | Phase | 名称 | 状态 |
 |---|---|---|
-| 0 | Research Constitution | ⚠️ 等待决策 |
+| 0 | Research Constitution | 🔄 进行中 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
 | 1 | Market Representation | ⏸️ 未开始 |
 | 2 | Market State Engine | ⏸️ 未开始 |
