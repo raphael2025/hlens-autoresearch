@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Architecture Bootstrap（Phase 0 之前）** |
+| 当前 Phase | **Phase 0（进行中；修复方案待批准，见 PROJECT_STATUS.md）** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）

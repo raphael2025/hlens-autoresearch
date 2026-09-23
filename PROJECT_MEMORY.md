@@ -11,7 +11,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：Phase 0（Research Constitution）实现完成，待宪法批准
+- 当前阶段：Phase 0（Research Constitution）；已有实现，独立审查发现关闭阻塞，修复方案待批准
 
 ## 2. Current Architecture
 
@@ -36,11 +36,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 4. Current Phase
 
-- Current Phase：Phase 0 之前（Architecture Bootstrap 完成）
-- Current Subphase：Phase 0 决策处理中
-- Current Objective：完成 Phase 0（契约 / 状态机已实现；宪法待批准为 1.0.0）
-- Current Blocker：Constitution 1.0.0 待 Raphael 批准（Phase 0 唯一未满足的验收标准）
-- Next Milestone：Constitution 获批 → Phase 0 关闭 → Phase 0.5 / Phase 1
+- Current Phase：Phase 0（进行中）
+- Current Subphase：Opus 已完成两轮复核；ADR-0008 / 0009 为 Proposed，待 Raphael 批准
+- Current Objective：解决 Phase 0 关闭阻塞，再进行宪法批准与关闭复审
+- Current Blocker：基础契约完整性问题；ADR-0008 / 0009 待批准与实施；Constitution 1.0.0 仍待 Raphael 批准
+- Next Milestone：修复方案获批 → 实施与复审 → Constitution 获批 → Phase 0 关闭
 
 ## 5. Active Decisions
 
@@ -67,6 +67,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 不修改旧项目与外部数据
 - Claude 不替 Raphael 做架构决策
 - Git：main 为稳定基线，实现工作走 `phase/*` 分支，合并进 main 需 Raphael 批准；无远程仓库（细节见 CLAUDE.md §10）
+- Raphael 于 2026-09-23 指定：Codex 只负责控制 Claude Code、审查与文档；编码和测试实现交给 WSL Claude Code 的 Opus 模型，架构决定仍由 Raphael 批准。
 
 ## 7. Current Known Risks
 

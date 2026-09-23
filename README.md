@@ -2,7 +2,7 @@
 
 > 一个长期演化的、模块化、可插拔、可验证的**加密市场自动化研究基础设施**。
 
-**当前阶段：Architecture Bootstrap（架构准备）** — 仓库只包含目录规划与文档，**没有任何业务实现**。
+**当前阶段：Phase 0（Research Constitution）** — 已有领域契约、状态机、Schema 与测试；独立审查后的修复方案正在准备，Phase 0 尚未关闭。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
 
 ## 它是什么 / 不是什么
 
@@ -49,7 +49,7 @@ flowchart LR
 
 ```
 hlens-autoresearch/
-├── docs/            架构、研究、ADR 文档（当前唯一有实质内容的部分）
+├── docs/            架构、研究、ADR 与审查文档
 ├── apps/            Application Plane：api / worker / web
 ├── core/            Domain 模型、Contracts、Lifecycle、Errors（冻结层）
 ├── research/        Research Plane：features / states / events / outcomes / hypotheses / experiments / validation

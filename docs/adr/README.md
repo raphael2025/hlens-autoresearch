@@ -13,6 +13,8 @@
 | [0005](0005-research-production-boundary.md) | Research / Production Boundary（D-03） | Accepted（2026-09-23） |
 | [0006](0006-strategy-lifecycle.md) | Strategy Lifecycle v2（D-05） | Accepted（2026-09-23）；取代 ADR-0002 第 5 条 |
 | [0007](0007-validation-architecture-three-layers.md) | 三层验证架构与两步冻结（D-09 结构部分） | Accepted（2026-09-23） |
+| [0008](0008-contract-payload-immutability.md) | 契约载荷的只读表示与内容哈希载荷定义 | Proposed（2026-09-23，待 Raphael 批准） |
+| [0009](0009-experiment-identity-binding.md) | 实验规格身份、运行标识与依赖内容绑定 | Proposed（2026-09-23，待 Raphael 批准） |
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -22,14 +24,16 @@
 |---|---|---|---|
 | D-01 | **Iceberg Catalog 选择**。Iceberg 必须有 Catalog；若用 PostgreSQL 作 SQL Catalog，则 Control Plane 与 Data Plane 共享数据库，模糊 P3/P8 边界。另外 Python 生态对 Iceberg 写入（PyIceberg）与 DuckDB 的 Iceberg 写支持成熟度不一。 | (a) PG 独立 database 作 SQL Catalog；(b) REST Catalog（如 Lakekeeper / Polaris）；(c) Phase 1 先用"Parquet + 自有快照清单"，Phase 2 再上 Iceberg | Phase 1 |
 | D-02 | **没有 Docker 时的对象存储**。S3 兼容存储（MinIO）通常以容器运行，但 Docker 未安装且本阶段禁止安装。 | (a) Phase 0–1 用本地文件系统作为 StorageAdapter；(b) 授权安装 Docker 后使用 MinIO；(c) 使用 MinIO 单二进制（非容器） | Phase 1 |
-| D-03 | ✅ **已决定（ADR-0005）** 代码位置歧义。Feature/State/Event 实现放 `research/<kind>/` 还是 `plugins/`？`strategies/`、`risk/` 是研究代码还是生产代码？这直接关系 H5（研究代码不得直接变成生产代码）。 | (a) `research/*` = 探索期插件，`plugins/` = 基础设施/引擎类插件，`strategies/`、`risk/` = 仅晋升后重新实现的代码；(b) 所有 Provider 实现统一放 `plugins/`，`research/` 只放实验编排与 notebook | → ADR-0005 Proposed |
+| D-03 | ✅ **已决定（ADR-0005）** 研究 / 生产边界。相关实现选择 Q-1/Q-2/Q-7 仍按 ADR 保持开放。 | 见 ADR-0005 | → ADR-0005 Accepted |
 | D-04 | **Validation 时序冲突**。Phase 8 才是 Validation & Robustness，但 Phase 5–7 已产生实验与晋升判断。 | (a) 最小验证门在 Phase 4 交付，Phase 8 做扩展（当前 roadmap 采用此解释）；(b) 把 Phase 8 前移到 Phase 5 之前 | Phase 4 |
-| D-05 | ✅ **已决定（ADR-0006）** Lifecycle 细节。VALIDATION 与 OOS 是否为两个状态；DEGRADED 能否回到 ACTIVE；RETIRED 是否进入 Failure Registry；REJECTED 与 FAILED 的区分；ACTIVE 在 Phase 10–12 表示"纸面"还是"实盘"。 | 见 07-validation.md §3 草案 | → ADR-0006 Proposed |
+| D-05 | ✅ **已决定（ADR-0006）** Lifecycle 细节；Q-4～Q-6 按 ADR 保持开放，现有已接受规则继续适用。 | 见 ADR-0006 与 07-validation.md §3 | → ADR-0006 Accepted |
 | D-06 | **Python 版本**。系统 Python 为 3.14.4；部分科学计算 / 数据库驱动 / PyIceberg 等对最新版本支持可能滞后。 | (a) 用 uv 固定 3.12 或 3.13 的项目内解释器；(b) 直接使用 3.14 | ✅ 已决定 → ADR-0003 |
 | D-07 | **Git 仓库**。项目目录尚未 `git init`（本阶段未授权）；复现元组依赖 commit SHA。另需决定远程托管位置。 | 授权后 `git init`（不修改全局 Git 配置） | ✅ 已决定 → ADR-0004 |
 | D-08 | **市场与执行范围**。覆盖哪些交易所 / 标的 / 频率（现货、永续、期权、链上）？Phase 13 是否包含实盘，由谁授权，风险预算上限？ | 需用户定义 | Phase 1 / 13 |
 | D-09 | **Constitution 数值**。TBD-1 至 TBD-5。结构部分（H-1、H-2）已定 → ADR-0007 Accepted；**数值仍未批准**，将在 Phase 4 校准后按 Profile 版本冻结。 | 需用户批准 | → 提案 `docs/research/proposals/d09-validation-threshold-proposal.md`（未批准） |
 | D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1 |
+| D-11 | **契约只读载荷与哈希边界**。独立审查 R01/R09；下一次未发布的 2.0.0 与旧版本只读兼容。 | ADR-0008 方案 A / 要求修改 / 暂缓 | Phase 0；Proposed，待批准 |
+| D-12 | **实验身份与复现绑定**。独立审查 R02/R05；种子、运行标识和直接依赖内容覆盖。 | ADR-0009 方案 A / 要求修改 / 暂缓 | Phase 0；Proposed，待批准 |
 
 ## 冲突记录
 
