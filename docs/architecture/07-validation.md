@@ -5,7 +5,8 @@
 ## 1. 原则
 
 - 验证是确定性程序，不是 LLM 判断，也不是人工目测。
-- 验证规则由 Constitution 版本控制；报告绑定版本。
+- 验证规则分三层（[ADR-0007](../adr/0007-validation-architecture-three-layers.md)，Proposed）：**Constitution** = 不可变原则；**Validation Profile** = 版本化的阈值与参数；**Experiment Metadata** = 每个实验实际使用的 Profile 版本与配置。
+- 报告绑定 Constitution 版本与 Profile 版本；实验永久保留它使用的 Profile 版本。
 - 禁止为了提高回测结果而修改 Constitution（H3 / P14）。Constitution 的修改只能前向生效，不能用于重新评估已失败的对象使其通过。
 
 ## 2. Validation Pipeline（D9）

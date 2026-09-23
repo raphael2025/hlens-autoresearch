@@ -37,8 +37,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Current Phase：Phase 0 之前（Architecture Bootstrap 完成）
 - Current Subphase：Phase 0 决策处理中
-- Current Objective：决定 D-09（验证门槛结构），然后开启 Phase 0
-- Current Blocker：D-09 提案待审；Python 3.13 未授权安装
+- Current Objective：批准 ADR-0007（宪法重组），然后开启 Phase 0
+- Current Blocker：ADR-0007 待批准；Python 3.13 未授权安装
 - Next Milestone：Raphael 说"开启 Phase 0"
 
 ## 5. Active Decisions
@@ -51,7 +51,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - D-05：生命周期 v2 → ADR-0006 **Accepted**，取代 ADR-0002 第 5 条；RETIRED 进退役记录，REJECTED / FAILED 进 Failure Registry
 - C-1（已定）：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；PRODUCTION_CANDIDATE = 已通过研究验证 + Paper Trading，待生产部署审查
 - C-2（已定）：PAPER = 单策略独立观察；ACTIVE = 组合 / Router 正式启用，带 execution_mode SIMULATED|LIVE（Phase 13 前仅 SIMULATED）；不设 LIVE 状态
-- D-09：阈值提案（Constitution + Validation Profile + Experiment Metadata 三层）→ `docs/research/proposals/d09-validation-threshold-proposal.md`，**未批准**
+- D-09 结构（H-1、H-2 已接受）：三层 = Constitution（不可变原则）/ Validation Profile（版本化阈值，被实验使用后不可变）/ Experiment Metadata（每个实验的 Profile 版本与配置）；两步冻结 = Phase 0 冻结原则与架构、Phase 4 校准后冻结初始 Profile 参数 → ADR-0007 **Proposed**
+- D-09 数值（TBD-1 ~ TBD-5）：**未批准**；Constitution 中不得出现数值阈值；提案见 `docs/research/proposals/d09-validation-threshold-proposal.md`
 
 ## 6. Active Constraints
 

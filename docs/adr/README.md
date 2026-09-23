@@ -12,6 +12,7 @@
 | [0004](0004-git-repository-baseline.md) | 本地 Git 仓库与 Bootstrap Baseline（D-07） | Accepted |
 | [0005](0005-research-production-boundary.md) | Research / Production Boundary（D-03） | Accepted（2026-09-23） |
 | [0006](0006-strategy-lifecycle.md) | Strategy Lifecycle v2（D-05） | Accepted（2026-09-23）；取代 ADR-0002 第 5 条 |
+| [0007](0007-validation-architecture-three-layers.md) | 三层验证架构与两步冻结（D-09 结构部分） | **Proposed** |
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -27,7 +28,7 @@
 | D-06 | **Python 版本**。系统 Python 为 3.14.4；部分科学计算 / 数据库驱动 / PyIceberg 等对最新版本支持可能滞后。 | (a) 用 uv 固定 3.12 或 3.13 的项目内解释器；(b) 直接使用 3.14 | ✅ 已决定 → ADR-0003 |
 | D-07 | **Git 仓库**。项目目录尚未 `git init`（本阶段未授权）；复现元组依赖 commit SHA。另需决定远程托管位置。 | 授权后 `git init`（不修改全局 Git 配置） | ✅ 已决定 → ADR-0004 |
 | D-08 | **市场与执行范围**。覆盖哪些交易所 / 标的 / 频率（现货、永续、期权、链上）？Phase 13 是否包含实盘，由谁授权，风险预算上限？ | 需用户定义 | Phase 1 / 13 |
-| D-09 | **Constitution 数值**。TBD-1 至 TBD-5（OOS 长度、最小样本、基准、参数稳定性、成本压力）。 | 需用户批准 | → 提案 `docs/research/proposals/d09-validation-threshold-proposal.md`（未批准） |
+| D-09 | **Constitution 数值**。TBD-1 至 TBD-5。结构部分（H-1、H-2）已接受 → ADR-0007（Proposed）；**数值仍未批准**，将在 Phase 4 校准后按 Profile 版本冻结。 | 需用户批准 | → 提案 `docs/research/proposals/d09-validation-threshold-proposal.md`（未批准） |
 | D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1 |
 
 ## 冲突记录

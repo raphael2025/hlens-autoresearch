@@ -39,11 +39,11 @@ flowchart TD
 ## Phase 0 — Research Constitution
 
 - **目标**：确立研究宪法、领域契约、项目工程基线，使后续一切实验有可裁判的规则。
-- **输入**：本架构文档集；用户对待决事项的决定；Constitution TBD 数值。
-- **输出**：批准的 Constitution v1.0.0；`core/domain` 与 `core/contracts` 的契约代码（Pydantic + JSON Schema 导出）；Lifecycle 状态机代码；错误分类；工程基线（Python 版本、依赖管理、lint/type/test）；ADR 0003+。
+- **输入**：本架构文档集；用户对待决事项的决定；D-09 的结构决定（H-1 三层结构、H-2 两步冻结）。
+- **输出**：批准的 Constitution v1.0.0（纯原则，数值由 Validation Profile 定义，见 H-1 / H-2 与 ADR-0007）；验证架构契约（Validation Profile 字段、Profile 选择规则、Experiment Metadata 字段）；`core/domain` 与 `core/contracts` 的契约代码（Pydantic + JSON Schema 导出）；Lifecycle 状态机代码；错误分类；工程基线（Python 版本、依赖管理、lint/type/test）；ADR 0003+。
 - **模块**：`core/*`、`docs/research/constitution.md`、`tests/`。
 - **依赖**：无（起点）。
-- **验收标准**：Constitution 状态为 Approved；所有核心实体有契约与 Schema 导出；状态机只允许定义的转移（测试覆盖）；契约层无基础设施依赖（导入检查测试）；CI/本地测试命令可运行。
+- **验收标准**：Constitution 状态为 Approved **且不含任何数值阈值**（数值属于 Validation Profile）；Validation Profile 与 Experiment Metadata 的契约已定义；所有核心实体有契约与 Schema 导出；状态机只允许定义的转移（测试覆盖）；契约层无基础设施依赖（导入检查测试）；CI/本地测试命令可运行。
 - **禁止事项**：实现任何 Feature/Strategy/Backtest；接入真实数据；引入 LLM。
 - **可能的失败模式**：契约过度设计导致后续僵化；阈值拍脑袋；契约泄漏具体技术类型；把讨论无限延长而不冻结。
 
@@ -95,11 +95,11 @@ flowchart TD
 
 - **目标**：为事件/信号计算标准化结果标签，建立最小验证门。
 - **输入**：Canonical、Event。
-- **输出**：OutcomeSpec + OutcomeProvider；Outcome 表；**最小 Validation Pipeline（G0–G3 + Sealed OOS）**；成本模型 v1。
+- **输出**：OutcomeSpec + OutcomeProvider；Outcome 表；**最小 Validation Pipeline（G0–G3 + Sealed OOS）**；成本模型 v1；**空模型校准报告与冻结的初始 Validation Profile 参数（两步冻结的 Step 2，必须在 Phase 5 之前完成）**。
 - **模块**：`research/outcomes/`、`research/validation/`。
 - **依赖**：P1、P3。
 - **验收标准**：Outcome 不能被作为输入（契约 + 测试保证）；purging/embargo 实现并测试；泄漏检测（打乱测试）可用。
-- **禁止事项**：跳过成本模型；在 Outcome 计算中使用未对齐的时间。
+- **禁止事项**：跳过成本模型；在 Outcome 计算中使用未对齐的时间；把 Phase 4 校准当作修改 Constitution 的许可；用实验结果追溯修改该实验使用的 Profile。
 - **可能的失败模式**：重叠 horizon 造成虚假显著；标签定义隐含未来信息。
 
 ## Phase 5 — Strategy Library
