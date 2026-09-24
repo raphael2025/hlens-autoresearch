@@ -256,22 +256,21 @@ ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 
 
 | Protocol | 方法 | DTO 与契约层不变量 | 首个实现 |
 |---|---|---|---|
-| `StorageAdapter` | `stage(StageRequest, Iterable[bytes]) → StagedObject`；`publish(StagedObject) → PublishResult`；`lookup(str) → ObjectRef \| None`；`open_read(ObjectRef) → BinaryIO` | 逻辑相对 key（ASCII 段、无 `.` / `..` / 空段 / 反斜杠 / scheme / `%` / NUL / 空白，≤ 1024；原始值先校验，不去空白）；`expected_sha256` 必填、`expected_size` 可选；`ObjectRef` = key + 带 scheme 的绝对 URI（authority 无凭据、路径无 `.` / `..`、无查询 / 片段）+ SHA-256 + 字节数；`PublishResult.outcome` ∈ `created` / `already_present` | C1 |
-| `CatalogAdapter[BatchT]` | `load_table(str) → TableInfo \| None`；`create_table(TableDefinition) → TableInfo`；`get_snapshot(str, str) → SnapshotInfo`；`commit_batch(CommitRequest, BatchT) → CommitResult` | 表身份 `namespace.table`（与 snapshot 绑定键同格式）；表定义只是实现侧定义文档的 `id + SemVer + hash` 绑定；`SnapshotInfo` 绑定所属表，父 snapshot 显式可空且不等于自身，batch ID 与指纹成对，`added_rows ≤ total_rows`；`CommitRequest.row_count ≥ 1`、期望父 snapshot 显式可空；`CommitResult` 的 snapshot 必须属于请求的表并携带其 batch ID、指纹与行数，`committed` 时父 snapshot 等于期望；无 `arrival_seq` | C2 / C3 |
-| `CollectorAdapter` | `descriptor → CollectorDescriptor`（只读属性）；`collect(CollectionRequest) → CollectionResult` | 版本化 `SourceBinding`；请求 = 稳定 `request_id` + source + 数据类型 + 非空 symbol 集合（规范排序、区分大小写）+ UTC 半开覆盖区间；结果回显完整请求与 collector 身份，对象只携带 `ObjectRef`，按 symbol 以对象与显式缺口**恰好覆盖**请求区间；来源校验和给出时须等于对象 SHA-256；来源 URI / 元数据中凭据形状的名称被拒绝；只有 descriptor 可声明 HTTPS origin | D0 |
+| `StorageAdapter` | `stage(StageRequest, Iterable[bytes]) → StagedObject`；`publish(StagedObject) → PublishResult`；`lookup(str) → ObjectRef \| None`；`open_read(ObjectRef) → BinaryIO` | 逻辑相对 key（ASCII 段、无 `.` / `..` / 空段 / 反斜杠 / scheme / `%` / NUL / 空白，≤ 1024；原始值先校验，不去空白）；`expected_sha256` 必填、`expected_size` 可选；`ObjectRef` = key + 真正绝对的 URI（`file` 必须是无远程 authority 的 `file:///绝对路径`；其它 scheme 必须有非空主机名 + 合法端口、无凭据；路径为非空对象路径，无空段与 `.` / `..`（含 `%2e`）段；无查询 / 片段）+ SHA-256 + 字节数；`PublishResult.outcome` ∈ `created` / `already_present` | C1 |
+| `CatalogAdapter[BatchT]` | `load_table(str) → TableInfo \| None`；`create_table(TableDefinition) → TableInfo`；`get_snapshot(str, str) → SnapshotInfo`；`commit_batch(CommitRequest, BatchT) → CommitResult` | 表身份 `namespace.table`（与 snapshot 绑定键同格式）；表定义只是实现侧定义文档的 `id + SemVer + hash` 绑定；`SnapshotInfo` 绑定所属表，父 snapshot 显式可空且不等于自身，batch ID 与指纹成对，`added_rows ≤ total_rows`；`CommitRequest.row_count ≥ 1`、期望父 snapshot 显式可空，`batch_fingerprint` 只是待 adapter 独立重算核对的主张；`CommitResult` 的 snapshot 必须属于请求的表并携带其 batch ID、指纹与行数，`committed` 时父 snapshot 等于期望；无 `arrival_seq` | C2 / C3 |
+| `CollectorAdapter` | `descriptor → CollectorDescriptor`（只读属性）；`collect(CollectionRequest) → CollectionResult` | 版本化 `SourceBinding`；请求 = 稳定 `request_id` + source + 数据类型 + 非空 symbol 集合（规范排序、区分大小写）+ UTC 半开覆盖区间；结果回显完整请求与 collector 身份，对象只携带 `ObjectRef`，按 symbol 以对象与显式缺口**恰好覆盖**请求区间；来源校验和给出时须等于对象 SHA-256；来源 URI 只能是 `https://合法主机[:端口]`（路径无 `.` / `..` 段）或无远程 authority、无查询的 `file:///绝对路径`，不得含凭据或片段；来源 URI 查询参数 / 元数据中凭据形状的名称被拒绝；只有 descriptor 可声明 HTTPS origin | D0 |
 
 **调用语义**（staging 不可见、校验失败与流中断不留可见半成品、同内容幂等、异内容 fail closed、不信任自报 `StagedObject`、
-只读 handle；batch 按 `(table, batch_id)` 幂等、指纹冲突与过期父 snapshot 显式失败、重启后重放得到同一 snapshot、
+只读 handle；每次提交与重放都先由 adapter 用其已登记、版本化的规则从实际 batch **独立重算**指纹并核对行数，不符即 `BatchRejected`，调用方自报的指纹不被信任；此后 batch 才按 `(table, batch_id)` 幂等、指纹冲突与过期父 snapshot 显式失败、重启后重放得到同一 snapshot、
 历史 snapshot 元数据不变；collector 结果对象已发布且与引用一致、重放身份稳定、网络来源在声明内、未声明 source 被拒绝）
 写在各模块文档中，由 `tests/contract_suites/` 的 provider-agnostic suite 对具体实现检查；未来实现继承 `*AdapterContract`
 并提供 subject fixture 即可复用。B3 用两个刻意不同的内存 / 临时文件替身证明 suite 接受合规实现，并用只带一处故障的变体
-证明它能杀死路径逃逸、校验和错误、非原子可见、覆盖不同内容、重复 batch 新提交、错误 snapshot、未发布 / 不匹配对象等行为。
+证明它能杀死路径逃逸、校验和错误、非原子可见、覆盖不同内容、重复 batch 新提交、信任自报 batch 指纹（首次提交或重放时内容被换掉）、错误 snapshot、未发布 / 不匹配对象等行为。两个 catalog 替身使用不同的 `BatchT` 与各自的指纹规则，suite 通过 subject 提供的实现专用指纹函数生成请求（这不是 Protocol 方法）。
 替身不是 Adapter 实现，不计入验收 #7 / #8 / #10。
 
 **诚实边界与延期**：DTO 不证明对象 / 表 / snapshot 的存在、字节与哈希一致、发布原子性、网络声明的真实性（声明不是安全
 控制）。`file://` 布局与私有 staging 区隔离（C1）；PyIceberg SQL Catalog、PostgreSQL 集成、并发与重启的真实证据（C2）；
-八张表的列级 Schema、partition spec 与演进、`batch_fingerprint` 是否由内容重算（C3）；按 snapshot 读取数据的 scan 接口
-（随 F 的 PIT 执行器以增量方法交付）；归档下载、端点限制与校验（D0）；解析与 revision 语义（D1 / D2）都不在 B3。
+八张表的列级 Schema、partition spec 与演进，以及真实 PyArrow microbatch 的具体 canonicalization / 指纹规则（C3；"adapter 必须独立重算并核对"这一行为已在 B3 冻结，不是延期义务）；按 snapshot 读取数据的 scan（F 按实际消费者定义**独立的**读取 Protocol / capability，或经相应 major + ADR 变更；不向已发布的 `CatalogAdapter` 追加必需方法，B3 不预先猜测其签名）；归档下载、端点限制与校验（D0）；解析与 revision 语义（D1 / D2）都不在 B3。
 
 ## 3. 契约规则
 
@@ -434,6 +433,11 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 （构造函数、`model_validate` / `model_validate_json`，见 §3.4），JSON Schema 只是面向外部消费者的描述。
 同类的"Schema 可见性弱于运行时"边界还有：时长符号与 `cost_model.kind`（07-validation.md §5.4）、
 以及只由跨字段相等关系约束的 `ExperimentMetadata.declared_research_class`（ADR-0018 §D-26.3）。
+B3 的对象 key、`ObjectRef.uri` 与 `CollectedObject.source_uri` 例外地在去空白**之前**校验原始值（带空白即拒绝，
+不被规范化）；两个 URI 字段的 JSON Schema pattern 只是近似（`file:///…` 或 `scheme://host[:port]/…`；来源 URI 为
+`https://host[:port]…` 或 `file:///…`），不表达的运行时规则有：按 RFC 3986 组件逐项检查、`file` 不得带 authority、
+端口范围与无前导零、每个路径段非空且不是 `.` / `..`（含 `%2e` 编码）、对象 URI 无查询 / 片段、`file` 来源无查询、
+以及来源查询参数名的凭据形状。
 
 ## 4. 目录映射
 

@@ -392,9 +392,12 @@ class MemoryCatalog:
         if request.expected_parent_snapshot_id != current_id:
             raise CommitConflict(f"expected {request.expected_parent_snapshot_id}, is {current_id}")
 
-    def _check_rows(self, request: CommitRequest, batch: tuple[str, ...]) -> None:
+    def _verify_batch(self, request: CommitRequest, batch: tuple[str, ...]) -> None:
+        """独立核对实际 batch：行数与按 `fake.rows@1` 重算的指纹，不信任请求的声明。"""
         if len(batch) != request.row_count:
             raise BatchRejected("row count mismatch")
+        if row_batch_fingerprint(batch) != request.batch_fingerprint:
+            raise BatchRejected("content fingerprint mismatch")
 
     def _parent_id(self, request: CommitRequest, current: SnapshotInfo | None) -> str | None:
         return None if current is None else current.snapshot_id
@@ -403,13 +406,13 @@ class MemoryCatalog:
         table = self._table(request.table)
         if table not in self._state.tables:
             raise TableNotFound(table)
+        self._verify_batch(request, batch)
         replay = self._replay(request, table)
         if replay is not None:
             return replay
         history = self._state.history[table]
         current = history[-1] if history else None
         self._check_parent(request, current)
-        self._check_rows(request, batch)
         self._state.counter += 1
         snapshot = SnapshotInfo(
             table=table,
@@ -428,6 +431,16 @@ class MemoryCatalog:
 
 def make_row_batch(rows: int, tag: str) -> tuple[str, ...]:
     return tuple(f"{tag}:{index}" for index in range(rows))
+
+
+def row_batch_fingerprint(batch: tuple[str, ...]) -> str:
+    """替身 A 的版本化指纹规则 `fake.rows@1`：规则名，再逐行写 8 字节长度前缀 + UTF-8 内容。"""
+    hasher = hashlib.sha256(b"fake.rows@1\x00")
+    for row in batch:
+        data = row.encode("utf-8")
+        hasher.update(len(data).to_bytes(8, "big"))
+        hasher.update(data)
+    return hasher.hexdigest()
 
 
 class JournalCatalog:
@@ -494,6 +507,10 @@ class JournalCatalog:
         entry = data.get(name)
         if entry is None:
             raise TableNotFound(name)
+        if len(batch) != request.row_count:
+            raise BatchRejected("row count mismatch")
+        if int_batch_fingerprint(batch) != request.batch_fingerprint:
+            raise BatchRejected("content fingerprint mismatch")
         snapshots = self._snapshots(entry)
         for snapshot in snapshots:
             if snapshot.batch_id == request.batch_id:
@@ -502,8 +519,6 @@ class JournalCatalog:
                 return CommitResult(
                     request=request, snapshot=snapshot, outcome=CommitOutcome.ALREADY_COMMITTED
                 )
-        if len(batch) != request.row_count:
-            raise BatchRejected("row count mismatch")
         current = snapshots[-1] if snapshots else None
         if request.expected_parent_snapshot_id != (
             None if current is None else current.snapshot_id
@@ -530,6 +545,14 @@ class JournalCatalog:
 def make_int_batch(rows: int, tag: str) -> list[int]:
     seed = int(sha256(tag.encode())[:8], 16)
     return [seed + index for index in range(rows)]
+
+
+def int_batch_fingerprint(batch: list[int]) -> str:
+    """替身 B 的版本化指纹规则 `fake.ints@1`：规则名，再逐个写 8 字节有符号大端整数。"""
+    hasher = hashlib.sha256(b"fake.ints@1\x00")
+    for value in batch:
+        hasher.update(value.to_bytes(8, "big", signed=True))
+    return hasher.hexdigest()
 
 
 # --- 故障变体 --------------------------------------------------------------------------
@@ -566,8 +589,29 @@ class IgnoresParentCatalog(MemoryCatalog):
 
 
 class IgnoresRowCountCatalog(MemoryCatalog):
-    def _check_rows(self, request: CommitRequest, batch: tuple[str, ...]) -> None:
-        return None
+    def _verify_batch(self, request: CommitRequest, batch: tuple[str, ...]) -> None:
+        if row_batch_fingerprint(batch) != request.batch_fingerprint:
+            raise BatchRejected("content fingerprint mismatch")
+
+
+class TrustsDeclaredFingerprintCatalog(MemoryCatalog):
+    """只核对行数，把请求自报的指纹当作事实：内容被换掉也照样提交。"""
+
+    def _verify_batch(self, request: CommitRequest, batch: tuple[str, ...]) -> None:
+        if len(batch) != request.row_count:
+            raise BatchRejected("row count mismatch")
+
+
+class ReplayFastPathCatalog(MemoryCatalog):
+    """首次提交会核对内容，但已提交的 batch_id 走快路径直接返回，不看实际 batch。"""
+
+    def commit_batch(self, request: CommitRequest, batch: tuple[str, ...]) -> CommitResult:
+        table = self._table(request.table)
+        if table in self._state.tables:
+            replay = self._replay(request, table)
+            if replay is not None:
+                return replay
+        return super().commit_batch(request, batch)
 
 
 class RedefiningCatalog(MemoryCatalog):

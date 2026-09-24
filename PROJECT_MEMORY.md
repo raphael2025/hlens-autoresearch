@@ -22,7 +22,8 @@
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
 - current Schema 74 份，与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
-  Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 待复核，无实现；suite 在 `tests/contract_suites/`）
+  Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 R1 返修待复核，无实现；suite 在 `tests/contract_suites/`）；
+  Catalog 必须从实际 batch 独立重算指纹并核对（不信任自报），C3 冻结 PyArrow 的具体指纹规则
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet = 真实来源；DuckDB / Polars 只是计算引擎；
   Phase 1 起：Iceberg Catalog 用独立 PostgreSQL 库、warehouse 为本地 `file://`、Phase 1 ~ 6 无 NATS（ADR-0021）
@@ -42,7 +43,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）本地已提交、待 Codex 复核；B1 / B2 已由 Codex 复核通过
+- Current Subphase：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）首轮复核退回，R1 返修本地已提交、待 Codex 复核；B1 / B2 已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - 当前唯一获批批次：**Claude B3**（三个 Data Plane Adapter 的 Protocol / DTO / Schema / contract tests）；C1 及以后未开放

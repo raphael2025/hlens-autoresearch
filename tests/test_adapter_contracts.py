@@ -16,6 +16,7 @@ import ast
 import hashlib
 import inspect
 import json
+import re
 import types
 import typing
 from datetime import UTC, datetime, timedelta, timezone
@@ -645,6 +646,8 @@ def test_legal_object_keys_are_accepted_unchanged(key: str) -> None:
         "s3://bucket/raw/a.zip",
         "memory://store/a",
         "cas://h:9000/a",
+        "cas://h:65535/a/b=1/c.parquet",
+        "s3://my-bucket.example/raw/x..y",
     ],
 )
 def test_legal_object_uris(uri: str) -> None:
@@ -669,6 +672,33 @@ def test_legal_object_uris(uri: str) -> None:
         "file:///srv/a b.zip",
         "file:///srv\\a.zip",
         "file:///srv/café.zip",
+        # R2：`file` 必须是无远程 authority 的绝对路径
+        "file://relative",
+        "file://relative/a.zip",
+        "file://host/srv/a.zip",
+        "file://localhost/srv/a.zip",
+        "file:///",
+        "file:///srv/",
+        "file:///srv//a.zip",
+        "file:///srv/%2e%2e/etc/passwd",
+        "file:///srv/%2E/a.zip",
+        # R2：其它 scheme 必须有非空 authority 与非空对象路径
+        "s3:///bucket/a.zip",
+        "memory:///a",
+        "s3://bucket",
+        "s3://bucket/",
+        "s3://bucket/a//b",
+        "s3://user@bucket/a.zip",
+        "s3://Bucket/a.zip",
+        "s3://-bucket/a.zip",
+        "s3://bucket../a.zip",
+        "cas://h:0/a",
+        "cas://h:0443/a",
+        "cas://h:65536/a",
+        "cas://h:/a",
+        "cas://h:port/a",
+        "s3://bucket/a.zip?versionId=1",
+        "s3:bucket/a.zip",
     ],
 )
 def test_illegal_object_uris(uri: str) -> None:
@@ -921,6 +951,10 @@ def test_legal_network_origins() -> None:
         "https://archive.example.test/a.zip",
         "https://market.example.test/v3/klines?symbol=AAAUSD&interval=1m&limit=1000",
         "file:///imports/history/AAAUSD.zip",
+        "https://archive.example.test",
+        "https://archive.example.test/",
+        "https://archive.example.test:8443/data/spot/daily/a.zip",
+        "https://archive.example.test/a..b/c.zip",
     ],
 )
 def test_legal_source_uris(uri: str) -> None:
@@ -945,6 +979,36 @@ def test_legal_source_uris(uri: str) -> None:
         "https://market.example.test/v3/x?secret=abc",
         "https://market.example.test/v3/x?password=abc",
         "https://market.example.test/v3/x?Authorization=abc",
+        # R2：只允许 https 网络来源与 file 只读导入，且必须真的绝对
+        "https:///path",
+        "https:///",
+        "https://",
+        "https:archive.example.test/a.zip",
+        "http://archive.example.test/a.zip",
+        "ftp://archive.example.test/a.zip",
+        "s3://bucket/a.zip",
+        "HTTPS://archive.example.test/a.zip",
+        "https://Archive.example.test/a.zip",
+        "https://archive.example.test:0/a.zip",
+        "https://archive.example.test:65536/a.zip",
+        "https://archive.example.test:08443/a.zip",
+        "https://archive.example.test:/a.zip",
+        "https://archive.example.test:https/a.zip",
+        "https://archive..example.test/a.zip",
+        "https://archive.example.test/../secret",
+        "https://archive.example.test/a/%2e%2e/b",
+        "https://archive.example.test/./a.zip",
+        "file://relative",
+        "file://relative/a.zip",
+        "file://host/imports/a.zip",
+        "file:relative/a.zip",
+        "file:/imports/a.zip",
+        "file:///",
+        "file:///imports/",
+        "file:///imports//a.zip",
+        "file:///imports/../etc/passwd",
+        "file:///imports/a.zip?x=1",
+        "file:///imports/a.zip#f",
     ],
 )
 def test_illegal_or_credential_shaped_source_uris(uri: str) -> None:
@@ -952,6 +1016,23 @@ def test_illegal_or_credential_shaped_source_uris(uri: str) -> None:
         validate_source_uri(uri)
     with pytest.raises(ValidationError):
         collected("AAAUSD", T0, T1, source_uri=uri)
+
+
+def test_uri_split_follows_rfc3986_components() -> None:
+    """拆分只是 RFC 3986 附录 B 的组件分解：区分"不存在"（None）与"存在但为空"。"""
+    assert storage.split_uri("file:///a/b") == storage.UriParts("file", "", "/a/b", None, None)
+    assert storage.split_uri("file://relative") == storage.UriParts(
+        "file", "relative", "", None, None
+    )
+    assert storage.split_uri("https:///path") == storage.UriParts("https", "", "/path", None, None)
+    assert storage.split_uri("https://h.test:1/p?q=1#f") == storage.UriParts(
+        "https", "h.test:1", "/p", "q=1", "f"
+    )
+    assert storage.split_uri("s3:bucket/a") == storage.UriParts("s3", None, "bucket/a", None, None)
+
+
+def test_source_uri_schemes_are_exactly_https_and_file() -> None:
+    assert collector.SOURCE_URI_SCHEMES == {"https", "file"}
 
 
 @pytest.mark.parametrize(
@@ -1207,6 +1288,11 @@ def test_b3_modules_import_only_stdlib_pydantic_and_core(module: object) -> None
         }
 
 
+#: 形如 `scheme://host` 的字面端点（`://` 后紧跟主机字符）；正则模式与报错说明里的
+#: `https://[…]`、`file:///…` 不是端点。
+_LITERAL_ENDPOINT_RE = re.compile(r"[a-z][a-z0-9+.-]*://[A-Za-z0-9]")
+
+
 def _code_strings(tree: ast.Module) -> list[str]:
     """模块中的字符串常量，排除文档字符串（文档可以提及后续批次的具体技术）。"""
     docstrings = {
@@ -1233,7 +1319,8 @@ def test_b3_modules_hardcode_no_venue_symbol_or_endpoint(module: object) -> None
         lowered = text.lower()
         for token in ("binance", "btcusdt", "ethusdt", "data-api", "vision"):
             assert token not in lowered, f"{module!r} 硬编码了 {token!r}：{text!r}"
-        assert "://" not in text or text.endswith("://") or "{" in text or "[" in text, text
+        literal = _LITERAL_ENDPOINT_RE.search(text)
+        assert literal is None, f"{module!r} 硬编码了端点 {literal.group(0)!r}"
     identifiers = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)} | {
         node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)
     }

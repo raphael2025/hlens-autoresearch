@@ -22,7 +22,7 @@ Phase 1 起的具体选择（[ADR-0021](../adr/0021-phase1-local-data-infrastruc
 
 接口落点（B3，02-domain.md §2.4）：`StorageAdapter`（staging → 校验 → 原子发布；逻辑相对 key，不给本机路径；同内容幂等、
 异内容 fail closed；无覆盖 / 删除 API）、`CatalogAdapter`（`namespace.table` 身份、表定义绑定、snapshot 元数据、按
-`(table, batch_id)` 幂等的 append 与乐观并发冲突；只隔离 Iceberg catalog 能力，不是 Control Plane Registry）与
+`(table, batch_id)` 幂等的 append 与乐观并发冲突，每次提交与重放前由 adapter 从实际 batch 独立重算指纹并核对行数；只隔离 Iceberg catalog 能力，不是 Control Plane Registry）与
 `CollectorAdapter`（有界、可重放的获取，结果只引用已发布对象并以显式缺口覆盖请求区间）的 Protocol、DTO 与
 provider-agnostic contract suite 已先于任何实现交付；实现分别属 C1、C2 / C3 与 D0。
 

@@ -16,7 +16,7 @@
 
 - **表身份**：`namespace.table`（与 `PointInTimeSpec.snapshot_bindings` 的键同一格式）；
 - **snapshot 身份**：`(table, snapshot_id)`；`SnapshotInfo` 总是绑定其所属表；
-- **batch / 幂等身份**：`(table, batch_id)` + 调用方声明的 `batch_fingerprint`。
+- **batch / 幂等身份**：`(table, batch_id)` + 由实际 batch 内容算出的 `batch_fingerprint`。
 
 调用语义（由 `tests/contract_suites/catalog.py` 检查）：
 
@@ -24,11 +24,17 @@
   解析实现侧已登记的表定义；未登记或哈希不符 → `UnknownTableDefinition`。同表同绑定重放
   幂等；同表不同绑定 → `TableDefinitionConflict`，已有表不变（Schema / 分区演进属 C3 的
   显式操作）。需要时隐式创建 namespace；
-- `commit_batch` 只做 append。先按 `(table, batch_id)` 查已有提交：指纹相同则返回**同一个**
-  snapshot（`already_committed`，不产生新 snapshot，与 `expected_parent_snapshot_id` 是否已
-  过期无关），指纹不同 → `BatchConflict`。否则 `expected_parent_snapshot_id` 必须等于当前
-  snapshot（首个提交为 `None`），不等 → `CommitConflict`（乐观并发，调用方重读后以同一
-  `batch_id` 重试）。batch 的实际行数必须等于 `row_count`，不等 → `BatchRejected`。
+- `commit_batch` 只做 append，按以下顺序判定（表名非法 `TableNameViolation`、表不存在
+  `TableNotFound` 先于这些步骤）：
+  1. **核对实际 batch**（首次提交与重放都必须做，任何快路径都不得绕过）：实际行数必须等于
+     `row_count`；adapter 必须用自己已登记、版本化的 batch 规范化 / 指纹规则，从实际 `BatchT`
+     **独立**算出指纹，并与 `batch_fingerprint` 相等。任一不符 → `BatchRejected`，不产生也不
+     改变任何 snapshot。调用方声明的指纹只是待核对的主张，不是事实；
+  2. 再按 `(table, batch_id)` 查已有提交：指纹相同则返回**同一个** snapshot
+     （`already_committed`，不产生新 snapshot，与 `expected_parent_snapshot_id` 是否已过期
+     无关），指纹不同 → `BatchConflict`；
+  3. 否则 `expected_parent_snapshot_id` 必须等于当前 snapshot（首个提交为 `None`），不等 →
+     `CommitConflict`（乐观并发，调用方重读后以同一 `batch_id` 重试）。
   失败的提交不产生 snapshot；已写未引用的文件是 orphan，只由显式 maintenance 清理；
 - 提交状态跨进程重启保持：重建的 adapter 对同一 `batch_id` 重放得到同一 snapshot；
 - `get_snapshot` 只返回该表真实存在的 snapshot；其它表的或不存在的 ID →
@@ -38,12 +44,18 @@
 元数据，不得用于 revision 选择。
 
 `BatchT` 是实现专用的 batch 类型（C2 为有界 `pyarrow.Table` microbatch，ADR-0023 §7）；
-核心契约不 import 它，也不承载行数据。
+核心契约不 import 它，也不承载行数据。指纹规则属于该表的版本化定义（由 `TableDefinition` 的
+`definition_hash` 绑定的定义文档承载），不是 Protocol 方法。
 
-**诚实边界**：`batch_fingerprint` 是调用方按版本化规则声明的幂等指纹，adapter 在重放时比较
-声明值；是否由 batch 内容重新计算并核对属 C2 / C3。按 snapshot 读取表数据（带投影 / 谓词
-的 scan）不在本批：它的形状取决于 F 的 PIT 执行器，届时以增量方法交付。表定义的列级
-Schema 与 partition spec 属 C3，本批没有验证任何具体表定义。
+**已冻结 vs 延期**：B3 冻结的是**行为**——adapter 必须按上述第 1 步独立重算并核对实际 batch 的
+行数与指纹，调用方自报的指纹不被信任（contract suite 以实现提供的真实指纹函数检查首次提交与
+重放两条路径）。C3 冻结真实 PyArrow microbatch 的具体 canonicalization / fingerprint 规则；
+任意 Python 对象的 `repr()` / pickle 不是可接受的生产规则。
+
+按 snapshot 读取表数据（带投影 / 谓词的 scan）不在本批，也**不会**以向本 Protocol 追加必需
+方法的方式交付（那会让全部已有实现失去结构兼容）：F 按实际消费者定义独立的读取 Protocol /
+capability，或经相应 major + ADR 变更。本批不预先猜测 scan 签名。表定义的列级 Schema 与
+partition spec 属 C3，本批没有验证任何具体表定义。
 """
 
 from __future__ import annotations
@@ -121,7 +133,7 @@ class BatchConflict(CatalogError):
 
 
 class BatchRejected(CatalogError):
-    """batch 与请求不一致（例如行数）；未产生 snapshot。"""
+    """实际 batch 与请求不一致（行数或独立重算的内容指纹）；未产生也未改变 snapshot。"""
 
 
 def validate_table_name(value: object) -> str:
@@ -203,7 +215,8 @@ class CommitRequest(Contract):
 
     - `batch_id`：稳定的幂等身份（例如由 Raw revision 与表名形成），重试时可从 Raw / staging
       重建同一批；
-    - `batch_fingerprint`：调用方按版本化规则声明的 batch 内容指纹；
+    - `batch_fingerprint`：调用方按该表的版本化指纹规则算出的 batch 内容指纹；adapter 必须从
+      实际 batch 独立重算并核对，不信任这个声明；
     - `row_count >= 1`：空 batch 不提交（避免"reader 被消费后写入零行"被当成成功，ADR-0023 §7）；
     - `expected_parent_snapshot_id` 必须显式给出：`null` 表示期望该表尚无 snapshot。
     """
@@ -269,5 +282,5 @@ class CatalogAdapter[BatchT](Protocol):
         ...
 
     def commit_batch(self, request: CommitRequest, batch: BatchT) -> CommitResult:
-        """按 `batch_id` 幂等的 append；冲突与拒绝见模块文档。"""
+        """先核对实际 batch（行数 + 独立重算的指纹），再按 `batch_id` 幂等 append。"""
         ...

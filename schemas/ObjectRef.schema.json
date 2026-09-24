@@ -15,7 +15,7 @@
       "type": "string"
     },
     "uri": {
-      "pattern": "^[a-z][a-z0-9+.-]*://[!-~]*$",
+      "pattern": "^(?:file:///|[a-z][a-z0-9+.-]*://[a-z0-9.-]+(?::[0-9]{1,5})?/)[!-~]+$",
       "title": "Uri",
       "type": "string"
     },

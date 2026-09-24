@@ -60,16 +60,20 @@ from tests.fake_adapters import (
     RangeImportCollector,
     RedefiningCatalog,
     RefBlindReadStorage,
+    ReplayFastPathCatalog,
     ReplayReturnsCurrentCatalog,
     RewritesHistoryCatalog,
     TableBlindSnapshotCatalog,
     TrustingStorage,
+    TrustsDeclaredFingerprintCatalog,
     UndeclaredOriginCollector,
     UnpublishedCollector,
     VisibleStagingStorage,
     WritableHandleStorage,
+    int_batch_fingerprint,
     make_int_batch,
     make_row_batch,
+    row_batch_fingerprint,
     sha256,
 )
 
@@ -130,6 +134,7 @@ def memory_catalog_subject(
     return CatalogSubject(
         open=lambda: factory(state, KNOWN_DEFINITIONS),
         make_batch=make_row_batch,
+        fingerprint=row_batch_fingerprint,
         definitions=(ALPHA, BETA),
         conflicting_definition=ALPHA_V2,
     )
@@ -141,6 +146,7 @@ def batch_amnesia_catalog_subject() -> CatalogSubject[tuple[str, ...]]:
     return CatalogSubject(
         open=lambda: MemoryCatalog(replace(state, batches={}), KNOWN_DEFINITIONS),
         make_batch=make_row_batch,
+        fingerprint=row_batch_fingerprint,
         definitions=(ALPHA, BETA),
         conflicting_definition=ALPHA_V2,
     )
@@ -190,6 +196,7 @@ class TestJournalCatalogContract(CatalogAdapterContract):
         return CatalogSubject(
             open=lambda: JournalCatalog(journal, KNOWN_DEFINITIONS),
             make_batch=make_int_batch,
+            fingerprint=int_batch_fingerprint,
             definitions=(ALPHA, BETA),
             conflicting_definition=ALPHA_V2,
         )
@@ -303,6 +310,16 @@ CATALOG_KILLS: tuple[
         catalog_suite.check_replayed_batch_returns_the_same_commit,
     ),
     (
+        "declared-fingerprint-trusted",
+        lambda: memory_catalog_subject(TrustsDeclaredFingerprintCatalog),
+        catalog_suite.check_swapped_content_on_first_commit_is_rejected,
+    ),
+    (
+        "replay-skips-content-check",
+        lambda: memory_catalog_subject(ReplayFastPathCatalog),
+        catalog_suite.check_swapped_content_on_replay_is_rejected,
+    ),
+    (
         "fingerprint-ignored",
         lambda: memory_catalog_subject(IgnoresFingerprintCatalog),
         catalog_suite.check_batch_fingerprint_conflict_fails_closed,
@@ -352,6 +369,7 @@ CATALOG_KILLS: tuple[
         lambda: CatalogSubject(
             open=lambda: MemoryCatalog(MemoryCatalogState(), KNOWN_DEFINITIONS),
             make_batch=make_row_batch,
+            fingerprint=row_batch_fingerprint,
             definitions=(ALPHA, BETA),
             conflicting_definition=ALPHA_V2,
         ),

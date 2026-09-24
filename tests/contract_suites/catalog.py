@@ -4,7 +4,10 @@
 
 - `open`：每次调用返回一个**新** adapter 实例，与此前实例共享同一持久 catalog（例如同一 PostgreSQL
   test database + warehouse），用来模拟进程重启与第二个并发 writer；
-- `make_batch(rows, tag)`：构造恰好 `rows` 行的实现专用 batch；不同 `tag` 产生不同内容；
+- `make_batch(rows, tag)`：确定性地构造恰好 `rows` 行的实现专用 batch；不同 `tag` 产生不同内容；
+- `fingerprint(batch)`：该实现已登记、版本化的 batch 指纹规则（与 adapter 内部独立重算所用的规则
+  相同）。suite 只用它**生成请求**中的 `batch_fingerprint`；它不是 `CatalogAdapter` 的 Protocol
+  方法。adapter 不得信任请求中的指纹，必须从实际 batch 独立重算并核对；
 - `definitions`：两个已在实现侧登记、表身份不同的 `TableDefinition`；
 - `conflicting_definition`：同样已登记、与 `definitions[0]` 同表但绑定不同的定义。
 
@@ -62,6 +65,7 @@ class CatalogSubject[BatchT]:
 
     open: Callable[[], CatalogAdapter[BatchT]]
     make_batch: Callable[[int, str], BatchT]
+    fingerprint: Callable[[BatchT], str]
     definitions: tuple[TableDefinition, TableDefinition]
     conflicting_definition: TableDefinition
 
@@ -85,7 +89,7 @@ INVALID_TABLE_NAMES: tuple[str, ...] = (
 )
 
 
-def _fingerprint(tag: str) -> str:
+def _sha256_text(tag: str) -> str:
     return hashlib.sha256(tag.encode("utf-8")).hexdigest()
 
 
@@ -96,6 +100,16 @@ def _subject_tables(subject: CatalogSubject[Any]) -> tuple[str, str]:
     require(
         conflicting.table == first.table and conflicting != first,
         "subject.conflicting_definition 必须与 definitions[0] 同表且绑定不同",
+    )
+    one, again = subject.make_batch(2, "probe"), subject.make_batch(2, "probe")
+    other = subject.make_batch(2, "probe-other")
+    require(
+        subject.fingerprint(one) == subject.fingerprint(again),
+        "subject.make_batch / fingerprint 必须是确定性的",
+    )
+    require(
+        subject.fingerprint(one) != subject.fingerprint(other),
+        "不同 tag 的 batch 必须有不同指纹",
     )
     return first.table, second.table
 
@@ -137,11 +151,19 @@ def _current(catalog: CatalogAdapter[Any], table: str) -> SnapshotInfo | None:
     return info.current_snapshot
 
 
-def _request(table: str, batch_id: str, rows: int, tag: str, parent: str | None) -> CommitRequest:
+def _request(
+    subject: CatalogSubject[Any],
+    table: str,
+    batch_id: str,
+    rows: int,
+    tag: str,
+    parent: str | None,
+) -> CommitRequest:
+    """以实现的真实指纹规则为 `make_batch(rows, tag)` 生成请求。"""
     return CommitRequest(
         table=table,
         batch_id=batch_id,
-        batch_fingerprint=_fingerprint(tag),
+        batch_fingerprint=subject.fingerprint(subject.make_batch(rows, tag)),
         row_count=rows,
         expected_parent_snapshot_id=parent,
     )
@@ -201,7 +223,7 @@ def check_unknown_definition_is_rejected(subject: CatalogSubject[Any]) -> None:
     catalog = subject.open()
     unknown = {
         "哈希不符": definition.model_copy(
-            update={"definition_hash": _fingerprint(definition.definition_hash)}
+            update={"definition_hash": _sha256_text(definition.definition_hash)}
         ),
         "未登记版本": definition.model_copy(update={"version": "999999.0.0"}),
     }
@@ -247,7 +269,7 @@ def check_invalid_table_names_are_rejected(subject: CatalogSubject[Any]) -> None
         forged_request = CommitRequest.model_construct(
             table=name,
             batch_id="b-invalid",
-            batch_fingerprint=_fingerprint("invalid"),
+            batch_fingerprint=_sha256_text("invalid"),
             row_count=1,
             expected_parent_snapshot_id=None,
         )
@@ -258,7 +280,7 @@ def check_commit_binds_snapshot_to_table_and_batch(subject: CatalogSubject[Any])
     table, _ = _subject_tables(subject)
     catalog = subject.open()
     _create(catalog, subject.definitions[0])
-    request = _request(table, "batch-a", 3, "a", None)
+    request = _request(subject, table, "batch-a", 3, "a", None)
     snapshot = _commit(subject, catalog, request, "a", CommitOutcome.COMMITTED)
     require(snapshot.parent_snapshot_id is None, "首个 snapshot 不得有父 snapshot")
     require(snapshot.total_rows == 3, "首个 snapshot 的 total_rows 应为 3")
@@ -275,12 +297,16 @@ def check_snapshot_history_is_immutable(subject: CatalogSubject[Any]) -> None:
     catalog = subject.open()
     _create(catalog, subject.definitions[0])
     first = _commit(
-        subject, catalog, _request(table, "batch-a", 3, "a", None), "a", CommitOutcome.COMMITTED
+        subject,
+        catalog,
+        _request(subject, table, "batch-a", 3, "a", None),
+        "a",
+        CommitOutcome.COMMITTED,
     )
     second = _commit(
         subject,
         catalog,
-        _request(table, "batch-b", 2, "b", first.snapshot_id),
+        _request(subject, table, "batch-b", 2, "b", first.snapshot_id),
         "b",
         CommitOutcome.COMMITTED,
     )
@@ -299,12 +325,12 @@ def check_replayed_batch_returns_the_same_commit(subject: CatalogSubject[Any]) -
     table, _ = _subject_tables(subject)
     catalog = subject.open()
     _create(catalog, subject.definitions[0])
-    request_a = _request(table, "batch-a", 3, "a", None)
+    request_a = _request(subject, table, "batch-a", 3, "a", None)
     first = _commit(subject, catalog, request_a, "a", CommitOutcome.COMMITTED)
     second = _commit(
         subject,
         catalog,
-        _request(table, "batch-b", 2, "b", first.snapshot_id),
+        _request(subject, table, "batch-b", 2, "b", first.snapshot_id),
         "b",
         CommitOutcome.COMMITTED,
     )
@@ -324,11 +350,17 @@ def check_batch_fingerprint_conflict_fails_closed(subject: CatalogSubject[Any]) 
     catalog = subject.open()
     _create(catalog, subject.definitions[0])
     first = _commit(
-        subject, catalog, _request(table, "batch-a", 3, "a", None), "a", CommitOutcome.COMMITTED
+        subject,
+        catalog,
+        _request(subject, table, "batch-a", 3, "a", None),
+        "a",
+        CommitOutcome.COMMITTED,
     )
     for parent in (first.snapshot_id, None):
-        changed = _request(table, "batch-a", 3, "a-changed", parent)
-        _commit_error(subject, catalog, changed, 3, "a-changed", BatchConflict)
+        for rows in (3, 2):
+            # 请求指纹与实际内容相符（通过第 1 步核对），但与已提交的 batch-a 不同。
+            changed = _request(subject, table, "batch-a", rows, "a-changed", parent)
+            _commit_error(subject, catalog, changed, rows, "a-changed", BatchConflict)
     require(_current(catalog, table) == first, "指纹冲突不得产生新 snapshot")
 
 
@@ -339,17 +371,26 @@ def check_stale_parent_conflict_fails_closed(subject: CatalogSubject[Any]) -> No
     _create(writer_one, subject.definitions[0])
     require(_current(writer_two, table) is None, "第二个 writer 应看到空表")
     winner = _commit(
-        subject, writer_one, _request(table, "batch-x", 2, "x", None), "x", CommitOutcome.COMMITTED
+        subject,
+        writer_one,
+        _request(subject, table, "batch-x", 2, "x", None),
+        "x",
+        CommitOutcome.COMMITTED,
     )
     _commit_error(
-        subject, writer_two, _request(table, "batch-y", 2, "y", None), 2, "y", CommitConflict
+        subject,
+        writer_two,
+        _request(subject, table, "batch-y", 2, "y", None),
+        2,
+        "y",
+        CommitConflict,
     )
     require(_current(writer_two, table) == winner, "冲突失败不得产生 snapshot")
     require(_current(writer_one, table) == winner, "冲突失败不得改变当前 snapshot")
     retried = _commit(
         subject,
         writer_two,
-        _request(table, "batch-y", 2, "y", winner.snapshot_id),
+        _request(subject, table, "batch-y", 2, "y", winner.snapshot_id),
         "y",
         CommitOutcome.COMMITTED,
     )
@@ -360,10 +401,18 @@ def check_row_count_mismatch_is_rejected_without_trace(subject: CatalogSubject[A
     table, _ = _subject_tables(subject)
     catalog = subject.open()
     _create(catalog, subject.definitions[0])
-    _commit_error(subject, catalog, _request(table, "batch-a", 3, "a", None), 2, "a", BatchRejected)
+    # 请求指纹与实际 2 行内容相符，只有 row_count 不符：必须因行数被拒绝。
+    mismatched = _request(subject, table, "batch-a", 2, "a", None).model_copy(
+        update={"row_count": 3}
+    )
+    _commit_error(subject, catalog, mismatched, 2, "a", BatchRejected)
     require(_current(catalog, table) is None, "被拒绝的 batch 不得产生 snapshot")
     snapshot = _commit(
-        subject, catalog, _request(table, "batch-a", 2, "a", None), "a", CommitOutcome.COMMITTED
+        subject,
+        catalog,
+        _request(subject, table, "batch-a", 2, "a", None),
+        "a",
+        CommitOutcome.COMMITTED,
     )
     require(snapshot.added_rows == 2, "被拒绝的 batch_id 不得留下提交记录")
 
@@ -373,9 +422,15 @@ def check_unknown_table_and_foreign_snapshot_are_rejected(subject: CatalogSubjec
     catalog = subject.open()
     _create(catalog, subject.definitions[0])
     snapshot = _commit(
-        subject, catalog, _request(table, "batch-a", 1, "a", None), "a", CommitOutcome.COMMITTED
+        subject,
+        catalog,
+        _request(subject, table, "batch-a", 1, "a", None),
+        "a",
+        CommitOutcome.COMMITTED,
     )
-    _commit_error(subject, catalog, _request(other, "batch-a", 1, "a", None), 1, "a", TableNotFound)
+    _commit_error(
+        subject, catalog, _request(subject, other, "batch-a", 1, "a", None), 1, "a", TableNotFound
+    )
     expect_error(
         TableNotFound,
         "get_snapshot(未建表)",
@@ -400,15 +455,59 @@ def check_batch_ids_are_scoped_per_table(subject: CatalogSubject[Any]) -> None:
     _create(catalog, subject.definitions[0])
     _create(catalog, subject.definitions[1])
     first = _commit(
-        subject, catalog, _request(table, "batch-1", 2, "t0", None), "t0", CommitOutcome.COMMITTED
+        subject,
+        catalog,
+        _request(subject, table, "batch-1", 2, "t0", None),
+        "t0",
+        CommitOutcome.COMMITTED,
     )
     second = _commit(
-        subject, catalog, _request(other, "batch-1", 3, "t1", None), "t1", CommitOutcome.COMMITTED
+        subject,
+        catalog,
+        _request(subject, other, "batch-1", 3, "t1", None),
+        "t1",
+        CommitOutcome.COMMITTED,
     )
     require(first.table == table and second.table == other, "snapshot 必须属于各自的表")
     require(
         _current(catalog, table) == first and _current(catalog, other) == second, "两表互不影响"
     )
+
+
+def check_swapped_content_on_first_commit_is_rejected(subject: CatalogSubject[Any]) -> None:
+    """声明指纹正确、行数相同，但传入的实际内容被换掉：`BatchRejected`，不产生 snapshot。"""
+    table, _ = _subject_tables(subject)
+    catalog = subject.open()
+    _create(catalog, subject.definitions[0])
+    request = _request(subject, table, "batch-a", 3, "a", None)
+    _commit_error(subject, catalog, request, 3, "a-swapped", BatchRejected)
+    require(_current(catalog, table) is None, "内容被换掉的 batch 不得产生 snapshot")
+    snapshot = _commit(subject, catalog, request, "a", CommitOutcome.COMMITTED)
+    require(snapshot.added_rows == 3, "被拒绝的 batch_id 不得留下提交记录")
+
+
+def check_swapped_content_on_replay_is_rejected(subject: CatalogSubject[Any]) -> None:
+    """已提交后，同一请求（同声明指纹、同行数）配上被换掉的内容重放：`BatchRejected`。
+
+    重放快路径也必须先核对实际 batch；同一实例与重建实例都一样。
+    """
+    table, _ = _subject_tables(subject)
+    catalog = subject.open()
+    _create(catalog, subject.definitions[0])
+    request = _request(subject, table, "batch-a", 3, "a", None)
+    first = _commit(subject, catalog, request, "a", CommitOutcome.COMMITTED)
+    for label, adapter in (("同一实例", catalog), ("重建实例", subject.open())):
+        for parent in (None, first.snapshot_id):
+            replay = request.model_copy(update={"expected_parent_snapshot_id": parent})
+            batch = subject.make_batch(3, "a-swapped")
+            expect_error(
+                BatchRejected,
+                f"{label}以换掉的内容重放 batch-a",
+                partial(adapter.commit_batch, replay, batch),
+            )
+        require(_current(adapter, table) == first, f"{label}的拒绝不得改变当前 snapshot")
+    again = _commit(subject, catalog, request, "a", CommitOutcome.ALREADY_COMMITTED)
+    require(again == first, "拒绝之后，真实内容的重放仍返回首次提交的 snapshot")
 
 
 CATALOG_CHECKS: tuple[CatalogCheck, ...] = (
@@ -419,6 +518,8 @@ CATALOG_CHECKS: tuple[CatalogCheck, ...] = (
     check_commit_binds_snapshot_to_table_and_batch,
     check_snapshot_history_is_immutable,
     check_replayed_batch_returns_the_same_commit,
+    check_swapped_content_on_first_commit_is_rejected,
+    check_swapped_content_on_replay_is_rejected,
     check_batch_fingerprint_conflict_fails_closed,
     check_stale_parent_conflict_fails_closed,
     check_row_count_mismatch_is_rejected_without_trace,

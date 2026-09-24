@@ -37,7 +37,6 @@ contract suite 对具体实现检查。
 
 from __future__ import annotations
 
-import re
 from datetime import datetime
 from enum import StrEnum
 from itertools import pairwise
@@ -46,7 +45,13 @@ from typing import Annotated, Protocol
 from pydantic import BeforeValidator, Field, field_validator, model_validator
 
 from core.contracts.revision import BINDING_ID_PATTERN
-from core.contracts.storage import ObjectRef
+from core.contracts.storage import (
+    ObjectRef,
+    has_dot_segment,
+    is_host_port,
+    is_object_path,
+    split_uri,
+)
 from core.domain.base import (
     NAME_PATTERN,
     SEMVER_PATTERN,
@@ -61,6 +66,7 @@ __all__ = [
     "NETWORK_ORIGIN_PATTERN",
     "REQUEST_ID_PATTERN",
     "SOURCE_URI_PATTERN",
+    "SOURCE_URI_SCHEMES",
     "SYMBOL_PATTERN",
     "CollectedObject",
     "CollectionFailed",
@@ -83,9 +89,12 @@ SYMBOL_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$"
 _HOST_LABEL = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
 #: 声明的网络 origin：只允许 `https://host[:port]`，无路径、查询、凭据。
 NETWORK_ORIGIN_PATTERN = rf"^https://{_HOST_LABEL}(?:\.{_HOST_LABEL})*(?::[0-9]{{1,5}})?$"
-#: 来源 URI：带 scheme 的绝对 URI（网络来源为 https，只读导入可为 file），ASCII 可见字符。
-SOURCE_URI_PATTERN = r"^[a-z][a-z0-9+.-]*://[!-~]+$"
-_SOURCE_URI_RE = re.compile(SOURCE_URI_PATTERN)
+#: 来源 URI 的 JSON Schema 近似：`https://host[:port]` 后接可选路径 / 查询，或 `file:///绝对路径`。
+#: 运行时（`validate_source_uri`）更严：端口范围、逐段检查、查询参数的凭据形状、`file` 无查询；
+#: 这些 JSON Schema 表达不了（02-domain.md §3.7）。
+SOURCE_URI_PATTERN = r"^(?:https://[a-z0-9.-]+(?::[0-9]{1,5})?(?:[/?][!-~]*)?|file:///[!-~]+)$"
+#: 本阶段允许的来源 scheme：`https` 网络来源与 `file` 只读导入。
+SOURCE_URI_SCHEMES = frozenset({"https", "file"})
 #: 来源元数据的键（例如 HTTP 响应头 `etag`、`last-modified`）：小写 token。
 HEADER_NAME_PATTERN = r"^[a-z0-9][a-z0-9-]{0,127}$"
 
@@ -120,17 +129,38 @@ def _has_secret_shape(name: str) -> bool:
 
 
 def validate_source_uri(value: object) -> str:
-    """复核来源 URI 的形状；原样返回。不访问网络。"""
-    if not isinstance(value, str) or _SOURCE_URI_RE.fullmatch(value) is None:
-        raise ValueError(f"非法来源 URI：{value!r}；必须是带 scheme 的绝对 URI")
-    if "#" in value or "\\" in value:
-        raise ValueError(f"来源 URI 不得含片段或反斜杠：{value!r}")
-    rest = value.split("://", 1)[1]
-    authority = re.split(r"[/?]", rest, maxsplit=1)[0]
-    if "@" in authority:
-        raise ValueError(f"来源 URI 不得携带凭据：{value!r}")
-    query = value.partition("?")[2]
-    for part in query.split("&") if query else ():
+    """复核来源 URI；原样返回。不访问网络。按 RFC 3986 组件逐项检查：
+
+    - 只接受 ASCII 可见字符（无空白、反斜杠），不得有片段；scheme 只能是 `https` 或 `file`；
+    - `https`：authority 必须是非空小写主机名 + 可选端口（1 ~ 65535），不得含凭据；路径可以为空或
+      以 `/` 开头，不得含 `.` / `..`（含 `%2e` 编码）段；查询参数名呈凭据形状即拒绝；
+    - `file`：必须是 `file:///绝对路径`（authority 存在且为空，无远程主机），路径为非空的绝对对象
+      路径，不得有查询。
+    """
+    if not isinstance(value, str) or not value.isascii() or not value.isprintable():
+        raise ValueError(f"非法来源 URI：{value!r}；只接受 ASCII 可见字符")
+    if " " in value or "\\" in value:
+        raise ValueError(f"来源 URI 不得含空白或反斜杠：{value!r}")
+    parts = split_uri(value)
+    if parts.scheme not in SOURCE_URI_SCHEMES or parts.authority is None:
+        raise ValueError(f"来源 URI 只能是 https://… 或 file:///…：{value!r}")
+    if parts.fragment is not None:
+        raise ValueError(f"来源 URI 不得含片段：{value!r}")
+    if parts.scheme == "file":
+        if parts.authority != "":
+            raise ValueError(
+                f"file 来源 URI 不得带 authority（必须是 file:///绝对路径）：{value!r}"
+            )
+        if parts.query is not None:
+            raise ValueError(f"file 来源 URI 不得含查询：{value!r}")
+        if not is_object_path(parts.path):
+            raise ValueError(f"file 来源 URI 必须是不含空段或 . / .. 段的绝对路径：{value!r}")
+        return value
+    if not is_host_port(parts.authority):
+        raise ValueError(f"https 来源 URI 必须有合法主机名（可带端口），不得含凭据：{value!r}")
+    if parts.path and (not parts.path.startswith("/") or has_dot_segment(parts.path)):
+        raise ValueError(f"https 来源 URI 的路径不得含 . / .. 段：{value!r}")
+    for part in parts.query.split("&") if parts.query else ():
         name = part.split("=", 1)[0]
         if _has_secret_shape(name):
             raise ValueError(f"来源 URI 的查询参数呈凭据形状：{name!r}")
