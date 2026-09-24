@@ -215,7 +215,38 @@ Event / Strategy 的直接输入。**
 证据是否真实、`revision_id` 是否按规则形成、`arrival_seq` 是否跨重启不复用、heads 是否真的互不排序，
 属未来 Registry、存储层与 PIT 执行器（批次 C ~ F）。`PointInTimeSelection` 是输出契约，不是选择算法。
 跨字段约束（点 / 区间形状、证据 / 缺口、结果形状、role）只在运行时校验，JSON Schema 弱于运行时（§3.7）。
-universe 与 `ResearchDatasetManifest` 属批次 B2。
+universe 与 `ResearchDatasetManifest` 见 §2.3（批次 B2）。
+
+### 2.3 历史可交易 universe 与 `ResearchDatasetManifest`（ADR-0024 / ADR-0023 §6，Phase 1 B2）
+
+`core/contracts/universe.py` 把 [ADR-0024](../adr/0024-historical-tradable-universe.md) 与
+[ADR-0023](../adr/0023-bitemporal-revision-data.md) §6 中契约层可表达的部分落成 13 个模型（语义见 03-data.md §3、§7.5）。
+不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`Instrument`、`DatasetRef`、`ReproducibilityTuple` 等已发布模型与 Schema 不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `TradableInterval` | 一段可交易区间 `[tradable_from, tradable_until)` | UTC；非空；`tradable_until` 必须显式给出，`null` = 开放 |
+| `StableEpisodeKey` | episode 身份：`(venue, instrument_type, venue_product_id)` | `basis` 显式为 `stable_product_id`；改名不改变身份；ID 字符串可以等于 symbol |
+| `DegradedEpisodeKey` | 退化身份：`(venue, instrument_type, symbol, tradable_from)` | `basis` 显式为 `degraded_symbol_start`；与稳定路径字段不可混用、缺一不可 |
+| `ListingRevision` | 一个 episode 的不可变 listing revision：B1 `RevisionRecord` + 静态 `Instrument` + 区间 + 状态 | `observation_key` = episode 键；venue / type 与键一致；退化键的 symbol 与起点与 revision 一致；区间至少一段、规范排序、不重叠不相邻、开放区间只在末尾；`listed` ⇔ 末段开放；来源状态原文可空不可伪造；`renamed_from` 只用于退化键改名（同 venue / type、不同 symbol、更早开始） |
+| `ListingHistory` | listing revision 聚合 | 以内部 revision 与证据构造 B1 `RevisionGraph`，复用全部图约束（含跨 episode supersedes 拒绝）；同一 venue / type 下稳定键与退化键可共存；集合语义规范排序 |
+| `UniverseFilter` | 过滤规则声明形状 | 指标 = FeatureSpec `name + SemVer + hash`（不用 `Ref`）；`metric_basis` 只能是 `point_in_time`；阈值只要求有限数，契约不选数值 |
+| `UniverseSelectionSpec` | 独立版本化选择规格（首切片 `binance.spot.btc-eth@1.0.0`） | 名称为绑定标识符、严格 SemVer；`candidate_source` 只能是 PIT listing 历史；symbols 非空去重排序；`filters` 必须显式给出、`filter_id` 唯一；无 `kind` / `Ref` / `lineage` |
+| `UniverseSpecBinding` | manifest 中的 spec 绑定 `name + SemVer + spec_hash` | 不是 `Ref`、无 `Kind`；`binds(spec)` 本地核对 |
+| `UniverseMember` / `UniverseExclusion` | 成员 / 排除清单条目：episode + 决定性 listing revision（+ 原因） | 排除原因只有 `not_tradable` / `filtered`（后者必带 `filter_id`）；competing heads 不是排除原因，而是 fail closed；生效区间成对给出且非空 |
+| `SelectedRevisionLineage` | 选中 revision 的 Canonical revision → Raw row → Raw source payload 链（`source_table` / `source_revision_id`；首切片归档路径中 source 即归档 revision，D3 REST 响应载荷同用此跳） | 表名为 `namespace.table`；canonical 跳在 canonical namespace，raw 与 source 跳在 raw namespace；具体 source 类型由未来 Collector / 表实现证明 |
+| `AvailabilityEvidenceGap` | availability 证据缺口记录 | 指向表 + revision + 记录该缺口的质量报告 |
+| `ResearchDatasetManifest` | Research Dataset 审计清单 | 全部字段必填、清单无默认值（可显式为空）；自身 `DatasetRef` 为 `research_dataset` 且表不在上游中；内嵌完整 B1 `PointInTimeSpec`，是上游 snapshot、simulation、`knowledge_cutoff` 与 PIT / availability / precedence / parser 绑定的唯一来源；上游必须含 `canonical.instrument_listings` 与 `quality.data_quality_reports`；成员 / 排除按 episode 去重互斥（区间 simulation 时按生效区间不重叠且落在窗口内）；lineage 与证据缺口按稳定身份去重，所涉表须有上游 snapshot，缺口引用的质量报告须在清单中；质量报告至少一项；每个 member / exclusion 的 `listing_revision_id` 只能属于一个 episode（同一 episode 的不重叠区间可重复使用），且必须在 lineage 中有 `canonical.instrument_listings` 来源链（其它 Canonical 表不能冒充）；无候选时成员、排除与 lineage 可同时为空 |
+
+上游 snapshot 只用 `PointInTimeSpec.snapshot_bindings` 表达，不另设 `DatasetRef` 列表：`quality` 表没有对应 `Zone`，
+平行列表也会带来漂移。模块不读取 `arrival_seq`，不以墙钟或 payload hash 排序或打破冲突（静态测试检查）。
+
+**诚实边界**：契约层**不**证明被绑定的 snapshot / spec / policy 版本在 Registry 中存在或哈希等于真实内容、来源的稳定 ID
+真实稳定、稳定键与退化键是否其实是同一产品、成员清单确实由 spec + snapshot + 两个截止按 maximal-head 重建、
+逐行 PIT 正确、lineage 是完整闭包、`filter_id` 存在于被绑定的 spec 中。这些属 Collector / 质量检查、Registry、
+批次 F 的 PIT / universe 执行器。未来 Runner 必须接收 manifest，并要求复现元组 `dataset_snapshots` 包含该 Research Dataset
+自身的 `DatasetRef`——这是尚未实现的接口义务，契约未改动 `ReproducibilityTuple`。
+ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 #12 属批次 F 与 Phase 4 / 5，不由本批单元测试宣称完成。
 
 ## 3. 契约规则
 
@@ -317,7 +348,7 @@ universe 与 `ResearchDatasetManifest` 属批次 B2。
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（46 份） | `schemas/*.schema.json` |
+| 当前 Schema（59 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |

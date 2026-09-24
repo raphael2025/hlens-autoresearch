@@ -21,7 +21,7 @@
   **视为已发布**（D-25）——此后任何破坏性契约变化都必须升 major 并走 ADR；尚无 v2 数据登记
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
-- current Schema 46 份，与 `CONTRACT_MODELS` 一一对应；Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）
+- current Schema 59 份，与 `CONTRACT_MODELS` 一一对应；Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet = 真实来源；DuckDB / Polars 只是计算引擎；
   Phase 1 起：Iceberg Catalog 用独立 PostgreSQL 库、warehouse 为本地 `file://`、Phase 1 ~ 6 无 NATS（ADR-0021）
@@ -41,7 +41,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**Claude B2**（D-31 universe 契约 + `ResearchDatasetManifest`）；B1 已由 Codex 复核通过
+- Current Subphase：**Claude B2**（D-31 universe 契约 + `ResearchDatasetManifest`）本地已提交、待 Codex 复核；B1 已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - 当前唯一获批批次：**Claude B2**（D-31 universe / manifest 契约、Schema、contract tests）；B3 及以后未开放
@@ -141,7 +141,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
   1658 测试、ruff check、ruff format --check、mypy strict 全绿；
-  Schema current 46 份（2.0.0，含 B1 已验收的 8 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
+  Schema current 46 份（2.0.0，含 B1 已验收的 8 份）逐字节一致（B2 待复核提交另增 13 份 → 59） + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
 - Phase 1：A2 / A2r、A3a / A3b 已由 Codex 复核推送；B1 已由 Codex 复核通过，恢复点 `b15faa9`，当前进入 B2

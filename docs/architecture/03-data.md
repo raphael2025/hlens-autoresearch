@@ -73,6 +73,13 @@ parser 版本，以及 universe 绑定。universe 按 [ADR-0024](../adr/0024-his
 与成员清单、排除原因清单。未来 Runner 接口必须接收 manifest，复现元组的 `dataset_snapshots` 必须包含该 Research Dataset 自身的 `DatasetRef`。
 首批切片的 PIT 输入输出见 §7.5。
 
+契约落点（B2，02-domain.md §2.3）：`core/contracts/universe.py` 的 `ResearchDatasetManifest` 内嵌完整 `PointInTimeSpec`，
+由它唯一给出上游 `snapshot_id`（`snapshot_bindings`，含无 `Zone` 的 `quality` 表）、simulation、`knowledge_cutoff` 与
+policy / parser 绑定；universe 以 `UniverseSpecBinding` 绑定，listing 历史由 `ListingRevision` / `ListingHistory` 表达。
+成员 / 排除引用的每个 listing revision 只能属于一个 episode，且必须在 manifest 的 lineage 中有 `canonical.instrument_listings`
+来源链；lineage 第三跳是通用的 Raw source payload（首切片为归档 revision，REST 补尾为 Raw 响应载荷）。
+契约只校验结构；snapshot 与版本是否存在、哈希是否对应真实内容、成员清单能否按位重建，属 Registry 与批次 F。
+
 ## 4. 时间语义（冻结；2026-09-24 按 ADR-0023 修订）
 
 完整语义、算法与验收矩阵见 [ADR-0023](../adr/0023-bitemporal-revision-data.md)；本节是冻结摘要。
@@ -232,9 +239,10 @@ ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅
 **输出**：
 
 - 一份**无冲突**的 Research Dataset（每个 key 至多一个选中 revision），以及 `research.dataset_manifests` 中的一条 manifest；
-- manifest 记录全部输入绑定、选中 revision 的 lineage（Canonical `revision_id` → Raw revision → 归档 revision）、
+- manifest 记录全部输入绑定、选中 revision 的 lineage（Canonical `revision_id` → Raw revision → Raw source revision；首切片即归档 revision）、
   universe 成员清单与排除原因清单、引用的质量报告，以及该 Research Dataset 自身的 `DatasetRef`（含其 `snapshot_id`）。
 
 **fail closed**（不产生可进入实验的数据集）：任一 competing head（观察或 listing）；请求绑定的 policy / parser / universe spec 无法解析到
 已登记且带证据的版本，或 `supersedes` 边引用的 precedence 证据缺失；所需时间范围内缺少 universe listing 历史；manifest 任一绑定项缺失。
-单行 availability 证据缺口不在此列：该行按 §4.2 保守计算并记入 manifest。
+单行 availability 证据缺口不在此列：该行按 §4.2 保守计算并记入 manifest（契约为 `AvailabilityEvidenceGap`，须引用 manifest 所列质量报告）。
+competing head 不是 universe 排除原因：它使构建 fail closed，不产生 manifest。

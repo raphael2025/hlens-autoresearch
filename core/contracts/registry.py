@@ -28,6 +28,21 @@ from core.contracts.revision import (
     RevisionGraph,
     RevisionRecord,
 )
+from core.contracts.universe import (
+    AvailabilityEvidenceGap,
+    DegradedEpisodeKey,
+    ListingHistory,
+    ListingRevision,
+    ResearchDatasetManifest,
+    SelectedRevisionLineage,
+    StableEpisodeKey,
+    TradableInterval,
+    UniverseExclusion,
+    UniverseFilter,
+    UniverseMember,
+    UniverseSelectionSpec,
+    UniverseSpecBinding,
+)
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.artifact import (
     DeploymentRecord,
@@ -129,6 +144,20 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     RevisionGraph,
     PointInTimeSpec,
     PointInTimeSelection,
+    # 历史可交易 universe 与 Research Dataset manifest（ADR-0024 / ADR-0023 §6，Phase 1 B2）
+    TradableInterval,
+    StableEpisodeKey,
+    DegradedEpisodeKey,
+    ListingRevision,
+    ListingHistory,
+    UniverseFilter,
+    UniverseSelectionSpec,
+    UniverseSpecBinding,
+    UniverseMember,
+    UniverseExclusion,
+    SelectedRevisionLineage,
+    AvailabilityEvidenceGap,
+    ResearchDatasetManifest,
 )
 
 

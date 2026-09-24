@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **B2 已开放**：B1 双时间 / revision DAG 契约已由 Codex 独立对抗复核通过；下一批为 universe / manifest 契约 |
+| 当前子阶段 | **B2 本地完成，待 Codex 复核**：universe / listing / `ResearchDatasetManifest` 契约已提交（未推送）；B3 未开放 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1 已验收，B2 开始） |
+| 总体状态 | 🔄 Phase 1 进行中（B1 已验收，B2 待复核） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -71,11 +71,12 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 A3a（Cursor）：锁定 §6.1 四个直接依赖与 `uv.lock`；import smoke 通过；Codex 已复核并推送
 - ✅ Phase 1 A3b（Cursor）：`infrastructure.Settings` 符合 §6.2；Codex 对抗复核、1469 项全量测试通过并推送（`d840dbb`）
 - ✅ Phase 1 B1（Claude）：8 个双时间 / revision DAG 契约与 Schema；Codex 发现并退回 dangling ID 跨 key 归属漏洞，修复后独立复核、1658 项全量测试与静态检查通过（`b15faa9`）
+- 🔎 Phase 1 B2（Claude，待复核）：13 个 universe / listing / manifest 契约与 Schema（current 59 份）；已按 Codex 首轮设计复核删除两条过严规则；R2 补 listing revision 归属唯一、listing lineage 不悬空，lineage 第三跳改为通用 `source_*`；本地 1938 项测试与静态检查通过
 
 ## 4. 当前正在做
 
 - ✅ B1（Claude）：双时间 / revision DAG 的 8 个契约、Schema（current 46 份）与 contract tests 已通过 Codex 独立复核；验收 #4 满足
-- 🔄 B2（Claude）：已开放 D-31 universe 契约与 `ResearchDatasetManifest` 契约批次；仍只做 Protocol 前的契约层，不进入 Collector / 存储实现
+- 🔎 B2（Claude）：D-31 universe 契约与 `ResearchDatasetManifest` 已本地提交，等待 Codex 独立复核与推送；仍只是契约层，不含选择器、PIT 执行器或存储
 
 ## 5. 下一步
 
@@ -89,7 +90,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已批准且已完成：Phase 0 全部批次（B1 / B2 / B3、C1 ~ C5）；Phase 1 S0（开启与分支）
 - 已批准且已完成：A1 / A1r / A1r2 / A2 / A2r —— ADR-0021 ~ 0024 起草、两次修正、接受与首切片冻结；ADR-0025 与执行门修正（docs-only）
 - 已完成并验收：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema 与 contract tests）
-- 当前已批准：**Claude B2**（D-31 universe 契约 + `ResearchDatasetManifest`，只限 `core/` 契约、Schema、contract tests 与必要文档）
+- 当前已批准：**Claude B2**（D-31 universe 契约 + `ResearchDatasetManifest`，只限 `core/` 契约、Schema、contract tests 与必要文档）——本地完成，待 Codex 复核
 - 未批准：B3 及任何 Phase 1 实现层（Collector / Provider / Iceberg / 数据库 / 网络 / 下载）、其他 Phase、任何原则或阈值变化、实盘
 
 ## 6. 当前待决策
@@ -149,18 +150,18 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 B2（Claude）：新增 13 个 listing episode / `UniverseSelectionSpec` / 成员与排除 / `ResearchDatasetManifest` 契约与 Schema（current 46 → 59，旧 Schema 与 v1 逐字节不变）；按 Codex 首轮设计复核删除"稳定 ID 不得等于 symbol"与"同一 venue/type 禁混身份依据"两条规则并补合法反例；R2 修复 Codex 对抗构造出的三类错误 manifest（listing lineage 缺失、成员 revision 悬空、跨 episode revision ID），lineage 第三跳改名 `source_*`；本地 1938 项测试通过 | 验收 #5 待 Codex 复核；未推送；B3 未开放 |
 | 2026-09-24 | Phase 1 B1（Claude）：新增 8 个双时间 / revision DAG 契约与 Schema；Codex 对抗复核发现 dangling revision ID 跨 key 归属冲突漏检，Claude R2 修复统一 claim 并补 7 项测试；Codex 独立运行 1658 项全量测试及静态检查通过 | 验收 #4 满足；B1 恢复点 `b15faa9`；B2 已开放 |
 | 2026-09-24 | Phase 1 A3b（Cursor）：`infrastructure.Settings` 实现 §6.2；Codex 发现并退回环境污染测试，修复后独立对抗复核、1469 项测试与全部静态检查通过；已推送 `d840dbb` | 验收 #3 满足；稳定恢复点前移；Claude B1 已批准 |
 | 2026-09-24 | Phase 1 A3a（Cursor）：锁定 §6.1 四个直接依赖（pyiceberg[pyarrow,sql-postgres]、pyarrow、pydantic-settings、httpx）与 `uv.lock`；新增 import smoke；Codex 已复核并推送 | 验收 #2；远程 `phase/1` 含 A3a |
 | 2026-09-24 | Phase 1 A2r docs-only：Codex 复核 A2 为 FIX_BEFORE_PUSH；新增 ADR-0025（私有 GitHub 远程，Codex 复核后逐进度推送）并同步 CLAUDE.md §10.8；运行时 catalog 设置只接受 PostgreSQL；A3 拆为 A3a / A3b，C1 只做存储，新增 Cursor D0 下载；PIT 证据缺口不再是数据集级失败；parser 覆盖区间为 UTC 半开区间 | A2 决定不变；执行门与远程流程对齐 |
-| 2026-09-24 | Phase 1 A2 docs-only：Codex 复核 A1r2 通过，ADR-0021 ~ 0024 Accepted；`03-data.md` 按 ADR 同步；冻结首批 8 张表、分区、数据源 / parser / policy 版本、PIT 输入输出、最小依赖与设置字段；roadmap Phase 1 写入验收矩阵与恢复序列 | 架构决策子阶段关闭；下一项获批实现为 Cursor A3 |
 
 ## 10. 下一阶段进入条件
 
 **Phase 0 关闭条件（roadmap 验收标准）：全部满足**
 1. ✅ Constitution 为 Approved（1.0.0）且不含任何数值阈值
 2. ✅ Validation Profile 与 Experiment Metadata 的契约已定义
-3. ✅ 所有核心实体有契约与 Schema 导出（Phase 0 收口时 current 38 份，现为 46 份，逐字节一致；legacy v1 35 份不变）
+3. ✅ 所有核心实体有契约与 Schema 导出（Phase 0 收口时 current 38 份，现为 59 份，逐字节一致；legacy v1 35 份不变）
 4. ✅ 状态机只允许定义的转移（测试覆盖；主体、时间、证据约束生效）
 5. ✅ 契约层无基础设施依赖（导入检查测试）
 6. ✅ 本地测试命令可运行（1433 项通过；ruff + mypy strict 全绿）；CI 尚未配置
@@ -171,7 +172,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 3. ✅ ADR-0021 ~ 0024 已 Accepted，决定 D-01、D-02、D-08、D-10、D-28、D-31；首切片已冻结（A2）
 4. 🔄 首次消费的 Provider 先交付 Protocol + DTO + contract tests（ADR-0017；B1 已满足、B2 进行中、B3 待开放），再开始实现（C 起）
 
-**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #4 满足；#5 对应 B2，进行中）。
+**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #4 满足；#5 对应 B2，本地完成待复核）。
 
 ## 11. 给 Raphael 的下一步
 
@@ -190,5 +191,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
    已完成 A1、A1r、A1r2、A2、A2r 与 A3：ADR-0021 ~ 0025 Accepted，首切片冻结，依赖与 typed settings 已推送。
-   **Claude B1**（双时间 / revision DAG 契约）已由 Codex 验收；当前只执行 B2 universe / manifest 契约，不得开始 B3 或 Phase 0.5。
+   **Claude B1**（双时间 / revision DAG 契约）已由 Codex 验收；B2 universe / manifest 契约已本地提交、等待复核；不得开始 B3 或 Phase 0.5。
 3. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。

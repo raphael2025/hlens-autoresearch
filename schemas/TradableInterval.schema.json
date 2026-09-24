@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "description": "一段历史可交易区间：UTC 半开区间 `[tradable_from, tradable_until)`（ADR-0024 §1）。\n\n`tradable_until` **必须显式给出**：`null` 表示仍可交易（开放区间），不提供默认值，避免\"漏写结束\n时间\"被读成\"仍在交易\"。区间非空：`tradable_from < tradable_until`。按 `simulation_time` 判断是否\n可交易：`tradable_from <= simulation_time < tradable_until`。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "tradable_from": {
+      "format": "date-time",
+      "title": "Tradable From",
+      "type": "string"
+    },
+    "tradable_until": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Tradable Until"
+    }
+  },
+  "required": [
+    "tradable_from",
+    "tradable_until"
+  ],
+  "title": "TradableInterval",
+  "type": "object"
+}
