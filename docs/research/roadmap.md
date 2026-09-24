@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`），当前仅架构决策子阶段：ADR-0021 ~ 0024 已起草为 Proposed，接受前不得实现；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
+| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024 已 Accepted，架构决策子阶段已关闭；实施按下文 Phase 1 恢复序列逐批进行，当前只批准 A3；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）
@@ -73,13 +73,60 @@ flowchart TD
 ## Phase 1 — Market Representation
 
 - **目标**：建立 Data Plane：采集 → Raw → Canonical → 基础 Representation。
-- **输入**：交易所公开行情（范围待定 D-08）；可能的既有数据（只读导入）。
-- **输出**：Collector Adapter；Raw/Canonical Iceberg 表；数据质量报告；基础 Representation（时间 bar、成交量 bar 等）；首批 FeatureProvider。
+- **输入**：Binance 公共 spot `BTCUSDT` / `ETHUSDT` 的归档 aggTrades 与 1m klines（D-08 → [ADR-0022](../adr/0022-phase1-market-and-execution-scope.md)）；可能的既有数据（只读导入）。
+- **输出**：Collector Adapter；Raw/Canonical Iceberg 表（首批清单见 03-data.md §7）；数据质量报告；Research Dataset + manifest；基础 Representation（时间 bar、成交量 bar 等）；首批 FeatureProvider。
 - **模块**：`plugins/`（collector）、`infrastructure/`、`research/features/`。
-- **依赖**：P0；D-01、D-02 决定。
-- **验收标准**：Canonical 数据有快照 ID 且可时间旅行；质量报告自动生成；point-in-time 测试通过；Feature 结果可复现。
-- **禁止事项**：把行情写入 PostgreSQL；以 DuckDB 文件作为唯一存储；修改外部既有数据。
-- **可能的失败模式**：时间戳时区混乱；交易所维护/断线造成静默缺口；符号映射错误；数据量超出 WSL 内存。
+- **依赖**：P0；D-01 / D-02 / D-10 → [ADR-0021](../adr/0021-phase1-local-data-infrastructure.md)、D-28 → [ADR-0023](../adr/0023-bitemporal-revision-data.md)、D-31 → [ADR-0024](../adr/0024-historical-tradable-universe.md)（均 Accepted）。
+- **验收标准**：Canonical 数据有快照 ID 且可时间旅行；质量报告自动生成；point-in-time 测试通过；Feature 结果可复现。逐项证据见下方验收矩阵。
+- **禁止事项**：把行情写入 PostgreSQL；以 DuckDB 文件作为唯一存储；修改外部既有数据；Phase 1 ~ 6 运行 NATS；任何账户 / 交易端点或交易密钥。
+- **可能的失败模式**：时间戳时区混乱；交易所维护/断线造成静默缺口；符号映射错误；数据量超出 WSL 内存；availability / precedence 证据不足导致历史可用区间缩小或数据集 fail closed。
+
+### Phase 1 验收矩阵
+
+每项必须有可观察证据；"批次"是首次必须满足的批次，之后各批次不得回退。
+
+| # | 验收项 | 可观察证据 | 批次 |
+|---|---|---|---|
+| 1 | ADR-0021 ~ 0024 Accepted；`03-data.md` 同步；首切片表 / 分区 / 标识符 / PIT I/O / 依赖 / 设置冻结 | ADR 索引与 docs 一致性测试 | A2 |
+| 2 | 只新增 03-data.md §6.1 的四个直接依赖，版本锁定在 `uv.lock` | `pyproject.toml` / `uv.lock` diff；禁用包不存在 | A3 |
+| 3 | 类型化设置符合 03-data.md §6.2；`/mnt/*`、非 `file://`、非 PostgreSQL（测试外）被拒；DSN 不外泄 | 设置单元测试 | A3 |
+| 4 | 双轴时间、revision、`supersedes` DAG 与 maximal-head 选择的契约、Schema 与 contract tests | ADR-0023 验收矩阵中契约层可表达的各项 | B1 |
+| 5 | listing revision、`UniverseSelectionSpec`、成员 / 排除清单、`ResearchDatasetManifest` 的契约、Schema 与 contract tests；`Instrument` / `Kind` 不变 | ADR-0024 契约层各项；manifest 缺绑定项被拒 | B2 |
+| 6 | Collector / Storage / Catalog Protocol + DTO + provider-agnostic contract tests 先于任何实现 | 提交顺序；实现提交前 contract tests 已存在 | B3 |
+| 7 | `file://` StorageAdapter：staging → 校验 → 同文件系统原子发布；不拼接绝对路径；HTTP 下载壳只访问两个公共 base | B3 contract tests 对实现通过 | C1 |
+| 8 | PyIceberg SQL Catalog on PostgreSQL，独立库 / role；集成测试用独立 PostgreSQL test database（并发提交、快照、时间旅行、重启恢复）；SQLite 不计入 | 集成测试报告；catalog 库中无行情行 | C2 |
+| 9 | 03-data.md §7.1 八张表按冻结名与初始分区创建；partition-spec 演进有等价测试；batch id 幂等 commit | 表 / 分区检查与重试测试 | C3 |
+| 10 | 归档先过 `.CHECKSUM`；parser `binance.spot.archive.parser@1.0.0` 的单位与零容差范围规则；失败整文件 fail closed | 2024-12-31 / 2025-01-01 对照与人为错单位测试 | D1 |
+| 11 | append-only revision：重放幂等、归档替换追加、`arrival_seq` 不决定优先级、竞争修订 fail closed、崩溃后恢复 | ADR-0023 / 0022 验收矩阵的写入与恢复各项 | D2 |
+| 12 | REST 补尾只用 market-data-only base；缺口显式标记，不推断填补 | 端点静态检查与缺口测试 | D3 |
+| 13 | WebSocket live tail 只在 backfill、gap reconciliation 与重放幂等验收后启用（可不启用） | 启用条件检查 | D4 |
+| 14 | Canonical trades / bars_1m 绑定 Raw lineage；更高周期从 Canonical 派生且重跑按位一致；有快照 ID 且可时间旅行 | lineage 与重跑一致测试；按 snapshot 查询 | E |
+| 15 | listing 历史进入 `canonical.instrument_listings`；质量报告按分区自动生成 | 质量报告存在性测试 | E |
+| 16 | availability / precedence policy 证据已产出、审阅并有测试；缺证据时保守取 `ingest_time` | 证据记录 + 测试 | D2 / E |
+| 17 | PIT 双截止 + maximal head；competing head、缺证据、缺 universe 历史、缺 manifest 绑定均 fail closed；同输入按位一致 | ADR-0023 / 0024 PIT 与 universe 验收项 | F |
+| 18 | 基础 Representation 与首批 FeatureProvider（接口先行）；Feature guard 只用 `available_time ≤ simulation_time` 且 `knowledge_time ≤ knowledge_cutoff`；Feature 结果可复现 | 可复现与泄漏测试 | F |
+| 19 | 首切片端到端：归档 → Raw → Canonical → PIT → Research Dataset + manifest → Representation | 端到端验收记录 | G |
+| 20 | 全程：PostgreSQL 无行情、Git 无凭据 / 数据、无账户 / 交易端点、无 NATS；每批 pytest / ruff / ruff format / mypy 全绿 | 每批检查输出与静态检查 | 全部 |
+
+### Phase 1 恢复序列
+
+顺序固定为 **A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G**。每批一个可恢复 commit；门未通过不得进入下一批。
+中断或失败时回到上一批已通过 Codex 复核的 commit 重新开始，不在失败状态上叠加。Provider 接口 / DTO / Schema / contract tests
+（B1 ~ B3）先于任何实现（C 起）。每批由 Codex 任务包单独授权；本序列表明方向，不等于授权。
+
+| 批次 | 执行 | 交付 | 可观察门 | 恢复点 |
+|---|---|---|---|---|
+| A3 | Cursor | 最小依赖锁定 + 类型化设置骨架 | 验收 #2、#3；全量检查通过 | A3 commit |
+| B1 | Claude | D-28 双时间与 revision DAG 契约（`core/` 串行） | 验收 #4；current Schema 导出一致；已有契约不变 | B1 commit |
+| B2 | Claude | D-31 universe 契约 + `ResearchDatasetManifest`（`core/` 串行） | 验收 #5 | B2 commit |
+| B3 | Claude | Collector / Storage / Catalog Protocol、DTO、contract tests | 验收 #6；无任何实现 | B3 commit |
+| C1 | Cursor | `file://` StorageAdapter 与 HTTP 下载壳 | 验收 #7 | C1 commit |
+| C2 | Claude | PyIceberg catalog 语义与幂等提交；创建 catalog 库 / role 前记录 H12 授权 | 验收 #8 | C2 commit |
+| C3 | Claude | 八张表的 Schema / 分区 / 演进 | 验收 #9 | C3 commit |
+| D1 ~ D4 | Claude | fail-closed 解析 → 修订 / 恢复 / precedence 证据 → REST 补尾 → 条件式 WS | 验收 #10 ~ #13、#16 | 每个子批一个 commit |
+| E | Claude | Canonical trades / bars_1m / listings 与质量报告 | 验收 #14 ~ #16 | 每个子批一个 commit |
+| F | Claude | PIT + universe → Research Dataset + manifest；Representation 与 FeatureProvider；质量门 | 验收 #17、#18 | 每个子批一个 commit |
+| G | Claude | 端到端验收、修复、关闭文档 | 验收 #19、#20 全部通过；Phase 关闭由 Codex / Raphael 决定 | G commit |
 
 ## Phase 2 — Market State Engine
 

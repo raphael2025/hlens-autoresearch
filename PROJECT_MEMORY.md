@@ -10,20 +10,22 @@
 - 名称：HLENS-AutoResearch
 - 定位：长期演化、模块化、可插拔、可验证的加密市场自动化研究基础设施（不是交易机器人或回测框架）
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
-- 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
-- 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），仅架构决策子阶段
+- Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
+  正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），架构决策已关闭、实现未开始
 
 ## 2. Current Architecture
 
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
 - 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`：随 Phase 0 收口 fast-forward 合并进 `main` 并打 tag，
-  **视为已发布**（D-25）——此后任何破坏性契约变化都必须升 major 并走 ADR；仍无远程、无 v2 数据登记
+  **视为已发布**（D-25）——此后任何破坏性契约变化都必须升 major 并走 ADR；尚无 v2 数据登记
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
 - current Schema 38 份，与 `CONTRACT_MODELS` 一一对应；Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
-- PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet on S3 兼容存储 = 真实来源；DuckDB / Polars 只是计算引擎
+- PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet = 真实来源；DuckDB / Polars 只是计算引擎；
+  Phase 1 起：Iceberg Catalog 用独立 PostgreSQL 库、warehouse 为本地 `file://`、Phase 1 ~ 6 无 NATS（ADR-0021）
+- 数据架构冻结正文与首切片（8 张表、分区、source / parser / policy / universe 标识符、PIT I/O、A3 依赖与设置字段）：`docs/architecture/03-data.md`
 - Provider / Plugin 架构；LLM、Backtest Engine 均可替换；LLM 只产出数据，永不作裁判
 - Domain 层无基础设施依赖；依赖方向 apps → application → domain ← plugins/infrastructure
 - 实验必须可复现（复现元组）；Schema 全部版本化
@@ -39,26 +41,19 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**架构决策**；只允许 docs-only 起草 / 复核 ADR-0021（D-01 / D-02 / D-10）、ADR-0022（D-08）、
-  ADR-0023（D-28）、ADR-0024（D-31，依赖 0023）；四份接受前不实现 Collector / Provider / Iceberg / 数据库 / 网络 / 下载 / 依赖安装
-- Current Objective：ADR-0021 ~ 0024 为 Proposed（A1 起草，A1r / A1r2 按 Codex 两次退回修正）→ Codex 再复核接受
-- ADR-0023 语义（A1r）：两条时间轴——历史轴 `event_time` / `source_time` / `available_time`（版本化 availability policy，
-  可早于 ingest，需证据）与知识轴 `ingest_time` / `knowledge_time`（`>= ingest_time`）；PIT 查询 = `available_time <= simulation_time`
-  且 `knowledge_time <= knowledge_cutoff`；派生值两轴分别传播，今天重算不把 `available_time` 推到今天
-- ADR-0023 / 0024 修订选择（A1r2）：`arrival_seq` 只表示本机追加顺序（唯一、稳定、不复用、允许间隙），不决定优先级；
-  优先级来自 `revision_id` + `supersedes` DAG + 持久化的来源 precedence 证据；淘汰被直接或传递 supersede 的候选，
-  唯一 maximal head 才选中；多个 head = conflict，fail closed；禁止用到达顺序、墙钟或 payload hash 打破冲突
-- Codex 裁决（A1r 写入）：不升 3.0.0，新增 `ResearchDatasetManifest` + 未来 Runner 接口义务；`UniverseSelectionSpec` 不新增 `Kind`，
-  在 manifest 中以 `name + SemVer + content hash` 绑定
-- Current Blocker：无（授权已记录）；Docker 未安装会影响 D-02 的可选方案
-- Next Milestone：ADR-0021 ~ 0024 Accepted；首个 Provider 先交付 Protocol + DTO + contract tests（ADR-0017）
+- Current Subphase：**架构决策已关闭**（A2：ADR-0021 ~ 0024 Accepted，`03-data.md` 同步并冻结首切片）；实现尚未开始
+- Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
+  验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
+- 当前唯一获批实现：**Cursor A3**（依赖锁定 + 类型化设置骨架）；Claude 的 B1 须等 A3 完成并由 Codex 下达任务包
+- Current Blocker：无；创建 catalog 库 / role（C2）前须记录 H12 授权
+- Next Milestone：A3 完成；B1 双时间与 revision 契约
 
 ## 5. Active Decisions
 
 - ADR-0001：重大架构决定用 ADR 记录；Agent 只能起草 Proposed
 - ADR-0002：架构基线（原则 P1–P17、四个 Plane、默认技术栈）
 - ADR-0003（D-06）：Python 3.13 + uv，与系统 Python 隔离
-- ADR-0004（D-07）：本地 Git 仓库；不改全局配置；远程未定
+- ADR-0004（D-07）：Git 仓库；不改全局配置；远程为私有 GitHub `raphael2025/hlens-autoresearch`（Codex 复核后推送；PR / CI 未配置）
 - ADR-0005（D-03）：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Q-1 / Q-2 / Q-3 / Q-7 开放
 - ADR-0006（D-05）：生命周期 v2（C-1：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；C-2：ACTIVE 带
   `execution_mode` SIMULATED|LIVE，不设 LIVE 状态）；RETIRED 进退役记录，REJECTED / FAILED 进 Failure Registry；Q-4 ~ Q-6 开放
@@ -79,9 +74,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0018（D-26）：三类语义身份（选择键、`Ref` 目标、Git 代码修订）排除信封版本；全局 `==` 与内容哈希不变
 - ADR-0019（D-27）：生命周期转移证据至少一项且非空；不做自报职责分离
 - ADR-0020：Constitution 发布为 `1.0.0 / Approved`，第一至第九章正文 sha256 `4d603d62…259cd` 不变，只前向适用
-- 开放问题（已登记，ADR 接受前仍未关闭）：D-28 修订数据语义 → ADR-0023、D-31 历史标的池 → ADR-0024；
-  D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；
-  D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022（四份均 Proposed）；D-04（Phase 4）
+- ADR-0021（D-01 / D-02 / D-10）：PyIceberg SQL Catalog on 独立 PostgreSQL 库（与 Control Plane 物理隔离）、WSL ext4 `file://` warehouse 经 Adapter、Phase 1 ~ 6 不运行 NATS
+- ADR-0022（D-08）：首切片 Binance 公共 spot BTCUSDT / ETHUSDT 归档优先 + market-data-only REST 补尾；WS 延后；无任何交易能力或密钥
+- ADR-0023（D-28）：历史轴（`available_time`，有证据的 policy）与知识轴（`knowledge_time`）分离；append-only revision；
+  `arrival_seq` 只作审计；PIT 双截止 + maximal head，competing heads fail closed；Research Dataset 绑定 `ResearchDatasetManifest`（不升 3.0.0）
+- ADR-0024（D-31）：静态 `Instrument` 不变 + 双轴 listing episode 历史；`UniverseSelectionSpec` 以 `name + SemVer + hash` 在 manifest 绑定，不新增 `Kind`
+- 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag）；原则或阈值变化、实盘、资金、风险预算不在内
 
@@ -95,16 +93,17 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 环境变更（安装、系统配置、Docker、数据库、全局 Git 配置）需 Raphael 授权
 - 不修改旧项目与外部数据
 - Claude 不替 Raphael 做架构决策；Codex 在 Raphael 委托边界内作正式决定并记录（CLAUDE.md §0）
-- Git：main 为稳定基线，实现工作走 `phase/*` 分支；合并进 main 需 Raphael 批准（或其已记录的授权）；无远程仓库
+- Git：main 为稳定基线，实现工作走 `phase/*` 分支；合并进 main 需 Raphael 批准（或其已记录的授权）；Claude 不 push，由 Codex 复核后推送
 - 实盘、资金、风险预算始终需要 Raphael 亲自批准
 
 ## 7. Current Known Risks
 
 - pypi.org 索引域名在本机被阻断（files.pythonhosted.org 可达）：离线安装需用 uv.lock 的精确版本
 - WSL 内存约 15 GiB：大数据集需分区和流式处理
-- Docker 未安装：Phase 1 之后的本地服务依赖它（D-02）
+- Docker 未安装：ADR-0021 已按无 Docker 设计（`file://` warehouse）；MinIO / S3 延期
 - 外部数据盘未挂载：`~/BTC` → `/mnt/wsl/PHYSICALDRIVE1p1/BTC` 当前不可访问
-- Git 没有全局提交身份：提交使用一次性 `-c` 参数；无远程，无异地备份、无 PR / CI
+- Git 没有全局提交身份：提交使用一次性 `-c` 参数；PR / CI 未配置；warehouse 数据无异地副本
+- availability / precedence policy 证据未产出：在其被产出并测试之前，首切片数据不可信（03-data.md §7.3）
 - Constitution 1.0.0 只是原则：验证流水线、泄漏门、多重检验校正、trial 账本均未实现，Profile 数值要到 Phase 4；
   在那之前没有实验能被实际判定
 - 契约层只校验**结构与声明**：传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、Registry 存在性、
@@ -145,5 +144,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Schema current 38 份（2.0.0）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
+- Phase 1：最近一次经 Codex 复核通过并推送的 `phase/1` 提交为 `6d53cf5`（A1r2）；之后的 A2 提交待复核
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
-  `phase/1` 从该 commit 创建（Phase 1 工作分支）；无远程、未 push
+  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`

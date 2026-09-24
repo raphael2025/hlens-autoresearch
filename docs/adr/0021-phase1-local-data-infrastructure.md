@@ -2,9 +2,11 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r 同步 Codex 事实复核；待 Codex 再复核后决定） |
+| 状态 | **Accepted（2026-09-24，Codex 依 Raphael 授权批准）**；尚待实施（起草与修正：2026-09-24，批次 A1 起草；A1r 同步 Codex 事实复核） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（依据 Raphael 2026-09-24"授权所有"的持续授权） |
+| 批准者 | Codex（依 Raphael 2026-09-24 记录的授权） |
+| 接受依据 | Codex 独立复核 A1r2 提交 `6d53cf5bdb3a13393a60f3a360ef048c91052864`：结论 **PASS**；独立重跑 docs 一致性 `7 passed`、全量 `1433 passed`、ruff check / format 与 mypy 无问题；于批次 A2 记录接受 |
 | 起草者 | Claude Code（Opus）按 Codex 裁决落文 |
 | 相关 Phase | Phase 1（首次使用）；影响至 Phase 11 |
 | 影响范围 | Infrastructure / Data / Plugin |
@@ -103,7 +105,7 @@ partitioned 表不支持 streaming `RecordBatchReader`。Claude 未联网、未�
   （细节见 ADR-0023）；orphan 只由显式 maintenance 任务在确认未被引用后清理。
 - Catalog 数据库不可用：写入 fail closed，不得降级为写本地清单或 SQLite。
 - 进程崩溃：重启后从 catalog 当前 snapshot 恢复；staging 中未提交的批次按幂等键重放。
-- 本地磁盘损坏或丢失：本阶段无异地副本（无远程、无 S3），这是明确接受的风险，由后续存储迁移解决。
+- 本地磁盘损坏或丢失：warehouse 本阶段无异地副本（私有 GitHub 远程只托管代码与文档，warehouse 数据不入 Git；无 S3），这是明确接受的风险，由后续存储迁移解决。
 
 ## 安全边界
 
@@ -140,7 +142,7 @@ partitioned 表不支持 streaming `RecordBatchReader`。Claude 未联网、未�
 
 - 实施前在锁定的 PyIceberg 版本上对 SQL Catalog（PostgreSQL）、`file:` FileIO、并发提交与重启恢复做 smoke / integration 验证（Codex 已按官方文档复核能力陈述）。
 - PostgreSQL 服务已由 Codex 只读确认在线；实施前仍须按 H12 记录创建 database / role 的授权，并以最小权限连接验证。
-- 本地 warehouse 的备份策略与远程仓库 / 异地存储决定（PROJECT_STATUS §6）。
+- 本地 warehouse 的备份策略与异地存储决定（代码远程已为私有 GitHub，不承担 warehouse 备份）。
 - NATS 引入门满足时另起 ADR，最迟 Phase 11 前。
 
 ## 版本策略
@@ -148,10 +150,12 @@ partitioned 表不支持 streaming `RecordBatchReader`。Claude 未联网、未�
 - 本 ADR 不改变契约版本。新增 Adapter 契约按 02-domain.md §3：增量为 minor；修改或删除既有字段为 major + ADR。
 - Catalog / Storage 的实现替换（REST Catalog、S3、MinIO）通过新 Adapter 实现 + 迁移验收，不改领域契约。
 
-## 合规检查（Proposed 阶段）
+## 合规检查（A2 接受时）
 
 - [x] 不修改任何已接受 ADR 正文、Constitution 或契约
 - [x] 不在 PostgreSQL 存储行情（H8）；不提交密钥或数据（H9）
 - [x] Domain 层仍无具体技术依赖（H7）
-- [ ] Codex 复核并接受 —— 待进行
-- [ ] 环境变更授权与依赖锁定 —— 实施批次
+- [x] Codex 独立复核 A1r2（`6d53cf5`，PASS）并于 2026-09-24 接受（A2 记录）
+- [x] 接受后同步冻结文档 `03-data.md` §1 / §6（Catalog 隔离、`file://` warehouse、Phase 1 ~ 6 无 NATS）—— A2 执行
+- [ ] 环境变更授权与依赖锁定 —— 实施批次（最小依赖清单已在 roadmap Phase 1 冻结，由 Cursor A3 锁定进 `uv.lock`）
+- [ ] 验收矩阵 1 ~ 11 —— 实施批次验证

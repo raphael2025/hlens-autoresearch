@@ -2,9 +2,11 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r、A1r2 按 Codex 两次独立复核退回意见修正；待 Codex 再复核后决定） |
+| 状态 | **Accepted（2026-09-24，Codex 依 Raphael 授权批准）**；尚待实施（起草与修正：2026-09-24，批次 A1 起草；A1r、A1r2 按 Codex 两次独立复核退回意见修正） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（依据 Raphael 2026-09-24"授权所有"的持续授权） |
+| 批准者 | Codex（依 Raphael 2026-09-24 记录的授权） |
+| 接受依据 | Codex 独立复核 A1r2 提交 `6d53cf5bdb3a13393a60f3a360ef048c91052864`：结论 **PASS**；独立重跑 docs 一致性 `7 passed`、全量 `1433 passed`、ruff check / format 与 mypy 无问题；于批次 A2 记录接受 |
 | 起草者 | Claude Code（Opus）按 Codex 裁决落文 |
 | 相关 Phase | Phase 1（首次使用）；Phase 5+ 的策略研究依赖 |
 | 影响范围 | Data / Contract / 研究完整性（Constitution C-L4） |
@@ -166,11 +168,13 @@ listing 历史表的 `snapshot_id`、`simulation_time` 或区间、`knowledge_cu
 - 本 ADR 不改变 `CONTRACT_SCHEMA_VERSION`，不改变 `Kind`。新增模型为 minor。
 - `UniverseSelectionSpec` 自身按 SemVer 版本化并带内容哈希；规则变化发布新版本，旧版本保留以复现旧实验。
 
-## 合规检查（Proposed 阶段）
+## 合规检查（A2 接受时）
 
 - [x] 不修改 `Instrument`、`Kind` 或任何契约、代码
 - [x] 不选择任何数值阈值
 - [x] 不修改 Constitution 原则；把 C-L4 落为可审计的数据义务
 - [x] 接受时问题已由 Codex 裁决并写入（不新增 `Kind`；manifest 绑定；暂停 / 改名语义确认）
 - [x] listing revision 选择使用 maximal-head 算法，competing heads fail closed（A1r2）
-- [ ] Codex 再复核并接受 —— 待进行
+- [x] Codex 独立复核 A1r2（`6d53cf5`，PASS）并于 2026-09-24 接受（A2 记录）
+- [x] universe 绑定写入 `03-data.md` §3 / §7（`binance.spot.btc-eth@1.0.0` + content hash）—— A2 执行
+- [ ] 验收矩阵 1 ~ 17 —— 实施批次验证

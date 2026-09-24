@@ -2,9 +2,11 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r、A1r2 按 Codex 两次独立复核退回意见修正；待 Codex 再复核后决定） |
+| 状态 | **Accepted（2026-09-24，Codex 依 Raphael 授权批准）**；尚待实施（起草与修正：2026-09-24，批次 A1 起草；A1r、A1r2 按 Codex 两次独立复核退回意见修正） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（依据 Raphael 2026-09-24"授权所有"的持续授权） |
+| 批准者 | Codex（依 Raphael 2026-09-24 记录的授权） |
+| 接受依据 | Codex 独立复核 A1r2 提交 `6d53cf5bdb3a13393a60f3a360ef048c91052864`：结论 **PASS**；独立重跑 docs 一致性 `7 passed`、全量 `1433 passed`、ruff check / format 与 mypy 无问题；于批次 A2 记录接受 |
 | 起草者 | Claude Code（Opus）按 Codex 裁决落文 |
 | 相关 Phase | Phase 1（首次使用）；所有后续 Phase 的数据消费 |
 | 影响范围 | Data / Contract / 复现机制 |
@@ -283,11 +285,13 @@ PIT 查询必须同时给出：
 - `03-data.md` §4 的修改以本 ADR 为依据，在 ADR 接受后的独立文档批次中执行。
 - PIT spec 与 availability policy 各自带版本号；变化 = 新版本，旧版本保留以复现旧实验。
 
-## 合规检查（Proposed 阶段）
+## 合规检查（A2 接受时）
 
-- [x] 不修改冻结文档正文（03-data.md §4 的修改只在本 ADR 中提出）
+- [x] Proposed 期间不修改冻结文档正文；接受后 §8 的修改已在 A2 同步到 `03-data.md` §3 / §4
 - [x] 不修改 Constitution 原则；C-L1 保持不变，`t` 明确为 `simulation_time`
 - [x] 不修改任何已接受 ADR 正文或已发布契约字段
 - [x] 接受时问题已由 Codex 裁决并写入（不升 3.0.0；新增 `ResearchDatasetManifest`）
 - [x] 追加顺序（`arrival_seq`）与修订优先级（`supersedes` / 来源证据）已分离（A1r2）
-- [ ] Codex 再复核并接受 —— 待进行
+- [x] Codex 独立复核 A1r2（`6d53cf5`，PASS）并于 2026-09-24 接受（A2 记录）
+- [ ] `FeatureSpec` 文档字符串同步、availability / precedence policy 证据 —— 实施批次
+- [ ] 验收矩阵 1 ~ 23 —— 实施批次验证

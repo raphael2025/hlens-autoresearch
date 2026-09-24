@@ -2,9 +2,11 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r 同步 Codex 事实复核与 ADR-0023 时间语义；待 Codex 再复核后决定） |
+| 状态 | **Accepted（2026-09-24，Codex 依 Raphael 授权批准）**；尚待实施（起草与修正：2026-09-24，批次 A1 起草；A1r 同步 Codex 事实复核与 ADR-0023 时间语义） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（依据 Raphael 2026-09-24"授权所有"的持续授权；执行范围部分见「安全边界」） |
+| 批准者 | Codex（依 Raphael 2026-09-24 记录的授权） |
+| 接受依据 | Codex 独立复核 A1r2 提交 `6d53cf5bdb3a13393a60f3a360ef048c91052864`：结论 **PASS**；独立重跑 docs 一致性 `7 passed`、全量 `1433 passed`、ruff check / format 与 mypy 无问题；于批次 A2 记录接受 |
 | 起草者 | Claude Code（Opus）按 Codex 裁决落文 |
 | 相关 Phase | Phase 1（研究数据范围）；执行范围约束至 Phase 13 |
 | 影响范围 | Data / Plugin / Security |
@@ -159,11 +161,13 @@ order book、options、链上数据、其它 venue 均延期，各自需要新�
   并记录在 Raw / Canonical 的来源元数据中。
 - 扩大范围（新 venue、新数据类型、第二切片）通过新的 ADR 或 Codex 裁决记录追加，不修改本 ADR 正文。
 
-## 合规检查（Proposed 阶段）
+## 合规检查（A2 接受时）
 
 - [x] 不访问交易所、不创建凭据、不下载数据
 - [x] 不授予任何实盘能力；实盘授权保持为 Raphael 专属（H10）
 - [x] 不修改任何已接受 ADR 正文、Constitution 或契约
-- [ ] Codex 复核并接受 —— 待进行
+- [x] Codex 独立复核 A1r2（`6d53cf5`，PASS）并于 2026-09-24 接受（A2 记录）
+- [x] 首切片来源 / parser / policy 标识符在 `03-data.md` §7 冻结 —— A2 执行
 - [x] 关键 Binance 事实（微秒切换、market-data-only base）已由 Codex 于 2026-09-24 按官方资料复核
-- [ ] 其余来源细节与行为 smoke 验证 —— 实施批次
+- [ ] 其余来源细节、availability / precedence policy 证据与行为 smoke 验证 —— 实施批次
+- [ ] 验收矩阵 1 ~ 11 —— 实施批次验证
