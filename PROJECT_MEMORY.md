@@ -44,7 +44,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3D REVIEW_PENDING**（`binance.spot.public-rest@1.0.0` collector、四项冻结设置、不可变 page / collection checkpoint、相同 `request_id` 重放不联网、HTTP / 重试 / 预算边界已实现）；D3C / D3C-R1 已由 Codex 验收（`643cf45` + `6b9e670`）
+- Current Subphase：**D3D REVIEW_PENDING**（D3D `61dd9bf` 被退回 HTTP client 注入缺陷，D3D-R1 已修复待复核；`binance.spot.public-rest@1.0.0` collector、四项冻结设置、不可变 page / collection checkpoint、相同 `request_id` 重放不联网、HTTP / 重试 / 预算边界已实现）；D3C / D3C-R1 已由 Codex 验收（`643cf45` + `6b9e670`）
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - D3D 待验收；D3E 等 D3D 经 Codex 验收后开放
@@ -84,7 +84,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   `arrival_seq` 只作审计；PIT 双截止 + maximal head，competing heads fail closed；Research Dataset 绑定 `ResearchDatasetManifest`（不升 3.0.0）
 - ADR-0024（D-31）：静态 `Instrument` 不变 + 双轴 listing episode 历史；`UniverseSelectionSpec` 以 `name + SemVer + hash` 在 manifest 绑定，不新增 `Kind`
 - ADR-0026（D-32）：PyIceberg 0.12 的 day transform 写入使用官方 `pyiceberg-core` extra；不改变冻结分区或写入路径；已实施并随 C3 验收
-- ADR-0027（D-33，Accepted 2026-09-25，部分实施）：D3B 已实现四张 additive Raw 表、REST 身份规则与纯 policy，D3C 已实现严格纯 decoder，D3D 已实现 `binance.spot.public-rest@1.0.0` collector（待验收）；归档路径与 `IDENTITY_HASH` 零改动；D3E 尚待实施；D-33 方案 A 生效（规范内容投影逐字段相等才在独立证据表写 evidence-only 边 归档 → REST，项目政策、非来源先后）
+- ADR-0027（D-33，Accepted 2026-09-25，部分实施）：D3B 已实现四张 additive Raw 表、REST 身份规则与纯 policy，D3C 已实现严格纯 decoder，D3D 已实现 `binance.spot.public-rest@1.0.0` collector（D3D-R1：collector 只经自建、无 hook / auth / 环境代理 / cookie 的 client 发送，不接受外部 `httpx.Client`；待验收）；归档路径与 `IDENTITY_HASH` 零改动；D3E 尚待实施；D-33 方案 A 生效（规范内容投影逐字段相等才在独立证据表写 evidence-only 边 归档 → REST，项目政策、非来源先后）
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /

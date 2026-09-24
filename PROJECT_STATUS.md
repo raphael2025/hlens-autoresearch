@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **D3D REVIEW_PENDING**：REST collector 已实现，等待 Codex 复核；D3E 仍关闭 |
+| 当前子阶段 | **D3D REVIEW_PENDING**：REST collector（`61dd9bf`）经 Codex 接受门退回 HTTP client 注入缺陷，D3D-R1 已修复，等待 Codex 复核；D3E 仍关闭 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3C 已验收；D3D 待复核） |
 | 最后更新时间 | 2026-09-25 |
@@ -90,7 +90,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 D3B / D3B-R1（Claude Opus）：四张 REST 表定义、独立 REST 身份规则、REST availability / precedence 与 D-33 通道等价纯函数；R1 关闭极端十进制异常泄漏与伪造 / 过期比较可生成边；Codex 对抗复核、真实 PostgreSQL 3252 项全量与静态检查通过（`3b267a0` + `02c0418`）
 - ✅ Phase 1 D3C / D3C-R1（Claude Opus）：严格、无 I/O 的 `binance.spot.rest.decoder@1.0.0`（`infrastructure/parser/binance_rest.py`）——完整正文 + 已校验页查询 + `retrieved_at` + 目标窗口 + 上一页摘要 + 正文上限（纯参数，非设置）→ 不可变元素 + 确定性页摘要，或一条整页拒绝（零元素）；R1 修复 RFC JSON 框架空白；Codex 独立对抗探针、真实 PostgreSQL 3434 项全量与静态检查通过（`643cf45` + `6b9e670`）
 - ✅ Phase 1 D1（Claude Opus）：`binance.spot.archive.parser@1.0.0` 按覆盖日选择毫秒 / 微秒，严格 ZIP / CSV 与零容差覆盖边界，失败只产结构化质量事件且不泄露部分 rows；Codex 独立运行 2955 项全量测试、70,000 行末尾失败原子性探针，并真实解析两个日期的 kline 与 aggTrades 官方归档（`c966085`）
-- 🔄 Phase 1 D3D（Claude Opus）：`binance.spot.public-rest@1.0.0` 同步 collector——结构化端点 allowlist、不跟随重定向、有界正文与重试、`Retry-After` / 418 / 5xx / 页数预算、注入时钟与 sleeper；按 D3C 分页并发布不可变正文对象 + page / collection checkpoint；同 `request_id` 重放零网络、崩溃点可续、并发以先发布者为准；四项冻结设置落入 `Settings`。**REVIEW_PENDING**
+- 🔄 Phase 1 D3D（Claude Opus）：`binance.spot.public-rest@1.0.0` 同步 collector——结构化端点 allowlist、不跟随重定向、有界正文与重试、`Retry-After` / 418 / 5xx / 页数预算、注入时钟与 sleeper；按 D3C 分页并发布不可变正文对象 + page / collection checkpoint；同 `request_id` 重放零网络、崩溃点可续、并发以先发布者为准；四项冻结设置落入 `Settings`。Codex 接受门发现可注入的 `httpx.Client` 能在 allowlist 之后加凭据 header、把请求改写到外域账户路径 → **D3D-R1**：删除 client 注入入口，collector 只经自建 client 发送（无 hook / auth / 环境代理 / 重定向，cookie 一律不存）。**REVIEW_PENDING**
 
 ## 4. 当前正在做
 
@@ -109,7 +109,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ D3A / D3A-R1（Claude Opus，docs-only）：Codex 已验收，ADR-0027 Accepted；验收 #13 的前置设计门满足
 - ✅ D3B / D3B-R1（Claude Opus）：Codex 已独立验收；四张 REST 表定义（原八张哈希不变）、独立 REST 身份规则、REST availability / precedence 与通道等价纯函数；无 HTTP、无写入；接受 `3b267a0` + `02c0418`
 - ✅ D3C / D3C-R1（Claude Opus）：Codex 已独立验收；接受 `643cf45` + `6b9e670`，验收记录 `docs/reviews/2026-09-25-d3c-rest-decoder-acceptance.md`
-- 🔄 D3D（Claude Opus）：**REVIEW_PENDING**；REST collector、四项冻结设置、不可变 page / collection checkpoint、相同 `request_id` 重放不联网、HTTP allowlist / 状态 / 重定向 / 限流 / 重试 / 预算边界均已实现并通过真实 PostgreSQL 全量 3578 项；等待 Codex 对抗复核，D3E 仍关闭
+- 🔄 D3D / D3D-R1（Claude Opus）：**REVIEW_PENDING**；D3D-R1 关闭 HTTP client 注入边界（`61dd9bf` 未被接受、未推送）；REST collector、四项冻结设置、不可变 page / collection checkpoint、相同 `request_id` 重放不联网、HTTP allowlist / 状态 / 重定向 / 限流 / 重试 / 预算边界均已实现并通过真实 PostgreSQL 全量 3578 项；等待 Codex 对抗复核，D3E 仍关闭
 
 ## 5. 下一步
 
@@ -204,11 +204,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | Phase 1 D3D-R1（Claude Opus）：Codex 复现 `61dd9bf` 的缺陷——构造入口接受完整 `httpx.Client`，其默认 header / cookie / auth / request hook 在 allowlist 之后生效，可加 `cookie`、`authorization` 并把已校验请求改写为外域 `/api/v3/account`。修复：删除 `http_client` 注入（`__init__` 与 `from_settings`），只留 `http_transport` 测试 seam；collector 自建并拥有 client（无 hook / auth、`trust_env=False`、拒收一切 cookie、不跟随重定向），发送前再核对请求（纵深防御）。新回归测试在 `61dd9bf` 上 8 项失败、修复后通过；`python -O` 43 项探针、真实 PostgreSQL 全量与静态检查全绿；契约与冻结哈希不变 | REVIEW_PENDING，等待 Codex 复核；D3E 仍关闭 |
 | 2026-09-25 | Phase 1 D3D（Claude Opus）：`binance.spot.public-rest@1.0.0` collector——结构化 allowlist（origin / 精确 path / 白名单 query，恶意输入零网络拒绝）、不跟随重定向、流式正文上限与 `Content-Length` 核对、`Retry-After` 纯秒有界等待 / 418 立即终止 / 5xx 与传输错误有界重试 / 每次 collect 的新取页预算、注入 UTC 墙钟与 monotonic / sleeper；按 D3C 的 `next_query` 分页，发布内容寻址正文对象 + 不可变 page / collection checkpoint，重放严格重解码并逐字段复现，同 `request_id` 零网络、崩溃点可续、并发以先发布者为准、改请求内容在联网前 fail closed；`Settings` 增加四项冻结字段。全量真实 PostgreSQL 3578 项、`python -O` 38 项对抗探针、只读公共 smoke（两种 data type 各一页）与全部静态检查全绿；冻结哈希与 12 张表定义不变 | REVIEW_PENDING，等待 Codex 复核；D3E 仍关闭 |
 | 2026-09-25 | Codex 独立复核 D3C / D3C-R1（`643cf45` + `6b9e670`）PASS：退回并修复 RFC JSON 框架空白；`python -O` 独立对抗探针覆盖合法组合、非 RFC 空白与尾随载荷；decoder / pagination 182 项、docs 7 项、真实 PostgreSQL 全量 3434 项及全部静态检查全绿；冻结哈希除派生 decoder hash 外不变 | D3C 接受；**只开放 D3D**；D3E 关闭；验收记录 `docs/reviews/2026-09-25-d3c-rest-decoder-acceptance.md` |
 | 2026-09-25 | Phase 1 D3C-R1（Claude Opus）：按 Codex 复核修正一处缺陷——顶层 JSON 值前后的 RFC 空白（空格 / 制表 / LF / CR）是合法框架，不再当作 `invalid_json` / `trailing_content`；只跳这四个字节，不用 Unicode `isspace()`；非 RFC 空白与任何非空白尾随内容仍整页拒绝；`DECODER_SPEC` 改为写明接受的框架空白，派生的 `DECODER_HASH` 随之改变（D3C 尚未验收）；其余严格性与既有哈希不变 | 等待 Codex 接受门；D3D 仍关闭 |
 | 2026-09-25 | Phase 1 D3C（Claude Opus）：严格 REST page decoder `binance.spot.rest.decoder@1.0.0`——正文上限先于 JSON 解析、严格 UTF-8 / 顶层数组 / 无重复键 / 无 NaN / 无尾随内容、精确元素形状与 `decimal(38,18)` 文法、查询下界与 `retrieved_at` 上界、页内与跨页顺序、未结束 K 线（至多一根且必须末项）、ADR §7 answered 区间、四种终止原因与精确续页查询（含 int64 溢出与不前进守卫）；目标窗口只管停止与覆盖，越界合法元素照常解码；拒绝为整页原子、零元素、不含正文；无 HTTP / store / 设置 / 新依赖 / 新公共契约；全量 3416 项、`python -O` 探针与全部静态检查全绿 | REVIEW_PENDING，等待 Codex 复核；D3D 仍关闭 |
-| 2026-09-25 | Codex 独立复核 D3B / D3B-R1（`3b267a0` + `02c0418`）PASS：`python -O` 对抗脚本通过；原八张表与归档身份哈希不变；真实 PostgreSQL 全量 3252 项、聚焦 199 项、docs 一致性与全部静态检查全绿 | D3B 接受；**只开放 D3C**，D3D～D3E 关闭；验收记录 `docs/reviews/2026-09-25-d3b-rest-foundations-acceptance.md` |
 
 ## 10. 下一阶段进入条件
 

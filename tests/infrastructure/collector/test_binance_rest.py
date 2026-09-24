@@ -25,7 +25,6 @@ from infrastructure.collector.binance_rest import (
     REST_COLLECTOR_ID,
     REST_COLLECTOR_VERSION,
     REST_SOURCE,
-    BinanceSpotRestCollector,
 )
 from infrastructure.revision.rest_identity import RestPageQuery, page_source_uri
 from tests.infrastructure.collector.rest_support import (
@@ -720,43 +719,14 @@ def test_out_of_range_operational_settings_are_refused(tmp_path: Path, venue: Re
             make_collector(storage, venue, **kwargs)  # type: ignore[arg-type]
 
 
-def test_close_is_idempotent_and_leaves_injected_clients_alone(
-    tmp_path: Path, venue: RestVenue
-) -> None:
-    import httpx
-
+def test_close_is_idempotent_and_closes_the_owned_client(tmp_path: Path, venue: RestVenue) -> None:
     storage = make_storage(tmp_path)
-    with BinanceSpotRestCollector(
-        storage,
-        market_data_base_url=ORIGIN,
-        http_connect_timeout_seconds=1.0,
-        http_read_timeout_seconds=1.0,
-        http_max_retries=0,
-        http_user_agent="hlens-d3d-test/0.0.0",
-        max_pages_per_collect=1,
-        min_request_interval_ms=50,
-        max_retry_after_seconds=1,
-        max_response_bytes=65_536,
-        http_transport=venue.transport(),
-    ) as collector:
+    with make_collector(storage, venue) as collector:
         assert collector.descriptor.version == REST_COLLECTOR_VERSION
-    injected = httpx.Client(transport=venue.transport())
-    other = BinanceSpotRestCollector(
-        storage,
-        market_data_base_url=ORIGIN,
-        http_connect_timeout_seconds=1.0,
-        http_read_timeout_seconds=1.0,
-        http_max_retries=0,
-        http_user_agent="hlens-d3d-test/0.0.0",
-        max_pages_per_collect=1,
-        min_request_interval_ms=50,
-        max_retry_after_seconds=1,
-        max_response_bytes=65_536,
-        http_client=injected,
-    )
-    other.close()
-    assert not injected.is_closed
-    injected.close()
+        client = collector._client
+    assert client.is_closed
+    collector.close()  # a second close is harmless
+    assert client.is_closed
 
 
 def test_retrieved_at_is_taken_after_the_last_byte(tmp_path: Path, venue: RestVenue) -> None:

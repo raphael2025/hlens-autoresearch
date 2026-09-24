@@ -109,3 +109,27 @@ def test_the_credential_denylist_is_the_only_place_secret_words_appear() -> None
             assert '"' in line or "#" in line or "credential" in line, (
                 f"{SOURCE_PATH.name}:{line_number} uses {word!r} outside the refusal list"
             )
+
+
+def test_the_module_builds_exactly_one_client_and_accepts_none() -> None:
+    """D3D-R1: no caller-supplied client, one owned client with every widening state off."""
+    arguments = {
+        arg.arg
+        for node in ast.walk(TREE)
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef)
+        for arg in (*node.args.args, *node.args.kwonlyargs)
+    }
+    assert "http_client" not in arguments
+    constructions = [
+        node
+        for node in ast.walk(TREE)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "Client"
+    ]
+    assert len(constructions) == 1
+    keywords = {kw.arg: kw.value for kw in constructions[0].keywords}
+    for name, expected in (("trust_env", False), ("follow_redirects", False), ("auth", None)):
+        value = keywords[name]
+        assert isinstance(value, ast.Constant) and value.value is expected, name
+    assert "event_hooks" in keywords and "cookies" in keywords

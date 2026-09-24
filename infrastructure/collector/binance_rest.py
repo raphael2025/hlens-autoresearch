@@ -47,6 +47,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from http.cookiejar import CookieJar, DefaultCookiePolicy
 from typing import Any, Final, Self
 
 import httpx
@@ -285,6 +286,28 @@ def _validate_market_data_origin(base_url: object) -> str:
     if parts.path not in {"", "/"}:
         raise ValueError("market-data base URL must be an origin without a path")
     return f"https://{parts.authority}"
+
+
+def _owned_client(
+    transport: httpx.BaseTransport | None, timeout: httpx.Timeout, user_agent: str
+) -> httpx.Client:
+    """The only client this module ever sends through (D3D-R1).
+
+    Every state that could act after the endpoint allowlist is pinned off: no auth, no request /
+    response hooks, no redirects, no environment trust (so neither ``NETRC`` credentials nor
+    ``*_PROXY`` rerouting apply), and a cookie jar whose policy refuses every cookie, so a
+    ``Set-Cookie`` answer can never be replayed on a later request.
+    """
+    return httpx.Client(
+        transport=transport,
+        timeout=timeout,
+        follow_redirects=False,
+        headers={"User-Agent": user_agent},
+        auth=None,
+        cookies=CookieJar(policy=DefaultCookiePolicy(allowed_domains=[])),
+        event_hooks={"request": [], "response": []},
+        trust_env=False,
+    )
 
 
 def _epoch_ms(value: datetime, label: str) -> int:
@@ -650,20 +673,24 @@ class BinanceSpotRestCollector:
         min_request_interval_ms: int,
         max_retry_after_seconds: int,
         max_response_bytes: int,
-        http_client: httpx.Client | None = None,
         http_transport: httpx.BaseTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
         sleeper: Callable[[float], None] | None = None,
     ) -> None:
+        """``http_transport`` is the only HTTP seam (tests use ``httpx.MockTransport``).
+
+        D3D-R1: there is deliberately no way to hand in an ``httpx.Client``. A caller's client
+        carries default headers, cookies, auth and request event hooks that act *after* the
+        endpoint allowlist, so it could add credentials or rewrite a validated request to another
+        origin or an account path. The collector always builds and owns its own client.
+        """
         if http_connect_timeout_seconds <= 0 or http_read_timeout_seconds <= 0:
             raise ValueError("HTTP timeouts must be positive")
         if http_max_retries < 0:
             raise ValueError("http_max_retries must be >= 0")
         if not http_user_agent.strip():
             raise ValueError("http_user_agent must not be blank")
-        if http_client is not None and http_transport is not None:
-            raise ValueError("provide at most one of http_client or http_transport")
 
         self._storage = storage
         self._origin = _validate_market_data_origin(market_data_base_url)
@@ -703,16 +730,7 @@ class BinanceSpotRestCollector:
         self._monotonic = monotonic or time.monotonic
         self._sleeper = sleeper or time.sleep
         self._last_send_monotonic: float | None = None
-        self._owns_client = http_client is None
-        if http_client is not None:
-            self._client = http_client
-        else:
-            self._client = httpx.Client(
-                transport=http_transport,
-                timeout=self._timeout,
-                follow_redirects=False,
-                headers={"User-Agent": self._user_agent},
-            )
+        self._client = _owned_client(http_transport, self._timeout, self._user_agent)
         self._descriptor = CollectorDescriptor(
             collector_id=REST_COLLECTOR_ID,
             version=REST_COLLECTOR_VERSION,
@@ -726,7 +744,6 @@ class BinanceSpotRestCollector:
         settings: Settings,
         storage: StorageAdapter,
         *,
-        http_client: httpx.Client | None = None,
         http_transport: httpx.BaseTransport | None = None,
         clock: Callable[[], datetime] | None = None,
         monotonic: Callable[[], float] | None = None,
@@ -744,7 +761,6 @@ class BinanceSpotRestCollector:
             min_request_interval_ms=settings.binance_rest_min_request_interval_ms,
             max_retry_after_seconds=settings.binance_rest_max_retry_after_seconds,
             max_response_bytes=settings.binance_rest_max_response_bytes,
-            http_client=http_client,
             http_transport=http_transport,
             clock=clock,
             monotonic=monotonic,
@@ -756,9 +772,8 @@ class BinanceSpotRestCollector:
         return self._descriptor
 
     def close(self) -> None:
-        """Close the client this instance created; an injected client is left alone."""
-        if self._owns_client:
-            self._client.close()
+        """Close the client this instance owns; idempotent."""
+        self._client.close()
 
     def __enter__(self) -> Self:
         return self
@@ -1042,6 +1057,18 @@ class BinanceSpotRestCollector:
             raise CollectionFailed("refusing a page URL that does not round-trip to its query")
         return url
 
+    def _assert_outgoing(self, request: httpx.Request, url: str) -> None:
+        """The request about to leave is exactly the validated one, carrying no credential.
+
+        Defence in depth only: the owned client has no hooks, auth, cookies or environment
+        trust, so nothing can change the request between this check and the transport.
+        """
+        if request.method != "GET" or str(request.url) != url:
+            raise CollectionFailed("refusing an outgoing request that differs from the page URL")
+        for name in request.headers.keys():
+            if _has_credential_shape(name):
+                raise CollectionFailed("refusing an outgoing request with a credential header")
+
     def _throttle(self) -> None:
         """At least ``min_request_interval_ms`` between two requests, retries included."""
         last = self._last_send_monotonic
@@ -1067,6 +1094,7 @@ class BinanceSpotRestCollector:
                         headers={"User-Agent": self._user_agent},
                         timeout=self._timeout,
                     )
+                    self._assert_outgoing(built, url)
                     response = self._client.send(built, stream=True, follow_redirects=False)
                 except httpx.HTTPError as exc:
                     last_error = exc

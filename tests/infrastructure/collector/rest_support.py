@@ -144,6 +144,8 @@ class RestVenue:
     origin: str = ORIGIN
     answers: dict[str, list[Answer]] = field(default_factory=dict)
     requests: list[str] = field(default_factory=list)
+    #: The exact headers of every request that reached the transport, in order.
+    headers_seen: list[dict[str, str]] = field(default_factory=list)
 
     # ------------------------------------------------------------------ queueing
 
@@ -165,6 +167,7 @@ class RestVenue:
     def handler(self, request: httpx.Request) -> httpx.Response:
         url = str(request.url)
         self.requests.append(url)
+        self.headers_seen.append(dict(request.headers))
         if f"{request.url.scheme}://{request.url.netloc.decode()}" != self.origin:
             raise AssertionError(f"the collector left its origin: {url}")
         key = f"{request.url.path}?{request.url.query.decode()}"
