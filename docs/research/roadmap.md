@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 0（进行中；C2 修复已完成，C3 关闭复验就绪，Constitution 1.0.0 已发布（ADR-0020），Phase 0 尚待正式关闭 / 合并 main / tag；见 PROJECT_STATUS.md）** |
+| 当前 Phase | **Phase 0 已完成（2026-09-24，tag `phase-0-complete`）；Phase 1 尚未开始，需入口 ADR 获批并明确开启；见 PROJECT_STATUS.md** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）

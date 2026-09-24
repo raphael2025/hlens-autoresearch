@@ -3,6 +3,7 @@
 > 给 Claude 的长期项目记忆：只保存跨会话仍然有效的事实。
 > 维护规则见 `CLAUDE.md` §8（目标 < 200 行，> 300 行必须 Compaction）。
 > 当前进度看 `PROJECT_STATUS.md`；完整架构看 `docs/architecture/`；决定全文看 `docs/adr/`。
+> 2026-09-24 Phase 0 收口时执行 Compaction：各 ADR 只保留 ID + 一句话，细节见 ADR 与 `docs/reviews/`。
 
 ## 1. Project Identity
 
@@ -11,26 +12,21 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
-  B3 串行实现已全部完成：ADR-0011 ~ 0016 已实施并由 Codex 独立复验，ADR-0017 按方案 B
-  是 docs-only 的交付节奏落地（不产生 Provider 代码）；关闭复审 C1 已完成（`FIX_BEFORE_CLOSE`），
-  修复 ADR-0018 / 0019 已 Accepted 并实施（C2c / C2d）；C3 复验 `READY_FOR_HUMAN_CONSTITUTION_GATE`；
-  ADR-0020 Accepted，Constitution 已发布为 1.0.0（C4b，原则零变化）；待 C5 关闭 / 合并 / tag
+- 当前阶段：**Phase 0 已完成**（2026-09-24，tag `phase-0-complete`）；Phase 1 **尚未开始**
 
 ## 2. Current Architecture
 
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
-- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`（**尚未发布**：只在 `phase/0` 分支生成，未合并 main、
-  无 tag、无远程发布、无 v2 数据登记）；模型只接受同 major，`1.x` 走 `core/compat/v1.py` 只读入口
-- Freeze Contracts, Evolve Implementations
-- 四个 Plane：Data / Research / Control / Application；Research ⟂ Application
-- PostgreSQL = Control Plane（不存大型行情）
-- Iceberg / Parquet on S3 兼容存储 = Data / Research Plane 的真实来源
-- DuckDB / Polars = 研究计算引擎，不是真实来源
-- Provider / Plugin 架构；LLM、Backtest Engine 均可替换
+- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`：随 Phase 0 收口 fast-forward 合并进 `main` 并打 tag，
+  **视为已发布**（D-25）——此后任何破坏性契约变化都必须升 major 并走 ADR；仍无远程、无 v2 数据登记
+- 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
+  v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
+- current Schema 38 份，与 `CONTRACT_MODELS` 一一对应；Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）
+- Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
+- PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet on S3 兼容存储 = 真实来源；DuckDB / Polars 只是计算引擎
+- Provider / Plugin 架构；LLM、Backtest Engine 均可替换；LLM 只产出数据，永不作裁判
 - Domain 层无基础设施依赖；依赖方向 apps → application → domain ← plugins/infrastructure
 - 实验必须可复现（复现元组）；Schema 全部版本化
-- LLM 只产出数据（假设 / 规格），永不作裁判
 - 全文：`docs/architecture/00-overview.md`
 
 ## 3. Current Research Direction
@@ -42,126 +38,80 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 4. Current Phase
 
-- Current Phase：Phase 0（进行中）
-- Current Subphase：批次 C。C1 独立关闭复审完成（基线 `fce4f81`，结论 `FIX_BEFORE_CLOSE`，
-  `docs/reviews/2026-09-24-phase0-closing-review-c1.md`）→ ADR-0018 / 0019 Accepted 并实施（C2c / C2d）→
-  C3 修复后复验 `READY_FOR_HUMAN_CONSTITUTION_GATE`（`docs/reviews/2026-09-24-phase0-closing-review-c3.md`）→
-  C4a 起草 ADR-0020 → C4b 接受并发布 Constitution 1.0.0
-- Current Objective：C5 关闭 Phase 0、`git merge --ff-only` 到 main、轻量 tag `phase-0-complete`
-- Current Blocker：无；Raphael 2026-09-24"授权所有"已覆盖 C5（限定：原则零变化；不含实盘 / 资金 / 风险预算）
-- Next Milestone：Phase 0 关闭；Phase 1 不自动开始，先准备入口 ADR
+- Current Phase：Phase 0 **Complete**（Research Constitution 1.0.0 已发布，roadmap 验收标准全部满足）
+- Next Phase：Phase 1（Market Representation）**尚未开始**，不会自动开启
+- Current Objective：准备 Phase 1 入口 ADR；D-01、D-02、D-08、D-10、D-28、D-31 在 Phase 1 入口 ADR 中决定
+- Current Blocker：Phase 1 需按 roadmap 规则明确开启；Docker 未安装（D-02 相关）
+- Next Milestone：Phase 1 入口 ADR 获批并明确开启 Phase 1
 
 ## 5. Active Decisions
 
 - ADR-0001：重大架构决定用 ADR 记录；Agent 只能起草 Proposed
 - ADR-0002：架构基线（原则 P1–P17、四个 Plane、默认技术栈）
-- D-06：Python 3.13 + uv，与系统 Python 隔离；升级需独立评估实验 → ADR-0003
-- D-07：本地 Git 仓库；不改全局配置；远程未定 → ADR-0004
-- D-03：研究 / 生产边界（Artifact + Registry + Promotion + Equivalence Gate；生产运行时拒绝加载无法追溯的策略）→ ADR-0005 **Accepted**
-- D-05：生命周期 v2 → ADR-0006 **Accepted**，取代 ADR-0002 第 5 条；RETIRED 进退役记录，REJECTED / FAILED 进 Failure Registry
-- C-1（已定）：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；PRODUCTION_CANDIDATE = 已通过研究验证 + Paper Trading，待生产部署审查
-- C-2（已定）：PAPER = 单策略独立观察；ACTIVE = 组合 / Router 正式启用，带 execution_mode SIMULATED|LIVE（Phase 13 前仅 SIMULATED）；不设 LIVE 状态
-- D-09 结构（H-1、H-2 已接受）：三层 = Constitution（不可变原则）/ Validation Profile（版本化阈值，被实验使用后不可变）/ Experiment Metadata（每个实验的 Profile 版本与配置）；两步冻结 = Phase 0 冻结原则与架构、Phase 4 校准后冻结初始 Profile 参数 → ADR-0007 **Accepted**；Constitution 已重组为 0.2.0-draft（纯原则），Profile 概念契约在 07-validation.md §5，Experiment Metadata 在 06-experiment.md §3
-- D-09 数值（TBD-1 ~ TBD-5）：**未批准**，Phase 4 校准后冻结为 Profile 参数；Constitution 中不得出现数值阈值；提案见 `docs/research/proposals/d09-validation-threshold-proposal.md`
-- ADR-0008：契约映射载荷只读、逐模型内容哈希边界与 v1 只读兼容；2026-09-23 Accepted，B1 已实施。
-- ADR-0009：完整实验规格身份、运行标识与直接依赖内容绑定；实际 seeds 保留在实验哈希中；2026-09-23 Accepted，B2 已实施。
-- ADR-0010：`model_copy(update=...)` 重新走完整校验（`model_construct` 明确不受支持）、唯一 ASCII
-  SemVer 2.0.0 语法、v1 只读入口的顶层 shape gate、JSON Schema 表达键值格式；2026-09-23 Accepted 并实施。
-- 契约版本号已在 B2 提升到 2.0.0，但该版本**尚未发布**（见 §2）：v1 与 v2 的
-  `content_hash` / `experiment_hash` **不可比较**；v1 只读路径 = `schemas/v1/`（35 份快照）
-  + `tests/vectors/v1/`（固定载荷与旧哈希）+ `core/compat/v1.py`。读取 v1 不赋予任何 v2 登记 / 晋升资格。
-- B3 的技术方向由 Codex 裁决（D-17 ~ D-25），ADR-0011 ~ 0017 于 2026-09-24 全部 **Accepted**，
-  0011 **已实施**（生命周期主体 / 授权 / 时间；删除自报的 `live_execution_enabled`，
-  实盘开关交未来 Control Plane 与人类授权，契约层不再拒绝 `to_mode = LIVE`）；
-  0012 **已实施**（13 个具体规格的 `kind` 为不可覆盖字面量、Feature / State / Event / Strategy
-  的直接输入白名单、Outcome 不得进入输入、lineage 保持可引用 Outcome，D-23）；
-  0013 **已实施**（`ValidationReport.verdict` 精确等于 `derive_verdict(gates)`、两处 `gate_id`
-  唯一、`threshold` 与来源成对、`Contract` 基类 `allow_inf_nan=False` 统一拒绝 NaN/±Inf、
-  两个概率型阈值结构范围 `[0,1]`，D-19、D-20.1 ~ D-20.3）；
-  0014 **已实施**（Profile 普适结构不变量，**D-20.4**，不是新 D 编号：walk-forward 三窗口 /
-  封存区长度 / Paper 观察期 `> 0`，embargo 与最大延长量 `>= 0`，两个压力倍数序列逐元素 `> 0`，
-  `cost_model` 必须指向 `cost_model`；时长符号与 kind 约束**只能由运行时保证**，
-  导出的 JSON Schema 诚实保持 duration 字符串与 `$ref`，见 07-validation.md §5.4）；
-  0015 **已实施**（审计身份类型与版本绑定，D-21、D-22：11 个内容哈希槽位统一为 `ContentHash`，
-  `GitOid` 只接受 40 / 64 位小写十六进制且与 `ContentHash` 是两套命名空间，新增契约值对象
-  `GitCodeRevision { commit_oid, tree_oid }` 承载 `production_code_hash`（**线字段名沿用**，
-  相等性为结构化比较），`constitution_version` 复用唯一 ASCII SemVer，
-  `ReproducibilityTuple` / `ValidationReport` / `ExperimentMetadata` 三处的 Profile 绑定改为
-  `validation_profile: Ref(kind=profile)` + `validation_profile_hash`，`ExperimentMetadata` 改用完整
-  `ProfileSelection`，`SelectionEntry` 删除重复的 `profile_version`；`run_id` / `report_id` /
-  `deployment_id` / `trace_id` / `snapshot_id` / URI / `validation_reports` / `environment_lock`
-  按 D-21.3 刻意保持不透明）；
-  0016 **已实施**（`LlmCall` 的最小完整登记，D-18：三个自由字符串哈希被三项**必填**的
-  `ContentBlobRef { uri, sha256: ContentHash, media_type?, byte_size? }` 取代，
-  `provider` / `model` 收紧为非空，`called_at` 显式必填且**无默认值**；`ContentBlobRef`
-  是第 38 个契约模型，不进入 `V1_MODEL_NAMES`；严禁自报 `verified`，取回与内容一致性延期）；
-  0017 **已实施**（Provider 交付节奏，方案 B，D-24：Phase 0 只冻结十类 Provider 的职责、
-  概念输入输出、确定性与版本语义；可执行 Protocol、DTO 与 provider-agnostic contract tests
-  在首次消费它的 Phase 开始实现之前交付并计入该 Phase 验收。这是 **docs-only** 的决定，
-  **没有产生任何 Provider 代码**：`core/contracts/` 中 Provider Protocol 数量为 0，
-  这是决定而非遗漏；实质文档同步在 `2ff1798`，一致性验收与状态收口在批次 7）。
-  D-17 ~ D-25 连续且唯一。
-- D-25：这批收窄仍属**尚未发布**的 2.0.0，不升 major；一旦发布（合并 main / tag / 有 v2 数据登记）
-  后再做同类改变必须升 major。
-- D-26 → ADR-0018（**Accepted，已实施 C2c**）：三类语义身份均排除信封 `schema_version`——Profile 选择键
-  `(venue, symbol, timeframe, research_class)`（判重与 `select()` 同源）、`Ref` 目标 `(kind, name, version)`
-  （跨对象主体比较）、`GitCodeRevision` 代码 `(commit_oid, tree_oid)`（部署 ↔ 等价检查）；全局 `==` 与内容哈希不变。
-  API：`selection_identity()` / `target_identity()` / `code_identity()`；共享常量 `RESEARCH_CLASS_PATTERN`（02-domain.md §3.6）。
-- D-27 → ADR-0019（**Accepted，已实施 C2d**）：生命周期转移证据必填、至少一项且非空（`EvidenceRef`）；
-  不做自报职责分离，不核验证据存在性。
-- D-28 ~ D-31 为**已登记的开放问题**（不选方案）：D-28 修订数据语义、D-31 历史标的池（Phase 1 前）；
-  D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）。
-- ADR-0020（**Accepted，C4b 已执行**）：Constitution `0.2.0-draft` → `1.0.0 / Approved`，只改页首版本 / 状态与修改历史，
-  第一 ~ 九章正文哈希保持 `4d603d62…259cd`；只前向适用；四道顺序门（发布 → 关闭 → ff 合并 → 轻量 tag）。
-- Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖
-  原则零变化的 Constitution 1.0.0 发布与 Phase 0 收口；任何原则或阈值变化、实盘、资金、风险预算不在内。
+- ADR-0003（D-06）：Python 3.13 + uv，与系统 Python 隔离
+- ADR-0004（D-07）：本地 Git 仓库；不改全局配置；远程未定
+- ADR-0005（D-03）：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Q-1 / Q-2 / Q-3 / Q-7 开放
+- ADR-0006（D-05）：生命周期 v2（C-1：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；C-2：ACTIVE 带
+  `execution_mode` SIMULATED|LIVE，不设 LIVE 状态）；RETIRED 进退役记录，REJECTED / FAILED 进 Failure Registry；Q-4 ~ Q-6 开放
+- ADR-0007（D-09 结构）：三层验证（Constitution / Validation Profile / Experiment Metadata）+ 两步冻结；
+  Constitution 曾以 `0.2.0-draft` 按此重组为纯原则，现已由 ADR-0020 发布为 `1.0.0 / Approved`，原则与阈值零变化
+- D-09 数值（TBD-1 ~ TBD-5）与 H-3 ~ H-7：**未批准**，Phase 4 校准后冻结为 Profile 参数；Constitution 中不得出现数值阈值
+- ADR-0008（D-11）：映射字段只读、逐模型内容哈希排除表、规范化 JSON、v1 只读兼容
+- ADR-0009（D-12）：完整实验身份与直接依赖内容绑定；实际 seeds 在实验哈希内；Report 绑定 run_id
+- ADR-0010（D-13 ~ D-16）：`model_copy(update=...)` 完整校验、唯一 ASCII SemVer、v1 顶层 shape gate、Schema 表达键值格式
+- ADR-0011（D-17）：生命周期主体一致、时间单调、LIVE 证据绑定主体与授权窗口；删除自报 `live_execution_enabled`
+- ADR-0012（D-23）：具体规格 `kind` 为不可覆盖字面量；Feature / State / Event / Strategy 输入白名单，Outcome 不得进入
+- ADR-0013（D-19、D-20.1 ~ 20.3）：`verdict` 精确等于 `derive_verdict(gates)`；`gate_id` 唯一；全局拒绝 NaN / ±Inf
+- ADR-0014（D-20.4）：Validation Profile 普适结构不变量（窗口 / 封存 / 观察期为正等），不选数值
+- ADR-0015（D-21、D-22）：`ContentHash` / `GitOid` / `GitCodeRevision` 分类型；Profile 绑定 = `Ref(kind=profile)` + 哈希
+- ADR-0016（D-18）：`LlmCall` 三项必填 `ContentBlobRef` + 显式 `called_at`；取回与一致性延期
+- ADR-0017（D-24）：Provider 方案 B——Phase 0 只冻结语义，Protocol / DTO / contract tests 随首次消费的 Phase 交付
+- D-25：上述收窄属未发布的 2.0.0；**Phase 0 收口后 2.0.0 已发布，同类改变必须升 major**
+- ADR-0018（D-26）：三类语义身份（选择键、`Ref` 目标、Git 代码修订）排除信封版本；全局 `==` 与内容哈希不变
+- ADR-0019（D-27）：生命周期转移证据至少一项且非空；不做自报职责分离
+- ADR-0020：Constitution 发布为 `1.0.0 / Approved`，第一至第九章正文 sha256 `4d603d62…259cd` 不变，只前向适用
+- 开放问题（已登记，不选方案）：D-28 修订数据语义、D-31 历史标的池（Phase 1 入口 ADR）；
+  D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；
+  D-01、D-02、D-08、D-10（Phase 1 入口）；D-04（Phase 4）
+- Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
+  Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag）；原则或阈值变化、实盘、资金、风险预算不在内
 
 ## 6. Active Constraints
 
 - 硬性规则全文见 `CLAUDE.md` §3（H1–H14），摘要如下：
-- 研究代码永不直接成为生产代码
-- LLM 不作最终裁决
-- 不因回测结果修改 Constitution、Profile 或验证规则
-- Outcome 不得作为 Feature / State / Event 的输入
+- 研究代码永不直接成为生产代码；LLM 不作最终裁决
+- 不因回测结果修改 Constitution、Profile 或验证规则；Constitution 修改须按第九章另起 ADR 并由 Raphael 批准具体变化
+- Outcome 不得作为 Feature / State / Event / Strategy 的输入
 - 所有实验可复现；所有 Schema 版本化；失败实验与生命周期历史不可删除
 - 环境变更（安装、系统配置、Docker、数据库、全局 Git 配置）需 Raphael 授权
 - 不修改旧项目与外部数据
-- Claude 不替 Raphael 做架构决策
-- Git：main 为稳定基线，实现工作走 `phase/*` 分支，合并进 main 需 Raphael 批准；无远程仓库（细节见 CLAUDE.md §10）
-- Raphael 于 2026-09-23 指定：Codex 决定项目方向、技术栈、架构、功能、逻辑与文档并控制 Claude Code；编码和测试实现交给 WSL Claude Code 的 Opus 模型。Constitution 原则、实盘/风险预算、环境安装、历史数据删除与 main 合并仍由 Raphael 亲自批准。
+- Claude 不替 Raphael 做架构决策；Codex 在 Raphael 委托边界内作正式决定并记录（CLAUDE.md §0）
+- Git：main 为稳定基线，实现工作走 `phase/*` 分支；合并进 main 需 Raphael 批准（或其已记录的授权）；无远程仓库
+- 实盘、资金、风险预算始终需要 Raphael 亲自批准
 
 ## 7. Current Known Risks
 
-- pypi.org 的索引域名在本机被网络阻断（files.pythonhosted.org 可达）：依赖安装很慢，离线安装需用 uv.lock 中的精确版本
+- pypi.org 索引域名在本机被阻断（files.pythonhosted.org 可达）：离线安装需用 uv.lock 的精确版本
 - WSL 内存约 15 GiB：大数据集需分区和流式处理
 - Docker 未安装：Phase 1 之后的本地服务依赖它（D-02）
 - 外部数据盘未挂载：`~/BTC` → `/mnt/wsl/PHYSICALDRIVE1p1/BTC` 当前不可访问
-- Git 没有全局提交身份：提交使用一次性 `-c` 参数，长期做法待定
-- Constitution 1.0.0 只是原则：验证流水线与 Profile 数值（Phase 4）就位前，仍没有实验能被实际判定
-- 契约层只校验直接引用的内容绑定与**声明层面**的输入类型（ADR-0012 白名单）：传递依赖闭包的
-  方向性、trial 权威账本、`run.repro` ↔ Spec 一致性、Registry 存在性、物化数据的泄漏检测
-  均为未实现的 Runner / Registry / 验证服务义务（06-experiment.md §7），不得宣称泄漏已被防住
-- ADR-0011 之后实盘开关、授权主体真实性、证据可取回、跨对象时间线、唯一当前状态
-  都是未实现的 Control Plane 义务；契约层不自报环境事实
-- ADR-0013 之后判定只保证**报告内部**自洽：门集合是否完整、`threshold_source` 是否真的指向
-  所绑定 Profile 的字段、`value` 是否真由 `metric` 算出，仍是未实现的验证服务义务
-- ADR-0014 之后 Profile 只保证**结构**合法：数值是否校准合理、Profile 是否已 frozen、
-  门集合是否齐备仍是 Phase 4 校准与 Control Plane / 验证服务的义务；时长符号与
-  `cost_model` 的 kind 在 JSON Schema 中不可见，只读 Schema 的消费者不得据此认为约束不存在
-- ADR-0015 之后身份字段只保证**格式**：哈希是否等于被引用对象的真实内容、Git 对象是否存在、
-  工作区是否干净、`validation_profile` 指向的版本是否已登记 / frozen、Run / 报告 / 元数据三处
-  绑定是否彼此一致，都是 Registry / Runner / Control Plane 的未实现义务；
-  `environment_lock` 的结构化表达按 ADR 明确**后续另定**
-- ADR-0016 之后 `LlmCall` 只保证**登记结构**完整：`uri` 可取回性、取回内容与 `sha256` 是否一致、
-  `media_type` / `byte_size` 是否与实际内容相符、已登记内容是否不可覆盖、数据外发合规、
-  一次实验是否登记了**所有**发生过的调用，全部是存储层 / Registry / Runner 的未实现义务；
-  06-experiment.md §2 的「完整输入输出」要求仍未完全满足，不得描述为已关闭
-- v1 只读 gate 只做顶层形状检查，不是完整 JSON Schema 递归校验；旧哈希只对完整的 v1 持久化规范载荷
-  复现历史身份，读取器不补写默认字段（C1 F2）
-- 生命周期证据只保证结构非空：存在性、内容是否支持结论、`approved_by` 真实性与职责分离属未来授权服务；
-  `venue` / `symbol` / `timeframe` 区分大小写、不做规范化（ADR-0018 边界）
-- JSON Schema 无法表达运行时的首尾空白去除，权威校验必须经过运行时模型（02-domain.md §3.7）
+- Git 没有全局提交身份：提交使用一次性 `-c` 参数；无远程，无异地备份、无 PR / CI
+- Constitution 1.0.0 只是原则：验证流水线、泄漏门、多重检验校正、trial 账本均未实现，Profile 数值要到 Phase 4；
+  在那之前没有实验能被实际判定
+- 契约层只校验**结构与声明**：传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、Registry 存在性、
+  物化数据泄漏检测、哈希与真实内容一致、Git 对象存在、Profile 已 frozen、跨对象绑定一致，
+  都是未实现的 Runner / Registry / Control Plane / 验证服务义务（06-experiment.md §7），不得宣称已防住
+- 判定只保证**报告内部**自洽：门集合完整性、`threshold_source` 真实性、`value` 由 `metric` 算出，属未来验证服务
+- `LlmCall` 只保证**登记结构**：内容可取回、内容与 `sha256` 一致、不可覆盖、外发合规、调用登记完整均未实现；
+  06-experiment.md §2 的「完整输入输出」不得描述为已满足
+- 生命周期证据只保证结构非空：存在性、支持结论与否、`approved_by` 真实性与职责分离属未来授权服务
+- 契约层不再拒绝 `to_mode = LIVE`：Phase 13 红线在 Control Plane 落地前只靠人与流程
+- JSON Schema 弱于运行时的几处：首尾空白去除（02-domain.md §3.7）、时长符号与 `cost_model.kind`
+  （07-validation.md §5.4）、只由跨字段相等约束的 `declared_research_class`；权威校验必须经过运行时模型
+- `venue` / `symbol` / `timeframe` 区分大小写、不做规范化（ADR-0018 边界）：未来 Adapter 必须产出规范值
+- v1 只读 gate 只做顶层形状检查；旧哈希只对完整的 v1 持久化规范载荷复现历史身份（C1 F2）
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
+- C3 关闭复验与 C2c / C2d 实现出自同一 Claude 会话，独立性有限；以 Codex 复核为最终把关
 
 ## 8. Important Historical Context
 
@@ -170,32 +120,20 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 旧研究中的 anti-leakage / red-team 规范可能成为新系统素材（Raphael 提及，尚未评估内容）
 - 旧研究可能已看过 BTC 全部历史，因此历史封存区在认知上不完全干净（D-09 H-3）
 - 旧策略或旧结论进入新系统时必须重新登记并重新验证，不能直接信任
+- Phase 0 审查链：C1（`fce4f81`，`FIX_BEFORE_CLOSE`）→ ADR-0018 / 0019 实施 → C3（`4a2951a`，
+  `READY_FOR_HUMAN_CONSTITUTION_GATE`）→ ADR-0020 发布 Constitution 1.0.0；记录见 `docs/reviews/`
 
 ## 9. Last Known Good State
 
 - Date：2026-09-24
-- Git Commit：`1ad9f59`（ADR-0016，Codex **独立复验通过**：1304 passed、Ruff / format / mypy 全绿、
-  38 份 current Schema 与全量重导出逐字节一致、legacy 35 份 Schema 与既有 `tests/vectors/v1/`
-  零差异、Accepted ADR-0016 正文零差异、`ContentBlobRef` / `LlmCall` 关键拒绝路径与
-  JSON 往返实验哈希与 v1 三哈希读取探针均通过）；上一恢复点 `695a34b`（ADR-0015）、
-  `d083273`（ADR-0014）、`04bb3f8`（ADR-0013）、`7f9892c`（ADR-0012）、`2544d2a`（ADR-0011），均已复验
-- Phase：Phase 0；B1/B2 + ADR-0010 + B3 批次 1 ~ 7（ADR-0011 ~ 0017）已完成，
-  契约 2.0.0 仍未发布；Phase 0 关闭复审（批次 C）已授权、进行中、尚无结论
-- State：core 契约、状态机、只读载荷、完整实验身份、规范版本语法、生命周期主体与授权、
-  信息流白名单、确定性判定与数值合法性、Profile 普适结构不变量、审计身份与版本绑定、
-  `LlmCall` 内容绑定、v1 只读兼容入口均已实现；1304 测试、ruff check、ruff format --check、
-  mypy strict 全绿（Codex 在 `1ad9f59` 上独立重跑）；
-  Schema current 38 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
-  **Provider Protocol 0 个（ADR-0017 方案 B 的决定，不是遗漏）**；
-  无 Feature / Strategy / Backtest / Runner / Registry / 存储实现
-- Notes：ADR-0001 ~ 0017 全部 Accepted 且全部已实施；ADR-0011 ~ 0016 各一个独立实现 commit
-  并均已由 Codex 独立复验；ADR-0017 是 docs-only 的交付节奏落地（实质同步在 `2ff1798`，
-  一致性验收与状态收口在批次 7，不产生 Provider 代码，因此不改变 last known good 的代码状态）；
-  Constitution 已按 ADR-0020 发布为 1.0.0（C4b）；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；
-  未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`；
-  C1 关闭复审在 `fce4f81` 上实跑 1304 passed 与三项检查全绿，结论 `FIX_BEFORE_CLOSE`（C2a / C2b 为 docs-only）；
-  C2c（ADR-0018，`9581773`）实跑 1379 passed，Codex 以下达 C2d 确认复验通过（明细未写入仓库）；
-  C2d（ADR-0019，`4a2951a`）实跑 1433 passed；C3 在 `4a2951a` 上只读复验（1433 passed、三项检查全绿、
-  Schema 逐字节一致、v1 零差异）结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`，Codex 据此下达 C4a。
-  C3 由实现同一会话完成、Codex 复验明细未写入仓库，因此上面的恢复点仍保留 `1ad9f59`；
-  C5 的 `phase-0-complete` tag 将成为下一个稳定恢复点
+- Stable recovery point：**轻量 tag `phase-0-complete`**（指向 Phase 0 closure commit，即 `main` 与 `phase/0`
+  的共同 HEAD；以 `git rev-parse phase-0-complete` 为准，本文件不写该提交自身的 SHA）
+- closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
+  其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
+- State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
+  Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
+  1433 测试、ruff check、ruff format --check、mypy strict 全绿；
+  Schema current 38 份（2.0.0）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
+  Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
+- 未实现（按 roadmap 延期）：Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
+- Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit；无远程、未 push

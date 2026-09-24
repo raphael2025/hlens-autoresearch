@@ -47,7 +47,9 @@
 >
 > ADR-0020 把 Constitution 从 `0.2.0-draft` 发布为 `1.0.0 / Approved`，原则正文零变化（第一至第九章 sha256 不变）；
 > 依据 Raphael 2026-09-24 的持续授权（来源与限定见 ADR-0020），C4a 以 Proposed 提出、Codex 复核后于 C4b 接受并发布。
-> 剩余顺序门由 C5 执行：关闭 Phase 0、fast-forward 合并 main、轻量 tag `phase-0-complete`。Phase 0 **尚未关闭**。
+> 剩余顺序门已由 C5 执行：Phase 0 正式关闭、`phase/0` fast-forward 合并进 `main`、轻量 tag `phase-0-complete`。
+> **Phase 0 已完成**；契约 `2.0.0` 随合并视为已发布（D-25：此后破坏性变化必须升 major）。Phase 1 尚未开始，
+> D-01、D-02、D-08、D-10、D-28、D-31 将在 Phase 1 入口 ADR 中决定。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -82,10 +84,10 @@
 | D-25 | **这批收窄是否需要升 major**：`2.0.0` 尚未发布（只在 `phase/0`、未合并 `main`、无 tag / 远程发布 / v2 数据登记）。 | Codex 裁决：继续属于未发布的 `2.0.0`，不升 major；发布后做同类改变必须升 major | Phase 0；Accepted（2026-09-24），写入 ADR-0011 ~ 0016 各自的版本小节 |
 | D-26 | **契约值对象的语义身份**：Profile 选择键、`Ref` 目标与 Git 代码修订的身份是否包含嵌套信封 `schema_version`；选择规则的判重与查询是否同源（C1 F1 / F3）。 | Codex 裁决 → [ADR-0018](0018-contract-value-semantic-identities.md)：三类显式语义身份，全局相等与内容哈希不变 | Phase 0；Accepted（2026-09-24），已实施（C2c） |
 | D-27 | **生命周期证据的最小结构**：每条转移是否必须带非空证据引用；是否在契约层要求职责分离（C1 F5）。 | Codex 裁决 → [ADR-0019](0019-lifecycle-evidence-minimum.md)：证据至少一项且非空；**不**做自报职责分离 | Phase 0；Accepted（2026-09-24），已实施（C2d） |
-| D-28 | **迟到 / 修订数据的 point-in-time 语义**：可用时间如何表达数据的迟到与修订（revision / as-of / vintage）；`event_time + declared_latency` 是否足够（C1 F4，原 R08）。 | 未决；本登记不选方案 | Phase 1 前决定 |
+| D-28 | **迟到 / 修订数据的 point-in-time 语义**：可用时间如何表达数据的迟到与修订（revision / as-of / vintage）；`event_time + declared_latency` 是否足够（C1 F4，原 R08）。 | 未决；本登记不选方案 | Phase 1 前决定（Phase 1 入口 ADR） |
 | D-29 | **`apps/worker` 与研究代码的边界**：01-system.md 让 worker 运行实验，而 `apps/` 不得 import `research/`；实验如何被运行而不越过边界（C1 F4，原 R15）。 | 未决；本登记不选方案 | 首次实现 worker / 实验运行前决定，最迟 Phase 5 前 |
 | D-30 | **C-L5 的跨对象校验执行点**：`embargo >= 最长 Outcome horizon` 需要同时看到 Profile 与 Outcome，由谁、在何时校验（C1 F4）。 | 未决；本登记不选方案 | Phase 4 前决定 |
-| D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | 未决；本登记不选方案 | Phase 1 前决定 |
+| D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | 未决；本登记不选方案 | Phase 1 前决定（Phase 1 入口 ADR） |
 
 > **编号说明**（2026-09-24 由 Codex 最终确认）：D-17 ~ D-25 连续且唯一。
 > D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份已接受且已实施的 ADR（C2c / C2d），

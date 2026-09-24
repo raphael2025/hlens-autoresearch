@@ -2,7 +2,7 @@
 
 > 一个长期演化的、模块化、可插拔、可验证的**加密市场自动化研究基础设施**。
 
-**当前阶段：Phase 0（Research Constitution）** — 已有领域契约、状态机、Schema 与测试；C1 复审发现的问题已由 ADR-0018 / 0019 修复，C3 关闭复验结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`；Constitution 1.0.0 已发布（ADR-0020，原则零变化），Phase 0 尚待正式关闭、合并 main 与 tag。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
+**当前阶段：Phase 0（Research Constitution）已完成**（2026-09-24，tag `phase-0-complete`）— 领域契约、状态机、Schema 与测试已就绪，研究宪法已发布为 1.0.0（ADR-0020）；Phase 1 尚未开始，先准备入口 ADR。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
 
 ## 它是什么 / 不是什么
 
