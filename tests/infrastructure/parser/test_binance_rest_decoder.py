@@ -111,6 +111,10 @@ def test_the_spec_states_every_rule_the_decoder_enforces() -> None:
     assert klines["continuation"] == "startTime = last closed open + 60000"
     assert klines["unclosed_kline"]["allowed"] == "at most one, and only as the final item"
     assert DECODER_SPEC["collection_target_window"]["never_rejects"].startswith("a valid element")
+    framing = DECODER_SPEC["json"]["framing_whitespace"]
+    assert framing.startswith("0x20, 0x09, 0x0A, 0x0D only (RFC 8259)")
+    assert "no other Unicode whitespace" in framing
+    assert DECODER_SPEC["json"]["trailing_content"].startswith("reject any non-whitespace")
     assert DECODER_SPEC["rejection"]["codes"] == sorted(code.value for code in RestRejectionCode)
     assert "the response body" in DECODER_SPEC["rejection"]["never_included"]
 
@@ -239,13 +243,14 @@ def test_decode_rest_page_requires_its_own_request_type() -> None:
 
 def test_a_body_exactly_at_the_limit_is_accepted_and_one_byte_above_is_not() -> None:
     payload = body(agg_items(3))
-    padded = payload + b" " * (MIN_BODY_LIMIT_BYTES - len(payload))
+    # Padded with a non-whitespace byte, so the padded body is trailing content and never framing.
+    padded = payload + b"!" * (MIN_BODY_LIMIT_BYTES - len(payload))
     assert len(padded) == MIN_BODY_LIMIT_BYTES
     at_limit = decode_rest_page(agg_request(max_body_bytes=MIN_BODY_LIMIT_BYTES), payload)
     assert decoded(at_limit).element_count == 3
 
     outcome = rejected(
-        decode_rest_page(agg_request(max_body_bytes=MIN_BODY_LIMIT_BYTES), padded + b" "),
+        decode_rest_page(agg_request(max_body_bytes=MIN_BODY_LIMIT_BYTES), padded + b"!"),
         CODE.BODY_TOO_LARGE,
     )
     assert outcome.body_size_bytes == MIN_BODY_LIMIT_BYTES + 1
@@ -268,10 +273,9 @@ def test_a_body_exactly_at_the_limit_is_accepted_and_one_byte_above_is_not() -> 
         (b"[", CODE.INVALID_JSON),
         (b"[,]", CODE.INVALID_JSON),
         (b"[]]", CODE.TRAILING_CONTENT),
-        (b"[] ", CODE.TRAILING_CONTENT),
         (b"[][]", CODE.TRAILING_CONTENT),
         (b"[]\n{}", CODE.TRAILING_CONTENT),
-        (b" []", CODE.INVALID_JSON),
+        (b" \t\r\n", CODE.INVALID_JSON),  # framing whitespace is not a JSON value
         (b"\xef\xbb\xbf[]", CODE.BYTE_ORDER_MARK),
         (b"\xff\xfe[\x00]\x00", CODE.INVALID_UTF8),
         (b'["\xc3("]', CODE.INVALID_UTF8),
@@ -292,6 +296,44 @@ def test_hostile_or_malformed_json_is_rejected_whole_page(
 ) -> None:
     for request in (agg_request(), kline_request()):
         assert rejected(decode_rest_page(request, payload), code).elements == ()
+
+
+#: RFC 8259 §2 insignificant whitespace; the exchange may frame the value with any of it.
+RFC_WHITESPACE = (b" ", b"\t", b"\n", b"\r")
+#: Whitespace to Unicode, but not to JSON: form feed, vertical tab, NBSP, line and ideographic
+#: separators. ``str.isspace()`` would accept every one of them.
+NON_RFC_WHITESPACE = (b"\x0c", b"\x0b", b"\xc2\xa0", b"\xe2\x80\xa8", b"\xe3\x80\x80")
+
+
+@pytest.mark.parametrize("space", RFC_WHITESPACE)
+@pytest.mark.parametrize("items", [[], agg_items(3)])
+def test_rfc_framing_whitespace_is_accepted_around_the_top_level_value(
+    space: bytes, items: list[dict[str, Any]]
+) -> None:
+    payload = body(items)
+    for framed in (space + payload, payload + space, space + payload + space):
+        assert decoded(decode_rest_page(agg_request(), framed)).element_count == len(items)
+
+
+def test_mixed_framing_whitespace_is_accepted_on_both_sides() -> None:
+    for items in ([], kline_items(2)):
+        framed = b" \t\r\n" + body(items) + b"\n\r\t "
+        assert decoded(decode_rest_page(kline_request(), framed)).element_count == len(items)
+
+
+@pytest.mark.parametrize("space", NON_RFC_WHITESPACE)
+def test_non_rfc_unicode_whitespace_is_not_framing(space: bytes) -> None:
+    payload = body(agg_items(2))
+    rejected(decode_rest_page(agg_request(), space + payload), CODE.INVALID_JSON)
+    rejected(decode_rest_page(agg_request(), payload + space), CODE.TRAILING_CONTENT)
+
+
+@pytest.mark.parametrize("tail", [b" x", b"\n{}", b"\t[]", b" \r\n 0", b"\r\n\x00"])
+def test_framing_whitespace_followed_by_content_is_still_trailing_content(tail: bytes) -> None:
+    outcome = rejected(
+        decode_rest_page(agg_request(), body(agg_items(2)) + tail), CODE.TRAILING_CONTENT
+    )
+    assert "follows the top-level JSON value" in outcome.detail
 
 
 def test_duplicate_object_keys_are_rejected_at_any_level() -> None:

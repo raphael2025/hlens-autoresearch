@@ -44,7 +44,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3C REVIEW_PENDING**（严格、无 I/O 的 `binance.spot.rest.decoder@1.0.0`，`infrastructure/parser/binance_rest.py`：纯函数解码 + 页摘要 / 整页拒绝，正文上限为显式参数；无 HTTP / store / 设置 / 新公共契约）；D3B 四张表、独立 REST 身份规则与三份纯 policy 已由 Codex 验收（`3b267a0` + `02c0418`）
+- Current Subphase：**D3C REVIEW_PENDING**（严格、无 I/O 的 `binance.spot.rest.decoder@1.0.0`，`infrastructure/parser/binance_rest.py`：纯函数解码 + 页摘要 / 整页拒绝，正文上限为显式参数；无 HTTP / store / 设置 / 新公共契约；D3C-R1 已按复核意见接受 RFC JSON 框架空白）；D3B 四张表、独立 REST 身份规则与三份纯 policy 已由 Codex 验收（`3b267a0` + `02c0418`）
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - D3C 已提交待复核；D3D → D3E 逐批经 Codex 验收后依次开放

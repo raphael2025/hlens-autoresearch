@@ -9,8 +9,9 @@ D3D's settings can never become a hidden global and a replayed page decodes iden
 What it decides (ADR-0027 §6, zero tolerance):
 
 - **body** — a complete entity body no larger than the caller's limit, strict UTF-8, no BOM;
-- **JSON** — one top-level array and nothing after it, no duplicate object keys anywhere, no
-  ``NaN`` / ``Infinity``, no fractional numbers, ``0 <= len <= query.limit``, exact element shapes;
+- **JSON** — one top-level array, framed at most by RFC 8259 whitespace and followed by nothing
+  else, no duplicate object keys anywhere, no ``NaN`` / ``Infinity``, no fractional numbers,
+  ``0 <= len <= query.limit``, exact element shapes;
 - **fields** — JSON integers that are non-negative int64 (a JSON boolean is *not* an integer),
   decimal fields as JSON strings exactly representable by ``decimal(38, 18)`` without rounding,
   and the accepted positive / OHLC / taker / minute-alignment row rules;
@@ -570,6 +571,17 @@ def _json_int(literal: str) -> int:
     return int(literal)
 
 
+#: RFC 8259 §2 insignificant whitespace — the only characters allowed to frame the top-level
+#: value. Deliberately not ``str.isspace()``: U+00A0, U+2028 and friends are trailing content.
+_JSON_WHITESPACE: Final = frozenset(" \t\n\r")
+
+
+def _skip_json_whitespace(text: str, index: int) -> int:
+    while index < len(text) and text[index] in _JSON_WHITESPACE:
+        index += 1
+    return index
+
+
 _DECODER: Final = json.JSONDecoder(
     object_pairs_hook=_no_duplicate_keys,
     parse_constant=_no_constant,
@@ -594,13 +606,14 @@ def _parse_body(request: RestPageDecodeRequest, body: bytes) -> list[Any]:
     if text.startswith("﻿"):
         raise _Reject(RestRejectionCode.BYTE_ORDER_MARK, "body starts with a byte order mark")
     try:
-        value, end = _DECODER.raw_decode(text)
+        value, end = _DECODER.raw_decode(text, _skip_json_whitespace(text, 0))
     except json.JSONDecodeError as exc:
         raise _Reject(RestRejectionCode.INVALID_JSON, f"{exc.msg} at character {exc.pos}") from None
-    if end != len(text):
+    tail = _skip_json_whitespace(text, end)
+    if tail != len(text):
         raise _Reject(
             RestRejectionCode.TRAILING_CONTENT,
-            f"{len(text) - end} characters follow the top-level JSON value",
+            f"non-whitespace content follows the top-level JSON value at character {tail}",
         )
     if not isinstance(value, list):
         raise _Reject(
@@ -1315,8 +1328,11 @@ DECODER_SPEC: Final[dict[str, Any]] = {
     },
     "json": {
         "top_level": "array",
-        "trailing_content": "reject",
-        "leading_whitespace": "reject",
+        "framing_whitespace": (
+            "0x20, 0x09, 0x0A, 0x0D only (RFC 8259), accepted before and after the top-level "
+            "value; no other Unicode whitespace"
+        ),
+        "trailing_content": "reject any non-whitespace after the top-level value",
         "duplicate_object_keys": "reject at any level",
         "constants": "NaN / Infinity / -Infinity rejected",
         "fractional_numbers": "rejected everywhere (decimals are JSON strings)",
