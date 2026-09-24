@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **架构决策**：ADR-0021 ~ 0024 已起草为 **Proposed**（A1），待 Codex 复核接受；四份 ADR 接受前不得开始任何实现 |
+| 当前子阶段 | **架构决策**：ADR-0021 ~ 0024 为 **Proposed**（A1 起草；A1r 按 Codex 复核退回意见修正 ADR-0023 / 0024 的时间语义），待 Codex 再复核接受；四份 ADR 接受前不得开始任何实现 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 决策子阶段 |
 | 最后更新时间 | 2026-09-24 |
@@ -22,7 +22,8 @@ Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / App
 
 Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明确开启 Phase 1**，但当前只进入架构决策子阶段：
 A1（docs-only）已把 Codex 的技术裁决起草为四份 **Proposed** ADR：ADR-0021（本地数据基础设施：D-01 / D-02 / D-10）、
-ADR-0022（市场与执行边界：D-08）、ADR-0023（双时间与修订数据：D-28）、ADR-0024（历史可交易 universe：D-31），尚未接受、尚未实施。Collector、Provider、Iceberg、数据库、
+ADR-0022（市场与执行边界：D-08）、ADR-0023（双时间与修订数据：D-28）、ADR-0024（历史可交易 universe：D-31），尚未接受、尚未实施。
+Codex 复核 A1 时发现 ADR-0023 的阻断缺陷（历史可用时间与本机得知时间混成一条轴，历史 backfill 在历史回测中全部不可见）；A1r 已把两条轴分开：`available_time`（历史策略时钟，由有证据的 availability policy 计算）与 `knowledge_time`（本机知识时钟），PIT 查询显式带 `simulation_time` 与 `knowledge_cutoff`。Collector、Provider、Iceberg、数据库、
 网络访问、数据下载与依赖安装**均尚未开始**，在四份 ADR 接受之前一律不得实现。
 
 收口依据的是 Raphael 2026-09-24"授权所有"的持续授权：Codex 判定它覆盖原则零变化的 Constitution 1.0.0 发布、
@@ -67,7 +68,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 - 🔄 Phase 1 架构决策子阶段：无任何实现批次在进行
 - ✅ A1（docs-only）：ADR-0021 ~ 0024 已起草为 Proposed
-- ⏭️ 下一步：Codex 复核四份 ADR（含 ADR-0023 / 0024 中留给接受时裁定的契约版本问题）；接受前不开始任何实现
+- ✅ A1r（docs-only）：按 Codex 复核退回意见分离历史可用时间与本机知识时间；写入 Codex 对 manifest（不升 3.0.0，新增 `ResearchDatasetManifest`）与 `UniverseSelectionSpec`（不新增 `Kind`）的裁决；同步 Codex 对 PostgreSQL、PyIceberg、Binance 的事实复核
+- ⏭️ 下一步：Codex 再复核四份 ADR；接受前不开始任何实现
 
 ## 5. 下一步
 
@@ -81,6 +83,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 - 已批准且已完成：Phase 0 全部批次（B1 / B2 / B3、C1 ~ C5）；Phase 1 S0（开启与分支）
 - 已批准且已完成：A1 —— docs-only 起草 ADR-0021 ~ 0024（Proposed）
+- 已批准且已完成：A1r —— 按 Codex 复核退回意见修正（仍为 Proposed）
 - 下一步（待 Codex 复核）：按复核意见修正并接受四份 ADR；之后的实施批次由 Codex 另行下达
 - 未批准：Phase 1 的任何实现（Collector / Provider / Iceberg / 数据库 / 网络 / 下载）、依赖或环境安装、其他 Phase、任何原则或阈值变化、实盘
 
@@ -122,8 +125,9 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ 外部是否存在 v1 历史数据证据不足，不宣称迁移已在真实数据上验证
 - ⚠️ 无远程仓库：没有异地备份、PR 与 CI
 - ⚠️ Docker 未安装、外部数据盘未挂载、WSL 内存约 15 GiB：影响 Phase 1 起的数据工作
-- ⚠️ ADR-0021 ~ 0024 引用的 PyIceberg 与 Binance 能力事实来自 Codex 控制稿，起草时未联网复核；实施前必须在锁定版本上核验
-- ⚠️ ADR-0023 修改冻结文档 03-data.md §4 的 `available_time` 定义；接受后才能改正文，若要让契约强制绑定 PIT manifest 则需契约升 major
+- ⚠️ PyIceberg 与 Binance 的关键能力事实已由 Codex 于 2026-09-24 按官方资料复核，PostgreSQL 服务已只读确认在线；实施前仍须按锁定依赖版本做行为 smoke / integration 验证
+- ⚠️ ADR-0023 修改冻结文档 03-data.md §4 的 `available_time` 定义；接受后才能改正文。manifest 绑定按 Codex 裁决由新增 `ResearchDatasetManifest` 与未来 Runner 接口承担，不升 major
+- ⚠️ 历史 backfill 能否早于本机 ingest 可用，取决于每个来源有证据的 availability policy；缺证据时保守取 ingest 时间，历史研究的可用区间会因此缩小
 - ⚠️ 旧研究可能已看过全部 BTC 历史：历史"样本外"区间在认知上不完全干净
 - ⚠️ C3 关闭复验与修复实现出自同一 Claude 会话，独立性有限（以 Codex 复核为最终把关）
 
@@ -145,11 +149,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 A1r docs-only：Codex 复核 A1 退回；ADR-0023 / 0024 把历史可用时间（`available_time`，availability policy）与本机知识时间（`knowledge_time`）分开，PIT / universe 查询带 `simulation_time` 与 `knowledge_cutoff`；写入 manifest 与 `Kind` 裁决；同步事实复核 | 历史 backfill 可用于历史 simulation 且修订不回写过去；四份 ADR 仍为 Proposed、未实施；下一步 Codex 再复核 |
 | 2026-09-24 | Phase 1 A1 docs-only：起草 ADR-0021（本地数据基础设施）、0022（市场与执行边界）、0023（双时间与修订）、0024（历史 universe）为 Proposed；ADR 索引把 D-01 / 02 / 08 / 10 / 28 / 31 指向它们 | 技术方案已成文但未接受、未实施；03-data.md §4 的修改只在 ADR-0023 中提出；下一步 Codex 复核 |
 | 2026-09-24 | Phase 1 S0：Codex 依 Raphael 持续授权明确开启 Phase 1；从 `main` 创建 `phase/1`；当前只进入架构决策子阶段 | 下一步 A1 docs-only 起草 ADR-0021 ~ 0024；接受前不实现 Collector / Iceberg / 数据库 / 下载；`phase-0-complete` 仍是 last known good |
 | 2026-09-24 | C5：Phase 0 正式关闭（docs-only closure commit）；`phase/0` fast-forward 合并进 `main`；轻量 tag `phase-0-complete` | Phase 0 完成；契约 2.0.0 随合并视为已发布，此后破坏性变化必须升 major；Phase 1 尚未开始；无远程、未 push |
 | 2026-09-24 | C4b docs-only：ADR-0020 Accepted（Raphael 2026-09-24 授权，经 Codex 复核），Constitution 发布为 `1.0.0 / Approved`，只改页首版本 / 状态并追加修改历史 | Phase 0 全部验收标准已满足；第一至第九章正文 sha256 不变；未改代码 / 测试 / Schema；下一步 C5 关闭、合并 main、tag |
-| 2026-09-24 | C3 修复后只读复验结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`；C4a docs-only：固化 C3 报告，起草 ADR-0020（Constitution 1.0.0，原则零变化，Proposed），修正状态漂移，`02-domain.md` §3.7 写明字符串校验的运行时 / Schema 边界 | Phase 0 唯一剩余验收项是 Constitution 1.0.0；Raphael 持续授权已记录；下一步 Codex 复核后 C4b → C5；未改代码 / 测试 / Schema / Constitution |
 
 ## 10. 下一阶段进入条件
 
@@ -183,5 +187,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
-   已完成 A1：ADR-0021 ~ 0024 起草为 Proposed。下一步待 Codex 复核；不得开始任何 Phase 1 实现或 Phase 0.5。
+   已完成 A1 与 A1r：ADR-0021 ~ 0024 为 Proposed（A1r 已修正时间语义）。下一步待 Codex 再复核；不得开始任何 Phase 1 实现或 Phase 0.5。
 3. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。

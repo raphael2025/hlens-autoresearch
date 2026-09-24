@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24，批次 A1；待 Codex 复核后决定） |
+| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r 同步 Codex 事实复核；待 Codex 再复核后决定） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（依据 Raphael 2026-09-24"授权所有"的持续授权） |
 | 起草者 | Claude Code（Opus）按 Codex 裁决落文 |
@@ -24,11 +24,14 @@ roadmap Phase 1 要求 Canonical 数据"有快照 ID 且可时间旅行"，禁�
 ADR-0002 规定默认技术栈中每一项的**引入时机**需要单独 ADR；本 ADR 是 PyIceberg、PostgreSQL SQL Catalog、
 本地文件 warehouse 与 EventBus 延期的引入决定。
 
-本机事实（起草时只读核验）：`psql (PostgreSQL) 18.6` 客户端存在，`/etc/postgresql/18` 存在；未连接服务、未创建任何库或角色。
+本机事实：Claude 起草时只读确认 `psql (PostgreSQL) 18.6` 客户端与 `/etc/postgresql/18` 存在；Codex 于 2026-09-24 只读确认服务可用——
+`pg_isready` 返回 `/var/run/postgresql:5432 - accepting connections`，`pg_lsclusters` 显示 PostgreSQL 18 main / 5432 online。
+**尚未连接任何数据库，未创建任何库或角色。**
 `data/*` 已被 `.gitignore` 排除。Docker 未安装（PROJECT_STATUS §7）。
 
-PyIceberg 的能力陈述（SQL Catalog 支持 PostgreSQL、`file:` FileIO）依据 Codex 控制稿引用的 PyIceberg 官方文档
-（py.iceberg.apache.org 的 configuration 与 catalog/sql 页面）。**本 ADR 起草时未联网复核**；实施批次必须在锁定的 PyIceberg 版本上重新核验。
+PyIceberg 的能力陈述由 Codex 于 2026-09-24 按官方文档复核（https://py.iceberg.apache.org/configuration/、
+https://py.iceberg.apache.org/reference/pyiceberg/table/）：SQL Catalog 支持 PostgreSQL 与 SQLite，SQLite 不适合并发生产用途；
+partitioned 表不支持 streaming `RecordBatchReader`。Claude 未联网、未安装依赖；实施批次仍须按锁定的依赖版本做行为 smoke / integration 验证。
 
 ## 裁决
 
@@ -135,8 +138,8 @@ PyIceberg 的能力陈述（SQL Catalog 支持 PostgreSQL、`file:` FileIO）依
 
 ## 开放义务
 
-- 实施前在锁定版本上核验 PyIceberg SQL Catalog、PostgreSQL 与 `file:` FileIO 的实际行为。
-- 实施前确认 PostgreSQL 服务状态，并按 H12 记录创建 database / role 的授权。
+- 实施前在锁定的 PyIceberg 版本上对 SQL Catalog（PostgreSQL）、`file:` FileIO、并发提交与重启恢复做 smoke / integration 验证（Codex 已按官方文档复核能力陈述）。
+- PostgreSQL 服务已由 Codex 只读确认在线；实施前仍须按 H12 记录创建 database / role 的授权，并以最小权限连接验证。
 - 本地 warehouse 的备份策略与远程仓库 / 异地存储决定（PROJECT_STATUS §6）。
 - NATS 引入门满足时另起 ADR，最迟 Phase 11 前。
 

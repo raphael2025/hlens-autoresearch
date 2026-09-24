@@ -26,10 +26,10 @@
 | [0018](0018-contract-value-semantic-identities.md) | 契约值对象的语义身份（D-26） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2c） |
 | [0019](0019-lifecycle-evidence-minimum.md) | 生命周期证据的最小结构（D-27） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2d） |
 | [0020](0020-approve-research-constitution-v1.md) | 发布 Research Constitution 1.0.0（原则零变化） | Accepted（2026-09-24，Raphael 明确批准，经 Codex 复核于 C4b 执行）；已实施 |
-| [0021](0021-phase1-local-data-infrastructure.md) | Phase 1 本地数据基础设施（D-01、D-02、D-10） | Proposed（2026-09-24，A1；待 Codex 复核） |
-| [0022](0022-phase1-market-and-execution-scope.md) | Phase 1 市场与执行边界（D-08） | Proposed（2026-09-24，A1；待 Codex 复核） |
-| [0023](0023-bitemporal-revision-data.md) | 双时间与修订数据的 point-in-time 语义（D-28） | Proposed（2026-09-24，A1；待 Codex 复核） |
-| [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Proposed（2026-09-24，A1；待 Codex 复核） |
+| [0021](0021-phase1-local-data-infrastructure.md) | Phase 1 本地数据基础设施（D-01、D-02、D-10） | Proposed（2026-09-24，A1；A1r 同步事实复核；待 Codex 再复核） |
+| [0022](0022-phase1-market-and-execution-scope.md) | Phase 1 市场与执行边界（D-08） | Proposed（2026-09-24，A1；A1r 同步事实复核；待 Codex 再复核） |
+| [0023](0023-bitemporal-revision-data.md) | 双时间与修订数据的 point-in-time 语义（D-28） | Proposed（2026-09-24，A1；A1r 按 Codex 退回意见分离历史可用时间与本机知识时间；待 Codex 再复核） |
+| [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Proposed（2026-09-24，A1；A1r 改为 `(simulation_time, knowledge_cutoff)` 双参数；待 Codex 再复核） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -53,7 +53,7 @@
 > 依据 Raphael 2026-09-24 的持续授权（来源与限定见 ADR-0020），C4a 以 Proposed 提出、Codex 复核后于 C4b 接受并发布。
 > 剩余顺序门已由 C5 执行：Phase 0 正式关闭、`phase/0` fast-forward 合并进 `main`、轻量 tag `phase-0-complete`。
 > **Phase 0 已完成**；契约 `2.0.0` 随合并视为已发布（D-25：此后破坏性变化必须升 major）。Phase 1 已于 2026-09-24 开启，
-> 当前仅架构决策子阶段：D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022、D-28 → ADR-0023、D-31 → ADR-0024（A1 已起草为 **Proposed**，尚未接受、尚未实施；接受前这些 D 编号仍未关闭，不得开始任何实现）。
+> 当前仅架构决策子阶段：D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022、D-28 → ADR-0023、D-31 → ADR-0024（A1 起草、A1r 按 Codex 复核退回意见修正，仍为 **Proposed**，尚未接受、尚未实施；接受前这些 D 编号仍未关闭，不得开始任何实现）。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 

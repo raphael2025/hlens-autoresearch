@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24，批次 A1；待 Codex 复核后决定） |
+| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r 同步 Codex 事实复核与 ADR-0023 时间语义；待 Codex 再复核后决定） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（依据 Raphael 2026-09-24"授权所有"的持续授权；执行范围部分见「安全边界」） |
 | 起草者 | Claude Code（Opus）按 Codex 裁决落文 |
@@ -21,9 +21,10 @@ roadmap Phase 1 的输入是"交易所公开行情（范围待定 D-08）"，输
 这个问题实际包含两件性质完全不同的事：**研究数据范围**（现在需要）与**未来执行范围**（Phase 13 才可能需要）。
 本 ADR 把两者拆开，只批准研究数据范围，并把执行范围收紧为明确的禁止与未来授权要求。
 
-Binance 相关事实（归档站点与目录、`.CHECKSUM` 文件、market-data-only REST base、2025-01-01 起 spot 归档时间戳改为微秒、
-归档文件可能被替换）依据 Codex 控制稿引用的 Binance 官方资料（binance-public-data README、spot REST API 文档、
-market_data_only FAQ）。**本 ADR 起草时未联网复核**，也未访问任何交易所端点；实施批次必须在开发前重新核验。
+Binance 相关事实的核验状态：Codex 于 2026-09-24 按官方资料复核了 spot 归档自 **2025-01-01** 起使用微秒时间戳，
+以及公开 market-data-only REST base 为 `https://data-api.binance.vision`（来源：https://github.com/binance/binance-public-data/、
+https://developers.binance.com/en/docs/products/spot/rest-api）。归档目录结构、`.CHECKSUM` 格式与归档替换做法依据同一官方仓库说明，
+实施时须对照锁定日期的官方资料逐项确认。Claude 未联网、未访问任何交易所端点；实施批次仍须做行为 smoke 验证。
 
 ## 裁决
 
@@ -60,6 +61,8 @@ Raw 必须能追溯：归档文件与其 checksum、下载 URI 与下载时间�
 
 官方归档可能在发现问题后替换文件并发布新 checksum。同一路径、不同 checksum 的文件是一个**新的 source revision**，
 按 [ADR-0023](0023-bitemporal-revision-data.md) 追加；旧文件、旧 checksum 及其解析结果全部保留，**禁止覆盖**。
+替换文件若没有可证明的公开时间，其 `available_time` 按 ADR-0023 §2 保守取本机 `ingest_time`，并记录证据缺口；
+它只在 `knowledge_cutoff` 不早于其 `knowledge_time` 的数据集中可见。
 
 ### 5. 第二纵向切片（门控）
 
@@ -143,7 +146,8 @@ order book、options、链上数据、其它 venue 均延期，各自需要新�
 
 ## 开放义务
 
-- 实施前核验 Binance 官方资料中的归档目录结构、checksum 格式、时间戳单位切换与 REST 限流规则。
+- 实施前对照官方资料确认归档目录结构、checksum 格式、归档替换做法与 REST 限流规则（时间戳单位切换与 market-data-only base 已由 Codex 复核），并做行为 smoke 验证。
+- Binance spot 归档首发与归档替换的 availability policy（ADR-0023 §2）由实施批次提出并附证据。
 - 是否用 aggTrades 重建 1m bar 与 venue 1m kline 做交叉核对，由实施批次在质量报告设计中提出。
 - 第二切片的范围与验收门在第一切片通过后另行记录。
 - Phase 13 执行范围与风险预算：Raphael 专属决定，届时单独形成授权记录。
@@ -161,4 +165,5 @@ order book、options、链上数据、其它 venue 均延期，各自需要新�
 - [x] 不授予任何实盘能力；实盘授权保持为 Raphael 专属（H10）
 - [x] 不修改任何已接受 ADR 正文、Constitution 或契约
 - [ ] Codex 复核并接受 —— 待进行
-- [ ] Binance 事实联网核验 —— 实施批次
+- [x] 关键 Binance 事实（微秒切换、market-data-only base）已由 Codex 于 2026-09-24 按官方资料复核
+- [ ] 其余来源细节与行为 smoke 验证 —— 实施批次
