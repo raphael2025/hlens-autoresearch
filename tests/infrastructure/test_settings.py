@@ -43,6 +43,10 @@ def test_defaults_with_only_catalog_dsn(monkeypatch: pytest.MonkeyPatch) -> None
     assert settings.http_user_agent == "hlens-autoresearch/0.0.0"
     assert str(settings.binance_archive_base_url) == "https://data.binance.vision/"
     assert str(settings.binance_market_data_base_url) == "https://data-api.binance.vision/"
+    assert settings.binance_rest_max_pages_per_collect == 200
+    assert settings.binance_rest_min_request_interval_ms == 250
+    assert settings.binance_rest_max_retry_after_seconds == 60
+    assert settings.binance_rest_max_response_bytes == 8388608
     assert settings.catalog_uri.get_secret_value() == VALID_CATALOG
 
 
@@ -200,6 +204,78 @@ def test_numeric_bounds_and_nonblank_strings(
 ) -> None:
     with pytest.raises(ValidationError):
         _settings(monkeypatch, HLENS_CATALOG_URI=VALID_CATALOG, **{key: value})
+
+
+#: ADR-0027 §12 / 03-data.md §6.2: env var → (lowest accepted, highest accepted).
+REST_BOUNDS: dict[str, tuple[int, int]] = {
+    "HLENS_BINANCE_REST_MAX_PAGES_PER_COLLECT": (1, 5000),
+    "HLENS_BINANCE_REST_MIN_REQUEST_INTERVAL_MS": (50, 60000),
+    "HLENS_BINANCE_REST_MAX_RETRY_AFTER_SECONDS": (1, 3600),
+    "HLENS_BINANCE_REST_MAX_RESPONSE_BYTES": (65536, 67108864),
+}
+REST_FIELDS: dict[str, str] = {
+    "HLENS_BINANCE_REST_MAX_PAGES_PER_COLLECT": "binance_rest_max_pages_per_collect",
+    "HLENS_BINANCE_REST_MIN_REQUEST_INTERVAL_MS": "binance_rest_min_request_interval_ms",
+    "HLENS_BINANCE_REST_MAX_RETRY_AFTER_SECONDS": "binance_rest_max_retry_after_seconds",
+    "HLENS_BINANCE_REST_MAX_RESPONSE_BYTES": "binance_rest_max_response_bytes",
+}
+
+
+@pytest.mark.parametrize("key", sorted(REST_BOUNDS))
+def test_rest_settings_accept_both_frozen_bounds(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    low, high = REST_BOUNDS[key]
+    for value in (low, high):
+        settings = _settings(monkeypatch, HLENS_CATALOG_URI=VALID_CATALOG, **{key: str(value)})
+        assert getattr(settings, REST_FIELDS[key]) == value
+
+
+@pytest.mark.parametrize("key", sorted(REST_BOUNDS))
+def test_rest_settings_reject_values_outside_the_frozen_bounds(
+    monkeypatch: pytest.MonkeyPatch, key: str
+) -> None:
+    low, high = REST_BOUNDS[key]
+    for value in (str(low - 1), str(high + 1), "0", "-1", "1.5", "", "many"):
+        with pytest.raises(ValidationError):
+            _settings(monkeypatch, HLENS_CATALOG_URI=VALID_CATALOG, **{key: value})
+
+
+def test_rest_settings_take_exact_uppercase_environment_overrides(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    settings = _settings(
+        monkeypatch,
+        HLENS_CATALOG_URI=VALID_CATALOG,
+        HLENS_BINANCE_REST_MAX_PAGES_PER_COLLECT="7",
+        HLENS_BINANCE_REST_MIN_REQUEST_INTERVAL_MS="900",
+        HLENS_BINANCE_REST_MAX_RETRY_AFTER_SECONDS="5",
+        HLENS_BINANCE_REST_MAX_RESPONSE_BYTES="131072",
+    )
+    assert settings.binance_rest_max_pages_per_collect == 7
+    assert settings.binance_rest_min_request_interval_ms == 900
+    assert settings.binance_rest_max_retry_after_seconds == 5
+    assert settings.binance_rest_max_response_bytes == 131072
+
+
+def test_rest_settings_reuse_the_existing_http_and_base_url_fields() -> None:
+    """ADR-0027 §12 forbids a second timeout / retry / user-agent / base-URL definition."""
+    fields = set(Settings.model_fields)
+    assert set(REST_FIELDS.values()) <= fields
+    duplicates = {
+        name
+        for name in fields
+        if name.startswith("binance_rest_")
+        and any(token in name for token in ("timeout", "retries", "user_agent", "base_url"))
+    }
+    assert duplicates == set()
+
+
+def test_the_collector_bounds_are_the_settings_bounds() -> None:
+    from infrastructure.collector import binance_rest as rest
+
+    assert (rest.MIN_PAGES_PER_COLLECT, rest.MAX_PAGES_PER_COLLECT) == (1, 5000)
+    assert (rest.MIN_REQUEST_INTERVAL_MS, rest.MAX_REQUEST_INTERVAL_MS) == (50, 60000)
+    assert (rest.MIN_RETRY_AFTER_SECONDS, rest.MAX_RETRY_AFTER_SECONDS) == (1, 3600)
+    assert (rest.MIN_RESPONSE_BYTES, rest.MAX_RESPONSE_BYTES) == (65536, 67108864)
 
 
 def test_binance_public_endpoint_defaults(monkeypatch: pytest.MonkeyPatch) -> None:

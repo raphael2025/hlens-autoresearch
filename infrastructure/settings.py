@@ -117,6 +117,12 @@ class Settings(BaseSettings):
     binance_market_data_base_url: AnyHttpUrl = Field(
         default_factory=lambda: AnyHttpUrl("https://data-api.binance.vision"),
     )
+    # REST collection operational bounds (ADR-0027 §12; 03-data.md §6.2). These are operational
+    # safety parameters, not Constitution or Validation Profile thresholds.
+    binance_rest_max_pages_per_collect: int = Field(default=200, ge=1, le=5000)
+    binance_rest_min_request_interval_ms: int = Field(default=250, ge=50, le=60000)
+    binance_rest_max_retry_after_seconds: int = Field(default=60, ge=1, le=3600)
+    binance_rest_max_response_bytes: int = Field(default=8388608, ge=65536, le=67108864)
 
     @field_validator("catalog_uri", mode="before")
     @classmethod
