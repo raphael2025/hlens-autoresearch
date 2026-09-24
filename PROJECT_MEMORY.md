@@ -41,10 +41,13 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
 - Current Subphase：**架构决策**；只允许 docs-only 起草 / 复核 ADR-0021（D-01 / D-02 / D-10）、ADR-0022（D-08）、
   ADR-0023（D-28）、ADR-0024（D-31，依赖 0023）；四份接受前不实现 Collector / Provider / Iceberg / 数据库 / 网络 / 下载 / 依赖安装
-- Current Objective：ADR-0021 ~ 0024 为 Proposed（A1 起草，A1r 按 Codex 退回修正）→ Codex 再复核接受
+- Current Objective：ADR-0021 ~ 0024 为 Proposed（A1 起草，A1r / A1r2 按 Codex 两次退回修正）→ Codex 再复核接受
 - ADR-0023 语义（A1r）：两条时间轴——历史轴 `event_time` / `source_time` / `available_time`（版本化 availability policy，
   可早于 ingest，需证据）与知识轴 `ingest_time` / `knowledge_time`（`>= ingest_time`）；PIT 查询 = `available_time <= simulation_time`
-  且 `knowledge_time <= knowledge_cutoff`，再按 `revision_seq` 取最新；派生值两轴分别传播，今天重算不把 `available_time` 推到今天
+  且 `knowledge_time <= knowledge_cutoff`；派生值两轴分别传播，今天重算不把 `available_time` 推到今天
+- ADR-0023 / 0024 修订选择（A1r2）：`arrival_seq` 只表示本机追加顺序（唯一、稳定、不复用、允许间隙），不决定优先级；
+  优先级来自 `revision_id` + `supersedes` DAG + 持久化的来源 precedence 证据；淘汰被直接或传递 supersede 的候选，
+  唯一 maximal head 才选中；多个 head = conflict，fail closed；禁止用到达顺序、墙钟或 payload hash 打破冲突
 - Codex 裁决（A1r 写入）：不升 3.0.0，新增 `ResearchDatasetManifest` + 未来 Runner 接口义务；`UniverseSelectionSpec` 不新增 `Kind`，
   在 manifest 中以 `name + SemVer + content hash` 绑定
 - Current Blocker：无（授权已记录）；Docker 未安装会影响 D-02 的可选方案

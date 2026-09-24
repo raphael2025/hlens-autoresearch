@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r 按 Codex 复核退回意见修正；待 Codex 再复核后决定） |
+| 状态 | **Proposed**（2026-09-24，批次 A1 起草；A1r、A1r2 按 Codex 两次独立复核退回意见修正；待 Codex 再复核后决定） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（依据 Raphael 2026-09-24"授权所有"的持续授权） |
 | 起草者 | Claude Code（Opus）按 Codex 裁决落文 |
@@ -22,6 +22,7 @@ C1 复审把这一缺口登记为 D-31。
 
 A1 版本用单一时刻 `t` 同时表达"历史上是否可交易"与"本机何时得知"，继承了 ADR-0023 A1 版本的缺陷。
 本修订按 ADR-0023 把两条轴分开：**valid interval 按 `simulation_time` 判断，revision / vintage 按 `knowledge_cutoff` 判断**。
+A1r2 进一步按 ADR-0023 §4 把本机追加顺序与修订优先级分开：listing revision 的选择由 `supersedes` 关系与来源证据决定，不由到达顺序决定。
 
 ## 裁决
 
@@ -32,7 +33,8 @@ A1 版本用单一时刻 `t` 同时表达"历史上是否可交易"与"本机何
   venue、venue 原生稳定产品 ID（若数据源提供）、symbol、instrument type、base / quote、
   `tradable_from`、`tradable_until`（**右开区间**，可为空表示仍可交易）、状态与原因、source、revision，
   以及 ADR-0023 的 `available_time`（历史轴，由 availability policy 计算）、`ingest_time` 与 `knowledge_time`（知识轴）。
-- 每次变化追加新 revision（`revision_seq`、`supersedes`、payload hash），不覆盖。
+- 每次变化追加新 revision，不覆盖；revision 字段与 ADR-0023 §4 相同：`arrival_seq`（只表示本机追加顺序）、`revision_id`、
+  `supersedes`、可用时的 `source_revision_id` 与 `source_revision_time`、payload hash；来源可证明的先后在 ingest 时持久化为 precedence 证据。
 
 ### 2. Listing episode、symbol 复用、暂停与改名（Codex 已确认）
 
@@ -52,10 +54,12 @@ A1 版本用单一时刻 `t` 同时表达"历史上是否可交易"与"本机何
 在 `(simulation_time, knowledge_cutoff)` 下构建 universe：
 
 1. 候选 listing revision 必须**同时**满足 `available_time <= simulation_time` 与 `knowledge_time <= knowledge_cutoff`；
-2. 对每个 episode 按稳定 revision 顺序（`revision_seq`）选最新候选；
+2. 对每个 episode 按 ADR-0023 §5 的 **maximal-head 算法**选择：用 `knowledge_time <= knowledge_cutoff` 的 `supersedes` 边与 precedence 证据
+   构建不可成环的 DAG，淘汰被其它候选直接或传递 supersede 的候选；只剩一个 head 则选它；**多个互不排序的 head 时 universe 构建
+   fail closed** 并写质量事件，**不得**用 `arrival_seq`、墙钟或 payload hash 选一个；
 3. 保留满足 `tradable_from <= simulation_time < tradable_until`（`tradable_until` 为空视为无穷）的 episode。
 
-由此：晚到本机的上市 / 下架修订在较早的 `knowledge_cutoff` 下不可见；来源公开时间晚于 `simulation_time` 的修订
+由此：来源的新 listing 修订先到、旧修订后到时仍选语义上的新修订；晚到本机的上市 / 下架修订在较早的 `knowledge_cutoff` 下不可见；来源公开时间晚于 `simulation_time` 的修订
 不会进入更早的 simulation；较晚 cutoff 看到的新 revision 不改变旧 cutoff 下的结果。
 
 ### 5. 版本化的 `UniverseSelectionSpec`（Codex 裁决）
@@ -95,6 +99,7 @@ listing 历史表的 `snapshot_id`、`simulation_time` 或区间、`knowledge_cu
 | D 只记录最新 listing 状态 | 表小 | 迟到修订会回写过去 | 违背 ADR-0023 |
 | E 以 symbol 作永久键 | 直观 | symbol 复用时混淆两个产品 | 身份错误 |
 | F 单一时刻 `t` 同时判断 valid interval 与 revision（A1 版本） | 简单 | 与 ADR-0023 A1 同一缺陷 | 已由 Codex 退回 |
+| H 按到达顺序选最新 listing 修订（A1r 版本） | 简单 | 旧修订后到会覆盖新修订 | 已由 Codex 第二次复核退回 |
 | G 为 `UniverseSelectionSpec` 新增 `Kind` 或借用 `Kind.DATASET` | 可用 `Ref` 引用 | 改变已发布枚举与 `REF_KEY_PATTERN`；借用 kind 是身份冒充 | Codex 裁决：manifest 内 `name + SemVer + hash` 绑定 |
 
 ## 契约、Schema 与迁移影响
@@ -110,6 +115,9 @@ listing 历史表的 `snapshot_id`、`simulation_time` 或区间、`knowledge_cu
   不得回退为今天的 symbol 列表。
 - 数据源不提供稳定产品 ID：使用退化键并标注；episode 边界存疑时写质量事件，不猜测合并。
 - listing 修订缺少来源发布时间且 policy 无法证明：`available_time` 按 ADR-0023 保守取 `ingest_time`，并记录证据缺口。
+- 同一 episode 出现 competing listing heads：该 `(simulation_time, knowledge_cutoff)` 的 universe 构建 fail closed，写质量事件；
+  只能通过追加有证据的 precedence 记录解决，且只对不早于该记录 `knowledge_time` 的 cutoff 生效。
+- `supersedes` 成环、自指或跨 episode：该 revision 拒绝写入并记录质量事件。
 - 成员清单重建：给定相同 spec（`name + SemVer + hash`）、相同 snapshot、相同 `simulation_time` 与 `knowledge_cutoff`，结果按位一致。
 
 ## 安全边界
@@ -134,6 +142,10 @@ listing 历史表的 `snapshot_id`、`simulation_time` 或区间、`knowledge_cu
 | 11 | 用今天的 symbol 列表或最终成交量构建历史池 | 不存在（静态检查与测试） |
 | 12 | 退市后缺失收益被当作 0 或删行 | 不存在；显式记录 |
 | 13 | `UniverseSelectionSpec` 以 `Ref` / `Kind.DATASET` 引用 | 不存在 |
+| 14 | listing 修订乱序到达：来源新修订先 ingest、旧修订后 ingest | 仍选语义上的新修订 |
+| 15 | 同一 episode 两个无 precedence 证据的不同 listing payload | universe 构建 fail closed，写质量事件 |
+| 16 | listing 的 A → B → C supersede 链以任意顺序到达；dangling predecessor 后到 | 选 C；结果不因到达顺序反转 |
+| 17 | 以 `arrival_seq` 决定 listing 修订优先级 | 不存在 |
 
 ## 后果
 
@@ -160,4 +172,5 @@ listing 历史表的 `snapshot_id`、`simulation_time` 或区间、`knowledge_cu
 - [x] 不选择任何数值阈值
 - [x] 不修改 Constitution 原则；把 C-L4 落为可审计的数据义务
 - [x] 接受时问题已由 Codex 裁决并写入（不新增 `Kind`；manifest 绑定；暂停 / 改名语义确认）
+- [x] listing revision 选择使用 maximal-head 算法，competing heads fail closed（A1r2）
 - [ ] Codex 再复核并接受 —— 待进行
