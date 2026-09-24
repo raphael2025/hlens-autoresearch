@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024、0026、0027 已 Accepted；A3～D2、D3A 与 D3B 已由 Codex 验收；当前只开放 D3C（D3D～D3E 依次待前一批验收）；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
+| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024、0026、0027 已 Accepted；A3～D2、D3A～D3C 已由 Codex 验收；当前只开放 D3D（D3E 待 D3D 验收）；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）
@@ -136,9 +136,8 @@ flowchart TD
 
 验收 #13 的前置是 **D3A 设计门**：现有八张表不能诚实承载 REST 的 Raw 三跳 lineage 与跨通道 precedence，
 拓扑与语义由 [ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md) 决定（Accepted 2026-09-25：四张 additive 表；D-33 方案 A 已生效）。
-D3A 设计门已通过（[验收记录](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)），D3B 亦已通过
-（[验收记录](../reviews/2026-09-25-d3b-rest-foundations-acceptance.md)）；**当前只开放 D3C**。
-顺序固定 D3A → D3B → D3C → D3D → D3E，每批一个可恢复 commit，门未过不得进入下一批；D3D～D3E 各自等前一批经 Codex 验收后开放。
+D3A 设计门、D3B 纯基础与 D3C 严格 decoder 均已通过（[D3A 验收](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)、[D3B 验收](../reviews/2026-09-25-d3b-rest-foundations-acceptance.md)、[D3C 验收](../reviews/2026-09-25-d3c-rest-decoder-acceptance.md)）；**当前只开放 D3D**。
+顺序固定 D3A → D3B → D3C → D3D → D3E，每批一个可恢复 commit，门未过不得进入下一批；D3E 等 D3D 经 Codex 验收后开放。
 每批交付一个**完整**的不变量：后一批只消费前一批已验收的结果，不回头补前一批的半个语义。
 下表 "#" 指 ADR-0027 验收矩阵编号。
 
@@ -146,7 +145,7 @@ D3A 设计门已通过（[验收记录](../reviews/2026-09-25-d3a-adr-0027-accep
 |---|---|---|---|---|---|
 | D3A / D3A-R1 | Claude | docs-only：ADR-0027、REST 官方证据、`03-data.md` §7.6、本拆分；R1 按 Codex 复核关闭 F1～F8 并改为四表方案 | `docs/**`、`PROJECT_STATUS.md`、`PROJECT_MEMORY.md` | docs 一致性、全量 pytest / ruff / format / mypy / `uv lock --check` 全绿；无实现代码、无 Schema / 契约 / 八表 / 依赖 / settings 变化；✅ Codex 验收，ADR-0027 Accepted | D3A-R1 `ed526f7` + 接受门 commit |
 | D3B | Claude | 四张新表定义 + REST 身份规则（页身份、键、payload hash、`edge_id`、`arrival_seq` 区间）+ REST availability / precedence policy + `binance.spot.delivery-channel@1.0.0` 纯函数（投影、相等判定、证据构造）；**无 HTTP、无 store、无写入** | `infrastructure/catalog/phase1_tables.py`（仅追加）、`infrastructure/revision/rest_identity.py`、`rest_availability.py`、`rest_precedence.py`、`channel_precedence.py`（均新增）、`infrastructure/revision/__init__.py`（导出）、对应 `tests/` | #1、#7（纯函数部分）、#9、#20（policy）、#21（REST 区间常量）；八张冻结表定义哈希与 `IDENTITY_HASH` 回归断言；REST 与归档 `observation_key` 跨模块一致；投影向量（相等、各字段不等、缺字段、超定义域、毫秒 / 微秒 kline 等价、亚毫秒 aggTrade 不等）；`edge_id` 不含时间；真实 PostgreSQL 建 12 表与重启幂等；✅ `3b267a0` + `02c0418` 经 Codex 验收 | D3B accepted commits + 接受门 commit |
-| D3C | Claude | 严格 decoder `binance.spot.rest.decoder@1.0.0`：纯函数（正文字节 + 规范页身份 + `retrieved_at` + 上一页摘要）→ 元素 + 页摘要（answered 区间、终止原因、续页查询）或拒绝 | `infrastructure/parser/binance_rest.py`、`infrastructure/parser/__init__.py`（导出）、`tests/` | #11 ～ #13 的 decoder 部分：ADR §6 envelope 表逐项正反例；越出目标窗口的合法元素**不**被拒；未结束 K 线；单位错由下界 / `retrieved_at` 上界捕获；截断 / 超长 / 重复键 / 多余字段 | D3C commit |
+| D3C / D3C-R1 | Claude | 严格 decoder `binance.spot.rest.decoder@1.0.0`：纯函数（正文字节 + 规范页身份 + `retrieved_at` + 上一页摘要）→ 元素 + 页摘要（answered 区间、终止原因、续页查询）或拒绝；R1 修复 RFC JSON 框架空白 | `infrastructure/parser/binance_rest.py`、`infrastructure/parser/__init__.py`（导出）、`tests/` | #11 ～ #13 的 decoder 部分：ADR §6 envelope 表逐项正反例；越出目标窗口的合法元素**不**被拒；未结束 K 线；单位错由下界 / `retrieved_at` 上界捕获；截断 / 超长 / 重复键 / 多余字段；✅ `643cf45` + `6b9e670` 经 Codex 验收 | D3C accepted commits + 接受门 commit |
 | D3D | Claude | REST collector：结构化 allowlist、按 D3C 分页、不可变 page / collection checkpoint、同 `request_id` 重放不联网、`Retry-After` / 418 / 5xx / 预算、四项新设置 | `infrastructure/collector/binance_rest.py`、`infrastructure/collector/__init__.py`、`infrastructure/settings.py`（四项新字段）、`tests/infrastructure/test_settings.py`、`tests/` | #10、#11 ～ #13 的 collector 部分、#14（含既有 `CollectorAdapter` contract suite 与"夹具第二次返回不同字节"）、#15 的崩溃点 1 / 2、#16 ～ #19；恶意 URL / 额外参数 / 重定向探针；全程 mock transport，另做一次只读 smoke | D3D commit |
 | D3E | Claude | REST revision store（response + 元素 revision、REST `arrival_seq` 分配、恢复）+ 跨通道 reconciler（写 `raw.binance_spot_precedence_evidence`，以证据表为幂等 checkpoint）+ 跨通道 graph 的 range guard | `infrastructure/revision/rest_store.py`、`infrastructure/revision/channel_reconcile.py`（均新增）、`infrastructure/revision/__init__.py`、`tests/`；**不改** `identity.py` 与 D2 `store.py` | #2 ～ #8、#11 / #13 的 store 部分、#15 崩溃点 3、#20、#21；两种到达顺序 × 四段 `knowledge_cutoff`；投影不等 / 无对侧 / 重复比较 / reconciler 重跑；真实 PostgreSQL 全量 | D3E commit |
 
