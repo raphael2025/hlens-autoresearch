@@ -26,6 +26,10 @@
 | [0018](0018-contract-value-semantic-identities.md) | 契约值对象的语义身份（D-26） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2c） |
 | [0019](0019-lifecycle-evidence-minimum.md) | 生命周期证据的最小结构（D-27） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2d） |
 | [0020](0020-approve-research-constitution-v1.md) | 发布 Research Constitution 1.0.0（原则零变化） | Accepted（2026-09-24，Raphael 明确批准，经 Codex 复核于 C4b 执行）；已实施 |
+| [0021](0021-phase1-local-data-infrastructure.md) | Phase 1 本地数据基础设施（D-01、D-02、D-10） | Proposed（2026-09-24，A1；待 Codex 复核） |
+| [0022](0022-phase1-market-and-execution-scope.md) | Phase 1 市场与执行边界（D-08） | Proposed（2026-09-24，A1；待 Codex 复核） |
+| [0023](0023-bitemporal-revision-data.md) | 双时间与修订数据的 point-in-time 语义（D-28） | Proposed（2026-09-24，A1；待 Codex 复核） |
+| [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Proposed（2026-09-24，A1；待 Codex 复核） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -49,7 +53,7 @@
 > 依据 Raphael 2026-09-24 的持续授权（来源与限定见 ADR-0020），C4a 以 Proposed 提出、Codex 复核后于 C4b 接受并发布。
 > 剩余顺序门已由 C5 执行：Phase 0 正式关闭、`phase/0` fast-forward 合并进 `main`、轻量 tag `phase-0-complete`。
 > **Phase 0 已完成**；契约 `2.0.0` 随合并视为已发布（D-25：此后破坏性变化必须升 major）。Phase 1 已于 2026-09-24 开启，
-> 当前仅架构决策子阶段：D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022、D-28 → ADR-0023、D-31 → ADR-0024（均待 A1 起草，接受前仍未关闭）。
+> 当前仅架构决策子阶段：D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022、D-28 → ADR-0023、D-31 → ADR-0024（A1 已起草为 **Proposed**，尚未接受、尚未实施；接受前这些 D 编号仍未关闭，不得开始任何实现）。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -57,16 +61,16 @@
 
 | ID | 问题 | 选项 | 阻塞 / 状态 |
 |---|---|---|---|
-| D-01 | **Iceberg Catalog 选择**。Iceberg 必须有 Catalog；若用 PostgreSQL 作 SQL Catalog，则 Control Plane 与 Data Plane 共享数据库，模糊 P3/P8 边界。另外 Python 生态对 Iceberg 写入（PyIceberg）与 DuckDB 的 Iceberg 写支持成熟度不一。 | (a) PG 独立 database 作 SQL Catalog；(b) REST Catalog（如 Lakekeeper / Polaris）；(c) Phase 1 先用"Parquet + 自有快照清单"，Phase 2 再上 Iceberg | Phase 1 |
-| D-02 | **没有 Docker 时的对象存储**。S3 兼容存储（MinIO）通常以容器运行，但 Docker 未安装且本阶段禁止安装。 | (a) Phase 0–1 用本地文件系统作为 StorageAdapter；(b) 授权安装 Docker 后使用 MinIO；(c) 使用 MinIO 单二进制（非容器） | Phase 1 |
+| D-01 | **Iceberg Catalog 选择**。Iceberg 必须有 Catalog；若用 PostgreSQL 作 SQL Catalog，则 Control Plane 与 Data Plane 共享数据库，模糊 P3/P8 边界。另外 Python 生态对 Iceberg 写入（PyIceberg）与 DuckDB 的 Iceberg 写支持成熟度不一。 | (a) PG 独立 database 作 SQL Catalog；(b) REST Catalog（如 Lakekeeper / Polaris）；(c) Phase 1 先用"Parquet + 自有快照清单"，Phase 2 再上 Iceberg | Phase 1；→ [ADR-0021](0021-phase1-local-data-infrastructure.md) Proposed（PostgreSQL-backed PyIceberg SQL Catalog，独立库） |
+| D-02 | **没有 Docker 时的对象存储**。S3 兼容存储（MinIO）通常以容器运行，但 Docker 未安装且本阶段禁止安装。 | (a) Phase 0–1 用本地文件系统作为 StorageAdapter；(b) 授权安装 Docker 后使用 MinIO；(c) 使用 MinIO 单二进制（非容器） | Phase 1；→ [ADR-0021](0021-phase1-local-data-infrastructure.md) Proposed（WSL ext4 `file://` warehouse，不装 Docker / MinIO） |
 | D-03 | ✅ **已决定（ADR-0005）** 研究 / 生产边界。相关实现选择 Q-1/Q-2/Q-7 仍按 ADR 保持开放。 | 见 ADR-0005 | → ADR-0005 Accepted |
 | D-04 | **Validation 时序冲突**。Phase 8 才是 Validation & Robustness，但 Phase 5–7 已产生实验与晋升判断。 | (a) 最小验证门在 Phase 4 交付，Phase 8 做扩展（当前 roadmap 采用此解释）；(b) 把 Phase 8 前移到 Phase 5 之前 | Phase 4 |
 | D-05 | ✅ **已决定（ADR-0006）** Lifecycle 细节；Q-4～Q-6 按 ADR 保持开放，现有已接受规则继续适用。 | 见 ADR-0006 与 07-validation.md §3 | → ADR-0006 Accepted |
 | D-06 | **Python 版本**。系统 Python 为 3.14.4；部分科学计算 / 数据库驱动 / PyIceberg 等对最新版本支持可能滞后。 | (a) 用 uv 固定 3.12 或 3.13 的项目内解释器；(b) 直接使用 3.14 | ✅ 已决定 → ADR-0003 |
 | D-07 | **Git 仓库**。项目目录尚未 `git init`（本阶段未授权）；复现元组依赖 commit SHA。另需决定远程托管位置。 | 授权后 `git init`（不修改全局 Git 配置） | ✅ 已决定 → ADR-0004 |
-| D-08 | **市场与执行范围**。覆盖哪些交易所 / 标的 / 频率（现货、永续、期权、链上）？Phase 13 是否包含实盘，由谁授权，风险预算上限？ | 需用户定义 | Phase 1 / 13 |
+| D-08 | **市场与执行范围**。覆盖哪些交易所 / 标的 / 频率（现货、永续、期权、链上）？Phase 13 是否包含实盘，由谁授权，风险预算上限？ | 需用户定义 | Phase 1 / 13；→ [ADR-0022](0022-phase1-market-and-execution-scope.md) Proposed（研究数据范围；实盘仍需 Raphael 独立授权） |
 | D-09 | **Constitution 数值**。TBD-1 至 TBD-5。结构部分（H-1、H-2）已定 → ADR-0007 Accepted；**数值仍未批准**，将在 Phase 4 校准后按 Profile 版本冻结。 | 需用户批准 | → 提案 `docs/research/proposals/d09-validation-threshold-proposal.md`（未批准） |
-| D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1 |
+| D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1；→ [ADR-0021](0021-phase1-local-data-infrastructure.md) Proposed（Phase 1 ~ 6 不运行 NATS，最迟 Phase 11 前引入） |
 | D-11 | ✅ **已决定（ADR-0008）** 契约只读载荷与哈希边界；下一次未发布的 2.0.0 与旧版本只读兼容。 | 方案 A | Phase 0；Accepted，B1 已实施 |
 | D-12 | ✅ **已决定（ADR-0009）** 实验身份与复现绑定；种子、运行标识和直接依赖内容覆盖。 | 方案 A | Phase 0；Accepted，B2 已实施（契约版本号提升到 2.0.0，该版本尚未发布） |
 | D-13 | ✅ **已决定（ADR-0010）** `model_copy(update=...)` 必须重新走完整校验；`model_construct` 明确为不受支持的可信数据逃生口。 | Codex 裁决 | Phase 0；Accepted，已实施 |
@@ -84,10 +88,10 @@
 | D-25 | **这批收窄是否需要升 major**：`2.0.0` 尚未发布（只在 `phase/0`、未合并 `main`、无 tag / 远程发布 / v2 数据登记）。 | Codex 裁决：继续属于未发布的 `2.0.0`，不升 major；发布后做同类改变必须升 major | Phase 0；Accepted（2026-09-24），写入 ADR-0011 ~ 0016 各自的版本小节 |
 | D-26 | **契约值对象的语义身份**：Profile 选择键、`Ref` 目标与 Git 代码修订的身份是否包含嵌套信封 `schema_version`；选择规则的判重与查询是否同源（C1 F1 / F3）。 | Codex 裁决 → [ADR-0018](0018-contract-value-semantic-identities.md)：三类显式语义身份，全局相等与内容哈希不变 | Phase 0；Accepted（2026-09-24），已实施（C2c） |
 | D-27 | **生命周期证据的最小结构**：每条转移是否必须带非空证据引用；是否在契约层要求职责分离（C1 F5）。 | Codex 裁决 → [ADR-0019](0019-lifecycle-evidence-minimum.md)：证据至少一项且非空；**不**做自报职责分离 | Phase 0；Accepted（2026-09-24），已实施（C2d） |
-| D-28 | **迟到 / 修订数据的 point-in-time 语义**：可用时间如何表达数据的迟到与修订（revision / as-of / vintage）；`event_time + declared_latency` 是否足够（C1 F4，原 R08）。 | 未决；本登记不选方案 | Phase 1 前决定（Phase 1 入口 ADR） |
+| D-28 | **迟到 / 修订数据的 point-in-time 语义**：可用时间如何表达数据的迟到与修订（revision / as-of / vintage）；`event_time + declared_latency` 是否足够（C1 F4，原 R08）。 | 未决；本登记不选方案 | Phase 1 前决定；→ [ADR-0023](0023-bitemporal-revision-data.md) Proposed |
 | D-29 | **`apps/worker` 与研究代码的边界**：01-system.md 让 worker 运行实验，而 `apps/` 不得 import `research/`；实验如何被运行而不越过边界（C1 F4，原 R15）。 | 未决；本登记不选方案 | 首次实现 worker / 实验运行前决定，最迟 Phase 5 前 |
 | D-30 | **C-L5 的跨对象校验执行点**：`embargo >= 最长 Outcome horizon` 需要同时看到 Profile 与 Outcome，由谁、在何时校验（C1 F4）。 | 未决；本登记不选方案 | Phase 4 前决定 |
-| D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | 未决；本登记不选方案 | Phase 1 前决定（Phase 1 入口 ADR） |
+| D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | 未决；本登记不选方案 | Phase 1 前决定；→ [ADR-0024](0024-historical-tradable-universe.md) Proposed（依赖 ADR-0023） |
 
 > **编号说明**（2026-09-24 由 Codex 最终确认）：D-17 ~ D-25 连续且唯一。
 > D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份已接受且已实施的 ADR（C2c / C2d），

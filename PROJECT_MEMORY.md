@@ -41,7 +41,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
 - Current Subphase：**架构决策**；只允许 docs-only 起草 / 复核 ADR-0021（D-01 / D-02 / D-10）、ADR-0022（D-08）、
   ADR-0023（D-28）、ADR-0024（D-31，依赖 0023）；四份接受前不实现 Collector / Provider / Iceberg / 数据库 / 网络 / 下载 / 依赖安装
-- Current Objective：A1 起草 ADR-0021 ~ 0024 为 Proposed → Codex 复核接受
+- Current Objective：ADR-0021 ~ 0024 已起草为 Proposed（A1）→ Codex 复核接受；接受时需裁定 PIT / universe manifest
+  是否进入契约强制（必填字段 = major）以及 `UniverseSelectionSpec` 是否新增 `Kind`
 - Current Blocker：无（授权已记录）；Docker 未安装会影响 D-02 的可选方案
 - Next Milestone：ADR-0021 ~ 0024 Accepted；首个 Provider 先交付 Protocol + DTO + contract tests（ADR-0017）
 
@@ -73,7 +74,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0020：Constitution 发布为 `1.0.0 / Approved`，第一至第九章正文 sha256 `4d603d62…259cd` 不变，只前向适用
 - 开放问题（已登记，ADR 接受前仍未关闭）：D-28 修订数据语义 → ADR-0023、D-31 历史标的池 → ADR-0024；
   D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；
-  D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022；D-04（Phase 4）
+  D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022（四份均 Proposed）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag）；原则或阈值变化、实盘、资金、风险预算不在内
 

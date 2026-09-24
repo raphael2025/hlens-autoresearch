@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **架构决策**：只允许 docs-only 起草与复核 ADR-0021 ~ 0024；四份 ADR 接受前不得开始任何实现 |
+| 当前子阶段 | **架构决策**：ADR-0021 ~ 0024 已起草为 **Proposed**（A1），待 Codex 复核接受；四份 ADR 接受前不得开始任何实现 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 决策子阶段 |
 | 最后更新时间 | 2026-09-24 |
@@ -21,8 +21,8 @@ Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / App
 此后任何破坏性契约变化都必须升 major 并走 ADR。仓库仍无远程，因此没有 push、PR 或 CI。
 
 Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明确开启 Phase 1**，但当前只进入架构决策子阶段：
-下一批 A1 是 docs-only 起草 ADR-0021（本地数据基础设施：D-01 / D-02 / D-10）、ADR-0022（市场与执行边界：D-08）、
-ADR-0023（双时间与修订数据：D-28）、ADR-0024（历史可交易 universe：D-31）。Collector、Provider、Iceberg、数据库、
+A1（docs-only）已把 Codex 的技术裁决起草为四份 **Proposed** ADR：ADR-0021（本地数据基础设施：D-01 / D-02 / D-10）、
+ADR-0022（市场与执行边界：D-08）、ADR-0023（双时间与修订数据：D-28）、ADR-0024（历史可交易 universe：D-31），尚未接受、尚未实施。Collector、Provider、Iceberg、数据库、
 网络访问、数据下载与依赖安装**均尚未开始**，在四份 ADR 接受之前一律不得实现。
 
 收口依据的是 Raphael 2026-09-24"授权所有"的持续授权：Codex 判定它覆盖原则零变化的 Constitution 1.0.0 发布、
@@ -66,7 +66,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ## 4. 当前正在做
 
 - 🔄 Phase 1 架构决策子阶段：无任何实现批次在进行
-- ⏭️ 下一步 A1（docs-only）：起草 ADR-0021 ~ 0024 为 Proposed，经 Codex 复核后接受；接受前不开始任何实现
+- ✅ A1（docs-only）：ADR-0021 ~ 0024 已起草为 Proposed
+- ⏭️ 下一步：Codex 复核四份 ADR（含 ADR-0023 / 0024 中留给接受时裁定的契约版本问题）；接受前不开始任何实现
 
 ## 5. 下一步
 
@@ -79,21 +80,22 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ### Claude Code 需要做
 
 - 已批准且已完成：Phase 0 全部批次（B1 / B2 / B3、C1 ~ C5）；Phase 1 S0（开启与分支）
-- 已批准、下一步：A1 —— docs-only 起草 ADR-0021 ~ 0024（Proposed），Codex 复核 S0 后即可执行
+- 已批准且已完成：A1 —— docs-only 起草 ADR-0021 ~ 0024（Proposed）
+- 下一步（待 Codex 复核）：按复核意见修正并接受四份 ADR；之后的实施批次由 Codex 另行下达
 - 未批准：Phase 1 的任何实现（Collector / Provider / Iceberg / 数据库 / 网络 / 下载）、依赖或环境安装、其他 Phase、任何原则或阈值变化、实盘
 
 ## 6. 当前待决策
 
-**Phase 1 入口决定**（ADR 接受前仍未关闭；本文件不选方案）
+**Phase 1 入口决定**（ADR 已起草为 Proposed；接受前仍未关闭）
 
 | ID | 问题 | 将由 |
 |---|---|---|
-| D-01 | Iceberg Catalog 选择 | ADR-0021（A1 起草） |
-| D-02 | 没有 Docker 时的对象存储 | ADR-0021 |
-| D-10 | NATS 引入时机 | ADR-0021 |
-| D-08 | 市场与执行范围（交易所 / 标的 / 频率） | ADR-0022 |
-| D-28 | 迟到 / 修订数据的 point-in-time 可用时间与 revision / as-of / vintage 语义 | ADR-0023 |
-| D-31 | C-L4 历史可交易标的池、上市 / 下架有效期及 Instrument 表达 | ADR-0024（依赖 ADR-0023） |
+| D-01 | Iceberg Catalog 选择 | ADR-0021（Proposed） |
+| D-02 | 没有 Docker 时的对象存储 | ADR-0021（Proposed） |
+| D-10 | NATS 引入时机 | ADR-0021（Proposed） |
+| D-08 | 市场与执行范围（交易所 / 标的 / 频率） | ADR-0022（Proposed） |
+| D-28 | 迟到 / 修订数据的 point-in-time 可用时间与 revision / as-of / vintage 语义 | ADR-0023（Proposed） |
+| D-31 | C-L4 历史可交易标的池、上市 / 下架有效期及 Instrument 表达 | ADR-0024（Proposed，依赖 ADR-0023） |
 
 **Phase 0 修复裁决（均已决定、已实施、已复验）**
 
@@ -120,6 +122,8 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ 外部是否存在 v1 历史数据证据不足，不宣称迁移已在真实数据上验证
 - ⚠️ 无远程仓库：没有异地备份、PR 与 CI
 - ⚠️ Docker 未安装、外部数据盘未挂载、WSL 内存约 15 GiB：影响 Phase 1 起的数据工作
+- ⚠️ ADR-0021 ~ 0024 引用的 PyIceberg 与 Binance 能力事实来自 Codex 控制稿，起草时未联网复核；实施前必须在锁定版本上核验
+- ⚠️ ADR-0023 修改冻结文档 03-data.md §4 的 `available_time` 定义；接受后才能改正文，若要让契约强制绑定 PIT manifest 则需契约升 major
 - ⚠️ 旧研究可能已看过全部 BTC 历史：历史"样本外"区间在认知上不完全干净
 - ⚠️ C3 关闭复验与修复实现出自同一 Claude 会话，独立性有限（以 Codex 复核为最终把关）
 
@@ -141,11 +145,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 A1 docs-only：起草 ADR-0021（本地数据基础设施）、0022（市场与执行边界）、0023（双时间与修订）、0024（历史 universe）为 Proposed；ADR 索引把 D-01 / 02 / 08 / 10 / 28 / 31 指向它们 | 技术方案已成文但未接受、未实施；03-data.md §4 的修改只在 ADR-0023 中提出；下一步 Codex 复核 |
 | 2026-09-24 | Phase 1 S0：Codex 依 Raphael 持续授权明确开启 Phase 1；从 `main` 创建 `phase/1`；当前只进入架构决策子阶段 | 下一步 A1 docs-only 起草 ADR-0021 ~ 0024；接受前不实现 Collector / Iceberg / 数据库 / 下载；`phase-0-complete` 仍是 last known good |
 | 2026-09-24 | C5：Phase 0 正式关闭（docs-only closure commit）；`phase/0` fast-forward 合并进 `main`；轻量 tag `phase-0-complete` | Phase 0 完成；契约 2.0.0 随合并视为已发布，此后破坏性变化必须升 major；Phase 1 尚未开始；无远程、未 push |
 | 2026-09-24 | C4b docs-only：ADR-0020 Accepted（Raphael 2026-09-24 授权，经 Codex 复核），Constitution 发布为 `1.0.0 / Approved`，只改页首版本 / 状态并追加修改历史 | Phase 0 全部验收标准已满足；第一至第九章正文 sha256 不变；未改代码 / 测试 / Schema；下一步 C5 关闭、合并 main、tag |
 | 2026-09-24 | C3 修复后只读复验结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`；C4a docs-only：固化 C3 报告，起草 ADR-0020（Constitution 1.0.0，原则零变化，Proposed），修正状态漂移，`02-domain.md` §3.7 写明字符串校验的运行时 / Schema 边界 | Phase 0 唯一剩余验收项是 Constitution 1.0.0；Raphael 持续授权已记录；下一步 Codex 复核后 C4b → C5；未改代码 / 测试 / Schema / Constitution |
-| 2026-09-24 | C2d：实施 ADR-0019（`LifecycleTransition.evidence` 必填、至少一项、每项非空，覆盖全部合法边）；新增 `tests/test_lifecycle_evidence.py`（red 31 failed → green 54 passed）；既有测试 helper 补测试证据 | F5 修复；全量 1433 passed；2 份 current Schema 变化；不做自报职责分离；v1 资产零差异；待 Codex 复验；下一步 Phase 0 关闭复验 |
 
 ## 10. 下一阶段进入条件
 
@@ -160,7 +164,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 **Phase 1 开启与实现前提：**
 1. ✅ Phase 0 完成
 2. ✅ Phase 1 已由 Codex 依 Raphael 持续授权明确开启（当前仅架构决策子阶段）
-3. ⏳ ADR-0021 ~ 0024 起草（A1）、复核并接受，决定 D-01、D-02、D-08、D-10、D-28、D-31
+3. ⏳ ADR-0021 ~ 0024 已起草（A1，Proposed），待复核并接受，以决定 D-01、D-02、D-08、D-10、D-28、D-31
 4. ⏳ 首次消费的 Provider 先交付 Protocol + DTO + contract tests（ADR-0017），再开始实现
 
 ## 11. 给 Raphael 的下一步
@@ -168,7 +172,8 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > 我现在应该干什么？
 
 1. Phase 0 已完成：宪法 1.0.0 已发布（原则一字未改），代码已合并进 `main`，并打了 `phase-0-complete` 标记。
-2. Phase 1 已开启，但目前只写架构决定（ADR-0021 ~ 0024），还不下载数据、不写采集代码。不需要你做任何决定。
+2. Phase 1 已开启，四份架构决定（ADR-0021 ~ 0024）已写成草案，等 Codex 复核；还不下载数据、不写采集代码。不需要你做任何决定。
+   其中 ADR-0022 明确：开发授权不等于实盘授权，Phase 13 之前系统没有下单能力，也不保存交易密钥。
 3. 以后若要修改任何原则或阈值，或涉及实盘 / 资金，需要你对具体内容单独批准。
 4. 建议尽快决定远程仓库（推荐 GitHub 私有），这样才有异地备份、PR 与 CI。
 
@@ -178,5 +183,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
-   下一步 A1（已授权，Codex 复核 S0 后执行）：docs-only 起草 ADR-0021 ~ 0024 为 Proposed；不得开始任何 Phase 1 实现或 Phase 0.5。
+   已完成 A1：ADR-0021 ~ 0024 起草为 Proposed。下一步待 Codex 复核；不得开始任何 Phase 1 实现或 Phase 0.5。
 3. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。
