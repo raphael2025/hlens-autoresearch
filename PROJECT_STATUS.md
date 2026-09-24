@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **架构决策已关闭**：ADR-0021 ~ 0024 已 **Accepted**（Codex 复核 A1r2 通过，A2 记录）；首切片已冻结，A2r 按 Codex 复核修正执行门与远程流程；实现**尚未开始**；A2 / A2r 待 Codex 复核推送，之后只批准 Cursor A3（A3a → A3b） |
+| 当前子阶段 | **A3a 依赖锁定完成（review-pending）**：`03-data.md` §6.1 四个直接依赖已写入 `pyproject.toml` / `uv.lock`；下一步获批实现为 **Cursor A3b**（typed settings） |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（待实施） |
+| 总体状态 | 🔄 Phase 1 进行中（A3a 待 Codex 复核推送） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -25,10 +25,10 @@ Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明
 ADR-0021（本地数据基础设施：PostgreSQL 独立库做 Iceberg Catalog、本地 `file://` warehouse、Phase 1 ~ 6 不用 NATS）、
 ADR-0022（Binance 公共现货 BTCUSDT / ETHUSDT，无任何交易能力）、ADR-0023（历史可用时间与本机知识时间分开；修订只追加，无法判定先后即失败）、
 ADR-0024（按当时可交易集合构建标的池）。A2 已把它们同步进数据架构文档，并冻结首批表名、分区、数据源版本、依赖清单与设置字段。
-Collector、Iceberg、数据库、网络访问、数据下载与依赖安装**均尚未开始**；A2 / A2r 经 Codex 复核推送后，只批准 Cursor 执行 A3（A3a 锁定依赖 → A3b 设置骨架，各自一个复核后推送的恢复点）。
+Collector、Iceberg、数据库、网络访问与数据下载**尚未开始**。A3a（依赖锁定）已本地提交、状态 **review-pending**；下一项获批实现为 Cursor A3b（typed settings），各自一个复核后推送的恢复点。
 
 代码仓库已有私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）：执行者只提交，Codex 复核通过后推送每个进度；PR 与 CI 尚未配置。
-远程 `phase/1` 目前停在 `6d53cf5`（A1r2）；A2 与 A2r 两个提交**尚未推送**，待 Codex 复核接受后一并推送。
+远程 `phase/1` 与本地对齐至含 A2 / A2r 的基线后，A3a 提交待 Codex 复核接受再推送。
 
 收口依据的是 Raphael 2026-09-24"授权所有"的持续授权：Codex 判定它覆盖原则零变化的 Constitution 1.0.0 发布、
 Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖任何原则或阈值变化、实盘、资金或风险预算。
@@ -39,7 +39,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（架构决策完成，待实施） |
+| 1 | Market Representation | 🔄 已开启（A3a 依赖锁定 review-pending） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -68,26 +68,26 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 0 正式关闭；`main` fast-forward；tag `phase-0-complete`
 - ✅ Phase 1 S0（docs-only）：从 `main` 创建 `phase/1`，Phase 1 开启并进入架构决策子阶段
 - ✅ Phase 1 A1 → A1r → A1r2 → A2（docs-only）：ADR-0021 ~ 0024 Accepted，首切片冻结，架构决策子阶段关闭
+- ✅ Phase 1 A3a（Cursor）：锁定 §6.1 四个直接依赖与 `uv.lock`；import smoke 通过；commit **review-pending**
 
 ## 4. 当前正在做
 
-- ✅ A2（docs-only）：接受 ADR-0021 ~ 0024；同步 `03-data.md`；冻结首切片表 / 分区 / 标识符 / PIT 输入输出、最小依赖与设置字段；roadmap Phase 1 写入验收矩阵与恢复序列
-- ✅ A2r（docs-only）：按 Codex 复核（FIX_BEFORE_PUSH）新增 ADR-0025 远程与推送流程；运行时设置只接受 PostgreSQL catalog；恢复 Cursor / Claude 批次分工（A3a / A3b、C1 仅存储、D0 下载）；明确 PIT 证据缺口与 parser 覆盖区间
-- ⏭️ 下一步：Codex 复核 A2 + A2r 并推送；之后只执行 Cursor A3a → A3b；实现尚未开始
+- ✅ A3a（Cursor）：`pyiceberg[pyarrow,sql-postgres]` / `pyarrow` / `pydantic-settings` / `httpx` 已锁定；SQLAlchemy 与 PostgreSQL 驱动仅为传递依赖；commit **review-pending**
+- ⏭️ 下一步：Codex 复核并推送 A3a；之后只执行 **Cursor A3b**（typed settings）
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 现在无需操作：Phase 0 已按你 2026-09-24 的授权收口；Phase 1 已由 Codex 依同一授权开启，架构决策已完成，下一步由 Cursor 做依赖与设置骨架
+- 现在无需操作：Phase 0 已按你 2026-09-24 的授权收口；Phase 1 已由 Codex 依同一授权开启；A3a 待 Codex 复核，下一步由 Cursor 做 A3b 设置骨架
 - 以后如果要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，需要你对具体内容单独批准
 
 ### Claude Code 需要做
 
 - 已批准且已完成：Phase 0 全部批次（B1 / B2 / B3、C1 ~ C5）；Phase 1 S0（开启与分支）
 - 已批准且已完成：A1 / A1r / A1r2 / A2 / A2r —— ADR-0021 ~ 0024 起草、两次修正、接受与首切片冻结；ADR-0025 与执行门修正（docs-only）
-- 下一步：**无** Claude 批次获批；下一项获批实现是 **Cursor A3a → A3b**。B1 起的 Claude 批次须等 A3 完成并由 Codex 下达任务包
-- 未批准：A3 以外的任何 Phase 1 实现（Collector / Provider / Iceberg / 数据库 / 网络 / 下载）、其他 Phase、任何原则或阈值变化、实盘
+- 下一步：**无** Claude 批次获批；下一项获批实现是 **Cursor A3b**（typed settings）。B1 起的 Claude 批次须等 A3 完成并由 Codex 下达任务包
+- 未批准：A3b 以外的任何 Phase 1 实现（Collector / Provider / Iceberg / 数据库 / 网络 / 下载）、其他 Phase、任何原则或阈值变化、实盘
 
 ## 6. 当前待决策
 
@@ -130,7 +130,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Cursor A3（A3a → A3b），其余实现（Collector、Provider、Iceberg、数据库、网络访问、数据下载）须等各自任务包
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Cursor A3b（typed settings）；A3a 已提交待复核；其余实现（Collector、Provider、Iceberg、数据库、网络访问、数据下载）须等各自任务包
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker），除非获得授权；创建 PostgreSQL 库 / 角色须先记录授权
@@ -146,11 +146,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-24 | Phase 1 A2r docs-only：Codex 复核 A2 为 FIX_BEFORE_PUSH；新增 ADR-0025（私有 GitHub 远程，Codex 复核后逐进度推送）并同步 CLAUDE.md §10.8；运行时 catalog 设置只接受 PostgreSQL；A3 拆为 A3a / A3b，C1 只做存储，新增 Cursor D0 下载；PIT 证据缺口不再是数据集级失败；parser 覆盖区间为 UTC 半开区间 | A2 决定不变；A2 / A2r 待 Codex 复核后推送，远程仍在 `6d53cf5` |
-| 2026-09-24 | Phase 1 A2 docs-only：Codex 复核 A1r2 通过，ADR-0021 ~ 0024 Accepted；`03-data.md` 按 ADR 同步；冻结首批 8 张表、分区、数据源 / parser / policy 版本、PIT 输入输出、最小依赖与设置字段；roadmap Phase 1 写入验收矩阵与恢复序列 | 架构决策子阶段关闭；实现尚未开始；下一项获批实现只有 Cursor A3 |
-| 2026-09-24 | Phase 1 A1r2 docs-only：Codex 第二次复核退回；ADR-0023 / 0024 把本机追加顺序（`arrival_seq`）与修订优先级（`revision_id` + `supersedes` + 来源证据）分开，PIT 与 universe 选择改为 maximal-head 算法，competing heads fail closed | 后到的旧修订不再覆盖新修订；无法判定先后时显式失败而不是静默选择；四份 ADR 仍为 Proposed、未实施；下一步 Codex 再复核 |
-| 2026-09-24 | Phase 1 A1r docs-only：Codex 复核 A1 退回；ADR-0023 / 0024 把历史可用时间（`available_time`，availability policy）与本机知识时间（`knowledge_time`）分开，PIT / universe 查询带 `simulation_time` 与 `knowledge_cutoff`；写入 manifest 与 `Kind` 裁决；同步事实复核 | 历史 backfill 可用于历史 simulation 且修订不回写过去；四份 ADR 仍为 Proposed、未实施；下一步 Codex 再复核 |
-| 2026-09-24 | Phase 1 A1 docs-only：起草 ADR-0021（本地数据基础设施）、0022（市场与执行边界）、0023（双时间与修订）、0024（历史 universe）为 Proposed；ADR 索引把 D-01 / 02 / 08 / 10 / 28 / 31 指向它们 | 技术方案已成文但未接受、未实施；03-data.md §4 的修改只在 ADR-0023 中提出；下一步 Codex 复核 |
+| 2026-09-24 | Phase 1 A3a（Cursor）：锁定 §6.1 四个直接依赖（pyiceberg[pyarrow,sql-postgres]、pyarrow、pydantic-settings、httpx）与 `uv.lock`；新增 import smoke；未新增 Polars/DuckDB/NATS 等禁用直接依赖 | 验收 #2；commit **review-pending**；下一步获批实现为 Cursor A3b |
+| 2026-09-24 | Phase 1 A2r docs-only：Codex 复核 A2 为 FIX_BEFORE_PUSH；新增 ADR-0025（私有 GitHub 远程，Codex 复核后逐进度推送）并同步 CLAUDE.md §10.8；运行时 catalog 设置只接受 PostgreSQL；A3 拆为 A3a / A3b，C1 只做存储，新增 Cursor D0 下载；PIT 证据缺口不再是数据集级失败；parser 覆盖区间为 UTC 半开区间 | A2 决定不变；执行门与远程流程对齐 |
+| 2026-09-24 | Phase 1 A2 docs-only：Codex 复核 A1r2 通过，ADR-0021 ~ 0024 Accepted；`03-data.md` 按 ADR 同步；冻结首批 8 张表、分区、数据源 / parser / policy 版本、PIT 输入输出、最小依赖与设置字段；roadmap Phase 1 写入验收矩阵与恢复序列 | 架构决策子阶段关闭；下一项获批实现为 Cursor A3 |
+| 2026-09-24 | Phase 1 A1r2 docs-only：Codex 第二次复核退回；ADR-0023 / 0024 把本机追加顺序（`arrival_seq`）与修订优先级（`revision_id` + `supersedes` + 来源证据）分开，PIT 与 universe 选择改为 maximal-head 算法，competing heads fail closed | 后到的旧修订不再覆盖新修订；无法判定先后时显式失败而不是静默选择 |
+| 2026-09-24 | Phase 1 A1r docs-only：Codex 复核 A1 退回；ADR-0023 / 0024 把历史可用时间（`available_time`，availability policy）与本机知识时间（`knowledge_time`）分开，PIT / universe 查询带 `simulation_time` 与 `knowledge_cutoff`；写入 manifest 与 `Kind` 裁决；同步事实复核 | 历史 backfill 可用于历史 simulation 且修订不回写过去 |
 
 ## 10. 下一阶段进入条件
 
@@ -186,6 +186,6 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
-   已完成 A1、A1r、A1r2、A2 与 A2r：ADR-0021 ~ 0025 Accepted，首切片冻结。当前没有获批的 Claude 批次：下一项是 Cursor A3a → A3b，
-   B1 起须等 A3 完成并由 Codex 下达任务包；不得开始 Phase 0.5。
+   已完成 A1、A1r、A1r2、A2 与 A2r：ADR-0021 ~ 0025 Accepted，首切片冻结。A3a 依赖锁定已提交（review-pending）。
+   当前没有获批的 Claude 批次：下一项获批实现是 **Cursor A3b**；B1 起须等 A3 完成并由 Codex 下达任务包；不得开始 Phase 0.5。
 3. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。
