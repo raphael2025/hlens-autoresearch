@@ -125,7 +125,7 @@ flowchart TD
 | B3 | Claude | Collector / Storage / Catalog Protocol、DTO、contract tests | 验收 #6；无任何实现 | B3 commit |
 | C1 | Cursor | 本地 `file://` StorageAdapter（仅此一项） | 验收 #7 | C1 commit |
 | C2 | Claude | PyIceberg catalog 语义与幂等提交；创建 catalog 库 / role 前记录 H12 授权 | 验收 #8 | C2 commit |
-| C3 | Claude | 八张表的 Schema / 分区 / 演进 | 验收 #9 | C3 commit |
+| C3 | Claude | 八张表的 Schema / 分区 / 演进（`day(...)` 分区写入以 ADR-0026 的 `pyiceberg-core` extra 已锁定为前提） | 验收 #9 | C3 commit |
 | D0 / CU-D1-DL | Cursor | 公共归档下载 + checksum + 原子交付；不解析、无 revision 语义 | 验收 #10 | D0 commit |
 | D1 ~ D4 | Claude | fail-closed parser 语义 → 修订 / 恢复 / precedence 证据 → REST 补尾 → 条件式 WS | 验收 #11 ~ #14、#17 | 每个子批一个 commit |
 | E | Claude | Canonical trades / bars_1m / listings 与质量报告 | 验收 #15 ~ #17 | 每个子批一个 commit |

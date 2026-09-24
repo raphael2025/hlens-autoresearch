@@ -153,11 +153,12 @@ Canonical 层每个分区产生质量报告：缺口、重复、异常值、时�
 
 | 包 | 为什么是直接依赖 |
 |---|---|
-| `pyiceberg[pyarrow,sql-postgres]` | Iceberg 表、SQL Catalog（PostgreSQL）与 PyArrow FileIO |
+| `pyiceberg[pyarrow,pyiceberg-core,sql-postgres]` | Iceberg 表、SQL Catalog（PostgreSQL）与 PyArrow FileIO；官方 extra `pyiceberg-core` 是写入 §7.1 `day(...)` 分区的必需实现（ADR-0026，D-32） |
 | `pyarrow` | 项目代码直接 import（microbatch `pyarrow.Table`） |
 | `pydantic-settings` | 类型化设置（§6.2） |
 | `httpx` | 归档与 market-data REST 下载 |
 
+- `pyiceberg-core` 只作为 PyIceberg 的官方 extra 引入，版本由 PyIceberg 自身约束解析进 `uv.lock`，不是独立顶层依赖（ADR-0026）。
 - **不**加入 Polars、DuckDB、NATS、boto3、Docker 或重试库。
 - SQLAlchemy 与 PostgreSQL 驱动保持**传递依赖**；只有项目代码直接 import，或解析器证明必须显式声明时才可成为直接依赖，
   且须先报告 Codex，获准后再加。
