@@ -1,0 +1,41 @@
+"""Phase 1 D1 Binance 公共现货归档 fail-closed parser。"""
+
+from infrastructure.parser.binance_archive import (
+    AGG_TRADES_ROW_SCHEMA,
+    KLINES_1M_ROW_SCHEMA,
+    PARSER_BINDING,
+    PARSER_ID,
+    PARSER_SPEC,
+    PARSER_VERSION,
+    ArchiveParseRequest,
+    ArchiveRejection,
+    ParsedArchive,
+    ParseOutcome,
+    ParserQualityEvent,
+    RejectionCode,
+    TimeUnit,
+    UnsupportedArchiveRequest,
+    parse_archive,
+    parse_archive_bytes,
+    time_unit_for,
+)
+
+__all__ = [
+    "AGG_TRADES_ROW_SCHEMA",
+    "ArchiveParseRequest",
+    "ArchiveRejection",
+    "KLINES_1M_ROW_SCHEMA",
+    "PARSER_BINDING",
+    "PARSER_ID",
+    "PARSER_SPEC",
+    "PARSER_VERSION",
+    "ParseOutcome",
+    "ParsedArchive",
+    "ParserQualityEvent",
+    "RejectionCode",
+    "TimeUnit",
+    "UnsupportedArchiveRequest",
+    "parse_archive",
+    "parse_archive_bytes",
+    "time_unit_for",
+]

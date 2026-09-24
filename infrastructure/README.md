@@ -10,6 +10,7 @@
 | `storage/` | Phase 1 C1 本地 `file://` `StorageAdapter`（`LocalFileStorageAdapter`） |
 | `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张生产表、batch 指纹规则与 partition-spec 演进 |
 | `collector/` | Phase 1 D0 Binance 公共现货日归档下载壳（`BinanceSpotArchiveCollector`） |
+| `parser/` | Phase 1 D1 Binance 公共现货日归档 fail-closed parser（`binance.spot.archive.parser@1.0.0`） |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
 
@@ -89,3 +90,13 @@ PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要�
 - **诚实边界（本批不做）**：不解析 ZIP / 行字段、不构造 revision、不写 Iceberg / Raw、
   不调用 market-data REST、不补尾、不接 WebSocket、不使用 `HLENS_BINANCE_MARKET_DATA_BASE_URL`。
 - 测试一律 `httpx.MockTransport` + 真实 `LocalFileStorageAdapter`（`tmp_path`），不访问公网。
+
+## Binance 归档 parser（D1）
+
+- 入口：`infrastructure.parser.parse_archive(request, storage)`（经 `StorageAdapter.open_read` 读取后按字节重算 SHA-256 / 长度，解析的正是被哈希的字节）与 `parse_archive_bytes(request, data)`；`ArchiveParseRequest.for_collected_object(collected, data_type=…, archive_revision_id=…)` 由 D0 `CollectedObject` 机械构造。
+- 版本登记：`PARSER_BINDING` = `PolicyBinding(role=parser, binance.spot.archive.parser, 1.0.0, policy_hash)`；`policy_hash` 是 `PARSER_SPEC`（单位规则、覆盖零容差、列布局、字段文法、CSV / ZIP 规则、资源上限）规范 JSON 的 SHA-256，golden 值在 `tests/infrastructure/parser/test_binance_archive_parser.py`。任何规则或上限变化 = 新 parser 版本。
+- 支持范围：`BTCUSDT` / `ETHUSDT` × `agg_trades` / `klines_1m` × 一个 UTC 整日；超出范围的请求抛 `UnsupportedArchiveRequest`（调用方错误，不是质量事件）。
+- 时间单位只由数据类型 + 覆盖日决定：早于 `2025-01-01T00:00:00Z` 毫秒，自该日起微秒；aggTrades 时间与 kline 开盘时间必须在 `[coverage_start, coverage_end)` 内（零容差）；kline 开盘对齐整分钟，收盘 = 开盘 + 1 分钟 − 1 tick。
+- 不可信输入：恰好一个与请求同名的普通 CSV 成员；拒绝前缀 / 尾随字节、注释、zip64、加密、未知标志 / 压缩方法、目录 / symlink、本地头与目录不一致、超限（压缩 1 GiB / 解压 3 GiB / 压缩比 50 / 行 1024 字节）；读到 EOF 后独立核对字节数与 CRC-32（`zipfile` 在声明大小偏小 / 偏大时不报错）。CSV：ASCII、LF 结尾且末行必须有 LF、无 CR / 空行 / header / 引号；整数 / 十进制（≤ `decimal(38,18)`，不经 float）/ `True`|`False` 严格文法；价格为正、aggTrade 数量为正、OHLC 与 taker ≤ total 不变量；aggTrade id 严格递增、时间不减、成交 id 区间不重叠；kline 开盘时间严格递增。缺失分钟与 aggTrade id 间隙不是 parser 拒绝（属后续质量规则）。
+- 结果：成功为 `ParsedArchive`（绑定 parser / 归档 revision / symbol / data type / coverage / `ObjectRef` / 成员名 / 单位，`rows` 为与 C3 Raw 表同名同类型的原生列 + `archive_line_number` + 换算后的 UTC 时间列）；任一失败为 `ArchiveRejection`（稳定 `RejectionCode`、行号 / 列名，不含原始行内容），`quality_event()` 给出与 `quality.data_quality_reports.events` 逐字段对应的可持久化事件。对象缺失等存储故障原样抛出。
+- **诚实边界（本批不做）**：不构造 revision / `observation_key` / `arrival_seq`、不写 Iceberg、不持久化质量报告、不访问网络；月归档不在 1.0.0 范围内。
