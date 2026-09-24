@@ -11,13 +11,13 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 已实施，等待验收与关闭复审
+- 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；Phase 0 关闭复审未做
 
 ## 2. Current Architecture
 
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
-- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`（**尚未发布**：未合并 main、无 tag、无远程、无 v2 数据登记）；
-  模型只接受同 major，`1.x` 走 `core/compat/v1.py` 只读入口
+- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`（**尚未发布**：只在 `phase/0` 分支生成，未合并 main、
+  无 tag、无远程发布、无 v2 数据登记）；模型只接受同 major，`1.x` 走 `core/compat/v1.py` 只读入口
 - Freeze Contracts, Evolve Implementations
 - 四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）
@@ -39,10 +39,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：B1、B2 已实施并经 Codex 验收；ADR-0010 纠偏已实施；契约仍为未发布的 2.0.0
-- Current Objective：等待 Codex 验收 B1/B2，再决定是否授权 B3 与 Phase 0 关闭复审
-- Current Blocker：B3 未授权（生命周期审批等遗漏）；Constitution 1.0.0 仍待 Raphael 亲自批准
-- Next Milestone：B1/B2 验收 → B3 决定 → Constitution 获批 → Phase 0 关闭
+- Current Subphase：B1、B2、ADR-0010 纠偏均经 Codex 最终复验并验收（2026-09-24，基线 `cd84a4e`）；
+  契约仍为未发布的 2.0.0
+- Current Objective：B3 的**只读规划与 Proposed ADR 起草**（Codex 已授权）；B3 代码实现未授权
+- Current Blocker：B3 实现待授权；Phase 0 关闭复审（批次 C）未授权；Constitution 1.0.0 仍待 Raphael 亲自批准
+- Next Milestone：B3 规划与 ADR → B3 实现授权 → Constitution 获批 → Phase 0 关闭复审 → 关闭
 
 ## 5. Active Decisions
 
@@ -60,9 +61,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0009：完整实验规格身份、运行标识与直接依赖内容绑定；实际 seeds 保留在实验哈希中；2026-09-23 Accepted，B2 已实施。
 - ADR-0010：`model_copy(update=...)` 重新走完整校验（`model_construct` 明确不受支持）、唯一 ASCII
   SemVer 2.0.0 语法、v1 只读入口的顶层 shape gate、JSON Schema 表达键值格式；2026-09-23 Accepted 并实施。
-- 契约 2.0.0 已随 B2 发布：v1 与 v2 的 `content_hash` / `experiment_hash` **不可比较**；v1 只读路径 =
-  `schemas/v1/`（35 份快照）+ `tests/vectors/v1/`（固定载荷与旧哈希）+ `core/compat/v1.py`。
-  读取 v1 不赋予任何 v2 登记 / 晋升资格。
+- 契约版本号已在 B2 提升到 2.0.0，但该版本**尚未发布**（见 §2）：v1 与 v2 的
+  `content_hash` / `experiment_hash` **不可比较**；v1 只读路径 = `schemas/v1/`（35 份快照）
+  + `tests/vectors/v1/`（固定载荷与旧哈希）+ `core/compat/v1.py`。读取 v1 不赋予任何 v2 登记 / 晋升资格。
+- B3 已获授权的只有**规划与 ADR 起草**；候选范围（未决定）：生命周期审批 / 主体 / 授权期、
+  Outcome 输入与 lag、防“证据不足即 PASS”、审计哈希字段统一、`LlmCall` 完整 I/O、
+  Runner / Registry 义务边界、Provider 验收范围漂移。
 
 ## 6. Active Constraints
 
@@ -102,12 +106,13 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- Date：2026-09-23
-- Git Commit：ADR-0010 纠偏提交（phase/0 分支 HEAD）；上一恢复点 `4e0f6e3`（B2）、`4f83e18`（B1）
-- Phase：Phase 0；B1/B2 + ADR-0010 已实施，契约 2.0.0 仍未发布，等待 Codex 复验与关闭复审
+- Date：2026-09-24
+- Git Commit：`cd84a4e`（ADR-0010 纠偏，Codex 最终复验通过）；上一恢复点 `4e0f6e3`（B2）、`4f83e18`（B1）
+- Phase：Phase 0；B1/B2 + ADR-0010 已实施并验收，契约 2.0.0 仍未发布，Phase 0 关闭复审未做
 - State：core 契约、状态机、只读载荷、完整实验身份、规范版本语法、v1 只读兼容入口均已实现；
-  545 测试、ruff check、ruff format --check、mypy strict 全绿；
-  Schema current 36 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0）；
+  545 测试、ruff check、ruff format --check、mypy strict 全绿（Codex 在 `cd84a4e` 上独立重跑）；
+  Schema current 36 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   无 Feature / Strategy / Backtest / Runner / Registry / 存储实现
-- Notes：ADR-0001 ~ 0010 Accepted；B3 未授权；Constitution 0.2.0-draft 待批准为 1.0.0；
-  D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；未合并 main、未创建 tag
+- Notes：ADR-0001 ~ 0010 Accepted；B3 只获准规划与 ADR 起草，实现未授权；
+  Constitution 0.2.0-draft 待批准为 1.0.0；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；
+  未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`

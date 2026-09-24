@@ -9,13 +9,14 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 0 — Research Constitution**（进行中） |
-| 当前子阶段 | B1、B2 已验收；ADR-0010 纠偏（D-13~D-16）已实施，等待 Codex 复验与 Phase 0 关闭复审 |
+| 当前子阶段 | B1、B2、ADR-0010 纠偏均已通过 Codex 最终复验并验收；下一步只授权 B3 的规划与 ADR 起草 |
 | 总体状态 | 🔄 进行中 |
-| 最后更新时间 | 2026-09-23 |
+| 最后更新时间 | 2026-09-24 |
 
-独立审查发现的不可变性与实验身份问题已由 B1（ADR-0008）与 B2（ADR-0009）修复，契约升到 2.0.0。
-生命周期审批等剩余遗漏属未授权的 B3，Phase 0 仍不能认定为“只差宪法批准”。
-任务方案见 `docs/reviews/2026-09-23-opus-supervision-plan.md`。
+独立审查发现的不可变性与实验身份问题已由 B1（ADR-0008）、B2（ADR-0009）与 ADR-0010 纠偏修复。
+契约 `2.0.0` 只在 `phase/0` 分支生成，**尚未发布**：未合并 `main`、无 tag、无远程发布、无任何 v2 数据登记。
+生命周期审批等剩余遗漏仍未修复，属 B3 候选范围；Phase 0 仍不能认定为“只差宪法批准”。
+验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`；任务方案见 `docs/reviews/2026-09-23-opus-supervision-plan.md`。
 
 ## 2. 当前进度
 
@@ -55,24 +56,27 @@
 - ✅ C-1、C-2 已决定：先纸面交易再成为生产候选；PAPER = 单策略观察，ACTIVE = 组合正式启用（带模拟 / 实盘标记）
 - ✅ D-09 提案：验证门槛三层结构 + BTCUSDT 1H 初始参数建议（未批准）
 - ✅ B1（ADR-0008）：14 个映射字段改为只读载荷、逐模型内容哈希排除表、规范化 JSON 约定、v1 固定向量
-- ✅ B2（ADR-0009）：完整实验身份与依赖内容绑定、报告绑定运行、契约 2.0.0 发布、v1 只读兼容入口
+- ✅ B2（ADR-0009）：完整实验身份与依赖内容绑定、报告绑定运行、契约版本号提升到 2.0.0、v1 只读兼容入口
 - ✅ ADR-0010 纠偏：复制更新重新校验、唯一 ASCII SemVer 2.0.0 语法、v1 顶层 shape gate、Schema 表达键值格式
+- ✅ B1 / B2 / ADR-0010 已通过 Codex 最终独立复验并正式验收（`docs/reviews/2026-09-23-b1-b2-acceptance.md`）
 
 ## 4. 当前正在做
 
-- ✅ B1（ADR-0008 只读载荷）、B2（ADR-0009 实验身份 + 契约 2.0.0）已完成并经 Codex 验收
-- ✅ ADR-0010（D-13~D-16）纠偏已完成并提交
-- 🔄 等待 Codex 复验；Phase 0 关闭复审（批次 C）与 B3 尚未授权
+- ✅ B1（ADR-0008 只读载荷）、B2（ADR-0009 实验身份）、ADR-0010 纠偏全部完成并由 Codex 验收通过
+- 🔄 B3 **只读规划与 ADR 起草**（Codex 已授权）；B3 代码实现尚未授权
+- ⏸️ Phase 0 关闭复审（批次 C）、Constitution 批准、main 合并仍未授权
 
-ADR-0010 完成后的实际检查（全部以 `uv run --no-sync --offline` 运行）：
-`pytest` 545 通过、`ruff check` 通过、`ruff format --check` 无差异、`mypy` 无错误。
+Codex 在 `cd84a4e` 上最终复验的实际结果：
+`pytest` 545 passed、`ruff check` All checks passed、`ruff format --check` 94 files already formatted、
+`mypy` Success: no issues found in 27 source files。关键探针确认 `model_copy` 后仍为 `FrozenMapping`
+且别名隔离，错 kind / 缺依赖 / 空 `run_id` 被拒绝，v1 合法载荷接受、错模型与多余字段拒绝。
 Schema：current 36 份（`schema_version` 默认 `2.0.0`）、legacy 35 份（`schemas/v1/`，逐字节不变）。
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 等 Codex 验收 B1/B2 后，决定是否授权 B3（生命周期审批等剩余遗漏）
+- 审阅 B3 的规划与 Proposed ADR 后，决定是否授权 B3 的代码实现
 - 关闭复审完成后，再决定研究宪法 `docs/research/constitution.md` 是否批准为 1.0.0
 - 决定远程仓库位置（不阻塞 Phase 0，但阻塞 PR / CI）
 
@@ -80,20 +84,28 @@ Schema：current 36 份（`schema_version` 默认 `2.0.0`）、legacy 35 份（`
 
 - 已批准且已完成：只读复核独立审查发现、准备并批准 ADR-0008 / 0009 方案 A
 - 已批准且已完成：Opus 串行实施 B1、B2；两批各留一个可恢复 commit，未合并 main
-- 已批准且已完成：ADR-0010 的 D-13 ~ D-16 纠偏
-- 未批准：B3（退役审批、subject 校验、授权有效期、Outcome 输入与 lag、`LlmCall` 完整输入输出、
-  审计哈希字段统一、传递依赖闭包等）、Constitution 批准、其他 Phase、环境安装与 main 合并
+- 已批准且已完成：ADR-0010 的 D-13 ~ D-16 纠偏，并通过 Codex 最终复验
+- 已批准（本轮）：B3 的**只读规划与 ADR 起草**——把候选范围写成可审阅的问题清单与 Proposed ADR
+- 未批准：B3 代码实现、Constitution 批准、Phase 0 关闭复审（批次 C）、其他 Phase、环境安装、
+  main 合并与 tag
 
 ## 6. 当前待决策
 
-**Phase 0 修复方案（已决定）**
+**Phase 0 契约修复（已决定并已验收）**
 - 问题：独立审查发现不可变对象可被嵌套修改、实验身份未覆盖完整规格，并发现生命周期审批遗漏等问题。
-- 为什么需要决定：修复涉及冻结契约与实验复现机制，必须先有 Proposed ADR，再由 Raphael 批准。
-- 当前授权：ADR-0008 / 0009 方案 A 与 B1/B2 实施（**已完成**）；未实现 Registry/Runner/存储，未登记任何实验。
-- D-11：[ADR-0008](docs/adr/0008-contract-payload-immutability.md) 已 Accepted。
-- D-12：[ADR-0009](docs/adr/0009-experiment-identity-binding.md) 已 Accepted。
-- 执行范围见 [Opus 执行交接](docs/reviews/2026-09-23-opus-phase0-handoff.md)；不含 B3、宪法批准或 main 合并。
-- Phase 0 Provider 签名交付范围仍需明确：05-plugin.md 的承诺与 roadmap 验收表不一致，暂不自行增加或删除验收条件。
+- D-11：[ADR-0008](docs/adr/0008-contract-payload-immutability.md) Accepted，B1 已实施并验收。
+- D-12：[ADR-0009](docs/adr/0009-experiment-identity-binding.md) Accepted，B2 已实施并验收。
+- D-13 ~ D-16：[ADR-0010](docs/adr/0010-contract-construction-and-canonical-versioning.md) Accepted，纠偏已实施并验收。
+- 验收结论见 [B1/B2 验收记录](docs/reviews/2026-09-23-b1-b2-acceptance.md)；未实现 Registry/Runner/存储，未登记任何实验。
+- 契约 `2.0.0` 只在 `phase/0` 生成，尚未合并 `main`、无 tag、无远程发布、无 v2 数据登记。
+
+**B3 范围（待规划，尚未决定）**
+- 问题：剩余的生命周期与校验遗漏如何收口、哪些留给 Runner / Registry。
+- 当前授权：只做**只读规划与 ADR 起草**；代码实现未授权。
+- 候选范围（问题清单，不是方案）：生命周期审批 / 主体 / 授权期、Outcome 输入与 lag、
+  防“证据不足即 PASS”、审计哈希字段统一、`LlmCall` 完整输入输出、Runner / Registry 义务边界、
+  Provider 验收范围漂移（05-plugin.md 与 roadmap 验收表不一致，暂不自行增删验收条件）。
+- 未决定时：契约保持现状，不新增字段、不改变已接受的不变量。
 
 **批准研究宪法 1.0.0**（仍未满足；已不是唯一关闭条件）
 - 问题：是否把 `docs/research/constitution.md` 从 0.2.0-draft 批准为 1.0.0。
@@ -111,7 +123,8 @@ Schema：current 36 份（`schema_version` 默认 `2.0.0`）、legacy 35 份（`
 
 ## 7. 当前风险
 
-- ⚠️ ADR-0010 纠偏尚未经 Codex 复验；工程检查通过不能替代关闭复审
+- ⚠️ B1/B2/ADR-0010 已验收，但工程检查与批次验收都不能替代 Phase 0 关闭复审（批次 C 未执行）
+- ⚠️ 生命周期审批、subject 校验、授权有效期、Outcome 输入与 lag 等遗漏仍未修复（B3 候选，仅获准规划）
 - ⚠️ `core/compat/v1.py` 的 v1 gate 只做**顶层**形状检查，不是完整 JSON Schema 递归校验
 - ⚠️ `LlmCall` 仍只存三个哈希，06-experiment.md §2 要求的"完整输入输出"仍是未关闭缺口
 - ⚠️ 传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性仍是未实现的 Runner / Registry 义务
@@ -139,17 +152,17 @@ Schema：current 36 份（`schema_version` 默认 `2.0.0`）、legacy 35 份（`
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Codex 对 `cd84a4e` 最终独立复验：B1、B2、ADR-0010 纠偏正式验收通过；授权 B3 只读规划与 ADR 起草 | `cd84a4e` 成为 last known good；契约 2.0.0 仍只在 `phase/0`，未合并 main / 无 tag / 无远程 / 无数据登记 |
 | 2026-09-23 | Codex 验收 B1/B2 后裁决 ADR-0010（D-13~D-16）并实施：复制更新重新校验、唯一 ASCII SemVer 语法、v1 顶层 shape gate、Schema 表达键值格式 | 公开构造路径唯一；版本身份无 Unicode / 前导零歧义；旧载荷不能凭空获得 legacy 身份；契约仍为未发布的 2.0.0 |
 | 2026-09-23 | B2 实施完成：完整实验身份与依赖绑定、Report→Run 绑定、契约 2.0.0 发布、v1 只读兼容入口与版本化快照 | 引用不同策略的实验不再哈希碰撞；v1/v2 哈希不可比较，旧记录无自动晋升资格 |
 | 2026-09-23 | B1 实施完成：契约映射载荷只读、逐模型内容哈希排除表、规范化 JSON 约定、v1 固定向量 | 契约身份不再能被就地修改污染；`schemas/` 无差异；B2 继续 |
 | 2026-09-23 | Raphael 授权 Codex 决定项目技术方向并控制 Claude Code；Codex 批准 ADR-0008/0009 方案 A 与 B1/B2 | Claude Code 开始串行修复契约；Constitution、其他 Phase 和 main 合并仍未授权 |
-| 2026-09-23 | 独立审查发现 Phase 0 关闭阻塞；Raphael 指定 Codex 控制与文档、Claude Code Opus 负责后续执行；先准备方案与 Proposed ADR | Phase 0 保持开启，具体代码方案待批准 |
 
 ## 10. 下一阶段进入条件
 
 **Phase 0 关闭条件（roadmap 验收标准）：**
-1. ⏳ current 36 份 + legacy 35 份 Schema；不可变性与实验身份已修复（B1/B2），交付范围待复审
-2. ⏳ 转移图测试通过；审批与历史归属校验仍有缺口
+1. ⏳ current 36 份 + legacy 35 份 Schema；不可变性与实验身份已修复并验收（B1/B2/ADR-0010），交付范围待关闭复审
+2. ⏳ 转移图测试通过；审批与历史归属校验仍有缺口（B3 候选）
 3. ✅ 契约层无基础设施依赖（导入检查测试）
 4. ✅ 本地测试命令可运行（ADR-0010 后实际 545 项通过）
 5. ✅ lint / 类型检查命令可运行（ruff + mypy strict 全绿）
@@ -164,7 +177,7 @@ Schema：current 36 份（`schema_version` 默认 `2.0.0`）、legacy 35 份（`
 
 > 我现在应该干什么？
 
-1. 等 Codex 验收 B1/B2 后，审阅是否授权 B3（剩余的生命周期与校验遗漏）。
+1. 审阅即将提交的 B3 规划与 Proposed ADR，决定是否授权 B3 的代码实现。
 2. 再决定研究宪法是否批准为 1.0.0。
 3. 最后决定 Phase 0 关闭、合并 main 与 tag。
 
@@ -172,7 +185,7 @@ Schema：current 36 份（`schema_version` 默认 `2.0.0`）、legacy 35 份（`
 
 > Claude 下一步可以执行什么？
 
-1. B1（`4f83e18`）、B2（`4e0f6e3`）与 ADR-0010 纠偏各留一个 commit，等待 Codex 复验。
-2. 未获授权前不启动 B3、不批准 Constitution、不关闭 Phase 0、不合并 main、不创建 tag。
-3. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据。
-4. Codex 提出修改意见后，由 Opus 在同一分支继续修复。
+1. B1（`4f83e18`）、B2（`4e0f6e3`）、ADR-0010 纠偏（`cd84a4e`）已验收；`cd84a4e` 为 last known good。
+2. 已授权：B3 的只读规划与 Proposed ADR 起草（候选范围见 §6，不得写成已决定方案）。
+3. 未获授权前不写 B3 实现代码、不批准 Constitution、不关闭 Phase 0、不合并 main、不创建 tag。
+4. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据。
