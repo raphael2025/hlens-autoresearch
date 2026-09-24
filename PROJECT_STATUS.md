@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **D2-R1 返修完成，待 Codex 复核**：按 Codex 复核意见修复两个缺陷（来源 checksum 必须存在、序号 anchor 改为流式有界归约）；D1 已由 Codex 独立验收 |
+| 当前子阶段 | **D3A REST Raw / lineage 设计门已开放（docs-only）**：D2 与 D2-R1 已由 Codex 独立验收；D3A 先解决 REST 原始响应、元素 revision 与三跳 lineage 的表拓扑，不得开始实现 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D1 已验收；D2 + D2-R1 待复核） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2 已验收；D3A 已开放） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -25,10 +25,10 @@ Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明
 ADR-0021（本地数据基础设施：PostgreSQL 独立库做 Iceberg Catalog、本地 `file://` warehouse、Phase 1 ~ 6 不用 NATS）、
 ADR-0022（Binance 公共现货 BTCUSDT / ETHUSDT，无任何交易能力）、ADR-0023（历史可用时间与本机知识时间分开；修订只追加，无法判定先后即失败）、
 ADR-0024（按当时可交易集合构建标的池）。A2 已把它们同步进数据架构文档，并冻结首批表名、分区、数据源版本、依赖清单与设置字段。
-Iceberg Catalog、本地 StorageAdapter、八张生产表定义、D0 Collector 与 D1 fail-closed parser 已验收；D2 revision 持久化已实现，等待 Codex 独立复核。A3a（依赖锁定）、A3b（typed settings）与 B1（双时间 / revision DAG 契约）均已由 Codex 独立复核；B1 对抗复核发现 dangling revision ID 可被不同 key 认领，Claude 修复并补回归测试后通过验收。
+Iceberg Catalog、本地 StorageAdapter、八张生产表定义、D0 Collector、D1 fail-closed parser 与 D2 append-only revision store 已验收。D2 首轮复核发现来源 checksum 真实性与 arrival anchor 全表物化两个缺陷；D2-R1 修复后由 Codex 复现旧提交四项失败、运行真实 PostgreSQL 全量与静态检查并接受。D3A 只开放 REST Raw / lineage 的 docs-only 架构门。
 
 代码仓库已有私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）：执行者只提交，Codex 复核通过后推送每个进度；PR 与 CI 尚未配置。
-本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C3、D-32、D0～D1 及各验收门；D1 实现恢复点为 `c966085`。
+本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C3、D-32、D0～D2 及各验收门；D2 修复后的实现恢复点为 `b05486b`。
 
 Raphael 2026-09-24 的“授权所有、全权接管并开发 / 测试 / 决策 / 文档”明确覆盖 C2 所需的 H12 环境变更：
 创建专用 PostgreSQL catalog / test database 与最小权限 role、写入仅本机且被 Git 忽略的凭据文件，并覆盖 D0 / D1 对
@@ -44,7 +44,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（D2 待复核） |
+| 1 | Market Representation | 🔄 已开启（D3A 设计门已开放） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -82,8 +82,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 C2（Claude Opus）：PostgreSQL-backed PyIceberg Catalog、定义注册、真实快照 / 时间旅行、重启幂等与乐观并发；Codex 独立运行 2630 项全量测试、12 轮同 batch 并发探针、权限 / 残留 / 密钥检查与静态检查通过（`373e286`）
 - ✅ Phase 1 C3（Claude Opus + Cursor Auto）：八张冻结生产表、`hlens.pyarrow-batch-sha256@1.0.0`、分区演进与幂等建表；ADR-0026 / D-32 增补官方 `pyiceberg-core` extra；Codex 独立运行 2728 项全量测试、8 表真实 PostgreSQL 写入 / 重启重放探针、残留 / 密钥 / 冻结边界检查与静态检查通过（`973ffbd`）
 - ✅ Phase 1 D0（Cursor Auto）：`BinanceSpotArchiveCollector` 只访问配置 archive base，严格 `.CHECKSUM` 先验校验、流式 staging / 原子发布、缺口与有界重试；经两轮对抗返修关闭中途流错误不重试与 base URL 静默改写；Codex 独立运行 2780 项全量测试、流中断 / 恶意 base 探针、残留 / 密钥 / 冻结边界检查与静态检查通过（`7a9f468`）
-- 🟡 Phase 1 D2（Claude Opus，待复核）：`infrastructure/revision/` 的身份规则、`binance.spot.publication@1.0.0`、`binance.spot.archive-revision@1.0.0` 与 `RawRevisionStore`；归档对象改为内容寻址（collector 升 `1.1.0`，source 绑定不变），序号 block 以归档表为 anchor 全在 Iceberg 内分配；本地跑过 3072 项全量（接真实 PostgreSQL；不接时 3019 通过 + 53 skipped）与全部静态检查
-- 🟡 Phase 1 D2-R1（Claude Opus，待复核）：修复 Codex 复核发现的两个缺陷——①缺失官方 `.CHECKSUM` 时不再用本机对象哈希冒充来源声明（`source_sha256` 必须存在、规范、等于 `ref.sha256`，且持久化的正是该来源声明），②序号 anchor 改用新增的 `PyIcebergCatalogAdapter.max_int64` 流式 Arrow batch 归约，不再把全归档历史物化成一个 `pa.Table`，并逐值 fail closed 校验 block base；另按审计缩窄 precedence 的乱序 ordered 声明（未改冻结 Schema 与 policy hash）；本地跑过 3091 项全量（接真实 PostgreSQL，0 skipped）与全部静态检查
+- ✅ Phase 1 D2（Claude Opus）：`infrastructure/revision/` 的身份规则、`binance.spot.publication@1.0.0`、`binance.spot.archive-revision@1.0.0` 与 `RawRevisionStore`；归档对象内容寻址，序号 block 以归档表为 anchor 全在 Iceberg 内分配；经 D2-R1 修复后由 Codex 独立运行真实 PostgreSQL 全量 3091 项、回归反例与全部静态检查并接受（`b05486b`）
+- ✅ Phase 1 D2-R1（Claude Opus）：关闭来源 checksum 伪造与 arrival anchor 全表物化两个缺陷；四个新增回归测试在旧提交 `ba9f417` 上由 Codex 独立复现为全部失败，在修复提交全部通过；未改冻结 Schema 与 precedence policy hash
 - ✅ Phase 1 D1（Claude Opus）：`binance.spot.archive.parser@1.0.0` 按覆盖日选择毫秒 / 微秒，严格 ZIP / CSV 与零容差覆盖边界，失败只产结构化质量事件且不泄露部分 rows；Codex 独立运行 2955 项全量测试、70,000 行末尾失败原子性探针，并真实解析两个日期的 kline 与 aggTrades 官方归档（`c966085`）
 
 ## 4. 当前正在做
@@ -99,14 +99,14 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ C3（Claude Opus + Cursor Auto）：Codex 已独立验收；八张表、batch 指纹、分区演进、四张按天分区表真实写入与重启重放均通过；验收矩阵 #9 满足
 - ✅ D0（Cursor Auto）：Codex 已独立验收；验收矩阵 #10 满足，接受 `7a9f468`
 - ✅ D1（Claude Opus）：Codex 已独立验收；验收矩阵 #11 满足，接受 `c966085`
-- 🟡 D2（Claude Opus）：实现完成，**待 Codex 独立复核**；append-only revision、幂等 replay、归档替换追加、arrival_seq block 分配、崩溃恢复与 availability / precedence 证据均已落地并有测试；D3 仍未开放
-- 🟡 D2-R1（Claude Opus）：Codex 复核发现的两个缺陷已修复并各有能识别旧实现的回归测试（四个新测试在 `ba9f417` 上确认失败）；额外 precedence 审计结论已写入代码与 `infrastructure/README.md`（只缩窄声明，未改冻结 Schema）；**待 Codex 复核**
+- ✅ D2 / D2-R1（Claude Opus）：Codex 已独立验收；验收矩阵 #12 / #17 满足，接受 `ba9f417` + `b05486b`
+- 🔄 D3A（Claude Opus，docs-only）：已开放 REST Raw source / element revision / 三跳 lineage 的设计门；只可起草 Proposed ADR、证据文档与 D3B～D3E 批次拆分，不得写实现
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 现在无需操作：D2 已实现并自测通过，等待 Codex 独立复核后推送
+- 现在无需操作：D2 已验收；Codex 正在控制 Claude 执行 D3A 设计门
 - 以后如果要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，需要你对具体内容单独批准
 
 ### Claude Code 需要做
@@ -115,8 +115,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已批准且已完成：A1 / A1r / A1r2 / A2 / A2r —— ADR-0021 ~ 0024 起草、两次修正、接受与首切片冻结；ADR-0025 与执行门修正（docs-only）
 - 已完成并验收：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema 与 contract tests）与 **Claude B2**（D-31 universe / manifest 契约）
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
-- C3、D-32、D0 与 D1 均已完成并通过 Codex 独立验收
-- 当前唯一获批实现批次：**D2**（已完成，待复核）；不得实现 REST / D3、WebSocket / D4 或 Canonical / E
+- C3、D-32、D0、D1 与 D2 均已完成并通过 Codex 独立验收
+- 当前唯一获批批次：**D3A（docs-only）**；不得实现 REST / D3B～D3E、WebSocket / D4 或 Canonical / E
 
 ## 6. 当前待决策
 
@@ -162,12 +162,13 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ PyIceberg 与 Binance 的关键能力事实已由 Codex 于 2026-09-24 按官方资料复核，PostgreSQL 服务已只读确认在线；实施前仍须按锁定依赖版本做行为 smoke / integration 验证
 - ⚠️ 来源若不提供修订关系或修订时间，同一观察的不同版本会成为 competing heads 并使数据集构建 fail closed；需要各来源的 precedence policy 与证据
 - ⚠️ **D2 的证据结论**：Binance 官方资料没有给出任何具体 revision 的公开时刻，因此 `binance.spot.publication@1.0.0` 三类主体全部保守取 `available_time = ingest_time` 并写证据缺口；在出现可引用的官方上界并发布新 policy 版本之前，早于本机 ingest 的历史可用区间为空。归档替换同样无法证明先后，一律 competing heads（数据全部保留，但任何“最新”结论 fail closed）
+- ⚠️ 现有八张冻结表不能诚实承载 REST response 与 REST element 的 Raw 三跳 lineage；D3A 必须先通过 Proposed ADR 给出 additive 表拓扑、版本与迁移门，设计未接受前不得实现
 - ⚠️ 旧研究可能已看过全部 BTC 历史：历史"样本外"区间在认知上不完全干净
 - ⚠️ D1 已真实验证两个单位边界日的 kline 与 aggTrades；大体量 BTC 日归档尚未做内存 / 吞吐基线，批量 backfill 前必须先完成容量检查与可恢复 checkpoint
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Claude D2；D3 及其后须等各自任务包
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Claude D3A docs-only；D3B 及其后须等各自任务包
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -183,11 +184,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Codex 独立验收 D2 / D2-R1：在 `ba9f417` 复现四项回归全部失败，修复提交 `b05486b` 上专项 18 项通过；真实 PostgreSQL 全量 3091 项、ruff / format / mypy / lock、冻结边界与敏感信息检查全绿 | 验收矩阵 #12 / #17 满足；接受 D2 并开放 D3A docs-only 设计门 |
 | 2026-09-24 | Phase 1 D2-R1（Claude Opus）：按 Codex 复核修复两个缺陷——缺失官方 checksum 不再被伪造成来源声明；序号 anchor 改为 `max_int64` 流式 Arrow batch 归约并逐值校验 block base。四个新回归测试在 `ba9f417` 上确认失败；3091 项全量（真实 PostgreSQL，0 skipped）与静态检查全绿 | 缺陷关闭，等待 Codex 复核；D3 仍未开放 |
 | 2026-09-24 | Phase 1 D2（Claude Opus）：`infrastructure/revision/` append-only revision 写入、幂等 replay、崩溃恢复、内容寻址归档对象（修复 D0 延期义务，collector → `1.1.0`）、序号 block 分配与两份 policy 证据；3072 项全量测试（接真实 PostgreSQL，含 9 项 D2 集成）与静态检查全绿 | 验收矩阵 #12 / #17 本地完成，待 Codex 复核；D3 未开放 |
 | 2026-09-24 | Codex 独立验收 D1：175 项专项、带真实 PostgreSQL 的 2955 项全量测试、70,000 行末尾失败原子性、两个单位边界日的官方 kline 与 ETHUSDT aggTrades、残留 / 密钥 / 冻结边界与静态检查全部通过；接受 `c966085` | 验收矩阵 #11 满足；D2 开放给 Claude Opus |
 | 2026-09-24 | Codex 独立验收 D0 / R1 / R2：52 项专项、带真实 PostgreSQL 的 2780 项全量测试、checksum / ZIP 中途流中断重试、8 类恶意 archive base、测试数据库清理、warehouse / 密钥 / 冻结边界与静态检查全部通过；接受 `7a9f468` | 验收矩阵 #10 满足；D1 开放给 Claude Opus |
-| 2026-09-24 | Phase 1 D0（Cursor Auto）：实现 `BinanceSpotArchiveCollector`（官方归档 + `.CHECKSUM` + 原子交付）；contract suite 与行为测试通过；未改 `core/`；D1 未开放 | 验收 #10 本地完成，待 Codex 复核推送 |
 
 ## 10. 下一阶段进入条件
 
@@ -205,14 +206,14 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 3. ✅ ADR-0021 ~ 0024 已 Accepted，决定 D-01、D-02、D-08、D-10、D-28、D-31；首切片已冻结（A2）
 4. ✅ 首次消费的 Provider 先交付 Protocol + DTO + contract tests（ADR-0017；B1～B3 已满足），再开始实现（C 起）
 
-**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #11 满足；#12 与 #17 对应 D2，实现完成待 Codex 复核）。
+**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #12 与 #17 满足；其余按批次门推进）。
 
 ## 11. 给 Raphael 的下一步
 
 > 我现在应该干什么？
 
 1. Phase 0 已完成：宪法 1.0.0 已发布（原则一字未改），代码已合并进 `main`，并打了 `phase-0-complete` 标记。
-2. Phase 1 已开启，四份架构决定（ADR-0021 ~ 0024）已由 Codex 复核接受；D0 下载、D1 解析已验收，D2 revision 持久化已实现并等待 Codex 复核。不需要你做任何决定。
+2. Phase 1 已开启，四份架构决定（ADR-0021 ~ 0024）已由 Codex 复核接受；D0 下载、D1 解析与 D2 revision 持久化已验收，D3A REST 设计门正在执行。不需要你做任何决定。
    其中 ADR-0022 明确：开发授权不等于实盘授权，Phase 13 之前系统没有下单能力，也不保存交易密钥。
 3. 以后若要修改任何原则或阈值，或涉及实盘 / 资金，需要你对具体内容单独批准。
 4. 每个经 Codex 复核通过的进度都会推送到私有 GitHub 仓库（ADR-0025）；PR 与 CI 以后再配置。
@@ -222,5 +223,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > Claude 下一步可以执行什么？
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
-2. 已完成 S0、A1～A3、B1～B3、C1～C3、D0～D2；D1 `c966085` 已由 Codex 独立验收，D2 实现待复核。
-3. Claude 的 D2 与 D2-R1 返修任务包均已执行完毕；在 Codex 复核通过前不做新工作，任何 Agent 都不得开始 D3 或 Phase 0.5。
+2. 已完成并验收 S0、A1～A3、B1～B3、C1～C3、D0～D2；D2 修复后的实现恢复点为 `b05486b`。
+3. 当前只执行 D3A docs-only 任务包：起草 REST Raw / lineage Proposed ADR、官方证据与 D3B～D3E 计划；不得开始实现或 Phase 0.5。

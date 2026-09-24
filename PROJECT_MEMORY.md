@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D1 已验收，D2 实现完成待 Codex 复核
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2 已验收，D3A REST Raw / lineage 设计门已开放
 
 ## 2. Current Architecture
 
@@ -44,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**Claude D2 已实现、待 Codex 复核**（archive / Raw append-only revision、恢复与证据）；B1～C3、D0～D1 已由 Codex 复核通过
+- Current Subphase：**D3A docs-only 设计门已开放**；D2 archive / Raw append-only revision、恢复与证据已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批批次：**Claude D2**（实现完成）；只做 archive / Raw append-only revision、幂等 replay、崩溃恢复与 availability / precedence 证据；不得实现 REST / D3 或后续批次
+- 当前唯一获批批次：**Claude D3A（docs-only）**；只起草 REST Raw source / element revision / 三跳 lineage 的 Proposed ADR、证据与 D3B～D3E 拆分，不得实现 REST 或后续批次
 - Current Blocker：无；C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：Codex 对 D2 提交做独立复核、对抗测试并推送；通过后再开放 D3
+- Next Milestone：Claude 提交 D3A 文档草案；Codex 复核并决定是否接受 ADR、冻结 additive 表拓扑并开放 D3B
 
 ## 5. Active Decisions
 
@@ -142,15 +142,15 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-24
-- Stable recovery point：Phase 1 D1 实现提交 `c966085`（Codex 已独立复核；随 D1 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
+- Stable recovery point：Phase 1 D2 修复提交 `b05486b`（Codex 已独立复核；随 D2 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
   其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
-  2955 测试、175 项 D1 专项、两个单位边界日的官方 kline / aggTrades 与 70,000 行末尾失败原子性探针、ruff check、ruff format --check、mypy strict 全绿；
+  D2 验收时真实 PostgreSQL 全量 3091 项、D2-R1 专项与旧提交四项反例、ruff check、ruff format --check、mypy strict 全绿；
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
-- 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、八张生产表定义、D0 Collector 与 D1 parser 已实现；revision 持久化从 D2 开始
-- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D1 已由 Codex 复核通过；D1 恢复点 `c966085`，当前进入 D2
+- 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、八张生产表定义、D0 Collector、D1 parser 与 D2 revision store 已实现
+- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 已由 Codex 复核通过；D2 恢复点 `b05486b`，当前进入 D3A docs-only 设计门
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
   `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`
