@@ -248,6 +248,31 @@ universe 与 `ResearchDatasetManifest` 见 §2.3（批次 B2）。
 自身的 `DatasetRef`——这是尚未实现的接口义务，契约未改动 `ReproducibilityTuple`。
 ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 #12 属批次 F 与 Phase 4 / 5，不由本批单元测试宣称完成。
 
+### 2.4 Data Plane Adapter 的 Protocol 与 DTO（ADR-0017 / 0021 / 0022 / 0023 §7，Phase 1 B3）
+
+`core/contracts/storage.py`、`catalog.py`、`collector.py` 交付三个基础设施 Adapter 的可执行 `typing.Protocol` 与 15 个 DTO
+（语义见 03-data.md §1、§7.1、§7.2）。它们只依赖标准库、Pydantic 与已有核心契约；**没有任何实现**。不升 `CONTRACT_SCHEMA_VERSION`，
+不新增 `Kind`，已发布模型与 Schema 不变。内容流、只读 handle 与实现专用 batch 是 Python 调用参数，不进入 DTO。
+
+| Protocol | 方法 | DTO 与契约层不变量 | 首个实现 |
+|---|---|---|---|
+| `StorageAdapter` | `stage(StageRequest, Iterable[bytes]) → StagedObject`；`publish(StagedObject) → PublishResult`；`lookup(str) → ObjectRef \| None`；`open_read(ObjectRef) → BinaryIO` | 逻辑相对 key（ASCII 段、无 `.` / `..` / 空段 / 反斜杠 / scheme / `%` / NUL / 空白，≤ 1024；原始值先校验，不去空白）；`expected_sha256` 必填、`expected_size` 可选；`ObjectRef` = key + 带 scheme 的绝对 URI（authority 无凭据、路径无 `.` / `..`、无查询 / 片段）+ SHA-256 + 字节数；`PublishResult.outcome` ∈ `created` / `already_present` | C1 |
+| `CatalogAdapter[BatchT]` | `load_table(str) → TableInfo \| None`；`create_table(TableDefinition) → TableInfo`；`get_snapshot(str, str) → SnapshotInfo`；`commit_batch(CommitRequest, BatchT) → CommitResult` | 表身份 `namespace.table`（与 snapshot 绑定键同格式）；表定义只是实现侧定义文档的 `id + SemVer + hash` 绑定；`SnapshotInfo` 绑定所属表，父 snapshot 显式可空且不等于自身，batch ID 与指纹成对，`added_rows ≤ total_rows`；`CommitRequest.row_count ≥ 1`、期望父 snapshot 显式可空；`CommitResult` 的 snapshot 必须属于请求的表并携带其 batch ID、指纹与行数，`committed` 时父 snapshot 等于期望；无 `arrival_seq` | C2 / C3 |
+| `CollectorAdapter` | `descriptor → CollectorDescriptor`（只读属性）；`collect(CollectionRequest) → CollectionResult` | 版本化 `SourceBinding`；请求 = 稳定 `request_id` + source + 数据类型 + 非空 symbol 集合（规范排序、区分大小写）+ UTC 半开覆盖区间；结果回显完整请求与 collector 身份，对象只携带 `ObjectRef`，按 symbol 以对象与显式缺口**恰好覆盖**请求区间；来源校验和给出时须等于对象 SHA-256；来源 URI / 元数据中凭据形状的名称被拒绝；只有 descriptor 可声明 HTTPS origin | D0 |
+
+**调用语义**（staging 不可见、校验失败与流中断不留可见半成品、同内容幂等、异内容 fail closed、不信任自报 `StagedObject`、
+只读 handle；batch 按 `(table, batch_id)` 幂等、指纹冲突与过期父 snapshot 显式失败、重启后重放得到同一 snapshot、
+历史 snapshot 元数据不变；collector 结果对象已发布且与引用一致、重放身份稳定、网络来源在声明内、未声明 source 被拒绝）
+写在各模块文档中，由 `tests/contract_suites/` 的 provider-agnostic suite 对具体实现检查；未来实现继承 `*AdapterContract`
+并提供 subject fixture 即可复用。B3 用两个刻意不同的内存 / 临时文件替身证明 suite 接受合规实现，并用只带一处故障的变体
+证明它能杀死路径逃逸、校验和错误、非原子可见、覆盖不同内容、重复 batch 新提交、错误 snapshot、未发布 / 不匹配对象等行为。
+替身不是 Adapter 实现，不计入验收 #7 / #8 / #10。
+
+**诚实边界与延期**：DTO 不证明对象 / 表 / snapshot 的存在、字节与哈希一致、发布原子性、网络声明的真实性（声明不是安全
+控制）。`file://` 布局与私有 staging 区隔离（C1）；PyIceberg SQL Catalog、PostgreSQL 集成、并发与重启的真实证据（C2）；
+八张表的列级 Schema、partition spec 与演进、`batch_fingerprint` 是否由内容重算（C3）；按 snapshot 读取数据的 scan 接口
+（随 F 的 PIT 执行器以增量方法交付）；归档下载、端点限制与校验（D0）；解析与 revision 语义（D1 / D2）都不在 B3。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -348,7 +373,7 @@ ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（59 份） | `schemas/*.schema.json` |
+| 当前 Schema（74 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -415,7 +440,7 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 | 路径 | 内容 |
 |---|---|
 | `core/domain/` | 实体、值对象、不变量 |
-| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义，当前尚无 Provider Protocol） |
+| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前只有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol，研究 Provider Protocol 仍为 0） |
 | `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
 | `core/errors/` | 错误分类 |
 | `core/compat/` | 历史契约 major 的**只读**读取入口（不是迁移服务） |

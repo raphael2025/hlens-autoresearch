@@ -73,6 +73,10 @@ Phase 0 冻结的是本节的**概念层内容**：每类 Provider 的职责、�
 | **SyntheticMarketProvider** | 生成合成市场 | generator spec + seed → synthetic Canonical data | 必须（给定种子） |
 
 另有基础设施 Adapter（不属于研究插件）：`CollectorAdapter`、`StorageAdapter`、`CatalogAdapter`、`ComputeEngineAdapter`、`EventBusAdapter`。
+其中 `CollectorAdapter`、`StorageAdapter`、`CatalogAdapter` 的可执行 Protocol、DTO 与 provider-agnostic contract suite
+已于 Phase 1 B3 交付（02-domain.md §2.4、`tests/contract_suites/`），尚无实现；`ComputeEngineAdapter`、`EventBusAdapter`
+在首次消费时按同一节奏交付。三者中只有 Collector 可以联网，并在其 descriptor 中声明 HTTPS origin（§6）；该声明只用于
+审计与一致性核对，不是安全控制。
 
 ## 4. 插件清单（Manifest）
 

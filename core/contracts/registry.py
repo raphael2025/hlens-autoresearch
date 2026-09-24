@@ -10,6 +10,21 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.contracts.catalog import (
+    CommitRequest,
+    CommitResult,
+    SnapshotInfo,
+    TableDefinition,
+    TableInfo,
+)
+from core.contracts.collector import (
+    CollectedObject,
+    CollectionRequest,
+    CollectionResult,
+    CollectorDescriptor,
+    CoverageGap,
+    SourceBinding,
+)
 from core.contracts.profile_selection import (
     ExperimentMetadata,
     OosUnsealing,
@@ -28,6 +43,7 @@ from core.contracts.revision import (
     RevisionGraph,
     RevisionRecord,
 )
+from core.contracts.storage import ObjectRef, PublishResult, StagedObject, StageRequest
 from core.contracts.universe import (
     AvailabilityEvidenceGap,
     DegradedEpisodeKey,
@@ -158,6 +174,22 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     SelectedRevisionLineage,
     AvailabilityEvidenceGap,
     ResearchDatasetManifest,
+    # Data Plane Adapter 的 DTO（ADR-0017 / ADR-0021 / ADR-0022，Phase 1 B3）
+    StageRequest,
+    StagedObject,
+    ObjectRef,
+    PublishResult,
+    TableDefinition,
+    SnapshotInfo,
+    TableInfo,
+    CommitRequest,
+    CommitResult,
+    SourceBinding,
+    CollectorDescriptor,
+    CollectionRequest,
+    CollectedObject,
+    CoverageGap,
+    CollectionResult,
 )
 
 

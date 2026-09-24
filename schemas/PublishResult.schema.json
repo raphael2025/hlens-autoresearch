@@ -1,0 +1,76 @@
+{
+  "$defs": {
+    "ObjectRef": {
+      "additionalProperties": false,
+      "description": "已发布不可变对象的引用：逻辑 key + 持久 URI + SHA-256 + 字节数。\n\nURI 由实现生成（ADR-0021：业务代码不拼接绝对路径）。`ContentBlobRef` 仍是通用内容引用；\n本类型额外要求 key 与长度，供 Raw 记录与 `open_read` 核对。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 1024,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._=-]{0,254}(?:/[A-Za-z0-9][A-Za-z0-9._=-]{0,254})*$",
+          "title": "Key",
+          "type": "string"
+        },
+        "uri": {
+          "pattern": "^[a-z][a-z0-9+.-]*://[!-~]*$",
+          "title": "Uri",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "uri",
+        "sha256",
+        "size"
+      ],
+      "title": "ObjectRef",
+      "type": "object"
+    },
+    "PublishOutcome": {
+      "description": "发布结果：新建，或目标已含相同内容（幂等重放）。",
+      "enum": [
+        "created",
+        "already_present"
+      ],
+      "title": "PublishOutcome",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次 `publish` 的结果。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "ref": {
+      "$ref": "#/$defs/ObjectRef"
+    },
+    "outcome": {
+      "$ref": "#/$defs/PublishOutcome"
+    }
+  },
+  "required": [
+    "ref",
+    "outcome"
+  ],
+  "title": "PublishResult",
+  "type": "object"
+}

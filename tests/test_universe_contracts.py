@@ -1645,10 +1645,13 @@ def test_every_b2_model_is_registered_and_exported(tmp_path: Path) -> None:
 
 
 def test_b2_only_appends_to_the_registry() -> None:
+    """B2 的 13 个模型紧接在 B2 之前的 46 个之后；之后的批次（B3 起）只能继续追加在其后。"""
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
+    b2_end = len(PRE_B2_MODEL_NAMES) + len(B2_MODELS)
     assert names[: len(PRE_B2_MODEL_NAMES)] == PRE_B2_MODEL_NAMES
-    assert names[len(PRE_B2_MODEL_NAMES) :] == tuple(model.__name__ for model in B2_MODELS)
-    assert len(CONTRACT_MODELS) == 59
+    assert names[len(PRE_B2_MODEL_NAMES) : b2_end] == tuple(model.__name__ for model in B2_MODELS)
+    assert b2_end == 59
+    assert len(CONTRACT_MODELS) == 74
 
 
 @pytest.mark.parametrize("name", sorted(FROZEN_SCHEMA_SHA256))

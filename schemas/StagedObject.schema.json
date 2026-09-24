@@ -1,0 +1,41 @@
+{
+  "additionalProperties": false,
+  "description": "已校验、尚不可见的 staging 条目。`staging_id` 由实现分配，不透明。\n\n这是调用凭据而不是事实：实现在 `publish` 时必须用自身签发记录核对它，不得信任其中的自报\n字段。同一凭据在发布成功后重试，得到 `already_present`。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "key": {
+      "maxLength": 1024,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._=-]{0,254}(?:/[A-Za-z0-9][A-Za-z0-9._=-]{0,254})*$",
+      "title": "Key",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "size": {
+      "minimum": 0,
+      "title": "Size",
+      "type": "integer"
+    },
+    "staging_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=@+-]{0,255}$",
+      "title": "Staging Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "key",
+    "sha256",
+    "size",
+    "staging_id"
+  ],
+  "title": "StagedObject",
+  "type": "object"
+}
