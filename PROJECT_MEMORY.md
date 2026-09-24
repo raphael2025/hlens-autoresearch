@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A 与 D3B 已验收；当前只开放 D3C
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A 与 D3B 已验收；D3C 已实现待 Codex 复核，D3D 仍关闭
 
 ## 2. Current Architecture
 
@@ -44,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3C OPEN**（严格、无 I/O 的 REST decoder）；D3B 四张表、独立 REST 身份规则与三份纯 policy 已由 Codex 验收（`3b267a0` + `02c0418`）
+- Current Subphase：**D3C REVIEW_PENDING**（严格、无 I/O 的 `binance.spot.rest.decoder@1.0.0`，`infrastructure/parser/binance_rest.py`：纯函数解码 + 页摘要 / 整页拒绝，正文上限为显式参数；无 HTTP / store / 设置 / 新公共契约）；D3B 四张表、独立 REST 身份规则与三份纯 policy 已由 Codex 验收（`3b267a0` + `02c0418`）
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 只开放 D3C（严格 REST decoder；无 HTTP、无 store、无写入）；D3D → D3E 逐批经 Codex 验收后依次开放
-- Current Blocker：无架构阻塞；D3C 可实施。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：Claude 完成 D3C，Codex 对抗复核后决定是否开放 D3D
+- D3C 已提交待复核；D3D → D3E 逐批经 Codex 验收后依次开放
+- Current Blocker：无架构阻塞。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
+- Next Milestone：Codex 对抗复核 D3C，决定是否开放 D3D
 
 ## 5. Active Decisions
 
