@@ -27,11 +27,13 @@
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
 > 0011 → 0012 → 0013 → 0014 → 0015 → 0016 → 0017 的串行批次进行，每批一个独立 commit。
-> **实现进度**：0011 ~ 0016 已实施（0011 ~ 0015 已由 Codex 独立复验，0016 待复验）；
+> **实现进度**：0011 ~ 0017 全部已实施，且 0011 ~ 0016 均已由 Codex 独立复验；
 > 0016 补齐的是 `LlmCall` 的**登记结构**（`ContentBlobRef` 使 current Schema 增至 38 份），
 > 内容的可取回性与内容 - 哈希一致仍是存储层 / Registry 的未实现义务，
 > `06-experiment.md` §2 的"完整输入输出"要求因此**仍未完全满足**；
-> 0017 按方案 B 随首次消费 Provider 的 Phase 交付。
+> 0017 的实施是 **docs-only 的交付节奏落地**：语义冻结与文档同步已完成，
+> 按方案 B 不产生任何 Provider 代码，`core/contracts/` 中的 Provider Protocol 数量**仍为 0**，
+> 各类接口随首次消费它的 Phase 交付。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -62,7 +64,7 @@
 | D-21 | **审计哈希字段的类型统一**：内容哈希、Git OID 与不透明 ID 如何分开表达。 | Codex 裁决 → [ADR-0015](0015-audit-identity-types-and-version-bindings.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0015 批次） |
 | D-22 | **版本绑定的表达**：Constitution 版本语法、Profile 复合引用是否继续塞进 `*_version` 字符串、选择依据的重复字段。 | Codex 裁决 → [ADR-0015](0015-audit-identity-types-and-version-bindings.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0015 批次） |
 | D-23 | **信息流白名单与 kind 判别字段**：Outcome 与 outcome-zone 数据能否进入 Feature / State / Event / Strategy 输入；`kind` 能否被覆盖。 | Codex 裁决 → [ADR-0012](0012-information-flow-and-kind-invariants.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0012 批次） |
-| D-24 | **Provider 接口交付范围漂移**：审计时 `05-plugin.md` §3 写"签名在 Phase 0 定义"，roadmap 验收表没有该条。 | Codex 裁决：方案 B → [ADR-0017](0017-provider-delivery-schedule.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
+| D-24 | **Provider 接口交付范围漂移**：审计时 `05-plugin.md` §3 写"签名在 Phase 0 定义"，roadmap 验收表没有该条。 | Codex 裁决：方案 B → [ADR-0017](0017-provider-delivery-schedule.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0017 批次，docs-only；Provider Protocol 数仍为 0） |
 | D-25 | **这批收窄是否需要升 major**：`2.0.0` 尚未发布（只在 `phase/0`、未合并 `main`、无 tag / 远程发布 / v2 数据登记）。 | Codex 裁决：继续属于未发布的 `2.0.0`，不升 major；发布后做同类改变必须升 major | Phase 0；Accepted（2026-09-24），写入 ADR-0011 ~ 0016 各自的版本小节 |
 
 > **编号说明**（2026-09-24 由 Codex 最终确认）：D-17 ~ D-25 连续且唯一。

@@ -2,7 +2,7 @@
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
 > 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.0.0`（ADR-0008 + ADR-0009 共同定义；
-> ADR-0011 ~ 0015 在同一个**尚未发布**的版本内继续收紧，不升 major，理由见各 ADR 的版本小节）。
+> ADR-0011 ~ 0016 在同一个**尚未发布**的版本内继续收紧，不升 major，理由见各 ADR 的版本小节）。
 
 ## 1. 统一标识与版本化
 

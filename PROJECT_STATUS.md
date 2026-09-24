@@ -9,14 +9,16 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 0 — Research Constitution**（进行中） |
-| 当前子阶段 | B3 串行实现进行中：批次 1（ADR-0011）~ 批次 6（ADR-0016 `LlmCall` 内容绑定）已完成，批次 0017 未开始 |
+| 当前子阶段 | B3 串行实现已全部完成：批次 1（ADR-0011）~ 批次 7（ADR-0017 交付节奏收口）；下一步是 Phase 0 关闭复审（批次 C，未授权） |
 | 总体状态 | 🔄 进行中 |
 | 最后更新时间 | 2026-09-24 |
 
 独立审查发现的不可变性与实验身份问题已由 B1（ADR-0008）、B2（ADR-0009）与 ADR-0010 纠偏修复。
 契约 `2.0.0` 只在 `phase/0` 分支生成，**尚未发布**：未合并 `main`、无 tag、无远程发布、无任何 v2 数据登记。
-B3 的剩余遗漏已由 Codex 裁决（D-17 ~ D-25）并写成 ADR-0011 ~ 0017，七份于 2026-09-24 全部 **Accepted**。
-ADR-0011（生命周期主体 / 授权 / 时间）、ADR-0012（信息流白名单与不可覆盖的 `kind`）、ADR-0013（确定性判定函数与拒绝 NaN / ±Inf）、ADR-0014（Profile 普适结构不变量）、ADR-0015（审计身份类型与版本绑定）与 ADR-0016（`LlmCall` 内容绑定）的契约代码均已实施；ADR-0016 关闭的是**登记结构**，内容可取回性与内容 - 哈希一致仍是存储层义务，`06-experiment.md` §2 的“完整输入输出”要求仍未完全满足。Phase 0 仍不能认定为“只差宪法批准”：批次 0017 与关闭复审（批次 C）都未做。
+B3 的剩余遗漏已由 Codex 裁决（D-17 ~ D-25）并写成 ADR-0011 ~ 0017，七份于 2026-09-24 全部 **Accepted 且已实施**。
+ADR-0011（生命周期主体 / 授权 / 时间）、ADR-0012（信息流白名单与不可覆盖的 `kind`）、ADR-0013（确定性判定函数与拒绝 NaN / ±Inf）、ADR-0014（Profile 普适结构不变量）、ADR-0015（审计身份类型与版本绑定）与 ADR-0016（`LlmCall` 内容绑定）的契约代码均已实施并由 Codex 独立复验（ADR-0016 = `1ad9f59`）。
+ADR-0017 是**方案 B 的交付节奏**，其实质交付（`05-plugin.md` §3、`02-domain.md` §4、`core/contracts/README.md`、roadmap 跨 Phase 规则）已在接受 ADR 的 docs-only 提交 `2ff1798` 中完成；批次 7 只做一致性验收与状态收口，按 ADR 不产生任何 Provider 代码，`core/contracts/` 中的 Provider Protocol 数量**仍为 0**。
+ADR-0016 关闭的是**登记结构**，内容可取回性与内容 - 哈希一致仍是存储层义务，`06-experiment.md` §2 的“完整输入输出”要求仍未完全满足。Phase 0 **尚未关闭**：关闭复审（批次 C）未授权、未执行，研究宪法仍是草案。
 验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`；任务方案见 `docs/reviews/2026-09-23-opus-supervision-plan.md`。
 
 ## 2. 当前进度
@@ -60,20 +62,21 @@ ADR-0011（生命周期主体 / 授权 / 时间）、ADR-0012（信息流白名�
 - ✅ B2（ADR-0009）：完整实验身份与依赖内容绑定、报告绑定运行、契约版本号提升到 2.0.0、v1 只读兼容入口
 - ✅ ADR-0010 纠偏：复制更新重新校验、唯一 ASCII SemVer 2.0.0 语法、v1 顶层 shape gate、Schema 表达键值格式
 - ✅ B1 / B2 / ADR-0010 已通过 Codex 最终独立复验并正式验收（`docs/reviews/2026-09-23-b1-b2-acceptance.md`）
-- ✅ B3 只读审计与技术裁决（D-17 ~ D-25）完成，ADR-0011 ~ 0017 经 Codex 文档复核后全部 Accepted（仅文档，未实现）
+- ✅ B3 只读审计与技术裁决（D-17 ~ D-25）完成，ADR-0011 ~ 0017 经 Codex 文档复核后全部 Accepted（接受提交为 docs-only；七份的实施随后按批次 1 ~ 7 全部完成）
 - ✅ B3 批次 1（ADR-0011）：失败的重新验证需人工批准才能退役、历史主体与时间单调、LIVE 证据绑定主体与授权窗口、删除自报的 `live_execution_enabled`、Run 与退役记录的时间顺序与枚举
 - ✅ B3 批次 2（ADR-0012）：13 个具体规格的 `kind` 冻结为不可覆盖的字面量、Feature / State / Event / Strategy 的直接输入按白名单收紧（Outcome 不得进入）、`observable_lag` / `training_window` / `state_space` 的局部不变量；lineage 保持现状
 - ✅ B3 批次 3（ADR-0013）：整体判定精确等于门结果的确定性函数、两处 `gate_id` 唯一、`threshold` 与来源成对出现、契约基类统一拒绝 NaN / ±Infinity、两个概率型阈值的结构范围 `[0,1]`
 - ✅ B3 批次 4（ADR-0014）：Validation Profile 的普适结构不变量——三个 walk-forward 窗口与封存区长度、Paper 观察期必须为正，embargo 与最大延长量非负，成本压力倍数逐元素为正，`cost_model` 必须指向 `cost_model`；不选任何 Phase 4 数值
 - ✅ B3 批次 5（ADR-0015）：11 个内容哈希槽位统一为 64 位小写十六进制 `ContentHash`，Git OID 独立为 `GitOid`（40 / 64 位小写，拒绝短 SHA），生产代码身份改为结构化值对象 `GitCodeRevision`（新增第 37 份 Schema），`constitution_version` 复用唯一 ASCII SemVer，三处 Profile 绑定改为 `Ref(kind=profile)` + 内容哈希，元数据改用完整 `ProfileSelection`，`SelectionEntry` 删除重复的版本字段
 - ✅ B3 批次 6（ADR-0016）：`LlmCall` 的三个自由字符串哈希被三项**必填**的 `ContentBlobRef`（非空 `uri` + `ContentHash`，可选 `media_type` / `byte_size`）取代，`provider` / `model` 收紧为非空，新增**显式必填且无默认值**的 `called_at`；`ContentBlobRef` 成为第 38 份 current Schema，不进入 v1 清单
+- ✅ B3 批次 7（ADR-0017）：Provider 交付节奏的一致性验收与状态收口（docs-only）；验收矩阵 1 ~ 4 逐项核对通过，`core/contracts/README.md` 的模型数与 `02-domain.md` 页首的 ADR 范围两处陈旧事实已修正；未新增任何 Python / 测试 / Schema，Provider Protocol 数仍为 0
 
 ## 4. 当前正在做
 
 - ✅ B1（ADR-0008 只读载荷）、B2（ADR-0009 实验身份）、ADR-0010 纠偏全部完成并由 Codex 验收通过
-- ✅ B3 的七份 ADR 已起草、复核并 Accepted（只改 Markdown，未动代码、测试、Schema）
+- ✅ B3 的七份 ADR 已起草、复核并 Accepted（接受提交只改 Markdown，未动代码、测试、Schema）
 - ✅ 复核修正已落实：D-18 编号补齐、ADR-0014 归入 D-20.4、`called_at` 改为显式必填且无默认值
-- ✅ ADR-0017 的文档同步已随接受完成（`05-plugin.md`、`02-domain.md`、`core/contracts/README.md`、roadmap）
+- ✅ ADR-0017 的文档同步已随接受在 `2ff1798` 完成（`05-plugin.md`、`02-domain.md`、`core/contracts/README.md`、roadmap）
 - ✅ B3 批次 1（ADR-0011）已实现：4 份 current Schema 重导出，559 项测试全绿，v1 快照与固定向量逐字节不变
 - ✅ B3 批次 2（ADR-0012）已实现：13 份 current Schema 重导出，767 项测试全绿，v1 快照与固定向量逐字节不变
 - ✅ ADR-0011 与 ADR-0012 的实现提交已通过 Codex **独立复验**（`2544d2a`、`7f9892c`；Codex 实际重跑 767 passed，Ruff / format / mypy / v1 冻结差异检查均通过）
@@ -81,9 +84,11 @@ ADR-0011（生命周期主体 / 授权 / 时间）、ADR-0012（信息流白名�
 - ✅ ADR-0013 的实现提交已通过 Codex **独立复验**（`04bb3f8`：832 passed，Ruff / format / mypy 全通过，v1 schema 差异为空，定向边界探针通过）
 - ✅ ADR-0014 的实现提交已通过 Codex **独立复验**（`d083273`：928 passed，Ruff / format / mypy 全通过，v1 schema 与固定向量差异为空，duration 的 Python / JSON 入口边界、倍数逐元素约束与 `cost_model.kind` 定向探针均通过）
 - ✅ B3 批次 5（ADR-0015）已实现：11 份 current Schema 重导出 + 1 份新增（`GitCodeRevision`，current 共 37 份），1245 项测试全绿，v1 快照与固定向量逐字节不变
-- ✅ ADR-0015 的实现提交已通过 Codex **独立复验**（`695a34b`：1245 passed、Ruff / format / mypy 全通过，37 份 current Schema 与新导出逐文件一致，`schemas/v1/` 与 `tests/vectors/v1/` 零差异，GitOid 边界 / 生产代码身份 / Profile kind / 旧字段 extra 的定向探针均通过）——**已独立复验的稳定恢复点**
-- ✅ B3 批次 6（ADR-0016）已实现：4 份 current Schema 重导出 + `LlmCall` 改写 + 1 份新增（`ContentBlobRef`，current 共 38 份），1304 项测试全绿，`schemas/v1/` 与既有 `tests/vectors/v1/` 逐字节不变；**待 Codex 独立复验**
-- 🔄 下一步：串行批次的最后一项 0017
+- ✅ ADR-0015 的实现提交已通过 Codex **独立复验**（`695a34b`：1245 passed、Ruff / format / mypy 全通过，37 份 current Schema 与新导出逐文件一致，`schemas/v1/` 与 `tests/vectors/v1/` 零差异，GitOid 边界 / 生产代码身份 / Profile kind / 旧字段 extra 的定向探针均通过）——此前的稳定恢复点
+- ✅ B3 批次 6（ADR-0016）已实现：4 份 current Schema 重导出 + `LlmCall` 改写 + 1 份新增（`ContentBlobRef`，current 共 38 份），1304 项测试全绿，`schemas/v1/` 与既有 `tests/vectors/v1/` 逐字节不变
+- ✅ ADR-0016 的实现提交已通过 Codex **独立复验**（`1ad9f59`：1304 passed，Ruff / format / mypy 全通过，38 份 current Schema 与全量重导出逐字节一致，legacy 35 份 Schema、`tests/vectors/v1/`、ADR-0016 正文零差异，`ContentBlobRef` / `LlmCall` 拒绝路径、JSON 往返实验哈希、v1 三哈希读取探针均通过）——**已独立复验的稳定恢复点**
+- ✅ B3 批次 7（ADR-0017）已完成：按 ADR 的验收矩阵 1 ~ 4 逐项核对文档一致性，修正两处陈旧事实（`core/contracts/README.md` 的 36 → 38、`02-domain.md` 页首的 ADR-0011 ~ 0015 → 0011 ~ 0016），并同步 ADR 索引与项目状态；docs-only，未动代码 / 测试 / Schema，Provider Protocol 数仍为 0
+- 🔄 下一步：Phase 0 关闭复审（批次 C）——**尚未授权**，Phase 0 仍未关闭
 - ⏸️ Phase 0 关闭复审（批次 C）、Constitution 批准、main 合并、tag 均未授权
 
 Codex 在 `cd84a4e` 上最终复验的实际结果：
@@ -96,8 +101,8 @@ Codex 在 `cd84a4e` 上最终复验的实际结果：
 
 ### 我（Raphael）需要做
 
-- 无阻塞项在等我：ADR-0011 ~ 0017 已由 Codex 依授权接受，下一步是 Claude Code 的串行实现
-- B3 实现完成后，再决定研究宪法 `docs/research/constitution.md` 是否批准为 1.0.0
+- **有一个授权动作在等我**：B3（ADR-0011 ~ 0017）已由 Codex 依授权接受并全部实施；下一步 Phase 0 关闭复审（批次 C）必须由我明确授权后才能开始，在此之前不会开始
+- B3 已全部完成；关闭复审之后再决定研究宪法 `docs/research/constitution.md` 是否批准为 1.0.0
 - 决定远程仓库位置（不阻塞 Phase 0，但阻塞 PR / CI）
 
 ### Claude Code 需要做
@@ -113,8 +118,8 @@ Codex 在 `cd84a4e` 上最终复验的实际结果：
 - 已批准且已完成：B3 批次 3 —— ADR-0013 的确定性判定函数与数值合法性实现（独立 commit，已复验）
 - 已批准且已完成：B3 批次 4 —— ADR-0014 的 Profile 普适结构不变量实现（独立 commit，已复验）
 - 已批准且已完成：B3 批次 5 —— ADR-0015 的审计身份类型与版本绑定实现（独立 commit，已复验）
-- 已批准且已完成：B3 批次 6 —— ADR-0016 的 `LlmCall` 内容绑定实现（独立 commit，待复验）
-- 已批准、未开始：B3 最后一个批次 0017（独立 commit）
+- 已批准且已完成：B3 批次 6 —— ADR-0016 的 `LlmCall` 内容绑定实现（独立 commit，已复验）
+- 已批准且已完成：B3 批次 7 —— ADR-0017 的验收与状态收口（独立 docs-only commit；未产生 Provider 代码）
 - 未批准：Constitution 批准、Phase 0 关闭复审（批次 C）、其他 Phase、环境安装、main 合并与 tag
 
 ## 6. 当前待决策
@@ -143,13 +148,14 @@ main 合并、tag、实盘与环境变更。
 | D-21 | 内容哈希统一为 `ContentHash`；Git OID 独立且必须完整；生产代码身份改为结构化 `GitCodeRevision`（已实施） | [0015](docs/adr/0015-audit-identity-types-and-version-bindings.md) |
 | D-22 | `constitution_version` 用唯一 ASCII SemVer；Profile 绑定改为 `Ref(kind=profile)` + 内容哈希；元数据使用完整 `ProfileSelection`；删除重复的版本副本（已实施） | [0015](docs/adr/0015-audit-identity-types-and-version-bindings.md) |
 | D-18 | `LlmCall` 三项内容引用全部必填（新值对象 `ContentBlobRef`）；`called_at` 显式必填且**无默认值**；可取回性与内容一致性延期，严禁自报 `verified`（已实施） | [0016](docs/adr/0016-llmcall-content-bindings.md) |
-| D-24 | Provider 采用方案 B：Phase 0 只冻结职责与语义，可执行 Protocol / DTO / 契约测试随首次消费它的 Phase 交付并验收 | [0017](docs/adr/0017-provider-delivery-schedule.md) |
+| D-24 | Provider 采用方案 B：Phase 0 只冻结职责与语义，可执行 Protocol / DTO / 契约测试随首次消费它的 Phase 交付并验收（已实施，docs-only；Provider Protocol 数仍为 0） | [0017](docs/adr/0017-provider-delivery-schedule.md) |
 | D-25 | 上述收窄仍属**尚未发布**的 `2.0.0`，不升 major（只在 `phase/0`、未合并 main、无 tag / 远程发布 / v2 数据登记）；发布后做同类改变必须升 major | 写入 0011 ~ 0016 各自的版本小节 |
 
-- 串行批次（已由 Codex 授权）：**0011 ✅ → 0012 ✅ → 0013 ✅ → 0014 ✅ → 0015 ✅ → 0016 ✅ → 0017**，
+- 串行批次（已由 Codex 授权）：**0011 ✅ → 0012 ✅ → 0013 ✅ → 0014 ✅ → 0015 ✅ → 0016 ✅ → 0017 ✅**，
   每批一个独立的可恢复 commit，中途不发布 v2、不登记实验、不合并 main。
-- 当前状态：ADR-0011 ~ 0016 已实现（0011 ~ 0015 已由 Codex 独立复验，0016 待复验）；
-  只剩 0017 未开始。
+- 当前状态：ADR-0011 ~ 0016 已实现且全部由 Codex 独立复验；ADR-0017 按方案 B 是 docs-only 的
+  交付节奏落地（实质同步在 `2ff1798`，批次 7 做验收与状态收口），**不产生 Provider 代码**。
+  B3 到此全部结束；Phase 0 的下一步是未授权的关闭复审（批次 C）。
 - 编号已确定：D-17 ~ D-25 连续唯一；ADR-0016 = D-18；ADR-0014 = D-20.4（不是新编号）。
 
 **批准研究宪法 1.0.0**（仍未满足；已不是唯一关闭条件）
@@ -214,11 +220,11 @@ main 合并、tag、实盘与环境变更。
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | B3 批次 7：ADR-0017 验收与状态收口（docs-only）——按验收矩阵 1 ~ 4 核对 `05-plugin.md` §3、`02-domain.md` §4、`core/contracts/README.md` 与 roadmap 跨 Phase 规则，修正 `core/contracts/README.md` 的模型数（36 → 38）与 `02-domain.md` 页首的 ADR 范围（0011 ~ 0015 → 0011 ~ 0016）；同时记录 Codex 对 `1ad9f59`（ADR-0016）的独立复验通过 | B3 串行实现全部结束；Provider 接口「Phase 0 没有」是**决定**而非欠账，`core/contracts/` 中 Provider Protocol 数仍为 0；未动代码 / 测试 / Schema，Phase 0 **仍未关闭**，下一步是未授权的关闭复审（批次 C） |
 | 2026-09-24 | B3 批次 6：实施 ADR-0016（`LlmCall` 的三个自由字符串哈希改为三项必填的 `ContentBlobRef`，`provider` / `model` 收紧为非空，新增显式必填、无默认值的 `called_at`；新增第 38 个契约模型 `ContentBlobRef`，不进入 v1 清单）；同时记录 Codex 对 `695a34b`（ADR-0015）的独立复验通过 | current Schema 4 份变化 + `LlmCall` 改写 + 1 份新增（共 38 份）；一次 LLM 调用第一次同时登记了「内容在哪里 + 内容是什么 + 何时调用」，代价是登记成本上升（调用方必须先把三份内容落到可取回位置）；**登记结构完整 ≠ 内容可复核**，取回与一致性仍未实现；v1 只读路径与既有固定向量逐字节不变 |
 | 2026-09-24 | B3 批次 5：实施 ADR-0015（11 个内容哈希槽位统一为 `ContentHash`、`GitOid` 拒绝短 SHA / 大写、新增结构化 `GitCodeRevision` 并登记为第 37 个契约模型、`constitution_version` 复用唯一 SemVer、三处 Profile 绑定改为 `Ref(kind=profile)` + 内容哈希、元数据改用完整 `ProfileSelection`、`SelectionEntry` 删除重复版本字段）；同时记录 Codex 对 `d083273` 的独立复验通过 | current Schema 11 份变化 + 1 份新增（共 37 份）；审计链上每个身份槽位都有可机读格式，生产代码一致性改为值对象比较；v1 快照与固定向量逐字节不变，v1 与 v2 身份仍不可比较 |
 | 2026-09-24 | B3 批次 4：实施 ADR-0014（walk-forward 三窗口 / 封存区长度 / Paper 观察期必须为正，embargo 与最大延长量非负，两个成本压力倍数序列逐元素为正，`cost_model` 必须指向 `cost_model`）；同时记录 Codex 对 `04bb3f8` 的独立复验通过 | 1 份 current Schema 变化（两个倍数序列新增 `items.exclusiveMinimum`）；时长符号与 `cost_model` kind 只能由运行时保证，Schema 诚实保持字符串 / `$ref`；结构上无意义的 Profile 无法构造；v1 快照与固定向量逐字节不变 |
 | 2026-09-24 | B3 批次 3：实施 ADR-0013（整体判定精确等于门结果函数、两处 `gate_id` 唯一、`threshold` 与来源成对出现、`Contract` 基类统一拒绝 NaN / ±Infinity、两个概率型阈值范围 `[0,1]`）；同时记录 Codex 对 `2544d2a`、`7f9892c` 的独立复验通过 | 1 份 current Schema 变化（`SignificanceParams` 的两个字段新增 `minimum` / `maximum`）；"证据不足即 PASS"在契约层被结构性排除；v1 快照与固定向量逐字节不变 |
-| 2026-09-24 | B3 批次 2：实施 ADR-0012（13 个具体规格的 `kind` 冻结为字面量、Feature / State / Event / Strategy 输入白名单、Outcome 不得成为输入、`observable_lag` / `training_window` / `state_space` 局部不变量） | 13 份 current Schema 变化（`kind` 收窄为 `const`，`FeatureSpec.inputs` 加 `minItems`）；lineage 保持可引用 Outcome；v1 快照与固定向量逐字节不变 |
 
 ## 10. 下一阶段进入条件
 
@@ -239,9 +245,10 @@ main 合并、tag、实盘与环境变更。
 
 > 我现在应该干什么？
 
-1. 现在不需要你决定什么：ADR-0011 ~ 0017 已由 Codex 依授权接受，B3 实现也已由它授权。
-2. 想了解 B3 会改什么，读 §6 的裁决表即可（七份 ADR 都在 `docs/adr/`）。
-3. 之后依次是：B3 最后一个批次（0017）→ Phase 0 关闭复审 → 研究宪法 1.0.0 → 合并 main 与 tag（后两项需要你）。
+1. 现在有一件事等你决定：是否明确授权开始 Phase 0 关闭复审（批次 C）。B3（ADR-0011 ~ 0017）已由 Codex 依授权接受并全部实施；未获你明确授权前，批次 C 不会开始。
+2. 想了解 B3 改了什么，读 §6 的裁决表即可（七份 ADR 都在 `docs/adr/`）。
+3. 之后依次是：Phase 0 关闭复审（批次 C，尚未授权）→ 研究宪法 1.0.0 → 合并 main 与 tag（后两项需要你）。
+4. Phase 0 **尚未关闭**：关闭复审没做，宪法仍是 0.2.0-draft。
 
 ## 12. 给 Claude Code 的下一步
 
@@ -249,9 +256,10 @@ main 合并、tag、实盘与环境变更。
 
 1. B1（`4f83e18`）、B2（`4e0f6e3`）、ADR-0010 纠偏（`cd84a4e`）已验收。
 2. 已完成：D-17 ~ D-25 的 ADR 起草、复核修正与接受，以及 ADR-0017 的文档同步（全部 docs-only）。
-3. 已完成：ADR-0011 ~ ADR-0016 的实现批次（各一个独立 commit，四项工程检查实际运行且全绿）；
-   ADR-0011 ~ ADR-0015 的提交已由 Codex 独立复验通过，ADR-0016（`phase/0` 顶端提交）待复验。
-4. 下一步：按 §6 的串行批次实施最后一个批次 ADR-0017（独立 commit），提交前实际运行
-   `pytest` / `ruff check` / `ruff format --check` / `mypy`。
-5. 不批准 Constitution、不关闭 Phase 0、不合并 main、不创建 tag。
-6. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据。
+3. 已完成：ADR-0011 ~ ADR-0016 的实现批次（各一个独立 commit，四项工程检查实际运行且全绿），
+   六个提交均已由 Codex 独立复验通过（ADR-0016 = `1ad9f59`）。
+4. 已完成：批次 7 —— ADR-0017 的验收与状态收口（独立 docs-only commit，四项工程检查实际运行且全绿；
+   未新增 Python / 测试 / Schema，Provider Protocol 数仍为 0）。
+5. 下一步需要授权：Phase 0 关闭复审（批次 C）。在获得授权前不开始。
+6. 不批准 Constitution、不关闭 Phase 0、不合并 main、不创建 tag。
+7. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据。
