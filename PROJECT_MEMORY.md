@@ -11,7 +11,8 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；Phase 0 关闭复审未做
+- 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
+  B3 裁决已成文但未实施；Phase 0 关闭复审未做
 
 ## 2. Current Architecture
 
@@ -39,11 +40,13 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：B1、B2、ADR-0010 纠偏均经 Codex 最终复验并验收（2026-09-24，基线 `cd84a4e`）；
-  契约仍为未发布的 2.0.0
-- Current Objective：B3 的**只读规划与 Proposed ADR 起草**（Codex 已授权）；B3 代码实现未授权
-- Current Blocker：B3 实现待授权；Phase 0 关闭复审（批次 C）未授权；Constitution 1.0.0 仍待 Raphael 亲自批准
-- Next Milestone：B3 规划与 ADR → B3 实现授权 → Constitution 获批 → Phase 0 关闭复审 → 关闭
+- Current Subphase：B3 技术裁决（D-17 ~ D-25）已成文为 ADR-0011 ~ 0017（全部 Proposed）；
+  契约代码未改动，仍为未发布的 2.0.0
+- Current Objective：等 Codex 对七份 ADR 做文档复核；复核通过并授权后按串行批次
+  0011 → 0012 → 0013 → 0014 → 0015 → 0016 → 0017 实施
+- Current Blocker：B3 实现待 Codex 复核与授权；Phase 0 关闭复审（批次 C）未授权；
+  Constitution 1.0.0 仍待 Raphael 亲自批准
+- Next Milestone：ADR 复核 → B3 实现授权 → Phase 0 关闭复审 → Constitution 获批 → 关闭
 
 ## 5. Active Decisions
 
@@ -64,9 +67,14 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 契约版本号已在 B2 提升到 2.0.0，但该版本**尚未发布**（见 §2）：v1 与 v2 的
   `content_hash` / `experiment_hash` **不可比较**；v1 只读路径 = `schemas/v1/`（35 份快照）
   + `tests/vectors/v1/`（固定载荷与旧哈希）+ `core/compat/v1.py`。读取 v1 不赋予任何 v2 登记 / 晋升资格。
-- B3 已获授权的只有**规划与 ADR 起草**；候选范围（未决定）：生命周期审批 / 主体 / 授权期、
-  Outcome 输入与 lag、防“证据不足即 PASS”、审计哈希字段统一、`LlmCall` 完整 I/O、
-  Runner / Registry 义务边界、Provider 验收范围漂移。
+- B3 的技术方向已由 Codex 裁决（D-17 ~ D-25，2026-09-24），写成 **Proposed** 的
+  ADR-0011 ~ 0017，**尚未实施**：0011 生命周期主体 / 授权 / 时间（含删除自报的
+  `live_execution_enabled`，实盘开关交未来 Control Plane）、0012 信息流白名单与不可覆盖的
+  `kind`、0013 确定性判定函数与拒绝 NaN/±Inf、0014 Profile 普适结构不变量、
+  0015 审计身份类型与 Profile 的 `Ref` + 内容哈希绑定、0016 `LlmCall` 三项内容引用必填、
+  0017 Provider 方案 B（接口随首次消费它的 Phase 交付）。
+- D-25：这批收窄仍属**尚未发布**的 2.0.0，不升 major；一旦发布（合并 main / tag / 有 v2 数据登记）
+  后再做同类改变必须升 major。
 
 ## 6. Active Constraints
 
@@ -92,7 +100,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Constitution 仍是草案：批准前不能判定任何实验
 - 契约层只校验直接引用的内容绑定；传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、
   Registry 存在性均为未实现的 Runner / Registry 义务（06-experiment.md §7）
-- `LlmCall` 仍只存哈希，"完整输入输出"仍是未关闭缺口（B3）
+- `LlmCall` 仍只存哈希，"完整输入输出"仍是未关闭缺口（ADR-0016 已裁决，未实施）
 - v1 只读 gate 只做顶层形状检查，不是完整 JSON Schema 递归校验
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
 
@@ -113,6 +121,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   545 测试、ruff check、ruff format --check、mypy strict 全绿（Codex 在 `cd84a4e` 上独立重跑）；
   Schema current 36 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   无 Feature / Strategy / Backtest / Runner / Registry / 存储实现
-- Notes：ADR-0001 ~ 0010 Accepted；B3 只获准规划与 ADR 起草，实现未授权；
+- Notes：ADR-0001 ~ 0010 Accepted；ADR-0011 ~ 0017 Proposed，实现未授权；
   Constitution 0.2.0-draft 待批准为 1.0.0；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；
   未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`
