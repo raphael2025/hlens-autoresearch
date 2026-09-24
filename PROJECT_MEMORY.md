@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3 已验收，D0 已开放
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0 已验收，D1 已开放
 
 ## 2. Current Architecture
 
@@ -22,7 +22,7 @@
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
 - current Schema 74 份，与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
-  Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 已由 Codex 验收；Storage 与 PostgreSQL-backed PyIceberg Catalog 的本地实现已验收；suite 在 `tests/contract_suites/`）；
+  Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 已由 Codex 验收；Storage、PostgreSQL-backed PyIceberg Catalog 与 Binance 公共归档 Collector 的本地实现已验收；suite 在 `tests/contract_suites/`）；
   Catalog 必须从实际 batch 独立重算指纹并核对（不信任自报）；C3 已冻结并实现 `hlens.pyarrow-batch-sha256@1.0.0`、八张生产表与分区演进
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet = 真实来源；DuckDB / Polars 只是计算引擎；
@@ -43,12 +43,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**Cursor D0**（Binance 公共归档下载、官方 `.CHECKSUM` 先验校验与原子交付）；B1～C3 已由 Codex 复核通过
+- Current Subphase：**Claude D1**（`binance.spot.archive.parser@1.0.0` 的 fail-closed 解析）；B1～C3、D0 已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批批次：**Cursor D0**；只做配置基址下的公共归档下载、对应 `.CHECKSUM` 校验、失败零交付与原子交付；不得解析或开始 D1
+- 当前唯一获批批次：**Claude D1**；只做可信归档的时间单位边界、覆盖区间零容差与整文件拒绝；不得实现 revision / D2 或后续批次
 - Current Blocker：无；C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：Cursor D0 提交后由 Codex 独立复核、对抗测试并推送；通过后再开放 D1
+- Next Milestone：Claude D1 提交后由 Codex 独立复核、对抗测试并推送；通过后再开放 D2
 
 ## 5. Active Decisions
 
@@ -86,7 +86,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
-  test database、最小权限 role 与本机忽略凭据，并覆盖 D0 对 Binance 官方公共归档和 `.CHECKSUM` 的有限网络访问；不覆盖系统软件安装、PostgreSQL 系统配置、其他数据库 / role、账户 / 交易接口、原则或阈值变化、实盘、资金或风险预算
+  test database、最小权限 role 与本机忽略凭据，并覆盖 D0 / D1 对 Binance 官方公共归档、`.CHECKSUM` 与本机忽略小样本 smoke 的有限网络访问；不覆盖系统软件安装、PostgreSQL 系统配置、其他数据库 / role、账户 / 交易接口、原则或阈值变化、实盘、资金或风险预算
 
 ## 6. Active Constraints
 
@@ -124,7 +124,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - `venue` / `symbol` / `timeframe` 区分大小写、不做规范化（ADR-0018 边界）：未来 Adapter 必须产出规范值
 - v1 只读 gate 只做顶层形状检查；旧哈希只对完整的 v1 持久化规范载荷复现历史身份（C1 F2）
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
-- 首批 Binance 原生字段、时间单位和压缩包结构尚未由真实归档样本验证；D1 必须用 D0 的可信样本验证并在不一致时 fail closed
+- D0 只证明下载与对象完整性；首批 Binance 原生字段、时间单位和压缩包结构仍须由 D1 用可信样本验证并在不一致时 fail closed
 
 ## 8. Important Historical Context
 
@@ -139,15 +139,15 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-24
-- Stable recovery point：Phase 1 C3 实现提交 `973ffbd`（Codex 已独立复核；随 C3 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
+- Stable recovery point：Phase 1 D0 实现提交 `7a9f468`（Codex 已独立复核；随 D0 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
   其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
-  2728 测试、8 表真实 PostgreSQL 写入 / 重启重放探针、ruff check、ruff format --check、mypy strict 全绿；
+  2780 测试、52 项 D0 专项、流中断 / 恶意 base 与真实 PostgreSQL 探针、ruff check、ruff format --check、mypy strict 全绿；
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
-- 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog 与八张生产表定义已实现；Collector 下载从 D0 开始
-- Phase 1：A2 / A2r、A3a / A3b、B1～C3 已由 Codex 复核通过；C3 恢复点 `973ffbd`，当前进入 D0
+- 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、八张生产表定义与 D0 Collector 已实现；parser 从 D1 开始
+- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0 已由 Codex 复核通过；D0 恢复点 `7a9f468`，当前进入 D1
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
   `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`
