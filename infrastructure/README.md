@@ -9,6 +9,7 @@
 | `settings.py` | 类型化运行时设置（03-data.md §6.2）：`file://` warehouse / staging、PostgreSQL catalog DSN、HTTP / Binance base URL |
 | `storage/` | Phase 1 C1 本地 `file://` `StorageAdapter`（`LocalFileStorageAdapter`） |
 | `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张生产表、batch 指纹规则与 partition-spec 演进 |
+| `collector/` | Phase 1 D0 Binance 公共现货日归档下载壳（`BinanceSpotArchiveCollector`） |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
 
@@ -70,4 +71,17 @@
 
 PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要其官方 extra `pyiceberg-core`。ADR-0026 把直接依赖定为 `pyiceberg[pyarrow,pyiceberg-core,sql-postgres]`（03-data.md §6.1）：`pyiceberg-core` 不是独立顶层依赖，版本由 PyIceberg 0.12 声明的约束（`>=0.10.1,<0.11.0`）解析，`uv.lock` 固定为 `0.10.1`。升级 PyIceberg 时须同时核对该约束。四张 `identity(symbol) + day(...)` 表的 PostgreSQL 用例全部实际写入，并断言真实的 `(symbol, day)` 分区值、replay 同 snapshot 与重启读取。
 
-Collector / 下载实现尚未开放（见 `PROJECT_STATUS.md`）。
+## BinanceSpotArchiveCollector（D0）
+
+- 入口：`infrastructure.collector.BinanceSpotArchiveCollector`（可用 `from_settings(settings, storage)` 机械工厂）。
+- 只访问构造时注入的 archive base（`HLENS_BINANCE_ARCHIVE_BASE_URL`）；descriptor 固定
+  `binance.spot.public-archive@1.0.0`，唯一 source `binance.public.spot.archive@1.0.0`，
+  `network_origins` = 该 base 的 HTTPS origin。
+- 支持范围：`BTCUSDT` / `ETHUSDT` × `agg_trades` / `klines_1m` × UTC 午夜对齐的整日半开区间；
+  其它 symbol / type / 非整日边界 / 未声明 source → `UnsupportedRequest`。
+- 每个 symbol/day：先 GET `.CHECKSUM`（404/410 → 显式 `SOURCE_ABSENT` gap，不拉 ZIP），
+  校验单行 ASCII sha256sum 后，再流式 GET ZIP，经 `StorageAdapter.stage(expected_sha256=…)` →
+  `publish` 原子交付；禁止跟随 redirect；同 key 异内容依赖存储层 `ObjectConflict` fail closed。
+- **诚实边界（本批不做）**：不解析 ZIP / 行字段、不构造 revision、不写 Iceberg / Raw、
+  不调用 market-data REST、不补尾、不接 WebSocket、不使用 `HLENS_BINANCE_MARKET_DATA_BASE_URL`。
+- 测试一律 `httpx.MockTransport` + 真实 `LocalFileStorageAdapter`（`tmp_path`），不访问公网。
