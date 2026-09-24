@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），架构决策已关闭、实现未开始
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），A3 依赖与 typed settings 已完成
 
 ## 2. Current Architecture
 
@@ -41,12 +41,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**架构决策已关闭**（A2：ADR-0021 ~ 0024 Accepted，`03-data.md` 同步并冻结首切片）；实现尚未开始
+- Current Subphase：**Claude B1**（双时间 / revision DAG 契约）；A3 已由 Codex 复核推送
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批实现：**Cursor A3a（依赖锁定）→ A3b（类型化设置骨架）**，须在 A2 / A2r 经 Codex 复核推送之后；Claude 的 B1 须等 A3 完成并由 Codex 下达任务包
+- 当前唯一获批批次：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema、contract tests）；B2 及以后未开放
 - Current Blocker：无；创建 catalog 库 / role（C2）前须记录 H12 授权
-- Next Milestone：A3 完成；B1 双时间与 revision 契约
+- Next Milestone：B1 经 Codex 复核推送；再开放 B2 universe 契约
 
 ## 5. Active Decisions
 
@@ -135,8 +135,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-24
-- Stable recovery point：**轻量 tag `phase-0-complete`**（指向 Phase 0 closure commit，即 `main` 与 `phase/0`
-  的共同 HEAD；以 `git rev-parse phase-0-complete` 为准，本文件不写该提交自身的 SHA）
+- Stable recovery point：Phase 1 分支 `d840dbb`（A3b；Codex 已复核并推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
   其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
@@ -145,6 +144,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Schema current 38 份（2.0.0）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
-- Phase 1：最近一次经 Codex 复核通过并推送的 `phase/1` 提交为 `6d53cf5`（A1r2）；A2 与 A2r 提交未推送，待 Codex 复核
+- Phase 1：A2 / A2r、A3a / A3b 均已由 Codex 复核推送；当前远端恢复点 `d840dbb`
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
-  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1`（至 `6d53cf5`）与 tag 已推送到私有 GitHub 远程 `origin`
+  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1`（至 `d840dbb`）与 tag 已推送到私有 GitHub 远程 `origin`

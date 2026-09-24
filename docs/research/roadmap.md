@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024 已 Accepted，架构决策子阶段已关闭；实施按下文 Phase 1 恢复序列逐批进行，当前只批准 A3（A3a → A3b）；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
+| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024 已 Accepted；A3 已由 Codex 复核推送，当前只批准 Claude B1；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）
