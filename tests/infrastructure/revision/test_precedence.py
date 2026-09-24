@@ -153,7 +153,14 @@ def test_a_declared_source_revision_time_orders_strictly() -> None:
     assert evidence[0].policy == PRECEDENCE_BINDING
 
 
-def test_the_ordering_conclusion_does_not_depend_on_arrival_order() -> None:
+def test_the_ordering_decision_itself_is_symmetric() -> None:
+    """The *decision* never depends on which side is the candidate.
+
+    This is a statement about the pure functions and about a graph whose edge was persisted.
+    What actually gets **written** does depend on arrival order, because an edge can only be
+    recorded on its newer side's own row — see
+    ``test_an_older_revision_arriving_later_leaves_competing_heads``.
+    """
     old = facts("rev1-a", "old", source_revision_id="6", source_revision_time=T0)
     new = facts(
         "rev1-b", "new", source_revision_id="7", source_revision_time=T0 + timedelta(hours=1)
@@ -167,6 +174,29 @@ def test_the_ordering_conclusion_does_not_depend_on_arrival_order() -> None:
         [record("rev1-a"), record("rev1-b", supersedes=("rev1-a",))], [edge("rev1-b", "rev1-a")]
     )
     assert heads == ("rev1-b",)
+
+
+def test_an_older_revision_arriving_later_leaves_competing_heads() -> None:
+    """The honest limit of D2 v1: only "arriving candidate supersedes a known older" is stored.
+
+    ``PrecedenceEvidence`` lives on the row of its newer side and revisions are append-only, so
+    when the semantically older revision arrives *second* there is no row left to write the edge
+    on. Nothing is inferred from arrival order: both revisions stay maximal heads and any
+    "latest" answer fails closed until an independent precedence record (future work, its own
+    ADR) supplies the edge.
+    """
+    old = facts("rev1-a", "old", source_revision_id="6", source_revision_time=T0)
+    new = facts(
+        "rev1-b", "new", source_revision_id="7", source_revision_time=T0 + timedelta(hours=1)
+    )
+    # The newer revision arrives first and knows nothing to supersede.
+    assert supersedes_for(new, [], knowledge_time=T0) == ((), (), ())
+    # The older one arrives second: ordered by the source, but not persistable on this row.
+    superseded, evidence, unordered = supersedes_for(old, [new], knowledge_time=T0)
+    assert superseded == () and evidence == () and unordered == ()
+
+    # Hence: no edge exists, and the store must report competing heads rather than pick one.
+    assert maximal_heads([record("rev1-a"), record("rev1-b")]) == ("rev1-a", "rev1-b")
 
 
 @pytest.mark.parametrize(
@@ -334,6 +364,7 @@ def test_only_the_allocation_path_of_the_store_touches_arrival_seq() -> None:
     assert mentioning == {
         "_persist",  # reads the recovered block base back from the archive row
         "_max_archive_arrival_seq",  # allocation anchor
+        "_check_archive_arrival_seq",  # validates each streamed anchor value
         "_append_archive",  # allocates the block
         "_verify_stored_archive",  # recovers the block base
         "_record_from_row",  # rebuilds the contract record

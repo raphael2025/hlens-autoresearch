@@ -119,7 +119,10 @@ PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要�
 ### 数据流与提交顺序
 
 1. **绑定身份**：从 `(data_type, symbol, coverage day)` 生成官方归档路径，核对 `source_uri` 以它结尾、
-   `ref.key` 等于内容寻址 key、`source_sha256 == ref.sha256`；任一不符 fail closed，不写任何东西。
+   `ref.key` 等于内容寻址 key；并且 `collected.source_sha256` **必须存在**、是规范小写 SHA-256、且等于 `ref.sha256`。
+   任一不符在任何 snapshot 产生前 fail closed，不写任何东西。
+   归档 payload hash 是**来源声明**（官方 `.CHECKSUM`，D0 已对本机字节验证过）：缺少该声明时绝不用本机对象哈希冒充，
+   持久化的 `source_sha256` 列写的也正是这个已验证的来源声明（D2-R1）。
 2. **archive revision**：一行稳定 batch 写入 `raw.binance_spot_archives`，**这次提交本身就是序号 block 的分配**。
 3. **parsed rows**：按有界 `pyarrow.Table` microbatch（默认 25 000 行，上限 250 000）写入
    `raw.binance_spot_agg_trades` / `raw.binance_spot_klines_1m`，顺序固定在 archive 行之后。
@@ -150,9 +153,12 @@ revision id 与到达顺序、墙钟无关：同一输入永远得到同一 id�
 
 ### arrival sequence：block 分配，只在 Iceberg 内
 
-- anchor 是 `raw.binance_spot_archives`：扫描它已提交的 `arrival_seq` 取最大值，下一个 **block base** 是
+- anchor 是 `raw.binance_spot_archives`：用 `max_int64` 流式归约出已提交 `arrival_seq` 的最大值，下一个 **block base** 是
   `(max // stride + 1) * stride`（空表为 0）。stride 冻结为 `2**32`，严格大于 D1 的解压成员上限（3 GiB，每行至少 1 字节 + LF），
   越界或 int64 溢出一律拒绝。
+- 归约过程中**逐值** fail closed：必须是非空 int64、非负、不超过 int64 上界，且是 stride 的倍数（合法 block base）；
+  任一不符抛 `CatalogIntegrityError`，绝不拿损坏的 anchor 去分配。查重不保存任何无界集合——
+  唯一性由 expected-parent 乐观提交与每表单 writer（ADR-0023 §7）保证，这里只证明"已提交的是合法 block base"。
 - archive 行用 block base，其 parsed rows 用 `base + archive_line_number`（1-based）。跨三张表全局不重复。
 - **archive 行的提交就是分配**：父 snapshot 冲突时重新读取、重新分配、重建 batch，绝不沿用失败尝试的 base（允许间隙，ADR-0023 §4）。
 - 崩溃后恢复：从已存在的 archive 行取回同一 base（以及 `ingest_time` / `knowledge_time`），所有 row revision 与 batch 按位重建。
@@ -184,6 +190,12 @@ batch id：archive 为 `<revision_id>.archive.<base>`（重试换 base 即换 id
   aggTrade 流只有定性的 "Real-time"；kline 的 "2000ms update speed" 是推送节奏不是发布上界），
   因此三类主体全部 `available_time = ingest_time` 并持久化结构化证据缺口（写在冻结的 `availability_evidence_gap` 列里）。
   归档替换同样无法证明先后，一律 **competing heads**。
+- **precedence 排序的方向限制（D2-R1，诚实边界）**：`precedence_evidence` 存在其 **newer 一侧**自己的行上，而 revision
+  只追加、已提交的行不回写。因此 v1 只持久化"**新到的 candidate supersedes 已知的较旧 revision**"这一个方向。
+  若来源语义上较新的 revision 先到、较旧的后到（`SUPERSEDED_BY`），不写任何边：两者都留作 maximal head，
+  任何"最新"结论 fail closed。这是保守做法，**不等于**已支持乱序到达的 ordered case——那需要独立的 precedence
+  记录（自己的表 + 单独 ADR），绝不能用到达顺序去猜。Binance 1.0.0 生产路径永远没有 source revision id / time，
+  始终 unordered，不受该限制影响。
 - `source_time` 保持为空：`Last-Modified` / `ETag` 不是官方的 revision 发布时间；原始响应头仍存在
   `source_metadata` 列中供审计（保存 ≠ 采信）。
 - `knowledge_time` 取注入 clock 的实际 UTC 时刻，必须 `>= ingest_time`（= D0 的 `retrieved_at`），
@@ -193,8 +205,11 @@ batch id：archive 为 `<revision_id>.archive.<base>`（重试换 base 即换 id
 
 - 本批只写 Raw；**不**做 Canonical、不做通用 PIT 查询、不建质量 taxonomy、不持久化质量报告与 manifest。
 - 每表单 writer（ADR-0023 §7）；并发只由父 snapshot 乐观冲突 + 有界重试兜底。
-- 序号 anchor 每次分配都整列扫描 `raw.binance_spot_archives`（每个归档文件一行，首切片规模可接受）；
-  规模变大后需要在 E/F 引入更窄的读取路径。
-- `PyIcebergCatalogAdapter.scan_columns` 是 infrastructure-only 的有界投影读取，**不在** `core` 的 `CatalogAdapter`
-  Protocol 里（通用读取接口由批次 F 的首个消费者定义）。
+- `PyIcebergCatalogAdapter.scan_columns` / `max_int64` 都是 infrastructure-only 的有界读取，**不在** `core` 的
+  `CatalogAdapter` Protocol 里（通用读取接口由批次 F 的首个消费者定义）。
+- 序号 anchor 的读取是**流式归约**，不是整表物化：`max_int64` 用 PyIceberg 的 `to_arrow_batch_reader`
+  逐个有界 record batch 折叠出最大值，跨 batch 只保留一个 Python int，因此归档历史再长也不会被拼成一个
+  `pa.Table`（旧实现走 `scan_columns(...).to_arrow()`，会整列物化；回归测试见下）。
+  **仍然存在的成本**：每次分配都要打开全部匹配的数据文件并读取该投影列，所以 I/O 随归档文件数线性增长；
+  真正收窄（清单级 min/max 剪枝或独立 anchor）仍是 E/F 的工作。
 - 行级契约构造是每行一次 Pydantic 校验：正确但不便宜；大体量 BTC 日归档的吞吐 / 内存基线仍是批量 backfill 前的前置工作。

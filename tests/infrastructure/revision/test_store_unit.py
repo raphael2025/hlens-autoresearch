@@ -15,6 +15,7 @@ import pytest
 
 from core.contracts.catalog import CommitOutcome
 from core.contracts.collector import SourceBinding
+from infrastructure.catalog import CatalogIntegrityError
 from infrastructure.parser import parse_archive
 from infrastructure.parser.binance_archive import PARSER_BINDING, ArchiveParseRequest
 from infrastructure.revision import (
@@ -28,6 +29,7 @@ from infrastructure.revision import (
     identity,
 )
 from infrastructure.revision.availability import AvailabilitySubject, rule_for
+from tests.infrastructure.catalog.catalog_support import ScanSpy
 from tests.infrastructure.parser import parser_support as ps
 from tests.infrastructure.revision import revision_support as rs
 from tests.infrastructure.revision.revision_support import StoreHarness
@@ -641,3 +643,134 @@ def test_identity_is_the_same_under_a_different_clock_and_a_different_order(
         backward = ingest_both(other, agg_first=False)
 
     assert forward == backward
+
+
+# ------------------------------------------------------------------ D2-R1: source evidence
+
+
+def test_an_archive_without_an_official_checksum_is_refused(harness: StoreHarness) -> None:
+    """A missing ``.CHECKSUM`` declaration may never be faked from the local object hash.
+
+    The archive payload hash is a *source* claim. Without it there is nothing to bind the
+    revision to, so ingest must fail before any snapshot exists on any of the three tables.
+    """
+    item = rs.archive(harness.storage)
+    undeclared = item.collected.model_copy(update={"source_sha256": None})
+    assert undeclared.source_sha256 is None
+
+    with pytest.raises(RevisionStoreError, match="CHECKSUM"):
+        harness.store().ingest(undeclared, item.context)
+
+    for table in (ARCHIVE_TABLE, AGG_TABLE, KLINE_TABLE):
+        assert harness.total_rows(table) == 0
+        assert harness.snapshot_id(table) is None
+
+
+def test_a_missing_checksum_is_refused_before_the_parse_too(harness: StoreHarness) -> None:
+    """``ingest_parsed`` shares the same binding gate: no back door around the source claim."""
+    item = rs.archive(harness.storage)
+    parsed = parse_archive(
+        ArchiveParseRequest.for_collected_object(
+            item.collected,
+            data_type=item.context.data_type,
+            archive_revision_id=harness.store().archive_revision_id(item.collected, item.context),
+        ),
+        harness.storage,
+    )
+    undeclared = item.collected.model_copy(update={"source_sha256": None})
+
+    with pytest.raises(RevisionStoreError, match="CHECKSUM"):
+        harness.store().ingest_parsed(undeclared, item.context, parsed)
+
+    assert harness.total_rows(ARCHIVE_TABLE) == 0
+
+
+def test_the_persisted_source_hash_is_the_source_declaration(harness: StoreHarness) -> None:
+    """The normal path writes the verified source claim, equal to the local object hash."""
+    item = rs.archive(harness.storage)
+    _ingested(harness.store().ingest(item.collected, item.context))
+
+    rows = harness.rows(ARCHIVE_TABLE, ("source_sha256", "object_sha256", "payload_hash"))
+    assert len(rows) == 1
+    assert rows[0]["source_sha256"] == item.collected.source_sha256
+    assert rows[0]["source_sha256"] == rows[0]["object_sha256"] == item.sha256
+    assert rows[0]["payload_hash"] == item.sha256
+
+
+def test_a_replay_verifies_the_persisted_source_hash(harness: StoreHarness) -> None:
+    """``source_sha256`` is part of what a recovery re-checks field by field."""
+    item = rs.archive(harness.storage)
+    harness.store().ingest(item.collected, item.context)
+    second = _ingested(harness.store().ingest(item.collected, item.context))
+
+    assert second.archive_commit.outcome is CommitOutcome.ALREADY_COMMITTED
+    assert harness.total_rows(ARCHIVE_TABLE) == 1
+
+
+# ------------------------------------------------------------------ D2-R1: bounded anchor
+
+
+def _distinct_archives(harness: StoreHarness, count: int) -> None:
+    """Ingest ``count`` archives of different days: one archive row each, one key each."""
+    store = harness.store()
+    for index in range(count):
+        item = rs.archive(
+            harness.storage,
+            day=ps.US_DAY + timedelta(days=index),
+            retrieved_at=rs.INGEST + timedelta(days=index),
+            rows=ps.agg_rows(ps.US_DAY + timedelta(days=index), count=2),
+        )
+        store.ingest(item.collected, item.context)
+
+
+def test_the_allocation_anchor_never_materialises_the_whole_archive_history(
+    harness: StoreHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression for the ``scan_columns(...).to_arrow()`` anchor (D2-R1 defect 2).
+
+    After six archives the table holds six rows. The seventh ingest still has to find the
+    largest committed ``arrival_seq``, but every Arrow table it materialises must stay a
+    single-key read: only the streaming reducer may touch the whole history.
+    """
+    _distinct_archives(harness, 6)
+    assert harness.total_rows(ARCHIVE_TABLE) == 6
+
+    spy = ScanSpy(monkeypatch)
+    item = rs.archive(
+        harness.storage,
+        day=ps.US_DAY + timedelta(days=6),
+        retrieved_at=rs.INGEST + timedelta(days=6),
+        rows=ps.agg_rows(ps.US_DAY + timedelta(days=6), count=2),
+    )
+    result = _ingested(harness.store().ingest(item.collected, item.context))
+
+    assert result.arrival_seq_base == 6 * identity.ARRIVAL_SEQ_STRIDE
+    assert spy.readers >= 1, "the anchor must go through the streaming batch reader"
+    # The old implementation read all six committed rows into one table here.
+    assert spy.largest_table <= 1, spy.to_arrow_rows
+    assert sum(spy.batch_rows) == 6, "the reduction still visited every committed archive row"
+
+
+def test_a_committed_anchor_that_is_not_a_block_base_fails_closed(
+    harness: StoreHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A corrupt anchor must stop the allocation, not seed the next block from garbage."""
+    monkeypatch.setattr(identity, "arrival_block_base", lambda _max: 5)
+    poisoned = rs.archive(harness.storage)
+    # The archive row commits with an unlawful ``arrival_seq``; the rows then refuse it.
+    with pytest.raises(identity.IdentityViolation):
+        harness.store().ingest(poisoned.collected, poisoned.context)
+    monkeypatch.undo()
+    assert harness.rows(ARCHIVE_TABLE, ("arrival_seq",)) == [{"arrival_seq": 5}]
+
+    later = rs.archive(
+        harness.storage,
+        day=ps.US_DAY + timedelta(days=1),
+        retrieved_at=rs.INGEST + timedelta(days=1),
+        rows=ps.agg_rows(ps.US_DAY + timedelta(days=1), count=2),
+    )
+    with pytest.raises(CatalogIntegrityError, match="block base"):
+        harness.store().ingest(later.collected, later.context)
+
+    assert harness.total_rows(ARCHIVE_TABLE) == 1
+    assert harness.total_rows(AGG_TABLE) == 0

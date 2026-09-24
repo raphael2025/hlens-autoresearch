@@ -26,7 +26,7 @@ inject any PyIceberg ``Catalog`` (for example a temporary SQLite ``SqlCatalog``)
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator, Sequence
+from collections.abc import Callable, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -165,6 +165,39 @@ def _backend(operation: str) -> Iterator[None]:
 def _identifier(table: str) -> tuple[str, str]:
     namespace, name = table.split(".")
     return namespace, name
+
+
+def _reduce_max_int64(
+    batches: Iterable[pa.RecordBatch],
+    *,
+    name: str,
+    column: str,
+    check: Callable[[int], None] | None,
+) -> int | None:
+    """Fold a stream of one-column record batches into their maximum (bounded memory).
+
+    Only the running maximum crosses a batch boundary, so the whole scanned history is never
+    materialised as one table. Each batch is validated structurally (single ``int64`` projection
+    of ``column``, no nulls) and each value is handed to ``check`` before it can win the
+    reduction: an illegal value fails closed instead of silently anchoring on garbage.
+    """
+    largest: int | None = None
+    for batch in batches:
+        if batch.num_columns != 1 or batch.schema.field(0).name != column:
+            raise CatalogIntegrityError(f"{name} did not project exactly the column {column!r}")
+        array = batch.column(0)
+        if not pa.types.is_int64(array.type):
+            raise CatalogIntegrityError(f"{name}.{column} is not an int64 column")
+        if array.null_count:
+            raise CatalogIntegrityError(f"{name}.{column} carries a null value")
+        for value in array.to_pylist():
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise CatalogIntegrityError(f"{name}.{column} carries a non-integer value")
+            if check is not None:
+                check(value)
+            if largest is None or value > largest:
+                largest = value
+    return largest
 
 
 def _revalidated[M: (TableDefinition, CommitRequest)](model: type[M], value: object) -> M:
@@ -336,6 +369,41 @@ class PyIcebergCatalogAdapter:
             self._verified(name, iceberg)
             scan = iceberg.scan(row_filter=row_filter, selected_fields=tuple(columns), limit=limit)
             return scan.to_arrow()
+
+    def max_int64(
+        self,
+        table: str,
+        column: str,
+        *,
+        row_filter: BooleanExpression = _ALWAYS_TRUE,
+        check: Callable[[int], None] | None = None,
+    ) -> int | None:
+        """The largest value of the ``int64`` ``column``, reduced over a streaming batch reader.
+
+        Unlike ``scan_columns`` this never builds one ``pyarrow.Table`` over the scanned history:
+        PyIceberg's ``to_arrow_batch_reader`` yields bounded record batches and only the running
+        maximum (one Python int) survives a batch. Memory therefore stays bounded as the table
+        grows; the I/O cost still grows with the number of matching data files, because every one
+        of them is opened and its projected column read.
+
+        Every value is validated while it streams (fail closed, no unbounded bookkeeping): the
+        column must be a non-nullable ``int64`` projection with no nulls, and ``check`` — the
+        caller's domain rule — must accept each value. ``None`` means the scan matched no row.
+        """
+        name = validate_table_name(table)
+        if not isinstance(column, str) or not column:
+            raise BatchRejected("max_int64 needs a column name")
+        if check is not None and not callable(check):
+            raise BatchRejected("max_int64 check must be callable")
+        with _backend("max_int64"):
+            iceberg = self._require(name)
+            self._verified(name, iceberg)
+            scan = iceberg.scan(row_filter=row_filter, selected_fields=(column,))
+            reader = scan.to_arrow_batch_reader()
+            try:
+                return _reduce_max_int64(reader, name=name, column=column, check=check)
+            finally:
+                reader.close()
 
     # ------------------------------------------------------------------ C3 evolution
 

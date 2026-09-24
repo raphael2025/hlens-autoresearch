@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **D2 实现完成，待 Codex 复核**：archive / Raw append-only revision、幂等 replay、崩溃恢复、内容寻址归档对象与 availability / precedence 证据；D1 已由 Codex 独立验收 |
+| 当前子阶段 | **D2-R1 返修完成，待 Codex 复核**：按 Codex 复核意见修复两个缺陷（来源 checksum 必须存在、序号 anchor 改为流式有界归约）；D1 已由 Codex 独立验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D1 已验收；D2 实现完成待复核） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D1 已验收；D2 + D2-R1 待复核） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -83,6 +83,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 C3（Claude Opus + Cursor Auto）：八张冻结生产表、`hlens.pyarrow-batch-sha256@1.0.0`、分区演进与幂等建表；ADR-0026 / D-32 增补官方 `pyiceberg-core` extra；Codex 独立运行 2728 项全量测试、8 表真实 PostgreSQL 写入 / 重启重放探针、残留 / 密钥 / 冻结边界检查与静态检查通过（`973ffbd`）
 - ✅ Phase 1 D0（Cursor Auto）：`BinanceSpotArchiveCollector` 只访问配置 archive base，严格 `.CHECKSUM` 先验校验、流式 staging / 原子发布、缺口与有界重试；经两轮对抗返修关闭中途流错误不重试与 base URL 静默改写；Codex 独立运行 2780 项全量测试、流中断 / 恶意 base 探针、残留 / 密钥 / 冻结边界检查与静态检查通过（`7a9f468`）
 - 🟡 Phase 1 D2（Claude Opus，待复核）：`infrastructure/revision/` 的身份规则、`binance.spot.publication@1.0.0`、`binance.spot.archive-revision@1.0.0` 与 `RawRevisionStore`；归档对象改为内容寻址（collector 升 `1.1.0`，source 绑定不变），序号 block 以归档表为 anchor 全在 Iceberg 内分配；本地跑过 3072 项全量（接真实 PostgreSQL；不接时 3019 通过 + 53 skipped）与全部静态检查
+- 🟡 Phase 1 D2-R1（Claude Opus，待复核）：修复 Codex 复核发现的两个缺陷——①缺失官方 `.CHECKSUM` 时不再用本机对象哈希冒充来源声明（`source_sha256` 必须存在、规范、等于 `ref.sha256`，且持久化的正是该来源声明），②序号 anchor 改用新增的 `PyIcebergCatalogAdapter.max_int64` 流式 Arrow batch 归约，不再把全归档历史物化成一个 `pa.Table`，并逐值 fail closed 校验 block base；另按审计缩窄 precedence 的乱序 ordered 声明（未改冻结 Schema 与 policy hash）；本地跑过 3091 项全量（接真实 PostgreSQL，0 skipped）与全部静态检查
 - ✅ Phase 1 D1（Claude Opus）：`binance.spot.archive.parser@1.0.0` 按覆盖日选择毫秒 / 微秒，严格 ZIP / CSV 与零容差覆盖边界，失败只产结构化质量事件且不泄露部分 rows；Codex 独立运行 2955 项全量测试、70,000 行末尾失败原子性探针，并真实解析两个日期的 kline 与 aggTrades 官方归档（`c966085`）
 
 ## 4. 当前正在做
@@ -99,6 +100,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ D0（Cursor Auto）：Codex 已独立验收；验收矩阵 #10 满足，接受 `7a9f468`
 - ✅ D1（Claude Opus）：Codex 已独立验收；验收矩阵 #11 满足，接受 `c966085`
 - 🟡 D2（Claude Opus）：实现完成，**待 Codex 独立复核**；append-only revision、幂等 replay、归档替换追加、arrival_seq block 分配、崩溃恢复与 availability / precedence 证据均已落地并有测试；D3 仍未开放
+- 🟡 D2-R1（Claude Opus）：Codex 复核发现的两个缺陷已修复并各有能识别旧实现的回归测试（四个新测试在 `ba9f417` 上确认失败）；额外 precedence 审计结论已写入代码与 `infrastructure/README.md`（只缩窄声明，未改冻结 Schema）；**待 Codex 复核**
 
 ## 5. 下一步
 
@@ -181,11 +183,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 D2-R1（Claude Opus）：按 Codex 复核修复两个缺陷——缺失官方 checksum 不再被伪造成来源声明；序号 anchor 改为 `max_int64` 流式 Arrow batch 归约并逐值校验 block base。四个新回归测试在 `ba9f417` 上确认失败；3091 项全量（真实 PostgreSQL，0 skipped）与静态检查全绿 | 缺陷关闭，等待 Codex 复核；D3 仍未开放 |
 | 2026-09-24 | Phase 1 D2（Claude Opus）：`infrastructure/revision/` append-only revision 写入、幂等 replay、崩溃恢复、内容寻址归档对象（修复 D0 延期义务，collector → `1.1.0`）、序号 block 分配与两份 policy 证据；3072 项全量测试（接真实 PostgreSQL，含 9 项 D2 集成）与静态检查全绿 | 验收矩阵 #12 / #17 本地完成，待 Codex 复核；D3 未开放 |
 | 2026-09-24 | Codex 独立验收 D1：175 项专项、带真实 PostgreSQL 的 2955 项全量测试、70,000 行末尾失败原子性、两个单位边界日的官方 kline 与 ETHUSDT aggTrades、残留 / 密钥 / 冻结边界与静态检查全部通过；接受 `c966085` | 验收矩阵 #11 满足；D2 开放给 Claude Opus |
 | 2026-09-24 | Codex 独立验收 D0 / R1 / R2：52 项专项、带真实 PostgreSQL 的 2780 项全量测试、checksum / ZIP 中途流中断重试、8 类恶意 archive base、测试数据库清理、warehouse / 密钥 / 冻结边界与静态检查全部通过；接受 `7a9f468` | 验收矩阵 #10 满足；D1 开放给 Claude Opus |
 | 2026-09-24 | Phase 1 D0（Cursor Auto）：实现 `BinanceSpotArchiveCollector`（官方归档 + `.CHECKSUM` + 原子交付）；contract suite 与行为测试通过；未改 `core/`；D1 未开放 | 验收 #10 本地完成，待 Codex 复核推送 |
-| 2026-09-24 | Codex 独立验收 C3：2728 项全量测试、44 项 PostgreSQL catalog 测试、8 张表真实写入 / 重启后同 batch 重放同一 snapshot、按天分区值、清理 / 密钥 / 冻结边界与静态检查全部通过；接受 `973ffbd` | 验收矩阵 #9 满足；D0 开放给 Cursor Auto |
 
 ## 10. 下一阶段进入条件
 
@@ -221,4 +223,4 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0、A1～A3、B1～B3、C1～C3、D0～D2；D1 `c966085` 已由 Codex 独立验收，D2 实现待复核。
-3. Claude 的 D2 任务包已执行完毕；在 Codex 复核通过前不做新工作，任何 Agent 都不得开始 D3 或 Phase 0.5。
+3. Claude 的 D2 与 D2-R1 返修任务包均已执行完毕；在 Codex 复核通过前不做新工作，任何 Agent 都不得开始 D3 或 Phase 0.5。

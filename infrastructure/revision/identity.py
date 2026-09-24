@@ -62,6 +62,7 @@ __all__ = [
     "archive_relative_path",
     "archive_source_identity",
     "arrival_block_base",
+    "check_sha256",
     "kline_1m_observation_key",
     "kline_1m_payload_hash",
     "revision_id",
@@ -118,7 +119,8 @@ def _check_data_type(data_type: str) -> str:
     return data_type
 
 
-def _check_sha256(value: str, label: str) -> str:
+def check_sha256(value: str, label: str) -> str:
+    """``value`` as canonical lower-case SHA-256 hex, or ``IdentityViolation`` (fail closed)."""
     if not isinstance(value, str) or _SHA256_RE.fullmatch(value) is None:
         raise IdentityViolation(f"{label} must be lower-case SHA-256 hex")
     return value
@@ -158,7 +160,7 @@ def archive_object_key(data_type: str, symbol: str, day: date, sha256: str) -> s
     directory, sub, infix = _ARCHIVE_LAYOUT[_check_data_type(data_type)]
     _check_symbol(symbol)
     _check_day(day)
-    _check_sha256(sha256, "archive sha256")
+    check_sha256(sha256, "archive sha256")
     tail = f"/{sub}" if sub else ""
     filename = f"{symbol}-{infix}-{day.isoformat()}.zip"
     return f"{_OBJECT_KEY_PREFIX}/{sha256}/daily/{directory}/{symbol}{tail}/{filename}"
@@ -217,7 +219,7 @@ def revision_id(observation_key: str, source_identity: str, payload_hash: str) -
         raise IdentityViolation("observation_key must be a non-empty string")
     if not isinstance(source_identity, str) or not source_identity:
         raise IdentityViolation("source_identity must be a non-empty string")
-    _check_sha256(payload_hash, "payload_hash")
+    check_sha256(payload_hash, "payload_hash")
     document = {
         "rule": IDENTITY_RULE_ID,
         "rule_version": IDENTITY_RULE_VERSION,

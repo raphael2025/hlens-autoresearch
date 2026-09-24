@@ -27,6 +27,7 @@ from pyiceberg.catalog import Catalog
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.partitioning import PartitionField, PartitionSpec
 from pyiceberg.schema import Schema
+from pyiceberg.table import DataScan
 from pyiceberg.transforms import IdentityTransform
 from pyiceberg.types import DoubleType, LongType, NestedField, StringType
 
@@ -214,3 +215,44 @@ class PostgresCatalogHarness(_Harness):
         catalog = connect_postgres_catalog(self.settings())
         self._opened.append(catalog)
         return catalog
+
+
+class ScanSpy:
+    """Records how PyIceberg scans are consumed: whole tables vs. streamed record batches.
+
+    Installed with ``monkeypatch``, it wraps ``DataScan.to_arrow`` and
+    ``DataScan.to_arrow_batch_reader`` so a test can prove that a read path never materialises a
+    whole history as one Arrow table (D2-R1 bounded allocation anchor).
+    """
+
+    def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self.to_arrow_rows: list[int] = []
+        self.readers = 0
+        self.batch_rows: list[int] = []
+        spy = self
+        real_to_arrow = DataScan.to_arrow
+        real_reader = DataScan.to_arrow_batch_reader
+
+        def to_arrow(scan: DataScan, *args: Any, **kwargs: Any) -> pa.Table:
+            table = real_to_arrow(scan, *args, **kwargs)
+            spy.to_arrow_rows.append(table.num_rows)
+            return table
+
+        def to_arrow_batch_reader(
+            scan: DataScan, *args: Any, **kwargs: Any
+        ) -> pa.RecordBatchReader:
+            spy.readers += 1
+            reader = real_reader(scan, *args, **kwargs)
+            batches = []
+            for batch in reader:
+                spy.batch_rows.append(batch.num_rows)
+                batches.append(batch)
+            return pa.RecordBatchReader.from_batches(reader.schema, batches)
+
+        monkeypatch.setattr(DataScan, "to_arrow", to_arrow)
+        monkeypatch.setattr(DataScan, "to_arrow_batch_reader", to_arrow_batch_reader)
+
+    @property
+    def largest_table(self) -> int:
+        """Rows of the largest single Arrow table materialised through ``to_arrow``."""
+        return max(self.to_arrow_rows, default=0)

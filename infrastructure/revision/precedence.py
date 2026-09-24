@@ -6,8 +6,8 @@ observation key, exactly one of three things:
 - **replay** — identical source identity and payload hash: no new revision, no new arrival
   sequence number (ADR-0023 §4 "重复");
 - **proven precedence** — the source itself declares a revision identity *and* a revision time on
-  both sides and they order strictly: the edge is persisted at ingest as ``supersedes`` plus a
-  ``PrecedenceEvidence`` record;
+  both sides, they order strictly, **and the arriving revision is the newer one**: the edge is
+  persisted at ingest as ``supersedes`` plus a ``PrecedenceEvidence`` record;
 - **competing heads** — anything else: both revisions stay, neither supersedes the other, and any
   "latest" answer must fail closed until a new, evidence-bearing precedence record is appended.
 
@@ -22,6 +22,17 @@ issues". So under 1.0.0 two archives at the same official path with different ch
 always competing heads — both sets of bytes and both sets of parsed rows are kept, and nothing
 picks one. The ordering branch is implemented for sources that do declare a revision time and is
 tested with an explicitly test-only policy binding.
+
+**Direction limit of the persisted ordering (D2-R1, honest boundary).** ``PrecedenceEvidence``
+is stored on the row of its *newer* side (the frozen ``raw.binance_spot_archives`` column holds
+the edges this revision declares), and revisions are append-only: a committed row is never
+rewritten. So only one direction can be persisted at ingest — the arriving candidate provably
+superseding an already-known revision. When the arriving revision is the **older** one
+(``SUPERSEDED_BY``), no edge is written: both revisions stay maximal heads and every "latest"
+answer fails closed. That is conservative, never wrong, and it is *not* the same as supporting
+out-of-order ordered arrival; doing so needs an independent precedence record (its own table and
+ADR) and must not be guessed from arrival order. The Binance 1.0.0 production path never
+declares a source revision id or time, so it is always unordered and this limit cannot bite it.
 """
 
 from __future__ import annotations
@@ -148,6 +159,12 @@ def supersedes_for(
     A replay is reported by raising: callers must not append a revision for it. Every returned
     ``supersedes`` id comes with its ``PrecedenceEvidence``, so the pair satisfies
     ``RevisionGraph``'s "every declared edge has evidence not later than this revision".
+
+    Only ``SUPERSEDES`` produces an edge. A ``SUPERSEDED_BY`` outcome — the source orders the
+    pair, but the *already committed* revision is the newer one — yields nothing to persist here:
+    the edge belongs on that older-arriving row, which append-only storage may not rewrite. Both
+    revisions therefore remain maximal heads and the caller fails closed (see the module
+    docstring's direction limit).
     """
     policy = PRECEDENCE_BINDING if binding is None else binding
     if policy.role is not PolicyRole.PRECEDENCE:

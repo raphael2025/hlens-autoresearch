@@ -41,7 +41,6 @@ from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol, Self
 
 import pyarrow as pa  # type: ignore[import-untyped]
-import pyarrow.compute as pc  # type: ignore[import-untyped]
 from pyiceberg.expressions import BooleanExpression, EqualTo
 
 from core.contracts.catalog import (
@@ -284,6 +283,15 @@ class RevisionCatalog(Protocol):
         limit: int | None = ...,
     ) -> pa.Table: ...
 
+    def max_int64(
+        self,
+        table: str,
+        column: str,
+        *,
+        row_filter: BooleanExpression = ...,
+        check: Callable[[int], None] | None = ...,
+    ) -> int | None: ...
+
 
 class RawRevisionStore:
     """Persists archive and parsed Raw revisions through the C2/C3 catalog adapter.
@@ -367,7 +375,20 @@ class RawRevisionStore:
             raise RevisionStoreError(
                 "published object key is not the content-addressed key of this archive"
             )
-        if collected.source_sha256 is not None and collected.source_sha256 != collected.ref.sha256:
+        # The archive payload hash is a *source* claim: it must come from the official
+        # ``.CHECKSUM`` and must already have been verified against the bytes this machine
+        # stored. Without that declaration there is nothing to bind the revision to, and the
+        # local object hash must never be passed off as one (D2-R1).
+        if collected.source_sha256 is None:
+            raise RevisionStoreError(
+                "the archive carries no official .CHECKSUM declaration: a Binance archive "
+                "revision's payload hash may not be taken from the local object hash"
+            )
+        try:
+            identity.check_sha256(collected.source_sha256, "source_sha256")
+        except identity.IdentityViolation as exc:
+            raise RevisionStoreError(str(exc)) from exc
+        if collected.source_sha256 != collected.ref.sha256:
             raise RevisionStoreError("source checksum and stored object disagree")
         observation_key = identity.archive_observation_key(context.data_type, collected.symbol, day)
         revision_id = identity.revision_id(
@@ -560,6 +581,7 @@ class RawRevisionStore:
             "coverage_start": collected.coverage_start,
             "coverage_end": collected.coverage_end,
             "source_uri": collected.source_uri,
+            "source_sha256": collected.source_sha256,
             "object_key": collected.ref.key,
             "object_uri": collected.ref.uri,
             "object_sha256": collected.ref.sha256,
@@ -683,14 +705,16 @@ class RawRevisionStore:
         return None if info.current_snapshot is None else info.current_snapshot.snapshot_id
 
     def _max_archive_arrival_seq(self) -> int | None:
-        """The largest committed archive ``arrival_seq``: the block allocation anchor."""
-        column = self._adapter.scan_columns(ARCHIVE_TABLE, columns=("arrival_seq",))
-        if column.num_rows == 0:
-            return None
-        largest = pc.max(column.column("arrival_seq")).as_py()
-        if not isinstance(largest, int):
-            raise CatalogIntegrityError("archive arrival_seq is not an integer column")
-        return largest
+        """The largest committed archive ``arrival_seq``: the block allocation anchor.
+
+        The reduction streams: the adapter folds bounded Arrow record batches into one running
+        maximum, so the archive history is never materialised as a single table however long it
+        grows (the per-file I/O cost does grow with it). Every streamed value must be a legal
+        block base, so a corrupted anchor fails closed instead of seeding an allocation.
+        """
+        return self._adapter.max_int64(
+            ARCHIVE_TABLE, "arrival_seq", check=_check_archive_arrival_seq
+        )
 
     def _stored_archive_row(self, revision_id: str) -> Mapping[str, Any] | None:
         rows = self._adapter.scan_columns(
@@ -767,6 +791,24 @@ class RawRevisionStore:
         raise CatalogIntegrityError(
             f"{table} has a row of batch {batch_id} but no snapshot that committed it"
         )
+
+
+# --------------------------------------------------------------------------- allocation anchor
+
+
+def _check_archive_arrival_seq(value: int) -> None:
+    """Validate one streamed anchor value; anything unlawful fails closed (never allocates).
+
+    Applied per value *inside* the streaming reduction, so no unbounded bookkeeping is needed:
+    uniqueness is already guaranteed by the expected-parent commit and the single writer per
+    table (ADR-0023 §7), and this only has to prove that what is committed is a legal block base.
+    """
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise CatalogIntegrityError("a committed archive arrival_seq is not an integer")
+    if value < 0 or value > identity.MAX_ARRIVAL_SEQ:
+        raise CatalogIntegrityError("a committed archive arrival_seq is outside the int64 range")
+    if value % identity.ARRIVAL_SEQ_STRIDE != 0:
+        raise CatalogIntegrityError("a committed archive arrival_seq is not a block base")
 
 
 # --------------------------------------------------------------------------- record building
@@ -944,6 +986,11 @@ def _archive_batch(
     context: ArchiveContext,
 ) -> pa.Table:
     """The one-row ``raw.binance_spot_archives`` batch of one archive revision."""
+    source_sha256 = collected.source_sha256
+    if source_sha256 is None:  # pragma: no cover - ``_identify`` already fails closed
+        raise RevisionStoreError(
+            "an archive row needs the official .CHECKSUM declaration as its source_sha256"
+        )
     times = record.availability.times
     columns = _revision_columns((record,), {record.revision_id: _edge_values(evidence)})
     columns.update(
@@ -961,7 +1008,8 @@ def _archive_batch(
             "coverage_end": [collected.coverage_end],
             "source_uri": [collected.source_uri],
             "retrieved_at": [collected.retrieved_at],
-            "source_sha256": [collected.ref.sha256],
+            # The source's own declaration (verified in ``_identify``), never the local hash.
+            "source_sha256": [source_sha256],
             "object_key": [collected.ref.key],
             "object_uri": [collected.ref.uri],
             "object_sha256": [collected.ref.sha256],
@@ -1081,6 +1129,7 @@ _ARCHIVE_LOOKUP_COLUMNS: Final[tuple[str, ...]] = (
     "coverage_start",
     "coverage_end",
     "source_uri",
+    "source_sha256",
     "object_key",
     "object_uri",
     "object_sha256",
