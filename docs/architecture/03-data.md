@@ -134,9 +134,9 @@ Canonical 层每个分区产生质量报告：缺口、重复、异常值、时�
 - 对象存储与 Catalog 已由 ADR-0021 决定（§1）；warehouse 与 staging **不得**位于 `/mnt/*` 或其它跨文件系统路径。
 - 现有外部数据（如 `~/BTC` 链接目标）**不得**被本项目修改；如需导入，Phase 1 以只读方式经 Collector 进入 Raw Zone。
 
-### 6.1 最小直接依赖（A2 冻结，A3 锁定）
+### 6.1 最小直接依赖（A2 冻结，A3a 锁定）
 
-按包身份冻结；精确版本由 A3 解析并写入 `uv.lock`。
+按包身份冻结；精确版本由 A3a 解析并写入 `uv.lock`。
 
 | 包 | 为什么是直接依赖 |
 |---|---|
@@ -149,13 +149,13 @@ Canonical 层每个分区产生质量报告：缺口、重复、异常值、时�
 - SQLAlchemy 与 PostgreSQL 驱动保持**传递依赖**；只有项目代码直接 import，或解析器证明必须显式声明时才可成为直接依赖，
   且须先报告 Codex，获准后再加。
 
-### 6.2 类型化设置字段（A2 冻结，A3 实现）
+### 6.2 类型化设置字段（A2 冻结，A3b 实现）
 
 | 环境变量 | 默认 | 约束 |
 |---|---|---|
 | `HLENS_WAREHOUSE_URI` | 仓库内 `data/warehouse` 的 `file://` URI | Phase 1 只接受 `file://`；拒绝 `/mnt/*` 与其它 scheme |
 | `HLENS_STAGING_URI` | warehouse 之下的 staging 目录 | 必须与 warehouse 位于同一文件系统（原子发布） |
-| `HLENS_CATALOG_URI` | 无（必填） | secret-valued DSN，不得出现在日志 / repr；测试之外必须是 PostgreSQL；SQLite 只允许单元测试 |
+| `HLENS_CATALOG_URI` | 无（必填） | secret-valued DSN，不得出现在日志 / repr；**只接受 PostgreSQL DSN**，运行时设置拒绝 SQLite 与其它 scheme |
 | `HLENS_CATALOG_NAME` | `hlens` | 非空 |
 | `HLENS_HTTP_CONNECT_TIMEOUT_SECONDS` | `10` | 正数 |
 | `HLENS_HTTP_READ_TIMEOUT_SECONDS` | `60` | 正数 |
@@ -163,6 +163,9 @@ Canonical 层每个分区产生质量报告：缺口、重复、异常值、时�
 | `HLENS_HTTP_USER_AGENT` | `hlens-autoresearch/0.0.0` | 非空 |
 | `HLENS_BINANCE_ARCHIVE_BASE_URL` | `https://data.binance.vision` | 公共归档站点 |
 | `HLENS_BINANCE_MARKET_DATA_BASE_URL` | `https://data-api.binance.vision` | market-data-only REST base（ADR-0022） |
+
+ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅供测试的 adapter / factory fixture 直接注入内存 SQLite catalog，
+设置代码中**不存在**"是否在 pytest 中"之类的隐藏分支。
 
 后续的 `.env.example` 只包含变量名与占位符，**不含任何凭据**；A2 不创建它。
 
@@ -201,7 +204,7 @@ Canonical 层每个分区产生质量报告：缺口、重复、异常值、时�
 | 类别 | 标识符 | 冻结内容 |
 |---|---|---|
 | Source | `binance.public.spot.archive@1.0.0` | `data.binance.vision` 公共 spot 日 / 月归档（aggTrades、1m klines）+ 同目录 `.CHECKSUM` |
-| Parser | `binance.spot.archive.parser@1.0.0` | 时间单位按**文件覆盖日期**（UTC）决定：早于 2025-01-01 为毫秒，自 2025-01-01 起为微秒；禁止逐值猜测数量级。每个解析出的时间必须落在该文件声明覆盖的 UTC 区间内（本版本零容差），否则整个文件 fail closed、不进 Canonical、写质量事件。单位或容差变化 = 新 parser 版本 |
+| Parser | `binance.spot.archive.parser@1.0.0` | 时间单位按**文件覆盖日期**（UTC）决定：早于 2025-01-01 为毫秒，自 2025-01-01 起为微秒；禁止逐值猜测数量级。每个文件声明覆盖 UTC 半开区间 `[coverage_start, coverage_end)`（日归档为该日，月归档为该月）；所有解析出的 aggTrades 事件时间与 kline 开盘时间必须落在区间内（零容差），任一例外即整个文件拒绝、不进 Canonical、写质量事件。单位或容差变化 = 新 parser 版本 |
 | Availability policy | `binance.spot.publication@1.0.0` | Binance spot 首发与归档替换的历史可用时间规则（ADR-0023 §2） |
 | Precedence policy | `binance.spot.archive-revision@1.0.0` | 同一归档路径不同 checksum 的 revision 之间能否证明先后；无法证明 = competing heads |
 | Universe spec | `binance.spot.btc-eth@1.0.0` + content hash | 首切片 `UniverseSelectionSpec`：`BTCUSDT`、`ETHUSDT` spot 的 listing episode；按 ADR-0024 绑定 |

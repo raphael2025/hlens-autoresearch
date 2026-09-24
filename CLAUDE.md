@@ -304,4 +304,6 @@ uv run mypy
 
 ### 10.8 状态报告
 
-每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。当前仓库**没有远程**：远程托管位置待 Raphael 决定（ADR-0004 遗留项），在此之前 PR 与 CI 部分填 `none` / `not configured`。
+每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。远程 `origin` 为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025）：
+Claude / Cursor 只提交、**不 push**；Codex 独立复核并运行所需检查后，把每个被接受的恢复点推送到对应 phase 分支。
+GIT_STATE 如实报告相对远程的 ahead 数；未创建 PR、未配置 CI 时分别填 `none` / `not configured`。

@@ -9,7 +9,7 @@
 | [0001](0001-record-architecture-decisions.md) | 使用 ADR 记录架构决策 | Accepted |
 | [0002](0002-architecture-baseline.md) | 架构基线 | Accepted（第 5 条被 ADR-0006 取代） |
 | [0003](0003-python-version-and-uv.md) | Python 3.13 + uv（D-06） | Accepted |
-| [0004](0004-git-repository-baseline.md) | 本地 Git 仓库与 Bootstrap Baseline（D-07） | Accepted |
+| [0004](0004-git-repository-baseline.md) | 本地 Git 仓库与 Bootstrap Baseline（D-07） | Accepted（第 3 条"暂不决定远程"被 ADR-0025 取代） |
 | [0005](0005-research-production-boundary.md) | Research / Production Boundary（D-03） | Accepted（2026-09-23） |
 | [0006](0006-strategy-lifecycle.md) | Strategy Lifecycle v2（D-05） | Accepted（2026-09-23）；取代 ADR-0002 第 5 条 |
 | [0007](0007-validation-architecture-three-layers.md) | 三层验证架构与两步冻结（D-09 结构部分） | Accepted（2026-09-23） |
@@ -30,6 +30,7 @@
 | [0022](0022-phase1-market-and-execution-scope.md) | Phase 1 市场与执行边界（D-08） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
 | [0023](0023-bitemporal-revision-data.md) | 双时间与修订数据的 point-in-time 语义（D-28） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
 | [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
+| [0025](0025-private-github-remote-and-reviewed-progress-push.md) | 私有 GitHub 远程与复核后逐进度推送 | Accepted（2026-09-24，Codex 依 Raphael 明确指示批准；A2r 记录）；取代 ADR-0004 第 3 条 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -67,7 +68,7 @@
 | D-04 | **Validation 时序冲突**。Phase 8 才是 Validation & Robustness，但 Phase 5–7 已产生实验与晋升判断。 | (a) 最小验证门在 Phase 4 交付，Phase 8 做扩展（当前 roadmap 采用此解释）；(b) 把 Phase 8 前移到 Phase 5 之前 | Phase 4 |
 | D-05 | ✅ **已决定（ADR-0006）** Lifecycle 细节；Q-4～Q-6 按 ADR 保持开放，现有已接受规则继续适用。 | 见 ADR-0006 与 07-validation.md §3 | → ADR-0006 Accepted |
 | D-06 | **Python 版本**。系统 Python 为 3.14.4；部分科学计算 / 数据库驱动 / PyIceberg 等对最新版本支持可能滞后。 | (a) 用 uv 固定 3.12 或 3.13 的项目内解释器；(b) 直接使用 3.14 | ✅ 已决定 → ADR-0003 |
-| D-07 | **Git 仓库**。项目目录尚未 `git init`（本阶段未授权）；复现元组依赖 commit SHA。另需决定远程托管位置。 | 授权后 `git init`（不修改全局 Git 配置） | ✅ 已决定 → ADR-0004 |
+| D-07 | **Git 仓库**。项目目录尚未 `git init`（本阶段未授权）；复现元组依赖 commit SHA。另需决定远程托管位置。 | 授权后 `git init`（不修改全局 Git 配置） | ✅ 已决定 → ADR-0004；远程 → [ADR-0025](0025-private-github-remote-and-reviewed-progress-push.md)（私有 GitHub，Codex 复核后推送） |
 | D-08 | **市场与执行范围**。覆盖哪些交易所 / 标的 / 频率（现货、永续、期权、链上）？Phase 13 是否包含实盘，由谁授权，风险预算上限？ | 需用户定义 | Phase 1 / 13；→ [ADR-0022](0022-phase1-market-and-execution-scope.md) Accepted（研究数据范围；实盘仍需 Raphael 独立授权） |
 | D-09 | **Constitution 数值**。TBD-1 至 TBD-5。结构部分（H-1、H-2）已定 → ADR-0007 Accepted；**数值仍未批准**，将在 Phase 4 校准后按 Profile 版本冻结。 | 需用户批准 | → 提案 `docs/research/proposals/d09-validation-threshold-proposal.md`（未批准） |
 | D-10 | **NATS 引入时机**。早期单机研究不需要事件总线，过早引入增加运维负担。 | (a) Phase 1–6 用进程内任务队列（接口为 EventBusAdapter），Phase 7/11 引入 NATS；(b) 从 Stage 2 开始即引入 | Phase 1；→ [ADR-0021](0021-phase1-local-data-infrastructure.md) Accepted（Phase 1 ~ 6 不运行 NATS，最迟 Phase 11 前引入） |

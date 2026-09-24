@@ -44,7 +44,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Subphase：**架构决策已关闭**（A2：ADR-0021 ~ 0024 Accepted，`03-data.md` 同步并冻结首切片）；实现尚未开始
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批实现：**Cursor A3**（依赖锁定 + 类型化设置骨架）；Claude 的 B1 须等 A3 完成并由 Codex 下达任务包
+- 当前唯一获批实现：**Cursor A3a（依赖锁定）→ A3b（类型化设置骨架）**，须在 A2 / A2r 经 Codex 复核推送之后；Claude 的 B1 须等 A3 完成并由 Codex 下达任务包
 - Current Blocker：无；创建 catalog 库 / role（C2）前须记录 H12 授权
 - Next Milestone：A3 完成；B1 双时间与 revision 契约
 
@@ -53,7 +53,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0001：重大架构决定用 ADR 记录；Agent 只能起草 Proposed
 - ADR-0002：架构基线（原则 P1–P17、四个 Plane、默认技术栈）
 - ADR-0003（D-06）：Python 3.13 + uv，与系统 Python 隔离
-- ADR-0004（D-07）：Git 仓库；不改全局配置；远程为私有 GitHub `raphael2025/hlens-autoresearch`（Codex 复核后推送；PR / CI 未配置）
+- ADR-0004（D-07）：本地 Git 仓库；不改全局配置；一次性提交身份（第 3 条"远程待定"被 ADR-0025 取代）
+- ADR-0025：远程 = 私有 GitHub `raphael2025/hlens-autoresearch`；Claude / Cursor 只提交不推送，Codex 复核后推送每个恢复点；PR / CI 未配置
 - ADR-0005（D-03）：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Q-1 / Q-2 / Q-3 / Q-7 开放
 - ADR-0006（D-05）：生命周期 v2（C-1：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；C-2：ACTIVE 带
   `execution_mode` SIMULATED|LIVE，不设 LIVE 状态）；RETIRED 进退役记录，REJECTED / FAILED 进 Failure Registry；Q-4 ~ Q-6 开放
@@ -144,6 +145,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Schema current 38 份（2.0.0）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
-- Phase 1：最近一次经 Codex 复核通过并推送的 `phase/1` 提交为 `6d53cf5`（A1r2）；之后的 A2 提交待复核
+- Phase 1：最近一次经 Codex 复核通过并推送的 `phase/1` 提交为 `6d53cf5`（A1r2）；A2 与 A2r 提交未推送，待 Codex 复核
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
-  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`
+  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1`（至 `6d53cf5`）与 tag 已推送到私有 GitHub 远程 `origin`
