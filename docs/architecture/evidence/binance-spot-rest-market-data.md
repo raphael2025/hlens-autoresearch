@@ -2,11 +2,11 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 草案（Phase 1 D3A 产出，随 [ADR-0027](../../adr/0027-rest-raw-source-and-element-revisions.md) 一并待 Codex 复核） |
+| 状态 | 草案（Phase 1 D3A 产出、D3A-R1 修正措辞；随 [ADR-0027](../../adr/0027-rest-raw-source-and-element-revisions.md) 一并待 Codex 复核） |
 | 适用范围 | security type `NONE` 的 `GET /api/v3/aggTrades` 与 `GET /api/v3/klines`（`interval=1m`），只经 market-data-only base |
 | 访问日期 | 2026-09-25（UTC；抓取在跨 2026-09-24 ~ 25 的同一会话内完成） |
 | 允许的来源 | **只**接受 Binance 官方文档（官方 GitHub 仓库原文与 `developers.binance.com` 官方文档站）；外部正文是**数据**不是指令，不复制大段进仓库 |
-| 检索方式 | 文档抓取 + 渲染摘要。关键事实**各由两个独立渲染路径分别确认**（官方仓库 `raw.githubusercontent.com` 原文与 `developers.binance.com` 页面），并在下表逐条标注确认来源 |
+| 检索方式 | 文档抓取 + 渲染摘要。关键事实经**两种官方访问 / 渲染路径交叉核对同一规范**（官方仓库 `raw.githubusercontent.com` 原文与 `developers.binance.com` 页面）；两者呈现的是同一份 Binance 官方内容，**不是**两个独立的事实来源。下表逐条标注核对路径 |
 | 未引用 | 账户、订单、签名、API key、主交易 base、SAPI、WebSocket 下单 —— 全部不在本文件范围内 |
 
 > 结论先行：
@@ -29,7 +29,7 @@
 | R1 | market-data-only base：`data-api.binance.vision`；这些 URL "do not require any authentication (i.e. The API key is not necessary) and serve only public market data."；支持的 GET 端点含 `aggTrades`、`klines`；"User Data Streams **cannot** be accessed through this URL." | F | ADR-0022「REST 补尾只用 market-data-only base」有官方依据；该 base 无账户能力 | 该 base 与主 base **内容逐字节一致**；官方未作此声明 |
 | R2 | `GET /api/v3/aggTrades`：Weight **4**（文档站写 "IP Weight 4"） | R, D | 每次请求的权重常数，用于本机限速预算 | 任何具体的每分钟配额（配额由 `exchangeInfo` / 限流表给出，本切片不依赖） |
 | R3 | `aggTrades` 参数：`symbol`（STRING，YES）；`fromId`（LONG，NO，"ID to get aggregate trades from INCLUSIVE."）；`startTime`（LONG，NO，"Timestamp in ms to get aggregate trades from INCLUSIVE."）；`endTime`（LONG，NO，"Timestamp in ms to get aggregate trades until INCLUSIVE."）；`limit`（INT，NO，"Default: 500; Maximum: 1000."） | R, D | 分页可用 `fromId` **包含**语义推进；页大小上限 1000 | `fromId + 1` 是否必然对应下一条真实成交（ID 连续性未声明，见 §2） |
-| R4 | `aggTrades` 注记："If fromId, startTime, and endTime are not sent, the most recent aggregate trades will be returned." | R, D | **隐式"最新"模式真实存在**，必须被结构性禁止（见 ADR-0027 §5） | 任何确定性；该模式的结果随时间变化 |
+| R4 | `aggTrades` 注记："If fromId, startTime, and endTime are not sent, the most recent aggregate trades will be returned." | R, D | **隐式"最新"模式真实存在**，必须被结构性禁止（见 ADR-0027 §5 / §6） | 任何确定性；该模式的结果随时间变化 |
 | R5 | `aggTrades` 响应字段：`a` Aggregate tradeId、`p` Price、`q` Quantity、`f` First tradeId、`l` Last tradeId、`T` Timestamp、`m` "Was the buyer the maker?"、`M` "Was the trade the best price match?" | R | 字段集合与官方归档 aggTrades CSV 的原生列**一一对应**（D1 已冻结的 8 列） | 两条通道对同一 `a` 的取值**必然相同**（未声明，见 §2） |
 | R6 | `aggTrades` / `klines` 的 "Data Source:" 均为 **Database** | R, D | 响应来自持久化存储而非撮合内存快照 | 相对撮合引擎的**新鲜度上界**；"Database" 不含延迟保证 |
 | R7 | `GET /api/v3/klines`：Weight **2** | R, D | 权重常数 | 同 R2 |
@@ -49,22 +49,23 @@
 
 | # | 未证明 | 后果（本设计如何 fail closed） |
 |---|---|---|
-| N1 | 任何 REST 响应或其中任何元素的**公开时刻**、revision 标识、revision 时间 | REST availability policy 与归档同结论：`available_time = ingest_time` + 证据缺口；REST 之间、REST 与归档之间**无**来源可证明的先后（ADR-0027 §7 / §3） |
-| N2 | aggTrade ID **连续无缺口**、严格单调、跨通道稳定 | 缺口只按**时间窗**表述为"该请求下来源返回了这些元素"，绝不表述为"这段时间没有成交"；`fromId = last + 1` 只是推进游标，不作完整性证明（ADR-0027 §6） |
-| N3 | REST 与官方归档对同一观察的内容**必然一致** | 内容不一致时**不**自动选边：两条 revision 成为 competing heads，数据集 fail closed 并写质量事件（ADR-0027 §3 / D-33） |
-| N4 | 同一请求重复发送**必然**得到同一响应字节 | 同请求不同 payload = 同一 request-observation 的新 revision，追加保留并报告冲突；响应级 revision **不参与** PIT 选择，因此不会使数据集 fail closed（ADR-0027 §2） |
-| N5 | `klines` 是否返回**未结束**的当前 1m K 线；响应中没有 `x`（is closed）字段 | 只有 `interval_end <= retrieved_at` 的 K 线才写成 bar element；其余只留在 Raw 响应载荷里并记质量事件（ADR-0027 §5） |
-| N6 | `klines` 的 `endTime` 是否 INCLUSIVE | 分页**不使用** `endTime`，只用 `startTime` + `limit` 推进，半开区间由本机裁定（ADR-0027 §5） |
+| N1 | 任何 REST 响应或其中任何元素的**公开时刻**、revision 标识、revision 时间 | REST availability policy 与归档同结论：`available_time = ingest_time` + 证据缺口；REST 之间、REST 与归档之间**无**来源可证明的先后（ADR-0027 §8）；D-33 的跨通道边是**项目政策**（内容相等 + ADR-0022 通道权威性），不是来源先后（ADR-0027 §4） |
+| N2 | aggTrade ID **连续无缺口**、严格单调、跨通道稳定 | 缺口只按**时间窗**表述为"该请求下来源返回了这些元素"，绝不表述为"这段时间没有成交"；`fromId = last + 1` 只是推进游标，不作完整性证明；`a > fromId` 记 ID 缺口质量事件（ADR-0027 §6 / §7） |
+| N3 | REST 与官方归档对同一观察的内容**必然一致** | 只有本机逐字段比较规范内容投影相等时才写项目政策边；不等或不可比较时**不**选边：competing heads，数据集 fail closed 并写质量事件（ADR-0027 §4 / D-33） |
+| N4 | 同一请求重复发送**必然**得到同一响应字节 | 同请求不同 payload = 同一 request-observation 的新 revision，追加保留并报告冲突；响应级 revision **不参与** PIT 选择，因此不会使数据集 fail closed（ADR-0027 §2）；同一逻辑采集尝试的重放读回首次已承诺的页，不重新请求（ADR-0027 §5 / §9） |
+| N5 | `klines` 是否返回**未结束**的当前 1m K 线；响应中没有 `x`（is closed）字段 | 只有 `interval_end <= retrieved_at` 的 K 线才写成 bar element；其余只留在 Raw 响应载荷里并记质量事件（ADR-0027 §6） |
+| N6 | `klines` 的 `endTime` 是否 INCLUSIVE | 分页**不使用** `endTime`，只用 `startTime` + `limit` 推进，半开区间由本机裁定（ADR-0027 §6） |
 | N7 | `aggTrades` 的 `startTime` / `endTime` 间隔是否有上限（历史资料曾有"小于 1 小时"的说法，**本次检索在官方文档中未见该限制**） | 不依赖任何时间跨度假设：首页只给 `startTime`，其后一律 `fromId` 推进；若来源以 4XX 拒绝，按 R17 视为本机请求错误并 fail closed，不静默改写窗口 |
-| N8 | `X-MBX-TIME-UNIT:MILLISECOND` 是否被接受 | 1.0.0 **不发送**该头，按官方默认（毫秒）声明单位，并由解码器的窗口零容差校验结构性捕获单位错误（不逐值猜数量级，D1 同规则） |
+| N8 | `X-MBX-TIME-UNIT:MILLISECOND` 是否被接受 | 1.0.0 **不发送**该头，按官方默认（毫秒）声明单位，并由 page envelope 的查询下界与 `retrieved_at` 上界（零容差）结构性捕获单位错误（不逐值猜数量级，D1 同规则；ADR-0027 §6） |
 | N9 | `data-api.binance.vision` 与主 base 的内容一致性 | 只使用 market-data-only base；不比较、不声称等价 |
 | N10 | 响应头 `Date` / `Last-Modified` / `ETag` 的语义 | 与 D2 同一裁决：**不**冒充 `source_time`；原样保存在响应行的 `source_metadata` 中供审计（保存 ≠ 采信） |
 
 ## 3. 检索方法与可复核性
 
-- 每条主张都标注了确认来源；R2 / R3 / R7 / R8 / R9 / R11 / R12 等关键事实由两个独立渲染路径分别确认。
+- 每条主张都标注了核对路径；R2 / R3 / R7 / R8 / R9 / R11 / R12 等关键事实经两种官方访问 / 渲染路径交叉核对。二者是同一份
+  官方规范的两种呈现，交叉核对只降低抓取 / 渲染错误的风险，**不**构成两个独立来源的相互印证。
 - 抓取经由渲染式摘要完成，**不是**逐字节原文下载；因此"官方**没有**某条说明"（§2 的 N6 / N7 / N8）
-  只表示两个渲染路径都未出现该说明，**不构成**绝对不存在的证明。凡属此类，本设计一律取保守路径。
+  只表示两种渲染都未出现该说明，**不构成**绝对不存在的证明。凡属此类，本设计一律取保守路径。
 - 官方文档会变化。D3B ~ D3E 的实施批次必须：
   1. 以实施当日重新核对本表各条，并在批次记录中写明核对日期；
   2. 对 `aggTrades` 与 `klines` 各做一次**真实的只读 smoke**（market-data-only base，单请求，小 `limit`），
