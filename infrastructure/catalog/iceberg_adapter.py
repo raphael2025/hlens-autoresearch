@@ -12,7 +12,11 @@ metadata:
   ``AssertRefSnapshotId`` requirement and the SQL catalog's compare-and-swap on the metadata
   pointer decide optimistic conflicts; ``CommitFailedException`` becomes ``CommitConflict``;
 - catalog database failures raise ``CatalogUnavailable`` (fail closed). There is no fallback
-  catalog and no local state besides the Iceberg files PyIceberg itself writes.
+  catalog and no local state besides the Iceberg files PyIceberg itself writes;
+- ``evolve_partition_spec`` (C3, infrastructure-only, not part of the core Protocol) moves a
+  table from a registered source definition to a registered partition-spec-only target in one
+  PyIceberg transaction (new default spec + ``hlens.definition.*`` binding properties, one
+  metadata commit). Data files are never rewritten; old files keep their old spec.
 
 Runtime construction goes through ``open_postgres_catalog_adapter`` (PostgreSQL only). Tests may
 inject any PyIceberg ``Catalog`` (for example a temporary SQLite ``SqlCatalog``) through the
@@ -24,7 +28,9 @@ from __future__ import annotations
 import re
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from types import TracebackType
 from typing import Final, Self
 from urllib.parse import urlparse
@@ -39,7 +45,9 @@ from pyiceberg.exceptions import (
     TableAlreadyExistsError,
 )
 from pyiceberg.table import Table as IcebergTable
+from pyiceberg.table.metadata import TableMetadata
 from pyiceberg.table.snapshots import Snapshot, ancestors_of
+from pyiceberg.table.update.spec import UpdateSpec
 
 from core.contracts.catalog import (
     BatchConflict,
@@ -65,6 +73,7 @@ from infrastructure.catalog.definitions import (
     PROPERTY_DEFINITION_VERSION,
     RegisteredTableDefinition,
     TableDefinitionRegistry,
+    require_partition_only_change,
 )
 from infrastructure.settings import Settings
 
@@ -75,6 +84,9 @@ __all__ = [
     "SUMMARY_FINGERPRINT_RULE",
     "CatalogIntegrityError",
     "CatalogUnavailable",
+    "DefinitionEvolutionError",
+    "EvolutionOutcome",
+    "PartitionEvolutionResult",
     "PyIcebergCatalogAdapter",
     "connect_postgres_catalog",
     "open_postgres_catalog_adapter",
@@ -101,6 +113,31 @@ class CatalogUnavailable(CatalogError):
 
 class CatalogIntegrityError(CatalogError):
     """Stored Iceberg metadata disagrees with the registered definition or batch metadata."""
+
+
+class DefinitionEvolutionError(CatalogError):
+    """A partition-spec evolution request is not a valid, registered source → target step.
+
+    Raised before anything is committed; the table keeps its current definition.
+    """
+
+
+class EvolutionOutcome(StrEnum):
+    """Result of ``evolve_partition_spec``: evolved now, or already at the target (replay)."""
+
+    EVOLVED = "evolved"
+    ALREADY_EVOLVED = "already_evolved"
+
+
+@dataclass(frozen=True)
+class PartitionEvolutionResult:
+    """Binding before / after an explicit partition-spec evolution and the new default spec."""
+
+    table: str
+    source: TableDefinition
+    target: TableDefinition
+    outcome: EvolutionOutcome
+    spec_id: int
 
 
 def _is_backend_error(exc: BaseException) -> bool:
@@ -181,6 +218,11 @@ class PyIcebergCatalogAdapter:
         registered = self._registry.resolve(requested)
         with _backend("create_table"):
             existing = self._load(name)
+            if existing is None and registered.is_evolution_target:
+                raise DefinitionEvolutionError(
+                    f"{requested.definition_id}@{requested.version} is a partition-spec evolution "
+                    f"target; create {name} with its initial definition and evolve it"
+                )
             if existing is None:
                 self._ensure_namespace(name)
                 try:
@@ -255,6 +297,130 @@ class PyIcebergCatalogAdapter:
                 raise CatalogIntegrityError(f"committed metadata of {name} does not match request")
             return CommitResult(request=request, snapshot=info, outcome=CommitOutcome.COMMITTED)
 
+    # ------------------------------------------------------------------ C3 evolution
+
+    def evolve_partition_spec(
+        self, source: TableDefinition, target: TableDefinition
+    ) -> PartitionEvolutionResult:
+        """Evolve ``source.table`` from ``source`` to the partition-spec-only target ``target``.
+
+        Both bindings must be registered and ``target`` must evolve exactly from ``source``.
+        The persisted table must be verified at ``source`` (or already verified at ``target``:
+        idempotent replay). The new spec and the ``hlens.definition.*`` binding properties are
+        staged in one PyIceberg transaction, checked against ``target`` before the commit and
+        committed as one metadata update (commit retries are pinned to zero). Any failure before
+        or during the commit leaves the table at ``source``; data files are never rewritten.
+        """
+        try:
+            requested_source = _revalidated(TableDefinition, source)
+            requested_target = _revalidated(TableDefinition, target)
+        except (TypeError, ValidationError) as exc:
+            raise DefinitionEvolutionError("invalid evolution bindings") from exc
+        name = validate_table_name(requested_source.table)
+        if requested_target.table != name:
+            raise DefinitionEvolutionError("source and target must bind the same table")
+        source_def = self._registry.resolve(requested_source)
+        target_def = self._registry.resolve(requested_target)
+        try:
+            require_partition_only_change(source_def, target_def)
+        except ValueError as exc:
+            raise DefinitionEvolutionError(str(exc)) from None
+        with _backend("evolve_partition_spec"):
+            iceberg = self._require(name)
+            stored = self._stored_binding(name, iceberg)
+            if stored == requested_target:
+                self._verified(name, iceberg)
+                return self._evolution_result(
+                    name, source_def, target_def, EvolutionOutcome.ALREADY_EVOLVED
+                )
+            if stored != requested_source:
+                raise TableDefinitionConflict(
+                    f"table {name} is at {stored.definition_id}@{stored.version}, "
+                    f"not the evolution source {requested_source.version}"
+                )
+            self._verified(name, iceberg)
+            transaction = iceberg.transaction()
+            try:
+                with transaction.update_spec() as update:
+                    self._stage_spec_changes(iceberg, update, source_def, target_def)
+            except ValueError as exc:
+                raise DefinitionEvolutionError(f"PyIceberg rejected the evolution: {exc}") from None
+            transaction.set_properties(
+                {
+                    PROPERTY_DEFINITION_VERSION: target_def.version,
+                    PROPERTY_DEFINITION_HASH: target_def.definition_hash,
+                }
+            )
+            self._check_staged(name, transaction.table_metadata, target_def)
+            try:
+                transaction.commit_transaction()
+            except CommitFailedException:
+                raise CommitConflict(
+                    f"table {name} changed concurrently; partition-spec evolution not applied"
+                ) from None
+            evolved = self._require(name)
+            if self._verified(name, evolved)[1] != requested_target:
+                raise CatalogIntegrityError(f"table {name} is not at the evolution target")
+            return self._evolution_result(name, source_def, target_def, EvolutionOutcome.EVOLVED)
+
+    @staticmethod
+    def _stage_spec_changes(
+        iceberg: IcebergTable,
+        update: UpdateSpec,
+        source: RegisteredTableDefinition,
+        target: RegisteredTableDefinition,
+    ) -> None:
+        """Remove source-only fields and add target-only fields (matched by partition field ID)."""
+        old = {field.field_id: field for field in source.partition_spec.fields}
+        new = {field.field_id: field for field in target.partition_spec.fields}
+        for field_id in sorted(old.keys() & new.keys()):
+            if old[field_id] != new[field_id]:
+                raise DefinitionEvolutionError(
+                    f"partition field {field_id} changes in place; renames are not evolutions"
+                )
+        schema = iceberg.schema()
+        for field_id in sorted(old.keys() - new.keys()):
+            update.remove_field(old[field_id].name)
+        for field_id in sorted(new.keys() - old.keys()):
+            added = new[field_id]
+            column = schema.find_column_name(added.source_id)
+            if column is None:
+                raise DefinitionEvolutionError(f"partition field {added.name!r} has no source")
+            update.add_field(column, added.transform, added.name)
+
+    @staticmethod
+    def _check_staged(name: str, staged: TableMetadata, target: RegisteredTableDefinition) -> None:
+        """Compare the staged (uncommitted) metadata with ``target``; nothing is committed yet."""
+        spec = staged.spec()
+        if (
+            spec.fields != target.partition_spec.fields
+            or spec.spec_id != target.partition_spec.spec_id
+        ):
+            raise DefinitionEvolutionError(
+                f"Iceberg would assign {spec} to {name}, not the declared target spec "
+                f"{target.partition_spec}"
+            )
+        if staged.schema().as_struct() != target.schema.as_struct():
+            raise DefinitionEvolutionError(f"staged schema of {name} differs from the target")
+        expected = target.table_properties()
+        if any(staged.properties.get(key) != value for key, value in expected.items()):
+            raise DefinitionEvolutionError(f"staged properties of {name} differ from the target")
+
+    def _evolution_result(
+        self,
+        name: str,
+        source: RegisteredTableDefinition,
+        target: RegisteredTableDefinition,
+        outcome: EvolutionOutcome,
+    ) -> PartitionEvolutionResult:
+        return PartitionEvolutionResult(
+            table=name,
+            source=source.binding,
+            target=target.binding,
+            outcome=outcome,
+            spec_id=target.partition_spec.spec_id,
+        )
+
     # ------------------------------------------------------------------ helpers
 
     def _load(self, name: str) -> IcebergTable | None:
@@ -307,8 +473,18 @@ class PyIcebergCatalogAdapter:
             raise CatalogIntegrityError(f"table {name} has an unexpected format version")
         if iceberg.schema().as_struct() != registered.schema.as_struct():
             raise CatalogIntegrityError(f"table {name} schema differs from its definition")
-        if iceberg.spec().fields != registered.partition_spec.fields:
+        spec = iceberg.spec()
+        expected_spec = registered.partition_spec
+        if spec.fields != expected_spec.fields or spec.spec_id != expected_spec.spec_id:
             raise CatalogIntegrityError(f"table {name} partition spec differs from its definition")
+        history = iceberg.metadata.specs()
+        for ancestor in self._registry.ancestors(registered):
+            kept = history.get(ancestor.partition_spec.spec_id)
+            if kept is None or kept.fields != ancestor.partition_spec.fields:
+                raise CatalogIntegrityError(
+                    f"table {name} lacks the partition spec of {ancestor.definition_id}@"
+                    f"{ancestor.version} it evolved from"
+                )
         return registered, binding
 
     def _table_info(self, name: str, iceberg: IcebergTable, binding: TableDefinition) -> TableInfo:

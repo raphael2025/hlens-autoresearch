@@ -8,7 +8,7 @@
 |---|---|
 | `settings.py` | 类型化运行时设置（03-data.md §6.2）：`file://` warehouse / staging、PostgreSQL catalog DSN、HTTP / Binance base URL |
 | `storage/` | Phase 1 C1 本地 `file://` `StorageAdapter`（`LocalFileStorageAdapter`） |
-| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表 |
+| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张生产表、batch 指纹规则与 partition-spec 演进 |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
 
@@ -24,7 +24,7 @@
 ## PyIcebergCatalogAdapter（C2）
 
 - 运行时入口只有 `open_postgres_catalog_adapter(settings, registry)`：`Settings.catalog_uri` 必须是 PostgreSQL DSN，warehouse 为 settings 的 `file://`；无任何降级。连接 / 数据库故障 → `CatalogUnavailable`（不回显 DSN）。测试可把临时 SQLite `SqlCatalog` 显式注入构造函数，但 SQLite 结果不是 PostgreSQL 证据。
-- `TableDefinitionRegistry`：`RegisteredTableDefinition` 把 `(definition_id, version)` 绑定到 PyIceberg Schema、partition spec、表属性与版本化 batch 指纹规则；`definition_hash` 由这些内容的规范 JSON **派生**。C2 只有测试定义；八张生产表与生产指纹规则属 C3。
+- `TableDefinitionRegistry`：`RegisteredTableDefinition` 把 `(definition_id, version)` 绑定到 PyIceberg Schema、partition spec、表属性与版本化 batch 指纹规则；`definition_hash` 由这些内容的规范 JSON **派生**。八张生产表与生产指纹规则见下文 C3。
 - 建表时绑定写入 Iceberg 表属性；每次访问都重新从登记表解析并核对 Schema / partition / format version / 自有属性，不符 fail closed（`UnknownTableDefinition` / `CatalogIntegrityError`）。
 - batch id / 指纹 / 行数 / 指纹规则写入 Iceberg snapshot summary；重放与幂等从 main 分支 snapshot 祖先链恢复，无 sidecar。
 - 每表固定 `commit.retry.num-retries=0`：PyIceberg 0.12 的自动重试会丢弃 `AssertRefSnapshotId` 并 rebase，破坏 `expected_parent_snapshot_id` 语义。冲突由 PyIceberg 需求检查与 SQL catalog 的 `metadata_location` CAS 判定，映射为 `CommitConflict`。
@@ -42,5 +42,32 @@
   ```
 
   每个测试用唯一 PyIceberg `catalog_name` 与 `tmp_path` warehouse，结束时经 PyIceberg 删除自己的表 / namespace；fixture 拒绝非 `*_test` 数据库。
+
+## Phase 1 生产表（C3）
+
+- 唯一入口：`infrastructure.catalog.PHASE1_TABLES` / `PHASE1_REGISTRY`（`phase1_tables.py`）——03-data.md §7.1 的八张表，`definition_id` = 表名，`version = 1.0.0`，初始分区按冻结值（`raw.binance_spot_agg_trades` / `canonical.trades`：identity `symbol` + day(`event_time`)；`raw.binance_spot_klines_1m` / `canonical.bars_1m`：identity `symbol` + day(`interval_start`)；其余不分区）。C2 的 test-only 定义只在 `tests/` 中。
+- Schema：字段 ID 在源码中逐个写出并等于 Iceberg 建表时分配的 ID（否则 import 失败）；每列带 Iceberg `doc`；时间一律 `timestamptz`（微秒、UTC），交易所十进制值一律 `decimal(38, 18)`，时长为整数微秒，无浮点。列与契约的映射见 `phase1_tables.py` 模块文档；定义哈希由 C2 的规范定义文档派生，golden 值在 `tests/infrastructure/catalog/test_phase1_tables.py`。任何 Schema / 分区 / 属性 / 规则变化 = 新定义版本。
+- 幂等建表：`ensure_phase1_tables(adapter)`；已存在且绑定相同则只核对、不改动；任何漂移 fail closed。操作入口（不打印 DSN）：
+
+  ```bash
+  set -a; . ./.env.catalog; set +a   # 不要 echo 变量
+  uv run python -m infrastructure.catalog.create_phase1_tables
+  ```
+
+### Batch 指纹规则 `hlens.pyarrow-batch-sha256@1.0.0`
+
+- 只接受有界 `pyarrow.Table`；按列逻辑拼接（与 chunk 切分无关）后对规范的**逻辑**编码做 SHA-256：null 位图、定宽值（null 槽位为 0）、字符串长度 + UTF-8 字节、list 长度 + 展平值、struct 子列（合并父级 null）。不使用原始 Arrow IPC 字节（null 槽位与切片外字节未定义）、`repr()`、pickle 或调用方指纹；Schema / 字段 metadata 不参与。
+- 只接受生产 Schema 需要的类型：`bool`、`int64`、`timestamp[us, UTC]`、`decimal128`、`large_string`、`large_list`、`struct`；其它类型与非空列中的 null → `BatchRejected`。只在 little-endian 主机运行。
+- 稳定性边界：以锁定的 `pyarrow==25.0.1` 的 golden vectors 与独立的逐字节推导测试证明；升级 PyArrow 必须保持 golden vectors 不变，编码或类型集合的任何变化 = 新规则版本（新表定义版本）。
+
+### 显式 partition-spec 演进（infrastructure-only，不在核心 Protocol 中）
+
+- `PyIcebergCatalogAdapter.evolve_partition_spec(source, target)`：`target` 必须以 `evolves_from` 绑定已登记的 `source`，且只允许 partition spec 与由此导致的 version / hash 不同（登记表构造时即校验）；目标定义显式声明 Iceberg 将分配的分区字段 ID 与 spec ID。
+- 当前表必须按 `source` 完整核对通过；新 spec 与 `hlens.definition.version` / `hash` 在同一个 PyIceberg transaction 中暂存、提交前与 `target` 比对、一次 metadata commit（重试固定为 0）。失败时表保持 `source`；已在 `target` 时幂等返回。不 drop / recreate，不重写数据文件，旧文件保留旧 spec。演进目标不能直接建表。
+- 限制：SQL catalog 的 CAS 只保护 spec 需求，不保护其它属性；提交后重新核对，若并发篡改则 `CatalogIntegrityError`（每表单 writer，ADR-0023 §7）。
+
+### 已知阻塞（D-32）
+
+PyIceberg 0.12 写入任何 `day` / `month` / `year` / `hour` / `bucket` 分区都需要可选扩展 `pyiceberg-core`，它不在锁定依赖中（03-data.md §6.1）。因此四张 `day(...)` 分区表可以建表、核对与演进，但 append 会在写入前失败（表不变）；对应 PostgreSQL 用例以 xfail 标注，见 `PROJECT_STATUS.md` §6。
 
 Collector / 下载实现尚未开放（见 `PROJECT_STATUS.md`）。

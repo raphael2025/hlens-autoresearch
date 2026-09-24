@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **C3 已开放**：实现八张冻结 Iceberg 表的版本化 Schema、初始分区、稳定 PyArrow batch 指纹与分区演进等价证据；C2 已验收 |
+| 当前子阶段 | **C3 本地完成，待 Codex 复核**：八张表、batch 指纹规则与分区演进已实现；其中四张按天分区的表暂时写不进数据，需决定 **D-32**（见 §6） |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C2 已验收，C3 已开放） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C2 已验收，C3 待复核；D-32 待决定） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -90,7 +90,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ C1-R1（Cursor Auto）：关闭短写与路径 TOCTOU；经 C1-R2 / C1-R3 继续返修
 - ✅ C1（Cursor Auto）：本地 `file://` `LocalFileStorageAdapter` 已实现；经 C1-R1 / C1-R2 / C1-R3 返修加固
 - ✅ C2（Claude Opus）：Codex 独立验收通过；验收矩阵 #8 满足，接受 `373e286`
-- 🔄 C3（Claude Opus）：八张冻结表的版本化 Schema / 初始分区 / 稳定 PyArrow batch 指纹 / 分区演进等价证据；不得访问外网或开始 Collector
+- 🟡 C3（Claude Opus）：本地完成，待 Codex 复核——八张表已按冻结名与分区建好（含本机 production-like 空表），batch 指纹规则与分区演进已有 PostgreSQL 证据；四张按天分区的表写入受 D-32 阻塞；D0 未开放
 
 ## 5. 下一步
 
@@ -109,6 +109,12 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - C2 的 H12 数据库资源已创建并验收；C3 只能使用现有本地 Catalog / warehouse，不得访问外网、下载数据或开始 Collector；D0 以后仍未开放
 
 ## 6. 当前待决策
+
+**ARCHITECTURE_DECISION_REQUIRED（C3 发现，待 Codex 决定）**
+
+| ID | 问题 | 推荐 | 不决定的影响 |
+|---|---|---|---|
+| D-32 | 锁定的 PyIceberg 0.12 写入按天分区（`day(...)`）的表必须有可选扩展 `pyiceberg-core`，而它不在 03-data.md §6.1 锁定的依赖里；四张冻结表（aggTrades / klines / trades / bars_1m）因此能建表但写不进数据 | 在锁定依赖中加入 PyIceberg 官方 extra `pyiceberg-core`（改 `pyproject.toml` / `uv.lock`，需 Codex 批准）；备选：改冻结分区为 identity 日期列，或改为 Parquet + `add_files` | 这四张表无法写入，D2 / E 的 trades 与 bars 无法落地 |
 
 **Phase 1 入口决定（均已决定，尚待实施）**
 
@@ -165,11 +171,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 C3（Claude Opus）：八张生产表定义、`hlens.pyarrow-batch-sha256@1.0.0` 指纹规则、显式分区演进与幂等建表入口；本机 production-like 八张空表已建；发现 D-32（按天分区写入缺 `pyiceberg-core`）；未改 `core/` | 验收 #9 待 Codex 复核与 D-32 决定；D0 未开放 |
 | 2026-09-24 | Codex 独立验收 C2：2630 项全量测试、12 轮同 batch 并发、真实 PostgreSQL 权限 / 清理 / payload 隔离、密钥扫描、ruff / format / mypy 与冻结路径均通过；接受 `373e286` | 验收 #8 满足；C3 开放 |
 | 2026-09-24 | Phase 1 C2（Claude Opus）：实现 PostgreSQL-backed PyIceberg Catalog 与定义登记表；创建专用 `hlens_iceberg_catalog` / `hlens_iceberg_catalog_test` 库与 role；contract suite 与 PostgreSQL 集成测试通过；未改 `core/` | 后由 Codex 独立验收并接受为 `373e286` |
 | 2026-09-24 | Codex 独立验收 C1：2574 项全量测试、46 项存储测试、根替换反例、ruff / format / mypy 与冻结路径均通过；接受 `7857039`；记录 H12 数据库授权并开放 Claude C2 | 验收 #7 满足；C2 开放 |
 | 2026-09-24 | Phase 1 C1-R2（Cursor Auto）：publish 后从最终 FD 重验 SHA/size；配置根重走确认可用 ref；失败清理本次 final；根 FD 按操作开关 + 幂等 close；经 C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
-| 2026-09-24 | Phase 1 C1-R1（Cursor Auto）：短写 write-all；warehouse/staging 根 FD + `dir_fd`/`O_NOFOLLOW`；publish/open_read/lookup 锚定已打开 FD；拒绝相同根；经 C1-R2 / C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
 
 ## 10. 下一阶段进入条件
 

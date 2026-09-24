@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -148,7 +149,8 @@ class _Harness:
         )
 
     def cleanup(self) -> None:
-        """Drop this harness's tables / namespaces through PyIceberg, then close connections."""
+        """Drop this harness's tables / namespaces through PyIceberg, close connections and
+        delete its ``file://`` warehouse (Iceberg metadata + Parquet)."""
         try:
             catalog = self.sql_catalog()
             for namespace in catalog.list_namespaces():
@@ -162,6 +164,9 @@ class _Harness:
             for opened in self._opened:
                 opened.close()
             self._opened.clear()
+        shutil.rmtree(self.warehouse, ignore_errors=True)
+        if self.warehouse.exists():
+            raise AssertionError("cleanup left the test warehouse behind")
 
 
 @dataclass
