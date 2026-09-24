@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24；待 Codex 复核文本后依已记录的授权执行批次 C4b） |
+| 状态 | **Accepted（2026-09-24，Raphael 明确批准）**：依据 Raphael 2026-09-24"授权所有"持续授权（来源与限定见「授权记录」），经 Codex 复核 Proposed 文本后于批次 C4b 执行 |
 | 日期 | 2026-09-24 |
 | 决策者 | Raphael（2026-09-24 持续授权，范围与限定见「授权记录」）；Codex 依该授权复核并执行 |
 | 起草者 | Claude Code（Opus），批次 C4a |
@@ -33,8 +33,8 @@ Constitution 全文是纯原则、无数值阈值，自 C1 基线 `fce4f81` 起 
     本授权即不适用，必须就该具体变化重新取得 Raphael 的批准；
   - 不覆盖实盘交易、资金、风险预算或任何 Phase 13 事项；
   - 不开启 Phase 1 或其它 Phase。
-- 本 ADR 暂为 Proposed，只是为了保留 **Proposed → 独立复核 → Accepted** 的审计顺序，**不表示**缺少 Raphael 授权，
-  下一步也不需要 Raphael 再次答复。
+- 本 ADR 在 C4a 以 Proposed 提出、经 Codex 复核后于 C4b 接受，保留了 **Proposed → 独立复核 → Accepted** 的审计顺序；
+  Proposed 阶段**不表示**缺少 Raphael 授权。接受时方案未改动：原则正文零变化、无数值阈值，授权限定因此适用。
 
 ## 决策
 
@@ -125,11 +125,12 @@ Profile 选择服务或任何 Registry / Runner / Control Plane 已经实现；�
 | 8 | 本 ADR 状态与授权记录 | Accepted，并如实记录 Raphael 授权来源与限定；不写"Phase 0 已关闭" |
 | 9 | 其它 Accepted ADR 正文与 C1 / C3 历史报告 | 零差异 |
 
-## 合规检查（Proposed 阶段）
+## 合规检查（C4b 接受时）
 
-- [x] 原则正文零变化，不加入任何数值阈值（ADR-0007）
+- [x] 原则正文零变化，不加入任何数值阈值（ADR-0007）——第一章至第九章正文 sha256 改动前后均为 `4d603d62…259cd`
 - [x] 只前向适用，不追溯重判
 - [x] 不宣称任何运行时验证能力已实现
-- [x] 授权来源与限定已记录；超出限定的变化不适用该授权
-- [ ] Codex 复核本文本 —— 待进行
-- [ ] 验收矩阵 1 ~ 9 —— C4b 执行时核对
+- [x] 授权来源与限定已记录；本次发布在限定之内
+- [x] Codex 复核 Proposed 文本（C4a → C4b）
+- [x] 验收矩阵 1 ~ 9 —— C4b 执行时核对（证据见 C4b 提交说明）
+- [ ] 顺序门 2 ~ 4（Phase 0 关闭、fast-forward 合并 main、轻量 tag）—— 由 C5 执行；本 ADR 接受**不等于** Phase 0 已关闭

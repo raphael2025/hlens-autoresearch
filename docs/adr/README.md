@@ -25,7 +25,7 @@
 | [0017](0017-provider-delivery-schedule.md) | Provider 接口的交付节奏（D-24，方案 B） | Accepted（2026-09-24，Codex 依 Raphael 授权批准） |
 | [0018](0018-contract-value-semantic-identities.md) | 契约值对象的语义身份（D-26） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2c） |
 | [0019](0019-lifecycle-evidence-minimum.md) | 生命周期证据的最小结构（D-27） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2d） |
-| [0020](0020-approve-research-constitution-v1.md) | 发布 Research Constitution 1.0.0（原则零变化） | Proposed（2026-09-24，C4a；待 Codex 复核后依已记录授权执行 C4b） |
+| [0020](0020-approve-research-constitution-v1.md) | 发布 Research Constitution 1.0.0（原则零变化） | Accepted（2026-09-24，Raphael 明确批准，经 Codex 复核于 C4b 执行）；已实施 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -45,9 +45,9 @@
 > 修复后关闭复验 C3 已完成，结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`
 > （[审查记录](../reviews/2026-09-24-phase0-closing-review-c3.md)）。
 >
-> ADR-0020 提出把 Constitution 从 `0.2.0-draft` 发布为 `1.0.0`，原则正文零变化；Raphael 已于 2026-09-24
-> 给出覆盖该发布及 Phase 0 收口的持续授权（来源与限定见 ADR-0020）。ADR-0020 暂为 Proposed 只为保留
-> 审计顺序：Codex 复核文本后执行 C4b（接受并发布），再由 C5 关闭 Phase 0、fast-forward 合并 main、打轻量 tag。
+> ADR-0020 把 Constitution 从 `0.2.0-draft` 发布为 `1.0.0 / Approved`，原则正文零变化（第一至第九章 sha256 不变）；
+> 依据 Raphael 2026-09-24 的持续授权（来源与限定见 ADR-0020），C4a 以 Proposed 提出、Codex 复核后于 C4b 接受并发布。
+> 剩余顺序门由 C5 执行：关闭 Phase 0、fast-forward 合并 main、轻量 tag `phase-0-complete`。Phase 0 **尚未关闭**。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 

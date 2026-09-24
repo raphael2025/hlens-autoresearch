@@ -2,8 +2,8 @@
 
 | 字段 | 值 |
 |---|---|
-| 版本 | **0.2.0-draft** |
-| 状态 | **Draft** — 结构已按 [ADR-0007](../adr/0007-validation-architecture-three-layers.md) 重组；**待 Phase 0 批准为 1.0.0**。批准前不得用于判定任何实验。 |
+| 版本 | **1.0.0** |
+| 状态 | **Approved**（2026-09-24，[ADR-0020](../adr/0020-approve-research-constitution-v1.md)）— 只前向适用于此后预登记的实验；批准前没有任何实验依据本文件判定，不得追溯重判 |
 | 修改规则 | 仅通过 ADR + Raphael 批准；只前向生效 |
 | 本文件**不包含**任何数值阈值 | 数值属于版本化的 [Validation Profile](../architecture/07-validation.md)（Step 2，Phase 4 校准后冻结） |
 
@@ -109,3 +109,4 @@
 |---|---|---|---|
 | 0.1.0-draft | 2026-09-21 | — | 初始草案（Architecture Bootstrap），含 TBD-1 ~ TBD-5 数值占位 |
 | 0.2.0-draft | 2026-09-23 | ADR-0007 | 重组为纯原则；移除全部数值占位（改由 Validation Profile 定义）；新增第二章三层结构；第七、八章与 ADR-0006 对齐 |
+| 1.0.0 | 2026-09-24 | ADR-0020 | 批准发布（Raphael 2026-09-24 授权）；第一章至第九章原则正文与 0.2.0-draft 逐字相同，无原则变化、无数值阈值 |

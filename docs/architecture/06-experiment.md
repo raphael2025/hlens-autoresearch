@@ -45,7 +45,7 @@
 | `param_search_space` | 若有参数搜索：完整搜索空间与尝试次数 |
 | `seeds` | 全部随机种子 |
 | `environment_lock` | 依赖锁文件哈希 + Python 版本 + 平台。仍是**复合描述字符串**，其结构化表达后续另定（ADR-0015 §D-21.3） |
-| `constitution_version` | 执行时的 Validation Constitution 版本；语法为全项目唯一的 ASCII SemVer 2.0.0（当前为 `0.2.0-draft`） |
+| `constitution_version` | 执行时的 Validation Constitution 版本；语法为全项目唯一的 ASCII SemVer 2.0.0（当前为 `1.0.0`，ADR-0020；此前为 `0.2.0-draft`） |
 | `validation_profile` | 执行时绑定的 Validation Profile 引用，规范串 `profile:{name}@{semver}`，`kind` 必须是 `profile` |
 | `validation_profile_hash` | 该 Profile 版本的内容哈希（64 位小写十六进制 SHA-256）。与上一行**成对**构成绑定：运行前绑定，运行后不可更换 |
 | `profile_selection` | 选择该 Profile 的依据（必填，无空默认值）：**唯一的选择规则引用**（kind 必须是 `profile_selection_rule`）、**该规则的内容哈希**、以及 `ProfileSelectionKey`（`venue` / `symbol` / `timeframe` / 预登记的 `research_class`） |
