@@ -25,7 +25,7 @@ Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明
 ADR-0021（本地数据基础设施：PostgreSQL 独立库做 Iceberg Catalog、本地 `file://` warehouse、Phase 1 ~ 6 不用 NATS）、
 ADR-0022（Binance 公共现货 BTCUSDT / ETHUSDT，无任何交易能力）、ADR-0023（历史可用时间与本机知识时间分开；修订只追加，无法判定先后即失败）、
 ADR-0024（按当时可交易集合构建标的池）。A2 已把它们同步进数据架构文档，并冻结首批表名、分区、数据源版本、依赖清单与设置字段。
-Iceberg Catalog、本地 StorageAdapter 与八张生产表定义已验收；Collector 的 D0 公共归档下载已开放，尚未交付。A3a（依赖锁定）、A3b（typed settings）与 B1（双时间 / revision DAG 契约）均已由 Codex 独立复核；B1 对抗复核发现 dangling revision ID 可被不同 key 认领，Claude 修复并补回归测试后通过验收。
+Iceberg Catalog、本地 StorageAdapter 与八张生产表定义已验收；Collector 的 D0 已本地完成，待 Codex 复核。A3a（依赖锁定）、A3b（typed settings）与 B1（双时间 / revision DAG 契约）均已由 Codex 独立复核；B1 对抗复核发现 dangling revision ID 可被不同 key 认领，Claude 修复并补回归测试后通过验收。
 
 代码仓库已有私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）：执行者只提交，Codex 复核通过后推送每个进度；PR 与 CI 尚未配置。
 本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C3、D-32 及各验收门；C3 实现恢复点为 `973ffbd`。

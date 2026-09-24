@@ -1,8 +1,11 @@
-"""Binance 公共现货日归档下载壳（Phase 1 D0；ADR-0021 / 0022 / 0023）。
+"""Binance 公共现货日归档下载壳（Phase 1 D0 / D0-R1；ADR-0021 / 0022 / 0023）。
 
 只做：配置 archive base 下的官方 ZIP + `.CHECKSUM` 获取、SHA-256 先验校验、经
 ``StorageAdapter`` 流式 staging → 原子 publish。不做归档解析、不构造 revision、
 不写表存储 / Raw、不访问 market-data 或账户 / 交易端点。
+
+D0-R1：每个 checksum / ZIP GET 的整次尝试（send → 状态 → 完整读/stage）共用
+``1 + http_max_retries`` 预算；archive base URL 拒绝凭据 / query / fragment 等，不静默改写。
 """
 
 from __future__ import annotations
@@ -11,10 +14,10 @@ import re
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime, timedelta
 from typing import Final, Self
-from urllib.parse import urlparse
 
 import httpx
 
+from core.contracts import _uri
 from core.contracts.collector import (
     CollectedObject,
     CollectionFailed,
@@ -29,6 +32,7 @@ from core.contracts.collector import (
 from core.contracts.storage import (
     IntegrityViolation,
     ObjectConflict,
+    PublishResult,
     StageRequest,
     StorageAdapter,
     StorageError,
@@ -67,31 +71,42 @@ def _utc_now() -> datetime:
     return datetime.now(UTC)
 
 
-def _https_origin(base_url: str) -> str:
-    parsed = urlparse(base_url)
-    if parsed.scheme != "https" or not parsed.hostname:
-        msg = f"archive base URL 必须是 https://host[:port]/…：{base_url!r}"
-        raise ValueError(msg)
-    host = parsed.hostname.lower()
-    if parsed.port is not None:
-        return f"https://{host}:{parsed.port}"
-    return f"https://{host}"
-
-
-def _normalize_base(base_url: str) -> str:
-    text = str(base_url).strip()
-    if not text:
+def _validate_archive_base(base_url: str) -> tuple[str, str]:
+    """严格校验 archive base；返回 ``(normalized_base, origin)``，不静默丢弃任何成分。"""
+    if not isinstance(base_url, str) or not base_url.strip():
         msg = "archive base URL must not be blank"
         raise ValueError(msg)
-    origin = _https_origin(text)
-    parsed = urlparse(text)
-    path = parsed.path.rstrip("/")
-    if path in {"", "/"}:
-        return origin
-    if any(segment in {".", "..", ""} for segment in path.split("/")):
-        msg = f"archive base URL 路径不得含空段或 . / ..：{base_url!r}"
+    text = base_url.strip()
+    if not _uri.is_visible_ascii(text):
+        msg = f"archive base URL 必须是无空白、无反斜杠的 ASCII 可见字符：{base_url!r}"
         raise ValueError(msg)
-    return f"{origin}{path}"
+    parts = _uri.split(text)
+    if parts.scheme != "https" or parts.authority is None:
+        msg = f"archive base URL 必须是 https://host[:port][/path]：{base_url!r}"
+        raise ValueError(msg)
+    if not _uri.is_host_port(parts.authority):
+        msg = (
+            f"archive base URL 的 authority 必须是合法小写主机名（可带端口 1～65535），"
+            f"不得含凭据：{base_url!r}"
+        )
+        raise ValueError(msg)
+    if parts.query is not None:
+        msg = f"archive base URL 不得含 query：{base_url!r}"
+        raise ValueError(msg)
+    if parts.fragment is not None:
+        msg = f"archive base URL 不得含 fragment：{base_url!r}"
+        raise ValueError(msg)
+    path = parts.path
+    if path not in {"", "/"} and not _uri.is_object_path(path):
+        msg = (
+            f"archive base URL 路径只能为空、`/`，或无空段、. / .. 与危险 percent escape "
+            f"的绝对路径：{base_url!r}"
+        )
+        raise ValueError(msg)
+    origin = f"https://{parts.authority}"
+    if path in {"", "/"}:
+        return origin, origin
+    return f"{origin}{path}", origin
 
 
 def _is_utc_midnight(value: datetime) -> bool:
@@ -189,6 +204,11 @@ def _is_retryable_transport(exc: BaseException) -> bool:
     )
 
 
+def _transport_failure_message(exc: BaseException) -> str:
+    """错误信息不得回显可能含凭据的 URL / header。"""
+    return f"HTTP transport failure: {type(exc).__name__}"
+
+
 class BinanceSpotArchiveCollector:
     """同步 ``CollectorAdapter``：Binance 公共 spot 日归档下载与官方 checksum 校验。"""
 
@@ -219,8 +239,7 @@ class BinanceSpotArchiveCollector:
             raise ValueError(msg)
 
         self._storage = storage
-        self._archive_base = _normalize_base(archive_base_url)
-        self._origin = _https_origin(self._archive_base)
+        self._archive_base, self._origin = _validate_archive_base(archive_base_url)
         self._max_retries = http_max_retries
         self._timeout = httpx.Timeout(
             connect=http_connect_timeout_seconds,
@@ -304,7 +323,7 @@ class BinanceSpotArchiveCollector:
         except StorageError as exc:
             raise CollectionFailed(str(exc)) from exc
         except httpx.HTTPError as exc:
-            raise CollectionFailed(f"HTTP transport failure: {exc}") from exc
+            raise CollectionFailed(_transport_failure_message(exc)) from exc
 
         return CollectionResult(
             request=request,
@@ -352,8 +371,11 @@ class BinanceSpotArchiveCollector:
         ):
             raise CollectionFailed(f"refusing unsafe archive relative path: {relative_path!r}")
         url = f"{self._archive_base}/{relative_path}"
-        parsed = urlparse(url)
-        if parsed.scheme != "https" or _https_origin(url) != self._origin:
+        parts = _uri.split(url)
+        if parts.scheme != "https" or parts.authority is None:
+            raise CollectionFailed(f"constructed URL escaped archive origin: {url!r}")
+        origin = f"https://{parts.authority}"
+        if origin != self._origin:
             raise CollectionFailed(f"constructed URL escaped archive origin: {url!r}")
         if not url.startswith(f"{self._archive_base}/"):
             raise CollectionFailed(f"constructed URL escaped archive base: {url!r}")
@@ -382,25 +404,11 @@ class BinanceSpotArchiveCollector:
             )
         source_sha256, _checksum_headers = checksum_outcome
 
-        zip_headers, stream = self._open_zip_stream(zip_url)
-        expected_size = _trusted_content_length(zip_headers)
-        try:
-            staged = self._storage.stage(
-                StageRequest(
-                    key=object_key,
-                    expected_sha256=source_sha256,
-                    expected_size=expected_size,
-                ),
-                stream,
-            )
-            published = self._storage.publish(staged)
-        except IntegrityViolation as exc:
-            raise CollectionFailed(f"ZIP integrity check failed: {exc}") from exc
-        except ObjectConflict as exc:
-            raise CollectionFailed(f"immutable object conflict: {exc}") from exc
-        finally:
-            stream.close()
-
+        published, zip_headers = self._fetch_and_publish_zip(
+            zip_url,
+            object_key=object_key,
+            source_sha256=source_sha256,
+        )
         return CollectedObject(
             ref=published.ref,
             symbol=symbol,
@@ -412,82 +420,158 @@ class BinanceSpotArchiveCollector:
             source_metadata=_safe_metadata(zip_headers),
         )
 
+    def _send_once(self, url: str) -> httpx.Response:
+        """单次 send + 状态前返回；不含重试。调用方负责关闭 response。"""
+        self._assert_url_allowed(url)
+        request = self._client.build_request(
+            "GET",
+            url,
+            headers={"User-Agent": self._user_agent},
+            timeout=self._timeout,
+        )
+        return self._client.send(request, stream=True, follow_redirects=False)
+
     def _get_checksum(
         self, url: str, *, expected_filename: str
     ) -> tuple[str, httpx.Headers] | None:
-        response = self._request(url)
-        try:
-            status = response.status_code
-            if status in {404, 410}:
-                return None
-            if status >= 300 and status < 400:
-                raise CollectionFailed(f"checksum redirect forbidden: HTTP {status}")
-            if status != 200:
-                raise CollectionFailed(f"checksum HTTP {status}")
-            body = _read_bounded_body(response, limit=_CHECKSUM_MAX_BYTES)
-            digest = _parse_checksum_body(body, expected_filename=expected_filename)
-            return digest, response.headers
-        finally:
-            response.close()
-
-    def _open_zip_stream(self, url: str) -> tuple[httpx.Headers, _ZipByteStream]:
-        response = self._request(url)
-        status = response.status_code
-        if status in {404, 410}:
-            response.close()
-            raise CollectionFailed(
-                f"ZIP absent while checksum present (source inconsistency): HTTP {status}"
-            )
-        if status >= 300 and status < 400:
-            response.close()
-            raise CollectionFailed(f"ZIP redirect forbidden: HTTP {status}")
-        if status != 200:
-            response.close()
-            raise CollectionFailed(f"ZIP HTTP {status}")
-        return response.headers, _ZipByteStream(response)
-
-    def _request(self, url: str) -> httpx.Response:
-        self._assert_url_allowed(url)
         attempts = 1 + self._max_retries
         last_error: Exception | None = None
         for attempt in range(attempts):
+            response: httpx.Response | None = None
             try:
-                request = self._client.build_request(
-                    "GET",
-                    url,
-                    headers={"User-Agent": self._user_agent},
-                    timeout=self._timeout,
-                )
-                response = self._client.send(request, stream=True, follow_redirects=False)
-            except httpx.HTTPError as exc:
-                last_error = exc
-                if _is_retryable_transport(exc) and attempt + 1 < attempts:
-                    continue
-                raise CollectionFailed(f"HTTP transport failure: {exc}") from exc
+                try:
+                    response = self._send_once(url)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
 
-            status = response.status_code
-            if status in _RETRYABLE_STATUS and attempt + 1 < attempts:
-                response.close()
-                last_error = CollectionFailed(f"retryable HTTP {status}")
-                continue
-            if status in _RETRYABLE_STATUS:
-                response.close()
-                raise CollectionFailed(f"exhausted retries for HTTP {status}")
-            return response
+                status = response.status_code
+                if status in {404, 410}:
+                    return None
+                if 300 <= status < 400:
+                    raise CollectionFailed(f"checksum redirect forbidden: HTTP {status}")
+                if status in _RETRYABLE_STATUS:
+                    last_error = CollectionFailed(f"retryable HTTP {status}")
+                    if attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(f"exhausted retries for HTTP {status}")
+                if status != 200:
+                    raise CollectionFailed(f"checksum HTTP {status}")
+
+                try:
+                    body = _read_bounded_body(response, limit=_CHECKSUM_MAX_BYTES)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
+
+                digest = _parse_checksum_body(body, expected_filename=expected_filename)
+                return digest, response.headers
+            finally:
+                if response is not None:
+                    response.close()
 
         assert last_error is not None
-        raise CollectionFailed(f"exhausted retries: {last_error}") from last_error
+        raise CollectionFailed(
+            f"exhausted retries: {_transport_failure_message(last_error)}"
+            if isinstance(last_error, httpx.HTTPError)
+            else f"exhausted retries: {last_error}"
+        ) from last_error
+
+    def _fetch_and_publish_zip(
+        self,
+        url: str,
+        *,
+        object_key: str,
+        source_sha256: str,
+    ) -> tuple[PublishResult, httpx.Headers]:
+        attempts = 1 + self._max_retries
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            response: httpx.Response | None = None
+            stream: _ZipByteStream | None = None
+            headers: httpx.Headers | None = None
+            try:
+                try:
+                    response = self._send_once(url)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
+
+                status = response.status_code
+                if status in {404, 410}:
+                    raise CollectionFailed(
+                        f"ZIP absent while checksum present (source inconsistency): HTTP {status}"
+                    )
+                if 300 <= status < 400:
+                    raise CollectionFailed(f"ZIP redirect forbidden: HTTP {status}")
+                if status in _RETRYABLE_STATUS:
+                    last_error = CollectionFailed(f"retryable HTTP {status}")
+                    if attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(f"exhausted retries for HTTP {status}")
+                if status != 200:
+                    raise CollectionFailed(f"ZIP HTTP {status}")
+
+                headers = response.headers
+                expected_size = _trusted_content_length(headers)
+                stream = _ZipByteStream(response)
+                response = None  # ownership moved to stream
+                try:
+                    staged = self._storage.stage(
+                        StageRequest(
+                            key=object_key,
+                            expected_sha256=source_sha256,
+                            expected_size=expected_size,
+                        ),
+                        stream,
+                    )
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
+                except IntegrityViolation as exc:
+                    raise CollectionFailed(f"ZIP integrity check failed: {exc}") from exc
+
+                try:
+                    published = self._storage.publish(staged)
+                except ObjectConflict as exc:
+                    raise CollectionFailed(f"immutable object conflict: {exc}") from exc
+                return published, headers
+            finally:
+                if stream is not None:
+                    stream.close()
+                elif response is not None:
+                    response.close()
+
+        assert last_error is not None
+        raise CollectionFailed(
+            f"exhausted retries: {_transport_failure_message(last_error)}"
+            if isinstance(last_error, httpx.HTTPError)
+            else f"exhausted retries: {last_error}"
+        ) from last_error
 
     def _assert_url_allowed(self, url: str) -> None:
-        parsed = urlparse(url)
-        if parsed.scheme != "https":
-            raise CollectionFailed(f"refusing non-HTTPS URL: {url!r}")
-        if _https_origin(url) != self._origin:
-            raise CollectionFailed(f"refusing URL outside archive origin: {url!r}")
+        if not _uri.is_visible_ascii(url):
+            raise CollectionFailed("refusing non-visible-ASCII URL")
+        parts = _uri.split(url)
+        if parts.scheme != "https" or parts.authority is None:
+            raise CollectionFailed("refusing non-HTTPS URL")
+        if not _uri.is_host_port(parts.authority):
+            raise CollectionFailed("refusing URL with invalid authority")
+        if parts.query is not None or parts.fragment is not None:
+            raise CollectionFailed("refusing URL with query or fragment")
+        origin = f"https://{parts.authority}"
+        if origin != self._origin:
+            raise CollectionFailed("refusing URL outside archive origin")
         if not url.startswith(f"{self._archive_base}/") and url != self._archive_base:
-            raise CollectionFailed(f"refusing URL outside archive base: {url!r}")
-        if parsed.username is not None or parsed.password is not None:
-            raise CollectionFailed(f"refusing URL with credentials: {url!r}")
+            raise CollectionFailed("refusing URL outside archive base")
 
 
 class _ZipByteStream:

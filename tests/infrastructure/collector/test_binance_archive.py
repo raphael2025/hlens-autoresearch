@@ -296,6 +296,52 @@ def test_malicious_base_path_rejected(tmp_path: Path) -> None:
         )
 
 
+@pytest.mark.parametrize(
+    "bad_base",
+    [
+        "https://u:p@archive.test",
+        "https://archive.test?evil=1",
+        "https://archive.test#frag",
+        "https://archive.test:99999",
+        "https://archive.test/%2e%2e/evil",
+        "https://archive.test/ok%2fescape",
+        "https://archive.test/ok%5cescape",
+        "https://archive.test//double",
+        "http://archive.test",
+    ],
+)
+def test_archive_base_url_rejected_without_silent_rewrite(tmp_path: Path, bad_base: str) -> None:
+    storage = make_storage(tmp_path)
+    with pytest.raises(ValueError):
+        BinanceSpotArchiveCollector(
+            storage,
+            archive_base_url=bad_base,
+            http_connect_timeout_seconds=1.0,
+            http_read_timeout_seconds=1.0,
+            http_max_retries=0,
+            http_user_agent="x",
+        )
+
+
+def test_safe_archive_base_prefix_keeps_requests_under_prefix(
+    tmp_path: Path, archive_fixture: ArchiveFixture
+) -> None:
+    prefix_base = "https://archive.test/mirror"
+    rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    # Fixture paths are host-relative after stripping leading slash from request URL path.
+    archive_fixture.put_zip(f"mirror/{rel}", b"prefixed-payload")
+    storage = make_storage(tmp_path)
+    collector = make_collector(
+        storage, archive_fixture, archive_base_url=prefix_base, max_retries=0
+    )
+    result = collector.collect(_request())
+    assert len(result.objects) == 1
+    assert result.objects[0].source_uri == f"{prefix_base}/{rel}"
+    for url in archive_fixture.requests:
+        assert url.startswith(f"{prefix_base}/")
+        assert not url.startswith(f"{ARCHIVE_ORIGIN}/data/")
+
+
 def test_transient_retry_count_exact(tmp_path: Path, archive_fixture: ArchiveFixture) -> None:
     rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
     digest = archive_fixture.put_zip(rel, b"payload")
@@ -448,7 +494,7 @@ def test_zip_streamed_in_chunks_without_content_aggregation(
     assert len(seen_chunks) > 1
     # Production ZIP path must not aggregate via response.content / .read().
     zip_helpers = inspect.getsource(archive_mod._ZipByteStream) + inspect.getsource(
-        archive_mod.BinanceSpotArchiveCollector._open_zip_stream
+        archive_mod.BinanceSpotArchiveCollector._fetch_and_publish_zip
     )
     assert ".content" not in zip_helpers
     assert ".read(" not in zip_helpers
@@ -583,3 +629,117 @@ def test_object_conflict_type_surfaces_as_collection_failed(
     collector = make_collector(storage, archive_fixture)
     with pytest.raises(CollectionFailed, match="conflict"):
         collector.collect(_request())
+
+
+def _count_urls(requests: list[str], *, suffix: str) -> int:
+    return sum(1 for url in requests if url.endswith(suffix))
+
+
+def test_checksum_midstream_read_error_retries_once(
+    tmp_path: Path, archive_fixture: ArchiveFixture
+) -> None:
+    rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    payload = b"0123456789abcdefghij"
+    archive_fixture.put_zip(rel, payload)
+    checksum_path = f"{rel}.CHECKSUM"
+    archive_fixture.stream_fail_after[checksum_path] = [10, None]
+    storage = make_storage(tmp_path)
+    collector = make_collector(storage, archive_fixture, max_retries=1)
+    result = collector.collect(_request())
+    assert len(result.objects) == 1
+    assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 2
+    assert _count_urls(archive_fixture.requests, suffix=".zip") == 1
+
+
+def test_checksum_midstream_exhausted_never_fetches_zip(
+    tmp_path: Path, archive_fixture: ArchiveFixture
+) -> None:
+    rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    payload = b"0123456789abcdefghij"
+    archive_fixture.put_zip(rel, payload)
+    checksum_path = f"{rel}.CHECKSUM"
+    archive_fixture.stream_fail_after[checksum_path] = [10, 10]
+    storage = make_storage(tmp_path)
+    collector = make_collector(storage, archive_fixture, max_retries=1)
+    with pytest.raises(CollectionFailed):
+        collector.collect(_request())
+    assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 2
+    assert _count_urls(archive_fixture.requests, suffix=".zip") == 0
+    assert (
+        storage.lookup(
+            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+        )
+        is None
+    )
+
+
+def test_zip_midstream_read_error_retries_without_regetting_checksum(
+    tmp_path: Path, archive_fixture: ArchiveFixture
+) -> None:
+    rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    payload = b"Z" * 40
+    archive_fixture.put_zip(rel, payload)
+    archive_fixture.stream_fail_after[rel] = [10, None]
+    storage = make_storage(tmp_path)
+    collector = make_collector(storage, archive_fixture, max_retries=1)
+    result = collector.collect(_request())
+    assert len(result.objects) == 1
+    assert result.objects[0].ref.size == len(payload)
+    assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 1
+    assert _count_urls(archive_fixture.requests, suffix=".zip") == 2
+    with storage.open_read(result.objects[0].ref) as handle:
+        assert handle.read() == payload
+
+
+def test_zip_midstream_exhausted_leaves_no_object(
+    tmp_path: Path, archive_fixture: ArchiveFixture
+) -> None:
+    rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    key = "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    payload = b"Z" * 40
+    archive_fixture.put_zip(rel, payload)
+    archive_fixture.stream_fail_after[rel] = [10, 10]
+    storage = make_storage(tmp_path)
+    collector = make_collector(storage, archive_fixture, max_retries=1)
+    with pytest.raises(CollectionFailed):
+        collector.collect(_request())
+    assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 1
+    assert _count_urls(archive_fixture.requests, suffix=".zip") == 2
+    assert storage.lookup(key) is None
+    published = [
+        path
+        for path in Path(str(tmp_path)).rglob("*")
+        if path.is_file() and "BTCUSDT-aggTrades-2024-01-01.zip" in path.name
+    ]
+    assert published == []
+
+
+def test_parse_integrity_and_4xx_still_not_retried(
+    tmp_path: Path, archive_fixture: ArchiveFixture
+) -> None:
+    rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    archive_fixture.files[rel] = b"payload"
+    archive_fixture.checksum_override[f"{rel}.CHECKSUM"] = b"not-valid-checksum\n"
+    storage = make_storage(tmp_path)
+    collector = make_collector(storage, archive_fixture, max_retries=5)
+    with pytest.raises(CollectionFailed):
+        collector.collect(_request())
+    assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 1
+    assert _count_urls(archive_fixture.requests, suffix=".zip") == 0
+
+    archive_fixture.requests.clear()
+    archive_fixture.checksum_override.clear()
+    wrong = hashlib.sha256(b"other").hexdigest()
+    archive_fixture.files[f"{rel}.CHECKSUM"] = (
+        f"{wrong}  BTCUSDT-aggTrades-2024-01-01.zip\n".encode("ascii")
+    )
+    with pytest.raises(CollectionFailed):
+        collector.collect(_request(request_id="integrity"))
+    assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 1
+    assert _count_urls(archive_fixture.requests, suffix=".zip") == 1
+
+    archive_fixture.requests.clear()
+    archive_fixture.status_sequence[f"{rel}.CHECKSUM"] = [400]
+    with pytest.raises(CollectionFailed, match="HTTP 400"):
+        collector.collect(_request(request_id="fourxx"))
+    assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 1

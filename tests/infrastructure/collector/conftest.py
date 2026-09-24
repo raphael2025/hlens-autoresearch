@@ -18,6 +18,30 @@ ARCHIVE_ORIGIN = "https://archive.test"
 ARCHIVE_BASE = f"{ARCHIVE_ORIGIN}"
 
 
+class _FailAfterStream(httpx.SyncByteStream):
+    """Yields ``data`` in chunks, then raises ``httpx.ReadError`` after ``fail_after`` bytes."""
+
+    def __init__(self, data: bytes, *, fail_after: int, chunk_size: int = 5) -> None:
+        self._data = data
+        self._fail_after = fail_after
+        self._chunk_size = chunk_size
+        self._sent = 0
+
+    def __iter__(self) -> Iterator[bytes]:
+        while self._sent < len(self._data):
+            if self._sent >= self._fail_after:
+                raise httpx.ReadError("mid-stream read failure")
+            end = min(self._sent + self._chunk_size, len(self._data), self._fail_after)
+            if end == self._sent:
+                raise httpx.ReadError("mid-stream read failure")
+            chunk = self._data[self._sent : end]
+            self._sent += len(chunk)
+            yield chunk
+
+    def close(self) -> None:
+        return None
+
+
 @dataclass
 class ArchiveFixture:
     """In-memory archive site driven by ``httpx.MockTransport``."""
@@ -30,6 +54,8 @@ class ArchiveFixture:
     fail_connect_times: dict[str, int] = field(default_factory=dict)
     status_sequence: dict[str, list[int]] = field(default_factory=dict)
     chunk_sizes: dict[str, int] = field(default_factory=dict)
+    #: path → mid-stream fail_after budgets; ``None`` = deliver full body this attempt.
+    stream_fail_after: dict[str, list[int | None]] = field(default_factory=dict)
     _connect_failures_done: dict[str, int] = field(default_factory=dict)
 
     def put_zip(self, path: str, payload: bytes, *, checksum: str | None = None) -> str:
@@ -75,9 +101,21 @@ class ArchiveFixture:
             return httpx.Response(404, request=request)
 
         payload = self.files[path]
-        chunk = self.chunk_sizes.get(path)
         etag = f'"{hashlib.sha256(payload).hexdigest()[:16]}"'
         headers = {"content-length": str(len(payload)), "etag": etag}
+
+        fail_seq = self.stream_fail_after.get(path)
+        if fail_seq:
+            fail_after = fail_seq.pop(0)
+            if fail_after is not None:
+                return httpx.Response(
+                    200,
+                    stream=_FailAfterStream(payload, fail_after=fail_after),
+                    headers=headers,
+                    request=request,
+                )
+
+        chunk = self.chunk_sizes.get(path)
         if chunk is None:
             return httpx.Response(200, content=payload, headers=headers, request=request)
 
