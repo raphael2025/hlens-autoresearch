@@ -263,9 +263,22 @@ def content_hash(payload: Any) -> str:
 
 
 class Contract(BaseModel):
-    """所有契约模型的基类：不可变、禁止未声明字段、带 schema_version。"""
+    """所有契约模型的基类：不可变、禁止未声明字段、拒绝非法浮点数、带 schema_version。
 
-    model_config = ConfigDict(frozen=True, extra="forbid", str_strip_whitespace=True)
+    `allow_inf_nan=False` 是 ADR-0013 §D-20.1 的**统一机制**：它作用于本模型下**全部**
+    浮点校验器——标量字段、序列元素、映射的键与值、`Annotated` 别名，以及 Python 与
+    `model_validate_json` 两条入口。嵌套契约自身也是 `Contract`，因此同样继承该配置。
+    不逐字段重复声明 `allow_inf_nan`，避免新增字段时漏配；覆盖面由
+    `tests/test_deterministic_validation.py` 对全部注册契约的 core schema 做审计。
+
+    这与 `canonical_json(allow_nan=False)` 是**同一条规则的两道关口**，不是互相替代：
+    校验阶段挡住非法数值的进入，序列化 / 哈希阶段再挡一次，且任何一处都**不得**把
+    NaN / ±Infinity 转成 `null`（ADR-0008 决策 4）。
+    """
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", str_strip_whitespace=True, allow_inf_nan=False
+    )
 
     schema_version: str = Field(default=CONTRACT_SCHEMA_VERSION, pattern=SEMVER_PATTERN)
 

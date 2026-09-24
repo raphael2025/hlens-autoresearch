@@ -430,7 +430,7 @@
     },
     "SignificanceParams": {
       "additionalProperties": false,
-      "description": "对应 Constitution C-T1：多重检验校正 + 过拟合概率。",
+      "description": "对应 Constitution C-T1：多重检验校正 + 过拟合概率。\n\n两个阈值是**无量纲的 unit interval 量**，结构范围为闭区间 `[0, 1]`（ADR-0013 D-20.2）。\n这只是**结构上的合法取值范围**，不是校准值：具体数值属于 D-09 的 TBD 系列，\nPhase 4 校准后才写入具体 Profile 版本。端点 `0` 与 `1` 是否算合理配置属于校准判断，\n因此刻意保留。",
       "properties": {
         "schema_version": {
           "default": "2.0.0",
@@ -444,6 +444,8 @@
           "type": "string"
         },
         "multiple_testing_threshold": {
+          "maximum": 1.0,
+          "minimum": 0.0,
           "title": "Multiple Testing Threshold",
           "type": "number"
         },
@@ -453,6 +455,8 @@
           "type": "string"
         },
         "overfitting_threshold": {
+          "maximum": 1.0,
+          "minimum": 0.0,
           "title": "Overfitting Threshold",
           "type": "number"
         },

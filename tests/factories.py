@@ -226,9 +226,11 @@ def selection_rule() -> ProfileSelectionRule:
     )
 
 
-def gate_result(verdict: Verdict = Verdict.PASS, *, with_threshold: bool = True) -> GateResult:
+def gate_result(
+    verdict: Verdict = Verdict.PASS, *, gate_id: str = "G0", with_threshold: bool = True
+) -> GateResult:
     return GateResult(
-        gate_id="G0",
+        gate_id=gate_id,
         metric="reproducible",
         value=1.0,
         threshold=1.0 if with_threshold else None,

@@ -5,6 +5,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
@@ -44,6 +45,8 @@ __all__ = [
     "RunState",
     "ValidationReport",
     "Verdict",
+    "derive_verdict",
+    "require_unique_gate_ids",
 ]
 
 
@@ -296,10 +299,51 @@ class GateResult(Contract):
     verdict: Verdict
 
     @model_validator(mode="after")
-    def _threshold_needs_source(self) -> GateResult:
+    def _threshold_and_source_are_paired(self) -> GateResult:
+        """`threshold` 与 `threshold_source` 同时存在或同时缺失（ADR-0013 D-19.3）。
+
+        有阈值必须声明非空来源（ADR-0007 的既有语义，空白来源仍然拒绝）；
+        反向同样成立：声明了任何非 `None` 的来源却没有阈值，也是不完整的门记录。
+        无阈值的纯报告项两者都留空。
+
+        **不校验来源路径的真实性**：`threshold_source` 是否真的指向所绑定 Profile
+        版本中的字段、其值是否等于 `threshold`，只有持有 Profile 实例的验证服务能核验；
+        契约层拿不到该实例，因此这里只是格式配对，不是来源已核实。
+        """
         if self.threshold is not None and not self.threshold_source:
             raise ValueError("阈值必须声明来源 Profile 字段（ADR-0007）")
+        if self.threshold_source is not None and self.threshold is None:
+            raise ValueError("声明了 threshold_source 就必须给出 threshold（ADR-0013 D-19.3）")
         return self
+
+
+def derive_verdict(gates: Sequence[GateResult]) -> Verdict:
+    """门结果集合 → 整体判定的**全函数**（ADR-0013 D-19.1）。
+
+    任一 `FAIL` → `FAIL`；否则任一 `INCONCLUSIVE` → `INCONCLUSIVE`；否则 `PASS`。
+    三种情形覆盖了所有可能的门结果集合，因此这是一个确定性的全函数。
+
+    这是"证据不足不得等同于 PASS"的可执行形式：任何想让判定偏离本函数的理由
+    （证据不足、数据质量、样本量、人工保留意见、外部事件）都必须**物化为报告内的一个门**，
+    不得通过直接设置 `verdict` 表达。
+    """
+    verdicts = {gate.verdict for gate in gates}
+    if Verdict.FAIL in verdicts:
+        return Verdict.FAIL
+    if Verdict.INCONCLUSIVE in verdicts:
+        return Verdict.INCONCLUSIVE
+    return Verdict.PASS
+
+
+def require_unique_gate_ids(gates: Sequence[GateResult], label: str) -> None:
+    """同一集合内 `gate_id` 不得重复（ADR-0013 D-19.2）。
+
+    重复的门意味着同一检查有两个结果，`derive_verdict` 将不再良定义。
+    """
+    seen = [gate.gate_id for gate in gates]
+    duplicates = sorted({gate_id for gate_id in seen if seen.count(gate_id) > 1})
+    if duplicates:
+        raise ValueError(f"{label} 存在重复的 gate_id：{duplicates}")
 
 
 class ValidationReport(Contract):
@@ -323,10 +367,19 @@ class ValidationReport(Contract):
     created_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
-    def _verdict_consistent(self) -> ValidationReport:
-        has_failing_gate = any(gate.verdict is Verdict.FAIL for gate in self.gates)
-        if has_failing_gate and self.verdict is Verdict.PASS:
-            raise ValueError("存在 FAIL 的门时，整体判定不得为 PASS")
+    def _verdict_is_the_gate_function(self) -> ValidationReport:
+        """`verdict` 必须**精确等于** `derive_verdict(gates)`（ADR-0013 D-19.1）。
+
+        这是双向检查，不是"不得为 PASS"这类单向检查：全部门 PASS 却判 FAIL、
+        证据不足却判 PASS，都同样被拒绝。
+        """
+        require_unique_gate_ids(self.gates, "ValidationReport.gates")
+        expected = derive_verdict(self.gates)
+        if self.verdict is not expected:
+            raise ValueError(
+                f"整体判定必须等于门结果的确定性函数：gates ⇒ {expected.value}，"
+                f"但 verdict = {self.verdict.value}；报告外的理由必须物化为一个门"
+            )
         return self
 
 

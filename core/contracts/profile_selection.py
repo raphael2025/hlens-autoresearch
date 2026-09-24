@@ -12,7 +12,7 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from core.domain.base import Contract, FrozenMapping, Kind, Ref, UtcDatetime, VersionedSpec
-from core.domain.research import GateResult, LlmCall
+from core.domain.research import GateResult, LlmCall, require_unique_gate_ids
 from core.domain.selection import ProfileSelection, ProfileSelectionKey
 from core.errors import ProfileViolation
 
@@ -104,6 +104,12 @@ class ExperimentMetadata(Contract):
     llm_calls: tuple[LlmCall, ...] = ()
     trace_id: str | None = None
     recorded_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _gate_ids_are_unique(self) -> ExperimentMetadata:
+        """同一份元数据内 `gate_id` 不得重复（ADR-0013 D-19.2）。"""
+        require_unique_gate_ids(self.gate_results, "ExperimentMetadata.gate_results")
+        return self
 
     @model_validator(mode="after")
     def _trial_index_within_count(self) -> ExperimentMetadata:

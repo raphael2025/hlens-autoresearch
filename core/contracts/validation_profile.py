@@ -87,12 +87,18 @@ class SampleSizeParams(Contract):
 
 
 class SignificanceParams(Contract):
-    """对应 Constitution C-T1：多重检验校正 + 过拟合概率。"""
+    """对应 Constitution C-T1：多重检验校正 + 过拟合概率。
+
+    两个阈值是**无量纲的 unit interval 量**，结构范围为闭区间 `[0, 1]`（ADR-0013 D-20.2）。
+    这只是**结构上的合法取值范围**，不是校准值：具体数值属于 D-09 的 TBD 系列，
+    Phase 4 校准后才写入具体 Profile 版本。端点 `0` 与 `1` 是否算合理配置属于校准判断，
+    因此刻意保留。
+    """
 
     multiple_testing_method: str = Field(min_length=1)
-    multiple_testing_threshold: float
+    multiple_testing_threshold: float = Field(ge=0.0, le=1.0)
     overfitting_metric: str = Field(min_length=1)
-    overfitting_threshold: float
+    overfitting_threshold: float = Field(ge=0.0, le=1.0)
     trial_count_scope: str = Field(min_length=1)
     reported_only_metrics: tuple[str, ...] = ()
 

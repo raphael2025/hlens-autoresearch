@@ -31,6 +31,34 @@ flowchart LR
 每个门（gate）输出结构化检查结果（check_id、指标、**阈值及其来源 Profile 字段**、是否通过），写入 ValidationReport。
 **所有阈值来自实验绑定的 Validation Profile 版本（§5），不得写死在流水线代码中。**
 
+### 2.1 整体判定是门结果的确定性函数（ADR-0013）
+
+`ValidationReport.verdict` **精确等于**下列函数对 `gates` 的取值，契约层拒绝任何不相等的组合：
+
+```
+任一门 FAIL            -> FAIL
+否则任一门 INCONCLUSIVE -> INCONCLUSIVE
+否则全部门 PASS         -> PASS
+```
+
+这三种情形覆盖了所有可能的门结果集合，因此这是一个全函数（实现：`core.domain.research.derive_verdict`）。
+
+**报告外因素必须物化为一个门。** 证据不足、数据质量不达标、样本量不够、人工保留意见、外部事件——
+任何想让判定偏离上式的理由，都必须先成为报告内的一个 `GateResult`（有 `gate_id`、`metric`、`value`、`verdict`），
+再由上式得出整体判定。**不得**通过直接设置 `verdict` 表达。这是"证据不足不得等同于 PASS"的可执行形式。
+
+配套的结构不变量：
+
+| 不变量 | 说明 |
+|---|---|
+| `gate_id` 唯一 | `ValidationReport.gates` 与 `ExperimentMetadata.gate_results` 内部不得重复；重复意味着同一检查有两个结果，判定函数不再良定义 |
+| `threshold` ↔ `threshold_source` | 两者同时存在或同时缺失；空白来源不算来源。无阈值的纯报告项两者都留空 |
+| 不写死门清单 | 一份报告必须包含哪些门由绑定的 Profile 决定并由验证服务检查；契约层不在 DTO 中写死任何 `gate_id` 清单 |
+
+**契约层只做格式与结构检查**：`threshold_source` 是否真的指向所绑定 Profile 版本中的字段、
+其值是否等于 `threshold`、报告是否包含 Profile 要求的全部门、`value` 是否真由声明的 `metric` 算出，
+都由持有 Profile 实例的验证服务核验（尚未实现）。
+
 ## 3. Experiment / Validation Lifecycle（D6）
 
 > 状态：**已冻结**，对应 [ADR-0006](../adr/0006-strategy-lifecycle.md)（Accepted，2026-09-23，取代 ADR-0002 第 5 条）。修改需新 ADR。
@@ -140,7 +168,7 @@ Profile 引用格式：`vp:{scope_id}@{semver}`，例如 `vp:btcusdt-1h-swing@1.
 | 适用范围 | `instrument`、`venue`、`timeframe`、`research_class` | 与选择规则（§5.2）匹配 |
 | 数据切分 | 研究窗口、封存 OOS 的**固定日期边界**与长度、embargo、walk-forward 配置 | 对应 Constitution 第四章 |
 | 样本量 | IS / OOS / 每个状态分组的最小有效独立样本量；有效样本折算方法 | 对应 C-T2 |
-| 显著性 | 多重检验校正方法与阈值、过拟合概率阈值、报告项 | 对应 C-T1 |
+| 显著性 | 多重检验校正方法与阈值、过拟合概率阈值、报告项 | 对应 C-T1；两个阈值是无量纲 unit interval 量，**结构范围** `[0, 1]`（ADR-0013 D-20.2） |
 | 基准 | 空模型设定与分位阈值；按类别适用的市场基准 | 对应 C-T4 |
 | 参数稳定性 | 邻域定义、邻域表现下限、时间对齐（bar 偏移）测试 | 对应 C-R1 |
 | 成本 | 基准成本模型 `name@version`、压力倍数、延迟压力、盈亏平衡成本要求 | 对应 C-R4、A6 |
@@ -148,6 +176,7 @@ Profile 引用格式：`vp:{scope_id}@{semver}`，例如 `vp:btcusdt-1h-swing@1.
 | 溯源 | 校准报告引用、批准 ADR、前一版本 | Step 2 冻结依据 |
 
 > 本文件与 Profile 契约都**不含具体数值**；数值在 Phase 4 校准后写入具体 Profile 版本。
+> `[0, 1]` 这类范围是**结构上的合法取值区间**，不是校准值，也不构成对任何阈值的选择。
 
 ### 5.2 选择规则（ProfileSelectionRule）
 
