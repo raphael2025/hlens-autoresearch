@@ -37,10 +37,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from enum import StrEnum
-from typing import Annotated, BinaryIO, NamedTuple, Protocol
+from typing import Annotated, BinaryIO, Protocol
 
 from pydantic import BeforeValidator, Field
 
+from core.contracts import _uri
 from core.domain.base import ContentHash, Contract
 
 __all__ = [
@@ -60,11 +61,6 @@ __all__ = [
     "StagingViolation",
     "StorageAdapter",
     "StorageError",
-    "UriParts",
-    "has_dot_segment",
-    "is_host_port",
-    "is_object_path",
-    "split_uri",
     "validate_object_key",
     "validate_object_uri",
 ]
@@ -84,68 +80,6 @@ _KEY_SEGMENT = r"[A-Za-z0-9][A-Za-z0-9._=-]{0,254}"
 OBJECT_KEY_PATTERN = rf"^{_KEY_SEGMENT}(?:/{_KEY_SEGMENT})*$"
 OBJECT_KEY_MAX_LENGTH = 1024
 _KEY_RE = re.compile(OBJECT_KEY_PATTERN)
-
-# ---------------------------------------------------------------------------------------
-# URI：先按 RFC 3986 附录 B 的参考正则拆成 scheme / authority / path / query / fragment 五个组件，
-# 再逐组件显式检查。`core/` 的依赖白名单不含 `urllib`（架构边界测试），且 `urlsplit` 对端口等
-# 也是惰性宽松的；这里的拆分本身不做任何校验，全部规则写在 `split_uri` 之后的检查里。
-# ---------------------------------------------------------------------------------------
-
-_RFC3986_SPLIT = re.compile(r"^(?:([^:/?#]+):)?(?://([^/?#]*))?([^?#]*)(?:\?([^#]*))?(?:#(.*))?$")
-_SCHEME_RE = re.compile(r"[a-z][a-z0-9+.-]*")
-_HOST_LABEL_RE = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?")
-_PORT_RE = re.compile(r"[1-9][0-9]{0,4}")
-
-
-class UriParts(NamedTuple):
-    """RFC 3986 的五个组件；`None` 表示该组件不存在（与存在但为空不同）。"""
-
-    scheme: str | None
-    authority: str | None
-    path: str
-    query: str | None
-    fragment: str | None
-
-
-def split_uri(value: str) -> UriParts:
-    """按 RFC 3986 附录 B 拆分组件；**不做校验**。调用方只接受 ASCII 可见字符后再拆分。"""
-    match = _RFC3986_SPLIT.fullmatch(value)
-    if match is None:  # pragma: no cover - 附录 B 的正则匹配任意字符串
-        raise ValueError(f"无法拆分 URI：{value!r}")
-    scheme, authority, path, query, fragment = match.groups()
-    return UriParts(scheme, authority, path, query, fragment)
-
-
-def is_host_port(authority: str) -> bool:
-    """`authority` 是否为非空的小写 DNS 主机名 + 可选端口（1 ~ 65535，无前导零）；不接受凭据。"""
-    host, colon, port = authority.partition(":")
-    if colon and (_PORT_RE.fullmatch(port) is None or int(port) > 65535):
-        return False
-    if not host or len(host) > 253:
-        return False
-    return all(_HOST_LABEL_RE.fullmatch(label) is not None for label in host.split("."))
-
-
-def _is_printable_ascii(value: str) -> bool:
-    return value.isascii() and value.isprintable() and " " not in value and "\\" not in value
-
-
-def _dot_segment(segment: str) -> bool:
-    """`.` / `..` 段，含百分号编码形式（`%2e`）。"""
-    return segment.lower().replace("%2e", ".") in {".", ".."}
-
-
-def is_object_path(path: str) -> bool:
-    """非空的绝对对象路径：以 `/` 开头，每段非空（无 `//`、不以 `/` 结尾），无 `.` / `..` 段。"""
-    if not path.startswith("/"):
-        return False
-    segments = path[1:].split("/")
-    return all(segment and not _dot_segment(segment) for segment in segments)
-
-
-def has_dot_segment(path: str) -> bool:
-    return any(_dot_segment(segment) for segment in path.split("/"))
-
 
 #: 发布对象持久 URI 的 JSON Schema 近似：`file:///…`，或 `scheme://host[:port]/…`。
 #: 运行时（`validate_object_uri`）更严：逐段检查、端口范围、`file` 不得带 authority、无查询 /
@@ -195,17 +129,19 @@ def validate_object_key(value: object) -> str:
 
 
 def validate_object_uri(value: object) -> str:
-    """复核发布对象 URI；原样返回。只检查组件，不打开、不解析到本机路径，不固定 warehouse 根。
+    """复核发布对象 URI；原样返回。只检查 RFC 3986 组件，不打开、不解析到本机路径，不固定
+    warehouse 根。
 
     - 只接受 ASCII 可见字符（无空白、反斜杠）；scheme 为小写；不得有查询或片段；
     - `file`：必须是 `file:///绝对路径`，即 authority 存在且为空（无远程主机）；
-    - 其它 scheme：authority 必须是非空主机名 + 可选端口（不得含凭据）；
-    - 路径必须是非空的绝对对象路径：每段非空，无 `.` / `..`（含 `%2e` 编码）段。
+    - 其它 scheme：authority 必须是非空主机名 + 可选端口（1 ~ 65535，无前导零），不得含凭据；
+    - 路径必须是非空的绝对对象路径：每段非空，每个 `%` 都是合法的两位十六进制 escape 且不解码为
+      `/`、`\\`、控制字符或 DEL，解码后不是 `.` / `..` 段。
     """
-    if not isinstance(value, str) or not _is_printable_ascii(value):
+    if not isinstance(value, str) or not _uri.is_visible_ascii(value):
         raise ValueError(f"非法对象 URI：{value!r}；只接受无空白、无反斜杠的 ASCII 可见字符")
-    parts = split_uri(value)
-    if parts.scheme is None or _SCHEME_RE.fullmatch(parts.scheme) is None:
+    parts = _uri.split(value)
+    if not _uri.is_scheme(parts.scheme):
         raise ValueError(f"对象 URI 必须带小写 scheme：{value!r}")
     if parts.query is not None or parts.fragment is not None:
         raise ValueError(f"对象 URI 不得含查询或片段：{value!r}")
@@ -216,12 +152,14 @@ def validate_object_uri(value: object) -> str:
             raise ValueError(
                 f"file 对象 URI 不得带 authority（必须是 file:///绝对路径）：{value!r}"
             )
-    elif not is_host_port(parts.authority):
+    elif not _uri.is_host_port(parts.authority):
         raise ValueError(
             f"对象 URI 的 authority 必须是非空主机名（可带端口），不得含凭据：{value!r}"
         )
-    if not is_object_path(parts.path):
-        raise ValueError(f"对象 URI 必须有非空的绝对对象路径，且不含空段或 . / .. 段：{value!r}")
+    if not _uri.is_object_path(parts.path):
+        raise ValueError(
+            f"对象 URI 必须有非空的绝对对象路径，无空段、. / .. 段或危险 escape：{value!r}"
+        )
     return value
 
 

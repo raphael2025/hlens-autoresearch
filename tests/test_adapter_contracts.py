@@ -27,7 +27,7 @@ import pytest
 from pydantic import ValidationError
 
 from core.compat.v1 import V1_MODEL_NAMES
-from core.contracts import catalog, collector, revision, storage
+from core.contracts import _uri, catalog, collector, revision, storage
 from core.contracts.catalog import (
     CatalogAdapter,
     CommitOutcome,
@@ -933,6 +933,15 @@ def test_descriptor_sets_are_canonical() -> None:
         "ftp://archive.example.test",
         "https://",
         "https://-bad.example.test",
+        # R2：端口范围与无前导零只在运行时表达（Schema pattern 允许 1 ~ 5 位数字）
+        "https://archive.example.test:0",
+        "https://archive.example.test:00080",
+        "https://archive.example.test:080",
+        "https://archive.example.test:65536",
+        "https://archive.example.test:99999",
+        "https://archive.example.test:",
+        "https://archive.example.test#f",
+        "https://archive..example.test",
     ],
 )
 def test_illegal_network_origins_are_rejected(origin: str) -> None:
@@ -941,8 +950,24 @@ def test_illegal_network_origins_are_rejected(origin: str) -> None:
 
 
 def test_legal_network_origins() -> None:
-    for origin in ("https://archive.example.test", "https://localhost:8443", "https://a-b.c1.test"):
+    for origin in (
+        "https://archive.example.test",
+        "https://localhost:8443",
+        "https://a-b.c1.test",
+        "https://archive.example.test:1",
+        "https://archive.example.test:443",
+        "https://archive.example.test:65535",
+    ):
         assert descriptor(network_origins=(origin,)).network_origins == (origin,)
+
+
+def test_origin_schema_pattern_is_weaker_than_runtime() -> None:
+    """Schema 端口 pattern 表达不了数值范围与无前导零（02-domain.md §3.7）；权威校验是运行时。"""
+    pattern = re.compile(collector.NETWORK_ORIGIN_PATTERN)
+    for origin in ("https://archive.example.test:00080", "https://archive.example.test:99999"):
+        assert pattern.fullmatch(origin) is not None
+        with pytest.raises(ValidationError):
+            descriptor(network_origins=(origin,))
 
 
 @pytest.mark.parametrize(
@@ -1018,17 +1043,109 @@ def test_illegal_or_credential_shaped_source_uris(uri: str) -> None:
         collected("AAAUSD", T0, T1, source_uri=uri)
 
 
-def test_uri_split_follows_rfc3986_components() -> None:
-    """拆分只是 RFC 3986 附录 B 的组件分解：区分"不存在"（None）与"存在但为空"。"""
-    assert storage.split_uri("file:///a/b") == storage.UriParts("file", "", "/a/b", None, None)
-    assert storage.split_uri("file://relative") == storage.UriParts(
-        "file", "relative", "", None, None
-    )
-    assert storage.split_uri("https:///path") == storage.UriParts("https", "", "/path", None, None)
-    assert storage.split_uri("https://h.test:1/p?q=1#f") == storage.UriParts(
-        "https", "h.test:1", "/p", "q=1", "f"
-    )
-    assert storage.split_uri("s3:bucket/a") == storage.UriParts("s3", None, "bucket/a", None, None)
+#: R2 对抗反例：一次 percent-decode 后会产生路径分隔符、反斜杠或控制字符；以及畸形 escape。
+ENCODED_OBJECT_URI_ATTACKS = (
+    "file:///warehouse/a%2f..%2fsecret",
+    "file:///warehouse/a%2F..%2Fsecret",
+    "file:///warehouse/a%5c..%5csecret",
+    "file:///warehouse/a%5C..%5Csecret",
+    "file:///warehouse/a%00b",
+    "file:///warehouse/a%1fb",
+    "file:///warehouse/a%0Ab",
+    "file:///warehouse/a%7fb",
+    "file:///warehouse/a%7Fb",
+    "file:///warehouse/%2e%2E/secret",
+    "s3://bucket/a%2f..%2fsecret",
+    "s3://bucket/a%5C..%5Csecret",
+    "s3://bucket/a%00",
+    "file:///warehouse/a%",
+    "file:///warehouse/a%2",
+    "file:///warehouse/a%GG",
+    "file:///warehouse/a%g0",
+    "s3://bucket/%%41",
+)
+ENCODED_SOURCE_URI_ATTACKS = (
+    "https://host/a%2f..%2fsecret",
+    "https://host/a%2F..%2Fsecret",
+    "https://host/a%5c..%5csecret",
+    "https://host/a%5C..%5Csecret",
+    "https://host/a%00b",
+    "https://host/a%0db",
+    "https://host/a%7Fb",
+    "https://host/%2e%2e/secret",
+    "https://host/a%",
+    "https://host/a%2",
+    "https://host/%zz",
+    "file:///imports/a%2fb.zip",
+    "file:///imports/a%5cb.zip",
+    "file:///imports/a%00.zip",
+    "file:///imports/a%.zip",
+    # https 路径不得有空段或尾随空段（根 `/` 除外），避免规范化歧义
+    "https://host//a",
+    "https://host/a//b",
+    "https://host/a/",
+    "https://host//",
+)
+
+
+@pytest.mark.parametrize("uri", ENCODED_OBJECT_URI_ATTACKS)
+def test_encoded_object_uri_attacks_are_rejected(uri: str) -> None:
+    with pytest.raises(ValueError):
+        validate_object_uri(uri)
+    with pytest.raises(ValidationError):
+        object_ref(uri=uri)
+
+
+@pytest.mark.parametrize("uri", ENCODED_SOURCE_URI_ATTACKS)
+def test_encoded_source_uri_attacks_are_rejected(uri: str) -> None:
+    with pytest.raises(ValueError):
+        validate_source_uri(uri)
+    with pytest.raises(ValidationError):
+        collected("AAAUSD", T0, T1, source_uri=uri)
+
+
+def test_ordinary_percent_encoding_is_preserved() -> None:
+    """合法 escape（`%20`、UTF-8 百分号字节、`%2e%2e%2e`）保留原样；字面空白仍被拒绝。"""
+    for uri in (
+        "file:///warehouse/a%20b.zip",
+        "file:///warehouse/caf%C3%A9.zip",
+        "s3://bucket/a%2Db/%2e%2e%2e",
+    ):
+        assert validate_object_uri(uri) == uri
+        assert object_ref(uri=uri).uri == uri
+    for uri in (
+        "https://archive.example.test/a%20b.zip",
+        "https://archive.example.test/caf%C3%A9.zip",
+        "file:///imports/a%20b.zip",
+    ):
+        assert validate_source_uri(uri) == uri
+        assert collected("AAAUSD", T0, T1, source_uri=uri).source_uri == uri
+    with pytest.raises(ValueError):
+        validate_object_uri("file:///warehouse/a b.zip")
+    with pytest.raises(ValueError):
+        validate_source_uri("https://archive.example.test/a b.zip")
+
+
+def test_uri_parsing_helpers_are_not_public_contract() -> None:
+    """URI 拆分与主机 / 路径助手是私有实现：不进入任何公共 `__all__`、注册表或 Schema。"""
+    internal = {
+        "UriParts",
+        "split",
+        "split_uri",
+        "is_host_port",
+        "is_object_path",
+        "is_https_path",
+        "has_dot_segment",
+        "is_scheme",
+        "is_visible_ascii",
+    }
+    for module in B3_MODULES:
+        assert not internal & set(module.__all__), module.__name__
+        assert not {name for name in module.__all__ if name.startswith("_")}, module.__name__
+    assert _uri.__all__ == []
+    registered = {model.__name__ for model in CONTRACT_MODELS}
+    assert not internal & registered
+    assert not any((CURRENT_SCHEMA_DIR / f"{name}.schema.json").exists() for name in internal)
 
 
 def test_source_uri_schemes_are_exactly_https_and_file() -> None:
@@ -1243,7 +1360,15 @@ def test_protocols_are_not_runtime_checkable(name: str) -> None:
 # ======================================================================================
 
 _STDLIB_ALLOWED = {"__future__", "collections", "datetime", "enum", "itertools", "re", "typing"}
-_CORE_ALLOWED = {"core.contracts.revision", "core.contracts.storage", "core.domain.base"}
+#: `core.contracts` 只以 `from core.contracts import _uri` 的形式出现（私有 URI 助手模块）。
+_CORE_ALLOWED = {
+    "core.contracts",
+    "core.contracts.revision",
+    "core.contracts.storage",
+    "core.domain.base",
+}
+#: 静态边界检查也覆盖私有 URI 助手模块。
+_STATIC_MODULES = (*B3_MODULES, _uri)
 
 
 def _tree(module: object) -> ast.Module:
@@ -1261,7 +1386,7 @@ def _imports(tree: ast.Module) -> set[str]:
     return found
 
 
-@pytest.mark.parametrize("module", B3_MODULES, ids=lambda m: m.__name__)
+@pytest.mark.parametrize("module", _STATIC_MODULES, ids=lambda m: m.__name__)
 def test_b3_modules_import_only_stdlib_pydantic_and_core(module: object) -> None:
     for imported in _imports(_tree(module)):
         root = imported.split(".")[0]
@@ -1312,7 +1437,7 @@ def _code_strings(tree: ast.Module) -> list[str]:
     ]
 
 
-@pytest.mark.parametrize("module", B3_MODULES, ids=lambda m: m.__name__)
+@pytest.mark.parametrize("module", _STATIC_MODULES, ids=lambda m: m.__name__)
 def test_b3_modules_hardcode_no_venue_symbol_or_endpoint(module: object) -> None:
     tree = _tree(module)
     for text in _code_strings(tree):
@@ -1379,7 +1504,7 @@ def test_only_the_collector_declares_network_capability() -> None:
     assert declaring == {"CollectorDescriptor"}
 
 
-@pytest.mark.parametrize("module", B3_MODULES, ids=lambda m: m.__name__)
+@pytest.mark.parametrize("module", _STATIC_MODULES, ids=lambda m: m.__name__)
 def test_b3_modules_read_no_wall_clock(module: object) -> None:
     tree = _tree(module)
     attrs = {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}

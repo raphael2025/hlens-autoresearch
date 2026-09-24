@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **B3 返修（R1）本地完成，待 Codex 复核**：Codex 首轮复核未验收；已修 batch 内容核对、URI 绝对性与 scan 交付说明（未推送）；无任何 Adapter 实现；C1 未开放 |
+| 当前子阶段 | **B3 返修（R2）本地完成，待 Codex 复核**：Codex 两轮复核未验收；R1 修 batch 内容核对、URI 绝对性与 scan 说明，R2 修编码路径、origin 端口与内部 API 暴露（未推送）；无任何 Adapter 实现；C1 未开放 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 进行中（B1、B2 已验收，B3 待复核） |
 | 最后更新时间 | 2026-09-24 |
@@ -72,13 +72,13 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 A3b（Cursor）：`infrastructure.Settings` 符合 §6.2；Codex 对抗复核、1469 项全量测试通过并推送（`d840dbb`）
 - ✅ Phase 1 B1（Claude）：8 个双时间 / revision DAG 契约与 Schema；Codex 发现并退回 dangling ID 跨 key 归属漏洞，修复后独立复核、1658 项全量测试与静态检查通过（`b15faa9`）
 - ✅ Phase 1 B2（Claude）：13 个 universe / listing / manifest 契约与 Schema（current 59 份）；Codex 两轮设计/对抗复核后补 listing revision 归属唯一、listing lineage 不悬空，并将 lineage 第三跳改为通用 `source_*`；Codex 独立运行 1938 项全量测试、5 个恶意 payload 与静态检查通过（`b41a46a`）
-- 🔎 Phase 1 B3（Claude，待复核）：Storage / Catalog / Collector 三个 Protocol + 15 个 DTO 与 Schema（current 74 份）；`tests/contract_suites/` 可复用检查被两个不同替身通过、并杀死 34 个单点故障用例；R1 返修：Catalog 必须从实际 batch 独立重算指纹（首次提交与重放都核对），来源 / 对象 URI 必须真正绝对；本地 2478 项测试与静态检查通过
+- 🔎 Phase 1 B3（Claude，待复核）：Storage / Catalog / Collector 三个 Protocol + 15 个 DTO 与 Schema（current 74 份）；`tests/contract_suites/` 可复用检查被两个不同替身通过、并杀死 34 个单点故障用例；R1 返修：Catalog 必须从实际 batch 独立重算指纹（首次提交与重放都核对），来源 / 对象 URI 必须真正绝对；R2 返修：URI 中的百分号编码不得解出路径分隔符 / 反斜杠 / 控制字符，origin 端口在运行时校验，URI 解析助手改为私有；本地 2528 项测试与静态检查通过
 
 ## 4. 当前正在做
 
 - ✅ B1（Claude）：双时间 / revision DAG 的 8 个契约、Schema（current 46 份）与 contract tests 已通过 Codex 独立复核；验收 #4 满足
 - ✅ B2（Claude）：D-31 universe 契约与 `ResearchDatasetManifest` 已通过 Codex 独立验收；验收 #5 满足
-- 🔎 B3（Claude）：Codex 首轮复核退回一项阻塞（Catalog 信任自报 batch 指纹）与两项收口（URI 绝对性、scan 交付说明）；R1 返修已本地提交，等待 Codex 复核与推送；没有任何 Adapter 实现
+- 🔎 B3（Claude）：Codex 首轮复核退回一项阻塞（Catalog 信任自报 batch 指纹）与两项收口（URI 绝对性、scan 交付说明），第二轮退回编码路径、origin 端口与内部 API 暴露三项；R2 返修已本地提交，等待 Codex 复核与推送；没有任何 Adapter 实现
 
 ## 5. 下一步
 
@@ -152,11 +152,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 B3-R2（Claude）：按 Codex 第二轮复核返修——URI 路径中的百分号编码必须合法且不得解出路径分隔符、反斜杠或控制字符（对象 URI 与来源 URI 同一规则），https 来源路径不得有空段；collector 声明的 origin 端口在运行时按 1 ~ 65535、无前导零校验；URI 解析助手移入私有模块，不再是公共契约；本地 2528 项测试通过 | 验收 #6 待 Codex 复核；未推送；C1 未开放 |
 | 2026-09-24 | Phase 1 B3-R1（Claude）：按 Codex 复核返修——Catalog 在任何提交或重放成功前必须用已登记、版本化的规则从实际 batch 独立重算指纹并核对行数（内容被换掉即拒绝，不信任自报指纹）；来源 URI 只允许合法主机的 `https` 与无远程主机的 `file:///绝对路径`，对象 URI 同样须真正绝对；读取接口将来以独立 Protocol 或 major + ADR 交付，不向已发布接口追加必需方法；新增 2 项 suite 检查与 2 个故障用例（共 34）；本地 2478 项测试通过 | 验收 #6 待 Codex 复核；未推送；C1 未开放 |
 | 2026-09-24 | Phase 1 B3（Claude）：新增 `StorageAdapter` / `CatalogAdapter[BatchT]` / `CollectorAdapter` 三个 Protocol 与 15 个 DTO / Schema（current 59 → 74，旧 Schema、v1 与向量逐字节不变）；`tests/contract_suites/` 提供可复用 suite，两套内存 / 临时文件替身通过全部检查，32 个单点故障用例（路径逃逸、校验和、非原子可见、覆盖、伪造 staging、重复 batch、错误 / 伪造 snapshot、未发布 / 不匹配对象等）全部被杀死；本地 2410 项测试通过 | 验收 #6 待 Codex 复核；未推送；C1 未开放 |
 | 2026-09-24 | Phase 1 B2（Claude）：新增 13 个 listing episode / `UniverseSelectionSpec` / 成员与排除 / `ResearchDatasetManifest` 契约与 Schema（current 46 → 59，旧 Schema 与 v1 逐字节不变）；R2 修复 Codex 对抗构造出的 listing lineage / revision 归属漏洞并将第三跳改名 `source_*`；Codex 独立重跑 1938 项全量测试、5 个恶意 payload、ruff / format / mypy 与逐字节 Schema 比较全部通过 | 验收 #5 满足；B2 恢复点 `b41a46a`；B3 已开放 |
 | 2026-09-24 | Phase 1 B1（Claude）：新增 8 个双时间 / revision DAG 契约与 Schema；Codex 对抗复核发现 dangling revision ID 跨 key 归属冲突漏检，Claude R2 修复统一 claim 并补 7 项测试；Codex 独立运行 1658 项全量测试及静态检查通过 | 验收 #4 满足；B1 恢复点 `b15faa9`；B2 已开放 |
-| 2026-09-24 | Phase 1 A3b（Cursor）：`infrastructure.Settings` 实现 §6.2；Codex 发现并退回环境污染测试，修复后独立对抗复核、1469 项测试与全部静态检查通过；已推送 `d840dbb` | 验收 #3 满足；稳定恢复点前移；Claude B1 已批准 |
 
 ## 10. 下一阶段进入条件
 

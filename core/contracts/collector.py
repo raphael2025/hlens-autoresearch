@@ -44,14 +44,9 @@ from typing import Annotated, Protocol
 
 from pydantic import BeforeValidator, Field, field_validator, model_validator
 
+from core.contracts import _uri
 from core.contracts.revision import BINDING_ID_PATTERN
-from core.contracts.storage import (
-    ObjectRef,
-    has_dot_segment,
-    is_host_port,
-    is_object_path,
-    split_uri,
-)
+from core.contracts.storage import ObjectRef
 from core.domain.base import (
     NAME_PATTERN,
     SEMVER_PATTERN,
@@ -132,8 +127,10 @@ def validate_source_uri(value: object) -> str:
     """复核来源 URI；原样返回。不访问网络。按 RFC 3986 组件逐项检查：
 
     - 只接受 ASCII 可见字符（无空白、反斜杠），不得有片段；scheme 只能是 `https` 或 `file`；
-    - `https`：authority 必须是非空小写主机名 + 可选端口（1 ~ 65535），不得含凭据；路径可以为空或
-      以 `/` 开头，不得含 `.` / `..`（含 `%2e` 编码）段；查询参数名呈凭据形状即拒绝；
+    - `https`：authority 必须是非空小写主机名 + 可选端口（1 ~ 65535，无前导零），不得含凭据；
+      路径只能为空、单独 `/`，或每段非空（无 `//`、无尾随 `/`）、无 `.` / `..` 段的绝对路径；
+      查询参数名呈凭据形状即拒绝；
+    - 路径中每个 `%` 必须是合法的两位十六进制 escape，且不得解码为 `/`、`\\`、控制字符或 DEL；
     - `file`：必须是 `file:///绝对路径`（authority 存在且为空，无远程主机），路径为非空的绝对对象
       路径，不得有查询。
     """
@@ -141,7 +138,7 @@ def validate_source_uri(value: object) -> str:
         raise ValueError(f"非法来源 URI：{value!r}；只接受 ASCII 可见字符")
     if " " in value or "\\" in value:
         raise ValueError(f"来源 URI 不得含空白或反斜杠：{value!r}")
-    parts = split_uri(value)
+    parts = _uri.split(value)
     if parts.scheme not in SOURCE_URI_SCHEMES or parts.authority is None:
         raise ValueError(f"来源 URI 只能是 https://… 或 file:///…：{value!r}")
     if parts.fragment is not None:
@@ -153,17 +150,45 @@ def validate_source_uri(value: object) -> str:
             )
         if parts.query is not None:
             raise ValueError(f"file 来源 URI 不得含查询：{value!r}")
-        if not is_object_path(parts.path):
-            raise ValueError(f"file 来源 URI 必须是不含空段或 . / .. 段的绝对路径：{value!r}")
+        if not _uri.is_object_path(parts.path):
+            raise ValueError(
+                f"file 来源 URI 必须是无空段、. / .. 段或危险 percent escape 的绝对路径：{value!r}"
+            )
         return value
-    if not is_host_port(parts.authority):
+    if not _uri.is_host_port(parts.authority):
         raise ValueError(f"https 来源 URI 必须有合法主机名（可带端口），不得含凭据：{value!r}")
-    if parts.path and (not parts.path.startswith("/") or has_dot_segment(parts.path)):
-        raise ValueError(f"https 来源 URI 的路径不得含 . / .. 段：{value!r}")
+    if not _uri.is_https_path(parts.path):
+        raise ValueError(
+            f"https 来源 URI 的路径只能为空、`/` 或无空段、. / .. 段与危险 percent escape 的"
+            f"绝对路径：{value!r}"
+        )
     for part in parts.query.split("&") if parts.query else ():
         name = part.split("=", 1)[0]
         if _has_secret_shape(name):
             raise ValueError(f"来源 URI 的查询参数呈凭据形状：{name!r}")
+    return value
+
+
+def _check_network_origin(value: object) -> object:
+    """运行时 origin 校验：精确的 `https://host[:port]`，与来源 URI 同一主机 / 端口规则。
+
+    JSON Schema pattern 表达不了端口范围与"无前导零"，权威校验在这里。
+    """
+    if not isinstance(value, str) or not _uri.is_visible_ascii(value):
+        raise ValueError(f"非法 network origin：{value!r}")
+    parts = _uri.split(value)
+    if (
+        parts.scheme != "https"
+        or parts.authority is None
+        or not _uri.is_host_port(parts.authority)
+        or parts.path
+        or parts.query is not None
+        or parts.fragment is not None
+    ):
+        raise ValueError(
+            f"network origin 必须是 https://<host>[:<port>]（端口 1 ~ 65535、无前导零），"
+            f"不得含凭据、路径、查询或片段：{value!r}"
+        )
     return value
 
 
@@ -175,7 +200,9 @@ def _check_header_name(value: str) -> str:
 
 RequestId = Annotated[str, Field(pattern=REQUEST_ID_PATTERN)]
 Symbol = Annotated[str, Field(pattern=SYMBOL_PATTERN)]
-NetworkOrigin = Annotated[str, Field(pattern=NETWORK_ORIGIN_PATTERN)]
+NetworkOrigin = Annotated[
+    str, Field(pattern=NETWORK_ORIGIN_PATTERN), BeforeValidator(_check_network_origin)
+]
 SourceUri = Annotated[str, Field(pattern=SOURCE_URI_PATTERN), BeforeValidator(validate_source_uri)]
 HeaderName = Annotated[str, Field(pattern=HEADER_NAME_PATTERN), BeforeValidator(_check_header_name)]
 NonEmptyStr = Annotated[str, Field(min_length=1)]

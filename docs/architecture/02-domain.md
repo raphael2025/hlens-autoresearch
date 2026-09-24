@@ -256,9 +256,9 @@ ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 
 
 | Protocol | 方法 | DTO 与契约层不变量 | 首个实现 |
 |---|---|---|---|
-| `StorageAdapter` | `stage(StageRequest, Iterable[bytes]) → StagedObject`；`publish(StagedObject) → PublishResult`；`lookup(str) → ObjectRef \| None`；`open_read(ObjectRef) → BinaryIO` | 逻辑相对 key（ASCII 段、无 `.` / `..` / 空段 / 反斜杠 / scheme / `%` / NUL / 空白，≤ 1024；原始值先校验，不去空白）；`expected_sha256` 必填、`expected_size` 可选；`ObjectRef` = key + 真正绝对的 URI（`file` 必须是无远程 authority 的 `file:///绝对路径`；其它 scheme 必须有非空主机名 + 合法端口、无凭据；路径为非空对象路径，无空段与 `.` / `..`（含 `%2e`）段；无查询 / 片段）+ SHA-256 + 字节数；`PublishResult.outcome` ∈ `created` / `already_present` | C1 |
+| `StorageAdapter` | `stage(StageRequest, Iterable[bytes]) → StagedObject`；`publish(StagedObject) → PublishResult`；`lookup(str) → ObjectRef \| None`；`open_read(ObjectRef) → BinaryIO` | 逻辑相对 key（ASCII 段、无 `.` / `..` / 空段 / 反斜杠 / scheme / `%` / NUL / 空白，≤ 1024；原始值先校验，不去空白）；`expected_sha256` 必填、`expected_size` 可选；`ObjectRef` = key + 真正绝对的 URI（`file` 必须是无远程 authority 的 `file:///绝对路径`；其它 scheme 必须有非空主机名 + 合法端口、无凭据；路径为非空对象路径，无空段与 `.` / `..`（含 `%2e`）段，每个 `%` 须是合法两位十六进制 escape 且不解码为 `/`、`\`、控制字符或 DEL；无查询 / 片段）+ SHA-256 + 字节数；`PublishResult.outcome` ∈ `created` / `already_present` | C1 |
 | `CatalogAdapter[BatchT]` | `load_table(str) → TableInfo \| None`；`create_table(TableDefinition) → TableInfo`；`get_snapshot(str, str) → SnapshotInfo`；`commit_batch(CommitRequest, BatchT) → CommitResult` | 表身份 `namespace.table`（与 snapshot 绑定键同格式）；表定义只是实现侧定义文档的 `id + SemVer + hash` 绑定；`SnapshotInfo` 绑定所属表，父 snapshot 显式可空且不等于自身，batch ID 与指纹成对，`added_rows ≤ total_rows`；`CommitRequest.row_count ≥ 1`、期望父 snapshot 显式可空，`batch_fingerprint` 只是待 adapter 独立重算核对的主张；`CommitResult` 的 snapshot 必须属于请求的表并携带其 batch ID、指纹与行数，`committed` 时父 snapshot 等于期望；无 `arrival_seq` | C2 / C3 |
-| `CollectorAdapter` | `descriptor → CollectorDescriptor`（只读属性）；`collect(CollectionRequest) → CollectionResult` | 版本化 `SourceBinding`；请求 = 稳定 `request_id` + source + 数据类型 + 非空 symbol 集合（规范排序、区分大小写）+ UTC 半开覆盖区间；结果回显完整请求与 collector 身份，对象只携带 `ObjectRef`，按 symbol 以对象与显式缺口**恰好覆盖**请求区间；来源校验和给出时须等于对象 SHA-256；来源 URI 只能是 `https://合法主机[:端口]`（路径无 `.` / `..` 段）或无远程 authority、无查询的 `file:///绝对路径`，不得含凭据或片段；来源 URI 查询参数 / 元数据中凭据形状的名称被拒绝；只有 descriptor 可声明 HTTPS origin | D0 |
+| `CollectorAdapter` | `descriptor → CollectorDescriptor`（只读属性）；`collect(CollectionRequest) → CollectionResult` | 版本化 `SourceBinding`；请求 = 稳定 `request_id` + source + 数据类型 + 非空 symbol 集合（规范排序、区分大小写）+ UTC 半开覆盖区间；结果回显完整请求与 collector 身份，对象只携带 `ObjectRef`，按 symbol 以对象与显式缺口**恰好覆盖**请求区间；来源校验和给出时须等于对象 SHA-256；来源 URI 只能是 `https://合法主机[:端口]`（路径为空、`/`，或无空段 / 尾随空段、无 `.` / `..` 段的绝对路径）或无远程 authority、无查询的 `file:///绝对路径`，两者路径的 percent escape 规则同 `ObjectRef`，不得含凭据或片段；来源 URI 查询参数 / 元数据中凭据形状的名称被拒绝；只有 descriptor 可声明 HTTPS origin（运行时校验为精确的 `https://host[:port]`，与来源 URI 同一主机 / 端口规则） | D0 |
 
 **调用语义**（staging 不可见、校验失败与流中断不留可见半成品、同内容幂等、异内容 fail closed、不信任自报 `StagedObject`、
 只读 handle；每次提交与重放都先由 adapter 用其已登记、版本化的规则从实际 batch **独立重算**指纹并核对行数，不符即 `BatchRejected`，调用方自报的指纹不被信任；此后 batch 才按 `(table, batch_id)` 幂等、指纹冲突与过期父 snapshot 显式失败、重启后重放得到同一 snapshot、
@@ -436,8 +436,10 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 B3 的对象 key、`ObjectRef.uri` 与 `CollectedObject.source_uri` 例外地在去空白**之前**校验原始值（带空白即拒绝，
 不被规范化）；两个 URI 字段的 JSON Schema pattern 只是近似（`file:///…` 或 `scheme://host[:port]/…`；来源 URI 为
 `https://host[:port]…` 或 `file:///…`），不表达的运行时规则有：按 RFC 3986 组件逐项检查、`file` 不得带 authority、
-端口范围与无前导零、每个路径段非空且不是 `.` / `..`（含 `%2e` 编码）、对象 URI 无查询 / 片段、`file` 来源无查询、
-以及来源查询参数名的凭据形状。
+端口范围与无前导零、每个路径段非空且不是 `.` / `..`（含 `%2e` 编码）、percent escape 必须合法且不得解码为
+`/`、`\`、控制字符或 DEL、对象 URI 无查询 / 片段、`file` 来源无查询，以及来源查询参数名的凭据形状。
+`CollectorDescriptor.network_origins` 的 Schema pattern 允许 1 ~ 5 位端口数字，表达不了端口数值范围（1 ~ 65535）与
+"无前导零"，权威校验在运行时。URI 的组件拆分与主机 / 路径检查是私有实现（`core/contracts/_uri.py`），不属于公共契约。
 
 ## 4. 目录映射
 
