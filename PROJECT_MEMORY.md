@@ -13,7 +13,8 @@
 - 主要时间周期：1H（同上，待 D-08 确认）
 - 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
   B3 串行实现已全部完成：ADR-0011 ~ 0016 已实施并由 Codex 独立复验，ADR-0017 按方案 B
-  是 docs-only 的交付节奏落地（不产生 Provider 代码）；Phase 0 关闭复审（批次 C）未授权、未做
+  是 docs-only 的交付节奏落地（不产生 Provider 代码）；Phase 0 关闭复审（批次 C）已于 2026-09-24
+  获 Raphael 明确授权，正在进行
 
 ## 2. Current Architecture
 
@@ -41,10 +42,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：B3 串行实现已结束；批次 1 ~ 7（ADR-0011 ~ 0017）全部完成，契约仍为未发布的 2.0.0
-- Current Objective：等待 Phase 0 关闭复审（批次 C）的授权；在此之前不开始新实现
-- Current Blocker：Phase 0 关闭复审（批次 C）未授权；Constitution 1.0.0 仍待 Raphael 亲自批准
-- Next Milestone：Phase 0 关闭复审（批次 C）→ Constitution 获批 1.0.0 → Phase 0 关闭
+- Current Subphase：B3 串行实现已结束（批次 1 ~ 7 / ADR-0011 ~ 0017 全部完成，契约仍为未发布的 2.0.0）；
+  Phase 0 关闭复审（批次 C）已于 2026-09-24 获 Raphael 明确授权，正在进行
+- Current Objective：执行批次 C —— 只做关闭复审、证据矩阵、剩余问题与迁移 / 旧版本影响；
+  不自动修代码、不改冻结契约；复审通过**不等于**批准 Constitution 或关闭 Phase 0
+- Current Blocker：Constitution 1.0.0、Phase 0 正式关闭、main 合并、tag 均需 Raphael 后续明确批准
+- Next Milestone：批次 C 复审结论 → Constitution 获批 1.0.0 → Phase 0 正式关闭
   （main 合并与 tag 需 Raphael）
 
 ## 5. Active Decisions
@@ -160,7 +163,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   JSON 往返实验哈希与 v1 三哈希读取探针均通过）；上一恢复点 `695a34b`（ADR-0015）、
   `d083273`（ADR-0014）、`04bb3f8`（ADR-0013）、`7f9892c`（ADR-0012）、`2544d2a`（ADR-0011），均已复验
 - Phase：Phase 0；B1/B2 + ADR-0010 + B3 批次 1 ~ 7（ADR-0011 ~ 0017）已完成，
-  契约 2.0.0 仍未发布，Phase 0 关闭复审（批次 C）未授权、未做
+  契约 2.0.0 仍未发布；Phase 0 关闭复审（批次 C）已授权、进行中、尚无结论
 - State：core 契约、状态机、只读载荷、完整实验身份、规范版本语法、生命周期主体与授权、
   信息流白名单、确定性判定与数值合法性、Profile 普适结构不变量、审计身份与版本绑定、
   `LlmCall` 内容绑定、v1 只读兼容入口均已实现；1304 测试、ruff check、ruff format --check、
