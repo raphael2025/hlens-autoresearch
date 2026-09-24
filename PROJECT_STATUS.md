@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **C2 本地完成，待 Codex 复核**：PostgreSQL-backed PyIceberg Catalog、幂等提交与真实 PostgreSQL 集成证据已提交；C3 未开放 |
+| 当前子阶段 | **C3 已开放**：实现八张冻结 Iceberg 表的版本化 Schema、初始分区、稳定 PyArrow batch 指纹与分区演进等价证据；C2 已验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C1 已验收，C2 待复核） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C2 已验收，C3 已开放） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -25,10 +25,10 @@ Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明
 ADR-0021（本地数据基础设施：PostgreSQL 独立库做 Iceberg Catalog、本地 `file://` warehouse、Phase 1 ~ 6 不用 NATS）、
 ADR-0022（Binance 公共现货 BTCUSDT / ETHUSDT，无任何交易能力）、ADR-0023（历史可用时间与本机知识时间分开；修订只追加，无法判定先后即失败）、
 ADR-0024（按当时可交易集合构建标的池）。A2 已把它们同步进数据架构文档，并冻结首批表名、分区、数据源版本、依赖清单与设置字段。
-Iceberg Catalog、Collector、网络访问与数据下载**尚未开始**；本地 StorageAdapter 已验收。A3a（依赖锁定）、A3b（typed settings）与 B1（双时间 / revision DAG 契约）均已由 Codex 独立复核；B1 对抗复核发现 dangling revision ID 可被不同 key 认领，Claude 修复并补回归测试后通过验收。
+Iceberg Catalog 与本地 StorageAdapter 已验收；Collector、网络访问与数据下载**尚未开始**。A3a（依赖锁定）、A3b（typed settings）与 B1（双时间 / revision DAG 契约）均已由 Codex 独立复核；B1 对抗复核发现 dangling revision ID 可被不同 key 认领，Claude 修复并补回归测试后通过验收。
 
 代码仓库已有私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）：执行者只提交，Codex 复核通过后推送每个进度；PR 与 CI 尚未配置。
-本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C1 及各验收门；C1 实现恢复点为 `7857039`。
+本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C2 及各验收门；C2 实现恢复点为 `373e286`。
 
 Raphael 2026-09-24 的“授权所有、全权接管并开发 / 测试 / 决策 / 文档”明确覆盖 C2 所需的 H12 环境变更：
 创建专用 PostgreSQL catalog / test database 与最小权限 role、写入仅本机且被 Git 忽略的凭据文件。该授权不含安装系统软件、
@@ -43,7 +43,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（C2 待复核） |
+| 1 | Market Representation | 🔄 已开启（C3 已开放） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -78,6 +78,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 B2（Claude）：13 个 universe / listing / manifest 契约与 Schema（current 59 份）；Codex 两轮设计/对抗复核后补 listing revision 归属唯一、listing lineage 不悬空，并将 lineage 第三跳改为通用 `source_*`；Codex 独立运行 1938 项全量测试、5 个恶意 payload 与静态检查通过（`b41a46a`）
 - ✅ Phase 1 B3（Claude）：Storage / Catalog / Collector 三个 Protocol + 15 个 DTO 与 Schema（current 74 份）；`tests/contract_suites/` 可复用检查被两个不同替身通过、并杀死 34 个单点故障用例；两轮返修关闭 batch 内容核对、URI 绝对性与编码路径、origin 端口及内部 API 暴露问题；Codex 独立运行 2528 项全量测试、恶意 URI / 端口探针、ruff / format / mypy 与冻结文件比较全部通过（`9c57253`）
 - ✅ Phase 1 C1（Cursor Auto）：本地 `file://` StorageAdapter 经三轮对抗返修关闭短写、路径 / payload TOCTOU、FD 泄漏、不可用 ref 与整根替换；Codex 独立运行 2574 项全量测试、根替换反例与静态检查通过（`7857039`）
+- ✅ Phase 1 C2（Claude Opus）：PostgreSQL-backed PyIceberg Catalog、定义注册、真实快照 / 时间旅行、重启幂等与乐观并发；Codex 独立运行 2630 项全量测试、12 轮同 batch 并发探针、权限 / 残留 / 密钥检查与静态检查通过（`373e286`）
 
 ## 4. 当前正在做
 
@@ -88,13 +89,14 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ C1-R2（Cursor Auto）：publish 最终 FD 身份重验、可用 ObjectRef、根 FD 生命周期；经 C1-R3 继续返修
 - ✅ C1-R1（Cursor Auto）：关闭短写与路径 TOCTOU；经 C1-R2 / C1-R3 继续返修
 - ✅ C1（Cursor Auto）：本地 `file://` `LocalFileStorageAdapter` 已实现；经 C1-R1 / C1-R2 / C1-R3 返修加固
-- 🔄 C2（Claude Opus）：本地完成待 Codex 复核——PyIceberg Catalog 通过 B3 contract suite（SQLite 与真实 PostgreSQL），PostgreSQL 集成覆盖并发、快照、时间旅行、重启恢复、幂等重放与 catalog 库无行情行；已按 H12 授权创建专用 catalog / test 库与最小权限 role（凭据仅在本机忽略文件）
+- ✅ C2（Claude Opus）：Codex 独立验收通过；验收矩阵 #8 满足，接受 `373e286`
+- 🔄 C3（Claude Opus）：八张冻结表的版本化 Schema / 初始分区 / 稳定 PyArrow batch 指纹 / 分区演进等价证据；不得访问外网或开始 Collector
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 现在无需操作：C1 已验收并将随验收门推送；Claude C2 由额度守护器控制，五小时用量达到 80% 时暂停并在刷新后恢复
+- 现在无需操作：C2 已验收并将随验收门推送；Claude C3 由额度守护器控制，五小时用量达到 80% 时暂停并在刷新后恢复
 - 以后如果要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，需要你对具体内容单独批准
 
 ### Claude Code 需要做
@@ -103,8 +105,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已批准且已完成：A1 / A1r / A1r2 / A2 / A2r —— ADR-0021 ~ 0024 起草、两次修正、接受与首切片冻结；ADR-0025 与执行门修正（docs-only）
 - 已完成并验收：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema 与 contract tests）与 **Claude B2**（D-31 universe / manifest 契约）
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
-- 当前唯一获批实现批次：**C2**；按任务包实现 PyIceberg Catalog，不得开始 C3
-- C2 可按上方已记录 H12 授权创建专用 catalog / test database 与最小权限 role；Collector、外网数据下载及 C3 以后仍未开放
+- 当前唯一获批实现批次：**C3**；按任务包实现八张冻结表的 Schema / 分区 / 指纹与演进证据，不得开始 D0
+- C2 的 H12 数据库资源已创建并验收；C3 只能使用现有本地 Catalog / warehouse，不得访问外网、下载数据或开始 Collector；D0 以后仍未开放
 
 ## 6. 当前待决策
 
@@ -147,10 +149,10 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Claude C2；C3 及其后须等各自任务包
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Claude C3；D0 及其后须等各自任务包
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
-- ❌ 不安装系统软件（包括 Docker）；C2 只可在已记录 H12 授权范围内创建专用 PostgreSQL catalog / test database 与最小权限 role
+- ❌ 不安装系统软件（包括 Docker）；C3 只可使用 C2 已创建并验收的专用 PostgreSQL catalog / test database 与最小权限 role，不得创建或修改其他数据库 / role
 - ❌ 不修改系统配置、`.wslconfig`、Git 全局配置
 - ❌ 不修改、移动或删除旧项目（`/mnt/e/alpha-autoquant`、`/mnt/e/hlens-cryptoplus`）与旧数据
 - ❌ 不选择 D-09 的五类数值（Phase 4 校准后才冻结）
@@ -163,11 +165,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-24 | Phase 1 C2（Claude Opus）：实现 PostgreSQL-backed PyIceberg Catalog 与定义登记表；创建专用 `hlens_iceberg_catalog` / `hlens_iceberg_catalog_test` 库与 role；contract suite 与 PostgreSQL 集成测试通过；未改 `core/` | 验收 #8 待 Codex 复核；C3 未开放 |
+| 2026-09-24 | Codex 独立验收 C2：2630 项全量测试、12 轮同 batch 并发、真实 PostgreSQL 权限 / 清理 / payload 隔离、密钥扫描、ruff / format / mypy 与冻结路径均通过；接受 `373e286` | 验收 #8 满足；C3 开放 |
+| 2026-09-24 | Phase 1 C2（Claude Opus）：实现 PostgreSQL-backed PyIceberg Catalog 与定义登记表；创建专用 `hlens_iceberg_catalog` / `hlens_iceberg_catalog_test` 库与 role；contract suite 与 PostgreSQL 集成测试通过；未改 `core/` | 后由 Codex 独立验收并接受为 `373e286` |
 | 2026-09-24 | Codex 独立验收 C1：2574 项全量测试、46 项存储测试、根替换反例、ruff / format / mypy 与冻结路径均通过；接受 `7857039`；记录 H12 数据库授权并开放 Claude C2 | 验收 #7 满足；C2 开放 |
 | 2026-09-24 | Phase 1 C1-R2（Cursor Auto）：publish 后从最终 FD 重验 SHA/size；配置根重走确认可用 ref；失败清理本次 final；根 FD 按操作开关 + 幂等 close；经 C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
 | 2026-09-24 | Phase 1 C1-R1（Cursor Auto）：短写 write-all；warehouse/staging 根 FD + `dir_fd`/`O_NOFOLLOW`；publish/open_read/lookup 锚定已打开 FD；拒绝相同根；经 C1-R2 / C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
-| 2026-09-24 | Phase 1 C1（Cursor Auto）：实现 `LocalFileStorageAdapter`（staging 流式校验、`os.link` 原子发布、幂等 / 冲突、路径 / symlink 安全）；接入 B3 Storage suite；未改 `core/`；经 C1-R* 返修 | 验收 #7 待 Codex 复核；C2 未开放 |
 
 ## 10. 下一阶段进入条件
 
@@ -185,7 +187,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 3. ✅ ADR-0021 ~ 0024 已 Accepted，决定 D-01、D-02、D-08、D-10、D-28、D-31；首切片已冻结（A2）
 4. ✅ 首次消费的 Provider 先交付 Protocol + DTO + contract tests（ADR-0017；B1～B3 已满足），再开始实现（C 起）
 
-**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #7 满足；#8 对应 C2，正在实施）。
+**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #8 满足；#9 对应 C3，已开放）。
 
 ## 11. 给 Raphael 的下一步
 
@@ -204,5 +206,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
    已完成 A1、A1r、A1r2、A2、A2r 与 A3：ADR-0021 ~ 0025 Accepted，首切片冻结，依赖与 typed settings 已推送。
-   **Claude B1～B3** 与 **Cursor C1** 已由 Codex 验收；当前执行 **Claude C2**。任何 Agent 都不得开始 C3 或 Phase 0.5。
-3. C2 可按已记录 H12 授权创建专用 PostgreSQL catalog / test database 与 role；不安装软件、不改系统 / Git 配置、不触碰其他数据库、旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。
+   **Claude B1～C2** 与 **Cursor C1** 已由 Codex 验收；当前执行 **Claude C3**。任何 Agent 都不得开始 D0 或 Phase 0.5。
+3. C3 使用已有专用 PostgreSQL catalog / test database 与本地 warehouse；不访问外网、不下载数据、不安装软件、不改系统 / Git 配置、不触碰其他数据库、旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。
