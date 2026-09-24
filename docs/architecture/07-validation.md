@@ -158,7 +158,10 @@ RETIRED 对象写入退役记录，**不写入 Failure Registry**：
 
 > 状态：概念契约，冻结于 [ADR-0007](../adr/0007-validation-architecture-three-layers.md)。Phase 0 将其落成 `core/contracts/` 中的代码契约；**参数值**在 Phase 4 校准后冻结（两步冻结 Step 2）。
 
-Profile 引用格式：`vp:{scope_id}@{semver}`，例如 `vp:btcusdt-1h-swing@1.0.0`。
+Profile 引用格式：`Ref` 的规范串 `profile:{name}@{semver}`，例如 `profile:btcusdt_1h_swing@1.0.0`
+（[ADR-0015](../adr/0015-audit-identity-types-and-version-bindings.md) §D-22.2）。它与全项目
+其它对象引用共用一套语法与校验；实验、报告与元数据三处都用这个引用 + 该版本的内容哈希
+（64 位小写十六进制 SHA-256）**成对**绑定，不再把复合引用塞进一个自由字符串。
 
 ### 5.1 字段
 
@@ -182,7 +185,7 @@ Profile 引用格式：`vp:{scope_id}@{semver}`，例如 `vp:btcusdt-1h-swing@1.
 ### 5.2 选择规则（ProfileSelectionRule）
 
 - 输入：`instrument`、`timeframe`、预登记的 `research_class`（按预登记的持仓周期类别）。
-- 输出：唯一的 `profile_id@version`。
+- 输出：唯一的 Profile 引用 `profile:{name}@{semver}`（版本只从该引用读取，不再有重复的版本字段）。
 - 规则是确定性的、版本化的；研究者不能自选 Profile（Constitution C-A4）。
 - 若实验的实际持仓分布偏离预登记类别超出声明范围，该实验按正确类别的 Profile 重新评估，**不得**因此换到更宽松的 Profile。
 

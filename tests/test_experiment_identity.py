@@ -330,12 +330,23 @@ def test_run_id_is_an_opaque_per_attempt_string() -> None:
 # ======================================================================================
 
 
-def test_selection_entry_rejects_version_mismatch() -> None:
+def test_selection_entry_has_a_single_version_source() -> None:
+    """ADR-0015 §D-22.4 起版本只有一处表达：重复的 `profile_version` 字段已删除。
+
+    ADR-0009 §矩阵 9 原先要求"两个副本必须一致"，现在该不一致**在结构上不可表达**，
+    这比事后校验更强；旧字段作为多余字段被 `extra="forbid"` 拒绝。
+    """
+    entry = SelectionEntry(
+        key=factories.selection_key(),
+        profile=Ref(kind=Kind.PROFILE, name="test_scope", version="1.0.0"),
+    )
+    assert entry.profile.version == "1.0.0"
+    assert "profile_version" not in SelectionEntry.model_fields
     with pytest.raises(ValidationError):
         SelectionEntry(
             key=factories.selection_key(),
             profile=Ref(kind=Kind.PROFILE, name="test_scope", version="1.0.0"),
-            profile_version="2.0.0",
+            profile_version="2.0.0",  # type: ignore[call-arg]
         )
 
 
@@ -344,7 +355,6 @@ def test_selection_entry_rejects_non_profile_kind() -> None:
         SelectionEntry(
             key=factories.selection_key(),
             profile=Ref(kind=Kind.FEATURE, name="test_scope", version="1.0.0"),
-            profile_version="1.0.0",
         )
 
 
@@ -383,7 +393,10 @@ def _variants() -> dict[str, ReproducibilityTuple]:
                 factories.cost_model_ref("cost_v2"),
             ),
         ),
-        "validation_profile_hash": factories.repro_tuple(validation_profile_hash="other-profile"),
+        "validation_profile_hash": factories.repro_tuple(validation_profile_hash=OTHER_SHA),
+        "validation_profile_ref": factories.repro_tuple(
+            validation_profile=factories.profile_ref(version="2.0.0")
+        ),
         "selection_rule_hash": factories.repro_tuple(
             profile_selection=factories.profile_selection(selection_rule_hash=OTHER_SHA)
         ),
@@ -394,7 +407,7 @@ def _variants() -> dict[str, ReproducibilityTuple]:
         ),
         "plugin_hash": changed_plugin,
         "seeds": factories.repro_tuple(seeds=(1,)),
-        "code_commit": factories.repro_tuple(code_commit="fedcba9876543210"),
+        "code_commit": factories.repro_tuple(code_commit=factories.OTHER_GIT_COMMIT_OID),
         "split_spec": factories.repro_tuple(split_spec="train/oos"),
         "environment_lock": factories.repro_tuple(environment_lock="other-lock"),
         "constitution_version": factories.repro_tuple(constitution_version="1.0.0"),
@@ -674,21 +687,22 @@ def test_registry_covers_the_new_selection_value_object() -> None:
 # ======================================================================================
 
 
-def test_metadata_and_tuple_share_the_selection_key_type() -> None:
+def test_metadata_and_tuple_share_the_selection_value_object() -> None:
+    """ADR-0015 §D-22.3 起两处共用**整个** `ProfileSelection`，不只是选择输入。"""
     repro = factories.repro_tuple()
     meta = ExperimentMetadata(
         experiment_hash=repro.experiment_hash,
         constitution_version=repro.constitution_version,
-        validation_profile_version=repro.validation_profile_version,
+        validation_profile=repro.validation_profile,
         validation_profile_hash=repro.validation_profile_hash,
-        profile_selection_rule_version=repro.profile_selection.selection_rule.version,
-        profile_selection_key=repro.profile_selection.key,
+        profile_selection=repro.profile_selection,
         hypothesis_family_id="family-1",
         trial_index=1,
         family_trial_count=1,
         declared_research_class=repro.profile_selection.key.research_class,
     )
-    assert meta.profile_selection_key == repro.profile_selection.key
+    assert meta.profile_selection == repro.profile_selection
+    assert meta.profile_selection.key == repro.profile_selection.key
     assert meta.experiment_hash == repro.experiment_hash
 
 

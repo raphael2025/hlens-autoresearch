@@ -274,7 +274,7 @@
       "type": "array"
     },
     "code_commit": {
-      "minLength": 7,
+      "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
       "title": "Code Commit",
       "type": "string"
     },
@@ -357,17 +357,15 @@
       "type": "string"
     },
     "constitution_version": {
-      "minLength": 1,
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Constitution Version",
       "type": "string"
     },
-    "validation_profile_version": {
-      "minLength": 1,
-      "title": "Validation Profile Version",
-      "type": "string"
+    "validation_profile": {
+      "$ref": "#/$defs/Ref"
     },
     "validation_profile_hash": {
-      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Validation Profile Hash",
       "type": "string"
     },
@@ -401,7 +399,7 @@
     "dependency_hashes",
     "environment_lock",
     "constitution_version",
-    "validation_profile_version",
+    "validation_profile",
     "validation_profile_hash",
     "profile_selection",
     "split_spec",

@@ -1,7 +1,8 @@
 # 02 — Domain Model
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
-> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.0.0`（ADR-0008 + ADR-0009 共同定义）。
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.0.0`（ADR-0008 + ADR-0009 共同定义；
+> ADR-0011 ~ 0015 在同一个**尚未发布**的版本内继续收紧，不升 major，理由见各 ADR 的版本小节）。
 
 ## 1. 统一标识与版本化
 
@@ -103,7 +104,8 @@ classDiagram
     }
     class ValidationReport {
         +constitution_version
-        +validation_profile_version
+        +validation_profile
+        +validation_profile_hash
         +checks
         +verdict
     }
@@ -147,7 +149,7 @@ classDiagram
 | **StrategySpec** | 信号 → 仓位的规则 | 参数空间必须声明（用于多重检验计数） |
 | **RiskPolicy** | 仓位、止损、敞口、杠杆限制 | 独立于策略版本化 |
 | **ExperimentSpec / Run** | 见 06-experiment.md | 可复现；策略 / 风控 / Outcome 只存放在复现元组内，Spec 上只有派生只读引用（ADR-0009） |
-| **ValidationReport** | 按 Constitution + Validation Profile 执行的检查结果 | 绑定 Constitution 版本**与 Profile 版本**（ADR-0007）；同时绑定 `run_id` **与** `experiment_hash`（ADR-0009） |
+| **ValidationReport** | 按 Constitution + Validation Profile 执行的检查结果 | 绑定 Constitution 版本**与 Profile**（ADR-0007；Profile 绑定 = `Ref(kind=profile)` + 内容哈希，ADR-0015）；同时绑定 `run_id` **与** `experiment_hash`（ADR-0009） |
 | **LifecycleRecord** | 研究对象的晋升状态 | 只能按状态机转移 |
 | **FailureRecord** | 失败/拒绝的记录 | 永不删除 |
 | **ResearchMemory** | 以上所有记录的可检索集合 | 追加式（append-only） |
@@ -252,6 +254,33 @@ Event / Strategy 的直接输入。**
 覆盖其直接的 `strategy_spec`。这只是**必要条件**，传递依赖闭包由 Runner / Registry 负责
 （06-experiment.md §7）。
 
+### 3.2.1 顶层身份字段的类型（ADR-0015）
+
+审计链上的身份槽位分成**四类**，它们不共用一个类型，也不按字段名里有 `id` / `hash` 就套用：
+
+| 类型 | 格式 | 含义 | 出现位置 |
+|---|---|---|---|
+| `ContentHash` | 64 位小写十六进制（`^[0-9a-f]{64}$`） | 本项目**规范化 JSON / 内容**的 SHA-256 | `ReproducibilityTuple.validation_profile_hash`；`ValidationReport.experiment_hash`、`validation_profile_hash`；`ExperimentMetadata.experiment_hash`、`validation_profile_hash`；`StrategyArtifact.experiment_hashes` 的每一项；`GoldenOutputs.signals_hash`、`positions_hash`；`EquivalenceCheck.artifact_id`；`DeploymentRecord.artifact_id`、`config_hash` |
+| `GitOid` | 40（SHA-1）或 64（SHA-256）位**小写**十六进制 | **Git** 对象 ID。与 `ContentHash` 是两套命名空间，短 SHA 与大写都被拒绝 | `ReproducibilityTuple.code_commit`；`StrategyArtifact.research_code_commit`、`research_code_tree_hash` |
+| `GitCodeRevision` | 值对象 `{commit_oid: GitOid, tree_oid: GitOid}` | 一份代码的完整 Git 身份（ADR-0005 §3 的"commit + tree hash"）。相等性是**结构化**比较 | `EquivalenceCheck.production_code_hash`、`DeploymentRecord.production_code_hash`（**线字段名沿用**，值已是该值对象） |
+| 不透明标识 / 复合描述 | 只要求非空 | 生成算法或格式**未冻结**，不得伪装成内容身份 | `run_id`、`report_id`、`deployment_id`、`trace_id`、`DatasetRef.snapshot_id`、`GoldenOutputs.signals_uri / positions_uri`、`StrategyArtifact.validation_reports`（即 `report_id` 列表）、`ReproducibilityTuple.environment_lock` |
+
+`artifact_id` 属于第一类：ADR-0005 §3 把它定义为 Artifact manifest 规范化 JSON 的 SHA-256，
+因此它是内容身份，不是不透明 ID。
+
+**版本与 Profile 的绑定**（ADR-0015 §D-22）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `constitution_version` | 唯一的 ASCII SemVer 2.0.0（§3.5 的同一个 pattern） | 出现在 `ReproducibilityTuple`、`ValidationReport`、`ExperimentMetadata` |
+| `validation_profile` | `Ref`，`kind` 必须是 `profile`；规范串 `profile:{name}@{semver}` | 同上三处；与 `validation_profile_hash: ContentHash` **成对**构成绑定 |
+| `profile_selection` | `ProfileSelection` 值对象（规则 `Ref` + 规则内容哈希 + 选择输入） | 复现元组与 `ExperimentMetadata` 用**同一个**值对象；`SelectionEntry` 的版本只从 `profile.version` 读取 |
+
+**诚实边界**：以上都是**格式与结构**约束。哈希是否真的等于被引用对象的内容、Git 对象是否
+存在、工作区是否干净、`validation_profile` 指向的版本是否已登记或已 frozen、三处绑定是否
+彼此一致，契约层都**没有**校验——分别属 Registry、Runner / 打包器与 Control Plane
+（ADR-0015「运行时延期义务」）。`environment_lock` 的结构化表达**后续另定**，本轮未定义。
+
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
 当前 `CONTRACT_SCHEMA_VERSION = 2.0.0`。模型校验**只接受同 major**（`2.x`），
@@ -259,7 +288,7 @@ Event / Strategy 的直接输入。**
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（36 份） | `schemas/*.schema.json` |
+| 当前 Schema（37 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |

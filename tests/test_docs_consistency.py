@@ -54,10 +54,14 @@ def test_lifecycle_order_is_paper_before_production_candidate() -> None:
         )
 
 
-def test_reproducibility_tuple_documents_both_rule_versions() -> None:
+def test_reproducibility_tuple_documents_both_rule_bindings() -> None:
+    """两层规则的绑定都必须写在文档里；Profile 的写法随 ADR-0015 D-22.2 更新。"""
     text = (REPO / "docs" / "architecture" / "06-experiment.md").read_text(encoding="utf-8")
     assert "constitution_version" in text
-    assert "validation_profile_version" in text
+    assert "`validation_profile`" in text
+    assert "`validation_profile_hash`" in text
+    assert "validation_profile_version" not in text, "旧的自由字符串字段名不得残留"
+    assert "vp:" not in text, "Profile 引用的规范串是 profile:{name}@{semver}"
 
 
 def test_adr_index_matches_adr_status() -> None:

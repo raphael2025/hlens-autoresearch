@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import UTC, date, datetime, timedelta
 
 from core.contracts.profile_selection import (
+    ExperimentMetadata,
     ProfileSelectionKey,
     ProfileSelectionRule,
     SelectionEntry,
@@ -26,8 +27,13 @@ from core.contracts.validation_profile import (
     ValidationProfile,
     WalkForwardParams,
 )
-from core.domain.artifact import GoldenOutputs, StrategyArtifact
-from core.domain.base import Kind, Ref
+from core.domain.artifact import (
+    DeploymentRecord,
+    EquivalenceCheck,
+    GoldenOutputs,
+    StrategyArtifact,
+)
+from core.domain.base import GitCodeRevision, Kind, Ref
 from core.domain.research import (
     ExperimentRun,
     ExperimentSpec,
@@ -49,6 +55,18 @@ HASH_C = "c" * 64
 HASH_D = "d" * 64
 HASH_E = "e" * 64
 HASH_RULE = "f" * 64
+#: Profile 与实验身份用的假 `ContentHash`（ADR-0015 §D-21.1 起这些槽位必须是 SHA-256 形状）。
+HASH_PROFILE = "1" * 64
+HASH_EXPERIMENT = "2" * 64
+HASH_CONFIG = "3" * 64
+
+#: 测试用的假 Git OID：40 位小写十六进制（ADR-0015 §D-21.2 起短 SHA 被拒绝）。
+GIT_COMMIT_OID = "0123456789abcdef0123456789abcdef01234567"
+GIT_TREE_OID = "fedcba9876543210fedcba9876543210fedcba98"
+#: 另一个合法 OID：供"只改一项就换身份"的实验哈希敏感性测试使用。
+OTHER_GIT_COMMIT_OID = "89abcdef0123456789abcdef0123456789abcdef"
+#: 64 位形式（SHA-256 仓库）同样合法。
+GIT_COMMIT_OID_SHA256 = "0123456789abcdef" * 4
 
 
 def dataset_ref() -> DatasetRef:
@@ -85,6 +103,11 @@ def selection_rule_ref(version: str = "1.0.0") -> Ref:
     return Ref(kind=Kind.PROFILE_SELECTION_RULE, name="test_rule", version=version)
 
 
+def profile_ref(name: str = "test_scope", version: str = "1.0.0") -> Ref:
+    """Validation Profile 的引用（ADR-0015 §D-22.2 起三处绑定都用它，不再用自由字符串）。"""
+    return Ref(kind=Kind.PROFILE, name=name, version=version)
+
+
 def profile_selection(**overrides: object) -> ProfileSelection:
     payload: dict[str, object] = {
         "selection_rule": selection_rule_ref(),
@@ -119,12 +142,12 @@ def repro_tuple(**overrides: object) -> ReproducibilityTuple:
     payload: dict[str, object] = {
         **refs,
         "dataset_snapshots": (dataset_ref(),),
-        "code_commit": "0123456789abcdef",
+        "code_commit": GIT_COMMIT_OID,
         "dependency_hashes": dependency_hashes(*(r for r in refs.values() if r is not None)),
         "environment_lock": "lock-hash",
         "constitution_version": "0.2.0-draft",
-        "validation_profile_version": "vp:test_scope@1.0.0",
-        "validation_profile_hash": "profile-hash",
+        "validation_profile": profile_ref(),
+        "validation_profile_hash": HASH_PROFILE,
         "profile_selection": profile_selection(),
         "split_spec": "train/validation/sealed-oos",
     }
@@ -216,13 +239,7 @@ def selection_rule() -> ProfileSelectionRule:
     return ProfileSelectionRule(
         name="test_rule",
         version="1.0.0",
-        entries=(
-            SelectionEntry(
-                key=selection_key(),
-                profile=Ref(kind=Kind.PROFILE, name="test_scope", version="1.0.0"),
-                profile_version="1.0.0",
-            ),
-        ),
+        entries=(SelectionEntry(key=selection_key(), profile=profile_ref()),),
     )
 
 
@@ -244,15 +261,32 @@ def validation_report(verdict: Verdict = Verdict.PASS, **overrides: object) -> V
         "report_id": "rep-1",
         "run_id": "run-1",
         "subject": strategy_ref(),
-        "experiment_hash": "exp-hash",
+        "experiment_hash": HASH_EXPERIMENT,
         "constitution_version": "0.2.0-draft",
-        "validation_profile_version": "vp:test_scope@1.0.0",
-        "validation_profile_hash": "profile-hash",
+        "validation_profile": profile_ref(),
+        "validation_profile_hash": HASH_PROFILE,
         "gates": (gate_result(verdict),),
         "verdict": verdict,
     }
     payload.update(overrides)
     return ValidationReport(**payload)  # type: ignore[arg-type]
+
+
+def experiment_metadata(**overrides: object) -> ExperimentMetadata:
+    """每个实验的规则绑定记录（ADR-0015 §D-22.2、§D-22.3 起用引用 + 完整选择依据）。"""
+    payload: dict[str, object] = {
+        "experiment_hash": HASH_EXPERIMENT,
+        "constitution_version": "0.2.0-draft",
+        "validation_profile": profile_ref(),
+        "validation_profile_hash": HASH_PROFILE,
+        "profile_selection": profile_selection(),
+        "hypothesis_family_id": "family-1",
+        "trial_index": 1,
+        "family_trial_count": 1,
+        "declared_research_class": "swing",
+    }
+    payload.update(overrides)
+    return ExperimentMetadata(**payload)  # type: ignore[arg-type]
 
 
 def experiment_run(**overrides: object) -> ExperimentRun:
@@ -265,14 +299,16 @@ def experiment_run(**overrides: object) -> ExperimentRun:
     return ExperimentRun(**payload)  # type: ignore[arg-type]
 
 
-def golden_outputs() -> GoldenOutputs:
-    return GoldenOutputs(
-        dataset_snapshot_id="snap-1",
-        signals_uri="s3://bucket/signals",
-        signals_hash=HASH_A,
-        positions_uri="s3://bucket/positions",
-        positions_hash=HASH_B,
-    )
+def golden_outputs(**overrides: object) -> GoldenOutputs:
+    payload: dict[str, object] = {
+        "dataset_snapshot_id": "snap-1",
+        "signals_uri": "s3://bucket/signals",
+        "signals_hash": HASH_A,
+        "positions_uri": "s3://bucket/positions",
+        "positions_hash": HASH_B,
+    }
+    payload.update(overrides)
+    return GoldenOutputs(**payload)  # type: ignore[arg-type]
 
 
 def strategy_artifact(**overrides: object) -> StrategyArtifact:
@@ -284,14 +320,47 @@ def strategy_artifact(**overrides: object) -> StrategyArtifact:
         "created_at": T0,
         "strategy_spec": spec_ref,
         "dependencies": dependency_hashes(spec_ref),
-        "research_code_commit": "0123456789abcdef",
-        "research_code_tree_hash": "0123456789abcdef",
-        "experiment_hashes": ("exp-hash",),
+        "research_code_commit": GIT_COMMIT_OID,
+        "research_code_tree_hash": GIT_TREE_OID,
+        "experiment_hashes": (HASH_EXPERIMENT,),
         "validation_reports": ("rep-1",),
         "golden_outputs": golden_outputs(),
     }
     payload.update(overrides)
     return StrategyArtifact(**payload)  # type: ignore[arg-type]
+
+
+def git_code_revision(**overrides: object) -> GitCodeRevision:
+    """生产代码修订：commit + tree 的结构化身份（ADR-0015 §D-21.2）。"""
+    payload: dict[str, object] = {"commit_oid": GIT_COMMIT_OID, "tree_oid": GIT_TREE_OID}
+    payload.update(overrides)
+    return GitCodeRevision(**payload)  # type: ignore[arg-type]
+
+
+def equivalence_check(**overrides: object) -> EquivalenceCheck:
+    payload: dict[str, object] = {
+        "artifact_id": HASH_C,
+        "production_code_hash": git_code_revision(),
+        "signals_match": True,
+        "positions_match": True,
+    }
+    payload.update(overrides)
+    return EquivalenceCheck(**payload)  # type: ignore[arg-type]
+
+
+def deployment_record(**overrides: object) -> DeploymentRecord:
+    """默认构造一份**自洽**的部署记录：与 Equivalence 检查的身份完全一致。"""
+    equivalence = overrides.pop("equivalence", equivalence_check())
+    assert isinstance(equivalence, EquivalenceCheck)
+    payload: dict[str, object] = {
+        "deployment_id": "deploy-1",
+        "artifact_id": equivalence.artifact_id,
+        "production_code_hash": equivalence.production_code_hash,
+        "config_hash": HASH_CONFIG,
+        "equivalence": equivalence,
+    }
+    payload.update(overrides)
+    return DeploymentRecord(**payload)  # type: ignore[arg-type]
 
 
 def lifecycle_history(**overrides: object) -> LifecycleHistory:

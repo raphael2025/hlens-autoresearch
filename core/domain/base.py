@@ -26,6 +26,7 @@ from pydantic import (
 __all__ = [
     "CONTRACT_SCHEMA_MAJOR",
     "CONTRACT_SCHEMA_VERSION",
+    "GIT_OID_PATTERN",
     "PLUGIN_KEY_PATTERN",
     "REF_KEY_PATTERN",
     "SEMVER_PATTERN",
@@ -33,6 +34,8 @@ __all__ = [
     "Contract",
     "ContentHash",
     "FrozenMapping",
+    "GitCodeRevision",
+    "GitOid",
     "Kind",
     "PluginKey",
     "Ref",
@@ -81,6 +84,19 @@ NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
 _NAME_BODY = r"[a-z][a-z0-9_]*"
 #: 内容哈希一律是 64 位小写十六进制 SHA-256。
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
+
+# ---------------------------------------------------------------------------------------
+# Git 对象 ID（ADR-0015 §D-21.2）
+#
+# Git OID 与本项目的内容哈希是**两套命名空间**，刻意不共用一个类型：前者由 Git 生成并指向
+# Git 对象，后者是规范化 JSON 的 SHA-256。长度只接受 40（SHA-1）或 64（SHA-256）——
+# 短 SHA 在仓库增长后会碰撞，也无法唯一定位对象，因此不是可审计的代码身份。
+# 只接受小写：Git 自身输出小写，混用大小写会让"同一个 commit"出现两种写法。
+# 这**只是格式约束**：不访问任何仓库，也不校验对象是否存在（属 Runner 与打包器）。
+# ---------------------------------------------------------------------------------------
+
+#: Git 对象 ID：40 位（SHA-1）或 64 位（SHA-256）小写十六进制。
+GIT_OID_PATTERN = r"^(?:[0-9a-f]{40}|[0-9a-f]{64})$"
 
 REF_PATTERN = re.compile(rf"^(?P<kind>[a-z_]+):(?P<name>{_NAME_BODY})@(?P<version>.+)$")
 #: 解析用：与 `SEMVER_PATTERN` 由同一组件拼成，只是多了命名捕获组。
@@ -148,6 +164,8 @@ _REF_KEY_RE = re.compile(REF_KEY_PATTERN)
 PluginKey = Annotated[str, Field(pattern=PLUGIN_KEY_PATTERN)]
 RefKey = Annotated[str, Field(pattern=REF_KEY_PATTERN)]
 ContentHash = Annotated[str, Field(pattern=SHA256_PATTERN)]
+#: Git 对象 ID（40 / 64 位小写十六进制）；与 `ContentHash` 是两个不同的命名空间。
+GitOid = Annotated[str, Field(pattern=GIT_OID_PATTERN)]
 
 
 def _to_builtin(value: Any) -> Any:
@@ -352,6 +370,24 @@ class Ref(Contract):
 
     def __str__(self) -> str:
         return f"{self.kind.value}:{self.name}@{self.version}"
+
+
+class GitCodeRevision(Contract):
+    """一份代码的 Git 身份：commit 与 tree 两个对象 ID（ADR-0015 §D-21.2）。
+
+    ADR-0005 §3 把生产代码身份定义为"commit + tree hash"的复合概念，因此它不是一个
+    字符串槽位：单独的 commit 说明"哪次提交"，tree 说明"实际内容是什么"，
+    两者分开才能区分"同一 commit 的不同工作区内容"。
+
+    因为是值对象，相等性比较是**结构化**比较：两处生产代码身份是否一致，比较的是
+    `(commit_oid, tree_oid)` 这一对，而不是可能只改了一半的字符串。
+
+    **诚实边界**：只约束格式。commit / tree 是否真的存在于某个仓库、工作区是否干净、
+    tree 是否真的属于该 commit，都需要访问 Git，属 Runner 与打包器（ADR-0015 运行时延期义务）。
+    """
+
+    commit_oid: GitOid
+    tree_oid: GitOid
 
 
 class VersionedSpec(Contract):

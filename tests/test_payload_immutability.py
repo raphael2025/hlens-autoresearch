@@ -85,19 +85,7 @@ def _lifecycle_params(**kw: Any) -> LifecycleParams:
 
 
 def _experiment_metadata(**kw: Any) -> ExperimentMetadata:
-    return ExperimentMetadata(
-        experiment_hash="exp-hash",
-        constitution_version="0.2.0-draft",
-        validation_profile_version="vp:test_scope@1.0.0",
-        validation_profile_hash="profile-hash",
-        profile_selection_rule_version="1.0.0",
-        profile_selection_key=factories.selection_key(),
-        hypothesis_family_id="family-1",
-        trial_index=1,
-        family_trial_count=1,
-        declared_research_class="swing",
-        **kw,
-    )
+    return factories.experiment_metadata(**kw)
 
 
 def _risk_gate(**kw: Any) -> RiskGateRecord:

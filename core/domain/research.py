@@ -13,9 +13,11 @@ from typing import Literal
 from pydantic import Field, model_validator
 
 from core.domain.base import (
+    SEMVER_PATTERN,
     ContentHash,
     Contract,
     FrozenMapping,
+    GitOid,
     Kind,
     PluginKey,
     Ref,
@@ -127,7 +129,8 @@ class ReproducibilityTuple(Contract):
     risk_policy_ref: Ref | None
     outcome_ref: Ref | None
     dataset_snapshots: tuple[DatasetRef, ...] = Field(min_length=1)
-    code_commit: str = Field(min_length=7)
+    #: 完整 Git OID（40 / 64 位小写十六进制）：短 SHA 不是可审计的代码身份（ADR-0015 §D-21.2）。
+    code_commit: GitOid
     plugin_versions: FrozenMapping[PluginKey, ContentHash] = Field(
         default_factory=dict, validate_default=True
     )
@@ -139,10 +142,12 @@ class ReproducibilityTuple(Contract):
         default_factory=dict, validate_default=True
     )
     seeds: tuple[int, ...] = ()
+    #: "锁文件哈希 + Python 版本 + 平台"的**复合描述**；结构化表达后续另定（ADR-0015 §D-21.3）。
     environment_lock: str = Field(min_length=1)
-    constitution_version: str = Field(min_length=1)
-    validation_profile_version: str = Field(min_length=1)
-    validation_profile_hash: str = Field(min_length=1)
+    constitution_version: str = Field(pattern=SEMVER_PATTERN)
+    #: Profile 绑定 = 已校验的引用 + 内容哈希，不再是自由字符串（ADR-0015 §D-22.2）。
+    validation_profile: Ref
+    validation_profile_hash: ContentHash
     profile_selection: ProfileSelection
     split_spec: str = Field(min_length=1)
     cost_model_ref: Ref
@@ -156,6 +161,7 @@ class ReproducibilityTuple(Contract):
             ("risk_policy_ref", self.risk_policy_ref, Kind.RISK),
             ("outcome_ref", self.outcome_ref, Kind.OUTCOME),
             ("cost_model_ref", self.cost_model_ref, Kind.COST_MODEL),
+            ("validation_profile", self.validation_profile, Kind.PROFILE),
         )
         for field_name, ref, kind in expected:
             if ref is not None and ref.kind is not kind:
@@ -358,13 +364,24 @@ class ValidationReport(Contract):
     report_id: str = Field(min_length=1)
     run_id: str = Field(min_length=1)
     subject: Ref
-    experiment_hash: str = Field(min_length=1)
-    constitution_version: str = Field(min_length=1)
-    validation_profile_version: str = Field(min_length=1)
-    validation_profile_hash: str = Field(min_length=1)
+    experiment_hash: ContentHash
+    constitution_version: str = Field(pattern=SEMVER_PATTERN)
+    validation_profile: Ref
+    validation_profile_hash: ContentHash
     gates: tuple[GateResult, ...] = Field(min_length=1)
     verdict: Verdict
     created_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _profile_kind(self) -> ValidationReport:
+        """`validation_profile` 必须指向 `profile`（ADR-0015 §D-22.2）。
+
+        **不校验**该版本是否已登记、是否 frozen，也不校验它与 Run / 元数据的绑定是否一致：
+        契约层拿不到另外两个实例与 Registry，这些属 Control Plane。
+        """
+        if self.validation_profile.kind is not Kind.PROFILE:
+            raise ValueError("validation_profile 必须指向 profile")
+        return self
 
     @model_validator(mode="after")
     def _verdict_is_the_gate_function(self) -> ValidationReport:

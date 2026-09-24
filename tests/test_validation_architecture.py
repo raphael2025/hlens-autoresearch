@@ -20,20 +20,7 @@ REPO = Path(__file__).resolve().parents[1]
 
 
 def _metadata(**overrides: object) -> ExperimentMetadata:
-    payload: dict[str, object] = {
-        "experiment_hash": "exp-hash",
-        "constitution_version": "0.2.0-draft",
-        "validation_profile_version": "vp:test_scope@1.0.0",
-        "validation_profile_hash": "profile-hash",
-        "profile_selection_rule_version": "1.0.0",
-        "profile_selection_key": factories.selection_key(),
-        "hypothesis_family_id": "family-1",
-        "trial_index": 1,
-        "family_trial_count": 1,
-        "declared_research_class": "swing",
-    }
-    payload.update(overrides)
-    return ExperimentMetadata(**payload)  # type: ignore[arg-type]
+    return factories.experiment_metadata(**overrides)
 
 
 def test_profile_requires_all_five_threshold_groups() -> None:
@@ -66,7 +53,7 @@ def test_frozen_profile_is_immutable_and_needs_calibration() -> None:
 def test_profile_selection_is_deterministic_and_has_no_fallback() -> None:
     """研究者不能自选 Profile；无匹配时报错而不是回退（C-A4）。"""
     rule = factories.selection_rule()
-    assert rule.select(factories.selection_key()).profile_version == "1.0.0"
+    assert rule.select(factories.selection_key()).profile.version == "1.0.0"
     with pytest.raises(ProfileViolation):
         rule.select(factories.selection_key(research_class="intraday"))
     with pytest.raises(ProfileViolation):
@@ -78,9 +65,13 @@ def test_profile_selection_is_deterministic_and_has_no_fallback() -> None:
 
 
 def test_metadata_binds_rule_versions() -> None:
+    """三层的版本绑定仍然齐备，只是表达从自由字符串改成了已校验的引用（ADR-0015 D-22）。"""
     meta = _metadata()
-    assert meta.constitution_version and meta.validation_profile_version
-    assert meta.profile_selection_rule_version
+    assert meta.constitution_version == "0.2.0-draft"
+    assert str(meta.validation_profile) == "profile:test_scope@1.0.0"
+    assert meta.validation_profile_hash == factories.HASH_PROFILE
+    assert meta.profile_selection.selection_rule.version == "1.0.0"
+    assert meta.profile_selection.selection_rule_hash == factories.HASH_RULE
 
 
 def test_metadata_counts_failed_trials() -> None:
@@ -92,6 +83,10 @@ def test_metadata_rejects_class_switching() -> None:
     """不得把实验重新归类到更宽松的 Profile（C-A4）。"""
     with pytest.raises(ValidationError):
         _metadata(declared_research_class="intraday")
+    with pytest.raises(ValidationError):
+        _metadata(
+            profile_selection=factories.profile_selection(key=factories.selection_key("intraday"))
+        )
 
 
 def test_unsealing_is_recorded_with_approval() -> None:
@@ -121,11 +116,12 @@ def test_report_and_tuple_agree_on_rule_versions() -> None:
     repro = factories.repro_tuple()
     report = factories.validation_report(
         constitution_version=repro.constitution_version,
-        validation_profile_version=repro.validation_profile_version,
+        validation_profile=repro.validation_profile,
         validation_profile_hash=repro.validation_profile_hash,
         experiment_hash=repro.experiment_hash,
     )
-    assert report.validation_profile_version == repro.validation_profile_version
+    assert report.validation_profile == repro.validation_profile
+    assert report.validation_profile_hash == repro.validation_profile_hash
     assert report.experiment_hash == repro.experiment_hash
 
 

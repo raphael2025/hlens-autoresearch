@@ -11,7 +11,16 @@ from typing import Literal
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, FrozenMapping, Kind, Ref, UtcDatetime, VersionedSpec
+from core.domain.base import (
+    SEMVER_PATTERN,
+    ContentHash,
+    Contract,
+    FrozenMapping,
+    Kind,
+    Ref,
+    UtcDatetime,
+    VersionedSpec,
+)
 from core.domain.research import GateResult, LlmCall, require_unique_gate_ids
 from core.domain.selection import ProfileSelection, ProfileSelectionKey
 from core.errors import ProfileViolation
@@ -30,19 +39,19 @@ __all__ = [
 
 
 class SelectionEntry(Contract):
+    """选择规则的一条映射：选择输入 → 唯一的 Profile 引用。
+
+    版本只从 `profile.version` 读取（ADR-0015 §D-22.4）：重复的 `profile_version`
+    字段已删除，因此不再存在"两个可以不一致的副本"，也不需要一条校验去维持它们一致。
+    """
+
     key: ProfileSelectionKey
     profile: Ref
-    profile_version: str = Field(min_length=1)
 
     @model_validator(mode="after")
-    def _profile_is_consistent(self) -> SelectionEntry:
+    def _profile_kind(self) -> SelectionEntry:
         if self.profile.kind is not Kind.PROFILE:
             raise ValueError("profile 必须指向 profile")
-        if self.profile.version != self.profile_version:
-            raise ValueError(
-                f"profile_version（{self.profile_version}）与 profile 引用的版本"
-                f"（{self.profile.version}）不一致"
-            )
         return self
 
 
@@ -86,12 +95,14 @@ class ExperimentMetadata(Contract):
     追加式、不可修改；与 ValidationReport 一起构成审计证据。
     """
 
-    experiment_hash: str = Field(min_length=1)
-    constitution_version: str = Field(min_length=1)
-    validation_profile_version: str = Field(min_length=1)
-    validation_profile_hash: str = Field(min_length=1)
-    profile_selection_rule_version: str = Field(min_length=1)
-    profile_selection_key: ProfileSelectionKey
+    experiment_hash: ContentHash
+    constitution_version: str = Field(pattern=SEMVER_PATTERN)
+    #: Profile 绑定 = 已校验的引用 + 内容哈希（ADR-0015 §D-22.2）。
+    validation_profile: Ref
+    validation_profile_hash: ContentHash
+    #: 完整的选择依据（规则引用 + 规则内容哈希 + 选择输入），与复现元组用同一个值对象
+    #: （ADR-0015 §D-22.3）：事后重建"按哪条规则、按什么输入选中了哪个 Profile"只有一个答案。
+    profile_selection: ProfileSelection
     hypothesis_family_id: str = Field(min_length=1)
     trial_index: int = Field(gt=0)
     family_trial_count: int = Field(gt=0)
@@ -106,6 +117,17 @@ class ExperimentMetadata(Contract):
     recorded_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @model_validator(mode="after")
+    def _profile_kind(self) -> ExperimentMetadata:
+        """`validation_profile` 必须指向 `profile`（ADR-0015 §D-22.2）。
+
+        **不校验**该 Profile 是否已登记、是否 frozen，也不校验它与 Run / 报告的绑定是否
+        彼此一致：契约层拿不到另外两个实例与 Registry，这些属 Control Plane。
+        """
+        if self.validation_profile.kind is not Kind.PROFILE:
+            raise ValueError("validation_profile 必须指向 profile")
+        return self
+
+    @model_validator(mode="after")
     def _gate_ids_are_unique(self) -> ExperimentMetadata:
         """同一份元数据内 `gate_id` 不得重复（ADR-0013 D-19.2）。"""
         require_unique_gate_ids(self.gate_results, "ExperimentMetadata.gate_results")
@@ -115,7 +137,7 @@ class ExperimentMetadata(Contract):
     def _trial_index_within_count(self) -> ExperimentMetadata:
         if self.trial_index > self.family_trial_count:
             raise ValueError("trial_index 不得大于 family_trial_count（失败尝试也必须计数）")
-        if self.declared_research_class != self.profile_selection_key.research_class:
+        if self.declared_research_class != self.profile_selection.key.research_class:
             raise ValueError(
                 "预登记的研究类别与 Profile 选择输入不一致（不得换到更宽松的 Profile）"
             )

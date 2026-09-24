@@ -16,7 +16,12 @@
 
 ## 2. 复现元组（Reproducibility Tuple，冻结）
 
-> 2026-09-23：按 [ADR-0007](../adr/0007-validation-architecture-three-layers.md) 增加 `validation_profile_version` 与 `profile_selection`。
+> 2026-09-23：按 [ADR-0007](../adr/0007-validation-architecture-three-layers.md) 增加 Profile 绑定与 `profile_selection`。
+> 2026-09-24：按 [ADR-0015](../adr/0015-audit-identity-types-and-version-bindings.md) §D-21、§D-22
+> 收紧审计身份字段的类型：内容哈希统一为 64 位小写十六进制 SHA-256，Git OID 必须完整，
+> Profile 绑定由原先的自由字符串版本字段改为 `validation_profile: Ref`（`kind` 必须是
+> `profile`）+ `validation_profile_hash`，元数据改用完整的 `profile_selection`。
+> **v1 载荷仍按 v1 当时的字段名读取**（`core/compat/v1.py`），旧身份不被新规则重写。
 > 2026-09-23：按 [ADR-0009](../adr/0009-experiment-identity-binding.md) §1、§5 增加
 > `strategy_ref` / `risk_policy_ref` / `outcome_ref` / `dependency_hashes`，并把 `profile_selection`
 > 改为结构化必填字段。**v1 与 v2 的 `experiment_hash` 覆盖面不同，不可比较。**
@@ -27,7 +32,7 @@
 |---|---|
 | `hypothesis_ref` | 预登记的假设 ID |
 | `dataset_snapshots` | 所有输入表的 Iceberg `snapshot_id` |
-| `code_commit` | Git commit SHA（工作区必须干净） |
+| `code_commit` | 研究代码的 Git commit OID：**完整** 40（SHA-1）或 64（SHA-256）位小写十六进制，不接受短 SHA（工作区必须干净） |
 | `strategy_ref` | 被检验的策略 `strategy:name@semver`；**必须显式提供**，不适用时明确填 `null` |
 | `risk_policy_ref` | 风控策略 `risk:name@semver`；同上 |
 | `outcome_ref` | 结果标签 `outcome:name@semver`；同上 |
@@ -36,9 +41,10 @@
 | `params` | 全部参数（含默认值展开） |
 | `param_search_space` | 若有参数搜索：完整搜索空间与尝试次数 |
 | `seeds` | 全部随机种子 |
-| `environment_lock` | 依赖锁文件哈希 + Python 版本 + 平台 |
-| `constitution_version` | 执行时的 Validation Constitution 版本 |
-| `validation_profile_version` | 执行时绑定的 Validation Profile：`vp:{scope_id}@{semver}` + `content_hash`。运行前绑定，运行后不可更换 |
+| `environment_lock` | 依赖锁文件哈希 + Python 版本 + 平台。仍是**复合描述字符串**，其结构化表达后续另定（ADR-0015 §D-21.3） |
+| `constitution_version` | 执行时的 Validation Constitution 版本；语法为全项目唯一的 ASCII SemVer 2.0.0（当前为 `0.2.0-draft`） |
+| `validation_profile` | 执行时绑定的 Validation Profile 引用，规范串 `profile:{name}@{semver}`，`kind` 必须是 `profile` |
+| `validation_profile_hash` | 该 Profile 版本的内容哈希（64 位小写十六进制 SHA-256）。与上一行**成对**构成绑定：运行前绑定，运行后不可更换 |
 | `profile_selection` | 选择该 Profile 的依据（必填，无空默认值）：**唯一的选择规则引用**（kind 必须是 `profile_selection_rule`）、**该规则的内容哈希**、以及 `ProfileSelectionKey`（`venue` / `symbol` / `timeframe` / 预登记的 `research_class`） |
 | `split_spec` | 训练 / 验证 / OOS 时间区间（引用 Constitution 规则） |
 | `cost_model_ref` | 成本/滑点模型 `name@version` |
@@ -51,7 +57,7 @@
 
 **复现判定**：同一元组重跑，确定性指标必须按位一致（或在声明的浮点容差内）。
 
-**规则可重建性（Constitution C-P4）**：`constitution_version` 与 `validation_profile_version` 都指向**不可变**的版本化定义，可随时按版本取回。因此任何实验在任何时点都能重建"当时适用的验证规则"，无需依赖当前文档的最新状态。
+**规则可重建性（Constitution C-P4）**：`constitution_version` 与 `validation_profile` + `validation_profile_hash` 都指向**不可变**的版本化定义，可随时按版本取回。因此任何实验在任何时点都能重建"当时适用的验证规则"，无需依赖当前文档的最新状态。
 
 ## 3. Experiment Metadata（概念契约）
 
@@ -60,8 +66,9 @@
 | 字段 | 说明 |
 |---|---|
 | `experiment_hash` | 复现元组规范化 JSON 的 SHA-256（定义文字不变；v2 起覆盖面包含策略 / 风控 / Outcome 引用与直接依赖内容绑定，故与 v1 的同名值不可比较） |
-| `constitution_version` / `validation_profile_version` | 执行时适用的规则版本（见 §2） |
-| `profile_selection` | 选择规则的输入与版本（见 §2） |
+| `constitution_version` | 执行时适用的 Constitution 版本（见 §2） |
+| `validation_profile` / `validation_profile_hash` | 执行时绑定的 Profile 引用与其内容哈希（见 §2） |
+| `profile_selection` | 完整的选择依据：选择规则引用 + 该规则的内容哈希 + 选择输入（与复现元组共用同一个值对象，见 §2） |
 | `hypothesis_family_id` | 所属假设族 |
 | `trial_index` / `family_trial_count` | 本次尝试序号与族内累计尝试次数（含失败） |
 | `declared_research_class` | 预登记的研究类别（持仓周期类别） |

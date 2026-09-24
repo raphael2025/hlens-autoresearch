@@ -12,8 +12,8 @@
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
 - 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
-  B3 串行实现进行中：ADR-0011 ~ 0014 已实施（0011 ~ 0013 已由 Codex 独立复验，0014 待复验），
-  0015 ~ 0017 仍只是文档；Phase 0 关闭复审未做
+  B3 串行实现进行中：ADR-0011 ~ 0015 已实施（0011 ~ 0014 已由 Codex 独立复验，0015 待复验），
+  0016 仍只是文档；Phase 0 关闭复审未做
 
 ## 2. Current Architecture
 
@@ -41,12 +41,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：B3 串行实现；批次 1 ~ 4（ADR-0011 / 0012 / 0013 / 0014）已完成，契约仍为未发布的 2.0.0
+- Current Subphase：B3 串行实现；批次 1 ~ 5（ADR-0011 / 0012 / 0013 / 0014 / 0015）已完成，契约仍为未发布的 2.0.0
 - Current Objective：继续 Codex 已授权的串行批次
-  0015 → 0016 → 0017，每批一个独立 commit
+  0016 → 0017，每批一个独立 commit
 - Current Blocker：无授权阻塞；Phase 0 关闭复审（批次 C）未授权；
   Constitution 1.0.0 仍待 Raphael 亲自批准
-- Next Milestone：B3 剩余三个实现批次 → Phase 0 关闭复审 → Constitution 获批 → 关闭
+- Next Milestone：B3 剩余两个实现批次 → Phase 0 关闭复审 → Constitution 获批 → 关闭
 
 ## 5. Active Decisions
 
@@ -79,8 +79,16 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   封存区长度 / Paper 观察期 `> 0`，embargo 与最大延长量 `>= 0`，两个压力倍数序列逐元素 `> 0`，
   `cost_model` 必须指向 `cost_model`；时长符号与 kind 约束**只能由运行时保证**，
   导出的 JSON Schema 诚实保持 duration 字符串与 `$ref`，见 07-validation.md §5.4）；
-  以下**尚未实施**：0015 审计身份类型与 Profile 的 `Ref` + 内容哈希绑定（D-21、D-22）、
-  0016 `LlmCall` 三项内容引用必填、`called_at` 显式必填且无默认值（**D-18**）、
+  0015 **已实施**（审计身份类型与版本绑定，D-21、D-22：11 个内容哈希槽位统一为 `ContentHash`，
+  `GitOid` 只接受 40 / 64 位小写十六进制且与 `ContentHash` 是两套命名空间，新增契约值对象
+  `GitCodeRevision { commit_oid, tree_oid }` 承载 `production_code_hash`（**线字段名沿用**，
+  相等性为结构化比较），`constitution_version` 复用唯一 ASCII SemVer，
+  `ReproducibilityTuple` / `ValidationReport` / `ExperimentMetadata` 三处的 Profile 绑定改为
+  `validation_profile: Ref(kind=profile)` + `validation_profile_hash`，`ExperimentMetadata` 改用完整
+  `ProfileSelection`，`SelectionEntry` 删除重复的 `profile_version`；`run_id` / `report_id` /
+  `deployment_id` / `trace_id` / `snapshot_id` / URI / `validation_reports` / `environment_lock`
+  按 D-21.3 刻意保持不透明）；
+  以下**尚未实施**：0016 `LlmCall` 三项内容引用必填、`called_at` 显式必填且无默认值（**D-18**）、
   0017 Provider 方案 B（接口随首次消费它的 Phase 交付，D-24）。
   D-17 ~ D-25 连续且唯一。
 - D-25：这批收窄仍属**尚未发布**的 2.0.0，不升 major；一旦发布（合并 main / tag / 有 v2 数据登记）
@@ -118,6 +126,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0014 之后 Profile 只保证**结构**合法：数值是否校准合理、Profile 是否已 frozen、
   门集合是否齐备仍是 Phase 4 校准与 Control Plane / 验证服务的义务；时长符号与
   `cost_model` 的 kind 在 JSON Schema 中不可见，只读 Schema 的消费者不得据此认为约束不存在
+- ADR-0015 之后身份字段只保证**格式**：哈希是否等于被引用对象的真实内容、Git 对象是否存在、
+  工作区是否干净、`validation_profile` 指向的版本是否已登记 / frozen、Run / 报告 / 元数据三处
+  绑定是否彼此一致，都是 Registry / Runner / Control Plane 的未实现义务；
+  `environment_lock` 的结构化表达按 ADR 明确**后续另定**
 - `LlmCall` 仍只存哈希，"完整输入输出"仍是未关闭缺口（ADR-0016 已 Accepted，未实施）
 - v1 只读 gate 只做顶层形状检查，不是完整 JSON Schema 递归校验
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
@@ -133,16 +145,17 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-24
-- Git Commit：`04bb3f8`（ADR-0013，Codex 独立复验通过）；上一恢复点 `7f9892c`（ADR-0012）、
-  `2544d2a`（ADR-0011），均已复验
-- Phase：Phase 0；B1/B2 + ADR-0010 + B3 批次 1 ~ 3 已实施并复验，契约 2.0.0 仍未发布，Phase 0 关闭复审未做
+- Git Commit：`d083273`（ADR-0014，Codex 独立复验通过）；上一恢复点 `04bb3f8`（ADR-0013）、
+  `7f9892c`（ADR-0012）、`2544d2a`（ADR-0011），均已复验
+- Phase：Phase 0；B1/B2 + ADR-0010 + B3 批次 1 ~ 4 已实施并复验，契约 2.0.0 仍未发布，Phase 0 关闭复审未做
 - State：core 契约、状态机、只读载荷、完整实验身份、规范版本语法、生命周期主体与授权、
-  信息流白名单、确定性判定与数值合法性、v1 只读兼容入口均已实现；832 测试、ruff check、
-  ruff format --check、mypy strict 全绿（Codex 在 `04bb3f8` 上独立重跑）；
+  信息流白名单、确定性判定与数值合法性、Profile 普适结构不变量、v1 只读兼容入口均已实现；
+  928 测试、ruff check、ruff format --check、mypy strict 全绿（Codex 在 `d083273` 上独立重跑）；
   Schema current 36 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   无 Feature / Strategy / Backtest / Runner / Registry / 存储实现
-- Notes：ADR-0001 ~ 0017 全部 Accepted；ADR-0011 ~ 0014 已实现（phase/0 上各一个独立 commit，
-  四项工程检查全绿）；0011 ~ 0013 已由 Codex 独立复验通过；ADR-0014（`phase/0` 顶端提交，928 测试全绿；hash 随下一批次或复验记录归档）
-  **待复验**，因此 last known good 仍为 `04bb3f8`；0015 ~ 0017 尚未开始；
+- Notes：ADR-0001 ~ 0017 全部 Accepted；ADR-0011 ~ 0015 已实现（phase/0 上各一个独立 commit，
+  四项工程检查全绿）；0011 ~ 0014 已由 Codex 独立复验通过；ADR-0015（`phase/0` 顶端提交，
+  1245 测试全绿，current Schema 增至 37 份；hash 随下一批次或复验记录归档）**待复验**，
+  因此 last known good 仍为 `d083273`；0016 ~ 0017 尚未开始；
   Constitution 0.2.0-draft 待批准为 1.0.0；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；
   未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`

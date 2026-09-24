@@ -68,20 +68,7 @@ def _gates(*verdicts: Verdict) -> tuple[GateResult, ...]:
 
 
 def _metadata(**overrides: object) -> ExperimentMetadata:
-    payload: dict[str, object] = {
-        "experiment_hash": "exp-hash",
-        "constitution_version": "0.2.0-draft",
-        "validation_profile_version": "vp:test_scope@1.0.0",
-        "validation_profile_hash": "profile-hash",
-        "profile_selection_rule_version": "1.0.0",
-        "profile_selection_key": factories.selection_key(),
-        "hypothesis_family_id": "family-1",
-        "trial_index": 1,
-        "family_trial_count": 1,
-        "declared_research_class": "swing",
-    }
-    payload.update(overrides)
-    return ExperimentMetadata(**payload)  # type: ignore[arg-type]
+    return factories.experiment_metadata(**overrides)
 
 
 # ======================================================================================

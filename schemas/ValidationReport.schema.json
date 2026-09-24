@@ -148,22 +148,20 @@
       "$ref": "#/$defs/Ref"
     },
     "experiment_hash": {
-      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Experiment Hash",
       "type": "string"
     },
     "constitution_version": {
-      "minLength": 1,
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Constitution Version",
       "type": "string"
     },
-    "validation_profile_version": {
-      "minLength": 1,
-      "title": "Validation Profile Version",
-      "type": "string"
+    "validation_profile": {
+      "$ref": "#/$defs/Ref"
     },
     "validation_profile_hash": {
-      "minLength": 1,
+      "pattern": "^[0-9a-f]{64}$",
       "title": "Validation Profile Hash",
       "type": "string"
     },
@@ -190,7 +188,7 @@
     "subject",
     "experiment_hash",
     "constitution_version",
-    "validation_profile_version",
+    "validation_profile",
     "validation_profile_hash",
     "gates",
     "verdict"

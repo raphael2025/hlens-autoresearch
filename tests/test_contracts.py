@@ -103,18 +103,23 @@ def test_naive_datetime_rejected() -> None:
         )
 
 
-def test_reproducibility_tuple_requires_profile_version() -> None:
-    """复现元组必须含 Constitution 版本与 Profile 版本（ADR-0007）。"""
+def test_reproducibility_tuple_requires_profile_binding() -> None:
+    """复现元组必须含 Constitution 版本与 Profile 绑定（ADR-0007、ADR-0015 D-22.2）。"""
     tuple_ = factories.repro_tuple()
-    assert tuple_.constitution_version and tuple_.validation_profile_version
-    with pytest.raises(ValidationError):
-        factories.repro_tuple(validation_profile_version="")
+    assert tuple_.constitution_version == "0.2.0-draft"
+    assert tuple_.validation_profile.kind is Kind.PROFILE
+    assert tuple_.validation_profile_hash == factories.HASH_PROFILE
+    for missing in ("validation_profile", "validation_profile_hash", "constitution_version"):
+        payload = tuple_.model_dump()
+        payload.pop(missing)
+        with pytest.raises(ValidationError):
+            type(tuple_)(**payload)
 
 
 def test_experiment_hash_is_stable_and_excludes_nothing_semantic() -> None:
     first = factories.repro_tuple()
     same = factories.repro_tuple()
-    other = factories.repro_tuple(code_commit="fedcba9876543210")
+    other = factories.repro_tuple(code_commit=factories.OTHER_GIT_COMMIT_OID)
     assert first.experiment_hash == same.experiment_hash
     assert first.experiment_hash != other.experiment_hash
 
