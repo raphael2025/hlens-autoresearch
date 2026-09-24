@@ -32,6 +32,11 @@ def start_ticks(day: date, *, tps: int | None = None) -> int:
 
 
 def object_key(data_type: str, symbol: str, day: date) -> str:
+    """A legal warehouse key for a parser fixture.
+
+    The parser only requires the official basename, so this stays a plain path; production
+    keys are content-addressed (``revisions/<sha256>/...``, see infrastructure/README.md).
+    """
     interval = "/1m" if data_type == "klines_1m" else ""
     filename = archive_filename(data_type, symbol, day)
     return f"raw/binance/spot/archive/daily/{_KEY_DIRS[data_type]}/{symbol}{interval}/{filename}"

@@ -26,7 +26,7 @@ inject any PyIceberg ``Catalog`` (for example a temporary SQLite ``SqlCatalog``)
 from __future__ import annotations
 
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -44,6 +44,7 @@ from pyiceberg.exceptions import (
     NoSuchTableError,
     TableAlreadyExistsError,
 )
+from pyiceberg.expressions import AlwaysTrue, BooleanExpression
 from pyiceberg.table import Table as IcebergTable
 from pyiceberg.table.metadata import TableMetadata
 from pyiceberg.table.snapshots import Snapshot, ancestors_of
@@ -102,6 +103,8 @@ _TOTAL_RECORDS: Final = "total-records"
 _SNAPSHOT_ID_RE = re.compile(r"^[1-9][0-9]{0,18}$")
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _EPOCH = datetime(1970, 1, 1, tzinfo=UTC)
+#: Module-level singleton so the scan default is not a call in an argument default.
+_ALWAYS_TRUE: Final[BooleanExpression] = AlwaysTrue()
 #: Top-level packages whose exceptions mean "the catalog database failed". They are matched by
 #: module name so project code does not import these transitive-only packages (03-data.md §6.1).
 _BACKEND_PACKAGES: Final = frozenset({"sqlalchemy", "psycopg2"})
@@ -296,6 +299,43 @@ class PyIcebergCatalogAdapter:
             ):
                 raise CatalogIntegrityError(f"committed metadata of {name} does not match request")
             return CommitResult(request=request, snapshot=info, outcome=CommitOutcome.COMMITTED)
+
+    # ------------------------------------------------------------------ D2 bounded read
+
+    def scan_columns(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = _ALWAYS_TRUE,
+        limit: int | None = None,
+    ) -> pa.Table:
+        """Read selected columns of ``table`` at its current snapshot (infrastructure only).
+
+        This is **not** part of the core ``CatalogAdapter`` Protocol: adding a required method
+        there would break every existing implementation, and the general point-in-time read
+        interface is defined by its first consumer in batch F (``core/contracts/catalog.py``).
+        D2 needs exactly this much: the committed ``arrival_seq`` of the allocation anchor, the
+        archive revision row a restart has to recover from, and the revisions of one observation
+        key. ``row_filter`` is a PyIceberg expression object, never a string built from data, and
+        the caller keeps the result bounded by projecting columns and filtering on the archive
+        table (which holds one row per archive file).
+
+        The table's definition binding is verified first, so a drifted table fails closed instead
+        of returning rows of unknown provenance.
+        """
+        name = validate_table_name(table)
+        if isinstance(columns, str) or not columns:
+            raise BatchRejected("scan_columns needs a non-empty sequence of column names")
+        if limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
+        ):
+            raise BatchRejected("scan limit must be a positive int or None")
+        with _backend("scan_columns"):
+            iceberg = self._require(name)
+            self._verified(name, iceberg)
+            scan = iceberg.scan(row_filter=row_filter, selected_fields=tuple(columns), limit=limit)
+            return scan.to_arrow()
 
     # ------------------------------------------------------------------ C3 evolution
 

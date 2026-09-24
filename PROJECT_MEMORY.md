@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D1 已验收，D2 已开放
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D1 已验收，D2 实现完成待 Codex 复核
 
 ## 2. Current Architecture
 
@@ -23,6 +23,7 @@
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
 - current Schema 74 份，与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
   Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 已由 Codex 验收；Storage、PostgreSQL-backed PyIceberg Catalog、Binance 公共归档 Collector 与 fail-closed parser 的本地实现已验收；suite 在 `tests/contract_suites/`）；
+  D2 起归档对象 key 内容寻址（`raw/binance/spot/archive/revisions/<sha256>/…`，collector `1.1.0`，source 绑定不变），`arrival_seq` 以归档表为 anchor 按 `2**32` block 分配、只存 Iceberg；
   Catalog 必须从实际 batch 独立重算指纹并核对（不信任自报）；C3 已冻结并实现 `hlens.pyarrow-batch-sha256@1.0.0`、八张生产表与分区演进
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet = 真实来源；DuckDB / Polars 只是计算引擎；
@@ -43,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**Claude D2**（archive / Raw append-only revision、恢复与证据）；B1～C3、D0～D1 已由 Codex 复核通过
+- Current Subphase：**Claude D2 已实现、待 Codex 复核**（archive / Raw append-only revision、恢复与证据）；B1～C3、D0～D1 已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批批次：**Claude D2**；只做 archive / Raw append-only revision、幂等 replay、崩溃恢复与 availability / precedence 证据；不得实现 REST / D3 或后续批次
+- 当前唯一获批批次：**Claude D2**（实现完成）；只做 archive / Raw append-only revision、幂等 replay、崩溃恢复与 availability / precedence 证据；不得实现 REST / D3 或后续批次
 - Current Blocker：无；C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：Claude D2 提交后由 Codex 独立复核、对抗测试并推送；通过后再开放 D3
+- Next Milestone：Codex 对 D2 提交做独立复核、对抗测试并推送；通过后再开放 D3
 
 ## 5. Active Decisions
 
@@ -108,7 +109,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Docker 未安装：ADR-0021 已按无 Docker 设计（`file://` warehouse）；MinIO / S3 延期
 - 外部数据盘未挂载：`~/BTC` → `/mnt/wsl/PHYSICALDRIVE1p1/BTC` 当前不可访问
 - Git 没有全局提交身份：提交使用一次性 `-c` 参数；PR / CI 未配置；warehouse 数据无异地副本
-- availability / precedence policy 证据未产出：在其被产出并测试之前，首切片数据不可信（03-data.md §7.3）
+- availability / precedence 证据已产出（D2，`docs/architecture/evidence/binance-spot-publication.md`）：官方资料**不能**证明任何具体 revision 的公开时刻，
+  因此 `binance.spot.publication@1.0.0` 一律 `available_time = ingest_time` + 证据缺口，早于本机 ingest 的历史可用区间为空；
+  `binance.spot.archive-revision@1.0.0` 无法证明归档替换的先后，一律 competing heads。放宽只能靠新证据 + 新 policy 版本（H3）
 - Constitution 1.0.0 只是原则：验证流水线、泄漏门、多重检验校正、trial 账本均未实现，Profile 数值要到 Phase 4；
   在那之前没有实验能被实际判定
 - 契约层只校验**结构与声明**：传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、Registry 存在性、

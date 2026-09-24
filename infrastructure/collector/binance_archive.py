@@ -50,7 +50,7 @@ __all__ = [
 ]
 
 COLLECTOR_ID: Final[str] = "binance.spot.public-archive"
-COLLECTOR_VERSION: Final[str] = "1.0.0"
+COLLECTOR_VERSION: Final[str] = "1.1.0"
 ARCHIVE_SOURCE: Final[SourceBinding] = SourceBinding(
     source_id="binance.public.spot.archive",
     version="1.0.0",
@@ -351,19 +351,33 @@ class BinanceSpotArchiveCollector:
         ):
             raise UnsupportedRequest("coverage must be aligned to UTC midnight day boundaries")
 
-    def _relative_paths(self, data_type: str, symbol: str, day: date) -> tuple[str, str, str]:
+    def _relative_paths(self, data_type: str, symbol: str, day: date) -> tuple[str, str]:
+        """官方相对路径与文件名；对象 key 由 `_object_key` 在校验和已知后content-address。"""
         day_text = day.isoformat()
         if data_type == "agg_trades":
             filename = f"{symbol}-aggTrades-{day_text}.zip"
-            relative = f"data/spot/daily/aggTrades/{symbol}/{filename}"
-            key = f"raw/binance/spot/archive/daily/aggTrades/{symbol}/{filename}"
-            return relative, filename, key
+            return f"data/spot/daily/aggTrades/{symbol}/{filename}", filename
         if data_type == "klines_1m":
             filename = f"{symbol}-1m-{day_text}.zip"
-            relative = f"data/spot/daily/klines/{symbol}/1m/{filename}"
-            key = f"raw/binance/spot/archive/daily/klines/{symbol}/1m/{filename}"
-            return relative, filename, key
+            return f"data/spot/daily/klines/{symbol}/1m/{filename}", filename
         raise UnsupportedRequest(f"unsupported data_type {data_type!r}")
+
+    def _object_key(self, relative_path: str, filename: str, source_sha256: str) -> str:
+        """内容寻址 key：`raw/binance/spot/archive/revisions/<sha256>/<官方 daily 尾部>`。
+
+        同一官方路径的**同一** checksum 总得到同一 key（发布幂等）；**不同** checksum 得到
+        另一个不可变对象，因此归档替换只追加、不覆盖，也不再需要用 `ObjectConflict` 挡住
+        （D2 的 revision 语义依赖这一点）。basename 仍是官方文件名，D1 的 key 校验不变。
+        """
+        if _SHA256_HEX.fullmatch(source_sha256) is None or source_sha256 != source_sha256.lower():
+            raise CollectionFailed("refusing to build an object key from a non-canonical sha256")
+        prefix = "data/spot/"
+        if not relative_path.startswith(prefix) or not relative_path.endswith(f"/{filename}"):
+            raise CollectionFailed(f"refusing unexpected archive layout: {relative_path!r}")
+        tail = relative_path[len(prefix) :]
+        if any(part in {".", "..", ""} for part in tail.split("/")) or "\\" in tail:
+            raise CollectionFailed(f"refusing unsafe archive relative path: {relative_path!r}")
+        return f"raw/binance/spot/archive/revisions/{source_sha256}/{tail}"
 
     def _url_for(self, relative_path: str) -> str:
         if (
@@ -392,7 +406,7 @@ class BinanceSpotArchiveCollector:
         day_end: datetime,
         day: date,
     ) -> CollectedObject | CoverageGap:
-        relative, filename, object_key = self._relative_paths(data_type, symbol, day)
+        relative, filename = self._relative_paths(data_type, symbol, day)
         zip_url = self._url_for(relative)
         checksum_url = self._url_for(f"{relative}.CHECKSUM")
 
@@ -409,7 +423,7 @@ class BinanceSpotArchiveCollector:
 
         published, zip_headers = self._fetch_and_publish_zip(
             zip_url,
-            object_key=object_key,
+            object_key=self._object_key(relative, filename, source_sha256),
             source_sha256=source_sha256,
         )
         return CollectedObject(

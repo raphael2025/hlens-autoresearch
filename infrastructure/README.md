@@ -11,6 +11,7 @@
 | `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张生产表、batch 指纹规则与 partition-spec 演进 |
 | `collector/` | Phase 1 D0 Binance 公共现货日归档下载壳（`BinanceSpotArchiveCollector`） |
 | `parser/` | Phase 1 D1 Binance 公共现货日归档 fail-closed parser（`binance.spot.archive.parser@1.0.0`） |
+| `revision/` | Phase 1 D2 append-only Raw revision：身份规则、availability / precedence policy、`RawRevisionStore` |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
 
@@ -82,7 +83,15 @@ PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要�
   其它 symbol / type / 非整日边界 / 未声明 source → `UnsupportedRequest`。
 - 每个 symbol/day：先 GET `.CHECKSUM`（404/410 → 显式 `SOURCE_ABSENT` gap，不拉 ZIP），
   校验单行 ASCII sha256sum 后，再流式 GET ZIP，经 `StorageAdapter.stage(expected_sha256=…)` →
-  `publish` 原子交付；禁止跟随 redirect；同 key 异内容依赖存储层 `ObjectConflict` fail closed。
+  `publish` 原子交付；禁止跟随 redirect。
+- **内容寻址对象 key（D2 §3 修复 D0 的延期义务）**：`raw/binance/spot/archive/revisions/<sha256>/daily/<官方尾部>`。
+  key 在官方 `.CHECKSUM` 校验通过**之后**才构造（sha256 必须是 64 位小写十六进制，否则 `CollectionFailed`），
+  basename 仍是官方 `.zip` 文件名（D1 的 key 校验不变）。同 URI + 同 checksum → 同一 key（`publish` 幂等）；
+  同 URI + 新 checksum → **另一个**不可变对象，旧对象不覆盖、不删除，因此归档替换不再撞 `ObjectConflict`，
+  D2 的 append-only revision 才能成立。路径只由 `(data_type, symbol, day, sha256)` 生成，不接受外部注入。
+- 这一变化外部可观察（`CollectionResult` 的 `ref.key` 变了），因此 collector 版本升为 `1.1.0`；
+  **`SourceBinding` 不变**（`binance.public.spot.archive@1.0.0`）：Binance 发布的内容与协议没有变化，
+  变的只是本机对象布局。D0 的 origin / checksum 先验校验 / 原子发布 / TOCTOU / 流重试性质全部保留。
 - 每个 checksum / ZIP GET 的整次尝试（send → 状态 → 完整读或完整流入 stage）受同一
   `http_max_retries` 预算（总尝试 `1 + retries`）；中途 `ReadError`/timeout 可重试，
   redirect / 普通 4xx / 校验与存储冲突不重试。两类 GET 预算独立，ZIP 重试不重取 checksum。
@@ -100,3 +109,92 @@ PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要�
 - 不可信输入：恰好一个与请求同名的普通 CSV 成员；拒绝前缀 / 尾随字节、注释、zip64、加密、未知标志 / 压缩方法、目录 / symlink、本地头与目录不一致、超限（压缩 1 GiB / 解压 3 GiB / 压缩比 50 / 行 1024 字节）；读到 EOF 后独立核对字节数与 CRC-32（`zipfile` 在声明大小偏小 / 偏大时不报错）。CSV：ASCII、LF 结尾且末行必须有 LF、无 CR / 空行 / header / 引号；整数 / 十进制（≤ `decimal(38,18)`，不经 float）/ `True`|`False` 严格文法；价格为正、aggTrade 数量为正、OHLC 与 taker ≤ total 不变量；aggTrade id 严格递增、时间不减、成交 id 区间不重叠；kline 开盘时间严格递增。缺失分钟与 aggTrade id 间隙不是 parser 拒绝（属后续质量规则）。
 - 结果：成功为 `ParsedArchive`（绑定 parser / 归档 revision / symbol / data type / coverage / `ObjectRef` / 成员名 / 单位，`rows` 为与 C3 Raw 表同名同类型的原生列 + `archive_line_number` + 换算后的 UTC 时间列）；任一失败为 `ArchiveRejection`（稳定 `RejectionCode`、行号 / 列名，不含原始行内容），`quality_event()` 给出与 `quality.data_quality_reports.events` 逐字段对应的可持久化事件。对象缺失等存储故障原样抛出。
 - **诚实边界（本批不做）**：不构造 revision / `observation_key` / `arrival_seq`、不写 Iceberg、不持久化质量报告、不访问网络；月归档不在 1.0.0 范围内。
+
+## Raw revision store（D2）
+
+`infrastructure/revision/` 把一个 D0 `CollectedObject` + 一个**严格** D1 parse outcome 变成不可变的 append-only revision
+（ADR-0023 §4 / §7，03-data.md §7.1 / §7.4）。入口：`RawRevisionStore.ingest(collected, ArchiveContext)`
+（或 `ingest_parsed` / `ingest_collection`）。
+
+### 数据流与提交顺序
+
+1. **绑定身份**：从 `(data_type, symbol, coverage day)` 生成官方归档路径，核对 `source_uri` 以它结尾、
+   `ref.key` 等于内容寻址 key、`source_sha256 == ref.sha256`；任一不符 fail closed，不写任何东西。
+2. **archive revision**：一行稳定 batch 写入 `raw.binance_spot_archives`，**这次提交本身就是序号 block 的分配**。
+3. **parsed rows**：按有界 `pyarrow.Table` microbatch（默认 25 000 行，上限 250 000）写入
+   `raw.binance_spot_agg_trades` / `raw.binance_spot_klines_1m`，顺序固定在 archive 行之后。
+4. **competing heads**：从该 `observation_key` 的全部归档 revision 重建 `RevisionGraph` 并算 maximal heads；
+   多于一个即在结果里报 conflict，**不选头**（ADR-0023 §5）。
+
+解析被拒绝（`ArchiveRejection`）时：不写 archive revision，也不写任何 parsed 行。ADR-0023 的失败语义规定失败 payload
+**不获得 `knowledge_time`**，而归档行没有 `knowledge_time` 就不能存在。已校验的不可变对象保留；质量事件只返回，
+**不持久化**（quality 表的写入属批次 E，这里诚实地不做）。
+
+### 身份（`identity.py`，版本化 + 可哈希）
+
+`IDENTITY_SPEC` 是规范 JSON，`IDENTITY_HASH` 由其完整内容派生（golden 值在 `tests/infrastructure/revision/test_identity.py`）：
+
+| 项 | 规则 |
+|---|---|
+| archive observation key | `binance:spot:archive:<官方路径>`；**不含** checksum / 下载时间 / 本机路径 |
+| aggTrade observation key | `binance:spot:agg_trade:<symbol>:<agg_trade_id>` |
+| 1m kline observation key | `binance:spot:kline:<symbol>:1m:<interval_start 微秒>` |
+| revision id | `rev1-<sha256>`：identity 规则（id + 版本 + hash）+ observation key + 稳定 source identity + payload hash 的规范 JSON |
+| archive payload hash | 官方 `.CHECKSUM` 声明并由存储层本机重算的对象 SHA-256 |
+| row payload hash | 原生 CSV 字段 + venue/market/symbol(+interval) + 时间单位的规范 JSON；**不含**行号、到达 / ingest / knowledge 时间 |
+| parsed row 绑定 | `source_id = binance.public.spot.archive@1.0.0:<archive revision id>`，另有 `archive_revision_id` 列与固定的 `binance.spot.archive.parser@1.0.0` |
+
+revision id 与到达顺序、墙钟无关：同一输入永远得到同一 id。所有 Arrow 行先构造
+`RevisionRecord` / `AvailabilityDecision` / `PrecedenceEvidence` 并经 `RevisionGraph` 校验，再映射到 C3 schema；
+没有第二套较弱校验。
+
+### arrival sequence：block 分配，只在 Iceberg 内
+
+- anchor 是 `raw.binance_spot_archives`：扫描它已提交的 `arrival_seq` 取最大值，下一个 **block base** 是
+  `(max // stride + 1) * stride`（空表为 0）。stride 冻结为 `2**32`，严格大于 D1 的解压成员上限（3 GiB，每行至少 1 字节 + LF），
+  越界或 int64 溢出一律拒绝。
+- archive 行用 block base，其 parsed rows 用 `base + archive_line_number`（1-based）。跨三张表全局不重复。
+- **archive 行的提交就是分配**：父 snapshot 冲突时重新读取、重新分配、重建 batch，绝不沿用失败尝试的 base（允许间隙，ADR-0023 §4）。
+- 崩溃后恢复：从已存在的 archive 行取回同一 base（以及 `ingest_time` / `knowledge_time`），所有 row revision 与 batch 按位重建。
+- PostgreSQL 里**没有**任何应用 sequence / counter / journal 表；catalog 库只存 PyIceberg 的 `iceberg_tables` /
+  `iceberg_namespace_properties`（有 PostgreSQL 测试断言）。
+- `arrival_seq` 只用于审计、幂等与恢复。`RevisionFacts`（precedence 的唯一输入）根本没有这个字段；
+  测试用 AST 断言 store 中只有分配 / 恢复 / 写列这几处提到它。
+
+### 恢复步骤（无 journal）
+
+再调用一次 `ingest` 就是恢复过程：
+
+1. 按 revision id 查 `raw.binance_spot_archives`：查到就核对**已持久化的**字段（payload hash、object key/uri/size、
+   `source_uri`、symbol、coverage、policy 绑定…），并取回 base 与两条知识轴时间；查不到就重新分配并提交。
+2. 用不可变对象 + D1 parser 重新解析（确定性），重建每个 microbatch 与其稳定 batch id。
+3. 每个 batch 走 `commit_batch`：adapter 从**实际** batch 独立重算指纹再回答，已提交的返回 `already_committed`，
+   同 batch id 异内容 → `BatchConflict` fail closed。因此"只信 batch id"的快路径不存在。
+
+batch id：archive 为 `<revision_id>.archive.<base>`（重试换 base 即换 id），行为 `<revision_id>.rows.<序号>`；
+两者都不含随机数、墙钟或当前 snapshot id。
+
+### Policy 与证据
+
+- availability `binance.spot.publication@1.0.0`、precedence `binance.spot.archive-revision@1.0.0`；
+  `policy_hash` 均由完整规范 JSON 派生，golden 值在对应测试里。
+- 证据文档：`docs/architecture/evidence/binance-spot-publication.md`（只引用 Binance 官方仓库 README 与官方 spot WS 文档，
+  记录 URL、访问日期、支持与**不**支持的主张）。
+- **1.0.0 的结论**：官方资料没有给出任何具体 revision 的公开时刻（归档只有"次日"的节奏与"可能事后更新"的声明；
+  aggTrade 流只有定性的 "Real-time"；kline 的 "2000ms update speed" 是推送节奏不是发布上界），
+  因此三类主体全部 `available_time = ingest_time` 并持久化结构化证据缺口（写在冻结的 `availability_evidence_gap` 列里）。
+  归档替换同样无法证明先后，一律 **competing heads**。
+- `source_time` 保持为空：`Last-Modified` / `ETag` 不是官方的 revision 发布时间；原始响应头仍存在
+  `source_metadata` 列中供审计（保存 ≠ 采信）。
+- `knowledge_time` 取注入 clock 的实际 UTC 时刻，必须 `>= ingest_time`（= D0 的 `retrieved_at`），
+  否则 fail closed；clock 不参与任何确定性身份或哈希。
+
+### 限制（诚实边界）
+
+- 本批只写 Raw；**不**做 Canonical、不做通用 PIT 查询、不建质量 taxonomy、不持久化质量报告与 manifest。
+- 每表单 writer（ADR-0023 §7）；并发只由父 snapshot 乐观冲突 + 有界重试兜底。
+- 序号 anchor 每次分配都整列扫描 `raw.binance_spot_archives`（每个归档文件一行，首切片规模可接受）；
+  规模变大后需要在 E/F 引入更窄的读取路径。
+- `PyIcebergCatalogAdapter.scan_columns` 是 infrastructure-only 的有界投影读取，**不在** `core` 的 `CatalogAdapter`
+  Protocol 里（通用读取接口由批次 F 的首个消费者定义）。
+- 行级契约构造是每行一次 Pydantic 校验：正确但不便宜；大体量 BTC 日归档的吞吐 / 内存基线仍是批量 backfill 前的前置工作。

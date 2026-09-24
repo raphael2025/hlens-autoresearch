@@ -27,6 +27,7 @@ from infrastructure.collector import (
 )
 from infrastructure.collector import binance_archive as archive_mod
 from infrastructure.settings import Settings
+from infrastructure.storage import LocalFileStorageAdapter
 from tests.infrastructure.collector.conftest import (
     ARCHIVE_BASE,
     ARCHIVE_ORIGIN,
@@ -36,6 +37,31 @@ from tests.infrastructure.collector.conftest import (
 )
 
 MODULE_PATH = Path(archive_mod.__file__).resolve()
+
+
+def object_key_for(relative_path: str, payload: bytes) -> str:
+    """The content-addressed warehouse key the collector must publish under (D0 / D2).
+
+    Computed here independently of the production code: ``revisions/<sha256>`` plus the official
+    ``daily/...`` tail, so the same official path with a new checksum is a *new* object.
+    """
+    digest = hashlib.sha256(payload).hexdigest()
+    tail = relative_path.removeprefix("data/spot/")
+    return f"raw/binance/spot/archive/revisions/{digest}/{tail}"
+
+
+def _published_keys(storage: LocalFileStorageAdapter, tmp_path: Path) -> list[str]:
+    """Every object visible in the warehouse, by logical key (staging excluded)."""
+    warehouse = tmp_path / "warehouse"
+    staging = warehouse / "staging"
+    keys = [
+        str(path.relative_to(warehouse))
+        for path in warehouse.rglob("*")
+        if path.is_file() and staging not in path.parents
+    ]
+    for key in keys:
+        assert storage.lookup(key) is not None
+    return sorted(keys)
 
 
 def _request(
@@ -66,23 +92,23 @@ def test_url_key_mapping_for_both_data_types_and_multi_day(
         ("agg_trades", "BTCUSDT", "2024-01-02"): b"agg-btc-2",
         ("klines_1m", "BTCUSDT", "2024-01-01"): b"kline-btc-1",
     }
-    expected = {
+    relative = {
         ("agg_trades", "BTCUSDT", "2024-01-01"): (
-            "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip",
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip",
+            "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
         ),
         ("agg_trades", "ETHUSDT", "2024-01-01"): (
-            "data/spot/daily/aggTrades/ETHUSDT/ETHUSDT-aggTrades-2024-01-01.zip",
-            "raw/binance/spot/archive/daily/aggTrades/ETHUSDT/ETHUSDT-aggTrades-2024-01-01.zip",
+            "data/spot/daily/aggTrades/ETHUSDT/ETHUSDT-aggTrades-2024-01-01.zip"
         ),
         ("agg_trades", "BTCUSDT", "2024-01-02"): (
-            "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-02.zip",
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-02.zip",
+            "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-02.zip"
         ),
         ("klines_1m", "BTCUSDT", "2024-01-01"): (
-            "data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-01.zip",
-            "raw/binance/spot/archive/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-01.zip",
+            "data/spot/daily/klines/BTCUSDT/1m/BTCUSDT-1m-2024-01-01.zip"
         ),
+    }
+    expected = {
+        item: (relative[item], object_key_for(relative[item], payload))
+        for item, payload in payloads.items()
     }
     for (data_type, symbol, day), payload in payloads.items():
         rel, _key = expected[(data_type, symbol, day)]
@@ -173,12 +199,7 @@ def test_bad_checksum_publishes_nothing(
     collector = make_collector(storage, archive_fixture)
     with pytest.raises(CollectionFailed):
         collector.collect(_request())
-    assert (
-        storage.lookup(
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-        )
-        is None
-    )
+    assert _published_keys(storage, tmp_path) == []
     assert f"{ARCHIVE_BASE}/{rel}" not in archive_fixture.requests
 
 
@@ -195,12 +216,7 @@ def test_zip_hash_mismatch_publishes_nothing(
     collector = make_collector(storage, archive_fixture)
     with pytest.raises(CollectionFailed):
         collector.collect(_request())
-    assert (
-        storage.lookup(
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-        )
-        is None
-    )
+    assert _published_keys(storage, tmp_path) == []
 
 
 def test_zip_size_mismatch_publishes_nothing(
@@ -242,12 +258,7 @@ def test_zip_size_mismatch_publishes_nothing(
     )
     with pytest.raises(CollectionFailed):
         collector.collect(_request())
-    assert (
-        storage.lookup(
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-        )
-        is None
-    )
+    assert _published_keys(storage, tmp_path) == []
 
 
 def test_redirect_not_followed(tmp_path: Path, archive_fixture: ArchiveFixture) -> None:
@@ -259,12 +270,7 @@ def test_redirect_not_followed(tmp_path: Path, archive_fixture: ArchiveFixture) 
     with pytest.raises(CollectionFailed, match="redirect"):
         collector.collect(_request())
     assert all("/evil/" not in url for url in archive_fixture.requests)
-    assert (
-        storage.lookup(
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-        )
-        is None
-    )
+    assert _published_keys(storage, tmp_path) == []
 
 
 def test_requests_stay_inside_configured_archive_base(
@@ -442,23 +448,35 @@ def test_replay_and_reopen_idempotent(tmp_path: Path, archive_fixture: ArchiveFi
     assert a.objects[0].retrieved_at != b.objects[0].retrieved_at
 
 
-def test_same_key_different_content_conflicts_and_keeps_old(
+def test_same_path_new_checksum_publishes_a_second_immutable_object(
     tmp_path: Path, archive_fixture: ArchiveFixture
 ) -> None:
+    """An official replacement is a new content-addressed object; the old one is untouched.
+
+    Keys are content-addressed (D2 §3), so a replaced archive no longer collides with its
+    predecessor: both sets of bytes stay readable and the revision semantics decide the rest.
+    """
     rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-    key = "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
     archive_fixture.put_zip(rel, b"original-bytes")
     storage = make_storage(tmp_path)
     collector = make_collector(storage, archive_fixture, max_retries=0)
     first = collector.collect(_request())
     old_ref = first.objects[0].ref
+    assert old_ref.key == object_key_for(rel, b"original-bytes")
 
     archive_fixture.put_zip(rel, b"mutated-bytes")
-    with pytest.raises(CollectionFailed):
-        collector.collect(_request(request_id="replay-mutated"))
-    assert storage.lookup(key) == old_ref
+    second = collector.collect(_request(request_id="replay-mutated"))
+    new_ref = second.objects[0].ref
+
+    assert new_ref.key == object_key_for(rel, b"mutated-bytes") != old_ref.key
+    assert new_ref.sha256 != old_ref.sha256
+    assert storage.lookup(old_ref.key) == old_ref
+    assert storage.lookup(new_ref.key) == new_ref
     with storage.open_read(old_ref) as handle:
         assert handle.read() == b"original-bytes"
+    with storage.open_read(new_ref) as handle:
+        assert handle.read() == b"mutated-bytes"
+    assert _published_keys(storage, tmp_path) == sorted([old_ref.key, new_ref.key])
 
 
 def test_zip_streamed_in_chunks_without_content_aggregation(
@@ -561,18 +579,7 @@ def test_partial_failure_does_not_return_result(
             _request(start=datetime(2024, 1, 1, tzinfo=UTC), end=datetime(2024, 1, 3, tzinfo=UTC))
         )
     # Day1 may already be published (idempotent), but collect itself must not return success.
-    assert (
-        storage.lookup(
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-        )
-        is not None
-    )
-    assert (
-        storage.lookup(
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-02.zip"
-        )
-        is None
-    )
+    assert _published_keys(storage, tmp_path) == [object_key_for(day1, b"day1")]
 
 
 def test_source_static_guards() -> None:
@@ -670,12 +677,7 @@ def test_checksum_midstream_exhausted_never_fetches_zip(
         collector.collect(_request())
     assert _count_urls(archive_fixture.requests, suffix=".CHECKSUM") == 2
     assert _count_urls(archive_fixture.requests, suffix=".zip") == 0
-    assert (
-        storage.lookup(
-            "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-        )
-        is None
-    )
+    assert _published_keys(storage, tmp_path) == []
 
 
 def test_zip_midstream_read_error_retries_without_regetting_checksum(
@@ -700,7 +702,7 @@ def test_zip_midstream_exhausted_leaves_no_object(
     tmp_path: Path, archive_fixture: ArchiveFixture
 ) -> None:
     rel = "data/spot/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
-    key = "raw/binance/spot/archive/daily/aggTrades/BTCUSDT/BTCUSDT-aggTrades-2024-01-01.zip"
+    key = object_key_for(rel, b"Z" * 40)
     payload = b"Z" * 40
     archive_fixture.put_zip(rel, payload)
     archive_fixture.stream_fail_after[rel] = [10, 10]
