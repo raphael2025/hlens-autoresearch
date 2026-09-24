@@ -22,7 +22,7 @@
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
 - current Schema 74 份，与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
-  Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 已由 Codex 验收，当前尚无实现；suite 在 `tests/contract_suites/`）；
+  Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 已由 Codex 验收；Storage 的本地实现已验收，Catalog 正在 C2 实现；suite 在 `tests/contract_suites/`）；
   Catalog 必须从实际 batch 独立重算指纹并核对（不信任自报），C3 冻结 PyArrow 的具体指纹规则
 - Freeze Contracts, Evolve Implementations；四个 Plane：Data / Research / Control / Application；Research ⟂ Application
 - PostgreSQL = Control Plane（不存大型行情）；Iceberg / Parquet = 真实来源；DuckDB / Polars 只是计算引擎；
@@ -43,12 +43,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**Cursor C1**（本地 `file://` StorageAdapter）；B1～B3 已由 Codex 复核通过
+- Current Subphase：**Claude C2**（PostgreSQL-backed PyIceberg Catalog）；B1～C1 已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批批次：**Cursor C1**（按已冻结 B3 契约实现本地 `file://` StorageAdapter）；C2 及以后未开放
-- Current Blocker：无；创建 catalog 库 / role（C2）前须记录 H12 授权
-- Next Milestone：Cursor C1 提交后由 Codex 独立复核并推送；再决定 C2 任务包
+- 当前唯一获批批次：**Claude C2**（PyIceberg Catalog 语义、幂等提交与真实 PostgreSQL 集成）；C3 及以后未开放
+- Current Blocker：无；C2 创建专用 catalog / test database 与最小权限 role 的 H12 授权已记录
+- Next Milestone：Claude C2 提交后由 Codex 独立复核、对抗测试并推送；通过后再开放 C3
 
 ## 5. Active Decisions
 
@@ -84,7 +84,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0024（D-31）：静态 `Instrument` 不变 + 双轴 listing episode 历史；`UniverseSelectionSpec` 以 `name + SemVer + hash` 在 manifest 绑定，不新增 `Kind`
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
-  Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag）；原则或阈值变化、实盘、资金、风险预算不在内
+  Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
+  test database、最小权限 role 与本机忽略凭据；不覆盖系统软件安装、PostgreSQL 系统配置、其他数据库 / role、原则或阈值变化、实盘、资金或风险预算
 
 ## 6. Active Constraints
 
@@ -137,15 +138,15 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-24
-- Stable recovery point：Phase 1 B3 实现提交 `9c57253`（Codex 已独立复核；随 B3 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
+- Stable recovery point：Phase 1 C1 实现提交 `7857039`（Codex 已独立复核；随 C1 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
   其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
-  2528 测试、ruff check、ruff format --check、mypy strict 全绿；
+  2574 测试、ruff check、ruff format --check、mypy strict 全绿；
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
-- 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
-- Phase 1：A2 / A2r、A3a / A3b、B1～B3 已由 Codex 复核通过；B3 恢复点 `9c57253`，当前进入 C1
+- 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Catalog、Control Plane；本地 StorageAdapter 已实现
+- Phase 1：A2 / A2r、A3a / A3b、B1～C1 已由 Codex 复核通过；C1 恢复点 `7857039`，当前进入 C2
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
   `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`
