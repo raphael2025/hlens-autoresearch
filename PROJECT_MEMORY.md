@@ -13,8 +13,8 @@
 - 主要时间周期：1H（同上，待 D-08 确认）
 - 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
   B3 串行实现已全部完成：ADR-0011 ~ 0016 已实施并由 Codex 独立复验，ADR-0017 按方案 B
-  是 docs-only 的交付节奏落地（不产生 Provider 代码）；Phase 0 关闭复审（批次 C）已于 2026-09-24
-  获 Raphael 明确授权，正在进行
+  是 docs-only 的交付节奏落地（不产生 Provider 代码）；关闭复审 C1 已完成（`FIX_BEFORE_CLOSE`），
+  C2a 已起草修复 ADR-0018 / 0019（Proposed，未实施）
 
 ## 2. Current Architecture
 
@@ -42,12 +42,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：B3 串行实现已结束（批次 1 ~ 7 / ADR-0011 ~ 0017 全部完成，契约仍为未发布的 2.0.0）；
-  Phase 0 关闭复审（批次 C）已于 2026-09-24 获 Raphael 明确授权，正在进行
-- Current Objective：执行批次 C —— 只做关闭复审、证据矩阵、剩余问题与迁移 / 旧版本影响；
-  不自动修代码、不改冻结契约；复审通过**不等于**批准 Constitution 或关闭 Phase 0
+- Current Subphase：批次 C。C1 独立关闭复审完成（基线 `fce4f81`，结论 `FIX_BEFORE_CLOSE`，
+  `docs/reviews/2026-09-24-phase0-closing-review-c1.md`）；C2a docs-only 已起草 ADR-0018 / 0019（Proposed）
+- Current Objective：Codex 复核接受 ADR-0018 / 0019 后按 0018 → 0019 串行实施（C2），再做关闭复验；
+  复审通过**不等于**批准 Constitution 或关闭 Phase 0
 - Current Blocker：Constitution 1.0.0、Phase 0 正式关闭、main 合并、tag 均需 Raphael 后续明确批准
-- Next Milestone：批次 C 复审结论 → Constitution 获批 1.0.0 → Phase 0 正式关闭
+- Next Milestone：C2 修复实施与复验 → Constitution 获批 1.0.0 → Phase 0 正式关闭
   （main 合并与 tag 需 Raphael）
 
 ## 5. Active Decisions
@@ -102,6 +102,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   D-17 ~ D-25 连续且唯一。
 - D-25：这批收窄仍属**尚未发布**的 2.0.0，不升 major；一旦发布（合并 main / tag / 有 v2 数据登记）
   后再做同类改变必须升 major。
+- D-26 → ADR-0018（**Proposed，未实施**）：Profile 选择键身份 = `(venue, symbol, timeframe, research_class)`、
+  判重与 `select()` 同源；`Ref` 目标身份 = `(kind, name, version)` 用于跨对象主体比较；不全局改写相等 / 内容哈希。
+- D-27 → ADR-0019（**Proposed，未实施**）：生命周期转移证据至少一项且非空；不做自报职责分离。
+- D-28 ~ D-31 为**已登记的开放问题**（不选方案）：D-28 修订数据语义、D-31 历史标的池（Phase 1 前）；
+  D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）。
 
 ## 6. Active Constraints
 
@@ -143,7 +148,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   `media_type` / `byte_size` 是否与实际内容相符、已登记内容是否不可覆盖、数据外发合规、
   一次实验是否登记了**所有**发生过的调用，全部是存储层 / Registry / Runner 的未实现义务；
   06-experiment.md §2 的「完整输入输出」要求仍未完全满足，不得描述为已关闭
-- v1 只读 gate 只做顶层形状检查，不是完整 JSON Schema 递归校验
+- v1 只读 gate 只做顶层形状检查，不是完整 JSON Schema 递归校验；旧哈希只对完整的 v1 持久化规范载荷
+  复现历史身份，读取器不补写默认字段（C1 F2）
+- ADR-0018 / 0019 实施前：Profile 选择规则可被嵌套 `schema_version` 绕过（C1 F1，P1），生命周期转移可无证据
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
 
 ## 8. Important Historical Context
@@ -175,4 +182,5 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   并均已由 Codex 独立复验；ADR-0017 是 docs-only 的交付节奏落地（实质同步在 `2ff1798`，
   一致性验收与状态收口在批次 7，不产生 Provider 代码，因此不改变 last known good 的代码状态）；
   Constitution 0.2.0-draft 待批准为 1.0.0；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；
-  未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`
+  未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`；
+  C1 关闭复审在 `fce4f81` 上实跑 1304 passed 与三项检查全绿，结论 `FIX_BEFORE_CLOSE`（C2a 为 docs-only，不改变代码恢复点）

@@ -111,4 +111,7 @@ available_lag: PT0S      # 仅 feature/state/event
 | 通用/基础设施插件 | `plugins/` |
 | 已晋升策略与风控 | `strategies/`、`risk/` |
 
-> 该位置划分存在歧义，见 ADR 待决事项 **D-03**。
+> 研究代码与生产代码的位置划分已由 [ADR-0005](../adr/0005-research-production-boundary.md)（D-03）决定：
+> `research/` 中的研究实现永不被生产运行时加载，生产使用的策略、风控与 Provider 须经
+> Artifact + Registry + Promotion + Equivalence Gate 进入 `strategies/`、`risk/`、`plugins/`（ADR-0005 §7）。
+> 研究与生产是否共用同一个生产级 Provider 实现仍是开放问题 Q-2。

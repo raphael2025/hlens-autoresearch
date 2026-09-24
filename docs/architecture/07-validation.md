@@ -28,7 +28,7 @@ flowchart LR
     G5 -- pass --> REP[ValidationReport PASS]
 ```
 
-每个门（gate）输出结构化检查结果（check_id、指标、**阈值及其来源 Profile 字段**、是否通过），写入 ValidationReport。
+每个门（gate）输出结构化检查结果（`gate_id`、指标 `metric` 与计算值 `value`、**阈值 `threshold` 及其来源 Profile 字段 `threshold_source`**、判定 `verdict`），写入 ValidationReport。
 **所有阈值来自实验绑定的 Validation Profile 版本（§5），不得写死在流水线代码中。**
 
 ### 2.1 整体判定是门结果的确定性函数（ADR-0013）

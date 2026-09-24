@@ -2,7 +2,7 @@
 
 > 一个长期演化的、模块化、可插拔、可验证的**加密市场自动化研究基础设施**。
 
-**当前阶段：Phase 0（Research Constitution）** — 已有领域契约、状态机、Schema 与测试；独立审查后的修复方案正在准备，Phase 0 尚未关闭。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
+**当前阶段：Phase 0（Research Constitution）** — 已有领域契约、状态机、Schema 与测试；关闭复审 C1 已完成（结论 `FIX_BEFORE_CLOSE`），C2 修复进行中，Phase 0 尚未关闭。当前状态以 [PROJECT_STATUS.md](PROJECT_STATUS.md) 为准。
 
 ## 它是什么 / 不是什么
 

@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 0（进行中；修复方案待批准，见 PROJECT_STATUS.md）** |
+| 当前 Phase | **Phase 0（进行中；关闭复审 C1 已完成，C2 修复进行中，Phase 0 尚未关闭；见 PROJECT_STATUS.md）** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）

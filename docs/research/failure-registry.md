@@ -19,7 +19,7 @@
 | `reason_code` | 例：`LEAKAGE_DETECTED`、`NOT_SIGNIFICANT_AFTER_MTC`、`OOS_DECAY`、`COST_KILLED`、`PARAM_UNSTABLE`、`STATE_CONCENTRATED`、`NOT_REPRODUCIBLE`、`DATA_QUALITY`、`HUMAN_VETO` |
 | `gate_id` | 失败的验证门 |
 | `evidence` | ExperimentRun / ValidationReport 引用 |
-| `hypothesis_family` | 所属假设族（用于 trial count） |
+| `hypothesis_family_id` | 所属假设族（用于 trial count） |
 | `lessons` | 可检索的教训 |
 | `recorded_at` | UTC |
 
