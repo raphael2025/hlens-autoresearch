@@ -16,4 +16,8 @@
 `STRATEGY_SIGNAL_KINDS`，02-domain.md §2.1）：它只校验**声明层面的直接引用**，
 传递依赖闭包与实际数据的泄漏检测仍属 Registry / Runner。
 
+`base.py` 的 `Ref.target_identity()`、`GitCodeRevision.code_identity()` 与 `selection.py` 的
+`ProfileSelectionKey.selection_identity()` 是 ADR-0018 的显式语义身份（排除信封 `schema_version`），
+供跨对象比较使用；`Contract.__eq__` 与内容哈希不变（02-domain.md §3.6）。
+
 > Phase 0：已有领域契约代码；不包含 Feature / Strategy / Backtest 计算实现。修复状态见 PROJECT_STATUS.md。

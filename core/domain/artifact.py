@@ -118,6 +118,8 @@ class DeploymentRecord(Contract):
             raise ValueError("未通过 Equivalence Gate 的实现不得部署（ADR-0005 §4）")
         if self.equivalence.artifact_id != self.artifact_id:
             raise ValueError("Equivalence 检查与部署的 artifact_id 不一致")
-        if self.equivalence.production_code_hash != self.production_code_hash:
+        # 比较代码身份 (commit, tree)，不比较信封版本（ADR-0015 §D-21.2、ADR-0018 §D-26.5）。
+        equivalence_code = self.equivalence.production_code_hash.code_identity()
+        if equivalence_code != self.production_code_hash.code_identity():
             raise ValueError("Equivalence 检查与部署的生产代码修订不一致（commit + tree）")
         return self

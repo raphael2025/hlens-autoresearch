@@ -2,7 +2,7 @@
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
 > 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.0.0`（ADR-0008 + ADR-0009 共同定义；
-> ADR-0011 ~ 0016 在同一个**尚未发布**的版本内继续收紧，不升 major，理由见各 ADR 的版本小节）。
+> ADR-0011 ~ 0016 与 ADR-0018 在同一个**尚未发布**的版本内继续收紧，不升 major，理由见各 ADR 的版本小节）。
 
 ## 1. 统一标识与版本化
 
@@ -324,6 +324,24 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 `major.minor.patch` 与 prerelease 的数字标识符禁止前导零；支持 build metadata；
 标识符不得为空。`schema_version`、`Ref.version`、`VersionedSpec.version`、
 `plugin_versions` 的键与依赖键共用同一套组件；major 从已验证的正则分组读取。
+
+### 3.6 契约值对象的语义身份（ADR-0018）
+
+每个契约都带 Contract 信封 `schema_version`，它参与 Pydantic 结构相等（`==`）与内容哈希。
+需要判断"同一业务键 / 同一目标 / 同一份代码"的地方**不**使用结构相等，而是调用显式的语义身份：
+
+| 语义身份 | API（返回固定形状元组） | 定义 | 使用位置 |
+|---|---|---|---|
+| Profile 选择键 | `ProfileSelectionKey.selection_identity()` | `(venue, symbol, timeframe, research_class)` | `ProfileSelectionRule` 的判重与 `select()`（同源） |
+| `Ref` 目标 | `Ref.target_identity()` | `(kind, name, version)` | `LifecycleHistory` 构造与 `append` 的 subject 比较；`ExecutionModeChange` 切 LIVE 时 Risk Gate / 授权的 subject 比较 |
+| Git 代码修订 | `GitCodeRevision.code_identity()` | `(commit_oid, tree_oid)` | `DeploymentRecord` 与其 `EquivalenceCheck` 的生产代码修订比较 |
+
+三者都**排除**各自的信封 `schema_version`。`venue` / `symbol` / `timeframe` 是区分大小写的精确不透明值，
+不做大小写折叠或 Unicode 规范化；`research_class` 与 `ProfileScope.research_class` 共用常量
+`RESEARCH_CLASS_PATTERN`（`^[a-z][a-z0-9_]*$`）。按规范串 `str(ref)` 做的依赖覆盖检查本就等价于目标身份。
+
+**全局规则不变**：`Contract.__eq__` 与 `content_hash()` 仍包含信封版本——仅信封不同的两个对象
+结构不相等、内容哈希不同，这是有意的最终设计。
 
 ## 4. 目录映射
 

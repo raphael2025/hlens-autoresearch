@@ -63,14 +63,16 @@ class ProfileSelectionRule(VersionedSpec):
 
     @model_validator(mode="after")
     def _unique_keys(self) -> ProfileSelectionRule:
-        keys = [entry.key.model_dump_json() for entry in self.entries]
+        """判重只看选择键身份（ADR-0018 §D-26.2），与 `select()` 同源；信封版本不参与。"""
+        keys = [entry.key.selection_identity() for entry in self.entries]
         if len(set(keys)) != len(keys):
             raise ValueError("选择规则存在重复 key：映射必须确定唯一")
         return self
 
     def select(self, key: ProfileSelectionKey) -> SelectionEntry:
         """返回唯一匹配项；无匹配时抛 `ProfileViolation`（不得回退到更宽松的 Profile）。"""
-        matches = [entry for entry in self.entries if entry.key == key]
+        wanted = key.selection_identity()
+        matches = [entry for entry in self.entries if entry.key.selection_identity() == wanted]
         if not matches:
             raise ProfileViolation(
                 f"没有匹配的 Validation Profile：{key.venue}/{key.symbol}/"

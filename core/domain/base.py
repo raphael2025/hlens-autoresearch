@@ -29,18 +29,21 @@ __all__ = [
     "GIT_OID_PATTERN",
     "PLUGIN_KEY_PATTERN",
     "REF_KEY_PATTERN",
+    "RESEARCH_CLASS_PATTERN",
     "SEMVER_PATTERN",
     "SHA256_PATTERN",
     "ContentBlobRef",
     "ContentHash",
     "Contract",
     "FrozenMapping",
+    "GitCodeIdentity",
     "GitCodeRevision",
     "GitOid",
     "Kind",
     "PluginKey",
     "Ref",
     "RefKey",
+    "RefTargetIdentity",
     "UtcDatetime",
     "VersionedSpec",
     "canonical_json",
@@ -82,6 +85,9 @@ _VERSION_BODY = rf"{SEMVER_CORE_PATTERN}{_PRERELEASE}{_BUILD}"
 SEMVER_PATTERN = rf"^{_VERSION_BODY}$"
 
 NAME_PATTERN = r"^[a-z][a-z0-9_]*$"
+#: 预登记研究类别的标识符约束（ADR-0018 §D-26.3）。`ProfileSelectionKey.research_class` 与
+#: `ProfileScope.research_class` **共用**这一个常量，不各写一份；取值集合仍未决定（D-09 H-7）。
+RESEARCH_CLASS_PATTERN = r"^[a-z][a-z0-9_]*$"
 _NAME_BODY = r"[a-z][a-z0-9_]*"
 #: 内容哈希一律是 64 位小写十六进制 SHA-256。
 SHA256_PATTERN = r"^[0-9a-f]{64}$"
@@ -167,6 +173,12 @@ RefKey = Annotated[str, Field(pattern=REF_KEY_PATTERN)]
 ContentHash = Annotated[str, Field(pattern=SHA256_PATTERN)]
 #: Git 对象 ID（40 / 64 位小写十六进制）；与 `ContentHash` 是两个不同的命名空间。
 GitOid = Annotated[str, Field(pattern=GIT_OID_PATTERN)]
+
+#: 语义身份的返回类型（ADR-0018 §D-26）：显式、固定形状的元组，不含 Contract 信封版本。
+#: `Ref` 目标身份 `(kind, name, version)`。
+type RefTargetIdentity = tuple[Kind, str, str]
+#: `GitCodeRevision` 代码身份 `(commit_oid, tree_oid)`。
+type GitCodeIdentity = tuple[str, str]
 
 
 def _to_builtin(value: Any) -> Any:
@@ -358,6 +370,15 @@ class Ref(Contract):
     name: str = Field(pattern=NAME_PATTERN)
     version: str = Field(pattern=SEMVER_PATTERN)
 
+    def target_identity(self) -> RefTargetIdentity:
+        """目标身份 `(kind, name, version)`：是否指向**同一个对象**（ADR-0018 §D-26.5）。
+
+        不含 Contract 信封 `schema_version`。跨对象判断"是否是同一目标"（生命周期 subject、
+        LIVE 授权 / Risk Gate subject）必须用它，而不是 Pydantic 全结构相等。
+        结构相等与 `content_hash()` 保持不变，仍包含信封版本（§D-26.7）。
+        """
+        return (self.kind, self.name, self.version)
+
     @classmethod
     def parse(cls, raw: str) -> Self:
         match = REF_PATTERN.match(raw)
@@ -389,6 +410,14 @@ class GitCodeRevision(Contract):
 
     commit_oid: GitOid
     tree_oid: GitOid
+
+    def code_identity(self) -> GitCodeIdentity:
+        """代码身份 `(commit_oid, tree_oid)`：是否是**同一份代码**（ADR-0018 §D-26.5）。
+
+        这是 ADR-0015 §D-21.2"生产代码身份 = commit + tree"的准确落点，不含 Contract 信封
+        `schema_version`。结构相等与 `content_hash()` 保持不变，仍包含信封版本（§D-26.7）。
+        """
+        return (self.commit_oid, self.tree_oid)
 
 
 class ContentBlobRef(Contract):

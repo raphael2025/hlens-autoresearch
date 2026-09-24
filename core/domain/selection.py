@@ -9,9 +9,12 @@ from __future__ import annotations
 
 from pydantic import Field, model_validator
 
-from core.domain.base import SHA256_PATTERN, Contract, Kind, Ref
+from core.domain.base import RESEARCH_CLASS_PATTERN, SHA256_PATTERN, Contract, Kind, Ref
 
-__all__ = ["ProfileSelection", "ProfileSelectionKey"]
+__all__ = ["ProfileSelection", "ProfileSelectionKey", "SelectionKeyIdentity"]
+
+#: Profile 选择键身份 `(venue, symbol, timeframe, research_class)`（ADR-0018 §D-26.1）。
+type SelectionKeyIdentity = tuple[str, str, str, str]
 
 
 class ProfileSelectionKey(Contract):
@@ -20,7 +23,16 @@ class ProfileSelectionKey(Contract):
     venue: str = Field(min_length=1)
     symbol: str = Field(min_length=1)
     timeframe: str = Field(min_length=1)
-    research_class: str = Field(min_length=1)
+    research_class: str = Field(pattern=RESEARCH_CLASS_PATTERN)
+
+    def selection_identity(self) -> SelectionKeyIdentity:
+        """选择键身份 `(venue, symbol, timeframe, research_class)`（ADR-0018 §D-26.1）。
+
+        不含 Contract 信封 `schema_version`：同一业务键不能靠改写信封版本选出另一个 Profile。
+        `venue` / `symbol` / `timeframe` 是区分大小写的精确不透明值，**不做**大小写折叠或
+        Unicode 规范化（§D-26.4）。结构相等与 `content_hash()` 保持不变（§D-26.7）。
+        """
+        return (self.venue, self.symbol, self.timeframe, self.research_class)
 
 
 class ProfileSelection(Contract):

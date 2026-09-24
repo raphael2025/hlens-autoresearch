@@ -14,7 +14,14 @@ from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
-from core.domain.base import Contract, FrozenMapping, Kind, Ref, VersionedSpec
+from core.domain.base import (
+    RESEARCH_CLASS_PATTERN,
+    Contract,
+    FrozenMapping,
+    Kind,
+    Ref,
+    VersionedSpec,
+)
 
 __all__ = [
     "BenchmarkParams",
@@ -72,7 +79,7 @@ class ProfileScope(Contract):
     venue: str = Field(min_length=1)
     symbol: str = Field(min_length=1)
     timeframe: str = Field(min_length=1)
-    research_class: str = Field(pattern=r"^[a-z][a-z0-9_]*$")
+    research_class: str = Field(pattern=RESEARCH_CLASS_PATTERN)
 
 
 class WalkForwardParams(Contract):

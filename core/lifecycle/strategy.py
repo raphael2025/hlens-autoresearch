@@ -202,9 +202,10 @@ class ExecutionModeChange(Contract):
             raise ValueError("切换到 LIVE 需要通过独立 Risk Gate")
         if self.authorization is None:
             raise ValueError("切换到 LIVE 需要明确的授权记录")
-        if self.risk_gate.subject != self.subject:
+        # 比较目标身份而非全结构相等：信封版本不同的同一目标仍是同一对象（ADR-0018 §D-26.5）。
+        if self.risk_gate.subject.target_identity() != self.subject.target_identity():
             raise ValueError("Risk Gate 的 subject 必须与本次变更的 subject 一致")
-        if self.authorization.subject != self.subject:
+        if self.authorization.subject.target_identity() != self.subject.target_identity():
             raise ValueError("授权记录的 subject 必须与本次变更的 subject 一致")
         if not (
             self.authorization.authorized_at <= self.occurred_at <= self.authorization.valid_until
@@ -229,7 +230,7 @@ class LifecycleHistory(Contract):
 
     def append(self, transition: LifecycleTransition) -> LifecycleHistory:
         """校验后返回**新的**历史对象（原对象不可变）。"""
-        if transition.subject != self.subject:
+        if transition.subject.target_identity() != self.subject.target_identity():
             raise LifecycleViolation("转移记录的 subject 与历史不一致")
         if transition.from_state is not self.current_state:
             raise LifecycleViolation(
@@ -250,7 +251,7 @@ class LifecycleHistory(Contract):
         state = LifecycleState.IDEA
         previous_at: datetime | None = None
         for transition in self.transitions:
-            if transition.subject != self.subject:
+            if transition.subject.target_identity() != self.subject.target_identity():
                 raise LifecycleViolation("转移记录的 subject 与历史不一致")
             if transition.from_state is not state:
                 raise ValueError(f"历史链断裂：{state} 之后出现 {transition.from_state}")

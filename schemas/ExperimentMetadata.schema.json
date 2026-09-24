@@ -273,7 +273,7 @@
           "type": "string"
         },
         "research_class": {
-          "minLength": 1,
+          "pattern": "^[a-z][a-z0-9_]*$",
           "title": "Research Class",
           "type": "string"
         }
