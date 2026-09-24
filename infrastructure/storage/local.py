@@ -1,4 +1,4 @@
-"""Local ``file://`` ``StorageAdapter`` (Phase 1 C1 / C1-R1 / C1-R2；ADR-0021 / B3 Protocol).
+"""Local ``file://`` ``StorageAdapter`` (Phase 1 C1～C1-R3；ADR-0021 / B3 Protocol).
 
 Warehouse 与 staging 必须是同一文件系统上的本地绝对 ``file://`` 根，且不得为同一路径。
 构造时记录两个根目录的 inode；每次操作临时打开根 FD，用 ``fstat`` 核对仍绑定构造时的
@@ -7,10 +7,11 @@ inode，再以 ``dir_fd`` + ``O_NOFOLLOW`` 逐段访问，拒绝路径组件或�
 写入使用可靠 write-all（处理短写、``InterruptedError``、返回 0）；哈希与 size 只对应确实
 完整写入的内容。发布用同文件系统 ``os.link(..., src_dir_fd=..., dst_dir_fd=...,
 follow_symlinks=False)``，不覆盖；link 成功后必须从**实际最终对象的同一个已打开 FD**
-重新校验普通文件 / SHA-256 / size，并从配置的 warehouse 根安全重走 ``key``，确认与
-本次 final FD 为同一 inode 且内容身份相同，才返回可用 ``ObjectRef``。任一步失败则用已
-持有的父目录 FD 删除**本次**新建的 final（不碰既有对象）。``open_read`` / ``lookup``
-对同一个已打开 FD 计算 SHA-256 / size。
+重新校验普通文件 / SHA-256 / size，再从**配置的** ``self._warehouse`` 路径重新打开根目录
+并与构造时 inode 比较（不得用操作开始时的旧 warehouse FD 代替），用该新根 FD 安全重走
+``key``，确认与本次 final FD 为同一 inode 且内容身份相同，才返回可用 ``ObjectRef``。任一步
+失败则用已持有的父目录 FD 删除**本次**新建的 final（不碰既有对象）。``open_read`` /
+``lookup`` 对同一个已打开 FD 计算 SHA-256 / size。
 
 根 FD 不跨操作持有；``close()`` / context manager 幂等，关闭后操作明确失败。
 """
@@ -319,29 +320,36 @@ class LocalFileStorageAdapter:
                             )
                         os.fsync(published_fd)
                         os.fsync(parent_fd)
-                        # Re-bind configured warehouse root and confirm the key is reachable
-                        # under it as the same inode with the same content identity.
-                        self._assert_root_bound(warehouse_fd, self._warehouse_stat, "warehouse")
-                        walk_fd = self._open_final_object_fd(warehouse_fd, key)
+                        # Re-open the configured warehouse *path* and bind to construction
+                        # inode. Must not reuse the operation-start warehouse_fd: after a
+                        # whole-root rename that FD still matches the old inode while the
+                        # path URI would point at a replacement directory.
+                        rebound_fd = self._open_bound_root(
+                            self._warehouse, self._warehouse_stat, "warehouse"
+                        )
                         try:
-                            walk_st = os.fstat(walk_fd)
-                            if not _same_inode(walk_st, published_st):
-                                raise IntegrityViolation(
-                                    f"published object for {key!r} is not reachable under "
-                                    "the configured warehouse root"
+                            walk_fd = self._open_final_object_fd(rebound_fd, key)
+                            try:
+                                walk_st = os.fstat(walk_fd)
+                                if not _same_inode(walk_st, published_st):
+                                    raise IntegrityViolation(
+                                        f"published object for {key!r} is not reachable under "
+                                        "the configured warehouse root"
+                                    )
+                                if not stat.S_ISREG(walk_st.st_mode):
+                                    raise IntegrityViolation(f"{key} is not a regular file")
+                                os.lseek(walk_fd, 0, os.SEEK_SET)
+                                walk_digest, walk_size = _sha256_fd(
+                                    walk_fd, chunk_size=self._chunk_size
                                 )
-                            if not stat.S_ISREG(walk_st.st_mode):
-                                raise IntegrityViolation(f"{key} is not a regular file")
-                            os.lseek(walk_fd, 0, os.SEEK_SET)
-                            walk_digest, walk_size = _sha256_fd(
-                                walk_fd, chunk_size=self._chunk_size
-                            )
-                            if walk_digest != staged.sha256 or walk_size != staged.size:
-                                raise IntegrityViolation(
-                                    f"warehouse walk identity mismatch for {key!r}"
-                                )
+                                if walk_digest != staged.sha256 or walk_size != staged.size:
+                                    raise IntegrityViolation(
+                                        f"warehouse walk identity mismatch for {key!r}"
+                                    )
+                            finally:
+                                _close_quiet(walk_fd)
                         finally:
-                            _close_quiet(walk_fd)
+                            _close_quiet(rebound_fd)
                     except BaseException:
                         if created_final:
                             self._unlink_created_final(parent_fd, final_name)

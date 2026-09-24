@@ -720,6 +720,57 @@ def test_publish_fail_closed_cleans_anchored_link_when_parent_replaced(
         pass
 
 
+# ---------------------------------------------------------------------------------------
+# C1-R3：publish 后从配置路径重新打开 warehouse 根，不得用操作开始时的旧 FD
+# ---------------------------------------------------------------------------------------
+
+
+def test_publish_fail_closed_when_entire_warehouse_root_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Whole-warehouse rename during os.link must not return a dangling CREATED ref.
+
+    Subdirectory replacement alone is insufficient: the bug is that the old warehouse
+    FD still matches the construction inode after the configured path is swapped.
+    """
+    storage = _adapter(tmp_path)
+    key = "raw/root.bin"
+    data = b"warehouse-root-swap"
+    staged = storage.stage(
+        StageRequest(key=key, expected_sha256=_sha(data), expected_size=len(data)),
+        _chunks(data),
+    )
+    warehouse = tmp_path / "warehouse"
+    saved = tmp_path / "saved-warehouse"
+    real_link = os.link
+
+    def swap_warehouse_root_then_link(
+        src: str | bytes | os.PathLike[str],
+        dst: str | bytes | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if warehouse.exists() and not saved.exists():
+            warehouse.rename(saved)
+            warehouse.mkdir()
+            (warehouse / "staging").mkdir()
+        real_link(
+            src,
+            dst,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(os, "link", swap_warehouse_root_then_link)
+    with pytest.raises((IntegrityViolation, StagingViolation, ObjectKeyViolation, OSError)):
+        storage.publish(staged)
+    assert not (saved / key).exists(), "created link under old root must be cleaned"
+    assert not (warehouse / key).exists(), "new warehouse must not gain the object"
+
+
 def test_successful_publish_ref_is_usable_same_and_restarted_adapter(tmp_path: Path) -> None:
     storage = _adapter(tmp_path)
     key = "raw/usable.bin"

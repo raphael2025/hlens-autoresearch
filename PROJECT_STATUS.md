@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **C1-R2 本地已完成，待 Codex 复核**：publish 后从最终 FD 重验身份；成功 ref 可 lookup/open_read；根 FD 按操作开关 + 幂等 close；未 push |
+| 当前子阶段 | **C1-R3 本地已完成，待 Codex 复核**：publish 后从配置路径重新打开 warehouse 根并核对构造 inode；整根替换 fail closed 并清理旧根链接；未 push |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～B3 已验收，C1-R2 待 Codex 复核） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～B3 已验收，C1-R3 待 Codex 复核） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -39,7 +39,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（C1-R2 待 Codex 复核） |
+| 1 | Market Representation | 🔄 已开启（C1-R3 待 Codex 复核） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -79,15 +79,16 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ B1（Claude）：双时间 / revision DAG 的 8 个契约、Schema（current 46 份）与 contract tests 已通过 Codex 独立复核；验收 #4 满足
 - ✅ B2（Claude）：D-31 universe 契约与 `ResearchDatasetManifest` 已通过 Codex 独立验收；验收 #5 满足
 - ✅ B3（Claude）：两轮返修后已由 Codex 独立验收；验收矩阵 #6 满足，三个 Data Plane Adapter 接口与 contract suite 已冻结
-- ✅ C1-R2（Cursor Auto）：publish 最终 FD 身份重验、可用 ObjectRef、根 FD 生命周期；B3 Storage suite + 专项 / 回归测试本地通过；**待 Codex 复核推送**；不得开始 C2
-- ✅ C1-R1（Cursor Auto）：关闭短写与路径 TOCTOU；经 C1-R2 继续返修
-- ✅ C1（Cursor Auto）：本地 `file://` `LocalFileStorageAdapter` 已实现；经 C1-R1 / C1-R2 返修加固
+- ✅ C1-R3（Cursor Auto）：publish 后从配置 warehouse 路径重新打开根并核对构造 inode；整根替换 fail closed + 清理旧根链接；新增回归测试；**待 Codex 复核推送**；不得开始 C2
+- ✅ C1-R2（Cursor Auto）：publish 最终 FD 身份重验、可用 ObjectRef、根 FD 生命周期；经 C1-R3 继续返修
+- ✅ C1-R1（Cursor Auto）：关闭短写与路径 TOCTOU；经 C1-R2 / C1-R3 继续返修
+- ✅ C1（Cursor Auto）：本地 `file://` `LocalFileStorageAdapter` 已实现；经 C1-R1 / C1-R2 / C1-R3 返修加固
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 现在无需操作：等待 Codex 独立复核 Cursor C1-R2 并推送；额度守护器会在 Opus 五小时用量达到 80% 时暂停并在刷新后恢复
+- 现在无需操作：等待 Codex 独立复核 Cursor C1-R3 并推送；额度守护器会在 Opus 五小时用量达到 80% 时暂停并在刷新后恢复
 - 以后如果要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，需要你对具体内容单独批准
 
 ### Claude Code 需要做
@@ -96,8 +97,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已批准且已完成：A1 / A1r / A1r2 / A2 / A2r —— ADR-0021 ~ 0024 起草、两次修正、接受与首切片冻结；ADR-0025 与执行门修正（docs-only）
 - 已完成并验收：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema 与 contract tests）与 **Claude B2**（D-31 universe / manifest 契约）
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
-- Claude 当前等待 Codex 复核 Cursor C1-R2；不得自行开始 C2
-- 当前实现授权已用完 C1 / C1-R1 / C1-R2；Catalog / Collector / Iceberg / 数据库 / 网络 / 下载仍未开放
+- Claude 当前等待 Codex 复核 Cursor C1-R3；不得自行开始 C2
+- 当前实现授权已用完 C1 / C1-R1 / C1-R2 / C1-R3；Catalog / Collector / Iceberg / 数据库 / 网络 / 下载仍未开放
 
 ## 6. 当前待决策
 
@@ -140,7 +141,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Cursor C1 / C1-R1 / C1-R2；C2 及其后须等各自任务包
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Cursor C1 / C1-R1 / C1-R2 / C1-R3；C2 及其后须等各自任务包
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker），除非获得授权；创建 PostgreSQL 库 / 角色须先记录授权
@@ -156,11 +157,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-24 | Phase 1 C1-R2（Cursor Auto）：publish 后从最终 FD 重验 SHA/size；配置根重走确认可用 ref；失败清理本次 final；根 FD 按操作开关 + 幂等 close；新增回归测试；**未 push，待 Codex 复核** | 验收 #7 待 Codex 复核；C2 未开放 |
-| 2026-09-24 | Phase 1 C1-R1（Cursor Auto）：短写 write-all；warehouse/staging 根 FD + `dir_fd`/`O_NOFOLLOW`；publish/open_read/lookup 锚定已打开 FD；拒绝相同根；新增回归测试；**未 push，待 Codex 复核** | 验收 #7 待 Codex 复核；C2 未开放 |
-| 2026-09-24 | Phase 1 C1（Cursor Auto）：实现 `LocalFileStorageAdapter`（staging 流式校验、`os.link` 原子发布、幂等 / 冲突、路径 / symlink 安全）；接入 B3 Storage suite；未改 `core/`；本地测试与静态检查通过；**未 push，待 Codex 复核** | 验收 #7 待 Codex 复核；C2 未开放 |
+| 2026-09-24 | Phase 1 C1-R3（Cursor Auto）：publish 后从配置 warehouse 路径重新打开根并核对构造 inode；整根替换 fail closed 并清理旧根链接；新增回归测试；**未 push，待 Codex 复核** | 验收 #7 待 Codex 复核；C2 未开放 |
+| 2026-09-24 | Phase 1 C1-R2（Cursor Auto）：publish 后从最终 FD 重验 SHA/size；配置根重走确认可用 ref；失败清理本次 final；根 FD 按操作开关 + 幂等 close；经 C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
+| 2026-09-24 | Phase 1 C1-R1（Cursor Auto）：短写 write-all；warehouse/staging 根 FD + `dir_fd`/`O_NOFOLLOW`；publish/open_read/lookup 锚定已打开 FD；拒绝相同根；经 C1-R2 / C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
+| 2026-09-24 | Phase 1 C1（Cursor Auto）：实现 `LocalFileStorageAdapter`（staging 流式校验、`os.link` 原子发布、幂等 / 冲突、路径 / symlink 安全）；接入 B3 Storage suite；未改 `core/`；经 C1-R* 返修 | 验收 #7 待 Codex 复核；C2 未开放 |
 | 2026-09-24 | Codex 独立验收 B3：2528 项全量测试、ruff / format / mypy、恶意 URI / origin 端口探针和冻结 Schema / 向量比较全部通过；接受实现恢复点 `9c57253` | 验收 #6 满足；B3 与验收门推送；开放 Cursor C1 |
-| 2026-09-24 | Phase 1 B3-R2（Claude）：按 Codex 第二轮复核返修——URI 百分号编码与 origin 端口校验；本地 2528 项测试通过 | 验收 #6 待 Codex 复核；随后已验收 |
 
 ## 10. 下一阶段进入条件
 
@@ -178,7 +179,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 3. ✅ ADR-0021 ~ 0024 已 Accepted，决定 D-01、D-02、D-08、D-10、D-28、D-31；首切片已冻结（A2）
 4. ✅ 首次消费的 Provider 先交付 Protocol + DTO + contract tests（ADR-0017；B1～B3 已满足），再开始实现（C 起）
 
-**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #6 满足；#7 对应 C1，C1-R2 本地完成待 Codex 复核）。
+**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #6 满足；#7 对应 C1，C1-R3 本地完成待 Codex 复核）。
 
 ## 11. 给 Raphael 的下一步
 
@@ -197,5 +198,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
    已完成 A1、A1r、A1r2、A2、A2r 与 A3：ADR-0021 ~ 0025 Accepted，首切片冻结，依赖与 typed settings 已推送。
-   **Claude B1～B3** 已由 Codex 验收；**Cursor C1 / C1-R1 / C1-R2** 本地实现已提交、待 Codex 复核。Claude 不得开始 C2，任何 Agent 都不得开始 Phase 0.5。
+   **Claude B1～B3** 已由 Codex 验收；**Cursor C1 / C1-R1 / C1-R2 / C1-R3** 本地实现已提交、待 Codex 复核。Claude 不得开始 C2，任何 Agent 都不得开始 Phase 0.5。
 3. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。
