@@ -9,10 +9,10 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **D3A REST Raw / lineage 设计门已开放（docs-only）**：D2 与 D2-R1 已由 Codex 独立验收；D3A 先解决 REST 原始响应、元素 revision 与三跳 lineage 的表拓扑，不得开始实现 |
+| 当前子阶段 | **D3A REST Raw / lineage 设计门已完成（docs-only），等待 Codex 复核**：ADR-0027 以 `Proposed` 提出 additive 表拓扑与 D-33 裁决请求；未获批准前不得开始 REST 实现 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2 已验收；D3A 已开放） |
-| 最后更新时间 | 2026-09-24 |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2 已验收；D3A 草案已提交，待复核） |
+| 最后更新时间 | 2026-09-25 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
 领域契约、状态机、三层验证契约、错误分类、Schema 导出与工程基线均已实现并通过两轮关闭复审
@@ -84,6 +84,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 D0（Cursor Auto）：`BinanceSpotArchiveCollector` 只访问配置 archive base，严格 `.CHECKSUM` 先验校验、流式 staging / 原子发布、缺口与有界重试；经两轮对抗返修关闭中途流错误不重试与 base URL 静默改写；Codex 独立运行 2780 项全量测试、流中断 / 恶意 base 探针、残留 / 密钥 / 冻结边界检查与静态检查通过（`7a9f468`）
 - ✅ Phase 1 D2（Claude Opus）：`infrastructure/revision/` 的身份规则、`binance.spot.publication@1.0.0`、`binance.spot.archive-revision@1.0.0` 与 `RawRevisionStore`；归档对象内容寻址，序号 block 以归档表为 anchor 全在 Iceberg 内分配；经 D2-R1 修复后由 Codex 独立运行真实 PostgreSQL 全量 3091 项、回归反例与全部静态检查并接受（`b05486b`）
 - ✅ Phase 1 D2-R1（Claude Opus）：关闭来源 checksum 伪造与 arrival anchor 全表物化两个缺陷；四个新增回归测试在旧提交 `ba9f417` 上由 Codex 独立复现为全部失败，在修复提交全部通过；未改冻结 Schema 与 precedence policy hash
+- 🔄 Phase 1 D3A（Claude Opus，docs-only）：ADR-0027 `Proposed` —— additive 三张 REST Raw 表（响应页 = Raw source payload revision，元素表绑定响应 revision）、与归档逐字符相同的 `observation_key`、通道级元素 source identity（分页重叠天然幂等）、规范请求身份与不依赖隐式"最新"默认的确定性分页、REST 官方证据（每条标注来源与访问日期，未证明项单列）、D3B～D3E 拆分与测试矩阵；登记 D-33 与三个实现陷阱。等待 Codex 复核
 - ✅ Phase 1 D1（Claude Opus）：`binance.spot.archive.parser@1.0.0` 按覆盖日选择毫秒 / 微秒，严格 ZIP / CSV 与零容差覆盖边界，失败只产结构化质量事件且不泄露部分 rows；Codex 独立运行 2955 项全量测试、70,000 行末尾失败原子性探针，并真实解析两个日期的 kline 与 aggTrades 官方归档（`c966085`）
 
 ## 4. 当前正在做
@@ -100,13 +101,13 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ D0（Cursor Auto）：Codex 已独立验收；验收矩阵 #10 满足，接受 `7a9f468`
 - ✅ D1（Claude Opus）：Codex 已独立验收；验收矩阵 #11 满足，接受 `c966085`
 - ✅ D2 / D2-R1（Claude Opus）：Codex 已独立验收；验收矩阵 #12 / #17 满足，接受 `ba9f417` + `b05486b`
-- 🔄 D3A（Claude Opus，docs-only）：已开放 REST Raw source / element revision / 三跳 lineage 的设计门；只可起草 Proposed ADR、证据文档与 D3B～D3E 批次拆分，不得写实现
+- ✅ D3A（Claude Opus，docs-only）：ADR-0027 `Proposed`（additive 三张 REST 表、通道级元素身份、请求身份与确定性分页、REST 官方证据、D3B～D3E 拆分）已提交，等待 Codex 复核；**新增待裁决 D-33**（归档 ↔ REST 同一观察的汇合规则），未裁决前 D3E 不得开工
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 现在无需操作：D2 已验收；Codex 正在控制 Claude 执行 D3A 设计门
+- 现在无需操作：D3A 设计草案已提交，由 Codex 复核并裁决 D-33（归档与 REST 重叠时的取舍规则）；该裁决不涉及资金、实盘或研究原则
 - 以后如果要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，需要你对具体内容单独批准
 
 ### Claude Code 需要做
@@ -116,11 +117,18 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已完成并验收：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema 与 contract tests）与 **Claude B2**（D-31 universe / manifest 契约）
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
 - C3、D-32、D0、D1 与 D2 均已完成并通过 Codex 独立验收
-- 当前唯一获批批次：**D3A（docs-only）**；不得实现 REST / D3B～D3E、WebSocket / D4 或 Canonical / E
+- D3A（docs-only）已完成：ADR-0027 草案、REST 证据文件、`03-data.md` §7.6 提案、roadmap D3 子批次拆分
+- 下一批次 **D3B 需要两个前提**：Codex 接受 ADR-0027，且裁决 D-33；在此之前不得实现 REST / D3C～D3E、WebSocket / D4 或 Canonical / E
 
 ## 6. 当前待决策
 
-**当前无待决架构决定。**
+**D3A 提出的决定（待 Codex 裁决，阻塞 D3E）**
+
+| ID | 问题 | 方案 | 状态 |
+|---|---|---|---|
+| D-33 | 同一笔成交 / 同一根 K 线既可能来自官方归档、也可能来自 REST 补尾；按 ADR-0023 它们是同一观察的两条 revision，没有来源证据即 competing heads，数据集 fail closed。归档迟早会覆盖曾用 REST 补过的区间，不裁决就等于禁止 REST 补尾 | ADR-0027 §3.4：**A（推荐）** 两条 revision 内容逐字段相同时，在写入时持久化"归档取代 REST"的 precedence 证据；内容不同则不产生任何边、继续 fail closed（真实矛盾必须暴露）。B 不裁决、C 改 PIT 语义（触碰已发布契约）、D / E 不诚实 | **未决**；Codex 裁决后才可执行 D3E |
+
+**此外无待决架构决定。**
 
 **C3 发现的决定（已决定，已实施）**
 
@@ -162,13 +170,15 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ PyIceberg 与 Binance 的关键能力事实已由 Codex 于 2026-09-24 按官方资料复核，PostgreSQL 服务已只读确认在线；实施前仍须按锁定依赖版本做行为 smoke / integration 验证
 - ⚠️ 来源若不提供修订关系或修订时间，同一观察的不同版本会成为 competing heads 并使数据集构建 fail closed；需要各来源的 precedence policy 与证据
 - ⚠️ **D2 的证据结论**：Binance 官方资料没有给出任何具体 revision 的公开时刻，因此 `binance.spot.publication@1.0.0` 三类主体全部保守取 `available_time = ingest_time` 并写证据缺口；在出现可引用的官方上界并发布新 policy 版本之前，早于本机 ingest 的历史可用区间为空。归档替换同样无法证明先后，一律 competing heads（数据全部保留，但任何“最新”结论 fail closed）
-- ⚠️ 现有八张冻结表不能诚实承载 REST response 与 REST element 的 Raw 三跳 lineage；D3A 必须先通过 Proposed ADR 给出 additive 表拓扑、版本与迁移门，设计未接受前不得实现
+- ⚠️ 现有八张冻结表不能诚实承载 REST response 与 REST element 的 Raw 三跳 lineage；ADR-0027 已提出 additive 拓扑（三张新表，归档路径零改动），**仍是 `Proposed`**，未被接受前不得实现
+- ⚠️ **D3A 发现的三个实现陷阱**（ADR-0027 §9）：身份规则哈希是全局的（把 REST 并入 D2 规则会改变所有归档 `revision_id`）、同一 availability `policy_id` 的两个版本无法在一份 PIT spec 中共存、`arrival_seq` 必须跨通道唯一。三者都必须在 D3B 按 ADR 的方案实现，否则会破坏已验收的归档路径
+- ⚠️ REST 的官方事实中，**未被证明**的部分已逐条列出（证据文件 §2）：无任何响应的公开时刻、aggTrade ID 不保证连续、REST 与归档内容不保证一致、未结束 K 线无法从载荷判别。这些都只能 fail closed，不得当作已解决
 - ⚠️ 旧研究可能已看过全部 BTC 历史：历史"样本外"区间在认知上不完全干净
 - ⚠️ D1 已真实验证两个单位边界日的 kline 与 aggTrades；大体量 BTC 日归档尚未做内存 / 吞吐基线，批量 backfill 前必须先完成容量检查与可恢复 checkpoint
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只批准 Claude D3A docs-only；D3B 及其后须等各自任务包
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；D3A docs-only 已交付，**D3B 及其后须等 ADR-0027 被接受 + D-33 裁决 + 各自任务包**
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -184,11 +194,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | Phase 1 D3A（Claude Opus，docs-only）：ADR-0027 `Proposed` —— 三张 additive REST Raw 表、通道级元素身份、规范请求身份与确定性分页、REST 官方证据（含逐条"未证明"）、D3B～D3E 拆分；发现并登记 D-33 与三个实现陷阱；八张冻结表、契约、Schema、依赖、settings 全部未动 | D3A 交付完成，等待 Codex 复核；D-33 未裁决前 D3E 不得开工 |
 | 2026-09-24 | Codex 独立验收 D2 / D2-R1：在 `ba9f417` 复现四项回归全部失败，修复提交 `b05486b` 上专项 18 项通过；真实 PostgreSQL 全量 3091 项、ruff / format / mypy / lock、冻结边界与敏感信息检查全绿 | 验收矩阵 #12 / #17 满足；接受 D2 并开放 D3A docs-only 设计门 |
 | 2026-09-24 | Phase 1 D2-R1（Claude Opus）：按 Codex 复核修复两个缺陷——缺失官方 checksum 不再被伪造成来源声明；序号 anchor 改为 `max_int64` 流式 Arrow batch 归约并逐值校验 block base。四个新回归测试在 `ba9f417` 上确认失败；3091 项全量（真实 PostgreSQL，0 skipped）与静态检查全绿 | 缺陷关闭，等待 Codex 复核；D3 仍未开放 |
 | 2026-09-24 | Phase 1 D2（Claude Opus）：`infrastructure/revision/` append-only revision 写入、幂等 replay、崩溃恢复、内容寻址归档对象（修复 D0 延期义务，collector → `1.1.0`）、序号 block 分配与两份 policy 证据；3072 项全量测试（接真实 PostgreSQL，含 9 项 D2 集成）与静态检查全绿 | 验收矩阵 #12 / #17 本地完成，待 Codex 复核；D3 未开放 |
 | 2026-09-24 | Codex 独立验收 D1：175 项专项、带真实 PostgreSQL 的 2955 项全量测试、70,000 行末尾失败原子性、两个单位边界日的官方 kline 与 ETHUSDT aggTrades、残留 / 密钥 / 冻结边界与静态检查全部通过；接受 `c966085` | 验收矩阵 #11 满足；D2 开放给 Claude Opus |
-| 2026-09-24 | Codex 独立验收 D0 / R1 / R2：52 项专项、带真实 PostgreSQL 的 2780 项全量测试、checksum / ZIP 中途流中断重试、8 类恶意 archive base、测试数据库清理、warehouse / 密钥 / 冻结边界与静态检查全部通过；接受 `7a9f468` | 验收矩阵 #10 满足；D1 开放给 Claude Opus |
 
 ## 10. 下一阶段进入条件
 
@@ -213,7 +223,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > 我现在应该干什么？
 
 1. Phase 0 已完成：宪法 1.0.0 已发布（原则一字未改），代码已合并进 `main`，并打了 `phase-0-complete` 标记。
-2. Phase 1 已开启，四份架构决定（ADR-0021 ~ 0024）已由 Codex 复核接受；D0 下载、D1 解析与 D2 revision 持久化已验收，D3A REST 设计门正在执行。不需要你做任何决定。
+2. Phase 1 已开启，四份架构决定（ADR-0021 ~ 0024）已由 Codex 复核接受；D0 下载、D1 解析与 D2 revision 持久化已验收，D3A REST 设计草案（ADR-0027）已提交待复核。不需要你做任何决定。
    其中 ADR-0022 明确：开发授权不等于实盘授权，Phase 13 之前系统没有下单能力，也不保存交易密钥。
 3. 以后若要修改任何原则或阈值，或涉及实盘 / 资金，需要你对具体内容单独批准。
 4. 每个经 Codex 复核通过的进度都会推送到私有 GitHub 仓库（ADR-0025）；PR 与 CI 以后再配置。
@@ -224,4 +234,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成并验收 S0、A1～A3、B1～B3、C1～C3、D0～D2；D2 修复后的实现恢复点为 `b05486b`。
-3. 当前只执行 D3A docs-only 任务包：起草 REST Raw / lineage Proposed ADR、官方证据与 D3B～D3E 计划；不得开始实现或 Phase 0.5。
+3. D3A docs-only 任务包已完成（ADR-0027 草案、REST 官方证据、§7.6 提案、D3B～D3E 拆分）。
+   下一步只能等 Codex 接受 ADR-0027 并裁决 D-33；获批后按 D3B → D3C → D3D → D3E 逐批实施，不得开始 Phase 0.5。

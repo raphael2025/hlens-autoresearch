@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2 已验收，D3A REST Raw / lineage 设计门已开放
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2 已验收，D3A REST Raw / lineage 设计草案已提交待复核
 
 ## 2. Current Architecture
 
@@ -44,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3A docs-only 设计门已开放**；D2 archive / Raw append-only revision、恢复与证据已由 Codex 复核通过
+- Current Subphase：**D3A docs-only 已交付，等待 Codex 复核**（ADR-0027 `Proposed` + REST 证据 + D3B～D3E 拆分）；D2 archive / Raw append-only revision、恢复与证据已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批批次：**Claude D3A（docs-only）**；只起草 REST Raw source / element revision / 三跳 lineage 的 Proposed ADR、证据与 D3B～D3E 拆分，不得实现 REST 或后续批次
-- Current Blocker：无；C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：Claude 提交 D3A 文档草案；Codex 复核并决定是否接受 ADR、冻结 additive 表拓扑并开放 D3B
+- D3A 已交付；**D3B 的前提是 ADR-0027 被接受且 D-33 被裁决**，在此之前不得实现 REST 或后续批次
+- Current Blocker：D-33（归档 ↔ REST 同一观察的汇合规则）未裁决 → 阻塞 D3E；C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
+- Next Milestone：Codex 复核 ADR-0027、裁决 D-33，接受后冻结 additive 表拓扑并开放 D3B
 
 ## 5. Active Decisions
 
@@ -84,6 +84,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   `arrival_seq` 只作审计；PIT 双截止 + maximal head，competing heads fail closed；Research Dataset 绑定 `ResearchDatasetManifest`（不升 3.0.0）
 - ADR-0024（D-31）：静态 `Instrument` 不变 + 双轴 listing episode 历史；`UniverseSelectionSpec` 以 `name + SemVer + hash` 在 manifest 绑定，不新增 `Kind`
 - ADR-0026（D-32）：PyIceberg 0.12 的 day transform 写入使用官方 `pyiceberg-core` extra；不改变冻结分区或写入路径；已实施并随 C3 验收
+- ADR-0027（D-33，**Proposed，未获批**）：REST 补尾用三张 additive Raw 表（响应页 + 两张元素表）承载三跳 lineage，归档路径零改动；元素 source identity 取通道级、`observation_key` 与归档相同；D-33（归档 ↔ REST 重叠如何不 fail closed）待 Codex 裁决
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
@@ -112,6 +113,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - availability / precedence 证据已产出（D2，`docs/architecture/evidence/binance-spot-publication.md`）：官方资料**不能**证明任何具体 revision 的公开时刻，
   因此 `binance.spot.publication@1.0.0` 一律 `available_time = ingest_time` + 证据缺口，早于本机 ingest 的历史可用区间为空；
   `binance.spot.archive-revision@1.0.0` 无法证明归档替换的先后，一律 competing heads。放宽只能靠新证据 + 新 policy 版本（H3）
+- REST 证据（D3A，`docs/architecture/evidence/binance-spot-rest-market-data.md`）同样结论：官方没有任何响应的公开时刻；
+  另外**未证明** aggTrade ID 连续、REST 与归档内容一致、未结束 K 线可从载荷判别 —— 这些一律 fail closed，不得当作已解决
 - Constitution 1.0.0 只是原则：验证流水线、泄漏门、多重检验校正、trial 账本均未实现，Profile 数值要到 Phase 4；
   在那之前没有实验能被实际判定
 - 契约层只校验**结构与声明**：传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、Registry 存在性、
@@ -151,6 +154,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、八张生产表定义、D0 Collector、D1 parser 与 D2 revision store 已实现
-- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 已由 Codex 复核通过；D2 恢复点 `b05486b`，当前进入 D3A docs-only 设计门
+- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 已由 Codex 复核通过；D2 恢复点 `b05486b`；D3A docs-only 草案已提交，待 Codex 复核
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
   `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`

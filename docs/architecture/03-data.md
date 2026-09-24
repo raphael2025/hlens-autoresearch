@@ -253,3 +253,36 @@ ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅
 已登记且带证据的版本，或 `supersedes` 边引用的 precedence 证据缺失；所需时间范围内缺少 universe listing 历史；manifest 任一绑定项缺失。
 单行 availability 证据缺口不在此列：该行按 §4.2 保守计算并记入 manifest（契约为 `AvailabilityEvidenceGap`，须引用 manifest 所列质量报告）。
 competing head 不是 universe 排除原因：它使构建 fail closed，不产生 manifest。
+
+### 7.6 REST 补尾的 Raw 拓扑（**提案**，[ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md) `Proposed`）
+
+> 本节是**提案**，不是冻结内容。ADR-0027 未被接受前，§7.1 / §7.3 / §6.2 保持原样，
+> 也**不得**开始 REST 实现（roadmap Phase 1 验收 #13 的前置设计门 D3A）。接受后由实施批次把本节内容
+> 并入 §7.1 / §7.3 并删除提案标记。
+
+现有八张表无法诚实承载 REST：没有 Raw source payload 表，且 `raw.binance_spot_agg_trades` /
+`raw.binance_spot_klines_1m` 的 `archive_revision_id` / `archive_line_number` 为必填的归档语义列。
+ADR-0027 提出 **additive** 拓扑，归档路径一字不改：
+
+| 表（提案） | 内容 | 初始分区 |
+|---|---|---|
+| `raw.binance_spot_rest_responses` | 一次 HTTP 响应页的 Raw source payload revision：规范请求身份、响应字节对象引用、HTTP 元数据、revision 与两轴时间字段 | 不分区 |
+| `raw.binance_spot_rest_agg_trades` | 从响应页解码的 aggTrade 元素 revision，绑定所属响应 revision | identity `symbol` + `day(event_time)` |
+| `raw.binance_spot_rest_klines_1m` | 从响应页解码的 1m kline 元素 revision，绑定所属响应 revision | identity `symbol` + `day(interval_start)` |
+
+三跳 lineage 因此无需任何契约改动即可表达：
+`canonical.trades → raw.binance_spot_rest_agg_trades → raw.binance_spot_rest_responses`
+（`SelectedRevisionLineage` 只要求 `raw_table` / `source_table` 位于 `raw` namespace）。
+
+提案中的新标识符：`binance.public.spot.rest@1.0.0`（source）、`binance.spot.rest.decoder@1.0.0`（decoder）、
+`binance.spot.rest-publication@1.0.0`（availability）、`binance.spot.rest-revision@1.0.0` 与
+`binance.spot.delivery-channel@1.0.0`（precedence）、`hlens.binance.spot.rest-revision-identity@1.0.0`（身份规则）。
+REST 的元素 `observation_key` 与归档**逐字符相同**，同一市场观察在 Raw 层即汇合；元素的 source identity 是
+**通道级**（不含响应 revision），因此分页重叠与重取天然幂等。
+
+官方事实与其边界见 [证据文件](evidence/binance-spot-rest-market-data.md)（2026-09-25 检索）：
+官方**没有**给出任何 REST 响应的公开时刻，因此 availability 与归档同样保守取 `ingest_time` 并记证据缺口；
+官方**没有**声明 aggTrade ID 连续，因此缺口只能表述为"该请求下来源返回了这些元素"。
+
+**待 Codex 裁决（D-33）**：同一观察同时由归档与 REST 交付时如何不 fail closed。ADR-0027 §3.4 推荐
+"内容逐字段相同时持久化通道 precedence 边（归档 supersede REST），内容不同则无边并 fail closed"。

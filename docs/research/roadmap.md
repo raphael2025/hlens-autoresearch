@@ -127,10 +127,29 @@ flowchart TD
 | C2 | Claude | PyIceberg catalog 语义与幂等提交；创建 catalog 库 / role 前记录 H12 授权 | 验收 #8 | C2 commit |
 | C3 | Claude | 八张表的 Schema / 分区 / 演进（`day(...)` 分区写入以 ADR-0026 的 `pyiceberg-core` extra 已锁定为前提） | 验收 #9 | C3 commit |
 | D0 / CU-D1-DL | Cursor | 公共归档下载 + checksum + 原子交付；不解析、无 revision 语义 | 验收 #10 | D0 commit |
-| D1 ~ D4 | Claude | fail-closed parser 语义 → 修订 / 恢复 / precedence 证据 → REST 补尾 → 条件式 WS | 验收 #11 ~ #14、#17 | 每个子批一个 commit |
+| D1 ~ D4 | Claude | fail-closed parser 语义 → 修订 / 恢复 / precedence 证据 → REST 补尾（D3，见下）→ 条件式 WS | 验收 #11 ~ #14、#17 | 每个子批一个 commit |
 | E | Claude | Canonical trades / bars_1m / listings 与质量报告 | 验收 #15 ~ #17 | 每个子批一个 commit |
 | F | Claude | PIT + universe → Research Dataset + manifest；Representation 与 FeatureProvider；质量门 | 验收 #18、#19 | 每个子批一个 commit |
 | G | Claude | 端到端验收、修复、关闭文档 | 验收 #20、#21 全部通过；Phase 关闭由 Codex / Raphael 决定 | G commit |
+
+#### D3（REST 补尾）子批次拆分
+
+验收 #13 的前置是 **D3A 设计门**：现有八张表不能诚实承载 REST 的 Raw 三跳 lineage，
+拓扑与语义必须先由 [ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md) 决定
+（含待裁决的 **D-33** 跨通道 precedence）。**ADR-0027 未被接受前，D3B 及其后不得开工。**
+顺序固定 D3A → D3B → D3C → D3D → D3E，每批一个可恢复 commit，门未过不得进入下一批。
+
+| 子批 | 执行 | 交付 | 文件边界 | 可观察门 / 测试矩阵 | 恢复点 |
+|---|---|---|---|---|---|
+| D3A | Claude | docs-only：ADR-0027 草案、REST 官方证据、`03-data.md` §7.6、本拆分 | `docs/**` | 全量 pytest / ruff / format / mypy / `uv lock --check` 全绿；无实现代码、无 Schema / 契约 / 八表 / 依赖 / settings 变化 | D3A commit |
+| D3B | Claude | 三张新表定义 + REST 身份规则 + REST availability / precedence policy 模块（**无 HTTP**） | `infrastructure/catalog/phase1_tables.py`（仅追加）、`infrastructure/revision/rest_identity.py`、`infrastructure/revision/rest_availability.py`、`infrastructure/revision/rest_precedence.py`、对应 `tests/` | ADR-0027 验收 #1、#14、#18；八张冻结表定义哈希逐字节不变的回归断言；REST 与归档 `observation_key` 跨模块一致；真实 PostgreSQL 建表与重启幂等 | D3B commit |
+| D3C | Cursor（可）/ Claude | REST collector 壳：结构化 endpoint allowlist、规范请求编码、分页、`Retry-After` 有界退避、响应字节 staging → 原子发布、缺口 | `infrastructure/collector/binance_rest.py`、`tests/` | ADR-0027 验收 #8 ~ #10、#15 ~ #17；恶意 URL / 额外参数 / 重定向探针；429 / 418 / 5xx 行为；重放同一请求得同一对象身份 | D3C commit |
+| D3D | Claude | 严格 decoder `binance.spot.rest.decoder@1.0.0`：JSON 形状、声明单位、窗口零容差、未结束 K 线规则 | `infrastructure/parser/binance_rest.py`、`tests/` | ADR-0027 验收 #11 ~ #12；越界 / 错单位 / 截断 JSON 一律整页拒绝且不部分写入 | D3D commit |
+| D3E | Claude | REST revision store：响应 source revision + 元素 revision、`arrival_seq` 区间、崩溃恢复、跨通道 precedence（按 D-33 裁决）、缺口 / 质量事件 | `infrastructure/revision/rest_store.py`、`tests/` | ADR-0027 验收 #2 ~ #7、#13、#19（#19 的端到端部分留给 E / F）；真实 PostgreSQL 全量 + 三个崩溃点重放 | D3E commit |
+
+依赖：D3B ← ADR-0027 接受；D3C ← D3B（身份与 policy 标识符）；D3D ← D3C（响应对象）；D3E ← D3B + D3C + D3D，且
+**D3E 另需 D-33 已裁决**。D3C 可交 Cursor（与 D0 同形：只下载与发布，不碰 revision 语义）；
+D3B / D3D / D3E 触及身份、双时间与 precedence 语义，必须 Claude 执行、Codex 独立复核。
 
 ## Phase 2 — Market State Engine
 

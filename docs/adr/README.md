@@ -32,6 +32,7 @@
 | [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
 | [0025](0025-private-github-remote-and-reviewed-progress-push.md) | 私有 GitHub 远程与复核后逐进度推送 | Accepted（2026-09-24，Codex 依 Raphael 明确指示批准；A2r 记录）；取代 ADR-0004 第 3 条 |
 | [0026](0026-pyiceberg-core-extra-for-day-partitions.md) | 为按天分区写入加入 PyIceberg 官方 extra `pyiceberg-core`（D-32） | Accepted（2026-09-24，Codex 依 Raphael 授权裁决方案 A；D32 记录）；尚待实施（Cursor 锁依赖、Claude 转正 xfail） |
+| [0027](0027-rest-raw-source-and-element-revisions.md) | REST 补尾的 Raw source / element revision 与三跳 lineage（D-33） | **Proposed**（2026-09-25，D3A 起草，待 Codex 复核）；未获批准前不得开始 REST 实现 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -95,6 +96,7 @@
 | D-30 | **C-L5 的跨对象校验执行点**：`embargo >= 最长 Outcome horizon` 需要同时看到 Profile 与 Outcome，由谁、在何时校验（C1 F4）。 | 未决；本登记不选方案 | Phase 4 前决定 |
 | D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | Codex 裁决 → [ADR-0024](0024-historical-tradable-universe.md)：静态 `Instrument` + 双轴 listing 历史 + 版本化 `UniverseSelectionSpec` | Phase 1；Accepted（2026-09-24），尚待实施（依赖 ADR-0023） |
 | D-32 | **按天分区写入缺依赖**：锁定的 PyIceberg 0.12 写入 `day(...)` 分区需要官方 extra `pyiceberg-core`，它不在 03-data.md §6.1 的依赖中，四张冻结表无法写入（C3 发现）。 | Codex 裁决：方案 A → [ADR-0026](0026-pyiceberg-core-extra-for-day-partitions.md)：加入该 extra；不改分区（B）、不改写入路径（C） | Phase 1；Accepted（2026-09-24），尚待实施 |
+| D-33 | **归档 ↔ REST 的同一观察如何汇合**：同一 `observation_key` 同时有归档交付与 REST 交付的 revision 时，按 ADR-0023 §5 是 competing heads → 数据集 fail closed。归档终将覆盖曾由 REST 补过的区间，不裁决即等于禁止 REST 补尾（D3A 发现）。 | [ADR-0027](0027-rest-raw-source-and-element-revisions.md) §3.4 的 A ~ E：**A（推荐）** 内容逐字段相同时在 ingest 持久化通道 precedence 边（归档 supersede REST），内容不同则无边并 fail closed；C 改 PIT 语义（触碰已发布契约） | Phase 1 D3；**未决**，阻塞 D3E；由 Codex 裁决 |
 
 > **编号说明**（2026-09-24 由 Codex 最终确认）：D-17 ~ D-25 连续且唯一。
 > D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份已接受且已实施的 ADR（C2c / C2d），
@@ -103,6 +105,8 @@
 > 内部决定 D-18.1 ~ D-18.3）。[ADR-0014](0014-validation-profile-structural-invariants.md)
 > **不是新 D 编号**：它是 **D-20 的结构合法性扩展（D-20.4）**，
 > D-20.1 ~ D-20.3 仍在 [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md)。
+> **D-32** 由 C3 发现、已由 ADR-0026 决定；**D-33** 由 D3A 发现，方案见
+> [ADR-0027](0027-rest-raw-source-and-element-revisions.md) §3.4，**尚未裁决**。
 
 ## 冲突记录
 
