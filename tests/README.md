@@ -18,6 +18,7 @@
 | `test_validation_profile_invariants.py` | ADR-0014 Validation Profile 的普适结构不变量 |
 | `test_audit_identity.py` | ADR-0015 审计身份类型（`ContentHash` / `GitOid` / `GitCodeRevision`）与版本绑定 |
 | `test_llm_call_bindings.py` | ADR-0016 `LlmCall` 的最小完整登记（`ContentBlobRef`、三项必填内容引用、显式 `called_at`） |
+| `test_lifecycle_evidence.py` | ADR-0019 生命周期证据最小结构：逐边的非空证据、两条入口、Schema 表达；不做自报职责分离 |
 | `test_semantic_identities.py` | ADR-0018 语义身份：Profile 选择键判重与查询同源、`Ref` 目标身份、`GitCodeRevision` 代码身份、共享 `research_class` 约束；全局相等与内容哈希不变 |
 | `test_validation_architecture.py` | ADR-0007 三层验证架构 |
 

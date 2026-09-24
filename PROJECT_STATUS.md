@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 0 — Research Constitution**（进行中） |
-| 当前子阶段 | 批次 C：关闭复审 C1 已完成（结论 **`FIX_BEFORE_CLOSE`**）；C2a 已固化 C1 报告并起草 ADR-0018 / 0019；C2b 已将两份 ADR **Accepted**；C2c 已实施 ADR-0018（待 Codex 复验）；下一步实施 ADR-0019 |
+| 当前子阶段 | 批次 C：关闭复审 C1 已完成（结论 **`FIX_BEFORE_CLOSE`**）；C2a 已固化 C1 报告并起草 ADR-0018 / 0019；C2b 已将两份 ADR **Accepted**；C2c 已实施 ADR-0018（Codex 已确认复验）；C2d 已实施 ADR-0019（待 Codex 复验）；下一步是 Phase 0 关闭复验 |
 | 总体状态 | 🔄 进行中 |
 | 最后更新时间 | 2026-09-24 |
 
@@ -96,8 +96,9 @@ Phase 0 **尚未关闭**，研究宪法仍是草案；复审通过也**不等于
 - ✅ 关闭复审 C1 已完成（结论 `FIX_BEFORE_CLOSE`，报告 `docs/reviews/2026-09-24-phase0-closing-review-c1.md`）
 - ✅ C2a（docs-only）已完成：C1 报告固化、ADR 起草、D-28 ~ D-31 登记、F6 修正
 - ✅ C2b（docs-only）已完成：ADR-0018 / 0019 **Accepted**
-- ✅ C2c：ADR-0018 已实施——三类显式语义身份 API（`ProfileSelectionKey.selection_identity()`、`Ref.target_identity()`、`GitCodeRevision.code_identity()`），选择规则判重与 `select()` 同源，4 处生命周期 / LIVE subject 比较与部署代码修订比较改用语义身份，`research_class` 共用 `RESEARCH_CLASS_PATTERN`；red 43 failed / 32 passed → green 75 passed；全量 1379 passed，Ruff / format / mypy 全绿；8 份 current Schema 仅 `research_class` 的 `minLength: 1` → `pattern`；v1 三条冻结路径零差异；**待 Codex 独立复验**
-- ⏭️ 下一步：实施 ADR-0019（独立 commit，先写 red 测试），再做关闭复验；Phase 0 仍未关闭
+- ✅ C2c：ADR-0018 已实施——三类显式语义身份 API（`ProfileSelectionKey.selection_identity()`、`Ref.target_identity()`、`GitCodeRevision.code_identity()`），选择规则判重与 `select()` 同源，4 处生命周期 / LIVE subject 比较与部署代码修订比较改用语义身份，`research_class` 共用 `RESEARCH_CLASS_PATTERN`；red 43 failed / 32 passed → green 75 passed；全量 1379 passed，Ruff / format / mypy 全绿；8 份 current Schema 仅 `research_class` 的 `minLength: 1` → `pattern`；v1 三条冻结路径零差异；Codex 以下达 C2d 确认 `9581773` 复验通过（复验明细未写入仓库）
+- ✅ C2d：ADR-0019 已实施——`LifecycleTransition.evidence` 必填、至少一项、每项去空白后非空（`EvidenceRef`），覆盖全部 18 条合法边；不做自报职责分离、不核验证据存在性；red 31 failed / 23 passed → green 54 passed；全量 1433 passed，Ruff / format / mypy 全绿；2 份 current Schema（`LifecycleTransition`、`LifecycleHistory`）：`evidence` 进入 required、`minItems: 1`、元素 `minLength: 1`、去掉 `default: []`，类描述同步；v1 三条冻结路径零差异；**待 Codex 独立复验**
+- ⏭️ 下一步：Codex 复验 C2d 后做 Phase 0 关闭复验；Phase 0 仍未关闭
 - ⏸️ Constitution 1.0.0 批准、Phase 0 正式关闭、main 合并、tag 均未授权（复审通过也不自动构成这些批准）
 
 Codex 在 `cd84a4e` 上最终复验的实际结果：
@@ -132,8 +133,9 @@ Codex 在 `cd84a4e` 上最终复验的实际结果：
 - 已批准且已完成：Phase 0 关闭复审 C1（独立只读，结论 `FIX_BEFORE_CLOSE`）
 - 已批准且已完成：C2a（docs-only）—— 固化 C1 报告、起草 ADR-0018 / 0019（Proposed）、登记 D-28 ~ D-31、修正 F6 文档漂移
 - 已批准且已完成：C2b（docs-only）—— 按 Codex 最终裁决补齐 ADR-0018 的 `GitCodeRevision` 代码身份与比较点盘点，两份 ADR 置为 Accepted
-- 已批准且已完成：C2c —— 实施 ADR-0018（独立 commit，待 Codex 复验）
-- 已批准、尚未开始：实施 ADR-0019（独立 commit）
+- 已批准且已完成：C2c —— 实施 ADR-0018（独立 commit，Codex 已确认复验）
+- 已批准且已完成：C2d —— 实施 ADR-0019（独立 commit，待 Codex 复验）
+- 下一步（需 Codex 授权）：Phase 0 关闭复验
 - 未批准：Constitution 批准、Phase 0 正式关闭、其他 Phase、环境安装、main 合并与 tag
 
 ## 6. 当前待决策
@@ -172,12 +174,12 @@ main 合并、tag、实盘与环境变更。
   B3 到此全部结束；Phase 0 关闭复审（批次 C）已于 2026-09-24 获授权，正在进行。
 - 编号已确定：D-17 ~ D-25 连续唯一；ADR-0016 = D-18；ADR-0014 = D-20.4（不是新编号）。
 
-**关闭复审 C1 的修复（Codex 已裁决并接受 ADR；0018 已实施，0019 尚待实施）**
+**关闭复审 C1 的修复（Codex 已裁决并接受 ADR；0018、0019 均已实施）**
 
 | 裁决 | 结论 | ADR / 状态 |
 |---|---|---|
-| D-26 | Profile 选择键身份 = `(venue, symbol, timeframe, research_class)`，判重与查询同源；`Ref` 目标身份 = `(kind, name, version)` 用于跨对象主体比较；`GitCodeRevision` 代码身份 = `(commit_oid, tree_oid)` 用于部署与等价检查比较；不全局改写相等与内容哈希 | [0018](docs/adr/0018-contract-value-semantic-identities.md)，Accepted，已实施（C2c，待复验） |
-| D-27 | 每条生命周期转移的证据引用至少一项且非空；**不**做自报职责分离（Q-5 未决、字符串无法证明分离） | [0019](docs/adr/0019-lifecycle-evidence-minimum.md)，Accepted，尚待实施 |
+| D-26 | Profile 选择键身份 = `(venue, symbol, timeframe, research_class)`，判重与查询同源；`Ref` 目标身份 = `(kind, name, version)` 用于跨对象主体比较；`GitCodeRevision` 代码身份 = `(commit_oid, tree_oid)` 用于部署与等价检查比较；不全局改写相等与内容哈希 | [0018](docs/adr/0018-contract-value-semantic-identities.md)，Accepted，已实施（C2c） |
+| D-27 | 每条生命周期转移的证据引用至少一项且非空；**不**做自报职责分离（Q-5 未决、字符串无法证明分离） | [0019](docs/adr/0019-lifecycle-evidence-minimum.md)，Accepted，已实施（C2d，待复验） |
 
 C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输入前提。
 
@@ -206,7 +208,7 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 
 ## 7. 当前风险
 
-- ⚠️ 关闭复审 C1 结论为 `FIX_BEFORE_CLOSE`：F1 / F3 已由 ADR-0018 实施修复（待 Codex 复验）；在 ADR-0019 实施前，生命周期转移仍可以没有证据引用（F5）
+- ⚠️ 关闭复审 C1 结论为 `FIX_BEFORE_CLOSE`：F1 / F3 已由 ADR-0018 实施修复；F5 已由 ADR-0019 实施修复（证据只保证结构非空，真实性仍待未来 Registry / Control Plane）；尚待关闭复验
 - ⚠️ `venue` / `symbol` / `timeframe` 仍区分大小写且不做规范化（ADR-0018 D-26.4 的明确边界）：Adapter 产出规范值是未来义务
 - ⚠️ `read_v1` 只在输入是完整的 v1 持久化规范载荷时才复现历史身份；省略默认字段的载荷会得到不同旧哈希（F2，已写入 10-migration.md）
 - ⚠️ ADR-0016 之后 `LlmCall` 只保证**登记结构**完整：契约层打不开 `uri`，因此内容是否可取回、
@@ -254,19 +256,19 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | C2d：实施 ADR-0019（`LifecycleTransition.evidence` 必填、至少一项、每项非空，覆盖全部合法边）；新增 `tests/test_lifecycle_evidence.py`（red 31 failed → green 54 passed）；既有测试 helper 补测试证据 | F5 修复；全量 1433 passed；2 份 current Schema 变化；不做自报职责分离；v1 资产零差异；待 Codex 复验；下一步 Phase 0 关闭复验 |
 | 2026-09-24 | C2c：实施 ADR-0018（三类语义身份 API；选择规则判重与查询同源；生命周期 / LIVE subject 与部署代码修订按语义身份比较；`research_class` 共用 `RESEARCH_CLASS_PATTERN`）；新增 `tests/test_semantic_identities.py`（red 43 failed → green 75 passed） | F1 / F3 修复；全量 1379 passed；8 份 current Schema 只多了 `research_class` pattern；全局 `==` 与内容哈希不变；v1 资产零差异；待 Codex 复验；下一步 ADR-0019 |
 | 2026-09-24 | C2b docs-only：按 Codex 最终裁决补齐 ADR-0018（第三类语义身份 `GitCodeRevision` = `(commit_oid, tree_oid)`，`DeploymentRecord` 与 `EquivalenceCheck` 按代码身份比较；`core/` 跨对象比较点完整盘点），ADR-0018 / 0019 置为 Accepted | 修复方案已正式接受但**尚未实施**；未动代码 / 测试 / Schema；下一步 0018 → 0019 串行实施；D-28 ~ D-31 仍开放；Phase 0 仍未关闭 |
 | 2026-09-24 | 关闭复审 C1 完成（结论 `FIX_BEFORE_CLOSE`）；C2a docs-only：固化 C1 报告，起草 ADR-0018（D-26 语义身份）与 ADR-0019（D-27 证据最小结构）为 Proposed，登记 D-28 ~ D-31，修正 README / roadmap / 05-plugin / 07-validation / 10-migration / failure-registry 的文档漂移 | 修复方案成文但**未实施**；未动代码 / 测试 / Schema；下一步 Codex 复核接受后串行实施；Phase 0 仍未关闭，Constitution、main 合并与 tag 仍需 Raphael |
 | 2026-09-24 | Raphael 明确授权开始 Phase 0 关闭复审（批次 C）；项目状态与长期记忆同步为「B3 已完成、批次 C 进行中」（docs-only） | 批次 C 只做关闭复审、证据矩阵、剩余问题与迁移 / 旧版本影响，不自动修代码或冻结契约；复审通过不等于批准 Constitution 或关闭 Phase 0，Constitution 1.0.0、Phase 0 关闭、main 合并与 tag 仍需 Raphael 另行批准 |
-| 2026-09-24 | B3 批次 7：ADR-0017 验收与状态收口（docs-only）——按验收矩阵 1 ~ 4 核对 `05-plugin.md` §3、`02-domain.md` §4、`core/contracts/README.md` 与 roadmap 跨 Phase 规则，修正 `core/contracts/README.md` 的模型数（36 → 38）与 `02-domain.md` 页首的 ADR 范围（0011 ~ 0015 → 0011 ~ 0016）；同时记录 Codex 对 `1ad9f59`（ADR-0016）的独立复验通过 | B3 串行实现全部结束；Provider 接口「Phase 0 没有」是**决定**而非欠账，`core/contracts/` 中 Provider Protocol 数仍为 0；未动代码 / 测试 / Schema，Phase 0 **仍未关闭**，下一步是未授权的关闭复审（批次 C） |
 
 ## 10. 下一阶段进入条件
 
 **Phase 0 关闭条件（roadmap 验收标准）：**
-1. ⏳ current 38 份 + legacy 35 份 Schema，逐字节一致；F1 已由 ADR-0018 实施修复，待 Codex 复验与关闭复验
+1. ⏳ current 38 份 + legacy 35 份 Schema，逐字节一致；F1 / F5 已由 ADR-0018 / 0019 实施修复，待关闭复验
 2. ⏳ 转移图测试通过；审批与历史归属校验已由 ADR-0011 补齐、信息流方向已由 ADR-0012 补齐、判定函数与数值合法性已由 ADR-0013 补齐、Profile 结构不变量已由 ADR-0014 补齐、审计身份与版本绑定已由 ADR-0015 补齐、LLM 调用的登记结构已由 ADR-0016 补齐（内容取回与核验按 ADR 延期）；C1 确认转移图测试通过，证据最小结构待 ADR-0019 实施
 3. ✅ 契约层无基础设施依赖（导入检查测试）
-4. ✅ 本地测试命令可运行（ADR-0018 批次后实际 1379 项通过）
+4. ✅ 本地测试命令可运行（ADR-0019 批次后实际 1433 项通过）
 5. ✅ lint / 类型检查命令可运行（ruff + mypy strict 全绿）
 6. ⏳ 研究宪法获批为 1.0.0（**需 Raphael**）
 
@@ -281,7 +283,7 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 
 1. 关闭复审 C1 已完成，结论是“先修再关”（`FIX_BEFORE_CLOSE`）：主要是一个 Profile 选择漏洞和几处文档过期。修复方案（ADR-0018 / 0019）已由 Codex 接受，接下来是实施，暂时不需要你做决定。
 2. 想了解 B3 改了什么，读 §6 的裁决表即可（七份 ADR 都在 `docs/adr/`）。
-3. 之后依次是：ADR-0018 已实施 → 实施 ADR-0019 → 关闭复验 → 研究宪法 1.0.0 → Phase 0 正式关闭 → 合并 main 与 tag（后三项需要你亲自批准）。
+3. 之后依次是：ADR-0018、0019 已实施 → 关闭复验 → 研究宪法 1.0.0 → Phase 0 正式关闭 → 合并 main 与 tag（后三项需要你亲自批准）。
 4. Phase 0 **尚未关闭**，宪法仍是 0.2.0-draft；复审通过也不会自动批准宪法或关闭 Phase 0。
 
 ## 12. 给 Claude Code 的下一步
@@ -295,7 +297,7 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 4. 已完成：批次 7 —— ADR-0017 的验收与状态收口（独立 docs-only commit，四项工程检查实际运行且全绿；
    未新增 Python / 测试 / Schema，Provider Protocol 数仍为 0）。
 5. 已完成：关闭复审 C1（结论 `FIX_BEFORE_CLOSE`）与 C2a（docs-only：审查记录、ADR-0018 / 0019 起草、D-28 ~ D-31 登记、F6 文档修正）与 C2b（docs-only：ADR-0018 补齐 `GitCodeRevision`，两份 ADR Accepted）。
-   已完成：C2c 实施 ADR-0018（独立 commit，待 Codex 复验）。
-   下一步：实施 ADR-0019（独立 commit，先写 red 测试）；D-28 ~ D-31 保持开放。
+   已完成：C2c 实施 ADR-0018、C2d 实施 ADR-0019（各一个独立 commit）。
+   下一步：Codex 复验 C2d 并授权后做 Phase 0 关闭复验；D-28 ~ D-31 保持开放。
 6. 不批准 Constitution、不关闭 Phase 0、不合并 main、不创建 tag；复审通过不构成其中任何批准。
 7. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据。

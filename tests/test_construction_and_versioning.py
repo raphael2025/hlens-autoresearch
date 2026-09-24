@@ -126,6 +126,7 @@ def test_lifecycle_history_append_still_works() -> None:
             from_state=LifecycleState.IDEA,
             to_state=LifecycleState.CANDIDATE,
             reason="ok",
+            evidence=("test-evidence:pre-registration",),
             triggered_by="test",
         )
     )

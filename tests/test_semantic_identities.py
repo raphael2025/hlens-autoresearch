@@ -223,6 +223,7 @@ def _transition(
         from_state=from_state,
         to_state=to_state,
         reason="test",
+        evidence=("test-evidence:semantic-identity",),
         triggered_by="test",
         occurred_at=T0,
     )

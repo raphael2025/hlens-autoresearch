@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Annotated
 
 from pydantic import Field, model_validator
 
@@ -27,6 +28,7 @@ from core.errors import LifecycleViolation
 
 __all__ = [
     "ALLOWED_TRANSITIONS",
+    "EvidenceRef",
     "AuthorizationRecord",
     "ExecutionMode",
     "ExecutionModeChange",
@@ -107,14 +109,24 @@ HUMAN_APPROVAL_TRANSITIONS: frozenset[tuple[LifecycleState, LifecycleState]] = f
 )
 
 
+#: 一项证据引用：去除首尾空白（`Contract` 的 `str_strip_whitespace`）后仍须非空
+#: （ADR-0019 §D-27.1）。格式（报告 ID、Run ID、URI 等）**不冻结**；
+#: 存在性与内容由 Registry / Control Plane 核验（§D-27.3）。
+EvidenceRef = Annotated[str, Field(min_length=1)]
+
+
 class LifecycleTransition(Contract):
-    """一次生命周期转移记录：只追加，永不修改（ADR-0006 §3 第 4 条）。"""
+    """一次生命周期转移记录：只追加，永不修改（ADR-0006 §3 第 4 条）。
+
+    每条转移都必须带**至少一项**非空证据引用（ADR-0019 §D-27.1），适用于全部合法转移。
+    契约层**不**要求 `approved_by != triggered_by`（§D-27.2），也**不**校验证据是否存在（§D-27.3）。
+    """
 
     subject: Ref
     from_state: LifecycleState
     to_state: LifecycleState
     reason: str = Field(min_length=1)
-    evidence: tuple[str, ...] = ()
+    evidence: tuple[EvidenceRef, ...] = Field(min_length=1)
     triggered_by: str = Field(min_length=1)
     approved_by: str | None = None
     occurred_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))

@@ -115,6 +115,7 @@ stateDiagram-v2
 - **执行点**："Phase 13 之前禁止真实生产交易"由未来 Control Plane 的可信配置与人类授权执行，**不**由载荷自证（ADR-0011 D-17.4 删除了自报的 `live_execution_enabled`）。
 - REJECTED、FAILED、RETIRED 为终态；重试 = 新版本的新 CANDIDATE，旧记录保留并计入尝试次数。
 - 每次转移与 `execution_mode` 变更都只追加、可审计。
+- 每条转移都必须带**至少一项**非空证据引用（`LifecycleTransition.evidence`，ADR-0019），适用于全部合法转移。契约层只保证结构：证据是否存在、是否支持结论由未来 Registry / Control Plane 核验；**不**要求 `approved_by != triggered_by`（Q-5 未决，自报字符串无法证明职责分离）。
 - OOS 数据对每个假设族只"开封"一次；开封记录不可撤销。
 
 ## 4. 终态记录：Failure Registry 与退役记录

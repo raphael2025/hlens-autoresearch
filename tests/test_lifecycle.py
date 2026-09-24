@@ -86,12 +86,14 @@ def _transition(
     *,
     subject: Ref = SUBJECT,
     occurred_at: datetime = AUTHORIZED_AT,
+    evidence: tuple[str, ...] = ("test-evidence:lifecycle",),
 ) -> LifecycleTransition:
     return LifecycleTransition(
         subject=subject,
         from_state=from_state,
         to_state=to_state,
         reason="test",
+        evidence=evidence,
         triggered_by="test",
         approved_by=approved_by,
         occurred_at=occurred_at,
