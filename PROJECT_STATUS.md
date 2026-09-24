@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **D3B 已开放**：Codex 于 2026-09-25 接受 ADR-0027（REST 补尾四张 additive 表；D-33 方案 A 生效），D3A 设计门通过；D3C～D3E 仍关闭，逐批验收后依次开放 |
+| 当前子阶段 | **D3B 已提交，REVIEW_PENDING（等待 Codex 复核）**：REST 四张表定义、独立 REST 身份规则与三份纯 policy 已实现，无 HTTP、无写入；**D3C 仍关闭**，D3C～D3E 逐批验收后依次开放 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2 与 D3A 设计门已验收；下一批 D3B） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2 与 D3A 设计门已验收；D3B 待复核） |
 | 最后更新时间 | 2026-09-25 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -44,7 +44,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（D3A 设计门已通过，D3B 开放） |
+| 1 | Market Representation | 🔄 已开启（D3B 待复核） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -87,6 +87,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 D3A（Claude Opus，docs-only）：ADR-0027 草案 `7111e54`；Codex 复核退回八项缺陷（目标窗口与页面合法性矛盾、响应缺知识时间、预算耗尽冒充来源缺口、重放义务、序号守卫位置、批次与设置、证据措辞、状态索引）
 - 🔄 Phase 1 D3A-R1（Claude Opus，docs-only）：逐项修正；因现有表的内嵌证据无法表达"归档取代后到的 REST"，改为**四张** additive 表（第四张为独立 precedence 证据表）；D3B～D3E 按四表方案重拆（`ed526f7`）
 - ✅ Phase 1 D3A 接受门（docs-only）：Codex 独立复核 `ed526f7` PASS，ADR-0027 Accepted、D-33 方案 A 生效；四张表、六个标识符、四项设置并入冻结数据架构；验收记录 `docs/reviews/2026-09-25-d3a-adr-0027-acceptance.md`
+- 🔄 Phase 1 D3B（Claude Opus）：四张 REST 表定义、独立 REST 身份规则、REST availability / precedence 与 D-33 通道等价纯函数；真实 PostgreSQL 全量测试与静态检查通过，等待 Codex 复核
 - ✅ Phase 1 D1（Claude Opus）：`binance.spot.archive.parser@1.0.0` 按覆盖日选择毫秒 / 微秒，严格 ZIP / CSV 与零容差覆盖边界，失败只产结构化质量事件且不泄露部分 rows；Codex 独立运行 2955 项全量测试、70,000 行末尾失败原子性探针，并真实解析两个日期的 kline 与 aggTrades 官方归档（`c966085`）
 
 ## 4. 当前正在做
@@ -104,7 +105,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ D1（Claude Opus）：Codex 已独立验收；验收矩阵 #11 满足，接受 `c966085`
 - ✅ D2 / D2-R1（Claude Opus）：Codex 已独立验收；验收矩阵 #12 / #17 满足，接受 `ba9f417` + `b05486b`
 - ✅ D3A / D3A-R1（Claude Opus，docs-only）：Codex 已验收，ADR-0027 Accepted；验收 #13 的前置设计门满足
-- ⏭️ D3B（Claude）：已开放，待 Codex 任务包——四张表定义、REST 身份规则、REST policy 与通道等价纯函数（无 HTTP、无写入）
+- 🔄 D3B（Claude Opus）：已提交，REVIEW_PENDING——四张 REST 表定义（原八张哈希不变）、独立 REST 身份规则、REST availability / precedence 与通道等价纯函数；无 HTTP、无写入；等待 Codex 复核
 
 ## 5. 下一步
 
@@ -121,7 +122,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
 - C3、D-32、D0、D1 与 D2 均已完成并通过 Codex 独立验收
 - D3A / D3A-R1 与接受门（docs-only）已完成并验收：ADR-0027 Accepted，数据架构冻结正文已并入四表 / 标识符 / 设置
-- 下一批次**只有 D3B**（按 Codex 任务包执行）；D3C～D3E 须各自等前一批验收，不得实现 WebSocket / D4 或 Canonical / E
+- D3B 已提交，等待 Codex 复核；**D3C 仍关闭**，须等 D3B 验收；不得实现 WebSocket / D4 或 Canonical / E
 
 ## 6. 当前待决策
 
@@ -182,7 +183,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只开放 **D3B**（须按 Codex 任务包执行），D3C～D3E 须等前一批验收
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；D3B 已提交待复核，**D3C～D3E 仍关闭**，须等前一批验收
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -198,11 +199,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | Phase 1 D3B（Claude Opus）：追加四张 ADR-0027 REST 表定义（原八张定义哈希逐字节不变，共 12 张）；独立 REST 身份规则（页身份白名单、与归档相同的元素键、不含时间的边身份、REST 序号区间）；REST availability / precedence 与 D-33 通道等价比较纯函数；无 HTTP、无写入；真实 PostgreSQL 全量测试与静态检查全绿 | REVIEW_PENDING，等待 Codex 复核；D3C 仍关闭 |
 | 2026-09-25 | Codex 独立复核 D3A-R1（`ed526f7`）PASS：ADR-0027 Accepted，D-33 方案 A 生效；四张 REST 表、六个标识符、四项设置并入冻结数据架构；ADR-0021～0024 实施状态改为逐项准确描述；docs 一致性、真实 PostgreSQL 全量 3091 项与静态检查全绿 | D3A 设计门通过；**只开放 D3B**，D3C～D3E 逐批验收后开放 |
 | 2026-09-25 | Phase 1 D3A-R1（Claude Opus，docs-only）：按 Codex 复核关闭八项缺陷——目标窗口与页面合法性分开、响应必有知识时间、预算 / 限流 / 解码失败不冒充来源缺口、同一采集请求重放不重新联网、序号只在单个观察图内检查、设置列齐、证据措辞、状态索引；改为四张 additive 表（第四张为独立 precedence 证据表），D-33 按 Codex 所选 A 写清；D3B～D3E 重拆 | 等待 Codex 再次复核；ADR-0027 仍 Proposed，D3B 关闭 |
 | 2026-09-25 | Phase 1 D3A（Claude Opus，docs-only）：ADR-0027 `Proposed` —— 三张 additive REST Raw 表、通道级元素身份、规范请求身份与确定性分页、REST 官方证据（含逐条"未证明"）、D3B～D3E 拆分；发现并登记 D-33 与三个实现陷阱；八张冻结表、契约、Schema、依赖、settings 全部未动 | D3A 交付完成，等待 Codex 复核；D-33 未裁决前 D3E 不得开工 |
 | 2026-09-24 | Codex 独立验收 D2 / D2-R1：在 `ba9f417` 复现四项回归全部失败，修复提交 `b05486b` 上专项 18 项通过；真实 PostgreSQL 全量 3091 项、ruff / format / mypy / lock、冻结边界与敏感信息检查全绿 | 验收矩阵 #12 / #17 满足；接受 D2 并开放 D3A docs-only 设计门 |
-| 2026-09-24 | Phase 1 D2-R1（Claude Opus）：按 Codex 复核修复两个缺陷——缺失官方 checksum 不再被伪造成来源声明；序号 anchor 改为 `max_int64` 流式 Arrow batch 归约并逐值校验 block base。四个新回归测试在 `ba9f417` 上确认失败；3091 项全量（真实 PostgreSQL，0 skipped）与静态检查全绿 | 缺陷关闭，等待 Codex 复核；D3 仍未开放 |
 
 ## 10. 下一阶段进入条件
 
@@ -238,4 +239,4 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成并验收 S0、A1～A3、B1～B3、C1～C3、D0～D2；D2 修复后的实现恢复点为 `b05486b`。
-3. D3A / D3A-R1 与接受门已完成（ADR-0027 Accepted）。下一步只执行 D3B（等 Codex 任务包）；D3C → D3D → D3E 逐批验收后依次开放，不得开始 Phase 0.5。
+3. D3A / D3A-R1 与接受门已完成（ADR-0027 Accepted）；D3B 已提交（未验收、未推送）。下一步只能等 Codex 复核 D3B；D3C → D3D → D3E 逐批验收后依次开放，不得开始 Phase 0.5。

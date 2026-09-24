@@ -1,4 +1,6 @@
-"""C3 production table definitions: exact layout, stable hashes, registry and evolution rules.
+"""C3 / D3B production table definitions: exact layout, stable hashes, registry and evolution.
+
+The C3 first slice (eight tables) is frozen byte for byte; D3B appends the four ADR-0027 tables.
 
 No catalog here (pure definitions); PostgreSQL evidence is in ``test_phase1_tables_postgres``.
 """
@@ -39,6 +41,12 @@ from infrastructure.catalog import (
     describe_partition_spec,
 )
 from infrastructure.catalog.phase1_tables import (
+    BINANCE_SPOT_AGG_TRADES,
+    BINANCE_SPOT_KLINES_1M,
+    BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+    BINANCE_SPOT_REST_AGG_TRADES,
+    BINANCE_SPOT_REST_KLINES_1M,
+    BINANCE_SPOT_REST_RESPONSES,
     CANONICAL_BARS_1M,
     EXCHANGE_DECIMAL,
     PHASE1_TABLE_PROPERTIES,
@@ -53,6 +61,7 @@ from tests.infrastructure.catalog.phase1_support import (
     listing_revision,
     manifest,
     manifest_row,
+    precedence_evidence_from_row,
     revision_from_row,
 )
 
@@ -137,7 +146,54 @@ GOLDEN: dict[str, tuple[str, str, str]] = {
     ),
 }
 
+#: ADR-0027 additions, appended after the frozen eight (D3B).
+REST_TABLES = (
+    "raw.binance_spot_rest_responses",
+    "raw.binance_spot_rest_agg_trades",
+    "raw.binance_spot_rest_klines_1m",
+    "raw.binance_spot_precedence_evidence",
+)
+REST_PARTITIONS: dict[str, list[tuple[int, str, str, str]]] = {
+    "raw.binance_spot_rest_responses": [],
+    "raw.binance_spot_rest_agg_trades": [
+        (1000, "identity", "symbol", "symbol"),
+        (1001, "day", "event_time", "event_time_day"),
+    ],
+    "raw.binance_spot_rest_klines_1m": [
+        (1000, "identity", "symbol", "symbol"),
+        (1001, "day", "interval_start", "interval_start_day"),
+    ],
+    "raw.binance_spot_precedence_evidence": [],
+}
+REST_GOLDEN: dict[str, tuple[str, str, str]] = {
+    "raw.binance_spot_rest_responses": (
+        "ee03134b24cb948c76e4dd14c099268aaedb3a19a2f6288a699941ed47c13d11",
+        "8298042557b585a7bd0cbfbd54f91a62880b3dc7f4e52202e082d145128ec6bd",
+        "7ec7d4c2171e823acf803b1aceb8a2b139486b778d683abb81c171c41e73adfa",
+    ),
+    "raw.binance_spot_rest_agg_trades": (
+        "b08e8fcd75ae0bbb568a56e15c36da06c735c1be88bfc702f0769084fe284c02",
+        "71cc0a0968e9a6af2ff54f22eff47160a87354019af8a2a641a303b2f027f8a3",
+        "51aedf15564b3879102c45fa617e25bbb486714301d15acf1330e929bbff7748",
+    ),
+    "raw.binance_spot_rest_klines_1m": (
+        "2ec437a9dcd54a60a3cf8afebc886ed2a2e9dd6acfe0ffce16a76875c0e6f04d",
+        "48f7d58fc3f730b17e13fd754024d4f96b10777d4386430c0cc44bde7e6e9644",
+        "c5fbd14eba1499b881a70d941804388b29d9c26df9265a241015ee13d74b7bba",
+    ),
+    "raw.binance_spot_precedence_evidence": (
+        "850a041e59ba65adab3d527bbc201d17dbf7cce0ac4ce626b0a354c27af51d27",
+        "3a3a9d41095b2deecc8a6530a2e57aea217825a0a7d44be8d29f79952d0e8ce8",
+        "a98d493598affe4c5ddc8a01ab351b297750a8e97b15536dfc173f3744f08654",
+    ),
+}
+#: All twelve tables in registry order, their partitions and goldens.
+PHASE1_TABLE_NAMES = FROZEN_TABLES + REST_TABLES
+ALL_PARTITIONS = {**FROZEN_PARTITIONS, **REST_PARTITIONS}
+ALL_GOLDEN = {**GOLDEN, **REST_GOLDEN}
+
 REVISION_TABLES = FROZEN_TABLES[:6]
+REST_REVISION_TABLES = REST_TABLES[:3]
 INTERVAL_TABLES = ("raw.binance_spot_klines_1m", "canonical.bars_1m")
 INSTANT_TABLES = ("raw.binance_spot_agg_trades", "canonical.trades")
 LINEAGE_TABLES = ("canonical.trades", "canonical.bars_1m", "canonical.instrument_listings")
@@ -190,10 +246,12 @@ def by_table(table: str) -> RegisteredTableDefinition:
 # --------------------------------------------------------------------------- registry
 
 
-def test_registry_holds_exactly_the_eight_frozen_tables() -> None:
-    assert tuple(item.table for item in PHASE1_TABLES) == FROZEN_TABLES
-    assert len(PHASE1_REGISTRY) == 8
-    assert [item.table for item in PHASE1_REGISTRY] == list(FROZEN_TABLES)
+def test_registry_holds_the_frozen_eight_then_the_four_rest_tables() -> None:
+    tables = tuple(item.table for item in PHASE1_TABLES)
+    assert tables[:8] == FROZEN_TABLES  # C3 first slice first, order unchanged
+    assert tables[8:] == REST_TABLES  # ADR-0027 additions appended
+    assert len(PHASE1_REGISTRY) == 12
+    assert [item.table for item in PHASE1_REGISTRY] == list(PHASE1_TABLE_NAMES)
     for definition in PHASE1_TABLES:
         assert definition.definition_id == definition.table
         assert definition.version == "1.0.0"
@@ -202,7 +260,7 @@ def test_registry_holds_exactly_the_eight_frozen_tables() -> None:
         assert dict(definition.properties) == dict(PHASE1_TABLE_PROPERTIES)
         assert PHASE1_REGISTRY.resolve(definition.binding) is definition
     c2_tables = {item.table for item in (catalog_support.ALPHA, catalog_support.BETA)}
-    assert not c2_tables & set(FROZEN_TABLES)
+    assert not c2_tables & set(PHASE1_TABLE_NAMES)
     for c2 in (catalog_support.ALPHA, catalog_support.BETA):
         with pytest.raises(Exception, match="not registered"):
             PHASE1_REGISTRY.resolve(c2.binding)
@@ -220,7 +278,15 @@ def test_production_entry_points_are_exported() -> None:
     assert catalog_package.PYARROW_BATCH_FINGERPRINT_RULE_ID == "hlens.pyarrow-batch-sha256@1.0.0"
 
 
-@pytest.mark.parametrize("table", FROZEN_TABLES)
+def test_frozen_eight_goldens_are_unchanged_by_d3b() -> None:
+    """The C3 definitions keep their exact hashes: D3B only appends."""
+    for table in FROZEN_TABLES:
+        assert by_table(table).definition_hash == GOLDEN[table][0], table
+    assert set(GOLDEN) == set(FROZEN_TABLES)
+    assert not set(REST_GOLDEN) & set(GOLDEN)
+
+
+@pytest.mark.parametrize("table", PHASE1_TABLE_NAMES)
 def test_layout_matches_golden_and_creation_ids(table: str) -> None:
     definition = by_table(table)
     fresh = assign_fresh_schema_ids(definition.schema)
@@ -228,13 +294,13 @@ def test_layout_matches_golden_and_creation_ids(table: str) -> None:
     assert definition.arrow_schema.equals(
         schema_to_pyarrow(definition.schema, include_field_ids=False), check_metadata=True
     )
-    expected_hash, expected_layout, expected_arrow = GOLDEN[table]
+    expected_hash, expected_layout, expected_arrow = ALL_GOLDEN[table]
     assert definition.definition_hash == expected_hash
     assert sha256_text("\n".join(layout_lines(definition.schema))) == expected_layout
     assert sha256_text(arrow_text(definition.arrow_schema)) == expected_arrow
 
 
-@pytest.mark.parametrize("table", FROZEN_TABLES)
+@pytest.mark.parametrize("table", PHASE1_TABLE_NAMES)
 def test_initial_partition_specs_are_the_frozen_ones(table: str) -> None:
     definition = by_table(table)
     spec = definition.partition_spec
@@ -248,12 +314,12 @@ def test_initial_partition_specs_are_the_frozen_ones(table: str) -> None:
         )
         for field in spec.fields
     ]
-    assert actual == FROZEN_PARTITIONS[table]
-    expected_text = ", ".join(f"{t}({c})" for _, t, c, _ in FROZEN_PARTITIONS[table])
+    assert actual == ALL_PARTITIONS[table]
+    expected_text = ", ".join(f"{t}({c})" for _, t, c, _ in ALL_PARTITIONS[table])
     assert describe_partition_spec(definition) == (expected_text or "unpartitioned")
 
 
-@pytest.mark.parametrize("table", FROZEN_TABLES)
+@pytest.mark.parametrize("table", PHASE1_TABLE_NAMES)
 def test_physical_types_are_exact_and_utc(table: str) -> None:
     allowed = (
         StringType,
@@ -296,6 +362,123 @@ def test_revision_tables_carry_the_revision_block(table: str) -> None:
     lineage.append("lineage_source_revision_id")
     for name in lineage:
         assert (name in schema.column_names) is (table in LINEAGE_TABLES), name
+
+
+# --------------------------------------------------------------------------- REST tables (D3B)
+
+
+def _field_shape(schema: Schema, name: str) -> list[tuple[str, str, bool]]:
+    """Names, types and requiredness of a field and its nested fields, without field IDs."""
+    root = schema.find_field(name)
+    names = index_name_by_id(schema)
+    return sorted(
+        (names[field_id], str(type(schema.find_type(field_id)).__name__),
+         schema.find_field(field_id).required)
+        for field_id in names
+        if names[field_id] == name or names[field_id].startswith(f"{name}.")
+    ) + [("root-required", str(root.required), True)]  # fmt: skip
+
+
+def test_rest_revision_tables_carry_the_revision_block() -> None:
+    for table in REST_REVISION_TABLES:
+        schema = by_table(table).schema
+        for name, required in REVISION_BLOCK.items():
+            assert schema.find_field(name).required is required, (table, name)
+        # Same physical shape as the frozen tables' evidence column (newer side = this row).
+        assert _field_shape(schema, "precedence_evidence") == _field_shape(
+            BINANCE_SPOT_AGG_TRADES.schema, "precedence_evidence"
+        )
+    response = BINANCE_SPOT_REST_RESPONSES.schema
+    # A response observation is the HTTP exchange [requested_at, ingest_time): both ends required.
+    assert response.find_field("event_time").required
+    assert response.find_field("event_end_time").required
+    for name in (
+        "requested_at",
+        "retrieved_at",
+        "page_identity_sha256",
+        "request_query",
+        "object_sha256",
+        "decode_outcome",
+        "decoder_hash",
+        "collection_request_id",
+    ):
+        assert response.find_field(name).required, name  # fmt: skip
+    for name in ("decode_rejection_code", "element_count", "answered_start", "answered_end"):
+        assert not response.find_field(name).required, name
+    assert "archive_revision_id" not in response.column_names
+
+
+@pytest.mark.parametrize(
+    ("rest", "archive"),
+    [(BINANCE_SPOT_REST_AGG_TRADES, BINANCE_SPOT_AGG_TRADES),
+     (BINANCE_SPOT_REST_KLINES_1M, BINANCE_SPOT_KLINES_1M)],
+    ids=["agg_trades", "klines_1m"],
+)  # fmt: skip
+def test_rest_element_tables_mirror_archive_natives_with_rest_lineage(
+    rest: RegisteredTableDefinition, archive: RegisteredTableDefinition
+) -> None:
+    archive_only = {"archive_revision_id", "archive_line_number", "parser_id", "parser_version",
+                    "parser_hash"}  # fmt: skip
+    rest_only = {"response_revision_id", "element_index", "decoder_id", "decoder_version",
+                 "decoder_hash"}  # fmt: skip
+    assert set(archive.schema.column_names) - set(rest.schema.column_names) == archive_only
+    assert set(rest.schema.column_names) - set(archive.schema.column_names) == rest_only
+    for name in (
+        set(archive.schema.column_names)
+        - archive_only
+        - {"precedence_evidence", "supersedes", "availability_evidence"}
+    ):
+        a_field, r_field = archive.schema.find_field(name), rest.schema.find_field(name)
+        assert r_field.field_type == a_field.field_type, name
+        if name not in {"is_best_match", "ignore_raw"}:
+            assert r_field.required == a_field.required, name
+    # Every REST response delivers these two natives; the archive columns stay optional.
+    native = "is_best_match" if rest is BINANCE_SPOT_REST_AGG_TRADES else "ignore_raw"
+    assert rest.schema.find_field(native).required
+    assert not archive.schema.find_field(native).required
+    for name in rest_only:
+        assert rest.schema.find_field(name).required, name
+
+
+def test_precedence_evidence_table_holds_both_ends_explicitly() -> None:
+    schema = BINANCE_SPOT_PRECEDENCE_EVIDENCE.schema
+    assert [field.name for field in schema.fields] == [
+        "edge_id",
+        "observation_key",
+        "revision_id",
+        "revision_table",
+        "superseded_revision_id",
+        "superseded_table",
+        "policy_id",
+        "policy_version",
+        "policy_hash",
+        "evidence",
+        "knowledge_time",
+        "revision_snapshot_id",
+        "superseded_snapshot_id",
+        "projection_sha256",
+        "contract_schema_version",
+    ]
+    assert schema.find_column_name(16) == "evidence.element"
+    for field in schema.fields:
+        assert field.required, field.name
+    assert isinstance(schema.find_type("knowledge_time"), TimestamptzType)
+    assert BINANCE_SPOT_PRECEDENCE_EVIDENCE.partition_spec.fields == ()
+    # Unlike the embedded column, the newer side is explicit and no revision block is carried.
+    for name in ("arrival_seq", "supersedes", "precedence_evidence", "available_time"):
+        assert name not in schema.column_names, name
+
+
+def test_precedence_evidence_rows_round_trip_to_the_contract() -> None:
+    row = ROW_BUILDERS["raw.binance_spot_precedence_evidence"]("rt")
+    stored = batch_for(BINANCE_SPOT_PRECEDENCE_EVIDENCE, [row]).to_pylist()[0]
+    assert stored == row
+    rebuilt = precedence_evidence_from_row(stored)
+    assert rebuilt.content_hash() == precedence_evidence_from_row(row).content_hash()
+    assert (rebuilt.revision_id, rebuilt.superseded_revision_id) == (
+        row["revision_id"],
+        row["superseded_revision_id"],
+    )
 
 
 # --------------------------------------------------------------------------- hashes
@@ -459,7 +642,7 @@ def test_registry_rejects_targets_that_change_more_than_the_spec() -> None:
 # --------------------------------------------------------------------------- contract carriage
 
 
-@pytest.mark.parametrize("table", REVISION_TABLES)
+@pytest.mark.parametrize("table", REVISION_TABLES + REST_REVISION_TABLES)
 def test_revision_rows_round_trip_to_contracts(table: str) -> None:
     definition = by_table(table)
     row = ROW_BUILDERS[table]("rt")

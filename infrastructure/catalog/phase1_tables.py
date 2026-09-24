@@ -1,8 +1,10 @@
-"""The eight Phase 1 production Iceberg tables (03-data.md §7.1; roadmap Phase 1 #9, batch C3).
+"""The twelve Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3 + D3B).
 
-Single entry point for the production layout: ``PHASE1_TABLES`` (eight definitions, frozen logical
+Single entry point for the production layout: ``PHASE1_TABLES`` (twelve definitions, frozen logical
 names, ``version = 1.0.0``, ``definition_id`` = table name), ``PHASE1_REGISTRY`` and the idempotent
-``ensure_phase1_tables``. C2 test-only definitions live under ``tests/`` and never enter this
+``ensure_phase1_tables``. The first eight are the C3 first slice and are unchanged by D3B; the last
+four are the ADR-0027 REST additions (three REST Raw tables + the independent precedence-evidence
+table). C2 test-only definitions live under ``tests/`` and never enter this
 registry.
 
 Every field ID is written out below and equals the ID Iceberg assigns on table creation (top-level
@@ -24,6 +26,12 @@ Accepted ADRs and contracts, the producers come in later batches):
   content hash. Interval tables name the historical start / end ``interval_start`` /
   ``interval_end`` (= ``ObservationTimes.event_time`` / ``event_end_time``); instantaneous tables
   have no end column (``event_end_time`` is null by definition).
+- **REST tables (ADR-0027)**: ``raw.binance_spot_rest_responses`` is the Raw source payload
+  revision of one HTTP response page; the two REST element tables bind ``response_revision_id`` +
+  ``element_index`` + the ``PolicyBinding(role=parser)`` of the REST decoder instead of the archive
+  lineage columns; their ``precedence_evidence`` column has the frozen shape (newer side = this row)
+  and carries same-channel edges only. ``raw.binance_spot_precedence_evidence`` holds one complete
+  ``PrecedenceEvidence`` per row with **both** ends explicit (the D-33 cross-channel edges).
 - **Raw lineage**: parsed Raw rows bind ``archive_revision_id`` (the ``raw.binance_spot_archives``
   revision) + line number + the ``PolicyBinding(role=parser)``; Canonical rows and listings carry
   the ``SelectedRevisionLineage`` hops as ``lineage_*`` columns.
@@ -72,6 +80,10 @@ __all__ = [
     "BINANCE_SPOT_AGG_TRADES",
     "BINANCE_SPOT_ARCHIVES",
     "BINANCE_SPOT_KLINES_1M",
+    "BINANCE_SPOT_PRECEDENCE_EVIDENCE",
+    "BINANCE_SPOT_REST_AGG_TRADES",
+    "BINANCE_SPOT_REST_KLINES_1M",
+    "BINANCE_SPOT_REST_RESPONSES",
     "CANONICAL_BARS_1M",
     "CANONICAL_INSTRUMENT_LISTINGS",
     "CANONICAL_TRADES",
@@ -90,7 +102,7 @@ __all__ = [
 PHASE1_DEFINITION_VERSION: Final = "1.0.0"
 #: Exchange prices / quantities / volumes (Binance spot uses at most 8 decimals).
 EXCHANGE_DECIMAL: Final = DecimalType(38, 18)
-#: Non-binding table properties shared by all eight tables (part of each definition hash).
+#: Non-binding table properties shared by all Phase 1 tables (part of each definition hash).
 PHASE1_TABLE_PROPERTIES: Final[Mapping[str, str]] = {"write.parquet.compression-codec": "zstd"}
 
 _S: Final = StringType()
@@ -169,6 +181,13 @@ _LINEAGE_RAW_TABLE = "SelectedRevisionLineage.raw_table (raw namespace)"
 _LINEAGE_RAW_REVISION = "SelectedRevisionLineage.raw_revision_id"
 _LINEAGE_SOURCE_TABLE = "SelectedRevisionLineage.source_table (raw namespace)"
 _LINEAGE_SOURCE_REVISION = "SelectedRevisionLineage.source_revision_id"
+_RESPONSE_REVISION = (
+    "revision_id of the raw.binance_spot_rest_responses revision that first delivered this element"
+)
+_ELEMENT_INDEX = "0-based position of this element in the delivering response array"
+_DECODER_ID = "decoder PolicyBinding.policy_id (role=parser), e.g. binance.spot.rest.decoder"
+_DECODER_VERSION = "decoder PolicyBinding.version"
+_DECODER_HASH = "decoder PolicyBinding.policy_hash (SHA-256 hex)"
 
 
 def _definition(
@@ -353,6 +372,205 @@ BINANCE_SPOT_KLINES_1M: Final = _definition(
         _opt(40, "ignore_raw", _S, "Binance 'ignore' column text as in the file"),
     ),
     _symbol_day_spec(23, 9, "interval_start"),
+)
+
+# --------------------------------------------------------------------------- raw / REST (ADR-0027)
+
+
+BINANCE_SPOT_REST_RESPONSES: Final = _definition(
+    "raw.binance_spot_rest_responses",
+    Schema(
+        _req(1, "observation_key", _S, "binance:spot:rest:<page_identity_sha256>"),
+        _req(2, "revision_id", _S, _REVISION_ID),
+        _req(3, "source_id", _S, "binance.public.spot.rest@1.0.0 (channel-level source identity)"),
+        _req(4, "payload_hash", _S, "SHA-256 hex of the response entity body"),
+        _req(5, "arrival_seq", _L, "REST block base in [2**62, 2**63); audit only"),
+        _req(6, "supersedes", _strings(54), _SUPERSEDES),
+        _opt(7, "source_revision_id", _S, _SOURCE_REVISION_ID),
+        _opt(8, "source_revision_time", _T, _SOURCE_REVISION_TIME),
+        _req(9, "event_time", _T, "ObservationTimes.event_time = requested_at (UTC)"),
+        _req(10, "event_end_time", _T, "ObservationTimes.event_end_time = ingest_time (UTC)"),
+        _opt(11, "source_time", _T, _SOURCE_TIME),
+        _req(12, "available_time", _T, _AVAILABLE_TIME),
+        _req(13, "ingest_time", _T, "ObservationTimes.ingest_time: last response body byte"),
+        _req(14, "knowledge_time", _T, _KNOWLEDGE_TIME),
+        _req(15, "declared_latency_us", _L, _DECLARED_LATENCY),
+        _req(16, "availability_policy_id", _S, _AVAILABILITY_ID),
+        _req(17, "availability_policy_version", _S, _AVAILABILITY_VERSION),
+        _req(18, "availability_policy_hash", _S, _AVAILABILITY_HASH),
+        _req(19, "availability_evidence", _strings(55), _AVAILABILITY_EVIDENCE),
+        _opt(20, "availability_evidence_gap", _S, _AVAILABILITY_GAP),
+        _precedence_evidence(21, 56, (57, 58, 59, 60, 61, 62, 63)),
+        _req(22, "contract_schema_version", _S, _CONTRACT_VERSION),
+        _req(23, "source_binding_id", _S, "SourceBinding.source_id, e.g. binance.public.spot.rest"),
+        _req(24, "source_binding_version", _S, "SourceBinding.version, e.g. 1.0.0"),
+        _req(25, "collector_id", _S, "CollectionResult.collector_id of the first delivery"),
+        _req(26, "collector_version", _S, "CollectionResult.collector_version"),
+        _req(27, "collection_request_id", _S, "logical CollectionRequest.request_id (first seen)"),
+        _req(28, "page_index", _L, "0-based page position in its chain (first delivery)"),
+        _req(29, "data_type", _S, "agg_trades | klines_1m"),
+        _req(30, "symbol", _S, _SYMBOL),
+        _req(31, "request_origin", _S, "page identity origin: configured https://host[:port]"),
+        _req(32, "request_path", _S, "page identity path, e.g. /api/v3/aggTrades"),
+        _req(33, "request_query", _S, "canonical name-sorted query string of the page"),
+        _req(34, "declared_time_unit", _S, "declared unit of the response times (millisecond)"),
+        _req(35, "page_limit", _L, "page identity limit (rule constant)"),
+        _req(36, "page_identity_sha256", _S, "SHA-256 of the canonical page identity document"),
+        _req(37, "source_uri", _S, "CollectedObject.source_uri: the exact request URI"),
+        _req(38, "requested_at", _T, "local UTC time the request was handed to the transport"),
+        _req(39, "retrieved_at", _T, "CollectedObject.retrieved_at: last body byte = ingest_time"),
+        _req(40, "http_status", _L, "HTTP status of the response (200 for every revision)"),
+        _req(
+            41,
+            "source_metadata",
+            ListType(
+                64,
+                StructType(
+                    _req(65, "name", _S, "metadata key (lower-case token, e.g. HTTP header)"),
+                    _req(66, "value", _S, "metadata value as received"),
+                ),
+                element_required=True,
+            ),
+            "CollectedObject.source_metadata as (name, value) pairs sorted by name",
+        ),
+        _req(42, "object_key", _S, "ObjectRef.key of the published response body"),
+        _req(43, "object_uri", _S, "ObjectRef.uri: warehouse URI of the response body"),
+        _req(44, "object_sha256", _S, "ObjectRef.sha256: SHA-256 computed over the stored bytes"),
+        _req(45, "object_size_bytes", _L, "ObjectRef.size in bytes"),
+        _req(46, "decoder_id", _S, _DECODER_ID),
+        _req(47, "decoder_version", _S, _DECODER_VERSION),
+        _req(48, "decoder_hash", _S, _DECODER_HASH),
+        _req(49, "decode_outcome", _S, "strict decode of the first delivery: accepted | rejected"),
+        _opt(50, "decode_rejection_code", _S, "decoder rejection code; null iff accepted"),
+        _opt(51, "element_count", _L, "decoded element count; null iff rejected"),
+        _opt(52, "answered_start", _T, "page answered interval start, inclusive; null if empty"),
+        _opt(53, "answered_end", _T, "page answered interval end, exclusive; null if empty"),
+    ),
+)
+
+BINANCE_SPOT_REST_AGG_TRADES: Final = _definition(
+    "raw.binance_spot_rest_agg_trades",
+    Schema(
+        _req(1, "observation_key", _S, _OBSERVATION_KEY),
+        _req(2, "revision_id", _S, _REVISION_ID),
+        _req(3, "source_id", _S, "binance.public.spot.rest@1.0.0 (channel-level source identity)"),
+        _req(4, "payload_hash", _S, _PAYLOAD_HASH),
+        _req(5, "arrival_seq", _L, "REST block base + element_index + 1; audit only"),
+        _req(6, "supersedes", _strings(36), _SUPERSEDES),
+        _opt(7, "source_revision_id", _S, _SOURCE_REVISION_ID),
+        _opt(8, "source_revision_time", _T, _SOURCE_REVISION_TIME),
+        _req(9, "event_time", _T, _EVENT_TIME),
+        _opt(10, "source_time", _T, _SOURCE_TIME),
+        _req(11, "available_time", _T, _AVAILABLE_TIME),
+        _req(12, "ingest_time", _T, _INGEST_TIME),
+        _req(13, "knowledge_time", _T, _KNOWLEDGE_TIME),
+        _req(14, "declared_latency_us", _L, _DECLARED_LATENCY),
+        _req(15, "availability_policy_id", _S, _AVAILABILITY_ID),
+        _req(16, "availability_policy_version", _S, _AVAILABILITY_VERSION),
+        _req(17, "availability_policy_hash", _S, _AVAILABILITY_HASH),
+        _req(18, "availability_evidence", _strings(37), _AVAILABILITY_EVIDENCE),
+        _opt(19, "availability_evidence_gap", _S, _AVAILABILITY_GAP),
+        _precedence_evidence(20, 38, (39, 40, 41, 42, 43, 44, 45)),
+        _req(21, "contract_schema_version", _S, _CONTRACT_VERSION),
+        _req(22, "symbol", _S, _SYMBOL),
+        _req(23, "response_revision_id", _S, _RESPONSE_REVISION),
+        _req(24, "element_index", _L, _ELEMENT_INDEX),
+        _req(25, "decoder_id", _S, _DECODER_ID),
+        _req(26, "decoder_version", _S, _DECODER_VERSION),
+        _req(27, "decoder_hash", _S, _DECODER_HASH),
+        _req(28, "agg_trade_id", _L, "Binance aggregate trade id (a)"),
+        _req(29, "price", _D, "Binance price (p)"),
+        _req(30, "quantity", _D, "Binance quantity (q)"),
+        _req(31, "first_trade_id", _L, "Binance first trade id (f)"),
+        _req(32, "last_trade_id", _L, "Binance last trade id (l)"),
+        _req(33, "timestamp_raw", _L, "Binance timestamp T in the declared unit (millisecond)"),
+        _req(34, "is_buyer_maker", _B, "Binance: was the buyer the maker (m)"),
+        _req(35, "is_best_match", _B, "Binance: was the trade the best price match (M)"),
+    ),
+    _symbol_day_spec(22, 9, "event_time"),
+)
+
+BINANCE_SPOT_REST_KLINES_1M: Final = _definition(
+    "raw.binance_spot_rest_klines_1m",
+    Schema(
+        _req(1, "observation_key", _S, _OBSERVATION_KEY),
+        _req(2, "revision_id", _S, _REVISION_ID),
+        _req(3, "source_id", _S, "binance.public.spot.rest@1.0.0 (channel-level source identity)"),
+        _req(4, "payload_hash", _S, _PAYLOAD_HASH),
+        _req(5, "arrival_seq", _L, "REST block base + element_index + 1; audit only"),
+        _req(6, "supersedes", _strings(41), _SUPERSEDES),
+        _opt(7, "source_revision_id", _S, _SOURCE_REVISION_ID),
+        _opt(8, "source_revision_time", _T, _SOURCE_REVISION_TIME),
+        _req(9, "interval_start", _T, _INTERVAL_START),
+        _req(10, "interval_end", _T, _INTERVAL_END),
+        _opt(11, "source_time", _T, _SOURCE_TIME),
+        _req(12, "available_time", _T, _AVAILABLE_TIME),
+        _req(13, "ingest_time", _T, _INGEST_TIME),
+        _req(14, "knowledge_time", _T, _KNOWLEDGE_TIME),
+        _req(15, "declared_latency_us", _L, _DECLARED_LATENCY),
+        _req(16, "availability_policy_id", _S, _AVAILABILITY_ID),
+        _req(17, "availability_policy_version", _S, _AVAILABILITY_VERSION),
+        _req(18, "availability_policy_hash", _S, _AVAILABILITY_HASH),
+        _req(19, "availability_evidence", _strings(42), _AVAILABILITY_EVIDENCE),
+        _opt(20, "availability_evidence_gap", _S, _AVAILABILITY_GAP),
+        _precedence_evidence(21, 43, (44, 45, 46, 47, 48, 49, 50)),
+        _req(22, "contract_schema_version", _S, _CONTRACT_VERSION),
+        _req(23, "symbol", _S, _SYMBOL),
+        _req(24, "response_revision_id", _S, _RESPONSE_REVISION),
+        _req(25, "element_index", _L, _ELEMENT_INDEX),
+        _req(26, "decoder_id", _S, _DECODER_ID),
+        _req(27, "decoder_version", _S, _DECODER_VERSION),
+        _req(28, "decoder_hash", _S, _DECODER_HASH),
+        _req(29, "open_time_raw", _L, "Binance kline open time in the declared unit"),
+        _req(30, "open", _D, "Binance open price"),
+        _req(31, "high", _D, "Binance high price"),
+        _req(32, "low", _D, "Binance low price"),
+        _req(33, "close", _D, "Binance close price"),
+        _req(34, "volume", _D, "Binance base asset volume"),
+        _req(35, "close_time_raw", _L, "Binance kline close time in the declared unit"),
+        _req(36, "quote_asset_volume", _D, "Binance quote asset volume"),
+        _req(37, "number_of_trades", _L, "Binance number of trades"),
+        _req(38, "taker_buy_base_asset_volume", _D, "Binance taker buy base asset volume"),
+        _req(39, "taker_buy_quote_asset_volume", _D, "Binance taker buy quote asset volume"),
+        _req(40, "ignore_raw", _S, "Binance 12th ('unused, ignore') field text as received"),
+    ),
+    _symbol_day_spec(23, 9, "interval_start"),
+)
+
+BINANCE_SPOT_PRECEDENCE_EVIDENCE: Final = _definition(
+    "raw.binance_spot_precedence_evidence",
+    Schema(
+        _req(1, "edge_id", _S, "edge1-<sha256>: policy + observation_key + both ends; no time"),
+        _req(2, "observation_key", _S, "PrecedenceEvidence.observation_key (both ends)"),
+        _req(3, "revision_id", _S, "PrecedenceEvidence.revision_id: the superseding revision"),
+        _req(4, "revision_table", _S, "Raw table (namespace.table) of revision_id"),
+        _req(
+            5,
+            "superseded_revision_id",
+            _S,
+            "PrecedenceEvidence.superseded_revision_id: the superseded revision",
+        ),
+        _req(6, "superseded_table", _S, "Raw table (namespace.table) of superseded_revision_id"),
+        _req(7, "policy_id", _S, "precedence PolicyBinding.policy_id"),
+        _req(8, "policy_version", _S, "precedence PolicyBinding.version"),
+        _req(9, "policy_hash", _S, "precedence PolicyBinding.policy_hash (SHA-256 hex)"),
+        _req(10, "evidence", _strings(16), "PrecedenceEvidence.evidence (non-empty)"),
+        _req(
+            11,
+            "knowledge_time",
+            _T,
+            "PrecedenceEvidence.knowledge_time: first successful comparison, never backfilled",
+        ),
+        _req(12, "revision_snapshot_id", _S, "snapshot of revision_table read by the comparison"),
+        _req(
+            13,
+            "superseded_snapshot_id",
+            _S,
+            "snapshot of superseded_table read by the comparison",
+        ),
+        _req(14, "projection_sha256", _S, "SHA-256 of the equal canonical content projection"),
+        _req(15, "contract_schema_version", _S, "contract envelope schema_version of the edge"),
+    ),
 )
 
 # --------------------------------------------------------------------------- canonical
@@ -611,7 +829,7 @@ DATASET_MANIFESTS: Final = _definition(
     ),
 )
 
-#: The eight production tables in 03-data.md §7.1 order.
+#: The twelve production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027.
 PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_AGG_TRADES,
@@ -621,6 +839,10 @@ PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
+    BINANCE_SPOT_REST_RESPONSES,
+    BINANCE_SPOT_REST_AGG_TRADES,
+    BINANCE_SPOT_REST_KLINES_1M,
+    BINANCE_SPOT_PRECEDENCE_EVIDENCE,
 )
 PHASE1_REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 

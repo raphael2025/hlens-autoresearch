@@ -5,8 +5,8 @@ This module binds each registered binding to the concrete PyIceberg ``Schema``, 
 table properties and the versioned batch fingerprint rule. The ``definition_hash`` is **derived**
 here as the SHA-256 of a canonical JSON document of that content; it is never taken from a caller.
 
-C2 shipped the mechanism; C3 adds the eight production tables (``phase1_tables``), the frozen
-PyArrow fingerprint rule (``fingerprint``) and explicit partition-spec evolution targets: a
+C2 shipped the mechanism; C3 adds the production tables (``phase1_tables``, extended by D3B), the
+frozen PyArrow fingerprint rule (``fingerprint``) and explicit partition-spec evolution targets: a
 definition with ``evolves_from`` is reachable only by evolving a table that is at the bound
 source definition, never by creating a table directly.
 """

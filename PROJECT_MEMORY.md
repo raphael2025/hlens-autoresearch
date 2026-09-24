@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2 与 D3A 设计门已验收（ADR-0027 Accepted），当前只开放 D3B
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2 与 D3A 设计门已验收（ADR-0027 Accepted），D3B 已提交待复核
 
 ## 2. Current Architecture
 
@@ -44,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3B 已开放**（ADR-0027 于 2026-09-25 由 Codex 接受，四表方案并入 `03-data.md`）；D2 archive / Raw append-only revision、恢复与证据已由 Codex 复核通过
+- Current Subphase：**D3B 已提交，REVIEW_PENDING**（四张 REST 表定义 + 独立 REST 身份规则 + 三份纯 policy；无 HTTP、无写入）；D2 archive / Raw append-only revision、恢复与证据已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - 只开放 D3B（四表定义、REST 身份规则与 policy、通道等价纯函数；无 HTTP、无写入）；D3C → D3D → D3E 逐批经 Codex 验收后依次开放
-- Current Blocker：无架构阻塞；D3B 待 Codex 任务包。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：D3B 实现并经 Codex 验收，开放 D3C
+- Current Blocker：无架构阻塞；D3B 待 Codex 复核，D3C 关闭。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
+- Next Milestone：Codex 验收 D3B，开放 D3C（严格 REST decoder）
 
 ## 5. Active Decisions
 

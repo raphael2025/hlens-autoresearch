@@ -1,4 +1,4 @@
-"""Test-only rows and evolution targets for the eight Phase 1 production tables (C3).
+"""Test-only rows and evolution targets for the twelve Phase 1 production tables (C3 / D3B).
 
 Rows are built from **validated contract objects** (``RevisionRecord``, ``ListingRevision``,
 ``ResearchDatasetManifest``, ``CollectedObject`` …) so the tests show that the physical columns
@@ -53,11 +53,21 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_KLINES_1M,
+    BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+    BINANCE_SPOT_REST_AGG_TRADES,
+    BINANCE_SPOT_REST_KLINES_1M,
+    BINANCE_SPOT_REST_RESPONSES,
     CANONICAL_BARS_1M,
     CANONICAL_INSTRUMENT_LISTINGS,
     CANONICAL_TRADES,
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
+)
+from infrastructure.revision import rest_identity
+from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
+from infrastructure.revision.rest_availability import (
+    RestAvailabilitySubject,
+    decide_rest_availability,
 )
 
 T0: Final = datetime(2024, 12, 31, 23, 59, tzinfo=UTC)
@@ -654,6 +664,219 @@ def manifest_row(tag: str = "a") -> dict[str, Any]:
     }
 
 
+# --------------------------------------------------------------------------- REST rows (D3B)
+
+REST_DECODER: Final = policy(PolicyRole.PARSER, "binance.spot.rest.decoder")
+REST_ORIGIN: Final = "https://market-data.invalid"
+
+
+def _ms(value: datetime) -> int:
+    return (value - datetime(1970, 1, 1, tzinfo=UTC)) // timedelta(milliseconds=1)
+
+
+def rest_record(
+    key: str,
+    payload_hash: str,
+    subject: RestAvailabilitySubject,
+    *,
+    event_time: datetime,
+    event_end_time: datetime | None,
+    ingest_time: datetime,
+    arrival_seq: int,
+) -> RevisionRecord:
+    decision = decide_rest_availability(
+        subject,
+        event_time=event_time,
+        event_end_time=event_end_time,
+        ingest_time=ingest_time,
+        knowledge_time=ingest_time + timedelta(seconds=2),
+    )
+    source = rest_identity.rest_source_identity()
+    return RevisionRecord(
+        observation_key=key,
+        revision_id=rest_identity.revision_id(key, source, payload_hash),
+        source_id=source,
+        payload_hash=payload_hash,
+        arrival_seq=arrival_seq,
+        availability=decision,
+    )
+
+
+def rest_response_row(
+    tag: str = "a", *, symbol: str = "BTCUSDT", start: datetime = T0
+) -> dict[str, Any]:
+    query = rest_identity.RestPageQuery.klines_from_start(symbol, _ms(start))
+    page = rest_identity.page_identity_sha256(query, REST_ORIGIN)
+    body = sha(f"rest-body-{tag}")
+    requested = start + timedelta(days=600)
+    retrieved = requested + timedelta(milliseconds=140)
+    record = rest_record(
+        rest_identity.response_observation_key(page),
+        body,
+        RestAvailabilitySubject.RESPONSE,
+        event_time=requested,
+        event_end_time=retrieved,
+        ingest_time=retrieved,
+        arrival_seq=rest_identity.REST_ARRIVAL_SEQ_BASE,
+    )
+    row = revision_columns(record)
+    row.update(
+        source_binding_id=rest_identity.REST_SOURCE_ID,
+        source_binding_version=rest_identity.REST_SOURCE_VERSION,
+        collector_id="binance.spot.rest.collector",
+        collector_version="1.0.0",
+        collection_request_id=f"rest-attempt-{tag}",
+        page_index=0,
+        data_type=query.data_type,
+        symbol=symbol,
+        request_origin=REST_ORIGIN,
+        request_path=query.path,
+        request_query=query.query_string(),
+        declared_time_unit=rest_identity.DECLARED_TIME_UNIT,
+        page_limit=query.limit,
+        page_identity_sha256=page,
+        source_uri=rest_identity.page_source_uri(query, REST_ORIGIN),
+        requested_at=requested,
+        retrieved_at=retrieved,
+        http_status=200,
+        source_metadata=[{"name": "x-mbx-used-weight-1m", "value": "2"}],
+        object_key=rest_identity.response_object_key(query.data_type, symbol, body, page),
+        object_uri=f"file:///warehouse/raw/binance/spot/rest/{body[:16]}.json",
+        object_sha256=body,
+        object_size_bytes=2048,
+        decoder_id=REST_DECODER.policy_id,
+        decoder_version=REST_DECODER.version,
+        decoder_hash=REST_DECODER.policy_hash,
+        decode_outcome="accepted",
+        decode_rejection_code=None,
+        element_count=1,
+        answered_start=start,
+        answered_end=start + timedelta(minutes=1),
+    )
+    return row
+
+
+def _decoder_columns(response_tag: str, element_index: int) -> dict[str, Any]:
+    return {
+        "response_revision_id": f"rest-response-{response_tag}",
+        "element_index": element_index,
+        "decoder_id": REST_DECODER.policy_id,
+        "decoder_version": REST_DECODER.version,
+        "decoder_hash": REST_DECODER.policy_hash,
+    }
+
+
+def rest_agg_trade_row(
+    tag: str = "a", *, symbol: str = "BTCUSDT", when: datetime = T0, trade_id: int = 1
+) -> dict[str, Any]:
+    natives: dict[str, Any] = {
+        "agg_trade_id": trade_id,
+        "price": Decimal("93712.01000000"),
+        "quantity": Decimal("0.00010000") * len(tag),
+        "first_trade_id": trade_id * 10,
+        "last_trade_id": trade_id * 10 + 2,
+        "timestamp_raw": _ms(when),
+        "is_buyer_maker": True,
+        "is_best_match": True,
+    }
+    record = rest_record(
+        rest_identity.agg_trade_observation_key(symbol, trade_id),
+        rest_identity.agg_trade_payload_hash(symbol, natives),
+        RestAvailabilitySubject.AGG_TRADE,
+        event_time=when,
+        event_end_time=None,
+        ingest_time=when + timedelta(days=600),
+        arrival_seq=rest_identity.element_arrival_seq(rest_identity.REST_ARRIVAL_SEQ_BASE, 0),
+    )
+    row = revision_columns(record, instantaneous=True)
+    row.update(symbol=symbol, **_decoder_columns(tag, 0), **natives)
+    return row
+
+
+def rest_kline_row(
+    tag: str = "a", *, symbol: str = "BTCUSDT", start: datetime = T0
+) -> dict[str, Any]:
+    end = start + timedelta(minutes=1)
+    natives: dict[str, Any] = {
+        "open_time_raw": _ms(start),
+        "open": Decimal("93700.00"),
+        "high": Decimal("93750.50"),
+        "low": Decimal("93690.10"),
+        "close": Decimal("93712.01"),
+        "volume": Decimal("12.34567800") * len(tag),
+        "close_time_raw": _ms(end) - 1,
+        "quote_asset_volume": Decimal("1157000.12345678"),
+        "number_of_trades": 321,
+        "taker_buy_base_asset_volume": Decimal("6.1"),
+        "taker_buy_quote_asset_volume": Decimal("571600.5"),
+        "ignore_raw": "0",
+    }
+    record = rest_record(
+        rest_identity.kline_1m_observation_key(symbol, start),
+        rest_identity.kline_1m_payload_hash(symbol, natives),
+        RestAvailabilitySubject.KLINE_1M,
+        event_time=start,
+        event_end_time=end,
+        ingest_time=end + timedelta(days=600),
+        arrival_seq=rest_identity.element_arrival_seq(rest_identity.REST_ARRIVAL_SEQ_BASE, 0),
+    )
+    row = revision_columns(record, interval=True)
+    row.update(symbol=symbol, **_decoder_columns(tag, 0), **natives)
+    return row
+
+
+def precedence_evidence_row(tag: str = "a") -> dict[str, Any]:
+    key = f"binance:spot:agg_trade:BTCUSDT:{len(tag)}"
+    archive_revision, rest_revision = f"archive-row-{tag}", f"rest-row-{tag}"
+    item = PrecedenceEvidence(
+        observation_key=key,
+        revision_id=archive_revision,
+        superseded_revision_id=rest_revision,
+        policy=DELIVERY_CHANNEL_BINDING,
+        evidence=("canonical market content equal", f"projection_sha256={sha(tag)}"),
+        knowledge_time=T0 + timedelta(days=601),
+    )
+    return {
+        "edge_id": rest_identity.edge_id(
+            DELIVERY_CHANNEL_BINDING, key, archive_revision, rest_revision
+        ),
+        "observation_key": item.observation_key,
+        "revision_id": item.revision_id,
+        "revision_table": BINANCE_SPOT_AGG_TRADES.table,
+        "superseded_revision_id": item.superseded_revision_id,
+        "superseded_table": BINANCE_SPOT_REST_AGG_TRADES.table,
+        "policy_id": item.policy.policy_id,
+        "policy_version": item.policy.version,
+        "policy_hash": item.policy.policy_hash,
+        "evidence": list(item.evidence),
+        "knowledge_time": item.knowledge_time,
+        "revision_snapshot_id": "101",
+        "superseded_snapshot_id": "202",
+        "projection_sha256": sha(tag),
+        "contract_schema_version": item.schema_version,
+    }
+
+
+def precedence_evidence_from_row(row: dict[str, Any]) -> PrecedenceEvidence:
+    """Rebuild the complete ``PrecedenceEvidence`` (both ends explicit) from an evidence row."""
+    version = row["contract_schema_version"]
+    return PrecedenceEvidence(
+        schema_version=version,
+        observation_key=row["observation_key"],
+        revision_id=row["revision_id"],
+        superseded_revision_id=row["superseded_revision_id"],
+        policy=PolicyBinding(
+            schema_version=version,
+            role=PolicyRole.PRECEDENCE,
+            policy_id=row["policy_id"],
+            version=row["policy_version"],
+            policy_hash=row["policy_hash"],
+        ),
+        evidence=tuple(row["evidence"]),
+        knowledge_time=row["knowledge_time"],
+    )
+
+
 #: One minimal valid row builder per production table (keyed by table name).
 ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     BINANCE_SPOT_ARCHIVES.table: archive_row,
@@ -664,6 +887,10 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     CANONICAL_INSTRUMENT_LISTINGS.table: listing_row,
     DATA_QUALITY_REPORTS.table: quality_row,
     DATASET_MANIFESTS.table: manifest_row,
+    BINANCE_SPOT_REST_RESPONSES.table: rest_response_row,
+    BINANCE_SPOT_REST_AGG_TRADES.table: rest_agg_trade_row,
+    BINANCE_SPOT_REST_KLINES_1M.table: rest_kline_row,
+    BINANCE_SPOT_PRECEDENCE_EVIDENCE.table: precedence_evidence_row,
 }
 assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
 assert CONTRACT_SCHEMA_VERSION == "2.0.0"

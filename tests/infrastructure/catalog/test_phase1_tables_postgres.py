@@ -1,4 +1,4 @@
-"""PostgreSQL evidence for C3 (roadmap Phase 1 #9): eight tables, batches, evolution, isolation.
+"""PostgreSQL evidence for C3 / D3B (roadmap #9): twelve tables, batches, evolution, isolation.
 
 Runs only with ``HLENS_TEST_CATALOG_URI`` naming the dedicated ``*_test`` database (explicit skip
 otherwise). Each test uses its own PyIceberg ``catalog_name`` and ``tmp_path`` warehouse; cleanup
@@ -57,6 +57,7 @@ from infrastructure.catalog.definitions import (
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
+    BINANCE_SPOT_REST_AGG_TRADES,
     CANONICAL_BARS_1M,
     CANONICAL_TRADES,
 )
@@ -76,13 +77,18 @@ from tests.infrastructure.catalog.phase1_support import (
     batch_for,
     logical_rows,
     minimal_batch,
+    rest_agg_trade_row,
     trade_row,
 )
-from tests.infrastructure.catalog.test_phase1_tables import FROZEN_PARTITIONS, FROZEN_TABLES
+from tests.infrastructure.catalog.test_phase1_tables import (
+    ALL_PARTITIONS,
+    FROZEN_TABLES,
+    PHASE1_TABLE_NAMES,
+)
 
 pytestmark = pytest.mark.postgres
 
-DAY_PARTITIONED = {table for table, spec in FROZEN_PARTITIONS.items() if spec}
+DAY_PARTITIONED = {table for table, spec in ALL_PARTITIONS.items() if spec}
 fingerprint = PYARROW_BATCH_FINGERPRINT.fingerprint
 
 
@@ -160,7 +166,7 @@ def harness_factory(tmp_path: Path) -> Iterator[Callable[[str], PostgresCatalogH
 # --------------------------------------------------------------------------- creation
 
 
-def test_eight_tables_are_created_idempotently_with_the_frozen_layout(
+def test_twelve_tables_are_created_idempotently_with_the_frozen_layout(
     pg_harness: PostgresCatalogHarness,
 ) -> None:
     adapter = open_postgres_catalog_adapter(pg_harness.settings(), PHASE1_REGISTRY)
@@ -168,7 +174,8 @@ def test_eight_tables_are_created_idempotently_with_the_frozen_layout(
         states = ensure_phase1_tables(adapter)
     finally:
         adapter.close()
-    assert [s.table for s in states] == list(FROZEN_TABLES)
+    assert [s.table for s in states] == list(PHASE1_TABLE_NAMES)
+    assert [s.table for s in states][:8] == list(FROZEN_TABLES)
     assert all(s.created and s.current_snapshot_id is None for s in states)
 
     catalog = pg_harness.sql_catalog()
@@ -195,7 +202,7 @@ def test_eight_tables_are_created_idempotently_with_the_frozen_layout(
         assert [
             (f.field_id, str(f.transform), iceberg.schema().find_column_name(f.source_id), f.name)
             for f in spec.fields
-        ] == FROZEN_PARTITIONS[definition.table]
+        ] == ALL_PARTITIONS[definition.table]
         assert iceberg.snapshots() == []
         locations[definition.table] = iceberg.metadata_location
 
@@ -235,7 +242,7 @@ def test_eight_tables_are_created_idempotently_with_the_frozen_layout(
 # --------------------------------------------------------------------------- batches
 
 
-@pytest.mark.parametrize("table", FROZEN_TABLES)
+@pytest.mark.parametrize("table", PHASE1_TABLE_NAMES)
 def test_each_table_appends_replays_restarts_and_time_travels(
     pg_harness: PostgresCatalogHarness, table: str
 ) -> None:
@@ -305,6 +312,8 @@ def _day_rows(table: str, tag: str) -> pa.Table:
         when = T0 + timedelta(minutes=offset)  # 23:59 and 00:00 the next day
         if table == BINANCE_SPOT_AGG_TRADES.table:
             row = agg_trade_row(tag, symbol=symbol, when=when, trade_id=index + 1)
+        elif table == BINANCE_SPOT_REST_AGG_TRADES.table:
+            row = rest_agg_trade_row(tag, symbol=symbol, when=when, trade_id=index + 1)
         elif table == CANONICAL_TRADES.table:
             row = trade_row(f"{tag}{index}", symbol=symbol, when=when)
         else:
@@ -318,7 +327,7 @@ def test_day_partitioned_tables_write_real_day_partitions(
     pg_harness: PostgresCatalogHarness, table: str
 ) -> None:
     definition = next(d for d in PHASE1_TABLES if d.table == table)
-    _, _, time_column, _ = FROZEN_PARTITIONS[table][1]
+    _, _, time_column, _ = ALL_PARTITIONS[table][1]
     spec = definition.partition_spec
     assert isinstance(spec.fields[1].transform, DayTransform)
     adapter = pg_harness.open_adapter(PHASE1_REGISTRY)
@@ -390,7 +399,7 @@ def test_catalog_database_holds_only_iceberg_metadata(pg_harness: PostgresCatalo
         "SELECT table_namespace || '.' || table_name, metadata_location FROM iceberg_tables "
         f"WHERE catalog_name = '{pg_harness.catalog_name}' ORDER BY 1",
     )
-    assert [row[0] for row in pointers] == sorted(FROZEN_TABLES)
+    assert [row[0] for row in pointers] == sorted(PHASE1_TABLE_NAMES)
     for _, location in pointers:
         assert location.startswith(pg_harness.warehouse_uri + "/")
     for definition in PHASE1_TABLES:

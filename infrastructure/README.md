@@ -8,10 +8,10 @@
 |---|---|
 | `settings.py` | 类型化运行时设置（03-data.md §6.2）：`file://` warehouse / staging、PostgreSQL catalog DSN、HTTP / Binance base URL |
 | `storage/` | Phase 1 C1 本地 `file://` `StorageAdapter`（`LocalFileStorageAdapter`） |
-| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张生产表、batch 指纹规则与 partition-spec 演进 |
+| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张首切片生产表 + D3B 四张 ADR-0027 REST 表（共 12 张）、batch 指纹规则与 partition-spec 演进 |
 | `collector/` | Phase 1 D0 Binance 公共现货日归档下载壳（`BinanceSpotArchiveCollector`） |
 | `parser/` | Phase 1 D1 Binance 公共现货日归档 fail-closed parser（`binance.spot.archive.parser@1.0.0`） |
-| `revision/` | Phase 1 D2 append-only Raw revision：身份规则、availability / precedence policy、`RawRevisionStore` |
+| `revision/` | Phase 1 D2 append-only Raw revision：身份规则、availability / precedence policy、`RawRevisionStore`；D3B 的 REST 纯规则（独立身份规则、REST availability / precedence、D-33 通道等价比较） |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
 
@@ -27,7 +27,7 @@
 ## PyIcebergCatalogAdapter（C2）
 
 - 运行时入口只有 `open_postgres_catalog_adapter(settings, registry)`：`Settings.catalog_uri` 必须是 PostgreSQL DSN，warehouse 为 settings 的 `file://`；无任何降级。连接 / 数据库故障 → `CatalogUnavailable`（不回显 DSN）。测试可把临时 SQLite `SqlCatalog` 显式注入构造函数，但 SQLite 结果不是 PostgreSQL 证据。
-- `TableDefinitionRegistry`：`RegisteredTableDefinition` 把 `(definition_id, version)` 绑定到 PyIceberg Schema、partition spec、表属性与版本化 batch 指纹规则；`definition_hash` 由这些内容的规范 JSON **派生**。八张生产表与生产指纹规则见下文 C3。
+- `TableDefinitionRegistry`：`RegisteredTableDefinition` 把 `(definition_id, version)` 绑定到 PyIceberg Schema、partition spec、表属性与版本化 batch 指纹规则；`definition_hash` 由这些内容的规范 JSON **派生**。生产表与生产指纹规则见下文 C3 / D3B。
 - 建表时绑定写入 Iceberg 表属性；每次访问都重新从登记表解析并核对 Schema / partition / format version / 自有属性，不符 fail closed（`UnknownTableDefinition` / `CatalogIntegrityError`）。
 - batch id / 指纹 / 行数 / 指纹规则写入 Iceberg snapshot summary；重放与幂等从 main 分支 snapshot 祖先链恢复，无 sidecar。
 - 每表固定 `commit.retry.num-retries=0`：PyIceberg 0.12 的自动重试会丢弃 `AssertRefSnapshotId` 并 rebase，破坏 `expected_parent_snapshot_id` 语义。冲突由 PyIceberg 需求检查与 SQL catalog 的 `metadata_location` CAS 判定，映射为 `CommitConflict`。
@@ -48,7 +48,7 @@
 
 ## Phase 1 生产表（C3）
 
-- 唯一入口：`infrastructure.catalog.PHASE1_TABLES` / `PHASE1_REGISTRY`（`phase1_tables.py`）——03-data.md §7.1 的八张表，`definition_id` = 表名，`version = 1.0.0`，初始分区按冻结值（`raw.binance_spot_agg_trades` / `canonical.trades`：identity `symbol` + day(`event_time`)；`raw.binance_spot_klines_1m` / `canonical.bars_1m`：identity `symbol` + day(`interval_start`)；其余不分区）。C2 的 test-only 定义只在 `tests/` 中。
+- 唯一入口：`infrastructure.catalog.PHASE1_TABLES` / `PHASE1_REGISTRY`（`phase1_tables.py`）——03-data.md §7.1 的十二张表（前八张为 C3 首切片且定义哈希不变，后四张为 D3B 追加），`definition_id` = 表名，`version = 1.0.0`，初始分区按冻结值（`raw.binance_spot_agg_trades` / `canonical.trades`：identity `symbol` + day(`event_time`)；`raw.binance_spot_klines_1m` / `canonical.bars_1m`：identity `symbol` + day(`interval_start`)；其余不分区）。C2 的 test-only 定义只在 `tests/` 中。
 - Schema：字段 ID 在源码中逐个写出并等于 Iceberg 建表时分配的 ID（否则 import 失败）；每列带 Iceberg `doc`；时间一律 `timestamptz`（微秒、UTC），交易所十进制值一律 `decimal(38, 18)`，时长为整数微秒，无浮点。列与契约的映射见 `phase1_tables.py` 模块文档；定义哈希由 C2 的规范定义文档派生，golden 值在 `tests/infrastructure/catalog/test_phase1_tables.py`。任何 Schema / 分区 / 属性 / 规则变化 = 新定义版本。
 - 幂等建表：`ensure_phase1_tables(adapter)`；已存在且绑定相同则只核对、不改动；任何漂移 fail closed。操作入口（不打印 DSN）：
 
@@ -213,3 +213,20 @@ batch id：archive 为 `<revision_id>.archive.<base>`（重试换 base 即换 id
   **仍然存在的成本**：每次分配都要打开全部匹配的数据文件并读取该投影列，所以 I/O 随归档文件数线性增长；
   真正收窄（清单级 min/max 剪枝或独立 anchor）仍是 E/F 的工作。
 - 行级契约构造是每行一次 Pydantic 校验：正确但不便宜；大体量 BTC 日归档的吞吐 / 内存基线仍是批量 backfill 前的前置工作。
+
+## REST 纯规则（D3B）
+
+ADR-0027 的第一批实现，全部是**纯函数**：无 HTTP、无 decoder、无 collector / store / reconciler、无 Iceberg 写入、不读时钟。
+
+- `catalog/phase1_tables.py` 追加四张表：`raw.binance_spot_rest_responses`（不分区）、`raw.binance_spot_rest_agg_trades` /
+  `raw.binance_spot_rest_klines_1m`（identity `symbol` + day）、`raw.binance_spot_precedence_evidence`（不分区，完整 `PrecedenceEvidence`
+  两端显式）。golden 哈希与布局见 `tests/infrastructure/catalog/test_phase1_tables.py`；前八张的哈希回归断言不变。
+- `revision/rest_identity.py`：`hlens.binance.spot.rest-revision-identity@1.0.0`，**不 import** `identity.py`
+  （其 `IDENTITY_HASH` 不变）。`RestPageQuery` 即参数白名单（隐式"最新"模式不可构造）；规范页身份与 `page_identity_sha256`；
+  与归档逐字符相同的元素键与 payload 文档（跨模块一致性测试）；`revision_id`；不含时间的 `edge_id`；REST `arrival_seq`
+  区间 `[2**62, 2**63)`、block 分配与区间守卫。
+- `revision/rest_availability.py`：`binance.spot.rest-publication@1.0.0`，全部主体 `available_time = ingest_time` + 证据缺口。
+- `revision/rest_precedence.py`：`binance.spot.rest-revision@1.0.0`，只有 replay 与 competing heads，从不产生边。
+- `revision/channel_precedence.py`：`binance.spot.delivery-channel@1.0.0`（D-33 A）。`compare_channels` 给出
+  `EQUAL` / `MISMATCH` / `INCOMPARABLE` / `INTEGRITY_VIOLATION`（后者由 D3E 转为 `CatalogIntegrityError`）；
+  `build_channel_edge` 只接受 `EQUAL`，边的 `knowledge_time` 由调用方给出且不得早于两侧 revision。
