@@ -22,6 +22,7 @@ from core.domain.base import (
     VersionedSpec,
     validate_ref_keyed_hashes,
 )
+from core.domain.execution import ExecutionMode
 from core.domain.selection import ProfileSelection
 from core.domain.specs import DatasetRef
 from core.errors import ReasonCode
@@ -254,6 +255,21 @@ class ExperimentRun(Contract):
             raise ValueError("experiment 必须指向 experiment")
         return self
 
+    @model_validator(mode="after")
+    def _local_time_order(self) -> ExperimentRun:
+        """两者都存在时 `started_at ≤ finished_at`（ADR-0011 D-17.5）。
+
+        这是**记录内部**的一致性；Run 的时间与生命周期转移、报告、监控事件之间的
+        全局因果顺序属于未来 Runner / Control Plane，契约层不做跨对象校验。
+        """
+        if (
+            self.started_at is not None
+            and self.finished_at is not None
+            and self.finished_at < self.started_at
+        ):
+            raise ValueError("finished_at 不得早于 started_at")
+        return self
+
     @property
     def experiment_hash(self) -> str:
         return self.repro.experiment_hash
@@ -335,13 +351,28 @@ class FailureRecord(Contract):
 
 
 class RetirementRecord(Contract):
-    """RETIRED 的追加式退役记录（07-validation.md §4.2）。RETIRED ≠ FAILED。"""
+    """RETIRED 的追加式退役记录（07-validation.md §4.2）。RETIRED ≠ FAILED。
+
+    `execution_mode` 复用共享的 `ExecutionMode` 枚举（`core/domain/execution.py`，
+    ADR-0011 D-17.5）：同一概念不再用自由字符串表达，也只有一个权威定义。
+    """
 
     subject_ref: Ref
     retirement_reason: str = Field(min_length=1)
     evidence: tuple[str, ...] = ()
     active_from: UtcDatetime | None = None
     active_to: UtcDatetime | None = None
-    execution_mode: str | None = None
+    execution_mode: ExecutionMode | None = None
     lessons: str | None = None
     recorded_at: UtcDatetime = Field(default_factory=lambda: datetime.now(UTC))
+
+    @model_validator(mode="after")
+    def _active_period_is_ordered(self) -> RetirementRecord:
+        """两者都存在时 `active_from ≤ active_to`（ADR-0011 D-17.5）。"""
+        if (
+            self.active_from is not None
+            and self.active_to is not None
+            and self.active_to < self.active_from
+        ):
+            raise ValueError("active_to 不得早于 active_from")
+        return self

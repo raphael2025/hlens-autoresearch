@@ -73,15 +73,26 @@ def _python_files(*relative: str) -> list[Path]:
     return files
 
 
-def _imported_roots(path: Path) -> set[str]:
+def _imported_modules(path: Path) -> set[str]:
+    """被导入模块的完整点分名（相对导入按本文件所在包解析）。"""
     tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-    roots: set[str] = set()
+    package = path.relative_to(REPO).parent.parts
+    modules: set[str] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
-            roots.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
-            roots.add(node.module.split(".")[0])
-    return roots
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom):
+            if node.level == 0:
+                if node.module:
+                    modules.add(node.module)
+            else:
+                base = package[: len(package) - node.level + 1]
+                modules.add(".".join((*base, node.module) if node.module else base))
+    return modules
+
+
+def _imported_roots(path: Path) -> set[str]:
+    return {module.split(".")[0] for module in _imported_modules(path)}
 
 
 def test_core_has_no_infrastructure_dependencies() -> None:
@@ -101,6 +112,24 @@ def test_core_does_not_import_outer_layers() -> None:
     for path in _python_files("core"):
         leaked = _imported_roots(path) & outer
         assert not leaked, f"{path.relative_to(REPO)} 依赖了外层模块：{sorted(leaked)}"
+
+
+def test_domain_does_not_import_other_core_packages() -> None:
+    """Domain 不依赖任何层（01-system.md §4）——包括 core 内部的外层包。
+
+    `core/lifecycle`、`core/contracts`、`core/compat` 都建立在 Domain 之上，
+    因此 Domain 只能向内引用 `core.domain.*` 与 `core.errors`。共享词汇
+    （例如 `ExecutionMode`）必须定义在 Domain，由外层重导出，而不是反向 import。
+    """
+    inner = {"core.domain", "core.errors"}
+    for path in _python_files("core/domain"):
+        leaked = sorted(
+            module
+            for module in _imported_modules(path)
+            if module.split(".")[0] == "core"
+            and not any(module == ok or module.startswith(f"{ok}.") for ok in inner)
+        )
+        assert not leaked, f"{path.relative_to(REPO)} 反向依赖了 core 的外层包：{leaked}"
 
 
 def test_apps_do_not_import_research_plane() -> None:

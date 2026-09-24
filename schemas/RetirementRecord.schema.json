@@ -1,5 +1,14 @@
 {
   "$defs": {
+    "ExecutionMode": {
+      "description": "ACTIVE 的属性，不是生命周期状态（ADR-0006 §2）。",
+      "enum": [
+        "SIMULATED",
+        "LIVE"
+      ],
+      "title": "ExecutionMode",
+      "type": "string"
+    },
     "Kind": {
       "description": "可版本化对象的类型（02-domain.md §1）。",
       "enum": [
@@ -56,7 +65,7 @@
     }
   },
   "additionalProperties": false,
-  "description": "RETIRED 的追加式退役记录（07-validation.md §4.2）。RETIRED ≠ FAILED。",
+  "description": "RETIRED 的追加式退役记录（07-validation.md §4.2）。RETIRED ≠ FAILED。\n\n`execution_mode` 复用共享的 `ExecutionMode` 枚举（`core/domain/execution.py`，\nADR-0011 D-17.5）：同一概念不再用自由字符串表达，也只有一个权威定义。",
   "properties": {
     "schema_version": {
       "default": "2.0.0",
@@ -109,14 +118,13 @@
     "execution_mode": {
       "anyOf": [
         {
-          "type": "string"
+          "$ref": "#/$defs/ExecutionMode"
         },
         {
           "type": "null"
         }
       ],
-      "default": null,
-      "title": "Execution Mode"
+      "default": null
     },
     "lessons": {
       "anyOf": [

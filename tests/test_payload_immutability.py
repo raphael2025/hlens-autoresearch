@@ -101,7 +101,8 @@ def _experiment_metadata(**kw: Any) -> ExperimentMetadata:
 
 
 def _risk_gate(**kw: Any) -> RiskGateRecord:
-    return RiskGateRecord(gate_id="RG1", passed=True, **kw)
+    """ADR-0011 D-17.3 起 `subject` 必填：Risk Gate 必须绑定被检查对象。"""
+    return RiskGateRecord(subject=factories.strategy_ref(), gate_id="RG1", passed=True, **kw)
 
 
 #: B2 起这两个映射字段是必填的（内容绑定不得缺省），因此没有"空默认值"路径。
