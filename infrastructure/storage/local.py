@@ -1,13 +1,18 @@
-"""Local ``file://`` ``StorageAdapter`` (Phase 1 C1 / C1-R1；ADR-0021 / B3 Protocol).
+"""Local ``file://`` ``StorageAdapter`` (Phase 1 C1 / C1-R1 / C1-R2；ADR-0021 / B3 Protocol).
 
 Warehouse 与 staging 必须是同一文件系统上的本地绝对 ``file://`` 根，且不得为同一路径。
-构造时打开并持有两个根目录 FD；之后所有最终对象的创建、存在性检查、读取与哈希都锚定在
-这些 FD 上，逐段 ``dir_fd`` + ``O_NOFOLLOW`` 访问，拒绝路径组件或最终对象上的 symlink。
+构造时记录两个根目录的 inode；每次操作临时打开根 FD，用 ``fstat`` 核对仍绑定构造时的
+inode，再以 ``dir_fd`` + ``O_NOFOLLOW`` 逐段访问，拒绝路径组件或最终对象上的 symlink。
 
 写入使用可靠 write-all（处理短写、``InterruptedError``、返回 0）；哈希与 size 只对应确实
 完整写入的内容。发布用同文件系统 ``os.link(..., src_dir_fd=..., dst_dir_fd=...,
-follow_symlinks=False)``，不覆盖；``open_read`` / ``lookup`` 对**同一个已打开 FD**计算
-SHA-256 / size。
+follow_symlinks=False)``，不覆盖；link 成功后必须从**实际最终对象的同一个已打开 FD**
+重新校验普通文件 / SHA-256 / size，并从配置的 warehouse 根安全重走 ``key``，确认与
+本次 final FD 为同一 inode 且内容身份相同，才返回可用 ``ObjectRef``。任一步失败则用已
+持有的父目录 FD 删除**本次**新建的 final（不碰既有对象）。``open_read`` / ``lookup``
+对同一个已打开 FD 计算 SHA-256 / size。
+
+根 FD 不跨操作持有；``close()`` / context manager 幂等，关闭后操作明确失败。
 """
 
 from __future__ import annotations
@@ -18,7 +23,8 @@ import json
 import os
 import secrets
 import stat
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import BinaryIO, Final, Self
 
@@ -33,6 +39,7 @@ from core.contracts.storage import (
     StagedObject,
     StageRequest,
     StagingViolation,
+    StorageError,
     validate_object_key,
 )
 from infrastructure.settings import (
@@ -48,6 +55,7 @@ _META_NAME: Final[str] = "meta.json"
 _PAYLOAD_NAME: Final[str] = "payload"
 _STAGING_ID_BYTES: Final[int] = 16
 _DIR_FLAGS: Final[int] = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
+_ROOT_FLAGS: Final[int] = os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW
 _FILE_READ_FLAGS: Final[int] = os.O_RDONLY | os.O_NOFOLLOW
 _FILE_CREATE_FLAGS: Final[int] = os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW
 
@@ -138,14 +146,22 @@ class LocalFileStorageAdapter:
         self._chunk_size = chunk_size
         self._warehouse_uri = self._warehouse.as_uri()
         self._staging_uri = self._staging.as_uri()
-        self._warehouse_fd = os.open(self._warehouse, os.O_RDONLY | os.O_DIRECTORY)
+        self._closed = False
+        # Capture root inodes without retaining FDs across the instance lifetime.
+        warehouse_fd: int | None = None
+        staging_fd: int | None = None
         try:
-            self._staging_fd = os.open(self._staging, os.O_RDONLY | os.O_DIRECTORY)
+            warehouse_fd = os.open(self._warehouse, _ROOT_FLAGS)
+            self._warehouse_stat = os.fstat(warehouse_fd)
+            staging_fd = os.open(self._staging, _ROOT_FLAGS)
+            self._staging_stat = os.fstat(staging_fd)
         except BaseException:
-            _close_quiet(self._warehouse_fd)
+            _close_quiet(warehouse_fd)
+            _close_quiet(staging_fd)
             raise
-        self._warehouse_stat = os.fstat(self._warehouse_fd)
-        self._staging_stat = os.fstat(self._staging_fd)
+        else:
+            _close_quiet(warehouse_fd)
+            _close_quiet(staging_fd)
 
     @classmethod
     def from_settings(
@@ -160,6 +176,17 @@ class LocalFileStorageAdapter:
             chunk_size=chunk_size,
         )
 
+    def close(self) -> None:
+        """Idempotent explicit lifecycle end; subsequent operations fail closed."""
+        self._closed = True
+
+    def __enter__(self) -> Self:
+        self._ensure_open()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self.close()
+
     @property
     def warehouse_uri(self) -> str:
         return self._warehouse_uri
@@ -167,6 +194,10 @@ class LocalFileStorageAdapter:
     @property
     def staging_uri(self) -> str:
         return self._staging_uri
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
 
     @property
     def forbidden_object_keys(self) -> tuple[str, ...]:
@@ -178,167 +209,268 @@ class LocalFileStorageAdapter:
 
     def stage(self, request: StageRequest, content: Iterable[bytes]) -> StagedObject:
         key = self._validated_key(request.key)
-        self._assert_key_not_staging(key)
-        staging_id = secrets.token_hex(_STAGING_ID_BYTES)
-        entry_fd: int | None = None
-        try:
-            os.mkdir(staging_id, 0o755, dir_fd=self._staging_fd)
-            entry_fd = os.open(staging_id, _DIR_FLAGS, dir_fd=self._staging_fd)
-            digest, size = self._stream_to_payload(entry_fd, content)
-            if request.expected_size is not None and size != request.expected_size:
-                raise IntegrityViolation(
-                    f"size mismatch for {key!r}: expected {request.expected_size}, got {size}"
-                )
-            if digest != request.expected_sha256:
-                raise IntegrityViolation(
-                    f"sha256 mismatch for {key!r}: expected {request.expected_sha256}, got {digest}"
-                )
-            meta = {"key": key, "sha256": digest, "size": size}
-            self._write_meta(entry_fd, meta)
-            os.fsync(entry_fd)
-            os.fsync(self._staging_fd)
-        except BaseException:
-            self._cleanup_staging_entry(staging_id, entry_fd)
-            raise
-        finally:
-            _close_quiet(entry_fd)
-        return StagedObject(key=key, sha256=digest, size=size, staging_id=staging_id)
+        with self._open_roots() as (warehouse_fd, staging_fd):
+            self._assert_key_not_staging(key, warehouse_fd)
+            staging_id = secrets.token_hex(_STAGING_ID_BYTES)
+            entry_fd: int | None = None
+            try:
+                os.mkdir(staging_id, 0o755, dir_fd=staging_fd)
+                entry_fd = os.open(staging_id, _DIR_FLAGS, dir_fd=staging_fd)
+                digest, size = self._stream_to_payload(entry_fd, content)
+                if request.expected_size is not None and size != request.expected_size:
+                    raise IntegrityViolation(
+                        f"size mismatch for {key!r}: expected {request.expected_size}, got {size}"
+                    )
+                if digest != request.expected_sha256:
+                    raise IntegrityViolation(
+                        f"sha256 mismatch for {key!r}: "
+                        f"expected {request.expected_sha256}, got {digest}"
+                    )
+                meta = {"key": key, "sha256": digest, "size": size}
+                self._write_meta(entry_fd, meta)
+                os.fsync(entry_fd)
+                os.fsync(staging_fd)
+            except BaseException:
+                self._cleanup_staging_entry(staging_fd, staging_id, entry_fd)
+                raise
+            finally:
+                _close_quiet(entry_fd)
+            return StagedObject(key=key, sha256=digest, size=size, staging_id=staging_id)
 
     def publish(self, staged: StagedObject) -> PublishResult:
         key = self._validated_key(staged.key)
-        self._assert_key_not_staging(key)
-        entry_fd, payload_present, meta = self._load_issued(staged)
-        try:
-            if (meta["key"], meta["sha256"], meta["size"]) != (
-                key,
-                staged.sha256,
-                staged.size,
-            ):
-                raise StagingViolation("staged object metadata does not match credential")
-
-            if not payload_present:
-                existing = self._published_identity(key)
-                if existing is None:
-                    raise StagingViolation("staged payload missing and target object absent")
-                existing_digest, existing_size = existing
-                if existing_digest != staged.sha256 or existing_size != staged.size:
-                    raise ObjectConflict(key)
-                return PublishResult(
-                    ref=self._ref(key, existing_digest, existing_size),
-                    outcome=PublishOutcome.ALREADY_PRESENT,
-                )
-
-            payload_digest, payload_size = self._hash_named_regular(entry_fd, _PAYLOAD_NAME)
-            if payload_digest != staged.sha256 or payload_size != staged.size:
-                raise StagingViolation("staged payload no longer matches issued identity")
-
-            existing = self._published_identity(key)
-            if existing is not None:
-                existing_digest, existing_size = existing
-                if existing_digest != staged.sha256 or existing_size != staged.size:
-                    raise ObjectConflict(key)
-                self._unlink_in_dir(entry_fd, _PAYLOAD_NAME)
-                return PublishResult(
-                    ref=self._ref(key, existing_digest, existing_size),
-                    outcome=PublishOutcome.ALREADY_PRESENT,
-                )
-
-            parent_fd, final_name, owned_parent = self._open_publish_parent(key)
+        with self._open_roots() as (warehouse_fd, staging_fd):
+            self._assert_key_not_staging(key, warehouse_fd)
+            entry_fd, payload_present, meta = self._load_issued(staging_fd, staged)
             try:
-                try:
-                    os.link(
-                        _PAYLOAD_NAME,
-                        final_name,
-                        src_dir_fd=entry_fd,
-                        dst_dir_fd=parent_fd,
-                        follow_symlinks=False,
-                    )
-                except FileExistsError:
-                    existing = self._published_identity(key)
+                if (meta["key"], meta["sha256"], meta["size"]) != (
+                    key,
+                    staged.sha256,
+                    staged.size,
+                ):
+                    raise StagingViolation("staged object metadata does not match credential")
+
+                if not payload_present:
+                    existing = self._published_identity(warehouse_fd, key)
                     if existing is None:
-                        raise ObjectConflict(key) from None
+                        raise StagingViolation("staged payload missing and target object absent")
                     existing_digest, existing_size = existing
                     if existing_digest != staged.sha256 or existing_size != staged.size:
-                        raise ObjectConflict(key) from None
-                    self._unlink_in_dir(entry_fd, _PAYLOAD_NAME)
+                        raise ObjectConflict(key)
                     return PublishResult(
-                        ref=self._ref(key, existing_digest, existing_size),
+                        ref=self._usable_ref(warehouse_fd, key, existing_digest, existing_size),
                         outcome=PublishOutcome.ALREADY_PRESENT,
                     )
 
-                published_fd = os.open(final_name, _FILE_READ_FLAGS, dir_fd=parent_fd)
-                try:
-                    mode = os.fstat(published_fd).st_mode
-                    if not stat.S_ISREG(mode):
-                        raise IntegrityViolation(f"{key} is not a regular file after publish")
-                    os.fsync(published_fd)
-                    os.fsync(parent_fd)
-                finally:
-                    os.close(published_fd)
-            finally:
-                if owned_parent:
-                    _close_quiet(parent_fd)
+                payload_digest, payload_size = self._hash_named_regular(entry_fd, _PAYLOAD_NAME)
+                if payload_digest != staged.sha256 or payload_size != staged.size:
+                    raise StagingViolation("staged payload no longer matches issued identity")
 
-            self._unlink_in_dir(entry_fd, _PAYLOAD_NAME)
-            return PublishResult(
-                ref=self._ref(key, staged.sha256, staged.size),
-                outcome=PublishOutcome.CREATED,
-            )
-        finally:
-            _close_quiet(entry_fd)
+                existing = self._published_identity(warehouse_fd, key)
+                if existing is not None:
+                    existing_digest, existing_size = existing
+                    if existing_digest != staged.sha256 or existing_size != staged.size:
+                        raise ObjectConflict(key)
+                    self._unlink_in_dir(entry_fd, _PAYLOAD_NAME)
+                    return PublishResult(
+                        ref=self._usable_ref(warehouse_fd, key, existing_digest, existing_size),
+                        outcome=PublishOutcome.ALREADY_PRESENT,
+                    )
+
+                parent_fd, final_name, owned_parent = self._open_publish_parent(warehouse_fd, key)
+                created_final = False
+                try:
+                    try:
+                        os.link(
+                            _PAYLOAD_NAME,
+                            final_name,
+                            src_dir_fd=entry_fd,
+                            dst_dir_fd=parent_fd,
+                            follow_symlinks=False,
+                        )
+                    except FileExistsError:
+                        existing = self._published_identity(warehouse_fd, key)
+                        if existing is None:
+                            raise ObjectConflict(key) from None
+                        existing_digest, existing_size = existing
+                        if existing_digest != staged.sha256 or existing_size != staged.size:
+                            raise ObjectConflict(key) from None
+                        self._unlink_in_dir(entry_fd, _PAYLOAD_NAME)
+                        return PublishResult(
+                            ref=self._usable_ref(warehouse_fd, key, existing_digest, existing_size),
+                            outcome=PublishOutcome.ALREADY_PRESENT,
+                        )
+
+                    created_final = True
+                    published_fd: int | None = None
+                    try:
+                        published_fd = os.open(final_name, _FILE_READ_FLAGS, dir_fd=parent_fd)
+                        published_st = os.fstat(published_fd)
+                        if not stat.S_ISREG(published_st.st_mode):
+                            raise IntegrityViolation(f"{key} is not a regular file after publish")
+                        os.lseek(published_fd, 0, os.SEEK_SET)
+                        final_digest, final_size = _sha256_fd(
+                            published_fd, chunk_size=self._chunk_size
+                        )
+                        if final_digest != staged.sha256 or final_size != staged.size:
+                            raise IntegrityViolation(
+                                f"published object identity does not match staging credential "
+                                f"for {key!r}"
+                            )
+                        os.fsync(published_fd)
+                        os.fsync(parent_fd)
+                        # Re-bind configured warehouse root and confirm the key is reachable
+                        # under it as the same inode with the same content identity.
+                        self._assert_root_bound(warehouse_fd, self._warehouse_stat, "warehouse")
+                        walk_fd = self._open_final_object_fd(warehouse_fd, key)
+                        try:
+                            walk_st = os.fstat(walk_fd)
+                            if not _same_inode(walk_st, published_st):
+                                raise IntegrityViolation(
+                                    f"published object for {key!r} is not reachable under "
+                                    "the configured warehouse root"
+                                )
+                            if not stat.S_ISREG(walk_st.st_mode):
+                                raise IntegrityViolation(f"{key} is not a regular file")
+                            os.lseek(walk_fd, 0, os.SEEK_SET)
+                            walk_digest, walk_size = _sha256_fd(
+                                walk_fd, chunk_size=self._chunk_size
+                            )
+                            if walk_digest != staged.sha256 or walk_size != staged.size:
+                                raise IntegrityViolation(
+                                    f"warehouse walk identity mismatch for {key!r}"
+                                )
+                        finally:
+                            _close_quiet(walk_fd)
+                    except BaseException:
+                        if created_final:
+                            self._unlink_created_final(parent_fd, final_name)
+                        raise
+                    finally:
+                        _close_quiet(published_fd)
+                finally:
+                    if owned_parent:
+                        _close_quiet(parent_fd)
+
+                self._unlink_in_dir(entry_fd, _PAYLOAD_NAME)
+                return PublishResult(
+                    ref=self._ref(key, staged.sha256, staged.size),
+                    outcome=PublishOutcome.CREATED,
+                )
+            finally:
+                _close_quiet(entry_fd)
 
     def lookup(self, key: str) -> ObjectRef | None:
         valid = self._validated_key(key)
-        self._assert_key_not_staging(valid)
-        identity = self._published_identity(valid)
-        if identity is None:
-            return None
-        digest, size = identity
-        return self._ref(valid, digest, size)
+        with self._open_roots() as (warehouse_fd, _staging_fd):
+            self._assert_key_not_staging(valid, warehouse_fd)
+            identity = self._published_identity(warehouse_fd, valid)
+            if identity is None:
+                return None
+            digest, size = identity
+            return self._ref(valid, digest, size)
 
     def open_read(self, ref: ObjectRef) -> BinaryIO:
         key = self._validated_key(ref.key)
-        self._assert_key_not_staging(key)
+        owned_fd: int | None = None
         try:
-            fd = self._open_final_object_fd(key)
-        except ObjectKeyViolation:
-            raise
-        except FileNotFoundError as exc:
-            raise ObjectNotFound(key) from exc
-        except OSError as exc:
-            if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
-                raise ObjectNotFound(key) from exc
-            if exc.errno in {errno.ELOOP, errno.EPERM}:
-                raise IntegrityViolation(f"{key} path contains a symlink or unsafe entry") from exc
-            raise
-        try:
-            mode = os.fstat(fd).st_mode
-            if not stat.S_ISREG(mode):
-                raise IntegrityViolation(f"{key} is not a regular file")
-            digest, size = _sha256_fd(fd, chunk_size=self._chunk_size)
-            if digest != ref.sha256 or size != ref.size:
-                raise IntegrityViolation(f"{key} does not match the reference")
-            os.lseek(fd, 0, os.SEEK_SET)
+            with self._open_roots() as (warehouse_fd, _staging_fd):
+                self._assert_key_not_staging(key, warehouse_fd)
+                try:
+                    fd = self._open_final_object_fd(warehouse_fd, key)
+                except ObjectKeyViolation:
+                    raise
+                except FileNotFoundError as exc:
+                    raise ObjectNotFound(key) from exc
+                except OSError as exc:
+                    if exc.errno in {errno.ENOENT, errno.ENOTDIR}:
+                        raise ObjectNotFound(key) from exc
+                    if exc.errno in {errno.ELOOP, errno.EPERM}:
+                        raise IntegrityViolation(
+                            f"{key} path contains a symlink or unsafe entry"
+                        ) from exc
+                    raise
+                owned_fd = fd
+                try:
+                    mode = os.fstat(fd).st_mode
+                    if not stat.S_ISREG(mode):
+                        raise IntegrityViolation(f"{key} is not a regular file")
+                    digest, size = _sha256_fd(fd, chunk_size=self._chunk_size)
+                    if digest != ref.sha256 or size != ref.size:
+                        raise IntegrityViolation(f"{key} does not match the reference")
+                    os.lseek(fd, 0, os.SEEK_SET)
+                except BaseException:
+                    _close_quiet(owned_fd)
+                    owned_fd = None
+                    raise
+                # Keep the object FD; root FDs close when the with-block exits.
+                transfer = owned_fd
+                owned_fd = None
+            try:
+                return open(transfer, "rb", closefd=True)
+            except BaseException:
+                _close_quiet(transfer)
+                raise
         except BaseException:
-            _close_quiet(fd)
+            _close_quiet(owned_fd)
             raise
-        return open(fd, "rb", closefd=True)
 
     # -----------------------------------------------------------------------------------
     # internals
     # -----------------------------------------------------------------------------------
 
+    def _ensure_open(self) -> None:
+        if self._closed:
+            raise StorageError("LocalFileStorageAdapter is closed")
+
+    def _open_bound_root(self, path: Path, expected: os.stat_result, label: str) -> int:
+        try:
+            fd = os.open(path, _ROOT_FLAGS)
+        except OSError as exc:
+            if exc.errno in {errno.ELOOP, errno.EPERM}:
+                raise IntegrityViolation(
+                    f"{label} root is a symlink or unsafe entry: {path}"
+                ) from exc
+            raise
+        try:
+            self._assert_root_bound(fd, expected, label)
+        except BaseException:
+            _close_quiet(fd)
+            raise
+        return fd
+
+    def _assert_root_bound(self, fd: int, expected: os.stat_result, label: str) -> None:
+        st = os.fstat(fd)
+        if not stat.S_ISDIR(st.st_mode):
+            raise IntegrityViolation(f"{label} root is not a directory")
+        if not _same_inode(st, expected):
+            raise IntegrityViolation(
+                f"{label} root inode no longer matches the adapter construction binding"
+            )
+
+    @contextmanager
+    def _open_roots(self) -> Iterator[tuple[int, int]]:
+        self._ensure_open()
+        warehouse_fd = self._open_bound_root(self._warehouse, self._warehouse_stat, "warehouse")
+        staging_fd: int | None = None
+        try:
+            staging_fd = self._open_bound_root(self._staging, self._staging_stat, "staging")
+            yield warehouse_fd, staging_fd
+        finally:
+            _close_quiet(staging_fd)
+            _close_quiet(warehouse_fd)
+
     def _validated_key(self, value: object) -> str:
         return validate_object_key(value)
 
-    def _assert_key_not_staging(self, key: str) -> None:
+    def _assert_key_not_staging(self, key: str, warehouse_fd: int) -> None:
         """Reject keys that map into staging or whose warehouse path crosses a symlink."""
         if _is_within(self._staging, self._warehouse):
             rel = self._staging.relative_to(self._warehouse).as_posix()
             if key == rel or key.startswith(f"{rel}/"):
                 raise ObjectKeyViolation(f"{key!r} maps into the private staging area")
         parts = key.split("/")
-        dir_fd = self._warehouse_fd
+        dir_fd = warehouse_fd
         owned: list[int] = []
         try:
             for part in parts[:-1]:
@@ -385,12 +517,28 @@ class LocalFileStorageAdapter:
     def _ref(self, key: str, digest: str, size: int) -> ObjectRef:
         return ObjectRef(key=key, uri=self._object_uri(key), sha256=digest, size=size)
 
-    def _cleanup_staging_entry(self, staging_id: str, entry_fd: int | None) -> None:
+    def _usable_ref(self, warehouse_fd: int, key: str, digest: str, size: int) -> ObjectRef:
+        """Build a ref only after confirming the object is reachable under the warehouse root."""
+        fd = self._open_final_object_fd(warehouse_fd, key)
+        try:
+            mode = os.fstat(fd).st_mode
+            if not stat.S_ISREG(mode):
+                raise IntegrityViolation(f"{key} is not a regular file")
+            got_digest, got_size = _sha256_fd(fd, chunk_size=self._chunk_size)
+            if got_digest != digest or got_size != size:
+                raise IntegrityViolation(f"{key} identity changed during publish")
+        finally:
+            _close_quiet(fd)
+        return self._ref(key, digest, size)
+
+    def _cleanup_staging_entry(
+        self, staging_fd: int, staging_id: str, entry_fd: int | None
+    ) -> None:
         if entry_fd is not None:
             self._unlink_in_dir(entry_fd, _PAYLOAD_NAME)
             self._unlink_in_dir(entry_fd, _META_NAME)
         try:
-            os.rmdir(staging_id, dir_fd=self._staging_fd)
+            os.rmdir(staging_id, dir_fd=staging_fd)
         except OSError:
             return
 
@@ -399,6 +547,14 @@ class LocalFileStorageAdapter:
             os.unlink(name, dir_fd=dir_fd)
         except FileNotFoundError:
             return
+        except OSError:
+            return
+
+    def _unlink_created_final(self, parent_fd: int, final_name: str) -> None:
+        """Remove a final we just created via this parent FD; fsync the parent."""
+        self._unlink_in_dir(parent_fd, final_name)
+        try:
+            os.fsync(parent_fd)
         except OSError:
             return
 
@@ -430,12 +586,14 @@ class LocalFileStorageAdapter:
         finally:
             os.close(fd)
 
-    def _load_issued(self, staged: StagedObject) -> tuple[int, bool, dict[str, object]]:
+    def _load_issued(
+        self, staging_fd: int, staged: StagedObject
+    ) -> tuple[int, bool, dict[str, object]]:
         staging_id = staged.staging_id
         if "/" in staging_id or "\\" in staging_id or staging_id in {".", ".."}:
             raise StagingViolation(f"illegal staging_id: {staging_id!r}")
         try:
-            entry_fd = os.open(staging_id, _DIR_FLAGS, dir_fd=self._staging_fd)
+            entry_fd = os.open(staging_id, _DIR_FLAGS, dir_fd=staging_fd)
         except FileNotFoundError as exc:
             raise StagingViolation(f"unknown or altered staging_id: {staging_id!r}") from exc
         except OSError as exc:
@@ -510,7 +668,7 @@ class LocalFileStorageAdapter:
         finally:
             os.close(fd)
 
-    def _open_publish_parent(self, key: str) -> tuple[int, str, bool]:
+    def _open_publish_parent(self, warehouse_fd: int, key: str) -> tuple[int, str, bool]:
         """Open (or create) the final parent directory under the warehouse FD.
 
         Returns ``(parent_fd, final_name, owned)``. Caller closes ``parent_fd`` iff ``owned``.
@@ -518,9 +676,9 @@ class LocalFileStorageAdapter:
         parts = key.split("/")
         final_name = parts[-1]
         if len(parts) == 1:
-            return self._warehouse_fd, final_name, False
+            return warehouse_fd, final_name, False
 
-        dir_fd = self._warehouse_fd
+        dir_fd = warehouse_fd
         owned: list[int] = []
         try:
             for part in parts[:-1]:
@@ -556,9 +714,9 @@ class LocalFileStorageAdapter:
                 ) from exc
             raise
 
-    def _open_final_object_fd(self, key: str) -> int:
+    def _open_final_object_fd(self, warehouse_fd: int, key: str) -> int:
         parts = key.split("/")
-        dir_fd = self._warehouse_fd
+        dir_fd = warehouse_fd
         owned: list[int] = []
         try:
             for part in parts[:-1]:
@@ -596,9 +754,9 @@ class LocalFileStorageAdapter:
             for owned_fd in reversed(owned):
                 _close_quiet(owned_fd)
 
-    def _published_identity(self, key: str) -> tuple[str, int] | None:
+    def _published_identity(self, warehouse_fd: int, key: str) -> tuple[str, int] | None:
         try:
-            fd = self._open_final_object_fd(key)
+            fd = self._open_final_object_fd(warehouse_fd, key)
         except ObjectKeyViolation:
             raise
         except IntegrityViolation:

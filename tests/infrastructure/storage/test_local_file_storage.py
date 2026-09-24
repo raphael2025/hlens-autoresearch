@@ -8,8 +8,10 @@ visibility boundaries — not a real power loss.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
+import sys
 import threading
 from collections.abc import Iterator
 from pathlib import Path
@@ -24,6 +26,8 @@ from core.contracts.storage import (
     ObjectRef,
     PublishOutcome,
     StageRequest,
+    StagingViolation,
+    StorageError,
 )
 from infrastructure.settings import Settings
 from infrastructure.storage import LocalFileStorageAdapter
@@ -45,8 +49,8 @@ def _chunks(data: bytes, size: int = 8) -> Iterator[bytes]:
 def _adapter(tmp_path: Path, *, chunk_size: int = 64) -> LocalFileStorageAdapter:
     warehouse = tmp_path / "warehouse"
     staging = warehouse / "staging"
-    warehouse.mkdir()
-    staging.mkdir()
+    warehouse.mkdir(parents=True, exist_ok=True)
+    staging.mkdir(exist_ok=True)
     return LocalFileStorageAdapter(
         warehouse.as_uri(),
         staging.as_uri(),
@@ -522,24 +526,19 @@ def test_publish_parent_replaced_with_external_symlink_does_not_escape(
         )
 
     monkeypatch.setattr(os, "link", racing_link)
-    try:
-        result = storage.publish(staged)
-    except (ObjectKeyViolation, OSError, IntegrityViolation, ObjectConflict):
-        # Fail-closed is acceptable; external must stay empty either way.
-        assert list(external.iterdir()) == []
-        assert not (external / "x.bin").exists()
-        return
+    with pytest.raises(
+        (ObjectKeyViolation, OSError, IntegrityViolation, ObjectConflict, StagingViolation)
+    ):
+        storage.publish(staged)
     assert list(external.iterdir()) == []
     assert not (external / "x.bin").exists()
-    # Published into the original warehouse parent inode (now reachable as saved-raw).
-    assert result.ref.sha256 == _sha(data)
-    assert result.ref.size == len(data)
-    saved_obj = warehouse / "saved-raw" / "x.bin"
-    assert saved_obj.is_file()
-    assert saved_obj.read_bytes() == data
-    # Path walk after the rename must not follow the external symlink.
-    with pytest.raises((ObjectKeyViolation, IntegrityViolation, ObjectNotFound)):
-        storage.open_read(result.ref)
+    # Anchored link into the renamed parent must be cleaned; no broken success ref.
+    assert not (warehouse / "saved-raw" / "x.bin").exists()
+    try:
+        assert storage.lookup(key) is None
+    except ObjectKeyViolation:
+        # Configured prefix is now a symlink; fail closed (not a published object).
+        pass
 
 
 def test_open_read_same_fd_survives_path_replacement(
@@ -626,3 +625,244 @@ def test_identical_warehouse_and_staging_roots_rejected(tmp_path: Path) -> None:
     uri = root.as_uri()
     with pytest.raises(ValueError, match="distinct"):
         LocalFileStorageAdapter(uri, uri)
+
+
+# ---------------------------------------------------------------------------------------
+# C1-R2：发布身份、可用引用、FD 生命周期
+# ---------------------------------------------------------------------------------------
+
+
+def test_publish_detects_staging_payload_swap_before_link(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _adapter(tmp_path)
+    key = "raw/swap.bin"
+    data = b"honest-payload"
+    staged = storage.stage(
+        StageRequest(key=key, expected_sha256=_sha(data), expected_size=len(data)),
+        _chunks(data),
+    )
+    staging_payload = tmp_path / "warehouse" / "staging" / staged.staging_id / _PAYLOAD_NAME
+    real_link = os.link
+    swapped = {"done": False}
+
+    def swap_then_link(
+        src: str | bytes | os.PathLike[str],
+        dst: str | bytes | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        if not swapped["done"]:
+            swapped["done"] = True
+            staging_payload.unlink()
+            staging_payload.write_bytes(b"EVIL")
+        real_link(
+            src,
+            dst,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(os, "link", swap_then_link)
+    with pytest.raises((StagingViolation, IntegrityViolation)):
+        storage.publish(staged)
+    assert storage.lookup(key) is None
+    assert not (tmp_path / "warehouse" / key).exists()
+
+
+def test_publish_fail_closed_cleans_anchored_link_when_parent_replaced(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _adapter(tmp_path)
+    key = "raw/x.bin"
+    data = b"must-not-leak-ref"
+    staged = storage.stage(
+        StageRequest(key=key, expected_sha256=_sha(data), expected_size=len(data)),
+        _chunks(data),
+    )
+    warehouse = tmp_path / "warehouse"
+    external = tmp_path / "external"
+    external.mkdir()
+    real_link = os.link
+
+    def racing_link(
+        src: str | bytes | os.PathLike[str],
+        dst: str | bytes | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        raw = warehouse / "raw"
+        saved = warehouse / "saved-raw"
+        if raw.exists() and not raw.is_symlink():
+            raw.rename(saved)
+            raw.symlink_to(external, target_is_directory=True)
+        real_link(
+            src,
+            dst,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+
+    monkeypatch.setattr(os, "link", racing_link)
+    with pytest.raises((ObjectKeyViolation, IntegrityViolation, StagingViolation, OSError)):
+        storage.publish(staged)
+    assert list(external.iterdir()) == []
+    assert not (warehouse / "saved-raw" / "x.bin").exists()
+    try:
+        assert storage.lookup(key) is None
+    except ObjectKeyViolation:
+        pass
+
+
+def test_successful_publish_ref_is_usable_same_and_restarted_adapter(tmp_path: Path) -> None:
+    storage = _adapter(tmp_path)
+    key = "raw/usable.bin"
+    data = b"round-trip-bytes"
+    result = storage.publish(
+        storage.stage(
+            StageRequest(key=key, expected_sha256=_sha(data), expected_size=len(data)),
+            _chunks(data),
+        )
+    )
+    ref = result.ref
+    uri_path = Path(ref.uri.removeprefix("file://"))
+    assert uri_path.is_file()
+    assert uri_path.read_bytes() == data
+    assert storage.lookup(key) == ref
+    with storage.open_read(ref) as handle:
+        assert handle.read() == data
+
+    restarted = LocalFileStorageAdapter(
+        (tmp_path / "warehouse").as_uri(),
+        (tmp_path / "warehouse" / "staging").as_uri(),
+    )
+    assert restarted.lookup(key) == ref
+    with restarted.open_read(ref) as handle:
+        assert handle.read() == data
+    restarted.close()
+
+
+def _count_proc_fds() -> int:
+    return len(os.listdir("/proc/self/fd"))
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="FD count via /proc/self/fd")
+def test_adapter_release_does_not_leak_root_fds(tmp_path: Path) -> None:
+    import gc
+
+    # Warm paths so first-open noise is not attributed to adapters under test.
+    warm = _adapter(tmp_path / "warm")
+    warm.close()
+    del warm
+    gc.collect()
+    baseline = _count_proc_fds()
+    adapters = [_adapter(tmp_path / f"n{i}") for i in range(100)]
+    mid = _count_proc_fds()
+    assert mid - baseline < 20  # per-op roots are closed; no linear hold
+    for adapter in adapters:
+        adapter.close()
+    del adapters
+    gc.collect()
+    after = _count_proc_fds()
+    assert after - baseline <= 8  # allow small framework noise; not +200
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="FD count via /proc/self/fd")
+def test_close_is_idempotent_and_does_not_double_close_unrelated_fd(tmp_path: Path) -> None:
+    storage = _adapter(tmp_path)
+    unrelated = os.open(tmp_path, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        storage.close()
+        storage.close()
+        with pytest.raises(StorageError, match="closed"):
+            storage.lookup("raw/x.bin")
+        # Unrelated FD must still be valid (close must not chase recycled numbers).
+        os.fstat(unrelated)
+    finally:
+        os.close(unrelated)
+
+
+@pytest.mark.skipif(not sys.platform.startswith("linux"), reason="FD count via /proc/self/fd")
+def test_constructor_second_root_open_failure_leaks_no_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    warehouse = tmp_path / "warehouse"
+    staging = tmp_path / "staging"
+    warehouse.mkdir()
+    staging.mkdir()
+    real_open = os.open
+    state = {"n": 0}
+    baseline = _count_proc_fds()
+
+    def flaky_open(
+        path: str | bytes | os.PathLike[str],
+        flags: int,
+        mode: int = 0o777,
+        *,
+        dir_fd: int | None = None,
+    ) -> int:
+        # Only count root opens (no dir_fd) during construction.
+        if dir_fd is None and (flags & os.O_DIRECTORY):
+            state["n"] += 1
+            if state["n"] == 2:
+                raise OSError(errno.EIO, "injected second root open failure")
+        return real_open(path, flags, mode, dir_fd=dir_fd)
+
+    monkeypatch.setattr(os, "open", flaky_open)
+    with pytest.raises(OSError, match="injected second root open failure"):
+        LocalFileStorageAdapter(warehouse.as_uri(), staging.as_uri())
+    assert _count_proc_fds() - baseline <= 2
+
+
+def test_post_link_verification_failure_removes_final(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _adapter(tmp_path)
+    key = "raw/post-link-fail.bin"
+    data = b"payload"
+    staged = storage.stage(
+        StageRequest(key=key, expected_sha256=_sha(data), expected_size=len(data)),
+        _chunks(data),
+    )
+    real_fsync = os.fsync
+    real_link = os.link
+    linked = {"done": False}
+    fail_next_fsync = {"armed": False}
+
+    def counting_link(
+        src: str | bytes | os.PathLike[str],
+        dst: str | bytes | os.PathLike[str],
+        *,
+        src_dir_fd: int | None = None,
+        dst_dir_fd: int | None = None,
+        follow_symlinks: bool = True,
+    ) -> None:
+        real_link(
+            src,
+            dst,
+            src_dir_fd=src_dir_fd,
+            dst_dir_fd=dst_dir_fd,
+            follow_symlinks=follow_symlinks,
+        )
+        linked["done"] = True
+        fail_next_fsync["armed"] = True
+
+    def flaky_fsync(fd: int) -> None:
+        if fail_next_fsync["armed"]:
+            fail_next_fsync["armed"] = False
+            raise OSError("injected post-link fsync failure")
+        real_fsync(fd)
+
+    monkeypatch.setattr(os, "link", counting_link)
+    monkeypatch.setattr(os, "fsync", flaky_fsync)
+    with pytest.raises(OSError, match="injected post-link fsync failure"):
+        storage.publish(staged)
+    assert linked["done"] is True
+    assert storage.lookup(key) is None
+    assert not (tmp_path / "warehouse" / key).exists()
