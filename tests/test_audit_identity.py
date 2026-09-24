@@ -616,11 +616,11 @@ def test_current_schema_export_is_complete_and_committed(tmp_path: Path) -> None
     """current 全量导出与已提交内容逐字段一致。
 
     模型数：ADR-0015 把它从 36 提到 37（新增 `GitCodeRevision`），
-    ADR-0016 再提到 38（新增 `ContentBlobRef`）。这里跟随当前事实，
+    ADR-0016 再提到 38（新增 `ContentBlobRef`），Phase 1 B1（ADR-0023）再提到 46。这里跟随当前事实，
     `GitCodeRevision` 本身的登记由 `test_git_code_revision_is_registered_and_exported` 断言。
     """
     written = export_json_schemas(tmp_path)
-    assert len(CONTRACT_MODELS) == 38
+    assert len(CONTRACT_MODELS) == 46
     assert len(written) == len(CONTRACT_MODELS)
     committed = {path.name for path in CURRENT_SCHEMA_DIR.glob("*.schema.json")}
     assert committed == {path.name for path in written.values()}

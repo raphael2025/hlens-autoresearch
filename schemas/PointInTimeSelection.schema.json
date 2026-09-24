@@ -1,0 +1,73 @@
+{
+  "$defs": {
+    "PointInTimeStatus": {
+      "description": "单个 `observation_key` 在一个 PIT 时刻的结果（ADR-0023 §5 第 4 步）。",
+      "enum": [
+        "selected",
+        "absent",
+        "conflict"
+      ],
+      "title": "PointInTimeStatus",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "单个 `observation_key` 在 `(simulation_time, knowledge_cutoff)` 下的 PIT 结果形状。\n\n- `selected`：恰好一个 maximal head，`selected_revision_id` 即它，`maximal_heads == (它,)`；\n- `absent`：没有候选，无 selected、无 head；\n- `conflict`：至少两个 maximal heads，**不得**携带 selected revision；数据集构建必须\n  fail closed，禁止以 `arrival_seq`、墙钟或 payload hash 打破。\n\n`maximal_heads` 是集合语义（去重、按 ID 规范排序，不表示先后）。这是**输出契约，不是选择算法**：\nheads 是否真的是候选集中互不排序的 maximal 元素，属于批次 F 的执行器，契约层无法证明。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "observation_key": {
+      "minLength": 1,
+      "title": "Observation Key",
+      "type": "string"
+    },
+    "simulation_time": {
+      "format": "date-time",
+      "title": "Simulation Time",
+      "type": "string"
+    },
+    "knowledge_cutoff": {
+      "format": "date-time",
+      "title": "Knowledge Cutoff",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/PointInTimeStatus"
+    },
+    "selected_revision_id": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Selected Revision Id"
+    },
+    "maximal_heads": {
+      "default": [],
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "title": "Maximal Heads",
+      "type": "array",
+      "uniqueItems": true
+    }
+  },
+  "required": [
+    "observation_key",
+    "simulation_time",
+    "knowledge_cutoff",
+    "status"
+  ],
+  "title": "PointInTimeSelection",
+  "type": "object"
+}

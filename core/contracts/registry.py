@@ -18,6 +18,16 @@ from core.contracts.profile_selection import (
     ProfileSelectionRule,
     SelectionEntry,
 )
+from core.contracts.revision import (
+    AvailabilityDecision,
+    ObservationTimes,
+    PointInTimeSelection,
+    PointInTimeSpec,
+    PolicyBinding,
+    PrecedenceEvidence,
+    RevisionGraph,
+    RevisionRecord,
+)
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.artifact import (
     DeploymentRecord,
@@ -110,6 +120,15 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     StrategyArtifact,
     EquivalenceCheck,
     DeploymentRecord,
+    # 双时间与 revision DAG（ADR-0023，Phase 1 B1）
+    PolicyBinding,
+    ObservationTimes,
+    AvailabilityDecision,
+    RevisionRecord,
+    PrecedenceEvidence,
+    RevisionGraph,
+    PointInTimeSpec,
+    PointInTimeSelection,
 )
 
 

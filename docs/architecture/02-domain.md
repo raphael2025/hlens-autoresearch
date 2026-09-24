@@ -192,6 +192,31 @@ Event / Strategy 的直接输入。**
 的行（Runner 与验证服务的泄漏门 G1）、`zone = research_dataset` 输入内部的 point-in-time 对齐
 （Phase 1+ 数据层）。
 
+### 2.2 双时间与 revision DAG 契约（ADR-0023，Phase 1 B1）
+
+`core/contracts/revision.py` 把 [ADR-0023](../adr/0023-bitemporal-revision-data.md) 中契约层可表达的部分落成 8 个模型
+（语义见 03-data.md §4、§7.5）。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`，已发布模型与 Schema 不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `PolicyBinding` | 规则绑定：`role` + `policy_id` + SemVer + `policy_hash` | `role` ∈ availability / precedence / point_in_time / parser；使用处要求确切 `role` |
+| `ObservationTimes` | 两轴时间（ADR 六字段；区间型另给 `event_end_time`） | UTC；`declared_latency >= 0`；`knowledge_time >= ingest_time`；`available_time` 不早于事件（区间取结束端）与已给出的 `source_time` |
+| `AvailabilityDecision` | 时间 + availability policy + 证据**或**证据缺口 | 两者恰好其一；`available_time < ingest_time` 必须有证据；缺口时 `available_time == ingest_time` |
+| `RevisionRecord` | 不可变 revision | 身份非空；`payload_hash` 为 SHA-256；`arrival_seq` 为非负整数且**只**用于审计；`supersedes` 去重、禁止自指、按 ID 规范排序；不早于 `source_revision_time` |
+| `PrecedenceEvidence` | 一条持久化 supersedes 边 | precedence policy；证据至少一项；新旧 revision 不同；带 `knowledge_time` |
+| `RevisionGraph` | 聚合校验 | `revision_id`、`arrival_seq` 唯一；同键 `source_id + payload_hash` 不重复；拒绝已知端点的跨 key 边与任何环；允许 dangling predecessor；记录声明的每条边须有同键同端点、`knowledge_time` 不晚于该记录的证据 |
+| `PointInTimeSpec` | PIT 查询输入（自身 `name` + SemVer） | simulation 单点或 UTC 半开区间二选一且 `start < end`；`knowledge_cutoff` 必填；snapshot / PIT / availability / precedence / parser 绑定非空、`role` 确切、字段内 `policy_id` 不重复 |
+| `PointInTimeSelection` | 单个 `observation_key` 的结果形状 | `selected` 恰好一个且即唯一 head；`absent` 无 head；`conflict` 至少两个 head 且无 selected |
+
+优先级只来自 `supersedes` 边与 precedence 证据；模块内**没有**以 `arrival_seq`、墙钟或 payload hash 排序或
+打破冲突的代码（静态测试检查）。集合语义的序列按 ID 规范排序只为内容哈希唯一，不表示先后。
+
+**诚实边界**：跨记录事实只在 `RevisionGraph` 证明；policy / parser 是否已登记且带证据、哈希是否等于真实内容、
+证据是否真实、`revision_id` 是否按规则形成、`arrival_seq` 是否跨重启不复用、heads 是否真的互不排序，
+属未来 Registry、存储层与 PIT 执行器（批次 C ~ F）。`PointInTimeSelection` 是输出契约，不是选择算法。
+跨字段约束（点 / 区间形状、证据 / 缺口、结果形状、role）只在运行时校验，JSON Schema 弱于运行时（§3.7）。
+universe 与 `ResearchDatasetManifest` 属批次 B2。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -292,7 +317,7 @@ Event / Strategy 的直接输入。**
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（38 份） | `schemas/*.schema.json` |
+| 当前 Schema（46 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
