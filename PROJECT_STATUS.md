@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **C2 已开放，Claude Opus 执行中**：实现 PostgreSQL-backed PyIceberg Catalog、幂等提交与真实集成证据；C1 已验收 |
+| 当前子阶段 | **C2 本地完成，待 Codex 复核**：PostgreSQL-backed PyIceberg Catalog、幂等提交与真实 PostgreSQL 集成证据已提交；C3 未开放 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C1 已验收，C2 进行中） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C1 已验收，C2 待复核） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -43,7 +43,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（C2 进行中） |
+| 1 | Market Representation | 🔄 已开启（C2 待复核） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -88,7 +88,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ C1-R2（Cursor Auto）：publish 最终 FD 身份重验、可用 ObjectRef、根 FD 生命周期；经 C1-R3 继续返修
 - ✅ C1-R1（Cursor Auto）：关闭短写与路径 TOCTOU；经 C1-R2 / C1-R3 继续返修
 - ✅ C1（Cursor Auto）：本地 `file://` `LocalFileStorageAdapter` 已实现；经 C1-R1 / C1-R2 / C1-R3 返修加固
-- 🔄 C2（Claude Opus）：PostgreSQL-backed PyIceberg Catalog、真实 PostgreSQL 集成、并发 / 快照 / 时间旅行 / 重启恢复与幂等提交；H12 授权已记录
+- 🔄 C2（Claude Opus）：本地完成待 Codex 复核——PyIceberg Catalog 通过 B3 contract suite（SQLite 与真实 PostgreSQL），PostgreSQL 集成覆盖并发、快照、时间旅行、重启恢复、幂等重放与 catalog 库无行情行；已按 H12 授权创建专用 catalog / test 库与最小权限 role（凭据仅在本机忽略文件）
 
 ## 5. 下一步
 
@@ -163,11 +163,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 C2（Claude Opus）：实现 PostgreSQL-backed PyIceberg Catalog 与定义登记表；创建专用 `hlens_iceberg_catalog` / `hlens_iceberg_catalog_test` 库与 role；contract suite 与 PostgreSQL 集成测试通过；未改 `core/` | 验收 #8 待 Codex 复核；C3 未开放 |
 | 2026-09-24 | Codex 独立验收 C1：2574 项全量测试、46 项存储测试、根替换反例、ruff / format / mypy 与冻结路径均通过；接受 `7857039`；记录 H12 数据库授权并开放 Claude C2 | 验收 #7 满足；C2 开放 |
 | 2026-09-24 | Phase 1 C1-R2（Cursor Auto）：publish 后从最终 FD 重验 SHA/size；配置根重走确认可用 ref；失败清理本次 final；根 FD 按操作开关 + 幂等 close；经 C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
 | 2026-09-24 | Phase 1 C1-R1（Cursor Auto）：短写 write-all；warehouse/staging 根 FD + `dir_fd`/`O_NOFOLLOW`；publish/open_read/lookup 锚定已打开 FD；拒绝相同根；经 C1-R2 / C1-R3 继续返修 | 验收 #7 待 Codex 复核；C2 未开放 |
 | 2026-09-24 | Phase 1 C1（Cursor Auto）：实现 `LocalFileStorageAdapter`（staging 流式校验、`os.link` 原子发布、幂等 / 冲突、路径 / symlink 安全）；接入 B3 Storage suite；未改 `core/`；经 C1-R* 返修 | 验收 #7 待 Codex 复核；C2 未开放 |
-| 2026-09-24 | Codex 独立验收 B3：2528 项全量测试、ruff / format / mypy、恶意 URI / origin 端口探针和冻结 Schema / 向量比较全部通过；接受实现恢复点 `9c57253` | 验收 #6 满足；B3 与验收门推送；开放 Cursor C1 |
 
 ## 10. 下一阶段进入条件
 
