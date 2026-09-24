@@ -1,0 +1,19 @@
+{
+  "contract_schema_version": "1.0.0",
+  "generated_by": "ADR-0016 实现批次（2026-09-24）；不是 066b22d 快照集的一部分",
+  "legacy_content_hash": "f6093ff2cc3b006c8629bd83df3a376199ce8ac71e4f707e1bc83425b1f33766",
+  "legacy_excluded_fields": [
+    "content_hash",
+    "created_at"
+  ],
+  "model": "LlmCall",
+  "note": "v1 形状的三哈希 LlmCall：按 v1 读取语义生成并固定，用于 ADR-0016 验收矩阵第 15 项",
+  "payload": {
+    "input_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+    "model": "vector-model-1",
+    "output_hash": "3333333333333333333333333333333333333333333333333333333333333333",
+    "prompt_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "provider": "vector_provider",
+    "schema_version": "1.0.0"
+  }
+}

@@ -33,11 +33,12 @@ from core.domain.artifact import (
     GoldenOutputs,
     StrategyArtifact,
 )
-from core.domain.base import GitCodeRevision, Kind, Ref
+from core.domain.base import ContentBlobRef, GitCodeRevision, Kind, Ref
 from core.domain.research import (
     ExperimentRun,
     ExperimentSpec,
     GateResult,
+    LlmCall,
     ReproducibilityTuple,
     ValidationReport,
     Verdict,
@@ -67,6 +68,30 @@ GIT_TREE_OID = "fedcba9876543210fedcba9876543210fedcba98"
 OTHER_GIT_COMMIT_OID = "89abcdef0123456789abcdef0123456789abcdef"
 #: 64 位形式（SHA-256 仓库）同样合法。
 GIT_COMMIT_OID_SHA256 = "0123456789abcdef" * 4
+
+
+def content_blob_ref(**overrides: object) -> ContentBlobRef:
+    """一份内容的取回引用（ADR-0016 §D-18.1）。
+
+    `uri` 只是**测试数据**：本项目尚未决定存储方案（D-01、D-02），也不会去取回它。
+    """
+    payload: dict[str, object] = {"uri": "s3://bucket/llm/prompt", "sha256": HASH_A}
+    payload.update(overrides)
+    return ContentBlobRef(**payload)  # type: ignore[arg-type]
+
+
+def llm_call(**overrides: object) -> LlmCall:
+    """一次登记完整的 LLM 调用：三项内容引用 + 显式调用时刻（ADR-0016 §D-18.2）。"""
+    payload: dict[str, object] = {
+        "provider": "test_provider",
+        "model": "test-model-1",
+        "prompt": content_blob_ref(uri="s3://bucket/llm/prompt", sha256=HASH_A),
+        "input": content_blob_ref(uri="s3://bucket/llm/input", sha256=HASH_B),
+        "output": content_blob_ref(uri="s3://bucket/llm/output", sha256=HASH_C),
+        "called_at": T0,
+    }
+    payload.update(overrides)
+    return LlmCall(**payload)  # type: ignore[arg-type]
 
 
 def dataset_ref() -> DatasetRef:

@@ -31,8 +31,9 @@ __all__ = [
     "REF_KEY_PATTERN",
     "SEMVER_PATTERN",
     "SHA256_PATTERN",
-    "Contract",
+    "ContentBlobRef",
     "ContentHash",
+    "Contract",
     "FrozenMapping",
     "GitCodeRevision",
     "GitOid",
@@ -388,6 +389,34 @@ class GitCodeRevision(Contract):
 
     commit_oid: GitOid
     tree_oid: GitOid
+
+
+class ContentBlobRef(Contract):
+    """一份内容的取回引用 + 内容哈希（ADR-0016 §D-18.1）。
+
+    把"内容在哪里"与"内容是什么"放进同一个值对象：`uri` 给出取回位置，
+    `sha256` 给出该内容规范的 SHA-256（与 `ContentHash` 同一命名空间，ADR-0015 §D-21.1）。
+    `media_type` 与 `byte_size` 是可选的描述性槽位。
+
+    `uri` **只做非空约束**：URI 方案取决于尚未决定的存储选择（D-01、D-02），
+    现在冻结方案等于把一个没做的决定写进契约。
+
+    空白语义：`Contract` 基类开启了 `str_strip_whitespace`，因此 `uri` 与 `media_type`
+    的纯空白取值都会先被去空白、再被 `min_length=1` 拒绝——两者**用同一条规则**，
+    不存在"空串拒绝、空白放行"的不一致。
+
+    **诚实边界**：本类型只约束**形状**。`uri` 是否可取回、取回的内容是否真的哈希成
+    `sha256`、`media_type` / `byte_size` 是否与实际内容相符，都必须由持有内容的
+    存储层 / Registry 核验（ADR-0016 §D-18.3）。本契约不打开 `uri`、不做任何取回，
+    也**不提供**任何自报"已验证"的布尔标志。
+    """
+
+    uri: str = Field(min_length=1)
+    sha256: ContentHash
+    #: 提供时不得为空（或纯空白）；不提供时为 `None`。
+    media_type: Annotated[str, Field(min_length=1)] | None = None
+    #: 提供时 `>= 0`；零字节内容是合法的，因此允许 `0`。
+    byte_size: Annotated[int, Field(ge=0)] | None = None
 
 
 class VersionedSpec(Contract):

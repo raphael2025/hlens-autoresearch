@@ -707,24 +707,52 @@ def test_metadata_and_tuple_share_the_selection_value_object() -> None:
 
 
 # ======================================================================================
-# LlmCall：登记缺口仍然存在，不得被描述成已完成
+# LlmCall：登记结构已由 ADR-0016 补齐，存储 / 取回缺口仍未关闭
 # ======================================================================================
 
 
-def test_llm_call_still_only_stores_hashes() -> None:
-    """ADR-0009 §5：完整输入输出或可取回引用的实现仍是后续缺口，本轮不改字段。"""
+def test_llm_call_registers_content_references_not_bare_hashes() -> None:
+    """ADR-0009 §5 记录的登记缺口由 ADR-0016 在**结构层面**关闭。
+
+    三个自由字符串哈希已被三项必填的 `ContentBlobRef`（取回引用 + `ContentHash`）取代，
+    并加上显式必填的 `called_at`。完整边界见 `tests/test_llm_call_bindings.py`。
+    """
+    from core.domain.base import ContentBlobRef
     from core.domain.research import LlmCall
 
     assert set(LlmCall.model_fields) == {
         "schema_version",
         "provider",
         "model",
-        "prompt_hash",
-        "input_hash",
-        "output_hash",
+        "prompt",
+        "input",
+        "output",
+        "called_at",
     }
+    for field in ("prompt", "input", "output"):
+        assert LlmCall.model_fields[field].annotation is ContentBlobRef
+        assert LlmCall.model_fields[field].is_required()
+    assert not {"prompt_hash", "input_hash", "output_hash"} & set(LlmCall.model_fields)
+
+
+def test_llm_call_storage_and_retrieval_gap_is_still_open() -> None:
+    """**结构完整 ≠ 内容可复核**：存储 / 取回 / 一致性仍是未实现的延期义务。
+
+    契约层拿不到 `uri` 指向的内容，因此不校验它是否存在、是否哈希成 `sha256`，
+    也无法判断一次实验是否登记了**所有**发生过的调用（ADR-0016 §D-18.3）。
+    这些义务必须继续以缺口形式写在文档里，不得被描述为已满足。
+    """
+    from core.domain.base import ContentBlobRef
+    from core.domain.research import LlmCall
+
+    for model in (LlmCall, ContentBlobRef):
+        for name, field in model.model_fields.items():
+            assert field.annotation is not bool, f"{model.__name__}.{name} 是自报布尔标志"
+        assert not hasattr(model, "verify")
+        assert not hasattr(model, "fetch")
     doc = (REPO / "docs" / "architecture" / "06-experiment.md").read_text(encoding="utf-8")
     assert "登记缺口" in doc, "06-experiment.md 必须保留 LLM 完整输入输出的缺口说明"
+    assert "仍未完全满足" in doc, "不得把结构化登记描述为已满足完整输入输出"
 
 
 # ======================================================================================

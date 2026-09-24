@@ -27,8 +27,10 @@
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
 > 0011 → 0012 → 0013 → 0014 → 0015 → 0016 → 0017 的串行批次进行，每批一个独立 commit。
-> **实现进度**：0011 ~ 0015 已实施（0011 ~ 0014 已由 Codex 独立复验，0015 待复验）；
-> 0016 尚未实施，其契约缺口（`LlmCall` 的完整内容登记）仍然存在；
+> **实现进度**：0011 ~ 0016 已实施（0011 ~ 0015 已由 Codex 独立复验，0016 待复验）；
+> 0016 补齐的是 `LlmCall` 的**登记结构**（`ContentBlobRef` 使 current Schema 增至 38 份），
+> 内容的可取回性与内容 - 哈希一致仍是存储层 / Registry 的未实现义务，
+> `06-experiment.md` §2 的"完整输入输出"要求因此**仍未完全满足**；
 > 0017 按方案 B 随首次消费 Provider 的 Phase 交付。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
@@ -54,7 +56,7 @@
 | D-15 | ✅ **已决定（ADR-0010）** v1 只读入口增加基于已提交快照的顶层 shape gate，快照缺失 fail closed。 | Codex 裁决 | Phase 0；Accepted，已实施 |
 | D-16 | ✅ **已决定（ADR-0010）** 三类映射字段的键值格式必须出现在导出的 JSON Schema 中，且与运行时同源。 | Codex 裁决 | Phase 0；Accepted，已实施 |
 | D-17 | **生命周期审批、主体归属、授权有效期与时间顺序**：失败的 revalidation 是否可以自动退役；历史、授权与 Risk Gate 的主体和时序如何约束；`live_execution_enabled` 这类自报字段是否成立。 | Codex 裁决 → [ADR-0011](0011-lifecycle-subject-authorization-and-time.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0011 批次） |
-| D-18 | **`LlmCall` 的最小完整登记**：一次 LLM 调用要登记哪些槽位；只存三个哈希是否足以构成可复核的审计记录。 | Codex 裁决 → [ADR-0016](0016-llmcall-content-bindings.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
+| D-18 | **`LlmCall` 的最小完整登记**：一次 LLM 调用要登记哪些槽位；只存三个哈希是否足以构成可复核的审计记录。 | Codex 裁决 → [ADR-0016](0016-llmcall-content-bindings.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0016 批次）；可取回性与内容一致性按 ADR 延期 |
 | D-19 | **整体 Verdict 与门结果的关系**：如何在契约层排除"证据不足即 PASS"。 | Codex 裁决 → [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0013 批次） |
 | D-20 | **数值合法性与结构合法性**：NaN / ±Infinity 的拒绝时点，阈值与来源的配对，两个概率型阈值的结构范围（D-20.1 ~ D-20.3）；Validation Profile 的普适结构不变量（D-20.4）。 | Codex 裁决 → [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md)（D-20.1 ~ D-20.3）、[ADR-0014](0014-validation-profile-structural-invariants.md)（D-20.4） | Phase 0；Accepted（2026-09-24），已实施（D-20.1 ~ D-20.3 在 ADR-0013 批次，D-20.4 在 ADR-0014 批次） |
 | D-21 | **审计哈希字段的类型统一**：内容哈希、Git OID 与不透明 ID 如何分开表达。 | Codex 裁决 → [ADR-0015](0015-audit-identity-types-and-version-bindings.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0015 批次） |

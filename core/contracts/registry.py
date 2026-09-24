@@ -25,7 +25,7 @@ from core.domain.artifact import (
     GoldenOutputs,
     StrategyArtifact,
 )
-from core.domain.base import GitCodeRevision, Ref
+from core.domain.base import ContentBlobRef, GitCodeRevision, Ref
 from core.domain.research import (
     ExperimentRun,
     ExperimentSpec,
@@ -67,6 +67,7 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     # 基础
     Ref,
     GitCodeRevision,
+    ContentBlobRef,
     Instrument,
     DatasetRef,
     # 研究对象规格

@@ -17,12 +17,18 @@
 | `test_deterministic_validation.py` | ADR-0013 确定性判定函数与数值合法性 |
 | `test_validation_profile_invariants.py` | ADR-0014 Validation Profile 的普适结构不变量 |
 | `test_audit_identity.py` | ADR-0015 审计身份类型（`ContentHash` / `GitOid` / `GitCodeRevision`）与版本绑定 |
+| `test_llm_call_bindings.py` | ADR-0016 `LlmCall` 的最小完整登记（`ContentBlobRef`、三项必填内容引用、显式 `called_at`） |
 | `test_validation_architecture.py` | ADR-0007 三层验证架构 |
 
 `factories.py` 是共享的最小合法对象构造器；其中的数字与哈希都是**测试数据**，不是被批准的阈值。
 
 `vectors/v1/` 是 **v1 legacy 语义**的固定载荷与旧哈希快照，用 commit `066b22d` 的代码生成，
 时间固定、不依赖 `now`；只读，不得用新实现重新生成（CLAUDE.md H6）。
+
+`vectors/v1_coverage/` 是**后续批次新增**的 v1 只读覆盖向量，**不属于** `066b22d` 快照集，
+单独建目录正是为了不去改写它。当前只有 `llm_call.json`：v1 形状的三哈希 `LlmCall` 载荷，
+期望哈希按 **v1 读取语义**（`read_v1` 的规则）生成后固定，用于 ADR-0016 验收矩阵第 15 项。
+它不是历史上真实存在过的 v1 记录，生成后同样只读（详见该目录的 `README.md`）。
 
 > reproducibility（重跑一致性）与 validation-negative-controls（已知过拟合样例必须被拒绝）
 > 需等待对应 Phase 开启（见 docs/research/roadmap.md）。

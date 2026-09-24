@@ -17,6 +17,9 @@
 ## 2. 复现元组（Reproducibility Tuple，冻结）
 
 > 2026-09-23：按 [ADR-0007](../adr/0007-validation-architecture-three-layers.md) 增加 Profile 绑定与 `profile_selection`。
+> 2026-09-24：按 [ADR-0016](../adr/0016-llmcall-content-bindings.md) §D-18 改写 `llm_calls`：
+> 三个自由字符串哈希被三项**必填**的 `ContentBlobRef`（取回引用 + 内容哈希）取代，
+> 并新增**显式必填、无默认值**的 `called_at`。这完成的是登记结构，**不是**内容可取回性。
 > 2026-09-24：按 [ADR-0015](../adr/0015-audit-identity-types-and-version-bindings.md) §D-21、§D-22
 > 收紧审计身份字段的类型：内容哈希统一为 64 位小写十六进制 SHA-256，Git OID 必须完整，
 > Profile 绑定由原先的自由字符串版本字段改为 `validation_profile: Ref`（`kind` 必须是
@@ -48,12 +51,22 @@
 | `profile_selection` | 选择该 Profile 的依据（必填，无空默认值）：**唯一的选择规则引用**（kind 必须是 `profile_selection_rule`）、**该规则的内容哈希**、以及 `ProfileSelectionKey`（`venue` / `symbol` / `timeframe` / 预登记的 `research_class`） |
 | `split_spec` | 训练 / 验证 / OOS 时间区间（引用 Constitution 规则） |
 | `cost_model_ref` | 成本/滑点模型 `name@version` |
-| `llm_calls` | 若有 LLM 参与：provider、model、prompt 哈希、完整输入输出 |
+| `llm_calls` | 若有 LLM 参与，每次调用登记：`provider` / `model`（均非空）、三项**必填**的内容引用 `prompt` / `input` / `output`（各为 `ContentBlobRef`：非空 `uri` + 64 位小写十六进制 `sha256`，可选 `media_type` / `byte_size`），以及**显式必填、无默认值**的 `called_at` |
 
-> **LlmCall 的登记缺口（未关闭）**：本表要求"完整输入输出"，但当前 `LlmCall` 契约只存
-> `prompt_hash` / `input_hash` / `output_hash` 三个哈希。ADR-0009 §5 记录了这一义务，
-> **完整内容或可取回引用的实现要等存储层就位后才能完成**，本轮未改字段。
-> 不得把"仅存哈希"描述为已满足本表的要求。
+> **LlmCall 的登记缺口（部分关闭，仍未满足）**：[ADR-0016](../adr/0016-llmcall-content-bindings.md)
+> 已把 `LlmCall` 从"只有三个哈希"提升为"取回引用 + 内容哈希 + 调用时刻"，
+> **登记结构已经完整**。但本表"完整输入输出"的要求**仍未完全满足**：
+> 契约层打不开 `uri`，因此在**存储层**就位、内容可取回并可核验之前，
+> 以下全部是未实现的延期义务——
+>
+> * `uri` 是否可取回（存在、可读、权限正确）；
+> * 取回的内容是否真的哈希成 `sha256`；`media_type` / `byte_size` 是否与实际内容相符；
+> * 已登记的内容是否不可覆盖、不可删除（追加式存储的义务）；
+> * 哪些数据可以发给外部 LLM（`09-security.md` §3 的数据外发策略）；
+> * 一次实验是否登记了**所有**发生过的 LLM 调用（属 Runner，契约层无法判断）。
+>
+> 不得把"仅存哈希"或本轮的结构化登记描述为已满足本表的要求；
+> 契约层也**不提供**任何自报"已验证"的布尔标志。
 
 **复现判定**：同一元组重跑，确定性指标必须按位一致（或在声明的浮点容差内）。
 

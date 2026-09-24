@@ -263,6 +263,7 @@ Event / Strategy 的直接输入。**
 | `ContentHash` | 64 位小写十六进制（`^[0-9a-f]{64}$`） | 本项目**规范化 JSON / 内容**的 SHA-256 | `ReproducibilityTuple.validation_profile_hash`；`ValidationReport.experiment_hash`、`validation_profile_hash`；`ExperimentMetadata.experiment_hash`、`validation_profile_hash`；`StrategyArtifact.experiment_hashes` 的每一项；`GoldenOutputs.signals_hash`、`positions_hash`；`EquivalenceCheck.artifact_id`；`DeploymentRecord.artifact_id`、`config_hash` |
 | `GitOid` | 40（SHA-1）或 64（SHA-256）位**小写**十六进制 | **Git** 对象 ID。与 `ContentHash` 是两套命名空间，短 SHA 与大写都被拒绝 | `ReproducibilityTuple.code_commit`；`StrategyArtifact.research_code_commit`、`research_code_tree_hash` |
 | `GitCodeRevision` | 值对象 `{commit_oid: GitOid, tree_oid: GitOid}` | 一份代码的完整 Git 身份（ADR-0005 §3 的"commit + tree hash"）。相等性是**结构化**比较 | `EquivalenceCheck.production_code_hash`、`DeploymentRecord.production_code_hash`（**线字段名沿用**，值已是该值对象） |
+| `ContentBlobRef` | 值对象 `{uri: 非空串, sha256: ContentHash, media_type?: 非空串, byte_size?: >= 0}` | 一份内容的**取回引用 + 内容哈希**（ADR-0016 §D-18.1）。`uri` 方案**刻意不冻结**（存储选择 D-01 / D-02 未决）；`uri` 与 `media_type` 的纯空白按空串拒绝 | `LlmCall.prompt`、`input`、`output`（三项**必填**） |
 | 不透明标识 / 复合描述 | 只要求非空 | 生成算法或格式**未冻结**，不得伪装成内容身份 | `run_id`、`report_id`、`deployment_id`、`trace_id`、`DatasetRef.snapshot_id`、`GoldenOutputs.signals_uri / positions_uri`、`StrategyArtifact.validation_reports`（即 `report_id` 列表）、`ReproducibilityTuple.environment_lock` |
 
 `artifact_id` 属于第一类：ADR-0005 §3 把它定义为 Artifact manifest 规范化 JSON 的 SHA-256，
@@ -280,6 +281,9 @@ Event / Strategy 的直接输入。**
 存在、工作区是否干净、`validation_profile` 指向的版本是否已登记或已 frozen、三处绑定是否
 彼此一致，契约层都**没有**校验——分别属 Registry、Runner / 打包器与 Control Plane
 （ADR-0015「运行时延期义务」）。`environment_lock` 的结构化表达**后续另定**，本轮未定义。
+`ContentBlobRef` 同理：契约层**不打开 `uri`**，因此内容是否可取回、取回结果是否真的哈希成
+`sha256`、`media_type` / `byte_size` 是否与实际内容相符，全部属存储层 / Registry
+（ADR-0016「运行时延期义务」）。这些槽位上**没有**、也不得引入自报"已验证"的布尔标志。
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
@@ -288,7 +292,7 @@ Event / Strategy 的直接输入。**
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（37 份） | `schemas/*.schema.json` |
+| 当前 Schema（38 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |

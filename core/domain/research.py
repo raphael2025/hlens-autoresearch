@@ -14,6 +14,7 @@ from pydantic import Field, model_validator
 
 from core.domain.base import (
     SEMVER_PATTERN,
+    ContentBlobRef,
     ContentHash,
     Contract,
     FrozenMapping,
@@ -103,13 +104,30 @@ class Hypothesis(VersionedSpec):
 
 
 class LlmCall(Contract):
-    """LLM 调用记录：LLM 只产出数据，永不裁决（09-security.md §3）。"""
+    """LLM 调用记录：LLM 只产出数据，永不裁决（09-security.md §3）。
 
-    provider: str
-    model: str
-    prompt_hash: str
-    input_hash: str
-    output_hash: str
+    ADR-0016 §D-18.2：`prompt` / `input` / `output` 三项**全部必填**，且都是
+    `ContentBlobRef`（取回引用 + 内容哈希）。一次 LLM 调用总是有提示、有输入、有输出；
+    允许其中任何一项缺失，等于允许记录一次无法复核的调用。原先的三个自由字符串
+    `prompt_hash` / `input_hash` / `output_hash` 被它们取代——哈希仍在，位置在
+    `ContentBlobRef.sha256`，并第一次带上了取回路径与格式约束。
+
+    `called_at` **显式必填且没有默认值**：若默认成 `datetime.now(UTC)`，那么稍后构造 DTO
+    的时刻就会冒充调用时刻，而审计记录无法分辨两者。宁可拒绝缺 `called_at` 的载荷，
+    也不要一个看起来合法、实则错误的调用时间。
+
+    **诚实边界（ADR-0016 §D-18.3）**：本模型完成的是**登记结构**。在存储层就位并能取回
+    内容之前，`06-experiment.md` §2 的"完整输入输出"要求**仍未满足**：URI 可取回性、
+    取回内容与 `sha256` 是否一致、登记内容是否不可覆盖、一次实验是否登记了**所有**
+    发生过的调用，全部是存储层 / Registry / Runner 的未实现义务。本模型不自报验证结果。
+    """
+
+    provider: str = Field(min_length=1)
+    model: str = Field(min_length=1)
+    prompt: ContentBlobRef
+    input: ContentBlobRef
+    output: ContentBlobRef
+    called_at: UtcDatetime
 
 
 class ReproducibilityTuple(Contract):

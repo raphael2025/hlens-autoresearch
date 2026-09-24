@@ -1,0 +1,54 @@
+{
+  "additionalProperties": false,
+  "description": "一份内容的取回引用 + 内容哈希（ADR-0016 §D-18.1）。\n\n把\"内容在哪里\"与\"内容是什么\"放进同一个值对象：`uri` 给出取回位置，\n`sha256` 给出该内容规范的 SHA-256（与 `ContentHash` 同一命名空间，ADR-0015 §D-21.1）。\n`media_type` 与 `byte_size` 是可选的描述性槽位。\n\n`uri` **只做非空约束**：URI 方案取决于尚未决定的存储选择（D-01、D-02），\n现在冻结方案等于把一个没做的决定写进契约。\n\n空白语义：`Contract` 基类开启了 `str_strip_whitespace`，因此 `uri` 与 `media_type`\n的纯空白取值都会先被去空白、再被 `min_length=1` 拒绝——两者**用同一条规则**，\n不存在\"空串拒绝、空白放行\"的不一致。\n\n**诚实边界**：本类型只约束**形状**。`uri` 是否可取回、取回的内容是否真的哈希成\n`sha256`、`media_type` / `byte_size` 是否与实际内容相符，都必须由持有内容的\n存储层 / Registry 核验（ADR-0016 §D-18.3）。本契约不打开 `uri`、不做任何取回，\n也**不提供**任何自报\"已验证\"的布尔标志。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "uri": {
+      "minLength": 1,
+      "title": "Uri",
+      "type": "string"
+    },
+    "sha256": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Sha256",
+      "type": "string"
+    },
+    "media_type": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Media Type"
+    },
+    "byte_size": {
+      "anyOf": [
+        {
+          "minimum": 0,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Byte Size"
+    }
+  },
+  "required": [
+    "uri",
+    "sha256"
+  ],
+  "title": "ContentBlobRef",
+  "type": "object"
+}
