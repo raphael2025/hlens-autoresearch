@@ -12,8 +12,12 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
+import os
+import subprocess
+import sys
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -37,6 +41,7 @@ from infrastructure.revision.channel_precedence import (
     KLINE_1M_PROJECTION,
     POLICY_STATEMENT,
     Channel,
+    ChannelComparison,
     ChannelPrecedenceViolation,
     ChannelRevision,
     ComparisonOutcome,
@@ -569,3 +574,138 @@ def test_the_edge_resolves_the_two_heads_in_one_revision_graph() -> None:
     RevisionGraph(revisions=records, precedence_evidence=(edge.evidence,))
     assert all(record.supersedes == () for record in records)
     assert maximal_heads(records, (edge.evidence,)) == (archive.revision_id,)
+
+
+# --------------------------------------------------------------------------- D3B-R1 boundaries
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        Decimal("1e100"),
+        Decimal("9" * 50),
+        Decimal("1E+999999"),
+        Decimal("1e-100"),
+        Decimal("1E-999999"),
+        Decimal("0." + "1" * 200),
+    ],
+    ids=["1e100", "50-digits", "1e+999999", "1e-100", "1e-999999", "200-fraction-digits"],
+)
+def test_extreme_finite_decimals_are_incomparable_never_an_exception(value: Decimal) -> None:
+    archive, stored = agg_pair()
+    row = dict(stored.row)
+    row["price"] = value
+    rest = ChannelRevision(**{**_fields(stored), "row": row})
+    comparison = compare_channels(archive, rest)  # must not raise decimal.InvalidOperation
+    assert comparison.outcome is ComparisonOutcome.INCOMPARABLE
+    assert comparison.reasons[0].startswith("rest: price")
+    with pytest.raises(ValueError, match="price"):
+        project(rest)
+    with pytest.raises(ChannelPrecedenceViolation):
+        build_channel_edge(comparison, knowledge_time=K_REST)
+
+
+def _forged(**changes: Any) -> ChannelComparison:
+    honest = compare_channels(*agg_pair())
+    fields: dict[str, Any] = {
+        "outcome": honest.outcome,
+        "projection_kind": honest.projection_kind,
+        "archive": honest.archive,
+        "rest": honest.rest,
+        "archive_projection_sha256": honest.archive_projection_sha256,
+        "rest_projection_sha256": honest.rest_projection_sha256,
+        "reasons": honest.reasons,
+    }
+    fields.update(changes)
+    return ChannelComparison(**fields)
+
+
+def test_a_forged_cross_key_equal_comparison_mints_no_edge() -> None:
+    archive, _ = agg_pair()
+    _, other_key = agg_pair(agg_trade_id=1)
+    assert archive.observation_key != other_key.observation_key
+    digest = project(archive).sha256
+    forged = _forged(
+        rest=other_key, archive_projection_sha256=digest, rest_projection_sha256=digest
+    )
+    with pytest.raises(ChannelPrecedenceViolation, match="observation_key"):
+        build_channel_edge(forged, knowledge_time=K_REST)
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        pytest.param({"archive_projection_sha256": "0" * 64, "rest_projection_sha256": "0" * 64},
+                     id="both-digests"),
+        pytest.param({"rest_projection_sha256": "0" * 64}, id="one-digest"),
+        pytest.param({"archive_projection_sha256": None, "rest_projection_sha256": None},
+                     id="no-digest"),
+        pytest.param({"projection_kind": KLINE_1M_PROJECTION}, id="kind"),
+        pytest.param({"reasons": ("differs: price",)}, id="reasons"),
+        pytest.param({"rest": agg_pair(price=Decimal("1"))[1]}, id="equal-claimed-for-mismatch"),
+        pytest.param({"archive": ChannelRevision(**{**_fields(agg_pair()[0]),
+                                                  "payload_hash": "0" * 64})},
+                     id="equal-claimed-for-integrity-violation"),
+    ],
+)  # fmt: skip
+def test_forged_projection_digests_or_outcomes_mint_no_edge(changes: dict[str, Any]) -> None:
+    with pytest.raises(ChannelPrecedenceViolation):
+        build_channel_edge(_forged(**changes), knowledge_time=K_REST)
+
+
+def test_rows_are_snapshotted_so_later_mutation_cannot_change_the_edge() -> None:
+    archive, stored = agg_pair()
+    caller_row = dict(stored.row)
+    rest = ChannelRevision(**{**_fields(stored), "row": caller_row})
+    comparison = compare_channels(archive, rest)
+    caller_row["price"] = Decimal("1")  # the caller's mapping changes after the comparison
+    edge = build_channel_edge(comparison, knowledge_time=K_REST)
+    assert rest.row["price"] == Decimal("93712.01")
+    assert edge.projection_sha256 == comparison.rest_projection_sha256
+    with pytest.raises(TypeError):
+        rest.row["price"] = Decimal("1")  # type: ignore[index]
+
+
+def test_a_stale_comparison_whose_row_was_swapped_mints_no_edge() -> None:
+    comparison = compare_channels(*agg_pair())
+    mutated = dict(comparison.rest.row)
+    mutated["price"] = Decimal("93712.02")
+    # Bypass the frozen dataclass the way a buggy caller could: the edge must still fail closed.
+    object.__setattr__(comparison.rest, "row", mutated)
+    with pytest.raises(ChannelPrecedenceViolation):
+        build_channel_edge(comparison, knowledge_time=K_REST)
+
+
+def test_edge_safety_does_not_depend_on_assert_statements() -> None:
+    tree = ast.parse(inspect.getsource(channel_precedence))
+    assert not [node.lineno for node in ast.walk(tree) if isinstance(node, ast.Assert)]
+
+
+def test_forged_comparisons_fail_closed_under_python_optimize() -> None:
+    script = (
+        "import sys\n"
+        "assert sys.flags.optimize == 1\n"
+        "from tests.infrastructure.revision import test_channel_precedence as t\n"
+        "from infrastructure.revision.channel_precedence import "
+        "ChannelPrecedenceViolation, build_channel_edge\n"
+        "_, other = t.agg_pair(agg_trade_id=1)\n"
+        "for forged in (t._forged(rest=other), t._forged(rest_projection_sha256='0' * 64)):\n"
+        "    try:\n"
+        "        build_channel_edge(forged, knowledge_time=t.K_REST)\n"
+        "    except ChannelPrecedenceViolation:\n"
+        "        continue\n"
+        "    raise SystemExit('edge minted under -O')\n"
+        "print('ok')\n"
+    )
+    repo = Path(__file__).resolve().parents[3]
+    env = {**os.environ, "PYTHONPATH": str(repo)}
+    result = subprocess.run(
+        [sys.executable, "-O", "-c", script],
+        cwd=repo,
+        env=env,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr + result.stdout
+    assert result.stdout.strip() == "ok"

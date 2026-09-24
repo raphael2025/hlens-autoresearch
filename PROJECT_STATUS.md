@@ -105,7 +105,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ D1（Claude Opus）：Codex 已独立验收；验收矩阵 #11 满足，接受 `c966085`
 - ✅ D2 / D2-R1（Claude Opus）：Codex 已独立验收；验收矩阵 #12 / #17 满足，接受 `ba9f417` + `b05486b`
 - ✅ D3A / D3A-R1（Claude Opus，docs-only）：Codex 已验收，ADR-0027 Accepted；验收 #13 的前置设计门满足
-- 🔄 D3B（Claude Opus）：已提交，REVIEW_PENDING——四张 REST 表定义（原八张哈希不变）、独立 REST 身份规则、REST availability / precedence 与通道等价纯函数；无 HTTP、无写入；等待 Codex 复核
+- 🔄 D3B（Claude Opus）：已提交，REVIEW_PENDING——四张 REST 表定义（原八张哈希不变）、独立 REST 身份规则、REST availability / precedence 与通道等价纯函数；无 HTTP、无写入；Codex 复核发现两处 fail-closed 缺陷，D3B-R1 已修复；仍等待 Codex 复核
 
 ## 5. 下一步
 
@@ -199,11 +199,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | Phase 1 D3B-R1（Claude Opus）：按 Codex 复核修复两处缺陷——极端十进制数不再抛出未捕获异常而是"不可比较"；生成跨通道证据前重新核对比较结果，伪造或过期的比较不能再产生证据边（不依赖 assert）；policy 哈希与既有标识符不变；真实 PostgreSQL 全量与静态检查全绿 | D3B 仍 REVIEW_PENDING；D3C 关闭 |
 | 2026-09-25 | Phase 1 D3B（Claude Opus）：追加四张 ADR-0027 REST 表定义（原八张定义哈希逐字节不变，共 12 张）；独立 REST 身份规则（页身份白名单、与归档相同的元素键、不含时间的边身份、REST 序号区间）；REST availability / precedence 与 D-33 通道等价比较纯函数；无 HTTP、无写入；真实 PostgreSQL 全量测试与静态检查全绿 | REVIEW_PENDING，等待 Codex 复核；D3C 仍关闭 |
 | 2026-09-25 | Codex 独立复核 D3A-R1（`ed526f7`）PASS：ADR-0027 Accepted，D-33 方案 A 生效；四张 REST 表、六个标识符、四项设置并入冻结数据架构；ADR-0021～0024 实施状态改为逐项准确描述；docs 一致性、真实 PostgreSQL 全量 3091 项与静态检查全绿 | D3A 设计门通过；**只开放 D3B**，D3C～D3E 逐批验收后开放 |
 | 2026-09-25 | Phase 1 D3A-R1（Claude Opus，docs-only）：按 Codex 复核关闭八项缺陷——目标窗口与页面合法性分开、响应必有知识时间、预算 / 限流 / 解码失败不冒充来源缺口、同一采集请求重放不重新联网、序号只在单个观察图内检查、设置列齐、证据措辞、状态索引；改为四张 additive 表（第四张为独立 precedence 证据表），D-33 按 Codex 所选 A 写清；D3B～D3E 重拆 | 等待 Codex 再次复核；ADR-0027 仍 Proposed，D3B 关闭 |
 | 2026-09-25 | Phase 1 D3A（Claude Opus，docs-only）：ADR-0027 `Proposed` —— 三张 additive REST Raw 表、通道级元素身份、规范请求身份与确定性分页、REST 官方证据（含逐条"未证明"）、D3B～D3E 拆分；发现并登记 D-33 与三个实现陷阱；八张冻结表、契约、Schema、依赖、settings 全部未动 | D3A 交付完成，等待 Codex 复核；D-33 未裁决前 D3E 不得开工 |
-| 2026-09-24 | Codex 独立验收 D2 / D2-R1：在 `ba9f417` 复现四项回归全部失败，修复提交 `b05486b` 上专项 18 项通过；真实 PostgreSQL 全量 3091 项、ruff / format / mypy / lock、冻结边界与敏感信息检查全绿 | 验收矩阵 #12 / #17 满足；接受 D2 并开放 D3A docs-only 设计门 |
 
 ## 10. 下一阶段进入条件
 

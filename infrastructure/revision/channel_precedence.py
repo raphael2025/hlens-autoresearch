@@ -36,8 +36,9 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal, localcontext
+from decimal import Decimal, InvalidOperation, localcontext
 from enum import StrEnum
+from types import MappingProxyType
 from typing import Any, Final
 
 from core.contracts.revision import PolicyBinding, PolicyRole, PrecedenceEvidence
@@ -136,6 +137,9 @@ class ChannelRevision:
     ``row`` holds that table's columns (native fields, ``symbol``, the stored UTC times and the
     lineage column). ``time_unit`` is the revision's declared unit: the D1 parser rule for an
     archive row, ``millisecond`` for REST 1.0.0.
+
+    The row is **snapshotted** into a read-only mapping at construction: mutating the caller's
+    mapping afterwards cannot change what was compared (D3B-R1).
     """
 
     channel: Channel
@@ -172,6 +176,7 @@ class ChannelRevision:
             raise ChannelPrecedenceViolation("REST 1.0.0 revisions are declared in milliseconds")
         if not isinstance(self.row, Mapping):
             raise ChannelPrecedenceViolation("row must be a mapping of column values")
+        object.__setattr__(self, "row", MappingProxyType(dict(self.row)))
 
     @property
     def table(self) -> str:
@@ -211,13 +216,17 @@ def _decimal(row: Mapping[str, Any], column: str) -> str:
     value = _value(row, column)
     if not isinstance(value, Decimal) or not value.is_finite() or value.is_signed():
         raise _Incomparable(f"{column} is not a finite non-negative Decimal")
+    # Magnitude first: quantizing a huge value to 18 places would exceed any context precision.
+    if value.adjusted() >= _INTEGER_DIGITS:
+        raise _Incomparable(f"{column} exceeds decimal(38, 18)")
     with localcontext() as context:
         context.prec = 80
-        quantized = value.quantize(_SCALE)
+        try:
+            quantized = value.quantize(_SCALE)
+        except InvalidOperation:
+            raise _Incomparable(f"{column} is not representable in decimal(38, 18)") from None
         if quantized != value:
             raise _Incomparable(f"{column} needs more than 18 fractional digits")
-    if quantized.adjusted() >= _INTEGER_DIGITS:
-        raise _Incomparable(f"{column} exceeds decimal(38, 18)")
     return format(quantized, "f")
 
 
@@ -491,6 +500,12 @@ class ChannelEdge:
 def build_channel_edge(comparison: ChannelComparison, *, knowledge_time: datetime) -> ChannelEdge:
     """The evidence-only edge ``archive supersedes REST`` for an ``EQUAL`` comparison.
 
+    The comparison is **not trusted**: it is re-evaluated from its two revisions (current rows,
+    channels, data type, observation key, identities) and every stored field — outcome, kind,
+    both projection digests, reasons — must match the fresh result; otherwise the input is
+    forged or stale and nothing is minted (D3B-R1). Checks are explicit raises, never
+    ``assert``, so they hold under ``python -O``.
+
     ``knowledge_time`` is supplied by the caller: the local time the comparison completed. It
     must not precede either revision's ``knowledge_time`` (never backfilled, ADR-0027 §4.6).
     """
@@ -500,24 +515,43 @@ def build_channel_edge(comparison: ChannelComparison, *, knowledge_time: datetim
         raise ChannelPrecedenceViolation(
             f"no edge for a {comparison.outcome.value} comparison: competing heads stay"
         )
+    fresh = compare_channels(comparison.archive, comparison.rest)
+    if fresh.outcome is not ComparisonOutcome.EQUAL:
+        raise ChannelPrecedenceViolation(
+            f"the comparison claims equal but its revisions now compare {fresh.outcome.value}: "
+            "forged or stale input, no edge"
+        )
+    for label, claimed, actual in (
+        ("projection_kind", comparison.projection_kind, fresh.projection_kind),
+        ("archive_projection_sha256", comparison.archive_projection_sha256,
+         fresh.archive_projection_sha256),
+        ("rest_projection_sha256", comparison.rest_projection_sha256,
+         fresh.rest_projection_sha256),
+        ("reasons", comparison.reasons, fresh.reasons),
+    ):  # fmt: skip
+        if claimed != actual:
+            raise ChannelPrecedenceViolation(
+                f"the comparison's {label} does not match its revisions: forged or stale input"
+            )
+    digest = fresh.archive_projection_sha256
+    if digest is None or digest != fresh.rest_projection_sha256:
+        raise ChannelPrecedenceViolation("an equal comparison must carry one projection digest")
     _check_utc(knowledge_time, "knowledge_time")
-    archive, rest = comparison.archive, comparison.rest
+    archive, rest = fresh.archive, fresh.rest
     floor = max(archive.knowledge_time, rest.knowledge_time)
     if knowledge_time < floor:
         raise ChannelPrecedenceViolation(
             "edge knowledge_time precedes a revision's knowledge_time: an edge is never "
             "backfilled before both sides were known"
         )
-    digest = comparison.archive_projection_sha256
-    assert digest is not None and digest == comparison.rest_projection_sha256
     evidence = PrecedenceEvidence(
-        observation_key=comparison.observation_key,
+        observation_key=fresh.observation_key,
         revision_id=archive.revision_id,
         superseded_revision_id=rest.revision_id,
         policy=DELIVERY_CHANNEL_BINDING,
         evidence=(
             POLICY_STATEMENT,
-            f"projection={comparison.projection_kind}",
+            f"projection={fresh.projection_kind}",
             f"projection_sha256={digest}",
             f"archive_payload_hash={archive.payload_hash}",
             f"rest_payload_hash={rest.payload_hash}",
@@ -529,7 +563,7 @@ def build_channel_edge(comparison: ChannelComparison, *, knowledge_time: datetim
     return ChannelEdge(
         edge_id=rest_identity.edge_id(
             DELIVERY_CHANNEL_BINDING,
-            comparison.observation_key,
+            fresh.observation_key,
             archive.revision_id,
             rest.revision_id,
         ),
