@@ -23,8 +23,8 @@
 | [0015](0015-audit-identity-types-and-version-bindings.md) | 审计身份类型与版本绑定（D-21、D-22） | Accepted（2026-09-24，Codex 依 Raphael 授权批准） |
 | [0016](0016-llmcall-content-bindings.md) | `LlmCall` 的最小完整登记（D-18） | Accepted（2026-09-24，Codex 依 Raphael 授权批准） |
 | [0017](0017-provider-delivery-schedule.md) | Provider 接口的交付节奏（D-24，方案 B） | Accepted（2026-09-24，Codex 依 Raphael 授权批准） |
-| [0018](0018-contract-value-semantic-identities.md) | 契约值对象的语义身份（D-26） | Proposed（2026-09-24，C1 F1 / F3；待 Codex 复核） |
-| [0019](0019-lifecycle-evidence-minimum.md) | 生命周期证据的最小结构（D-27） | Proposed（2026-09-24，C1 F5；待 Codex 复核） |
+| [0018](0018-contract-value-semantic-identities.md) | 契约值对象的语义身份（D-26） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；尚待实施 |
+| [0019](0019-lifecycle-evidence-minimum.md) | 生命周期证据的最小结构（D-27） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；尚待实施 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -38,8 +38,9 @@
 > 各类接口随首次消费它的 Phase 交付。
 
 > ADR-0018 / 0019 来自 Phase 0 关闭复审 C1（[审查记录](../reviews/2026-09-24-phase0-closing-review-c1.md)，
-> 结论 `FIX_BEFORE_CLOSE`）的 Codex 裁决 D-26 / D-27，由批次 C2a（docs-only）起草为 **Proposed**；
-> 两份均**尚未实施**，需 Codex 复核接受后按 0018 → 0019 串行实施，每批一个独立 commit。
+> 结论 `FIX_BEFORE_CLOSE`）的 Codex 裁决 D-26 / D-27，由批次 C2a 起草、C2b 补齐
+> （ADR-0018 增加 `GitCodeRevision` 代码身份与 `core/` 比较点完整盘点）后于 2026-09-24 **Accepted**。
+> 两份均**尚未实施**；下一步严格按 0018 → 0019 串行实施，每批一个独立 commit。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -72,15 +73,15 @@
 | D-23 | **信息流白名单与 kind 判别字段**：Outcome 与 outcome-zone 数据能否进入 Feature / State / Event / Strategy 输入；`kind` 能否被覆盖。 | Codex 裁决 → [ADR-0012](0012-information-flow-and-kind-invariants.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0012 批次） |
 | D-24 | **Provider 接口交付范围漂移**：审计时 `05-plugin.md` §3 写"签名在 Phase 0 定义"，roadmap 验收表没有该条。 | Codex 裁决：方案 B → [ADR-0017](0017-provider-delivery-schedule.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0017 批次，docs-only；Provider Protocol 数仍为 0） |
 | D-25 | **这批收窄是否需要升 major**：`2.0.0` 尚未发布（只在 `phase/0`、未合并 `main`、无 tag / 远程发布 / v2 数据登记）。 | Codex 裁决：继续属于未发布的 `2.0.0`，不升 major；发布后做同类改变必须升 major | Phase 0；Accepted（2026-09-24），写入 ADR-0011 ~ 0016 各自的版本小节 |
-| D-26 | **契约值对象的语义身份**：Profile 选择键与 `Ref` 目标身份是否包含嵌套信封 `schema_version`；选择规则的判重与查询是否同源（C1 F1 / F3）。 | Codex 裁决 → [ADR-0018](0018-contract-value-semantic-identities.md) | Phase 0；Proposed（2026-09-24），未实施 |
-| D-27 | **生命周期证据的最小结构**：每条转移是否必须带非空证据引用；是否在契约层要求职责分离（C1 F5）。 | Codex 裁决 → [ADR-0019](0019-lifecycle-evidence-minimum.md)：证据至少一项且非空；**不**做自报职责分离 | Phase 0；Proposed（2026-09-24），未实施 |
+| D-26 | **契约值对象的语义身份**：Profile 选择键、`Ref` 目标与 Git 代码修订的身份是否包含嵌套信封 `schema_version`；选择规则的判重与查询是否同源（C1 F1 / F3）。 | Codex 裁决 → [ADR-0018](0018-contract-value-semantic-identities.md)：三类显式语义身份，全局相等与内容哈希不变 | Phase 0；Accepted（2026-09-24），尚待实施 |
+| D-27 | **生命周期证据的最小结构**：每条转移是否必须带非空证据引用；是否在契约层要求职责分离（C1 F5）。 | Codex 裁决 → [ADR-0019](0019-lifecycle-evidence-minimum.md)：证据至少一项且非空；**不**做自报职责分离 | Phase 0；Accepted（2026-09-24），尚待实施 |
 | D-28 | **迟到 / 修订数据的 point-in-time 语义**：可用时间如何表达数据的迟到与修订（revision / as-of / vintage）；`event_time + declared_latency` 是否足够（C1 F4，原 R08）。 | 未决；本登记不选方案 | Phase 1 前决定 |
 | D-29 | **`apps/worker` 与研究代码的边界**：01-system.md 让 worker 运行实验，而 `apps/` 不得 import `research/`；实验如何被运行而不越过边界（C1 F4，原 R15）。 | 未决；本登记不选方案 | 首次实现 worker / 实验运行前决定，最迟 Phase 5 前 |
 | D-30 | **C-L5 的跨对象校验执行点**：`embargo >= 最长 Outcome horizon` 需要同时看到 Profile 与 Outcome，由谁、在何时校验（C1 F4）。 | 未决；本登记不选方案 | Phase 4 前决定 |
 | D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | 未决；本登记不选方案 | Phase 1 前决定 |
 
 > **编号说明**（2026-09-24 由 Codex 最终确认）：D-17 ~ D-25 连续且唯一。
-> D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份 Proposed ADR，
+> D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份已接受、尚待实施的 ADR，
 > D-28 ~ D-31 是**已登记的开放问题**，不是已决定事项。
 > [ADR-0016](0016-llmcall-content-bindings.md) 是 **D-18**（`LlmCall` 的最小完整登记，
 > 内部决定 D-18.1 ~ D-18.3）。[ADR-0014](0014-validation-profile-structural-invariants.md)

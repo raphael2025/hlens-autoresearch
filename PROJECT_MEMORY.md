@@ -14,7 +14,7 @@
 - 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
   B3 串行实现已全部完成：ADR-0011 ~ 0016 已实施并由 Codex 独立复验，ADR-0017 按方案 B
   是 docs-only 的交付节奏落地（不产生 Provider 代码）；关闭复审 C1 已完成（`FIX_BEFORE_CLOSE`），
-  C2a 已起草修复 ADR-0018 / 0019（Proposed，未实施）
+  修复 ADR-0018 / 0019 已 Accepted（C2b），尚未实施
 
 ## 2. Current Architecture
 
@@ -43,8 +43,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Current Phase：Phase 0（进行中）
 - Current Subphase：批次 C。C1 独立关闭复审完成（基线 `fce4f81`，结论 `FIX_BEFORE_CLOSE`，
-  `docs/reviews/2026-09-24-phase0-closing-review-c1.md`）；C2a docs-only 已起草 ADR-0018 / 0019（Proposed）
-- Current Objective：Codex 复核接受 ADR-0018 / 0019 后按 0018 → 0019 串行实施（C2），再做关闭复验；
+  `docs/reviews/2026-09-24-phase0-closing-review-c1.md`）；ADR-0018 / 0019 经 C2a 起草、C2b 补齐后 Accepted，尚未实施
+- Current Objective：严格按 ADR-0018 → ADR-0019 串行实施（每批一个 commit），再做关闭复验；
   复审通过**不等于**批准 Constitution 或关闭 Phase 0
 - Current Blocker：Constitution 1.0.0、Phase 0 正式关闭、main 合并、tag 均需 Raphael 后续明确批准
 - Next Milestone：C2 修复实施与复验 → Constitution 获批 1.0.0 → Phase 0 正式关闭
@@ -102,9 +102,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   D-17 ~ D-25 连续且唯一。
 - D-25：这批收窄仍属**尚未发布**的 2.0.0，不升 major；一旦发布（合并 main / tag / 有 v2 数据登记）
   后再做同类改变必须升 major。
-- D-26 → ADR-0018（**Proposed，未实施**）：Profile 选择键身份 = `(venue, symbol, timeframe, research_class)`、
-  判重与 `select()` 同源；`Ref` 目标身份 = `(kind, name, version)` 用于跨对象主体比较；不全局改写相等 / 内容哈希。
-- D-27 → ADR-0019（**Proposed，未实施**）：生命周期转移证据至少一项且非空；不做自报职责分离。
+- D-26 → ADR-0018（**Accepted，尚未实施**）：三类语义身份均排除信封 `schema_version`——Profile 选择键
+  `(venue, symbol, timeframe, research_class)`（判重与 `select()` 同源）、`Ref` 目标 `(kind, name, version)`
+  （跨对象主体比较）、`GitCodeRevision` 代码 `(commit_oid, tree_oid)`（部署 ↔ 等价检查）；全局 `==` 与内容哈希不变。
+- D-27 → ADR-0019（**Accepted，尚未实施**）：生命周期转移证据至少一项且非空；不做自报职责分离。
 - D-28 ~ D-31 为**已登记的开放问题**（不选方案）：D-28 修订数据语义、D-31 历史标的池（Phase 1 前）；
   D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）。
 
