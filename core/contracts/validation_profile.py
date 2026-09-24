@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -151,7 +152,7 @@ class ValidationProfile(VersionedSpec):
     完整性：五类门槛必须齐全，否则 Profile 无效（Constitution C-A7）。
     """
 
-    kind: Kind = Kind.PROFILE
+    kind: Literal[Kind.PROFILE] = Kind.PROFILE
     status: ProfileStatus = ProfileStatus.DRAFT
     scope: ProfileScope
     data_split: DataSplitParams

@@ -12,7 +12,7 @@
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
 - 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
-  B3 串行实现进行中：ADR-0011 已实施，0012 ~ 0017 仍只是文档；Phase 0 关闭复审未做
+  B3 串行实现进行中：ADR-0011、0012 已实施，0013 ~ 0017 仍只是文档；Phase 0 关闭复审未做
 
 ## 2. Current Architecture
 
@@ -40,12 +40,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 0（进行中）
-- Current Subphase：B3 串行实现；批次 1（ADR-0011）已完成，契约仍为未发布的 2.0.0
+- Current Subphase：B3 串行实现；批次 1（ADR-0011）与批次 2（ADR-0012）已完成，契约仍为未发布的 2.0.0
 - Current Objective：继续 Codex 已授权的串行批次
-  0012 → 0013 → 0014 → 0015 → 0016 → 0017，每批一个独立 commit
+  0013 → 0014 → 0015 → 0016 → 0017，每批一个独立 commit
 - Current Blocker：无授权阻塞；Phase 0 关闭复审（批次 C）未授权；
   Constitution 1.0.0 仍待 Raphael 亲自批准
-- Next Milestone：B3 剩余六个实现批次 → Phase 0 关闭复审 → Constitution 获批 → 关闭
+- Next Milestone：B3 剩余五个实现批次 → Phase 0 关闭复审 → Constitution 获批 → 关闭
 
 ## 5. Active Decisions
 
@@ -69,8 +69,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - B3 的技术方向由 Codex 裁决（D-17 ~ D-25），ADR-0011 ~ 0017 于 2026-09-24 全部 **Accepted**，
   0011 **已实施**（生命周期主体 / 授权 / 时间；删除自报的 `live_execution_enabled`，
   实盘开关交未来 Control Plane 与人类授权，契约层不再拒绝 `to_mode = LIVE`）；
-  以下**尚未实施**：0012 信息流白名单与不可覆盖的 `kind`（D-23）、
-  0013 确定性判定函数与拒绝 NaN/±Inf（D-19、D-20.1 ~ D-20.3）、
+  0012 **已实施**（13 个具体规格的 `kind` 为不可覆盖字面量、Feature / State / Event / Strategy
+  的直接输入白名单、Outcome 不得进入输入、lineage 保持可引用 Outcome，D-23）；
+  以下**尚未实施**：0013 确定性判定函数与拒绝 NaN/±Inf（D-19、D-20.1 ~ D-20.3）、
   0014 Profile 普适结构不变量（**D-20.4**，不是新 D 编号）、
   0015 审计身份类型与 Profile 的 `Ref` + 内容哈希绑定（D-21、D-22）、
   0016 `LlmCall` 三项内容引用必填、`called_at` 显式必填且无默认值（**D-18**）、
@@ -101,8 +102,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 外部数据盘未挂载：`~/BTC` → `/mnt/wsl/PHYSICALDRIVE1p1/BTC` 当前不可访问
 - Git 没有全局提交身份：提交使用一次性 `-c` 参数，长期做法待定
 - Constitution 仍是草案：批准前不能判定任何实验
-- 契约层只校验直接引用的内容绑定；传递依赖闭包、trial 权威账本、`run.repro` ↔ Spec 一致性、
-  Registry 存在性均为未实现的 Runner / Registry 义务（06-experiment.md §7）
+- 契约层只校验直接引用的内容绑定与**声明层面**的输入类型（ADR-0012 白名单）：传递依赖闭包的
+  方向性、trial 权威账本、`run.repro` ↔ Spec 一致性、Registry 存在性、物化数据的泄漏检测
+  均为未实现的 Runner / Registry / 验证服务义务（06-experiment.md §7），不得宣称泄漏已被防住
 - ADR-0011 之后实盘开关、授权主体真实性、证据可取回、跨对象时间线、唯一当前状态
   都是未实现的 Control Plane 义务；契约层不自报环境事实
 - `LlmCall` 仍只存哈希，"完整输入输出"仍是未关闭缺口（ADR-0016 已 Accepted，未实施）
@@ -126,7 +128,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   545 测试、ruff check、ruff format --check、mypy strict 全绿（Codex 在 `cd84a4e` 上独立重跑）；
   Schema current 36 份（2.0.0）+ legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   无 Feature / Strategy / Backtest / Runner / Registry / 存储实现
-- Notes：ADR-0001 ~ 0017 全部 Accepted；ADR-0011 已实现（phase/0 上的独立 commit，
-  四项工程检查全绿，待 Codex 复验），0012 ~ 0017 尚未开始；
+- Notes：ADR-0001 ~ 0017 全部 Accepted；ADR-0011 与 ADR-0012 已实现（phase/0 上各一个独立
+  commit，四项工程检查全绿，待 Codex 复验），0013 ~ 0017 尚未开始；
   Constitution 0.2.0-draft 待批准为 1.0.0；D-09 数值、H-3 ~ H-7、Q-1 ~ Q-7 仍开放；
   未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`

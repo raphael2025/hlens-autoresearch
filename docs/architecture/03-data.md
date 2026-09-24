@@ -31,6 +31,16 @@ flowchart LR
 
 注：Outcome 直接由 Canonical 计算（前向价格路径），并在 Research Dataset 中以 point-in-time 方式与输入对齐。**Outcome 永不回流为 Feature/State/Event 的输入。**
 
+这条方向在契约层有**声明层面**的执行点（ADR-0012）：`FeatureSpec.inputs` / `StateSpec.features` /
+`EventSpec.features` / `EventSpec.states` / `StrategySpec.signals` 按白名单限制被引用对象的 `kind`
+与数据集的 `zone`，因此 Outcome 的 `Ref` 与 `zone = outcome` 的 `DatasetRef` 会被直接拒绝
+（白名单全表见 02-domain.md §2.1）。
+
+**这不等于泄漏已被防住**：契约层只看得见直接引用**声明的**类型。传递依赖闭包的方向性、
+被引用对象是否真的是该类型、物化数据是否使用了 `available_time > t` 的行、
+`research_dataset` 内部的 point-in-time 对齐，分别是 Registry、Runner 与验证服务泄漏门（G1）
+的未实现义务。
+
 ## 3. 数据分层（Zones，冻结）
 
 | Zone | 内容 | 规则 |

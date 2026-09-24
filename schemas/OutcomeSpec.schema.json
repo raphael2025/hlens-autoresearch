@@ -65,8 +65,10 @@
       "type": "string"
     },
     "kind": {
-      "$ref": "#/$defs/Kind",
-      "default": "outcome"
+      "const": "outcome",
+      "default": "outcome",
+      "title": "Kind",
+      "type": "string"
     },
     "name": {
       "pattern": "^[a-z][a-z0-9_]*$",

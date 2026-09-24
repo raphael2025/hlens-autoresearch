@@ -7,4 +7,8 @@
 `execution.py` 存放 `ExecutionMode`，供生命周期与退役记录共用（`core/lifecycle/strategy.py` 重导出），
 以保证 Domain 不反向依赖 `core/lifecycle`。
 
+`specs.py` 另含信息流白名单（`FEATURE_INPUT_KINDS` / `FEATURE_INPUT_ZONES` /
+`STRATEGY_SIGNAL_KINDS`，02-domain.md §2.1）：它只校验**声明层面的直接引用**，
+传递依赖闭包与实际数据的泄漏检测仍属 Registry / Runner。
+
 > Phase 0：已有领域契约代码；不包含 Feature / Strategy / Backtest 计算实现。修复状态见 PROJECT_STATUS.md。

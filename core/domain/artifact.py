@@ -6,6 +6,8 @@ Artifact 是"研究结论"的不可变打包；生产运行时只能加载 Regis
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field, model_validator
 
 from core.domain.base import (
@@ -39,7 +41,7 @@ class StrategyArtifact(VersionedSpec):
     任何参数、依赖或代码变化 = 新 Artifact = 需重新验证。
     """
 
-    kind: Kind = Kind.ARTIFACT
+    kind: Literal[Kind.ARTIFACT] = Kind.ARTIFACT
     strategy_spec: Ref
     #: `kind:name@semver → SHA-256 内容哈希`（ADR-0009 §5）。键带 kind，避免 Feature /
     #: State 等同名对象混淆。**完整传递依赖闭包**由未来 Registry / 打包器解析并检查。

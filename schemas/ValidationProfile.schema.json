@@ -538,8 +538,10 @@
       "type": "string"
     },
     "kind": {
-      "$ref": "#/$defs/Kind",
-      "default": "profile"
+      "const": "profile",
+      "default": "profile",
+      "title": "Kind",
+      "type": "string"
     },
     "name": {
       "pattern": "^[a-z][a-z0-9_]*$",

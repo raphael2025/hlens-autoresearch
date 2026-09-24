@@ -7,6 +7,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -73,7 +74,7 @@ class HypothesisOrigin(StrEnum):
 class KnowledgeItem(VersionedSpec):
     """公开来源中的**待检验主张**，不是已验证结论。"""
 
-    kind: Kind = Kind.KNOWLEDGE
+    kind: Literal[Kind.KNOWLEDGE] = Kind.KNOWLEDGE
     source: str = Field(min_length=1)
     license: str
     claim: str = Field(min_length=1)
@@ -86,7 +87,7 @@ class KnowledgeItem(VersionedSpec):
 class Hypothesis(VersionedSpec):
     """可证伪的陈述；运行前预登记且不可变（Constitution A1 / A2）。"""
 
-    kind: Kind = Kind.HYPOTHESIS
+    kind: Literal[Kind.HYPOTHESIS] = Kind.HYPOTHESIS
     family_id: str = Field(min_length=1)
     statement: str = Field(min_length=1)
     conditions: tuple[str, ...] = ()
@@ -200,7 +201,7 @@ class ExperimentSpec(VersionedSpec):
     JSON 与 Schema 也不重复发出这些派生字段。
     """
 
-    kind: Kind = Kind.EXPERIMENT
+    kind: Literal[Kind.EXPERIMENT] = Kind.EXPERIMENT
     repro: ReproducibilityTuple
 
     @property

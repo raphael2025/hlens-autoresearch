@@ -134,8 +134,10 @@
       "type": "string"
     },
     "kind": {
-      "$ref": "#/$defs/Kind",
-      "default": "profile_selection_rule"
+      "const": "profile_selection_rule",
+      "default": "profile_selection_rule",
+      "title": "Kind",
+      "type": "string"
     },
     "name": {
       "pattern": "^[a-z][a-z0-9_]*$",

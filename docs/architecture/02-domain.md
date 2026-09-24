@@ -152,6 +152,44 @@ classDiagram
 | **FailureRecord** | 失败/拒绝的记录 | 永不删除 |
 | **ResearchMemory** | 以上所有记录的可检索集合 | 追加式（append-only） |
 
+### 2.1 信息流白名单与判别字段（ADR-0012）
+
+冻结的方向是 Canonical → Feature → State / Event → Research Dataset；Outcome 由 Canonical 计算，
+**永不回流**为 Feature / State / Event / Strategy 的输入（Constitution C-L2、03-data.md §2）。
+契约层把这条方向落成**声明层面**的可执行反例：
+
+| 字段 | 允许的 `Ref.kind` | 允许的 `DatasetRef.zone` | 数量 |
+|---|---|---|---|
+| `RepresentationSpec.inputs` | 不接受 `Ref` | 不限（本轮不收紧） | 至少 1 |
+| `FeatureSpec.inputs` | `representation`、`feature` | `canonical`、`feature`、`research_dataset` | 至少 1 |
+| `StateSpec.features` | `feature` | 不接受 | 至少 1 |
+| `EventSpec.features` | `feature` | 不接受 | features 与 states 至少其一非空 |
+| `EventSpec.states` | `state` | 不接受 | 同上 |
+| `StrategySpec.signals` | `feature`、`state`、`event` | 不接受 | 至少 1 |
+| `StrategySpec.risk_policy` | `risk` | 不接受 | 可选 |
+
+直接推论：**Outcome 的 `Ref` 与 `zone = outcome` 的 `DatasetRef` 都不得成为 Feature / State /
+Event / Strategy 的直接输入。**
+
+**判别字段不可覆盖**：13 个具体规格（`RepresentationSpec`、`FeatureSpec`、`StateSpec`、
+`EventSpec`、`OutcomeSpec`、`StrategySpec`、`RiskPolicy`、`KnowledgeItem`、`Hypothesis`、
+`ExperimentSpec`、`StrategyArtifact`、`ValidationProfile`、`ProfileSelectionRule`）的 `kind`
+是**字面量**：只接受自身那一个取值，默认构造仍自动取得它，传别的取值被**拒绝**而不是被静默接受。
+导出的 JSON Schema 中这些 `kind` 因此是单值（`const`）。`Ref.kind` 与 `VersionedSpec` 基类的
+`kind` 保持完整 `Kind` 枚举——引用必须能指向各种类型。判别字段不能被伪造，所有按 `kind` 做的
+既有校验（ADR-0009 的引用 kind 检查等）才无法被绕过。
+
+**局部不变量**：`EventSpec.observable_lag >= 0`（零可接受）；`StateSpec.training_window` 若提供
+必须为正（`None` 表示不适用）；`StateSpec.state_space` 的标签必须唯一。
+
+**`lineage` 不在此列**：它是**溯源**（"这个对象从哪里来"），不是计算输入，因此仍可引用 Outcome。
+
+**诚实边界**：以上只校验**声明层面的直接引用**，是必要条件，**不**等于泄漏已被防住。
+下列仍是未实现的运行时义务：传递依赖闭包的方向性（上游是否间接依赖了某个 Outcome）、
+被引用对象是否真的是该类型且内容匹配（Registry）、物化数据是否使用了 `available_time > t`
+的行（Runner 与验证服务的泄漏门 G1）、`zone = research_dataset` 输入内部的 point-in-time 对齐
+（Phase 1+ 数据层）。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。

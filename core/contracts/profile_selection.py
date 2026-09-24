@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import Literal
 
 from pydantic import Field, model_validator
 
@@ -48,7 +49,7 @@ class SelectionEntry(Contract):
 class ProfileSelectionRule(VersionedSpec):
     """`(标的, 周期, 研究类别) → Profile` 的确定性映射。"""
 
-    kind: Kind = Kind.PROFILE_SELECTION_RULE
+    kind: Literal[Kind.PROFILE_SELECTION_RULE] = Kind.PROFILE_SELECTION_RULE
     entries: tuple[SelectionEntry, ...] = Field(min_length=1)
 
     @model_validator(mode="after")

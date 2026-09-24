@@ -161,8 +161,10 @@
       "type": "string"
     },
     "kind": {
-      "$ref": "#/$defs/Kind",
-      "default": "artifact"
+      "const": "artifact",
+      "default": "artifact",
+      "title": "Kind",
+      "type": "string"
     },
     "name": {
       "pattern": "^[a-z][a-z0-9_]*$",
