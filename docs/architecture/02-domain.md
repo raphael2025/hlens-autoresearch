@@ -343,6 +343,17 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 **全局规则不变**：`Contract.__eq__` 与 `content_hash()` 仍包含信封版本——仅信封不同的两个对象
 结构不相等、内容哈希不同，这是有意的最终设计。
 
+### 3.7 字符串校验的运行时与 JSON Schema 边界
+
+`Contract` 开启了 `str_strip_whitespace=True`：运行时 Pydantic 会**先去除首尾空白，再**检查 `min_length`、
+`pattern` 等约束。导出的 JSON Schema 只能表达序列化后字段本身的约束，无法表达"先去空白"这一步。
+因此只读 Schema 的消费者对**带首尾空白的原始输入**可能与运行时判断不同——例如纯空白串能满足 Schema 的
+`minLength: 1` 却被运行时拒绝；`" swing "` 不满足 Schema 的 pattern 却会被运行时去空白后接受。
+运行时序列化输出已去空白，二者对规范化后的值一致。**系统权威的输入校验必须经过运行时模型**
+（构造函数、`model_validate` / `model_validate_json`，见 §3.4），JSON Schema 只是面向外部消费者的描述。
+同类的"Schema 可见性弱于运行时"边界还有：时长符号与 `cost_model.kind`（07-validation.md §5.4）、
+以及只由跨字段相等关系约束的 `ExperimentMetadata.declared_research_class`（ADR-0018 §D-26.3）。
+
 ## 4. 目录映射
 
 | 路径 | 内容 |

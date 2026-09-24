@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 0 — Research Constitution**（进行中） |
-| 当前子阶段 | 批次 C：关闭复审 C1 已完成（结论 **`FIX_BEFORE_CLOSE`**）；C2a 已固化 C1 报告并起草 ADR-0018 / 0019；C2b 已将两份 ADR **Accepted**；C2c 已实施 ADR-0018（Codex 已确认复验）；C2d 已实施 ADR-0019（待 Codex 复验）；下一步是 Phase 0 关闭复验 |
+| 当前子阶段 | 批次 C：关闭复审 C1 已完成（结论 **`FIX_BEFORE_CLOSE`**）；C2a 已固化 C1 报告并起草 ADR-0018 / 0019；C2b 已将两份 ADR **Accepted**；C2c / C2d 已实施 ADR-0018 / 0019；C3 修复后关闭复验结论 **`READY_FOR_HUMAN_CONSTITUTION_GATE`**；C4a 已固化 C3 报告并起草 ADR-0020（Constitution 1.0.0，**Proposed**）；下一步 Codex 复核后依已记录授权执行 C4b |
 | 总体状态 | 🔄 进行中 |
 | 最后更新时间 | 2026-09-24 |
 
@@ -19,8 +19,10 @@ B3 的剩余遗漏已由 Codex 裁决（D-17 ~ D-25）并写成 ADR-0011 ~ 0017�
 ADR-0011（生命周期主体 / 授权 / 时间）、ADR-0012（信息流白名单与不可覆盖的 `kind`）、ADR-0013（确定性判定函数与拒绝 NaN / ±Inf）、ADR-0014（Profile 普适结构不变量）、ADR-0015（审计身份类型与版本绑定）与 ADR-0016（`LlmCall` 内容绑定）的契约代码均已实施并由 Codex 独立复验（ADR-0016 = `1ad9f59`）。
 ADR-0017 是**方案 B 的交付节奏**，其实质交付（`05-plugin.md` §3、`02-domain.md` §4、`core/contracts/README.md`、roadmap 跨 Phase 规则）已在接受 ADR 的 docs-only 提交 `2ff1798` 中完成；批次 7 只做一致性验收与状态收口，按 ADR 不产生任何 Provider 代码，`core/contracts/` 中的 Provider Protocol 数量**仍为 0**。
 ADR-0016 关闭的是**登记结构**，内容可取回性与内容 - 哈希一致仍是存储层义务，`06-experiment.md` §2 的“完整输入输出”要求仍未完全满足。
-关闭复审 C1（基线 `fce4f81`）已完成，结论 **`FIX_BEFORE_CLOSE`**：四项工程检查全绿、Schema 逐字节一致、v1 资产零变化，但 Profile 选择规则的唯一映射可被嵌套 `schema_version` 绕过（F1，P1），另有若干文档漂移。Codex 已裁决 D-26 ~ D-31：D-26 / D-27 写成 ADR-0018 / 0019，已于 2026-09-24 **Accepted、尚未实施**，D-28 ~ D-31 登记为开放问题。报告见 `docs/reviews/2026-09-24-phase0-closing-review-c1.md`。
-Phase 0 **尚未关闭**，研究宪法仍是草案；复审通过也**不等于**自动批准 Constitution 或关闭 Phase 0。
+关闭复审 C1（基线 `fce4f81`）已完成，结论 **`FIX_BEFORE_CLOSE`**：四项工程检查全绿、Schema 逐字节一致、v1 资产零变化，但 Profile 选择规则的唯一映射可被嵌套 `schema_version` 绕过（F1，P1），另有若干文档漂移。Codex 已裁决 D-26 ~ D-31：D-26 / D-27 写成 ADR-0018 / 0019，已 **Accepted 并分别在 C2c / C2d 实施**，D-28 ~ D-31 登记为开放问题。报告见 `docs/reviews/2026-09-24-phase0-closing-review-c1.md`。
+修复后关闭复验 C3（基线 `4a2951a`）结论 **`READY_FOR_HUMAN_CONSTITUTION_GATE`**：无 P0 / P1 / P2，F1 / F3 / F5 已修复，1433 passed、四项检查全绿、Schema 逐字节一致、v1 资产零变化；报告见 `docs/reviews/2026-09-24-phase0-closing-review-c3.md`。
+唯一未满足的 Phase 0 验收项是 Constitution 1.0.0：ADR-0020 提出原则正文零变化的发布，Raphael 已于 2026-09-24 给出覆盖该发布及 Phase 0 收口（关闭、fast-forward 合并 main、轻量 tag）的持续授权（来源与限定见 ADR-0020）；ADR-0020 暂为 Proposed 只为保留审计顺序。
+Phase 0 **尚未关闭**，研究宪法当前仍是 `0.2.0-draft`，将在 C4b 按 ADR-0020 发布为 1.0.0。
 验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`；任务方案见 `docs/reviews/2026-09-23-opus-supervision-plan.md`。
 
 ## 2. 当前进度
@@ -98,8 +100,9 @@ Phase 0 **尚未关闭**，研究宪法仍是草案；复审通过也**不等于
 - ✅ C2b（docs-only）已完成：ADR-0018 / 0019 **Accepted**
 - ✅ C2c：ADR-0018 已实施——三类显式语义身份 API（`ProfileSelectionKey.selection_identity()`、`Ref.target_identity()`、`GitCodeRevision.code_identity()`），选择规则判重与 `select()` 同源，4 处生命周期 / LIVE subject 比较与部署代码修订比较改用语义身份，`research_class` 共用 `RESEARCH_CLASS_PATTERN`；red 43 failed / 32 passed → green 75 passed；全量 1379 passed，Ruff / format / mypy 全绿；8 份 current Schema 仅 `research_class` 的 `minLength: 1` → `pattern`；v1 三条冻结路径零差异；Codex 以下达 C2d 确认 `9581773` 复验通过（复验明细未写入仓库）
 - ✅ C2d：ADR-0019 已实施——`LifecycleTransition.evidence` 必填、至少一项、每项去空白后非空（`EvidenceRef`），覆盖全部 18 条合法边；不做自报职责分离、不核验证据存在性；red 31 failed / 23 passed → green 54 passed；全量 1433 passed，Ruff / format / mypy 全绿；2 份 current Schema（`LifecycleTransition`、`LifecycleHistory`）：`evidence` 进入 required、`minItems: 1`、元素 `minLength: 1`、去掉 `default: []`，类描述同步；v1 三条冻结路径零差异；**待 Codex 独立复验**
-- ⏭️ 下一步：Codex 复验 C2d 后做 Phase 0 关闭复验；Phase 0 仍未关闭
-- ⏸️ Constitution 1.0.0 批准、Phase 0 正式关闭、main 合并、tag 均未授权（复审通过也不自动构成这些批准）
+- ✅ C3（只读）：修复后关闭复验，结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`，无 P0 / P1 / P2，4 项 P3（C2c / C2d 由同一 Claude 会话实现，C3 独立性有限，已在报告中说明）
+- ✅ C4a（docs-only）：固化 C3 报告；起草 ADR-0020（Proposed）；修正 C3 P3-1 状态漂移；`02-domain.md` §3.7 写明字符串校验的运行时 / Schema 边界（C3 P3-2）
+- ⏭️ 下一步：Codex 复核 ADR-0020 文本 → C4b 接受 ADR-0020 并发布 Constitution 1.0.0 → C5 关闭 Phase 0、fast-forward 合并 main、轻量 tag `phase-0-complete`；三步均已在 Raphael 2026-09-24 持续授权范围内，不需要再次答复
 
 Codex 在 `cd84a4e` 上最终复验的实际结果：
 `pytest` 545 passed、`ruff check` All checks passed、`ruff format --check` 94 files already formatted、
@@ -111,8 +114,8 @@ Codex 在 `cd84a4e` 上最终复验的实际结果：
 
 ### 我（Raphael）需要做
 
-- 关闭复审 C1 已给出结论 `FIX_BEFORE_CLOSE`；修复 ADR-0018 / 0019 已由 Codex 依授权接受，接下来是实施，**现在无需我操作**
-- 修复完成并复验后，再由我决定：研究宪法 `docs/research/constitution.md` 是否批准为 1.0.0、Phase 0 是否正式关闭、是否合并 main 与打 tag（复审通过不会自动完成其中任何一项）
+- 已于 2026-09-24 给出"授权所有"的持续授权；Codex 判定其覆盖原则零变化的 Constitution 1.0.0 发布与 Phase 0 收口（关闭、fast-forward 合并 main、轻量 tag），**现在无需我操作**
+- 若将来要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，仍需要我对具体内容单独批准
 - 决定远程仓库位置（不阻塞 Phase 0，但阻塞 PR / CI）
 
 ### Claude Code 需要做
@@ -134,9 +137,11 @@ Codex 在 `cd84a4e` 上最终复验的实际结果：
 - 已批准且已完成：C2a（docs-only）—— 固化 C1 报告、起草 ADR-0018 / 0019（Proposed）、登记 D-28 ~ D-31、修正 F6 文档漂移
 - 已批准且已完成：C2b（docs-only）—— 按 Codex 最终裁决补齐 ADR-0018 的 `GitCodeRevision` 代码身份与比较点盘点，两份 ADR 置为 Accepted
 - 已批准且已完成：C2c —— 实施 ADR-0018（独立 commit，Codex 已确认复验）
-- 已批准且已完成：C2d —— 实施 ADR-0019（独立 commit，待 Codex 复验）
-- 下一步（需 Codex 授权）：Phase 0 关闭复验
-- 未批准：Constitution 批准、Phase 0 正式关闭、其他 Phase、环境安装、main 合并与 tag
+- 已批准且已完成：C2d —— 实施 ADR-0019（独立 commit）
+- 已批准且已完成：C3 —— 修复后只读关闭复验（`READY_FOR_HUMAN_CONSTITUTION_GATE`）
+- 已批准且已完成：C4a（docs-only）—— 固化 C3 报告、起草 ADR-0020（Proposed）、修正状态漂移
+- 下一步（Codex 复核 ADR-0020 后）：C4b 接受 ADR-0020 并发布 Constitution 1.0.0；再 C5 关闭 Phase 0、fast-forward 合并 main、轻量 tag
+- 未批准：其他 Phase、环境安装、任何原则或阈值变化、实盘
 
 ## 6. 当前待决策
 
@@ -192,11 +197,10 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 | D-30 | C-L5 `embargo >= 最长 Outcome horizon` 的跨对象校验执行点 | Phase 4 前 |
 | D-31 | C-L4 历史可交易标的池、上市 / 下架有效期及 Instrument 表达 | Phase 1 前 |
 
-**批准研究宪法 1.0.0**（仍未满足；已不是唯一关闭条件）
-- 问题：是否把 `docs/research/constitution.md` 从 0.2.0-draft 批准为 1.0.0。
-- 为什么需要决定：验收标准写明"Constitution 状态为 Approved"；这是人工决定，Claude 不能代批。
-- 可选方案：批准 / 要求修改后再批准。
-- 推荐方案：先处理关闭阻塞，再审阅九章原则；不引入任何数值阈值。
+**研究宪法 1.0.0**（已有 Raphael 持续授权；ADR-0020 处于 Proposed 审计阶段）
+- 内容：把 `docs/research/constitution.md` 从 0.2.0-draft 发布为 1.0.0 / Approved，原则正文零变化、不加任何数值阈值，只前向适用（[ADR-0020](docs/adr/0020-approve-research-constitution-v1.md)）。
+- 授权：Raphael 2026-09-24"授权所有"；限定为原则零变化，不含实盘 / 资金 / 风险预算。
+- 下一步：Codex 复核 ADR-0020 文本后执行 C4b，无需新的人工输入。
 
 **远程仓库位置**（不阻塞 Phase 0；阻塞 PR / CI 流程）
 - 问题：是否在 GitHub 建立远程仓库，私有还是公开，仓库名用什么。
@@ -208,7 +212,9 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 
 ## 7. 当前风险
 
-- ⚠️ 关闭复审 C1 结论为 `FIX_BEFORE_CLOSE`：F1 / F3 已由 ADR-0018 实施修复；F5 已由 ADR-0019 实施修复（证据只保证结构非空，真实性仍待未来 Registry / Control Plane）；尚待关闭复验
+- ⚠️ C1 的 F1 / F3 / F5 已由 ADR-0018 / 0019 修复并经 C3 复验；证据只保证结构非空，真实性、`approved_by` 权限与职责分离仍待未来 Registry / 授权服务
+- ⚠️ JSON Schema 无法表达运行时的首尾空白去除：纯 Schema 消费者对带空白的原始输入可能与运行时判断不同，权威校验必须经过运行时模型（`02-domain.md` §3.7）
+- ⚠️ C3 的独立性有限（C2c / C2d 与 C3 出自同一 Claude 会话）：Codex 的复核是最终把关
 - ⚠️ `venue` / `symbol` / `timeframe` 仍区分大小写且不做规范化（ADR-0018 D-26.4 的明确边界）：Adapter 产出规范值是未来义务
 - ⚠️ `read_v1` 只在输入是完整的 v1 持久化规范载荷时才复现历史身份；省略默认字段的载荷会得到不同旧哈希（F2，已写入 10-migration.md）
 - ⚠️ ADR-0016 之后 `LlmCall` 只保证**登记结构**完整：契约层打不开 `uri`，因此内容是否可取回、
@@ -256,21 +262,21 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | C3 修复后只读复验结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`；C4a docs-only：固化 C3 报告，起草 ADR-0020（Constitution 1.0.0，原则零变化，Proposed），修正状态漂移，`02-domain.md` §3.7 写明字符串校验的运行时 / Schema 边界 | Phase 0 唯一剩余验收项是 Constitution 1.0.0；Raphael 持续授权已记录；下一步 Codex 复核后 C4b → C5；未改代码 / 测试 / Schema / Constitution |
 | 2026-09-24 | C2d：实施 ADR-0019（`LifecycleTransition.evidence` 必填、至少一项、每项非空，覆盖全部合法边）；新增 `tests/test_lifecycle_evidence.py`（red 31 failed → green 54 passed）；既有测试 helper 补测试证据 | F5 修复；全量 1433 passed；2 份 current Schema 变化；不做自报职责分离；v1 资产零差异；待 Codex 复验；下一步 Phase 0 关闭复验 |
 | 2026-09-24 | C2c：实施 ADR-0018（三类语义身份 API；选择规则判重与查询同源；生命周期 / LIVE subject 与部署代码修订按语义身份比较；`research_class` 共用 `RESEARCH_CLASS_PATTERN`）；新增 `tests/test_semantic_identities.py`（red 43 failed → green 75 passed） | F1 / F3 修复；全量 1379 passed；8 份 current Schema 只多了 `research_class` pattern；全局 `==` 与内容哈希不变；v1 资产零差异；待 Codex 复验；下一步 ADR-0019 |
 | 2026-09-24 | C2b docs-only：按 Codex 最终裁决补齐 ADR-0018（第三类语义身份 `GitCodeRevision` = `(commit_oid, tree_oid)`，`DeploymentRecord` 与 `EquivalenceCheck` 按代码身份比较；`core/` 跨对象比较点完整盘点），ADR-0018 / 0019 置为 Accepted | 修复方案已正式接受但**尚未实施**；未动代码 / 测试 / Schema；下一步 0018 → 0019 串行实施；D-28 ~ D-31 仍开放；Phase 0 仍未关闭 |
 | 2026-09-24 | 关闭复审 C1 完成（结论 `FIX_BEFORE_CLOSE`）；C2a docs-only：固化 C1 报告，起草 ADR-0018（D-26 语义身份）与 ADR-0019（D-27 证据最小结构）为 Proposed，登记 D-28 ~ D-31，修正 README / roadmap / 05-plugin / 07-validation / 10-migration / failure-registry 的文档漂移 | 修复方案成文但**未实施**；未动代码 / 测试 / Schema；下一步 Codex 复核接受后串行实施；Phase 0 仍未关闭，Constitution、main 合并与 tag 仍需 Raphael |
-| 2026-09-24 | Raphael 明确授权开始 Phase 0 关闭复审（批次 C）；项目状态与长期记忆同步为「B3 已完成、批次 C 进行中」（docs-only） | 批次 C 只做关闭复审、证据矩阵、剩余问题与迁移 / 旧版本影响，不自动修代码或冻结契约；复审通过不等于批准 Constitution 或关闭 Phase 0，Constitution 1.0.0、Phase 0 关闭、main 合并与 tag 仍需 Raphael 另行批准 |
 
 ## 10. 下一阶段进入条件
 
 **Phase 0 关闭条件（roadmap 验收标准）：**
-1. ⏳ current 38 份 + legacy 35 份 Schema，逐字节一致；F1 / F5 已由 ADR-0018 / 0019 实施修复，待关闭复验
-2. ⏳ 转移图测试通过；审批与历史归属校验已由 ADR-0011 补齐、信息流方向已由 ADR-0012 补齐、判定函数与数值合法性已由 ADR-0013 补齐、Profile 结构不变量已由 ADR-0014 补齐、审计身份与版本绑定已由 ADR-0015 补齐、LLM 调用的登记结构已由 ADR-0016 补齐（内容取回与核验按 ADR 延期）；C1 确认转移图测试通过，证据最小结构待 ADR-0019 实施
+1. ✅ current 38 份 + legacy 35 份 Schema，逐字节一致；F1 / F5 已由 ADR-0018 / 0019 修复，C3 复验通过
+2. ✅ 转移图测试通过；审批与历史归属校验已由 ADR-0011 补齐、信息流方向已由 ADR-0012 补齐、判定函数与数值合法性已由 ADR-0013 补齐、Profile 结构不变量已由 ADR-0014 补齐、审计身份与版本绑定已由 ADR-0015 补齐、LLM 调用的登记结构已由 ADR-0016 补齐（内容取回与核验按 ADR 延期）；证据最小结构已由 ADR-0019 补齐（C2d），C3 复验通过
 3. ✅ 契约层无基础设施依赖（导入检查测试）
 4. ✅ 本地测试命令可运行（ADR-0019 批次后实际 1433 项通过）
 5. ✅ lint / 类型检查命令可运行（ruff + mypy strict 全绿）
-6. ⏳ 研究宪法获批为 1.0.0（**需 Raphael**）
+6. ⏳ 研究宪法发布为 1.0.0：ADR-0020 Proposed，Raphael 持续授权已记录，待 Codex 复核后执行 C4b
 
 **从 Phase 0 进入 Phase 0.5 / Phase 1，需要：**
 1. 研究宪法 0.2.0-draft 获批为 1.0.0（纯原则，不含数值）
@@ -281,10 +287,10 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
 
 > 我现在应该干什么？
 
-1. 关闭复审 C1 已完成，结论是“先修再关”（`FIX_BEFORE_CLOSE`）：主要是一个 Profile 选择漏洞和几处文档过期。修复方案（ADR-0018 / 0019）已由 Codex 接受，接下来是实施，暂时不需要你做决定。
+1. C1 发现的问题已修好，修复后复验 C3 的结论是"可以进入宪法批准门"（`READY_FOR_HUMAN_CONSTITUTION_GATE`）。你已给出"授权所有"，宪法 1.0.0 发布（原则一字不改）与 Phase 0 收口会按授权依次执行，暂时不需要你做决定。
 2. 想了解 B3 改了什么，读 §6 的裁决表即可（七份 ADR 都在 `docs/adr/`）。
-3. 之后依次是：ADR-0018、0019 已实施 → 关闭复验 → 研究宪法 1.0.0 → Phase 0 正式关闭 → 合并 main 与 tag（后三项需要你亲自批准）。
-4. Phase 0 **尚未关闭**，宪法仍是 0.2.0-draft；复审通过也不会自动批准宪法或关闭 Phase 0。
+3. 之后依次是：Codex 复核 ADR-0020 → 发布宪法 1.0.0（C4b）→ 关闭 Phase 0、合并 main、打 `phase-0-complete` tag（C5）→ 准备 Phase 1 的入口决定（Phase 1 不会自动开始）。
+4. 以后若要改动任何原则或阈值，或涉及实盘 / 资金，仍需要你对具体内容单独批准。
 
 ## 12. 给 Claude Code 的下一步
 
@@ -298,6 +304,7 @@ C1 F2：`read_v1` 算法不变，只在 `10-migration.md` 写明旧哈希的输�
    未新增 Python / 测试 / Schema，Provider Protocol 数仍为 0）。
 5. 已完成：关闭复审 C1（结论 `FIX_BEFORE_CLOSE`）与 C2a（docs-only：审查记录、ADR-0018 / 0019 起草、D-28 ~ D-31 登记、F6 文档修正）与 C2b（docs-only：ADR-0018 补齐 `GitCodeRevision`，两份 ADR Accepted）。
    已完成：C2c 实施 ADR-0018、C2d 实施 ADR-0019（各一个独立 commit）。
-   下一步：Codex 复验 C2d 并授权后做 Phase 0 关闭复验；D-28 ~ D-31 保持开放。
-6. 不批准 Constitution、不关闭 Phase 0、不合并 main、不创建 tag；复审通过不构成其中任何批准。
+   已完成：C3 修复后只读复验（`READY_FOR_HUMAN_CONSTITUTION_GATE`）与 C4a（docs-only：C3 报告、ADR-0020 Proposed、状态漂移修正）。
+   下一步：Codex 复核 ADR-0020 后执行 C4b（接受 ADR-0020、发布 Constitution 1.0.0，原则正文哈希必须不变），再执行 C5；D-28 ~ D-31 保持开放。
+6. 任何原则或阈值变化、实盘、资金、风险预算都不在现有授权内；不开启 Phase 1。
 7. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据。

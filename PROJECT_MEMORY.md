@@ -14,7 +14,8 @@
 - 当前阶段：Phase 0（Research Constitution）；契约修复 B1/B2 与 ADR-0010 纠偏已验收；
   B3 串行实现已全部完成：ADR-0011 ~ 0016 已实施并由 Codex 独立复验，ADR-0017 按方案 B
   是 docs-only 的交付节奏落地（不产生 Provider 代码）；关闭复审 C1 已完成（`FIX_BEFORE_CLOSE`），
-  修复 ADR-0018 / 0019 已 Accepted（C2b）；ADR-0018（C2c）与 ADR-0019（C2d）均已实施
+  修复 ADR-0018 / 0019 已 Accepted 并实施（C2c / C2d）；C3 复验 `READY_FOR_HUMAN_CONSTITUTION_GATE`；
+  ADR-0020（Constitution 1.0.0，原则零变化）Proposed，待 Codex 复核后执行 C4b
 
 ## 2. Current Architecture
 
@@ -43,12 +44,13 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Current Phase：Phase 0（进行中）
 - Current Subphase：批次 C。C1 独立关闭复审完成（基线 `fce4f81`，结论 `FIX_BEFORE_CLOSE`，
-  `docs/reviews/2026-09-24-phase0-closing-review-c1.md`）；ADR-0018 / 0019 经 C2a 起草、C2b 补齐后 Accepted；ADR-0018 已实施（C2c）、ADR-0019 已实施（C2d，待 Codex 复验）
-- Current Objective：Codex 复验 C2d 后做 Phase 0 关闭复验；
-  复审通过**不等于**批准 Constitution 或关闭 Phase 0
-- Current Blocker：Constitution 1.0.0、Phase 0 正式关闭、main 合并、tag 均需 Raphael 后续明确批准
-- Next Milestone：C2 修复实施与复验 → Constitution 获批 1.0.0 → Phase 0 正式关闭
-  （main 合并与 tag 需 Raphael）
+  `docs/reviews/2026-09-24-phase0-closing-review-c1.md`）→ ADR-0018 / 0019 Accepted 并实施（C2c / C2d）→
+  C3 修复后复验 `READY_FOR_HUMAN_CONSTITUTION_GATE`（`docs/reviews/2026-09-24-phase0-closing-review-c3.md`）→
+  C4a 起草 ADR-0020（Proposed）
+- Current Objective：Codex 复核 ADR-0020 → C4b 接受并发布 Constitution 1.0.0（原则正文哈希不变）→
+  C5 关闭 Phase 0、`git merge --ff-only` 到 main、轻量 tag `phase-0-complete`
+- Current Blocker：无；Raphael 2026-09-24"授权所有"已覆盖上述三步（限定：原则零变化；不含实盘 / 资金 / 风险预算）
+- Next Milestone：Phase 0 关闭；Phase 1 不自动开始，先准备入口 ADR
 
 ## 5. Active Decisions
 
@@ -110,6 +112,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   不做自报职责分离，不核验证据存在性。
 - D-28 ~ D-31 为**已登记的开放问题**（不选方案）：D-28 修订数据语义、D-31 历史标的池（Phase 1 前）；
   D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）。
+- ADR-0020（**Proposed**）：Constitution `0.2.0-draft` → `1.0.0 / Approved`，只改页首版本 / 状态与修改历史，
+  第一 ~ 九章正文哈希必须保持 `4d603d62…259cd`；只前向适用；四道顺序门（发布 → 关闭 → ff 合并 → 轻量 tag）。
+- Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖
+  原则零变化的 Constitution 1.0.0 发布与 Phase 0 收口；任何原则或阈值变化、实盘、资金、风险预算不在内。
 
 ## 6. Active Constraints
 
@@ -155,6 +161,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   复现历史身份，读取器不补写默认字段（C1 F2）
 - 生命周期证据只保证结构非空：存在性、内容是否支持结论、`approved_by` 真实性与职责分离属未来授权服务；
   `venue` / `symbol` / `timeframe` 区分大小写、不做规范化（ADR-0018 边界）
+- JSON Schema 无法表达运行时的首尾空白去除，权威校验必须经过运行时模型（02-domain.md §3.7）
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
 
 ## 8. Important Historical Context
@@ -189,4 +196,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   未合并 main、未创建 tag；验收记录见 `docs/reviews/2026-09-23-b1-b2-acceptance.md`；
   C1 关闭复审在 `fce4f81` 上实跑 1304 passed 与三项检查全绿，结论 `FIX_BEFORE_CLOSE`（C2a / C2b 为 docs-only）；
   C2c（ADR-0018，`9581773`）实跑 1379 passed，Codex 以下达 C2d 确认复验通过（明细未写入仓库）；
-  C2d（ADR-0019）实跑 1433 passed 与三项检查全绿，**尚待 Codex 独立复验**，复验前不替换上面的恢复点
+  C2d（ADR-0019，`4a2951a`）实跑 1433 passed；C3 在 `4a2951a` 上只读复验（1433 passed、三项检查全绿、
+  Schema 逐字节一致、v1 零差异）结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`，Codex 据此下达 C4a。
+  C3 由实现同一会话完成、Codex 复验明细未写入仓库，因此上面的恢复点仍保留 `1ad9f59`；
+  C5 的 `phase-0-complete` tag 将成为下一个稳定恢复点

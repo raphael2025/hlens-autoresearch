@@ -25,6 +25,7 @@
 | [0017](0017-provider-delivery-schedule.md) | Provider 接口的交付节奏（D-24，方案 B） | Accepted（2026-09-24，Codex 依 Raphael 授权批准） |
 | [0018](0018-contract-value-semantic-identities.md) | 契约值对象的语义身份（D-26） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2c） |
 | [0019](0019-lifecycle-evidence-minimum.md) | 生命周期证据的最小结构（D-27） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2d） |
+| [0020](0020-approve-research-constitution-v1.md) | 发布 Research Constitution 1.0.0（原则零变化） | Proposed（2026-09-24，C4a；待 Codex 复核后依已记录授权执行 C4b） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -41,7 +42,12 @@
 > 结论 `FIX_BEFORE_CLOSE`）的 Codex 裁决 D-26 / D-27，由批次 C2a 起草、C2b 补齐
 > （ADR-0018 增加 `GitCodeRevision` 代码身份与 `core/` 比较点完整盘点）后于 2026-09-24 **Accepted**。
 > ADR-0018 已于 C2c 实施、ADR-0019 已于 C2d 实施（ADR 正文中的"尚待实施"是接受时的状态，正文不回写）；
-> 下一步是 Phase 0 关闭复验。
+> 修复后关闭复验 C3 已完成，结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`
+> （[审查记录](../reviews/2026-09-24-phase0-closing-review-c3.md)）。
+>
+> ADR-0020 提出把 Constitution 从 `0.2.0-draft` 发布为 `1.0.0`，原则正文零变化；Raphael 已于 2026-09-24
+> 给出覆盖该发布及 Phase 0 收口的持续授权（来源与限定见 ADR-0020）。ADR-0020 暂为 Proposed 只为保留
+> 审计顺序：Codex 复核文本后执行 C4b（接受并发布），再由 C5 关闭 Phase 0、fast-forward 合并 main、打轻量 tag。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -82,7 +88,7 @@
 | D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | 未决；本登记不选方案 | Phase 1 前决定 |
 
 > **编号说明**（2026-09-24 由 Codex 最终确认）：D-17 ~ D-25 连续且唯一。
-> D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份已接受、尚待实施的 ADR，
+> D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份已接受且已实施的 ADR（C2c / C2d），
 > D-28 ~ D-31 是**已登记的开放问题**，不是已决定事项。
 > [ADR-0016](0016-llmcall-content-bindings.md) 是 **D-18**（`LlmCall` 的最小完整登记，
 > 内部决定 D-18.1 ~ D-18.3）。[ADR-0014](0014-validation-profile-structural-invariants.md)
