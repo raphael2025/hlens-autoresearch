@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024 已 Accepted；A3 已由 Codex 复核推送，当前只批准 Claude B1；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
+| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024、0026、0027 已 Accepted；A3～D2 与 D3A 设计门已由 Codex 验收；当前只开放 D3B（D3C～D3E 依次待前一批验收）；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）
@@ -95,7 +95,7 @@ flowchart TD
 | 6 | Collector / Storage / Catalog Protocol + DTO + provider-agnostic contract tests 先于任何实现 | 提交顺序；实现提交前 contract tests 已存在 | B3 |
 | 7 | `file://` StorageAdapter：staging → 校验 → 同文件系统原子发布；不拼接绝对路径 | B3 Storage contract tests 对实现通过 | C1 |
 | 8 | PyIceberg SQL Catalog on PostgreSQL，独立库 / role；集成测试用独立 PostgreSQL test database（并发提交、快照、时间旅行、重启恢复）；SQLite 只经测试 fixture 注入且不计入集成证据 | 集成测试报告；catalog 库中无行情行 | C2 |
-| 9 | 03-data.md §7.1 八张表按冻结名与初始分区创建；partition-spec 演进有等价测试；batch id 幂等 commit | 表 / 分区检查与重试测试 | C3 |
+| 9 | 03-data.md §7.1 首切片八张表按冻结名与初始分区创建（ADR-0027 的四张 REST 表属 D3B）；partition-spec 演进有等价测试；batch id 幂等 commit | 表 / 分区检查与重试测试 | C3 |
 | 10 | 公共归档下载只访问 `HLENS_BINANCE_ARCHIVE_BASE_URL`；先过 `.CHECKSUM` 再经 staging 原子交付；checksum 失败不交付；**不含**解析或 revision 语义 | 下载壳测试与端点静态检查 | D0 |
 | 11 | parser `binance.spot.archive.parser@1.0.0`：按文件覆盖日期选单位；解析时间全部落在 `[coverage_start, coverage_end)` 内（零容差）；任一例外整文件拒绝并写质量事件 | 2024-12-31 / 2025-01-01 对照与人为错单位 / 越界测试 | D1 |
 | 12 | append-only revision：重放幂等、归档替换追加、`arrival_seq` 不决定优先级、竞争修订 fail closed、崩溃后恢复 | ADR-0023 / 0022 验收矩阵的写入与恢复各项 | D2 |
@@ -135,21 +135,21 @@ flowchart TD
 #### D3（REST 补尾）子批次拆分
 
 验收 #13 的前置是 **D3A 设计门**：现有八张表不能诚实承载 REST 的 Raw 三跳 lineage 与跨通道 precedence，
-拓扑与语义由 [ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md) 决定（四张 additive 表；D-33 已由 Codex 选 A，
-随 ADR 整体接受生效）。**ADR-0027 未被接受前，D3B 及其后不得开工。**
-顺序固定 D3A → D3B → D3C → D3D → D3E，每批一个可恢复 commit，门未过不得进入下一批。
+拓扑与语义由 [ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md) 决定（Accepted 2026-09-25：四张 additive 表；D-33 方案 A 已生效）。
+D3A 设计门已通过（[验收记录](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)），**当前只开放 D3B**。
+顺序固定 D3A → D3B → D3C → D3D → D3E，每批一个可恢复 commit，门未过不得进入下一批；D3C～D3E 各自等前一批经 Codex 验收后开放。
 每批交付一个**完整**的不变量：后一批只消费前一批已验收的结果，不回头补前一批的半个语义。
 下表 "#" 指 ADR-0027 验收矩阵编号。
 
 | 子批 | 执行 | 交付 | 文件边界 | 可观察门 / 测试矩阵 | 恢复点 |
 |---|---|---|---|---|---|
-| D3A / D3A-R1 | Claude | docs-only：ADR-0027、REST 官方证据、`03-data.md` §7.6、本拆分；R1 按 Codex 复核关闭 F1～F8 并改为四表方案 | `docs/**`、`PROJECT_STATUS.md`、`PROJECT_MEMORY.md` | docs 一致性、全量 pytest / ruff / format / mypy / `uv lock --check` 全绿；无实现代码、无 Schema / 契约 / 八表 / 依赖 / settings 变化 | D3A-R1 commit |
+| D3A / D3A-R1 | Claude | docs-only：ADR-0027、REST 官方证据、`03-data.md` §7.6、本拆分；R1 按 Codex 复核关闭 F1～F8 并改为四表方案 | `docs/**`、`PROJECT_STATUS.md`、`PROJECT_MEMORY.md` | docs 一致性、全量 pytest / ruff / format / mypy / `uv lock --check` 全绿；无实现代码、无 Schema / 契约 / 八表 / 依赖 / settings 变化；✅ Codex 验收，ADR-0027 Accepted | D3A-R1 `ed526f7` + 接受门 commit |
 | D3B | Claude | 四张新表定义 + REST 身份规则（页身份、键、payload hash、`edge_id`、`arrival_seq` 区间）+ REST availability / precedence policy + `binance.spot.delivery-channel@1.0.0` 纯函数（投影、相等判定、证据构造）；**无 HTTP、无 store、无写入** | `infrastructure/catalog/phase1_tables.py`（仅追加）、`infrastructure/revision/rest_identity.py`、`rest_availability.py`、`rest_precedence.py`、`channel_precedence.py`（均新增）、`infrastructure/revision/__init__.py`（导出）、对应 `tests/` | #1、#7（纯函数部分）、#9、#20（policy）、#21（REST 区间常量）；八张冻结表定义哈希与 `IDENTITY_HASH` 回归断言；REST 与归档 `observation_key` 跨模块一致；投影向量（相等、各字段不等、缺字段、超定义域、毫秒 / 微秒 kline 等价、亚毫秒 aggTrade 不等）；`edge_id` 不含时间；真实 PostgreSQL 建 12 表与重启幂等 | D3B commit |
 | D3C | Claude | 严格 decoder `binance.spot.rest.decoder@1.0.0`：纯函数（正文字节 + 规范页身份 + `retrieved_at` + 上一页摘要）→ 元素 + 页摘要（answered 区间、终止原因、续页查询）或拒绝 | `infrastructure/parser/binance_rest.py`、`infrastructure/parser/__init__.py`（导出）、`tests/` | #11 ～ #13 的 decoder 部分：ADR §6 envelope 表逐项正反例；越出目标窗口的合法元素**不**被拒；未结束 K 线；单位错由下界 / `retrieved_at` 上界捕获；截断 / 超长 / 重复键 / 多余字段 | D3C commit |
 | D3D | Claude | REST collector：结构化 allowlist、按 D3C 分页、不可变 page / collection checkpoint、同 `request_id` 重放不联网、`Retry-After` / 418 / 5xx / 预算、四项新设置 | `infrastructure/collector/binance_rest.py`、`infrastructure/collector/__init__.py`、`infrastructure/settings.py`（四项新字段）、`tests/infrastructure/test_settings.py`、`tests/` | #10、#11 ～ #13 的 collector 部分、#14（含既有 `CollectorAdapter` contract suite 与"夹具第二次返回不同字节"）、#15 的崩溃点 1 / 2、#16 ～ #19；恶意 URL / 额外参数 / 重定向探针；全程 mock transport，另做一次只读 smoke | D3D commit |
 | D3E | Claude | REST revision store（response + 元素 revision、REST `arrival_seq` 分配、恢复）+ 跨通道 reconciler（写 `raw.binance_spot_precedence_evidence`，以证据表为幂等 checkpoint）+ 跨通道 graph 的 range guard | `infrastructure/revision/rest_store.py`、`infrastructure/revision/channel_reconcile.py`（均新增）、`infrastructure/revision/__init__.py`、`tests/`；**不改** `identity.py` 与 D2 `store.py` | #2 ～ #8、#11 / #13 的 store 部分、#15 崩溃点 3、#20、#21；两种到达顺序 × 四段 `knowledge_cutoff`；投影不等 / 无对侧 / 重复比较 / reconciler 重跑；真实 PostgreSQL 全量 | D3E commit |
 
-依赖：D3B ← ADR-0027 接受；D3C ← D3B（页身份与 decoder 标识符）；D3D ← D3C（分页的续页游标与终止判定来自严格 decoder，
+依赖：D3B ← ADR-0027 接受（已满足）；D3C ← D3B（页身份与 decoder 标识符）；D3D ← D3C（分页的续页游标与终止判定来自严格 decoder，
 避免 collector 复制第二套解码逻辑）；D3E ← D3B + D3C + D3D。验收 #22（三跳 lineage 端到端）属批次 E / F。
 D3B～D3E 均触及身份、双时间、重放或 precedence 语义，由 Claude 执行、Codex 独立复核。
 

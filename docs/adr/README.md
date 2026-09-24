@@ -26,13 +26,13 @@
 | [0018](0018-contract-value-semantic-identities.md) | 契约值对象的语义身份（D-26） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2c） |
 | [0019](0019-lifecycle-evidence-minimum.md) | 生命周期证据的最小结构（D-27） | Accepted（2026-09-24，Codex 依 Raphael 授权批准）；已实施（C2d） |
 | [0020](0020-approve-research-constitution-v1.md) | 发布 Research Constitution 1.0.0（原则零变化） | Accepted（2026-09-24，Raphael 明确批准，经 Codex 复核于 C4b 执行）；已实施 |
-| [0021](0021-phase1-local-data-infrastructure.md) | Phase 1 本地数据基础设施（D-01、D-02、D-10） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
-| [0022](0022-phase1-market-and-execution-scope.md) | Phase 1 市场与执行边界（D-08） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
-| [0023](0023-bitemporal-revision-data.md) | 双时间与修订数据的 point-in-time 语义（D-28） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
-| [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；尚待实施 |
+| [0021](0021-phase1-local-data-infrastructure.md) | Phase 1 本地数据基础设施（D-01、D-02、D-10） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；核心本地基础设施已实施（C1 `file://` StorageAdapter、C2 PostgreSQL-backed PyIceberg Catalog、C3 生产表；未运行 NATS） |
+| [0022](0022-phase1-market-and-execution-scope.md) | Phase 1 市场与执行边界（D-08） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；归档与范围部分已实施（D0 下载、D1 解析、D2 revision；无交易能力）；REST 补尾待 D3（ADR-0027） |
+| [0023](0023-bitemporal-revision-data.md) | 双时间与修订数据的 point-in-time 语义（D-28） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；契约（B1）与 Raw 归档 revision 部分已实施（D2）；Canonical（E）与 PIT / manifest 执行（F）部分待实施 |
+| [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；契约与设计已交付（B2）；listing 历史采集与 universe 执行（E / F）待实施 |
 | [0025](0025-private-github-remote-and-reviewed-progress-push.md) | 私有 GitHub 远程与复核后逐进度推送 | Accepted（2026-09-24，Codex 依 Raphael 明确指示批准；A2r 记录）；取代 ADR-0004 第 3 条 |
 | [0026](0026-pyiceberg-core-extra-for-day-partitions.md) | 为按天分区写入加入 PyIceberg 官方 extra `pyiceberg-core`（D-32） | Accepted（2026-09-24，Codex 依 Raphael 授权裁决方案 A；D32 记录）；已实施（Cursor 锁依赖 `e40c285`、Claude C3-R1 转正 xfail，随 C3 验收） |
-| [0027](0027-rest-raw-source-and-element-revisions.md) | REST 补尾的 Raw source / element revision、通道等价 precedence 与三跳 lineage（D-33） | **Proposed**（2026-09-25，D3A 起草；D3A-R1 按 Codex 复核修正为四表方案，待再次复核）；D-33 已由 Codex 选 A，随本 ADR 整体接受生效；未获批准前不得开始 REST 实现 |
+| [0027](0027-rest-raw-source-and-element-revisions.md) | REST 补尾的 Raw source / element revision、通道等价 precedence 与三跳 lineage（D-33） | Accepted（2026-09-25，Codex 依 Raphael 授权批准；复核 D3A-R1 `ed526f7` PASS，[审阅记录](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)）；D-33 方案 A 生效；尚待实施（D3B 起逐批） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
@@ -56,7 +56,7 @@
 > 依据 Raphael 2026-09-24 的持续授权（来源与限定见 ADR-0020），C4a 以 Proposed 提出、Codex 复核后于 C4b 接受并发布。
 > 剩余顺序门已由 C5 执行：Phase 0 正式关闭、`phase/0` fast-forward 合并进 `main`、轻量 tag `phase-0-complete`。
 > **Phase 0 已完成**；契约 `2.0.0` 随合并视为已发布（D-25：此后破坏性变化必须升 major）。Phase 1 已于 2026-09-24 开启，
-> D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022、D-28 → ADR-0023、D-31 → ADR-0024（A1 起草、A1r / A1r2 按 Codex 两次复核退回意见修正，Codex 复核 A1r2 提交 `6d53cf5` 结论 PASS 后于 2026-09-24 **Accepted**，由 A2 记录并同步冻结文档 `03-data.md`；**尚未实施**）。架构决策子阶段已关闭；实施按 roadmap Phase 1 的恢复序列逐批进行，Provider 接口 / DTO / Schema / contract tests 先于实现（ADR-0017）。
+> D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022、D-28 → ADR-0023、D-31 → ADR-0024（A1 起草、A1r / A1r2 按 Codex 两次复核退回意见修正，Codex 复核 A1r2 提交 `6d53cf5` 结论 PASS 后于 2026-09-24 **Accepted**，由 A2 记录并同步冻结文档 `03-data.md`；实施进度见上表各行，均为部分实施，不宣称整份 ADR 完成）。架构决策子阶段已关闭；实施按 roadmap Phase 1 的恢复序列逐批进行，Provider 接口 / DTO / Schema / contract tests 先于实现（ADR-0017）。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -91,22 +91,22 @@
 | D-25 | **这批收窄是否需要升 major**：`2.0.0` 尚未发布（只在 `phase/0`、未合并 `main`、无 tag / 远程发布 / v2 数据登记）。 | Codex 裁决：继续属于未发布的 `2.0.0`，不升 major；发布后做同类改变必须升 major | Phase 0；Accepted（2026-09-24），写入 ADR-0011 ~ 0016 各自的版本小节 |
 | D-26 | **契约值对象的语义身份**：Profile 选择键、`Ref` 目标与 Git 代码修订的身份是否包含嵌套信封 `schema_version`；选择规则的判重与查询是否同源（C1 F1 / F3）。 | Codex 裁决 → [ADR-0018](0018-contract-value-semantic-identities.md)：三类显式语义身份，全局相等与内容哈希不变 | Phase 0；Accepted（2026-09-24），已实施（C2c） |
 | D-27 | **生命周期证据的最小结构**：每条转移是否必须带非空证据引用；是否在契约层要求职责分离（C1 F5）。 | Codex 裁决 → [ADR-0019](0019-lifecycle-evidence-minimum.md)：证据至少一项且非空；**不**做自报职责分离 | Phase 0；Accepted（2026-09-24），已实施（C2d） |
-| D-28 | **迟到 / 修订数据的 point-in-time 语义**：可用时间如何表达数据的迟到与修订（revision / as-of / vintage）；`event_time + declared_latency` 是否足够（C1 F4，原 R08）。 | Codex 裁决 → [ADR-0023](0023-bitemporal-revision-data.md)：双轴六字段、append-only revision、maximal-head PIT | Phase 1；Accepted（2026-09-24），尚待实施 |
+| D-28 | **迟到 / 修订数据的 point-in-time 语义**：可用时间如何表达数据的迟到与修订（revision / as-of / vintage）；`event_time + declared_latency` 是否足够（C1 F4，原 R08）。 | Codex 裁决 → [ADR-0023](0023-bitemporal-revision-data.md)：双轴六字段、append-only revision、maximal-head PIT | Phase 1；Accepted（2026-09-24）；契约与 Raw 归档 revision 已实施，Canonical / PIT 待实施 |
 | D-29 | **`apps/worker` 与研究代码的边界**：01-system.md 让 worker 运行实验，而 `apps/` 不得 import `research/`；实验如何被运行而不越过边界（C1 F4，原 R15）。 | 未决；本登记不选方案 | 首次实现 worker / 实验运行前决定，最迟 Phase 5 前 |
 | D-30 | **C-L5 的跨对象校验执行点**：`embargo >= 最长 Outcome horizon` 需要同时看到 Profile 与 Outcome，由谁、在何时校验（C1 F4）。 | 未决；本登记不选方案 | Phase 4 前决定 |
-| D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | Codex 裁决 → [ADR-0024](0024-historical-tradable-universe.md)：静态 `Instrument` + 双轴 listing 历史 + 版本化 `UniverseSelectionSpec` | Phase 1；Accepted（2026-09-24），尚待实施（依赖 ADR-0023） |
+| D-31 | **C-L4 历史可交易标的池**：上市 / 下架有效期如何表达，`Instrument` 是否需要有效期（C1 F4）。 | Codex 裁决 → [ADR-0024](0024-historical-tradable-universe.md)：静态 `Instrument` + 双轴 listing 历史 + 版本化 `UniverseSelectionSpec` | Phase 1；Accepted（2026-09-24）；契约已交付，listing 历史与 universe 执行待实施（依赖 ADR-0023） |
 | D-32 | **按天分区写入缺依赖**：锁定的 PyIceberg 0.12 写入 `day(...)` 分区需要官方 extra `pyiceberg-core`，它不在 03-data.md §6.1 的依赖中，四张冻结表无法写入（C3 发现）。 | Codex 裁决：方案 A → [ADR-0026](0026-pyiceberg-core-extra-for-day-partitions.md)：加入该 extra；不改分区（B）、不改写入路径（C） | Phase 1；Accepted（2026-09-24），已实施（随 C3 验收） |
-| D-33 | **归档 ↔ REST 的同一观察如何汇合**：同一 `observation_key` 同时有归档交付与 REST 交付的 revision 时，按 ADR-0023 §5 是 competing heads → 数据集 fail closed。归档终将覆盖曾由 REST 补过的区间，不裁决即等于禁止 REST 补尾（D3A 发现）。 | Codex 选择方案 A → [ADR-0027](0027-rest-raw-source-and-element-revisions.md) §4：项目定义的版本化规范内容投影逐字段相等时，在独立证据表 `raw.binance_spot_precedence_evidence` 追加 evidence-only 边（归档 revision 取代 REST revision）；不等 / 不可比较则无边、fail closed；不是来源声明的先后 | Phase 1 D3；已选 A，随 ADR-0027 整体接受生效（ADR 仍 Proposed） |
+| D-33 | **归档 ↔ REST 的同一观察如何汇合**：同一 `observation_key` 同时有归档交付与 REST 交付的 revision 时，按 ADR-0023 §5 是 competing heads → 数据集 fail closed。归档终将覆盖曾由 REST 补过的区间，不裁决即等于禁止 REST 补尾（D3A 发现）。 | Codex 选择方案 A → [ADR-0027](0027-rest-raw-source-and-element-revisions.md) §4：项目定义的版本化规范内容投影逐字段相等时，在独立证据表 `raw.binance_spot_precedence_evidence` 追加 evidence-only 边（归档 revision 取代 REST revision）；不等 / 不可比较则无边、fail closed；不是来源声明的先后 | Phase 1 D3；已决定（ADR-0027 Accepted 2026-09-25），D-33 方案 A 生效；尚待实施（D3B 起） |
 
 > **编号说明**（2026-09-24 由 Codex 最终确认）：D-17 ~ D-25 连续且唯一。
 > D-26 ~ D-31 由 C1 复审后的 Codex 裁决新增，与 D-25 连续：D-26 / D-27 各对应一份已接受且已实施的 ADR（C2c / C2d），
-> D-28 / D-31 已于 2026-09-24 分别由 ADR-0023 / 0024 决定（Accepted，尚待实施）；D-29 / D-30 仍是**已登记的开放问题**，不是已决定事项。
+> D-28 / D-31 已于 2026-09-24 分别由 ADR-0023 / 0024 决定（Accepted，部分实施）；D-29 / D-30 仍是**已登记的开放问题**，不是已决定事项。
 > [ADR-0016](0016-llmcall-content-bindings.md) 是 **D-18**（`LlmCall` 的最小完整登记，
 > 内部决定 D-18.1 ~ D-18.3）。[ADR-0014](0014-validation-profile-structural-invariants.md)
 > **不是新 D 编号**：它是 **D-20 的结构合法性扩展（D-20.4）**，
 > D-20.1 ~ D-20.3 仍在 [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md)。
-> **D-32** 由 C3 发现、已由 ADR-0026 决定并实施；**D-33** 由 D3A 发现，Codex 已选方案 A（语义见
-> [ADR-0027](0027-rest-raw-source-and-element-revisions.md) §4），随该 ADR 整体接受后生效。
+> **D-32** 由 C3 发现、已由 ADR-0026 决定并实施；**D-33** 由 D3A 发现，Codex 选方案 A（语义见
+> [ADR-0027](0027-rest-raw-source-and-element-revisions.md) §4），随该 ADR 于 2026-09-25 接受而生效。
 
 ## 冲突记录
 

@@ -177,9 +177,18 @@ Canonical 层每个分区产生质量报告：缺口、重复、异常值、时�
 | `HLENS_HTTP_USER_AGENT` | `hlens-autoresearch/0.0.0` | 非空 |
 | `HLENS_BINANCE_ARCHIVE_BASE_URL` | `https://data.binance.vision` | 公共归档站点 |
 | `HLENS_BINANCE_MARKET_DATA_BASE_URL` | `https://data-api.binance.vision` | market-data-only REST base（ADR-0022） |
+| `HLENS_BINANCE_REST_MAX_PAGES_PER_COLLECT` | `200` | int，`1 ≤ n ≤ 5000`；单次 `collect` 最多**新取**的页数（checkpoint 重放不计）；用尽 → `CollectionFailed`，逻辑尝试保持可续（ADR-0027 §12） |
+| `HLENS_BINANCE_REST_MIN_REQUEST_INTERVAL_MS` | `250` | int，`50 ≤ n ≤ 60000`；相邻两次 REST 请求（含重试）的最小间隔 |
+| `HLENS_BINANCE_REST_MAX_RETRY_AFTER_SECONDS` | `60` | int，`1 ≤ n ≤ 3600`；429 的 `Retry-After`（秒）超过即 fail closed、不等待；缺失或非法视同超过；418 一律立即终止 |
+| `HLENS_BINANCE_REST_MAX_RESPONSE_BYTES` | `8388608` | int，`65536 ≤ n ≤ 67108864`；去除 content coding 后的 REST 正文上限（边解码边计数）；超过 → 失败、不发布 |
 
 ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅供测试的 adapter / factory fixture 直接注入内存 SQLite catalog，
 设置代码中**不存在**"是否在 pytest 中"之类的隐藏分支。
+
+REST 采集（ADR-0027 §12）**复用**而不另设：`HLENS_HTTP_CONNECT_TIMEOUT_SECONDS` / `HLENS_HTTP_READ_TIMEOUT_SECONDS`（与 D0 相同的
+httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 / 429 的尝试上限为 `1 + n`）、`HLENS_HTTP_USER_AGENT`、
+`HLENS_BINANCE_MARKET_DATA_BASE_URL`（必须是精确 `https://host[:port]` origin，拒绝路径 / query / 凭据，不静默改写）。
+四项 `HLENS_BINANCE_REST_*` 是运维安全参数，不是 Constitution / Validation Profile 阈值；页大小 `limit = 1000` 是页身份规则常量，不是设置。
 
 后续的 `.env.example` 只包含变量名与占位符，**不含任何凭据**；A2 不创建它。
 
@@ -187,6 +196,7 @@ ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅
 
 范围见 [ADR-0022](../adr/0022-phase1-market-and-execution-scope.md)：Binance 公共 spot、`BTCUSDT` / `ETHUSDT`、归档 aggTrades 与 1m klines。
 本节冻结首批逻辑名、分区与标识符；列级 Schema、`observation_key` 与 `revision_id` 规则由契约 / 表批次提出并随表版本化。
+2026-09-25 按 [ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md)（Accepted）additive 扩充 REST 补尾：新增四张 Raw 表与六个标识符，原八张表与原标识符不变。
 
 ### 7.1 逻辑 Iceberg 表
 
@@ -200,10 +210,16 @@ ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅
 | `canonical.instrument_listings` | listing episode revision（ADR-0024 §1 / §2） | 不分区 |
 | `quality.data_quality_reports` | 质量报告与质量事件 | 不分区 |
 | `research.dataset_manifests` | `ResearchDatasetManifest` 记录 | 不分区 |
+| `raw.binance_spot_rest_responses` | 一个 REST 响应页的 Raw source payload revision：规范页身份、响应字节对象引用、HTTP 元数据、页面解码摘要、revision 与两轴时间字段；空页、被 decoder 拒绝的完整页也是 revision（ADR-0027 §2） | 不分区 |
+| `raw.binance_spot_rest_agg_trades` | 从 REST 响应页解码的 aggTrade 元素 revision，绑定首个交付它的响应 revision | identity `symbol` + `day(event_time)` |
+| `raw.binance_spot_rest_klines_1m` | 从 REST 响应页解码的已结束 1m kline 元素 revision，绑定首个交付它的响应 revision | identity `symbol` + `day(interval_start)` |
+| `raw.binance_spot_precedence_evidence` | 独立、append-only 的完整 `PrecedenceEvidence`：稳定 `edge_id`（不含时间）、`observation_key`、两端 revision 与所在表、policy 绑定、证据、边的 `knowledge_time`、比较时固定的两侧 snapshot、投影哈希（ADR-0027 §1 / §4） | 不分区 |
 
 - **归档字节**以不可变对象存于 warehouse（经 `StorageAdapter`：staging → checksum 校验 → 同文件系统原子发布），
   由 `raw.binance_spot_archives` 引用；**不存入 PostgreSQL**，也不覆盖：同路径新 checksum = 新对象 + 新 revision。
   maintenance 不得删除任何被归档 revision 引用的对象。
+- 共 12 张 Phase 1 表：前 8 张为 A2 首切片（定义与哈希不因 ADR-0027 改变），后 4 张为 ADR-0027 的 REST additive 扩充。
+  REST 响应字节同样以不可变对象存于 warehouse（内容寻址 key），由 `raw.binance_spot_rest_responses` 引用。
 - Iceberg namespace 是存储命名，不改变契约的 `Zone` 枚举；`quality` 与 manifest 表是审计 / 元数据表，由 manifest 契约引用。
   物化 Research Dataset 表的命名随 PIT 实施批次提出，不在本清单内。
 - **分区演进**需要该表新的 partition-spec 版本与新旧 spec 查询结果的等价测试，**不是**契约变化。
@@ -221,6 +237,12 @@ ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅
 | Parser | `binance.spot.archive.parser@1.0.0` | 时间单位按**文件覆盖日期**（UTC）决定：早于 2025-01-01 为毫秒，自 2025-01-01 起为微秒；禁止逐值猜测数量级。每个文件声明覆盖 UTC 半开区间 `[coverage_start, coverage_end)`（日归档为该日，月归档为该月）；所有解析出的 aggTrades 事件时间与 kline 开盘时间必须落在区间内（零容差），任一例外即整个文件拒绝、不进 Canonical、写质量事件。单位或容差变化 = 新 parser 版本 |
 | Availability policy | `binance.spot.publication@1.0.0` | Binance spot 首发与归档替换的历史可用时间规则（ADR-0023 §2） |
 | Precedence policy | `binance.spot.archive-revision@1.0.0` | 同一归档路径不同 checksum 的 revision 之间能否证明先后；无法证明 = competing heads |
+| Source | `binance.public.spot.rest@1.0.0` | market-data-only base 的 `GET /api/v3/aggTrades` 与 `GET /api/v3/klines`（`1m`），security type NONE（ADR-0027） |
+| Decoder（parser role） | `binance.spot.rest.decoder@1.0.0` | ADR-0027 §6 的 page envelope（零容差）、声明单位（毫秒）、未结束 K 线规则、正文上限；变化 = 新版本 |
+| Availability policy | `binance.spot.rest-publication@1.0.0` | REST 全部主体 `available_time = ingest_time` + 证据缺口 |
+| Precedence policy | `binance.spot.rest-revision@1.0.0` | REST 通道内部：同内容幂等；不同内容无证据 → competing heads；从不产生边 |
+| Precedence policy | `binance.spot.delivery-channel@1.0.0` | D-33 方案 A：版本化规范内容投影逐字段相等 → evidence-only 边"归档 revision 取代 REST revision"，写入证据表；否则无边。项目政策，不是来源声明的先后 |
+| 身份规则 | `hlens.binance.spot.rest-revision-identity@1.0.0` | REST 页身份、键与 payload hash、`edge_id`、`arrival_seq` 区间（REST 自 `2**62` 起）；与归档身份规则物理隔离 |
 | Universe spec | `binance.spot.btc-eth@1.0.0` + content hash | 首切片 `UniverseSelectionSpec`：`BTCUSDT`、`ETHUSDT` spot 的 listing episode；按 ADR-0024 绑定 |
 
 **标识符冻结 ≠ 数据可信**：availability 与 precedence policy 的来源证据仍须由实施批次产出、审阅并有测试。
@@ -254,47 +276,22 @@ ADR-0021 允许的 SQLite 单元测试不经过运行时设置：测试通过仅
 单行 availability 证据缺口不在此列：该行按 §4.2 保守计算并记入 manifest（契约为 `AvailabilityEvidenceGap`，须引用 manifest 所列质量报告）。
 competing head 不是 universe 排除原因：它使构建 fail closed，不产生 manifest。
 
-### 7.6 REST 补尾的 Raw 拓扑（**提案**，[ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md) `Proposed`）
+### 7.6 REST 补尾设计摘要（[ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md)，Accepted 2026-09-25）
 
-> 本节是**提案**，不是冻结内容。ADR-0027 未被接受前，§7.1 / §7.3 / §6.2 保持原样，
-> 也**不得**开始 REST 实现（roadmap Phase 1 验收 #13 的前置设计门 D3A / D3A-R1）。接受门把本节内容
-> 并入 §7.1 / §7.3 / §6.2 并删除提案标记。
+表与标识符见 §7.1 / §7.3，设置见 §6.2；全文与验收矩阵见 ADR-0027。要点：
 
-现有八张表无法诚实承载 REST：没有 Raw source payload 表；`raw.binance_spot_agg_trades` /
-`raw.binance_spot_klines_1m` 的 `archive_revision_id` / `archive_line_number` 为必填的归档语义列；
-冻结表内嵌的 `precedence_evidence` 省略外侧新端（隐含"新端 = 本行"），无法在 REST 后到时表达"归档取代 REST"。
-ADR-0027 提出 **additive** 拓扑，归档路径一字不改：
-
-| 表（提案） | 内容 | 初始分区 |
-|---|---|---|
-| `raw.binance_spot_rest_responses` | 一个 HTTP 响应页的 Raw source payload revision：规范页身份、响应字节对象引用、HTTP 元数据、页面解码摘要、revision 与两轴时间字段（空页、被拒页也是 revision） | 不分区 |
-| `raw.binance_spot_rest_agg_trades` | 从响应页解码的 aggTrade 元素 revision，绑定首个交付它的响应 revision | identity `symbol` + `day(event_time)` |
-| `raw.binance_spot_rest_klines_1m` | 从响应页解码的已结束 1m kline 元素 revision，绑定首个交付它的响应 revision | identity `symbol` + `day(interval_start)` |
-| `raw.binance_spot_precedence_evidence` | 独立、append-only 的完整 `PrecedenceEvidence`（两端显式、稳定 `edge_id`、policy 绑定、证据、边的 `knowledge_time`、比较时固定的两侧 snapshot） | 不分区 |
-
-三跳 lineage 无需任何契约改动即可表达：
-`canonical.trades → raw.binance_spot_rest_agg_trades → raw.binance_spot_rest_responses`
-（`SelectedRevisionLineage` 只要求 `raw_table` / `source_table` 位于 `raw` namespace）。
-
-提案中的新标识符：`binance.public.spot.rest@1.0.0`（source）、`binance.spot.rest.decoder@1.0.0`（decoder）、
-`binance.spot.rest-publication@1.0.0`（availability）、`binance.spot.rest-revision@1.0.0` 与
-`binance.spot.delivery-channel@1.0.0`（precedence）、`hlens.binance.spot.rest-revision-identity@1.0.0`（身份规则）。
-REST 的元素 `observation_key` 与归档**逐字符相同**；元素 source identity 是**通道级**，分页重叠与重取天然幂等。
-
-要点（全文见 ADR-0027）：
-
-- **两种身份**：`CollectionRequest.request_id` 是一次逻辑采集尝试（重放从不可变 checkpoint 返回首次已承诺的对象，不重新联网）；
+- **三跳 lineage** 无需契约改动：`canonical.trades → raw.binance_spot_rest_agg_trades → raw.binance_spot_rest_responses`。
+  REST 元素 `observation_key` 与归档逐字符相同；元素 source identity 是通道级，分页重叠与重取天然幂等。
+- **两种身份**：`CollectionRequest.request_id` 是一次逻辑采集尝试，重放从不可变 checkpoint 返回首次已承诺的对象、不重新联网；
   规范页身份（method / origin / path / query / 声明单位 / 规则）可跨尝试相同。`CollectorAdapter` 必需协议不变。
 - **目标窗口 ≠ 页面合法性**：`[t0, t1)` 只用于停止与覆盖账；page envelope 由实际查询、排序、字段形状、声明单位与
   `retrieved_at` 上界决定，零容差。越出目标窗口的合法元素照常入 Raw。
 - **缺口诚实**：页数预算、限流、5xx、传输失败、截断、无效 JSON、envelope 违约都是 `CollectionFailed`；`SOURCE_ABSENT`
   只用于短页 / 空页之后、陈述确切查询在 `retrieved_at` 的回答。
-- **D-33（Codex 已选 A，随 ADR-0027 接受生效）**：项目定义的版本化规范内容投影逐字段相等时，
-  在证据表追加 evidence-only 边"归档 revision 取代 REST revision"；不等 / 不可比较 → 无边、fail closed。
-  这不是来源声明的先后。边的 `knowledge_time` 是首次比较并提交的本机时刻，此前两 head 可见即冲突。
+- **D-33 方案 A（已生效）**：规范内容投影逐字段相等时，在 `raw.binance_spot_precedence_evidence` 追加 evidence-only 边；
+  不等 / 不可比较 → 无边、fail closed。边的 `knowledge_time` 是首次比较并提交的本机时刻，此前两 head 都可见即冲突。
+  REST 毫秒与 2025 年起归档微秒之间，带亚毫秒位的 aggTrade 无法证明相等，一律 fail closed（ADR-0027 §4.8）。
 - **`arrival_seq`**：REST 自 `2**62` 起分配；只要求同一被聚合 graph 内唯一；归档分配与 `IDENTITY_HASH` 不变。
-- **设置提案**：新增页数上限、`Retry-After` 上限、请求最小间隔、正文字节上限四项；超时 / 重试 / UA / base URL 复用 §6.2。
+- **PIT 绑定**：使用 REST 数据的 PIT 读取必须同时绑定所读 REST 表与 `raw.binance_spot_precedence_evidence` 的 snapshot（ADR-0027 §13）。
 
-官方事实与其边界见 [证据文件](evidence/binance-spot-rest-market-data.md)（2026-09-25 检索）：
-官方**没有**给出任何 REST 响应的公开时刻，因此 availability 与归档同样保守取 `ingest_time` 并记证据缺口；
-官方**没有**声明 aggTrade ID 连续，因此缺口只能表述为"该查询下来源返回了这些元素"。
+官方事实与其边界见 [证据文件](evidence/binance-spot-rest-market-data.md)（2026-09-25 检索）。

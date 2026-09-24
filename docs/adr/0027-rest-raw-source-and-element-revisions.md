@@ -2,17 +2,19 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-25，Phase 1 D3A 起草；D3A-R1 按 Codex 复核修正；待 Codex 再次复核并另作接受门，未获批准前不得实现） |
+| 状态 | **Accepted（2026-09-25，Codex 依 Raphael 授权批准）**；尚待实施（D3B 起逐批实施）。起草与修正：D3A `7111e54` 起草，Codex 复核退回八项缺陷；D3A-R1 `ed526f7` 修正 |
 | 日期 | 2026-09-25 |
 | 决策者 | Codex（Raphael 2026-09-24 "授权所有" 的持续授权范围内） |
-| D-33 | **Codex 已选择方案 A**（项目定义的规范市场内容等价 + ADR-0022 归档为权威 backfill 通道，§4）；随本 ADR 整体接受后生效 |
+| 批准者 | Codex（依 Raphael 2026-09-24 记录的持续授权） |
+| 接受依据 | Codex 独立复核 D3A-R1 提交 `ed526f7`：结论 **PASS**；记录见 [审阅记录](../reviews/2026-09-25-d3a-adr-0027-acceptance.md) |
+| D-33 | **方案 A 已生效**（Codex 选择；项目定义的规范市场内容等价 + ADR-0022 归档为权威 backfill 通道，§4） |
 | 起草者 | Claude Code（Opus），Phase 1 批次 D3A / D3A-R1（docs-only） |
 | 相关 Phase | Phase 1（roadmap 验收 #13 的前置设计） |
 | 影响范围 | Data / Infrastructure / Security |
 | 是否破坏兼容 | 否：新增四张 Raw 表与新增标识符；八张冻结表定义、`core/` 已发布契约、`CollectorAdapter` Protocol、Schema 导出、`IDENTITY_SPEC` / `IDENTITY_HASH` 全部不变 |
 | 前置 | [ADR-0021](0021-phase1-local-data-infrastructure.md)、[ADR-0022](0022-phase1-market-and-execution-scope.md)、[ADR-0023](0023-bitemporal-revision-data.md)、[ADR-0024](0024-historical-tradable-universe.md) |
 | 证据 | [binance-spot-rest-market-data.md](../architecture/evidence/binance-spot-rest-market-data.md)（2026-09-25 检索） |
-| 落点 | `03-data.md` §7.6（提案小节；接受门把它并入 §7.1 / §7.3 / §6.2 冻结正文） |
+| 落点 | `03-data.md` §7.1（四张表）、§7.3（六个标识符）、§6.2（四项设置与复用语义）、§7.6（REST 设计摘要）——接受门已并入冻结正文 |
 
 ## 背景
 
@@ -324,7 +326,7 @@ checkpoint 格式是 REST collector 的版本化内部规格（D3D），不是�
    按 `revision_id` 读回 block 与时间，缺失元素批从不可变正文重建，已提交批次由 catalog 按 batch 指纹幂等；重跑 reconciler
    先读回已提交 `edge_id`，只补缺失边，已提交边的 `knowledge_time` 原样复用。
 
-### 10. 新增标识符（提案，接受后并入 `03-data.md` §7.3）
+### 10. 新增标识符（已并入 `03-data.md` §7.3）
 
 | 类别 | 标识符 | 内容 |
 |---|---|---|
@@ -349,7 +351,7 @@ checkpoint 格式是 REST collector 的版本化内部规格（D3D），不是�
    每条 revision 的序号必须落在其通道区间内，越界或碰撞即 fail closed（D2 归档要到达 `2**62` 需约 `2**30` 个归档文件，
    不可达；万一出现也只会 fail closed，不会静默混号）。
 
-### 12. 运维设置（非 Constitution / Validation Profile 阈值；接受门并入 `03-data.md` §6.2，D3D 实现）
+### 12. 运维设置（非 Constitution / Validation Profile 阈值；已并入 `03-data.md` §6.2，D3D 实现）
 
 复用（不新增）：`HLENS_HTTP_CONNECT_TIMEOUT_SECONDS`、`HLENS_HTTP_READ_TIMEOUT_SECONDS`、`HLENS_HTTP_MAX_RETRIES`
 （每页 5xx / 传输失败 / 429 的尝试上限 `1 + n`）、`HLENS_HTTP_USER_AGENT`、`HLENS_BINANCE_MARKET_DATA_BASE_URL`
@@ -373,7 +375,7 @@ checkpoint 格式是 REST collector 的版本化内部规格（D3D），不是�
 - `PHASE1_TABLES` 由 8 张扩为 12 张（D3B，断言前 8 张定义哈希不变）。
 - PIT（批次 F）的 `snapshot_bindings` 在使用 REST 数据时必须同时绑定四张新表中被读取者，含 `raw.binance_spot_precedence_evidence`；
   证据表缺失 / snapshot 无法解析 → fail closed（§7.5 既有规则）。
-- `03-data.md` §7.1 / §7.3 / §6.2 是冻结正文：Proposed 期间不改；接受门把 §1 / §10 / §12 并入并删除 §7.6 的提案标记。
+- `03-data.md` §7.1 / §7.3 / §6.2 是冻结正文：起草与修正期间未改；接受门已把 §1 / §10 / §12 并入，§7.6 改为已接受的 REST 设计摘要。
 
 ## 明确不做
 
@@ -459,7 +461,7 @@ checkpoint 格式是 REST collector 的版本化内部规格（D3D），不是�
 
 ## 开放义务
 
-- 本 ADR 由 Codex 再次复核；接受门把 §1 / §10 / §12 并入 `03-data.md` §7.1 / §7.3 / §6.2，D-33 随之生效。
+- 实施按 roadmap D3B → D3C → D3D → D3E 逐批进行，每批由 Codex 单独验收后才开放下一批。
 - 实施批次按证据文件 §3 重新核对官方资料并做只读 smoke；实测与证据冲突时先更新证据再发新版本。
 - 是否改为请求微秒单位（§4.8）：需新页身份 / decoder 版本、smoke 证据与 Codex 批准。
 - 质量事件类型名（`rest_window_gap`、`rest_unclosed_kline_skipped`、`rest_response_competing_payload`、`rest_agg_trade_id_gap`、
@@ -472,14 +474,14 @@ checkpoint 格式是 REST collector 的版本化内部规格（D3D），不是�
 - 归档侧 `binance.spot.publication@1.0.0`、`binance.spot.archive-revision@1.0.0`、
   `hlens.binance.spot.raw-revision-identity@1.0.0` 不得因本 ADR 改动。
 
-## 合规检查（D3A-R1 提交时）
+## 合规检查（D3A-R1 提交与接受门）
 
-- [x] 不修改冻结正文（`03-data.md` §7.1 / §7.3 / §6.2 原样，提案写在 §7.6）
+- [x] 起草与修正期间不修改冻结正文（提案写在 §7.6）；接受后已由接受门并入 §7.1 / §7.3 / §6.2
 - [x] 不修改 Constitution、已发布契约、`CollectorAdapter` Protocol、Schema 导出与八张表定义
 - [x] 不新增依赖、不改 `uv.lock`、不改 settings 代码；不含实现代码、网络访问代码或凭据
 - [x] 官方事实逐条标注来源与访问日期，未证明项单列（证据文件 §2）
-- [x] D-33：Codex 已选 A，语义写入 §4；随本 ADR 整体接受生效
-- [ ] Codex 复核 D3A-R1 并作接受门
+- [x] D-33：Codex 已选 A，语义写入 §4；随本 ADR 接受生效
+- [x] Codex 独立复核 D3A-R1（`ed526f7`，PASS）并于 2026-09-25 接受
 - [ ] 验收矩阵 1 ~ 21 —— D3B ~ D3E；22 —— E / F
 
 ## 参考
