@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - 主要研究对象：BTCUSDT（D-09 提案中的参考标的；正式市场范围待 D-08）
 - 主要时间周期：1H（同上，待 D-08 确认）
-- 当前阶段：**Phase 0 已完成**（2026-09-24，tag `phase-0-complete`）；Phase 1 **尚未开始**
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），仅架构决策子阶段
 
 ## 2. Current Architecture
 
@@ -38,11 +38,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 4. Current Phase
 
-- Current Phase：Phase 0 **Complete**（Research Constitution 1.0.0 已发布，roadmap 验收标准全部满足）
-- Next Phase：Phase 1（Market Representation）**尚未开始**，不会自动开启
-- Current Objective：准备 Phase 1 入口 ADR；D-01、D-02、D-08、D-10、D-28、D-31 在 Phase 1 入口 ADR 中决定
-- Current Blocker：Phase 1 需按 roadmap 规则明确开启；Docker 未安装（D-02 相关）
-- Next Milestone：Phase 1 入口 ADR 获批并明确开启 Phase 1
+- Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
+- Current Subphase：**架构决策**；只允许 docs-only 起草 / 复核 ADR-0021（D-01 / D-02 / D-10）、ADR-0022（D-08）、
+  ADR-0023（D-28）、ADR-0024（D-31，依赖 0023）；四份接受前不实现 Collector / Provider / Iceberg / 数据库 / 网络 / 下载 / 依赖安装
+- Current Objective：A1 起草 ADR-0021 ~ 0024 为 Proposed → Codex 复核接受
+- Current Blocker：无（授权已记录）；Docker 未安装会影响 D-02 的可选方案
+- Next Milestone：ADR-0021 ~ 0024 Accepted；首个 Provider 先交付 Protocol + DTO + contract tests（ADR-0017）
 
 ## 5. Active Decisions
 
@@ -70,9 +71,9 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0018（D-26）：三类语义身份（选择键、`Ref` 目标、Git 代码修订）排除信封版本；全局 `==` 与内容哈希不变
 - ADR-0019（D-27）：生命周期转移证据至少一项且非空；不做自报职责分离
 - ADR-0020：Constitution 发布为 `1.0.0 / Approved`，第一至第九章正文 sha256 `4d603d62…259cd` 不变，只前向适用
-- 开放问题（已登记，不选方案）：D-28 修订数据语义、D-31 历史标的池（Phase 1 入口 ADR）；
+- 开放问题（已登记，ADR 接受前仍未关闭）：D-28 修订数据语义 → ADR-0023、D-31 历史标的池 → ADR-0024；
   D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；
-  D-01、D-02、D-08、D-10（Phase 1 入口）；D-04（Phase 4）
+  D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag）；原则或阈值变化、实盘、资金、风险预算不在内
 
@@ -136,4 +137,5 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Schema current 38 份（2.0.0）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
-- Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit；无远程、未 push
+- Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
+  `phase/1` 从该 commit 创建（Phase 1 工作分支）；无远程、未 push

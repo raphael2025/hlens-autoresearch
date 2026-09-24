@@ -48,8 +48,8 @@
 > ADR-0020 把 Constitution 从 `0.2.0-draft` 发布为 `1.0.0 / Approved`，原则正文零变化（第一至第九章 sha256 不变）；
 > 依据 Raphael 2026-09-24 的持续授权（来源与限定见 ADR-0020），C4a 以 Proposed 提出、Codex 复核后于 C4b 接受并发布。
 > 剩余顺序门已由 C5 执行：Phase 0 正式关闭、`phase/0` fast-forward 合并进 `main`、轻量 tag `phase-0-complete`。
-> **Phase 0 已完成**；契约 `2.0.0` 随合并视为已发布（D-25：此后破坏性变化必须升 major）。Phase 1 尚未开始，
-> D-01、D-02、D-08、D-10、D-28、D-31 将在 Phase 1 入口 ADR 中决定。
+> **Phase 0 已完成**；契约 `2.0.0` 随合并视为已发布（D-25：此后破坏性变化必须升 major）。Phase 1 已于 2026-09-24 开启，
+> 当前仅架构决策子阶段：D-01 / D-02 / D-10 → ADR-0021、D-08 → ADR-0022、D-28 → ADR-0023、D-31 → ADR-0024（均待 A1 起草，接受前仍未关闭）。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 

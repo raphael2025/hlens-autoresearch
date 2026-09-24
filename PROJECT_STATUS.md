@@ -8,9 +8,10 @@
 | 项 | 值 |
 |---|---|
 | 项目版本 | 0.0.0 |
-| 当前 Phase | **Phase 0 — Research Constitution：✅ 已完成**（2026-09-24，tag `phase-0-complete`） |
-| 下一 Phase | Phase 1 — Market Representation：⏸️ **尚未开始**（需先写入口 ADR 并明确开启） |
-| 总体状态 | ✅ Phase 0 收口完成；等待 Phase 1 入口决策 |
+| 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
+| 当前子阶段 | **架构决策**：只允许 docs-only 起草与复核 ADR-0021 ~ 0024；四份 ADR 接受前不得开始任何实现 |
+| 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
+| 总体状态 | 🔄 Phase 1 决策子阶段 |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -18,6 +19,11 @@ Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / App
 （C1 `FIX_BEFORE_CLOSE` → ADR-0018 / 0019 修复 → C3 `READY_FOR_HUMAN_CONSTITUTION_GATE`）。
 `phase/0` 已 fast-forward 合并进 `main`，并打轻量 tag `phase-0-complete`；契约 `2.0.0` 随之视为**已发布**，
 此后任何破坏性契约变化都必须升 major 并走 ADR。仓库仍无远程，因此没有 push、PR 或 CI。
+
+Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明确开启 Phase 1**，但当前只进入架构决策子阶段：
+下一批 A1 是 docs-only 起草 ADR-0021（本地数据基础设施：D-01 / D-02 / D-10）、ADR-0022（市场与执行边界：D-08）、
+ADR-0023（双时间与修订数据：D-28）、ADR-0024（历史可交易 universe：D-31）。Collector、Provider、Iceberg、数据库、
+网络访问、数据下载与依赖安装**均尚未开始**，在四份 ADR 接受之前一律不得实现。
 
 收口依据的是 Raphael 2026-09-24"授权所有"的持续授权：Codex 判定它覆盖原则零变化的 Constitution 1.0.0 发布、
 Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖任何原则或阈值变化、实盘、资金或风险预算。
@@ -28,7 +34,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | ⏸️ 未开始 |
+| 1 | Market Representation | 🔄 已开启（架构决策子阶段） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -55,37 +61,39 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
   （`READY_FOR_HUMAN_CONSTITUTION_GATE`）
 - ✅ 研究宪法 `1.0.0 / Approved`（ADR-0020，第一至第九章正文 sha256 不变）
 - ✅ Phase 0 正式关闭；`main` fast-forward；tag `phase-0-complete`
+- ✅ Phase 1 S0（docs-only）：从 `main` 创建 `phase/1`，Phase 1 开启并进入架构决策子阶段
 
 ## 4. 当前正在做
 
-- ✅ Phase 0 已收口，目前没有进行中的实现批次
-- ⏭️ 下一步是准备 Phase 1 入口 ADR（D-01、D-02、D-08、D-10、D-28、D-31）；Phase 1 **不会自动开始**
+- 🔄 Phase 1 架构决策子阶段：无任何实现批次在进行
+- ⏭️ 下一步 A1（docs-only）：起草 ADR-0021 ~ 0024 为 Proposed，经 Codex 复核后接受；接受前不开始任何实现
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 现在无需操作：Phase 0 已按你 2026-09-24 的授权收口
+- 现在无需操作：Phase 0 已按你 2026-09-24 的授权收口；Phase 1 已由 Codex 依同一授权开启，当前只做架构决策
 - 以后如果要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，需要你对具体内容单独批准
 - 决定远程仓库位置（阻塞 PR / CI 与异地备份）
 
 ### Claude Code 需要做
 
-- 已批准且已完成：Phase 0 全部批次（B1 / B2 / B3、C1 ~ C5）
-- 未批准：Phase 1 或其他 Phase 的任何实现、环境安装、任何原则或阈值变化、实盘
+- 已批准且已完成：Phase 0 全部批次（B1 / B2 / B3、C1 ~ C5）；Phase 1 S0（开启与分支）
+- 已批准、下一步：A1 —— docs-only 起草 ADR-0021 ~ 0024（Proposed），Codex 复核 S0 后即可执行
+- 未批准：Phase 1 的任何实现（Collector / Provider / Iceberg / 数据库 / 网络 / 下载）、依赖或环境安装、其他 Phase、任何原则或阈值变化、实盘
 
 ## 6. 当前待决策
 
-**Phase 1 入口决定**（在 Phase 1 入口 ADR 中决定；本文件不选方案）
+**Phase 1 入口决定**（ADR 接受前仍未关闭；本文件不选方案）
 
-| ID | 问题 | 决定时点 |
+| ID | 问题 | 将由 |
 |---|---|---|
-| D-01 | Iceberg Catalog 选择 | Phase 1 入口 |
-| D-02 | 没有 Docker 时的对象存储 | Phase 1 入口 |
-| D-08 | 市场与执行范围（交易所 / 标的 / 频率） | Phase 1 入口 |
-| D-10 | NATS 引入时机 | Phase 1 入口 |
-| D-28 | 迟到 / 修订数据的 point-in-time 可用时间与 revision / as-of / vintage 语义 | Phase 1 入口 |
-| D-31 | C-L4 历史可交易标的池、上市 / 下架有效期及 Instrument 表达 | Phase 1 入口 |
+| D-01 | Iceberg Catalog 选择 | ADR-0021（A1 起草） |
+| D-02 | 没有 Docker 时的对象存储 | ADR-0021 |
+| D-10 | NATS 引入时机 | ADR-0021 |
+| D-08 | 市场与执行范围（交易所 / 标的 / 频率） | ADR-0022 |
+| D-28 | 迟到 / 修订数据的 point-in-time 可用时间与 revision / as-of / vintage 语义 | ADR-0023 |
+| D-31 | C-L4 历史可交易标的池、上市 / 下架有效期及 Instrument 表达 | ADR-0024（依赖 ADR-0023） |
 
 **Phase 0 修复裁决（均已决定、已实施、已复验）**
 
@@ -117,7 +125,8 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 不开始 Phase 0.5 或 Phase 1 的任何实现，直到入口 ADR 获批并明确开启
+- ❌ 不开始 Phase 1 的任何实现（Collector、Provider、Iceberg、数据库、网络访问、数据下载、依赖安装），直到 ADR-0021 ~ 0024 全部接受
+- ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装软件（包括 Docker），除非获得授权
 - ❌ 不修改系统配置、`.wslconfig`、Git 全局配置
@@ -132,11 +141,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 S0：Codex 依 Raphael 持续授权明确开启 Phase 1；从 `main` 创建 `phase/1`；当前只进入架构决策子阶段 | 下一步 A1 docs-only 起草 ADR-0021 ~ 0024；接受前不实现 Collector / Iceberg / 数据库 / 下载；`phase-0-complete` 仍是 last known good |
 | 2026-09-24 | C5：Phase 0 正式关闭（docs-only closure commit）；`phase/0` fast-forward 合并进 `main`；轻量 tag `phase-0-complete` | Phase 0 完成；契约 2.0.0 随合并视为已发布，此后破坏性变化必须升 major；Phase 1 尚未开始；无远程、未 push |
 | 2026-09-24 | C4b docs-only：ADR-0020 Accepted（Raphael 2026-09-24 授权，经 Codex 复核），Constitution 发布为 `1.0.0 / Approved`，只改页首版本 / 状态并追加修改历史 | Phase 0 全部验收标准已满足；第一至第九章正文 sha256 不变；未改代码 / 测试 / Schema；下一步 C5 关闭、合并 main、tag |
 | 2026-09-24 | C3 修复后只读复验结论 `READY_FOR_HUMAN_CONSTITUTION_GATE`；C4a docs-only：固化 C3 报告，起草 ADR-0020（Constitution 1.0.0，原则零变化，Proposed），修正状态漂移，`02-domain.md` §3.7 写明字符串校验的运行时 / Schema 边界 | Phase 0 唯一剩余验收项是 Constitution 1.0.0；Raphael 持续授权已记录；下一步 Codex 复核后 C4b → C5；未改代码 / 测试 / Schema / Constitution |
 | 2026-09-24 | C2d：实施 ADR-0019（`LifecycleTransition.evidence` 必填、至少一项、每项非空，覆盖全部合法边）；新增 `tests/test_lifecycle_evidence.py`（red 31 failed → green 54 passed）；既有测试 helper 补测试证据 | F5 修复；全量 1433 passed；2 份 current Schema 变化；不做自报职责分离；v1 资产零差异；待 Codex 复验；下一步 Phase 0 关闭复验 |
-| 2026-09-24 | C2c：实施 ADR-0018（三类语义身份 API；选择规则判重与查询同源；生命周期 / LIVE subject 与部署代码修订按语义身份比较；`research_class` 共用 `RESEARCH_CLASS_PATTERN`）；新增 `tests/test_semantic_identities.py`（red 43 failed → green 75 passed） | F1 / F3 修复；全量 1379 passed；8 份 current Schema 只多了 `research_class` pattern；全局 `==` 与内容哈希不变；v1 资产零差异；待 Codex 复验；下一步 ADR-0019 |
 
 ## 10. 下一阶段进入条件
 
@@ -148,17 +157,18 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 5. ✅ 契约层无基础设施依赖（导入检查测试）
 6. ✅ 本地测试命令可运行（1433 项通过；ruff + mypy strict 全绿）；CI 因无远程而延期
 
-**进入 Phase 1 需要：**
+**Phase 1 开启与实现前提：**
 1. ✅ Phase 0 完成
-2. ⏳ 写出并批准 Phase 1 入口 ADR，决定 D-01、D-02、D-08、D-10、D-28、D-31
-3. ⏳ 按 roadmap 规则明确开启 Phase 1（首次消费的 Provider 需先交付 Protocol + DTO + contract tests，ADR-0017）
+2. ✅ Phase 1 已由 Codex 依 Raphael 持续授权明确开启（当前仅架构决策子阶段）
+3. ⏳ ADR-0021 ~ 0024 起草（A1）、复核并接受，决定 D-01、D-02、D-08、D-10、D-28、D-31
+4. ⏳ 首次消费的 Provider 先交付 Protocol + DTO + contract tests（ADR-0017），再开始实现
 
 ## 11. 给 Raphael 的下一步
 
 > 我现在应该干什么？
 
 1. Phase 0 已完成：宪法 1.0.0 已发布（原则一字未改），代码已合并进 `main`，并打了 `phase-0-complete` 标记。
-2. 目前不需要你做任何决定。下一步是准备 Phase 1 的入口决定；Phase 1 不会自动开始。
+2. Phase 1 已开启，但目前只写架构决定（ADR-0021 ~ 0024），还不下载数据、不写采集代码。不需要你做任何决定。
 3. 以后若要修改任何原则或阈值，或涉及实盘 / 资金，需要你对具体内容单独批准。
 4. 建议尽快决定远程仓库（推荐 GitHub 私有），这样才有异地备份、PR 与 CI。
 
@@ -167,5 +177,6 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > Claude 下一步可以执行什么？
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
-2. 未批准任何实现任务：Phase 1 入口 ADR 需由 Codex 下达后才可起草；不得开始 Phase 0.5 / Phase 1 实现。
+2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
+   下一步 A1（已授权，Codex 复核 S0 后执行）：docs-only 起草 ADR-0021 ~ 0024 为 Proposed；不得开始任何 Phase 1 实现或 Phase 0.5。
 3. 不安装软件、不改系统 / Git 配置、不触碰旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。
