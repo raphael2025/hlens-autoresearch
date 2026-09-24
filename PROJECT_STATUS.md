@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **C3 本地完成，待 Codex 复核**：八张表、batch 指纹规则与分区演进已实现；四张按天分区的表暂时写不进数据——**D-32 已由 Codex 决定方案 A**（ADR-0026，补一个 PyIceberg 官方扩展），待依赖锁定与测试转正 |
+| 当前子阶段 | **C3 本地完成，待 Codex 最终复核**：八张表、batch 指纹规则与分区演进已实现；D-32 已实施（ADR-0026，依赖已由 Cursor 锁定），四张按天分区的表已真实写入、重放与重启读取 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C2 已验收，C3 待复核；D-32 已决定、待实施） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C2 已验收，C3 待 Codex 最终复核；D-32 已实施） |
 | 最后更新时间 | 2026-09-24 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -60,7 +60,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ## 3. 已完成
 
-- ✅ 架构蓝图：11 份架构文档、路线图；ADR-0001 ~ 0026 全部 Accepted（0021 ~ 0024、0026 尚待实施）
+- ✅ 架构蓝图：11 份架构文档、路线图；ADR-0001 ~ 0026 全部 Accepted（0021 ~ 0024 尚待实施；0026 已实施）
 - ✅ 工程基线：Python 3.13 + uv（ADR-0003）、Git（ADR-0004；私有 GitHub 远程与复核后推送 → ADR-0025）；pytest / ruff / ruff format / mypy strict 全绿
 - ✅ 研究 / 生产边界（ADR-0005）、生命周期 v2（ADR-0006）、三层验证架构与两步冻结（ADR-0007）
 - ✅ 契约修复 B1 / B2 / ADR-0010：只读载荷、完整实验身份、构造路径与版本语法、v1 只读兼容
@@ -90,7 +90,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ C1-R1（Cursor Auto）：关闭短写与路径 TOCTOU；经 C1-R2 / C1-R3 继续返修
 - ✅ C1（Cursor Auto）：本地 `file://` `LocalFileStorageAdapter` 已实现；经 C1-R1 / C1-R2 / C1-R3 返修加固
 - ✅ C2（Claude Opus）：Codex 独立验收通过；验收矩阵 #8 满足，接受 `373e286`
-- 🟡 C3（Claude Opus）：本地完成，待 Codex 复核——八张表已按冻结名与分区建好（含本机 production-like 空表），batch 指纹规则与分区演进已有 PostgreSQL 证据；四张按天分区的表写入受 D-32 阻塞（已决定方案 A / ADR-0026：先由 Cursor 锁定依赖，再由 Claude 把 5 个 xfail 转为通过）；D0 未开放
+- 🟡 C3（Claude Opus）：本地完成，待 Codex 最终复核——八张表已按冻结名与分区建好（含本机 production-like 空表，保持为空），batch 指纹规则与分区演进已有 PostgreSQL 证据；D-32 已实施：Cursor 锁定依赖（`e40c285`），Claude C3-R1 把 5 个 xfail 转为通过并新增 4 个按天分区写入用例；D0 未开放
 
 ## 5. 下一步
 
@@ -106,18 +106,18 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已完成并验收：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema 与 contract tests）与 **Claude B2**（D-31 universe / manifest 契约）
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
 - 当前唯一获批实现批次：**C3**；按任务包实现八张冻结表的 Schema / 分区 / 指纹与演进证据，不得开始 D0
-- D-32 后续（ADR-0026）：Cursor 把依赖改为 `pyiceberg[pyarrow,pyiceberg-core,sql-postgres]` 并锁定后，Claude 把 C3 的 5 个 D-32 xfail 转为通过；各自须等任务包
+- D-32 后续（ADR-0026）：已完成——Cursor 锁定 `pyiceberg[pyarrow,pyiceberg-core,sql-postgres]`，Claude C3-R1 把 5 个 D-32 xfail 转为通过；待 Codex 最终复核 C3
 - C2 的 H12 数据库资源已创建并验收；C3 只能使用现有本地 Catalog / warehouse，不得访问外网、下载数据或开始 Collector；D0 以后仍未开放
 
 ## 6. 当前待决策
 
 **当前无待决架构决定。**
 
-**C3 发现的决定（已决定，待实施）**
+**C3 发现的决定（已决定，已实施）**
 
 | ID | 问题 | 结论 | 实施状态 |
 |---|---|---|---|
-| D-32 | 锁定的 PyIceberg 0.12 写入按天分区（`day(...)`）的表必须有可选扩展 `pyiceberg-core`，它不在原锁定依赖里；四张冻结表（aggTrades / klines / trades / bars_1m）能建表但写不进数据 | Codex 选方案 A → ADR-0026，Accepted：在同一个 PyIceberg 依赖上加官方 extra `pyiceberg-core`；表名、分区、写入路径不变；不改分区（B）、不改用 `add_files`（C） | 待 Cursor 锁定依赖，再由 Claude 把 5 个 xfail 转为通过；C3 仍待复核，D0 不开放 |
+| D-32 | 锁定的 PyIceberg 0.12 写入按天分区（`day(...)`）的表必须有可选扩展 `pyiceberg-core`，它不在原锁定依赖里；四张冻结表（aggTrades / klines / trades / bars_1m）能建表但写不进数据 | Codex 选方案 A → ADR-0026，Accepted：在同一个 PyIceberg 依赖上加官方 extra `pyiceberg-core`；表名、分区、写入路径不变；不改分区（B）、不改用 `add_files`（C） | 已实施：Cursor 锁定依赖（`e40c285`）；Claude C3-R1 转正 5 个 xfail，四张表真实写入；C3 待 Codex 最终复核，D0 不开放 |
 
 **Phase 1 入口决定（均已决定，尚待实施）**
 
@@ -174,11 +174,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-24 | Phase 1 C3-R1（Claude Opus）：在 Cursor 锁定 `pyiceberg-core`（`e40c285`）后，C3 的 5 个 D-32 xfail 全部转为通过，新增 4 个按天分区写入用例；四张按天分区表真实写入、重放同一 snapshot、重启可读；全量 2728 项通过（2719 + 9），0 skipped / 0 xfailed；未改实现与 `core/` | D-32 已实施；C3 待 Codex 最终复核；D0 未开放 |
 | 2026-09-24 | D-32 由 Codex 决定方案 A，记录为 ADR-0026（docs-only）：PyIceberg 依赖加官方 extra `pyiceberg-core`；同步 03-data.md §6.1、roadmap C3 行与 ADR 索引；未改代码、依赖锁或测试 | C3 仍待复核；待 Cursor 锁依赖、Claude 转正 5 个 xfail；D0 未开放 |
 | 2026-09-24 | Phase 1 C3（Claude Opus）：八张生产表定义、`hlens.pyarrow-batch-sha256@1.0.0` 指纹规则、显式分区演进与幂等建表入口；本机 production-like 八张空表已建；发现 D-32（按天分区写入缺 `pyiceberg-core`）；未改 `core/` | 验收 #9 待 Codex 复核与 D-32 决定；D0 未开放 |
 | 2026-09-24 | Codex 独立验收 C2：2630 项全量测试、12 轮同 batch 并发、真实 PostgreSQL 权限 / 清理 / payload 隔离、密钥扫描、ruff / format / mypy 与冻结路径均通过；接受 `373e286` | 验收 #8 满足；C3 开放 |
 | 2026-09-24 | Phase 1 C2（Claude Opus）：实现 PostgreSQL-backed PyIceberg Catalog 与定义登记表；创建专用 `hlens_iceberg_catalog` / `hlens_iceberg_catalog_test` 库与 role；contract suite 与 PostgreSQL 集成测试通过；未改 `core/` | 后由 Codex 独立验收并接受为 `373e286` |
-| 2026-09-24 | Codex 独立验收 C1：2574 项全量测试、46 项存储测试、根替换反例、ruff / format / mypy 与冻结路径均通过；接受 `7857039`；记录 H12 数据库授权并开放 Claude C2 | 验收 #7 满足；C2 开放 |
 
 ## 10. 下一阶段进入条件
 
@@ -215,5 +215,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成 S0：`phase/1` 分支已创建，Phase 1 开启并进入架构决策子阶段。
    已完成 A1、A1r、A1r2、A2、A2r 与 A3：ADR-0021 ~ 0025 Accepted，首切片冻结，依赖与 typed settings 已推送。
-   **Claude B1～C2** 与 **Cursor C1** 已由 Codex 验收；当前执行 **Claude C3**（D-32 已由 ADR-0026 决定，待 Cursor 锁依赖后转正 5 个 xfail）。任何 Agent 都不得开始 D0 或 Phase 0.5。
+   **Claude B1～C2** 与 **Cursor C1** 已由 Codex 验收；**Claude C3**（含 C3-R1：D-32 / ADR-0026 已实施，5 个 xfail 已转正）本地完成，待 Codex 最终复核。任何 Agent 都不得开始 D0 或 Phase 0.5。
 3. C3 使用已有专用 PostgreSQL catalog / test database 与本地 warehouse；不访问外网、不下载数据、不安装软件、不改系统 / Git 配置、不触碰其他数据库、旧项目与外部数据；不做任何原则 / 阈值变化或实盘相关工作。

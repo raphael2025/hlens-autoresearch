@@ -5,27 +5,25 @@ otherwise). Each test uses its own PyIceberg ``catalog_name`` and ``tmp_path`` w
 drops the tables / namespaces through PyIceberg and deletes the warehouse files. Direct SQL is
 read-only verification.
 
-Writes to ``day(...)``-partitioned tables need PyIceberg's optional ``pyiceberg-core`` extension,
-which is not in the locked dependency set (decision D-32, ``PROJECT_STATUS.md`` §6). Those paths
-first assert that the failed write left the table unchanged, then report ``xfail``; once the
-extension is locked they run in full.
+Writes to the four ``identity(symbol) + day(...)`` tables use PyIceberg's official
+``pyiceberg-core`` extra (ADR-0026); they run in full and assert the real day partition values.
 """
 
 from __future__ import annotations
 
-import importlib.util
 import uuid
 from collections.abc import Callable, Iterator
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from pyiceberg.catalog.sql import SqlCatalog
-from pyiceberg.exceptions import CommitFailedException, NotInstalledError
+from pyiceberg.exceptions import CommitFailedException
+from pyiceberg.manifest import DataFile
 from pyiceberg.table import Table as IcebergTable
-from pyiceberg.transforms import IdentityTransform
+from pyiceberg.transforms import DayTransform, IdentityTransform
 
 from core.contracts.catalog import (
     BatchRejected,
@@ -56,7 +54,12 @@ from infrastructure.catalog.definitions import (
     PROPERTY_DEFINITION_VERSION,
     PROPERTY_FINGERPRINT_RULE,
 )
-from infrastructure.catalog.phase1_tables import BINANCE_SPOT_ARCHIVES, CANONICAL_BARS_1M
+from infrastructure.catalog.phase1_tables import (
+    BINANCE_SPOT_AGG_TRADES,
+    BINANCE_SPOT_ARCHIVES,
+    CANONICAL_BARS_1M,
+    CANONICAL_TRADES,
+)
 from tests.infrastructure.catalog.catalog_support import (
     PostgresCatalogHarness,
     postgres_test_catalog_uri,
@@ -65,19 +68,21 @@ from tests.infrastructure.catalog.phase1_support import (
     ARCHIVES_BY_SYMBOL,
     BARS_MONTH,
     EVOLUTION_REGISTRY,
+    ROW_BUILDERS,
+    T0,
+    agg_trade_row,
     archive_row,
     archives_by_symbol_target,
     batch_for,
     logical_rows,
     minimal_batch,
+    trade_row,
 )
 from tests.infrastructure.catalog.test_phase1_tables import FROZEN_PARTITIONS, FROZEN_TABLES
 
 pytestmark = pytest.mark.postgres
 
-HAS_PYICEBERG_CORE = importlib.util.find_spec("pyiceberg_core") is not None
 DAY_PARTITIONED = {table for table, spec in FROZEN_PARTITIONS.items() if spec}
-D32 = "D-32: day() partition writes need pyiceberg-core, which is not in the locked dependencies"
 fingerprint = PYARROW_BATCH_FINGERPRINT.fingerprint
 
 
@@ -112,6 +117,12 @@ def _scan(
     if row_filter is not None:
         kwargs["row_filter"] = row_filter
     return iceberg.scan(**kwargs).to_arrow()
+
+
+def _partition(data_file: DataFile) -> tuple[Any, ...]:
+    """A data file's partition values (Iceberg transform results) as a plain tuple."""
+    record = data_file.partition
+    return tuple(record[i] for i in range(len(record)))
 
 
 def _sql(catalog: SqlCatalog, statement: str) -> list[tuple[Any, ...]]:
@@ -246,14 +257,6 @@ def test_each_table_appends_replays_restarts_and_time_travels(
         adapter.commit_batch(fake, batch_a)
     assert pg_harness.sql_catalog().load_table(_identifier(table)).snapshots() == []
 
-    if table in DAY_PARTITIONED and not HAS_PYICEBERG_CORE:
-        before = _state(pg_harness.sql_catalog().load_table(_identifier(table)))
-        with pytest.raises(NotInstalledError, match="pyiceberg_core"):
-            _commit(adapter, table, "batch-a", batch_a, None)
-        assert _state(pg_harness.sql_catalog().load_table(_identifier(table))) == before
-        assert adapter.load_table(table) is not None
-        pytest.xfail(D32)
-
     first = _commit(adapter, table, "batch-a", batch_a, None)
     assert first.outcome is CommitOutcome.COMMITTED and first.snapshot.added_rows == 1
     replay = _commit(adapter, table, "batch-a", batch_a, None)
@@ -280,14 +283,93 @@ def test_each_table_appends_replays_restarts_and_time_travels(
     assert logical_rows(_scan(catalog, table, second)) == logical_rows(both)
     assert logical_rows(_scan(catalog, table)) == logical_rows(both)
     assert len(catalog.load_table(_identifier(table)).snapshots()) == 2
+    # Real data files with the frozen spec's partition values (T0 is 2024-12-31 UTC).
+    files = [task.file for task in catalog.load_table(_identifier(table)).scan().plan_files()]
+    assert all(f.file_path.startswith(pg_harness.warehouse_uri + "/") for f in files)
+    partitions = sorted((f.spec_id, _partition(f), f.record_count) for f in files)
+    key = ("BTCUSDT", DAY_2024_12_31) if table in DAY_PARTITIONED else ()
+    assert partitions == [(0, key, 1), (0, key, 1)]
+
+
+DAY_2024_12_31 = (date(2024, 12, 31) - date(1970, 1, 1)).days
+DAY_2025_01_01 = DAY_2024_12_31 + 1
+
+
+def _day_rows(table: str, tag: str) -> pa.Table:
+    """Two symbols x both sides of the 2024-12-31 / 2025-01-01 UTC day boundary."""
+    definition = next(d for d in PHASE1_TABLES if d.table == table)
+    rows = []
+    for index, (symbol, offset) in enumerate(
+        (s, o) for s in ("BTCUSDT", "ETHUSDT") for o in (0, 1)
+    ):
+        when = T0 + timedelta(minutes=offset)  # 23:59 and 00:00 the next day
+        if table == BINANCE_SPOT_AGG_TRADES.table:
+            row = agg_trade_row(tag, symbol=symbol, when=when, trade_id=index + 1)
+        elif table == CANONICAL_TRADES.table:
+            row = trade_row(f"{tag}{index}", symbol=symbol, when=when)
+        else:
+            row = ROW_BUILDERS[table](f"{tag}{index}", symbol=symbol, start=when)
+        rows.append(row)
+    return batch_for(definition, rows)
+
+
+@pytest.mark.parametrize("table", sorted(DAY_PARTITIONED))
+def test_day_partitioned_tables_write_real_day_partitions(
+    pg_harness: PostgresCatalogHarness, table: str
+) -> None:
+    definition = next(d for d in PHASE1_TABLES if d.table == table)
+    _, _, time_column, _ = FROZEN_PARTITIONS[table][1]
+    spec = definition.partition_spec
+    assert isinstance(spec.fields[1].transform, DayTransform)
+    adapter = pg_harness.open_adapter(PHASE1_REGISTRY)
+    adapter.create_table(definition.binding)
+    batch = _day_rows(table, "d")
+    assert batch.num_rows == 4
+
+    first = _commit(adapter, table, "day-batch", batch, None)
+    assert first.outcome is CommitOutcome.COMMITTED and first.snapshot.added_rows == 4
+    replay = _commit(adapter, table, "day-batch", batch, None)
+    assert replay.outcome is CommitOutcome.ALREADY_COMMITTED and replay.snapshot == first.snapshot
+    adapter.close()
+
+    restarted = pg_harness.open_adapter(PHASE1_REGISTRY)
+    info = restarted.load_table(table)
+    assert info is not None and info.current_snapshot == first.snapshot
+    again = _commit(restarted, table, "day-batch", batch, first.snapshot.snapshot_id)
+    assert again.outcome is CommitOutcome.ALREADY_COMMITTED and again.snapshot == first.snapshot
+
+    iceberg = pg_harness.sql_catalog().load_table(_identifier(table))
+    assert [s.snapshot_id for s in iceberg.snapshots()] == [int(first.snapshot.snapshot_id)]
+    files = [task.file for task in iceberg.scan().plan_files()]
+    assert all(f.file_path.startswith(pg_harness.warehouse_uri + "/") for f in files)
+    assert all(f.file_path.endswith(".parquet") for f in files)
+    assert sorted((f.spec_id, _partition(f), f.record_count) for f in files) == [
+        (0, ("BTCUSDT", DAY_2024_12_31), 1),
+        (0, ("BTCUSDT", DAY_2025_01_01), 1),
+        (0, ("ETHUSDT", DAY_2024_12_31), 1),
+        (0, ("ETHUSDT", DAY_2025_01_01), 1),
+    ]
+    assert logical_rows(iceberg.scan().to_arrow()) == logical_rows(batch)
+
+    # Predicates on the day source column and on symbol prune to the matching partitions.
+    new_day = f"{time_column} >= '2025-01-01T00:00:00+00:00'"
+    pruned = [task.file for task in iceberg.scan(row_filter=new_day).plan_files()]
+    assert sorted(_partition(f) for f in pruned) == [
+        ("BTCUSDT", DAY_2025_01_01),
+        ("ETHUSDT", DAY_2025_01_01),
+    ]
+    expected = [r for r in batch.to_pylist() if r[time_column] >= T0 + timedelta(minutes=1)]
+    assert logical_rows(iceberg.scan(row_filter=new_day).to_arrow()) == sorted(expected, key=repr)
+    eth = iceberg.scan(row_filter="symbol == 'ETHUSDT'")
+    assert {_partition(task.file)[0] for task in eth.plan_files()} == {"ETHUSDT"}
+    assert [r["symbol"] for r in eth.to_arrow().to_pylist()] == ["ETHUSDT", "ETHUSDT"]
 
 
 def test_catalog_database_holds_only_iceberg_metadata(pg_harness: PostgresCatalogHarness) -> None:
     marker = f"C3PAYLOAD{uuid.uuid4().hex}"
     adapter = pg_harness.open_adapter(PHASE1_REGISTRY)
     ensure_phase1_tables(adapter)
-    written = [d for d in PHASE1_TABLES if d.table not in DAY_PARTITIONED or HAS_PYICEBERG_CORE]
-    for definition in written:
+    for definition in PHASE1_TABLES:
         batch = minimal_batch(definition, marker)
         assert marker in repr(batch.to_pylist())
         _commit(adapter, definition.table, f"{marker}-batch", batch, None)
@@ -311,7 +393,7 @@ def test_catalog_database_holds_only_iceberg_metadata(pg_harness: PostgresCatalo
     assert [row[0] for row in pointers] == sorted(FROZEN_TABLES)
     for _, location in pointers:
         assert location.startswith(pg_harness.warehouse_uri + "/")
-    for definition in written:
+    for definition in PHASE1_TABLES:
         iceberg = catalog.load_table(_identifier(definition.table))
         paths = [task.file.file_path for task in iceberg.scan().plan_files()]
         assert paths and all(p.startswith(pg_harness.warehouse_uri + "/") for p in paths)
@@ -449,10 +531,14 @@ def test_day_partitioned_table_evolves_to_month_in_metadata(
     restarted = pg_harness.open_adapter(EVOLUTION_REGISTRY)
     info = restarted.load_table(table)
     assert info is not None and info.definition == BARS_MONTH.binding
-    if not HAS_PYICEBERG_CORE:
-        pytest.xfail(D32)
     rows = minimal_batch(CANONICAL_BARS_1M, "after-evolution")
-    assert _commit(restarted, table, "b", rows, None).outcome is CommitOutcome.COMMITTED
+    written = _commit(restarted, table, "b", rows, None)
+    assert written.outcome is CommitOutcome.COMMITTED and written.snapshot.added_rows == 1
+    iceberg = pg_harness.sql_catalog().load_table(_identifier(table))
+    files = [task.file for task in iceberg.scan().plan_files()]
+    # 2024-12-31 is month 659 since 1970-01; the new file carries the month spec.
+    assert [(f.spec_id, _partition(f)) for f in files] == [(1, ("BTCUSDT", 659))]
+    assert logical_rows(_scan(pg_harness.sql_catalog(), table)) == logical_rows(rows)
 
 
 def _evolvable(pg_harness: PostgresCatalogHarness, registry: TableDefinitionRegistry) -> Any:

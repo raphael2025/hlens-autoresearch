@@ -66,8 +66,8 @@
 - 当前表必须按 `source` 完整核对通过；新 spec 与 `hlens.definition.version` / `hash` 在同一个 PyIceberg transaction 中暂存、提交前与 `target` 比对、一次 metadata commit（重试固定为 0）。失败时表保持 `source`；已在 `target` 时幂等返回。不 drop / recreate，不重写数据文件，旧文件保留旧 spec。演进目标不能直接建表。
 - 限制：SQL catalog 的 CAS 只保护 spec 需求，不保护其它属性；提交后重新核对，若并发篡改则 `CatalogIntegrityError`（每表单 writer，ADR-0023 §7）。
 
-### 已知阻塞（D-32）
+### 按天分区写入依赖（D-32 → ADR-0026）
 
-PyIceberg 0.12 写入任何 `day` / `month` / `year` / `hour` / `bucket` 分区都需要可选扩展 `pyiceberg-core`，它不在锁定依赖中（03-data.md §6.1）。因此四张 `day(...)` 分区表可以建表、核对与演进，但 append 会在写入前失败（表不变）；对应 PostgreSQL 用例以 xfail 标注，见 `PROJECT_STATUS.md` §6。
+PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要其官方 extra `pyiceberg-core`。ADR-0026 把直接依赖定为 `pyiceberg[pyarrow,pyiceberg-core,sql-postgres]`（03-data.md §6.1）：`pyiceberg-core` 不是独立顶层依赖，版本由 PyIceberg 0.12 声明的约束（`>=0.10.1,<0.11.0`）解析，`uv.lock` 固定为 `0.10.1`。升级 PyIceberg 时须同时核对该约束。四张 `identity(symbol) + day(...)` 表的 PostgreSQL 用例全部实际写入，并断言真实的 `(symbol, day)` 分区值、replay 同 snapshot 与重启读取。
 
 Collector / 下载实现尚未开放（见 `PROJECT_STATUS.md`）。
