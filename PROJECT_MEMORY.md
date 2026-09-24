@@ -41,12 +41,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**Claude B1**（双时间 / revision DAG 契约）；A3 已由 Codex 复核推送
+- Current Subphase：**Claude B2**（D-31 universe 契约 + `ResearchDatasetManifest`）；B1 已由 Codex 复核通过
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- 当前唯一获批批次：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema、contract tests）；B2 及以后未开放
+- 当前唯一获批批次：**Claude B2**（D-31 universe / manifest 契约、Schema、contract tests）；B3 及以后未开放
 - Current Blocker：无；创建 catalog 库 / role（C2）前须记录 H12 授权
-- Next Milestone：B1 经 Codex 复核推送；再开放 B2 universe 契约
+- Next Milestone：B2 经 Codex 复核推送；再开放 B3 首个 Provider Protocol / DTO
 
 ## 5. Active Decisions
 
@@ -135,15 +135,15 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 9. Last Known Good State
 
 - Date：2026-09-24
-- Stable recovery point：Phase 1 分支 `d840dbb`（A3b；Codex 已复核并推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
+- Stable recovery point：Phase 1 B1 实现提交 `b15faa9`（Codex 已独立复核；随本次验收文档推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
   其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
-  1433 测试、ruff check、ruff format --check、mypy strict 全绿；
-  Schema current 46 份（2.0.0，含 B1 待复核的 8 份；恢复点 `d840dbb` 为 38 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
+  1658 测试、ruff check、ruff format --check、mypy strict 全绿；
+  Schema current 46 份（2.0.0，含 B1 已验收的 8 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、存储、Control Plane
-- Phase 1：A2 / A2r、A3a / A3b 均已由 Codex 复核推送；当前远端恢复点 `d840dbb`
+- Phase 1：A2 / A2r、A3a / A3b 已由 Codex 复核推送；B1 已由 Codex 复核通过，恢复点 `b15faa9`，当前进入 B2
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
-  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1`（至 `d840dbb`）与 tag 已推送到私有 GitHub 远程 `origin`
+  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`
