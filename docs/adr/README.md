@@ -25,10 +25,11 @@
 | [0017](0017-provider-delivery-schedule.md) | Provider 接口的交付节奏（D-24，方案 B） | Accepted（2026-09-24，Codex 依 Raphael 授权批准） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
-> 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。
-> **ADR 已获批准，但接受它们的提交仍是 docs-only：代码实现尚未发生**，
-> 契约代码、测试与 `schemas/` 与批准前完全一致。实现按
+> 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
 > 0011 → 0012 → 0013 → 0014 → 0015 → 0016 → 0017 的串行批次进行，每批一个独立 commit。
+> **实现进度**：0011、0012、0013、0014 已实施（0011 ~ 0013 已由 Codex 独立复验，
+> 0014 待复验）；0015、0016 尚未实施，其契约缺口仍然存在；
+> 0017 按方案 B 随首次消费 Provider 的 Phase 交付。
 
 ## 待决事项（ARCHITECTURE_DECISION_REQUIRED）
 
@@ -52,13 +53,13 @@
 | D-14 | ✅ **已决定（ADR-0010）** 唯一、ASCII、完整 SemVer 2.0.0 语法；major 从已验证的正则分组读取。 | Codex 裁决 | Phase 0；Accepted，已实施 |
 | D-15 | ✅ **已决定（ADR-0010）** v1 只读入口增加基于已提交快照的顶层 shape gate，快照缺失 fail closed。 | Codex 裁决 | Phase 0；Accepted，已实施 |
 | D-16 | ✅ **已决定（ADR-0010）** 三类映射字段的键值格式必须出现在导出的 JSON Schema 中，且与运行时同源。 | Codex 裁决 | Phase 0；Accepted，已实施 |
-| D-17 | **生命周期审批、主体归属、授权有效期与时间顺序**：失败的 revalidation 是否可以自动退役；历史、授权与 Risk Gate 的主体和时序如何约束；`live_execution_enabled` 这类自报字段是否成立。 | Codex 裁决 → [ADR-0011](0011-lifecycle-subject-authorization-and-time.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
+| D-17 | **生命周期审批、主体归属、授权有效期与时间顺序**：失败的 revalidation 是否可以自动退役；历史、授权与 Risk Gate 的主体和时序如何约束；`live_execution_enabled` 这类自报字段是否成立。 | Codex 裁决 → [ADR-0011](0011-lifecycle-subject-authorization-and-time.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0011 批次） |
 | D-18 | **`LlmCall` 的最小完整登记**：一次 LLM 调用要登记哪些槽位；只存三个哈希是否足以构成可复核的审计记录。 | Codex 裁决 → [ADR-0016](0016-llmcall-content-bindings.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
-| D-19 | **整体 Verdict 与门结果的关系**：如何在契约层排除"证据不足即 PASS"。 | Codex 裁决 → [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
-| D-20 | **数值合法性与结构合法性**：NaN / ±Infinity 的拒绝时点，阈值与来源的配对，两个概率型阈值的结构范围（D-20.1 ~ D-20.3）；Validation Profile 的普适结构不变量（D-20.4）。 | Codex 裁决 → [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md)（D-20.1 ~ D-20.3）、[ADR-0014](0014-validation-profile-structural-invariants.md)（D-20.4） | Phase 0；Accepted（2026-09-24），实现未开始 |
+| D-19 | **整体 Verdict 与门结果的关系**：如何在契约层排除"证据不足即 PASS"。 | Codex 裁决 → [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0013 批次） |
+| D-20 | **数值合法性与结构合法性**：NaN / ±Infinity 的拒绝时点，阈值与来源的配对，两个概率型阈值的结构范围（D-20.1 ~ D-20.3）；Validation Profile 的普适结构不变量（D-20.4）。 | Codex 裁决 → [ADR-0013](0013-deterministic-verdict-and-finite-numbers.md)（D-20.1 ~ D-20.3）、[ADR-0014](0014-validation-profile-structural-invariants.md)（D-20.4） | Phase 0；Accepted（2026-09-24），已实施（D-20.1 ~ D-20.3 在 ADR-0013 批次，D-20.4 在 ADR-0014 批次） |
 | D-21 | **审计哈希字段的类型统一**：内容哈希、Git OID 与不透明 ID 如何分开表达。 | Codex 裁决 → [ADR-0015](0015-audit-identity-types-and-version-bindings.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
 | D-22 | **版本绑定的表达**：Constitution 版本语法、Profile 复合引用是否继续塞进 `*_version` 字符串、选择依据的重复字段。 | Codex 裁决 → [ADR-0015](0015-audit-identity-types-and-version-bindings.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
-| D-23 | **信息流白名单与 kind 判别字段**：Outcome 与 outcome-zone 数据能否进入 Feature / State / Event / Strategy 输入；`kind` 能否被覆盖。 | Codex 裁决 → [ADR-0012](0012-information-flow-and-kind-invariants.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
+| D-23 | **信息流白名单与 kind 判别字段**：Outcome 与 outcome-zone 数据能否进入 Feature / State / Event / Strategy 输入；`kind` 能否被覆盖。 | Codex 裁决 → [ADR-0012](0012-information-flow-and-kind-invariants.md) | Phase 0；Accepted（2026-09-24），已实施（ADR-0012 批次） |
 | D-24 | **Provider 接口交付范围漂移**：审计时 `05-plugin.md` §3 写"签名在 Phase 0 定义"，roadmap 验收表没有该条。 | Codex 裁决：方案 B → [ADR-0017](0017-provider-delivery-schedule.md) | Phase 0；Accepted（2026-09-24），实现未开始 |
 | D-25 | **这批收窄是否需要升 major**：`2.0.0` 尚未发布（只在 `phase/0`、未合并 `main`、无 tag / 远程发布 / v2 数据登记）。 | Codex 裁决：继续属于未发布的 `2.0.0`，不升 major；发布后做同类改变必须升 major | Phase 0；Accepted（2026-09-24），写入 ADR-0011 ~ 0016 各自的版本小节 |
 

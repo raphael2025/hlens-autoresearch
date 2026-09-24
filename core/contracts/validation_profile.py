@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from datetime import date, timedelta
 from enum import StrEnum
-from typing import Literal
+from typing import Annotated, Literal
 
 from pydantic import Field, model_validator
 
@@ -21,7 +21,10 @@ __all__ = [
     "CostStressParams",
     "DataSplitParams",
     "LifecycleParams",
+    "NonNegativeDuration",
     "ParameterStabilityParams",
+    "PositiveDuration",
+    "PositiveMultiplier",
     "ProfileScope",
     "ProfileStatus",
     "Provenance",
@@ -30,6 +33,27 @@ __all__ = [
     "ValidationProfile",
     "WalkForwardParams",
 ]
+
+
+#: 严格正的时间跨度（ADR-0014 §D-20.4）。零长度或负长度的训练 / 检验窗口、封存区、观察期
+#: 在任何标的与周期下都不是"另一种校准选择"，而是结构上无意义的配置。
+#:
+#: **JSON Schema 表达限制**：`timedelta` 的线格式是 ISO 8601 duration 字符串
+#: （`type: string, format: duration`），而 `minimum` / `exclusiveMinimum` 是数值关键字，
+#: 无法表达字符串上的时长顺序。因此该约束是**运行时**约束：Pydantic 在 Python 与
+#: `model_validate_json` 两条入口都强制执行，导出的 Schema 诚实保持字符串形状，
+#: 不把数值 minimum 伪装上去（07-validation.md §5.4）。
+PositiveDuration = Annotated[timedelta, Field(gt=timedelta(0))]
+
+#: 非负的时间跨度（ADR-0014 §D-20.4）：零表示"不设该期限"，是合法配置；负数不是。
+#: JSON Schema 表达限制同 `PositiveDuration`。
+NonNegativeDuration = Annotated[timedelta, Field(ge=timedelta(0))]
+
+#: 严格正的倍数（ADR-0014 §D-20.4）：零倍成本压力等于"不施压"，负倍没有语义。
+#: 约束作用于**序列的每个元素**，因此导出的 Schema 里是 `items.exclusiveMinimum`。
+#: 有限性由 ADR-0013 §D-20.1 的 `Contract.model_config.allow_inf_nan=False` 保证，
+#: 本别名不重复声明。
+PositiveMultiplier = Annotated[float, Field(gt=0.0)]
 
 
 class ProfileStatus(StrEnum):
@@ -52,21 +76,31 @@ class ProfileScope(Contract):
 
 
 class WalkForwardParams(Contract):
-    train_window: timedelta
-    test_window: timedelta
-    step: timedelta
+    """Walk-forward 配置。三个时间跨度必须严格为正（ADR-0014 §D-20.4）。
+
+    本模型**不**约束跨字段关系（例如 `test_window` 与 `step` 的比例）：那取决于校准与
+    方法选择，不是普适结构。
+    """
+
+    train_window: PositiveDuration
+    test_window: PositiveDuration
+    step: PositiveDuration
     min_positive_window_fraction: float = Field(ge=0.0, le=1.0)
     max_single_window_pnl_share: float = Field(gt=0.0, le=1.0)
 
 
 class DataSplitParams(Contract):
-    """对应 Constitution 第四章。封存区使用固定日期边界，不随运行时间滚动。"""
+    """对应 Constitution 第四章。封存区使用固定日期边界，不随运行时间滚动。
+
+    结构不变量（ADR-0014 §D-20.4）：`sealed_oos_length > 0`（零长度封存区不构成样本外检验）；
+    `embargo >= 0` 与 `sealed_oos_max_extension >= 0`（零分别表示不设隔离期、不允许延长）。
+    """
 
     research_window_start: date
     sealed_oos_boundary: date
-    sealed_oos_length: timedelta
-    sealed_oos_max_extension: timedelta
-    embargo: timedelta
+    sealed_oos_length: PositiveDuration
+    sealed_oos_max_extension: NonNegativeDuration
+    embargo: NonNegativeDuration
     walk_forward: WalkForwardParams
 
     @model_validator(mode="after")
@@ -123,20 +157,38 @@ class ParameterStabilityParams(Contract):
 
 
 class CostStressParams(Contract):
-    """对应 Constitution C-R4 与 A6。"""
+    """对应 Constitution C-R4 与 A6。
+
+    结构不变量（ADR-0014 §D-20.4）：两个倍数序列的**每一项**严格为正；
+    `cost_model` 必须指向 `cost_model` kind——这是跨字段语义，JSON Schema 不表达它，
+    由运行时校验保证。
+    """
 
     cost_model: Ref
     fill_assumption: str = Field(min_length=1)
-    stress_multipliers: tuple[float, ...] = Field(min_length=1)
-    reported_only_multipliers: tuple[float, ...] = ()
+    stress_multipliers: tuple[PositiveMultiplier, ...] = Field(min_length=1)
+    reported_only_multipliers: tuple[PositiveMultiplier, ...] = ()
     delay_stress_bars: int = Field(ge=0)
     min_breakeven_cost_multiple: float = Field(gt=0.0)
 
+    @model_validator(mode="after")
+    def _cost_model_kind(self) -> CostStressParams:
+        if self.cost_model.kind is not Kind.COST_MODEL:
+            raise ValueError(
+                f"CostStressParams.cost_model 必须指向 cost_model，"
+                f"收到 {self.cost_model.kind.value}"
+            )
+        return self
+
 
 class LifecycleParams(Contract):
-    """对应 Constitution C-G3 与 ADR-0006（Q-6 仍开放）。"""
+    """对应 Constitution C-G3 与 ADR-0006（Q-6 仍开放）。
 
-    paper_period: timedelta
+    结构不变量（ADR-0014 §D-20.4）：`paper_period > 0`——观察期必须有长度。
+    本约束只管符号，不回答"观察期该多长"（Phase 4）或"该由谁定义"（Q-6）。
+    """
+
+    paper_period: PositiveDuration
     paper_acceptance_rule: str = Field(min_length=1)
     degradation_thresholds: FrozenMapping[str, float] = Field(
         default_factory=dict, validate_default=True

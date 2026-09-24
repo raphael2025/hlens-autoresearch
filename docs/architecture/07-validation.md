@@ -177,6 +177,7 @@ Profile 引用格式：`vp:{scope_id}@{semver}`，例如 `vp:btcusdt-1h-swing@1.
 
 > 本文件与 Profile 契约都**不含具体数值**；数值在 Phase 4 校准后写入具体 Profile 版本。
 > `[0, 1]` 这类范围是**结构上的合法取值区间**，不是校准值，也不构成对任何阈值的选择。
+> 与数值无关的普适结构不变量（符号约束、`cost_model` 的 kind）见 §5.4。
 
 ### 5.2 选择规则（ProfileSelectionRule）
 
@@ -190,3 +191,37 @@ Profile 引用格式：`vp:{scope_id}@{semver}`，例如 `vp:btcusdt-1h-swing@1.
 - `frozen` 的 Profile 版本永不修改；修正 = 新版本（Constitution C-A5）。
 - 所有版本及其 `content_hash` 保存在 Control Plane，可按版本取回。
 - 因此任何实验在任何时点都能重建"当时适用的验证规则" = Constitution 版本 + Profile 版本（Constitution C-P4）。
+
+### 5.4 普适结构不变量（ADR-0014）
+
+以下约束在**所有**可能的 Profile 中都必须成立，与具体数值选择无关，因此属于两步冻结的
+Step 1（结构）并在 Phase 0 冻结。它们只约束**符号与判别字段**，不选择任何阈值：
+
+| 字段 | 结构不变量 | 为什么它是结构而非校准 |
+|---|---|---|
+| `walk_forward.train_window` / `test_window` / `step` | `> 0` | 零或负的窗口不构成一次 walk-forward 推进 |
+| `data_split.sealed_oos_length` | `> 0` | 零长度封存区不构成样本外检验 |
+| `data_split.embargo` | `>= 0` | 零 = 不设隔离期，是合法配置；负数没有语义 |
+| `data_split.sealed_oos_max_extension` | `>= 0` | 零 = 不允许延长，是合法配置 |
+| `cost_stress.stress_multipliers` / `reported_only_multipliers` 的**每一项** | `> 0` | 零倍等于不施压，负倍没有语义 |
+| `cost_stress.cost_model` | `kind` 必须是 `cost_model` | 指向别的对象类型不是"另一种成本模型" |
+| `lifecycle.paper_period` | `> 0` | 观察期必须有长度 |
+
+所有浮点字段（含序列与映射内的数值）拒绝 NaN 与 ±Infinity，由 `Contract` 基类的
+`allow_inf_nan=False` 统一保证（ADR-0013 §D-20.1），本节不重复定义该规则。
+既有校验（例如封存边界必须晚于研究窗口起点）行为不变。
+
+**JSON Schema 的表达限制与运行时保证**（ADR-0014 的实现说明，不是新的 wire-format 决定）：
+
+| 约束类型 | 导出的 JSON Schema | 运行时（Pydantic） |
+|---|---|---|
+| 时长字段的符号 | 保持 `type: string, format: duration`，**不含**任何数值 `minimum` / `exclusiveMinimum` | 强制执行 `> 0` / `>= 0`，Python 与 `model_validate_json` 两条入口都生效 |
+| 倍数序列的逐元素下界 | `items.exclusiveMinimum: 0`（数值字段，可如实表达） | 同上，逐元素校验 |
+| `cost_model.kind` | 仍是普通 `Ref` 引用，不表达该约束 | 模型校验器强制执行 |
+
+原因：`timedelta` 的线格式是 ISO 8601 duration **字符串**，而 `minimum` / `exclusiveMinimum`
+是数值关键字，无法表达字符串上的时长顺序。因此导出的 Schema 诚实保持字符串形状——
+既不把数值下界伪装到字符串 Schema 上，也不为了让 Schema 可表达而把线格式改成秒数。
+`cost_model.kind` 同理，是跨字段语义而非形状约束。**结论**：只读 JSON Schema 的消费者
+看不到这三类约束，不得据此认为它们不存在；它们由契约层的运行时校验保证，
+校验入口以 Pydantic 模型为准。
