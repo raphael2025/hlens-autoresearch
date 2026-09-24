@@ -308,6 +308,11 @@ def test_malicious_base_path_rejected(tmp_path: Path) -> None:
         "https://archive.test/ok%5cescape",
         "https://archive.test//double",
         "http://archive.test",
+        " https://archive.test",
+        "https://archive.test ",
+        " https://archive.test ",
+        "\thttps://archive.test",
+        "https://archive.test\n",
     ],
 )
 def test_archive_base_url_rejected_without_silent_rewrite(tmp_path: Path, bad_base: str) -> None:

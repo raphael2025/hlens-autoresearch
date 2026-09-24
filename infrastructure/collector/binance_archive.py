@@ -73,10 +73,13 @@ def _utc_now() -> datetime:
 
 def _validate_archive_base(base_url: str) -> tuple[str, str]:
     """严格校验 archive base；返回 ``(normalized_base, origin)``，不静默丢弃任何成分。"""
-    if not isinstance(base_url, str) or not base_url.strip():
+    if not isinstance(base_url, str) or not base_url:
         msg = "archive base URL must not be blank"
         raise ValueError(msg)
-    text = base_url.strip()
+    if base_url != base_url.strip():
+        msg = f"archive base URL must not have leading or trailing whitespace: {base_url!r}"
+        raise ValueError(msg)
+    text = base_url
     if not _uri.is_visible_ascii(text):
         msg = f"archive base URL 必须是无空白、无反斜杠的 ASCII 可见字符：{base_url!r}"
         raise ValueError(msg)
