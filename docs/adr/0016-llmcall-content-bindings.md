@@ -1,8 +1,8 @@
-# ADR-0016: `LlmCall` 的最小完整登记
+# ADR-0016: `LlmCall` 的最小完整登记（D-18）
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24 起草，等待 Codex 文档复核；未获批准，不得实施） |
+| 状态 | **Accepted**（2026-09-24，Codex 依 Raphael 授权批准） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（Raphael 已授权其决定项目技术方向） |
 | 起草者 | Claude Code（Opus） |
@@ -28,7 +28,7 @@
 
 ## 精确决定
 
-### 1. 新增值对象 `ContentBlobRef`
+### D-18.1 新增值对象 `ContentBlobRef`
 
 | 字段 | 类型 | 必填 | 说明 |
 |---|---|---|---|
@@ -40,7 +40,7 @@
 `uri` 只做"非空"约束：URI 方案取决于尚未决定的存储选择（D-01、D-02），
 现在收紧会把一个未做的决定写死进冻结契约。
 
-### 2. `LlmCall` 的最小完整登记
+### D-18.2 `LlmCall` 的最小完整登记
 
 | 字段 | 决定 |
 |---|---|
@@ -49,7 +49,7 @@
 | `output` | `ContentBlobRef`，**必填** |
 | `provider` | 非空字符串（现状为无约束字符串，收紧为 `min_length=1`） |
 | `model` | 非空字符串（同上） |
-| `called_at` | `UtcDatetime`，必填并带默认值（`datetime.now(UTC)`，与其它审计时间字段一致） |
+| `called_at` | `UtcDatetime`，**显式必填，不提供默认值** |
 
 原有的 `prompt_hash` / `input_hash` / `output_hash` 三个字符串字段被上述三个值对象**取代**：
 哈希继续存在，位置在 `ContentBlobRef.sha256`，并且第一次带上了取回路径与格式约束。
@@ -57,7 +57,13 @@
 三项**全部必填**：一次 LLM 调用总是有提示、有输入、有输出。允许其中任何一项缺失，
 等于允许记录一次无法复核的调用。
 
-### 3. 可取回性与内容一致性延期
+`called_at` **不设默认值**，与其它可以默认为"记录创建时刻"的审计时间字段不同：
+调用时刻必须由调用方提供真实值。若给它一个 `datetime.now(UTC)` 默认值，
+那么稍后（可能是几分钟、几小时后）构造 DTO 的时刻就会冒充调用时刻，
+而审计记录无法分辨两者。宁可让缺失 `called_at` 的载荷被拒绝，
+也不要一个看起来合法、实则错误的调用时间。
+
+### D-18.3 可取回性与内容一致性延期
 
 **严禁自报 `verified` 布尔。** 契约层无法打开 `uri`，因此：
 
@@ -116,7 +122,7 @@
 
 ## 验收测试矩阵
 
-> 本矩阵是**未来实现批次**的验收条件，本轮只起草，未运行、未实现。
+> 本 ADR 已获批准；下列矩阵是**实现批次**的验收条件。实现尚未发生，矩阵未运行。
 
 | # | 反例 / 场景 | 期望 |
 |---|---|---|
@@ -129,13 +135,14 @@
 | 7 | `byte_size` 为负 | 拒绝；为 `0` 时接受；不提供时接受 |
 | 8 | `provider` / `model` 为空串 | 拒绝 |
 | 9 | `called_at` 为 naive datetime | 拒绝（`UtcDatetime`） |
-| 10 | 不传 `called_at` | 接受，取默认值 |
-| 11 | `LlmCall` 出现任何自报验证布尔字段 | 不存在 |
-| 12 | `ContentBlobRef` 已登记进 `CONTRACT_MODELS` 并导出 Schema | 是 |
-| 13 | `V1_MODEL_NAMES` 是否包含 `ContentBlobRef`；`schemas/v1/` 文件数 | 否；仍为 35 份 |
-| 14 | v1 的三哈希 `LlmCall` 固定向量经 `read_v1` 读取 | 接受，旧哈希不变 |
-| 15 | 含 `llm_calls` 的复现元组 JSON 往返 | `experiment_hash` 按位一致 |
-| 16 | `06-experiment.md` 的缺口说明 | 在存储层就位前保持存在，不得删改为"已满足" |
+| 10 | `called_at` 为合法的 UTC aware datetime | 接受 |
+| 11 | 不传 `called_at` | 拒绝（无默认值，必须由调用方提供） |
+| 12 | `LlmCall` 出现任何自报验证布尔字段 | 不存在 |
+| 13 | `ContentBlobRef` 已登记进 `CONTRACT_MODELS` 并导出 Schema | 是 |
+| 14 | `V1_MODEL_NAMES` 是否包含 `ContentBlobRef`；`schemas/v1/` 文件数 | 否；仍为 35 份 |
+| 15 | v1 的三哈希 `LlmCall` 固定向量经 `read_v1` 读取 | 接受，旧哈希不变 |
+| 16 | 含 `llm_calls` 的复现元组 JSON 往返 | `experiment_hash` 按位一致 |
+| 17 | `06-experiment.md` 的缺口说明 | 在存储层就位前保持存在，不得删改为"已满足" |
 
 ## 后果
 

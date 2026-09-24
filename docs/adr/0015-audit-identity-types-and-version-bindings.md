@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24 起草，等待 Codex 文档复核；未获批准，不得实施） |
+| 状态 | **Accepted**（2026-09-24，Codex 依 Raphael 授权批准） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（Raphael 已授权其决定项目技术方向） |
 | 起草者 | Claude Code（Opus） |
@@ -163,7 +163,7 @@ v1 与 v2 的 `content_hash` / `experiment_hash` 本就**不可比较**（ADR-00
   不存在需要迁移的 v2 数据。
 - 需要重新导出 `schemas/`，顶层 Schema 数量将从 36 份增加；实际数量与差异以实施时的重导出结果为准。
 - `schemas/v1/`（35 份）与 `tests/vectors/v1/` **逐字节不变**。
-- **文档同步义务（获批后随实现执行，本轮不做）**：`06-experiment.md` §2 与
+- **文档同步义务（随本 ADR 的实现批次执行，接受本 ADR 的提交不做）**：`06-experiment.md` §2 与
   `07-validation.md` §5 目前把 Profile 引用写成 `vp:{scope_id}@{semver}`，
   与 `Ref(kind=profile)` 的规范串 `profile:{name}@{semver}` 不是同一种写法，需一并修订；
   `02-domain.md` §3.2 的身份键表需要补入本 ADR 的顶层身份类型。
@@ -176,7 +176,7 @@ v1 与 v2 的 `content_hash` / `experiment_hash` 本就**不可比较**（ADR-00
 
 ## 验收测试矩阵
 
-> 本矩阵是**未来实现批次**的验收条件，本轮只起草，未运行、未实现。
+> 本 ADR 已获批准；下列矩阵是**实现批次**的验收条件。实现尚未发生，矩阵未运行。
 
 | # | 反例 / 场景 | 期望 |
 |---|---|---|

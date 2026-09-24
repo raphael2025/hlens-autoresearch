@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-24 起草，等待 Codex 文档复核；未获批准，不得实施） |
+| 状态 | **Accepted**（2026-09-24，Codex 依 Raphael 授权批准） |
 | 日期 | 2026-09-24 |
 | 决策者 | Codex（Raphael 已授权其决定项目技术方向） |
 | 起草者 | Claude Code（Opus） |
@@ -13,10 +13,10 @@
 
 ## 背景
 
-`05-plugin.md` §3 的表头写着"冻结语义，**签名在 Phase 0 以代码形式定义**"，列出十类
-Provider；Phase 0 的 roadmap 验收标准里却没有"Provider 接口已定义"这一条，
-`core/contracts/README.md` 也记着"Provider 签名交付范围仍需明确"。
-仓库中 `core/contracts/` 目前只有验证架构契约与 Schema 导出，没有任何 Provider Protocol。
+Codex 审计时（`c81a548`），`05-plugin.md` §3 的表头写着"冻结语义，**签名在 Phase 0 以代码形式定义**"，
+列出十类 Provider；Phase 0 的 roadmap 验收标准里却没有"Provider 接口已定义"这一条，
+`core/contracts/README.md` 则记着"Provider 签名交付范围仍需明确"。
+仓库中 `core/contracts/` 只有验证架构契约与 Schema 导出，没有任何 Provider Protocol（现在仍然如此）。
 
 这是一处**文档与验收范围的不一致**，必须决定交付节奏，否则每次 Phase 0 复审都会重新争论
 "Provider 接口算不算 Phase 0 的欠账"。可选的两条路：
@@ -78,25 +78,33 @@ roadmap 若调整 Phase 归属，本表随之解释，无需修改本 ADR。
 `ComputeEngineAdapter`、`EventBusAdapter`）不是研究插件，适用同一交付节奏，
 其时点取决于 D-01、D-02、D-10。
 
-### 4. 实施时必须同步的文档
+### 4. 文档同步
 
-**未来某个 Provider 落地时**，必须在同一批次内同步修订（本轮**不做**）：
+本 ADR 获批时，**描述交付节奏本身**的文档已在同一提交内同步为当前真相：
+
+| 目标 | 已同步内容 |
+|---|---|
+| `05-plugin.md` §3 | 表头不再写"签名在 Phase 0 以代码形式定义"，改为：Phase 0 冻结职责 / 概念输入输出 / 确定性与版本语义，可执行接口按本 ADR 的节奏交付 |
+| `02-domain.md` §4 | `core/contracts/` 的说明与上述节奏一致，且不声称已存在 Provider Protocol |
+| `core/contracts/README.md` | 删除"Provider 签名交付范围仍需明确"，写明已定节奏与"当前尚未交付任何 Provider Protocol"的事实 |
+| `docs/research/roadmap.md` | 增加一条跨 Phase 验收规则：任一 Phase 首次消费某 Provider 前必须先交付 Protocol + DTO + provider-agnostic contract tests |
+
+**未来某个 Provider 落地时**，仍须在该批次内同步：
 
 | 目标 | 修订内容 |
 |---|---|
-| `05-plugin.md` §3 | 表头"签名在 Phase 0 以代码形式定义"改为按本 ADR 的交付节奏表述 |
-| `02-domain.md` §4 | `core/contracts/` 的内容说明补入该 Provider 接口 |
-| `core/contracts/README.md` | 删除"Provider 签名交付范围仍需明确"，写明当前已交付的接口 |
-| 相关 Phase 的验收标准 | 把该 Provider 的 Protocol + DTO + contract tests 列为验收项 |
+| `02-domain.md` §4、`core/contracts/README.md` | 补入该 Provider 已交付的接口 |
+| 该 Phase 的验收标准 | 把该 Provider 的 Protocol + DTO + contract tests 列为具体验收项 |
 
-roadmap 的 Phase 验收标准属于 Codex / Raphael 的决定范围；本 ADR 只记录"获批后需要同步"，
-不代替任何人修改 roadmap。
+roadmap 的跨 Phase 通用规则按本 ADR 同步；**各 Phase 的验收标准正文、Phase 顺序与范围
+不由本 ADR 改动**，仍属 Codex / Raphael 的决定范围。
 
 ## 明确不做
 
-- **本轮不写任何 Provider Protocol、DTO 或 contract test。**
-- **本轮不直接修改 `05-plugin.md`、`02-domain.md`、`core/contracts/README.md` 或 roadmap**——
-  这些是本 ADR **获批后**随实施批次执行的同步义务，不是起草阶段的动作。
+- **不写任何 Provider Protocol、DTO 或 contract test**：本 ADR 只定节奏，接受本 ADR 的提交
+  仍是 docs-only，`core/contracts/` 中的 Provider Protocol 数量仍为 0。
+- **不改变 roadmap 的 Phase 顺序、范围或任何 Phase 的开启状态**；对 roadmap 的同步
+  只限于 §4 的跨 Phase 通用验收规则。
 - 不改变十类 Provider 的划分、职责或确定性声明。
 - 不决定 Provider 的发现机制（`05-plugin.md` §5 的 entry points 保持现状）。
 - 不决定研究与生产是否共用同一个 Provider 实现（ADR-0005 Q-2 仍开放）。
@@ -126,17 +134,16 @@ D-25 关于"收窄仍属未发布的 `2.0.0`"的结论适用于 ADR-0011 ~ ADR-0
 ## 验收测试矩阵
 
 > 本 ADR 的验收对象是**流程与文档一致性**，不是运行时行为。
-> 下列检查在本 ADR 获批后、以及每个 Provider 落地时执行；本轮只起草，未执行。
+> 第 1 ~ 4 项在接受本 ADR 的提交中已满足；第 5 ~ 6 项在每个 Provider 落地时执行。
 
-| # | 场景 | 期望 |
-|---|---|---|
-| 1 | Phase 0 结束时 `core/contracts/` 中的 Provider Protocol 数量 | 0（方案 B 的直接结论） |
-| 2 | `05-plugin.md` §3 的表头表述与本 ADR | 获批后一致（当前不一致，是本 ADR 要解决的问题） |
-| 3 | `core/contracts/README.md` 的"交付范围仍需明确" | 获批后按 §4 处理 |
-| 4 | 某 Provider 的首个实现提交时，其 Protocol / DTO / contract tests | 三者已先行存在，且在该 Phase 验收项中 |
-| 5 | 任一 Phase 的 Provider 实现早于其接口与契约测试 | 该 Phase 验收不通过 |
-| 6 | 本轮改动是否触及 `05-plugin.md` / `02-domain.md` / roadmap / `core/contracts/README.md` | 未触及 |
-| 7 | 本轮改动是否新增 Python 代码或 Schema | 未新增 |
+| # | 场景 | 期望 | 本提交 |
+|---|---|---|---|
+| 1 | `05-plugin.md` §3 的表头表述与本 ADR | 一致 | 已同步 |
+| 2 | `02-domain.md` §4 与 `core/contracts/README.md` | 与节奏一致，且不声称已交付 Provider Protocol | 已同步 |
+| 3 | roadmap 的跨 Phase 验收规则 | 存在且与 §2 一致；Phase 顺序与范围不变 | 已同步 |
+| 4 | 本提交是否新增 Python 代码、测试或 Schema | 未新增；`core/contracts/` 中 Provider Protocol 数量仍为 0 | 满足 |
+| 5 | 某 Provider 的首个实现提交时，其 Protocol / DTO / contract tests | 三者已先行存在，且在该 Phase 验收项中 | 未到时点 |
+| 6 | 任一 Phase 的 Provider 实现早于其接口与契约测试 | 该 Phase 验收不通过 | 未到时点 |
 
 ## 备选方案
 
@@ -152,14 +159,14 @@ D-25 关于"收窄仍属未发布的 `2.0.0`"的结论适用于 ADR-0011 ~ ADR-0
   Phase 0 的交付边界清晰——没有 Provider 接口是**决定**，不是欠账；
   每类接口在有真实消费者时定义，并且接口与 provider-agnostic 测试先于实现。
 - 负面 / 代价：Phase 0 关闭时 `core/contracts/` 中没有 Provider 接口，
-  任何后续复审都必须读到本 ADR 才知道这是有意为之——因此 §4 的文档同步义务不可省略；
+  任何后续复审都必须读到本 ADR 或已同步的文档才知道这是有意为之；
   每个 Phase 的工作量增加一块（接口 + DTO + 契约测试）。
 - 对复现性的影响：无。本 ADR 不改变任何数据结构或哈希。
 
 ## 合规检查
 
-- [ ] 不修改 `05-plugin.md`、`02-domain.md`、`core/contracts/README.md`、roadmap（获批后随实施同步）
-- [ ] 不扩大 Phase 范围，不开启任何 Phase
+- [ ] 对 `05-plugin.md`、`02-domain.md`、`core/contracts/README.md`、roadmap 的修改只限于 §4 的节奏同步
+- [ ] 不扩大 Phase 范围，不开启任何 Phase，不改动各 Phase 的验收标准正文
 - [ ] 不修改任何已批准 ADR 的正文
 - [ ] 不新增代码、测试或 Schema
 - [ ] 不代替 Codex / Raphael 修改 Phase 验收标准

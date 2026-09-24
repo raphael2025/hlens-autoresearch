@@ -36,6 +36,18 @@ flowchart TD
 
 ---
 
+## 跨 Phase 通用验收规则
+
+以下规则适用于每一个 Phase，不改变 Phase 顺序、范围或开启条件。
+
+- **Provider 接口先于实现**（[ADR-0017](../adr/0017-provider-delivery-schedule.md)）：
+  任一 Phase 首次消费某类 Provider 之前，必须先交付该 Provider 的可执行 Protocol、
+  输入输出 DTO（带 `schema_version` 并导出 JSON Schema）与 provider-agnostic contract tests；
+  三者列入该 Phase 的验收。Provider 实现早于其接口与契约测试的 Phase 不得通过验收。
+  Phase 0 只冻结 Provider 的职责、概念输入输出、确定性与版本语义，不交付任何 Protocol。
+
+---
+
 ## Phase 0 — Research Constitution
 
 - **目标**：确立研究宪法、领域契约、项目工程基线，使后续一切实验有可裁判的规则。

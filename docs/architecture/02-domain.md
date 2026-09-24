@@ -247,7 +247,7 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 | 路径 | 内容 |
 |---|---|
 | `core/domain/` | 实体、值对象、不变量 |
-| `core/contracts/` | Provider 接口、跨 Plane DTO、JSON Schema 导出 |
+| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义，当前尚无 Provider Protocol） |
 | `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
 | `core/errors/` | 错误分类 |
 | `core/compat/` | 历史契约 major 的**只读**读取入口（不是迁移服务） |

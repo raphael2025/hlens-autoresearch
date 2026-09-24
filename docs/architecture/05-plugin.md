@@ -50,7 +50,14 @@ flowchart TB
     REG --> APP[Application Layer selects by name@version]
 ```
 
-## 3. Provider 接口语义（冻结语义，签名在 Phase 0 以代码形式定义）
+## 3. Provider 接口语义（Phase 0 冻结语义；可执行签名按 ADR-0017 的节奏交付）
+
+Phase 0 冻结的是本节的**概念层内容**：每类 Provider 的职责、概念输入输出、确定性语义，
+以及 §1 / §4 / §6 的版本与审计语义。**Phase 0 不定义十类 Provider 的可执行 Protocol。**
+每一类 Provider 的可执行 Protocol、输入输出 DTO（带 `schema_version` 并导出 JSON Schema）
+与 provider-agnostic contract tests，在**首次消费它的 Phase 开始实现之前**交付，
+并计入该 Phase 的验收（[ADR-0017](../adr/0017-provider-delivery-schedule.md)）。
+
 
 | Provider | 职责 | 输入 → 输出（概念） | 确定性 |
 |---|---|---|---|
