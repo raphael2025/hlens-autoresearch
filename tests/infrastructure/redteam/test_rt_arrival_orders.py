@@ -135,17 +135,14 @@ def test_rest_first_then_archive_conflicts_until_reconciled(w: World) -> None:
     final = rt.build(w)
     lineage = {item.canonical_revision_id: item.raw_table for item in final.manifest.lineage}
     assert {lineage[row["revision_id"]] for row in final.selection.rows} == {c.ARCHIVE_AGGS.table}
-    assert ManifestStore(w.h.adapter).load(rest_only.manifest.content_hash()) == rest_only.manifest
+    assert (
+        ManifestStore(w.h.adapter, w.builder()).load(rest_only.manifest.content_hash())
+        == rest_only.manifest
+    )
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=DatasetSpecError,
-    reason="G2 finding RT-5: F3 requires raw.binance_spot_precedence_evidence (and "
-    "quality.availability_evidence_gaps) to be bound whenever the table has a snapshot *now*; "
-    "a manifest built before the first D-33 edge can never be rebuilt afterwards",
-)
 def test_a_manifest_built_before_the_first_edge_still_reproduces_after_it(w: World) -> None:
+    """G2 RT-5 (fixed): the binding requirement is judged at the build, not at today's heads."""
     w.listed()
     arrivals = Arrivals(w)
     for name in ("IR", "NR"):
@@ -158,6 +155,32 @@ def test_a_manifest_built_before_the_first_edge_still_reproduces_after_it(w: Wor
     assert w.h.head(c.EVIDENCE.table) is not None  # the first edge now exists
     replay = rt.build(w, rest_only.manifest.point_in_time)
     assert replay.replayed and replay.manifest == rest_only.manifest
+
+
+def test_after_the_first_edge_the_old_manifest_loads_but_no_new_build_omits_the_edges(
+    w: World,
+) -> None:
+    """RT-5's boundary: only the materialized selection is judged at its own build."""
+    w.listed()
+    arrivals = Arrivals(w)
+    for name in ("IR", "NR"):
+        arrivals.step(name)
+    rt.report(w, at=utc(2023, 12, 15))
+    rest_only = rt.build(w)
+    stale = rest_only.manifest.point_in_time
+    for name in ("IA", "NA", "RC"):
+        arrivals.step(name)
+    store = ManifestStore(w.h.adapter, w.builder())
+    assert store.load(rest_only.manifest.content_hash()) == rest_only.manifest
+    assert store.persist(rest_only.manifest).replayed
+    before = rt.outputs(w)
+    # The same stale spec over another window is a new build: it runs now, when the edges exist.
+    with pytest.raises(DatasetSpecError, match="does not bind it"):
+        rt.build(w, stale, window=(START, START + timedelta(hours=1)))
+    # So is a new spec that simply leaves the evidence table out.
+    with pytest.raises(DatasetSpecError, match="ADR-0027"):
+        rt.build(w, skip=(*rt.OWN, c.EVIDENCE.table))
+    assert rt.outputs(w) == before
 
 
 def test_archive_first_then_rest_conflicts_until_reconciled_then_selects_the_same_rows(

@@ -58,7 +58,10 @@ def test_after_a_replacement_the_old_manifest_reproduces_and_a_new_build_conflic
     # The old manifest is untouched by later knowledge: bit-identical replay, still loadable.
     replay = rt.build(w, old_spec)
     assert replay.replayed and replay.manifest == first.manifest
-    assert ManifestStore(w.h.adapter).load(first.manifest.content_hash()) == first.manifest
+    assert (
+        ManifestStore(w.h.adapter, w.builder()).load(first.manifest.content_hash())
+        == first.manifest
+    )
 
     # Any spec that sees both archive revisions fails closed; nothing is written.
     before = rt.outputs(w)

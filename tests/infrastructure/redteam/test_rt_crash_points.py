@@ -105,9 +105,9 @@ def test_a_crash_after_any_commit_then_a_rerun_equals_an_uninterrupted_run(
         orphan = w.h.head(DATASET_SELECTIONS.table)
         assert (orphan is not None) == (k >= COMMITS - 1)
         assert w.h.rows(DATASET_MANIFESTS) == [] or k == COMMITS
-        assert ManifestStore(w.h.adapter).load(expected.manifest.content_hash()) is None or (
-            k == COMMITS
-        )
+        assert ManifestStore(w.h.adapter, w.builder()).load(
+            expected.manifest.content_hash()
+        ) is None or (k == COMMITS)
 
         rerun = _pipeline(w)
         assert rt.dataset_rows(rerun) == rt.dataset_rows(expected)

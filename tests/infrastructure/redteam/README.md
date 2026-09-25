@@ -24,7 +24,7 @@ is removed.
 | | replacement in Raw, not yet normalized | **RT-2 (succeeds)** |
 | `test_rt_arrival_orders` | all 16 lawful orders of ingest / normalize / reconcile | none needed: identical rows and manifest shape in every order |
 | | REST first, archive later (and the reverse), builds in between | F1 `PitConflictError` until the D-33 edge exists |
-| | manifest built before the first D-33 edge, rebuilt after it | **RT-5 (succeeds: rebuild refused)** |
+| | manifest built before the first D-33 edge, rebuilt after it | the rebuild replays (RT-5 fixed: a materialized selection is judged at its own build); a new build omitting the edges: F3 `DatasetSpecError` |
 | `test_rt_crash_points` | process death after each of the 19 commits of a full run, then rerun | every stage's idempotent recovery; no manifest while dead; orphan selection batch adopted |
 | | archive rows stopped half-way, read by E1 | E1 (`not exactly the N lines of its object`) |
 | | Canonical unit stopped half-way, read by E3 / F3 | **RT-1 (succeeds)** |
@@ -35,7 +35,7 @@ is removed.
 | | rows appended under a dataset's selection id | immune: the manifest binds its own snapshot |
 | | Canonical / dataset Parquet file rewritten in place; archive object bit-flipped | F1 proofs / F3 read-back / D2 object checksum (`CatalogIntegrityError`) |
 | | forged row under a genuine manifest hash | `ManifestStore.load` / `persist` |
-| | self-consistent manifest no build produced (exclusion dropped) | **RT-4 (succeeds)** |
+| | self-consistent manifest no build produced (exclusion dropped) | `ManifestStore.persist` / `load` re-derive it (`DatasetBuilder.verify_manifest`, RT-4 fixed) |
 | `test_rt_specs` | snapshot of another table; malformed snapshot id | catalog `SnapshotNotFound` |
 | | stale evidence / listing / exchangeInfo / gap / Raw element / Canonical snapshot | F1 conflict, F2 `LISTING_NOT_DERIVED`, E2 history proof, F3 gap-batch check, D-33 edge re-derivation, `QualityReportMissing` |
 | | forged hash of each of the 9 policy bindings; missing normalizer binding | F3 `KNOWN_BINDINGS` / F1 `REQUIRED_BINDINGS` |

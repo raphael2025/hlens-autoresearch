@@ -38,7 +38,10 @@ def test_end_to_end_and_restart_rebuild_on_postgres(pg: World) -> None:
         first.manifest.model_dump(mode="json")
     )
     assert len(pg.h.rows(DATASET_MANIFESTS)) == 1
-    assert ManifestStore(pg.h.adapter).load(first.manifest.content_hash()) == first.manifest
+    assert (
+        ManifestStore(pg.h.adapter, pg.builder()).load(first.manifest.content_hash())
+        == first.manifest
+    )
 
 
 def test_before_the_first_observation_nothing_is_written_on_postgres(pg: World) -> None:

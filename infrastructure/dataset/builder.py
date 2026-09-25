@@ -7,8 +7,10 @@ part; ``build`` materializes it and persists the manifest. Under ``hlens.dataset
 1. **bindings** (fail closed) — every availability / precedence / parser binding of the PIT spec
    must be a registered one with its exact hash (``KNOWN_BINDINGS``); the Canonical table of the
    data type, the listing tables and ``quality.data_quality_reports`` must be bound; the Raw
-   evidence table must be bound **whenever it has a snapshot** (ADR-0027 §13 as D-F1n ⑤ assigns
-   it to F3); the dataset's own table must not be an upstream binding;
+   evidence table (ADR-0027 §13 as D-F1n ⑤ assigns it to F3) and the evidence-gap table
+   (ADR-0031) must be bound **whenever they had a snapshot when the build ran** (see
+   ``_check_unbound``: a replay of a materialized selection is judged at its own build, G2 RT-5);
+   the dataset's own table must not be an upstream binding;
 2. **universe** — F2 ``UniverseBuilder`` at the bound snapshots; unconstructible = no dataset;
 3. **selection** — per member symbol, ``PitSelector.select`` slice by slice (``agg_trades``: UTC
    hours, ``klines_1m``: UTC days, clipped to the window), each key selected only by the slice
@@ -34,6 +36,11 @@ part; ``build`` materializes it and persists the manifest. Under ``hlens.dataset
    manifest. The manifest binds the dataset's own snapshot, so it can only follow the batch: a
    failure in between leaves a batch without a manifest, which no reader may use (ADR-0023 §6);
    a rerun replays the same batch and completes the manifest (F3-R1, cursor review 1).
+
+``verify_manifest`` (the ``ManifestVerifier`` of ``ManifestStore``, G2 RT-4) proves a manifest is
+exactly what a build of its own inputs produced: its dataset snapshot commits the batch
+``selection_id_for`` those inputs, and ``select`` at the bound snapshots re-derives every member,
+exclusion, lineage entry, report id, evidence gap and the rows the snapshot committed.
 """
 
 from __future__ import annotations
@@ -48,7 +55,14 @@ import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import EqualTo
 from pyiceberg.schema import assign_fresh_schema_ids
 
-from core.contracts.catalog import BatchConflict, CommitConflict, CommitRequest, TableNotFound
+from core.contracts.catalog import (
+    BatchConflict,
+    CommitConflict,
+    CommitRequest,
+    SnapshotInfo,
+    SnapshotNotFound,
+    TableNotFound,
+)
 from core.contracts.revision import PointInTimeSelection, PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
 from core.contracts.universe import (
@@ -87,8 +101,9 @@ from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVA
 from infrastructure.revision.precedence import PRECEDENCE_BINDING as ARCHIVE_PRECEDENCE
 from infrastructure.revision.rest_availability import REST_AVAILABILITY_BINDING
 from infrastructure.revision.rest_precedence import REST_PRECEDENCE_BINDING
+from infrastructure.revision.row_integrity import snapshots_of_batches
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
-from infrastructure.universe.builder import UniverseBuilder, UniverseBuilt
+from infrastructure.universe.builder import REGISTERED_UNIVERSES, UniverseBuilder, UniverseBuilt
 
 __all__ = [
     "DATASET_RULE_HASH",
@@ -169,6 +184,9 @@ _EVIDENCE: Final = BINANCE_SPOT_PRECEDENCE_EVIDENCE.table
 _LISTINGS: Final = CANONICAL_INSTRUMENT_LISTINGS.table
 _QUALITY: Final = DATA_QUALITY_REPORTS.table
 _GAPS: Final = QUALITY_EVIDENCE_GAPS.table
+#: Tables bound whenever they had a snapshot when the build ran (not the listing tables: a
+#: missing listing history is the universe's refusal), with the decision that requires it.
+_BOUND_IF_PRESENT: Final = ((_EVIDENCE, "ADR-0027 §13"), (_GAPS, "ADR-0031"))
 
 
 class DatasetBuildError(Exception):
@@ -280,24 +298,70 @@ class DatasetBuilder:
                 "universe's members: an empty Research Dataset has no snapshot of its own"
             )
         commit = self._materialize(selection)
-        manifest = ResearchDatasetManifest(
-            dataset=DatasetRef(
+        manifest = _manifest_of(
+            selection,
+            DatasetRef(
                 zone=Zone.RESEARCH_DATASET,
                 table=self._table.table,
                 snapshot_id=commit.snapshot_id,
                 time_range_start=start,
                 time_range_end=end,
             ),
-            point_in_time=pit,
-            universe_spec=universe.binding(),
-            members=selection.universe.members,
-            exclusions=selection.universe.exclusions,
-            lineage=selection.lineage,
-            quality_report_ids=selection.quality_report_ids,
-            evidence_gaps=selection.evidence_gaps,
         )
-        persisted = ManifestStore(self._adapter).persist(manifest)
+        # ``select`` derived the selection in this very call and ``_materialize`` read its rows
+        # back at the snapshot: the manifest is checked against it rather than re-selected.
+        verifier = _JustSelected(self._adapter, self._table, selection)
+        persisted = ManifestStore(self._adapter, verifier).persist(manifest)
         return DatasetBuilt(selection, manifest, commit, persisted)
+
+    def manifests(self) -> ManifestStore:
+        """The ``ManifestStore`` whose manifests this builder verifies (persist and load)."""
+        return ManifestStore(self._adapter, self)
+
+    def verify_manifest(self, manifest: ResearchDatasetManifest) -> None:
+        """``manifest`` is exactly what a build of its own inputs produced, or raise (G2 RT-4).
+
+        A hash-consistent, contract-valid manifest can still be false (an exclusion dropped over
+        the genuine dataset snapshot). So its dataset must be a snapshot of this builder's table
+        committing the batch ``selection_id_for`` the manifest's own universe spec (a registered
+        one), PIT spec, window and one data type; ``select`` at the bound snapshots (read-only,
+        deterministic) must then re-derive the manifest field for field, and the snapshot's rows
+        (batch fingerprint and count). Memory: one selection, the dataset's rows — as a build.
+        """
+        if not isinstance(manifest, ResearchDatasetManifest):
+            raise DatasetSpecError("manifest must be a ResearchDatasetManifest")
+        snapshot = _dataset_snapshot(self._adapter, self._table, manifest)
+        binding = manifest.universe_spec
+        universe = REGISTERED_UNIVERSES.get((binding.name, binding.version))
+        if universe is None or universe.binding() != binding:
+            raise CatalogIntegrityError(
+                f"manifest universe {binding.name}@{binding.version} is not a registered spec"
+            )
+        pit, dataset = manifest.point_in_time, manifest.dataset
+        start, end = dataset.time_range_start, dataset.time_range_end
+        data_types = [
+            data_type
+            for data_type in sorted(rules.CANONICAL_TABLES)
+            if selection_id_for(universe, pit, data_type, start, end) == snapshot.batch_id
+        ]
+        if len(data_types) != 1:
+            raise CatalogIntegrityError(
+                f"dataset snapshot {dataset.snapshot_id} of {dataset.table} does not commit the "
+                "selection of the manifest's own inputs"
+            )
+        selection = self.select(universe, pit, data_types[0], start, end)
+        _check_manifest(self._adapter, self._table, manifest, selection)
+        batch = pa.Table.from_pylist(
+            [dict(row) for row in selection.rows], schema=self._table.arrow_schema
+        )
+        if (
+            snapshot.added_rows != batch.num_rows
+            or snapshot.batch_fingerprint != self._table.fingerprint_rule.fingerprint(batch)
+        ):
+            raise CatalogIntegrityError(
+                f"dataset snapshot {dataset.snapshot_id} of {dataset.table} committed other rows "
+                "than its manifest's inputs select"
+            )
 
     def select(
         self,
@@ -309,10 +373,11 @@ class DatasetBuilder:
     ) -> DatasetSelection:
         """Everything a build decides, at the bound snapshots; nothing is written."""
         canonical = self._check_request(pit, data_type, start, end)
+        selection_id = selection_id_for(universe, pit, data_type, start, end)
+        self._check_unbound(pit, selection_id)
         built = UniverseBuilder(
             self._adapter, self._storage, market_data_base_url=self._origin
         ).build(universe, pit)
-        selection_id = selection_id_for(universe, pit, data_type, start, end)
         column = _time_column(data_type)
         selector = PitSelector(self._adapter, self._storage)
         rows: list[dict[str, Any]] = []
@@ -401,17 +466,41 @@ class DatasetBuilder:
                 raise DatasetSpecError(f"the PIT spec does not bind {table}")
         if self._table.table in bound:
             raise DatasetSpecError("the dataset's own table must not be an upstream binding")
-        if _EVIDENCE not in bound and self._head(_EVIDENCE) is not None:
-            raise DatasetSpecError(
-                f"{_EVIDENCE} has a snapshot but the PIT spec does not bind it (ADR-0027 §13)"
-            )
-        if _GAPS not in bound and self._head(_GAPS) is not None:
-            # Quality rule 2.0.0 keeps its evidence gaps there (ADR-0031): read unbound, every
-            # report's gaps would look missing.
-            raise DatasetSpecError(
-                f"{_GAPS} has a snapshot but the PIT spec does not bind it (ADR-0031)"
-            )
         return canonical.table
+
+    def _check_unbound(self, pit: PointInTimeSpec, selection_id: str) -> None:
+        """The evidence and gap tables are bound if they had a snapshot when the build ran.
+
+        The D-33 edges in ``_EVIDENCE`` resolve archive / REST heads (ADR-0027 §13); quality rule
+        2.0.0 keeps its evidence gaps in ``_GAPS`` (ADR-0031): read unbound, every report's gaps
+        would look missing. The requirement is judged at the build the spec describes, not at
+        today's heads (G2 RT-5); heads only move forward, so:
+
+        - a **new** build (its ``selection_id`` never materialized) runs now: refused while
+          either table has a snapshot now;
+        - a **replay** of a materialized selection is judged at its first build: the one writer
+          of the dataset table commits batch ``selection_id`` only after this very check passed
+          for the same spec (the id hashes the PIT spec, bindings included), so the table had no
+          snapshot then and its first snapshot came later. A batch forged under that id widens
+          nothing: ``_materialize`` / ``verify_manifest`` accept it only with exactly the rows
+          ``select`` derives, and an unbound table reads as empty on the pinned view, which can
+          only remove information, never change a selection (``PinnedCatalogView``).
+
+        Commit timestamps (``SnapshotInfo.committed_at``) are audit-only by contract and Iceberg
+        sequence numbers are per table: neither orders two tables' commits, so neither is used.
+        """
+        bound = pit.snapshot_bindings
+        missing = [
+            (table, adr)
+            for table, adr in _BOUND_IF_PRESENT
+            if table not in bound and self._head(table) is not None
+        ]
+        if not missing:
+            return
+        if snapshots_of_batches(self._adapter, self._table.table, (selection_id,))[selection_id]:
+            return  # a replay: the requirement held when the selection was first materialized
+        table, adr = missing[0]
+        raise DatasetSpecError(f"{table} has a snapshot but the PIT spec does not bind it ({adr})")
 
     # ------------------------------------------------------------------ selection
 
@@ -546,6 +635,80 @@ class DatasetBuilder:
         if info is None:
             raise TableNotFound(f"table {table} does not exist")
         return None if info.current_snapshot is None else info.current_snapshot.snapshot_id
+
+
+# =========================================================================================
+# manifest verification (G2 RT-4)
+# =========================================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class _JustSelected:
+    """``build``'s verifier: the manifest against the selection ``select`` just derived."""
+
+    adapter: RevisionCatalog
+    table: RegisteredTableDefinition
+    selection: DatasetSelection
+
+    def verify_manifest(self, manifest: ResearchDatasetManifest) -> None:
+        _check_manifest(self.adapter, self.table, manifest, self.selection)
+
+
+def _manifest_of(selection: DatasetSelection, dataset: DatasetRef) -> ResearchDatasetManifest:
+    return ResearchDatasetManifest(
+        dataset=dataset,
+        point_in_time=selection.point_in_time,
+        universe_spec=selection.universe_spec.binding(),
+        members=selection.universe.members,
+        exclusions=selection.universe.exclusions,
+        lineage=selection.lineage,
+        quality_report_ids=selection.quality_report_ids,
+        evidence_gaps=selection.evidence_gaps,
+    )
+
+
+def _dataset_snapshot(
+    adapter: RevisionCatalog,
+    definition: RegisteredTableDefinition,
+    manifest: ResearchDatasetManifest,
+) -> SnapshotInfo:
+    """The manifest's own dataset snapshot, which must be one of ``definition``'s table."""
+    dataset = manifest.dataset
+    if dataset.zone is not Zone.RESEARCH_DATASET or dataset.table != definition.table:
+        raise CatalogIntegrityError(
+            f"manifest dataset {dataset.zone.value}:{dataset.table} is not {definition.table}"
+        )
+    try:
+        return adapter.get_snapshot(dataset.table, dataset.snapshot_id)
+    except SnapshotNotFound as exc:
+        raise CatalogIntegrityError(
+            f"manifest dataset snapshot {dataset.snapshot_id} is not a snapshot of {dataset.table}"
+        ) from exc
+
+
+def _check_manifest(
+    adapter: RevisionCatalog,
+    definition: RegisteredTableDefinition,
+    manifest: ResearchDatasetManifest,
+    selection: DatasetSelection,
+) -> None:
+    """``manifest`` binds the batch of ``selection`` and states exactly what it derived."""
+    snapshot = _dataset_snapshot(adapter, definition, manifest)
+    if snapshot.batch_id != selection.selection_id:
+        raise CatalogIntegrityError(
+            f"dataset snapshot {snapshot.snapshot_id} commits {snapshot.batch_id!r}, not the "
+            f"selection {selection.selection_id} of the manifest's inputs"
+        )
+    expected = _manifest_of(selection, manifest.dataset)
+    if expected != manifest:
+        drift = [
+            name
+            for name in ResearchDatasetManifest.model_fields
+            if getattr(expected, name) != getattr(manifest, name)
+        ]
+        raise CatalogIntegrityError(
+            f"manifest {manifest.content_hash()} is not what its inputs build: {drift} differ"
+        )
 
 
 # =========================================================================================

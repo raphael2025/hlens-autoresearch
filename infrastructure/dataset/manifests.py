@@ -6,6 +6,14 @@ queryable identity columns plus ``manifest_json``, the contract canonical JSON w
 identity: persisting the same manifest again finds its row, proves it equal and commits nothing;
 a different row under that hash, or two rows, is ``CatalogIntegrityError``. ``load`` re-proves a
 persisted row (hash of the JSON, the contract re-validated, every column re-derived).
+
+A hash-consistent, contract-valid manifest can still be false: the genuine one minus an exclusion
+(survivorship) binds the same genuine dataset snapshot (G2 finding RT-4). So the store never
+persists or returns a manifest its ``ManifestVerifier`` has not proven to be exactly what a build
+of its own inputs produces — ``DatasetBuilder`` is that verifier: the dataset snapshot must commit
+the batch ``selection_id_for`` those inputs, and ``DatasetBuilder.select`` at the bound snapshots
+(read-only, deterministic) must re-derive every member, exclusion, lineage entry, report id, gap
+and the dataset rows themselves.
 """
 
 from __future__ import annotations
@@ -13,7 +21,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import EqualTo
@@ -25,7 +33,13 @@ from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
 
-__all__ = ["ManifestPersisted", "ManifestStore", "manifest_batch_id", "manifest_row"]
+__all__ = [
+    "ManifestPersisted",
+    "ManifestStore",
+    "ManifestVerifier",
+    "manifest_batch_id",
+    "manifest_row",
+]
 
 _TABLE: Final = DATASET_MANIFESTS.table
 _ATTEMPTS: Final = 8
@@ -85,14 +99,26 @@ class ManifestPersisted:
         return self.commit is None
 
 
-class ManifestStore:
-    """The one writer of ``research.dataset_manifests``; content-hash idempotent."""
+class ManifestVerifier(Protocol):
+    """Proves a manifest is what a build of its own inputs produces, or raises (fail closed)."""
 
-    def __init__(self, adapter: RevisionCatalog) -> None:
+    def verify_manifest(self, manifest: ResearchDatasetManifest) -> None: ...
+
+
+class ManifestStore:
+    """The one writer of ``research.dataset_manifests``; content-hash idempotent.
+
+    Every manifest is proven by ``verifier`` before it is persisted (a replay included) and after
+    it is loaded; nothing is committed for a manifest that does not verify.
+    """
+
+    def __init__(self, adapter: RevisionCatalog, verifier: ManifestVerifier) -> None:
         self._adapter = adapter
+        self._verifier = verifier
 
     def persist(self, manifest: ResearchDatasetManifest) -> ManifestPersisted:
         expected = manifest_row(manifest)
+        self._verifier.verify_manifest(manifest)
         content_hash = expected["manifest_content_hash"]
         last: Exception | None = None
         for _ in range(_ATTEMPTS):
@@ -136,7 +162,7 @@ class ManifestStore:
         raise CatalogIntegrityError(f"manifest {content_hash} lost {_ATTEMPTS} races") from last
 
     def load(self, content_hash: str) -> ResearchDatasetManifest | None:
-        """The persisted manifest, re-proven; ``None`` if no row has this hash."""
+        """The persisted manifest, re-proven and re-derived; ``None`` if no row has this hash."""
         row = self._row(content_hash)
         if row is None:
             return None
@@ -146,6 +172,7 @@ class ManifestStore:
         manifest = ResearchDatasetManifest.model_validate_json(document)
         if manifest_row(manifest) != row:
             raise CatalogIntegrityError(f"manifest {content_hash}: columns disagree with its JSON")
+        self._verifier.verify_manifest(manifest)
         return manifest
 
     def _row(self, content_hash: str) -> Mapping[str, Any] | None:

@@ -4,5 +4,7 @@
   deterministic selection at the bound snapshots, gated by the F2 universe, bound to verified
   quality reports, materialized as one batch of a research table, recorded as a manifest;
 - ``selection``: the **proposed** shape of that research table (no table is frozen for it);
-- ``manifests``: ``ManifestStore`` — content-hash idempotent ``research.dataset_manifests`` rows.
+- ``manifests``: ``ManifestStore`` — content-hash idempotent ``research.dataset_manifests`` rows,
+  each re-derived by its ``ManifestVerifier`` (``DatasetBuilder.verify_manifest``) on persist and
+  load.
 """

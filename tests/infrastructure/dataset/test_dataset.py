@@ -9,13 +9,13 @@ from __future__ import annotations
 
 import json
 from datetime import timedelta
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
 from core.contracts.universe import ExclusionReason, ResearchDatasetManifest
 from core.domain.base import canonical_json
-from core.domain.specs import Zone
+from core.domain.specs import DatasetRef, Zone
 from infrastructure.canonical.listings import UnconstructibleReason
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -122,7 +122,7 @@ def test_archive_to_manifest_end_to_end(w: World) -> None:
     # Persisted: one row, re-proven on load.
     [row] = w.h.rows(MANIFESTS)
     assert row == manifest_row(manifest)
-    assert ManifestStore(w.h.adapter).load(manifest.content_hash()) == manifest
+    assert ManifestStore(w.h.adapter, w.builder()).load(manifest.content_hash()) == manifest
     assert not built.replayed
 
 
@@ -366,7 +366,7 @@ def test_slices_follow_the_utc_grid() -> None:
 def test_manifest_store_is_content_hash_idempotent(w: World) -> None:
     _ready(w)
     built = _build(w)
-    store = ManifestStore(w.h.adapter)
+    store = ManifestStore(w.h.adapter, w.builder())
     assert store.persist(built.manifest).replayed
     other: ResearchDatasetManifest = built.manifest.model_copy(
         update={"quality_report_ids": (*built.manifest.quality_report_ids, "qr-extra")}
@@ -383,3 +383,100 @@ def test_manifest_store_is_content_hash_idempotent(w: World) -> None:
         )
         == built.selection.selection_id
     )
+
+
+# =========================================================================================
+# manifest verification (G2 RT-4): a manifest is what a build of its own inputs produced
+# =========================================================================================
+
+LATE: Final = (utc(2023, 11, 14, 22), END)
+
+
+def test_a_genuine_manifest_verifies_on_persist_and_load(w: World) -> None:
+    _ready(w)
+    built = _build(w)
+    builder = w.builder()
+    builder.verify_manifest(built.manifest)
+    store = builder.manifests()
+    assert store.load(built.manifest.content_hash()) == built.manifest
+    assert store.persist(built.manifest).replayed
+    w.more_trades()  # later heads never reach the manifest's bound snapshots
+    w.report()
+    assert store.load(built.manifest.content_hash()) == built.manifest
+    later = _build(w, built.manifest.point_in_time, window=LATE)  # another dataset, same spec
+    assert store.load(later.manifest.content_hash()) == later.manifest
+    assert store.load(built.manifest.content_hash()) == built.manifest
+
+
+def _revalidated(manifest: ResearchDatasetManifest, **update: Any) -> ResearchDatasetManifest:
+    """A contract-valid, hash-consistent variant of ``manifest``."""
+    forged = manifest.model_copy(update=update)
+    return ResearchDatasetManifest.model_validate_json(forged.model_dump_json())
+
+
+def test_no_manifest_a_build_did_not_produce_is_persisted_or_loaded(w: World) -> None:
+    _ready(w)
+    built = _build(w)
+    other = _build(w, built.manifest.point_in_time, window=LATE)
+    genuine = built.manifest
+    dataset = genuine.dataset
+    listing_lineage = tuple(i for i in genuine.lineage if i.canonical_table != c.TRADES.table)
+    forgeries = {
+        "extra-report": _revalidated(
+            genuine, quality_report_ids=(*genuine.quality_report_ids, "qr-extra")
+        ),
+        "dropped-member": _revalidated(genuine, members=genuine.members[1:]),
+        "dropped-lineage": _revalidated(genuine, lineage=listing_lineage),
+        "dropped-gap": _revalidated(genuine, evidence_gaps=genuine.evidence_gaps[1:]),
+        "other-window": _revalidated(
+            genuine,
+            dataset=dataset.model_copy(update={"time_range_end": END + timedelta(hours=1)}),
+        ),
+        "other-snapshot": _revalidated(
+            genuine,
+            dataset=dataset.model_copy(update={"snapshot_id": other.dataset_commit.snapshot_id}),
+        ),
+        "other-table": _revalidated(
+            genuine, dataset=dataset.model_copy(update={"table": "research.elsewhere"})
+        ),
+        "unregistered-universe": _revalidated(
+            genuine,
+            universe_spec=genuine.universe_spec.model_copy(update={"spec_hash": "0" * 64}),
+        ),
+    }
+    store = w.builder().manifests()
+    for name, forged in forgeries.items():
+        assert forged != genuine, name
+        before = w.h.head(MANIFESTS.table)
+        with pytest.raises(CatalogIntegrityError):
+            store.persist(forged)
+        assert w.h.head(MANIFESTS.table) == before, name  # nothing committed
+        w.h.forge_rows(MANIFESTS, [manifest_row(forged)], batch_id=f"forged-{name}")
+        with pytest.raises(CatalogIntegrityError):
+            store.load(forged.content_hash())
+    assert store.load(genuine.content_hash()) == genuine
+
+
+def test_a_dataset_snapshot_with_other_rows_than_its_selection_is_refused(w: World) -> None:
+    _ready(w)
+    spec = w.spec()
+    selection = w.builder().select(FIRST_SLICE_UNIVERSE, spec, "agg_trades", *LATE)
+    assert len(selection.rows) == 3
+    # A hostile writer commits the selection's batch id with one row dropped.
+    rows = [dict(row) for row in selection.rows[1:]]
+    w.h.forge_rows(DATASET_SELECTIONS, rows, batch_id=selection.selection_id)
+    snapshot = w.h.head(DATASET_SELECTIONS.table)
+    assert snapshot is not None
+    manifest = b._manifest_of(
+        selection,
+        DatasetRef(
+            zone=Zone.RESEARCH_DATASET,
+            table=DATASET_SELECTIONS.table,
+            snapshot_id=snapshot,
+            time_range_start=LATE[0],
+            time_range_end=LATE[1],
+        ),
+    )
+    with pytest.raises(CatalogIntegrityError, match="committed other rows"):
+        w.builder().manifests().persist(manifest)
+    assert w.h.rows(MANIFESTS) == []

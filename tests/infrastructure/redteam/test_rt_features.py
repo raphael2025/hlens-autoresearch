@@ -76,13 +76,13 @@ def _forged_row(w: World, built: DatasetBuilt) -> str:
     row = dict(rt.manifest_row(other), manifest_content_hash=genuine)
     w.h.forge_rows(DATASET_MANIFESTS, [row], batch_id="forged-manifest")
     with pytest.raises(CatalogIntegrityError):
-        ManifestStore(w.h.adapter).load(genuine)  # the store itself refuses it
+        ManifestStore(w.h.adapter, w.builder()).load(genuine)  # the store itself refuses it
     return genuine
 
 
 def _unknown(w: World, built: DatasetBuilt) -> str:
     unknown = content_hash({"manifest": "never persisted"})
-    assert ManifestStore(w.h.adapter).load(unknown) is None
+    assert ManifestStore(w.h.adapter, w.builder()).load(unknown) is None
     return unknown
 
 

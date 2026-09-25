@@ -206,23 +206,17 @@ def test_a_forged_row_under_a_genuine_manifest_hash_is_refused(w: World) -> None
     row = dict(rt.manifest_row(forged), manifest_content_hash=built.manifest.content_hash())
     w.h.forge_rows(DATASET_MANIFESTS, [row], batch_id="forged-manifest")
     with pytest.raises(CatalogIntegrityError):
-        ManifestStore(w.h.adapter).load(built.manifest.content_hash())
+        ManifestStore(w.h.adapter, w.builder()).load(built.manifest.content_hash())
     with pytest.raises(CatalogIntegrityError):
         rt.build(w, built.manifest.point_in_time)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="G2 finding RT-4: ManifestStore persists and loads any hash-consistent manifest; "
-    "nothing ties a manifest to the build that produced its dataset snapshot, so a "
-    "survivorship-biased manifest over a genuine dataset snapshot is accepted",
-)
 def test_a_self_consistent_manifest_no_build_produced_is_refused(w: World) -> None:
+    """G2 RT-4 (fixed): the store re-derives every manifest it persists or loads."""
     built = _halted(w)
     forged = _survivorship(built)
     assert forged.dataset == built.manifest.dataset  # binds the genuine dataset snapshot
-    store = ManifestStore(w.h.adapter)
+    store = ManifestStore(w.h.adapter, w.builder())
     with pytest.raises(CatalogIntegrityError):
         store.persist(forged)
         store.load(forged.content_hash())

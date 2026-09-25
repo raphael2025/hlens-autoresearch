@@ -166,7 +166,7 @@ def test_phase1_first_slice_archive_to_representation(w: ds.World) -> None:
     # Persisted: one row, re-proven on load.
     [manifest_db_row] = w.h.rows(DATASET_MANIFESTS)
     assert manifest_db_row == manifest_row(manifest)
-    assert ManifestStore(w.h.adapter).load(manifest.content_hash()) == manifest
+    assert ManifestStore(w.h.adapter, w.builder()).load(manifest.content_hash()) == manifest
     assert not built.replayed
 
     # A rebuild (fresh process: a reopened catalog adapter) is bit-identical and replays.
