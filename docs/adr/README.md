@@ -42,6 +42,7 @@
 | [0034](0034-knowledge-provider.md) | KnowledgeProvider 契约与本地知识库（Phase 0.5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0044](0044-event-bus-and-worker-jobs.md) | EventBusAdapter 契约、内存总线与 worker 幂等任务（Phase 11 地基） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0042](0042-synthetic-market-provider.md) | SyntheticMarketProvider 契约与随机游走生成器（Phase 9） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0045](0045-strategy-evolution.md) | 策略演化算子与谱系（Phase 12） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0047](0047-migration-framework.md) | 技术迁移框架——金标准重跑与 Adapter 一致性（Phase 14） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
