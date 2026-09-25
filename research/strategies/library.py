@@ -2,7 +2,8 @@
 
 Every entry has a source (KnowledgeItem refs in the spec / policy lineage), a declared parameter
 space and a hypothesis family (for the trial count). Registration is not validity: every entry is
-``NOT_VALIDATED`` until the Phase 4 pipeline is wired (``validation.py``). Nothing here is promoted;
+``NOT_VALIDATED`` until it passes the validation pipeline (``validation.py``, ADR-0037 / 0041) with
+frozen Profile numbers. Nothing here is promoted;
 ``strategies/`` and ``risk/`` stay empty (ADR-0005).
 """
 
