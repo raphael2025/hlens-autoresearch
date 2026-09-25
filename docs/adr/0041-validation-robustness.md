@@ -206,3 +206,24 @@ R17 测试显式传 `horizon=0` 以保持其原语义。循环 E2E 的连带变�
 `G0.manifest_binding` PASS 且其余门与合成路径完全相同；manifest 外的 bar / 过晚 cutoff / 无标的 bar 被检出；合成路径被标注；公开构建器即
 `validate` 所用输入；FAIL 后的诊断 G4 只报告、不改判定）。真实数据冒烟改用公开诊断 API 并传入 `DatasetPriceBars`。状态仍为
 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (durable ledgers, 2026-09-25)
+
+不新增 ADR，不改契约。调试批次的发现：`SealedOosVault` 的开封账本（含 `claim_evaluation` / `mark_evaluated` 与逐族批准）只存在于内存，
+进程重启后"每族只开封一次""每次开封只评估一次""全局开封预算"都不再跨进程生效——重启后的进程可以把已开封过的族再开封一次。
+
+修复只加不改：新增共享模块 `research.persistence.AppendOnlyJournal`（哈希链、只追加的 JSON-lines 文件，写法对齐
+`research.strategies.failure_registry.FailureRegistry`——`append` 是唯一的写操作，`flush` + `fsync`，文件变短即 `JournalCorrupted`
+拒绝写入），额外加一条 SHA-256 哈希链：每行携带自身内容哈希与前一行的哈希（`core.domain.base.canonical_json` 规范化），重新打开文件时
+重放并校验整条链，哈希不符、链断开、行被截断或出现未知记录类型一律 `JournalCorrupted`，不静默修复、不跳过。
+
+`research/validation/sealed_oos.py` 新增 `DurableUnsealingLedger`（实现既有的 `UnsealingLedger` Protocol，行为与
+`InMemoryUnsealingLedger` 完全一致，只是落盘）；`SealedOosVault.__init__` 新增可选关键字参数 `path`，与既有的 `ledger` 参数二选一
+（都省略时默认新建 `InMemoryUnsealingLedger()`，与原有行为相同；同时给出 `ledger` 与 `path` 报错）。所有既有调用点都显式传 `ledger`，
+不受影响，API 完全向后兼容。同一批次里 `research/hypotheses/ledger.py` 的 `TrialLedger` 与 `research/evolution/lineage.py` 的
+`LineageGraph` 也获得同样的可选 `path`（见各自模块与 ADR-0040 / ADR-0045 的同名实施说明）。
+
+回归测试：`tests/research/persistence/test_journal.py`（哈希链、重放、篡改/重排/截断/文件变短拒绝、确定性重放同一状态哈希、
+NaN/Infinity payload 拒绝）；`tests/research/validation/test_durable_sealed_oos.py`（进程 A 开封的族在进程 B 无法再开封；进程 A
+`claim_evaluation` 消耗的评估进程 B 无法再领取；全局预算跨重启计数；篡改文件拒绝；确定性重放）。状态仍为
+FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值无变化，本说明不涉及任何验证规则或阈值。

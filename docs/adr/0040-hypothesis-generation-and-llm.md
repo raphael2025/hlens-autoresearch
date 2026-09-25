@@ -20,3 +20,18 @@
 4. 生成：`from_knowledge`（每个知识主张一个待检验假设，`origin = knowledge`）；`from_llm`（输出须通过结构校验，结果是
    `reviewed = False` 的草稿，账本只接受经人工审阅的草稿）。LLM 不参与任何裁决、不修改验证规则。
 5. 批量实验调度复用 `apps/worker`（ADR-0044）；trial 校正在 P4 / P8 验证中消费账本计数。
+
+## Implementation note (durable ledgers, 2026-09-25)
+
+不新增 ADR，不改契约。调试批次的发现：`TrialLedger` 只存在于内存，进程重启后一个族的 trial 计数回落到 0，破坏 C-T1 的多重检验
+校正（校正用的尝试次数必须是该族**全部**已登记假设，失败的也算）。
+
+修复：`TrialLedger.__init__` 新增可选参数 `path`（省略即原有的纯内存行为，完全向后兼容——所有既有调用都是 `TrialLedger()` 无参）。
+给出 `path` 时，每次**新**登记（`register` / `register_draft` 返回 `True`）追加一行到 `research.persistence.AppendOnlyJournal`
+（哈希链、只追加、`flush` + `fsync`，与 `research.strategies.failure_registry.FailureRegistry` 同一持久化写法，另加 SHA-256 哈希链，
+细节见 ADR-0041 同日实施说明）；重复登记同一内容不追加（保持幂等，不重复计数）。重新打开同一文件会重放并校验整条哈希链，恢复
+`_registered` / `_order`，因此一个族的 trial 计数跨进程重启延续；换内容重复登记（`name@version` 相同、内容不同）在重放时与实时注册
+一样被拒绝（`LedgerError`），文件被篡改、截断或出现未知记录类型一律 `research.persistence.JournalCorrupted`。
+
+回归测试：`tests/research/hypotheses/test_durable_ledger.py`（trial 计数跨重启延续；重放后幂等登记与换内容拒绝；篡改文件拒绝；
+确定性重放同一状态）。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。

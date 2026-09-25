@@ -32,6 +32,7 @@
 | R22 | 中 | `research/validation/overfitting.py`（CSCV） | purge 只用时期时间 ± embargo，标签 / 持有期可能长于 embargo | ✅ 已修：必填 `horizon`（`RobustnessInput.holding_horizon` = max(标签 horizon, 最长持有期)），与 `purge_and_embargo` 同一语义；剔除过多仍 INCONCLUSIVE（ADR-0041 实施说明「review fixes 2」） |
 | R23 | 低 | `research/validation/robustness.py`（walk-forward） | 无收益的窗口被移出分母，抬高正收益窗口比例 | ✅ 已修（保守选项）：空窗口计入并报告，任一空窗口 → `G4.walk_forward.positive_fraction` INCONCLUSIVE（不计为非正：那会把缺证据变成 REJECTED）。连带：循环多轮 E2E 的第 0 轮从 PASS 变为 INCONCLUSIVE（每轮只验证新段，Profile walk-forward 覆盖整个研究窗口），见 ADR-0049 实施说明第 5 条 |
 | R24 | 低 | `apps/worker/loop.py`（预算） | 只有阶段多报时停机，少报时预算按少报额计费 | ✅ 已修（保守选项）：完成的阶段按逐维度 max(声明, 报告) 计费，`StageRecord.charged` 记录 |
+| R26 | 中 | `research/validation/sealed_oos.py`、`research/hypotheses/ledger.py`、`research/evolution/lineage.py` | 开封账本（含 `claim_evaluation` / `mark_evaluated` 与逐族批准）、`TrialLedger`、`LineageGraph` 只存在于内存：进程重启后"每族只开封一次""全局开封预算""族 trial 计数""谱系父子关系"都不再跨进程生效 | ✅ 已修：新增共享模块 `research.persistence.AppendOnlyJournal`（哈希链、只追加 JSON-lines，写法对齐 `FailureRegistry`）；三者的构造函数新增可选 `path`（省略即原有纯内存行为，向后兼容），给定时落盘并在重新打开时重放校验整条哈希链；篡改、截断或未知记录类型一律拒绝，不静默修复（ADR-0040 / ADR-0041 / ADR-0045 同日实施说明） |
 
 ## B. 需要 Raphael 决定（红线，Claude 不自行决定）
 

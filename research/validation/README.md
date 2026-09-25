@@ -22,7 +22,7 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
 | `gates.py` | `threshold(profile, path)`（值 + 来源路径）、`explicit_threshold`（`param:`）、`compare_gate`、`flag_gate`、`inconclusive_gate`、`missing_field_gate`、`configuration_missing_gate`、`ProfileFieldMissing` |
 | `splits.py` | `purge_and_embargo`、`walk_forward_folds` / `walk_forward_windows`（Profile 窗口与 embargo）、`non_overlapping_windows`（G4 窗口统计只计不重叠的测试窗口）、`purged_k_fold`（排除封存区）、`research_spans` |
 | `controls.py` | `SignalStudy` / `FittableStudy` Protocol；`blind_labels`（流水线使用的侧向一律由盲化标签计算）；shuffle / shift 负对照（C-L6） |
-| `sealed_oos.py` | `SealedOosVault`（固定日期窗口，开封前锁定，每族只开封一次，全局预算 `max_unsealings` 为必填显式参数，每次开封只可评估一次；`claim_evaluation` 在任何封存样本离开前即记为已评估，返回一次性 `SealedEvaluation`）、`UnsealingLedger` Protocol + 内存实现 |
+| `sealed_oos.py` | `SealedOosVault`（固定日期窗口，开封前锁定，每族只开封一次，全局预算 `max_unsealings` 为必填显式参数，每次开封只可评估一次；`claim_evaluation` 在任何封存样本离开前即记为已评估，返回一次性 `SealedEvaluation`）、`UnsealingLedger` Protocol + 内存实现 `InMemoryUnsealingLedger` + 落盘实现 `DurableUnsealingLedger`（见下） |
 | `costs.py` | 成本模型 v1 的应用：净收益、盈亏平衡成本倍数、Profile 绑定检查 |
 | `stats.py` | 有效独立样本（重叠区间连通分量数）、HAC t 检验、多重检验校正（`bonferroni` / `sidak`；其它方法拒绝） |
 | `calibration.py` | 空模型校准报告框架：`RandomWalkMarket` 上的假阳性率 / 检出率（`FRAMEWORK_ONLY_NOT_CALIBRATED`，不提出任何数值） |
@@ -39,3 +39,13 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   适配器门 `G0.manifest_binding` 核对 setup 的 manifest 哈希即该包装的哈希、重跑用到的每根 bar 都是包装内已证明的 bar、所验证标的有 bar、
   没有 bar 晚于包装的 `price_cutoff`；任一不符判 **FAIL**（G0 → `REJECTED` / `CONTRACT_VIOLATION`）。`dataset_bars=None` 为合成路径：
   manifest 哈希只是未经验证的标签，不加门，报告视图 `extra.price_binding.mode = "synthetic_unverified"`。
+
+### 落盘的开封账本（调试批次，2026-09-25，ADR-0041 实施说明）
+
+`SealedOosVault` 默认仍是纯内存的（省略 `ledger` / `path` 时等价于原先的 `InMemoryUnsealingLedger()`）。
+构造时传入 `path=<文件>`（与 `ledger` 二选一，同时给出会报错）即改用 `DurableUnsealingLedger`：
+每次 `record` / `mark_evaluated` 追加一行哈希链 JSON（`research.persistence.AppendOnlyJournal`，写法与
+`research.strategies.failure_registry.FailureRegistry` 一致——只追加、`flush` + `fsync`、文件变短即拒绝），
+重新打开文件会重放并校验整条哈希链后恢复状态。效果：某族在进程 A 开封后，进程 B 打开同一文件无法再次开封该族；
+在进程 A 里 `claim_evaluation` 消耗的评估，进程 B 也无法再次领取；全局 `max_unsealings` 预算跨重启累计计数。
+链被篡改、截断或出现未知记录类型一律 `research.persistence.JournalCorrupted`，不静默修复。

@@ -1,0 +1,97 @@
+"""Durable ``TrialLedger``: family trial counts survive a process restart (debugging pass,
+2026-09-25; ADR-0040 implementation note; backlog row R26).
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from core.domain.base import Kind, Ref
+from research.hypotheses import LedgerError, TrialLedger, negation
+from research.persistence import AppendOnlyJournal, JournalCorrupted
+
+S = Ref(kind=Kind.STRATEGY, name="tsmom", version="1.0.0")
+
+
+def test_the_family_trial_count_continues_across_a_restart(tmp_path: Path) -> None:
+    path = tmp_path / "trials.jsonl"
+
+    process_a = TrialLedger(path)
+    assert process_a.register(negation("h1", "fam", S, "0.1"))
+    assert process_a.register(negation("h2", "fam", S, "0.1"))
+    assert process_a.trials("fam") == 2
+
+    process_b = TrialLedger(path)  # a fresh process opening the same ledger file
+    assert process_b.trials("fam") == 2
+    assert process_b.register(negation("h3", "fam", S, "0.1"))
+    assert process_b.trials("fam") == 3
+
+    process_c = TrialLedger(path)
+    assert process_c.trials("fam") == 3
+    assert {h.name for h in process_c.hypotheses} == {"h1", "h2", "h3"}
+
+
+def test_re_registering_the_same_hypothesis_after_reload_is_not_a_new_trial(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "trials.jsonl"
+    h1 = negation("h1", "fam", S, "0.1")
+    TrialLedger(path).register(h1)
+
+    reloaded = TrialLedger(path)
+    assert not reloaded.register(h1)  # idempotent: the family count does not double
+    assert reloaded.trials("fam") == 1
+
+
+def test_changing_a_registered_hypothesis_after_reload_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "trials.jsonl"
+    original = negation("h1", "fam", S, "0.1")
+    TrialLedger(path).register(original)
+
+    reloaded = TrialLedger(path)
+    changed = original.model_copy(update={"statement": "something else"})
+    with pytest.raises(LedgerError, match="new version"):
+        reloaded.register(changed)
+
+
+def test_omitting_path_keeps_the_ledger_purely_in_memory(tmp_path: Path) -> None:
+    ledger = TrialLedger()
+    ledger.register(negation("h1", "fam", S, "0.1"))
+    # nothing was written to disk: a fresh path-backed ledger does not see it
+    fresh = TrialLedger(tmp_path / "unrelated.jsonl")
+    assert fresh.trials("fam") == 0
+
+
+def test_a_tampered_ledger_file_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "trials.jsonl"
+    TrialLedger(path).register(negation("h1", "fam", S, "0.1"))
+
+    lines = path.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[0])
+    tampered["payload"]["family_id"] = "other_fam"
+    path.write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+
+    with pytest.raises(JournalCorrupted):
+        TrialLedger(path)
+
+
+def test_an_unknown_record_type_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "trials.jsonl"
+    AppendOnlyJournal(path).append("not_a_registration", {"x": 1})
+    with pytest.raises(JournalCorrupted):
+        TrialLedger(path)
+
+
+def test_deterministic_replay_gives_the_same_state(tmp_path: Path) -> None:
+    path = tmp_path / "trials.jsonl"
+    ledger = TrialLedger(path)
+    ledger.register(negation("h1", "fam", S, "0.1"))
+    ledger.register(negation("h2", "fam", S, "0.1"))
+
+    a = TrialLedger(path)
+    b = TrialLedger(path)
+    assert a.trials("fam") == b.trials("fam") == 2
+    assert [h.content_hash() for h in a.hypotheses] == [h.content_hash() for h in b.hypotheses]

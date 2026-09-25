@@ -24,8 +24,12 @@ Budget and one-shot evaluation (Phase 8 fix, ADR-0041):
   claim hands the bars out once (``take("bars")``) and the label spans once (``view``); after the
   claim nobody, the claimant included, can read the window through the vault again.
 
-``InMemoryUnsealingLedger`` is the framework ledger; a durable Control Plane ledger implements the
-same ``UnsealingLedger`` Protocol later (not in this batch).
+``InMemoryUnsealingLedger`` is the pure-memory ledger; ``DurableUnsealingLedger`` (debugging pass,
+2026-09-25, ADR-0041 implementation note) is the same Protocol backed by a hash-chained
+append-only file (``research.persistence.AppendOnlyJournal``), so "one unsealing per family",
+"one evaluation per unsealing" and the global unsealing count survive a process restart. A
+Control Plane ledger may implement the same ``UnsealingLedger`` Protocol later; that is not this
+batch.
 """
 
 from __future__ import annotations
@@ -33,13 +37,16 @@ from __future__ import annotations
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Protocol
 
 from core.contracts.profile_selection import OosUnsealing
 from core.contracts.validation_profile import ValidationProfile
+from research.persistence import AppendOnlyJournal, JournalCorrupted
 from research.validation.splits import LabeledSpan, midnight_utc
 
 __all__ = [
+    "DurableUnsealingLedger",
     "InMemoryUnsealingLedger",
     "OosAlreadyUnsealed",
     "OosBudgetExhausted",
@@ -129,6 +136,74 @@ class InMemoryUnsealingLedger:
         return family_id in self._evaluated
 
 
+class DurableUnsealingLedger:
+    """``UnsealingLedger`` backed by a hash-chained append-only file (debugging pass, 2026-09-25).
+
+    Every ``record`` / ``mark_evaluated`` call is one journal line; replaying the file on open
+    restores exactly the state ``InMemoryUnsealingLedger`` would have built from the same calls,
+    so a family unsealed (or evaluated) by one process cannot be unsealed (or evaluated) again by
+    another that opens the same file. A tampered, truncated or foreign-type file is refused
+    (``research.persistence.JournalCorrupted``); nothing is ever rewritten or deleted.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._journal = AppendOnlyJournal(path)
+        self._records: dict[str, OosUnsealing] = {}
+        self._evaluated: set[str] = set()
+        for entry in self._journal.entries:
+            if entry.type == "unseal":
+                family_id = entry.payload["family_id"]
+                unsealing = OosUnsealing.model_validate(entry.payload["unsealing"])
+                if family_id in self._records:
+                    raise JournalCorrupted(
+                        f"{path}: family {family_id!r} was unsealed twice in the journal"
+                    )
+                self._records[family_id] = unsealing
+            elif entry.type == "mark_evaluated":
+                family_id = entry.payload["family_id"]
+                if family_id not in self._records:
+                    raise JournalCorrupted(
+                        f"{path}: family {family_id!r} evaluated before it was unsealed"
+                    )
+                if family_id in self._evaluated:
+                    raise JournalCorrupted(
+                        f"{path}: family {family_id!r} was marked evaluated twice"
+                    )
+                self._evaluated.add(family_id)
+            else:
+                raise JournalCorrupted(f"{path}: unknown record type {entry.type!r}")
+
+    @property
+    def path(self) -> Path:
+        return self._journal.path
+
+    def get(self, family_id: str) -> OosUnsealing | None:
+        return self._records.get(family_id)
+
+    def record(self, family_id: str, unsealing: OosUnsealing) -> None:
+        if family_id in self._records:
+            raise OosAlreadyUnsealed(f"family {family_id!r} has already been unsealed")
+        self._journal.append(
+            "unseal",
+            {"family_id": family_id, "unsealing": unsealing.model_dump(mode="json")},
+        )
+        self._records[family_id] = unsealing
+
+    def count(self) -> int:
+        return len(self._records)
+
+    def mark_evaluated(self, family_id: str) -> None:
+        if family_id not in self._records:
+            raise SealedOosLocked(f"family {family_id!r} has not unsealed the OOS window")
+        if family_id in self._evaluated:
+            raise SealedOosAlreadyEvaluated(f"family {family_id!r} already evaluated sealed OOS")
+        self._journal.append("mark_evaluated", {"family_id": family_id})
+        self._evaluated.add(family_id)
+
+    def is_evaluated(self, family_id: str) -> bool:
+        return family_id in self._evaluated
+
+
 class SealedEvaluation:
     """A family's single sealed OOS evaluation, already recorded as consumed (see module docs).
 
@@ -166,14 +241,32 @@ class SealedOosVault:
     """The window of one Profile with a global unsealing budget (explicit, see module docs)."""
 
     def __init__(
-        self, profile: ValidationProfile, ledger: UnsealingLedger, *, max_unsealings: int
+        self,
+        profile: ValidationProfile,
+        ledger: UnsealingLedger | None = None,
+        *,
+        max_unsealings: int,
+        path: Path | None = None,
     ) -> None:
+        """``ledger`` is the framework default; pass ``path`` instead for a durable ledger file.
+
+        ``path`` is additive (debugging pass, 2026-09-25): omit it and behavior is unchanged
+        (in-memory, never persisted). Passing both ``ledger`` and ``path`` is ambiguous and
+        refused.
+        """
+        if ledger is not None and path is not None:
+            raise ValueError("pass either ledger or path, not both")
         if isinstance(max_unsealings, bool) or max_unsealings < 1:
             raise ValueError("max_unsealings must be a positive int")
         self.window = SealedWindow.from_profile(profile)
         self.max_unsealings = max_unsealings
         self.budget_source = "param:max_unsealings"
-        self._ledger = ledger
+        if ledger is not None:
+            self._ledger = ledger
+        elif path is not None:
+            self._ledger = DurableUnsealingLedger(path)
+        else:
+            self._ledger = InMemoryUnsealingLedger()
 
     def research_view(self, spans: Sequence[LabeledSpan]) -> tuple[LabeledSpan, ...]:
         """Spans that do not touch the sealed window (always allowed)."""
