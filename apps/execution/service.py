@@ -116,6 +116,7 @@ class ExecutionService:
         if type(venue) is not SimulatedVenue:
             raise LiveExecutionRefused("only the in-process SimulatedVenue is accepted (ADR-0046)")
         self._mode = mode
+        venue.bind_kill_switch(kill_switch)
         self._venue = venue
         self._kill_switch = kill_switch
         self._risk = risk

@@ -13,7 +13,8 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Protocol
 
-from apps.execution.errors import LiveExecutionRefused
+from apps.execution.errors import KillSwitchEngaged, LiveExecutionRefused
+from apps.execution.kill_switch import KillSwitch
 from apps.execution.records import FillRecord, OrderRecord, Side, instrument_key
 from core.domain.base import content_hash
 from core.domain.execution import ExecutionMode
@@ -77,6 +78,17 @@ class SimulatedVenue:
         self._fills: list[FillRecord] = []
         self._filled: set[str] = set()
         self._positions: dict[tuple[str, str], Decimal] = {}
+        self._kill_switch: KillSwitch | None = None
+
+    def bind_kill_switch(self, kill_switch: KillSwitch) -> None:
+        """Bind the one kill switch every fill is checked against (once; rebinding is refused).
+
+        The venue enforces the switch itself, so a caller holding the venue directly cannot fill
+        around a tripped switch; an unbound venue never fills.
+        """
+        if self._kill_switch is not None and self._kill_switch is not kill_switch:
+            raise ValueError("this venue is already bound to a different kill switch")
+        self._kill_switch = kill_switch
 
     @property
     def venue_id(self) -> str:
@@ -100,6 +112,10 @@ class SimulatedVenue:
         """Record the order and fill it in full at ``price`` adjusted by the cost model."""
         if order.mode is not ExecutionMode.SIMULATED:
             raise LiveExecutionRefused("the simulated venue executes SIMULATED orders only")
+        if self._kill_switch is None:
+            raise KillSwitchEngaged("the venue is not bound to a kill switch; it never fills")
+        if self._kill_switch.tripped:
+            raise KillSwitchEngaged("kill switch is tripped; the venue refuses every fill")
         if not isinstance(price, Decimal) or not price.is_finite() or price <= 0:
             raise ValueError("price must be a finite, positive Decimal")
         if order.record_id in self._filled:

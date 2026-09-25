@@ -20,6 +20,7 @@ from apps.execution import (
     ExecutionService,
     ExecutionStage,
     KillSwitch,
+    KillSwitchEngaged,
     LadderGateRecord,
     LadderGateRefused,
     LinearCostModel,
@@ -243,6 +244,28 @@ def test_kill_switch_drill_stops_all_order_flow() -> None:
     assert rig.kill_switch.tripped
     assert rig.bus_ids(type(report.trip)) == [report.trip.record_id]
     assert AlertKind.KILL_SWITCH_TRIPPED in {a.kind for a in rig.monitor.alerts}
+
+
+def test_the_venue_itself_refuses_fills_once_the_kill_switch_trips() -> None:
+    """Holding the venue directly must not bypass a tripped kill switch (review finding)."""
+    rig = Rig()
+    rig.service.submit_targets(rig.targets(btc=10), {KB: Decimal(100)})
+    order = rig.venue.orders[-1]
+    rig.service.trip_kill_switch(reason="bypass probe", tripped_by="test")
+    with pytest.raises(KillSwitchEngaged, match="tripped"):
+        rig.service.venue.execute(order, Decimal(100), T0)
+    assert len(rig.venue.fills) == 1
+
+
+def test_an_unbound_venue_never_fills_and_cannot_be_rebound() -> None:
+    rig = Rig()
+    rig.service.submit_targets(rig.targets(btc=10), {KB: Decimal(100)})
+    loose = SimulatedVenue(venue_id="sim-2", cost_model=COSTS)
+    with pytest.raises(KillSwitchEngaged, match="not bound"):
+        loose.execute(rig.venue.orders[-1], Decimal(100), T0)
+    assert loose.fills == ()
+    with pytest.raises(ValueError, match="different kill switch"):
+        rig.venue.bind_kill_switch(KillSwitch())
 
 
 def test_monitor_alert_hook_can_trip_the_kill_switch_on_drawdown() -> None:

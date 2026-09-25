@@ -59,3 +59,10 @@ import `core.contracts.strategy` / `core.domain` / `apps.execution`——不 imp
 定量（定量由必填的 `PositionSizer` 完成（v1 `EquityPriceSizer`：`quantity = weight * equity / price`，价格须在 `as_of` 已知，缺失或非正即拒绝；无"权重即数量"的默认），2026-09-25 修订）与测试见 ADR-0038 的同一条
 记录；红线（第 5 条 LIVE 拒绝、第 6 条 Kill Switch）在新增的端到端测试
 （`tests/apps/test_execution_strategy_source.py`）中重新断言，均未放宽。
+
+## Implementation note (venue-level kill switch, 2026-09-25)
+
+只读复核发现：`ExecutionService.venue` 公开，持有者可直接 `venue.execute(...)` 绕过已跳闸的 Kill Switch（仍只是模拟）。
+修复：`SimulatedVenue.bind_kill_switch` 在服务构造时绑定唯一的 Kill Switch（换绑拒绝），`execute` 在未绑定或已跳闸时
+一律拒绝（`KillSwitchEngaged`）——"跳闸后无成交"由场所自身保证，不再只靠服务的事前检查。
+测试：`tests/apps/test_execution.py`（直接调用场所被拒、未绑定场所不成交、换绑拒绝）。

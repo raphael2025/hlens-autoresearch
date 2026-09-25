@@ -28,3 +28,7 @@ class LadderGateRefused(ExecutionRefused):
 
 class DeploymentNotAdmitted(ExecutionRefused):
     """Target positions from a deployment that was not admitted (ADR-0005 §4)."""
+
+
+class KillSwitchEngaged(ExecutionRefused):
+    """The venue refused to fill: its kill switch is tripped, or it was never bound to one."""

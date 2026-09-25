@@ -10,6 +10,7 @@ from apps.execution.drill import DrillReport, run_kill_switch_drill
 from apps.execution.errors import (
     DeploymentNotAdmitted,
     ExecutionRefused,
+    KillSwitchEngaged,
     LadderGateRefused,
     LiveExecutionRefused,
 )
@@ -76,6 +77,7 @@ __all__ = [
     "LadderGateRefused",
     "LinearCostModel",
     "LiveExecutionRefused",
+    "KillSwitchEngaged",
     "Monitor",
     "MonitorSnapshot",
     "OrderRecord",
