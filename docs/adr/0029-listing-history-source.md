@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-25，待 Raphael / Codex 决定；未批准前 E2 不得实施） |
+| 状态 | **Accepted**（2026-09-25，采纳建议方案 A） |
 | 日期 | 2026-09-25 |
-| 决策者 | 待定 |
+| 决策者 | Claude Code（Opus），依 Raphael 2026-09-25 明确授权（"一切都你自己决定"；红线除外） |
 | 起草者 | Claude Code（Opus），依 Raphael 2026-09-25 对 D-E2 的"同意推荐方案"（先取证、再起草） |
 | 相关 Phase | Phase 1（roadmap 验收 #16、#18 的前置；E2 / F2） |
 | 影响范围 | Data / Infrastructure / Security（新增一个 market-data-only 端点） |
@@ -69,7 +69,7 @@ ADR-0024 要求按当时可交易集合构建 universe，并把"确认 Binance �
 
 | 方案 | 内容 | 优点 | 缺点 | 结论 |
 |---|---|---|---|---|
-| **A（建议）** | `exchangeInfo` 快照 → 新 Raw 表 → 观察下界语义的 listing revision | 唯一的官方、无凭据来源；诚实标注下界；additive | 只能从本机开始记录；需扩 ADR-0022 端点清单与新 collector | 采纳（待批准） |
+| **A（采纳）** | `exchangeInfo` 快照 → 新 Raw 表 → 观察下界语义的 listing revision | 唯一的官方、无凭据来源；诚实标注下界；additive | 只能从本机开始记录；需扩 ADR-0022 端点清单与新 collector | 采纳 |
 | B | 由已提交归档的"某日有成交"推导可交易区间 | 可覆盖历史日期 | 是推断而非上市记录；一条 listing revision 需绑定多条 Raw lineage，冻结表只能一条（需改表 = major）；且历史 `available_time` 仍为 `ingest_time`，推出的历史区间照样不可用于历史 simulation | 拒绝（不解决历史，且需改冻结表） |
 | C | 项目手写的静态声明（如"BTCUSDT 自 2017-08-17 可交易"） | 最简单 | 用今天的知识写过去，正是 ADR-0024 禁止的幸存者偏差路径；无来源 | 拒绝 |
 | D | SAPI 下架计划 / 官方公告 | 有下架信息 | 不在 market-data-only 列表；需凭据或非结构化解析；描述未来计划而非历史 | 拒绝（ADR-0022 边界） |

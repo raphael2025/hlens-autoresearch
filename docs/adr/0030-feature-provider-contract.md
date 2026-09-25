@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-25，待 Raphael / Codex 决定；批准前不改 `core/`） |
+| 状态 | **Accepted**（2026-09-25，采纳建议方案 A） |
 | 日期 | 2026-09-25 |
-| 决策者 | 待定 |
+| 决策者 | Claude Code（Opus），依 Raphael 2026-09-25 明确授权（"一切都你自己决定"；红线除外） |
 | 起草者 | Claude Code（Opus），Phase 1 F4 前置设计（docs-only） |
 | 相关 Phase | Phase 1（roadmap 验收 #19） |
 | 影响范围 | Contract（`core/contracts/` 新增模块，additive） |
@@ -64,7 +64,7 @@ class FeatureProvider(Protocol):
 
 | 方案 | 内容 | 缺点 | 结论 |
 |---|---|---|---|
-| **A（建议）** | 执行器截断 + 契约扰动测试 | 需要执行器（F4 实现） | 采纳 |
+| **A（采纳）** | 执行器截断 + 契约扰动测试 | 需要执行器（F4 实现） | 采纳 |
 | B | Provider 自行按 `available_time` 过滤 | 信任插件；一个错误插件即泄漏 | 拒绝（LLM / 研究代码不得自证） |
 | C | 只做契约扰动测试、不截断 | 测试覆盖有限，运行时仍可泄漏 | 拒绝 |
 | D | 同时为 Representation 立 Provider | Phase 1 无可插拔需求 | 延后 |
