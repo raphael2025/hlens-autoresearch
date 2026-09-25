@@ -73,6 +73,7 @@ from infrastructure.dataset.selection import SELECTION_NAMESPACE, SELECTION_SCHE
 from infrastructure.parser.binance_archive import PARSER_BINDING as ARCHIVE_PARSER_BINDING
 from infrastructure.parser.binance_exchange_info import EXCHANGE_INFO_DECODER_BINDING
 from infrastructure.parser.binance_rest import DECODER_BINDING as REST_DECODER_BINDING
+from infrastructure.pit.assumption import ASSUMPTION_BINDING
 from infrastructure.pit.selector import PIT_BINDING, PitSelection, PitSelector
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.quality.listing_report import ListingQualityReporter
@@ -138,6 +139,7 @@ KNOWN_BINDINGS: Final = frozenset(
         REST_AVAILABILITY_BINDING,
         EXCHANGE_INFO_AVAILABILITY_BINDING,
         rules.AVAILABILITY_BINDING,
+        ASSUMPTION_BINDING,
         ARCHIVE_PRECEDENCE,
         REST_PRECEDENCE_BINDING,
         DELIVERY_CHANNEL_BINDING,

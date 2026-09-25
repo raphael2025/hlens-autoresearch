@@ -18,6 +18,7 @@ from core.contracts.revision import PointInTimeSpec, PointInTimeStatus, PolicyBi
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit import selector as selector_module
+from infrastructure.pit.assumption import ASSUMPTION_BINDING, ASSUMPTION_LATENCY
 from infrastructure.pit.selector import (
     PIT_BINDING,
     PitConflictError,
@@ -525,3 +526,80 @@ def test_a_chain_is_read_whole_whichever_window_reads_it() -> None:
         read, "event_time", late, late + timedelta(hours=1), touching=True
     )
     assert {row["revision_id"] for row in touching} == {"k0", "k1", "k2"}
+
+
+# =========================================================================================
+# ADR-0032 (D-HIST): the archive event-time availability assumption
+# =========================================================================================
+
+TRADE_AT = utc(2023, 11, 14, 22, 14)  # ss.T0: the fixture trades' event time
+WITH_ASSUMPTION = (rules.AVAILABILITY_BINDING, ASSUMPTION_BINDING)
+
+
+def _archive_only(h: RestHarness) -> str:
+    items = ss.agg_items(1)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_A)
+    c.normalizer(h, clock=StepClock(start=N_A)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    return f"binance:spot:agg_trade:{SYMBOL}:100"
+
+
+def _status(h: RestHarness, at: datetime, **overrides: Any) -> Any:
+    out = _select(h, _spec(h, cutoff=FAR, at=at, **overrides))
+    [selection] = out.selections
+    return selection.status, out
+
+
+def test_without_the_assumption_history_before_ingest_is_invisible(h: RestHarness) -> None:
+    _archive_only(h)
+    status, out = _status(h, TRADE_AT + timedelta(hours=1))
+    assert status is PointInTimeStatus.ABSENT and out.assumed == {}
+
+
+def test_the_bound_assumption_makes_an_archive_trade_available_at_event_time_plus_latency(
+    h: RestHarness,
+) -> None:
+    _archive_only(h)
+    [row] = h.rows(c.TRADES)
+    before, _ = _status(
+        h, TRADE_AT + ASSUMPTION_LATENCY - timedelta(microseconds=1),
+        availability_bindings=WITH_ASSUMPTION,
+    )  # fmt: skip
+    status, out = _status(h, TRADE_AT + ASSUMPTION_LATENCY, availability_bindings=WITH_ASSUMPTION)
+    assert before is PointInTimeStatus.ABSENT and status is PointInTimeStatus.SELECTED
+    effective = TRADE_AT + ASSUMPTION_LATENCY
+    assert out.assumed == {row["revision_id"]: (row["available_time"], effective)}
+    assert out.selected_rows[row["revision_id"]]["available_time"] == effective
+    # The stored row is unchanged and its evidence gap is still listed and bound.
+    assert h.rows(c.TRADES)[0]["available_time"] == row["available_time"]
+    assert [gap.revision_id for gap in out.evidence_gaps] == [row["revision_id"]]
+
+
+def test_the_assumption_never_moves_a_rest_revision(h: RestHarness) -> None:
+    items = ss.agg_items(1)
+    [response] = c.ingest_rest(h, "agg_trades", items, knowledge=K_R)
+    c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, response)
+    status, out = _status(h, TRADE_AT + timedelta(hours=1), availability_bindings=WITH_ASSUMPTION)
+    assert status is PointInTimeStatus.ABSENT and out.assumed == {}
+
+
+def test_a_bar_becomes_available_at_its_close_plus_latency(h: RestHarness) -> None:
+    items = ss.kline_items(1)
+    archive = c.ingest_archive(h, "klines_1m", ss.archive_kline_lines(items), knowledge=K_A)
+    c.normalizer(h, clock=StepClock(start=N_A)).normalize_unit(c.ARCHIVE_KLINES.table, archive)
+    [bar] = h.rows(c.BARS)
+    spec = _spec(h, cutoff=FAR, at=bar["interval_end"] + ASSUMPTION_LATENCY)
+    spec = spec.model_copy(update={"availability_bindings": WITH_ASSUMPTION})
+    out = PitSelector(h.adapter, h.storage).select(spec, "klines_1m", SYMBOL, START, END)
+    [selection] = out.selections
+    assert selection.status is PointInTimeStatus.SELECTED
+    assert out.assumed[bar["revision_id"]][1] == bar["interval_end"] + ASSUMPTION_LATENCY
+
+
+def test_another_version_or_hash_of_the_assumption_is_refused(h: RestHarness) -> None:
+    _archive_only(h)
+    forged = ASSUMPTION_BINDING.model_copy(update={"policy_hash": "0" * 64})
+    with pytest.raises(PitSpecError, match="archive-event-time-assumption"):
+        _select(
+            h,
+            _spec(h, cutoff=FAR, availability_bindings=(rules.AVAILABILITY_BINDING, forged)),
+        )

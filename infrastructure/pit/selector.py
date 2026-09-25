@@ -36,6 +36,7 @@ from __future__ import annotations
 import hashlib
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
 
@@ -58,6 +59,11 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import CanonicalNormalizer
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_PRECEDENCE_EVIDENCE
+from infrastructure.pit.assumption import (
+    AssumptionSpecError,
+    assumption_bound,
+    effective_available_times,
+)
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.channel_reconcile import ChannelReconciler, revision_record_from_row
@@ -101,6 +107,9 @@ PIT_SPEC: Final[dict[str, Any]] = {
     "revision; identical consecutive results merged",
     "never_read": ["arrival_seq", "wall clock", "payload_hash ordering"],
     "unbound_tables": "read as empty (only removes information); the Canonical table must be bound",
+    "availability_assumptions": "an assumption policy bound in availability_bindings "
+    "(hlens.availability.archive-event-time-assumption, ADR-0032) replaces available_time, "
+    "never later, for the revisions it names; stored revisions and evidence gaps unchanged",
     "evidence_binding": "an unbound Raw evidence table means no edges (conflicts only, never "
     "another selection); the dataset builder must bind it whenever it has a snapshot "
     "(ADR-0027 §13, ADR-0028 §7) and the result records whether it was bound",
@@ -148,8 +157,12 @@ class PitSelection:
     edges: Mapping[str, tuple[PrecedenceEvidence, ...]]
     #: Whether the spec bound the Raw evidence table (False = read as no edges).
     evidence_bound: bool
-    #: The proven Canonical row of every revision that is selected at some evaluation.
+    #: The proven Canonical row of every revision that is selected at some evaluation; with the
+    #: ADR-0032 assumption bound, ``available_time`` is the effective one (see ``assumed``).
     selected_rows: Mapping[str, Mapping[str, Any]]
+    #: ADR-0032: revision -> (stored, effective) available_time for every evaluated revision the
+    #: bound assumption moved; empty when the spec does not bind it.
+    assumed: Mapping[str, tuple[datetime, datetime]] = dataclass_field(default_factory=dict)
 
     def require_no_conflict(self) -> None:
         if self.conflicts:
@@ -244,6 +257,16 @@ class PitSelector:
             view, canonical.table, data_type, instrument.symbol, start, end, touching
         )
         verified = self._verify_canonical(view, rows)
+        try:
+            moved = effective_available_times(verified, bound=assumption_bound(spec))
+        except AssumptionSpecError as exc:
+            raise PitSpecError(str(exc)) from None
+        available = {
+            row["revision_id"]: moved[row["revision_id"]][1]
+            if row["revision_id"] in moved
+            else row["available_time"]
+            for row in verified
+        }
         by_key: dict[str, list[Mapping[str, Any]]] = {}
         for row in verified:
             by_key.setdefault(row["observation_key"], []).append(row)
@@ -264,7 +287,7 @@ class PitSelector:
                 revision_record_from_row(key_rows[revision]) for revision in sorted(key_rows)
             )
             records_by_key[key] = records
-            for selection in _evaluate(key, records, edges.get(key, ()), spec):
+            for selection in _evaluate(key, records, edges.get(key, ()), spec, available):
                 selections.append(selection)
                 if selection.status is PointInTimeStatus.CONFLICT:
                     conflicts.add(key)
@@ -273,6 +296,8 @@ class PitSelector:
                     if revision is None:  # pragma: no cover - the contract forbids it
                         raise CatalogIntegrityError("a selected result without a revision")
                     row = key_rows[revision]
+                    if revision in moved:
+                        row = dict(row, available_time=moved[revision][1])
                     selected_rows[revision] = row
                     lineage[revision] = SelectedRevisionLineage(
                         canonical_table=canonical.table,
@@ -296,6 +321,7 @@ class PitSelector:
             edges={key: tuple(value) for key, value in edges.items()},
             evidence_bound=BINANCE_SPOT_PRECEDENCE_EVIDENCE.table in spec.snapshot_bindings,
             selected_rows={revision: selected_rows[revision] for revision in sorted(selected_rows)},
+            assumed={revision: moved[revision] for revision in sorted(moved)},
         )
 
     # ------------------------------------------------------------------ reads and proofs
@@ -524,6 +550,7 @@ def _heads(
     edges: Sequence[PrecedenceEvidence],
     at: datetime,
     cutoff: datetime,
+    available: Mapping[str, datetime],
 ) -> tuple[str, ...]:
     known = [item for item in records if item.availability.times.knowledge_time <= cutoff]
     known_edges = [item for item in edges if item.knowledge_time <= cutoff]
@@ -531,7 +558,7 @@ def _heads(
         RevisionGraph(revisions=tuple(known), precedence_evidence=tuple(known_edges))
     except ValueError as exc:
         raise CatalogIntegrityError(f"the Canonical revision graph is invalid: {exc}") from None
-    candidates = [item for item in known if item.availability.times.available_time <= at]
+    candidates = [item for item in known if available[item.revision_id] <= at]
     if not candidates:
         return ()
     # ``maximal_heads`` walks every known edge from every candidate, through any known (even
@@ -544,6 +571,7 @@ def _evaluate(
     records: Sequence[RevisionRecord],
     edges: Sequence[PrecedenceEvidence],
     spec: PointInTimeSpec,
+    available: Mapping[str, datetime],
 ) -> list[PointInTimeSelection]:
     cutoff = spec.knowledge_cutoff
     if spec.simulation_time is not None:
@@ -553,16 +581,16 @@ def _evaluate(
         if start is None or end is None:  # pragma: no cover - the contract forbids it
             raise PitSpecError("the spec has neither a simulation time nor an interval")
         changes = {
-            item.availability.times.available_time
+            available[item.revision_id]
             for item in records
             if item.availability.times.knowledge_time <= cutoff
-            and start < item.availability.times.available_time < end
+            and start < available[item.revision_id] < end
         }
         instants = [start, *sorted(changes)]
     results: list[PointInTimeSelection] = []
     previous: tuple[PointInTimeStatus, tuple[str, ...]] | None = None
     for at in instants:
-        heads = _heads(records, edges, at, cutoff)
+        heads = _heads(records, edges, at, cutoff, available)
         status = (
             PointInTimeStatus.ABSENT
             if not heads
