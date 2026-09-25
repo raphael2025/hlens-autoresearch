@@ -73,9 +73,14 @@ class DatasetBindingError(FeatureInputBuildError):
     """The observations cannot be proven to belong to the manifest's Research Dataset."""
 
 
-def load_manifest(adapter: RevisionCatalog, manifest_content_hash: str) -> ResearchDatasetManifest:
-    """The persisted manifest, proven by ``ManifestStore.load``; absent: ``DatasetBindingError``."""
-    manifest = ManifestStore(adapter).load(manifest_content_hash)
+def load_manifest(manifests: ManifestStore, manifest_content_hash: str) -> ResearchDatasetManifest:
+    """The persisted manifest, proven by ``ManifestStore.load`` — which re-derives it through its
+    ``DatasetBuilder`` (G2 RT-4) — absent: ``DatasetBindingError``."""
+    if not isinstance(manifests, ManifestStore):
+        raise DatasetBindingError(
+            "a verifying ManifestStore (DatasetBuilder.manifests()) is needed"
+        )
+    manifest = manifests.load(manifest_content_hash)
     if manifest is None:
         raise DatasetBindingError(
             f"no Research Dataset manifest is persisted as {manifest_content_hash}"
@@ -87,6 +92,7 @@ def feature_request_from_dataset(
     adapter: RevisionCatalog,
     storage: StorageAdapter,
     *,
+    manifests: ManifestStore,
     manifest_content_hash: str,
     pit_spec: PointInTimeSpec,
     observations: Sequence[FeatureObservation],
@@ -94,7 +100,7 @@ def feature_request_from_dataset(
     evaluation_times: Sequence[datetime],
 ) -> FeatureRequest:
     """A request for ``feature`` over observations proven to be the manifest's dataset rows."""
-    manifest = load_manifest(adapter, manifest_content_hash)
+    manifest = load_manifest(manifests, manifest_content_hash)
     spec = manifest.point_in_time
     if not isinstance(pit_spec, PointInTimeSpec) or pit_spec.content_hash() != spec.content_hash():
         raise DatasetBindingError(
