@@ -5,8 +5,9 @@
 `SIMULATED / NOT_VALIDATED` 横幅。
 
 > 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；实现说明 2026-09-25 补充，
-> 控制台页面 2026-09-25 再补充）：7 个只读页面 —— Dashboard、Validation Reports、Research Loop、
-> State × Strategy Matrices、Router Paper Runs、Lifecycle、Knowledge Search。依赖已本地安装
+> 控制台页面 2026-09-25 再补充，Gate Calibration 页面与剩余报告种类的 fixtures 2026-09-26 再补充）：
+> 8 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
+> Router Paper Runs、Gate Calibration、Lifecycle、Knowledge Search。依赖已本地安装
 > （`node_modules/`，已 gitignore），`npm run gen:api` 与 `npm run build` 均已跑通。
 
 ## 页面
@@ -18,10 +19,18 @@
 | Research Loop | round 时间线、budget used 图表、失败数 | `/reports/research_loop_round` |
 | State × Strategy Matrices | 矩阵列表 + 详情（per-state 指标热力图、样本数） | `/reports/state_strategy_matrix[/​{id}]` |
 | Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比） | `/reports/router_paper_run[/​{id}]` |
+| Gate Calibration | 报告列表 + 详情（每个候选 Profile、每个 gate 的 FPR / power 表，附 Clopper-Pearson 区间） | `/reports/gate_calibration[/​{id}]` |
 | Lifecycle | 允许的状态转移表 | `/lifecycle/transitions` |
 | Knowledge Search | 知识条目检索（待检验主张，非结论） | `/knowledge/search` |
 
 State × Strategy Matrices 与 Router Paper Runs 同样带 `SIMULATED / NOT_VALIDATED` 横幅（`src/components/Banner.tsx`）；Router Paper Runs 额外标注 PAPER ONLY —— 两者都不含任何下单 / 转账 / 实盘账户 UI（H10）。
+
+Gate Calibration 页面同样带 `SIMULATED / NOT_VALIDATED` 横幅，并额外叠加一条更醒目的
+`EvidenceOnlyBanner`（`src/components/Banner.tsx`，红底）："EVIDENCE ONLY — NOT A PROFILE
+DECISION"：这些 FPR / power 数字是 Phase 9 校准证据（`research/synthetic_lab/gate_calibration.py`
+的 `DISCLAIMER`），不是 Validation Profile 的数值来源。页面本身不给出、也不计算任何推荐值 / 默认值 /
+最优值 —— 只原样展示 payload 里每个候选 Profile、每个 gate 的通过率与区间；不含任何下单 / 转账 /
+实盘账户 UI（H10）。
 
 ## 开发 / 构建
 
@@ -64,9 +73,11 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 
 ### 用 `apps/web/fixtures/` 快速起一个有数据的后端
 
-`apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了两份示例（`state_strategy_matrix/`
-与 `router_paper_run/`），内容由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
-`ReportStore` 实际读到的文件逐字节一致，不是手写的示例数据。可以直接把它当 `reports_root` 起后端：
+`apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了全部五种报告种类的示例
+（`validation_report/`、`research_loop_round/`、`state_strategy_matrix/`、`router_paper_run/`、
+`gate_calibration/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
+`ReportStore` 实际读到的文件逐字节一致，不是手写的示例数据（生成方式见
+[fixtures/README.md](fixtures/README.md)）。可以直接把它当 `reports_root` 起后端：
 
 ```python
 import uvicorn
@@ -77,14 +88,16 @@ app = create_app(reports_root=Path("apps/web/fixtures"))
 uvicorn.run(app, host="127.0.0.1", port=8000)
 ```
 
-再在另一个终端 `npm run dev` 打开 State × Strategy Matrices / Router Paper Runs 页面即可看到图表；
-`validation_report` / `research_loop_round` 两个页面在这个目录下仍是空列表（未提供对应 fixture）。
+再在另一个终端 `npm run dev`，八个页面（Dashboard / Lifecycle / Knowledge Search 除外）都能看到数据。
+`tests/apps/test_console_fixtures.py` 保证每个 `ReportKind` 在这个目录下至少有一份 fixture，并且每份
+都能通过 `ReportStore` 与 `/reports/...` 端点正常读回。
 
 ## 代码分割（Code splitting）
 
 每个页面在 `src/App.tsx` 里用 `React.lazy` 单独懒加载：大多数页面都会拉入 ECharts
-（`src/lib/echarts.ts`，只 `echarts/core` + 用到的 chart / component 子集，而不是整个包），把七个
-页面都塞进入口 chunk 会让构建产物超过 500 kB 的警告阈值。`vite.config.ts` 的
+（`src/lib/echarts.ts`，只 `echarts/core` + 用到的 chart / component 子集，而不是整个包），把八个
+页面都塞进入口 chunk 会让构建产物超过 500 kB 的警告阈值。Gate Calibration 页面本身不用 ECharts（纯
+表格），所以它的 chunk 很小（约 4 kB），不需要额外拆分。`vite.config.ts` 的
 `build.rollupOptions.output.manualChunks` 额外把 `zrender`（ECharts 的渲染层依赖）拆成独立 chunk ——
 两者合在一个自动生成的共享 chunk 里时仍然单个超过 500 kB，分开后每个 chunk 都在阈值以下。
 `npm run build` 应当不再出现 "chunks are larger than 500 kB" 的警告；如果新增页面又把某个 chunk

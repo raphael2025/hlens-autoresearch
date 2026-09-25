@@ -24,6 +24,9 @@ const Lifecycle = lazy(() => import("./pages/Lifecycle").then((m) => ({ default:
 const KnowledgeSearch = lazy(() =>
   import("./pages/KnowledgeSearch").then((m) => ({ default: m.KnowledgeSearch })),
 );
+const GateCalibration = lazy(() =>
+  import("./pages/GateCalibration").then((m) => ({ default: m.GateCalibration })),
+);
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", render: () => <Dashboard /> },
@@ -31,6 +34,7 @@ const TABS = [
   { key: "research-loop", label: "Research Loop", render: () => <ResearchLoop /> },
   { key: "state-strategy", label: "State × Strategy Matrices", render: () => <StateStrategyMatrices /> },
   { key: "router-paper", label: "Router Paper Runs", render: () => <RouterPaperRuns /> },
+  { key: "gate-calibration", label: "Gate Calibration", render: () => <GateCalibration /> },
   { key: "lifecycle", label: "Lifecycle", render: () => <Lifecycle /> },
   { key: "knowledge", label: "Knowledge Search", render: () => <KnowledgeSearch /> },
 ] as const;

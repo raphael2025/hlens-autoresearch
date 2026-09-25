@@ -19,3 +19,28 @@ export function SimulatedBanner() {
     </div>
   );
 }
+
+// Gate Calibration reports are Phase 9 synthetic-truth evidence for D-09 (ADR-0007 two-step
+// freeze) — never a Profile decision by themselves (research/synthetic_lab/gate_calibration.py's
+// DISCLAIMER). This banner is deliberately louder (red, not the amber SimulatedBanner) so the
+// page cannot be read as "here are the numbers to use".
+export function EvidenceOnlyBanner() {
+  return (
+    <div
+      role="note"
+      style={{
+        background: "#f8d7da",
+        color: "#58151c",
+        border: "1px solid #f1aeb5",
+        borderRadius: 6,
+        padding: "8px 12px",
+        margin: "8px 0 16px",
+        fontSize: 14,
+        fontWeight: 700,
+      }}
+    >
+      EVIDENCE ONLY — NOT A PROFILE DECISION — 这些 FPR / power 数字是 Phase 9 校准证据，不是 Validation
+      Profile 的数值来源；Profile 数值只能由 Raphael 依两步冻结流程（ADR-0007）事后设定。本页不给出、也不暗示任何推荐值。
+    </div>
+  );
+}
