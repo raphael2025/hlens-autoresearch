@@ -12,9 +12,12 @@ information through the label window.
 
 ``walk_forward_folds`` takes its windows (train / test / step), the embargo and the research and
 sealed boundaries from the Profile; ``walk_forward_windows`` yields the same windows as plain time
-ranges (the G4 window statistics use them). ``purged_k_fold`` takes an explicit fold count and
-embargo (no defaults) and, like the walk-forward, only ever sees ``research_spans`` of the Profile:
-samples reaching the sealed OOS window never enter any fold (Phase 8 fix, ADR-0041).
+ranges. With ``step < test_window`` consecutive test ranges overlap; the G4 window statistics
+therefore count only ``non_overlapping_windows`` (greedy in time order, ADR-0041 review fix), so a
+period is never counted in two windows. (G2 already keeps each event's first fold only.)
+``purged_k_fold`` takes an explicit fold count and embargo (no defaults) and, like the
+walk-forward, only ever sees ``research_spans`` of the Profile: samples reaching the sealed OOS
+window never enter any fold (Phase 8 fix, ADR-0041).
 """
 
 from __future__ import annotations
@@ -30,6 +33,7 @@ __all__ = [
     "WalkForwardWindow",
     "LabeledSpan",
     "midnight_utc",
+    "non_overlapping_windows",
     "purge_and_embargo",
     "purged_k_fold",
     "research_spans",
@@ -137,6 +141,19 @@ def walk_forward_windows(profile: ValidationProfile) -> list[WalkForwardWindow]:
         windows.append(WalkForwardWindow(len(windows), train_start, train_end, test_end))
         train_start += wf.step
     return windows
+
+
+def non_overlapping_windows(windows: Sequence[WalkForwardWindow]) -> list[WalkForwardWindow]:
+    """The windows whose test ranges ``[train_end, test_end)`` are pairwise disjoint.
+
+    Greedy in time order: a window is kept when its test range starts at or after the end of
+    the last kept one. With ``step >= test_window`` every window is kept.
+    """
+    kept: list[WalkForwardWindow] = []
+    for window in sorted(windows, key=lambda item: (item.train_end, item.index)):
+        if not kept or window.train_end >= kept[-1].test_end:
+            kept.append(window)
+    return kept
 
 
 def walk_forward_folds(spans: Sequence[LabeledSpan], profile: ValidationProfile) -> list[Fold]:

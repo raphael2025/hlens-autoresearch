@@ -11,6 +11,15 @@ by ``robustness.overfitting_check`` against ``significance.overfitting_threshold
   rank ``w = rank / (N + 1)`` and logit ``l = ln(w / (1 - w))``, PBO is the share of splits with
   ``l <= 0`` (the in-sample winner is at or below the out-of-sample median). Ties rank by average.
   Per-block sums and sums of squares make each split ``O(S * N)``.
+  **Purge / embargo between blocks** (ADR-0041 review fix, 2026-09-25): the plain CSCV lets a
+  holding period or serially correlated returns straddle an in-sample / out-of-sample block
+  boundary. Every split therefore drops the in-sample periods that lie strictly within
+  ``embargo`` before the start (purge) or after the end (embargo) of any out-of-sample block,
+  exactly as ``splits.purge_and_embargo`` does for spans. The embargo is a required argument;
+  ``robustness.overfitting_check`` passes the Profile's ``data_split.embargo`` (the same one the
+  walk-forward splits use; C-L5 requires it to cover the longest Outcome horizon). An embargo of
+  zero reproduces the unpurged CSCV. If a split keeps fewer than two in-sample periods the PBO is
+  refused (``CscvPurgeTooWide``), never computed on a degenerate sample.
 - **Deflated Sharpe ratio** (Bailey & López de Prado, *The Deflated Sharpe Ratio*, 2014): the
   probability that the true Sharpe ratio exceeds the expected maximum of ``N`` unskilled trials,
   ``SR0 = sqrt(V[SR]) * ((1 - g) * z(1 - 1/N) + g * z(1 - 1/(N e)))`` (``g`` Euler–Mascheroni),
@@ -24,13 +33,16 @@ runs on ``float`` in a fixed order (deterministic on one platform; ADR-0037 §5)
 from __future__ import annotations
 
 import math
+from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
 from dataclasses import dataclass
+from datetime import datetime, timedelta
 from itertools import combinations
 from statistics import NormalDist
 from typing import Final
 
 __all__ = [
+    "CscvPurgeTooWide",
     "DeflatedSharpe",
     "Pbo",
     "deflated_sharpe_ratio",
@@ -70,6 +82,49 @@ class Pbo:
     mean_logit: float
     #: Share of splits in which the in-sample winner lost money out of sample (reported only).
     oos_loss_share: float
+    #: The purge / embargo applied around every out-of-sample block.
+    embargo: timedelta
+    #: The most in-sample periods any one split dropped for the purge / embargo.
+    purged_in_sample_periods_max: int
+
+
+class CscvPurgeTooWide(ValueError):
+    """The purge / embargo leaves a CSCV split with fewer than two in-sample periods."""
+
+
+Segment = tuple[int, int]
+
+
+def _subtract(block: Segment, cuts: Sequence[Segment]) -> list[Segment]:
+    """``[start, end)`` minus the (possibly overlapping) index ranges ``cuts``, in order."""
+    pieces = [block]
+    for cut_start, cut_end in cuts:
+        if cut_start >= cut_end:
+            continue
+        kept: list[Segment] = []
+        for start, end in pieces:
+            if cut_end <= start or cut_start >= end:
+                kept.append((start, end))
+                continue
+            if start < cut_start:
+                kept.append((start, cut_start))
+            if cut_end < end:
+                kept.append((cut_end, end))
+        pieces = kept
+    return pieces
+
+
+def _purge_cuts(
+    times: Sequence[datetime], bounds: Sequence[Segment], rest: Sequence[int], embargo: timedelta
+) -> list[Segment]:
+    """Index ranges strictly within ``embargo`` before / after every out-of-sample block."""
+    cuts: list[Segment] = []
+    for block in rest:
+        start, end = bounds[block]
+        first, last = times[start], times[end - 1]
+        cuts.append((bisect_right(times, first - embargo), bisect_left(times, first)))
+        cuts.append((bisect_right(times, last), bisect_left(times, last + embargo)))
+    return cuts
 
 
 def _average_rank(values: Sequence[float], index: int) -> float:
@@ -79,8 +134,18 @@ def _average_rank(values: Sequence[float], index: int) -> float:
     return below + (equal + 1) / 2.0
 
 
-def probability_of_backtest_overfitting(matrix: Sequence[Sequence[float]], partitions: int) -> Pbo:
-    """PBO of a family: ``matrix[trial][period]`` per-period returns on one shared grid."""
+def probability_of_backtest_overfitting(
+    matrix: Sequence[Sequence[float]],
+    partitions: int,
+    *,
+    times: Sequence[datetime],
+    embargo: timedelta,
+) -> Pbo:
+    """PBO of a family: ``matrix[trial][period]`` per-period returns on one shared grid.
+
+    ``times[i]`` is the time of period ``i`` (strictly ascending); in-sample periods within
+    ``embargo`` of an out-of-sample block are purged in every split (see module docs).
+    """
     trials = len(matrix)
     if trials < 2:
         raise ValueError("PBO needs at least two trials")
@@ -91,6 +156,10 @@ def probability_of_backtest_overfitting(matrix: Sequence[Sequence[float]], parti
         raise ValueError("CSCV partitions must be an even int >= 2")
     if periods < 2 * partitions:
         raise ValueError("CSCV needs at least two periods per partition")
+    if len(times) != periods or any(a >= b for a, b in zip(times, times[1:], strict=False)):
+        raise ValueError("CSCV needs one strictly ascending time per period")
+    if embargo < timedelta(0):
+        raise ValueError("embargo must be >= 0")
     size, extra = divmod(periods, partitions)
     bounds: list[tuple[int, int]] = []
     begin = 0
@@ -98,42 +167,55 @@ def probability_of_backtest_overfitting(matrix: Sequence[Sequence[float]], parti
         end = begin + size + (1 if block < extra else 0)
         bounds.append((begin, end))
         begin = end
-    stats = [
-        [
-            (
-                float(end - start),
-                math.fsum(row[start:end]),
-                math.fsum(x * x for x in row[start:end]),
-            )
-            for start, end in bounds
-        ]
-        for row in matrix
-    ]
+    cache: dict[Segment, list[tuple[float, float, float]]] = {}
 
-    def sharpe_on(trial: int, blocks: Sequence[int]) -> float:
+    def segment_stats(segment: Segment) -> list[tuple[float, float, float]]:
+        if segment not in cache:
+            start, end = segment
+            cache[segment] = [
+                (
+                    float(end - start),
+                    math.fsum(row[start:end]),
+                    math.fsum(x * x for x in row[start:end]),
+                )
+                for row in matrix
+            ]
+        return cache[segment]
+
+    def sharpe_on(trial: int, segments: Sequence[Segment]) -> float:
         n = total = squares = 0.0
-        for block in blocks:
-            bn, bs, bq = stats[trial][block]
+        for segment in segments:
+            bn, bs, bq = segment_stats(segment)[trial]
             n, total, squares = n + bn, total + bs, squares + bq
         return _sr(n, total, squares)
 
-    def mean_on(trial: int, blocks: Sequence[int]) -> float:
-        n = sum(stats[trial][block][0] for block in blocks)
-        return sum(stats[trial][block][1] for block in blocks) / n
+    def mean_on(trial: int, segments: Sequence[Segment]) -> float:
+        n = sum(segment_stats(segment)[trial][0] for segment in segments)
+        return sum(segment_stats(segment)[trial][1] for segment in segments) / n
 
-    overfit = losses = splits = 0
+    overfit = losses = splits = purged_max = 0
     logits: list[float] = []
     everything = range(partitions)
     for chosen in combinations(everything, partitions // 2):
         rest = tuple(block for block in everything if block not in chosen)
-        in_sample = [sharpe_on(trial, chosen) for trial in range(trials)]
-        out_sample = [sharpe_on(trial, rest) for trial in range(trials)]
+        cuts = _purge_cuts(times, bounds, rest, embargo)
+        kept = [piece for block in chosen for piece in _subtract(bounds[block], cuts)]
+        full = sum(bounds[block][1] - bounds[block][0] for block in chosen)
+        size_kept = sum(end - start for start, end in kept)
+        if size_kept < 2:
+            raise CscvPurgeTooWide(
+                f"the embargo {embargo} leaves {size_kept} in-sample periods in a CSCV split"
+            )
+        purged_max = max(purged_max, full - size_kept)
+        oos = [bounds[block] for block in rest]
+        in_sample = [sharpe_on(trial, kept) for trial in range(trials)]
+        out_sample = [sharpe_on(trial, oos) for trial in range(trials)]
         best = max(range(trials), key=lambda trial: (in_sample[trial], -trial))
         omega = _average_rank(out_sample, best) / (trials + 1)
         logit = math.log(omega / (1.0 - omega))
         logits.append(logit)
         overfit += logit <= 0.0
-        losses += mean_on(best, rest) < 0.0
+        losses += mean_on(best, oos) < 0.0
         splits += 1
     return Pbo(
         pbo=overfit / splits,
@@ -143,6 +225,8 @@ def probability_of_backtest_overfitting(matrix: Sequence[Sequence[float]], parti
         periods=periods,
         mean_logit=math.fsum(logits) / splits,
         oos_loss_share=losses / splits,
+        embargo=embargo,
+        purged_in_sample_periods_max=purged_max,
     )
 
 

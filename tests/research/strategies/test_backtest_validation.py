@@ -121,6 +121,7 @@ E2E_TEST_ONLY_PARAMS = RobustnessParams(
     min_capacity=None,
     impact_coefficient=0.1,
     cross_asset_min_positive_fraction=None,
+    max_undersampled_pnl_share=None,
 )
 FEE, SLIPPAGE = Decimal("0.00005"), Decimal("0.00005")
 COST_MODEL = CostModelSpec(

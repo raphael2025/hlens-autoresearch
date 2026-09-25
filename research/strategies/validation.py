@@ -31,6 +31,15 @@ validator states it) and, optionally, the JSON-ready report view for later visua
 G5 (sealed OOS) is deliberately not part of ``validate``: the unsealing is a one-shot, budgeted
 event (``SealedOosVault``) run separately. The backtest handed to ``validate`` must therefore cover
 the research window only (a label reaching the sealed window fails ``G1.sealed_oos_excluded``).
+**A G0 – G4 PASS from ``validate`` is never promotable without a G5 result**:
+``BacktestValidation.promotion_blocked_reason`` (and the view's ``promotion`` block) is
+``"sealed_oos_not_evaluated"`` for such a report; only a report that also passed G5 is eligible
+for the lifecycle review (ADR-0006), which remains a separate, human-approved step.
+
+Provenance limit (ADR-0041): ``G1.label_blind_sides`` cannot detect a ``FixedSides`` that was
+pre-filled from outcome signs outside the pipeline (the sides would be identical under blinded
+and real labels). The defence is provenance: this adapter builds its ``FixedSides`` only from
+contract-checked ``TargetPosition`` rows, never from labels.
 """
 
 from __future__ import annotations
@@ -64,7 +73,7 @@ from research.validation.pipeline import (
     build_report,
     reason_for_gate,
 )
-from research.validation.report import report_view
+from research.validation.report import promotion_blocked_reason, report_view
 from research.validation.returns import (
     ParamPoint,
     PeriodReturns,
@@ -98,6 +107,11 @@ class BacktestValidation:
     def __post_init__(self) -> None:
         if (self.report.verdict is Verdict.FAIL) != (self.failure_reason is not None):
             raise ValueError("failure_reason is required exactly when the verdict is FAIL")
+
+    @property
+    def promotion_blocked_reason(self) -> str | None:
+        """Why the report cannot support a promotion; a PASS without G5 is never promotable."""
+        return promotion_blocked_reason(self.report)
 
     def check_subject(self, subject: Ref) -> None:
         if self.report.subject.target_identity() != subject.target_identity():

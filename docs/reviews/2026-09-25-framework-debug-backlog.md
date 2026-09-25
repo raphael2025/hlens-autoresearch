@@ -20,6 +20,12 @@
 | R10 | 低 | `research/loop/memory.py` | LLM 草稿审阅无身份门禁 | 🔨 W2 调试中：必须给出非循环自身的审阅人并记录 |
 | R11 | 低~中 | `infrastructure/strategy/signals.py`、`infrastructure/event/inputs.py` | `available_time = evaluation_time` 依赖上游契约保证因果 | 设计如此（F4 / P2 契约已保证 `latest_input_available_time <= evaluation_time`）；调试时加跨层断言 |
 | R12 | 低~中 | `infrastructure/event/runner.py` | 稀疏检查点网格下，检查点之间的回填对执行器不可见 | 已在 ADR-0036 记录；调试时评估默认网格 |
+| R13 | 高 | `research/validation/robustness.py`（容量） | `min_capacity` 缺失只记入缺失字段、不产生门，整体可 PASS；`G4.capacity.estimated` 恒为 PASS | ✅ 已修（ADR-0041 实现说明）：估计值只报告；缺 `min_capacity` / 冲击系数 = INCONCLUSIVE 门；`RobustnessCheck` 拒绝无门的缺失字段 |
+| R14 | 高 | `research/validation/robustness.py`（参数邻域、时间对齐、延迟压力、跨资产） | 无邻点、偏移为空、`delay_stress_bars = 0`、未声明标的时 `gates=()`，检查被静默跳过 | ✅ 已修：均为 C-R1 ~ C-R5 必需检查，改为 `configuration_missing:<what>` INCONCLUSIVE 门；逐项依据见 ADR-0041 实现说明 |
+| R15 | 中 | `research/validation/robustness.py`（C-R2） | 只要样本充足状态净收益 > 0 即通过，欠采样状态的 P&L 集中度被忽略 | ✅ 已修：始终报告欠采样 P&L 占比；有显式参数 `param:state.max_undersampled_pnl_share` 时设门，无参数且占比为正时 INCONCLUSIVE（无发明阈值） |
+| R16 | 中 | `research/validation/splits.py`、`robustness.py`（walk-forward） | `step < test_window` 时窗口重叠，正收益窗口比例被抬高 | ✅ 已修：G4 只计不重叠的测试窗口（`non_overlapping_windows`），跳过数写入报告 |
+| R17 | 中 | `research/validation/overfitting.py`（CSCV） | CSCV 分块之间不做 purge / embargo | ✅ 已修：按 Profile `data_split.embargo` 剔除样本外分块两侧的样本内时期；剔除过多则 INCONCLUSIVE |
+| R18 | 记录 | `research/strategies/validation.py`、`research/validation/report.py` | 预填 `FixedSides` 的来源限制；`validate` 不含 G5 | ✅ 已记录：文档写明 G0 – G4 PASS 无 G5 永不可晋升；报告视图 `promotion` 块与 `BacktestValidation.promotion_blocked_reason` 结构标注 |
 
 ## B. 需要 Raphael 决定（红线，Claude 不自行决定）
 
@@ -37,7 +43,8 @@
 - **P5 策略 / 回测**：执行模型单一（下一根开盘成交、无部分成交 / 融资 / 冲击）；尚无 `plugins/` 下的生产 StrategyProvider（TSMOM 在 research/，须经 Promotion，H5）。
 - **P6 / P10（W1）**：路由结果的身份只由 `run_hash` 绑定；切换成本在回测成本之外另计且不重设仓位；端到端测试中的 ACTIVE 生命周期只是测试夹具。
 - **P9 校准**：检测器抛出异常时直接传播而不计为 INCONCLUSIVE；G5 未实际运行（开封消耗由 G0–G4 通过推断）；（控制台 `gate_calibration` 报告种类已补上）；8 个种子 × 2 天只是冒烟规模。
-- **P8 稳健性**：CSCV 分块之间不做 purge；回测适配器只验证单标的；状态标签由调用方提供，必须是因果的。
+- **P8 稳健性**：~~CSCV 分块之间不做 purge~~（R17 已修）；回测适配器只验证单标的；状态标签由调用方提供，必须是因果的；
+  `delay_stress_bars = 0` 或空 `time_alignment_offsets` 的 Profile 下 G4 永远不能 PASS（R14，是否允许豁免属 D-PFIELDS）。
 - **P11 循环**：总线与审计只在内存中（NATS / Control Plane 持久化待做）；算力秒数为阶段自报，不是实测；审计记录尚不是版本化契约。W2 正在把状态、验证、实验与进化阶段换成真实组件。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；尚无 PostgreSQL 变体测试；与特征路径的证明逻辑部分重复；无缓存。

@@ -171,13 +171,17 @@ STRICT_TEST_ONLY_PROFILE = factories.validation_profile(
     cost_stress=_cost_stress(5.0, 1),
 )
 
-#: TEST ONLY — explicit parameters for rules without a Profile field.
+#: TEST ONLY — explicit parameters for rules without a Profile field. ``min_capacity=0.0`` states
+#: "no capacity requirement in this smoke test" explicitly: since the ADR-0041 review fix a missing
+#: ``min_capacity`` is INCONCLUSIVE (it used to be silently skipped), and this harness exercises the
+#: other gates' pass rates, not capacity.
 TEST_ONLY_PARAMS = RobustnessParams(
     cscv_partitions=4,
     max_participation_rate=1.0,
-    min_capacity=None,
+    min_capacity=0.0,
     impact_coefficient=0.0,
     cross_asset_min_positive_fraction=None,
+    max_undersampled_pnl_share=None,
 )
 #: TEST ONLY — the reported interval level (a reporting parameter).
 TEST_ONLY_ALPHA = Decimal("0.05")

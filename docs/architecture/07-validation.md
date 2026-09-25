@@ -94,17 +94,20 @@ INCONCLUSIVE 不停止；整体判定只由 `derive_verdict` 给出。
 
 | 检查 | `gate_id` | 对应规则 | 阈值来源 |
 |---|---|---|---|
-| 过拟合概率 | `G4.overfitting` | C-T1、C-R1 | `significance.overfitting_metric`（`pbo_cscv` / `deflated_sharpe`）、`significance.overfitting_threshold`；CSCV 分块 `param:cscv_partitions` |
+| 过拟合概率 | `G4.overfitting` | C-T1、C-R1 | `significance.overfitting_metric`（`pbo_cscv` / `deflated_sharpe`）、`significance.overfitting_threshold`；CSCV 分块 `param:cscv_partitions`，分块间 purge / embargo 取 `data_split.embargo` |
 | 参数邻域 | `G4.param_neighborhood.performance_ratio`、`.positive_fraction` | C-R1 | `parameter_stability.neighborhood_definition`（`adjacent_grid`）、`.min_neighborhood_performance_ratio`、`.min_positive_neighbor_fraction` |
-| 时间对齐 | `G4.time_alignment.<i>` | C-R1 | `parameter_stability.time_alignment_offsets[i]`、`.min_neighborhood_performance_ratio` |
+| 时间对齐 | `G4.time_alignment.<i>`（未配置偏移时 `.offsets`） | C-R1 | `parameter_stability.time_alignment_offsets[i]`、`.min_neighborhood_performance_ratio` |
 | 延迟压力 | `G4.delay_stress` | C-R4、A6 | `cost_stress.delay_stress_bars`、`cost_stress.min_breakeven_cost_multiple` |
 | 成本压力 | `G4.cost_stress.breakeven`、`G4.cost_stress.<i>` | C-R4、A6 | `cost_stress.min_breakeven_cost_multiple`、`cost_stress.stress_multipliers[i]` |
-| walk-forward 窗口统计 | `G4.walk_forward.positive_fraction`、`.max_window_share` | C-S4、C-R3 | `data_split.walk_forward.min_positive_window_fraction`、`.max_single_window_pnl_share` |
-| 状态分解 | `G4.state.sufficient_states`、`.pnl_outside_undersampled_states` | C-R2 | `sample_size.min_effective_trades_per_state` |
-| 容量 | `G4.capacity.estimated`、`.required` | C-R5 | 无 Profile 字段：`param:capacity.max_participation_rate`、`param:capacity.min_capacity` |
+| walk-forward 窗口统计（只计不重叠的测试窗口） | `G4.walk_forward.positive_fraction`、`.max_window_share` | C-S4、C-R3 | `data_split.walk_forward.min_positive_window_fraction`、`.max_single_window_pnl_share` |
+| 状态分解 | `G4.state.sufficient_states`、`.pnl_outside_undersampled_states`、`.undersampled_pnl_share` | C-R2 | `sample_size.min_effective_trades_per_state`；无 Profile 字段：`param:state.max_undersampled_pnl_share` |
+| 容量 | `G4.capacity.estimated`（仅在无法估计时出现，INCONCLUSIVE）、`.required`、`.impact_estimated` | C-R5 | 无 Profile 字段：`param:capacity.max_participation_rate`、`param:capacity.min_capacity`、`param:capacity.impact_coefficient` |
 | 跨资产 | `G4.cross_asset.scope_covered`、`.positive_fraction` | C-R3 | 无 Profile 字段：`param:cross_asset.min_positive_fraction` |
 
 - Profile 没有字段的规则只接受显式参数（`param:<name>`）；不传则门为 INCONCLUSIVE（metric `profile_field_missing:<name>`），不发明默认值。
+- 不静默通过（ADR-0041 实现说明「复审修正」）：C-R1 ~ C-R5 都是 Constitution 必需检查，配置为空或被关闭（无参数邻点、
+  `time_alignment_offsets` 为空、`delay_stress_bars = 0`、未声明标的范围）时门为 INCONCLUSIVE（metric `configuration_missing:<what>`）；
+  计算出估计值（容量、冲击、P&L 占比）本身不构成 PASS；没有 G5 结果的 G0 – G4 PASS 在报告视图中标为不可晋升（`sealed_oos_not_evaluated`）。
 - 回溯审计（`retro_audit.py`）只报告差异、不执行转移；已拒绝对象的有效判定恒为 FAIL（构造时强制，对应 §1 "只能前向生效"）。
 - 报告视图（`report.py`）输出规范 JSON，供日后 apps/web 可视化。
 - Phase 5 接线：`research/strategies/validation.py` 的 `PipelineBacktestValidator` 对回测跑 G0 – G4（单标的；G5 独立进行）。

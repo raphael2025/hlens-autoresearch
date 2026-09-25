@@ -239,7 +239,11 @@ def test_delay_stress_uses_the_profile_delay_and_breakeven() -> None:
             )
         }
     )
-    assert delay_stress_check(off, delayed).status is CheckStatus.NOT_APPLICABLE
+    # review fix R14: a disabled delay stress is never silently skipped (C-R4 is required)
+    disabled = delay_stress_check(off, delayed)
+    assert disabled.status is CheckStatus.INCONCLUSIVE
+    (off_gate,) = disabled.gates
+    assert off_gate.metric == "configuration_missing:cost_stress.delay_stress_bars"
 
 
 def test_time_alignment_requires_every_profile_offset() -> None:
@@ -286,11 +290,15 @@ def test_state_decomposition_rejects_profit_from_an_undersampled_state() -> None
         StateTrade("rare", base + i * hour, base + (i + 1) * hour, Decimal("0.05"))
         for i in range(12, 14)
     ]
-    check = state_decomposition_check(rf.G4_TEST_ONLY_PROFILE, common + rare)
+    check = state_decomposition_check(
+        rf.G4_TEST_ONLY_PROFILE, common + rare, max_undersampled_share=None
+    )
     gates = {gate.gate_id: gate for gate in check.gates}
     assert gates["G4.state.pnl_outside_undersampled_states"].verdict is Verdict.FAIL
     assert check.status is CheckStatus.FAIL
-    unlabeled = state_decomposition_check(rf.G4_TEST_ONLY_PROFILE, None)
+    unlabeled = state_decomposition_check(
+        rf.G4_TEST_ONLY_PROFILE, None, max_undersampled_share=None
+    )
     assert unlabeled.gates[0].verdict is Verdict.INCONCLUSIVE
 
 

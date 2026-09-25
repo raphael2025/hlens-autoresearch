@@ -66,6 +66,7 @@ G4_TEST_ONLY_PARAMS = RobustnessParams(
     min_capacity=None,
     impact_coefficient=0.1,
     cross_asset_min_positive_fraction=0.5,
+    max_undersampled_pnl_share=None,
 )
 NO_EXPLICIT_PARAMS = RobustnessParams(
     cscv_partitions=None,
@@ -73,6 +74,7 @@ NO_EXPLICIT_PARAMS = RobustnessParams(
     min_capacity=None,
     impact_coefficient=None,
     cross_asset_min_positive_fraction=None,
+    max_undersampled_pnl_share=None,
 )
 COST_PER_UNIT = Decimal("0.00001")  # per unit of position change (TEST ONLY)
 MINUTES = 1440

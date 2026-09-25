@@ -108,3 +108,48 @@ G4 必须使用验证上下文绑定的同一 Profile（内容哈希核对）。
   - CSCV 不在分块间做 purge；状态标签由调用方提供（必须因果）；冲击模型为平方根形式、系数为显式参数；所有检查只在合成市场上
     做过冒烟测试，数值仍全部 TBD，校准属于两步冻结 Step 2。
 - 不涉及：Constitution、Validation Profile 字段、Lifecycle 状态机、`core/contracts` Schema、`apps/`、实盘。
+
+## Implementation note (review fixes, 2026-09-25)
+
+一份对 Phase 8 G4 代码的只读复审列出 6 项（调试待办 R13 – R18，`docs/reviews/2026-09-25-framework-debug-backlog.md`）。
+本说明记录修正；**不新增 ADR、不改 `core/domain` / `core/contracts`、不改 Profile Schema、不引入任何数值阈值**
+（缺 Profile 字段的问题仍属 D-PFIELDS / D-CTRL，由 Raphael 决定）。每项都有先失败后通过的回归测试
+（`tests/research/validation/test_g4_review_fixes.py`）。总规则：**计算出一个数值本身永远不算通过**；必需检查的配置为空时不得静默跳过。
+
+1. **R13 容量（C-R5）**：`min_capacity` 缺失时只记入 `missing_fields`、不产生门，整体可能 PASS；`G4.capacity.estimated` 恒为 PASS。
+   修正：估计值（容量、冲击）只写入 `details`；`G4.capacity.estimated` 只在无法估计时以 INCONCLUSIVE 出现；估计成功后
+   `G4.capacity.required` 与 `param:capacity.min_capacity` 比较，缺失则为 `profile_field_missing:capacity.min_capacity`（INCONCLUSIVE）；
+   C-R5 同样要求冲击估计，缺冲击系数时新增 `G4.capacity.impact_estimated` = `profile_field_missing:capacity.impact_coefficient`。
+   结构防线：`RobustnessCheck` 拒绝"列出缺失字段却没有对应 INCONCLUSIVE 门"与"没有门也没有原因"的检查。
+2. **R14 空配置静默跳过**：逐项依据文档判定（新门帮助函数 `gates.configuration_missing_gate`，metric `configuration_missing:<what>`）：
+
+   | 检查 | 依据 | 空 / 关闭时 |
+   |---|---|---|
+   | 参数邻域（无邻点） | C-R1"只在孤立参数点上成立的结果无效" | 两个 `G4.param_neighborhood.*` 门 INCONCLUSIVE（`param_search_space.neighbors`） |
+   | 时间对齐（偏移为空） | C-R1；07-validation §5.1 把"时间对齐（bar 偏移）测试"列为 C-R1 的 Profile 组成 | `G4.time_alignment.offsets` INCONCLUSIVE（`parameter_stability.time_alignment_offsets`） |
+   | 延迟压力（`delay_stress_bars = 0`） | C-R4 / A6；§5.1 把"延迟压力"列为 C-R4 的组成 | `G4.delay_stress` INCONCLUSIVE（`cost_stress.delay_stress_bars`） |
+   | 跨资产（未声明范围） | C-R3"必须在声明的适用范围内检验" | `G4.cross_asset.scope_covered` INCONCLUSIVE（`declared_instruments`） |
+
+   文档中没有任何 G4 检查被写为可选，因此**没有检查使用 NOT_APPLICABLE**；`NOT_APPLICABLE` 仍保留，但只允许带记录原因的无门检查。
+   注意：Profile 契约允许 `delay_stress_bars = 0` 与空 `time_alignment_offsets`（结构合法），但这样的 Profile 下 G4 永远不能 PASS；
+   若 Raphael 认为某类研究可豁免，需要 Profile 层面的明确表达（D-PFIELDS 范畴）。
+3. **R15 状态 P&L 集中度（C-R2）**：原门只要求"样本充足状态合计净收益 > 0"，不看欠采样状态贡献多少。修正：始终报告
+   `undersampled_pnl_share = max(欠采样净收益, 0) / 总净收益`；有显式参数 `param:state.max_undersampled_pnl_share` 时新门
+   `G4.state.undersampled_pnl_share` 与之比较（`[<=]`）；无参数且欠采样状态贡献为正时该门为 `profile_field_missing`（INCONCLUSIVE）；
+   欠采样状态没有正贡献时无需阈值、不加门。`RobustnessParams` 新增必填字段 `max_undersampled_pnl_share`（`None` = 未给）。
+4. **R16 walk-forward 窗口重叠**：`step < test_window` 时测试窗口重叠、同一时期被多次计数。选择**只计不重叠窗口**（不拒绝配置，
+   因为 `WalkForwardParams` 刻意不约束 step 与窗口的关系）：`splits.non_overlapping_windows` 按时间贪心保留测试区间两两不交的窗口，
+   `details` 记录 `profile_windows` 与 `windows_skipped_overlapping`。G2 已按事件只保留首个折，不受影响。
+5. **R17 CSCV 分块间 purge**：实现 purge / embargo：每个拆分中，距任一样本外分块起点之前或终点之后严格小于 `embargo` 的样本内时期被剔除
+   （与 `splits.purge_and_embargo` 同一语义）；`embargo` 为必填参数，`overfitting_check` 传入 Profile 的 `data_split.embargo`
+   （与切分共用，C-L5 要求其覆盖最长 Outcome horizon）；`embargo = 0` 与原 CSCV 完全一致；剔除后样本内少于 2 期则拒绝计算
+   （`CscvPurgeTooWide` → `pbo_not_computed:purge_leaves_too_few_in_sample_periods`，INCONCLUSIVE）。本 ADR「后果」中"CSCV 不在分块间做 purge"一条由此关闭。
+6. **R18 只记录、不改规则**：(a) 在流水线外用标签符号预填的 `FixedSides` 无法被 `G1.label_blind_sides` 识别——来源限制，防线仍是接线只从
+   契约校验过的 `TargetPosition` 构造侧向（`research/strategies/validation.py` 文档已写明）；(b) `validate` 按设计不含 G5，封存 OOS 是独立、
+   显式的一步：**G0 – G4 PASS 没有 G5 结果永不可晋升**。结构标注：报告视图新增 `promotion` 块（视图 schema 1.1.0，仅新增），
+   `BacktestValidation.promotion_blocked_reason` 同源——非 PASS 为 `verdict_not_pass`，无 G5 门的 PASS 为 `sealed_oos_not_evaluated`，
+   只有含 G5 且 PASS 才为 `None`（仍只是进入 ADR-0006 生命周期审查的资格）。
+
+测试夹具：P9 合成实验室的 TEST ONLY 参数原先 `min_capacity=None`，依赖 R13 的静默通过；现显式给出 `min_capacity=0.0`（TEST ONLY，
+表示"本冒烟测试不设容量要求"），断言未改动。`test_robustness.py` 中 `delay_stress_bars = 0` 判 NOT_APPLICABLE 的断言改为更严格的
+INCONCLUSIVE + `configuration_missing` 断言（原断言编码的正是 R14 缺陷）。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。

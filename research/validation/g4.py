@@ -7,7 +7,8 @@ stage failed, G4. The robustness input may be passed lazily (a callable): buildi
 means re-running every declared parameter point, which is pointless after an earlier FAIL.
 Without any robustness input G4 is materialized as ``G4.robustness_input`` = ``INCONCLUSIVE``
 (ADR-0013: a missing stage is never a PASS). G5 (sealed OOS) stays a separate, one-shot call
-(``pipeline.run_sealed_oos``).
+(``pipeline.run_sealed_oos``): a G0 – G4 ``PASS`` is **never promotable** on its own — the
+report view labels it ``promotion.blocked_reason = "sealed_oos_not_evaluated"`` until G5 runs.
 
 ``RobustnessParams`` are the explicit parameters for rules the Profile contract has **no field**
 for. Every field is required (``None`` = not given → ``profile_field_missing``); nothing here has a
@@ -59,6 +60,7 @@ class RobustnessParams:
     min_capacity: float | None
     impact_coefficient: float | None
     cross_asset_min_positive_fraction: float | None
+    max_undersampled_pnl_share: float | None
 
     def _threshold(self, name: str, value: float | None) -> Threshold | None:
         return None if value is None else explicit_threshold(name, value)
@@ -70,6 +72,10 @@ class RobustnessParams:
     @property
     def capacity_floor(self) -> Threshold | None:
         return self._threshold("capacity.min_capacity", self.min_capacity)
+
+    @property
+    def undersampled_share(self) -> Threshold | None:
+        return self._threshold("state.max_undersampled_pnl_share", self.max_undersampled_pnl_share)
 
     @property
     def cross_asset_fraction(self) -> Threshold | None:
@@ -84,6 +90,7 @@ class RobustnessParams:
             "capacity.min_capacity": self.min_capacity,
             "capacity.impact_coefficient": self.impact_coefficient,
             "cross_asset.min_positive_fraction": self.cross_asset_min_positive_fraction,
+            "state.max_undersampled_pnl_share": self.max_undersampled_pnl_share,
             "source": "param (explicit; no Profile field exists)",
         }
 
@@ -145,7 +152,9 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
         delay_stress_check(profile, inp.delayed),
         cost_stress_check(profile, returns),
         walk_forward_check(profile, returns),
-        state_decomposition_check(profile, inp.state_trades),
+        state_decomposition_check(
+            profile, inp.state_trades, max_undersampled_share=params.undersampled_share
+        ),
         capacity_check(
             profile,
             inp.capacity_fills,

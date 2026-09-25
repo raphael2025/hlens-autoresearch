@@ -17,6 +17,11 @@ budget); for those a caller may pass an ``explicit_threshold`` whose source is `
 verifier sees it did not come from the Profile), or nothing — then the gate is
 ``missing_field_gate``: ``INCONCLUSIVE`` with metric ``profile_field_missing:<name>``, never a
 default and never a PASS.
+
+Review fixes (ADR-0041 implementation note, 2026-09-25): a Constitution-required check whose
+configuration is empty or disabled (no parameter neighbours, no time-alignment offsets, a zero
+delay stress, no declared instrument scope) is ``configuration_missing_gate``: ``INCONCLUSIVE``
+with metric ``configuration_missing:<what>`` — the check is never silently skipped.
 """
 
 from __future__ import annotations
@@ -30,12 +35,14 @@ from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, Verdict
 
 __all__ = [
+    "CONFIGURATION_MISSING",
     "PARAM_SOURCE_PREFIX",
     "PROFILE_FIELD_MISSING",
     "Direction",
     "ProfileFieldMissing",
     "Threshold",
     "compare_gate",
+    "configuration_missing_gate",
     "explicit_threshold",
     "flag_gate",
     "inconclusive_gate",
@@ -46,6 +53,8 @@ __all__ = [
 
 #: Metric prefix of a gate whose rule has no Profile field and no explicit parameter.
 PROFILE_FIELD_MISSING: Final = "profile_field_missing"
+#: Metric prefix of a Constitution-required check whose configuration is empty or disabled.
+CONFIGURATION_MISSING: Final = "configuration_missing"
 #: ``threshold_source`` prefix of a threshold passed as an explicit parameter (not the Profile).
 PARAM_SOURCE_PREFIX: Final = "param:"
 
@@ -154,3 +163,8 @@ def inconclusive_gate(gate_id: str, metric: str, value: float) -> GateResult:
 def missing_field_gate(gate_id: str, field: str, value: float = 0.0) -> GateResult:
     """A rule whose threshold has neither a Profile field nor an explicit parameter."""
     return inconclusive_gate(gate_id, f"{PROFILE_FIELD_MISSING}:{field}", value)
+
+
+def configuration_missing_gate(gate_id: str, configuration: str, value: float = 0.0) -> GateResult:
+    """A required check that cannot run because its configuration is empty or disabled."""
+    return inconclusive_gate(gate_id, f"{CONFIGURATION_MISSING}:{configuration}", value)
