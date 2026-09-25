@@ -6,6 +6,9 @@
 - ``inputs``: ``inputs_from_feature_run`` / ``inputs_from_state_series`` build
   ``EventInputPoint``s with lineage (the state side is the local Phase 3 shape until Phase 2's
   ``StateProvider`` is wired);
+- ``upstream``: ``verify_interaction`` / ``verify_input_lineage`` — what a run is given must match
+  what the spec declares (an interaction's upstream specs, their hashes and Feature / State union;
+  each input point's per-point lineage against its feature / state run); called by ``run_events``;
 - ``table``: ``event_table`` flattens a result into Event-table rows.
 
 Providers are injected through the ``core.contracts.event.EventProvider`` Protocol; nothing here

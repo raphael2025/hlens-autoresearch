@@ -95,3 +95,39 @@ PIT 一致性（不得未来确认）、哈希敏感、未声明规格、非有�
 test_phase3_events_smoke.py` 的状态序列已换成真实的 `plugins.states.TrendRangeProvider`（经
 `infrastructure.state.run_state`），新增 `tests/infrastructure/event/test_state_inputs.py` 覆盖重跑一致、
 未来扰动不改变过去事件 id、显式 `None` 不填补。详见 ADR-0035 的同一条记录。
+
+## Implementation note (interaction upstream verification, 2026-09-26)
+
+不新增 ADR，不改 `core/contracts`、`core/domain`（`EventSpec` / `EventRequest` 等冻结）或 Provider 接口。处理 debug
+backlog C 节 P3"交互规格声明的上游只做形式检查"与本 ADR 后果中的诚实边界（02-domain §2.8 同一边界）中**一次运行被
+交给了什么**的部分；Registry 登记本身仍属 Registry。
+
+新增 `infrastructure/event/upstream.py`，由 `run_events` 在第一个检查点之前调用；错误类移入
+`infrastructure/event/errors.py`（`runner` 照旧导出）。任一不符抛 `UpstreamVerificationError`（`EventRunnerError`
+子类），fail closed，从不静默丢弃：
+
+1. **交互核对**（`verify_interaction`）。交互 = `lineage` 含 `kind=event` 引用，或请求带上游事件。
+   - `run_events(..., upstream_specs=...)` 对交互**必填**；所给上游规格恰好等于声明的上游引用（缺、多、重复都拒绝）；
+     非交互规格收到上游事件或上游规格同样拒绝。
+   - 上游 spec hash：§5 规定交互的 trigger 绑定"上游引用、上游 spec hash 与窗口"，因此所给上游规格的
+     `content_hash()` 必须出现在交互 trigger 文本中（256 位内容哈希；同一 ref 下内容不同的规格哈希不同而被拒绝）。
+     不解析任何 Provider 的 trigger 约定。
+   - 请求中的每个上游事件必须属于某个声明的上游规格且 `spec_hash` 等于该规格的哈希。
+   - Feature / State 输入：交互声明的并集必须**等于**上游规格声明的并集，**不是**超集。依据：本 ADR §5
+     （"交互规格声明上游规格的 Feature / State 并集为（传递）输入"）、02-domain §2.8 诚实边界（"是否与上游规格一致"）、
+     `plugins/events/interactions.py` 的构造（恰为并集）；且交互只消费上游事件，并集之外的 Feature / State 是任何计算都
+     用不到的声明输入，即虚假的溯源声明。子集同样拒绝（隐藏了传递输入）。
+   - 可选 `upstream_results`：请求中的每个上游事件必须逐字出现在所给上游结果中，所给结果只含声明上游规格的事件。
+2. **逐点 lineage 核对**（`verify_input_lineage`）。给了 `feature_runs` / `state_runs`（`(FeatureRequest, FeatureResult)`
+   / `(StateRequest, StateResult)`）时，请求的每个输入点必须恰好等于适配器（`inputs_from_feature_run` /
+   `state_series_from_state_run`）从对应运行重算出的点：值、时间与逐点 `source_lineage_hash` 都相同。来源没有运行、
+   运行中没有该点、伪造的 lineage 或值、结果不回答其请求、同一来源两次运行，都拒绝。未给运行时不核对（本地
+   `StateSeriesPoint` 形状的 lineage 由调用方计算，仍属调用方 / Registry）。
+
+调用方更新：`tests/infrastructure/event/test_event_runner.py` 的交互运行与 `tests/smoke/test_phase3_events_smoke.py`
+现在传入上游规格 / 结果与特征 / 状态运行（冒烟因此逐点核对全部输入 lineage）。回归测试
+`tests/infrastructure/event/test_upstream_verification.py`：匹配的交互通过；缺少 / 多余 / 未声明的上游、未绑定的上游
+spec hash、上游事件哈希不符、并集不符（超集 / 子集 / 不同）、伪造的 lineage 与值、无运行的点都被拒绝；
+`ConfirmedTopProvider`、`BackdatedProvider` 与一个回填时间的交互算子仍被执行器抓住。仍然 FRAMEWORK_IMPLEMENTED /
+NOT_VALIDATED；未做：Registry 侧的登记核对、多跳（传递）上游的一次性核对（每跳在自己的运行中核对）、非交互规格的
+输入点来源是否属于声明的 Feature / State。

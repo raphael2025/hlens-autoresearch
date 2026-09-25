@@ -17,7 +17,9 @@ of any time never changes retroactively.
 ``EventSpec`` can only depend on features and states (ADR-0012), so an interaction spec declares
 the union of the upstream specs' features / states as its (transitive) inputs, records the upstream
 event refs in ``lineage``, and binds the upstream refs, their spec hashes and the window in its
-trigger. Upstream events of any other definition or spec hash are refused (fail closed).
+trigger. Upstream events of any other definition or spec hash are refused (fail closed). The runner
+(``infrastructure.event.upstream``) verifies the declared union and bound hashes against the
+upstream specs supplied to the run (ADR-0036 implementation note of 2026-09-26).
 """
 
 from __future__ import annotations
@@ -126,6 +128,8 @@ class _PairProvider(EventProviderBase):
             raise ValueError("lineage must be the two upstream event refs, in trigger order")
         _window(params["window_us"])
         # The declared inputs are the upstream specs' (not visible here): only their form is fixed.
+        # ``infrastructure.event.run_events`` checks them (and the bound upstream hashes) against
+        # the upstream specs supplied to the run.
         for refs_of in (spec.features, spec.states):
             keys = [str(ref) for ref in refs_of]
             if keys != sorted(set(keys)):

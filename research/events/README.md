@@ -9,7 +9,7 @@ Phase 3 — Event & Interaction Engine 的研究侧代码（ADR-0036）。事件
 | 位置 | 内容 |
 |---|---|
 | `core/contracts/event.py` | `EventProvider` Protocol 与 5 个 DTO（事件时间 = 可观测时间、溯源、截至 `as_of` 的事件表） |
-| `infrastructure/event/` | 执行器 `run_events`（结构性截断 + 相邻检查点一致：不得未来确认）、输入适配、Event 表逻辑物化 |
+| `infrastructure/event/` | 执行器 `run_events`（结构性截断 + 相邻检查点一致：不得未来确认；交互的上游规格 / 并集与输入点逐点 lineage 核对，见 `upstream.py`）、输入适配、Event 表逻辑物化 |
 | `plugins/events/` | 首批 EventProvider 与交互算子（阈值穿越、波动率突破、状态切换、A 后 B、共现） |
 | `research/events/stats.py`（本目录） | 事件表的描述统计：频率、共现、lead-lag、重叠 / 独立性诊断 |
 

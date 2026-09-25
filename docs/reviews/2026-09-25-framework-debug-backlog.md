@@ -47,7 +47,7 @@
 
 ## C. 各批次自报的已知缺口（调试时逐个处理）
 
-- **P3 事件**：一次请求只覆盖一个标的；检查点网格代价约为检查点数 × 可见输入数；交互规格声明的上游只做形式检查；尚无物理 Event 表。
+- **P3 事件**：一次请求只覆盖一个标的；检查点网格代价约为检查点数 × 可见输入数；~~交互规格声明的上游只做形式检查~~ ✅ 已修（2026-09-26）：`run_events` 经 `infrastructure/event/upstream.py` 核对交互的上游规格（恰为声明的 `lineage` 事件引用、spec hash 被 trigger 绑定、上游事件属于它们且哈希一致、Feature / State 声明**等于**上游并集，可选核对上游结果），给出特征 / 状态运行时逐点重算 `source_lineage_hash`；任一不符 fail closed（ADR-0036 Implementation note, interaction upstream verification；回归测试 `tests/infrastructure/event/test_upstream_verification.py`）；尚无物理 Event 表。
 - **P4 Outcome / 最小验证门**：负对照为单次固定种子；开封记录与 Outcome 表只在内存中；统计用浮点正态近似。
 - **P5 策略 / 回测**：执行模型单一（下一根开盘成交、无部分成交 / 融资 / 冲击）；尚无 `plugins/` 下的生产 StrategyProvider（TSMOM 在 research/，须经 Promotion，H5）。
 - **P6 / P10（W1）**：路由结果的身份只由 `run_hash` 绑定；切换成本在回测成本之外另计且不重设仓位；端到端测试中的 ACTIVE 生命周期只是测试夹具。

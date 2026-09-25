@@ -20,6 +20,7 @@ from typing import Any
 
 from core.contracts.event import EventInputPoint, EventProvider, EventRequest, EventResult
 from core.contracts.feature import FeatureObservation, FeatureRequest, FeatureResult
+from core.contracts.state import StateRequest, StateResult
 from core.contracts.synthetic import SyntheticBar, SyntheticMarketSpec
 from core.contracts.universe import SelectedRevisionLineage
 from core.domain.base import FrozenMapping, content_hash
@@ -133,7 +134,7 @@ def _feature(
 
 def _direction(
     returns_request: FeatureRequest, returns: FeatureResult
-) -> tuple[EventInputPoint, ...]:
+) -> tuple[tuple[EventInputPoint, ...], tuple[StateRequest, StateResult]]:
     """The real Phase 2 state series: TrendRangeProvider over the log-return feature, run through
     ``infrastructure.state.run_state`` and adapted to event inputs by
     ``state_series_from_state_run`` (the Phase 2 -> Phase 3 wiring point)."""
@@ -141,7 +142,7 @@ def _direction(
     request = state_request(TREND_RANGE, returns_request.evaluation_times, inputs)
     result = run_state(TrendRangeProvider((TREND_RANGE,)), TREND_RANGE, request)
     points = state_series_from_state_run(request, result)
-    return inputs_from_state_series(DIRECTION, points)
+    return inputs_from_state_series(DIRECTION, points), (request, result)
 
 
 @dataclass(frozen=True)
@@ -152,14 +153,17 @@ class Pipeline:
     results: dict[str, EventResult]
 
 
-def _run(spec: EventSpec, provider: EventProvider, **fields: Any) -> EventResult:
+def _run(
+    spec: EventSpec, provider: EventProvider, verify: dict[str, Any], **fields: Any
+) -> EventResult:
     request = EventRequest(
         event=spec.ref,
         spec_hash=spec.content_hash(),
         as_of=START + (MINUTES + 5) * MINUTE,
         **fields,
     )
-    return run_events(provider, spec, request)
+    # ``verify``: the upstream runs / specs / results the runner checks the request against.
+    return run_events(provider, spec, request, **verify)
 
 
 def _pipeline(*, shock_after: datetime | None = None) -> Pipeline:
@@ -176,26 +180,34 @@ def _pipeline(*, shock_after: datetime | None = None) -> Pipeline:
         for feature_request, result in ((returns_request, returns), (vol_request, vol))
         for value in result.values
     }
-    direction_inputs = _direction(returns_request, returns)
+    direction_inputs, state_run = _direction(returns_request, returns)
     state_lineages = {item.source_lineage_hash for item in direction_inputs}
     inputs = return_points + inputs_from_feature_run(vol_request, vol) + direction_inputs
     results: dict[str, EventResult] = {}
+    # Every input point is re-derived from the feature / state runs (per-point lineage).
+    runs: dict[str, Any] = {
+        "feature_runs": ((returns_request, returns), (vol_request, vol)),
+        "state_runs": (state_run,),
+    }
     for spec, provider in (
         (CROSS, FeatureThresholdCrossProvider((CROSS,))),
         (BREAKOUT, VolatilityBreakoutProvider((BREAKOUT,))),
         (SWITCH, StateSwitchProvider((SWITCH,))),
     ):
-        results[spec.name] = _run(spec, provider, inputs=inputs)
-    results[SEQUENCE.name] = _run(
-        SEQUENCE,
-        EventSequenceProvider((SEQUENCE,)),
-        upstream_events=results[BREAKOUT.name].events + results[SWITCH.name].events,
+        results[spec.name] = _run(spec, provider, runs, inputs=inputs)
+    interactions: tuple[tuple[EventSpec, EventProvider, EventSpec, EventSpec], ...] = (
+        (SEQUENCE, EventSequenceProvider((SEQUENCE,)), BREAKOUT, SWITCH),
+        (CO_OCCUR, EventCoOccurrenceProvider((CO_OCCUR,)), CROSS, BREAKOUT),
     )
-    results[CO_OCCUR.name] = _run(
-        CO_OCCUR,
-        EventCoOccurrenceProvider((CO_OCCUR,)),
-        upstream_events=results[CROSS.name].events + results[BREAKOUT.name].events,
-    )
+    for pair, pair_provider, first, second in interactions:
+        # The interaction is checked against its upstream specs and their results.
+        upstream = (results[first.name], results[second.name])
+        results[pair.name] = _run(
+            pair,
+            pair_provider,
+            {"upstream_specs": (first, second), "upstream_results": upstream},
+            upstream_events=upstream[0].events + upstream[1].events,
+        )
     return Pipeline(
         inputs=inputs,
         lineages=frozenset(feature_lineages) | state_lineages,

@@ -119,7 +119,12 @@ def test_interactions_run_on_upstream_runs() -> None:
         (EventCoOccurrenceProvider, MINUTE),
     ):
         spec = provider_cls.spec(CROSS_UP, SWITCH, window, observable_lag=LAG)
-        result = run_events(provider_cls((spec,)), spec, request(spec, upstream_events=upstream))
+        result = run_events(
+            provider_cls((spec,)),
+            spec,
+            request(spec, upstream_events=upstream),
+            upstream_specs=(CROSS_UP, SWITCH),
+        )
         assert result.events
         known = {item.event_id for item in upstream}
         assert all(set(item.upstream_event_ids) <= known for item in result.events)

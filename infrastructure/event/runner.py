@@ -24,6 +24,16 @@ then invisible to the runner).
 The returned result answers the full ``request`` and is built by the runner; its hashes equal what
 a compliant provider returns for the full request directly.
 
+Before any checkpoint the runner verifies what it is given against what the spec declares
+(``infrastructure.event.upstream``; ADR-0036 implementation note of 2026-09-26): an interaction
+(a spec whose ``lineage`` names upstream events, or a request carrying upstream events) needs its
+``upstream_specs`` — exactly the declared ones, each bound by its spec hash in the interaction's
+trigger, the interaction's Feature / State inputs equal to their union, every upstream event of
+one of them with its hash, and (with ``upstream_results``) every upstream event taken from those
+results. With ``feature_runs`` / ``state_runs`` every input point must be exactly the point the
+adapter recomputes from its run (per-point ``source_lineage_hash``). Any mismatch raises
+``UpstreamVerificationError`` (fail closed).
+
 Pure: no catalog, no clock, no randomness.
 """
 
@@ -43,22 +53,23 @@ from core.contracts.event import (
     EventResult,
     UnsupportedEvent,
 )
+from core.contracts.feature import FeatureRequest, FeatureResult
+from core.contracts.state import StateRequest, StateResult
 from core.domain.specs import EventSpec
+from infrastructure.event.errors import EventRunnerError, FutureConfirmationError
+from infrastructure.event.upstream import (
+    UpstreamVerificationError,
+    verify_input_lineage,
+    verify_interaction,
+)
 
 __all__ = [
     "EventRunnerError",
     "FutureConfirmationError",
+    "UpstreamVerificationError",
     "default_checkpoints",
     "run_events",
 ]
-
-
-class EventRunnerError(Exception):
-    """The run cannot produce an honest result (spec / request mismatch, a non-compliant answer)."""
-
-
-class FutureConfirmationError(EventRunnerError):
-    """Tables as of two checkpoints disagree: an event was back-dated or retracted."""
 
 
 def _descriptor(provider: EventProvider) -> EventProviderDescriptor:
@@ -138,13 +149,23 @@ def run_events(
     request: EventRequest,
     *,
     checkpoints: Sequence[datetime] | None = None,
+    upstream_specs: Sequence[EventSpec] | None = None,
+    upstream_results: Sequence[EventResult] | None = None,
+    feature_runs: Sequence[tuple[FeatureRequest, FeatureResult]] = (),
+    state_runs: Sequence[tuple[StateRequest, StateResult]] = (),
 ) -> EventResult:
-    """Answer ``request`` for ``spec``: one truncated sub-request per checkpoint."""
+    """Answer ``request`` for ``spec``: one truncated sub-request per checkpoint.
+
+    ``upstream_specs`` is required for an interaction; ``upstream_results``, ``feature_runs``
+    and ``state_runs`` are optional, stricter provenance (see the module docstring).
+    """
     if not isinstance(spec, EventSpec) or not isinstance(request, EventRequest):
         raise EventRunnerError("run_events needs an EventSpec and an EventRequest")
     spec_hash = spec.content_hash()
     if request.event != spec.ref or request.spec_hash != spec_hash:
         raise EventRunnerError(f"the request is not for {spec.ref} with this spec hash")
+    verify_interaction(spec, request, upstream_specs, upstream_results)
+    verify_input_lineage(request, feature_runs, state_runs)
     descriptor = _descriptor(provider)
     if not descriptor.supports(spec.ref, spec_hash):
         raise UnsupportedEvent(f"{descriptor.plugin_key} does not declare {spec.ref}")
