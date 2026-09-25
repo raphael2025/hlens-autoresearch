@@ -5,6 +5,8 @@ from apps.worker.degradation import DegradationCheck, DegradationMonitor
 from apps.worker.jobs import JobOutcome, JobRunner, JobSpec
 from apps.worker.loop import (
     AUTOMATABLE_TARGETS,
+    EXTENDED_STAGE_ORDER,
+    OPTIONAL_STAGES,
     STAGE_ORDER,
     AutomationForbidden,
     LifecycleGuard,
@@ -16,6 +18,7 @@ from apps.worker.loop import (
     ResearchLoop,
     RoundContext,
     RoundStatus,
+    StageFailed,
     StageRecord,
     StageResult,
     StageStatus,
@@ -24,6 +27,8 @@ from apps.worker.loop import (
 
 __all__ = [
     "AUTOMATABLE_TARGETS",
+    "EXTENDED_STAGE_ORDER",
+    "OPTIONAL_STAGES",
     "STAGE_ORDER",
     "AutomationForbidden",
     "DegradationCheck",
@@ -41,6 +46,7 @@ __all__ = [
     "RoundContext",
     "RoundStatus",
     "StageRecord",
+    "StageFailed",
     "StageResult",
     "StageStatus",
     "StageUsage",

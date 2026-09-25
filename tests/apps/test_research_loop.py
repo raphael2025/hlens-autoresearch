@@ -24,12 +24,19 @@ from apps.worker import (
     ResearchLoop,
     RoundContext,
     RoundStatus,
+    StageFailed,
     StageResult,
     StageStatus,
     StageUsage,
 )
 from apps.worker.degradation import DEGRADATION_TOPIC
-from apps.worker.loop import ROUND_TOPIC, STAGE_TOPIC, automation_reachable_states
+from apps.worker.loop import (
+    EXTENDED_STAGE_ORDER,
+    FORBIDDEN_TARGETS,
+    ROUND_TOPIC,
+    STAGE_TOPIC,
+    automation_reachable_states,
+)
 from core.contracts.validation_profile import LifecycleParams
 from core.domain.base import FrozenMapping, Kind, Ref
 from core.lifecycle.strategy import LifecycleState
@@ -175,10 +182,72 @@ def test_llm_cost_and_per_round_limits_are_enforced_before_the_stage() -> None:
 
 
 def test_an_under_declared_stage_is_an_overrun_and_halts() -> None:
-    sneaky = FakeStage("experiment", StageUsage(trials=0), actual=StageUsage(trials=3))
+    sneaky = FakeStage(
+        "experiment",
+        StageUsage(trials=1, compute_seconds=Decimal(2)),
+        actual=StageUsage(trials=3, compute_seconds=Decimal(1)),
+    )
     loop, _ = _loop(_stages(experiment=sneaky))
     [record] = loop.run_unattended(2)
     assert record.status is RoundStatus.BUDGET_OVERRUN and loop.total_usage.trials == 3
+    assert loop.halted is RoundStatus.BUDGET_OVERRUN
+    stage = {s.name: s for s in record.stages}["experiment"]
+    assert stage.status is StageStatus.BUDGET_OVERRUN
+    assert stage.overrun == StageUsage(trials=2)  # actual minus declared, per dimension
+    assert record.overrun == {"stage": "experiment", "amount": StageUsage(trials=2).payload()}
+    assert record.payload()["overrun"] == record.overrun
+    with pytest.raises(LoopHalted):
+        loop.submit_round(1)
+
+
+def test_a_failed_stage_is_charged_what_it_reports_else_its_estimate() -> None:
+    declared = StageUsage(trials=2, compute_seconds=Decimal(5))
+
+    def partial(ctx: RoundContext) -> None:
+        raise StageFailed("died half way", usage=StageUsage(trials=1, compute_seconds=Decimal(2)))
+
+    def boom(ctx: RoundContext) -> None:
+        raise RuntimeError("no usage report")
+
+    reported, _ = _loop(_stages(experiment=FakeStage("experiment", declared, action=partial)))
+    [record] = reported.run_unattended(1)
+    stage = {s.name: s for s in record.stages}["experiment"]
+    assert (record.status, stage.status) == (RoundStatus.FAILED, StageStatus.FAILED)
+    assert stage.usage == StageUsage(trials=1, compute_seconds=Decimal(2)) == record.round_usage
+    assert stage.overrun is None and record.overrun is None and reported.halted is None
+    unreported, _ = _loop(_stages(experiment=FakeStage("experiment", declared, action=boom)))
+    [record] = unreported.run_unattended(1)
+    assert record.round_usage == declared and "no usage report" in (
+        {s.name: s for s in record.stages}["experiment"].error or ""
+    )
+
+
+def test_a_failed_stage_that_spent_more_than_declared_halts() -> None:
+    def greedy(ctx: RoundContext) -> None:
+        raise StageFailed("over and out", usage=StageUsage(compute_seconds=Decimal(9)))
+
+    stage = FakeStage("validation", StageUsage(compute_seconds=Decimal(4)), action=greedy)
+    loop, _ = _loop(_stages(validation=stage))
+    [record] = loop.run_unattended(3)
+    failed = {s.name: s for s in record.stages}["validation"]
+    assert failed.status is StageStatus.BUDGET_OVERRUN and "over and out" in (failed.error or "")
+    assert failed.overrun == StageUsage(compute_seconds=Decimal(5))
+    assert record.status is RoundStatus.BUDGET_OVERRUN and loop.halted is RoundStatus.BUDGET_OVERRUN
+    assert loop.total_usage.compute_seconds == Decimal(9)
+
+
+def test_the_optional_evolution_stage_has_exactly_one_place() -> None:
+    stages = _stages()
+    stages.insert(3, FakeStage("evolution"))
+    loop, _ = _loop(stages)
+    [record] = loop.run_unattended(1)
+    assert [s.name for s in record.stages] == list(EXTENDED_STAGE_ORDER)
+    misplaced = _stages()
+    misplaced.insert(5, FakeStage("evolution"))
+    with pytest.raises(ValueError, match="exactly"):
+        _loop(misplaced)
+    with pytest.raises(ValueError, match="exactly"):
+        _loop([*_stages(), FakeStage("reporting")])
 
 
 def test_a_failing_stage_is_recorded_and_the_loop_continues() -> None:
@@ -193,20 +262,20 @@ def test_a_failing_stage_is_recorded_and_the_loop_continues() -> None:
     assert failed.status is StageStatus.FAILED and "provider down" in (failed.error or "")
 
 
-@pytest.mark.parametrize(
-    "target",
-    [LifecycleState.PAPER, LifecycleState.PRODUCTION_CANDIDATE, LifecycleState.ACTIVE],
-)
+@pytest.mark.parametrize("target", sorted(FORBIDDEN_TARGETS))
 def test_the_guard_never_moves_anything_to_paper_or_beyond(target: LifecycleState) -> None:
     def promote(ctx: RoundContext) -> None:
         _admit(ctx)
+        for step in (LifecycleState.VALIDATION, LifecycleState.OOS):  # as far as automation goes
+            ctx.advance(SUBJECT, step, reason="validated", evidence=("e",))
         ctx.advance(SUBJECT, target, reason="sneak", evidence=("e",))
 
     loop, _ = _loop(_stages(memory=FakeStage("memory", action=promote)))
     [record] = loop.run_unattended(2)
     assert record.status is RoundStatus.GUARD_VIOLATION and loop.halted is not None
-    assert loop.guard.state_of(SUBJECT) is LifecycleState.CANDIDATE
-    assert all(t.to_state is not LifecycleState.ACTIVE for t in record.transitions)
+    assert loop.guard.state_of(SUBJECT) is LifecycleState.OOS
+    assert all(t.to_state not in FORBIDDEN_TARGETS for t in record.transitions)
+    assert all(t.approved_by is None for t in record.transitions)
 
 
 def test_the_guard_refuses_subjects_it_does_not_own_and_human_gates() -> None:

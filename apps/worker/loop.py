@@ -4,16 +4,21 @@ This is the **research-agnostic** mechanism. It never imports ``research/`` (01-
 concrete stages are injected by a composition root (``research/loop/compose.py`` or a test).
 
 A *round* runs the stages in the fixed order ``STAGE_ORDER`` (ingest new data -> state update ->
-hypothesis generation -> experiment -> validation -> memory). Before each stage the scheduler asks
-the stage for its declared usage (``estimate``) and consults the ``LoopBudget``:
+hypothesis generation -> experiment -> validation -> memory). The optional stages of
+``OPTIONAL_STAGES`` (``evolution``, between hypothesis and experiment) may be added at their fixed
+place in ``EXTENDED_STAGE_ORDER``; nothing else. Before each stage the scheduler asks the stage for
+its declared usage (``estimate``) and consults the ``LoopBudget``:
 
 - the estimate does not fit -> the stage is ``REFUSED_BUDGET``, the round stops as
   ``BUDGET_EXHAUSTED`` and the loop halts; the budget is never expanded (a larger budget is a new
   ``LoopBudget`` whose hash is written into every record);
 - the stage reports more usage than it declared -> the usage is charged (it happened), the stage is
-  ``BUDGET_OVERRUN`` and the loop halts (fail closed on an under-declaring stage);
+  ``BUDGET_OVERRUN``, the stage and round records state the overrun amount (actual minus declared,
+  per dimension) and the loop halts (fail closed on an under-declaring stage);
 - the stage raises -> the stage is ``FAILED``, the round is recorded as ``FAILED`` (a failure is
-  research data) and the next round may run;
+  research data) and the next round may run. A stage that raises ``StageFailed`` reports the usage
+  it actually spent before failing, which is charged instead of the estimate (an overrun there halts
+  the loop like any other); any other exception is charged at the estimate;
 - the stage asks for a lifecycle transition the automation may not make -> ``GUARD_VIOLATION`` and
   the loop halts.
 
@@ -36,7 +41,7 @@ for the loop by construction (roadmap Phase 11: no automatic promotion to ACTIVE
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
@@ -56,7 +61,9 @@ from core.lifecycle.strategy import (
 
 __all__ = [
     "AUTOMATABLE_TARGETS",
+    "EXTENDED_STAGE_ORDER",
     "FORBIDDEN_TARGETS",
+    "OPTIONAL_STAGES",
     "ROUND_JOB",
     "ROUND_TOPIC",
     "STAGE_ORDER",
@@ -72,10 +79,12 @@ __all__ = [
     "RoundContext",
     "RoundStatus",
     "StageRecord",
+    "StageFailed",
     "StageResult",
     "StageStatus",
     "StageUsage",
     "automation_reachable_states",
+    "check_stage_order",
 ]
 
 #: The fixed order of a round (roadmap Phase 11: 新数据 → 状态更新 → 假设 → 实验 → 验证 → 记忆).
@@ -87,6 +96,33 @@ STAGE_ORDER: Final[tuple[str, ...]] = (
     "validation",
     "memory",
 )
+#: Stages a composition may add; each has one fixed place in ``EXTENDED_STAGE_ORDER``.
+OPTIONAL_STAGES: Final[frozenset[str]] = frozenset({"evolution"})
+#: The required stages with every optional stage at its place (evolution: new variants of the best
+#: earlier candidates, registered before this round's experiments so they are re-validated).
+EXTENDED_STAGE_ORDER: Final[tuple[str, ...]] = (
+    "ingest",
+    "state",
+    "hypothesis",
+    "evolution",
+    "experiment",
+    "validation",
+    "memory",
+)
+
+
+def check_stage_order(names: Sequence[str]) -> tuple[str, ...]:
+    """``names`` must be ``STAGE_ORDER`` plus optional stages at their fixed places."""
+    given = tuple(names)
+    present = set(given) & OPTIONAL_STAGES
+    expected = tuple(n for n in EXTENDED_STAGE_ORDER if n in STAGE_ORDER or n in present)
+    if given != expected:
+        raise ValueError(
+            f"stages must be exactly {STAGE_ORDER} in order (optional {sorted(OPTIONAL_STAGES)} "
+            f"at their place in {EXTENDED_STAGE_ORDER}), got {given}"
+        )
+    return given
+
 
 ROUND_JOB: Final = "research_loop.round"
 JOB_TOPIC: Final = "research_loop.jobs"
@@ -172,12 +208,30 @@ class StageUsage:
             or self.compute_seconds > other.compute_seconds
         )
 
+    def excess_over(self, other: StageUsage) -> StageUsage:
+        """Per dimension, how much larger than ``other`` this usage is (zero where it is not)."""
+        return StageUsage(
+            max(self.trials - other.trials, 0),
+            max(self.llm_cost_units - other.llm_cost_units, Decimal(0)),
+            max(self.compute_seconds - other.compute_seconds, Decimal(0)),
+        )
+
     def payload(self) -> dict[str, Any]:
         return {
             "trials": self.trials,
             "llm_cost_units": str(self.llm_cost_units),
             "compute_seconds": str(self.compute_seconds),
         }
+
+
+class StageFailed(Exception):  # noqa: N818 - named after the stage status it produces
+    """Raised by a stage that failed after spending ``usage`` (charged instead of the estimate)."""
+
+    def __init__(self, message: str, *, usage: StageUsage) -> None:
+        super().__init__(message)
+        if not isinstance(usage, StageUsage):
+            raise TypeError("usage must be a StageUsage")
+        self.usage = usage
 
 
 @dataclass(frozen=True, slots=True)
@@ -262,6 +316,11 @@ class LifecycleGuard:
             raise ValueError("actor must be non-empty")
         self._actor = actor
         self._histories: dict[tuple[Any, ...], LifecycleHistory] = {}
+
+    @property
+    def actor(self) -> str:
+        """The automation identity written as ``triggered_by`` (never a human reviewer)."""
+        return self._actor
 
     @property
     def histories(self) -> tuple[LifecycleHistory, ...]:
@@ -401,6 +460,8 @@ class StageRecord:
     summary: Mapping[str, Any] | None = None
     error: str | None = None
     refused: tuple[str, ...] = ()
+    #: Actual minus declared usage (per dimension) when the stage overran its estimate.
+    overrun: StageUsage | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -411,6 +472,7 @@ class StageRecord:
             "summary": None if self.summary is None else dict(self.summary),
             "error": self.error,
             "refused": list(self.refused),
+            "overrun": None if self.overrun is None else self.overrun.payload(),
         }
 
 
@@ -441,6 +503,14 @@ class LoopRecord:
     total_usage: StageUsage
     previous_hash: str | None
 
+    @property
+    def overrun(self) -> dict[str, Any] | None:
+        """The stage that overran its declared usage and by how much (``None``: no overrun)."""
+        for stage in self.stages:
+            if stage.overrun is not None:
+                return {"stage": stage.name, "amount": stage.overrun.payload()}
+        return None
+
     def payload(self) -> dict[str, Any]:
         return {
             "loop_id": self.loop_id,
@@ -453,6 +523,7 @@ class LoopRecord:
             "transitions": [_transition_payload(t) for t in self.transitions],
             "round_usage": self.round_usage.payload(),
             "total_usage": self.total_usage.payload(),
+            "overrun": self.overrun,
             "previous_hash": self.previous_hash,
         }
 
@@ -517,9 +588,7 @@ class ResearchLoop:
         audit: LoopAuditLog | None = None,
         consumer: str = "research_loop_worker",
     ) -> None:
-        names = tuple(stage.name for stage in stages)
-        if names != STAGE_ORDER:
-            raise ValueError(f"stages must be exactly {STAGE_ORDER} in order, got {names}")
+        check_stage_order([stage.name for stage in stages])
         if epoch.tzinfo is None or epoch.utcoffset() != timedelta(0):
             raise ValueError("epoch must be a UTC datetime")
         if cadence <= timedelta(0):
@@ -672,19 +741,36 @@ class ResearchLoop:
                 stage.name, StageStatus.GUARD_VIOLATION, estimate=estimate, error=_error(exc)
             )
             return record, estimate
+        except StageFailed as exc:  # the stage reports what it actually spent before failing
+            record = self._charged(stage.name, StageStatus.FAILED, estimate, exc.usage, exc)
+            return record, exc.usage
         except Exception as exc:  # noqa: BLE001 - recorded as a failed stage, never dropped
             record = StageRecord(
                 stage.name, StageStatus.FAILED, estimate=estimate, error=_error(exc)
             )
             return record, estimate
         ctx.artifacts[stage.name] = result.artifacts
-        status = (
-            StageStatus.BUDGET_OVERRUN if result.usage.exceeds(estimate) else StageStatus.COMPLETED
+        record = self._charged(stage.name, StageStatus.COMPLETED, estimate, result.usage, None)
+        return replace(record, summary=result.summary), result.usage
+
+    @staticmethod
+    def _charged(
+        name: str,
+        status: StageStatus,
+        estimate: StageUsage,
+        usage: StageUsage,
+        exc: Exception | None,
+    ) -> StageRecord:
+        """The record of a stage that spent ``usage``: an overrun halts, whatever the outcome."""
+        overrun = usage.excess_over(estimate) if usage.exceeds(estimate) else None
+        return StageRecord(
+            name,
+            StageStatus.BUDGET_OVERRUN if overrun is not None else status,
+            estimate=estimate,
+            usage=usage,
+            error=None if exc is None else _error(exc),
+            overrun=overrun,
         )
-        record = StageRecord(
-            stage.name, status, estimate=estimate, usage=result.usage, summary=result.summary
-        )
-        return record, result.usage
 
     def _publish_stage(self, ctx: RoundContext, record: StageRecord) -> None:
         self._bus.publish(

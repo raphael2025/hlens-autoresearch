@@ -1,216 +1,299 @@
-"""ADR-0049 smoke test: unattended rounds of the research loop on a synthetic market.
+"""ADR-0049 W2 e2e: unattended rounds of the loop on the real Phase 1 / 2 / 4 / 5 / 6 / 7 / 8 / 12
+components (F4 features, P2 state provider via ``run_state``, P5 TSMOM + ``BarBacktester``,
+P6 State × Strategy matrix, P7 ``TrialLedger``, P4 / P8 ``PipelineBacktestValidator`` G0 – G4,
+P12 evolution operators) on a synthetic market with a planted effect, versus pure noise.
 
-TEST ONLY: every budget, cost unit and model parameter here is an arbitrary, uncalibrated number
-chosen to keep the test small; the Validation Profile is the Phase 4 ``TEST_ONLY_PROFILE``.
-Synthetic results support no claim about real markets (roadmap Phase 9).
+TEST ONLY: every budget, cost unit, model parameter and Profile number comes from
+``loop_fixtures`` and is arbitrary and uncalibrated (see its docstring). Synthetic results support
+no claim about real markets (roadmap Phase 9).
 """
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from collections.abc import Iterator
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
-from apps.worker import LoopBudget, ResearchLoop, RoundStatus, StageStatus
-from apps.worker.loop import ROUND_TOPIC, STAGE_ORDER, STAGE_TOPIC
-from core.contracts.synthetic import PlantedEffect, SyntheticMarketSpec
-from core.domain.research import EvidenceLevel, HypothesisOrigin, KnowledgeItem
+import pytest
+
+from apps.worker import AUTOMATABLE_TARGETS, LoopBudget, ResearchLoop, RoundStatus, StageStatus
+from apps.worker.loop import EXTENDED_STAGE_ORDER, FORBIDDEN_TARGETS, ROUND_TOPIC, STAGE_TOPIC
+from core.domain.research import HypothesisOrigin, RunState, Verdict
+from core.domain.specs import StrategySpec
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
-from plugins.llm import ScriptedLLMProvider
-from plugins.synthetic import RandomWalkMarket
-from research.loop import ResearchMemory, SyntheticLoopConfig, build_synthetic_loop
-from research.strategies.failure_registry import FailureRegistry
-from tests.research.validation.fixtures import TEST_ONLY_PROFILE
-
-EPOCH = datetime(2026, 1, 1, tzinfo=UTC)
-FAMILY = "loop_autocorrelation"
-
-#: TEST ONLY budget.
-TEST_ONLY_BUDGET = LoopBudget(
-    max_trials_per_round=3,
-    max_trials_total=10,
-    max_llm_cost_units=Decimal(10),
-    max_compute_seconds=Decimal(100),
-)
+from research.evolution import LineageGraph, require_new_version
+from research.loop import OosUnsealBudget, ResearchMemory
+from research.strategies.pipeline import CandidateTrialRunner
+from research.validation.sealed_oos import OosAlreadyUnsealed, SealedOosVault
+from tests.research.loop import loop_fixtures as fx
 
 
-def _knowledge(lag: int) -> KnowledgeItem:
-    return KnowledgeItem(
-        name=f"k_autocorr_lag_{lag}",
-        version="1.0.0",
-        created_at=EPOCH,
-        source="test://synthetic",
-        license="test-only",
-        claim=f"minute returns carry sign information at lag {lag}",
-        conditions=(f"lag_minutes = {lag}",),
-        evidence_level=EvidenceLevel.E0_ANECDOTE,
-    )
+@dataclass
+class Run:
+    loop: ResearchLoop
+    memory: ResearchMemory
+    bus: InMemoryEventBus
+    records: tuple[Any, ...]
 
 
-def _llm_output(index: int, lag: int | None) -> dict[str, Any]:
-    return {
-        "name": f"h_llm_{index}",
-        "statement": f"LLM suggestion {index}",
-        "expected_direction": "higher",
-        "minimum_meaningful_effect": "declared before running",
-        "conditions": [] if lag is None else [f"lag_minutes = {lag}"],
-    }
+def _run(tmp: Path, rounds: int = 3, **config: Any) -> Run:
+    loop, memory, bus = fx.build(tmp, fx.config(**config))
+    return Run(loop, memory, bus, loop.run_unattended(rounds))
 
 
-def _config(budget: LoopBudget = TEST_ONLY_BUDGET, seed: int = 11) -> SyntheticLoopConfig:
-    return SyntheticLoopConfig(
-        loop_id="synthetic_loop",
-        seed=seed,
-        epoch=EPOCH,
-        cadence=timedelta(hours=8),
-        budget=budget,
-        market=SyntheticMarketSpec(
-            name="loop_market",
-            version="1.0.0",
-            symbol="SYN-USDT",
-            start=EPOCH,
-            minutes=1,
-            seed=0,
-            initial_price=Decimal(100),
-            volatility=Decimal("0.001"),
-            effects=(PlantedEffect(lag_minutes=1, strength=Decimal("0.3")),),
-        ),
-        minutes_per_round=400,
-        compute_seconds_per_bar=Decimal("0.01"),
-        state_window=60,
-        trend_threshold=Decimal("0.3"),
-        family_id=FAMILY,
-        knowledge=(_knowledge(1), _knowledge(2), _knowledge(3)),
-        max_new_hypotheses_per_round=1,
-        hypothesis_compute_seconds=Decimal("0.5"),
-        compute_seconds_per_trial=Decimal(1),
-        validation_compute_seconds=Decimal("0.5"),
-        state_compute_seconds=Decimal("0.5"),
-        profile=TEST_ONLY_PROFILE,
-        constitution_version="1.0.0",
-        llm_prompt="propose one falsifiable hypothesis about minute returns",
-        llm_cost_units_per_call=Decimal(1),
-    )
+@pytest.fixture(scope="module")
+def planted(tmp_path_factory: pytest.TempPathFactory) -> Run:
+    return _run(tmp_path_factory.mktemp("planted"))
 
 
-def _build(
-    tmp: Path,
-    *,
-    config: SyntheticLoopConfig | None = None,
-    llm_lags: tuple[int | None, ...] = (1, 2, None),
-) -> tuple[ResearchLoop, ResearchMemory, InMemoryEventBus]:
-    bus = InMemoryEventBus()
-    memory = ResearchMemory(failures=FailureRegistry(tmp / "failures.jsonl"))
-    llm = ScriptedLLMProvider(
-        [_llm_output(i, lag) for i, lag in enumerate(llm_lags)], clock=lambda: EPOCH
-    )
-    loop = build_synthetic_loop(
-        config or _config(), provider=RandomWalkMarket(), bus=bus, memory=memory, llm=llm
-    )
-    return loop, memory, bus
+@pytest.fixture(scope="module")
+def noise(tmp_path_factory: pytest.TempPathFactory) -> Run:
+    return _run(tmp_path_factory.mktemp("noise"), planted=False)
 
 
-def _states(loop: ResearchLoop) -> set[LifecycleState]:
-    return {t.to_state for h in loop.guard.histories for t in h.transitions}
+def _stage(record: Any, name: str) -> Any:
+    return next(stage for stage in record.stages if stage.name == name)
 
 
-def test_three_unattended_rounds_produce_an_audit_trail(tmp_path: Path) -> None:
-    loop, memory, bus = _build(tmp_path)
-    records = loop.run_unattended(3)
-    assert [r.status for r in records] == [RoundStatus.COMPLETED] * 3
-    assert loop.audit.verify()
-    # every stage of every round completed and was published; every round was published
-    assert all(s.status is StageStatus.COMPLETED for r in records for s in r.stages)
-    assert len(bus.poll("audit", STAGE_TOPIC, 100)) == 3 * len(STAGE_ORDER)
-    assert len(bus.poll("audit", ROUND_TOPIC, 100)) == 3
-    # one knowledge hypothesis per round was pre-registered and counted as a trial
-    assert memory.ledger.trials(FAMILY) == 3 and loop.total_usage.trials == 3
-    assert {h.origin for h in memory.ledger.hypotheses} == {HypothesisOrigin.KNOWLEDGE}
-    # LLM drafts were only queued for human review, never registered by the loop
-    assert memory.reviews.pending == ("h_llm_0@1.0.0", "h_llm_1@1.0.0", "h_llm_2@1.0.0")
-    assert loop.total_usage.llm_cost_units == Decimal(3)
-    # outputs (failures included) are recorded
-    assert len(memory.experiments) == 3
-    verdicts = [
-        row["verdict"]
-        for r in records
-        for s in r.stages
-        if s.name == "validation" and s.summary is not None
-        for row in s.summary["reports"]
+def _floats(value: object) -> Iterator[float]:
+    if isinstance(value, float):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _floats(item)
+    elif isinstance(value, list | tuple):
+        for item in value:
+            yield from _floats(item)
+
+
+def _transitions(run: Run) -> list[Any]:
+    return [t for h in run.loop.guard.histories for t in h.transitions]
+
+
+# ---------------------------------------------------------------------------------------- rounds
+
+
+def test_three_unattended_rounds_on_real_components(planted: Run) -> None:
+    run = planted
+    assert [r.status for r in run.records] == [RoundStatus.COMPLETED] * 3
+    assert run.loop.audit.verify()
+    assert all(s.status is StageStatus.COMPLETED for r in run.records for s in r.stages)
+    assert [s.name for s in run.records[0].stages] == list(EXTENDED_STAGE_ORDER)
+    assert len(run.bus.poll("audit", STAGE_TOPIC, 100)) == 3 * len(EXTENDED_STAGE_ORDER)
+    assert len(run.bus.poll("audit", ROUND_TOPIC, 100)) == 3
+    # P2 state through run_state over F4 feature values, every round
+    for record in run.records:
+        state = _stage(record, "state").summary
+        assert state["state"] == str(fx.TREND.ref) and state["evaluated"] > 0
+        assert state["state_result_hash"] and state["feature_result_hashes"]
+    # the planted 60-bar effect passes G0 - G4 in round 0 and is moved to OOS, no further
+    first = _stage(run.records[0], "validation").summary["reports"]
+    assert [(r["hypothesis"], r["verdict"]) for r in first] == [
+        ("hypothesis:h_k_tsmom_lookback_60@1.0.0", "PASS")
     ]
-    # with this seed the planted lag-1 effect passes the screening, lags 2 and 3 are rejected
-    assert verdicts == ["PASS", "FAIL", "FAIL"]
-    rejected = [r for r in memory.failures.records() if r.terminal_state == "REJECTED"]
-    assert [r.gate_id for r in rejected] == ["G3.adjusted_p_value"] * 2
-    # nothing ever reaches OOS or beyond
-    assert _states(loop) <= {
-        LifecycleState.CANDIDATE,
-        LifecycleState.VALIDATION,
-        LifecycleState.REJECTED,
-        LifecycleState.FAILED,
-    }
-    assert LifecycleState.ACTIVE not in _states(loop)
+    assert {g["gate_id"].split(".")[0] for g in first[0]["gates"]} == {"G0", "G1", "G2", "G3", "G4"}
+    # no unseal budget: the sealed window stays sealed and G5 never runs
+    assert first[0]["sealed_oos"]["status"] == "sealed"
+    assert first[0]["sealed_oos"]["reason"] == "no unseal budget configured"
+    assert run.loop.guard.state_of(run.memory.trials[0].hypothesis.ref) is LifecycleState.OOS
+    # later hypotheses are refuted and filed; LLM drafts only wait for a human
+    assert run.memory.reviews.pending == ("h_llm_0@1.0.0", "h_llm_1@1.0.0", "h_llm_2@1.0.0")
+    assert run.loop.total_usage.llm_cost_units == Decimal(3)
 
 
-def test_same_seed_gives_identical_audit_hashes(tmp_path: Path) -> None:
-    first, _, _ = _build(tmp_path / "a")
-    second, _, _ = _build(tmp_path / "b")
-    hashes = [r.record_hash for r in first.run_unattended(3)]
-    assert hashes == [r.record_hash for r in second.run_unattended(3)]
-    other, _, _ = _build(tmp_path / "c", config=_config(seed=12))
-    assert [r.record_hash for r in other.run_unattended(3)] != hashes
+def test_pure_noise_passes_nothing(noise: Run) -> None:
+    run = noise
+    assert [r.status for r in run.records] == [RoundStatus.COMPLETED] * 3
+    verdicts = [v.verdict for v in run.memory.validations]
+    assert verdicts and Verdict.PASS not in verdicts
+    assert LifecycleState.OOS not in {t.to_state for t in _transitions(run)}
+    assert run.memory.offspring == []  # nothing un-refuted to evolve from
+    rejected = [r for r in run.memory.failures.records() if r.terminal_state == "REJECTED"]
+    assert len(rejected) == sum(1 for v in verdicts if v is Verdict.FAIL)
 
 
-def test_budget_exhaustion_stops_the_loop(tmp_path: Path) -> None:
+def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) -> None:
+    again = _run(tmp_path / "again")
+    assert [r.record_hash for r in again.records] == [r.record_hash for r in planted.records]
+    other_loop, _, _ = fx.build(tmp_path / "other", fx.config(seed=12))
+    [other] = other_loop.run_unattended(1)
+    assert other.record_hash != planted.records[0].record_hash
+
+
+def test_hashed_records_hold_no_floats(planted: Run, noise: Run) -> None:
+    for run in (planted, noise):
+        for record in run.records:
+            assert list(_floats(record.payload())) == []
+
+
+# ---------------------------------------------------------------------------------------- budget
+
+
+def test_budget_exhaustion_stops_the_loop_before_evolution(tmp_path: Path) -> None:
     budget = LoopBudget(
         max_trials_per_round=3,
         max_trials_total=2,
         max_llm_cost_units=Decimal(10),
-        max_compute_seconds=Decimal(100),
+        max_compute_seconds=Decimal(1000),
     )
-    loop, memory, _ = _build(tmp_path, config=_config(budget=budget))
-    records = loop.run_unattended(5)
-    assert [r.status for r in records] == [
-        RoundStatus.COMPLETED,
-        RoundStatus.COMPLETED,
-        RoundStatus.BUDGET_EXHAUSTED,
-    ]
-    refused = {s.name: s for s in records[-1].stages}
-    assert refused["hypothesis"].status is StageStatus.REFUSED_BUDGET
-    assert refused["experiment"].status is StageStatus.SKIPPED
-    assert memory.ledger.trials(FAMILY) == 2 and loop.halted is RoundStatus.BUDGET_EXHAUSTED
+    run = _run(tmp_path, rounds=5, budget=budget)
+    assert [r.status for r in run.records] == [RoundStatus.COMPLETED, RoundStatus.BUDGET_EXHAUSTED]
+    last = run.records[-1]
+    assert _stage(last, "hypothesis").status is StageStatus.COMPLETED
+    refused = _stage(last, "evolution")
+    assert refused.status is StageStatus.REFUSED_BUDGET and refused.refused == ("max_trials_total",)
+    assert _stage(last, "experiment").status is StageStatus.SKIPPED
+    assert run.loop.halted is RoundStatus.BUDGET_EXHAUSTED
+    assert run.memory.ledger.trials(fx.FAMILY) == 2 == run.loop.total_usage.trials
+    assert run.memory.offspring == []  # the refused stage registered nothing
 
 
-def test_a_human_reviewed_llm_draft_is_registered_in_a_later_round(tmp_path: Path) -> None:
-    loop, memory, _ = _build(tmp_path)
-    loop.run_unattended(1)
-    memory.reviews.approve("h_llm_0@1.0.0", reviewer="test-human")  # outside the loop
+# ------------------------------------------------------------------------------------- lifecycle
+
+
+def test_no_paper_or_active_transition_ever(planted: Run, noise: Run) -> None:
+    for run in (planted, noise):
+        transitions = _transitions(run)
+        assert transitions
+        states = {t.to_state for t in transitions}
+        assert states <= AUTOMATABLE_TARGETS and states.isdisjoint(FORBIDDEN_TARGETS)
+        assert all(t.approved_by is None for t in transitions)
+        assert {t.triggered_by for t in transitions} == {run.loop.guard.actor}
+
+
+# ------------------------------------------------------------------------------ trials / records
+
+
+def test_every_trial_is_preregistered_recorded_and_reproducible(planted: Run) -> None:
+    memory = planted.memory
+    registered = {(h.name, h.version): h.content_hash() for h in memory.ledger.hypotheses}
+    assert len(memory.trials) == len(registered) == len(memory.experiments)
+    for outcome in memory.trials:
+        hypothesis, repro = outcome.hypothesis, outcome.run.repro
+        assert registered[(hypothesis.name, hypothesis.version)] == hypothesis.content_hash()
+        assert outcome.run.experiment_hash == repro.content_hash()
+        assert outcome.experiment.experiment_hash == repro.content_hash()
+        assert outcome.run.state is RunState.COMPLETED and outcome.trial is not None
+        # the reproducibility tuple of 06-experiment.md §2
+        assert repro.hypothesis_ref == hypothesis.ref
+        assert repro.dataset_snapshots[0].snapshot_id == outcome.summary["market_hash"]
+        assert repro.code_commit == fx.CODE_COMMIT
+        assert repro.validation_profile_hash == fx.loop_profile().content_hash()
+        assert {"bar_log_return@1.0.0", "trend_range@1.0.0", "research_tsmom@0.1.0"} <= set(
+            repro.plugin_versions
+        )
+        assert repro.params["lookback"] in (60, 240, 1440)
+        assert len(repro.seeds) == 2
+        # re-running the recorded point reproduces the recorded backtest exactly
+        assert outcome.candidate is not None and outcome.inputs is not None
+        rerun = CandidateTrialRunner(outcome.candidate, outcome.inputs, fx.wiring().backtester)
+        again = rerun.run(dict(outcome.request_params))
+        assert again.backtest.result_hash == outcome.trial.backtest.result_hash
+        assert outcome.summary["state_strategy_matrix_hash"]
+    # every refutation was filed, failures included, nothing dropped
+    fails = [v for v in memory.validations if v.verdict is Verdict.FAIL]
+    assert len(memory.failures.records()) == len(fails)
+
+
+def test_offspring_are_new_versions_registered_and_revalidated(planted: Run) -> None:
+    memory = planted.memory
+    assert memory.offspring, "the planted run must evolve at least one candidate"
+    specs: dict[str, StrategySpec] = {str(s.ref): s for s in memory.lineage}
+    graph = LineageGraph(memory.lineage)
+    reports = {str(v.outcome.hypothesis.ref): v for v in memory.validations}
+    for row in memory.offspring:
+        parent, child = specs[row["parent"]], specs[row["child"]]
+        require_new_version(parent, child)  # accepted: a new version with lineage
+        assert child.version != parent.version and parent.ref in child.lineage
+        assert parent.ref in graph.ancestors(child.ref)
+        hypothesis = next(h for h in memory.ledger.hypotheses if str(h.ref) == row["hypothesis"])
+        assert hypothesis.origin is HypothesisOrigin.COMBINATION
+        # validated afresh: its own report about the child spec, never the parent's verdict
+        own = reports[row["hypothesis"]]
+        assert own.round_index == row["round"] and own.report is not None
+        assert own.report.subject == child.ref
+        assert own.report.report_id != row["parent_report_id"]
+        history = next(
+            h for h in planted.loop.guard.histories if str(h.subject) == row["hypothesis"]
+        )
+        assert history.transitions[0].from_state is LifecycleState.IDEA
+        assert history.transitions[0].to_state is LifecycleState.CANDIDATE
+
+
+# -------------------------------------------------------------------------------------- sealed
+
+
+def _sealed_config(unseal: OosUnsealBudget | None) -> Any:
+    # one 4-day round: research days 0-3, then the sealed OOS day 3-4 of the Profile
+    return fx.config(
+        lookbacks=(60,),
+        days_per_round=4,
+        profile=fx.loop_profile(boundary_day=3),
+        loop_wiring=fx.wiring(evolution=False, oos_unseal=unseal),
+    )
+
+
+def test_sealed_oos_stays_sealed_without_an_unseal_budget(tmp_path: Path) -> None:
+    loop, memory, _ = fx.build(tmp_path, _sealed_config(None))
     [record] = loop.run_unattended(1)
-    hypothesis = {s.name: s for s in record.stages}["hypothesis"]
-    assert hypothesis.summary is not None
-    assert "hypothesis:h_llm_0@1.0.0" in hypothesis.summary["registered"]
-    assert {h.origin for h in memory.ledger.hypotheses} == {
-        HypothesisOrigin.KNOWLEDGE,
-        HypothesisOrigin.LLM,
-    }
-    evidence = [e for t in record.transitions for e in t.evidence]
-    assert "human_review:test-human" in evidence
+    assert _stage(record, "ingest").summary["sealed_bars_withheld"] == 1440
+    [result] = memory.validations
+    assert result.verdict is Verdict.PASS and result.sealed_report is None
+    assert result.sealed_status["status"] == "sealed"
+    assert memory.oos_ledger.count() == 0
 
 
-def test_an_unrunnable_hypothesis_is_failed_and_recorded(tmp_path: Path) -> None:
-    loop, memory, _ = _build(tmp_path, llm_lags=(None, None))
+def test_an_explicit_unseal_budget_runs_g5_once_per_family(tmp_path: Path) -> None:
+    unseal = OosUnsealBudget(max_unsealings=1, approved_by="test-human")
+    loop, memory, _ = fx.build(tmp_path, _sealed_config(unseal))
+    [record] = loop.run_unattended(1)
+    [result] = memory.validations
+    assert result.verdict is Verdict.PASS and result.sealed_report is not None
+    assert [g.gate_id for g in result.sealed_report.gates] == [
+        "G5.unsealing_recorded",
+        "G5.oos_effective_sample_size",
+        "G5.oos_breakeven_cost_multiple",
+    ]
+    assert memory.oos_ledger.count() == 1 and memory.oos_ledger.is_evaluated(fx.FAMILY)
+    unsealing = memory.oos_ledger.get(fx.FAMILY)
+    assert unsealing is not None and unsealing.approved_by == "test-human"
+    vault = SealedOosVault(fx.loop_profile(boundary_day=3), memory.oos_ledger, max_unsealings=1)
+    with pytest.raises(OosAlreadyUnsealed):
+        vault.unseal(fx.FAMILY, "test-human", fx.T0)
+    # at most OOS: a G5 pass stays in OOS (OOS -> PAPER needs a human)
+    assert result.sealed_report.verdict is Verdict.PASS
+    assert loop.guard.state_of(result.outcome.hypothesis.ref) is LifecycleState.OOS
+    with pytest.raises(ValueError, match="human"):
+        OosUnsealBudget(max_unsealings=1, approved_by=loop.guard.actor)
+    assert record.status is RoundStatus.COMPLETED
+
+
+# ---------------------------------------------------------------------------------- LLM reviews
+
+
+def test_reviewed_llm_drafts_are_registered_later_and_unrunnable_ones_fail(tmp_path: Path) -> None:
+    loop, memory, _ = fx.build(
+        tmp_path,
+        fx.config(loop_wiring=fx.wiring(evolution=False), days_per_round=2),
+        llm_lookbacks=(None, 240),
+    )
     loop.run_unattended(1)
-    memory.reviews.approve("h_llm_0@1.0.0", reviewer="test-human")
+    with pytest.raises(ValueError, match="automation"):
+        memory.reviews.approve("h_llm_0@1.0.0", reviewer=loop.guard.actor)
+    with pytest.raises(ValueError, match="identity"):
+        memory.reviews.approve("h_llm_0@1.0.0", reviewer="  ")
+    memory.reviews.approve("h_llm_0@1.0.0", reviewer="test-human")  # outside the loop
+    [approval] = memory.reviews.approvals
+    assert approval.reviewer == "test-human" and approval.key == "h_llm_0@1.0.0"
     [record] = loop.run_unattended(1)
     assert record.status is RoundStatus.COMPLETED
+    assert "hypothesis:h_llm_0@1.0.0" in _stage(record, "hypothesis").summary["registered"]
+    assert "human_review:test-human" in [e for t in record.transitions for e in t.evidence]
+    llm_trial = next(o for o in memory.trials if o.hypothesis.origin is HypothesisOrigin.LLM)
+    assert llm_trial.run.state is RunState.ERRORED and len(llm_trial.run.repro.llm_calls) == 1
     failed = [r for r in memory.failures.records() if r.terminal_state == "FAILED"]
     assert [str(r.subject_ref) for r in failed] == ["hypothesis:h_llm_0@1.0.0"]
-    assert LifecycleState.FAILED in _states(loop)
-
-
-def test_the_loop_never_writes_approved_transitions(tmp_path: Path) -> None:
-    loop, _, _ = _build(tmp_path)
-    loop.run_unattended(3)
-    assert all(t.approved_by is None for h in loop.guard.histories for t in h.transitions)
+    assert loop.guard.state_of(llm_trial.hypothesis.ref) is LifecycleState.FAILED

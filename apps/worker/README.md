@@ -11,6 +11,8 @@
 >   放不下即停轮并停机、从不扩大；`LifecycleGuard` 是阶段唯一的生命周期写入口，只能到 CANDIDATE / VALIDATION / OOS / REJECTED / FAILED，
 >   永不到 PAPER / PRODUCTION_CANDIDATE / ACTIVE，也从不设置 `approved_by`；每轮（含失败与拒绝）一条哈希链 `LoopRecord`，
 >   阶段完成发布 `research_loop.stage`，轮次发布 `research_loop.round`。
+>   W2（2026-09-25）：可选阶段 `evolution` 只能位于 hypothesis 与 experiment 之间（`OPTIONAL_STAGES` / `EXTENDED_STAGE_ORDER`）；
+>   超出声明用量时阶段与轮次记录写明超出量（`overrun`）并停机；阶段抛 `StageFailed(usage=...)` 时按其报告的实际用量计费。
 > - `degradation.py`：`DegradationMonitor` 用 `ValidationProfile.lifecycle.degradation_thresholds` 对比近期指标与验证基线，
 >   越限发布 `research_loop.degradation` 事件（不做生命周期转移）。
 > - 本目录只依赖 `core` 与标准库；具体研究阶段在 `research/loop/`，由研究侧组合根注入（apps 不 import research）。

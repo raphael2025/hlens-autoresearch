@@ -1,7 +1,7 @@
 """``run_unattended_and_report`` (research/loop/compose.py): the P11 loop's optional report sink.
 
-Reuses the P11 e2e fixture (``tests/research/loop/test_loop_e2e.py``) so this exercises the real
-composed loop, not a hand-built stand-in for ``LoopRecord``.
+Reuses the P11 loop fixtures (``tests/research/loop/loop_fixtures.py``, W2 real components) so this
+exercises the real composed loop, not a hand-built stand-in for ``LoopRecord``.
 """
 
 from __future__ import annotations
@@ -15,7 +15,9 @@ from apps.api import create_app
 from apps.api.store import ReportKind, ReportStore
 from core.domain.base import canonical_json
 from research.loop import run_unattended_and_report
-from tests.research.loop.test_loop_e2e import _build
+from tests.research.loop import loop_fixtures as fx
+
+_build = fx.build  # the W2 real-component loop, default TEST ONLY config
 
 
 def test_reports_root_none_writes_nothing(tmp_path: Path) -> None:

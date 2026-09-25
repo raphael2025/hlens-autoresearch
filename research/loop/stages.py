@@ -1,74 +1,92 @@
-"""Concrete research stages of the continuous loop (Phase 11; ADR-0049).
+"""Concrete research stages of the continuous loop (Phase 11; ADR-0049, W2 wiring).
 
 Each class implements ``apps.worker.loop.LoopStage`` (``name`` / ``estimate`` / ``run``). Every
-number a stage uses — minutes per round, state window, cost units, compute declarations — is a
-constructor parameter; validation thresholds are read from the bound ``ValidationProfile`` only.
+number a stage uses — minutes per round, decision grid, chunk sizes, cost units, compute
+declarations — is a constructor parameter; validation thresholds are read from the bound
+``ValidationProfile`` only (inside ``research/validation``).
 
-- ``IngestStage``: generates this round's new market segment ``[as_of - minutes, as_of)``;
-- ``StateStage``: loop-local trend / range summary of the new segment (efficiency ratio);
+- ``IngestStage``: generates this round's new market segment ``[as_of - minutes, as_of)`` and
+  splits it by the Profile's fixed calendar: research bars (label known before the sealed OOS
+  boundary) and sealed bars (withheld; ``segment.SealedBars``). Bars outside the Profile's research
+  window and after the sealed window are not used (counted in the summary);
+- ``StateStage``: Phase 1 F4 ``bar_log_return`` through ``run_feature`` over the research bars,
+  then a Phase 2 ``StateProvider`` through ``infrastructure.state.run_state`` at every decision
+  time and at the end of the research data; the same feature values become the strategy signals
+  (``infrastructure.strategy.signals.signals_from_features``);
 - ``HypothesisStage``: pre-registers knowledge hypotheses and human-reviewed LLM drafts
   (IDEA → CANDIDATE) and asks the LLM for one new draft, which only goes to the review queue;
-- ``ExperimentStage``: lag-``k`` sign-following study on the new segment (``lag_minutes = k``),
-  CANDIDATE → VALIDATION;
-- ``ValidationStage``: screening gates G2 effective sample and G3 multiple-testing adjusted p
-  (trials = the family's registrations, failures included);
-- ``MemoryStage``: FAIL → REJECTED + FailureRecord, errored → FAILED + FailureRecord; PASS and
-  INCONCLUSIVE stay in VALIDATION awaiting the full P4 / P8 pipeline.
+- ``EvolutionStage`` (optional, ``research/loop/evolution.py``): offspring of the best earlier
+  candidates, registered as new hypotheses and validated afresh this round;
+- ``ExperimentStage`` / ``ValidationStage`` (``research/loop/trials.py``): the reproducible
+  experiment records, the Phase 5 strategy → backtest run, the Phase 6 State × Strategy matrix and
+  the Phase 4 / 8 pipeline (G0 – G4; G5 only with an explicit unseal budget);
+- ``MemoryStage``: every outcome into memory and the lifecycle: errored trial → FAILED; FAIL →
+  REJECTED (both with a FailureRecord); in-sample PASS → OOS (the furthest the loop can go);
+  a failed sealed OOS → REJECTED; INCONCLUSIVE stays in VALIDATION.
 
-The screening is **not** the full validation pipeline; a screening PASS never advances a subject
-(to OOS or beyond). Positions use only returns known before the bar they trade (C-L1); the synthetic
-market's planted truth is never an input (it is only counted in the audit summary).
+Positions use only features known before the bar they trade (C-L1); the synthetic market's planted
+truth is never an input (it is only counted in the audit summary).
 """
 
 from __future__ import annotations
 
-import re
-from collections.abc import Sequence
-from datetime import timedelta
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final
 
 from apps.worker.loop import RoundContext, StageResult, StageUsage
+from core.contracts.feature import FeatureProvider
 from core.contracts.llm import LLMProvider
-from core.contracts.synthetic import SyntheticMarket, SyntheticMarketProvider, SyntheticMarketSpec
-from core.contracts.validation_profile import ValidationProfile
-from core.domain.base import content_hash
-from core.domain.research import (
-    FailureRecord,
-    GateResult,
-    Hypothesis,
-    KnowledgeItem,
-    ValidationReport,
-    Verdict,
-    derive_verdict,
+from core.contracts.state import StateProvider, StateResult
+from core.contracts.strategy import SignalObservation
+from core.contracts.synthetic import (
+    SyntheticBar,
+    SyntheticMarketProvider,
+    SyntheticMarketSpec,
 )
+from core.contracts.validation_profile import ValidationProfile
+from core.domain.research import FailureRecord, Hypothesis, KnowledgeItem, LlmCall, Verdict
+from core.domain.specs import FeatureSpec, StateSpec
 from core.errors import ReasonCode
 from core.lifecycle.strategy import LifecycleState
+from infrastructure.state import run_state, state_inputs, state_request
+from infrastructure.strategy.signals import signals_from_features
 from research.hypotheses import HypothesisDraft, from_knowledge, from_llm
+from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.memory import ResearchMemory
-from research.validation.gates import Direction, compare_gate, inconclusive_gate, threshold
-from research.validation.stats import adjust_p_value, effective_sample_size, hac_t_test
+from research.loop.segment import (
+    SealedBars,
+    Segment,
+    decision_grid,
+    feature_pairs,
+    observations,
+)
+from research.loop.trials import (
+    ExperimentStage,
+    OosUnsealBudget,
+    TrialComponents,
+    TrialOutcome,
+    ValidationOutcome,
+    ValidationStage,
+    failure_of,
+)
+from research.validation.splits import midnight_utc
 
 __all__ = [
+    "EvolutionPlan",
+    "EvolutionStage",
     "ExperimentStage",
     "HypothesisStage",
     "IngestStage",
     "MemoryStage",
+    "OosUnsealBudget",
     "StateStage",
+    "TrialComponents",
     "ValidationStage",
 ]
 
-_LAG: Final = re.compile(r"^lag_minutes\s*=\s*(\d+)$")
 _MINUTE: Final = timedelta(minutes=1)
-_GATE_REASON: Final = {
-    "G2.effective_sample_size": ReasonCode.INSUFFICIENT_EFFECTIVE_SAMPLE,
-    "G3.adjusted_p_value": ReasonCode.NOT_SIGNIFICANT_AFTER_MTC,
-}
-
-
-def _returns(market: SyntheticMarket) -> list[Decimal]:
-    closes = [bar.close for bar in market.bars]
-    return [closes[i] / closes[i - 1] - 1 for i in range(1, len(closes))]
 
 
 def _positive_int(value: int, name: str) -> int:
@@ -84,14 +102,22 @@ class IngestStage:
         self,
         provider: SyntheticMarketProvider,
         base: SyntheticMarketSpec,
+        profile: ValidationProfile,
         *,
         minutes_per_round: int,
         compute_seconds_per_bar: Decimal,
+        decision_step: timedelta,
+        decision_warmup: timedelta,
+        label_horizon: timedelta,
     ) -> None:
         self._provider = provider
         self._base = base
+        self._profile = profile
         self._minutes = _positive_int(minutes_per_round, "minutes_per_round")
         self._per_bar = compute_seconds_per_bar
+        self._step = decision_step
+        self._warmup = decision_warmup
+        self._horizon = label_horizon
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
         return StageUsage(compute_seconds=self._per_bar * self._minutes)
@@ -103,24 +129,49 @@ class IngestStage:
         )
         spec = SyntheticMarketSpec.model_validate(payload)
         market = self._provider.generate(spec)
+        split = self._profile.data_split
+        start = midnight_utc(split.research_window_start)
+        boundary = midnight_utc(split.sealed_oos_boundary)
+        window = (boundary, boundary + split.sealed_oos_length)
+        research: list[SyntheticBar] = []
+        sealed: list[SyntheticBar] = []
+        unused = 0
+        for bar in market.bars:
+            if bar.interval_start >= start and bar.interval_end <= boundary:
+                research.append(bar)
+            elif bar.interval_start >= window[0] and bar.interval_end <= window[1]:
+                sealed.append(bar)
+            else:
+                unused += 1
+        descriptor = self._provider.descriptor
+        segment = Segment(
+            market=market,
+            symbol=spec.symbol,
+            provider_key=f"{descriptor.name}@{descriptor.version}",
+            provider_hash=descriptor.content_hash(),
+            research=tuple(research),
+            sealed=SealedBars(sealed, window),
+            decision_times=decision_grid(
+                research, step=self._step, warmup=self._warmup, horizon=self._horizon
+            ),
+        )
         summary = {
             "spec_hash": market.spec_hash,
             "market_hash": market.market_hash,
             "provider": market.provider,
             "bars": len(market.bars),
+            "research_bars": len(research),
+            "sealed_bars_withheld": len(sealed),
+            "unused_bars": unused,
+            "decision_times": len(segment.decision_times),
             "start": spec.start.isoformat(),
             "planted_effects": len(market.truth),
         }
-        return StageResult(summary, self.estimate(ctx), {"market": market})
+        return StageResult(summary, self.estimate(ctx), {"segment": segment})
 
 
 class StateStage:
-    """Efficiency ratio ``|sum r| / sum |r|`` over the last ``window`` returns of the segment.
-
-    ``>= trend_threshold`` is a trend (up / down by the sign), otherwise range. Both numbers are
-    model parameters of the caller (not validation thresholds). Wiring the Phase 2
-    ``StateProvider`` runner in place of this summary is a follow-up.
-    """
+    """F4 features → P2 states of the new segment (see module docs)."""
 
     name = "state"
 
@@ -128,42 +179,98 @@ class StateStage:
         self,
         memory: ResearchMemory,
         *,
-        window: int,
-        trend_threshold: Decimal,
+        feature_provider: FeatureProvider,
+        feature_spec: FeatureSpec,
+        state_provider: StateProvider,
+        state_spec: StateSpec,
+        feature_chunk_bars: int,
         compute_seconds: Decimal,
     ) -> None:
+        if feature_spec.ref not in state_spec.features:
+            raise ValueError(f"{state_spec.ref} does not read {feature_spec.ref}")
         self._memory = memory
-        self._window = _positive_int(window, "window")
-        if not Decimal(0) <= trend_threshold <= Decimal(1):
-            raise ValueError("trend_threshold must be within [0, 1]")
-        self._threshold = trend_threshold
+        self._feature_provider = feature_provider
+        self._feature_spec = feature_spec
+        self._state_provider = state_provider
+        self._state_spec = state_spec
+        self._chunk = _positive_int(feature_chunk_bars, "feature_chunk_bars")
         self._compute = compute_seconds
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
         return StageUsage(compute_seconds=self._compute)
 
+    def _signals(
+        self, segment: Segment, bars: Sequence[SyntheticBar]
+    ) -> tuple[tuple[Any, ...], tuple[SignalObservation, ...]]:
+        pairs = feature_pairs(
+            self._feature_provider,
+            self._feature_spec,
+            observations(segment.market, bars, segment.symbol),
+            chunk=self._chunk,
+            manifest=segment.market.market_hash,
+        )
+        signals = tuple(
+            signal
+            for _, result in pairs
+            for signal in signals_from_features(
+                result,
+                feature=self._feature_spec.ref,
+                instrument=segment.symbol,
+                knowledge_time=result.values[-1].evaluation_time,
+            )
+        )
+        return pairs, signals
+
     def run(self, ctx: RoundContext) -> StageResult:
-        market: SyntheticMarket = ctx.artifact("ingest", "market")
-        returns = _returns(market)[-self._window :]
-        label: str | None
-        ratio: Decimal | None
-        if len(returns) < self._window:
-            label, ratio = None, None
-        else:
-            total = sum(returns, Decimal(0))
-            path = sum((abs(r) for r in returns), Decimal(0))
-            ratio = Decimal(0) if path == 0 else abs(total) / path
-            if ratio >= self._threshold and total != 0:
-                label = "trend_up" if total > 0 else "trend_down"
-            else:
-                label = "range"
+        segment: Segment = ctx.artifact("ingest", "segment")
+        plugins = {
+            segment.provider_key: segment.provider_hash,
+            **_plugin(self._feature_provider.descriptor),
+            **_plugin(self._state_provider.descriptor),
+        }
+        artifacts: dict[str, Any] = {
+            "spec_ref": self._state_spec.ref,
+            "plugins": plugins,
+            "signals_for": lambda bars: self._signals(segment, bars)[1],
+        }
+        if not segment.research or segment.research_end is None:
+            summary: dict[str, Any] = {
+                "state": str(self._state_spec.ref),
+                "label": None,
+                "evaluated": 0,
+            }
+            self._memory.states.append({"round": ctx.round_index, **summary})
+            empty: Mapping[datetime, str | None] = {}
+            artifacts.update(signals=(), result=None, labels=empty, label=None)
+            return StageResult(summary, self.estimate(ctx), artifacts)
+        pairs, signals = self._signals(segment, segment.research)
+        times = tuple(sorted({*segment.decision_times, segment.research_end}))
+        request = state_request(self._state_spec, times, state_inputs(pairs))
+        result: StateResult = run_state(self._state_provider, self._state_spec, request)
+        labels = {value.evaluation_time: value.state for value in result.values}
+        current = labels[segment.research_end]
+        counts: dict[str, int] = {}
+        for label in labels.values():
+            key = "(not computable)" if label is None else label
+            counts[key] = counts.get(key, 0) + 1
         summary = {
-            "label": label,
-            "efficiency_ratio": None if ratio is None else str(ratio),
-            "window": self._window,
+            "state": str(self._state_spec.ref),
+            "state_spec_hash": self._state_spec.content_hash(),
+            "feature": str(self._feature_spec.ref),
+            "feature_result_hashes": [result_.result_hash for _, result_ in pairs],
+            "state_result_hash": result.result_hash,
+            "evaluated": len(result.values),
+            "label_counts": dict(sorted(counts.items())),
+            "label": current,
+            "as_of": segment.research_end.isoformat(),
         }
         self._memory.states.append({"round": ctx.round_index, **summary})
-        return StageResult(summary, self.estimate(ctx), {"label": label})
+        artifacts.update(signals=signals, result=result, labels=labels, label=current)
+        return StageResult(summary, self.estimate(ctx), artifacts)
+
+
+def _plugin(descriptor: Any) -> dict[str, str]:
+    return {f"{descriptor.name}@{descriptor.version}": descriptor.content_hash()}
 
 
 class HypothesisStage:
@@ -225,6 +332,7 @@ class HypothesisStage:
                     "enqueued_for_review": self._memory.reviews.enqueue(draft),
                 }
         registered: list[Hypothesis] = []
+        llm_calls: dict[str, LlmCall] = {}
         for hypothesis in fresh:
             self._memory.ledger.register(hypothesis)
             registered.append(hypothesis)
@@ -235,6 +343,7 @@ class HypothesisStage:
             self._memory.ledger.register_draft(reviewed)
             self._memory.reviews.mark_taken(reviewed)
             registered.append(reviewed.hypothesis)
+            llm_calls[str(reviewed.hypothesis.ref)] = reviewed.call
             self._admit(
                 ctx,
                 reviewed.hypothesis,
@@ -251,7 +360,11 @@ class HypothesisStage:
             "llm": llm_summary,
             "pending_reviews": list(self._memory.reviews.pending),
         }
-        return StageResult(summary, self._usage(fresh, drafts), {"registered": tuple(registered)})
+        return StageResult(
+            summary,
+            self._usage(fresh, drafts),
+            {"registered": tuple(registered), "llm_calls": llm_calls},
+        )
 
     def _usage(
         self, fresh: tuple[Hypothesis, ...], drafts: tuple[HypothesisDraft, ...]
@@ -274,165 +387,9 @@ class HypothesisStage:
         )
 
 
-def _lag_of(hypothesis: Hypothesis) -> int:
-    lags = [int(m.group(1)) for c in hypothesis.conditions if (m := _LAG.fullmatch(c.strip()))]
-    if len(lags) != 1 or lags[0] < 1:
-        raise ValueError(
-            f"{hypothesis.ref} does not declare exactly one 'lag_minutes = k' (k >= 1)"
-        )
-    return lags[0]
-
-
-class ExperimentStage:
-    """Sign-following study: position ``sign(r_{t-k})`` earns ``r_t`` (only past returns used)."""
-
-    name = "experiment"
-
-    def __init__(self, memory: ResearchMemory, *, compute_seconds_per_trial: Decimal) -> None:
-        self._memory = memory
-        self._per_trial = compute_seconds_per_trial
-
-    def estimate(self, ctx: RoundContext) -> StageUsage:
-        registered: tuple[Hypothesis, ...] = ctx.artifact("hypothesis", "registered")
-        return StageUsage(compute_seconds=self._per_trial * len(registered))
-
-    def run(self, ctx: RoundContext) -> StageResult:
-        market: SyntheticMarket = ctx.artifact("ingest", "market")
-        registered: tuple[Hypothesis, ...] = ctx.artifact("hypothesis", "registered")
-        returns = _returns(market)
-        bars = market.bars
-        results: list[dict[str, Any]] = []
-        for hypothesis in registered:
-            base = {"hypothesis": str(hypothesis.ref), "market_hash": market.market_hash}
-            try:
-                lag = _lag_of(hypothesis)
-            except ValueError as exc:
-                results.append({**base, "status": "errored", "error": str(exc)})
-                continue
-            values: list[float] = []
-            intervals = []
-            for i in range(lag, len(returns)):
-                past = returns[i - lag]
-                sign = (past > 0) - (past < 0)
-                values.append(float(sign * returns[i]))
-                bar = bars[i + 1]  # returns[i] is realized over bar i + 1
-                intervals.append((bar.interval_start, bar.interval_end))
-            row: dict[str, Any] = {
-                **base,
-                "status": "completed",
-                "lag": lag,
-                "n": len(values),
-                "effective_n": effective_sample_size(intervals),
-            }
-            if len(values) >= 2:
-                test = hac_t_test(values, lag=0)
-                row.update(mean=test.mean, t_stat=test.t_stat, p_greater=test.p_greater)
-            row["experiment_hash"] = content_hash(row)
-            results.append(row)
-            ctx.advance(
-                hypothesis.ref,
-                LifecycleState.VALIDATION,
-                reason="experiment completed; awaiting validation",
-                evidence=(f"experiment:{row['experiment_hash']}",),
-            )
-        self._memory.experiments.extend({"round": ctx.round_index, **r} for r in results)
-        return StageResult(
-            {"experiments": results},
-            self.estimate(ctx),
-            {"results": tuple(results), "by_ref": {str(h.ref): h for h in registered}},
-        )
-
-
-class ValidationStage:
-    """Screening gates only (G2 effective sample, G3 adjusted p); thresholds from the Profile."""
-
-    name = "validation"
-
-    def __init__(
-        self,
-        memory: ResearchMemory,
-        profile: ValidationProfile,
-        *,
-        constitution_version: str,
-        compute_seconds: Decimal,
-    ) -> None:
-        self._memory = memory
-        self._profile = profile
-        self._constitution = constitution_version
-        self._compute = compute_seconds
-
-    def estimate(self, ctx: RoundContext) -> StageUsage:
-        return StageUsage(compute_seconds=self._compute)
-
-    def _gates(self, row: dict[str, Any], family_trials: int) -> tuple[GateResult, ...]:
-        profile = self._profile
-        sample = compare_gate(
-            profile,
-            "G2.effective_sample_size",
-            "effective_trades",
-            float(row["effective_n"]),
-            threshold(profile, "sample_size.min_effective_trades_in_sample"),
-            Direction.AT_LEAST,
-        )
-        if "p_greater" not in row:
-            return sample, inconclusive_gate("G3.adjusted_p_value", "adjusted_p_value", 1.0)
-        adjusted = adjust_p_value(
-            float(row["p_greater"]),
-            profile.significance.multiple_testing_method,
-            family_trials,
-        )
-        significance = compare_gate(
-            profile,
-            "G3.adjusted_p_value",
-            "adjusted_p_value",
-            adjusted,
-            threshold(profile, "significance.multiple_testing_threshold"),
-            Direction.AT_MOST,
-        )
-        return sample, significance
-
-    def run(self, ctx: RoundContext) -> StageResult:
-        results: tuple[dict[str, Any], ...] = ctx.artifact("experiment", "results")
-        by_ref: dict[str, Hypothesis] = ctx.artifact("experiment", "by_ref")
-        reports: list[ValidationReport] = []
-        rows: list[dict[str, Any]] = []
-        for row in results:
-            if row["status"] != "completed":
-                continue
-            hypothesis = by_ref[row["hypothesis"]]
-            gates = self._gates(row, self._memory.ledger.trials(hypothesis.family_id))
-            run_id = f"{ctx.loop_id}:{ctx.round_index}:{hypothesis.name}"
-            report = ValidationReport(
-                report_id=content_hash({"run_id": run_id, "experiment": row["experiment_hash"]}),
-                run_id=run_id,
-                subject=hypothesis.ref,
-                experiment_hash=row["experiment_hash"],
-                constitution_version=self._constitution,
-                validation_profile=self._profile.ref,
-                validation_profile_hash=self._profile.content_hash(),
-                gates=gates,
-                verdict=derive_verdict(gates),
-                created_at=ctx.as_of,
-            )
-            reports.append(report)
-            rows.append(
-                {
-                    "hypothesis": row["hypothesis"],
-                    "report_id": report.report_id,
-                    "report_hash": report.content_hash(),
-                    "verdict": report.verdict.value,
-                    "gates": [
-                        {"gate_id": g.gate_id, "value": g.value, "verdict": g.verdict.value}
-                        for g in gates
-                    ],
-                }
-            )
-        summary = {
-            "scope": "loop screening (G2 effective sample, G3 adjusted p); not the full pipeline",
-            "profile": str(self._profile.ref),
-            "reports": rows,
-        }
-        return StageResult(summary, self.estimate(ctx), {"reports": tuple(reports)})
+#: A technical failure (``FAILED`` terminal state) after VALIDATION has no ADR-0006 edge
+#: (``VALIDATION → FAILED`` does not exist): the record is filed, the lifecycle stays put.
+_NO_FAILED_EDGE: Final = frozenset({LifecycleState.VALIDATION, LifecycleState.OOS})
 
 
 class MemoryStage:
@@ -449,71 +406,111 @@ class MemoryStage:
         return record.content_hash()
 
     def run(self, ctx: RoundContext) -> StageResult:
-        results: tuple[dict[str, Any], ...] = ctx.artifact("experiment", "results")
-        by_ref: dict[str, Hypothesis] = ctx.artifact("experiment", "by_ref")
-        reports: tuple[ValidationReport, ...] = ctx.artifact("validation", "reports")
+        outcomes: tuple[TrialOutcome, ...] = ctx.artifact("experiment", "outcomes")
+        results: tuple[ValidationOutcome, ...] = ctx.artifact("validation", "validations")
         round_ref = f"loop_round:{ctx.loop_id}:{ctx.round_index}"
         failures: list[str] = []
-        screen_passed: list[str] = []
+        oos: list[str] = []
         inconclusive: list[str] = []
-        for row in results:
-            if row["status"] == "completed":
+        lifecycle_unchanged: list[str] = []
+        for outcome in outcomes:
+            if outcome.completed:
                 continue
-            hypothesis = by_ref[row["hypothesis"]]
+            hypothesis = outcome.hypothesis
+            evidence = (f"run:{outcome.run.run_id}", round_ref)
+            failures.append(
+                self._record(
+                    FailureRecord(
+                        subject_ref=hypothesis.ref,
+                        terminal_state="FAILED",
+                        reason_code=outcome.reason or ReasonCode.RUN_ERRORED,
+                        evidence=evidence,
+                        hypothesis_family_id=hypothesis.family_id,
+                        lessons=None if outcome.error is None else outcome.error[:2000],
+                        recorded_at=ctx.as_of,
+                    )
+                )
+            )
+            ctx.advance(
+                hypothesis.ref, LifecycleState.FAILED, reason="trial errored", evidence=evidence
+            )
+        for result in results:
+            self._settle(ctx, result, round_ref, failures, oos, inconclusive, lifecycle_unchanged)
+        summary = {
+            "failure_records": failures,
+            "moved_to_oos": oos,
+            "inconclusive_in_validation": inconclusive,
+            "technical_failures_lifecycle_unchanged": lifecycle_unchanged,
+            "ledger_size": len(self._memory.ledger.hypotheses),
+            "pending_reviews": list(self._memory.reviews.pending),
+        }
+        return StageResult(summary)
+
+    def _settle(
+        self,
+        ctx: RoundContext,
+        result: ValidationOutcome,
+        round_ref: str,
+        failures: list[str],
+        oos: list[str],
+        inconclusive: list[str],
+        unchanged: list[str],
+    ) -> None:
+        hypothesis = result.outcome.hypothesis
+        subject = str(hypothesis.ref)
+        if result.report is None:  # the validator itself errored: a technical failure
             failures.append(
                 self._record(
                     FailureRecord(
                         subject_ref=hypothesis.ref,
                         terminal_state="FAILED",
                         reason_code=ReasonCode.RUN_ERRORED,
-                        evidence=(round_ref,),
+                        evidence=(f"run:{result.outcome.run.run_id}", round_ref),
                         hypothesis_family_id=hypothesis.family_id,
-                        lessons=str(row["error"])[:2000],
+                        lessons=None if result.error is None else result.error[:2000],
                         recorded_at=ctx.as_of,
                     )
                 )
             )
+            unchanged.append(subject)
+            return
+        if result.report.verdict is Verdict.INCONCLUSIVE:
+            inconclusive.append(subject)
+            return
+        if result.report.verdict is Verdict.PASS:
             ctx.advance(
                 hypothesis.ref,
-                LifecycleState.FAILED,
-                reason="experiment errored",
-                evidence=(round_ref,),
+                LifecycleState.OOS,
+                reason="in-sample G0-G4 passed; OOS is the last state the loop may reach",
+                evidence=(f"validation_report:{result.report.report_id}", round_ref),
             )
-        for report in reports:
-            subject = str(report.subject)
-            hypothesis = by_ref[subject]
-            if report.verdict is Verdict.PASS:
-                screen_passed.append(subject)
-                continue
-            if report.verdict is Verdict.INCONCLUSIVE:
-                inconclusive.append(subject)
-                continue
-            failed = next(g for g in report.gates if g.verdict is Verdict.FAIL)
-            evidence = (f"validation_report:{report.report_id}", round_ref)
-            failures.append(
-                self._record(
-                    FailureRecord(
-                        subject_ref=report.subject,
-                        terminal_state="REJECTED",
-                        reason_code=_GATE_REASON.get(failed.gate_id, ReasonCode.CONTRACT_VIOLATION),
-                        gate_id=failed.gate_id,
-                        evidence=evidence,
-                        hypothesis_family_id=hypothesis.family_id,
-                        recorded_at=ctx.as_of,
-                    )
+            oos.append(subject)
+        failure = failure_of(result)
+        if failure is None:
+            return
+        state, reason, gate_id = failure
+        report = result.sealed_report if result.sealed_report is not None else result.report
+        evidence = (f"validation_report:{report.report_id}", round_ref)
+        failures.append(
+            self._record(
+                FailureRecord(
+                    subject_ref=hypothesis.ref,
+                    terminal_state=state,
+                    reason_code=reason,
+                    gate_id=gate_id,
+                    evidence=evidence,
+                    hypothesis_family_id=hypothesis.family_id,
+                    recorded_at=ctx.as_of,
                 )
             )
-            ctx.advance(
-                report.subject,
-                LifecycleState.REJECTED,
-                reason=f"screening gate {failed.gate_id} failed",
-                evidence=evidence,
-            )
-        summary = {
-            "failure_records": failures,
-            "screen_passed_awaiting_full_validation": screen_passed,
-            "inconclusive": inconclusive,
-            "ledger_size": len(self._memory.ledger.hypotheses),
-            "pending_reviews": list(self._memory.reviews.pending),
-        }
-        return StageResult(summary)
+        )
+        current = ctx.state_of(hypothesis.ref)
+        if state == "FAILED" and current in _NO_FAILED_EDGE:
+            unchanged.append(subject)
+            return
+        ctx.advance(
+            hypothesis.ref,
+            LifecycleState.REJECTED,
+            reason=f"validation gate {gate_id} failed",
+            evidence=evidence,
+        )
