@@ -297,6 +297,22 @@ def test_the_report_is_written_through_the_report_writer(
         write_gate_calibration(tmp_path, _toy_setup())
 
 
+def test_the_console_serves_the_written_report(
+    toy_report: GateCalibrationReport, tmp_path: Path
+) -> None:
+    from fastapi.testclient import TestClient
+
+    from apps.api.app import create_app
+    from apps.api.store import ReportKind, ReportStore
+
+    write_gate_calibration(tmp_path, _toy_setup())
+    envelope = ReportStore(tmp_path).get(ReportKind.GATE_CALIBRATION, toy_report.report_hash)
+    assert envelope.payload == json.loads(json.dumps(toy_report.to_payload()))
+    client = TestClient(create_app(reports_root=tmp_path))
+    listed = client.get("/reports/gate_calibration").json()
+    assert [item["id"] for item in listed] == [toy_report.report_hash]
+
+
 def test_the_cli_writes_the_report(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     code = main(
         ["--setup", "tests.research.synthetic_lab.gate_fixtures:cli_setup", "--out", str(tmp_path)]

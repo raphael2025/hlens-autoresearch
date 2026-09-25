@@ -73,4 +73,5 @@ export const REPORT_KINDS: ReportKind[] = [
   "research_loop_round",
   "state_strategy_matrix",
   "router_paper_run",
+  "gate_calibration",
 ];

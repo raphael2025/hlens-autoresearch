@@ -39,12 +39,13 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class ReportKind(StrEnum):
-    """The report kinds the console serves (task spec: (a)-(d))."""
+    """The report kinds the console serves ((a)-(d) plus Phase 9 gate calibration evidence)."""
 
     VALIDATION_REPORT = "validation_report"
     RESEARCH_LOOP_ROUND = "research_loop_round"
     STATE_STRATEGY_MATRIX = "state_strategy_matrix"
     ROUTER_PAPER_RUN = "router_paper_run"
+    GATE_CALIBRATION = "gate_calibration"
 
 
 class InvalidReportId(ValueError):

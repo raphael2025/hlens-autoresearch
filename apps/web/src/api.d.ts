@@ -186,10 +186,10 @@ export interface components {
         };
         /**
          * ReportKind
-         * @description The report kinds the console serves (task spec: (a)-(d)).
+         * @description The report kinds the console serves ((a)-(d) plus Phase 9 gate calibration evidence).
          * @enum {string}
          */
-        ReportKind: "validation_report" | "research_loop_round" | "state_strategy_matrix" | "router_paper_run";
+        ReportKind: "validation_report" | "research_loop_round" | "state_strategy_matrix" | "router_paper_run" | "gate_calibration";
         /** ValidationError */
         ValidationError: {
             /** Context */

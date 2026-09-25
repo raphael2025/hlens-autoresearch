@@ -4,8 +4,8 @@ Evidence only — not a Profile decision (ADR-0042 implementation note, gate cal
 The report object is taken structurally (``report_hash`` + ``to_payload()``) so this package does
 not import ``research/synthetic_lab`` (which imports this writer).
 
-``apps/api``'s ``ReportStore`` has no ``gate_calibration`` kind yet; the file follows the same
-``<root>/<kind>/<id>.json`` envelope rules, so serving it later is a store-side addition only.
+``apps/api``'s ``ReportStore`` serves it as the ``gate_calibration`` kind (same
+``<root>/<kind>/<id>.json`` envelope rules).
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ from research.reports.envelope import WrittenReport, write_report_file
 
 __all__ = ["KIND", "CalibrationPayload", "write_gate_calibration_report"]
 
-#: Directory name under the report root (not yet a ``apps.api.store.ReportKind``).
+#: Directory name under the report root (``apps.api.store.ReportKind.GATE_CALIBRATION``).
 KIND = "gate_calibration"
 
 

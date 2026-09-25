@@ -181,3 +181,5 @@ gen:api` / `npm run build` (all under the `MemoryMax=2G` cap).
 **Left open**: no write endpoints (unchanged from the original 裁决); `validation_report` /
 `research_loop_round` still have no fixture files under `apps/web/fixtures/` (only the two kinds
 this batch's pages need).
+
+- 2026-09-25：`ReportKind.GATE_CALIBRATION`（`gate_calibration`）加入只读 API 与前端类型，服务 Phase 9 校准证据（只读，证据而非 Profile 决定）。
