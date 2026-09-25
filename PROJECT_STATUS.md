@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）**：Phase 1 收尾返修进行中；Phase 0.5、2～14 按路线图分 4 波、每波 4 个子代理先实现框架代码（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），全部完成后再逐个调试与验证 |
+| 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3D 已验收；D3E + R1 + R2、D4、E0 待复核） |
+| 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
 | 最后更新时间 | 2026-09-25 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -97,40 +97,23 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ## 4. 当前正在做
 
-- ✅ B1（Claude）：双时间 / revision DAG 的 8 个契约、Schema（current 46 份）与 contract tests 已通过 Codex 独立复核；验收 #4 满足
-- ✅ B2（Claude）：D-31 universe 契约与 `ResearchDatasetManifest` 已通过 Codex 独立验收；验收 #5 满足
-- ✅ B3（Claude）：两轮返修后已由 Codex 独立验收；验收矩阵 #6 满足，三个 Data Plane Adapter 接口与 contract suite 已冻结
-- ✅ C1-R3（Cursor Auto）：Codex 独立复核通过；整根替换 fail closed 且无旧 / 新根残留；验收矩阵 #7 满足
-- ✅ C1-R2（Cursor Auto）：publish 最终 FD 身份重验、可用 ObjectRef、根 FD 生命周期；经 C1-R3 继续返修
-- ✅ C1-R1（Cursor Auto）：关闭短写与路径 TOCTOU；经 C1-R2 / C1-R3 继续返修
-- ✅ C1（Cursor Auto）：本地 `file://` `LocalFileStorageAdapter` 已实现；经 C1-R1 / C1-R2 / C1-R3 返修加固
-- ✅ C2（Claude Opus）：Codex 独立验收通过；验收矩阵 #8 满足，接受 `373e286`
-- ✅ C3（Claude Opus + Cursor Auto）：Codex 已独立验收；八张表、batch 指纹、分区演进、四张按天分区表真实写入与重启重放均通过；验收矩阵 #9 满足
-- ✅ D0（Cursor Auto）：Codex 已独立验收；验收矩阵 #10 满足，接受 `7a9f468`
-- ✅ D1（Claude Opus）：Codex 已独立验收；验收矩阵 #11 满足，接受 `c966085`
-- ✅ D2 / D2-R1（Claude Opus）：Codex 已独立验收；验收矩阵 #12 / #17 满足，接受 `ba9f417` + `b05486b`
-- ✅ D3A / D3A-R1（Claude Opus，docs-only）：Codex 已验收，ADR-0027 Accepted；验收 #13 的前置设计门满足
-- ✅ D3B / D3B-R1（Claude Opus）：Codex 已独立验收；四张 REST 表定义（原八张哈希不变）、独立 REST 身份规则、REST availability / precedence 与通道等价纯函数；无 HTTP、无写入；接受 `3b267a0` + `02c0418`
-- ✅ D3C / D3C-R1（Claude Opus）：Codex 已独立验收；接受 `643cf45` + `6b9e670`，验收记录 `docs/reviews/2026-09-25-d3c-rest-decoder-acceptance.md`
-- ✅ D3D / D3D-R1（Claude Opus）：Codex 已独立验收；接受 `61dd9bf` + `c06b9fa`，验收记录 `docs/reviews/2026-09-25-d3d-rest-collector-acceptance.md`
-- 🔄 D3E / D3E-R1 / D3E-R2（Claude Opus）：**REVIEW_PENDING**；REST response / element revision store、REST `arrival_seq`、崩溃恢复、跨通道 reconciler、证据表幂等与 graph range guard 已实现（`21e31f5`）；R1 修复 store 的已存行核对（`52f7477`）；R2 让 reconciler 在比较前用同一套核对证明两侧每一行，已提交并推送到未审 WIP 分支，等待 Codex 复核
+- 🔨 **逐个调试（2026-09-25 夜）**：全部框架代码已合并并通过全量门禁；正在按 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) 逐项处理——
+  独立只读复核（cursor-agent）发现的问题已修复 18 项（验证门的 4 个高危泄漏 / 复用漏洞、G4 的"空配置即通过"、模拟场所绕过 Kill Switch、权重被当作数量等），
+  其余缺口已登记；真实数据端到端冒烟（≤ 2 万行，只验证能力、不得出市场结论）进行中
+- ⏸ Phase 1：实现与红队返修完成，等待 Codex / Raphael 验收（证据：`docs/reviews/2026-09-25-phase1-close-evidence.md`、`phase1-review-guide.md`）
 
 ## 5. 下一步
 
 ### 我（Raphael）需要做
 
-- 现在无需操作：ADR-0027 已由 Codex 接受，归档与 REST 重叠时的取舍规则（D-33）随之生效；不涉及资金、实盘或研究原则
-- 以后如果要**修改任何原则或阈值**，或涉及实盘 / 资金 / 风险预算，需要你对具体内容单独批准
+- 验收：按 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) 与 §11 查看本夜成果；Phase 1 按 `docs/reviews/2026-09-25-phase1-review-guide.md` 验收
+- 决定 §6 中的 D-FLOAT、D-PFIELDS、D-CTRL、D-MINEFF、D-VFAIL、D-DEP（都是红线或需确认项，Claude 未自行决定）
+- 以后冻结 Validation Profile 数值（D-09 TBD-1～5）时，可参考 Phase 9 校准工具生成的证据（只是证据，不是建议值）
 
 ### Claude Code 需要做
 
-- 已批准且已完成：Phase 0 全部批次（B1 / B2 / B3、C1 ~ C5）；Phase 1 S0（开启与分支）
-- 已批准且已完成：A1 / A1r / A1r2 / A2 / A2r —— ADR-0021 ~ 0024 起草、两次修正、接受与首切片冻结；ADR-0025 与执行门修正（docs-only）
-- 已完成并验收：**Claude B1**（ADR-0023 双时间 / revision DAG 契约、Schema 与 contract tests）与 **Claude B2**（D-31 universe / manifest 契约）
-- 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
-- C3、D-32、D0、D1 与 D2 均已完成并通过 Codex 独立验收
-- D3A / D3A-R1 与接受门（docs-only）已完成并验收：ADR-0027 Accepted，数据架构冻结正文已并入四表 / 标识符 / 设置
-- D3B～D3D 及返修均已完成并由 Codex 验收；**D3E、D3E-R1 与 D3E-R2 返修已提交、等待 Codex 复核**；D4 已记录"不启用 WebSocket"（待复核）；Canonical / E 仍关闭
+- 继续逐个调试（待办 C 节），每项带回归测试；不改冻结契约、不设阈值、不接实盘
+- 每个恢复点通过严格门禁后快进推送 WIP 备份分支 `wip/phase-1-unreviewed`；不合并 `main`、不打 tag
 
 ## 6. 当前待决策
 
@@ -239,11 +222,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | **全阶段框架代码完成**（Raphael 指示：4 个子代理并行、先框架后调试）：Phase 0.5、2～14 与研究控制台全部有可运行框架、冒烟测试与 ADR（0034～0049）；跨阶段接线完成（特征 / 状态 / 事件 → 策略信号、状态 → 事件、回测 → 状态×策略 → 路由、策略 → 模拟执行、真实数据集 → 标签与回测、持续循环用真实组件）。全部为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED | 进入逐个调试；6 项待 Raphael 决定（§6） |
+| 2026-09-25 | 调试第一轮：独立只读复核发现并已修复 18 个问题（验证门标签泄漏、样本数高估、封存样本外可复用、未做 purge、G4 空配置 / 缺字段静默通过、模拟场所可绕过 Kill Switch、权重当数量等），每项带回归测试；严格全量门禁 5174 项通过（82c562b） | 其余缺口登记在调试待办 |
 | 2026-09-25 | Raphael 批准 D-HIST 推荐方案：ADR-0032 已实施——数据集规格显式绑定"归档按事件时间 + 5 秒可用"的假设后，历史数据可用于回测；存储数据、证据缺口与知识轴不变，不绑定则保持保守。同时合并 F2 历史标的池（按当时可见的上市记录，杜绝幸存者偏差）与 F3 数据集和清单（全部上游快照、规则、上市与数据来源链、质量报告、证据缺口逐项绑定，同输入逐位相同），以及证据缺口逐批精确核对。全量 4380 项通过 | REVIEW_PENDING；剩 ADR-0033 / G1～G3 |
 | 2026-09-25 | 依 Raphael 授权（"一切都你自己决定"），Claude 接受 ADR-0029 / ADR-0030 并新增 ADR-0031；以 Opus / Sonnet 子代理并行开发、cursor-agent 独立复核：E2 上市历史（exchangeInfo 快照 → 观察下界的上市记录）、F4 特征契约（执行器截断防泄漏）与三个首批 K 线特征、证据缺口独立表（质量规则 2.0.0）、容量探针工具与数据运行手册。每批复核发现的问题都已返修（零输入填 0、上市区段按模拟时刻计数、跨时段的成交副本链等）。全量 4332 项通过，已推送 WIP 备份 | REVIEW_PENDING；F2 / F3 开发中 |
 | 2026-09-25 | G3-S3（Claude Opus，未经 Codex 复核）：质量报告对成交数据按小时分段证明，只处理有数据的时段，同一份报告内每个原始单元只证明一次（固定快照上的结果可复用）；报告内容与原来逐位相同。3000 行实测报告耗时从约 20 秒降到约 2 秒。另发现"证据缺口逐条写进一行报告"在成交整天规模下放不下，登记为 D-QGAP 待决定。随后只读复核发现 1 个高危缺陷（同一笔成交的两条副本时间不同、落入不同时段时，冲突会被漏掉），G3-S3-R1 已修复：窗口内出现的每个键，其前后一天内的全部副本一起参与选择 | REVIEW_PENDING；D-QGAP 待 Raphael |
-| 2026-09-25 | G3-S2（Claude Opus，未经 Codex 复核）：时点选择不再限定整天，可选任意 UTC 时段，并且只重新证明被读到的那几批规范层记录（整个单元的一致性仍全部核对）。6 万行实测：选 1 小时峰值约 0.27 GB；整天选择每行约 11 KB，成交数据须按小时分段 | REVIEW_PENDING；质量报告的分段留待下一批 |
-| 2026-09-25 | G3-S（Claude Opus，未经 Codex 复核）：规范化不再把整个原始单元读进内存——每次调用先固定三张表的快照，按批次窗口证明原始行、再按窗口规范化并提交，每批在自己的快照上核对。输出的规范层记录与批次号逐位不变。30 万行实测：新增内存约 0.8 GB（原先约每行 19 KB），外推一整天约 2～3 GB | REVIEW_PENDING；只读复核发现 1 个高危回归（REST 页因别页先交付而缺号时被误拒）与 2 个次要缺口（重放不复查 revision id、归档缺尾行未拒绝），G3-S-R1 已修复；时点选择 / 质量报告仍按单元整读 |
 
 ## 10. 下一阶段进入条件
 
@@ -267,16 +250,15 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. Phase 0 已完成：宪法 1.0.0 已发布（原则一字未改），代码已合并进 `main`，并打了 `phase-0-complete` 标记。
-2. Phase 1 已开启，ADR-0021～0024、0026、0027 已接受；D0～D2 与 D3A～D3D 均已验收；D3E REST store / reconciler 及其返修 D3E-R1、D3E-R2 已提交，等待 Codex 复核。不需要你做任何决定。
-   其中 ADR-0022 明确：开发授权不等于实盘授权，Phase 13 之前系统没有下单能力，也不保存交易密钥。
-3. 以后若要修改任何原则或阈值，或涉及实盘 / 资金，需要你对具体内容单独批准。
-4. 每个经 Codex 复核通过的进度都会推送到私有 GitHub 仓库（ADR-0025）；PR 与 CI 以后再配置。
+1. 早上验收：先看 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md)（已修复的问题、已知缺口、待你决定的事），再看本文件 §2 阶段表。
+2. 你需要做决定的只有 §6 的 D-FLOAT、D-PFIELDS、D-CTRL、D-MINEFF、D-VFAIL、D-DEP；不决定时系统保持保守（不会多放行、不会晋升）。
+3. 所有新 Phase 都是"框架已实现、未验证"：没有任何策略被验证或晋升，Profile 数值仍待冻结，系统没有下单能力。
+4. 代码在 `claude/hlens-autorecearch-dev-c05c2b`，已快进备份到私有仓库 `wip/phase-1-unreviewed`；没有合并 `main`、没有打 tag——这两件事需要你本人批准。
 
 ## 12. 给 Claude Code 的下一步
 
 > Claude 下一步可以执行什么？
 
-1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
-2. 已完成并验收 S0、A1～A3、B1～B3、C1～C3、D0～D2、D3A～D3D；D3D 修复后的实现恢复点为 `c06b9fa`。
-3. D3A～D3D 及返修均已完成并通过 Codex 接受门。D3E、D3E-R1、D3E-R2、D4 门记录与 E0（ADR-0028 Proposed）已提交（REVIEW_PENDING，已推送到 `wip/phase-1-unreviewed`），等待 Codex 接受门；E1 须等 ADR-0028 被接受，不得开始 Phase 0.5。
+1. 继续逐个调试：调试待办 C / E 节中不需要 Raphael 决定的条目，每项带回归测试并通过严格门禁（ruff / format / mypy / lock / 全量 pytest）。
+2. 不得：修改冻结契约或 Profile 结构（D-FLOAT / D-PFIELDS / D-CTRL / D-VFAIL 待决）、设任何验证阈值、接入实盘或密钥、合并 `main`、打 tag、force push。
+3. Phase 1 等待 Codex / Raphael 验收；验收意见到来时优先处理。
