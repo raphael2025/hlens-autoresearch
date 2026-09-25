@@ -46,17 +46,17 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 0.5 | Public Knowledge Base | 🧱 框架已实现（ADR-0034，NOT_VALIDATED） |
 | 1 | Market Representation | 🔄 实现完成、红队返修完成，待验收（D3E 起 REVIEW_PENDING） |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035，NOT_VALIDATED） |
-| 3 | Event & Interaction Engine | 🔨 框架开发中（子代理） |
-| 4 | Outcome Engine + 最小验证门 | 🔨 框架开发中（子代理） |
-| 5 | Strategy Library + 回测 | 🔨 框架开发中（子代理） |
+| 3 | Event & Interaction Engine | 🧱 框架已实现（ADR-0036，NOT_VALIDATED；接 P2 状态输入的接线开发中） |
+| 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037：标签引擎、成本模型 v1、G0–G3 + 封存样本外门；Profile 数值 TBD） |
+| 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038：策略 / 风控 / 回测契约、bar 回测器 v1、TSMOM；接 P4 验证的接线开发中） |
 | 6 | State × Strategy | 🧱 框架已实现（ADR-0039，NOT_VALIDATED；待接 P5 回测 / P4 验证） |
 | 7 | Dynamic Discovery | 🧱 框架已实现（ADR-0040：组合算子、预登记账本、LLMProvider 契约 + 离线替身） |
-| 8 | Validation & Robustness | ⏳ 排队（第二波） |
+| 8 | Validation & Robustness | 🔨 框架开发中（子代理，ADR-0041） |
 | 9 | Synthetic Market Lab | 🧱 生成器框架已实现（ADR-0042，NOT_VALIDATED）；校准报告待 P4 / P8 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面） |
-| 11 | Continuous Research Loop | 🧱 地基已实现（ADR-0044：事件总线 + worker 幂等任务）；循环接线待 P8 |
+| 11 | Continuous Research Loop | 🧱 地基已实现（ADR-0044）；🔨 持续循环接线开发中（子代理，ADR-0049） |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045） |
-| 13 | Production Adaptive System（仅模拟，无实盘） | 🔨 框架开发中（子代理，ADR-0046） |
+| 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046：模拟执行、急停、二线风控；实盘在结构上被拒绝）；接 P5 目标仓位的接线开发中 |
 | 14 | Technology Migration | 🧱 框架已实现（ADR-0047） |
 | apps | api / worker / web | 🧱 骨架已实现（ADR-0048 / 0044；web 未安装构建） |
 
