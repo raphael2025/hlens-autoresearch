@@ -57,7 +57,6 @@ from core.contracts.feature import (
     FeatureObservation,
     FeatureRequest,
     FeatureResult,
-    ObservationScalar,
 )
 from core.contracts.outcome import OutcomeEvent, OutcomeLabelSpec, OutcomeMethod, OutcomeRequest
 from core.contracts.revision import PointInTimeSpec
@@ -114,10 +113,14 @@ from research.strategies.pipeline import (
     evaluate_strategy,
 )
 from research.strategies.signals import LOG_RETURN_SIGNAL
-from research.strategies.validation import PipelineBacktestValidator, ValidatorSetup
+from research.strategies.validation import (
+    DIAGNOSTIC_MODE,
+    PRICE_BINDING_DATASET,
+    PipelineBacktestValidator,
+    RobustnessDiagnostic,
+    ValidatorSetup,
+)
 from research.validation import RobustnessParams, ValidationContext
-from research.validation.g4 import RobustnessResult, run_robustness
-from research.validation.returns import ParamPoint
 from tests import factories
 from tests.infrastructure.catalog.catalog_support import postgres_test_catalog_uri
 from tests.infrastructure.dataset import dataset_support as ds
@@ -319,7 +322,7 @@ class Chain:
     evaluation: StrategyEvaluation
     context: ValidationContext
     report: ValidationReport
-    robustness: RobustnessResult
+    robustness: RobustnessDiagnostic
     matrix: StateStrategyMatrix
     written: tuple[WrittenReport, ...]
 
@@ -488,6 +491,7 @@ def run_chain(w: ds.World, report_root: Path, registry_path: Path) -> Chain:
         state_of=lambda at: by_time.get(at) or "unknown",
         bar_volume=volumes,
         declared_instruments=(BTC_C,),
+        dataset_bars=price_bars,  # G0.manifest_binding: the labels' manifest is the bars' (E5)
     )
     validator = PipelineBacktestValidator(setup)
     evaluation = evaluate_strategy(
@@ -501,13 +505,9 @@ def run_chain(w: ds.World, report_root: Path, registry_path: Path) -> Chain:
     report = evaluation.validation.report
 
     # ---- P8: G4 on the dataset-backed trials. ``validate`` builds its G4 input lazily and only
-    # when G0 - G3 did not fail, so on a failing fixture G4 would never run; the same input
-    # ``validate`` would build (its own builder) is run directly here (backlog E4) ----
-    declared: dict[str, ObservationScalar] = {"lookback": 60, "long_only": False}
-    assert declared == {**dict(candidate.spec.params), **CHOSEN}
-    rerun = setup.trials.run(declared)
-    chosen: ParamPoint = {"lookback": 60, "long_only": False}
-    robustness = run_robustness(validator._robustness(candidate.spec, chosen, rerun))
+    # when G0 - G3 did not fail, so on a failing fixture G4 would never run; the validator's
+    # public builder (``robustness_input``) is run as a report-only diagnostic (backlog E4) ----
+    robustness = validator.robustness_diagnostic(candidate.spec, evaluation.backtest)
 
     # ---- P6: state x strategy matrix ----
     matrix = matrix_from_backtest(candidate.spec.ref, VOL_REGIME.ref, evaluation.backtest, states)
@@ -631,7 +631,17 @@ def _check_bindings(chain: Chain, store: ReportStore) -> None:
         "adapter": "research.strategies.validation.PipelineBacktestValidator",
         "instrument": BTC_C,
         "backtest_result_hash": backtest.result_hash,
+        "price_binding": {
+            "mode": PRICE_BINDING_DATASET,
+            "manifest_content_hash": point.content_hash(),
+            "price_cutoff": chain.price_bars.price_cutoff.isoformat(),
+            "verified": True,
+            "mismatches": [],
+        },
     }
+    # E5: the labels' manifest is verified to be the backtest bars' (G0 adapter gate).
+    binding = next(g for g in report.gates if g.gate_id == "G0.manifest_binding")
+    assert binding.verdict is Verdict.PASS and binding.value == 0.0
     run = chain.context.run
     assert (report.run_id, report.experiment_hash) == (run.run_id, run.experiment_hash)
     assert run.repro.dataset_snapshots == (interval.dataset, point.dataset)
@@ -646,8 +656,10 @@ def _check_bindings(chain: Chain, store: ReportStore) -> None:
         assert f"backtest_result:{backtest.result_hash}" in failure.evidence
     else:
         assert evaluation.failure is None
-    # P8 (direct G4 run): only G4 gates, each with a defined verdict; when ``validate`` ran G4
-    # itself, it produced exactly these gates.
+    # P8 (G4 diagnostic, report only): only G4 gates, each with a defined verdict, about this
+    # backtest; when ``validate`` ran G4 itself, it produced exactly these gates.
+    assert chain.robustness.mode == DIAGNOSTIC_MODE
+    assert chain.robustness.backtest_result_hash == backtest.result_hash
     g4 = chain.robustness.gates
     assert g4 and all(g.gate_id.startswith("G4.") and g.verdict in set(Verdict) for g in g4)
     if "G4" in stages:

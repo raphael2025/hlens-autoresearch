@@ -37,6 +37,7 @@ from core.domain.base import Kind, Ref
 from core.domain.research import RunState, Verdict, derive_verdict
 from core.domain.specs import OutcomeSpec
 from core.errors import ReasonCode
+from infrastructure.bars import DatasetPriceBars
 from plugins.backtest import BarBacktester
 from plugins.outcomes import ForwardReturnOutcome
 from plugins.synthetic import RandomWalkMarket
@@ -51,8 +52,16 @@ from research.strategies.pipeline import (
     evaluate_strategy,
 )
 from research.strategies.signals import bar_signals
-from research.strategies.validation import PipelineBacktestValidator, ValidatorSetup
+from research.strategies.validation import (
+    DIAGNOSTIC_MODE,
+    PRICE_BINDING_DATASET,
+    PRICE_BINDING_SYNTHETIC,
+    PipelineBacktestValidator,
+    ValidatorSetup,
+    binding_mismatches,
+)
 from research.validation import RobustnessParams, ValidationContext, to_json
+from research.validation.g4 import run_robustness
 from tests import factories
 
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
@@ -237,11 +246,14 @@ def _setup(
     candidate: StrategyCandidate,
     *,
     context: ValidationContext | None = None,
+    manifest: str = "7" * 64,
+    dataset_bars: DatasetPriceBars | None = None,
 ) -> ValidatorSetup:
     return ValidatorSetup(
         context=context or _context(candidate),
         outcome_provider=ForwardReturnOutcome((LABEL_SPEC,)),
-        manifest_content_hash="7" * 64,
+        manifest_content_hash=manifest,
+        dataset_bars=dataset_bars,
         instrument=SYMBOL,
         trials=CandidateTrialRunner(candidate, _inputs(market), BarBacktester()),
         chosen_params=CHOSEN,
@@ -402,3 +414,151 @@ def test_an_evaluation_is_never_promotable_without_a_sealed_oos_result(
         assert result.promotion_blocked_reason == "sealed_oos_not_evaluated"
     unvalidated = StrategyEvaluation(result.subject, EvaluationStatus.NOT_VALIDATED)
     assert unvalidated.promotion_blocked_reason == "status_not_validated"
+
+
+# =========================================================================================
+# backlog E5: the labels' manifest is verified to be the backtest bars' (G0.manifest_binding)
+# =========================================================================================
+
+MANIFEST = "7" * 64
+
+
+def _proven(market: SyntheticMarket, manifest: str = MANIFEST) -> DatasetPriceBars:
+    """Stands in for ``backtest_bars_from_dataset`` (its only producer) over these bars."""
+    bars = _bars(market)
+    return DatasetPriceBars(manifest, max(bar.available_time for bar in bars), bars)
+
+
+def _extra(result: StrategyEvaluation) -> dict[str, object]:
+    assert result.validation is not None and result.validation.view is not None
+    extra = result.validation.view["extra"]
+    assert isinstance(extra, dict)
+    return extra
+
+
+def test_the_synthetic_path_is_labelled_unverified(
+    planted: tuple[StrategyEvaluation, FailureRegistry],
+) -> None:
+    result, _ = planted
+    assert _extra(result)["price_binding"] == {
+        "mode": PRICE_BINDING_SYNTHETIC,
+        "manifest_content_hash": MANIFEST,
+        "verified": False,
+    }
+    assert result.validation is not None
+    assert "G0.manifest_binding" not in {g.gate_id for g in result.validation.report.gates}
+
+
+def test_a_matching_manifest_passes_the_g0_binding_and_changes_nothing_else(
+    planted: tuple[StrategyEvaluation, FailureRegistry], tmp_path: Path
+) -> None:
+    market = _market(seed=7, planted=True)
+    proven = _proven(market)
+    result, _ = _evaluate(market, tmp_path, dataset_bars=proven)
+    assert result.validation is not None
+    gates = result.validation.report.gates
+    binding = next(g for g in gates if g.gate_id == "G0.manifest_binding")
+    assert (binding.verdict, binding.value) == (Verdict.PASS, 0.0)
+    synthetic, _ = planted
+    assert synthetic.validation is not None
+    assert tuple(g for g in gates if g is not binding) == synthetic.validation.report.gates
+    assert _extra(result)["price_binding"] == {
+        "mode": PRICE_BINDING_DATASET,
+        "manifest_content_hash": MANIFEST,
+        "price_cutoff": proven.price_cutoff.isoformat(),
+        "verified": True,
+        "mismatches": [],
+    }
+
+
+def test_a_mismatched_manifest_hash_is_refused_at_g0(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    result, registry = _evaluate(market, tmp_path, dataset_bars=_proven(market, "8" * 64))
+    assert result.status is EvaluationStatus.REJECTED
+    assert result.validation is not None
+    report = result.validation.report
+    assert report.verdict is Verdict.FAIL
+    binding = next(g for g in report.gates if g.gate_id == "G0.manifest_binding")
+    assert (binding.verdict, binding.value) == (Verdict.FAIL, 1.0)
+    # Refused before any label is computed: only the adapter gates exist.
+    assert {g.gate_id.split(".")[0] for g in report.gates} == {"G0"}
+    (record,) = registry.records()
+    assert (record.gate_id, record.terminal_state, record.reason_code) == (
+        "G0.manifest_binding",
+        "REJECTED",
+        ReasonCode.CONTRACT_VIOLATION,
+    )
+    binding_view = _extra(result)["price_binding"]
+    assert isinstance(binding_view, dict)
+    assert (binding_view["verified"], binding_view["mismatches"]) == (False, ["manifest_hash"])
+
+
+def test_bars_outside_the_manifest_are_refused() -> None:
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    proven = _proven(market)
+    setup = _setup(market, candidate, dataset_bars=proven)
+    assert binding_mismatches(setup, proven.bars) == []
+    first = proven.bars[0]
+    moved = first.model_copy(
+        update={name: getattr(first, name) + 1 for name in ("open", "high", "low", "close")}
+    )
+    assert binding_mismatches(setup, (moved, *proven.bars[1:])) == ["bars_in_manifest"]
+    other = _setup(market, candidate, dataset_bars=proven, manifest="8" * 64)
+    assert binding_mismatches(other, proven.bars) == ["manifest_hash"]
+    early = DatasetPriceBars(MANIFEST, proven.bars[-1].interval_start, proven.bars)
+    assert binding_mismatches(_setup(market, candidate, dataset_bars=early), proven.bars) == [
+        "price_cutoff"
+    ]
+    foreign = tuple(bar.model_copy(update={"instrument": "OTHER-USDT"}) for bar in proven.bars)
+    assert "instrument_bars" in binding_mismatches(setup, foreign)
+    # The synthetic path has nothing to verify against; it is labelled in the view instead.
+    assert binding_mismatches(_setup(market, candidate), (moved,)) == []
+
+
+# =========================================================================================
+# backlog E4: public G4 input builder; a report-only diagnostic after an earlier FAIL
+# =========================================================================================
+
+
+def test_the_public_g4_builder_is_what_validate_runs(
+    planted: tuple[StrategyEvaluation, FailureRegistry],
+) -> None:
+    result, _ = planted
+    assert result.validation is not None and result.backtest is not None
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    validator = PipelineBacktestValidator(_setup(market, candidate))
+    inp = validator.robustness_input(candidate.spec, result.backtest)
+    g4 = tuple(g for g in result.validation.report.gates if g.gate_id.startswith("G4."))
+    assert g4 and run_robustness(inp).gates == g4
+    other = CandidateTrialRunner(candidate, _inputs(market), BarBacktester())
+    with pytest.raises(ValueError, match="do not reproduce"):
+        validator.robustness_input(candidate.spec, other.run({"lookback": 240}).backtest)
+
+
+def test_a_diagnostic_g4_after_a_fail_is_report_only() -> None:
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    other = COST_MODEL.model_copy(update={"fee_rate_per_side": Decimal("0.001")})
+    ctx = _context(candidate)
+    ctx = ValidationContext(**{**ctx.__dict__, "cost_model": other})
+    validator = PipelineBacktestValidator(_setup(market, candidate, context=ctx))
+    backtest = CandidateTrialRunner(candidate, _inputs(market), BarBacktester()).run(CHOSEN)
+    before = validator.validate(candidate.spec.ref, candidate.spec, backtest.backtest)
+    assert before.report.verdict is Verdict.FAIL
+    assert not any(g.gate_id.startswith("G4.") for g in before.report.gates)
+
+    diagnostic = validator.robustness_diagnostic(candidate.spec, backtest.backtest)
+    assert diagnostic.mode == DIAGNOSTIC_MODE
+    assert diagnostic.backtest_result_hash == backtest.backtest.result_hash
+    assert diagnostic.gates and all(g.gate_id.startswith("G4.") for g in diagnostic.gates)
+    assert diagnostic.to_dict()["verdict_effect"] == "none"
+    with pytest.raises(ValueError):
+        type(diagnostic)(diagnostic.result, diagnostic.backtest_result_hash, mode="validated")
+    # The verdict is untouched: validating again gives the same gates and verdict.
+    after = validator.validate(candidate.spec.ref, candidate.spec, backtest.backtest)
+    assert (after.report.gates, after.report.verdict) == (
+        before.report.gates,
+        before.report.verdict,
+    )

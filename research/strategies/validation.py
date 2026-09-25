@@ -30,6 +30,33 @@ validator states it) and, optionally, the JSON-ready report view for later visua
 5. the report's verdict is ``derive_verdict`` of all gates; the failure reason comes from
    ``research.validation.reason_for_gate``.
 
+Price-bar binding (backlog E5). The ``OutcomeRequest`` the validator builds carries
+``ValidatorSetup.manifest_content_hash``. There are two paths, and the view always names the one
+taken in ``extra["price_binding"]``:
+
+- **dataset** (``ValidatorSetup.dataset_bars`` is a ``DatasetPriceBars``, produced only by
+  ``infrastructure.bars.backtest_bars_from_dataset`` after it proved every bar against the
+  persisted manifest): the adapter gate ``G0.manifest_binding`` checks that the setup's manifest
+  hash **is** the wrapper's, that every bar of the re-run (hence of the backtest, via
+  ``G0.reproducibility``, and of the labels, which are built from those bars) **is** one of the
+  wrapper's proven bars, that the validated instrument has bars at all, and that no bar is
+  available after the wrapper's ``price_cutoff``. Any mismatch is ``FAIL`` at G0: the labels would
+  be about other data than the backtest, a broken binding like ``G0.bindings`` (07-validation §2:
+  G0 fail → Failure Registry; Constitution C-P1: the reproduction tuple binds the data). It is
+  filed as ``REJECTED`` / ``CONTRACT_VIOLATION`` by ``reason_for_gate`` (the ``G0.`` row). The
+  validator does not re-prove the manifest itself (research holds no catalog handle); it proves
+  that what it validates is exactly what the wrapper proved;
+- **synthetic** (``dataset_bars=None``): the manifest hash is a caller-given label (e.g. a
+  synthetic market hash) and is **not verified**. No gate is added (an unverifiable binding is
+  neither a PASS nor a reason to change the synthetic lab's verdicts); the view labels the path
+  ``synthetic_unverified``. Such a report is never evidence about a Research Dataset.
+
+G4 outside ``validate`` (backlog E4). ``robustness_input(spec, backtest)`` is the public builder of
+exactly the input ``validate`` hands to G4 (it re-runs the chosen point and refuses a backtest the
+re-run does not reproduce). ``robustness_diagnostic(spec, backtest)`` runs G4 on it **even after an
+earlier FAIL**; its result is a ``RobustnessDiagnostic`` labelled ``diagnostic_report_only``: it is
+never part of a ``ValidationReport``, never changes a verdict and never files a failure.
+
 G5 (sealed OOS) is deliberately not part of ``validate``: the unsealing is a one-shot, budgeted
 event (``SealedOosVault``) run separately. The backtest handed to ``validate`` must therefore cover
 the research window only (a label reaching the sealed window fails ``G1.sealed_oos_excluded``).
@@ -60,12 +87,14 @@ from core.domain.base import Ref
 from core.domain.research import GateResult, ValidationReport, Verdict
 from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
+from infrastructure.bars.dataset import DatasetPriceBars
 from research.outcomes.table import materialize
 from research.validation.controls import FixedSides
 from research.validation.g4 import (
     RobustnessInput,
     RobustnessParams,
     RobustnessResult,
+    run_robustness,
     run_validation,
 )
 from research.validation.gates import flag_gate, inconclusive_gate
@@ -88,14 +117,26 @@ from research.validation.robustness import CapacityFill, StateTrade
 __all__ = [
     "BacktestValidation",
     "BacktestValidator",
+    "DIAGNOSTIC_MODE",
+    "PRICE_BINDING_DATASET",
+    "PRICE_BINDING_SYNTHETIC",
     "PipelineBacktestValidator",
+    "RobustnessDiagnostic",
     "TrialRun",
     "TrialRunner",
     "ValidatorSetup",
+    "binding_mismatches",
 ]
 
 Params = Mapping[str, ObservationScalar]
 SpecScalar = str | int | float | bool
+
+#: View label of the dataset path: the bars are a verified manifest's (``G0.manifest_binding``).
+PRICE_BINDING_DATASET = "dataset_manifest_verified"
+#: View label of the synthetic path: the manifest hash is an unverified label.
+PRICE_BINDING_SYNTHETIC = "synthetic_unverified"
+#: Label of a G4 run outside ``validate``: report only, never a verdict.
+DIAGNOSTIC_MODE = "diagnostic_report_only"
 
 
 @dataclass(frozen=True, slots=True)
@@ -159,7 +200,11 @@ class ValidatorSetup:
     - ``state_of``: a **causal** state label for a decision time (``None`` → C-R2 INCONCLUSIVE);
     - ``bar_volume``: traded quantity per ``(instrument, interval_start)`` (``None`` → C-R5
       INCONCLUSIVE);
-    - ``declared_instruments``: the declared scope for C-R3 (each is run on its own).
+    - ``declared_instruments``: the declared scope for C-R3 (each is run on its own);
+    - ``dataset_bars``: the ``DatasetPriceBars`` the trials run on (dataset path, checked by
+      ``G0.manifest_binding``), or ``None`` for the synthetic path, whose ``manifest_content_hash``
+      is an unverified label (named ``synthetic_unverified`` in the view). The only defaulted
+      field: ``None`` keeps the synthetic callers unchanged, and the view always labels it.
     """
 
     context: ValidationContext
@@ -173,6 +218,56 @@ class ValidatorSetup:
     state_of: Callable[[datetime], str] | None
     bar_volume: Mapping[tuple[str, datetime], Decimal] | None
     declared_instruments: tuple[str, ...]
+    dataset_bars: DatasetPriceBars | None = None
+
+
+def binding_mismatches(setup: ValidatorSetup, bars: Sequence[PriceBar]) -> list[str]:
+    """The failed dataset-binding checks of ``bars`` under ``setup`` (empty = bound).
+
+    Always empty on the synthetic path (``dataset_bars is None``): there is nothing to verify
+    against, which the view labels instead.
+    """
+    proven = setup.dataset_bars
+    if proven is None:
+        return []
+    allowed = {bar.content_hash() for bar in proven.bars}
+    checks = {
+        "manifest_hash": setup.manifest_content_hash == proven.manifest_content_hash,
+        "bars_in_manifest": all(bar.content_hash() in allowed for bar in bars),
+        "instrument_bars": any(bar.instrument == setup.instrument for bar in bars),
+        "price_cutoff": all(bar.available_time <= proven.price_cutoff for bar in bars),
+    }
+    return sorted(name for name, ok in checks.items() if not ok)
+
+
+@dataclass(frozen=True, slots=True)
+class RobustnessDiagnostic:
+    """G4 run outside ``validate`` (e.g. after an earlier FAIL): **report only**.
+
+    ``mode`` is always ``DIAGNOSTIC_MODE``. A diagnostic is never part of a ``ValidationReport``,
+    never changes a verdict and never files a failure; ``backtest_result_hash`` names the backtest
+    it is about.
+    """
+
+    result: RobustnessResult
+    backtest_result_hash: str
+    mode: str = DIAGNOSTIC_MODE
+
+    def __post_init__(self) -> None:
+        if self.mode != DIAGNOSTIC_MODE:
+            raise ValueError(f"a robustness diagnostic is always {DIAGNOSTIC_MODE!r}")
+
+    @property
+    def gates(self) -> tuple[GateResult, ...]:
+        return self.result.gates
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "mode": self.mode,
+            "verdict_effect": "none",
+            "backtest_result_hash": self.backtest_result_hash,
+            "robustness": self.result.to_dict(),
+        }
 
 
 def _outcome_bars(bars: Sequence[PriceBar], instrument: str) -> tuple[OutcomePriceBar, ...]:
@@ -291,9 +386,33 @@ class PipelineBacktestValidator:
             reproduce=lambda: rerun.backtest.result_hash,
             recorded_result_hash=backtest.result_hash,
         )
-        run = run_validation(in_sample, lambda: self._robustness(spec, chosen, rerun))
+        run = run_validation(in_sample, lambda: self._robustness_input(spec, chosen, rerun))
         report = build_report(ctx, (*adapter, *run.gates))
         return self._answer(report, run.robustness, rerun)
+
+    def robustness_input(self, spec: StrategySpec, backtest: BacktestResult) -> RobustnessInput:
+        """The G4 input ``validate`` would build for ``backtest`` under this setup (backlog E4).
+
+        Re-runs the setup's chosen point; a backtest the re-run does not reproduce is refused
+        (``ValueError``): the input would describe another backtest.
+        """
+        subject = self._setup.context.subject
+        if spec.ref.target_identity() != subject.target_identity():
+            raise ValueError(f"the validation context is about {subject}, not {spec.ref}")
+        chosen = _full(spec, self._setup.chosen_params)
+        rerun = self._setup.trials.run(_request(spec, chosen))
+        if rerun.backtest.result_hash != backtest.result_hash:
+            raise ValueError("the chosen parameters do not reproduce this backtest: no G4 input")
+        return self._robustness_input(spec, chosen, rerun)
+
+    def robustness_diagnostic(
+        self, spec: StrategySpec, backtest: BacktestResult
+    ) -> RobustnessDiagnostic:
+        """G4 on ``robustness_input`` whatever G0 – G3 said; ``diagnostic_report_only``."""
+        return RobustnessDiagnostic(
+            result=run_robustness(self.robustness_input(spec, backtest)),
+            backtest_result_hash=backtest.result_hash,
+        )
 
     # ----------------------------------------------------------------------------------
 
@@ -305,7 +424,7 @@ class PipelineBacktestValidator:
         )
         instruments = {target.instrument for target in rerun.targets}
         single = instruments == {self._setup.instrument}
-        return (
+        gates = (
             flag_gate("G0.backtest_cost_model", "cost_rates_equal", same, float(same)),
             flag_gate("G0.single_instrument_adapter", "instruments", True, 1.0)
             if single
@@ -313,6 +432,16 @@ class PipelineBacktestValidator:
                 "G0.single_instrument_adapter", "instruments", float(len(instruments))
             ),
         )
+        if self._setup.dataset_bars is None:  # synthetic path: labelled in the view, no gate
+            return gates
+        mismatches = binding_mismatches(self._setup, rerun.bars)
+        binding = flag_gate(
+            "G0.manifest_binding",
+            "manifest_binding_mismatch_count",
+            not mismatches,
+            float(len(mismatches)),
+        )
+        return (*gates, binding)
 
     def _answer(
         self, report: ValidationReport, robustness: RobustnessResult | None, rerun: TrialRun
@@ -328,11 +457,29 @@ class PipelineBacktestValidator:
                 "adapter": "research.strategies.validation.PipelineBacktestValidator",
                 "instrument": self._setup.instrument,
                 "backtest_result_hash": rerun.backtest.result_hash,
+                "price_binding": self._price_binding(rerun),
             },
         )
         return BacktestValidation(report=report, failure_reason=reason, view=view)
 
-    def _robustness(
+    def _price_binding(self, rerun: TrialRun) -> dict[str, object]:
+        setup = self._setup
+        if setup.dataset_bars is None:
+            return {
+                "mode": PRICE_BINDING_SYNTHETIC,
+                "manifest_content_hash": setup.manifest_content_hash,
+                "verified": False,
+            }
+        mismatches = binding_mismatches(setup, rerun.bars)
+        return {
+            "mode": PRICE_BINDING_DATASET,
+            "manifest_content_hash": setup.dataset_bars.manifest_content_hash,
+            "price_cutoff": setup.dataset_bars.price_cutoff.isoformat(),
+            "verified": not mismatches,
+            "mismatches": mismatches,
+        }
+
+    def _robustness_input(
         self, spec: StrategySpec, chosen: ParamPoint, rerun: TrialRun
     ) -> RobustnessInput:
         setup, profile = self._setup, self._setup.context.profile

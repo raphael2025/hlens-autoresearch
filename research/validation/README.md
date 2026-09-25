@@ -29,3 +29,13 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
 
 门清单、阈值来源与已知缺口见 ADR-0037、ADR-0041 与 docs/architecture/07-validation.md §2.2 / §2.3。
 策略回测的接线（`PipelineBacktestValidator`）在 `research/strategies/validation.py`。
+
+接线的两个公开补充（ADR-0041 Implementation note E4/E5）：
+
+- **G4 输入的公开构建器**：`PipelineBacktestValidator.robustness_input(spec, backtest)` 构建 `validate` 会交给 G4 的同一输入
+  （重跑所选参数点；重跑不复现该回测则拒绝）。`robustness_diagnostic(spec, backtest)` 在前序阶段已 FAIL 时也能跑 G4，
+  结果是标为 `diagnostic_report_only` 的 `RobustnessDiagnostic`：**只报告**，不进入 `ValidationReport`、不改变判定、不写 Failure Registry。
+- **价格 bar 与 manifest 的绑定**：`ValidatorSetup.dataset_bars` 给出 `infrastructure.bars.DatasetPriceBars`（数据集路径）时，
+  适配器门 `G0.manifest_binding` 核对 setup 的 manifest 哈希即该包装的哈希、重跑用到的每根 bar 都是包装内已证明的 bar、所验证标的有 bar、
+  没有 bar 晚于包装的 `price_cutoff`；任一不符判 **FAIL**（G0 → `REJECTED` / `CONTRACT_VIOLATION`）。`dataset_bars=None` 为合成路径：
+  manifest 哈希只是未经验证的标签，不加门，报告视图 `extra.price_binding.mode = "synthetic_unverified"`。

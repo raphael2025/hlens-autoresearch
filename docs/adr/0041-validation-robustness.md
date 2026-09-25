@@ -179,3 +179,30 @@ INCONCLUSIVE + `configuration_missing` 断言（原断言编码的正是 R14 缺
 
 测试夹具：G4 夹具的 `holding_horizon` = 1 分钟（`robustness_fixtures.HOLDING_HORIZON`：每根 bar 结束时重新决定仓位、只持有一根）；
 R17 测试显式传 `horizon=0` 以保持其原语义。循环 E2E 的连带变化见 ADR-0049 同日实施说明第 5 条。
+
+## Implementation note (E4/E5, 2026-09-25)
+
+真实数据冒烟（`docs/reviews/2026-09-25-framework-debug-backlog.md` E 节）的两项发现，在 §5 接线上修正；契约、Profile schema、
+`core/domain` 均未改动，阈值无变化。
+
+1. **E4 公开 G4 输入构建器**：原先构建 G4 输入的逻辑只在私有 `_robustness` 中，而 `validate` 仅在 G0 – G3 无 FAIL 时惰性构建，
+   冒烟测试只能调用私有方法。现公开 `PipelineBacktestValidator.robustness_input(spec, backtest)`：重跑 setup 的所选参数点，
+   重跑结果哈希不等于给定回测时拒绝（`ValueError`，输入会描述另一个回测）；`validate` 与之共用同一构建逻辑。另增诊断模式
+   `robustness_diagnostic(spec, backtest)`：前序阶段 FAIL 后仍可跑 G4，结果为 `RobustnessDiagnostic`（`mode = "diagnostic_report_only"`，
+   `verdict_effect = "none"`），**只报告**：不进入 `ValidationReport`、不改变判定（ADR-0013 的判定仍只由 `validate` 的门给出）、
+   不写 Failure Registry。§3「G0 – G3 FAIL 后不跑 G4」的流程不变。
+2. **E5 manifest 绑定改为经验证**：原先 `OutcomeRequest` 的 manifest 哈希由调用方给出、按信任接受。现 `ValidatorSetup` 新增
+   `dataset_bars: DatasetPriceBars | None`（`infrastructure.bars`，唯一生产者 `backtest_bars_from_dataset` 已逐根证明 bar 属于持久化 manifest）。
+   给出时，适配器门 `G0.manifest_binding`（metric `manifest_binding_mismatch_count`）核对：setup 的 manifest 哈希 = 包装的哈希；
+   重跑的每根 bar（按内容哈希）都在包装内（回测经 `G0.reproducibility`、标签经同一批 bar 与之绑定）；所验证标的有 bar；无 bar 晚于包装的
+   `price_cutoff`。**不符判 FAIL，而非 INCONCLUSIVE**：不符不是证据不足，而是标签与回测描述的是不同数据，属于与 `G0.bindings` 同类的
+   绑定矛盾（07-validation §2：G0 fail → Failure Registry；Constitution C-P1：复现元组绑定数据快照；C-P3 精神下不可证明的复现不得通过）；
+   `reason_for_gate` 的 `G0.` 行将其记为 `REJECTED` / `CONTRACT_VIOLATION`。验证器不重新证明 manifest 本身（research 不持有 catalog 句柄），
+   只证明它验证的正是包装所证明的。`dataset_bars=None` 为**合成路径**（合成实验室、研究循环、校准）：manifest 哈希只是未经验证的标签，
+   不加门（不可验证的绑定既非 PASS，也不应改变合成实验的判定），报告视图 `extra.price_binding = {"mode": "synthetic_unverified", "verified": false, ...}`；
+   数据集路径为 `"dataset_manifest_verified"`，并列出 `mismatches`。该字段是 `ValidatorSetup` 唯一带默认值的字段，仅为保持合成调用方不变，且始终在视图中标注。
+
+回归测试：`tests/research/strategies/test_backtest_validation.py`（哈希不符被 G0 拒绝并以 CONTRACT_VIOLATION 入册；哈希一致时
+`G0.manifest_binding` PASS 且其余门与合成路径完全相同；manifest 外的 bar / 过晚 cutoff / 无标的 bar 被检出；合成路径被标注；公开构建器即
+`validate` 所用输入；FAIL 后的诊断 G4 只报告、不改判定）。真实数据冒烟改用公开诊断 API 并传入 `DatasetPriceBars`。状态仍为
+FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
