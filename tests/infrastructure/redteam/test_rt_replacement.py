@@ -119,12 +119,6 @@ def test_the_bound_assumption_does_not_hide_a_replacement(w: World) -> None:
     assert rt.outputs(w) == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="G2 finding RT-2: a replacement archive held by the bound Raw snapshot but not yet "
-    "normalized is invisible to F1/E3/F3; the build selects the old archive as the only head",
-)
 def test_a_replacement_known_to_raw_but_not_normalized_fails_closed(w: World) -> None:
     w.listed()
     w.trades()

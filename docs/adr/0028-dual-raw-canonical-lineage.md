@@ -265,3 +265,12 @@ Iceberg 已提交行与不可变 Raw，不用 journal 或可变 sidecar。
   symbol 与该批行的时间范围内各只出现一次——冒用他人时间的行由 PIT 对其自称单元的证明拒绝）；重放时对已提交批次同样复查 revision id；最后核对单元的行恰为
   `base + 各 Raw 位置`、整个块内没有其他行。§6 的全部语义（一次时钟读数、证明先于读时钟与提交、崩溃续跑、
   Raw 变化即拒绝）不变，Canonical 行与批次号逐位不变。
+- **G2-R1a 单元完整性（红队 RT-1 / RT-2 / RT-3）**：(1) 读取方（`verify_unit` 全量与按批，即 F1 / E3 / F3）只接受
+  计划的全部批次均已提交的单元；已提交前缀是中途停止的 normalization，判 `CanonicalUnitIncomplete`（属
+  `CatalogIntegrityError`，fail closed），重跑 normalizer 即解除。(2) REST 单元的缺号只允许是本页 body 中由**另一**已提交
+  响应 revision 首次交付的元素：normalizer 严格重解码该响应首次交付的页面，逐个元素按 store 的同一身份规则求出
+  revision id，缺失者必须在固定快照中恰有一行、属于另一响应且证明合法；否则判 `CanonicalUnitIncomplete`，在读时钟与
+  任何提交之前拒绝，store 重跑补齐后再 normalize。仅凭响应行的 `element_count` 无法区分"别页已交付"与"丢失"，故不采用。
+  (3) E3 报告（并经其 `existing_only` 复算覆盖 F3）要求分区内（venue symbol × UTC 日）每条绑定快照中的 Raw 元素
+  revision 都已有 Canonical 映像，否则 `RawNotDerived`（与 listing 的 `LISTING_NOT_DERIVED` 对应），只读窄列。
+  Canonical 行、批次号与规则哈希不变；待 Codex 确认此记录。

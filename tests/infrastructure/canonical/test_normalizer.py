@@ -25,6 +25,7 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
     CanonicalNormalizeConflict,
     CanonicalNormalizeError,
+    CanonicalUnitIncomplete,
     unit_batch_id,
 )
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
@@ -539,18 +540,16 @@ def test_a_committed_batch_that_no_longer_reproduces_fails_closed(h: RestHarness
     assert _state(h) == before
 
 
-@pytest.mark.parametrize(
-    ("microbatch_rows", "match"),
-    # E1-R3: the unit size recorded in the committed batch ids no longer matches the Raw unit.
-    [(None, "the Raw unit changed"), (1, "the Raw unit changed")],
-)
-def test_a_raw_unit_that_grows_after_normalization_fails_closed(
-    h: RestHarness, microbatch_rows: int | None, match: str
+@pytest.mark.parametrize("microbatch_rows", [None, 1])
+def test_a_rest_unit_the_store_has_not_finished_is_refused_until_it_has(
+    h: RestHarness, microbatch_rows: int | None
 ) -> None:
-    """Normalize a crash-partial REST unit, then let the Raw store finish it.
+    """G2-R1a / RT-3 (was: a Raw unit that grows after normalization fails closed).
 
-    With one-row Canonical batches the new Raw rows would land in batches of their own; only the
-    unit size in every batch id (E1-R1) keeps that from being completed silently.
+    Before G2-R1a the crash-partial REST unit was normalized as a one-row unit and failed
+    closed forever once the store finished it ("the Raw unit changed"). Now its missing
+    elements — held by no other page — make it incomplete: nothing is committed and no clock
+    is read until the store's rerun completes the page; then the whole page is normalized.
     """
     items = ss.agg_items(3)
     cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [items])
@@ -561,15 +560,35 @@ def test_a_raw_unit_that_grows_after_normalization_fails_closed(
         h.store(clock=StepClock(start=K_REST), adapter=proxy, element_microbatch_rows=1)\
             .ingest_collection(ss.agg_request("req-a"))  # fmt: skip
     [response] = h.rows(c.RESPONSES)
-    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=microbatch_rows)
-    assert len(n.normalize_unit(c.REST_AGGS.table, response["revision_id"]).revision_ids) == 1
+    assert len(h.rows(c.REST_AGGS)) == 1
+    clock = StepClock(start=K_NORM)
+    n = c.normalizer(h, clock=clock, microbatch_rows=microbatch_rows)
+    before = _state(h)
+    with pytest.raises(CanonicalUnitIncomplete, match=r"element\(s\) \[1, 2\] are committed"):
+        n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
+    with pytest.raises(CanonicalUnitIncomplete):
+        n.verify_unit(c.REST_AGGS.table, response["revision_id"])
+    assert clock.calls == 0 and _state(h) == before == (None, [])
     h.store(clock=StepClock(start=K_REST), element_microbatch_rows=1).ingest_collection(
         ss.agg_request("req-a")
     )
+    out = n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
+    assert len(out.revision_ids) == 3 and clock.calls == 1
+    assert sorted(row["venue_trade_id"] for row in h.rows(c.TRADES)) == ["100", "101", "102"]
+    assert [
+        row["revision_id"] for row in n.verify_unit(c.REST_AGGS.table, response["revision_id"])
+    ] == list(out.revision_ids)
+
+
+def test_a_plan_recording_another_unit_size_fails_closed(h: RestHarness) -> None:
+    """E1-R1: the unit size in every batch id; a Raw unit of another size no longer matches."""
+    archive, _, _ = _pair(h)
+    h.forge_rows(c.TRADES, [_forged_row(h, 0)], unit_batch_id(archive, 4, 1, 0))
+    clock = StepClock(start=K_NORM)
     before = _state(h)
-    with pytest.raises(CatalogIntegrityError, match=match):
-        n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
-    assert _state(h) == before
+    with pytest.raises(CatalogIntegrityError, match="the Raw unit changed"):
+        c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert clock.calls == 0 and _state(h) == before
 
 
 # =========================================================================================
@@ -1038,3 +1057,28 @@ def test_a_restricted_verification_proves_the_raw_rows_it_reads(h: RestHarness) 
         n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={4})
     with pytest.raises(CatalogIntegrityError):
         n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+
+
+# =========================================================================================
+# G2-R1a: readers take a normalized unit only whole (RT-1)
+# =========================================================================================
+
+
+def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarness) -> None:
+    """RT-1: a committed prefix of the plan is a normalization that stopped, not a smaller unit;
+    the full and the restricted reader refuse it until a rerun commits the rest."""
+    archive = _crash_partial(h, 5, 2)
+    committed = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
+    assert len(committed) == 2
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    with pytest.raises(CanonicalUnitIncomplete, match="1 of the 3 batches"):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    with pytest.raises(CanonicalUnitIncomplete, match="1 of the 3 batches"):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={committed[0]["arrival_seq"]})
+    out = c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    full = n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    assert [row["revision_id"] for row in full] == list(out.revision_ids)
+    part = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={committed[0]["arrival_seq"]})
+    assert part == full[:2]

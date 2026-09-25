@@ -69,6 +69,7 @@ __all__ = [
     "QualityReportMissing",
     "QualityReported",
     "QualityReporter",
+    "RawNotDerived",
     "evidence_gaps_of",
     "quality_report_id",
 ]
@@ -133,6 +134,12 @@ _INPUT_TABLES: Final[Mapping[str, tuple[str, ...]]] = {
 }
 
 
+#: Raw element tables whose revisions a Canonical partition must all derive (RT-2).
+_RAW_ELEMENT_TABLES: Final[Mapping[str, tuple[str, ...]]] = {
+    "agg_trades": (BINANCE_SPOT_AGG_TRADES.table, BINANCE_SPOT_REST_AGG_TRADES.table),
+    "klines_1m": (BINANCE_SPOT_KLINES_1M.table, BINANCE_SPOT_REST_KLINES_1M.table),
+}
+
 #: Selection slice per data type (G3-S3): a trade day is proven an hour at a time; a bar day
 #: (1 440 rows) at once. Keys never straddle slices, so the report is the whole-day report.
 _SLICES: Final[Mapping[str, timedelta]] = {
@@ -196,6 +203,16 @@ class QualityReportError(Exception):
 
 class QualityReportMissing(QualityReportError):
     """``existing_only``: no committed report matches these inputs (a dataset fails closed)."""
+
+
+class RawNotDerived(QualityReportError):
+    """A Raw element revision of the partition has no Canonical image at the bound snapshots.
+
+    The Canonical partition is then not yet what its bound Raw snapshots say (a unit not, or
+    only partly, normalized — e.g. a replacement archive ingested but not normalized: G2 RT-2),
+    so no report describes it and no dataset may bind it; normalizing the unit resolves it.
+    The Canonical twin of the listing read's ``LISTING_NOT_DERIVED``.
+    """
 
 
 @dataclass(frozen=True, slots=True)
@@ -358,6 +375,7 @@ class QualityReporter:
         of ``quality.availability_evidence_gaps`` as soon as the slice is proven (ADR-0031), so
         nothing but counts is kept across slices.
         """
+        self._check_derived(data_type, symbol, day, bindings)
         partition = _Partition()
         gaps = _GapWriter(self._adapter, report_id, symbol, day, verify=verify)
         # One selector for every slice: it proves each unit and day once under these bindings.
@@ -384,6 +402,55 @@ class QualityReporter:
             )
         partition.gap_rows, partition.gap_batches = gaps.close()
         return partition
+
+    def _check_derived(
+        self, data_type: str, symbol: str, day: date, bindings: Mapping[str, str]
+    ) -> None:
+        """Every Raw element revision of the partition has its Canonical image (G2-R1a / RT-2).
+
+        One narrow column per table and day: the Raw ``revision_id`` of each bound Raw element
+        table (venue symbol, event in the day) must each appear as ``lineage_raw_revision_id``
+        of a Canonical row of the partition (the normalizer copies the event time and maps one
+        Raw element revision to one Canonical revision). A REST element another page delivered
+        first is a row of that page only, so it is required once. Nothing is written before.
+        """
+        canonical = rules.CANONICAL_TABLES[data_type].table
+        column = _time_column(data_type)
+        start = datetime.combine(day, time(), tzinfo=UTC)
+        for raw_table in _RAW_ELEMENT_TABLES[data_type]:
+            snapshot = bindings.get(raw_table)
+            if snapshot is None:
+                continue
+            raw = self._adapter.scan_columns(
+                raw_table,
+                columns=("revision_id",),
+                row_filter=And(
+                    EqualTo("symbol", symbol),  # type: ignore[call-arg, arg-type]
+                    And(
+                        GreaterThanOrEqual(column, start),  # type: ignore[call-arg, arg-type]
+                        LessThan(column, start + _DAY),  # type: ignore[call-arg, arg-type]
+                    ),
+                ),
+                snapshot_id=snapshot,
+            ).column("revision_id")
+            if not len(raw):
+                continue
+            images = self._adapter.scan_columns(
+                canonical,
+                columns=("lineage_raw_revision_id",),
+                row_filter=And(
+                    EqualTo("lineage_raw_table", raw_table),  # type: ignore[call-arg, arg-type]
+                    _slice_filter(symbol, column, start, start + _DAY),
+                ),
+                snapshot_id=bindings[canonical],
+            ).column("lineage_raw_revision_id")
+            derived = pc.is_in(raw, value_set=pc.unique(images))
+            missing = len(raw) - (pc.sum(derived).as_py() or 0)
+            if missing:
+                raise RawNotDerived(
+                    f"{missing} Raw revision(s) of {raw_table} {symbol} {day.isoformat()} have no "
+                    f"{canonical} revision at the bound snapshots: normalize their units first"
+                )
 
     def _occupied(
         self,

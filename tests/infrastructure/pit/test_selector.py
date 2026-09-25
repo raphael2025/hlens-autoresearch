@@ -16,6 +16,7 @@ from pyiceberg.expressions import EqualTo
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus, PolicyBinding, PolicyRole
 from infrastructure.canonical import rules
+from infrastructure.canonical.normalizer import CanonicalUnitIncomplete
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.assumption import ASSUMPTION_BINDING, ASSUMPTION_LATENCY
@@ -305,6 +306,22 @@ def test_an_unbound_raw_table_makes_its_canonical_rows_unprovable(h: RestHarness
     _chain(h)
     with pytest.raises(CatalogIntegrityError, match="no Raw element revision"):
         _select(h, _spec(h, cutoff=FAR, skip=(c.REST_AGGS.table,)))
+
+
+def test_a_unit_whose_normalization_stopped_half_way_is_never_selected(h: RestHarness) -> None:
+    """G2-R1a / RT-1: F1 refuses a Canonical unit holding only a prefix of its plan."""
+    items = ss.agg_items(3)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_A)
+    proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=c.TRADES.table))
+    with pytest.raises(ss.Crash):
+        c.normalizer(
+            h, clock=StepClock(start=N_A), adapter=proxy, microbatch_rows=1
+        ).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert len(h.rows(c.TRADES)) == 1
+    with pytest.raises(CanonicalUnitIncomplete, match="1 of the 3 batches"):
+        _select(h, _spec(h, cutoff=FAR))
+    c.normalizer(h, clock=StepClock(start=N_A)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert len(_select(h, _spec(h, cutoff=FAR)).selected_rows) == 3
 
 
 def test_r3_a_recommitted_earlier_edge_cannot_change_a_selection(h: RestHarness) -> None:

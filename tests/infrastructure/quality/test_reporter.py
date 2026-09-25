@@ -394,6 +394,22 @@ def test_a_replay_reuses_the_report_and_new_data_makes_a_new_one(h: RestHarness)
     assert newer.report_id != first.report_id and len(h.rows(REPORTS)) == 2
 
 
+def test_a_raw_unit_not_yet_normalized_gets_no_report(h: RestHarness) -> None:
+    """G2-R1a / RT-2: every Raw element revision of the partition needs its Canonical image."""
+    _ingest(h, "klines_1m", ss.kline_items(1))
+    [response] = c.ingest_rest(
+        h, "klines_1m", ss.kline_items(1, first_ms=ss.T0 + 3 * ss.MINUTE_MS), knowledge=K_R,
+        request_id="req-k2",
+    )  # fmt: skip
+    clock = StepClock(start=K_Q)
+    with pytest.raises(q.RawNotDerived, match="1 Raw revision"):
+        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    assert clock.calls == 0 and h.rows(REPORTS) == [] and h.rows(QUALITY_EVIDENCE_GAPS) == []
+    c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_KLINES.table, response)
+    out = QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    assert not out.reused and len(h.rows(REPORTS)) == 1
+
+
 def test_an_unprovable_partition_gets_no_report(h: RestHarness) -> None:
     _ingest(h, "klines_1m", ss.kline_items(1))
     [row] = [r for r in h.rows(c.BARS) if r["lineage_raw_table"] == c.REST_KLINES.table]

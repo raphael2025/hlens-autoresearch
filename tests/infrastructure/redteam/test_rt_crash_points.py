@@ -140,13 +140,6 @@ def test_a_crash_inside_the_archive_store_leaves_a_unit_no_reader_accepts(w: Wor
     assert w.h.rows(c.TRADES) == []
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="G2 finding RT-1: a Canonical unit whose normalization crashed after its first "
-    "batch is a lawful 'prefix' to every reader; E3 reports it and F3 builds a dataset "
-    "without the Raw rows the bound snapshot holds",
-)
 def test_a_crash_inside_the_normalizer_leaves_no_dataset_behind(w: World) -> None:
     w.listed()
     archive = rt.archived(
@@ -163,13 +156,6 @@ def test_a_crash_inside_the_normalizer_leaves_no_dataset_behind(w: World) -> Non
     assert rt.outputs(w) == before
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="G2 finding RT-3: a REST response whose element batches stopped half-way is "
-    "normalized as a complete unit (E1 allows REST position gaps without proving another "
-    "page owns them); the dataset silently loses the page's other trades",
-)
 def test_a_crash_inside_the_rest_store_leaves_no_dataset_behind(w: World) -> None:
     w.listed()
     items = ss.agg_items(2)

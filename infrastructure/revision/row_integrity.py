@@ -139,6 +139,7 @@ __all__ = [
     "MAX_ELEMENT_MICROBATCH_ROWS",
     "PROVENANCE_COLUMNS",
     "REJECTED",
+    "PageElement",
     "PersistedRowVerifier",
     "batch",
     "batch_rows",
@@ -148,6 +149,7 @@ __all__ = [
     "history_from",
     "element_batch_id",
     "element_columns",
+    "element_identity",
     "response_batch_id",
     "response_columns",
     "snapshots_of_batches",
@@ -725,6 +727,27 @@ def _revision_block(record: RevisionRecord) -> dict[str, Any]:
     }
 
 
+def element_identity(
+    data_type: str, symbol: str, native: Mapping[str, Any]
+) -> tuple[str, str, str]:
+    """``(key, payload hash, revision id)`` of one REST element from its normalised natives.
+
+    The identity never depends on the response that delivered the element: that is what lets a
+    later page find an element another page delivered first (``foreign``, never re-written).
+    """
+    if data_type == "agg_trades":
+        key = rest_identity.agg_trade_observation_key(symbol, native["agg_trade_id"])
+        payload = rest_identity.agg_trade_payload_hash(symbol, dict(native))
+    else:
+        key = rest_identity.kline_1m_observation_key(symbol, _at_ms(native["open_time_raw"]))
+        payload = rest_identity.kline_1m_payload_hash(symbol, dict(native))
+    return (
+        key,
+        payload,
+        rest_identity.revision_id(key, rest_identity.rest_source_identity(), payload),
+    )
+
+
 def element_columns(
     definition: RegisteredTableDefinition,
     data_type: str,
@@ -745,12 +768,11 @@ def element_columns(
     """
     subject = _ELEMENT_SUBJECTS[data_type]
     source = rest_identity.rest_source_identity()
+    key, payload, revision_id = element_identity(data_type, symbol, native)
     times: dict[str, Any]
     if data_type == "agg_trades":
         event_time = _at_ms(native["timestamp_raw"])
         times = {"event_time": event_time}
-        key = rest_identity.agg_trade_observation_key(symbol, native["agg_trade_id"])
-        payload = rest_identity.agg_trade_payload_hash(symbol, dict(native))
         decision = decide_rest_availability(
             subject, event_time=event_time, ingest_time=ingest_time, knowledge_time=knowledge_time
         )
@@ -758,8 +780,6 @@ def element_columns(
         start = _at_ms(native["open_time_raw"])
         end = _at_ms(native["close_time_raw"] + 1)
         times = {"interval_start": start, "interval_end": end}
-        key = rest_identity.kline_1m_observation_key(symbol, start)
-        payload = rest_identity.kline_1m_payload_hash(symbol, dict(native))
         decision = decide_rest_availability(
             subject,
             event_time=start,
@@ -767,7 +787,6 @@ def element_columns(
             ingest_time=ingest_time,
             knowledge_time=knowledge_time,
         )
-    revision_id = rest_identity.revision_id(key, source, payload)
     record = RevisionRecord(
         observation_key=key,
         revision_id=revision_id,
@@ -891,6 +910,15 @@ def _archive_times_hold(
 # =========================================================================================
 # the verifier
 # =========================================================================================
+
+
+@dataclass(frozen=True, slots=True)
+class PageElement:
+    """One element a proven, accepted response page holds (strict re-decode of its body)."""
+
+    element_index: int
+    observation_key: str
+    revision_id: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -1347,6 +1375,60 @@ class PersistedRowVerifier:
                     f"{table}: the element batches of response revision {lineage} follow no "
                     "single microbatch plan"
                 )
+
+    def page_elements(
+        self, data_type: str, response_revision_id: str
+    ) -> tuple[Mapping[str, Any], tuple[PageElement, ...]]:
+        """The one committed response revision and every element its body holds (G2-R1a).
+
+        The response row is proven lawful first (``verify_responses``); an accepted page is then
+        strictly re-decoded from its first delivery and must hold exactly ``element_count``
+        elements. Each element's identity comes from ``element_identity`` — the store's own —
+        so a reader can tell which of them the element table must hold, under this response or
+        (first delivered by another page, never re-written: ADR-0027) under another one. A
+        rejected page holds none.
+        """
+        definition = ELEMENT_DEFINITIONS.get(data_type)
+        if definition is None:
+            raise CatalogIntegrityError(f"unsupported REST data_type {data_type!r}")
+        found = self._scan(
+            BINANCE_SPOT_REST_RESPONSES, _equals("revision_id", response_revision_id)
+        )
+        if len(found) != 1:
+            raise CatalogIntegrityError(
+                f"{response_revision_id} is committed {len(found)} time(s) in "
+                f"{BINANCE_SPOT_REST_RESPONSES.table}"
+            )
+        [response] = found
+        self.verify_responses([response])
+        if response["data_type"] != data_type:
+            raise CatalogIntegrityError(
+                f"response revision {response_revision_id} is not a {data_type} page"
+            )
+        if response["decode_outcome"] != ACCEPTED:
+            return response, ()
+        _, page = self._first_delivery_page(response)
+        decoded = page.outcome
+        if (
+            not isinstance(decoded, RestPageDecoded)
+            or len(decoded.elements) != (response["element_count"])
+        ):
+            raise CatalogIntegrityError(
+                f"the body of response revision {response_revision_id} does not decode to its "
+                f"{response['element_count']} element(s)"
+            )
+        elements: list[PageElement] = []
+        for element in decoded.elements:
+            natives = _normalised(definition, element.native_fields())
+            try:
+                key, _, revision_id = element_identity(data_type, response["symbol"], natives)
+            except (rest_identity.RestIdentityViolation, KeyError, TypeError) as exc:
+                raise CatalogIntegrityError(
+                    f"element {element.element_index} of response revision "
+                    f"{response_revision_id} has no lawful identity: {exc}"
+                ) from None
+            elements.append(PageElement(element.element_index, key, revision_id))
+        return response, tuple(elements)
 
     # ------------------------------------------------------------------ archive rows
 

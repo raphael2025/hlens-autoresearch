@@ -21,14 +21,14 @@ is removed.
 | `test_rt_replacement` | archive replaced (same path, new checksum) after a build | old manifest replays bit-identically; new build F1 `PitConflictError` |
 | | original / replacement in either arrival order | F1 `PitConflictError` |
 | | ADR-0032 assumption bound + replacement | F1 `PitConflictError` (both archive revisions become candidates) |
-| | replacement in Raw, not yet normalized | **RT-2 (succeeds)** |
+| | replacement in Raw, not yet normalized | E3 `RawNotDerived` (fixed RT-2, G2-R1a) |
 | `test_rt_arrival_orders` | all 16 lawful orders of ingest / normalize / reconcile | none needed: identical rows and manifest shape in every order |
 | | REST first, archive later (and the reverse), builds in between | F1 `PitConflictError` until the D-33 edge exists |
 | | manifest built before the first D-33 edge, rebuilt after it | the rebuild replays (RT-5 fixed: a materialized selection is judged at its own build); a new build omitting the edges: F3 `DatasetSpecError` |
 | `test_rt_crash_points` | process death after each of the 19 commits of a full run, then rerun | every stage's idempotent recovery; no manifest while dead; orphan selection batch adopted |
 | | archive rows stopped half-way, read by E1 | E1 (`not exactly the N lines of its object`) |
-| | Canonical unit stopped half-way, read by E3 / F3 | **RT-1 (succeeds)** |
-| | REST elements stopped half-way, read by E1 / E3 / F3 | **RT-3 (succeeds)** |
+| | Canonical unit stopped half-way, read by E3 / F3 | E3 `RawNotDerived`; F1 `CanonicalUnitIncomplete` (fixed RT-1, G2-R1a) |
+| | REST elements stopped half-way, read by E1 / E3 / F3 | E1 `CanonicalUnitIncomplete`, nothing committed (fixed RT-3, G2-R1a) |
 | `test_rt_tamper` | forged / deleted Canonical row | F1 unit re-normalization (`CatalogIntegrityError`) |
 | | deleted evidence-gap row; deleted quality report | F3 report re-derivation (`CatalogIntegrityError` / `QualityReportMissing`) |
 | | deleted listing row | E2 listing proof (`not a listing derivation batch`) |

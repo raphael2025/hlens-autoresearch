@@ -10,9 +10,11 @@ the unit (G3-S): a unit is read, proven and written in windows of Raw positions.
    so no verdict is ever drawn from a moving table;
 2. **prove** (no clock, no write) — window by window, every Raw row of the unit is proven by the
    shared ``PersistedRowVerifier`` (D3E-R2 / R3); the unit's Raw positions must then be distinct
-   and, for an archive, exactly the ``1 … N`` lines of its object (a REST response may lack the
-   positions another page delivered first). Batch ``i`` is the ``i``-th rank slice of ``chunk``
-   positions. The committed batch ids are the plan (E1-R3): unit size ``N`` and microbatch size;
+   and, for an archive, exactly the ``1 … N`` lines of its object; a REST response may lack only
+   the elements of its body that another committed page delivered first (G2-R1a / RT-3: any
+   other missing element is a store that stopped half-way, ``CanonicalUnitIncomplete``, and
+   nothing is written). Batch ``i`` is the ``i``-th rank slice of ``chunk`` positions. The
+   committed batch ids are the plan (E1-R3): unit size ``N`` and microbatch size;
    committed batches must be a contiguous prefix of it, each holding exactly the rows its window
    normalizes to (content, fingerprint, row count) under the block base and ready time recovered
    from them, and the unit's committed rows must be exactly those batches' rows;
@@ -26,7 +28,9 @@ the unit (G3-S): a unit is read, proven and written in windows of Raw positions.
    rows and nothing else sits in its block.
 
 A unit whose Raw rows changed after it was first normalized no longer matches its committed plan
-and fails closed: normalize a Raw unit only after its ingest returned. Nothing is repaired or
+and fails closed: normalize a Raw unit only after its ingest returned. Readers (``verify_unit``)
+take a normalized unit only whole: a committed prefix of its plan is ``CanonicalUnitIncomplete``
+(G2-R1a / RT-1), resolved by rerunning ``normalize_unit``. Nothing is repaired or
 rewritten; there is no journal or sidecar. The normalizer never reads the Raw evidence table:
 cross-channel edges are mapped at PIT time (ADR-0028 §3.2).
 """
@@ -46,6 +50,7 @@ from pyiceberg.expressions import (
     BooleanExpression,
     EqualTo,
     GreaterThanOrEqual,
+    In,
     LessThan,
     LessThanOrEqual,
 )
@@ -77,6 +82,7 @@ __all__ = [
     "CanonicalNormalizeConflict",
     "CanonicalNormalizeError",
     "CanonicalNormalizer",
+    "CanonicalUnitIncomplete",
     "CanonicalUnitNormalized",
     "unit_batch_id",
 ]
@@ -84,6 +90,8 @@ __all__ = [
 DEFAULT_MICROBATCH_ROWS: Final = 25_000
 MAX_MICROBATCH_ROWS: Final = 250_000
 _ATTEMPTS: Final = 8
+#: Observation keys per ``IN`` lookup of the elements another page delivered first.
+_KEY_CHUNK: Final = 256
 _ZERO: Final = timedelta(0)
 _ROWS_DIGITS: Final = 10
 _CHUNK_DIGITS: Final = 6
@@ -100,6 +108,22 @@ class CanonicalNormalizeError(Exception):
 
 class CanonicalNormalizeConflict(CanonicalNormalizeError):
     """The unit cannot be normalized honestly now (clock, contention); nothing is committed."""
+
+
+class CanonicalUnitIncomplete(CanonicalNormalizeError, CatalogIntegrityError):
+    """A unit is not complete at the pinned snapshots: fail closed, nothing written (G2-R1a).
+
+    Two states, neither of which a reader or the normalizer may take for a whole unit:
+
+    - its **Canonical** plan is only partly committed (the normalizer stopped between batches):
+      readers refuse it until a rerun commits the missing batches (RT-1);
+    - its **Raw** REST response lacks an element its body holds that no other committed page
+      delivered first (the store stopped between element batches): the normalizer refuses it,
+      before any clock reading or commit, until the store's rerun completes the page (RT-3).
+
+    It is a ``CatalogIntegrityError`` so every fail-closed caller refuses it; the distinct type
+    tells a caller that rerunning the unfinished writer, not repair, is the way out.
+    """
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -309,10 +333,12 @@ class CanonicalNormalizer:
 
         The committed batch ids give the plan (unit size, microbatch size). Every Raw row of
         the unit is proven, the committed rows must be exactly what their Raw rows normalize to
-        under the recovered block base and ready time, the committed batches must be a
-        contiguous prefix of that plan with their exact fingerprints, and the committed rows must
-        be exactly those batches' rows. Run on a catalog view pinned to a manifest's snapshots,
-        it proves what those snapshots held (Phase 1 F1).
+        under the recovered block base and ready time, the committed batches must be the whole
+        plan (a prefix is ``CanonicalUnitIncomplete``, G2-R1a) with their exact fingerprints, and
+        the committed rows must be exactly those batches' rows; a REST unit's missing elements
+        must be held by other committed pages. A unit with no committed batch returns no rows.
+        Run on a catalog view pinned to a manifest's snapshots, it proves what those snapshots
+        held (Phase 1 F1).
 
         With ``arrival_seqs`` (G3-S2) only the committed batches holding those numbers are proven
         and returned — their Raw rows, fingerprints and exact content — while every unit-wide
@@ -324,7 +350,9 @@ class CanonicalNormalizer:
         channel = self._channel(raw_table, source_revision_id)
         pin = self._pin(channel, source_revision_id)
         if arrival_seqs is None:
-            return self._survey(pin, channel, source_revision_id, keep_rows=True).committed_rows
+            survey = self._survey(pin, channel, source_revision_id, keep_rows=True)
+            _require_complete(channel, source_revision_id, survey.plan, survey.unit_rows)
+            return survey.committed_rows
         return self._verify_batches(pin, channel, source_revision_id, frozenset(arrival_seqs))
 
     def _verify_batches(
@@ -339,6 +367,7 @@ class CanonicalNormalizer:
         if facts.plan is None or facts.base is None or facts.ready is None:
             return ()
         plan, base, ready = facts.plan, facts.base, facts.ready
+        _require_complete(channel, source_revision_id, plan, len(facts.positions))
         wanted = _batches_holding(facts.positions, plan.chunk, base, seqs) & set(plan.batches)
         kept: list[Mapping[str, Any]] = []
         for index in sorted(wanted):
@@ -417,6 +446,7 @@ class CanonicalNormalizer:
                     "the rows of its committed batches (rows deleted or added)"
                 )
             facts = _UnitFacts(tuple(positions), plan, base, ready)
+        self._check_rest_unit(pin, channel, source_revision_id, positions)
         if self._frozen:
             while len(self._facts) >= _FACT_CACHE:
                 self._facts.pop(next(iter(self._facts)))
@@ -462,6 +492,22 @@ class CanonicalNormalizer:
     # ------------------------------------------------------------------ prove (no writes)
 
     def _survey(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        *,
+        keep_rows: bool,
+    ) -> _Survey:
+        """The proving pass, then (REST) the unit's completeness against its page (RT-3).
+
+        Completeness is judged last, so every committed-state defect keeps its own verdict.
+        """
+        survey = self._survey_unit(pin, channel, source_revision_id, keep_rows=keep_rows)
+        self._check_rest_unit(pin, channel, source_revision_id, survey.positions)
+        return survey
+
+    def _survey_unit(
         self,
         pin: _Pin,
         channel: rules.RawChannel,
@@ -568,9 +614,10 @@ class CanonicalNormalizer:
         """Proven Raw positions are distinct; an archive unit is its whole object, lines 1 … N.
 
         A REST response may lack positions: elements another page delivered first are never
-        re-written under it (D3E), so its own positions can have gaps (review E-1). An archive
-        revision's rows are its parsed object's lines, all of them (review E-3): a unit missing
-        its last lines is truncated, not smaller.
+        re-written under it (D3E), so its own positions can have gaps (review E-1) — but only
+        those (G2-R1a / RT-3: ``_check_rest_unit``, judged after the committed state). An
+        archive revision's rows are its parsed object's lines, all of them (review E-3): a unit
+        missing its last lines is truncated, not smaller.
         """
         table = channel.element.table
         if any(a == b for a, b in zip(positions, positions[1:], strict=False)):
@@ -585,6 +632,68 @@ class CanonicalNormalizer:
                 f"{table}: the rows of archive revision {source_revision_id} are not exactly the "
                 f"{expected} lines of its object"
             )
+
+    def _check_rest_unit(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        positions: Sequence[int],
+    ) -> None:
+        """Every element the response's body holds is its own row or another page's (RT-3).
+
+        The response revision is proven and its body strictly re-decoded (``page_elements``);
+        each element not held under this response must be held — exactly once, proven lawful —
+        under **another** committed response revision at the pinned snapshot (the store skips
+        such elements: they are never re-written, ADR-0027). Anything else is a page whose
+        element batches stopped half-way: ``CanonicalUnitIncomplete``, nothing is written.
+
+        The response's ``element_count`` alone cannot tell a skipped element from a lost one
+        (both are simply absent), so completeness is proven element by element from the body.
+        An archive unit's completeness is ``_check_positions``' (its object's ``1 … N`` lines).
+        """
+        if channel.name == "archive":
+            return
+        table = channel.element.table
+        response, elements = pin.verifier.page_elements(channel.data_type, source_revision_id)
+        own = {position - 1 for position in positions}
+        if not own <= {element.element_index for element in elements}:
+            raise CatalogIntegrityError(
+                f"{table}: unit {source_revision_id} holds positions its body does not"
+            )
+        missing = [element for element in elements if element.element_index not in own]
+        if not missing:
+            return
+        held: dict[str, list[Mapping[str, Any]]] = {}
+        columns = tuple(field.name for field in channel.element.arrow_schema)
+        keys = sorted({element.observation_key for element in missing})
+        for start in range(0, len(keys), _KEY_CHUNK):
+            for row in pin.catalog.scan_columns(
+                table,
+                columns=columns,
+                row_filter=And(
+                    _equals("symbol", response["symbol"]),
+                    In("observation_key", keys[start : start + _KEY_CHUNK]),  # type: ignore[call-arg, arg-type]
+                ),
+            ).to_pylist():
+                held.setdefault(row["revision_id"], []).append(row)
+        unheld = [
+            element.element_index
+            for element in missing
+            if len(held.get(element.revision_id, ())) != 1
+            or held[element.revision_id][0]["response_revision_id"] == source_revision_id
+        ]
+        if unheld:
+            raise CanonicalUnitIncomplete(
+                f"{table}: response revision {source_revision_id} holds {len(elements)} "
+                f"element(s) but element(s) {unheld[:8]} are committed neither under it nor "
+                "under another page: its element batches stopped half-way (rerun the store)"
+            )
+        pin.verifier.verify_rest_elements(
+            channel.element,
+            channel.data_type,
+            [held[element.revision_id][0] for element in missing],
+        )
 
     def _raw_window(
         self,
@@ -942,6 +1051,28 @@ class CanonicalNormalizer:
         if info is None:
             raise TableNotFound(f"table {table} does not exist; create the Phase 1 tables first")
         return None if info.current_snapshot is None else info.current_snapshot.snapshot_id
+
+
+def _require_complete(
+    channel: rules.RawChannel,
+    source_revision_id: str,
+    plan: _CommittedPlan | None,
+    unit_rows: int,
+) -> None:
+    """A reader takes a normalized unit only whole: every batch of its plan committed (RT-1).
+
+    A unit with no committed batch is simply not normalized (it has no rows to read); a
+    committed prefix of the plan is a normalization that stopped half-way, never a smaller unit.
+    """
+    if plan is None:
+        return
+    planned = -(-unit_rows // plan.chunk)
+    if len(plan.batches) != planned:
+        raise CanonicalUnitIncomplete(
+            f"{channel.canonical.table}: unit {source_revision_id} has {len(plan.batches)} of the "
+            f"{planned} batches of its plan committed: its normalization stopped half-way "
+            "(rerun the normalizer)"
+        )
 
 
 def _position_column(channel: rules.RawChannel) -> str:
