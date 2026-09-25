@@ -1,4 +1,4 @@
-"""Phase 6 framework: State x Strategy decomposition and conditional trial counting."""
+"""Phase 6 framework: State x Strategy decomposition, conditional trial counting, P5 wiring."""
 
 from __future__ import annotations
 
@@ -7,9 +7,29 @@ from decimal import Decimal
 
 import pytest
 
-from core.domain.base import Kind, Ref
-from research.experiments import register_conditionals, state_strategy_matrix
+from core.contracts.state import (
+    StateInput,
+    StateProviderDescriptor,
+    StateRequest,
+    StateResult,
+    StateValue,
+)
+from core.contracts.strategy import (
+    BacktestCostModel,
+    BacktestRequest,
+    BacktestResult,
+    TargetPosition,
+)
+from core.domain.base import FrozenMapping, Kind, Ref, content_hash
+from plugins.backtest import BarBacktester
+from research.experiments import (
+    backtest_returns,
+    matrix_from_backtest,
+    register_conditionals,
+    state_strategy_matrix,
+)
 from research.hypotheses import TrialLedger
+from tests.strategy_fixtures import make_bars
 
 S = Ref(kind=Kind.STRATEGY, name="tsmom", version="1.0.0")
 ST = Ref(kind=Kind.STATE, name="vol_regime", version="1.0.0")
@@ -55,3 +75,87 @@ def test_every_conditional_attempt_counts_as_a_trial() -> None:
         minimum_effect="0.1",
     )
     assert trials == 3
+
+
+# --------------------------------------------------------------------- W1: P5 backtest wiring
+
+
+def _state_result(labels: dict[datetime, str | None]) -> StateResult:
+    feature = Ref(kind=Kind.FEATURE, name="bar_realized_vol_5", version="1.0.0")
+    source = content_hash({"fixture": "vol"})
+    times = tuple(sorted(labels))
+    request = StateRequest(
+        state=ST,
+        spec_hash=content_hash({"fixture": "state-spec"}),
+        evaluation_times=times,
+        inputs=tuple(
+            StateInput(
+                feature=feature, evaluation_time=t, value=Decimal(1), source_result_hash=source
+            )
+            for t in times
+        ),
+    )
+    descriptor = StateProviderDescriptor(
+        name="fixture_states",
+        version="1.0.0",
+        deterministic=True,
+        supported_states=FrozenMapping({str(ST): request.spec_hash}),
+    )
+    values = [
+        StateValue(evaluation_time=t, state=None, inputs_used=0)
+        if labels[t] is None
+        else StateValue(evaluation_time=t, state=labels[t], inputs_used=1, latest_input_time=t)
+        for t in times
+    ]
+    return StateResult.build(request, descriptor, values)
+
+
+def _buy_and_hold() -> BacktestResult:
+    # bar k spans [T0 + k, T0 + k + 1); each opens at the previous close.
+    bars = make_bars("BTC", [Decimal(c) for c in ("100", "110", "99", "99", "108.9")], start=T0)
+    zero = BacktestCostModel(
+        name="zero_cost", version="1.0.0", fee_rate=Decimal(0), slippage_rate=Decimal(0)
+    )
+    target = TargetPosition(
+        decision_time=_t(1),
+        instrument="BTC",
+        target_weight=Decimal(1),
+        inputs_used=1,
+        latest_input_available_time=_t(1),
+    )
+    request = BacktestRequest(
+        cost_model=zero, initial_equity=Decimal(1000), bars=bars, targets=(target,)
+    )
+    return BarBacktester().run(request)
+
+
+def test_backtest_returns_are_keyed_by_the_start_of_each_period() -> None:
+    returns = backtest_returns(_buy_and_hold())
+    # marks: 1000 (t1, flat), 1100 (t2), 990 (t3), 990 (t4), 1089 (t5)
+    assert returns == {
+        _t(1): Decimal("0.1"),
+        _t(2): Decimal("-0.1"),
+        _t(3): Decimal(0),
+        _t(4): Decimal("0.1"),
+    }
+
+
+def test_matrix_from_backtest_attributes_to_the_state_known_at_t_and_links_inputs() -> None:
+    backtest = _buy_and_hold()
+    states = _state_result({_t(1): "high", _t(2): "low", _t(3): "low", _t(4): None, _t(5): "low"})
+    matrix = matrix_from_backtest(S, ST, backtest, states, top_k=1)
+    cells = {cell.state: cell for cell in matrix.cells}
+    assert cells["high"].count == 1 and cells["high"].total == Decimal("0.1")
+    assert cells["low"].count == 2 and cells["low"].total == Decimal("-0.1")
+    assert cells[None].count == 1 and cells[None].total == Decimal("0.1")
+    assert matrix.backtest_result_hash == backtest.result_hash
+    assert matrix.state_result_hash == states.result_hash
+    again = matrix_from_backtest(S, ST, _buy_and_hold(), states, top_k=1)
+    assert again == matrix and again.matrix_hash == matrix.matrix_hash
+    assert backtest.result_hash in matrix.report()
+
+
+def test_matrix_from_backtest_refuses_a_period_without_a_state() -> None:
+    states = _state_result({_t(1): "high", _t(2): "low", _t(4): "low"})
+    with pytest.raises(ValueError, match="no state was evaluated"):
+        matrix_from_backtest(S, ST, _buy_and_hold(), states)

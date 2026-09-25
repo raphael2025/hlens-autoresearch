@@ -8,20 +8,43 @@ its largest few returns — the inputs of Constitution C-R2 ("must not depend on
 single state"). No threshold is applied here: acceptance numbers belong to the Validation Profile
 (P4 / P8). Every conditional variant researched is registered as a ``conditioning`` hypothesis in
 the ``TrialLedger`` so it counts as a trial (Constitution C-T1, roadmap P6 acceptance).
+
+Wiring to Phase 5 (W1): ``matrix_from_backtest`` takes a P5 ``BacktestResult`` and a P2
+``StateResult``. ``backtest_returns`` turns the equity curve into per-bar simple returns keyed by
+the **start** of the period they are realized over: consecutive equity points ``(t, e_t)`` and
+``(t_next, e_next)`` give ``e_next / e_t - 1`` at key ``t`` (the book held over ``(t, t_next]`` was
+decided at or before ``t`` under ``next_bar_open``, and its return includes that bar's fees and
+slippage). The first bar has no earlier mark in the result, so its return is not attributed. The
+matrix records the ``result_hash`` of the backtest and of the state result it was built from.
 """
 
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
-from decimal import Decimal
+from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from itertools import pairwise
+from typing import Final
 
 from core.contracts.state import StateResult
-from core.domain.base import Ref
+from core.contracts.strategy import BacktestResult
+from core.domain.base import Ref, content_hash
 from research.hypotheses import TrialLedger, conditioning
 
-__all__ = ["StateCell", "StateStrategyMatrix", "register_conditionals", "state_strategy_matrix"]
+__all__ = [
+    "RETURN_QUANTUM",
+    "StateCell",
+    "StateStrategyMatrix",
+    "backtest_returns",
+    "matrix_from_backtest",
+    "register_conditionals",
+    "state_strategy_matrix",
+]
+
+#: Per-bar returns derived from an equity curve are quantized to this step (half-even).
+RETURN_QUANTUM: Final = Decimal("1e-18")
+_CONTEXT: Final = Context(prec=50, rounding=ROUND_HALF_EVEN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,10 +67,42 @@ class StateStrategyMatrix:
     #: Share of the best cell's gains produced by its ``top_k`` largest returns.
     top_k_share_in_best_state: Decimal | None
     top_k: int
+    #: ``result_hash`` of the P5 backtest the returns came from (None: a plain return mapping).
+    backtest_result_hash: str | None = None
+    #: ``result_hash`` of the P2 state result (None: a plain time -> label mapping).
+    state_result_hash: str | None = None
+
+    @property
+    def matrix_hash(self) -> str:
+        """Content hash of the whole matrix, its inputs' hashes included."""
+        return content_hash(
+            {
+                "strategy": str(self.strategy),
+                "state": str(self.state),
+                "cells": [
+                    {
+                        "state": cell.state,
+                        "count": cell.count,
+                        "total": str(cell.total),
+                        "mean": None if cell.mean is None else str(cell.mean),
+                        "hit_rate": None if cell.hit_rate is None else str(cell.hit_rate),
+                        "top_returns": [str(value) for value in cell.top_returns],
+                    }
+                    for cell in self.cells
+                ],
+                "best_state_share": _text(self.best_state_share),
+                "top_k_share_in_best_state": _text(self.top_k_share_in_best_state),
+                "top_k": self.top_k,
+                "backtest_result_hash": self.backtest_result_hash,
+                "state_result_hash": self.state_result_hash,
+            }
+        )
 
     def report(self) -> str:
         lines = [
             f"# {self.strategy} × {self.state}",
+            "",
+            f"backtest: {self.backtest_result_hash} · states: {self.state_result_hash}",
             "",
             "| state | n | mean | hit rate | total |",
             "|---|---|---|---|---|",
@@ -114,7 +169,51 @@ def state_strategy_matrix(
         best_state_share=best_share,
         top_k_share_in_best_state=top_share,
         top_k=top_k,
+        state_result_hash=states.result_hash if isinstance(states, StateResult) else None,
     )
+
+
+def _text(value: Decimal | None) -> str | None:
+    return None if value is None else str(value)
+
+
+def backtest_returns(backtest: BacktestResult) -> dict[datetime, Decimal]:
+    """Per-bar simple returns of a P5 equity curve, keyed by the start of each period.
+
+    ``(t, e_t), (t_next, e_next)`` -> ``{t: e_next / e_t - 1}`` (50 digits, quantized to
+    ``RETURN_QUANTUM``). A non-positive equity mark has no return: the curve is refused.
+    """
+    if not isinstance(backtest, BacktestResult):
+        raise ValueError("backtest_returns needs a BacktestResult")
+    out: dict[datetime, Decimal] = {}
+    with localcontext(_CONTEXT):
+        for earlier, later in pairwise(backtest.equity_curve):
+            if earlier.equity <= 0:
+                raise ValueError(
+                    f"equity at {earlier.time.isoformat()} is not positive: no return is defined"
+                )
+            out[earlier.time] = (later.equity / earlier.equity - 1).quantize(RETURN_QUANTUM)
+    return out
+
+
+def matrix_from_backtest(
+    strategy: Ref,
+    state: Ref,
+    backtest: BacktestResult,
+    states: StateResult,
+    *,
+    top_k: int = 5,
+) -> StateStrategyMatrix:
+    """``state_strategy_matrix`` over a P5 backtest's per-bar returns and a P2 state result.
+
+    The return over ``(t, t_next]`` goes to the state evaluated at ``t`` (known at ``t``); every
+    period start must have a state evaluation (otherwise ``ValueError``). The matrix binds both
+    inputs by ``result_hash``.
+    """
+    if not isinstance(states, StateResult):
+        raise ValueError("matrix_from_backtest needs a StateResult")
+    matrix = state_strategy_matrix(strategy, state, backtest_returns(backtest), states, top_k=top_k)
+    return replace(matrix, backtest_result_hash=backtest.result_hash)
 
 
 def _values(buckets: Mapping[str | None, list[Decimal]], label: str | None) -> list[Decimal]:

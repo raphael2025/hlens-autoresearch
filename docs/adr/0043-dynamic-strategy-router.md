@@ -15,3 +15,11 @@
    （无杠杆）。
 3. 每次权重变化计换手 `Σ|Δw|` 并按声明的费率计切换成本（路由切换成本吞噬收益是主要失败模式）。
 4. 本构建只驱动纸面 / 模拟运行（执行侧见 ADR-0046，无实盘）；与回测偏差的声明范围由 P8 验证给出（调试阶段接入）。
+
+## 实施说明
+
+- **接线（W1，2026-09-25）**：`research/router/paper.py::paper_run` 把 t 时刻的路由权重与各被路由策略的 P5 目标仓位（as-of
+  `decision_time <= t`）组合为目标仓位，交给注入的 `BacktestProvider` 模拟；每次路由换手按 `switching_cost_rate × 换手 × 决策时净权益`
+  在决策之后的第一个估值点从现金扣除（叠加在成本模型之上）。返回路由器**自身**的 `BacktestResult`（归属
+  `research_router_paper@0.1.0`），使路由器成为可被验证的策略对象；`RouterPaperRun.run_hash` 绑定路由规格、状态结果、策略结果、
+  gross / net 结果与切换成本明细。仍只是纸面 / 模拟；无契约变化、无阈值。语义细节见 `research/router/README.md`。
