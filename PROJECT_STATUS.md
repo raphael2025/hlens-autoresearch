@@ -54,11 +54,11 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 8 | Validation & Robustness | 🔨 框架开发中（子代理，ADR-0041） |
 | 9 | Synthetic Market Lab | 🧱 生成器框架已实现（ADR-0042，NOT_VALIDATED）；校准报告待 P4 / P8 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面） |
-| 11 | Continuous Research Loop | 🧱 地基已实现（ADR-0044）；🔨 持续循环接线开发中（子代理，ADR-0049） |
+| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049：六阶段轮次、预算先查后跑、生命周期守卫永不到 ACTIVE、哈希链审计、劣化监控） |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045） |
 | 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046：模拟执行、急停、二线风控；实盘在结构上被拒绝）；接 P5 目标仓位的接线开发中 |
 | 14 | Technology Migration | 🧱 框架已实现（ADR-0047） |
-| apps | api / worker / web | 🧱 骨架已实现（ADR-0048 / 0044；web 未安装构建） |
+| apps | api / worker / web | 🧱 框架已实现（ADR-0048：只读 API + 研究控制台 5 页，npm 构建通过；ADR-0044 / 0049 worker 与循环） |
 
 图例：🧱 = 按 Raphael 2026-09-25 指示先实现的框架代码（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），全部完成后逐个调试与验证；阈值 / Profile 数值一律 TBD；实盘相关一律不实现。
 
