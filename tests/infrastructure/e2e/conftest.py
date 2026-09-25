@@ -1,0 +1,22 @@
+"""Fixtures for the G1 Phase 1 first-slice end-to-end test (roadmap #20)."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from pathlib import Path
+
+import pytest
+
+from tests.infrastructure.dataset import dataset_support as ds
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    config.addinivalue_line(
+        "markers", "postgres: needs the dedicated PostgreSQL test catalog (HLENS_TEST_CATALOG_URI)"
+    )
+
+
+@pytest.fixture
+def w(tmp_path: Path) -> Iterator[ds.World]:
+    with ds.sqlite_world(tmp_path) as opened:
+        yield opened
