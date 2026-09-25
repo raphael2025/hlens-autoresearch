@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from datetime import timedelta
 from decimal import Decimal
 from typing import Any
@@ -48,7 +49,7 @@ def _ingest(h: RestHarness, data_type: str, items: list[Any], archive_items: Any
     h.reconciler(clock=StepClock(start=K_E)).reconcile(data_type, SYMBOL, DAY)
 
 
-def _events(row: dict[str, Any], kind: str) -> list[dict[str, Any]]:
+def _events(row: Mapping[str, Any], kind: str) -> list[dict[str, Any]]:
     return [event for event in row["events"] if event["event_type"] == kind]
 
 
