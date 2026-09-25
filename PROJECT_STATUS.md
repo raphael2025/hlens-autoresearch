@@ -42,22 +42,24 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 | Phase | 名称 | 状态 |
 |---|---|---|
-| 0 | Research Constitution | ✅ 已完成 |
-| 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（D3E 已开放） |
-| 2 | Market State Engine | ⏸️ 未开始 |
-| 3 | Event & Interaction Engine | ⏸️ 未开始 |
-| 4 | Outcome Engine | ⏸️ 未开始 |
-| 5 | Strategy Library | ⏸️ 未开始 |
-| 6 | State × Strategy | ⏸️ 未开始 |
-| 7 | Dynamic Discovery | ⏸️ 未开始 |
-| 8 | Validation | ⏸️ 未开始 |
-| 9 | Synthetic Market Lab | ⏸️ 未开始 |
-| 10 | Dynamic Strategy Router | ⏸️ 未开始 |
-| 11 | Continuous Research Loop | ⏸️ 未开始 |
-| 12 | Strategy Evolution | ⏸️ 未开始 |
-| 13 | Production Adaptive System | ⏸️ 未开始 |
-| 14 | Technology Migration | ⏸️ 未开始 |
+| 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
+| 0.5 | Public Knowledge Base | 🧱 框架已实现（ADR-0034，NOT_VALIDATED） |
+| 1 | Market Representation | 🔄 实现完成、红队返修完成，待验收（D3E 起 REVIEW_PENDING） |
+| 2 | Market State Engine | 🔨 框架开发中（子代理） |
+| 3 | Event & Interaction Engine | 🔨 框架开发中（子代理） |
+| 4 | Outcome Engine + 最小验证门 | 🔨 框架开发中（子代理） |
+| 5 | Strategy Library + 回测 | 🔨 框架开发中（子代理） |
+| 6 | State × Strategy | ⏳ 排队（第二波） |
+| 7 | Dynamic Discovery | ⏳ 排队（第二波） |
+| 8 | Validation & Robustness | ⏳ 排队（第二波） |
+| 9 | Synthetic Market Lab | 🧱 生成器框架已实现（ADR-0042，NOT_VALIDATED）；校准报告待 P4 / P8 |
+| 10 | Dynamic Strategy Router（纸面） | ⏳ 排队（第三波） |
+| 11 | Continuous Research Loop | ⏳ 排队（第三波） |
+| 12 | Strategy Evolution | ⏳ 排队（第三波） |
+| 13 | Production Adaptive System（仅模拟，无实盘） | ⏳ 排队（第四波） |
+| 14 | Technology Migration | 🔨 框架开发中（Claude） |
+
+图例：🧱 = 按 Raphael 2026-09-25 指示先实现的框架代码（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），全部完成后逐个调试与验证；阈值 / Profile 数值一律 TBD；实盘相关一律不实现。
 
 ## 3. 已完成
 
