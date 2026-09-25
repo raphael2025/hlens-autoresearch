@@ -16,15 +16,12 @@ strategy reaches the execution plane (``apps.execution.service.ExecutionService.
 3. if a ``RiskProvider`` was supplied, constrain those positions with a ``RiskRequest`` built the
    same way (``ConstrainedPosition.as_target`` folds the risk-side answer back onto the strategy
    position); the risk answer must also pass ``RiskResult.check_answers``;
-4. map each (possibly risk-constrained) ``target_weight`` to ``apps.execution.records.
-   TargetPosition.quantity`` via the ``instruments`` map (signal-side instrument name ->
-   ``core.domain.specs.Instrument``).
-
-**Known v1 simplification** (framework batch; a debugging-pass follow-up, not a contract change):
-step 4 maps the weight straight onto ``quantity`` — the execution plane's per-instrument
-book-keeping (deltas, orders, fills, second-line risk) is exercised end-to-end with real numbers,
-but real position sizing (``quantity = weight * equity / price``, as ``plugins.backtest.bar`` does
-for the research backtester) needs equity and price knowledge this narrow seam does not have.
+4. size each (possibly risk-constrained) ``target_weight`` into an
+   ``apps.execution.records.TargetPosition.quantity`` with the injected ``PositionSizer``
+   (required, no identity default). ``EquityPriceSizer`` is the v1 sizer:
+   ``quantity = weight * equity / price`` (as ``plugins.backtest.bar`` does for the research
+   backtester), where the price must be known at ``as_of``; a missing or non-positive price refuses
+   (fail closed, never assumed).
 
 Only ``core.contracts.strategy`` / ``core.domain`` / ``apps.execution`` are imported — never
 ``research/`` or ``infrastructure/`` (``tests/test_architecture_boundaries.py``,
@@ -36,6 +33,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Mapping
 from datetime import datetime
 from decimal import Decimal
+from typing import Protocol
 
 from apps.execution.errors import ExecutionRefused
 from apps.execution.records import TargetPosition as ExecutionTargetPosition
@@ -52,7 +50,12 @@ from core.contracts.strategy import TargetPosition as SignalTargetPosition
 from core.domain.base import FrozenMapping, Kind
 from core.domain.specs import Instrument, RiskPolicy, StrategySpec
 
-__all__ = ["StrategyProviderTargetSource", "StrategySourceRefused"]
+__all__ = [
+    "EquityPriceSizer",
+    "PositionSizer",
+    "StrategyProviderTargetSource",
+    "StrategySourceRefused",
+]
 
 #: ``(deployment_id, as_of) -> raw signal feed``; the source may over-return (e.g. every signal it
 #: has ever seen) — the adapter keeps only what is honestly visible at ``as_of``.
@@ -64,6 +67,43 @@ PortfolioStateSource = Callable[[str, datetime], PortfolioState]
 
 class StrategySourceRefused(ExecutionRefused):
     """The Phase 5 -> Phase 13 adapter refused to answer: fail closed, no position is assumed."""
+
+
+class PositionSizer(Protocol):
+    """``(deployment_id, instrument, target_weight, as_of) -> signed quantity``.
+
+    Must only use equity / prices known at ``as_of``; refuse (``StrategySourceRefused``) rather
+    than assume when it cannot size honestly.
+    """
+
+    def quantity(
+        self, deployment_id: str, instrument: Instrument, target_weight: Decimal, as_of: datetime
+    ) -> Decimal: ...
+
+
+#: ``(instrument, as_of) -> last price known at as_of``, or ``None`` when there is none.
+PriceSource = Callable[[Instrument, datetime], Decimal | None]
+
+
+class EquityPriceSizer:
+    """v1 sizer: ``quantity = target_weight * equity / price`` (price known at ``as_of``)."""
+
+    def __init__(self, *, equity: Decimal, price: PriceSource) -> None:
+        if not isinstance(equity, Decimal) or not equity.is_finite() or equity <= 0:
+            raise ValueError("equity must be a positive finite Decimal")
+        self._equity = equity
+        self._price = price
+
+    def quantity(
+        self, deployment_id: str, instrument: Instrument, target_weight: Decimal, as_of: datetime
+    ) -> Decimal:
+        price = self._price(instrument, as_of)
+        if price is None or not isinstance(price, Decimal) or not price.is_finite() or price <= 0:
+            raise StrategySourceRefused(
+                f"no positive price known at {as_of.isoformat()} for {instrument.symbol}"
+                f" (deployment {deployment_id}); refusing to size"
+            )
+        return target_weight * self._equity / price
 
 
 def _default_portfolio_state(_deployment_id: str, as_of: datetime) -> PortfolioState:
@@ -80,6 +120,7 @@ class StrategyProviderTargetSource:
         strategy_spec: StrategySpec,
         instruments: Mapping[str, Instrument],
         signals: SignalSource,
+        sizer: PositionSizer,
         params: Mapping[str, Decimal | int | bool | str] | None = None,
         risk: RiskProvider | None = None,
         risk_policy: RiskPolicy | None = None,
@@ -97,6 +138,7 @@ class StrategyProviderTargetSource:
         self._spec = strategy_spec
         self._instruments = dict(instruments)
         self._signals = signals
+        self._sizer = sizer
         self._params = dict(params or {})
         self._risk = risk
         self._risk_policy = risk_policy
@@ -134,7 +176,10 @@ class StrategyProviderTargetSource:
 
         targets = tuple(
             ExecutionTargetPosition(
-                instrument=self._instruments[item.instrument], quantity=item.target_weight
+                instrument=self._instruments[item.instrument],
+                quantity=self._sizer.quantity(
+                    deployment_id, self._instruments[item.instrument], item.target_weight, as_of
+                ),
             )
             for item in positions
         )

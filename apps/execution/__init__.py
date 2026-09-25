@@ -41,7 +41,12 @@ from apps.execution.service import (
     ExecutionService,
     TargetPositionSource,
 )
-from apps.execution.strategy_source import StrategyProviderTargetSource, StrategySourceRefused
+from apps.execution.strategy_source import (
+    EquityPriceSizer,
+    PositionSizer,
+    StrategyProviderTargetSource,
+    StrategySourceRefused,
+)
 from apps.execution.venue import CostModel, LinearCostModel, SimulatedVenue
 
 __all__ = [
@@ -83,6 +88,8 @@ __all__ = [
     "SimulatedVenue",
     "StrategyProviderTargetSource",
     "StrategySourceRefused",
+    "EquityPriceSizer",
+    "PositionSizer",
     "TargetPosition",
     "TargetPositionSource",
     "TargetPositions",

@@ -17,6 +17,7 @@ from decimal import Decimal
 import pytest
 
 from apps.execution import (
+    EquityPriceSizer,
     ExecutionReport,
     ExecutionService,
     KillSwitch,
@@ -63,6 +64,9 @@ KB, KE = instrument_key(BTC), instrument_key(ETH)
 INSTRUMENTS = {KB: BTC, KE: ETH}
 
 SPEC = fake_strategy_spec()
+#: Equity 1000 at price 100: a weight w sizes to 10 * w units (never the weight itself).
+EQUITY, PRICE = Decimal(1000), Decimal(100)
+SIZER = EquityPriceSizer(equity=EQUITY, price=lambda _instrument, _as_of: PRICE)
 
 
 def _signal(instrument: str, minutes_before: int, value: Decimal) -> SignalObservation:
@@ -103,6 +107,7 @@ def _source(**overrides: object) -> StrategyProviderTargetSource:
         "strategy_spec": SPEC,
         "instruments": INSTRUMENTS,
         "signals": _signals(BASE_SIGNALS),
+        "sizer": SIZER,
     }
     fields.update(overrides)
     return StrategyProviderTargetSource(**fields)  # type: ignore[arg-type]
@@ -159,9 +164,10 @@ def test_risk_provider_visibly_constrains_the_mapped_quantity() -> None:
     )
     loose = unconstrained.target_positions("dep-1", AS_OF)
     capped = constrained.target_positions("dep-1", AS_OF)
-    assert abs(_quantity(loose, BTC)) > Decimal("0.1")  # teeth: unconstrained exceeds the cap
-    assert abs(_quantity(capped, BTC)) == Decimal("0.1")
-    assert abs(_quantity(capped, ETH)) == Decimal("0.1")
+    cap_units = Decimal("0.1") * EQUITY / PRICE
+    assert abs(_quantity(loose, BTC)) > cap_units  # teeth: unconstrained exceeds the cap
+    assert abs(_quantity(capped, BTC)) == cap_units
+    assert abs(_quantity(capped, ETH)) == cap_units
 
 
 # -- end to end through ExecutionService, SIMULATED mode -----------------------------------------
@@ -276,3 +282,25 @@ def test_kill_switch_halts_order_flow() -> None:
     assert second.rejections and all(
         r.source is RejectionSource.KILL_SWITCH for r in second.rejections
     )
+
+
+def test_weights_are_sized_by_equity_and_price_never_used_as_quantities() -> None:
+    targets = _source().target_positions("dep-1", AS_OF)
+    doubled = _source(
+        sizer=EquityPriceSizer(equity=EQUITY * 2, price=lambda _i, _t: PRICE)
+    ).target_positions("dep-1", AS_OF)
+    for instrument in (BTC, ETH):
+        assert _quantity(doubled, instrument) == 2 * _quantity(targets, instrument)
+        assert _quantity(targets, instrument) != 0
+
+
+@pytest.mark.parametrize("price", [None, Decimal(0), Decimal(-1), Decimal("NaN")])
+def test_a_missing_or_non_positive_price_refuses_to_size(price: Decimal | None) -> None:
+    source = _source(sizer=EquityPriceSizer(equity=EQUITY, price=lambda _i, _t: price))
+    with pytest.raises(StrategySourceRefused, match="price"):
+        source.target_positions("dep-1", AS_OF)
+
+
+def test_the_sizer_refuses_a_non_positive_equity() -> None:
+    with pytest.raises(ValueError, match="equity"):
+        EquityPriceSizer(equity=Decimal(0), price=lambda _i, _t: PRICE)

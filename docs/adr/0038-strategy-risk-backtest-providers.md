@@ -77,3 +77,5 @@ strategy_source.py` 新增 `StrategyProviderTargetSource`，把一个 `StrategyP
 `tests/apps/test_execution_strategy_source.py`：未来信号不泄漏、fail closed、风控约束确有效果、经
 `ExecutionService.admit` / `run_once`（SIMULATED，`RiskLimits.from_risk_policy`）端到端、LIVE 仍被拒绝、
 Kill Switch 仍能止住订单流。
+
+**修订（2026-09-25，Claude Opus）**：上面的"v1 简化"已撤销——权重不再直接当作数量；定量由必填的 `PositionSizer` 完成（v1 `EquityPriceSizer`：`quantity = weight * equity / price`，价格须在 `as_of` 已知，缺失或非正即拒绝；无"权重即数量"的默认）。测试：`tests/apps/test_execution_strategy_source.py`（按权益与价格定量、价格缺失 / 非正拒绝、权益非正拒绝）。

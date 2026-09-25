@@ -33,6 +33,4 @@
 `strategy_source.StrategyProviderTargetSource` 是这条接缝已接上的适配器：包一个 `StrategyProvider`（可选
 `RiskProvider`）与一个信号源 callable，构造 `StrategyRequest` 时 `knowledge_cutoff = as_of`、只保留
 `available_time <= as_of` 且 `knowledge_time <= as_of` 的信号，答案未通过 `StrategyResult.check_answers`
-（或 `RiskResult.check_answers`）即 fail closed（`StrategySourceRefused`）。**v1 简化**：把
-`target_weight`（含风控约束后）直接映射为 `TargetPosition.quantity`——真正的仓位定量
-（`quantity = weight * equity / price`）留给调试批次，见 ADR-0038 / ADR-0046 的 Implementation note。
+（或 `RiskResult.check_answers`）即 fail closed（`StrategySourceRefused`）。定量由必填的 `PositionSizer` 完成（v1 `EquityPriceSizer`：`quantity = weight * equity / price`，价格须在 `as_of` 已知，缺失或非正即拒绝；无"权重即数量"的默认），见 ADR-0038 / ADR-0046 的 Implementation note。
