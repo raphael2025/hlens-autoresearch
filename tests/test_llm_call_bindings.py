@@ -290,10 +290,10 @@ def test_content_blob_ref_is_not_a_v1_model() -> None:
 
 
 def test_current_schema_count_grew_to_38(tmp_path: Path) -> None:
-    """ADR-0016 后 current 模型数 37 → 38，Phase 1 B1 后 → 46，B2 后 → 59，B3 后 → 74；
+    """ADR-0016 后 current 模型数 37 → 38，Phase 1 B1 后 → 46，B2 后 → 59，B3 后 → 74，F4 后 → 79；
     全量导出与已提交内容逐文件一致。"""
     written = export_json_schemas(tmp_path)
-    assert len(CONTRACT_MODELS) == 74
+    assert len(CONTRACT_MODELS) == 79
     assert len(written) == len(CONTRACT_MODELS)
     committed = {path.name for path in CURRENT_SCHEMA_DIR.glob("*.schema.json")}
     assert committed == {path.name for path in written.values()}

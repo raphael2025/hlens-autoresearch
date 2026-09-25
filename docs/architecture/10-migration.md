@@ -37,7 +37,7 @@
 
 | 资产 | 路径 | 性质 |
 |---|---|---|
-| 当前 Schema | `schemas/*.schema.json`（74 份，`schema_version` 默认 `2.0.0`） | 由 `python -m core.contracts.registry` 导出 |
+| 当前 Schema | `schemas/*.schema.json`（79 份，`schema_version` 默认 `2.0.0`） | 由 `python -m core.contracts.registry` 导出 |
 | v1 Schema 快照 | `schemas/v1/*.schema.json`（35 份，默认 `1.0.0`） | **只读、只增不改**；当前导出只写 `schemas/` 顶层，不会覆盖它 |
 | v1 固定载荷 + 旧哈希向量 | `tests/vectors/v1/*.json` | 用 v1 代码（commit `066b22d`）生成，时间固定，不依赖 `now` |
 | v1 可执行只读入口 | `core/compat/v1.py` 的 `read_v1()` | 返回 `LegacyV1Record` |

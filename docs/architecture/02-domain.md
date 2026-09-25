@@ -272,6 +272,26 @@ ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 
 控制）。`file://` 布局与私有 staging 区隔离（C1）；PyIceberg SQL Catalog、PostgreSQL 集成、并发与重启的真实证据（C2）；
 八张表的列级 Schema、partition spec 与演进，以及真实 PyArrow microbatch 的具体 canonicalization / 指纹规则（C3；"adapter 必须独立重算并核对"这一行为已在 B3 冻结，不是延期义务）；按 snapshot 读取数据的 scan（F 按实际消费者定义**独立的**读取 Protocol / capability，或经相应 major + ADR 变更；不向已发布的 `CatalogAdapter` 追加必需方法，B3 不预先猜测其签名）；归档下载、端点限制与校验（D0）；解析与 revision 语义（D1 / D2）都不在 B3。
 
+### 2.5 FeatureProvider 的 Protocol 与 DTO（ADR-0030，Phase 1 F4）
+
+`core/contracts/feature.py` 交付 `FeatureProvider` Protocol（`descriptor` → `ProviderDescriptor`；`compute(FeatureRequest) → FeatureResult`）
+与 5 个 DTO（语义见 03-data.md §4.5）。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`FeatureSpec` 与既有 Schema 逐字节不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `FeatureObservation` | 交给 Provider 的一条输入观察（PIT 选中的 Canonical revision 或其确定性派生） | UTC；区间非空；`available_time` 不早于观察可被观察的时刻（区间取结束端）；值只接受 `Decimal` / `int` / `bool` / 非数值文本，拒绝浮点与 NaN / ±Infinity；带 `SelectedRevisionLineage` |
+| `FeatureRequest` | 一次计算请求：`feature`（`kind=feature`）+ `spec_hash`、`manifest_content_hash`、`knowledge_cutoff`、评估时刻、观察 | 评估时刻非空严格升序；观察按 `(available_time, observation_key)` 规范排序且该二元组不重复；每条观察 `knowledge_time <= knowledge_cutoff`，否则构造即拒绝；`visible_at(t, available_lag)` 定义可见集合（`available_time + available_lag <= t`，同键取最晚可用的一条） |
+| `FeatureValue` | 一个评估时刻的值 | `value` 必填，`None` = 显式不可计算（不填补）；`inputs_used` 为 0 当且仅当 `latest_input_available_time` 为空；`latest_input_available_time <= evaluation_time` |
+| `FeatureResult` | 结果：`request_hash`、`provider`（`name@version`）+ `provider_hash`、值、`result_hash` | 值按评估时刻严格升序；`result_hash` 构造时复核；`check_answers(request, descriptor, available_lag)` 核对请求哈希、Provider 身份、一一对应与带 lag 的输入时间 |
+| `ProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_features` 非空，`feature:name@semver → spec hash`（规格参数由哈希绑定） |
+
+泄漏由执行器结构性保证（ADR-0030 方案 A）：`infrastructure/feature/runner.py` 对每个评估时刻只把可见集合交给 Provider。
+provider-agnostic contract suite 在 `tests/contract_suites/feature.py`（确定性、因果扰动、lag、截止、显式 `None`、一一对应、
+非有限数、哈希敏感、未声明规格）；两个刻意不同的替身通过全部检查，单点故障变体被逐一杀死。
+
+**诚实边界**：`manifest_content_hash` 是否对应已登记的 `ResearchDatasetManifest`、观察是否真的来自其绑定的 snapshot，属 F3 / Registry；
+值是否只依赖可见集合、确定性，由 contract suite 对具体实现检查，契约层不能证明。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -372,7 +392,7 @@ ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（74 份） | `schemas/*.schema.json` |
+| 当前 Schema（79 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -446,7 +466,7 @@ B3 的对象 key、`ObjectRef.uri` 与 `CollectedObject.source_uri` 例外地在
 | 路径 | 内容 |
 |---|---|
 | `core/domain/` | 实体、值对象、不变量 |
-| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前只有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol，研究 Provider Protocol 仍为 0） |
+| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol 与 F4 的 `FeatureProvider`（ADR-0030）；其余研究 Provider Protocol 待首次消费时交付） |
 | `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
 | `core/errors/` | 错误分类 |
 | `core/compat/` | 历史契约 major 的**只读**读取入口（不是迁移服务） |

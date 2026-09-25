@@ -72,6 +72,11 @@ Phase 0 冻结的是本节的**概念层内容**：每类 Provider 的职责、�
 | **LLMProvider** | 文本生成/结构化提取 | prompt + schema → structured output | 不确定（需记录） |
 | **SyntheticMarketProvider** | 生成合成市场 | generator spec + seed → synthetic Canonical data | 必须（给定种子） |
 
+`FeatureProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 1 F4 交付（[ADR-0030](../adr/0030-feature-provider-contract.md)，
+02-domain.md §2.5）：执行器 `infrastructure/feature/runner.py` 对每个评估时刻只把 `available_time + available_lag <= t`、
+`knowledge_time <= knowledge_cutoff` 的输入交给 Provider；首批实现（bar 对数收益、滚动已实现波动率、滚动成交量和）在
+`plugins/features/`，窗口等参数属于各自 `FeatureSpec`，由 descriptor 中的 spec hash 绑定。
+
 另有基础设施 Adapter（不属于研究插件）：`CollectorAdapter`、`StorageAdapter`、`CatalogAdapter`、`ComputeEngineAdapter`、`EventBusAdapter`。
 其中 `CollectorAdapter`、`StorageAdapter`、`CatalogAdapter` 的可执行 Protocol、DTO 与 provider-agnostic contract suite
 已于 Phase 1 B3 交付（02-domain.md §2.4、`tests/contract_suites/`），尚无实现；`ComputeEngineAdapter`、`EventBusAdapter`

@@ -25,6 +25,13 @@ from core.contracts.collector import (
     CoverageGap,
     SourceBinding,
 )
+from core.contracts.feature import (
+    FeatureObservation,
+    FeatureRequest,
+    FeatureResult,
+    FeatureValue,
+    ProviderDescriptor,
+)
 from core.contracts.profile_selection import (
     ExperimentMetadata,
     OosUnsealing,
@@ -190,6 +197,12 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     CollectedObject,
     CoverageGap,
     CollectionResult,
+    # FeatureProvider 的 DTO（ADR-0030，Phase 1 F4）
+    FeatureObservation,
+    FeatureRequest,
+    FeatureValue,
+    FeatureResult,
+    ProviderDescriptor,
 )
 
 
