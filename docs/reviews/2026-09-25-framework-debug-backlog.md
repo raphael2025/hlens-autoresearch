@@ -58,8 +58,12 @@
   重启从最后一轮续跑、累计预算与停机状态、护栏对象随之恢复，从不重跑已记录轮次；轮中崩溃（只 started 未 recorded）→ 停止待人工审查；
   ~~算力秒数为阶段自报，不是实测~~ ✅ 已修（2026-09-26）：每次 `stage.run` 以单调墙钟 + CPU 时钟实测，放在哈希记录之外（`ResearchLoop.metrics` /
   `research_loop.metrics`），预算仍按 max(声明, 报告)，超出显式容差（无默认，未配置只报告）即标记（ADR-0049 实施说明 durable audit and measured compute）。
-  仍未做：总线只在内存中（NATS / Control Plane 持久化待做）；研究侧组合根未接持久审计（`ResearchMemory` 仍在内存）；尾部整行删除需外部锚点才能发现；
-  审计记录尚不是版本化契约。
+  ~~研究侧组合根未接持久审计（`ResearchMemory` 仍在内存）~~ ✅ 已修（2026-09-26）：`open_synthetic_loop(config, state_dir=...)` 把审计、TrialLedger、
+  开封账本、谱系、失败登记、审阅队列（新增持久 `ReviewQueue(path)`）与每轮记忆检查点放在一个目录；重新打开时全部恢复并交叉校验（配置指纹、
+  中断轮次、审计 ↔ 检查点、各文件位置、增量 ↔ 审计摘要、审计 ↔ 各账本），任一不符即拒绝启动（`LoopStateInconsistent`）；单个文件的尾部整行删除
+  由跨文件位置发现（ADR-0049 实施说明 durable composition；`tests/research/loop/test_loop_durable.py`）。
+  仍未做：总线只在内存中（NATS / Control Plane 持久化待做）；**所有**文件一致截回更早轮次边界仍需目录外锚点才能发现；
+  审计记录与记忆检查点尚不是版本化契约；持久组合只有合成市场组合根。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：
   `tests/infrastructure/bars/test_dataset_bars_postgres.py` / `test_manifest_pair_postgres.py`，与 SQLite 侧同一套测试函数对象、

@@ -64,6 +64,16 @@ class LineageGraph:
             self._journal.append("add_spec", spec.model_dump(mode="json"))
         self._specs[spec.ref] = spec
 
+    @property
+    def journal(self) -> AppendOnlyJournal | None:
+        """The backing journal (``None``: in memory); read-only use, for cross-file checks."""
+        return self._journal
+
+    @property
+    def specs(self) -> tuple[StrategySpec, ...]:
+        """Every recorded spec in the order it was first recorded (journal order when durable)."""
+        return tuple(self._specs.values())
+
     def parents(self, ref: Ref) -> tuple[Ref, ...]:
         spec = self._specs.get(ref)
         return () if spec is None else tuple(spec.lineage)

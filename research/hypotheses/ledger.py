@@ -80,6 +80,11 @@ class TrialLedger:
         except (LedgerError, KeyError, ValueError) as exc:  # JournalCorrupted passes through
             raise JournalCorrupted(f"{path}: inconsistent ledger line: {exc}") from exc
 
+    @property
+    def journal(self) -> AppendOnlyJournal | None:
+        """The backing journal (``None``: in memory); read-only use, for cross-file checks."""
+        return self._journal
+
     def register(self, hypothesis: Hypothesis) -> bool:
         """Register (pre-register) ``hypothesis``; ``False`` if exactly it was already registered.
 

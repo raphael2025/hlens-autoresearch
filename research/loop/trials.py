@@ -220,10 +220,16 @@ class TrialOutcome:
     #: ``None``: the hypothesis's first trial (its registration); otherwise the re-evaluation's
     #: ``TrialLedger`` attempt key.
     attempt: str | None = None
+    #: The research data's end the trial evaluated up to (``inputs.knowledge_cutoff``; ``None``
+    #: when no inputs were built). Kept apart from ``inputs`` because a trial restored from a
+    #: durable state directory (``research.loop.durable``) carries no in-memory ``inputs`` /
+    #: ``trial`` artifacts — only what later rounds read.
+    knowledge_cutoff: datetime | None = None
 
     @property
     def completed(self) -> bool:
-        return self.run.state is RunState.COMPLETED and self.trial is not None
+        """The run completed (``trial`` is set for every completed run of this process)."""
+        return self.run.state is RunState.COMPLETED
 
 
 @dataclass(frozen=True)
@@ -571,6 +577,7 @@ class ExperimentStage:
             error=error,
             reason=reason,
             attempt=attempt,
+            knowledge_cutoff=None if inputs is None else inputs.knowledge_cutoff,
         )
 
 

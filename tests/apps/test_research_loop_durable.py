@@ -22,6 +22,7 @@ from apps.worker import (
     LoopAuditLog,
     LoopBudget,
     LoopHalted,
+    LoopRecord,
     ResearchLoop,
     RoundContext,
     RoundStatus,
@@ -366,3 +367,59 @@ def test_the_worker_journal_and_metrics_modules_use_only_core_and_the_stdlib() -
             for alias in node.names
         }
         assert roots <= roots_allowed, f"apps/worker/{name} imports {sorted(roots - roots_allowed)}"
+
+
+# --------------------------------------------------------------------------- round checkpoint
+
+
+def test_the_checkpoint_sees_each_round_before_the_audit_records_it(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    audit = LoopAuditLog(path)
+    seen: list[tuple[int, str, int]] = []
+
+    def checkpoint(record: LoopRecord) -> None:
+        seen.append((record.round_index, record.record_hash, len(audit.records)))
+
+    loop = ResearchLoop(
+        loop_id="fake_loop",
+        stages=_durable_stages(),
+        budget=TEST_ONLY_BUDGET,
+        bus=InMemoryEventBus(),
+        seed=7,
+        epoch=EPOCH,
+        cadence=timedelta(hours=1),
+        audit=audit,
+        checkpoint=checkpoint,
+    )
+    records = loop.run_unattended(2)
+    # called once per round, with the final record, while the audit did not yet hold it
+    assert seen == [(r.round_index, r.record_hash, r.round_index) for r in records]
+
+
+def test_a_failing_checkpoint_leaves_the_round_unrecorded_and_stops_the_loop(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "audit.jsonl"
+
+    def checkpoint(record: LoopRecord) -> None:
+        if record.round_index == 1:
+            raise OSError("disk full")
+
+    loop = ResearchLoop(
+        loop_id="fake_loop",
+        stages=_durable_stages(),
+        budget=TEST_ONLY_BUDGET,
+        bus=InMemoryEventBus(),
+        seed=7,
+        epoch=EPOCH,
+        cadence=timedelta(hours=1),
+        audit=LoopAuditLog(path),
+        checkpoint=checkpoint,
+    )
+    with pytest.raises(RuntimeError, match="disk full"):
+        loop.run_unattended(3)
+    assert loop.stopped is not None and "round 1 could not be recorded" in loop.stopped
+    reopened = LoopAuditLog(path)
+    assert len(reopened.records) == 1 and reopened.open_round == 1  # interrupted, not recorded
+    with pytest.raises(LoopHalted):
+        loop.submit_round(1)

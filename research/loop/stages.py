@@ -182,7 +182,7 @@ class IngestStage:
                 sealed.append(bar)
             else:
                 unused += 1
-        memory.markets.append(market)
+        memory.add_market(spec, market)
         if research:
             memory.research_data.append(ResearchPiece(ctx.round_index, market, tuple(research)))
         pieces = tuple(memory.research_data)
@@ -414,11 +414,11 @@ def reevaluation_candidates(
             key in rejected
             or state_of(hypothesis.ref) is not LifecycleState.VALIDATION
             or trial is None
-            or trial.inputs is None
+            or trial.knowledge_cutoff is None
             or result is None
             or result.outcome is not trial
             or result.verdict is not Verdict.INCONCLUSIVE
-            or trial.inputs.knowledge_cutoff >= data_end
+            or trial.knowledge_cutoff >= data_end
         ):
             continue
         chosen.append(hypothesis)

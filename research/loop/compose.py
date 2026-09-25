@@ -17,6 +17,13 @@ without one the sealed window stays sealed.
 ``LoopRecord`` it produces to a report root via ``research.reports.write_research_loop_round``,
 when one is given. Nothing here changes what a round does or its content hash; the report root is
 purely an additional, optional sink for the same records the loop already returns.
+
+Durable composition (ADR-0049 implementation note, durable composition, 2026-09-26):
+``open_synthetic_loop(config, state_dir=...)`` (or ``build_synthetic_loop(..., state_dir=...)``)
+keeps the audit and every part of ``ResearchMemory`` the stages read across rounds under one
+directory, restores them on reopening and refuses to start when they disagree
+(``research.loop.durable``). Without a state directory nothing changes: all in memory, same record
+hashes (a restarted durable run reproduces the uninterrupted run's hashes as well).
 """
 
 from __future__ import annotations
@@ -26,6 +33,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 from apps.worker.loop import LoopBudget, LoopRecord, LoopStage, ResearchLoop
 from core.contracts.cost_model import CostModelSpec
@@ -40,6 +48,7 @@ from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import KnowledgeItem
 from core.domain.selection import ProfileSelection
 from core.domain.specs import FeatureSpec, StateSpec
+from research.loop.durable import DurableState, open_state
 from research.loop.memory import ResearchMemory
 from research.loop.stages import (
     EvolutionPlan,
@@ -58,9 +67,12 @@ from research.strategies.pipeline import StrategyCandidate
 from research.validation import RobustnessParams
 
 __all__ = [
+    "DurableLoop",
     "LoopWiring",
     "SyntheticLoopConfig",
     "build_synthetic_loop",
+    "loop_fingerprint",
+    "open_synthetic_loop",
     "run_unattended_and_report",
 ]
 
@@ -126,8 +138,33 @@ def build_synthetic_loop(
     *,
     provider: SyntheticMarketProvider,
     bus: EventBusAdapter,
-    memory: ResearchMemory,
+    memory: ResearchMemory | None = None,
     llm: LLMProvider | None = None,
+    state_dir: Path | None = None,
+) -> ResearchLoop:
+    """Compose the loop over ``memory`` (in memory), or over ``state_dir`` (durable).
+
+    Exactly one of ``memory`` / ``state_dir``. ``state_dir`` is ``open_synthetic_loop(...).loop``;
+    use ``open_synthetic_loop`` directly when the caller needs the restored memory (e.g. to
+    approve LLM drafts between rounds).
+    """
+    if (memory is None) == (state_dir is None):
+        raise ValueError("pass exactly one of memory (in memory) or state_dir (durable)")
+    if state_dir is not None:
+        return open_synthetic_loop(
+            config, state_dir=state_dir, provider=provider, bus=bus, llm=llm
+        ).loop
+    assert memory is not None
+    return _compose(config, provider, bus, memory, llm, None)
+
+
+def _compose(
+    config: SyntheticLoopConfig,
+    provider: SyntheticMarketProvider,
+    bus: EventBusAdapter,
+    memory: ResearchMemory,
+    llm: LLMProvider | None,
+    state: DurableState | None,
 ) -> ResearchLoop:
     wiring = config.wiring
     for candidate in wiring.strategies:
@@ -202,9 +239,81 @@ def build_synthetic_loop(
         seed=config.seed,
         epoch=config.epoch,
         cadence=config.cadence,
+        audit=None if state is None else state.audit,
+        checkpoint=None if state is None else state.checkpoint,
     )
     memory.reviews.bind_loop_actor(loop.guard.actor)  # the loop can never approve its own drafts
+    if state is not None:
+        state.verify_guard(loop.guard)
     return loop
+
+
+@dataclass(frozen=True)
+class DurableLoop:
+    """A loop composed over a state directory, with the research memory restored from it."""
+
+    loop: ResearchLoop
+    memory: ResearchMemory
+    state_dir: Path
+
+
+def open_synthetic_loop(
+    config: SyntheticLoopConfig,
+    *,
+    state_dir: Path,
+    provider: SyntheticMarketProvider,
+    bus: EventBusAdapter,
+    llm: LLMProvider | None = None,
+) -> DurableLoop:
+    """Compose the loop over ``state_dir`` (created when missing), restoring every stateful part.
+
+    The audit, trial ledger, sealed-OOS unsealing ledger, lineage, failure registry, review queue
+    and the per-round memory checkpoint all live under ``state_dir``
+    (``research.loop.durable``). Reopening restores them, cross-checks them against each other and
+    against this configuration, and refuses (``LoopStateInconsistent``) on any disagreement; the
+    loop then continues after the last recorded round. ``llm`` is external: resuming its own state
+    (e.g. a scripted provider's position) is the caller's job. Human review approvals go through
+    ``DurableLoop.memory.reviews.approve`` (journaled).
+    """
+    wiring = config.wiring
+    state = open_state(
+        state_dir,
+        fingerprint=loop_fingerprint(config),
+        strategies=wiring.strategies,
+        provider=provider,
+        provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
+    )
+    loop = _compose(config, provider, bus, state.memory, llm, state)
+    return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root)
+
+
+def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
+    """What a restored research memory depends on (the header of a state directory).
+
+    Budgets are not part of it (a larger budget is a new ``LoopBudget``, recorded in every
+    record's ``budget_hash``); neither are compute declarations or the LLM provider.
+    """
+    wiring = config.wiring
+    return {
+        "loop_id": config.loop_id,
+        "seed": config.seed,
+        "epoch": config.epoch.isoformat(),
+        "cadence_seconds": int(config.cadence.total_seconds()),
+        "family_id": config.family_id,
+        "profile": config.profile.content_hash(),
+        "constitution_version": config.constitution_version,
+        "market": config.market.content_hash(),
+        "minutes_per_round": config.minutes_per_round,
+        "knowledge": [item.content_hash() for item in config.knowledge],
+        "strategies": [c.spec.content_hash() for c in wiring.strategies],
+        "feature_spec": wiring.feature_spec.content_hash(),
+        "state_spec": wiring.state_spec.content_hash(),
+        "label_spec": wiring.label_spec.content_hash(),
+        "cost_model": wiring.cost_model.content_hash(),
+        "code_commit": wiring.code_commit,
+        "environment_lock": wiring.environment_lock,
+        "evolution": wiring.evolution is not None,
+    }
 
 
 def run_unattended_and_report(

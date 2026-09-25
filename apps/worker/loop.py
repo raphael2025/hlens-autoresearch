@@ -41,6 +41,14 @@ budget totals, the halting state and the guard's subjects come from the verified
 restart never re-runs a recorded round and never resets the budget. A round that was started but
 never recorded (the process died mid-round, spending unknown) stops the loop for human review.
 
+**Round checkpoint** (ADR-0049 implementation note, durable composition, 2026-09-26). An optional
+``checkpoint`` callable is called with each finished round's ``LoopRecord`` after the round ran and
+**before** the audit records it: a composition root persists whatever state its stages keep across
+rounds there (``research/loop/compose.py`` writes its research-memory checkpoint, which names the
+record hash). If it raises, the round is not recorded and the loop stops (fail closed), exactly
+like an audit write failure; a checkpoint written for a round the audit never recorded is an
+interrupted round for the composition to refuse on reopening.
+
 **Measured time.** Every ``stage.run`` is timed with a monotonic wall clock and the process CPU
 clock (``apps.worker.metrics``). The measurement is kept **outside** the hashed record, in
 ``ResearchLoop.metrics`` and on ``research_loop.metrics``; the budget still charges
@@ -60,7 +68,7 @@ for the loop by construction (roadmap Phase 11: no automatic promotion to ACTIVE
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -853,12 +861,14 @@ class ResearchLoop:
         consumer: str = "research_loop_worker",
         clock: Clock | None = None,
         compute_tolerance_seconds: Decimal | int | str | None = None,
+        checkpoint: Callable[[LoopRecord], None] | None = None,
     ) -> None:
         """``audit``: a ``LoopAuditLog`` (``LoopAuditLog(path)`` for a durable one); when it
         already holds rounds the loop continues it (see module docs). ``clock``: the stage timer
         (default ``monotonic_clock``; tests inject a fake). ``compute_tolerance_seconds``: how far
         a stage's measured time may exceed its declared compute seconds before the metrics flag
-        it; ``None`` (no default) = report only."""
+        it; ``None`` (no default) = report only. ``checkpoint``: called with every finished
+        round's record before the audit records it (see module docs); ``None``: nothing."""
         check_stage_order([stage.name for stage in stages])
         if epoch.tzinfo is None or epoch.utcoffset() != timedelta(0):
             raise ValueError("epoch must be a UTC datetime")
@@ -874,6 +884,7 @@ class ResearchLoop:
         self._guard = guard or LifecycleGuard(actor=f"research_loop:{loop_id}")
         self._audit = audit if audit is not None else LoopAuditLog()
         self._clock: Clock = clock or monotonic_clock
+        self._checkpoint = checkpoint
         self._tolerance = (
             None
             if compute_tolerance_seconds is None
@@ -1024,6 +1035,8 @@ class ResearchLoop:
         try:
             self._audit.begin_round(self._loop_id, round_index)
             record, timings = self._run_round(round_index)
+            if self._checkpoint is not None:
+                self._checkpoint(record)  # the composition's state, before the audit names it
             self._audit.append(record)
         except Exception as exc:
             # the round may have spent budget and moved subjects without a durable record

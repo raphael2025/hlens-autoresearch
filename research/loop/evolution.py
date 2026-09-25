@@ -229,8 +229,7 @@ class EvolutionStage:
                 )
             )
             for known in (parent_candidate.spec, spec):
-                if all(s.ref != known.ref for s in memory.lineage):
-                    memory.lineage.append(known)
+                memory.add_lineage(known)  # durable memory: also the lineage journal
             graph = LineageGraph(memory.lineage)
             missing = [r for r in graph.missing() if r.kind is Kind.STRATEGY]
             if missing:

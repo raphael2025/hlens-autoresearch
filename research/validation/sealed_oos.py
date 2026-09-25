@@ -177,6 +177,11 @@ class DurableUnsealingLedger:
     def path(self) -> Path:
         return self._journal.path
 
+    @property
+    def journal(self) -> AppendOnlyJournal:
+        """The backing journal (read-only use: its entries and head, for cross-file checks)."""
+        return self._journal
+
     def get(self, family_id: str) -> OosUnsealing | None:
         return self._records.get(family_id)
 

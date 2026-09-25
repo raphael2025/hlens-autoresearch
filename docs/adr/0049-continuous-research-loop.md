@@ -186,3 +186,41 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
    研究侧组合（`research/loop/compose.py`）仍未接持久审计：其 `ResearchMemory` 仍在内存中，只恢复审计而不恢复研究记忆会不一致。
    停机的持久审计要继续运行需要人工决定（新审计 / 新 loop_id）；NATS 与 Control Plane 持久化仍另立 ADR。
    回归测试：`tests/apps/test_research_loop_durable.py`、`tests/research/persistence/test_journal.py::test_the_worker_journal_shares_the_on_disk_contract`。
+
+## Implementation note (durable composition, 2026-09-26)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；无契约 / Schema / 生命周期 / Constitution / Profile 变更；
+`LoopRecord` 载荷与哈希规则不变。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。补上一条实施说明第 5 点的缺口
+（「研究侧组合根仍未接持久审计」；调试待办 C 节 P11）。
+
+1. **一个状态目录**：`open_synthetic_loop(config, state_dir=...)`（或 `build_synthetic_loop(..., state_dir=...)`；不给 `state_dir`
+   = 原纯内存行为、记录哈希相同）。目录内：`audit.jsonl`（`LoopAuditLog`）、`memory.jsonl`（头行 `loop_state_opened` = 配置指纹，
+   加每个已记录轮次一条 `round_memory` 检查点）、`trial_ledger.jsonl`（`TrialLedger(path)`）、`sealed_oos.jsonl`（`DurableUnsealingLedger`）、
+   `lineage.jsonl`（`LineageGraph(path=...)`）、`reviews.jsonl`（新增 `ReviewQueue(path)`：入队 / 审批 / 取用逐行哈希链，重放时重新核验
+   审批人非自动化身份、草稿与调用哈希一致）、`failures.jsonl`（`FailureRegistry`）。实现：`research/loop/durable.py`。
+2. **检查点**：`ResearchLoop` 新增可选、研究无关的 `checkpoint` 回调，在每轮结束、审计记录之前以 `LoopRecord` 调用；回调失败 → 该轮不记录、
+   循环 `stopped`（fail closed）。研究侧的检查点写明 `record_hash`、其余每个文件的位置（日志：行数 + 链头哈希；失败登记：条数 + 记录哈希摘要），
+   以及本轮对 `ResearchMemory` 的增量：市场**规格**（重启时用确定性提供者重新生成，须复现 `market_hash`）、研究段、新增策略（后代由其父代
+   与进化计划的 `provider_for` 重建）、试验 / 验证记录（pydantic 记录，复现各自内容哈希；不保存内存中的 `inputs` / `trial` 运行产物——
+   `TrialOutcome` 为此新增 `knowledge_cutoff` 字段，重新评估的筛选改读它；`completed` 只看运行状态）、实验 / 状态 / 后代摘要。
+3. **交叉校验**（重新打开时，任一不符 → `LoopStateInconsistent`，从不修复或跳过；单个文件自身损坏仍是 `JournalCorrupted`）：
+   (1) 配置指纹（loop_id、种子、epoch / cadence、族、Profile、市场规格、策略目录、知识、特征 / 状态 / 标签 / 成本规格、Constitution 版本、
+   代码提交、环境锁、是否进化；预算不在内）一致；缺头行而其他文件有状态 → 拒绝；(2) 审计中只 started 未 recorded 的轮次 → 拒绝（中断，须人工审查）；
+   (3) 每条已记录轮次恰有一条同序号、同 `record_hash` 的检查点；(4) 每个检查点记录的每个文件位置都存在于该文件（同行号、同链哈希）、单调不回退，
+   最后一个检查点即文件末尾——`reviews.jsonl` 之后只允许人工审批行（两轮之间的人工操作）；失败登记同理（条数 + 前缀摘要）；
+   (5) 每轮恢复的增量等于审计哈希记录里的阶段摘要（摄取市场与规格哈希、状态摘要、每条实验行 = 其试验摘要、验证报告行、后代行）；
+   (6) 审计登记 / 重新评估（按 attempt）的假设都在 TrialLedger；后代及父代规格在谱系且哈希一致；每条 `human_review:<who>` 证据在审阅队列中有
+   该人对该草稿的审批且已取用；开封 / 已消耗的 G5 在开封账本中有同一批准人且已评估；审计列出的失败记录哈希都在失败登记中；
+   (7) 护栏按审计重放后，每个生命周期对象都是已登记的假设。
+4. **尾部截断**：单个文件删去尾部整行仍是一条合法的短链（单文件无法自知），但检查点记录了其余每个文件的位置、审计与检查点一一对应，
+   所以任一**单个**文件（审计、检查点、账本、开封账本、谱系、审阅、失败登记）被截断都会被发现。**剩余限制**：所有文件被**一致地**截回
+   更早的轮次边界是一段合法的较短历史，只能靠目录外的锚点（例如别处保存 / 总线上发布的 `record_hash`）发现；最后一轮之后的人工审批在被
+   某轮取用之前不被任何检查点引用，只删这些审批等同于"尚未审批"。TrialLedger 行携带假设的墙钟 `created_at`（不在语义哈希内），因此另一次
+   同配置运行产生的账本文件不是本历史，同样被拒绝（"rewritten"）。
+5. **LLM 提供者属外部**：其自身状态（例如脚本化提供者已用到第几条输出）不是循环状态，由调用方续接。
+6. **测试**（`tests/research/loop/test_loop_durable.py`，TEST ONLY 小配置：单个 lookback-60 知识假设、4 天一轮、显式开封预算、进化、脚本化 LLM，
+   第 0 轮后人工审批一条草稿；约 20 秒、< 300 MB）：跑 1 轮 → 丢弃全部对象 → 从同一目录重建 → 跑余下 2 轮，最终审计哈希、总用量、trial 日志与族
+   trial 数、全部生命周期历史、封存 OOS 状态、失败记录、审批与谱系与不中断的纯内存运行完全相同；拒绝用例：删除账本文件、审计超前于账本
+   （账本截回第 0 轮 / 换成另一次运行的账本）、篡改审批（原地改 → 链断；改后重建链 → 与检查点不符；改成自动化身份 → 队列自身拒绝）、
+   逐文件删尾行（8 例）、中断轮次、换配置、删除检查点文件、改写检查点增量；一致截断（已记录的限制）可打开并续跑出相同结果。
+   机制侧回调：`tests/apps/test_research_loop_durable.py`（回调在审计记录之前看到最终记录；回调失败 → 该轮未记录、循环停止）。

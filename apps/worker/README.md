@@ -20,6 +20,10 @@
 >   `metrics.py`：每次 `stage.run` 用单调墙钟 + 进程 CPU 时钟测量，放在哈希记录之外（`ResearchLoop.metrics`、主题 `research_loop.metrics`），
 >   记录哈希保持确定；预算仍按 max(声明, 报告) 计费；`compute_tolerance_seconds`（无默认）给定时，实测超出声明多于容差的阶段被标记，
 >   未给定只报告。
+> - 轮次检查点（ADR-0049 实施说明 durable composition，2026-09-26）：`ResearchLoop(checkpoint=...)` 可选回调，在每轮运行结束、
+>   审计记录该轮**之前**以该轮 `LoopRecord` 调用；组合根在此持久化其阶段跨轮依赖的状态（`research/loop/durable.py` 的记忆检查点，
+>   写明 `record_hash`）。回调抛异常 → 该轮不记录、循环 `stopped`（与审计写入失败相同，fail closed）；未给定 = 原行为。
+>   回调仍是研究无关的：本目录不知道检查点里是什么。
 > - `degradation.py`：`DegradationMonitor` 用 `ValidationProfile.lifecycle.degradation_thresholds` 对比近期指标与验证基线，
 >   越限发布 `research_loop.degradation` 事件（不做生命周期转移）。
 > - 本目录只依赖 `core` 与标准库；具体研究阶段在 `research/loop/`，由研究侧组合根注入（apps 不 import research）。
