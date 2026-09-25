@@ -9,7 +9,8 @@
 | `descriptor` | → `SyntheticProviderDescriptor`（`name@version`，恒为确定性） |
 | `generate` | `SyntheticMarketSpec` → `SyntheticMarket`（1 分钟 bar + 植入的真值） |
 
-**真值**：`SyntheticMarket.truth` 记录生成器实际植入的效应（无植入即空）；校准报告用它判断检出与误报。
+**真值**：`SyntheticMarket.truth` 记录生成器实际植入的效应（无植入即空）；
+校准报告用它判断检出与误报。
 **确定性**：同一 spec（含 `seed`）→ 同一 `market_hash`。数值一律 `Decimal`（ADR-0013，无浮点）。
 """
 
