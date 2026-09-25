@@ -16,8 +16,8 @@
 | R6 | 中 | `apps/execution/service.py` | 持有 `service.venue` 可绕过已跳闸的 Kill Switch（仍只是模拟） | ✅ 已修（809182e）：场所自身绑定并检查 Kill Switch |
 | R7 | 中 | `apps/execution/strategy_source.py` | P5 → P13 接线把权重直接当作数量 | ✅ 已修（ffdd5d5）：必填 `PositionSizer`，v1 按权益 / 价格定量 |
 | R8 | 中 | `apps/worker/loop.py` | 阶段实际用量超出预估时，事后才发现（超支一次后停机） | ✅ 已修（W2，deb590a；R8 另见 R24） |
-| R9 | 中 | `research/loop/stages.py` | 循环审计记录的哈希含浮点数（跨平台可能分叉） | ✅ 已修（W2，deb590a；R8 另见 R24） |
-| R10 | 低 | `research/loop/memory.py` | LLM 草稿审阅无身份门禁 | ✅ 已修（W2，deb590a；R8 另见 R24） |
+| R9 | 中 | `research/loop/stages.py` | 循环审计记录的哈希含浮点数（跨平台可能分叉） | ✅ 已修（W2，deb590a：固定精度 Decimal 字符串） |
+| R10 | 低 | `research/loop/memory.py` | LLM 草稿审阅无身份门禁 | ✅ 已修（W2，deb590a：必须给出非循环自身的审阅人） |
 | R11 | 低~中 | `infrastructure/strategy/signals.py`、`infrastructure/event/inputs.py` | `available_time = evaluation_time` 依赖上游契约保证因果 | 设计如此（F4 / P2 契约已保证 `latest_input_available_time <= evaluation_time`）；调试时加跨层断言 |
 | R12 | 低~中 | `infrastructure/event/runner.py` | 稀疏检查点网格下，检查点之间的回填对执行器不可见 | 已在 ADR-0036 记录；调试时评估默认网格 |
 | R13 | 高 | `research/validation/robustness.py`（容量） | `min_capacity` 缺失只记入缺失字段、不产生门，整体可 PASS；`G4.capacity.estimated` 恒为 PASS | ✅ 已修（ADR-0041 实现说明）：估计值只报告；缺 `min_capacity` / 冲击系数 = INCONCLUSIVE 门；`RobustnessCheck` 拒绝无门的缺失字段 |
