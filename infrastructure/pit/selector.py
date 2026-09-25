@@ -92,6 +92,9 @@ PIT_SPEC: Final[dict[str, Any]] = {
     "revision; identical consecutive results merged",
     "never_read": ["arrival_seq", "wall clock", "payload_hash ordering"],
     "unbound_tables": "read as empty (only removes information); the Canonical table must be bound",
+    "evidence_binding": "an unbound Raw evidence table means no edges (conflicts only, never "
+    "another selection); the dataset builder must bind it whenever it has a snapshot "
+    "(ADR-0027 §13, ADR-0028 §7) and the result records whether it was bound",
 }
 PIT_HASH: Final = hashlib.sha256(canonical_json(PIT_SPEC).encode("utf-8")).hexdigest()
 PIT_BINDING: Final = PolicyBinding(
@@ -134,6 +137,8 @@ class PitSelection:
     #: The verified Canonical records per key (what the selections were computed from).
     records: Mapping[str, tuple[RevisionRecord, ...]]
     edges: Mapping[str, tuple[PrecedenceEvidence, ...]]
+    #: Whether the spec bound the Raw evidence table (False = read as no edges).
+    evidence_bound: bool
 
     def require_no_conflict(self) -> None:
         if self.conflicts:
@@ -251,6 +256,7 @@ class PitSelector:
             conflicts=tuple(sorted(conflicts)),
             records=records_by_key,
             edges={key: tuple(value) for key, value in edges.items()},
+            evidence_bound=BINANCE_SPOT_PRECEDENCE_EVIDENCE.table in spec.snapshot_bindings,
         )
 
     # ------------------------------------------------------------------ reads and proofs
@@ -316,7 +322,13 @@ class PitSelector:
     ) -> dict[str, list[PrecedenceEvidence]]:
         evidence_snapshot = spec.snapshot_bindings.get(BINANCE_SPOT_PRECEDENCE_EVIDENCE.table)
         if evidence_snapshot is None:
-            return {}  # unbound evidence = no edges: keys with both channels stay conflicts
+            # Unbound = no edges. That can only turn a selection into a conflict (every
+            # cross-channel edge needs an archive endpoint of the same key), never into another
+            # selection, and it stays reproducible. An evidence table that has never been
+            # written has no snapshot and cannot be bound at all; so ADR-0027 §13 is enforced
+            # where the current state is known — the dataset builder (F3) must bind it whenever
+            # it has a snapshot — and ``PitSelection.evidence_bound`` records which case this is.
+            return {}
         reconciler = ChannelReconciler(view, self._storage)
         mapped: dict[str, list[PrecedenceEvidence]] = {}
         for day in days:

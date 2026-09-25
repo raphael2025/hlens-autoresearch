@@ -183,10 +183,31 @@ def test_an_old_spec_reproduces_its_result_after_new_evidence(h: RestHarness) ->
     assert new.conflicts == () and len(new.lineage) == 2  # key 100 via the edge, key 900 alone
 
 
-def test_an_unbound_evidence_table_leaves_the_conflict(h: RestHarness) -> None:
+def test_an_unbound_evidence_table_only_ever_yields_conflicts(h: RestHarness) -> None:
+    """Unbound evidence = no edges: both channels -> conflict; recorded in the result."""
     _chain(h)
     out = _select(h, _spec(h, cutoff=FAR, skip=(c.EVIDENCE.table,)))
-    assert out.conflicts == (KEY,)
+    assert out.conflicts == (KEY,) and out.evidence_bound is False
+    assert _select(h, _spec(h, cutoff=FAR)).evidence_bound is True
+
+
+def test_rest_only_keys_select_the_same_with_or_without_the_evidence_binding(
+    h: RestHarness,
+) -> None:
+    """A never-written evidence table cannot be bound; REST-only keys involve no edge anyway."""
+    [response] = c.ingest_rest(h, "agg_trades", ss.agg_items(1), knowledge=K_R)
+    c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, response)
+    assert h.head(c.EVIDENCE.table) is None  # nothing to bind
+    [selection] = _select(h, _spec(h, cutoff=FAR)).selections
+    assert selection.status is PointInTimeStatus.SELECTED
+
+
+def test_an_archive_only_scope_needs_no_evidence_binding(h: RestHarness) -> None:
+    [item] = ss.agg_items(1)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines([item]), knowledge=K_A)
+    c.normalizer(h, clock=StepClock(start=N_A)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    [selection] = _select(h, _spec(h, cutoff=FAR)).selections
+    assert selection.status is PointInTimeStatus.SELECTED
 
 
 def test_selection_is_deterministic(h: RestHarness) -> None:
