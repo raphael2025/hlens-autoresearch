@@ -9,6 +9,7 @@ threshold comes from the Profile with its source, and the verdict is ``derive_ve
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 
@@ -273,3 +274,19 @@ def test_outcome_table_hides_labels_until_they_are_known(
     assert first not in table.known_as_of(first.available_time - timedelta(microseconds=1))
     assert first in table.known_as_of(first.available_time)
     assert table.rows()[0]["label_only"] is True
+
+
+def test_a_context_stamp_makes_the_report_hash_reproducible() -> None:
+    """Regression (real-data smoke, backlog E3): ``created_at`` is part of the report's content
+    hash; without a stamp it is the wall clock, so two identical validations hashed differently."""
+    gates = (factories.gate_result(Verdict.PASS),)
+    stamp = BOUNDARY - timedelta(hours=1)
+    ctx = replace(context(), created_at=stamp)
+    first, second = build_report(ctx, gates), build_report(ctx, gates)
+    assert first.created_at == second.created_at == stamp
+    assert first.content_hash() == second.content_hash()
+    unstamped = build_report(context(), gates)  # the default is unchanged: the wall clock
+    assert unstamped.created_at != stamp
+    assert unstamped.model_copy(update={"created_at": stamp}).content_hash() == first.content_hash()
+    with pytest.raises(ValueError):  # the stamp is validated like any other report field
+        build_report(replace(ctx, created_at=stamp.replace(tzinfo=None)), gates)

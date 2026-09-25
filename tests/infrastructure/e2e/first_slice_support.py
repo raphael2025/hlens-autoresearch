@@ -154,9 +154,21 @@ def ingest_trades_for(w: ds.World, symbol: str, *, tag: str) -> None:
     w.h.reconciler(clock=ss.StepClock(start=ds.K_E)).reconcile("agg_trades", symbol, ss.DAY)
 
 
-def ingest_bars_for(w: ds.World, symbol: str, *, tag: str, base: str) -> None:
-    """Archive + REST 1m klines, normalized on both channels, reconciled (D-33 edge)."""
-    items = klines(KLINE_COUNT, KLINE_START_MS, base=base)
+def ingest_bars_for(
+    w: ds.World,
+    symbol: str,
+    *,
+    tag: str,
+    base: str,
+    items: list[list[Any]] | None = None,
+) -> None:
+    """Archive + REST 1m klines, normalized on both channels, reconciled (D-33 edge).
+
+    ``items`` (contiguous 1m klines of ``ss.DAY``) replaces the default ``KLINE_COUNT`` run.
+    """
+    if items is None:
+        items = klines(KLINE_COUNT, KLINE_START_MS, base=base)
+    first_ms: int = items[0][0]
     archive_revision = ingest_archive_for(
         w.h,
         "klines_1m",
@@ -172,8 +184,8 @@ def ingest_bars_for(w: ds.World, symbol: str, *, tag: str, base: str) -> None:
         items,
         knowledge=ds.K_R,
         request_id=f"rest-klines-{tag}",
-        start_ms=KLINE_START_MS,
-        end_ms=KLINE_START_MS + KLINE_COUNT * ss.MINUTE_MS,
+        start_ms=first_ms,
+        end_ms=first_ms + len(items) * ss.MINUTE_MS,
     )
     c.normalizer(w.h, clock=ss.StepClock(start=ds.N_A)).normalize_unit(
         c.ARCHIVE_KLINES.table, archive_revision

@@ -105,7 +105,12 @@ SUPPORTED_NULL_MODELS = frozenset({"random-entry", "random_entry"})
 
 @dataclass(frozen=True)
 class ValidationContext:
-    """What a report binds: the run, its rule versions, the cost model and the label spec."""
+    """What a report binds: the run, its rule versions, the cost model and the label spec.
+
+    ``created_at`` stamps the report (``ValidationReport.created_at`` is part of its content
+    hash). ``None`` keeps the model's wall-clock default; a reproducible caller passes a fixed,
+    data-derived time so a rerun gives the same report hash.
+    """
 
     report_id: str
     subject: Ref
@@ -114,6 +119,7 @@ class ValidationContext:
     profile: ValidationProfile
     cost_model: CostModelSpec
     label_spec: OutcomeLabelSpec
+    created_at: datetime | None = None
 
 
 @dataclass(frozen=True)
@@ -529,8 +535,9 @@ def run_sealed_oos(inp: SealedOosInput) -> tuple[GateResult, ...]:
 
 
 def build_report(ctx: ValidationContext, gates: Sequence[GateResult]) -> ValidationReport:
-    """The report; its verdict is exactly ``derive_verdict(gates)`` (ADR-0013)."""
-    return ValidationReport(
+    """The report; its verdict is exactly ``derive_verdict(gates)`` (ADR-0013); stamped with
+    ``ctx.created_at`` when the context fixes one (reproducible report hash)."""
+    report = ValidationReport(
         report_id=ctx.report_id,
         run_id=ctx.run.run_id,
         subject=ctx.subject,
@@ -541,6 +548,10 @@ def build_report(ctx: ValidationContext, gates: Sequence[GateResult]) -> Validat
         gates=tuple(gates),
         verdict=derive_verdict(gates),
     )
+    if ctx.created_at is None:
+        return report
+    # Re-validated (UTC-aware), not a bare model_copy.
+    return ValidationReport.model_validate({**report.model_dump(), "created_at": ctx.created_at})
 
 
 #: gate-id prefix → (terminal state, reason code); first match wins.

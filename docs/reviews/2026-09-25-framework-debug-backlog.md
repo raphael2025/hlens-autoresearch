@@ -57,3 +57,19 @@
 2. 逐 Phase 跑端到端冒烟：合成市场 → 特征 → 状态 → 事件 → Outcome → 策略 → 回测 → 验证（G0–G4）→ 矩阵 → 路由 → 循环 → 模拟执行。
 3. 处理 C 节缺口中不需要 Raphael 决定的部分；B 节等 Raphael 决定。
 4. 在小规模真实数据集（≤ 2 万行）上重复第 2 步，只作能力验证，不形成任何市场结论（Profile 数值未冻结）。
+
+## E. 真实数据冒烟发现（Real-data smoke findings）
+
+来源：D 节第 4 步的能力冒烟 `tests/infrastructure/e2e/test_research_pipeline_real_data.py`（`postgres` 标记；PostgreSQL 测试 catalog + `tmp_path` warehouse）。
+只验证管道能力（逐步哈希绑定、重跑哈希一致、无超出截止时刻的数据、判定属于已定义判定），**不形成任何市场结论**；验证用 TEST ONLY Profile，从不断言 PASS。
+
+| # | 严重度 | 位置 | 发现 | 处理 |
+|---|---|---|---|---|
+| E0 | 记录 | `data/warehouse`（只读检查） | 本地 warehouse 只有表元数据（约 140K），没有真实行情；网络采集器未运行。冒烟因此沿用 G1 首切片方式：Binance 12 槽 kline 格式（BTCUSDT / ETHUSDT 各 300 根 1m）经真实入库路径（归档 D2、REST D3D/D3E、规范化 E1、D-33 对账、质量报告 E3、上市 E2、F3 构建）进入隔离 catalog | 真正的真实数据跑一遍需要 Raphael 授权运行采集器（网络），列为后续 |
+| E1 | 中 | `infrastructure/bars/dataset.py` × `infrastructure/feature/dataset.py` | 同一条链需要**两个** manifest：P4 / P5 取 bar 只接受点时刻 spec，而 F4 在逐 bar 评估时刻需要区间 spec（点时刻 spec 只能在 `simulation_time` 之后评估）。两者只通过相同的 snapshot 绑定与相同的 OHLC 相互对应，没有任何对象把二者绑定为"同一数据集" | 冒烟中断言两者 snapshot 绑定相同、逐 bar 收盘价相同；是否支持区间 spec 取 bar 或引入"数据集对"绑定待定（与 C 节"数据集接线"合并处理） |
+| E2 | 低 | `research/experiments/state_strategy.py`（P6） | 矩阵按权益点时间（= bar `interval_end`）归属收益，状态必须恰好在该网格上评估；ADR-0032 下 bar 收盘后 5 s 才可见，因此在该网格上所有特征 / 状态 / 策略输入都滞后一根 bar | 设计如此（因果、无未来函数）；在文档中说明，或允许矩阵按"t 时刻已知的最近状态"归属 |
+| E3 | 中 | `research/validation/pipeline.py`（`build_report`） | `ValidationReport.created_at` 计入内容哈希，而 `PipelineBacktestValidator` 经 `build_report` 用墙钟时间戳 → 同一验证重跑报告哈希不同（循环 W2 靠事后 `model_copy` 补救） | ✅ 已修：`ValidationContext.created_at`（可选，默认不变）给定时作为报告时间戳（经校验）；回归测试 `test_a_context_stamp_makes_the_report_hash_reproducible` |
+| E4 | 中 | `research/strategies/validation.py`、`research/validation/g4.py` | G4 输入只在 G0 – G3 未 FAIL 时惰性构建；本夹具 G2 FAIL（成本），经 `validate` 永远走不到 G4。构建 G4 输入的逻辑只在私有 `_robustness` 中，没有公开入口 | 冒烟直接用同一构建器（私有方法）+ `run_robustness` 跑 G4；建议公开 `robustness_input(...)` |
+| E5 | 中 | `research/strategies/validation.py`（`ValidatorSetup.manifest_content_hash`） | 验证器构造 `OutcomeRequest` 时 manifest 哈希由调用方给出、按信任接受，并未证明试验 bar 就是该 manifest 的 bar；`BacktestRequest` 也没有 manifest 槽位（只在 `DatasetPriceBars` 旁路记录） | 冒烟中由构造保证一致；建议验证器接收 `DatasetPriceBars` 并核对 bar 与哈希 |
+| E6 | 低 | `research/validation/stats.py`（`overlap-clusters`） | 每分钟决策 + 15 分钟标签窗口使全部标签连成一个重叠簇，有效样本数 = 1（G2 INCONCLUSIVE）。这是保守方法的正确结果，但意味着"持续持仓"类策略需要稀疏的决策节奏才能得到有效样本 | 研究设计问题（决策节奏 vs 标签窗口），非代码缺陷；记录 |
+| E7 | 低 | `infrastructure/strategy/signals.py` | `signals_from_features` 给所有信号同一个 `knowledge_time`（调用方给出的单值），知识轴因此很粗；可见性只按 `available_time`，不影响因果 | 记录；需要逐值知识时间时再扩展 |
