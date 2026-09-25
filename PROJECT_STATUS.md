@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **D3E-R1 REVIEW_PENDING**：Codex 首轮复核 D3E 退回两处已提交行完整性缺陷，返修已提交，等待 Codex 复核；D4 / E 仍关闭 |
+| 当前子阶段 | **D3E-R2 REVIEW_PENDING**：Codex 复核 D3E-R1 时又确认跨通道比对会把被篡改的已存行当作事实写证据边；R2 返修已提交（未经 Codex 复核），D4 / E 仍关闭 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3D 已验收；D3E + D3E-R1 待复核） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3D 已验收；D3E + D3E-R1 + D3E-R2 待复核） |
 | 最后更新时间 | 2026-09-25 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -110,7 +110,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ D3B / D3B-R1（Claude Opus）：Codex 已独立验收；四张 REST 表定义（原八张哈希不变）、独立 REST 身份规则、REST availability / precedence 与通道等价纯函数；无 HTTP、无写入；接受 `3b267a0` + `02c0418`
 - ✅ D3C / D3C-R1（Claude Opus）：Codex 已独立验收；接受 `643cf45` + `6b9e670`，验收记录 `docs/reviews/2026-09-25-d3c-rest-decoder-acceptance.md`
 - ✅ D3D / D3D-R1（Claude Opus）：Codex 已独立验收；接受 `61dd9bf` + `c06b9fa`，验收记录 `docs/reviews/2026-09-25-d3d-rest-collector-acceptance.md`
-- 🔄 D3E / D3E-R1（Claude Opus）：**REVIEW_PENDING**；REST response / element revision store、REST `arrival_seq`、崩溃恢复、跨通道 reconciler、证据表幂等与 graph range guard 已实现（`21e31f5`）；首轮复核退回两处已提交行完整性缺陷，R1 返修已提交，等待 Codex 复核
+- 🔄 D3E / D3E-R1 / D3E-R2（Claude Opus）：**REVIEW_PENDING**；REST response / element revision store、REST `arrival_seq`、崩溃恢复、跨通道 reconciler、证据表幂等与 graph range guard 已实现（`21e31f5`）；R1 修复 store 的已存行核对（`52f7477`）；R2 让 reconciler 在比较前用同一套核对证明两侧每一行，已提交并推送到未审 WIP 分支，等待 Codex 复核
 
 ## 5. 下一步
 
@@ -127,7 +127,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
 - C3、D-32、D0、D1 与 D2 均已完成并通过 Codex 独立验收
 - D3A / D3A-R1 与接受门（docs-only）已完成并验收：ADR-0027 Accepted，数据架构冻结正文已并入四表 / 标识符 / 设置
-- D3B～D3D 及返修均已完成并由 Codex 验收；**D3E 与 D3E-R1 返修已提交、等待 Codex 复核**；WebSocket / D4 与 Canonical / E 仍关闭
+- D3B～D3D 及返修均已完成并由 Codex 验收；**D3E、D3E-R1 与 D3E-R2 返修已提交、等待 Codex 复核**；WebSocket / D4 与 Canonical / E 仍关闭
 
 ## 6. 当前待决策
 
@@ -179,8 +179,9 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ PyIceberg 与 Binance 的关键能力事实已由 Codex 于 2026-09-24 按官方资料复核，PostgreSQL 服务已只读确认在线；实施前仍须按锁定依赖版本做行为 smoke / integration 验证
 - ⚠️ 来源若不提供修订关系或修订时间，同一观察的不同版本会成为 competing heads 并使数据集构建 fail closed；需要各来源的 precedence policy 与证据
 - ⚠️ **D2 的证据结论**：Binance 官方资料没有给出任何具体 revision 的公开时刻，因此 `binance.spot.publication@1.0.0` 三类主体全部保守取 `available_time = ingest_time` 并写证据缺口；在出现可引用的官方上界并发布新 policy 版本之前，早于本机 ingest 的历史可用区间为空。归档替换同样无法证明先后，一律 competing heads（数据全部保留，但任何“最新”结论 fail closed）
-- ⚠️ REST 补尾的四张新表、身份与跨通道纯 policy、严格 decoder 和可重放 collector 已由 D3B～D3D 实现并验收；D3E store / reconciler 及 R1 返修已实现、尚待 Codex 复核，验收前 REST 数据不能进入任何数据集
-- ⚠️ D3E-R1 的剩余边界：由另一页首次交付的元素，store 证明了那一页的响应记录合法、元素继承其序号与时间，但**没有**重新解码那一页正文来证明元素确实在那个位置（需要那一页的采集链上下文）；reconciler 读取 REST 元素行时尚未做同样的来源核对（不在本批范围，列为后续工作）
+- ⚠️ REST 补尾的四张新表、身份与跨通道纯 policy、严格 decoder 和可重放 collector 已由 D3B～D3D 实现并验收；D3E store / reconciler 及 R1 / R2 返修已实现、尚待 Codex 复核，验收前 REST 数据不能进入任何数据集
+- ⚠️ D3E-R1 / R2 的剩余边界：由另一页首次交付的元素，只证明那一页的响应记录合法、元素继承其序号与时间、并且仍是那一页已提交批次的原样内容，**没有**重新解码那一页正文（需要那一页的采集链上下文）；归档行同理只证明它是那份归档已提交批次的原样内容，不在比对时重新解析归档文件。R2 起 reconciler 与 store 使用同一套核对
+- ⚠️ R2 的性能代价：每次核对都会遍历相关表的提交历史来找批次（与 R1 对响应表的做法相同），并按批次重读行；表历史很长时会变慢，需在 G3 容量基线中测量
 - ⚠️ D3E 的保守边界：同一页、同一字节若在另一次采集里先被拒绝、后被接受（上下文不同），store 拒绝写入这些元素（否则要借用拒绝时打下的知识时间）；比对读取以"读前读后表头一致"固定 snapshot（现有 catalog 读取接口不带 snapshot 参数）
 - ⚠️ D3D 的 market-data base 与 D0-R2 一致：把空路径与单独 `/` 视为 origin 根（`AnyHttpUrl` 默认值即如此渲染），其它任何路径 / query / fragment / 凭据一律拒绝；`Content-Length` 只在响应无 content coding 时与实体长度比对（有 coding 时它计的是编码后字节），解压后的大小上限始终生效
 - ⚠️ **三个实现陷阱**（ADR-0027 §11）：身份规则哈希是全局的（REST 必须用独立规则）、同一 `policy_id` 两个版本不能共存于一份 PIT spec、归档与 REST 合入同一观察时序号必须不碰撞（按区间划分，D3E 在单个观察图内检查）；归档身份与分配代码均不改
@@ -191,7 +192,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；**D3E / D3E-R1 已提交待复核**，D4 / E 仍关闭，须等 D3E 验收
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；**D3E / D3E-R1 / D3E-R2 已提交待复核**，D4 / E 仍关闭，须等 D3E 验收
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -207,11 +208,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | Phase 1 D3E-R2（Claude Opus，未经 Codex 复核）：Codex 用两条探针证实 `52f7477` 的跨通道比对仍会把被篡改的已存行当作事实——REST 元素伪造来源响应并推迟一小时知识时间、或归档元素推迟知识时间并清零政策哈希，都照样写出"归档 → REST"证据边。修复：把 store 的已存行核对抽成共享核对器，store 与 reconciler 调同一实现；reconciler 在任何比较、发现或写边之前，逐行证明两侧：REST 行追到唯一合法的响应记录与其正文，归档行追到唯一合法的归档记录与其已发布文件（逐列重建时间、政策、序号、空边），并核对各自已提交批次的指纹与行数；五张相关表在读前读后表头一致才下判断，否则有界重读。新回归测试在 `52f7477` 上 55 项失败、修复后全部通过；`python -O` 8 项探针、真实 PostgreSQL 全量与静态检查见提交说明；契约、表定义、冻结哈希与依赖锁零改动 | REVIEW_PENDING（已推送未审 WIP 分支）；D4 / E 仍关闭 |
 | 2026-09-25 | Phase 1 D3E-R1（Claude Opus）：Codex 复现 `21e31f5` 的两处缺陷——同内容元素行带伪造来源响应与推迟一小时的知识时间仍被原样采用；时间倒置、政策哈希被清零的竞争响应只被报告为普通竞争。修复：store 采用、比较或据以报告的每一条已提交响应 / 元素行，都先从它自身的输入逐列重建（时间、可用性政策与决定、来源 / collector / decoder 绑定、页面与正文身份、空的边与取代、契约版本、序号块、唯一批次快照与指纹）；元素行须指向唯一、合法、已接受且元素数足够的响应，并逐列继承其序号与时间；跨两张表的读取以读前读后表头一致为准、有界重读。新回归测试在 `21e31f5` 上 59 + 1 项失败、修复后通过；`python -O` 探针、真实 PostgreSQL 全量与静态检查见提交说明；契约、表定义、冻结哈希与依赖锁零改动 | REVIEW_PENDING，等待 Codex 复核；D4 / E 仍关闭 |
 | 2026-09-25 | Phase 1 D3E（Claude Opus）：REST store 只消费已提交的 D3D 采集（c3），用已验收的 D3D 读取器逐页复核 checkpoint 并严格重解码，从不联网；每个完整 200 页写一条响应 revision（空页、越界页、被拒页都写），新 revision 从 `2**62` 起按 `2**32` 分块分配序号，同页同字节跨采集幂等、异字节追加并报告；已接受页的元素按确定性 microbatch 写入、继承响应的时间，重叠页幂等、不同内容并存并报告；崩溃后重跑只补缺失批次，时间与序号不变。reconciler 固定两侧 snapshot，只在内容投影逐字段相等时向独立证据表写"归档 → REST"边，重跑复用首次时间；序号区间 / 碰撞守卫；两种到达顺序 × 四段 cutoff 均按 ADR 验证。契约、Schema、冻结表与已验收模块零改动 | REVIEW_PENDING，等待 Codex 复核；D4 / E 仍关闭；测试结果见提交说明 |
 | 2026-09-25 | Codex 独立复核 D3D / D3D-R1（`61dd9bf` + `c06b9fa`）PASS：首轮退回完整 HTTP client 注入绕过；返修后敌意 client 被签名拒绝，环境代理 / Cookie / auth / hooks / redirect 均关闭；独立聚焦 240 项、真实 PostgreSQL 全量 3587 项、公共只读 smoke、离线重放与全部静态检查全绿；冻结哈希与 12 张表不变 | D3D 接受；**只开放 D3E**；D4 / E 关闭；验收记录 `docs/reviews/2026-09-25-d3d-rest-collector-acceptance.md` |
 | 2026-09-25 | Phase 1 D3D-R1（Claude Opus）：Codex 复现 `61dd9bf` 的缺陷——构造入口接受完整 `httpx.Client`，其默认 header / cookie / auth / request hook 在 allowlist 之后生效，可加 `cookie`、`authorization` 并把已校验请求改写为外域 `/api/v3/account`。修复：删除 `http_client` 注入（`__init__` 与 `from_settings`），只留 `http_transport` 测试 seam；collector 自建并拥有 client（无 hook / auth、`trust_env=False`、拒收一切 cookie、不跟随重定向），发送前再核对请求（纵深防御）。新回归测试在 `61dd9bf` 上 8 项失败、修复后通过；`python -O` 43 项探针、真实 PostgreSQL 全量与静态检查全绿；契约与冻结哈希不变 | REVIEW_PENDING，等待 Codex 复核；D3E 仍关闭 |
-| 2026-09-25 | Phase 1 D3D（Claude Opus）：`binance.spot.public-rest@1.0.0` collector——结构化 allowlist（origin / 精确 path / 白名单 query，恶意输入零网络拒绝）、不跟随重定向、流式正文上限与 `Content-Length` 核对、`Retry-After` 纯秒有界等待 / 418 立即终止 / 5xx 与传输错误有界重试 / 每次 collect 的新取页预算、注入 UTC 墙钟与 monotonic / sleeper；按 D3C 的 `next_query` 分页，发布内容寻址正文对象 + 不可变 page / collection checkpoint，重放严格重解码并逐字段复现，同 `request_id` 零网络、崩溃点可续、并发以先发布者为准、改请求内容在联网前 fail closed；`Settings` 增加四项冻结字段。全量真实 PostgreSQL 3578 项、`python -O` 38 项对抗探针、只读公共 smoke（两种 data type 各一页）与全部静态检查全绿；冻结哈希与 12 张表定义不变 | REVIEW_PENDING，等待 Codex 复核；D3E 仍关闭 |
 
 ## 10. 下一阶段进入条件
 
@@ -236,7 +237,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > 我现在应该干什么？
 
 1. Phase 0 已完成：宪法 1.0.0 已发布（原则一字未改），代码已合并进 `main`，并打了 `phase-0-complete` 标记。
-2. Phase 1 已开启，ADR-0021～0024、0026、0027 已接受；D0～D2 与 D3A～D3D 均已验收；D3E REST store / reconciler 及其首轮返修 D3E-R1 已提交，等待 Codex 复核。不需要你做任何决定。
+2. Phase 1 已开启，ADR-0021～0024、0026、0027 已接受；D0～D2 与 D3A～D3D 均已验收；D3E REST store / reconciler 及其返修 D3E-R1、D3E-R2 已提交，等待 Codex 复核。不需要你做任何决定。
    其中 ADR-0022 明确：开发授权不等于实盘授权，Phase 13 之前系统没有下单能力，也不保存交易密钥。
 3. 以后若要修改任何原则或阈值，或涉及实盘 / 资金，需要你对具体内容单独批准。
 4. 每个经 Codex 复核通过的进度都会推送到私有 GitHub 仓库（ADR-0025）；PR 与 CI 以后再配置。
@@ -247,4 +248,4 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
 2. 已完成并验收 S0、A1～A3、B1～B3、C1～C3、D0～D2、D3A～D3D；D3D 修复后的实现恢复点为 `c06b9fa`。
-3. D3A～D3D 及返修均已完成并通过 Codex 接受门。D3E 与返修 D3E-R1 已提交（REVIEW_PENDING），等待 Codex 接受门；D4 / E 须等 D3E 验收后另行开放，不得开始 Phase 0.5。
+3. D3A～D3D 及返修均已完成并通过 Codex 接受门。D3E 与返修 D3E-R1、D3E-R2 已提交（REVIEW_PENDING，R2 已推送到 `wip/phase-1-unreviewed`），等待 Codex 接受门；D4 / E 须等 D3E 验收后另行开放，不得开始 Phase 0.5。

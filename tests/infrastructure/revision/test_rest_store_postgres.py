@@ -10,9 +10,11 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
+from pyiceberg.expressions import EqualTo
 
 from core.contracts.catalog import CommitOutcome, CommitRequest
 from core.contracts.collector import CollectionResult
@@ -20,11 +22,14 @@ from infrastructure.catalog import PHASE1_TABLES, ensure_phase1_tables
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
+    BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     BINANCE_SPOT_REST_AGG_TRADES,
     BINANCE_SPOT_REST_KLINES_1M,
     BINANCE_SPOT_REST_RESPONSES,
 )
+from infrastructure.revision import identity as archive_identity
+from infrastructure.revision import rest_identity
 from infrastructure.revision.channel_reconcile import (
     assemble_channel_graph,
     evidence_from_row,
@@ -52,6 +57,7 @@ REST_AGGS = BINANCE_SPOT_REST_AGG_TRADES
 REST_KLINES = BINANCE_SPOT_REST_KLINES_1M
 ARCHIVE_AGGS = BINANCE_SPOT_AGG_TRADES
 EVIDENCE = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+ARCHIVES = BINANCE_SPOT_ARCHIVES
 BASE = 1 << 62
 STRIDE = 1 << 32
 K_ARCHIVE = utc(2023, 12, 1)
@@ -299,3 +305,74 @@ def test_forged_lineage_and_drifted_competitor_are_refused_on_postgres(pg: RestH
         pg.store(clock=StepClock(start=K_EDGE)).ingest_collection(ss.agg_request("pg-b"))
     assert {table: pg.head(table) for table in heads} == heads
     assert pg.rows(EVIDENCE) == []
+
+
+@pytest.mark.parametrize(
+    ("corruption", "match"),
+    [
+        ("rest-lineage-and-time", "lineage response revision rev1-9+ is committed 0 time"),
+        ("archive-time-and-policy", r"\['availability_policy_hash', 'knowledge_time'\]"),
+        ("rest-element-batch", "committed with other content"),
+        ("archive-row-batch", "committed with other content"),
+    ],
+)
+def test_forged_rows_are_proven_before_any_edge_on_postgres(
+    pg: RestHarness, corruption: str, match: str
+) -> None:
+    """D3E-R2 on the runtime catalog: Codex reconciler counterexamples A / B and a batch tamper
+    per channel (every row lawful on its own) end in ``CatalogIntegrityError`` and zero edges."""
+    items = ss.agg_items(3)
+    pg.ingest_archive(
+        "agg_trades",
+        ss.archive_agg_lines(items),
+        clock=StepClock(start=K_ARCHIVE),
+        retrieved_at=utc(2023, 11, 16),
+    )
+    cs.queue_agg_chain(pg.venue, SYMBOL, T0, [items])
+    assert isinstance(pg.collect(ss.agg_request("pg-a")), CollectionResult)
+    pg.store(clock=StepClock(start=K_REST)).ingest_collection(ss.agg_request("pg-a"))
+    rest = sorted(pg.rows(REST_AGGS), key=lambda row: row["element_index"])
+    archive = sorted(pg.rows(ARCHIVE_AGGS), key=lambda row: row["archive_line_number"])
+    late = timedelta(hours=1)
+    if corruption == "rest-lineage-and-time":
+        target, table = rest[0], REST_AGGS
+        forged = dict(
+            target,
+            response_revision_id="rev1-" + "9" * 64,
+            knowledge_time=target["knowledge_time"] + late,
+        )
+    elif corruption == "archive-time-and-policy":
+        target, table = archive[0], ARCHIVE_AGGS
+        forged = dict(
+            target,
+            knowledge_time=target["knowledge_time"] + late,
+            availability_policy_hash="0" * 64,
+        )
+    else:
+        channel = "rest" if corruption == "rest-element-batch" else "archive"
+        target, table = (rest[1], REST_AGGS) if channel == "rest" else (archive[1], ARCHIVE_AGGS)
+        forged = dict(target, quantity=target["quantity"] + Decimal("0.001"))
+        if channel == "rest":
+            forged["payload_hash"] = rest_identity.agg_trade_payload_hash(SYMBOL, forged)
+            forged["revision_id"] = rest_identity.revision_id(
+                forged["observation_key"], forged["source_id"], forged["payload_hash"]
+            )
+        else:
+            forged["payload_hash"] = archive_identity.agg_trade_payload_hash(
+                SYMBOL, "millisecond", forged
+            )
+            forged["revision_id"] = archive_identity.revision_id(
+                forged["observation_key"], forged["source_id"], forged["payload_hash"]
+            )
+    pg.delete_rows(table, EqualTo("revision_id", target["revision_id"]))  # type: ignore[call-arg, arg-type]
+    pg.forge_rows(table, [forged], "corruption")
+    watched = (ARCHIVES, ARCHIVE_AGGS, RESPONSES, REST_AGGS, EVIDENCE)
+    before = {definition.table: pg.head(definition.table) for definition in watched}
+    clock = StepClock(start=K_EDGE)
+
+    with pytest.raises(CatalogIntegrityError, match=match):
+        pg.reconciler(clock=clock).reconcile("agg_trades", SYMBOL, DAY)
+
+    assert clock.calls == 0
+    assert {definition.table: pg.head(definition.table) for definition in watched} == before
+    assert pg.rows(EVIDENCE) == [] and forged in pg.rows(table)

@@ -353,48 +353,7 @@ class RawRevisionStore:
 
     def _identify(self, collected: CollectedObject, context: ArchiveContext) -> tuple[str, str]:
         """``(observation_key, revision_id)``, after binding the object to the official path."""
-        if not isinstance(collected, CollectedObject):
-            raise RevisionStoreError("collected must be a CollectedObject")
-        if not isinstance(context, ArchiveContext):
-            raise RevisionStoreError("context must be an ArchiveContext")
-        start = collected.coverage_start
-        if (start.hour, start.minute, start.second, start.microsecond) != (0, 0, 0, 0):
-            raise RevisionStoreError("archive coverage must start at a UTC midnight")
-        if collected.coverage_end - start != _DAY:
-            raise RevisionStoreError("archive coverage must be exactly one UTC day")
-        day = start.date()
-        relative = identity.archive_relative_path(context.data_type, collected.symbol, day)
-        if not collected.source_uri.endswith(f"/{relative}"):
-            raise RevisionStoreError(
-                f"source URI does not end in the official archive path {relative!r}"
-            )
-        expected_key = identity.archive_object_key(
-            context.data_type, collected.symbol, day, collected.ref.sha256
-        )
-        if collected.ref.key != expected_key:
-            raise RevisionStoreError(
-                "published object key is not the content-addressed key of this archive"
-            )
-        # The archive payload hash is a *source* claim: it must come from the official
-        # ``.CHECKSUM`` and must already have been verified against the bytes this machine
-        # stored. Without that declaration there is nothing to bind the revision to, and the
-        # local object hash must never be passed off as one (D2-R1).
-        if collected.source_sha256 is None:
-            raise RevisionStoreError(
-                "the archive carries no official .CHECKSUM declaration: a Binance archive "
-                "revision's payload hash may not be taken from the local object hash"
-            )
-        try:
-            identity.check_sha256(collected.source_sha256, "source_sha256")
-        except identity.IdentityViolation as exc:
-            raise RevisionStoreError(str(exc)) from exc
-        if collected.source_sha256 != collected.ref.sha256:
-            raise RevisionStoreError("source checksum and stored object disagree")
-        observation_key = identity.archive_observation_key(context.data_type, collected.symbol, day)
-        revision_id = identity.revision_id(
-            observation_key, identity.archive_source_identity(), collected.ref.sha256
-        )
-        return observation_key, revision_id
+        return identify_archive(collected, context)
 
     # ------------------------------------------------------------------ persistence
 
@@ -791,6 +750,60 @@ class RawRevisionStore:
         raise CatalogIntegrityError(
             f"{table} has a row of batch {batch_id} but no snapshot that committed it"
         )
+
+
+# --------------------------------------------------------------------------- identity
+
+
+def identify_archive(collected: CollectedObject, context: ArchiveContext) -> tuple[str, str]:
+    """``(observation_key, revision_id)``, after binding the object to the official path.
+
+    The one binding rule of an archive revision to its published object, shared by the store's
+    ingest and the persisted-row verifier (D3E-R2): the same inputs can never be judged twice
+    by two rules.
+    """
+    if not isinstance(collected, CollectedObject):
+        raise RevisionStoreError("collected must be a CollectedObject")
+    if not isinstance(context, ArchiveContext):
+        raise RevisionStoreError("context must be an ArchiveContext")
+    start = collected.coverage_start
+    if (start.hour, start.minute, start.second, start.microsecond) != (0, 0, 0, 0):
+        raise RevisionStoreError("archive coverage must start at a UTC midnight")
+    if collected.coverage_end - start != _DAY:
+        raise RevisionStoreError("archive coverage must be exactly one UTC day")
+    day = start.date()
+    relative = identity.archive_relative_path(context.data_type, collected.symbol, day)
+    if not collected.source_uri.endswith(f"/{relative}"):
+        raise RevisionStoreError(
+            f"source URI does not end in the official archive path {relative!r}"
+        )
+    expected_key = identity.archive_object_key(
+        context.data_type, collected.symbol, day, collected.ref.sha256
+    )
+    if collected.ref.key != expected_key:
+        raise RevisionStoreError(
+            "published object key is not the content-addressed key of this archive"
+        )
+    # The archive payload hash is a *source* claim: it must come from the official
+    # ``.CHECKSUM`` and must already have been verified against the bytes this machine
+    # stored. Without that declaration there is nothing to bind the revision to, and the
+    # local object hash must never be passed off as one (D2-R1).
+    if collected.source_sha256 is None:
+        raise RevisionStoreError(
+            "the archive carries no official .CHECKSUM declaration: a Binance archive "
+            "revision's payload hash may not be taken from the local object hash"
+        )
+    try:
+        identity.check_sha256(collected.source_sha256, "source_sha256")
+    except identity.IdentityViolation as exc:
+        raise RevisionStoreError(str(exc)) from exc
+    if collected.source_sha256 != collected.ref.sha256:
+        raise RevisionStoreError("source checksum and stored object disagree")
+    observation_key = identity.archive_observation_key(context.data_type, collected.symbol, day)
+    revision_id = identity.revision_id(
+        observation_key, identity.archive_source_identity(), collected.ref.sha256
+    )
+    return observation_key, revision_id
 
 
 # --------------------------------------------------------------------------- allocation anchor

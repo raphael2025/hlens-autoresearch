@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3D 已验收；D3E（`21e31f5`）首轮退回 → D3E-R1 已提交、REVIEW_PENDING
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3D 已验收；D3E（`21e31f5`）→ D3E-R1（`52f7477`）→ D3E-R2 均 REVIEW_PENDING
 
 ## 2. Current Architecture
 
@@ -44,10 +44,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3E-R1 REVIEW_PENDING**；REST response / element store 与跨通道 reconciler（`21e31f5`）首轮复核退回已提交行完整性缺陷，R1 返修已提交，等待 Codex 复核（D3D / D3D-R1 `61dd9bf` + `c06b9fa` 已验收）
+- Current Subphase：**D3E-R2 REVIEW_PENDING**；REST store / reconciler（`21e31f5`）→ R1 store 已存行核对（`52f7477`）→ R2 reconciler 比较前用共享核对器（`infrastructure/revision/row_integrity.py`）证明两侧每一行；均待 Codex 复核（D3D / D3D-R1 `61dd9bf` + `c06b9fa` 已验收）
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- D3E / D3E-R1 待复核；D4 / E 等 D3E 经 Codex 验收后另行开放
+- D3E / D3E-R1 / D3E-R2 待复核；D4 / E 等 D3E 经 Codex 验收后另行开放；无 Codex 时 Claude 的提交只推 `wip/phase-<n>-unreviewed`，不推正式 `phase/<n>`
 - Current Blocker：无架构阻塞。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
 - Next Milestone：Codex 对抗复核 D3E + D3E-R1，决定是否接受并开放 D4 / E
 
@@ -154,6 +154,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 未实现（按 roadmap 延期）：Canonical、PIT / dataset / representation、Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、12 张生产表定义、D0 / D3D collector、D1 / D3C parser、D2 archive revision store 与 D3E REST store / reconciler（待复核）已实现
-- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3D 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` 首轮退回 → D3E-R1 已提交、REVIEW_PENDING
+- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3D 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 均 REVIEW_PENDING
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
   `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`

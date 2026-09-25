@@ -3,17 +3,22 @@
 For one affected partition ``(data_type, symbol, UTC day)`` — after an ingest on either channel, or
 as an independent re-run — the reconciler:
 
-1. pins the snapshots it reads: the REST element table, the archive element table, the archive
-   revision table (for each archive row's declared unit) and the precedence-evidence table. A
-   read counts only if every table head is the same before and after it (heads only move forward),
-   so every comparison is a judgement about fixed, named snapshots;
-2. takes every REST element revision of that day, every revision of the same observation keys on
-   both channels, and runs the accepted pure policy ``compare_channels`` on every archive × REST
-   pair. Projection, decimal and unit rules are **not** re-implemented here;
-3. ``INTEGRITY_VIOLATION`` aborts with ``CatalogIntegrityError`` before any edge is committed;
+1. pins the snapshots it reads: the REST element and response tables, the archive element and
+   archive revision tables and the precedence-evidence table. A read — and every verdict drawn
+   from it, a pass or an integrity failure — counts only if all five heads are the same before
+   and after it (heads only move forward); otherwise it is read again, a bounded number of times;
+2. takes every REST element revision of that day and every revision of the same observation keys
+   on both channels, and **proves each one** with the shared ``PersistedRowVerifier`` (D3E-R2)
+   before anything is compared: REST rows down to a lawful response revision, its published body
+   and its exact element batch; archive rows down to a lawful archive revision, its published
+   object and its exact row batch. A row that does not reproduce is ``CatalogIntegrityError``:
+   no comparison, no finding, no clock reading, no edge;
+3. runs the accepted pure policy ``compare_channels`` on every archive × REST pair of proven
+   rows. Projection, decimal and unit rules are **not** re-implemented here;
+4. ``INTEGRITY_VIOLATION`` aborts with ``CatalogIntegrityError`` before any edge is committed;
    ``MISMATCH`` / ``INCOMPARABLE`` produce no edge and a deterministic finding; a key without a
    counterpart is not an error and records nothing;
-4. for ``EQUAL`` pairs the time-free ``edge_id`` is looked up in
+5. for ``EQUAL`` pairs the time-free ``edge_id`` is looked up in
    ``raw.binance_spot_precedence_evidence`` first. A committed edge is re-verified field for field
    (policy, both ends and tables, projection hash, evidence items, the snapshots it pinned, a
    knowledge time not before either revision) and reused with its **first** knowledge time; only
@@ -64,6 +69,7 @@ from core.contracts.revision import (
     RevisionGraph,
     RevisionRecord,
 )
+from core.contracts.storage import StorageAdapter
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -73,8 +79,8 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     BINANCE_SPOT_REST_AGG_TRADES,
     BINANCE_SPOT_REST_KLINES_1M,
+    BINANCE_SPOT_REST_RESPONSES,
 )
-from infrastructure.parser.binance_archive import time_unit_for
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision import rest_identity
 from infrastructure.revision.channel_precedence import (
@@ -88,6 +94,7 @@ from infrastructure.revision.channel_precedence import (
     build_channel_edge,
     compare_channels,
 )
+from infrastructure.revision.row_integrity import PersistedRowVerifier
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
 
 __all__ = [
@@ -126,12 +133,6 @@ _TIME_COLUMNS: Final[Mapping[str, str]] = {
     "agg_trades": "event_time",
     "klines_1m": "interval_start",
 }
-_ARCHIVE_UNIT_COLUMNS: Final[tuple[str, ...]] = (
-    "revision_id",
-    "data_type",
-    "symbol",
-    "coverage_start",
-)
 _ATTEMPTS: Final = 8
 #: Keys per ``IN`` scan (bounded predicate size; the pinned read spans all chunks).
 _KEY_CHUNK: Final = 500
@@ -351,9 +352,11 @@ class ChannelReconciled:
 @dataclass(frozen=True, slots=True)
 class _Pinned:
     rest_snapshot: str | None
+    responses_snapshot: str | None
     archive_snapshot: str | None
     archives_snapshot: str | None
     evidence_snapshot: str | None
+    #: Every row below is proven (``PersistedRowVerifier``) against these five heads.
     rest_rows: tuple[Mapping[str, Any], ...]
     archive_rows: tuple[Mapping[str, Any], ...]
     units: Mapping[str, str]
@@ -381,6 +384,7 @@ class ChannelReconciler:
     def __init__(
         self,
         adapter: RevisionCatalog,
+        storage: StorageAdapter,
         *,
         clock: Callable[[], datetime] | None = None,
         edge_microbatch_rows: int = DEFAULT_EDGE_MICROBATCH_ROWS,
@@ -394,6 +398,8 @@ class ChannelReconciler:
         self._adapter = adapter
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = edge_microbatch_rows
+        # The REST store's own verifier: one set of provenance rules for both consumers.
+        self._verifier = PersistedRowVerifier(adapter, storage)
 
     def reconcile(self, data_type: str, symbol: str, day: date) -> ChannelReconciled:
         if data_type not in _REST_TABLES:
@@ -723,47 +729,64 @@ class ChannelReconciler:
     # ------------------------------------------------------------------ reads
 
     def _pinned_read(self, data_type: str, symbol: str, day: date) -> _Pinned:
+        """Rows of the partition, proven lawful, all judged against one set of five heads."""
         rest_def, archive_def = _REST_TABLES[data_type], _ARCHIVE_TABLES[data_type]
-        tables = (rest_def.table, archive_def.table, BINANCE_SPOT_ARCHIVES.table, EVIDENCE_TABLE)
+        tables = (
+            rest_def.table,
+            BINANCE_SPOT_REST_RESPONSES.table,
+            archive_def.table,
+            BINANCE_SPOT_ARCHIVES.table,
+            EVIDENCE_TABLE,
+        )
         start = datetime.combine(day, time(), tzinfo=UTC)
         column = _TIME_COLUMNS[data_type]
         for _ in range(_ATTEMPTS):
             heads = tuple(self._head(table) for table in tables)
-            day_rows = self._scan(
-                rest_def,
-                _all(
-                    _equals("symbol", symbol),
-                    _at_least(column, start),
-                    _below(column, start + _DAY),
-                ),
-            )
-            keys = sorted({row["observation_key"] for row in day_rows})
-            rest_rows = self._by_keys(rest_def, symbol, keys)
-            archive_rows = self._by_keys(archive_def, symbol, keys)
-            units = self._archive_units(
-                data_type, symbol, sorted({row["archive_revision_id"] for row in archive_rows})
-            )
-            evidence_rows: list[Mapping[str, Any]] = []
-            for offset in range(0, len(keys), _KEY_CHUNK):
-                evidence_rows.extend(
-                    self._scan(
-                        BINANCE_SPOT_PRECEDENCE_EVIDENCE,
-                        _member("observation_key", keys[offset : offset + _KEY_CHUNK]),
-                    )
+            try:
+                day_rows = self._scan(
+                    rest_def,
+                    _all(
+                        _equals("symbol", symbol),
+                        _at_least(column, start),
+                        _below(column, start + _DAY),
+                    ),
                 )
+                keys = sorted({row["observation_key"] for row in day_rows})
+                rest_rows = self._by_keys(rest_def, symbol, keys)
+                archive_rows = self._by_keys(archive_def, symbol, keys)
+                # Proven before anything is compared (D3E-R2): lineage, times, policy, batch.
+                self._verifier.verify_rest_elements(rest_def, data_type, rest_rows)
+                archives = self._verifier.verify_archive_elements(
+                    archive_def, data_type, symbol, archive_rows
+                )
+                evidence_rows: list[Mapping[str, Any]] = []
+                for offset in range(0, len(keys), _KEY_CHUNK):
+                    evidence_rows.extend(
+                        self._scan(
+                            BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+                            _member("observation_key", keys[offset : offset + _KEY_CHUNK]),
+                        )
+                    )
+            except CatalogIntegrityError:
+                if tuple(self._head(table) for table in tables) == heads:
+                    raise  # judged on one fixed view: the failure stands
+                continue  # a head moved: the verdict mixed two snapshots, read again
             if tuple(self._head(table) for table in tables) != heads:
                 continue  # a head moved during the read: the rows are not one snapshot's
             return _Pinned(
                 rest_snapshot=heads[0],
-                archive_snapshot=heads[1],
-                archives_snapshot=heads[2],
-                evidence_snapshot=heads[3],
+                responses_snapshot=heads[1],
+                archive_snapshot=heads[2],
+                archives_snapshot=heads[3],
+                evidence_snapshot=heads[4],
                 rest_rows=tuple(rest_rows),
                 archive_rows=tuple(archive_rows),
-                units=units,
+                units={archive_id: item.time_unit.value for archive_id, item in archives.items()},
                 evidence_rows=tuple(evidence_rows),
             )
-        raise ChannelReconcileConflict("the tables kept moving: no pinned read was possible")
+        raise ChannelReconcileConflict(
+            f"the tables kept moving: no pinned read was possible after {_ATTEMPTS} attempts"
+        )
 
     def _by_keys(
         self, definition: RegisteredTableDefinition, symbol: str, keys: Sequence[str]
@@ -780,29 +803,6 @@ class ChannelReconciler:
                 )
             )
         return rows
-
-    def _archive_units(
-        self, data_type: str, symbol: str, archive_revision_ids: Sequence[str]
-    ) -> dict[str, str]:
-        """Declared unit per archive revision, from its committed coverage (D1 parser rule)."""
-        units: dict[str, str] = {}
-        for offset in range(0, len(archive_revision_ids), _KEY_CHUNK):
-            chunk = archive_revision_ids[offset : offset + _KEY_CHUNK]
-            rows = self._adapter.scan_columns(
-                BINANCE_SPOT_ARCHIVES.table,
-                columns=_ARCHIVE_UNIT_COLUMNS,
-                row_filter=_member("revision_id", chunk),
-            ).to_pylist()
-            for row in rows:
-                if row["revision_id"] in units:
-                    raise CatalogIntegrityError(
-                        f"archive revision {row['revision_id']} is committed twice"
-                    )
-                if row["data_type"] == data_type and row["symbol"] == symbol:
-                    units[row["revision_id"]] = time_unit_for(
-                        data_type, row["coverage_start"]
-                    ).value
-        return units
 
     def _scan(
         self, definition: RegisteredTableDefinition, row_filter: BooleanExpression

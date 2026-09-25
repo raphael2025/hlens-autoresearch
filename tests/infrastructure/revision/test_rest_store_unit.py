@@ -867,11 +867,14 @@ def test_an_owned_element_that_drifts_from_its_re_decode_fails_closed(
     proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=RESPONSES.table))
     with pytest.raises(Crash):
         h.store(clock=StepClock(start=K1), adapter=proxy).ingest_collection(ss.agg_request("req-a"))
-    # A writer commits element 0 under our lineage but not as the re-decoded page has it.
+    # A writer commits element 0 under our lineage but not as the re-decoded page has it — as
+    # our lineage's first element batch, so the D3E-R2 batch check (fingerprint, row count,
+    # one microbatch plan) holds and only the comparisons named above can see the drift.
     out_rows = _expected_element_rows(tmp_path=h.tmp_path)
     forged = dict(out_rows[0])
     forged.update(drift)
-    h.forge_rows(AGGS, [forged], "forged-owned")
+    [response] = h.rows(RESPONSES)
+    h.forge_snapshot(AGGS, [forged], batch_id=f"{response['revision_id']}.elements.00000000")
     heads = (h.head(RESPONSES.table), h.head(AGGS.table))
     with pytest.raises(CatalogIntegrityError, match=match):
         h.store(clock=StepClock(start=K1)).ingest_collection(ss.agg_request("req-a"))
@@ -1226,6 +1229,7 @@ def test_a_foreign_element_whose_lineage_response_is_not_lawful_is_refused(
     after = _tables_state(h)
     assert after[AGGS.table] == before[AGGS.table]
     assert after[RESPONSES.table][1] == before[RESPONSES.table][1] + 1
+    assert after[BINANCE_SPOT_PRECEDENCE_EVIDENCE.table] == (None, 0)  # evidence stays silent
 
 
 @pytest.mark.parametrize("lineage", ["rejected-page", "kline-page"])
@@ -1263,7 +1267,9 @@ def test_a_foreign_element_naming_a_response_that_released_no_such_element_is_re
 
     with pytest.raises(CatalogIntegrityError, match="did not accept a agg_trades page of BTCUSDT"):
         h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
-    assert _tables_state(h)[AGGS.table] == before[AGGS.table]
+    after = _tables_state(h)
+    assert after[AGGS.table] == before[AGGS.table]
+    assert after[BINANCE_SPOT_PRECEDENCE_EVIDENCE.table] == (None, 0)
 
 
 def test_a_lawful_foreign_lineage_is_adopted_and_replays_idempotently(h: RestHarness) -> None:
@@ -1298,7 +1304,9 @@ def test_a_competing_element_revision_must_be_lawful_to_become_a_finding(h: Rest
 
     with pytest.raises(CatalogIntegrityError, match=r"\['knowledge_time'\]"):
         h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
-    assert _tables_state(h)[AGGS.table] == element_state
+    after = _tables_state(h)
+    assert after[AGGS.table] == element_state
+    assert after[BINANCE_SPOT_PRECEDENCE_EVIDENCE.table] == (None, 0)
 
 
 # ------------------------------------------------------------------ competing response revisions
@@ -1537,7 +1545,9 @@ def test_a_mixed_view_is_never_judged_the_newer_snapshot_is(h: RestHarness) -> N
     with pytest.raises(CatalogIntegrityError, match="committed 2 time"):
         h.store(clock=StepClock(start=K2), adapter=proxy).ingest_collection(request_b)
     assert proxy.lineage_scans == 2
-    assert _tables_state(h)[AGGS.table] == element_state
+    after = _tables_state(h)
+    assert after[AGGS.table] == element_state
+    assert after[BINANCE_SPOT_PRECEDENCE_EVIDENCE.table] == (None, 0)
 
 
 def test_heads_that_keep_moving_end_in_a_bounded_conflict(h: RestHarness) -> None:
@@ -1549,4 +1559,6 @@ def test_heads_that_keep_moving_end_in_a_bounded_conflict(h: RestHarness) -> Non
     with pytest.raises(RestRevisionStoreConflict, match="kept moving.*after 8 attempts"):
         h.store(clock=StepClock(start=K2), adapter=proxy).ingest_collection(request_b)
     assert proxy.lineage_scans == 8
-    assert _tables_state(h)[AGGS.table] == element_state
+    after = _tables_state(h)
+    assert after[AGGS.table] == element_state
+    assert after[BINANCE_SPOT_PRECEDENCE_EVIDENCE.table] == (None, 0)

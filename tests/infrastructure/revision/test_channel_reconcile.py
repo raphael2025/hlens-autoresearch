@@ -10,13 +10,17 @@ selection in each segment is written down by hand from ADR-0027 §4.7.
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 from collections.abc import Iterator
+from dataclasses import dataclass
 from datetime import datetime, timedelta
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
 import pytest
+from pyiceberg.expressions import EqualTo
 
 from core.contracts.catalog import CommitRequest
 from core.contracts.revision import (
@@ -30,13 +34,15 @@ from core.domain.base import canonical_json
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
+    BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_KLINES_1M,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     BINANCE_SPOT_REST_AGG_TRADES,
     BINANCE_SPOT_REST_KLINES_1M,
+    BINANCE_SPOT_REST_RESPONSES,
 )
+from infrastructure.revision import channel_reconcile, rest_identity
 from infrastructure.revision import identity as archive_identity
-from infrastructure.revision import rest_identity
 from infrastructure.revision.channel_precedence import (
     AGG_TRADE_PROJECTION,
     DELIVERY_CHANNEL_BINDING,
@@ -44,6 +50,9 @@ from infrastructure.revision.channel_precedence import (
     KLINE_1M_PROJECTION,
     POLICY_STATEMENT,
     Channel,
+    ChannelComparison,
+    ComparisonOutcome,
+    compare_channels,
 )
 from infrastructure.revision.channel_reconcile import (
     FINDING_CHANNEL_INCOMPARABLE,
@@ -118,7 +127,8 @@ def _rest(
     else:
         cs.queue_kline_chain(h.venue, SYMBOL, t0, [items], retrieved_at_ms=retrieved_ms)
         request = ss.kline_request(request_id, start_ms=t0)
-    assert not isinstance(h.collect(request, start_ms=retrieved_ms), Exception)
+    collected = h.collect(request, start_ms=retrieved_ms)  # a side effect: never inside assert
+    assert not isinstance(collected, Exception)
     h.store(clock=StepClock(start=knowledge)).ingest_collection(request)
 
 
@@ -470,21 +480,51 @@ def test_microsecond_archive_klines_equal_millisecond_rest_klines(h: RestHarness
     assert units == {item[0] * 1000 for item in items}  # really microsecond rows
 
 
-def test_an_incomparable_pair_yields_a_finding_next_to_an_equal_one(h: RestHarness) -> None:
-    items = ss.kline_items(1)
-    _archive(h, "klines_1m", ss.archive_kline_lines(items), knowledge=EARLY)
-    _rest(h, "klines_1m", items, knowledge=LATE)
-    # A lawful second REST revision of the same minute whose "ignore" field is empty.
-    [real] = h.rows(REST_KLINES)
-    odd = dict(real)
-    odd["ignore_raw"] = ""
-    odd["payload_hash"] = rest_identity.kline_1m_payload_hash(SYMBOL, odd)
-    odd["revision_id"] = rest_identity.revision_id(
-        odd["observation_key"], odd["source_id"], odd["payload_hash"]
-    )
-    odd["arrival_seq"] = BASE + 7 * STRIDE + 1
-    h.forge_rows(REST_KLINES, [odd], "second-rest-revision")
+def _competing_rest_klines(h: RestHarness) -> tuple[dict[str, Any], dict[str, Any]]:
+    """An archive kline, the equal REST kline and a lawful competing REST kline of that minute.
 
+    Both REST revisions come from the real collector and store: the same page identity is
+    answered twice with different bytes (volume), so the second is a competing revision.
+    """
+    items = ss.kline_items(1)
+    changed = [list(items[0])]
+    changed[0][5] = "7.50000000"
+    _archive(h, "klines_1m", ss.archive_kline_lines(items), knowledge=EARLY)
+    cs.queue_kline_chain(h.venue, SYMBOL, T0, [items])
+    cs.queue_kline_chain(h.venue, SYMBOL, T0, [changed])
+    request_a, request_b = ss.kline_request("req-rest-a"), ss.kline_request("req-rest-b")
+    first = h.collect(request_a)
+    second = h.collect(request_b, start_ms=cs.RETRIEVED_AT_MS + 60_000)
+    assert not isinstance(first, Exception) and not isinstance(second, Exception)
+    h.store(clock=StepClock(start=LATE)).ingest_collection(request_a)
+    h.store(clock=StepClock(start=LATE + timedelta(hours=1))).ingest_collection(request_b)
+    [real] = [row for row in h.rows(REST_KLINES) if row["volume"] != Decimal("7.5")]
+    [odd] = [row for row in h.rows(REST_KLINES) if row["volume"] == Decimal("7.5")]
+    return real, odd
+
+
+def test_an_incomparable_outcome_yields_a_finding_next_to_an_equal_one(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The reconciler's handling of ``INCOMPARABLE``. Both frozen parsers only store in-domain
+    values, so a *lawful* pair never projects as incomparable (the pure policy tests cover that
+    branch); here the accepted policy's verdict for the competing pair is replaced by an
+    ``INCOMPARABLE`` one, and everything else — rows, verification, the equal edge — is real."""
+    real, odd = _competing_rest_klines(h)
+    genuine = compare_channels
+
+    def policy(archive: Any, rest: Any) -> ChannelComparison:
+        result = genuine(archive, rest)
+        if rest.revision_id != odd["revision_id"]:
+            return result
+        assert result.outcome is ComparisonOutcome.MISMATCH  # the real verdict
+        return dataclasses.replace(
+            result,
+            outcome=ComparisonOutcome.INCOMPARABLE,
+            reasons=("rest: ignore_raw is empty",),
+        )
+
+    monkeypatch.setattr(channel_reconcile, "compare_channels", policy)
     out = h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("klines_1m", SYMBOL, DAY)
 
     [edge] = out.edges
@@ -501,6 +541,43 @@ def test_an_incomparable_pair_yields_a_finding_next_to_an_equal_one(h: RestHarne
     # The archive supersedes the equal REST revision, the incomparable one still competes.
     assert pit.status is PointInTimeStatus.CONFLICT
     assert set(pit.maximal_heads) == {archive[0].revision_id, odd["revision_id"]}
+
+
+def test_a_lawful_competing_rest_revision_is_a_mismatch_finding(h: RestHarness) -> None:
+    real, odd = _competing_rest_klines(h)
+    out = h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("klines_1m", SYMBOL, DAY)
+    [edge] = out.edges
+    assert edge.edge.evidence.superseded_revision_id == real["revision_id"]
+    [finding] = out.findings
+    assert (finding.code, finding.rest_revision_id) == (
+        FINDING_CHANNEL_MISMATCH,
+        odd["revision_id"],
+    )
+    assert finding.reasons == ("differs: volume",)
+
+
+def test_a_forged_incomparable_rest_revision_is_refused_before_comparison(
+    h: RestHarness,
+) -> None:
+    """A row no pipeline can produce (empty ``ignore``) is an integrity error, not a finding."""
+    items = ss.kline_items(1)
+    _archive(h, "klines_1m", ss.archive_kline_lines(items), knowledge=EARLY)
+    _rest(h, "klines_1m", items, knowledge=LATE)
+    [real] = h.rows(REST_KLINES)
+    odd = dict(real)
+    odd["ignore_raw"] = ""
+    odd["payload_hash"] = rest_identity.kline_1m_payload_hash(SYMBOL, odd)
+    odd["revision_id"] = rest_identity.revision_id(
+        odd["observation_key"], odd["source_id"], odd["payload_hash"]
+    )
+    odd["arrival_seq"] = BASE + 7 * STRIDE + 1
+    h.forge_rows(REST_KLINES, [odd], "second-rest-revision")
+    clock = StepClock(start=K_EDGE)
+
+    with pytest.raises(CatalogIntegrityError, match=r"\['arrival_seq'\]"):
+        h.reconciler(clock=clock).reconcile("klines_1m", SYMBOL, DAY)
+
+    assert h.rows(EVIDENCE) == [] and clock.calls == 0
 
 
 # =========================================================================================
@@ -522,7 +599,9 @@ def test_a_stored_payload_that_does_not_re_derive_aborts_with_zero_edges(h: Rest
     h.forge_rows(REST_AGGS, [forged], "forged-payload")
     clock = StepClock(start=K_EDGE)
 
-    with pytest.raises(CatalogIntegrityError, match="contradict"):
+    with pytest.raises(
+        CatalogIntegrityError, match="committed payload_hash of .* does not re-derive"
+    ):
         h.reconciler(clock=clock).reconcile("agg_trades", SYMBOL, DAY)
 
     assert h.rows(EVIDENCE) == [] and clock.calls == 0
@@ -825,3 +904,436 @@ def test_record_mapping_round_trips_real_rows(h: RestHarness) -> None:
             row["payload_hash"],
         )
         assert record.availability.times.knowledge_time == row["knowledge_time"]
+
+
+# =========================================================================================
+# #8 (D3E-R2): every row the reconciler compares is proven lawful first — zero edges otherwise
+# =========================================================================================
+
+ARCHIVES = BINANCE_SPOT_ARCHIVES
+RESPONSES = BINANCE_SPOT_REST_RESPONSES
+FORGED_ID = "rev1-" + "9" * 64
+PRECEDENCE_ITEM = {
+    "superseded_revision_id": "rev1-" + "a" * 64,
+    "policy_id": "binance.spot.delivery-channel",
+    "policy_version": "1.0.0",
+    "policy_hash": "b" * 64,
+    "evidence": ["made up"],
+    "knowledge_time": EARLY,
+}
+_ALL_TABLES = (ARCHIVES, ARCHIVE_AGGS, RESPONSES, REST_AGGS, EVIDENCE)
+
+
+def _state(h: RestHarness) -> dict[str, Any]:
+    """Head and full content of every table the reconciler reads or writes."""
+    return {
+        definition.table: (h.head(definition.table), h.rows(definition))
+        for definition in _ALL_TABLES
+    }
+
+
+def _drifted(row: dict[str, Any], drift: dict[str, Any]) -> dict[str, Any]:
+    forged = dict(row)
+    for column, value in drift.items():
+        forged[column] = value(row) if callable(value) else value
+    return forged
+
+
+def _replace(
+    h: RestHarness,
+    definition: Any,
+    old: dict[str, Any],
+    new: dict[str, Any] | None,
+    *,
+    batch_id: str = "corruption",
+) -> None:
+    """Swap one committed row for ``new`` (or drop it): a metadata-consistent delete + append."""
+    h.delete_rows(definition, EqualTo("revision_id", old["revision_id"]))  # type: ignore[call-arg, arg-type]
+    if new is not None:
+        h.forge_rows(definition, [new], batch_id)
+
+
+def _refused(h: RestHarness, match: str) -> None:
+    """The reconcile fails closed: no clock reading, no evidence, no table touched at all."""
+    before = _state(h)
+    clock = StepClock(start=K_EDGE)
+    with pytest.raises(CatalogIntegrityError, match=match):
+        h.reconciler(clock=clock).reconcile("agg_trades", SYMBOL, DAY)
+    assert clock.calls == 0
+    assert _state(h) == before
+    assert h.rows(EVIDENCE) == [] and h.head(EVIDENCE.table) is None
+
+
+def _pair(h: RestHarness, count: int = 1) -> list[dict[str, Any]]:
+    items = ss.agg_items(count)
+    _archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=EARLY)
+    _rest(h, "agg_trades", items, knowledge=LATE)
+    return items
+
+
+#: What must catch each batch tamper: the committed fingerprint, the committed row count, or —
+#: for a second row claiming a taken arrival number — the arrival-number uniqueness guard. A
+#: dropped REST element leaves its lineage one row short of its batches; a dropped archive row
+#: leaves its (bounded, re-read) row batch without the committed content.
+_BATCH_TAMPER = {
+    ("element", "renatived"): "committed with other content",
+    ("element", "dropped"): r"has 2 element row\(s\) but its element batches committed 3",
+    ("element", "added"): "arrival_seq .* is not unique",
+    ("row", "renatived"): "committed with other content",
+    ("row", "dropped"): "committed with other content",
+    ("row", "added"): "arrival_seq .* is not unique",
+}
+
+
+def _renatived(row: dict[str, Any], channel: str) -> dict[str, Any]:
+    """Another quantity with a self-consistent payload hash and revision id (row-level lawful)."""
+    forged = dict(row, quantity=row["quantity"] + Decimal("0.001"))
+    rules: Any = rest_identity if channel == "rest" else archive_identity
+    if channel == "rest":
+        forged["payload_hash"] = rest_identity.agg_trade_payload_hash(SYMBOL, forged)
+    else:
+        forged["payload_hash"] = archive_identity.agg_trade_payload_hash(
+            SYMBOL, "millisecond", forged
+        )
+    forged["revision_id"] = rules.revision_id(
+        forged["observation_key"], forged["source_id"], forged["payload_hash"]
+    )
+    return forged
+
+
+# ------------------------------------------------------------------ Codex counterexamples
+
+
+def test_codex_r2_a_forged_rest_lineage_and_time_write_no_edge(h: RestHarness) -> None:
+    """``/tmp/d3e_r1_reconciler_lineage_probe.py``: lineage ``rev1-999…``, knowledge +1 h."""
+    _pair(h)
+    [row] = h.rows(REST_AGGS)
+    forged = _drifted(
+        row,
+        {
+            "response_revision_id": FORGED_ID,
+            "knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1),
+        },
+    )
+    h.overwrite_rows(REST_AGGS, [forged], batch_id="forged-lineage")
+    _refused(h, f"lineage response revision {FORGED_ID} is committed 0 time")
+    assert h.rows(REST_AGGS) == [forged]  # never repaired
+
+
+def test_codex_r2_b_forged_archive_time_and_policy_write_no_edge(h: RestHarness) -> None:
+    """``/tmp/d3e_r1_reconciler_archive_probe.py``: knowledge +1 h, policy hash zeroed."""
+    _pair(h)
+    [row] = h.rows(ARCHIVE_AGGS)
+    forged = _drifted(
+        row,
+        {
+            "knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1),
+            "availability_policy_hash": "0" * 64,
+        },
+    )
+    h.overwrite_rows(ARCHIVE_AGGS, [forged], batch_id="forged-archive-time-policy")
+    _refused(h, r"\['availability_policy_hash', 'knowledge_time'\]")
+    assert h.rows(ARCHIVE_AGGS) == [forged]
+
+
+# ------------------------------------------------------------------ REST element rows
+
+
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    [
+        ({"response_revision_id": FORGED_ID}, "committed 0 time"),
+        ({"arrival_seq": BASE + 7}, r"\['arrival_seq'\]"),
+        ({"element_index": 5, "arrival_seq": BASE + 6}, "outside the 1 element"),
+        (
+            {"knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1)},
+            r"\['knowledge_time'\]",
+        ),
+        (
+            {
+                "ingest_time": lambda r: r["ingest_time"] - timedelta(seconds=1),
+                "available_time": lambda r: r["available_time"] - timedelta(seconds=1),
+            },
+            r"\['available_time', 'ingest_time'\]",
+        ),
+        ({"availability_policy_hash": "0" * 64}, r"\['availability_policy_hash'\]"),
+        ({"availability_evidence_gap": "made up"}, r"\['availability_evidence_gap'\]"),
+        ({"decoder_hash": "0" * 64}, r"\['decoder_hash'\]"),
+        ({"decoder_version": "9.9.9"}, r"\['decoder_version'\]"),
+        ({"contract_schema_version": "9.9.9"}, r"\['contract_schema_version'\]"),
+        ({"supersedes": ["rev1-" + "a" * 64]}, r"\['supersedes'\]"),
+        ({"precedence_evidence": [PRECEDENCE_ITEM]}, r"\['precedence_evidence'\]"),
+        ({"source_revision_id": "venue-7"}, r"\['source_revision_id'\]"),
+    ],
+)
+def test_a_rest_row_whose_lineage_does_not_hold_writes_no_edge(
+    h: RestHarness, drift: dict[str, Any], match: str
+) -> None:
+    _pair(h)
+    [row] = h.rows(REST_AGGS)
+    _replace(h, REST_AGGS, row, _drifted(row, drift))
+    _refused(h, match)
+
+
+@pytest.mark.parametrize(
+    ("corruption", "match"),
+    [
+        ("twin-response", "committed 2 time"),
+        ("response-knowledge", "committed with other content"),
+        ("response-policy", r"\['availability_policy_hash'\]"),
+        ("response-batch-replayed", "2 snapshots committing it"),
+        ("response-body-missing", "is not published"),
+    ],
+)
+def test_a_rest_row_whose_lineage_response_is_not_lawful_writes_no_edge(
+    h: RestHarness, corruption: str, match: str
+) -> None:
+    _pair(h)
+    [response] = h.rows(RESPONSES)
+    batch_id = f"{response['revision_id']}.response.{response['arrival_seq']}"
+    if corruption == "twin-response":
+        h.forge_rows(RESPONSES, [dict(response)], "twin-response")
+    elif corruption == "response-knowledge":
+        forged = _drifted(
+            response, {"knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1)}
+        )
+        _replace(h, RESPONSES, response, forged)
+    elif corruption == "response-policy":
+        _replace(h, RESPONSES, response, _drifted(response, {"availability_policy_hash": "0" * 64}))
+    elif corruption == "response-batch-replayed":
+        _replace(h, RESPONSES, response, None)
+        h.forge_snapshot(RESPONSES, [dict(response)], batch_id=batch_id)
+    else:
+        h.object_path(response["object_key"]).unlink()
+    _refused(h, match)
+
+
+@pytest.mark.parametrize("corruption", ["renatived", "dropped", "added"])
+def test_a_rest_element_batch_that_no_longer_reproduces_writes_no_edge(
+    h: RestHarness, corruption: str
+) -> None:
+    """Every row is lawful on its own; only the committed element batch proves the tamper.
+
+    ``renatived``: element 101 swapped for a self-consistent competitor (same lineage, index and
+    arrival number) — without the batch check it would be a plain mismatch finding.
+    ``dropped``: element 101 removed. ``added``: a lawful-looking fourth element appended.
+    """
+    _pair(h, 3)
+    rows = sorted(h.rows(REST_AGGS), key=lambda row: row["element_index"])
+    if corruption == "renatived":
+        _replace(h, REST_AGGS, rows[1], _renatived(rows[1], "rest"))
+    elif corruption == "dropped":
+        _replace(h, REST_AGGS, rows[1], None)
+    else:
+        extra = _renatived(rows[2], "rest")
+        h.forge_rows(REST_AGGS, [extra], "hostile-element")
+    _refused(h, _BATCH_TAMPER["element", corruption])
+
+
+# ------------------------------------------------------------------ archive element rows
+
+
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    [
+        ({"arrival_seq": lambda r: r["arrival_seq"] + 1}, r"\['arrival_seq'\]"),
+        (
+            {"archive_line_number": 2, "arrival_seq": lambda r: r["arrival_seq"] + 1},
+            "not committed by any batch",
+        ),
+        (
+            {"knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1)},
+            r"\['knowledge_time'\]",
+        ),
+        (
+            {
+                "ingest_time": lambda r: r["ingest_time"] - timedelta(seconds=1),
+                "available_time": lambda r: r["available_time"] - timedelta(seconds=1),
+            },
+            r"\['available_time', 'ingest_time'\]",
+        ),
+        ({"availability_policy_hash": "0" * 64}, r"\['availability_policy_hash'\]"),
+        ({"availability_policy_version": "9.9.9"}, r"\['availability_policy_version'\]"),
+        ({"availability_evidence_gap": "made up"}, r"\['availability_evidence_gap'\]"),
+        ({"declared_latency_us": 5}, r"\['declared_latency_us'\]"),
+        ({"parser_hash": "0" * 64}, r"\['parser_hash'\]"),
+        ({"contract_schema_version": "9.9.9"}, r"\['contract_schema_version'\]"),
+        ({"supersedes": ["rev1-" + "a" * 64]}, r"\['supersedes'\]"),
+        ({"precedence_evidence": [PRECEDENCE_ITEM]}, r"\['precedence_evidence'\]"),
+        ({"source_revision_time": EARLY}, r"\['source_revision_time'\]"),
+        ({"event_time": lambda r: r["event_time"] + TICK}, "event_time"),
+    ],
+)
+def test_an_archive_row_whose_lineage_does_not_hold_writes_no_edge(
+    h: RestHarness, drift: dict[str, Any], match: str
+) -> None:
+    _pair(h)
+    [row] = h.rows(ARCHIVE_AGGS)
+    _replace(h, ARCHIVE_AGGS, row, _drifted(row, drift))
+    _refused(h, match)
+
+
+@pytest.mark.parametrize(
+    ("corruption", "match"),
+    [
+        ("twin-archive", "committed 2 time"),
+        ("archive-knowledge", "committed with other content"),
+        ("archive-policy", r"\['availability_policy_hash'\]"),
+        ("archive-object-size", r"\['object_size_bytes'\]"),
+        ("archive-collector", "collector"),
+        ("archive-batch-replayed", "2 snapshots committing it"),
+        ("archive-object-missing", "is not published"),
+        ("archive-other-symbol", "not committed for this data type"),
+    ],
+)
+def test_an_archive_row_whose_archive_revision_is_not_lawful_writes_no_edge(
+    h: RestHarness, corruption: str, match: str
+) -> None:
+    _pair(h)
+    [archive] = h.rows(ARCHIVES)
+    batch_id = f"{archive['revision_id']}.archive.{archive['arrival_seq']}"
+    replace: dict[str, dict[str, Any]] = {
+        "archive-knowledge": {"knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1)},
+        "archive-policy": {"availability_policy_hash": "0" * 64},
+        "archive-object-size": {"object_size_bytes": 1},
+        "archive-collector": {"collector_version": "9.9.9"},
+        "archive-other-symbol": {"symbol": "ETHUSDT"},
+    }
+    if corruption == "twin-archive":
+        h.forge_rows(ARCHIVES, [dict(archive)], "twin-archive")
+    elif corruption in replace:
+        _replace(h, ARCHIVES, archive, _drifted(archive, replace[corruption]))
+    elif corruption == "archive-batch-replayed":
+        _replace(h, ARCHIVES, archive, None)
+        h.forge_snapshot(ARCHIVES, [dict(archive)], batch_id=batch_id)
+    else:
+        h.object_path(archive["object_key"]).unlink()
+    _refused(h, match)
+
+
+@pytest.mark.parametrize("corruption", ["renatived", "dropped", "added"])
+def test_an_archive_row_batch_that_no_longer_reproduces_writes_no_edge(
+    h: RestHarness, corruption: str
+) -> None:
+    _pair(h, 3)
+    rows = sorted(h.rows(ARCHIVE_AGGS), key=lambda row: row["archive_line_number"])
+    if corruption == "renatived":
+        _replace(h, ARCHIVE_AGGS, rows[1], _renatived(rows[1], "archive"))
+    elif corruption == "dropped":
+        _replace(h, ARCHIVE_AGGS, rows[1], None)
+    else:
+        # A self-consistent competitor of line 2 (same key, line and arrival number).
+        h.forge_rows(ARCHIVE_AGGS, [_renatived(rows[1], "archive")], "hostile-archive-row")
+    _refused(h, _BATCH_TAMPER["row", corruption])
+
+
+def test_a_lawful_pair_still_yields_its_edge_after_verification(h: RestHarness) -> None:
+    """Control: nothing tampered — the verified pair is equal and gets exactly one edge."""
+    _pair(h, 3)
+    out = h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
+    assert len(out.edges) == 3 and out.findings == ()
+    assert len(h.rows(EVIDENCE)) == 3
+
+
+# ------------------------------------------------------------------ one fixed view
+
+
+@dataclass
+class _ReadHook(ProxyCatalog):
+    """Runs ``hook(n)`` after the n-th archive element read of a pinned read — i.e. between the
+    element rows and every lineage / holder / batch verification of that attempt."""
+
+    hook: Any = None
+    attempts: int = 0
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_columns(table, **kwargs)
+        text = repr(kwargs.get("row_filter"))
+        if table == ARCHIVE_AGGS.table and "observation_key" in text:
+            self.attempts += 1
+            if self.hook is not None:
+                self.hook(self.attempts)
+        return result
+
+
+def _mover(h: RestHarness, table: str) -> Any:
+    """Commits an unrelated row (never read by this partition's reconcile) to ``table``."""
+    templates = {
+        ARCHIVES.table: (ARCHIVES, h.rows(ARCHIVES)[0]),
+        ARCHIVE_AGGS.table: (ARCHIVE_AGGS, h.rows(ARCHIVE_AGGS)[0]),
+        RESPONSES.table: (RESPONSES, h.rows(RESPONSES)[0]),
+        REST_AGGS.table: (REST_AGGS, h.rows(REST_AGGS)[0]),
+    }
+    edge = _edge_row(h)
+
+    def commit(index: int) -> None:
+        digest = hashlib.sha256(f"mover-{table}-{index}".encode()).hexdigest()
+        if table == EVIDENCE.table:
+            row = dict(edge, observation_key=f"binance:spot:agg_trade:ETHUSDT:{index}")
+            row["edge_id"] = "edge1-" + digest
+            h.forge_rows(EVIDENCE, [row], f"mover-{index}")
+            return
+        definition, template = templates[table]
+        row = dict(template, revision_id="rev1-" + digest, symbol="ETHUSDT")
+        row["arrival_seq"] = (
+            BASE + (500 + index) * STRIDE
+            if table in (RESPONSES.table, REST_AGGS.table)
+            else (5000 + index) * STRIDE
+        )
+        if table == ARCHIVE_AGGS.table:
+            row["archive_revision_id"] = "rev1-" + "8" * 64
+        if table == REST_AGGS.table:
+            row["response_revision_id"] = "rev1-" + "8" * 64
+        h.forge_rows(definition, [row], f"mover-{index}")
+
+    return commit
+
+
+@pytest.mark.parametrize(
+    "table", [ARCHIVES.table, ARCHIVE_AGGS.table, RESPONSES.table, REST_AGGS.table, EVIDENCE.table]
+)
+def test_a_head_moved_mid_read_is_read_again_and_judged_once(h: RestHarness, table: str) -> None:
+    _pair(h)
+    mover = _mover(h, table)
+    proxy = _ReadHook(h.adapter, hook=lambda n: mover(n) if n == 1 else None)
+
+    out = h.reconciler(clock=StepClock(start=K_EDGE), adapter=proxy).reconcile(
+        "agg_trades", SYMBOL, DAY
+    )
+
+    assert proxy.attempts >= 2  # the first view mixed two snapshots and was discarded
+    [edge] = out.edges
+    assert out.findings == () and not edge.reused
+    [row] = [item for item in h.rows(EVIDENCE) if item["observation_key"].split(":")[3] == SYMBOL]
+    assert row["edge_id"] == edge.edge_id
+
+
+@pytest.mark.parametrize("twin", ["archive", "response"])
+def test_a_twin_landing_mid_read_is_never_judged_on_a_mixed_view(h: RestHarness, twin: str) -> None:
+    _pair(h)
+    definition = ARCHIVES if twin == "archive" else RESPONSES
+    [original] = h.rows(definition)
+
+    def land(count: int) -> None:
+        if count == 1:
+            h.forge_rows(definition, [dict(original)], "hostile-twin")
+
+    proxy = _ReadHook(h.adapter, hook=land)
+    clock = StepClock(start=K_EDGE)
+    with pytest.raises(CatalogIntegrityError, match="committed 2 time"):
+        h.reconciler(clock=clock, adapter=proxy).reconcile("agg_trades", SYMBOL, DAY)
+    assert proxy.attempts == 2 and clock.calls == 0
+    assert h.rows(EVIDENCE) == []
+
+
+def test_heads_that_keep_moving_end_in_a_bounded_conflict_without_an_edge(
+    h: RestHarness,
+) -> None:
+    _pair(h)
+    mover = _mover(h, ARCHIVES.table)
+    proxy = _ReadHook(h.adapter, hook=mover)
+    clock = StepClock(start=K_EDGE)
+    with pytest.raises(ChannelReconcileConflict, match="kept moving"):
+        h.reconciler(clock=clock, adapter=proxy).reconcile("agg_trades", SYMBOL, DAY)
+    assert proxy.attempts == 8 and clock.calls == 0
+    assert h.rows(EVIDENCE) == []

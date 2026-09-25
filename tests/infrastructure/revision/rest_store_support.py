@@ -194,7 +194,7 @@ class RestHarness:
         self, *, clock: Callable[[], datetime], adapter: Any = None, **kwargs: Any
     ) -> ChannelReconciler:
         return ChannelReconciler(
-            self.adapter if adapter is None else adapter, clock=clock, **kwargs
+            self.adapter if adapter is None else adapter, self.storage, clock=clock, **kwargs
         )
 
     def ingest_archive(
@@ -313,6 +313,18 @@ class RestHarness:
                 SUMMARY_FINGERPRINT_RULE: definition.fingerprint_rule.rule_id,
             },
         )
+
+    def delete_rows(
+        self, definition: RegisteredTableDefinition, row_filter: BooleanExpression
+    ) -> None:
+        """Delete rows through raw PyIceberg (a hostile maintenance writer, no batch metadata).
+
+        Unlike ``overwrite_rows`` the resulting snapshot is metadata-consistent, so what
+        catches the tamper is the row / lineage / batch verification, not the snapshot reader.
+        """
+        namespace, name = definition.table.split(".")
+        iceberg = self.catalog.sql_catalog().load_table((namespace, name))
+        iceberg.delete(delete_filter=row_filter)
 
     def object_path(self, key: str) -> Path:
         return local_file_uri_to_path(self.storage.warehouse_uri, field_name="warehouse_uri") / key
