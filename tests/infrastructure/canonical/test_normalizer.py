@@ -7,17 +7,20 @@ reconciler. Expected values are written down from ADR-0028 by hand, not from the
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from pyiceberg.expressions import EqualTo
 
 from core.contracts.catalog import CommitRequest
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
 from core.domain.base import canonical_json
+from infrastructure.canonical import normalizer as nz
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
     CanonicalNormalizeConflict,
@@ -780,7 +783,8 @@ class _ReadHook(ProxyCatalog):
         return result
 
 
-def test_a_head_moved_mid_read_is_read_again(h: RestHarness) -> None:
+def test_a_head_moved_mid_read_does_not_move_the_call(h: RestHarness) -> None:
+    """G3-S: every read of a call time-travels to the heads pinned at its start."""
     archive, _, _ = _pair(h, 1)
     [template] = h.rows(c.ARCHIVES)
 
@@ -794,3 +798,108 @@ def test_a_head_moved_mid_read_is_read_again(h: RestHarness) -> None:
         c.ARCHIVE_AGGS.table, archive
     )
     assert proxy.reads >= 2 and len(out.revision_ids) == 1
+
+
+# =========================================================================================
+# G3-S: bounded windows over pinned snapshots
+# =========================================================================================
+
+
+@dataclass
+class _ScanLog(ProxyCatalog):
+    """Records (table, column count, rows returned) of every scan; ``hook`` runs before it."""
+
+    scans: list[tuple[str, int, int]] = field(default_factory=list)
+    hook: Any = None
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        if self.hook is not None:
+            self.hook(table, kwargs)
+        result = self.inner.scan_columns(table, **kwargs)
+        self.scans.append((table, len(kwargs["columns"]), result.num_rows))
+        return result
+
+
+def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None:
+    items = ss.agg_items(7)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    log = _ScanLog(h.adapter)
+    out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=2)\
+        .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+    assert [commit.row_count for commit in out.commits] == [2, 2, 2, 1]
+    wide = [(table, rows) for table, width, rows in log.scans if width > 3]
+    # Canonical rows are only ever read one window (or its block slice) at a time.
+    assert max(rows for table, rows in wide if table == c.TRADES.table) <= 2
+    # Raw rows: 4 proving windows + 4 writing windows of <= 2 rows (the verifier's own reads of
+    # the D2 batch are bounded by D2's microbatch, not by this unit).
+    assert sum(1 for table, rows in wide if table == c.ARCHIVE_AGGS.table and rows <= 2) >= 8
+    rows = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
+    assert [row["revision_id"] for row in rows] == list(out.revision_ids)
+    assert [row["arrival_seq"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
+
+
+def test_windows_and_one_window_normalize_identically(h: RestHarness) -> None:
+    items = ss.agg_items(5)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    [response] = c.ingest_rest(h, "agg_trades", items, knowledge=K_REST)
+    small = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2)
+    large = c.normalizer(h, clock=StepClock(start=K_NORM))
+    a = small.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    r = large.normalize_unit(c.REST_AGGS.table, response)
+    rows = {row["revision_id"]: row for row in h.rows(c.TRADES)}
+    for out in (a, r):
+        assert len(out.revision_ids) == 5
+    # Same market content per key, lineage and block differ only (ADR-0028 §1).
+    by_key: dict[str, set[str]] = {}
+    for row in rows.values():
+        by_key.setdefault(row["observation_key"], set()).add(row["payload_hash"])
+    assert all(len(hashes) == 1 for hashes in by_key.values()) and len(by_key) == 5
+    assert small.verify_unit(c.ARCHIVE_AGGS.table, archive) == large.verify_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+
+
+def test_another_writer_mid_proof_restarts_the_unit_without_double_writes(h: RestHarness) -> None:
+    items = ss.agg_items(3)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    [response] = c.ingest_rest(h, "agg_trades", items, knowledge=K_REST)
+    rival = c.normalizer(h, clock=StepClock(start=K_NORM))
+    fired: list[bool] = []
+
+    def interleave(table: str, kwargs: Mapping[str, Any]) -> None:
+        if table == c.ARCHIVE_AGGS.table and not fired and len(kwargs["columns"]) > 3:
+            fired.append(True)
+            rival.normalize_unit(c.REST_AGGS.table, response)  # moves canonical.trades
+
+    clock = StepClock(start=K_NORM)
+    out = c.normalizer(h, clock=clock, adapter=_ScanLog(h.adapter, hook=interleave))\
+        .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+    assert fired and len(out.revision_ids) == 3 and out.arrival_seq_base == c.STRIDE
+    assert len(h.rows(c.TRADES)) == 6
+    # The first commit lost its expected parent before anything of the unit was committed, so
+    # the whole unit restarted with a new block and a new reading (ADR-0028 §6: the old reading
+    # was never persisted); the rival's rows are untouched and nothing is written twice.
+    assert clock.calls == 2
+
+
+def test_proof_windows_never_split_a_position_and_cover_all() -> None:
+    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [(1, 2), (3, 4), (5, 5)]
+    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1)]
+    assert list(nz._proof_windows([], 2)) == []
+    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40)]
+
+
+@pytest.mark.parametrize(
+    ("values", "first", "last", "ok"),
+    [
+        ([1, 2, 3], 1, 3, True),
+        ([3, 1, 2], 1, 3, True),
+        ([1, 2, 2], 1, 3, False),
+        ([1, 2, 4], 1, 3, False),
+        ([1, 2], 1, 3, False),
+        ([], 1, 0, True),
+        ([None, 2, 3], 1, 3, False),
+    ],
+)
+def test_runs(values: list[int | None], first: int, last: int, ok: bool) -> None:
+    assert nz._is_run(pa.array(values, type=pa.int64()), first, last) is ok

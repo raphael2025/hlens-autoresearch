@@ -214,6 +214,12 @@ _MICROSECOND: Final = timedelta(microseconds=1)
 _BATCH_INDEX_DIGITS: Final = 8
 #: Verified first-delivery collections kept per verifier (checkpoints are immutable).
 _COLLECTION_CACHE: Final = 16
+#: History walks memoised per (table, head, prefixes): a head's history never changes.
+_BATCH_INDEX_CACHE: Final = 8
+#: Verified archives kept by a caching verifier (each holds its parsed object).
+_ARCHIVE_CACHE: Final = 2
+#: Widest ``arrival_seq`` range one holder scan covers (G3-S).
+_HOLDER_SPAN: Final = 1 << 17
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -906,12 +912,21 @@ class PersistedRowVerifier:
         storage: StorageAdapter,
         *,
         storage_error: Callable[[StorageError], Exception] | None = None,
+        cache_archives: bool = False,
     ) -> None:
         self._adapter = adapter
         self._storage = storage
         self._storage_error = storage_error or (lambda exc: exc)
         #: Verified first-delivery collections, most recent last (immutable checkpoints).
         self._collections: dict[tuple[str, str], CommittedCollection] = {}
+        self._batch_index: dict[
+            tuple[str, str | None, tuple[str, ...]], dict[str, dict[int, list[SnapshotInfo]]]
+        ] = {}
+        #: Only for a verifier over a pinned, read-only view (one normalizer call, G3-S): the
+        #: archive rows, their objects and parses cannot change under it, so each archive is
+        #: proven and parsed once for all the windows of its unit.
+        self._cache_archives = cache_archives
+        self._archives: dict[tuple[str, str, str], VerifiedArchive] = {}
 
     # ------------------------------------------------------------------ first deliveries
 
@@ -986,16 +1001,44 @@ class PersistedRowVerifier:
         return rows
 
     def _holders(self, table: str, seqs: Sequence[int]) -> dict[int, list[str]]:
+        """Every row holding one of ``seqs``: range scans over runs of nearby numbers (G3-S)."""
+        wanted = set(seqs)
         holders: dict[int, list[str]] = {}
-        for chunk in _chunks(sorted(seqs)):
+        ordered = sorted(wanted)
+        start = 0
+        while start < len(ordered):
+            first = ordered[start]
+            end = start + 1
+            while end < len(ordered) and ordered[end] - first < _HOLDER_SPAN:
+                end += 1
             found = self._adapter.scan_columns(
                 table,
                 columns=("revision_id", "arrival_seq"),
-                row_filter=_member("arrival_seq", chunk),
+                row_filter=And(
+                    _at_least("arrival_seq", first), _below("arrival_seq", ordered[end - 1] + 1)
+                ),
             ).to_pylist()
             for item in found:
-                holders.setdefault(item["arrival_seq"], []).append(item["revision_id"])
+                if item["arrival_seq"] in wanted:
+                    holders.setdefault(item["arrival_seq"], []).append(item["revision_id"])
+            start = end
         return holders
+
+    def _indexed(
+        self, table: str, prefixes: Mapping[str, str]
+    ) -> dict[str, dict[int, list[SnapshotInfo]]]:
+        """``_indexed_batches``, memoised per head: one history walk for many windows (G3-S)."""
+        info = self._adapter.load_table(table)
+        snapshot = None if info is None else info.current_snapshot
+        head = None if snapshot is None else snapshot.snapshot_id
+        key = (table, head, tuple(sorted(prefixes)))
+        found = self._batch_index.get(key)
+        if found is None:
+            found = _indexed_batches(self._adapter, table, prefixes)
+            if len(self._batch_index) >= _BATCH_INDEX_CACHE:
+                self._batch_index.pop(next(iter(self._batch_index)))
+            self._batch_index[key] = found
+        return {prefix: {i: list(v) for i, v in value.items()} for prefix, value in found.items()}
 
     def _check_sole_holders(self, table: str, by_seq: Mapping[int, str], label: str) -> None:
         holders = self._holders(table, list(by_seq))
@@ -1265,7 +1308,7 @@ class PersistedRowVerifier:
             for row in self._scan(definition, _member("response_revision_id", chunk)):
                 by_lineage[row["response_revision_id"]].append(row)
         prefixes = {f"{lineage}.elements.": lineage for lineage in lineage_ids}
-        found = _indexed_batches(self._adapter, table, prefixes)
+        found = self._indexed(table, prefixes)
         for prefix, lineage in prefixes.items():
             members = sorted(by_lineage[lineage], key=lambda row: row["element_index"])
             batches = [
@@ -1330,6 +1373,13 @@ class PersistedRowVerifier:
         self, data_type: str, symbol: str, archive_ids: Sequence[str]
     ) -> dict[str, VerifiedArchive]:
         """Each named archive revision: committed once, for this data type and symbol, lawful."""
+        cached = {
+            archive_id: self._archives[(data_type, symbol, archive_id)]
+            for archive_id in archive_ids
+            if (data_type, symbol, archive_id) in self._archives
+        }
+        if len(cached) == len(archive_ids):
+            return cached
         table = BINANCE_SPOT_ARCHIVES.table
         found: dict[str, list[Mapping[str, Any]]] = {}
         for chunk in _chunks(list(archive_ids)):
@@ -1369,6 +1419,11 @@ class PersistedRowVerifier:
         for batch_id, row in batches.items():
             snapshot = _one_snapshot(table, batch_id, snapshots[batch_id])
             check_batch_snapshot(BINANCE_SPOT_ARCHIVES, batch_id, snapshot, [row])
+        if self._cache_archives:
+            for archive_id, item in verified.items():
+                while len(self._archives) >= _ARCHIVE_CACHE:
+                    self._archives.pop(next(iter(self._archives)))
+                self._archives[(data_type, symbol, archive_id)] = item
         return verified
 
     def _reparse(
@@ -1555,7 +1610,7 @@ class PersistedRowVerifier:
         """
         table = definition.table
         prefixes = {f"{archive_id}.rows.": archive_id for archive_id in rows}
-        found = _indexed_batches(self._adapter, table, prefixes)
+        found = self._indexed(table, prefixes)
         for prefix, archive_id in sorted(prefixes.items()):
             batches = sorted(found[prefix].items())
             snapshots = [_one_snapshot(table, _row_batch_id(archive_id, i), s) for i, s in batches]

@@ -26,7 +26,7 @@ from core.contracts.catalog import (
     SnapshotInfo,
     TableInfo,
 )
-from infrastructure.catalog.iceberg_adapter import PyIcebergCatalogAdapter
+from infrastructure.revision.store import RevisionCatalog
 
 __all__ = ["PinnedCatalogView", "PinnedViewError"]
 
@@ -38,7 +38,7 @@ class PinnedViewError(Exception):
 class PinnedCatalogView:
     """``RevisionCatalog`` reads at fixed snapshots; no commits, no allocation."""
 
-    def __init__(self, adapter: PyIcebergCatalogAdapter, bindings: Mapping[str, str]) -> None:
+    def __init__(self, adapter: RevisionCatalog, bindings: Mapping[str, str]) -> None:
         self._adapter = adapter
         self._bindings = dict(bindings)
 
