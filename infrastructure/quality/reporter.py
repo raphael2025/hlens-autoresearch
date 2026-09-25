@@ -42,7 +42,7 @@ from core.contracts.revision import PointInTimeSpec
 from core.contracts.storage import StorageAdapter
 from core.domain.base import FrozenMapping, canonical_json
 from infrastructure.canonical import rules
-from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError, PyIcebergCatalogAdapter
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
@@ -57,7 +57,7 @@ from infrastructure.catalog.phase1_tables import (
 from infrastructure.pit.selector import PIT_BINDING, REQUIRED_BINDINGS, PitSelection, PitSelector
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
-from infrastructure.revision.store import BatchCommit
+from infrastructure.revision.store import BatchCommit, RevisionCatalog
 
 __all__ = [
     "QUALITY_RULE_HASH",
@@ -65,6 +65,7 @@ __all__ = [
     "QUALITY_RULE_SPEC",
     "QUALITY_RULE_VERSION",
     "QualityReportError",
+    "QualityReportMissing",
     "QualityReported",
     "QualityReporter",
     "evidence_gaps_of",
@@ -190,6 +191,10 @@ class QualityReportError(Exception):
     """A report cannot be produced honestly (scope, clock, contention); nothing is committed."""
 
 
+class QualityReportMissing(QualityReportError):
+    """``existing_only``: no committed report matches these inputs (a dataset fails closed)."""
+
+
 @dataclass(frozen=True, slots=True)
 class QualityReported:
     report_id: str
@@ -240,7 +245,7 @@ class QualityReporter:
 
     def __init__(
         self,
-        adapter: PyIcebergCatalogAdapter,
+        adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
         clock: Callable[[], datetime] | None = None,
@@ -250,7 +255,16 @@ class QualityReporter:
         self._clock = clock or (lambda: datetime.now(UTC))
         self._selector = PitSelector(adapter, storage)
 
-    def report(self, data_type: str, symbol: str, day: date) -> QualityReported:
+    def report(
+        self, data_type: str, symbol: str, day: date, *, existing_only: bool = False
+    ) -> QualityReported:
+        """Write (or reuse) the partition's report at the current heads.
+
+        With ``existing_only`` nothing is written and no clock is read: the committed report
+        for exactly these inputs is re-derived and returned, or ``QualityReportMissing``. A
+        dataset build runs this on a ``PinnedCatalogView`` of its bindings (F3), so "these
+        inputs" are the dataset's bound snapshots.
+        """
         tables = _INPUT_TABLES.get(data_type)
         if tables is None:
             raise QualityReportError(f"unsupported data_type {data_type!r}")
@@ -266,6 +280,11 @@ class QualityReporter:
                 raise QualityReportError(f"{canonical} has no snapshot: nothing to report on")
             report_id = quality_report_id(canonical, symbol, day, bindings)
             committed = self._committed(report_id)
+            if committed is None and existing_only:
+                # Nothing may be written, not even gap batches (ADR-0031): no report, no build.
+                raise QualityReportMissing(
+                    f"no committed quality report {report_id} for these input snapshots"
+                )
             # A committed report is only ever verified: its gap batches are checked, never written.
             partition = self._survey(
                 data_type, symbol, day, bindings, report_id, verify=committed is not None
@@ -686,18 +705,45 @@ class _GapWriter:
 
 
 def evidence_gaps_of(adapter: Any, report_id: str) -> list[dict[str, Any]]:
-    """The evidence-gap rows of one report (ADR-0031), sorted by (table, revision_id).
+    """Every evidence gap one committed report records, sorted by (table, revision_id).
 
-    Rows of ``quality.availability_evidence_gaps`` exist without a report row only for a report
-    that never completed; callers bind gaps through a committed report id.
+    Gaps listed in the report row itself (small reports: quality rule 1.0.0 partitions and the
+    listing-history report) and rows of ``quality.availability_evidence_gaps`` (rule 2.0.0,
+    ADR-0031) are returned alike. Pass a ``PinnedCatalogView`` to read them at a dataset's bound
+    snapshots. Gap rows without a committed report row are never returned.
     """
-    columns = tuple(field.name for field in QUALITY_EVIDENCE_GAPS.arrow_schema)
-    rows: list[dict[str, Any]] = adapter.scan_columns(
-        QUALITY_EVIDENCE_GAPS.table,
-        columns=columns,
-        row_filter=EqualTo("quality_report_id", report_id),  # type: ignore[call-arg, arg-type]
+    reports = adapter.scan_columns(
+        DATA_QUALITY_REPORTS.table,
+        columns=("report_id", "subject_symbol", "subject_start", "evidence_gaps"),
+        row_filter=EqualTo("report_id", report_id),  # type: ignore[call-arg, arg-type]
     ).to_pylist()
-    return sorted(rows, key=lambda row: (row["table"], row["revision_id"]))
+    if len(reports) > 1:
+        raise CatalogIntegrityError(f"quality report {report_id} is committed twice")
+    if not reports:
+        return []
+    [report] = reports
+    found: list[dict[str, Any]] = [
+        {
+            "quality_report_id": report_id,
+            "table": gap["table"],
+            "revision_id": gap["revision_id"],
+            "gap": gap["gap"],
+            "subject_symbol": report["subject_symbol"],
+            "subject_start": report["subject_start"],
+        }
+        for gap in report["evidence_gaps"]
+    ]
+    columns = tuple(field.name for field in QUALITY_EVIDENCE_GAPS.arrow_schema)
+    info = adapter.load_table(QUALITY_EVIDENCE_GAPS.table)
+    if info is not None and info.current_snapshot is not None:
+        found.extend(
+            adapter.scan_columns(
+                QUALITY_EVIDENCE_GAPS.table,
+                columns=columns,
+                row_filter=EqualTo("quality_report_id", report_id),  # type: ignore[call-arg, arg-type]
+            ).to_pylist()
+        )
+    return sorted(found, key=lambda row: (row["table"], row["revision_id"]))
 
 
 def _time_column(data_type: str) -> str:

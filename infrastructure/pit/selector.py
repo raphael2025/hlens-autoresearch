@@ -56,12 +56,13 @@ from core.contracts.universe import SelectedRevisionLineage
 from core.domain.base import canonical_json
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import CanonicalNormalizer
-from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError, PyIcebergCatalogAdapter
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_PRECEDENCE_EVIDENCE
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.channel_reconcile import ChannelReconciler, revision_record_from_row
 from infrastructure.revision.precedence import maximal_heads
+from infrastructure.revision.store import RevisionCatalog
 
 __all__ = [
     "PIT_BINDING",
@@ -193,7 +194,7 @@ def _check_bindings(spec: PointInTimeSpec) -> None:
 class PitSelector:
     """Deterministic PIT selection at a spec's bound snapshots; never writes."""
 
-    def __init__(self, adapter: PyIcebergCatalogAdapter, storage: StorageAdapter) -> None:
+    def __init__(self, adapter: RevisionCatalog, storage: StorageAdapter) -> None:
         self._adapter = adapter
         self._storage = storage
         #: The last spec's bound snapshots, their view and immutable-view normalizer, and the

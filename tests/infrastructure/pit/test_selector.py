@@ -346,7 +346,7 @@ def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> Non
     )
     first = utc(2023, 11, 14, 22, 14)  # ss.T0: the unit's first trade
     log = _RawScans(h.adapter)
-    out = PitSelector(log, h.storage).select(  # type: ignore[arg-type]
+    out = PitSelector(log, h.storage).select(
         _spec(h, cutoff=FAR), "agg_trades", SYMBOL, first + 2 * MINUTE, first + 4 * MINUTE
     )
     assert sorted(row["arrival_seq"] for row in out.selected_rows.values()) == [3, 4]
@@ -370,7 +370,7 @@ def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> Non
     slices = [(first, first + 3 * MINUTE), (first + 3 * MINUTE, first + 7 * MINUTE)]
     spec = _spec(h, cutoff=FAR)
     log = _RawScans(h.adapter)
-    shared = PitSelector(log, h.storage)  # type: ignore[arg-type]
+    shared = PitSelector(log, h.storage)
     for start, end in slices:
         out = shared.select(spec, "agg_trades", SYMBOL, start, end)
         fresh = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, start, end)
