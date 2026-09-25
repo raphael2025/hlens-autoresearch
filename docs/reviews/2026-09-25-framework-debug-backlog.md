@@ -18,7 +18,7 @@
 | R8 | 中 | `apps/worker/loop.py` | 阶段实际用量超出预估时，事后才发现（超支一次后停机） | ✅ 已修（W2，deb590a；R8 另见 R24） |
 | R9 | 中 | `research/loop/stages.py` | 循环审计记录的哈希含浮点数（跨平台可能分叉） | ✅ 已修（W2，deb590a：固定精度 Decimal 字符串） |
 | R10 | 低 | `research/loop/memory.py` | LLM 草稿审阅无身份门禁 | ✅ 已修（W2，deb590a：必须给出非循环自身的审阅人） |
-| R11 | 低~中 | `infrastructure/strategy/signals.py`、`infrastructure/event/inputs.py` | `available_time = evaluation_time` 依赖上游契约保证因果 | 设计如此（F4 / P2 契约已保证 `latest_input_available_time <= evaluation_time`）；调试时加跨层断言 |
+| R11 | 低~中 | `infrastructure/strategy/signals.py`、`infrastructure/event/inputs.py` | `available_time = evaluation_time` 依赖上游契约保证因果 | ✅ 已由契约保证：`FeatureValue` / `StateValue` 构造时即拒绝 `latest_input_* > evaluation_time`（`core/contracts/feature.py`、`state.py`），执行器再以 `check_answers` 逐个复核可见集合；适配器只做映射 |
 | R12 | 低~中 | `infrastructure/event/runner.py` | 稀疏检查点网格下，检查点之间的回填对执行器不可见 | 已在 ADR-0036 记录；调试时评估默认网格 |
 | R13 | 高 | `research/validation/robustness.py`（容量） | `min_capacity` 缺失只记入缺失字段、不产生门，整体可 PASS；`G4.capacity.estimated` 恒为 PASS | ✅ 已修（ADR-0041 实现说明）：估计值只报告；缺 `min_capacity` / 冲击系数 = INCONCLUSIVE 门；`RobustnessCheck` 拒绝无门的缺失字段 |
 | R14 | 高 | `research/validation/robustness.py`（参数邻域、时间对齐、延迟压力、跨资产） | 无邻点、偏移为空、`delay_stress_bars = 0`、未声明标的时 `gates=()`，检查被静默跳过 | ✅ 已修：均为 C-R1 ~ C-R5 必需检查，改为 `configuration_missing:<what>` INCONCLUSIVE 门；逐项依据见 ADR-0041 实现说明 |
