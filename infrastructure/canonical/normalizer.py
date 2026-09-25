@@ -10,14 +10,15 @@ the unit (G3-S): a unit is read, proven and written in windows of Raw positions.
    so no verdict is ever drawn from a moving table;
 2. **prove** (no clock, no write) — window by window, every Raw row of the unit is proven by the
    shared ``PersistedRowVerifier`` (D3E-R2 / R3); the unit's Raw positions must then be distinct
-   and, for an archive, exactly the ``1 … N`` lines of its object; a REST response may lack only
-   the elements of its body that another committed page delivered first (G2-R1a / RT-3: any
-   other missing element is a store that stopped half-way, ``CanonicalUnitIncomplete``, and
-   nothing is written). Batch ``i`` is the ``i``-th rank slice of ``chunk`` positions. The
-   committed batch ids are the plan (E1-R3): unit size ``N`` and microbatch size;
-   committed batches must be a contiguous prefix of it, each holding exactly the rows its window
-   normalizes to (content, fingerprint, row count) under the block base and ready time recovered
-   from them, and the unit's committed rows must be exactly those batches' rows;
+   and, for an archive, exactly the ``1 … N`` lines of its object; a REST response may lack only the
+   elements of its body that another committed page delivered first (G2-R1a / RT-3: any other
+   missing element is a store that stopped half-way, ``CanonicalUnitIncomplete``, and nothing is
+   written; ``check_rest_page``, which the E3 report shares: G2-R3a). Batch ``i`` is the ``i``-th
+   rank slice of ``chunk`` positions. The committed batch ids are the plan (E1-R3): unit size ``N``
+   and microbatch size; committed batches must be a contiguous prefix of it, each holding exactly
+   the rows its window normalizes to (content, fingerprint, row count) under the block base and
+   ready time recovered from them, and the unit's committed rows must be exactly those batches'
+   rows;
 3. **write** — only if nothing of the unit is committed: a fresh block above the table's largest
    ``arrival_seq`` and **one** reading of the injected UTC clock, never before a Raw
    ``knowledge_time`` (refused, not raised). Each missing batch
@@ -38,7 +39,7 @@ cross-channel edges are mapped at PIT time (ADR-0028 §3.2).
 from __future__ import annotations
 
 from bisect import bisect_left
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
@@ -68,6 +69,7 @@ from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.row_integrity import (
+    PageElement,
     PersistedRowVerifier,
     batch,
     batch_rows,
@@ -84,6 +86,7 @@ __all__ = [
     "CanonicalNormalizer",
     "CanonicalUnitIncomplete",
     "CanonicalUnitNormalized",
+    "check_rest_page",
     "unit_batch_id",
 ]
 
@@ -640,59 +643,16 @@ class CanonicalNormalizer:
         source_revision_id: str,
         positions: Sequence[int],
     ) -> None:
-        """Every element the response's body holds is its own row or another page's (RT-3).
-
-        The response revision is proven and its body strictly re-decoded (``page_elements``);
-        each element not held under this response must be held — exactly once, proven lawful —
-        under **another** committed response revision at the pinned snapshot (the store skips
-        such elements: they are never re-written, ADR-0027). Anything else is a page whose
-        element batches stopped half-way: ``CanonicalUnitIncomplete``, nothing is written.
-
-        The response's ``element_count`` alone cannot tell a skipped element from a lost one
-        (both are simply absent), so completeness is proven element by element from the body.
-        An archive unit's completeness is ``_check_positions``' (its object's ``1 … N`` lines).
-        """
+        """A REST unit is its whole page (``check_rest_page``); an archive is judged by
+        ``_check_positions`` (its object's ``1 … N`` lines)."""
         if channel.name == "archive":
             return
-        table = channel.element.table
-        response, elements = pin.verifier.page_elements(channel.data_type, source_revision_id)
-        own = {position - 1 for position in positions}
-        if not own <= {element.element_index for element in elements}:
-            raise CatalogIntegrityError(
-                f"{table}: unit {source_revision_id} holds positions its body does not"
-            )
-        missing = [element for element in elements if element.element_index not in own]
-        if not missing:
-            return
-        held: dict[str, list[Mapping[str, Any]]] = {}
-        columns = tuple(field.name for field in channel.element.arrow_schema)
-        keys = sorted({element.observation_key for element in missing})
-        for start in range(0, len(keys), _KEY_CHUNK):
-            for row in pin.catalog.scan_columns(
-                table,
-                columns=columns,
-                row_filter=And(
-                    _equals("symbol", response["symbol"]),
-                    In("observation_key", keys[start : start + _KEY_CHUNK]),  # type: ignore[call-arg, arg-type]
-                ),
-            ).to_pylist():
-                held.setdefault(row["revision_id"], []).append(row)
-        unheld = [
-            element.element_index
-            for element in missing
-            if len(held.get(element.revision_id, ())) != 1
-            or held[element.revision_id][0]["response_revision_id"] == source_revision_id
-        ]
-        if unheld:
-            raise CanonicalUnitIncomplete(
-                f"{table}: response revision {source_revision_id} holds {len(elements)} "
-                f"element(s) but element(s) {unheld[:8]} are committed neither under it nor "
-                "under another page: its element batches stopped half-way (rerun the store)"
-            )
-        pin.verifier.verify_rest_elements(
-            channel.element,
-            channel.data_type,
-            [held[element.revision_id][0] for element in missing],
+        check_rest_page(
+            pin.catalog,
+            pin.verifier,
+            channel,
+            source_revision_id,
+            {position - 1 for position in positions},
         )
 
     def _raw_window(
@@ -1051,6 +1011,125 @@ class CanonicalNormalizer:
         if info is None:
             raise TableNotFound(f"table {table} does not exist; create the Phase 1 tables first")
         return None if info.current_snapshot is None else info.current_snapshot.snapshot_id
+
+
+def check_rest_page(
+    catalog: RevisionCatalog,
+    verifier: PersistedRowVerifier,
+    channel: rules.RawChannel,
+    response_revision_id: str,
+    own: Collection[int],
+) -> None:
+    """Every element the response's body holds is its own row or another page's (RT-3).
+
+    ``own`` are the ``element_index`` values committed under the response in ``channel``'s
+    element table; ``catalog`` / ``verifier`` must read one pinned state. The response revision
+    is proven and its body strictly re-decoded (``page_elements``); each element not held under
+    this response must be held — exactly once, proven lawful — under **another** committed
+    response revision (the store skips such elements: they are never re-written, ADR-0027).
+    Anything else is a page whose element batches stopped half-way (or never started):
+    ``CanonicalUnitIncomplete``. The normalizer (E1) and the partition report (E3, hence F3)
+    share this one judgement.
+
+    The response's ``element_count`` alone cannot tell a skipped element from a lost one (both
+    are simply absent), so completeness is proven element by element from the body.
+
+    Memory is bounded (G2-R3a): the history of the missing elements' observation keys is read
+    ``_KEY_CHUNK`` keys at a time and only three narrow columns of it are kept, for the rows
+    whose ``revision_id`` is a missing element's; full rows are then read back only for those
+    holders (at most the page's ``element_count``) and proven by ``verify_rest_elements``.
+    """
+    if channel.name == "archive":
+        raise CanonicalNormalizeError(f"{channel.element.table} is not a REST element table")
+    table = channel.element.table
+    response, elements = verifier.page_elements(channel.data_type, response_revision_id)
+    own = set(own)
+    if not own <= {element.element_index for element in elements}:
+        raise CatalogIntegrityError(
+            f"{table}: unit {response_revision_id} holds positions its body does not"
+        )
+    missing = [element for element in elements if element.element_index not in own]
+    if not missing:
+        return
+    symbol = _equals("symbol", response["symbol"])
+    holders = _holders(catalog, table, symbol, missing)
+    unheld = [
+        element.element_index
+        for element in missing
+        if holders.get(element.revision_id, (0, "", ""))[0] != 1
+        or holders[element.revision_id][1] == response_revision_id
+    ]
+    if unheld:
+        raise CanonicalUnitIncomplete(
+            f"{table}: response revision {response_revision_id} holds {len(elements)} "
+            f"element(s) but element(s) {unheld[:8]} are committed neither under it nor "
+            "under another page: its element batches stopped half-way (rerun the store)"
+        )
+    rows: dict[str, Mapping[str, Any]] = {}
+    columns = tuple(field.name for field in channel.element.arrow_schema)
+    wanted = sorted({element.revision_id for element in missing})
+    for start in range(0, len(wanted), _KEY_CHUNK):
+        ids = wanted[start : start + _KEY_CHUNK]
+        keys = sorted({holders[revision][2] for revision in ids})
+        for row in catalog.scan_columns(
+            table,
+            columns=columns,
+            row_filter=And(
+                symbol,
+                And(
+                    In("observation_key", keys),  # type: ignore[call-arg, arg-type]
+                    In("revision_id", ids),  # type: ignore[call-arg, arg-type]
+                ),
+            ),
+        ).to_pylist():
+            if row["revision_id"] in rows:
+                raise CatalogIntegrityError(
+                    f"{table}: element revision {row['revision_id']} is held twice"
+                )
+            rows[row["revision_id"]] = row
+    if len(rows) != len(wanted):
+        raise CatalogIntegrityError(
+            f"{table}: the holders of response revision {response_revision_id}'s missing "
+            "elements did not read back"
+        )
+    verifier.verify_rest_elements(
+        channel.element, channel.data_type, [rows[element.revision_id] for element in missing]
+    )
+
+
+def _holders(
+    catalog: RevisionCatalog,
+    table: str,
+    symbol: BooleanExpression,
+    missing: Sequence[PageElement],
+) -> dict[str, tuple[int, str, str]]:
+    """Per missing element revision id: ``(rows holding it, a holder's response, its key)``.
+
+    Rows are those of the symbol whose ``observation_key`` is a missing element's key; the
+    response / key are only meaningful when the count is 1 (then they are the one holder's).
+    """
+    wanted = pa.array(sorted({element.revision_id for element in missing}), type=pa.string())
+    keys = sorted({element.observation_key for element in missing})
+    found: dict[str, tuple[int, str, str]] = {}
+    for start in range(0, len(keys), _KEY_CHUNK):
+        chunk = catalog.scan_columns(
+            table,
+            columns=("revision_id", "response_revision_id", "observation_key"),
+            row_filter=And(
+                symbol,
+                In("observation_key", keys[start : start + _KEY_CHUNK]),  # type: ignore[call-arg, arg-type]
+            ),
+        )
+        chunk = chunk.filter(pc.is_in(chunk.column("revision_id"), value_set=wanted))
+        for revision, lineage, key in zip(
+            chunk.column("revision_id").to_pylist(),
+            chunk.column("response_revision_id").to_pylist(),
+            chunk.column("observation_key").to_pylist(),
+            strict=True,
+        ):
+            count = found.get(revision, (0, lineage, key))[0]
+            found[revision] = (count + 1, lineage, key)
+    return found
 
 
 def _require_complete(

@@ -29,6 +29,7 @@ is removed.
 | | archive rows stopped half-way, read by E1 | E1 (`not exactly the N lines of its object`) |
 | | Canonical unit stopped half-way, read by E3 / F3 | E3 `RawNotDerived`; F1 `CanonicalUnitIncomplete` (fixed RT-1, G2-R1a) |
 | | REST elements stopped half-way, read by E1 / E3 / F3 | E1 `CanonicalUnitIncomplete`, nothing committed (fixed RT-3, G2-R1a) |
+| | REST response committed, died before its first element, read by E3 / F3 | E3 / F3 `CanonicalUnitIncomplete` (page check shared with E1; RT-3 residual fixed, G2-R3a) |
 | `test_rt_tamper` | forged / deleted Canonical row | F1 unit re-normalization (`CatalogIntegrityError`) |
 | | deleted evidence-gap row; deleted quality report | F3 report re-derivation (`CatalogIntegrityError` / `QualityReportMissing`) |
 | | deleted listing row | E2 listing proof (`not a listing derivation batch`) |

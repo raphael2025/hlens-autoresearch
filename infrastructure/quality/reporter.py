@@ -9,7 +9,10 @@ under the rule set ``hlens.quality.canonical-partition@1.0.0``:
    table); the report is then computed on a ``PinnedCatalogView`` of exactly those snapshots, so it
    is reproducible from its own ``report_inputs`` event;
 2. **proof** — everything is read through ``PitSelector`` (Canonical rows re-normalized, Raw edges
-   re-derived); a partition that does not prove fails closed with no report;
+   re-derived); a partition that does not prove fails closed with no report. Before that, every
+   bound Raw element revision of the partition must have its Canonical image (``RawNotDerived``)
+   and every bound REST page that can hold an element of the day must hold all of its body's
+   elements (``CanonicalUnitIncomplete``, the normalizer's own rule: G2-R3a);
 3. **events** (deterministic ids; no numeric threshold anywhere — outlier rules need calibrated
    thresholds and are left to a later rule version):
    - ``report_inputs`` — the bound snapshots, as canonical JSON;
@@ -36,13 +39,14 @@ from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
-from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThan
+from pyiceberg.expressions import And, EqualTo, GreaterThan, GreaterThanOrEqual, In, LessThan
 
 from core.contracts.catalog import BatchConflict, CommitConflict, CommitRequest, TableNotFound
 from core.contracts.revision import PointInTimeSpec
 from core.contracts.storage import StorageAdapter
 from core.domain.base import FrozenMapping, canonical_json
 from infrastructure.canonical import rules
+from infrastructure.canonical.normalizer import check_rest_page
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
@@ -56,8 +60,15 @@ from infrastructure.catalog.phase1_tables import (
     QUALITY_EVIDENCE_GAPS,
 )
 from infrastructure.pit.selector import PIT_BINDING, REQUIRED_BINDINGS, PitSelection, PitSelector
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
-from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
+from infrastructure.revision.row_integrity import (
+    ACCEPTED,
+    PersistedRowVerifier,
+    batch,
+    check_batch_snapshot,
+    history_from,
+)
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
 
 __all__ = [
@@ -114,6 +125,8 @@ _DAY: Final = timedelta(days=1)
 _MINUTE: Final = timedelta(minutes=1)
 _ATTEMPTS: Final = 8
 _ZERO: Final = timedelta(0)
+#: Response revisions whose own element indices one narrow scan reads (G2-R3a).
+_PAGE_CHUNK: Final = 64
 _INPUT_TABLES: Final[Mapping[str, tuple[str, ...]]] = {
     "agg_trades": (
         rules.CANONICAL_TABLES["agg_trades"].table,
@@ -462,6 +475,81 @@ class QualityReporter:
                     f"{missing} Raw revision(s) of {raw_table} {symbol} {day.isoformat()} have no "
                     f"{canonical} revision at the bound snapshots: normalize their units first"
                 )
+        self._check_rest_pages(data_type, symbol, day, bindings)
+
+    def _check_rest_pages(
+        self, data_type: str, symbol: str, day: date, bindings: Mapping[str, str]
+    ) -> None:
+        """No bound REST page of the partition is missing an element (G2-R3a / RT-3 residual).
+
+        A response whose store died before its first element batch has no Raw element row, so
+        the derivation check above cannot see it. Every accepted response revision of the
+        symbol whose answered interval can hold an element of the day (the decoder keeps each
+        element inside ``[answered_start, answered_end]``) must therefore hold all of its body's
+        elements — its own rows, or rows another committed page delivered first. The judgement
+        is the normalizer's own (``check_rest_page``), on a view pinned to the bindings; it runs
+        only for a page whose own ``element_index`` values are not exactly ``0 … count - 1``.
+        A page straddling midnight is judged whole for either day: fail closed.
+        """
+        responses = BINANCE_SPOT_REST_RESPONSES.table
+        snapshot = bindings.get(responses)
+        if snapshot is None:
+            return
+        [channel] = [
+            rules.raw_channel_of(table)
+            for table in _RAW_ELEMENT_TABLES[data_type]
+            if rules.raw_channel_of(table).name != "archive"
+        ]
+        start = datetime.combine(day, time(), tzinfo=UTC)
+        pages = self._adapter.scan_columns(
+            responses,
+            columns=("revision_id", "element_count"),
+            row_filter=And(
+                And(
+                    EqualTo("data_type", data_type),  # type: ignore[call-arg, arg-type]
+                    EqualTo("symbol", symbol),  # type: ignore[call-arg, arg-type]
+                ),
+                And(
+                    And(
+                        EqualTo("decode_outcome", ACCEPTED),  # type: ignore[call-arg, arg-type]
+                        GreaterThan("element_count", 0),  # type: ignore[call-arg, arg-type]
+                    ),
+                    And(
+                        LessThan("answered_start", start + _DAY),  # type: ignore[call-arg, arg-type]
+                        GreaterThanOrEqual("answered_end", start),  # type: ignore[call-arg, arg-type]
+                    ),
+                ),
+            ),
+            snapshot_id=snapshot,
+        ).to_pylist()
+        counts = {page["revision_id"]: page["element_count"] for page in pages}
+        ids = sorted(counts)
+        view: PinnedCatalogView | None = None
+        verifier: PersistedRowVerifier | None = None
+        for begin in range(0, len(ids), _PAGE_CHUNK):
+            chunk = ids[begin : begin + _PAGE_CHUNK]
+            own: dict[str, set[int]] = {revision: set() for revision in chunk}
+            element_snapshot = bindings.get(channel.element.table)
+            if element_snapshot is not None:
+                found = self._adapter.scan_columns(
+                    channel.element.table,
+                    columns=(channel.lineage_column, "element_index"),
+                    row_filter=In(channel.lineage_column, chunk),  # type: ignore[call-arg, arg-type]
+                    snapshot_id=element_snapshot,
+                )
+                for revision, index in zip(
+                    found.column(channel.lineage_column).to_pylist(),
+                    found.column("element_index").to_pylist(),
+                    strict=True,
+                ):
+                    own[revision].add(index)
+            for revision in chunk:
+                if own[revision] == set(range(counts[revision])):
+                    continue
+                if view is None or verifier is None:
+                    view = PinnedCatalogView(self._adapter, bindings)
+                    verifier = PersistedRowVerifier(view, self._storage)
+                check_rest_page(view, verifier, channel, revision, own[revision])
 
     def _normalized(self, canonical: str, head: str, units: set[str]) -> bool:
         """Whether the Canonical history up to ``head`` holds a normalizer batch of any unit."""

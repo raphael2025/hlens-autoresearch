@@ -15,7 +15,7 @@ from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
-from pyiceberg.expressions import EqualTo, GreaterThanOrEqual
+from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, In
 
 from core.contracts.catalog import CommitRequest
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
@@ -1082,3 +1082,160 @@ def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarne
     assert [row["revision_id"] for row in full] == list(out.revision_ids)
     part = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={committed[0]["arrival_seq"]})
     assert part == full[:2]
+
+
+# =========================================================================================
+# G2-R3a: the page completeness check reads narrow columns in chunks
+# =========================================================================================
+
+
+def _unbounded_check_rest_unit(
+    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: list[int]
+) -> None:
+    """The pre-G2-R3a ``_check_rest_unit`` verbatim: full rows of every history row per key."""
+    table = channel.element.table
+    response, elements = pin.verifier.page_elements(channel.data_type, source_revision_id)
+    own = {position - 1 for position in positions}
+    if not own <= {element.element_index for element in elements}:
+        raise CatalogIntegrityError(
+            f"{table}: unit {source_revision_id} holds positions its body does not"
+        )
+    missing = [element for element in elements if element.element_index not in own]
+    if not missing:
+        return
+    held: dict[str, list[Mapping[str, Any]]] = {}
+    columns = tuple(field.name for field in channel.element.arrow_schema)
+    keys = sorted({element.observation_key for element in missing})
+    for start in range(0, len(keys), nz._KEY_CHUNK):
+        for row in pin.catalog.scan_columns(
+            table,
+            columns=columns,
+            row_filter=And(
+                nz._equals("symbol", response["symbol"]),
+                In("observation_key", keys[start : start + nz._KEY_CHUNK]),  # type: ignore[call-arg, arg-type]
+            ),
+        ).to_pylist():
+            held.setdefault(row["revision_id"], []).append(row)
+    unheld = [
+        element.element_index
+        for element in missing
+        if len(held.get(element.revision_id, ())) != 1
+        or held[element.revision_id][0]["response_revision_id"] == source_revision_id
+    ]
+    if unheld:
+        raise CanonicalUnitIncomplete(
+            f"{table}: response revision {source_revision_id} holds {len(elements)} "
+            f"element(s) but element(s) {unheld[:8]} are committed neither under it nor "
+            "under another page: its element batches stopped half-way (rerun the store)"
+        )
+    pin.verifier.verify_rest_elements(
+        channel.element,
+        channel.data_type,
+        [held[element.revision_id][0] for element in missing],
+    )
+
+
+@dataclass
+class _SpyVerifier:
+    """Delegates to the real verifier; records the rows each ``verify_rest_elements`` proves."""
+
+    inner: Any
+    proved: list[list[Mapping[str, Any]]] = field(default_factory=list)
+
+    def page_elements(self, data_type: str, response_revision_id: str) -> Any:
+        return self.inner.page_elements(data_type, response_revision_id)
+
+    def verify_rest_elements(self, definition: Any, data_type: str, rows: Any) -> None:
+        self.proved.append([dict(row) for row in rows])
+        self.inner.verify_rest_elements(definition, data_type, rows)
+
+
+def _page_verdicts(h: RestHarness, units: list[str]) -> list[tuple[Any, ...]]:
+    """``(unit, check, outcome, rows proven)`` of the bounded and the unbounded check."""
+    channel = rules.raw_channel_of(c.REST_AGGS.table)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    verdicts: list[tuple[Any, ...]] = []
+    for unit in units:
+        pin = n._pin(channel, unit)
+        positions, _ = n._positions(pin, channel, unit)
+        for check in ("bounded", "unbounded"):
+            spy = _SpyVerifier(pin.verifier)
+            spied = nz._Pin(pin.catalog, pin.canonical_head, spy)  # type: ignore[arg-type]
+            try:
+                if check == "bounded":
+                    n._check_rest_unit(spied, channel, unit, positions)
+                else:
+                    _unbounded_check_rest_unit(spied, channel, unit, positions)
+                outcome: tuple[str, str] = ("ok", "")
+            except CatalogIntegrityError as exc:
+                outcome = (type(exc).__name__, str(exc))
+            verdicts.append((unit, check, outcome, spy.proved))
+    return verdicts
+
+
+def _same_verdicts(verdicts: list[tuple[Any, ...]]) -> dict[str, tuple[Any, ...]]:
+    by_unit: dict[str, dict[str, tuple[Any, ...]]] = {}
+    for unit, check, outcome, proved in verdicts:
+        by_unit.setdefault(unit, {})[check] = (outcome, proved)
+    for unit, checks in by_unit.items():
+        assert checks["bounded"] == checks["unbounded"], unit
+    return {unit: checks["bounded"] for unit, checks in by_unit.items()}
+
+
+@pytest.mark.parametrize("key_chunk", [1, 2, nz._KEY_CHUNK])
+def test_the_bounded_page_check_keeps_the_unbounded_verdicts(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch, key_chunk: int
+) -> None:
+    """G2-R3a: narrow columns and chunked read-backs give the old verdict and prove the same
+    rows — on a complete page, a page two of whose elements another page delivered, a page
+    that stopped half-way, other history rows of the keys, and a holder committed twice."""
+    monkeypatch.setattr(nz, "_KEY_CHUNK", key_chunk)
+    cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [ss.agg_items(3, first_id=100)])
+    cs.queue_agg_chain(
+        h.venue, SYMBOL, ss.T0 + 1, [ss.agg_items(3, first_id=101, first_ms=ss.T0 + 1)]
+    )
+    cs.queue_agg_chain(
+        h.venue, SYMBOL, ss.T0 + 10, [ss.agg_items(3, first_id=110, first_ms=ss.T0 + 10)]
+    )
+    h.collect(ss.agg_request("req-a"))
+    h.collect(ss.agg_request("req-b", start_ms=ss.T0 + 1))
+    h.collect(ss.agg_request("req-c", start_ms=ss.T0 + 10))
+    store = h.store(clock=StepClock(start=K_REST))
+    a = store.ingest_collection(ss.agg_request("req-a")).pages[0].response_revision_id
+    b = store.ingest_collection(ss.agg_request("req-b", start_ms=ss.T0 + 1))
+    b_id = b.pages[0].response_revision_id
+    proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=c.REST_AGGS.table))
+    with pytest.raises(Crash):
+        h.store(clock=StepClock(start=K_REST), adapter=proxy, element_microbatch_rows=1)\
+            .ingest_collection(ss.agg_request("req-c", start_ms=ss.T0 + 10))  # fmt: skip
+    [partial] = {row["revision_id"] for row in h.rows(c.RESPONSES)} - {a, b_id}
+    # Other revisions of B's foreign keys (never holders of its elements) sit in the history.
+    foreign = sorted(
+        (row for row in h.rows(c.REST_AGGS) if row["response_revision_id"] == a),
+        key=lambda row: row["element_index"],
+    )[1:]
+    noise = [
+        dict(
+            row,
+            revision_id=f"noise-{i}",
+            response_revision_id="elsewhere",
+            arrival_seq=row["arrival_seq"] + 9 * c.STRIDE,
+        )
+        for i, row in enumerate(foreign)
+    ]
+    h.forge_rows(c.REST_AGGS, noise, "noise")
+
+    verdicts = _same_verdicts(_page_verdicts(h, [a, b_id, partial]))
+    assert verdicts[a] == (("ok", ""), [])
+    outcome, proved = verdicts[b_id]
+    assert outcome == ("ok", "")
+    assert [[row["revision_id"] for row in rows] for rows in proved] == [
+        [row["revision_id"] for row in foreign]
+    ]
+    assert verdicts[partial][0][0] == "CanonicalUnitIncomplete"
+    assert verdicts[partial][1] == []
+
+    # A holder committed twice (a copy under another lineage) leaves B's element unheld.
+    h.forge_rows(c.REST_AGGS, [dict(foreign[0], response_revision_id="elsewhere")], "copy")
+    outcome, proved = _same_verdicts(_page_verdicts(h, [b_id]))[b_id]
+    assert outcome[0] == "CanonicalUnitIncomplete" and proved == []
