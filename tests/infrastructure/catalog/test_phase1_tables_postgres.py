@@ -1,12 +1,12 @@
-"""PostgreSQL evidence for C3 / D3B / E2 / QG-1 (roadmap #9): fourteen tables, batches, evolution,
-isolation.
+"""PostgreSQL evidence for C3 / D3B / E2 / QG-1 / DS-1 (roadmap #9): fifteen tables, batches,
+evolution, isolation.
 
 Runs only with ``HLENS_TEST_CATALOG_URI`` naming the dedicated ``*_test`` database (explicit skip
 otherwise). Each test uses its own PyIceberg ``catalog_name`` and ``tmp_path`` warehouse; cleanup
 drops the tables / namespaces through PyIceberg and deletes the warehouse files. Direct SQL is
 read-only verification.
 
-Writes to the five ``identity(symbol) + day(...)`` tables use PyIceberg's official
+Writes to the six ``identity(symbol) + day(...)`` tables use PyIceberg's official
 ``pyiceberg-core`` extra (ADR-0026); they run in full and assert the real day partition values.
 """
 
@@ -167,7 +167,7 @@ def harness_factory(tmp_path: Path) -> Iterator[Callable[[str], PostgresCatalogH
 # --------------------------------------------------------------------------- creation
 
 
-def test_fourteen_tables_are_created_idempotently_with_the_frozen_layout(
+def test_fifteen_tables_are_created_idempotently_with_the_frozen_layout(
     pg_harness: PostgresCatalogHarness,
 ) -> None:
     adapter = open_postgres_catalog_adapter(pg_harness.settings(), PHASE1_REGISTRY)

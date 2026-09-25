@@ -216,17 +216,19 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 | `raw.binance_spot_precedence_evidence` | 独立、append-only 的完整 `PrecedenceEvidence`：稳定 `edge_id`（不含时间）、`observation_key`、两端 revision 与所在表、policy 绑定、证据、边的 `knowledge_time`、比较时固定的两侧 snapshot、投影哈希（ADR-0027 §1 / §4） | 不分区 |
 | `raw.binance_spot_exchange_info` | 每次成功 `GET /api/v3/exchangeInfo` 快照的 Raw source revision：请求身份、响应字节对象引用、HTTP 元数据、`serverTime` 与请求 symbol 的原生字段（ADR-0029 §1） | 不分区 |
 | `quality.availability_evidence_gaps` | 质量报告引用的 `AvailabilityEvidenceGap` 逐条记录（`quality_report_id` + `table` + `revision_id` + `gap`，另带所在批次序号 `batch_index`），按时段分批只追加写入、逐批按行核对；报告行是唯一引用（ADR-0031） | identity `subject_symbol` + `day(subject_start)` |
+| `research.dataset_selections` | `DatasetBuilder` 一次构建物化的行：每个 key 选中的 Canonical revision 指针（`canonical_table` + `revision_id`，不复制 payload）及其生效的 simulation 区间（`effective_from` / `effective_until`；皆空 = point simulation），一批一个 `selection_id`；是 `research.dataset_manifests` 绑定的 `DatasetRef` 表（ADR-0033） | identity `symbol` + `day(event_time)` |
 
 - **归档字节**以不可变对象存于 warehouse（经 `StorageAdapter`：staging → checksum 校验 → 同文件系统原子发布），
   由 `raw.binance_spot_archives` 引用；**不存入 PostgreSQL**，也不覆盖：同路径新 checksum = 新对象 + 新 revision。
   maintenance 不得删除任何被归档 revision 引用的对象。
-- 共 14 张 Phase 1 表：前 8 张为 A2 首切片（定义与哈希不因 ADR-0027 / ADR-0029 / ADR-0031 改变），中 4 张为
+- 共 15 张 Phase 1 表：前 8 张为 A2 首切片（定义与哈希不因 ADR-0027 / ADR-0029 / ADR-0031 / ADR-0033 改变），中 4 张为
   ADR-0027 的 REST additive 扩充，第 13 张为 ADR-0029 的 exchangeInfo 快照表（E2），第 14 张为 ADR-0031 的
-  质量证据缺口表（QG-1）。REST 响应字节同样以不可变对象存于 warehouse（内容寻址 key），由
+  质量证据缺口表（QG-1），第 15 张为 ADR-0033 的 Research Dataset 选择表（DS-1）。REST 响应字节同样以不可变对象存于 warehouse（内容寻址 key），由
   `raw.binance_spot_rest_responses` 引用。
 - Iceberg namespace 是存储命名，不改变契约的 `Zone` 枚举；`quality` 与 manifest 表是审计 / 元数据表，由 manifest 契约引用。
-  物化 Research Dataset 表的命名随 PIT 实施批次提出，不在本清单内。F3 的提议形状见 `infrastructure/dataset/selection.py`（每行引用一个选中的 Canonical revision 及其生效 simulation 区间，
-  不复制 payload）；表名与登记**待批准**，在此之前生产环境不能物化 Research Dataset。
+  物化 Research Dataset 表 `research.dataset_selections` 已由 ADR-0033（DS-1）登记（见上表），冻结的是
+  `infrastructure/dataset/selection.py` 提出的形状（每行引用一个选中的 Canonical revision 及其生效 simulation
+  区间，不复制 payload）；`selection.py` 现在反向导入该表的 schema 作为唯一来源。
 - **分区演进**需要该表新的 partition-spec 版本与新旧 spec 查询结果的等价测试，**不是**契约变化。
 
 ### 7.2 PyIceberg 写入约束

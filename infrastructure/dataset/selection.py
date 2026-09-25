@@ -1,12 +1,13 @@
-"""The materialized PIT selection of a Research Dataset — **proposed** table shape (Phase 1 F3).
+"""The materialized PIT selection of a Research Dataset — production table shape (ADR-0033, DS-1).
 
 ADR-0023 §6 and ``03-data.md`` §3 / §7.5 require a Research Dataset to have its **own** Iceberg
-``snapshot_id`` (``ResearchDatasetManifest.dataset``), but no Research Dataset table is frozen:
-``03-data.md`` §7.1 leaves "the naming of materialized Research Dataset tables" to the PIT batch
-to *propose*. This module is that proposal and nothing more: ``SELECTION_SCHEMA`` is the shape a
-dataset build writes, and ``selection_table_definition`` builds a definition of it for a caller
-that **has** an approved (or, in tests, a test-only) table name. It registers nothing, creates no
-table and does not touch ``PHASE1_TABLES``.
+``snapshot_id`` (``ResearchDatasetManifest.dataset``). This module proposed that table's shape for
+Phase 1 F3; ADR-0033 (DS-1) accepted it and registered it as the fifteenth production table,
+``research.dataset_selections`` (``infrastructure.catalog.phase1_tables.DATASET_SELECTIONS``).
+The field definitions now live there — the single source of truth, since ``dataset`` already
+depends on ``catalog`` and the reverse would cycle — and this module re-exports them under their
+original names so ``infrastructure.dataset.builder`` (and any caller building an alternate,
+same-shape ``research.*`` table) is unaffected.
 
 One row = one Canonical revision selected for one observation key, for the simulation span in
 which it is the selection and its symbol a universe member (point simulation: no span). Rows
@@ -20,12 +21,9 @@ from __future__ import annotations
 
 from typing import Final
 
-from pyiceberg.schema import Schema
-from pyiceberg.types import NestedField, StringType, TimestamptzType
-
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.fingerprint import PYARROW_BATCH_FINGERPRINT
-from infrastructure.catalog.phase1_tables import PHASE1_TABLE_PROPERTIES
+from infrastructure.catalog.phase1_tables import DATASET_SELECTIONS, PHASE1_TABLE_PROPERTIES
 
 __all__ = [
     "SELECTION_DEFINITION_VERSION",
@@ -35,27 +33,22 @@ __all__ = [
 ]
 
 SELECTION_NAMESPACE: Final = "research"
-SELECTION_DEFINITION_VERSION: Final = "1.0.0"
-
-_S: Final = StringType()
-_T: Final = TimestamptzType()
-
-SELECTION_SCHEMA: Final = Schema(
-    NestedField(1, "selection_id", _S, required=True, doc="dataset build id (= batch id)"),
-    NestedField(2, "canonical_table", _S, required=True, doc="selected revision's table"),
-    NestedField(3, "symbol", _S, required=True, doc="Canonical symbol, e.g. BTC-USDT"),
-    NestedField(4, "observation_key", _S, required=True, doc="RevisionRecord.observation_key"),
-    NestedField(5, "revision_id", _S, required=True, doc="the selected Canonical revision"),
-    NestedField(6, "event_time", _T, required=True, doc="its event_time / interval_start (UTC)"),
-    NestedField(7, "effective_from", _T, required=False, doc="simulation span start; null = point"),
-    NestedField(8, "effective_until", _T, required=False, doc="simulation span end (exclusive)"),
-)
+SELECTION_DEFINITION_VERSION: Final = DATASET_SELECTIONS.version
+#: The frozen production schema (``research.dataset_selections``, ADR-0033); single source of
+#: truth lives in ``infrastructure.catalog.phase1_tables``.
+SELECTION_SCHEMA: Final = DATASET_SELECTIONS.schema
 
 
 def selection_table_definition(
     table: str, *, version: str = SELECTION_DEFINITION_VERSION
 ) -> RegisteredTableDefinition:
-    """A definition of ``SELECTION_SCHEMA`` under ``table`` (``research`` namespace only)."""
+    """A definition of ``SELECTION_SCHEMA`` under ``table`` (``research`` namespace only).
+
+    ``DATASET_SELECTIONS`` is the frozen, partitioned production definition of this schema under
+    ``research.dataset_selections``; this constructor stays generic (unpartitioned, arbitrary
+    ``research.*`` name) for a caller that needs its own, differently-named table of the same
+    shape.
+    """
     if table.split(".", 1)[0] != SELECTION_NAMESPACE:
         raise ValueError(f"a Research Dataset table must be in the {SELECTION_NAMESPACE} namespace")
     return RegisteredTableDefinition(

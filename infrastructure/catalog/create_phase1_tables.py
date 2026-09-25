@@ -1,4 +1,4 @@
-"""Idempotently create the fourteen Phase 1 tables in the configured catalog (C3 operator entry).
+"""Idempotently create the fifteen Phase 1 tables in the configured catalog (C3 operator entry).
 
 Reads runtime ``Settings`` from the environment (``HLENS_CATALOG_URI`` etc.; load
 ``.env.catalog`` into the environment first, never echo it). Existing tables with the same

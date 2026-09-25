@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from core.domain.base import canonical_json
-from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS
+from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS, DATASET_SELECTIONS
 from infrastructure.dataset.manifests import ManifestStore
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseUnconstructible
 from tests.infrastructure.catalog.catalog_support import postgres_test_catalog_uri
@@ -48,4 +48,4 @@ def test_before_the_first_observation_nothing_is_written_on_postgres(pg: World) 
     with pytest.raises(UniverseUnconstructible):
         pg.builder().build(FIRST_SLICE_UNIVERSE, pg.spec(at=L1), "agg_trades", START, END)
     assert pg.h.rows(DATASET_MANIFESTS) == []
-    assert pg.h.head(ds.TEST_DATASET.table) is None
+    assert pg.h.head(DATASET_SELECTIONS.table) is None

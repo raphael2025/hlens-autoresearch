@@ -1,13 +1,14 @@
-"""The fourteen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3+D3B+E2+QG-1).
+"""The fifteen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3+D3B+E2+QG-1+DS-1).
 
-Single entry point for the production layout: ``PHASE1_TABLES`` (fourteen definitions, frozen
+Single entry point for the production layout: ``PHASE1_TABLES`` (fifteen definitions, frozen
 logical names, ``version = 1.0.0``, ``definition_id`` = table name), ``PHASE1_REGISTRY`` and the
 idempotent ``ensure_phase1_tables``. The first eight are the C3 first slice and are unchanged by
 D3B; the next four are the ADR-0027 REST additions (three REST Raw tables + the independent
 precedence-evidence table); the thirteenth is the ADR-0029 additive exchangeInfo snapshot table
-(E2); the fourteenth is the ADR-0031 additive quality evidence-gap table (QG-1). Appending never
-changes an earlier definition or its hash. C2 test-only definitions live under ``tests/`` and
-never enter this registry.
+(E2); the fourteenth is the ADR-0031 additive quality evidence-gap table (QG-1); the fifteenth is
+the ADR-0033 additive Research Dataset selection table (DS-1). Appending never changes an earlier
+definition or its hash. C2 test-only definitions live under ``tests/`` and never enter this
+registry.
 
 Every field ID is written out below and equals the ID Iceberg assigns on table creation (top-level
 fields first, then nested fields depth-first); the module refuses to import otherwise. Field docs
@@ -60,6 +61,17 @@ Accepted ADRs and contracts, the producers come in later batches):
   the batch that wrote it, so a report's rows are verified batch by batch in bounded memory.
   The report row itself is the only reference to a batch of gap rows; nothing here changes
   ``AvailabilityEvidenceGap`` or ``quality.data_quality_reports``.
+- **Research Dataset selections (ADR-0033, DS-1)**: ``research.dataset_selections`` is an
+  additive table carrying the rows ``DatasetBuilder`` materializes for one dataset build, one
+  batch per ``selection_id``: a pointer to the selected Canonical revision (``canonical_table`` +
+  ``revision_id``) keyed by ``observation_key``, plus the simulation span in which it is the
+  selection and its symbol a universe member (``effective_from`` / ``effective_until``; both null
+  = point simulation). No payload copy: the Canonical snapshot is bound by the manifest and
+  immutable, so the pointer *is* the content. Partitioned like the other event-time revision
+  tables, ``identity(symbol) + day(event_time)``. This is the table
+  ``research.dataset_manifests.dataset_table`` names as ``DatasetRef`` (ADR-0023 §6); it freezes
+  the shape ``infrastructure/dataset/selection.py`` proposed (F3), which now imports it back as
+  the single source of truth.
 
 This module creates no data and derives no semantics: revision IDs, observation keys, policy
 evidence, parsing, Canonical conversion and PIT selection belong to batches D ~ F.
@@ -104,6 +116,7 @@ __all__ = [
     "CANONICAL_INSTRUMENT_LISTINGS",
     "CANONICAL_TRADES",
     "DATASET_MANIFESTS",
+    "DATASET_SELECTIONS",
     "DATA_QUALITY_REPORTS",
     "EXCHANGE_DECIMAL",
     "PHASE1_DEFINITION_VERSION",
@@ -955,9 +968,27 @@ QUALITY_EVIDENCE_GAPS: Final = _definition(
     _symbol_day_spec(5, 6, "subject_start"),
 )
 
-#: The fourteen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027,
+# --------------------------------------------------------------------------- research (ADR-0033)
+
+
+DATASET_SELECTIONS: Final = _definition(
+    "research.dataset_selections",
+    Schema(
+        _req(1, "selection_id", _S, "dataset build id (= batch id)"),
+        _req(2, "canonical_table", _S, "selected revision's table"),
+        _req(3, "symbol", _S, "Canonical symbol, e.g. BTC-USDT"),
+        _req(4, "observation_key", _S, "RevisionRecord.observation_key"),
+        _req(5, "revision_id", _S, "the selected Canonical revision"),
+        _req(6, "event_time", _T, "its event_time / interval_start (UTC)"),
+        _opt(7, "effective_from", _T, "simulation span start; null = point"),
+        _opt(8, "effective_until", _T, "simulation span end (exclusive)"),
+    ),
+    _symbol_day_spec(3, 6, "event_time"),
+)
+
+#: The fifteen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027,
 #: then the ADR-0029 exchangeInfo snapshot table (E2), then the ADR-0031 quality evidence-gap
-#: table (QG-1).
+#: table (QG-1), then the ADR-0033 Research Dataset selection table (DS-1).
 PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_AGG_TRADES,
@@ -973,6 +1004,7 @@ PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     BINANCE_SPOT_EXCHANGE_INFO,
     QUALITY_EVIDENCE_GAPS,
+    DATASET_SELECTIONS,
 )
 PHASE1_REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 

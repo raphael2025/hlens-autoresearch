@@ -38,6 +38,7 @@
 | [0030](0030-feature-provider-contract.md) | FeatureProvider 的 Protocol、DTO 与 provider-agnostic 契约测试（F4 前置） | Accepted（2026-09-25，方案 A；Claude 依 Raphael 授权决定） |
 | [0031](0031-quality-evidence-gap-table.md) | 质量报告的证据缺口写入独立只追加表（D-QGAP） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0032](0032-archive-event-time-availability-assumption.md) | 历史归档的事件时间可用性假设（PIT 叠加层，D-HIST） | Accepted（2026-09-25；Raphael 批准） |
+| [0033](0033-research-dataset-selection-table.md) | 物化 Research Dataset 选择表登记为生产表（DS-1） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按

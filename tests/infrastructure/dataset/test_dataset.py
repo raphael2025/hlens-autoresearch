@@ -23,6 +23,7 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
+    DATASET_SELECTIONS,
 )
 from infrastructure.dataset import builder as b
 from infrastructure.dataset.builder import (
@@ -84,13 +85,13 @@ def test_archive_to_manifest_end_to_end(w: World) -> None:
     # Rows: the three archive trades (the D-33 edges make the archive copy the only head).
     archive_rows = [r for r in w.h.rows(c.TRADES) if r["lineage_raw_table"] == c.ARCHIVE_AGGS.table]
     assert len(archive_rows) == 3
-    rows = w.h.rows_at(ds.TEST_DATASET.table, built.dataset_commit.snapshot_id)
+    rows = w.h.rows_at(DATASET_SELECTIONS.table, built.dataset_commit.snapshot_id)
     assert sorted(r["revision_id"] for r in rows) == sorted(r["revision_id"] for r in archive_rows)
     assert {r["selection_id"] for r in rows} == {built.selection.selection_id}
     assert {(r["effective_from"], r["effective_until"]) for r in rows} == {(None, None)}
     # Own DatasetRef: the materialized snapshot, the event window.
     assert manifest.dataset.zone is Zone.RESEARCH_DATASET
-    assert manifest.dataset.table == ds.TEST_DATASET.table
+    assert manifest.dataset.table == DATASET_SELECTIONS.table
     assert manifest.dataset.snapshot_id == built.dataset_commit.snapshot_id
     assert (manifest.dataset.time_range_start, manifest.dataset.time_range_end) == (START, END)
     # Lineage: listings (both hops = the observing snapshot) + trades (three hops to the archive).
@@ -148,7 +149,7 @@ def test_a_rebuild_is_bit_identical_and_replays(w: World) -> None:
     )
     assert second.replayed and second.dataset_commit.snapshot_id == first.dataset_commit.snapshot_id
     assert len(w.h.rows(MANIFESTS)) == 1
-    assert len(w.h.rows_at(ds.TEST_DATASET.table, first.dataset_commit.snapshot_id)) == 3
+    assert len(w.h.rows_at(DATASET_SELECTIONS.table, first.dataset_commit.snapshot_id)) == 3
     # The same inputs select the same rows without writing anything.
     again = w.builder().select(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
     assert again.rows == first.selection.rows
@@ -191,7 +192,7 @@ def test_a_symbol_is_never_a_member_before_it_is_observed(w: World) -> None:
         _build(w, at=L1)  # simulation before the first local observation
     assert caught.value.reason == UnconstructibleReason.NO_VISIBLE_LISTING
     assert w.h.rows(MANIFESTS) == []
-    assert w.h.head(ds.TEST_DATASET.table) is None
+    assert w.h.head(DATASET_SELECTIONS.table) is None
 
 
 def test_an_interval_gates_rows_by_membership_spans(w: World) -> None:

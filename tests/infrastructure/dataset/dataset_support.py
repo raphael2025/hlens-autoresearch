@@ -2,9 +2,9 @@
 
 A ``World`` joins the D3E harness (archives, REST pages, normalizer, reconciler over the mock
 venue) and the E2 harness (exchangeInfo snapshots, listing derivation) on **one** catalog and
-warehouse. The catalog registry adds one test-only research table of the proposed
-``SELECTION_SCHEMA`` — the production registry has no Research Dataset table (03-data.md §7.1).
-Nothing under test is faked: only transports and clocks are injected.
+warehouse. ``DatasetBuilder`` writes to the production Research Dataset table
+``research.dataset_selections`` (DS-1, ADR-0033), created like every other Phase 1 table by
+``ensure_phase1_tables``. Nothing under test is faked: only transports and clocks are injected.
 """
 
 from __future__ import annotations
@@ -21,9 +21,12 @@ from core.contracts.universe import DegradedEpisodeKey, UniverseExclusion, Unive
 from infrastructure.canonical import listing_rules as lr
 from infrastructure.canonical import rules
 from infrastructure.catalog.definitions import TableDefinitionRegistry
-from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS, PHASE1_TABLES
+from infrastructure.catalog.phase1_tables import (
+    DATASET_MANIFESTS,
+    DATASET_SELECTIONS,
+    PHASE1_TABLES,
+)
 from infrastructure.dataset.builder import DatasetBuilder
-from infrastructure.dataset.selection import selection_table_definition
 from infrastructure.pit.selector import PIT_BINDING
 from infrastructure.quality.listing_report import ListingQualityReporter
 from infrastructure.quality.reporter import QualityReporter
@@ -47,8 +50,7 @@ from tests.infrastructure.revision.rest_store_support import (
 )
 
 ORIGIN: Final = xs.ORIGIN
-TEST_DATASET: Final = selection_table_definition("research.f3test_selection")
-REGISTRY: Final = TableDefinitionRegistry((*PHASE1_TABLES, TEST_DATASET))
+REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 
 #: Listing observations (exchangeInfo retrieved_at) before the market data of 2023-11-14.
 L1: Final = utc(2023, 11, 10)
@@ -211,7 +213,7 @@ class World:
             self.h.adapter,
             self.h.storage,
             market_data_base_url=ORIGIN,
-            dataset_table=TEST_DATASET,
+            dataset_table=DATASET_SELECTIONS,
         )
 
     def universe(self) -> UniverseBuilder:
@@ -237,7 +239,6 @@ def _world(
     tmp_path: Path, catalog: SqliteCatalogHarness | PostgresCatalogHarness
 ) -> Iterator[World]:
     with ss._harness(tmp_path, catalog) as h:
-        h.adapter.create_table(TEST_DATASET.binding)
         x = xs.Harness(
             tmp_path=tmp_path,
             catalog=cast(SqliteCatalogHarness, catalog),

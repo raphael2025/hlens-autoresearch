@@ -8,7 +8,7 @@
 |---|---|
 | `settings.py` | 类型化运行时设置（03-data.md §6.2）：`file://` warehouse / staging、PostgreSQL catalog DSN、HTTP / Binance base URL |
 | `storage/` | Phase 1 C1 本地 `file://` `StorageAdapter`（`LocalFileStorageAdapter`） |
-| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张首切片生产表 + D3B 四张 ADR-0027 REST 表 + E2 一张 ADR-0029 快照表 + QG-1 一张 ADR-0031 证据缺口表（共 14 张）、batch 指纹规则与 partition-spec 演进 |
+| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张首切片生产表 + D3B 四张 ADR-0027 REST 表 + E2 一张 ADR-0029 快照表 + QG-1 一张 ADR-0031 证据缺口表 + DS-1 一张 ADR-0033 Research Dataset 选择表（共 15 张）、batch 指纹规则与 partition-spec 演进 |
 | `collector/` | Phase 1 D0 Binance 公共现货日归档下载壳（`BinanceSpotArchiveCollector`） |
 | `parser/` | Phase 1 D1 Binance 公共现货日归档 fail-closed parser（`binance.spot.archive.parser@1.0.0`） |
 | `revision/` | Phase 1 D2 append-only Raw revision：身份规则、availability / precedence policy、`RawRevisionStore`；D3B 的 REST 纯规则（独立身份规则、REST availability / precedence、D-33 通道等价比较） |
@@ -16,7 +16,7 @@
 | `pit/` | Phase 1 F1：`PinnedCatalogView`（按 manifest 绑定的 snapshot 只读；未绑定的表读作空）与 `PitSelector`（规则 `hlens.pit.maximal-head@1.0.0`：绑定核对 → 在绑定 snapshot 上证明 Canonical 行（只证明读到的批次，单元级事实全部核对，G3-S2）与 Raw 边；窗口为任意 UTC 区间，成交数据按小时分段 → 映射边 → 双截止 maximal-head；输出选择、lineage、证据缺口、冲突）。`PyIcebergCatalogAdapter.scan_columns` 为此增加可选 `snapshot_id`（仅基础设施层，核心 Protocol 不变） |
 | `quality/` | Phase 1 E3：`QualityReporter`（规则集 `hlens.quality.canonical-partition@1.0.0`）——每个 Canonical 分区（表 × 标的 × UTC 日）一行 `quality.data_quality_reports`：在当时各输入表的固定快照上经 F1 证明后生成事件（输入绑定、竞争 head、1m 缺口、aggTrade ID 跳号、K 线不变式违例）与全部证据缺口；report_id 由输入快照决定，重跑复用首次时间；成交按小时分段证明、只处理有数据的时段，同一报告内每个单元只证明一次（G3-S3；证据缺口格式待 D-QGAP）。**不含任何数值阈值**（异常值检测需校准，留待后续规则版本）；F3 增加 `existing_only`（只复算已提交报告）。`listing_report.py`：`ListingQualityReporter`（`hlens.quality.listing-history@1.0.0`）——listing 历史一行报告：输入快照、E2 推导发现（未知状态、缺 symbol、分歧等）为质量事件，全部 listing revision 的证据缺口 |
 | `universe/` | Phase 1 F2（ADR-0024 / 0029）：`UniverseBuilder`——已登记的 `UniverseSelectionSpec`（首切片 `binance.spot.btc-eth@1.0.0`，spec 中为 venue 原生 symbol，候选须是由该 symbol 观察推导、instrument 为其 Canonical 形式的 episode）在 PIT 规格绑定的 snapshot 上经 E2 `ListingDeriver.listing_at` 求成员 / 排除（暂停 = `not_tradable`）；区间在起点与区间内每个可能变化的时刻求值并合并；缺 listing 绑定 / 政策、未登记 spec、任何 unconstructible（含首次本机观察之前）一律 fail closed；带 filter 的 spec 因无 PIT 指标输入而拒绝（不设阈值） |
-| `dataset/` | Phase 1 F3：`DatasetBuilder`（规则 `hlens.dataset.pit-selection@1.0.0`）——绑定全部已登记、证据表有快照即须绑定 → F2 universe → 每个成员按切片（成交按小时、K 线按天）`PitSelector` 选择、`require_no_conflict`、按成员区间门控 → 每个覆盖分区与 listing 历史须已有**恰在绑定 snapshot 上**的质量报告（`existing_only` 复算，不写、不读时钟），缺口经 `evidence_gaps_of` 绑定 → 一批写入调用方给定的 research 表（批次号 = `selection_id`，重建重放同一 snapshot；空选择拒绝）→ `ManifestStore` 以内容哈希幂等写 `research.dataset_manifests` 并复核。research 表只是**提议形状**（`selection.py`），生产表未冻结、未登记 |
+| `dataset/` | Phase 1 F3：`DatasetBuilder`（规则 `hlens.dataset.pit-selection@1.0.0`）——绑定全部已登记、证据表有快照即须绑定 → F2 universe → 每个成员按切片（成交按小时、K 线按天）`PitSelector` 选择、`require_no_conflict`、按成员区间门控 → 每个覆盖分区与 listing 历史须已有**恰在绑定 snapshot 上**的质量报告（`existing_only` 复算，不写、不读时钟），缺口经 `evidence_gaps_of` 绑定 → 一批写入调用方给定的 research 表（批次号 = `selection_id`，重建重放同一 snapshot；空选择拒绝）→ `ManifestStore` 以内容哈希幂等写 `research.dataset_manifests` 并复核。research 表的形状仍在 `selection.py`（`SELECTION_SCHEMA`）——DS-1（ADR-0033）把它登记为生产表 `research.dataset_selections`（`catalog/phase1_tables.py` 第 15 张），`selection.py` 反向导入其 schema 作为唯一来源 |
 | `feature/` | Phase 1 F4（ADR-0030）：`run_feature`——对每个评估时刻只把可见集合（`available_time + available_lag <= t`，同键取最晚可用，`knowledge_time <= knowledge_cutoff`）交给 `FeatureProvider`，每个回答经 `FeatureResult.check_answers` 核对；`bar_observations` / `derived_bar_observations` 从 F1 选择（无冲突）与 E4 完整派生 bar 构造带 lineage 的 `FeatureObservation`，`pit_feature_request` 拒绝 PIT 视图覆盖不到的评估时刻（`t - lag` 须在 simulation 区间内）；不 import 任何插件 |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
@@ -54,7 +54,7 @@
 
 ## Phase 1 生产表（C3）
 
-- 唯一入口：`infrastructure.catalog.PHASE1_TABLES` / `PHASE1_REGISTRY`（`phase1_tables.py`）——03-data.md §7.1 的十四张表（前八张为 C3 首切片且定义哈希不变，中四张为 D3B 追加，第 13 张为 E2 追加，第 14 张为 QG-1 追加），`definition_id` = 表名，`version = 1.0.0`，初始分区按冻结值（`raw.binance_spot_agg_trades` / `canonical.trades`：identity `symbol` + day(`event_time`)；`raw.binance_spot_klines_1m` / `canonical.bars_1m`：identity `symbol` + day(`interval_start`)；`quality.availability_evidence_gaps`：identity `subject_symbol` + day(`subject_start`)；其余不分区）。C2 的 test-only 定义只在 `tests/` 中。
+- 唯一入口：`infrastructure.catalog.PHASE1_TABLES` / `PHASE1_REGISTRY`（`phase1_tables.py`）——03-data.md §7.1 的十五张表（前八张为 C3 首切片且定义哈希不变，中四张为 D3B 追加，第 13 张为 E2 追加，第 14 张为 QG-1 追加，第 15 张为 DS-1 追加），`definition_id` = 表名，`version = 1.0.0`，初始分区按冻结值（`raw.binance_spot_agg_trades` / `canonical.trades` / `research.dataset_selections`：identity `symbol` + day(`event_time`)；`raw.binance_spot_klines_1m` / `canonical.bars_1m`：identity `symbol` + day(`interval_start`)；`quality.availability_evidence_gaps`：identity `subject_symbol` + day(`subject_start`)；其余不分区）。C2 的 test-only 定义只在 `tests/` 中。
 - Schema：字段 ID 在源码中逐个写出并等于 Iceberg 建表时分配的 ID（否则 import 失败）；每列带 Iceberg `doc`；时间一律 `timestamptz`（微秒、UTC），交易所十进制值一律 `decimal(38, 18)`，时长为整数微秒，无浮点。列与契约的映射见 `phase1_tables.py` 模块文档；定义哈希由 C2 的规范定义文档派生，golden 值在 `tests/infrastructure/catalog/test_phase1_tables.py`。任何 Schema / 分区 / 属性 / 规则变化 = 新定义版本。
 - 幂等建表：`ensure_phase1_tables(adapter)`；已存在且绑定相同则只核对、不改动；任何漂移 fail closed。操作入口（不打印 DSN）：
 
@@ -281,3 +281,15 @@ listing 推导 `binance.spot.listing-status@1.0.0`、precedence policy `binance.
 `test_earlier_goldens_are_unchanged_by_qg1`，镜像 E2 的 `test_earlier_goldens_are_unchanged_by_e2`）。
 本批只交付表定义；把质量规则升到 `hlens.quality.canonical-partition@2.0.0` 并分批写入该表属
 `quality/reporter.py` 的实现范围，不在此列。
+
+## research.dataset_selections 表（DS-1，ADR-0033，仅表结构）
+
+`catalog/phase1_tables.py` 追加第 15 张表 `research.dataset_selections`：`DatasetBuilder` 一次构建写入的行，
+每行一个 key 的选中结果——`selection_id`（批次号 = 构建 id）、`canonical_table` + `revision_id`（指向选中的
+Canonical revision，不复制 payload）、`observation_key`、`event_time`，以及该选中在其中生效的 simulation 区间
+`effective_from` / `effective_until`（两者皆空 = point simulation），分区 `identity(symbol) + day(event_time)`
+（与 `canonical.trades` 一致）。这是 `research.dataset_manifests` 绑定的 `DatasetRef` 表；表形状原为
+`infrastructure/dataset/selection.py` 的提议（`SELECTION_SCHEMA`），DS-1 把它登记为生产表后，`selection.py`
+反向从 `catalog/phase1_tables.py` 导入该 schema，两处不再重复定义。前 14 张的定义与哈希不变（回归测试
+`test_earlier_goldens_are_unchanged_by_ds1`，镜像 QG-1 的 `test_earlier_goldens_are_unchanged_by_qg1`）。
+`tests/infrastructure/dataset/dataset_support.py` 的 F2 / F3 测试改用该生产表，不再另建同形状的 test-only 表。

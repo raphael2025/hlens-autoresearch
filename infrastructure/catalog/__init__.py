@@ -1,8 +1,8 @@
 """Data Plane Iceberg catalog adapter: PostgreSQL-backed PyIceberg SQL catalog (Phase 1 C2 / C3).
 
-C2: adapter + definition registry mechanism. C3 / D3B / E2 / QG-1: the fourteen production tables
-(``PHASE1_TABLES`` / ``PHASE1_REGISTRY`` / ``ensure_phase1_tables``), the frozen batch fingerprint
-rule ``hlens.pyarrow-batch-sha256@1.0.0`` and explicit partition-spec evolution.
+C2: adapter + definition registry mechanism. C3 / D3B / E2 / QG-1 / DS-1: the fifteen production
+tables (``PHASE1_TABLES`` / ``PHASE1_REGISTRY`` / ``ensure_phase1_tables``), the frozen batch
+fingerprint rule ``hlens.pyarrow-batch-sha256@1.0.0`` and explicit partition-spec evolution.
 """
 
 from infrastructure.catalog.definitions import (

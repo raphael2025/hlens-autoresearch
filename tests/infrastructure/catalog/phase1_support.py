@@ -1,4 +1,5 @@
-"""Test-only rows and evolution targets for the fourteen Phase 1 production tables (C3/D3B/E2/QG-1).
+"""Test-only rows and evolution targets for the fifteen Phase 1 production tables
+(C3/D3B/E2/QG-1/DS-1).
 
 Rows are built from **validated contract objects** (``RevisionRecord``, ``ListingRevision``,
 ``ResearchDatasetManifest``, ``CollectedObject`` …) so the tests show that the physical columns
@@ -63,6 +64,7 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_TRADES,
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
+    DATASET_SELECTIONS,
     QUALITY_EVIDENCE_GAPS,
 )
 from infrastructure.revision import exchange_info_identity, rest_identity
@@ -956,6 +958,22 @@ def quality_evidence_gap_row(
     }
 
 
+def dataset_selection_row(
+    tag: str = "a", *, symbol: str = "BTCUSDT", start: datetime = T0
+) -> dict[str, Any]:
+    """One ``research.dataset_selections`` row (DS-1, ADR-0033): a pointer, no revision block."""
+    return {
+        "selection_id": f"selection-{tag}",
+        "canonical_table": CANONICAL_TRADES.table,
+        "symbol": symbol,
+        "observation_key": f"binance:spot:{symbol}:aggtrade:{len(tag)}",
+        "revision_id": f"canonical-trade-{tag}",
+        "event_time": start,
+        "effective_from": None,
+        "effective_until": None,
+    }
+
+
 #: One minimal valid row builder per production table (keyed by table name).
 ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     BINANCE_SPOT_ARCHIVES.table: archive_row,
@@ -972,6 +990,7 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     BINANCE_SPOT_PRECEDENCE_EVIDENCE.table: precedence_evidence_row,
     BINANCE_SPOT_EXCHANGE_INFO.table: exchange_info_row,
     QUALITY_EVIDENCE_GAPS.table: quality_evidence_gap_row,
+    DATASET_SELECTIONS.table: dataset_selection_row,
 }
 assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
 assert CONTRACT_SCHEMA_VERSION == "2.0.0"
