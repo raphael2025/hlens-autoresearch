@@ -139,6 +139,8 @@ class PitSelection:
     edges: Mapping[str, tuple[PrecedenceEvidence, ...]]
     #: Whether the spec bound the Raw evidence table (False = read as no edges).
     evidence_bound: bool
+    #: The proven Canonical row of every revision that is selected at some evaluation.
+    selected_rows: Mapping[str, Mapping[str, Any]]
 
     def require_no_conflict(self) -> None:
         if self.conflicts:
@@ -221,6 +223,7 @@ class PitSelector:
         gaps: dict[str, EvidenceGap] = {}
         conflicts: set[str] = set()
         records_by_key: dict[str, tuple[RevisionRecord, ...]] = {}
+        selected_rows: dict[str, Mapping[str, Any]] = {}
         for key in sorted(by_key):
             key_rows = {row["revision_id"]: row for row in by_key[key]}
             records = tuple(
@@ -236,6 +239,7 @@ class PitSelector:
                     if revision is None:  # pragma: no cover - the contract forbids it
                         raise CatalogIntegrityError("a selected result without a revision")
                     row = key_rows[revision]
+                    selected_rows[revision] = row
                     lineage[revision] = SelectedRevisionLineage(
                         canonical_table=canonical.table,
                         canonical_revision_id=revision,
@@ -257,6 +261,7 @@ class PitSelector:
             records=records_by_key,
             edges={key: tuple(value) for key, value in edges.items()},
             evidence_bound=BINANCE_SPOT_PRECEDENCE_EVIDENCE.table in spec.snapshot_bindings,
+            selected_rows={revision: selected_rows[revision] for revision in sorted(selected_rows)},
         )
 
     # ------------------------------------------------------------------ reads and proofs

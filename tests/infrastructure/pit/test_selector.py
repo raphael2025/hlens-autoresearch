@@ -32,7 +32,17 @@ K_E = utc(2023, 12, 10)
 FAR = utc(2030, 1, 1)
 START, END = utc(2023, 11, 14), utc(2023, 11, 15)
 KEY = f"binance:spot:agg_trade:{SYMBOL}:100"
-TABLES = (c.ARCHIVES, c.ARCHIVE_AGGS, c.RESPONSES, c.REST_AGGS, c.EVIDENCE, c.TRADES)
+TABLES = (
+    c.ARCHIVES,
+    c.ARCHIVE_AGGS,
+    c.ARCHIVE_KLINES,
+    c.RESPONSES,
+    c.REST_AGGS,
+    c.REST_KLINES,
+    c.EVIDENCE,
+    c.TRADES,
+    c.BARS,
+)
 
 
 def _spec(
