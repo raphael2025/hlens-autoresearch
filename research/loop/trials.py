@@ -27,10 +27,15 @@ when present, the evolution stage):
 ``ValidationStage`` — ``PipelineBacktestValidator`` (G0 → G3, then G4 robustness) for every
 completed trial, with a ``ValidationContext`` bound to the trial's run and an ``ExperimentMetadata``
 whose ``trial_index`` / ``family_trial_count`` come from the ledger (failures included). G5 (sealed
-OOS) runs only when an explicit ``OosUnsealBudget`` is configured, the in-sample verdict is PASS,
-the round has sealed data and the family has not used its one unsealing; otherwise the sealed window
-stays sealed and G5 is simply not run. The stage makes no lifecycle move; the memory stage does
-(PASS → OOS at most; FAIL → REJECTED).
+OOS) runs only when an explicit ``OosUnsealBudget`` is configured **and lists the family** with its
+approving human, the in-sample verdict is PASS, the round has sealed data and the family has not
+used its one unsealing; otherwise the sealed window stays sealed and G5 is simply not run. Once
+the family is unsealed, its single evaluation is claimed (``SealedOosVault.claim_evaluation``)
+before any sealed bar is released, so it is consumed atomically: if the sealed run then ends
+without a statistic (no sealed decision time, no non-flat target, an error) the G5 report is
+``INCONCLUSIVE`` with ``G5.oos_evaluation`` = ``consumed_without_result:<reason>`` and the window
+stays closed for good (ADR-0049 review fixes 2). The stage makes no lifecycle move; the memory
+stage does (PASS → OOS at most; FAIL → REJECTED).
 
 Record hashes never depend on the wall clock: reports and metadata are stamped with the round's
 scheduled time, and floats are written as quantized Decimal text (``segment.decimal_text``).
@@ -66,6 +71,7 @@ from core.domain.base import FrozenMapping, Ref, content_hash
 from core.domain.research import (
     ExperimentRun,
     ExperimentSpec,
+    GateResult,
     Hypothesis,
     LlmCall,
     ReproducibilityTuple,
@@ -104,7 +110,8 @@ from research.validation import (
     run_sealed_oos,
 )
 from research.validation.controls import FixedSides
-from research.validation.sealed_oos import OosBudgetExhausted, SealedOosVault
+from research.validation.pipeline import CONSUMED_WITHOUT_RESULT, sealed_oos_without_result
+from research.validation.sealed_oos import OosBudgetExhausted, SealedEvaluation, SealedOosVault
 
 __all__ = [
     "ExperimentStage",
@@ -150,21 +157,41 @@ class TrialComponents:
 
 @dataclass(frozen=True)
 class OosUnsealBudget:
-    """Explicit permission to unseal the sealed OOS window (C-S2): a global budget + its approver.
+    """Explicit, per-family permission to unseal the sealed OOS window (C-S2).
 
-    Without this object the loop never unseals anything. ``approved_by`` is the human who granted
-    the budget (recorded in every ``OosUnsealing``); an automation identity is refused.
+    Without this object the loop never unseals anything. ``approved_families`` maps every
+    hypothesis family a human has approved for its one unsealing to **that** human's identity
+    (recorded as ``approved_by`` in the family's ``OosUnsealing``); the loop may only unseal a
+    family on this list, so a budget signed once at configuration time cannot be spent on
+    families nobody looked at (ADR-0049 review fixes 2). ``max_unsealings`` still bounds the
+    global count (``SealedOosVault``). An empty list, a blank family id or an automation
+    identity is refused.
     """
 
     max_unsealings: int
-    approved_by: str
+    approved_families: Mapping[str, str]
 
     def __post_init__(self) -> None:
         if isinstance(self.max_unsealings, bool) or self.max_unsealings < 1:
             raise ValueError("max_unsealings must be a positive int")
-        who = self.approved_by.strip()
-        if not who or who.startswith(_AUTOMATION_PREFIX):
-            raise ValueError("an unseal budget needs the approving human's identity")
+        if not isinstance(self.approved_families, Mapping) or not self.approved_families:
+            raise ValueError("an unseal budget needs at least one explicitly approved family")
+        approved: dict[str, str] = {}
+        for family, approver in self.approved_families.items():
+            key = family.strip() if isinstance(family, str) else ""
+            who = approver.strip() if isinstance(approver, str) else ""
+            if not key:
+                raise ValueError("an approved family id must not be blank")
+            if key in approved:
+                raise ValueError(f"family {key!r} is listed twice")
+            if not who or who.startswith(_AUTOMATION_PREFIX):
+                raise ValueError(f"family {key!r} needs the approving human's identity")
+            approved[key] = who
+        object.__setattr__(self, "approved_families", FrozenMapping(approved))
+
+    def approver_of(self, family_id: str) -> str | None:
+        """The human who approved ``family_id``'s unsealing (``None``: not approved)."""
+        return self.approved_families.get(family_id)
 
 
 @dataclass(frozen=True)
@@ -704,16 +731,60 @@ class ValidationStage:
         if not len(segment.sealed):
             return None, {"status": "sealed", "reason": "no sealed-window data in this round"}
         family = outcome.hypothesis.family_id
+        approver = unseal.approver_of(family)
+        if approver is None:
+            return None, {
+                "status": "sealed",
+                "reason": "the family is not on the unseal budget's approved list",
+            }
         vault = SealedOosVault(
             self._c.profile, self._memory.oos_ledger, max_unsealings=unseal.max_unsealings
         )
         if vault.is_unsealed(family):
             return None, {"status": "sealed", "reason": "the family already used its unsealing"}
         try:
-            unsealing = vault.unseal(family, unseal.approved_by, ctx.as_of)
+            unsealing = vault.unseal(family, approver, ctx.as_of)
         except OosBudgetExhausted as exc:
             return None, {"status": "sealed", "reason": str(exc)}
-        sealed_bars = segment.sealed.release(vault, family)
+        # From here on the family's single evaluation is consumed, whatever happens next: the
+        # claim marks it evaluated before any sealed bar leaves the vault (review fixes 2).
+        evaluation = vault.claim_evaluation(family)
+        g5_context = replace(
+            context,
+            report_id=content_hash({"run": outcome.run.run_id, "stage": "sealed_oos"}),
+            metadata=context.metadata.model_copy(update={"oos_unsealing": unsealing}),
+        )
+        status: dict[str, Any] = {"status": "unsealed", "approved_by": unsealing.approved_by}
+        result: tuple[GateResult, ...] | str
+        try:
+            result = self._sealed_gates(
+                ctx, outcome, segment, vault, evaluation, g5_context, status
+            )
+        except Exception as exc:  # noqa: BLE001 - the consumed evaluation is recorded, not lost
+            status["error"] = f"{type(exc).__name__}: {exc}"[:500]
+            result = "sealed run errored"
+        if isinstance(result, str):
+            status.update(status=CONSUMED_WITHOUT_RESULT, reason=result)
+            result = sealed_oos_without_result(
+                g5_context, vault, evaluation, result.replace(" ", "_")
+            )
+        report = build_report(g5_context, result).model_copy(update={"created_at": ctx.as_of})
+        return report, status
+
+    def _sealed_gates(
+        self,
+        ctx: RoundContext,
+        outcome: TrialOutcome,
+        segment: Segment,
+        vault: SealedOosVault,
+        evaluation: SealedEvaluation,
+        g5_context: ValidationContext,
+        status: dict[str, Any],
+    ) -> tuple[GateResult, ...] | str:
+        """G5 gates of the claimed evaluation, or why it ended without a result."""
+        step = self._sealed_step
+        assert step is not None
+        sealed_bars = segment.sealed.release(evaluation)
         build_signals: Callable[..., tuple[SignalObservation, ...]] = ctx.artifact(
             "state", "signals_for"
         )
@@ -723,14 +794,9 @@ class ValidationStage:
         decisions = decision_grid(
             sealed_bars, step=step, warmup=step, horizon=self._c.label_spec.horizon
         )
-        status: dict[str, Any] = {
-            "status": "unsealed",
-            "approved_by": unsealing.approved_by,
-            "sealed_bars": len(sealed_bars),
-            "decisions": len(decisions),
-        }
+        status.update(sealed_bars=len(sealed_bars), decisions=len(decisions))
         if not decisions:
-            return None, {**status, "reason": "no sealed decision time"}
+            return "no sealed decision time"
         sealed_inputs = replace(
             inputs,
             bars=tuple(price_bar(segment.symbol, bar) for bar in bars),
@@ -755,7 +821,7 @@ class ValidationStage:
             for bar in bars
         )
         if not traded:
-            return None, {**status, "reason": "no non-flat target in the sealed window"}
+            return "no non-flat target in the sealed window"
         table = materialize(
             self._c.outcome_provider,
             OutcomeRequest(
@@ -769,18 +835,11 @@ class ValidationStage:
                 bars=outcome_bars,
             ),
         )
-        g5_context = replace(
-            context,
-            report_id=content_hash({"run": outcome.run.run_id, "stage": "sealed_oos"}),
-            metadata=context.metadata.model_copy(update={"oos_unsealing": unsealing}),
-        )
         study = FixedSides(
             refs=tuple(candidate.spec.signals),
             by_event={_event_key(t): _side(t.target_weight) for t in traded},
         )
-        gates = run_sealed_oos(SealedOosInput(g5_context, vault, table, study))
-        report = build_report(g5_context, gates).model_copy(update={"created_at": ctx.as_of})
-        return report, status
+        return run_sealed_oos(SealedOosInput(g5_context, vault, table, study, evaluation))
 
 
 def failure_of(result: ValidationOutcome) -> tuple[str, ReasonCode, str] | None:

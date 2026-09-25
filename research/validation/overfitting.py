@@ -20,6 +20,15 @@ by ``robustness.overfitting_check`` against ``significance.overfitting_threshold
   walk-forward splits use; C-L5 requires it to cover the longest Outcome horizon). An embargo of
   zero reproduces the unpurged CSCV. If a split keeps fewer than two in-sample periods the PBO is
   refused (``CscvPurgeTooWide``), never computed on a degenerate sample.
+  **Label / holding horizon** (ADR-0041 review fixes 2, 2026-09-25): a period's return can share a
+  label or a position with periods up to ``horizon`` later, and that span can be longer than the
+  embargo. ``horizon`` is therefore a second required argument: every period is treated as the
+  span ``[t, t + horizon]`` and purged like a ``LabeledSpan`` in ``splits.purge_and_embargo`` —
+  overlapping an out-of-sample block's spans → purged (inclusive), then the embargo runs after the
+  block's last span end. The purge width is thus ``max(horizon, embargo)`` before a block and
+  ``horizon + embargo`` after it. ``robustness.overfitting_check`` passes the longest of the
+  Outcome label horizon and the longest holding period it was given (``RobustnessInput``).
+  ``horizon = 0`` gives the embargo-only purge above.
 - **Deflated Sharpe ratio** (Bailey & López de Prado, *The Deflated Sharpe Ratio*, 2014): the
   probability that the true Sharpe ratio exceeds the expected maximum of ``N`` unskilled trials,
   ``SR0 = sqrt(V[SR]) * ((1 - g) * z(1 - 1/N) + g * z(1 - 1/(N e)))`` (``g`` Euler–Mascheroni),
@@ -84,6 +93,8 @@ class Pbo:
     oos_loss_share: float
     #: The purge / embargo applied around every out-of-sample block.
     embargo: timedelta
+    #: The label / holding horizon of one period (its span ``[t, t + horizon]``).
+    horizon: timedelta
     #: The most in-sample periods any one split dropped for the purge / embargo.
     purged_in_sample_periods_max: int
 
@@ -115,15 +126,29 @@ def _subtract(block: Segment, cuts: Sequence[Segment]) -> list[Segment]:
 
 
 def _purge_cuts(
-    times: Sequence[datetime], bounds: Sequence[Segment], rest: Sequence[int], embargo: timedelta
+    times: Sequence[datetime],
+    bounds: Sequence[Segment],
+    rest: Sequence[int],
+    embargo: timedelta,
+    horizon: timedelta,
 ) -> list[Segment]:
-    """Index ranges strictly within ``embargo`` before / after every out-of-sample block."""
+    """Index ranges to drop around every out-of-sample block ``[first, last]``.
+
+    As ``splits.purge_and_embargo`` with each period spanning ``[t, t + horizon]``: before the
+    block, periods with ``t >= first - horizon`` (their span reaches the block: purge, inclusive)
+    or strictly within ``embargo`` of it; after the block, periods with ``t <= last + horizon``
+    (they overlap the block's last span: purge, inclusive) and then strictly within ``embargo``
+    after ``last + horizon``. With ``horizon = 0`` this is the plain embargo of R17.
+    """
     cuts: list[Segment] = []
     for block in rest:
         start, end = bounds[block]
         first, last = times[start], times[end - 1]
-        cuts.append((bisect_right(times, first - embargo), bisect_left(times, first)))
-        cuts.append((bisect_right(times, last), bisect_left(times, last + embargo)))
+        before = min(bisect_left(times, first - horizon), bisect_right(times, first - embargo))
+        cuts.append((before, bisect_left(times, first)))
+        purged = bisect_right(times, last + horizon) if horizon > timedelta(0) else end
+        embargoed = bisect_left(times, last + horizon + embargo)
+        cuts.append((bisect_right(times, last), max(purged, embargoed)))
     return cuts
 
 
@@ -140,11 +165,13 @@ def probability_of_backtest_overfitting(
     *,
     times: Sequence[datetime],
     embargo: timedelta,
+    horizon: timedelta,
 ) -> Pbo:
     """PBO of a family: ``matrix[trial][period]`` per-period returns on one shared grid.
 
-    ``times[i]`` is the time of period ``i`` (strictly ascending); in-sample periods within
-    ``embargo`` of an out-of-sample block are purged in every split (see module docs).
+    ``times[i]`` is the time of period ``i`` (strictly ascending); in-sample periods whose span
+    ``[t, t + horizon]`` overlaps an out-of-sample block, or that lie within ``embargo`` of it,
+    are purged in every split (see module docs).
     """
     trials = len(matrix)
     if trials < 2:
@@ -160,6 +187,8 @@ def probability_of_backtest_overfitting(
         raise ValueError("CSCV needs one strictly ascending time per period")
     if embargo < timedelta(0):
         raise ValueError("embargo must be >= 0")
+    if horizon < timedelta(0):
+        raise ValueError("horizon must be >= 0")
     size, extra = divmod(periods, partitions)
     bounds: list[tuple[int, int]] = []
     begin = 0
@@ -198,13 +227,14 @@ def probability_of_backtest_overfitting(
     everything = range(partitions)
     for chosen in combinations(everything, partitions // 2):
         rest = tuple(block for block in everything if block not in chosen)
-        cuts = _purge_cuts(times, bounds, rest, embargo)
+        cuts = _purge_cuts(times, bounds, rest, embargo, horizon)
         kept = [piece for block in chosen for piece in _subtract(bounds[block], cuts)]
         full = sum(bounds[block][1] - bounds[block][0] for block in chosen)
         size_kept = sum(end - start for start, end in kept)
         if size_kept < 2:
             raise CscvPurgeTooWide(
-                f"the embargo {embargo} leaves {size_kept} in-sample periods in a CSCV split"
+                f"the embargo {embargo} with horizon {horizon} leaves {size_kept} in-sample "
+                "periods in a CSCV split"
             )
         purged_max = max(purged_max, full - size_kept)
         oos = [bounds[block] for block in rest]
@@ -226,6 +256,7 @@ def probability_of_backtest_overfitting(
         mean_logit=math.fsum(logits) / splits,
         oos_loss_share=losses / splits,
         embargo=embargo,
+        horizon=horizon,
         purged_in_sample_periods_max=purged_max,
     )
 

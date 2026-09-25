@@ -92,3 +92,33 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
 仍未做（调试批次）：持久化审计与 NATS；滚动循环与固定日历 Profile 的配合（研究窗外数据不被使用，换窗口需新 Profile 与人工决定）；
 逐 bar 状态归因（`matrix_from_backtest`）因逐 bar `run_state` 成本过高未用；验证阶段的技术失败没有 `VALIDATION → FAILED` 边，
 只写 FailureRecord、生命周期不动；算力秒仍是声明值而非实测。
+
+## Implementation note (review fixes 2, 2026-09-25)
+
+不新增 ADR。第二轮只读评审的发现（调试待办 R19 – R22、R24）；状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED，
+无契约 / Schema / 生命周期 / Constitution / Profile 结构变更。
+
+1. **R19 OOS 的含义（语义核对，行为不变）**：文档支持"正在经过 / 有资格进入封存样本外检验"，不是"已通过 OOS"：
+   ADR-0006 §1 与 07-validation.md §3 状态表写 `OOS | 正在经过封存样本外检验`；状态图的边为
+   `VALIDATION → OOS : in-sample gates passed`、`OOS → PAPER : sealed OOS passed`、`OOS → REJECTED : OOS failed`；
+   04-research-loop.md §7 允许循环自动到达 OOS。因此记忆阶段在样本内 G0 – G4 PASS 时移到 OOS（无论 G5 是否运行），
+   转移证据是**样本内**报告（`validation_report:<in-sample id>`，原因写明 "eligible for the sealed OOS evaluation (G5)"）。
+   G5 只决定 OOS 之内的去向：未运行 / INCONCLUSIVE（含 `consumed_without_result`）→ 留在 OOS；FAIL → `OOS → REJECTED`；
+   PASS → 仍在 OOS（`OOS → PAPER` 需人工批准，护栏拒绝）。`MemoryStage` 文档写明；测试覆盖"无 G5 PASS 不越过 OOS"。
+2. **R20 按族批准开封**：`OosUnsealBudget(max_unsealings, approved_families)`，`approved_families` 把每个经人批准的
+   假设族映射到**该族**的批准人（写入该族 `OosUnsealing.approved_by`）；空名单、空族名、空批准人、自动化身份一律拒绝。
+   循环只开封名单上的族（其他族状态 `sealed`，原因 "not on the unseal budget's approved list"）；全局次数仍由 vault 约束。
+   原 `approved_by`（一次签名覆盖所有族）被移除。
+3. **R21 开封即原子消耗唯一评估（真实缺陷）**：原流程先开封并释放封存 bar，之后若"无封存决策时刻 / 无非零仓位"提前返回，
+   开封已用掉却没有评估记录，且 vault 仍允许他人读一次 `sealed_view`。修正：开封后立即 `SealedOosVault.claim_evaluation`
+   （在任何封存样本离开 vault 前把该族记为已评估），`SealedBars.release` 只接受这个一次性凭据，G5 通过
+   `SealedOosInput.evaluation` 读取标签（各一次）。提前结束或封存运行出错时，G5 报告为 INCONCLUSIVE：
+   `G5.oos_evaluation` = `consumed_without_result:<原因>`（`pipeline.sealed_oos_without_result`），窗口永久关闭。
+   两条提前返回路径各有回归测试。
+4. **R24 预算按 max(声明, 报告) 计费**：完成的阶段按逐维度 `max(estimate, usage)` 计费（`StageRecord.charged` 记录与报告
+   不同时的计费额）；报告用量是自报的，少报不能拉长预算。失败阶段仍按 `StageFailed` 报告的实际用量计费（原设计，未改）。
+5. **R23 的连带影响**（见 ADR-0041 同日实施说明）：walk-forward 窗口无收益时 `G4.walk_forward.positive_fraction` 为 INCONCLUSIVE。
+   循环每轮只验证新段（3 天），而 Profile 的 walk-forward 覆盖整个研究窗口（测试夹具 10 天），因此多轮 E2E 中植入效应在第 0 轮
+   从 PASS 变为 INCONCLUSIVE（除该门外其余 G0 – G4 门均 PASS），留在 VALIDATION；原 PASS 正是靠丢弃空窗口得到的。
+   PASS → OOS 与 G5 路径由单轮覆盖整个研究窗口的封存测试覆盖。滚动循环与固定日历 Profile 的配合（逐轮新段 vs 累计研究数据）
+   仍是"仍未做"中的开放项，需要决定。

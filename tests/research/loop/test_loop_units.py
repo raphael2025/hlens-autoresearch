@@ -10,7 +10,7 @@ import pytest
 from core.domain.research import Hypothesis, HypothesisOrigin
 from plugins.llm import ScriptedLLMProvider
 from research.hypotheses import HypothesisDraft, from_llm
-from research.loop import ReviewQueue
+from research.loop import OosUnsealBudget, ReviewQueue
 from research.loop.segment import RECORD_QUANTUM, decimal_text, trial_point
 from tests.research.loop.loop_fixtures import T0, llm_output
 
@@ -81,3 +81,26 @@ def test_a_trial_point_is_exactly_what_the_hypothesis_registered() -> None:
     ):
         with pytest.raises(ValueError):
             trial_point(_hypothesis(*conditions))
+
+
+def test_an_unseal_budget_lists_each_approved_family_with_its_human() -> None:
+    """R20: the loop may only unseal a family a human approved, recorded per family."""
+    budget = OosUnsealBudget(
+        max_unsealings=2, approved_families={" fam_a ": " alice ", "fam_b": "bob"}
+    )
+    assert budget.approver_of("fam_a") == "alice" and budget.approver_of("fam_b") == "bob"
+    assert budget.approver_of("fam_c") is None  # not listed: never unsealed by the loop
+    with pytest.raises(TypeError):
+        budget.approved_families["fam_c"] = "carol"  # type: ignore[index]
+    for families in (
+        {},
+        {"  ": "alice"},
+        {"fam": ""},
+        {"fam": "   "},
+        {"fam": "research_loop:synthetic_loop"},
+        {"fam": "alice", " fam ": "bob"},
+    ):
+        with pytest.raises(ValueError):
+            OosUnsealBudget(max_unsealings=1, approved_families=families)
+    with pytest.raises(ValueError, match="positive"):
+        OosUnsealBudget(max_unsealings=0, approved_families={"fam": "alice"})

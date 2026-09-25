@@ -200,6 +200,45 @@ def test_an_under_declared_stage_is_an_overrun_and_halts() -> None:
         loop.submit_round(1)
 
 
+def test_an_under_reporting_stage_is_still_charged_its_declaration() -> None:
+    """R24: a completed stage is charged max(declared, reported) per dimension."""
+    declared = StageUsage(trials=2, llm_cost_units=Decimal(1), compute_seconds=Decimal(5))
+    quiet = FakeStage(
+        "hypothesis", declared, actual=StageUsage(trials=0, compute_seconds=Decimal(7))
+    )
+    budget = LoopBudget(
+        max_trials_per_round=5,
+        max_trials_total=4,
+        max_llm_cost_units=Decimal(100),
+        max_compute_seconds=Decimal(1000),
+    )
+    loop, _ = _loop(_stages(hypothesis=quiet), budget)
+    records = loop.run_unattended(5)
+    stage = {s.name: s for s in records[0].stages}["hypothesis"]
+    # compute 7 > 5 is an overrun and halts; the dimensions it under-reported are still charged
+    assert stage.status is StageStatus.BUDGET_OVERRUN
+    charged = StageUsage(trials=2, llm_cost_units=Decimal(1), compute_seconds=Decimal(7))
+    assert stage.charged == charged == records[0].round_usage
+    assert stage.payload()["charged"] == charged.payload()
+    honest_but_quiet = FakeStage("hypothesis", declared, actual=StageUsage())
+    loop, _ = _loop(_stages(hypothesis=honest_but_quiet), budget)
+    records = loop.run_unattended(5)
+    # reported 0 trials each round, but 2 were declared: the trial budget (4) ends after 2 rounds
+    assert [r.status for r in records] == [
+        RoundStatus.COMPLETED,
+        RoundStatus.COMPLETED,
+        RoundStatus.BUDGET_EXHAUSTED,
+    ]
+    assert loop.total_usage == StageUsage(
+        trials=4, llm_cost_units=Decimal(2), compute_seconds=Decimal(10)
+    )
+    first = {s.name: s for s in records[0].stages}["hypothesis"]
+    assert first.usage == StageUsage() and first.charged == declared
+    # a stage that reports exactly its declaration records no separate charge
+    exact = {s.name: s for s in records[0].stages}["ingest"]
+    assert exact.charged is None and exact.payload()["charged"] is None
+
+
 def test_a_failed_stage_is_charged_what_it_reports_else_its_estimate() -> None:
     declared = StageUsage(trials=2, compute_seconds=Decimal(5))
 

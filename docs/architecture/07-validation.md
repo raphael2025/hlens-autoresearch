@@ -70,7 +70,7 @@ INCONCLUSIVE 不停止；整体判定只由 `derive_verdict` 给出。
 | G1 泄漏 | `G1.outcome_not_input`、`G1.label_blind_sides`、`G1.embargo_covers_horizon`、`G1.sealed_oos_excluded`、`G1.shuffle_control`、`G1.shift_control` | C-L2、C-L5、C-S2、C-L6 | 负对照：`significance.multiple_testing_threshold` |
 | G2 含成本的样本内统计（只在 walk-forward 测试折上） | `G2.walk_forward_folds`、`G2.effective_sample_size`、`G2.breakeven_cost_multiple`、`G2.cost_stress.<i>`、`G2.cost_report.<i>`（纯报告项）、`G2.null_model_percentile` | C-T2、C-R4 / A6、C-T4 | `sample_size.min_effective_trades_in_sample`、`cost_stress.min_breakeven_cost_multiple`、`cost_stress.stress_multipliers[i]`、`benchmark.null_model_percentile` |
 | G3 多重检验校正后的显著性 | `G3.adjusted_p_value` | C-T1、C-T3 | `significance.multiple_testing_threshold` |
-| G5 Sealed OOS | `G5.unsealing_recorded`、`G5.oos_effective_sample_size`、`G5.oos_breakeven_cost_multiple` | C-S1 ~ C-S3 | `sample_size.min_effective_trades_out_of_sample`、`cost_stress.min_breakeven_cost_multiple` |
+| G5 Sealed OOS | `G5.unsealing_recorded`、`G5.oos_effective_sample_size`、`G5.oos_breakeven_cost_multiple`；已消耗却无统计量时 `G5.oos_evaluation`（`consumed_without_result:<原因>`，INCONCLUSIVE） | C-S1 ~ C-S3 | `sample_size.min_effective_trades_out_of_sample`、`cost_stress.min_breakeven_cost_multiple` |
 
 - **无默认阈值**：`threshold(profile, path)` 同时返回值与字段路径；比较方向写在 metric 末尾（`[>=]` / `[<=]`），
   持有 Profile 的核验方可以重算判定。`inconclusive_bands` 以 `gate_id` 为键，`|value − threshold| <= band` 判 INCONCLUSIVE。
@@ -84,6 +84,8 @@ INCONCLUSIVE 不停止；整体判定只由 `derive_verdict` 给出。
 - **统计前先切分**（ADR-0041 §6）：G2 / G3 只在 Profile 的 walk-forward 测试折上计算，训练集已 purge + embargo；可拟合研究逐折只用训练标签拟合。
   `purged_k_fold` 与 walk-forward 一样排除封存区样本。有效独立样本 = 重叠持有区间的连通分量数。
 - **Sealed OOS 预算**（ADR-0041 §6）：全局开封预算 `max_unsealings` 为必填显式参数（Profile 无此字段）；每次开封只能评估一次。
+  需要先取封存 bar 再生成标签的调用方用 `claim_evaluation`：在任何封存样本离开 vault **之前**记为已评估，之后无人能再读该窗口；
+  提前结束（无决策时刻、无非零仓位、出错）记为 INCONCLUSIVE 的 `consumed_without_result`（ADR-0041 实现说明「复审修正 2」）。
 - 已知缺口（ADR-0037「后果」，部分由 ADR-0041 关闭）：负对照为单次抽取、复用显著性阈值；开封账本未持久化；
   Profile 数值仍全部 TBD，校准报告只是框架（`FRAMEWORK_ONLY_NOT_CALIBRATED`）。
 
@@ -94,12 +96,12 @@ INCONCLUSIVE 不停止；整体判定只由 `derive_verdict` 给出。
 
 | 检查 | `gate_id` | 对应规则 | 阈值来源 |
 |---|---|---|---|
-| 过拟合概率 | `G4.overfitting` | C-T1、C-R1 | `significance.overfitting_metric`（`pbo_cscv` / `deflated_sharpe`）、`significance.overfitting_threshold`；CSCV 分块 `param:cscv_partitions`，分块间 purge / embargo 取 `data_split.embargo` |
+| 过拟合概率 | `G4.overfitting` | C-T1、C-R1 | `significance.overfitting_metric`（`pbo_cscv` / `deflated_sharpe`）、`significance.overfitting_threshold`；CSCV 分块 `param:cscv_partitions`，分块间 purge / embargo 取 `data_split.embargo`，且 purge 宽度至少为标签 / 最长持有期（`RobustnessInput.holding_horizon`） |
 | 参数邻域 | `G4.param_neighborhood.performance_ratio`、`.positive_fraction` | C-R1 | `parameter_stability.neighborhood_definition`（`adjacent_grid`）、`.min_neighborhood_performance_ratio`、`.min_positive_neighbor_fraction` |
 | 时间对齐 | `G4.time_alignment.<i>`（未配置偏移时 `.offsets`） | C-R1 | `parameter_stability.time_alignment_offsets[i]`、`.min_neighborhood_performance_ratio` |
 | 延迟压力 | `G4.delay_stress` | C-R4、A6 | `cost_stress.delay_stress_bars`、`cost_stress.min_breakeven_cost_multiple` |
 | 成本压力 | `G4.cost_stress.breakeven`、`G4.cost_stress.<i>` | C-R4、A6 | `cost_stress.min_breakeven_cost_multiple`、`cost_stress.stress_multipliers[i]` |
-| walk-forward 窗口统计（只计不重叠的测试窗口） | `G4.walk_forward.positive_fraction`、`.max_window_share` | C-S4、C-R3 | `data_split.walk_forward.min_positive_window_fraction`、`.max_single_window_pnl_share` |
+| walk-forward 窗口统计（只计不重叠的测试窗口；无收益的窗口计入并使比例 INCONCLUSIVE） | `G4.walk_forward.positive_fraction`、`.max_window_share` | C-S4、C-R3 | `data_split.walk_forward.min_positive_window_fraction`、`.max_single_window_pnl_share` |
 | 状态分解 | `G4.state.sufficient_states`、`.pnl_outside_undersampled_states`、`.undersampled_pnl_share` | C-R2 | `sample_size.min_effective_trades_per_state`；无 Profile 字段：`param:state.max_undersampled_pnl_share` |
 | 容量 | `G4.capacity.estimated`（仅在无法估计时出现，INCONCLUSIVE）、`.required`、`.impact_estimated` | C-R5 | 无 Profile 字段：`param:capacity.max_participation_rate`、`param:capacity.min_capacity`、`param:capacity.impact_coefficient` |
 | 跨资产 | `G4.cross_asset.scope_covered`、`.positive_fraction` | C-R3 | 无 Profile 字段：`param:cross_asset.min_positive_fraction` |

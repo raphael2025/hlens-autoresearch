@@ -88,7 +88,8 @@ class LoopWiring:
     code_commit: str
     environment_lock: str
     evolution: EvolutionPlan | None
-    #: ``None`` (the default): the sealed OOS window is never unsealed by the loop.
+    #: ``None`` (the default): the sealed OOS window is never unsealed by the loop. Otherwise only
+    #: the families it lists (each with its approving human) may be unsealed.
     oos_unseal: OosUnsealBudget | None = None
     sealed_decision_step: timedelta | None = None
 

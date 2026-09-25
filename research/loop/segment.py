@@ -1,9 +1,10 @@
 """Shared building blocks of the loop's research stages (Phase 11; ADR-0049, W2 wiring).
 
 - ``Segment``: one round's new market data. Bars whose label could reach the Profile's sealed OOS
-  window are **withheld** from research: they sit in ``SealedBars`` and are released only for a
-  family the ``SealedOosVault`` has unsealed (Constitution C-S1 ~ C-S3; the vault enforces one
-  unsealing per family and the explicit global budget);
+  window are **withheld** from research: they sit in ``SealedBars`` and are released only against
+  the ``SealedEvaluation`` a ``SealedOosVault`` hands out after the family's unsealing, which has
+  already consumed the family's single evaluation (Constitution C-S1 ~ C-S3; the vault enforces
+  one unsealing per family and the explicit global budget);
 - ``decision_grid``: decision times ``start + warmup + k * step`` whose label (``horizon``) ends
   inside the research part of the segment;
 - ``observations`` / ``feature_pairs``: synthetic bars as ``FeatureObservation`` rows (lineage
@@ -39,7 +40,7 @@ from core.domain.base import FrozenMapping
 from core.domain.research import Hypothesis
 from core.domain.specs import FeatureSpec
 from infrastructure.feature.runner import run_feature
-from research.validation.sealed_oos import SealedOosLocked, SealedOosVault
+from research.validation.sealed_oos import SealedEvaluation, SealedOosLocked
 
 __all__ = [
     "RECORD_QUANTUM",
@@ -94,7 +95,13 @@ def price_bar(symbol: str, bar: SyntheticBar) -> PriceBar:
 
 
 class SealedBars:
-    """Bars inside the sealed OOS window; released only for a family the vault has unsealed."""
+    """Bars inside the sealed OOS window; released only against a claimed one-shot evaluation.
+
+    ``release`` needs the family's ``SealedEvaluation`` (``SealedOosVault.claim_evaluation``),
+    which has already recorded the family's single evaluation as consumed: releasing the bars can
+    therefore never leave an unsealed-but-unevaluated window behind (ADR-0049 review fixes 2).
+    The claim hands the bars out once.
+    """
 
     def __init__(self, bars: Sequence[SyntheticBar], window: tuple[datetime, datetime]) -> None:
         self._bars = tuple(bars)
@@ -103,9 +110,10 @@ class SealedBars:
     def __len__(self) -> int:
         return len(self._bars)
 
-    def release(self, vault: SealedOosVault, family_id: str) -> tuple[SyntheticBar, ...]:
-        if not vault.is_unsealed(family_id):
-            raise SealedOosLocked(f"family {family_id!r} has not unsealed the OOS window")
+    def release(self, evaluation: SealedEvaluation) -> tuple[SyntheticBar, ...]:
+        if (evaluation.window.start, evaluation.window.end) != self.window:
+            raise SealedOosLocked("the evaluation was claimed for another sealed window")
+        evaluation.take("bars")
         return self._bars
 
 

@@ -300,19 +300,29 @@ def _boundary_leak() -> tuple[list[list[float]], list[datetime]]:
 
 def test_r17_cscv_purge_removes_the_boundary_leak() -> None:
     matrix, times = _boundary_leak()
-    plain = probability_of_backtest_overfitting(matrix, 2, times=times, embargo=timedelta(0))
-    purged = probability_of_backtest_overfitting(matrix, 2, times=times, embargo=3 * MINUTE)
+    # horizon = 0: the embargo-only purge of R17 (the label horizon is covered by R22)
+    zero = timedelta(0)
+    plain = probability_of_backtest_overfitting(
+        matrix, 2, times=times, embargo=timedelta(0), horizon=zero
+    )
+    purged = probability_of_backtest_overfitting(
+        matrix, 2, times=times, embargo=3 * MINUTE, horizon=zero
+    )
     assert plain.pbo == 0.0 and plain.purged_in_sample_periods_max == 0
     assert purged.pbo == 1.0
     assert purged.purged_in_sample_periods_max == 2  # strictly within 3 minutes of the block
     with pytest.raises(CscvPurgeTooWide):
-        probability_of_backtest_overfitting(matrix, 2, times=times, embargo=timedelta(hours=1))
+        probability_of_backtest_overfitting(
+            matrix, 2, times=times, embargo=timedelta(hours=1), horizon=zero
+        )
 
 
 def test_r17_overfitting_check_purges_with_the_profile_embargo() -> None:
     _, trials = rf.momentum_family(3, "0.3")
     chosen = rf.best(trials)
-    check = overfitting_check(PROFILE, trials, chosen.params, len(trials), 10)
+    check = overfitting_check(
+        PROFILE, trials, chosen.params, len(trials), 10, horizon=rf.HOLDING_HORIZON
+    )
     pbo = check.details["pbo"]
     assert isinstance(pbo, dict)
     assert pbo["embargo_source"] == "data_split.embargo"
@@ -321,7 +331,9 @@ def test_r17_overfitting_check_purges_with_the_profile_embargo() -> None:
     wide = PROFILE.model_copy(
         update={"data_split": PROFILE.data_split.model_copy(update={"embargo": timedelta(days=1)})}
     )
-    refused = overfitting_check(wide, trials, chosen.params, len(trials), 10)
+    refused = overfitting_check(
+        wide, trials, chosen.params, len(trials), 10, horizon=rf.HOLDING_HORIZON
+    )
     (gate,) = refused.gates
     assert gate.verdict is Verdict.INCONCLUSIVE
     assert gate.metric == "pbo_not_computed:purge_leaves_too_few_in_sample_periods"

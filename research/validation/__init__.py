@@ -23,6 +23,7 @@ from research.validation.pipeline import (
     reason_for_gate,
     run_in_sample,
     run_sealed_oos,
+    sealed_oos_without_result,
 )
 from research.validation.report import report_view, to_json
 from research.validation.retro_audit import AuditSubject, RetroAuditReport, retro_audit
@@ -46,5 +47,6 @@ __all__ = [
     "run_robustness",
     "run_sealed_oos",
     "run_validation",
+    "sealed_oos_without_result",
     "to_json",
 ]

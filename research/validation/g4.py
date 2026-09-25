@@ -111,10 +111,16 @@ class RobustnessInput:
     per_asset: Mapping[str, PeriodReturns]
     declared_instruments: tuple[str, ...]
     params: RobustnessParams
+    #: The longest span one period's return shares a label or a position with later periods:
+    #: the larger of the Outcome label horizon and the longest holding period of the evaluated
+    #: trades. Required (no default): the CSCV purge is at least this wide (review fixes 2).
+    holding_horizon: timedelta
 
     def __post_init__(self) -> None:
         if self.family_trial_count < 1:
             raise ValueError("family_trial_count must be >= 1")
+        if self.holding_horizon < timedelta(0):
+            raise ValueError("holding_horizon must be >= 0")
         if not self.trials:
             raise ValueError("G4 needs at least the chosen trial")
 
@@ -145,7 +151,12 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
     returns = chosen.returns
     checks = (
         overfitting_check(
-            profile, inp.trials, inp.chosen, inp.family_trial_count, params.cscv_partitions
+            profile,
+            inp.trials,
+            inp.chosen,
+            inp.family_trial_count,
+            params.cscv_partitions,
+            horizon=inp.holding_horizon,
         ),
         parameter_neighborhood_check(profile, inp.trials, inp.chosen, inp.param_space),
         time_alignment_check(profile, returns, inp.time_shifted),

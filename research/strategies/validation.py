@@ -24,7 +24,9 @@ validator states it) and, optionally, the JSON-ready report view for later visua
 4. ``research.validation.run_validation`` runs G0 → G3 and then G4, whose input is built lazily
    (only when G0 – G3 did not fail): every point of the spec's declared ``param_search_space``,
    the Profile's delay stress and time-alignment offsets, one run per declared instrument, the
-   caller's causal state labels and bar volumes;
+   caller's causal state labels and bar volumes, and the holding horizon of the CSCV purge: the
+   larger of the bound label spec's ``horizon`` and the longest holding period of the re-run
+   (a non-flat decision held until the next decision or the end of data; review fixes 2);
 5. the report's verdict is ``derive_verdict`` of all gates; the failure reason comes from
    ``research.validation.reason_for_gate``.
 
@@ -197,6 +199,25 @@ def _event_key(target: TargetPosition) -> str:
     return f"{target.instrument}|{target.decision_time.isoformat()}"
 
 
+def _longest_holding(targets: Sequence[TargetPosition], base: PeriodReturns) -> timedelta:
+    """Longest span a non-flat target is held: until its instrument's next decision (or the end
+    of data), the same holding interval ``_state_trades`` uses."""
+    end_of_data = base.times[-1] if base.times else None
+    rows: dict[str, list[TargetPosition]] = {}
+    for target in targets:
+        rows.setdefault(target.instrument, []).append(target)
+    longest = timedelta(0)
+    for mine in rows.values():
+        ordered = sorted(mine, key=lambda target: target.decision_time)
+        for index, target in enumerate(ordered):
+            if _side(target.target_weight) == 0:
+                continue
+            end = ordered[index + 1].decision_time if index + 1 < len(ordered) else end_of_data
+            if end is not None and end > target.decision_time:
+                longest = max(longest, end - target.decision_time)
+    return longest
+
+
 def _full(spec: StrategySpec, point: ParamPoint) -> dict[str, SpecScalar]:
     """The identity of a trial: spec defaults overridden by the point."""
     return {**dict(spec.params), **dict(point)}
@@ -350,6 +371,9 @@ class PipelineBacktestValidator:
             per_asset=per_asset,
             declared_instruments=setup.declared_instruments,
             params=setup.robustness,
+            holding_horizon=max(
+                setup.context.label_spec.horizon, _longest_holding(rerun.targets, base)
+            ),
         )
 
     def _state_trades(self, rerun: TrialRun, base: PeriodReturns) -> tuple[StateTrade, ...] | None:

@@ -21,7 +21,8 @@ declarations — is a constructor parameter; validation thresholds are read from
   experiment records, the Phase 5 strategy → backtest run, the Phase 6 State × Strategy matrix and
   the Phase 4 / 8 pipeline (G0 – G4; G5 only with an explicit unseal budget);
 - ``MemoryStage``: every outcome into memory and the lifecycle: errored trial → FAILED; FAIL →
-  REJECTED (both with a FailureRecord); in-sample PASS → OOS (the furthest the loop can go);
+  REJECTED (both with a FailureRecord); in-sample PASS → OOS (the furthest the loop can go; OOS
+  means *under / eligible for* sealed OOS evaluation, not "passed OOS" — see ``MemoryStage``);
   a failed sealed OOS → REJECTED; INCONCLUSIVE stays in VALIDATION.
 
 Positions use only features known before the bar they trade (C-L1); the synthetic market's planted
@@ -393,6 +394,23 @@ _NO_FAILED_EDGE: Final = frozenset({LifecycleState.VALIDATION, LifecycleState.OO
 
 
 class MemoryStage:
+    """Files every outcome and makes the loop's lifecycle moves.
+
+    What ``OOS`` means (ADR-0049 review fixes 2): the lifecycle state ``OOS`` is
+    "正在经过封存样本外检验" — a subject that is *undergoing / eligible for* the sealed OOS
+    evaluation — not a subject that passed it (ADR-0006 §1 state table, 07-validation.md §3;
+    the edge ``VALIDATION → OOS`` is labelled "in-sample gates passed" and the next edge
+    ``OOS → PAPER`` "sealed OOS passed"). The stage therefore moves an in-sample G0 – G4 ``PASS``
+    to ``OOS`` whether or not G5 ran, with the **in-sample** report as the transition's evidence.
+    G5 decides only what happens inside OOS:
+
+    - G5 not run (no budget / family not approved / no sealed data) or ``INCONCLUSIVE`` (including
+      ``consumed_without_result``): the subject stays in ``OOS``;
+    - G5 ``FAIL``: ``OOS → REJECTED`` with a FailureRecord citing the sealed report;
+    - G5 ``PASS``: still ``OOS``. ``OOS → PAPER`` needs a human approval (ADR-0006 §3) and the
+      ``LifecycleGuard`` refuses it, so nothing beyond ``OOS`` ever happens in the loop.
+    """
+
     name = "memory"
 
     def __init__(self, memory: ResearchMemory) -> None:
@@ -481,7 +499,10 @@ class MemoryStage:
             ctx.advance(
                 hypothesis.ref,
                 LifecycleState.OOS,
-                reason="in-sample G0-G4 passed; OOS is the last state the loop may reach",
+                reason=(
+                    "in-sample G0-G4 passed: eligible for the sealed OOS evaluation (G5); "
+                    "OOS is the last state the loop may reach"
+                ),
                 evidence=(f"validation_report:{result.report.report_id}", round_ref),
             )
             oos.append(subject)

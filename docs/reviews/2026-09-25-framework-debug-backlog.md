@@ -26,6 +26,12 @@
 | R16 | 中 | `research/validation/splits.py`、`robustness.py`（walk-forward） | `step < test_window` 时窗口重叠，正收益窗口比例被抬高 | ✅ 已修：G4 只计不重叠的测试窗口（`non_overlapping_windows`），跳过数写入报告 |
 | R17 | 中 | `research/validation/overfitting.py`（CSCV） | CSCV 分块之间不做 purge / embargo | ✅ 已修：按 Profile `data_split.embargo` 剔除样本外分块两侧的样本内时期；剔除过多则 INCONCLUSIVE |
 | R18 | 记录 | `research/strategies/validation.py`、`research/validation/report.py` | 预填 `FixedSides` 的来源限制；`validate` 不含 G5 | ✅ 已记录：文档写明 G0 – G4 PASS 无 G5 永不可晋升；报告视图 `promotion` 块与 `BacktestValidation.promotion_blocked_reason` 结构标注 |
+| R19 | 高（语义） | `research/loop/stages.py`（`MemoryStage`） | 样本内 G0 – G4 PASS 即移到 OOS，即使 G5 未运行 | ✅ 已核对（行为不变）：ADR-0006 §1 / 07-validation §3 定义 OOS = "正在经过封存样本外检验"，边 `VALIDATION → OOS` = in-sample gates passed、`OOS → PAPER` = sealed OOS passed；文档与转移原因写明"有资格进入 G5"，证据为样本内报告；测试覆盖无 G5 PASS 不越过 OOS（ADR-0049 实施说明「review fixes 2」） |
+| R20 | 中 | `research/loop/trials.py`（`OosUnsealBudget`） | 开封预算在配置时一次签名，无人值守循环可耗尽全局开封额度 | ✅ 已修：`approved_families` 逐族列出批准人（写入该族 `OosUnsealing.approved_by`），循环只开封名单上的族；空名单 / 自动化身份被拒 |
+| R21 | 中（真实缺陷） | `research/loop/trials.py`、`segment.py`、`research/validation/sealed_oos.py`、`pipeline.py` | G5 先开封并释放封存 bar，之后提前返回（无封存决策时刻 / 无非零仓位）时开封已消耗却无评估记录，vault 仍允许他人读一次 | ✅ 已修：`claim_evaluation` 在释放前原子消耗唯一评估；`SealedBars.release` 只接受一次性凭据；提前结束或出错 → INCONCLUSIVE `consumed_without_result`，窗口永久关闭；两条路径均有回归测试 |
+| R22 | 中 | `research/validation/overfitting.py`（CSCV） | purge 只用时期时间 ± embargo，标签 / 持有期可能长于 embargo | ✅ 已修：必填 `horizon`（`RobustnessInput.holding_horizon` = max(标签 horizon, 最长持有期)），与 `purge_and_embargo` 同一语义；剔除过多仍 INCONCLUSIVE（ADR-0041 实施说明「review fixes 2」） |
+| R23 | 低 | `research/validation/robustness.py`（walk-forward） | 无收益的窗口被移出分母，抬高正收益窗口比例 | ✅ 已修（保守选项）：空窗口计入并报告，任一空窗口 → `G4.walk_forward.positive_fraction` INCONCLUSIVE（不计为非正：那会把缺证据变成 REJECTED）。连带：循环多轮 E2E 的第 0 轮从 PASS 变为 INCONCLUSIVE（每轮只验证新段，Profile walk-forward 覆盖整个研究窗口），见 ADR-0049 实施说明第 5 条 |
+| R24 | 低 | `apps/worker/loop.py`（预算） | 只有阶段多报时停机，少报时预算按少报额计费 | ✅ 已修（保守选项）：完成的阶段按逐维度 max(声明, 报告) 计费，`StageRecord.charged` 记录 |
 
 ## B. 需要 Raphael 决定（红线，Claude 不自行决定）
 

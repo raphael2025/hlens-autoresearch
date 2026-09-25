@@ -78,6 +78,9 @@ NO_EXPLICIT_PARAMS = RobustnessParams(
 )
 COST_PER_UNIT = Decimal("0.00001")  # per unit of position change (TEST ONLY)
 MINUTES = 1440
+#: ``_run`` re-decides every position at each bar's end and holds it one bar: a period shares its
+#: position with no later period, so the label / holding horizon of these families is one bar.
+HOLDING_HORIZON = timedelta(minutes=1)
 
 
 def market(seed: int, strength: str | None = None) -> SyntheticMarket:
@@ -185,6 +188,7 @@ def robustness_input(
     per_asset: dict[str, PeriodReturns] | None = None,
     declared: tuple[str, ...] = ("SYN-USDT",),
     family_trial_count: int | None = None,
+    holding_horizon: timedelta = HOLDING_HORIZON,
 ) -> RobustnessInput:
     chosen_returns = next(t.returns for t in trials if dict(t.params) == dict(chosen))
     return RobustnessInput(
@@ -200,4 +204,5 @@ def robustness_input(
         per_asset=per_asset if per_asset is not None else {"SYN-USDT": chosen_returns},
         declared_instruments=declared,
         params=params,
+        holding_horizon=holding_horizon,
     )

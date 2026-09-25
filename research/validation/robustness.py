@@ -23,7 +23,7 @@ Checks (principle → gate ids → threshold sources):
 - ``overfitting_check`` (C-T1 / C-R1) → ``G4.overfitting`` → method
   ``significance.overfitting_metric``, threshold ``significance.overfitting_threshold``; CSCV
   partitions ``param:cscv_partitions``, purged / embargoed between blocks by
-  ``data_split.embargo``;
+  ``data_split.embargo`` and at least the label / holding horizon (``RobustnessInput``);
 - ``parameter_neighborhood_check`` (C-R1) → ``G4.param_neighborhood.performance_ratio`` /
   ``.positive_fraction`` → ``parameter_stability.neighborhood_definition`` (method),
   ``.min_neighborhood_performance_ratio``, ``.min_positive_neighbor_fraction``;
@@ -35,7 +35,8 @@ Checks (principle → gate ids → threshold sources):
 - ``cost_stress_check`` (C-R4 / A6) → ``G4.cost_stress.breakeven`` / ``.<i>`` →
   ``cost_stress.min_breakeven_cost_multiple``, ``cost_stress.stress_multipliers[i]``;
 - ``walk_forward_check`` (C-S4 / C-R3) → ``G4.walk_forward.positive_fraction`` /
-  ``.max_window_share`` → ``data_split.walk_forward.*``, over the non-overlapping test windows;
+  ``.max_window_share`` → ``data_split.walk_forward.*``, over the non-overlapping test windows
+  (a window without returns is counted and makes the fraction ``INCONCLUSIVE``);
 - ``state_decomposition_check`` (C-R2) → ``G4.state.sufficient_states`` /
   ``.pnl_outside_undersampled_states`` / ``.undersampled_pnl_share`` →
   ``sample_size.min_effective_trades_per_state``; no Profile field:
@@ -215,8 +216,15 @@ def overfitting_check(
     chosen: ParamPoint,
     family_trial_count: int,
     cscv_partitions: int | None,
+    *,
+    horizon: timedelta,
 ) -> RobustnessCheck:
-    """Gate the Profile's overfitting metric; the other metric is reported only."""
+    """Gate the Profile's overfitting metric; the other metric is reported only.
+
+    ``horizon`` is the longest span one period shares a label or a position with later periods
+    (the larger of the Outcome label horizon and the longest holding period); the CSCV purge is
+    at least that wide (``overfitting.probability_of_backtest_overfitting``).
+    """
     method = _method(
         profile.significance.overfitting_metric,
         PBO_METHODS | DSR_METHODS,
@@ -247,7 +255,11 @@ def overfitting_check(
         embargo = profile.data_split.embargo
         try:
             pbo = probability_of_backtest_overfitting(
-                matrix, cscv_partitions, times=selected.returns.times, embargo=embargo
+                matrix,
+                cscv_partitions,
+                times=selected.returns.times,
+                embargo=embargo,
+                horizon=horizon,
             )
         except CscvPurgeTooWide:
             pbo_reason = "purge_leaves_too_few_in_sample_periods"
@@ -262,6 +274,8 @@ def overfitting_check(
                 "oos_loss_share": pbo.oos_loss_share,
                 "embargo_seconds": embargo.total_seconds(),
                 "embargo_source": "data_split.embargo",
+                "purge_horizon_seconds": horizon.total_seconds(),
+                "purge_horizon_source": "max(label horizon, longest holding period)",
                 "purged_in_sample_periods_max": pbo.purged_in_sample_periods_max,
             }
     if pbo_reason:
@@ -596,6 +610,17 @@ def cost_stress_check(profile: ValidationProfile, returns: PeriodReturns) -> Rob
 
 
 def walk_forward_check(profile: ValidationProfile, returns: PeriodReturns) -> RobustnessCheck:
+    """Positive-window fraction and single-window P&L share over the non-overlapping windows.
+
+    Every non-overlapping Profile window counts (review fixes 2, 2026-09-25): a window without any
+    return is reported (``periods = 0``, ``windows_without_returns``) and — the conservative
+    choice — makes ``G4.walk_forward.positive_fraction`` ``INCONCLUSIVE``
+    (``walk_forward_windows_without_returns``): the evidence does not cover the Profile's
+    walk-forward (C-S4), so no fraction is computed over a shrunken denominator. Counting such a
+    window as non-positive was rejected: it would turn missing evidence into a refutation
+    (``FAIL`` → REJECTED, a terminal state). The P&L share is unaffected by empty windows (they add
+    nothing to the maximum or the total) and is still computed over the windows with returns.
+    """
     wf_limit = threshold(profile, "data_split.walk_forward.min_positive_window_fraction")
     share_limit = threshold(profile, "data_split.walk_forward.max_single_window_pnl_share")
     uses = (
@@ -606,9 +631,21 @@ def walk_forward_check(profile: ValidationProfile, returns: PeriodReturns) -> Ro
     pnls: list[float] = []
     windows = walk_forward_windows(profile)
     disjoint = non_overlapping_windows(windows)  # overlapping tests would double-count periods
+    empty = 0
     for window in disjoint:
         part = returns.window(window.train_end, window.test_end)
         if not len(part):
+            empty += 1
+            rows.append(
+                {
+                    "index": window.index,
+                    "test_start": window.train_end.isoformat(),
+                    "test_end": window.test_end.isoformat(),
+                    "periods": 0,
+                    "net_return": None,
+                    "sharpe": None,
+                }
+            )
             continue
         pnl = float(sum(part.net(), Decimal(0)))
         pnls.append(pnl)
@@ -630,16 +667,20 @@ def walk_forward_check(profile: ValidationProfile, returns: PeriodReturns) -> Ro
             inconclusive_gate(share_id, "no_walk_forward_window_with_returns", 0.0),
         )
     else:
-        fraction = sum(1 for pnl in pnls if pnl > 0) / len(pnls)
         total = sum(pnls)
-        fraction_gate = compare_gate(
-            profile,
-            fraction_id,
-            "positive_window_fraction",
-            fraction,
-            wf_limit,
-            Direction.AT_LEAST,
-        )
+        if empty:
+            fraction_gate = inconclusive_gate(
+                fraction_id, "walk_forward_windows_without_returns", float(empty)
+            )
+        else:
+            fraction_gate = compare_gate(
+                profile,
+                fraction_id,
+                "positive_window_fraction",
+                sum(1 for pnl in pnls if pnl > 0) / len(pnls),
+                wf_limit,
+                Direction.AT_LEAST,
+            )
         if total <= 0:
             share_gate = inconclusive_gate(share_id, "total_window_pnl_not_positive", total)
         else:
@@ -662,6 +703,8 @@ def walk_forward_check(profile: ValidationProfile, returns: PeriodReturns) -> Ro
             "window_selection": "non_overlapping_test_windows",
             "profile_windows": len(windows),
             "windows_skipped_overlapping": len(windows) - len(disjoint),
+            "windows_without_returns": empty,
+            "empty_window_rule": "positive_fraction INCONCLUSIVE when any window has no return",
         },
     )
 

@@ -11,7 +11,8 @@ no claim about real markets (roadmap Phase 9).
 from __future__ import annotations
 
 from collections.abc import Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -26,8 +27,13 @@ from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
 from research.evolution import LineageGraph, require_new_version
 from research.loop import OosUnsealBudget, ResearchMemory
+from research.loop import trials as loop_trials
 from research.strategies.pipeline import CandidateTrialRunner
-from research.validation.sealed_oos import OosAlreadyUnsealed, SealedOosVault
+from research.validation.sealed_oos import (
+    OosAlreadyUnsealed,
+    SealedOosAlreadyEvaluated,
+    SealedOosVault,
+)
 from tests.research.loop import loop_fixtures as fx
 
 
@@ -89,16 +95,28 @@ def test_three_unattended_rounds_on_real_components(planted: Run) -> None:
         state = _stage(record, "state").summary
         assert state["state"] == str(fx.TREND.ref) and state["evaluated"] > 0
         assert state["state_result_hash"] and state["feature_result_hashes"]
-    # the planted 60-bar effect passes G0 - G4 in round 0 and is moved to OOS, no further
+    # The planted 60-bar effect passes every G0 - G4 gate in round 0 except the walk-forward
+    # coverage: this round's 3 days leave most of the Profile's (10-day) walk-forward windows
+    # without returns, which is INCONCLUSIVE since review fixes 2 (R23; it used to PASS on the
+    # shrunken denominator). It therefore stays in VALIDATION; PASS -> OOS is covered below by the
+    # sealed-OOS tests, whose single round covers the whole research window.
     first = _stage(run.records[0], "validation").summary["reports"]
     assert [(r["hypothesis"], r["verdict"]) for r in first] == [
-        ("hypothesis:h_k_tsmom_lookback_60@1.0.0", "PASS")
+        ("hypothesis:h_k_tsmom_lookback_60@1.0.0", "INCONCLUSIVE")
     ]
     assert {g["gate_id"].split(".")[0] for g in first[0]["gates"]} == {"G0", "G1", "G2", "G3", "G4"}
-    # no unseal budget: the sealed window stays sealed and G5 never runs
-    assert first[0]["sealed_oos"]["status"] == "sealed"
-    assert first[0]["sealed_oos"]["reason"] == "no unseal budget configured"
-    assert run.loop.guard.state_of(run.memory.trials[0].hypothesis.ref) is LifecycleState.OOS
+    not_pass = [g for g in first[0]["gates"] if g["verdict"] != "PASS"]
+    assert [(g["gate_id"], g["verdict"]) for g in not_pass] == [
+        ("G4.walk_forward.positive_fraction", "INCONCLUSIVE")
+    ]
+    [result] = [v for v in run.memory.validations if v.round_index == 0]
+    assert result.report is not None
+    [gate] = [g for g in result.report.gates if g.verdict is Verdict.INCONCLUSIVE]
+    assert gate.metric == "walk_forward_windows_without_returns" and gate.value > 0
+    assert first[0]["sealed_oos"]["status"] == "not_run"  # G5 needs an in-sample PASS
+    assert run.loop.guard.state_of(run.memory.trials[0].hypothesis.ref) is (
+        LifecycleState.VALIDATION
+    )
     # later hypotheses are refuted and filed; LLM drafts only wait for a human
     assert run.memory.reviews.pending == ("h_llm_0@1.0.0", "h_llm_1@1.0.0", "h_llm_2@1.0.0")
     assert run.loop.total_usage.llm_cost_units == Decimal(3)
@@ -243,11 +261,112 @@ def test_sealed_oos_stays_sealed_without_an_unseal_budget(tmp_path: Path) -> Non
     [result] = memory.validations
     assert result.verdict is Verdict.PASS and result.sealed_report is None
     assert result.sealed_status["status"] == "sealed"
+    assert result.sealed_status["reason"] == "no unseal budget configured"
     assert memory.oos_ledger.count() == 0
+    # R19: OOS = eligible for / undergoing the sealed evaluation. Without a G5 PASS nothing
+    # beyond OOS happens, and the move into OOS cites the in-sample report.
+    _assert_ends_in_oos_on_in_sample_evidence(loop, result, record)
+    assert not memory.failures.records()
+
+
+def _assert_ends_in_oos_on_in_sample_evidence(loop: Any, result: Any, record: Any) -> None:
+    [history] = [h for h in loop.guard.histories if h.subject == result.outcome.hypothesis.ref]
+    assert [(t.from_state, t.to_state) for t in history.transitions] == [
+        (LifecycleState.IDEA, LifecycleState.CANDIDATE),
+        (LifecycleState.CANDIDATE, LifecycleState.VALIDATION),
+        (LifecycleState.VALIDATION, LifecycleState.OOS),
+    ]
+    move = history.transitions[-1]
+    assert f"validation_report:{result.report.report_id}" in move.evidence
+    assert "in-sample" in move.reason and "eligible for the sealed OOS evaluation" in move.reason
+    if result.sealed_report is not None:
+        assert f"validation_report:{result.sealed_report.report_id}" not in move.evidence
+    assert _stage(record, "memory").summary["moved_to_oos"] == [str(result.outcome.hypothesis.ref)]
+
+
+def test_a_family_not_on_the_approved_list_is_never_unsealed(tmp_path: Path) -> None:
+    unseal = OosUnsealBudget(max_unsealings=5, approved_families={"another_family": "test-human"})
+    loop, memory, _ = fx.build(tmp_path, _sealed_config(unseal))
+    [record] = loop.run_unattended(1)
+    [result] = memory.validations
+    assert result.verdict is Verdict.PASS and result.sealed_report is None
+    assert result.sealed_status == {
+        "status": "sealed",
+        "reason": "the family is not on the unseal budget's approved list",
+    }
+    assert memory.oos_ledger.count() == 0 and memory.oos_ledger.get(fx.FAMILY) is None
+    _assert_ends_in_oos_on_in_sample_evidence(loop, result, record)
+
+
+def _assert_consumed_without_result(loop: Any, memory: ResearchMemory, reason: str) -> None:
+    [result] = memory.validations
+    assert result.verdict is Verdict.PASS
+    sealed = result.sealed_report
+    assert sealed is not None and sealed.verdict is Verdict.INCONCLUSIVE
+    assert [(g.gate_id, g.verdict, g.metric) for g in sealed.gates] == [
+        ("G5.unsealing_recorded", Verdict.PASS, "oos_unsealing_recorded"),
+        (
+            "G5.oos_evaluation",
+            Verdict.INCONCLUSIVE,
+            f"consumed_without_result:{reason.replace(' ', '_')}",
+        ),
+    ]
+    assert result.sealed_status["status"] == "consumed_without_result"
+    assert result.sealed_status["reason"] == reason
+    assert result.sealed_status["approved_by"] == "test-human"
+    # the single evaluation is consumed: nobody can unseal or read the window again
+    assert memory.oos_ledger.count() == 1 and memory.oos_ledger.is_evaluated(fx.FAMILY)
+    vault = SealedOosVault(fx.loop_profile(boundary_day=3), memory.oos_ledger, max_unsealings=5)
+    with pytest.raises(SealedOosAlreadyEvaluated):
+        vault.sealed_view(fx.FAMILY, [])
+    with pytest.raises(SealedOosAlreadyEvaluated):
+        vault.claim_evaluation(fx.FAMILY)
+    with pytest.raises(OosAlreadyUnsealed):
+        vault.unseal(fx.FAMILY, "test-human", fx.T0)
+    # INCONCLUSIVE G5: the subject stays in OOS, no failure record
+    assert loop.guard.state_of(result.outcome.hypothesis.ref) is LifecycleState.OOS
+    assert not memory.failures.records()
+
+
+def test_no_sealed_decision_time_still_consumes_the_single_evaluation(tmp_path: Path) -> None:
+    unseal = OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: "test-human"})
+    config = _sealed_config(unseal)
+    # a sealed decision step longer than the 1-day sealed window: no sealed decision time
+    wiring = replace(config.wiring, sealed_decision_step=timedelta(days=2))
+    loop, memory, _ = fx.build(tmp_path, replace(config, wiring=wiring))
+    [record] = loop.run_unattended(1)
+    assert record.status is RoundStatus.COMPLETED
+    _assert_consumed_without_result(loop, memory, "no sealed decision time")
+    assert memory.validations[0].sealed_status["decisions"] == 0
+
+
+class _FlatInTheSealedWindow(CandidateTrialRunner):
+    """TEST ONLY collaborator stub: the strategy stays flat in the sealed run (the one whose
+    knowledge cutoff lies after the sealed boundary); in-sample runs are untouched."""
+
+    def run(self, params: Any, **kwargs: Any) -> Any:
+        trial = super().run(params, **kwargs)
+        boundary = fx.T0 + timedelta(days=3)
+        if self.inputs.knowledge_cutoff <= boundary:
+            return trial
+        flat = tuple(t.model_copy(update={"target_weight": Decimal(0)}) for t in trial.targets)
+        return replace(trial, targets=flat)
+
+
+def test_no_non_flat_sealed_target_still_consumes_the_single_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(loop_trials, "CandidateTrialRunner", _FlatInTheSealedWindow)
+    unseal = OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: "test-human"})
+    loop, memory, _ = fx.build(tmp_path, _sealed_config(unseal))
+    [record] = loop.run_unattended(1)
+    assert record.status is RoundStatus.COMPLETED
+    _assert_consumed_without_result(loop, memory, "no non-flat target in the sealed window")
+    assert memory.validations[0].sealed_status["decisions"] > 0
 
 
 def test_an_explicit_unseal_budget_runs_g5_once_per_family(tmp_path: Path) -> None:
-    unseal = OosUnsealBudget(max_unsealings=1, approved_by="test-human")
+    unseal = OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: "test-human"})
     loop, memory, _ = fx.build(tmp_path, _sealed_config(unseal))
     [record] = loop.run_unattended(1)
     [result] = memory.validations
@@ -266,8 +385,11 @@ def test_an_explicit_unseal_budget_runs_g5_once_per_family(tmp_path: Path) -> No
     # at most OOS: a G5 pass stays in OOS (OOS -> PAPER needs a human)
     assert result.sealed_report.verdict is Verdict.PASS
     assert loop.guard.state_of(result.outcome.hypothesis.ref) is LifecycleState.OOS
+    _assert_ends_in_oos_on_in_sample_evidence(loop, result, record)
+    with pytest.raises(SealedOosAlreadyEvaluated):  # the one evaluation was used
+        vault.sealed_view(fx.FAMILY, [])
     with pytest.raises(ValueError, match="human"):
-        OosUnsealBudget(max_unsealings=1, approved_by=loop.guard.actor)
+        OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: loop.guard.actor})
     assert record.status is RoundStatus.COMPLETED
 
 

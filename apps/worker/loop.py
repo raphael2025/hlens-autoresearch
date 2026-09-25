@@ -12,6 +12,9 @@ its declared usage (``estimate``) and consults the ``LoopBudget``:
 - the estimate does not fit -> the stage is ``REFUSED_BUDGET``, the round stops as
   ``BUDGET_EXHAUSTED`` and the loop halts; the budget is never expanded (a larger budget is a new
   ``LoopBudget`` whose hash is written into every record);
+- a completed stage is charged ``max(declared, reported)`` per dimension (``StageRecord.charged``;
+  ADR-0049 review fixes 2): the reported usage is self-declared, so a stage that reports less than
+  it declared is still charged its declaration and cannot stretch the budget by under-reporting;
 - the stage reports more usage than it declared -> the usage is charged (it happened), the stage is
   ``BUDGET_OVERRUN``, the stage and round records state the overrun amount (actual minus declared,
   per dimension) and the loop halts (fail closed on an under-declaring stage);
@@ -206,6 +209,14 @@ class StageUsage:
             self.trials > other.trials
             or self.llm_cost_units > other.llm_cost_units
             or self.compute_seconds > other.compute_seconds
+        )
+
+    def at_least(self, other: StageUsage) -> StageUsage:
+        """Per dimension, the larger of this usage and ``other``."""
+        return StageUsage(
+            max(self.trials, other.trials),
+            max(self.llm_cost_units, other.llm_cost_units),
+            max(self.compute_seconds, other.compute_seconds),
         )
 
     def excess_over(self, other: StageUsage) -> StageUsage:
@@ -462,6 +473,9 @@ class StageRecord:
     refused: tuple[str, ...] = ()
     #: Actual minus declared usage (per dimension) when the stage overran its estimate.
     overrun: StageUsage | None = None
+    #: What the budget was charged when it differs from ``usage`` (a completed stage is charged
+    #: ``max(estimate, usage)`` per dimension); ``None``: exactly ``usage`` (or nothing).
+    charged: StageUsage | None = None
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -473,6 +487,7 @@ class StageRecord:
             "error": self.error,
             "refused": list(self.refused),
             "overrun": None if self.overrun is None else self.overrun.payload(),
+            "charged": None if self.charged is None else self.charged.payload(),
         }
 
 
@@ -751,7 +766,16 @@ class ResearchLoop:
             return record, estimate
         ctx.artifacts[stage.name] = result.artifacts
         record = self._charged(stage.name, StageStatus.COMPLETED, estimate, result.usage, None)
-        return replace(record, summary=result.summary), result.usage
+        # the reported usage is self-declared: never charge less than was declared up front
+        charged = result.usage.at_least(estimate)
+        return (
+            replace(
+                record,
+                summary=result.summary,
+                charged=None if charged == result.usage else charged,
+            ),
+            charged,
+        )
 
     @staticmethod
     def _charged(

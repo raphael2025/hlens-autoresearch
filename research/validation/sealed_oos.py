@@ -14,7 +14,15 @@ Budget and one-shot evaluation (Phase 8 fix, ADR-0041):
   parameter** (no default; ``budget_source`` records ``param:max_unsealings``). Switching the
   ``family_id`` therefore cannot re-open the same window without limit (``OosBudgetExhausted``);
 - an unsealing buys **one** evaluation: ``sealed_view`` hands the window's samples out once per
-  family and records that in the ledger; a second read raises ``SealedOosAlreadyEvaluated``.
+  family and records that in the ledger; a second read raises ``SealedOosAlreadyEvaluated``;
+- one-shot accounting at release (ADR-0041 review fixes 2, 2026-09-25): a caller that needs the
+  window's raw data *before* it can build the labels (the research loop re-runs the strategy on
+  the sealed bars first) takes a ``SealedEvaluation`` with ``claim_evaluation``. The claim marks
+  the family evaluated in the ledger **before** any sealed sample leaves the vault, so the
+  evaluation is consumed even when it later ends without a result (the caller records that as an
+  INCONCLUSIVE ``consumed_without_result`` report, ``pipeline.sealed_oos_without_result``). The
+  claim hands the bars out once (``take("bars")``) and the label spans once (``view``); after the
+  claim nobody, the claimant included, can read the window through the vault again.
 
 ``InMemoryUnsealingLedger`` is the framework ledger; a durable Control Plane ledger implements the
 same ``UnsealingLedger`` Protocol later (not in this batch).
@@ -37,6 +45,7 @@ __all__ = [
     "OosBudgetExhausted",
     "SealedOosAlreadyEvaluated",
     "SealedOosLocked",
+    "SealedEvaluation",
     "SealedOosVault",
     "SealedWindow",
     "UnsealingLedger",
@@ -120,6 +129,39 @@ class InMemoryUnsealingLedger:
         return family_id in self._evaluated
 
 
+class SealedEvaluation:
+    """A family's single sealed OOS evaluation, already recorded as consumed (see module docs).
+
+    Only ``SealedOosVault.claim_evaluation`` creates one. Each part of the window (``"bars"``,
+    ``"labels"``) can be taken once; a second take raises ``SealedOosAlreadyEvaluated``.
+    """
+
+    PARTS: frozenset[str] = frozenset({"bars", "labels"})
+
+    def __init__(self, family_id: str, window: SealedWindow) -> None:
+        self.family_id = family_id
+        self.window = window
+        self._taken: set[str] = set()
+
+    def take(self, part: str) -> None:
+        """Record that ``part`` of the window was handed out (once per claim)."""
+        if part not in self.PARTS:
+            raise ValueError(f"unknown sealed part {part!r}")
+        if part in self._taken:
+            raise SealedOosAlreadyEvaluated(
+                f"family {self.family_id!r} already took the sealed {part}"
+            )
+        self._taken.add(part)
+
+    def taken(self, part: str) -> bool:
+        return part in self._taken
+
+    def view(self, spans: Sequence[LabeledSpan]) -> tuple[LabeledSpan, ...]:
+        """Spans fully inside the window (the ``labels`` part, handed out once)."""
+        self.take("labels")
+        return tuple(span for span in spans if self.window.contains(span))
+
+
 class SealedOosVault:
     """The window of one Profile with a global unsealing budget (explicit, see module docs)."""
 
@@ -158,11 +200,15 @@ class SealedOosVault:
     def is_evaluated(self, family_id: str) -> bool:
         return self._ledger.is_evaluated(family_id)
 
-    def sealed_view(self, family_id: str, spans: Sequence[LabeledSpan]) -> tuple[LabeledSpan, ...]:
-        """Spans fully inside the window, handed out **once** after the family's unsealing."""
+    def claim_evaluation(self, family_id: str) -> SealedEvaluation:
+        """Consume the family's single evaluation **now** and return its one-shot handle."""
         if self._ledger.get(family_id) is None:
             raise SealedOosLocked(f"family {family_id!r} has not unsealed the OOS window")
         if self._ledger.is_evaluated(family_id):
             raise SealedOosAlreadyEvaluated(f"family {family_id!r} already evaluated sealed OOS")
         self._ledger.mark_evaluated(family_id)
-        return tuple(span for span in spans if self.window.contains(span))
+        return SealedEvaluation(family_id, self.window)
+
+    def sealed_view(self, family_id: str, spans: Sequence[LabeledSpan]) -> tuple[LabeledSpan, ...]:
+        """Spans fully inside the window, handed out **once** after the family's unsealing."""
+        return self.claim_evaluation(family_id).view(spans)

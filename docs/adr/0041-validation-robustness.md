@@ -153,3 +153,29 @@ G4 必须使用验证上下文绑定的同一 Profile（内容哈希核对）。
 测试夹具：P9 合成实验室的 TEST ONLY 参数原先 `min_capacity=None`，依赖 R13 的静默通过；现显式给出 `min_capacity=0.0`（TEST ONLY，
 表示"本冒烟测试不设容量要求"），断言未改动。`test_robustness.py` 中 `delay_stress_bars = 0` 判 NOT_APPLICABLE 的断言改为更严格的
 INCONCLUSIVE + `configuration_missing` 断言（原断言编码的正是 R14 缺陷）。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (review fixes 2, 2026-09-25)
+
+不新增 ADR。第二轮只读评审中与验证代码有关的发现（调试待办 R21 – R23）；无 Profile 结构、Constitution 或契约变更，
+所有阈值仍只来自 Profile 或显式参数。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+1. **R21 封存评估在释放时原子消耗**：`SealedOosVault.claim_evaluation(family)` 在任何封存样本离开 vault **之前**把该族记为
+   已评估，返回一次性 `SealedEvaluation`（bar 与标签各只能取一次）；`sealed_view` 改为 `claim_evaluation(...).view(...)`（行为不变）。
+   `SealedOosInput.evaluation`（可选）让先取 bar 的调用方用已消耗的凭据跑 G5；凭据须属于同一族且来自同一 vault。
+   评估已消耗却没有统计量时，`pipeline.sealed_oos_without_result` 给出 `G5.unsealing_recorded` PASS +
+   `G5.oos_evaluation` = `consumed_without_result:<原因>`（INCONCLUSIVE，永不 PASS）。
+2. **R22 CSCV purge 至少覆盖标签 / 持有期**：`probability_of_backtest_overfitting` 新增必填 `horizon`：每期视为跨度
+   `[t, t + horizon]`，与 `splits.purge_and_embargo` 同一语义——与样本外分块的跨度重叠即 purge（含端点），embargo 从分块最后一个
+   跨度的终点起算；即分块前宽度 `max(horizon, embargo)`（保留 R17 的"分块前 embargo"），分块后 `horizon + embargo`；
+   `horizon = 0` 与 R17 完全一致。`RobustnessInput` 新增必填 `holding_horizon`；`PipelineBacktestValidator` 取绑定标签规格的
+   `horizon` 与重跑中最长持有期（非零仓位决策到下一决策或数据末尾）的较大者。`details.pbo` 记录 `purge_horizon_seconds`。
+   剔除过多仍为 `CscvPurgeTooWide` → `pbo_not_computed:purge_leaves_too_few_in_sample_periods`（INCONCLUSIVE）。
+   回归测试把 2 分块的剔除数与 `purge_and_embargo` 逐一对照。
+3. **R23 walk-forward 空窗口计入分母（保守选项）**：原实现丢弃没有收益的窗口，抬高正收益窗口比例。两种可选：计为非正，
+   或报告并判 INCONCLUSIVE。选择后者：空窗口说明证据没有覆盖 Profile 的 walk-forward（C-S4），属证据不足；计为非正会把缺证据
+   变成否证（FAIL → REJECTED 终态，且原因码误记为 OOS_DECAY）。现在每个不重叠窗口都列入 `details.windows`（空窗口 `periods = 0`），
+   `windows_without_returns` 计数，任一空窗口即 `G4.walk_forward.positive_fraction` = `walk_forward_windows_without_returns`
+   （INCONCLUSIVE）；单窗口 P&L 占比不受空窗口影响（空窗口不改变最大值与总和），仍在有收益的窗口上计算。
+
+测试夹具：G4 夹具的 `holding_horizon` = 1 分钟（`robustness_fixtures.HOLDING_HORIZON`：每根 bar 结束时重新决定仓位、只持有一根）；
+R17 测试显式传 `horizon=0` 以保持其原语义。循环 E2E 的连带变化见 ADR-0049 同日实施说明第 5 条。

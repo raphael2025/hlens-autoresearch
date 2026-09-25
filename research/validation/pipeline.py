@@ -24,7 +24,9 @@ Stages, gate ids and threshold sources:
   ``significance.multiple_testing_threshold``);
 - **G5 sealed OOS**: ``G5.unsealing_recorded``, ``G5.oos_effective_sample_size``
   (``sample_size.min_effective_trades_out_of_sample``), ``G5.oos_breakeven_cost_multiple``
-  (``cost_stress.min_breakeven_cost_multiple``).
+  (``cost_stress.min_breakeven_cost_multiple``); an evaluation that was claimed (consumed) but
+  ended before any statistic is ``G5.oos_evaluation`` = ``consumed_without_result:<reason>``
+  (``INCONCLUSIVE``, ``sealed_oos_without_result``; ADR-0041 review fixes 2).
 
 G4 (robustness, Phase 8) lives in ``research.validation.robustness`` and is composed after G3 by
 ``research.validation.g4.run_validation``. Every side this module uses is computed from blinded
@@ -77,7 +79,7 @@ from research.validation.gates import (
     inconclusive_gate,
     threshold,
 )
-from research.validation.sealed_oos import SealedOosVault, SealedWindow
+from research.validation.sealed_oos import SealedEvaluation, SealedOosVault, SealedWindow
 from research.validation.splits import LabeledSpan, walk_forward_folds
 from research.validation.stats import (
     UnsupportedMethod,
@@ -96,6 +98,7 @@ __all__ = [
     "reason_for_gate",
     "run_in_sample",
     "run_sealed_oos",
+    "sealed_oos_without_result",
 ]
 
 #: Null-model names this pipeline implements (random entries with the same trade count and the
@@ -134,10 +137,15 @@ class InSampleInput:
 
 @dataclass(frozen=True)
 class SealedOosInput:
+    """G5 input. ``evaluation`` is the family's already-claimed one-shot evaluation when the
+    caller had to take the sealed bars first (``SealedOosVault.claim_evaluation``); without it,
+    ``run_sealed_oos`` consumes the evaluation itself through ``vault.sealed_view``."""
+
     context: ValidationContext
     vault: SealedOosVault
     outcomes: OutcomeTable
     study: SignalStudy
+    evaluation: SealedEvaluation | None = None
 
 
 def _span(label: OutcomeLabel) -> LabeledSpan:
@@ -501,7 +509,13 @@ def run_sealed_oos(inp: SealedOosInput) -> tuple[GateResult, ...]:
     if not unsealed:
         return tuple(gates)
     computable = _computable(inp.outcomes.labels)
-    allowed = {span.key for span in inp.vault.sealed_view(family, [_span(x) for x in computable])}
+    spans = [_span(x) for x in computable]
+    if inp.evaluation is None:
+        view = inp.vault.sealed_view(family, spans)
+    else:
+        _check_claim(inp.vault, inp.evaluation, family)
+        view = inp.evaluation.view(spans)
+    allowed = {span.key for span in view}
     labels = [label for label in computable if label.event_key in allowed]
     keys = tuple(label.event_key for label in labels)
     trades = _trades(labels, inp.study.sides(keys, blind_labels(len(keys))))
@@ -527,6 +541,38 @@ def run_sealed_oos(inp: SealedOosInput) -> tuple[GateResult, ...]:
         )
     )
     return tuple(gates)
+
+
+#: Gate of a sealed evaluation that was consumed but produced no G5 statistic.
+CONSUMED_WITHOUT_RESULT = "consumed_without_result"
+
+
+def _check_claim(vault: SealedOosVault, evaluation: SealedEvaluation, family: str) -> None:
+    if evaluation.family_id != family:
+        raise ValueError(
+            f"the sealed evaluation belongs to {evaluation.family_id!r}, not {family!r}"
+        )
+    if evaluation.window != vault.window or not vault.is_evaluated(family):
+        raise ValueError("the sealed evaluation was not claimed from this vault")
+
+
+def sealed_oos_without_result(
+    ctx: ValidationContext, vault: SealedOosVault, evaluation: SealedEvaluation, reason: str
+) -> tuple[GateResult, ...]:
+    """G5 of a claimed evaluation that ended before any statistic (``INCONCLUSIVE``).
+
+    The family's one evaluation is already consumed (``claim_evaluation``), so the window stays
+    closed for good; the report records why no G5 statistic exists
+    (``G5.oos_evaluation`` = ``consumed_without_result:<reason>``). It is never a PASS.
+    """
+    family = ctx.metadata.hypothesis_family_id
+    _check_claim(vault, evaluation, family)
+    if not reason.strip():
+        raise ValueError("a consumed evaluation needs its reason")
+    return (
+        flag_gate("G5.unsealing_recorded", "oos_unsealing_recorded", True, 1.0),
+        inconclusive_gate("G5.oos_evaluation", f"{CONSUMED_WITHOUT_RESULT}:{reason}", 0.0),
+    )
 
 
 # ======================================================================================
