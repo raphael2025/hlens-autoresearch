@@ -1,7 +1,8 @@
-"""C3 / D3B / E2 production table definitions: exact layout, stable hashes, registry, evolution.
+"""C3 / D3B / E2 / QG-1 production table definitions: layout, stable hashes, registry, evolution.
 
-The C3 first slice (eight tables) is frozen byte for byte; D3B appends the four ADR-0027 tables and
-E2 the ADR-0029 exchangeInfo snapshot table, each leaving every earlier definition untouched.
+The C3 first slice (eight tables) is frozen byte for byte; D3B appends the four ADR-0027 tables,
+E2 the ADR-0029 exchangeInfo snapshot table and QG-1 the ADR-0031 quality evidence-gap table, each
+leaving every earlier definition untouched.
 
 No catalog here (pure definitions); PostgreSQL evidence is in ``test_phase1_tables_postgres``.
 """
@@ -52,6 +53,7 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_BARS_1M,
     EXCHANGE_DECIMAL,
     PHASE1_TABLE_PROPERTIES,
+    QUALITY_EVIDENCE_GAPS,
 )
 from tests.infrastructure.catalog import catalog_support
 from tests.infrastructure.catalog.phase1_support import (
@@ -201,10 +203,25 @@ E2_GOLDEN: dict[str, tuple[str, str, str]] = {
         "32e3fc7f875dbed2fe701f82b88cfc5394aded44d9277f1afdefaa006fa961bf",
     ),
 }
-#: All thirteen tables in registry order, their partitions and goldens.
-PHASE1_TABLE_NAMES = FROZEN_TABLES + REST_TABLES + E2_TABLES
-ALL_PARTITIONS = {**FROZEN_PARTITIONS, **REST_PARTITIONS, **E2_PARTITIONS}
-ALL_GOLDEN = {**GOLDEN, **REST_GOLDEN, **E2_GOLDEN}
+#: ADR-0031 addition, appended after the E2 table (QG-1).
+QG_TABLES = ("quality.availability_evidence_gaps",)
+QG_PARTITIONS: dict[str, list[tuple[int, str, str, str]]] = {
+    "quality.availability_evidence_gaps": [
+        (1000, "identity", "subject_symbol", "symbol"),
+        (1001, "day", "subject_start", "subject_start_day"),
+    ],
+}
+QG_GOLDEN: dict[str, tuple[str, str, str]] = {
+    "quality.availability_evidence_gaps": (
+        "139fdac6ea09495cc60e2ecdfc860039ea1f824583e0211aa394932c2a42456d",
+        "2dffd38d84f669f014c68c28ed7fb7d5b72893fff92ada1efd3a4e0a801c2cab",
+        "7fc6533bdf25ed3fe80d7a1df32d47d3f5fdfadd9a5db4af423c9f39f9edd48d",
+    ),
+}
+#: All fourteen tables in registry order, their partitions and goldens.
+PHASE1_TABLE_NAMES = FROZEN_TABLES + REST_TABLES + E2_TABLES + QG_TABLES
+ALL_PARTITIONS = {**FROZEN_PARTITIONS, **REST_PARTITIONS, **E2_PARTITIONS, **QG_PARTITIONS}
+ALL_GOLDEN = {**GOLDEN, **REST_GOLDEN, **E2_GOLDEN, **QG_GOLDEN}
 
 REVISION_TABLES = FROZEN_TABLES[:6]
 REST_REVISION_TABLES = REST_TABLES[:3]
@@ -260,12 +277,13 @@ def by_table(table: str) -> RegisteredTableDefinition:
 # --------------------------------------------------------------------------- registry
 
 
-def test_registry_holds_the_frozen_eight_then_the_rest_then_the_e2_tables() -> None:
+def test_registry_holds_the_frozen_eight_then_the_rest_then_the_e2_and_qg1_tables() -> None:
     tables = tuple(item.table for item in PHASE1_TABLES)
     assert tables[:8] == FROZEN_TABLES  # C3 first slice first, order unchanged
     assert tables[8:12] == REST_TABLES  # ADR-0027 additions appended
-    assert tables[12:] == E2_TABLES  # ADR-0029 addition appended last
-    assert len(PHASE1_REGISTRY) == 13
+    assert tables[12:13] == E2_TABLES  # ADR-0029 addition appended after REST
+    assert tables[13:] == QG_TABLES  # ADR-0031 addition appended last
+    assert len(PHASE1_REGISTRY) == 14
     assert [item.table for item in PHASE1_REGISTRY] == list(PHASE1_TABLE_NAMES)
     for definition in PHASE1_TABLES:
         assert definition.definition_id == definition.table
@@ -308,6 +326,14 @@ def test_earlier_goldens_are_unchanged_by_e2() -> None:
     assert not set(E2_GOLDEN) & (set(GOLDEN) | set(REST_GOLDEN))
 
 
+def test_earlier_goldens_are_unchanged_by_qg1() -> None:
+    """QG-1 only appends: all thirteen earlier definitions keep their exact hashes."""
+    earlier_golden = {**GOLDEN, **REST_GOLDEN, **E2_GOLDEN}
+    for table in FROZEN_TABLES + REST_TABLES + E2_TABLES:
+        assert by_table(table).definition_hash == earlier_golden[table][0], table
+    assert not set(QG_GOLDEN) & set(earlier_golden)
+
+
 def test_exchange_info_table_carries_the_revision_block_and_the_snapshot_natives() -> None:
     schema = BINANCE_SPOT_EXCHANGE_INFO.schema
     for name, required in REVISION_BLOCK.items():
@@ -333,6 +359,39 @@ def test_exchange_info_table_carries_the_revision_block_and_the_snapshot_natives
     assert (
         by_table("canonical.instrument_listings").definition_hash
         == GOLDEN["canonical.instrument_listings"][0]
+    )
+
+
+def test_quality_evidence_gaps_table_holds_one_gap_per_row_partitioned_by_subject() -> None:
+    """QG-1 (ADR-0031): no revision block, one ``AvailabilityEvidenceGap`` per row, time-sliced."""
+    schema = QUALITY_EVIDENCE_GAPS.schema
+    assert [field.name for field in schema.fields] == [
+        "quality_report_id",
+        "table",
+        "revision_id",
+        "gap",
+        "subject_symbol",
+        "subject_start",
+    ]
+    for field in schema.fields:
+        assert field.required, field.name
+    assert isinstance(schema.find_type("subject_start"), TimestamptzType)
+    assert [
+        (f.field_id, str(f.transform), schema.find_column_name(f.source_id), f.name)
+        for f in QUALITY_EVIDENCE_GAPS.partition_spec.fields
+    ] == [
+        (1000, "identity", "subject_symbol", "symbol"),
+        (1001, "day", "subject_start", "subject_start_day"),
+    ]
+    # No revision block, no precedence evidence: this is not a revision table (it does carry its
+    # own ``revision_id`` column, the AvailabilityEvidenceGap field, unrelated to the block's).
+    for name in REVISION_BLOCK:
+        if name != "revision_id":
+            assert name not in schema.column_names, name
+    # DATA_QUALITY_REPORTS' own definition and hash are untouched by the new table.
+    assert (
+        by_table("quality.data_quality_reports").definition_hash
+        == GOLDEN["quality.data_quality_reports"][0]
     )
 
 

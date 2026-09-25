@@ -77,14 +77,14 @@ def _collect_agg(h: RestHarness, request_id: str, count: int = 3) -> None:
     assert isinstance(h.collect(ss.agg_request(request_id)), CollectionResult)
 
 
-def test_all_thirteen_phase1_tables_exist_with_their_bindings(pg: RestHarness) -> None:
+def test_all_fourteen_phase1_tables_exist_with_their_bindings(pg: RestHarness) -> None:
     ensure_phase1_tables(pg.adapter)  # idempotent on an existing catalog
     bound = {}
     for definition in PHASE1_TABLES:
         info = pg.adapter.load_table(definition.table)
         assert info is not None, definition.table
         bound[definition.table] = info.definition
-    assert len(bound) == 13
+    assert len(bound) == 14
     for definition in (RESPONSES, REST_AGGS, REST_KLINES, EVIDENCE):
         assert bound[definition.table] == definition.binding
 

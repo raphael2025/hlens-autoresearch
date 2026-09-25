@@ -1,12 +1,13 @@
-"""The thirteen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3 + D3B + E2).
+"""The fourteen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3+D3B+E2+QG-1).
 
-Single entry point for the production layout: ``PHASE1_TABLES`` (thirteen definitions, frozen
+Single entry point for the production layout: ``PHASE1_TABLES`` (fourteen definitions, frozen
 logical names, ``version = 1.0.0``, ``definition_id`` = table name), ``PHASE1_REGISTRY`` and the
 idempotent ``ensure_phase1_tables``. The first eight are the C3 first slice and are unchanged by
 D3B; the next four are the ADR-0027 REST additions (three REST Raw tables + the independent
-precedence-evidence table); the last one is the ADR-0029 additive exchangeInfo snapshot table
-(E2). Appending never changes an earlier definition or its hash. C2 test-only definitions live
-under ``tests/`` and never enter this registry.
+precedence-evidence table); the thirteenth is the ADR-0029 additive exchangeInfo snapshot table
+(E2); the fourteenth is the ADR-0031 additive quality evidence-gap table (QG-1). Appending never
+changes an earlier definition or its hash. C2 test-only definitions live under ``tests/`` and
+never enter this registry.
 
 Every field ID is written out below and equals the ID Iceberg assigns on table creation (top-level
 fields first, then nested fields depth-first); the module refuses to import otherwise. Field docs
@@ -51,6 +52,13 @@ Accepted ADRs and contracts, the producers come in later batches):
 - **Quality reports**: no quality-report contract exists yet; the table is a generic carrier keyed
   by ``report_id`` (the ID referenced by manifests and ``AvailabilityEvidenceGap``). The event
   taxonomy and the quality rules are proposed with batch E.
+- **Quality evidence gaps (ADR-0031, QG-1)**: ``quality.availability_evidence_gaps`` is an
+  additive, append-only table carrying one row per ``AvailabilityEvidenceGap`` referenced by a
+  quality report (``quality_report_id`` + ``table`` + ``revision_id`` + ``gap``), partitioned by
+  ``identity(subject_symbol) + day(subject_start)`` so a report's gaps can be written in bounded,
+  time-sliced batches instead of one unbounded report row. The report row itself is the only
+  reference to a batch of gap rows; nothing here changes ``AvailabilityEvidenceGap`` or
+  ``quality.data_quality_reports``.
 
 This module creates no data and derives no semantics: revision IDs, observation keys, policy
 evidence, parsing, Canonical conversion and PIT selection belong to batches D ~ F.
@@ -102,6 +110,7 @@ __all__ = [
     "PHASE1_TABLES",
     "PHASE1_TABLE_PROPERTIES",
     "Phase1TableState",
+    "QUALITY_EVIDENCE_GAPS",
     "describe_partition_spec",
     "ensure_phase1_tables",
 ]
@@ -931,8 +940,22 @@ DATASET_MANIFESTS: Final = _definition(
     ),
 )
 
-#: The thirteen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027, then
-#: the ADR-0029 exchangeInfo snapshot table (E2).
+QUALITY_EVIDENCE_GAPS: Final = _definition(
+    "quality.availability_evidence_gaps",
+    Schema(
+        _req(1, "quality_report_id", _S, "AvailabilityEvidenceGap.quality_report_id"),
+        _req(2, "table", _S, "AvailabilityEvidenceGap.table"),
+        _req(3, "revision_id", _S, "AvailabilityEvidenceGap.revision_id"),
+        _req(4, "gap", _S, "AvailabilityEvidenceGap.gap"),
+        _req(5, "subject_symbol", _S, "partition symbol of the time-sliced batch this row is in"),
+        _req(6, "subject_start", _T, "covered UTC day start, inclusive (partition key)"),
+    ),
+    _symbol_day_spec(5, 6, "subject_start"),
+)
+
+#: The fourteen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027,
+#: then the ADR-0029 exchangeInfo snapshot table (E2), then the ADR-0031 quality evidence-gap
+#: table (QG-1).
 PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_AGG_TRADES,
@@ -947,6 +970,7 @@ PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_REST_KLINES_1M,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     BINANCE_SPOT_EXCHANGE_INFO,
+    QUALITY_EVIDENCE_GAPS,
 )
 PHASE1_REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 

@@ -36,6 +36,7 @@
 | [0028](0028-dual-raw-canonical-lineage.md) | 双 Raw 通道进入 Canonical 的 revision 身份、三跳 lineage 与 precedence 映射（E0） | Accepted（2026-09-25，Raphael 批准方案 B：lineage 进 Canonical 身份，PIT 从固定 Raw 证据 snapshot 一对一映射，不新增表、不改契约）；尚待实施（E1） |
 | [0029](0029-listing-history-source.md) | 首切片标的上市历史的来源（E2，D-E2） | Accepted（2026-09-25，方案 A；Claude 依 Raphael 授权决定） |
 | [0030](0030-feature-provider-contract.md) | FeatureProvider 的 Protocol、DTO 与 provider-agnostic 契约测试（F4 前置） | Accepted（2026-09-25，方案 A；Claude 依 Raphael 授权决定） |
+| [0031](0031-quality-evidence-gap-table.md) | 质量报告的证据缺口写入独立只追加表（D-QGAP） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
