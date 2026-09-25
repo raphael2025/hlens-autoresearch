@@ -22,6 +22,7 @@ from infrastructure.pit.selector import (
     PitSelector,
     PitSpecError,
 )
+from infrastructure.quality.reporter import QualityReporter
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.revision import rest_store_support as ss
@@ -379,3 +380,56 @@ def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> Non
     later = _spec(h, cutoff=K_A)
     shared.select(later, "agg_trades", SYMBOL, *slices[0])
     assert shared._bound == tuple(sorted(later.snapshot_bindings.items()))
+
+
+# =========================================================================================
+# G3-S3-R1: a key's revisions are evaluated together whatever window reads it (review G-1)
+# =========================================================================================
+
+
+def _straddle(h: RestHarness) -> str:
+    """Trade 100: archive copy at 21:59:59.999, REST copy at 22:14 — a mismatch, no edge."""
+    items = ss.agg_items(3)
+    archive_items = [dict(item) for item in items]
+    archive_items[0]["T"] = ss.T0 - 14 * ss.MINUTE_MS - 1
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(archive_items), knowledge=K_A)
+    [response] = c.ingest_rest(h, "agg_trades", items, knowledge=K_R)
+    c.normalizer(h, clock=StepClock(start=N_A)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, response)
+    h.reconciler(clock=StepClock(start=K_E)).reconcile("agg_trades", SYMBOL, ss.DAY)
+    return f"binance:spot:agg_trade:{SYMBOL}:100"
+
+
+@pytest.mark.parametrize(
+    "window",
+    [
+        (utc(2023, 11, 14), utc(2023, 11, 15)),
+        (utc(2023, 11, 14, 21), utc(2023, 11, 14, 22)),
+        (utc(2023, 11, 14, 22), utc(2023, 11, 14, 23)),
+    ],
+)
+def test_a_window_never_sees_one_side_of_a_conflict(
+    h: RestHarness, window: tuple[datetime, datetime]
+) -> None:
+    key = _straddle(h)
+    out = PitSelector(h.adapter, h.storage).select(
+        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, *window
+    )
+    assert key in out.conflicts
+    assert len(out.records[key]) == 2
+
+
+def test_the_day_report_keeps_a_conflict_whose_revisions_straddle_slices(h: RestHarness) -> None:
+    key = _straddle(h)
+    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=utc(2023, 12, 20))).report(
+        "agg_trades", SYMBOL, ss.DAY
+    )
+    competing = [e for e in out.row["events"] if e["event_type"] == "competing_heads"]
+    assert [e["observation_key"] for e in competing] == [key]
+    # Each revision's gap is listed once, although both slices evaluated the key.
+    gaps = [gap["revision_id"] for gap in out.row["evidence_gaps"]]
+    assert (
+        len(gaps)
+        == len(set(gaps))
+        == len([r for r in h.rows(c.TRADES) if r["availability_evidence_gap"] is not None])
+    )

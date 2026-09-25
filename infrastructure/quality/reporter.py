@@ -421,7 +421,14 @@ class QualityReporter:
         end: datetime,
     ) -> list[Mapping[str, Any]]:
         """The slice's proven Canonical rows: one scan of the slice, exactly the proven set."""
-        wanted = {r.revision_id for rs in selection.records.values() for r in rs}
+        # The selection also evaluates revisions of its keys outside the slice (key closure);
+        # the slice's own rows are those whose event lies in it.
+        wanted = {
+            r.revision_id
+            for rs in selection.records.values()
+            for r in rs
+            if start <= r.availability.times.event_time < end
+        }
         table = next(t for t in rules.CANONICAL_TABLES.values() if t.table == canonical)
         data_type = next(k for k, t in rules.CANONICAL_TABLES.items() if t.table == canonical)
         found: list[Mapping[str, Any]] = self._adapter.scan_columns(

@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
 
-from pyiceberg.expressions import And, BooleanExpression, EqualTo, GreaterThanOrEqual, LessThan
+from pyiceberg.expressions import And, BooleanExpression, EqualTo, GreaterThanOrEqual, In, LessThan
 
 from core.contracts.revision import (
     PointInTimeSelection,
@@ -75,6 +75,8 @@ __all__ = [
 ]
 
 _DAY: Final = timedelta(days=1)
+#: How far from a window the other revisions of its keys are looked for (key closure).
+_KEY_REACH: Final = timedelta(days=1)
 
 PIT_RULE_ID: Final = "hlens.pit.maximal-head"
 PIT_RULE_VERSION: Final = "1.0.0"
@@ -89,6 +91,8 @@ PIT_SPEC: Final[dict[str, Any]] = {
     "elimination": "a candidate superseded, directly or through any known revision, by another "
     "candidate is eliminated",
     "result": "1 head -> selected; 0 -> absent; >1 -> conflict (the dataset fails closed)",
+    "window": "a key is in [start, end) when any revision's event lies in it; all its "
+    "revisions within one day of the window are evaluated together",
     "interval": "evaluated at the start and at every in-interval available_time of a known "
     "revision; identical consecutive results merged",
     "never_read": ["arrival_seq", "wall clock", "payload_hash ordering"],
@@ -233,6 +237,9 @@ class PitSelector:
         by_key: dict[str, list[Mapping[str, Any]]] = {}
         for row in verified:
             by_key.setdefault(row["observation_key"], []).append(row)
+        column = _time_column(data_type)
+        # Edges of every day a revision of the window's keys lies in (the key closure below).
+        days = sorted(set(days) | {row[column].astimezone(UTC).date() for row in verified})
         edges = self._mapped_edges(view, spec, data_type, symbol, days, by_key)
 
         selections: list[PointInTimeSelection] = []
@@ -292,15 +299,33 @@ class PitSelector:
         start: datetime,
         end: datetime,
     ) -> list[Mapping[str, Any]]:
+        """Every revision of every key the window holds (key closure, G3-S3 review G-1).
+
+        A key is in ``[start, end)`` when any of its revisions' event lies there. Revisions of one
+        key may disagree on their event time (a mismatching archive and REST copy of one trade),
+        so all its revisions within ``_KEY_REACH`` of the window are read and evaluated together:
+        a window never sees only one side of a conflict.
+        """
         definition = rules.CANONICAL_TABLES[data_type]
-        column = "event_time" if data_type == "agg_trades" else "interval_start"
+        column = _time_column(data_type)
+        keys = view.scan_columns(
+            table,
+            columns=("observation_key",),
+            row_filter=And(
+                _equals("symbol", canonical_symbol),
+                And(_at_least(column, start), _below(column, end)),
+            ),
+        ).column("observation_key")
+        wanted = set(keys.to_pylist())
+        if not wanted:
+            return []
         columns = tuple(field.name for field in definition.arrow_schema)
         rows: list[Mapping[str, Any]] = view.scan_columns(
             table,
             columns=columns,
             row_filter=And(
-                _equals("symbol", canonical_symbol),
-                And(_at_least(column, start), _below(column, end)),
+                And(_equals("symbol", canonical_symbol), In("observation_key", wanted)),  # type: ignore[call-arg, arg-type]
+                And(_at_least(column, start - _KEY_REACH), _below(column, end + _KEY_REACH)),
             ),
         ).to_pylist()
         return rows
@@ -392,6 +417,10 @@ class PitSelector:
                     )
                 )
         return mapped
+
+
+def _time_column(data_type: str) -> str:
+    return "event_time" if data_type == "agg_trades" else "interval_start"
 
 
 def _days(start: datetime, end: datetime) -> list[date]:
