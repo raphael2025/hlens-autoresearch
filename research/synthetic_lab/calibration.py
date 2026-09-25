@@ -1,7 +1,8 @@
 """Method calibration on synthetic markets (roadmap Phase 9; ADR-0042).
 
 A *detector* is any method under test — eventually the full validation pipeline (P4 / P8) —
-reduced to ``market -> bool`` ("an effect was found"). ``calibrate`` runs it on ``trials`` pure-noise
+reduced to ``market -> bool`` ("an effect was found"). ``calibrate`` runs it on ``trials``
+pure-noise
 markets (seeds ``seed_base ... seed_base + trials - 1``) and on as many markets with the planted
 effect, and reports the empirical false-positive rate and power. The declared level the pipeline
 must meet is a Validation Profile number (not set here); synthetic results never support claims
