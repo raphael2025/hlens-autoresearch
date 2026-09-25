@@ -292,6 +292,23 @@ provider-agnostic contract suite 在 `tests/contract_suites/feature.py`（确定
 **诚实边界**：`manifest_content_hash` 是否对应已登记的 `ResearchDatasetManifest`、观察是否真的来自其绑定的 snapshot，属 F3 / Registry；
 值是否只依赖可见集合、确定性，由 contract suite 对具体实现检查，契约层不能证明。
 
+### 2.6 StateProvider 的 Protocol 与 DTO（ADR-0035，Phase 2）
+
+`core/contracts/state.py` 交付 `StateProvider` Protocol（`descriptor` → `StateProviderDescriptor`；`compute(StateRequest) → StateResult`）
+与 5 个 DTO。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`StateSpec` 与既有 Schema 逐字节不变。实现状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `StateInput` | 一个 Feature 值：`feature`（只能 `kind=feature`）在 `evaluation_time` 的值（`None` = 不可计算），`source_result_hash` 绑定给出它的 `FeatureResult` | Outcome / State / Event 引用构造即拒绝；值规则同 `FeatureValue`（拒绝浮点与非有限数） |
+| `StateRequest` | 一次识别请求：`state`（`kind=state`）+ `spec_hash`、评估时刻、输入 | 评估时刻非空严格升序；输入按 `(evaluation_time, feature)` 规范排序且不重复；`visible_at(t, training_window)` = `evaluation_time <= t`（训练型再限于 `> t - training_window`） |
+| `StateValue` | 一个评估时刻的状态 | `state` 必填，`None` = 显式不可计算；`inputs_used` 为 0 当且仅当 `latest_input_time` 为空，此时 `state` 必须为 `None`；`latest_input_time <= evaluation_time` |
+| `StateResult` | 状态序列：`request_hash`、`provider` + `provider_hash`、值、`result_hash` | 值严格升序；`result_hash` 构造时复核；`check_answers(request, descriptor, spec)` 核对规格、一一对应、标签属于 `state_space`、输入时间属于可见（含窗口）集合 |
+| `StateProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_states` 非空，`state:name@semver → spec hash` |
+
+`StateSpec` 没有 `params` 字段：模型参数以规范形式 `<method>:<canonical JSON>` 编码进 `StateSpec.method`（`state_method` / `parse_state_method`），
+因而受 spec hash 绑定。执行器 `infrastructure/state/runner.py` 对每个评估时刻只把可见（含训练窗口）输入交给 Provider，训练型规格必须固定 `seed`；
+provider-agnostic contract suite 在 `tests/contract_suites/state.py`。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -392,7 +409,7 @@ provider-agnostic contract suite 在 `tests/contract_suites/feature.py`（确定
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（91 份） | `schemas/*.schema.json` |
+| 当前 Schema（96 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |

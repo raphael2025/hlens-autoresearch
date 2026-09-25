@@ -57,6 +57,13 @@ from core.contracts.revision import (
     RevisionGraph,
     RevisionRecord,
 )
+from core.contracts.state import (
+    StateInput,
+    StateProviderDescriptor,
+    StateRequest,
+    StateResult,
+    StateValue,
+)
 from core.contracts.storage import ObjectRef, PublishResult, StagedObject, StageRequest
 from core.contracts.synthetic import (
     PlantedEffect,
@@ -233,6 +240,12 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     LlmRequest,
     LlmResponse,
     LlmProviderDescriptor,
+    # StateProvider 的 DTO（ADR-0035，Phase 2）
+    StateInput,
+    StateRequest,
+    StateValue,
+    StateResult,
+    StateProviderDescriptor,
 )
 
 

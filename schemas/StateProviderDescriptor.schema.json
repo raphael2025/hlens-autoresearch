@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "StateProvider 的身份与能力声明（05-plugin.md §3：StateProvider 必须确定性）。\n\n`supported_states`：非空，`state:name@semver` → 该 `StateSpec` 的内容哈希（训练窗口、种子与\nmethod 参数都属规格内容，因而由哈希绑定）。实例生命周期内不变。训练型模型的随机性只能来自\n规格中的 `seed`，因此同样声明 `deterministic=True`。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Version",
+      "type": "string"
+    },
+    "deterministic": {
+      "const": true,
+      "title": "Deterministic",
+      "type": "boolean"
+    },
+    "supported_states": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^state:[a-z][a-z0-9_]*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "title": "Supported States",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "deterministic",
+    "supported_states"
+  ],
+  "title": "StateProviderDescriptor",
+  "type": "object"
+}
