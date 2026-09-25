@@ -1,47 +1,42 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
+import { Dashboard } from "./pages/Dashboard";
+import { KnowledgeSearch } from "./pages/KnowledgeSearch";
+import { Lifecycle } from "./pages/Lifecycle";
+import { ResearchLoop } from "./pages/ResearchLoop";
+import { ValidationReports } from "./pages/ValidationReports";
 
-// Framework skeleton (ADR-0048, NOT_VALIDATED): health, lifecycle transitions and knowledge
-// search through apps/api. Types come from `npm run gen:api` (src/api.d.ts) once installed.
-type KnowledgeItem = { name: string; claim: string; source: string; evidence_level: string; status: string };
+// Research console (ADR-0048, NOT_VALIDATED): read-only pages over apps/api. No order or trading
+// UI of any kind lives here or ever will (H10) — see each page's SIMULATED / NOT_VALIDATED banner.
+const TABS = [
+  { key: "dashboard", label: "Dashboard", render: () => <Dashboard /> },
+  { key: "validation", label: "Validation Reports", render: () => <ValidationReports /> },
+  { key: "research-loop", label: "Research Loop", render: () => <ResearchLoop /> },
+  { key: "lifecycle", label: "Lifecycle", render: () => <Lifecycle /> },
+  { key: "knowledge", label: "Knowledge Search", render: () => <KnowledgeSearch /> },
+] as const;
+
+type TabKey = (typeof TABS)[number]["key"];
 
 export function App() {
-  const [health, setHealth] = useState<string>("…");
-  const [items, setItems] = useState<KnowledgeItem[]>([]);
-  const [terms, setTerms] = useState<string>("momentum");
-
-  useEffect(() => {
-    fetch("/api/health").then((r) => r.json()).then((b) => setHealth(b.status)).catch(() => setHealth("down"));
-  }, []);
-
-  const search = () => {
-    fetch("/api/knowledge/search", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ terms: terms.split(/\s+/).filter(Boolean), limit: 50 }),
-    })
-      .then((r) => r.json())
-      .then((b) => setItems(b.items ?? []))
-      .catch(() => setItems([]));
-  };
+  const [active, setActive] = useState<TabKey>("dashboard");
+  const current = TABS.find((tab) => tab.key === active) ?? TABS[0];
 
   return (
-    <main style={{ fontFamily: "system-ui", padding: 16, maxWidth: 960, margin: "0 auto" }}>
+    <main style={{ fontFamily: "system-ui", padding: 16, maxWidth: 1100, margin: "0 auto" }}>
       <h1>HLENS Research Console</h1>
-      <p>API: {health}</p>
-      <section>
-        <h2>知识库检索（待检验主张，不是结论）</h2>
-        <input value={terms} onChange={(e) => setTerms(e.target.value)} />
-        <button onClick={search}>检索</button>
-        <ul>
-          {items.map((item) => (
-            <li key={item.name}>
-              <strong>{item.name}</strong> [{item.evidence_level} · {item.status}] — {item.claim}
-              <br />
-              <small>{item.source}</small>
-            </li>
-          ))}
-        </ul>
-      </section>
+      <nav style={{ display: "flex", gap: 8, marginBottom: 16, flexWrap: "wrap" }}>
+        {TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActive(tab.key)}
+            style={{ fontWeight: tab.key === active ? 700 : 400 }}
+            aria-current={tab.key === active}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </nav>
+      {current.render()}
     </main>
   );
 }

@@ -88,6 +88,52 @@
         "title": "KnowledgeStatus",
         "type": "string"
       },
+      "ReportEnvelope": {
+        "description": "The minimal envelope every report kind is served through.",
+        "properties": {
+          "content_hash": {
+            "title": "Content Hash",
+            "type": "string"
+          },
+          "created": {
+            "format": "date-time",
+            "title": "Created",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/ReportKind"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
+          }
+        },
+        "required": [
+          "kind",
+          "id",
+          "created",
+          "payload",
+          "content_hash"
+        ],
+        "title": "ReportEnvelope",
+        "type": "object"
+      },
+      "ReportKind": {
+        "description": "The report kinds the console serves (task spec: (a)-(d)).",
+        "enum": [
+          "validation_report",
+          "research_loop_round",
+          "state_strategy_matrix",
+          "router_paper_run"
+        ],
+        "title": "ReportKind",
+        "type": "string"
+      },
       "ValidationError": {
         "properties": {
           "ctx": {
@@ -239,6 +285,95 @@
           }
         },
         "summary": "Transitions"
+      }
+    },
+    "/reports/{kind}": {
+      "get": {
+        "operationId": "list_reports_reports__kind__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ReportKind"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ReportEnvelope"
+                  },
+                  "title": "Response List Reports Reports  Kind  Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Reports"
+      }
+    },
+    "/reports/{kind}/{report_id}": {
+      "get": {
+        "operationId": "get_report_reports__kind___report_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/ReportKind"
+            }
+          },
+          {
+            "in": "path",
+            "name": "report_id",
+            "required": true,
+            "schema": {
+              "title": "Report Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReportEnvelope"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Report"
       }
     }
   }
