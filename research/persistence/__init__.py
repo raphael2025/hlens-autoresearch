@@ -9,6 +9,9 @@ reordered or removed after the fact (CLAUDE.md H6).
 
 This is research-plane, file-based persistence, not a database (CLAUDE.md H8/H12): one caller,
 one file, one append at a time. It is not a substitute for the Control Plane ledger.
+
+``apps.worker.journal`` implements the same on-disk contract independently for the research
+loop's durable audit (``apps/`` must not import ``research/``); a test keeps the two in step.
 """
 
 from __future__ import annotations

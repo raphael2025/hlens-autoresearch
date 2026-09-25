@@ -30,6 +30,23 @@ append-only ``LoopAuditLog`` and published on the event bus. The records hold no
 a round's time is its **scheduled** time ``epoch + round_index * cadence``, and its seed is derived
 from the loop seed, so the same seed and inputs give the same record hashes.
 
+**Durable audit** (ADR-0049 implementation note, 2026-09-26). ``LoopAuditLog(path)`` backs the log
+with a hash-chained, append-only, fsync'd JSON-lines file (``apps.worker.journal``). Before a
+round runs, a ``loop_round_started`` line is written; after it, a ``loop_round_recorded`` line with
+the record's payload and hash. Reopening the file replays and verifies both chains (the journal's
+line hashes and the records' ``previous_hash`` / ``record_hash``, each record rebuilt from its
+payload must reproduce its hash); a tampered or truncated file is refused (``JournalCorrupted``).
+A ``ResearchLoop`` given a non-empty audit continues it: the next round index, the cumulative
+budget totals, the halting state and the guard's subjects come from the verified records, so a
+restart never re-runs a recorded round and never resets the budget. A round that was started but
+never recorded (the process died mid-round, spending unknown) stops the loop for human review.
+
+**Measured time.** Every ``stage.run`` is timed with a monotonic wall clock and the process CPU
+clock (``apps.worker.metrics``). The measurement is kept **outside** the hashed record, in
+``ResearchLoop.metrics`` and on ``research_loop.metrics``; the budget still charges
+``max(declared, reported)``. A stage whose measurement exceeds its declared compute seconds by more
+than the configured ``compute_tolerance_seconds`` is flagged there (no default: report only).
+
 Rounds are driven as ``JobRunner`` jobs (one job per round, ``max_attempts = 1``: a round that
 spent budget is never retried; a duplicate submission is absorbed by the job's content identity).
 
@@ -51,6 +68,8 @@ from enum import StrEnum
 from typing import Any, Final, Protocol
 
 from apps.worker.jobs import JobOutcome, JobRunner, JobSpec
+from apps.worker.journal import AppendOnlyJournal, JournalCorrupted, JournalEntry, JournalPath
+from apps.worker.metrics import Clock, RoundMetrics, StageMetrics, monotonic_clock, seconds
 from core.contracts.event_bus import BusMessage, EventBusAdapter
 from core.domain.base import Ref, content_hash
 from core.errors import LifecycleViolation
@@ -66,13 +85,17 @@ __all__ = [
     "AUTOMATABLE_TARGETS",
     "EXTENDED_STAGE_ORDER",
     "FORBIDDEN_TARGETS",
+    "METRICS_TOPIC",
     "OPTIONAL_STAGES",
     "ROUND_JOB",
+    "ROUND_RECORDED",
+    "ROUND_STARTED",
     "ROUND_TOPIC",
     "STAGE_ORDER",
     "STAGE_TOPIC",
     "AutomationForbidden",
     "LifecycleGuard",
+    "LoopAuditCorrupted",
     "LoopAuditLog",
     "LoopBudget",
     "LoopHalted",
@@ -131,6 +154,11 @@ ROUND_JOB: Final = "research_loop.round"
 JOB_TOPIC: Final = "research_loop.jobs"
 STAGE_TOPIC: Final = "research_loop.stage"
 ROUND_TOPIC: Final = "research_loop.round"
+#: Side channel for measured stage time (never hashed into a ``LoopRecord``).
+METRICS_TOPIC: Final = "research_loop.metrics"
+#: Durable audit line types: a round is marked started before it runs, recorded after it.
+ROUND_STARTED: Final = "loop_round_started"
+ROUND_RECORDED: Final = "loop_round_recorded"
 
 S = LifecycleState
 
@@ -547,11 +575,155 @@ class LoopRecord:
         return content_hash(self.payload())
 
 
-class LoopAuditLog:
-    """Append-only, hash-chained list of ``LoopRecord`` (no update or delete method)."""
+_USAGE_KEYS: Final = frozenset({"trials", "llm_cost_units", "compute_seconds"})
+_STAGE_KEYS: Final = frozenset(
+    {"name", "status", "estimate", "usage", "summary", "error", "refused", "overrun", "charged"}
+)
+_TRANSITION_KEYS: Final = frozenset({"subject", "from", "to", "reason", "evidence", "triggered_by"})
+_RECORD_KEYS: Final = frozenset(
+    {
+        "loop_id",
+        "round_index",
+        "seed",
+        "as_of",
+        "budget_hash",
+        "status",
+        "stages",
+        "transitions",
+        "round_usage",
+        "total_usage",
+        "overrun",
+        "previous_hash",
+    }
+)
+_STARTED_KEYS: Final = frozenset({"loop_id", "round_index", "previous_hash"})
+_RECORDED_KEYS: Final = frozenset({"record", "record_hash"})
 
-    def __init__(self) -> None:
+
+def _fields(raw: Any, keys: frozenset[str], what: str) -> Mapping[str, Any]:
+    if not isinstance(raw, Mapping) or set(raw) != keys:
+        raise ValueError(f"{what} does not have exactly the fields {sorted(keys)}")
+    return raw
+
+
+def _int(raw: Any, what: str) -> int:
+    if isinstance(raw, bool) or not isinstance(raw, int):
+        raise ValueError(f"{what} must be an int")
+    return raw
+
+
+def _str(raw: Any, what: str) -> str:
+    if not isinstance(raw, str):
+        raise ValueError(f"{what} must be a string")
+    return raw
+
+
+def _optional_str(raw: Any, what: str) -> str | None:
+    return None if raw is None else _str(raw, what)
+
+
+def _usage_from(raw: Any) -> StageUsage:
+    fields = _fields(raw, _USAGE_KEYS, "a usage")
+    return StageUsage(
+        _int(fields["trials"], "trials"),
+        Decimal(_str(fields["llm_cost_units"], "llm_cost_units")),
+        Decimal(_str(fields["compute_seconds"], "compute_seconds")),
+    )
+
+
+def _optional_usage(raw: Any) -> StageUsage | None:
+    return None if raw is None else _usage_from(raw)
+
+
+def _stage_from(raw: Any) -> StageRecord:
+    fields = _fields(raw, _STAGE_KEYS, "a stage record")
+    summary = fields["summary"]
+    if summary is not None and not isinstance(summary, Mapping):
+        raise ValueError("a stage summary must be a JSON object")
+    refused = fields["refused"]
+    if not isinstance(refused, list):
+        raise ValueError("refused must be a list")
+    return StageRecord(
+        name=_str(fields["name"], "stage name"),
+        status=StageStatus(fields["status"]),
+        estimate=_optional_usage(fields["estimate"]),
+        usage=_optional_usage(fields["usage"]),
+        summary=summary,
+        error=_optional_str(fields["error"], "error"),
+        refused=tuple(_str(item, "refused limit") for item in refused),
+        overrun=_optional_usage(fields["overrun"]),
+        charged=_optional_usage(fields["charged"]),
+    )
+
+
+def _transition_from(raw: Any, occurred_at: datetime) -> LifecycleTransition:
+    fields = _fields(raw, _TRANSITION_KEYS, "a transition")
+    evidence = fields["evidence"]
+    if not isinstance(evidence, list):
+        raise ValueError("evidence must be a list")
+    # the loop's transitions happen at the round's scheduled time and never carry an approval
+    return LifecycleTransition(
+        subject=Ref.parse(_str(fields["subject"], "subject")),
+        from_state=LifecycleState(fields["from"]),
+        to_state=LifecycleState(fields["to"]),
+        reason=_str(fields["reason"], "reason"),
+        evidence=tuple(_str(item, "evidence") for item in evidence),
+        triggered_by=_str(fields["triggered_by"], "triggered_by"),
+        approved_by=None,
+        occurred_at=occurred_at,
+    )
+
+
+def _record_from(raw: Any) -> LoopRecord:
+    """Rebuild a ``LoopRecord`` from its payload (the caller checks it reproduces the payload)."""
+    fields = _fields(raw, _RECORD_KEYS, "a loop record")
+    as_of = datetime.fromisoformat(_str(fields["as_of"], "as_of"))
+    if as_of.tzinfo is None or as_of.utcoffset() != timedelta(0):
+        raise ValueError("as_of must be UTC")
+    stages, transitions = fields["stages"], fields["transitions"]
+    if not isinstance(stages, list) or not isinstance(transitions, list):
+        raise ValueError("stages and transitions must be lists")
+    return LoopRecord(
+        loop_id=_str(fields["loop_id"], "loop_id"),
+        round_index=_int(fields["round_index"], "round_index"),
+        seed=_int(fields["seed"], "seed"),
+        as_of=as_of,
+        budget_hash=_str(fields["budget_hash"], "budget_hash"),
+        status=RoundStatus(fields["status"]),
+        stages=tuple(_stage_from(stage) for stage in stages),
+        transitions=tuple(_transition_from(t, as_of) for t in transitions),
+        round_usage=_usage_from(fields["round_usage"]),
+        total_usage=_usage_from(fields["total_usage"]),
+        previous_hash=_optional_str(fields["previous_hash"], "previous_hash"),
+    )
+
+
+class LoopAuditCorrupted(JournalCorrupted):
+    """A durable audit whose lines chain correctly but do not form a valid loop history."""
+
+
+class LoopAuditLog:
+    """Append-only, hash-chained list of ``LoopRecord`` (no update or delete method).
+
+    ``path=None`` (the default): in memory only. With a ``path``: durable (see module docs) —
+    ``begin_round`` writes a ``loop_round_started`` line before a round runs and ``append`` a
+    ``loop_round_recorded`` line after it, each fsync'd before the in-memory state changes, and
+    opening an existing file replays and verifies it (``JournalCorrupted`` /
+    ``LoopAuditCorrupted`` on any tampering, truncation or unknown line type).
+    """
+
+    def __init__(self, path: JournalPath | None = None) -> None:
         self._records: list[LoopRecord] = []
+        self._loop_id: str | None = None
+        self._open_round: int | None = None
+        self._journal = None if path is None else AppendOnlyJournal(path)
+        if self._journal is not None:
+            for entry in self._journal.entries:
+                self._replay(entry)
+
+    @property
+    def durable(self) -> bool:
+        return self._journal is not None
 
     @property
     def records(self) -> tuple[LoopRecord, ...]:
@@ -561,14 +733,36 @@ class LoopAuditLog:
     def head(self) -> str | None:
         return self._records[-1].record_hash if self._records else None
 
-    def append(self, record: LoopRecord) -> None:
-        if record.round_index != len(self._records):
-            raise ValueError(
-                f"round {record.round_index} is out of order (next {len(self._records)})"
+    @property
+    def loop_id(self) -> str | None:
+        """The loop this audit belongs to (``None`` while nothing was written)."""
+        return self._loop_id
+
+    @property
+    def open_round(self) -> int | None:
+        """A round started but not recorded; after a replay, a round that was interrupted."""
+        return self._open_round
+
+    def begin_round(self, loop_id: str, round_index: int) -> None:
+        """Mark ``round_index`` as started (durable: before the round spends anything)."""
+        self._check_start(loop_id, round_index)
+        if self._journal is not None:
+            self._journal.append(
+                ROUND_STARTED,
+                {"loop_id": loop_id, "round_index": round_index, "previous_hash": self.head},
             )
-        if record.previous_hash != self.head:
-            raise ValueError("the record does not chain to the audit head")
-        self._records.append(record)
+        self._loop_id = loop_id
+        self._open_round = round_index
+
+    def append(self, record: LoopRecord) -> None:
+        self._check_record(record)
+        if self._journal is not None:
+            if self._open_round != record.round_index:
+                raise ValueError("a durable audit records only a round begun with begin_round")
+            self._journal.append(
+                ROUND_RECORDED, {"record": record.payload(), "record_hash": record.record_hash}
+            )
+        self._admit(record)
 
     def verify(self) -> bool:
         previous: str | None = None
@@ -577,6 +771,61 @@ class LoopAuditLog:
                 return False
             previous = record.record_hash
         return True
+
+    # -- internals ------------------------------------------------------------------------------
+
+    def _check_loop(self, loop_id: str) -> None:
+        if self._loop_id is not None and loop_id != self._loop_id:
+            raise ValueError(f"the audit belongs to loop {self._loop_id!r}, not {loop_id!r}")
+
+    def _check_start(self, loop_id: str, round_index: int) -> None:
+        if self._open_round is not None:
+            raise ValueError(f"round {self._open_round} was started and has no record")
+        self._check_loop(loop_id)
+        if round_index != len(self._records):
+            raise ValueError(f"round {round_index} is out of order (next {len(self._records)})")
+
+    def _check_record(self, record: LoopRecord) -> None:
+        self._check_loop(record.loop_id)
+        if record.round_index != len(self._records):
+            raise ValueError(
+                f"round {record.round_index} is out of order (next {len(self._records)})"
+            )
+        if record.previous_hash != self.head:
+            raise ValueError("the record does not chain to the audit head")
+        if self._open_round not in (None, record.round_index):
+            raise ValueError(f"round {self._open_round} was started, not {record.round_index}")
+
+    def _admit(self, record: LoopRecord) -> None:
+        self._records.append(record)
+        self._loop_id = record.loop_id
+        self._open_round = None
+
+    def _replay(self, entry: JournalEntry) -> None:
+        where = f"{self._journal.path if self._journal else '?'}:{entry.seq}"
+        try:
+            if entry.type == ROUND_STARTED:
+                started = _fields(entry.payload, _STARTED_KEYS, "a round start")
+                round_index = _int(started["round_index"], "round_index")
+                self._check_start(_str(started["loop_id"], "loop_id"), round_index)
+                if started["previous_hash"] != self.head:
+                    raise ValueError("the round start does not chain to the audit head")
+                self._loop_id, self._open_round = started["loop_id"], round_index
+            elif entry.type == ROUND_RECORDED:
+                recorded = _fields(entry.payload, _RECORDED_KEYS, "a round record")
+                record = _record_from(recorded["record"])
+                if record.payload() != recorded["record"]:
+                    raise ValueError("the record does not rebuild to its own payload")
+                if record.record_hash != recorded["record_hash"]:
+                    raise ValueError("the record does not reproduce its record_hash")
+                if self._open_round != record.round_index:
+                    raise ValueError("a round was recorded without being started")
+                self._check_record(record)
+                self._admit(record)
+            else:
+                raise ValueError(f"unknown audit line type {entry.type!r}")
+        except (ArithmeticError, KeyError, LifecycleViolation, TypeError, ValueError) as exc:
+            raise LoopAuditCorrupted(f"{where} is not a valid loop audit line: {exc}") from exc
 
 
 # --------------------------------------------------------------------------- the loop
@@ -602,7 +851,14 @@ class ResearchLoop:
         guard: LifecycleGuard | None = None,
         audit: LoopAuditLog | None = None,
         consumer: str = "research_loop_worker",
+        clock: Clock | None = None,
+        compute_tolerance_seconds: Decimal | int | str | None = None,
     ) -> None:
+        """``audit``: a ``LoopAuditLog`` (``LoopAuditLog(path)`` for a durable one); when it
+        already holds rounds the loop continues it (see module docs). ``clock``: the stage timer
+        (default ``monotonic_clock``; tests inject a fake). ``compute_tolerance_seconds``: how far
+        a stage's measured time may exceed its declared compute seconds before the metrics flag
+        it; ``None`` (no default) = report only."""
         check_stage_order([stage.name for stage in stages])
         if epoch.tzinfo is None or epoch.utcoffset() != timedelta(0):
             raise ValueError("epoch must be a UTC datetime")
@@ -616,9 +872,19 @@ class ResearchLoop:
         self._epoch = epoch
         self._cadence = cadence
         self._guard = guard or LifecycleGuard(actor=f"research_loop:{loop_id}")
-        self._audit = audit or LoopAuditLog()
+        self._audit = audit if audit is not None else LoopAuditLog()
+        self._clock: Clock = clock or monotonic_clock
+        self._tolerance = (
+            None
+            if compute_tolerance_seconds is None
+            else _decimal(compute_tolerance_seconds, "compute_tolerance_seconds")
+        )
+        self._metrics: list[RoundMetrics] = []
+        #: Why the loop stopped outside a halting round (interrupted round, audit write failure).
+        self._stopped: str | None = None
         self._total = StageUsage()
         self._halted: RoundStatus | None = None
+        self._restore()
         self._runner = JobRunner(
             bus,
             consumer=consumer,
@@ -648,9 +914,22 @@ class ResearchLoop:
         """Why the loop stopped, or ``None`` while it may run."""
         return self._halted
 
+    @property
+    def stopped(self) -> str | None:
+        """Why the loop stopped outside a round's status (interrupted round, audit failure)."""
+        return self._stopped
+
+    @property
+    def metrics(self) -> tuple[RoundMetrics, ...]:
+        """Measured stage time of the rounds this process ran (unhashed side channel)."""
+        return tuple(self._metrics)
+
+    @property
+    def compute_tolerance_seconds(self) -> Decimal | None:
+        return self._tolerance
+
     def submit_round(self, round_index: int) -> str:
-        if self._halted is not None:
-            raise LoopHalted(f"the loop halted ({self._halted}); reconfigure it to continue")
+        self._check_can_run()
         job = JobSpec(ROUND_JOB, {"loop_id": self._loop_id, "round": round_index})
         return self._runner.submit(job)
 
@@ -673,16 +952,84 @@ class ResearchLoop:
 
     # -- internals ------------------------------------------------------------------------------
 
+    def _check_can_run(self) -> None:
+        if self._stopped is not None:
+            raise LoopHalted(f"the loop stopped: {self._stopped}")
+        if self._halted is not None:
+            raise LoopHalted(f"the loop halted ({self._halted}); reconfigure it to continue")
+
+    def _scheduled(self, round_index: int) -> datetime:
+        return self._epoch + round_index * self._cadence
+
+    def _restore(self) -> None:
+        """Continue an audit that already holds rounds (a restart): take the next round index,
+        the cumulative budget totals, the halting state and the guard's subjects from its
+        verified records. Anything inconsistent with this loop's configuration is refused."""
+        audit = self._audit
+        if audit.loop_id is not None and audit.loop_id != self._loop_id:
+            raise ValueError(f"the audit belongs to loop {audit.loop_id!r}, not {self._loop_id!r}")
+        if audit.open_round is not None:
+            self._stopped = (
+                f"round {audit.open_round} was started but never recorded (interrupted); what it "
+                "spent is unknown, so the loop does not continue until a human reviews the audit"
+            )
+        records = audit.records
+        if not records:
+            return
+        if not audit.verify():
+            raise ValueError("the audit's hash chain does not verify")
+        if self._guard.histories:
+            raise ValueError("a loop continuing an audit rebuilds its guard; pass a fresh guard")
+        total = StageUsage()
+        for record in records:
+            index = record.round_index
+            if record.seed != _round_seed(self._seed, index) or record.as_of != self._scheduled(
+                index
+            ):
+                raise ValueError(f"audit round {index} was scheduled with another seed / epoch")
+            total = total + record.round_usage
+            if total != record.total_usage:
+                raise ValueError(f"audit round {index}'s total usage does not add up")
+            if record.status in HALTING and record is not records[-1]:
+                raise ValueError(f"audit round {index} halted the loop, yet rounds follow it")
+            for transition in record.transitions:
+                self._replay_transition(transition)
+        self._total = total
+        last = records[-1].status
+        self._halted = last if last in HALTING else None
+
+    def _replay_transition(self, transition: LifecycleTransition) -> None:
+        subject = transition.subject
+        if transition.from_state is S.IDEA and self._guard.state_of(subject) is None:
+            self._guard.open(subject)
+        replayed = self._guard.advance(
+            subject,
+            transition.to_state,
+            reason=transition.reason,
+            evidence=transition.evidence,
+            occurred_at=transition.occurred_at,
+        )
+        if _transition_payload(replayed) != _transition_payload(transition):
+            raise ValueError(
+                f"audit transition of {subject} does not replay under guard {self._guard.actor!r}"
+            )
+
     def _handle_round(self, params: Mapping[str, Any]) -> str:
         if params["loop_id"] != self._loop_id:
             raise ValueError("the job belongs to another loop")
         round_index = int(params["round"])
         if round_index != len(self._audit.records):
             raise ValueError(f"round {round_index} is out of order")
-        if self._halted is not None:
-            raise LoopHalted(f"the loop halted ({self._halted})")
-        record = self._run_round(round_index)
-        self._audit.append(record)
+        self._check_can_run()
+        try:
+            self._audit.begin_round(self._loop_id, round_index)
+            record, timings = self._run_round(round_index)
+            self._audit.append(record)
+        except Exception as exc:
+            # the round may have spent budget and moved subjects without a durable record
+            self._stopped = f"round {round_index} could not be recorded ({_error(exc)})"
+            raise
+        self._total = record.total_usage
         self._bus.publish(
             BusMessage.build(
                 ROUND_TOPIC,
@@ -690,29 +1037,44 @@ class ResearchLoop:
                 {"record_hash": record.record_hash, "record": record.payload()},
             )
         )
+        metrics = RoundMetrics(
+            loop_id=self._loop_id,
+            round_index=round_index,
+            record_hash=record.record_hash,
+            tolerance_seconds=self._tolerance,
+            stages=timings,
+        )
+        self._metrics.append(metrics)
+        self._bus.publish(
+            BusMessage.build(METRICS_TOPIC, f"{self._loop_id}:{round_index}", metrics.payload())
+        )
         if record.status in HALTING:
             self._halted = record.status
         return record.record_hash
 
-    def _run_round(self, round_index: int) -> LoopRecord:
+    def _run_round(self, round_index: int) -> tuple[LoopRecord, tuple[StageMetrics, ...]]:
         ctx = RoundContext(
             loop_id=self._loop_id,
             round_index=round_index,
             seed=_round_seed(self._seed, round_index),
-            as_of=self._epoch + round_index * self._cadence,
+            as_of=self._scheduled(round_index),
             _guard=self._guard,
         )
         round_usage = StageUsage()
+        total = self._total
         records: list[StageRecord] = []
+        timings: list[StageMetrics] = []
         status = RoundStatus.COMPLETED
         for stage in self._stages:
             if status is not RoundStatus.COMPLETED:
                 records.append(StageRecord(stage.name, StageStatus.SKIPPED))
                 continue
-            record, spent = self._run_stage(stage, ctx, round_usage)
+            record, spent, timing = self._run_stage(stage, ctx, round_usage, total)
             round_usage = round_usage + spent
-            self._total = self._total + spent
+            total = total + spent
             records.append(record)
+            if timing is not None:
+                timings.append(timing)
             self._publish_stage(ctx, record)
             status = {
                 StageStatus.COMPLETED: RoundStatus.COMPLETED,
@@ -721,7 +1083,7 @@ class ResearchLoop:
                 StageStatus.BUDGET_OVERRUN: RoundStatus.BUDGET_OVERRUN,
                 StageStatus.GUARD_VIOLATION: RoundStatus.GUARD_VIOLATION,
             }[record.status]
-        return LoopRecord(
+        loop_record = LoopRecord(
             loop_id=self._loop_id,
             round_index=round_index,
             seed=ctx.seed,
@@ -731,39 +1093,48 @@ class ResearchLoop:
             stages=tuple(records),
             transitions=tuple(ctx.transitions),
             round_usage=round_usage,
-            total_usage=self._total,
+            total_usage=total,
             previous_hash=self._audit.head,
         )
+        return loop_record, tuple(timings)
 
     def _run_stage(
-        self, stage: LoopStage, ctx: RoundContext, round_usage: StageUsage
-    ) -> tuple[StageRecord, StageUsage]:
+        self, stage: LoopStage, ctx: RoundContext, round_usage: StageUsage, total: StageUsage
+    ) -> tuple[StageRecord, StageUsage, StageMetrics | None]:
+        """Run one stage: its record, what the budget is charged, and its measured time
+        (``None`` when ``run`` was never called: a failed estimate or a budget refusal)."""
         try:
             estimate = stage.estimate(ctx)
         except Exception as exc:  # noqa: BLE001 - recorded as a failed stage, never dropped
-            return StageRecord(stage.name, StageStatus.FAILED, error=_error(exc)), StageUsage()
-        refused = self._budget.refusals(round_usage, self._total, estimate)
+            record = StageRecord(stage.name, StageStatus.FAILED, error=_error(exc))
+            return record, StageUsage(), None
+        refused = self._budget.refusals(round_usage, total, estimate)
         if refused:
             record = StageRecord(
                 stage.name, StageStatus.REFUSED_BUDGET, estimate=estimate, refused=tuple(refused)
             )
-            return record, StageUsage()
+            return record, StageUsage(), None
+        failure: Exception | None = None
+        started = self._clock()
         try:
             result = stage.run(ctx)
             content_hash(dict(result.summary))  # the summary must be canonical JSON
-        except AutomationForbidden as exc:
+        except Exception as exc:  # noqa: BLE001 - classified below, never dropped
+            failure = exc
+        timing = self._timing(stage.name, estimate, started, self._clock())
+        if isinstance(failure, AutomationForbidden):
             record = StageRecord(
-                stage.name, StageStatus.GUARD_VIOLATION, estimate=estimate, error=_error(exc)
+                stage.name, StageStatus.GUARD_VIOLATION, estimate=estimate, error=_error(failure)
             )
-            return record, estimate
-        except StageFailed as exc:  # the stage reports what it actually spent before failing
-            record = self._charged(stage.name, StageStatus.FAILED, estimate, exc.usage, exc)
-            return record, exc.usage
-        except Exception as exc:  # noqa: BLE001 - recorded as a failed stage, never dropped
+            return record, estimate, timing
+        if isinstance(failure, StageFailed):  # the stage reports what it spent before failing
+            record = self._charged(stage.name, StageStatus.FAILED, estimate, failure.usage, failure)
+            return record, failure.usage, timing
+        if failure is not None:
             record = StageRecord(
-                stage.name, StageStatus.FAILED, estimate=estimate, error=_error(exc)
+                stage.name, StageStatus.FAILED, estimate=estimate, error=_error(failure)
             )
-            return record, estimate
+            return record, estimate, timing
         ctx.artifacts[stage.name] = result.artifacts
         record = self._charged(stage.name, StageStatus.COMPLETED, estimate, result.usage, None)
         # the reported usage is self-declared: never charge less than was declared up front
@@ -775,6 +1146,26 @@ class ResearchLoop:
                 charged=None if charged == result.usage else charged,
             ),
             charged,
+            timing,
+        )
+
+    def _timing(
+        self,
+        name: str,
+        estimate: StageUsage,
+        started: tuple[int, int],
+        ended: tuple[int, int],
+    ) -> StageMetrics:
+        """Measured wall / CPU time of one ``run`` (unhashed; flagged only with a tolerance)."""
+        wall = seconds(ended[0] - started[0])
+        cpu = seconds(ended[1] - started[1])
+        excess = max(wall, cpu) - estimate.compute_seconds
+        return StageMetrics(
+            name=name,
+            declared_compute_seconds=estimate.compute_seconds,
+            wall_seconds=wall,
+            cpu_seconds=cpu,
+            flagged=None if self._tolerance is None else excess > self._tolerance,
         )
 
     @staticmethod

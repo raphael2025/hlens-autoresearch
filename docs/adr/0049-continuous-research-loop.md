@@ -6,7 +6,7 @@
 | 日期 | 2026-09-25 |
 | 决策者 | Claude Code（Opus），依 Raphael 2026-09-25 明确授权（红线除外） |
 | 相关 Phase | Phase 11（Continuous Research Loop） |
-| 影响范围 | `apps/worker/loop.py`、`apps/worker/degradation.py`、`research/loop/`；无契约变更（不新增 Schema） |
+| 影响范围 | `apps/worker/loop.py`、`apps/worker/degradation.py`、`apps/worker/journal.py` / `metrics.py`（2026-09-26）、`research/loop/`；无契约变更（不新增 Schema） |
 | 实施状态 | FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 ## 背景
@@ -152,3 +152,37 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
    `G4.walk_forward.positive_fraction` INCONCLUSIVE、留在 VALIDATION；第 1 轮在累计 6 天上作为新 trial 重新评估，G0 – G4 全部 PASS → OOS；
    第 2 轮在研究窗口之后，没有新研究数据，不重新评估，封存日被扣留。纯噪声什么也不通过。测试覆盖：trial 数随轮次增长、
    REJECTED / OOS 后不再评估、封存 bar 从不进入研究数据。
+
+## Implementation note (durable audit and measured compute, 2026-09-26)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；无契约 / Schema / 生命周期 / Constitution / Profile 变更；
+`LoopRecord` 载荷与哈希规则不变（同种子同输入的记录哈希与此前完全相同）。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+调试待办 C 节 P11（「审计只在内存中」「算力秒为阶段自报」）。
+
+1. **持久审计（可选）**：`LoopAuditLog(path)`（省略 `path` = 原纯内存行为）。每轮运行**前**写一行 `loop_round_started`
+   （loop_id、轮次、前一条记录哈希），运行后写一行 `loop_round_recorded`（记录载荷 + `record_hash`）；每行 append / flush / fsync，
+   先落盘再改内存。重新打开时重放并双重校验：文件行的哈希链（`JournalCorrupted`），以及每条记录——从载荷重建的 `LoopRecord`
+   必须逐字段复现载荷与 `record_hash`，轮次连续、`previous_hash` 相接、先 started 后 recorded、loop_id 一致；未知行类型、
+   篡改、重排、截断的尾行一律拒绝（`LoopAuditCorrupted` / `JournalCorrupted`），从不修复或跳过。
+2. **重启续跑**：`ResearchLoop` 拿到非空审计时从中恢复——下一轮序号、累计预算用量（逐轮核对 `total_usage` 连加一致）、
+   停机状态（最后一轮为停机状态则仍停机）、护栏已打开对象的生命周期（按记录的转移在新 `LifecycleGuard` 上重放，actor 不同即拒绝）。
+   因此重启从不重跑已记录的轮次（重复提交的旧轮次任务因"乱序"失败，阶段不运行），也从不重置 trial / LLM / 算力预算。
+   审计属于别的 loop、或种子 / epoch / cadence 与记录不符、或传入的护栏已有状态 → 构造即拒绝。只写了 started、没有 recorded 的轮次
+   （进程在轮中死亡，已花费多少未知）→ 循环 `stopped`，拒绝继续，须人工审查；审计写入失败同样使循环 `stopped`（fail closed）。
+3. **为什么在 `apps/worker` 独立实现同一 journal 契约**（`apps/worker/journal.py`，而不是移动 `research.persistence`）：
+   `apps/` 不得 import `research/`（01-system.md §3）；本 ADR 第 1 条规定 worker 机制只依赖 `core` 与标准库（静态测试）——
+   把 journal 放进 `infrastructure/` 会破坏这条；`core` 的 Domain 不得做 I/O；把研究平面代码直接搬进 `apps/` 等于研究代码
+   不经 Promotion 成为生产代码（H5）。因此 worker 以约 150 行独立实现**同一磁盘契约**（行格式、GENESIS、哈希规则、fsync、
+   缩短即拒绝），`research.persistence` 不动；一个交叉测试证明两者写出的文件逐字节相同、可互相重放、同样拒绝篡改，防止漂移。
+4. **实测算力（不入哈希）**：调度器用单调墙钟（`time.monotonic_ns`）与进程 CPU 时钟（`time.process_time_ns`）测量每次
+   `stage.run`，结果放在**哈希记录之外**：`ResearchLoop.metrics`（`RoundMetrics` / `StageMetrics`，以 `record_hash` 关联记录）
+   与总线主题 `research_loop.metrics`。审计文件与记录哈希因此保持确定（测试：两次持久运行文件逐字节相同）。预算仍按
+   `max(声明, 报告)` 计费，从不按实测计费。实测 = `max(墙钟, CPU)`（多线程时 CPU 可大于墙钟，取保守值）。
+   `compute_tolerance_seconds`（秒，显式配置，**无默认**）：实测超出声明算力秒多于容差的阶段在指标中 `flagged = True`；
+   未配置时只报告（`flagged = None`）。标记只是报告，不改变轮次状态、预算或停机（这些只由确定性的哈希记录决定）。
+   只有真正运行了 `run` 的阶段有测量（预算拒绝、跳过、估算失败的阶段没有）。
+5. **诚实边界 / 仍未做**：整行删除文件**尾部**的若干行会留下一条合法但更短的链（任何无外部锚点的哈希链都如此）；
+   检测需要外部锚定的头哈希（例如总线上发布的 `record_hash`）。指标只保存在本进程内存与总线上，不随重启恢复。
+   研究侧组合（`research/loop/compose.py`）仍未接持久审计：其 `ResearchMemory` 仍在内存中，只恢复审计而不恢复研究记忆会不一致。
+   停机的持久审计要继续运行需要人工决定（新审计 / 新 loop_id）；NATS 与 Control Plane 持久化仍另立 ADR。
+   回归测试：`tests/apps/test_research_loop_durable.py`、`tests/research/persistence/test_journal.py::test_the_worker_journal_shares_the_on_disk_contract`。

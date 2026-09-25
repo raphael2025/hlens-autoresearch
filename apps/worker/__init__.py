@@ -3,6 +3,7 @@ the degradation monitor. Never imports research/ (stages are injected by a compo
 
 from apps.worker.degradation import DegradationCheck, DegradationMonitor
 from apps.worker.jobs import JobOutcome, JobRunner, JobSpec
+from apps.worker.journal import AppendOnlyJournal, JournalCorrupted
 from apps.worker.loop import (
     AUTOMATABLE_TARGETS,
     EXTENDED_STAGE_ORDER,
@@ -10,6 +11,7 @@ from apps.worker.loop import (
     STAGE_ORDER,
     AutomationForbidden,
     LifecycleGuard,
+    LoopAuditCorrupted,
     LoopAuditLog,
     LoopBudget,
     LoopHalted,
@@ -24,19 +26,23 @@ from apps.worker.loop import (
     StageStatus,
     StageUsage,
 )
+from apps.worker.metrics import RoundMetrics, StageMetrics, monotonic_clock
 
 __all__ = [
     "AUTOMATABLE_TARGETS",
     "EXTENDED_STAGE_ORDER",
     "OPTIONAL_STAGES",
     "STAGE_ORDER",
+    "AppendOnlyJournal",
     "AutomationForbidden",
     "DegradationCheck",
     "DegradationMonitor",
     "JobOutcome",
     "JobRunner",
     "JobSpec",
+    "JournalCorrupted",
     "LifecycleGuard",
+    "LoopAuditCorrupted",
     "LoopAuditLog",
     "LoopBudget",
     "LoopHalted",
@@ -44,10 +50,13 @@ __all__ = [
     "LoopStage",
     "ResearchLoop",
     "RoundContext",
+    "RoundMetrics",
     "RoundStatus",
     "StageRecord",
     "StageFailed",
+    "StageMetrics",
     "StageResult",
     "StageStatus",
     "StageUsage",
+    "monotonic_clock",
 ]

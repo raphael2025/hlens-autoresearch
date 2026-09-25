@@ -32,7 +32,11 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 - 记录哈希不含墙钟时间：报告 / 元数据 / 失败记录均以本轮计划时刻盖章；浮点以固定量化 Decimal 文本写入。
 - 合成市场的植入真值不作为输入，只在审计摘要中计数；合成结果不支持真实市场结论。
 
-未完成（调试批次）：持久化审计与 NATS、研究仪表盘；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
+- 审计持久化与实测算力在机制侧（`apps/worker`，ADR-0049 实施说明 2026-09-26）：`LoopAuditLog(path)` 可选落盘并在重启时续跑；
+  阶段实测时间只进入不入哈希的指标（`ResearchLoop.metrics`），因此本目录阶段的记录哈希不变。本组合根尚未接持久审计：
+  `ResearchMemory`（TrialLedger 等）在此组合中仍在内存，只恢复审计不恢复研究记忆会不一致。
+
+未完成（调试批次）：研究侧组合接持久审计（需要同时持久化 `ResearchMemory`）、NATS、研究仪表盘；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；
 封存 bar 只取本轮段内的（跨轮累计封存数据未做）；`matrix_from_backtest` 的逐 bar 归因需要逐 bar 状态（本循环按决策期归因）；
 验证阶段的技术失败（`VALIDATION → FAILED` 不是 ADR-0006 的边）只记 FailureRecord、生命周期不动。

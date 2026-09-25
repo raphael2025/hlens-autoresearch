@@ -13,6 +13,13 @@
 >   阶段完成发布 `research_loop.stage`，轮次发布 `research_loop.round`。
 >   W2（2026-09-25）：可选阶段 `evolution` 只能位于 hypothesis 与 experiment 之间（`OPTIONAL_STAGES` / `EXTENDED_STAGE_ORDER`）；
 >   超出声明用量时阶段与轮次记录写明超出量（`overrun`）并停机；阶段抛 `StageFailed(usage=...)` 时按其报告的实际用量计费。
+> - 持久审计与实测算力（ADR-0049 实施说明 2026-09-26）：`LoopAuditLog(path)` 可选落盘（`journal.py`：哈希链、只追加、fsync、
+>   缩短 / 篡改 / 截断即拒绝；与 `research.persistence` 同一磁盘契约的独立实现，因为 apps 不得 import research）。每轮运行前写
+>   `loop_round_started`、运行后写 `loop_round_recorded`；重新打开时重放校验，`ResearchLoop` 从中恢复下一轮序号、累计预算、停机状态与护栏对象，
+>   从不重跑已记录轮次、从不重置预算；只开始未记录的轮次（中途崩溃）或审计写入失败 → `stopped`，须人工审查。
+>   `metrics.py`：每次 `stage.run` 用单调墙钟 + 进程 CPU 时钟测量，放在哈希记录之外（`ResearchLoop.metrics`、主题 `research_loop.metrics`），
+>   记录哈希保持确定；预算仍按 max(声明, 报告) 计费；`compute_tolerance_seconds`（无默认）给定时，实测超出声明多于容差的阶段被标记，
+>   未给定只报告。
 > - `degradation.py`：`DegradationMonitor` 用 `ValidationProfile.lifecycle.degradation_thresholds` 对比近期指标与验证基线，
 >   越限发布 `research_loop.degradation` 事件（不做生命周期转移）。
 > - 本目录只依赖 `core` 与标准库；具体研究阶段在 `research/loop/`，由研究侧组合根注入（apps 不 import research）。

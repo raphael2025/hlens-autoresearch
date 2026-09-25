@@ -9,6 +9,9 @@ from pathlib import Path
 
 import pytest
 
+from apps.worker.journal import GENESIS_HASH as WORKER_GENESIS
+from apps.worker.journal import AppendOnlyJournal as WorkerJournal
+from apps.worker.journal import JournalCorrupted as WorkerCorrupted
 from research.persistence import GENESIS_HASH, AppendOnlyJournal, JournalCorrupted
 
 
@@ -126,3 +129,29 @@ def test_append_fsyncs_and_survives_a_fresh_process_view(tmp_path: Path) -> None
     AppendOnlyJournal(path).append("kind_a", {"n": 1})
     # a brand new journal instance (standing in for a restarted process) sees the same content
     assert AppendOnlyJournal(path).head_hash != GENESIS_HASH
+
+
+def test_the_worker_journal_shares_the_on_disk_contract(tmp_path: Path) -> None:
+    """``apps.worker.journal`` is an independent implementation of this contract (apps/ may not
+    import research/); files written by either replay identically in the other."""
+    assert WORKER_GENESIS == GENESIS_HASH
+    by_research, by_worker = tmp_path / "research.jsonl", tmp_path / "worker.jsonl"
+    research, worker = AppendOnlyJournal(by_research), WorkerJournal(by_worker)
+    for payload in ({"n": 1}, {"nested": {"b": [1, 2], "a": "x"}}, {"text": "非 ASCII"}):
+        research.append("kind_a", payload)
+        worker.append("kind_a", payload)
+    assert by_research.read_bytes() == by_worker.read_bytes()
+    assert WorkerJournal(by_research).head_hash == AppendOnlyJournal(by_worker).head_hash
+    assert [e.payload for e in WorkerJournal(by_research).entries] == [
+        e.payload for e in AppendOnlyJournal(by_worker).entries
+    ]
+
+    lines = by_worker.read_text(encoding="utf-8").splitlines()
+    tampered = json.loads(lines[0])
+    tampered["payload"]["n"] = 2
+    lines[0] = json.dumps(tampered)
+    by_worker.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    with pytest.raises(JournalCorrupted):
+        AppendOnlyJournal(by_worker)
+    with pytest.raises(WorkerCorrupted):
+        WorkerJournal(by_worker)

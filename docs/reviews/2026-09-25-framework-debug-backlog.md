@@ -54,7 +54,12 @@
 - **P9 校准**：检测器抛出异常时直接传播而不计为 INCONCLUSIVE；G5 未实际运行（开封消耗由 G0–G4 通过推断）；（控制台 `gate_calibration` 报告种类已补上）；8 个种子 × 2 天只是冒烟规模。
 - **P8 稳健性**：~~CSCV 分块之间不做 purge~~（R17 已修）；回测适配器只验证单标的；状态标签由调用方提供，必须是因果的；
   `delay_stress_bars = 0` 或空 `time_alignment_offsets` 的 Profile 下 G4 永远不能 PASS（R14，是否允许豁免属 D-PFIELDS）。
-- **P11 循环**：总线与审计只在内存中（NATS / Control Plane 持久化待做）；算力秒数为阶段自报，不是实测；审计记录尚不是版本化契约。W2 正在把状态、验证、实验与进化阶段换成真实组件。
+- **P11 循环**：~~审计只在内存中~~ ✅ 已修（2026-09-26）：`LoopAuditLog(path)` 可选持久审计（哈希链、只追加、fsync，重放校验，篡改 / 截断拒绝），
+  重启从最后一轮续跑、累计预算与停机状态、护栏对象随之恢复，从不重跑已记录轮次；轮中崩溃（只 started 未 recorded）→ 停止待人工审查；
+  ~~算力秒数为阶段自报，不是实测~~ ✅ 已修（2026-09-26）：每次 `stage.run` 以单调墙钟 + CPU 时钟实测，放在哈希记录之外（`ResearchLoop.metrics` /
+  `research_loop.metrics`），预算仍按 max(声明, 报告)，超出显式容差（无默认，未配置只报告）即标记（ADR-0049 实施说明 durable audit and measured compute）。
+  仍未做：总线只在内存中（NATS / Control Plane 持久化待做）；研究侧组合根未接持久审计（`ResearchMemory` 仍在内存）；尾部整行删除需外部锚点才能发现；
+  审计记录尚不是版本化契约。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：
   `tests/infrastructure/bars/test_dataset_bars_postgres.py` / `test_manifest_pair_postgres.py`，与 SQLite 侧同一套测试函数对象、
