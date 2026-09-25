@@ -23,8 +23,9 @@ returns for the full request directly.
 
 ``run_feature`` does not check ``request.manifest_content_hash``: a result is a Research Dataset
 result only when its request was built by ``infrastructure.feature.dataset.
-feature_request_from_dataset`` (manifest loaded and verified, observations proven against it; G2
-RT-6). A request from ``pit_feature_request`` is an ad-hoc / test run whose hash is a label.
+feature_request_from_dataset`` or ``feature_request_from_derived_bars`` (manifest loaded and
+verified, observations proven against it; G2 RT-6, F4-R2). A request from ``pit_feature_request``
+is an ad-hoc / test run whose hash is a label.
 
 Pure: no catalog, no clock, no randomness.
 """

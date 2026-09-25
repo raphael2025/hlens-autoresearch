@@ -205,8 +205,9 @@ def pit_feature_request(
 
     ``knowledge_cutoff`` is the spec's; every evaluation time must be answerable by its PIT view.
     ``manifest_content_hash`` is taken as given (ad-hoc / test runs): a request over a Research
-    Dataset is built by ``infrastructure.feature.dataset.feature_request_from_dataset``, which
-    loads and verifies the manifest and proves the observations against it (G2 RT-6).
+    Dataset is built by ``infrastructure.feature.dataset.feature_request_from_dataset`` (or
+    ``feature_request_from_derived_bars`` for E4 derived bars), which loads and verifies the
+    manifest and proves the observations against it (G2 RT-6, F4-R2).
     """
     if not isinstance(feature, FeatureSpec):
         raise FeatureInputBuildError("feature must be a FeatureSpec")

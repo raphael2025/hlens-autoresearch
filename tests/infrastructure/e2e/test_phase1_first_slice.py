@@ -16,7 +16,8 @@ Two tests:
 
 - ``test_phase1_first_slice_archive_to_representation``: the full walk (1-6 in the roadmap #20
   batch brief) ending in a materialized, manifested Research Dataset and a reproducible F4 feature
-  over E4-resampled bars.
+  over E4-resampled bars, bound to the persisted manifest by ``feature_request_from_derived_bars``
+  (F4-R2).
 - ``test_pit_selection_with_and_without_the_archive_assumption``: the same archive-only revision
   selected under a conservative spec (ABSENT before the store's ingest time) and under a spec that
   binds ``infrastructure.pit.assumption.ASSUMPTION_BINDING`` (ADR-0032; SELECTED shortly after the
@@ -30,6 +31,7 @@ from typing import Any
 
 import pytest
 
+from core.contracts.feature import FeatureRequest
 from core.contracts.revision import PointInTimeStatus
 from core.domain.base import Kind, Ref, canonical_json
 from infrastructure.canonical import rules
@@ -41,11 +43,8 @@ from infrastructure.catalog.phase1_tables import (
     QUALITY_EVIDENCE_GAPS,
 )
 from infrastructure.dataset.manifests import ManifestStore, manifest_row
-from infrastructure.feature.observations import (
-    FeatureInputBuildError,
-    derived_bar_observations,
-    pit_feature_request,
-)
+from infrastructure.feature.dataset import DatasetBindingError, feature_request_from_derived_bars
+from infrastructure.feature.observations import FeatureInputBuildError, derived_bar_observations
 from infrastructure.feature.runner import run_feature
 from infrastructure.pit.assumption import ASSUMPTION_BINDING, ASSUMPTION_LATENCY
 from infrastructure.pit.selector import PitSelector
@@ -196,13 +195,27 @@ def test_phase1_first_slice_archive_to_representation(w: ds.World) -> None:
     assert spec.simulation_time is not None
     sim_time = spec.simulation_time
     eval_time = sim_time + feature.available_lag
-    request = pit_feature_request(
-        pit_spec=spec,
-        observations=observations,
-        feature=feature,
-        evaluation_times=(eval_time,),
-        manifest_content_hash=manifest.content_hash(),
-    )
+
+    # The run is bound to the persisted manifest (F4-R2): the manifest is loaded and re-derived
+    # through the builder's ManifestStore, and the 5-minute bars are proven to be exactly
+    # resample_bars of the manifest's own dataset selection.
+    def dataset_request(
+        items: Any, evaluation_times: tuple[Any, ...] = (eval_time,)
+    ) -> FeatureRequest:
+        return feature_request_from_derived_bars(
+            w.h.adapter,
+            w.h.storage,
+            builder=w.builder(),
+            manifest_content_hash=manifest.content_hash(),
+            pit_spec=spec,
+            minutes=5,
+            observations=items,
+            feature=feature,
+            evaluation_times=evaluation_times,
+        )
+
+    request = dataset_request(observations)
+    assert request.manifest_content_hash == manifest.content_hash()
     # Mechanical no-lookahead: the visible set never includes an observation later than the
     # evaluation time allows, and every value's latest input honours the lag (F4 runner + contract).
     for item in request.visible_at(eval_time, feature.available_lag):
@@ -216,13 +229,10 @@ def test_phase1_first_slice_archive_to_representation(w: ds.World) -> None:
     # A point spec proves visibility only as of its own simulation_time: an earlier evaluation
     # time is refused outright rather than silently answered from a later view.
     with pytest.raises(FeatureInputBuildError, match="does not cover"):
-        pit_feature_request(
-            pit_spec=spec,
-            observations=observations,
-            feature=feature,
-            evaluation_times=(sim_time - timedelta(days=1),),
-            manifest_content_hash=manifest.content_hash(),
-        )
+        dataset_request(observations, (sim_time - timedelta(days=1),))
+    # Derived bars that are not exactly resample_bars of the dataset never make a request.
+    with pytest.raises(DatasetBindingError, match="not exactly"):
+        dataset_request(observations[:1])
 
     # Stable result_hash across re-runs, including across a fresh process (reopened catalog).
     result_second = run_feature(BarLogReturnProvider((feature,)), feature, request)
@@ -234,13 +244,8 @@ def test_phase1_first_slice_archive_to_representation(w: ds.World) -> None:
     )
     bars5_again = resample_bars(selection_again, 5, DAY_START, DAY_END)
     observations_again = derived_bar_observations(bars5_again, selection_again, spec)
-    request_again = pit_feature_request(
-        pit_spec=spec,
-        observations=observations_again,
-        feature=feature,
-        evaluation_times=(eval_time,),
-        manifest_content_hash=manifest.content_hash(),
-    )
+    request_again = dataset_request(observations_again)
+    assert request_again.model_dump_json() == request.model_dump_json()
     result_third = run_feature(BarLogReturnProvider((feature,)), feature, request_again)
     assert result_third.result_hash == result_first.result_hash
 
