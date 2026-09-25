@@ -58,7 +58,7 @@ def test_purged_k_fold_never_trains_on_overlapping_or_embargoed_labels() -> None
     spans = [span(f"s{i:03d}", i * 5) for i in range(60)]  # 10-minute labels every 5 minutes
     embargo = timedelta(minutes=20)
     by_key = {s.key: s for s in spans}
-    for fold in purged_k_fold(spans, 4, embargo):
+    for fold in purged_k_fold(spans, 4, embargo, profile=TEST_ONLY_PROFILE):
         test = [by_key[k] for k in fold.test]
         lo = min(s.start for s in test)
         hi = max(s.end for s in test)
@@ -96,7 +96,7 @@ def test_sealed_window_comes_from_fixed_profile_dates() -> None:
 
 def test_sealed_oos_is_locked_until_unsealed_and_unseals_only_once() -> None:
     ledger = InMemoryUnsealingLedger()
-    vault = SealedOosVault(TEST_ONLY_PROFILE, ledger)
+    vault = SealedOosVault(TEST_ONLY_PROFILE, ledger, max_unsealings=2)
     inside = LabeledSpan(key="in", start=BOUNDARY + MINUTE, end=BOUNDARY + 3 * MINUTE)
     before = LabeledSpan(key="before", start=T0, end=T0 + MINUTE)
     assert vault.research_view([inside, before]) == (before,)

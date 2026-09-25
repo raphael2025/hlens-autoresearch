@@ -1,0 +1,865 @@
+"""G4 robustness checks: Constitution C-R1 ~ C-R5 and the C-T1 overfitting probability (ADR-0041).
+
+Every check returns a ``RobustnessCheck``: its gates (the only thing that decides a verdict,
+ADR-0013), the thresholds it used **with the Profile field that supplied each one**, the fields it
+needed but could not find, and a JSON-ready ``details`` block for the report. There is no numeric
+threshold in this module: a threshold is ``gates.threshold(profile, <path>)`` or, for a rule the
+Profile contract has no field for, an ``explicit_threshold`` recorded as ``param:<name>``; with
+neither, the gate is ``missing_field_gate`` (``INCONCLUSIVE``, metric ``profile_field_missing:...``)
+and the check's status is ``PROFILE_FIELD_MISSING``. The only literal comparisons are structural
+signs (a profit is ``> 0``), never calibrated numbers.
+
+Checks (principle → gate ids → threshold sources):
+
+- ``overfitting_check`` (C-T1 / C-R1) → ``G4.overfitting`` → method
+  ``significance.overfitting_metric``, threshold ``significance.overfitting_threshold``; CSCV
+  partitions ``param:cscv_partitions``;
+- ``parameter_neighborhood_check`` (C-R1) → ``G4.param_neighborhood.performance_ratio`` /
+  ``.positive_fraction`` → ``parameter_stability.neighborhood_definition`` (method),
+  ``.min_neighborhood_performance_ratio``, ``.min_positive_neighbor_fraction``;
+- ``time_alignment_check`` (C-R1) → ``G4.time_alignment.<i>`` →
+  ``parameter_stability.time_alignment_offsets[i]`` (offset),
+  ``.min_neighborhood_performance_ratio``;
+- ``delay_stress_check`` (C-R4 / A6) → ``G4.delay_stress`` → ``cost_stress.delay_stress_bars``
+  (delay), ``cost_stress.min_breakeven_cost_multiple``;
+- ``cost_stress_check`` (C-R4 / A6) → ``G4.cost_stress.breakeven`` / ``.<i>`` →
+  ``cost_stress.min_breakeven_cost_multiple``, ``cost_stress.stress_multipliers[i]``;
+- ``walk_forward_check`` (C-S4 / C-R3) → ``G4.walk_forward.positive_fraction`` /
+  ``.max_window_share`` → ``data_split.walk_forward.*``;
+- ``state_decomposition_check`` (C-R2) → ``G4.state.sufficient_states`` /
+  ``.pnl_outside_undersampled_states`` → ``sample_size.min_effective_trades_per_state``;
+- ``capacity_check`` (C-R5) → ``G4.capacity.estimated`` / ``.required`` → no Profile field:
+  ``param:capacity.max_participation_rate``, ``param:capacity.min_capacity``;
+- ``cross_asset_check`` (C-R3) → ``G4.cross_asset.scope_covered`` / ``.positive_fraction`` → no
+  Profile field: ``param:cross_asset.min_positive_fraction``.
+
+Performance is the per-period Sharpe ratio of **net** returns at cost multiplier 1
+(``overfitting.sharpe_ratio``); window P&L is the sum of per-period net returns.
+Status: FRAMEWORK_IMPLEMENTED / NOT_VALIDATED.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from decimal import Decimal
+from enum import StrEnum
+from typing import Final
+
+from core.contracts.validation_profile import ValidationProfile
+from core.domain.research import GateResult, Verdict
+from research.validation.costs import multiplier
+from research.validation.gates import (
+    Direction,
+    Threshold,
+    compare_gate,
+    flag_gate,
+    inconclusive_gate,
+    missing_field_gate,
+    threshold,
+)
+from research.validation.overfitting import (
+    deflated_sharpe_ratio,
+    probability_of_backtest_overfitting,
+    sharpe_ratio,
+)
+from research.validation.returns import ParamPoint, PeriodReturns, TrialReturns, param_key
+from research.validation.splits import walk_forward_windows
+from research.validation.stats import UnsupportedMethod, effective_sample_size
+
+__all__ = [
+    "DSR_METHODS",
+    "NEIGHBORHOOD_METHODS",
+    "PBO_METHODS",
+    "CapacityFill",
+    "CheckStatus",
+    "RobustnessCheck",
+    "StateTrade",
+    "ThresholdUse",
+    "capacity_check",
+    "cost_stress_check",
+    "cross_asset_check",
+    "delay_stress_check",
+    "overfitting_check",
+    "parameter_neighborhood_check",
+    "state_decomposition_check",
+    "time_alignment_check",
+    "walk_forward_check",
+]
+
+#: ``significance.overfitting_metric`` names implemented here; any other name is refused.
+PBO_METHODS: Final = frozenset({"pbo_cscv", "pbo", "cscv_pbo"})
+DSR_METHODS: Final = frozenset({"deflated_sharpe", "deflated_sharpe_ratio", "dsr"})
+#: ``parameter_stability.neighborhood_definition`` names implemented here.
+NEIGHBORHOOD_METHODS: Final = frozenset({"adjacent_grid", "adjacent_grid_points", "one_step_grid"})
+
+
+class CheckStatus(StrEnum):
+    PASS = "PASS"
+    FAIL = "FAIL"
+    INCONCLUSIVE = "INCONCLUSIVE"
+    PROFILE_FIELD_MISSING = "PROFILE_FIELD_MISSING"
+    NOT_APPLICABLE = "NOT_APPLICABLE"
+
+
+@dataclass(frozen=True)
+class ThresholdUse:
+    """One threshold a check compared against, and the field (or ``param:``) it came from."""
+
+    name: str
+    value: float
+    source: str
+
+
+@dataclass(frozen=True)
+class RobustnessCheck:
+    check_id: str
+    principles: tuple[str, ...]
+    gates: tuple[GateResult, ...]
+    thresholds: tuple[ThresholdUse, ...] = ()
+    missing_fields: tuple[str, ...] = ()
+    details: Mapping[str, object] = field(default_factory=dict)
+    note: str = ""
+
+    @property
+    def status(self) -> CheckStatus:
+        verdicts = {gate.verdict for gate in self.gates}
+        if Verdict.FAIL in verdicts:
+            return CheckStatus.FAIL
+        if self.missing_fields:
+            return CheckStatus.PROFILE_FIELD_MISSING
+        if Verdict.INCONCLUSIVE in verdicts:
+            return CheckStatus.INCONCLUSIVE
+        if not self.gates:
+            return CheckStatus.NOT_APPLICABLE
+        return CheckStatus.PASS
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "check_id": self.check_id,
+            "principles": list(self.principles),
+            "status": self.status.value,
+            "gates": [gate.model_dump(mode="json") for gate in self.gates],
+            "thresholds": [
+                {"name": use.name, "value": use.value, "source": use.source}
+                for use in self.thresholds
+            ],
+            "missing_fields": list(self.missing_fields),
+            "details": dict(self.details),
+            "note": self.note,
+        }
+
+
+def _use(name: str, limit: Threshold) -> ThresholdUse:
+    return ThresholdUse(name=name, value=limit.value, source=limit.source)
+
+
+def _method(value: str, supported: frozenset[str], field_path: str) -> str:
+    name = value.strip().lower()
+    if name not in supported:
+        raise UnsupportedMethod(f"{field_path} {value!r} is not implemented")
+    return name
+
+
+def _chosen(trials: Sequence[TrialReturns], chosen: ParamPoint) -> TrialReturns:
+    key = param_key(chosen)
+    match = [trial for trial in trials if trial.key() == key]
+    if len(match) != 1:
+        raise ValueError(f"exactly one trial must hold the chosen parameters {dict(chosen)}")
+    return match[0]
+
+
+def _sharpe(returns: PeriodReturns) -> float:
+    return sharpe_ratio(returns.net_floats())
+
+
+# ======================================================================================
+# C-T1 / C-R1: selection overfitting (PBO via CSCV, Deflated Sharpe)
+# ======================================================================================
+
+
+def overfitting_check(
+    profile: ValidationProfile,
+    trials: Sequence[TrialReturns],
+    chosen: ParamPoint,
+    family_trial_count: int,
+    cscv_partitions: int | None,
+) -> RobustnessCheck:
+    """Gate the Profile's overfitting metric; the other metric is reported only."""
+    method = _method(
+        profile.significance.overfitting_metric,
+        PBO_METHODS | DSR_METHODS,
+        "significance.overfitting_metric",
+    )
+    limit = threshold(profile, "significance.overfitting_threshold")
+    selected = _chosen(trials, chosen)
+    if any(trial.returns.times != selected.returns.times for trial in trials):
+        raise ValueError("every trial of the family must share one period grid")
+    matrix = [trial.returns.net_floats() for trial in trials]
+    count = max(family_trial_count, len(trials))
+    details: dict[str, object] = {
+        "method": method,
+        "trials_evaluated": len(trials),
+        "family_trial_count": count,
+        "chosen_params": {name: value for name, value in sorted(selected.params.items())},
+    }
+    missing: list[str] = []
+    pbo_value: float | None = None
+    pbo_reason = ""
+    if cscv_partitions is None:
+        pbo_reason = "cscv_partitions_missing"
+    elif len(trials) < 2:
+        pbo_reason = "fewer_than_two_trials"
+    elif len(selected.returns) < 2 * cscv_partitions:
+        pbo_reason = "too_few_periods_for_partitions"
+    else:
+        pbo = probability_of_backtest_overfitting(matrix, cscv_partitions)
+        pbo_value = pbo.pbo
+        details["pbo"] = {
+            "pbo": pbo.pbo,
+            "splits": pbo.splits,
+            "partitions": pbo.partitions,
+            "partitions_source": "param:cscv_partitions",
+            "mean_logit": pbo.mean_logit,
+            "oos_loss_share": pbo.oos_loss_share,
+        }
+    if pbo_reason:
+        details["pbo"] = {"not_computed": pbo_reason}
+    dsr = deflated_sharpe_ratio(
+        matrix[trials.index(selected)], [sharpe_ratio(row) for row in matrix], count
+    )
+    details["deflated_sharpe"] = (
+        {"not_computed": "degenerate_returns"}
+        if dsr is None
+        else {
+            "dsr": dsr.dsr,
+            "sharpe": dsr.sharpe,
+            "benchmark_sharpe": dsr.benchmark_sharpe,
+            "skewness": dsr.skewness,
+            "kurtosis": dsr.kurtosis,
+            "periods": dsr.periods,
+            "trials": dsr.trials,
+        }
+    )
+    if method in PBO_METHODS:
+        if pbo_value is not None:
+            gate = compare_gate(
+                profile,
+                "G4.overfitting",
+                "probability_of_backtest_overfitting",
+                pbo_value,
+                limit,
+                Direction.AT_MOST,
+            )
+        elif pbo_reason == "cscv_partitions_missing":
+            missing.append("cscv_partitions")
+            gate = missing_field_gate("G4.overfitting", "cscv_partitions")
+        else:
+            gate = inconclusive_gate("G4.overfitting", f"pbo_not_computed:{pbo_reason}", 0.0)
+    elif dsr is None:
+        gate = inconclusive_gate("G4.overfitting", "dsr_not_computed:degenerate_returns", 0.0)
+    else:
+        gate = compare_gate(
+            profile,
+            "G4.overfitting",
+            "one_minus_deflated_sharpe_ratio",
+            1.0 - dsr.dsr,
+            limit,
+            Direction.AT_MOST,
+        )
+    return RobustnessCheck(
+        check_id="overfitting",
+        principles=("C-T1", "C-R1"),
+        gates=(gate,),
+        thresholds=(_use("overfitting_threshold", limit),),
+        missing_fields=tuple(missing),
+        details=details,
+    )
+
+
+# ======================================================================================
+# C-R1: parameter neighbourhood and time alignment
+# ======================================================================================
+
+
+Scalar = str | int | float | bool
+
+
+def _neighbors(
+    chosen: ParamPoint, space: Mapping[str, Sequence[Scalar]]
+) -> list[dict[str, Scalar]]:
+    points: list[dict[str, Scalar]] = []
+    for name in sorted(space):
+        values = list(space[name])
+        if len(values) < 2:
+            continue
+        if name not in chosen:
+            raise ValueError(f"the chosen point has no value for declared parameter {name!r}")
+        reprs = [repr(value) for value in values]
+        if repr(chosen[name]) not in reprs:
+            raise ValueError(f"the chosen {name}={chosen[name]!r} is not in the declared space")
+        index = reprs.index(repr(chosen[name]))
+        for other in (index - 1, index + 1):
+            if 0 <= other < len(values):
+                points.append({**chosen, name: values[other]})
+    return points
+
+
+def parameter_neighborhood_check(
+    profile: ValidationProfile,
+    trials: Sequence[TrialReturns],
+    chosen: ParamPoint,
+    param_space: Mapping[str, Sequence[str | int | float | bool]],
+) -> RobustnessCheck:
+    params = profile.parameter_stability
+    method = _method(
+        params.neighborhood_definition,
+        NEIGHBORHOOD_METHODS,
+        "parameter_stability.neighborhood_definition",
+    )
+    ratio_limit = threshold(profile, "parameter_stability.min_neighborhood_performance_ratio")
+    fraction_limit = threshold(profile, "parameter_stability.min_positive_neighbor_fraction")
+    uses = (
+        _use("min_neighborhood_performance_ratio", ratio_limit),
+        _use("min_positive_neighbor_fraction", fraction_limit),
+    )
+    selected = _chosen(trials, chosen)
+    points = _neighbors(selected.params, param_space)
+    details: dict[str, object] = {"method": method, "declared_neighbors": len(points)}
+    if not points:
+        return RobustnessCheck(
+            check_id="parameter_neighborhood",
+            principles=("C-R1",),
+            gates=(),
+            thresholds=uses,
+            details=details,
+            note="no declared parameter varies: C-R1 has no neighbourhood to test",
+        )
+    by_key = {trial.key(): trial for trial in trials}
+    found = [by_key.get(param_key(point)) for point in points]
+    evaluated = [trial for trial in found if trial is not None]
+    chosen_sr = _sharpe(selected.returns)
+    sharpes = [_sharpe(trial.returns) for trial in evaluated]
+    details.update(
+        chosen_sharpe=chosen_sr,
+        neighbors=[
+            {"params": dict(sorted(trial.params.items())), "sharpe": sr}
+            for trial, sr in zip(evaluated, sharpes, strict=True)
+        ],
+        neighbors_not_evaluated=len(points) - len(evaluated),
+    )
+    ratio_id = "G4.param_neighborhood.performance_ratio"
+    fraction_id = "G4.param_neighborhood.positive_fraction"
+    if len(evaluated) != len(points):
+        missing = float(len(points) - len(evaluated))
+        gates = (
+            inconclusive_gate(ratio_id, "declared_neighbors_not_evaluated", missing),
+            inconclusive_gate(fraction_id, "declared_neighbors_not_evaluated", missing),
+        )
+    else:
+        fraction = sum(1 for sr in sharpes if sr > 0) / len(sharpes)
+        fraction_gate = compare_gate(
+            profile,
+            fraction_id,
+            "positive_neighbor_fraction",
+            fraction,
+            fraction_limit,
+            Direction.AT_LEAST,
+        )
+        if chosen_sr <= 0:
+            ratio_gate = inconclusive_gate(ratio_id, "chosen_sharpe_not_positive", chosen_sr)
+        else:
+            ratio = (sum(sharpes) / len(sharpes)) / chosen_sr
+            ratio_gate = compare_gate(
+                profile,
+                ratio_id,
+                "neighbor_mean_sharpe_over_chosen_sharpe",
+                ratio,
+                ratio_limit,
+                Direction.AT_LEAST,
+            )
+        gates = (ratio_gate, fraction_gate)
+    return RobustnessCheck(
+        check_id="parameter_neighborhood",
+        principles=("C-R1",),
+        gates=gates,
+        thresholds=uses,
+        details=details,
+    )
+
+
+def time_alignment_check(
+    profile: ValidationProfile,
+    base: PeriodReturns,
+    shifted: Mapping[timedelta, PeriodReturns],
+) -> RobustnessCheck:
+    """The result must survive the Profile's decision-time offsets (bar-offset alignment)."""
+    offsets = profile.parameter_stability.time_alignment_offsets
+    limit = threshold(profile, "parameter_stability.min_neighborhood_performance_ratio")
+    uses = (_use("min_neighborhood_performance_ratio", limit),)
+    if not offsets:
+        return RobustnessCheck(
+            check_id="time_alignment",
+            principles=("C-R1",),
+            gates=(),
+            thresholds=uses,
+            note="parameter_stability.time_alignment_offsets is empty",
+        )
+    base_sr = _sharpe(base)
+    gates: list[GateResult] = []
+    rows: list[dict[str, object]] = []
+    for index, offset in enumerate(offsets):
+        gate_id = f"G4.time_alignment.{index}"
+        run = shifted.get(offset)
+        row: dict[str, object] = {
+            "offset_seconds": offset.total_seconds(),
+            "offset_source": f"parameter_stability.time_alignment_offsets[{index}]",
+        }
+        if run is None:
+            gates.append(inconclusive_gate(gate_id, "time_aligned_run_missing", 0.0))
+        elif base_sr <= 0:
+            gates.append(inconclusive_gate(gate_id, "base_sharpe_not_positive", base_sr))
+        else:
+            shifted_sr = _sharpe(run)
+            row["sharpe"] = shifted_sr
+            gates.append(
+                compare_gate(
+                    profile,
+                    gate_id,
+                    "shifted_sharpe_over_base_sharpe",
+                    shifted_sr / base_sr,
+                    limit,
+                    Direction.AT_LEAST,
+                )
+            )
+        rows.append(row)
+    return RobustnessCheck(
+        check_id="time_alignment",
+        principles=("C-R1",),
+        gates=tuple(gates),
+        thresholds=uses,
+        details={"base_sharpe": base_sr, "offsets": rows},
+    )
+
+
+# ======================================================================================
+# C-R4 / A6: delay stress and cost stress
+# ======================================================================================
+
+
+def delay_stress_check(
+    profile: ValidationProfile, delayed: PeriodReturns | None
+) -> RobustnessCheck:
+    """The edge must survive executing ``cost_stress.delay_stress_bars`` bars late."""
+    bars = profile.cost_stress.delay_stress_bars
+    limit = threshold(profile, "cost_stress.min_breakeven_cost_multiple")
+    uses = (_use("min_breakeven_cost_multiple", limit),)
+    details: dict[str, object] = {
+        "delay_bars": bars,
+        "delay_bars_source": "cost_stress.delay_stress_bars",
+    }
+    if bars == 0:
+        return RobustnessCheck(
+            check_id="delay_stress",
+            principles=("C-R4",),
+            gates=(),
+            thresholds=uses,
+            details=details,
+            note="cost_stress.delay_stress_bars is 0: the Profile asks for no delay stress",
+        )
+    if delayed is None:
+        gate = inconclusive_gate("G4.delay_stress", "delayed_run_missing", float(bars))
+    else:
+        breakeven = delayed.breakeven_cost_multiple()
+        details["net_total"] = float(sum(delayed.net(), Decimal(0)))
+        if breakeven is None:
+            gate = inconclusive_gate("G4.delay_stress", "no_cost_in_delayed_run", 0.0)
+        else:
+            details["breakeven_cost_multiple"] = float(breakeven)
+            gate = compare_gate(
+                profile,
+                "G4.delay_stress",
+                "delayed_breakeven_cost_multiple",
+                float(breakeven),
+                limit,
+                Direction.AT_LEAST,
+            )
+    return RobustnessCheck(
+        check_id="delay_stress",
+        principles=("C-R4",),
+        gates=(gate,),
+        thresholds=uses,
+        details=details,
+    )
+
+
+def cost_stress_check(profile: ValidationProfile, returns: PeriodReturns) -> RobustnessCheck:
+    """Breakeven cost multiple of the realized returns vs every Profile stress multiplier."""
+    stress = profile.cost_stress
+    floor = threshold(profile, "cost_stress.min_breakeven_cost_multiple")
+    limits = [
+        threshold(profile, f"cost_stress.stress_multipliers[{index}]")
+        for index in range(len(stress.stress_multipliers))
+    ]
+    uses = (_use("min_breakeven_cost_multiple", floor),) + tuple(
+        _use(f"stress_multiplier_{index}", limit) for index, limit in enumerate(limits)
+    )
+    reported = {
+        repr(value): float(sum(returns.net(multiplier(value)), Decimal(0)))
+        for value in (*stress.stress_multipliers, *stress.reported_only_multipliers)
+    }
+    details: dict[str, object] = {"net_total_at_multiplier": reported}
+    breakeven = returns.breakeven_cost_multiple()
+    gate_ids = ["G4.cost_stress.breakeven"] + [
+        f"G4.cost_stress.{index}" for index in range(len(limits))
+    ]
+    if breakeven is None:
+        gates = tuple(inconclusive_gate(gate_id, "no_cost_no_trades", 0.0) for gate_id in gate_ids)
+    else:
+        value = float(breakeven)
+        details["breakeven_cost_multiple"] = value
+        gates = (
+            compare_gate(
+                profile, gate_ids[0], "breakeven_cost_multiple", value, floor, Direction.AT_LEAST
+            ),
+        ) + tuple(
+            compare_gate(
+                profile,
+                gate_id,
+                "breakeven_cost_multiple_vs_stress",
+                value,
+                limit,
+                Direction.AT_LEAST,
+            )
+            for gate_id, limit in zip(gate_ids[1:], limits, strict=True)
+        )
+    return RobustnessCheck(
+        check_id="cost_stress",
+        principles=("C-R4",),
+        gates=gates,
+        thresholds=uses,
+        details=details,
+    )
+
+
+# ======================================================================================
+# C-S4 / C-R3: walk-forward window statistics (per-period report)
+# ======================================================================================
+
+
+def walk_forward_check(profile: ValidationProfile, returns: PeriodReturns) -> RobustnessCheck:
+    wf_limit = threshold(profile, "data_split.walk_forward.min_positive_window_fraction")
+    share_limit = threshold(profile, "data_split.walk_forward.max_single_window_pnl_share")
+    uses = (
+        _use("min_positive_window_fraction", wf_limit),
+        _use("max_single_window_pnl_share", share_limit),
+    )
+    rows: list[dict[str, object]] = []
+    pnls: list[float] = []
+    for window in walk_forward_windows(profile):
+        part = returns.window(window.train_end, window.test_end)
+        if not len(part):
+            continue
+        pnl = float(sum(part.net(), Decimal(0)))
+        pnls.append(pnl)
+        rows.append(
+            {
+                "index": window.index,
+                "test_start": window.train_end.isoformat(),
+                "test_end": window.test_end.isoformat(),
+                "periods": len(part),
+                "net_return": pnl,
+                "sharpe": _sharpe(part),
+            }
+        )
+    fraction_id = "G4.walk_forward.positive_fraction"
+    share_id = "G4.walk_forward.max_window_share"
+    if not pnls:
+        gates: tuple[GateResult, ...] = (
+            inconclusive_gate(fraction_id, "no_walk_forward_window_with_returns", 0.0),
+            inconclusive_gate(share_id, "no_walk_forward_window_with_returns", 0.0),
+        )
+    else:
+        fraction = sum(1 for pnl in pnls if pnl > 0) / len(pnls)
+        total = sum(pnls)
+        fraction_gate = compare_gate(
+            profile,
+            fraction_id,
+            "positive_window_fraction",
+            fraction,
+            wf_limit,
+            Direction.AT_LEAST,
+        )
+        if total <= 0:
+            share_gate = inconclusive_gate(share_id, "total_window_pnl_not_positive", total)
+        else:
+            share_gate = compare_gate(
+                profile,
+                share_id,
+                "max_window_pnl_share",
+                max(pnls) / total,
+                share_limit,
+                Direction.AT_MOST,
+            )
+        gates = (fraction_gate, share_gate)
+    return RobustnessCheck(
+        check_id="walk_forward",
+        principles=("C-S4", "C-R3"),
+        gates=gates,
+        thresholds=uses,
+        details={"windows": rows},
+    )
+
+
+# ======================================================================================
+# C-R2: state decomposition with per-state effective sample size
+# ======================================================================================
+
+
+@dataclass(frozen=True)
+class StateTrade:
+    """One trade (holding interval) labelled with the market state known at its decision."""
+
+    state: str
+    start: datetime
+    end: datetime
+    net: Decimal
+
+
+def state_decomposition_check(
+    profile: ValidationProfile, trades: Sequence[StateTrade] | None
+) -> RobustnessCheck:
+    """The result must not rest on states with too few effective independent trades."""
+    limit = threshold(profile, "sample_size.min_effective_trades_per_state")
+    uses = (_use("min_effective_trades_per_state", limit),)
+    coverage_note = (
+        "sample_size.min_regime_coverage is a free-form Profile string "
+        f"({profile.sample_size.min_regime_coverage!r}); it is recorded, not machine-interpreted"
+    )
+    if trades is None:
+        return RobustnessCheck(
+            check_id="state_decomposition",
+            principles=("C-R2",),
+            gates=(inconclusive_gate("G4.state.sufficient_states", "state_labels_missing", 0.0),),
+            thresholds=uses,
+            note=coverage_note,
+        )
+    grouped: dict[str, list[StateTrade]] = {}
+    for trade in trades:
+        grouped.setdefault(trade.state, []).append(trade)
+    rows: list[dict[str, object]] = []
+    sufficient_net = Decimal(0)
+    sufficient = 0
+    for state in sorted(grouped):
+        items = grouped[state]
+        effective = effective_sample_size([(item.start, item.end) for item in items])
+        net = sum((item.net for item in items), Decimal(0))
+        enough = effective >= limit.value
+        sufficient += enough
+        if enough:
+            sufficient_net += net
+        rows.append(
+            {
+                "state": state,
+                "trades": len(items),
+                "effective_trades": effective,
+                "net_return": float(net),
+                "sufficient": enough,
+            }
+        )
+    if sufficient:
+        gates: tuple[GateResult, ...] = (
+            flag_gate("G4.state.sufficient_states", "states_with_enough_trades", True, sufficient),
+            flag_gate(
+                "G4.state.pnl_outside_undersampled_states",
+                "net_return_of_sufficient_states",
+                sufficient_net > 0,
+                float(sufficient_net),
+            ),
+        )
+    else:
+        gates = (
+            inconclusive_gate("G4.state.sufficient_states", "states_with_enough_trades", 0.0),
+            inconclusive_gate(
+                "G4.state.pnl_outside_undersampled_states", "no_sufficient_state", 0.0
+            ),
+        )
+    return RobustnessCheck(
+        check_id="state_decomposition",
+        principles=("C-R2",),
+        gates=gates,
+        thresholds=uses,
+        details={"states": rows},
+        note=coverage_note,
+    )
+
+
+# ======================================================================================
+# C-R5: capacity (turnover x participation vs volume) and impact estimate
+# ======================================================================================
+
+
+@dataclass(frozen=True)
+class CapacityFill:
+    """One execution: traded notional as a fraction of equity, and its bar's traded notional."""
+
+    time: datetime
+    traded_fraction: Decimal
+    bar_volume_notional: Decimal | None
+
+
+def capacity_check(
+    profile: ValidationProfile,
+    fills: Sequence[CapacityFill] | None,
+    periods: int,
+    *,
+    max_participation: Threshold | None,
+    min_capacity: Threshold | None,
+    impact_coefficient: float | None,
+) -> RobustnessCheck:
+    """Capacity = ``max_participation * min(bar volume / traded fraction)`` over the fills.
+
+    The Profile contract has no capacity field: the participation limit and any required capacity
+    are explicit parameters (``param:``) or missing. The impact estimate uses a square-root model
+    ``coefficient * sqrt(participation)`` per unit traded, only when a coefficient is given.
+    """
+    missing: list[str] = []
+    uses: list[ThresholdUse] = []
+    details: dict[str, object] = {"periods": periods}
+    gates: list[GateResult] = []
+    traded = [fill for fill in fills or () if fill.traded_fraction > 0]
+    if fills is not None:
+        turnover = float(sum((fill.traded_fraction for fill in traded), Decimal(0)))
+        details["turnover_per_period"] = turnover / periods if periods else None
+        details["fills"] = len(traded)
+    if max_participation is None:
+        missing.append("capacity.max_participation_rate")
+        gates.append(missing_field_gate("G4.capacity.estimated", "capacity.max_participation_rate"))
+    elif fills is None or any(fill.bar_volume_notional is None for fill in traded):
+        gates.append(inconclusive_gate("G4.capacity.estimated", "bar_volume_missing", 0.0))
+    elif not traded:
+        gates.append(inconclusive_gate("G4.capacity.estimated", "no_trades", 0.0))
+    else:
+        uses.append(_use("max_participation_rate", max_participation))
+        ratios = [
+            float(fill.bar_volume_notional) / float(fill.traded_fraction)
+            for fill in traded
+            if fill.bar_volume_notional is not None
+        ]
+        capacity = max_participation.value * min(ratios)
+        details["capacity"] = capacity
+        gates.append(flag_gate("G4.capacity.estimated", "capacity_notional", True, capacity))
+        if impact_coefficient is not None:
+            impact = sum(
+                impact_coefficient * (capacity / ratio) ** 0.5 * float(fill.traded_fraction)
+                for fill, ratio in zip(traded, ratios, strict=True)
+            )
+            details["impact_cost_per_period_at_capacity"] = impact / periods if periods else None
+            details["impact_coefficient_source"] = "param:capacity.impact_coefficient"
+        else:
+            details["impact_cost_per_period_at_capacity"] = None
+            details["impact_not_estimated"] = "param:capacity.impact_coefficient not given"
+        if min_capacity is None:
+            missing.append("capacity.min_capacity")
+        else:
+            uses.append(_use("min_capacity", min_capacity))
+            gates.append(
+                compare_gate(
+                    profile,
+                    "G4.capacity.required",
+                    "capacity_notional",
+                    capacity,
+                    min_capacity,
+                    Direction.AT_LEAST,
+                )
+            )
+    return RobustnessCheck(
+        check_id="capacity",
+        principles=("C-R5",),
+        gates=tuple(gates),
+        thresholds=tuple(uses),
+        missing_fields=tuple(missing),
+        details=details,
+    )
+
+
+# ======================================================================================
+# C-R3: cross-asset consistency inside the declared scope
+# ======================================================================================
+
+
+def cross_asset_check(
+    profile: ValidationProfile,
+    per_asset: Mapping[str, PeriodReturns],
+    declared: Sequence[str],
+    min_positive_fraction: Threshold | None,
+) -> RobustnessCheck:
+    """Every declared instrument must be tested; with two or more, the sign must be consistent.
+
+    The Profile scope is one symbol and has no cross-asset field: the consistency threshold is an
+    explicit parameter (``param:cross_asset.min_positive_fraction``) or missing.
+    """
+    if not declared:
+        return RobustnessCheck(
+            check_id="cross_asset",
+            principles=("C-R3",),
+            gates=(),
+            note="no declared instrument scope",
+        )
+    rows = [
+        {
+            "instrument": name,
+            "periods": len(per_asset[name]),
+            "net_return": float(sum(per_asset[name].net(), Decimal(0))),
+            "sharpe": _sharpe(per_asset[name]),
+        }
+        for name in sorted(per_asset)
+    ]
+    absent = [name for name in declared if name not in per_asset]
+    gates: list[GateResult] = [
+        flag_gate("G4.cross_asset.scope_covered", "declared_instruments_tested", True, 1.0)
+        if not absent
+        else inconclusive_gate(
+            "G4.cross_asset.scope_covered", "declared_instruments_not_tested", float(len(absent))
+        )
+    ]
+    missing: list[str] = []
+    uses: list[ThresholdUse] = []
+    if len(declared) >= 2:
+        if min_positive_fraction is None:
+            missing.append("cross_asset.min_positive_fraction")
+            gates.append(
+                missing_field_gate(
+                    "G4.cross_asset.positive_fraction", "cross_asset.min_positive_fraction"
+                )
+            )
+        elif absent:
+            gates.append(
+                inconclusive_gate(
+                    "G4.cross_asset.positive_fraction",
+                    "declared_instruments_not_tested",
+                    float(len(absent)),
+                )
+            )
+        else:
+            uses.append(_use("min_positive_fraction", min_positive_fraction))
+            positive = sum(1 for name in declared if sum(per_asset[name].net(), Decimal(0)) > 0)
+            gates.append(
+                compare_gate(
+                    profile,
+                    "G4.cross_asset.positive_fraction",
+                    "positive_instrument_fraction",
+                    positive / len(declared),
+                    min_positive_fraction,
+                    Direction.AT_LEAST,
+                )
+            )
+    return RobustnessCheck(
+        check_id="cross_asset",
+        principles=("C-R3",),
+        gates=tuple(gates),
+        thresholds=tuple(uses),
+        missing_fields=tuple(missing),
+        details={"declared": list(declared), "instruments": rows, "not_tested": absent},
+    )

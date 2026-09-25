@@ -4,7 +4,7 @@
 - ``volatility_target``: ``VolatilityTargetRiskProvider`` (RiskProvider) and ``vol_target_bars``;
 - ``signals``: bar-derived signal observations for exploration;
 - ``pipeline``: strategy → risk → backtest → validation hook → Failure Registry;
-- ``validation``: the narrow ``BacktestValidator`` seam (TODO(phase4-wiring));
+- ``validation``: the ``BacktestValidator`` seam and ``PipelineBacktestValidator`` (G0 – G4);
 - ``failure_registry``: append-only ``FailureRecord`` store;
 - ``library``: entries with sources and declared parameter spaces.
 """

@@ -251,7 +251,7 @@ def test_sealed_oos_gate_requires_the_recorded_unsealing(
     market, _ = planted
     oos_table = outcome_table(market, sealed_events(market))
     study = MomentumSignStudy(market, _events(oos_table))
-    vault = SealedOosVault(TEST_ONLY_PROFILE, InMemoryUnsealingLedger())
+    vault = SealedOosVault(TEST_ONLY_PROFILE, InMemoryUnsealingLedger(), max_unsealings=1)
     ctx = context()
     locked = run_sealed_oos(SealedOosInput(ctx, vault, oos_table, study))
     assert [(g.gate_id, g.verdict) for g in locked] == [("G5.unsealing_recorded", Verdict.FAIL)]

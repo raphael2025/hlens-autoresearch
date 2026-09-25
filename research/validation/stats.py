@@ -1,7 +1,10 @@
 """Minimal statistics for the G2 / G3 gates (Constitution C-T1 ~ C-T3).
 
 - ``effective_sample_size``: overlapping holding intervals are not independent (C-T2); the count
-  is the greedy number of pairwise non-overlapping intervals, never the number of bars;
+  is the number of disjoint clusters of overlapping intervals (connected components of their
+  union), never the number of bars. A long interval blocks everything nested inside it: ``[0, 10)``
+  and ``[2, 3)`` are one effective sample, and so is ``[0, 10)``, ``[2, 3)``, ``[4, 5)`` (Phase 8
+  fix, ADR-0041: the earlier ``min`` shrank the blocked region and counted nested samples twice);
 - ``hac_t_test``: the mean with a Newey–West (Bartlett) standard error whose lag is the maximal
   overlap between samples (C-T3: autocorrelation aware), and a normal-approximation p-value;
 - ``adjust_p_value``: family-wise multiple-testing adjustment (C-T1) by the Profile's
@@ -34,7 +37,11 @@ class UnsupportedMethod(ValueError):
 
 
 def effective_sample_size(intervals: Sequence[tuple[datetime, datetime]]) -> int:
-    """Greedy count of pairwise non-overlapping ``[start, end)`` intervals."""
+    """Number of disjoint clusters of overlapping ``[start, end)`` intervals.
+
+    A new cluster starts only when an interval starts at or after the end of **every** earlier
+    interval (the blocked region grows with ``max``, it never shrinks).
+    """
     count = 0
     free_from: datetime | None = None
     for start, end in sorted(intervals):
@@ -42,7 +49,7 @@ def effective_sample_size(intervals: Sequence[tuple[datetime, datetime]]) -> int
             count += 1
             free_from = end
         else:
-            free_from = min(free_from, end)
+            free_from = max(free_from, end)
     return count
 
 

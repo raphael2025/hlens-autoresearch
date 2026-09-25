@@ -5,7 +5,16 @@ Constitution C-S1 ~ C-S3 and 07-validation.md §3: the window starts at the Prof
 with the run time. Before an unsealing is recorded, the vault refuses to hand out any sample of the
 window (``SealedOosLocked``). ``unseal`` records an ``OosUnsealing`` in an append-only ledger and
 refuses a second unsealing of the same family (``OosAlreadyUnsealed``); the record is never
-removed. The ledger also gives the global unsealing count (C-S2: counted in a global budget).
+removed.
+
+Budget and one-shot evaluation (Phase 8 fix, ADR-0041):
+
+- the ledger's global unsealing count (C-S2: counted in a global budget) is bounded by the vault's
+  ``max_unsealings``. The Profile has no field for this budget, so it is a **required explicit
+  parameter** (no default; ``budget_source`` records ``param:max_unsealings``). Switching the
+  ``family_id`` therefore cannot re-open the same window without limit (``OosBudgetExhausted``);
+- an unsealing buys **one** evaluation: ``sealed_view`` hands the window's samples out once per
+  family and records that in the ledger; a second read raises ``SealedOosAlreadyEvaluated``.
 
 ``InMemoryUnsealingLedger`` is the framework ledger; a durable Control Plane ledger implements the
 same ``UnsealingLedger`` Protocol later (not in this batch).
@@ -25,6 +34,8 @@ from research.validation.splits import LabeledSpan, midnight_utc
 __all__ = [
     "InMemoryUnsealingLedger",
     "OosAlreadyUnsealed",
+    "OosBudgetExhausted",
+    "SealedOosAlreadyEvaluated",
     "SealedOosLocked",
     "SealedOosVault",
     "SealedWindow",
@@ -38,6 +49,14 @@ class OosAlreadyUnsealed(Exception):
 
 class SealedOosLocked(Exception):
     """Sealed OOS data was requested without a recorded unsealing."""
+
+
+class OosBudgetExhausted(Exception):
+    """The global unsealing budget of the window is used up."""
+
+
+class SealedOosAlreadyEvaluated(Exception):
+    """The family's single sealed OOS evaluation has already been handed out."""
 
 
 @dataclass(frozen=True)
@@ -65,12 +84,19 @@ class UnsealingLedger(Protocol):
 
     def count(self) -> int: ...
 
+    def mark_evaluated(self, family_id: str) -> None:
+        """Record that the family's one sealed evaluation was handed out (append-only)."""
+        ...
+
+    def is_evaluated(self, family_id: str) -> bool: ...
+
 
 class InMemoryUnsealingLedger:
     """Append-only: a family is recorded once and never removed."""
 
     def __init__(self) -> None:
         self._records: dict[str, OosUnsealing] = {}
+        self._evaluated: set[str] = set()
 
     def get(self, family_id: str) -> OosUnsealing | None:
         return self._records.get(family_id)
@@ -83,10 +109,28 @@ class InMemoryUnsealingLedger:
     def count(self) -> int:
         return len(self._records)
 
+    def mark_evaluated(self, family_id: str) -> None:
+        if family_id not in self._records:
+            raise SealedOosLocked(f"family {family_id!r} has not unsealed the OOS window")
+        if family_id in self._evaluated:
+            raise SealedOosAlreadyEvaluated(f"family {family_id!r} already evaluated sealed OOS")
+        self._evaluated.add(family_id)
+
+    def is_evaluated(self, family_id: str) -> bool:
+        return family_id in self._evaluated
+
 
 class SealedOosVault:
-    def __init__(self, profile: ValidationProfile, ledger: UnsealingLedger) -> None:
+    """The window of one Profile with a global unsealing budget (explicit, see module docs)."""
+
+    def __init__(
+        self, profile: ValidationProfile, ledger: UnsealingLedger, *, max_unsealings: int
+    ) -> None:
+        if isinstance(max_unsealings, bool) or max_unsealings < 1:
+            raise ValueError("max_unsealings must be a positive int")
         self.window = SealedWindow.from_profile(profile)
+        self.max_unsealings = max_unsealings
+        self.budget_source = "param:max_unsealings"
         self._ledger = ledger
 
     def research_view(self, spans: Sequence[LabeledSpan]) -> tuple[LabeledSpan, ...]:
@@ -102,12 +146,23 @@ class SealedOosVault:
             raise ValueError("family_id must not be blank")
         if self._ledger.get(family_id) is not None:
             raise OosAlreadyUnsealed(f"family {family_id!r} has already been unsealed")
+        if self._ledger.count() >= self.max_unsealings:
+            raise OosBudgetExhausted(
+                f"the sealed OOS budget ({self.max_unsealings} unsealings, "
+                f"{self.budget_source}) is used up"
+            )
         unsealing = OosUnsealing(unsealed_at=at, approved_by=approved_by, family_unseal_count=1)
         self._ledger.record(family_id, unsealing)
         return unsealing
 
+    def is_evaluated(self, family_id: str) -> bool:
+        return self._ledger.is_evaluated(family_id)
+
     def sealed_view(self, family_id: str, spans: Sequence[LabeledSpan]) -> tuple[LabeledSpan, ...]:
-        """Spans fully inside the window; only after the family's unsealing was recorded."""
+        """Spans fully inside the window, handed out **once** after the family's unsealing."""
         if self._ledger.get(family_id) is None:
             raise SealedOosLocked(f"family {family_id!r} has not unsealed the OOS window")
+        if self._ledger.is_evaluated(family_id):
+            raise SealedOosAlreadyEvaluated(f"family {family_id!r} already evaluated sealed OOS")
+        self._ledger.mark_evaluated(family_id)
         return tuple(span for span in spans if self.window.contains(span))

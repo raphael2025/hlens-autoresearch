@@ -47,6 +47,7 @@
 | [0038](0038-strategy-risk-backtest-providers.md) | Strategy / Risk / Backtest Provider 契约、回测器 v1 与研究策略库（Phase 5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0036](0036-event-provider-contract.md) | EventProvider 契约、事件执行器与首批事件 / 交互算子（Phase 3） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0037](0037-outcome-engine-and-minimal-validation-pipeline.md) | Outcome Engine、成本模型 v1 与最小 Validation Pipeline（Phase 4 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
+| [0041](0041-validation-robustness.md) | G4 稳健性套件、回溯审计、Phase 4 复审修正与策略验证接线（Phase 8 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0042](0042-synthetic-market-provider.md) | SyntheticMarketProvider 契约与随机游走生成器（Phase 9） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0045](0045-strategy-evolution.md) | 策略演化算子与谱系（Phase 12） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0046](0046-simulated-execution-service.md) | 独立执行服务（仅模拟）、Kill Switch、二道风控与执行阶梯（Phase 13 框架；无实盘） | Accepted（2026-09-25；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |

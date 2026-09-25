@@ -9,10 +9,17 @@ point) of one library candidate:
    the risk signals visible at that time and the previous constrained weights as portfolio state
    (``equity=None``: risk runs ahead of the simulation, so path-dependent rules must refuse);
 3. ``BacktestProvider.run`` on the (constrained) targets, checked with ``check_answers``;
-4. the ``BacktestValidator`` hook (``validation.py``; TODO(phase4-wiring)) — without it the result
-   is ``NOT_VALIDATED``, never a pass;
-5. a ``FAIL`` verdict (→ ``REJECTED``) or a run / contract error (→ ``FAILED``) is appended to the
-   ``FailureRegistry``. Nothing is ever deleted; a retry is a new version.
+4. the ``BacktestValidator`` (``validation.py``): ``PipelineBacktestValidator`` runs the Phase 4
+   gates G0 – G3 and the Phase 8 robustness gates G4 (``research/validation``, ADR-0037 /
+   ADR-0041). Without a validator the result is ``NOT_VALIDATED``, never a pass;
+5. a ``FAIL`` verdict (→ ``REJECTED``) or a run / contract error — in the simulation or in the
+   validator — (→ ``FAILED``) is appended to the ``FailureRegistry``. Nothing is ever deleted; a
+   retry is a new version.
+
+``CandidateTrialRunner`` re-runs steps 1 – 3 at any declared parameter point, optionally with the
+targets executed ``delay_bars`` bars late (delay stress), the decision grid shifted by
+``decision_offset`` (time alignment) or restricted to some instruments (cross-asset). The validator
+uses it for reproduction and for the G4 trial family.
 
 The pipeline performs no lifecycle transition (that is the Control Plane's) and decides nothing:
 the verdict is whatever the validator's report says.
@@ -21,8 +28,8 @@ the verdict is whatever the validator's report says.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, replace
+from datetime import datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
 
@@ -47,21 +54,27 @@ from core.contracts.strategy import (
     StrategyRequest,
     StrategyResult,
     TargetPosition,
+    execution_bar,
 )
 from core.domain.base import FrozenMapping, Ref
 from core.domain.research import FailureRecord, Verdict
 from core.domain.specs import RiskPolicy, StrategySpec
 from core.errors import ReasonCode
 from research.strategies.failure_registry import FailureRegistry
-from research.strategies.validation import BacktestValidation, BacktestValidator
+from research.strategies.validation import BacktestValidation, BacktestValidator, TrialRun
 
 __all__ = [
+    "CandidateTrialRunner",
     "EvaluationInputs",
     "EvaluationStatus",
     "StrategyCandidate",
     "StrategyEvaluation",
     "evaluate_strategy",
 ]
+
+
+#: Validation failures that are technical (FAILED), not a refutation (REJECTED): C-P3, ADR-0006.
+_TECHNICAL_FAILURES = frozenset({ReasonCode.NOT_REPRODUCIBLE, ReasonCode.RUN_ERRORED})
 
 
 class EvaluationStatus(StrEnum):
@@ -174,6 +187,111 @@ def _failure(
     )
 
 
+@dataclass(slots=True)
+class _Simulation:
+    strategy_result: StrategyResult | None = None
+    risk_results: tuple[RiskResult, ...] = ()
+    targets: tuple[TargetPosition, ...] = ()
+    backtest: BacktestResult | None = None
+
+
+def _strategy_step(
+    candidate: StrategyCandidate, inputs: EvaluationInputs, sim: _Simulation
+) -> None:
+    request = StrategyRequest(
+        strategy=candidate.spec.ref,
+        spec_hash=candidate.spec.content_hash(),
+        params=FrozenMapping(inputs.params or {}),
+        instruments=inputs.instruments,
+        knowledge_cutoff=inputs.knowledge_cutoff,
+        decision_times=inputs.decision_times,
+        signals=inputs.signals,
+    )
+    sim.strategy_result = candidate.strategy.target_positions(request)
+    sim.strategy_result.check_answers(request, candidate.strategy.descriptor)
+    sim.risk_results, sim.targets = _risk_step(candidate, inputs, sim.strategy_result)
+
+
+def _backtest_step(
+    inputs: EvaluationInputs, backtester: BacktestProvider, targets: tuple[TargetPosition, ...]
+) -> BacktestResult:
+    request = BacktestRequest(
+        cost_model=inputs.cost_model,
+        initial_equity=inputs.initial_equity,
+        bars=inputs.bars,
+        targets=targets,
+    )
+    result = backtester.run(request)
+    result.check_answers(request, backtester.descriptor)
+    return result
+
+
+def _bar_length(bars: Sequence[PriceBar]) -> timedelta:
+    lengths = {bar.interval_end - bar.interval_start for bar in bars}
+    if len(lengths) != 1:
+        raise ValueError("delay stress needs one uniform bar length")
+    return lengths.pop()
+
+
+def _delayed(
+    targets: Sequence[TargetPosition], bars: Sequence[PriceBar], delay_bars: int
+) -> tuple[TargetPosition, ...]:
+    """Every target executed ``delay_bars`` bars later (same information, later fill).
+
+    A target whose delayed decision has no execution bar left is dropped (it could never fill).
+    """
+    step = _bar_length(bars) * delay_bars
+    ordered = sorted(bars, key=lambda bar: (bar.interval_start, bar.instrument))
+    moved: list[TargetPosition] = []
+    for target in targets:
+        later = target.decision_time + step
+        if execution_bar(ordered, target.instrument, later) is None:
+            continue
+        moved.append(target.model_validate({**target.model_dump(), "decision_time": later}))
+    return tuple(moved)
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateTrialRunner:
+    """Re-runs strategy → risk → backtest of one candidate (a ``validation.TrialRunner``)."""
+
+    candidate: StrategyCandidate
+    inputs: EvaluationInputs
+    backtester: BacktestProvider
+
+    def run(
+        self,
+        params: Mapping[str, ObservationScalar],
+        *,
+        delay_bars: int = 0,
+        decision_offset: timedelta = timedelta(0),
+        instruments: tuple[str, ...] | None = None,
+    ) -> TrialRun:
+        if delay_bars < 0:
+            raise ValueError("delay_bars must be >= 0")
+        base = self.inputs
+        names = base.instruments if instruments is None else tuple(sorted(set(instruments)))
+        keep = set(names)
+        if not keep <= set(base.instruments):
+            raise ValueError(f"unknown instruments {sorted(keep - set(base.instruments))}")
+        trial = replace(
+            base,
+            instruments=names,
+            bars=tuple(bar for bar in base.bars if bar.instrument in keep),
+            decision_times=tuple(t + decision_offset for t in base.decision_times),
+            signals=tuple(item for item in base.signals if item.instrument in keep),
+            risk_signals=tuple(item for item in base.risk_signals if item.instrument in keep),
+            params=params,
+        )
+        sim = _Simulation()
+        _strategy_step(self.candidate, trial, sim)
+        targets = _delayed(sim.targets, trial.bars, delay_bars) if delay_bars else sim.targets
+        backtest = _backtest_step(trial, self.backtester, targets)
+        return TrialRun(
+            targets=targets, backtest=backtest, bars=trial.bars, cost_model=trial.cost_model
+        )
+
+
 def evaluate_strategy(
     candidate: StrategyCandidate,
     inputs: EvaluationInputs,
@@ -184,41 +302,27 @@ def evaluate_strategy(
 ) -> StrategyEvaluation:
     """Run one trial end to end; failures are appended to ``registry`` (see module docs)."""
     subject = candidate.spec.ref
-    strategy_result: StrategyResult | None = None
-    risk_results: tuple[RiskResult, ...] = ()
+    sim = _Simulation()
     try:
-        request = StrategyRequest(
-            strategy=subject,
-            spec_hash=candidate.spec.content_hash(),
-            params=FrozenMapping(inputs.params or {}),
-            instruments=inputs.instruments,
-            knowledge_cutoff=inputs.knowledge_cutoff,
-            decision_times=inputs.decision_times,
-            signals=inputs.signals,
+        _strategy_step(candidate, inputs, sim)
+        backtest = _backtest_step(inputs, backtester, sim.targets)
+    except (StrategyProviderError, RiskProviderError, BacktestProviderError) as exc:
+        return _failed(candidate, registry, ReasonCode.RUN_ERRORED, exc, sim.strategy_result)
+    except (ValidationError, ValueError) as exc:
+        return _failed(candidate, registry, ReasonCode.CONTRACT_VIOLATION, exc, sim.strategy_result)
+    strategy_result, risk_results = sim.strategy_result, sim.risk_results
+
+    if validator is None:  # nothing validated it: never a pass
+        return StrategyEvaluation(
+            subject, EvaluationStatus.NOT_VALIDATED, strategy_result, risk_results, backtest
         )
-        strategy_result = candidate.strategy.target_positions(request)
-        strategy_result.check_answers(request, candidate.strategy.descriptor)
-        risk_results, targets = _risk_step(candidate, inputs, strategy_result)
-        backtest_request = BacktestRequest(
-            cost_model=inputs.cost_model,
-            initial_equity=inputs.initial_equity,
-            bars=inputs.bars,
-            targets=targets,
-        )
-        backtest = backtester.run(backtest_request)
-        backtest.check_answers(backtest_request, backtester.descriptor)
+    try:
+        validation = validator.validate(subject, candidate.spec, backtest)
+        validation.check_subject(subject)
     except (StrategyProviderError, RiskProviderError, BacktestProviderError) as exc:
         return _failed(candidate, registry, ReasonCode.RUN_ERRORED, exc, strategy_result)
     except (ValidationError, ValueError) as exc:
         return _failed(candidate, registry, ReasonCode.CONTRACT_VIOLATION, exc, strategy_result)
-
-    if validator is None:
-        # TODO(phase4-wiring, ADR-0037): pass the Phase 4 validation adapter here.
-        return StrategyEvaluation(
-            subject, EvaluationStatus.NOT_VALIDATED, strategy_result, risk_results, backtest
-        )
-    validation = validator.validate(subject, candidate.spec, backtest)
-    validation.check_subject(subject)
     report = validation.report
     if report.verdict is Verdict.PASS:
         status = EvaluationStatus.PASSED
@@ -227,9 +331,10 @@ def evaluate_strategy(
     else:
         failed_gate = next(gate.gate_id for gate in report.gates if gate.verdict is Verdict.FAIL)
         reason = validation.failure_reason or ReasonCode.CONTRACT_VIOLATION
+        technical = reason in _TECHNICAL_FAILURES  # C-P3: not reproducible = FAILED
         record = _failure(
             candidate,
-            "REJECTED",
+            "FAILED" if technical else "REJECTED",
             reason,
             (
                 f"validation_report:{report.report_id}",
@@ -241,7 +346,7 @@ def evaluate_strategy(
         registry.append(record)
         return StrategyEvaluation(
             subject,
-            EvaluationStatus.REJECTED,
+            EvaluationStatus.FAILED if technical else EvaluationStatus.REJECTED,
             strategy_result,
             risk_results,
             backtest,
