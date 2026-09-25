@@ -35,6 +35,7 @@ Canonical 不合并、不挑选、不丢弃 Raw revision。竞争、相等、晚
 
 | 列 | 规则 |
 |---|---|
+| `contract_schema_version` | 写入时的 `CONTRACT_SCHEMA_VERSION`（当前 `2.0.0`），即行映射回 `RevisionRecord` 时的契约信封版本 |
 | `observation_key` | **与 Raw 元素逐字符相同**（`binance:spot:agg_trade:<symbol>:<aggTradeId>`、`binance:spot:kline:<symbol>:1m:<start µs>`）。两个通道同一观察在 Canonical 仍是同一键，Raw 边的两端映射后仍同键 |
 | `source_id` | Canonical source identity = `hlens.canonical.binance-spot.normalizer@<版本>` + `\|` + `lineage_raw_table` + `\|` + `lineage_raw_revision_id`。**lineage 进身份**：同一市场内容经两条 Raw lineage 到达，得到两条 Canonical revision |
 | `payload_hash` | Canonical 规范内容文档的 SHA-256（§2）；只含 Canonical 市场列，不含 lineage、时间、`arrival_seq` |
@@ -48,18 +49,27 @@ Canonical 不合并、不挑选、不丢弃 Raw revision。竞争、相等、晚
 
 ### 2. Canonical 规范内容
 
-| Canonical 表 | payload kind | 市场列（与冻结表列对应） |
+| Canonical 表 | payload kind | payload 文档字段（非 `*_us` 字段与冻结表同名列一一对应） |
 |---|---|---|
 | `canonical.trades` | `hlens.canonical.trade/1` | `venue`、`instrument_type`、`symbol`、`venue_symbol`、`venue_trade_id`（= aggTradeId 十进制文本）、`price`、`quantity`、`buyer_is_maker`、`event_time_us` |
 | `canonical.bars_1m` | `hlens.canonical.bar_1m/1` | `venue`、`instrument_type`、`symbol`、`venue_symbol`、`interval_start_us`、`interval_end_us`、`open`、`high`、`low`、`close`、`volume`、`quote_volume`、`trade_count`、`taker_buy_base_volume`、`taker_buy_quote_volume` |
 
-十进制按 `decimal(38, 18)` 渲染为 18 位小数定点文本，时间为精确 UTC 纪元微秒（归档按其声明单位、REST 按毫秒换算，
-与 D-33 投影相同的换算规则），规范 JSON 排序键、紧凑分隔、UTF-8。`symbol` / `venue_symbol` 的映射由 normalizer 规格冻结
+`event_time_us` / `interval_start_us` / `interval_end_us` **只是 payload 文档字段**：它们是冻结列 `event_time` /
+`interval_start` / `interval_end`（UTC 时间戳）的精确 UTC 纪元微秒整数；表中不存在 `*_us` 列。
+十进制按 `decimal(38, 18)` 渲染为 18 位小数定点文本，时间按归档声明单位或 REST 毫秒换算（与 D-33 投影相同的换算规则），规范 JSON 排序键、紧凑分隔、UTF-8。`symbol` / `venue_symbol` 的映射由 normalizer 规格冻结
 （首切片两个标的），必须与 `canonical.instrument_listings` 同一 universe spec 的 `Instrument` 一致（E2 校验）。
 Canonical 内容比 Raw 少（例如 `first_trade_id` / `last_trade_id` / `is_best_match` / `ignore` 不进 Canonical 列）；
 **因此 Canonical payload 相等永远不是 precedence 证据**（§3），precedence 只来自 Raw 已持久化的边。
 
 ### 3. Precedence 映射：PIT 从固定 Raw 证据 snapshot 确定性映射（方案 B）
+
+**3.0 与 ADR-0023 §4 的关系（需 Codex 在接受时确认的解释）**：ADR-0023 §4 写"Canonical revision 的 `supersedes` 由其
+Raw source revision 的关系派生；normalizer 重跑不得重新发明来源优先级"。ADR-0027 §4.4 之后，Raw 层自身把关系分成两类：
+Raw 行内的 `supersedes`（同通道），以及**明确不写进任何行 `supersedes`** 的独立证据表边（跨通道，可晚到）。本 ADR
+把 ADR-0023 §4 解释为"Canonical 按 Raw 的同一结构派生 precedence"：行内 ↔ 行内（§3.1），独立证据 ↔ 由 PIT 从绑定的
+Raw 证据 snapshot 一对一映射（§3.2）。这样 Canonical 没有新的来源判断，也不必为了跨通道边改写已提交行或伪造新
+revision；若 Codex 认为 ADR-0023 §4 要求跨通道边进入 Canonical 行内 `supersedes`，则方案 B 不成立，应改选方案 A
+（独立 Canonical 证据表）而不是任何改写旧行的方案。
 
 **3.1 行内列**：Canonical 行的 `supersedes` 与 `precedence_evidence` 只承载**所在 Raw 元素行自身行内的边**的映像。
 在已冻结的 policy 下 Raw 元素行内边恒为空（归档 `binance.spot.archive-revision@1.0.0` 的边只可能出现在归档 revision 行，
@@ -99,7 +109,7 @@ Canonical 内容比 Raw 少（例如 `first_trade_id` / `last_trade_id` / `is_be
 | `ingest_time` | Raw 行的 `ingest_time`（本机首次收到该 payload 的时刻，不是 normalizer 时间） |
 | `available_time` | `max(规格约束, raw.available_time + declared_latency)`，`declared_latency = 0`；trade 的规格约束为 `event_time`，1m bar 为 `interval_end`。今天重算只影响 `knowledge_time` |
 | `knowledge_time` | `max(actual_ready_time, raw.knowledge_time)`。`actual_ready_time` 是 normalizer 对一个 normalization 单元（§5）完成全部输入证明之后、提交之前读取一次的注入 UTC 时钟；时钟早于任一输入 `knowledge_time` 即冲突（拒绝回填），不取 max 掩盖 |
-| availability 绑定 | 新派生 policy `hlens.canonical.availability@1.0.0`（公式即本表）；`availability_evidence` 列出输入 Raw 的 availability 绑定与 Raw `revision_id`；`availability_evidence_gap` 继承 Raw 的缺口陈述 |
+| availability 绑定 | 新派生 policy `hlens.canonical.availability@1.0.0`（公式即本表）。`AvailabilityDecision` 要求证据与缺口**恰好一项**：输入 Raw 行带缺口时，`availability_evidence = []`、`availability_evidence_gap = "inherited from <raw_table>/<raw_revision_id> under <policy_id>@<version>: <Raw 缺口原文>"`；输入 Raw 行带证据时，`availability_evidence = ["input <raw_table>/<raw_revision_id> under <policy_id>@<version>", *Raw 证据项]`、缺口为空。首切片两个 Raw availability policy 都写缺口，故 Canonical 行一律走缺口分支 |
 
 重跑与崩溃恢复**复用**已提交行的 `knowledge_time`（同 `revision_id` 幂等），不重打时钟；旧 cutoff 的结果因此不变。
 
@@ -159,7 +169,8 @@ Raw 边或端点 Raw 行复核失败；Canonical 行的 lineage 在绑定的 Raw
 PIT（`simulation_time` 足够晚）：cutoff `< 12-02` 不存在；`[12-02, 12-06)` 选 `a'`；`[12-06, 12-10)` 冲突；
 `>= 12-10` 选 `a'`，manifest 的 `SelectedRevisionLineage = (canonical.trades, a', raw.binance_spot_agg_trades, rev1-A,
 raw.binance_spot_archives, rev1-F)`，并绑定 Canonical、两张 Raw 元素表、两张 Raw source 表与证据表的 snapshot。
-若 `E` 在 12-01 之后、12-02 之前就已存在，`K_E' = 12-06`，冲突区间为空。
+另一时间线：若 `r` 直到 12-11 才被 normalize（`K_R' = 12-11`，Raw 边 12-10 已存在），则 `K_E' = max(12-10, 12-02, 12-11) = 12-11`，
+冲突区间 `[12-11, 12-11)` 为空：`[12-02, 12-11)` 只见 `a'`，`>= 12-11` 两者可见且边同时生效，仍选 `a'`。
 
 ## 备选方案
 
