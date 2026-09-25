@@ -157,8 +157,13 @@ D3B～D3E 均触及身份、双时间、重放或 precedence 语义，由 Claude
 
 D4 门记录（`REVIEW_PENDING`，待 Codex 复核）：[2026-09-25 D4 live-tail 门](../reviews/2026-09-25-d4-live-tail-gate.md)。
 ADR-0022 的三项启用前置（历史 backfill、REST gap reconciliation、重放幂等）未全部验收，且没有已批准的实时消费者，
-因此 Phase 1 首切片**不启用** WebSocket live tail（#14 明确允许）；不写任何 WS 代码。下一批候选为 **E0-CANONICAL-DESIGN**
-（docs-only 双 Raw 通道进入 Canonical 的设计门），须待 Codex 验收 D3E 与本记录后开放。
+因此 Phase 1 首切片**不启用** WebSocket live tail（#14 明确允许）；不写任何 WS 代码。
+
+#### E0（双 Raw → Canonical 设计门）
+
+[ADR-0028](../adr/0028-dual-raw-canonical-lineage.md)（**Proposed**，待 Codex 复核）：Canonical revision 与 Raw 元素 revision
+一一对应、lineage 进 Canonical 身份；跨通道边不物化到 Canonical，由 PIT 从绑定的 Raw 证据 snapshot 一对一映射；
+Canonical `arrival_seq` 独立分配；无表与契约变化。**E1 在 ADR-0028 被接受前关闭**。
 
 ## Phase 2 — Market State Engine
 

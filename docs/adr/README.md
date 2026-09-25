@@ -33,6 +33,7 @@
 | [0025](0025-private-github-remote-and-reviewed-progress-push.md) | 私有 GitHub 远程与复核后逐进度推送 | Accepted（2026-09-24，Codex 依 Raphael 明确指示批准；A2r 记录）；取代 ADR-0004 第 3 条 |
 | [0026](0026-pyiceberg-core-extra-for-day-partitions.md) | 为按天分区写入加入 PyIceberg 官方 extra `pyiceberg-core`（D-32） | Accepted（2026-09-24，Codex 依 Raphael 授权裁决方案 A；D32 记录）；已实施（Cursor 锁依赖 `e40c285`、Claude C3-R1 转正 xfail，随 C3 验收） |
 | [0027](0027-rest-raw-source-and-element-revisions.md) | REST 补尾的 Raw source / element revision、通道等价 precedence 与三跳 lineage（D-33） | Accepted（2026-09-25，Codex 依 Raphael 授权批准；复核 D3A-R1 `ed526f7` PASS，[审阅记录](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)）；D-33 方案 A 生效；尚待实施（D3B 起逐批） |
+| [0028](0028-dual-raw-canonical-lineage.md) | 双 Raw 通道进入 Canonical 的 revision 身份、三跳 lineage 与 precedence 映射（E0） | Proposed（2026-09-25，Claude E0 起草，待 Codex 复核；建议方案 B：lineage 进 Canonical 身份，PIT 从固定 Raw 证据 snapshot 一对一映射，不新增表、不改契约）；E1 未开放 |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
