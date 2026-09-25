@@ -153,6 +153,13 @@ D3A 设计门、D3B 纯基础、D3C 严格 decoder 与 D3D 可重放 collector �
 避免 collector 复制第二套解码逻辑）；D3E ← D3B + D3C + D3D。验收 #22（三跳 lineage 端到端）属批次 E / F。
 D3B～D3E 均触及身份、双时间、重放或 precedence 语义，由 Claude 执行、Codex 独立复核。
 
+#### D4（条件式 WebSocket）
+
+D4 门记录（`REVIEW_PENDING`，待 Codex 复核）：[2026-09-25 D4 live-tail 门](../reviews/2026-09-25-d4-live-tail-gate.md)。
+ADR-0022 的三项启用前置（历史 backfill、REST gap reconciliation、重放幂等）未全部验收，且没有已批准的实时消费者，
+因此 Phase 1 首切片**不启用** WebSocket live tail（#14 明确允许）；不写任何 WS 代码。下一批候选为 **E0-CANONICAL-DESIGN**
+（docs-only 双 Raw 通道进入 Canonical 的设计门），须待 Codex 验收 D3E 与本记录后开放。
+
 ## Phase 2 — Market State Engine
 
 - **目标**：定义并识别市场状态（趋势/震荡、波动率体制、流动性体制、资金费率体制等）。

@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3D 已验收；D3E（`21e31f5`）→ D3E-R1（`52f7477`）→ D3E-R2 均 REVIEW_PENDING
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3D 已验收；D3E（`21e31f5`）→ D3E-R1（`52f7477`）→ D3E-R2（`c326434`）与 D4 门记录均 REVIEW_PENDING
 
 ## 2. Current Architecture
 
@@ -47,7 +47,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Subphase：**D3E-R2 REVIEW_PENDING**；REST store / reconciler（`21e31f5`）→ R1 store 已存行核对（`52f7477`）→ R2 reconciler 比较前用共享核对器（`infrastructure/revision/row_integrity.py`）证明两侧每一行；均待 Codex 复核（D3D / D3D-R1 `61dd9bf` + `c06b9fa` 已验收）
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- D3E / D3E-R1 / D3E-R2 待复核；D4 / E 等 D3E 经 Codex 验收后另行开放；无 Codex 时 Claude 的提交只推 `wip/phase-<n>-unreviewed`，不推正式 `phase/<n>`
+- D3E / R1 / R2 待复核；D4 提案：Phase 1 首切片不启用 WebSocket live tail（ADR-0022 三项前置未全验收、无实时消费者；`docs/reviews/2026-09-25-d4-live-tail-gate.md`，待复核）；E0 等 Codex 验收 D3E 与 D4 后开放；无 Codex 时 Claude 的提交只推 `wip/phase-<n>-unreviewed`，不推正式 `phase/<n>`
 - Current Blocker：无架构阻塞。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
 - Next Milestone：Codex 对抗复核 D3E + D3E-R1，决定是否接受并开放 D4 / E
 
