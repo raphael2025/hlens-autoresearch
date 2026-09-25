@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import dataclasses
 from decimal import Decimal
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
+from core.contracts.revision import PointInTimeStatus
 from infrastructure.canonical.resample import ResampleError, resample_bars
 from infrastructure.pit.selector import PitSelector
 from tests.infrastructure.canonical import canonical_support as c
@@ -182,3 +184,58 @@ def test_a_bar_is_never_available_before_its_interval_ends(h: RestHarness) -> No
     [bar] = resample_bars(selection, 5, DAY_START, DAY_END)
     assert max(row["available_time"] for row in h.rows(c.BARS)) < bar.interval_end
     assert bar.available_time == bar.interval_end == utc(2023, 11, 14, 22, 20)
+
+
+# =========================================================================================
+# E1-R3: exact arithmetic (review B-4)
+# =========================================================================================
+
+
+def _synthetic(values: list[dict[str, Decimal]]) -> Any:
+    rows, selections = {}, []
+    for i, overrides in enumerate(values):
+        start = utc(2024, 3, 5, 0, i)
+        revision = f"crev1-{i}"
+        rows[revision] = {
+            "interval_start": start,
+            "symbol": "BTC-USDT",
+            "revision_id": revision,
+            "open": Decimal("68000"),
+            "high": Decimal("68100"),
+            "low": Decimal("67900"),
+            "close": Decimal("68050"),
+            "volume": Decimal("88000"),
+            "quote_volume": Decimal("6000000000.000000000000000001"),
+            "taker_buy_base_volume": Decimal("1"),
+            "taker_buy_quote_volume": Decimal("1"),
+            "trade_count": 10,
+            "available_time": utc(2024, 3, 5, 0, i + 2),
+            "knowledge_time": utc(2024, 3, 6),
+            **overrides,
+        }
+        selections.append(
+            SimpleNamespace(
+                observation_key=f"k{i}",
+                status=PointInTimeStatus.SELECTED,
+                selected_revision_id=revision,
+            )
+        )
+    return SimpleNamespace(
+        canonical_table=c.BARS.table,
+        conflicts=(),
+        selections=tuple(selections),
+        selected_rows=rows,
+    )
+
+
+def test_wide_decimal_sums_are_exact() -> None:
+    """Two lawful decimal(38,18) minutes whose sum has 29 significant digits."""
+    [bar] = resample_bars(_synthetic([{}, {}]), 2, utc(2024, 3, 5), utc(2024, 3, 6))
+    assert bar.quote_volume == Decimal("12000000000.000000000000000002")
+    assert bar.volume == Decimal("176000")
+
+
+def test_an_inexact_value_is_a_resample_error() -> None:
+    selection = _synthetic([{"volume": Decimal("0.0000000000000000001")}])
+    with pytest.raises(ResampleError, match="not exact"):
+        resample_bars(selection, 2, utc(2024, 3, 5), utc(2024, 3, 6))

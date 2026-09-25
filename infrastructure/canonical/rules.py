@@ -240,9 +240,14 @@ NORMALIZER_SPEC: Final[dict[str, Any]] = {
         "base": "reserved, never a row",
     },
     "batches": {
-        "id": "<normalizer>@<version>.<raw source revision id>.<unit rows:010d>.<index:08d>",
+        "id": "<normalizer>@<version>.<raw source revision id>.<unit rows:010d>.<chunk:06d>"
+        ".<index:08d>",
         "why_unit_rows": "a Raw unit that changed after normalization plans other ids and fails "
         "closed; a crash-recovery re-plan of the same unit reproduces them (ADR-0028 §6, E1-R1)",
+        "plan": "the committed ids are the plan (E1-R3): recovery and verification read unit rows "
+        "and chunk from them, never from configuration; batch i holds exactly planned rows "
+        "[i*chunk, (i+1)*chunk); committed indexes are a contiguous prefix; one plan per unit; "
+        "committed rows == the rows of the committed batches",
     },
 }
 NORMALIZER_HASH: Final = _digest(NORMALIZER_SPEC)

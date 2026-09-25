@@ -16,6 +16,7 @@ from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORTS
 from infrastructure.quality import reporter as q
 from infrastructure.quality.reporter import QualityReporter, QualityReportError
 from tests.infrastructure.canonical import canonical_support as c
+from tests.infrastructure.pit.test_selector import _chain
 from tests.infrastructure.revision import rest_store_support as ss
 from tests.infrastructure.revision.rest_store_support import (
     DAY,
@@ -166,6 +167,19 @@ def test_a_clock_before_what_it_describes_is_refused(h: RestHarness) -> None:
             "klines_1m", SYMBOL, DAY
         )
     assert h.rows(REPORTS) == []
+
+
+def test_a_clock_before_a_precedence_edge_it_relies_on_is_refused(h: RestHarness) -> None:
+    """Review C-2: every revision is known by 12-08, the archive->REST edge only on 12-10."""
+    _chain(h)
+    clock = StepClock(start=utc(2023, 12, 8))
+    with pytest.raises(QualityReportError, match="precedence edge"):
+        QualityReporter(h.adapter, h.storage, clock=clock).report("agg_trades", SYMBOL, DAY)
+    assert h.rows(REPORTS) == []
+    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_E)).report(
+        "agg_trades", SYMBOL, DAY
+    )
+    assert out.row["knowledge_time"] == K_E
 
 
 def test_bar_invariants_are_checked_without_thresholds() -> None:

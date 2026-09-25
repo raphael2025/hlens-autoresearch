@@ -145,7 +145,7 @@ __all__ = [
     "check_batch_snapshot",
     "check_block_base",
     "check_provenance_shape",
-    "indexed_batches",
+    "history_from",
     "element_batch_id",
     "element_columns",
     "response_batch_id",
@@ -319,11 +319,15 @@ def _indexed_batches(
     return found
 
 
-def indexed_batches(
-    adapter: RevisionCatalog, table: str, prefixes: Iterable[str]
-) -> dict[str, dict[int, list[SnapshotInfo]]]:
-    """Public form of ``_indexed_batches`` (Canonical verification, Phase 1 F1)."""
-    return _indexed_batches(adapter, table, prefixes)
+def history_from(
+    adapter: RevisionCatalog, table: str, snapshot_id: str | None
+) -> Iterable[SnapshotInfo]:
+    """``snapshot_id`` and its ancestors, newest first (a pinned head's history; none if None)."""
+    snapshot = None if snapshot_id is None else adapter.get_snapshot(table, snapshot_id)
+    while snapshot is not None:
+        yield snapshot
+        parent = snapshot.parent_snapshot_id
+        snapshot = None if parent is None else adapter.get_snapshot(table, parent)
 
 
 def check_batch_snapshot(

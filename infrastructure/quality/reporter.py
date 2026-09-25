@@ -215,16 +215,23 @@ class QualityReporter:
             now = self._clock()
             if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() != _ZERO:
                 raise QualityReportError("the clock must return timezone-aware UTC")
+            # Every fact the report describes — revisions and the mapped precedence edges that
+            # decide its heads — must be known by its knowledge_time (E1-R3 / review C-2).
             floor = max(
                 (
-                    r.availability.times.knowledge_time
-                    for rs in selection.records.values()
-                    for r in rs
+                    *(
+                        r.availability.times.knowledge_time
+                        for rs in selection.records.values()
+                        for r in rs
+                    ),
+                    *(e.knowledge_time for es in selection.edges.values() for e in es),
                 ),
                 default=None,
             )
             if floor is not None and now < floor:
-                raise QualityReportError("the report clock precedes a revision it describes")
+                raise QualityReportError(
+                    "the report clock precedes a revision or precedence edge it describes"
+                )
             row = self._row(body, now)
             try:
                 commit = self._commit(report_id, row)

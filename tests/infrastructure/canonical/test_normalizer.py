@@ -22,6 +22,7 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
     CanonicalNormalizeConflict,
     CanonicalNormalizeError,
+    unit_batch_id,
 )
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.revision import identity as archive_identity
@@ -528,14 +529,15 @@ def test_a_committed_batch_that_no_longer_reproduces_fails_closed(h: RestHarness
     row = sorted(h.rows(c.TRADES), key=lambda item: item["arrival_seq"])[1]
     h.delete_rows(c.TRADES, EqualTo("revision_id", row["revision_id"]))  # type: ignore[call-arg, arg-type]
     before = _state(h)
-    with pytest.raises(CatalogIntegrityError, match="partially committed"):
+    with pytest.raises(CatalogIntegrityError, match="rows deleted or added"):
         c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert _state(h) == before
 
 
 @pytest.mark.parametrize(
     ("microbatch_rows", "match"),
-    [(None, "only partially committed"), (1, "0 snapshots committing it")],
+    # E1-R3: the unit size recorded in the committed batch ids no longer matches the Raw unit.
+    [(None, "the Raw unit changed"), (1, "the Raw unit changed")],
 )
 def test_a_raw_unit_that_grows_after_normalization_fails_closed(
     h: RestHarness, microbatch_rows: int | None, match: str
@@ -563,6 +565,160 @@ def test_a_raw_unit_that_grows_after_normalization_fails_closed(
     with pytest.raises(CatalogIntegrityError, match=match):
         n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
     assert _state(h) == before
+
+
+# =========================================================================================
+# E1-R3: the committed batch ids are the plan (review B)
+# =========================================================================================
+
+
+def _unit_batches(h: RestHarness, source: str) -> list[tuple[str | None, int | None]]:
+    return [
+        (s.batch_id, s.added_rows)
+        for s in h.history(c.TRADES.table)
+        if s.batch_id is not None and source in s.batch_id
+    ]
+
+
+def _crash_partial(h: RestHarness, count: int, microbatch_rows: int) -> str:
+    items = ss.agg_items(count)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=c.TRADES.table))
+    with pytest.raises(Crash):
+        c.normalizer(
+            h, clock=StepClock(start=K_NORM), adapter=proxy, microbatch_rows=microbatch_rows
+        ).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    return archive
+
+
+@pytest.mark.parametrize("microbatch_rows", [None, 1, 2, 3])
+def test_recovery_follows_the_committed_plan_whatever_the_configuration(
+    h: RestHarness, microbatch_rows: int | None
+) -> None:
+    archive = _crash_partial(h, 5, 2)
+    assert len(h.rows(c.TRADES)) == 2
+    clock = StepClock(start=K_NORM + timedelta(hours=1))
+    out = c.normalizer(h, clock=clock, microbatch_rows=microbatch_rows).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert clock.calls == 0 and out.knowledge_time == K_NORM  # recovered, not re-read
+    assert _unit_batches(h, archive) == [
+        (unit_batch_id(archive, 5, 2, 0), 2),
+        (unit_batch_id(archive, 5, 2, 1), 2),
+        (unit_batch_id(archive, 5, 2, 2), 1),
+    ]
+    assert unit_batch_id(archive, 5, 2, 1).endswith(".0000000005.000002.00000001")
+    assert len(h.rows(c.TRADES)) == 5
+    verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert [row["revision_id"] for row in verified] == list(out.revision_ids)
+
+
+@pytest.mark.parametrize("delete", ["all", "one"])
+def test_batches_whose_rows_were_deleted_fail_closed_without_a_clock_reading(
+    h: RestHarness, delete: str
+) -> None:
+    archive, _, _ = _pair(h)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    rows = sorted(h.rows(c.TRADES), key=lambda item: item["arrival_seq"])
+    column, value = (
+        ("lineage_source_revision_id", archive)
+        if delete == "all"
+        else ("revision_id", rows[-1]["revision_id"])
+    )
+    h.delete_rows(c.TRADES, EqualTo(column, value))  # type: ignore[call-arg, arg-type]
+    match = "rows are gone" if delete == "all" else "rows deleted or added"
+    before = _state(h)
+    with pytest.raises(CatalogIntegrityError, match=match):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    clock = StepClock(start=K_NORM + timedelta(days=3))
+    with pytest.raises(CatalogIntegrityError, match=match):
+        c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert clock.calls == 0 and _state(h) == before
+
+
+def _forged_row(h: RestHarness, index: int) -> dict[str, Any]:
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    raw = sorted(h.rows(c.ARCHIVE_AGGS), key=lambda row: row["archive_line_number"])
+    return rules.canonical_row(channel, raw[index], base=0, ready_time=K_NORM)
+
+
+@pytest.mark.parametrize(
+    ("chunk", "match"),
+    [
+        (1, "more than one plan"),  # another microbatch size under the same unit
+        (3, "committed with other content"),  # the plan's own id, 1 row where 3 belong
+    ],
+)
+def test_a_batch_off_the_committed_plan_fails_closed(
+    h: RestHarness, chunk: int, match: str
+) -> None:
+    archive = _crash_partial(h, 7, 3)
+    h.forge_rows(c.TRADES, [_forged_row(h, 3)], unit_batch_id(archive, 7, chunk, 1))
+    before = _state(h)
+    with pytest.raises(CatalogIntegrityError, match=match):
+        c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(c.ARCHIVE_AGGS.table, archive)
+    for microbatch_rows in (1, 3, None):
+        clock = StepClock(start=K_NORM)
+        with pytest.raises(CatalogIntegrityError, match=match):
+            c.normalizer(h, clock=clock, microbatch_rows=microbatch_rows).normalize_unit(
+                c.ARCHIVE_AGGS.table, archive
+            )
+        assert clock.calls == 0
+    assert _state(h) == before
+
+
+@pytest.mark.parametrize(
+    "suffix", ["0000000007.000003", "7.000003.00000001", "0000000007.000003.0000000x"]
+)
+def test_a_malformed_batch_id_of_the_unit_fails_closed(h: RestHarness, suffix: str) -> None:
+    archive = _crash_partial(h, 7, 3)
+    prefix = unit_batch_id(archive, 7, 3, 0).rsplit(".", 3)[0]
+    h.forge_rows(c.TRADES, [_forged_row(h, 3)], f"{prefix}.{suffix}")
+    with pytest.raises(CatalogIntegrityError, match="malformed batch id"):
+        c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+
+
+def test_committed_rows_without_a_batch_fail_closed(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 1)
+    h.forge_rows(c.TRADES, [_forged_row(h, 0)], "not-a-normalizer-batch")
+    clock = StepClock(start=K_NORM)
+    with pytest.raises(CatalogIntegrityError, match="no committed batch"):
+        c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert clock.calls == 0
+
+
+def test_a_recovered_batch_committed_with_other_content_is_corruption(h: RestHarness) -> None:
+    """Every writer recovers the same plan, so a batch conflict then is never contention."""
+    archive = _crash_partial(h, 5, 2)
+    fired: list[bool] = []
+
+    def forge(request: CommitRequest) -> None:
+        if not fired:
+            fired.append(True)
+            h.forge_rows(c.TRADES, [_forged_row(h, 4)], request.batch_id)
+
+    clock = StepClock(start=K_NORM)
+    proxy = ProxyCatalog(h.adapter, before=forge)
+    with pytest.raises(CatalogIntegrityError, match="committed with other content"):
+        c.normalizer(h, clock=clock, adapter=proxy).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert clock.calls == 0 and fired
+
+
+def test_a_fresh_unit_raced_reads_the_clock_once(h: RestHarness) -> None:
+    archive, _, _ = _pair(h)
+    rival = c.normalizer(h, clock=StepClock(start=K_NORM + timedelta(minutes=1)))
+
+    def interleave(request: CommitRequest) -> None:
+        if not h.rows(c.TRADES):
+            rival.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+
+    clock = StepClock(start=K_NORM)
+    out = c.normalizer(h, clock=clock, adapter=ProxyCatalog(h.adapter, before=interleave))\
+        .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+    assert clock.calls == 1 and out.knowledge_time == K_NORM + timedelta(minutes=1)
 
 
 def test_a_clock_behind_raw_knowledge_or_naive_is_refused(h: RestHarness) -> None:

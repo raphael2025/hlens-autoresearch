@@ -250,3 +250,11 @@ Iceberg 已提交行与不可变 Raw，不用 journal 或可变 sidecar。
   原因：只含 `<index>` 时，崩溃后续跑与"Raw 单元在首次 normalize 后增长"无法区分，后者的新行若落入全新批次会被
   静默补全，违反 §6"Raw 单元变化即 fail closed"。加入单元行数后，同一 Raw 单元的续跑复现相同批次号，增长后的单元
   规划出不同批次号而 fail closed。格式随 normalizer 1.0.0 冻结在 `NORMALIZER_SPEC`；待 Codex / Raphael 确认此记录。
+- **E1-R3 批次计划**：batch id 再加一段 microbatch 大小：
+  `...<raw source revision id>.<unit rows:010d>.<chunk:06d>.<index:08d>`。已提交的批次号本身就是计划：崩溃续跑与
+  核对从批次号读出单元行数与批大小，不再依赖运行时配置（此前以不同 `microbatch_rows` 续跑会切出另一种批次形状）。
+  批次 `i` 必须恰为计划行 `[i*chunk, (i+1)*chunk)`（指纹与行数），已提交序号须为连续前缀，同一单元只允许一种计划，
+  已提交行必须恰为已提交批次的行；批次历史仍在而行被删除、Raw 单元行数与计划不符、批次号格式非法、有行无批次，
+  一律判为完整性错误且不读时钟。`BatchConflict`：尚无计划（新分配）时视为竞争，重读后采用对手的计划、不再读时钟；
+  已有计划时视为数据损坏。Canonical 行内容不变；`NORMALIZER_SPEC` 哈希随之变化，版本仍为 1.0.0（尚未产生
+  任何正式数据），待 Codex / Raphael 确认此记录。

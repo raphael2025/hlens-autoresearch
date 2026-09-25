@@ -13,7 +13,8 @@ because its selection can change inside the interval and a bar needs one revisio
 - ``complete`` is true only when every minute of the bucket is present — **nothing is filled or
   interpolated**; consumers decide what an incomplete bar may be used for;
 - OHLC: first present minute's open, last present minute's close, max high, min low; volumes,
-  quote volume, taker volumes and trade count are sums;
+  quote volume, taker volumes and trade count are sums, computed exactly (80-digit context,
+  inexact results refused);
 - times (ADR-0023 §3): ``available_time = max(bucket end, max constituent available_time)`` (a bar
   is not observable before its interval ends), ``knowledge_time = max constituent knowledge_time``;
 - ``content_sha256`` covers the bar's market content and constituent revision ids, so equal
@@ -26,7 +27,16 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from decimal import Decimal
+from decimal import (
+    Context,
+    Decimal,
+    DecimalException,
+    DivisionByZero,
+    Inexact,
+    InvalidOperation,
+    Overflow,
+    localcontext,
+)
 from typing import Any, Final
 
 from core.contracts.revision import PointInTimeStatus
@@ -44,6 +54,10 @@ _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _MINUTE: Final = timedelta(minutes=1)
 _MICRO: Final = timedelta(microseconds=1)
 _SCALE: Final = Decimal("0.000000000000000001")
+# decimal(38,18) inputs, at most 1440 per bar: sums need <= 42 significant digits. Every
+# arithmetic step runs exactly in this context (E1-R3): an inexact result is an error, never a
+# silently rounded bar.
+_EXACT: Final = Context(prec=80, traps=[Inexact, InvalidOperation, Overflow, DivisionByZero])
 RESAMPLE_ID: Final = "hlens.canonical.resample"
 RESAMPLE_VERSION: Final = "1.0.0"
 RESAMPLE_SPEC: Final[dict[str, Any]] = {
@@ -132,7 +146,11 @@ def resample_bars(
     for row in rows:
         offset = (row["interval_start"] - _EPOCH) // period
         buckets.setdefault(_EPOCH + offset * period, []).append(row)
-    bars = [_bar(bucket, period, minutes, members) for bucket, members in buckets.items()]
+    try:
+        with localcontext(_EXACT):
+            bars = [_bar(bucket, period, minutes, members) for bucket, members in buckets.items()]
+    except (DecimalException, TypeError) as exc:
+        raise ResampleError(f"bar arithmetic is not exact: {type(exc).__name__}") from None
     return tuple(sorted(bars, key=lambda bar: bar.interval_start))
 
 
