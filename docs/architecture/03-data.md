@@ -225,7 +225,8 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
   质量证据缺口表（QG-1）。REST 响应字节同样以不可变对象存于 warehouse（内容寻址 key），由
   `raw.binance_spot_rest_responses` 引用。
 - Iceberg namespace 是存储命名，不改变契约的 `Zone` 枚举；`quality` 与 manifest 表是审计 / 元数据表，由 manifest 契约引用。
-  物化 Research Dataset 表的命名随 PIT 实施批次提出，不在本清单内。
+  物化 Research Dataset 表的命名随 PIT 实施批次提出，不在本清单内。F3 的提议形状见 `infrastructure/dataset/selection.py`（每行引用一个选中的 Canonical revision 及其生效 simulation 区间，
+  不复制 payload）；表名与登记**待批准**，在此之前生产环境不能物化 Research Dataset。
 - **分区演进**需要该表新的 partition-spec 版本与新旧 spec 查询结果的等价测试，**不是**契约变化。
 
 ### 7.2 PyIceberg 写入约束
@@ -261,6 +262,8 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 | Availability policy | `binance.spot.exchange-info-publication@1.0.0` | 快照与由其推导的 listing revision 一律 `available_time = ingest_time` + 证据缺口（listing 缺口写明 observed-from 下界）（ADR-0029 §1 / §2） |
 | Listing 推导（parser role） | `binance.spot.listing-status@1.0.0` | `TRADING` → listed；`HALT` / `BREAK` / `END_OF_DAY` / `CANCEL_ONLY` → suspended（观察时刻关闭区间）；其它状态、缺失 symbol、base / quote 不符 → 不推断、universe fail closed；永不产生 `delisted`；`tradable_from` = 首次观察到 `TRADING` 的 `retrieved_at`；只在映射状态变化时追加 revision；lineage 两跳均为观察快照（ADR-0029 §2） |
 | Precedence policy | `binance.spot.listing-observation@1.0.0` | 同一来源、同一 episode：推导链中后一条 supersede 前一条，观察时刻（`retrieved_at`）严格递增，证据为两次快照的 `retrieved_at` 与 revision id；同一时刻两份快照不可排序（fail closed）；不用 `arrival_seq`（ADR-0029 §2） |
+| Quality rule | `hlens.quality.listing-history@1.0.0` | listing 历史一行报告：输入快照（listing + exchangeInfo 表）、E2 推导发现作为质量事件、全部 listing revision 的证据缺口；无阈值（Phase 1 F2 / F3，待确认） |
+| Dataset rule | `hlens.dataset.pit-selection@1.0.0` | Research Dataset 的组装：绑定全部已登记、证据表有快照即须绑定；F2 universe；按成员与切片（成交 1 小时、K 线 1 天）做 PIT 选择、任一冲突 fail closed、按成员区间门控；覆盖分区与 listing 的质量报告须恰在绑定 snapshot 上已存在并复算；空选择拒绝（Phase 1 F3，待确认） |
 | Universe spec | `binance.spot.btc-eth@1.0.0` + content hash | 首切片 `UniverseSelectionSpec`：`BTCUSDT`、`ETHUSDT` spot 的 listing episode；按 ADR-0024 绑定 |
 
 **标识符冻结 ≠ 数据可信**：availability 与 precedence policy 的来源证据仍须由实施批次产出、审阅并有测试。
@@ -293,6 +296,11 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 已登记且带证据的版本，或 `supersedes` 边引用的 precedence 证据缺失；所需时间范围内缺少 universe listing 历史；manifest 任一绑定项缺失。
 单行 availability 证据缺口不在此列：该行按 §4.2 保守计算并记入 manifest（契约为 `AvailabilityEvidenceGap`，须引用 manifest 所列质量报告）。
 competing head 不是 universe 排除原因：它使构建 fail closed，不产生 manifest。
+
+F2 / F3 实现要点（`infrastructure/universe/`、`infrastructure/dataset/`）：universe spec 的 symbols 是 venue 原生 symbol；
+早于首次本机观察的 simulation 使构建 fail closed（ADR-0029 §3），不是排除；暂停 = `not_tradable` 排除，历史保留；
+带 filter 的 spec 在有 PIT 指标输入之前一律拒绝。数据集只收成员区间内的选择；质量报告由数据集构建**要求**而非生成
+（报告须描述恰为绑定的 snapshot，生成于构建时的报告无法被已固定的质量表 snapshot 绑定）。
 
 ### 7.6 REST 补尾设计摘要（[ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md)，Accepted 2026-09-25）
 
