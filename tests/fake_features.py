@@ -152,15 +152,20 @@ class LatestValueProvider(_Base):
                 continue
             last = max(source, key=lambda item: item.event_time)
             # The reported input is always taken from the honest visible set, so a faulty
-            # ``_source`` is caught by what the value does, not by the bookkeeping.
+            # ``_source`` is caught by what the value does, not by the bookkeeping. With nothing
+            # honestly visible even a faulty variant answers None: a value from zero inputs is
+            # refused by the contract itself (F4-R1), which would hide the fault being tested.
             visible = request.visible_at(at, spec.available_lag)
-            honest = max(visible, key=lambda item: item.event_time) if visible else None
+            if not visible:
+                out.append(self._none(at))
+                continue
+            honest = max(visible, key=lambda item: item.event_time)
             out.append(
                 FeatureValue(
                     evaluation_time=at,
                     value=self._decorate(last.values["x"], at),
-                    inputs_used=0 if honest is None else 1,
-                    latest_input_available_time=None if honest is None else honest.available_time,
+                    inputs_used=1,
+                    latest_input_available_time=honest.available_time,
                 )
             )
         return out

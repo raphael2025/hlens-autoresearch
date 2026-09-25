@@ -364,3 +364,15 @@ def test_the_runner_imports_no_plugin_or_research_code() -> None:
     assert found
     for path, roots in found.items():
         assert not roots & {"plugins", "research", "apps"}, path
+
+
+@pytest.mark.parametrize("text", ["NaN", "nan", "Infinity", "-Infinity", "inf", " sNaN "])
+def test_non_finite_numeric_text_is_not_an_observation_value(text: str) -> None:
+    """F4-R1 (cursor review 5): NaN / Infinity must not enter as strings either."""
+    from core.contracts.feature import _observation_scalar
+
+    class _Info:
+        mode = "python"
+
+    with pytest.raises(ValueError, match="非有限"):
+        _observation_scalar(text, _Info())  # type: ignore[arg-type]

@@ -23,9 +23,6 @@ Pure: no catalog, no clock, no randomness.
 
 from __future__ import annotations
 
-from bisect import bisect_right
-from datetime import datetime
-
 from pydantic import ValidationError
 
 from core.contracts.feature import (
@@ -75,7 +72,7 @@ def _answer(
 def run_feature(
     provider: FeatureProvider, spec: FeatureSpec, request: FeatureRequest
 ) -> FeatureResult:
-    """Answer ``request`` for ``spec`` with ``provider``, one truncated sub-request at a time."""
+    """Answer ``request`` for ``spec`` with ``provider``: one truncated sub-request per time."""
     if not isinstance(spec, FeatureSpec) or not isinstance(request, FeatureRequest):
         raise FeatureRunnerError("run_feature needs a FeatureSpec and a FeatureRequest")
     if not spec.deterministic:
@@ -88,24 +85,17 @@ def run_feature(
         raise UnsupportedFeature(f"{descriptor.plugin_key} does not declare {spec.ref}")
 
     lag = spec.available_lag
-    horizons = [item.available_time + lag for item in request.observations]  # ascending
-    groups: list[tuple[int, list[datetime]]] = []
-    for at in request.evaluation_times:
-        prefix = bisect_right(horizons, at)  # observations with available_time + lag <= at
-        if groups and groups[-1][0] == prefix:
-            groups[-1][1].append(at)
-        else:
-            groups.append((prefix, [at]))
-
     values: list[FeatureValue] = []
-    for _, times in groups:
+    # One evaluation time per call (F4-R1): a provider can never let one time's value depend on
+    # which other times it was asked about; each call sees only that time's visible prefix.
+    for at in request.evaluation_times:
         sub = FeatureRequest(
             feature=request.feature,
             spec_hash=request.spec_hash,
             manifest_content_hash=request.manifest_content_hash,
             knowledge_cutoff=request.knowledge_cutoff,
-            evaluation_times=tuple(times),
-            observations=request.visible_at(times[-1], lag),
+            evaluation_times=(at,),
+            observations=request.visible_at(at, lag),
         )
         values.extend(_answer(provider, descriptor, spec, sub))
 

@@ -78,14 +78,16 @@ def test_the_provider_only_ever_sees_the_visible_set() -> None:
         assert len(keys) == len(set(keys))
 
 
-def test_one_call_per_distinct_visible_set() -> None:
+def test_one_call_per_evaluation_time() -> None:
+    """F4-R1: each call answers exactly one time over that time's visible prefix, so no value
+    can depend on which other times were asked about."""
     spy = Spy((SPEC,))
-    run_feature(spy, SPEC, _request())
-    sets = [
-        tuple((item.observation_key, item.available_time) for item in sub.observations)
-        for sub in spy.seen
-    ]
-    assert len(sets) == len(set(sets))  # consecutive times with one visible set share a call
+    request = _request()
+    run_feature(spy, SPEC, request)
+    assert [sub.evaluation_times for sub in spy.seen] == [(t,) for t in request.evaluation_times]
+    for sub in spy.seen:
+        [at] = sub.evaluation_times
+        assert sub.observations == request.visible_at(at, SPEC.available_lag)
 
 
 @pytest.mark.parametrize("provider", [LatestValueProvider, RunningCountProvider])

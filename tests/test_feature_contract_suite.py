@@ -148,7 +148,24 @@ def test_every_kill_uses_a_published_suite_check() -> None:
 
 
 #: Variants whose single fault shows in every compute, so no basic check can pass them.
-_BROKEN_EVERYWHERE = {"forged-result-hash", "nan-value", "drifting-descriptor"}
+#: zero-fill joined them with F4-R1: a value computed from zero inputs is now refused by
+#: ``FeatureValue`` itself, so such a provider cannot even produce a result.
+_BROKEN_EVERYWHERE = {"forged-result-hash", "nan-value", "drifting-descriptor", "zero-fill"}
+
+
+def test_a_value_from_zero_inputs_cannot_be_built() -> None:
+    """F4-R1 (cursor review 1/2): filling is refused by the contract, not only by the suite."""
+    from datetime import UTC, datetime
+    from decimal import Decimal
+
+    from pydantic import ValidationError
+
+    from core.contracts.feature import FeatureValue
+
+    at = datetime(2024, 3, 1, 12, tzinfo=UTC)
+    with pytest.raises(ValidationError, match="value 必须为 None"):
+        FeatureValue(evaluation_time=at, value=Decimal(0), inputs_used=0)
+    assert FeatureValue(evaluation_time=at, value=None, inputs_used=0).value is None
 
 
 @pytest.mark.parametrize(

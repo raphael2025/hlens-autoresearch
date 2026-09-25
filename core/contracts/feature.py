@@ -104,6 +104,14 @@ def _finite_decimal(text: str) -> Decimal | None:
     return parsed if parsed.is_finite() else None
 
 
+def _non_finite_text(text: str) -> bool:
+    """文本能被解析为 NaN / ±Infinity（F4-R1：不得以字符串形式绕过有限数规则）。"""
+    try:
+        return not Decimal(text.strip()).is_finite()
+    except (InvalidOperation, ValueError):
+        return False
+
+
 def _observation_scalar(value: object, info: ValidationInfo) -> object:
     """观察值：拒绝浮点；可解析为有限十进制数的文本只能是 `Decimal`。
 
@@ -118,6 +126,8 @@ def _observation_scalar(value: object, info: ValidationInfo) -> object:
             if info.mode == "json":
                 return parsed
             raise ValueError(f"数值文本 {value!r} 必须以 Decimal 传入，不得作为字符串值")
+        if _non_finite_text(value):
+            raise ValueError(f"非有限数值文本 {value!r} 不得作为观察值（ADR-0013）")
     return value
 
 
@@ -249,7 +259,8 @@ class FeatureValue(Contract):
     """一个评估时刻的特征值。
 
     - `value`：必填；`None` 表示显式"不可计算"（历史不足等），不填补；
-    - `inputs_used`：计算该值实际使用的观察条数；为 0 当且仅当 `latest_input_available_time` 为空；
+    - `inputs_used`：计算该值实际使用的观察条数；为 0 当且仅当 `latest_input_available_time` 为空，
+      且此时 `value` 必须为 `None`（零输入的值只能是填补）；
     - `latest_input_available_time`：所用观察中最大的 `available_time`，不晚于 `evaluation_time`
       （带 `available_lag` 的完整约束由 `FeatureResult.check_answers` 检查）。
     """
@@ -263,6 +274,9 @@ class FeatureValue(Contract):
     def _input_invariants(self) -> FeatureValue:
         if (self.inputs_used == 0) != (self.latest_input_available_time is None):
             raise ValueError("inputs_used 为 0 当且仅当 latest_input_available_time 为空")
+        if self.inputs_used == 0 and self.value is not None:
+            # 没有用到任何输入的值只能是填补（F4-R1）：显式"不可计算"，不填 0。
+            raise ValueError("inputs_used 为 0 时 value 必须为 None（不填补）")
         if (
             self.latest_input_available_time is not None
             and self.latest_input_available_time > self.evaluation_time
