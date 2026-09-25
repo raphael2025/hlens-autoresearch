@@ -365,6 +365,7 @@ class _Pinned:
 
 @dataclass(frozen=True, slots=True)
 class _Plan:
+    partition: tuple[str, str, date]
     pinned: _Pinned
     comparisons: tuple[ChannelComparison, ...]
     findings: tuple[ChannelFinding, ...]
@@ -532,6 +533,7 @@ class ChannelReconciler:
             if comparison.outcome is ComparisonOutcome.EQUAL
         }
         existing = self._existing_edges(pinned.evidence_rows, equal)
+        self._verify_edge_provenance(data_type, symbol, day, pinned)
         missing = tuple(equal[edge_id] for edge_id in sorted(set(equal) - set(existing)))
         frozen_records = {
             key: (tuple(pair[0]), tuple(pair[1])) for key, pair in sorted(records.items())
@@ -548,6 +550,7 @@ class ChannelReconciler:
                 ),
             )
         return _Plan(
+            partition=(data_type, symbol, day),
             pinned=pinned,
             comparisons=tuple(comparisons),
             findings=tuple(findings),
@@ -596,6 +599,73 @@ class ChannelReconciler:
             raise CatalogIntegrityError(
                 f"{channel.value} row {row['revision_id']} cannot be compared: {exc}"
             ) from None
+
+    def _verify_edge_provenance(
+        self, data_type: str, symbol: str, day: date, pinned: _Pinned
+    ) -> None:
+        """Every committed edge row of the partition is exactly what an edge batch committed.
+
+        D3E-R3: an edge row is not a free input either. Each of this partition's edge batch
+        snapshots (id prefix ``<policy>@<version>.edges.<data type>.<symbol>.<day>.``) is
+        re-read by time travel — rows at the snapshot minus rows at its parent — and must match
+        its committed row count, content-derived id and fingerprint. The partition's current edge
+        rows must then be exactly those committed rows: a row no edge batch committed (forged or
+        re-committed with another ``knowledge_time``) or a committed row that is gone fails
+        closed.
+        """
+        definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+        head = pinned.evidence_snapshot
+        keys = sorted({row["observation_key"] for row in pinned.rest_rows})
+        prefix = _edge_batch_prefix((data_type, symbol, day))
+        committed: dict[str, Mapping[str, Any]] = {}
+        snapshot_id = head
+        while snapshot_id is not None:
+            snapshot = self._adapter.get_snapshot(EVIDENCE_TABLE, snapshot_id)
+            parent = snapshot.parent_snapshot_id
+            if snapshot.batch_id is not None and snapshot.batch_id.startswith(prefix):
+                after = self._rows_at(keys, snapshot.snapshot_id)
+                before = {} if parent is None else self._rows_at(keys, parent)
+                added = {edge_id: row for edge_id, row in after.items() if edge_id not in before}
+                ordered = [added[edge_id] for edge_id in sorted(added)]
+                table = pa.Table.from_pylist(
+                    [dict(row) for row in ordered], schema=definition.arrow_schema
+                )
+                if (
+                    len(ordered) != snapshot.added_rows
+                    or snapshot.batch_id != _edge_batch_id((data_type, symbol, day), added)
+                    or snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(table)
+                ):
+                    raise CatalogIntegrityError(
+                        f"edge batch {snapshot.batch_id} no longer reproduces from its snapshot"
+                    )
+                for edge_id, row in added.items():
+                    if edge_id in committed:
+                        raise CatalogIntegrityError(f"evidence edge {edge_id} is committed twice")
+                    committed[edge_id] = row
+            snapshot_id = parent
+        current = {row["edge_id"]: row for row in pinned.evidence_rows}
+        for edge_id, row in current.items():
+            if committed.get(edge_id) != row:
+                raise CatalogIntegrityError(
+                    f"evidence edge {edge_id} is not exactly what an edge batch of this "
+                    "partition committed"
+                )
+        missing = sorted(set(committed) - set(current))
+        if missing:
+            raise CatalogIntegrityError(f"committed evidence edge {missing[0]} is gone")
+
+    def _rows_at(self, keys: Sequence[str], snapshot_id: str) -> dict[str, Mapping[str, Any]]:
+        columns = tuple(field.name for field in BINANCE_SPOT_PRECEDENCE_EVIDENCE.arrow_schema)
+        rows: dict[str, Mapping[str, Any]] = {}
+        for offset in range(0, len(keys), _KEY_CHUNK):
+            for row in self._adapter.scan_columns(
+                EVIDENCE_TABLE,
+                columns=columns,
+                row_filter=_member("observation_key", keys[offset : offset + _KEY_CHUNK]),
+                snapshot_id=snapshot_id,
+            ).to_pylist():
+                rows[row["edge_id"]] = row
+        return rows
 
     def _existing_edges(
         self,
@@ -697,7 +767,7 @@ class ChannelReconciler:
             )
             request = CommitRequest(
                 table=EVIDENCE_TABLE,
-                batch_id=_edge_batch_id(edge.edge_id for edge in chunk),
+                batch_id=_edge_batch_id(plan.partition, (edge.edge_id for edge in chunk)),
                 batch_fingerprint=definition.fingerprint_rule.fingerprint(batch),
                 row_count=len(chunk),
                 expected_parent_snapshot_id=parent,
@@ -845,11 +915,17 @@ def _edge_id(comparison: ChannelComparison) -> str:
     )
 
 
-def _edge_batch_id(edge_ids: Iterable[str]) -> str:
+def _edge_batch_prefix(partition: tuple[str, str, date]) -> str:
+    """Batch ids of one partition's edges share this prefix (D3E-R3: provenance is findable)."""
+    data_type, symbol, day = partition
+    policy = DELIVERY_CHANNEL_BINDING
+    return f"{policy.policy_id}@{policy.version}.edges.{data_type}.{symbol}.{day.isoformat()}."
+
+
+def _edge_batch_id(partition: tuple[str, str, date], edge_ids: Iterable[str]) -> str:
     """Content-derived batch id: the same missing edge set always maps to the same batch."""
     digest = hashlib.sha256("\n".join(sorted(edge_ids)).encode("utf-8")).hexdigest()
-    policy = DELIVERY_CHANNEL_BINDING
-    return f"{policy.policy_id}@{policy.version}.edges.{digest}"
+    return f"{_edge_batch_prefix(partition)}{digest}"
 
 
 def _normalised_row(edge: ChannelEdge) -> Mapping[str, Any]:

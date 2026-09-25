@@ -292,3 +292,15 @@ def test_an_unbound_raw_table_makes_its_canonical_rows_unprovable(h: RestHarness
     _chain(h)
     with pytest.raises(CatalogIntegrityError, match="no Raw element revision"):
         _select(h, _spec(h, cutoff=FAR, skip=(c.REST_AGGS.table,)))
+
+
+def test_r3_a_recommitted_earlier_edge_cannot_change_a_selection(h: RestHarness) -> None:
+    """Review C-1: before D3E-R3 this turned the honest conflict at 12-08 into a selection."""
+    _chain(h)
+    cutoff = utc(2023, 12, 8)
+    assert _select(h, _spec(h, cutoff=cutoff)).conflicts == (KEY,)
+    [edge] = h.rows(c.EVIDENCE)
+    h.delete_rows(c.EVIDENCE, EqualTo("edge_id", edge["edge_id"]))  # type: ignore[call-arg, arg-type]
+    h.forge_rows(c.EVIDENCE, [dict(edge, knowledge_time=K_R)], "forged-edge")
+    with pytest.raises(CatalogIntegrityError, match="not exactly what an edge batch"):
+        _select(h, _spec(h, cutoff=cutoff))

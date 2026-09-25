@@ -84,9 +84,8 @@ from core.contracts.catalog import (
     SnapshotInfo,
     TableNotFound,
 )
-from core.contracts.collector import CollectionRequest, CollectionResult, UnsupportedRequest
-from core.contracts.storage import IntegrityViolation, StorageAdapter, StorageError
-from core.domain.base import canonical_json
+from core.contracts.collector import CollectionRequest, CollectionResult
+from core.contracts.storage import StorageAdapter, StorageError
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -109,12 +108,18 @@ from infrastructure.revision.row_integrity import (
     ELEMENT_NATIVE_COLUMNS,
     PROVENANCE_COLUMNS,
     REJECTED,
+    CheckpointConflict,
+    CheckpointMissing,
+    CommittedCheckpointError,
     PersistedRowVerifier,
     check_batch_snapshot,
     check_block_base,
     check_provenance_shape,
+    checkpoint_reader,
     element_batch_id,
     element_columns,
+    load_committed_collection,
+    page_provenance,
     response_batch_id,
     response_columns,
     snapshots_of_batches,
@@ -365,19 +370,7 @@ class RestRevisionStore:
         try:
             # The accepted D3D checkpoint reader. Its only transport refuses every request and
             # no collect path is ever called: the store re-verifies, it never fetches.
-            self._reader = d3d.BinanceSpotRestCollector(
-                storage,
-                market_data_base_url=market_data_base_url,
-                http_connect_timeout_seconds=1.0,
-                http_read_timeout_seconds=1.0,
-                http_max_retries=0,
-                http_user_agent="hlens-d3e-checkpoint-reader/1.0.0",
-                max_pages_per_collect=d3d.MIN_PAGES_PER_COLLECT,
-                min_request_interval_ms=d3d.MIN_REQUEST_INTERVAL_MS,
-                max_retry_after_seconds=d3d.MIN_RETRY_AFTER_SECONDS,
-                max_response_bytes=d3d.MAX_RESPONSE_BYTES,
-                http_transport=httpx.MockTransport(_refuse_network),
-            )
+            self._reader = checkpoint_reader(storage, market_data_base_url)
         except ValueError as exc:
             raise RestRevisionStoreError(f"invalid market-data origin: {exc}") from None
         self._origin = self._reader.descriptor.network_origins[0]
@@ -422,72 +415,25 @@ class RestRevisionStore:
     # ------------------------------------------------------------------ c3: committed checkpoint
 
     def _load_collection(self, request: CollectionRequest) -> _Collection:
-        """The committed collection checkpoint, re-verified field for field (never fetched)."""
-        reader = self._reader
+        """The committed collection checkpoint, re-verified field for field (never fetched).
+
+        The one checkpoint path shared with the persisted-row verifier (D3E-R3).
+        """
         try:
-            start_ms, end_ms = reader._validate_request(request)
-        except UnsupportedRequest as exc:
-            raise RestRevisionStoreError(f"not a REST collection request: {exc}") from None
-        fingerprint = d3d._request_fingerprint(request)
-        root = f"{d3d.CHECKPOINT_PREFIX}/{d3d._sha256_hex(request.request_id.encode('utf-8'))}"
-        key = f"{root}/collection.json"
-        try:
-            payload = reader._read_object(key)
-            if payload is None:
-                raise RestRevisionStoreError(
-                    f"request {request.request_id!r} has no committed collection checkpoint "
-                    "(c3): the store only persists finished attempts and never collects"
-                )
-            document = d3d._parse_checkpoint(payload, d3d.COLLECTION_CHECKPOINT_KIND)
-            if d3d._mapping_field(document, "request") != fingerprint:
-                raise RestRevisionStoreConflict(
-                    f"request {request.request_id!r} is committed with different request content"
-                )
-            chains = reader._verify_chains(key, document, fingerprint, request, start_ms, end_ms)
-            if not chains:
-                raise d3d._CheckpointInvalid(f"{key!r} records no chain at all")
-            outcome = d3d._str_field(document, "outcome")
-            result: CollectionResult | None
-            if outcome == "failed":
-                failure = d3d._mapping_field(document, "failure")
-                reader._check_failure_shape(failure, chains)
-                result = None
-                rebuilt = d3d._collection_document(
-                    fingerprint, chains, result=None, failure=dict(failure)
-                )
-            elif outcome == "succeeded":
-                if [symbol for symbol, _ in chains] != list(request.symbols):
-                    raise d3d._CheckpointInvalid(f"{key!r} succeeds without every symbol")
-                for symbol, records in chains:
-                    last = records[-1]
-                    if last.rejection is not None or last.summary.stop_reason is None:
-                        raise d3d._CheckpointInvalid(f"{key!r} has an unterminated {symbol} chain")
-                result = reader._assemble(request, start_ms, end_ms, chains)
-                rebuilt = d3d._collection_document(fingerprint, chains, result=result, failure=None)
-            else:
-                raise d3d._CheckpointInvalid(f"{key!r} carries an unknown outcome")
-            if canonical_json(rebuilt).encode("utf-8") != payload:
-                raise d3d._CheckpointInvalid(f"{key!r} does not reproduce field for field")
-        except d3d._CheckpointInvalid as exc:
-            raise RestCheckpointIntegrityError(
-                f"committed checkpoint does not reproduce: {exc}"
-            ) from None
-        except IntegrityViolation as exc:
-            raise RestCheckpointIntegrityError(
-                f"a committed object does not match its reference: {exc}"
-            ) from None
+            loaded = load_committed_collection(self._reader, request)
+        except CheckpointMissing as exc:
+            raise RestRevisionStoreError(str(exc)) from None
+        except CheckpointConflict as exc:
+            raise RestRevisionStoreConflict(str(exc)) from None
+        except CommittedCheckpointError as exc:
+            raise RestCheckpointIntegrityError(str(exc)) from None
         except StorageError as exc:
             raise RestRevisionStoreError(f"storage failure: {exc}") from exc
-        except ValueError as exc:
-            # A malformed committed reference (e.g. an ``ObjectRef`` that no longer validates).
-            raise RestCheckpointIntegrityError(
-                f"committed checkpoint does not validate: {exc}"
-            ) from None
         return _Collection(
-            request=request,
-            outcome=outcome,
-            result=result,
-            chains=tuple((symbol, tuple(records)) for symbol, records in chains),
+            request=loaded.request,
+            outcome=loaded.outcome,
+            result=loaded.result,
+            chains=loaded.chains,
         )
 
     # ------------------------------------------------------------------ one page
@@ -705,40 +651,10 @@ class RestRevisionStore:
         """The response row of ``page``; ``provenance`` substitutes another first delivery."""
         query = page.query
         if provenance is None:
-            outcome = page.outcome
-            if isinstance(outcome, RestPageRejection):
-                decoded: dict[str, Any] = {
-                    "decode_outcome": _REJECTED,
-                    "decode_rejection_code": outcome.code.value,
-                    "element_count": None,
-                    "answered_start": None,
-                    "answered_end": None,
-                }
-            else:
-                summary = outcome.summary
-                if summary.element_count != len(outcome.elements):
-                    raise RestRevisionStoreError("page summary does not count its elements")
-                answered = summary.answered
-                decoded = {
-                    "decode_outcome": _ACCEPTED,
-                    "decode_rejection_code": None,
-                    "element_count": summary.element_count,
-                    "answered_start": None if answered.is_empty else _at_ms(answered.start_ms),
-                    "answered_end": None if answered.is_empty else _at_ms(answered.end_ms),
-                }
-            provenance = {
-                "collector_id": d3d.REST_COLLECTOR_ID,
-                "collector_version": d3d.REST_COLLECTOR_VERSION,
-                "collection_request_id": request.request_id,
-                "page_index": page.page_index,
-                "requested_at": page.requested_at,
-                "retrieved_at": page.retrieved_at,
-                "source_metadata": [
-                    {"name": name, "value": page.http_metadata[name]}
-                    for name in sorted(page.http_metadata)
-                ],
-                **decoded,
-            }
+            try:
+                provenance = page_provenance(request, page)
+            except CommittedCheckpointError as exc:
+                raise RestRevisionStoreError(str(exc)) from None
         else:
             check_provenance_shape(provenance)
         return response_columns(

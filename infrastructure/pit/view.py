@@ -64,7 +64,14 @@ class PinnedCatalogView:
         columns: Sequence[str],
         row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
         limit: int | None = None,
+        snapshot_id: str | None = None,
     ) -> pa.Table:
+        if snapshot_id is not None:
+            # An explicit historical snapshot (e.g. an edge batch's own commit): immutable, so
+            # the read is reproducible whatever the bindings say.
+            return self._adapter.scan_columns(
+                table, columns=columns, row_filter=row_filter, limit=limit, snapshot_id=snapshot_id
+            )
         bound = self._bindings.get(table)
         if bound is None:
             # Unbound = empty, with the table's real column types.

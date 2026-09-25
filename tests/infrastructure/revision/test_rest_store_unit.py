@@ -851,11 +851,11 @@ def test_a_duplicated_element_revision_or_arrival_number_fails_closed(
             {"knowledge_time": K1 + timedelta(hours=1)},
             r"does not inherit its lineage response .*\['knowledge_time'\]",
         ),
-        # Lawful under its lineage (index 2 of 3, arrival base + 3) but not where the re-decoded
-        # page puts this element: only the owned re-decode comparison can see it.
+        # Lawful under its lineage (index 2 of 3, arrival base + 3) but not where the page's
+        # body puts this element: since D3E-R3 the verifier's body binding sees it first.
         (
             {"element_index": 2, "arrival_seq": BASE + 3},
-            r"disagrees with its re-decoded element: \['arrival_seq', 'element_index'\]",
+            r"is not element 2 of its lineage response's body",
         ),
     ],
 )

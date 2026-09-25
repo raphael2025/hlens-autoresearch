@@ -110,8 +110,11 @@ class ProxyCatalog:
         columns: Sequence[str],
         row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
         limit: int | None = None,
+        snapshot_id: str | None = None,
     ) -> pa.Table:
-        return self.inner.scan_columns(table, columns=columns, row_filter=row_filter, limit=limit)
+        return self.inner.scan_columns(
+            table, columns=columns, row_filter=row_filter, limit=limit, snapshot_id=snapshot_id
+        )
 
     def max_int64(
         self,

@@ -19,6 +19,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any
 
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from pyiceberg.expressions import EqualTo
 
@@ -41,8 +42,10 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_REST_KLINES_1M,
     BINANCE_SPOT_REST_RESPONSES,
 )
+from infrastructure.parser.binance_archive import AGG_TRADES_ROW_SCHEMA, time_unit_for
 from infrastructure.revision import channel_reconcile, rest_identity
 from infrastructure.revision import identity as archive_identity
+from infrastructure.revision.availability import AVAILABILITY_BINDING, AvailabilitySubject
 from infrastructure.revision.channel_precedence import (
     AGG_TRADE_PROJECTION,
     DELIVERY_CHANNEL_BINDING,
@@ -68,6 +71,12 @@ from infrastructure.revision.channel_reconcile import (
 )
 from infrastructure.revision.precedence import maximal_heads
 from infrastructure.revision.rest_availability import RestAvailabilitySubject
+from infrastructure.revision.row_integrity import (
+    ELEMENT_NATIVE_COLUMNS,
+    element_batch_id,
+    element_columns,
+)
+from infrastructure.revision.store import _row_batch, _row_batch_id, _row_records, _times_from_row
 from tests.infrastructure.catalog.phase1_support import rest_record
 from tests.infrastructure.collector import rest_support as cs
 from tests.infrastructure.revision import rest_store_support as ss
@@ -976,10 +985,12 @@ def _pair(h: RestHarness, count: int = 1) -> list[dict[str, Any]]:
 #: dropped REST element leaves its lineage one row short of its batches; a dropped archive row
 #: leaves its (bounded, re-read) row batch without the committed content.
 _BATCH_TAMPER = {
-    ("element", "renatived"): "committed with other content",
+    # D3E-R3: the body binding catches a swapped element before its batch fingerprint does.
+    ("element", "renatived"): r"is not element 1 of its lineage response's body: \['quantity'\]",
     ("element", "dropped"): r"has 2 element row\(s\) but its element batches committed 3",
     ("element", "added"): "arrival_seq .* is not unique",
-    ("row", "renatived"): "committed with other content",
+    # D3E-R3: the re-parse catches a swapped archive row before its batch fingerprint does.
+    ("row", "renatived"): r"is not line 2 of archive revision .*: \['quantity'\]",
     ("row", "dropped"): "committed with other content",
     ("row", "added"): "arrival_seq .* is not unique",
 }
@@ -1139,7 +1150,8 @@ def test_a_rest_element_batch_that_no_longer_reproduces_writes_no_edge(
         ({"arrival_seq": lambda r: r["arrival_seq"] + 1}, r"\['arrival_seq'\]"),
         (
             {"archive_line_number": 2, "arrival_seq": lambda r: r["arrival_seq"] + 1},
-            "not committed by any batch",
+            # D3E-R3: the re-parsed object has one line, so line 2 cannot exist at all.
+            "is not a line of the 1-line object",
         ),
         (
             {"knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1)},
@@ -1337,3 +1349,105 @@ def test_heads_that_keep_moving_end_in_a_bounded_conflict_without_an_edge(
         h.reconciler(clock=clock, adapter=proxy).reconcile("agg_trades", SYMBOL, DAY)
     assert proxy.attempts == 8 and clock.calls == 0
     assert h.rows(EVIDENCE) == []
+
+
+# =========================================================================================
+# D3E-R3: rows are bound to their immutable sources (independent review, 2026-09-25)
+# =========================================================================================
+
+
+def test_r3_an_archive_row_batch_beyond_the_object_is_refused(h: RestHarness) -> None:
+    """Review A-1: a hostile ``<A>.rows.00000001`` with line 4 of a 3-line archive."""
+    items = ss.agg_items(4)
+    _archive(h, "agg_trades", ss.archive_agg_lines(items[:3]), knowledge=EARLY)
+    _rest(h, "agg_trades", items, knowledge=LATE)
+    [archive] = h.rows(ARCHIVES)
+    rows = sorted(h.rows(ARCHIVE_AGGS), key=lambda r: r["archive_line_number"])
+    item = items[3]
+    native = {name: rows[2][name] for name in AGG_TRADES_ROW_SCHEMA.names}
+    native.update(
+        agg_trade_id=item["a"],
+        price=Decimal(item["p"]),
+        quantity=Decimal(item["q"]),
+        first_trade_id=item["f"],
+        last_trade_id=item["l"],
+        timestamp_raw=item["T"],
+        is_buyer_maker=item["m"],
+        is_best_match=item["M"],
+        archive_line_number=4,
+        event_time=ss.at_ms(item["T"]),
+    )
+    chunk = pa.Table.from_pylist([native], schema=AGG_TRADES_ROW_SCHEMA)
+    records = _row_records(
+        chunk,
+        data_type="agg_trades",
+        symbol=SYMBOL,
+        time_unit=time_unit_for("agg_trades", archive["coverage_start"]).value,
+        source_identity=archive_identity.row_source_identity(archive["revision_id"]),
+        base=archive["arrival_seq"],
+        times=_times_from_row(archive),
+        subject=AvailabilitySubject.AGG_TRADE,
+        binding=AVAILABILITY_BINDING,
+    )
+    forged = _row_batch(ARCHIVE_AGGS, records, chunk, "agg_trades").to_pylist()
+    h.forge_rows(ARCHIVE_AGGS, forged, _row_batch_id(archive["revision_id"], 1))
+    _refused(h, "is not a line of the 3-line object")
+
+
+def test_r3_a_rest_element_in_a_slot_its_body_does_not_hold_is_refused(h: RestHarness) -> None:
+    """Review A-2: lineage L2's elements were all first delivered by L1; a forged batch gives
+    L2 an element 0 = trade 103, which L2's body does not hold at index 0."""
+    items = ss.agg_items(4)
+    _archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=EARLY)
+    _rest(h, "agg_trades", items[:3], knowledge=LATE, request_id="req-a", t0=T0)
+    _rest(h, "agg_trades", items[:3], knowledge=LATE, request_id="req-b", t0=T0 - 1)
+    owners = {row["response_revision_id"] for row in h.rows(REST_AGGS)}
+    [l2] = [row for row in h.rows(RESPONSES) if row["revision_id"] not in owners]
+    item = items[3]
+    template = h.rows(REST_AGGS)[0]
+    native = {name: template[name] for name in ELEMENT_NATIVE_COLUMNS["agg_trades"]}
+    native.update(
+        agg_trade_id=item["a"],
+        price=Decimal(item["p"]),
+        quantity=Decimal(item["q"]),
+        first_trade_id=item["f"],
+        last_trade_id=item["l"],
+        timestamp_raw=item["T"],
+        is_buyer_maker=item["m"],
+        is_best_match=item["M"],
+    )
+    schema = pa.schema([REST_AGGS.arrow_schema.field(name) for name in native])
+    native = pa.Table.from_pylist([native], schema=schema).to_pylist()[0]
+    *_, row = element_columns(
+        REST_AGGS,
+        "agg_trades",
+        SYMBOL,
+        native,
+        element_index=0,
+        response_revision_id=l2["revision_id"],
+        base=l2["arrival_seq"],
+        ingest_time=l2["ingest_time"],
+        knowledge_time=l2["knowledge_time"],
+    )
+    h.forge_rows(REST_AGGS, [dict(row)], element_batch_id(l2["revision_id"], 0))
+    _refused(h, "is not element 0 of its lineage response's body")
+
+
+def test_r3_an_edge_recommitted_with_an_earlier_time_is_refused(h: RestHarness) -> None:
+    """Review C-1: delete the edge row, re-commit it outside its edge batch, K_E moved earlier."""
+    _pair(h)
+    h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
+    [edge] = h.rows(EVIDENCE)
+    h.delete_rows(EVIDENCE, EqualTo("edge_id", edge["edge_id"]))  # type: ignore[call-arg, arg-type]
+    h.forge_rows(EVIDENCE, [dict(edge, knowledge_time=LATE)], "forged-edge")
+    with pytest.raises(CatalogIntegrityError, match="not exactly what an edge batch"):
+        h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
+
+
+def test_r3_a_deleted_edge_is_refused(h: RestHarness) -> None:
+    _pair(h)
+    h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
+    [edge] = h.rows(EVIDENCE)
+    h.delete_rows(EVIDENCE, EqualTo("edge_id", edge["edge_id"]))  # type: ignore[call-arg, arg-type]
+    with pytest.raises(CatalogIntegrityError, match="is gone"):
+        h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)

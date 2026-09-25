@@ -312,8 +312,9 @@ def test_forged_lineage_and_drifted_competitor_are_refused_on_postgres(pg: RestH
     [
         ("rest-lineage-and-time", "lineage response revision rev1-9+ is committed 0 time"),
         ("archive-time-and-policy", r"\['availability_policy_hash', 'knowledge_time'\]"),
-        ("rest-element-batch", "committed with other content"),
-        ("archive-row-batch", "committed with other content"),
+        # D3E-R3: the body / re-parse binding catches the swapped row before its fingerprint.
+        ("rest-element-batch", r"is not element 1 of its lineage response's body"),
+        ("archive-row-batch", r"is not line 2 of archive revision"),
     ],
 )
 def test_forged_rows_are_proven_before_any_edge_on_postgres(

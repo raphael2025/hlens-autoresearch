@@ -32,10 +32,14 @@ Archive (``raw.binance_spot_archives`` + ``raw.binance_spot_agg_trades`` / ``...
   number is held by it alone; and its row batch ``<archive>.rows.<index>`` — a contiguous
   prefix of one microbatch plan — must still hold exactly what that snapshot committed.
 
-What is *not* proven: that a REST element first delivered by another page really sat at that
-index of that page's body (re-decoding needs that page's chain context), and that an archive
-row's natives are the ones the object's bytes hold (that is D2's re-parse on ingest). Both are
-bound instead by the committed batch fingerprint of their lineage.
+Bound to immutable sources (D3E-R3, after an independent review reproduced forged rows sitting
+in brand-new batches with their own fingerprints):
+
+- every REST response row is rebuilt from the **verified checkpoint page of its first delivery**
+  (the committed D3D collection re-read and strictly re-decoded), provenance columns included;
+- every REST element row must be the element the first delivery's body holds **at its index**;
+- every archive row must be exactly the **strict D1 re-parse** of its archive object at its line,
+  and no line beyond the object's rows exists.
 
 Every lookup is bounded (``IN`` chunks, one lineage at a time). Callers read the rows and run
 the verification between two identical sets of table heads; a view whose heads moved is never
@@ -49,6 +53,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
+import httpx
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
     And,
@@ -60,7 +65,13 @@ from pyiceberg.expressions import (
 )
 
 from core.contracts.catalog import SnapshotInfo, TableNotFound
-from core.contracts.collector import CollectedObject, SourceBinding
+from core.contracts.collector import (
+    CollectedObject,
+    CollectionRequest,
+    CollectionResult,
+    SourceBinding,
+    UnsupportedRequest,
+)
 from core.contracts.revision import AvailabilityDecision, RevisionRecord
 from core.contracts.storage import (
     IntegrityViolation,
@@ -68,7 +79,7 @@ from core.contracts.storage import (
     StorageAdapter,
     StorageError,
 )
-from core.domain.base import FrozenMapping
+from core.domain.base import FrozenMapping, canonical_json
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -81,13 +92,21 @@ from infrastructure.catalog.phase1_tables import (
 )
 from infrastructure.collector import binance_archive as d0
 from infrastructure.collector import binance_rest as d3d
+from infrastructure.parser import ArchiveParseRequest, parse_archive
 from infrastructure.parser.binance_archive import (
     AGG_TRADES_ROW_SCHEMA,
     KLINES_1M_ROW_SCHEMA,
+    ArchiveRejection,
+    ParsedArchive,
     TimeUnit,
     time_unit_for,
 )
-from infrastructure.parser.binance_rest import DECODER_BINDING, RestRejectionCode
+from infrastructure.parser.binance_rest import (
+    DECODER_BINDING,
+    RestPageDecoded,
+    RestPageRejection,
+    RestRejectionCode,
+)
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision import rest_identity
 from infrastructure.revision.availability import (
@@ -193,6 +212,8 @@ _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _MINUTE: Final = timedelta(minutes=1)
 _MICROSECOND: Final = timedelta(microseconds=1)
 _BATCH_INDEX_DIGITS: Final = 8
+#: Verified first-delivery collections kept per verifier (checkpoints are immutable).
+_COLLECTION_CACHE: Final = 16
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -327,6 +348,192 @@ def _one_snapshot(table: str, batch_id: str, found: Sequence[SnapshotInfo]) -> S
             f"{table} has rows of batch {batch_id} but {len(found)} snapshots committing it"
         )
     return found[0]
+
+
+# =========================================================================================
+# committed D3D collections (the one checkpoint path; D3E-R3)
+# =========================================================================================
+
+
+class CommittedCheckpointError(Exception):
+    """A committed D3D collection cannot serve as provenance."""
+
+
+class CheckpointMissing(CommittedCheckpointError):
+    """No committed collection checkpoint (c3) for the request."""
+
+
+class CheckpointConflict(CommittedCheckpointError):
+    """The request id is committed with other request content."""
+
+
+class CheckpointInvalid(CommittedCheckpointError):
+    """The committed checkpoint or a body it references does not reproduce."""
+
+
+@dataclass(frozen=True, slots=True)
+class CommittedCollection:
+    request: CollectionRequest
+    outcome: str
+    result: CollectionResult | None
+    chains: tuple[tuple[str, tuple[Any, ...]], ...]
+
+
+def _refuse_network(request: httpx.Request) -> httpx.Response:
+    raise CheckpointInvalid("a checkpoint reader never touches the network")
+
+
+def checkpoint_reader(storage: StorageAdapter, origin: str) -> Any:
+    """The accepted D3D checkpoint reader; its only transport refuses every request."""
+    return d3d.BinanceSpotRestCollector(
+        storage,
+        market_data_base_url=origin,
+        http_connect_timeout_seconds=1.0,
+        http_read_timeout_seconds=1.0,
+        http_max_retries=0,
+        http_user_agent="hlens-d3e-checkpoint-reader/1.0.0",
+        max_pages_per_collect=d3d.MIN_PAGES_PER_COLLECT,
+        min_request_interval_ms=d3d.MIN_REQUEST_INTERVAL_MS,
+        max_retry_after_seconds=d3d.MIN_RETRY_AFTER_SECONDS,
+        max_response_bytes=d3d.MAX_RESPONSE_BYTES,
+        http_transport=httpx.MockTransport(_refuse_network),
+    )
+
+
+def _collection_key(request_id: str) -> str:
+    root = f"{d3d.CHECKPOINT_PREFIX}/{d3d._sha256_hex(request_id.encode('utf-8'))}"
+    return f"{root}/collection.json"
+
+
+def committed_request(reader: Any, request_id: str) -> CollectionRequest:
+    """The ``CollectionRequest`` a committed collection checkpoint is bound to."""
+    try:
+        payload = reader._read_object(_collection_key(request_id))
+        if payload is None:
+            raise CheckpointMissing(f"request {request_id!r} has no committed collection")
+        document = d3d._parse_checkpoint(payload, d3d.COLLECTION_CHECKPOINT_KIND)
+        fingerprint = d3d._mapping_field(document, "request")
+        request = CollectionRequest(
+            request_id=fingerprint["request_id"],
+            source=SourceBinding(
+                source_id=fingerprint["source_id"], version=fingerprint["source_version"]
+            ),
+            data_type=fingerprint["data_type"],
+            symbols=tuple(fingerprint["symbols"]),
+            coverage_start=datetime.fromisoformat(fingerprint["coverage_start"]),
+            coverage_end=datetime.fromisoformat(fingerprint["coverage_end"]),
+        )
+    except (d3d._CheckpointInvalid, KeyError, TypeError, ValueError) as exc:
+        raise CheckpointInvalid(
+            f"committed collection of {request_id!r} is invalid: {exc}"
+        ) from None
+    if request.request_id != request_id or d3d._request_fingerprint(request) != fingerprint:
+        raise CheckpointInvalid(f"committed collection of {request_id!r} names another request")
+    return request
+
+
+def load_committed_collection(reader: Any, request: CollectionRequest) -> CommittedCollection:
+    """The committed collection checkpoint of ``request``, re-verified field for field.
+
+    Every page is re-read and strictly re-decoded by the accepted D3D reader; never fetched.
+    ``StorageError`` other than an integrity violation propagates unchanged.
+    """
+    try:
+        start_ms, end_ms = reader._validate_request(request)
+    except UnsupportedRequest as exc:
+        raise CheckpointInvalid(f"not a REST collection request: {exc}") from None
+    fingerprint = d3d._request_fingerprint(request)
+    key = _collection_key(request.request_id)
+    try:
+        payload = reader._read_object(key)
+        if payload is None:
+            raise CheckpointMissing(
+                f"request {request.request_id!r} has no committed collection checkpoint "
+                "(c3): the store only persists finished attempts and never collects"
+            )
+        document = d3d._parse_checkpoint(payload, d3d.COLLECTION_CHECKPOINT_KIND)
+        if d3d._mapping_field(document, "request") != fingerprint:
+            raise CheckpointConflict(
+                f"request {request.request_id!r} is committed with different request content"
+            )
+        chains = reader._verify_chains(key, document, fingerprint, request, start_ms, end_ms)
+        if not chains:
+            raise d3d._CheckpointInvalid(f"{key!r} records no chain at all")
+        outcome = d3d._str_field(document, "outcome")
+        result: CollectionResult | None
+        if outcome == "failed":
+            failure = d3d._mapping_field(document, "failure")
+            reader._check_failure_shape(failure, chains)
+            result = None
+            rebuilt = d3d._collection_document(
+                fingerprint, chains, result=None, failure=dict(failure)
+            )
+        elif outcome == "succeeded":
+            if [symbol for symbol, _ in chains] != list(request.symbols):
+                raise d3d._CheckpointInvalid(f"{key!r} succeeds without every symbol")
+            for symbol, records in chains:
+                last = records[-1]
+                if last.rejection is not None or last.summary.stop_reason is None:
+                    raise d3d._CheckpointInvalid(f"{key!r} has an unterminated {symbol} chain")
+            result = reader._assemble(request, start_ms, end_ms, chains)
+            rebuilt = d3d._collection_document(fingerprint, chains, result=result, failure=None)
+        else:
+            raise d3d._CheckpointInvalid(f"{key!r} carries an unknown outcome")
+        if canonical_json(rebuilt).encode("utf-8") != payload:
+            raise d3d._CheckpointInvalid(f"{key!r} does not reproduce field for field")
+    except d3d._CheckpointInvalid as exc:
+        raise CheckpointInvalid(f"committed checkpoint does not reproduce: {exc}") from None
+    except IntegrityViolation as exc:
+        raise CheckpointInvalid(f"a committed object does not match its reference: {exc}") from None
+    except StorageError:
+        raise
+    except ValueError as exc:
+        raise CheckpointInvalid(f"committed checkpoint does not validate: {exc}") from None
+    return CommittedCollection(
+        request=request,
+        outcome=outcome,
+        result=result,
+        chains=tuple((symbol, tuple(records)) for symbol, records in chains),
+    )
+
+
+def page_provenance(request: CollectionRequest, page: Any) -> dict[str, Any]:
+    """The first-delivery provenance columns of a response row, from its verified page."""
+    outcome = page.outcome
+    if isinstance(outcome, RestPageRejection):
+        decoded: dict[str, Any] = {
+            "decode_outcome": REJECTED,
+            "decode_rejection_code": outcome.code.value,
+            "element_count": None,
+            "answered_start": None,
+            "answered_end": None,
+        }
+    elif isinstance(outcome, RestPageDecoded):
+        summary = outcome.summary
+        if summary.element_count != len(outcome.elements):
+            raise CheckpointInvalid("page summary does not count its elements")
+        answered = summary.answered
+        decoded = {
+            "decode_outcome": ACCEPTED,
+            "decode_rejection_code": None,
+            "element_count": summary.element_count,
+            "answered_start": None if answered.is_empty else _at_ms(answered.start_ms),
+            "answered_end": None if answered.is_empty else _at_ms(answered.end_ms),
+        }
+    else:  # pragma: no cover - the verified reader only yields these two outcomes
+        raise CheckpointInvalid("unknown page decode outcome")
+    return {
+        "collector_id": d3d.REST_COLLECTOR_ID,
+        "collector_version": d3d.REST_COLLECTOR_VERSION,
+        "collection_request_id": request.request_id,
+        "page_index": page.page_index,
+        "requested_at": page.requested_at,
+        "retrieved_at": page.retrieved_at,
+        "source_metadata": [
+            {"name": name, "value": page.http_metadata[name]} for name in sorted(page.http_metadata)
+        ],
+        **decoded,
+    }
 
 
 # =========================================================================================
@@ -602,6 +809,15 @@ def _verify_rest_element_identity(table: str, data_type: str, row: Mapping[str, 
         raise CatalogIntegrityError(f"{table}: committed times of {row['revision_id']} drift")
 
 
+def _normalised(
+    definition: RegisteredTableDefinition, fields: Mapping[str, Any]
+) -> Mapping[str, Any]:
+    """Native fields exactly as ``definition`` stores them (``decimal(38, 18)`` included)."""
+    schema = pa.schema([definition.arrow_schema.field(name) for name in fields])
+    rows: list[Mapping[str, Any]] = pa.Table.from_pylist([dict(fields)], schema=schema).to_pylist()
+    return rows[0]
+
+
 def _mismatched(expected: Mapping[str, Any], stored: Mapping[str, Any]) -> list[str]:
     return sorted(
         name for name, value in expected.items() if name not in stored or stored[name] != value
@@ -668,6 +884,8 @@ class VerifiedArchive:
     revision_id: str
     time_unit: TimeUnit
     row: Mapping[str, Any]
+    #: The strict D1 re-parse of the published archive object (D3E-R3): what the rows must be.
+    parsed: ParsedArchive
 
 
 class PersistedRowVerifier:
@@ -688,6 +906,69 @@ class PersistedRowVerifier:
         self._adapter = adapter
         self._storage = storage
         self._storage_error = storage_error or (lambda exc: exc)
+        #: Verified first-delivery collections, most recent last (immutable checkpoints).
+        self._collections: dict[tuple[str, str], CommittedCollection] = {}
+
+    # ------------------------------------------------------------------ first deliveries
+
+    def _first_delivery_page(self, response: Mapping[str, Any]) -> tuple[CollectionRequest, Any]:
+        """The verified checkpoint page that first delivered ``response`` (D3E-R3).
+
+        The response row names its first delivery (collection request id + page index); that
+        committed collection is re-read and strictly re-decoded by the accepted D3D reader, and
+        the page must be exactly this response's page identity and body.
+        """
+        origin, request_id = response["request_origin"], response["collection_request_id"]
+        key = (origin, request_id)
+        collection = self._collections.get(key)
+        if collection is None:
+            try:
+                reader = checkpoint_reader(self._storage, origin)
+            except ValueError as exc:
+                raise CatalogIntegrityError(
+                    f"response origin {origin!r} is invalid: {exc}"
+                ) from None
+            try:
+                collection = load_committed_collection(
+                    reader, committed_request(reader, request_id)
+                )
+            except CommittedCheckpointError as exc:
+                raise CatalogIntegrityError(
+                    f"the first delivery {request_id!r} of response revision "
+                    f"{response['revision_id']} does not reproduce: {exc}"
+                ) from None
+            except StorageError as exc:
+                mapped = self._storage_error(exc)
+                if mapped is exc:
+                    raise
+                raise mapped from exc
+            finally:
+                reader.close()
+            if len(self._collections) >= _COLLECTION_CACHE:
+                self._collections.pop(next(iter(self._collections)))
+            self._collections[key] = collection
+        pages = [
+            page
+            for symbol, records in collection.chains
+            if symbol == response["symbol"]
+            for page in records
+            if page.page_index == response["page_index"]
+        ]
+        if len(pages) != 1:
+            raise CatalogIntegrityError(
+                f"the first delivery {request_id!r} has no page {response['page_index']} of "
+                f"{response['symbol']} for response revision {response['revision_id']}"
+            )
+        page = pages[0]
+        if (
+            page.page_identity != response["page_identity_sha256"]
+            or page.body.sha256 != response["payload_hash"]
+        ):
+            raise CatalogIntegrityError(
+                f"the first delivery of response revision {response['revision_id']} is another "
+                "page or body"
+            )
+        return collection.request, page
 
     # ------------------------------------------------------------------ catalog helpers
 
@@ -786,6 +1067,36 @@ class PersistedRowVerifier:
             raise CatalogIntegrityError(
                 f"committed response revision {revision} does not reproduce from its own "
                 f"inputs: {mismatched}"
+            )
+        # D3E-R3: the provenance columns are not free inputs — rebuild the whole row from the
+        # verified checkpoint page of its first delivery.
+        request, page = self._first_delivery_page(stored)
+        try:
+            delivered = response_columns(
+                data_type=request.data_type,
+                source_binding=(request.source.source_id, request.source.version),
+                query=page.query,
+                origin=stored["request_origin"],
+                page_identity=page.page_identity,
+                source_uri=page.source_uri,
+                http_status=page.http_status,
+                body=(page.body.key, page.body.uri, page.body.sha256, page.body.size),
+                base=stored["arrival_seq"],
+                knowledge_time=stored["knowledge_time"],
+                provenance=page_provenance(request, page),
+            )
+        except (CommittedCheckpointError, KeyError, TypeError, ValueError) as exc:
+            raise CatalogIntegrityError(
+                f"committed response revision {revision} cannot be rebuilt from its first "
+                f"delivery: {exc}"
+            ) from None
+        mismatched = _mismatched(
+            batch_rows(batch(BINANCE_SPOT_REST_RESPONSES, [delivered]))[0], stored
+        )
+        if mismatched:
+            raise CatalogIntegrityError(
+                f"committed response revision {revision} does not reproduce from its first "
+                f"delivery: {mismatched}"
             )
 
     def verify_responses(self, rows: Sequence[Mapping[str, Any]]) -> None:
@@ -911,6 +1222,27 @@ class PersistedRowVerifier:
                     f"{table}: element {revision} does not inherit its lineage response "
                     f"{response['revision_id']}: {mismatched}"
                 )
+            # D3E-R3: the natives must be the element the lineage response's body holds at
+            # this index (strict re-decode of its first delivery), not merely self-consistent.
+            _, page = self._first_delivery_page(response)
+            decoded = page.outcome
+            element = (
+                None
+                if not isinstance(decoded, RestPageDecoded)
+                else next((e for e in decoded.elements if e.element_index == index), None)
+            )
+            if element is None:
+                raise CatalogIntegrityError(
+                    f"{table}: element {revision}: the body of its lineage response "
+                    f"{response['revision_id']} holds no element {index}"
+                )
+            natives = _normalised(definition, element.native_fields())
+            wrong = sorted(name for name, value in natives.items() if row[name] != value)
+            if wrong:
+                raise CatalogIntegrityError(
+                    f"{table}: element {revision} is not element {index} of its lineage "
+                    f"response's body: {wrong}"
+                )
 
     def _verify_rest_element_batches(
         self, definition: RegisteredTableDefinition, lineage_ids: Sequence[str]
@@ -1012,11 +1344,12 @@ class PersistedRowVerifier:
                     "for this data type and symbol"
                 )
             row = rows[0]
-            self._lawful_archive_row(row)
+            collected = self._lawful_archive_row(row)
             verified[archive_id] = VerifiedArchive(
                 revision_id=archive_id,
                 time_unit=time_unit_for(data_type, row["coverage_start"]),
                 row=row,
+                parsed=self._reparse(collected, data_type, archive_id),
             )
         by_base: dict[int, str] = {}
         for item in verified.values():
@@ -1034,7 +1367,34 @@ class PersistedRowVerifier:
             check_batch_snapshot(BINANCE_SPOT_ARCHIVES, batch_id, snapshot, [row])
         return verified
 
-    def _lawful_archive_row(self, stored: Mapping[str, Any]) -> None:
+    def _reparse(
+        self, collected: CollectedObject, data_type: str, archive_id: str
+    ) -> ParsedArchive:
+        """The strict D1 parse of the published object (D3E-R3): what D2 must have written."""
+        try:
+            outcome = parse_archive(
+                ArchiveParseRequest.for_collected_object(
+                    collected, data_type=data_type, archive_revision_id=archive_id
+                ),
+                self._storage,
+            )
+        except IntegrityViolation as exc:
+            raise CatalogIntegrityError(
+                f"the object of archive revision {archive_id} does not match: {exc}"
+            ) from None
+        except StorageError as exc:
+            mapped = self._storage_error(exc)
+            if mapped is exc:
+                raise
+            raise mapped from exc
+        if isinstance(outcome, ArchiveRejection) or not isinstance(outcome, ParsedArchive):
+            raise CatalogIntegrityError(
+                f"archive revision {archive_id} is committed but its object does not parse: "
+                "D2 never writes a revision for a rejected archive"
+            )
+        return outcome
+
+    def _lawful_archive_row(self, stored: Mapping[str, Any]) -> CollectedObject:
         """Rebuild an archive revision row with the D2 builder from its published object.
 
         Inputs: the published object (looked up by its key), the official path / checksum and
@@ -1109,6 +1469,7 @@ class PersistedRowVerifier:
                 f"committed archive revision {revision} does not reproduce from its own "
                 f"inputs: {mismatched}"
             )
+        return collected
 
     def _verify_archive_rows(
         self,
@@ -1121,6 +1482,27 @@ class PersistedRowVerifier:
         table = definition.table
         schema = _PARSER_ROW_SCHEMAS[data_type]
         ordered = sorted(rows, key=lambda row: (row["archive_line_number"], row["revision_id"]))
+        parsed = archive.parsed.rows
+        for row in ordered:
+            line = row["archive_line_number"]
+            if (
+                not isinstance(line, int)
+                or isinstance(line, bool)
+                or not 1 <= line <= archive.parsed.row_count
+            ):
+                raise CatalogIntegrityError(
+                    f"{table}: row {row['revision_id']} (line {line!r}) is not a line of the "
+                    f"{archive.parsed.row_count}-line object of archive revision "
+                    f"{archive.revision_id}"
+                )
+            # D3E-R3: the parser columns must be exactly what the object holds at that line.
+            [truth] = parsed.slice(line - 1, 1).to_pylist()
+            wrong = sorted(name for name in schema.names if row[name] != truth[name])
+            if wrong:
+                raise CatalogIntegrityError(
+                    f"{table}: row {row['revision_id']} is not line {line} of archive revision "
+                    f"{archive.revision_id}'s object: {wrong}"
+                )
         for row in ordered:
             problem = _archive_times_hold(data_type, archive.time_unit, archive.row, row)
             if problem is not None:

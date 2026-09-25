@@ -281,6 +281,7 @@ class RevisionCatalog(Protocol):
         columns: Sequence[str],
         row_filter: BooleanExpression = ...,
         limit: int | None = ...,
+        snapshot_id: str | None = ...,
     ) -> pa.Table: ...
 
     def max_int64(
