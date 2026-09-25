@@ -152,7 +152,10 @@ class PitSelection:
     evidence_gaps: tuple[EvidenceGap, ...]
     #: Observation keys with at least one conflicting evaluation.
     conflicts: tuple[str, ...]
-    #: The verified Canonical records per key (what the selections were computed from).
+    #: The verified Canonical records per key (what the selections were computed from), exactly
+    #: as stored: with the ADR-0032 assumption bound, their ``available_time`` is the stored one —
+    #: the effective times are in ``assumed`` and ``selected_rows`` (never recompute visibility
+    #: from these records).
     records: Mapping[str, tuple[RevisionRecord, ...]]
     edges: Mapping[str, tuple[PrecedenceEvidence, ...]]
     #: Whether the spec bound the Raw evidence table (False = read as no edges).
