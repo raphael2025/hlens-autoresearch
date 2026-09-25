@@ -17,6 +17,7 @@ import pytest
 from core.contracts.catalog import CommitOutcome, CommitRequest
 from core.contracts.collector import CollectionResult
 from infrastructure.catalog import PHASE1_TABLES, ensure_phase1_tables
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
@@ -253,3 +254,48 @@ def test_a_raced_reconcile_on_two_connections_keeps_one_edge_time(pg: RestHarnes
     rows = pg.rows(EVIDENCE)
     assert len(rows) == len({row["edge_id"] for row in rows}) == 2
     assert {row["knowledge_time"] for row in rows} == {K_EDGE + timedelta(minutes=1)}
+
+
+def test_forged_lineage_and_drifted_competitor_are_refused_on_postgres(pg: RestHarness) -> None:
+    """D3E-R1 on the runtime catalog: Codex counterexamples A and B fail closed."""
+    items = ss.agg_items(3)
+    changed = [dict(item) for item in items]
+    changed[1]["p"] = "92792.06000000"
+    cs.queue_agg_chain(pg.venue, SYMBOL, T0, [items])
+    cs.queue_agg_chain(pg.venue, SYMBOL, T0, [changed])
+    assert isinstance(pg.collect(ss.agg_request("pg-a")), CollectionResult)
+    assert isinstance(
+        pg.collect(ss.agg_request("pg-b"), start_ms=cs.RETRIEVED_AT_MS + 60_000), CollectionResult
+    )
+    pg.store(clock=StepClock(start=K_REST)).ingest_collection(ss.agg_request("pg-a"))
+    [response_a] = pg.rows(RESPONSES)
+
+    # A: element 100 (shared by both bodies) names a forged lineage with a later knowledge_time
+    # → pg-b's own response row is lawful and committed, but no element of pg-b is written.
+    shared = next(row for row in pg.rows(REST_AGGS) if row["agg_trade_id"] == 100)
+    others = [row for row in pg.rows(REST_AGGS) if row["agg_trade_id"] != 100]
+    forged_element = dict(shared)
+    forged_element["response_revision_id"] = "rev1-" + "9" * 64
+    forged_element["knowledge_time"] = shared["knowledge_time"] + timedelta(hours=1)
+    pg.overwrite_rows(REST_AGGS, [*others, forged_element], batch_id="corruption")
+    element_head = pg.head(REST_AGGS.table)
+    with pytest.raises(CatalogIntegrityError, match="is committed 0 time"):
+        pg.store(clock=StepClock(start=K_EDGE)).ingest_collection(ss.agg_request("pg-b"))
+    assert pg.head(REST_AGGS.table) == element_head
+    assert forged_element in pg.rows(REST_AGGS) and len(pg.rows(REST_AGGS)) == 3
+    assert len(pg.rows(RESPONSES)) == 2
+
+    # B: the competitor drifts (knowledge before ingest, zeroed policy hash) → re-running pg-b
+    # is refused while reading its own page identity: nothing at all is written.
+    response_b = next(
+        row for row in pg.rows(RESPONSES) if row["revision_id"] != response_a["revision_id"]
+    )
+    forged_response = dict(response_a)
+    forged_response["knowledge_time"] = response_a["ingest_time"] - timedelta(hours=1)
+    forged_response["availability_policy_hash"] = "0" * 64
+    pg.overwrite_rows(RESPONSES, [forged_response, response_b], batch_id="corruption")
+    heads = {table.table: pg.head(table.table) for table in (RESPONSES, REST_AGGS, EVIDENCE)}
+    with pytest.raises(CatalogIntegrityError, match="knowledge_time must not precede"):
+        pg.store(clock=StepClock(start=K_EDGE)).ingest_collection(ss.agg_request("pg-b"))
+    assert {table: pg.head(table) for table in heads} == heads
+    assert pg.rows(EVIDENCE) == []

@@ -41,6 +41,23 @@ Idempotency and recovery (no journal, no mutable sidecar):
   the expected rows and compares them with what is actually committed, including the snapshot's
   batch fingerprint; any disagreement is ``CatalogIntegrityError``.
 
+Every committed row the store adopts, compares or reports is proven lawful first, never trusted
+for its identity alone (D3E-R1):
+
+- a response revision (ours or a competitor) is rebuilt column for column from its own inputs —
+  page query + origin, published body, block base, request / retrieval / knowledge times and a
+  validated first-delivery provenance — and must hold its arrival block alone and be the only,
+  exact content of its one batch snapshot;
+- an element revision (owned, adopted from another page or competing) must name exactly one
+  such lawful response revision that accepted a page of its data type and symbol with enough
+  elements; the row is rebuilt from its native fields plus that response's block base and times
+  and must match column for column, its arrival number held by it alone. What is *not* proven for
+  a revision first delivered by another page is that the other page's body really held it at
+  that index (re-decoding it needs that page's chain context);
+- element rows and their lineage responses live in two tables and the catalog reads current
+  heads, so the whole read is judged only if both heads are unchanged before and after it
+  (bounded re-reads, then ``RestRevisionStoreConflict``); a mixed view is never judged.
+
 Quality findings (decoder facts, rejections, competing payloads) are returned deterministically
 in the outcome. Persisting them is batch E; this module invents no public taxonomy.
 """
@@ -83,6 +100,7 @@ from infrastructure.parser.binance_rest import (
     RestKline1mElement,
     RestPageDecoded,
     RestPageRejection,
+    RestRejectionCode,
 )
 from infrastructure.revision import rest_identity
 from infrastructure.revision.rest_availability import (
@@ -124,12 +142,25 @@ _ELEMENT_SUBJECTS: Final[Mapping[str, RestAvailabilitySubject]] = {
     "klines_1m": RestAvailabilitySubject.KLINE_1M,
 }
 
+
+def _native_columns(definition: RegisteredTableDefinition) -> tuple[str, ...]:
+    """The decoder's native element fields: every column after the decoder binding."""
+    names = [field.name for field in definition.arrow_schema]
+    return tuple(names[names.index("decoder_hash") + 1 :])
+
+
+_ELEMENT_NATIVE_COLUMNS: Final[Mapping[str, tuple[str, ...]]] = {
+    data_type: _native_columns(definition) for data_type, definition in _ELEMENT_DEFINITIONS.items()
+}
+
 #: Rows per element microbatch. A page holds at most ``PAGE_LIMIT`` elements, so one batch per
 #: page by default; the microbatch plan (and therefore every batch id) depends on this value.
 DEFAULT_ELEMENT_MICROBATCH_ROWS: Final = rest_identity.PAGE_LIMIT
 MAX_ELEMENT_MICROBATCH_ROWS: Final = rest_identity.PAGE_LIMIT
-#: Attempts per commit when another writer moved the table head.
+#: Attempts per commit when another writer moved the table head (and per pinned read).
 _COMMIT_ATTEMPTS: Final = 8
+#: Values per ``IN`` filter of a bounded lookup (lineage responses, arrival holders).
+_KEY_CHUNK: Final = 256
 _ZERO: Final = timedelta(0)
 _EPOCH: Final = datetime(1970, 1, 1, tzinfo=UTC)
 _MINUTE: Final = timedelta(minutes=1)
@@ -159,6 +190,8 @@ _PROVENANCE_COLUMNS: Final[tuple[str, ...]] = (
     "answered_start",
     "answered_end",
 )
+#: Every response revision is a complete 200 page (s1); other statuses never reach the store.
+_HTTP_OK: Final = 200
 _ACCEPTED: Final = "accepted"
 _REJECTED: Final = "rejected"
 
@@ -573,7 +606,12 @@ class RestRevisionStore:
             parent = self._current_snapshot_id(RESPONSE_TABLE)
             ours, competing = self._response_rows(observation_key, revision_id)
             if ours is not None:
-                return self._adopt_response(request, page, ours, competing)
+                adopted = self._adopt_response(request, page, ours, competing)
+                if self._current_snapshot_id(RESPONSE_TABLE) != parent:
+                    # The judgement mixed two snapshots of the response table: read again.
+                    last_error = CommitConflict(f"{RESPONSE_TABLE} moved during the adopt read")
+                    continue
+                return adopted
             base = self._next_block_base()
             knowledge_time = self._knowledge_time(page.retrieved_at)
             row = self._response_row(request, page, base=base, knowledge_time=knowledge_time)
@@ -612,7 +650,7 @@ class RestRevisionStore:
                 competing=competing,
             )
         raise RestRevisionStoreConflict(
-            f"could not allocate a REST arrival block for {revision_id} after "
+            f"could not allocate or pin a REST arrival block for {revision_id} after "
             f"{_COMMIT_ATTEMPTS} attempts"
         ) from last_error
 
@@ -682,8 +720,6 @@ class RestRevisionStore:
     ) -> dict[str, Any]:
         """The response row of ``page``; ``provenance`` substitutes another first delivery."""
         query = page.query
-        observation_key = rest_identity.response_observation_key(page.page_identity)
-        source = rest_identity.rest_source_identity()
         if provenance is None:
             outcome = page.outcome
             if isinstance(outcome, RestPageRejection):
@@ -721,51 +757,19 @@ class RestRevisionStore:
             }
         else:
             _check_provenance_shape(provenance)
-        requested_at = provenance["requested_at"]
-        retrieved_at = provenance["retrieved_at"]
-        decision = decide_rest_availability(
-            RestAvailabilitySubject.RESPONSE,
-            event_time=requested_at,
-            event_end_time=retrieved_at,
-            ingest_time=retrieved_at,
+        return _response_columns(
+            data_type=request.data_type,
+            source_binding=(request.source.source_id, request.source.version),
+            query=query,
+            origin=self._origin,
+            page_identity=page.page_identity,
+            source_uri=page.source_uri,
+            http_status=page.http_status,
+            body=(page.body.key, page.body.uri, page.body.sha256, page.body.size),
+            base=base,
             knowledge_time=knowledge_time,
+            provenance=provenance,
         )
-        record = RevisionRecord(
-            observation_key=observation_key,
-            revision_id=rest_identity.revision_id(observation_key, source, page.body.sha256),
-            source_id=source,
-            payload_hash=page.body.sha256,
-            arrival_seq=base,
-            availability=decision,
-        )
-        row = _revision_block(record)
-        row.update(
-            {
-                "event_time": requested_at,
-                "event_end_time": retrieved_at,
-                "source_binding_id": request.source.source_id,
-                "source_binding_version": request.source.version,
-                "data_type": request.data_type,
-                "symbol": query.symbol,
-                "request_origin": self._origin,
-                "request_path": query.path,
-                "request_query": query.query_string(),
-                "declared_time_unit": rest_identity.DECLARED_TIME_UNIT,
-                "page_limit": query.limit,
-                "page_identity_sha256": page.page_identity,
-                "source_uri": page.source_uri,
-                "http_status": page.http_status,
-                "object_key": page.body.key,
-                "object_uri": page.body.uri,
-                "object_sha256": page.body.sha256,
-                "object_size_bytes": page.body.size,
-                "decoder_id": DECODER_BINDING.policy_id,
-                "decoder_version": DECODER_BINDING.version,
-                "decoder_hash": DECODER_BINDING.policy_hash,
-                **provenance,
-            }
-        )
-        return row
 
     def _response_rows(
         self, observation_key: str, revision_id: str
@@ -790,7 +794,111 @@ class RestRevisionStore:
                 others.add(row["revision_id"])
         if len(others) + len(ours) != len(rows):
             raise CatalogIntegrityError(f"page identity {observation_key} repeats a revision")
+        # A competing revision is a business fact only if it is itself a lawful committed row.
+        self._verify_response_facts(rows)
         return (ours[0] if ours else None), tuple(sorted(others))
+
+    def _lawful_response_row(self, stored: Mapping[str, Any]) -> None:
+        """Rebuild a committed response row from its own inputs; every column must reproduce.
+
+        The inputs are the page query + origin (page identity, URI, key), the body digest (its
+        published object), the block base, ``requested_at`` / ``retrieved_at`` /
+        ``knowledge_time`` and the first delivery's validated provenance. Everything else — the
+        availability decision, policy binding, source / collector / decoder bindings, schema
+        version, empty edges and ``supersedes`` — is derived from the frozen rules and compared.
+        """
+        revision = stored.get("revision_id")
+        try:
+            _check_block_base(stored["arrival_seq"])
+            data_type = stored["data_type"]
+            if data_type not in ELEMENT_TABLES:
+                raise ValueError(f"unsupported data_type {data_type!r}")
+            query = rest_identity.RestPageQuery.from_pairs(
+                data_type, _query_pairs(stored["request_query"])
+            )
+            origin = stored["request_origin"]
+            page_identity = rest_identity.page_identity_sha256(query, origin)
+            body_key = rest_identity.response_object_key(
+                data_type, query.symbol, stored["payload_hash"], page_identity
+            )
+            provenance = {name: stored[name] for name in _PROVENANCE_COLUMNS}
+            _check_provenance_shape(provenance)
+            _check_provenance_values(provenance)
+            body = self._storage.lookup(body_key)
+            if body is None:
+                raise ValueError(f"its response body {body_key!r} is not published")
+            expected = _response_columns(
+                data_type=data_type,
+                source_binding=(d3d.REST_SOURCE.source_id, d3d.REST_SOURCE.version),
+                query=query,
+                origin=origin,
+                page_identity=page_identity,
+                source_uri=rest_identity.page_source_uri(query, origin),
+                http_status=_HTTP_OK,
+                body=(body.key, body.uri, body.sha256, body.size),
+                base=stored["arrival_seq"],
+                knowledge_time=stored["knowledge_time"],
+                provenance=provenance,
+            )
+        except IntegrityViolation as exc:
+            raise CatalogIntegrityError(
+                f"the body of committed response revision {revision} does not match: {exc}"
+            ) from None
+        except StorageError as exc:
+            raise RestRevisionStoreError(f"storage failure: {exc}") from exc
+        except (KeyError, TypeError, ValueError, OverflowError) as exc:
+            raise CatalogIntegrityError(
+                f"committed response revision {revision} is not lawful: {exc}"
+            ) from None
+        normalised = _batch_rows(_batch(BINANCE_SPOT_REST_RESPONSES, [expected]))[0]
+        mismatched = sorted(
+            name
+            for name, value in normalised.items()
+            if name not in stored or stored[name] != value
+        )
+        if mismatched:
+            raise CatalogIntegrityError(
+                f"committed response revision {revision} does not reproduce from its own "
+                f"inputs: {mismatched}"
+            )
+
+    def _verify_response_facts(self, rows: Sequence[Mapping[str, Any]]) -> None:
+        """Each row is lawful, holds its block alone and is its batch's only, exact content."""
+        if not rows:
+            return
+        for row in rows:
+            self._lawful_response_row(row)
+        by_base: dict[int, str] = {}
+        for row in rows:
+            if by_base.setdefault(row["arrival_seq"], row["revision_id"]) != row["revision_id"]:
+                raise CatalogIntegrityError(
+                    f"REST arrival block {row['arrival_seq']} is held by two response revisions"
+                )
+        bases = sorted(by_base)
+        holders: dict[int, list[str]] = {}
+        for offset in range(0, len(bases), _KEY_CHUNK):
+            found = self._adapter.scan_columns(
+                RESPONSE_TABLE,
+                columns=("revision_id", "arrival_seq"),
+                row_filter=_member("arrival_seq", bases[offset : offset + _KEY_CHUNK]),
+            ).to_pylist()
+            for item in found:
+                holders.setdefault(item["arrival_seq"], []).append(item["revision_id"])
+        for base, revision in by_base.items():
+            if holders.get(base) != [revision]:
+                raise CatalogIntegrityError(
+                    f"REST arrival block {base} is not held by response revision {revision} alone"
+                )
+        batches = {_response_batch_id(row["revision_id"], row["arrival_seq"]): row for row in rows}
+        snapshots = _snapshots_of_batches(self._adapter, RESPONSE_TABLE, batches)
+        for batch_id, row in batches.items():
+            found_snapshots = snapshots[batch_id]
+            if len(found_snapshots) != 1:
+                raise CatalogIntegrityError(
+                    f"{RESPONSE_TABLE} has rows of batch {batch_id} but {len(found_snapshots)} "
+                    "snapshots committing it"
+                )
+            _check_batch_snapshot(BINANCE_SPOT_REST_RESPONSES, batch_id, found_snapshots[0], [row])
 
     def _verify_response_readback(
         self, revision_id: str, base: int, expected: Mapping[str, Any]
@@ -860,8 +968,7 @@ class RestRevisionStore:
         commits: list[BatchCommit] = []
         last_error: Exception | None = None
         for _ in range(_COMMIT_ATTEMPTS):
-            parent = self._current_snapshot_id(definition.table)
-            existing = self._element_rows(definition, data_type, symbol, keys)
+            parent, existing = self._pinned_element_rows(definition, data_type, symbol, keys)
             status = _classify(planned, existing, state.revision_id)
             commits = []
             try:
@@ -919,7 +1026,7 @@ class RestRevisionStore:
             ) from last_error
 
         # Read back: every element this response owns is committed exactly once, as planned.
-        final = self._element_rows(definition, data_type, symbol, keys)
+        _, final = self._pinned_element_rows(definition, data_type, symbol, keys)
         status = _classify(planned, final, state.revision_id)
         if any(status[item.revision_id] == "new" for item in planned):
             raise CatalogIntegrityError(
@@ -934,6 +1041,36 @@ class RestRevisionStore:
             findings,
         )
 
+    def _pinned_element_rows(
+        self,
+        definition: RegisteredTableDefinition,
+        data_type: str,
+        symbol: str,
+        keys: Sequence[str],
+    ) -> tuple[str | None, list[Mapping[str, Any]]]:
+        """``(element head, rows)`` read and verified against one fixed pair of table heads.
+
+        The element rows and their lineage response rows live in two tables and the catalog
+        reads current heads only, so both heads are read before and after the whole read and
+        verification; a moved head (heads only move forward) discards the judgement and reads
+        again, a bounded number of times.
+        """
+        for _ in range(_COMMIT_ATTEMPTS):
+            heads = (
+                self._current_snapshot_id(definition.table),
+                self._current_snapshot_id(RESPONSE_TABLE),
+            )
+            rows = self._element_rows(definition, data_type, symbol, keys)
+            if (
+                self._current_snapshot_id(definition.table),
+                self._current_snapshot_id(RESPONSE_TABLE),
+            ) == heads:
+                return heads[0], rows
+        raise RestRevisionStoreConflict(
+            f"{definition.table} / {RESPONSE_TABLE} kept moving: no pinned read of "
+            f"{len(keys)} element key(s) after {_COMMIT_ATTEMPTS} attempts"
+        )
+
     def _element_rows(
         self,
         definition: RegisteredTableDefinition,
@@ -941,7 +1078,7 @@ class RestRevisionStore:
         symbol: str,
         keys: Sequence[str],
     ) -> list[Mapping[str, Any]]:
-        """Every committed revision of ``keys``, each proven to re-derive its own identity."""
+        """Every committed revision of ``keys``, each proven lawful down to its lineage."""
         rows = self._scan(
             definition, _both(_equals("symbol", symbol), _member("observation_key", keys))
         )
@@ -957,7 +1094,105 @@ class RestRevisionStore:
             if row["arrival_seq"] in seen_seqs:
                 raise CatalogIntegrityError(f"arrival_seq {row['arrival_seq']} is not unique")
             seen_seqs.add(row["arrival_seq"])
+        self._verify_element_lineage(definition, data_type, rows)
         return rows
+
+    def _verify_element_lineage(
+        self,
+        definition: RegisteredTableDefinition,
+        data_type: str,
+        rows: Sequence[Mapping[str, Any]],
+    ) -> None:
+        """Each element row is exactly what its lineage response revision must have released.
+
+        ``response_revision_id`` must name exactly one committed, lawful (fully re-derived),
+        accepted response revision of the same data type and symbol whose element count covers
+        ``element_index``. The element row is then rebuilt from its native fields and that
+        response's block base and times — arrival number, availability decision, decoder
+        binding, schema version, empty edges and ``supersedes`` — and must match column for
+        column. Its arrival number must be held by this revision alone.
+        """
+        if not rows:
+            return
+        table = definition.table
+        lineage_ids = sorted({row["response_revision_id"] for row in rows})
+        found: dict[str, list[Mapping[str, Any]]] = {}
+        for offset in range(0, len(lineage_ids), _KEY_CHUNK):
+            chunk = lineage_ids[offset : offset + _KEY_CHUNK]
+            for response in self._scan(BINANCE_SPOT_REST_RESPONSES, _member("revision_id", chunk)):
+                found.setdefault(response["revision_id"], []).append(response)
+        for lineage_id in lineage_ids:
+            count = len(found.get(lineage_id, ()))
+            if count != 1:
+                raise CatalogIntegrityError(
+                    f"{table}: lineage response revision {lineage_id} is committed {count} "
+                    "time(s); an element must name exactly one committed response"
+                )
+        lineage = {lineage_id: found[lineage_id][0] for lineage_id in lineage_ids}
+        self._verify_response_facts([lineage[lineage_id] for lineage_id in lineage_ids])
+        for row in rows:
+            response = lineage[row["response_revision_id"]]
+            revision = row["revision_id"]
+            if (
+                response["data_type"] != data_type
+                or response["symbol"] != row["symbol"]
+                or response["decode_outcome"] != _ACCEPTED
+            ):
+                raise CatalogIntegrityError(
+                    f"{table}: element {revision} names response revision {response['revision_id']}"
+                    f" that did not accept a {data_type} page of {row['symbol']}"
+                )
+            index = row["element_index"]
+            if (
+                not isinstance(index, int)
+                or isinstance(index, bool)
+                or not 0 <= index < response["element_count"]
+            ):
+                raise CatalogIntegrityError(
+                    f"{table}: element {revision} has element_index {index!r} outside the "
+                    f"{response['element_count']} element(s) of its lineage response"
+                )
+            try:
+                *_, expected = _element_columns(
+                    definition,
+                    data_type,
+                    row["symbol"],
+                    {name: row[name] for name in _ELEMENT_NATIVE_COLUMNS[data_type]},
+                    element_index=index,
+                    response_revision_id=response["revision_id"],
+                    base=response["arrival_seq"],
+                    ingest_time=response["ingest_time"],
+                    knowledge_time=response["knowledge_time"],
+                )
+            except (KeyError, TypeError, ValueError, OverflowError) as exc:
+                raise CatalogIntegrityError(
+                    f"{table}: element {revision} cannot be what its lineage response "
+                    f"released: {exc}"
+                ) from None
+            mismatched = sorted(
+                name for name, value in expected.items() if name not in row or row[name] != value
+            )
+            if mismatched:
+                raise CatalogIntegrityError(
+                    f"{table}: element {revision} does not inherit its lineage response "
+                    f"{response['revision_id']}: {mismatched}"
+                )
+        by_seq = {row["arrival_seq"]: row["revision_id"] for row in rows}
+        seqs = sorted(by_seq)
+        holders: dict[int, list[str]] = {}
+        for offset in range(0, len(seqs), _KEY_CHUNK):
+            held = self._adapter.scan_columns(
+                table,
+                columns=("revision_id", "arrival_seq"),
+                row_filter=_member("arrival_seq", seqs[offset : offset + _KEY_CHUNK]),
+            ).to_pylist()
+            for item in held:
+                holders.setdefault(item["arrival_seq"], []).append(item["revision_id"])
+        for seq, revision in by_seq.items():
+            if holders.get(seq) != [revision]:
+                raise CatalogIntegrityError(
+                    f"{table}: arrival_seq {seq} is not held by element {revision} alone"
+                )
 
     # ------------------------------------------------------------------ catalog helpers
 
@@ -988,13 +1223,7 @@ class RestRevisionStore:
     ) -> SnapshotInfo:
         """The snapshot that committed ``batch_id`` must carry exactly these rows' fingerprint."""
         snapshot = _snapshot_of_batch(self._adapter, definition.table, batch_id)
-        batch = _batch(definition, [dict(row) for row in rows])
-        if snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(
-            batch
-        ) or snapshot.added_rows != len(rows):
-            raise CatalogIntegrityError(
-                f"batch {batch_id} of {definition.table} was committed with other content"
-            )
+        _check_batch_snapshot(definition, batch_id, snapshot, rows)
         return snapshot
 
 
@@ -1047,6 +1276,111 @@ def _check_provenance_shape(provenance: Mapping[str, Any]) -> None:
         raise ValueError("the first delivery names another collector")
 
 
+def _check_provenance_values(provenance: Mapping[str, Any]) -> None:
+    """The first delivery's recorded values must be ones the D3D / D3C pipeline can produce."""
+    request_id = provenance["collection_request_id"]
+    if not isinstance(request_id, str) or not request_id:
+        raise ValueError("the first delivery has no collection request id")
+    page_index = provenance["page_index"]
+    if not isinstance(page_index, int) or isinstance(page_index, bool) or page_index < 0:
+        raise ValueError("the first delivery's page_index is not a non-negative int")
+    names: list[str] = []
+    for item in provenance["source_metadata"]:
+        if set(item) != {"name", "value"} or not isinstance(item["value"], str):
+            raise ValueError("source_metadata items are (name, value) text pairs")
+        names.append(item["name"])
+    if names != sorted(set(names)) or not set(names) <= d3d.ALLOWED_RESPONSE_HEADERS:
+        raise ValueError("source_metadata is not the sorted header allowlist projection")
+    code = provenance["decode_rejection_code"]
+    if code is not None and code not in {item.value for item in RestRejectionCode}:
+        raise ValueError(f"unknown decoder rejection code {code!r}")
+    count = provenance["element_count"]
+    if count is not None and count > rest_identity.PAGE_LIMIT:
+        raise ValueError("an accepted page holds more elements than one page can")
+    for label in ("answered_start", "answered_end"):
+        value = provenance[label]
+        if value is not None and (value - _EPOCH) % timedelta(milliseconds=1):
+            raise ValueError(f"{label} is not a whole millisecond")
+
+
+def _query_pairs(text: object) -> list[tuple[str, str]]:
+    """``name=value&…`` back into pairs; the query rule then demands the canonical encoding."""
+    if not isinstance(text, str) or not text:
+        raise ValueError("request_query is empty")
+    pairs: list[tuple[str, str]] = []
+    for part in text.split("&"):
+        name, separator, value = part.partition("=")
+        if not separator or not name or "=" in value:
+            raise ValueError("request_query is not name=value pairs")
+        pairs.append((name, value))
+    return pairs
+
+
+def _response_columns(
+    *,
+    data_type: str,
+    source_binding: tuple[str, str],
+    query: rest_identity.RestPageQuery,
+    origin: str,
+    page_identity: str,
+    source_uri: str,
+    http_status: int,
+    body: tuple[str, str, str, int],
+    base: int,
+    knowledge_time: datetime,
+    provenance: Mapping[str, Any],
+) -> dict[str, Any]:
+    """Every column of one response revision from its inputs (the single builder, s1)."""
+    body_key, body_uri, body_sha256, body_size = body
+    observation_key = rest_identity.response_observation_key(page_identity)
+    source = rest_identity.rest_source_identity()
+    requested_at = provenance["requested_at"]
+    retrieved_at = provenance["retrieved_at"]
+    decision = decide_rest_availability(
+        RestAvailabilitySubject.RESPONSE,
+        event_time=requested_at,
+        event_end_time=retrieved_at,
+        ingest_time=retrieved_at,
+        knowledge_time=knowledge_time,
+    )
+    record = RevisionRecord(
+        observation_key=observation_key,
+        revision_id=rest_identity.revision_id(observation_key, source, body_sha256),
+        source_id=source,
+        payload_hash=body_sha256,
+        arrival_seq=base,
+        availability=decision,
+    )
+    row = _revision_block(record)
+    row.update(
+        {
+            "event_time": requested_at,
+            "event_end_time": retrieved_at,
+            "source_binding_id": source_binding[0],
+            "source_binding_version": source_binding[1],
+            "data_type": data_type,
+            "symbol": query.symbol,
+            "request_origin": origin,
+            "request_path": query.path,
+            "request_query": query.query_string(),
+            "declared_time_unit": rest_identity.DECLARED_TIME_UNIT,
+            "page_limit": query.limit,
+            "page_identity_sha256": page_identity,
+            "source_uri": source_uri,
+            "http_status": http_status,
+            "object_key": body_key,
+            "object_uri": body_uri,
+            "object_sha256": body_sha256,
+            "object_size_bytes": body_size,
+            "decoder_id": DECODER_BINDING.policy_id,
+            "decoder_version": DECODER_BINDING.version,
+            "decoder_hash": DECODER_BINDING.policy_hash,
+            **provenance,
+        }
+    )
+    return row
+
+
 def _revision_block(record: RevisionRecord) -> dict[str, Any]:
     """The revision columns shared by the REST tables, from a validated contract record."""
     times = record.availability.times
@@ -1096,21 +1430,45 @@ def _batch_rows(batch: pa.Table) -> list[Mapping[str, Any]]:
 
 def _snapshot_of_batch(adapter: RevisionCatalog, table: str, batch_id: str) -> SnapshotInfo:
     """The main-branch snapshot that committed ``batch_id`` (exactly one), else fail closed."""
-    info = adapter.load_table(table)
-    if info is None:
-        raise TableNotFound(f"table {table} does not exist")
-    found: list[SnapshotInfo] = []
-    snapshot = info.current_snapshot
-    while snapshot is not None:
-        if snapshot.batch_id == batch_id:
-            found.append(snapshot)
-        parent = snapshot.parent_snapshot_id
-        snapshot = None if parent is None else adapter.get_snapshot(table, parent)
+    found = _snapshots_of_batches(adapter, table, [batch_id])[batch_id]
     if len(found) != 1:
         raise CatalogIntegrityError(
             f"{table} has rows of batch {batch_id} but {len(found)} snapshots committing it"
         )
     return found[0]
+
+
+def _snapshots_of_batches(
+    adapter: RevisionCatalog, table: str, batch_ids: Iterable[str]
+) -> dict[str, list[SnapshotInfo]]:
+    """Main-branch snapshots committing each of ``batch_ids``, in one walk of the history."""
+    wanted: dict[str, list[SnapshotInfo]] = {batch_id: [] for batch_id in batch_ids}
+    info = adapter.load_table(table)
+    if info is None:
+        raise TableNotFound(f"table {table} does not exist")
+    snapshot = info.current_snapshot
+    while snapshot is not None:
+        if snapshot.batch_id in wanted:
+            wanted[snapshot.batch_id].append(snapshot)
+        parent = snapshot.parent_snapshot_id
+        snapshot = None if parent is None else adapter.get_snapshot(table, parent)
+    return wanted
+
+
+def _check_batch_snapshot(
+    definition: RegisteredTableDefinition,
+    batch_id: str,
+    snapshot: SnapshotInfo,
+    rows: Sequence[Mapping[str, Any]],
+) -> None:
+    """The snapshot committing ``batch_id`` must carry exactly these rows' fingerprint."""
+    batch = _batch(definition, [dict(row) for row in rows])
+    if snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(
+        batch
+    ) or snapshot.added_rows != len(rows):
+        raise CatalogIntegrityError(
+            f"batch {batch_id} of {definition.table} was committed with other content"
+        )
 
 
 def _normalised_natives(
@@ -1132,78 +1490,46 @@ def _plan_elements(
     state: _ResponseState,
 ) -> list[_PlannedElement]:
     """One fully built, normalised row per decoded element (no catalog I/O)."""
-    subject = _ELEMENT_SUBJECTS[data_type]
     natives = _normalised_natives(definition, [element.native_fields() for element in elements])
-    source = rest_identity.rest_source_identity()
     planned: list[_PlannedElement] = []
     previous_index = -1
     for position, (element, native) in enumerate(zip(elements, natives, strict=True)):
         if element.element_index <= previous_index:
             raise RestRevisionStoreError("decoded elements are not in response order")
         previous_index = element.element_index
+        if set(native) != set(_ELEMENT_NATIVE_COLUMNS[data_type]):
+            raise RestRevisionStoreError("decoded native fields drift from the element table")
+        if data_type == "agg_trades":
+            if not isinstance(element, RestAggTradeElement):
+                raise RestRevisionStoreError("an aggTrades page decoded a non-aggTrade")
+            if element.event_time != _at_ms(native["timestamp_raw"]):
+                raise RestRevisionStoreError("decoded event_time is not T in milliseconds")
+        else:
+            if not isinstance(element, RestKline1mElement):
+                raise RestRevisionStoreError("a klines page decoded a non-kline")
+            start = _at_ms(native["open_time_raw"])
+            end = _at_ms(native["close_time_raw"] + 1)
+            if (element.interval_start, element.interval_end) != (start, end) or (
+                end - start != _MINUTE
+            ):
+                raise RestRevisionStoreError("decoded interval is not the declared minute")
         try:
-            if data_type == "agg_trades":
-                if not isinstance(element, RestAggTradeElement):
-                    raise RestRevisionStoreError("an aggTrades page decoded a non-aggTrade")
-                event_time = _at_ms(native["timestamp_raw"])
-                if element.event_time != event_time:
-                    raise RestRevisionStoreError("decoded event_time is not T in milliseconds")
-                times: dict[str, Any] = {"event_time": event_time}
-                key = rest_identity.agg_trade_observation_key(symbol, native["agg_trade_id"])
-                payload = rest_identity.agg_trade_payload_hash(symbol, dict(native))
-                decision = decide_rest_availability(
-                    subject,
-                    event_time=event_time,
-                    ingest_time=state.ingest_time,
-                    knowledge_time=state.knowledge_time,
-                )
-            else:
-                if not isinstance(element, RestKline1mElement):
-                    raise RestRevisionStoreError("a klines page decoded a non-kline")
-                start = _at_ms(native["open_time_raw"])
-                end = _at_ms(native["close_time_raw"] + 1)
-                if (element.interval_start, element.interval_end) != (start, end) or (
-                    end - start != _MINUTE
-                ):
-                    raise RestRevisionStoreError("decoded interval is not the declared minute")
-                times = {"interval_start": start, "interval_end": end}
-                key = rest_identity.kline_1m_observation_key(symbol, start)
-                payload = rest_identity.kline_1m_payload_hash(symbol, dict(native))
-                decision = decide_rest_availability(
-                    subject,
-                    event_time=start,
-                    event_end_time=end,
-                    ingest_time=state.ingest_time,
-                    knowledge_time=state.knowledge_time,
-                )
-            revision_id = rest_identity.revision_id(key, source, payload)
-            record = RevisionRecord(
-                observation_key=key,
-                revision_id=revision_id,
-                source_id=source,
-                payload_hash=payload,
-                arrival_seq=rest_identity.element_arrival_seq(state.base, element.element_index),
-                availability=decision,
+            key, revision_id, payload, row = _element_columns(
+                definition,
+                data_type,
+                symbol,
+                native,
+                element_index=element.element_index,
+                response_revision_id=state.revision_id,
+                base=state.base,
+                ingest_time=state.ingest_time,
+                knowledge_time=state.knowledge_time,
             )
         except (RestAvailabilityViolation, rest_identity.RestIdentityViolation) as exc:
             raise RestRevisionStoreConflict(
                 f"element {element.element_index} of {state.revision_id} cannot inherit the "
                 f"response revision's times: {exc}"
             ) from None
-        row = _revision_block(record)
-        row.update(times)
-        row.update(
-            {
-                "symbol": symbol,
-                "response_revision_id": state.revision_id,
-                "element_index": element.element_index,
-                "decoder_id": DECODER_BINDING.policy_id,
-                "decoder_version": DECODER_BINDING.version,
-                "decoder_hash": DECODER_BINDING.policy_hash,
-                **native,
-            }
-        )
-        normalised = _batch_rows(_batch(definition, [row]))[0]
         planned.append(
             _PlannedElement(
                 position=position,
@@ -1211,12 +1537,79 @@ def _plan_elements(
                 observation_key=key,
                 revision_id=revision_id,
                 payload_hash=payload,
-                row=normalised,
+                row=row,
             )
         )
     if len({item.revision_id for item in planned}) != len(planned):
         raise RestRevisionStoreError("one page decoded the same element revision twice")
     return planned
+
+
+def _element_columns(
+    definition: RegisteredTableDefinition,
+    data_type: str,
+    symbol: str,
+    native: Mapping[str, Any],
+    *,
+    element_index: int,
+    response_revision_id: str,
+    base: int,
+    ingest_time: datetime,
+    knowledge_time: datetime,
+) -> tuple[str, str, str, Mapping[str, Any]]:
+    """``(key, revision id, payload hash, normalised row)`` of one element of a response.
+
+    The single builder (s2): the element's times come from its native fields, its arrival
+    number from the response's block base, its ``ingest_time`` / ``knowledge_time`` from the
+    response revision; bindings, schema version and empty edges from the frozen rules.
+    """
+    subject = _ELEMENT_SUBJECTS[data_type]
+    source = rest_identity.rest_source_identity()
+    times: dict[str, Any]
+    if data_type == "agg_trades":
+        event_time = _at_ms(native["timestamp_raw"])
+        times = {"event_time": event_time}
+        key = rest_identity.agg_trade_observation_key(symbol, native["agg_trade_id"])
+        payload = rest_identity.agg_trade_payload_hash(symbol, dict(native))
+        decision = decide_rest_availability(
+            subject, event_time=event_time, ingest_time=ingest_time, knowledge_time=knowledge_time
+        )
+    else:
+        start = _at_ms(native["open_time_raw"])
+        end = _at_ms(native["close_time_raw"] + 1)
+        times = {"interval_start": start, "interval_end": end}
+        key = rest_identity.kline_1m_observation_key(symbol, start)
+        payload = rest_identity.kline_1m_payload_hash(symbol, dict(native))
+        decision = decide_rest_availability(
+            subject,
+            event_time=start,
+            event_end_time=end,
+            ingest_time=ingest_time,
+            knowledge_time=knowledge_time,
+        )
+    revision_id = rest_identity.revision_id(key, source, payload)
+    record = RevisionRecord(
+        observation_key=key,
+        revision_id=revision_id,
+        source_id=source,
+        payload_hash=payload,
+        arrival_seq=rest_identity.element_arrival_seq(base, element_index),
+        availability=decision,
+    )
+    row = _revision_block(record)
+    row.update(times)
+    row.update(
+        {
+            "symbol": symbol,
+            "response_revision_id": response_revision_id,
+            "element_index": element_index,
+            "decoder_id": DECODER_BINDING.policy_id,
+            "decoder_version": DECODER_BINDING.version,
+            "decoder_hash": DECODER_BINDING.policy_hash,
+            **native,
+        }
+    )
+    return key, revision_id, payload, _batch_rows(_batch(definition, [row]))[0]
 
 
 def _verify_element_identity(table: str, data_type: str, row: Mapping[str, Any]) -> None:

@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 from collections.abc import Iterator
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -842,19 +843,40 @@ def test_a_duplicated_element_revision_or_arrival_number_fails_closed(
         h.store(clock=StepClock(start=K1)).ingest_collection(ss.agg_request("req-a"))
 
 
-def test_an_owned_element_that_drifts_from_its_re_decode_fails_closed(h: RestHarness) -> None:
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    [
+        # Not what the lineage response released: caught before any re-decode comparison.
+        (
+            {"knowledge_time": K1 + timedelta(hours=1)},
+            r"does not inherit its lineage response .*\['knowledge_time'\]",
+        ),
+        # Lawful under its lineage (index 2 of 3, arrival base + 3) but not where the re-decoded
+        # page puts this element: only the owned re-decode comparison can see it.
+        (
+            {"element_index": 2, "arrival_seq": BASE + 3},
+            r"disagrees with its re-decoded element: \['arrival_seq', 'element_index'\]",
+        ),
+    ],
+)
+def test_an_owned_element_that_drifts_from_its_re_decode_fails_closed(
+    h: RestHarness, drift: dict[str, Any], match: str
+) -> None:
     cs.queue_agg_chain(h.venue, SYMBOL, T0, [ss.agg_items(3)])
     _collected(h, ss.agg_request("req-a"))
     proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=RESPONSES.table))
     with pytest.raises(Crash):
         h.store(clock=StepClock(start=K1), adapter=proxy).ingest_collection(ss.agg_request("req-a"))
-    # A writer commits element 0 under our lineage but with another knowledge_time.
+    # A writer commits element 0 under our lineage but not as the re-decoded page has it.
     out_rows = _expected_element_rows(tmp_path=h.tmp_path)
     forged = dict(out_rows[0])
-    forged["knowledge_time"] = K1 + timedelta(hours=1)
+    forged.update(drift)
     h.forge_rows(AGGS, [forged], "forged-owned")
-    with pytest.raises(CatalogIntegrityError, match="disagrees with its re-decoded element"):
+    heads = (h.head(RESPONSES.table), h.head(AGGS.table))
+    with pytest.raises(CatalogIntegrityError, match=match):
         h.store(clock=StepClock(start=K1)).ingest_collection(ss.agg_request("req-a"))
+    assert (h.head(RESPONSES.table), h.head(AGGS.table)) == heads
+    assert h.rows(AGGS) == [forged]
 
 
 def _expected_element_rows(*, tmp_path: Path) -> list[dict[str, Any]]:
@@ -1020,3 +1042,511 @@ def test_committed_outcomes_report_commit_outcomes(h: RestHarness) -> None:
     assert out.pages[0].response_commit.outcome is CommitOutcome.COMMITTED
     assert [commit.outcome for commit in out.pages[0].element_commits] == [CommitOutcome.COMMITTED]
     assert len(out.new_snapshot_ids) == 2 and not out.replayed
+
+
+# =========================================================================================
+# #8 (D3E-R1): every committed row the store adopts, compares or reports is proven lawful
+# =========================================================================================
+
+K2 = K1 + timedelta(days=1)
+FORGED_ID = "rev1-" + "9" * 64
+PRECEDENCE_ITEM = {
+    "superseded_revision_id": "rev1-" + "a" * 64,
+    "policy_id": "binance.spot.delivery-channel",
+    "policy_version": "1.0.0",
+    "policy_hash": "b" * 64,
+    "evidence": ["made up"],
+    "knowledge_time": K1,
+}
+
+
+def _tables_state(h: RestHarness) -> dict[str, Any]:
+    """Heads and row counts of every table the store or a reconciler could write."""
+    tables = (RESPONSES, AGGS, KLINES, BINANCE_SPOT_PRECEDENCE_EVIDENCE)
+    return {
+        definition.table: (h.head(definition.table), len(h.rows(definition)))
+        for definition in tables
+    }
+
+
+def _drifted(row: dict[str, Any], drift: dict[str, Any]) -> dict[str, Any]:
+    forged = dict(row)
+    for column, value in drift.items():
+        forged[column] = value(row) if callable(value) else value
+    return forged
+
+
+@dataclass
+class _CaptureCatalog(ProxyCatalog):
+    """Records the batch the store is about to commit, then dies before committing it."""
+
+    captured: list[dict[str, Any]] = field(default_factory=list)
+
+    def commit_batch(self, request: CommitRequest, batch: Any) -> Any:
+        self.captured.extend(batch.to_pylist())
+        raise Crash(f"captured {request.batch_id}")
+
+
+def _captured_response(h: RestHarness, request: Any, *, clock_start: datetime) -> dict[str, Any]:
+    """The exact response row the store would commit for ``request`` (nothing is committed)."""
+    capture = _CaptureCatalog(h.adapter)
+    with pytest.raises(Crash):
+        h.store(clock=StepClock(start=clock_start), adapter=capture).ingest_collection(request)
+    [row] = capture.captured
+    return row
+
+
+def _response_batch(row: dict[str, Any]) -> str:
+    return f"{row['revision_id']}.response.{row['arrival_seq']}"
+
+
+# ------------------------------------------------------------------ Codex counterexample A
+
+
+def test_codex_a_a_foreign_element_with_an_orphan_lineage_is_refused(h: RestHarness) -> None:
+    """Same payload / revision id, lineage ``rev1-999…`` and a knowledge_time one hour late."""
+    cs.queue_agg_chain(h.venue, SYMBOL, T0, [ss.agg_items(1)])
+    _collected(h, ss.agg_request("req-a"))
+    [reference] = _expected_element_rows(tmp_path=h.tmp_path)[:1]
+    forged = _drifted(
+        reference,
+        {
+            "response_revision_id": FORGED_ID,
+            "knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1),
+        },
+    )
+    h.forge_rows(AGGS, [forged], "hostile-foreign-element")
+    element_head = h.head(AGGS.table)
+
+    with pytest.raises(
+        CatalogIntegrityError, match=f"lineage response revision {FORGED_ID} is committed 0 time"
+    ):
+        h.store(clock=StepClock(start=K2)).ingest_collection(ss.agg_request("req-a"))
+
+    # s1 (this page's own, lawful response revision) is committed; no element is, and the
+    # forged row is neither adopted nor repaired.
+    assert h.head(AGGS.table) == element_head and h.rows(AGGS) == [forged]
+    [response] = h.rows(RESPONSES)
+    assert response["knowledge_time"] == K2
+    assert h.rows(BINANCE_SPOT_PRECEDENCE_EVIDENCE) == []
+
+
+# ------------------------------------------------------------------ foreign element lineage
+
+
+def _overlap(h: RestHarness) -> tuple[RestCollectionStored, Any]:
+    """Page A holds 100..102; page B (not yet stored) holds 101..103 — 101 and 102 overlap."""
+    cs.queue_agg_chain(h.venue, SYMBOL, T0, [ss.agg_items(3, first_id=100, first_ms=T0)])
+    cs.queue_agg_chain(h.venue, SYMBOL, T0 + 1, [ss.agg_items(3, first_id=101, first_ms=T0 + 1)])
+    _collected(h, ss.agg_request("req-a"))
+    request_b = ss.agg_request("req-b", start_ms=T0 + 1)
+    _collected(h, request_b)
+    first = h.store(clock=StepClock(start=K1)).ingest_collection(ss.agg_request("req-a"))
+    return first, request_b
+
+
+def _replace_element(h: RestHarness, agg_trade_id: int, forged: dict[str, Any]) -> None:
+    rows = [row for row in h.rows(AGGS) if row["agg_trade_id"] != agg_trade_id]
+    h.overwrite_rows(AGGS, [*rows, forged], batch_id="corruption")
+
+
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    [
+        ({"response_revision_id": FORGED_ID}, "committed 0 time"),
+        ({"arrival_seq": BASE + 7}, r"\['arrival_seq'\]"),
+        ({"element_index": 5, "arrival_seq": BASE + 6}, "outside the 3 element"),
+        ({"element_index": -1, "arrival_seq": BASE}, "outside the 3 element"),
+        (
+            {"knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1)},
+            r"\['knowledge_time'\]",
+        ),
+        (
+            {
+                "ingest_time": lambda r: r["ingest_time"] - timedelta(seconds=1),
+                "available_time": lambda r: r["available_time"] - timedelta(seconds=1),
+            },
+            r"\['available_time', 'ingest_time'\]",
+        ),
+        ({"availability_policy_hash": "0" * 64}, r"\['availability_policy_hash'\]"),
+        ({"availability_policy_version": "9.9.9"}, r"\['availability_policy_version'\]"),
+        ({"availability_evidence_gap": "made up"}, r"\['availability_evidence_gap'\]"),
+        ({"availability_evidence": ["made up"]}, r"\['availability_evidence'\]"),
+        ({"declared_latency_us": 5}, r"\['declared_latency_us'\]"),
+        ({"decoder_hash": "0" * 64}, r"\['decoder_hash'\]"),
+        ({"decoder_version": "9.9.9"}, r"\['decoder_version'\]"),
+        ({"contract_schema_version": "9.9.9"}, r"\['contract_schema_version'\]"),
+        ({"supersedes": ["rev1-" + "a" * 64]}, r"\['supersedes'\]"),
+        ({"precedence_evidence": [PRECEDENCE_ITEM]}, r"\['precedence_evidence'\]"),
+        ({"source_revision_id": "venue-7"}, r"\['source_revision_id'\]"),
+    ],
+)
+def test_a_foreign_element_whose_lineage_does_not_hold_is_refused(
+    h: RestHarness, drift: dict[str, Any], match: str
+) -> None:
+    first, request_b = _overlap(h)
+    shared = next(row for row in h.rows(AGGS) if row["agg_trade_id"] == 101)
+    forged = _drifted(shared, drift)
+    _replace_element(h, 101, forged)
+    before = _tables_state(h)
+
+    with pytest.raises(CatalogIntegrityError, match=match):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+
+    after = _tables_state(h)
+    assert after[AGGS.table] == before[AGGS.table]  # no element of page B was written
+    assert after[BINANCE_SPOT_PRECEDENCE_EVIDENCE.table] == (None, 0)
+    assert after[RESPONSES.table][1] == before[RESPONSES.table][1] + 1  # only B's own s1 row
+    assert forged in h.rows(AGGS)
+
+
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    [
+        ({"availability_policy_hash": "0" * 64}, r"\['availability_policy_hash'\]"),
+        (
+            {"knowledge_time": lambda r: r["ingest_time"] - timedelta(hours=1)},
+            "knowledge_time must not precede ingest_time",
+        ),
+        ({"decoder_hash": "0" * 64}, r"\['decoder_hash'\]"),
+    ],
+)
+def test_a_foreign_element_whose_lineage_response_is_not_lawful_is_refused(
+    h: RestHarness, drift: dict[str, Any], match: str
+) -> None:
+    """The lineage response itself (another page identity than B's) drifted in place."""
+    first, request_b = _overlap(h)
+    [response_a] = h.rows(RESPONSES)
+    h.overwrite_rows(RESPONSES, [_drifted(response_a, drift)], batch_id="corruption")
+    before = _tables_state(h)
+
+    with pytest.raises(CatalogIntegrityError, match=match):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+
+    after = _tables_state(h)
+    assert after[AGGS.table] == before[AGGS.table]
+    assert after[RESPONSES.table][1] == before[RESPONSES.table][1] + 1
+
+
+@pytest.mark.parametrize("lineage", ["rejected-page", "kline-page"])
+def test_a_foreign_element_naming_a_response_that_released_no_such_element_is_refused(
+    h: RestHarness, lineage: str
+) -> None:
+    """The lineage response is lawful, but it did not accept an aggTrades page of BTCUSDT."""
+    first, request_b = _overlap(h)
+    if lineage == "rejected-page":
+        bad = [ss.agg_item(900, T0 + 50, price="0.00000000")]
+        cs.queue_agg_chain(h.venue, SYMBOL, T0 + 50, [bad])
+        request = ss.agg_request("req-bad", start_ms=T0 + 50)
+        assert isinstance(h.collect(request), CollectionFailed)
+    else:
+        cs.queue_kline_chain(h.venue, SYMBOL, T0, [ss.kline_items(1)])
+        request = ss.kline_request("req-k")
+        _collected(h, request)
+    h.store(clock=StepClock(start=K1)).ingest_collection(request)
+    [response] = [
+        row for row in h.rows(RESPONSES) if row["collection_request_id"] == request.request_id
+    ]
+    shared = next(row for row in h.rows(AGGS) if row["agg_trade_id"] == 101)
+    forged = _drifted(
+        shared,
+        {
+            "response_revision_id": response["revision_id"],
+            "arrival_seq": response["arrival_seq"] + 1 + 1,
+            "ingest_time": response["ingest_time"],
+            "available_time": response["ingest_time"],
+            "knowledge_time": response["knowledge_time"],
+        },
+    )
+    _replace_element(h, 101, forged)
+    before = _tables_state(h)
+
+    with pytest.raises(CatalogIntegrityError, match="did not accept a agg_trades page of BTCUSDT"):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+    assert _tables_state(h)[AGGS.table] == before[AGGS.table]
+
+
+def test_a_lawful_foreign_lineage_is_adopted_and_replays_idempotently(h: RestHarness) -> None:
+    first, request_b = _overlap(h)
+    store = h.store(clock=StepClock(start=K2))
+    second = store.ingest_collection(request_b)
+    state = _tables_state(h)
+
+    again = store.ingest_collection(request_b)
+
+    assert again.replayed and _tables_state(h) == state
+    by_id = _by(h.rows(AGGS), "revision_id")
+    for shared in first.pages[0].element_revision_ids[1:]:
+        assert by_id[shared]["response_revision_id"] == first.pages[0].response_revision_id
+        assert by_id[shared]["knowledge_time"] == K1
+    assert second.findings == again.findings == ()
+
+
+def test_a_competing_element_revision_must_be_lawful_to_become_a_finding(h: RestHarness) -> None:
+    """Page B disagrees on element 101; A's committed 101 drifted, so no finding is reported."""
+    cs.queue_agg_chain(h.venue, SYMBOL, T0, [ss.agg_items(3, first_id=100, first_ms=T0)])
+    b_items = ss.agg_items(3, first_id=101, first_ms=T0 + 1)
+    b_items[0]["q"] = "0.00250000"
+    cs.queue_agg_chain(h.venue, SYMBOL, T0 + 1, [b_items])
+    _collected(h, ss.agg_request("req-a"))
+    request_b = ss.agg_request("req-b", start_ms=T0 + 1)
+    _collected(h, request_b)
+    h.store(clock=StepClock(start=K1)).ingest_collection(ss.agg_request("req-a"))
+    shared = next(row for row in h.rows(AGGS) if row["agg_trade_id"] == 101)
+    _replace_element(h, 101, _drifted(shared, {"knowledge_time": K1 + timedelta(hours=1)}))
+    element_state = _tables_state(h)[AGGS.table]
+
+    with pytest.raises(CatalogIntegrityError, match=r"\['knowledge_time'\]"):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+    assert _tables_state(h)[AGGS.table] == element_state
+
+
+# ------------------------------------------------------------------ competing response revisions
+
+
+def _competing_pages(h: RestHarness) -> tuple[Any, Any]:
+    """req-a and req-b ask the same page identity and are answered with different bytes."""
+    items = ss.agg_items(3)
+    changed = [dict(item) for item in items]
+    changed[1]["p"] = "92792.06000000"
+    cs.queue_agg_chain(h.venue, SYMBOL, T0, [items])
+    cs.queue_agg_chain(h.venue, SYMBOL, T0, [changed])
+    request_a, request_b = ss.agg_request("req-a"), ss.agg_request("req-b")
+    _collected(h, request_a)
+    _collected(h, request_b, start_ms=cs.RETRIEVED_AT_MS + 60_000)
+    return request_a, request_b
+
+
+def _other_page_response(h: RestHarness) -> dict[str, Any]:
+    """A lawful response row of another page identity (klines), not committed."""
+    cs.queue_kline_chain(h.venue, SYMBOL, T0, [ss.kline_items(1)])
+    request = ss.kline_request("req-k")
+    _collected(h, request)
+    return _captured_response(h, request, clock_start=K1)
+
+
+def test_codex_b_a_competing_response_with_time_and_policy_drift_is_refused(
+    h: RestHarness,
+) -> None:
+    request_a, request_b = _competing_pages(h)
+    competitor = _captured_response(h, request_a, clock_start=K1)
+    forged = _drifted(
+        competitor,
+        {
+            "knowledge_time": lambda r: r["ingest_time"] - timedelta(hours=1),
+            "availability_policy_hash": "0" * 64,
+        },
+    )
+    h.forge_rows(RESPONSES, [forged], _response_batch(forged))
+    before = _tables_state(h)
+
+    with pytest.raises(CatalogIntegrityError, match="knowledge_time must not precede"):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+
+    assert _tables_state(h) == before  # nothing at all: s1 is refused before any commit
+    assert h.rows(RESPONSES) == [forged]
+
+
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    [
+        (
+            {
+                "requested_at": lambda r: r["retrieved_at"] + timedelta(seconds=1),
+                "event_time": lambda r: r["retrieved_at"] + timedelta(seconds=1),
+            },
+            "requested_at must precede ingest_time",
+        ),
+        ({"event_end_time": lambda r: r["retrieved_at"] - timedelta(seconds=1)}, "event_end_time"),
+        ({"ingest_time": lambda r: r["ingest_time"] - timedelta(seconds=1)}, r"\['ingest_time'\]"),
+        ({"available_time": lambda r: r["knowledge_time"]}, r"\['available_time'\]"),
+        ({"availability_policy_version": "9.9.9"}, r"\['availability_policy_version'\]"),
+        ({"availability_evidence_gap": "made up"}, r"\['availability_evidence_gap'\]"),
+        ({"decoder_hash": "0" * 64}, r"\['decoder_hash'\]"),
+        ({"decoder_id": "some.other.decoder"}, r"\['decoder_id'\]"),
+        ({"collector_version": "9.9.9"}, "another collector"),
+        ({"source_binding_version": "2.0.0"}, r"\['source_binding_version'\]"),
+        ({"source_uri": "https://elsewhere.example/api/v3/aggTrades"}, r"\['source_uri'\]"),
+        ({"http_status": 206}, r"\['http_status'\]"),
+        ({"object_size_bytes": 1}, r"\['object_size_bytes'\]"),
+        ({"object_uri": "file:///elsewhere.json"}, r"\['object_uri'\]"),
+        ({"page_limit": 500}, r"\['page_limit'\]"),
+        # Another query derives another page identity, hence another body key: nothing is there.
+        ({"request_query": "limit=1000&startTime=1&symbol=BTCUSDT"}, "is not published"),
+        ({"page_identity_sha256": "c" * 64}, r"\['page_identity_sha256'\]"),
+        ({"symbol": "ETHUSDT"}, r"\['symbol'\]"),
+        ({"contract_schema_version": "9.9.9"}, r"\['contract_schema_version'\]"),
+        ({"supersedes": ["rev1-" + "a" * 64]}, r"\['supersedes'\]"),
+        ({"precedence_evidence": [PRECEDENCE_ITEM]}, r"\['precedence_evidence'\]"),
+        (
+            {"source_metadata": [{"name": "set-cookie", "value": "x"}]},
+            "header allowlist",
+        ),
+        ({"decode_rejection_code": "made_up"}, "a count and no rejection code"),
+        ({"element_count": 1001}, "more elements than one page"),
+        ({"page_index": -1}, "page_index"),
+        ({"collection_request_id": ""}, "collection request id"),
+        ({"arrival_seq": BASE + 5}, "not a block base"),
+    ],
+)
+def test_a_competing_response_revision_must_be_lawful(
+    h: RestHarness, drift: dict[str, Any], match: str
+) -> None:
+    request_a, request_b = _competing_pages(h)
+    forged = _drifted(_captured_response(h, request_a, clock_start=K1), drift)
+    h.forge_rows(RESPONSES, [forged], _response_batch(forged))
+    before = _tables_state(h)
+
+    with pytest.raises(CatalogIntegrityError, match=match):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+
+    assert _tables_state(h) == before
+    assert h.rows(RESPONSES) == [forged]
+
+
+def test_a_competing_response_sharing_an_arrival_block_is_refused(h: RestHarness) -> None:
+    request_a, request_b = _competing_pages(h)
+    competitor = _captured_response(h, request_a, clock_start=K1)
+    other = _other_page_response(h)
+    assert competitor["arrival_seq"] == other["arrival_seq"] == BASE
+    h.forge_rows(RESPONSES, [competitor], _response_batch(competitor))
+    h.forge_rows(RESPONSES, [other], _response_batch(other))
+    before = _tables_state(h)
+
+    with pytest.raises(CatalogIntegrityError, match=f"block {BASE} is not held by"):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+    assert _tables_state(h) == before
+
+
+@pytest.mark.parametrize("corruption", ["foreign-batch-id", "fingerprint", "row-count"])
+def test_a_competing_response_batch_must_be_its_own_exact_snapshot(
+    h: RestHarness, corruption: str
+) -> None:
+    request_a, request_b = _competing_pages(h)
+    competitor = _captured_response(h, request_a, clock_start=K1)
+    if corruption == "foreign-batch-id":
+        h.forge_rows(RESPONSES, [competitor], "hostile-batch")
+        match = "0 snapshots"
+    elif corruption == "fingerprint":
+        h.forge_snapshot(
+            RESPONSES, [competitor], batch_id=_response_batch(competitor), fingerprint="0" * 64
+        )
+        match = "committed with other content"
+    else:
+        other = _drifted(_other_page_response(h), {"arrival_seq": BASE + 9 * STRIDE})
+        h.forge_snapshot(RESPONSES, [competitor, other], batch_id=_response_batch(competitor))
+        match = "committed with other content"
+    before = _tables_state(h)
+
+    with pytest.raises(CatalogIntegrityError, match=match):
+        h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+    assert _tables_state(h) == before
+
+
+def test_a_lawful_competing_response_still_yields_the_finding(h: RestHarness) -> None:
+    request_a, request_b = _competing_pages(h)
+    competitor = _captured_response(h, request_a, clock_start=K1)
+    h.forge_rows(RESPONSES, [competitor], _response_batch(competitor))
+
+    out = h.store(clock=StepClock(start=K2)).ingest_collection(request_b)
+
+    [finding] = [item for item in out.findings if item.code == FINDING_RESPONSE_COMPETING]
+    assert finding.related_revision_ids == (competitor["revision_id"],)
+    responses = h.rows(RESPONSES)
+    assert len(responses) == 2 and all(row["supersedes"] == [] for row in responses)
+    assert competitor in responses
+    assert out.pages[0].arrival_seq_base == BASE + STRIDE
+    assert h.rows(BINANCE_SPOT_PRECEDENCE_EVIDENCE) == []
+
+
+# ------------------------------------------------------------------ cross-table pinned reads
+
+
+@dataclass
+class _ScanHook(ProxyCatalog):
+    """Runs ``hook`` right after each lineage lookup (response scan by ``revision_id``) that
+    follows an element-table scan — i.e. between the element read and the closing head check."""
+
+    hook: Any = None
+    lineage_scans: int = 0
+    armed: bool = False
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_columns(table, **kwargs)
+        text = repr(kwargs.get("row_filter"))
+        if table == AGGS.table and "observation_key" in text:
+            self.armed = True
+        elif (
+            table == RESPONSES.table
+            and self.armed
+            and "revision_id" in text
+            and kwargs.get("limit") is None
+        ):
+            self.armed = False
+            self.lineage_scans += 1
+            if self.hook is not None:
+                self.hook(self.lineage_scans)
+        return result
+
+
+def _unrelated_response_factory(h: RestHarness) -> Any:
+    """Commits a fresh, unrelated response row (another page identity) per call."""
+    template = _anchor_row(h, BASE + 100 * STRIDE, "mover")
+
+    def commit(index: int) -> None:
+        row = dict(template)
+        digest = hashlib.sha256(f"mover-{index}".encode()).hexdigest()
+        row["payload_hash"] = row["object_sha256"] = digest
+        row["revision_id"] = rest_identity.revision_id(
+            row["observation_key"], row["source_id"], digest
+        )
+        row["arrival_seq"] = BASE + (100 + index) * STRIDE
+        h.forge_rows(RESPONSES, [row], f"mover-{index}")
+
+    return commit
+
+
+def test_a_head_moved_between_element_and_lineage_reads_is_read_again(h: RestHarness) -> None:
+    first, request_b = _overlap(h)
+    mover = _unrelated_response_factory(h)
+    proxy = _ScanHook(h.adapter, hook=lambda count: mover(count) if count == 1 else None)
+
+    out = h.store(clock=StepClock(start=K2), adapter=proxy).ingest_collection(request_b)
+
+    assert proxy.lineage_scans >= 3  # moved once → read again, then the closing read-back
+    by_id = _by(h.rows(AGGS), "revision_id")
+    for shared in first.pages[0].element_revision_ids[1:]:
+        assert by_id[shared]["response_revision_id"] == first.pages[0].response_revision_id
+    assert out.pages[0].owned_element_revision_ids == (out.pages[0].element_revision_ids[2],)
+
+
+def test_a_mixed_view_is_never_judged_the_newer_snapshot_is(h: RestHarness) -> None:
+    """A twin of the lineage response lands after the lineage read: the first judgement (one
+    row, lawful) mixes two snapshots and must be discarded; the re-read sees the twin."""
+    first, request_b = _overlap(h)
+    [response_a] = h.rows(RESPONSES)
+    twin = _drifted(response_a, {"arrival_seq": BASE + 50 * STRIDE})
+
+    def land_twin(count: int) -> None:
+        if count == 1:
+            h.forge_rows(RESPONSES, [twin], "hostile-twin")
+
+    proxy = _ScanHook(h.adapter, hook=land_twin)
+    element_state = _tables_state(h)[AGGS.table]
+
+    with pytest.raises(CatalogIntegrityError, match="committed 2 time"):
+        h.store(clock=StepClock(start=K2), adapter=proxy).ingest_collection(request_b)
+    assert proxy.lineage_scans == 2
+    assert _tables_state(h)[AGGS.table] == element_state
+
+
+def test_heads_that_keep_moving_end_in_a_bounded_conflict(h: RestHarness) -> None:
+    first, request_b = _overlap(h)
+    mover = _unrelated_response_factory(h)
+    proxy = _ScanHook(h.adapter, hook=mover)
+    element_state = _tables_state(h)[AGGS.table]
+
+    with pytest.raises(RestRevisionStoreConflict, match="kept moving.*after 8 attempts"):
+        h.store(clock=StepClock(start=K2), adapter=proxy).ingest_collection(request_b)
+    assert proxy.lineage_scans == 8
+    assert _tables_state(h)[AGGS.table] == element_state
