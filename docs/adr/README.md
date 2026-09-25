@@ -40,6 +40,7 @@
 | [0032](0032-archive-event-time-availability-assumption.md) | 历史归档的事件时间可用性假设（PIT 叠加层，D-HIST） | Accepted（2026-09-25；Raphael 批准） |
 | [0033](0033-research-dataset-selection-table.md) | 物化 Research Dataset 选择表登记为生产表（DS-1） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0034](0034-knowledge-provider.md) | KnowledgeProvider 契约与本地知识库（Phase 0.5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0043](0043-dynamic-strategy-router.md) | 动态策略路由框架（Phase 10，仅纸面） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0044](0044-event-bus-and-worker-jobs.md) | EventBusAdapter 契约、内存总线与 worker 幂等任务（Phase 11 地基） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0039](0039-state-strategy-research.md) | 状态 × 策略研究框架（Phase 6） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0040](0040-hypothesis-generation-and-llm.md) | 假设生成、组合算子、预登记账本与 LLMProvider 契约（Phase 7） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
