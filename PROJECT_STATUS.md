@@ -51,7 +51,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038：策略 / 风控 / 回测契约、bar 回测器 v1、TSMOM；接 P4 验证的接线开发中） |
 | 6 | State × Strategy | 🧱 框架已实现（ADR-0039，NOT_VALIDATED；待接 P5 回测 / P4 验证） |
 | 7 | Dynamic Discovery | 🧱 框架已实现（ADR-0040：组合算子、预登记账本、LLMProvider 契约 + 离线替身） |
-| 8 | Validation & Robustness | 🔨 框架开发中（子代理，ADR-0041） |
+| 8 | Validation & Robustness | 🧱 框架已实现（ADR-0041：G4 稳健性套件、回溯审计、已接入策略验证；P4 复核的 5 个问题已修） |
 | 9 | Synthetic Market Lab | 🧱 生成器框架已实现（ADR-0042，NOT_VALIDATED）；校准报告待 P4 / P8 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面） |
 | 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049：六阶段轮次、预算先查后跑、生命周期守卫永不到 ACTIVE、哈希链审计、劣化监控） |
