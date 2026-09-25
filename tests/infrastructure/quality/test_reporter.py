@@ -13,6 +13,7 @@ from pyiceberg.expressions import EqualTo
 
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORTS
+from infrastructure.pit.selector import PIT_BINDING
 from infrastructure.quality import reporter as q
 from infrastructure.quality.reporter import QualityReporter, QualityReportError
 from tests.infrastructure.canonical import canonical_support as c
@@ -219,10 +220,7 @@ def test_a_committed_report_before_what_it_describes_is_never_reused(h: RestHarn
     early = utc(2023, 12, 1)
     reporter = QualityReporter(h.adapter, h.storage, clock=StepClock(start=early))
     bindings = reporter._pinned_heads(q._INPUT_TABLES["agg_trades"])
-    report_id = (
-        f"{q.QUALITY_RULE_ID}@{q.QUALITY_RULE_VERSION}.{c.TRADES.table}.{SYMBOL}."
-        f"{DAY.isoformat()}.{q._digest({'rule_hash': q.QUALITY_RULE_HASH, 'bindings': bindings})}"
-    )
+    report_id = q.quality_report_id(c.TRADES.table, SYMBOL, DAY, bindings)
     partition = reporter._survey("agg_trades", SYMBOL, DAY, bindings)
     body = reporter._body("agg_trades", SYMBOL, DAY, bindings, report_id, partition)
     reporter._commit(report_id, reporter._row(body, early))
@@ -230,6 +228,15 @@ def test_a_committed_report_before_what_it_describes_is_never_reused(h: RestHarn
     with pytest.raises(CatalogIntegrityError, match="knowledge_time before a revision"):
         QualityReporter(h.adapter, h.storage, clock=clock).report("agg_trades", SYMBOL, DAY)
     assert clock.calls == 0
+
+
+def test_the_report_id_changes_with_any_rule_it_relies_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Review H-3: a PIT (or required policy) change is a new report, not a stale one."""
+    bindings = {c.TRADES.table: "1"}
+    before = q.quality_report_id(c.TRADES.table, SYMBOL, DAY, bindings)
+    changed = PIT_BINDING.model_copy(update={"policy_hash": "0" * 64})
+    monkeypatch.setattr(q, "PIT_BINDING", changed)
+    assert q.quality_report_id(c.TRADES.table, SYMBOL, DAY, bindings) != before
 
 
 def test_bar_invariants_are_checked_without_thresholds() -> None:

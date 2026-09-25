@@ -401,22 +401,51 @@ def _straddle(h: RestHarness) -> str:
 
 
 @pytest.mark.parametrize(
-    "window",
+    ("window", "owned"),
     [
-        (utc(2023, 11, 14), utc(2023, 11, 15)),
-        (utc(2023, 11, 14, 21), utc(2023, 11, 14, 22)),
-        (utc(2023, 11, 14, 22), utc(2023, 11, 14, 23)),
+        ((utc(2023, 11, 14), utc(2023, 11, 15)), True),
+        ((utc(2023, 11, 14, 21), utc(2023, 11, 14, 22)), True),  # holds the earliest copy
+        ((utc(2023, 11, 14, 22), utc(2023, 11, 14, 23)), False),
     ],
 )
 def test_a_window_never_sees_one_side_of_a_conflict(
-    h: RestHarness, window: tuple[datetime, datetime]
+    h: RestHarness, window: tuple[datetime, datetime], owned: bool
 ) -> None:
+    """Review G-1 / H-1: a straddling key is evaluated with all its revisions, by the one window
+    holding its earliest event; a touching reader sees it in every window it touches."""
     key = _straddle(h)
-    out = PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, *window
-    )
-    assert key in out.conflicts
-    assert len(out.records[key]) == 2
+    selector = PitSelector(h.adapter, h.storage)
+    spec = _spec(h, cutoff=FAR)
+    out = selector.select(spec, "agg_trades", SYMBOL, *window)
+    assert (key in out.conflicts) is owned and (key in out.records) is owned
+    if owned:
+        assert len(out.records[key]) == 2
+    touching = selector.select(spec, "agg_trades", SYMBOL, *window, touching=True)
+    assert key in touching.conflicts and len(touching.records[key]) == 2
+
+
+def test_adjacent_windows_never_select_a_key_twice(h: RestHarness) -> None:
+    """Review H-1: with only the archive copy known, the key is selected by one hour only."""
+    key = _straddle(h)
+    spec = _spec(h, cutoff=N_A)
+    selector = PitSelector(h.adapter, h.storage)
+    hours = [
+        (utc(2023, 11, 14, 21), utc(2023, 11, 14, 22)),
+        (utc(2023, 11, 14, 22), utc(2023, 11, 14, 23)),
+    ]
+    selected = [
+        s.selected_revision_id
+        for start, end in hours
+        for s in selector.select(spec, "agg_trades", SYMBOL, start, end).selections
+        if s.observation_key == key and s.status is PointInTimeStatus.SELECTED
+    ]
+    whole = selector.select(spec, "agg_trades", SYMBOL, START, END)
+    assert len(selected) == 1
+    assert selected == [
+        s.selected_revision_id
+        for s in whole.selections
+        if s.observation_key == key and s.status is PointInTimeStatus.SELECTED
+    ]
 
 
 def test_the_day_report_keeps_a_conflict_whose_revisions_straddle_slices(h: RestHarness) -> None:

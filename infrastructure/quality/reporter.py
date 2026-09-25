@@ -65,6 +65,7 @@ __all__ = [
     "QualityReportError",
     "QualityReported",
     "QualityReporter",
+    "quality_report_id",
 ]
 
 QUALITY_RULE_ID: Final = "hlens.quality.canonical-partition"
@@ -88,7 +89,8 @@ QUALITY_RULE_SPEC: Final[dict[str, Any]] = {
     },
     "thresholds": "none (outliers need calibrated thresholds: a later rule version)",
     "evidence_gaps": "every Canonical revision of the partition with an evidence gap",
-    "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of inputs>",
+    "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of the rule hashes used "
+    "(this set, the PIT rule, its required policies) and the bound snapshots>",
     "knowledge_time": "first commit's clock reading, reused by every replay",
 }
 QUALITY_RULE_HASH: Final = hashlib.sha256(
@@ -153,6 +155,27 @@ class _Partition:
                 if item.observation_key == key
                 for head in item.maximal_heads
             )
+
+
+def quality_report_id(canonical: str, symbol: str, day: date, bindings: Mapping[str, str]) -> str:
+    """The report's identity: rule set, partition, bound snapshots and every rule it relies on.
+
+    The PIT rule and the policies its selections apply are hashed in too (review H-3): a change
+    to any of them is a new report, never a committed report that no longer re-derives.
+    """
+    rules_used = {
+        "quality": QUALITY_RULE_HASH,
+        "pit": PIT_BINDING.policy_hash,
+        **{
+            f"{binding.policy_id}@{binding.version}": binding.policy_hash
+            for bound in REQUIRED_BINDINGS.values()
+            for binding in bound
+        },
+    }
+    return (
+        f"{QUALITY_RULE_ID}@{QUALITY_RULE_VERSION}.{canonical}.{symbol}.{day.isoformat()}."
+        f"{_digest({'rules': rules_used, 'bindings': dict(bindings)})}"
+    )
 
 
 class QualityReportError(Exception):
@@ -233,10 +256,7 @@ class QualityReporter:
             canonical = rules.CANONICAL_TABLES[data_type].table
             if canonical not in bindings:
                 raise QualityReportError(f"{canonical} has no snapshot: nothing to report on")
-            report_id = (
-                f"{QUALITY_RULE_ID}@{QUALITY_RULE_VERSION}.{canonical}.{symbol}.{day.isoformat()}."
-                f"{_digest({'rule_hash': QUALITY_RULE_HASH, 'bindings': bindings})}"
-            )
+            report_id = quality_report_id(canonical, symbol, day, bindings)
             partition = self._survey(data_type, symbol, day, bindings)
             body = self._body(data_type, symbol, day, bindings, report_id, partition)
             # Every fact the report describes — revisions and the mapped precedence edges that
@@ -351,7 +371,9 @@ class QualityReporter:
             precedence_bindings=(DELIVERY_CHANNEL_BINDING, rules.PRECEDENCE_MAP_BINDING),
             parser_bindings=REQUIRED_BINDINGS["parser_bindings"],
         )
-        return self._selector.select(spec, data_type, symbol, start, end)
+        # Every key touching the slice: a straddling key is evaluated in each slice it touches
+        # and de-duplicated here (conflicts by key, rows by the slice that holds their event).
+        return self._selector.select(spec, data_type, symbol, start, end, touching=True)
 
     # ------------------------------------------------------------------ the report
 

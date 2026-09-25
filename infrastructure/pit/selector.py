@@ -91,8 +91,9 @@ PIT_SPEC: Final[dict[str, Any]] = {
     "elimination": "a candidate superseded, directly or through any known revision, by another "
     "candidate is eliminated",
     "result": "1 head -> selected; 0 -> absent; >1 -> conflict (the dataset fails closed)",
-    "window": "a key is in [start, end) when any revision's event lies in it; all its "
-    "revisions within one day of the window are evaluated together",
+    "window": "a key's revisions within one day of each other are evaluated together; the key "
+    "belongs to the window holding the earliest of their events (revisions further apart are "
+    "not matched)",
     "interval": "evaluated at the start and at every in-interval available_time of a known "
     "revision; identical consecutive results merged",
     "never_read": ["arrival_seq", "wall clock", "payload_hash ordering"],
@@ -217,7 +218,11 @@ class PitSelector:
         symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        touching: bool = False,
     ) -> PitSelection:
+        """Select the keys the window owns (default) or, with ``touching``, every key with any
+        revision in it (a reader that de-duplicates across windows, e.g. a quality report)."""
         if not isinstance(spec, PointInTimeSpec):
             raise PitSpecError("spec must be a PointInTimeSpec")
         _check_bindings(spec)
@@ -232,7 +237,9 @@ class PitSelector:
             raise PitSpecError(f"the spec does not bind {canonical.table}")
         view = self._pinned(spec)
 
-        rows = self._canonical_rows(view, canonical.table, data_type, instrument.symbol, start, end)
+        rows = self._canonical_rows(
+            view, canonical.table, data_type, instrument.symbol, start, end, touching
+        )
         verified = self._verify_canonical(view, rows)
         by_key: dict[str, list[Mapping[str, Any]]] = {}
         for row in verified:
@@ -298,13 +305,16 @@ class PitSelector:
         canonical_symbol: str,
         start: datetime,
         end: datetime,
+        touching: bool,
     ) -> list[Mapping[str, Any]]:
-        """Every revision of every key the window holds (key closure, G3-S3 review G-1).
+        """Every revision of every key the window owns (key closure, G3-S3 review G-1 / H-1).
 
-        A key is in ``[start, end)`` when any of its revisions' event lies there. Revisions of one
-        key may disagree on their event time (a mismatching archive and REST copy of one trade),
-        so all its revisions within ``_KEY_REACH`` of the window are read and evaluated together:
-        a window never sees only one side of a conflict.
+        Revisions of one key may disagree on their event time (a mismatching archive and REST
+        copy of one trade), so a key's revisions within ``_KEY_REACH`` of the window are read and
+        evaluated together, and the key belongs to the window holding its **earliest** such event
+        — exactly one of any partition of time into windows, so slices never select a key twice.
+        Revisions further apart than ``_KEY_REACH`` are not matched (a known limit: each side is
+        then evaluated alone in its own window).
         """
         definition = rules.CANONICAL_TABLES[data_type]
         column = _time_column(data_type)
@@ -328,7 +338,14 @@ class PitSelector:
                 And(_at_least(column, start - _KEY_REACH), _below(column, end + _KEY_REACH)),
             ),
         ).to_pylist()
-        return rows
+        earliest: dict[str, datetime] = {}
+        for row in rows:
+            key, at = row["observation_key"], row[column]
+            if key not in earliest or at < earliest[key]:
+                earliest[key] = at
+        if touching:
+            return rows
+        return [row for row in rows if start <= earliest[row["observation_key"]] < end]
 
     def _verify_canonical(
         self, view: PinnedCatalogView, rows: Sequence[Mapping[str, Any]]
