@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **Phase 1 收尾（REVIEW_PENDING）**：E2 上市历史、F2 历史标的池、F3 数据集与清单、F4 特征、D-HIST 历史可用性假设（ADR-0032，Raphael 批准）、证据缺口独立表（ADR-0031）均已实现并各经只读复核返修；剩余：数据集生产表（ADR-0033）、G1 端到端、G2 红队、G3 关闭证据 |
+| 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）**：Phase 1 收尾返修进行中；Phase 0.5、2～14 按路线图分 4 波、每波 4 个子代理先实现框架代码（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），全部完成后再逐个调试与验证 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3D 已验收；D3E + R1 + R2、D4、E0 待复核） |
 | 最后更新时间 | 2026-09-25 |
