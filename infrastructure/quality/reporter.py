@@ -35,6 +35,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThan
 
 from core.contracts.catalog import BatchConflict, CommitConflict, CommitRequest, TableNotFound
@@ -95,8 +96,10 @@ QUALITY_RULE_SPEC: Final[dict[str, Any]] = {
     "thresholds": "none (outliers need calibrated thresholds: a later rule version)",
     "evidence_gaps": "every Canonical revision of the partition with an evidence gap, as rows of "
     "quality.availability_evidence_gaps in batches <report_id>.gaps.<index:08d> (<= 25000 rows, "
-    "sorted by revision_id, in slice order) committed before the report row; the report row "
-    "lists none and carries an evidence_gaps event with the counts (ADR-0031)",
+    "sorted by revision_id, in slice order; each row carries its batch_index) committed before "
+    "the report row; each batch's rows must equal exactly the rows written for it and every row "
+    "of the report must lie in one of its batches; the report row lists none and carries an "
+    "evidence_gaps event with the counts (ADR-0031)",
     "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of the rule hashes used "
     "(this set, the PIT rule, its required policies) and the bound snapshots>",
     "knowledge_time": "first commit's clock reading, reused by every replay",
@@ -286,9 +289,15 @@ class QualityReporter:
                     f"no committed quality report {report_id} for these input snapshots"
                 )
             # A committed report is only ever verified: its gap batches are checked, never written.
-            partition = self._survey(
-                data_type, symbol, day, bindings, report_id, verify=committed is not None
-            )
+            # A gap batch that loses a commit race is retried like the report row; the batches
+            # already written replay idempotently and are verified again.
+            try:
+                partition = self._survey(
+                    data_type, symbol, day, bindings, report_id, verify=committed is not None
+                )
+            except CommitConflict as exc:
+                last = exc
+                continue
             body = self._body(data_type, symbol, day, bindings, report_id, partition)
             # Every fact the report describes — revisions and the mapped precedence edges that
             # decide its heads — must be known by its knowledge_time (E1-R3 / review C-2), for a
@@ -568,31 +577,31 @@ class QualityReporter:
 
 
 _GAP_BATCH_ROWS: Final = 25_000
-_DIGEST_MODULUS: Final = 1 << 256
-
-
-def _gap_digest(row: Mapping[str, Any]) -> int:
-    document = {
-        "quality_report_id": row["quality_report_id"],
-        "table": row["table"],
-        "revision_id": row["revision_id"],
-        "gap": row["gap"],
-        "subject_symbol": row["subject_symbol"],
-        "subject_start": row["subject_start"].isoformat(),
-    }
-    return int(_digest(document), 16)
-
-
 _GAP_INDEX_DIGITS: Final = 8
+_GAP_COLUMNS: Final = tuple(field.name for field in QUALITY_EVIDENCE_GAPS.arrow_schema)
+
+
+def _report_rows(report_id: str) -> Any:
+    return EqualTo("quality_report_id", report_id)  # type: ignore[call-arg, arg-type]
+
+
+def _gap_key(row: Mapping[str, Any]) -> tuple[Any, ...]:
+    return tuple(row[name] for name in _GAP_COLUMNS)
 
 
 class _GapWriter:
     """Streams a report's evidence gaps into ``quality.availability_evidence_gaps`` (ADR-0031).
 
     Batches ``<report_id>.gaps.<index:08d>`` of at most 25 000 rows, sorted by ``revision_id``
-    within each slice, numbered in slice order. Writing replays idempotently (same id, same
-    content); with ``verify`` nothing is written and every batch must already be committed with
-    exactly these rows, and no further batch of the report may exist.
+    within each slice, numbered in slice order; every row carries its batch's ``batch_index``.
+    Writing replays idempotently (same id, same content); with ``verify`` nothing is written and
+    every batch must already be committed by exactly one snapshot with exactly these rows.
+
+    In both modes each batch is checked as soon as it is written or verified: the rows the table
+    holds for ``(report, batch_index)`` must be exactly the batch's rows (same multiset). ``close``
+    then scans only the report's ``batch_index`` column: its count must be the rows written and
+    every index must be one written, so no row outside the checked batches exists (a batch that
+    appeared mid-run included). Memory stays bounded by one batch.
     """
 
     def __init__(
@@ -605,13 +614,14 @@ class _GapWriter:
         self._verify = verify
         self._rows = 0
         self._index = 0
-        self._digest = 0
+        # The committed report's batch snapshots (verify mode only). They are only looked up
+        # here, never trusted for completeness: that is the row-level batch_index check's job.
         self._committed: dict[str, list[Any]] | None = None
 
     def _batch_id(self, index: int) -> str:
         return f"{self._report_id}.gaps.{index:0{_GAP_INDEX_DIGITS}d}"
 
-    def _history(self) -> dict[str, list[Any]]:
+    def _snapshots(self) -> dict[str, list[Any]]:
         if self._committed is None:
             found: dict[str, list[Any]] = {}
             prefix = f"{self._report_id}.gaps."
@@ -628,6 +638,7 @@ class _GapWriter:
     def add(self, table: str, gaps: Sequence[tuple[str, str]]) -> None:
         ordered = sorted(gaps)
         for offset in range(0, len(ordered), _GAP_BATCH_ROWS):
+            index = self._index
             rows = [
                 {
                     "quality_report_id": self._report_id,
@@ -636,19 +647,19 @@ class _GapWriter:
                     "gap": gap,
                     "subject_symbol": self._symbol,
                     "subject_start": self._start,
+                    "batch_index": index,
                 }
                 for revision, gap in ordered[offset : offset + _GAP_BATCH_ROWS]
             ]
-            self._put(self._batch_id(self._index), rows)
+            self._put(self._batch_id(index), rows)
+            self._check_rows(index, rows)
             self._index += 1
             self._rows += len(rows)
-            for row in rows:
-                self._digest = (self._digest + _gap_digest(row)) % _DIGEST_MODULUS
 
     def _put(self, batch_id: str, rows: list[dict[str, Any]]) -> None:
         definition = QUALITY_EVIDENCE_GAPS
         if self._verify:
-            snapshots = self._history().get(batch_id, [])
+            snapshots = self._snapshots().get(batch_id, [])
             if len(snapshots) != 1:
                 raise CatalogIntegrityError(
                     f"evidence-gap batch {batch_id} is committed {len(snapshots)} time(s)"
@@ -676,30 +687,56 @@ class _GapWriter:
                 f"evidence-gap batch {batch_id} is committed with other content"
             ) from None
 
-    def close(self) -> tuple[int, int]:
-        if self._verify:
-            expected = {self._batch_id(index) for index in range(self._index)}
-            extra = sorted(set(self._history()) - expected)
-            if extra:
-                raise CatalogIntegrityError(
-                    f"evidence-gap batches {extra[:3]} belong to no gap of report {self._report_id}"
-                )
-        # The rows the table holds for this report must be exactly the rows written: a batch
-        # snapshot keeps its fingerprint when rows are deleted or added later, so the rows
-        # themselves are counted and digested (an order-independent sum of row hashes).
+    def _check_rows(self, index: int, rows: list[dict[str, Any]]) -> None:
+        """The table's rows of ``(report, index)`` are exactly ``rows`` (a batch-bounded scan).
+
+        A batch snapshot keeps its fingerprint when rows are later deleted, altered or added,
+        so the rows themselves are compared, as sorted canonical rows (an exact multiset check).
+        One row more than expected is enough to fail, so no more than that is read.
+        """
+        normalised = batch(QUALITY_EVIDENCE_GAPS, rows).to_pylist()
+        expected = sorted(_gap_key(row) for row in normalised)
         found = self._adapter.scan_columns(
             QUALITY_EVIDENCE_GAPS.table,
-            columns=("table", "revision_id", "gap", "subject_symbol", "subject_start"),
-            row_filter=EqualTo("quality_report_id", self._report_id),  # type: ignore[call-arg, arg-type]
-        )
-        digest = 0
-        for row in found.to_pylist():
-            row["quality_report_id"] = self._report_id
-            digest = (digest + _gap_digest(row)) % _DIGEST_MODULUS
-        if found.num_rows != self._rows or digest != self._digest:
+            columns=_GAP_COLUMNS,
+            row_filter=And(
+                _report_rows(self._report_id),
+                EqualTo("batch_index", index),  # type: ignore[call-arg, arg-type]
+            ),
+            limit=len(rows) + 1,
+        ).to_pylist()
+        if sorted(_gap_key(row) for row in found) != expected:
             raise CatalogIntegrityError(
-                f"{QUALITY_EVIDENCE_GAPS.table} holds {found.num_rows} gap row(s) of report "
-                f"{self._report_id}, not exactly the {self._rows} it wrote"
+                f"{QUALITY_EVIDENCE_GAPS.table} holds other gap rows in batch "
+                f"{self._batch_id(index)} than the {len(rows)} it wrote"
+            )
+
+    def close(self) -> tuple[int, int]:
+        """Every gap row of the report lies in a checked batch (one narrow ``batch_index`` scan)."""
+        indices = (
+            self._adapter.scan_columns(
+                QUALITY_EVIDENCE_GAPS.table,
+                columns=("batch_index",),
+                row_filter=_report_rows(self._report_id),
+            )
+            .column("batch_index")
+            .combine_chunks()
+        )
+        count = len(indices)
+        low, high, distinct = -1, -1, 0
+        if count:
+            bounds = pc.min_max(indices).as_py()
+            low, high = bounds["min"], bounds["max"]
+            distinct = pc.count_distinct(indices).as_py()
+        if (
+            count != self._rows
+            or (count and (low < 0 or high >= self._index))
+            or (distinct != self._index)
+        ):
+            raise CatalogIntegrityError(
+                f"{QUALITY_EVIDENCE_GAPS.table} holds {count} gap row(s) of report "
+                f"{self._report_id} in batch indices {low}..{high}, not exactly the "
+                f"{self._rows} it wrote in batches 0..{self._index - 1}"
             )
         return self._rows, self._index
 
@@ -733,7 +770,8 @@ def evidence_gaps_of(adapter: Any, report_id: str) -> list[dict[str, Any]]:
         }
         for gap in report["evidence_gaps"]
     ]
-    columns = tuple(field.name for field in QUALITY_EVIDENCE_GAPS.arrow_schema)
+    # ``batch_index`` is the writer's bookkeeping, not part of an AvailabilityEvidenceGap.
+    columns = tuple(name for name in _GAP_COLUMNS if name != "batch_index")
     info = adapter.load_table(QUALITY_EVIDENCE_GAPS.table)
     if info is not None and info.current_snapshot is not None:
         found.extend(

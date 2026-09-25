@@ -215,7 +215,7 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 | `raw.binance_spot_rest_klines_1m` | 从 REST 响应页解码的已结束 1m kline 元素 revision，绑定首个交付它的响应 revision | identity `symbol` + `day(interval_start)` |
 | `raw.binance_spot_precedence_evidence` | 独立、append-only 的完整 `PrecedenceEvidence`：稳定 `edge_id`（不含时间）、`observation_key`、两端 revision 与所在表、policy 绑定、证据、边的 `knowledge_time`、比较时固定的两侧 snapshot、投影哈希（ADR-0027 §1 / §4） | 不分区 |
 | `raw.binance_spot_exchange_info` | 每次成功 `GET /api/v3/exchangeInfo` 快照的 Raw source revision：请求身份、响应字节对象引用、HTTP 元数据、`serverTime` 与请求 symbol 的原生字段（ADR-0029 §1） | 不分区 |
-| `quality.availability_evidence_gaps` | 质量报告引用的 `AvailabilityEvidenceGap` 逐条记录（`quality_report_id` + `table` + `revision_id` + `gap`），按时段分批只追加写入；报告行是唯一引用（ADR-0031） | identity `subject_symbol` + `day(subject_start)` |
+| `quality.availability_evidence_gaps` | 质量报告引用的 `AvailabilityEvidenceGap` 逐条记录（`quality_report_id` + `table` + `revision_id` + `gap`，另带所在批次序号 `batch_index`），按时段分批只追加写入、逐批按行核对；报告行是唯一引用（ADR-0031） | identity `subject_symbol` + `day(subject_start)` |
 
 - **归档字节**以不可变对象存于 warehouse（经 `StorageAdapter`：staging → checksum 校验 → 同文件系统原子发布），
   由 `raw.binance_spot_archives` 引用；**不存入 PostgreSQL**，也不覆盖：同路径新 checksum = 新对象 + 新 revision。

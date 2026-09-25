@@ -213,9 +213,9 @@ QG_PARTITIONS: dict[str, list[tuple[int, str, str, str]]] = {
 }
 QG_GOLDEN: dict[str, tuple[str, str, str]] = {
     "quality.availability_evidence_gaps": (
-        "139fdac6ea09495cc60e2ecdfc860039ea1f824583e0211aa394932c2a42456d",
-        "2dffd38d84f669f014c68c28ed7fb7d5b72893fff92ada1efd3a4e0a801c2cab",
-        "7fc6533bdf25ed3fe80d7a1df32d47d3f5fdfadd9a5db4af423c9f39f9edd48d",
+        "3b4cf1b2362422e42a1dd17d5227290c6200e3440d79520f9e9e516542918bd0",
+        "f6c2591a7ead79bdbc148b109e998d9e1fc99a5114b7fefe24054d8666f320e8",
+        "d3bd775f95931b4650cc17ffccc827ec844c4a47e0bf853ae853c9e666ac5607",
     ),
 }
 #: All fourteen tables in registry order, their partitions and goldens.
@@ -372,10 +372,13 @@ def test_quality_evidence_gaps_table_holds_one_gap_per_row_partitioned_by_subjec
         "gap",
         "subject_symbol",
         "subject_start",
+        "batch_index",
     ]
     for field in schema.fields:
         assert field.required, field.name
     assert isinstance(schema.find_type("subject_start"), TimestamptzType)
+    # QG-R1: each row names its batch, so a report is verified batch by batch in bounded memory.
+    assert isinstance(schema.find_type("batch_index"), LongType)
     assert [
         (f.field_id, str(f.transform), schema.find_column_name(f.source_id), f.name)
         for f in QUALITY_EVIDENCE_GAPS.partition_spec.fields

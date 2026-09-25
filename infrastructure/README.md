@@ -275,7 +275,8 @@ listing 推导 `binance.spot.listing-status@1.0.0`、precedence policy `binance.
 ## quality.availability_evidence_gaps 表（QG-1，ADR-0031，仅表结构）
 
 `catalog/phase1_tables.py` 追加第 14 张表 `quality.availability_evidence_gaps`：每条
-`AvailabilityEvidenceGap`（`quality_report_id` + `table` + `revision_id` + `gap`）一行，分区
+`AvailabilityEvidenceGap`（`quality_report_id` + `table` + `revision_id` + `gap`）一行，另带写入它的批次序号
+`batch_index`（QG-R1：报告按批次逐批核对行，内存以一批为界），分区
 `identity(subject_symbol) + day(subject_start)`，前 13 张的定义与哈希不变（回归测试
 `test_earlier_goldens_are_unchanged_by_qg1`，镜像 E2 的 `test_earlier_goldens_are_unchanged_by_e2`）。
 本批只交付表定义；把质量规则升到 `hlens.quality.canonical-partition@2.0.0` 并分批写入该表属

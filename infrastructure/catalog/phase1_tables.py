@@ -56,9 +56,10 @@ Accepted ADRs and contracts, the producers come in later batches):
   additive, append-only table carrying one row per ``AvailabilityEvidenceGap`` referenced by a
   quality report (``quality_report_id`` + ``table`` + ``revision_id`` + ``gap``), partitioned by
   ``identity(subject_symbol) + day(subject_start)`` so a report's gaps can be written in bounded,
-  time-sliced batches instead of one unbounded report row. The report row itself is the only
-  reference to a batch of gap rows; nothing here changes ``AvailabilityEvidenceGap`` or
-  ``quality.data_quality_reports``.
+  time-sliced batches instead of one unbounded report row. Each row carries the ``batch_index`` of
+  the batch that wrote it, so a report's rows are verified batch by batch in bounded memory.
+  The report row itself is the only reference to a batch of gap rows; nothing here changes
+  ``AvailabilityEvidenceGap`` or ``quality.data_quality_reports``.
 
 This module creates no data and derives no semantics: revision IDs, observation keys, policy
 evidence, parsing, Canonical conversion and PIT selection belong to batches D ~ F.
@@ -949,6 +950,7 @@ QUALITY_EVIDENCE_GAPS: Final = _definition(
         _req(4, "gap", _S, "AvailabilityEvidenceGap.gap"),
         _req(5, "subject_symbol", _S, "partition symbol of the time-sliced batch this row is in"),
         _req(6, "subject_start", _T, "covered UTC day start, inclusive (partition key)"),
+        _req(7, "batch_index", _L, "index of the report's gap batch holding this row (0-based)"),
     ),
     _symbol_day_spec(5, 6, "subject_start"),
 )

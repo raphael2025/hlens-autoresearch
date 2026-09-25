@@ -9,8 +9,9 @@ from decimal import Decimal
 from typing import Any
 
 import pytest
-from pyiceberg.expressions import EqualTo
+from pyiceberg.expressions import And, EqualTo
 
+from core.contracts.catalog import CommitConflict, CommitRequest
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORTS, QUALITY_EVIDENCE_GAPS
 from infrastructure.pit.selector import PIT_BINDING
@@ -150,13 +151,157 @@ def test_a_reused_report_with_tampered_gaps_fails_closed(h: RestHarness, tamper:
         h.delete_rows(GAPS, EqualTo("revision_id", gap["revision_id"]))  # type: ignore[call-arg, arg-type]
         heads_before = h.head(GAPS.table)
     else:
-        h.forge_rows(GAPS, [gap], f"{first.report_id}.gaps.00000099")
+        h.forge_rows(GAPS, [dict(gap, batch_index=0)], f"{first.report_id}.gaps.00000099")
         heads_before = h.head(GAPS.table)
     clock = StepClock(start=K_Q)
-    # A deleted row leaves every batch snapshot intact: the rows themselves are digested.
-    with pytest.raises(CatalogIntegrityError, match="gap row|belong to no gap"):
+    # A deleted row leaves every batch snapshot intact: the rows themselves are compared.
+    with pytest.raises(CatalogIntegrityError, match="gap row"):
         QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
     assert clock.calls == 0 and h.head(GAPS.table) == heads_before
+
+
+def _stored_gaps(h: RestHarness, report_id: str) -> list[dict[str, Any]]:
+    return [row for row in h.rows(GAPS) if row["quality_report_id"] == report_id]
+
+
+def _replace_row(h: RestHarness, old: dict[str, Any], new: dict[str, Any]) -> None:
+    """A hostile maintenance writer: one row deleted, one row appended (the count is kept)."""
+    h.delete_rows(
+        GAPS,
+        And(
+            EqualTo("revision_id", old["revision_id"]),  # type: ignore[call-arg, arg-type]
+            EqualTo("table", old["table"]),  # type: ignore[call-arg, arg-type]
+        ),
+    )
+    h.forge_rows(GAPS, [new], "maintenance")
+
+
+def test_a_reused_report_with_an_altered_gap_row_fails_closed(h: RestHarness) -> None:
+    """Review QG-R1 #2: same row count, one gap text changed."""
+    _ingest(h, "klines_1m", ss.kline_items(2))
+    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    stored = _stored_gaps(h, first.report_id)
+    _replace_row(h, stored[0], dict(stored[0], gap=stored[0]["gap"] + " (altered)"))
+    assert len(_stored_gaps(h, first.report_id)) == len(stored)
+    clock = StepClock(start=K_Q)
+    with pytest.raises(CatalogIntegrityError, match="other gap rows in batch"):
+        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    assert clock.calls == 0
+
+
+def test_a_reused_report_with_a_row_moved_to_another_batch_fails_closed(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review QG-R1 #2: the report's rows are the same multiset, one row in the wrong batch."""
+    monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
+    _ingest(h, "klines_1m", ss.kline_items(3))
+    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    stored = _stored_gaps(h, first.report_id)
+    [moved, *_] = [row for row in stored if row["batch_index"] == 0]
+    _replace_row(h, moved, dict(moved, batch_index=1))
+    after = _stored_gaps(h, first.report_id)
+    assert sorted((r["table"], r["revision_id"], r["gap"]) for r in after) == sorted(
+        (r["table"], r["revision_id"], r["gap"]) for r in stored
+    )
+    clock = StepClock(start=K_Q)
+    with pytest.raises(CatalogIntegrityError, match=r"other gap rows in batch .*\.gaps\.00000000"):
+        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    assert clock.calls == 0
+
+
+@pytest.mark.parametrize("reuse", [False, True], ids=["write", "verify"])
+def test_a_gap_batch_appearing_mid_run_fails_closed(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch, reuse: bool
+) -> None:
+    """Review QG-R1 #3: a batch committed after the history was read is still caught, both
+    when the report is written and when a committed one is verified."""
+    monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
+    _ingest(h, "klines_1m", ss.kline_items(3))
+    if reuse:
+        QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+            "klines_1m", SYMBOL, DAY
+        )
+    reports_before = h.rows(REPORTS)
+    check = q._GapWriter._check_rows
+    forged: list[str] = []
+
+    def check_then_forge(writer: Any, index: int, rows: list[dict[str, Any]]) -> None:
+        check(writer, index, rows)
+        if index == 0 and not forged:
+            if reuse:
+                assert writer._committed is not None  # the batch history has been read
+            batch_id = f"{writer._report_id}.gaps.00000007"
+            h.forge_rows(GAPS, [dict(rows[0], batch_index=7)], batch_id)
+            forged.append(batch_id)
+
+    monkeypatch.setattr(q._GapWriter, "_check_rows", check_then_forge)
+    clock = StepClock(start=K_Q)
+    with pytest.raises(CatalogIntegrityError, match=r"in batch indices 0\.\.7"):
+        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    assert forged and clock.calls == 0 and h.rows(REPORTS) == reports_before
+
+
+@pytest.mark.parametrize("reuse", [False, True], ids=["write", "verify"])
+def test_gap_verification_reads_at_most_one_batch_per_scan(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch, reuse: bool
+) -> None:
+    """Review QG-R1 #1: no scan of the gap table returns more than one batch of gap rows; the
+    one scan over the whole report reads the batch_index column only."""
+    monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
+    _ingest(h, "klines_1m", ss.kline_items(3))
+    if reuse:
+        QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+            "klines_1m", SYMBOL, DAY
+        )
+    scan = h.adapter.scan_columns
+    scans: list[tuple[tuple[str, ...], int]] = []
+
+    def spy(table: str, **kwargs: Any) -> Any:
+        found = scan(table, **kwargs)
+        if table == GAPS.table:
+            scans.append((tuple(kwargs["columns"]), found.num_rows))
+        return found
+
+    monkeypatch.setattr(h.adapter, "scan_columns", spy)
+    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    assert out.reused is reuse
+    wide = [rows for columns, rows in scans if columns != ("batch_index",)]
+    narrow = [rows for columns, rows in scans if columns == ("batch_index",)]
+    assert wide == [2, 2, 2]  # one scan per batch, each bounded by the batch size
+    assert narrow == [6]  # the whole report: one int64 column
+
+
+def test_a_gap_batch_losing_a_commit_race_is_retried(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review QG-R1 #4: a CommitConflict on a gap batch goes through the report's retry loop;
+    the batch already written replays idempotently."""
+    monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
+    _ingest(h, "klines_1m", ss.kline_items(3))
+    commit = h.adapter.commit_batch
+    gap_commits: list[str] = []
+
+    def racing(request: CommitRequest, table: Any) -> Any:
+        if request.table == GAPS.table:
+            gap_commits.append(request.batch_id)
+            if len(gap_commits) == 2:
+                raise CommitConflict("another writer moved the gap table")
+        return commit(request, table)
+
+    monkeypatch.setattr(h.adapter, "commit_batch", racing)
+    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    batches = [f"{out.report_id}.gaps.{i:08d}" for i in range(3)]
+    assert gap_commits == [batches[0], batches[1], *batches]
+    assert _gap_batches(h, out.report_id) == [(batch_id, 2) for batch_id in batches]
+    assert len(q.evidence_gaps_of(h.adapter, out.report_id)) == 6
 
 
 def test_competing_heads_and_trade_id_jumps_are_reported(h: RestHarness) -> None:

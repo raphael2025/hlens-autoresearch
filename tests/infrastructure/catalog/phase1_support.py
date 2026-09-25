@@ -952,6 +952,7 @@ def quality_evidence_gap_row(
         "gap": "x",
         "subject_symbol": symbol,
         "subject_start": start,
+        "batch_index": 0,
     }
 
 
