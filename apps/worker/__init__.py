@@ -1,5 +1,47 @@
-"""Application-plane worker (ADR-0044): idempotent, retryable jobs. Never imports research/."""
+"""Application-plane worker (ADR-0044, ADR-0049): idempotent jobs, the research-loop scheduler and
+the degradation monitor. Never imports research/ (stages are injected by a composition root)."""
 
+from apps.worker.degradation import DegradationCheck, DegradationMonitor
 from apps.worker.jobs import JobOutcome, JobRunner, JobSpec
+from apps.worker.loop import (
+    AUTOMATABLE_TARGETS,
+    STAGE_ORDER,
+    AutomationForbidden,
+    LifecycleGuard,
+    LoopAuditLog,
+    LoopBudget,
+    LoopHalted,
+    LoopRecord,
+    LoopStage,
+    ResearchLoop,
+    RoundContext,
+    RoundStatus,
+    StageRecord,
+    StageResult,
+    StageStatus,
+    StageUsage,
+)
 
-__all__ = ["JobOutcome", "JobRunner", "JobSpec"]
+__all__ = [
+    "AUTOMATABLE_TARGETS",
+    "STAGE_ORDER",
+    "AutomationForbidden",
+    "DegradationCheck",
+    "DegradationMonitor",
+    "JobOutcome",
+    "JobRunner",
+    "JobSpec",
+    "LifecycleGuard",
+    "LoopAuditLog",
+    "LoopBudget",
+    "LoopHalted",
+    "LoopRecord",
+    "LoopStage",
+    "ResearchLoop",
+    "RoundContext",
+    "RoundStatus",
+    "StageRecord",
+    "StageResult",
+    "StageStatus",
+    "StageUsage",
+]
