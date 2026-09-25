@@ -99,7 +99,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ## 4. 当前正在做
 
 - 🔨 **逐个调试（2026-09-25 夜）**：全部框架代码已合并并通过全量门禁；正在按 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) 逐项处理——
-  独立只读复核（cursor-agent）发现的问题已修复 18 项（验证门的 4 个高危泄漏 / 复用漏洞、G4 的"空配置即通过"、模拟场所绕过 Kill Switch、权重被当作数量等），
+  独立只读复核（cursor-agent）发现的问题已修复 26 项（验证门的 4 个高危泄漏 / 复用漏洞、G4 的"空配置即通过"、模拟场所绕过 Kill Switch、权重被当作数量等），
   其余缺口已登记；真实数据格式的端到端冒烟已通过（本机无真实行情，用真实格式小样本走真实入库路径；见 D-NET）
 - ⏸ Phase 1：实现与红队返修完成，等待 Codex / Raphael 验收（证据：`docs/reviews/2026-09-25-phase1-close-evidence.md`、`phase1-review-guide.md`）
 
@@ -252,7 +252,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 早上验收：先看 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md)（已修复的问题、已知缺口、待你决定的事），再看本文件 §2 阶段表。
+1. 早上验收：先看 [早上验收指南](docs/reviews/2026-09-26-morning-acceptance-guide.md)，再看 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) 与本文件 §2 阶段表。
 2. 你需要做决定的只有 §6 的 D-FLOAT、D-PFIELDS、D-CTRL、D-MINEFF、D-VFAIL、D-DEP、D-NET；不决定时系统保持保守（不会多放行、不会晋升）。
 3. 所有新 Phase 都是"框架已实现、未验证"：没有任何策略被验证或晋升，Profile 数值仍待冻结，系统没有下单能力。
 4. 代码在 `claude/hlens-autorecearch-dev-c05c2b`，已快进备份到私有仓库 `wip/phase-1-unreviewed`；没有合并 `main`、没有打 tag——这两件事需要你本人批准。
