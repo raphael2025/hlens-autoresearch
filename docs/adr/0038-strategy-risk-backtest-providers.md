@@ -54,10 +54,26 @@ contract suite 在首次消费它的 Phase（Phase 5）之前交付。roadmap Ph
 - 延期：每个策略的 ValidationReport（依赖 Phase 4 流水线接入）；Control Plane 上的权威 Failure Registry 与生命周期转移；
   Promotion（ADR-0005）。
 
-## Implementation note (wiring, 2026-09-25)
+## Implementation note (signal adapters, 2026-09-25)
 
 上游结果 → 策略信号的可复用适配器在 `infrastructure/strategy/signals.py`（`signals_from_features` /
 `signals_from_states` / `signals_from_events`）：评估于 `t` 的 Feature / State 值与在 `t` 可观测的 Event 在 `t` 可用；
 `knowledge_time` 必须由调用方显式给出（上游运行的知识截止），早于结果时刻即拒绝；`None` 原样保留（不填补）；
 引用种类不符即拒绝，Outcome 由 `SignalObservation` 自身拒绝（C-L2）。测试：`tests/infrastructure/strategy/test_signals.py`。
 状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (wiring P5 → P13, 2026-09-25)
+
+Phase 5 → Phase 13 的接缝已接上（裁决不变；细节与 ADR-0046 的同一条记录一致）：`apps/execution/
+strategy_source.py` 新增 `StrategyProviderTargetSource`，把一个 `StrategyProvider`（可选 `RiskProvider`）
+包成 `apps.execution.service.TargetPositionSource`。构造 `StrategyRequest` 时 `knowledge_cutoff = as_of`、
+`decision_times = (as_of,)`，且信号先按 `available_time <= as_of` 且 `knowledge_time <= as_of` 过滤才进入请求
+（不给一个"过于热心"的信号源留下泄漏未来的机会）；答案未通过 `StrategyResult.check_answers`（或接入
+`RiskProvider` 时 `RiskResult.check_answers`）即 fail closed（`StrategySourceRefused`），从不填补。**v1 简化**
+（留给调试批次，非契约变更）：把 `target_weight` 直接映射为 `apps.execution.records.TargetPosition.quantity`
+——执行侧的逐标的记账（差额、订单、成交、二道风控）因此被真实数值端到端跑通，但真正的仓位定量
+（`quantity = weight * equity / price`，`plugins.backtest.bar` 对研究回测的做法）需要这条窄缝目前没有的权益
+与价格知识。新增 `tests/fake_strategy.py`（确定性 `StrategyProvider` / `RiskProvider` 测试替身）与
+`tests/apps/test_execution_strategy_source.py`：未来信号不泄漏、fail closed、风控约束确有效果、经
+`ExecutionService.admit` / `run_once`（SIMULATED，`RiskLimits.from_risk_policy`）端到端、LIVE 仍被拒绝、
+Kill Switch 仍能止住订单流。

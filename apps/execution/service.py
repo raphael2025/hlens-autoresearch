@@ -74,7 +74,10 @@ class TargetPositionSource(Protocol):
     """The narrow seam to Phase 5: the only way strategy output enters the execution plane.
 
     A production strategy runtime (Phase 5, ADR-0038) implements this for a promoted artifact's
-    deployment; it returns target positions, never orders.
+    deployment; it returns target positions, never orders. ``apps.execution.strategy_source.
+    StrategyProviderTargetSource`` is the wiring adapter: it wraps a
+    ``core.contracts.strategy.StrategyProvider`` (+ optional ``RiskProvider``) and a signal source
+    to answer this Protocol.
     """
 
     def target_positions(self, deployment_id: str, as_of: datetime) -> TargetPositions: ...

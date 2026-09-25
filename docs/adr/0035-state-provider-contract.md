@@ -94,3 +94,16 @@ Protocol：`descriptor` → `StateProviderDescriptor`；`compute(StateRequest) �
 - [x] 不修改 Validation Constitution 或 Profile；无数值验证阈值
 - [x] Domain 层仍无具体技术依赖
 - [x] Outcome 不进入 State 输入（`StateInput.feature` 只能 `kind=feature`）
+
+## Implementation note（wiring，2026-09-25）
+
+Phase 2 → Phase 3 的接缝已接上（不改本 ADR 的裁决，见 ADR-0036 的同一条记录）：
+`infrastructure/event/inputs.py` 新增 `state_value_lineage` / `state_series_from_state_run`，把一次
+`(StateRequest, StateResult)` 转成事件引擎的 `StateSeriesPoint`。因果性直接来自本 ADR §1 的结构性截断：
+`run_state` 保证一个评估时刻的 `StateValue` 只是 `visible_at(t, training_window)` 的函数，因此
+`state_value_lineage` 只需绑定 state 身份（ref、spec hash、provider、provider hash）与该 `StateValue`
+本身——不得绑定 `request_hash` / `result_hash`（覆盖整段运行的全部评估时刻，含未来）。`StateValue.state`
+为 `None`（不可计算）原样传为 `label=None`，不填补。`tests/smoke/test_phase3_events_smoke.py` 的状态序列
+已从"符号 stand-in"换成真实的 `plugins.states.TrendRangeProvider`（经 `infrastructure.state.run_state`）；
+新增 `tests/infrastructure/event/test_state_inputs.py`：重跑同请求结果一致、未来扰动不改变过去的点与下游
+事件 id、显式 `None` 不被填补。

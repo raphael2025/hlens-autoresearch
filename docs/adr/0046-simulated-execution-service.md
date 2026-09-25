@@ -49,3 +49,13 @@ Raphael **未授权**实盘交易（CLAUDE.md H10、ADR-0022 §7）。本构建�
 - 负面：没有持久化（审计与总线都在进程内）；没有部分成交、盘口、延迟、资金费率等更真实的模拟；PAPER 与 SIMULATED 目前使用同一模拟场所，
   区别只在记录的阶梯等级；多部署共享一个账户级风控簿。
 - 未决：真实 venue、凭据管理、实盘授权服务、实时行情接入、持久审计存储——全部需要 Raphael 授权与新 ADR。
+
+## Implementation note（wiring，2026-09-25）
+
+第 1 条裁决中"Phase 5 的 Strategy / Risk Provider 由 lead 接到这个接口"已完成：新增
+`apps/execution/strategy_source.py`（`StrategyProviderTargetSource` / `StrategySourceRefused`），只
+import `core.contracts.strategy` / `core.domain` / `apps.execution`——不 import `research/` 或
+`infrastructure/`（`tests/test_architecture_boundaries.py` 的执行服务红线覆盖本文件）。适配器的行为、
+已知的 v1 简化（`target_weight` 直接映射为 `quantity`，真正定量留给调试批次）与测试见 ADR-0038 的同一条
+记录；红线（第 5 条 LIVE 拒绝、第 6 条 Kill Switch）在新增的端到端测试
+（`tests/apps/test_execution_strategy_source.py`）中重新断言，均未放宽。

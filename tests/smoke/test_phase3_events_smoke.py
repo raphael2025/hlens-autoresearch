@@ -1,11 +1,14 @@
-"""Phase 3 smoke: synthetic bars -> features -> events -> interactions -> statistics (ADR-0036).
+"""Phase 3 smoke: synthetic bars -> features -> state -> events -> interactions -> statistics
+(ADR-0035, ADR-0036).
 
 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED: this proves the pipeline is wired, point-in-time,
 deterministic and traceable on a seeded synthetic market; it says nothing about any real-market
 effect.
 
-The state series is a stand-in built here (the sign of the log return, a causal label per minute)
-in the local Phase 3 shape — Phase 2's StateProvider replaces it when wired.
+The state series is a real Phase 2 ``StateProvider`` (``TrendRangeProvider``, an efficiency-ratio
+trend/range rule over the log-return feature) run through ``infrastructure.state.run_state`` and
+adapted to the event engine's input shape by
+``infrastructure.event.inputs.state_series_from_state_run`` (the Phase 2 -> Phase 3 wiring point).
 """
 
 from __future__ import annotations
@@ -19,16 +22,17 @@ from core.contracts.event import EventInputPoint, EventProvider, EventRequest, E
 from core.contracts.feature import FeatureObservation, FeatureRequest, FeatureResult
 from core.contracts.synthetic import SyntheticBar, SyntheticMarketSpec
 from core.contracts.universe import SelectedRevisionLineage
-from core.domain.base import FrozenMapping, Kind, Ref, content_hash
+from core.domain.base import FrozenMapping, content_hash
 from core.domain.specs import EventSpec, FeatureSpec
 from infrastructure.event.inputs import (
-    StateSeriesPoint,
     feature_value_lineage,
     inputs_from_feature_run,
     inputs_from_state_series,
+    state_series_from_state_run,
 )
 from infrastructure.event.runner import run_events
 from infrastructure.feature.runner import run_feature
+from infrastructure.state import run_state, state_inputs, state_request
 from plugins.events import (
     EventCoOccurrenceProvider,
     EventSequenceProvider,
@@ -37,6 +41,7 @@ from plugins.events import (
     VolatilityBreakoutProvider,
 )
 from plugins.features import BarLogReturnProvider, BarRealizedVolatilityProvider
+from plugins.states import TrendRangeProvider
 from plugins.synthetic import RandomWalkMarket
 from research.events.stats import co_occurrence, event_frequency, lead_lag, overlap_diagnostics
 
@@ -55,7 +60,9 @@ LINEAGE = SelectedRevisionLineage(
 )
 LOG_RETURN = BarLogReturnProvider.spec()
 REALIZED_VOL = BarRealizedVolatilityProvider.spec(5)
-DIRECTION = Ref(kind=Kind.STATE, name="return_direction", version="1.0.0")
+#: Rule-based (no training window, no seed): trend/range by efficiency ratio over 5 returns.
+TREND_RANGE = TrendRangeProvider.spec(LOG_RETURN.ref, window=5, threshold="0.5")
+DIRECTION = TREND_RANGE.ref
 
 CROSS = FeatureThresholdCrossProvider.spec(LOG_RETURN.ref, Decimal(0), "up")
 BREAKOUT = VolatilityBreakoutProvider.spec(REALIZED_VOL.ref, 10, Decimal("1.2"))
@@ -124,31 +131,23 @@ def _feature(
     return request, run_feature(provider, spec, request)
 
 
-def _direction(points: tuple[EventInputPoint, ...]) -> tuple[EventInputPoint, ...]:
-    """Stand-in state series: the sign of each log return (causal, per point)."""
-    series = []
-    for item in points:
-        value = item.value
-        label = None
-        if isinstance(value, Decimal):
-            label = "up" if value > 0 else "down" if value < 0 else "flat"
-        series.append(
-            StateSeriesPoint(
-                evaluation_time=item.evaluation_time,
-                available_time=item.available_time,
-                label=label,
-                lineage_hash=content_hash(
-                    {"stand_in": "return_direction", "from": item.source_lineage_hash}
-                ),
-            )
-        )
-    return inputs_from_state_series(DIRECTION, series)
+def _direction(
+    returns_request: FeatureRequest, returns: FeatureResult
+) -> tuple[EventInputPoint, ...]:
+    """The real Phase 2 state series: TrendRangeProvider over the log-return feature, run through
+    ``infrastructure.state.run_state`` and adapted to event inputs by
+    ``state_series_from_state_run`` (the Phase 2 -> Phase 3 wiring point)."""
+    inputs = state_inputs([(returns_request, returns)])
+    request = state_request(TREND_RANGE, returns_request.evaluation_times, inputs)
+    result = run_state(TrendRangeProvider((TREND_RANGE,)), TREND_RANGE, request)
+    points = state_series_from_state_run(request, result)
+    return inputs_from_state_series(DIRECTION, points)
 
 
 @dataclass(frozen=True)
 class Pipeline:
     inputs: tuple[EventInputPoint, ...]
-    #: Every causal lineage hash the feature runs and the state stand-in can produce.
+    #: Every causal lineage hash the feature runs and the state run can produce.
     lineages: frozenset[str]
     results: dict[str, EventResult]
 
@@ -177,7 +176,9 @@ def _pipeline(*, shock_after: datetime | None = None) -> Pipeline:
         for feature_request, result in ((returns_request, returns), (vol_request, vol))
         for value in result.values
     }
-    inputs = return_points + inputs_from_feature_run(vol_request, vol) + _direction(return_points)
+    direction_inputs = _direction(returns_request, returns)
+    state_lineages = {item.source_lineage_hash for item in direction_inputs}
+    inputs = return_points + inputs_from_feature_run(vol_request, vol) + direction_inputs
     results: dict[str, EventResult] = {}
     for spec, provider in (
         (CROSS, FeatureThresholdCrossProvider((CROSS,))),
@@ -197,8 +198,7 @@ def _pipeline(*, shock_after: datetime | None = None) -> Pipeline:
     )
     return Pipeline(
         inputs=inputs,
-        lineages=frozenset(feature_lineages)
-        | {content_hash({"stand_in": "return_direction", "from": x}) for x in feature_lineages},
+        lineages=frozenset(feature_lineages) | state_lineages,
         results=results,
     )
 

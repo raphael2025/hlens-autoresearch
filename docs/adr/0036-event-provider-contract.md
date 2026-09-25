@@ -82,4 +82,16 @@ PIT 一致性（不得未来确认）、哈希敏感、未声明规格、非有�
   - 一个请求对应一个标的（上游运行按标的）；多标的事件表需要 subject 键，另行决定。
   - 默认检查点使执行器成本为 O(检查点 × 可见集合)；更大规模需要增量接口（届时另立版本）。
   - 交互规格的 Feature / State 并集只核对形式（排序、唯一），不回溯核对上游规格——属 Registry。
-  - 物理 Event 表、Registry 登记、与 Phase 2 StateProvider 的适配器、统计在真实数据上的校准均未做（NOT_VALIDATED）。
+  - 物理 Event 表、Registry 登记、统计在真实数据上的校准均未做（NOT_VALIDATED）；与 Phase 2 StateProvider
+    的适配器见下方 Implementation note（已接上）。
+
+## Implementation note（wiring，2026-09-25）
+
+`infrastructure/event/inputs.py` 的 WIRING POINT 已接上：新增 `state_value_lineage` /
+`state_series_from_state_run`，把 Phase 2 的 `(StateRequest, StateResult)` 转成本 ADR §1 的
+`StateSeriesPoint` / `EventInputPoint`（`source_lineage_hash` 只依赖 state 身份与该点的 `StateValue`
+本身，从不依赖覆盖全部评估时刻的 `request_hash` / `result_hash`，因此过去的点与引用它们的事件的身份不随
+未来数据改变，符合 `EventInputPoint` 文档字符串的要求）；事件引擎其余部分不变。`tests/smoke/
+test_phase3_events_smoke.py` 的状态序列已换成真实的 `plugins.states.TrendRangeProvider`（经
+`infrastructure.state.run_state`），新增 `tests/infrastructure/event/test_state_inputs.py` 覆盖重跑一致、
+未来扰动不改变过去事件 id、显式 `None` 不填补。详见 ADR-0035 的同一条记录。
