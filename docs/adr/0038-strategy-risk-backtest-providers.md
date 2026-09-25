@@ -53,3 +53,11 @@ contract suite 在首次消费它的 Phase（Phase 5）之前交付。roadmap Ph
   生产路径应改由 FeatureProvider runner 产出信号。
 - 延期：每个策略的 ValidationReport（依赖 Phase 4 流水线接入）；Control Plane 上的权威 Failure Registry 与生命周期转移；
   Promotion（ADR-0005）。
+
+## Implementation note (wiring, 2026-09-25)
+
+上游结果 → 策略信号的可复用适配器在 `infrastructure/strategy/signals.py`（`signals_from_features` /
+`signals_from_states` / `signals_from_events`）：评估于 `t` 的 Feature / State 值与在 `t` 可观测的 Event 在 `t` 可用；
+`knowledge_time` 必须由调用方显式给出（上游运行的知识截止），早于结果时刻即拒绝；`None` 原样保留（不填补）；
+引用种类不符即拒绝，Outcome 由 `SignalObservation` 自身拒绝（C-L2）。测试：`tests/infrastructure/strategy/test_signals.py`。
+状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
