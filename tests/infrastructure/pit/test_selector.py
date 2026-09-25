@@ -325,11 +325,13 @@ class _RawScans(ProxyCatalog):
     """Counts full-width reads of the archive element table (proof windows)."""
 
     widths: list[tuple[int, int]] = field(default_factory=list)
+    columns: list[tuple[str, ...]] = field(default_factory=list)
 
     def scan_columns(self, table: str, **kwargs: Any) -> Any:
         result = self.inner.scan_columns(table, **kwargs)
         if table == c.ARCHIVE_AGGS.table:
             self.widths.append((len(kwargs["columns"]), result.num_rows))
+            self.columns.append(tuple(kwargs["columns"]))
         return result
 
 
@@ -351,3 +353,29 @@ def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> Non
         _spec(h, cutoff=FAR), "agg_trades", SYMBOL, START, END
     )
     assert {r: whole.selected_rows[r] for r in out.selected_rows} == dict(out.selected_rows)
+
+
+def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> None:
+    """G3-S3: bound snapshots never change, so slices under one spec reuse the proofs, and
+    every slice equals what a fresh selector returns."""
+    items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_A)
+    c.normalizer(h, clock=StepClock(start=N_A), microbatch_rows=2).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    first = utc(2023, 11, 14, 22, 14)
+    slices = [(first, first + 3 * MINUTE), (first + 3 * MINUTE, first + 7 * MINUTE)]
+    spec = _spec(h, cutoff=FAR)
+    log = _RawScans(h.adapter)
+    shared = PitSelector(log, h.storage)  # type: ignore[arg-type]
+    for start, end in slices:
+        out = shared.select(spec, "agg_trades", SYMBOL, start, end)
+        fresh = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, start, end)
+        assert out.selections == fresh.selections
+        assert dict(out.selected_rows) == dict(fresh.selected_rows)
+    # The unit's positions (a narrow read) were read once for both slices.
+    assert log.columns.count(("archive_line_number", "symbol")) == 1
+    # A new spec (other bindings) starts over.
+    later = _spec(h, cutoff=K_A)
+    shared.select(later, "agg_trades", SYMBOL, *slices[0])
+    assert shared._bound == tuple(sorted(later.snapshot_bindings.items()))

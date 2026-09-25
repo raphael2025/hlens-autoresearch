@@ -88,6 +88,10 @@ _ZERO: Final = timedelta(0)
 _ROWS_DIGITS: Final = 10
 _CHUNK_DIGITS: Final = 6
 _INDEX_DIGITS: Final = 8
+#: Units whose unit-wide facts an immutable-view normalizer keeps (G3-S3).
+_FACT_CACHE: Final = 2
+#: Proven committed batches an immutable-view normalizer keeps (each <= one microbatch).
+_BATCH_CACHE: Final = 2
 
 
 class CanonicalNormalizeError(Exception):
@@ -174,6 +178,16 @@ class _Pin:
 
 
 @dataclass(frozen=True, slots=True)
+class _UnitFacts:
+    """A unit's proven unit-wide facts (no Raw or Canonical rows)."""
+
+    positions: tuple[int, ...]
+    plan: _CommittedPlan | None
+    base: int | None
+    ready: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
 class _Survey:
     """What the proving pass established about the unit at the pinned view."""
 
@@ -218,6 +232,14 @@ class CanonicalNormalizer:
         self._storage = storage
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = microbatch_rows
+        #: On a ``PinnedCatalogView`` nothing can change under the normalizer (it cannot write
+        #: there either), so its pins — with their archive caches — and each unit's unit-wide
+        #: facts are proven once and reused by every later call (G3-S3: a reader of many time
+        #: slices of one unit).
+        self._frozen = isinstance(adapter, PinnedCatalogView)
+        self._pins: dict[tuple[str, ...], _Pin] = {}
+        self._facts: dict[tuple[str, str], _UnitFacts] = {}
+        self._batches: dict[tuple[str, str, int], tuple[Mapping[str, Any], ...]] = {}
 
     # ------------------------------------------------------------------ entry points
 
@@ -301,10 +323,105 @@ class CanonicalNormalizer:
         """
         channel = self._channel(raw_table, source_revision_id)
         pin = self._pin(channel, source_revision_id)
-        only = None if arrival_seqs is None else frozenset(arrival_seqs)
-        return self._survey(
-            pin, channel, source_revision_id, keep_rows=True, only=only
-        ).committed_rows
+        if arrival_seqs is None:
+            return self._survey(pin, channel, source_revision_id, keep_rows=True).committed_rows
+        return self._verify_batches(pin, channel, source_revision_id, frozenset(arrival_seqs))
+
+    def _verify_batches(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        seqs: frozenset[int],
+    ) -> tuple[Mapping[str, Any], ...]:
+        """The committed batches holding ``seqs``, proven, over the unit-wide facts (G3-S2)."""
+        facts = self._unit_facts(pin, channel, source_revision_id)
+        if facts.plan is None or facts.base is None or facts.ready is None:
+            return ()
+        plan, base, ready = facts.plan, facts.base, facts.ready
+        wanted = _batches_holding(facts.positions, plan.chunk, base, seqs) & set(plan.batches)
+        kept: list[Mapping[str, Any]] = []
+        for index in sorted(wanted):
+            key = (channel.element.table, source_revision_id, index)
+            proven = self._batches.get(key) if self._frozen else None
+            if proven is not None:
+                kept.extend(proven)
+                continue
+            low, high, _ = _batch_window(facts.positions, plan.chunk, index)
+            raw = self._raw_window(pin, channel, source_revision_id, low, high)
+            self._prove(pin, channel, raw)
+            planned = self._planned(channel, raw, base, ready)
+            check_batch_snapshot(
+                channel.canonical,
+                unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
+                plan.batches[index],
+                planned,
+            )
+            self._check_committed_window(pin, channel, base, low, high, planned)
+            kept.extend(planned)
+            if self._frozen:
+                # Consecutive time slices share at most their boundary batch: keep the last few.
+                while len(self._batches) >= _BATCH_CACHE:
+                    self._batches.pop(next(iter(self._batches)))
+                self._batches[key] = tuple(planned)
+        return tuple(kept)
+
+    def _unit_facts(
+        self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
+    ) -> _UnitFacts:
+        """Every unit-wide fact, from narrow columns; kept per unit on an immutable view."""
+        key = (channel.element.table, source_revision_id)
+        cached = self._facts.get(key) if self._frozen else None
+        if cached is not None:
+            return cached
+        table = channel.canonical.table
+        positions, symbol = self._positions(pin, channel, source_revision_id)
+        if not positions:
+            self._prove_source(pin, channel, source_revision_id)
+        self._check_positions(pin, channel, source_revision_id, positions, symbol)
+        plan = self._committed_plan(pin, channel, source_revision_id)
+        seqs, readies = self._committed_times(pin, channel, source_revision_id)
+        facts = _UnitFacts(tuple(positions), None, None, None)
+        if not positions:
+            if len(seqs) or plan is not None:
+                raise CatalogIntegrityError(
+                    f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
+                    "has no Raw element revision"
+                )
+        elif plan is None:
+            if len(seqs):
+                raise CatalogIntegrityError(
+                    f"{table}: unit {source_revision_id} has committed rows but no committed batch"
+                )
+        else:
+            base, ready = self._recover(channel, source_revision_id, seqs, readies)
+            if plan.unit_rows != len(positions):
+                raise CatalogIntegrityError(
+                    f"{table}: unit {source_revision_id} was normalized as {plan.unit_rows} rows "
+                    f"but its Raw unit now has {len(positions)}: the Raw unit changed"
+                )
+            indices = sorted(plan.batches)
+            if indices != list(range(len(indices))):
+                raise CatalogIntegrityError(
+                    f"{table}: the batches of unit {source_revision_id} are not a contiguous prefix"
+                )
+            if indices and indices[-1] * plan.chunk >= len(positions):
+                raise CatalogIntegrityError(
+                    f"{table}: batch {indices[-1]} of unit {source_revision_id} lies beyond its "
+                    "plan"
+                )
+            covered = min(len(indices) * plan.chunk, len(positions))
+            if not _same_numbers(seqs, [base + position for position in positions[:covered]]):
+                raise CatalogIntegrityError(
+                    f"{table}: the committed rows of unit {source_revision_id} are not exactly "
+                    "the rows of its committed batches (rows deleted or added)"
+                )
+            facts = _UnitFacts(tuple(positions), plan, base, ready)
+        if self._frozen:
+            while len(self._facts) >= _FACT_CACHE:
+                self._facts.pop(next(iter(self._facts)))
+            self._facts[key] = facts
+        return facts
 
     # ------------------------------------------------------------------ pin
 
@@ -320,6 +437,8 @@ class CanonicalNormalizer:
     def _pin(self, channel: rules.RawChannel, source_revision_id: str) -> _Pin:
         """Heads read twice and equal: at one instant between, all three held them."""
         tables = (channel.element.table, channel.source.table, channel.canonical.table)
+        if self._frozen and tables in self._pins:
+            return self._pins[tables]
         for _ in range(_ATTEMPTS):
             heads = tuple(self._head(table) for table in tables)
             if tuple(self._head(table) for table in tables) != heads:
@@ -328,11 +447,14 @@ class CanonicalNormalizer:
                 self._adapter,
                 {table: head for table, head in zip(tables, heads, strict=True) if head},
             )
-            return _Pin(
+            pin = _Pin(
                 catalog=catalog,
                 canonical_head=heads[2],
                 verifier=PersistedRowVerifier(catalog, self._storage, cache_archives=True),
             )
+            if self._frozen:
+                self._pins[tables] = pin
+            return pin
         raise CanonicalNormalizeConflict(
             f"{' / '.join(tables)} kept moving: no pinned read of unit {source_revision_id}"
         )
@@ -346,14 +468,11 @@ class CanonicalNormalizer:
         source_revision_id: str,
         *,
         keep_rows: bool,
-        only: frozenset[int] | None = None,
     ) -> _Survey:
         table = channel.canonical.table
         positions, symbol = self._positions(pin, channel, source_revision_id)
         floor: datetime | None = None
-        # Restricted (``only``): the Raw rows are proven with the committed batches holding the
-        # requested numbers, below — never a window nobody reads.
-        for low, high in () if only is not None else _proof_windows(positions, self._microbatch):
+        for low, high in _proof_windows(positions, self._microbatch):
             raw = self._raw_window(pin, channel, source_revision_id, low, high)
             self._prove(pin, channel, raw)
             latest = max(row["knowledge_time"] for row in raw)
@@ -392,17 +511,12 @@ class CanonicalNormalizer:
             raise CatalogIntegrityError(
                 f"{table}: batch {indices[-1]} of unit {source_revision_id} lies beyond its plan"
             )
-        wanted = None if only is None else _batches_holding(positions, plan.chunk, base, only)
         kept: list[Mapping[str, Any]] = []
         ids: list[str] = []
         covered = min(len(indices) * plan.chunk, unit_rows)
         for index in indices:
-            if wanted is not None and index not in wanted:
-                continue
             low, high, _ = _batch_window(positions, plan.chunk, index)
             raw = self._raw_window(pin, channel, source_revision_id, low, high)
-            if wanted is not None:
-                self._prove(pin, channel, raw)
             planned = self._planned(channel, raw, base, ready)
             check_batch_snapshot(
                 channel.canonical,

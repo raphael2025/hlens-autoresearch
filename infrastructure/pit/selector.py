@@ -189,6 +189,22 @@ class PitSelector:
     def __init__(self, adapter: PyIcebergCatalogAdapter, storage: StorageAdapter) -> None:
         self._adapter = adapter
         self._storage = storage
+        #: The last spec's bound snapshots, their view and immutable-view normalizer, and the
+        #: verified Raw edges per (data type, symbol, day): bound snapshots never change, so a
+        #: caller selecting many slices under one spec proves each unit and day once (G3-S3).
+        self._bound: tuple[tuple[str, str], ...] | None = None
+        self._view: PinnedCatalogView | None = None
+        self._normalizer: CanonicalNormalizer | None = None
+        self._edges: dict[tuple[str, str, date], tuple[Any, ...]] = {}
+
+    def _pinned(self, spec: PointInTimeSpec) -> PinnedCatalogView:
+        bound = tuple(sorted(spec.snapshot_bindings.items()))
+        if bound != self._bound or self._view is None:
+            self._bound = bound
+            self._view = PinnedCatalogView(self._adapter, spec.snapshot_bindings)
+            self._normalizer = CanonicalNormalizer(self._view, self._storage)
+            self._edges = {}
+        return self._view
 
     def select(
         self,
@@ -210,7 +226,7 @@ class PitSelector:
         days = _days(start, end)
         if canonical.table not in spec.snapshot_bindings:
             raise PitSpecError(f"the spec does not bind {canonical.table}")
-        view = PinnedCatalogView(self._adapter, spec.snapshot_bindings)
+        view = self._pinned(spec)
 
         rows = self._canonical_rows(view, canonical.table, data_type, instrument.symbol, start, end)
         verified = self._verify_canonical(view, rows)
@@ -293,7 +309,7 @@ class PitSelector:
         self, view: PinnedCatalogView, rows: Sequence[Mapping[str, Any]]
     ) -> list[Mapping[str, Any]]:
         """Every row read must be exactly a row its unit re-normalizes to at these snapshots."""
-        normalizer = CanonicalNormalizer(view, self._storage)
+        normalizer = self._normalizer or CanonicalNormalizer(view, self._storage)
         units: dict[tuple[str, str], set[int]] = {}
         for row in rows:
             unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
@@ -341,7 +357,11 @@ class PitSelector:
         reconciler = ChannelReconciler(view, self._storage)
         mapped: dict[str, list[PrecedenceEvidence]] = {}
         for day in days:
-            for edge in reconciler.verified_edges(data_type, symbol, day):
+            verified = self._edges.get((data_type, symbol, day))
+            if verified is None:
+                verified = tuple(reconciler.verified_edges(data_type, symbol, day))
+                self._edges[(data_type, symbol, day)] = verified
+            for edge in verified:
                 raw = edge.evidence
                 rows = by_key.get(raw.observation_key, ())
                 ends = []

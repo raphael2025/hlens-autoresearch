@@ -30,12 +30,12 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
-from pyiceberg.expressions import EqualTo, In
+from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThan
 
 from core.contracts.catalog import BatchConflict, CommitConflict, CommitRequest, TableNotFound
 from core.contracts.revision import PointInTimeSpec
@@ -120,6 +120,41 @@ _INPUT_TABLES: Final[Mapping[str, tuple[str, ...]]] = {
 }
 
 
+#: Selection slice per data type (G3-S3): a trade day is proven an hour at a time; a bar day
+#: (1 440 rows) at once. Keys never straddle slices, so the report is the whole-day report.
+_SLICES: Final[Mapping[str, timedelta]] = {
+    "agg_trades": timedelta(hours=1),
+    "klines_1m": _DAY,
+}
+
+
+@dataclass
+class _Partition:
+    """What the report needs from the proven partition, gathered slice by slice."""
+
+    floor: datetime | None = None
+    conflicts: dict[str, set[str]] = field(default_factory=dict)
+    bars: list[Mapping[str, Any]] = field(default_factory=list)
+    trade_ids: list[int] = field(default_factory=list)
+    gaps: list[tuple[str, str]] = field(default_factory=list)
+
+    def absorb(self, selection: PitSelection) -> None:
+        times = [
+            *(r.availability.times.knowledge_time for rs in selection.records.values() for r in rs),
+            *(e.knowledge_time for es in selection.edges.values() for e in es),
+        ]
+        if times:
+            latest = max(times)
+            self.floor = latest if self.floor is None else max(self.floor, latest)
+        for key in selection.conflicts:
+            self.conflicts.setdefault(key, set()).update(
+                head
+                for item in selection.selections
+                if item.observation_key == key
+                for head in item.maximal_heads
+            )
+
+
 class QualityReportError(Exception):
     """A report cannot be produced honestly (scope, clock, contention); nothing is committed."""
 
@@ -182,6 +217,7 @@ class QualityReporter:
         self._adapter = adapter
         self._storage = storage
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._selector = PitSelector(adapter, storage)
 
     def report(self, data_type: str, symbol: str, day: date) -> QualityReported:
         tables = _INPUT_TABLES.get(data_type)
@@ -201,22 +237,12 @@ class QualityReporter:
                 f"{QUALITY_RULE_ID}@{QUALITY_RULE_VERSION}.{canonical}.{symbol}.{day.isoformat()}."
                 f"{_digest({'rule_hash': QUALITY_RULE_HASH, 'bindings': bindings})}"
             )
-            selection = self._select(data_type, symbol, day, bindings)
-            body = self._body(data_type, symbol, day, bindings, report_id, selection)
+            partition = self._survey(data_type, symbol, day, bindings)
+            body = self._body(data_type, symbol, day, bindings, report_id, partition)
             # Every fact the report describes — revisions and the mapped precedence edges that
             # decide its heads — must be known by its knowledge_time (E1-R3 / review C-2), for a
             # fresh report and for a committed one it would reuse alike (E1-R4).
-            floor = max(
-                (
-                    *(
-                        r.availability.times.knowledge_time
-                        for rs in selection.records.values()
-                        for r in rs
-                    ),
-                    *(e.knowledge_time for es in selection.edges.values() for e in es),
-                ),
-                default=None,
-            )
+            floor = partition.floor
             committed = self._committed(report_id)
             if committed is not None:
                 if floor is not None and committed["knowledge_time"] < floor:
@@ -257,8 +283,62 @@ class QualityReporter:
                 return {table: head for table, head in sorted(first.items()) if head is not None}
         raise QualityReportError("the input tables kept moving")
 
-    def _select(
+    def _survey(
         self, data_type: str, symbol: str, day: date, bindings: Mapping[str, str]
+    ) -> _Partition:
+        """The proven partition, selected slice by slice (G3-S3); nothing else is kept."""
+        partition = _Partition()
+        # One selector for every slice: it proves each unit and day once under these bindings.
+        self._selector = PitSelector(self._adapter, self._storage)
+        canonical = rules.CANONICAL_TABLES[data_type].table
+        start = datetime.combine(day, time(), tzinfo=UTC)
+        step = _SLICES[data_type]
+        for begin in self._occupied(data_type, symbol, bindings, start, step):
+            end = min(begin + step, start + _DAY)
+            selection = self._select(data_type, symbol, begin, end, bindings)
+            partition.absorb(selection)
+            rows = self._rows(canonical, bindings, selection, symbol, begin, end)
+            if data_type == "klines_1m":
+                partition.bars.extend(rows)
+            else:
+                partition.trade_ids.extend(int(row["venue_trade_id"]) for row in rows)
+            partition.gaps.extend(
+                (row["revision_id"], row["availability_evidence_gap"])
+                for row in rows
+                if row["availability_evidence_gap"] is not None
+            )
+        return partition
+
+    def _occupied(
+        self,
+        data_type: str,
+        symbol: str,
+        bindings: Mapping[str, str],
+        start: datetime,
+        step: timedelta,
+    ) -> list[datetime]:
+        """Slice starts of the day holding at least one Canonical row (one narrow scan).
+
+        A slice without rows has no key, so nothing of it can enter the report; skipping it
+        leaves the report unchanged.
+        """
+        canonical = rules.CANONICAL_TABLES[data_type].table
+        column = _time_column(data_type)
+        times = self._adapter.scan_columns(
+            canonical,
+            columns=(column,),
+            row_filter=_slice_filter(symbol, column, start, start + _DAY),
+            snapshot_id=bindings[canonical],
+        ).column(column)
+        return sorted({start + ((value - start) // step) * step for value in times.to_pylist()})
+
+    def _select(
+        self,
+        data_type: str,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        bindings: Mapping[str, str],
     ) -> PitSelection:
         spec = PointInTimeSpec(
             name="hlens.quality.partition-view",
@@ -271,10 +351,7 @@ class QualityReporter:
             precedence_bindings=(DELIVERY_CHANNEL_BINDING, rules.PRECEDENCE_MAP_BINDING),
             parser_bindings=REQUIRED_BINDINGS["parser_bindings"],
         )
-        start = datetime.combine(day, time(), tzinfo=UTC)
-        return PitSelector(self._adapter, self._storage).select(
-            spec, data_type, symbol, start, start + _DAY
-        )
+        return self._selector.select(spec, data_type, symbol, start, end)
 
     # ------------------------------------------------------------------ the report
 
@@ -285,9 +362,9 @@ class QualityReporter:
         day: date,
         bindings: Mapping[str, str],
         report_id: str,
-        selection: PitSelection,
+        partition: _Partition,
     ) -> dict[str, Any]:
-        canonical = selection.canonical_table
+        canonical = rules.CANONICAL_TABLES[data_type].table
         start = datetime.combine(day, time(), tzinfo=UTC)
         events = [
             _event(
@@ -300,13 +377,7 @@ class QualityReporter:
                 detail=canonical_json(dict(bindings)),
             )
         ]
-        for key in selection.conflicts:
-            heads = {
-                head
-                for item in selection.selections
-                if item.observation_key == key
-                for head in item.maximal_heads
-            }
+        for key, heads in sorted(partition.conflicts.items()):
             events.append(
                 _event(
                     "competing_heads",
@@ -318,19 +389,13 @@ class QualityReporter:
                     detail=f"{len(heads)} maximal heads with everything the bound snapshots know",
                 )
             )
-        rows = self._rows(canonical, bindings, selection)
         if data_type == "klines_1m":
-            events.extend(_bar_events(canonical, rows, start))
+            events.extend(_bar_events(canonical, partition.bars, start))
         else:
-            events.extend(_trade_events(canonical, rows))
+            events.extend(_trade_events(canonical, partition.trade_ids))
         gaps = [
-            {
-                "table": canonical,
-                "revision_id": row["revision_id"],
-                "gap": row["availability_evidence_gap"],
-            }
-            for row in sorted(rows, key=lambda item: item["revision_id"])
-            if row["availability_evidence_gap"] is not None
+            {"table": canonical, "revision_id": revision, "gap": gap}
+            for revision, gap in sorted(partition.gaps)
         ]
         return {
             "report_id": report_id,
@@ -347,25 +412,24 @@ class QualityReporter:
         }
 
     def _rows(
-        self, canonical: str, bindings: Mapping[str, str], selection: PitSelection
+        self,
+        canonical: str,
+        bindings: Mapping[str, str],
+        selection: PitSelection,
+        symbol: str,
+        start: datetime,
+        end: datetime,
     ) -> list[Mapping[str, Any]]:
-        """The proven Canonical rows of the partition (as the selector verified them)."""
+        """The slice's proven Canonical rows: one scan of the slice, exactly the proven set."""
         wanted = {r.revision_id for rs in selection.records.values() for r in rs}
-        if not wanted:
-            return []
         table = next(t for t in rules.CANONICAL_TABLES.values() if t.table == canonical)
-        columns = tuple(field.name for field in table.arrow_schema)
-        found: list[Mapping[str, Any]] = []
-        ids = sorted(wanted)
-        for offset in range(0, len(ids), 256):
-            found.extend(
-                self._adapter.scan_columns(
-                    canonical,
-                    columns=columns,
-                    row_filter=_member("revision_id", ids[offset : offset + 256]),
-                    snapshot_id=bindings[canonical],
-                ).to_pylist()
-            )
+        data_type = next(k for k, t in rules.CANONICAL_TABLES.items() if t.table == canonical)
+        found: list[Mapping[str, Any]] = self._adapter.scan_columns(
+            canonical,
+            columns=tuple(field.name for field in table.arrow_schema),
+            row_filter=_slice_filter(symbol, _time_column(data_type), start, end),
+            snapshot_id=bindings[canonical],
+        ).to_pylist()
         if {row["revision_id"] for row in found} != wanted or len(found) != len(wanted):
             raise CatalogIntegrityError(f"{canonical} rows do not match the proven revisions")
         return found
@@ -419,8 +483,18 @@ class QualityReporter:
         return None if info.current_snapshot is None else info.current_snapshot.snapshot_id
 
 
-def _member(column: str, values: Iterable[object]) -> Any:
-    return In(column, set(values))  # type: ignore[call-arg, arg-type]
+def _time_column(data_type: str) -> str:
+    return "event_time" if data_type == "agg_trades" else "interval_start"
+
+
+def _slice_filter(symbol: str, column: str, start: datetime, end: datetime) -> Any:
+    return And(
+        EqualTo("symbol", rules.SYMBOLS[symbol].symbol),  # type: ignore[call-arg, arg-type]
+        And(
+            GreaterThanOrEqual(column, start),  # type: ignore[call-arg, arg-type]
+            LessThan(column, end),  # type: ignore[call-arg, arg-type]
+        ),
+    )
 
 
 def _bar_events(
@@ -479,8 +553,8 @@ def _gap(table: str, start: datetime, end: datetime) -> dict[str, Any]:
     )
 
 
-def _trade_events(table: str, rows: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
-    ids = sorted({int(row["venue_trade_id"]) for row in rows})
+def _trade_events(table: str, trade_ids: Iterable[int]) -> list[dict[str, Any]]:
+    ids = sorted(set(trade_ids))
     events = []
     for previous, current in zip(ids, ids[1:], strict=False):
         if current != previous + 1:

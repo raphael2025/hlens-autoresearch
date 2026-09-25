@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
-from datetime import timedelta
+from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
@@ -129,6 +129,36 @@ def test_trade_id_jumps_at_the_boundary(h: RestHarness, next_id: int, absent: in
         assert jumps == [f"aggregate trade ids jump from 102 to {next_id} ({absent} id(s) absent)"]
 
 
+def test_a_trade_day_is_proven_hour_by_hour_into_one_report(h: RestHarness) -> None:
+    """G3-S3: slices are an implementation detail; a jump across an hour boundary, and every
+    evidence gap of every slice, land in the one day report."""
+    early = ss.agg_items(2, first_id=100, first_ms=ss.T0 - 15 * ss.MINUTE_MS)  # 21:59
+    late = ss.agg_items(2, first_id=105, first_ms=ss.T0)  # 22:14
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(early + late), knowledge=K_A)
+    c.normalizer(h, clock=StepClock(start=N_A)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    selected: list[tuple[datetime, datetime]] = []
+    reporter = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q))
+    select = reporter._select
+
+    def spy(data_type: str, symbol: str, start: datetime, end: datetime, bindings: Any) -> Any:
+        selected.append((start, end))
+        return select(data_type, symbol, start, end, bindings)
+
+    reporter._select = spy  # type: ignore[method-assign]
+    out = reporter.report("agg_trades", SYMBOL, DAY)
+    assert selected == [
+        (utc(2023, 11, 14, 21), utc(2023, 11, 14, 22)),
+        (utc(2023, 11, 14, 22), utc(2023, 11, 14, 23)),
+    ]
+    [jump] = _events(out.row, "agg_trade_id_discontinuity")
+    assert jump["detail"] == "aggregate trade ids jump from 101 to 105 (3 id(s) absent)"
+    rows = h.rows(c.TRADES)
+    assert [gap["revision_id"] for gap in out.row["evidence_gaps"]] == sorted(
+        row["revision_id"] for row in rows if row["availability_evidence_gap"] is not None
+    )
+    assert len(out.row["evidence_gaps"]) == 4
+
+
 def test_a_replay_reuses_the_report_and_new_data_makes_a_new_one(h: RestHarness) -> None:
     _ingest(h, "klines_1m", ss.kline_items(1))
     first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
@@ -193,8 +223,8 @@ def test_a_committed_report_before_what_it_describes_is_never_reused(h: RestHarn
         f"{q.QUALITY_RULE_ID}@{q.QUALITY_RULE_VERSION}.{c.TRADES.table}.{SYMBOL}."
         f"{DAY.isoformat()}.{q._digest({'rule_hash': q.QUALITY_RULE_HASH, 'bindings': bindings})}"
     )
-    selection = reporter._select("agg_trades", SYMBOL, DAY, bindings)
-    body = reporter._body("agg_trades", SYMBOL, DAY, bindings, report_id, selection)
+    partition = reporter._survey("agg_trades", SYMBOL, DAY, bindings)
+    body = reporter._body("agg_trades", SYMBOL, DAY, bindings, report_id, partition)
     reporter._commit(report_id, reporter._row(body, early))
     clock = StepClock(start=K_Q)
     with pytest.raises(CatalogIntegrityError, match="knowledge_time before a revision"):
