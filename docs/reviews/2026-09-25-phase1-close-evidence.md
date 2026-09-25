@@ -192,7 +192,8 @@ D3E-R3（`7e9e084`）与 E1-R3/R4、G3-S 系列穿插出现在同一段提交历
 - **测试**：`tests/infrastructure/dataset/test_dataset.py::test_archive_to_manifest_end_to_end`——这条测试确实贯穿"归档 → Raw → Canonical → PIT → Research Dataset + manifest"，但**不包含 Representation / FeatureProvider 这一跳**；`test_universe.py`（10 个用例）、`test_dataset_postgres.py`。
 - **本批新增的观察**：`infrastructure/tools/capacity_probe.py` 的 `--rest --dataset --feature` 组合运行（见本文档 §2）是仓库里**第一次在同一次进程内**把"归档 + REST 两通道 → Raw → Canonical → PIT → Research Dataset + manifest → F4 Representation"全部串起来执行成功（N=1000，全部阶段耗时 < 30 秒、内存增量 < 200 MB）。**这是一次容量探针的成功执行，不是一条带断言的正确性测试**，不能替代 roadmap 要求的"端到端验收记录"（批次 G）。
 - **commit**：F2 `87a3d3e`；F3 `a167d87` + R1（F3-I）`08913b1` + R2（F3-R1）`762643f`；DS-1 `6fba363`；本批 G3-C（本次提交）。
-- **状态**：❌ **未满足（REVIEW_PENDING / 待 G1）**——roadmap 把 #20 归为批次 G（"端到端验收、修复、关闭文档"），`PROJECT_STATUS.md` §4 明确写着"剩余：…G1 端到端、G2 红队、G3 关闭证据"。G1 本身还没有开始。本文档（G3-C 的一半）只是为 G1 准备材料，不能视为 #20 已满足。
+- **G1 端到端验收（合并后补记）**：`tests/infrastructure/e2e/test_phase1_first_slice.py::test_phase1_first_slice_archive_to_representation`（BTCUSDT + ETHUSDT：归档 + REST → Raw → 跨通道边 → Canonical → 上市历史 → 质量报告 → PIT → F2 标的池 → F3 数据集 + manifest 写入生产表 → E4 重采样 → F4 特征，重建逐位相同）、`::test_pit_selection_with_and_without_the_archive_assumption`（ADR-0032 保守 / 假设两种规格）、`test_phase1_first_slice_postgres.py`（真实 PostgreSQL）；验收记录 `docs/reviews/2026-09-25-phase1-e2e-acceptance.md`。
+- **状态**：🔄 **REVIEW_PENDING**——端到端验收测试已存在并通过（G1），待 Codex 复核。
 
 ### #21 — 全程：PostgreSQL 无行情、Git 无凭据/数据、无账户/交易端点、无 NATS；每批 pytest/ruff/format/mypy 全绿；每个接受点经 Codex 复核后推送
 
@@ -297,7 +298,7 @@ uv run mypy
 
 1. **已验收（Codex 独立复核 + 验收门 commit）**：#1～#12，以及 #17 中归档侧与 D3B（REST）侧的 policy 部分。对应 roadmap 批次 A2/A2r、A3a、A3b、B1、B2、B3、C1、C2、C3、D0、D1、D2、D3A、D3B、D3C、D3D。
 2. **REVIEW_PENDING（实现已提交，验收门缺失）**：#9 后半（exchangeInfo/证据缺口/DS-1 三张表）、#13 后半（D3E）、#14（D4 门记录）、#15、#16、#17 后半（exchangeInfo policy、D-HIST）、#18、#19。对应批次 D3E 及其后的一切（D3E-R1/R2/R3、D4、E0～E4、F1～F4、QG-1/QG-2、DS-1）。
-3. **未满足**：#20（端到端验收记录，待批次 G / G1）。
+3. **#20**：G1 已补齐端到端验收测试与记录，现为 REVIEW_PENDING（不再是"未满足"）。
 4. **本批（G3-C）范围内自查通过，不改变以上结论**：`--rest` / `--dataset` / `--feature` 三个新增探针阶段在 N=200（pytest）与 N=1000（手工运行）都成功执行，ruff / ruff format / mypy / 相关测试全部通过；但探针只是执行能力的证据，不是正确性验收，也没有让 D3E 起的任何一项从 REVIEW_PENDING 变成已验收。
 5. **给 Codex 的建议顺序**（仅为建议，不代替决策）：D3E（含 R1/R2/R3）是后续一切的地基，逻辑上应先补上它的验收门，再评估 E0～DS-1 这一整段是否可以一次性批量复核，还是要拆回逐批复核。
 
