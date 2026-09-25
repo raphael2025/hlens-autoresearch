@@ -1,7 +1,7 @@
-import * as echarts from "echarts";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listReports, type ReportEnvelope } from "../api";
 import { SimulatedBanner } from "../components/Banner";
+import { echarts } from "../lib/echarts";
 
 function asNumber(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value)) return value;

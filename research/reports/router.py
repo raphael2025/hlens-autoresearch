@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from core.contracts.strategy import EquityPoint
 from research.reports.envelope import WrittenReport, write_report_file
 from research.router.paper import RouterPaperRun
 
@@ -12,6 +13,18 @@ __all__ = ["KIND", "write_router_paper_run"]
 
 #: Directory name under the report root; matches ``apps.api.store.ReportKind.ROUTER_PAPER_RUN``.
 KIND = "router_paper_run"
+
+
+def _equity_curve(points: tuple[EquityPoint, ...]) -> list[dict[str, Any]]:
+    return [
+        {
+            "time": point.time.isoformat(),
+            "cash": str(point.cash),
+            "equity": str(point.equity),
+            "gross_exposure": str(point.gross_exposure),
+        }
+        for point in points
+    ]
 
 
 def _payload(run: RouterPaperRun) -> dict[str, Any]:
@@ -48,6 +61,11 @@ def _payload(run: RouterPaperRun) -> dict[str, Any]:
         "initial_equity": str(run.result.initial_equity),
         "final_equity": str(run.result.final_equity),
         "pnl": str(run.result.pnl),
+        # Display-only (not part of run_hash, which already binds gross_result_hash / result_hash):
+        # the console's before- vs after-switching-cost equity chart needs the point series, not
+        # just the endpoints.
+        "gross_equity_curve": _equity_curve(run.gross.equity_curve),
+        "net_equity_curve": _equity_curve(run.result.equity_curve),
         "run_hash": run.run_hash,
     }
 
@@ -57,6 +75,8 @@ def write_router_paper_run(root: Path, run: RouterPaperRun) -> WrittenReport:
 
     ``run.run_hash`` already binds the router spec, state result, every routed strategy's result
     hash, the routing decisions, the switching charges and both backtest results (module docstring,
-    "``RouterPaperRun.run_hash`` binds everything") — the object's own result hash.
+    "``RouterPaperRun.run_hash`` binds everything") — the object's own result hash. The payload's
+    ``gross_equity_curve`` / ``net_equity_curve`` are display data for that already-bound pair of
+    results (``gross_result_hash`` / ``result_hash``); they carry no additional identity.
     """
     return write_report_file(root, KIND, run.run_hash, _payload(run))

@@ -59,3 +59,7 @@ Phase 11 循环的接线在 `research/loop/compose.py` 的 `run_unattended_and_r
 按显示需要挑选的摘要（例如路由纸面运行不落盘完整合并目标仓位序列），不是对应对象的逐字段完整转储，
 必要时可以扩展。没有写端点/鉴权/清理策略——这些由控制台的写路径（ADR-0048 §3 提到的 P7/P8/P11
 框架落地后再暴露）与运维决定。
+
+`router_paper_run` 额外落盘 `gross_equity_curve` / `net_equity_curve`（每点 `time` / `cash` /
+`equity` / `gross_exposure`，2026-09-25 补充，供控制台画 switching-cost 前后对比图）——纯展示字段，
+不参与 `run_hash`（后者已经绑定 `gross_result_hash` / `result_hash`，见各自模块文档字符串）。

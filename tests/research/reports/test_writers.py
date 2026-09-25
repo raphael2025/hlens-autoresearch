@@ -251,6 +251,12 @@ def test_router_paper_run_round_trips_through_the_store(tmp_path: Path) -> None:
     assert envelope.payload["run_hash"] == run.run_hash
     assert envelope.payload["result_hash"] == run.result.result_hash
     assert Decimal(envelope.payload["total_switching_cost"]) == run.total_switching_cost
+    # Display-only equity curves for the console's before/after-cost chart (not part of run_hash).
+    assert len(envelope.payload["gross_equity_curve"]) == len(run.gross.equity_curve)
+    assert len(envelope.payload["net_equity_curve"]) == len(run.result.equity_curve)
+    first_gross_point = envelope.payload["gross_equity_curve"][0]
+    assert first_gross_point["time"] == run.gross.equity_curve[0].time.isoformat()
+    assert Decimal(first_gross_point["equity"]) == run.gross.equity_curve[0].equity
 
     client = TestClient(create_app(reports_root=tmp_path))
     listed = client.get("/reports/router_paper_run").json()
