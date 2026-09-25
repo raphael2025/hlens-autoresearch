@@ -31,7 +31,9 @@ part; ``build`` materializes it and persists the manifest. Under ``hlens.dataset
 7. **manifest** — ``ResearchDatasetManifest`` (own ``DatasetRef``, the PIT spec, universe binding,
    members / exclusions, listing + data lineage, report ids, evidence gaps) persisted through
    ``ManifestStore`` (content-hash idempotent, verified on replay). Same inputs → bit-identical
-   manifest.
+   manifest. The manifest binds the dataset's own snapshot, so it can only follow the batch: a
+   failure in between leaves a batch without a manifest, which no reader may use (ADR-0023 §6);
+   a rerun replays the same batch and completes the manifest (F3-R1, cursor review 1).
 """
 
 from __future__ import annotations
@@ -602,9 +604,13 @@ def _intersect(
     b_from: datetime | None,
     b_until: datetime | None,
 ) -> tuple[datetime | None, datetime | None] | None:
-    if a_from is None or b_from is None or a_until is None or b_until is None:
+    ends = (a_from, a_until, b_from, b_until)
+    if all(end is None for end in ends):
         # A point simulation: the selection holds and the symbol is a member.
         return (None, None)
+    if a_from is None or a_until is None or b_from is None or b_until is None:
+        # Interval spans are always closed (F3-R1, cursor review 2): a partial one is a bug.
+        raise CatalogIntegrityError(f"an interval span is open at one end: {ends}")
     low, high = max(a_from, b_from), min(a_until, b_until)
     return (low, high) if low < high else None
 
