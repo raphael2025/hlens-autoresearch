@@ -25,6 +25,7 @@ from core.contracts.collector import (
     CoverageGap,
     SourceBinding,
 )
+from core.contracts.event_bus import BusMessage
 from core.contracts.feature import (
     FeatureObservation,
     FeatureRequest,
@@ -225,6 +226,8 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     SyntheticBar,
     SyntheticMarket,
     SyntheticProviderDescriptor,
+    # EventBusAdapter 的消息（ADR-0044，Phase 11 地基）
+    BusMessage,
 )
 
 

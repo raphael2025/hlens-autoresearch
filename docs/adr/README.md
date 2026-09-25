@@ -40,6 +40,7 @@
 | [0032](0032-archive-event-time-availability-assumption.md) | 历史归档的事件时间可用性假设（PIT 叠加层，D-HIST） | Accepted（2026-09-25；Raphael 批准） |
 | [0033](0033-research-dataset-selection-table.md) | 物化 Research Dataset 选择表登记为生产表（DS-1） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0034](0034-knowledge-provider.md) | KnowledgeProvider 契约与本地知识库（Phase 0.5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0044](0044-event-bus-and-worker-jobs.md) | EventBusAdapter 契约、内存总线与 worker 幂等任务（Phase 11 地基） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0042](0042-synthetic-market-provider.md) | SyntheticMarketProvider 契约与随机游走生成器（Phase 9） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0047](0047-migration-framework.md) | 技术迁移框架——金标准重跑与 Adapter 一致性（Phase 14） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 
