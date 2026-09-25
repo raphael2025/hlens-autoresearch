@@ -322,7 +322,9 @@ def test_the_mapped_edge_is_exact_and_refuses_wrong_endpoints(h: RestHarness) ->
         if row["lineage_raw_revision_id"] == raw_edge.superseded_revision_id
     ]
     a, r = revision_record_from_row(a_row), revision_record_from_row(r_row)
-    mapped = rules.map_channel_edge(raw_edge, raw_row["edge_id"], a, r)
+    snapshot = h.head(c.EVIDENCE.table)
+    assert snapshot is not None
+    mapped = rules.map_channel_edge(raw_edge, raw_row["edge_id"], snapshot, a, r)
     assert mapped == PrecedenceEvidence(
         observation_key=KEY,
         revision_id=a.revision_id,
@@ -331,19 +333,21 @@ def test_the_mapped_edge_is_exact_and_refuses_wrong_endpoints(h: RestHarness) ->
         evidence=(
             rules.PRECEDENCE_MAP_STATEMENT,
             f"raw_edge_id={raw_row['edge_id']}",
-            f"raw_policy=binance.spot.delivery-channel@1.0.0#{raw_edge.policy.policy_hash}",
+            f"raw_evidence_table=raw.binance_spot_precedence_evidence@snapshot:{snapshot}",
             *raw_edge.evidence,
         ),
         knowledge_time=K_EDGE,
     )
     with pytest.raises(rules.CanonicalRuleViolation, match="not the Canonical image"):
-        rules.map_channel_edge(raw_edge, raw_row["edge_id"], r, a)
+        rules.map_channel_edge(raw_edge, raw_row["edge_id"], snapshot, r, a)
     other = a.model_copy(update={"observation_key": f"binance:spot:agg_trade:{SYMBOL}:999"})
     with pytest.raises(rules.CanonicalRuleViolation, match="another observation_key"):
-        rules.map_channel_edge(raw_edge, raw_row["edge_id"], other, r)
+        rules.map_channel_edge(raw_edge, raw_row["edge_id"], snapshot, other, r)
     foreign = a.model_copy(update={"source_id": f"elsewhere|x|{raw_edge.revision_id}"})
     with pytest.raises(rules.CanonicalRuleViolation, match="not the Canonical image"):
-        rules.map_channel_edge(raw_edge, raw_row["edge_id"], foreign, r)
+        rules.map_channel_edge(raw_edge, raw_row["edge_id"], snapshot, foreign, r)
+    with pytest.raises(rules.CanonicalRuleViolation, match="snapshot"):
+        rules.map_channel_edge(raw_edge, raw_row["edge_id"], "", a, r)
 
 
 def test_same_channel_competition_stays_a_conflict(h: RestHarness) -> None:
@@ -529,8 +533,18 @@ def test_a_committed_batch_that_no_longer_reproduces_fails_closed(h: RestHarness
     assert _state(h) == before
 
 
-def test_a_raw_unit_that_grows_after_normalization_fails_closed(h: RestHarness) -> None:
-    """Normalize a crash-partial REST unit, then let the Raw store finish it."""
+@pytest.mark.parametrize(
+    ("microbatch_rows", "match"),
+    [(None, "only partially committed"), (1, "0 snapshots committing it")],
+)
+def test_a_raw_unit_that_grows_after_normalization_fails_closed(
+    h: RestHarness, microbatch_rows: int | None, match: str
+) -> None:
+    """Normalize a crash-partial REST unit, then let the Raw store finish it.
+
+    With one-row Canonical batches the new Raw rows would land in batches of their own; only the
+    unit size in every batch id (E1-R1) keeps that from being completed silently.
+    """
     items = ss.agg_items(3)
     cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [items])
     collected = h.collect(ss.agg_request("req-a"))
@@ -540,13 +554,13 @@ def test_a_raw_unit_that_grows_after_normalization_fails_closed(h: RestHarness) 
         h.store(clock=StepClock(start=K_REST), adapter=proxy, element_microbatch_rows=1)\
             .ingest_collection(ss.agg_request("req-a"))  # fmt: skip
     [response] = h.rows(c.RESPONSES)
-    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=microbatch_rows)
     assert len(n.normalize_unit(c.REST_AGGS.table, response["revision_id"]).revision_ids) == 1
     h.store(clock=StepClock(start=K_REST), element_microbatch_rows=1).ingest_collection(
         ss.agg_request("req-a")
     )
     before = _state(h)
-    with pytest.raises(CatalogIntegrityError, match="committed with other content|partially"):
+    with pytest.raises(CatalogIntegrityError, match=match):
         n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
     assert _state(h) == before
 

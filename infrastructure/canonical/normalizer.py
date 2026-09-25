@@ -13,7 +13,8 @@ revision, or a REST response revision's own elements) of one data type, under no
    **one** reading of the injected UTC clock, taken after every proof and before any commit, never
    before a Raw ``knowledge_time`` (refused, not raised);
 3. one Canonical row per Raw row (``rules.canonical_row``) in Raw position order, deterministic
-   microbatches ``<normalizer>@<version>.<source revision>.<index>``; committed batches must carry
+   microbatches ``<normalizer>@<version>.<source revision>.<unit rows>.<index>``; committed
+   batches must carry
    exactly the planned rows (fingerprint, row count), partially committed ones fail closed,
    missing ones are committed with the expected parent snapshot;
 4. read-back: the unit's rows, their revision ids and arrival numbers are committed exactly once.
@@ -86,9 +87,18 @@ def _member(column: str, values: Iterable[object]) -> BooleanExpression:
     return In(column, set(values))  # type: ignore[call-arg, arg-type]
 
 
-def unit_batch_id(source_revision_id: str, index: int) -> str:
-    """Stable id of the ``index``-th Canonical microbatch of one unit."""
-    return f"{rules.NORMALIZER_ID}@{rules.NORMALIZER_VERSION}.{source_revision_id}.{index:08d}"
+def unit_batch_id(source_revision_id: str, unit_rows: int, index: int) -> str:
+    """Stable id of the ``index``-th Canonical microbatch of a unit of ``unit_rows`` rows.
+
+    The unit's size is part of every batch id: a crash-recovery re-plan of the same Raw unit
+    reproduces the ids, while a Raw unit that grew after it was normalized plans other ids, so
+    its already committed rows sit in batches the new plan does not have and it fails closed
+    instead of being completed silently with the first ready time (E1-R1).
+    """
+    return (
+        f"{rules.NORMALIZER_ID}@{rules.NORMALIZER_VERSION}.{source_revision_id}"
+        f".{unit_rows:010d}.{index:08d}"
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -347,8 +357,9 @@ class CanonicalNormalizer:
             (index, list(planned[offset : offset + self._microbatch]))
             for index, offset in enumerate(range(0, len(planned), self._microbatch))
         ]
+        size = len(planned)
         done = {
-            unit_batch_id(source_revision_id, index)
+            unit_batch_id(source_revision_id, size, index)
             for index, rows in chunks
             if any(row["revision_id"] in committed for row in rows)
         }
@@ -356,7 +367,7 @@ class CanonicalNormalizer:
         parent = pinned.canonical_head
         commits: list[BatchCommit] = []
         for index, rows in chunks:
-            batch_id = unit_batch_id(source_revision_id, index)
+            batch_id = unit_batch_id(source_revision_id, size, index)
             present = [row["revision_id"] in committed for row in rows]
             if all(present):
                 found = snapshots[batch_id]

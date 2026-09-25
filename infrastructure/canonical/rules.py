@@ -338,7 +338,12 @@ PRECEDENCE_MAP_SPEC: Final[dict[str, Any]] = {
     "endpoints": "exactly one Canonical revision per Raw endpoint under the bound normalizer "
     "(lineage_raw_table, lineage_raw_revision_id); zero -> no Canonical edge; more -> fail",
     "knowledge_time": "max(raw edge knowledge_time, both Canonical knowledge_time); no clock",
-    "evidence": [PRECEDENCE_MAP_STATEMENT, "raw_edge_id=<edge_id>", "*raw edge evidence"],
+    "evidence": [
+        PRECEDENCE_MAP_STATEMENT,
+        "raw_edge_id=<edge_id>",
+        f"raw_evidence_table={BINANCE_SPOT_PRECEDENCE_EVIDENCE.table}@snapshot:<bound snapshot id>",
+        "*raw edge evidence",
+    ],
     "materialised": False,
 }
 PRECEDENCE_MAP_HASH: Final = _digest(PRECEDENCE_MAP_SPEC)
@@ -676,6 +681,7 @@ def canonical_row(
 def map_channel_edge(
     raw_edge: PrecedenceEvidence,
     raw_edge_id: str,
+    raw_evidence_snapshot_id: str,
     archive_canonical: RevisionRecord,
     rest_canonical: RevisionRecord,
 ) -> PrecedenceEvidence:
@@ -688,6 +694,9 @@ def map_channel_edge(
     """
     if not isinstance(raw_edge, PrecedenceEvidence):
         raise CanonicalRuleViolation("raw_edge must be a PrecedenceEvidence")
+    for label, value in (("raw_edge_id", raw_edge_id), ("snapshot", raw_evidence_snapshot_id)):
+        if not isinstance(value, str) or not value:
+            raise CanonicalRuleViolation(f"{label} must be a non-empty string")
     pairs = (
         (archive_canonical, raw_edge.revision_id, "archive"),
         (rest_canonical, raw_edge.superseded_revision_id, "rest"),
@@ -721,8 +730,8 @@ def map_channel_edge(
             evidence=(
                 PRECEDENCE_MAP_STATEMENT,
                 f"raw_edge_id={raw_edge_id}",
-                f"raw_policy={raw_edge.policy.policy_id}@{raw_edge.policy.version}"
-                f"#{raw_edge.policy.policy_hash}",
+                f"raw_evidence_table={BINANCE_SPOT_PRECEDENCE_EVIDENCE.table}"
+                f"@snapshot:{raw_evidence_snapshot_id}",
                 *raw_edge.evidence,
             ),
             knowledge_time=knowledge,

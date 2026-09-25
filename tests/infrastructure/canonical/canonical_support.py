@@ -133,10 +133,13 @@ def mapped_edges(h: RestHarness, key: str, table: Any = TRADES) -> list[Preceden
         rest = by_lineage.get((row["superseded_table"], row["superseded_revision_id"]))
         if archive is None or rest is None:
             continue  # an endpoint not yet normalized: no Canonical edge in this snapshot
+        snapshot = h.head(EVIDENCE.table)
+        assert snapshot is not None
         mapped.append(
             rules.map_channel_edge(
                 evidence_from_row(row),
                 row["edge_id"],
+                snapshot,
                 revision_record_from_row(archive),
                 revision_record_from_row(rest),
             )
