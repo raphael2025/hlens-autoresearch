@@ -203,20 +203,9 @@ class QualityReporter:
             )
             selection = self._select(data_type, symbol, day, bindings)
             body = self._body(data_type, symbol, day, bindings, report_id, selection)
-            committed = self._committed(report_id)
-            if committed is not None:
-                expected = self._row(body, committed["knowledge_time"])
-                mismatched = sorted(k for k, v in expected.items() if committed[k] != v)
-                if mismatched:
-                    raise CatalogIntegrityError(
-                        f"quality report {report_id} disagrees with its re-derivation: {mismatched}"
-                    )
-                return QualityReported(report_id, committed, None, True)
-            now = self._clock()
-            if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() != _ZERO:
-                raise QualityReportError("the clock must return timezone-aware UTC")
             # Every fact the report describes — revisions and the mapped precedence edges that
-            # decide its heads — must be known by its knowledge_time (E1-R3 / review C-2).
+            # decide its heads — must be known by its knowledge_time (E1-R3 / review C-2), for a
+            # fresh report and for a committed one it would reuse alike (E1-R4).
             floor = max(
                 (
                     *(
@@ -228,6 +217,23 @@ class QualityReporter:
                 ),
                 default=None,
             )
+            committed = self._committed(report_id)
+            if committed is not None:
+                if floor is not None and committed["knowledge_time"] < floor:
+                    raise CatalogIntegrityError(
+                        f"quality report {report_id} is committed with a knowledge_time before a "
+                        "revision or precedence edge it describes"
+                    )
+                expected = self._row(body, committed["knowledge_time"])
+                mismatched = sorted(k for k, v in expected.items() if committed[k] != v)
+                if mismatched:
+                    raise CatalogIntegrityError(
+                        f"quality report {report_id} disagrees with its re-derivation: {mismatched}"
+                    )
+                return QualityReported(report_id, committed, None, True)
+            now = self._clock()
+            if not isinstance(now, datetime) or now.tzinfo is None or now.utcoffset() != _ZERO:
+                raise QualityReportError("the clock must return timezone-aware UTC")
             if floor is not None and now < floor:
                 raise QualityReportError(
                     "the report clock precedes a revision or precedence edge it describes"

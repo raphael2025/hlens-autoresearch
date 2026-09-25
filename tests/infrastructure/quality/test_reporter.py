@@ -182,6 +182,26 @@ def test_a_clock_before_a_precedence_edge_it_relies_on_is_refused(h: RestHarness
     assert out.row["knowledge_time"] == K_E
 
 
+def test_a_committed_report_before_what_it_describes_is_never_reused(h: RestHarness) -> None:
+    """E1-R4: a report row committed with a knowledge_time before the edge (an older writer or a
+    forger) is refused on the reuse path too, not only when a fresh report is written."""
+    _chain(h)
+    early = utc(2023, 12, 1)
+    reporter = QualityReporter(h.adapter, h.storage, clock=StepClock(start=early))
+    bindings = reporter._pinned_heads(q._INPUT_TABLES["agg_trades"])
+    report_id = (
+        f"{q.QUALITY_RULE_ID}@{q.QUALITY_RULE_VERSION}.{c.TRADES.table}.{SYMBOL}."
+        f"{DAY.isoformat()}.{q._digest({'rule_hash': q.QUALITY_RULE_HASH, 'bindings': bindings})}"
+    )
+    selection = reporter._select("agg_trades", SYMBOL, DAY, bindings)
+    body = reporter._body("agg_trades", SYMBOL, DAY, bindings, report_id, selection)
+    reporter._commit(report_id, reporter._row(body, early))
+    clock = StepClock(start=K_Q)
+    with pytest.raises(CatalogIntegrityError, match="knowledge_time before a revision"):
+        QualityReporter(h.adapter, h.storage, clock=clock).report("agg_trades", SYMBOL, DAY)
+    assert clock.calls == 0
+
+
 def test_bar_invariants_are_checked_without_thresholds() -> None:
     start = utc(2023, 11, 14)
     base = {
