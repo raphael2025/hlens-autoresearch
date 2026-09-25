@@ -1,11 +1,13 @@
 """Evolution stage of the loop (optional; Phase 12 operators, ADR-0045; W2 wiring of ADR-0049).
 
 When due (round ``r > 0`` with ``r % every_rounds == 0``) the stage takes the best earlier
-validated trials that were **not refuted** (verdict PASS or INCONCLUSIVE; ranked PASS first, then
-by the G3 adjusted p-value, then by round and name) and, for up to ``parents_per_round`` parents
-whose spec was never evolved before, applies ``mutate``: the first declared parameter value (params
-in name order, values in declared order) that differs from both the parent's default and the
-parent's tested point and whose resulting point was never tested for that strategy name.
+validated hypotheses that are **not refuted** — judged by each hypothesis's **latest** validation
+(a hypothesis re-evaluated on the accumulated research data may have been refuted since an earlier
+INCONCLUSIVE; ADR-0049 accumulated-window note): verdict PASS or INCONCLUSIVE, ranked PASS first,
+then by the G3 adjusted p-value, then by round and name — and, for up to ``parents_per_round``
+parents whose spec was never evolved before, applies ``mutate``: the first declared parameter
+value (params in name order, values in declared order) that differs from both the parent's default
+and the parent's tested point and whose resulting point was never tested for that strategy name.
 
 Every offspring:
 
@@ -15,8 +17,8 @@ Every offspring:
 - is registered in the ``TrialLedger`` as its own hypothesis (``origin = combination``, parameter
   point pinned in its conditions) **before** it runs, so it counts as a trial of the family;
 - enters the lifecycle at ``IDEA`` → ``CANDIDATE`` and is experimented and validated in **this**
-  round on this round's (new) data like any other hypothesis — it never inherits its parent's
-  verdict (the parent's report id is only cited as the reason it was chosen).
+  round on the round's accumulated research data like any other hypothesis — it never inherits its
+  parent's verdict (the parent's report id is only cited as the reason it was chosen).
 
 The stage declares its trials before running (budget-checked by the scheduler); a round in which it
 is not due declares and spends nothing. ``combine`` and ``retire`` are not used by the loop:
@@ -147,10 +149,13 @@ class EvolutionStage:
             for o in memory.trials
             if o.candidate is not None
         }
+        latest: dict[str, ValidationOutcome] = {}
+        for result in memory.validations:  # later rounds overwrite: each hypothesis's latest
+            latest[str(result.outcome.hypothesis.ref)] = result
         eligible = sorted(
             (
                 v
-                for v in memory.validations
+                for v in latest.values()
                 if v.verdict in {Verdict.PASS, Verdict.INCONCLUSIVE}
                 and v.outcome.candidate is not None
             ),

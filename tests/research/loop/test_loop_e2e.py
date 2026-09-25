@@ -3,6 +3,9 @@ components (F4 features, P2 state provider via ``run_state``, P5 TSMOM + ``BarBa
 P6 State × Strategy matrix, P7 ``TrialLedger``, P4 / P8 ``PipelineBacktestValidator`` G0 – G4,
 P12 evolution operators) on a synthetic market with a planted effect, versus pure noise.
 
+Every round evaluates on the accumulated research data (ADR-0049 accumulated-window note); see
+``loop_fixtures`` for the calendar (research window = rounds 0 and 1, round 2 after it).
+
 TEST ONLY: every budget, cost unit, model parameter and Profile number comes from
 ``loop_fixtures`` and is arbitrary and uncalibrated (see its docstring). Synthetic results support
 no claim about real markets (roadmap Phase 9).
@@ -21,13 +24,16 @@ import pytest
 
 from apps.worker import AUTOMATABLE_TARGETS, LoopBudget, ResearchLoop, RoundStatus, StageStatus
 from apps.worker.loop import EXTENDED_STAGE_ORDER, FORBIDDEN_TARGETS, ROUND_TOPIC, STAGE_TOPIC
-from core.domain.research import HypothesisOrigin, RunState, Verdict
+from core.domain.base import Ref
+from core.domain.research import FailureRecord, HypothesisOrigin, RunState, Verdict
 from core.domain.specs import StrategySpec
+from core.errors import ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
 from research.evolution import LineageGraph, require_new_version
 from research.loop import OosUnsealBudget, ResearchMemory
 from research.loop import trials as loop_trials
+from research.loop.stages import reevaluation_candidates
 from research.strategies.pipeline import CandidateTrialRunner
 from research.validation.sealed_oos import (
     OosAlreadyUnsealed,
@@ -82,7 +88,30 @@ def _transitions(run: Run) -> list[Any]:
 # ---------------------------------------------------------------------------------------- rounds
 
 
+H60 = "hypothesis:h_k_tsmom_lookback_60@1.0.0"
+H240 = "hypothesis:h_k_tsmom_lookback_240@1.0.0"
+H1440 = "hypothesis:h_k_tsmom_lookback_1440@1.0.0"
+CHILD = "hypothesis:h_tsmom_bars_v1_1_0@1.0.0"
+BOUNDARY = fx.T0 + timedelta(days=6)  # the default TEST ONLY Profile's sealed OOS boundary
+
+
+def _reports(record: Any) -> list[tuple[str, str, str]]:
+    return [
+        (r["hypothesis"], r["origin"], r["verdict"])
+        for r in _stage(record, "validation").summary["reports"]
+    ]
+
+
 def test_three_unattended_rounds_on_real_components(planted: Run) -> None:
+    """The planted 60-bar effect on the accumulated research window.
+
+    Round 0 sees 3 of the Profile's 6 research days: every G0 - G4 gate passes except the
+    walk-forward coverage — the Profile's windows over days 3 - 6 have no returns yet, which is
+    INCONCLUSIVE (R23) — so the hypothesis stays in VALIDATION. Round 1's accumulated data covers
+    the whole research window and the walk-forward: the hypothesis, re-evaluated as a new
+    registered trial, passes G0 - G4 and moves to OOS. Round 2 brings no research data (it lies
+    after the window), so nothing is re-evaluated; its fresh hypothesis is refuted.
+    """
     run = planted
     assert [r.status for r in run.records] == [RoundStatus.COMPLETED] * 3
     assert run.loop.audit.verify()
@@ -90,20 +119,20 @@ def test_three_unattended_rounds_on_real_components(planted: Run) -> None:
     assert [s.name for s in run.records[0].stages] == list(EXTENDED_STAGE_ORDER)
     assert len(run.bus.poll("audit", STAGE_TOPIC, 100)) == 3 * len(EXTENDED_STAGE_ORDER)
     assert len(run.bus.poll("audit", ROUND_TOPIC, 100)) == 3
+    # the accumulated research window: 3 days, then 6, then still 6 (round 2 is after it)
+    ingest = [_stage(r, "ingest").summary for r in run.records]
+    assert [i["research_bars"] for i in ingest] == [3 * 1440, 3 * 1440, 0]
+    assert [i["accumulated_research_bars"] for i in ingest] == [3 * 1440, 6 * 1440, 6 * 1440]
+    assert [i["sealed_bars_withheld"] for i in ingest] == [0, 0, 1440]
+    assert [i["unused_bars"] for i in ingest] == [0, 0, 2 * 1440]
     # P2 state through run_state over F4 feature values, every round
     for record in run.records:
         state = _stage(record, "state").summary
         assert state["state"] == str(fx.TREND.ref) and state["evaluated"] > 0
         assert state["state_result_hash"] and state["feature_result_hashes"]
-    # The planted 60-bar effect passes every G0 - G4 gate in round 0 except the walk-forward
-    # coverage: this round's 3 days leave most of the Profile's (10-day) walk-forward windows
-    # without returns, which is INCONCLUSIVE since review fixes 2 (R23; it used to PASS on the
-    # shrunken denominator). It therefore stays in VALIDATION; PASS -> OOS is covered below by the
-    # sealed-OOS tests, whose single round covers the whole research window.
+    # round 0: INCONCLUSIVE on the walk-forward coverage only
     first = _stage(run.records[0], "validation").summary["reports"]
-    assert [(r["hypothesis"], r["verdict"]) for r in first] == [
-        ("hypothesis:h_k_tsmom_lookback_60@1.0.0", "INCONCLUSIVE")
-    ]
+    assert _reports(run.records[0]) == [(H60, "hypothesis", "INCONCLUSIVE")]
     assert {g["gate_id"].split(".")[0] for g in first[0]["gates"]} == {"G0", "G1", "G2", "G3", "G4"}
     not_pass = [g for g in first[0]["gates"] if g["verdict"] != "PASS"]
     assert [(g["gate_id"], g["verdict"]) for g in not_pass] == [
@@ -114,16 +143,169 @@ def test_three_unattended_rounds_on_real_components(planted: Run) -> None:
     [gate] = [g for g in result.report.gates if g.verdict is Verdict.INCONCLUSIVE]
     assert gate.metric == "walk_forward_windows_without_returns" and gate.value > 0
     assert first[0]["sealed_oos"]["status"] == "not_run"  # G5 needs an in-sample PASS
-    assert run.loop.guard.state_of(run.memory.trials[0].hypothesis.ref) is (
-        LifecycleState.VALIDATION
-    )
-    # later hypotheses are refuted and filed; LLM drafts only wait for a human
+    assert [(t.subject.name, t.to_state) for t in run.records[0].transitions] == [
+        ("h_k_tsmom_lookback_60", LifecycleState.CANDIDATE),
+        ("h_k_tsmom_lookback_60", LifecycleState.VALIDATION),
+    ]
+    # round 1: the whole research window; the re-evaluation passes every G0 - G4 gate -> OOS
+    assert _stage(run.records[1], "hypothesis").summary["reevaluations"] == [H60]
+    assert _reports(run.records[1]) == [
+        (H240, "hypothesis", "PASS"),
+        (H60, "reevaluation", "PASS"),
+        (CHILD, "evolution", "FAIL"),
+    ]
+    [again] = [v for v in run.memory.validations if v.round_index == 1 and v.outcome.attempt]
+    assert again.outcome.hypothesis.ref == result.outcome.hypothesis.ref
+    assert again.outcome.attempt == "loop_round:synthetic_loop:1"
+    assert again.report is not None and again.report.verdict is Verdict.PASS
+    assert {g.verdict for g in again.report.gates} == {Verdict.PASS}
+    assert _stage(run.records[1], "memory").summary["moved_to_oos"] == [H240, H60]
+    [history] = [h for h in run.loop.guard.histories if str(h.subject) == H60]
+    assert [(t.from_state, t.to_state) for t in history.transitions] == [
+        (LifecycleState.IDEA, LifecycleState.CANDIDATE),
+        (LifecycleState.CANDIDATE, LifecycleState.VALIDATION),
+        (LifecycleState.VALIDATION, LifecycleState.OOS),
+    ]
+    assert f"validation_report:{again.report.report_id}" in history.transitions[-1].evidence
+    # round 2: no new research data -> no re-evaluation; the fresh hypothesis is refuted
+    assert _stage(run.records[2], "hypothesis").summary["reevaluations"] == []
+    assert _reports(run.records[2]) == [(H1440, "hypothesis", "FAIL")]
+    states = {str(h.subject): h.current_state for h in run.loop.guard.histories}
+    assert states == {
+        H60: LifecycleState.OOS,
+        H240: LifecycleState.OOS,
+        CHILD: LifecycleState.REJECTED,
+        H1440: LifecycleState.REJECTED,
+    }
+    # LLM drafts only wait for a human
     assert run.memory.reviews.pending == ("h_llm_0@1.0.0", "h_llm_1@1.0.0", "h_llm_2@1.0.0")
     assert run.loop.total_usage.llm_cost_units == Decimal(3)
 
 
+def test_every_look_at_the_accumulated_data_is_a_registered_trial(planted: Run) -> None:
+    """Re-evaluating the same (growing) data is paid in trials: the family count G3 corrects for
+    grows with every (hypothesis, round) evaluation, and each report binds its own trial index."""
+    run = planted
+    log = run.memory.ledger.trial_log
+    assert [(f"hypothesis:{e.name}@{e.version}", e.attempt) for e in log] == [
+        (H60, None),
+        (H240, None),
+        (H60, "loop_round:synthetic_loop:1"),
+        (CHILD, None),
+        (H1440, None),
+    ]
+    assert run.memory.ledger.trials(fx.FAMILY) == 5 == run.loop.total_usage.trials
+    counts = [_stage(r, "hypothesis").summary["family_trials"] for r in run.records]
+    assert counts == [1, 3, 5]  # after the hypothesis stage (round 1's offspring comes later)
+    reports = [r for record in run.records for r in _stage(record, "validation").summary["reports"]]
+    assert [(r["trial_index"], r["family_trial_count"]) for r in reports] == [
+        (1, 1),
+        (2, 4),
+        (3, 4),
+        (4, 4),
+        (5, 5),
+    ]
+    for result in run.memory.validations:  # the report's metadata carries the same numbers
+        assert result.report is not None
+        index = run.memory.ledger.trial_index(result.outcome.hypothesis, result.outcome.attempt)
+        assert result.summary["trial_index"] == index
+
+
+def test_refuted_and_oos_hypotheses_are_never_evaluated_again(planted: Run, noise: Run) -> None:
+    for run in (planted, noise):
+        looks: dict[str, list[tuple[int, Verdict | None]]] = {}
+        for result in run.memory.validations:
+            key = str(result.outcome.hypothesis.ref)
+            looks.setdefault(key, []).append((result.round_index, result.verdict))
+        for key, seen in looks.items():
+            rounds = [r for r, _ in seen]
+            assert rounds == sorted(set(rounds)), key  # at most one evaluation per round
+            # only an INCONCLUSIVE look may be followed by another one
+            assert all(verdict is Verdict.INCONCLUSIVE for _, verdict in seen[:-1]), key
+        rejected = {
+            str(r.subject_ref)
+            for r in run.memory.failures.records()
+            if r.terminal_state == "REJECTED"
+        }
+        for key in rejected:
+            assert looks[key][-1][1] is Verdict.FAIL
+    assert [r.outcome.attempt for r in noise.memory.validations] == [None, None, None]
+
+
+def test_only_open_hypotheses_with_new_data_are_reevaluated(tmp_path: Path) -> None:
+    """``reevaluation_candidates``: VALIDATION + INCONCLUSIVE + grown data; never REJECTED /
+    FAILED / OOS / CANDIDATE subjects, never a subject with a REJECTED failure record."""
+    loop, memory, _ = fx.build(
+        tmp_path, fx.config(lookbacks=(60,), loop_wiring=fx.wiring(evolution=False))
+    )
+    [record] = loop.run_unattended(1)
+    [result] = memory.validations
+    assert result.verdict is Verdict.INCONCLUSIVE
+    hypothesis, trial = result.outcome.hypothesis, result.outcome
+    assert trial.inputs is not None
+    seen_until = trial.inputs.knowledge_cutoff
+    later = seen_until + timedelta(days=3)
+    assert loop.guard.state_of(hypothesis.ref) is LifecycleState.VALIDATION
+    assert reevaluation_candidates(memory, loop.guard.state_of, later, 1) == (hypothesis,)
+    assert reevaluation_candidates(memory, loop.guard.state_of, later, 0) == ()
+    assert reevaluation_candidates(memory, loop.guard.state_of, seen_until, 1) == ()
+    assert reevaluation_candidates(memory, loop.guard.state_of, None, 1) == ()
+    for state in (
+        LifecycleState.CANDIDATE,
+        LifecycleState.OOS,
+        LifecycleState.REJECTED,
+        LifecycleState.FAILED,
+    ):
+
+        def pinned(_ref: Ref, pinned_state: LifecycleState = state) -> LifecycleState:
+            return pinned_state
+
+        assert reevaluation_candidates(memory, pinned, later, 1) == ()
+    memory.failures.append(
+        FailureRecord(
+            subject_ref=hypothesis.ref,
+            terminal_state="REJECTED",
+            reason_code=ReasonCode.BENCHMARK_NOT_BEATEN,
+            gate_id="G2.null_model_percentile",
+            evidence=("test-only",),
+            hypothesis_family_id=hypothesis.family_id,
+            recorded_at=fx.T0,
+        )
+    )
+    assert reevaluation_candidates(memory, loop.guard.state_of, later, 1) == ()
+    assert record.status is RoundStatus.COMPLETED
+
+
+def test_sealed_bars_never_enter_the_research_data(planted: Run) -> None:
+    run = planted
+    for piece in run.memory.research_data:
+        assert all(bar.interval_end <= BOUNDARY for bar in piece.bars)
+    assert [p.round_index for p in run.memory.research_data] == [0, 1]
+    sealed_starts = {
+        bar.interval_start
+        for bar in run.memory.markets[2].bars
+        if BOUNDARY <= bar.interval_start < BOUNDARY + timedelta(days=1)
+    }
+    assert len(sealed_starts) == 1440
+    for outcome in run.memory.trials:
+        assert outcome.inputs is not None
+        assert outcome.inputs.knowledge_cutoff <= BOUNDARY
+        assert all(bar.available_time <= BOUNDARY for bar in outcome.inputs.bars)
+        assert all(s.available_time <= BOUNDARY for s in outcome.inputs.signals)
+        assert not sealed_starts & {bar.interval_start for bar in outcome.inputs.bars}
+        assert all(t + fx.LABEL_SPEC.horizon < BOUNDARY for t in outcome.inputs.decision_times)
+        for snapshot in outcome.run.repro.dataset_snapshots:
+            assert snapshot.time_range_end is not None and snapshot.time_range_end <= BOUNDARY
+    assert run.memory.oos_ledger.count() == 0  # nothing was ever unsealed
+
+
 def test_pure_noise_passes_nothing(noise: Run) -> None:
     run = noise
+    assert [_reports(r) for r in run.records] == [
+        [(H60, "hypothesis", "FAIL")],
+        [(H240, "hypothesis", "FAIL")],
+        [(H1440, "hypothesis", "FAIL")],
+    ]
     assert [r.status for r in run.records] == [RoundStatus.COMPLETED] * 3
     verdicts = [v.verdict for v in run.memory.validations]
     assert verdicts and Verdict.PASS not in verdicts
@@ -151,9 +333,11 @@ def test_hashed_records_hold_no_floats(planted: Run, noise: Run) -> None:
 
 
 def test_budget_exhaustion_stops_the_loop_before_evolution(tmp_path: Path) -> None:
+    # round 0: 1 trial; round 1: a new hypothesis + the re-evaluation of round 0's INCONCLUSIVE
+    # one (2 trials: 3 in total), then the offspring would be the 4th
     budget = LoopBudget(
         max_trials_per_round=3,
-        max_trials_total=2,
+        max_trials_total=3,
         max_llm_cost_units=Decimal(10),
         max_compute_seconds=Decimal(1000),
     )
@@ -161,11 +345,13 @@ def test_budget_exhaustion_stops_the_loop_before_evolution(tmp_path: Path) -> No
     assert [r.status for r in run.records] == [RoundStatus.COMPLETED, RoundStatus.BUDGET_EXHAUSTED]
     last = run.records[-1]
     assert _stage(last, "hypothesis").status is StageStatus.COMPLETED
+    assert _stage(last, "hypothesis").summary["registered"] == [H240]
+    assert _stage(last, "hypothesis").summary["reevaluations"] == [H60]
     refused = _stage(last, "evolution")
     assert refused.status is StageStatus.REFUSED_BUDGET and refused.refused == ("max_trials_total",)
     assert _stage(last, "experiment").status is StageStatus.SKIPPED
     assert run.loop.halted is RoundStatus.BUDGET_EXHAUSTED
-    assert run.memory.ledger.trials(fx.FAMILY) == 2 == run.loop.total_usage.trials
+    assert run.memory.ledger.trials(fx.FAMILY) == 3 == run.loop.total_usage.trials
     assert run.memory.offspring == []  # the refused stage registered nothing
 
 
@@ -188,16 +374,31 @@ def test_no_paper_or_active_transition_ever(planted: Run, noise: Run) -> None:
 def test_every_trial_is_preregistered_recorded_and_reproducible(planted: Run) -> None:
     memory = planted.memory
     registered = {(h.name, h.version): h.content_hash() for h in memory.ledger.hypotheses}
-    assert len(memory.trials) == len(registered) == len(memory.experiments)
+    log = memory.ledger.trial_log
+    assert len(memory.trials) == len(log) == len(memory.experiments)
+    assert [(o.hypothesis.name, o.attempt) for o in memory.trials] == [
+        (e.name, e.attempt) for e in log
+    ]
     for outcome in memory.trials:
         hypothesis, repro = outcome.hypothesis, outcome.run.repro
         assert registered[(hypothesis.name, hypothesis.version)] == hypothesis.content_hash()
+        assert memory.ledger.is_registered(hypothesis, outcome.attempt)
         assert outcome.run.experiment_hash == repro.content_hash()
         assert outcome.experiment.experiment_hash == repro.content_hash()
         assert outcome.run.state is RunState.COMPLETED and outcome.trial is not None
         # the reproducibility tuple of 06-experiment.md §2
         assert repro.hypothesis_ref == hypothesis.ref
-        assert repro.dataset_snapshots[0].snapshot_id == outcome.summary["market_hash"]
+        # the accumulated research data: one snapshot per contributing market, oldest first
+        pieces = [p for p in memory.research_data if p.round_index <= outcome.round_index]
+        assert [
+            (s.snapshot_id, s.time_range_start, s.time_range_end) for s in repro.dataset_snapshots
+        ] == [
+            (p.market.market_hash, p.bars[0].interval_start, p.bars[-1].interval_end)
+            for p in pieces
+        ]
+        assert outcome.inputs is not None
+        assert len(outcome.inputs.bars) == sum(len(p.bars) for p in pieces)
+        assert outcome.summary["market_hash"] == memory.markets[outcome.round_index].market_hash
         assert repro.code_commit == fx.CODE_COMMIT
         assert repro.validation_profile_hash == fx.loop_profile().content_hash()
         assert {"bar_log_return@1.0.0", "trend_range@1.0.0", "research_tsmom@0.1.0"} <= set(

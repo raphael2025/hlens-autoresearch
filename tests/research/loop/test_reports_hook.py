@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 from fastapi.testclient import TestClient
 
@@ -17,7 +18,13 @@ from core.domain.base import canonical_json
 from research.loop import run_unattended_and_report
 from tests.research.loop import loop_fixtures as fx
 
-_build = fx.build  # the W2 real-component loop, default TEST ONLY config
+
+def _build(tmp: Path) -> Any:
+    """The W2 real-component loop (TEST ONLY config) with one knowledge hypothesis and no
+    evolution: every round still yields a real ``LoopRecord`` (round 1 re-evaluates round 0's
+    INCONCLUSIVE hypothesis on the accumulated research data), at a fraction of the default
+    scenario's validation cost — this module tests the report sink, not the research."""
+    return fx.build(tmp, fx.config(lookbacks=(60,), loop_wiring=fx.wiring(evolution=False)))
 
 
 def test_reports_root_none_writes_nothing(tmp_path: Path) -> None:

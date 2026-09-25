@@ -95,3 +95,33 @@ def test_deterministic_replay_gives_the_same_state(tmp_path: Path) -> None:
     b = TrialLedger(path)
     assert a.trials("fam") == b.trials("fam") == 2
     assert [h.content_hash() for h in a.hypotheses] == [h.content_hash() for h in b.hypotheses]
+
+
+def test_re_evaluations_are_durable_trials_across_a_restart(tmp_path: Path) -> None:
+    """ADR-0049 accumulated window × R26: re-evaluations count after a restart too."""
+    path = tmp_path / "trials.jsonl"
+    h1 = negation("h1", "fam", S, "0.1")
+
+    process_a = TrialLedger(path)
+    assert process_a.register(h1)
+    assert process_a.register_reevaluation(h1, "round-1")
+    assert process_a.trials("fam") == 2
+
+    process_b = TrialLedger(path)
+    assert process_b.trials("fam") == 2
+    assert process_b.is_registered(h1, "round-1")
+    assert process_b.trial_index(h1, "round-1") == 2
+    assert not process_b.register_reevaluation(h1, "round-1")  # same attempt: not a new trial
+    assert process_b.register_reevaluation(h1, "round-2")
+    assert TrialLedger(path).trials("fam") == 3
+    assert [e.attempt for e in TrialLedger(path).trial_log] == [None, "round-1", "round-2"]
+
+
+def test_a_re_evaluation_line_without_its_registration_is_refused(tmp_path: Path) -> None:
+    path = tmp_path / "trials.jsonl"
+    h1 = negation("h1", "fam", S, "0.1")
+    AppendOnlyJournal(path).append(
+        "reevaluate", {"hypothesis": h1.model_dump(mode="json"), "attempt": "round-1"}
+    )
+    with pytest.raises(JournalCorrupted, match="inconsistent"):
+        TrialLedger(path)

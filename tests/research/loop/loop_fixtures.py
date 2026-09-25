@@ -6,9 +6,13 @@ arbitrary, **uncalibrated** numbers chosen to keep the smoke tests small and fas
 proposal, not a calibration result and must never be used for research (Profile numbers remain
 TBD). Synthetic results support no claim about real markets (roadmap Phase 9).
 
-Calendar: each round ingests a new 3-day segment ``[as_of - 3 days, as_of)`` of a fresh seeded
-random walk; round ``i`` covers days ``3i .. 3i + 3`` after ``T0``. The Profile's research window
-starts at ``T0`` and its sealed OOS window starts after the last round's data (``boundary_day``).
+Calendar: each round ingests a new 3-day segment ``[as_of - 3 days, as_of)`` of a seeded random
+walk that continues the previous round's price path; round ``i`` covers days ``3i .. 3i + 3``
+after ``T0``. The Profile's research window is days ``0 .. boundary_day`` (default 6: rounds 0 and
+1) and its sealed OOS window the day after it; every round evaluates on the **accumulated**
+research data (ADR-0049 accumulated-window note), so round 0 sees 3 of the 6 research days (the
+Profile's walk-forward is not yet covered) and round 1 all 6. Round 2 lies after the research
+window: its first day is the sealed window (withheld) and the rest is unused.
 """
 
 from __future__ import annotations
@@ -67,7 +71,7 @@ FAMILY = "loop_tsmom"
 CODE_COMMIT = "0123456789abcdef0123456789abcdef01234567"
 
 
-def loop_profile(boundary_day: int = 10) -> ValidationProfile:
+def loop_profile(boundary_day: int = 6) -> ValidationProfile:
     """TEST ONLY — arbitrary, uncalibrated numbers (see module docstring)."""
     return factories.validation_profile(
         name="test_only_loop_uncalibrated",
@@ -267,6 +271,7 @@ def config(
         family_id=FAMILY,
         knowledge=tuple(knowledge(lookback) for lookback in lookbacks),
         max_new_hypotheses_per_round=1,
+        max_reevaluations_per_round=1,
         hypothesis_compute_seconds=Decimal("0.5"),
         compute_seconds_per_trial=Decimal(1),
         validation_compute_seconds=Decimal(5),

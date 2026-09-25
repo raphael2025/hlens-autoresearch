@@ -5,28 +5,34 @@ W2 wiring (ADR-0049 implementation note, 2026-09-25). Every number comes from ``
 from explicit ``RobustnessParams`` by ``research/validation`` itself.
 
 ``ExperimentStage`` — one trial per hypothesis registered this round (by the hypothesis stage and,
-when present, the evolution stage):
+when present, the evolution stage) and per re-evaluation the hypothesis stage pre-registered, all
+on the round's **accumulated research data** (every research-window bar ingested up to ``as_of``;
+ADR-0049 accumulated-window note):
 
-1. the hypothesis must already be in the ``TrialLedger`` with exactly this content (pre-registered
-   before it runs, Constitution A1 / C-T1); otherwise the trial is ERRORED and not run;
+1. the hypothesis must already be in the ``TrialLedger`` with exactly this content, and a
+   re-evaluation must be registered there as its own trial (``attempt``), before it runs
+   (Constitution A1 / C-T1); otherwise the trial is ERRORED and not run;
 2. ``segment.trial_point`` resolves the strategy (catalog of ``StrategyCandidate``) and the
    parameter point; an unresolvable hypothesis is an ERRORED trial (recorded, never dropped);
 3. an ``ExperimentSpec`` + ``ExperimentRun`` carry the full reproducibility tuple of
-   06-experiment.md §2 (hypothesis / strategy / risk / outcome refs, dataset snapshot = the
-   synthetic market hash, code commit, plugin versions, dependency hashes, params and search space,
-   seeds, environment lock, Constitution version, Profile ref + hash + selection, split spec, cost
-   model, LLM calls);
-4. ``CandidateTrialRunner`` runs strategy → risk → backtest on the research bars with the F4
-   ``bar_log_return`` signals of the state stage;
+   06-experiment.md §2 (hypothesis / strategy / risk / outcome refs, dataset snapshots = one per
+   ingested market contributing research bars, with its time range, code commit, plugin versions,
+   dependency hashes, params and search space, seeds, environment lock, Constitution version,
+   Profile ref + hash + selection, split spec, cost model, LLM calls — for a re-evaluation, the
+   LLM call its first trial cited);
+4. ``CandidateTrialRunner`` runs strategy → risk → backtest on the accumulated research bars with
+   the F4 ``bar_log_return`` signals of the state stage;
 5. P6: the backtest's per-bar returns are compounded per decision period ``[d_i, d_i+1)`` and
    attributed to the P2 state evaluated at ``d_i`` (``state_strategy_matrix`` over the state
    result; the matrix binds the backtest and state result hashes);
-6. a completed trial moves CANDIDATE → VALIDATION; an errored one is left for the memory stage
-   (CANDIDATE → FAILED + FailureRecord).
+6. a completed first trial moves CANDIDATE → VALIDATION (a re-evaluation is already there); an
+   errored one is left for the memory stage (CANDIDATE → FAILED + FailureRecord; an errored
+   re-evaluation only files its FailureRecord).
 
 ``ValidationStage`` — ``PipelineBacktestValidator`` (G0 → G3, then G4 robustness) for every
 completed trial, with a ``ValidationContext`` bound to the trial's run and an ``ExperimentMetadata``
-whose ``trial_index`` / ``family_trial_count`` come from the ledger (failures included). G5 (sealed
+whose ``trial_index`` / ``family_trial_count`` come from the ledger's trial log (failures and every
+re-evaluation included, so G3 corrects for each look at the accumulated data). G5 (sealed
 OOS) runs only when an explicit ``OosUnsealBudget`` is configured **and lists the family** with its
 approving human, the in-sample verdict is PASS, the round has sealed data and the family has not
 used its one unsealing; otherwise the sealed window stays sealed and G5 is simply not run. Once
@@ -211,6 +217,9 @@ class TrialOutcome:
     summary: Mapping[str, Any]
     error: str | None = None
     reason: ReasonCode | None = None
+    #: ``None``: the hypothesis's first trial (its registration); otherwise the re-evaluation's
+    #: ``TrialLedger`` attempt key.
+    attempt: str | None = None
 
     @property
     def completed(self) -> bool:
@@ -240,12 +249,16 @@ class ValidationOutcome:
         return next((g.value for g in self.report.gates if g.gate_id == gate_id), None)
 
 
-def _registered_this_round(ctx: RoundContext) -> tuple[tuple[Hypothesis, str], ...]:
-    """Hypotheses registered this round, in order: hypothesis stage first, then evolution."""
-    found: list[tuple[Hypothesis, str]] = [
-        (h, "hypothesis") for h in ctx.artifacts.get("hypothesis", {}).get("registered", ())
+def _registered_this_round(ctx: RoundContext) -> tuple[tuple[Hypothesis, str, str | None], ...]:
+    """This round's trials in order: new hypotheses, re-evaluations, then evolution offspring."""
+    stage = ctx.artifacts.get("hypothesis", {})
+    found: list[tuple[Hypothesis, str, str | None]] = [
+        (h, "hypothesis", None) for h in stage.get("registered", ())
     ]
-    found += [(h, "evolution") for h in ctx.artifacts.get("evolution", {}).get("registered", ())]
+    found += [(h, "reevaluation", attempt) for h, attempt in stage.get("reevaluations", ())]
+    found += [
+        (h, "evolution", None) for h in ctx.artifacts.get("evolution", {}).get("registered", ())
+    ]
     return tuple(found)
 
 
@@ -257,10 +270,16 @@ def _seed(round_seed: int, hypothesis: Hypothesis) -> int:
     return int(content_hash({"round_seed": round_seed, "trial": str(hypothesis.ref)})[:8], 16)
 
 
-def _llm_calls(ctx: RoundContext, hypothesis: Hypothesis) -> tuple[LlmCall, ...]:
+def _llm_calls(
+    ctx: RoundContext, hypothesis: Hypothesis, memory: ResearchMemory
+) -> tuple[LlmCall, ...]:
+    """The LLM call behind ``hypothesis``: this round's, else the one its first trial cited."""
     calls: Mapping[str, LlmCall] = ctx.artifacts.get("hypothesis", {}).get("llm_calls", {})
     call = calls.get(str(hypothesis.ref))
-    return () if call is None else (call,)
+    if call is not None:
+        return (call,)
+    first = next((o for o in memory.trials if o.hypothesis.ref == hypothesis.ref), None)
+    return () if first is None else tuple(first.run.repro.llm_calls)
 
 
 def _period_returns(
@@ -323,8 +342,8 @@ class ExperimentStage:
     def run(self, ctx: RoundContext) -> StageResult:
         outcomes: list[TrialOutcome] = []
         try:
-            for hypothesis, origin in _registered_this_round(ctx):
-                outcomes.append(self._trial(ctx, hypothesis, origin))
+            for hypothesis, origin, attempt in _registered_this_round(ctx):
+                outcomes.append(self._trial(ctx, hypothesis, origin, attempt))
         except Exception as exc:
             raise StageFailed(
                 f"{type(exc).__name__}: {exc}",
@@ -342,13 +361,8 @@ class ExperimentStage:
 
     # ------------------------------------------------------------------------------------------
 
-    def _pre_registered(self, hypothesis: Hypothesis) -> bool:
-        return any(
-            h.name == hypothesis.name
-            and h.version == hypothesis.version
-            and h.content_hash() == hypothesis.content_hash()
-            for h in self._memory.ledger.hypotheses
-        )
+    def _pre_registered(self, hypothesis: Hypothesis, attempt: str | None) -> bool:
+        return self._memory.ledger.is_registered(hypothesis, attempt)
 
     def _repro(
         self,
@@ -376,23 +390,34 @@ class ExperimentStage:
             if candidate.risk_policy is not None and candidate.risk is not None:
                 dependencies[str(candidate.risk_policy.ref)] = candidate.risk_policy.content_hash()
                 all_plugins.update(dict([_plugin(candidate.risk.descriptor)]))
-        first = segment.research[0].interval_start if segment.research else ctx.as_of
+        first = segment.research_start or ctx.as_of
         last = segment.research_end or ctx.as_of
         boundary = profile.data_split.sealed_oos_boundary.isoformat()
+        table = f"synthetic.{segment.provider_key}"
+        snapshots = tuple(
+            DatasetRef(
+                zone=Zone.CANONICAL,
+                table=table,
+                snapshot_id=piece.market.market_hash,
+                time_range_start=piece.bars[0].interval_start,
+                time_range_end=piece.bars[-1].interval_end,
+            )
+            for piece in segment.pieces
+        ) or (
+            DatasetRef(
+                zone=Zone.CANONICAL,
+                table=table,
+                snapshot_id=segment.market.market_hash,
+                time_range_start=first,
+                time_range_end=last,
+            ),
+        )
         return ReproducibilityTuple(
             hypothesis_ref=hypothesis.ref,
             strategy_ref=None if spec is None else spec.ref,
             risk_policy_ref=None if spec is None else spec.risk_policy,
             outcome_ref=c.label_spec.outcome,
-            dataset_snapshots=(
-                DatasetRef(
-                    zone=Zone.CANONICAL,
-                    table=f"synthetic.{segment.provider_key}",
-                    snapshot_id=segment.market.market_hash,
-                    time_range_start=first,
-                    time_range_end=last,
-                ),
-            ),
+            dataset_snapshots=snapshots,
             code_commit=c.code_commit,
             plugin_versions=FrozenMapping(all_plugins),
             dependency_hashes=FrozenMapping(dependencies),
@@ -410,10 +435,12 @@ class ExperimentStage:
                 f"for {profile.data_split.sealed_oos_length}"
             ),
             cost_model_ref=c.cost_model.ref,
-            llm_calls=_llm_calls(ctx, hypothesis),
+            llm_calls=_llm_calls(ctx, hypothesis, self._memory),
         )
 
-    def _trial(self, ctx: RoundContext, hypothesis: Hypothesis, origin: str) -> TrialOutcome:
+    def _trial(
+        self, ctx: RoundContext, hypothesis: Hypothesis, origin: str, attempt: str | None
+    ) -> TrialOutcome:
         segment: Segment = ctx.artifact("ingest", "segment")
         signals: tuple[SignalObservation, ...] = ctx.artifact("state", "signals")
         states: StateResult = ctx.artifact("state", "result")
@@ -424,9 +451,10 @@ class ExperimentStage:
         params: dict[str, Param] = {}
         error: str | None = None
         reason: ReasonCode | None = None
-        if not self._pre_registered(hypothesis):
+        if not self._pre_registered(hypothesis, attempt):
             error, reason = (
-                f"{hypothesis.ref} was not pre-registered",
+                f"{hypothesis.ref} was not pre-registered"
+                + ("" if attempt is None else f" for the re-evaluation {attempt}"),
                 ReasonCode.CONTRACT_VIOLATION,
             )
         else:
@@ -501,7 +529,12 @@ class ExperimentStage:
             "experiment_hash": repro.experiment_hash,
             "run_id": run_id,
             "run_state": state.value,
+            "attempt": attempt,
             "market_hash": segment.market.market_hash,
+            "research_data_hash": segment.data_hash,
+            "research_start": _iso(segment.research_start),
+            "research_end": _iso(segment.research_end),
+            "research_bars": len(segment.research),
             "error": None if error is None else error[:500],
         }
         if trial is not None:
@@ -516,12 +549,13 @@ class ExperimentStage:
                 else decimal_text(final / trial.backtest.initial_equity - 1),
                 state_strategy_matrix_hash=matrix_hash,
             )
-            ctx.advance(
-                hypothesis.ref,
-                LifecycleState.VALIDATION,
-                reason="experiment completed; awaiting validation",
-                evidence=(f"experiment:{repro.experiment_hash}", f"run:{run_id}"),
-            )
+            if ctx.state_of(hypothesis.ref) is LifecycleState.CANDIDATE:  # a re-evaluation is
+                ctx.advance(  # already in VALIDATION
+                    hypothesis.ref,
+                    LifecycleState.VALIDATION,
+                    reason="experiment completed; awaiting validation",
+                    evidence=(f"experiment:{repro.experiment_hash}", f"run:{run_id}"),
+                )
         return TrialOutcome(
             round_index=ctx.round_index,
             hypothesis=hypothesis,
@@ -536,7 +570,12 @@ class ExperimentStage:
             summary=summary,
             error=error,
             reason=reason,
+            attempt=attempt,
         )
+
+
+def _iso(moment: datetime | None) -> str | None:
+    return None if moment is None else moment.isoformat()
 
 
 def _side(weight: Decimal) -> int:
@@ -617,8 +656,7 @@ class ValidationStage:
 
     def _context(self, ctx: RoundContext, outcome: TrialOutcome) -> ValidationContext:
         hypothesis, c = outcome.hypothesis, self._c
-        family = [h for h in self._memory.ledger.hypotheses if h.family_id == hypothesis.family_id]
-        index = next(i for i, h in enumerate(family, start=1) if h.ref == hypothesis.ref)
+        ledger = self._memory.ledger
         metadata = ExperimentMetadata(
             experiment_hash=outcome.run.experiment_hash,
             constitution_version=c.constitution_version,
@@ -626,8 +664,8 @@ class ValidationStage:
             validation_profile_hash=c.profile.content_hash(),
             profile_selection=c.profile_selection,
             hypothesis_family_id=hypothesis.family_id,
-            trial_index=index,
-            family_trial_count=len(family),
+            trial_index=ledger.trial_index(hypothesis, outcome.attempt),
+            family_trial_count=ledger.trials(hypothesis.family_id),
             declared_research_class=c.declared_research_class,
             llm_calls=outcome.run.repro.llm_calls,
             trace_id=outcome.run.run_id,
@@ -653,7 +691,7 @@ class ValidationStage:
         setup = ValidatorSetup(
             context=context,
             outcome_provider=self._c.outcome_provider,
-            manifest_content_hash=segment.market.market_hash,
+            manifest_content_hash=segment.data_hash,
             instrument=segment.symbol,
             trials=CandidateTrialRunner(candidate, inputs, self._c.backtester),
             chosen_params=dict(outcome.request_params),
@@ -668,6 +706,7 @@ class ValidationStage:
         base: dict[str, Any] = {
             "hypothesis": str(outcome.hypothesis.ref),
             "origin": outcome.origin,
+            "attempt": outcome.attempt,
             "subject": str(candidate.spec.ref),
             "experiment_hash": outcome.run.experiment_hash,
             "family_trial_count": context.metadata.family_trial_count,
@@ -785,8 +824,8 @@ class ValidationStage:
         step = self._sealed_step
         assert step is not None
         sealed_bars = segment.sealed.release(evaluation)
-        build_signals: Callable[..., tuple[SignalObservation, ...]] = ctx.artifact(
-            "state", "signals_for"
+        signals_with: Callable[..., tuple[SignalObservation, ...]] = ctx.artifact(
+            "state", "signals_with"
         )
         candidate, inputs = outcome.candidate, outcome.inputs
         assert candidate is not None and inputs is not None
@@ -802,7 +841,7 @@ class ValidationStage:
             bars=tuple(price_bar(segment.symbol, bar) for bar in bars),
             decision_times=decisions,
             knowledge_cutoff=sealed_bars[-1].interval_end,
-            signals=build_signals(bars),
+            signals=signals_with(sealed_bars),
         )
         run = CandidateTrialRunner(candidate, sealed_inputs, self._c.backtester).run(
             dict(outcome.request_params)
@@ -826,7 +865,9 @@ class ValidationStage:
             self._c.outcome_provider,
             OutcomeRequest(
                 label_spec=self._c.label_spec,
-                manifest_content_hash=segment.market.market_hash,
+                manifest_content_hash=content_hash(
+                    {"research": segment.data_hash, "sealed": segment.market.market_hash}
+                ),
                 price_cutoff=max(bar.available_time for bar in outcome_bars),
                 events=tuple(
                     OutcomeEvent(event_key=_event_key(t), event_time=t.decision_time)

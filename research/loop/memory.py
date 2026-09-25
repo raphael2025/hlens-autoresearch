@@ -12,6 +12,9 @@
   round order (append-only); ``experiments`` / ``states`` are their JSON summaries.
 - ``lineage``: every strategy spec the loop evolved from or into (for ``LineageGraph``).
 - ``oos_ledger``: the sealed-OOS unsealing ledger (one unsealing per family, append-only).
+- ``markets`` / ``research_data``: every market the ingest stage generated and the research-window
+  bars each contributed (``ResearchPiece``, oldest first): the accumulated research data every
+  round evaluates on (ADR-0049 accumulated-window note). Sealed-window bars are never in it.
 """
 
 from __future__ import annotations
@@ -19,8 +22,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Any, Final
 
+from core.contracts.synthetic import SyntheticMarket
 from core.domain.specs import StrategySpec
 from research.hypotheses import HypothesisDraft, TrialLedger
+from research.loop.segment import ResearchPiece
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import StrategyCandidate
 from research.validation.sealed_oos import InMemoryUnsealingLedger
@@ -135,6 +140,8 @@ class ResearchMemory:
     lineage: list[StrategySpec] = field(default_factory=list)
     offspring: list[dict[str, Any]] = field(default_factory=list)
     oos_ledger: InMemoryUnsealingLedger = field(default_factory=InMemoryUnsealingLedger)
+    markets: list[SyntheticMarket] = field(default_factory=list)
+    research_data: list[ResearchPiece] = field(default_factory=list)
 
     def add_strategy(self, candidate: StrategyCandidate) -> None:
         """Add a candidate to the catalog; the same ref with other content is refused."""

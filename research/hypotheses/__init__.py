@@ -9,11 +9,12 @@ from research.hypotheses.dsl import (
     transformation,
 )
 from research.hypotheses.generator import HypothesisDraft, from_knowledge, from_llm
-from research.hypotheses.ledger import LedgerError, TrialLedger
+from research.hypotheses.ledger import LedgerError, TrialEntry, TrialLedger
 
 __all__ = [
     "HypothesisDraft",
     "LedgerError",
+    "TrialEntry",
     "TrialLedger",
     "conditioning",
     "ensemble",

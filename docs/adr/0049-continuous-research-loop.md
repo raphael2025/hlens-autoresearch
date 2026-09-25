@@ -122,3 +122,33 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
    从 PASS 变为 INCONCLUSIVE（除该门外其余 G0 – G4 门均 PASS），留在 VALIDATION；原 PASS 正是靠丢弃空窗口得到的。
    PASS → OOS 与 G5 路径由单轮覆盖整个研究窗口的封存测试覆盖。滚动循环与固定日历 Profile 的配合（逐轮新段 vs 累计研究数据）
    仍是"仍未做"中的开放项，需要决定。
+
+## Implementation note (accumulated validation window, 2026-09-25)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；无契约 / Schema / 生命周期 / Constitution / Profile 结构变更。
+状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。调试待办 R25。
+
+1. **决定**：每轮的 EXPERIMENT 与 VALIDATION 阶段在**累计研究数据**上评估假设——截至本轮 `as_of` 摄取的全部研究窗口 bar
+   （`ResearchMemory.research_data`，每个摄取市场一个 `ResearchPiece`，按时间排列）——而不是只用本轮新的 3 天段。
+   理由：Profile 的 walk-forward 覆盖整个研究窗口；只用新段时其余窗口永远无收益，G4 `walk_forward.positive_fraction`
+   在结构上必然 INCONCLUSIVE（R23，本 ADR「review fixes 2」第 5 条），循环永远无法把真实效应推进到 OOS。
+   封存 OOS 窗口的 bar 仍只进入 `SealedBars`（被扣留，只凭一次性评估凭据释放），**永不**进入研究数据；研究窗口之前 / 封存窗口之后
+   的 bar 仍不使用（计数）。每轮新市场接续上一轮的价格路径（初始价 = 上一轮最后收盘价），累计数据是一条连续路径，
+   不会在段边界出现跳空。
+2. **风险与对策（同一数据被反复评估）**：每个（假设，轮次）评估都是 TrialLedger 中**单独预登记的 trial**：
+   `TrialLedger.register_reevaluation(hypothesis, attempt)`（attempt = `loop_round:<loop>:<round>`，同一 attempt 不重复计数，
+   内容变化的假设被拒——那是新版本）；`trials(family)` 与 `trial_index` 计入每次重新评估，因此 G3 的多重检验校正随每次
+   观察增强，循环预算也按 trial 计费。
+3. **重新评估的范围**（`research/loop/stages.py::reevaluation_candidates`，由假设阶段在运行前登记）：只有仍开放的假设——
+   生命周期 `VALIDATION`、最近一次 trial 的最近样本内报告为 INCONCLUSIVE——且累计研究数据的终点晚于它最近一次评估所用数据
+   时才重新评估（相同数据只会多花一个 trial）；每轮最多 `max_reevaluations_per_round` 个（配置，无默认；0 = 不重新评估），
+   按登记先后。永不重新评估：已 REJECTED（有 REJECTED FailureRecord 或处于 REJECTED）/ FAILED 的假设；已在 OOS 的假设
+   （不再做样本内重跑）；最近一次试验或验证器出错的假设；仍在 CANDIDATE 的假设。重新评估的结果按原规则结算：
+   PASS → OOS，FAIL → REJECTED，INCONCLUSIVE 留在 VALIDATION；出错的重新评估只写 FailureRecord（没有 `VALIDATION → FAILED` 边）。
+4. **进化阶段**按每个假设**最近一次**验证判断是否"未被否证"（早先 INCONCLUSIVE、后来 FAIL 的不再作为父代）。
+5. **复现记录**：`ExperimentSpec` 的 `dataset_snapshots` 为每个参与的摄取市场一条（含时间范围）；特征请求以各自市场哈希为标签，
+   验证器 manifest 为累计数据哈希（`Segment.data_hash`）。状态阶段按研究段缓存特征运行、数据未增长时复用状态结果（纯缓存，结果不变）。
+6. **E2E**（TEST ONLY Profile 的研究窗口改为 6 天 = 第 0、1 轮）：植入效应的 lookback-60 假设第 0 轮（3/6 天）只有
+   `G4.walk_forward.positive_fraction` INCONCLUSIVE、留在 VALIDATION；第 1 轮在累计 6 天上作为新 trial 重新评估，G0 – G4 全部 PASS → OOS；
+   第 2 轮在研究窗口之后，没有新研究数据，不重新评估，封存日被扣留。纯噪声什么也不通过。测试覆盖：trial 数随轮次增长、
+   REJECTED / OOS 后不再评估、封存 bar 从不进入研究数据。

@@ -1,12 +1,15 @@
 """Shared building blocks of the loop's research stages (Phase 11; ADR-0049, W2 wiring).
 
-- ``Segment``: one round's new market data. Bars whose label could reach the Profile's sealed OOS
-  window are **withheld** from research: they sit in ``SealedBars`` and are released only against
-  the ``SealedEvaluation`` a ``SealedOosVault`` hands out after the family's unsealing, which has
-  already consumed the family's single evaluation (Constitution C-S1 ~ C-S3; the vault enforces
-  one unsealing per family and the explicit global budget);
+- ``Segment``: one round's data. Its research part is the **accumulated research window** — every
+  research-window bar ingested up to the round's ``as_of`` (``ResearchPiece`` per ingested market,
+  oldest first; ADR-0049 accumulated-window note) — so the Profile's walk-forward, which spans the
+  whole research window, can be covered once enough rounds have run. Bars whose label could reach
+  the Profile's sealed OOS window are **never** part of it: they are **withheld** in ``SealedBars``
+  and are released only against the ``SealedEvaluation`` a ``SealedOosVault`` hands out after the
+  family's unsealing, which has already consumed the family's single evaluation (Constitution
+  C-S1 ~ C-S3; the vault enforces one unsealing per family and the explicit global budget);
 - ``decision_grid``: decision times ``start + warmup + k * step`` whose label (``horizon``) ends
-  inside the research part of the segment;
+  inside the research data;
 - ``observations`` / ``feature_pairs``: synthetic bars as ``FeatureObservation`` rows (lineage
   labels point at the synthetic market) and F4 feature runs over contiguous chunks — a chunk sees
   one earlier bar, so values do not depend on the chunk size (a performance parameter only);
@@ -25,6 +28,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
+from functools import cached_property
 from typing import Final
 
 from core.contracts.feature import (
@@ -36,7 +40,7 @@ from core.contracts.feature import (
 from core.contracts.strategy import PriceBar
 from core.contracts.synthetic import SyntheticBar, SyntheticMarket
 from core.contracts.universe import SelectedRevisionLineage
-from core.domain.base import FrozenMapping
+from core.domain.base import FrozenMapping, content_hash
 from core.domain.research import Hypothesis
 from core.domain.specs import FeatureSpec
 from infrastructure.feature.runner import run_feature
@@ -45,6 +49,7 @@ from research.validation.sealed_oos import SealedEvaluation, SealedOosLocked
 __all__ = [
     "RECORD_QUANTUM",
     "Param",
+    "ResearchPiece",
     "SealedBars",
     "Segment",
     "TrialPoint",
@@ -118,24 +123,68 @@ class SealedBars:
 
 
 @dataclass(frozen=True)
+class ResearchPiece:
+    """The research-window bars one ingested market contributed to the accumulated research data."""
+
+    round_index: int
+    market: SyntheticMarket
+    bars: tuple[SyntheticBar, ...]
+
+    def identity(self) -> dict[str, object]:
+        return {
+            "round": self.round_index,
+            "market_hash": self.market.market_hash,
+            "start": self.bars[0].interval_start.isoformat(),
+            "end": self.bars[-1].interval_end.isoformat(),
+            "bars": len(self.bars),
+        }
+
+
+@dataclass(frozen=True)
 class Segment:
-    """One round's data: research bars (and their observations) and the withheld sealed bars."""
+    """One round's data: the accumulated research bars and this round's withheld sealed bars.
+
+    ``pieces`` is the accumulated research data up to the round's ``as_of`` (oldest first; this
+    round's contribution, if any, last) and ``research`` their bars in time order; ``market`` is
+    this round's newly ingested market and ``sealed`` its sealed-window bars (withheld). Only
+    bars inside the Profile's research window whose label ends before the sealed OOS boundary are
+    ever in ``pieces``.
+    """
 
     market: SyntheticMarket
     symbol: str
     provider_key: str
     provider_hash: str
-    research: tuple[SyntheticBar, ...]
+    pieces: tuple[ResearchPiece, ...]
     sealed: SealedBars
     decision_times: tuple[datetime, ...]
 
+    @cached_property
+    def research(self) -> tuple[SyntheticBar, ...]:
+        return tuple(bar for piece in self.pieces for bar in piece.bars)
+
     @property
+    def new_research(self) -> tuple[SyntheticBar, ...]:
+        """This round's own contribution to the research data (possibly empty)."""
+        last = self.pieces[-1] if self.pieces else None
+        return last.bars if last is not None and last.market is self.market else ()
+
+    @cached_property
     def research_bars(self) -> tuple[PriceBar, ...]:
         return tuple(price_bar(self.symbol, bar) for bar in self.research)
 
     @property
+    def research_start(self) -> datetime | None:
+        return self.pieces[0].bars[0].interval_start if self.pieces else None
+
+    @property
     def research_end(self) -> datetime | None:
-        return self.research[-1].interval_end if self.research else None
+        return self.pieces[-1].bars[-1].interval_end if self.pieces else None
+
+    @property
+    def data_hash(self) -> str:
+        """Identity of the accumulated research data (every piece's market hash and range)."""
+        return content_hash([piece.identity() for piece in self.pieces])
 
 
 def decision_grid(
@@ -201,17 +250,22 @@ def feature_pairs(
     *,
     chunk: int,
     manifest: str,
+    prefix: FeatureObservation | None = None,
 ) -> tuple[tuple[FeatureRequest, FeatureResult], ...]:
     """``spec`` evaluated at every row's ``available_time`` via ``run_feature``, chunk by chunk.
 
-    Each chunk's request also carries the row just before the chunk (one earlier bar); the runner
+    Each chunk's request also carries the row just before the chunk (one earlier bar; for the
+    first chunk, ``prefix`` — the last row of the preceding data — when given); the runner
     truncates every call to the visible prefix, so there is no look-ahead inside a chunk either.
     """
     if chunk < 1:
         raise ValueError("chunk must be positive")
+    if prefix is not None and rows and prefix.available_time >= rows[0].available_time:
+        raise ValueError("the prefix row must precede the rows")
     pairs: list[tuple[FeatureRequest, FeatureResult]] = []
     for start in range(0, len(rows), chunk):
-        part = rows[max(0, start - 1) : start + chunk]
+        before = rows[start - 1 : start] if start else (() if prefix is None else (prefix,))
+        part = (*before, *rows[start : start + chunk])
         times = tuple(row.available_time for row in rows[start : start + chunk])
         request = FeatureRequest(
             feature=spec.ref,

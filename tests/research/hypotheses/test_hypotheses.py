@@ -59,6 +59,40 @@ def test_a_registered_hypothesis_is_immutable() -> None:
         ledger.register(changed)
 
 
+def test_a_reevaluation_is_its_own_pre_registered_trial() -> None:
+    """ADR-0049 accumulated-window note: every further look at a hypothesis counts as a trial."""
+    ledger = TrialLedger()
+    first, second = negation("h_a", "fam", S, "0.1"), negation("h_b", "fam", S, "0.1")
+    with pytest.raises(LedgerError, match="not registered"):
+        ledger.register_reevaluation(first, "round:1")
+    ledger.register(first)
+    ledger.register(second)
+    assert ledger.trials("fam") == 2 and ledger.is_registered(first)
+    assert not ledger.is_registered(first, "round:1")
+    assert ledger.register_reevaluation(first, "round:1")
+    assert not ledger.register_reevaluation(first, " round:1 ")  # the same attempt: no new trial
+    assert ledger.register_reevaluation(first, "round:2")
+    assert ledger.trials("fam") == 4 and ledger.trials("other") == 0
+    assert ledger.is_registered(first, "round:1") and not ledger.is_registered(second, "round:1")
+    assert [(e.name, e.attempt) for e in ledger.trial_log] == [
+        ("h_a", None),
+        ("h_b", None),
+        ("h_a", "round:1"),
+        ("h_a", "round:2"),
+    ]
+    assert ledger.trial_index(first) == 1 and ledger.trial_index(first, "round:2") == 4
+    assert ledger.trial_index(second) == 2
+    with pytest.raises(LedgerError):
+        ledger.trial_index(second, "round:1")
+    with pytest.raises(LedgerError, match="non-empty"):
+        ledger.register_reevaluation(first, "  ")
+    changed = first.model_copy(update={"statement": "something else"})
+    with pytest.raises(LedgerError, match="new version"):
+        ledger.register_reevaluation(changed, "round:3")
+    assert not ledger.is_registered(changed)
+    assert len(ledger.hypotheses) == 2  # a re-evaluation never adds a hypothesis
+
+
 def test_knowledge_claims_become_traceable_hypotheses() -> None:
     items = LocalKnowledgeProvider().items
     hypotheses = from_knowledge(items, "kb")

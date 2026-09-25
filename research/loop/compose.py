@@ -108,6 +108,9 @@ class SyntheticLoopConfig:
     family_id: str
     knowledge: Sequence[KnowledgeItem]
     max_new_hypotheses_per_round: int
+    #: Still-open (VALIDATION / INCONCLUSIVE) hypotheses re-evaluated per round on the grown
+    #: accumulated research data, each as a new registered trial (0: never re-evaluate).
+    max_reevaluations_per_round: int
     hypothesis_compute_seconds: Decimal
     compute_seconds_per_trial: Decimal
     validation_compute_seconds: Decimal
@@ -148,6 +151,7 @@ def build_synthetic_loop(
     )
     stages: tuple[LoopStage, ...] = (
         IngestStage(
+            memory,
             provider,
             config.market,
             config.profile,
@@ -171,6 +175,7 @@ def build_synthetic_loop(
             family_id=config.family_id,
             knowledge=config.knowledge,
             max_new_per_round=config.max_new_hypotheses_per_round,
+            max_reevaluations_per_round=config.max_reevaluations_per_round,
             compute_seconds=config.hypothesis_compute_seconds,
             llm=llm,
             llm_prompt=config.llm_prompt if llm is not None else None,

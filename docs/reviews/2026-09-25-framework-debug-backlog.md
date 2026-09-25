@@ -33,6 +33,7 @@
 | R23 | 低 | `research/validation/robustness.py`（walk-forward） | 无收益的窗口被移出分母，抬高正收益窗口比例 | ✅ 已修（保守选项）：空窗口计入并报告，任一空窗口 → `G4.walk_forward.positive_fraction` INCONCLUSIVE（不计为非正：那会把缺证据变成 REJECTED）。连带：循环多轮 E2E 的第 0 轮从 PASS 变为 INCONCLUSIVE（每轮只验证新段，Profile walk-forward 覆盖整个研究窗口），见 ADR-0049 实施说明第 5 条 |
 | R24 | 低 | `apps/worker/loop.py`（预算） | 只有阶段多报时停机，少报时预算按少报额计费 | ✅ 已修（保守选项）：完成的阶段按逐维度 max(声明, 报告) 计费，`StageRecord.charged` 记录 |
 | R26 | 中 | `research/validation/sealed_oos.py`、`research/hypotheses/ledger.py`、`research/evolution/lineage.py` | 开封账本（含 `claim_evaluation` / `mark_evaluated` 与逐族批准）、`TrialLedger`、`LineageGraph` 只存在于内存：进程重启后"每族只开封一次""全局开封预算""族 trial 计数""谱系父子关系"都不再跨进程生效 | ✅ 已修：新增共享模块 `research.persistence.AppendOnlyJournal`（哈希链、只追加 JSON-lines，写法对齐 `FailureRegistry`）；三者的构造函数新增可选 `path`（省略即原有纯内存行为，向后兼容），给定时落盘并在重新打开时重放校验整条哈希链；篡改、截断或未知记录类型一律拒绝，不静默修复（ADR-0040 / ADR-0041 / ADR-0045 同日实施说明） |
+| R25 | 中（设计） | `research/loop/stages.py`、`trials.py`、`segment.py`、`research/hypotheses/ledger.py` | 循环每轮只验证新段（3 天），而 Profile 的 walk-forward 覆盖整个研究窗口，G4 walk-forward 结构性 INCONCLUSIVE，真实效应永远到不了 OOS（R23 连带） | ✅ 已改（决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线）：实验 / 验证在截至 `as_of` 的累计研究数据上进行，封存窗口仍永不进入；每个（假设，轮次）评估都是 TrialLedger 中单独预登记的 trial（`register_reevaluation`），族 trial 数随之增长、G3 校正随之加强；只重新评估 VALIDATION 中 INCONCLUSIVE 且数据已增长的假设，REJECTED / FAILED 永不、OOS 不再样本内重跑。E2E：植入效应第 0 轮 INCONCLUSIVE，第 1 轮累计数据覆盖 walk-forward 后 PASS → OOS；纯噪声不通过（ADR-0049 accumulated validation window 实施说明） |
 
 ## B. 需要 Raphael 决定（红线，Claude 不自行决定）
 

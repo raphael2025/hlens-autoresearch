@@ -5,16 +5,20 @@ number a stage uses — minutes per round, decision grid, chunk sizes, cost unit
 declarations — is a constructor parameter; validation thresholds are read from the bound
 ``ValidationProfile`` only (inside ``research/validation``).
 
-- ``IngestStage``: generates this round's new market segment ``[as_of - minutes, as_of)`` and
-  splits it by the Profile's fixed calendar: research bars (label known before the sealed OOS
-  boundary) and sealed bars (withheld; ``segment.SealedBars``). Bars outside the Profile's research
-  window and after the sealed window are not used (counted in the summary);
-- ``StateStage``: Phase 1 F4 ``bar_log_return`` through ``run_feature`` over the research bars,
-  then a Phase 2 ``StateProvider`` through ``infrastructure.state.run_state`` at every decision
-  time and at the end of the research data; the same feature values become the strategy signals
-  (``infrastructure.strategy.signals.signals_from_features``);
+- ``IngestStage``: generates this round's new market segment ``[as_of - minutes, as_of)``
+  (continuing the previously ingested price path) and splits it by the Profile's fixed calendar:
+  research bars (label known before the sealed OOS boundary) join the **accumulated research
+  data** in ``ResearchMemory.research_data``; sealed bars are withheld (``segment.SealedBars``)
+  and never join it. Bars outside the Profile's research window and after the sealed window are
+  not used (counted in the summary);
+- ``StateStage``: Phase 1 F4 ``bar_log_return`` through ``run_feature`` over the accumulated
+  research bars, then a Phase 2 ``StateProvider`` through ``infrastructure.state.run_state`` at
+  every decision time and at the end of the research data; the same feature values become the
+  strategy signals (``infrastructure.strategy.signals.signals_from_features``);
 - ``HypothesisStage``: pre-registers knowledge hypotheses and human-reviewed LLM drafts
-  (IDEA → CANDIDATE) and asks the LLM for one new draft, which only goes to the review queue;
+  (IDEA → CANDIDATE), pre-registers re-evaluations of still-open (VALIDATION / INCONCLUSIVE)
+  hypotheses as new trials when the research data has grown, and asks the LLM for one new draft,
+  which only goes to the review queue;
 - ``EvolutionStage`` (optional, ``research/loop/evolution.py``): offspring of the best earlier
   candidates, registered as new hypotheses and validated afresh this round;
 - ``ExperimentStage`` / ``ValidationStage`` (``research/loop/trials.py``): the reproducible
@@ -25,19 +29,28 @@ declarations — is a constructor parameter; validation thresholds are read from
   means *under / eligible for* sealed OOS evaluation, not "passed OOS" — see ``MemoryStage``);
   a failed sealed OOS → REJECTED; INCONCLUSIVE stays in VALIDATION.
 
+Accumulated research window (ADR-0049 accumulated-window note, 2026-09-25): every round's
+experiment and validation stages evaluate on all research-window bars ingested up to the round's
+``as_of`` — not only the new segment — because the Profile's walk-forward spans the whole research
+window (a segment-only evaluation leaves its windows empty: G4 INCONCLUSIVE by construction). The
+price of looking at the same data again is paid in trials: each (hypothesis, round) evaluation is
+a separately pre-registered ``TrialLedger`` trial, so the family trial count G3 corrects for grows
+with every look; REJECTED / FAILED hypotheses are never re-evaluated and OOS ones are never re-run
+in sample. The sealed OOS window never enters the research data.
+
 Positions use only features known before the bar they trade (C-L1); the synthetic market's planted
 truth is never an input (it is only counted in the audit summary).
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any, Final
 
 from apps.worker.loop import RoundContext, StageResult, StageUsage
-from core.contracts.feature import FeatureProvider
+from core.contracts.feature import FeatureObservation, FeatureProvider
 from core.contracts.llm import LLMProvider
 from core.contracts.state import StateProvider, StateResult
 from core.contracts.strategy import SignalObservation
@@ -47,6 +60,7 @@ from core.contracts.synthetic import (
     SyntheticMarketSpec,
 )
 from core.contracts.validation_profile import ValidationProfile
+from core.domain.base import Ref, content_hash
 from core.domain.research import FailureRecord, Hypothesis, KnowledgeItem, LlmCall, Verdict
 from core.domain.specs import FeatureSpec, StateSpec
 from core.errors import ReasonCode
@@ -57,6 +71,7 @@ from research.hypotheses import HypothesisDraft, from_knowledge, from_llm
 from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
+    ResearchPiece,
     SealedBars,
     Segment,
     decision_grid,
@@ -85,6 +100,8 @@ __all__ = [
     "StateStage",
     "TrialComponents",
     "ValidationStage",
+    "reevaluation_attempt",
+    "reevaluation_candidates",
 ]
 
 _MINUTE: Final = timedelta(minutes=1)
@@ -97,10 +114,23 @@ def _positive_int(value: int, name: str) -> int:
 
 
 class IngestStage:
+    """New market data → the accumulated research window of the round (see module docs).
+
+    Each round generates its new segment ``[as_of - minutes, as_of)``; the market continues the
+    path of the previously ingested one (its initial price is the last ingested close), so the
+    accumulated research data is one continuous price path rather than segments that each restart
+    at the base price. The new segment is split by the Profile's fixed calendar: research-window
+    bars whose label is known before the sealed OOS boundary are appended to
+    ``ResearchMemory.research_data``; sealed-window bars are withheld (``SealedBars``) and never
+    join the research data; bars before the research window, after the sealed window, or already
+    covered by earlier rounds are not used (counted).
+    """
+
     name = "ingest"
 
     def __init__(
         self,
+        memory: ResearchMemory,
         provider: SyntheticMarketProvider,
         base: SyntheticMarketSpec,
         profile: ValidationProfile,
@@ -111,6 +141,7 @@ class IngestStage:
         decision_warmup: timedelta,
         label_horizon: timedelta,
     ) -> None:
+        self._memory = memory
         self._provider = provider
         self._base = base
         self._profile = profile
@@ -124,46 +155,63 @@ class IngestStage:
         return StageUsage(compute_seconds=self._per_bar * self._minutes)
 
     def run(self, ctx: RoundContext) -> StageResult:
+        memory = self._memory
         payload = self._base.model_dump()
         payload.update(
             seed=ctx.seed, start=ctx.as_of - self._minutes * _MINUTE, minutes=self._minutes
         )
+        if memory.markets and memory.markets[-1].bars:
+            payload.update(initial_price=memory.markets[-1].bars[-1].close)
         spec = SyntheticMarketSpec.model_validate(payload)
         market = self._provider.generate(spec)
         split = self._profile.data_split
         start = midnight_utc(split.research_window_start)
         boundary = midnight_utc(split.sealed_oos_boundary)
         window = (boundary, boundary + split.sealed_oos_length)
+        covered = memory.research_data[-1].bars[-1].interval_end if memory.research_data else None
         research: list[SyntheticBar] = []
         sealed: list[SyntheticBar] = []
-        unused = 0
+        unused = already = 0
         for bar in market.bars:
             if bar.interval_start >= start and bar.interval_end <= boundary:
-                research.append(bar)
+                if covered is not None and bar.interval_start < covered:
+                    already += 1  # an earlier round already contributed this time
+                else:
+                    research.append(bar)
             elif bar.interval_start >= window[0] and bar.interval_end <= window[1]:
                 sealed.append(bar)
             else:
                 unused += 1
+        memory.markets.append(market)
+        if research:
+            memory.research_data.append(ResearchPiece(ctx.round_index, market, tuple(research)))
+        pieces = tuple(memory.research_data)
+        accumulated = tuple(bar for piece in pieces for bar in piece.bars)
         descriptor = self._provider.descriptor
         segment = Segment(
             market=market,
             symbol=spec.symbol,
             provider_key=f"{descriptor.name}@{descriptor.version}",
             provider_hash=descriptor.content_hash(),
-            research=tuple(research),
+            pieces=pieces,
             sealed=SealedBars(sealed, window),
             decision_times=decision_grid(
-                research, step=self._step, warmup=self._warmup, horizon=self._horizon
+                accumulated, step=self._step, warmup=self._warmup, horizon=self._horizon
             ),
         )
         summary = {
             "spec_hash": market.spec_hash,
             "market_hash": market.market_hash,
             "provider": market.provider,
+            "initial_price": str(spec.initial_price),
             "bars": len(market.bars),
             "research_bars": len(research),
             "sealed_bars_withheld": len(sealed),
             "unused_bars": unused,
+            "already_covered_bars": already,
+            "accumulated_research_bars": len(segment.research),
+            "research_pieces": len(pieces),
+            "research_data_hash": segment.data_hash,
             "decision_times": len(segment.decision_times),
             "start": spec.start.isoformat(),
             "planted_effects": len(market.truth),
@@ -172,7 +220,7 @@ class IngestStage:
 
 
 class StateStage:
-    """F4 features → P2 states of the new segment (see module docs)."""
+    """F4 features → P2 states of the accumulated research data (see module docs)."""
 
     name = "state"
 
@@ -196,19 +244,28 @@ class StateStage:
         self._state_spec = state_spec
         self._chunk = _positive_int(feature_chunk_bars, "feature_chunk_bars")
         self._compute = compute_seconds
+        # Pure caches (same inputs, same outputs): feature runs per research piece, and the last
+        # state result keyed by the research data hash.
+        self._piece_features: dict[str, tuple[tuple[Any, ...], tuple[SignalObservation, ...]]] = {}
+        self._last_state: tuple[str, StateResult] | None = None
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
         return StageUsage(compute_seconds=self._compute)
 
-    def _signals(
-        self, segment: Segment, bars: Sequence[SyntheticBar]
+    def _features(
+        self,
+        symbol: str,
+        rows: Sequence[FeatureObservation],
+        prefix: FeatureObservation | None,
+        manifest: str,
     ) -> tuple[tuple[Any, ...], tuple[SignalObservation, ...]]:
         pairs = feature_pairs(
             self._feature_provider,
             self._feature_spec,
-            observations(segment.market, bars, segment.symbol),
+            rows,
             chunk=self._chunk,
-            manifest=segment.market.market_hash,
+            manifest=manifest,
+            prefix=prefix,
         )
         signals = tuple(
             signal
@@ -216,11 +273,37 @@ class StateStage:
             for signal in signals_from_features(
                 result,
                 feature=self._feature_spec.ref,
-                instrument=segment.symbol,
+                instrument=symbol,
                 knowledge_time=result.values[-1].evaluation_time,
             )
         )
         return pairs, signals
+
+    def _research_features(
+        self, segment: Segment
+    ) -> tuple[tuple[Any, ...], tuple[SignalObservation, ...], FeatureObservation | None]:
+        """Feature runs over the accumulated research data, piece by piece.
+
+        A piece's features depend only on its own bars and the last bar before it (both fixed
+        once ingested), so each piece is evaluated once and reused in later rounds; its requests
+        are labelled with the piece's own market hash.
+        """
+        pairs: list[Any] = []
+        signals: list[SignalObservation] = []
+        prefix: FeatureObservation | None = None
+        previous: dict[str, object] | None = None
+        for piece in segment.pieces:
+            key = content_hash({"piece": piece.identity(), "after": previous})
+            cached = self._piece_features.get(key)
+            if cached is None:
+                rows = observations(piece.market, piece.bars, segment.symbol)
+                cached = self._features(segment.symbol, rows, prefix, piece.market.market_hash)
+                self._piece_features[key] = cached
+            pairs.extend(cached[0])
+            signals.extend(cached[1])
+            [prefix] = observations(piece.market, piece.bars[-1:], segment.symbol)
+            previous = piece.identity()
+        return tuple(pairs), tuple(signals), prefix
 
     def run(self, ctx: RoundContext) -> StageResult:
         segment: Segment = ctx.artifact("ingest", "segment")
@@ -229,10 +312,21 @@ class StateStage:
             **_plugin(self._feature_provider.descriptor),
             **_plugin(self._state_provider.descriptor),
         }
+        pairs, signals, last_row = self._research_features(segment)
+
+        def signals_with(extra: Sequence[SyntheticBar]) -> tuple[SignalObservation, ...]:
+            """Signals over the research data followed by ``extra`` bars of this round's market
+            (the released sealed bars of a claimed G5 evaluation)."""
+            more = observations(segment.market, extra, segment.symbol)
+            return (
+                signals
+                + self._features(segment.symbol, more, last_row, segment.market.market_hash)[1]
+            )
+
         artifacts: dict[str, Any] = {
             "spec_ref": self._state_spec.ref,
             "plugins": plugins,
-            "signals_for": lambda bars: self._signals(segment, bars)[1],
+            "signals_with": signals_with,
         }
         if not segment.research or segment.research_end is None:
             summary: dict[str, Any] = {
@@ -244,10 +338,13 @@ class StateStage:
             empty: Mapping[datetime, str | None] = {}
             artifacts.update(signals=(), result=None, labels=empty, label=None)
             return StageResult(summary, self.estimate(ctx), artifacts)
-        pairs, signals = self._signals(segment, segment.research)
         times = tuple(sorted({*segment.decision_times, segment.research_end}))
-        request = state_request(self._state_spec, times, state_inputs(pairs))
-        result: StateResult = run_state(self._state_provider, self._state_spec, request)
+        if self._last_state is not None and self._last_state[0] == segment.data_hash:
+            result = self._last_state[1]  # no new research data: the same request and result
+        else:
+            request = state_request(self._state_spec, times, state_inputs(pairs))
+            result = run_state(self._state_provider, self._state_spec, request)
+            self._last_state = (segment.data_hash, result)
         labels = {value.evaluation_time: value.state for value in result.values}
         current = labels[segment.research_end]
         counts: dict[str, int] = {}
@@ -274,7 +371,73 @@ def _plugin(descriptor: Any) -> dict[str, str]:
     return {f"{descriptor.name}@{descriptor.version}": descriptor.content_hash()}
 
 
+def reevaluation_attempt(ctx: RoundContext) -> str:
+    """The ``TrialLedger`` attempt key of a re-evaluation in this round."""
+    return f"loop_round:{ctx.loop_id}:{ctx.round_index}"
+
+
+def reevaluation_candidates(
+    memory: ResearchMemory,
+    state_of: Callable[[Ref], LifecycleState | None],
+    data_end: datetime | None,
+    limit: int,
+) -> tuple[Hypothesis, ...]:
+    """Registered hypotheses to evaluate again on the grown research data (ledger order).
+
+    ADR-0049 accumulated-window note: a hypothesis is re-evaluated only while it is still open —
+    lifecycle ``VALIDATION`` with an ``INCONCLUSIVE`` latest in-sample report on its latest trial —
+    and only when the accumulated research data now ends later than the data that latest trial
+    used (identical data would only add a trial). Never re-evaluated: a hypothesis with a REJECTED
+    failure record or in ``REJECTED`` / ``FAILED`` (terminal), one in ``OOS`` (not re-run in
+    sample), one whose latest trial errored or whose validator errored (a FailureRecord was
+    filed), and one still in ``CANDIDATE``. At most ``limit`` hypotheses, oldest registration
+    first.
+    """
+    if limit < 1 or data_end is None:
+        return ()
+    latest_trial: dict[str, TrialOutcome] = {}
+    for outcome in memory.trials:
+        latest_trial[str(outcome.hypothesis.ref)] = outcome
+    latest_validation: dict[str, ValidationOutcome] = {}
+    for validated in memory.validations:
+        latest_validation[str(validated.outcome.hypothesis.ref)] = validated
+    rejected = {
+        str(record.subject_ref)
+        for record in memory.failures.records()
+        if record.terminal_state == "REJECTED"
+    }
+    chosen: list[Hypothesis] = []
+    for hypothesis in memory.ledger.hypotheses:
+        key = str(hypothesis.ref)
+        trial, result = latest_trial.get(key), latest_validation.get(key)
+        if (
+            key in rejected
+            or state_of(hypothesis.ref) is not LifecycleState.VALIDATION
+            or trial is None
+            or trial.inputs is None
+            or result is None
+            or result.outcome is not trial
+            or result.verdict is not Verdict.INCONCLUSIVE
+            or trial.inputs.knowledge_cutoff >= data_end
+        ):
+            continue
+        chosen.append(hypothesis)
+        if len(chosen) == limit:
+            break
+    return tuple(chosen)
+
+
 class HypothesisStage:
+    """Pre-registers this round's trials (see module docs).
+
+    Fresh knowledge hypotheses and human-reviewed LLM drafts are registered (IDEA → CANDIDATE).
+    Up to ``max_reevaluations_per_round`` still-open hypotheses of earlier rounds
+    (``reevaluation_candidates``) are pre-registered again as **new trials**
+    (``TrialLedger.register_reevaluation``, attempt ``loop_round:<loop>:<round>``): each
+    (hypothesis, round) evaluation counts towards the family's trial count and the round's trial
+    budget, so G3's multiple-testing correction sees every look at the accumulated data.
+    """
+
     name = "hypothesis"
 
     def __init__(
@@ -284,6 +447,7 @@ class HypothesisStage:
         family_id: str,
         knowledge: Sequence[KnowledgeItem],
         max_new_per_round: int,
+        max_reevaluations_per_round: int,
         compute_seconds: Decimal,
         llm: LLMProvider | None = None,
         llm_prompt: str | None = None,
@@ -291,29 +455,43 @@ class HypothesisStage:
     ) -> None:
         if (llm is None) != (llm_prompt is None):
             raise ValueError("an LLM source needs both a provider and a prompt")
+        reevaluations = max_reevaluations_per_round
+        if (
+            isinstance(reevaluations, bool)
+            or not isinstance(reevaluations, int)
+            or reevaluations < 0
+        ):
+            raise ValueError("max_reevaluations_per_round must be a non-negative int")
         self._memory = memory
         self._family = family_id
         self._knowledge = tuple(knowledge)
         self._max_new = _positive_int(max_new_per_round, "max_new_per_round")
+        self._max_reevaluations = reevaluations
         self._compute = compute_seconds
         self._llm = llm
         self._prompt = llm_prompt
         self._llm_cost = llm_cost_units_per_call
 
-    def _plan(self) -> tuple[tuple[Hypothesis, ...], tuple[HypothesisDraft, ...]]:
+    def _plan(
+        self, ctx: RoundContext
+    ) -> tuple[tuple[Hypothesis, ...], tuple[HypothesisDraft, ...], tuple[Hypothesis, ...]]:
         known = {(h.name, h.version) for h in self._memory.ledger.hypotheses}
         fresh = tuple(
             h
             for h in from_knowledge(self._knowledge, self._family)
             if (h.name, h.version) not in known
         )[: self._max_new]
-        return fresh, self._memory.reviews.reviewed_untaken()
+        segment: Segment = ctx.artifact("ingest", "segment")
+        again = reevaluation_candidates(
+            self._memory, ctx.state_of, segment.research_end, self._max_reevaluations
+        )
+        return fresh, self._memory.reviews.reviewed_untaken(), again
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
-        return self._usage(*self._plan())
+        return self._usage(*self._plan(ctx))
 
     def run(self, ctx: RoundContext) -> StageResult:
-        fresh, drafts = self._plan()
+        fresh, drafts, again = self._plan(ctx)
         llm_summary: dict[str, Any] | None = None
         if self._llm is not None and self._prompt is not None:
             context = {
@@ -354,25 +532,38 @@ class HypothesisStage:
                     f"human_review:{self._memory.reviews.reviewer_of(reviewed)}",
                 ),
             )
+        attempt = reevaluation_attempt(ctx)
+        for hypothesis in again:  # pre-registered as new trials before they run
+            if not self._memory.ledger.register_reevaluation(hypothesis, attempt):
+                raise ValueError(f"{hypothesis.ref} was already re-evaluated as {attempt}")
         summary = {
             "registered": [str(h.ref) for h in registered],
             "hypothesis_hashes": [h.content_hash() for h in registered],
+            "reevaluations": [str(h.ref) for h in again],
+            "reevaluation_attempt": attempt if again else None,
             "family_trials": self._memory.ledger.trials(self._family),
             "llm": llm_summary,
             "pending_reviews": list(self._memory.reviews.pending),
         }
         return StageResult(
             summary,
-            self._usage(fresh, drafts),
-            {"registered": tuple(registered), "llm_calls": llm_calls},
+            self._usage(fresh, drafts, again),
+            {
+                "registered": tuple(registered),
+                "reevaluations": tuple((h, attempt) for h in again),
+                "llm_calls": llm_calls,
+            },
         )
 
     def _usage(
-        self, fresh: tuple[Hypothesis, ...], drafts: tuple[HypothesisDraft, ...]
+        self,
+        fresh: tuple[Hypothesis, ...],
+        drafts: tuple[HypothesisDraft, ...],
+        again: tuple[Hypothesis, ...],
     ) -> StageUsage:
         calls = 0 if self._llm is None else 1
         return StageUsage(
-            trials=len(fresh) + len(drafts),
+            trials=len(fresh) + len(drafts) + len(again),
             llm_cost_units=self._llm_cost * calls,
             compute_seconds=self._compute,
         )
@@ -409,6 +600,10 @@ class MemoryStage:
     - G5 ``FAIL``: ``OOS → REJECTED`` with a FailureRecord citing the sealed report;
     - G5 ``PASS``: still ``OOS``. ``OOS → PAPER`` needs a human approval (ADR-0006 §3) and the
       ``LifecycleGuard`` refuses it, so nothing beyond ``OOS`` ever happens in the loop.
+
+    A re-evaluation (ADR-0049 accumulated-window note) is settled the same way from ``VALIDATION``:
+    PASS → OOS, FAIL → REJECTED, INCONCLUSIVE stays; an errored re-evaluation run has no
+    ``VALIDATION → FAILED`` edge, so its FailureRecord is filed and the lifecycle stays put.
     """
 
     name = "memory"
@@ -449,6 +644,9 @@ class MemoryStage:
                     )
                 )
             )
+            if ctx.state_of(hypothesis.ref) in _NO_FAILED_EDGE:  # an errored re-evaluation
+                lifecycle_unchanged.append(str(hypothesis.ref))
+                continue
             ctx.advance(
                 hypothesis.ref, LifecycleState.FAILED, reason="trial errored", evidence=evidence
             )
