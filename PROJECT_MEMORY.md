@@ -86,6 +86,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0026（D-32）：PyIceberg 0.12 的 day transform 写入使用官方 `pyiceberg-core` extra；不改变冻结分区或写入路径；已实施并随 C3 验收
 - ADR-0028（E0，**Accepted** 2026-09-25，Raphael 批准方案 B）：Canonical revision 与 Raw 元素 revision 一一对应、lineage 进身份；跨通道边由 PIT 从绑定的 Raw 证据 snapshot 映射，不物化；Canonical `arrival_seq` 独立分配；E1 已实现（`infrastructure/canonical/`，REVIEW_PENDING；规范 symbol = `<base>-<quote>`，E2 须一致）；F1 选择引擎 `infrastructure/pit/`（`hlens.pit.maximal-head@1.0.0`，只在绑定 snapshot 上读取与证明，REVIEW_PENDING）；E3 质量报告 `infrastructure/quality/`（`hlens.quality.canonical-partition@1.0.0`，无数值阈值，REVIEW_PENDING）
 - ADR-0029（E2 listing 来源，**Proposed** 2026-09-25）：官方唯一无凭据来源为 `exchangeInfo` 当前快照（无上市日期 / 历史 / 稳定 ID）；建议新增该端点 + Raw 表，`tradable_from` = 本机首次观察下界；历史 simulation 仍不可构建
+- ADR-0030（F4 FeatureProvider 契约，**Proposed** 2026-09-25）：执行器截断输入（available ≤ t 且 knowledge ≤ cutoff，lag 由执行器施加）+ 契约因果扰动测试；Representation 在 Phase 1 不设 Provider
 - ADR-0027（D-33，Accepted 2026-09-25，部分实施）：D3B 已实现四张 additive Raw 表、REST 身份规则与纯 policy，D3C 已实现严格纯 decoder，D3D 已验收 `binance.spot.public-rest@1.0.0` collector（`61dd9bf` + `c06b9fa`；只经自建、无 hook / auth / 环境代理 / cookie 的 client 发送，不接受外部 `httpx.Client`）；归档路径与 `IDENTITY_HASH` 零改动；D3E store / reconciler 已提交、待 Codex 复核；D-33 方案 A 生效（规范内容投影逐字段相等才在独立证据表写 evidence-only 边 归档 → REST，项目政策、非来源先后）
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的

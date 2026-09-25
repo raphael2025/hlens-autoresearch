@@ -35,6 +35,7 @@
 | [0027](0027-rest-raw-source-and-element-revisions.md) | REST 补尾的 Raw source / element revision、通道等价 precedence 与三跳 lineage（D-33） | Accepted（2026-09-25，Codex 依 Raphael 授权批准；复核 D3A-R1 `ed526f7` PASS，[审阅记录](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)）；D-33 方案 A 生效；尚待实施（D3B 起逐批） |
 | [0028](0028-dual-raw-canonical-lineage.md) | 双 Raw 通道进入 Canonical 的 revision 身份、三跳 lineage 与 precedence 映射（E0） | Accepted（2026-09-25，Raphael 批准方案 B：lineage 进 Canonical 身份，PIT 从固定 Raw 证据 snapshot 一对一映射，不新增表、不改契约）；尚待实施（E1） |
 | [0029](0029-listing-history-source.md) | 首切片标的上市历史的来源（E2，D-E2） | Proposed（2026-09-25，Claude 取证后起草，待 Raphael / Codex 决定；建议方案 A：`exchangeInfo` 状态快照 → 新 Raw 表 → 观察下界语义的 listing revision）；E2 未开放 |
+| [0030](0030-feature-provider-contract.md) | FeatureProvider 的 Protocol、DTO 与 provider-agnostic 契约测试（F4 前置） | Proposed（2026-09-25，Claude 起草，待 Raphael / Codex 决定；建议执行器截断输入 + 契约扰动测试；`core/contracts/` additive） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按
