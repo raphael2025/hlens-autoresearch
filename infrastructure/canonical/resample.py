@@ -183,9 +183,8 @@ def _bar(
         taker_buy_base_volume=values["taker_buy_base_volume"],
         taker_buy_quote_volume=values["taker_buy_quote_volume"],
         minutes_present=len(ordered),
-        complete=len(ordered) == minutes and all(
-            starts[i] == bucket + i * _MINUTE for i in range(len(starts))
-        ),
+        complete=len(ordered) == minutes
+        and all(starts[i] == bucket + i * _MINUTE for i in range(len(starts))),
         constituents=constituents,
         available_time=max(end, *(row["available_time"] for row in ordered)),
         knowledge_time=max(row["knowledge_time"] for row in ordered),
