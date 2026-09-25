@@ -45,7 +45,7 @@ from pathlib import Path
 from research.reports import write_validation_report
 
 written = write_validation_report(Path("var/reports"), report)
-written.id       # 用于 GET /reports/validation_report/{id}
+written.id  # 用于 GET /reports/validation_report/{id}
 written.written  # False = 内容相同的 no-op
 ```
 
