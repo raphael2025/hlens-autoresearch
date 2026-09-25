@@ -88,3 +88,17 @@ G0 核对 Profile 的 `cost_stress.cost_model`、复现元组的 `cost_model_ref
   Canonical `bars_1m` 读取尚未接入（只有合成价格源）；Profile 数值仍全部 TBD。
 - 与任务说明的差异：任务说明把门写作"G0 数据 / 契约、G1 泄漏、G2 复现、G3 统计 / 成本"；正式文档 07-validation.md 的顺序为
   G0 复现、G1 泄漏、G2 含成本统计、G3 多重检验。依文档优先级采用后者，数据 / 契约检查并入 G0。
+
+## Implementation note (dataset wiring, 2026-09-25)
+
+上文"Canonical `bars_1m` 读取尚未接入"的缺口由 `infrastructure/bars/dataset.py` 的 `outcome_request_from_dataset` 接上
+（与 ADR-0038 的 `backtest_bars_from_dataset` 共用同一证明路径，镜像 `infrastructure/feature/dataset.py` 的 RT-6 修复）：
+调用方只给 `DatasetBuilder` 与 manifest 内容哈希，manifest 只经该 builder 自身的验证型 `ManifestStore`（`load_manifest`）加载，
+不存在接受裸哈希或 manifest 对象的入口；只接受单点 simulation 的 manifest（区间数据集拒绝，留待后续）；在 manifest 自身的
+dataset snapshot 与 selection id 下读取 `klines_1m` 行（无行 / 所请求标的无行 → fail closed），逐标的以 manifest 的 PIT spec
+重选 Canonical 1m bar，须**恰好**等于数据集行（多 / 少 → `CatalogIntegrityError`），lineage 须由 manifest 绑定；每根 bar 保留
+选择给出的自身 `available_time`（仅当 spec 绑定 ADR-0032 时为假设生效时刻）与 `Decimal` OHLC，不补缺口。`price_cutoff`
+默认为 manifest 的 `simulation_time`，不得晚于它；所请求窗口内任何 `available_time > price_cutoff` 的 bar 被拒绝而非静默丢弃。
+请求携带 manifest 内容哈希。没有新增契约或 ADR。测试：`tests/infrastructure/bars/test_dataset_bars.py`（真实小数据集 →
+`ForwardReturnOutcome` / `TripleBarrierOutcome` 标签，标签只在出场后可知；伪造 / 未持久化 manifest 与非 builder 验证者被拒；
+cutoff 后的 bar 被拒；重跑逐位一致）。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。

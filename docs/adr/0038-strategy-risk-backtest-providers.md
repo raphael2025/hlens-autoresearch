@@ -79,3 +79,13 @@ strategy_source.py` 新增 `StrategyProviderTargetSource`，把一个 `StrategyP
 Kill Switch 仍能止住订单流。
 
 **修订（2026-09-25，Claude Opus）**：上面的"v1 简化"已撤销——权重不再直接当作数量；定量由必填的 `PositionSizer` 完成（v1 `EquityPriceSizer`：`quantity = weight * equity / price`，价格须在 `as_of` 已知，缺失或非正即拒绝；无"权重即数量"的默认）。测试：`tests/apps/test_execution_strategy_source.py`（按权益与价格定量、价格缺失 / 非正拒绝、权益非正拒绝）。
+
+## Implementation note (dataset wiring, 2026-09-25)
+
+`infrastructure/bars/dataset.py` 的 `backtest_bars_from_dataset` 把已持久化、经验证的 Research Dataset 的 Canonical 1m bar
+转成 `PriceBar`（`instrument` = Canonical symbol），与 ADR-0037 的 `outcome_request_from_dataset` 共用同一证明路径（验证型
+`ManifestStore` 加载、单点 spec、数据集 snapshot 行、按 spec 重选且须恰好等于数据集行、lineage 绑定、自身 `available_time` 与
+`Decimal` OHLC、`price_cutoff` 之后可用的 bar 被拒）。`BacktestRequest` 的 Schema 冻结、没有 manifest / cutoff 槽位，因此返回
+`DatasetPriceBars(manifest_content_hash, price_cutoff, bars)`，由调用方记入复现元组；未改契约、无新 ADR。缺失分钟不填补
+（回测器保持最后一次标记）。测试：`tests/infrastructure/bars/test_dataset_bars.py`（数据集 → `BarBacktester`、重跑 `result_hash`
+一致、缺标的 / 非 bar 数据集 fail closed）。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
