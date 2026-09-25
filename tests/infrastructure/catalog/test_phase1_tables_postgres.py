@@ -370,9 +370,11 @@ def test_day_partitioned_tables_write_real_day_partitions(
     ]
     expected = [r for r in batch.to_pylist() if r[time_column] >= T0 + timedelta(minutes=1)]
     assert logical_rows(iceberg.scan(row_filter=new_day).to_arrow()) == sorted(expected, key=repr)
-    eth = iceberg.scan(row_filter="symbol == 'ETHUSDT'")
+    # The identity partition's source column (``symbol``, or ``subject_symbol`` for ADR-0031).
+    symbol_column = definition.schema.find_field(spec.fields[0].source_id).name
+    eth = iceberg.scan(row_filter=f"{symbol_column} == 'ETHUSDT'")
     assert {_partition(task.file)[0] for task in eth.plan_files()} == {"ETHUSDT"}
-    assert [r["symbol"] for r in eth.to_arrow().to_pylist()] == ["ETHUSDT", "ETHUSDT"]
+    assert [r[symbol_column] for r in eth.to_arrow().to_pylist()] == ["ETHUSDT", "ETHUSDT"]
 
 
 def test_catalog_database_holds_only_iceberg_metadata(pg_harness: PostgresCatalogHarness) -> None:
