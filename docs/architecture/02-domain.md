@@ -392,7 +392,7 @@ provider-agnostic contract suite 在 `tests/contract_suites/feature.py`（确定
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（88 份） | `schemas/*.schema.json` |
+| 当前 Schema（91 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |

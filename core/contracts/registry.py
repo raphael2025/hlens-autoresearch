@@ -38,6 +38,7 @@ from core.contracts.knowledge import (
     KnowledgeQuery,
     KnowledgeResult,
 )
+from core.contracts.llm import LlmProviderDescriptor, LlmRequest, LlmResponse
 from core.contracts.profile_selection import (
     ExperimentMetadata,
     OosUnsealing,
@@ -228,6 +229,10 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     SyntheticProviderDescriptor,
     # EventBusAdapter 的消息（ADR-0044，Phase 11 地基）
     BusMessage,
+    # LLMProvider 的 DTO（ADR-0040，Phase 7）
+    LlmRequest,
+    LlmResponse,
+    LlmProviderDescriptor,
 )
 
 
