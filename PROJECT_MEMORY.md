@@ -90,8 +90,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0027（D-33，Accepted 2026-09-25，部分实施）：D3B 已实现四张 additive Raw 表、REST 身份规则与纯 policy，D3C 已实现严格纯 decoder，D3D 已验收 `binance.spot.public-rest@1.0.0` collector（`61dd9bf` + `c06b9fa`；只经自建、无 hook / auth / 环境代理 / cookie 的 client 发送，不接受外部 `httpx.Client`）；归档路径与 `IDENTITY_HASH` 零改动；D3E store / reconciler 已提交、待 Codex 复核；D-33 方案 A 生效（规范内容投影逐字段相等才在独立证据表写 evidence-only 边 归档 → REST，项目政策、非来源先后）
 - Raphael 授权（2026-09-25）："一切都你自己决定，允许多子代理，尽快开发"——Claude 可自行决定并接受 ADR（记为"依 Raphael 授权"），
   红线仍需 Raphael 本人：Constitution 原则 / 阈值、Profile 数值、实盘 / 资金 / 风险预算、删除历史数据、系统软件、生产部署、合并 `main`
-- D-HIST（2026-09-25 决定，ADR-0031 待写）：原始归档按事件时间 + 声明延迟计可用（官方实时公开流为依据，"归档 = 当时推送"为明示假设）；替换与 REST 仍保守
-- D-QGAP 随 D-HIST 解决（报告格式不变）；D-PUSH：只推 WIP 备份分支；D-P05：Phase 1 关闭后再开
+- D-HIST：**待 Raphael 本人决定**（触及已发布契约"不得仅凭 event_time 回填"与宪法 C-L1 前提，属红线）；推荐 PIT 假设叠加层（数据集显式绑定、存储不改）
+- D-QGAP：方案 A（ADR-0031，证据缺口独立只追加表）；D-PUSH：只推 WIP 备份分支；D-P05：Phase 1 关闭后再开
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
