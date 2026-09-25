@@ -6,6 +6,7 @@ values written down from ADR-0023 §5 / ADR-0028 §4 by hand.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -16,6 +17,7 @@ from pyiceberg.expressions import EqualTo
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus, PolicyBinding, PolicyRole
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.pit import selector as selector_module
 from infrastructure.pit.selector import (
     PIT_BINDING,
     PitConflictError,
@@ -462,3 +464,64 @@ def test_the_day_report_keeps_a_conflict_whose_revisions_straddle_slices(h: Rest
         == len(set(gaps))
         == len([r for r in h.rows(c.TRADES) if r["availability_evidence_gap"] is not None])
     )
+
+
+# =========================================================================================
+# G3-S3-R3: chains of a key's revisions (review G3 cursor-1)
+# =========================================================================================
+
+
+def _revisions(*offsets: timedelta, key: str = "k") -> list[dict[str, Any]]:
+    base = utc(2023, 11, 14)
+    return [
+        {"observation_key": key, "revision_id": f"{key}{i}", "event_time": base + offset}
+        for i, offset in enumerate(offsets)
+    ]
+
+
+def _owners(rows: list[dict[str, Any]], step: timedelta, days: int = 5) -> dict[str, int]:
+    """How many windows of a partition of time own each revision."""
+
+    def read(low: datetime, high: datetime) -> list[Mapping[str, Any]]:
+        return [row for row in rows if low <= row["event_time"] < high]
+
+    counts = {row["revision_id"]: 0 for row in rows}
+    start = utc(2023, 11, 13)
+    while start < utc(2023, 11, 13) + timedelta(days=days):
+        window = [row for row in rows if start <= row["event_time"] < start + step]
+        if window:
+            for row in selector_module._key_closure(
+                read, "event_time", start, start + step, touching=False
+            ):
+                counts[row["revision_id"]] += 1
+        start += step
+    return counts
+
+
+@pytest.mark.parametrize("step", [timedelta(hours=1), timedelta(hours=6), timedelta(days=1)])
+@pytest.mark.parametrize(
+    "offsets",
+    [
+        (timedelta(0), timedelta(hours=21.6), timedelta(hours=43.2)),  # a chain over 1.8 days
+        (timedelta(0), timedelta(hours=2)),  # a plain straddle
+        (timedelta(0), timedelta(days=3)),  # two chains: each owned once
+        (timedelta(hours=5),),
+    ],
+)
+def test_every_revision_is_owned_by_exactly_one_window(
+    step: timedelta, offsets: tuple[timedelta, ...]
+) -> None:
+    assert set(_owners(_revisions(*offsets), step).values()) == {1}
+
+
+def test_a_chain_is_read_whole_whichever_window_reads_it() -> None:
+    rows = _revisions(timedelta(0), timedelta(hours=21.6), timedelta(hours=43.2))
+
+    def read(low: datetime, high: datetime) -> list[Mapping[str, Any]]:
+        return [row for row in rows if low <= row["event_time"] < high]
+
+    late = utc(2023, 11, 14) + timedelta(hours=43)
+    touching = selector_module._key_closure(
+        read, "event_time", late, late + timedelta(hours=1), touching=True
+    )
+    assert {row["revision_id"] for row in touching} == {"k0", "k1", "k2"}

@@ -34,7 +34,7 @@ dataset builder must refuse ``conflicts`` (``require_no_conflict``).
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
@@ -77,6 +77,8 @@ __all__ = [
 _DAY: Final = timedelta(days=1)
 #: How far from a window the other revisions of its keys are looked for (key closure).
 _KEY_REACH: Final = timedelta(days=1)
+#: Bound on the transitive widening of that search (a longer chain fails closed).
+_CLOSURE_STEPS: Final = 16
 
 PIT_RULE_ID: Final = "hlens.pit.maximal-head"
 PIT_RULE_VERSION: Final = "1.0.0"
@@ -91,9 +93,9 @@ PIT_SPEC: Final[dict[str, Any]] = {
     "elimination": "a candidate superseded, directly or through any known revision, by another "
     "candidate is eliminated",
     "result": "1 head -> selected; 0 -> absent; >1 -> conflict (the dataset fails closed)",
-    "window": "a key's revisions within one day of each other are evaluated together; the key "
-    "belongs to the window holding the earliest of their events (revisions further apart are "
-    "not matched)",
+    "window": "a key's revisions chained by gaps of at most one day are evaluated together; the "
+    "key belongs to the window holding the chain's earliest event (a revision more than one day "
+    "from every other is its own chain)",
     "interval": "evaluated at the start and at every in-interval available_time of a known "
     "revision; identical consecutive results merged",
     "never_read": ["arrival_seq", "wall clock", "payload_hash ordering"],
@@ -330,22 +332,19 @@ class PitSelector:
         if not wanted:
             return []
         columns = tuple(field.name for field in definition.arrow_schema)
-        rows: list[Mapping[str, Any]] = view.scan_columns(
-            table,
-            columns=columns,
-            row_filter=And(
-                And(_equals("symbol", canonical_symbol), In("observation_key", wanted)),  # type: ignore[call-arg, arg-type]
-                And(_at_least(column, start - _KEY_REACH), _below(column, end + _KEY_REACH)),
-            ),
-        ).to_pylist()
-        earliest: dict[str, datetime] = {}
-        for row in rows:
-            key, at = row["observation_key"], row[column]
-            if key not in earliest or at < earliest[key]:
-                earliest[key] = at
-        if touching:
-            return rows
-        return [row for row in rows if start <= earliest[row["observation_key"]] < end]
+
+        def read(low: datetime, high: datetime) -> list[Mapping[str, Any]]:
+            found: list[Mapping[str, Any]] = view.scan_columns(
+                table,
+                columns=columns,
+                row_filter=And(
+                    And(_equals("symbol", canonical_symbol), In("observation_key", wanted)),  # type: ignore[call-arg, arg-type]
+                    And(_at_least(column, low), _below(column, high)),
+                ),
+            ).to_pylist()
+            return found
+
+        return _key_closure(read, column, start, end, touching=touching)
 
     def _verify_canonical(
         self, view: PinnedCatalogView, rows: Sequence[Mapping[str, Any]]
@@ -434,6 +433,66 @@ class PitSelector:
                     )
                 )
         return mapped
+
+
+def _key_closure(
+    read: Callable[[datetime, datetime], list[Mapping[str, Any]]],
+    column: str,
+    start: datetime,
+    end: datetime,
+    *,
+    touching: bool,
+) -> list[Mapping[str, Any]]:
+    """The window's keys' chains, read until closed; owned keys only unless ``touching``.
+
+    Every kept chain must lie wholly inside what was read, with a reach to spare on both sides;
+    otherwise the read widens (review G3 cursor-1): a chain's earliest event — and so the one
+    window owning the key — never depends on which window reads it.
+    """
+    low, high = start - _KEY_REACH, end + _KEY_REACH
+    for _ in range(_CLOSURE_STEPS):
+        rows = _chained(read(low, high), column, start, end)
+        if not rows:
+            return []
+        times = [row[column] for row in rows]
+        wider = (min(low, min(times) - _KEY_REACH), max(high, max(times) + _KEY_REACH))
+        if wider == (low, high):
+            break
+        low, high = wider
+    else:
+        raise CatalogIntegrityError(
+            f"key revisions around {start.isoformat()} chain beyond {_CLOSURE_STEPS} closure steps"
+        )
+    if touching:
+        return rows
+    earliest: dict[str, datetime] = {}
+    for row in rows:
+        key, at = row["observation_key"], row[column]
+        if key not in earliest or at < earliest[key]:
+            earliest[key] = at
+    return [row for row in rows if start <= earliest[row["observation_key"]] < end]
+
+
+def _chained(
+    rows: Sequence[Mapping[str, Any]], column: str, start: datetime, end: datetime
+) -> list[Mapping[str, Any]]:
+    """Per key, the chains (revisions linked by gaps <= ``_KEY_REACH``) touching the window."""
+    by_key: dict[str, list[Mapping[str, Any]]] = {}
+    for row in rows:
+        by_key.setdefault(row["observation_key"], []).append(row)
+    kept: list[Mapping[str, Any]] = []
+    for members in by_key.values():
+        members.sort(key=lambda row: (row[column], row["revision_id"]))
+        chain: list[Mapping[str, Any]] = []
+        for row in members:
+            if chain and row[column] - chain[-1][column] > _KEY_REACH:
+                if any(start <= item[column] < end for item in chain):
+                    kept.extend(chain)
+                chain = []
+            chain.append(row)
+        if any(start <= item[column] < end for item in chain):
+            kept.extend(chain)
+    return kept
 
 
 def _time_column(data_type: str) -> str:

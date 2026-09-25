@@ -305,13 +305,19 @@ def _history(adapter: RevisionCatalog, table: str) -> Iterable[SnapshotInfo]:
 
 
 def _indexed_batches(
-    adapter: RevisionCatalog, table: str, prefixes: Iterable[str]
+    adapter: RevisionCatalog,
+    table: str,
+    prefixes: Iterable[str],
+    snapshots: Iterable[SnapshotInfo] | None = None,
 ) -> dict[str, dict[int, list[SnapshotInfo]]]:
-    """Per prefix: ``<prefix><8-digit index>`` batch snapshots by index, in one history walk."""
+    """Per prefix: ``<prefix><8-digit index>`` batch snapshots by index, in one history walk.
+
+    ``snapshots`` is the history to walk (default: the table's current one).
+    """
     found: dict[str, dict[int, list[SnapshotInfo]]] = {prefix: {} for prefix in prefixes}
     if not found:
         return found
-    for snapshot in _history(adapter, table):
+    for snapshot in _history(adapter, table) if snapshots is None else snapshots:
         batch_id = snapshot.batch_id
         if batch_id is None:
             continue
@@ -1034,7 +1040,10 @@ class PersistedRowVerifier:
         key = (table, head, tuple(sorted(prefixes)))
         found = self._batch_index.get(key)
         if found is None:
-            found = _indexed_batches(self._adapter, table, prefixes)
+            # Walk exactly the history of the head the memo is keyed by (a commit landing in
+            # between must never be filed under the older head: review G3 cursor-3).
+            walk = None if info is None else history_from(self._adapter, table, head)
+            found = _indexed_batches(self._adapter, table, prefixes, walk)
             if len(self._batch_index) >= _BATCH_INDEX_CACHE:
                 self._batch_index.pop(next(iter(self._batch_index)))
             self._batch_index[key] = found
