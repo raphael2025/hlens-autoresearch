@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 状态 | Draft |
-| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024、0026、0027 已 Accepted；A3～D2、D3A～D3C 已由 Codex 验收；当前只开放 D3D（D3E 待 D3D 验收）；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
+| 当前 Phase | **Phase 1 已开启（2026-09-24，分支 `phase/1`）：ADR-0021 ~ 0024、0026、0027 已 Accepted；A3～D2、D3A～D3D 已由 Codex 验收；当前只开放 D3E；Phase 0 已完成（tag `phase-0-complete`）；见 PROJECT_STATUS.md** |
 | 规则 | 一个 Phase 只有在用户明确开启后才能开始实现；验收标准全部满足后才能关闭 |
 
 ## 依赖图（D10）
@@ -136,8 +136,8 @@ flowchart TD
 
 验收 #13 的前置是 **D3A 设计门**：现有八张表不能诚实承载 REST 的 Raw 三跳 lineage 与跨通道 precedence，
 拓扑与语义由 [ADR-0027](../adr/0027-rest-raw-source-and-element-revisions.md) 决定（Accepted 2026-09-25：四张 additive 表；D-33 方案 A 已生效）。
-D3A 设计门、D3B 纯基础与 D3C 严格 decoder 均已通过（[D3A 验收](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)、[D3B 验收](../reviews/2026-09-25-d3b-rest-foundations-acceptance.md)、[D3C 验收](../reviews/2026-09-25-d3c-rest-decoder-acceptance.md)）；**当前只开放 D3D**。
-顺序固定 D3A → D3B → D3C → D3D → D3E，每批一个可恢复 commit，门未过不得进入下一批；D3E 等 D3D 经 Codex 验收后开放。
+D3A 设计门、D3B 纯基础、D3C 严格 decoder 与 D3D 可重放 collector 均已通过（[D3A 验收](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)、[D3B 验收](../reviews/2026-09-25-d3b-rest-foundations-acceptance.md)、[D3C 验收](../reviews/2026-09-25-d3c-rest-decoder-acceptance.md)、[D3D 验收](../reviews/2026-09-25-d3d-rest-collector-acceptance.md)）；**当前只开放 D3E**。
+顺序固定 D3A → D3B → D3C → D3D → D3E，每批一个可恢复 commit，门未过不得进入下一批；D3E 已在 D3D 经 Codex 验收后开放。
 每批交付一个**完整**的不变量：后一批只消费前一批已验收的结果，不回头补前一批的半个语义。
 下表 "#" 指 ADR-0027 验收矩阵编号。
 

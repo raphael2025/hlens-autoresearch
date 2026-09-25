@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **D3D REVIEW_PENDING**：REST collector（`61dd9bf`）经 Codex 接受门退回 HTTP client 注入缺陷，D3D-R1 已修复，等待 Codex 复核；D3E 仍关闭 |
+| 当前子阶段 | **D3E OPEN**：D3D `61dd9bf` 经接受门退回，D3D-R1 `c06b9fa` 修复后由 Codex 独立验收；只开放 REST store / reconciler |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3C 已验收；D3D 待复核） |
+| 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3D 已验收；D3E 已开放） |
 | 最后更新时间 | 2026-09-25 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -25,10 +25,10 @@ Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明
 ADR-0021（本地数据基础设施：PostgreSQL 独立库做 Iceberg Catalog、本地 `file://` warehouse、Phase 1 ~ 6 不用 NATS）、
 ADR-0022（Binance 公共现货 BTCUSDT / ETHUSDT，无任何交易能力）、ADR-0023（历史可用时间与本机知识时间分开；修订只追加，无法判定先后即失败）、
 ADR-0024（按当时可交易集合构建标的池）。A2 已把它们同步进数据架构文档，并冻结首批表名、分区、数据源版本、依赖清单与设置字段。
-Iceberg Catalog、本地 StorageAdapter、八张生产表定义、D0 Collector、D1 fail-closed parser 与 D2 append-only revision store 已验收。D2 首轮复核发现来源 checksum 真实性与 arrival anchor 全表物化两个缺陷；D2-R1 修复后由 Codex 复现旧提交四项失败、运行真实 PostgreSQL 全量与静态检查并接受。D3A 是 REST Raw / lineage 的 docs-only 架构门：Codex 复核草案后退回八项缺陷，D3A-R1 修正后由 Codex 独立复核接受 ADR-0027。D3B 首轮复核发现极端十进制异常泄漏与伪造 / 过期比较可生成边；D3B-R1 修复后由 Codex 接受。D3C 首轮复核发现 RFC JSON 框架空白被误拒；D3C-R1 修复后由 Codex 以 `python -O` 对抗探针、真实 PostgreSQL 3434 项全量与静态检查接受，D3D 开放。
+Iceberg Catalog、本地 StorageAdapter、八张生产表定义、D0 Collector、D1 fail-closed parser 与 D2 append-only revision store 已验收。D2 首轮复核发现来源 checksum 真实性与 arrival anchor 全表物化两个缺陷；D2-R1 修复后由 Codex 复现旧提交四项失败、运行真实 PostgreSQL 全量与静态检查并接受。D3A 是 REST Raw / lineage 的 docs-only 架构门：Codex 复核草案后退回八项缺陷，D3A-R1 修正后由 Codex 独立复核接受 ADR-0027。D3B 首轮复核发现极端十进制异常泄漏与伪造 / 过期比较可生成边；D3B-R1 修复后由 Codex 接受。D3C 首轮复核发现 RFC JSON 框架空白被误拒；D3C-R1 修复后由 Codex 以 `python -O` 对抗探针、真实 PostgreSQL 3434 项全量与静态检查接受。D3D 首轮复核发现完整 HTTP client 注入可在 allowlist 后加入凭据并改写到外域账户路径；D3D-R1 删除该入口并关闭环境代理与 Cookie 回放，Codex 独立复现修复、运行真实 PostgreSQL 3587 项全量后接受，D3E 开放。
 
 代码仓库已有私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）：执行者只提交，Codex 复核通过后推送每个进度；PR 与 CI 尚未配置。
-本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C3、D-32、D0～D2 及各验收门；D2 修复后的实现恢复点为 `b05486b`。
+本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C3、D-32、D0～D2、D3A～D3D 及各返修 / 验收门；D3D 修复后的实现恢复点为 `c06b9fa`。
 
 Raphael 2026-09-24 的“授权所有、全权接管并开发 / 测试 / 决策 / 文档”明确覆盖 C2 所需的 H12 环境变更：
 创建专用 PostgreSQL catalog / test database 与最小权限 role、写入仅本机且被 Git 忽略的凭据文件，并覆盖 D0 / D1 对
@@ -44,7 +44,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成 |
 | 0.5 | Public Knowledge Base | ⏸️ 未开始 |
-| 1 | Market Representation | 🔄 已开启（D3D 已开放） |
+| 1 | Market Representation | 🔄 已开启（D3E 已开放） |
 | 2 | Market State Engine | ⏸️ 未开始 |
 | 3 | Event & Interaction Engine | ⏸️ 未开始 |
 | 4 | Outcome Engine | ⏸️ 未开始 |
@@ -90,7 +90,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 D3B / D3B-R1（Claude Opus）：四张 REST 表定义、独立 REST 身份规则、REST availability / precedence 与 D-33 通道等价纯函数；R1 关闭极端十进制异常泄漏与伪造 / 过期比较可生成边；Codex 对抗复核、真实 PostgreSQL 3252 项全量与静态检查通过（`3b267a0` + `02c0418`）
 - ✅ Phase 1 D3C / D3C-R1（Claude Opus）：严格、无 I/O 的 `binance.spot.rest.decoder@1.0.0`（`infrastructure/parser/binance_rest.py`）——完整正文 + 已校验页查询 + `retrieved_at` + 目标窗口 + 上一页摘要 + 正文上限（纯参数，非设置）→ 不可变元素 + 确定性页摘要，或一条整页拒绝（零元素）；R1 修复 RFC JSON 框架空白；Codex 独立对抗探针、真实 PostgreSQL 3434 项全量与静态检查通过（`643cf45` + `6b9e670`）
 - ✅ Phase 1 D1（Claude Opus）：`binance.spot.archive.parser@1.0.0` 按覆盖日选择毫秒 / 微秒，严格 ZIP / CSV 与零容差覆盖边界，失败只产结构化质量事件且不泄露部分 rows；Codex 独立运行 2955 项全量测试、70,000 行末尾失败原子性探针，并真实解析两个日期的 kline 与 aggTrades 官方归档（`c966085`）
-- 🔄 Phase 1 D3D（Claude Opus）：`binance.spot.public-rest@1.0.0` 同步 collector——结构化端点 allowlist、不跟随重定向、有界正文与重试、`Retry-After` / 418 / 5xx / 页数预算、注入时钟与 sleeper；按 D3C 分页并发布不可变正文对象 + page / collection checkpoint；同 `request_id` 重放零网络、崩溃点可续、并发以先发布者为准；四项冻结设置落入 `Settings`。Codex 接受门发现可注入的 `httpx.Client` 能在 allowlist 之后加凭据 header、把请求改写到外域账户路径 → **D3D-R1**：删除 client 注入入口，collector 只经自建 client 发送（无 hook / auth / 环境代理 / 重定向，cookie 一律不存）。**REVIEW_PENDING**
+- ✅ Phase 1 D3D / D3D-R1（Claude Opus）：`binance.spot.public-rest@1.0.0` 同步 collector——结构化端点 allowlist、不跟随重定向、有界正文与重试、`Retry-After` / 418 / 5xx / 页数预算、D3C 驱动分页、不可变正文与 page / collection checkpoint、同 `request_id` 零网络重放与崩溃恢复；D3D-R1 删除可绕过 allowlist 的完整 client 注入并关闭环境代理 / Cookie 回放；Codex 独立安全探针、公共只读 smoke、真实 PostgreSQL 3587 项全量与静态检查通过（`61dd9bf` + `c06b9fa`）
 
 ## 4. 当前正在做
 
@@ -109,7 +109,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ D3A / D3A-R1（Claude Opus，docs-only）：Codex 已验收，ADR-0027 Accepted；验收 #13 的前置设计门满足
 - ✅ D3B / D3B-R1（Claude Opus）：Codex 已独立验收；四张 REST 表定义（原八张哈希不变）、独立 REST 身份规则、REST availability / precedence 与通道等价纯函数；无 HTTP、无写入；接受 `3b267a0` + `02c0418`
 - ✅ D3C / D3C-R1（Claude Opus）：Codex 已独立验收；接受 `643cf45` + `6b9e670`，验收记录 `docs/reviews/2026-09-25-d3c-rest-decoder-acceptance.md`
-- 🔄 D3D / D3D-R1（Claude Opus）：**REVIEW_PENDING**；D3D-R1 关闭 HTTP client 注入边界（`61dd9bf` 未被接受、未推送）；REST collector、四项冻结设置、不可变 page / collection checkpoint、相同 `request_id` 重放不联网、HTTP allowlist / 状态 / 重定向 / 限流 / 重试 / 预算边界均已实现并通过真实 PostgreSQL 全量 3578 项；等待 Codex 对抗复核，D3E 仍关闭
+- ✅ D3D / D3D-R1（Claude Opus）：Codex 已独立验收；接受 `61dd9bf` + `c06b9fa`，验收记录 `docs/reviews/2026-09-25-d3d-rest-collector-acceptance.md`
+- 🔄 D3E（Claude Opus）：**OPEN**；只实现 REST response / element revision store、REST `arrival_seq`、恢复、跨通道 reconciler、证据表幂等 checkpoint 与 graph range guard
 
 ## 5. 下一步
 
@@ -126,7 +127,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 已完成并验收：**Claude B3**（Collector / Storage / Catalog Protocol、DTO、Schema、provider-agnostic contract tests）
 - C3、D-32、D0、D1 与 D2 均已完成并通过 Codex 独立验收
 - D3A / D3A-R1 与接受门（docs-only）已完成并验收：ADR-0027 Accepted，数据架构冻结正文已并入四表 / 标识符 / 设置
-- D3B / D3B-R1 与 D3C / D3C-R1 已完成并验收；**D3D REST collector 已实现并进入 REVIEW_PENDING**，等待 Codex 对抗复核；D3E、WebSocket / D4 与 Canonical / E 仍关闭
+- D3B～D3D 及返修均已完成并由 Codex 验收；现在只可实现 **D3E REST store / reconciler**；WebSocket / D4 与 Canonical / E 仍关闭
 
 ## 6. 当前待决策
 
@@ -134,7 +135,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 | ID | 问题 | 方案 | 状态 |
 |---|---|---|---|
-| D-33 | 同一笔成交 / 同一根 K 线既可能来自官方归档、也可能来自 REST 补尾；按 ADR-0023 它们是同一观察的两条 revision，没有证据即互相冲突，数据集 fail closed。不裁决就等于禁止 REST 补尾 | **Codex 选 A**（ADR-0027 §4）：本机比较两者的规范市场内容，逐字段完全相同才记一条"归档优先"的项目政策证据（存入独立证据表）；不同或无法比较就不记、继续 fail closed。这是项目规则，不是交易所声明的先后 | 已决定：ADR-0027 Accepted（2026-09-25），方案 A 生效；D3B 纯 policy 与 D3C decoder 已验收，D3D～D3E 待实施 |
+| D-33 | 同一笔成交 / 同一根 K 线既可能来自官方归档、也可能来自 REST 补尾；按 ADR-0023 它们是同一观察的两条 revision，没有证据即互相冲突，数据集 fail closed。不裁决就等于禁止 REST 补尾 | **Codex 选 A**（ADR-0027 §4）：本机比较两者的规范市场内容，逐字段完全相同才记一条"归档优先"的项目政策证据（存入独立证据表）；不同或无法比较就不记、继续 fail closed。这是项目规则，不是交易所声明的先后 | 已决定：ADR-0027 Accepted（2026-09-25），方案 A 生效；D3B 纯 policy、D3C decoder 与 D3D collector 已验收，D3E 已开放 |
 
 **此外无待决架构决定。**
 
@@ -178,7 +179,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ PyIceberg 与 Binance 的关键能力事实已由 Codex 于 2026-09-24 按官方资料复核，PostgreSQL 服务已只读确认在线；实施前仍须按锁定依赖版本做行为 smoke / integration 验证
 - ⚠️ 来源若不提供修订关系或修订时间，同一观察的不同版本会成为 competing heads 并使数据集构建 fail closed；需要各来源的 precedence policy 与证据
 - ⚠️ **D2 的证据结论**：Binance 官方资料没有给出任何具体 revision 的公开时刻，因此 `binance.spot.publication@1.0.0` 三类主体全部保守取 `available_time = ingest_time` 并写证据缺口；在出现可引用的官方上界并发布新 policy 版本之前，早于本机 ingest 的历史可用区间为空。归档替换同样无法证明先后，一律 competing heads（数据全部保留，但任何“最新”结论 fail closed）
-- ⚠️ REST 补尾的四张新表、身份与跨通道纯 policy 已由 D3B 实现并验收，严格 decoder 已由 D3C 实现并验收，D3D collector 已实现但**未验收**；D3E store / reconciler 尚未实现，完成并验收前 REST 数据不能进入任何数据集
+- ⚠️ REST 补尾的四张新表、身份与跨通道纯 policy、严格 decoder 和可重放 collector 已由 D3B～D3D 实现并验收；D3E store / reconciler 尚未实现，完成并验收前 REST 数据不能进入任何数据集
 - ⚠️ D3D 的 market-data base 与 D0-R2 一致：把空路径与单独 `/` 视为 origin 根（`AnyHttpUrl` 默认值即如此渲染），其它任何路径 / query / fragment / 凭据一律拒绝；`Content-Length` 只在响应无 content coding 时与实体长度比对（有 coding 时它计的是编码后字节），解压后的大小上限始终生效
 - ⚠️ **三个实现陷阱**（ADR-0027 §11）：身份规则哈希是全局的（REST 必须用独立规则）、同一 `policy_id` 两个版本不能共存于一份 PIT spec、归档与 REST 合入同一观察时序号必须不碰撞（按区间划分，D3E 在单个观察图内检查）；归档身份与分配代码均不改
 - ⚠️ D-33 采用精确比较：REST 以毫秒交付、2025 年起归档为微秒，同一笔成交若带亚毫秒位就无法证明相等，只能 fail closed（正确但降低 REST 补尾的价值）；是否改请求微秒需以后单独验证并批准
@@ -188,7 +189,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只开放 **D3D**，D3E 仍关闭，须等 D3D 验收
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；当前只开放 **D3E**，D4 / E 仍关闭，须等 D3E 验收
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -204,6 +205,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | Codex 独立复核 D3D / D3D-R1（`61dd9bf` + `c06b9fa`）PASS：首轮退回完整 HTTP client 注入绕过；返修后敌意 client 被签名拒绝，环境代理 / Cookie / auth / hooks / redirect 均关闭；独立聚焦 240 项、真实 PostgreSQL 全量 3587 项、公共只读 smoke、离线重放与全部静态检查全绿；冻结哈希与 12 张表不变 | D3D 接受；**只开放 D3E**；D4 / E 关闭；验收记录 `docs/reviews/2026-09-25-d3d-rest-collector-acceptance.md` |
 | 2026-09-25 | Phase 1 D3D-R1（Claude Opus）：Codex 复现 `61dd9bf` 的缺陷——构造入口接受完整 `httpx.Client`，其默认 header / cookie / auth / request hook 在 allowlist 之后生效，可加 `cookie`、`authorization` 并把已校验请求改写为外域 `/api/v3/account`。修复：删除 `http_client` 注入（`__init__` 与 `from_settings`），只留 `http_transport` 测试 seam；collector 自建并拥有 client（无 hook / auth、`trust_env=False`、拒收一切 cookie、不跟随重定向），发送前再核对请求（纵深防御）。新回归测试在 `61dd9bf` 上 8 项失败、修复后通过；`python -O` 43 项探针、真实 PostgreSQL 全量与静态检查全绿；契约与冻结哈希不变 | REVIEW_PENDING，等待 Codex 复核；D3E 仍关闭 |
 | 2026-09-25 | Phase 1 D3D（Claude Opus）：`binance.spot.public-rest@1.0.0` collector——结构化 allowlist（origin / 精确 path / 白名单 query，恶意输入零网络拒绝）、不跟随重定向、流式正文上限与 `Content-Length` 核对、`Retry-After` 纯秒有界等待 / 418 立即终止 / 5xx 与传输错误有界重试 / 每次 collect 的新取页预算、注入 UTC 墙钟与 monotonic / sleeper；按 D3C 的 `next_query` 分页，发布内容寻址正文对象 + 不可变 page / collection checkpoint，重放严格重解码并逐字段复现，同 `request_id` 零网络、崩溃点可续、并发以先发布者为准、改请求内容在联网前 fail closed；`Settings` 增加四项冻结字段。全量真实 PostgreSQL 3578 项、`python -O` 38 项对抗探针、只读公共 smoke（两种 data type 各一页）与全部静态检查全绿；冻结哈希与 12 张表定义不变 | REVIEW_PENDING，等待 Codex 复核；D3E 仍关闭 |
 | 2026-09-25 | Codex 独立复核 D3C / D3C-R1（`643cf45` + `6b9e670`）PASS：退回并修复 RFC JSON 框架空白；`python -O` 独立对抗探针覆盖合法组合、非 RFC 空白与尾随载荷；decoder / pagination 182 项、docs 7 项、真实 PostgreSQL 全量 3434 项及全部静态检查全绿；冻结哈希除派生 decoder hash 外不变 | D3C 接受；**只开放 D3D**；D3E 关闭；验收记录 `docs/reviews/2026-09-25-d3c-rest-decoder-acceptance.md` |
@@ -233,7 +235,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > 我现在应该干什么？
 
 1. Phase 0 已完成：宪法 1.0.0 已发布（原则一字未改），代码已合并进 `main`，并打了 `phase-0-complete` 标记。
-2. Phase 1 已开启，四份架构决定（ADR-0021 ~ 0024）已由 Codex 复核接受；D0～D2、D3A REST 设计、D3B 纯基础与 D3C 严格 decoder 均已验收；当前实施 D3D REST collector。不需要你做任何决定。
+2. Phase 1 已开启，ADR-0021～0024、0026、0027 已接受；D0～D2 与 D3A～D3D 均已验收；当前实施 D3E REST store / reconciler。不需要你做任何决定。
    其中 ADR-0022 明确：开发授权不等于实盘授权，Phase 13 之前系统没有下单能力，也不保存交易密钥。
 3. 以后若要修改任何原则或阈值，或涉及实盘 / 资金，需要你对具体内容单独批准。
 4. 每个经 Codex 复核通过的进度都会推送到私有 GitHub 仓库（ADR-0025）；PR 与 CI 以后再配置。
@@ -243,5 +245,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > Claude 下一步可以执行什么？
 
 1. 已完成：Phase 0 全部批次（契约、状态机、B1 ~ B3、C1 ~ C5），最终恢复点为 tag `phase-0-complete`。
-2. 已完成并验收 S0、A1～A3、B1～B3、C1～C3、D0～D2；D2 修复后的实现恢复点为 `b05486b`。
-3. D3A～D3C 及返修均已完成并通过 Codex 接受门。当前只执行 D3D；D3E 须等 D3D 验收后开放，不得开始 Phase 0.5。
+2. 已完成并验收 S0、A1～A3、B1～B3、C1～C3、D0～D2、D3A～D3D；D3D 修复后的实现恢复点为 `c06b9fa`。
+3. D3A～D3D 及返修均已完成并通过 Codex 接受门。当前只执行 D3E；D4 / E 须等 D3E 验收后另行开放，不得开始 Phase 0.5。

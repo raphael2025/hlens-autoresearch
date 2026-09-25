@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3C 已验收；D3D 已实现、待 Codex 复核
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3D 已验收；当前只开放 D3E
 
 ## 2. Current Architecture
 
@@ -44,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3D REVIEW_PENDING**（D3D `61dd9bf` 被退回 HTTP client 注入缺陷，D3D-R1 已修复待复核；`binance.spot.public-rest@1.0.0` collector、四项冻结设置、不可变 page / collection checkpoint、相同 `request_id` 重放不联网、HTTP / 重试 / 预算边界已实现）；D3C / D3C-R1 已由 Codex 验收（`643cf45` + `6b9e670`）
+- Current Subphase：**D3E OPEN**；D3D `61dd9bf` 经接受门退回完整 HTTP client 注入缺陷，D3D-R1 `c06b9fa` 修复后由 Codex 独立验收；只实现 REST store / reconciler
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- D3D 待验收；D3E 等 D3D 经 Codex 验收后开放
+- 只开放 D3E；D4 / E 等 D3E 经 Codex 验收后另行开放
 - Current Blocker：无架构阻塞。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：Claude 完成 D3D，Codex 对抗复核后决定是否开放 D3E
+- Next Milestone：Claude 完成 D3E REST store / reconciler，Codex 对抗复核后决定是否开放 D4 / E
 
 ## 5. Active Decisions
 
@@ -84,7 +84,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   `arrival_seq` 只作审计；PIT 双截止 + maximal head，competing heads fail closed；Research Dataset 绑定 `ResearchDatasetManifest`（不升 3.0.0）
 - ADR-0024（D-31）：静态 `Instrument` 不变 + 双轴 listing episode 历史；`UniverseSelectionSpec` 以 `name + SemVer + hash` 在 manifest 绑定，不新增 `Kind`
 - ADR-0026（D-32）：PyIceberg 0.12 的 day transform 写入使用官方 `pyiceberg-core` extra；不改变冻结分区或写入路径；已实施并随 C3 验收
-- ADR-0027（D-33，Accepted 2026-09-25，部分实施）：D3B 已实现四张 additive Raw 表、REST 身份规则与纯 policy，D3C 已实现严格纯 decoder，D3D 已实现 `binance.spot.public-rest@1.0.0` collector（D3D-R1：collector 只经自建、无 hook / auth / 环境代理 / cookie 的 client 发送，不接受外部 `httpx.Client`；待验收）；归档路径与 `IDENTITY_HASH` 零改动；D3E 尚待实施；D-33 方案 A 生效（规范内容投影逐字段相等才在独立证据表写 evidence-only 边 归档 → REST，项目政策、非来源先后）
+- ADR-0027（D-33，Accepted 2026-09-25，部分实施）：D3B 已实现四张 additive Raw 表、REST 身份规则与纯 policy，D3C 已实现严格纯 decoder，D3D 已验收 `binance.spot.public-rest@1.0.0` collector（`61dd9bf` + `c06b9fa`；只经自建、无 hook / auth / 环境代理 / cookie 的 client 发送，不接受外部 `httpx.Client`）；归档路径与 `IDENTITY_HASH` 零改动；D3E 已开放、尚待实施；D-33 方案 A 生效（规范内容投影逐字段相等才在独立证据表写 evidence-only 边 归档 → REST，项目政策、非来源先后）
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
@@ -144,16 +144,16 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- Date：2026-09-24
-- Stable recovery point：Phase 1 D2 修复提交 `b05486b`（Codex 已独立复核；随 D2 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
+- Date：2026-09-25
+- Stable recovery point：Phase 1 D3D-R1 修复提交 `c06b9fa`（Codex 已独立复核；随 D3D 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
   其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
-  D2 验收时真实 PostgreSQL 全量 3091 项、D2-R1 专项与旧提交四项反例、ruff check、ruff format --check、mypy strict 全绿；
+  D3D 验收时真实 PostgreSQL 全量 3587 项、HTTP client 注入反例 / 离线重放 / 公共只读 smoke、ruff check、ruff format --check、mypy strict 全绿；
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
-- 未实现（按 roadmap 延期）：Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、八张生产表定义、D0 Collector、D1 parser 与 D2 revision store 已实现
-- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 已由 Codex 复核通过；D2 恢复点 `b05486b`；D3A（`7111e54`，退回）→ D3A-R1（`ed526f7`，Codex PASS）→ ADR-0027 接受门 docs-only 提交（待 Codex 推送）
+- 未实现（按 roadmap 延期）：D3E REST store / reconciler、Canonical、PIT / dataset / representation、Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、12 张生产表定义、D0 / D3D collector、D1 / D3C parser 与 D2 archive revision store 已实现
+- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3D 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；当前只开放 D3E
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
   `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`
