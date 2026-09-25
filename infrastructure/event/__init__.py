@@ -9,6 +9,9 @@
 - ``upstream``: ``verify_interaction`` / ``verify_input_lineage`` — what a run is given must match
   what the spec declares (an interaction's upstream specs, their hashes and Feature / State union;
   each input point's per-point lineage against its feature / state run); called by ``run_events``;
+  each returns an ``UpstreamVerification`` naming the checks performed / not performed, and
+  ``verify_upstream(..., require_full=True)`` (``run_events(..., require_full=True)``) refuses a
+  run whose evidence for any applicable check is missing;
 - ``table``: ``event_table`` flattens a result into Event-table rows.
 
 Providers are injected through the ``core.contracts.event.EventProvider`` Protocol; nothing here

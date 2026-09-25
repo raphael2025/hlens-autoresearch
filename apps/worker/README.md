@@ -24,6 +24,9 @@
 >   审计记录该轮**之前**以该轮 `LoopRecord` 调用；组合根在此持久化其阶段跨轮依赖的状态（`research/loop/durable.py` 的记忆检查点，
 >   写明 `record_hash`）。回调抛异常 → 该轮不记录、循环 `stopped`（与审计写入失败相同，fail closed）；未给定 = 原行为。
 >   回调仍是研究无关的：本目录不知道检查点里是什么。
+> - 持久复核修复（ADR-0049 实施说明 durable review fixes，2026-09-26）：`ResearchLoop` 续接审计时，任何一条记录的 `budget_hash`
+>   与本循环的 `LoopBudget` 不同即拒绝（调高、调低都拒绝）——提高预算是人的决定，须新审计 / 新 `loop_id`。新增可选回调
+>   `after_record`：在审计记录一轮**之后**以该轮 `LoopRecord` 调用（研究侧组合根用它前移目录外的锚点）；回调失败 → 该轮已记录、循环 `stopped`。
 > - `degradation.py`：`DegradationMonitor` 用 `ValidationProfile.lifecycle.degradation_thresholds` 对比近期指标与验证基线，
 >   越限发布 `research_loop.degradation` 事件（不做生命周期转移）。
 > - 本目录只依赖 `core` 与标准库；具体研究阶段在 `research/loop/`，由研究侧组合根注入（apps 不 import research）。

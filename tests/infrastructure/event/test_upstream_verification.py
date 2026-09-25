@@ -7,6 +7,7 @@ were built from (per-point ``source_lineage_hash``). Every mismatch fails closed
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from datetime import timedelta
 from decimal import Decimal
@@ -17,7 +18,7 @@ import pytest
 from core.contracts.event import Event, EventInputPoint, EventRequest, EventResult
 from core.contracts.feature import FeatureRequest, FeatureResult
 from core.contracts.state import StateRequest, StateResult
-from core.domain.base import Kind, Ref, content_hash
+from core.domain.base import Kind, Ref, canonical_json, content_hash
 from core.domain.specs import EventSpec
 from infrastructure.event.inputs import (
     inputs_from_feature_run,
@@ -29,6 +30,14 @@ from infrastructure.event.runner import (
     FutureConfirmationError,
     UpstreamVerificationError,
     run_events,
+)
+from infrastructure.event.upstream import (
+    CHECK_INPUT_LINEAGE,
+    CHECK_UPSTREAM_RESULTS,
+    CHECK_UPSTREAM_SPECS,
+    verify_input_lineage,
+    verify_interaction,
+    verify_upstream,
 )
 from infrastructure.feature.runner import run_feature
 from infrastructure.state import run_state, state_inputs, state_request
@@ -349,3 +358,116 @@ def test_faulty_providers_are_still_caught() -> None:
             upstream_specs=(CROSS_UP, SWITCH),
             upstream_results=(UP_RESULT, SWITCH_RESULT),
         )
+
+
+# ---------------------------------------------------------------- exact trigger binding
+
+
+def _with_trigger(spec: EventSpec, **fields: Any) -> EventSpec:
+    """``spec`` with its trigger's parameters updated (still canonical JSON)."""
+    raw = json.loads(spec.trigger)
+    return _variant(spec, trigger=canonical_json({**raw, **fields}))
+
+
+def _upstream_request(spec: EventSpec) -> EventRequest:
+    return request(spec, upstream_events=UPSTREAM)
+
+
+def test_an_overlapping_hash_inside_another_value_is_not_a_binding() -> None:
+    """The substring match accepted a hash that only occurs inside another (longer) value."""
+    switch_hash = SWITCH.content_hash()
+    spec = _with_trigger(
+        SEQUENCE,
+        then_hash=SWITCH_TWIN.content_hash(),  # binds the twin, not SWITCH
+        note="ab" + switch_hash + "cd",  # SWITCH's hash, overlapping other hex
+    )
+    assert switch_hash in spec.trigger  # the old substring check would have accepted it
+    with pytest.raises(UpstreamVerificationError, match="does not bind .*" + SWITCH.name):
+        verify_interaction(spec, _upstream_request(spec), (CROSS_UP, SWITCH))
+
+
+def test_a_hash_bound_to_another_field_is_not_a_binding() -> None:
+    # SWITCH's exact hash is in the trigger, but under a field that does not pair it with its ref
+    spec = _with_trigger(
+        SEQUENCE, then_hash=SWITCH_TWIN.content_hash(), spare_hash=SWITCH.content_hash()
+    )
+    with pytest.raises(UpstreamVerificationError, match="does not bind"):
+        verify_interaction(spec, _upstream_request(spec), (CROSS_UP, SWITCH))
+
+
+def test_a_ref_bound_to_two_hashes_is_refused() -> None:
+    spec = _with_trigger(SEQUENCE, third=str(SWITCH.ref), third_hash=SWITCH_TWIN.content_hash())
+    with pytest.raises(UpstreamVerificationError, match="does not bind"):
+        verify_interaction(spec, _upstream_request(spec), (CROSS_UP, SWITCH))
+
+
+@pytest.mark.parametrize(
+    "trigger",
+    [
+        "sequence of " + CROSS_UP.content_hash() + " and " + SWITCH.content_hash(),
+        json.dumps([CROSS_UP.content_hash(), SWITCH.content_hash()]),
+        '{"first": "x", "first": "y"}',
+    ],
+    ids=["free-text", "json-array", "repeated-key"],
+)
+def test_a_trigger_that_is_not_a_json_object_is_refused(trigger: str) -> None:
+    spec = _variant(SEQUENCE, trigger=trigger)
+    with pytest.raises(UpstreamVerificationError, match="not a JSON object"):
+        verify_interaction(spec, _upstream_request(spec), (CROSS_UP, SWITCH))
+
+
+# ---------------------------------------------------------------- what was verified
+
+
+def test_the_report_names_what_was_and_was_not_verified() -> None:
+    specs = (CROSS_UP, SWITCH)
+    interaction = verify_interaction(SEQUENCE, _upstream_request(SEQUENCE), specs)
+    assert interaction.performed == (CHECK_UPSTREAM_SPECS,)
+    assert interaction.not_performed == (CHECK_UPSTREAM_RESULTS,) and not interaction.full
+    strict = verify_interaction(
+        SEQUENCE, _upstream_request(SEQUENCE), specs, (UP_RESULT, SWITCH_RESULT)
+    )
+    assert strict.performed == (CHECK_UPSTREAM_SPECS, CHECK_UPSTREAM_RESULTS) and strict.full
+
+    plain = request(CROSS_UP, inputs=X_INPUTS)
+    single = verify_interaction(CROSS_UP, plain, None)
+    assert single.not_applicable == (CHECK_UPSTREAM_SPECS, CHECK_UPSTREAM_RESULTS)
+    assert single.full and single.performed == ()
+
+    lineage_req = EventRequest(
+        event=TREND_SWITCH.ref,
+        spec_hash=TREND_SWITCH.content_hash(),
+        as_of=at(40),
+        inputs=STATE_POINTS,
+    )
+    assert verify_input_lineage(lineage_req).not_performed == (CHECK_INPUT_LINEAGE,)
+    assert verify_input_lineage(lineage_req, state_runs=(STATE_RUN,)).performed == (
+        CHECK_INPUT_LINEAGE,
+    )
+    assert verify_input_lineage(_upstream_request(SEQUENCE)).not_applicable == (
+        CHECK_INPUT_LINEAGE,
+    )
+    merged = verify_upstream(TREND_SWITCH, lineage_req, state_runs=(STATE_RUN,))
+    assert merged.full and merged.performed == (CHECK_INPUT_LINEAGE,)
+
+
+def test_require_full_refuses_when_the_runs_are_missing() -> None:
+    _lineage_run(TREND_SWITCH, INPUTS)  # the default: runs without them, only partially verified
+    with pytest.raises(UpstreamVerificationError, match="input_lineage.*could not be performed"):
+        _lineage_run(TREND_SWITCH, INPUTS, require_full=True)
+    verified = _lineage_run(TREND_SWITCH, INPUTS, require_full=True, **RUNS)
+    assert verified == _lineage_run(TREND_SWITCH, INPUTS)
+
+
+def test_require_full_refuses_an_interaction_without_its_upstream_results() -> None:
+    specs = (CROSS_UP, SWITCH)
+    _interaction(SEQUENCE, upstream_specs=specs)
+    with pytest.raises(UpstreamVerificationError, match="upstream_results.*could not be performed"):
+        _interaction(SEQUENCE, upstream_specs=specs, require_full=True)
+    full = _interaction(
+        SEQUENCE,
+        upstream_specs=specs,
+        upstream_results=(UP_RESULT, SWITCH_RESULT),
+        require_full=True,
+    )
+    assert full == _interaction(SEQUENCE, upstream_specs=specs)

@@ -47,7 +47,15 @@ never recorded (the process died mid-round, spending unknown) stops the loop for
 rounds there (``research/loop/compose.py`` writes its research-memory checkpoint, which names the
 record hash). If it raises, the round is not recorded and the loop stops (fail closed), exactly
 like an audit write failure; a checkpoint written for a round the audit never recorded is an
-interrupted round for the composition to refuse on reopening.
+interrupted round for the composition to refuse on reopening. An optional ``after_record``
+callable is called with each round's record right **after** the audit recorded it (the research
+composition moves its external anchor there); if it raises, the round stays recorded and the loop
+stops (fail closed).
+
+**Budget binding** (ADR-0049 implementation note, durable review fixes, 2026-09-26). A loop that
+continues an audit refuses any record made under another ``LoopBudget`` (``budget_hash``): the
+budget of a running loop is never changed on a restart — not raised, not lowered. Raising a budget
+is a human decision and takes a new audit / ``loop_id``.
 
 **Measured time.** Every ``stage.run`` is timed with a monotonic wall clock and the process CPU
 clock (``apps.worker.metrics``). The measurement is kept **outside** the hashed record, in
@@ -862,13 +870,17 @@ class ResearchLoop:
         clock: Clock | None = None,
         compute_tolerance_seconds: Decimal | int | str | None = None,
         checkpoint: Callable[[LoopRecord], None] | None = None,
+        after_record: Callable[[LoopRecord], None] | None = None,
     ) -> None:
         """``audit``: a ``LoopAuditLog`` (``LoopAuditLog(path)`` for a durable one); when it
         already holds rounds the loop continues it (see module docs). ``clock``: the stage timer
         (default ``monotonic_clock``; tests inject a fake). ``compute_tolerance_seconds``: how far
         a stage's measured time may exceed its declared compute seconds before the metrics flag
         it; ``None`` (no default) = report only. ``checkpoint``: called with every finished
-        round's record before the audit records it (see module docs); ``None``: nothing."""
+        round's record before the audit records it (see module docs); ``None``: nothing.
+        ``after_record``: called with every round's record right after the audit recorded it
+        (e.g. to move an external anchor); if it raises, the round stays recorded and the loop
+        stops (fail closed); ``None``: nothing."""
         check_stage_order([stage.name for stage in stages])
         if epoch.tzinfo is None or epoch.utcoffset() != timedelta(0):
             raise ValueError("epoch must be a UTC datetime")
@@ -885,6 +897,7 @@ class ResearchLoop:
         self._audit = audit if audit is not None else LoopAuditLog()
         self._clock: Clock = clock or monotonic_clock
         self._checkpoint = checkpoint
+        self._after_record = after_record
         self._tolerance = (
             None
             if compute_tolerance_seconds is None
@@ -975,7 +988,10 @@ class ResearchLoop:
     def _restore(self) -> None:
         """Continue an audit that already holds rounds (a restart): take the next round index,
         the cumulative budget totals, the halting state and the guard's subjects from its
-        verified records. Anything inconsistent with this loop's configuration is refused."""
+        verified records. Anything inconsistent with this loop's configuration is refused —
+        including a record made under another ``LoopBudget`` (its ``budget_hash``): a budget is
+        never changed on a running loop; a larger one is a human decision and a new audit /
+        ``loop_id``."""
         audit = self._audit
         if audit.loop_id is not None and audit.loop_id != self._loop_id:
             raise ValueError(f"the audit belongs to loop {audit.loop_id!r}, not {self._loop_id!r}")
@@ -998,6 +1014,13 @@ class ResearchLoop:
                 index
             ):
                 raise ValueError(f"audit round {index} was scheduled with another seed / epoch")
+            if record.budget_hash != self._budget.budget_hash:
+                raise ValueError(
+                    f"audit round {index} ran under another LoopBudget (budget_hash "
+                    f"{record.budget_hash[:12]}, this loop's {self._budget.budget_hash[:12]}): a "
+                    "budget is never changed on a running loop; raising it is a human decision "
+                    "and takes a new audit / loop_id"
+                )
             total = total + record.round_usage
             if total != record.total_usage:
                 raise ValueError(f"audit round {index}'s total usage does not add up")
@@ -1043,6 +1066,18 @@ class ResearchLoop:
             self._stopped = f"round {round_index} could not be recorded ({_error(exc)})"
             raise
         self._total = record.total_usage
+        if record.status in HALTING:
+            self._halted = record.status
+        if self._after_record is not None:
+            try:
+                self._after_record(record)
+            except Exception as exc:
+                # the round is recorded; whatever the hook keeps (an anchor) is now behind it
+                self._stopped = (
+                    f"round {round_index} was recorded, but the after-record hook failed "
+                    f"({_error(exc)}); the loop does not continue until a human reviews it"
+                )
+                raise
         self._bus.publish(
             BusMessage.build(
                 ROUND_TOPIC,
@@ -1061,8 +1096,6 @@ class ResearchLoop:
         self._bus.publish(
             BusMessage.build(METRICS_TOPIC, f"{self._loop_id}:{round_index}", metrics.payload())
         )
-        if record.status in HALTING:
-            self._halted = record.status
         return record.record_hash
 
     def _run_round(self, round_index: int) -> tuple[LoopRecord, tuple[StageMetrics, ...]]:

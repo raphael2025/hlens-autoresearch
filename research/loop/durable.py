@@ -35,10 +35,11 @@ round's record **before** the audit records it. The checkpoint line holds
 
 **Cross-checks on reopening** (``LoopStateInconsistent`` on any failure; nothing is repaired):
 
-1. configuration: the header's fingerprint equals this configuration's (loop id, seed, family,
-   Profile, market spec, strategy catalog, knowledge, feature / state / label / cost specs,
-   Constitution version, code commit, environment lock, evolution on / off); a missing header
-   while any other file holds state is refused;
+1. configuration: the header's fingerprint equals this configuration's (loop id, seed, epoch,
+   exact cadence, family, Profile, market spec, strategy catalog, knowledge, feature / state /
+   label / cost specs, Constitution version, code commit, environment lock, evolution on / off,
+   the loop budget and the sealed-OOS unseal budget); the refusal names the fields that differ; a
+   missing header while any other file holds state is refused;
 2. no interrupted round: an audit round started but never recorded is refused (what it spent is
    unknown; a human reviews it);
 3. audit ↔ checkpoint: exactly one checkpoint per recorded round, same index and record hash;
@@ -58,17 +59,40 @@ round's record **before** the audit records it. The checkpoint line holds
    family's unsealing by the same approver, marked evaluated; every failure record hash the audit
    lists is in the failure registry;
 7. after the loop replayed the audit into its guard: every lifecycle subject is a registered
-   hypothesis.
+   hypothesis;
+8. with an anchor: the directory is at or after the anchored head, with the same history up to it
+   (see **External anchor**).
 
 **Tail truncation.** Deleting whole trailing lines of one journal leaves a valid shorter chain
 (the journal alone cannot tell). Across files it is detected: the checkpoint names the position of
 every other file (a shorter ledger / lineage / vault / failure registry is *behind* its recorded
 position) and the audit names the checkpoints (a shorter audit or memory file no longer pairs one
-checkpoint per record). **Remaining limit:** truncating *every* file consistently back to an
-earlier round boundary yields a valid, shorter history — detecting that needs an anchor outside the
-directory (e.g. a ``record_hash`` published on the bus / kept elsewhere). Likewise, human approvals
-appended after the last round are not named by any checkpoint until a round takes them, so
-dropping only those is indistinguishable from "not approved yet".
+checkpoint per record).
+
+**External anchor** (ADR-0049 implementation note, durable review fixes, 2026-09-26). Truncating
+*every* file consistently back to an earlier round boundary yields a valid, shorter history: the
+directory alone cannot tell, and those rounds could then run again (re-register trials, re-spend
+the budget, re-unseal the sealed OOS window). An optional ``StateAnchor`` outside the directory
+closes that: after every recorded round it receives the directory's ``StateHead`` — the number of
+recorded rounds, the audit head (last ``record_hash``), the memory journal's chain head and every
+other file's position at the end of that round (the checkpoint's ``heads``). On reopening with an
+anchor, the directory must be **at or after** the anchored round with the **same history up to
+it** (that round's record hash, the memory journal line at that position and the checkpoint's
+positions); behind it (rolled back) or diverged is refused (``LoopStateInconsistent``), and so is
+an anchor that holds no head while the directory already holds recorded rounds (the anchor was
+lost, or attached to a running directory: a human decides). After the checks the anchor is moved
+up to the directory's head (a round recorded while the anchor could not be updated is accepted
+once, then anchored). ``FileAnchor(path)`` keeps the heads in a hash-chained journal file, which
+must lie outside the state directory; any object with ``load`` / ``publish`` (e.g. one that
+publishes on a bus or to another host) works. **Without an anchor** the behaviour is unchanged and
+the limit stands: a consistent truncation opens as the shorter history. Either way, human
+approvals appended after the last round are not named by any checkpoint (nor anchor) until a
+round takes them, so dropping only those is indistinguishable from "not approved yet".
+
+**Budgets are part of the configuration.** The fingerprint binds the ``LoopBudget`` and the whole
+sealed-OOS ``OosUnsealBudget`` (``max_unsealings``, every approved family and its approver), so
+reopening a directory with a larger (or any other) budget or unseal quota is refused: raising a
+budget is a human decision and takes a **new** ``state_dir`` or ``loop_id``.
 
 The LLM provider is external: its own state (e.g. a scripted provider's position) is not loop
 state and is the caller's to resume.
@@ -81,7 +105,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 from apps.worker.loop import LifecycleGuard, LoopAuditLog, LoopRecord
 from core.contracts.synthetic import SyntheticMarketProvider, SyntheticMarketSpec
@@ -107,6 +131,7 @@ from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
 from research.validation.sealed_oos import DurableUnsealingLedger
 
 __all__ = [
+    "ANCHOR_HEAD",
     "AUDIT_FILE",
     "FAILURES_FILE",
     "LEDGER_FILE",
@@ -118,8 +143,11 @@ __all__ = [
     "SEALED_OOS_FILE",
     "STATE_VERSION",
     "DurableState",
+    "FileAnchor",
     "LoopStateInconsistent",
     "MemoryCheckpoint",
+    "StateAnchor",
+    "StateHead",
     "open_state",
 ]
 
@@ -134,8 +162,18 @@ FAILURES_FILE: Final = "failures.jsonl"
 #: Memory journal line types.
 LOOP_STATE_OPENED: Final = "loop_state_opened"
 ROUND_MEMORY: Final = "round_memory"
-#: Version of the memory journal's payload layout.
-STATE_VERSION: Final = 1
+#: Anchor journal line type (``FileAnchor``).
+ANCHOR_HEAD: Final = "loop_state_head"
+#: Version of the memory journal's payload layout (2: the fingerprint binds the budgets and the
+#: exact cadence; a version-1 directory is refused, its budgets were never bound).
+STATE_VERSION: Final = 2
+
+#: Fingerprint fields that are budgets (a change is a human decision: a new directory).
+_BUDGET_FIELDS: Final = {
+    "budget": "the loop budget (LoopBudget)",
+    "oos_unseal": "the sealed-OOS unseal budget (OosUnsealBudget: max_unsealings, approved "
+    "families and their approvers)",
+}
 
 #: The journals a checkpoint positions (name -> file), in a fixed order.
 _JOURNALS: Final = (
@@ -361,6 +399,101 @@ class MemoryCheckpoint:
         )
         self._marks = _Marks.of(memory)
 
+    @property
+    def journal(self) -> AppendOnlyJournal:
+        return self._journal
+
+
+# -------------------------------------------------------------------------------------- anchor
+
+
+@dataclass(frozen=True, slots=True)
+class StateHead:
+    """Where a state directory's history ends (what an external anchor keeps; module docs).
+
+    ``rounds``: recorded rounds; ``audit_head``: the last ``record_hash`` (``None`` before the
+    first round); ``memory_head``: the memory journal's chain head (header + one checkpoint per
+    round); ``heads``: every other file's position at the end of the last round (the last
+    checkpoint's ``heads``; empty before the first round).
+    """
+
+    rounds: int
+    audit_head: str | None
+    memory_head: str
+    heads: Mapping[str, Any]
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "rounds": self.rounds,
+            "audit_head": self.audit_head,
+            "memory_head": self.memory_head,
+            "heads": _json(dict(self.heads)),
+        }
+
+    @classmethod
+    def from_payload(cls, raw: Any) -> StateHead:
+        if not isinstance(raw, Mapping) or set(raw) != _HEAD_KEYS:
+            raise _refuse(f"an anchored head must have exactly the fields {sorted(_HEAD_KEYS)}")
+        rounds, audit_head, memory_head = raw["rounds"], raw["audit_head"], raw["memory_head"]
+        if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 0:
+            raise _refuse("an anchored head's round count must be a non-negative int")
+        if (audit_head is None) != (rounds == 0) or not isinstance(audit_head, str | None):
+            raise _refuse("an anchored head names an audit head exactly when it has rounds")
+        if not isinstance(memory_head, str) or not isinstance(raw["heads"], Mapping):
+            raise _refuse("an anchored head needs a memory head and the file positions")
+        return cls(rounds, audit_head, memory_head, _json(dict(raw["heads"])))
+
+
+_HEAD_KEYS: Final = frozenset({"rounds", "audit_head", "memory_head", "heads"})
+
+
+class StateAnchor(Protocol):
+    """Keeps a state directory's head somewhere the directory's files cannot roll back."""
+
+    def load(self) -> StateHead | None:
+        """The last head published (``None``: nothing published yet)."""
+        ...
+
+    def publish(self, head: StateHead) -> None:
+        """Keep ``head`` (called after every recorded round and after a verified reopening)."""
+        ...
+
+
+class FileAnchor:
+    """A ``StateAnchor`` in one hash-chained journal file **outside** the state directory.
+
+    Every published head is one ``loop_state_head`` line (``AppendOnlyJournal``: a tampered or
+    shrunk file is ``JournalCorrupted``). Publishing the current head again is a no-op; a head
+    behind (or diverging from) the last one is refused — the anchor never moves backwards.
+    """
+
+    def __init__(self, path: Path | str) -> None:
+        self._journal = AppendOnlyJournal(Path(path))
+
+    @property
+    def path(self) -> Path:
+        return self._journal.path
+
+    def load(self) -> StateHead | None:
+        entries = self._journal.entries
+        if not entries:
+            return None
+        last = entries[-1]
+        if last.type != ANCHOR_HEAD:
+            raise _refuse(f"{self.path}:{last.seq} is not an anchored loop state head")
+        return StateHead.from_payload(last.payload)
+
+    def publish(self, head: StateHead) -> None:
+        last = self.load()
+        if last == head:
+            return
+        if last is not None and head.rounds <= last.rounds:
+            raise _refuse(
+                f"the anchor {self.path} is at round count {last.rounds}; it never moves back "
+                f"or sideways (asked to keep {head.rounds})"
+            )
+        self._journal.append(ANCHOR_HEAD, head.payload())
+
 
 # ------------------------------------------------------------------------------------- restore
 
@@ -373,6 +506,35 @@ class DurableState:
     memory: ResearchMemory
     audit: LoopAuditLog
     checkpoint: MemoryCheckpoint
+    anchor: StateAnchor | None = None
+
+    def head(self) -> StateHead:
+        """The directory's current head (after the last recorded round)."""
+        entries = self.checkpoint.journal.entries
+        rounds = len(self.audit.records)
+        if len(entries) != rounds + 1:
+            raise _refuse(
+                f"the memory journal holds {len(entries) - 1} checkpoint(s) for {rounds} "
+                "recorded round(s): a round was checkpointed but not recorded"
+            )
+        return StateHead(
+            rounds=rounds,
+            audit_head=self.audit.head,
+            memory_head=entries[-1].hash,
+            heads=_json(dict(entries[-1].payload["heads"])) if rounds else {},
+        )
+
+    def publish_anchor(self, record: LoopRecord | None = None) -> None:
+        """Move the anchor up to the current head (no anchor: nothing).
+
+        ``ResearchLoop(after_record=...)`` calls it with every recorded round; the composition
+        calls it without a record once the reopened directory passed every cross-check.
+        """
+        if self.anchor is None:
+            return
+        if record is not None and record.record_hash != self.audit.head:
+            raise _refuse(f"round {record.round_index} is not the audit head: nothing to anchor")
+        self.anchor.publish(self.head())
 
     def verify_guard(self, guard: LifecycleGuard) -> None:
         """Cross-check 7: every lifecycle subject the audit replayed is a registered hypothesis."""
@@ -396,15 +558,26 @@ def open_state(
     strategies: Sequence[StrategyCandidate],
     provider: SyntheticMarketProvider,
     provider_for: Callable[[StrategySpec], Any] | None,
+    anchor: StateAnchor | None = None,
 ) -> DurableState:
     """Open (or create) a loop state directory and restore the research memory from it.
 
     ``strategies``: the configured library catalog (added before the restored offspring);
     ``provider``: regenerates the ingested markets; ``provider_for``: serves an offspring spec
-    (the evolution plan's; ``None`` without evolution). Raises ``LoopStateInconsistent`` when the
-    files disagree (see module docs), ``JournalCorrupted`` when one file is itself corrupt.
+    (the evolution plan's; ``None`` without evolution); ``anchor``: the optional external anchor
+    (module docs; a ``FileAnchor`` must lie outside ``state_dir``). Raises
+    ``LoopStateInconsistent`` when the files disagree with each other, the configuration or the
+    anchor (see module docs), ``JournalCorrupted`` when one file is itself corrupt. The anchor is
+    only verified here; ``DurableState.publish_anchor`` moves it up once the caller's own checks
+    (the lifecycle guard) passed too.
     """
     root = Path(state_dir)
+    if isinstance(anchor, FileAnchor) and anchor.path.resolve().is_relative_to(root.resolve()):
+        raise ValueError(
+            f"the anchor {anchor.path} lies inside the state directory {root}: an anchor must "
+            "live outside it (it has to survive a rollback of the directory)"
+        )
+    anchored = None if anchor is None else anchor.load()
     root.mkdir(parents=True, exist_ok=True)
     audit = LoopAuditLog(root / AUDIT_FILE)
     journal = AppendOnlyJournal(root / MEMORY_FILE)
@@ -423,16 +596,22 @@ def open_state(
     entries = journal.entries
     if not entries:
         _require_empty(audit, memory)
+        if anchored is not None and anchored.rounds:
+            raise _behind(root, 0, anchored)
         journal.append(LOOP_STATE_OPENED, {"state_version": STATE_VERSION, "fingerprint": expected})
-        return DurableState(root, memory, audit, MemoryCheckpoint(journal, memory))
+        state = DurableState(root, memory, audit, MemoryCheckpoint(journal, memory), anchor)
+        _check_anchor(state, anchored, ())
+        return state
     header = entries[0]
-    if header.type != LOOP_STATE_OPENED or header.payload.get("state_version") != STATE_VERSION:
+    if header.type != LOOP_STATE_OPENED:
         raise _refuse(f"{journal.path} does not start with a loop state header")
-    if header.payload.get("fingerprint") != expected:
+    if header.payload.get("state_version") != STATE_VERSION:
         raise _refuse(
-            f"{root} belongs to another loop configuration (fingerprint mismatch); a changed "
-            "configuration is a new state directory"
+            f"{journal.path} has state version {header.payload.get('state_version')!r}, this "
+            f"code writes {STATE_VERSION}: open it with the code that wrote it, or start a new "
+            "state directory"
         )
+    _check_fingerprint(root, header.payload.get("fingerprint"), expected)
     checkpoints = []
     for entry in entries[1:]:
         if entry.type != ROUND_MEMORY or set(entry.payload) != _ROUND_KEYS:
@@ -443,7 +622,73 @@ def open_state(
     for record, checkpoint in zip(audit.records, checkpoints, strict=True):
         _restore_round(memory, record, checkpoint["delta"], provider, provider_for)
     _check_ledgers(memory, audit.records)
-    return DurableState(root, memory, audit, MemoryCheckpoint(journal, memory))
+    state = DurableState(root, memory, audit, MemoryCheckpoint(journal, memory), anchor)
+    _check_anchor(state, anchored, checkpoints)
+    return state
+
+
+def _check_fingerprint(root: Path, recorded: Any, expected: Any) -> None:
+    """Cross-check 1, naming the fields that differ (budgets: a human decision)."""
+    if recorded == expected:
+        return
+    if not isinstance(recorded, Mapping):
+        raise _refuse(f"{root} has no readable configuration fingerprint")
+    changed = sorted(k for k in set(recorded) | set(expected) if recorded.get(k) != expected.get(k))
+    budgets = [_BUDGET_FIELDS[k] for k in changed if k in _BUDGET_FIELDS]
+    if budgets:
+        raise _refuse(
+            f"{root} was opened with another loop configuration: {'; '.join(budgets)} differs "
+            "from the one bound to this state directory. A budget is never changed on a running "
+            "loop (not raised, not lowered): raising it is a human decision and takes a NEW "
+            f"state_dir or loop_id (fields that differ: {changed})"
+        )
+    raise _refuse(
+        f"{root} belongs to another loop configuration (fields that differ: {changed}); a changed "
+        "configuration is a new state directory"
+    )
+
+
+def _behind(root: Path, rounds: int, anchored: StateHead) -> LoopStateInconsistent:
+    return _refuse(
+        f"{root} holds {rounds} recorded round(s) but its external anchor recorded "
+        f"{anchored.rounds}: the directory is behind its anchor (rolled back / consistently "
+        "truncated, or replaced) and those rounds would run again"
+    )
+
+
+def _check_anchor(
+    state: DurableState, anchored: StateHead | None, checkpoints: Sequence[Mapping[str, Any]]
+) -> None:
+    """Cross-check 8: the directory is at or after the anchored head, on the same history."""
+    if state.anchor is None:
+        return
+    records = state.audit.records
+    if anchored is None:
+        if records:
+            raise _refuse(
+                f"the external anchor holds no head, but {state.root} holds {len(records)} "
+                "recorded round(s): the anchor was lost or attached to a running directory "
+                "(a human checks the directory and re-anchors it deliberately)"
+            )
+        return
+    count = anchored.rounds
+    if count > len(records):
+        raise _behind(state.root, len(records), anchored)
+    entries = state.checkpoint.journal.entries
+    same = entries[count].hash == anchored.memory_head and (
+        count == 0
+        or (
+            records[count - 1].record_hash == anchored.audit_head
+            and _json(dict(checkpoints[count - 1]["heads"])) == anchored.heads
+        )
+    )
+    if not same:
+        raise _refuse(
+            f"{state.root} has diverged from its external anchor: its history up to round "
+            f"{count - 1} differs from the anchored one (audit / memory / file positions)"
+            if count
+            else f"{state.root} has diverged from its external anchor (another header)"
+        )
 
 
 def _require_empty(audit: LoopAuditLog, memory: ResearchMemory) -> None:

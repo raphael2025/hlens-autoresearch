@@ -131,3 +131,23 @@ spec hash、上游事件哈希不符、并集不符（超集 / 子集 / 不同�
 `ConfirmedTopProvider`、`BackdatedProvider` 与一个回填时间的交互算子仍被执行器抓住。仍然 FRAMEWORK_IMPLEMENTED /
 NOT_VALIDATED；未做：Registry 侧的登记核对、多跳（传递）上游的一次性核对（每跳在自己的运行中核对）、非交互规格的
 输入点来源是否属于声明的 Feature / State。
+
+## Implementation note (durable review fixes, 2026-09-26)
+
+不新增 ADR，不改 `core/contracts`、`core/domain` 或 Provider 接口；`run_events` 的默认行为（不给 `require_full`）只在上游哈希绑定一项变严。
+处理只读复核的一项中等发现（上一条实施说明第 1 点"不解析任何 Provider 的 trigger 约定"被本条取代）。
+
+1. **上游 spec hash 精确绑定**。原实现只检查所给上游规格的哈希是否作为**子串**出现在交互 trigger 文本中，重叠的十六进制串（例如某个更长的值里
+   恰好包含该哈希）会误判为已绑定。现在按本 ADR §4 把 trigger 解析为规范 JSON 对象（非 JSON 对象、重复键 → 拒绝），上游只由一对顶层字段绑定：
+   `<name>` = 上游引用（`str(ref)`，逐字相等）且 `<name>_hash` = 其 spec hash（逐字相等）——即首批交互算子的形式（`first` / `first_hash`、
+   `then` / `then_hash`、`left` / `left_hash` 等）。所给规格的 `content_hash()` 必须**恰好等于** trigger 为该引用绑定的唯一哈希；只出现在其它值里、
+   出现在不与引用配对的字段里、或同一引用绑定了两个哈希，都拒绝（`UpstreamVerificationError`）。
+2. **写明哪些核对没有做**。`verify_interaction` / `verify_input_lineage` 返回 `UpstreamVerification`（`performed` / `not_performed` /
+   `not_applicable`，核对名 `upstream_specs`、`upstream_results`、`input_lineage`）：非交互规格的两项上游核对为不适用；交互未给 `upstream_results`
+   时该项为未做；未给 `feature_runs` / `state_runs` 而请求有输入点时 `input_lineage` 为未做（无输入点为不适用）。新增 `verify_upstream`（合并两者）
+   与 `run_events(..., require_full=True)`：任一适用核对因证据缺失而未做即拒绝，调用方由此可以断言"完整核对"而不是静默得到较弱的子集。
+   默认 `require_full=False`，与原行为相同。
+3. **调用方**：`tests/smoke/test_phase3_events_smoke.py` 的每次运行改用 `require_full=True`，并断言报告完整。
+4. **测试**（`tests/infrastructure/event/test_upstream_verification.py`）：重叠哈希（`then_hash` 绑定孪生规格、SWITCH 的哈希只在另一个值中，旧的
+   子串检查会接受）被拒绝；哈希在不配对字段中、同一引用绑定两个哈希、非 JSON 对象 / JSON 数组 / 重复键的 trigger 被拒绝；报告在交互 / 非交互 /
+   有无运行 / 无输入点各路径上写明已做与未做的核对；`require_full` 在缺少特征 / 状态运行或缺少上游结果时拒绝，证据齐全时与默认运行结果相同。

@@ -8,11 +8,16 @@ spec (one whose ``lineage`` names ``kind=event`` refs, or whose request carries 
 
 - the supplied upstream specs are exactly the declared upstream event refs (``lineage``), one spec
   per ref — none missing, none extra;
-- the interaction binds each one's spec hash: ADR-0036 §5 has the interaction's ``trigger`` bind
-  "the upstream refs, the upstream spec hashes and the window", so the supplied spec's
-  ``content_hash()`` must occur in the trigger text (a 256-bit content hash; a spec of another
-  content under the same ref has another hash and is refused). Format-agnostic: no trigger
-  convention of any provider is parsed;
+- the interaction binds each one's spec hash **exactly**: ADR-0036 §5 has the interaction's
+  ``trigger`` bind "the upstream refs, the upstream spec hashes and the window", and ADR-0036 §4
+  makes the trigger the canonical JSON object ``{"operator": ..., <params>}``. The trigger is
+  therefore parsed (not searched as text), and an upstream is bound only by a pair of top-level
+  fields ``<name>`` = the upstream ref (``str(ref)``, exactly) and ``<name>_hash`` = its spec hash
+  (exactly) — the form of the first-batch interaction operators (``first`` / ``first_hash``,
+  ``second`` / ``second_hash``). The supplied spec's ``content_hash()`` must equal the one hash the
+  trigger binds to its ref: a hash that only occurs inside another value (e.g. overlapping hex) is
+  not a binding, a ref bound to another or to two hashes is refused, and a trigger that is not a
+  JSON object (or repeats a key) is refused;
 - every upstream event of the request is of a declared upstream spec and carries that spec's hash;
 - the interaction's declared Feature / State inputs **equal** the union of the upstream specs'
   (not "a superset"): ADR-0036 §5 and 02-domain §2.8 define the interaction's inputs as the union
@@ -34,13 +39,31 @@ answer its request, or two runs of one source are refused. Without runs nothing 
 local ``StateSeriesPoint`` shape carries caller-computed lineage; that remains the caller's /
 Registry's responsibility).
 
+**What was verified** (ADR-0036 implementation note, exact upstream binding, 2026-09-26). Both
+functions return an ``UpstreamVerification`` naming the checks that were ``performed``,
+``not_performed`` (applicable, but their evidence was not supplied) and ``not_applicable``
+(nothing to check: the upstream checks of a non-interaction, the input lineage of a request
+without input points):
+
+- ``upstream_specs`` — the interaction checks above (always required for an interaction);
+- ``upstream_results`` — every upstream event taken from the supplied upstream results;
+- ``input_lineage`` — every input point recomputed from the supplied feature / state runs.
+
+``verify_upstream`` runs both and merges the reports; with ``require_full=True`` it refuses
+(``UpstreamVerificationError``) when any applicable check was not performed, so a caller can
+demand full verification instead of silently getting the weaker one
+(``run_events(..., require_full=True)``).
+
 Pure: no catalog, no clock, no plugin import.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, Final
 
 from core.contracts.event import Event, EventInputPoint, EventRequest, EventResult
 from core.contracts.feature import FeatureRequest, FeatureResult
@@ -55,16 +78,52 @@ from infrastructure.event.inputs import (
 )
 
 __all__ = [
+    "CHECK_INPUT_LINEAGE",
+    "CHECK_UPSTREAM_RESULTS",
+    "CHECK_UPSTREAM_SPECS",
+    "UpstreamVerification",
     "UpstreamVerificationError",
     "declared_upstream",
     "is_interaction",
     "verify_input_lineage",
     "verify_interaction",
+    "verify_upstream",
 ]
+
+#: The interaction checks against the supplied upstream specs (declared refs, bound hashes,
+#: input union, upstream event hashes).
+CHECK_UPSTREAM_SPECS: Final = "upstream_specs"
+#: Every upstream event of the request is taken from the supplied upstream results.
+CHECK_UPSTREAM_RESULTS: Final = "upstream_results"
+#: Every input point is recomputed from the supplied feature / state runs.
+CHECK_INPUT_LINEAGE: Final = "input_lineage"
 
 
 class UpstreamVerificationError(EventRunnerError):
     """What the run is given does not match what the spec declares (fail closed)."""
+
+
+@dataclass(frozen=True, slots=True)
+class UpstreamVerification:
+    """Which upstream checks a run's evidence allowed (see the module docstring)."""
+
+    performed: tuple[str, ...] = ()
+    #: Applicable, but the evidence was not supplied: the run is only partially verified.
+    not_performed: tuple[str, ...] = ()
+    #: Nothing to check (e.g. the upstream checks of a non-interaction).
+    not_applicable: tuple[str, ...] = ()
+
+    @property
+    def full(self) -> bool:
+        """Every applicable check was performed."""
+        return not self.not_performed
+
+    def merged(self, other: UpstreamVerification) -> UpstreamVerification:
+        return UpstreamVerification(
+            performed=self.performed + other.performed,
+            not_performed=self.not_performed + other.not_performed,
+            not_applicable=self.not_applicable + other.not_applicable,
+        )
 
 
 def declared_upstream(spec: EventSpec) -> tuple[Ref, ...]:
@@ -101,13 +160,53 @@ def _upstream_specs(
         raise UpstreamVerificationError(f"{spec.ref}: no upstream spec supplied for {missing}")
     if extra:
         raise UpstreamVerificationError(f"{spec.ref} does not declare the upstream specs {extra}")
+    bindings = _trigger_bindings(spec)
     for key, (_, spec_hash) in supplied.items():
-        if spec_hash not in spec.trigger:
+        bound = bindings.get(key, ())
+        if bound != (spec_hash,):
             raise UpstreamVerificationError(
                 f"{spec.ref} does not bind the supplied upstream spec {key} (spec hash "
-                f"{spec_hash[:12]} is not in its trigger)"
+                f"{spec_hash[:12]}; its trigger binds {key} to "
+                f"{[item[:12] for item in bound] or 'nothing'})"
             )
     return supplied
+
+
+def _no_duplicate_keys(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    out: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in out:
+            raise ValueError(f"the key {key!r} is repeated")
+        out[key] = value
+    return out
+
+
+def _trigger_bindings(spec: EventSpec) -> dict[str, tuple[str, ...]]:
+    """The upstream bindings of an interaction trigger: ref -> the hash(es) bound to it.
+
+    ADR-0036 §4: the trigger is the canonical JSON object of the operator and its parameters; an
+    upstream is bound by the top-level pair ``<name>`` (the ref) and ``<name>_hash`` (its hash).
+    """
+    try:
+        raw = json.loads(spec.trigger, object_pairs_hook=_no_duplicate_keys)
+    except ValueError as exc:
+        raise UpstreamVerificationError(
+            f"{spec.ref}: the interaction trigger is not a JSON object (ADR-0036 §4): {exc}"
+        ) from None
+    if not isinstance(raw, dict):
+        raise UpstreamVerificationError(
+            f"{spec.ref}: the interaction trigger is not a JSON object (ADR-0036 §4)"
+        )
+    bindings: dict[str, tuple[str, ...]] = {}
+    for key, value in raw.items():
+        field = f"{key}_hash"
+        if field not in raw or not isinstance(value, str):
+            continue
+        bound = raw[field]
+        if not isinstance(bound, str):
+            raise UpstreamVerificationError(f"{spec.ref}: trigger field {field} is not a hash")
+        bindings[value] = (*bindings.get(value, ()), bound)
+    return bindings
 
 
 def _require_input_union(spec: EventSpec, upstream: Iterable[EventSpec]) -> None:
@@ -144,14 +243,19 @@ def verify_interaction(
     request: EventRequest,
     upstream_specs: Sequence[EventSpec] | None,
     upstream_results: Sequence[EventResult] | None = None,
-) -> None:
-    """Check an event run against its supplied upstream specs / results (module docstring)."""
+) -> UpstreamVerification:
+    """Check an event run against its supplied upstream specs / results (module docstring).
+
+    Returns what was verified: for a non-interaction both upstream checks are not applicable;
+    for an interaction ``upstream_specs`` is performed and ``upstream_results`` only when the
+    results were supplied (``not_performed`` otherwise).
+    """
     if not is_interaction(spec, request):
         if upstream_specs or upstream_results:
             raise UpstreamVerificationError(
                 f"{spec.ref} declares no upstream events but upstream specs / results were supplied"
             )
-        return
+        return UpstreamVerification(not_applicable=(CHECK_UPSTREAM_SPECS, CHECK_UPSTREAM_RESULTS))
     if not declared_upstream(spec):
         raise UpstreamVerificationError(
             f"{spec.ref} declares no upstream events but the request carries some"
@@ -164,7 +268,9 @@ def verify_interaction(
     _require_input_union(spec, (item for item, _ in supplied.values()))
     _require_declared_events(spec, request.upstream_events, supplied)
     if upstream_results is None:
-        return
+        return UpstreamVerification(
+            performed=(CHECK_UPSTREAM_SPECS,), not_performed=(CHECK_UPSTREAM_RESULTS,)
+        )
     known: dict[str, Event] = {}
     for result in upstream_results:
         if not isinstance(result, EventResult):
@@ -177,6 +283,7 @@ def verify_interaction(
                 f"upstream event {item.event_id[:12]} of {item.event} is in none of the supplied "
                 "upstream results"
             )
+    return UpstreamVerification(performed=(CHECK_UPSTREAM_SPECS, CHECK_UPSTREAM_RESULTS))
 
 
 def _expected_points(
@@ -209,10 +316,16 @@ def verify_input_lineage(
     request: EventRequest,
     feature_runs: Sequence[tuple[FeatureRequest, FeatureResult]] = (),
     state_runs: Sequence[tuple[StateRequest, StateResult]] = (),
-) -> None:
-    """Every input point must be recomputed exactly from a supplied run (module docstring)."""
+) -> UpstreamVerification:
+    """Every input point must be recomputed exactly from a supplied run (module docstring).
+
+    Returns what was verified: ``input_lineage`` is performed when runs were supplied, not
+    applicable when the request has no input points and ``not_performed`` otherwise.
+    """
     if not feature_runs and not state_runs:
-        return
+        if not request.inputs:
+            return UpstreamVerification(not_applicable=(CHECK_INPUT_LINEAGE,))
+        return UpstreamVerification(not_performed=(CHECK_INPUT_LINEAGE,))
     expected = _expected_points(feature_runs, state_runs)
     for item in request.inputs:
         label = f"input {item.source} @ {item.evaluation_time.isoformat()}"
@@ -231,3 +344,31 @@ def verify_input_lineage(
             raise UpstreamVerificationError(
                 f"{label}: value / times differ from the supplied upstream run"
             )
+    return UpstreamVerification(performed=(CHECK_INPUT_LINEAGE,))
+
+
+def verify_upstream(
+    spec: EventSpec,
+    request: EventRequest,
+    *,
+    upstream_specs: Sequence[EventSpec] | None = None,
+    upstream_results: Sequence[EventResult] | None = None,
+    feature_runs: Sequence[tuple[FeatureRequest, FeatureResult]] = (),
+    state_runs: Sequence[tuple[StateRequest, StateResult]] = (),
+    require_full: bool = False,
+) -> UpstreamVerification:
+    """``verify_interaction`` and ``verify_input_lineage``, merged (module docstring).
+
+    ``require_full=True`` refuses a run for which any applicable check could not be performed
+    because its evidence (``upstream_results`` / ``feature_runs`` / ``state_runs``) is missing.
+    """
+    report = verify_interaction(spec, request, upstream_specs, upstream_results).merged(
+        verify_input_lineage(request, feature_runs, state_runs)
+    )
+    if require_full and not report.full:
+        raise UpstreamVerificationError(
+            f"{spec.ref}: full upstream verification was required, but "
+            f"{list(report.not_performed)} could not be performed (evidence not supplied: "
+            "upstream_results for upstream_results, feature_runs / state_runs for input_lineage)"
+        )
+    return report

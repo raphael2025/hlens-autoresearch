@@ -24,6 +24,14 @@ keeps the audit and every part of ``ResearchMemory`` the stages read across roun
 directory, restores them on reopening and refuses to start when they disagree
 (``research.loop.durable``). Without a state directory nothing changes: all in memory, same record
 hashes (a restarted durable run reproduces the uninterrupted run's hashes as well).
+
+Durable review fixes (ADR-0049 implementation note, 2026-09-26): the configuration fingerprint
+binds the ``LoopBudget``, the whole ``OosUnsealBudget`` (``max_unsealings``, approved families and
+approvers) and the exact cadence (microseconds), so a directory reopened with any other budget or
+unseal quota is refused — raising a budget is a human decision and takes a new ``state_dir`` or
+``loop_id``. ``anchor=`` (a path outside ``state_dir`` or any ``StateAnchor``) keeps the
+directory's head after every recorded round and refuses a directory that was rolled back or
+diverged (``research.loop.durable``, **External anchor**).
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+from os import PathLike
 from pathlib import Path
 from typing import Any
 
@@ -48,7 +57,7 @@ from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import KnowledgeItem
 from core.domain.selection import ProfileSelection
 from core.domain.specs import FeatureSpec, StateSpec
-from research.loop.durable import DurableState, open_state
+from research.loop.durable import DurableState, FileAnchor, StateAnchor, open_state
 from research.loop.memory import ResearchMemory
 from research.loop.stages import (
     EvolutionPlan,
@@ -141,19 +150,22 @@ def build_synthetic_loop(
     memory: ResearchMemory | None = None,
     llm: LLMProvider | None = None,
     state_dir: Path | None = None,
+    anchor: StateAnchor | Path | None = None,
 ) -> ResearchLoop:
     """Compose the loop over ``memory`` (in memory), or over ``state_dir`` (durable).
 
     Exactly one of ``memory`` / ``state_dir``. ``state_dir`` is ``open_synthetic_loop(...).loop``;
     use ``open_synthetic_loop`` directly when the caller needs the restored memory (e.g. to
-    approve LLM drafts between rounds).
+    approve LLM drafts between rounds). ``anchor`` only with ``state_dir``.
     """
     if (memory is None) == (state_dir is None):
         raise ValueError("pass exactly one of memory (in memory) or state_dir (durable)")
     if state_dir is not None:
         return open_synthetic_loop(
-            config, state_dir=state_dir, provider=provider, bus=bus, llm=llm
+            config, state_dir=state_dir, provider=provider, bus=bus, llm=llm, anchor=anchor
         ).loop
+    if anchor is not None:
+        raise ValueError("an anchor keeps a state directory's head: it needs state_dir")
     assert memory is not None
     return _compose(config, provider, bus, memory, llm, None)
 
@@ -241,10 +253,12 @@ def _compose(
         cadence=config.cadence,
         audit=None if state is None else state.audit,
         checkpoint=None if state is None else state.checkpoint,
+        after_record=None if state is None or state.anchor is None else state.publish_anchor,
     )
     memory.reviews.bind_loop_actor(loop.guard.actor)  # the loop can never approve its own drafts
     if state is not None:
         state.verify_guard(loop.guard)
+        state.publish_anchor()  # every check passed: the anchor catches up with the directory
     return loop
 
 
@@ -264,6 +278,7 @@ def open_synthetic_loop(
     provider: SyntheticMarketProvider,
     bus: EventBusAdapter,
     llm: LLMProvider | None = None,
+    anchor: StateAnchor | Path | None = None,
 ) -> DurableLoop:
     """Compose the loop over ``state_dir`` (created when missing), restoring every stateful part.
 
@@ -274,6 +289,15 @@ def open_synthetic_loop(
     loop then continues after the last recorded round. ``llm`` is external: resuming its own state
     (e.g. a scripted provider's position) is the caller's job. Human review approvals go through
     ``DurableLoop.memory.reviews.approve`` (journaled).
+
+    The budgets are part of the configuration: reopening with another ``LoopBudget`` or
+    ``OosUnsealBudget`` (a larger quota, another approved family or approver — or a smaller one)
+    is refused; raising a budget is a human decision and takes a new ``state_dir`` or ``loop_id``.
+    ``anchor``: an optional external anchor — a path **outside** ``state_dir`` (a ``FileAnchor``)
+    or any ``StateAnchor``; it receives the directory's head after every recorded round, and a
+    reopened directory behind it (rolled back) or diverged from it is refused. Without it a
+    consistent truncation of every file to an earlier round boundary is not detectable (the
+    documented limit of ``research.loop.durable``).
     """
     wiring = config.wiring
     state = open_state(
@@ -282,23 +306,38 @@ def open_synthetic_loop(
         strategies=wiring.strategies,
         provider=provider,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
+        anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
     )
     loop = _compose(config, provider, bus, state.memory, llm, state)
     return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root)
 
 
+def _unseal_payload(budget: OosUnsealBudget | None) -> dict[str, Any] | None:
+    if budget is None:
+        return None
+    return {
+        "max_unsealings": budget.max_unsealings,
+        "approved_families": dict(sorted(budget.approved_families.items())),
+    }
+
+
 def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
     """What a restored research memory depends on (the header of a state directory).
 
-    Budgets are not part of it (a larger budget is a new ``LoopBudget``, recorded in every
-    record's ``budget_hash``); neither are compute declarations or the LLM provider.
+    Includes the budgets (the ``LoopBudget`` payload and the whole ``OosUnsealBudget``): a state
+    directory is bound to the budgets it was opened with, and changing them on reopening is
+    refused (a new budget is a human decision: a new ``state_dir`` / ``loop_id``). The cadence is
+    exact (whole microseconds, ``timedelta``'s resolution). Compute declarations and the LLM
+    provider are not part of it.
     """
     wiring = config.wiring
     return {
         "loop_id": config.loop_id,
         "seed": config.seed,
         "epoch": config.epoch.isoformat(),
-        "cadence_seconds": int(config.cadence.total_seconds()),
+        "cadence_microseconds": config.cadence // timedelta(microseconds=1),
+        "budget": config.budget.payload(),
+        "oos_unseal": _unseal_payload(wiring.oos_unseal),
         "family_id": config.family_id,
         "profile": config.profile.content_hash(),
         "constitution_version": config.constitution_version,

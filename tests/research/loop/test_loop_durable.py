@@ -14,24 +14,28 @@ from __future__ import annotations
 import gc
 import json
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
+from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import pytest
 
-from apps.worker import LoopAuditLog, ResearchLoop
+from apps.worker import LoopAuditLog, LoopBudget, ResearchLoop
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
 from plugins.llm import ScriptedLLMProvider
 from plugins.synthetic import RandomWalkMarket
 from research.loop import (
+    FileAnchor,
     LoopStateInconsistent,
     OosUnsealBudget,
     ResearchMemory,
     ReviewQueue,
     SyntheticLoopConfig,
     build_synthetic_loop,
+    loop_fingerprint,
     open_synthetic_loop,
 )
 from research.loop.durable import (
@@ -63,14 +67,25 @@ ALL_FILES = (
 )
 
 
-def _config(seed: int = 11) -> SyntheticLoopConfig:
-    unseal = OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: REVIEWER})
+def _unseal() -> OosUnsealBudget:
+    return OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: REVIEWER})
+
+
+def _config(
+    seed: int = 11,
+    *,
+    budget: LoopBudget = fx.TEST_ONLY_BUDGET,
+    unseal: OosUnsealBudget | None | Literal["default"] = "default",
+) -> SyntheticLoopConfig:
     return fx.config(
         seed=seed,
+        budget=budget,
         lookbacks=(60,),
         days_per_round=4,
         profile=fx.loop_profile(boundary_day=3),
-        loop_wiring=fx.wiring(evolution=True, oos_unseal=unseal),
+        loop_wiring=fx.wiring(
+            evolution=True, oos_unseal=_unseal() if unseal == "default" else unseal
+        ),
     )
 
 
@@ -80,13 +95,21 @@ def _llm(consumed: int = 0) -> ScriptedLLMProvider:
     return ScriptedLLMProvider(outputs[consumed:], clock=lambda: fx.T0)
 
 
-def _open(state_dir: Path, *, consumed: int = 0, seed: int = 11) -> Any:
+def _open(
+    state_dir: Path,
+    *,
+    consumed: int = 0,
+    seed: int = 11,
+    config: SyntheticLoopConfig | None = None,
+    anchor: Path | None = None,
+) -> Any:
     return open_synthetic_loop(
-        _config(seed),
+        config or _config(seed),
         state_dir=state_dir,
         provider=RandomWalkMarket(),
         bus=InMemoryEventBus(),
         llm=_llm(consumed),
+        anchor=anchor,
     )
 
 
@@ -173,6 +196,25 @@ def _drop_trailing_lines(path: Path, count: int) -> None:
     lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
     assert len(lines) > count
     path.write_text("".join(lines[:-count]), encoding="utf-8")
+
+
+def _truncate_to_round_0(state_dir: Path) -> None:
+    """Cut every file consistently back to the end of round 0 (plus the later human approval)."""
+    memory_lines = (state_dir / MEMORY_FILE).read_text(encoding="utf-8").splitlines(keepends=True)
+    heads = json.loads(memory_lines[1])["payload"]["heads"]  # the checkpoint of round 0
+    keep = {
+        MEMORY_FILE: 2,  # header + round 0
+        AUDIT_FILE: 2,  # started + recorded round 0
+        LEDGER_FILE: heads["trial_ledger"]["seq"],
+        SEALED_OOS_FILE: heads["sealed_oos"]["seq"],
+        LINEAGE_FILE: heads["lineage"]["seq"],
+        REVIEWS_FILE: heads["reviews"]["seq"] + 1,  # + the approval made after round 0
+        FAILURES_FILE: heads["failures"]["count"],
+    }
+    for name, count in keep.items():
+        path = state_dir / name
+        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+        path.write_text("".join(lines[:count]), encoding="utf-8")
 
 
 def _rechain(path: Path, edit: Any) -> None:
@@ -334,24 +376,11 @@ def test_truncating_every_file_consistently_is_the_documented_limit(
     restarted: tuple[Path, Outcome], uninterrupted: Outcome, tmp_path: Path
 ) -> None:
     """Every file cut back to the end of round 0 (plus the later human approval) is a valid
-    earlier history: it opens, and continuing it reproduces the uninterrupted run. Detecting such
-    a rollback needs an anchor outside the directory (see ``research.loop.durable``)."""
+    earlier history: without an anchor it opens, and continuing it reproduces the uninterrupted
+    run. Detecting such a rollback needs an anchor outside the directory (see
+    ``research.loop.durable`` and the anchored tests below)."""
     state_dir = _copy(restarted[0], tmp_path)
-    memory_lines = (state_dir / MEMORY_FILE).read_text(encoding="utf-8").splitlines(keepends=True)
-    heads = json.loads(memory_lines[1])["payload"]["heads"]  # the checkpoint of round 0
-    keep = {
-        MEMORY_FILE: 2,  # header + round 0
-        AUDIT_FILE: 2,  # started + recorded round 0
-        LEDGER_FILE: heads["trial_ledger"]["seq"],
-        SEALED_OOS_FILE: heads["sealed_oos"]["seq"],
-        LINEAGE_FILE: heads["lineage"]["seq"],
-        REVIEWS_FILE: heads["reviews"]["seq"] + 1,  # + the approval made after round 0
-        FAILURES_FILE: heads["failures"]["count"],
-    }
-    for name, count in keep.items():
-        path = state_dir / name
-        lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
-        path.write_text("".join(lines[:count]), encoding="utf-8")
+    _truncate_to_round_0(state_dir)
     reopened = _open(state_dir, consumed=1)
     assert len(reopened.loop.audit.records) == 1
     reopened.loop.run_unattended(ROUNDS - 1)
@@ -410,3 +439,178 @@ def test_a_journaled_review_queue_replays_drafts_approvals_and_takes(
     assert queue.reviewed_untaken() == ()
     with pytest.raises(ValueError, match="already approved"):
         queue.approve(DRAFT, reviewer="someone-else")
+
+
+# ------------------------------------------------------------- budgets bound to the directory
+
+
+@pytest.mark.parametrize(
+    ("config", "what"),
+    [
+        (
+            lambda: _config(budget=replace(fx.TEST_ONLY_BUDGET, max_trials_total=1000)),
+            "the loop budget",
+        ),
+        (
+            lambda: _config(
+                budget=replace(fx.TEST_ONLY_BUDGET, max_compute_seconds=Decimal(10**9))
+            ),
+            "the loop budget",
+        ),
+        (
+            lambda: _config(budget=replace(fx.TEST_ONLY_BUDGET, max_trials_per_round=1)),
+            "the loop budget",  # smaller: any change is refused, not only a raise
+        ),
+        (
+            lambda: _config(
+                unseal=OosUnsealBudget(max_unsealings=2, approved_families={fx.FAMILY: REVIEWER})
+            ),
+            "the sealed-OOS unseal budget",
+        ),
+        (
+            lambda: _config(
+                unseal=OosUnsealBudget(
+                    max_unsealings=1,
+                    approved_families={fx.FAMILY: REVIEWER, "another_family": REVIEWER},
+                )
+            ),
+            "the sealed-OOS unseal budget",
+        ),
+        (
+            lambda: _config(
+                unseal=OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: "someone"})
+            ),
+            "the sealed-OOS unseal budget",
+        ),
+        (lambda: _config(unseal=None), "the sealed-OOS unseal budget"),
+    ],
+    ids=[
+        "bigger-trials-total",
+        "bigger-compute",
+        "smaller-trials-per-round",
+        "bigger-unseal-quota",
+        "added-approved-family",
+        "other-approver",
+        "unseal-removed",
+    ],
+)
+def test_reopening_with_another_budget_is_refused(
+    restarted: tuple[Path, Outcome], tmp_path: Path, config: Any, what: str
+) -> None:
+    """A budget is bound to its state directory: raising it is a human decision (new dir)."""
+    state_dir = _copy(restarted[0], tmp_path)
+    before = {name: (state_dir / name).read_bytes() for name in ALL_FILES}
+    with pytest.raises(LoopStateInconsistent, match=f"{what}.*NEW state_dir or loop_id"):
+        _open(state_dir, consumed=ROUNDS, config=config())
+    assert {name: (state_dir / name).read_bytes() for name in ALL_FILES} == before
+
+
+def test_reopening_with_an_identical_budget_is_accepted(
+    restarted: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir = _copy(restarted[0], tmp_path)
+    same = _config(
+        budget=LoopBudget.from_config(fx.TEST_ONLY_BUDGET.payload()),
+        unseal=OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: REVIEWER}),
+    )
+    reopened = _open(state_dir, consumed=ROUNDS, config=same)
+    assert len(reopened.loop.audit.records) == ROUNDS
+
+
+def test_the_fingerprint_binds_the_exact_cadence() -> None:
+    base = _config()
+    for delta in (timedelta(milliseconds=500), timedelta(microseconds=1)):
+        shifted = replace(base, cadence=base.cadence + delta)
+        # the former whole-second fingerprint could not tell them apart
+        assert int(shifted.cadence.total_seconds()) == int(base.cadence.total_seconds())
+        assert loop_fingerprint(shifted) != loop_fingerprint(base)
+    assert loop_fingerprint(replace(base)) == loop_fingerprint(base)
+
+
+# ---------------------------------------------------------------------------- external anchor
+
+
+@pytest.fixture(scope="module")
+def anchored(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Path, Outcome]:
+    """The restart scenario with an external anchor (a file outside the state directory)."""
+    root = tmp_path_factory.mktemp("anchored")
+    state_dir, anchor = root / "state", root / "anchor.jsonl"
+    first = _open(state_dir, anchor=anchor)
+    first.loop.run_unattended(1)
+    first.memory.reviews.approve(DRAFT, reviewer=REVIEWER)
+    del first
+    gc.collect()
+    second = _open(state_dir, consumed=1, anchor=anchor)
+    second.loop.run_unattended(ROUNDS - 1)
+    return state_dir, anchor, _outcome(second.loop, second.memory)
+
+
+def _copy_anchored(anchored: tuple[Path, Path, Outcome], tmp_path: Path) -> tuple[Path, Path]:
+    anchor = tmp_path / "anchor.jsonl"
+    shutil.copyfile(anchored[1], anchor)
+    return _copy(anchored[0], tmp_path), anchor
+
+
+def test_an_anchored_restart_ends_like_an_uninterrupted_one(
+    anchored: tuple[Path, Path, Outcome], uninterrupted: Outcome
+) -> None:
+    state_dir, anchor, outcome = anchored
+    assert outcome == uninterrupted  # the anchor changes nothing a round does
+    heads = [json.loads(line)["payload"] for line in anchor.read_text("utf-8").splitlines()]
+    # opened (0), round 0 (1), reopened (no new line), rounds 1 and 2
+    assert [head["rounds"] for head in heads] == [0, 1, 2, 3]
+    head = FileAnchor(anchor).load()
+    assert head is not None and head.audit_head == outcome.record_hashes[-1]
+    assert head.memory_head == AppendOnlyJournal(state_dir / MEMORY_FILE).head_hash
+
+
+def test_a_consistent_truncation_is_refused_with_an_anchor(
+    anchored: tuple[Path, Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir, anchor = _copy_anchored(anchored, tmp_path)
+    _truncate_to_round_0(state_dir)
+    with pytest.raises(LoopStateInconsistent, match="behind its anchor"):
+        _open(state_dir, consumed=1, anchor=anchor)
+    # without the anchor the same directory opens: the documented limit
+    assert len(_open(state_dir, consumed=1).loop.audit.records) == 1
+
+
+def test_a_deleted_state_directory_is_refused_with_an_anchor(
+    anchored: tuple[Path, Path, Outcome], tmp_path: Path
+) -> None:
+    _, anchor = _copy_anchored(anchored, tmp_path)
+    with pytest.raises(LoopStateInconsistent, match="holds 0 recorded round.*behind its"):
+        _open(tmp_path / "fresh", anchor=anchor)
+
+
+def test_a_diverged_history_is_refused_by_the_anchor(
+    anchored: tuple[Path, Path, Outcome], restarted: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    """Another run of the same configuration: same audit hashes, other ledger lines."""
+    _, anchor = _copy_anchored(anchored, tmp_path)
+    other = _copy(restarted[0], tmp_path / "other")
+    with pytest.raises(LoopStateInconsistent, match="diverged from its external anchor"):
+        _open(other, consumed=ROUNDS, anchor=anchor)
+
+
+def test_a_lost_or_misplaced_anchor_is_refused(
+    anchored: tuple[Path, Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir, _ = _copy_anchored(anchored, tmp_path)
+    with pytest.raises(LoopStateInconsistent, match="anchor holds no head"):
+        _open(state_dir, consumed=ROUNDS, anchor=tmp_path / "empty_anchor.jsonl")
+    with pytest.raises(ValueError, match="inside the state directory"):
+        _open(state_dir, consumed=ROUNDS, anchor=state_dir / "anchor.jsonl")
+
+
+def test_the_file_anchor_never_moves_back(
+    anchored: tuple[Path, Path, Outcome], tmp_path: Path
+) -> None:
+    _, path = _copy_anchored(anchored, tmp_path)
+    anchor = FileAnchor(path)
+    head = anchor.load()
+    assert head is not None and head.rounds == ROUNDS
+    anchor.publish(head)  # the same head again: a no-op
+    with pytest.raises(LoopStateInconsistent, match="never moves back"):
+        anchor.publish(replace(head, rounds=1))
+    assert anchor.load() == head

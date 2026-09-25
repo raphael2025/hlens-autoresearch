@@ -14,7 +14,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `evolution.py` | `EvolutionStage` / `EvolutionPlan`：从更早轮次未被否证（按各假设最近一次验证：PASS / INCONCLUSIVE）的最佳候选出发 `mutate`，`require_new_version` 与目录防覆盖，`LineageGraph` 可追溯；后代作为新假设先登记、IDEA → CANDIDATE、本轮在累计研究数据上重新验证，不继承父代结论 |
 | `memory.py` | `ResearchMemory`（TrialLedger、ReviewQueue、FailureRegistry、策略目录、试验 / 验证记录、谱系、封存开封账本、摄取市场（及其生成规格）与累计研究数据）；`ReviewQueue.approve` 要求非空且非自动化身份（非循环自身 actor、非 `research_loop:` 前缀），并记录审批；`ReviewQueue(path)` 把入队 / 审批 / 取用逐行写入哈希链日志，重放时重新核验（自动化身份的审批、草稿或调用哈希不符的审批 → `JournalCorrupted`） |
 | `compose.py` | `SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：研究侧组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop） |
-| `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent` |
+| `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 
 要点：
 
@@ -50,18 +50,24 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 - **检查点**：`ResearchLoop(checkpoint=...)` 在审计记录一轮之前写入该轮检查点：`record_hash`、其余每个文件的位置（日志：行数 + 链头；
   失败登记：条数 + 摘要），以及本轮对 `ResearchMemory` 的增量（市场规格——重启时重新生成并须复现 `market_hash`；研究段；新增策略；
   试验 / 验证记录（pydantic 记录，不含内存中的 `inputs` / `trial` 运行产物，保留 `knowledge_cutoff`）；实验 / 状态 / 后代摘要）。
-- **重新打开的交叉校验**（任一不符 → `LoopStateInconsistent`，从不修复）：配置指纹一致；无中断轮次（只 started 未 recorded → 拒绝，须人工审查）；
+- **重新打开的交叉校验**（任一不符 → `LoopStateInconsistent`，从不修复）：配置指纹（含预算与开封预算）一致；无中断轮次（只 started 未 recorded → 拒绝，须人工审查）；
   每条已记录轮次恰有一条同序号、同 `record_hash` 的检查点；每个检查点记录的每个文件位置都存在（同行号同链哈希）、单调不回退，最后一个检查点
   即文件末尾（`reviews.jsonl` 之后只允许人工审批行）；每轮增量等于审计哈希记录中的阶段摘要（市场、状态摘要、实验行 = 试验摘要、验证报告行、
   后代行），记录复现各自内容哈希；审计里登记 / 重新评估的假设都在 TrialLedger，后代及其父代在谱系且规格哈希一致，每条 `human_review:<who>`
   证据在审阅队列中有该人对该草稿的审批且已取用，开封 / 已消耗的 G5 在开封账本中有同一批准人且已评估，审计列出的失败记录都在失败登记中；
   护栏重放后每个生命周期对象都是已登记假设。
 - **尾部截断**：单个文件删去整行尾部仍是合法的短链，但其余文件记录了它的位置（或审计与检查点不再一一对应），因此被跨文件校验发现。
-  **剩余限制**：把**所有**文件一致地截回更早的轮次边界是合法的较短历史，只能靠目录之外的锚点（例如别处保存的 `record_hash`）发现；
-  最后一轮之后追加的人工审批在被某轮取用之前不被任何检查点引用，只删这些审批等同于"尚未审批"。
+- **预算绑定目录**（ADR-0049 实施说明 durable review fixes，2026-09-26）：配置指纹包含 `LoopBudget` 与完整的 `OosUnsealBudget`
+  （`max_unsealings`、获准族及批准人）以及精确节奏（`cadence_microseconds`）；用任何不同的预算（更大、更小、多一个获准族、换批准人）重新打开都拒绝，
+  消息写明哪个预算不同。**提高预算是人的决定：用新的 `state_dir` 或新的 `loop_id`。** 头行版本 `STATE_VERSION = 2`（版本 1 目录被拒绝）。
+- **可选外部锚点**：`open_synthetic_loop(..., anchor=Path | StateAnchor)`。每个已记录轮次之后锚点收到目录的头（轮数、审计头、记忆日志链头、各文件位置）；
+  重新打开时目录必须不早于锚点且到该轮为止历史相同，落后（一致截断、目录被删重建）、分叉、或锚点为空而目录已有轮次 → 拒绝；通过后锚点前移。
+  `FileAnchor` 必须在目录之外。**不给锚点时限制照旧**：把**所有**文件一致地截回更早的轮次边界是合法的较短历史，可以打开；
+  最后一轮之后追加的人工审批在被某轮取用之前不被任何检查点或锚点引用，只删这些审批等同于"尚未审批"。
 - LLM 提供者属外部：其自身状态（如脚本化提供者的位置）不是循环状态，由调用方续接。
 - 回归测试：`tests/research/loop/test_loop_durable.py`（重启 e2e 与不中断运行的审计哈希 / trial 数 / 生命周期 / 封存 OOS 完全相同；
-  删除账本、审计超前账本、篡改审批、逐文件尾部截断、一致截断（已记录的限制）、中断轮次、换配置、删检查点文件、篡改检查点增量）。
+  删除账本、审计超前账本、篡改审批、逐文件尾部截断、一致截断（已记录的限制）、中断轮次、换配置、删检查点文件、篡改检查点增量；
+  换预算 / 开封额度 / 获准族 / 批准人被拒绝、相同预算接受、节奏精确；带锚点的重启、一致截断 / 删目录 / 分叉 / 锚点丢失或在目录内被拒绝、锚点不后退）。
 
 未完成（调试批次）：NATS、研究仪表盘；持久组合只覆盖合成市场组合根（真实数据集组合根另做）；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；

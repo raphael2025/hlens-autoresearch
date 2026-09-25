@@ -32,6 +32,7 @@ from infrastructure.event.inputs import (
     state_series_from_state_run,
 )
 from infrastructure.event.runner import run_events
+from infrastructure.event.upstream import verify_upstream
 from infrastructure.feature.runner import run_feature
 from infrastructure.state import run_state, state_inputs, state_request
 from plugins.events import (
@@ -163,7 +164,10 @@ def _run(
         **fields,
     )
     # ``verify``: the upstream runs / specs / results the runner checks the request against.
-    return run_events(provider, spec, request, **verify)
+    # ``require_full``: the smoke must verify every applicable check, never the weaker subset.
+    report = verify_upstream(spec, request, **verify, require_full=True)
+    assert report.full and report.performed, report
+    return run_events(provider, spec, request, **verify, require_full=True)
 
 
 def _pipeline(*, shock_after: datetime | None = None) -> Pipeline:

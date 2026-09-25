@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import ast
 import json
+from collections.abc import Callable
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -423,3 +425,69 @@ def test_a_failing_checkpoint_leaves_the_round_unrecorded_and_stops_the_loop(
     assert len(reopened.records) == 1 and reopened.open_round == 1  # interrupted, not recorded
     with pytest.raises(LoopHalted):
         loop.submit_round(1)
+
+
+# ------------------------------------------------------- budget binding and after-record hook
+
+
+@pytest.mark.parametrize(
+    "field",
+    ["max_trials_per_round", "max_trials_total", "max_llm_cost_units", "max_compute_seconds"],
+)
+@pytest.mark.parametrize("step", [1, -1], ids=["raised", "lowered"])
+def test_a_restart_under_another_budget_is_refused(tmp_path: Path, field: str, step: int) -> None:
+    """ADR-0049 durable review fixes: a budget is never changed on a running loop."""
+    path = tmp_path / "audit.jsonl"
+    _loop(_durable_stages(), LoopAuditLog(path))[0].run_unattended(2)
+    changed = replace(TEST_ONLY_BUDGET, **{field: getattr(TEST_ONLY_BUDGET, field) + step})
+    assert changed.budget_hash != TEST_ONLY_BUDGET.budget_hash
+    with pytest.raises(ValueError, match="another LoopBudget"):
+        _loop(_durable_stages(), LoopAuditLog(path), budget=changed)
+    same = LoopBudget.from_config(TEST_ONLY_BUDGET.payload())  # an equal budget is accepted
+    assert len(_loop(_durable_stages(), LoopAuditLog(path), budget=same)[0].audit.records) == 2
+
+
+def _hooked(path: Path, hook: Callable[[LoopRecord], None]) -> ResearchLoop:
+    return ResearchLoop(
+        loop_id="fake_loop",
+        stages=_durable_stages(),
+        budget=TEST_ONLY_BUDGET,
+        bus=InMemoryEventBus(),
+        seed=7,
+        epoch=EPOCH,
+        cadence=timedelta(hours=1),
+        audit=LoopAuditLog(path),
+        after_record=hook,
+    )
+
+
+def test_the_after_record_hook_sees_each_round_after_the_audit_recorded_it(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "audit.jsonl"
+    seen: list[tuple[int, str | None, int]] = []
+
+    def hook(record: LoopRecord) -> None:
+        # the durable audit already holds the round when the hook runs
+        on_disk = LoopAuditLog(path)
+        seen.append((record.round_index, on_disk.head, len(on_disk.records)))
+
+    records = _hooked(path, hook).run_unattended(2)
+    assert seen == [(r.round_index, r.record_hash, r.round_index + 1) for r in records]
+
+
+def test_a_failing_after_record_hook_keeps_the_round_and_stops_the_loop(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+
+    def hook(record: LoopRecord) -> None:
+        if record.round_index == 1:
+            raise OSError("anchor unreachable")
+
+    loop = _hooked(path, hook)
+    with pytest.raises(RuntimeError, match="anchor unreachable"):
+        loop.run_unattended(3)
+    assert loop.stopped is not None and "round 1 was recorded" in loop.stopped
+    reopened = LoopAuditLog(path)
+    assert len(reopened.records) == 2 and reopened.open_round is None  # recorded, not interrupted
+    with pytest.raises(LoopHalted):
+        loop.submit_round(2)

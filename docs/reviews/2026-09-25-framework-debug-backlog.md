@@ -47,7 +47,7 @@
 
 ## C. 各批次自报的已知缺口（调试时逐个处理）
 
-- **P3 事件**：一次请求只覆盖一个标的；检查点网格代价约为检查点数 × 可见输入数；~~交互规格声明的上游只做形式检查~~ ✅ 已修（2026-09-26）：`run_events` 经 `infrastructure/event/upstream.py` 核对交互的上游规格（恰为声明的 `lineage` 事件引用、spec hash 被 trigger 绑定、上游事件属于它们且哈希一致、Feature / State 声明**等于**上游并集，可选核对上游结果），给出特征 / 状态运行时逐点重算 `source_lineage_hash`；任一不符 fail closed（ADR-0036 Implementation note, interaction upstream verification；回归测试 `tests/infrastructure/event/test_upstream_verification.py`）；尚无物理 Event 表。
+- **P3 事件**：一次请求只覆盖一个标的；检查点网格代价约为检查点数 × 可见输入数；~~交互规格声明的上游只做形式检查~~ ✅ 已修（2026-09-26）：`run_events` 经 `infrastructure/event/upstream.py` 核对交互的上游规格（恰为声明的 `lineage` 事件引用、spec hash 被 trigger 绑定、上游事件属于它们且哈希一致、Feature / State 声明**等于**上游并集，可选核对上游结果），给出特征 / 状态运行时逐点重算 `source_lineage_hash`；任一不符 fail closed（ADR-0036 Implementation note, interaction upstream verification；回归测试 `tests/infrastructure/event/test_upstream_verification.py`）；~~spec hash 按 trigger 子串匹配（重叠十六进制可误判）~~ ✅ 已修（2026-09-26）：解析规范 JSON trigger，`<name>` / `<name>_hash` 字段逐字相等才算绑定；核对函数返回已做 / 未做 / 不适用的核对，`run_events(..., require_full=True)` 在缺证据时拒绝，P3 冒烟改用它（ADR-0036 Implementation note, durable review fixes）；尚无物理 Event 表。
 - **P4 Outcome / 最小验证门**：负对照为单次固定种子；开封记录与 Outcome 表只在内存中；统计用浮点正态近似。
 - **P5 策略 / 回测**：执行模型单一（下一根开盘成交、无部分成交 / 融资 / 冲击）；尚无 `plugins/` 下的生产 StrategyProvider（TSMOM 在 research/，须经 Promotion，H5）。
 - **P6 / P10（W1）**：路由结果的身份只由 `run_hash` 绑定；切换成本在回测成本之外另计且不重设仓位；端到端测试中的 ACTIVE 生命周期只是测试夹具。
@@ -62,7 +62,11 @@
   开封账本、谱系、失败登记、审阅队列（新增持久 `ReviewQueue(path)`）与每轮记忆检查点放在一个目录；重新打开时全部恢复并交叉校验（配置指纹、
   中断轮次、审计 ↔ 检查点、各文件位置、增量 ↔ 审计摘要、审计 ↔ 各账本），任一不符即拒绝启动（`LoopStateInconsistent`）；单个文件的尾部整行删除
   由跨文件位置发现（ADR-0049 实施说明 durable composition；`tests/research/loop/test_loop_durable.py`）。
-  仍未做：总线只在内存中（NATS / Control Plane 持久化待做）；**所有**文件一致截回更早轮次边界仍需目录外锚点才能发现；
+  ~~重新打开时预算 / 开封额度未绑定（可用更大的预算或更多获准族续跑同一目录）~~ ✅ 已修（2026-09-26）：配置指纹绑定 `LoopBudget` 与完整
+  `OosUnsealBudget`（额度、获准族、批准人）及精确节奏，任何变化拒绝（提高预算须新 `state_dir` / `loop_id`），机制侧续接审计也核对 `budget_hash`；
+  ~~所有文件一致截回更早轮次边界无法发现~~ ✅ 可选外部锚点（`anchor=`，目录外 `FileAnchor` 或任一 `StateAnchor`）：落后 / 分叉 / 锚点丢失即拒绝；
+  不给锚点时仍是已记录的限制（ADR-0049 实施说明 durable review fixes）。
+  仍未做：总线只在内存中（NATS / Control Plane 持久化待做）；最后一轮之后未被取用的人工审批不被检查点或锚点引用；
   审计记录与记忆检查点尚不是版本化契约；持久组合只有合成市场组合根。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：

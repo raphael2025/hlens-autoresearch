@@ -9,7 +9,7 @@ from research.loop.compose import (
     open_synthetic_loop,
     run_unattended_and_report,
 )
-from research.loop.durable import LoopStateInconsistent
+from research.loop.durable import FileAnchor, LoopStateInconsistent, StateAnchor, StateHead
 from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.memory import ResearchMemory, ReviewApproval, ReviewQueue
 from research.loop.stages import (
@@ -32,6 +32,7 @@ __all__ = [
     "EvolutionPlan",
     "EvolutionStage",
     "ExperimentStage",
+    "FileAnchor",
     "HypothesisStage",
     "IngestStage",
     "LoopStateInconsistent",
@@ -41,6 +42,8 @@ __all__ = [
     "ResearchMemory",
     "ReviewApproval",
     "ReviewQueue",
+    "StateAnchor",
+    "StateHead",
     "StateStage",
     "SyntheticLoopConfig",
     "TrialComponents",
