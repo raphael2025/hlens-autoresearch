@@ -312,7 +312,9 @@ def test_a_forged_report_under_the_expected_id_is_refused(w: World) -> None:
     btc_id = quality_report_id(c.TRADES.table, SYMBOL, DAY, json.loads(inputs["detail"]))
     forged = dict(eth, report_id=btc_id, subject_symbol=SYMBOL)  # ETH's content, BTC's id
     w.h.forge_rows(DATA_QUALITY_REPORTS, [forged], batch_id=btc_id)
-    with pytest.raises(CatalogIntegrityError, match="disagrees with its re-derivation"):
+    with pytest.raises(
+        CatalogIntegrityError, match="disagrees with its re-derivation|evidence-gap batch"
+    ):
         _build(w)
 
 

@@ -66,6 +66,7 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORTS,
+    QUALITY_EVIDENCE_GAPS,
 )
 from infrastructure.dataset.manifests import ManifestPersisted, ManifestStore
 from infrastructure.dataset.selection import SELECTION_NAMESPACE, SELECTION_SCHEMA
@@ -161,6 +162,7 @@ _ATTEMPTS: Final = 8
 _EVIDENCE: Final = BINANCE_SPOT_PRECEDENCE_EVIDENCE.table
 _LISTINGS: Final = CANONICAL_INSTRUMENT_LISTINGS.table
 _QUALITY: Final = DATA_QUALITY_REPORTS.table
+_GAPS: Final = QUALITY_EVIDENCE_GAPS.table
 
 
 class DatasetBuildError(Exception):
@@ -385,6 +387,12 @@ class DatasetBuilder:
         if _EVIDENCE not in bound and self._head(_EVIDENCE) is not None:
             raise DatasetSpecError(
                 f"{_EVIDENCE} has a snapshot but the PIT spec does not bind it (ADR-0027 §13)"
+            )
+        if _GAPS not in bound and self._head(_GAPS) is not None:
+            # Quality rule 2.0.0 keeps its evidence gaps there (ADR-0031): read unbound, every
+            # report's gaps would look missing.
+            raise DatasetSpecError(
+                f"{_GAPS} has a snapshot but the PIT spec does not bind it (ADR-0031)"
             )
         return canonical.table
 
