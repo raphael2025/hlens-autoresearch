@@ -100,7 +100,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 - 🔨 **逐个调试（2026-09-25 夜）**：全部框架代码已合并并通过全量门禁；正在按 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) 逐项处理——
   独立只读复核（cursor-agent）发现的问题已修复 18 项（验证门的 4 个高危泄漏 / 复用漏洞、G4 的"空配置即通过"、模拟场所绕过 Kill Switch、权重被当作数量等），
-  其余缺口已登记；真实数据端到端冒烟（≤ 2 万行，只验证能力、不得出市场结论）进行中
+  其余缺口已登记；真实数据格式的端到端冒烟已通过（本机无真实行情，用真实格式小样本走真实入库路径；见 D-NET）
 - ⏸ Phase 1：实现与红队返修完成，等待 Codex / Raphael 验收（证据：`docs/reviews/2026-09-25-phase1-close-evidence.md`、`phase1-review-guide.md`）
 
 ## 5. 下一步
@@ -108,7 +108,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ### 我（Raphael）需要做
 
 - 验收：按 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) 与 §11 查看本夜成果；Phase 1 按 `docs/reviews/2026-09-25-phase1-review-guide.md` 验收
-- 决定 §6 中的 D-FLOAT、D-PFIELDS、D-CTRL、D-MINEFF、D-VFAIL、D-DEP（都是红线或需确认项，Claude 未自行决定）
+- 决定 §6 中的 D-FLOAT、D-PFIELDS、D-CTRL、D-MINEFF、D-VFAIL、D-DEP、D-NET（都是红线或需确认项，Claude 未自行决定）
 - 以后冻结 Validation Profile 数值（D-09 TBD-1～5）时，可参考 Phase 9 校准工具生成的证据（只是证据，不是建议值）
 
 ### Claude Code 需要做
@@ -147,6 +147,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | D-CTRL | 校准发现：同一个显著性阈值被两处反向使用（策略检验要求足够显著，负对照要求不显著），调一个就动另一个 | 与 D-PFIELDS 一起起 ADR，给负对照单独字段 | 保持共用（偏保守，不会多放行） |
 | D-MINEFF | 状态 × 策略的条件假设要求填"最小效应"：它算研究者预先声明的假设内容，还是验证门槛？ | 算假设内容，不作门槛 | 只在测试里出现，生产路径无默认值 |
 | D-VFAIL | 生命周期状态机只允许 CANDIDATE → FAILED，没有 VALIDATION → FAILED：验证阶段若出现技术故障（不可复现、运行出错），失败记录会进 Failure Registry，但对象的生命周期状态无法标为 FAILED | 另起 ADR 增加 VALIDATION → FAILED（需证据） | 保持：失败记录照写，状态停在 VALIDATION |
+| D-NET | 本机仓库里没有真实行情数据（只有表结构），真实数据端到端测试只能用"真实格式的小样本"。要跑真正的真实数据，需要运行采集器从币安公共归档下载（公开数据、无密钥） | 授权下载 BTCUSDT / ETHUSDT 各 1～3 天的公共归档（约数万行），只写入本机、不提交仓库 | 继续用真实格式小样本验证流程，不形成任何数据结论 |
 | D-DEP | 持续循环的通用机制放在 `apps/worker`，研究阶段放在 `research/loop`，因此 research 依赖 apps/worker（apps 不依赖 research，边界测试不变）——Claude 依授权已接受（ADR-0049），请确认 | 维持 | 维持 ADR-0049 |
 
 **此外无待决架构决定。**
@@ -223,7 +224,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-25 | **全阶段框架代码完成**（Raphael 指示：4 个子代理并行、先框架后调试）：Phase 0.5、2～14 与研究控制台全部有可运行框架、冒烟测试与 ADR（0034～0049）；跨阶段接线完成（特征 / 状态 / 事件 → 策略信号、状态 → 事件、回测 → 状态×策略 → 路由、策略 → 模拟执行、真实数据集 → 标签与回测、持续循环用真实组件）。全部为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED | 进入逐个调试；6 项待 Raphael 决定（§6） |
+| 2026-09-25 | **全阶段框架代码完成**（Raphael 指示：4 个子代理并行、先框架后调试）：Phase 0.5、2～14 与研究控制台全部有可运行框架、冒烟测试与 ADR（0034～0049）；跨阶段接线完成（特征 / 状态 / 事件 → 策略信号、状态 → 事件、回测 → 状态×策略 → 路由、策略 → 模拟执行、真实数据集 → 标签与回测、持续循环用真实组件）。全部为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED | 进入逐个调试；7 项待 Raphael 决定（§6） |
 | 2026-09-25 | 调试第一轮：独立只读复核发现并已修复 18 个问题（验证门标签泄漏、样本数高估、封存样本外可复用、未做 purge、G4 空配置 / 缺字段静默通过、模拟场所可绕过 Kill Switch、权重当数量等），每项带回归测试；严格全量门禁 5174 项通过（82c562b） | 其余缺口登记在调试待办 |
 | 2026-09-25 | Raphael 批准 D-HIST 推荐方案：ADR-0032 已实施——数据集规格显式绑定"归档按事件时间 + 5 秒可用"的假设后，历史数据可用于回测；存储数据、证据缺口与知识轴不变，不绑定则保持保守。同时合并 F2 历史标的池（按当时可见的上市记录，杜绝幸存者偏差）与 F3 数据集和清单（全部上游快照、规则、上市与数据来源链、质量报告、证据缺口逐项绑定，同输入逐位相同），以及证据缺口逐批精确核对。全量 4380 项通过 | REVIEW_PENDING；剩 ADR-0033 / G1～G3 |
 | 2026-09-25 | 依 Raphael 授权（"一切都你自己决定"），Claude 接受 ADR-0029 / ADR-0030 并新增 ADR-0031；以 Opus / Sonnet 子代理并行开发、cursor-agent 独立复核：E2 上市历史（exchangeInfo 快照 → 观察下界的上市记录）、F4 特征契约（执行器截断防泄漏）与三个首批 K 线特征、证据缺口独立表（质量规则 2.0.0）、容量探针工具与数据运行手册。每批复核发现的问题都已返修（零输入填 0、上市区段按模拟时刻计数、跨时段的成交副本链等）。全量 4332 项通过，已推送 WIP 备份 | REVIEW_PENDING；F2 / F3 开发中 |
@@ -252,7 +253,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > 我现在应该干什么？
 
 1. 早上验收：先看 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md)（已修复的问题、已知缺口、待你决定的事），再看本文件 §2 阶段表。
-2. 你需要做决定的只有 §6 的 D-FLOAT、D-PFIELDS、D-CTRL、D-MINEFF、D-VFAIL、D-DEP；不决定时系统保持保守（不会多放行、不会晋升）。
+2. 你需要做决定的只有 §6 的 D-FLOAT、D-PFIELDS、D-CTRL、D-MINEFF、D-VFAIL、D-DEP、D-NET；不决定时系统保持保守（不会多放行、不会晋升）。
 3. 所有新 Phase 都是"框架已实现、未验证"：没有任何策略被验证或晋升，Profile 数值仍待冻结，系统没有下单能力。
 4. 代码在 `claude/hlens-autorecearch-dev-c05c2b`，已快进备份到私有仓库 `wip/phase-1-unreviewed`；没有合并 `main`、没有打 tag——这两件事需要你本人批准。
 
