@@ -44,7 +44,7 @@ uv run pytest -q
 uv run ruff check . && uv run ruff format --check . && uv run mypy
 ```
 
-最近一次严格门禁（ruff / format / mypy / `uv lock --check` / 全量 pytest，含 PostgreSQL 测试库）：见 PROJECT_STATUS §9 与下方 §6。
+最近一次严格门禁（ruff / format / mypy / `uv lock --check` / 全量 pytest，含 PostgreSQL 测试库）：`d6450a0` 上 5308 项全部通过（约 26 分钟）。
 真实数据格式的端到端能力冒烟：`tests/infrastructure/e2e/test_research_pipeline_real_data.py`（需要测试库环境变量）。
 持续循环端到端：`tests/research/loop/test_loop_e2e.py`（植入效应的假设在数据足够后通过 G0–G4 进入 OOS，纯噪声全部不通过，永不到 PAPER / ACTIVE）。
 
