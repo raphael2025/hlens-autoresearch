@@ -1,0 +1,626 @@
+"""E1 Canonical normalizer (ADR-0028; roadmap #15; ADR-0028 E1 acceptance #1 ~ #12).
+
+Raw rows come from the accepted D2 store and the D3E REST store; the D-33 edge from the real
+reconciler. Expected values are written down from ADR-0028 by hand, not from the builder.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from decimal import Decimal
+from typing import Any
+
+import pytest
+from pyiceberg.expressions import EqualTo
+
+from core.contracts.catalog import CommitRequest
+from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
+from core.domain.base import canonical_json
+from infrastructure.canonical import rules
+from infrastructure.canonical.normalizer import (
+    CanonicalNormalizeConflict,
+    CanonicalNormalizeError,
+)
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.revision import identity as archive_identity
+from infrastructure.revision.channel_reconcile import evidence_from_row, revision_record_from_row
+from tests.infrastructure.canonical import canonical_support as c
+from tests.infrastructure.collector import rest_support as cs
+from tests.infrastructure.revision import rest_store_support as ss
+from tests.infrastructure.revision.rest_store_support import (
+    SYMBOL,
+    Crash,
+    ProxyCatalog,
+    RestHarness,
+    StepClock,
+    utc,
+)
+
+K_ARCHIVE = utc(2023, 12, 1)
+K_REST = utc(2023, 12, 5)
+K_NORM = utc(2023, 12, 6)
+K_EDGE = utc(2023, 12, 10)
+KEY = f"binance:spot:agg_trade:{SYMBOL}:100"
+
+
+def _sha(document: dict[str, Any]) -> str:
+    return hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
+
+
+def _pair(h: RestHarness, count: int = 3) -> tuple[str, str, list[dict[str, Any]]]:
+    items = ss.agg_items(count)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    [response] = c.ingest_rest(h, "agg_trades", items, knowledge=K_REST)
+    return archive, response, items
+
+
+# =========================================================================================
+# the rules
+# =========================================================================================
+
+
+def test_spec_hashes_are_derived_from_their_specs() -> None:
+    assert rules.IDENTITY_HASH == _sha(rules.IDENTITY_SPEC)
+    assert rules.NORMALIZER_BINDING.policy_hash == _sha(rules.NORMALIZER_SPEC)
+    assert rules.AVAILABILITY_BINDING.policy_hash == _sha(rules.AVAILABILITY_SPEC)
+    assert rules.PRECEDENCE_MAP_BINDING.policy_hash == _sha(rules.PRECEDENCE_MAP_SPEC)
+    ids = {
+        rules.NORMALIZER_BINDING.policy_id,
+        rules.AVAILABILITY_BINDING.policy_id,
+        rules.PRECEDENCE_MAP_BINDING.policy_id,
+        rules.IDENTITY_SPEC["rule"],
+    }
+    assert ids == {
+        "hlens.canonical.binance-spot.normalizer",
+        "hlens.canonical.availability",
+        "hlens.canonical.precedence-map",
+        "hlens.canonical.revision-identity",
+    }
+    # Separate from both Raw identity rules (ADR-0027 §11 trap 1).
+    assert rules.IDENTITY_HASH != archive_identity.IDENTITY_HASH
+
+
+def test_the_revision_id_is_exactly_the_documented_digest() -> None:
+    key, source, payload = KEY, "hlens.canonical.binance-spot.normalizer@1.0.0|t|r", "a" * 64
+    document = {
+        "rule": "hlens.canonical.revision-identity",
+        "rule_version": "1.0.0",
+        "rule_hash": rules.IDENTITY_HASH,
+        "observation_key": key,
+        "source_id": source,
+        "payload_hash": payload,
+    }
+    assert rules.revision_id(key, source, payload) == f"crev1-{_sha(document)}"
+
+
+def test_the_trade_payload_is_exactly_the_documented_document() -> None:
+    columns = {
+        "venue": "binance",
+        "instrument_type": "spot",
+        "symbol": "BTC-USDT",
+        "venue_symbol": "BTCUSDT",
+        "venue_trade_id": "100",
+        "price": Decimal("92792.05"),
+        "quantity": Decimal("0.0015"),
+        "buyer_is_maker": True,
+        "event_time": utc(2023, 11, 14, 22, 14),
+    }
+    document = {
+        "kind": "hlens.canonical.trade/1",
+        "venue": "binance",
+        "instrument_type": "spot",
+        "symbol": "BTC-USDT",
+        "venue_symbol": "BTCUSDT",
+        "venue_trade_id": "100",
+        "price": "92792.050000000000000000",
+        "quantity": "0.001500000000000000",
+        "buyer_is_maker": True,
+        "event_time_us": 1_700_000_040_000_000,
+    }
+    assert rules.payload_hash("agg_trades", columns) == _sha(document)
+    with pytest.raises(rules.CanonicalRuleViolation, match="18 fractional"):
+        rules.payload_hash("agg_trades", dict(columns, price=Decimal("0.1000000000000000001")))
+    with pytest.raises(rules.CanonicalRuleViolation, match="non-negative"):
+        rules.payload_hash("agg_trades", dict(columns, quantity=Decimal("-1")))
+
+
+@pytest.mark.parametrize(
+    ("value", "ok"),
+    [(0, True), (rules.ARRIVAL_SEQ_STRIDE, True), (5, False), (1 << 62, False), (-1 << 32, False),
+     (True, False)],
+)  # fmt: skip
+def test_block_bases(value: Any, ok: bool) -> None:
+    if ok:
+        assert rules.check_block_base(value) == value
+    else:
+        with pytest.raises(rules.CanonicalRuleViolation):
+            rules.check_block_base(value)
+
+
+# =========================================================================================
+# #2 / #5: one Canonical revision per Raw revision, lineage in the identity
+# =========================================================================================
+
+
+def test_archive_and_rest_units_map_one_to_one_with_every_frozen_column(h: RestHarness) -> None:
+    archive, response, items = _pair(h)
+    [archive_row] = [row for row in h.rows(c.ARCHIVE_AGGS) if row["agg_trade_id"] == 100]
+    [rest_row] = [row for row in h.rows(c.REST_AGGS) if row["agg_trade_id"] == 100]
+    clock = StepClock(start=K_NORM)
+    n = c.normalizer(h, clock=clock)
+
+    first = n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    second = n.normalize_unit(c.REST_AGGS.table, response)
+
+    assert clock.calls == 2  # one reading per unit
+    assert (first.arrival_seq_base, second.arrival_seq_base) == (0, c.STRIDE)
+    rows = {row["lineage_raw_revision_id"]: row for row in h.rows(c.TRADES)}
+    assert len(rows) == 6
+    a, r = rows[archive_row["revision_id"]], rows[rest_row["revision_id"]]
+    # Same market content, same payload hash, two revisions (lineage is identity, #5).
+    assert a["payload_hash"] == r["payload_hash"] and a["revision_id"] != r["revision_id"]
+    assert a["observation_key"] == r["observation_key"] == KEY
+    assert a["source_id"] == (
+        f"hlens.canonical.binance-spot.normalizer@1.0.0|raw.binance_spot_agg_trades|"
+        f"{archive_row['revision_id']}"
+    )
+    assert (a["lineage_source_table"], a["lineage_source_revision_id"]) == (
+        "raw.binance_spot_archives",
+        archive,
+    )
+    assert (r["lineage_source_table"], r["lineage_source_revision_id"]) == (
+        "raw.binance_spot_rest_responses",
+        response,
+    )
+    assert a["arrival_seq"] == 0 + 1 and r["arrival_seq"] == c.STRIDE + 0 + 1
+    item = items[0]
+    assert (a["venue"], a["instrument_type"], a["symbol"], a["venue_symbol"]) == (
+        "binance",
+        "spot",
+        "BTC-USDT",
+        "BTCUSDT",
+    )
+    assert a["venue_trade_id"] == str(item["a"]) and a["buyer_is_maker"] is item["m"]
+    assert a["price"] == Decimal(item["p"]) and a["quantity"] == Decimal(item["q"])
+    # Times (ADR-0023 §3): Raw ingest / available, knowledge = the unit's one reading.
+    assert a["ingest_time"] == archive_row["ingest_time"]
+    assert a["available_time"] == archive_row["available_time"] == archive_row["ingest_time"]
+    assert a["knowledge_time"] == K_NORM >= archive_row["knowledge_time"]
+    assert r["knowledge_time"] == K_NORM + timedelta(seconds=1)  # the clock's second reading
+    assert a["availability_policy_id"] == "hlens.canonical.availability"
+    assert a["availability_evidence"] == []
+    assert a["availability_evidence_gap"].startswith(
+        f"inherited from raw.binance_spot_agg_trades/{archive_row['revision_id']} under "
+        "binance.spot.publication@1.0.0: "
+    )
+    assert a["availability_evidence_gap"].endswith(archive_row["availability_evidence_gap"])
+    assert a["supersedes"] == a["precedence_evidence"] == r["supersedes"] == []
+    assert a["contract_schema_version"] == "2.0.0"
+    assert a["declared_latency_us"] == 0 and a["source_time"] is None
+    # Every Canonical row maps back to a lawful contract record.
+    for row in rows.values():
+        revision_record_from_row(row)
+
+
+def test_klines_become_one_minute_bars(h: RestHarness) -> None:
+    items = ss.kline_items(2)
+    archive = c.ingest_archive(h, "klines_1m", ss.archive_kline_lines(items), knowledge=K_ARCHIVE)
+    [response] = c.ingest_rest(h, "klines_1m", items, knowledge=K_REST)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    n.normalize_unit(c.ARCHIVE_KLINES.table, archive)
+    n.normalize_unit(c.REST_KLINES.table, response)
+    rows = h.rows(c.BARS)
+    assert len(rows) == 4
+    [raw] = [row for row in h.rows(c.ARCHIVE_KLINES) if row["open_time_raw"] == items[0][0]]
+    [bar] = [row for row in rows if row["lineage_raw_revision_id"] == raw["revision_id"]]
+    assert bar["interval_end"] - bar["interval_start"] == timedelta(minutes=1)
+    assert (bar["trade_count"], bar["quote_volume"]) == (
+        raw["number_of_trades"],
+        raw["quote_asset_volume"],
+    )
+    assert bar["available_time"] == raw["ingest_time"]  # >= interval_end, gap branch
+    by_key: dict[str, set[str]] = {}
+    for row in rows:
+        by_key.setdefault(row["observation_key"], set()).add(row["payload_hash"])
+    assert all(len(hashes) == 1 for hashes in by_key.values())  # equal content across channels
+
+
+def test_equal_canonical_content_from_different_raw_content_is_never_folded(
+    h: RestHarness,
+) -> None:
+    """#6: archive and REST differ only in ``first_trade_id`` (dropped by Canonical)."""
+    items = ss.agg_items(1)
+    archive_items = [dict(items[0], f=items[0]["f"] - 1)]
+    archive = c.ingest_archive(
+        h, "agg_trades", ss.archive_agg_lines(archive_items), knowledge=K_ARCHIVE
+    )
+    [response] = c.ingest_rest(h, "agg_trades", items, knowledge=K_REST)
+    out = h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, ss.DAY)
+    assert out.edges == () and len(out.findings) == 1  # D-33: mismatch, no Raw edge
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    n.normalize_unit(c.REST_AGGS.table, response)
+    a, r = c.records(h, KEY)
+    assert a.payload_hash == r.payload_hash and a.revision_id != r.revision_id
+    status, heads = c.select([a, r], c.mapped_edges(h, KEY), utc(2030, 1, 1))
+    assert status is PointInTimeStatus.CONFLICT and set(heads) == {a.revision_id, r.revision_id}
+
+
+# =========================================================================================
+# #1 / #2: both arrival orders × edge before / after normalization × four cutoffs
+# =========================================================================================
+
+
+@pytest.mark.parametrize("order", ["archive_first", "rest_first"])
+@pytest.mark.parametrize("edge", ["before_normalization", "after_normalization"])
+def test_four_cutoffs_over_mapped_edges(h: RestHarness, order: str, edge: str) -> None:
+    items = ss.agg_items(1)
+    k_first, k_second = utc(2023, 12, 1), utc(2023, 12, 5)
+    if order == "archive_first":
+        archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=k_first)
+        [response] = c.ingest_rest(h, "agg_trades", items, knowledge=k_second)
+    else:
+        [response] = c.ingest_rest(h, "agg_trades", items, knowledge=k_first)
+        archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=k_second)
+    k_norm_a, k_norm_r = utc(2023, 12, 6), utc(2023, 12, 7)
+    # Before normalization: after both Raw knowledge times, before either Canonical row exists.
+    k_edge = utc(2023, 12, 5, 12) if edge == "before_normalization" else utc(2023, 12, 10)
+
+    def reconcile() -> None:
+        h.reconciler(clock=StepClock(start=k_edge)).reconcile("agg_trades", SYMBOL, ss.DAY)
+
+    if edge == "before_normalization":
+        reconcile()
+    c.normalizer(h, clock=StepClock(start=k_norm_a)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    c.normalizer(h, clock=StepClock(start=k_norm_r)).normalize_unit(c.REST_AGGS.table, response)
+    if edge == "after_normalization":
+        reconcile()
+
+    revisions = c.records(h, KEY)
+    [a] = [item for item in revisions if "raw.binance_spot_agg_trades|" in item.source_id]
+    [r] = [item for item in revisions if "raw.binance_spot_rest_agg_trades|" in item.source_id]
+    [mapped] = c.mapped_edges(h, KEY)
+    k_mapped = max(k_edge, k_norm_a, k_norm_r)
+    assert mapped.knowledge_time == k_mapped
+    assert (mapped.revision_id, mapped.superseded_revision_id) == (a.revision_id, r.revision_id)
+    table = {
+        "before both": c.select(revisions, [mapped], k_norm_a - c.TICK),
+        "first": c.select(revisions, [mapped], k_norm_a),
+        "both, edge unknown": c.select(revisions, [mapped], k_norm_r),
+        "edge known": c.select(revisions, [mapped], k_mapped),
+    }
+    assert table["before both"][0] is PointInTimeStatus.ABSENT
+    assert table["first"] == (PointInTimeStatus.SELECTED, (a.revision_id,))
+    if edge == "before_normalization":
+        # K_E' = max(...) = the later normalization: the conflict window is empty.
+        assert k_mapped == k_norm_r
+        assert table["both, edge unknown"] == (PointInTimeStatus.SELECTED, (a.revision_id,))
+    else:
+        assert table["both, edge unknown"][0] is PointInTimeStatus.CONFLICT
+        assert c.select(revisions, [mapped], k_mapped - c.TICK)[0] is PointInTimeStatus.CONFLICT
+    assert table["edge known"] == (PointInTimeStatus.SELECTED, (a.revision_id,))
+    # Nothing was materialised in Canonical rows: the edge lives only in the Raw evidence table.
+    assert all(row["supersedes"] == [] for row in h.rows(c.TRADES))
+
+
+def test_the_mapped_edge_is_exact_and_refuses_wrong_endpoints(h: RestHarness) -> None:
+    archive, response, _ = _pair(h, 1)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    n.normalize_unit(c.REST_AGGS.table, response)
+    h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, ss.DAY)
+    [raw_row] = h.rows(c.EVIDENCE)
+    raw_edge = evidence_from_row(raw_row)
+    [a_row] = [
+        row for row in h.rows(c.TRADES) if row["lineage_raw_revision_id"] == raw_edge.revision_id
+    ]
+    [r_row] = [
+        row
+        for row in h.rows(c.TRADES)
+        if row["lineage_raw_revision_id"] == raw_edge.superseded_revision_id
+    ]
+    a, r = revision_record_from_row(a_row), revision_record_from_row(r_row)
+    mapped = rules.map_channel_edge(raw_edge, raw_row["edge_id"], a, r)
+    assert mapped == PrecedenceEvidence(
+        observation_key=KEY,
+        revision_id=a.revision_id,
+        superseded_revision_id=r.revision_id,
+        policy=rules.PRECEDENCE_MAP_BINDING,
+        evidence=(
+            rules.PRECEDENCE_MAP_STATEMENT,
+            f"raw_edge_id={raw_row['edge_id']}",
+            f"raw_policy=binance.spot.delivery-channel@1.0.0#{raw_edge.policy.policy_hash}",
+            *raw_edge.evidence,
+        ),
+        knowledge_time=K_EDGE,
+    )
+    with pytest.raises(rules.CanonicalRuleViolation, match="not the Canonical image"):
+        rules.map_channel_edge(raw_edge, raw_row["edge_id"], r, a)
+    other = a.model_copy(update={"observation_key": f"binance:spot:agg_trade:{SYMBOL}:999"})
+    with pytest.raises(rules.CanonicalRuleViolation, match="another observation_key"):
+        rules.map_channel_edge(raw_edge, raw_row["edge_id"], other, r)
+    foreign = a.model_copy(update={"source_id": f"elsewhere|x|{raw_edge.revision_id}"})
+    with pytest.raises(rules.CanonicalRuleViolation, match="not the Canonical image"):
+        rules.map_channel_edge(raw_edge, raw_row["edge_id"], foreign, r)
+
+
+def test_same_channel_competition_stays_a_conflict(h: RestHarness) -> None:
+    """#4: two REST bodies disagree on one element → two Canonical revisions, no edge."""
+    items = ss.agg_items(1)
+    changed = [dict(items[0], q="0.00250000")]
+    cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [items])
+    cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [changed])
+    first = h.collect(ss.agg_request("req-a"))
+    second = h.collect(ss.agg_request("req-b"), start_ms=cs.RETRIEVED_AT_MS + 60_000)
+    assert not isinstance(first, Exception) and not isinstance(second, Exception)
+    store = h.store(clock=StepClock(start=K_REST))
+    pages = [store.ingest_collection(ss.agg_request(name)).pages[0] for name in ("req-a", "req-b")]
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    for page in pages:
+        n.normalize_unit(c.REST_AGGS.table, page.response_revision_id)
+    revisions = c.records(h, KEY)
+    assert len(revisions) == 2 and revisions[0].payload_hash != revisions[1].payload_hash
+    assert c.select(revisions, c.mapped_edges(h, KEY), utc(2030, 1, 1))[0] is (
+        PointInTimeStatus.CONFLICT
+    )
+
+
+# =========================================================================================
+# idempotency, crash recovery, concurrency (#7 / #8)
+# =========================================================================================
+
+
+def test_a_replay_changes_nothing_and_reads_no_clock(h: RestHarness) -> None:
+    archive, _, _ = _pair(h)
+    c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    before = (h.head(c.TRADES.table), h.rows(c.TRADES))
+    later = StepClock(start=K_NORM + timedelta(days=9))
+    again = c.normalizer(h, clock=later).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert again.replayed and later.calls == 0
+    assert (h.head(c.TRADES.table), h.rows(c.TRADES)) == before
+
+
+@pytest.mark.parametrize("crash_after", [1, 2])
+def test_a_crash_between_batches_resumes_with_the_first_base_and_time(
+    h: RestHarness, crash_after: int
+) -> None:
+    archive, _, _ = _pair(h)
+    proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(crash_after, table=c.TRADES.table))
+    with pytest.raises(Crash):
+        c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy, microbatch_rows=1)\
+            .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+    assert len(h.rows(c.TRADES)) == crash_after
+    later = StepClock(start=K_NORM + timedelta(hours=5))
+    out = c.normalizer(h, clock=later, microbatch_rows=1).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert later.calls == 0 and out.knowledge_time == K_NORM and out.arrival_seq_base == 0
+    rows = h.rows(c.TRADES)
+    assert len(rows) == 3 and {row["knowledge_time"] for row in rows} == {K_NORM}
+    assert [commit.replayed for commit in out.commits] == [True] * crash_after + [False] * (
+        3 - crash_after
+    )
+    # Same result as one uninterrupted run in an independent catalog.
+    with ss.sqlite_harness(h.tmp_path / "reference") as ref:
+        ref_archive, _, _ = _pair(ref)
+        c.normalizer(ref, clock=StepClock(start=K_NORM), microbatch_rows=1).normalize_unit(
+            c.ARCHIVE_AGGS.table, ref_archive
+        )
+        ref_rows = ref.rows(c.TRADES)
+    key = lambda row: row["revision_id"]  # noqa: E731
+    assert sorted(rows, key=key) == sorted(ref_rows, key=key)
+
+
+def test_a_crash_before_the_first_batch_starts_over_with_a_new_reading(h: RestHarness) -> None:
+    archive, _, _ = _pair(h)
+
+    def die(request: CommitRequest) -> None:
+        raise Crash("before the first commit")
+
+    with pytest.raises(Crash):
+        c.normalizer(h, clock=StepClock(start=K_NORM), adapter=ProxyCatalog(h.adapter, before=die))\
+            .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
+    assert h.rows(c.TRADES) == []
+    later = K_NORM + timedelta(hours=1)
+    out = c.normalizer(h, clock=StepClock(start=later)).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert out.knowledge_time == later  # the earlier reading was never persisted
+
+
+def test_a_concurrent_unit_takes_the_block_and_the_loser_reallocates(h: RestHarness) -> None:
+    archive, response, _ = _pair(h)
+    rival = c.normalizer(h, clock=StepClock(start=K_NORM + timedelta(minutes=1)))
+    fired: list[bool] = []
+
+    def interleave(request: CommitRequest) -> None:
+        if not fired:
+            fired.append(True)
+            rival.normalize_unit(c.REST_AGGS.table, response)
+
+    proxy = ProxyCatalog(h.adapter, before=interleave)
+    out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert fired and out.arrival_seq_base == c.STRIDE  # the rival committed block 0 first
+    seqs = [row["arrival_seq"] for row in h.rows(c.TRADES)]
+    assert len(seqs) == len(set(seqs)) == 6
+
+
+def test_the_same_unit_raced_is_committed_once(h: RestHarness) -> None:
+    archive, _, _ = _pair(h)
+    rival = c.normalizer(h, clock=StepClock(start=K_NORM + timedelta(minutes=1)))
+    fired: list[bool] = []
+
+    def interleave(request: CommitRequest) -> None:
+        if not fired:
+            fired.append(True)
+            rival.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+
+    proxy = ProxyCatalog(h.adapter, before=interleave)
+    out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert out.replayed and out.knowledge_time == K_NORM + timedelta(minutes=1)
+    assert len(h.rows(c.TRADES)) == 3
+
+
+# =========================================================================================
+# fail closed (#10 / #12)
+# =========================================================================================
+
+
+def _state(h: RestHarness) -> tuple[Any, ...]:
+    return (h.head(c.TRADES.table), h.rows(c.TRADES))
+
+
+def test_a_forged_raw_row_is_never_normalized(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 1)
+    [row] = h.rows(c.ARCHIVE_AGGS)
+    forged = dict(row, knowledge_time=row["knowledge_time"] + timedelta(hours=1))
+    h.delete_rows(c.ARCHIVE_AGGS, EqualTo("revision_id", row["revision_id"]))  # type: ignore[call-arg, arg-type]
+    h.forge_rows(c.ARCHIVE_AGGS, [forged], "corruption")
+    clock = StepClock(start=K_NORM)
+    with pytest.raises(CatalogIntegrityError, match=r"\['knowledge_time'\]"):
+        c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert clock.calls == 0 and h.rows(c.TRADES) == []
+
+
+@pytest.mark.parametrize(
+    ("drift", "match"),
+    [
+        # A unit's ready time is recovered from its committed rows, so a one-row unit whose time
+        # drifted re-normalizes consistently: only its committed batch fingerprint exposes it.
+        (
+            {"knowledge_time": lambda r: r["knowledge_time"] + timedelta(hours=1)},
+            "committed with other content",
+        ),
+        ({"symbol": "BTCUSDT"}, "disagrees"),
+        ({"lineage_source_table": "raw.binance_spot_rest_responses"}, "disagrees|not part"),
+        ({"supersedes": ["crev1-" + "a" * 64]}, "disagrees"),
+        ({"payload_hash": "0" * 64}, "disagrees"),
+    ],
+)
+def test_a_committed_canonical_row_that_drifts_fails_closed(
+    h: RestHarness, drift: dict[str, Any], match: str
+) -> None:
+    archive, _, _ = _pair(h, 1)
+    c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    [row] = h.rows(c.TRADES)
+    forged = {name: (value(row) if callable(value) else value) for name, value in drift.items()}
+    h.delete_rows(c.TRADES, EqualTo("revision_id", row["revision_id"]))  # type: ignore[call-arg, arg-type]
+    h.forge_rows(c.TRADES, [dict(row, **forged)], "corruption")
+    before = _state(h)
+    with pytest.raises(CatalogIntegrityError, match=match):
+        c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert _state(h) == before
+
+
+def test_a_committed_batch_that_no_longer_reproduces_fails_closed(h: RestHarness) -> None:
+    archive, _, _ = _pair(h)
+    c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    row = sorted(h.rows(c.TRADES), key=lambda item: item["arrival_seq"])[1]
+    h.delete_rows(c.TRADES, EqualTo("revision_id", row["revision_id"]))  # type: ignore[call-arg, arg-type]
+    before = _state(h)
+    with pytest.raises(CatalogIntegrityError, match="partially committed"):
+        c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert _state(h) == before
+
+
+def test_a_raw_unit_that_grows_after_normalization_fails_closed(h: RestHarness) -> None:
+    """Normalize a crash-partial REST unit, then let the Raw store finish it."""
+    items = ss.agg_items(3)
+    cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [items])
+    collected = h.collect(ss.agg_request("req-a"))
+    assert not isinstance(collected, Exception), collected
+    proxy = ProxyCatalog(h.adapter, after=ss.crash_after_commits(1, table=c.REST_AGGS.table))
+    with pytest.raises(Crash):
+        h.store(clock=StepClock(start=K_REST), adapter=proxy, element_microbatch_rows=1)\
+            .ingest_collection(ss.agg_request("req-a"))  # fmt: skip
+    [response] = h.rows(c.RESPONSES)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    assert len(n.normalize_unit(c.REST_AGGS.table, response["revision_id"]).revision_ids) == 1
+    h.store(clock=StepClock(start=K_REST), element_microbatch_rows=1).ingest_collection(
+        ss.agg_request("req-a")
+    )
+    before = _state(h)
+    with pytest.raises(CatalogIntegrityError, match="committed with other content|partially"):
+        n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
+    assert _state(h) == before
+
+
+def test_a_clock_behind_raw_knowledge_or_naive_is_refused(h: RestHarness) -> None:
+    archive, _, _ = _pair(h)
+    with pytest.raises(CanonicalNormalizeConflict, match="backfill"):
+        c.normalizer(h, clock=StepClock(start=K_ARCHIVE - c.TICK)).normalize_unit(
+            c.ARCHIVE_AGGS.table, archive
+        )
+    with pytest.raises(CanonicalNormalizeError, match="timezone-aware"):
+        c.normalizer(h, clock=lambda: datetime(2024, 1, 1)).normalize_unit(
+            c.ARCHIVE_AGGS.table, archive
+        )
+    assert h.rows(c.TRADES) == []
+
+
+def test_unknown_units_and_tables_fail_closed(h: RestHarness) -> None:
+    _pair(h, 1)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    with pytest.raises(CanonicalNormalizeError, match="Raw element table"):
+        n.normalize_unit("canonical.trades", "x")
+    with pytest.raises(CanonicalNormalizeError, match="not one committed revision"):
+        n.normalize_unit(c.ARCHIVE_AGGS.table, "rev1-" + "9" * 64)
+
+
+def test_an_empty_rest_page_is_a_unit_without_rows(h: RestHarness) -> None:
+    cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [[]])
+    collected = h.collect(ss.agg_request("req-empty"))
+    assert not isinstance(collected, Exception), collected
+    stored = h.store(clock=StepClock(start=K_REST)).ingest_collection(ss.agg_request("req-empty"))
+    out = c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(
+        c.REST_AGGS.table, stored.pages[0].response_revision_id
+    )
+    assert out.revision_ids == () and out.commits == () and h.rows(c.TRADES) == []
+
+
+# =========================================================================================
+# #8: one fixed view
+# =========================================================================================
+
+
+@dataclass
+class _ReadHook(ProxyCatalog):
+    """Runs ``hook(n)`` after the n-th Raw element read of the unit (before verification)."""
+
+    hook: Any = None
+    reads: int = 0
+    table: str = field(default=c.ARCHIVE_AGGS.table)
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_columns(table, **kwargs)
+        if (
+            table == self.table
+            and "archive_revision_id" in repr(kwargs.get("row_filter"))
+            and (kwargs.get("columns") and len(kwargs["columns"]) > 2)
+        ):
+            self.reads += 1
+            if self.hook is not None:
+                self.hook(self.reads)
+        return result
+
+
+def test_a_head_moved_mid_read_is_read_again(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 1)
+    [template] = h.rows(c.ARCHIVES)
+
+    def move(count: int) -> None:
+        if count == 1:
+            row = dict(template, revision_id="rev1-" + "8" * 64, arrival_seq=900 * c.STRIDE)
+            h.forge_rows(c.ARCHIVES, [row], "mover")
+
+    proxy = _ReadHook(h.adapter, hook=move)
+    out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert proxy.reads >= 2 and len(out.revision_ids) == 1

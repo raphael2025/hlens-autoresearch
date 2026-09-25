@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **E1 进行中**：ADR-0028 已由 Raphael 批准（方案 B），开始实现规范层；D3E-R2、D4 的代码与门记录仍未经 Codex 复核 |
+| 当前子阶段 | **E1 REVIEW_PENDING**：规范层 normalizer 已实现（ADR-0028 方案 B，Raphael 已批准）；D3E-R2、D4、E1 均未经 Codex 复核；E2 起仍关闭 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 进行中（B1～C3、D0～D2、D3A～D3D 已验收；D3E + R1 + R2、D4、E0 待复核） |
 | 最后更新时间 | 2026-09-25 |
@@ -192,7 +192,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；**D3E / R1 / R2、D4 已提交待 Codex 复核**；E1 已开放（ADR-0028 Accepted）；E2 起仍关闭；不写任何 WebSocket 代码
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；**D3E / R1 / R2、D4、E1 已提交待 Codex 复核**；E2 起仍关闭；不写任何 WebSocket 代码
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -208,11 +208,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-25 | Phase 1 E1（Claude Opus，未经 Codex 复核）：实现规范层 normalizer——以一个原始来源记录（一份归档或一页 REST 响应）为单元，先证明其中每条原始行合法，再逐条生成规范层记录（BTC-USDT / ETH-USDT 成交与 1 分钟 K 线），来源链写进身份；每个单元只读一次时钟，崩溃或重跑复用首次时间与序号块；原始单元在规范化之后又变化则拒绝。四个变异实现全部被测试抓出；`python -O` 探针 5/5；真实 PostgreSQL 全量见提交说明 | REVIEW_PENDING；E2（标的上市历史）仍关闭 |
 | 2026-09-25 | Raphael 对 D-E0 回复"同意推荐方案"：**ADR-0028 接受（方案 B）**——规范层每条记录对应一条原始记录、来源链写进身份；归档与 REST 之间的"归档优先"证据由构建数据集时按固定快照对应过去。四个新标识符并入 `03-data.md` §7.3，设计摘要写入 §7.7 | E1（规范层实现）开放；D3E / D4 仍待 Codex 复核 |
 | 2026-09-25 | Phase 1 E0（Claude Opus，仅文档，未经 Codex 复核）：提出 ADR-0028（Proposed）——每条原始行情记录在规范层恰好对应一条记录，来源链写进它的身份，因此归档与 REST 交付的同一笔成交在规范层是两条可分别追溯的记录；归档与 REST 之间"归档优先"的证据不复制到规范层，而是在构建数据集时按固定快照一对一对应过去，不读墙钟、不新增表、不改契约。比较了四种方案并用反例排除"只保留当前最新"和"内容相同就合并"两种 | REVIEW_PENDING；E1（规范层实现）在 ADR-0028 被接受前关闭 |
 | 2026-09-25 | Phase 1 D4（Claude Opus，仅文档，未经 Codex 复核）：检查 ADR-0022 的三项启用前置——历史 backfill 只在小样本与边界日 smoke 上满足、REST 补缺比对（D3E）尚未验收、REST 写入侧重放随 D3E 未验收——且没有任何已批准的批次需要实时数据，因此记录"Phase 1 首切片不启用 WebSocket 实时流"（roadmap #14 明确允许）；没有写任何 WebSocket 代码，并列出将来重新开启的前置。记录见 `docs/reviews/2026-09-25-d4-live-tail-gate.md` | REVIEW_PENDING；E0（Canonical 设计门）仍关闭，待 Codex 验收 D3E 与 D4 |
 | 2026-09-25 | Phase 1 D3E-R2（Claude Opus，未经 Codex 复核）：Codex 用两条探针证实 `52f7477` 的跨通道比对仍会把被篡改的已存行当作事实——REST 元素伪造来源响应并推迟一小时知识时间、或归档元素推迟知识时间并清零政策哈希，都照样写出"归档 → REST"证据边。修复：把 store 的已存行核对抽成共享核对器，store 与 reconciler 调同一实现；reconciler 在任何比较、发现或写边之前，逐行证明两侧：REST 行追到唯一合法的响应记录与其正文，归档行追到唯一合法的归档记录与其已发布文件（逐列重建时间、政策、序号、空边），并核对各自已提交批次的指纹与行数；五张相关表在读前读后表头一致才下判断，否则有界重读。新回归测试在 `52f7477` 上 55 项失败、修复后全部通过；`python -O` 8 项探针、真实 PostgreSQL 全量与静态检查见提交说明；契约、表定义、冻结哈希与依赖锁零改动 | REVIEW_PENDING（已推送未审 WIP 分支）；D4 / E 仍关闭 |
-| 2026-09-25 | Phase 1 D3E-R1（Claude Opus）：Codex 复现 `21e31f5` 的两处缺陷——同内容元素行带伪造来源响应与推迟一小时的知识时间仍被原样采用；时间倒置、政策哈希被清零的竞争响应只被报告为普通竞争。修复：store 采用、比较或据以报告的每一条已提交响应 / 元素行，都先从它自身的输入逐列重建（时间、可用性政策与决定、来源 / collector / decoder 绑定、页面与正文身份、空的边与取代、契约版本、序号块、唯一批次快照与指纹）；元素行须指向唯一、合法、已接受且元素数足够的响应，并逐列继承其序号与时间；跨两张表的读取以读前读后表头一致为准、有界重读。新回归测试在 `21e31f5` 上 59 + 1 项失败、修复后通过；`python -O` 探针、真实 PostgreSQL 全量与静态检查见提交说明；契约、表定义、冻结哈希与依赖锁零改动 | REVIEW_PENDING，等待 Codex 复核；D4 / E 仍关闭 |
 
 ## 10. 下一阶段进入条件
 
