@@ -988,3 +988,53 @@ def test_a_replay_rechecks_revision_id_uniqueness(h: RestHarness) -> None:
     h.forge_rows(c.TRADES, [copy], "copy")
     with pytest.raises(CatalogIntegrityError, match="not held by exactly one row"):
         n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+
+
+# =========================================================================================
+# G3-S2: proving only the committed batches a reader reads
+# =========================================================================================
+
+
+def _seven(h: RestHarness) -> tuple[str, list[dict[str, Any]]]:
+    """A 7-row archive unit normalized as batches of 2 (positions 1-2, 3-4, 5-6, 7)."""
+    items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_ARCHIVE)
+    c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    return archive, sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
+
+
+def test_a_restricted_verification_returns_the_windows_it_proves(h: RestHarness) -> None:
+    archive, rows = _seven(h)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    full = n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    assert [row["revision_id"] for row in full] == [row["revision_id"] for row in rows]
+    # arrival_seq 3 lies in the second batch (positions 3-4); 7 in the last one.
+    part = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={3, 7})
+    assert [row["arrival_seq"] for row in part] == [3, 4, 7]
+    assert all(row == full[row["arrival_seq"] - 1] for row in part)
+    # A number outside the unit's block proves nothing and returns nothing.
+    assert n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={c.STRIDE + 1}) == ()
+
+
+def test_a_restricted_verification_still_checks_the_whole_unit(h: RestHarness) -> None:
+    archive, rows = _seven(h)
+    # Delete a committed row of the last batch; a reader of the first batch must still refuse.
+    h.delete_rows(c.TRADES, EqualTo("revision_id", rows[-1]["revision_id"]))  # type: ignore[call-arg, arg-type]
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    with pytest.raises(CatalogIntegrityError, match="rows deleted or added"):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={1})
+
+
+def test_a_restricted_verification_proves_the_raw_rows_it_reads(h: RestHarness) -> None:
+    archive, _ = _seven(h)
+    raw = sorted(h.rows(c.ARCHIVE_AGGS), key=lambda row: row["archive_line_number"])
+    forged = dict(raw[3], price=raw[3]["price"] + 1)  # line 4: the second batch
+    h.delete_rows(c.ARCHIVE_AGGS, EqualTo("revision_id", raw[3]["revision_id"]))  # type: ignore[call-arg, arg-type]
+    h.forge_rows(c.ARCHIVE_AGGS, [forged], "corruption")
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    with pytest.raises(CatalogIntegrityError):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={4})
+    with pytest.raises(CatalogIntegrityError):
+        n.verify_unit(c.ARCHIVE_AGGS.table, archive)

@@ -6,6 +6,7 @@ values written down from ADR-0023 §5 / ADR-0028 §4 by hand.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
@@ -24,12 +25,19 @@ from infrastructure.pit.selector import (
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.revision import rest_store_support as ss
-from tests.infrastructure.revision.rest_store_support import SYMBOL, RestHarness, StepClock, utc
+from tests.infrastructure.revision.rest_store_support import (
+    SYMBOL,
+    ProxyCatalog,
+    RestHarness,
+    StepClock,
+    utc,
+)
 
 K_A, K_R = utc(2023, 12, 1), utc(2023, 12, 5)
 N_A, N_R = utc(2023, 12, 6), utc(2023, 12, 7)
 K_E = utc(2023, 12, 10)
 FAR = utc(2030, 1, 1)
+MINUTE = timedelta(minutes=1)
 START, END = utc(2023, 11, 14), utc(2023, 11, 15)
 KEY = f"binance:spot:agg_trade:{SYMBOL}:100"
 TABLES = (
@@ -271,10 +279,11 @@ def test_an_unbound_canonical_table_and_a_bad_window_are_refused(h: RestHarness)
     _chain(h)
     with pytest.raises(PitSpecError, match="does not bind canonical.trades"):
         _select(h, _spec(h, cutoff=FAR, skip=(c.TRADES.table,)))
-    with pytest.raises(PitSpecError, match="midnight"):
-        PitSelector(h.adapter, h.storage).select(
-            _spec(h, cutoff=FAR), "agg_trades", SYMBOL, START + timedelta(hours=1), END
-        )
+    selector = PitSelector(h.adapter, h.storage)
+    with pytest.raises(PitSpecError, match="UTC datetime"):
+        selector.select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, START.replace(tzinfo=None), END)
+    with pytest.raises(PitSpecError, match="must not be empty"):
+        selector.select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, END, END)
 
 
 def test_a_forged_canonical_row_is_refused(h: RestHarness) -> None:
@@ -304,3 +313,41 @@ def test_r3_a_recommitted_earlier_edge_cannot_change_a_selection(h: RestHarness)
     h.forge_rows(c.EVIDENCE, [dict(edge, knowledge_time=K_R)], "forged-edge")
     with pytest.raises(CatalogIntegrityError, match="not exactly what an edge batch"):
         _select(h, _spec(h, cutoff=cutoff))
+
+
+# =========================================================================================
+# G3-S2: a narrow window proves only the committed batches it reads
+# =========================================================================================
+
+
+@dataclass
+class _RawScans(ProxyCatalog):
+    """Counts full-width reads of the archive element table (proof windows)."""
+
+    widths: list[tuple[int, int]] = field(default_factory=list)
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_columns(table, **kwargs)
+        if table == c.ARCHIVE_AGGS.table:
+            self.widths.append((len(kwargs["columns"]), result.num_rows))
+        return result
+
+
+def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> None:
+    items = ss.agg_items(7, ms_step=ss.MINUTE_MS)
+    archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_A)
+    c.normalizer(h, clock=StepClock(start=N_A), microbatch_rows=2).normalize_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    first = utc(2023, 11, 14, 22, 14)  # ss.T0: the unit's first trade
+    log = _RawScans(h.adapter)
+    out = PitSelector(log, h.storage).select(  # type: ignore[arg-type]
+        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, first + 2 * MINUTE, first + 4 * MINUTE
+    )
+    assert sorted(row["arrival_seq"] for row in out.selected_rows.values()) == [3, 4]
+    # One Raw proof window of the second batch (positions 3-4) — not the unit's four windows.
+    assert [rows for width, rows in log.widths if width > 3 and rows <= 2] == [2]
+    whole = PitSelector(h.adapter, h.storage).select(
+        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, START, END
+    )
+    assert {r: whole.selected_rows[r] for r in out.selected_rows} == dict(out.selected_rows)

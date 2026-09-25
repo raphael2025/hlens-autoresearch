@@ -1,7 +1,7 @@
 """Point-in-time selection over Canonical revisions (Phase 1 F1; ADR-0023 §5, ADR-0028 §3.2 / §7).
 
 ``PitSelector.select(spec, data_type, symbol, start, end)`` answers, for every Canonical
-``observation_key`` of one venue symbol whose event lies in the UTC-day window ``[start, end)``,
+``observation_key`` of one venue symbol whose event lies in the UTC window ``[start, end)``,
 what a dataset bound to ``spec`` may use:
 
 1. **bindings** — the spec's PIT rule must be ``hlens.pit.maximal-head@1.0.0``; its availability,
@@ -10,7 +10,8 @@ what a dataset bound to ``spec`` may use:
    Canonical table must be bound. Anything else is ``PitSpecError`` (fail closed);
 2. **pinned, proven reads** — everything is read through a ``PinnedCatalogView`` of the spec's
    snapshot bindings. Every Canonical row is proven by re-normalizing its Raw unit
-   (``CanonicalNormalizer.verify_unit``, whose Raw rows ``PersistedRowVerifier`` proves), and every
+   (``CanonicalNormalizer.verify_unit``, whose Raw rows ``PersistedRowVerifier`` proves; only the
+   committed batches holding rows that were read, plus the unit-wide facts, G3-S2), and every
    Raw ``archive → REST`` edge of the window by the reconciler's re-derivation
    (``ChannelReconciler.verified_edges``). Anything that does not reproduce is
    ``CatalogIntegrityError``;
@@ -293,12 +294,15 @@ class PitSelector:
     ) -> list[Mapping[str, Any]]:
         """Every row read must be exactly a row its unit re-normalizes to at these snapshots."""
         normalizer = CanonicalNormalizer(view, self._storage)
-        units = sorted(
-            {(row["lineage_raw_table"], row["lineage_source_revision_id"]) for row in rows}
-        )
+        units: dict[tuple[str, str], set[int]] = {}
+        for row in rows:
+            unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
+            units.setdefault(unit, set()).add(row["arrival_seq"])
         proven: dict[str, Mapping[str, Any]] = {}
-        for raw_table, source in units:
-            for row in normalizer.verify_unit(raw_table, source):
+        for (raw_table, source), seqs in sorted(units.items()):
+            # Only the committed batches holding what was read are proven and kept (G3-S2);
+            # the unit-wide facts are still checked by verify_unit.
+            for row in normalizer.verify_unit(raw_table, source, arrival_seqs=seqs):
                 proven[row["revision_id"]] = row
         for row in rows:
             expected = proven.get(row["revision_id"])
@@ -371,14 +375,14 @@ class PitSelector:
 
 
 def _days(start: datetime, end: datetime) -> list[date]:
+    """The UTC days the window ``[start, end)`` touches (any UTC instants, G3-S2)."""
     for label, value in (("start", start), ("end", end)):
         if (
             not isinstance(value, datetime)
             or value.tzinfo is None
             or value.utcoffset() != timedelta(0)
-            or value.timetz().replace(tzinfo=None) != time()
         ):
-            raise PitSpecError(f"{label} must be a UTC midnight")
+            raise PitSpecError(f"{label} must be a UTC datetime")
     if not start < end:
         raise PitSpecError("the window must not be empty")
     days: list[date] = []

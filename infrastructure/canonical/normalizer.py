@@ -33,6 +33,7 @@ cross-channel edges are mapped at PIT time (ADR-0028 §3.2).
 
 from __future__ import annotations
 
+from bisect import bisect_left
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
@@ -275,7 +276,13 @@ class CanonicalNormalizer:
             f"unit {source_revision_id} of {raw_table} lost {_ATTEMPTS} commit races"
         ) from last_error
 
-    def verify_unit(self, raw_table: str, source_revision_id: str) -> tuple[Mapping[str, Any], ...]:
+    def verify_unit(
+        self,
+        raw_table: str,
+        source_revision_id: str,
+        *,
+        arrival_seqs: Iterable[int] | None = None,
+    ) -> tuple[Mapping[str, Any], ...]:
         """The unit's committed Canonical rows, proven; nothing is written and no clock is read.
 
         The committed batch ids give the plan (unit size, microbatch size). Every Raw row of
@@ -284,10 +291,20 @@ class CanonicalNormalizer:
         contiguous prefix of that plan with their exact fingerprints, and the committed rows must
         be exactly those batches' rows. Run on a catalog view pinned to a manifest's snapshots,
         it proves what those snapshots held (Phase 1 F1).
+
+        With ``arrival_seqs`` (G3-S2) only the committed batches holding those numbers are proven
+        and returned — their Raw rows, fingerprints and exact content — while every unit-wide
+        fact (plan, distinct Raw positions and an archive's whole object, block base and ready
+        time, the unit's committed rows being exactly its committed batches') is still checked
+        from narrow columns. A reader of one time window of a large unit thus proves what it
+        reads without holding the unit.
         """
         channel = self._channel(raw_table, source_revision_id)
         pin = self._pin(channel, source_revision_id)
-        return self._survey(pin, channel, source_revision_id, keep_rows=True).committed_rows
+        only = None if arrival_seqs is None else frozenset(arrival_seqs)
+        return self._survey(
+            pin, channel, source_revision_id, keep_rows=True, only=only
+        ).committed_rows
 
     # ------------------------------------------------------------------ pin
 
@@ -329,11 +346,14 @@ class CanonicalNormalizer:
         source_revision_id: str,
         *,
         keep_rows: bool,
+        only: frozenset[int] | None = None,
     ) -> _Survey:
         table = channel.canonical.table
         positions, symbol = self._positions(pin, channel, source_revision_id)
         floor: datetime | None = None
-        for low, high in _proof_windows(positions, self._microbatch):
+        # Restricted (``only``): the Raw rows are proven with the committed batches holding the
+        # requested numbers, below — never a window nobody reads.
+        for low, high in () if only is not None else _proof_windows(positions, self._microbatch):
             raw = self._raw_window(pin, channel, source_revision_id, low, high)
             self._prove(pin, channel, raw)
             latest = max(row["knowledge_time"] for row in raw)
@@ -368,21 +388,22 @@ class CanonicalNormalizer:
             raise CatalogIntegrityError(
                 f"{table}: the batches of unit {source_revision_id} are not a contiguous prefix"
             )
+        if indices and indices[-1] * plan.chunk >= unit_rows:
+            raise CatalogIntegrityError(
+                f"{table}: batch {indices[-1]} of unit {source_revision_id} lies beyond its plan"
+            )
+        wanted = None if only is None else _batches_holding(positions, plan.chunk, base, only)
         kept: list[Mapping[str, Any]] = []
         ids: list[str] = []
-        covered = 0
+        covered = min(len(indices) * plan.chunk, unit_rows)
         for index in indices:
-            if index * plan.chunk >= unit_rows:
-                raise CatalogIntegrityError(
-                    f"{table}: batch {index} of unit {source_revision_id} lies beyond its plan"
-                )
-            low, high, covered = _batch_window(positions, plan.chunk, index)
-            planned = self._planned(
-                channel,
-                self._raw_window(pin, channel, source_revision_id, low, high),
-                base,
-                ready,
-            )
+            if wanted is not None and index not in wanted:
+                continue
+            low, high, _ = _batch_window(positions, plan.chunk, index)
+            raw = self._raw_window(pin, channel, source_revision_id, low, high)
+            if wanted is not None:
+                self._prove(pin, channel, raw)
+            planned = self._planned(channel, raw, base, ready)
             check_batch_snapshot(
                 channel.canonical,
                 unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
@@ -836,6 +857,18 @@ def _batch_window(positions: Sequence[int], chunk: int, index: int) -> tuple[int
     start = index * chunk
     end = min(start + chunk, len(positions))
     return positions[start], positions[end - 1], end
+
+
+def _batches_holding(
+    positions: Sequence[int], chunk: int, base: int, seqs: Iterable[int]
+) -> set[int]:
+    """Indices of the batches whose rows carry any of ``seqs`` (others name no row of the unit)."""
+    found: set[int] = set()
+    for seq in seqs:
+        rank = bisect_left(positions, seq - base)
+        if rank < len(positions) and positions[rank] == seq - base:
+            found.add(rank // chunk)
+    return found
 
 
 def _same_numbers(values: pa.Array, expected: Sequence[int]) -> bool:
