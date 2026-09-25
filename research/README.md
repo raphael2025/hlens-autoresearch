@@ -22,5 +22,6 @@ Research Plane。探索性研究代码与实验编排。**研究代码不得直�
 | `router/` | Phase 10（ADR-0043） | 动态策略路由（仅纸面）与纸面运行，见 [router/README.md](router/README.md) |
 | `loop/` | Phase 11（ADR-0049） | 持续研究循环的六个研究阶段与组合根（通用调度 / 预算 / 生命周期守卫 / 审计在 `apps/worker/loop.py`），见 [loop/README.md](loop/README.md) |
 | `evolution/` | Phase 12（ADR-0045） | 变异 / 组合 / 退役算子与谱系图（新对象必须新版本并重新验证） |
+| `reports/` | ADR-0048 report writer | 研究侧报告写入方：验证报告 / 循环轮次审计 / 状态 × 策略矩阵 / 路由纸面运行 → `apps/api` 只读控制台能读回的 JSON 文件，见 [reports/README.md](reports/README.md) |
 
 跨阶段端到端冒烟：`tests/research/test_cross_phase_e2e.py`（合成市场 → 特征 → 状态 → 策略 → 回测 → 状态 × 策略矩阵 → 路由纸面运行）。

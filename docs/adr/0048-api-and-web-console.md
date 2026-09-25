@@ -68,3 +68,65 @@ router-paper-run reports are served by the API and counted on the Dashboard but 
 page yet (not asked for by this task); a real research-plane writer for these report directories
 does not exist yet (P6 / P9 / P10 framework land the report shapes this store already reads
 generically).
+
+## Implementation note (report writer, 2026-09-25)
+
+Adds the research-plane counterpart the previous note left open: a writer under `research/reports/`
+for each of the four report kinds `apps.api.store.ReportStore` already reads. Still
+FRAMEWORK_IMPLEMENTED / NOT_VALIDATED, still within the original 裁决 (no new decision; write
+endpoints on `apps/api` itself remain out of scope per 裁决 §3).
+
+**Design: where the shared envelope / canonical-JSON rule lives**
+
+`ReportStore` recomputes its own `content_hash` from the parsed payload on every read, independent
+of on-disk formatting — so the writer never has to reproduce the store's envelope or match its hash
+function byte-for-byte. What the writer does need is its own deterministic, canonical serialization
+(sorted keys) so that "same content" comparisons for the append-only rule are format-stable. Two
+options were on the table: reuse `apps/api/store.py`'s private `_canonical_json` / `_content_hash`,
+or reuse `core.domain.base.canonical_json` (the project's one existing canonical-JSON definition,
+docs/architecture/02-domain.md §3, already used by every `Contract.content_hash()`). Decision:
+**core**. `apps/api/store.py`'s encoder is private (underscore-prefixed, not in `__all__`) and
+differs only cosmetically (`ensure_ascii=True` vs. core's `False`) — reusing it would reach into
+another Plane's internals for a rule that already has an authoritative, public definition upstream
+of both `apps/` and `research/`. No new contract model was added; `research/reports/envelope.py`'s
+`write_report_file` is a small pure function (`root, kind, id, payload -> WrittenReport`) built on
+that one existing helper.
+
+**research/reports/**
+
+- `envelope.py`: `write_report_file(root, kind, id, payload)` — writes `<root>/<kind>/<id>.json`
+  atomically (temp file + `os.replace`); writing identical content already on disk is a no-op
+  (`WrittenReport.written = False`); writing different content under an existing id raises
+  `ReportConflict` (append-only, H6-adjacent: a report is never silently rewritten). `id` is
+  validated against the same safe-filename pattern `apps/api/store.py` uses.
+- One writer per kind, each deriving `id` from **the object's own content / result hash** — every
+  one of the four already carries one, so no new hashing scheme was introduced:
+  `validation.py` (`ValidationReport.content_hash()` — not `report_id`, which the model's own
+  docstring calls an external label, not a content identity), `loop.py`
+  (`LoopRecord.record_hash`, importing `apps.worker.loop` — the one sanctioned research→apps
+  exception, ADR-0049, already used by `research/loop/compose.py`), `matrix.py`
+  (`StateStrategyMatrix.matrix_hash`; the payload mirrors that hash's fields rather than importing
+  a private helper from `research/experiments/state_strategy.py`, which this batch does not touch),
+  `router.py` (`RouterPaperRun.run_hash`). Because the id is content-derived, two different report
+  contents can never collide on id by construction; `ReportConflict` is exercised directly at the
+  `write_report_file` level and by forcing the same id under a kind's directory in tests.
+- `research/loop/compose.py` gained `run_unattended_and_report(loop, rounds, *, reports_root=None)`:
+  a thin wrapper around `ResearchLoop.run_unattended` that also writes every `LoopRecord` produced
+  when `reports_root` is given (`None`, the default, writes nothing — identical to calling
+  `run_unattended` directly). This is the P11 loop's optional report-root hook the task asked for.
+
+**Tests**: `tests/research/reports/test_writers.py` (the generic writer's determinism / idempotence
+/ conflict-refusal / unsafe-id rejection, and each of the four kind-specific writers round-tripped
+through both `ReportStore` and `apps.api.create_app`'s `/reports/...` endpoints via `TestClient`);
+`tests/research/loop/test_reports_hook.py` (the P11 e2e fixture run through
+`run_unattended_and_report`, with and without a `reports_root`, including that replaying the same
+rounds again leaves the on-disk files byte-identical).
+
+**Docs**: `research/reports/README.md` (new), a `research/README.md` row, and
+`apps/web/README.md` extended with a concrete snippet for pointing `create_app(reports_root=...)`
+at a directory `research/reports` writers fill.
+
+**Left open**: the four payload shapes are display-oriented summaries picked by this batch, not
+exhaustive field-for-field dumps of every object (e.g. `router_paper_run` omits the full combined
+target-position series); extending them is routine follow-up, not a contract change. No write
+endpoints or report-root pruning/retention policy — unchanged from the original 裁决.

@@ -37,7 +37,25 @@ systemd-run --user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0 npm run bu
 ```
 
 后端需单独启动才能让 `npm run dev` 的代理生效（例如 `uvicorn` 跑 `apps.api.app:create_app`
-的一个工厂实例，`reports_root` 指向一个写有 JSON 报告文件的目录）。
+的一个工厂实例，`reports_root` 指向一个写有 JSON 报告文件的目录）。这个目录由研究侧的
+`research/reports`（[README](../../research/reports/README.md)）写入 —— `apps/api` 从不 import
+`research/`，两边只通过 `<reports_root>/<kind>/<id>.json` 这份文件格式约定耦合。启动示例：
+
+```python
+# 先用研究侧的 writer 把报告写进某个目录，例如：
+#   from research.reports import write_validation_report
+#   write_validation_report(Path("var/reports"), report)
+# 再让 apps/api 指向同一个目录：
+import uvicorn
+from pathlib import Path
+from apps.api import create_app
+
+app = create_app(reports_root=Path("var/reports"))
+uvicorn.run(app, host="127.0.0.1", port=8000)
+```
+
+`reports_root=None`（工厂默认值）等价于没有配置报告目录：所有 `/reports/*` 端点返回空列表 / 404，
+而不是报错。
 
 ## OpenAPI 类型
 

@@ -4,6 +4,12 @@
 ``apps.worker.loop.ResearchLoop``. The dependency points research → apps/worker (the worker is the
 runtime host and exposes the stage Protocol); apps/ never imports research/ (01-system.md §3).
 Every number comes from ``SyntheticLoopConfig``; there are no defaults for budgets or thresholds.
+
+``run_unattended_and_report`` optionally feeds each round's audit record to the research console
+(ADR-0048): a thin wrapper around ``ResearchLoop.run_unattended`` that also writes every
+``LoopRecord`` it produces to a report root via ``research.reports.write_research_loop_round``,
+when one is given. Nothing here changes what a round does or its content hash; the report root is
+purely an additional, optional sink for the same records the loop already returns.
 """
 
 from __future__ import annotations
@@ -12,8 +18,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
-from apps.worker.loop import LoopBudget, ResearchLoop
+from apps.worker.loop import LoopBudget, LoopRecord, ResearchLoop
 from core.contracts.event_bus import EventBusAdapter
 from core.contracts.llm import LLMProvider
 from core.contracts.synthetic import SyntheticMarketProvider, SyntheticMarketSpec
@@ -28,8 +35,9 @@ from research.loop.stages import (
     StateStage,
     ValidationStage,
 )
+from research.reports import write_research_loop_rounds
 
-__all__ = ["SyntheticLoopConfig", "build_synthetic_loop"]
+__all__ = ["SyntheticLoopConfig", "build_synthetic_loop", "run_unattended_and_report"]
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,3 +114,20 @@ def build_synthetic_loop(
         epoch=config.epoch,
         cadence=config.cadence,
     )
+
+
+def run_unattended_and_report(
+    loop: ResearchLoop, rounds: int, *, reports_root: Path | None = None
+) -> tuple[LoopRecord, ...]:
+    """``loop.run_unattended(rounds)``, also writing every record when ``reports_root`` is given.
+
+    ``reports_root is None`` (the default) behaves exactly like calling ``run_unattended``
+    directly: no filesystem write happens. When set, every ``LoopRecord`` the loop produces is
+    also written to ``<reports_root>/research_loop_round/<record_hash>.json`` (append-only;
+    re-running the same rounds under the same seed is a no-op, see
+    ``research.reports.write_research_loop_round``).
+    """
+    records = loop.run_unattended(rounds)
+    if reports_root is not None:
+        write_research_loop_rounds(reports_root, records)
+    return records
