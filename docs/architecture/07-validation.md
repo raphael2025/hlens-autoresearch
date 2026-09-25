@@ -59,6 +59,29 @@ flowchart LR
 其值是否等于 `threshold`、报告是否包含 Profile 要求的全部门、`value` 是否真由声明的 `metric` 算出，
 都由持有 Profile 实例的验证服务核验（尚未实现）。
 
+### 2.2 实现说明：Phase 4 最小流水线（ADR-0037，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）
+
+`research/validation/` 实现了上图的 G0、G1、G2、G3 与 G5（G4 稳健性属 Phase 8）。一个阶段出现 FAIL 即停止，
+INCONCLUSIVE 不停止；整体判定只由 `derive_verdict` 给出。
+
+| 阶段 | `gate_id` | 对应规则 | 阈值来源（Profile 字段） |
+|---|---|---|---|
+| G0 复现、数据与契约 | `G0.bindings`、`G0.run_state`、`G0.data_available`、`G0.reproducibility`、`G0.signal_determinism` | C-P1 ~ C-P3；Profile / 成本模型 / Outcome / 实验绑定一致 | 无（结构检查） |
+| G1 泄漏 | `G1.outcome_not_input`、`G1.embargo_covers_horizon`、`G1.sealed_oos_excluded`、`G1.shuffle_control`、`G1.shift_control` | C-L2、C-L5、C-S2、C-L6 | 负对照：`significance.multiple_testing_threshold` |
+| G2 含成本的样本内统计 | `G2.effective_sample_size`、`G2.breakeven_cost_multiple`、`G2.cost_stress.<i>`、`G2.cost_report.<i>`（纯报告项）、`G2.null_model_percentile` | C-T2、C-R4 / A6、C-T4 | `sample_size.min_effective_trades_in_sample`、`cost_stress.min_breakeven_cost_multiple`、`cost_stress.stress_multipliers[i]`、`benchmark.null_model_percentile` |
+| G3 多重检验校正后的显著性 | `G3.adjusted_p_value` | C-T1、C-T3 | `significance.multiple_testing_threshold` |
+| G5 Sealed OOS | `G5.unsealing_recorded`、`G5.oos_effective_sample_size`、`G5.oos_breakeven_cost_multiple` | C-S1 ~ C-S3 | `sample_size.min_effective_trades_out_of_sample`、`cost_stress.min_breakeven_cost_multiple` |
+
+- **无默认阈值**：`threshold(profile, path)` 同时返回值与字段路径；比较方向写在 metric 末尾（`[>=]` / `[<=]`），
+  持有 Profile 的核验方可以重算判定。`inconclusive_bands` 以 `gate_id` 为键，`|value − threshold| <= band` 判 INCONCLUSIVE。
+- **证据不足**：有效独立样本不足、样本太少无法检验时判 INCONCLUSIVE，不判 PASS。
+- **方法名**：Profile 中本流水线未实现的方法名（多重检验、空模型）一律拒绝，不回退。
+- **成本**：所有净值都经 `CostModelSpec`（ADR-0037 §4）；零成本模型在契约层被拒绝。
+- **负对照**：在打乱 / 循环平移后的标签上**重跑研究**，检验方向与结果的协方差；效应必须消失。
+- **Sealed OOS**：窗口来自 Profile 的固定日期边界；开封前锁定；每个假设族只能开封一次，开封记录只追加（§3 规则）。
+- 已知缺口（ADR-0037「后果」）：负对照为单次抽取、复用显著性阈值；过拟合概率、每状态样本量、walk-forward 窗口统计、
+  延迟压力未实现；开封账本未持久化；Profile 数值仍全部 TBD，校准报告只是框架（`FRAMEWORK_ONLY_NOT_CALIBRATED`）。
+
 ## 3. Experiment / Validation Lifecycle（D6）
 
 > 状态：**已冻结**，对应 [ADR-0006](../adr/0006-strategy-lifecycle.md)（Accepted，2026-09-23，取代 ADR-0002 第 5 条）。修改需新 ADR。

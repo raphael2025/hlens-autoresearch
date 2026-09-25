@@ -78,7 +78,7 @@ Phase 0 冻结的是本节的**概念层内容**：每类 Provider 的职责、�
 `plugins/features/`，窗口等参数属于各自 `FeatureSpec`，由 descriptor 中的 spec hash 绑定。
 
 `StrategyProvider`、`RiskProvider`、`BacktestProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 5 框架批次交付
-（[ADR-0038](../adr/0038-strategy-risk-backtest-providers.md)，02-domain.md §2.6）：回测器 v1 `plugins/backtest/BarBacktester`
+（[ADR-0038](../adr/0038-strategy-risk-backtest-providers.md)，02-domain.md §2.7）：回测器 v1 `plugins/backtest/BarBacktester`
 （下一根 bar 开盘成交，费率 + 滑点，只是模拟）；研究期策略与风控在 `research/strategies/`，未晋升。
 `EventProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 3 交付（[ADR-0036](../adr/0036-event-provider-contract.md)，
 02-domain.md §2.8）：执行器 `infrastructure/event/runner.py` 对每个检查点只交出 `available_time + observable_lag <= t` 的输入，

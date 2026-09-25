@@ -25,6 +25,7 @@ from core.contracts.collector import (
     CoverageGap,
     SourceBinding,
 )
+from core.contracts.cost_model import CostModelSpec
 from core.contracts.event import (
     Event,
     EventInputPoint,
@@ -46,6 +47,15 @@ from core.contracts.knowledge import (
     KnowledgeResult,
 )
 from core.contracts.llm import LlmProviderDescriptor, LlmRequest, LlmResponse
+from core.contracts.outcome import (
+    OutcomeEvent,
+    OutcomeLabel,
+    OutcomeLabelSpec,
+    OutcomePriceBar,
+    OutcomeProviderDescriptor,
+    OutcomeRequest,
+    OutcomeResult,
+)
 from core.contracts.profile_selection import (
     ExperimentMetadata,
     OosUnsealing,
@@ -296,6 +306,15 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     EventRequest,
     EventResult,
     EventProviderDescriptor,
+    # OutcomeProvider 的 DTO 与成本模型 v1（ADR-0037，Phase 4）
+    OutcomeLabelSpec,
+    OutcomePriceBar,
+    OutcomeEvent,
+    OutcomeRequest,
+    OutcomeLabel,
+    OutcomeProviderDescriptor,
+    OutcomeResult,
+    CostModelSpec,
 )
 
 

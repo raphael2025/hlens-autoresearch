@@ -14,3 +14,6 @@ Research Plane。探索性研究代码与实验编排。**研究代码不得直�
 | `strategies/` | Phase 5 研究策略库（ADR-0038）：时间序列动量 StrategyProvider、波动率目标 RiskProvider、策略 → 风控 → 回测 → 验证接缝 → Failure Registry 流水线 |
 > 各子目录随对应 Phase 的框架批次加入代码（见 docs/research/roadmap.md）；已有代码：`events/`（Phase 3，ADR-0036）。
 > 生产包（`apps/`、`strategies/`、`risk/`）不得 import 本目录（架构边界测试）。
+> 已有代码（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`outcomes/`（Outcome 物化）与 `validation/`（最小 Validation Pipeline），
+> 见 [ADR-0037](../docs/adr/0037-outcome-engine-and-minimal-validation-pipeline.md)。其余目录仍只作规划，实现需等待对应 Phase 开启
+> （见 docs/research/roadmap.md）。`apps/`、`strategies/`、`risk/` 不得 import 本目录。

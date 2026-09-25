@@ -308,27 +308,54 @@ provider-agnostic contract suite 在 `tests/contract_suites/feature.py`（确定
 `StateSpec` 没有 `params` 字段：模型参数以规范形式 `<method>:<canonical JSON>` 编码进 `StateSpec.method`（`state_method` / `parse_state_method`），
 因而受 spec hash 绑定。执行器 `infrastructure/state/runner.py` 对每个评估时刻只把可见（含训练窗口）输入交给 Provider，训练型规格必须固定 `seed`；
 provider-agnostic contract suite 在 `tests/contract_suites/state.py`。
+
 ### 2.7 Strategy / Risk / Backtest Provider 的 Protocol 与 DTO（ADR-0038，Phase 5）
+
 `core/contracts/strategy.py` 交付三个 Protocol 与 17 个 DTO（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）。不升 `CONTRACT_SCHEMA_VERSION`，
 不新增 `Kind`；`StrategySpec` / `RiskPolicy` 与既有 Schema 逐字节不变。全部确定性、全部 `Decimal`（浮点与 NaN / ±Infinity 拒绝）。
+
 | Protocol | 成员 | DTO 与契约层不变量 |
+|---|---|---|
 | `StrategyProvider` | `target_positions(StrategyRequest) → StrategyResult` | `SignalObservation` 只能是 feature / state / event（Outcome 永不作为输入）；`StrategyRequest.visible_at(t)` = `available_time <= t`、同键取最晚可用；`knowledge_time <= knowledge_cutoff` 构造即检查；`TargetPosition` 零输入必须为 0、输入时间不晚于决策时刻；`StrategyResult.check_answers` 核对 `decision_times × instruments` 一一对应与输入时间属于可见集合 |
 | `RiskProvider` | `constrain(RiskRequest) → RiskResult` | 请求只含一个决策时刻，`available_time > decision_time` 的信号与晚于它的 `PortfolioState` 构造即拒绝；`ConstrainedPosition.binding_rules` 为空当且仅当仓位未被调整；`check_answers` 核对一一对应并原样回显请求权重 |
 | `BacktestProvider` | `run(BacktestRequest) → BacktestResult` | `BacktestCostModel`（费率 + 不利滑点率，`cost_model:name@version`）；`PriceBar.available_time >= interval_end`；`Fill.fill_time >= decision_time`；descriptor 只能 `deterministic` + `simulation_only` + `next_bar_open`；`BacktestResult` 的费用 / 滑点合计与 `result_hash` 构造时复核，`check_answers` 核对每笔成交恰在执行模型规定的 bar 开盘 |
+
 contract suite 在 `tests/contract_suites/{strategy,risk,backtest}.py`（因果扰动、确定性、未声明规格；回测的买入持有 = 价格比、
 零仓位零 PnL、平价往返只亏成本、改变未来 bar 不改变过去权益）。**诚实边界**：策略是否只依赖可见集合、风控是否真的执行其声明的规则、
 PnL 是否按成本模型计算，由 contract suite 对具体实现检查，契约层不能证明。
+
 ### 2.8 EventProvider 的 Protocol 与 DTO（ADR-0036，Phase 3）
+
 `core/contracts/event.py` 交付 `EventProvider` Protocol（`descriptor` → `EventProviderDescriptor`；`detect(EventRequest) → EventResult`）
 与 5 个 DTO。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`EventSpec` 与既有 Schema 逐字节不变（参数写入 `trigger` 的规范 JSON）。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
 | `EventInputPoint` | 上游 Feature / State 序列的一个点 | `source` 只能是 feature / state；`available_time >= evaluation_time`；值规则同 `FeatureObservation`；`source_lineage_hash` 只能依赖当时已知的信息 |
 | `Event` | Event 表的一行：`event` + `spec_hash`、`event_time`、`attributes`、`input_ids`、`upstream_event_ids`、`event_id` | `kind=event`；至少引用一个输入或上游事件；两个 id 列表严格升序；`event_id` 构造时复核 |
 | `EventRequest` | 截至 `as_of` 的识别请求：输入点 + 上游事件 | 输入按 `(available_time, source, evaluation_time)` 规范排序、`(source, evaluation_time)` 唯一、每条序列只追加；上游事件 `event_id` 唯一且不得是自身定义；`visible_at` / `truncated` 定义可见集合 |
 | `EventResult` | 截至 `as_of` 的事件表 | 事件按 `(event_time, event_id)` 严格升序且不晚于 `as_of`；`result_hash` 复核；`check_answers` 核对事件时间 = 可观测时间、引用的输入在当时可见且在请求中、属于请求的事件定义 |
 | `EventProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_events` 非空，`event:name@semver → spec hash` |
+
 执行器 `infrastructure/event/runner.py` 对每个检查点只交出可见集合，并要求相邻检查点的事件表一致（不得回填 / 撤回：不得未来确认）。
 provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实边界**：`source_lineage_hash` 是否对应已登记的上游值、
 交互规格声明的 Feature / State 并集是否与上游规格一致，属 Registry。
+
+### 2.9 OutcomeProvider 的 Protocol 与 DTO、成本模型 v1（ADR-0037，Phase 4）
+
+`core/contracts/outcome.py` 交付 `OutcomeProvider` Protocol（`descriptor` → `OutcomeProviderDescriptor`；`compute(OutcomeRequest) → OutcomeResult`）
+与 7 个 DTO；`core/contracts/cost_model.py` 交付 `CostModelSpec`。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`OutcomeSpec` 与既有 Schema 逐字节不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `OutcomeLabelSpec` | 一份 `OutcomeSpec` 的可执行标签参数（`forward_return` / `triple_barrier`、horizon、屏障） | 绑定 `outcome` 引用 + `outcome_spec_hash`；horizon > 0；屏障与方法匹配 |
+| `OutcomePriceBar` / `OutcomeEvent` | Canonical 价格 bar；需要标签的决策时刻 | `Decimal` 价格、OHLC 自洽、`available_time >= interval_end` |
+| `OutcomeRequest` | 标签规格 + manifest 哈希 + `price_cutoff` + 事件 + bar | 事件规范排序、键唯一；bar 升序不重叠且都在 cutoff 前可用 |
+| `OutcomeLabel` | 一个事件的标签 | `label_only = true`；`None` = 显式不可计算；入场不早于事件、`available_time >= exit_time` |
+| `OutcomeResult` / `OutcomeProviderDescriptor` | 结果与 Provider 身份 | `result_hash` 构造时复核；`check_answers` 核对入场、horizon、出场与可用时间 |
+| `CostModelSpec` | 成本模型 v1（每侧手续费 + 滑点） | `kind=cost_model`；费率在 `[0, 1)`，总费率 > 0（不得跳过成本模型） |
+
+**Outcome 永不作为输入**：`label_only` 判别字段 + 输入 DTO 的 `extra="forbid"` + §2.1 白名单 + 运行时 `refuse_outcome_input`。
 
 ## 3. 契约规则
 
@@ -430,7 +457,7 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（118 份） | `schemas/*.schema.json` |
+| 当前 Schema（126 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
