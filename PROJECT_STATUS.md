@@ -94,6 +94,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ Phase 1 D3C / D3C-R1（Claude Opus）：严格、无 I/O 的 `binance.spot.rest.decoder@1.0.0`（`infrastructure/parser/binance_rest.py`）——完整正文 + 已校验页查询 + `retrieved_at` + 目标窗口 + 上一页摘要 + 正文上限（纯参数，非设置）→ 不可变元素 + 确定性页摘要，或一条整页拒绝（零元素）；R1 修复 RFC JSON 框架空白；Codex 独立对抗探针、真实 PostgreSQL 3434 项全量与静态检查通过（`643cf45` + `6b9e670`）
 - ✅ Phase 1 D1（Claude Opus）：`binance.spot.archive.parser@1.0.0` 按覆盖日选择毫秒 / 微秒，严格 ZIP / CSV 与零容差覆盖边界，失败只产结构化质量事件且不泄露部分 rows；Codex 独立运行 2955 项全量测试、70,000 行末尾失败原子性探针，并真实解析两个日期的 kline 与 aggTrades 官方归档（`c966085`）
 - ✅ Phase 1 D3D / D3D-R1（Claude Opus）：`binance.spot.public-rest@1.0.0` 同步 collector——结构化端点 allowlist、不跟随重定向、有界正文与重试、`Retry-After` / 418 / 5xx / 页数预算、D3C 驱动分页、不可变正文与 page / collection checkpoint、同 `request_id` 零网络重放与崩溃恢复；D3D-R1 删除可绕过 allowlist 的完整 client 注入并关闭环境代理 / Cookie 回放；Codex 独立安全探针、公共只读 smoke、真实 PostgreSQL 3587 项全量与静态检查通过（`61dd9bf` + `c06b9fa`）
+- ✅ 全阶段框架代码（2026-09-25，Raphael 指示；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：Phase 0.5、2～14、研究控制台与跨阶段接线，ADR-0034～0049；逐个调试进行中
 
 ## 4. 当前正在做
 
