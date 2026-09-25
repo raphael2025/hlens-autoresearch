@@ -16,7 +16,9 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pyiceberg.expressions import EqualTo
 
+from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS
 from infrastructure.dataset.builder import DatasetSpecError
 from infrastructure.dataset.manifests import ManifestStore
 from infrastructure.pit.selector import PitConflictError
@@ -204,3 +206,25 @@ def test_archive_first_then_rest_conflicts_until_reconciled_then_selects_the_sam
     assert rt.dataset_rows(final) == rt.dataset_rows(archive_only)
     assert final.manifest.members == archive_only.manifest.members
     assert final.manifest.content_hash() != archive_only.manifest.content_hash()  # new bindings
+
+
+def test_a_selection_batch_without_its_manifest_is_no_replay(w: World) -> None:
+    """G2-R2 (cursor review): only a completed build is replayed past the binding check. A batch
+    whose manifest never persisted (planted, or a build that died in between) is a new build."""
+    w.listed()
+    arrivals = Arrivals(w)
+    for name in ("IR", "NR"):
+        arrivals.step(name)
+    rt.report(w, at=utc(2023, 12, 15))
+    rest_only = rt.build(w)
+    stale = rest_only.manifest.point_in_time
+    w.h.delete_rows(  # the manifest row is gone; the selection batch stays
+        DATASET_MANIFESTS,
+        EqualTo("manifest_content_hash", rest_only.manifest.content_hash()),  # type: ignore[call-arg, arg-type]
+    )
+    for name in ("IA", "NA", "RC"):
+        arrivals.step(name)
+    before = rt.outputs(w)
+    with pytest.raises(DatasetSpecError, match="does not bind it"):
+        rt.build(w, stale)
+    assert rt.outputs(w) == before

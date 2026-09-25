@@ -80,7 +80,7 @@ def _request(
     return feature_request_from_dataset(
         w.h.adapter,
         w.h.storage,
-        manifests=w.builder().manifests(),
+        builder=w.builder(),
         manifest_content_hash=built.manifest.content_hash(),
         pit_spec=spec,
         observations=_observations(w, spec) if observations is None else observations,
@@ -210,7 +210,7 @@ def test_the_assumption_bound_or_not_is_part_of_the_spec(w: World) -> None:
         feature_request_from_dataset(
             w.h.adapter,
             w.h.storage,
-            manifests=w.builder().manifests(),
+            builder=w.builder(),
             manifest_content_hash=built.manifest.content_hash(),
             pit_spec=plain,
             observations=_observations(w, plain),

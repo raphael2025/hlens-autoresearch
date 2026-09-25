@@ -421,9 +421,10 @@ class QualityReporter:
             snapshot = bindings.get(raw_table)
             if snapshot is None:
                 continue
-            raw = self._adapter.scan_columns(
+            unit_column = rules.raw_channel_of(raw_table).lineage_column
+            found = self._adapter.scan_columns(
                 raw_table,
-                columns=("revision_id",),
+                columns=("revision_id", unit_column),
                 row_filter=And(
                     EqualTo("symbol", symbol),  # type: ignore[call-arg, arg-type]
                     And(
@@ -432,7 +433,8 @@ class QualityReporter:
                     ),
                 ),
                 snapshot_id=snapshot,
-            ).column("revision_id")
+            )
+            raw = found.column("revision_id")
             if not len(raw):
                 continue
             images = self._adapter.scan_columns(
@@ -447,10 +449,29 @@ class QualityReporter:
             derived = pc.is_in(raw, value_set=pc.unique(images))
             missing = len(raw) - (pc.sum(derived).as_py() or 0)
             if missing:
+                # Rows of a unit the normalizer has committed batches for were normalized and are
+                # gone: tampering, not lag (G2-R2: a deleted Canonical row is an integrity error).
+                units = set(pc.filter(found.column(unit_column), pc.invert(derived)).to_pylist())
+                if self._normalized(canonical, bindings[canonical], units):
+                    raise CatalogIntegrityError(
+                        f"{missing} Raw revision(s) of {raw_table} {symbol} {day.isoformat()} "
+                        f"belong to normalized units yet have no {canonical} revision: Canonical "
+                        "rows were deleted"
+                    )
                 raise RawNotDerived(
                     f"{missing} Raw revision(s) of {raw_table} {symbol} {day.isoformat()} have no "
                     f"{canonical} revision at the bound snapshots: normalize their units first"
                 )
+
+    def _normalized(self, canonical: str, head: str, units: set[str]) -> bool:
+        """Whether the Canonical history up to ``head`` holds a normalizer batch of any unit."""
+        prefixes = tuple(
+            f"{rules.NORMALIZER_ID}@{rules.NORMALIZER_VERSION}.{unit}." for unit in units
+        )
+        return any(
+            snapshot.batch_id is not None and snapshot.batch_id.startswith(prefixes)
+            for snapshot in history_from(self._adapter, canonical, head)
+        )
 
     def _occupied(
         self,

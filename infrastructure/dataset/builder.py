@@ -83,6 +83,7 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORTS,
+    DATASET_MANIFESTS,
     QUALITY_EVIDENCE_GAPS,
 )
 from infrastructure.dataset.manifests import ManifestPersisted, ManifestStore
@@ -497,10 +498,25 @@ class DatasetBuilder:
         ]
         if not missing:
             return
-        if snapshots_of_batches(self._adapter, self._table.table, (selection_id,))[selection_id]:
-            return  # a replay: the requirement held when the selection was first materialized
+        snapshots = snapshots_of_batches(self._adapter, self._table.table, (selection_id,))
+        materialized = {item.snapshot_id for item in snapshots[selection_id]}
+        if materialized and self._manifested(materialized):
+            # A replay of a completed build: a persisted manifest already binds this batch's
+            # snapshot, so the requirement held when it was first built (G2 RT-5). A batch alone
+            # (planted, or a build that died before its manifest) proves no such build: it is
+            # judged as a new build (G2-R2, cursor review).
+            return
         table, adr = missing[0]
         raise DatasetSpecError(f"{table} has a snapshot but the PIT spec does not bind it ({adr})")
+
+    def _manifested(self, snapshot_ids: set[str]) -> bool:
+        """Whether a persisted manifest names one of ``snapshot_ids`` of this builder's table."""
+        rows = self._adapter.scan_columns(
+            DATASET_MANIFESTS.table,
+            columns=("dataset_table", "dataset_snapshot_id"),
+            row_filter=EqualTo("dataset_table", self._table.table),  # type: ignore[call-arg, arg-type]
+        ).to_pylist()
+        return any(row["dataset_snapshot_id"] in snapshot_ids for row in rows)
 
     # ------------------------------------------------------------------ selection
 

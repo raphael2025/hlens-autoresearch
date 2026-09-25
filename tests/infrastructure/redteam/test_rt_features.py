@@ -53,7 +53,7 @@ def _run(w: World, built: DatasetBuilt, manifest_hash: str, **spec: Any) -> Feat
     request = feature_request_from_dataset(
         w.h.adapter,
         w.h.storage,
-        manifests=w.builder().manifests(),
+        builder=w.builder(),
         pit_spec=pit,
         observations=bar_observations(selection, pit),
         feature=FEATURE,

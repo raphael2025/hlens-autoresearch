@@ -48,8 +48,7 @@ from core.contracts.universe import ResearchDatasetManifest
 from core.domain.specs import FeatureSpec
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
-from infrastructure.dataset.builder import selection_id_of
-from infrastructure.dataset.manifests import ManifestStore
+from infrastructure.dataset.builder import DatasetBuilder, selection_id_of
 from infrastructure.dataset.selection import SELECTION_SCHEMA
 from infrastructure.feature.observations import (
     FeatureInputBuildError,
@@ -73,14 +72,13 @@ class DatasetBindingError(FeatureInputBuildError):
     """The observations cannot be proven to belong to the manifest's Research Dataset."""
 
 
-def load_manifest(manifests: ManifestStore, manifest_content_hash: str) -> ResearchDatasetManifest:
-    """The persisted manifest, proven by ``ManifestStore.load`` — which re-derives it through its
-    ``DatasetBuilder`` (G2 RT-4) — absent: ``DatasetBindingError``."""
-    if not isinstance(manifests, ManifestStore):
-        raise DatasetBindingError(
-            "a verifying ManifestStore (DatasetBuilder.manifests()) is needed"
-        )
-    manifest = manifests.load(manifest_content_hash)
+def load_manifest(builder: DatasetBuilder, manifest_content_hash: str) -> ResearchDatasetManifest:
+    """The persisted manifest, loaded through ``builder``'s own ``ManifestStore`` — which
+    re-derives it (G2 RT-4) — never through a caller-supplied verifier (G2-R2, cursor review).
+    Absent: ``DatasetBindingError``."""
+    if not isinstance(builder, DatasetBuilder):
+        raise DatasetBindingError("a DatasetBuilder is needed to verify the manifest")
+    manifest = builder.manifests().load(manifest_content_hash)
     if manifest is None:
         raise DatasetBindingError(
             f"no Research Dataset manifest is persisted as {manifest_content_hash}"
@@ -92,7 +90,7 @@ def feature_request_from_dataset(
     adapter: RevisionCatalog,
     storage: StorageAdapter,
     *,
-    manifests: ManifestStore,
+    builder: DatasetBuilder,
     manifest_content_hash: str,
     pit_spec: PointInTimeSpec,
     observations: Sequence[FeatureObservation],
@@ -100,7 +98,7 @@ def feature_request_from_dataset(
     evaluation_times: Sequence[datetime],
 ) -> FeatureRequest:
     """A request for ``feature`` over observations proven to be the manifest's dataset rows."""
-    manifest = load_manifest(manifests, manifest_content_hash)
+    manifest = load_manifest(builder, manifest_content_hash)
     spec = manifest.point_in_time
     if not isinstance(pit_spec, PointInTimeSpec) or pit_spec.content_hash() != spec.content_hash():
         raise DatasetBindingError(
