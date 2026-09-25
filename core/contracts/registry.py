@@ -25,6 +25,13 @@ from core.contracts.collector import (
     CoverageGap,
     SourceBinding,
 )
+from core.contracts.event import (
+    Event,
+    EventInputPoint,
+    EventProviderDescriptor,
+    EventRequest,
+    EventResult,
+)
 from core.contracts.event_bus import BusMessage
 from core.contracts.feature import (
     FeatureObservation,
@@ -283,6 +290,12 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     EquityPoint,
     BacktestResult,
     BacktestProviderDescriptor,
+    # EventProvider 的 DTO（ADR-0036，Phase 3）
+    EventInputPoint,
+    Event,
+    EventRequest,
+    EventResult,
+    EventProviderDescriptor,
 )
 
 

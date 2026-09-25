@@ -1,0 +1,85 @@
+# ADR-0036: EventProvider 契约、事件执行器与首批事件 / 交互算子（Phase 3）
+
+| 字段 | 值 |
+|---|---|
+| 状态 | **Accepted**（2026-09-25） |
+| 日期 | 2026-09-25 |
+| 决策者 | Claude Code（Opus），依 Raphael 2026-09-25 明确授权（红线除外） |
+| 相关 Phase | Phase 3 — Event & Interaction Engine（依 Raphael 2026-09-25 全阶段框架实现指示） |
+| 影响范围 | Contract（`core/contracts/event.py`，additive）、`infrastructure/event/`、`plugins/events/`、`research/events/` |
+| 是否破坏兼容 | 否：只新增 5 个模型与 1 个 Protocol；`EventSpec` 与既有 Schema 逐字节不变；Schema 87 → 92 |
+| 实施状态 | FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
+| 前置 | [ADR-0017](0017-provider-delivery-schedule.md)、[ADR-0012](0012-information-flow-and-kind-invariants.md)、[ADR-0030](0030-feature-provider-contract.md) |
+
+## 背景
+
+roadmap Phase 3 要求识别离散事件及其交互与时序关系，输出 EventSpec + EventProvider、Event 表与共现 / 时序统计；
+验收：事件时间 = 可观测时间、事件定义版本化、交互算子的输出可追溯到上游事件；禁止在事件定义中使用未来确认。
+ADR-0017 要求 Provider 的可执行 Protocol、DTO 与 provider-agnostic 契约测试在首次消费前交付。Phase 2 的
+StateProvider 由另一批次并行实现，本批次不能依赖它。
+
+## 裁决
+
+### 1. 输入：上游序列点（`EventInputPoint`）
+
+一个点 = 一条 Feature / State 序列在 `evaluation_time` 的值（Feature 数值或 State 标签，`None` = 不可计算），带
+`available_time`（可被观测的最早时刻）与 `source_lineage_hash`（**因果**溯源：只依赖 `available_time` 时已知的信息；
+不得是整段上游运行的 `result_hash`，否则过去事件的身份会随未来数据改变——冒烟测试发现并据此确定）。
+`EventRequest` 要求 `(source, evaluation_time)` 唯一、每条序列只追加（按 `evaluation_time` 排序后 `available_time`
+不递减），因此"截至 t 可见"的点总是序列前缀。交互算子另以上游 `Event` 为输入（`upstream_events`）。
+
+State 序列在 Phase 3 使用**本地最小形状**（`infrastructure/event/inputs.py` 的 `StateSeriesPoint`：时间、可用时间、
+标签、逐点 lineage）；Phase 2 合并时在同一文件加一个从 StateProvider 结果到该形状的适配器，事件引擎其余部分不变。
+
+### 2. 事件时间 = 可观测时间
+
+`Event.event_time` 恰好等于所引用输入（点的 `available_time`、上游事件的 `event_time`）的最大值加
+`EventSpec.observable_lag`；事件只能引用在 `event_time` 已可见的输入。`EventResult.check_answers` 对每个事件核对这两条，
+并核对它属于请求的事件定义（`event` + `spec_hash`）、引用的输入都在请求中。
+
+### 3. 截至 `as_of` 的事件表与结构性截断（执行器）
+
+`detect(EventRequest) → EventResult` 返回 `event_time <= as_of` 的全部事件，只能是 `as_of` 可见集合的函数。
+`infrastructure/event/runner.py` 的 `run_events` 对每个检查点 `t` 只把 `t` 的可见集合交给 Provider（与 ADR-0030
+方案 A 同构），并要求截至 `t` 的表恰好是截至更晚检查点的表在 `event_time <= t` 上的限制：事件被回填到更早时间
+（未来确认）或被撤回都 fail closed（`FutureConfirmationError`）。默认检查点 = 可见集合每次变化的时刻 + `as_of`，
+因此每个事件都在它自己的 `event_time` 用当时可见的数据被复核；调用方可传更粗的网格（更便宜、更弱，已在代码中说明）。
+
+### 4. 版本化与参数绑定
+
+`EventSpec` 没有 `params` 字段（冻结契约，H1 不改），首批 Provider 把全部参数写入 `trigger`：
+`{"operator": ..., <params>}` 的规范 JSON。它属于规格内容，因而由 descriptor 中的 spec hash 绑定；Provider 只服务它能从
+自身 trigger 重建出同一哈希的规格。`Event` 带 `event` 引用与 `spec_hash`，`event_id` 为内容哈希（构造时复核）。
+Event 表的逻辑物化见 `infrastructure/event/table.py`（`event_table`）；登记物理 `event.*` Iceberg 表另行决定。
+
+### 5. 首批 Provider 与交互算子（`plugins/events/`）
+
+| Provider | 定义 |
+|---|---|
+| `FeatureThresholdCrossProvider` | 相邻两点跨越固定水平（`up` / `down` / `both`） |
+| `VolatilityBreakoutProvider` | 进入 `value > multiplier * 前 window 个值的均值` 区域（精确 `Decimal` 比较，不精确即拒绝） |
+| `StateSwitchProvider` | 相邻两个可计算点的标签不同（可限定 from / to） |
+| `EventSequenceProvider` | A 之后 `window` 内的 B：每个 B 链接其之前最近的 A |
+| `EventCoOccurrenceProvider` | A、B 相距不超过 `window`（任一顺序） |
+
+交互算子的输出 `upstream_event_ids` 引用它连接的上游事件，逐跳可追溯到 Feature / State 输入。由于 `EventSpec`
+只能依赖 Feature / State（ADR-0012），交互规格声明上游规格的 Feature / State 并集为（传递）输入，把上游事件引用写入
+`lineage`，并在 trigger 中绑定上游引用、上游 spec hash 与窗口；其它定义 / 哈希的上游事件一律拒绝。
+
+水平、窗口、倍数都是**事件定义参数**，不是验证阈值；本 ADR 不引入任何验证阈值或 Profile 数值。
+
+### 6. 契约测试与研究统计
+
+`tests/contract_suites/event.py`：descriptor、夹具自检、确定性、只依赖可见集合（含 lag）、因果扰动、执行器截断下的
+PIT 一致性（不得未来确认）、哈希敏感、未声明规格、非有限数。刻意错误的替身（未来确认的"顶部"、提前一分钟的事件时间）
+被对应检查杀死。`research/events/stats.py`：频率、共现（含独立泊松近似下的期望与 lift）、lead-lag 直方图、重叠 /
+独立性诊断（相邻重叠比例、贪心不重叠计数、到达间隔离散度）；只描述，不判定。
+
+## 后果
+
+- 正面：事件引擎与 Feature 引擎同构（截断 + 回答核对），并多一道结构性 PIT 一致性检查，直接落实"禁止未来确认"。
+- 负面 / 延期：
+  - 一个请求对应一个标的（上游运行按标的）；多标的事件表需要 subject 键，另行决定。
+  - 默认检查点使执行器成本为 O(检查点 × 可见集合)；更大规模需要增量接口（届时另立版本）。
+  - 交互规格的 Feature / State 并集只核对形式（排序、唯一），不回溯核对上游规格——属 Registry。
+  - 物理 Event 表、Registry 登记、与 Phase 2 StateProvider 的适配器、统计在真实数据上的校准均未做（NOT_VALIDATED）。

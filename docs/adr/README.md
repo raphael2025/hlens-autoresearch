@@ -45,6 +45,7 @@
 | [0039](0039-state-strategy-research.md) | 状态 × 策略研究框架（Phase 6） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0040](0040-hypothesis-generation-and-llm.md) | 假设生成、组合算子、预登记账本与 LLMProvider 契约（Phase 7） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0038](0038-strategy-risk-backtest-providers.md) | Strategy / Risk / Backtest Provider 契约、回测器 v1 与研究策略库（Phase 5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0036](0036-event-provider-contract.md) | EventProvider 契约、事件执行器与首批事件 / 交互算子（Phase 3） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0042](0042-synthetic-market-provider.md) | SyntheticMarketProvider 契约与随机游走生成器（Phase 9） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0045](0045-strategy-evolution.md) | 策略演化算子与谱系（Phase 12） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0046](0046-simulated-execution-service.md) | 独立执行服务（仅模拟）、Kill Switch、二道风控与执行阶梯（Phase 13 框架；无实盘） | Accepted（2026-09-25；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |

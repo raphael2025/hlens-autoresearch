@@ -318,6 +318,17 @@ provider-agnostic contract suite 在 `tests/contract_suites/state.py`。
 contract suite 在 `tests/contract_suites/{strategy,risk,backtest}.py`（因果扰动、确定性、未声明规格；回测的买入持有 = 价格比、
 零仓位零 PnL、平价往返只亏成本、改变未来 bar 不改变过去权益）。**诚实边界**：策略是否只依赖可见集合、风控是否真的执行其声明的规则、
 PnL 是否按成本模型计算，由 contract suite 对具体实现检查，契约层不能证明。
+### 2.8 EventProvider 的 Protocol 与 DTO（ADR-0036，Phase 3）
+`core/contracts/event.py` 交付 `EventProvider` Protocol（`descriptor` → `EventProviderDescriptor`；`detect(EventRequest) → EventResult`）
+与 5 个 DTO。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`EventSpec` 与既有 Schema 逐字节不变（参数写入 `trigger` 的规范 JSON）。
+| `EventInputPoint` | 上游 Feature / State 序列的一个点 | `source` 只能是 feature / state；`available_time >= evaluation_time`；值规则同 `FeatureObservation`；`source_lineage_hash` 只能依赖当时已知的信息 |
+| `Event` | Event 表的一行：`event` + `spec_hash`、`event_time`、`attributes`、`input_ids`、`upstream_event_ids`、`event_id` | `kind=event`；至少引用一个输入或上游事件；两个 id 列表严格升序；`event_id` 构造时复核 |
+| `EventRequest` | 截至 `as_of` 的识别请求：输入点 + 上游事件 | 输入按 `(available_time, source, evaluation_time)` 规范排序、`(source, evaluation_time)` 唯一、每条序列只追加；上游事件 `event_id` 唯一且不得是自身定义；`visible_at` / `truncated` 定义可见集合 |
+| `EventResult` | 截至 `as_of` 的事件表 | 事件按 `(event_time, event_id)` 严格升序且不晚于 `as_of`；`result_hash` 复核；`check_answers` 核对事件时间 = 可观测时间、引用的输入在当时可见且在请求中、属于请求的事件定义 |
+| `EventProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_events` 非空，`event:name@semver → spec hash` |
+执行器 `infrastructure/event/runner.py` 对每个检查点只交出可见集合，并要求相邻检查点的事件表一致（不得回填 / 撤回：不得未来确认）。
+provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实边界**：`source_lineage_hash` 是否对应已登记的上游值、
+交互规格声明的 Feature / State 并集是否与上游规格一致，属 Registry。
 
 ## 3. 契约规则
 
@@ -419,8 +430,7 @@ PnL 是否按成本模型计算，由 contract suite 对具体实现检查，契
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（113 份） | `schemas/*.schema.json` |
-| 当前 Schema（104 份） | `schemas/*.schema.json` |
+| 当前 Schema（118 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -495,6 +505,7 @@ B3 的对象 key、`ObjectRef.uri` 与 `CollectedObject.source_uri` 例外地在
 |---|---|
 | `core/domain/` | 实体、值对象、不变量 |
 | `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol、F4 的 `FeatureProvider`（ADR-0030）与 Phase 5 的 `StrategyProvider` / `RiskProvider` / `BacktestProvider`（ADR-0038）；其余研究 Provider Protocol 待首次消费时交付） |
+| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol 与 F4 的 `FeatureProvider`（ADR-0030）、Phase 3 的 `EventProvider`（ADR-0036）；其余研究 Provider Protocol 待首次消费时交付） |
 | `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
 | `core/errors/` | 错误分类 |
 | `core/compat/` | 历史契约 major 的**只读**读取入口（不是迁移服务） |

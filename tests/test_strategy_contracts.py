@@ -76,7 +76,7 @@ def _target(minute: int, weight: str = "1", inputs: int = 1) -> TargetPosition:
 
 def test_p5_appends_seventeen_models_with_exported_schemas(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 113
+    assert len(names) == 118
     # Phases append in merge order: the 17 P5 models form one contiguous block after F4.
     start = min(names.index(model.__name__) for model in P5_MODELS)
     assert start >= 79
