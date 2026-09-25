@@ -242,3 +242,11 @@ Iceberg 已提交行与不可变 Raw，不用 journal 或可变 sidecar。
 
 - ADR-0023 §3～§7；ADR-0027 §1、§4、§11、§13；`03-data.md` §4、§7；`02-domain.md` `SelectedRevisionLineage`
 - D3E-R2 `infrastructure/revision/row_integrity.py`（`PersistedRowVerifier`）
+
+## 实施记录（不改变上述决定）
+
+- **E1-R1（`65aedd6`）批次号**：§6 的 batch id 在实现中多一段计划单元行数：
+  `hlens.canonical.binance-spot.normalizer@<版本>.<raw source revision id>.<unit rows:010d>.<index:08d>`。
+  原因：只含 `<index>` 时，崩溃后续跑与"Raw 单元在首次 normalize 后增长"无法区分，后者的新行若落入全新批次会被
+  静默补全，违反 §6"Raw 单元变化即 fail closed"。加入单元行数后，同一 Raw 单元的续跑复现相同批次号，增长后的单元
+  规划出不同批次号而 fail closed。格式随 normalizer 1.0.0 冻结在 `NORMALIZER_SPEC`；待 Codex / Raphael 确认此记录。

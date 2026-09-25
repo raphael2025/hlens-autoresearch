@@ -239,6 +239,11 @@ NORMALIZER_SPEC: Final[dict[str, Any]] = {
         "position": "archive_line_number (archive) | element_index + 1 (REST)",
         "base": "reserved, never a row",
     },
+    "batches": {
+        "id": "<normalizer>@<version>.<raw source revision id>.<unit rows:010d>.<index:08d>",
+        "why_unit_rows": "a Raw unit that changed after normalization plans other ids and fails "
+        "closed; a crash-recovery re-plan of the same unit reproduces them (ADR-0028 §6, E1-R1)",
+    },
 }
 NORMALIZER_HASH: Final = _digest(NORMALIZER_SPEC)
 NORMALIZER_BINDING: Final = PolicyBinding(
