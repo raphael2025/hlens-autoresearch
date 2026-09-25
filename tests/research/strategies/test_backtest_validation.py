@@ -388,3 +388,17 @@ def test_the_trial_runner_delays_and_restricts_trials() -> None:
     }
     with pytest.raises(ValueError):
         runner.run(CHOSEN, instruments=("NOPE",))
+
+
+def test_an_evaluation_is_never_promotable_without_a_sealed_oos_result(
+    planted: tuple[StrategyEvaluation, FailureRegistry],
+) -> None:
+    """ADR-0041 R18: a research-window result (G0–G4) never unblocks promotion by itself."""
+    result, _ = planted
+    assert result.validation is not None
+    assert not any(g.gate_id.startswith("G5.") for g in result.validation.report.gates)
+    assert result.promotion_blocked_reason is not None
+    if result.status is EvaluationStatus.PASSED:
+        assert result.promotion_blocked_reason == "sealed_oos_not_evaluated"
+    unvalidated = StrategyEvaluation(result.subject, EvaluationStatus.NOT_VALIDATED)
+    assert unvalidated.promotion_blocked_reason == "status_not_validated"

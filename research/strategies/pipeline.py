@@ -78,6 +78,9 @@ _TECHNICAL_FAILURES = frozenset({ReasonCode.NOT_REPRODUCIBLE, ReasonCode.RUN_ERR
 
 
 class EvaluationStatus(StrEnum):
+    """``PASSED`` = every gate the validator ran passed (research window, G0–G4 by default); it is
+    **not** promotable by itself — see ``StrategyEvaluation.promotion_blocked_reason`` (G5)."""
+
     NOT_VALIDATED = "NOT_VALIDATED"
     PASSED = "PASSED"
     INCONCLUSIVE = "INCONCLUSIVE"
@@ -132,6 +135,14 @@ class StrategyEvaluation:
     backtest: BacktestResult | None = None
     validation: BacktestValidation | None = None
     failure: FailureRecord | None = None
+
+    @property
+    def promotion_blocked_reason(self) -> str | None:
+        """``None`` only for a ``PASSED`` evaluation whose report also carries a sealed-OOS (G5)
+        result; everything else is blocked, with the reason (ADR-0041 review fix R18)."""
+        if self.status is not EvaluationStatus.PASSED or self.validation is None:
+            return f"status_{self.status.value.lower()}"
+        return self.validation.promotion_blocked_reason
 
 
 def _risk_step(
