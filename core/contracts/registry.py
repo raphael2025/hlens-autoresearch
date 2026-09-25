@@ -32,6 +32,11 @@ from core.contracts.feature import (
     FeatureValue,
     ProviderDescriptor,
 )
+from core.contracts.knowledge import (
+    KnowledgeProviderDescriptor,
+    KnowledgeQuery,
+    KnowledgeResult,
+)
 from core.contracts.profile_selection import (
     ExperimentMetadata,
     OosUnsealing,
@@ -203,6 +208,10 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     FeatureValue,
     FeatureResult,
     ProviderDescriptor,
+    # KnowledgeProvider 的 DTO（ADR-0034，Phase 0.5）
+    KnowledgeQuery,
+    KnowledgeProviderDescriptor,
+    KnowledgeResult,
 )
 
 

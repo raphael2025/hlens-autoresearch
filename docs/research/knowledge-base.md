@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 空（Architecture Bootstrap） |
+| 状态 | 首批 6 条种子条目（Phase 0.5 框架实现，ADR-0034；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED） |
 | 首次填充 | Phase 0.5 |
 
 公开研究知识的结构化存储。知识条目是**待检验的主张**，不是已验证结论。
@@ -35,4 +35,11 @@
 
 | id | claim | source | evidence | status |
 |---|---|---|---|---|
-| — | 暂无条目 | — | — | — |
+| strategy_time_series_momentum | 过去 12 个月超额收益正向预测下月超额收益（多类期货） | Moskowitz, Ooi, Pedersen (2012), JFE | E4 | unverified |
+| strategy_crypto_time_series_momentum | 加密货币周度收益存在时间序列动量 | Liu, Tsyvinski (2021), RFS | E2 | unverified |
+| factor_crypto_market_size_momentum | 市场、规模、动量三因子解释加密货币横截面 | Liu, Tsyvinski, Wu (2022), JF | E3 | unverified |
+| risk_volatility_managed_portfolios | 按近期已实现方差反向缩放暴露提高夏普 | Moreira, Muir (2017), JF | E3 | unverified |
+| risk_volatility_managed_portfolios_out_of_sample | 可实施的样本外波动率管理策略并不系统性跑赢（反证） | Cederburg et al. (2020), JFE | E3 | unverified |
+| state_cross_exchange_price_deviations | 同一加密货币跨交易所存在持续的价格偏离，跨国大于境内 | Makarov, Schoar (2020), JFE | E2 | unverified |
+
+条目以 JSON 存于 `docs/research/knowledge/`，由 `plugins/knowledge/LocalKnowledgeProvider` 检索（ADR-0034）。
