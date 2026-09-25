@@ -308,6 +308,16 @@ provider-agnostic contract suite 在 `tests/contract_suites/feature.py`（确定
 `StateSpec` 没有 `params` 字段：模型参数以规范形式 `<method>:<canonical JSON>` 编码进 `StateSpec.method`（`state_method` / `parse_state_method`），
 因而受 spec hash 绑定。执行器 `infrastructure/state/runner.py` 对每个评估时刻只把可见（含训练窗口）输入交给 Provider，训练型规格必须固定 `seed`；
 provider-agnostic contract suite 在 `tests/contract_suites/state.py`。
+### 2.7 Strategy / Risk / Backtest Provider 的 Protocol 与 DTO（ADR-0038，Phase 5）
+`core/contracts/strategy.py` 交付三个 Protocol 与 17 个 DTO（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）。不升 `CONTRACT_SCHEMA_VERSION`，
+不新增 `Kind`；`StrategySpec` / `RiskPolicy` 与既有 Schema 逐字节不变。全部确定性、全部 `Decimal`（浮点与 NaN / ±Infinity 拒绝）。
+| Protocol | 成员 | DTO 与契约层不变量 |
+| `StrategyProvider` | `target_positions(StrategyRequest) → StrategyResult` | `SignalObservation` 只能是 feature / state / event（Outcome 永不作为输入）；`StrategyRequest.visible_at(t)` = `available_time <= t`、同键取最晚可用；`knowledge_time <= knowledge_cutoff` 构造即检查；`TargetPosition` 零输入必须为 0、输入时间不晚于决策时刻；`StrategyResult.check_answers` 核对 `decision_times × instruments` 一一对应与输入时间属于可见集合 |
+| `RiskProvider` | `constrain(RiskRequest) → RiskResult` | 请求只含一个决策时刻，`available_time > decision_time` 的信号与晚于它的 `PortfolioState` 构造即拒绝；`ConstrainedPosition.binding_rules` 为空当且仅当仓位未被调整；`check_answers` 核对一一对应并原样回显请求权重 |
+| `BacktestProvider` | `run(BacktestRequest) → BacktestResult` | `BacktestCostModel`（费率 + 不利滑点率，`cost_model:name@version`）；`PriceBar.available_time >= interval_end`；`Fill.fill_time >= decision_time`；descriptor 只能 `deterministic` + `simulation_only` + `next_bar_open`；`BacktestResult` 的费用 / 滑点合计与 `result_hash` 构造时复核，`check_answers` 核对每笔成交恰在执行模型规定的 bar 开盘 |
+contract suite 在 `tests/contract_suites/{strategy,risk,backtest}.py`（因果扰动、确定性、未声明规格；回测的买入持有 = 价格比、
+零仓位零 PnL、平价往返只亏成本、改变未来 bar 不改变过去权益）。**诚实边界**：策略是否只依赖可见集合、风控是否真的执行其声明的规则、
+PnL 是否按成本模型计算，由 contract suite 对具体实现检查，契约层不能证明。
 
 ## 3. 契约规则
 
@@ -409,7 +419,8 @@ provider-agnostic contract suite 在 `tests/contract_suites/state.py`。
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（96 份） | `schemas/*.schema.json` |
+| 当前 Schema（113 份） | `schemas/*.schema.json` |
+| 当前 Schema（104 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -483,7 +494,7 @@ B3 的对象 key、`ObjectRef.uri` 与 `CollectedObject.source_uri` 例外地在
 | 路径 | 内容 |
 |---|---|
 | `core/domain/` | 实体、值对象、不变量 |
-| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol 与 F4 的 `FeatureProvider`（ADR-0030）；其余研究 Provider Protocol 待首次消费时交付） |
+| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol、F4 的 `FeatureProvider`（ADR-0030）与 Phase 5 的 `StrategyProvider` / `RiskProvider` / `BacktestProvider`（ADR-0038）；其余研究 Provider Protocol 待首次消费时交付） |
 | `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
 | `core/errors/` | 错误分类 |
 | `core/compat/` | 历史契约 major 的**只读**读取入口（不是迁移服务） |

@@ -1651,7 +1651,7 @@ def test_b2_only_appends_to_the_registry() -> None:
     assert names[: len(PRE_B2_MODEL_NAMES)] == PRE_B2_MODEL_NAMES
     assert names[len(PRE_B2_MODEL_NAMES) : b2_end] == tuple(model.__name__ for model in B2_MODELS)
     assert b2_end == 59
-    assert len(CONTRACT_MODELS) == 96
+    assert len(CONTRACT_MODELS) == 113
 
 
 @pytest.mark.parametrize("name", sorted(FROZEN_SCHEMA_SHA256))

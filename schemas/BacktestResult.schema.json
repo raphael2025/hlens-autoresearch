@@ -1,0 +1,201 @@
+{
+  "$defs": {
+    "EquityPoint": {
+      "additionalProperties": false,
+      "description": "一个时点（bar 收盘）的组合估值：`equity = cash + Σ quantity × mark_price`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "time": {
+          "format": "date-time",
+          "title": "Time",
+          "type": "string"
+        },
+        "cash": {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Cash",
+          "type": "string"
+        },
+        "equity": {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Equity",
+          "type": "string"
+        },
+        "gross_exposure": {
+          "ge": 0,
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Gross Exposure",
+          "type": "string"
+        }
+      },
+      "required": [
+        "time",
+        "cash",
+        "equity",
+        "gross_exposure"
+      ],
+      "title": "EquityPoint",
+      "type": "object"
+    },
+    "Fill": {
+      "additionalProperties": false,
+      "description": "一笔模拟成交（不是订单；v1 没有任何下单能力）。\n\n`fill_time`（成交 bar 的 `interval_start`）不得早于 `decision_time`——结构性无未来函数。\n`slippage_cost = |quantity| × |fill_price − reference_price|`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "instrument": {
+          "minLength": 1,
+          "title": "Instrument",
+          "type": "string"
+        },
+        "decision_time": {
+          "format": "date-time",
+          "title": "Decision Time",
+          "type": "string"
+        },
+        "fill_time": {
+          "format": "date-time",
+          "title": "Fill Time",
+          "type": "string"
+        },
+        "reference_price": {
+          "gt": 0,
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Reference Price",
+          "type": "string"
+        },
+        "fill_price": {
+          "gt": 0,
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Fill Price",
+          "type": "string"
+        },
+        "quantity": {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Quantity",
+          "type": "string"
+        },
+        "fee": {
+          "ge": 0,
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Fee",
+          "type": "string"
+        },
+        "slippage_cost": {
+          "ge": 0,
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "title": "Slippage Cost",
+          "type": "string"
+        }
+      },
+      "required": [
+        "instrument",
+        "decision_time",
+        "fill_time",
+        "reference_price",
+        "fill_price",
+        "quantity",
+        "fee",
+        "slippage_cost"
+      ],
+      "title": "Fill",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次 `run` 的结果。\n\n- `fills` 按 `(fill_time, instrument)` 升序；`equity_curve` 按 `time` 严格升序、非空；\n- `final_equity` 等于权益曲线的最后一点；`total_fees` / `total_slippage` 等于各成交之和；\n- `unexecuted_targets`：没有成交的目标数（其后无 bar，或在成交前被同一标的更晚的目标取代）；\n- `result_hash` 构造时复核。PnL = `final_equity − initial_equity`（已扣除费用与滑点）。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "request_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Hash",
+      "type": "string"
+    },
+    "provider": {
+      "pattern": "^[a-z][a-z0-9_]*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "provider_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Provider Hash",
+      "type": "string"
+    },
+    "initial_equity": {
+      "gt": 0,
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Initial Equity",
+      "type": "string"
+    },
+    "fills": {
+      "items": {
+        "$ref": "#/$defs/Fill"
+      },
+      "title": "Fills",
+      "type": "array"
+    },
+    "equity_curve": {
+      "items": {
+        "$ref": "#/$defs/EquityPoint"
+      },
+      "minItems": 1,
+      "title": "Equity Curve",
+      "type": "array"
+    },
+    "final_equity": {
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Final Equity",
+      "type": "string"
+    },
+    "total_fees": {
+      "ge": 0,
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total Fees",
+      "type": "string"
+    },
+    "total_slippage": {
+      "ge": 0,
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Total Slippage",
+      "type": "string"
+    },
+    "unexecuted_targets": {
+      "minimum": 0,
+      "title": "Unexecuted Targets",
+      "type": "integer"
+    },
+    "result_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Result Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_hash",
+    "provider",
+    "provider_hash",
+    "initial_equity",
+    "fills",
+    "equity_curve",
+    "final_equity",
+    "total_fees",
+    "total_slippage",
+    "unexecuted_targets",
+    "result_hash"
+  ],
+  "title": "BacktestResult",
+  "type": "object"
+}

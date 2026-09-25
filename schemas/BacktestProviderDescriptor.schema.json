@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "BacktestProvider 的身份：只能确定性、只能模拟、v1 只有 `next_bar_open` 执行模型。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Version",
+      "type": "string"
+    },
+    "deterministic": {
+      "const": true,
+      "title": "Deterministic",
+      "type": "boolean"
+    },
+    "simulation_only": {
+      "const": true,
+      "title": "Simulation Only",
+      "type": "boolean"
+    },
+    "execution_model": {
+      "const": "next_bar_open",
+      "title": "Execution Model",
+      "type": "string"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "deterministic",
+    "simulation_only",
+    "execution_model"
+  ],
+  "title": "BacktestProviderDescriptor",
+  "type": "object"
+}

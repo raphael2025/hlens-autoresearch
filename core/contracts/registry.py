@@ -65,6 +65,25 @@ from core.contracts.state import (
     StateValue,
 )
 from core.contracts.storage import ObjectRef, PublishResult, StagedObject, StageRequest
+from core.contracts.strategy import (
+    BacktestCostModel,
+    BacktestProviderDescriptor,
+    BacktestRequest,
+    BacktestResult,
+    ConstrainedPosition,
+    EquityPoint,
+    Fill,
+    PortfolioState,
+    PriceBar,
+    RiskProviderDescriptor,
+    RiskRequest,
+    RiskResult,
+    SignalObservation,
+    StrategyProviderDescriptor,
+    StrategyRequest,
+    StrategyResult,
+    TargetPosition,
+)
 from core.contracts.synthetic import (
     PlantedEffect,
     SyntheticBar,
@@ -246,6 +265,24 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     StateValue,
     StateResult,
     StateProviderDescriptor,
+    # Strategy / Risk / Backtest Provider 的 DTO（ADR-0038，Phase 5）
+    SignalObservation,
+    StrategyRequest,
+    TargetPosition,
+    StrategyResult,
+    StrategyProviderDescriptor,
+    PortfolioState,
+    RiskRequest,
+    ConstrainedPosition,
+    RiskResult,
+    RiskProviderDescriptor,
+    BacktestCostModel,
+    PriceBar,
+    BacktestRequest,
+    Fill,
+    EquityPoint,
+    BacktestResult,
+    BacktestProviderDescriptor,
 )
 
 

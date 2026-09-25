@@ -77,6 +77,10 @@ Phase 0 冻结的是本节的**概念层内容**：每类 Provider 的职责、�
 `knowledge_time <= knowledge_cutoff` 的输入交给 Provider；首批实现（bar 对数收益、滚动已实现波动率、滚动成交量和）在
 `plugins/features/`，窗口等参数属于各自 `FeatureSpec`，由 descriptor 中的 spec hash 绑定。
 
+`StrategyProvider`、`RiskProvider`、`BacktestProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 5 框架批次交付
+（[ADR-0038](../adr/0038-strategy-risk-backtest-providers.md)，02-domain.md §2.6）：回测器 v1 `plugins/backtest/BarBacktester`
+（下一根 bar 开盘成交，费率 + 滑点，只是模拟）；研究期策略与风控在 `research/strategies/`，未晋升。
+
 另有基础设施 Adapter（不属于研究插件）：`CollectorAdapter`、`StorageAdapter`、`CatalogAdapter`、`ComputeEngineAdapter`、`EventBusAdapter`。
 其中 `CollectorAdapter`、`StorageAdapter`、`CatalogAdapter` 的可执行 Protocol、DTO 与 provider-agnostic contract suite
 已于 Phase 1 B3 交付（02-domain.md §2.4、`tests/contract_suites/`），尚无实现；`ComputeEngineAdapter`、`EventBusAdapter`

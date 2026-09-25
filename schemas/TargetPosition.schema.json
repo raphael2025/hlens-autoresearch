@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "description": "一个决策时刻、一个标的的目标仓位。\n\n- `target_weight`：带符号的目标权重（名义敞口 / 组合权益；`1` = 满仓多头，`-1` = 满仓空头）；\n- `inputs_used` / `latest_input_available_time`：计算它实际使用的观察条数与其中最晚的\n  `available_time`；为 0 当且仅当后者为空，此时目标只能是 `0`（没有信息就不持仓，不填补）。",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "decision_time": {
+      "format": "date-time",
+      "title": "Decision Time",
+      "type": "string"
+    },
+    "instrument": {
+      "minLength": 1,
+      "title": "Instrument",
+      "type": "string"
+    },
+    "target_weight": {
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Target Weight",
+      "type": "string"
+    },
+    "inputs_used": {
+      "minimum": 0,
+      "title": "Inputs Used",
+      "type": "integer"
+    },
+    "latest_input_available_time": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Latest Input Available Time"
+    }
+  },
+  "required": [
+    "decision_time",
+    "instrument",
+    "target_weight",
+    "inputs_used"
+  ],
+  "title": "TargetPosition",
+  "type": "object"
+}
