@@ -37,7 +37,7 @@ diverged (``research.loop.durable``, **External anchor**).
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from os import PathLike
@@ -327,8 +327,9 @@ def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
     Includes the budgets (the ``LoopBudget`` payload and the whole ``OosUnsealBudget``): a state
     directory is bound to the budgets it was opened with, and changing them on reopening is
     refused (a new budget is a human decision: a new ``state_dir`` / ``loop_id``). The cadence is
-    exact (whole microseconds, ``timedelta``'s resolution). Compute declarations and the LLM
-    provider are not part of it.
+    exact (whole microseconds, ``timedelta``'s resolution), and so are the decision / warm-up /
+    sealed decision steps; the evolution plan's numbers, the initial equity, the feature chunk size
+    and the explicit G4 parameters are bound too. Compute declarations and the LLM provider are not.
     """
     wiring = config.wiring
     return {
@@ -351,7 +352,32 @@ def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
         "cost_model": wiring.cost_model.content_hash(),
         "code_commit": wiring.code_commit,
         "environment_lock": wiring.environment_lock,
-        "evolution": wiring.evolution is not None,
+        "evolution": _evolution_payload(wiring.evolution),
+        "decision_step_microseconds": wiring.decision_step // timedelta(microseconds=1),
+        "decision_warmup_microseconds": wiring.decision_warmup // timedelta(microseconds=1),
+        "sealed_decision_step_microseconds": (
+            None
+            if wiring.sealed_decision_step is None
+            else wiring.sealed_decision_step // timedelta(microseconds=1)
+        ),
+        "feature_chunk_bars": wiring.feature_chunk_bars,
+        "initial_equity": str(wiring.initial_equity),
+        "robustness": {  # explicit G4 parameters, as exact text (no float in the fingerprint)
+            name: None if value is None else repr(value)
+            for name, value in sorted(asdict(wiring.robustness).items())
+        },
+    }
+
+
+def _evolution_payload(plan: EvolutionPlan | None) -> dict[str, Any] | None:
+    """The evolution plan's declared numbers (``provider_for`` is code: ``code_commit``)."""
+    if plan is None:
+        return None
+    return {
+        "every_rounds": plan.every_rounds,
+        "parents_per_round": plan.parents_per_round,
+        "compute_seconds": str(plan.compute_seconds),
+        "minimum_meaningful_effect": plan.minimum_meaningful_effect,
     }
 
 

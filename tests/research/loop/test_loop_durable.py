@@ -527,6 +527,21 @@ def test_the_fingerprint_binds_the_exact_cadence() -> None:
     assert loop_fingerprint(replace(base)) == loop_fingerprint(base)
 
 
+def test_the_fingerprint_binds_decision_steps_and_g4_parameters() -> None:
+    """Everything that changes what a round computes is part of the state directory's identity."""
+    base = _config()
+    wiring = base.wiring
+    variants = [
+        replace(wiring, decision_step=wiring.decision_step + timedelta(microseconds=1)),
+        replace(wiring, decision_warmup=wiring.decision_warmup + timedelta(minutes=1)),
+        replace(wiring, sealed_decision_step=timedelta(minutes=7)),
+        replace(wiring, initial_equity=wiring.initial_equity + 1),
+        replace(wiring, robustness=replace(wiring.robustness, cscv_partitions=6)),
+    ]
+    for changed in variants:
+        assert loop_fingerprint(replace(base, wiring=changed)) != loop_fingerprint(base)
+
+
 # ---------------------------------------------------------------------------- external anchor
 
 
