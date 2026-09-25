@@ -12,7 +12,7 @@ import pytest
 from pyiceberg.expressions import EqualTo
 
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
-from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORTS
+from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORTS, QUALITY_EVIDENCE_GAPS
 from infrastructure.pit.selector import PIT_BINDING
 from infrastructure.quality import reporter as q
 from infrastructure.quality.reporter import QualityReporter, QualityReportError
@@ -82,10 +82,81 @@ def test_a_bar_partition_report_lists_gaps_inputs_and_evidence_gaps(h: RestHarne
     ]
     assert _events(row, "competing_heads") == []  # the D-33 edges order both keys
     bars = h.rows(c.BARS)
-    assert sorted(g["revision_id"] for g in row["evidence_gaps"]) == sorted(
-        b["revision_id"] for b in bars
+    assert sorted(
+        g["revision_id"] for g in q.evidence_gaps_of(h.adapter, row["report_id"])
+    ) == sorted(b["revision_id"] for b in bars)
+    assert all(
+        g["gap"].startswith("inherited from ")
+        for g in q.evidence_gaps_of(h.adapter, row["report_id"])
     )
-    assert all(g["gap"].startswith("inherited from ") for g in row["evidence_gaps"])
+
+
+# ------------------------------------------------------------------ ADR-0031 (QG-2)
+
+GAPS = QUALITY_EVIDENCE_GAPS
+
+
+def _gap_batches(h: RestHarness, report_id: str) -> list[tuple[str | None, int | None]]:
+    return [
+        (s.batch_id, s.added_rows)
+        for s in h.history(GAPS.table)
+        if s.batch_id is not None and s.batch_id.startswith(f"{report_id}.gaps.")
+    ]
+
+
+def test_gaps_live_in_their_own_table_in_bounded_batches(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
+    _ingest(h, "klines_1m", ss.kline_items(3))
+    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    assert out.row["evidence_gaps"] == []
+    gaps = q.evidence_gaps_of(h.adapter, out.report_id)
+    assert len(gaps) == 6  # 3 archive + 3 REST bar revisions, all without publication evidence
+    assert {g["subject_symbol"] for g in gaps} == {SYMBOL}
+    assert {g["subject_start"] for g in gaps} == {utc(2023, 11, 14)}
+    assert _gap_batches(h, out.report_id) == [
+        (f"{out.report_id}.gaps.00000000", 2),
+        (f"{out.report_id}.gaps.00000001", 2),
+        (f"{out.report_id}.gaps.00000002", 2),
+    ]
+    [event] = _events(out.row, "evidence_gaps")
+    assert event["detail"].startswith("6 evidence gap(s) in 3 batch(es)")
+
+
+def test_a_reused_report_verifies_its_gaps_without_writing(h: RestHarness) -> None:
+    _ingest(h, "klines_1m", ss.kline_items(2))
+    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    heads = (h.head(GAPS.table), h.head(REPORTS.table))
+    again = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    assert again.reused and again.row == first.row
+    assert (h.head(GAPS.table), h.head(REPORTS.table)) == heads
+
+
+@pytest.mark.parametrize("tamper", ["delete", "extra"])
+def test_a_reused_report_with_tampered_gaps_fails_closed(h: RestHarness, tamper: str) -> None:
+    _ingest(h, "klines_1m", ss.kline_items(2))
+    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
+        "klines_1m", SYMBOL, DAY
+    )
+    [gap, *_] = q.evidence_gaps_of(h.adapter, first.report_id)
+    if tamper == "delete":
+        h.delete_rows(GAPS, EqualTo("revision_id", gap["revision_id"]))  # type: ignore[call-arg, arg-type]
+        heads_before = h.head(GAPS.table)
+    else:
+        h.forge_rows(GAPS, [gap], f"{first.report_id}.gaps.00000099")
+        heads_before = h.head(GAPS.table)
+    clock = StepClock(start=K_Q)
+    # A deleted row leaves every batch snapshot intact: the rows themselves are digested.
+    with pytest.raises(CatalogIntegrityError, match="gap row|belong to no gap"):
+        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    assert clock.calls == 0 and h.head(GAPS.table) == heads_before
 
 
 def test_competing_heads_and_trade_id_jumps_are_reported(h: RestHarness) -> None:
@@ -154,10 +225,10 @@ def test_a_trade_day_is_proven_hour_by_hour_into_one_report(h: RestHarness) -> N
     [jump] = _events(out.row, "agg_trade_id_discontinuity")
     assert jump["detail"] == "aggregate trade ids jump from 101 to 105 (3 id(s) absent)"
     rows = h.rows(c.TRADES)
-    assert [gap["revision_id"] for gap in out.row["evidence_gaps"]] == sorted(
+    assert [gap["revision_id"] for gap in q.evidence_gaps_of(h.adapter, out.report_id)] == sorted(
         row["revision_id"] for row in rows if row["availability_evidence_gap"] is not None
     )
-    assert len(out.row["evidence_gaps"]) == 4
+    assert len(q.evidence_gaps_of(h.adapter, out.report_id)) == 4
 
 
 def test_a_replay_reuses_the_report_and_new_data_makes_a_new_one(h: RestHarness) -> None:
@@ -221,7 +292,7 @@ def test_a_committed_report_before_what_it_describes_is_never_reused(h: RestHarn
     reporter = QualityReporter(h.adapter, h.storage, clock=StepClock(start=early))
     bindings = reporter._pinned_heads(q._INPUT_TABLES["agg_trades"])
     report_id = q.quality_report_id(c.TRADES.table, SYMBOL, DAY, bindings)
-    partition = reporter._survey("agg_trades", SYMBOL, DAY, bindings)
+    partition = reporter._survey("agg_trades", SYMBOL, DAY, bindings, report_id, verify=False)
     body = reporter._body("agg_trades", SYMBOL, DAY, bindings, report_id, partition)
     reporter._commit(report_id, reporter._row(body, early))
     clock = StepClock(start=K_Q)

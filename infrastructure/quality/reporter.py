@@ -52,9 +52,11 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_REST_KLINES_1M,
     BINANCE_SPOT_REST_RESPONSES,
     DATA_QUALITY_REPORTS,
+    QUALITY_EVIDENCE_GAPS,
 )
 from infrastructure.pit.selector import PIT_BINDING, REQUIRED_BINDINGS, PitSelection, PitSelector
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
+from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
 from infrastructure.revision.store import BatchCommit
 
 __all__ = [
@@ -65,11 +67,12 @@ __all__ = [
     "QualityReportError",
     "QualityReported",
     "QualityReporter",
+    "evidence_gaps_of",
     "quality_report_id",
 ]
 
 QUALITY_RULE_ID: Final = "hlens.quality.canonical-partition"
-QUALITY_RULE_VERSION: Final = "1.0.0"
+QUALITY_RULE_VERSION: Final = "2.0.0"
 QUALITY_RULE_SPEC: Final[dict[str, Any]] = {
     "rule": QUALITY_RULE_ID,
     "version": QUALITY_RULE_VERSION,
@@ -86,9 +89,13 @@ QUALITY_RULE_SPEC: Final[dict[str, Any]] = {
         "agg_trade_id_discontinuity": "jump between consecutive aggregate trade ids of the day",
         "bar_1m_invariant_violation": "low/high do not bound open/close, low > high, or a taker "
         "volume exceeds its total",
+        "evidence_gaps": "number of evidence-gap rows and batches of this report (ADR-0031)",
     },
     "thresholds": "none (outliers need calibrated thresholds: a later rule version)",
-    "evidence_gaps": "every Canonical revision of the partition with an evidence gap",
+    "evidence_gaps": "every Canonical revision of the partition with an evidence gap, as rows of "
+    "quality.availability_evidence_gaps in batches <report_id>.gaps.<index:08d> (<= 25000 rows, "
+    "sorted by revision_id, in slice order) committed before the report row; the report row "
+    "lists none and carries an evidence_gaps event with the counts (ADR-0031)",
     "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of the rule hashes used "
     "(this set, the PIT rule, its required policies) and the bound snapshots>",
     "knowledge_time": "first commit's clock reading, reused by every replay",
@@ -138,7 +145,8 @@ class _Partition:
     conflicts: dict[str, set[str]] = field(default_factory=dict)
     bars: list[Mapping[str, Any]] = field(default_factory=list)
     trade_ids: list[int] = field(default_factory=list)
-    gaps: list[tuple[str, str]] = field(default_factory=list)
+    gap_rows: int = 0
+    gap_batches: int = 0
 
     def absorb(self, selection: PitSelection) -> None:
         times = [
@@ -257,13 +265,16 @@ class QualityReporter:
             if canonical not in bindings:
                 raise QualityReportError(f"{canonical} has no snapshot: nothing to report on")
             report_id = quality_report_id(canonical, symbol, day, bindings)
-            partition = self._survey(data_type, symbol, day, bindings)
+            committed = self._committed(report_id)
+            # A committed report is only ever verified: its gap batches are checked, never written.
+            partition = self._survey(
+                data_type, symbol, day, bindings, report_id, verify=committed is not None
+            )
             body = self._body(data_type, symbol, day, bindings, report_id, partition)
             # Every fact the report describes — revisions and the mapped precedence edges that
             # decide its heads — must be known by its knowledge_time (E1-R3 / review C-2), for a
             # fresh report and for a committed one it would reuse alike (E1-R4).
             floor = partition.floor
-            committed = self._committed(report_id)
             if committed is not None:
                 if floor is not None and committed["knowledge_time"] < floor:
                     raise CatalogIntegrityError(
@@ -304,10 +315,23 @@ class QualityReporter:
         raise QualityReportError("the input tables kept moving")
 
     def _survey(
-        self, data_type: str, symbol: str, day: date, bindings: Mapping[str, str]
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        bindings: Mapping[str, str],
+        report_id: str,
+        *,
+        verify: bool,
     ) -> _Partition:
-        """The proven partition, selected slice by slice (G3-S3); nothing else is kept."""
+        """The proven partition, selected slice by slice (G3-S3); gaps go to their own table.
+
+        Each slice's evidence gaps are written (or, for a committed report, verified) as batches
+        of ``quality.availability_evidence_gaps`` as soon as the slice is proven (ADR-0031), so
+        nothing but counts is kept across slices.
+        """
         partition = _Partition()
+        gaps = _GapWriter(self._adapter, report_id, symbol, day, verify=verify)
         # One selector for every slice: it proves each unit and day once under these bindings.
         self._selector = PitSelector(self._adapter, self._storage)
         canonical = rules.CANONICAL_TABLES[data_type].table
@@ -322,11 +346,15 @@ class QualityReporter:
                 partition.bars.extend(rows)
             else:
                 partition.trade_ids.extend(int(row["venue_trade_id"]) for row in rows)
-            partition.gaps.extend(
-                (row["revision_id"], row["availability_evidence_gap"])
-                for row in rows
-                if row["availability_evidence_gap"] is not None
+            gaps.add(
+                canonical,
+                [
+                    (row["revision_id"], row["availability_evidence_gap"])
+                    for row in rows
+                    if row["availability_evidence_gap"] is not None
+                ],
             )
+        partition.gap_rows, partition.gap_batches = gaps.close()
         return partition
 
     def _occupied(
@@ -415,10 +443,18 @@ class QualityReporter:
             events.extend(_bar_events(canonical, partition.bars, start))
         else:
             events.extend(_trade_events(canonical, partition.trade_ids))
-        gaps = [
-            {"table": canonical, "revision_id": revision, "gap": gap}
-            for revision, gap in sorted(partition.gaps)
-        ]
+        events.append(
+            _event(
+                "evidence_gaps",
+                table=QUALITY_EVIDENCE_GAPS.table,
+                key=None,
+                revisions=(),
+                start=start,
+                end=start + _DAY,
+                detail=f"{partition.gap_rows} evidence gap(s) in {partition.gap_batches} "
+                f"batch(es) {report_id}.gaps.* of {QUALITY_EVIDENCE_GAPS.table}",
+            )
+        )
         return {
             "report_id": report_id,
             "quality_rule_id": QUALITY_RULE_ID,
@@ -430,7 +466,7 @@ class QualityReporter:
             "subject_start": start,
             "subject_end": start + _DAY,
             "events": events,
-            "evidence_gaps": gaps,
+            "evidence_gaps": [],
         }
 
     def _rows(
@@ -510,6 +546,158 @@ class QualityReporter:
         if info is None:
             raise TableNotFound(f"table {table} does not exist; create the Phase 1 tables first")
         return None if info.current_snapshot is None else info.current_snapshot.snapshot_id
+
+
+_GAP_BATCH_ROWS: Final = 25_000
+_DIGEST_MODULUS: Final = 1 << 256
+
+
+def _gap_digest(row: Mapping[str, Any]) -> int:
+    document = {
+        "quality_report_id": row["quality_report_id"],
+        "table": row["table"],
+        "revision_id": row["revision_id"],
+        "gap": row["gap"],
+        "subject_symbol": row["subject_symbol"],
+        "subject_start": row["subject_start"].isoformat(),
+    }
+    return int(_digest(document), 16)
+
+
+_GAP_INDEX_DIGITS: Final = 8
+
+
+class _GapWriter:
+    """Streams a report's evidence gaps into ``quality.availability_evidence_gaps`` (ADR-0031).
+
+    Batches ``<report_id>.gaps.<index:08d>`` of at most 25 000 rows, sorted by ``revision_id``
+    within each slice, numbered in slice order. Writing replays idempotently (same id, same
+    content); with ``verify`` nothing is written and every batch must already be committed with
+    exactly these rows, and no further batch of the report may exist.
+    """
+
+    def __init__(
+        self, adapter: Any, report_id: str, symbol: str, day: date, *, verify: bool
+    ) -> None:
+        self._adapter = adapter
+        self._report_id = report_id
+        self._symbol = symbol
+        self._start = datetime.combine(day, time(), tzinfo=UTC)
+        self._verify = verify
+        self._rows = 0
+        self._index = 0
+        self._digest = 0
+        self._committed: dict[str, list[Any]] | None = None
+
+    def _batch_id(self, index: int) -> str:
+        return f"{self._report_id}.gaps.{index:0{_GAP_INDEX_DIGITS}d}"
+
+    def _history(self) -> dict[str, list[Any]]:
+        if self._committed is None:
+            found: dict[str, list[Any]] = {}
+            prefix = f"{self._report_id}.gaps."
+            info = self._adapter.load_table(QUALITY_EVIDENCE_GAPS.table)
+            if info is None:
+                raise TableNotFound(f"table {QUALITY_EVIDENCE_GAPS.table} does not exist")
+            head = None if info.current_snapshot is None else info.current_snapshot.snapshot_id
+            for snapshot in history_from(self._adapter, QUALITY_EVIDENCE_GAPS.table, head):
+                if snapshot.batch_id is not None and snapshot.batch_id.startswith(prefix):
+                    found.setdefault(snapshot.batch_id, []).append(snapshot)
+            self._committed = found
+        return self._committed
+
+    def add(self, table: str, gaps: Sequence[tuple[str, str]]) -> None:
+        ordered = sorted(gaps)
+        for offset in range(0, len(ordered), _GAP_BATCH_ROWS):
+            rows = [
+                {
+                    "quality_report_id": self._report_id,
+                    "table": table,
+                    "revision_id": revision,
+                    "gap": gap,
+                    "subject_symbol": self._symbol,
+                    "subject_start": self._start,
+                }
+                for revision, gap in ordered[offset : offset + _GAP_BATCH_ROWS]
+            ]
+            self._put(self._batch_id(self._index), rows)
+            self._index += 1
+            self._rows += len(rows)
+            for row in rows:
+                self._digest = (self._digest + _gap_digest(row)) % _DIGEST_MODULUS
+
+    def _put(self, batch_id: str, rows: list[dict[str, Any]]) -> None:
+        definition = QUALITY_EVIDENCE_GAPS
+        if self._verify:
+            snapshots = self._history().get(batch_id, [])
+            if len(snapshots) != 1:
+                raise CatalogIntegrityError(
+                    f"evidence-gap batch {batch_id} is committed {len(snapshots)} time(s)"
+                )
+            check_batch_snapshot(definition, batch_id, snapshots[0], rows)
+            return
+        table = batch(definition, rows)
+        info = self._adapter.load_table(definition.table)
+        parent = (
+            None
+            if info is None or info.current_snapshot is None
+            else (info.current_snapshot.snapshot_id)
+        )
+        request = CommitRequest(
+            table=definition.table,
+            batch_id=batch_id,
+            batch_fingerprint=definition.fingerprint_rule.fingerprint(table),
+            row_count=len(rows),
+            expected_parent_snapshot_id=parent,
+        )
+        try:
+            self._adapter.commit_batch(request, table)
+        except BatchConflict:
+            raise CatalogIntegrityError(
+                f"evidence-gap batch {batch_id} is committed with other content"
+            ) from None
+
+    def close(self) -> tuple[int, int]:
+        if self._verify:
+            expected = {self._batch_id(index) for index in range(self._index)}
+            extra = sorted(set(self._history()) - expected)
+            if extra:
+                raise CatalogIntegrityError(
+                    f"evidence-gap batches {extra[:3]} belong to no gap of report {self._report_id}"
+                )
+        # The rows the table holds for this report must be exactly the rows written: a batch
+        # snapshot keeps its fingerprint when rows are deleted or added later, so the rows
+        # themselves are counted and digested (an order-independent sum of row hashes).
+        found = self._adapter.scan_columns(
+            QUALITY_EVIDENCE_GAPS.table,
+            columns=("table", "revision_id", "gap", "subject_symbol", "subject_start"),
+            row_filter=EqualTo("quality_report_id", self._report_id),  # type: ignore[call-arg, arg-type]
+        )
+        digest = 0
+        for row in found.to_pylist():
+            row["quality_report_id"] = self._report_id
+            digest = (digest + _gap_digest(row)) % _DIGEST_MODULUS
+        if found.num_rows != self._rows or digest != self._digest:
+            raise CatalogIntegrityError(
+                f"{QUALITY_EVIDENCE_GAPS.table} holds {found.num_rows} gap row(s) of report "
+                f"{self._report_id}, not exactly the {self._rows} it wrote"
+            )
+        return self._rows, self._index
+
+
+def evidence_gaps_of(adapter: Any, report_id: str) -> list[dict[str, Any]]:
+    """The evidence-gap rows of one report (ADR-0031), sorted by (table, revision_id).
+
+    Rows of ``quality.availability_evidence_gaps`` exist without a report row only for a report
+    that never completed; callers bind gaps through a committed report id.
+    """
+    columns = tuple(field.name for field in QUALITY_EVIDENCE_GAPS.arrow_schema)
+    rows: list[dict[str, Any]] = adapter.scan_columns(
+        QUALITY_EVIDENCE_GAPS.table,
+        columns=columns,
+        row_filter=EqualTo("quality_report_id", report_id),  # type: ignore[call-arg, arg-type]
+    ).to_pylist()
+    return sorted(rows, key=lambda row: (row["table"], row["revision_id"]))
 
 
 def _time_column(data_type: str) -> str:

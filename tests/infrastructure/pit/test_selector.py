@@ -24,7 +24,7 @@ from infrastructure.pit.selector import (
     PitSelector,
     PitSpecError,
 )
-from infrastructure.quality.reporter import QualityReporter
+from infrastructure.quality.reporter import QualityReporter, evidence_gaps_of
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.revision import rest_store_support as ss
@@ -458,7 +458,7 @@ def test_the_day_report_keeps_a_conflict_whose_revisions_straddle_slices(h: Rest
     competing = [e for e in out.row["events"] if e["event_type"] == "competing_heads"]
     assert [e["observation_key"] for e in competing] == [key]
     # Each revision's gap is listed once, although both slices evaluated the key.
-    gaps = [gap["revision_id"] for gap in out.row["evidence_gaps"]]
+    gaps = [gap["revision_id"] for gap in evidence_gaps_of(h.adapter, out.report_id)]
     assert (
         len(gaps)
         == len(set(gaps))

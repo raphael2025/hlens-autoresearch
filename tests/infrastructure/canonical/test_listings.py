@@ -381,6 +381,7 @@ def test_5_a_late_earlier_first_observation_is_a_second_episode_and_fails_closed
     # which one is the instrument and the read fails closed.
     early = at(h, T1)
     assert early.constructible and early.listing is not None
+    assert isinstance(early.listing.episode, DegradedEpisodeKey)
     assert early.listing.episode.tradable_from == T1
     assert at(h, T3).reason == UnconstructibleReason.MULTIPLE_EPISODES
     # Before the stale episode was derived, the knowledge axis still answers.
