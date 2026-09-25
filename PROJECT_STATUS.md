@@ -52,7 +52,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 6 | State × Strategy | 🧱 框架已实现（ADR-0039，NOT_VALIDATED；待接 P5 回测 / P4 验证） |
 | 7 | Dynamic Discovery | 🧱 框架已实现（ADR-0040：组合算子、预登记账本、LLMProvider 契约 + 离线替身） |
 | 8 | Validation & Robustness | 🧱 框架已实现（ADR-0041：G4 稳健性套件、回溯审计、已接入策略验证；P4 复核的 5 个问题已修） |
-| 9 | Synthetic Market Lab | 🧱 生成器框架已实现（ADR-0042，NOT_VALIDATED）；校准报告待 P4 / P8 |
+| 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042：合成市场 + 验证门的校准工具——假阳性率 / 检出力 / 精确置信区间，只给证据不选数值） |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面） |
 | 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049：六阶段轮次、预算先查后跑、生命周期守卫永不到 ACTIVE、哈希链审计、劣化监控） |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045） |
@@ -160,6 +160,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|---|
 | D-FLOAT | 验证结果与 Profile 阈值等核心模型在哈希里用浮点数，跨平台可能不一致；改成精确小数属于修改冻结契约 | 另起 ADR 改为精确小数 | 保持现状：同一台机器可复现 |
 | D-PFIELDS | 验证 Profile 缺容量、跨资产一致性、开封预算等字段；改 Profile 结构属于红线 | 另起 ADR 只加字段，数值仍待校准后冻结 | 这些检查未显式传参时一律"不确定"，绝不判通过 |
+| D-CTRL | 校准发现：同一个显著性阈值被两处反向使用（策略检验要求足够显著，负对照要求不显著），调一个就动另一个 | 与 D-PFIELDS 一起起 ADR，给负对照单独字段 | 保持共用（偏保守，不会多放行） |
 | D-MINEFF | 状态 × 策略的条件假设要求填"最小效应"：它算研究者预先声明的假设内容，还是验证门槛？ | 算假设内容，不作门槛 | 只在测试里出现，生产路径无默认值 |
 | D-DEP | 持续循环的通用机制放在 `apps/worker`，研究阶段放在 `research/loop`，因此 research 依赖 apps/worker（apps 不依赖 research，边界测试不变）——Claude 依授权已接受（ADR-0049），请确认 | 维持 | 维持 ADR-0049 |
 
