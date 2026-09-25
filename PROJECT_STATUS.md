@@ -162,6 +162,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | D-PFIELDS | 验证 Profile 缺容量、跨资产一致性、开封预算等字段；改 Profile 结构属于红线 | 另起 ADR 只加字段，数值仍待校准后冻结 | 这些检查未显式传参时一律"不确定"，绝不判通过 |
 | D-CTRL | 校准发现：同一个显著性阈值被两处反向使用（策略检验要求足够显著，负对照要求不显著），调一个就动另一个 | 与 D-PFIELDS 一起起 ADR，给负对照单独字段 | 保持共用（偏保守，不会多放行） |
 | D-MINEFF | 状态 × 策略的条件假设要求填"最小效应"：它算研究者预先声明的假设内容，还是验证门槛？ | 算假设内容，不作门槛 | 只在测试里出现，生产路径无默认值 |
+| D-VFAIL | 生命周期状态机只允许 CANDIDATE → FAILED，没有 VALIDATION → FAILED：验证阶段若出现技术故障（不可复现、运行出错），失败记录会进 Failure Registry，但对象的生命周期状态无法标为 FAILED | 另起 ADR 增加 VALIDATION → FAILED（需证据） | 保持：失败记录照写，状态停在 VALIDATION |
 | D-DEP | 持续循环的通用机制放在 `apps/worker`，研究阶段放在 `research/loop`，因此 research 依赖 apps/worker（apps 不依赖 research，边界测试不变）——Claude 依授权已接受（ADR-0049），请确认 | 维持 | 维持 ADR-0049 |
 
 **此外无待决架构决定。**

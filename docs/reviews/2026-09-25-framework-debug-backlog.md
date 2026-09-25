@@ -34,6 +34,7 @@
 | D-FLOAT | `GateResult`、Validation Profile 阈值等核心域模型在哈希载荷中使用浮点数（改为 Decimal 属破坏性契约变更，H1） | 另起 ADR：新 major 或新增 Decimal 字段并弃用浮点字段 | 保持现状：同平台可复现，跨平台不保证（ADR 已如实记录） |
 | D-PFIELDS | Validation Profile 缺少容量、跨资产一致性、CSCV 分块数、开封预算、冲击系数等字段（改 Profile 结构属 H2） | 另起 ADR 增加这些字段（数值仍待校准后冻结） | 这些规则只能由调用方显式传参；未传时判为 INCONCLUSIVE，绝不判通过 |
 | D-CTRL | 校准证据（P9 × P8）：`significance.multiple_testing_threshold` 被两处反向使用——G3 要求校正后 p ≤ 阈值，G1 负对照要求对照 p ≥ 阈值；因此"放宽"阈值反而让负对照全部失败，Profile 无法单独调节两者 | 与 D-PFIELDS 合并起 ADR：为负对照增加独立字段 | 保持：两者共用一个阈值（偏保守，不会多放行） |
+| D-VFAIL | 生命周期只允许 CANDIDATE → FAILED；验证阶段的技术故障（C-P3）无法把对象标为 FAILED（ADR-0006 状态机属冻结契约） | 另起 ADR 增加 VALIDATION → FAILED（需证据） | 失败记录照写进 Failure Registry，生命周期停在 VALIDATION |
 | D-MINEFF | P6 条件假设登记要求 `minimum_effect`（测试中用 `"0.1"`）：它是假设字段还是验证阈值？ | 视为预登记的假设字段（研究者声明），不作为验证门槛 | 测试用值只存在于测试中；生产路径不设默认 |
 
 ## C. 各批次自报的已知缺口（调试时逐个处理）
