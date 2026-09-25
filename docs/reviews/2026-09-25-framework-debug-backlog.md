@@ -56,7 +56,9 @@
   `delay_stress_bars = 0` 或空 `time_alignment_offsets` 的 Profile 下 G4 永远不能 PASS（R14，是否允许豁免属 D-PFIELDS）。
 - **P11 循环**：总线与审计只在内存中（NATS / Control Plane 持久化待做）；算力秒数为阶段自报，不是实测；审计记录尚不是版本化契约。W2 正在把状态、验证、实验与进化阶段换成真实组件。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
-- **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；尚无 PostgreSQL 变体测试；与特征路径的证明逻辑部分重复；无缓存。
+- **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：
+  `tests/infrastructure/bars/test_dataset_bars_postgres.py` / `test_manifest_pair_postgres.py`，与 SQLite 侧同一套测试函数对象、
+  同一套断言在真实 PostgreSQL 测试库上逐一通过，见 ADR-0037 实施说明）；与特征路径的证明逻辑部分重复；无缓存。
 - **研究控制台**：前端单包约 1.19 MB；矩阵与路由纸面运行只有 API 与计数，没有专门页面。
 
 ## D. 调试阶段的顺序建议

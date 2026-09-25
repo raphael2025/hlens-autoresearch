@@ -138,3 +138,16 @@ pair.feature_manifest_hash`，报告视图记录 `pair_hash`。该接线属后�
 收盘价一致性作为推论检查保留），`pair_hash` 纳入重跑哈希一致性比较。回归测试：`tests/infrastructure/bars/test_manifest_pair.py`
 （匹配通过；上游 snapshot 不同、标的集合不同、ADR-0032 选择不同、价格视图早于 / 晚于区间终点、知识截止不同、角色互换、伪造 /
 未持久化 manifest、非 builder 验证者均拒绝）。没有新增契约或 ADR。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (PostgreSQL variants, 2026-09-26)
+
+补上述缺口列表中"尚无 PostgreSQL 变体测试"（`docs/reviews/2026-09-25-framework-debug-backlog.md` C 节）：
+新增 `tests/infrastructure/bars/test_dataset_bars_postgres.py` 与 `test_manifest_pair_postgres.py`，做法与 F3 数据集 PostgreSQL
+证据（`tests/infrastructure/dataset/test_dataset_postgres.py`）同一机制——`pytest.mark.postgres` + `HLENS_TEST_CATALOG_URI`
+未设置即 `pytest.skip`——但更进一步：两个新文件不重写场景，而是把 `test_dataset_bars.py` / `test_manifest_pair.py` 里逐一个
+测试函数对象原样 `import` 进来（`__all__` 标出以免 ruff 误判未使用），只在本模块另行提供一个基于
+`infrastructure/dataset/dataset_support.postgres_world` 的 `w` fixture；pytest 按收集所在的模块解析 fixture，因此同一段测试
+代码、同一套断言，分别以 SQLite 和 PostgreSQL 目录跑一遍，两侧永远不会因为手抄第二份而出现断言漂移。两个文件的全部 29 个场景
+（含参数化的伪造 / 未持久化 manifest 变体）在真实 PostgreSQL 测试库上逐一通过，与 SQLite 侧结果一致；未发现生产代码缺陷，未
+改动 `infrastructure/bars/` 下任何文件。新增 `tests/infrastructure/bars/conftest.py` 注册 `postgres` 标记（与其余目录的写法一致）。
+没有新增契约或 ADR。
