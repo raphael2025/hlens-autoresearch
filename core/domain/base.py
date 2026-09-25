@@ -290,7 +290,53 @@ def canonical_json(payload: Any) -> str:
 
 def content_hash(payload: Any) -> str:
     """规范化 JSON 的 SHA-256（02-domain.md §1）。"""
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return _sha256_text(canonical_json(payload))
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _canonical_object_with_fragments(
+    payload: Mapping[str, Any], fragments: Mapping[str, str]
+) -> str:
+    """`canonical_json({**payload, **fragments 所代表的值})`，其中 `fragments` 已是规范 JSON 文本。
+
+    与 `canonical_json` **逐字节相同**：紧凑分隔符下 JSON 值的编码与其所在位置无关，
+    `sort_keys` 对 `str` 键就是按键排序（键唯一），键本身用同一编码器编码。
+    只供 `Contract` 在已校验的嵌套实例上复用其规范 JSON（G3-P2，纯性能）。
+    """
+    encoded = {key: canonical_json(value) for key, value in payload.items()}
+    if encoded.keys() & fragments.keys():
+        raise ValueError("fragment 键与载荷键重复")
+    encoded.update(fragments)
+    body = ",".join(f"{canonical_json(key)}:{encoded[key]}" for key in sorted(encoded))
+    return "{" + body + "}"
+
+
+def _memo_get(slot: Any, model: BaseModel) -> str | None:
+    """读取一个契约实例上的记忆值；实例的顶层字段在记忆之后被换过则视为无效。
+
+    记忆值与 `(__dict__ 对象, 各字段值对象)` 的**身份**绑定：`__init__` 重入、`__setstate__`
+    （二者都换掉 `__dict__`）、`object.__setattr__` / `__dict__[...]` 改写顶层字段都会使其失效。
+    """
+    try:
+        fields_dict, fields, value = slot.__get__(model)
+    except AttributeError:
+        return None
+    current = model.__dict__
+    if fields_dict is not current or len(fields) != len(current):
+        return None
+    for remembered, now in zip(fields, current.values(), strict=True):
+        if remembered is not now:
+            return None
+    return value  # type: ignore[no-any-return]
+
+
+def _memo_set(slot: Any, model: BaseModel, value: str) -> str:
+    current = model.__dict__
+    slot.__set__(model, (current, tuple(current.values()), value))
+    return value
 
 
 class Contract(BaseModel):
@@ -311,12 +357,45 @@ class Contract(BaseModel):
         frozen=True, extra="forbid", str_strip_whitespace=True, allow_inf_nan=False
     )
 
+    #: 内容哈希与规范 JSON 的逐实例记忆（G3-P2，纯性能，不改变任何哈希 / 相等 / 校验语义）。
+    #: 用普通 slot 而**不是** Pydantic 私有属性：私有属性参与 `__eq__`、`__copy__` 与 pickle，
+    #: 会让"算过哈希"的实例与内容相同的实例不相等；slot 不参与三者，复制 / 反序列化得到的
+    #: 实例一律从空记忆开始。`__weakref__` 保留基类原有的弱引用能力。
+    __slots__ = ("__weakref__", "_content_hash_memo", "_canonical_dump_memo")
+
     schema_version: str = Field(default=CONTRACT_SCHEMA_VERSION, pattern=SEMVER_PATTERN)
 
     def content_hash(self) -> str:
-        """按语义内容计算哈希；排除逐模型声明的非语义字段。"""
-        payload = self.model_dump(mode="json", exclude=self._non_semantic_fields())
-        return content_hash(payload)
+        """按语义内容计算哈希；排除逐模型声明的非语义字段。
+
+        每个实例只计算一次（契约 frozen，ADR-0008；`model_copy(update=...)` 重新构造，ADR-0010）。
+        记忆值与实例顶层字段的对象身份绑定（见 `_memo_get`），顶层字段被绕过 frozen 改写后
+        会重新计算。**诚实边界**同 ADR-0008 决策 2：直接改写嵌套对象内部（例如
+        `FrozenMapping._data`，或对嵌套契约 `object.__setattr__`）不在只读承诺之内，
+        也不被记忆检测。
+        """
+        memo = _memo_get(_CONTENT_HASH_MEMO, self)
+        if memo is not None:
+            return memo
+        return _memo_set(_CONTENT_HASH_MEMO, self, _sha256_text(self._semantic_canonical_json()))
+
+    def _semantic_canonical_json(self) -> str:
+        """内容哈希的输入：排除非语义字段后的 `model_dump(mode="json")` 的规范 JSON。
+
+        子类只可为**性能**覆写，结果必须与本实现逐字节相同（见 `FeatureRequest`）。
+        """
+        return canonical_json(self.model_dump(mode="json", exclude=self._non_semantic_fields()))
+
+    def _canonical_dump_json(self) -> str:
+        """完整 `model_dump(mode="json")`（不排除任何字段）的规范 JSON，逐实例记忆。
+
+        这正是该实例作为**同一声明类型**的嵌套字段出现在父契约 dump 中的片段，
+        供父契约在构造内容哈希输入时复用（`_canonical_object_with_fragments`）。
+        """
+        memo = _memo_get(_CANONICAL_DUMP_MEMO, self)
+        if memo is not None:
+            return memo
+        return _memo_set(_CANONICAL_DUMP_MEMO, self, canonical_json(self.model_dump(mode="json")))
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
         """复制契约；**带 `update` 时重新走完整校验**（ADR-0010 §D-13）。
@@ -361,6 +440,11 @@ class Contract(BaseModel):
         `occurred_at` 规则：`run_id`、`subject`、授权与审计时间都可能是语义。
         """
         return {"created_at"}
+
+
+#: `Contract.__slots__` 的描述符：直接经描述符读写，绕开 Pydantic 的 `__getattr__` / `__setattr__`。
+_CONTENT_HASH_MEMO = Contract.__dict__["_content_hash_memo"]
+_CANONICAL_DUMP_MEMO = Contract.__dict__["_canonical_dump_memo"]
 
 
 class Ref(Contract):

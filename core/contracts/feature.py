@@ -52,6 +52,7 @@ from core.domain.base import (
     PluginKey,
     Ref,
     UtcDatetime,
+    _canonical_object_with_fragments,
     content_hash,
 )
 
@@ -239,6 +240,23 @@ class FeatureRequest(Contract):
                     f"观察 {item.observation_key!r} 的 knowledge_time 晚于 knowledge_cutoff"
                 )
         return self
+
+    def _semantic_canonical_json(self) -> str:
+        """与基类逐字节相同的哈希输入；观察片段复用各观察实例记忆的规范 JSON（G3-P2）。
+
+        执行器为每个评估时刻构造一个子请求，其观察是同一批已校验实例的前缀；逐条复用
+        片段后，子请求的哈希不再对整段前缀重新 dump。只在每条观察的类型**恰为**
+        `FeatureObservation` 时复用（子类实例按声明类型序列化，片段可能不同），否则走基类。
+        """
+        exclude = self._non_semantic_fields()
+        observations = self.observations
+        if "observations" in exclude or any(
+            type(item) is not FeatureObservation for item in observations
+        ):
+            return super()._semantic_canonical_json()
+        head = self.model_dump(mode="json", exclude=exclude | {"observations"})
+        fragment = "[" + ",".join(item._canonical_dump_json() for item in observations) + "]"
+        return _canonical_object_with_fragments(head, {"observations": fragment})
 
     def visible_at(
         self, evaluation_time: datetime, available_lag: timedelta

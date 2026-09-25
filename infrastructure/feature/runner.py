@@ -12,8 +12,10 @@ The provider is called once per evaluation time (F4-R1), so a run costs evaluati
 prefix. Measured (G3-P) almost all of that is the contract's own per-call work on the sub-request:
 the ``content_hash()`` that the provider's ``FeatureResult.build`` and ``check_answers`` each
 compute over the whole prefix, plus the sub-request's validation; building the visible sets
-incrementally here saved about 1 % and was not kept. Removing the rest needs a core change
-(e.g. memoizing ``content_hash`` of frozen contracts), not a weaker check here.
+incrementally here saved about 1 % and was not kept. G3-P2 removed most of it in core, not by a
+weaker check here: ``Contract.content_hash()`` is memoized per instance and a sub-request's hash
+input reuses each (shared, already validated) observation's memoized canonical JSON, byte-identical
+to the full dump (700 x 700: about 5.3 s -> 1.1-1.4 s).
 
 Every sub-result must be exactly a valid ``FeatureResult`` that answers its sub-request
 (``FeatureResult.check_answers``); the descriptor must declare the spec's hash and must not change
