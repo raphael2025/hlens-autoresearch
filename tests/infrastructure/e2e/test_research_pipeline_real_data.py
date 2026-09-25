@@ -18,7 +18,9 @@ Chain (one run; then a fresh process on the same catalog runs it again):
 
 1. F3: two manifests over the same bars and the same upstream snapshots, both binding the ADR-0032
    archive assumption: an **interval** spec (F4 needs a PIT view at every evaluation time) and a
-   **point** spec (the P4 / P5 bar path accepts only a point spec — backlog E1);
+   **point** spec (the P4 / P5 bar path accepts only a point spec — backlog E1), bound together by
+   ``pair_manifests`` (both verified; same snapshots, ADR-0032 choice, instruments and lineage; the
+   point view at the end of the interval);
 2. F4: ``bar_log_return`` and ``bar_realized_vol_10`` through ``feature_request_from_dataset`` (the
    interval manifest, verified) and ``run_feature``;
 3. P2: a volatility regime (``run_state``) over the realized-volatility values;
@@ -76,8 +78,10 @@ from core.domain.research import RunState, ValidationReport, Verdict
 from core.domain.specs import FeatureSpec, OutcomeSpec
 from infrastructure.bars import (
     DatasetPriceBars,
+    ManifestPair,
     backtest_bars_from_dataset,
     outcome_request_from_dataset,
+    pair_manifests,
 )
 from infrastructure.dataset.builder import DatasetBuilt
 from infrastructure.event.inputs import inputs_from_state_series, state_series_from_state_run
@@ -307,6 +311,7 @@ def pg(tmp_path: Path) -> Iterator[ds.World]:
 class Chain:
     interval: DatasetBuilt
     point: DatasetBuilt
+    pair: ManifestPair
     observations: tuple[FeatureObservation, ...]
     feature_requests: dict[str, FeatureRequest]
     features: dict[str, FeatureResult]
@@ -397,6 +402,10 @@ def run_chain(w: ds.World, report_root: Path, registry_path: Path) -> Chain:
     )
     point = rt.build(
         w, _assumed(w.spec(skip=rt.OWN)), data_type="klines_1m", window=(DAY_START, DAY_END)
+    )
+    # E1: one chain, one verified pair (both manifests reloaded through the verifying store).
+    pair = pair_manifests(
+        w.builder(), interval.manifest.content_hash(), point.manifest.content_hash()
     )
 
     # ---- F4: features over the interval manifest's proven BTC bars ----
@@ -520,6 +529,7 @@ def run_chain(w: ds.World, report_root: Path, registry_path: Path) -> Chain:
     return Chain(
         interval=interval,
         point=point,
+        pair=pair,
         observations=observations,
         feature_requests={"log_return": lr_request, "realized_vol": vol_request},
         features={"log_return": lr_result, "realized_vol": vol_result},
@@ -547,6 +557,7 @@ def _hashes(chain: Chain) -> dict[str, str]:
     return {
         "interval_manifest": chain.interval.manifest.content_hash(),
         "point_manifest": chain.point.manifest.content_hash(),
+        "manifest_pair": chain.pair.pair_hash,
         "log_return_request": chain.feature_requests["log_return"].content_hash(),
         "log_return": chain.features["log_return"].result_hash,
         "realized_vol": chain.features["realized_vol"].result_hash,
@@ -570,10 +581,14 @@ def _hashes(chain: Chain) -> dict[str, str]:
 
 def _check_bindings(chain: Chain, store: ReportStore) -> None:
     interval, point = chain.interval.manifest, chain.point.manifest
-    # F3: both manifests bind the same upstream snapshots; the bars they prove are the same.
-    assert interval.point_in_time.snapshot_bindings == point.point_in_time.snapshot_bindings
+    # F3 / E1: the verified pair binds exactly these two manifests (same snapshots, the same
+    # ADR-0032 choice — here bound —, instruments and lineage; the point view at the interval end).
+    assert (chain.pair.feature_manifest_hash, chain.pair.price_manifest_hash) == (
+        interval.content_hash(),
+        point.content_hash(),
+    )
     assert ASSUMPTION_BINDING in interval.point_in_time.availability_bindings
-    assert ASSUMPTION_BINDING in point.point_in_time.availability_bindings
+    # What the pair implies, observed: the bars both paths prove are the same bars.
     closes = {o.event_time: o.values["close"] for o in chain.observations}
     assert {bar.interval_start: bar.close for bar in chain.price_bars.bars} == closes
     assert len(closes) == BAR_COUNT

@@ -102,3 +102,39 @@ dataset snapshot 与 selection id 下读取 `klines_1m` 行（无行 / 所请求
 请求携带 manifest 内容哈希。没有新增契约或 ADR。测试：`tests/infrastructure/bars/test_dataset_bars.py`（真实小数据集 →
 `ForwardReturnOutcome` / `TripleBarrierOutcome` 标签，标签只在出场后可知；伪造 / 未持久化 manifest 与非 builder 验证者被拒；
 cutoff 后的 bar 被拒；重跑逐位一致）。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (E1 manifest pairing, 2026-09-25)
+
+真实数据冒烟发现 E1（`docs/reviews/2026-09-25-framework-debug-backlog.md` E 节）：同一条研究链需要两份 manifest——F4 逐 bar
+评估需要**区间** simulation spec，上文数据集接线（`outcome_request_from_dataset` / `backtest_bars_from_dataset`）只接受**单点**
+spec——而此前没有任何对象把二者绑定为同一份市场数据。`infrastructure/bars/pair.py` 新增 `pair_manifests(builder,
+feature_manifest_hash, price_manifest_hash)`（规则 `hlens.dataset.manifest-pair@1.0.0`，规则全文与哈希为 `PAIR_RULE` /
+`PAIR_RULE_HASH`）：
+
+1. 两份 manifest 都只经 builder 自身的验证型 `ManifestStore`（`load_manifest`）加载；未持久化、伪造行、非 builder 验证者一律拒绝；
+   不存在接受 manifest 对象的入口；
+2. 特征侧须为区间 `[start, end)`，价格侧须为单点，且 `price.simulation_time == feature.simulation_end`（价格视图是特征区间之后
+   的第一个时刻；`price_cutoff` 默认且不得晚于它）；`knowledge_cutoff` 相等；
+3. `snapshot_bindings` 相等；ADR-0032 选择相同（`assumption_bound` 两侧同真或同假），其余 availability / precedence / parser /
+   PIT 规则绑定相等；
+4. universe spec 绑定、Research Dataset 表与数据窗口（`time_range_start` / `time_range_end`）相等；
+5. 价格侧成员 episode = 在整个特征区间内都是成员的 episode（生效区间首尾相接覆盖 `[start, end)`），且 `end` 处 listing revision
+   相同；区间内只部分为成员的 episode 拒绝；排除的 episode 集合相等；
+6. lineage：Canonical 表集合相等，价格侧每个 lineage 都在特征侧中，价格侧证据缺口 ⊆ 特征侧，质量报告 ID 相等。
+
+任一不符 → `ManifestPairError`（`DatasetBarsError` 子类，逐项说明原因）。通过则返回不可变 `ManifestPair`（`feature_manifest_hash`、
+`price_manifest_hash`、`pair_hash` = 规则哈希下两哈希的内容哈希；构造时复核 `pair_hash`）。
+
+**只能由字段证明到此为止的部分（限制）**：manifest 不含数据类型字段，由"Canonical 表集合相同 + 价格 lineage ⊆ 特征 lineage"代替，
+bar 路径自身也拒绝没有 `klines_1m` 行的 manifest；只在特征侧出现的 revision 被视为区间内被取代的 revision，是否确被取代不在此重证
+（两条路径各自逐 bar 重选证明自己的行）；恰在 `end` 可用的 revision 或区间内的 listing 变化会使配对 fail closed（保守拒绝）；
+`ManifestPair` 是记录而非证明，需要证明的消费方以两个哈希重调 `pair_manifests`。
+
+**研究侧的使用（本次不改 `research/`）**：`research/strategies/validation.py` 的 `ValidatorSetup.dataset_bars`（`DatasetPriceBars`，
+其 `manifest_content_hash` 即价格 manifest）今后可旁带一个 `ManifestPair`：G0 `manifest_binding` 核对
+`pair.price_manifest_hash == dataset_bars.manifest_content_hash`，并核对特征请求的 `manifest_content_hash ==
+pair.feature_manifest_hash`，报告视图记录 `pair_hash`。该接线属后续批次。真实数据冒烟
+`tests/infrastructure/e2e/test_research_pipeline_real_data.py` 已改用 `pair_manifests` 取代其临时的 snapshot / 假设比较（逐 bar
+收盘价一致性作为推论检查保留），`pair_hash` 纳入重跑哈希一致性比较。回归测试：`tests/infrastructure/bars/test_manifest_pair.py`
+（匹配通过；上游 snapshot 不同、标的集合不同、ADR-0032 选择不同、价格视图早于 / 晚于区间终点、知识截止不同、角色互换、伪造 /
+未持久化 manifest、非 builder 验证者均拒绝）。没有新增契约或 ADR。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
