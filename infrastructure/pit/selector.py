@@ -40,7 +40,9 @@ from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
 
-from pyiceberg.expressions import And, BooleanExpression, EqualTo, GreaterThanOrEqual, In, LessThan
+import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.compute as pc  # type: ignore[import-untyped]
+from pyiceberg.expressions import And, BooleanExpression, EqualTo, GreaterThanOrEqual, LessThan
 
 from core.contracts.revision import (
     PointInTimeSelection,
@@ -82,6 +84,9 @@ __all__ = [
 ]
 
 _DAY: Final = timedelta(days=1)
+_HOUR: Final = timedelta(hours=1)
+#: Rows (all columns) one fetch of the key-closure read may hold before filtering (G3-P).
+_FETCH_ROWS: Final = 100_000
 #: How far from a window the other revisions of its keys are looked for (key closure).
 _KEY_REACH: Final = timedelta(days=1)
 #: Bound on the transitive widening of that search (a longer chain fails closed).
@@ -362,17 +367,20 @@ class PitSelector:
         if not wanted:
             return []
         columns = tuple(field.name for field in definition.arrow_schema)
+        members = pa.array(sorted(wanted), type=pa.string())
 
-        def read(low: datetime, high: datetime) -> list[Mapping[str, Any]]:
-            found: list[Mapping[str, Any]] = view.scan_columns(
+        def scan(names: Sequence[str], low: datetime, high: datetime) -> pa.Table:
+            return view.scan_columns(
                 table,
-                columns=columns,
+                columns=names,
                 row_filter=And(
-                    And(_equals("symbol", canonical_symbol), In("observation_key", wanted)),  # type: ignore[call-arg, arg-type]
+                    _equals("symbol", canonical_symbol),
                     And(_at_least(column, low), _below(column, high)),
                 ),
-            ).to_pylist()
-            return found
+            )
+
+        def read(low: datetime, high: datetime) -> list[Mapping[str, Any]]:
+            return _wanted_rows(scan, members, columns, column, low, high)
 
         return _key_closure(read, column, start, end, touching=touching)
 
@@ -463,6 +471,69 @@ class PitSelector:
                     )
                 )
         return mapped
+
+
+def _wanted_rows(
+    scan: Callable[[Sequence[str], datetime, datetime], pa.Table],
+    members: pa.Array,
+    columns: Sequence[str],
+    column: str,
+    low: datetime,
+    high: datetime,
+) -> list[Mapping[str, Any]]:
+    """The rows in ``[low, high)`` whose ``observation_key`` is in ``members`` (G3-P).
+
+    ``scan(names, a, b)`` reads ``names`` of the symbol's rows with ``a <= column < b`` at one
+    pinned snapshot. The result holds exactly the rows one scan filtered by ``In(observation_key,
+    members)`` over ``[low, high)`` returns, each once (the order may differ; nothing downstream
+    depends on it). That single scan cannot prune data files by the key set (PyIceberg stops
+    trying above 200 literals, and below it the keys' shared prefix defeats the 16-character
+    string statistics) and binds / converts the whole set per data file (keys x files). Instead:
+
+    1. **locate** — per UTC day (one partition) of the range, only ``(observation_key, column)``
+       is read; every row is counted into its UTC hour, and the hours holding a member row
+       (an Arrow ``is_in``: the membership test the scan filter makes) are noted;
+    2. **fetch** — runs of consecutive noted hours, clipped to ``[low, high)`` and holding at most
+       ``_FETCH_ROWS`` rows in all (a larger hour alone), are read in full and filtered by the same
+       membership test.
+
+    The runs are disjoint, lie in ``[low, high)`` and cover every hour holding a member row of
+    this immutable snapshot, so every member row is returned exactly once. Memory is bounded by
+    one day of two columns plus one run of full rows, never by the whole (widened) range.
+    """
+    counts: dict[datetime, int] = {}
+    noted: set[datetime] = set()
+    day = datetime.combine(low.astimezone(UTC).date(), time(), tzinfo=UTC)
+    while day < high:
+        piece = scan(("observation_key", column), max(low, day), min(high, day + _DAY))
+        hours = pc.floor_temporal(piece.column(column), unit="hour")
+        for entry in pc.value_counts(hours).to_pylist():
+            counts[entry["values"].astimezone(UTC)] = entry["counts"]
+        member = pc.is_in(piece.column("observation_key"), value_set=members)
+        noted.update(hour.astimezone(UTC) for hour in pc.unique(hours.filter(member)).to_pylist())
+        day += _DAY
+    rows: list[Mapping[str, Any]] = []
+    for first, last in _runs(sorted(noted), counts):
+        piece = scan(columns, max(low, first), min(high, last + _HOUR))
+        member = pc.is_in(piece.column("observation_key"), value_set=members)
+        rows.extend(piece.filter(member).to_pylist())
+    return rows
+
+
+def _runs(
+    hours: Sequence[datetime], counts: Mapping[datetime, int]
+) -> list[tuple[datetime, datetime]]:
+    """Ascending ``hours`` as runs of consecutive hours of at most ``_FETCH_ROWS`` rows each."""
+    runs: list[tuple[datetime, datetime]] = []
+    total = 0
+    for hour in hours:
+        if runs and hour == runs[-1][1] + _HOUR and total + counts[hour] <= _FETCH_ROWS:
+            runs[-1] = (runs[-1][0], hour)
+            total += counts[hour]
+        else:
+            runs.append((hour, hour))
+            total = counts[hour]
+    return runs
 
 
 def _key_closure(

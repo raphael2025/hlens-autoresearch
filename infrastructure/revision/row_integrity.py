@@ -266,10 +266,10 @@ def element_batch_id(response_revision_id: str, index: int) -> str:
 
 def batch(definition: RegisteredTableDefinition, rows: Sequence[Mapping[str, Any]]) -> pa.Table:
     """Rows → a batch in the registered Arrow schema; any column drift fails closed here."""
-    names = [field.name for field in definition.arrow_schema]
+    names = {field.name for field in definition.arrow_schema}
     for row in rows:
-        drift = sorted(set(names) ^ set(row))
-        if drift:
+        if row.keys() != names:
+            drift = sorted(names ^ set(row))
             raise CatalogIntegrityError(f"row for {definition.table} drifts: {drift}")
     table = pa.Table.from_pylist([dict(row) for row in rows], schema=definition.arrow_schema)
     if table.num_rows != len(rows):  # pragma: no cover - from_pylist keeps the row count
@@ -349,7 +349,7 @@ def check_batch_snapshot(
     rows: Sequence[Mapping[str, Any]],
 ) -> None:
     """The snapshot committing ``batch_id`` must carry exactly these rows' fingerprint."""
-    table = batch(definition, [dict(row) for row in rows])
+    table = batch(definition, rows)
     if snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(
         table
     ) or snapshot.added_rows != len(rows):
@@ -1555,7 +1555,11 @@ class PersistedRowVerifier:
         table = definition.table
         schema = _PARSER_ROW_SCHEMAS[data_type]
         ordered = sorted(rows, key=lambda row: (row["archive_line_number"], row["revision_id"]))
-        parsed = archive.parsed.rows
+        # The rows up to the first one naming no line of the object; their lines are taken from
+        # the parsed object in one read (G3-P), then checked in order before that refusal, so the
+        # first failing row and its message are exactly those of a row-by-row check.
+        lines: list[int] = []
+        outside: Mapping[str, Any] | None = None
         for row in ordered:
             line = row["archive_line_number"]
             if (
@@ -1563,19 +1567,29 @@ class PersistedRowVerifier:
                 or isinstance(line, bool)
                 or not 1 <= line <= archive.parsed.row_count
             ):
-                raise CatalogIntegrityError(
-                    f"{table}: row {row['revision_id']} (line {line!r}) is not a line of the "
-                    f"{archive.parsed.row_count}-line object of archive revision "
-                    f"{archive.revision_id}"
-                )
+                outside = row
+                break
+            lines.append(line)
+        truths = (
+            archive.parsed.rows.take(pa.array([line - 1 for line in lines], pa.int64())).to_pylist()
+            if lines
+            else []
+        )
+        for row, line, truth in zip(ordered, lines, truths, strict=False):
             # D3E-R3: the parser columns must be exactly what the object holds at that line.
-            [truth] = parsed.slice(line - 1, 1).to_pylist()
             wrong = sorted(name for name in schema.names if row[name] != truth[name])
             if wrong:
                 raise CatalogIntegrityError(
                     f"{table}: row {row['revision_id']} is not line {line} of archive revision "
                     f"{archive.revision_id}'s object: {wrong}"
                 )
+        if outside is not None:
+            raise CatalogIntegrityError(
+                f"{table}: row {outside['revision_id']} (line "
+                f"{outside['archive_line_number']!r}) is not a line of the "
+                f"{archive.parsed.row_count}-line object of archive revision "
+                f"{archive.revision_id}"
+            )
         for row in ordered:
             problem = _archive_times_hold(data_type, archive.time_unit, archive.row, row)
             if problem is not None:

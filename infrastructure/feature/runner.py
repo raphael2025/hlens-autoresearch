@@ -8,9 +8,12 @@ observation per key: the latest available), with ``knowledge_time <= knowledge_c
 guaranteed by the request contract. Leakage therefore does not depend on the provider (ADR-0030
 option A); the contract suite additionally checks providers called directly.
 
-Consecutive evaluation times whose visible sets are identical share one sub-request (the visible
-set only grows at an ``available_time + lag``), so a provider is called once per distinct visible
-set.
+The provider is called once per evaluation time (F4-R1), so a run costs evaluation times x visible
+prefix. Measured (G3-P) almost all of that is the contract's own per-call work on the sub-request:
+the ``content_hash()`` that the provider's ``FeatureResult.build`` and ``check_answers`` each
+compute over the whole prefix, plus the sub-request's validation; building the visible sets
+incrementally here saved about 1 % and was not kept. Removing the rest needs a core change
+(e.g. memoizing ``content_hash`` of frozen contracts), not a weaker check here.
 
 Every sub-result must be exactly a valid ``FeatureResult`` that answers its sub-request
 (``FeatureResult.check_answers``); the descriptor must declare the spec's hash and must not change

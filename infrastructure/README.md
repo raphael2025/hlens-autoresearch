@@ -293,3 +293,11 @@ Canonical revision，不复制 payload）、`observation_key`、`event_time`，�
 反向从 `catalog/phase1_tables.py` 导入该 schema，两处不再重复定义。前 14 张的定义与哈希不变（回归测试
 `test_earlier_goldens_are_unchanged_by_ds1`，镜像 QG-1 的 `test_earlier_goldens_are_unchanged_by_qg1`）。
 `tests/infrastructure/dataset/dataset_support.py` 的 F2 / F3 测试改用该生产表，不再另建同形状的 test-only 表。
+
+## 规模性能（G3-P，语义不变）
+
+受限探针（≤ 10k 行、SQLite catalog、2500M 内存上限；前 → 后）：
+
+- **PIT key closure 读**（`pit/selector.py`）：不再用一个 `In(observation_key, 全部 key)` 扫描（PyIceberg 超过 200 个字面量即不按统计裁剪，且 key 前 16 字符相同、截断的字符串统计本就无法裁剪；每个数据文件都要重绑定 / 转换整个集合），改为按 UTC 日只读 `(observation_key, 时间)` 定位含窗口 key 的小时、再按小时（每次 ≤ 10 万行）读整行并以 Arrow `is_in` 本地过滤；结果行集合与旧扫描逐行相同（`tests/infrastructure/pit/test_selector_scale.py`），逐 key 链扩展（`_key_closure`）不变。按 ≤ 200 key 分块扫描实测更慢（1 万 key 时 5.3 s 对 1.3 s），未采用。10k 笔成交、40 个数据文件：1 天窗口（1 万 key）2.64 s → 0.76 s；3 小时内成交的 1 小时窗口（3,333 key）0.92 s → 0.41 s；单文件 1 天窗口 0.29 s → 0.22 s，单文件 1 小时窗口 0.031 s → 0.041 s（多两次窄扫描）。
+- **Feature runner**（`feature/runner.py`）：未改代码。700 根 bar × 700 个评估时刻 4.20 s；约 90% 是每次调用对子请求整个前缀各算一次的 `content_hash()`（Provider 的 `FeatureResult.build` 与 `check_answers`）及子请求校验，均属核心契约、随前缀线性增长；在 runner 内增量构建可见集合只快约 1%（4.15 s），未保留。去掉这部分需要改核心（例如缓存冻结契约的 `content_hash`），不能靠削弱检查。
+- **Normalize / 行证明**（`revision/row_integrity.py`）：归档行逐行 `slice().to_pylist()` 改为一次 `take`（首个失败行与报错不变），`batch()` 的列漂移检查改为先比较键集合。10k 行归档单批 normalize 2.23–2.33 s → 2.03 s；冷 1 小时 PIT 选择（含单元证明）2.05–2.10 s → 1.81 s。多批次时成本主要在 PyIceberg 每次扫描重读全部 manifest（40 批 normalize 约 15 s、约 8 千次 manifest 打开），不在本批范围。

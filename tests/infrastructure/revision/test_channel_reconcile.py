@@ -1186,6 +1186,25 @@ def test_an_archive_row_whose_lineage_does_not_hold_writes_no_edge(
 
 
 @pytest.mark.parametrize(
+    ("line", "match"),
+    [
+        (9, r"is not line 1 of archive revision .*: \['quantity'\]"),  # sorts after line 1
+        (0, "row .* \\(line 0\\) is not a line of the 3-line object"),  # sorts before line 1
+    ],
+)
+def test_g3p_the_first_failing_archive_row_decides_the_refusal(
+    h: RestHarness, line: int, match: str
+) -> None:
+    """G3-P: the lines are taken from the object in one read; still, in line order, the first
+    row that fails (another content, or no line of the object) decides the refusal."""
+    _pair(h, 3)
+    rows = sorted(h.rows(ARCHIVE_AGGS), key=lambda row: row["archive_line_number"])
+    _replace(h, ARCHIVE_AGGS, rows[0], _renatived(rows[0], "archive"), batch_id="corruption-1")
+    _replace(h, ARCHIVE_AGGS, rows[2], dict(rows[2], archive_line_number=line), batch_id="c-3")
+    _refused(h, match)
+
+
+@pytest.mark.parametrize(
     ("corruption", "match"),
     [
         ("twin-archive", "committed 2 time"),
