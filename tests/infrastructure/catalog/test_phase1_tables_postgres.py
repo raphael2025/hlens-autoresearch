@@ -1,4 +1,4 @@
-"""PostgreSQL evidence for C3 / D3B (roadmap #9): twelve tables, batches, evolution, isolation.
+"""PostgreSQL evidence for C3 / D3B (roadmap #9): thirteen tables, batches, evolution, isolation.
 
 Runs only with ``HLENS_TEST_CATALOG_URI`` naming the dedicated ``*_test`` database (explicit skip
 otherwise). Each test uses its own PyIceberg ``catalog_name`` and ``tmp_path`` warehouse; cleanup
@@ -166,7 +166,7 @@ def harness_factory(tmp_path: Path) -> Iterator[Callable[[str], PostgresCatalogH
 # --------------------------------------------------------------------------- creation
 
 
-def test_twelve_tables_are_created_idempotently_with_the_frozen_layout(
+def test_thirteen_tables_are_created_idempotently_with_the_frozen_layout(
     pg_harness: PostgresCatalogHarness,
 ) -> None:
     adapter = open_postgres_catalog_adapter(pg_harness.settings(), PHASE1_REGISTRY)

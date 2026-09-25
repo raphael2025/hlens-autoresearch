@@ -1,4 +1,4 @@
-"""Test-only rows and evolution targets for the twelve Phase 1 production tables (C3 / D3B).
+"""Test-only rows and evolution targets for the thirteen Phase 1 production tables (C3/D3B/E2).
 
 Rows are built from **validated contract objects** (``RevisionRecord``, ``ListingRevision``,
 ``ResearchDatasetManifest``, ``CollectedObject`` …) so the tests show that the physical columns
@@ -52,6 +52,7 @@ from infrastructure.catalog import (
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
+    BINANCE_SPOT_EXCHANGE_INFO,
     BINANCE_SPOT_KLINES_1M,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     BINANCE_SPOT_REST_AGG_TRADES,
@@ -63,8 +64,12 @@ from infrastructure.catalog.phase1_tables import (
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
 )
-from infrastructure.revision import rest_identity
+from infrastructure.revision import exchange_info_identity, rest_identity
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
+from infrastructure.revision.exchange_info_availability import (
+    ExchangeInfoAvailabilitySubject,
+    decide_exchange_info_availability,
+)
 from infrastructure.revision.rest_availability import (
     RestAvailabilitySubject,
     decide_rest_availability,
@@ -877,6 +882,64 @@ def precedence_evidence_from_row(row: dict[str, Any]) -> PrecedenceEvidence:
     )
 
 
+EXCHANGE_INFO_DECODER: Final = policy(PolicyRole.PARSER, "binance.spot.exchange-info.decoder")
+
+
+def exchange_info_row(tag: str = "a") -> dict[str, Any]:
+    """One ``raw.binance_spot_exchange_info`` snapshot revision (E2, ADR-0029)."""
+    query = exchange_info_identity.ExchangeInfoQuery()
+    request_identity = exchange_info_identity.request_identity_sha256(query, REST_ORIGIN)
+    key = exchange_info_identity.snapshot_observation_key(request_identity)
+    body = sha(f"exchange-info-body-{tag}")
+    requested = T0 + timedelta(days=600)
+    retrieved = requested + timedelta(milliseconds=90)
+    decision = decide_exchange_info_availability(
+        ExchangeInfoAvailabilitySubject.SNAPSHOT,
+        requested_at=requested,
+        ingest_time=retrieved,
+        knowledge_time=retrieved + timedelta(seconds=2),
+    )
+    source = exchange_info_identity.exchange_info_source_identity()
+    record = RevisionRecord(
+        observation_key=key,
+        revision_id=exchange_info_identity.revision_id(key, source, body),
+        source_id=source,
+        payload_hash=body,
+        arrival_seq=0,
+        availability=decision,
+    )
+    row = revision_columns(record)
+    row.update(
+        source_binding_id=exchange_info_identity.EXCHANGE_INFO_SOURCE_ID,
+        source_binding_version=exchange_info_identity.EXCHANGE_INFO_SOURCE_VERSION,
+        collector_id="binance.spot.public-exchange-info",
+        collector_version="1.0.0",
+        collection_request_id=f"exchange-info-attempt-{tag}",
+        request_origin=REST_ORIGIN,
+        request_path=query.path,
+        request_query=query.query_string(),
+        request_identity_sha256=request_identity,
+        source_uri=exchange_info_identity.request_source_uri(query, REST_ORIGIN),
+        requested_at=requested,
+        retrieved_at=retrieved,
+        http_status=200,
+        source_metadata=[{"name": "x-mbx-used-weight-1m", "value": "20"}],
+        object_key=exchange_info_identity.response_object_key(body, request_identity),
+        object_uri=f"file:///warehouse/raw/binance/spot/exchange-info/{body[:16]}.json",
+        object_sha256=body,
+        object_size_bytes=4096,
+        decoder_id=EXCHANGE_INFO_DECODER.policy_id,
+        decoder_version=EXCHANGE_INFO_DECODER.version,
+        decoder_hash=EXCHANGE_INFO_DECODER.policy_hash,
+        server_time_raw=1_788_000_000_000,
+        requested_symbols=["BTCUSDT", "ETHUSDT"],
+        symbols=[
+            {"symbol": "BTCUSDT", "status": "TRADING", "base_asset": "BTC", "quote_asset": "USDT"}
+        ],
+    )
+    return row
+
+
 #: One minimal valid row builder per production table (keyed by table name).
 ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     BINANCE_SPOT_ARCHIVES.table: archive_row,
@@ -891,6 +954,7 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     BINANCE_SPOT_REST_AGG_TRADES.table: rest_agg_trade_row,
     BINANCE_SPOT_REST_KLINES_1M.table: rest_kline_row,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE.table: precedence_evidence_row,
+    BINANCE_SPOT_EXCHANGE_INFO.table: exchange_info_row,
 }
 assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
 assert CONTRACT_SCHEMA_VERSION == "2.0.0"

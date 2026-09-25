@@ -1,6 +1,7 @@
-"""C3 / D3B production table definitions: exact layout, stable hashes, registry and evolution.
+"""C3 / D3B / E2 production table definitions: exact layout, stable hashes, registry, evolution.
 
-The C3 first slice (eight tables) is frozen byte for byte; D3B appends the four ADR-0027 tables.
+The C3 first slice (eight tables) is frozen byte for byte; D3B appends the four ADR-0027 tables and
+E2 the ADR-0029 exchangeInfo snapshot table, each leaving every earlier definition untouched.
 
 No catalog here (pure definitions); PostgreSQL evidence is in ``test_phase1_tables_postgres``.
 """
@@ -42,6 +43,7 @@ from infrastructure.catalog import (
 )
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
+    BINANCE_SPOT_EXCHANGE_INFO,
     BINANCE_SPOT_KLINES_1M,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     BINANCE_SPOT_REST_AGG_TRADES,
@@ -187,10 +189,22 @@ REST_GOLDEN: dict[str, tuple[str, str, str]] = {
         "a98d493598affe4c5ddc8a01ab351b297750a8e97b15536dfc173f3744f08654",
     ),
 }
-#: All twelve tables in registry order, their partitions and goldens.
-PHASE1_TABLE_NAMES = FROZEN_TABLES + REST_TABLES
-ALL_PARTITIONS = {**FROZEN_PARTITIONS, **REST_PARTITIONS}
-ALL_GOLDEN = {**GOLDEN, **REST_GOLDEN}
+#: ADR-0029 addition, appended after the REST tables (E2).
+E2_TABLES = ("raw.binance_spot_exchange_info",)
+E2_PARTITIONS: dict[str, list[tuple[int, str, str, str]]] = {
+    "raw.binance_spot_exchange_info": [],
+}
+E2_GOLDEN: dict[str, tuple[str, str, str]] = {
+    "raw.binance_spot_exchange_info": (
+        "369b3bfcf9ed60b7af050743fdda68167c937bc529512cf08e48886ea6f01ce0",
+        "ed285cc08aea947ab889259125f8bfaa2aa2b27b553df7cef0cbadf09152bb83",
+        "32e3fc7f875dbed2fe701f82b88cfc5394aded44d9277f1afdefaa006fa961bf",
+    ),
+}
+#: All thirteen tables in registry order, their partitions and goldens.
+PHASE1_TABLE_NAMES = FROZEN_TABLES + REST_TABLES + E2_TABLES
+ALL_PARTITIONS = {**FROZEN_PARTITIONS, **REST_PARTITIONS, **E2_PARTITIONS}
+ALL_GOLDEN = {**GOLDEN, **REST_GOLDEN, **E2_GOLDEN}
 
 REVISION_TABLES = FROZEN_TABLES[:6]
 REST_REVISION_TABLES = REST_TABLES[:3]
@@ -246,11 +260,12 @@ def by_table(table: str) -> RegisteredTableDefinition:
 # --------------------------------------------------------------------------- registry
 
 
-def test_registry_holds_the_frozen_eight_then_the_four_rest_tables() -> None:
+def test_registry_holds_the_frozen_eight_then_the_rest_then_the_e2_tables() -> None:
     tables = tuple(item.table for item in PHASE1_TABLES)
     assert tables[:8] == FROZEN_TABLES  # C3 first slice first, order unchanged
-    assert tables[8:] == REST_TABLES  # ADR-0027 additions appended
-    assert len(PHASE1_REGISTRY) == 12
+    assert tables[8:12] == REST_TABLES  # ADR-0027 additions appended
+    assert tables[12:] == E2_TABLES  # ADR-0029 addition appended last
+    assert len(PHASE1_REGISTRY) == 13
     assert [item.table for item in PHASE1_REGISTRY] == list(PHASE1_TABLE_NAMES)
     for definition in PHASE1_TABLES:
         assert definition.definition_id == definition.table
@@ -284,6 +299,41 @@ def test_frozen_eight_goldens_are_unchanged_by_d3b() -> None:
         assert by_table(table).definition_hash == GOLDEN[table][0], table
     assert set(GOLDEN) == set(FROZEN_TABLES)
     assert not set(REST_GOLDEN) & set(GOLDEN)
+
+
+def test_earlier_goldens_are_unchanged_by_e2() -> None:
+    """E2 only appends: all twelve earlier definitions keep their exact hashes."""
+    for table in FROZEN_TABLES + REST_TABLES:
+        assert by_table(table).definition_hash == {**GOLDEN, **REST_GOLDEN}[table][0], table
+    assert not set(E2_GOLDEN) & (set(GOLDEN) | set(REST_GOLDEN))
+
+
+def test_exchange_info_table_carries_the_revision_block_and_the_snapshot_natives() -> None:
+    schema = BINANCE_SPOT_EXCHANGE_INFO.schema
+    for name, required in REVISION_BLOCK.items():
+        assert schema.find_field(name).required is required, name
+    assert _field_shape(schema, "precedence_evidence") == _field_shape(
+        BINANCE_SPOT_AGG_TRADES.schema, "precedence_evidence"
+    )
+    # A snapshot observation is the HTTP exchange [requested_at, ingest_time): both ends required.
+    assert schema.find_field("event_time").required
+    assert schema.find_field("event_end_time").required
+    symbols = schema.find_type("symbols")
+    assert isinstance(symbols, ListType) and isinstance(symbols.element_type, StructType)
+    assert [field.name for field in symbols.element_type.fields] == [
+        "symbol",
+        "status",
+        "base_asset",
+        "quote_asset",
+    ]
+    for name in ("server_time_raw", "requested_symbols", "request_identity_sha256", "decoder_hash"):
+        assert schema.find_field(name).required, name
+    assert BINANCE_SPOT_EXCHANGE_INFO.partition_spec.fields == ()
+    # Listings bind this table as both lineage hops; the listings definition itself is unchanged.
+    assert (
+        by_table("canonical.instrument_listings").definition_hash
+        == GOLDEN["canonical.instrument_listings"][0]
+    )
 
 
 @pytest.mark.parametrize("table", PHASE1_TABLE_NAMES)

@@ -250,6 +250,13 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 | PIT rule | `hlens.pit.maximal-head@1.0.0` | 在规格绑定的 snapshot 上证明 Canonical 行（重新规范化其 Raw 单元，只证明读到的批次、单元级事实全部核对）与 Raw 边（重新推导），映射边，按 `available_time ≤ simulation_time`、`knowledge_time ≤ knowledge_cutoff` 双截止取 maximal head；多于一个 = 冲突（数据集 fail closed）；窗口为任意 UTC 区间，同一键相距一天以内的全部 revision 一起参与选择，键只属于其最早事件所在的窗口（读取方可选"触及"语义自行去重）（Phase 1 F1、G3-S2、G3-S3-R1 / R2） |
 | Quality rule | `hlens.quality.canonical-partition@1.0.0` | 每个 Canonical 分区（表 × 标的 × UTC 日）一行报告：输入快照、竞争 head、1m 缺口、aggTrade ID 跳号、K 线不变式违例与全部证据缺口；无数值阈值（Phase 1 E3；证据缺口格式待 D-QGAP） |
 | Representation | `hlens.canonical.resample@1.0.0` | 只从 PIT 选中的 `canonical.bars_1m` 派生整除一天的分钟周期，UTC 对齐，缺分钟标为不完整、绝不补齐，`available_time ≥ 区间结束`，精确十进制运算（Phase 1 E4） |
+| Source | `binance.public.spot.exchange-info@1.0.0` | market-data-only base 的 `GET /api/v3/exchangeInfo`，唯一参数 `symbols=["BTCUSDT","ETHUSDT"]`，security type NONE；每个成功 200 响应一条 Raw source revision，存 `raw.binance_spot_exchange_info`（ADR-0029 §1） |
+| Collector | `binance.spot.public-exchange-info@1.0.0` | 联网前按结构化白名单拒绝其它 source / symbol / 参数；复用 D3D wire；内容寻址响应对象 + 不可变快照 checkpoint，重放不联网（ADR-0029 §1） |
+| Decoder（parser role） | `binance.spot.exchange-info.decoder@1.0.0` | 严格 JSON；只读 `serverTime`（原样、不解释单位）与请求 symbol 的 `symbol` / `status` / `baseAsset` / `quoteAsset`；未请求或重复 symbol 拒绝整份快照，拒绝不产生 Raw revision；变化 = 新版本 |
+| 身份规则 | `hlens.binance.spot.exchange-info-identity@1.0.0` | 请求身份 `{method, origin, path, query, rule}`、`binance:spot:exchange-info:<sha256>` 键、响应字节 payload hash、`rev1-` id、`arrival_seq` = 已提交最大值 + 1；与归档 / REST 规则物理隔离 |
+| Availability policy | `binance.spot.exchange-info-publication@1.0.0` | 快照与由其推导的 listing revision 一律 `available_time = ingest_time` + 证据缺口（listing 缺口写明 observed-from 下界）（ADR-0029 §1 / §2） |
+| Listing 推导（parser role） | `binance.spot.listing-status@1.0.0` | `TRADING` → listed；`HALT` / `BREAK` / `END_OF_DAY` / `CANCEL_ONLY` → suspended（观察时刻关闭区间）；其它状态、缺失 symbol、base / quote 不符 → 不推断、universe fail closed；永不产生 `delisted`；`tradable_from` = 首次观察到 `TRADING` 的 `retrieved_at`；只在映射状态变化时追加 revision；lineage 两跳均为观察快照（ADR-0029 §2） |
+| Precedence policy | `binance.spot.listing-observation@1.0.0` | 同一来源、同一 episode：推导链中后一条 supersede 前一条，观察时刻（`retrieved_at`）严格递增，证据为两次快照的 `retrieved_at` 与 revision id；同一时刻两份快照不可排序（fail closed）；不用 `arrival_seq`（ADR-0029 §2） |
 | Universe spec | `binance.spot.btc-eth@1.0.0` + content hash | 首切片 `UniverseSelectionSpec`：`BTCUSDT`、`ETHUSDT` spot 的 listing episode；按 ADR-0024 绑定 |
 
 **标识符冻结 ≠ 数据可信**：availability 与 precedence policy 的来源证据仍须由实施批次产出、审阅并有测试。

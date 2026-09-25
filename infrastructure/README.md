@@ -8,7 +8,7 @@
 |---|---|
 | `settings.py` | 类型化运行时设置（03-data.md §6.2）：`file://` warehouse / staging、PostgreSQL catalog DSN、HTTP / Binance base URL |
 | `storage/` | Phase 1 C1 本地 `file://` `StorageAdapter`（`LocalFileStorageAdapter`） |
-| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张首切片生产表 + D3B 四张 ADR-0027 REST 表（共 12 张）、batch 指纹规则与 partition-spec 演进 |
+| `catalog/` | Phase 1 C2 PostgreSQL-backed PyIceberg `CatalogAdapter[pyarrow.Table]`（`PyIcebergCatalogAdapter`）与定义登记表；C3 八张首切片生产表 + D3B 四张 ADR-0027 REST 表 + E2 一张 ADR-0029 快照表（共 13 张）、batch 指纹规则与 partition-spec 演进 |
 | `collector/` | Phase 1 D0 Binance 公共现货日归档下载壳（`BinanceSpotArchiveCollector`） |
 | `parser/` | Phase 1 D1 Binance 公共现货日归档 fail-closed parser（`binance.spot.archive.parser@1.0.0`） |
 | `revision/` | Phase 1 D2 append-only Raw revision：身份规则、availability / precedence policy、`RawRevisionStore`；D3B 的 REST 纯规则（独立身份规则、REST availability / precedence、D-33 通道等价比较） |
@@ -234,3 +234,38 @@ ADR-0027 的第一批实现，全部是**纯函数**：无 HTTP、无 decoder、
 - `revision/channel_precedence.py`：`binance.spot.delivery-channel@1.0.0`（D-33 A）。`compare_channels` 给出
   `EQUAL` / `MISMATCH` / `INCOMPARABLE` / `INTEGRITY_VIOLATION`（后者由 D3E 转为 `CatalogIntegrityError`）；
   `build_channel_edge` 只接受 `EQUAL`，边的 `knowledge_time` 由调用方给出且不得早于两侧 revision。
+
+## exchangeInfo 快照与 listing 历史（E2，ADR-0029）
+
+ADR-0029 方案 A 的实施批次。新增标识符：source `binance.public.spot.exchange-info@1.0.0`、collector
+`binance.spot.public-exchange-info@1.0.0`、decoder `binance.spot.exchange-info.decoder@1.0.0`、身份规则
+`hlens.binance.spot.exchange-info-identity@1.0.0`、availability policy `binance.spot.exchange-info-publication@1.0.0`、
+listing 推导 `binance.spot.listing-status@1.0.0`、precedence policy `binance.spot.listing-observation@1.0.0`。
+每个规则的哈希由其规范 JSON 派生，golden 值在对应测试中。
+
+- `catalog/phase1_tables.py` 追加第 13 张表 `raw.binance_spot_exchange_info`（不分区）；前 12 张的定义与哈希不变
+  （回归测试 `test_earlier_goldens_are_unchanged_by_e2`）。`canonical.instrument_listings` 定义不变。
+- `collector/binance_exchange_info.py`：`GET /api/v3/exchangeInfo`，唯一参数 `symbols=["BTCUSDT","ETHUSDT"]`
+  （`ExchangeInfoQuery` 即白名单；URL 构造后按白名单重新解析）；其它 source / symbol 集合 / 参数在联网前拒绝。
+  线路复用已验收的 D3D wire（自有 client、无 redirect / cookie / auth / 环境代理、有界重试、`Retry-After`、响应头白名单）。
+  响应字节为内容寻址不可变对象，逻辑尝试为一个不可变快照 checkpoint；同一 `request_id` 重放不联网（严格复核并重新解码），
+  decoder 拒绝是稳定失败，**不产生** Raw revision。
+- `parser/binance_exchange_info.py`：严格 JSON（重复键、NaN、小数 / 指数数字拒绝），只读 `serverTime`（原样保存、不解释单位）
+  与每个请求 symbol 的 `symbol` / `status` / `baseAsset` / `quoteAsset`；未请求或重复的 symbol 拒绝整份快照；
+  缺失 symbol 与未知状态是事实，不在此解释。
+- `revision/exchange_info_store.py`：每份已提交快照一条 Raw source revision（请求身份 + 字节；同字节即重放），
+  `available_time = ingest_time` + 证据缺口，`arrival_seq` = 已提交最大值 + 1，单行 batch `<revision>.snapshot.<seq>`，
+  expected-parent 提交与有界重试。`ExchangeInfoRowVerifier` 把每行按**其首次交付的 checkpoint** 逐列重建，
+  并证明表历史只有单行追加（无删除、无外来 batch）。
+- `canonical/listing_rules.py` + `canonical/listings.py`：`TRADING` → listed；`HALT` / `BREAK` / `END_OF_DAY` /
+  `CANCEL_ONLY` → suspended（在观察时刻关闭区间）；未知状态、缺失 symbol、base / quote 不符 → 不推断、finding、
+  universe fail closed 直到下一次明确观察；永不产生 `delisted`。`tradable_from` = 首次观察到 `TRADING` 的
+  `retrieved_at`（observed-from，写入 `status_reason` 与证据缺口），退化 episode 键。只在映射状态变化时追加 revision，
+  `supersedes` 上一条（`retrieved_at` 严格递增；同一时刻两份快照无法排序 → 链停止）。推导是快照集合的纯函数；
+  一次推导一个 batch `binance.spot.listing-status@1.0.0.from.<Raw snapshot id>`，证明时按该 Raw snapshot 重新推导
+  全部已提交 batch。迟到快照若移动了已提交的变化点，旧 revision 保留并报告 `listing_history_diverged`，
+  其可用之后的读取为 competing heads（fail closed）。
+- `ListingDeriver.listing_at(symbol, simulation_time, knowledge_cutoff)`：universe 构建消费的 PIT 读取；
+  首次本机观察之前一律 `no_visible_listing`（历史可用性证据缺口，ADR-0029 开放义务）。
+- **诚实边界**：finding 只在结果中返回，写入 `quality.data_quality_reports` 属质量写入器；未做 ADR-0029 要求的
+  只读 smoke（L4 字段与 `serverTime` 单位）——测试只用 mock transport。

@@ -1,11 +1,12 @@
-"""The twelve Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3 + D3B).
+"""The thirteen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3 + D3B + E2).
 
-Single entry point for the production layout: ``PHASE1_TABLES`` (twelve definitions, frozen logical
-names, ``version = 1.0.0``, ``definition_id`` = table name), ``PHASE1_REGISTRY`` and the idempotent
-``ensure_phase1_tables``. The first eight are the C3 first slice and are unchanged by D3B; the last
-four are the ADR-0027 REST additions (three REST Raw tables + the independent precedence-evidence
-table). C2 test-only definitions live under ``tests/`` and never enter this
-registry.
+Single entry point for the production layout: ``PHASE1_TABLES`` (thirteen definitions, frozen
+logical names, ``version = 1.0.0``, ``definition_id`` = table name), ``PHASE1_REGISTRY`` and the
+idempotent ``ensure_phase1_tables``. The first eight are the C3 first slice and are unchanged by
+D3B; the next four are the ADR-0027 REST additions (three REST Raw tables + the independent
+precedence-evidence table); the last one is the ADR-0029 additive exchangeInfo snapshot table
+(E2). Appending never changes an earlier definition or its hash. C2 test-only definitions live
+under ``tests/`` and never enter this registry.
 
 Every field ID is written out below and equals the ID Iceberg assigns on table creation (top-level
 fields first, then nested fields depth-first); the module refuses to import otherwise. Field docs
@@ -32,6 +33,11 @@ Accepted ADRs and contracts, the producers come in later batches):
   lineage columns; their ``precedence_evidence`` column has the frozen shape (newer side = this row)
   and carries same-channel edges only. ``raw.binance_spot_precedence_evidence`` holds one complete
   ``PrecedenceEvidence`` per row with **both** ends explicit (the D-33 cross-channel edges).
+- **exchangeInfo snapshots (ADR-0029)**: ``raw.binance_spot_exchange_info`` is the Raw source
+  revision of one successful ``GET /api/v3/exchangeInfo`` answer (request identity + body bytes);
+  it carries the requested symbols and, per requested symbol present in the answer, the four
+  native fields the listing derivation reads. ``canonical.instrument_listings`` rows derived from
+  it name it as both lineage hops.
 - **Raw lineage**: parsed Raw rows bind ``archive_revision_id`` (the ``raw.binance_spot_archives``
   revision) + line number + the ``PolicyBinding(role=parser)``; Canonical rows and listings carry
   the ``SelectedRevisionLineage`` hops as ``lineage_*`` columns.
@@ -79,6 +85,7 @@ from infrastructure.catalog.iceberg_adapter import PyIcebergCatalogAdapter
 __all__ = [
     "BINANCE_SPOT_AGG_TRADES",
     "BINANCE_SPOT_ARCHIVES",
+    "BINANCE_SPOT_EXCHANGE_INFO",
     "BINANCE_SPOT_KLINES_1M",
     "BINANCE_SPOT_PRECEDENCE_EVIDENCE",
     "BINANCE_SPOT_REST_AGG_TRADES",
@@ -537,6 +544,101 @@ BINANCE_SPOT_REST_KLINES_1M: Final = _definition(
     _symbol_day_spec(23, 9, "interval_start"),
 )
 
+BINANCE_SPOT_EXCHANGE_INFO: Final = _definition(
+    "raw.binance_spot_exchange_info",
+    Schema(
+        _req(1, "observation_key", _S, "binance:spot:exchange-info:<request_identity_sha256>"),
+        _req(2, "revision_id", _S, _REVISION_ID),
+        _req(
+            3,
+            "source_id",
+            _S,
+            "binance.public.spot.exchange-info@1.0.0 (channel-level source identity)",
+        ),
+        _req(4, "payload_hash", _S, "SHA-256 hex of the response entity body"),
+        _req(5, "arrival_seq", _L, "previous largest arrival_seq + 1 (0 first); audit only"),
+        _req(6, "supersedes", _strings(47), _SUPERSEDES),
+        _opt(7, "source_revision_id", _S, _SOURCE_REVISION_ID),
+        _opt(8, "source_revision_time", _T, _SOURCE_REVISION_TIME),
+        _req(9, "event_time", _T, "ObservationTimes.event_time = requested_at (UTC)"),
+        _req(10, "event_end_time", _T, "ObservationTimes.event_end_time = ingest_time (UTC)"),
+        _opt(11, "source_time", _T, _SOURCE_TIME),
+        _req(12, "available_time", _T, _AVAILABLE_TIME),
+        _req(13, "ingest_time", _T, "ObservationTimes.ingest_time: last response body byte"),
+        _req(14, "knowledge_time", _T, _KNOWLEDGE_TIME),
+        _req(15, "declared_latency_us", _L, _DECLARED_LATENCY),
+        _req(16, "availability_policy_id", _S, _AVAILABILITY_ID),
+        _req(17, "availability_policy_version", _S, _AVAILABILITY_VERSION),
+        _req(18, "availability_policy_hash", _S, _AVAILABILITY_HASH),
+        _req(19, "availability_evidence", _strings(48), _AVAILABILITY_EVIDENCE),
+        _opt(20, "availability_evidence_gap", _S, _AVAILABILITY_GAP),
+        _precedence_evidence(21, 49, (50, 51, 52, 53, 54, 55, 56)),
+        _req(22, "contract_schema_version", _S, _CONTRACT_VERSION),
+        _req(
+            23,
+            "source_binding_id",
+            _S,
+            "SourceBinding.source_id, e.g. binance.public.spot.exchange-info",
+        ),
+        _req(24, "source_binding_version", _S, "SourceBinding.version, e.g. 1.0.0"),
+        _req(25, "collector_id", _S, "collector id of the first delivery"),
+        _req(26, "collector_version", _S, "collector version of the first delivery"),
+        _req(27, "collection_request_id", _S, "logical snapshot request id (first delivery)"),
+        _req(28, "request_origin", _S, "request identity origin: configured https://host[:port]"),
+        _req(29, "request_path", _S, "request identity path: /api/v3/exchangeInfo"),
+        _req(30, "request_query", _S, "canonical query string (the symbols parameter only)"),
+        _req(
+            31, "request_identity_sha256", _S, "SHA-256 of the canonical request identity document"
+        ),
+        _req(32, "source_uri", _S, "the exact request URI"),
+        _req(33, "requested_at", _T, "local UTC time the request was handed to the transport"),
+        _req(34, "retrieved_at", _T, "last response body byte = ingest_time (first delivery)"),
+        _req(35, "http_status", _L, "HTTP status of the response (200 for every revision)"),
+        _req(
+            36,
+            "source_metadata",
+            ListType(
+                57,
+                StructType(
+                    _req(58, "name", _S, "metadata key (lower-case token, e.g. HTTP header)"),
+                    _req(59, "value", _S, "metadata value as received"),
+                ),
+                element_required=True,
+            ),
+            "allow-listed HTTP response headers as (name, value) pairs sorted by name",
+        ),
+        _req(37, "object_key", _S, "ObjectRef.key of the published response body"),
+        _req(38, "object_uri", _S, "ObjectRef.uri: warehouse URI of the response body"),
+        _req(39, "object_sha256", _S, "ObjectRef.sha256: SHA-256 computed over the stored bytes"),
+        _req(40, "object_size_bytes", _L, "ObjectRef.size in bytes"),
+        _req(41, "decoder_id", _S, "decoder PolicyBinding.policy_id (role=parser)"),
+        _req(42, "decoder_version", _S, _DECODER_VERSION),
+        _req(43, "decoder_hash", _S, _DECODER_HASH),
+        _req(
+            44,
+            "server_time_raw",
+            _L,
+            "response-level serverTime as received; unit not interpreted, never a status time",
+        ),
+        _req(45, "requested_symbols", _strings(60), "symbols of the request (set, sorted)"),
+        _req(
+            46,
+            "symbols",
+            ListType(
+                61,
+                StructType(
+                    _req(62, "symbol", _S, "exchangeInfo symbols[].symbol as received"),
+                    _req(63, "status", _S, "exchangeInfo symbols[].status as received"),
+                    _req(64, "base_asset", _S, "exchangeInfo symbols[].baseAsset as received"),
+                    _req(65, "quote_asset", _S, "exchangeInfo symbols[].quoteAsset as received"),
+                ),
+                element_required=True,
+            ),
+            "requested symbols present in the response, sorted by symbol (absent = missing)",
+        ),
+    ),
+)
+
 BINANCE_SPOT_PRECEDENCE_EVIDENCE: Final = _definition(
     "raw.binance_spot_precedence_evidence",
     Schema(
@@ -829,7 +931,8 @@ DATASET_MANIFESTS: Final = _definition(
     ),
 )
 
-#: The twelve production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027.
+#: The thirteen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027, then
+#: the ADR-0029 exchangeInfo snapshot table (E2).
 PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_AGG_TRADES,
@@ -843,6 +946,7 @@ PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_REST_AGG_TRADES,
     BINANCE_SPOT_REST_KLINES_1M,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+    BINANCE_SPOT_EXCHANGE_INFO,
 )
 PHASE1_REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 
