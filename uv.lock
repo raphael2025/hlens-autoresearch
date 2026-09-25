@@ -3,6 +3,15 @@ revision = 3
 requires-python = "==3.13.*"
 
 [[package]]
+name = "annotated-doc"
+version = "0.0.5"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/5a/8e/38aa427ed5402449e226975b649c5dc73ccadfefeb95e6aecb8f8ea4b6b6/annotated_doc-0.0.5.tar.gz", hash = "sha256:c7e58ce09192557605d8bbd92836d7e1d520ac9580096042c0bfd197efacf1bb", size = 10758, upload-time = "2026-07-28T13:50:58.129Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/3e/30/e900b21425a860e195f32e37657aa1f7c7f2b1bfb26f03ca209b90933c06/annotated_doc-0.0.5-py3-none-any.whl", hash = "sha256:117bac03a25ede5df5440e855b32d556049ca169ead221505badf432fed4b101", size = 5302, upload-time = "2026-07-28T13:50:57.239Z" },
+]
+
+[[package]]
 name = "annotated-types"
 version = "0.8.0"
 source = { registry = "https://pypi.org/simple" }
@@ -151,6 +160,22 @@ wheels = [
 ]
 
 [[package]]
+name = "fastapi"
+version = "0.141.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "annotated-doc" },
+    { name = "pydantic" },
+    { name = "starlette" },
+    { name = "typing-extensions" },
+    { name = "typing-inspection" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/8a/02/91e3416a8fdd715abb903a952a6bec7cdd8d14eed55d415fc8595524c319/fastapi-0.141.1.tar.gz", hash = "sha256:e8822fc40db1e1858054d7a949a888695bc9bdce70139178e33bd2871a453ca1", size = 425799, upload-time = "2026-07-29T17:18:05.568Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/cb/03/10388a42375ee7e4ac9b94eb2c5c569c8b5795e377e701c9ac3ad63de890/fastapi-0.141.1-py3-none-any.whl", hash = "sha256:bfb91aa2d334c61cb35ba9a116fc123b3d3df31640b801cf57a7a78ec3f603b3", size = 131954, upload-time = "2026-07-29T17:18:04.364Z" },
+]
+
+[[package]]
 name = "fsspec"
 version = "2026.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -189,6 +214,7 @@ name = "hlens-autoresearch"
 version = "0.0.0"
 source = { virtual = "." }
 dependencies = [
+    { name = "fastapi" },
     { name = "httpx" },
     { name = "pyarrow" },
     { name = "pydantic" },
@@ -205,6 +231,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "fastapi", specifier = ">=0.115" },
     { name = "httpx", specifier = ">=0.28.1" },
     { name = "pyarrow", specifier = ">=25.0.1" },
     { name = "pydantic", specifier = ">=2.9" },
@@ -695,6 +722,18 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/4b/73/e29fa88dfc809857a55e6523911d345d00cab4adf87032c21ade8874223c/sqlalchemy-2.0.54-cp313-cp313-win32.whl", hash = "sha256:264460333ed0b177cbb1956355d0ee4e0cab83fb415c934ce12a25db2e7be39c", size = 2138931, upload-time = "2026-09-15T22:42:51.801Z" },
     { url = "https://files.pythonhosted.org/packages/89/9d/885e7491836f3dad368c74f0d5b93551d37b0ec66c9e8753240ee988308f/sqlalchemy-2.0.54-cp313-cp313-win_amd64.whl", hash = "sha256:cf89e92bf0d4204a6afcc17af27b9271ed9c7e34e17d6f80c085d431ea4a1747", size = 2166496, upload-time = "2026-09-15T22:42:53.603Z" },
     { url = "https://files.pythonhosted.org/packages/24/a1/bd5e3e99bc9c8863b51ac5b9b03008a7f2da8c6b59695992f5c654e1265b/sqlalchemy-2.0.54-py3-none-any.whl", hash = "sha256:7e33a631ab1474f8fe6b910bd1a07b7b8009c4c78cdd3fb18001b03e3bc2e1d2", size = 1958015, upload-time = "2026-09-15T22:24:22.95Z" },
+]
+
+[[package]]
+name = "starlette"
+version = "1.7.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "anyio" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/7b/2b/3850dc6bf7ef71b088962eba31dafc6cffd2f96e577ebb0bb316df96da3e/starlette-1.7.0.tar.gz", hash = "sha256:c79f74ea63cff761804fbbfb182f1e0b440c2d07b164d24700c5a1bab5d6ff5d", size = 2736246, upload-time = "2026-09-23T07:30:26.35Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/4e/d6/1ec1b290f9e0fb067899b61e1d37a30c923068bad260b216dbe37a7d2967/starlette-1.7.0-py3-none-any.whl", hash = "sha256:67f8e99895493dd2911a03f11314af6ceebeae4e704bb9f43dfc6a9db151c93e", size = 78980, upload-time = "2026-09-23T07:30:24.567Z" },
 ]
 
 [[package]]

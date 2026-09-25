@@ -44,6 +44,7 @@
 | [0042](0042-synthetic-market-provider.md) | SyntheticMarketProvider 契约与随机游走生成器（Phase 9） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0045](0045-strategy-evolution.md) | 策略演化算子与谱系（Phase 12） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0047](0047-migration-framework.md) | 技术迁移框架——金标准重跑与 Adapter 一致性（Phase 14） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0048](0048-api-and-web-console.md) | API 服务与研究控制台骨架（apps/api、apps/web） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按

@@ -8,6 +8,7 @@ description = "Modular, pluggable, verifiable automated research infrastructure 
 readme = "README.md"
 requires-python = "==3.13.*"
 dependencies = [
+    "fastapi>=0.115",
     "httpx>=0.28.1",
     "pyarrow>=25.0.1",
     "pydantic>=2.9",

@@ -1,0 +1,47 @@
+"""FastAPI application (ADR-0048; framework, FRAMEWORK_IMPLEMENTED / NOT_VALIDATED).
+
+Read-only endpoints over the domain and plugins; no business rules live here, and nothing imports
+``research/`` (01-system.md §3). Providers are injected, so tests and deployments choose them.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import FastAPI
+
+from core.contracts.knowledge import KnowledgeProvider, KnowledgeQuery, KnowledgeResult
+from core.contracts.registry import CONTRACT_MODELS
+from core.lifecycle.strategy import ALLOWED_TRANSITIONS
+
+__all__ = ["API_VERSION", "create_app"]
+
+API_VERSION = "0.1.0"
+
+
+def create_app(*, knowledge: KnowledgeProvider | None = None) -> FastAPI:
+    app = FastAPI(title="HLENS-AutoResearch API", version=API_VERSION)
+
+    @app.get("/health")
+    def health() -> dict[str, str]:
+        return {"status": "ok", "api_version": API_VERSION}
+
+    @app.get("/contracts")
+    def contracts() -> list[str]:
+        return sorted(model.__name__ for model in CONTRACT_MODELS)
+
+    @app.get("/lifecycle/transitions")
+    def transitions() -> list[dict[str, str]]:
+        return [
+            {"from": source.value, "to": target.value}
+            for source, target in sorted(ALLOWED_TRANSITIONS, key=lambda pair: (pair[0], pair[1]))
+        ]
+
+    @app.post("/knowledge/search", response_model=None)
+    def knowledge_search(query: KnowledgeQuery) -> dict[str, Any]:
+        if knowledge is None:
+            return {"error": "no knowledge provider is configured"}
+        result: KnowledgeResult = knowledge.search(query)
+        return result.model_dump(mode="json")
+
+    return app

@@ -2,4 +2,4 @@
 
 Application Plane。包含 api、worker、web。**运行时不得 import `research/`**（01-system.md §3）。
 
-> Architecture Bootstrap：目录仅作规划，**尚无代码**。实现需等待对应 Phase 开启（见 docs/research/roadmap.md）。
+> 框架已实现（Raphael 2026-09-25 全阶段框架指示）：`api/`（ADR-0048）、`worker/`（ADR-0044）、`web/`（ADR-0048）；均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
