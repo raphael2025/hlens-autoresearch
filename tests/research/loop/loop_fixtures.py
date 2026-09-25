@@ -123,11 +123,15 @@ def loop_profile(boundary_day: int = 10) -> ValidationProfile:
     )
 
 
-#: TEST ONLY — explicit parameters for rules without a Profile field.
+#: TEST ONLY — explicit parameters for rules without a Profile field. ``min_capacity=0.0`` states
+#: "no capacity requirement in this smoke loop" explicitly: since the ADR-0041 review fix a missing
+#: ``min_capacity`` is INCONCLUSIVE (it used to be silently skipped); likewise the P&L share of
+#: undersampled states (C-R2) now needs an explicit bound (0.5: arbitrary, TEST ONLY).
 LOOP_TEST_ONLY_PARAMS = RobustnessParams(
     cscv_partitions=8,
     max_participation_rate=0.01,
-    min_capacity=None,
+    min_capacity=0.0,
+    max_undersampled_pnl_share=0.5,
     impact_coefficient=0.1,
     cross_asset_min_positive_fraction=None,
 )
