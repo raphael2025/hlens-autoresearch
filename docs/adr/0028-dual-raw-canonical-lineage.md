@@ -2,15 +2,16 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-25，待 Codex 复核；未批准前 E1 不得实施） |
+| 状态 | **Accepted（2026-09-25，Raphael 以"同意推荐方案"批准方案 B）**；尚待实施（E1 起）。起草 E0 `ca48a36`，Cursor 审计修正 E0-R1 `e2951e4` |
 | 日期 | 2026-09-25 |
-| 决策者 | Codex（Raphael 2026-09-24 "授权所有" 的持续授权范围内），尚未决定 |
+| 决策者 | Raphael（项目最终决策者，2026-09-25 对 D-E0 决策包回复"同意推荐方案"）；同时确认 §3.0 对 ADR-0023 §4 的解释 |
 | 起草者 | Claude Code（Opus），Phase 1 批次 E0（docs-only），依 Raphael 2026-09-25 的持续执行授权 |
 | 相关 Phase | Phase 1（roadmap 验收 #15、#18、#20 的前置设计） |
 | 影响范围 | Data / Infrastructure |
 | 是否破坏兼容 | 否：不改 12 张表定义、不改 `core/` 契约与 Schema、不新增表；只新增标识符与 E1 的实现规则 |
 | 前置 | [ADR-0022](0022-phase1-market-and-execution-scope.md)、[ADR-0023](0023-bitemporal-revision-data.md)、[ADR-0024](0024-historical-tradable-universe.md)、[ADR-0027](0027-rest-raw-source-and-element-revisions.md) |
-| 基线 | D4 `a536ef3`（REVIEW_PENDING），其下 D3E-R2 `c326434`（REVIEW_PENDING） |
+| 基线 | D4 `a536ef3`（REVIEW_PENDING），其下 D3E-R2 `c326434`（REVIEW_PENDING）。本 ADR 的接受不等于 D3E / D4 代码或门记录已验收，二者仍待 Codex |
+| 落点 | `03-data.md` §7.3（四个新标识符）、§7.7（Canonical 设计摘要）——接受时已并入 |
 
 ## 背景
 

@@ -161,9 +161,9 @@ ADR-0022 的三项启用前置（历史 backfill、REST gap reconciliation、重
 
 #### E0（双 Raw → Canonical 设计门）
 
-[ADR-0028](../adr/0028-dual-raw-canonical-lineage.md)（**Proposed**，待 Codex 复核）：Canonical revision 与 Raw 元素 revision
+[ADR-0028](../adr/0028-dual-raw-canonical-lineage.md)（**Accepted** 2026-09-25，Raphael 批准方案 B）：Canonical revision 与 Raw 元素 revision
 一一对应、lineage 进 Canonical 身份；跨通道边不物化到 Canonical，由 PIT 从绑定的 Raw 证据 snapshot 一对一映射；
-Canonical `arrival_seq` 独立分配；无表与契约变化。**E1 在 ADR-0028 被接受前关闭**。
+Canonical `arrival_seq` 独立分配；无表与契约变化。**E1 已开放**（仍以未经 Codex 验收的 D3E 为输入，结果 REVIEW_PENDING）。
 
 ## Phase 2 — Market State Engine
 

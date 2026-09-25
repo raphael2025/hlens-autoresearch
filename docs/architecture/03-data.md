@@ -243,6 +243,10 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 | Precedence policy | `binance.spot.rest-revision@1.0.0` | REST 通道内部：同内容幂等；不同内容无证据 → competing heads；从不产生边 |
 | Precedence policy | `binance.spot.delivery-channel@1.0.0` | D-33 方案 A：版本化规范内容投影逐字段相等 → evidence-only 边"归档 revision 取代 REST revision"，写入证据表；否则无边。项目政策，不是来源声明的先后 |
 | 身份规则 | `hlens.binance.spot.rest-revision-identity@1.0.0` | REST 页身份、键与 payload hash、`edge_id`、`arrival_seq` 区间（REST 自 `2**62` 起）；与归档身份规则物理隔离 |
+| 身份规则 | `hlens.canonical.revision-identity@1.0.0` | Canonical revision 身份（`crev1-`）：`{rule, observation_key, source_id, payload_hash}`；source identity 内嵌 normalizer 版本与 Raw lineage（ADR-0028 §1）；与归档 / REST 规则物理隔离 |
+| Normalizer（parser role） | `hlens.canonical.binance-spot.normalizer@1.0.0` | Raw 元素 revision → Canonical trades / bars_1m 一一对应；payload 文档 `hlens.canonical.trade/1` / `hlens.canonical.bar_1m/1`；行内边只映像 Raw 行内边（1.0.0 为空）；独立 `arrival_seq` 块（ADR-0028 §2 / §3.1 / §5 / §6） |
+| Availability policy | `hlens.canonical.availability@1.0.0` | 派生：`available = max(规格约束, raw.available + 0)`，`knowledge = max(normalizer ready, raw.knowledge)`；证据 / 缺口二选一继承（ADR-0028 §4） |
+| Precedence policy | `hlens.canonical.precedence-map@1.0.0` | PIT 把绑定的 Raw 证据 snapshot 中已复核的边按 lineage 一对一映射到 Canonical 端点，`knowledge_time = max(K_E, 两端 Canonical knowledge)`；不物化、不读墙钟（ADR-0028 §3.2） |
 | Universe spec | `binance.spot.btc-eth@1.0.0` + content hash | 首切片 `UniverseSelectionSpec`：`BTCUSDT`、`ETHUSDT` spot 的 listing episode；按 ADR-0024 绑定 |
 
 **标识符冻结 ≠ 数据可信**：availability 与 precedence policy 的来源证据仍须由实施批次产出、审阅并有测试。
@@ -295,3 +299,12 @@ competing head 不是 universe 排除原因：它使构建 fail closed，不产�
 - **PIT 绑定**：使用 REST 数据的 PIT 读取必须同时绑定所读 REST 表与 `raw.binance_spot_precedence_evidence` 的 snapshot（ADR-0027 §13）。
 
 官方事实与其边界见 [证据文件](evidence/binance-spot-rest-market-data.md)（2026-09-25 检索）。
+
+### 7.7 双 Raw → Canonical 设计摘要（[ADR-0028](../adr/0028-dual-raw-canonical-lineage.md)，Accepted 2026-09-25）
+
+- 每条 Raw 元素 revision 在一个 normalizer 版本下恰好对应一条 Canonical revision；`observation_key` 与 Raw 相同，
+  source identity 内嵌 Raw 表与 revision id，因此归档与 REST 交付的同一内容是两条可追溯的 Canonical revision。
+- 行内 `supersedes` / `precedence_evidence` 只映像 Raw 行内边；跨通道边不物化到 Canonical，由 PIT 从绑定的
+  `raw.binance_spot_precedence_evidence` snapshot 一对一映射。Canonical payload 相等永远不是 precedence 证据。
+- 时间按 ADR-0023 §3 传播，normalizer 每个单元读一次注入时钟、重跑复用；`arrival_seq` 每张 Canonical 表独立分块，
+  不复制 Raw。使用 Canonical 的 PIT 必须绑定 Canonical、所涉 Raw 元素与 source 表以及 Raw 证据表的 snapshot。
