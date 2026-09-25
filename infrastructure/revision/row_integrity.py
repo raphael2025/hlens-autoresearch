@@ -1369,6 +1369,11 @@ class PersistedRowVerifier:
         self._verify_archive_row_batches(definition, by_archive)
         return lineage
 
+    def archive_row_count(self, data_type: str, symbol: str, archive_id: str) -> int:
+        """Lines of the verified, strictly re-parsed object of one archive revision."""
+        verified = self._verified_archives(data_type, symbol, [archive_id])
+        return verified[archive_id].parsed.row_count
+
     def _verified_archives(
         self, data_type: str, symbol: str, archive_ids: Sequence[str]
     ) -> dict[str, VerifiedArchive]:

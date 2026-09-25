@@ -15,7 +15,7 @@ from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
-from pyiceberg.expressions import EqualTo
+from pyiceberg.expressions import EqualTo, GreaterThanOrEqual
 
 from core.contracts.catalog import CommitRequest
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
@@ -28,11 +28,13 @@ from infrastructure.canonical.normalizer import (
     unit_batch_id,
 )
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.revision import ArchiveIngested, RawRevisionStore
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision.channel_reconcile import evidence_from_row, revision_record_from_row
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.collector import rest_support as cs
 from tests.infrastructure.revision import rest_store_support as ss
+from tests.infrastructure.revision import revision_support as rs
 from tests.infrastructure.revision.rest_store_support import (
     SYMBOL,
     Crash,
@@ -890,16 +892,99 @@ def test_proof_windows_never_split_a_position_and_cover_all() -> None:
 
 
 @pytest.mark.parametrize(
-    ("values", "first", "last", "ok"),
+    ("values", "expected", "ok"),
     [
-        ([1, 2, 3], 1, 3, True),
-        ([3, 1, 2], 1, 3, True),
-        ([1, 2, 2], 1, 3, False),
-        ([1, 2, 4], 1, 3, False),
-        ([1, 2], 1, 3, False),
-        ([], 1, 0, True),
-        ([None, 2, 3], 1, 3, False),
+        ([1, 2, 3], [1, 2, 3], True),
+        ([3, 1, 2], [1, 2, 3], True),
+        ([4, 2], [2, 4], True),  # a REST unit's positions may have gaps
+        ([1, 2, 2], [1, 2, 3], False),
+        ([1, 2, 4], [1, 2, 3], False),
+        ([1, 2], [1, 2, 3], False),
+        ([], [], True),
+        ([None, 2, 3], [1, 2, 3], False),
     ],
 )
-def test_runs(values: list[int | None], first: int, last: int, ok: bool) -> None:
-    assert nz._is_run(pa.array(values, type=pa.int64()), first, last) is ok
+def test_same_numbers(values: list[int | None], expected: list[int], ok: bool) -> None:
+    assert nz._same_numbers(pa.array(values, type=pa.int64()), expected) is ok
+
+
+def test_batch_windows_are_rank_slices_of_the_positions() -> None:
+    positions = [2, 3, 5, 8, 9]
+    assert [nz._batch_window(positions, 2, i) for i in range(3)] == [
+        (2, 3, 2),
+        (5, 8, 4),
+        (9, 9, 5),
+    ]
+
+
+# =========================================================================================
+# G3-S-R1: review E
+# =========================================================================================
+
+
+def test_a_rest_unit_lacking_positions_another_page_delivered_is_normalized(
+    h: RestHarness,
+) -> None:
+    """Review E-1: page B re-delivers trades 101..102 first delivered by page A and owns only
+    trade 103 (element_index 2); its positions have a gap and it is still lawful."""
+    cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [ss.agg_items(3, first_id=100)])
+    cs.queue_agg_chain(
+        h.venue, SYMBOL, ss.T0 + 1, [ss.agg_items(3, first_id=101, first_ms=ss.T0 + 1)]
+    )
+    h.collect(ss.agg_request("req-a"))
+    h.collect(ss.agg_request("req-b", start_ms=ss.T0 + 1))
+    store = h.store(clock=StepClock(start=K_REST))
+    a = store.ingest_collection(ss.agg_request("req-a")).pages[0].response_revision_id
+    b = store.ingest_collection(ss.agg_request("req-b", start_ms=ss.T0 + 1)).pages[0]
+    owned = [
+        r["element_index"]
+        for r in h.rows(c.REST_AGGS)
+        if r["response_revision_id"] == b.response_revision_id
+    ]
+    assert owned == [2]
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=1)
+    assert len(n.normalize_unit(c.REST_AGGS.table, a).revision_ids) == 3
+    out = n.normalize_unit(c.REST_AGGS.table, b.response_revision_id)
+    [row] = [r for r in h.rows(c.TRADES) if r["revision_id"] == out.revision_ids[0]]
+    assert out.arrival_seq_base is not None
+    assert row["arrival_seq"] == out.arrival_seq_base + 3 and row["venue_trade_id"] == "103"
+    assert n.normalize_unit(c.REST_AGGS.table, b.response_revision_id).replayed
+    assert [
+        r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)
+    ] == list(out.revision_ids)
+
+
+def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> None:
+    """Review E-3: an archive revision's rows are all the lines of its object."""
+    arc = rs.archive(
+        h.storage,
+        data_type="agg_trades",
+        symbol=SYMBOL,
+        day=ss.DAY,
+        rows=ss.archive_agg_lines(ss.agg_items(5)),
+        retrieved_at=c.ARCHIVE_RETRIEVED,
+        request_id="archive-1",
+    )
+    ingested = RawRevisionStore(
+        h.adapter, h.storage, clock=StepClock(start=K_ARCHIVE), microbatch_rows=2
+    ).ingest(arc.collected, arc.context)
+    assert isinstance(ingested, ArchiveIngested), ingested
+    archive = ingested.archive_revision_id
+    h.delete_rows(c.ARCHIVE_AGGS, GreaterThanOrEqual("archive_line_number", 5))  # type: ignore[call-arg, arg-type]
+    clock = StepClock(start=K_NORM)
+    with pytest.raises(CatalogIntegrityError, match="not exactly the 5 lines of its object"):
+        c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert clock.calls == 0 and h.rows(c.TRADES) == []
+
+
+def test_a_replay_rechecks_revision_id_uniqueness(h: RestHarness) -> None:
+    """Review E-2: an exact copy of a committed row (another block, same time) is refused on
+    replay, as on the first run's read-back."""
+    archive, _, _ = _pair(h)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=2)
+    n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    row = sorted(h.rows(c.TRADES), key=lambda item: item["arrival_seq"])[1]
+    copy = dict(row, arrival_seq=row["arrival_seq"] + 9 * c.STRIDE, lineage_source_revision_id="x")
+    h.forge_rows(c.TRADES, [copy], "copy")
+    with pytest.raises(CatalogIntegrityError, match="not held by exactly one row"):
+        n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
