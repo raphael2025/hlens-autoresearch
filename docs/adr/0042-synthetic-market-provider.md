@@ -17,7 +17,8 @@
    内容同形的 1 分钟 bar、实际植入的 `truth` 与绑定全部内容的 `market_hash`；给定种子必须确定性，数值一律 `Decimal`。
 2. 首个实现 `plugins/synthetic/RandomWalkMarket`：带种子的 `random.Random`，每个抽样立即量化为固定 `Decimal` 精度。
 3. 用途只限检验方法（纯噪声上的假阳性率、植入效应的检出力）；**不得**用合成结果支持真实市场结论（roadmap P9 禁止事项）。
-   校准报告（假阳性率、检出力）依赖 P4 / P8 验证流水线，在其框架完成后接入。
+   校准框架 `research/synthetic_lab.calibrate`：任意检测器（最终是 P4 / P8 完整验证流水线）在 N 个纯噪声市场与 N 个植入效应市场上
+   运行，报告经验假阳性率与检出力；须达到的声明水平属 Validation Profile（不在此设定）。
 
 ## 后果
 
