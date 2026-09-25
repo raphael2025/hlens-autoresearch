@@ -342,8 +342,13 @@ class PyIcebergCatalogAdapter:
         columns: Sequence[str],
         row_filter: BooleanExpression = _ALWAYS_TRUE,
         limit: int | None = None,
+        snapshot_id: str | None = None,
     ) -> pa.Table:
         """Read selected columns of ``table`` at its current snapshot (infrastructure only).
+
+        ``snapshot_id`` (Phase 1 F1) reads a named snapshot of the table instead — the time
+        travel a point-in-time build needs to re-read exactly what its manifest bound. An id the
+        table does not have is ``SnapshotNotFound``; nothing falls back to the current head.
 
         This is **not** part of the core ``CatalogAdapter`` Protocol: adding a required method
         there would break every existing implementation, and the general point-in-time read
@@ -367,7 +372,24 @@ class PyIcebergCatalogAdapter:
         with _backend("scan_columns"):
             iceberg = self._require(name)
             self._verified(name, iceberg)
-            scan = iceberg.scan(row_filter=row_filter, selected_fields=tuple(columns), limit=limit)
+            if snapshot_id is None:
+                scan = iceberg.scan(
+                    row_filter=row_filter, selected_fields=tuple(columns), limit=limit
+                )
+                return scan.to_arrow()
+            pinned = (
+                iceberg.metadata.snapshot_by_id(int(snapshot_id))
+                if isinstance(snapshot_id, str) and _SNAPSHOT_ID_RE.fullmatch(snapshot_id)
+                else None
+            )
+            if pinned is None:
+                raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
+            scan = iceberg.scan(
+                row_filter=row_filter,
+                selected_fields=tuple(columns),
+                limit=limit,
+                snapshot_id=pinned.snapshot_id,
+            )
             return scan.to_arrow()
 
     def max_int64(

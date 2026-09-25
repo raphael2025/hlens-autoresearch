@@ -126,6 +126,7 @@ __all__ = [
     "check_batch_snapshot",
     "check_block_base",
     "check_provenance_shape",
+    "indexed_batches",
     "element_batch_id",
     "element_columns",
     "response_batch_id",
@@ -295,6 +296,13 @@ def _indexed_batches(
             raise CatalogIntegrityError(f"{table} has a malformed batch id {batch_id!r}")
         found[prefix].setdefault(int(tail), []).append(snapshot)
     return found
+
+
+def indexed_batches(
+    adapter: RevisionCatalog, table: str, prefixes: Iterable[str]
+) -> dict[str, dict[int, list[SnapshotInfo]]]:
+    """Public form of ``_indexed_batches`` (Canonical verification, Phase 1 F1)."""
+    return _indexed_batches(adapter, table, prefixes)
 
 
 def check_batch_snapshot(

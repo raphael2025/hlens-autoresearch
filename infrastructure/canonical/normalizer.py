@@ -50,6 +50,7 @@ from infrastructure.revision.row_integrity import (
     batch,
     batch_rows,
     check_batch_snapshot,
+    indexed_batches,
     snapshots_of_batches,
 )
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
@@ -201,6 +202,68 @@ class CanonicalNormalizer:
         raise CanonicalNormalizeConflict(
             f"unit {source_revision_id} of {raw_table} lost {_ATTEMPTS} commit races"
         ) from last_error
+
+    def verify_unit(self, raw_table: str, source_revision_id: str) -> tuple[Mapping[str, Any], ...]:
+        """The unit's committed Canonical rows, proven; nothing is written and no clock is read.
+
+        Every Raw row of the unit is proven, the committed rows must be exactly what their Raw
+        rows normalize to under the recovered block base and ready time, and every batch of the
+        plan must be either fully committed with its exact fingerprint or entirely absent (a unit
+        still being normalized at the read snapshot). Run on a catalog view pinned to a
+        manifest's snapshots, it proves what those snapshots held (Phase 1 F1).
+        """
+        try:
+            channel = rules.raw_channel_of(raw_table)
+        except rules.CanonicalRuleViolation as exc:
+            raise CanonicalNormalizeError(str(exc)) from None
+        pinned = self._pinned_read(channel, source_revision_id)
+        if not pinned.committed:
+            return ()
+        if not pinned.raw_rows:
+            raise CatalogIntegrityError(
+                f"{channel.canonical.table} holds Canonical rows of unit {source_revision_id} "
+                "that has no Raw element revision"
+            )
+        base, ready = self._base_and_ready(channel, pinned)
+        planned = self._plan(channel, pinned, base, ready)
+        definition = channel.canonical
+        committed = {row["revision_id"] for row in pinned.committed}
+        # The writer's microbatch size is not the reader's business: the committed batches of
+        # this unit's plan (its size is in every id) must split the planned rows, in order, as a
+        # contiguous prefix of one plan, each with its exact fingerprint (E1-R1 batch ids).
+        size = len(planned)
+        prefix = (
+            f"{rules.NORMALIZER_ID}@{rules.NORMALIZER_VERSION}.{source_revision_id}.{size:010d}."
+        )
+        found = indexed_batches(self._adapter, definition.table, [prefix])[prefix]
+        batches = [(index, found[index]) for index in sorted(found)]
+        if [index for index, _ in batches] != list(range(len(batches))):
+            raise CatalogIntegrityError(
+                f"Canonical unit {source_revision_id}: its batches are not a contiguous prefix"
+            )
+        offset = 0
+        sizes: list[int] = []
+        for index, snapshots in batches:
+            batch_id = unit_batch_id(source_revision_id, size, index)
+            if len(snapshots) != 1:
+                raise CatalogIntegrityError(
+                    f"{definition.table} has rows of batch {batch_id} but {len(snapshots)} "
+                    "snapshots committing it"
+                )
+            rows = planned[offset : offset + snapshots[0].added_rows]
+            offset += snapshots[0].added_rows
+            sizes.append(snapshots[0].added_rows)
+            check_batch_snapshot(definition, batch_id, snapshots[0], rows)
+        if sizes and (any(value != sizes[0] for value in sizes[:-1]) or sizes[-1] > sizes[0]):
+            raise CatalogIntegrityError(
+                f"Canonical unit {source_revision_id}: its batches follow no single plan"
+            )
+        if {row["revision_id"] for row in planned[:offset]} != committed:
+            raise CatalogIntegrityError(
+                f"Canonical unit {source_revision_id}: committed rows are not exactly the rows "
+                "of its committed batches"
+            )
+        return tuple(row for row in planned if row["revision_id"] in committed)
 
     # ------------------------------------------------------------------ pinned read
 

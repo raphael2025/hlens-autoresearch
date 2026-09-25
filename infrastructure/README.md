@@ -13,6 +13,7 @@
 | `parser/` | Phase 1 D1 Binance 公共现货日归档 fail-closed parser（`binance.spot.archive.parser@1.0.0`） |
 | `revision/` | Phase 1 D2 append-only Raw revision：身份规则、availability / precedence policy、`RawRevisionStore`；D3B 的 REST 纯规则（独立身份规则、REST availability / precedence、D-33 通道等价比较） |
 | `canonical/` | Phase 1 E1（ADR-0028）：四个 Canonical 规则（身份 `crev1-`、normalizer、派生 availability、precedence-map 纯函数）与 `CanonicalNormalizer`——一个 Raw source revision 为一个单元，先经 `PersistedRowVerifier` 证明全部 Raw 行，再一一映射为 `canonical.trades` / `canonical.bars_1m` 行；独立 `arrival_seq` 块、一次时钟读数、崩溃恢复复用；不读 Raw 证据表 |
+| `pit/` | Phase 1 F1：`PinnedCatalogView`（按 manifest 绑定的 snapshot 只读；未绑定的表读作空）与 `PitSelector`（规则 `hlens.pit.maximal-head@1.0.0`：绑定核对 → 在绑定 snapshot 上证明 Canonical 行与 Raw 边 → 映射边 → 双截止 maximal-head；输出选择、lineage、证据缺口、冲突）。`PyIcebergCatalogAdapter.scan_columns` 为此增加可选 `snapshot_id`（仅基础设施层，核心 Protocol 不变） |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
 

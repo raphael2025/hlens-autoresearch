@@ -402,14 +402,7 @@ class ChannelReconciler:
         self._verifier = PersistedRowVerifier(adapter, storage)
 
     def reconcile(self, data_type: str, symbol: str, day: date) -> ChannelReconciled:
-        if data_type not in _REST_TABLES:
-            raise ChannelReconcileError(f"unsupported data_type {data_type!r}")
-        try:
-            rest_identity.agg_trade_observation_key(symbol, 0)
-        except rest_identity.RestIdentityViolation as exc:
-            raise ChannelReconcileError(str(exc)) from None
-        if not isinstance(day, date) or isinstance(day, datetime):
-            raise ChannelReconcileError("day must be a datetime.date (UTC)")
+        self._check_partition(data_type, symbol, day)
         last_error: Exception | None = None
         for _ in range(_ATTEMPTS):
             plan = self._plan(data_type, symbol, day)
@@ -446,6 +439,29 @@ class ChannelReconciler:
         raise ChannelReconcileConflict(
             f"reconcile of {data_type} {symbol} {day} lost {_ATTEMPTS} evidence-table races"
         ) from last_error
+
+    def verified_edges(self, data_type: str, symbol: str, day: date) -> tuple[ChannelEdge, ...]:
+        """The partition's **committed** edges, each re-verified; nothing is written or stamped.
+
+        The same pinned read, row proofs and edge re-derivation as ``reconcile``, without the
+        clock or a commit: equal pairs that have no committed edge yet are **not** returned — an
+        edge exists only once it is persisted (ADR-0027 §4.6). Run on a catalog view pinned to a
+        manifest's snapshots (``infrastructure.pit.view``), it answers "which verified edges did
+        those snapshots hold" (Phase 1 F1, ADR-0028 §3.2).
+        """
+        self._check_partition(data_type, symbol, day)
+        plan = self._plan(data_type, symbol, day)
+        return tuple(plan.existing[edge_id] for edge_id in sorted(plan.existing))
+
+    def _check_partition(self, data_type: str, symbol: str, day: date) -> None:
+        if data_type not in _REST_TABLES:
+            raise ChannelReconcileError(f"unsupported data_type {data_type!r}")
+        try:
+            rest_identity.agg_trade_observation_key(symbol, 0)
+        except rest_identity.RestIdentityViolation as exc:
+            raise ChannelReconcileError(str(exc)) from None
+        if not isinstance(day, date) or isinstance(day, datetime):
+            raise ChannelReconcileError("day must be a datetime.date (UTC)")
 
     # ------------------------------------------------------------------ plan (no writes)
 
