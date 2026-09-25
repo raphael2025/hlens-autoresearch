@@ -19,7 +19,21 @@ REST back-fill (Phase 1 D3B, ADR-0027) — pure rules only, no I/O:
   edge;
 - ``channel_precedence``: ``binance.spot.delivery-channel@1.0.0`` — D-33 content projections,
   comparison and the evidence-only archive → REST edge.
+
+REST persistence (Phase 1 D3E, ADR-0027 §4 / §9 / §11) — internal entry points:
+
+- ``rest_store``: ``RestRevisionStore`` — response / element revisions from a committed D3D
+  collection attempt, REST ``arrival_seq`` blocks, idempotent replay and crash recovery;
+- ``channel_reconcile``: ``ChannelReconciler`` — pinned-snapshot comparison and idempotent
+  evidence-only edges; ``assemble_channel_graph`` — the cross-channel arrival range guard.
+
+The two D3E modules read the D3C decoder and the D3D checkpoint reader, which themselves import
+``rest_identity`` from this package; they are therefore exported lazily (PEP 562) so importing
+this package never forms an import cycle.
 """
+
+import importlib
+from typing import TYPE_CHECKING, Any
 
 from infrastructure.revision.availability import (
     AVAILABILITY_BINDING,
@@ -107,6 +121,66 @@ from infrastructure.revision.store import (
     RevisionStoreError,
 )
 
+if TYPE_CHECKING:
+    from infrastructure.revision.channel_reconcile import (
+        ArrivalSeqRangeViolation,
+        ChannelFinding,
+        ChannelReconcileConflict,
+        ChannelReconciled,
+        ChannelReconcileError,
+        ChannelReconciler,
+        ReconciledEdge,
+        assemble_channel_graph,
+        check_arrival_seq,
+    )
+    from infrastructure.revision.rest_store import (
+        RestCheckpointIntegrityError,
+        RestCollectionStored,
+        RestPageStored,
+        RestQualityFinding,
+        RestRevisionStore,
+        RestRevisionStoreConflict,
+        RestRevisionStoreError,
+    )
+
+#: D3E names → the module that defines them (resolved on first attribute access).
+_LAZY_EXPORTS: dict[str, str] = {
+    **dict.fromkeys(
+        (
+            "ArrivalSeqRangeViolation",
+            "ChannelFinding",
+            "ChannelReconciled",
+            "ChannelReconcileConflict",
+            "ChannelReconcileError",
+            "ChannelReconciler",
+            "ReconciledEdge",
+            "assemble_channel_graph",
+            "check_arrival_seq",
+        ),
+        "infrastructure.revision.channel_reconcile",
+    ),
+    **dict.fromkeys(
+        (
+            "RestCheckpointIntegrityError",
+            "RestCollectionStored",
+            "RestPageStored",
+            "RestQualityFinding",
+            "RestRevisionStore",
+            "RestRevisionStoreConflict",
+            "RestRevisionStoreError",
+        ),
+        "infrastructure.revision.rest_store",
+    ),
+}
+
+
+def __getattr__(name: str) -> Any:
+    module = _LAZY_EXPORTS.get(name)
+    if module is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return getattr(importlib.import_module(module), name)
+
+
 __all__ = [
     "ARCHIVE_TABLE",
     "ARRIVAL_SEQ_STRIDE",
@@ -143,6 +217,7 @@ __all__ = [
     "ArchiveContext",
     "ArchiveIngested",
     "ArchiveRejected",
+    "ArrivalSeqRangeViolation",
     "AvailabilityGapSummary",
     "AvailabilityRule",
     "AvailabilityRuleKind",
@@ -152,7 +227,12 @@ __all__ = [
     "Channel",
     "ChannelComparison",
     "ChannelEdge",
+    "ChannelFinding",
     "ChannelPrecedenceViolation",
+    "ChannelReconcileConflict",
+    "ChannelReconcileError",
+    "ChannelReconciled",
+    "ChannelReconciler",
     "ChannelRevision",
     "ComparisonOutcome",
     "IdentityViolation",
@@ -160,16 +240,26 @@ __all__ = [
     "PrecedenceOutcome",
     "PrecedenceViolation",
     "RawRevisionStore",
+    "ReconciledEdge",
     "RestArrivalSeqOverflow",
     "RestAvailabilitySubject",
     "RestAvailabilityViolation",
+    "RestCheckpointIntegrityError",
+    "RestCollectionStored",
     "RestIdentityViolation",
     "RestPageQuery",
+    "RestPageStored",
     "RestPrecedenceViolation",
+    "RestQualityFinding",
+    "RestRevisionStore",
+    "RestRevisionStoreConflict",
+    "RestRevisionStoreError",
     "RevisionFacts",
     "RevisionStoreConflict",
     "RevisionStoreError",
+    "assemble_channel_graph",
     "build_channel_edge",
+    "check_arrival_seq",
     "compare_channels",
     "decide_availability",
     "decide_precedence",
