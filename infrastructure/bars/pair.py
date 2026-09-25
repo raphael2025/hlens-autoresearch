@@ -74,6 +74,7 @@ __all__ = [
     "PAIR_RULE_HASH",
     "ManifestPair",
     "ManifestPairError",
+    "pair_hash_of",
     "pair_manifests",
 ]
 
@@ -112,7 +113,7 @@ class ManifestPair:
     pair_hash: str
 
     def __post_init__(self) -> None:
-        if self.pair_hash != _pair_hash(self.feature_manifest_hash, self.price_manifest_hash):
+        if self.pair_hash != pair_hash_of(self.feature_manifest_hash, self.price_manifest_hash):
             raise ManifestPairError("pair_hash does not bind these two manifest hashes")
 
 
@@ -126,14 +127,17 @@ def pair_manifests(
     return ManifestPair(
         feature_manifest_hash=feature.content_hash(),
         price_manifest_hash=price.content_hash(),
-        pair_hash=_pair_hash(feature.content_hash(), price.content_hash()),
+        pair_hash=pair_hash_of(feature.content_hash(), price.content_hash()),
     )
 
 
-# ---------------------------------------------------------------------------------------------
+def pair_hash_of(feature_manifest_hash: str, price_manifest_hash: str) -> str:
+    """The pair hash binding these two manifest hashes under ``PAIR_RULE_HASH``.
 
-
-def _pair_hash(feature_manifest_hash: str, price_manifest_hash: str) -> str:
+    Public so a consumer holding only a ``ManifestPair`` record (no builder, e.g. the research
+    validator) can re-check that its ``pair_hash`` binds its two manifest hashes; that re-check
+    is not a re-proof of the pairing itself (only ``pair_manifests`` proves it).
+    """
     return content_hash(
         {
             "rule": PAIR_RULE_HASH,
@@ -141,6 +145,9 @@ def _pair_hash(feature_manifest_hash: str, price_manifest_hash: str) -> str:
             "price_manifest": price_manifest_hash,
         }
     )
+
+
+# ---------------------------------------------------------------------------------------------
 
 
 def _refuse(message: str) -> ManifestPairError:

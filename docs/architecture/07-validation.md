@@ -74,7 +74,8 @@ INCONCLUSIVE 不停止；整体判定只由 `derive_verdict` 给出。
 
 - **策略回测适配器的 G0 门**（`research/strategies/validation.py`，ADR-0041 实现说明）：`G0.backtest_cost_model`（回测成本与验证成本模型一致）、
   `G0.single_instrument_adapter`（适配器只验证单标的；多标的判 INCONCLUSIVE）、`G0.manifest_binding`（给出 `DatasetPriceBars` 时：
-  manifest 哈希一致、回测所用 bar 均为该数据集已证明的 bar、有该标的的 bar、无晚于 `price_cutoff` 可用的 bar；不符判 FAIL）。
+  manifest 哈希一致、回测所用 bar 均为该数据集已证明的 bar、有该标的的 bar、无晚于 `price_cutoff` 可用的 bar；另给出该链的
+  `ManifestPair` 时，还核对其价格哈希即 bar 的 manifest、特征哈希即调用方传入的各特征请求 manifest 哈希、pair 哈希可重算；不符判 FAIL）。
   不给数据集包装（合成数据）时不加该门，报告视图标 `synthetic_unverified`。
 - **无默认阈值**：`threshold(profile, path)` 同时返回值与字段路径；比较方向写在 metric 末尾（`[>=]` / `[<=]`），
   持有 Profile 的核验方可以重算判定。`inconclusive_bands` 以 `gate_id` 为键，`|value − threshold| <= band` 判 INCONCLUSIVE。

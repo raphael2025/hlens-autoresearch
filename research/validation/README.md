@@ -39,6 +39,11 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   适配器门 `G0.manifest_binding` 核对 setup 的 manifest 哈希即该包装的哈希、重跑用到的每根 bar 都是包装内已证明的 bar、所验证标的有 bar、
   没有 bar 晚于包装的 `price_cutoff`；任一不符判 **FAIL**（G0 → `REJECTED` / `CONTRACT_VIOLATION`）。`dataset_bars=None` 为合成路径：
   manifest 哈希只是未经验证的标签，不加门，报告视图 `extra.price_binding.mode = "synthetic_unverified"`。
+- **特征 / 价格 manifest 对**（ADR-0041 Implementation note, manifest pair in G0）：`ValidatorSetup.manifest_pair` 给出该链的
+  `infrastructure.bars.ManifestPair`（由 `pair_manifests` 证明）时，`G0.manifest_binding` 另核对 pair 的价格哈希即 `dataset_bars` 的
+  manifest 哈希、pair 的特征哈希即 `ValidatorSetup.feature_manifest_hashes` 中每个特征请求的 `manifest_content_hash`（信号不带
+  manifest 哈希，须由调用方显式传入且至少一个）、pair 哈希可按规则重算（`pair_hash_of`）。给 pair 无 `dataset_bars`、给特征哈希无 pair
+  均视为不一致的 setup；任一不符判 **FAIL**。不给 pair 时 E5 行为不变；真实数据冒烟走 pair 路径。
 
 ### 落盘的开封账本（调试批次，2026-09-25，ADR-0041 实施说明）
 

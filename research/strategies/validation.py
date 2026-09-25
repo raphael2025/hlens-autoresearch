@@ -46,10 +46,24 @@ taken in ``extra["price_binding"]``:
   filed as ``REJECTED`` / ``CONTRACT_VIOLATION`` by ``reason_for_gate`` (the ``G0.`` row). The
   validator does not re-prove the manifest itself (research holds no catalog handle); it proves
   that what it validates is exactly what the wrapper proved;
-- **synthetic** (``dataset_bars=None``): the manifest hash is a caller-given label (e.g. a
-  synthetic market hash) and is **not verified**. No gate is added (an unverifiable binding is
-  neither a PASS nor a reason to change the synthetic lab's verdicts); the view labels the path
-  ``synthetic_unverified``. Such a report is never evidence about a Research Dataset.
+- **manifest pair** (backlog E1 follow-up; ``ValidatorSetup.manifest_pair`` is the chain's
+  ``infrastructure.bars.ManifestPair`` from ``pair_manifests``): one chain has an interval
+  manifest for its features and a point manifest for its prices. ``G0.manifest_binding`` then
+  also checks that the pair's price hash **is** ``dataset_bars``' manifest hash, that the pair's
+  feature hash **is** the manifest hash of every feature request behind the signals, and that the
+  pair hash recomputes (``pair_hash_of``). The validator cannot see the feature manifest itself:
+  ``SignalObservation`` and ``TrialRun`` carry no manifest hash, so the caller passes each feature
+  request's ``manifest_content_hash`` in ``ValidatorSetup.feature_manifest_hashes`` (at least one
+  when a pair is given) and they are compared. A pair without ``dataset_bars``, or feature hashes
+  without a pair, is an inconsistent setup (nothing to check them against): ``FAIL``, never a
+  silent skip. Like the bars, the pair is not re-proven here (no builder in research): a
+  ``ManifestPair`` is a record of ``pair_manifests``' proof, and the validator proves that what it
+  validates is exactly what that record names;
+- **synthetic** (``dataset_bars=None``, no pair, no feature hashes): the manifest hash is a
+  caller-given label (e.g. a synthetic market hash) and is **not verified**. No gate is added
+  (an unverifiable binding is neither a PASS nor a reason to change the synthetic lab's
+  verdicts); the view labels the path ``synthetic_unverified``. Such a report is never evidence
+  about a Research Dataset.
 
 G4 outside ``validate`` (backlog E4). ``robustness_input(spec, backtest)`` is the public builder of
 exactly the input ``validate`` hands to G4 (it re-runs the chosen point and refuses a backtest the
@@ -88,6 +102,7 @@ from core.domain.research import GateResult, ValidationReport, Verdict
 from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
 from infrastructure.bars.dataset import DatasetPriceBars
+from infrastructure.bars.pair import ManifestPair, pair_hash_of
 from research.outcomes.table import materialize
 from research.validation.controls import FixedSides
 from research.validation.g4 import (
@@ -203,8 +218,16 @@ class ValidatorSetup:
     - ``declared_instruments``: the declared scope for C-R3 (each is run on its own);
     - ``dataset_bars``: the ``DatasetPriceBars`` the trials run on (dataset path, checked by
       ``G0.manifest_binding``), or ``None`` for the synthetic path, whose ``manifest_content_hash``
-      is an unverified label (named ``synthetic_unverified`` in the view). The only defaulted
-      field: ``None`` keeps the synthetic callers unchanged, and the view always labels it.
+      is an unverified label (named ``synthetic_unverified`` in the view);
+    - ``manifest_pair``: the chain's verified feature / price ``ManifestPair`` (backlog E1), or
+      ``None``; given, ``G0.manifest_binding`` also checks it against ``dataset_bars`` and
+      ``feature_manifest_hashes``;
+    - ``feature_manifest_hashes``: the ``manifest_content_hash`` of each feature request whose
+      values feed the signals (the validator cannot see them otherwise); compared with the
+      pair's feature hash.
+
+    Only the last three fields have defaults (``None`` / empty): they keep the synthetic callers
+    unchanged, and the view always labels the path taken.
     """
 
     context: ValidationContext
@@ -219,24 +242,51 @@ class ValidatorSetup:
     bar_volume: Mapping[tuple[str, datetime], Decimal] | None
     declared_instruments: tuple[str, ...]
     dataset_bars: DatasetPriceBars | None = None
+    manifest_pair: ManifestPair | None = None
+    feature_manifest_hashes: tuple[str, ...] = ()
+
+
+def _binding_declared(setup: ValidatorSetup) -> bool:
+    """Whether the setup takes the dataset path (anything to verify); else it is synthetic."""
+    return (
+        setup.dataset_bars is not None
+        or setup.manifest_pair is not None
+        or bool(setup.feature_manifest_hashes)
+    )
 
 
 def binding_mismatches(setup: ValidatorSetup, bars: Sequence[PriceBar]) -> list[str]:
     """The failed dataset-binding checks of ``bars`` under ``setup`` (empty = bound).
 
-    Always empty on the synthetic path (``dataset_bars is None``): there is nothing to verify
-    against, which the view labels instead.
+    Always empty on the synthetic path (no ``dataset_bars``, no ``manifest_pair``, no
+    ``feature_manifest_hashes``): there is nothing to verify against, which the view labels
+    instead. An inconsistent setup (a pair without bars, feature hashes without a pair) is a
+    mismatch, never a skip.
     """
-    proven = setup.dataset_bars
+    proven, pair = setup.dataset_bars, setup.manifest_pair
+    checks: dict[str, bool] = {}
     if proven is None:
-        return []
-    allowed = {bar.content_hash() for bar in proven.bars}
-    checks = {
-        "manifest_hash": setup.manifest_content_hash == proven.manifest_content_hash,
-        "bars_in_manifest": all(bar.content_hash() in allowed for bar in bars),
-        "instrument_bars": any(bar.instrument == setup.instrument for bar in bars),
-        "price_cutoff": all(bar.available_time <= proven.price_cutoff for bar in bars),
-    }
+        checks["pair_without_dataset_bars"] = pair is None
+    else:
+        allowed = {bar.content_hash() for bar in proven.bars}
+        checks |= {
+            "manifest_hash": setup.manifest_content_hash == proven.manifest_content_hash,
+            "bars_in_manifest": all(bar.content_hash() in allowed for bar in bars),
+            "instrument_bars": any(bar.instrument == setup.instrument for bar in bars),
+            "price_cutoff": all(bar.available_time <= proven.price_cutoff for bar in bars),
+        }
+    if pair is None:
+        checks["feature_hashes_without_pair"] = not setup.feature_manifest_hashes
+    else:
+        features = setup.feature_manifest_hashes
+        checks |= {
+            "pair_hash": pair.pair_hash
+            == pair_hash_of(pair.feature_manifest_hash, pair.price_manifest_hash),
+            "pair_feature_manifest": bool(features)
+            and all(item == pair.feature_manifest_hash for item in features),
+        }
+        if proven is not None:
+            checks["pair_price_manifest"] = pair.price_manifest_hash == proven.manifest_content_hash
     return sorted(name for name, ok in checks.items() if not ok)
 
 
@@ -432,7 +482,7 @@ class PipelineBacktestValidator:
                 "G0.single_instrument_adapter", "instruments", float(len(instruments))
             ),
         )
-        if self._setup.dataset_bars is None:  # synthetic path: labelled in the view, no gate
+        if not _binding_declared(self._setup):  # synthetic path: labelled in the view, no gate
             return gates
         mismatches = binding_mismatches(self._setup, rerun.bars)
         binding = flag_gate(
@@ -463,21 +513,35 @@ class PipelineBacktestValidator:
         return BacktestValidation(report=report, failure_reason=reason, view=view)
 
     def _price_binding(self, rerun: TrialRun) -> dict[str, object]:
-        setup = self._setup
-        if setup.dataset_bars is None:
+        setup, proven, pair = self._setup, self._setup.dataset_bars, self._setup.manifest_pair
+        if not _binding_declared(setup):
             return {
                 "mode": PRICE_BINDING_SYNTHETIC,
                 "manifest_content_hash": setup.manifest_content_hash,
                 "verified": False,
             }
         mismatches = binding_mismatches(setup, rerun.bars)
-        return {
+        view: dict[str, object] = {
             "mode": PRICE_BINDING_DATASET,
-            "manifest_content_hash": setup.dataset_bars.manifest_content_hash,
-            "price_cutoff": setup.dataset_bars.price_cutoff.isoformat(),
+            "manifest_content_hash": setup.manifest_content_hash
+            if proven is None
+            else proven.manifest_content_hash,
+            "price_cutoff": None if proven is None else proven.price_cutoff.isoformat(),
             "verified": not mismatches,
             "mismatches": mismatches,
         }
+        if pair is not None or setup.feature_manifest_hashes:
+            view["manifest_pair"] = (
+                None
+                if pair is None
+                else {
+                    "feature_manifest_hash": pair.feature_manifest_hash,
+                    "price_manifest_hash": pair.price_manifest_hash,
+                    "pair_hash": pair.pair_hash,
+                }
+            )
+            view["feature_manifest_hashes"] = list(setup.feature_manifest_hashes)
+        return view
 
     def _robustness_input(
         self, spec: StrategySpec, chosen: ParamPoint, rerun: TrialRun

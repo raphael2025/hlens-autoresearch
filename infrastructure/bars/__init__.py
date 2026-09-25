@@ -10,6 +10,7 @@
   (point) manifests (backlog E1): both loaded through the verifying ``ManifestStore``, proven to
   share snapshots, policies (the ADR-0032 choice), universe, window, instruments and lineage, with
   the price view at the end of the feature interval; returns an immutable ``ManifestPair``.
+  ``pair_hash_of`` recomputes a pair hash (the research validator's ``G0.manifest_binding``).
 """
 
 from infrastructure.bars.dataset import (
@@ -23,6 +24,7 @@ from infrastructure.bars.pair import (
     PAIR_RULE_HASH,
     ManifestPair,
     ManifestPairError,
+    pair_hash_of,
     pair_manifests,
 )
 
@@ -35,5 +37,6 @@ __all__ = [
     "ManifestPairError",
     "backtest_bars_from_dataset",
     "outcome_request_from_dataset",
+    "pair_hash_of",
     "pair_manifests",
 ]

@@ -37,7 +37,7 @@ from core.domain.base import Kind, Ref
 from core.domain.research import RunState, Verdict, derive_verdict
 from core.domain.specs import OutcomeSpec
 from core.errors import ReasonCode
-from infrastructure.bars import DatasetPriceBars
+from infrastructure.bars import DatasetPriceBars, ManifestPair, pair_hash_of
 from plugins.backtest import BarBacktester
 from plugins.outcomes import ForwardReturnOutcome
 from plugins.synthetic import RandomWalkMarket
@@ -248,12 +248,16 @@ def _setup(
     context: ValidationContext | None = None,
     manifest: str = "7" * 64,
     dataset_bars: DatasetPriceBars | None = None,
+    manifest_pair: ManifestPair | None = None,
+    feature_manifest_hashes: tuple[str, ...] = (),
 ) -> ValidatorSetup:
     return ValidatorSetup(
         context=context or _context(candidate),
         outcome_provider=ForwardReturnOutcome((LABEL_SPEC,)),
         manifest_content_hash=manifest,
         dataset_bars=dataset_bars,
+        manifest_pair=manifest_pair,
+        feature_manifest_hashes=feature_manifest_hashes,
         instrument=SYMBOL,
         trials=CandidateTrialRunner(candidate, _inputs(market), BarBacktester()),
         chosen_params=CHOSEN,
@@ -514,6 +518,175 @@ def test_bars_outside_the_manifest_are_refused() -> None:
     assert "instrument_bars" in binding_mismatches(setup, foreign)
     # The synthetic path has nothing to verify against; it is labelled in the view instead.
     assert binding_mismatches(_setup(market, candidate), (moved,)) == []
+
+
+# =========================================================================================
+# backlog E1 follow-up: G0.manifest_binding checks the chain's feature / price manifest pair
+# =========================================================================================
+
+FEATURE_MANIFEST = "6" * 64
+
+
+def _pair(feature: str = FEATURE_MANIFEST, price: str = MANIFEST) -> ManifestPair:
+    """Stands in for ``pair_manifests`` (its only producer) over these two hashes."""
+    return ManifestPair(feature, price, pair_hash_of(feature, price))
+
+
+def _binding(result: StrategyEvaluation) -> tuple[Verdict, dict[str, object]]:
+    assert result.validation is not None
+    gate = next(g for g in result.validation.report.gates if g.gate_id == "G0.manifest_binding")
+    view = _extra(result)["price_binding"]
+    assert isinstance(view, dict)
+    return gate.verdict, view
+
+
+def _assert_refused_at_g0(
+    result: StrategyEvaluation, registry: FailureRegistry, mismatches: list[str]
+) -> None:
+    assert result.status is EvaluationStatus.REJECTED
+    assert result.validation is not None
+    report = result.validation.report
+    assert report.verdict is Verdict.FAIL
+    binding = next(g for g in report.gates if g.gate_id == "G0.manifest_binding")
+    assert (binding.verdict, binding.value) == (Verdict.FAIL, float(len(mismatches)))
+    # Refused before any label is computed: only the adapter gates exist.
+    assert {g.gate_id.split(".")[0] for g in report.gates} == {"G0"}
+    (record,) = registry.records()
+    assert (record.gate_id, record.terminal_state, record.reason_code) == (
+        "G0.manifest_binding",
+        "REJECTED",
+        ReasonCode.CONTRACT_VIOLATION,
+    )
+    _, view = _binding(result)
+    assert (view["verified"], view["mismatches"]) == (False, mismatches)
+
+
+def test_a_matching_manifest_pair_passes_and_changes_nothing_else(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    proven, pair = _proven(market), _pair()
+    result, _ = _evaluate(
+        market,
+        tmp_path / "pair",
+        dataset_bars=proven,
+        manifest_pair=pair,
+        feature_manifest_hashes=(FEATURE_MANIFEST, FEATURE_MANIFEST),
+    )
+    verdict, view = _binding(result)
+    assert verdict is Verdict.PASS
+    assert view == {
+        "mode": PRICE_BINDING_DATASET,
+        "manifest_content_hash": MANIFEST,
+        "price_cutoff": proven.price_cutoff.isoformat(),
+        "verified": True,
+        "mismatches": [],
+        "manifest_pair": {
+            "feature_manifest_hash": FEATURE_MANIFEST,
+            "price_manifest_hash": MANIFEST,
+            "pair_hash": pair.pair_hash,
+        },
+        "feature_manifest_hashes": [FEATURE_MANIFEST, FEATURE_MANIFEST],
+    }
+    # The pair adds checks, never gates: the report equals the pair-less dataset path's (E5).
+    without, _ = _evaluate(market, tmp_path / "without", dataset_bars=proven)
+    assert result.validation is not None and without.validation is not None
+    assert result.validation.report.gates == without.validation.report.gates
+    assert result.validation.report.verdict is without.validation.report.verdict
+    assert result.status is without.status
+
+
+def test_a_pair_for_other_prices_is_refused_at_g0(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    result, registry = _evaluate(
+        market,
+        tmp_path,
+        dataset_bars=_proven(market),
+        manifest_pair=_pair(price="8" * 64),  # a genuine pair hash, but of another price view
+        feature_manifest_hashes=(FEATURE_MANIFEST,),
+    )
+    _assert_refused_at_g0(result, registry, ["pair_price_manifest"])
+
+
+def test_features_from_another_manifest_are_refused_at_g0(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    result, registry = _evaluate(
+        market,
+        tmp_path,
+        dataset_bars=_proven(market),
+        manifest_pair=_pair(),
+        feature_manifest_hashes=(FEATURE_MANIFEST, "5" * 64),  # one request off the pair
+    )
+    _assert_refused_at_g0(result, registry, ["pair_feature_manifest"])
+
+
+def test_a_forged_pair_hash_is_refused_at_g0(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    forged = _pair()
+    with pytest.raises(ValueError, match="pair_hash"):  # refused at construction ...
+        ManifestPair(FEATURE_MANIFEST, MANIFEST, "0" * 64)
+    object.__setattr__(forged, "pair_hash", "0" * 64)  # ... so forge one past it
+    result, registry = _evaluate(
+        market,
+        tmp_path,
+        dataset_bars=_proven(market),
+        manifest_pair=forged,
+        feature_manifest_hashes=(FEATURE_MANIFEST,),
+    )
+    _assert_refused_at_g0(result, registry, ["pair_hash"])
+
+
+def test_a_pair_without_dataset_bars_is_refused_at_g0(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    result, registry = _evaluate(
+        market, tmp_path, manifest_pair=_pair(), feature_manifest_hashes=(FEATURE_MANIFEST,)
+    )
+    _assert_refused_at_g0(result, registry, ["pair_without_dataset_bars"])
+    _, view = _binding(result)
+    assert (view["mode"], view["price_cutoff"]) == (PRICE_BINDING_DATASET, None)
+
+
+def test_pair_checks_are_each_detected() -> None:
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    proven = _proven(market)
+
+    def check(**fields: object) -> list[str]:
+        setup = _setup(market, candidate, **fields)  # type: ignore[arg-type]
+        return binding_mismatches(setup, proven.bars)
+
+    features = (FEATURE_MANIFEST,)
+    assert check(dataset_bars=proven, manifest_pair=_pair(), feature_manifest_hashes=features) == []
+    # A pair needs the feature requests' hashes: none given is a mismatch, not a skip.
+    assert check(dataset_bars=proven, manifest_pair=_pair()) == ["pair_feature_manifest"]
+    # Feature hashes with nothing to compare them to are an inconsistent setup.
+    assert check(dataset_bars=proven, feature_manifest_hashes=features) == [
+        "feature_hashes_without_pair"
+    ]
+    assert check(feature_manifest_hashes=features) == ["feature_hashes_without_pair"]
+    # A pair about two other manifests: both sides refused.
+    other = _pair(feature="5" * 64, price="8" * 64)
+    assert check(dataset_bars=proven, manifest_pair=other, feature_manifest_hashes=features) == [
+        "pair_feature_manifest",
+        "pair_price_manifest",
+    ]
+    # Without a pair, E5 is unchanged; the synthetic path has nothing to verify.
+    assert check(dataset_bars=proven) == []
+    assert check() == []
+
+
+def test_the_synthetic_path_is_unchanged_by_the_pair_fields(
+    planted: tuple[StrategyEvaluation, FailureRegistry],
+) -> None:
+    market = _market(seed=7, planted=True)
+    setup = _setup(market, library_entries()[0].candidate())
+    assert (setup.manifest_pair, setup.feature_manifest_hashes) == (None, ())
+    result, _ = planted
+    assert result.validation is not None
+    assert "G0.manifest_binding" not in {g.gate_id for g in result.validation.report.gates}
+    assert _extra(result)["price_binding"] == {
+        "mode": PRICE_BINDING_SYNTHETIC,
+        "manifest_content_hash": MANIFEST,
+        "verified": False,
+    }
 
 
 # =========================================================================================

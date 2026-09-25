@@ -227,3 +227,30 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
 NaN/Infinity payload 拒绝）；`tests/research/validation/test_durable_sealed_oos.py`（进程 A 开封的族在进程 B 无法再开封；进程 A
 `claim_evaluation` 消耗的评估进程 B 无法再领取；全局预算跨重启计数；篡改文件拒绝；确定性重放）。状态仍为
 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值无变化，本说明不涉及任何验证规则或阈值。
+
+## Implementation note (manifest pair in G0, 2026-09-26)
+
+不新增 ADR，不改契约、`core/domain`、Profile 或阈值。完成 ADR-0037 Implementation note（E1 manifest pairing）中留给研究侧的后续：
+同一条研究链的特征取自**区间** manifest、价格取自**单点** manifest，二者由 `infrastructure.bars.pair_manifests` 证明为同一份市场数据并
+记录为 `ManifestPair`；此前验证器只核对价格侧（E5），不知道特征来自哪份 manifest。
+
+1. `ValidatorSetup` 新增两个带默认值的可选字段：`manifest_pair: ManifestPair | None = None` 与
+   `feature_manifest_hashes: tuple[str, ...] = ()`。验证器**看不到**特征 manifest：`SignalObservation` 与 `TrialRun` 都不携带 manifest
+   哈希，因此由调用方显式传入每个供给信号的特征请求的 `manifest_content_hash`，由验证器比对。
+2. 给出 pair 时，适配器门 `G0.manifest_binding` 在 E5 的检查之外再核对：`pair.price_manifest_hash == dataset_bars.manifest_content_hash`
+   （`pair_price_manifest`）；`feature_manifest_hashes` 非空且每一项都等于 `pair.feature_manifest_hash`（`pair_feature_manifest`）；
+   `pair.pair_hash` 按规则重算一致（`pair_hash`，经新公开的 `infrastructure.bars.pair_hash_of`，与 `ManifestPair` 构造时的复核同一函数，
+   不复制规则）。不一致的 setup 同样判不符而非跳过：给出 pair 却无 `dataset_bars`（`pair_without_dataset_bars`）、给出特征哈希却无 pair
+   （`feature_hashes_without_pair`）。**任一不符判 FAIL**，理由与 E5 相同（特征、标签与回测描述的不是同一份数据，属 `G0.bindings`
+   同类的绑定矛盾），`reason_for_gate` 记为 `REJECTED` / `CONTRACT_VIOLATION`。
+3. 不给 pair 时 E5 行为完全不变；三者都不给仍为合成路径（不加门，视图 `synthetic_unverified`）。给出 pair 或特征哈希时，报告视图
+   `extra.price_binding` 另记 `manifest_pair`（两哈希与 pair 哈希）与 `feature_manifest_hashes`；无 `dataset_bars` 时 `price_cutoff` 为 `null`。
+4. 架构边界：`tests/test_architecture_boundaries.py` 只禁止 core → 外层与 apps → research，research 导入 `infrastructure.bars` 已有先例
+   （`DatasetPriceBars`），故直接使用 `ManifestPair` 类型，无需结构化 Protocol。
+5. 限制：验证器不重新证明配对本身（research 不持有 catalog / builder）；`ManifestPair` 是 `pair_manifests` 证明的记录，验证器证明它所验证的
+   正是该记录所指的两份 manifest。`feature_manifest_hashes` 由调用方给出：信号值本身不经特征请求哈希回溯证明（契约无此字段，需要时另议）。
+
+回归测试：`tests/research/strategies/test_backtest_validation.py`（匹配的 pair 通过且门与无 pair 的数据集路径完全相同；价格哈希不符、
+特征哈希不符、伪造 pair 哈希、无 `dataset_bars` 的 pair 均在 G0 判 FAIL 并以 CONTRACT_VIOLATION 入册；各项不符逐一检出；合成路径不变）。
+真实数据冒烟 `tests/infrastructure/e2e/test_research_pipeline_real_data.py` 改为传入 pair 与两个特征请求的 manifest 哈希，断言
+`G0.manifest_binding` PASS 且视图记录 pair。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。

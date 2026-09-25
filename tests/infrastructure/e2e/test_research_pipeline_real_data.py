@@ -29,7 +29,8 @@ Chain (one run; then a fresh process on the same catalog runs it again):
    manifest) and ``materialize``;
 6. P5: research TSMOM on the F4 log returns (``signals_from_features``) and the ``BarBacktester`` on
    ``backtest_bars_from_dataset`` (point manifest), through ``evaluate_strategy``;
-7. P4 / P8: ``PipelineBacktestValidator`` (G0 – G4) under a TEST ONLY profile;
+7. P4 / P8: ``PipelineBacktestValidator`` (G0 – G4) under a TEST ONLY profile, given the proven
+   bars and the chain's ``ManifestPair`` (``G0.manifest_binding`` checks both, backlog E5 / E1);
 8. P6: ``matrix_from_backtest`` over the backtest and the P2 states;
 9. reports written by ``research.reports`` and read back through ``apps.api.store.ReportStore``.
 
@@ -501,6 +502,13 @@ def run_chain(w: ds.World, report_root: Path, registry_path: Path) -> Chain:
         bar_volume=volumes,
         declared_instruments=(BTC_C,),
         dataset_bars=price_bars,  # G0.manifest_binding: the labels' manifest is the bars' (E5)
+        # E1 follow-up: the chain's pair binds the bars' manifest to the features' (the
+        # signals carry no manifest hash, so each feature request's is passed explicitly).
+        manifest_pair=pair,
+        feature_manifest_hashes=(
+            lr_request.manifest_content_hash,
+            vol_request.manifest_content_hash,
+        ),
     )
     validator = PipelineBacktestValidator(setup)
     evaluation = evaluate_strategy(
@@ -652,9 +660,16 @@ def _check_bindings(chain: Chain, store: ReportStore) -> None:
             "price_cutoff": chain.price_bars.price_cutoff.isoformat(),
             "verified": True,
             "mismatches": [],
+            "manifest_pair": {
+                "feature_manifest_hash": interval.content_hash(),
+                "price_manifest_hash": point.content_hash(),
+                "pair_hash": chain.pair.pair_hash,
+            },
+            "feature_manifest_hashes": [interval.content_hash(), interval.content_hash()],
         },
     }
-    # E5: the labels' manifest is verified to be the backtest bars' (G0 adapter gate).
+    # E5 + E1 follow-up: the labels' manifest is verified to be the backtest bars', and the
+    # chain's pair binds those bars' manifest to the features' (G0 adapter gate).
     binding = next(g for g in report.gates if g.gate_id == "G0.manifest_binding")
     assert binding.verdict is Verdict.PASS and binding.value == 0.0
     run = chain.context.run
