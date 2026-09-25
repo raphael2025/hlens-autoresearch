@@ -376,9 +376,13 @@ def test_5_a_late_earlier_first_observation_is_a_second_episode_and_fails_closed
     result = derive(h)
     assert stale["revision_id"] in result.diverged
     assert {row["episode_tradable_from"] for row in listings(h)} == {T1, T2}
-    # Two known episodes of one symbol: which one is the instrument cannot be said, at any time.
-    for simulation in (T1, T3):
-        assert at(h, simulation).reason == UnconstructibleReason.MULTIPLE_EPISODES
+    # E2-R1 (cursor review): only episodes available at simulation_time count. At T1 only the
+    # earlier episode is visible and answers; once both are visible, the degraded key cannot say
+    # which one is the instrument and the read fails closed.
+    early = at(h, T1)
+    assert early.constructible and early.listing is not None
+    assert early.listing.episode.tradable_from == T1
+    assert at(h, T3).reason == UnconstructibleReason.MULTIPLE_EPISODES
     # Before the stale episode was derived, the knowledge axis still answers.
     assert at(h, T1, stale["knowledge_time"] - xs.MS).reason == (
         UnconstructibleReason.NO_VISIBLE_LISTING

@@ -552,7 +552,11 @@ def _select(
         raise CatalogIntegrityError(
             f"{LISTINGS_TABLE}: not a lawful listing history: {exc}"
         ) from None
-    episodes = {row["observation_key"] for row in known_rows}
+    # Only episodes a strategy could have seen at simulation_time count (E2-R1, cursor review):
+    # a revision available later must not change the answer at simulation_time.
+    episodes = {
+        row["observation_key"] for row in known_rows if row["available_time"] <= simulation_time
+    }
     if len(episodes) > 1:
         return refuse(
             UnconstructibleReason.MULTIPLE_EPISODES,
