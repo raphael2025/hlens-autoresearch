@@ -56,6 +56,13 @@ from core.contracts.revision import (
     RevisionRecord,
 )
 from core.contracts.storage import ObjectRef, PublishResult, StagedObject, StageRequest
+from core.contracts.synthetic import (
+    PlantedEffect,
+    SyntheticBar,
+    SyntheticMarket,
+    SyntheticMarketSpec,
+    SyntheticProviderDescriptor,
+)
 from core.contracts.universe import (
     AvailabilityEvidenceGap,
     DegradedEpisodeKey,
@@ -212,6 +219,12 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     KnowledgeQuery,
     KnowledgeProviderDescriptor,
     KnowledgeResult,
+    # SyntheticMarketProvider 的 DTO（ADR-0042，Phase 9）
+    PlantedEffect,
+    SyntheticMarketSpec,
+    SyntheticBar,
+    SyntheticMarket,
+    SyntheticProviderDescriptor,
 )
 
 

@@ -1530,7 +1530,7 @@ def test_b3_only_appends_to_the_registry() -> None:
     b3_end = len(PRE_B3_MODEL_NAMES) + len(B3_MODELS)
     assert names[len(PRE_B3_MODEL_NAMES) : b3_end] == tuple(model.__name__ for model in B3_MODELS)
     assert b3_end == 74
-    assert len(CONTRACT_MODELS) == 82
+    assert len(CONTRACT_MODELS) == 87
 
 
 def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
