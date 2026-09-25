@@ -42,6 +42,6 @@ is removed.
 | `test_rt_listings` | symbol absent from every snapshot; interval opening before the first observation; knowledge cutoff before the listing is known | F2 `NO_VISIBLE_LISTING` |
 | | late snapshot moving a change point after a build | F2 `COMPETING_HEADS`; the old manifest replays |
 | `test_rt_assumption` | ADR-0032 assumption bound over REST-only data | F1: REST revisions never move (rows identical to the unbound spec) |
-| `test_rt_features` | feature run bound to a forged / missing manifest, or to another spec's manifest | **RT-6 (succeeds)** |
+| `test_rt_features` | feature run bound to a forged / missing manifest, or to another spec's manifest | `feature_request_from_dataset`: `ManifestStore.load` / PIT spec check (RT-6, fixed in G2-R1c) |
 
 Runtime is dominated by the 19 crash points and the 16 arrival orders (about five minutes in total).

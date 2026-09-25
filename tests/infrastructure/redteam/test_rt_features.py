@@ -3,6 +3,11 @@
 F4 binds every ``FeatureRequest`` to a manifest by ``manifest_content_hash``. A request bound to
 a manifest that does not load (forged row, no such manifest) or that describes another PIT spec
 than the observations were selected under must never produce a ``FeatureResult``.
+
+RT-6 (fixed in G2-R1c): a feature run over a Research Dataset is built by
+``feature_request_from_dataset``, which loads the manifest through ``ManifestStore`` and proves the
+observations against its PIT spec, dataset snapshot and lineage. ``pit_feature_request`` stays the
+ad-hoc path and makes no dataset claim.
 """
 
 from __future__ import annotations
@@ -19,11 +24,8 @@ from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS
 from infrastructure.dataset.builder import DatasetBuilt
 from infrastructure.dataset.manifests import ManifestStore
-from infrastructure.feature.observations import (
-    FeatureInputBuildError,
-    bar_observations,
-    pit_feature_request,
-)
+from infrastructure.feature.dataset import feature_request_from_dataset
+from infrastructure.feature.observations import FeatureInputBuildError, bar_observations
 from infrastructure.feature.runner import FeatureRunnerError, run_feature
 from infrastructure.pit.selector import PitSelector
 from plugins.features import BarVolumeSumProvider
@@ -48,7 +50,9 @@ def _run(w: World, built: DatasetBuilt, manifest_hash: str, **spec: Any) -> Feat
     """Observations selected under the manifest's spec (or ``spec`` overrides), then F4."""
     pit = built.manifest.point_in_time.model_copy(update=spec)
     selection = PitSelector(w.h.adapter, w.h.storage).select(pit, "klines_1m", SYMBOL, *DAY_WINDOW)
-    request = pit_feature_request(
+    request = feature_request_from_dataset(
+        w.h.adapter,
+        w.h.storage,
         pit_spec=pit,
         observations=bar_observations(selection, pit),
         feature=FEATURE,
@@ -88,12 +92,6 @@ TAMPERED: dict[str, Callable[[World, DatasetBuilt], str]] = {
 }
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="G2 finding RT-6: pit_feature_request / run_feature take manifest_content_hash on "
-    "trust; nothing loads (ManifestStore.load) or checks the manifest a feature run binds",
-)
 @pytest.mark.parametrize("attack", sorted(TAMPERED))
 def test_a_feature_run_bound_to_a_manifest_that_does_not_load_is_refused(
     w: World, attack: str
@@ -104,12 +102,6 @@ def test_a_feature_run_bound_to_a_manifest_that_does_not_load_is_refused(
         _run(w, built, manifest_hash)
 
 
-@pytest.mark.xfail(
-    strict=True,
-    raises=pytest.fail.Exception,
-    reason="G2 finding RT-6: the observations of a feature request are never checked against "
-    "the manifest it binds (its PIT spec, lineage or dataset rows)",
-)
 def test_observations_selected_under_another_spec_cannot_borrow_a_manifest(w: World) -> None:
     built = _bars_dataset(w)
     other = utc(2023, 12, 18)  # another simulation time and knowledge cutoff than the manifest's

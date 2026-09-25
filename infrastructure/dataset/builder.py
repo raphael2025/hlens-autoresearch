@@ -56,6 +56,7 @@ from core.contracts.universe import (
     ResearchDatasetManifest,
     SelectedRevisionLineage,
     UniverseSelectionSpec,
+    UniverseSpecBinding,
 )
 from core.domain.base import canonical_json
 from core.domain.specs import DatasetRef, Zone
@@ -103,6 +104,7 @@ __all__ = [
     "DatasetSelection",
     "DatasetSpecError",
     "selection_id_for",
+    "selection_id_of",
 ]
 
 DATASET_RULE_ID: Final = "hlens.dataset.pit-selection"
@@ -221,10 +223,21 @@ def selection_id_for(
     start: datetime,
     end: datetime,
 ) -> str:
+    return selection_id_of(universe.binding(), pit, data_type, start, end)
+
+
+def selection_id_of(
+    universe: UniverseSpecBinding,
+    pit: PointInTimeSpec,
+    data_type: str,
+    start: datetime,
+    end: datetime,
+) -> str:
+    """``selection_id_for`` from the universe's binding: what a manifest alone can recompute."""
     document = {
         "rule": DATASET_RULE_HASH,
         "point_in_time": pit.content_hash(),
-        "universe": universe.binding().model_dump(mode="json"),
+        "universe": universe.model_dump(mode="json"),
         "data_type": data_type,
         "start": start.isoformat(),
         "end": end.isoformat(),
