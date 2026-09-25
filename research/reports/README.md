@@ -15,6 +15,7 @@ import——两边只通过这份文件格式约定耦合。
 | `loop.py` | `write_research_loop_round[s]`：Phase 11 `LoopRecord`（`apps/worker/loop.py`，经 `research/loop/compose.py` 组合） |
 | `matrix.py` | `write_state_strategy_matrix`：Phase 6 `StateStrategyMatrix`（`research/experiments/state_strategy.py` 的 `matrix_from_backtest`） |
 | `router.py` | `write_router_paper_run`：Phase 10 `RouterPaperRun`（`research/router/paper.py` 的 `paper_run`） |
+| `gate_calibration.py` | `write_gate_calibration_report`：Phase 9 `GateCalibrationReport`（`research/synthetic_lab/gate_calibration.py`；id = `report_hash`；`apps/api` 尚无此 kind） |
 
 ## 信封 / 哈希规则
 
@@ -33,7 +34,7 @@ SHA-256），因此写入方**不需要**复现它的信封或逐字节匹配它
 
 `id` 一律取**对象自身已有的内容 / 结果哈希**，四种报告分别是：`ValidationReport.content_hash()`
 （不是外部赋予、非内容身份的 `report_id`，见该模型自身文档字符串）、`LoopRecord.record_hash`、
-`StateStrategyMatrix.matrix_hash`、`RouterPaperRun.run_hash`。同一对象重复写入因此天然幂等；
+`StateStrategyMatrix.matrix_hash`、`RouterPaperRun.run_hash`（Phase 9 的 `gate_calibration` 同理用 `GateCalibrationReport.report_hash`）。同一对象重复写入因此天然幂等；
 两个不同内容的对象天然拿到不同 id，不会互相覆盖——`ReportConflict` 主要是防御性的（例如手工损坏的
 文件），并由 `envelope.py` 的单元测试直接触发验证。
 

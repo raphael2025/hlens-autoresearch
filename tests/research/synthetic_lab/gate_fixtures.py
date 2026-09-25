@@ -1,0 +1,326 @@
+"""Fixtures for the Phase 9 gate calibration harness tests.
+
+!!! TEST ONLY !!!  ``LAX_TEST_ONLY_PROFILE`` and ``STRICT_TEST_ONLY_PROFILE`` are deliberately
+extreme, **uncalibrated** candidates built to exercise the harness: the lax one lets almost
+anything through, the strict one almost nothing. They are not a proposal, not a calibration result
+and must never be used for research or copied into a real Validation Profile (D-09 TBD-1..5 are
+frozen by Raphael after calibration). ``TEST_ONLY_PARAMS`` and ``TEST_ONLY_ALPHA`` are likewise
+arbitrary TEST ONLY values.
+
+The detector is the full G0 → G4 pipeline through ``PipelineBacktestValidator`` on a 60-bar TSMOM
+(the first library entry) over the research window of a two-day ``RandomWalkMarket``.
+"""
+
+from __future__ import annotations
+
+from datetime import UTC, date, datetime, timedelta
+from decimal import Decimal
+
+from core.contracts.cost_model import CostModelSpec
+from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
+from core.contracts.strategy import BacktestCostModel, PriceBar
+from core.contracts.synthetic import PlantedEffect, SyntheticMarket, SyntheticMarketSpec
+from core.contracts.validation_profile import (
+    BenchmarkParams,
+    CostStressParams,
+    DataSplitParams,
+    ParameterStabilityParams,
+    SampleSizeParams,
+    SignificanceParams,
+    ValidationProfile,
+    WalkForwardParams,
+)
+from core.domain.base import Kind, Ref
+from core.domain.research import RunState
+from core.domain.specs import OutcomeSpec
+from plugins.backtest import BarBacktester
+from plugins.outcomes import ForwardReturnOutcome
+from plugins.synthetic import RandomWalkMarket
+from research.strategies.library import library_entries
+from research.strategies.pipeline import EvaluationInputs, StrategyCandidate
+from research.strategies.signals import bar_signals
+from research.strategies.validation import TrialRunner, ValidatorSetup
+from research.synthetic_lab.gate_calibration import (
+    GateCalibrationSetup,
+    StrategyValidatorDetector,
+)
+from research.validation import RobustnessParams, ValidationContext
+from tests import factories
+
+T0 = datetime(2024, 1, 1, tzinfo=UTC)
+BOUNDARY = datetime(2024, 1, 3, tzinfo=UTC)
+HOUR = timedelta(hours=1)
+MINUTE = timedelta(minutes=1)
+SYMBOL = "SYN-USDT"
+CHOSEN = {"lookback": 60}
+
+BASE_SPEC = SyntheticMarketSpec(
+    name="gate_calibration_market",
+    version="1.0.0",
+    symbol=SYMBOL,
+    start=T0,
+    minutes=2 * 1440,  # the research window only; nothing at or after BOUNDARY is generated
+    seed=0,
+    initial_price=Decimal(100),
+    volatility=Decimal("0.001"),
+)
+STRONG = PlantedEffect(lag_minutes=60, strength=Decimal("0.5"))
+WEAK = PlantedEffect(lag_minutes=60, strength=Decimal("0.2"))
+
+
+def _split() -> DataSplitParams:
+    return DataSplitParams(
+        research_window_start=date(2024, 1, 1),
+        sealed_oos_boundary=date(2024, 1, 3),
+        sealed_oos_length=timedelta(days=1),
+        sealed_oos_max_extension=timedelta(0),
+        embargo=HOUR,
+        walk_forward=WalkForwardParams(
+            train_window=timedelta(hours=12),
+            test_window=timedelta(hours=6),
+            step=timedelta(hours=6),
+            min_positive_window_fraction=0.0,
+            max_single_window_pnl_share=1.0,
+        ),
+    )
+
+
+def _cost_stress(min_breakeven: float, delay: int) -> CostStressParams:
+    return CostStressParams(
+        cost_model=Ref(kind=Kind.COST_MODEL, name="cost_v1", version="1.0.0"),
+        fill_assumption="next-bar-open",
+        stress_multipliers=(1.0,),
+        delay_stress_bars=delay,
+        min_breakeven_cost_multiple=min_breakeven,
+    )
+
+
+#: TEST ONLY — deliberately lax (see module docstring).
+LAX_TEST_ONLY_PROFILE = factories.validation_profile(
+    name="test_only_lax_uncalibrated",
+    data_split=_split(),
+    sample_size=SampleSizeParams(
+        min_effective_trades_in_sample=1,
+        min_effective_trades_out_of_sample=1,
+        min_effective_trades_per_state=1,
+        effective_sample_method="overlap-clusters",
+        min_regime_coverage="test-only",
+    ),
+    significance=SignificanceParams(
+        multiple_testing_method="bonferroni",
+        # Not 1.0: the pipeline reads this one level both for G3 (adjusted p <= level) and for
+        # the G1 negative controls (control p >= level), so a "lax" 1.0 fails every G1 control.
+        multiple_testing_threshold=0.05,
+        overfitting_metric="pbo_cscv",
+        overfitting_threshold=1.0,
+        trial_count_scope="family",
+    ),
+    benchmark=BenchmarkParams(
+        null_model="random-entry",
+        null_model_simulations=20,
+        null_model_percentile=0.0,
+        market_benchmark_rule="test-only",
+        inverse_control_reported=False,
+    ),
+    parameter_stability=ParameterStabilityParams(
+        neighborhood_definition="adjacent_grid",
+        min_neighborhood_performance_ratio=-1000.0,
+        min_positive_neighbor_fraction=0.0,
+        time_alignment_offsets=(MINUTE,),
+    ),
+    cost_stress=_cost_stress(1e-9, 1),
+)
+
+#: TEST ONLY — deliberately strict (see module docstring).
+STRICT_TEST_ONLY_PROFILE = factories.validation_profile(
+    name="test_only_strict_uncalibrated",
+    data_split=_split().model_copy(
+        update={
+            "walk_forward": _split().walk_forward.model_copy(
+                update={"min_positive_window_fraction": 1.0, "max_single_window_pnl_share": 0.3}
+            )
+        }
+    ),
+    sample_size=SampleSizeParams(
+        min_effective_trades_in_sample=40,
+        min_effective_trades_out_of_sample=20,
+        min_effective_trades_per_state=15,
+        effective_sample_method="overlap-clusters",
+        min_regime_coverage="test-only",
+    ),
+    significance=SignificanceParams(
+        multiple_testing_method="bonferroni",
+        multiple_testing_threshold=0.0001,
+        overfitting_metric="pbo_cscv",
+        overfitting_threshold=0.05,
+        trial_count_scope="family",
+    ),
+    benchmark=BenchmarkParams(
+        null_model="random-entry",
+        null_model_simulations=20,
+        null_model_percentile=99.0,
+        market_benchmark_rule="test-only",
+        inverse_control_reported=False,
+    ),
+    parameter_stability=ParameterStabilityParams(
+        neighborhood_definition="adjacent_grid",
+        min_neighborhood_performance_ratio=0.9,
+        min_positive_neighbor_fraction=1.0,
+        time_alignment_offsets=(MINUTE,),
+    ),
+    cost_stress=_cost_stress(5.0, 1),
+)
+
+#: TEST ONLY — explicit parameters for rules without a Profile field.
+TEST_ONLY_PARAMS = RobustnessParams(
+    cscv_partitions=4,
+    max_participation_rate=1.0,
+    min_capacity=None,
+    impact_coefficient=0.0,
+    cross_asset_min_positive_fraction=None,
+)
+#: TEST ONLY — the reported interval level (a reporting parameter).
+TEST_ONLY_ALPHA = Decimal("0.05")
+
+FEE, SLIPPAGE = Decimal("0.00001"), Decimal("0.00001")
+COST_MODEL = CostModelSpec(
+    name="cost_v1",
+    version="1.0.0",
+    created_at=T0,
+    fee_rate_per_side=FEE,
+    slippage_rate_per_side=SLIPPAGE,
+)
+BACKTEST_COSTS = BacktestCostModel(
+    name="cost_v1", version="1.0.0", fee_rate=FEE, slippage_rate=SLIPPAGE
+)
+OUTCOME_SPEC = OutcomeSpec(
+    name="fwd_1h", version="1.0.0", created_at=T0, horizon=HOUR, label_definition="1h fwd"
+)
+LABEL_SPEC = OutcomeLabelSpec.bind(OUTCOME_SPEC, OutcomeMethod.FORWARD_RETURN)
+
+
+def candidate() -> StrategyCandidate:
+    return library_entries()[0].candidate()
+
+
+def inputs(market: SyntheticMarket) -> EvaluationInputs:
+    bars = tuple(
+        PriceBar(
+            instrument=SYMBOL,
+            interval_start=bar.interval_start,
+            interval_end=bar.interval_end,
+            available_time=bar.interval_end,
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+        )
+        for bar in market.bars
+        if bar.interval_end <= BOUNDARY
+    )
+    decisions: list[datetime] = []
+    t = T0 + 61 * MINUTE
+    while t + HOUR < BOUNDARY:  # every label ends before the sealed window
+        decisions.append(t)
+        t += HOUR
+    return EvaluationInputs(
+        instruments=(SYMBOL,),
+        bars=bars,
+        decision_times=tuple(decisions),
+        knowledge_cutoff=BOUNDARY,
+        cost_model=BACKTEST_COSTS,
+        initial_equity=Decimal(1_000_000),
+        signals=bar_signals(bars),
+        params=CHOSEN,
+    )
+
+
+def context(strategy: StrategyCandidate, profile: ValidationProfile) -> ValidationContext:
+    spec = strategy.spec
+    refs = {"hypothesis_ref": factories.hypothesis_ref(), "risk_policy_ref": None}
+    repro = factories.repro_tuple(
+        **refs,
+        strategy_ref=spec.ref,
+        outcome_ref=LABEL_SPEC.outcome,
+        cost_model_ref=COST_MODEL.ref,
+        validation_profile=profile.ref,
+        validation_profile_hash=profile.content_hash(),
+        dependency_hashes={
+            str(refs["hypothesis_ref"]): factories.HASH_A,
+            str(spec.ref): spec.content_hash(),
+            str(LABEL_SPEC.outcome): LABEL_SPEC.outcome_spec_hash,
+            str(COST_MODEL.ref): COST_MODEL.content_hash(),
+        },
+    )
+    run = factories.experiment_run(repro=repro, state=RunState.COMPLETED)
+    trials = 1
+    for values in spec.param_search_space.values():
+        trials *= len(values)
+    metadata = factories.experiment_metadata(
+        experiment_hash=run.experiment_hash,
+        validation_profile=profile.ref,
+        validation_profile_hash=profile.content_hash(),
+        hypothesis_family_id=strategy.hypothesis_family_id,
+        family_trial_count=trials,
+    )
+    return ValidationContext(
+        report_id="rep-gate-calibration",
+        subject=spec.ref,
+        run=run,
+        metadata=metadata,
+        profile=profile,
+        cost_model=COST_MODEL,
+        label_spec=LABEL_SPEC,
+    )
+
+
+def detector() -> StrategyValidatorDetector:
+    strategy = candidate()
+
+    def setup_for(
+        market: SyntheticMarket, profile: ValidationProfile, runner: TrialRunner
+    ) -> ValidatorSetup:
+        return ValidatorSetup(
+            context=context(strategy, profile),
+            outcome_provider=ForwardReturnOutcome((LABEL_SPEC,)),
+            manifest_content_hash="7" * 64,
+            instrument=SYMBOL,
+            trials=runner,
+            chosen_params=CHOSEN,
+            seed=11,
+            robustness=TEST_ONLY_PARAMS,
+            state_of=lambda t: "am" if t.hour < 12 else "pm",
+            bar_volume={(SYMBOL, bar.interval_start): bar.volume for bar in market.bars},
+            declared_instruments=(SYMBOL,),
+        )
+
+    return StrategyValidatorDetector(
+        name="tsmom60_full_pipeline",
+        candidate=strategy,
+        backtester=BarBacktester(),
+        inputs_for=inputs,
+        setup_for=setup_for,
+    )
+
+
+def setup(
+    seeds: int,
+    *,
+    candidates: tuple[ValidationProfile, ...] = (LAX_TEST_ONLY_PROFILE, STRICT_TEST_ONLY_PROFILE),
+    planted: tuple[PlantedEffect, ...] = (STRONG, WEAK),
+) -> GateCalibrationSetup:
+    return GateCalibrationSetup(
+        provider=RandomWalkMarket(),
+        base=BASE_SPEC,
+        detector=detector(),
+        candidates=candidates,
+        noise_seeds=tuple(range(seeds)),
+        planted=planted,
+        planted_seeds=tuple(range(100, 100 + seeds)),
+        alpha=TEST_ONLY_ALPHA,
+    )
+
+
+def cli_setup() -> GateCalibrationSetup:
+    """The ``--setup`` factory the CLI test loads (one seed, one planted arm, lax only)."""
+    return setup(1, candidates=(LAX_TEST_ONLY_PROFILE,), planted=(STRONG,))

@@ -110,6 +110,24 @@ INCONCLUSIVE 不停止；整体判定只由 `derive_verdict` 给出。
 - Phase 5 接线：`research/strategies/validation.py` 的 `PipelineBacktestValidator` 对回测跑 G0 – G4（单标的；G5 独立进行）。
 - 已知缺口：见 ADR-0041「后果」（容量 / 跨资产 / 开封预算缺 Profile 字段；浮点进入哈希载荷；数值全部 TBD）。
 
+### 2.4 校准证据如何进入 D-09 决定（Phase 9；ADR-0042 实现说明，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）
+
+Profile 数值（D-09 TBD-1..5）是两步冻结的 Step 2，**由 Raphael 决定**。`research/synthetic_lab/gate_calibration.py`
+只为这个决定产出证据，**evidence only — not a Profile decision**：
+
+1. 调用方提供一组**候选** Profile（harness 没有默认 Profile，也不生成候选）、纯噪声与植入效应（强度 × 滞后）市场的种子，
+   以及区间的 `alpha`（报告参数，不是 Profile 数值）。
+2. 检测器是完整流水线：每个合成市场的研究窗口经 `PipelineBacktestValidator` 跑 G0 → G4；每个候选 Profile 各跑一遍。
+3. 报告按「候选 × 门」给出：噪声上的通过率（假阳性率）、每个植入强度的通过率（检出力）、INCONCLUSIVE 率、
+   未到达该门的次数，以及 G0 – G4 PASS 后会消耗的封存 OOS 开封率；比率为精确计数 + Clopper-Pearson 区间（`Decimal`）。
+4. 报告确定、可 JSON 序列化并有 `report_hash`，记录全部输入（生成器、检测器、基础规格、种子、植入效应、候选 Profile
+   的引用与内容哈希）；**没有**任何推荐值、默认值或排名字段。
+5. Raphael 依据报告选定数值后，冻结的 Profile 在 `provenance.calibration_report` 引用该 `report_hash`，
+   并以批准 ADR 记录（C-A8、ADR-0007）；harness 从不写入任何 Profile。合成结果不支持真实市场结论（roadmap P9）。
+
+- 框架冒烟观察（非校准结论）：`significance.multiple_testing_threshold` 同时被 G3（调整后 p ≤ 阈值）与 G1 负对照
+  （对照 p ≥ 阈值）读取，方向相反；因此单调「放宽」该阈值并不会单调提高流水线层面的假阳性率。是否拆分为两个字段属 D-09 / ADR 范畴。
+
 ## 3. Experiment / Validation Lifecycle（D6）
 
 > 状态：**已冻结**，对应 [ADR-0006](../adr/0006-strategy-lifecycle.md)（Accepted，2026-09-23，取代 ADR-0002 第 5 条）。修改需新 ADR。

@@ -18,7 +18,7 @@ Research Plane。探索性研究代码与实验编排。**研究代码不得直�
 | `strategies/` | Phase 5（ADR-0038） | 研究策略库：时间序列动量、波动率目标风控、策略 → 风控 → 回测 → 验证 → Failure Registry 流水线 |
 | `experiments/` | Phase 6（ADR-0039） | 状态 × 策略矩阵（接 P5 回测）与条件假设登记 |
 | `hypotheses/` | Phase 7（ADR-0040） | 假设 DSL 组合算子、预登记 Trial 账本、知识 / LLM 草稿生成（LLM 草稿须审阅） |
-| `synthetic_lab/` | Phase 9（ADR-0042） | 合成市场上的检测器校准（假阳性率与检出力） |
+| `synthetic_lab/` | Phase 9（ADR-0042） | 合成市场上的检测器校准（假阳性率与检出力）；验证门校准 harness（候选 Profile × 门的证据，不是 Profile 决定），见 [synthetic_lab/README.md](synthetic_lab/README.md) |
 | `router/` | Phase 10（ADR-0043） | 动态策略路由（仅纸面）与纸面运行，见 [router/README.md](router/README.md) |
 | `loop/` | Phase 11（ADR-0049） | 持续研究循环的六个研究阶段与组合根（通用调度 / 预算 / 生命周期守卫 / 审计在 `apps/worker/loop.py`），见 [loop/README.md](loop/README.md) |
 | `evolution/` | Phase 12（ADR-0045） | 变异 / 组合 / 退役算子与谱系图（新对象必须新版本并重新验证） |
