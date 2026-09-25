@@ -46,6 +46,17 @@ flowchart LR
 - Metrics：采集延迟、数据缺口、任务队列深度、实验吞吐、验证通过率。
 - **验证通过率异常升高**应作为告警（可能的泄漏或规则被削弱信号）。
 
+### 4.1 执行服务（Phase 13 框架，仅模拟）
+
+`apps/execution/`（[ADR-0046](../adr/0046-simulated-execution-service.md)，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）是独立的
+执行服务，当前**只有**进程内模拟场所：
+
+- 无网络 I/O、无凭据、无真实场所；`ExecutionMode.LIVE` 与非 `SimulatedVenue` 场所被拒绝；阶梯 PAPER 之后的各级总是拒绝并记录。
+- 每个订单先记录、再经 Kill Switch 与二道风控、后成交；订单 / 成交 / 拒绝 / Kill Switch 触发 / 告警 / 阶梯决定都进只追加审计轨迹，
+  并发布到事件总线 `execution.*` 主题（当前为进程内总线，ADR-0044；不持久）。
+- 风险数值（资金、敞口、杠杆、亏损、回撤阈值、费率）由操作者注入，没有默认值；Kill Switch 没有 reset，恢复 = 人新建服务实例。
+- 运行时状态目前都在进程内；满足 §3"服务无本地状态"需要持久审计存储与外部总线，属后续 ADR。
+
 ## 5. 当前环境（WSL2）注意
 
 - 研究数据应放在 Linux 文件系统（ext4），避免 `/mnt/c` 跨文件系统 I/O。
