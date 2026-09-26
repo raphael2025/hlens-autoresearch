@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { api, escaped, renderInitial, renderSettled } from "../components/render.test-util.tsx";
+import { api, count, escaped, renderInitial, renderSettled } from "../components/render.test-util.tsx";
 import { fixtureEnvelopes } from "../lib/fixtures.test-util.ts";
 import { formatUsage, roundRow } from "../lib/researchLoop.ts";
 import { ResearchLoop } from "./ResearchLoop.tsx";
@@ -18,7 +18,7 @@ test("first paint: banner, loading, nothing fetched yet", () => {
   assert.ok(html.includes("加载round 记录中…"));
 });
 
-test("loaded: one row per round with status, stages and usage; the chart container; invalid warning", async () => {
+test("loaded: one row per round with status, stages and usage; invalid warning", async () => {
   const { html, requests } = await renderSettled(<ResearchLoop />, {
     routes: [api.listing(KIND, reports, [{ id: "r-bad", reason: "record_hash mismatch" }])],
   });
@@ -28,8 +28,21 @@ test("loaded: one row per round with status, stages and usage; the chart contain
   assert.ok(html.includes(`<td>${row.status}</td>`));
   assert.ok(html.includes(`<td>${row.stagesRun} / ${row.stagesSkipped}</td>`));
   assert.ok(html.includes(`<td>${escaped(formatUsage(row.roundUsage))}</td>`));
-  assert.ok(html.includes('<div style="width:100%;height:300px;margin:16px 0"></div>'));
   assert.ok(html.includes("r-bad: record_hash mismatch"));
+});
+
+test("loaded: one usage chart per dimension, each captioned with its unit (no shared axis)", async () => {
+  const { html } = await renderSettled(<ResearchLoop />, { routes: [api.listing(KIND, reports)] });
+  assert.equal(count(html, "<figure"), 3);
+  for (const [key, title] of [
+    ["trials", "trials (count)"],
+    ["llm_cost_units", "llm_cost_units (cost units)"],
+    ["compute_seconds", "compute_seconds (s)"],
+  ]) {
+    assert.ok(html.includes(`${escaped(title)}：每轮用量（柱，左轴）· 累计用量（线，右轴）`), title);
+    assert.ok(html.includes(`<div data-usage="${key}" style="width:100%;height:200px"></div>`), key);
+  }
+  assert.ok(!html.includes("charged usage"), "the old single shared axis is gone");
 });
 
 test("empty: the empty text, no table", async () => {

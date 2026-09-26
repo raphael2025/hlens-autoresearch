@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { clone, fixtureEnvelopes } from "./fixtures.test-util.ts";
-import { asNumber, formatUsage, roundRow, roundRows, usageSeries } from "./researchLoop.ts";
+import {
+  asNumber,
+  formatUsage,
+  roundRow,
+  roundRows,
+  USAGE_KEYS,
+  usageChartOption,
+  usageSeries,
+  withUnit,
+} from "./researchLoop.ts";
 
 const [fixture] = fixtureEnvelopes("research_loop_round");
 
@@ -68,4 +77,58 @@ test("rows are ordered by loop then round index, and the chart series follow tha
   const chart = usageSeries(rows);
   assert.deepEqual(chart.labels, ["loop-x#0", "loop-x#1"]);
   assert.deepEqual(chart.series.find((s) => s.key === "trials")?.round, [1, 3]);
+});
+
+test("one series per usage dimension, each with its own unit, round and cumulative total", () => {
+  const later = clone(fixture);
+  later.id = "later";
+  later.payload.round_index = 1;
+  later.payload.round_usage = { trials: 2, llm_cost_units: "0.25", compute_seconds: "30" };
+  later.payload.total_usage = { trials: 3, llm_cost_units: "0.75", compute_seconds: "32" };
+  const chart = usageSeries(roundRows([fixture, later]));
+  assert.deepEqual(
+    chart.series.map((s) => [s.key, s.unit, s.title]),
+    [
+      ["trials", "count", "trials (count)"],
+      ["llm_cost_units", "cost units", "llm_cost_units (cost units)"],
+      ["compute_seconds", "s", "compute_seconds (s)"],
+    ],
+  );
+  assert.deepEqual(USAGE_KEYS, ["trials", "llm_cost_units", "compute_seconds"]);
+  const compute = chart.series[2];
+  assert.deepEqual(compute.round, [2, 30]);
+  assert.deepEqual(compute.total, [2, 32]);
+});
+
+test("a dimension's chart: round bars on the left axis, cumulative line on the right, units everywhere", () => {
+  const later = clone(fixture);
+  later.id = "later";
+  later.payload.round_index = 1;
+  later.payload.total_usage = { trials: 2, llm_cost_units: "1", compute_seconds: "4" };
+  const chart = usageSeries(roundRows([fixture, later]));
+  for (const series of chart.series) {
+    const option = usageChartOption(chart.labels, series);
+    assert.deepEqual(option.xAxis.data, chart.labels);
+    // two value axes: a growing total never flattens the per-round bars
+    assert.deepEqual(
+      option.yAxis.map((axis) => [axis.position, axis.name]),
+      [
+        ["left", `per round (${series.unit})`],
+        ["right", `cumulative (${series.unit})`],
+      ],
+    );
+    const [round, total] = option.series;
+    assert.deepEqual([round.type, round.yAxisIndex, round.data], ["bar", 0, series.round]);
+    assert.deepEqual([total.type, total.yAxisIndex, total.data], ["line", 1, series.total]);
+    assert.equal(option.tooltip.valueFormatter(2), `2 ${series.unit}`);
+    assert.equal(option.tooltip.valueFormatter(null), "—");
+  }
+  // never one numeric axis shared by incommensurable dimensions
+  assert.equal(new Set(chart.series.map((s) => usageChartOption(chart.labels, s).yAxis[0].name)).size, 3);
+});
+
+test("withUnit: a number with its unit, anything else a placeholder", () => {
+  assert.equal(withUnit(0.5, "cost units"), "0.5 cost units");
+  assert.equal(withUnit(Number.NaN, "s"), "—");
+  assert.equal(withUnit("2", "s"), "—");
 });
