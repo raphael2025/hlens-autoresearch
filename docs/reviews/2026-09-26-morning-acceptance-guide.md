@@ -44,7 +44,7 @@ uv run pytest -q
 uv run ruff check . && uv run ruff format --check . && uv run mypy
 ```
 
-最近一次严格门禁（ruff / format / mypy / `uv lock --check` / 全量 pytest，含 PostgreSQL 测试库）：`81d177d` 上 5448 项全部通过（约 31 分钟）。
+最近一次严格门禁（ruff / format / mypy / `uv lock --check` / 全量 pytest，含 PostgreSQL 测试库）：`5432b2f` 上 5619 项全部通过（约 30 分钟）。
 真实数据格式的端到端能力冒烟：`tests/infrastructure/e2e/test_research_pipeline_real_data.py`（需要测试库环境变量）。
 持续循环端到端：`tests/research/loop/test_loop_e2e.py`（植入效应的假设在数据足够后通过 G0–G4 进入 OOS，纯噪声全部不通过，永不到 PAPER / ACTIVE）。
 
@@ -78,6 +78,7 @@ cd apps/web && npm ci && npm run build
 - 真实数据链：同一条研究链的特征与价格两个 manifest 须经 `pair_manifests` 校验配对，验证器 G0 核对标签、回测与特征来自同一对已校验数据集，对不上即 FAIL。
 - 调试第二轮（2026-09-26 凌晨）：持续循环的全部状态（审计、Trial 账本、开封记录、谱系、审阅批准、失败登记）可放在同一个目录，进程重启后逐轮继续、结果与不中断运行完全一致，任一文件被删、被截断或被篡改即拒绝启动；交互事件的上游规格与输入来源逐项核对；数据集 bar 测试补齐 PostgreSQL 版本；控制台补齐全部报告种类的示例与校准证据页。
 - 调试第三轮：状态目录绑定预算、开封配额、决策步长与 G4 参数（重开时任何改动即拒绝；提高预算须换新目录，由人决定）；可选目录外锚点识别整体截断；交互事件的上游哈希改为逐字段精确匹配，`require_full` 在证据缺失时拒绝。
+- 调试第四轮：轮间人工批准即时写检查点并推进锚点；文件型持久事件总线（通过总线契约测试）；回测器可选的成交量上限 / 市场冲击 / 融资成本（默认结果逐字节不变）；循环审计记录成为版本化契约（ADR-0050，只追加，现有哈希不变）。
 - 持续循环：在累积研究数据上验证，每次重新评估都算一次新 trial（多重检验校正随之增长）；已拒绝的不再评估。
 
 ## 6. Git 状态
