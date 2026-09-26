@@ -32,6 +32,21 @@ G4 (robustness, Phase 8) lives in ``research.validation.robustness`` and is comp
 ``research.validation.g4.run_validation``. Every side this module uses is computed from blinded
 labels (``controls.blind_labels``). Too few effective samples is ``INCONCLUSIVE`` (evidence
 insufficient), never a PASS.
+
+Multi-seed negative controls (debugging pass, 2026-09-26; CODE_COMPLETE / DEBUG_PENDING; backlog
+C "P4: negative controls are a single fixed seed"): ``InSampleInput.control_seeds`` is optional.
+``None`` (default) keeps the single draw per control (shuffle with ``seed``, shift with
+``seed + 1``) — the gates are byte-identical to before. A non-empty tuple of distinct seeds runs
+**both** controls once per seed (each with that seed itself, so the seed in the gate id is the
+seed that was used): per-seed gates ``G1.shuffle_control.seed.<s>`` / ``G1.shift_control.seed.<s>``
+are judged under the base gate id (so the Profile's ``inconclusive_bands`` entry of
+``G1.shuffle_control`` / ``G1.shift_control`` applies to every seed) against the same
+``significance.multiple_testing_threshold``; the base gate ``G1.shuffle_control`` /
+``G1.shift_control`` then aggregates them by the standard rule (any ``FAIL`` fails, else any
+``INCONCLUSIVE`` is ``INCONCLUSIVE``, else ``PASS``) and reports the minimum p-value (metric
+``..._timing_p_value_min_over_seeds[>=]``). More seeds can only add ways to fail: the option never
+loosens the controls, and there is no default seed list. The G2 null model stays single-seed
+(``seed + 2``).
 """
 
 from __future__ import annotations
@@ -60,6 +75,7 @@ from core.domain.specs import STRATEGY_SIGNAL_KINDS
 from core.errors import ReasonCode
 from research.outcomes.table import OutcomeTable
 from research.validation.controls import (
+    ControlResult,
     FittableStudy,
     SignalStudy,
     blind_labels,
@@ -74,6 +90,7 @@ from research.validation.costs import (
 )
 from research.validation.gates import (
     Direction,
+    Threshold,
     compare_gate,
     flag_gate,
     inconclusive_gate,
@@ -127,12 +144,29 @@ class ValidationContext:
 
 @dataclass(frozen=True)
 class InSampleInput:
+    """G0 – G3 input. ``control_seeds`` is the optional multi-seed negative-control option (module
+    docs, **Multi-seed negative controls**): ``None`` (default) keeps the single-seed controls
+    exactly as before; a non-empty tuple of distinct ``int`` seeds runs both controls once per
+    seed. It has no default seed list: the caller names every seed."""
+
     context: ValidationContext
     outcomes: OutcomeTable
     study: SignalStudy
     seed: int
     reproduce: Callable[[], str]
     recorded_result_hash: str
+    control_seeds: tuple[int, ...] | None = None
+
+    def __post_init__(self) -> None:
+        seeds = self.control_seeds
+        if seeds is None:
+            return
+        if not isinstance(seeds, tuple) or not seeds:
+            raise ValueError("control_seeds must be None or a non-empty tuple of int seeds")
+        if any(isinstance(seed, bool) or not isinstance(seed, int) for seed in seeds):
+            raise TypeError("every control seed must be an int")
+        if len(set(seeds)) != len(seeds):
+            raise ValueError("control_seeds must be distinct (each is recorded in a gate id)")
 
 
 @dataclass(frozen=True)
@@ -261,18 +295,71 @@ def _g1(inp: InSampleInput, labels: Sequence[OutcomeLabel]) -> list[GateResult]:
     )
     lag = overlap_lag(_intervals(labels))
     alpha = threshold(profile, "significance.multiple_testing_threshold")
-    for gate_id, control in (
-        ("G1.shuffle_control", shuffle_control(inp.study, keys, values, lag, inp.seed)),
-        ("G1.shift_control", shift_control(inp.study, keys, values, lag, inp.seed + 1)),
+    if inp.control_seeds is None:
+        for gate_id, control in (
+            ("G1.shuffle_control", shuffle_control(inp.study, keys, values, lag, inp.seed)),
+            ("G1.shift_control", shift_control(inp.study, keys, values, lag, inp.seed + 1)),
+        ):
+            gates.append(_control_gate(profile, gate_id, control, len(values), alpha))
+        return gates
+    for gate_id, name, run in (
+        ("G1.shuffle_control", "shuffle", shuffle_control),
+        ("G1.shift_control", "shift", shift_control),
     ):
-        metric = f"{control.name}_timing_p_value"
-        if not control.applicable or len(values) < 2:
-            gates.append(inconclusive_gate(gate_id, metric, control.p_value))
-        else:
-            gates.append(
-                compare_gate(profile, gate_id, metric, control.p_value, alpha, Direction.AT_LEAST)
+        per_seed = tuple(
+            _control_gate(
+                profile,
+                gate_id,
+                run(inp.study, keys, values, lag, seed),
+                len(values),
+                alpha,
+                recorded_as=f"{gate_id}{CONTROL_SEED_INFIX}{seed}",
             )
+            for seed in inp.control_seeds
+        )
+        gates.extend((_aggregate_control_gate(gate_id, name, per_seed, alpha), *per_seed))
     return gates
+
+
+#: Gate-id infix of a per-seed negative-control gate: ``G1.shuffle_control.seed.<seed>``.
+CONTROL_SEED_INFIX = ".seed."
+
+
+def _control_gate(
+    profile: ValidationProfile,
+    gate_id: str,
+    control: ControlResult,
+    n: int,
+    alpha: Threshold,
+    *,
+    recorded_as: str | None = None,
+) -> GateResult:
+    """One control's gate, judged under ``gate_id`` (so the Profile's inconclusive band of that
+    id applies) and recorded under ``recorded_as`` when given (a per-seed gate)."""
+    metric = f"{control.name}_timing_p_value"
+    if not control.applicable or n < 2:
+        gate = inconclusive_gate(gate_id, metric, control.p_value)
+    else:
+        gate = compare_gate(profile, gate_id, metric, control.p_value, alpha, Direction.AT_LEAST)
+    if recorded_as is None:
+        return gate
+    return GateResult.model_validate({**gate.model_dump(), "gate_id": recorded_as})
+
+
+def _aggregate_control_gate(
+    gate_id: str, name: str, per_seed: Sequence[GateResult], alpha: Threshold
+) -> GateResult:
+    """The multi-seed control under its base id: the standard rule over the per-seed gates
+    (any ``FAIL`` fails, else any ``INCONCLUSIVE`` is ``INCONCLUSIVE``), reporting the minimum
+    p-value."""
+    return GateResult(
+        gate_id=gate_id,
+        metric=f"{name}_timing_p_value_min_over_seeds[{Direction.AT_LEAST.value}]",
+        value=min(gate.value for gate in per_seed),
+        threshold=alpha.value,
+        threshold_source=alpha.source,
+        verdict=derive_verdict(per_seed),
+    )
 
 
 # ======================================================================================

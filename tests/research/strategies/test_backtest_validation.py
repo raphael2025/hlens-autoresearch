@@ -918,3 +918,37 @@ def test_the_capacity_check_uses_the_execution_models_coefficient() -> None:
     assert details["impact_cost_per_period_at_capacity"] is not None
     # A successfully resolved coefficient is never gated (an estimate is reported, not a pass).
     assert "G4.capacity.impact_estimated" not in {g.gate_id for g in result.gates}
+
+
+# =========================================================================================
+# debugging pass (2026-09-26): optional multi-seed G1 negative controls through ValidatorSetup
+# =========================================================================================
+
+_CONTROLS = ("G1.shuffle_control", "G1.shift_control")
+
+
+def test_the_default_setup_keeps_single_seed_controls() -> None:
+    market = _market(seed=7, planted=True)
+    setup = _setup(market, library_entries()[0].candidate())
+    assert setup.control_seeds is None
+
+
+def test_control_seeds_reach_the_in_sample_controls() -> None:
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    backtest = CandidateTrialRunner(candidate, _inputs(market), BarBacktester()).run(CHOSEN)
+    plain = PipelineBacktestValidator(_setup(market, candidate))
+    seeded = PipelineBacktestValidator(replace(_setup(market, candidate), control_seeds=(11, 12)))
+    before = plain.validate(candidate.spec.ref, candidate.spec, backtest.backtest).report.gates
+    after = seeded.validate(candidate.spec.ref, candidate.spec, backtest.backtest).report.gates
+    old, new = {g.gate_id: g for g in before}, {g.gate_id: g for g in after}
+    assert not any(".seed." in gate_id for gate_id in old)
+    # the setup's seed 11 is the legacy shuffle seed, 12 the legacy shift seed
+    for gate_id, seed in zip(_CONTROLS, (11, 12), strict=True):
+        per_seed = new[f"{gate_id}.seed.{seed}"]
+        assert (per_seed.value, per_seed.verdict) == (old[gate_id].value, old[gate_id].verdict)
+        assert new[gate_id].metric.endswith("_min_over_seeds[>=]")
+    assert set(new) - set(old) == {f"{g}.seed.{s}" for g in _CONTROLS for s in (11, 12)}
+    for gate_id in old:
+        if not gate_id.startswith(_CONTROLS):
+            assert new[gate_id] == old[gate_id]

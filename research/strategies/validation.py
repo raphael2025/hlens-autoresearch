@@ -274,10 +274,13 @@ class ValidatorSetup:
       required to reproduce a plain ``BarBacktester()`` backtest (the pre-existing behaviour is
       untouched): they exist to make an *opt-in* execution model an explicit, checked part of the
       setup instead of an unstated assumption of whatever ``TrialRunner`` the caller wired in.
+    - ``control_seeds`` (debugging pass, 2026-09-26): passed unchanged to
+      ``InSampleInput.control_seeds`` — the optional multi-seed G1 negative controls
+      (``research.validation.pipeline`` module docs). ``None`` keeps the single-seed controls.
 
-    Only the last five fields have defaults (``None`` / empty): they keep the synthetic callers
-    and the pre-existing (no execution model) callers unchanged, and the view always labels the
-    path taken.
+    Only the last six fields have defaults (``None`` / empty): they keep the synthetic callers
+    and the pre-existing (no execution model, single-seed controls) callers unchanged, and the
+    view always labels the path taken.
     """
 
     context: ValidationContext
@@ -296,6 +299,7 @@ class ValidatorSetup:
     feature_manifest_hashes: tuple[str, ...] = ()
     backtester: BacktestProvider | None = None
     execution: ExecutionModel | None = None
+    control_seeds: tuple[int, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.backtester is not None and self.execution is not None:
@@ -491,6 +495,7 @@ class PipelineBacktestValidator:
             seed=setup.seed,
             reproduce=lambda: rerun.backtest.result_hash,
             recorded_result_hash=backtest.result_hash,
+            control_seeds=setup.control_seeds,
         )
         run = run_validation(in_sample, lambda: self._robustness_input(spec, chosen, rerun))
         report = build_report(ctx, (*adapter, *run.gates))
