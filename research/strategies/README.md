@@ -10,6 +10,7 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 |---|---|
 | `time_series_momentum.py` | `TimeSeriesMomentumProvider`（StrategyProvider）；`tsmom_bars@1.0.0`、`tsmom_bars_vol_scaled@1.0.0`；lineage 为知识库条目 |
 | `cross_sectional_momentum.py` | `CrossSectionalMomentumProvider`（StrategyProvider）；`xsmom_bars@1.0.0`；lineage 为 `factor_crypto_market_size_momentum@1.0.0` |
+| `cross_section.py` | 横截面策略的**声明**（ADR-0059）：静态集合 `CROSS_SECTIONAL_STRATEGIES`（按 `StrategySpec.name`），`is_cross_sectional(spec)` 只读规格名，从不由结果推断 |
 | `volatility_target.py` | `VolatilityTargetRiskProvider`（RiskProvider）；`vol_target_bars@1.0.0` 与其声明的参数空间 |
 | `signals.py` | 从 `PriceBar` 派生 `bar_log_return` / `bar_realized_vol_<n>` 信号观察（探索用；生产路径走 FeatureProvider runner） |
 | `pipeline.py` | 策略 → 风控 → 回测 → 验证 → Failure Registry；`CandidateTrialRunner`（任一声明参数点重跑，可延迟 k bar、平移决策网格、限定标的） |
@@ -48,7 +49,14 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 参数空间 `lookback ∈ {60, 240, 1440}`、`long_only ∈ {False, True}`、`top_n ∈ {1, 2}`、`gross_exposure ∈ {1}`（int：规格不存 Decimal、请求拒收数值文本），
 试验数 12；这些是策略参数，不是验证阈值。库条目 `hypothesis_family_id = "xsmom_bars"`（独立于 `tsmom_bars`）。它至少需要两个标的，
 端到端测试走多标的验证路径（`ValidatorSetup.instruments`）。注意：G4 跨资产检查对每个标的单独重跑，截面策略在单标的上按定义空仓，
-因此其跨资产证据对此类策略结构上无信息量（记录为验证设计待办，未改任何门）。
+因此其跨资产证据对此类策略结构上无信息量——由 ADR-0059 解决（见下）。
+
+**横截面策略的 G4 跨资产检查**（[ADR-0059](../../docs/adr/0059-cross-asset-check-for-cross-sectional-strategies.md)，Accepted 2026-09-26；
+状态 **CODE_COMPLETE / DEBUG_PENDING**；未改 core / 契约 / Schema）：`validation.py` 构建 G4 输入时为每个声明标的的单标的重跑记录是否有敞口
+（`_exposed`：有非零执行目标或成交；只看持仓，不看收益），全部无敞口时跨资产比例门判 `INCONCLUSIVE`（C）。`cross_section.is_cross_sectional(spec)`
+为真的策略（目前只有 `xsmom_bars`）在逐标的重跑之后，再对 `subuniverse_partition(declared_instruments)` 的每个子宇宙各重跑一次，按同一
+`cross_asset.min_positive_fraction` 判定子宇宙正收益比例（A）；少于 4 个声明标的（不足两个子宇宙）判 `INCONCLUSIVE`。这些都是所选试验的稳健性重跑，
+试验数不变。其它策略的 `TrialRunner` 调用与报告逐字节不变（改动前固定的哈希见 `tests/research/strategies/test_cross_sectional_g4.py`）。
 
 **未实现**：`state_cross_exchange_price_deviations`（Makarov & Schoar 2020，跨交易所价差）需要多交易所数据，超出已批准的数据范围
 （ADR-0022：仅 Binance），因此不在本库实现；数据范围扩大需先有 ADR。

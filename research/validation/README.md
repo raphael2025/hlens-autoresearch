@@ -96,3 +96,17 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   INCONCLUSIVE → INCONCLUSIVE，PASS 需要池化证据与每个标的的证据都通过（交并检验，只会减少 PASS）。
 - 已知限制（DEBUG_PENDING）：池化后的 G1 负对照对按时间交错的多标的标签序列做置换 / 循环平移，可能把一个标的的方向与另一标的的标签配对——
   仍是有效的零假设（只会破坏对齐），但其在多标的数据上的误报率尚未校准（Phase 9）。
+
+### 横截面策略的 C-R3（[ADR-0059](../../docs/adr/0059-cross-asset-check-for-cross-sectional-strategies.md)，Accepted 2026-09-26）
+
+> 状态：**CODE_COMPLETE / DEBUG_PENDING**。无 core / 契约 / Schema 变化，无新数值阈值；两个新参数都不给时 `cross_asset_check` 输出逐字节不变。
+
+- **C（零敞口）**：`cross_asset_check(..., exposed=...)` / `RobustnessInput.per_asset_exposed`：当**每个**声明标的的单标的重跑都已知无持仓
+  （判据由调用方从持仓得出：非零执行目标或成交；从不由零收益推断；未知不视为零）时，`G4.cross_asset.positive_fraction` 判 `INCONCLUSIVE`
+  （`not_applicable_zero_exposure_single_asset`），不计算比例——不再把"检查不适用"记成 FAIL，也永不 PASS。
+- **A（子宇宙）**：`cross_asset_check(..., sub_universes=...)` / `RobustnessInput.sub_universes` 只对**声明**的横截面策略给出
+  （`research/strategies/cross_section.py`）。`subuniverse_partition` 把声明标的去重排序后按相邻两两切分、奇数个并入最后一组（规则名
+  `SUBUNIVERSE_RULE` 写入 `details.cross_section`）；子宇宙必须恰为该划分，否则 `ValueError`。净收益为正的子宇宙比例用**同一**
+  `param:cross_asset.min_positive_fraction` 判定（metric `positive_subuniverse_fraction`）；不足两个子宇宙 → `INCONCLUSIVE`
+  （`not_enough_instruments_for_subuniverses`）。逐标的行仍写入 `details`，但不对横截面策略判门。子宇宙重跑不是新试验，`family_trial_count` 不变。
+

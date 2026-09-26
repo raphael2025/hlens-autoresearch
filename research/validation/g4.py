@@ -44,6 +44,11 @@ always been raised (tests pin them); ``MemoryError`` is a resource failure whose
 reproducible, so recording it would make the result depend on the machine. Anything else
 (arithmetic, lookup, attribute, runtime, assertion errors, ...) is the broken-check case.
 Nothing changes when no check raises: the checks, their gates and ``to_dict`` are identical.
+
+Cross-sectional strategies in C-R3 (ADR-0059, Accepted 2026-09-26; CODE_COMPLETE /
+DEBUG_PENDING): ``RobustnessInput.per_asset_exposed`` and ``.sub_universes`` (both default
+``None`` = unchanged) are handed to ``cross_asset_check`` (see its docs). Both are robustness
+re-runs of the chosen trial, never new trials: ``family_trial_count`` is unchanged.
 """
 
 from __future__ import annotations
@@ -64,6 +69,7 @@ from research.validation.robustness import (
     CapacityFill,
     RobustnessCheck,
     StateTrade,
+    SubUniverse,
     capacity_check,
     cost_stress_check,
     cross_asset_check,
@@ -161,6 +167,15 @@ class RobustnessInput:
     #: note, 2026-09-26): see ``run_robustness``.
     #: A ``Decimal`` (the model's own value) is compared exactly (review fixes 3).
     execution_impact_coefficient: Decimal | float | None = None
+    #: ADR-0059 C (Accepted 2026-09-26): per declared instrument, whether its single-asset
+    #: re-run in ``per_asset`` ever held a position (``research.strategies.validation``: a
+    #: non-flat target or a fill). ``None`` (default, every caller before ADR-0059) = unknown:
+    #: the cross-asset check is unchanged.
+    per_asset_exposed: Mapping[str, bool] | None = None
+    #: ADR-0059 A: the sub-universe re-runs of a strategy **declared** cross-sectional, exactly
+    #: ``robustness.subuniverse_partition(declared_instruments)`` (``()`` when fewer than two
+    #: sub-universes exist). ``None`` (default) = not declared cross-sectional.
+    sub_universes: tuple[SubUniverse, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.family_trial_count < 1:
@@ -318,7 +333,12 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
             impact_conflict=impact_conflict,
         ),
         "cross_asset": lambda: cross_asset_check(
-            profile, inp.per_asset, inp.declared_instruments, params.cross_asset_fraction
+            profile,
+            inp.per_asset,
+            inp.declared_instruments,
+            params.cross_asset_fraction,
+            exposed=inp.per_asset_exposed,
+            sub_universes=inp.sub_universes,
         ),
     }
     checks = tuple(_isolated(check_id, runs[check_id]) for check_id, _, _ in CHECKS)

@@ -417,7 +417,9 @@ def test_a_single_instrument_run_has_no_cross_section() -> None:
     """G4 cross-asset re-runs one instrument alone: a cross-sectional rule is flat there.
 
     The G4 input still builds (one per-asset series per declared instrument); those series are
-    flat by construction, which is what the cross-asset check then judges (no verdict asserted).
+    flat by construction and recorded as zero exposure. ``xsmom_bars`` is declared cross-sectional
+    (ADR-0059), so C-R3 is judged over sub-universes instead; two instruments allow none
+    (``test_cross_sectional_g4`` covers the verdicts).
     """
     book = multi.Book.of("p,n")
     candidate = _entry().candidate()
@@ -431,3 +433,5 @@ def test_a_single_instrument_run_has_no_cross_section() -> None:
         candidate.spec, backtest
     )
     assert set(g4.per_asset) == set(book.names)
+    assert g4.per_asset_exposed == dict.fromkeys(book.names, False)
+    assert g4.sub_universes == ()

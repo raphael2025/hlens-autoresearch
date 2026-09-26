@@ -148,6 +148,19 @@ single-instrument path byte-identical (report hashes pinned in
   decision time as exposed when any instrument's target is non-flat (the base returns are the
   portfolio's).
 
+G4 cross-asset for cross-sectional strategies (ADR-0059, Accepted 2026-09-26; CODE_COMPLETE /
+DEBUG_PENDING). No core / contract / Schema change. ``RobustnessInput.per_asset_exposed`` records,
+for every declared instrument's single-asset re-run, whether it ever held a position
+(``_exposed``: a non-flat executed target or a fill — decided from positions, never from returns);
+when all are flat, ``G4.cross_asset.positive_fraction`` is ``INCONCLUSIVE``
+(``not_applicable_zero_exposure_single_asset``, C). A strategy **declared** cross-sectional
+(``research.strategies.cross_section``, by spec name; never inferred from results) is also re-run
+once per sub-universe of ``robustness.subuniverse_partition(declared_instruments)`` (A), after the
+per-asset runs; those are robustness re-runs of the chosen trial like the per-asset ones, so
+``family_trial_count`` is unchanged. Every other strategy makes exactly the same ``TrialRunner``
+calls as before and its report is byte-identical (hashes pinned in
+``tests/research/strategies/test_cross_sectional_g4.py``).
+
 Known limit (DEBUG_PENDING): the pooled G1 negative controls permute / circularly shift the
 pooled label sequence, which interleaves instruments by time, so a control may pair one
 instrument's side with another's label. That is still a valid null (it can only break
@@ -180,6 +193,7 @@ from infrastructure.bars.dataset import DatasetPriceBars
 from infrastructure.bars.pair import ManifestPair, pair_hash_of
 from plugins.backtest import BarBacktester, ExecutionModel
 from research.outcomes.table import OutcomeTable, materialize
+from research.strategies.cross_section import is_cross_sectional
 from research.validation.controls import FixedSides
 from research.validation.g4 import (
     RobustnessInput,
@@ -209,7 +223,12 @@ from research.validation.returns import (
     from_backtest,
     param_key,
 )
-from research.validation.robustness import CapacityFill, StateTrade
+from research.validation.robustness import (
+    CapacityFill,
+    StateTrade,
+    SubUniverse,
+    subuniverse_partition,
+)
 
 __all__ = [
     "BacktestValidation",
@@ -483,6 +502,13 @@ def _side(weight: Decimal) -> int:
 
 def _event_key(target: TargetPosition) -> str:
     return f"{target.instrument}|{target.decision_time.isoformat()}"
+
+
+def _exposed(run: TrialRun) -> bool:
+    """Whether a re-run ever held a position (ADR-0059 C criterion): at least one non-flat target
+    (after risk / delay: the targets the backtest executed) or at least one fill. Decided from the
+    run's positions, never from its returns (a flat run and a zero-return run are different)."""
+    return any(_side(t.target_weight) != 0 for t in run.targets) or bool(run.backtest.fills)
 
 
 def _longest_holding(targets: Sequence[TargetPosition], base: PeriodReturns) -> timedelta:
@@ -835,12 +861,26 @@ class PipelineBacktestValidator:
         }
         # A multi-instrument base run is never one asset's: every declared asset is re-run alone.
         single = setup.instruments is None and setup.declared_instruments == (setup.instrument,)
-        per_asset = {
-            name: base
-            if single
-            else from_backtest(runner.run(params, instruments=(name,)).backtest)
+        alone = {
+            name: rerun if single else runner.run(params, instruments=(name,))
             for name in setup.declared_instruments
         }
+        per_asset = {
+            name: base if single else from_backtest(run.backtest) for name, run in alone.items()
+        }
+        # ADR-0059 A: a strategy *declared* cross-sectional (never inferred from these runs) is
+        # also re-run on each disjoint sub-universe of its declared instruments.
+        sub_universes = None
+        if is_cross_sectional(spec):
+            sub_universes = tuple(
+                SubUniverse(
+                    instruments=names,
+                    returns=from_backtest(run.backtest),
+                    exposed=_exposed(run),
+                )
+                for names in subuniverse_partition(setup.declared_instruments)
+                for run in (runner.run(params, instruments=names),)
+            )
         return RobustnessInput(
             profile=profile,
             family_trial_count=setup.context.metadata.family_trial_count,
@@ -858,6 +898,8 @@ class PipelineBacktestValidator:
                 setup.context.label_spec.horizon, _longest_holding(rerun.targets, base)
             ),
             execution_impact_coefficient=self._execution_impact_coefficient(),
+            per_asset_exposed={name: _exposed(run) for name, run in alone.items()},
+            sub_universes=sub_universes,
         )
 
     def _execution_impact_coefficient(self) -> Decimal | None:

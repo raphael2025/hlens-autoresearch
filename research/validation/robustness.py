@@ -51,7 +51,12 @@ Checks (principle → gate ids → threshold sources):
   ``.impact_estimated`` → no Profile field: ``param:capacity.max_participation_rate``,
   ``param:capacity.min_capacity``, ``param:capacity.impact_coefficient``;
 - ``cross_asset_check`` (C-R3) → ``G4.cross_asset.scope_covered`` / ``.positive_fraction`` → no
-  Profile field: ``param:cross_asset.min_positive_fraction``.
+  Profile field: ``param:cross_asset.min_positive_fraction``. ADR-0059 (Accepted 2026-09-26): when
+  every declared instrument's single-asset re-run is known to hold no position the fraction is
+  ``INCONCLUSIVE`` (``not_applicable_zero_exposure_single_asset``); a strategy **declared**
+  cross-sectional is judged over disjoint sub-universes (``subuniverse_partition``) with the same
+  threshold, ``INCONCLUSIVE`` (``not_enough_instruments_for_subuniverses``) when fewer than two
+  sub-universes exist.
 
 Performance is the per-period Sharpe ratio of **net** returns at cost multiplier 1
 (``overfitting.sharpe_ratio``); window P&L is the sum of per-period net returns.
@@ -93,12 +98,17 @@ from research.validation.stats import UnsupportedMethod, effective_sample_size
 
 __all__ = [
     "DSR_METHODS",
+    "MIN_CROSS_SECTION",
     "NEIGHBORHOOD_METHODS",
+    "NOT_ENOUGH_FOR_SUBUNIVERSES",
     "PBO_METHODS",
+    "SUBUNIVERSE_RULE",
+    "ZERO_EXPOSURE_SINGLE_ASSET",
     "CapacityFill",
     "CheckStatus",
     "RobustnessCheck",
     "StateTrade",
+    "SubUniverse",
     "ThresholdUse",
     "capacity_check",
     "cost_stress_check",
@@ -107,6 +117,7 @@ __all__ = [
     "overfitting_check",
     "parameter_neighborhood_check",
     "state_decomposition_check",
+    "subuniverse_partition",
     "time_alignment_check",
     "walk_forward_check",
 ]
@@ -983,18 +994,125 @@ def capacity_check(
 # C-R3: cross-asset consistency inside the declared scope
 # ======================================================================================
 
+#: ``G4.cross_asset.positive_fraction`` reason when every declared instrument's single-asset
+#: re-run holds no position at all (ADR-0059 C): the per-asset fraction is not computed.
+ZERO_EXPOSURE_SINGLE_ASSET: Final = "not_applicable_zero_exposure_single_asset"
+#: ``G4.cross_asset.positive_fraction`` reason of a declared cross-sectional strategy whose
+#: declared instruments cannot be split into two or more sub-universes (ADR-0059 A).
+NOT_ENOUGH_FOR_SUBUNIVERSES: Final = "not_enough_instruments_for_subuniverses"
+#: The recorded partition rule of ``subuniverse_partition`` (ADR-0059 A).
+SUBUNIVERSE_RULE: Final = "sorted_unique_consecutive_pairs_odd_remainder_joins_last"
+#: The smallest cross-section: a ranking between instruments needs at least two of them. This is
+#: the structural definition of a cross-section (ADR-0059 A), not a calibrated number.
+MIN_CROSS_SECTION: Final = 2
+
+
+@dataclass(frozen=True)
+class SubUniverse:
+    """One sub-universe re-run of a declared cross-sectional strategy (ADR-0059 A).
+
+    ``exposed`` is whether the re-run ever held a position (``research.strategies.validation``:
+    a non-flat target or a fill); it is reported, the gate judges the net return.
+    """
+
+    instruments: tuple[str, ...]
+    returns: PeriodReturns
+    exposed: bool
+
+
+def subuniverse_partition(declared: Sequence[str]) -> tuple[tuple[str, ...], ...]:
+    """The deterministic partition of ``declared`` into disjoint sub-universes (ADR-0059 A).
+
+    Rule ``SUBUNIVERSE_RULE``: the distinct names, sorted, cut into consecutive pairs; with an odd
+    count the last name joins the last pair (so every sub-universe has at least
+    ``MIN_CROSS_SECTION`` instruments and every declared instrument is in exactly one). Fewer than
+    two sub-universes possible (fewer than four instruments) → ``()``: C-R3 cannot be tested this
+    way, never a PASS.
+    """
+    names = sorted(set(declared))
+    count = len(names) // MIN_CROSS_SECTION
+    if count < 2:
+        return ()
+    chunks = [
+        tuple(names[i * MIN_CROSS_SECTION : (i + 1) * MIN_CROSS_SECTION]) for i in range(count)
+    ]
+    chunks[-1] = tuple(names[(count - 1) * MIN_CROSS_SECTION :])
+    return tuple(chunks)
+
+
+def _all_zero_exposure(declared: Sequence[str], exposed: Mapping[str, bool] | None) -> bool:
+    """ADR-0059 C: every declared instrument's single-asset re-run is known to hold no position
+    (unknown exposure — no mapping or a missing name — is never assumed to be zero)."""
+    if exposed is None:
+        return False
+    return all(name in exposed and not exposed[name] for name in declared)
+
+
+def _subuniverse_gate(
+    profile: ValidationProfile,
+    declared: Sequence[str],
+    absent: Sequence[str],
+    sub_universes: tuple[SubUniverse, ...],
+    min_positive_fraction: Threshold | None,
+    missing: list[str],
+    uses: list[ThresholdUse],
+) -> GateResult:
+    """``G4.cross_asset.positive_fraction`` of a declared cross-sectional strategy (ADR-0059 A)."""
+    gate_id = "G4.cross_asset.positive_fraction"
+    if min_positive_fraction is None:
+        missing.append("cross_asset.min_positive_fraction")
+        return missing_field_gate(gate_id, "cross_asset.min_positive_fraction")
+    if absent:
+        return inconclusive_gate(gate_id, "declared_instruments_not_tested", float(len(absent)))
+    if len(sub_universes) < 2:
+        return inconclusive_gate(gate_id, NOT_ENOUGH_FOR_SUBUNIVERSES, float(len(set(declared))))
+    uses.append(_use("min_positive_fraction", min_positive_fraction))
+    positive = sum(1 for item in sub_universes if sum(item.returns.net(), Decimal(0)) > 0)
+    return compare_gate(
+        profile,
+        gate_id,
+        "positive_subuniverse_fraction",
+        positive / len(sub_universes),
+        min_positive_fraction,
+        Direction.AT_LEAST,
+    )
+
 
 def cross_asset_check(
     profile: ValidationProfile,
     per_asset: Mapping[str, PeriodReturns],
     declared: Sequence[str],
     min_positive_fraction: Threshold | None,
+    *,
+    exposed: Mapping[str, bool] | None = None,
+    sub_universes: tuple[SubUniverse, ...] | None = None,
 ) -> RobustnessCheck:
     """Every declared instrument must be tested; with two or more, the sign must be consistent.
 
     The Profile scope is one symbol and has no cross-asset field: the consistency threshold is an
     explicit parameter (``param:cross_asset.min_positive_fraction``) or missing.
+
+    ADR-0059 (Accepted 2026-09-26); both keyword arguments default to ``None`` = the behaviour
+    before it, byte for byte:
+
+    - ``exposed`` (C): per declared instrument, whether its single-asset re-run ever held a
+      position. When every declared instrument's re-run is known to hold none, the per-asset
+      fraction says nothing about the strategy: ``G4.cross_asset.positive_fraction`` is
+      ``INCONCLUSIVE`` (``ZERO_EXPOSURE_SINGLE_ASSET``) instead of a structural FAIL. Only the
+      exposure decides this, never zero returns; unknown exposure is never assumed to be zero;
+    - ``sub_universes`` (A): given only for a strategy **declared** cross-sectional
+      (``research.strategies.cross_section``; never inferred from results). Its sub-universe
+      re-runs must be exactly ``subuniverse_partition(declared)`` (else ``ValueError``); the
+      fraction of sub-universes with a positive net return is judged against the **same**
+      ``min_positive_fraction`` (``()`` → ``INCONCLUSIVE`` ``NOT_ENOUGH_FOR_SUBUNIVERSES``). The
+      per-asset rows are still reported; they do not gate a cross-sectional strategy.
     """
+    if sub_universes is not None:
+        expected = subuniverse_partition(declared)
+        if tuple(item.instruments for item in sub_universes) != expected:
+            raise ValueError(
+                f"sub-universe re-runs must follow {SUBUNIVERSE_RULE}: expected {expected}"
+            )
     if not declared:  # C-R3: the result must be tested inside a *declared* scope
         return RobustnessCheck(
             check_id="cross_asset",
@@ -1024,7 +1142,34 @@ def cross_asset_check(
     ]
     missing: list[str] = []
     uses: list[ThresholdUse] = []
-    if len(declared) >= 2:
+    details: dict[str, object] = {
+        "declared": list(declared),
+        "instruments": rows,
+        "not_tested": absent,
+    }
+    note = ""
+    if sub_universes is not None:
+        gates.append(
+            _subuniverse_gate(
+                profile, declared, absent, sub_universes, min_positive_fraction, missing, uses
+            )
+        )
+        details["cross_section"] = {
+            "declared_cross_sectional": True,
+            "rule": SUBUNIVERSE_RULE,
+            "sub_universes": [
+                {
+                    "instruments": list(item.instruments),
+                    "periods": len(item.returns),
+                    "net_return": float(sum(item.returns.net(), Decimal(0))),
+                    "sharpe": _sharpe(item.returns),
+                    "exposed": item.exposed,
+                }
+                for item in sub_universes
+            ],
+        }
+        note = "declared cross-sectional: C-R3 judged over disjoint sub-universes (ADR-0059 A)"
+    elif len(declared) >= 2:
         if min_positive_fraction is None:
             missing.append("cross_asset.min_positive_fraction")
             gates.append(
@@ -1040,6 +1185,19 @@ def cross_asset_check(
                     float(len(absent)),
                 )
             )
+        elif _all_zero_exposure(declared, exposed):
+            gates.append(
+                inconclusive_gate(
+                    "G4.cross_asset.positive_fraction",
+                    ZERO_EXPOSURE_SINGLE_ASSET,
+                    float(len(declared)),
+                )
+            )
+            details["zero_exposure"] = {
+                "rule": "no single-asset re-run held a position (no non-flat target, no fill)",
+                "instruments": sorted(declared),
+            }
+            note = "every single-asset re-run is flat: the per-asset fraction is not applicable"
         else:
             uses.append(_use("min_positive_fraction", min_positive_fraction))
             positive = sum(1 for name in declared if sum(per_asset[name].net(), Decimal(0)) > 0)
@@ -1059,5 +1217,6 @@ def cross_asset_check(
         gates=tuple(gates),
         thresholds=tuple(uses),
         missing_fields=tuple(missing),
-        details={"declared": list(declared), "instruments": rows, "not_tested": absent},
+        details=details,
+        note=note,
     )

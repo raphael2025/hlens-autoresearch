@@ -62,7 +62,7 @@
 | [0056](0056-event-table.md) | 物理 Event 表 `event.events`（Phase 3，只追加，按 `result_hash` 幂等） | Accepted（2026-09-26；Claude 依 Raphael 明确授权决定）；CODE_COMPLETE / DEBUG_PENDING |
 | [0057](0057-event-request-subject.md) | 事件请求的标的键 `EventRequest.subject`（P3-MULTISYM，additive） | Accepted（2026-09-26；Claude 依 Raphael 授权决定）；代码已写，待按 2.1.0 重新声明（Codex K3 / K5），未作为契约完成 |
 | [0058](0058-knowledge-reviewed-write-path.md) | 知识库经人工审阅的写入路径（Python API / CLI，无 HTTP 写端点） | Accepted（2026-09-26；Claude 依 Raphael 明确授权） |
-| [0059](0059-cross-asset-check-for-cross-sectional-strategies.md) | G4 跨资产检查（C-R3）对横截面策略的适用方式 | Proposed（2026-09-26；Claude 起草，验证规则变化待批准） |
+| [0059](0059-cross-asset-check-for-cross-sectional-strategies.md) | G4 跨资产检查（C-R3）对横截面策略的适用方式 | Accepted（2026-09-26；Claude 依 Raphael 授权决定，含红线）；C + A 已实施，CODE_COMPLETE / DEBUG_PENDING |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

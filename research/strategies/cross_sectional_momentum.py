@@ -51,11 +51,15 @@ from research.strategies.signals import LOG_RETURN_SIGNAL
 
 __all__ = [
     "XSMOM_KNOWLEDGE",
+    "XSMOM_NAME",
     "XSMOM_PARAM_SPACE",
     "CrossSectionalMomentumProvider",
     "xsmom_spec",
 ]
 
+#: The strategy's name (``StrategySpec.name``); ``research.strategies.cross_section`` declares
+#: it cross-sectional (ADR-0059).
+XSMOM_NAME: Final = "xsmom_bars"
 #: KnowledgeItem refs the strategy is drawn from (its lineage).
 XSMOM_KNOWLEDGE: Final = (
     Ref(kind=Kind.KNOWLEDGE, name="factor_crypto_market_size_momentum", version="1.0.0"),
@@ -82,7 +86,7 @@ _WEIGHT_QUANTUM: Final = Decimal("1e-18")
 def xsmom_spec() -> StrategySpec:
     """``strategy:xsmom_bars@1.0.0`` — cross-sectional momentum over the requested instruments."""
     return StrategySpec(
-        name="xsmom_bars",
+        name=XSMOM_NAME,
         version="1.0.0",
         created_at=_SPEC_TIME,
         lineage=XSMOM_KNOWLEDGE,
