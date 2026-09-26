@@ -521,3 +521,11 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - `22392ea`（钉住 worktree、真实 PostgreSQL 测试 catalog）：**GATE OK** —— ruff All checks passed；613 files already formatted；mypy no issues in 474 source files；lock ok；
   **pytest 5852 passed, 1 warning in 3216.90s (0:53:36)**。（此前 `8a7655e` 为 7 failed / 5845 passed，B40 修复。）仅作证据：按 Codex K3，集成会话在 Codex 复核前不并入 Phase 1 候选或 `wip/phase-1-unreviewed`。
 - 另：`dc89d1e` 更正验证器文档字符串与 `07-validation.md` G2 行（ADR-0060 已在循环 / 合成校准强制启用）。
+
+**B43 — ARCHITECTURE_DECISION_REQUIRED：D-LIST / ADR-0051（撤回 Claude 的接受）**
+
+- 冲突：Claude 依 Raphael 的一般授权（"所有决策由你决定，含红线"）一度接受 ADR-0051 方案 A 并开独立 Phase 1 分支 `phase1/adr-0051-listing-assumption` 实施；集成会话指出 Raphael 2026-09-26 曾对 D-LIST **明确暂缓**
+  （"后面再授权 我不知道这个是什么"，见 PROJECT_STATUS §6 与 ADR-0051 状态行）。具体暂缓优先于一般授权；按 CLAUDE.md §0 文档冲突即停止并提出决策包。已令该通道停止：不推送、ADR-0051 状态恢复 Proposed / 暂缓、草稿只作本地 WIP（NOT APPROVED）。
+- 决策包：**问题**——是否授权 ADR-0051 方案 A（一次公开 `exchangeInfo` 调用 + 显式绑定、写入清单的"上市历史假设"，仿 ADR-0032）？**为什么重要**——没有上市历史，真实历史数据建不成研究数据集（D-NET 停在 PIT 选择）；
+  **选项**——A：授权（草稿实现可在批准后完成、跑严格门禁再并入）；B：只从今天起前向采集，不用历史上市假设；**推荐**：A（默认保守：不绑定即维持现行拒绝）；**不决定时**：保持现状，真实数据只到 PIT 选择。
+
