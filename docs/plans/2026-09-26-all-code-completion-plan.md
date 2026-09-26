@@ -335,3 +335,13 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 子代理：`pytest tests/research/strategies tests/research/validation tests/research/loop/test_loop_units.py tests/test_architecture_boundaries.py` → 235 passed；synthetic_lab → 38 passed；ruff / format / mypy（45 files）通过。
 - 本分支集成后：`pytest -m "not postgres" tests/research/strategies tests/research/validation tests/research/synthetic_lab tests/research/loop/test_loop_units.py tests/test_architecture_boundaries.py tests/test_docs_consistency.py`
   → 280 passed, 1 warning (187 s)；`ruff check research tests/research` → 通过；mypy（45 files）→ no issues。
+
+**B21 — Phase 6 / 11：条件假设可选接入持续循环**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 P6 通道 `273fd0e` 的 cherry-pick）
+
+- `LoopWiring.conditional: ConditionalPlan | None = None`（`minimum_effect`、`min_support` 均无默认）；开启时每个 trial 的矩阵算出后、读取任何单元数值前，登记全部声明状态单元 + 未知单元
+  （键到该 trial 自身假设：`<parent>_given_<state>_<label|unknown_state>`），首个 trial 登记、重新评估按同一 attempt 键再计一次；全有或全无、幂等；单元计入同轮交给 G3 的族 trial 数；
+  实验阶段按"单元数 × trial 数"声明预算；指纹只在有计划时带 `conditional` 键；持久核对要求每个已记录单元都在账本中。逐单元验证未做（后续）。
+- 不开启时默认运行的 3 个记录哈希与指纹哈希与 `1fb7918` 一致（`test_records_without_a_conditional_plan_are_pinned` 固定）。开启需要约 4 倍 trial 预算。
+- 子代理：`pytest tests/research/loop tests/research/experiments` → 130 passed (355 s)；相关套件 → 47 passed；ruff / format / mypy（25 files）通过。
+- 本分支集成后：`pytest -m "not postgres" tests/research/loop tests/research/experiments tests/research/test_cross_phase_e2e.py tests/test_architecture_boundaries.py tests/test_docs_consistency.py`
+  → 152 passed, 1 warning (369 s，含固定哈希——说明此前集成的 P8 / P10 未改变循环记录)；ruff / mypy（25 files）通过。
