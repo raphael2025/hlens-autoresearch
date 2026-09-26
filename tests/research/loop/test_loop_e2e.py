@@ -25,7 +25,7 @@ import pytest
 
 from apps.worker import AUTOMATABLE_TARGETS, LoopBudget, ResearchLoop, RoundStatus, StageStatus
 from apps.worker.loop import EXTENDED_STAGE_ORDER, FORBIDDEN_TARGETS, ROUND_TOPIC, STAGE_TOPIC
-from core.domain.base import Ref
+from core.domain.base import Ref, content_hash
 from core.domain.research import FailureRecord, HypothesisOrigin, RunState, Verdict
 from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
@@ -336,6 +336,29 @@ def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) ->
     other_loop, _, _ = fx.build(tmp_path / "other", fx.config(seed=12))
     [other] = other_loop.run_unattended(1)
     assert other.record_hash != planted.records[0].record_hash
+
+
+#: Pinned at 1fb7918 (before the opt-in ``ConditionalPlan`` existed): the default planted run's
+#: record hashes and its configuration fingerprint. A loop without the plan must reproduce them
+#: byte for byte. A deliberate change elsewhere that alters these records (another stage's
+#: summary, a component's result) re-pins them in the same commit, stating why.
+PINNED_RECORD_HASHES = [
+    "d5efeba61c9e63e3e9c6800c243fb51fa9b9db4acc51edfa42f51ae57ee4fe27",
+    "b288ac32ea943d8d1cd46700590855b4d53a7e9adcbaec3d1a432badc4b2c766",
+    "0e58619b2545188b03d53ca4ffe142d38f4c3de175fb3bb06a5f9a526c6a2cb3",
+]
+PINNED_FINGERPRINT_HASH = "355f27483684ea467eafcf75d41a01aa6d7025de5418c209524594baa04a0766"
+
+
+def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:
+    assert fx.wiring().conditional is None
+    assert [r.record_hash for r in planted.records] == PINNED_RECORD_HASHES
+    assert content_hash(loop_fingerprint(fx.config())) == PINNED_FINGERPRINT_HASH
+    for record in planted.records:  # no conditional key, no conditional trial, no charge
+        experiment = _stage(record, "experiment")
+        assert all("conditional" not in row for row in experiment.summary["experiments"])
+        assert experiment.estimate.trials == 0 == experiment.usage.trials
+    assert not any("_given_" in h.name for h in planted.memory.ledger.hypotheses)
 
 
 def test_hashed_records_hold_no_floats(planted: Run, noise: Run) -> None:

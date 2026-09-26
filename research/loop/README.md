@@ -12,7 +12,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 |---|---|
 | `segment.py` | `RoundData` 协议（摄取之后各阶段读本轮数据的唯一入口：研究 bar、决策网格、扣留的封存段、特征运行、复现快照、验证器绑定）；`Segment`（合成实现，本轮数据：**累计研究数据**——截至 `as_of` 摄取的全部研究窗口 bar，每个摄取市场一个 `ResearchPiece`——+ 本轮被扣留的封存段 `SealedBars`，只凭 vault 发出的一次性 `SealedEvaluation` 释放——该凭据在释放前已把该族的唯一评估记为消耗）、决策网格、合成 bar → `FeatureObservation`、分块 F4 特征运行、`trial_point`（假设条件 `strategy = name@version` / `param k = v`，其他条件一律拒绝）、`decimal_text`（进入哈希记录的浮点先转固定量化的 Decimal 文本） |
 | `stages.py` | `IngestStage`（新市场接续上一轮价格路径；按 Profile 固定日历切分：研究窗口 bar 并入累计研究数据，封存 bar 扣留）、`StateStage`（F4 `bar_log_return` 经 `run_feature` → Phase 2 `StateProvider` 经 `run_state`，都在累计研究数据上；同一特征值经 `signals_from_features` 成为策略信号；按研究段缓存特征）、`HypothesisStage`（知识假设 + 已人工审阅的 LLM 草稿预登记；仍开放的假设在数据增长后作为新 trial 重新登记（`reevaluation_candidates`）；新草稿只入审阅队列）、`MemoryStage`（出错 → FAILED、FAIL → REJECTED，均写 FailureRecord；样本内 PASS → OOS——OOS 表示「正在经过 / 有资格进入封存样本外检验」，不是「已通过 OOS」，证据为样本内报告；封存 OOS 失败 → REJECTED，G5 未运行 / INCONCLUSIVE / PASS 均留在 OOS；INCONCLUSIVE 留在 VALIDATION） |
-| `trials.py` | `ExperimentStage`（先核对已在 TrialLedger 预登记（重新评估按 attempt 核对），在累计研究数据上，再生成 06-experiment.md §2 复现元组的 `ExperimentSpec` / `ExperimentRun`，经 `CandidateTrialRunner` 跑策略 → 风控 → 回测，按决策期把收益归到 Phase 2 状态上做 Phase 6 矩阵）、`ValidationStage`（`PipelineBacktestValidator` G0 – G4；G5 仅在显式 `OosUnsealBudget` 列出该族、样本内 PASS、本轮有封存段且该族未开封时运行；开封后先 `claim_evaluation` 原子消耗唯一评估，提前结束或出错 → INCONCLUSIVE `consumed_without_result`，窗口永久关闭）、`TrialComponents`、`OosUnsealBudget`（全局次数 + `approved_families`：族 → 批准人） |
+| `trials.py` | `ExperimentStage`（先核对已在 TrialLedger 预登记（重新评估按 attempt 核对），在累计研究数据上，再生成 06-experiment.md §2 复现元组的 `ExperimentSpec` / `ExperimentRun`，经 `CandidateTrialRunner` 跑策略 → 风控 → 回测，按决策期把收益归到 Phase 2 状态上做 Phase 6 矩阵）、`ValidationStage`（`PipelineBacktestValidator` G0 – G4；G5 仅在显式 `OosUnsealBudget` 列出该族、样本内 PASS、本轮有封存段且该族未开封时运行；开封后先 `claim_evaluation` 原子消耗唯一评估，提前结束或出错 → INCONCLUSIVE `consumed_without_result`，窗口永久关闭）、`TrialComponents`、`OosUnsealBudget`（全局次数 + `approved_families`：族 → 批准人）、`ConditionalPlan`（opt-in：矩阵全部单元预登记为 trial，见下「条件化假设」） |
 | `evolution.py` | `EvolutionStage` / `EvolutionPlan`：从更早轮次未被否证（按各假设最近一次验证：PASS / INCONCLUSIVE）的最佳候选出发 `mutate`，`require_new_version` 与目录防覆盖，`LineageGraph` 可追溯；后代作为新假设先登记、IDEA → CANDIDATE、本轮在累计研究数据上重新验证，不继承父代结论 |
 | `memory.py` | `ResearchMemory`（TrialLedger、ReviewQueue、FailureRegistry、策略目录、试验 / 验证记录、谱系、封存开封账本、摄取市场（及其生成规格）与累计研究数据）；`ReviewQueue.approve` 要求非空且非自动化身份（非循环自身 actor、非 `research_loop:` 前缀），并记录审批；`ReviewQueue(path)` 把入队 / 审批 / 取用逐行写入哈希链日志，重放时重新核验（自动化身份的审批、草稿或调用哈希不符的审批 → `JournalCorrupted`）；`ReviewQueue.observe(ReviewObserver)` 绑定唯一观察者（持久状态目录：审批前拒绝轮中审批、审批后立即写轮间检查点并移动锚点） |
 | `compose.py` | `compose_loop` / `compose_durable`（两种数据源共用的组合：同一组阶段、预算、护栏、审计、持久钩子与自动持久总线）+ `LoopSettings` / `settings_fingerprint`；`SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：合成组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir, bus, owned_bus)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop）；不给 `bus` 时自动使用 `state_dir/bus` 并与审计交叉核对（`check_round_bus`） |
@@ -167,3 +167,30 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 → 该轮假设阶段 FAILED、其后阶段 SKIPPED、草稿不登记（fail closed）。约定：提供者须把每个载荷存为其规范 JSON（`plugins.llm.ScriptedLLMProvider(store=...)` 即如此）。
 不用包装时行为与记录哈希不变。测试：`tests/research/loop/test_llm_content.py`。
 
+
+## 条件化假设（Phase 6 进入循环，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+决策：Claude，依据 Raphael 2026-09-26 的自主决策指示（非红线事项；无 core / 契约 / Schema 变更，无 Profile 数字或阈值，无门放宽）。
+
+**显式 opt-in**：`LoopWiring.conditional: ConditionalPlan | None = None`（`research/loop/trials.py`）。`ConditionalPlan(minimum_effect, min_support)`
+两个字段都必填、无默认值（缺省即 `TypeError`）：`minimum_effect` 为非空文本（条件化假设声明的最小有意义效应）；`min_support` 为正整数，
+或显式 `None`（未声明阈值 → 每个单元 `no_support_threshold`）。`min_support` 只标注报告，不是 Validation Profile 数字，不参与任何门。
+
+- **`None`（默认）**：什么都不发生；记录、指纹与结果与没有该字段时逐字节相同（`test_loop_e2e.py::test_records_without_a_conditional_plan_are_pinned`
+  钉住 1fb7918 的默认 planted 三轮记录哈希与配置指纹）。指纹只在设置时多出 `conditional` 键。
+- **设置时**：每个试验的 State × Strategy 矩阵算出后、读取任何单元数字之前，`research.experiments.register_trial_conditionals` 把矩阵的**全部**单元
+  （声明的 `StateSpec.state_space` + 未知状态单元，从不按结果挑选）登记为该试验假设的条件化假设：名称 `<假设名>_given_<状态名>_<标签|unknown_state>`、
+  父假设的版本与族、`origin_refs` 追加父假设 `Ref`。每个（单元，观察）一个 trial，与父假设的 trial 结构一一对应：父假设首次试验 → 登记单元；
+  父假设的重新评估（attempt `loop_round:<loop>:<round>`）→ 每个单元以同一 attempt `register_reevaluation` 一次。全部或全不登记；同一观察再登记不增加 trial。
+- 这些 trial 进入**同一族**的 trial 数：验证阶段交给 G3 的 `family_trial_count` 从本轮起就包含它们（多重检验校正更严格）。
+- 实验行 `conditional`：父假设、attempt、族、状态、计划参数、`matrix_hash`、`newly_registered`、`family_trials`、逐单元（假设 ref、`trial_index`、样本数、
+  `supported` / `support` = `meets_min_support` / `below_min_support` / `no_support_threshold`）与 `validation: PER_CELL_VALIDATION`（未运行）。
+  出错的试验没有矩阵 → `conditional: null`、不登记。条件化假设不进入生命周期，也不会被重新评估或进化。
+- **预算**：实验阶段声明 `trials = 单元数 × 本轮试验数`（上界；运行器按 max(声明, 实际) 计费），条件化 trial 与其他登记一样计入 `LoopBudget`
+  （P11：不得无限扩大 trial 预算）。启用时需要相应更大的 trial 预算，否则实验阶段 `REFUSED_BUDGET`。
+- **持久**：登记写入 `trial_ledger.jsonl`（轮内），由检查点位置覆盖；重开后重放完全一致（重启后的记录哈希与 trial 日志等于不中断运行），
+  对已记录的观察再次登记为幂等（0 个新 trial、账本不追加）；交叉校验 6 追加：实验行登记的每个单元必须在账本中（按其 attempt）。
+  计划写入指纹：以其他计划或去掉计划重开同一目录被拒。
+
+**未做（后续）**：逐单元验证（没有任何门看单元收益；登记 = 预先承诺 + 诚实的 trial 计数）；单元假设的生命周期；数据集组合的端到端测试（代码路径共用 `compose_loop`，
+指纹共用 `settings_fingerprint`）。测试：`tests/research/loop/test_loop_conditional.py`、`tests/research/experiments/test_trial_conditionals.py`。

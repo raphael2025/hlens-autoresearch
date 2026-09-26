@@ -26,6 +26,14 @@ reported per cell against ``min_support``, a required caller parameter with no d
 reports every cell as unsupported (no stated threshold), and a cell below the threshold is
 reported unsupported, never dropped. No verdict is produced here (Validation Profile, P4 / P8).
 ``register_conditionals`` (caller-supplied labels) is kept for compatibility.
+
+Trial-keyed cells for the continuous loop (2026-09-26, CODE_COMPLETE / DEBUG_PENDING; decided by
+Claude under Raphael's 2026-09-26 autonomous-decision instruction): ``register_trial_conditionals``
+registers the same declared cells, keyed by the hypothesis whose trial produced the matrix
+(``trial_conditional_hypotheses``), in that hypothesis's family, one trial per cell and look —
+the parent's first trial registers the cells, a re-evaluation (``attempt``) registers one
+re-evaluation of every cell under the same key. Used by ``research/loop`` only with an explicit
+``ConditionalPlan``. Per-cell validation is not done here or there (a follow-up).
 """
 
 from __future__ import annotations
@@ -56,7 +64,9 @@ __all__ = [
     "matrix_from_backtest",
     "register_conditionals",
     "register_matrix_conditionals",
+    "register_trial_conditionals",
     "state_strategy_matrix",
+    "trial_conditional_hypotheses",
 ]
 
 #: Per-bar returns derived from an equity curve are quantized to this step (half-even).
@@ -308,6 +318,10 @@ class ConditionalRegistration:
     newly_registered: int
     #: ``TrialLedger.trials(family_id)`` after the registration.
     family_trials: int
+    #: ``register_trial_conditionals``: the ``Ref`` string of the trial's hypothesis (else None).
+    parent: str | None = None
+    #: ``register_trial_conditionals``: the look's attempt key (``None``: the first look).
+    attempt: str | None = None
 
 
 def _conditional_name(strategy: Ref, state: Ref, label: str | None) -> str:
@@ -353,6 +367,77 @@ def _support(count: int, min_support: int | None) -> tuple[bool, SupportReason]:
     return True, "meets_min_support"
 
 
+def _checked_matrix(
+    matrix: StateStrategyMatrix, state_spec: StateSpec, min_support: int | None, caller: str
+) -> None:
+    if not isinstance(matrix, StateStrategyMatrix):
+        raise ValueError(f"{caller} needs a StateStrategyMatrix")
+    if min_support is not None and (
+        isinstance(min_support, bool) or not isinstance(min_support, int) or min_support < 1
+    ):
+        raise ValueError("min_support must be a positive int, or None when no threshold is stated")
+    if not isinstance(state_spec, StateSpec) or state_spec.ref != matrix.state:
+        raise ValueError(f"state_spec must declare the matrix's state {matrix.state}")
+    declared = set(state_spec.state_space)
+    stray = sorted(c.state for c in matrix.cells if c.state is not None and c.state not in declared)
+    if stray:
+        raise ValueError(f"matrix cells outside the declared state space: {stray}")
+
+
+def _register_cells(
+    ledger: TrialLedger,
+    matrix: StateStrategyMatrix,
+    planned: tuple[tuple[str | None, Hypothesis], ...],
+    *,
+    family_id: str,
+    min_support: int | None,
+    attempt: str | None,
+    parent: Hypothesis | None,
+) -> ConditionalRegistration:
+    """All or none: every conflict is found before the first registration (see callers)."""
+    existing = {(h.name, h.version): h for h in ledger.hypotheses}
+    for _, hypothesis in planned:
+        known = existing.get((hypothesis.name, hypothesis.version))
+        if known is not None and known.content_hash() != hypothesis.content_hash():
+            raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+        if attempt is not None and known is None:
+            raise LedgerError(
+                f"{hypothesis.ref} is not registered: a re-evaluation look ({attempt}) needs the "
+                "cell's first look registered first"
+            )
+    if attempt is None:
+        newly = sum(1 for _, hypothesis in planned if ledger.register(hypothesis))
+    else:
+        newly = sum(
+            1 for _, hypothesis in planned if ledger.register_reevaluation(hypothesis, attempt)
+        )
+    counts = {cell.state: cell.count for cell in matrix.cells}
+    cells: list[CellSupport] = []
+    for label, hypothesis in planned:
+        count = counts.get(label, 0)
+        supported, reason = _support(count, min_support)
+        cells.append(
+            CellSupport(
+                state=label,
+                count=count,
+                hypothesis=str(hypothesis.ref),
+                trial_index=ledger.trial_index(hypothesis, attempt),
+                supported=supported,
+                reason=reason,
+            )
+        )
+    return ConditionalRegistration(
+        matrix_hash=matrix.matrix_hash,
+        family_id=family_id,
+        min_support=min_support,
+        cells=tuple(cells),
+        newly_registered=newly,
+        family_trials=ledger.trials(family_id),
+        parent=None if parent is None else str(parent.ref),
+        attempt=attempt,
+    )
+
+
 def register_matrix_conditionals(
     ledger: TrialLedger,
     matrix: StateStrategyMatrix,
@@ -371,50 +456,112 @@ def register_matrix_conditionals(
     anything is registered; re-registering identical cells adds no trial. ``min_support`` is
     required (no default) and, when given, a positive int.
     """
-    if not isinstance(matrix, StateStrategyMatrix):
-        raise ValueError("register_matrix_conditionals needs a StateStrategyMatrix")
-    if min_support is not None and (
-        isinstance(min_support, bool) or not isinstance(min_support, int) or min_support < 1
-    ):
-        raise ValueError("min_support must be a positive int, or None when no threshold is stated")
-    if not isinstance(state_spec, StateSpec) or state_spec.ref != matrix.state:
-        raise ValueError(f"state_spec must declare the matrix's state {matrix.state}")
-    declared = set(state_spec.state_space)
-    stray = sorted(c.state for c in matrix.cells if c.state is not None and c.state not in declared)
-    if stray:
-        raise ValueError(f"matrix cells outside the declared state space: {stray}")
+    _checked_matrix(matrix, state_spec, min_support, "register_matrix_conditionals")
     planned = conditional_hypotheses(
         strategy=matrix.strategy,
         state_spec=state_spec,
         family_id=family_id,
         minimum_effect=minimum_effect,
     )
-    existing = {(h.name, h.version): h for h in ledger.hypotheses}
-    for _, hypothesis in planned:
-        known = existing.get((hypothesis.name, hypothesis.version))
-        if known is not None and known.content_hash() != hypothesis.content_hash():
-            raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
-    newly = sum(1 for _, hypothesis in planned if ledger.register(hypothesis))
-    counts = {cell.state: cell.count for cell in matrix.cells}
-    cells: list[CellSupport] = []
-    for label, hypothesis in planned:
-        count = counts.get(label, 0)
-        supported, reason = _support(count, min_support)
-        cells.append(
-            CellSupport(
-                state=label,
-                count=count,
-                hypothesis=str(hypothesis.ref),
-                trial_index=ledger.trial_index(hypothesis),
-                supported=supported,
-                reason=reason,
-            )
-        )
-    return ConditionalRegistration(
-        matrix_hash=matrix.matrix_hash,
+    return _register_cells(
+        ledger,
+        matrix,
+        planned,
         family_id=family_id,
         min_support=min_support,
-        cells=tuple(cells),
-        newly_registered=newly,
-        family_trials=ledger.trials(family_id),
+        attempt=None,
+        parent=None,
+    )
+
+
+def trial_conditional_hypotheses(
+    *, parent: Hypothesis, strategy: Ref, state_spec: StateSpec, minimum_effect: str
+) -> tuple[tuple[str | None, Hypothesis], ...]:
+    """The cell hypotheses of one trial of ``parent``: declared labels, then the unknown cell.
+
+    Same cells and statements as ``conditional_hypotheses``, but keyed by the trial's hypothesis
+    instead of the bare strategy, so each hypothesis a family evaluates (another parameter point
+    of the same strategy, an offspring, an LLM draft) has its own conditional trials: name
+    ``<parent name>_given_<state name>_<label | unknown_state>``, the parent's version and
+    family, and ``parent.ref`` appended to ``origin_refs`` (traceable to the trial it decomposes).
+    Depends only on the parent, the strategy and the declared state space — never on a result.
+    """
+    if not isinstance(parent, Hypothesis):
+        raise ValueError("trial_conditional_hypotheses needs the trial's Hypothesis")
+    if not isinstance(state_spec, StateSpec):
+        raise ValueError(
+            "trial_conditional_hypotheses needs the StateSpec that declares the states"
+        )
+    cells: list[str | None] = [*state_spec.state_space, None]
+    names = [
+        f"{parent.name}_given_{state_spec.ref.name}_"
+        + ("unknown_state" if label is None else label)
+        for label in cells
+    ]
+    if len(set(names)) != len(names):
+        raise ValueError(f"cell hypothesis names collide: {sorted(names)}")
+    planned: list[tuple[str | None, Hypothesis]] = []
+    for label, name in zip(cells, names, strict=True):
+        base = conditioning(
+            name,
+            parent.family_id,
+            strategy,
+            state_spec.ref,
+            UNKNOWN_STATE_VALUE if label is None else label,
+            minimum_effect,
+        )
+        planned.append(
+            (
+                label,
+                Hypothesis.model_validate(
+                    {
+                        **base.model_dump(),
+                        "version": parent.version,
+                        "origin_refs": (*base.origin_refs, parent.ref),
+                    }
+                ),
+            )
+        )
+    return tuple(planned)
+
+
+def register_trial_conditionals(
+    ledger: TrialLedger,
+    matrix: StateStrategyMatrix,
+    *,
+    parent: Hypothesis,
+    attempt: str | None,
+    state_spec: StateSpec,
+    minimum_effect: str,
+    min_support: int | None,
+) -> ConditionalRegistration:
+    """Register every cell of one trial's ``matrix`` as a trial of ``parent``'s family.
+
+    The continuous loop's form of ``register_matrix_conditionals`` (research/loop, opt-in
+    ``ConditionalPlan``): the cells are ``trial_conditional_hypotheses`` (declared state space +
+    unknown cell, keyed by ``parent``) and each look at them is one counted trial, mirroring the
+    parent's own trial: ``attempt=None`` (the parent's first trial) registers the cell hypotheses;
+    ``attempt=<key>`` (a pre-registered re-evaluation of the parent) registers one re-evaluation
+    of every cell under the same key (``TrialLedger.register_reevaluation``) and requires the
+    cells' first look to be registered. All or none; idempotent (the same look again adds no
+    trial). ``min_support`` is required (no default), as in ``register_matrix_conditionals``;
+    ``matrix.strategy`` must be the strategy the parent's trial ran.
+    """
+    _checked_matrix(matrix, state_spec, min_support, "register_trial_conditionals")
+    if attempt is not None and (not isinstance(attempt, str) or not attempt.strip()):
+        raise ValueError("attempt must be None (the first look) or a non-blank attempt key")
+    planned = trial_conditional_hypotheses(
+        parent=parent,
+        strategy=matrix.strategy,
+        state_spec=state_spec,
+        minimum_effect=minimum_effect,
+    )
+    return _register_cells(
+        ledger,
+        matrix,
+        planned,
+        family_id=parent.family_id,
+        min_support=min_support,
+        attempt=None if attempt is None else attempt.strip(),
+        parent=parent,
     )

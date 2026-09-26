@@ -29,6 +29,27 @@ ADR-0049 accumulated-window note):
    errored one is left for the memory stage (CANDIDATE → FAILED + FailureRecord; an errored
    re-evaluation only files its FailureRecord).
 
+Conditional hypotheses (P6 in the loop; opt-in, 2026-09-26, CODE_COMPLETE / DEBUG_PENDING —
+decided by Claude under Raphael's 2026-09-26 autonomous-decision instruction). Only with an
+explicit ``ConditionalPlan`` (``LoopWiring.conditional``; ``None`` by default: nothing below
+happens and every record is byte-identical to a loop without the field). Then, right after a
+trial's matrix is computed and before any per-cell number is read, every cell of the matrix — the
+declared ``StateSpec.state_space`` plus the unknown-state cell, never a subset chosen by results —
+is registered in the ``TrialLedger`` as a conditioning hypothesis of the trial's hypothesis
+(``research.experiments.register_trial_conditionals``): the trial's family, one counted trial per
+cell and look — the hypothesis's first trial registers the cells, a re-evaluation (attempt ``a``)
+registers one re-evaluation of every cell under ``a``. They therefore enter the family trial
+count that ``ValidationStage`` hands G3 (``family_trial_count``), from this round on. The trial's
+experiment row carries ``conditional``: the registrations (hypothesis, trial index), the plan's
+``minimum_effect`` / ``min_support`` and each cell's sample support against ``min_support``
+(``meets_min_support`` / ``below_min_support`` / ``no_support_threshold``) — a count, not a
+verdict. An errored trial has no matrix, so nothing is registered for it (``conditional: null``).
+The stage declares ``trials = cells × trials this round`` (an upper bound: the runner charges
+``max(estimate, usage)``), so the conditional trials are charged to the ``LoopBudget`` like every
+other registration. **Per-cell validation is not run** (no gate sees a cell's returns): the
+registrations are the pre-commitment and the honest trial count; validating a cell hypothesis is a
+follow-up.
+
 ``ValidationStage`` — ``PipelineBacktestValidator`` (G0 → G3, then G4 robustness) for every
 completed trial, with a ``ValidationContext`` bound to the trial's run and an ``ExperimentMetadata``
 whose ``trial_index`` / ``family_trial_count`` come from the ledger's trial log (failures and every
@@ -60,6 +81,7 @@ scheduled time, and floats are written as quantized Decimal text (``segment.deci
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
@@ -97,9 +119,17 @@ from core.domain.research import (
     Verdict,
 )
 from core.domain.selection import ProfileSelection
+from core.domain.specs import StateSpec
 from core.errors import ReasonCode
 from core.lifecycle.strategy import LifecycleState
-from research.experiments import RETURN_QUANTUM, backtest_returns, state_strategy_matrix
+from research.experiments import (
+    RETURN_QUANTUM,
+    ConditionalRegistration,
+    StateStrategyMatrix,
+    backtest_returns,
+    register_trial_conditionals,
+    state_strategy_matrix,
+)
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
     Param,
@@ -139,6 +169,8 @@ from research.validation.sealed_oos import (
 
 __all__ = [
     "EPHEMERAL_UNSEAL_MARK",
+    "PER_CELL_VALIDATION",
+    "ConditionalPlan",
     "ExperimentStage",
     "OosUnsealBudget",
     "TrialComponents",
@@ -179,6 +211,39 @@ class TrialComponents:
             fee_rate=self.cost_model.fee_rate_per_side,
             slippage_rate=self.cost_model.slippage_rate_per_side,
         )
+
+
+#: What the loop records about the validation of a registered cell hypothesis (module docs).
+PER_CELL_VALIDATION: Final = "not_run: registration only (per-cell validation is a follow-up)"
+_LABEL: Final = re.compile(r"[a-z0-9_]+")
+
+
+@dataclass(frozen=True)
+class ConditionalPlan:
+    """Opt-in: register every cell of each trial's State × Strategy matrix (module docs).
+
+    Both fields are required (no defaults): ``minimum_effect`` is the conditioning hypotheses'
+    declared minimum meaningful effect (non-blank text); ``min_support`` is the per-cell sample
+    support threshold the stage summary reports against (a positive int, or an explicit ``None``:
+    no threshold stated, every cell reported ``no_support_threshold``). ``min_support`` only
+    labels the report — it is not a Validation Profile number and gates nothing.
+    """
+
+    minimum_effect: str
+    min_support: int | None
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.minimum_effect, str) or not self.minimum_effect.strip():
+            raise ValueError("a ConditionalPlan needs a non-blank minimum_effect")
+        support = self.min_support
+        if support is not None and (
+            isinstance(support, bool) or not isinstance(support, int) or support < 1
+        ):
+            raise ValueError("min_support must be a positive int, or None when none is stated")
+
+    def payload(self) -> dict[str, Any]:
+        """The plan as fingerprinted and recorded."""
+        return {"minimum_effect": self.minimum_effect, "min_support": self.min_support}
 
 
 @dataclass(frozen=True)
@@ -399,23 +464,49 @@ class ExperimentStage:
         components: TrialComponents,
         *,
         compute_seconds_per_trial: Decimal,
+        conditional: ConditionalPlan | None = None,
+        state_spec: StateSpec | None = None,
     ) -> None:
+        if conditional is not None:
+            if not isinstance(conditional, ConditionalPlan):
+                raise ValueError("conditional must be a ConditionalPlan (or None)")
+            if not isinstance(state_spec, StateSpec):
+                raise ValueError("a ConditionalPlan needs the StateSpec that declares the cells")
+            unnameable = [x for x in state_spec.state_space if not _LABEL.fullmatch(x)]
+            if unnameable:
+                raise ValueError(
+                    f"state labels {unnameable} cannot name a cell hypothesis ([a-z0-9_]+)"
+                )
         self._memory = memory
         self._c = components
         self._per_trial = compute_seconds_per_trial
+        self._conditional = conditional
+        self._state_spec = state_spec
+        self._conditional_trials = 0
+
+    def _cells(self) -> int:
+        """Conditional trials one trial can register (0 without a plan)."""
+        if self._conditional is None or self._state_spec is None:
+            return 0
+        return len(self._state_spec.state_space) + 1
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
-        return StageUsage(compute_seconds=self._per_trial * len(_registered_this_round(ctx)))
+        trials = len(_registered_this_round(ctx))
+        return StageUsage(trials=self._cells() * trials, compute_seconds=self._per_trial * trials)
 
     def run(self, ctx: RoundContext) -> StageResult:
         outcomes: list[TrialOutcome] = []
+        self._conditional_trials = 0
         try:
             for hypothesis, origin, attempt in _registered_this_round(ctx):
                 outcomes.append(self._trial(ctx, hypothesis, origin, attempt))
         except Exception as exc:
             raise StageFailed(
                 f"{type(exc).__name__}: {exc}",
-                usage=StageUsage(compute_seconds=self._per_trial * (len(outcomes) + 1)),
+                usage=StageUsage(
+                    trials=self._conditional_trials,
+                    compute_seconds=self._per_trial * (len(outcomes) + 1),
+                ),
             ) from exc
         self._memory.trials.extend(outcomes)
         self._memory.experiments.extend(
@@ -423,9 +514,50 @@ class ExperimentStage:
         )
         return StageResult(
             {"experiments": [dict(o.summary) for o in outcomes]},
-            StageUsage(compute_seconds=self._per_trial * len(outcomes)),
+            StageUsage(
+                trials=self._conditional_trials, compute_seconds=self._per_trial * len(outcomes)
+            ),
             {"outcomes": tuple(outcomes)},
         )
+
+    def _register_conditionals(
+        self, hypothesis: Hypothesis, attempt: str | None, matrix: StateStrategyMatrix
+    ) -> dict[str, Any]:
+        """Every cell of ``matrix`` registered as a trial before any cell number is read."""
+        plan, spec = self._conditional, self._state_spec
+        assert plan is not None and spec is not None
+        registration: ConditionalRegistration = register_trial_conditionals(
+            self._memory.ledger,
+            matrix,
+            parent=hypothesis,
+            attempt=attempt,
+            state_spec=spec,
+            minimum_effect=plan.minimum_effect,
+            min_support=plan.min_support,
+        )
+        self._conditional_trials += registration.newly_registered
+        return {
+            "parent": registration.parent,
+            "attempt": registration.attempt,
+            "family_id": registration.family_id,
+            "state": str(spec.ref),
+            **plan.payload(),
+            "matrix_hash": registration.matrix_hash,
+            "newly_registered": registration.newly_registered,
+            "family_trials": registration.family_trials,
+            "cells": [
+                {
+                    "state": cell.state,
+                    "hypothesis": cell.hypothesis,
+                    "trial_index": cell.trial_index,
+                    "count": cell.count,
+                    "supported": cell.supported,
+                    "support": cell.reason,
+                }
+                for cell in registration.cells
+            ],
+            "validation": PER_CELL_VALIDATION,
+        }
 
     # ------------------------------------------------------------------------------------------
 
@@ -527,7 +659,7 @@ class ExperimentStage:
         run_id = f"{ctx.loop_id}:{ctx.round_index}:{hypothesis.name}@{hypothesis.version}"
         inputs: EvaluationInputs | None = None
         trial: TrialRun | None = None
-        matrix_hash: str | None = None
+        matrix: StateStrategyMatrix | None = None
         if candidate is not None and error is None:
             if not segment.decision_times or segment.research_end is None:
                 error, reason = "the segment has no decision time", ReasonCode.RUN_ERRORED
@@ -551,13 +683,20 @@ class ExperimentStage:
                         states,
                     )
                     matrix = replace(matrix, backtest_result_hash=trial.backtest.result_hash)
-                    matrix_hash = matrix.matrix_hash
                 except Exception as exc:  # noqa: BLE001 - an errored trial is recorded, not dropped
-                    error, reason, trial = (
+                    error, reason, trial, matrix = (
                         f"{type(exc).__name__}: {exc}",
                         ReasonCode.RUN_ERRORED,
                         None,
+                        None,
                     )
+        # opt-in P6 (module docs), outside the errored-trial handler: a registration that fails
+        # (a ledger conflict) fails the stage; it never becomes a quietly errored trial
+        conditional = (
+            None
+            if self._conditional is None or matrix is None
+            else self._register_conditionals(hypothesis, attempt, matrix)
+        )
         state = RunState.COMPLETED if trial is not None else RunState.ERRORED
         run = ExperimentRun(
             run_id=run_id,
@@ -597,7 +736,7 @@ class ExperimentStage:
                 net_return=None
                 if final is None
                 else decimal_text(final / trial.backtest.initial_equity - 1),
-                state_strategy_matrix_hash=matrix_hash,
+                state_strategy_matrix_hash=None if matrix is None else matrix.matrix_hash,
             )
             if ctx.state_of(hypothesis.ref) is LifecycleState.CANDIDATE:  # a re-evaluation is
                 ctx.advance(  # already in VALIDATION
@@ -606,6 +745,8 @@ class ExperimentStage:
                     reason="experiment completed; awaiting validation",
                     evidence=(f"experiment:{repro.experiment_hash}", f"run:{run_id}"),
                 )
+        if self._conditional is not None:  # the key exists only with a plan (records unchanged)
+            summary["conditional"] = conditional
         return TrialOutcome(
             round_index=ctx.round_index,
             hypothesis=hypothesis,

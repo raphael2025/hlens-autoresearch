@@ -12,7 +12,9 @@ from research.experiments.state_strategy import (
     matrix_from_backtest,
     register_conditionals,
     register_matrix_conditionals,
+    register_trial_conditionals,
     state_strategy_matrix,
+    trial_conditional_hypotheses,
 )
 
 __all__ = [
@@ -27,5 +29,7 @@ __all__ = [
     "matrix_from_backtest",
     "register_conditionals",
     "register_matrix_conditionals",
+    "register_trial_conditionals",
     "state_strategy_matrix",
+    "trial_conditional_hypotheses",
 ]

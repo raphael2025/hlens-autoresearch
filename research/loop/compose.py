@@ -123,6 +123,7 @@ from research.loop.stages import (
     TrialComponents,
     ValidationStage,
 )
+from research.loop.trials import ConditionalPlan
 from research.reports import write_research_loop_rounds
 from research.strategies.pipeline import StrategyCandidate
 from research.validation import RobustnessParams
@@ -180,6 +181,11 @@ class LoopWiring:
     #: the families it lists (each with its approving human) may be unsealed.
     oos_unseal: OosUnsealBudget | None = None
     sealed_decision_step: timedelta | None = None
+    #: ``None`` (the default): no conditional hypothesis is formed and every record, fingerprint
+    #: and outcome is byte-identical to a loop without this field. A ``ConditionalPlan``: every
+    #: cell of each trial's State × Strategy matrix is pre-registered as a trial of the trial's
+    #: family (``research.loop.trials``, **Conditional hypotheses**); fingerprinted.
+    conditional: ConditionalPlan | None = None
 
 
 class LoopSettings(Protocol):
@@ -364,7 +370,11 @@ def compose_loop(
         ),
         *evolution,
         ExperimentStage(
-            memory, components, compute_seconds_per_trial=config.compute_seconds_per_trial
+            memory,
+            components,
+            compute_seconds_per_trial=config.compute_seconds_per_trial,
+            conditional=wiring.conditional,
+            state_spec=wiring.state_spec,
         ),
         ValidationStage(
             memory,
@@ -607,8 +617,14 @@ def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
 
 
 def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
-    """The part of a state directory's fingerprint every round data source shares."""
+    """The part of a state directory's fingerprint every round data source shares.
+
+    The opt-in ``ConditionalPlan`` appears only when set (``conditional``: its payload), so every
+    fingerprint of a configuration without one stays exactly as it was."""
     wiring = config.wiring
+    conditional: dict[str, Any] = (
+        {} if wiring.conditional is None else {"conditional": wiring.conditional.payload()}
+    )
     return {
         "loop_id": config.loop_id,
         "seed": config.seed,
@@ -641,6 +657,7 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
             name: None if value is None else repr(value)
             for name, value in sorted(asdict(wiring.robustness).items())
         },
+        **conditional,
     }
 
 

@@ -36,6 +36,7 @@ from research.loop.stages import (
     StateStage,
 )
 from research.loop.trials import (
+    ConditionalPlan,
     ExperimentStage,
     OosUnsealBudget,
     TrialComponents,
@@ -45,6 +46,7 @@ from research.loop.trials import (
 )
 
 __all__ = [
+    "ConditionalPlan",
     "DatasetCatalog",
     "DatasetIngestStage",
     "DatasetLoopConfig",
