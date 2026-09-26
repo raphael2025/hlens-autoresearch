@@ -494,3 +494,11 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 实际运行：本分支集成后 `pytest -m "not postgres" tests/research tests/infrastructure/migration tests/golden tests/test_docs_consistency.py` → **858 passed, 1 warning (1376.94 s)**（L7 子代理报告的 4 个 `LoopStateLocked` 失败已由 B37 的 `conftest.py` 修复）；
   `ruff check .` → 通过；`mypy research tests/research` → no issues in 168 files。PostgreSQL e2e 的 Profile 变化未经验证（其中 `test_research_loop_real_data_g5` 断言 PASS）。
 - 遗留：`research/strategies/validation.py` / `pipeline.py` 文档字符串仍称循环与校准未启用（待更新）；`07-validation.md` §G2 门清单待同步。
+
+**B40 — Phase 1 分支 2.1.0 门禁回归修复（`phase1/adr-0052-versioned-replay` 快进至 `22392ea`）**
+
+- 证据：集成会话在 `8a7655e` 上以真实 PostgreSQL 测试 catalog 跑严格全量门禁 → **7 failed, 5845 passed, 1 warning (3468 s)**，静态检查通过；失败集中在 ADR-0052 通道未跑的 `tests/apps`、`tests/plugins`。
+- 修复：`apps/api/openapi.json` / `apps/web/src/api.d.ts` 重新生成（各一行：信封 `schema_version` 默认值 2.0.0 → 2.1.0，无端点变化）；`test_the_default_backtester_is_byte_identical_to_v1`（6 例）**不覆盖**旧常量——
+  在 `contract_schema_version_scope("2.0.0")` 内重建回测，断言记录的 v1 哈希（`fada3325…` / `766b48ff…` / `ab8bd307…`）不变，并断言 2.1.0 运行除版本字段及其上的哈希外内容相同，另固定 2.1.0 哈希（注明 ADR-0052 M2）。
+- 修复通道实际运行：`pytest -m "not postgres" tests/apps tests/plugins tests/test_*.py tests/contract_suites` → 3310 passed；ruff / format（613 files）/ mypy（474 files）通过；`npm run build` ✓（该分支无 `npm test` 脚本）。
+  已请集成会话在 `22392ea` 上重跑严格 PostgreSQL 门禁（仅作证据）。
