@@ -158,3 +158,12 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；
 封存 bar 只取本轮段内的（跨轮累计封存数据未做）；`matrix_from_backtest` 的逐 bar 归因需要逐 bar 状态（本循环按决策期归因）；
 验证阶段的技术失败（`VALIDATION → FAILED` 不是 ADR-0006 的边）只记 FailureRecord、生命周期不动。
+
+## LLM 调用内容可取回（Phase 7，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+`research/loop/llm_content.py`：可选的 `ContentVerifiedLLM(inner, resolver)`（`LLMProvider` 包装）。内层提供者作答后，调用的 prompt / input / output 三个引用必须经
+`resolver`（如 `infrastructure.content.LocalContentStore`，`verify_llm_call` 逐个重算哈希并核对大小）取回，且取回的载荷必须**等于**实际交换的 prompt、请求 input 与响应 output；
+否则 `ValueError`——`from_llm` 与假设阶段按"被拒草稿"记录、从不登记。组合根把 resolver 交给假设阶段：人工审阅过的草稿在被取用时再核对一次，内容在审阅与使用之间消失或变化
+→ 该轮假设阶段 FAILED、其后阶段 SKIPPED、草稿不登记（fail closed）。约定：提供者须把每个载荷存为其规范 JSON（`plugins.llm.ScriptedLLMProvider(store=...)` 即如此）。
+不用包装时行为与记录哈希不变。测试：`tests/research/loop/test_llm_content.py`。
+

@@ -66,9 +66,11 @@ from core.domain.research import FailureRecord, Hypothesis, KnowledgeItem, LlmCa
 from core.domain.specs import FeatureSpec, StateSpec
 from core.errors import ReasonCode
 from core.lifecycle.strategy import LifecycleState
+from infrastructure.content import ContentResolver
 from infrastructure.state import run_state, state_inputs, state_request
 from research.hypotheses import HypothesisDraft, from_knowledge, from_llm
 from research.loop.evolution import EvolutionPlan, EvolutionStage
+from research.loop.llm_content import verify_call_content
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
     ResearchPiece,
@@ -394,6 +396,7 @@ class HypothesisStage:
         llm: LLMProvider | None = None,
         llm_prompt: str | None = None,
         llm_cost_units_per_call: Decimal = Decimal(0),
+        llm_content: ContentResolver | None = None,
     ) -> None:
         if (llm is None) != (llm_prompt is None):
             raise ValueError("an LLM source needs both a provider and a prompt")
@@ -413,6 +416,7 @@ class HypothesisStage:
         self._llm = llm
         self._prompt = llm_prompt
         self._llm_cost = llm_cost_units_per_call
+        self._llm_content = llm_content
 
     def _plan(
         self, ctx: RoundContext
@@ -461,6 +465,8 @@ class HypothesisStage:
                 ctx, hypothesis, (f"hypothesis:{hypothesis.ref}#{hypothesis.content_hash()}",)
             )
         for reviewed in drafts:
+            if self._llm_content is not None:  # the reviewed content must still be the content
+                verify_call_content(reviewed.call, self._llm_content)
             self._memory.ledger.register_draft(reviewed)
             self._memory.reviews.mark_taken(reviewed)
             registered.append(reviewed.hypothesis)

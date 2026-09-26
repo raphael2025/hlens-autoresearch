@@ -109,6 +109,7 @@ from research.loop.durable import (
     StateAnchor,
     open_state,
 )
+from research.loop.llm_content import ContentVerifiedLLM
 from research.loop.memory import ResearchMemory
 from research.loop.stages import (
     EvolutionPlan,
@@ -359,6 +360,7 @@ def compose_loop(
             llm=llm,
             llm_prompt=config.llm_prompt if llm is not None else None,
             llm_cost_units_per_call=config.llm_cost_units_per_call,
+            llm_content=llm.resolver if isinstance(llm, ContentVerifiedLLM) else None,
         ),
         *evolution,
         ExperimentStage(

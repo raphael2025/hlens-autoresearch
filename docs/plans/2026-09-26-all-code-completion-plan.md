@@ -245,3 +245,16 @@
 - 本分支集成后实际运行：`pytest -m "not postgres" tests/research/validation tests/research/outcomes tests/research/strategies tests/research/loop/test_loop_units.py tests/research/synthetic_lab tests/test_architecture_boundaries.py tests/test_information_flow.py tests/test_validation_architecture.py tests/test_outcome_contracts.py`
   → 511 passed, 1 warning (142.8 s)；`ruff check research tests/research` → 通过；mypy（validation / outcomes / strategies.validation + 测试）→ no issues。
 - 限制：固定的哈希来自浮点，跨平台可能需重新固定（同 D-FLOAT）；浮点正态近似与 G1 / G3 共用阈值仍待 ADR-0052 实施（被 10.2 的 ADR-0052-IMPL 阻塞）。
+
+**B11 — infra 子代理（Phase 7 / 14）+ Phase 7 循环接线**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 集成（infra 通道 `02048ff`、`d7770e8`、README 提交去掉 `plugins/knowledge/README.md`；知识写入提交 `0c10a65` **未集成**，见 10.2 P05-WRITE，Phase 0.5 由集成会话负责）：
+  - Phase 7：`infrastructure/content/`（`LocalContentStore`：`<root>/sha256/<ab>/<hash>`，引用 `cas://sha256/<hash>`，读取重算哈希与大小，篡改 / 截断 / 缺失 / 外来引用拒绝，从不覆盖；`verify_llm_call`）；
+    `ScriptedLLMProvider(store=)`（plugins 内的 `BlobSink` Protocol，不 import infrastructure；不给 store 时逐字节不变，5 个参考哈希固定）。
+  - Phase 14：`save_golden` / `load_golden`（内容寻址、加载校验）、`GoldenDiff.report()`、`rollback.py` 的 `rollback_evidence`（容差 0 下与金标准逐位一致才 `RESTORED`，只是证据、不执行回滚）、
+    测试侧把 event-bus 契约套件经 `run_conformance` 跑在内存与文件总线上（故意坏的总线失败）。不引入任何新基础设施。
+- 本分支新增：`research/loop/llm_content.py`（`ContentVerifiedLLM`、`verify_call_content`：引用可取回且取回内容**等于**实际交换的 prompt / input / output）、`research/loop/stages.py`（假设阶段取用已审阅草稿时再核对）、
+  `research/loop/compose.py`（resolver 交给假设阶段）、`research/loop/README.md`；测试 `tests/research/loop/test_llm_content.py`（5 项，含"审阅后内容消失 → 该轮假设阶段 FAILED、其后 SKIPPED、草稿不登记"）。
+- 实际运行：`pytest -m "not postgres" tests/infrastructure/content tests/plugins tests/infrastructure/migration tests/infrastructure/event_bus tests/test_architecture_boundaries.py tests/test_feature_contracts.py tests/test_llm_call_bindings.py tests/test_docs_consistency.py tests/research/hypotheses`
+  → 487 passed；`pytest -m "not postgres" tests/research/loop tests/research/hypotheses tests/apps/test_research_loop_durable.py tests/test_architecture_boundaries.py` → 154 passed, 1 warning (312 s)；
+  `tests/research/loop/test_llm_content.py` → 5 passed；ruff check → 通过；mypy（content / migration / plugins.llm + 测试 15 files；research/loop + 新测试 12 files）→ no issues。
