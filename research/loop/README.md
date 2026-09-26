@@ -241,3 +241,14 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   指纹多出 `hypothesis_batch`（仅在设置时）。持久重开不会重复登记。
 
 测试：`tests/research/hypotheses/test_strict_llm_drafts.py`、`tests/research/hypotheses/test_batch.py`、`tests/research/loop/test_loop_llm_rejection.py`、`tests/research/loop/test_loop_batch.py`。
+
+### 知识检索来源（Phase 7 补全，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+`LoopWiring.knowledge_source`（可选，`None` 时记录与指纹逐字节不变）：声明的 `KnowledgeSource`（`KnowledgeProvider` + `KnowledgeQuery`，
+`research.hypotheses.generator`）。hypothesis 阶段每轮检索一次（估算与运行共用同一结果），重新校验 `KnowledgeResult`（出处、排序、`result_hash`），
+拒绝答非所问（`query_hash` 不符）或来自其他 provider 的结果（阶段 FAILED，不登记任何假设）；条目经 `from_knowledge` 成为知识假设，
+排在声明的 `knowledge` 之后（共用 `max_new_per_round`；声明中已有的条目按声明来源计）。摘要 `knowledge_search` 记 provider、查询哈希、
+`result_hash`、条目与本轮由检索登记的假设；这些假设的生命周期证据带 `knowledge_query:<hash>` / `knowledge_result:<hash>`（无契约变更：
+`origin_refs` 仍是条目引用）。指纹多出 `knowledge_source`（provider 身份、descriptor 哈希、查询哈希；仅在设置时）。
+
+测试：`tests/research/hypotheses/test_knowledge_source.py`、`tests/research/loop/test_loop_knowledge_source.py`。

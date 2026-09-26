@@ -19,6 +19,8 @@ from research.hypotheses.dsl import (
 )
 from research.hypotheses.generator import (
     HypothesisDraft,
+    KnowledgeSearch,
+    KnowledgeSource,
     LlmDraftRejected,
     from_knowledge,
     from_llm,
@@ -31,6 +33,8 @@ __all__ = [
     "BatchRefused",
     "HypothesisBatch",
     "HypothesisDraft",
+    "KnowledgeSearch",
+    "KnowledgeSource",
     "LedgerError",
     "LlmDraftRejected",
     "ReviewedOperators",

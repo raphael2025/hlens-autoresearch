@@ -13,6 +13,14 @@ valid ``Hypothesis`` (e.g. a name outside the naming pattern), raises ``LlmDraft
 ``ValueError`` that still carries the exchange's ``LlmCall``, so a caller records the rejected
 call (its content hash and refs) alongside the reason — every LLM output is recorded, accepted or
 not (roadmap P7).
+
+Knowledge search (Phase 7 completion, 2026-09-26): ``KnowledgeSource`` is a declared
+``KnowledgeProvider`` + ``KnowledgeQuery``; ``KnowledgeSource.search`` asks the provider
+(``core.contracts.knowledge``), re-validates the ``KnowledgeResult`` (provenance, order,
+``result_hash``), refuses a result for another query or from another provider, and turns every
+item into a hypothesis with ``from_knowledge``. The returned ``KnowledgeSearch`` carries the query
+hash and the ``result_hash``: the origin of those hypotheses, which a caller records next to them
+(``origin_refs`` hold the items' refs; a hash is not a ``Ref``, so no contract change is needed).
 """
 
 from __future__ import annotations
@@ -23,10 +31,18 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from core.contracts.knowledge import KnowledgeProvider, KnowledgeQuery, KnowledgeResult
 from core.contracts.llm import LLMProvider, LlmRequest
 from core.domain.research import Hypothesis, HypothesisOrigin, KnowledgeItem, LlmCall
 
-__all__ = ["HypothesisDraft", "LlmDraftRejected", "from_knowledge", "from_llm"]
+__all__ = [
+    "HypothesisDraft",
+    "KnowledgeSearch",
+    "KnowledgeSource",
+    "LlmDraftRejected",
+    "from_knowledge",
+    "from_llm",
+]
 
 
 class _DraftFields(BaseModel):
@@ -72,6 +88,66 @@ def from_knowledge(items: tuple[KnowledgeItem, ...], family_id: str) -> tuple[Hy
         )
         for item in items
     )
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSearch:
+    """One search and the hypotheses it produced (``query_hash`` / ``result_hash``: the origin)."""
+
+    provider: str
+    query_hash: str
+    result_hash: str
+    items: tuple[KnowledgeItem, ...]
+    hypotheses: tuple[Hypothesis, ...]
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "provider": self.provider,
+            "query_hash": self.query_hash,
+            "result_hash": self.result_hash,
+            "items": [str(item.ref) for item in self.items],
+        }
+
+    def evidence(self) -> tuple[str, str]:
+        return (f"knowledge_query:{self.query_hash}", f"knowledge_result:{self.result_hash}")
+
+
+@dataclass(frozen=True, slots=True)
+class KnowledgeSource:
+    """A declared knowledge search: the provider and the exact query (see module docs)."""
+
+    provider: KnowledgeProvider
+    query: KnowledgeQuery
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.query, KnowledgeQuery):
+            raise TypeError("a knowledge source declares a KnowledgeQuery")
+
+    def payload(self) -> dict[str, str]:
+        """What a loop fingerprint binds: the provider's identity and the query."""
+        descriptor = self.provider.descriptor
+        return {
+            "provider": descriptor.plugin_key,
+            "descriptor": descriptor.content_hash(),
+            "query": self.query.content_hash(),
+        }
+
+    def search(self, family_id: str) -> KnowledgeSearch:
+        answer = self.provider.search(self.query)
+        if not isinstance(answer, KnowledgeResult):
+            raise ValueError("the knowledge provider did not return a KnowledgeResult")
+        result = KnowledgeResult.model_validate(answer.model_dump(mode="json"))  # re-check hash
+        if result.query_hash != self.query.content_hash():
+            raise ValueError("the knowledge provider answered another query")
+        if result.provider != self.provider.descriptor.plugin_key:
+            raise ValueError(f"the result is from {result.provider}, not the declared provider")
+        return KnowledgeSearch(
+            provider=result.provider,
+            query_hash=result.query_hash,
+            result_hash=result.result_hash,
+            items=result.items,
+            hypotheses=from_knowledge(result.items, family_id),
+        )
 
 
 def from_llm(

@@ -31,3 +31,9 @@
 算子种类是 `trial_point` 跑不了的 DSL 算子（conditioning / interaction / temporal / transformation / ensemble / negation）或未知种类、
 参数未声明搜索空间、值不在搜索空间内（类型也须一致）、浮点值、文本值读回后不是它自己、空或重复的因子。`preregister_batch(batch, ledger)`
 全有或全无地把整批预登记进 `TrialLedger`，族 trial 数因此覆盖整个网格。算子只是数据（主张、方向、固定列表中的种类），生成物永不作为代码执行。
+
+## 知识检索来源（`generator.py`，Phase 7 补全，2026-09-26）
+
+`KnowledgeSource(provider, query).search(family_id)` 调用 `KnowledgeProvider.search(KnowledgeQuery)`，重新校验结果并拒绝其他查询 / 其他 provider 的结果，
+返回 `KnowledgeSearch`（provider、`query_hash`、`result_hash`、条目、`from_knowledge` 生成的假设）；查询哈希与 `result_hash` 是这些假设的来源，
+由调用方（循环的 hypothesis 阶段）记入摘要与生命周期证据。

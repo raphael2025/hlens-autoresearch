@@ -23,7 +23,8 @@ declarations — is a constructor parameter; validation thresholds are read from
   which only goes to the review queue (a schema-invalid output is recorded with its ``LlmCall``'s
   content hash and refs next to the rejection reason, never registered); an optional declared
   ``HypothesisBatch`` (``research.hypotheses.batch``) is pre-registered as a whole the first round
-  it runs;
+  it runs; an optional ``KnowledgeSource`` is searched once per round and its items join the
+  declared knowledge, with the query hash and ``result_hash`` recorded as their origin;
 - ``EvolutionStage`` (optional, ``research/loop/evolution.py``): offspring of the best earlier
   candidates, registered as new hypotheses and validated afresh this round;
 - ``ExperimentStage`` / ``ValidationStage`` (``research/loop/trials.py``): the reproducible
@@ -82,6 +83,8 @@ from infrastructure.state import run_state, state_inputs, state_request
 from research.hypotheses import (
     HypothesisBatch,
     HypothesisDraft,
+    KnowledgeSearch,
+    KnowledgeSource,
     LlmDraftRejected,
     from_knowledge,
     from_llm,
@@ -411,6 +414,14 @@ class HypothesisStage:
     **whole** batch is pre-registered in the ``TrialLedger`` (``preregister_batch``, before any
     trial of the round runs; the round's trial budget is charged for every cell) and every cell is
     this round's trial; the summary's ``batch`` key names the grid and the reviewed allowlist.
+
+    ``knowledge_source`` (optional; ``None`` changes nothing): a declared ``KnowledgeProvider`` +
+    ``KnowledgeQuery`` searched once per round (``KnowledgeSource.search``). Its items become
+    knowledge hypotheses after the declared ``knowledge`` (same ``max_new_per_round`` cap; an item
+    the declared knowledge already holds counts as declared). The summary's ``knowledge_search``
+    key records the provider, the query hash, the ``KnowledgeResult.result_hash``, the items and
+    the hypotheses registered from them this round; each of those hypotheses' lifecycle evidence
+    carries ``knowledge_query:<hash>`` / ``knowledge_result:<hash>`` — their origin.
     """
 
     name = "hypothesis"
@@ -429,6 +440,7 @@ class HypothesisStage:
         llm_cost_units_per_call: Decimal = Decimal(0),
         llm_content: ContentResolver | None = None,
         batch: HypothesisBatch | None = None,
+        knowledge_source: KnowledgeSource | None = None,
     ) -> None:
         if (llm is None) != (llm_prompt is None):
             raise ValueError("an LLM source needs both a provider and a prompt")
@@ -452,6 +464,8 @@ class HypothesisStage:
         if batch is not None:
             self._check_batch(batch)
         self._batch = batch
+        self._source = knowledge_source
+        self._searched: tuple[tuple[str, int], KnowledgeSearch] | None = None
 
     def _check_batch(self, batch: HypothesisBatch) -> None:
         """Every cell runs here as declared, or the stage is refused (see class docs)."""
@@ -470,6 +484,15 @@ class HypothesisStage:
                 raise ValueError(f"{hypothesis.ref}: no strategy {point.strategy} in the catalog")
             _request_point(candidate, point.overrides)
 
+    def _search(self, ctx: RoundContext) -> KnowledgeSearch | None:
+        """This round's knowledge search (asked once per round: the plan and the run agree)."""
+        if self._source is None:
+            return None
+        key = (ctx.loop_id, ctx.round_index)
+        if self._searched is None or self._searched[0] != key:
+            self._searched = (key, self._source.search(self._family))
+        return self._searched[1]
+
     def _batch_pending(self) -> tuple[Hypothesis, ...]:
         if self._batch is None:
             return ()
@@ -485,11 +508,12 @@ class HypothesisStage:
         tuple[Hypothesis, ...],
     ]:
         known = {(h.name, h.version) for h in self._memory.ledger.hypotheses}
-        fresh = tuple(
-            h
-            for h in from_knowledge(self._knowledge, self._family)
-            if (h.name, h.version) not in known
-        )[: self._max_new]
+        declared = from_knowledge(self._knowledge, self._family)
+        search = self._search(ctx)
+        if search is not None:  # searched items after the declared ones, never twice
+            listed = {(h.name, h.version) for h in declared}
+            declared += tuple(h for h in search.hypotheses if (h.name, h.version) not in listed)
+        fresh = tuple(h for h in declared if (h.name, h.version) not in known)[: self._max_new]
         segment: RoundData = ctx.artifact("ingest", "segment")
         again = reevaluation_candidates(
             self._memory, ctx.state_of, segment.research_end, self._max_reevaluations
@@ -545,6 +569,15 @@ class HypothesisStage:
                 }
         registered: list[Hypothesis] = []
         llm_calls: dict[str, LlmCall] = {}
+        search = self._search(ctx)
+        searched: set[tuple[str, str]] = set()
+        if search is not None:
+            listed = {(item.name, item.version) for item in self._knowledge}
+            searched = {
+                (h.name, h.version)
+                for h, item in zip(search.hypotheses, search.items, strict=True)
+                if (item.name, item.version) not in listed
+            }
         if self._batch is not None and batched:
             evidence = (
                 f"batch:{self._batch.grid.name}#{self._batch.grid.content_hash()}",
@@ -558,11 +591,18 @@ class HypothesisStage:
                     hypothesis,
                     (f"hypothesis:{hypothesis.ref}#{hypothesis.content_hash()}", *evidence),
                 )
+        from_search: list[str] = []
         for hypothesis in fresh:
             self._memory.ledger.register(hypothesis)
             registered.append(hypothesis)
+            origin: tuple[str, ...] = ()
+            if search is not None and (hypothesis.name, hypothesis.version) in searched:
+                origin = search.evidence()
+                from_search.append(str(hypothesis.ref))
             self._admit(
-                ctx, hypothesis, (f"hypothesis:{hypothesis.ref}#{hypothesis.content_hash()}",)
+                ctx,
+                hypothesis,
+                (f"hypothesis:{hypothesis.ref}#{hypothesis.content_hash()}", *origin),
             )
         for reviewed in drafts:
             if self._llm_content is not None:  # the reviewed content must still be the content
@@ -594,6 +634,8 @@ class HypothesisStage:
             "pending_reviews": list(self._memory.reviews.pending),
             **batch_summary,
         }
+        if search is not None:
+            summary["knowledge_search"] = {**search.summary(), "registered": from_search}
         return StageResult(
             summary,
             self._usage(fresh, drafts, again, batch),

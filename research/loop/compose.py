@@ -102,7 +102,7 @@ from core.domain.research import KnowledgeItem
 from core.domain.selection import ProfileSelection
 from core.domain.specs import FeatureSpec, StateSpec
 from infrastructure.event_bus import FileEventBus, InMemoryEventBus
-from research.hypotheses import HypothesisBatch
+from research.hypotheses import HypothesisBatch, KnowledgeSource
 from research.loop.durable import (
     DurableState,
     FileAnchor,
@@ -194,6 +194,11 @@ class LoopWiring:
     #: ``HypothesisBatch`` (``research.hypotheses.batch``): pre-registered as a whole by the
     #: hypothesis stage the first round it runs (every cell a trial of the family); fingerprinted.
     hypothesis_batch: HypothesisBatch | None = None
+    #: ``None`` (the default): no knowledge search, every record and fingerprint byte-identical. A
+    #: ``KnowledgeSource`` (declared ``KnowledgeProvider`` + ``KnowledgeQuery``): searched once per
+    #: round by the hypothesis stage, the query / result hashes recorded as the origin of the
+    #: hypotheses it yields; the provider identity and the query are fingerprinted.
+    knowledge_source: KnowledgeSource | None = None
 
 
 class LoopSettings(Protocol):
@@ -376,6 +381,7 @@ def compose_loop(
             llm_cost_units_per_call=config.llm_cost_units_per_call,
             llm_content=llm.resolver if isinstance(llm, ContentVerifiedLLM) else None,
             batch=wiring.hypothesis_batch,
+            knowledge_source=wiring.knowledge_source,
         ),
         *evolution,
         ExperimentStage(
@@ -643,13 +649,16 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
 
     The opt-in ``ConditionalPlan`` appears only when set (``conditional``: its payload), so every
     fingerprint of a configuration without one stays exactly as it was; so does the opt-in
-    ``HypothesisBatch`` (``hypothesis_batch``: its payload)."""
+    ``HypothesisBatch`` (``hypothesis_batch``: its payload) and the opt-in ``KnowledgeSource``
+    (``knowledge_source``: provider identity and query hash)."""
     wiring = config.wiring
     opt_in: dict[str, Any] = (
         {} if wiring.conditional is None else {"conditional": wiring.conditional.payload()}
     )
     if wiring.hypothesis_batch is not None:
         opt_in["hypothesis_batch"] = wiring.hypothesis_batch.payload()
+    if wiring.knowledge_source is not None:
+        opt_in["knowledge_source"] = wiring.knowledge_source.payload()
     return {
         "loop_id": config.loop_id,
         "seed": config.seed,
