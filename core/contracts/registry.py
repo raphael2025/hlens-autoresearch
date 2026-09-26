@@ -100,6 +100,7 @@ from core.contracts.strategy import (
     ConstrainedPosition,
     EquityPoint,
     Fill,
+    FillRemainder,
     PortfolioState,
     PriceBar,
     RiskProviderDescriptor,
@@ -334,6 +335,8 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     LoopRoundRecord,
     LoopRoundStarted,
     LoopRoundRecorded,
+    # 回测剩余量跨 bar 结转（ADR-0054；additive，只追加）
+    FillRemainder,
 )
 
 

@@ -79,7 +79,8 @@ Phase 0 冻结的是本节的**概念层内容**：每类 Provider 的职责、�
 
 `StrategyProvider`、`RiskProvider`、`BacktestProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 5 框架批次交付
 （[ADR-0038](../adr/0038-strategy-risk-backtest-providers.md)，02-domain.md §2.7）：回测器 v1 `plugins/backtest/BarBacktester`
-（下一根 bar 开盘成交，费率 + 滑点，只是模拟）；研究期策略与风控在 `research/strategies/`，未晋升。
+（下一根 bar 开盘成交，费率 + 滑点，只是模拟；可选执行模型含成交量上限剩余量跨 bar 结转
+`next_bar_open_participation`，[ADR-0054](../adr/0054-partial-fill-carry-over.md)）；研究期策略与风控在 `research/strategies/`，未晋升。
 `EventProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 3 交付（[ADR-0036](../adr/0036-event-provider-contract.md)，
 02-domain.md §2.8）：执行器 `infrastructure/event/runner.py` 对每个检查点只交出 `available_time + observable_lag <= t` 的输入，
 并要求相邻检查点的事件表一致（不得回填 / 撤回：不得未来确认）；首批实现（阈值穿越、波动率突破、状态切换，以及"A 后 B"、

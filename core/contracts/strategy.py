@@ -23,8 +23,13 @@
 时刻，任何 `available_time > decision_time` 的信号在构造时即被拒绝。信号只能是 Feature / State /
 Event（`STRATEGY_SIGNAL_KINDS`）——Outcome 永不作为输入（Constitution C-L2）。
 
-**执行**：v1 只有一种执行模型 `next_bar_open`：决策时刻 `t` 的目标在该标的**第一根**
+**执行**：v1 的执行模型 `next_bar_open`：决策时刻 `t` 的目标在该标的**第一根**
 `interval_start >= t` 的 bar 的开盘价成交（`Fill.fill_time >= Fill.decision_time` 是构造不变量）。
+ADR-0054 additive 增加 `next_bar_open_participation`：目标在同一执行 bar 按执行前权益
+定量为**目标变化量**，按成交量上限没成交完的**剩余量**在该标的之后的 bar 开盘继续成交，
+直到全部成交、被同一标的更晚的目标取代或数据结束；每个目标的结转记录在
+`BacktestResult.remainders`（`FillRemainder`），`check_answers` 按 descriptor 的执行模型分支。
+新字段（`PriceBar.volume`、`BacktestResult.remainders`）缺省时从载荷中省略，既有哈希逐位不变。
 回测**只是模拟**：descriptor 的 `simulation_only` 只能为 `true`，本契约没有任何下单、账户或
 交易所端点。
 
@@ -72,7 +77,10 @@ __all__ = [
     "BacktestResult",
     "ConstrainedPosition",
     "EquityPoint",
+    "ExecutionModelName",
     "Fill",
+    "FillRemainder",
+    "FillRemainderEnd",
     "PortfolioState",
     "PriceBar",
     "RiskInputError",
@@ -107,6 +115,22 @@ RiskRefKey = Annotated[str, Field(pattern=RISK_REF_KEY_PATTERN)]
 
 #: 契约内部合计（费用、滑点）用的精度：远大于实现输出的有效位数，合计在其中是精确的。
 _SUM_PRECISION = 120
+
+#: 回测执行模型（ADR-0038 / ADR-0054）：`next_bar_open` = 每个目标在其执行 bar 一次成交；
+#: `next_bar_open_participation` = 按成交量上限分 bar 成交，剩余量结转到同一标的之后的 bar。
+ExecutionModelName = Literal["next_bar_open", "next_bar_open_participation"]
+#: 一个目标的结转在何处结束（ADR-0054 §3）。
+FillRemainderEnd = Literal["filled", "superseded", "end_of_data"]
+
+
+def _omit_none(value: object) -> bool:
+    """ADR-0054：可选字段为 `None` 时从载荷中省略，使既有载荷与哈希逐位不变。"""
+    return value is None
+
+
+def _omit_empty(value: object) -> bool:
+    """ADR-0054：可选序列为空时从载荷中省略，使既有载荷与哈希逐位不变。"""
+    return value == ()
 
 
 # ---------------------------------------------------------------------------------------
@@ -740,7 +764,13 @@ class BacktestCostModel(Contract):
 
 
 class PriceBar(Contract):
-    """一根价格 bar：`[interval_start, interval_end)`，`available_time >= interval_end`。"""
+    """一根价格 bar：`[interval_start, interval_end)`，`available_time >= interval_end`。
+
+    `volume`（ADR-0054 §4，可选）：该 bar 的成交数量（`>= 0`）。它是 bar 收盘后才知道的量，
+    只被模拟器用来界定"这根 bar 市场能承载多少"，**从不**进入策略或风控的决策输入
+    （`StrategyRequest` / `RiskRequest` 不含 `PriceBar`），因此不构成 C-L1 泄漏。为 `None` 时
+    从载荷中省略：既有 `PriceBar` 与 `BacktestRequest` 的内容哈希逐位不变。
+    """
 
     instrument: NonEmptyStr
     interval_start: UtcDatetime
@@ -750,6 +780,7 @@ class PriceBar(Contract):
     high: PositiveDecimal
     low: PositiveDecimal
     close: PositiveDecimal
+    volume: NonNegativeDecimal | None = Field(default=None, exclude_if=_omit_none)
 
     @model_validator(mode="after")
     def _invariants(self) -> PriceBar:
@@ -769,7 +800,7 @@ def _bar_order(item: PriceBar) -> tuple[datetime, str]:
 def execution_bar(
     bars: Sequence[PriceBar], instrument: str, decision_time: datetime
 ) -> PriceBar | None:
-    """`next_bar_open` 执行模型：该标的第一根 `interval_start >= decision_time` 的 bar。"""
+    """执行 bar：该标的第一根 `interval_start >= decision_time` 的 bar（两种执行模型相同）。"""
     for bar in bars:  # 已按 (interval_start, instrument) 升序
         if bar.instrument == instrument and bar.interval_start >= decision_time:
             return bar
@@ -847,6 +878,49 @@ class Fill(Contract):
         return self
 
 
+class FillRemainder(Contract):
+    """一个目标在 `next_bar_open_participation` 执行模型下的结转记录（ADR-0054 §3）。
+
+    - `requested_quantity`：目标变化量（执行 bar 按执行前权益定量，之后不再重新定量），非零；
+    - `filled_quantity`：该目标各笔成交数量之和，与 `requested_quantity` 同号（或为 0），
+      绝对值不超过它；
+    - `remaining_quantity = |requested_quantity| − |filled_quantity|`（`>= 0`）；
+    - `ended_by`：`filled`（剩余为 0）、`superseded`（同一标的更晚的目标在其执行 bar 取代它）、
+      `end_of_data`（该标的的 bar 用完）；后两者剩余为正；
+    - `ended_at`：结束所在 bar 的 `interval_start`（`filled` = 最后一笔成交的 bar；
+      `superseded` = 取代它的目标的执行 bar；`end_of_data` = 该标的最后一根 bar）。
+    """
+
+    instrument: NonEmptyStr
+    decision_time: UtcDatetime
+    requested_quantity: FiniteDecimal
+    filled_quantity: FiniteDecimal
+    remaining_quantity: NonNegativeDecimal
+    ended_by: FillRemainderEnd
+    ended_at: UtcDatetime
+
+    @model_validator(mode="after")
+    def _invariants(self) -> FillRemainder:
+        if self.requested_quantity == 0:
+            raise ValueError("零目标变化量没有结转")
+        if self.filled_quantity != 0 and (self.filled_quantity > 0) != (
+            self.requested_quantity > 0
+        ):
+            raise ValueError("成交方向必须与目标变化量相同")
+        if abs(self.filled_quantity) > abs(self.requested_quantity):
+            raise ValueError("成交数量绝对值之和超过目标变化量")
+        with localcontext() as ctx:
+            ctx.prec = _SUM_PRECISION
+            remaining = abs(self.requested_quantity) - abs(self.filled_quantity)
+        if self.remaining_quantity != remaining:
+            raise ValueError("remaining_quantity 必须等于 |requested| − |filled|")
+        if (self.ended_by == "filled") != (self.remaining_quantity == 0):
+            raise ValueError("filled 当且仅当剩余为 0；superseded / end_of_data 剩余必须为正")
+        if self.ended_at < self.decision_time:
+            raise ValueError("ended_at 不得早于 decision_time")
+        return self
+
+
 class EquityPoint(Contract):
     """一个时点（bar 收盘）的组合估值：`equity = cash + Σ quantity × mark_price`。"""
 
@@ -857,13 +931,14 @@ class EquityPoint(Contract):
 
 
 class BacktestProviderDescriptor(Contract):
-    """BacktestProvider 的身份：只能确定性、只能模拟、v1 只有 `next_bar_open` 执行模型。"""
+    """BacktestProvider 的身份：只能确定性、只能模拟；执行模型为 `next_bar_open`（v1）或
+    `next_bar_open_participation`（ADR-0054：剩余量跨 bar 结转）。"""
 
     name: str = Field(pattern=NAME_PATTERN)
     version: str = Field(pattern=SEMVER_PATTERN)
     deterministic: Literal[True]
     simulation_only: Literal[True]
-    execution_model: Literal["next_bar_open"]
+    execution_model: ExecutionModelName
 
     @property
     def plugin_key(self) -> str:
@@ -876,6 +951,9 @@ class BacktestResult(Contract):
     - `fills` 按 `(fill_time, instrument)` 升序；`equity_curve` 按 `time` 严格升序、非空；
     - `final_equity` 等于权益曲线的最后一点；`total_fees` / `total_slippage` 等于各成交之和；
     - `unexecuted_targets`：没有成交的目标数（其后无 bar，或在成交前被同一标的更晚的目标取代）；
+    - `remainders`（ADR-0054）：`next_bar_open_participation` 下每个已定量目标的结转记录，按
+      `(decision_time, instrument)` 唯一升序；只有该执行模型可以非空。为空时从哈希载荷中省略，
+      既有 `result_hash` 逐位不变；
     - `result_hash` 构造时复核。PnL = `final_equity − initial_equity`（已扣除费用与滑点）。
     """
 
@@ -889,6 +967,7 @@ class BacktestResult(Contract):
     total_fees: NonNegativeDecimal
     total_slippage: NonNegativeDecimal
     unexecuted_targets: int = Field(ge=0, strict=True)
+    remainders: tuple[FillRemainder, ...] = Field(default=(), exclude_if=_omit_empty)
     result_hash: ContentHash
 
     @model_validator(mode="after")
@@ -896,6 +975,9 @@ class BacktestResult(Contract):
         fill_keys = [(item.fill_time, item.instrument) for item in self.fills]
         if fill_keys != sorted(fill_keys):
             raise ValueError("fills 必须按 (fill_time, instrument) 升序")
+        remainder_keys = [(item.decision_time, item.instrument) for item in self.remainders]
+        if any(later <= earlier for earlier, later in pairwise(remainder_keys)):
+            raise ValueError("remainders 必须按 (decision_time, instrument) 唯一升序")
         _strictly_ascending([point.time for point in self.equity_curve], "equity_curve.time")
         if self.final_equity != self.equity_curve[-1].equity:
             raise ValueError("final_equity 必须等于权益曲线的最后一点")
@@ -929,9 +1011,11 @@ class BacktestResult(Contract):
         fills: Iterable[Fill],
         equity_curve: Iterable[EquityPoint],
         unexecuted_targets: int,
+        remainders: Iterable[FillRemainder] = (),
     ) -> BacktestResult:
         fill_items = tuple(fills)
         curve = tuple(equity_curve)
+        remainder_items = tuple(remainders)
         if not curve:
             raise ValueError("equity_curve 不得为空")
         request_hash = request.content_hash()
@@ -949,6 +1033,7 @@ class BacktestResult(Contract):
             total_fees=total_fees,
             total_slippage=total_slippage,
             unexecuted_targets=unexecuted_targets,
+            remainders=remainder_items,
             result_hash="0" * 64,
         )
         return cls(
@@ -962,14 +1047,19 @@ class BacktestResult(Contract):
             total_fees=total_fees,
             total_slippage=total_slippage,
             unexecuted_targets=unexecuted_targets,
+            remainders=remainder_items,
             result_hash=_hash_of(**draft._hashed_fields()),
         )
 
     def check_answers(
         self, request: BacktestRequest, descriptor: BacktestProviderDescriptor
     ) -> None:
-        """请求哈希与身份一致；初始权益一致；每笔成交对应一个目标，并恰好在执行模型规定的 bar
-        （该标的第一根 `interval_start >= decision_time` 的 bar）以其开盘价为参考价成交。"""
+        """请求哈希与身份一致；初始权益一致；再按 descriptor 的执行模型核对成交（ADR-0054 §2）。
+
+        `next_bar_open`：每笔成交对应一个目标，并恰好在执行模型规定的 bar（该标的第一根
+        `interval_start >= decision_time` 的 bar）以其开盘价为参考价成交；不得有结转记录。
+        `next_bar_open_participation`：见 `_check_carry_over`。
+        """
         if self.request_hash != request.content_hash():
             raise ValueError("request_hash 与请求不符")
         if (self.provider, self.provider_hash) != (
@@ -979,6 +1069,11 @@ class BacktestResult(Contract):
             raise ValueError("provider / provider_hash 与 descriptor 不符")
         if self.initial_equity != request.initial_equity:
             raise ValueError("initial_equity 与请求不符")
+        if descriptor.execution_model == "next_bar_open_participation":
+            self._check_carry_over(request)
+            return
+        if self.remainders:
+            raise ValueError("只有 next_bar_open_participation 执行模型可以有结转记录")
         targets = {_position_order(item) for item in request.targets}
         for item in self.fills:
             if (item.decision_time, item.instrument) not in targets:
@@ -993,6 +1088,100 @@ class BacktestResult(Contract):
         if len(self.fills) + self.unexecuted_targets > len(request.targets):
             raise ValueError("成交数 + 未执行目标数超过目标数")
 
+    def _check_carry_over(self, request: BacktestRequest) -> None:
+        """`next_bar_open_participation` 的成交规则（ADR-0054 §1 – §3）。
+
+        - 成交属于 `(decision_time, instrument)` 命中的目标；`fill_time` 是该标的某根 bar 的
+          `interval_start`，且 `执行 bar <= fill_time < 同标的下一目标的执行 bar`（没有下一目标、
+          或下一目标没有执行 bar，则不设上界）；参考价 = 该 bar 开盘价；同一目标的成交按
+          `fill_time` 严格递增（一根 bar 至多一笔）；
+        - 有成交的目标必须有结转记录；记录的目标存在且有执行 bar；每笔成交与目标变化量同向；
+          `filled_quantity` 等于各笔成交之和（绝对值不超过目标变化量由 `FillRemainder` 保证）；
+        - `ended_at` 是该标的的一根 bar：`filled` = 最后一笔成交的 bar；`superseded` = 下一目标的
+          执行 bar；`end_of_data` = 该标的最后一根 bar，且没有下一目标的执行 bar；
+        - 计数：有成交的目标数 + `unexecuted_targets <= 目标数`。
+        """
+        bars_of: dict[str, dict[datetime, PriceBar]] = {}
+        for bar in request.bars:  # 已按 (interval_start, instrument) 升序
+            bars_of.setdefault(bar.instrument, {})[bar.interval_start] = bar
+        by_instrument: dict[str, list[TargetPosition]] = {}
+        for target in request.targets:
+            by_instrument.setdefault(target.instrument, []).append(target)
+        windows: dict[tuple[datetime, str], tuple[datetime | None, datetime | None]] = {}
+        for instrument, targets in by_instrument.items():
+            first_bars = _first_at_or_after(sorted(bars_of[instrument]), targets)
+            for index, target in enumerate(targets):
+                upper = first_bars[index + 1] if index + 1 < len(targets) else None
+                windows[_position_order(target)] = (first_bars[index], upper)
+
+        fills_of: dict[tuple[datetime, str], list[Fill]] = {}
+        for item in self.fills:
+            key = (item.decision_time, item.instrument)
+            if key not in windows:
+                raise ValueError(f"成交 {item.instrument} @ {item.fill_time} 没有对应的目标")
+            first, upper = windows[key]
+            fill_bar = bars_of[item.instrument].get(item.fill_time)
+            if (
+                fill_bar is None
+                or first is None
+                or item.fill_time < first
+                or (upper is not None and item.fill_time >= upper)
+            ):
+                raise ValueError(
+                    f"成交 {item.instrument} @ {item.fill_time} 不在该目标的结转窗口"
+                    "（执行 bar 至同标的下一目标的执行 bar 之前）的某根 bar"
+                )
+            if item.reference_price != fill_bar.open:
+                raise ValueError(f"成交 {item.instrument} 的参考价不是该 bar 的开盘价")
+            earlier = fills_of.setdefault(key, [])
+            if earlier and item.fill_time <= earlier[-1].fill_time:
+                raise ValueError(
+                    f"目标 {item.instrument} @ {item.decision_time} 在同一根 bar 成交两次"
+                )
+            earlier.append(item)
+
+        records = {(item.decision_time, item.instrument): item for item in self.remainders}
+        missing = sorted(set(fills_of) - set(records))
+        if missing:
+            raise ValueError(f"有成交的目标缺少结转记录：{missing[0][1]} @ {missing[0][0]}")
+        for key, record in records.items():
+            label = f"{record.instrument} @ {record.decision_time}"
+            if key not in windows or windows[key][0] is None:
+                raise ValueError(f"结转记录 {label} 没有对应的、有执行 bar 的目标")
+            upper = windows[key][1]
+            fills = fills_of.get(key, [])
+            if any((item.quantity > 0) != (record.requested_quantity > 0) for item in fills):
+                raise ValueError(f"目标 {label} 有与目标变化量反向的成交")
+            if _exact_sum(item.quantity for item in fills) != record.filled_quantity:
+                raise ValueError(f"结转记录 {label} 的 filled_quantity 与其成交之和不符")
+            if record.ended_by == "filled":
+                ended_ok = bool(fills) and record.ended_at == fills[-1].fill_time
+            elif record.ended_by == "superseded":
+                ended_ok = upper is not None and record.ended_at == upper
+            else:
+                ended_ok = upper is None and record.ended_at == max(bars_of[record.instrument])
+            if not ended_ok:
+                raise ValueError(
+                    f"结转记录 {label} 的 {record.ended_by} 结束于 {record.ended_at}，"
+                    "与成交 / 下一目标 / bar 不符"
+                )
+        if len(fills_of) + self.unexecuted_targets > len(request.targets):
+            raise ValueError("有成交的目标数 + 未执行目标数超过目标数")
+
+
+def _first_at_or_after(
+    starts: Sequence[datetime], targets: Sequence[TargetPosition]
+) -> list[datetime | None]:
+    """每个目标（按 `decision_time` 升序）在升序 `starts` 中第一个 `>= decision_time` 的时刻，
+    即该标的的执行 bar（同 `execution_bar`）；没有则为 `None`。"""
+    out: list[datetime | None] = []
+    index = 0
+    for target in targets:
+        while index < len(starts) and starts[index] < target.decision_time:
+            index += 1
+        out.append(starts[index] if index < len(starts) else None)
+    return out
+
 
 class BacktestProvider(Protocol):
     """目标仓位 + 价格 + 成本模型 → 成交与 PnL（ADR-0038）。只是模拟。"""
@@ -1001,5 +1190,5 @@ class BacktestProvider(Protocol):
     def descriptor(self) -> BacktestProviderDescriptor: ...
 
     def run(self, request: BacktestRequest) -> BacktestResult:
-        """按 `next_bar_open` 执行模型模拟全部目标；输入无法模拟 → `BacktestInputError`。"""
+        """按 descriptor 声明的执行模型模拟全部目标；输入无法模拟 → `BacktestInputError`。"""
         ...

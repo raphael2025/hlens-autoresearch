@@ -113,3 +113,48 @@ ADR-0038 execution realism 说明已实现可选 `ExecutionModel`（参与率上
 - [x] 不修改 Validation Constitution；不引入数值阈值（参与率属回测器参数，由调用方显式给出）
 - [x] Domain 层仍无具体技术依赖；仍只是模拟，无下单能力
 - [ ] 由 Raphael 本人批准——待定
+
+## Implementation note (carry-over, 2026-09-26)
+
+实施批次（Claude Code，Opus）。**裁决不变**，按 §1 – §5 实施；状态 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+- **契约**（`core/contracts/strategy.py`，全部 additive）：`BacktestProviderDescriptor.execution_model` 为
+  `Literal["next_bar_open", "next_bar_open_participation"]`；新模型 `FillRemainder`（登记表末尾追加，Schema 134 → 135）；
+  `PriceBar.volume: NonNegativeDecimal | None = None` 与 `BacktestResult.remainders: tuple[FillRemainder, ...] = ()` 用 Pydantic
+  `Field(exclude_if=...)` 在缺省时从 `model_dump` 中省略（嵌套 dump 同样省略），因此 `content_hash`、`_hashed_fields()` 与导出载荷
+  对旧对象逐位不变。`FillRemainder` 构造时自证：目标变化量非零、成交同向且绝对值不超量、`remaining = |requested| − |filled|`（120 位精确）、
+  `filled ⇔ remaining = 0`、`ended_at >= decision_time`；`remainders` 按 `(decision_time, instrument)` 唯一升序。
+- **`check_answers`** 按 descriptor 分支。`next_bar_open` 分支原有检查逐字不变，只在前面加一条"不得有结转记录"（旧结果恒为空，行为不变）。
+  `next_bar_open_participation` 分支（`_check_carry_over`）实现 §2 全部规则，并补充三条使记录可审计的规则：有成交的目标必须有记录；
+  记录必须对应一个有执行 bar 的目标；`ended_at` 必须与结束原因一致（`filled` = 最后一笔成交的 bar，`superseded` = 同标的下一目标的执行 bar，
+  `end_of_data` = 该标的最后一根 bar 且没有下一目标的执行 bar）。
+- **回测器**（`plugins/backtest/`）：`ExecutionModel(carry_over=True, max_participation_rate=...)` 开启新模型（`carry_over` 必须是 `bool`，
+  且需要参与上限；关闭时指纹载荷不含该键，既有指纹逐位不变），`BarBacktester` 随之声明 `next_bar_open_participation`、version
+  `1.2.0+exec.<fingerprint>`（`CARRY_OVER_VERSION`）。语义取舍：
+  - 每个**已定量**且目标变化量非零的目标都有一条记录（含一次成交完的，`filled`）；变化量为 0 的目标计为已执行、无记录；在执行 bar 之前就被
+    取代的目标从未定量，计为未执行、无记录（与 v1 相同）；有记录但一笔未成交（成交量为 0）的目标计为未执行；
+  - 成交量只读 `PriceBar.volume`（结转路径上缺失即 `BacktestInputError`，旁路 `bar_volume` 不能替代）；旁路与 `PriceBar.volume` 同时给出
+    且不一致即拒绝——截断变体同样执行这条检查（只在 bar 带 `volume` 时触发，既有输入不受影响）；
+  - 冲击与融资照旧逐笔 / 逐 bar 步计算；剩余量记账在 120 位、陷阱 `Inexact` 的上下文中进行（会舍入即拒绝），因此 `filled` 目标的各笔成交之和
+    精确等于目标变化量；
+  - `ExecutionReport.carried` 恒等于 `BacktestResult.remainders`；`ExecutionReport.remainders`（截断时取消的剩余量）在新模型下为空。
+- **版本（§5，按 ADR-0052 §4 先盘点）**：盘点结论——数据面规范化把 `CONTRACT_SCHEMA_VERSION` 写入每一行 Canonical revision
+  （`infrastructure/canonical/rules.py` `contract_schema_version` 列），重放时 `infrastructure/canonical/normalizer.py` `_exact` 逐列比较
+  "已提交行"与"重新规范化的行"，不一致即 `CatalogIntegrityError`。因此把信封升到 2.1.0 会让已提交的 D-NET 数据（2.0.0 行）无法幂等重放；
+  同时新构造对象的 `request_hash` / `result_hash` 都会改变（`request_hash` 含信封版本）。按 §5 / ADR-0052 §4，本批次**不升信封**、不自行
+  选择，`CONTRACT_SCHEMA_VERSION` 保持 `2.0.0`（与 ADR-0023 / 0024 / 0038 新增 additive 模型时的做法相同），并把"是否 / 如何随 2.1.0 发布"
+  列为 `ARCHITECTURE_DECISION_REQUIRED`（与 ADR-0052 的信封决定是同一个问题，交 Codex / Raphael）。在该决定之前：新字段缺省即省略，
+  旧载荷、旧哈希与数据面重放全部不受影响（下列金值测试证明）；已知代价是 2.0.0 旧实现读到带新字段的载荷会按 `extra="forbid"` 拒绝（fail closed）。
+- **测试**：`tests/plugins/backtest/test_carry_over.py`（50a43a4 记录的金值：黄金请求的 `request_hash`、首根 bar 哈希、默认 descriptor 哈希、
+  两个截断变体的 `(fingerprint, provider_hash, result_hash)`，加上 `test_execution_model.py` 中 9c0b851 的 v1 `result_hash`；分 bar 成交之和
+  等于目标变化量；不按权益重新定量；零成交量等待；`superseded` 与按实际持仓重新定量；执行 bar 前被取代的目标；`end_of_data`；多标的；
+  缺 `volume` 拒绝；旁路不一致拒绝；改变 `t` 之后的价格与成交量不改变 `t` 之前的成交 / 记录 / 权益 / 融资；14 种伪造结果被 `check_answers`
+  拒绝：无对应目标的成交、越出下一目标执行 bar、bar 之间、同 bar 两笔、反向、超量、参考价、缺记录、无目标记录、数量不符、结束 bar / 原因不符、计数超额；
+  `next_bar_open` descriptor 拒绝结转记录）；`tests/contract_suites/backtest.py` 按声明的执行模型选择检查项
+  （`BacktestProviderContract` 的 descriptor 检查只接受 `next_bar_open`，新增 `CarryOverBacktestProviderContract` / `CARRY_OVER_CHECKS`），
+  新变体（含冲击 + 融资）通过；`tests/test_strategy_contracts.py`（`FillRemainder` 不变量、`volume` 省略与校验、descriptor 字面量、
+  `remainders` 排序与省略）；`tests/research/strategies/test_backtest_validation.py`（同参数的结转 / 截断变体是两个 provider，
+  `G0.execution_model` 拒绝不符者、接受相符的结转回测且 `G0.reproducibility` 通过）。
+- **未做（留给调试批次）**：`infrastructure/bars/dataset.py` 尚未从 `canonical.bars_1m.volume` 填入 `PriceBar.volume`（真实数据上新模型因此
+  会以缺 `volume` 拒绝）；`exclude_if` 需要 Pydantic ≥ 2.12，`pyproject.toml` 仍写 `pydantic>=2.9`（锁文件为 2.13.5，未改依赖声明）；
+  G4 容量检查未改读结转结果；剩余量不按权益重新定量是 §1 明示的简化。

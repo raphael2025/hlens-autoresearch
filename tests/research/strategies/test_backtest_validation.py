@@ -831,6 +831,78 @@ def test_a_mismatched_execution_model_is_refused_at_g0(tmp_path: Path) -> None:
     )
 
 
+def _carry_over_model(market: SyntheticMarket) -> ExecutionModel:
+    """The ``_variant`` parameters with the remainder carried over (ADR-0054; TEST ONLY)."""
+    return ExecutionModel(
+        max_participation_rate=Decimal("0.01"),
+        impact_coefficient=Decimal("0.1"),
+        bar_volume=_volumes(market),
+        carry_over=True,
+    )
+
+
+def _inputs_with_volume(market: SyntheticMarket) -> EvaluationInputs:
+    """``_inputs`` whose bars carry the market's volume (``PriceBar.volume``, ADR-0054 §4)."""
+    inputs = _inputs(market)
+    volumes = _volumes(market)
+    bars = tuple(
+        bar.model_copy(update={"volume": volumes[(bar.instrument, bar.interval_start)]})
+        for bar in inputs.bars
+    )
+    return replace(inputs, bars=bars)
+
+
+def test_g0_execution_model_tells_carry_over_from_truncation(tmp_path: Path) -> None:
+    """ADR-0054: the same cap and impact with and without carry-over are two execution models —
+    two providers, told apart by ``G0.execution_model``: a truncating backtest validated against a
+    declared carry-over model is refused before any re-run-dependent gate."""
+    market = _market(seed=7, planted=True)
+    truncating = _variant(market)
+    carry = BarBacktester(execution=_carry_over_model(market))
+    assert carry.descriptor.execution_model == "next_bar_open_participation"
+    assert truncating.descriptor.execution_model == "next_bar_open"
+    assert carry.descriptor.content_hash() != truncating.descriptor.content_hash()
+    result, registry = _evaluate(
+        market, tmp_path, run_backtester=truncating, execution=carry.execution
+    )
+    assert result.status is EvaluationStatus.REJECTED
+    assert result.validation is not None
+    gate = next(g for g in result.validation.report.gates if g.gate_id == "G0.execution_model")
+    assert (gate.verdict, gate.value) == (Verdict.FAIL, 0.0)
+    assert {g.gate_id.split(".")[0] for g in result.validation.report.gates} == {"G0"}
+    (record,) = registry.records()
+    assert (record.gate_id, record.reason_code) == (
+        "G0.execution_model",
+        ReasonCode.CONTRACT_VIOLATION,
+    )
+
+
+def test_a_carry_over_backtest_passes_g0_against_its_declared_model(tmp_path: Path) -> None:
+    """A candidate backtested with carry-over (bars carrying volume) and validated against the
+    same declared model passes ``G0.execution_model`` and reproduces (ADR-0054)."""
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    model = _carry_over_model(market)
+    carry = BarBacktester(execution=model)
+    inputs = _inputs_with_volume(market)
+    trials = CandidateTrialRunner(candidate, inputs, carry)
+    registry = FailureRegistry(tmp_path / "failures.jsonl")
+    result = evaluate_strategy(
+        candidate,
+        inputs,
+        backtester=carry,
+        registry=registry,
+        validator=PipelineBacktestValidator(
+            _setup(market, candidate, trials=trials, execution=model)
+        ),
+    )
+    assert result.backtest is not None and result.backtest.remainders
+    assert result.validation is not None
+    gates = {g.gate_id: g for g in result.validation.report.gates}
+    assert gates["G0.execution_model"].verdict is Verdict.PASS
+    assert gates["G0.reproducibility"].verdict is Verdict.PASS
+
+
 def test_a_setup_cannot_declare_both_backtester_and_execution(tmp_path: Path) -> None:
     market = _market(seed=7, planted=True)
     candidate = library_entries()[0].candidate()

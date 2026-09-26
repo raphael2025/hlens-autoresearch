@@ -76,7 +76,7 @@ def _target(minute: int, weight: str = "1", inputs: int = 1) -> TargetPosition:
 
 def test_p5_appends_seventeen_models_with_exported_schemas(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 134
+    assert len(names) == 135
     # Phases append in merge order: the 17 P5 models form one contiguous block after F4.
     start = min(names.index(model.__name__) for model in P5_MODELS)
     assert start >= 79
@@ -223,3 +223,151 @@ def test_backtest_descriptor_is_simulation_only() -> None:
                 "execution_model": "next_bar_open",
             }
         )
+
+
+# ---------------------------------------------------------------------------------------
+# ADR-0054: partial-fill carry-over (additive; omitted from payloads when absent)
+# ---------------------------------------------------------------------------------------
+
+
+def _bar(**kw: object) -> PriceBar:
+    fields: dict[str, object] = {
+        "instrument": "BTCUSDT",
+        "interval_start": T0,
+        "interval_end": T0 + MINUTE,
+        "available_time": T0 + MINUTE,
+        "open": Decimal(1),
+        "high": Decimal(1),
+        "low": Decimal(1),
+        "close": Decimal(1),
+    }
+    fields.update(kw)
+    return PriceBar.model_validate(fields)
+
+
+def _remainder(**kw: object) -> contracts.FillRemainder:
+    fields: dict[str, object] = {
+        "instrument": "BTCUSDT",
+        "decision_time": T0,
+        "requested_quantity": Decimal(100),
+        "filled_quantity": Decimal(40),
+        "remaining_quantity": Decimal(60),
+        "ended_by": "superseded",
+        "ended_at": T0 + 2 * MINUTE,
+    }
+    fields.update(kw)
+    return contracts.FillRemainder.model_validate(fields)
+
+
+def test_carry_over_appends_one_model_with_an_exported_schema(tmp_path: Path) -> None:
+    names = tuple(model.__name__ for model in CONTRACT_MODELS)
+    assert names[-1] == "FillRemainder"
+    written = export_json_schemas(tmp_path)
+    committed = (CURRENT_SCHEMA_DIR / "FillRemainder.schema.json").read_bytes()
+    assert committed == written["FillRemainder"].read_bytes()
+
+
+def test_bar_volume_is_optional_non_negative_and_omitted_when_absent() -> None:
+    bare = _bar()
+    assert bare.volume is None
+    assert "volume" not in bare.model_dump(mode="json")
+    assert "volume" not in bare.model_dump()
+    assert _bar(volume=Decimal(0)).model_dump(mode="json")["volume"] == "0"
+    assert _bar(volume=Decimal(5)).content_hash() != bare.content_hash()
+    assert PriceBar.model_validate_json(_bar(volume=Decimal(5)).model_dump_json()).volume == 5
+    for bad in (Decimal(-1), 0.5, Decimal("NaN")):
+        with pytest.raises(ValidationError):
+            _bar(volume=bad)
+
+
+def test_the_descriptor_accepts_exactly_the_two_execution_models() -> None:
+    fields = {"name": "x", "version": "1.0.0", "deterministic": True, "simulation_only": True}
+    for model in ("next_bar_open", "next_bar_open_participation"):
+        descriptor = contracts.BacktestProviderDescriptor.model_validate(
+            {**fields, "execution_model": model}
+        )
+        assert descriptor.execution_model == model
+    with pytest.raises(ValidationError):
+        contracts.BacktestProviderDescriptor.model_validate(
+            {**fields, "execution_model": "next_bar_close"}
+        )
+
+
+def test_a_fill_remainder_is_self_consistent() -> None:
+    assert _remainder().remaining_quantity == 60
+    filled = _remainder(
+        requested_quantity=Decimal(-100),
+        filled_quantity=Decimal(-100),
+        remaining_quantity=Decimal(0),
+        ended_by="filled",
+    )
+    assert filled.ended_by == "filled"
+    unfilled = _remainder(filled_quantity=Decimal(0), remaining_quantity=Decimal(100))
+    assert unfilled.ended_by == "superseded"
+    bad: list[tuple[dict[str, object], str]] = [
+        ({"requested_quantity": Decimal(0), "filled_quantity": Decimal(0)}, "零目标变化量"),
+        ({"filled_quantity": Decimal(-40), "remaining_quantity": Decimal(60)}, "方向"),
+        ({"filled_quantity": Decimal(140), "remaining_quantity": Decimal(0)}, "超过"),
+        ({"remaining_quantity": Decimal(59)}, "remaining_quantity"),
+        ({"ended_by": "filled"}, "filled 当且仅当"),
+        ({"filled_quantity": Decimal(100), "remaining_quantity": Decimal(0)}, "filled 当且仅当"),
+        ({"ended_at": T0 - MINUTE}, "ended_at"),
+        ({"ended_by": "cancelled"}, "ended_by"),
+    ]
+    for update, message in bad:
+        with pytest.raises(ValidationError, match=message):
+            _remainder(**update)
+
+
+def test_result_remainders_are_ordered_and_omitted_from_the_hash_when_empty() -> None:
+    second = _bar(
+        interval_start=T0 + MINUTE, interval_end=T0 + 2 * MINUTE, available_time=T0 + 2 * MINUTE
+    )
+    request = contracts.BacktestRequest(
+        cost_model=BacktestCostModel(
+            name="c", version="1.0.0", fee_rate=Decimal(0), slippage_rate=Decimal(0)
+        ),
+        initial_equity=Decimal(1),
+        bars=(_bar(), second),
+        targets=(),
+    )
+    descriptor = contracts.BacktestProviderDescriptor(
+        name="x",
+        version="1.0.0",
+        deterministic=True,
+        simulation_only=True,
+        execution_model="next_bar_open_participation",
+    )
+    curve = (
+        contracts.EquityPoint(
+            time=T0 + MINUTE, cash=Decimal(1), equity=Decimal(1), gross_exposure=Decimal(0)
+        ),
+    )
+    empty = contracts.BacktestResult.build(
+        request, descriptor, fills=(), equity_curve=curve, unexecuted_targets=0
+    )
+    assert "remainders" not in empty.model_dump(mode="json")
+    assert "remainders" not in empty._hashed_fields()
+    first = _remainder()
+    later = _remainder(decision_time=T0 + MINUTE)
+    with_records = contracts.BacktestResult.build(
+        request,
+        descriptor,
+        fills=(),
+        equity_curve=curve,
+        unexecuted_targets=0,
+        remainders=(first, later),
+    )
+    assert with_records.result_hash != empty.result_hash
+    revived = contracts.BacktestResult.model_validate_json(with_records.model_dump_json())
+    assert revived == with_records
+    for disordered in ((later, first), (first, first)):
+        with pytest.raises(ValidationError, match="remainders"):
+            contracts.BacktestResult.build(
+                request,
+                descriptor,
+                fills=(),
+                equity_curve=curve,
+                unexecuted_targets=0,
+                remainders=disordered,
+            )

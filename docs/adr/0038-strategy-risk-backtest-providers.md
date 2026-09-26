@@ -117,7 +117,8 @@ Kill Switch 仍能止住订单流。
   `成交数 + 未执行目标数 <= 目标数`（每个目标至多一笔成交）；`BacktestResult` 也没有剩余量字段。因此**同一目标的剩余量跨 bar 结转无法
   表达**：变体在执行 bar 截断、取消剩余量并在报告中列出；策略在下一决策时刻重发目标时按实际持仓重新定量（re-targeting），仓位逐 bar
   收敛。容量被截为 0 的目标计为未执行。要支持真正的跨 bar 结转需另起 ADR（additive：新执行模型字面量、放宽成交 bar 规则、剩余量字段、
-  `PriceBar` 可选成交量），由 Codex / Raphael 决定。
+  `PriceBar` 可选成交量），由 Codex / Raphael 决定。→ 已决定并实施：[ADR-0054](0054-partial-fill-carry-over.md)
+  （Raphael 2026-09-26 批准；`ExecutionModel(carry_over=True)` → `next_bar_open_participation`，见其实施说明）；截断变体行为不变。
 - **contract suite**：变体（参与上限生效但不约束、借券开启）通过完整 `tests/contract_suites/backtest.py`；冲击 / 约束性上限 / 现金融资
   开启时，买入持有闭式解按设计不再成立（测试断言其失败，证明执行确被改变），与成本语义无关的检查（descriptor、确定性、零仓位、无未来
   函数；冲击 + 上限时还有平价往返恰亏费用 + 滑点）全部通过。测试：`tests/plugins/backtest/test_execution_model.py`（默认逐字节相同、

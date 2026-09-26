@@ -13,6 +13,23 @@ before its decision), and passes the **benchmark consistency** checks on the sub
 
 Equalities are compared after quantizing both sides to ``tolerance`` (the backtester's documented
 monetary quantum is finer), so they hold for any exact-``Decimal`` implementation.
+
+The checks are chosen by the execution model the provider **declares** (ADR-0054 §2):
+``BacktestProviderContract`` runs ``BACKTEST_CHECKS`` for ``next_bar_open`` (its descriptor check
+refuses any other model), ``CarryOverBacktestProviderContract`` runs ``CARRY_OVER_CHECKS`` for
+``next_bar_open_participation`` — the model-agnostic checks (descriptor, determinism, zero
+positions, no look-ahead) plus the carry-over semantics:
+
+- a weight-one target at the first bar is sized once against the pre-trade equity, fills in several
+  bars (never two at one bar), and its fills sum exactly to the request (``ended_by = filled``);
+- a later target supersedes the remainder at its own execution bar and is sized against the
+  actual holdings (re-targeting); the old remainder is cancelled with a positive remainder;
+- a remainder still open at the instrument's last bar ends ``end_of_data`` there;
+- no look-ahead: changing prices **and volumes** after ``t`` leaves every fill, every ended
+  remainder and every equity point before ``t`` unchanged.
+
+A carry-over subject's bars all carry ``volume``, the cap binds (a weight-one target cannot fill
+in a single bar) and the bars suffice to fill a weight-one target at the first bar.
 """
 
 from __future__ import annotations
@@ -29,12 +46,20 @@ from core.contracts.strategy import (
     BacktestProviderDescriptor,
     BacktestRequest,
     BacktestResult,
+    FillRemainder,
     PriceBar,
     TargetPosition,
 )
 from tests.contract_suites._support import call_ok, require, revalidated
 
-__all__ = ["BACKTEST_CHECKS", "BacktestCheck", "BacktestProviderContract", "BacktestSubject"]
+__all__ = [
+    "BACKTEST_CHECKS",
+    "CARRY_OVER_CHECKS",
+    "BacktestCheck",
+    "BacktestProviderContract",
+    "BacktestSubject",
+    "CarryOverBacktestProviderContract",
+]
 
 ZERO_COST = BacktestCostModel(
     name="zero_cost", version="1.0.0", fee_rate=Decimal(0), slippage_rate=Decimal(0)
@@ -92,6 +117,11 @@ def check_descriptor(subject: BacktestSubject) -> None:
     descriptor = subject.open().descriptor
     revalidated(BacktestProviderDescriptor, descriptor, "descriptor")
     require(descriptor.simulation_only is True, "a backtester is simulation only")
+    require(
+        descriptor.execution_model == "next_bar_open",
+        f"these checks are for next_bar_open; a {descriptor.execution_model} provider runs "
+        "CarryOverBacktestProviderContract",
+    )
 
 
 def check_determinism(subject: BacktestSubject) -> None:
@@ -203,6 +233,147 @@ BACKTEST_CHECKS: tuple[BacktestCheck, ...] = (
 )
 
 
+# ---------------------------------------------------------------------------------------
+# next_bar_open_participation (ADR-0054): the remainder carries over to later bars
+# ---------------------------------------------------------------------------------------
+
+
+def _record(result: BacktestResult, target: TargetPosition) -> FillRemainder:
+    found = [
+        item
+        for item in result.remainders
+        if (item.decision_time, item.instrument) == (target.decision_time, target.instrument)
+    ]
+    require(len(found) == 1, f"one carry-over record per sized target, got {len(found)}")
+    return found[0]
+
+
+def check_carry_over_descriptor(subject: BacktestSubject) -> None:
+    descriptor = subject.open().descriptor
+    revalidated(BacktestProviderDescriptor, descriptor, "descriptor")
+    require(descriptor.simulation_only is True, "a backtester is simulation only")
+    require(
+        descriptor.execution_model == "next_bar_open_participation",
+        f"these checks are for next_bar_open_participation, not {descriptor.execution_model}",
+    )
+    require(
+        all(bar.volume is not None for bar in subject.bars),
+        "a carry-over subject's bars all carry volume",
+    )
+
+
+def check_carry_over_fills_sum_to_the_target(subject: BacktestSubject) -> None:
+    first = subject.bars[0]
+    target = _target(first, Decimal(1))
+    result = _run(subject.open(), _request(subject, (target,), subject.costs))
+    record = _record(result, target)
+    require(len(result.fills) >= 2, "the subject's cap must bind: one bar cannot fill the target")
+    times = [fill.fill_time for fill in result.fills]
+    require(times == sorted(set(times)), "at most one fill per bar, in time order")
+    require(times[0] == first.interval_start, "the first fill is at the execution bar")
+    require(all(fill.quantity > 0 for fill in result.fills), "every fill is in the target's way")
+    with localcontext() as ctx:
+        ctx.prec = 120
+        total = sum((fill.quantity for fill in result.fills), Decimal(0))
+        sized = record.requested_quantity * first.open
+    _same(sized, subject.initial_equity, subject, "sized once against the pre-trade equity")
+    require(record.ended_by == "filled", f"the subject's bars must fill it, got {record.ended_by}")
+    require(total == record.requested_quantity, "the fills sum exactly to the request")
+    require(record.remaining_quantity == 0, "nothing remains once filled")
+    require(record.ended_at == times[-1], "a filled remainder ends at its last fill")
+    require(result.unexecuted_targets == 0, "the target executed")
+
+
+def check_carry_over_superseded_by_a_later_target(subject: BacktestSubject) -> None:
+    first, second = subject.bars[0], subject.bars[1]
+    old, new = _target(first, Decimal(1)), _target(second, Decimal(0))
+    result = _run(subject.open(), _request(subject, (old, new), subject.costs))
+    old_record = _record(result, old)
+    require(old_record.ended_by == "superseded", f"got {old_record.ended_by}")
+    require(old_record.ended_at == second.interval_start, "superseded at the new execution bar")
+    require(old_record.remaining_quantity > 0, "the cancelled remainder is positive")
+    bought = [fill for fill in result.fills if fill.decision_time == old.decision_time]
+    require(
+        [fill.fill_time for fill in bought] == [first.interval_start],
+        "the old target fills only before the new target's execution bar",
+    )
+    new_record = _record(result, new)
+    require(
+        new_record.requested_quantity == -bought[0].quantity,
+        "the new target is sized against the actual holdings",
+    )
+    sold = [fill for fill in result.fills if fill.decision_time == new.decision_time]
+    require(bool(sold) and all(fill.quantity < 0 for fill in sold), "flattening sells")
+
+
+def check_carry_over_ends_at_the_end_of_data(subject: BacktestSubject) -> None:
+    last = subject.bars[-1]
+    target = _target(last, Decimal(1))
+    result = _run(subject.open(), _request(subject, (target,), subject.costs))
+    record = _record(result, target)
+    require(record.ended_by == "end_of_data", f"got {record.ended_by}")
+    require(record.ended_at == last.interval_start, "end_of_data ends at the last bar")
+    require(record.remaining_quantity > 0, "the cap binds, so something remains")
+
+
+def check_carry_over_no_look_ahead(subject: BacktestSubject) -> None:
+    targets = (
+        _target(subject.bars[0], Decimal(1)),
+        _target(subject.bars[len(subject.bars) // 2], Decimal(-1)),
+    )
+    base = _run(subject.open(), _request(subject, targets, subject.costs))
+    cut = len(subject.bars) // 2 + 1
+    changed = subject.bars[:cut] + tuple(
+        bar.model_copy(
+            update={
+                "open": bar.open * 2,
+                "high": bar.high * 2,
+                "low": bar.low * 2,
+                "close": bar.close * 2,
+                "volume": None if bar.volume is None else bar.volume * 7,
+            }
+        )
+        for bar in subject.bars[cut:]
+    )
+    moved_subject = BacktestSubject(
+        subject.open, changed, subject.costs, subject.initial_equity, subject.tolerance
+    )
+    moved = _run(subject.open(), _request(moved_subject, targets, subject.costs))
+    before = subject.bars[cut].interval_start
+    horizon = subject.bars[cut - 1].interval_end
+    require(
+        [p for p in base.equity_curve if p.time <= horizon]
+        == [p for p in moved.equity_curve if p.time <= horizon],
+        "equity up to t changed when only later bars changed",
+    )
+    require(
+        [f for f in base.fills if f.fill_time < before]
+        == [f for f in moved.fills if f.fill_time < before],
+        "fills before t changed when only later bars changed",
+    )
+    require(
+        [r for r in base.remainders if r.ended_at < before]
+        == [r for r in moved.remainders if r.ended_at < before],
+        "remainders ended before t changed when only later bars changed",
+    )
+    require(
+        all(fill.fill_time >= fill.decision_time for fill in base.fills),
+        "no fill may precede its decision",
+    )
+
+
+CARRY_OVER_CHECKS: tuple[BacktestCheck, ...] = (
+    check_carry_over_descriptor,
+    check_determinism,
+    check_zero_positions_zero_pnl,
+    check_no_look_ahead,
+    check_carry_over_fills_sum_to_the_target,
+    check_carry_over_superseded_by_a_later_target,
+    check_carry_over_ends_at_the_end_of_data,
+    check_carry_over_no_look_ahead,
+)
+
+
 class BacktestProviderContract:
     """pytest entry point: subclass as ``Test*`` and provide ``backtest_subject``."""
 
@@ -212,6 +383,21 @@ class BacktestProviderContract:
 
     @pytest.mark.parametrize("check", BACKTEST_CHECKS, ids=lambda check: check.__name__)
     def test_backtest_contract(
+        self, backtest_subject: BacktestSubject, check: BacktestCheck
+    ) -> None:
+        check(backtest_subject)
+
+
+class CarryOverBacktestProviderContract:
+    """pytest entry point for a ``next_bar_open_participation`` provider (ADR-0054): subclass as
+    ``Test*`` and provide ``backtest_subject`` (bars with volume, a binding cap)."""
+
+    @pytest.fixture
+    def backtest_subject(self) -> BacktestSubject:
+        raise NotImplementedError("subclasses provide backtest_subject")
+
+    @pytest.mark.parametrize("check", CARRY_OVER_CHECKS, ids=lambda check: check.__name__)
+    def test_carry_over_contract(
         self, backtest_subject: BacktestSubject, check: BacktestCheck
     ) -> None:
         check(backtest_subject)

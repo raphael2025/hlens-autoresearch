@@ -3,7 +3,7 @@
 跨 Plane DTO、JSON Schema 导出与 Provider 接口（05-plugin.md、02-domain.md §3）；Provider 接口按 ADR-0017 的节奏交付。所有 Schema 带 schema_version。
 
 `registry.py` 的 `CONTRACT_MODELS` 是"所有核心实体都有契约与 Schema 导出"的唯一来源：
-当前 134 个模型导出到 `schemas/` 顶层；`schemas/v1/` 是 v1 只读快照，导出不会写入其中。
+当前 135 个模型导出到 `schemas/` 顶层；`schemas/v1/` 是 v1 只读快照，导出不会写入其中。
 
 `revision.py`（Phase 1 B1，ADR-0023）：双时间、availability / precedence 绑定、append-only revision DAG、
 PIT 输入与 maximal-head 结果形状的 8 个契约（见 02-domain.md §2.2）。只有契约与不变量，不含 PIT 选择算法或存储。
@@ -54,3 +54,6 @@ Provider 接口的交付节奏由 ADR-0017 定下：Phase 0 只冻结职责、�
 > 当前状态（框架批次，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：研究 Provider 已交付 Feature（F4）、State（P2）、Event（P3）、Outcome（P4）、
 > Strategy / Risk / Backtest（P5）、LLM（P7）、Knowledge（P0.5）、SyntheticMarket（P9）的 Protocol；基础设施 Adapter 另交付
 > `EventBusAdapter`（P11 地基）；`ComputeEngineAdapter` 待首次消费时交付（ADR-0017）。进度见 PROJECT_STATUS.md。
+>
+> `strategy.py` 的回测契约经 ADR-0054 additive 扩展：执行模型 `next_bar_open_participation`（剩余量跨 bar 结转）、新模型
+> `FillRemainder`、可选 `PriceBar.volume` 与 `BacktestResult.remainders`（缺省时从载荷省略，既有哈希不变；信封仍为 2.0.0）。

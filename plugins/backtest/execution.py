@@ -1,15 +1,23 @@
-"""Opt-in execution realism for ``BarBacktester`` (ADR-0038 note, 2026-09-26). Simulation only.
+"""Opt-in execution realism for ``BarBacktester`` (ADR-0038 note, 2026-09-26; carry-over:
+ADR-0054). Simulation only.
 
 ``ExecutionModel`` switches on, one by one and only when its parameter is given explicitly:
 
 - **participation cap** (``max_participation_rate`` + ``bar_volume``): a fill at a bar trades at
-  most ``max_participation_rate × bar volume`` units. What does not fit is **cancelled at that bar
-  and reported** (``UnfilledRemainder``), never carried to a later bar: the frozen contract pins
-  every fill of a target to its execution bar (``BacktestResult.check_answers`` / ``execution_bar``)
-  and allows at most one fill per target (``fills + unexecuted_targets <= targets``). A strategy
-  that re-issues its target at the next decision time is re-sized against the actual holdings, so
-  the position converges bar by bar (re-targeting); carrying a single target's remainder across
-  bars needs a contract change (backlog decision D-PARTIAL);
+  most ``max_participation_rate × bar volume`` units. Under the ``next_bar_open`` execution model
+  (``carry_over=False``) what does not fit is **cancelled at that bar and reported**
+  (``UnfilledRemainder``): that model pins every fill of a target to its execution bar
+  (``BacktestResult.check_answers`` / ``execution_bar``) with at most one fill per target. A
+  strategy that re-issues its target at the next decision time is re-sized against the actual
+  holdings, so the position converges bar by bar (re-targeting);
+- **carry-over** (``carry_over=True``, ADR-0054; needs the cap): the backtester declares the
+  ``next_bar_open_participation`` execution model instead. A target is sized once, at its execution
+  bar, into a quantity change; what the cap does not let through **carries over** to the
+  instrument's next bar open, until it is filled, superseded by a later target for the instrument
+  (re-sized against the actual holdings; the old remainder is cancelled) or the data end. The bar
+  volume comes from ``PriceBar.volume`` (a bar on the carry path without one is refused, never
+  filled in); ``bar_volume`` is optional here and, when given, must agree with it. Each sized
+  target's record is a ``FillRemainder`` in ``BacktestResult.remainders``;
 - **square-root market impact** (``impact_coefficient`` + ``bar_volume``): the fill price moves
   against the trade by ``impact_coefficient × sqrt(participation)`` of the reference price, with
   ``participation = |quantity| / bar volume`` (= traded notional / bar volume notional). This is the
@@ -26,12 +34,15 @@
   ``final_equity`` / PnL, **not** in ``total_fees`` / ``total_slippage``; it is itemised in the
   ``ExecutionReport`` (``FundingCharge`` per bar step).
 
-No parameter has a default value: ``None`` means *off*. Bar volume is not a field of the frozen
-``PriceBar``, so it is supplied here — traded quantity per ``(instrument, interval_start)``, the
-same shape as ``research.strategies.validation.ValidatorSetup.bar_volume`` — and is bound, together
-with every parameter, into ``fingerprint``, which ``BarBacktester`` puts into the descriptor's
-version build metadata and thereby into ``BacktestResult.provider_hash``. A trade at a bar whose
-volume is missing is refused (``BacktestInputError``), never filled in.
+No parameter has a default value: ``None`` means *off* (``carry_over`` defaults to ``False``, the
+pre-existing behaviour). Without carry-over, bar volume is supplied here — traded quantity per
+``(instrument, interval_start)``, the same shape as
+``research.strategies.validation.ValidatorSetup.bar_volume`` — and is bound, together with every
+parameter, into ``fingerprint``, which ``BarBacktester`` puts into the descriptor's version build
+metadata and thereby into ``BacktestResult.provider_hash`` (with carry-over, the volumes are in the
+request's ``PriceBar.volume`` and so in ``request_hash``). A trade at a bar whose volume is missing
+is refused (``BacktestInputError``), never filled in; a ``bar_volume`` entry that disagrees with the
+bar's own ``PriceBar.volume`` is refused too (ADR-0054 §4).
 """
 
 from __future__ import annotations
@@ -43,6 +54,7 @@ from decimal import Decimal
 from types import MappingProxyType
 from typing import Final
 
+from core.contracts.strategy import FillRemainder
 from core.domain.base import content_hash
 
 __all__ = [
@@ -98,7 +110,10 @@ class ExecutionModel:
     - ``impact_coefficient``: ``>= 0``, square-root law (``IMPACT_MODEL``); needs ``bar_volume``;
     - ``short_borrow_rate`` / ``cash_borrow_rate``: in ``[0, 1)`` per bar step;
     - ``bar_volume``: traded quantity (``>= 0``) per ``(instrument, interval_start)``; required by,
-      and only accepted with, the cap or the impact.
+      and only accepted with, the cap or the impact (optional with ``carry_over``, whose volumes
+      come from ``PriceBar.volume``);
+    - ``carry_over`` (ADR-0054): ``True`` carries the cap's remainder to later bars
+      (``next_bar_open_participation``); needs ``max_participation_rate``.
 
     At least one behaviour must be switched on — with none, use ``BarBacktester()``.
     """
@@ -108,8 +123,13 @@ class ExecutionModel:
     short_borrow_rate: Decimal | None = None
     cash_borrow_rate: Decimal | None = None
     bar_volume: Mapping[VolumeKey, Decimal] | None = field(default=None, repr=False)
+    carry_over: bool = False
 
     def __post_init__(self) -> None:
+        if not isinstance(self.carry_over, bool):
+            raise TypeError("carry_over must be a bool")
+        if self.carry_over and self.max_participation_rate is None:
+            raise ValueError("carry_over needs max_participation_rate (nothing to carry otherwise)")
         if self.max_participation_rate is not None:
             rate = _decimal(self.max_participation_rate, "max_participation_rate")
             if not Decimal(0) < rate <= Decimal(1):
@@ -121,7 +141,7 @@ class ExecutionModel:
         _rate(self.cash_borrow_rate, "cash_borrow_rate")
         if not (self.needs_volume or self.charges_funding):
             raise ValueError("an ExecutionModel must switch on at least one behaviour")
-        if self.needs_volume and self.bar_volume is None:
+        if self.needs_volume and self.bar_volume is None and not self.carry_over:
             raise ValueError("the participation cap and the impact model need bar_volume")
         if not self.needs_volume and self.bar_volume is not None:
             raise ValueError("bar_volume is only accepted with the participation cap or impact")
@@ -165,7 +185,7 @@ class ExecutionModel:
             if self.impact_coefficient is None
             else {"model": IMPACT_MODEL, "coefficient": _canonical(self.impact_coefficient)}
         )
-        return {
+        payload: dict[str, object] = {
             "execution_model": "hlens_bar_execution",
             "revision": _REVISION,
             "max_participation_rate": _canonical(self.max_participation_rate),
@@ -174,6 +194,9 @@ class ExecutionModel:
             "cash_borrow_rate": _canonical(self.cash_borrow_rate),
             "bar_volume": volumes,
         }
+        if self.carry_over:  # absent when off: pre-existing fingerprints stay bit-identical
+            payload["carry_over"] = True
+        return payload
 
     def volume(self, instrument: str, interval_start: datetime) -> Decimal | None:
         if self.bar_volume is None:
@@ -183,7 +206,8 @@ class ExecutionModel:
 
 @dataclass(frozen=True)
 class UnfilledRemainder:
-    """A target's trade cut by the participation cap at its execution bar; the rest is cancelled."""
+    """A target's trade cut by the participation cap at its execution bar; the rest is cancelled
+    (``next_bar_open`` only; with ``carry_over`` see ``ExecutionReport.carried``)."""
 
     instrument: str
     decision_time: datetime
@@ -221,6 +245,8 @@ class ExecutionReport:
     """What ``BacktestResult`` cannot carry, bound to it by ``result_hash``.
 
     ``execution_fingerprint`` is ``None`` for the default (v1) backtester, whose report is empty.
+    ``remainders`` lists the cap's cancelled remainders (``next_bar_open`` only); ``carried`` is,
+    with ``carry_over``, exactly ``BacktestResult.remainders`` (ADR-0054), and empty otherwise.
     """
 
     result_hash: str
@@ -230,3 +256,4 @@ class ExecutionReport:
     funding: tuple[FundingCharge, ...]
     total_impact: Decimal
     total_funding: Decimal
+    carried: tuple[FillRemainder, ...] = ()
