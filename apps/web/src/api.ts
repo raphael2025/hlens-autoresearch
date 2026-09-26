@@ -17,6 +17,9 @@ export type KnowledgeItem = Schemas["KnowledgeItem"];
 export type JobList = Schemas["JobList"];
 export type JobView = Schemas["JobView"];
 export type JobStatus = Schemas["JobStatus"];
+export type Health = Schemas["Health"];
+export type ContractNames = Schemas["ContractNames"];
+export type LifecycleTransition = Schemas["LifecycleTransition"];
 
 const BASE = "/api";
 
@@ -36,15 +39,15 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   return (await response.json()) as T;
 }
 
-export function getHealth(): Promise<{ status: string; api_version: string }> {
+export function getHealth(): Promise<Health> {
   return request("/health");
 }
 
-export function getContracts(): Promise<string[]> {
+export function getContracts(): Promise<ContractNames> {
   return request("/contracts");
 }
 
-export function getLifecycleTransitions(): Promise<Array<{ from: string; to: string }>> {
+export function getLifecycleTransitions(): Promise<LifecycleTransition[]> {
   return request("/lifecycle/transitions");
 }
 

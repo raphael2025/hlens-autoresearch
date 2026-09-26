@@ -22,7 +22,7 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 `{kind}` ∈ `validation_report` \| `research_loop_round` \| `state_strategy_matrix` \| `router_paper_run` \|
 `gate_calibration` \| `router_stop` \| `state_diagnostics` \| `event_statistics`（后三种 2026-09-26 加入，
 CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳定性诊断、Phase 3 事件统计；写入方见
-`research/reports/README.md`，与其他非 `research_loop_round` 的 kind 一样不透明提供）。
+`research/reports/README.md`）。除 `state_strategy_matrix` 外，每个 kind 都做契约 / 身份校验（见下）。
 
 ## Report 端点（研究控制台，2026-09-25 新增）
 
@@ -34,9 +34,9 @@ CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳�
 ```
 
 - `create_app(reports_root=None)`（默认）：所有 `/reports/*` 端点返回空列表 / 404，不报错。
-- 目录约定：`<reports_root>/<kind>/<id>.json`，每个文件一个 JSON 对象（payload 内部结构不由本层解释；
-  唯一例外是 `research_loop_round`：它必须是合法的 `LoopRoundRecord`（ADR-0050）且 `id` 等于其 `record_hash`，
-  否则视为 malformed——列表跳过、单条读取返回 422）。
+- 目录约定：`<reports_root>/<kind>/<id>.json`，每个文件一个 JSON 对象。`research_loop_round` 必须是合法的
+  `LoopRoundRecord`（ADR-0050）且 `id` 等于其 `record_hash`；其他 kind 的校验见下节。不通过即 malformed——
+  列表中列入 `invalid`、单条读取返回 422。
 - `content_hash`：payload 规范 JSON（排序键、紧凑分隔符）的 SHA-256。
 - 拒绝路径穿越：`id` 必须匹配安全文件名模式且解析后仍在对应 `kind` 目录内，否则 400；未知
   `kind` 由 FastAPI 的枚举校验直接 422；损坏的 JSON 文件在列表接口中被跳过，在详情接口中报错。
@@ -65,4 +65,27 @@ CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳�
   `job_rerun` 行，而 API 没有声明该处理器幂等，重放会（与运行器一样）拒绝这段历史 → 每个 `/jobs` 请求都 500。
   API 没有处理器表，无法核对这些名字；这是 fail closed 的有意选择，不是 bug。
 - 已知限制（DEBUG_PENDING）：读取与运行器的追加并发时可能读到半行 → 该次 500，重试即可；知识检索与任务端点
-  尚未在真实部署中验证。`GET /reports/{kind}/{id}` 的 422 `detail` 仍含文件路径（沿用旧行为）。
+  尚未在真实部署中验证。
+
+## 报告契约 / 身份校验与错误体（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+`research/reports` 的每个写入方都用报告自身的内容身份命名文件。`ReportStore` 只依据 payload 字段
+重新计算该身份（不 import `research/`，用 `core.domain.base.content_hash` 复述每个写入方的哈希规则），
+文件名、记录的哈希与字段三者不一致即 malformed：
+
+| kind | 校验（文件 id 必须等于该身份） |
+|---|---|
+| `validation_report` | 合法的 `core.domain.research.ValidationReport`，规范 JSON 往返一致；id = `content_hash()` |
+| `router_paper_run` | `run_hash` = 其绑定字段的哈希（`research/router/paper.py` `_run_hash`） |
+| `router_stop` | `stop_hash` = `{"kind": "router_stop", 其余全部字段}` 的哈希 |
+| `state_diagnostics` | id = 整个 payload 的哈希（`diagnostics_hash`） |
+| `event_statistics` / `gate_calibration` | `report_hash` = 去掉它之后 payload 的哈希 |
+
+诚实边界：哈希不绑定的展示字段（路由运行的权益曲线、首末权益、每个决策的 `switching_cost`）不被核对；
+`state_strategy_matrix` 仍不透明提供（其 `matrix_hash` 无法只凭 payload 重算）。
+
+- **错误体不含服务器路径**：malformed 报告的 422 `detail` 为 `<kind>/<id> is malformed: <原因>`；本层所有
+  `HTTPException` 经同一处理器把绝对路径缩成最后一段（`public_detail`），知识 provider 的 `OSError` 文本同样如此。
+- **OpenAPI**：`GET /reports/{kind}/{id}` 的 422 声明为 `ApiError | HTTPValidationError`（存储拒绝，或未知
+  `kind` 的请求校验）。`/health` → `Health`、`/contracts` → `ContractNames`、`/lifecycle/transitions` →
+  `LifecycleTransition[]`，JSON 与之前逐字段相同。

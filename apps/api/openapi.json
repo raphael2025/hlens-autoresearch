@@ -15,6 +15,14 @@
         "title": "ApiError",
         "type": "object"
       },
+      "ContractNames": {
+        "description": "``GET /contracts``: the registered contract model names, sorted.",
+        "items": {
+          "type": "string"
+        },
+        "title": "ContractNames",
+        "type": "array"
+      },
       "EvidenceLevel": {
         "description": "\u77e5\u8bc6\u6761\u76ee\u7684\u8bc1\u636e\u7b49\u7ea7\uff08docs/research/knowledge-base.md\uff09\u3002",
         "enum": [
@@ -38,6 +46,25 @@
           }
         },
         "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "Health": {
+        "description": "``GET /health``.",
+        "properties": {
+          "api_version": {
+            "title": "Api Version",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "api_version"
+        ],
+        "title": "Health",
         "type": "object"
       },
       "InvalidReport": {
@@ -383,6 +410,25 @@
         "title": "KnowledgeStatus",
         "type": "string"
       },
+      "LifecycleTransition": {
+        "description": "One allowed lifecycle transition (``GET /lifecycle/transitions``), ``{\"from\", \"to\"}``.",
+        "properties": {
+          "from": {
+            "title": "From",
+            "type": "string"
+          },
+          "to": {
+            "title": "To",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from",
+          "to"
+        ],
+        "title": "LifecycleTransition",
+        "type": "object"
+      },
       "Ref": {
         "additionalProperties": false,
         "description": "\u5bf9\u8c61\u5f15\u7528\uff1a`{kind}:{name}@{version}`\u3002",
@@ -550,11 +596,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "items": {
-                    "type": "string"
-                  },
-                  "title": "Response Contracts Contracts Get",
-                  "type": "array"
+                  "$ref": "#/components/schemas/ContractNames"
                 }
               }
             },
@@ -572,11 +614,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "additionalProperties": {
-                    "type": "string"
-                  },
-                  "title": "Response Health Health Get",
-                  "type": "object"
+                  "$ref": "#/components/schemas/Health"
                 }
               }
             },
@@ -770,10 +808,7 @@
               "application/json": {
                 "schema": {
                   "items": {
-                    "additionalProperties": {
-                      "type": "string"
-                    },
-                    "type": "object"
+                    "$ref": "#/components/schemas/LifecycleTransition"
                   },
                   "title": "Response Transitions Lifecycle Transitions Get",
                   "type": "array"
@@ -881,11 +916,18 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ApiError"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HTTPValidationError"
+                    }
+                  ]
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "The report file is malformed or fails its kind's contract / identity check (ApiError), or the request is invalid (HTTPValidationError)"
           }
         },
         "summary": "Get Report"

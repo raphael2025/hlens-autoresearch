@@ -7,11 +7,29 @@ JSON files under a configured directory, and this module only reads them
 back. The payload is served as ``payload`` inside a small envelope (``kind``, ``id``, ``created``,
 ``payload``, ``content_hash``); adding a new report kind never requires a contract change here.
 
-Only the ``research_loop_round`` kind is checked against a contract (ADR-0050): its payload must be
+The ``research_loop_round`` kind is checked against a contract (ADR-0050): its payload must be
 a valid ``core.contracts.loop_audit.LoopRoundRecord`` that round-trips byte-identically, and the
 file's ``id`` must be that record's ``record_hash`` (the writer names files by it). A file that
 fails either check is malformed — never served as a report — so an edited or ill-formed audit
-record is never served as one. Other kinds are still served opaquely.
+record is never served as one.
+
+Contract and identity checks of the other kinds (2026-09-26; CODE_COMPLETE / DEBUG_PENDING). Every
+``research/reports`` writer names a file by the report's own content identity; the store
+recomputes that identity from the payload fields (it never imports ``research/``; the rules below
+restate each writer's hash with ``core.domain.base.content_hash``) and refuses a file whose name,
+recorded hash and fields disagree:
+
+| kind | contract / identity (file id must equal it) |
+|---|---|
+| ``validation_report`` | a ``core.domain.research.ValidationReport`` that round-trips; its hash |
+| ``router_paper_run`` | ``run_hash`` = hash of the fields it binds (``paper.py`` ``_run_hash``) |
+| ``router_stop`` | ``stop_hash`` = hash of ``{"kind": "router_stop", <every other field>}`` |
+| ``state_diagnostics`` | id = hash of the whole payload (``diagnostics_hash``) |
+| ``event_statistics`` / ``gate_calibration`` | ``report_hash`` = hash of the payload without it |
+
+Honest boundary: display-only fields a hash does not bind (the router run's equity curves,
+endpoints and per-decision ``switching_cost``) are not verified; ``state_strategy_matrix`` is still
+served opaquely (its ``matrix_hash`` is not recomputable from the payload alone).
 
 Malformed files are **visible, not silent** (2026-09-26; CODE_COMPLETE / DEBUG_PENDING):
 :meth:`ReportStore.listing` (behind ``GET /reports/{kind}``) returns the well-formed reports *and*
@@ -31,14 +49,17 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 from pydantic import BaseModel, ConfigDict
 
 from core.contracts.loop_audit import LoopRoundRecord
+from core.domain.base import canonical_json, content_hash
+from core.domain.research import ValidationReport
 
 __all__ = [
     "InvalidReport",
@@ -78,8 +99,8 @@ class ReportNotFound(LookupError):
 
 
 class ReportMalformed(ValueError):
-    """Raised when a report file is not a well-formed JSON object (or, for ``research_loop_round``,
-    not a valid record named by its hash). ``reason`` is the message without the file's path."""
+    """Raised when a report file is not a well-formed JSON object, or fails its kind's contract /
+    identity check (module docs). ``reason`` is the message without the file's path."""
 
     def __init__(self, path: Path, reason: str) -> None:
         super().__init__(f"{path}: {reason}")
@@ -136,10 +157,120 @@ def _check_loop_round(path: Path, payload: dict[str, Any]) -> None:
         raise ReportMalformed(path, "the file name is not the record's record_hash")
 
 
+def _check_validation_report(path: Path, payload: dict[str, Any]) -> None:
+    """A ``validation_report`` file holds a valid ``ValidationReport`` named by its content hash
+    (``research/reports/validation.py`` writes ``report.model_dump(mode="json")`` under
+    ``report.content_hash()``)."""
+    try:
+        report = ValidationReport.model_validate(payload)
+        same = canonical_json(report.model_dump(mode="json")) == canonical_json(payload)
+    except (TypeError, ValueError) as exc:  # pydantic's ValidationError is a ValueError
+        raise ReportMalformed(path, f"not a valid ValidationReport: {exc}") from exc
+    if not same:
+        raise ReportMalformed(path, "the ValidationReport payload does not round-trip")
+    if report.content_hash() != path.stem:
+        raise ReportMalformed(path, "the file name is not the report's content hash")
+
+
+def _hash_of(path: Path, body: Any, what: str) -> str:
+    try:
+        return content_hash(body)
+    except (TypeError, ValueError) as exc:  # e.g. a NaN literal: not canonical JSON
+        raise ReportMalformed(path, f"the fields bound by {what} are not canonical JSON") from exc
+
+
+def _require_identity(path: Path, payload: dict[str, Any], field: str, expected: str) -> None:
+    """The recorded ``field`` must be ``expected`` (recomputed) and the file must be named by it."""
+    if payload.get(field) != expected:
+        raise ReportMalformed(path, f"{field} does not match the payload it binds")
+    if path.stem != expected:
+        raise ReportMalformed(path, f"the file name is not the report's {field}")
+
+
+def _self_hashed(field: str) -> Callable[[Path, dict[str, Any]], None]:
+    """``field`` is the content hash of the payload without it (and the file is named by it)."""
+
+    def check(path: Path, payload: dict[str, Any]) -> None:
+        body = {key: value for key, value in payload.items() if key != field}
+        _require_identity(path, payload, field, _hash_of(path, body, field))
+
+    return check
+
+
+def _check_state_diagnostics(path: Path, payload: dict[str, Any]) -> None:
+    """``diagnostics_hash`` is the content hash of the whole payload; the file is named by it."""
+    if path.stem != _hash_of(path, payload, "diagnostics_hash"):
+        raise ReportMalformed(path, "the file name is not the report's diagnostics_hash")
+
+
+#: The routing decision fields ``run_hash`` binds (``switching_cost`` is display-only).
+_DECISION_FIELDS: Final = ("at", "state", "weights", "turnover")
+_RUN_FIELDS: Final = (
+    "router",
+    "router_spec_hash",
+    "state_result_hash",
+    "strategy_result_hashes",
+    "request_hash",
+    "gross_result_hash",
+    "charges",
+    "result_hash",
+)
+_STOP_FIELDS: Final = (
+    "router",
+    "router_spec_hash",
+    "reason",
+    "detail",
+    "lifecycle",
+    "state_result_hash",
+    "strategy_result_hashes",
+    "validation_reports",
+)
+#: Keys only present when supplied / in evidence mode (absent: not hashed, as the writer does).
+_OPTIONAL_RUN_FIELDS: Final = ("validation_reports", "eligibility")
+
+
+def _check_router_paper_run(path: Path, payload: dict[str, Any]) -> None:
+    """``run_hash`` restated from ``research/router/paper.py`` ``_run_hash`` over the payload."""
+    try:
+        body: dict[str, Any] = {key: payload[key] for key in _RUN_FIELDS}
+        body["decisions"] = [
+            {key: decision[key] for key in _DECISION_FIELDS} for decision in payload["decisions"]
+        ]
+    except (KeyError, TypeError) as exc:
+        raise ReportMalformed(path, f"lacks a field bound by run_hash: {exc}") from exc
+    for key in _OPTIONAL_RUN_FIELDS:
+        if key in payload:
+            body[key] = payload[key]
+    _require_identity(path, payload, "run_hash", _hash_of(path, body, "run_hash"))
+
+
+def _check_router_stop(path: Path, payload: dict[str, Any]) -> None:
+    """``stop_hash`` restated from ``research/router/paper.py`` ``_stop_record``."""
+    try:
+        body: dict[str, Any] = {"kind": "router_stop"} | {key: payload[key] for key in _STOP_FIELDS}
+    except KeyError as exc:
+        raise ReportMalformed(path, f"lacks a field bound by stop_hash: {exc}") from exc
+    if "eligibility" in payload:  # evidence mode only
+        body["eligibility"] = payload["eligibility"]
+    _require_identity(path, payload, "stop_hash", _hash_of(path, body, "stop_hash"))
+
+
 def _validate_id(report_id: str) -> str:
     if not _SAFE_ID.fullmatch(report_id) or ".." in report_id:
         raise InvalidReportId(f"invalid report id: {report_id!r}")
     return report_id
+
+
+#: The contract / identity check of every kind that has one (module docs).
+_CHECKS: Final[dict[ReportKind, Callable[[Path, dict[str, Any]], None]]] = {
+    ReportKind.VALIDATION_REPORT: _check_validation_report,
+    ReportKind.RESEARCH_LOOP_ROUND: _check_loop_round,
+    ReportKind.ROUTER_PAPER_RUN: _check_router_paper_run,
+    ReportKind.ROUTER_STOP: _check_router_stop,
+    ReportKind.STATE_DIAGNOSTICS: _check_state_diagnostics,
+    ReportKind.EVENT_STATISTICS: _self_hashed("report_hash"),
+    ReportKind.GATE_CALIBRATION: _self_hashed("report_hash"),
+}
 
 
 class ReportStore:
@@ -194,8 +325,9 @@ class ReportStore:
             raise ReportMalformed(path, "unreadable or not well-formed JSON") from exc
         if not isinstance(payload, dict):
             raise ReportMalformed(path, "JSON root must be an object")
-        if kind is ReportKind.RESEARCH_LOOP_ROUND:
-            _check_loop_round(path, payload)
+        check = _CHECKS.get(kind)
+        if check is not None:
+            check(path, payload)
         created = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         return ReportEnvelope(
             kind=kind,

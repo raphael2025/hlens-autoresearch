@@ -153,6 +153,11 @@ export interface components {
             detail: string;
         };
         /**
+         * ContractNames
+         * @description ``GET /contracts``: the registered contract model names, sorted.
+         */
+        ContractNames: string[];
+        /**
          * EvidenceLevel
          * @description 知识条目的证据等级（docs/research/knowledge-base.md）。
          * @enum {string}
@@ -162,6 +167,16 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * Health
+         * @description ``GET /health``.
+         */
+        Health: {
+            /** Api Version */
+            api_version: string;
+            /** Status */
+            status: string;
         };
         /**
          * InvalidReport
@@ -337,6 +352,16 @@ export interface components {
          */
         KnowledgeStatus: "unverified" | "supported" | "contradicted" | "inconclusive";
         /**
+         * LifecycleTransition
+         * @description One allowed lifecycle transition (``GET /lifecycle/transitions``), ``{"from", "to"}``.
+         */
+        LifecycleTransition: {
+            /** From */
+            from: string;
+            /** To */
+            to: string;
+        };
+        /**
          * Ref
          * @description 对象引用：`{kind}:{name}@{version}`。
          */
@@ -428,7 +453,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": string[];
+                    "application/json": components["schemas"]["ContractNames"];
                 };
             };
         };
@@ -448,9 +473,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    };
+                    "application/json": components["schemas"]["Health"];
                 };
             };
         };
@@ -626,9 +649,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": {
-                        [key: string]: string;
-                    }[];
+                    "application/json": components["schemas"]["LifecycleTransition"][];
                 };
             };
         };
@@ -703,13 +724,13 @@ export interface operations {
                     "application/json": components["schemas"]["ApiError"];
                 };
             };
-            /** @description Validation Error */
+            /** @description The report file is malformed or fails its kind's contract / identity check (ApiError), or the request is invalid (HTTPValidationError) */
             422: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
+                    "application/json": components["schemas"]["ApiError"] | components["schemas"]["HTTPValidationError"];
                 };
             };
         };
