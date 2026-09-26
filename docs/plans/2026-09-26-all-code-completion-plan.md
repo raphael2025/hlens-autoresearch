@@ -309,3 +309,15 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - `apps/web/src/lib/routerEligibility.ts`、`components/EligibilityEvidence.tsx`、`routerStop.ts`、`RouterStops.tsx`、`RouterPaperRuns.tsx`：三种停止原因中文标签 + 原码；证据模式下逐策略证据表（生命周期、报告哈希、主体、判定、G5、结果 / 拒绝原因）；
   无法解析的证据项以警告计数，不当作"无证据"；信任模式载荷不多显示任何内容。
 - 本分支集成后实际运行：`npm test` → tests 43 / pass 43 / fail 0；`npm run build` → ✓ built。未在浏览器对真实后端手工验证。
+
+### 10.5 Codex 全代码复核（`1d5427f`，`docs/reviews/2026-09-26-codex-full-code-review.md`）后的执行
+
+本分支已快进到 Codex 复核提交 `1d5427f`，按其顺序执行：K1 → K2 文档同步 → K3（ADR-0052 按 2.1.0，旧 2.0.0 数据原样可读可重放，否则交付阻断证据）；K4（PIT 边重复）属 Phase 1，不在本分支修改。
+自主决策记录中 ADR-0052 "保持 2.0.0" 一行已被 K3 取代。
+
+**B19 — K1：知识库 `verify` 对孤立 `.review` 返回 0**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- `plugins/knowledge/cli.py`：存在无对应条目的审阅记录（崩溃的 `add`）即拒绝，退出码 1，stderr 列出文件并提示"重跑同一 add 即补全"；恢复路径保留。
+- 回归测试 `test_cli_verify_fails_on_an_orphan_review_and_the_same_add_recovers`（断言退出码、stderr、同内容 `add` 恢复后 `verify` 为 0）。
+- 旧版本复现（把 `HEAD:plugins/knowledge/cli.py` 载入临时模块，同一孤立审阅目录）：`old verify exit code: 0`；修复后 `new verify exit code: 1`。
+- 实际运行：`uv run pytest -q -m "not postgres" tests/plugins/knowledge` → 50 passed in 0.14s；`ruff check` → All checks passed；`mypy plugins/knowledge tests/plugins/knowledge` → no issues in 8 files。

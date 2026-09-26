@@ -255,3 +255,30 @@ def test_cli_verify_flags_an_unreviewed_store_file(
 def test_cli_verify_passes_on_the_repository_seed_base(capsys: pytest.CaptureFixture[str]) -> None:
     assert main(["verify", "--items-dir", str(DEFAULT_ITEMS_DIR)]) == 0
     assert capsys.readouterr().out.strip().endswith("items load cleanly")
+
+
+def test_cli_verify_fails_on_an_orphan_review_and_the_same_add_recovers(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Codex review K1: a crash between the review record and the item file must not verify."""
+    store = _store(tmp_path)
+    store.add(ITEM, reviewed_by="raphael")
+    item_path, review_path = store.paths_for(str(ITEM["name"]), str(ITEM["version"]))
+    item_path.unlink()  # the state a crash after the review record leaves behind
+    assert review_path.exists() and not item_path.exists()
+    capsys.readouterr()
+
+    assert main(["verify", "--items-dir", str(tmp_path)]) == 1
+    out, err = capsys.readouterr()
+    assert "incomplete add (review without item)" in err
+    assert review_path.name in err and "re-run the same add" in err
+    assert "load cleanly" not in out
+
+    batch = tmp_path.parent / f"{tmp_path.name}-recover.json"
+    batch.write_text(json.dumps(ITEM), encoding="utf-8")
+    add = ["add", "--reviewed-by", "raphael", "--items-dir", str(tmp_path), str(batch)]
+    assert main(add) == 0
+    assert item_path.exists()
+    assert main(["verify", "--items-dir", str(tmp_path)]) == 0
+    out, err = capsys.readouterr()
+    assert err == "" and "1 items load cleanly" in out

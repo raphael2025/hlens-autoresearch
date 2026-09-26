@@ -6,7 +6,9 @@
 ``add`` reads one ``KnowledgeItem`` object or a list of them. Every item is checked (contract,
 source / licence, reviewer, conflicts with the directory and within the batch) before anything is
 written, so an invalid batch writes nothing. ``verify`` loads the directory with the provider rules
-and re-verifies every review record. Exit status: 0 on success, 1 on a refused or invalid input.
+and re-verifies every review record; a review record without its item (a crashed ``add``) is not a
+clean state and fails ``verify`` (re-running the same ``add`` completes it). Exit status: 0 on
+success, 1 on a refused or invalid input or an unclean directory.
 The HTTP API stays read-only (ADR-0048).
 """
 
@@ -76,9 +78,16 @@ def _verify(store: LocalKnowledgeStore) -> list[str]:
     for item_path in sorted(store.items_dir.glob("item-*.json")):
         if not item_path.with_suffix(".review").exists():
             raise KnowledgeWriteError(f"{item_path.name} has no review record")
-    for review_path in sorted(store.items_dir.glob("item-*.review")):
-        if not review_path.with_suffix(".json").exists():
-            lines.append(f"incomplete add (review without item): {review_path.name}")
+    orphans = [
+        review_path.name
+        for review_path in sorted(store.items_dir.glob("item-*.review"))
+        if not review_path.with_suffix(".json").exists()
+    ]
+    if orphans:  # a crashed add: not a clean state (re-running the same add completes it)
+        raise KnowledgeWriteError(
+            f"incomplete add (review without item): {', '.join(orphans)}; "
+            "re-run the same add to complete it"
+        )
     lines.append(f"{len(provider.items)} items load cleanly")
     return lines
 
