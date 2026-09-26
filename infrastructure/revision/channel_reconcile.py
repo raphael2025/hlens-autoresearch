@@ -57,6 +57,7 @@ from core.contracts.catalog import (
     BatchConflict,
     CommitConflict,
     CommitRequest,
+    SnapshotInfo,
     SnapshotNotFound,
     TableNotFound,
 )
@@ -605,39 +606,55 @@ class ChannelReconciler:
     ) -> None:
         """Every committed edge row of the partition is exactly what an edge batch committed.
 
-        D3E-R3: an edge row is not a free input either. Each of this partition's edge batch
-        snapshots (id prefix ``<policy>@<version>.edges.<data type>.<symbol>.<day>.``) is
-        re-read by time travel — rows at the snapshot minus rows at its parent — and must match
-        its committed row count, content-derived id and fingerprint. The partition's current edge
-        rows must then be exactly those committed rows: a row no edge batch committed (forged or
-        re-committed with another ``knowledge_time``) or a committed row that is gone fails
-        closed.
+        D3E-R3: an edge row is not a free input either. Each edge batch snapshot (id prefix
+        ``<policy>@<version>.edges.<data type>.<symbol>.<day>.``) that can hold an edge of this
+        partition's keys is re-read by time travel — rows at the snapshot minus rows at its
+        parent — and must match its committed row count, content-derived id and fingerprint. The
+        partition's current edge rows must then be exactly those committed rows: a row no edge
+        batch committed (forged or re-committed with another ``knowledge_time``), a row two
+        batches committed, or a committed row of these keys that is gone fails closed.
+
+        Cross-day keys: an aggTrade key's REST revisions can fall on different UTC days, so
+        every partition holding one of them reads the same revisions and derives the same edges,
+        and whichever reconciles first commits them under **its own** day prefix. The batches
+        checked are therefore those of every UTC day on which a REST revision of this
+        partition's keys falls (a legitimate batch of another day only ever holds edges of that
+        day's keys, and a key belongs to a day because one of its REST revisions does; REST rows
+        are append-only). A batch is always re-read with the key set of the partition that wrote
+        it — never a subset — so its complete row set is what gets re-checked.
         """
-        definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
         head = pinned.evidence_snapshot
         keys = sorted({row["observation_key"] for row in pinned.rest_rows})
-        prefix = _edge_batch_prefix((data_type, symbol, day))
+        column = _TIME_COLUMNS[data_type]
+        # The partitions whose edge batches can hold an edge of these keys, and their key sets.
+        partitions: dict[str, tuple[date, Sequence[str]]] = {
+            _edge_batch_prefix((data_type, symbol, day)): (day, keys)
+        }
+        for other in sorted({_utc_day(row[column]) for row in pinned.rest_rows} - {day}):
+            partitions[_edge_batch_prefix((data_type, symbol, other))] = (
+                other,
+                self._day_keys(data_type, symbol, other, pinned.rest_snapshot),
+            )
         committed: dict[str, Mapping[str, Any]] = {}
         snapshot_id = head
         while snapshot_id is not None:
             snapshot = self._adapter.get_snapshot(EVIDENCE_TABLE, snapshot_id)
             parent = snapshot.parent_snapshot_id
-            if snapshot.batch_id is not None and snapshot.batch_id.startswith(prefix):
-                after = self._rows_at(keys, snapshot.snapshot_id)
-                before = {} if parent is None else self._rows_at(keys, parent)
-                added = {edge_id: row for edge_id, row in after.items() if edge_id not in before}
-                ordered = [added[edge_id] for edge_id in sorted(added)]
-                table = pa.Table.from_pylist(
-                    [dict(row) for row in ordered], schema=definition.arrow_schema
+            owner = None
+            if snapshot.batch_id is not None:
+                owner = next(
+                    (
+                        partition
+                        for prefix, partition in partitions.items()
+                        if snapshot.batch_id.startswith(prefix)
+                    ),
+                    None,
                 )
-                if (
-                    len(ordered) != snapshot.added_rows
-                    or snapshot.batch_id != _edge_batch_id((data_type, symbol, day), added)
-                    or snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(table)
-                ):
-                    raise CatalogIntegrityError(
-                        f"edge batch {snapshot.batch_id} no longer reproduces from its snapshot"
-                    )
+            if owner is not None:
+                owner_day, owner_keys = owner
+                added = self._edge_batch_rows(
+                    (data_type, symbol, owner_day), owner_keys, snapshot, parent
+                )
                 for edge_id, row in added.items():
                     if edge_id in committed:
                         raise CatalogIntegrityError(f"evidence edge {edge_id} is committed twice")
@@ -650,9 +667,62 @@ class ChannelReconciler:
                     f"evidence edge {edge_id} is not exactly what an edge batch of this "
                     "partition committed"
                 )
-        missing = sorted(set(committed) - set(current))
+        own = set(keys)
+        missing = sorted(
+            edge_id
+            for edge_id, row in committed.items()
+            if row["observation_key"] in own and edge_id not in current
+        )
         if missing:
             raise CatalogIntegrityError(f"committed evidence edge {missing[0]} is gone")
+
+    def _edge_batch_rows(
+        self,
+        partition: tuple[str, str, date],
+        keys: Sequence[str],
+        snapshot: SnapshotInfo,
+        parent: str | None,
+    ) -> dict[str, Mapping[str, Any]]:
+        """The complete row set of one edge batch of ``partition``, proven to reproduce it.
+
+        ``keys`` is that partition's key set now: a superset of the one the batch was derived
+        from (REST rows are append-only), so the time-travel diff holds every row it added.
+        """
+        definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+        after = self._rows_at(keys, snapshot.snapshot_id)
+        before = {} if parent is None else self._rows_at(keys, parent)
+        added = {edge_id: row for edge_id, row in after.items() if edge_id not in before}
+        ordered = [added[edge_id] for edge_id in sorted(added)]
+        table = pa.Table.from_pylist([dict(row) for row in ordered], schema=definition.arrow_schema)
+        if (
+            len(ordered) != snapshot.added_rows
+            or snapshot.batch_id != _edge_batch_id(partition, added)
+            or snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(table)
+        ):
+            raise CatalogIntegrityError(
+                f"edge batch {snapshot.batch_id} no longer reproduces from its snapshot"
+            )
+        return added
+
+    def _day_keys(
+        self, data_type: str, symbol: str, day: date, rest_snapshot: str | None
+    ) -> list[str]:
+        """The observation keys of one partition, read at the pinned REST snapshot."""
+        if rest_snapshot is None:  # pragma: no cover - a REST row was read, so it has one
+            raise CatalogIntegrityError("a REST row was read from a table without a snapshot")
+        start = datetime.combine(day, time(), tzinfo=UTC)
+        column = _TIME_COLUMNS[data_type]
+        rows = self._adapter.scan_columns(
+            _REST_TABLES[data_type].table,
+            columns=("observation_key",),
+            row_filter=_all(
+                _equals("symbol", symbol),
+                _at_least(column, start),
+                _below(column, start + _DAY),
+            ),
+            snapshot_id=rest_snapshot,
+        ).to_pylist()
+        return sorted({row["observation_key"] for row in rows})
 
     def _rows_at(self, keys: Sequence[str], snapshot_id: str) -> dict[str, Mapping[str, Any]]:
         columns = tuple(field.name for field in BINANCE_SPOT_PRECEDENCE_EVIDENCE.arrow_schema)
@@ -913,6 +983,13 @@ def _edge_id(comparison: ChannelComparison) -> str:
         comparison.archive.revision_id,
         comparison.rest.revision_id,
     )
+
+
+def _utc_day(value: object) -> date:
+    """The UTC day of a persisted time column; anything but an aware UTC instant fails closed."""
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() != _ZERO:
+        raise CatalogIntegrityError(f"a REST row carries a time that is not UTC: {value!r}")
+    return value.date()
 
 
 def _edge_batch_prefix(partition: tuple[str, str, date]) -> str:

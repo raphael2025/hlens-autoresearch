@@ -43,6 +43,7 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_REST_RESPONSES,
 )
 from infrastructure.parser.binance_archive import AGG_TRADES_ROW_SCHEMA, time_unit_for
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import channel_reconcile, rest_identity
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision.availability import AVAILABILITY_BINDING, AvailabilitySubject
@@ -64,6 +65,7 @@ from infrastructure.revision.channel_reconcile import (
     ChannelReconcileConflict,
     ChannelReconciled,
     ChannelReconcileError,
+    ChannelReconciler,
     assemble_channel_graph,
     check_arrival_seq,
     evidence_from_row,
@@ -1470,3 +1472,266 @@ def test_r3_a_deleted_edge_is_refused(h: RestHarness) -> None:
     h.delete_rows(EVIDENCE, EqualTo("edge_id", edge["edge_id"]))  # type: ignore[call-arg, arg-type]
     with pytest.raises(CatalogIntegrityError, match="is gone"):
         h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
+
+
+# =========================================================================================
+# D3E-R3 cross-day: one aggTrade key whose REST revisions fall on two UTC days
+# =========================================================================================
+
+#: 2023-11-15T00:00:00Z: the midnight between ``DAY`` and ``NEXT_DAY``.
+MIDNIGHT_MS = 1_700_006_400_000
+NEXT_DAY = DAY + timedelta(days=1)
+ONLY_DAY = f"binance:spot:agg_trade:{SYMBOL}:99"  # a REST revision on DAY only
+SPANNING = f"binance:spot:agg_trade:{SYMBOL}:100"  # REST revisions on DAY and on NEXT_DAY
+ONLY_NEXT = f"binance:spot:agg_trade:{SYMBOL}:101"  # a REST revision on NEXT_DAY only
+K_SECOND = K_EDGE + timedelta(hours=1)
+
+
+def _cross_midnight(h: RestHarness) -> None:
+    """aggTrade 100 is delivered twice by REST: at 23:59:59.999 of DAY and at 00:00 of
+    NEXT_DAY (another event time, so another payload and revision). Each day's archive holds
+    the equal counterpart of its own REST revision; 99 / 101 live on one day only.
+
+    Partitions DAY and NEXT_DAY therefore both read every revision of key 100 and derive the
+    same two key-100 edges, while their edge batches carry different day prefixes.
+    """
+    before = ss.agg_item(99, MIDNIGHT_MS - 2)
+    late = ss.agg_item(100, MIDNIGHT_MS - 1)
+    early = ss.agg_item(100, MIDNIGHT_MS)
+    after = ss.agg_item(101, MIDNIGHT_MS + 1)
+    _archive(
+        h,
+        "agg_trades",
+        ss.archive_agg_lines([before, late]),
+        knowledge=EARLY,
+        request_id="archive-day",
+    )
+    _archive(
+        h,
+        "agg_trades",
+        ss.archive_agg_lines([early, after]),
+        knowledge=EARLY,
+        day=NEXT_DAY,
+        retrieved_at=utc(2023, 11, 17),
+        request_id="archive-next",
+    )
+    _rest(
+        h,
+        "agg_trades",
+        [before, late],
+        knowledge=LATE,
+        request_id="req-day",
+        t0=MIDNIGHT_MS - MINUTE_MS,
+    )
+    _rest(
+        h,
+        "agg_trades",
+        [early, after],
+        knowledge=LATE + timedelta(hours=1),
+        request_id="req-next",
+        t0=MIDNIGHT_MS - MINUTE_MS - 1,
+    )
+    days: dict[str, set[Any]] = {}
+    for row in h.rows(REST_AGGS):
+        days.setdefault(row["observation_key"], set()).add(row["event_time"].date())
+    assert days == {ONLY_DAY: {DAY}, SPANNING: {DAY, NEXT_DAY}, ONLY_NEXT: {NEXT_DAY}}
+
+
+def _keys_of(out: ChannelReconciled) -> list[str]:
+    return sorted(item.edge.evidence.observation_key for item in out.edges)
+
+
+def _pinned_view(h: RestHarness, evidence_snapshot: str | None = None) -> PinnedCatalogView:
+    """A read-only catalog view pinned like a PIT manifest (what the PIT selector reads)."""
+    bindings = {table.table: h.head(table.table) for table in _ALL_TABLES}
+    if evidence_snapshot is not None:
+        bindings[EVIDENCE.table] = evidence_snapshot
+    return PinnedCatalogView(
+        h.adapter, {table: head for table, head in bindings.items() if head is not None}
+    )
+
+
+def _pinned_edges(h: RestHarness, day: Any, evidence_snapshot: str | None = None) -> list[Any]:
+    view = _pinned_view(h, evidence_snapshot)
+    return list(ChannelReconciler(view, h.storage).verified_edges("agg_trades", SYMBOL, day))
+
+
+@pytest.mark.parametrize("first_day", [DAY, NEXT_DAY], ids=["day_first", "next_first"])
+def test_r3_cross_day_a_key_spanning_midnight_reconciles_from_both_days(
+    h: RestHarness, first_day: Any
+) -> None:
+    _cross_midnight(h)
+    second_day = NEXT_DAY if first_day == DAY else DAY
+    own = {DAY: ONLY_DAY, NEXT_DAY: ONLY_NEXT}
+
+    first = h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, first_day)
+    first_head = h.head(EVIDENCE.table)
+    second = h.reconciler(clock=StepClock(start=K_SECOND)).reconcile(
+        "agg_trades", SYMBOL, second_day
+    )
+
+    # First run: both key-100 edges and its own single-day key, in one batch of its prefix.
+    assert _keys_of(first) == sorted([SPANNING, SPANNING, own[first_day]])
+    assert all(not item.reused for item in first.edges) and len(first.commits) == 1
+    assert len(first.findings) == 2  # key 100's cross pairs differ in event time
+    # Second run: key 100's edges were committed by the other day's batch; re-verified, reused.
+    assert _keys_of(second) == sorted([SPANNING, SPANNING, own[second_day]])
+    assert {item.edge.evidence.observation_key for item in second.edges if item.reused} == {
+        SPANNING
+    }
+    assert [item.edge.evidence.observation_key for item in second.edges if not item.reused] == [
+        own[second_day]
+    ]
+    prefix = f"{DELIVERY_CHANNEL_BINDING.policy_id}@{DELIVERY_CHANNEL_BINDING.version}.edges."
+    [first_commit], [second_commit] = first.commits, second.commits
+    assert first_commit.batch_id.startswith(f"{prefix}agg_trades.{SYMBOL}.{first_day}.")
+    assert second_commit.batch_id.startswith(f"{prefix}agg_trades.{SYMBOL}.{second_day}.")
+    rows = h.rows(EVIDENCE)
+    assert len(rows) == len({row["edge_id"] for row in rows}) == 4  # 99, 101 and both of key 100
+    times: dict[str, set[datetime]] = {}
+    for row in rows:
+        times.setdefault(row["observation_key"], set()).add(row["knowledge_time"])
+    # The first commit of each edge is authoritative: key 100 keeps the first run's time.
+    assert times == {SPANNING: {K_EDGE}, own[first_day]: {K_EDGE}, own[second_day]: {K_SECOND}}
+
+    # Re-runs of both days, in both orders, are idempotent: no clock, no commit, all reused.
+    head = h.head(EVIDENCE.table)
+    edges: dict[Any, tuple[str, ...]] = {}
+    for day in (first_day, second_day, first_day):
+        later = StepClock(start=K_EDGE + timedelta(days=30))
+        again = h.reconciler(clock=later).reconcile("agg_trades", SYMBOL, day)
+        assert later.calls == 0 and again.commits == () and h.head(EVIDENCE.table) == head
+        assert again.edges and all(item.reused for item in again.edges)
+        edges[day] = again.edge_ids
+    assert edges[first_day] == first.edge_ids and edges[second_day] == second.edge_ids
+    assert h.rows(EVIDENCE) == rows
+
+    # verified_edges (the PIT selector's call) agrees live and on a pinned view, for both days.
+    for day in (DAY, NEXT_DAY):
+        clock = StepClock(start=FAR)
+        live = h.reconciler(clock=clock).verified_edges("agg_trades", SYMBOL, day)
+        assert tuple(edge.edge_id for edge in live) == edges[day] and clock.calls == 0
+        assert tuple(edge.edge_id for edge in _pinned_edges(h, day)) == edges[day]
+    # A manifest pinned between the two edge batches: the second day already sees key 100's
+    # edges (committed by the first day's batch) and not its own, still uncommitted one.
+    assert first_head is not None
+    early = {day: _pinned_edges(h, day, first_head) for day in (DAY, NEXT_DAY)}
+    assert tuple(edge.edge_id for edge in early[first_day]) == first.edge_ids
+    assert sorted(edge.evidence.observation_key for edge in early[second_day]) == [
+        SPANNING,
+        SPANNING,
+    ]
+
+    # PIT over the pinned verified edges: each single-day key selects its archive revision;
+    # key 100's two REST revisions are superseded, its two archive revisions stay competing.
+    evidence = {
+        edge.edge_id: edge.evidence for day in (DAY, NEXT_DAY) for edge in _pinned_edges(h, day)
+    }
+    assert len(evidence) == 4
+    for key, status in (
+        (ONLY_DAY, PointInTimeStatus.SELECTED),
+        (ONLY_NEXT, PointInTimeStatus.SELECTED),
+        (SPANNING, PointInTimeStatus.CONFLICT),
+    ):
+        archive, rest = _records(h, key)
+        graph = assemble_channel_graph(
+            archive, rest, [item for item in evidence.values() if item.observation_key == key]
+        )
+        pit = _select(list(graph.revisions), list(graph.precedence_evidence), key, FAR)
+        assert pit.status is status
+        assert set(pit.maximal_heads) == {record.revision_id for record in archive}
+
+
+def test_r3_cross_day_both_orders_converge_to_the_same_edge_set(tmp_path: Path) -> None:
+    edge_sets = []
+    for label, order in (("day", (DAY, NEXT_DAY)), ("next", (NEXT_DAY, DAY))):
+        with ss.sqlite_harness(tmp_path / label) as h:
+            _cross_midnight(h)
+            for day in order:
+                h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, day)
+            edge_sets.append(
+                sorted(
+                    (row["edge_id"], row["revision_id"], row["superseded_revision_id"])
+                    for row in h.rows(EVIDENCE)
+                )
+            )
+    assert len(edge_sets[0]) == 4 and edge_sets[0] == edge_sets[1]
+
+
+def _spanning_edge(h: RestHarness) -> dict[str, Any]:
+    """Both days reconciled, DAY first: a key-100 edge that DAY's edge batch committed."""
+    _cross_midnight(h)
+    h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
+    h.reconciler(clock=StepClock(start=K_SECOND)).reconcile("agg_trades", SYMBOL, NEXT_DAY)
+    return sorted(
+        (row for row in h.rows(EVIDENCE) if row["observation_key"] == SPANNING),
+        key=lambda row: row["edge_id"],
+    )[0]
+
+
+def _cross_refused(h: RestHarness, day: Any, match: str) -> None:
+    """``reconcile`` and ``verified_edges`` (live and pinned) of ``day`` fail closed."""
+    before = _state(h)
+    clock = StepClock(start=K_EDGE)
+    with pytest.raises(CatalogIntegrityError, match=match):
+        h.reconciler(clock=clock).reconcile("agg_trades", SYMBOL, day)
+    with pytest.raises(CatalogIntegrityError, match=match):
+        h.reconciler(clock=clock).verified_edges("agg_trades", SYMBOL, day)
+    with pytest.raises(CatalogIntegrityError, match=match):
+        _pinned_edges(h, day)
+    assert clock.calls == 0 and _state(h) == before
+
+
+def _drop(h: RestHarness, edge: dict[str, Any]) -> None:
+    h.delete_rows(EVIDENCE, EqualTo("edge_id", edge["edge_id"]))  # type: ignore[call-arg, arg-type]
+
+
+@pytest.mark.parametrize("day", [DAY, NEXT_DAY], ids=["from_day", "from_next"])
+def test_r3_cross_day_an_edge_recommitted_with_an_earlier_time_is_refused(
+    h: RestHarness, day: Any
+) -> None:
+    edge = _spanning_edge(h)
+    _drop(h, edge)
+    h.forge_rows(EVIDENCE, [dict(edge, knowledge_time=LATE + timedelta(hours=2))], "forged-edge")
+    _cross_refused(h, day, "not exactly what an edge batch")
+
+
+@pytest.mark.parametrize("day", [DAY, NEXT_DAY], ids=["from_day", "from_next"])
+def test_r3_cross_day_a_forged_second_row_is_refused(h: RestHarness, day: Any) -> None:
+    edge = _spanning_edge(h)
+    h.forge_rows(EVIDENCE, [dict(edge)], "forged-duplicate")
+    _cross_refused(h, day, "committed twice")
+
+
+@pytest.mark.parametrize("day", [DAY, NEXT_DAY], ids=["from_day", "from_next"])
+def test_r3_cross_day_a_deleted_edge_is_refused(h: RestHarness, day: Any) -> None:
+    edge = _spanning_edge(h)
+    _drop(h, edge)
+    _cross_refused(h, day, "is gone")
+
+
+@pytest.mark.parametrize("day", [DAY, NEXT_DAY], ids=["from_day", "from_next"])
+def test_r3_cross_day_a_recommit_as_the_other_days_batch_is_refused(
+    h: RestHarness, day: Any
+) -> None:
+    """Delete key 100's edge and re-commit the identical row as a reproducible NEXT_DAY edge
+    batch (content-derived id, count and fingerprint all right): DAY's batch committed it."""
+    edge = _spanning_edge(h)
+    _drop(h, edge)
+    partition = ("agg_trades", SYMBOL, NEXT_DAY)
+    batch_id = channel_reconcile._edge_batch_id(partition, [edge["edge_id"]])
+    h.forge_rows(EVIDENCE, [dict(edge)], batch_id)
+    _cross_refused(h, day, "committed twice")
+
+
+@pytest.mark.parametrize("day", [DAY, NEXT_DAY], ids=["from_day", "from_next"])
+def test_r3_cross_day_a_batch_claiming_the_other_days_prefix_is_refused(
+    h: RestHarness, day: Any
+) -> None:
+    """A re-timed key-100 row committed under a DAY edge-batch id its content does not derive."""
+    edge = _spanning_edge(h)
+    _drop(h, edge)
+    prefix = channel_reconcile._edge_batch_prefix(("agg_trades", SYMBOL, DAY))
+    forged = dict(edge, knowledge_time=LATE + timedelta(hours=2))
+    h.forge_rows(EVIDENCE, [forged], prefix + "0" * 64)
+    _cross_refused(h, day, "no longer reproduces")
