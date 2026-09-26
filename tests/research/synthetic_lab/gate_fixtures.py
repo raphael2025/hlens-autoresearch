@@ -13,13 +13,20 @@ The detector is the full G0 → G4 pipeline through ``PipelineBacktestValidator`
 
 from __future__ import annotations
 
+from collections.abc import Sequence
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 from core.contracts.cost_model import CostModelSpec
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
 from core.contracts.strategy import BacktestCostModel, PriceBar
-from core.contracts.synthetic import PlantedEffect, SyntheticMarket, SyntheticMarketSpec
+from core.contracts.synthetic import (
+    PlantedEffect,
+    SyntheticBar,
+    SyntheticMarket,
+    SyntheticMarketSpec,
+)
 from core.contracts.validation_profile import (
     BenchmarkParams,
     CostStressParams,
@@ -42,6 +49,7 @@ from research.strategies.signals import bar_signals
 from research.strategies.validation import TrialRunner, ValidatorSetup
 from research.synthetic_lab.gate_calibration import (
     GateCalibrationSetup,
+    SealedInputsFactory,
     StrategyValidatorDetector,
 )
 from research.validation import RobustnessParams, ValidationContext
@@ -64,6 +72,11 @@ BASE_SPEC = SyntheticMarketSpec(
     initial_price=Decimal(100),
     volatility=Decimal("0.001"),
 )
+#: G5 mode: the research window plus the one-day sealed window of both TEST ONLY Profiles.
+G5_BASE_SPEC = BASE_SPEC.model_copy(
+    update={"name": "gate_calibration_market_g5", "minutes": 3 * 1440}
+)
+SEALED_END = BOUNDARY + timedelta(days=1)
 STRONG = PlantedEffect(lag_minutes=60, strength=Decimal("0.5"))
 WEAK = PlantedEffect(lag_minutes=60, strength=Decimal("0.2"))
 
@@ -207,8 +220,8 @@ def candidate() -> StrategyCandidate:
     return library_entries()[0].candidate()
 
 
-def inputs(market: SyntheticMarket) -> EvaluationInputs:
-    bars = tuple(
+def _price_bars(bars: Sequence[SyntheticBar]) -> tuple[PriceBar, ...]:
+    return tuple(
         PriceBar(
             instrument=SYMBOL,
             interval_start=bar.interval_start,
@@ -219,9 +232,12 @@ def inputs(market: SyntheticMarket) -> EvaluationInputs:
             low=bar.low,
             close=bar.close,
         )
-        for bar in market.bars
-        if bar.interval_end <= BOUNDARY
+        for bar in bars
     )
+
+
+def inputs(market: SyntheticMarket) -> EvaluationInputs:
+    bars = _price_bars([bar for bar in market.bars if bar.interval_end <= BOUNDARY])
     decisions: list[datetime] = []
     t = T0 + 61 * MINUTE
     while t + HOUR < BOUNDARY:  # every label ends before the sealed window
@@ -236,6 +252,26 @@ def inputs(market: SyntheticMarket) -> EvaluationInputs:
         initial_equity=Decimal(1_000_000),
         signals=bar_signals(bars),
         params=CHOSEN,
+    )
+
+
+def sealed_inputs(
+    research: EvaluationInputs, sealed_bars: tuple[SyntheticBar, ...]
+) -> EvaluationInputs:
+    """G5 inputs: research + released sealed bars, hourly decisions inside the sealed window."""
+    bars = (*research.bars, *_price_bars(sealed_bars))
+    last = sealed_bars[-1].interval_end if sealed_bars else BOUNDARY
+    decisions: list[datetime] = []
+    t = BOUNDARY + 61 * MINUTE
+    while t + HOUR < last:  # every label ends inside the released sealed bars
+        decisions.append(t)
+        t += HOUR
+    return replace(
+        research,
+        bars=bars,
+        decision_times=tuple(decisions),
+        knowledge_cutoff=last,
+        signals=bar_signals(bars),
     )
 
 
@@ -278,7 +314,8 @@ def context(strategy: StrategyCandidate, profile: ValidationProfile) -> Validati
     )
 
 
-def detector() -> StrategyValidatorDetector:
+def detector(*, sealed_inputs_for: SealedInputsFactory | None = None) -> StrategyValidatorDetector:
+    """``sealed_inputs_for`` (e.g. ``sealed_inputs``) enables ``detect_sealed`` (G5 mode)."""
     strategy = candidate()
 
     def setup_for(
@@ -304,6 +341,7 @@ def detector() -> StrategyValidatorDetector:
         backtester=BarBacktester(),
         inputs_for=inputs,
         setup_for=setup_for,
+        sealed_inputs_for=sealed_inputs_for,
     )
 
 
@@ -312,16 +350,30 @@ def setup(
     *,
     candidates: tuple[ValidationProfile, ...] = (LAX_TEST_ONLY_PROFILE, STRICT_TEST_ONLY_PROFILE),
     planted: tuple[PlantedEffect, ...] = (STRONG, WEAK),
+    sealed_oos_g5: bool = False,
 ) -> GateCalibrationSetup:
+    """``sealed_oos_g5=True``: G5 mode over ``G5_BASE_SPEC`` (research + sealed window)."""
+    if not sealed_oos_g5:  # exactly the pre-G5 setup (its report hashes are pinned)
+        return GateCalibrationSetup(
+            provider=RandomWalkMarket(),
+            base=BASE_SPEC,
+            detector=detector(),
+            candidates=candidates,
+            noise_seeds=tuple(range(seeds)),
+            planted=planted,
+            planted_seeds=tuple(range(100, 100 + seeds)),
+            alpha=TEST_ONLY_ALPHA,
+        )
     return GateCalibrationSetup(
         provider=RandomWalkMarket(),
-        base=BASE_SPEC,
-        detector=detector(),
+        base=G5_BASE_SPEC,
+        detector=detector(sealed_inputs_for=sealed_inputs),
         candidates=candidates,
         noise_seeds=tuple(range(seeds)),
         planted=planted,
         planted_seeds=tuple(range(100, 100 + seeds)),
         alpha=TEST_ONLY_ALPHA,
+        sealed_oos_g5=True,
     )
 
 

@@ -27,7 +27,28 @@ Pieces:
 - Sealed OOS consumption: G5 is a one-shot, budgeted event (``SealedOosVault``) that only a
   G0 – G4 ``PASS`` may reach. Each passing run unseals its own family in a fresh in-memory vault
   per candidate; the vault's capacity is the number of runs (a bookkeeping bound, not a budget
-  choice). G5 itself is not run here.
+  choice). By default G5 itself is not run.
+- Optional G5 mode (``GateCalibrationSetup.sealed_oos_g5``, opt-in, off by default; with it off
+  every report and ``report_hash`` is byte-identical to the harness without it). The detector
+  must implement ``detect_sealed`` (``SealedGateDetector``); a detector without it is **refused**
+  at setup time (``ValueError``), never silently reported. In G5 mode the generated market is
+  split per candidate at the Profile's sealed window (``SealedWindow``): ``detect`` and
+  ``detect_sealed`` only ever receive the research view (bars ending at or before the window
+  start); the sealed-window bars are withheld in a ``SealedRelease`` and leave it only through
+  ``release()`` — after the harness has unsealed the run's family and claimed its one-shot
+  evaluation (``SealedOosVault.claim_evaluation``, mirroring the research loop's G5, R21 / R27).
+  Only a G0 – G4 ``PASS`` is unsealed, so a non-passing run never has its sealed bars released.
+  After the claim the evaluation is consumed whatever happens: a detector that exits early
+  reports ``G5.oos_evaluation = consumed_without_result:<reason>``
+  (``research.validation.sealed_oos_without_result``) and one that raises is recorded as an
+  ``INCONCLUSIVE`` G5 without gates, ``consumed_without_result`` and ``detector_error`` — never a
+  pass. Per arm the report adds the G5 pass / inconclusive / fail rates among the runs that
+  reached G5 and the end-to-end (G0 – G5) pass rate over every run of the arm (false-positive
+  rate on noise, power on planted arms). ``StrategyValidatorDetector.detect_sealed`` re-runs the
+  candidate over research + released sealed bars (``sealed_inputs_for``), labels its non-flat
+  sealed-window targets and runs ``research.validation.run_sealed_oos`` on the claimed
+  evaluation, as ``research.loop.trials`` does. Each calibration run is its own simulated family
+  (``gate_calibration:<arm>:<seed>``); the G5 context binds that family and its unsealing.
 - Detector failures: an exception raised by ``detect`` is a failure of the method under
   calibration on that market, not of the harness. The run is recorded as ``INCONCLUSIVE`` with no
   gates (every gate ``not_evaluated``) and the exception type / message in ``detector_error``;
@@ -45,23 +66,28 @@ from __future__ import annotations
 import argparse
 import importlib
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Final, Protocol
+from typing import Final, Protocol, cast
 
 from core.contracts.feature import ObservationScalar
-from core.contracts.strategy import BacktestProvider
+from core.contracts.outcome import OutcomeEvent, OutcomePriceBar, OutcomeRequest
+from core.contracts.profile_selection import OosUnsealing
+from core.contracts.strategy import BacktestProvider, TargetPosition
 from core.contracts.synthetic import (
     PlantedEffect,
+    SyntheticBar,
     SyntheticMarket,
     SyntheticMarketProvider,
     SyntheticMarketSpec,
 )
+from core.contracts.synthetic import market_hash as synthetic_market_hash
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import content_hash
 from core.domain.research import ValidationReport, Verdict
+from research.outcomes.table import materialize
 from research.reports.envelope import WrittenReport
 from research.reports.gate_calibration import write_gate_calibration_report
 from research.strategies.pipeline import CandidateTrialRunner, EvaluationInputs, StrategyCandidate
@@ -72,7 +98,20 @@ from research.strategies.validation import (
     ValidatorSetup,
 )
 from research.synthetic_lab.intervals import INTERVAL_METHOD, BinomialRate, binomial_rate
-from research.validation.sealed_oos import InMemoryUnsealingLedger, SealedOosVault
+from research.validation import (
+    SealedOosInput,
+    build_report,
+    run_sealed_oos,
+    sealed_oos_without_result,
+)
+from research.validation.controls import FixedSides
+from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
+from research.validation.sealed_oos import (
+    InMemoryUnsealingLedger,
+    SealedEvaluation,
+    SealedOosVault,
+    SealedWindow,
+)
 
 __all__ = [
     "DISCLAIMER",
@@ -86,10 +125,16 @@ __all__ = [
     "GateDetector",
     "GateEvidence",
     "RunRecord",
+    "SealedArmEvidence",
+    "SealedGateDetector",
+    "SealedInputsFactory",
+    "SealedRelease",
+    "SealedRunRecord",
     "StrategyValidatorDetector",
     "main",
     "planted_arm_id",
     "run_gate_calibration",
+    "supports_sealed_oos",
     "write_gate_calibration",
 ]
 
@@ -104,6 +149,9 @@ NOTE: Final = (
 )
 NOISE_ARM: Final = "noise"
 _UNSEALED_BY: Final = "gate_calibration_harness(simulated)"
+#: Each calibration run is its own simulated hypothesis family.
+_FAMILY_FORMAT: Final = "gate_calibration:<arm>:<seed>"
+EVALUATED: Final = "evaluated"
 #: Upper bound on the recorded exception message (the report must stay small and deterministic).
 _ERROR_MESSAGE_LIMIT: Final = 200
 
@@ -128,6 +176,67 @@ class GateDetector(Protocol):
         ...
 
     def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport: ...
+
+
+class SealedRelease:
+    """One calibration run's claimed G5 evaluation and its withheld sealed-window bars.
+
+    The harness creates it only **after** ``unseal`` and ``claim_evaluation`` of the run's family,
+    so the evaluation is already consumed when ``detect_sealed`` sees it. ``release()`` hands the
+    sealed bars out once (``SealedEvaluation.take("bars")``; a second call raises
+    ``SealedOosAlreadyEvaluated``). ``vault`` / ``evaluation`` are what
+    ``research.validation.SealedOosInput`` needs to run G5 on the claim.
+    """
+
+    def __init__(
+        self,
+        *,
+        family_id: str,
+        vault: SealedOosVault,
+        evaluation: SealedEvaluation,
+        unsealing: OosUnsealing,
+        bars: tuple[SyntheticBar, ...],
+    ) -> None:
+        if evaluation.family_id != family_id or not vault.is_evaluated(family_id):
+            raise ValueError("a sealed release needs the family's claimed evaluation")
+        self.family_id = family_id
+        self.vault = vault
+        self.evaluation = evaluation
+        self.unsealing = unsealing
+        self._bars = bars
+
+    @property
+    def window(self) -> SealedWindow:
+        return self.evaluation.window
+
+    @property
+    def released(self) -> bool:
+        return self.evaluation.taken("bars")
+
+    def release(self) -> tuple[SyntheticBar, ...]:
+        """The sealed-window bars, handed out once against the claimed evaluation."""
+        self.evaluation.take("bars")
+        return self._bars
+
+
+class SealedGateDetector(GateDetector, Protocol):
+    """A detector that can also run G5 on a claimed sealed evaluation (optional G5 mode).
+
+    ``detect_sealed`` receives the same research-view market ``detect`` saw and must return the
+    G5 report under ``profile``: its gates come from ``research.validation.run_sealed_oos`` on
+    ``sealed.evaluation`` or, when it ends early, ``sealed_oos_without_result`` (never a PASS).
+    """
+
+    def detect_sealed(
+        self, market: SyntheticMarket, profile: ValidationProfile, sealed: SealedRelease
+    ) -> ValidationReport: ...
+
+
+def supports_sealed_oos(detector: GateDetector) -> bool:
+    """``detect_sealed`` exists and the detector does not declare itself unable to run it."""
+    if not callable(getattr(detector, "detect_sealed", None)):
+        return False
+    return bool(getattr(detector, "sealed_oos_supported", True))
 
 
 _TrialKey = tuple[tuple[tuple[str, str], ...], int, timedelta, tuple[str, ...] | None]
@@ -167,6 +276,17 @@ class CachingTrialRunner:
 #: ``(market, candidate Profile, cached trial runner) -> ValidatorSetup``; the setup must use the
 #: given runner and bind the given Profile.
 SetupFactory = Callable[[SyntheticMarket, ValidationProfile, TrialRunner], ValidatorSetup]
+#: ``(research inputs, released sealed bars) -> G5 inputs``: the research bars followed by the
+#: sealed bars, decision times inside the sealed window only, and the signals over all of them.
+SealedInputsFactory = Callable[[EvaluationInputs, tuple[SyntheticBar, ...]], EvaluationInputs]
+
+
+def _side(weight: Decimal) -> int:
+    return int(weight > 0) - int(weight < 0)
+
+
+def _event_key(target: TargetPosition) -> str:
+    return f"{target.instrument}|{target.decision_time.isoformat()}"
 
 
 class StrategyValidatorDetector:
@@ -175,6 +295,9 @@ class StrategyValidatorDetector:
     ``inputs_for`` must return the **research window** of the market only (the validator fails
     ``G1.sealed_oos_excluded`` otherwise). The trial runner of the last market is kept, so the
     harness's market-outer / Profile-inner order reuses every backtest across candidates.
+
+    ``sealed_inputs_for`` (optional) enables ``detect_sealed`` (G5 mode, module docs); without it
+    ``sealed_oos_supported`` is ``False`` and a G5-mode setup refuses the detector.
     """
 
     def __init__(
@@ -185,13 +308,19 @@ class StrategyValidatorDetector:
         backtester: BacktestProvider,
         inputs_for: Callable[[SyntheticMarket], EvaluationInputs],
         setup_for: SetupFactory,
+        sealed_inputs_for: SealedInputsFactory | None = None,
     ) -> None:
         self._name = name
         self._candidate = candidate
         self._backtester = backtester
         self._inputs_for = inputs_for
         self._setup_for = setup_for
+        self._sealed_inputs_for = sealed_inputs_for
         self._cached: tuple[str, CachingTrialRunner] | None = None
+
+    @property
+    def sealed_oos_supported(self) -> bool:
+        return self._sealed_inputs_for is not None
 
     @property
     def name(self) -> str:
@@ -214,8 +343,9 @@ class StrategyValidatorDetector:
             self._cached = (market.market_hash, CachingTrialRunner(inner))
         return self._cached[1]
 
-    def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport:
-        runner = self._runner(market)
+    def _setup(
+        self, market: SyntheticMarket, profile: ValidationProfile, runner: CachingTrialRunner
+    ) -> ValidatorSetup:
         setup = self._setup_for(market, profile, runner)
         if setup.trials is not runner:
             raise DetectorConfigurationError("setup_for must use the trial runner it is given")
@@ -223,14 +353,94 @@ class StrategyValidatorDetector:
             raise DetectorConfigurationError(
                 "setup_for must bind the candidate Profile it is given"
             )
+        return setup
+
+    def _request(self, setup: ValidatorSetup) -> dict[str, ObservationScalar]:
+        """The point the validator re-runs (G0 reproducibility compares the two result hashes):
+        spec defaults overridden by the chosen point, declared keys only."""
         spec = self._candidate.spec
-        # The point the validator re-runs (G0 reproducibility compares the two result hashes):
-        # spec defaults overridden by the chosen point, declared keys only.
         point = {**dict(spec.params), **dict(setup.chosen_params)}
-        request = {k: v for k, v in point.items() if k in spec.param_search_space}
-        backtest = runner.run(request).backtest  # type: ignore[arg-type]
+        return {k: v for k, v in point.items() if k in spec.param_search_space}  # type: ignore[misc]
+
+    def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport:
+        runner = self._runner(market)
+        setup = self._setup(market, profile, runner)
+        spec = self._candidate.spec
+        backtest = runner.run(self._request(setup)).backtest
         validation = PipelineBacktestValidator(setup).validate(spec.ref, spec, backtest)
         return validation.report
+
+    def detect_sealed(
+        self, market: SyntheticMarket, profile: ValidationProfile, sealed: SealedRelease
+    ) -> ValidationReport:
+        """G5 on the claimed evaluation (module docs; mirrors ``research.loop.trials``)."""
+        if self._sealed_inputs_for is None:
+            raise DetectorConfigurationError("detect_sealed needs sealed_inputs_for")
+        setup = self._setup(market, profile, self._runner(market))
+        context = setup.context
+        g5_context = replace(
+            context,
+            report_id=content_hash(
+                {"report": context.report_id, "stage": "sealed_oos", "family": sealed.family_id}
+            ),
+            metadata=context.metadata.model_copy(
+                update={"hypothesis_family_id": sealed.family_id, "oos_unsealing": sealed.unsealing}
+            ),
+        )
+
+        def without_result(reason: str) -> ValidationReport:
+            gates = sealed_oos_without_result(g5_context, sealed.vault, sealed.evaluation, reason)
+            return build_report(g5_context, gates)
+
+        sealed_bars = sealed.release()
+        inputs = self._sealed_inputs_for(self._inputs_for(market), sealed_bars)
+        if not inputs.decision_times:
+            return without_result("no_sealed_decision_time")
+        if any(t < sealed.window.start for t in inputs.decision_times):
+            raise DetectorConfigurationError("sealed_inputs_for must decide inside the window")
+        candidate = self._candidate
+        run = CandidateTrialRunner(candidate, inputs, self._backtester).run(self._request(setup))
+        traded = [t for t in run.targets if _side(t.target_weight) != 0]
+        if not traded:
+            return without_result("no_non_flat_target_in_the_sealed_window")
+        outcome_bars = tuple(
+            OutcomePriceBar(
+                interval_start=bar.interval_start,
+                interval_end=bar.interval_end,
+                available_time=bar.available_time,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+            )
+            for bar in inputs.bars
+        )
+        table = materialize(
+            setup.outcome_provider,
+            OutcomeRequest(
+                label_spec=context.label_spec,
+                manifest_content_hash=content_hash(
+                    {
+                        "research": setup.manifest_content_hash,
+                        "sealed": [bar.content_hash() for bar in sealed_bars],
+                    }
+                ),
+                price_cutoff=max(bar.available_time for bar in outcome_bars),
+                events=tuple(
+                    OutcomeEvent(event_key=_event_key(t), event_time=t.decision_time)
+                    for t in traded
+                ),
+                bars=outcome_bars,
+            ),
+        )
+        study = FixedSides(
+            refs=tuple(candidate.spec.signals),
+            by_event={_event_key(t): _side(t.target_weight) for t in traded},
+        )
+        gates = run_sealed_oos(
+            SealedOosInput(g5_context, sealed.vault, table, study, sealed.evaluation)
+        )
+        return build_report(g5_context, gates)
 
 
 # ======================================================================================
@@ -250,7 +460,11 @@ class GateCalibrationSetup:
     - ``candidates``: the caller's candidate Profiles (compared, never chosen here);
     - ``planted``: one arm per effect (strength / lag), each run on every ``planted_seeds`` seed;
     - ``alpha``: the two-sided level of the reported Clopper-Pearson intervals (a reporting
-      parameter, not a Profile number).
+      parameter, not a Profile number);
+    - ``sealed_oos_g5``: the one opt-in switch (module docs, G5 mode). It is ``False`` unless the
+      caller sets it, so setups written before G5 mode existed keep their reports byte-identical.
+      With it on, the detector must support ``detect_sealed`` and ``base`` must generate every
+      candidate's whole sealed window after some research data (checked from the spec only).
     """
 
     provider: SyntheticMarketProvider
@@ -261,8 +475,31 @@ class GateCalibrationSetup:
     planted: tuple[PlantedEffect, ...]
     planted_seeds: tuple[int, ...]
     alpha: Decimal
+    sealed_oos_g5: bool = False
 
     def __post_init__(self) -> None:
+        self._check_inputs()
+        if not isinstance(self.sealed_oos_g5, bool):
+            raise ValueError("sealed_oos_g5 must be a bool")
+        if self.sealed_oos_g5:
+            self._check_g5()
+
+    def _check_g5(self) -> None:
+        """Decided from the detector and the spec only: no market is generated or read."""
+        if not supports_sealed_oos(self.detector):
+            raise ValueError(
+                f"G5 mode needs a detector with detect_sealed; {self.detector.name!r} has none"
+            )
+        end = self.base.start + timedelta(minutes=self.base.minutes)
+        for profile in self.candidates:
+            window = SealedWindow.from_profile(profile)
+            if not self.base.start < window.start or end < window.end:
+                raise ValueError(
+                    f"G5 mode: the base spec must cover {profile.ref}'s sealed window "
+                    f"[{window.start.isoformat()}, {window.end.isoformat()}) after research data"
+                )
+
+    def _check_inputs(self) -> None:
         if self.base.effects:
             raise ValueError("the base spec must be pure noise (no planted effects)")
         if not self.candidates:
@@ -292,7 +529,7 @@ class GateCalibrationSetup:
         return ((NOISE_ARM, (), self.noise_seeds), *planted)
 
     def inputs_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "generator": self.provider.descriptor.plugin_key,
             "detector": {"name": self.detector.name, **dict(self.detector.describe())},
             "base_spec": self.base.model_dump(mode="json"),
@@ -313,6 +550,64 @@ class GateCalibrationSetup:
             ],
             "interval": {"method": INTERVAL_METHOD, "alpha": str(self.alpha)},
         }
+        # Additive and only when on: setups without G5 mode keep their report hashes.
+        if self.sealed_oos_g5:
+            payload["sealed_oos_g5"] = {"enabled": True, "family_id": _FAMILY_FORMAT}
+        return payload
+
+    def run_count(self) -> int:
+        return sum(len(seeds) for _, _, seeds in self.arms())
+
+
+def _gate_lists(gates: Sequence[tuple[str, Verdict]]) -> dict[str, list[str]]:
+    return {
+        "failing_gates": [g for g, v in gates if v is Verdict.FAIL],
+        "inconclusive_gates": [g for g, v in gates if v is Verdict.INCONCLUSIVE],
+    }
+
+
+@dataclass(frozen=True, slots=True)
+class SealedRunRecord:
+    """The G5 step of one G0 – G4 ``PASS`` run (G5 mode only; module docs).
+
+    ``consumed_without_result``: the claimed evaluation ended before any G5 statistic (the
+    detector reported ``consumed_without_result:<reason>`` or raised); such a G5 is never a pass.
+    ``sealed_bars_released``: the withheld sealed bars left the ``SealedRelease``.
+    """
+
+    family_id: str
+    verdict: Verdict
+    gates: tuple[tuple[str, Verdict], ...]
+    gates_hash: str
+    consumed_without_result: bool
+    sealed_bars_released: bool
+    #: ``"<ExceptionType>: <message>"`` when ``detect_sealed`` raised.
+    detector_error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.detector_error is not None and (
+            self.verdict is not Verdict.INCONCLUSIVE
+            or self.gates
+            or not self.consumed_without_result
+        ):
+            raise ValueError(
+                "a G5 detector error is an INCONCLUSIVE, consumed_without_result G5 without gates"
+            )
+        if self.consumed_without_result and self.verdict is Verdict.PASS:
+            raise ValueError("a G5 consumed without result is never a PASS")
+
+    def to_payload(self) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "family_id": self.family_id,
+            "verdict": self.verdict.value,
+            "status": CONSUMED_WITHOUT_RESULT if self.consumed_without_result else EVALUATED,
+            "gates_hash": self.gates_hash,
+            **_gate_lists(self.gates),
+            "sealed_bars_released": self.sealed_bars_released,
+        }
+        if self.detector_error is not None:
+            payload["detector_error"] = self.detector_error
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,12 +624,24 @@ class RunRecord:
     sealed_oos_unsealed: bool = False
     #: ``"<ExceptionType>: <message>"`` when ``detect`` raised (the run is then ``INCONCLUSIVE``).
     detector_error: str | None = None
+    #: The G5 step (G5 mode, G0 – G4 ``PASS`` runs only); ``None`` when G5 was not reached.
+    g5: SealedRunRecord | None = None
 
     def __post_init__(self) -> None:
         if self.detector_error is not None and (
             self.verdict is not Verdict.INCONCLUSIVE or self.gates
         ):
             raise ValueError("a detector error is an INCONCLUSIVE run without gates")
+        if self.g5 is not None and not (self.verdict is Verdict.PASS and self.sealed_oos_unsealed):
+            raise ValueError("only an unsealed G0 - G4 PASS reaches G5")
+
+    @property
+    def end_to_end_passed(self) -> bool:
+        """G0 – G5 all passed (only meaningful in G5 mode)."""
+        return self.g5 is not None and self.g5.verdict is Verdict.PASS
+
+    def all_gates(self) -> tuple[tuple[str, Verdict], ...]:
+        return self.gates if self.g5 is None else (*self.gates, *self.g5.gates)
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -344,19 +651,54 @@ class RunRecord:
             "market_hash": self.market_hash,
             "verdict": self.verdict.value,
             "gates_hash": self.gates_hash,
-            "failing_gates": [g for g, v in self.gates if v is Verdict.FAIL],
-            "inconclusive_gates": [g for g, v in self.gates if v is Verdict.INCONCLUSIVE],
+            **_gate_lists(self.gates),
             "sealed_oos_unsealed": self.sealed_oos_unsealed,
         }
         # Additive and only when present: reports without detector errors keep their hashes.
         if self.detector_error is not None:
             payload["detector_error"] = self.detector_error
+        if self.g5 is not None:
+            payload["sealed_oos_g5"] = self.g5.to_payload()
         return payload
 
 
 def _pass_key(arm: str) -> str:
     """Noise passes are false positives; planted passes are detections (power)."""
     return "false_positive_rate" if arm == NOISE_ARM else "power"
+
+
+def _rate_payload(rate: BinomialRate | None) -> dict[str, object] | None:
+    return None if rate is None else rate.to_payload()
+
+
+@dataclass(frozen=True, slots=True)
+class SealedArmEvidence:
+    """G5 rates of one arm under one candidate (G5 mode only).
+
+    ``passed`` / ``inconclusive`` / ``failed`` are conditional on reaching G5 (``n = reached``;
+    ``None`` when no run of the arm reached G5). ``end_to_end`` is the G0 – G5 pass rate over
+    **every** run of the arm: the false-positive rate on noise, the power on a planted arm.
+    """
+
+    arm: str
+    reached: int
+    passed: BinomialRate | None
+    inconclusive: BinomialRate | None
+    failed: BinomialRate | None
+    consumed_without_result: int
+    detector_errors: int
+    end_to_end: BinomialRate
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "reached": self.reached,
+            "pass_rate": _rate_payload(self.passed),
+            "inconclusive_rate": _rate_payload(self.inconclusive),
+            "fail_rate": _rate_payload(self.failed),
+            "consumed_without_result": self.consumed_without_result,
+            "detector_errors": self.detector_errors,
+            "end_to_end_g0_g5": {_pass_key(self.arm): self.end_to_end.to_payload()},
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -370,6 +712,8 @@ class ArmEvidence:
     sealed_oos_consumed: BinomialRate
     #: Runs whose detector raised (already counted in ``inconclusive``).
     detector_errors: int = 0
+    #: G5 mode only.
+    g5: SealedArmEvidence | None = None
 
     def to_payload(self) -> dict[str, object]:
         payload: dict[str, object] = {
@@ -381,6 +725,8 @@ class ArmEvidence:
         }
         if self.detector_errors:
             payload["detector_errors"] = self.detector_errors
+        if self.g5 is not None:
+            payload["sealed_oos_g5"] = self.g5.to_payload()
         return payload
 
 
@@ -412,6 +758,8 @@ class CandidateEvidence:
     gates: tuple[GateEvidence, ...]
     runs: tuple[RunRecord, ...]
     sealed_oos_unsealings: int
+    #: G5 mode only: the number of claimed (consumed) sealed evaluations.
+    sealed_oos_g5_evaluations: int | None = None
 
     def arm(self, arm: str) -> ArmEvidence:
         return next(item for item in self.arms if item.arm == arm)
@@ -423,6 +771,21 @@ class CandidateEvidence:
     def power(self, effect: PlantedEffect) -> BinomialRate:
         return self.arm(planted_arm_id(effect)).passed
 
+    def g5(self, arm: str) -> SealedArmEvidence:
+        evidence = self.arm(arm).g5
+        if evidence is None:
+            raise ValueError("G5 was not run (GateCalibrationSetup.sealed_oos_g5 is off)")
+        return evidence
+
+    @property
+    def end_to_end_false_positive_rate(self) -> BinomialRate:
+        """G0 – G5 pass rate on noise (G5 mode only)."""
+        return self.g5(NOISE_ARM).end_to_end
+
+    def end_to_end_power(self, effect: PlantedEffect) -> BinomialRate:
+        """G0 – G5 pass rate of a planted arm (G5 mode only)."""
+        return self.g5(planted_arm_id(effect)).end_to_end
+
     def gate(self, gate_id: str, arm: str) -> GateEvidence:
         return next(g for g in self.gates if g.gate_id == gate_id and g.arm == arm)
 
@@ -433,14 +796,17 @@ class CandidateEvidence:
         gates: dict[str, dict[str, object]] = {}
         for gate in self.gates:
             gates.setdefault(gate.gate_id, {})[gate.arm] = gate.to_payload()
-        return {
+        payload: dict[str, object] = {
             "profile": self.profile,
             "profile_hash": self.profile_hash,
             "pipeline": {arm.arm: arm.to_payload() for arm in self.arms},
             "gates": gates,
             "sealed_oos_unsealings": self.sealed_oos_unsealings,
-            "runs": [run.to_payload() for run in self.runs],
         }
+        if self.sealed_oos_g5_evaluations is not None:
+            payload["sealed_oos_g5_evaluations"] = self.sealed_oos_g5_evaluations
+        payload["runs"] = [run.to_payload() for run in self.runs]
+        return payload
 
 
 @dataclass(frozen=True)
@@ -478,6 +844,11 @@ class GateCalibrationReport:
 # ======================================================================================
 
 
+def _error_text(error: Exception) -> str:
+    message = " ".join(str(error).split())[:_ERROR_MESSAGE_LIMIT]
+    return f"{type(error).__name__}: {message}" if message else type(error).__name__
+
+
 def _record(arm: str, seed: int, market: SyntheticMarket, report: ValidationReport) -> RunRecord:
     return RunRecord(
         arm=arm,
@@ -492,7 +863,6 @@ def _record(arm: str, seed: int, market: SyntheticMarket, report: ValidationRepo
 
 def _errored(arm: str, seed: int, market: SyntheticMarket, error: Exception) -> RunRecord:
     """A run whose detector raised: ``INCONCLUSIVE``, no gates, the error recorded."""
-    message = " ".join(str(error).split())[:_ERROR_MESSAGE_LIMIT]
     return RunRecord(
         arm=arm,
         seed=seed,
@@ -501,42 +871,119 @@ def _errored(arm: str, seed: int, market: SyntheticMarket, error: Exception) -> 
         verdict=Verdict.INCONCLUSIVE,
         gates=(),
         gates_hash=content_hash([]),
-        detector_error=f"{type(error).__name__}: {message}" if message else type(error).__name__,
+        detector_error=_error_text(error),
     )
 
 
-def _consume_sealed_oos(profile: ValidationProfile, runs: Sequence[RunRecord]) -> list[RunRecord]:
-    """Each passing run spends its family's single unsealing (see module docs)."""
-    vault = SealedOosVault(profile, InMemoryUnsealingLedger(), max_unsealings=len(runs))
-    out: list[RunRecord] = []
-    for run in runs:
-        unsealed = run.verdict is Verdict.PASS
-        if unsealed:
-            family = f"gate_calibration:{run.arm}:{run.seed}"
-            vault.unseal(family, approved_by=_UNSEALED_BY, at=vault.window.start)
-        out.append(
-            RunRecord(
-                arm=run.arm,
-                seed=run.seed,
-                market_spec_hash=run.market_spec_hash,
-                market_hash=run.market_hash,
-                verdict=run.verdict,
-                gates=run.gates,
-                gates_hash=run.gates_hash,
-                sealed_oos_unsealed=unsealed,
-                detector_error=run.detector_error,
-            )
+def _family(arm: str, seed: int) -> str:
+    return f"gate_calibration:{arm}:{seed}"
+
+
+def _split(
+    market: SyntheticMarket, window: SealedWindow
+) -> tuple[SyntheticMarket, tuple[SyntheticBar, ...]]:
+    """G5 mode: the research view (bars ending at or before the window start) and the withheld
+    sealed-window bars. Splitting a generated synthetic market is not reading it: no detector
+    step sees the second part before its family's claim (module docs)."""
+    research = tuple(bar for bar in market.bars if bar.interval_end <= window.start)
+    sealed = tuple(
+        bar
+        for bar in market.bars
+        if window.start <= bar.interval_start and bar.interval_end <= window.end
+    )
+    view = SyntheticMarket(
+        spec_hash=market.spec_hash,
+        provider=market.provider,
+        bars=research,
+        truth=market.truth,
+        market_hash=synthetic_market_hash(
+            market.spec_hash, market.provider, research, market.truth
+        ),
+    )
+    return view, sealed
+
+
+def _run_g5(
+    detector: SealedGateDetector,
+    vault: SealedOosVault,
+    family: str,
+    unsealing: OosUnsealing,
+    view: SyntheticMarket,
+    sealed_bars: tuple[SyntheticBar, ...],
+    profile: ValidationProfile,
+) -> SealedRunRecord:
+    """Claim the family's one evaluation, then run the detector's G5 on it (module docs)."""
+    # From here on the evaluation is consumed, whatever happens next (R21 / R27).
+    evaluation = vault.claim_evaluation(family)
+    sealed = SealedRelease(
+        family_id=family, vault=vault, evaluation=evaluation, unsealing=unsealing, bars=sealed_bars
+    )
+    try:
+        report = detector.detect_sealed(view, profile, sealed)
+    except DetectorConfigurationError:
+        raise
+    except Exception as error:  # the method failed on the claimed window: evidence, not a pass
+        return SealedRunRecord(
+            family_id=family,
+            verdict=Verdict.INCONCLUSIVE,
+            gates=(),
+            gates_hash=content_hash([]),
+            consumed_without_result=True,
+            sealed_bars_released=sealed.released,
+            detector_error=_error_text(error),
         )
-    return out
+    if report.validation_profile_hash != profile.content_hash():
+        raise ValueError(f"{detector.name}: G5 report is not under {profile.ref}")
+    if not any(gate.gate_id.startswith("G5.") for gate in report.gates):
+        raise DetectorConfigurationError("detect_sealed must return the G5 gates")
+    if report.verdict is Verdict.PASS and not evaluation.taken("labels"):
+        raise DetectorConfigurationError(
+            "a G5 PASS must come from run_sealed_oos on the claimed evaluation"
+        )
+    return SealedRunRecord(
+        family_id=family,
+        verdict=report.verdict,
+        gates=tuple((gate.gate_id, gate.verdict) for gate in report.gates),
+        gates_hash=content_hash([gate.content_hash() for gate in report.gates]),
+        consumed_without_result=any(
+            gate.metric.startswith(f"{CONSUMED_WITHOUT_RESULT}:") for gate in report.gates
+        ),
+        sealed_bars_released=sealed.released,
+    )
+
+
+def _sealed_arm(arm: str, mine: Sequence[RunRecord], alpha: Decimal) -> SealedArmEvidence:
+    reached = [run.g5 for run in mine if run.g5 is not None]
+    k = len(reached)
+
+    def conditional(verdict: Verdict) -> BinomialRate | None:
+        if not k:
+            return None
+        return binomial_rate(sum(g5.verdict is verdict for g5 in reached), k, alpha)
+
+    return SealedArmEvidence(
+        arm=arm,
+        reached=k,
+        passed=conditional(Verdict.PASS),
+        inconclusive=conditional(Verdict.INCONCLUSIVE),
+        failed=conditional(Verdict.FAIL),
+        consumed_without_result=sum(g5.consumed_without_result for g5 in reached),
+        detector_errors=sum(g5.detector_error is not None for g5 in reached),
+        end_to_end=binomial_rate(sum(run.end_to_end_passed for run in mine), len(mine), alpha),
+    )
 
 
 def _evidence(
-    profile: ValidationProfile, runs: Sequence[RunRecord], arms: Sequence[str], alpha: Decimal
+    profile: ValidationProfile,
+    records: Sequence[RunRecord],
+    arms: Sequence[str],
+    alpha: Decimal,
+    *,
+    sealed_oos_g5: bool,
 ) -> CandidateEvidence:
-    records = _consume_sealed_oos(profile, runs)
     arm_rows: list[ArmEvidence] = []
     gate_rows: list[GateEvidence] = []
-    gate_ids = sorted({gate for run in records for gate, _ in run.gates})
+    gate_ids = sorted({gate for run in records for gate, _ in run.all_gates()})
     for arm in arms:
         mine = [run for run in records if run.arm == arm]
         n = len(mine)
@@ -551,10 +998,11 @@ def _evidence(
                     sum(run.sealed_oos_unsealed for run in mine), n, alpha
                 ),
                 detector_errors=sum(run.detector_error is not None for run in mine),
+                g5=_sealed_arm(arm, mine, alpha) if sealed_oos_g5 else None,
             )
         )
         for gate_id in gate_ids:
-            seen = [dict(run.gates).get(gate_id) for run in mine]
+            seen = [dict(run.all_gates()).get(gate_id) for run in mine]
             gate_rows.append(
                 GateEvidence(
                     gate_id=gate_id,
@@ -572,12 +1020,26 @@ def _evidence(
         gates=tuple(gate_rows),
         runs=tuple(records),
         sealed_oos_unsealings=sum(run.sealed_oos_unsealed for run in records),
+        sealed_oos_g5_evaluations=(
+            sum(run.g5 is not None for run in records) if sealed_oos_g5 else None
+        ),
     )
 
 
 def run_gate_calibration(setup: GateCalibrationSetup) -> GateCalibrationReport:
-    """Validate every market of every arm under every candidate Profile (see module docs)."""
+    """Validate every market of every arm under every candidate Profile (see module docs).
+
+    Each G0 – G4 ``PASS`` spends its family's single unsealing in the candidate's own in-memory
+    vault (capacity: the number of runs, a bookkeeping bound); in G5 mode it then claims the
+    evaluation and runs ``detect_sealed``.
+    """
     runs: dict[str, list[RunRecord]] = {p.content_hash(): [] for p in setup.candidates}
+    vaults = {
+        p.content_hash(): SealedOosVault(
+            p, InMemoryUnsealingLedger(), max_unsealings=setup.run_count()
+        )
+        for p in setup.candidates
+    }
     for arm, effects, seeds in setup.arms():
         for seed in seeds:
             spec = setup.base.model_copy(update={"seed": seed, "effects": effects})
@@ -585,21 +1047,43 @@ def run_gate_calibration(setup: GateCalibrationSetup) -> GateCalibrationReport:
             if market.truth != effects:
                 raise ValueError(f"{arm}/{seed}: the market's truth is not the planted effects")
             for profile in setup.candidates:
+                key = profile.content_hash()
+                vault = vaults[key]
+                view, sealed_bars = (
+                    _split(market, vault.window) if setup.sealed_oos_g5 else (market, ())
+                )
                 try:
-                    report = setup.detector.detect(market, profile)
+                    report = setup.detector.detect(view, profile)
                 except DetectorConfigurationError:
                     raise
                 except Exception as error:  # the method failed on this market: evidence
-                    runs[profile.content_hash()].append(_errored(arm, seed, market, error))
+                    runs[key].append(_errored(arm, seed, market, error))
                     continue
                 if report.validation_profile_hash != profile.content_hash():
                     raise ValueError(f"{setup.detector.name}: report is not under {profile.ref}")
-                runs[profile.content_hash()].append(_record(arm, seed, market, report))
+                record = _record(arm, seed, market, report)
+                if record.verdict is Verdict.PASS:
+                    family = _family(arm, seed)
+                    unsealing = vault.unseal(
+                        family, approved_by=_UNSEALED_BY, at=vault.window.start
+                    )
+                    g5 = None
+                    if setup.sealed_oos_g5:
+                        detector = cast(SealedGateDetector, setup.detector)
+                        g5 = _run_g5(detector, vault, family, unsealing, view, sealed_bars, profile)
+                    record = replace(record, sealed_oos_unsealed=True, g5=g5)
+                runs[key].append(record)
     arms = [arm for arm, _, _ in setup.arms()]
     return GateCalibrationReport(
         inputs=setup.inputs_payload(),
         candidates=tuple(
-            _evidence(profile, runs[profile.content_hash()], arms, setup.alpha)
+            _evidence(
+                profile,
+                runs[profile.content_hash()],
+                arms,
+                setup.alpha,
+                sealed_oos_g5=setup.sealed_oos_g5,
+            )
             for profile in setup.candidates
         ),
     )
