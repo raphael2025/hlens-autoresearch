@@ -101,7 +101,7 @@ cmp /tmp/calib/gate_calibration/bada61369ed52c29eaaba1efffbf610f768fb325ee3a56e3
   docs/research/calibration/single_instrument_evidence.json
 ```
 
-多标的同理（工厂 `multi_instrument_evidence`，文件名为其 `report_hash`）。等价地可用
+多标的同理（工厂 `multi_instrument_evidence`，文件名为其 `report_hash`）。2026-09-27 在原代码基线 `dd6c8e1`（报告由 2.1.0 代码生成；2.2.0 代码重跑会得到新的 `report_hash`）上以同一命令（6 GB 上限）复现：退出码 0，输出与 `multi_instrument_evidence.json` `cmp` 相同，文件 SHA-256 `d6723bbdf619ff04b623cc8a271ecfcb28ef21dfa8798a0fb2e0ec6c65699107`（完成计划 B57）。等价地可用
 `python -m research.synthetic_lab.gate_calibration --setup ... --out ...`：B52 之前 `-m` 以 `__main__` 重新执行该模块，
 得到不同的 setup 类，`isinstance` 检查拒绝一切 setup；现在 `__main__` 块转调包内模块的 `main`，并有子进程测试覆盖。
 缩减种子数的再生成不会得到相同字节，故不作为测试。

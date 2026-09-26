@@ -145,6 +145,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - `venue` / `symbol` / `timeframe` 区分大小写、不做规范化（ADR-0018 边界）：未来 Adapter 必须产出规范值
 - v1 只读 gate 只做顶层形状检查；旧哈希只对完整的 v1 持久化规范载荷复现历史身份（C1 F2）
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
+- 后代 G5 是未决设计边界：后代沿用父代 `family_id`，每个 family 只评估一次密封 OOS（C-S1..3），重复使用会泄漏 holdout；需新的预注册 family / 独立未来密封窗口与 Profile 证据规则（未决定；完成计划 B57）
 - D1 已用两个时间单位边界日的官方 kline 与 aggTrades 验证原生字段、单位和 ZIP 结构；大体量 BTC 日归档仍须在批量 backfill 前做容量基线
 
 ## 8. Important Historical Context
@@ -159,7 +160,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 全代码分支（2026-09-26）：全量非 PostgreSQL 门禁 7031 passed / 136 deselected（`3be497b`，审计后续 B44～B54，契约 2.1.0，未验收）；此前保留恢复点 `564c87c`；ADR-0052 独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`（未并入 Phase 1 候选 / `main`）
+- 全代码分支（2026-09-27）：`wip/all-code-completion` 冻结 HEAD `1551b30` 全量非 PostgreSQL 门禁 7244 passed / 136 deselected（B1～B56，契约 2.2.0，未验收；完成计划 B57）；更早 `3be497b` 7031 passed；此前保留恢复点 `564c87c`；ADR-0052 独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`（未并入 Phase 1 候选 / `main`）
 - Date：2026-09-25（Phase 1 正式恢复点；全代码分支见上一条）
 - Stable recovery point：Phase 1 D3D-R1 修复提交 `c06b9fa`（Codex 已独立复核；随 D3D 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；

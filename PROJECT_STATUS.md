@@ -53,7 +53,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 6 | State × Strategy | 🧱 框架已实现（ADR-0039）；矩阵条件假设全单元预登记、可选接入循环、逐单元验证（B27）CODE_COMPLETE / DEBUG_PENDING |
 | 7 | Dynamic Discovery | 🧱 框架已实现（ADR-0040）；LLM 调用内容存储与循环内可取回核对；严格草稿、被拒调用记录、声明式批次、知识检索来源（B33）CODE_COMPLETE / DEBUG_PENDING |
 | 8 | Validation & Robustness | 🧱 框架已实现（ADR-0041）；G4 逐检查异常隔离、多标的验证、横截面跨资产（ADR-0059，B29）CODE_COMPLETE / DEBUG_PENDING |
-| 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交；只给证据不选数值 |
+| 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）CODE_COMPLETE / DEBUG_PENDING |
 | 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；总线外部锚点、任务只读 API、ADR-0053（VALIDATION → FAILED）、可选条件假设、跨进程测试与状态目录单写者锁、劣化检查报告（B32 / B34）CODE_COMPLETE / DEBUG_PENDING |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045）；替换提案（恒待人工批准）与循环之外的替换提案作业（证据逐份核验、账本单写者锁 + 外部锚点，B49）CODE_COMPLETE / DEBUG_PENDING |
@@ -214,6 +214,8 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ 旧研究可能已看过全部 BTC 历史：历史"样本外"区间在认知上不完全干净
 - ⚠️ D1 已真实验证两个单位边界日的 kline 与 aggTrades；大体量 BTC 日归档尚未做内存 / 吞吐基线，批量 backfill 前必须先完成容量检查与可恢复 checkpoint
 
+- ⚠️ **后代 G5 是未决设计边界**：进化后代沿用父代 family，每个 family 只能评估一次密封样本外（宪法 C-S1..3），所以后代报告没有 G5、替换提案无法用循环自己的报告支撑；为后代重复使用同一密封窗口会泄漏 holdout。需要新的预注册 family 或独立的未来密封窗口，以及相应的 Profile 证据规则，均未决定（完成计划 B57）
+
 ## 8. 当前禁止事项
 
 - ❌ 只按 roadmap Phase 1 恢复序列逐批实施；**D3E / R1 / R2 / R3、D4、E1 已提交待 Codex 复核**；E2 起仍关闭；不写任何 WebSocket 代码
@@ -232,11 +234,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | B57：冻结 WIP `1551b30` 全量非 PostgreSQL 门禁 7244 passed / 136 deselected，静态检查、Schema、控制台测试与构建全部退出码 0；B52 双标的证据在原基线 `dd6c8e1` 上逐字节复现；后代 G5 记录为未决设计边界 | 只作证据与恢复点；未选阈值、未冻结 Profile；docs-only |
 | 2026-09-27 | B56：ADR-0062（Codex 决定，2026-09-27 **Accepted**）——Validation Profile 冻结登记：追加式、哈希链、单写者、**必需**目录外锚点；登记绑定 Profile ref + 内容哈希、校准报告原始字节 / 自哈希 / 与 provenance 逐字相等、具名批准人与 UTC 时间；写路径失败即作废实例；Promotion 不再信任对象的 `status = FROZEN`，必须有有效登记，否则 `profile_not_frozen` | CODE_COMPLETE / DEBUG_PENDING；登记为空，所有晋升仍被拒；不认证身份、不是生产控制面；未改契约 / Schema / Profile 数值 / 哈希；ADR 接受不等于 Phase 4 / 5 验收 |
 | 2026-09-26 | B55：ADR-0055 知识标签 / 资产检索（契约 2.2.0：`tags_all` AND、`assets_any` OR 精确；2.1.0 固定向量逐位复现；控制台筛选）经 Codex 复核进入整合；组合分支 `claude/adr-0055-integration` 从 `a5836b2` cherry-pick，三处 fixture 冲突保留 B46 变体与两代遗留；Phase 9 证据改为按记录版本 2.1.0 核对 | CODE_COMPLETE / DEBUG_PENDING；ADR-0055 Accepted（Codex，2026-09-26，`c08c589` 门禁 7179 passed、退出码 0）；已 fast-forward 推送到 `wip/all-code-completion`；种子尚无具名人工审阅的标签 / 资产，Phase 0.5 未验收 |
 | 2026-09-26 | 审计后续（B44～B52）：真实 HTTP 冒烟（含 502 / 500）；报告存储解码缺陷修复；Promotion 要求冻结且带校准的 Profile 与市场基准项；替换提案作业（循环之外）；研究循环内容核对失败记录调用、核对模式写入指纹；持久审计须显式选择 `record_marks`；劣化证据不足绝不显示为健康；Phase 9 中等规模证据；`-m` 校准 CLI 修复 | 全部 CODE_COMPLETE / DEBUG_PENDING；新待决 D-DEG-IE；未合并 `phase/1` / `main` |
 | 2026-09-26 | 全代码批次收尾（B25～B43）：ADR-0059 / 0060 / 0061 实施、ADR-0005 Promotion 链、P6 逐单元验证、P7 批次与知识来源、P11 跨进程测试与状态目录单写者锁、P13 风险重放、P10 路由自身验证与纸面偏差、全栈契约核对与组件测试、契约 2.1.0 合入；D-LIST 恢复 Raphael 暂缓；最终门禁 `8983ead` 6749 passed | 全部 CODE_COMPLETE / DEBUG_PENDING，待 Cursor 调试与 Codex 复核；未合并 `phase/1` / `main` |
-| 2026-09-26 | ADR-0052 契约 2.1.0（按记录版本重放）合入全代码分支（`core/adr-0052-into-full-code`）；ADR-0054 / 0057 的新字段改为 2.1.0 声明；验证的研究侧取值完成（精确比较、Profile 字段优先且不可被显式参数覆盖、负对照独立阈值）；事件表记录契约版本；因信封变化而变的测试钉值逐一核实后改钉 | CODE_COMPLETE / DEBUG_PENDING；待协调者集成与 Codex 复核 |
 
 ## 10. 下一阶段进入条件
 

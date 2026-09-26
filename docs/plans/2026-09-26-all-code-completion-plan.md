@@ -694,6 +694,30 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   Profile 数值 / 哈希 / ADR-0008。
 - 接受：Codex 于 2026-09-27 接受 ADR-0062（架构与实现方案），阶段 3 文档 `0cdf19f` + 日期修正 `3c344df` 已推送；ADR / 实现的接受**不等于** Phase 4 或 Phase 5 验收：冻结登记仍为空（没有任何 `profile.frozen` 记录，所有 Promotion 仍以 `profile_not_frozen` 被拒），Validation Profile 数值（D-09 TBD-1..5）仍未冻结。
 
+**B57 — 冻结 WIP `1551b30` 的全量门禁与 B52 双标的证据复现（docs-only；只作证据）**
+
+- 双标的证据复现（原代码基线，**不是** `1551b30`：Phase 9 证据由 2.1.0 代码生成，2.2.0 代码重跑会得到新的输入与 `report_hash`）：
+  独立 worktree `/tmp/hlens-b52-repro-dd6c8e1`，HEAD `dd6c8e13d370bc69ebc13a3cbfa23111fddea37c`；命令
+  `systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline python -c 'import sys; from research.synthetic_lab.gate_calibration import main; sys.exit(main(sys.argv[1:]))' --setup tests.research.synthetic_lab.evidence_setups:multi_instrument_evidence --out /tmp/calib-b52-dd6c8e1`；scope 2026-09-26T22:34:31Z → 22:52:31Z，CPU 17 min 59.7 s，内存峰值 577.9 MB，无 OOM；exec session 12194 退出码 0。
+  唯一输出 `gate_calibration/0f04d1b649d7ce6357e47d84e6ae709d343bfcbb44271398a34cb2aa83f2cecd.json`；与提交的
+  `docs/research/calibration/multi_instrument_evidence.json` `cmp` 退出码 0（逐字节相同，1358906 字节），两者文件 SHA-256 均为
+  `d6723bbdf619ff04b623cc8a271ecfcb28ef21dfa8798a0fb2e0ec6c65699107`；报告内 `report_hash` =
+  `0f04d1b649d7ce6357e47d84e6ae709d343bfcbb44271398a34cb2aa83f2cecd`，按规范 JSON 自哈希成立，`kind = gate_calibration`。
+  此前一次同命令运行（PID 1295726，退出码 130）是有意停止，不计为结果。不据此选择阈值或冻结 Profile。
+- 全量非 PostgreSQL 门禁（冻结 HEAD `1551b3042d351bbceeb577d20431b6e3a0c1f81a`，工作树干净，本地 = 远端；复现结束后才启动，不重叠；
+  完整日志 `~/hlens-gate-logs/1551b30/`）：`START_SHA 1551b30… dirty=0 2026-09-26T22:53:54Z`
+  - `systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest -q -rs -m "not postgres" -p no:cacheprovider`
+    → `7244 passed, 136 deselected, 1 warning in 2897.18s (0:48:17)`，退出码 0（2899 s）；无 skip（控制台 live-backend smoke
+    `tests/apps/test_live_backend_smoke.py` 无标记，随之实际运行）；1 warning 为 Starlette `httpx` 弃用提示。
+  - `uv run ruff check .` → `All checks passed!`，退出码 0；`uv run ruff format --check .` → `761 files already formatted`，退出码 0；
+    `uv run mypy`（6 GB 上限）→ `Success: no issues found in 595 source files`，退出码 0；`uv lock --check --offline` → `Resolved 52 packages`，退出码 0。
+  - `uv run python -m core.contracts.registry` → 135 份 Schema，导出后 `git status schemas` 0 处变化；`uv run python -m apps.api.openapi` →
+    `openapi.json` 0 处变化；`npm --prefix apps/web run gen:api` → `api.d.ts` 0 处变化（均退出码 0）。
+  - `npm --prefix apps/web test` → lib `tests 87 / pass 87 / fail 0`、组件 `tests 109 / pass 109 / fail 0`，退出码 0；
+    `npm --prefix apps/web run build` → `✓ built`，退出码 0。
+  - `END_SHA 1551b3042d351bbceeb577d20431b6e3a0c1f81a dirty=0 2026-09-26T23:42:21Z`。本提交为 docs-only，不在该门禁覆盖范围内。
+- **未决设计边界：后代 G5（只记录，不实施）**。事实：`EvolutionStage` 的后代沿用 `source.family_id`；`OosUnsealing` / `SealedOosVault` 每个 family 只允许一次密封 OOS 评估（宪法 C-S1..3），所以循环为后代产生的报告不含 G5，替换提案作业（B49 / B53）无法用循环自身的报告支撑提案。这是有意的保护，不是缺失的报告。风险：为后代再次消耗同一密封窗口会泄漏 holdout（父代的 OOS 结果已被看过，后代的产生以它为条件）。所需前置条件（均未决定）：新的预注册 family，或独立的、未来的、未被看过的密封窗口；以及对应的 Profile 证据规则（什么证据足以评估一个后代）。本批未改 OOS / Promotion 状态、`family_id`、Profile 或宪法。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
@@ -702,10 +726,10 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 6 | 数据集组合根上的条件计划端到端测试（B50） | 同 10.6 |
 | 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51）；冻结以 ADR-0062 的追加式、带锚点的 Profile 冻结登记为权威（B56，ADR-0062 Accepted） | 今天登记为空 → 所有晋升被拒（设计如此）；批准人只是声明，登记不是生产 Control Plane |
 | 0.5 | 按标签 / 资产检索（ADR-0055 Accepted，契约 2.2.0，含控制台；B55） | Phase 0.5 未验收：种子尚无具名人工审阅的标签 / 资产 |
-| 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告未重跑复现 |
+| 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告已在原基线 `dd6c8e1` 上逐字节复现（B57，只作证据） |
 | 10 | 证据模式要求报告的 Profile 与市场基准项（B51） | 证据模式不要求 FROZEN；不要求 `G2.inverse_control` |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
-| 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案；锚点不认证新增行 |
+| 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案（有意：每个 family 只评估一次密封 OOS；未决设计边界见 B57）；锚点不认证新增行 |
 | 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做；控制台对 502 / 500 的呈现未经真实后端；生产 ASGI 服务器未选定 |
 
 架构边界：本轮（`c36005b..` 最终 HEAD `3be497b`）没有改动 `core/` 或 `schemas/`（Schema 仍 135 份，契约 2.1.0）；B55 在组合分支上改动 `core/`（契约 2.2.0，ADR-0055）与全部 135 份 Schema 的信封默认值及三份知识 Schema；新增 `plugins/` / `infrastructure/` 不得 import `research/` 的边界测试（B51）。
