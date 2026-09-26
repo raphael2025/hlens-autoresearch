@@ -718,6 +718,25 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   - `END_SHA 1551b3042d351bbceeb577d20431b6e3a0c1f81a dirty=0 2026-09-26T23:42:21Z`。本提交为 docs-only，不在该门禁覆盖范围内。
 - **未决设计边界：后代 G5（只记录，不实施）**。事实：`EvolutionStage` 的后代沿用 `source.family_id`；`OosUnsealing` / `SealedOosVault` 每个 family 只允许一次密封 OOS 评估（宪法 C-S1..3），所以循环为后代产生的报告不含 G5，替换提案作业（B49 / B53）无法用循环自身的报告支撑提案。这是有意的保护，不是缺失的报告。风险：为后代再次消耗同一密封窗口会泄漏 holdout（父代的 OOS 结果已被看过，后代的产生以它为条件）。所需前置条件（均未决定）：新的预注册 family，或独立的、未来的、未被看过的密封窗口；以及对应的 Profile 证据规则（什么证据足以评估一个后代）。本批未改 OOS / Promotion 状态、`family_id`、Profile 或宪法。
 
+**B58 — P10 证据模式要求 Profile 所要求的 ADR-0060 反向对照项（`9c2871d`；隔离分支 `claude/p10-inverse-control`，基于 `0612cc6`，快进推送到 `wip/all-code-completion`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 缺口（复核发现）：`research/router/evidence.py` 只要求 Profile 所选的 `G2.market_benchmark` 项；ADR-0060 规定 `benchmark.inverse_control_reported = true`
+  即报告含 `G2.inverse_control`，但缺该项的 PASS 报告仍能通过路由资格。
+- 修复：`check_report` 在市场基准项之后新增最后一项检查——匹配到的 Profile 该标志为 true 且报告没有逐字相同的 `G2.inverse_control` 门 →
+  `inverse_control_missing`（`EligibilityRefusal` 新值）。只要求存在（只报告项，不设阈值、不改判定）；为 false 时行为不变。
+  `ValidationReport` 要求判定由全部门导出，INCONCLUSIVE 的该项使报告判定 INCONCLUSIVE，已在更早的 `verdict_not_pass` 被拒（测试固定）。
+  替换提案作业复用 `check_report`，同样拒绝。控制台 `routerEligibility.ts` 增加该码的中文说明（G5 显示为「通过」）。
+- 测试：true + 缺失 → 拒绝（近似 id 也拒绝）；true + 存在 → 路由（任何已计算的数值，含负收益）；false + 缺失 → 路由；市场基准与反向对照各自必需、
+  顺序在 Profile / 市场基准之后；拒绝写入 `RouterStop` 载荷与 `stop_hash`；替换提案作业 `inverse_control_missing`。夹具：路由测试 Profile 显式声明
+  `inverse_control_reported`（工厂默认 true）；`toy_report` 默认带 `G2.inverse_control`（与既有 `market_benchmark` 参数相同模式）。
+  在修复前的 `evidence.py` 上新测试 4 项失败，修复后通过。信任模式钉值（`TRUST_*`、`BASELINE_RUN_HASH`）未变；没有被钉的证据模式哈希。
+- 实际运行（隔离 worktree，未与门禁重叠）：`pytest -m "not postgres" tests/research/router tests/research/evolution tests/promotion tests/research/reports`
+  + 文档一致性 + 架构边界 → `394 passed, 1 warning in 27.92s`，退出码 0；`ruff check .` → `All checks passed!`；`ruff format --check .` →
+  `761 files already formatted`；`mypy` → `Success: no issues found in 595 source files`；`npm test` → lib 88 / 88、组件 110 / 110，退出码 0；
+  `npm run build` ✓，退出码 0。未另跑全量门禁（下一次全量门禁覆盖）。
+- 边界：未改契约 / Schema / 阈值 / Profile 数值；未改 Promotion——`research/promotion/service.py` 同样只要求市场基准项、不要求 `G2.inverse_control`
+  （FOLLOW-UP，未执行）。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
@@ -727,7 +746,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51）；冻结以 ADR-0062 的追加式、带锚点的 Profile 冻结登记为权威（B56，ADR-0062 Accepted） | 今天登记为空 → 所有晋升被拒（设计如此）；批准人只是声明，登记不是生产 Control Plane |
 | 0.5 | 按标签 / 资产检索（ADR-0055 Accepted，契约 2.2.0，含控制台；B55） | Phase 0.5 未验收：种子尚无具名人工审阅的标签 / 资产 |
 | 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告已在原基线 `dd6c8e1` 上逐字节复现（B57，只作证据） |
-| 10 | 证据模式要求报告的 Profile 与市场基准项（B51） | 证据模式不要求 FROZEN；不要求 `G2.inverse_control` |
+| 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | 证据模式不要求 FROZEN；Promotion 尚不要求 `G2.inverse_control` |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
 | 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案（有意：每个 family 只评估一次密封 OOS；未决设计边界见 B57）；锚点不认证新增行 |
 | 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做；控制台对 502 / 500 的呈现未经真实后端；生产 ASGI 服务器未选定 |
