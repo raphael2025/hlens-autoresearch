@@ -13,12 +13,13 @@ no claim about real markets (roadmap Phase 9).
 
 from __future__ import annotations
 
+import ast
 from collections.abc import Iterator
 from dataclasses import dataclass, replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast, get_protocol_members
 
 import pytest
 
@@ -30,12 +31,26 @@ from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
+from plugins.llm import ScriptedLLMProvider
+from plugins.synthetic import RandomWalkMarket
 from research.evolution import LineageGraph, require_new_version
-from research.loop import OosUnsealBudget, ResearchMemory
+from research.loop import (
+    OosUnsealBudget,
+    ResearchMemory,
+    RoundData,
+    build_synthetic_loop,
+    loop_fingerprint,
+    open_synthetic_loop,
+)
 from research.loop import trials as loop_trials
+from research.loop.compose import _synthetic_ingest, compose_loop
 from research.loop.stages import reevaluation_candidates
+from research.loop.trials import EPHEMERAL_UNSEAL_MARK
+from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import CandidateTrialRunner
 from research.validation.sealed_oos import (
+    DurableUnsealingLedger,
+    InMemoryUnsealingLedger,
     OosAlreadyUnsealed,
     SealedOosAlreadyEvaluated,
     SealedOosVault,
@@ -446,12 +461,16 @@ def test_offspring_are_new_versions_registered_and_revalidated(planted: Run) -> 
 
 
 def _sealed_config(unseal: OosUnsealBudget | None) -> Any:
-    # one 4-day round: research days 0-3, then the sealed OOS day 3-4 of the Profile
+    # one 4-day round: research days 0-3, then the sealed OOS day 3-4 of the Profile. These loops
+    # are in memory: the unseal budget carries the TEST-ONLY ephemeral-ledger flag (review fixes 4)
     return fx.config(
         lookbacks=(60,),
         days_per_round=4,
         profile=fx.loop_profile(boundary_day=3),
-        loop_wiring=fx.wiring(evolution=False, oos_unseal=unseal),
+        loop_wiring=fx.wiring(
+            evolution=False,
+            oos_unseal=None if unseal is None else replace(unseal, ephemeral_unseal_for_tests=True),
+        ),
     )
 
 
@@ -515,6 +534,7 @@ def _assert_consumed_without_result(loop: Any, memory: ResearchMemory, reason: s
     assert result.sealed_status["status"] == "consumed_without_result"
     assert result.sealed_status["reason"] == reason
     assert result.sealed_status["approved_by"] == "test-human"
+    assert result.sealed_status["unseal_ledger"] == EPHEMERAL_UNSEAL_MARK  # never real use
     # the single evaluation is consumed: nobody can unseal or read the window again
     assert memory.oos_ledger.count() == 1 and memory.oos_ledger.is_evaluated(fx.FAMILY)
     vault = SealedOosVault(fx.loop_profile(boundary_day=3), memory.oos_ledger, max_unsealings=5)
@@ -580,6 +600,11 @@ def test_an_explicit_unseal_budget_runs_g5_once_per_family(tmp_path: Path) -> No
     assert memory.oos_ledger.count() == 1 and memory.oos_ledger.is_evaluated(fx.FAMILY)
     unsealing = memory.oos_ledger.get(fx.FAMILY)
     assert unsealing is not None and unsealing.approved_by == "test-human"
+    # the TEST-ONLY ephemeral ledger is visible in the audit: the G5 status and the stage summary
+    assert result.sealed_status["unseal_ledger"] == EPHEMERAL_UNSEAL_MARK
+    assert _stage(record, "validation").summary["unseal_ledger"] == EPHEMERAL_UNSEAL_MARK
+    [row] = _stage(record, "validation").summary["reports"]
+    assert row["sealed_oos"]["unseal_ledger"] == EPHEMERAL_UNSEAL_MARK
     vault = SealedOosVault(fx.loop_profile(boundary_day=3), memory.oos_ledger, max_unsealings=1)
     with pytest.raises(OosAlreadyUnsealed):
         vault.unseal(fx.FAMILY, "test-human", fx.T0)
@@ -592,6 +617,206 @@ def test_an_explicit_unseal_budget_runs_g5_once_per_family(tmp_path: Path) -> No
     with pytest.raises(ValueError, match="human"):
         OosUnsealBudget(max_unsealings=1, approved_families={fx.FAMILY: loop.guard.actor})
     assert record.status is RoundStatus.COMPLETED
+
+
+# --------------------------------------- durable unsealing ledger (review fixes 4, 2026-09-26)
+
+
+def _unseal_budget(*, ephemeral: bool = False) -> OosUnsealBudget:
+    return OosUnsealBudget(
+        max_unsealings=1,
+        approved_families={fx.FAMILY: "test-human"},
+        ephemeral_unseal_for_tests=ephemeral,
+    )
+
+
+def _budget_config(budget: OosUnsealBudget) -> Any:
+    """``_sealed_config`` with ``budget`` exactly as given (no flag added)."""
+    config = _sealed_config(None)
+    wiring = replace(config.wiring, oos_unseal=budget, sealed_decision_step=fx.HOUR)
+    return replace(config, wiring=wiring)
+
+
+def _llm() -> ScriptedLLMProvider:
+    return ScriptedLLMProvider(
+        [fx.llm_output(i, lookback) for i, lookback in enumerate((240, 1440, None))],
+        clock=lambda: fx.T0,
+    )
+
+
+def _memory(tmp_path: Path, ledger: Any = None) -> ResearchMemory:
+    failures = FailureRegistry(tmp_path / "failures.jsonl")
+    if ledger is None:
+        return ResearchMemory(failures=failures)
+    return ResearchMemory(failures=failures, oos_ledger=ledger)
+
+
+def test_an_unseal_budget_needs_a_durable_unsealing_ledger(tmp_path: Path) -> None:
+    """An in-memory ledger forgets its unsealings on a restart: refused without the flag."""
+    with pytest.raises(ValueError, match="durable unsealing ledger"):
+        fx.build(tmp_path, _budget_config(_unseal_budget()))
+    # an explicitly passed durable ledger: G5 runs, and nothing marks the run as test-only
+    memory = _memory(tmp_path, DurableUnsealingLedger(tmp_path / "sealed_oos.jsonl"))
+    loop = build_synthetic_loop(
+        _budget_config(_unseal_budget()),
+        provider=RandomWalkMarket(),
+        bus=InMemoryEventBus(),
+        memory=memory,
+        llm=_llm(),
+    )
+    [record] = loop.run_unattended(1)
+    [result] = memory.validations
+    assert result.sealed_report is not None and result.sealed_status["status"] == "unsealed"
+    assert "unseal_ledger" not in result.sealed_status
+    assert "unseal_ledger" not in _stage(record, "validation").summary
+    assert memory.oos_ledger.count() == 1 and memory.oos_ledger.is_evaluated(fx.FAMILY)
+
+
+def test_the_ledger_is_rechecked_before_every_unsealing(tmp_path: Path) -> None:
+    memory = _memory(tmp_path, DurableUnsealingLedger(tmp_path / "sealed_oos.jsonl"))
+    loop = build_synthetic_loop(
+        _budget_config(_unseal_budget()),
+        provider=RandomWalkMarket(),
+        bus=InMemoryEventBus(),
+        memory=memory,
+        llm=_llm(),
+    )
+    memory.oos_ledger = InMemoryUnsealingLedger()  # swapped after composition
+    [record] = loop.run_unattended(1)
+    validation = _stage(record, "validation")
+    assert validation.status is StageStatus.FAILED
+    assert "durable unsealing ledger" in (validation.error or "")
+    assert memory.oos_ledger.count() == 0 and not memory.oos_ledger.is_evaluated(fx.FAMILY)
+
+
+def test_the_test_only_ephemeral_flag_is_explicit_and_visible(tmp_path: Path) -> None:
+    flagged = _budget_config(_unseal_budget(ephemeral=True))
+    # visible in the fingerprint (only when set: every durable fingerprint is unchanged)
+    assert loop_fingerprint(flagged)["oos_unseal"]["ephemeral_unseal_for_tests"] is True
+    plain = loop_fingerprint(_budget_config(_unseal_budget()))["oos_unseal"]
+    assert "ephemeral_unseal_for_tests" not in plain
+    # refused with a durable ledger, and with a state directory (before anything is written)
+    with pytest.raises(ValueError, match="drop the flag"):
+        build_synthetic_loop(
+            flagged,
+            provider=RandomWalkMarket(),
+            bus=InMemoryEventBus(),
+            memory=_memory(tmp_path, DurableUnsealingLedger(tmp_path / "sealed_oos.jsonl")),
+            llm=_llm(),
+        )
+    state_dir = tmp_path / "state"
+    with pytest.raises(ValueError, match="TEST-ONLY"):
+        open_synthetic_loop(
+            flagged, state_dir=state_dir, provider=RandomWalkMarket(), bus=InMemoryEventBus()
+        )
+    assert not state_dir.exists()
+    with pytest.raises(ValueError, match="bool"):
+        OosUnsealBudget(
+            max_unsealings=1,
+            approved_families={fx.FAMILY: "test-human"},
+            ephemeral_unseal_for_tests=cast(Any, "yes"),
+        )
+    # in memory it works, and every record it touches says so (see also the G5 test above)
+    loop, memory, _ = fx.build(tmp_path / "flagged", flagged)
+    [record] = loop.run_unattended(1)
+    [result] = memory.validations
+    assert result.sealed_status["status"] == "unsealed"
+    assert result.sealed_status["unseal_ledger"] == EPHEMERAL_UNSEAL_MARK
+    assert _stage(record, "validation").summary["unseal_ledger"] == EPHEMERAL_UNSEAL_MARK
+
+
+# ------------------------------- synthetic sealed bars stay with the ingest (review fixes 4)
+
+
+class _RecordingSealed:
+    """A round's ``SealedSource``, recording whether each release came after the claim."""
+
+    def __init__(self, sealed: Any, memory: ResearchMemory, releases: list[bool]) -> None:
+        self._sealed, self._memory, self._releases = sealed, memory, releases
+
+    @property
+    def window(self) -> Any:
+        return self._sealed.window
+
+    def evaluable(self, as_of: Any) -> str | None:
+        result: str | None = self._sealed.evaluable(as_of)
+        return result
+
+    def release(self, evaluation: Any) -> Any:
+        self._releases.append(self._memory.oos_ledger.is_evaluated(evaluation.family_id))
+        return self._sealed.release(evaluation)
+
+
+class _RoundDataOnly:
+    """The ingest's segment with nothing but the ``RoundData`` protocol's members: any other
+    attribute (the generated market, the research pieces, ...) raises."""
+
+    MEMBERS = frozenset(get_protocol_members(RoundData))
+
+    def __init__(self, segment: Any, sealed: _RecordingSealed) -> None:
+        self._segment, self._sealed = segment, sealed
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in self.MEMBERS:
+            raise AttributeError(f"a stage read {name!r}, which is not part of RoundData")
+        return self._sealed if name == "sealed" else getattr(self._segment, name)
+
+
+class _ProtocolOnlyIngest:
+    name = "ingest"
+
+    def __init__(self, inner: Any, memory: ResearchMemory, releases: list[bool]) -> None:
+        self._inner, self._memory, self._releases = inner, memory, releases
+
+    def estimate(self, ctx: Any) -> Any:
+        return self._inner.estimate(ctx)
+
+    def run(self, ctx: Any) -> Any:
+        result = self._inner.run(ctx)
+        segment = result.artifacts["segment"]
+        sealed = _RecordingSealed(segment.sealed, self._memory, self._releases)
+        artifacts = {**result.artifacts, "segment": _RoundDataOnly(segment, sealed)}
+        return replace(result, artifacts=artifacts)
+
+
+def test_stages_after_the_ingest_see_only_the_round_data_protocol(tmp_path: Path) -> None:
+    """The synthetic ingest generates the sealed bars with its market (not a read of real sealed
+    data); every later stage — G5 included — runs over the RoundData protocol alone, and the
+    sealed bars leave the segment once, after the family's evaluation was claimed."""
+    config = _sealed_config(_unseal_budget())
+    assert set(RoundData.__dict__) >= {"sealed", "research_bars", "feature_runs"}
+    assert not {"market", "pieces", "research"} & _RoundDataOnly.MEMBERS
+    loop, memory, _ = fx.build(tmp_path / "plain", config)
+    [plain] = loop.run_unattended(1)
+    releases: list[bool] = []
+    guarded = _memory(tmp_path / "guarded")
+    ingest = _ProtocolOnlyIngest(
+        _synthetic_ingest(config, RandomWalkMarket(), guarded), guarded, releases
+    )
+    loop = compose_loop(config, ingest, InMemoryEventBus(), guarded, _llm(), None)
+    [record] = loop.run_unattended(1)
+    assert record.status is RoundStatus.COMPLETED
+    assert all(stage.status is StageStatus.COMPLETED for stage in record.stages)
+    assert releases == [True]  # one release, after the claim
+    [result] = guarded.validations
+    assert result.sealed_report is not None and result.sealed_status["status"] == "unsealed"
+    assert record.record_hash == plain.record_hash  # the proxy changes nothing that is recorded
+
+
+def test_no_stage_after_the_ingest_touches_the_generated_market() -> None:
+    """Source scan: outside ``IngestStage`` the stage modules never access ``market`` /
+    ``markets`` (the generated market, sealed bars included, stays with the ingest)."""
+    root = Path(loop_trials.__file__).parent
+    offenders: list[str] = []
+    for module in ("stages.py", "trials.py", "evolution.py"):
+        tree = ast.parse((root / module).read_text())
+        for node in tree.body:
+            if isinstance(node, ast.ClassDef) and node.name == "IngestStage":
+                continue
+            for item in ast.walk(node):
+                if isinstance(item, ast.Attribute) and item.attr in {"market", "markets"}:
+                    offenders.append(f"{module}:{item.lineno}")
+    assert offenders == []
 
 
 # ---------------------------------------------------------------------------------- LLM reviews

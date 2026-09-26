@@ -31,7 +31,9 @@ approved list with its human approver, only after an in-sample PASS, at most onc
 evaluation is claimed — recorded as consumed — before any sealed manifest, bar or feature is read;
 an early end is ``consumed_without_result``), bounded by ``max_unsealings``; the unsealing ledger
 is the durable ``sealed_oos.jsonl`` of the state directory, so a restart never unseals again, and
-the budget is part of the fingerprint. What is read and proven after the claim:
+the budget is part of the fingerprint. An in-memory dataset loop with a budget needs an explicitly
+passed ``DurableUnsealingLedger`` (or the TEST-ONLY ``ephemeral_unseal_for_tests`` flag; review
+fixes 4, ``research.loop.trials.OosUnsealBudget``). What is read and proven after the claim:
 ``research.loop.dataset_source.SealedDatasetPair``.
 """
 
@@ -55,6 +57,7 @@ from research.loop.compose import (
     LoopWiring,
     compose_durable,
     compose_loop,
+    refuse_ephemeral_unseal,
     settings_fingerprint,
 )
 from research.loop.dataset_source import (
@@ -177,6 +180,7 @@ def open_dataset_loop(
     manifests ``config.rounds`` declares for its round. ``bus`` omitted: the composition's own
     ``FileEventBus(state_dir / "bus")``, cross-checked against the audit (``compose_durable``).
     """
+    refuse_ephemeral_unseal(config)
     wiring = config.wiring
     state = open_state(
         state_dir,

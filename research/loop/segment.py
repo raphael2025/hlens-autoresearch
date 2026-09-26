@@ -30,6 +30,18 @@ storage only on ``release`` against a claimed evaluation (ADR-0049 implementatio
 G5). ``Segment`` is the synthetic implementation (``IngestStage``; its record hashes are unchanged
 by the refactor), ``DatasetSegment`` (``research.loop.dataset_source``) the one over verified
 Research Dataset manifests.
+
+Synthetic sealed bars (ADR-0049 implementation note, review fixes 4, 2026-09-26). The synthetic
+ingest **generates** its sealed-window bars as part of generating the round's market and then
+withholds them; generating is not reading real sealed data (the market is synthetic, so there is
+no real out-of-sample observation to leak). The generated market stays with the ingest: in
+``ResearchMemory.markets`` (a durable restore regenerates it from its spec) and as
+``Segment.market`` / ``ResearchPiece.market`` (their market hash labels the research data). The
+stages after the ingest must not see the sealed bars, and they do not: they read the round only
+through the ``RoundData`` protocol, which exposes no market object and hands sealed bars out only
+via ``sealed.release`` against a claimed evaluation (proved by a test that runs the whole loop, G5
+included, over a proxy exposing only the protocol's members, and by a source scan that no stage
+other than the ingest touches ``market`` / ``markets``).
 """
 
 from __future__ import annotations

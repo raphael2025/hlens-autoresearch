@@ -10,7 +10,9 @@ declarations — is a constructor parameter; validation thresholds are read from
   research bars (label known before the sealed OOS boundary) join the **accumulated research
   data** in ``ResearchMemory.research_data``; sealed bars are withheld (``segment.SealedBars``)
   and never join it. Bars outside the Profile's research window and after the sealed window are
-  not used (counted in the summary);
+  not used (counted in the summary). Generating the sealed bars is not reading real sealed data
+  (synthetic market); the later stages never receive them except through ``sealed.release``
+  after a claim (``research.loop.segment``, "Synthetic sealed bars");
 - ``StateStage``: Phase 1 F4 ``bar_log_return`` through ``run_feature`` over the accumulated
   research bars, then a Phase 2 ``StateProvider`` through ``infrastructure.state.run_state`` at
   every decision time and at the end of the research data; the same feature values become the

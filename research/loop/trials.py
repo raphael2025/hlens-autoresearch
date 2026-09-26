@@ -47,6 +47,13 @@ pair ends as ``consumed_without_result:sealed_data_refused``; its G5 report also
 ``G0.manifest_binding`` for the sealed pair (ADR-0049 implementation note, dataset G5). The stage
 makes no lifecycle move; the memory stage does (PASS → OOS at most; FAIL → REJECTED).
 
+The unsealing ledger must be durable (ADR-0049 implementation note, review fixes 4): an unseal
+budget over an in-memory ledger is refused at construction and again before every unsealing
+(``require_durable_unsealing``), because a restarted process would forget the unsealing and could
+run G5 for the same family again. The TEST-ONLY ``OosUnsealBudget.ephemeral_unseal_for_tests``
+flag is the only way around it and is written into the stage summary (``unseal_ledger``) and into
+every unsealed G5 status (``EPHEMERAL_UNSEAL_MARK``).
+
 Record hashes never depend on the wall clock: reports and metadata are stamped with the round's
 scheduled time, and floats are written as quantized Decimal text (``segment.decimal_text``).
 """
@@ -122,9 +129,16 @@ from research.validation import (
 from research.validation.controls import FixedSides
 from research.validation.gates import flag_gate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT, sealed_oos_without_result
-from research.validation.sealed_oos import OosBudgetExhausted, SealedEvaluation, SealedOosVault
+from research.validation.sealed_oos import (
+    DurableUnsealingLedger,
+    OosBudgetExhausted,
+    SealedEvaluation,
+    SealedOosVault,
+    UnsealingLedger,
+)
 
 __all__ = [
+    "EPHEMERAL_UNSEAL_MARK",
     "ExperimentStage",
     "OosUnsealBudget",
     "TrialComponents",
@@ -132,6 +146,7 @@ __all__ = [
     "ValidationOutcome",
     "ValidationStage",
     "failure_of",
+    "require_durable_unsealing",
 ]
 
 _CONTEXT: Final = Context(prec=50, rounding=ROUND_HALF_EVEN)
@@ -177,14 +192,28 @@ class OosUnsealBudget:
     families nobody looked at (ADR-0049 review fixes 2). ``max_unsealings`` still bounds the
     global count (``SealedOosVault``). An empty list, a blank family id or an automation
     identity is refused.
+
+    Durable ledger (ADR-0049 implementation note, review fixes 4, 2026-09-26): an unseal budget
+    is spent against an unsealing ledger that must survive a restart — ``DurableUnsealingLedger``
+    (a ``state_dir``, or ``ResearchMemory(oos_ledger=DurableUnsealingLedger(path))``). An
+    in-memory ledger forgets its unsealings when the process ends, so a restarted loop could
+    unseal the same family again: ``ValidationStage`` refuses the combination. The only exception
+    is ``ephemeral_unseal_for_tests=True``, a **TEST-ONLY** flag for a non-durable ledger; it is
+    bound into the loop fingerprint and written into every G5 status and validation summary it
+    touches (``EPHEMERAL_UNSEAL_MARK``), so such a run can never be mistaken for real use. It is
+    refused with a durable ledger and with a ``state_dir``.
     """
 
     max_unsealings: int
     approved_families: Mapping[str, str]
+    #: TEST ONLY: allow a non-durable unsealing ledger (see the class docs). Never for research.
+    ephemeral_unseal_for_tests: bool = False
 
     def __post_init__(self) -> None:
         if isinstance(self.max_unsealings, bool) or self.max_unsealings < 1:
             raise ValueError("max_unsealings must be a positive int")
+        if not isinstance(self.ephemeral_unseal_for_tests, bool):
+            raise ValueError("ephemeral_unseal_for_tests must be a bool")
         if not isinstance(self.approved_families, Mapping) or not self.approved_families:
             raise ValueError("an unseal budget needs at least one explicitly approved family")
         approved: dict[str, str] = {}
@@ -258,6 +287,34 @@ class ValidationOutcome:
         if self.report is None:
             return None
         return next((g.value for g in self.report.gates if g.gate_id == gate_id), None)
+
+
+#: What the audit carries when an unseal budget runs on a non-durable ledger (TEST ONLY).
+EPHEMERAL_UNSEAL_MARK: Final = "EPHEMERAL_TEST_ONLY: in-memory unsealing ledger, lost on restart"
+
+
+def require_durable_unsealing(budget: OosUnsealBudget | None, ledger: UnsealingLedger) -> None:
+    """Refuse an unseal budget whose ledger would not survive a restart (``OosUnsealBudget`` docs).
+
+    ``DurableUnsealingLedger`` is the only ledger accepted as durable (another durable
+    ``UnsealingLedger`` must be added here explicitly: fail closed)."""
+    if budget is None:
+        return
+    durable = isinstance(ledger, DurableUnsealingLedger)
+    if budget.ephemeral_unseal_for_tests:
+        if durable:
+            raise ValueError(
+                "ephemeral_unseal_for_tests is a TEST-ONLY flag for a non-durable unsealing "
+                "ledger; this loop's ledger is durable: drop the flag"
+            )
+        return
+    if not durable:
+        raise ValueError(
+            "an OosUnsealBudget needs a durable unsealing ledger (a state_dir, or "
+            "ResearchMemory(oos_ledger=DurableUnsealingLedger(path))): an in-memory ledger "
+            "forgets its unsealings on a restart and would let a family be unsealed again "
+            f"(got {type(ledger).__name__}; ephemeral_unseal_for_tests=True is for tests only)"
+        )
 
 
 def _registered_this_round(ctx: RoundContext) -> tuple[tuple[Hypothesis, str, str | None], ...]:
@@ -609,6 +666,7 @@ class ValidationStage:
     ) -> None:
         if (oos_unseal is None) != (sealed_decision_step is None):
             raise ValueError("an unseal budget needs a sealed decision step and vice versa")
+        require_durable_unsealing(oos_unseal, memory.oos_ledger)
         self._memory = memory
         self._c = components
         self._per = compute_seconds_per_validation
@@ -640,6 +698,8 @@ class ValidationStage:
             "profile_hash": self._c.profile.content_hash(),
             "reports": [dict(r.summary) for r in results],
         }
+        if self._unseal is not None and self._unseal.ephemeral_unseal_for_tests:
+            summary["unseal_ledger"] = EPHEMERAL_UNSEAL_MARK
         return StageResult(
             summary,
             StageUsage(compute_seconds=self._per * len(results)),
@@ -775,6 +835,8 @@ class ValidationStage:
                 "status": "sealed",
                 "reason": "the family is not on the unseal budget's approved list",
             }
+        # re-checked here: the memory's ledger is a mutable field (fail closed before unsealing)
+        require_durable_unsealing(unseal, self._memory.oos_ledger)
         vault = SealedOosVault(
             self._c.profile, self._memory.oos_ledger, max_unsealings=unseal.max_unsealings
         )
@@ -795,6 +857,8 @@ class ValidationStage:
             metadata=context.metadata.model_copy(update={"oos_unsealing": unsealing}),
         )
         status: dict[str, Any] = {"status": "unsealed", "approved_by": unsealing.approved_by}
+        if unseal.ephemeral_unseal_for_tests:
+            status["unseal_ledger"] = EPHEMERAL_UNSEAL_MARK
         result: tuple[GateResult, ...] | str
         try:
             result = self._sealed_gates(

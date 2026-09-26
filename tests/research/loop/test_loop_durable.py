@@ -57,6 +57,12 @@ from research.loop.durable import (
 from research.loop.memory import REVIEW_APPROVED
 from research.persistence import AppendOnlyJournal, JournalCorrupted
 from research.strategies.failure_registry import FailureRegistry
+from research.validation.sealed_oos import (
+    DurableUnsealingLedger,
+    OosAlreadyUnsealed,
+    SealedOosAlreadyEvaluated,
+    SealedOosVault,
+)
 from tests.research.loop import loop_fixtures as fx
 
 ROUNDS = 3
@@ -164,9 +170,14 @@ def _outcome(loop: ResearchLoop, memory: ResearchMemory) -> Outcome:
 
 @pytest.fixture(scope="module")
 def uninterrupted(tmp_path_factory: pytest.TempPathFactory) -> Outcome:
-    """The same scenario without a state directory (all in memory, never restarted)."""
+    """The same scenario without a state directory (in memory, never restarted). Its unseal
+    budget needs a durable unsealing ledger (review fixes 4): one is passed explicitly, so the
+    records are the durable run's (the TEST-ONLY ephemeral flag would mark them)."""
     tmp = tmp_path_factory.mktemp("uninterrupted")
-    memory = ResearchMemory(failures=FailureRegistry(tmp / "failures.jsonl"))
+    memory = ResearchMemory(
+        failures=FailureRegistry(tmp / "failures.jsonl"),
+        oos_ledger=DurableUnsealingLedger(tmp / SEALED_OOS_FILE),
+    )
     loop = build_synthetic_loop(
         _config(), provider=RandomWalkMarket(), bus=InMemoryEventBus(), memory=memory, llm=_llm()
     )
@@ -273,6 +284,30 @@ def test_reopening_restores_the_memory_later_rounds_read(restarted: tuple[Path, 
     assert {str(c.spec.ref) for c in memory.strategies.values()} >= {
         row["child"] for row in memory.offspring
     }
+
+
+def test_a_durable_restart_never_unseals_again(
+    restarted: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    """Review fixes 4: the unsealing lives in the durable ledger. Round 0 unsealed the family
+    before the restart; the rounds run after it never unsealed or evaluated it again, and a
+    reopened directory refuses a second unsealing or claim outright."""
+    state_dir = _copy(restarted[0], tmp_path)
+    reopened = _open(state_dir, consumed=ROUNDS)
+    memory = reopened.memory
+    ledger = memory.oos_ledger
+    assert isinstance(ledger, DurableUnsealingLedger)
+    assert ledger.count() == 1 and ledger.is_evaluated(fx.FAMILY)
+    unsealed = [v for v in memory.validations if v.sealed_status.get("status") == "unsealed"]
+    assert [v.round_index for v in unsealed] == [0]  # before the restart, once
+    later = [v for v in memory.validations if v.round_index > 0 and v.sealed_report is not None]
+    assert later == []  # the rounds after the restart never ran G5 again
+    vault = SealedOosVault(fx.loop_profile(boundary_day=3), ledger, max_unsealings=5)
+    with pytest.raises(OosAlreadyUnsealed):
+        vault.unseal(fx.FAMILY, REVIEWER, fx.T0)
+    with pytest.raises(SealedOosAlreadyEvaluated):
+        vault.claim_evaluation(fx.FAMILY)
+    assert all("unseal_ledger" not in v.sealed_status for v in memory.validations)
 
 
 def test_state_dir_none_is_unchanged_and_exactly_one_source_is_required(tmp_path: Path) -> None:

@@ -415,3 +415,44 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。补上调试待办 C 节 P11「持久组
    该族是否已认领）；新进程重开状态目录后同族的后续样本内 PASS 不再开封（`the family already used its unsealing`），且不读封存对；未获准族从不开封、
    不读封存对；上游 snapshot 不同的封存对在认领后被拒（只有两次 manifest 加载，无 bar 读取，窗口已消耗，留在 OOS）。约 4 分钟、< 2 GB。无数据库单元：
    `tests/infrastructure/e2e/test_research_loop_dataset_g5_units.py`（声明规则、预算需封存对、指纹、`evaluable` 与释放前的拒绝不触及存储）。
+
+## Implementation note (review fixes 4, 2026-09-26)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；无契约 / Schema / 生命周期 / Constitution / Profile 变更；
+不改 `core/`、`infrastructure/dataset/*`、`infrastructure/feature/dataset.py`；`LoopRecord` 载荷与哈希规则不变。状态仍为
+FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。修正封存 OOS 处理的只读复核发现：
+
+1. **只扣留的封存声明不再读取任何数据**（HIGH，`research/loop/dataset_source.py`）：此前 `DatasetRound.sealed_manifest_hash` 路径在摄取时调用
+   `backtest_bars_from_dataset` 读封存窗口的 bar 以计数——未评估，但封存 OHLC 在任何认领之前进入了进程内存，违反「认领之前不读封存窗口的任何
+   东西」（上文 dataset G5 说明）。改为：摄取只记录**声明**——`sealed_manifest_hash` 与 `sealed_window`（Profile 的封存窗口，不触及存储）；
+   `WithheldSealedWindow`（取代 `WithheldSealedBars`）只持有窗口与声明哈希，永不可评估、`release` 恒拒绝。封存 bar 的计数无法不读行（或验证型加载
+   manifest）而得，**故删除**：数据集轮次的 `sealed_bars_withheld` 恒为 `None`，`unused_bars` 移除，声明的 view 晚于截止也不再在摄取时被拒（它从不被读）。
+   只扣留的轮次记录哈希因此改变（摘要字段变化）；合成路径不变。合成路径的封存 bar 是**生成**的（生成整段市场再按日历扣留）：不是读取真实
+   封存数据，没有真实 OOS 泄漏；生成的市场留在摄取侧（`ResearchMemory.markets` 供持久恢复重新生成、`Segment.market` / `ResearchPiece.market`
+   提供市场哈希），摄取之后的阶段只经 `RoundData` 协议读本轮数据，协议不暴露市场，封存 bar 只经已认领评估的 `sealed.release` 交出。
+2. **开封预算需要持久开封账本**（HIGH，`research/loop/trials.py`）：默认 `InMemoryUnsealingLedger` 在进程重启后忘记开封，非持久循环可能对同一族
+   再次运行 G5。改为：`OosUnsealBudget` 只与 `DurableUnsealingLedger` 一起被接受（`state_dir` 的 `sealed_oos.jsonl`，或显式传入
+   `ResearchMemory(oos_ledger=DurableUnsealingLedger(path))`）；`ValidationStage` 在构造时与每次开封前（`require_durable_unsealing`，账本是可变字段）
+   检查，内存账本 → `ValueError`（开封前 fail closed，什么都不开封）。其他 `UnsealingLedger` 实现须在此显式接纳（fail closed）。唯一例外是 TEST ONLY
+   的 `OosUnsealBudget(ephemeral_unseal_for_tests=True)`：写入指纹（`oos_unseal.ephemeral_unseal_for_tests`，只在为真时出现，既有持久指纹不变）、
+   验证阶段摘要（`unseal_ledger`）与每个开封的 G5 状态（`EPHEMERAL_UNSEAL_MARK`）；与持久账本同用、或与 `state_dir` 同用（在写入目录之前，
+   `refuse_ephemeral_unseal`）都被拒。
+3. **被验证的标的须是两对的成员**（MEDIUM，`SealedDatasetPair._load`）：跨对核对不比较成员 / 排除集合，封存窗口可以有不同的 universe 构成——
+   这是有意的（上市状态可以合法变化）。G5 验证的是**同一个单一标的**，已由代码保证：循环单标的（`DatasetIngestStage(symbol=...)`，验证器
+   `declared_instruments=(symbol,)`），研究与封存两次 bar 读取都只请求 `symbols=(symbol,)`，`backtest_bars_from_dataset` 拒绝没有行的请求标的
+   （`infrastructure/bars/dataset.py` 第 3 步），特征请求须携带该标的全部数据集行。新增显式检查：认领之后、`pair_manifests` 与任何封存 bar 读取之前，
+   该标的须在研究 pair 与封存 pair 的价格视图成员中（按 `DegradedEpisodeKey` 的 venue / 类型 / Canonical 标的匹配；稳定产品 ID 的 episode 不写标的，
+   不能证明 → 拒绝，首片没有稳定 ID，ADR-0029），否则 `SealedDataRefused` → `consumed_without_result:sealed_data_refused`。`pair_manifests` 已证明
+   每对内部特征成员 = 价格成员，故价格视图代表整对。
+4. **验证缓存命中路径的检查 / 使用时差**（LOW，`infrastructure/bars/verified.py`，只改文档）：命中时比较一次 head 后返回；比较之后并发前进的
+   head 不被这次命中观察到（下一次加载会看到并 miss）。返回的 manifest 仍正确：内容由哈希固定，证明所读的 snapshot 均被钉住（不可变表状态），
+   等同于写入者在一次普通 `load_manifest` 返回之后才提交。
+5. **测试**：`tests/infrastructure/e2e/test_research_loop_real_data.py`——`LoadRecorder`（与 G5 e2e 共用，移到此处）记录 builder 的每次 manifest
+   请求、验证型加载与数据集 bar 读取：只扣留的封存 manifest 从不被请求、加载或读 bar（带缓存首跑与无缓存重跑都检查），研究 pair 被读；缓存计数
+   (6, 4, 4, 0)；摘要断言声明（哈希、窗口、`sealed_bars_withheld is None`、无 `unused_bars`）。`..._g5.py`——开封前封存对不被请求、封存 bar 在认领后
+   读一次；新增「标的须是两对成员」（研究侧 / 封存侧各一次：认领后被拒、封存 bar 零读取、窗口已消耗）；内存循环带 TEST ONLY 标志。
+   `..._dataset_g5_units.py`——`WithheldSealedWindow` 只持有声明；成员匹配（稳定 ID、其他 venue、缺失均拒绝）。`tests/research/loop/test_loop_e2e.py`——
+   无持久账本的开封预算被拒、显式持久账本可运行且无测试标记、开封前账本被换成内存账本 → 验证阶段失败且不开封、标志进入指纹 / 摘要 / G5 状态、
+   与持久账本或 `state_dir` 同用被拒（目录未创建）、非布尔被拒；摄取之后的阶段在只暴露 `RoundData` 成员的代理上跑完整一轮（含 G5），封存 bar 在认领后
+   只释放一次，记录哈希与无代理运行相同；源码扫描确认 `IngestStage` 之外不访问 `market` / `markets`。原内存 G5 测试改用 TEST ONLY 标志并断言其可见，
+   `test_loop_durable.py` 的不中断对照改为显式持久账本（与重启运行的记录哈希比较不变），新增持久重启后不再开封。

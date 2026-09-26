@@ -22,7 +22,9 @@ Checked: G5 runs once for the approved family and its report carries G5 gates pl
 ``G0.manifest_binding`` for the sealed pair; no sealed manifest is loaded before the family's
 evaluation is claimed (every verified manifest load is recorded); an unapproved family is never
 unsealed and its sealed pair is never read; a sealed pair on other snapshots is refused after the
-claim (``consumed_without_result``, never evaluated); a restart does not unseal again.
+claim (``consumed_without_result``, never evaluated); a restart does not unseal again; the validated
+instrument must be a member of both pairs (review fixes 4). In-memory loops here carry the TEST-ONLY
+``ephemeral_unseal_for_tests`` flag (an unseal budget otherwise needs a durable ledger).
 
 !!! TEST ONLY !!!  ``G5_TEST_ONLY_PROFILE``, ``G5_TEST_ONLY_COST_MODEL`` and the robustness numbers
 are deliberately permissive, uncalibrated numbers whose only purpose is to let a trial on a few
@@ -55,7 +57,7 @@ from core.contracts.validation_profile import (
     WalkForwardParams,
 )
 from core.domain.research import EvidenceLevel, KnowledgeItem, ValidationReport, Verdict
-from infrastructure.dataset.builder import DatasetBuilder, DatasetBuilt
+from infrastructure.dataset.builder import DatasetBuilt
 from infrastructure.event_bus import InMemoryEventBus
 from research.loop import (
     DatasetCatalog,
@@ -65,11 +67,11 @@ from research.loop import (
     ResearchMemory,
     ValidationOutcome,
     build_dataset_loop,
+    dataset_source,
     open_dataset_loop,
 )
 from research.strategies.failure_registry import FailureRegistry
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
-from research.validation.sealed_oos import UnsealingLedger
 from tests import factories
 from tests.infrastructure.catalog.catalog_support import postgres_test_catalog_uri
 from tests.infrastructure.dataset import dataset_support as ds
@@ -218,26 +220,9 @@ def g5(tmp_path_factory: pytest.TempPathFactory) -> Iterator[G5World]:
 # =========================================================================================
 
 
-class LoadRecorder:
-    """Every verified manifest load of the loop's builder (``ManifestStore.load`` proves each one
-    through ``verify_manifest``; every bar / feature read of a manifest loads it first), with
-    whether the family's sealed evaluation had already been claimed at that moment."""
-
-    def __init__(self, monkeypatch: pytest.MonkeyPatch, builder: DatasetBuilder) -> None:
-        self.loads: list[tuple[str, bool]] = []
-        self.ledger: UnsealingLedger | None = None
-        verify = builder.verify_manifest
-
-        def recording(manifest: ResearchDatasetManifest) -> None:
-            claimed = self.ledger is not None and self.ledger.is_evaluated(FAMILY)
-            self.loads.append((manifest.content_hash(), claimed))
-            verify(manifest)
-
-        monkeypatch.setattr(builder, "verify_manifest", recording)
-
-    def of(self, pair: tuple[DatasetBuilt, DatasetBuilt]) -> list[tuple[str, bool]]:
-        hashes = {built.manifest.content_hash() for built in pair}
-        return [load for load in self.loads if load[0] in hashes]
+#: Every manifest request, verified load and dataset bar read of the loop's builder, with whether
+#: the family's sealed evaluation had already been claimed then (shared with the withheld e2e).
+LoadRecorder = base.LoadRecorder
 
 
 def _catalog(g5: G5World, monkeypatch: pytest.MonkeyPatch) -> tuple[DatasetCatalog, LoadRecorder]:
@@ -276,6 +261,13 @@ def _in_memory(
     catalog, recorder = _catalog(g5, monkeypatch)
     memory = ResearchMemory(failures=FailureRegistry(tmp_path / "failures.jsonl"))
     recorder.ledger = memory.oos_ledger
+    # in memory: the unseal budget carries the TEST-ONLY ephemeral-ledger flag (review fixes 4)
+    budget = config.wiring.oos_unseal
+    assert budget is not None
+    config = replace(
+        config,
+        wiring=replace(config.wiring, oos_unseal=replace(budget, ephemeral_unseal_for_tests=True)),
+    )
     loop = build_dataset_loop(config, catalog=catalog, bus=InMemoryEventBus(), memory=memory)
     [record] = loop.run_unattended(1)
     assert record.status is RoundStatus.COMPLETED, [
@@ -344,6 +336,10 @@ def test_g5_runs_once_for_the_approved_family_and_a_restart_does_not_unseal_agai
         sealed_loads = recorder.of(g5.sealed)
         assert sealed_loads and all(claimed for _, claimed in sealed_loads)
         assert {key for key, _ in sealed_loads} == {b.manifest.content_hash() for b in g5.sealed}
+        # nothing of it was even requested before the claim; its bars were read once, after it
+        touched = recorder.touched(g5.sealed)
+        assert touched and all(claimed for _, claimed in touched)
+        assert recorder.bars_of(g5.sealed) == [(g5.sealed[1].manifest.content_hash(), True)]
         base._check_lifecycle(durable.loop)
         first = record
 
@@ -366,7 +362,7 @@ def test_g5_runs_once_for_the_approved_family_and_a_restart_does_not_unseal_agai
             "reason": "the family already used its unsealing",
         }
         assert ledger.count() == 1
-        assert recorder.of(g5.sealed) == []  # nothing of the sealed pair read at all
+        assert recorder.touched(g5.sealed) == []  # nothing of the sealed pair read at all
         base._check_lifecycle(reopened.loop)
 
 
@@ -382,7 +378,7 @@ def test_an_unapproved_family_is_never_unsealed_and_its_sealed_pair_never_read(
         "reason": "the family is not on the unseal budget's approved list",
     }
     assert memory.oos_ledger.count() == 0 and not memory.oos_ledger.is_evaluated(FAMILY)
-    assert recorder.of(g5.sealed) == []
+    assert recorder.touched(g5.sealed) == []
     # the research pair was read (the recorder does see loads)
     assert recorder.of(g5.research)
     base._check_lifecycle(loop)
@@ -413,4 +409,50 @@ def test_a_sealed_pair_on_other_snapshots_is_refused_after_the_claim(
     # only the two verified manifest loads happened, both after the claim; no bar path read
     loads = recorder.of(g5.foreign)
     assert len(loads) == 2 and all(claimed for _, claimed in loads)
+    assert recorder.bars_of(g5.foreign) == []
+    base._check_lifecycle(loop)
+
+
+def _without_symbol(manifest: ResearchDatasetManifest) -> ResearchDatasetManifest:
+    """``manifest`` whose universe no longer lists the validated instrument (the other symbol
+    stays a member): a stand-in for a sealed window of another universe composition."""
+    members = tuple(m for m in manifest.members if ds.symbol_of(m) != base.SYMBOL)
+    assert members and len(members) < len(manifest.members)
+    return manifest.model_copy(update={"members": members})
+
+
+@pytest.mark.parametrize("side", ["research pair", "sealed pair"])
+def test_the_validated_instrument_must_be_a_member_of_both_pairs(
+    g5: G5World, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, side: str
+) -> None:
+    """Review fixes 4: G5 validates the same single instrument on both sides; a pair whose
+    universe does not list it is refused after the claim, before any sealed bar is read."""
+    target = (g5.research if side == "research pair" else g5.sealed)[1].manifest.content_hash()
+    # the research pair's price manifest reaches the sealed pair through the ingest's first
+    # verified load; the sealed price manifest through the sealed pair's own verified load
+    name = "load_verified_manifest" if side == "research pair" else "load_manifest"
+    load = getattr(dataset_source, name)
+
+    def stripped(*args: Any) -> ResearchDatasetManifest:
+        manifest = load(*args)
+        return _without_symbol(manifest) if manifest.content_hash() == target else manifest
+
+    monkeypatch.setattr(dataset_source, name, stripped)
+    memory, recorder, loop = _in_memory(g5, monkeypatch, _config((g5.round(),)), tmp_path)
+    result = _only(memory, 0)
+    status = result.sealed_status
+    assert status["status"] == CONSUMED_WITHOUT_RESULT
+    assert status["reason"] == "sealed data refused"
+    assert f"{base.SYMBOL} is not a member of the {side}" in status["error"]
+    assert "sealed_bars" not in status  # refused before any sealed bar was released
+    report = result.sealed_report
+    assert report is not None and report.verdict is Verdict.INCONCLUSIVE
+    evaluation = _gates(report)["G5.oos_evaluation"]
+    assert evaluation.metric == f"{CONSUMED_WITHOUT_RESULT}:sealed_data_refused"
+    # the one evaluation is consumed; the sealed manifests were loaded only after the claim and
+    # no sealed bar was read
+    assert memory.oos_ledger.count() == 1 and memory.oos_ledger.is_evaluated(FAMILY)
+    touched = recorder.touched(g5.sealed)
+    assert touched and all(claimed for _, claimed in touched)
+    assert recorder.bars_of(g5.sealed) == []
     base._check_lifecycle(loop)

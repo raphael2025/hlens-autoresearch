@@ -16,7 +16,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `evolution.py` | `EvolutionStage` / `EvolutionPlan`：从更早轮次未被否证（按各假设最近一次验证：PASS / INCONCLUSIVE）的最佳候选出发 `mutate`，`require_new_version` 与目录防覆盖，`LineageGraph` 可追溯；后代作为新假设先登记、IDEA → CANDIDATE、本轮在累计研究数据上重新验证，不继承父代结论 |
 | `memory.py` | `ResearchMemory`（TrialLedger、ReviewQueue、FailureRegistry、策略目录、试验 / 验证记录、谱系、封存开封账本、摄取市场（及其生成规格）与累计研究数据）；`ReviewQueue.approve` 要求非空且非自动化身份（非循环自身 actor、非 `research_loop:` 前缀），并记录审批；`ReviewQueue(path)` 把入队 / 审批 / 取用逐行写入哈希链日志，重放时重新核验（自动化身份的审批、草稿或调用哈希不符的审批 → `JournalCorrupted`）；`ReviewQueue.observe(ReviewObserver)` 绑定唯一观察者（持久状态目录：审批前拒绝轮中审批、审批后立即写轮间检查点并移动锚点） |
 | `compose.py` | `compose_loop` / `compose_durable`（两种数据源共用的组合：同一组阶段、预算、护栏、审计、持久钩子与自动持久总线）+ `LoopSettings` / `settings_fingerprint`；`SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：合成组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir, bus, owned_bus)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop）；不给 `bus` 时自动使用 `state_dir/bus` 并与审计交叉核对（`check_round_bus`） |
-| `dataset_source.py` | `DatasetIngestStage` / `DatasetRound` / `DatasetSegment` / `DatasetCatalog`：每轮从声明的 manifest 读数据；`SealedDatasetPair`（封存 manifest 对，只在开封认领后读取）/ `WithheldSealedBars`（见下「数据集组合」） |
+| `dataset_source.py` | `DatasetIngestStage` / `DatasetRound` / `DatasetSegment` / `DatasetCatalog`：每轮从声明的 manifest 读数据；`SealedDatasetPair`（封存 manifest 对，只在开封认领后读取）/ `WithheldSealedWindow`（只扣留声明：只记录哈希与 Profile 封存窗口，从不读取；见下「数据集组合」） |
 | `dataset_compose.py` | `DatasetLoopConfig` + `build_dataset_loop` / `open_dataset_loop` / `dataset_loop_fingerprint`：数据集组合根 |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 
@@ -33,6 +33,14 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 - 生命周期最多到 OOS；OOS → PAPER 需要人工批准，循环在结构上无法产生 PAPER / ACTIVE。
 - 封存 OOS 默认永不开封；只有显式 `OosUnsealBudget`（全局次数 + 逐族批准人名单，自动化身份被拒）列出的族才开封，每族一次；
   开封即消耗该族唯一的一次评估（即使之后没有结果），之后无人能再读该窗口。
+  **开封账本必须持久**（review fixes 4）：`OosUnsealBudget` 只与 `DurableUnsealingLedger`（`state_dir` 的 `sealed_oos.jsonl`，或显式传入
+  `ResearchMemory(oos_ledger=DurableUnsealingLedger(path))`）一起被接受；内存账本重启即忘记开封记录、可能让同一族再开封，`ValidationStage`
+  拒绝该组合。唯一例外是 TEST ONLY 的 `OosUnsealBudget(..., ephemeral_unseal_for_tests=True)`：写入指纹、验证阶段摘要
+  （`unseal_ledger`）与每个开封的 G5 状态（`EPHEMERAL_UNSEAL_MARK`），不会被误认为真实使用；与持久账本或 `state_dir` 同用被拒。
+- 合成路径的封存 bar 是生成出来的（`IngestStage` 生成整段市场再按日历切分）：生成不是读取真实封存数据，没有真实 OOS 泄漏。
+  摄取之后的阶段只通过 `RoundData` 协议读本轮数据——协议不暴露市场对象，封存 bar 只经 `sealed.release`（凭已认领的评估）交出；
+  `test_stages_after_the_ingest_see_only_the_round_data_protocol` 用只暴露协议成员的代理跑完整循环（含 G5）并比对记录哈希，
+  另有源码扫描确认摄取之外的阶段从不访问 `market` / `markets`。
 - 预算：完成的阶段按逐维度 max(声明, 报告) 计费（`apps/worker/loop.py`，`StageRecord.charged`），少报不能拉长预算。
 - 记录哈希不含墙钟时间：报告 / 元数据 / 失败记录均以本轮计划时刻盖章；浮点以固定量化 Decimal 文本写入。
 - 合成市场的植入真值不作为输入，只在审计摘要中计数；合成结果不支持真实市场结论。
@@ -63,7 +71,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   护栏重放后每个生命周期对象都是已登记假设。
 - **尾部截断**：单个文件删去整行尾部仍是合法的短链，但其余文件记录了它的位置（或审计与检查点不再一一对应），因此被跨文件校验发现。
 - **预算绑定目录**（ADR-0049 实施说明 durable review fixes，2026-09-26）：配置指纹包含 `LoopBudget` 与完整的 `OosUnsealBudget`
-  （`max_unsealings`、获准族及批准人）以及精确节奏（`cadence_microseconds`）；用任何不同的预算（更大、更小、多一个获准族、换批准人）重新打开都拒绝，
+  （`max_unsealings`、获准族及批准人；TEST ONLY 的 `ephemeral_unseal_for_tests` 仅在为真时出现）以及精确节奏（`cadence_microseconds`）；用任何不同的预算（更大、更小、多一个获准族、换批准人）重新打开都拒绝，
   消息写明哪个预算不同。**提高预算是人的决定：用新的 `state_dir` 或新的 `loop_id`。** 头行版本 `STATE_VERSION = 3`（版本 1 / 2 目录被拒绝）。
 - **可选外部锚点**：`open_synthetic_loop(..., anchor=Path | StateAnchor)`。每个已记录轮次之后锚点收到目录的头（轮数、审计头、记忆日志链头、各文件位置）；
   重新打开时目录必须不早于锚点且到该轮为止历史相同，落后（一致截断、目录被删重建）、分叉、或锚点为空而目录已有轮次 → 拒绝；通过后锚点前移。
@@ -112,18 +120,23 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   可选 `DatasetCatalog(..., manifest_cache=VerifiedManifestCache())`（`infrastructure/bars/verified.py`）：同一 builder、所读 snapshot 均未变时复用
   成功的验证（价格 / 配对 / 特征 / bar / 封存各次加载；`feature_request_from_dataset` 仍每次验证）；默认 `None`，记录哈希有无缓存都相同。
 - **截止**：价格 manifest 的视图（= 特征区间终点）晚于本轮 `as_of` → 摄取拒绝；每根 bar、每条特征观测再次核对。
-- **研究窗口**：pair 的数据窗口必须在 Profile 研究窗口之内，研究 manifest 从不含封存窗口的行。可选的只扣留封存 manifest 的 bar 按固定日历扣留
-  （`WithheldSealedBars`），永不进入研究数据，也永不开封（没有封存窗口的特征）。
+- **研究窗口**：pair 的数据窗口必须在 Profile 研究窗口之内，研究 manifest 从不含封存窗口的行。可选的只扣留封存 manifest（`sealed_manifest_hash`）
+  **只记录声明**（review fixes 4）：摘要写 `sealed_manifest_hash` 与 `sealed_window`（Profile 的封存窗口），`WithheldSealedWindow` 不持有任何数据；
+  该 manifest 从不加载、其 bar 从不读取也不计数（计数无法不读行而得，故删除：数据集轮次的 `sealed_bars_withheld` 恒为 `None`，`unused_bars` 已移除）；
+  永不开封（没有封存窗口的特征）。声明错误的扣留哈希因此不会在摄取时被拒——它同样从不被读取。
 - **封存 OOS（G5，dataset G5 实施说明）**：声明了封存 manifest 对的轮次可以运行 G5；`OosUnsealBudget` 只在至少一轮声明了封存对时被接受。
   摄取阶段**完全不读**封存对（`SealedDatasetPair`）；验证阶段在开封前只问 `evaluable`（按声明、Profile 窗口与本轮截止判断：窗口须在
   `as_of` 之前结束，不读存储），先 `claim_evaluation`（把该族唯一评估记为已消耗）再 `release`：经验证型 `ManifestStore` 加载两份封存
   manifest，核对与研究 pair 相同的上游 snapshot、`knowledge_cutoff`、ADR-0032 选择与其余政策绑定、universe、数据集表与 Canonical 表集合，
-  数据窗口**恰好**是 Profile 封存窗口、价格视图在 `[窗口终点, as_of]` 内，再 `pair_manifests`、读已证明的封存 bar 与特征观测。任一不符
+  数据窗口**恰好**是 Profile 封存窗口、价格视图在 `[窗口终点, as_of]` 内，被验证的标的在**两对**价格视图的成员中（按 `DegradedEpisodeKey`
+  的 venue / 类型 / Canonical 标的匹配；稳定产品 ID 的 episode 不写标的，不能证明成员资格 → 拒绝），再 `pair_manifests`、读已证明的封存 bar 与特征观测。任一不符
   → `SealedDataRefused`，G5 报告 INCONCLUSIVE `consumed_without_result:sealed_data_refused`，该族窗口永久关闭（配置错误同样花掉该族的开封）。
   G5 的信号只经 `feature_request_from_dataset` 在封存特征 manifest 上计算；G5 报告带 `G0.manifest_binding`（研究 bar 对研究 pair、封存 bar /
   封存特征请求对封存 pair）。其余保证与合成路径相同：只开封获准族（人类批准人）、样本内 PASS 才开封、每次开封一次评估、提前结束
-  `consumed_without_result`、开封账本随状态目录持久（重启不再开封）、开封预算与封存对都在指纹中。跨两对**无法**由 manifest 字段证明而未核对的：
-  成员 / 排除集合、质量报告 id、lineage 修订与证据缺口（窗口不同，数据不同；封存对内部由 `pair_manifests` 核对）。
+  `consumed_without_result`、开封账本随状态目录持久（重启不再开封）、开封预算与封存对都在指纹中。跨两对不比较的：完整的成员 / 排除集合
+  （封存窗口可以有不同的 universe 构成）、质量报告 id、lineage 修订与证据缺口（窗口不同，数据不同；封存对内部由 `pair_manifests` 核对）。
+  G5 验证的是**同一个单一标的**：循环只有一个标的（`symbol`），两次 bar 读取都只请求 `symbols=(symbol,)`，`backtest_bars_from_dataset` 拒绝没有行的
+  标的，特征请求必须携带该标的的全部行，且上面的成员检查显式要求它在两对中都是成员。
 - **绑定**：验证器拿到已证明的 bar、`ManifestPair` 与每个特征请求的 manifest 哈希 → 每份报告运行 `G0.manifest_binding`；复现元组的数据集快照
   为两份 manifest 的 `DatasetRef`；实验摘要写明 manifest 与 pair 哈希。
 - **持久**：不保存摄取记忆（每轮重读声明的 manifest；检查点 `markets` / `research_data` 为空）；指纹绑定标的与每轮全部声明哈希；
@@ -135,7 +148,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   manifest 被加载（记录每次验证型加载；夹具第二天 5 小时 = 封存窗口，供 240 根回看预热）、未获准族从不开封也不读封存对、上游 snapshot 不同的封存对在开封后被拒、重启不再开封）；
   无数据库的单元：`tests/infrastructure/e2e/test_research_loop_dataset_g5_units.py`。
 
-未完成（调试批次）：NATS、研究仪表盘；每轮约 6 – 7 次验证型 manifest 加载（无缓存；开封一次再加 6 次）；数据集 G5 的封存特征只来自封存 manifest
+未完成（调试批次）：NATS、研究仪表盘；每轮约 6 次验证型 manifest 加载（无缓存；只扣留的封存声明不加载；开封一次再加 6 次）；数据集 G5 的封存特征只来自封存 manifest
 （特征请求只能携带该 manifest 的行，没有跨边界的前置 bar），前几次评估不可计算，策略在封存窗口开头需要重新预热（回看 240 根即窗口内约 4 小时
 空仓）——保守、不跨边界，但短封存窗口可能以 `consumed_without_result` 结束；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；

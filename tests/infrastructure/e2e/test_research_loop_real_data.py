@@ -21,14 +21,17 @@ Rounds (cadence 4 h; each round's cutoff is its scheduled ``as_of``):
 
 - round 0, cutoff 2023-11-14 21:00 — pair: interval ``[2023-11-14, 21:00)`` + point view at 21:00;
 - round 1, cutoff 2023-11-15 01:00 — pair: interval ``[2023-11-14, 01:00)`` + point view at 01:00,
-  plus the sealed window's point manifest (view 01:00, window 00:00 – 01:00): withheld.
+  plus the sealed window's point manifest (view 01:00, window 00:00 – 01:00): withheld — declared
+  only, never loaded or read (ADR-0049 implementation note, review fixes 4).
 
 Checked: both rounds complete with a hash-chained audit; every validation report binds its data
 (``G0.manifest_binding`` PASS); no bar, observation, signal or decision is after its round's
-cutoff and no sealed-window bar enters research; a rerun in a fresh process (the persisted
-manifests read by their declared hashes, durable state reopened between the rounds) gives identical
-record hashes; nothing reaches PAPER / ACTIVE; a round whose declared view is after its cutoff is
-refused at ingest.
+cutoff and no sealed-window bar enters research; the withheld sealed manifest is recorded as a
+declaration and never requested, loaded or read as bars (every manifest request, verified load and
+dataset bar read of the builder is recorded, with and without the cache); a rerun in a fresh
+process (the persisted manifests read by their declared hashes, durable state reopened between
+the rounds) gives identical record hashes; nothing reaches PAPER / ACTIVE; a round whose declared
+view is after its cutoff is refused at ingest.
 
 !!! TEST ONLY !!!  ``LOOP_REAL_DATA_TEST_ONLY_PROFILE``, ``LOOP_REAL_DATA_TEST_ONLY_PARAMS``, the
 budget, cost units, decision grid and state-model parameters hold arbitrary, uncalibrated numbers
@@ -38,7 +41,7 @@ calibration result and must never be used for research.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
@@ -52,6 +55,7 @@ from apps.worker.loop import FORBIDDEN_TARGETS, LoopAuditLog, LoopRecord
 from core.contracts.cost_model import CostModelSpec
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
 from core.contracts.revision import PointInTimeSpec
+from core.contracts.universe import ResearchDatasetManifest
 from core.contracts.validation_profile import (
     BenchmarkParams,
     CostStressParams,
@@ -66,7 +70,7 @@ from core.domain.research import EvidenceLevel, KnowledgeItem, Verdict
 from core.domain.selection import ProfileSelection, ProfileSelectionKey
 from core.domain.specs import OutcomeSpec
 from infrastructure.bars import VerifiedManifestCache
-from infrastructure.dataset.builder import DatasetBuilt
+from infrastructure.dataset.builder import DatasetBuilder, DatasetBuilt
 from infrastructure.event_bus import InMemoryEventBus
 from infrastructure.pit.assumption import ASSUMPTION_BINDING
 from plugins.backtest import BarBacktester
@@ -84,12 +88,14 @@ from research.loop import (
     ResearchMemory,
     build_dataset_loop,
     check_round_bus,
+    dataset_source,
     open_dataset_loop,
 )
 from research.loop.durable import AUDIT_FILE
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.library import library_entries
 from research.validation import RobustnessParams
+from research.validation.sealed_oos import UnsealingLedger
 from tests import factories
 from tests.infrastructure.catalog.catalog_support import postgres_test_catalog_uri
 from tests.infrastructure.dataset import dataset_support as ds
@@ -386,9 +392,90 @@ def _open(
     config: DatasetLoopConfig,
     state_dir: Path,
     cache: VerifiedManifestCache | None = None,
+    catalog: DatasetCatalog | None = None,
 ) -> DurableLoop:
     """Durable, on the composition's own ``state_dir / "bus"`` (cross-checked with the audit)."""
-    return open_dataset_loop(config, state_dir=state_dir, catalog=_catalog(w, cache))
+    return open_dataset_loop(config, state_dir=state_dir, catalog=catalog or _catalog(w, cache))
+
+
+class LoadRecorder:
+    """What the loop reads of manifests through one builder (shared with the G5 e2e).
+
+    - ``requests``: every manifest hash the builder's ``ManifestStore`` is asked to load (before
+      any row is read; ``load_manifest`` is the only way the loop loads a manifest, the verified
+      cache included);
+    - ``loads``: every verified load (``ManifestStore.load`` proves each one through
+      ``verify_manifest``; every bar / feature read of a manifest loads it first);
+    - ``bars``: every dataset bar read of the loop (``backtest_bars_from_dataset`` as the dataset
+      ingest and the sealed pair call it) through this builder.
+
+    Each entry records whether the family's sealed evaluation had already been claimed then."""
+
+    def __init__(
+        self, monkeypatch: pytest.MonkeyPatch, builder: DatasetBuilder, family: str = FAMILY
+    ) -> None:
+        self.requests: list[tuple[str, bool]] = []
+        self.loads: list[tuple[str, bool]] = []
+        self.bars: list[tuple[str, bool]] = []
+        self.ledger: UnsealingLedger | None = None
+        self._family = family
+        verify, stores = builder.verify_manifest, builder.manifests
+
+        def recording(manifest: ResearchDatasetManifest) -> None:
+            self.loads.append((manifest.content_hash(), self._claimed()))
+            verify(manifest)
+
+        def recorded_store() -> Any:
+            store = stores()
+            load = store.load
+
+            def recording_load(key: str) -> Any:
+                self.requests.append((key, self._claimed()))
+                return load(key)
+
+            store.load = recording_load  # type: ignore[method-assign, assignment]
+            return store
+
+        read = vars(dataset_source)["backtest_bars_from_dataset"]  # the name the loop calls
+
+        def recording_bars(*args: Any, **kwargs: Any) -> Any:
+            if kwargs.get("builder") is builder:
+                self.bars.append((kwargs["manifest_content_hash"], self._claimed()))
+            return read(*args, **kwargs)
+
+        monkeypatch.setattr(builder, "verify_manifest", recording)
+        monkeypatch.setattr(builder, "manifests", recorded_store)
+        monkeypatch.setattr(dataset_source, "backtest_bars_from_dataset", recording_bars)
+
+    def _claimed(self) -> bool:
+        return self.ledger is not None and self.ledger.is_evaluated(self._family)
+
+    @staticmethod
+    def _of(entries: list[tuple[str, bool]], builds: Iterable[DatasetBuilt]) -> list[Any]:
+        hashes = {built.manifest.content_hash() for built in builds}
+        return [entry for entry in entries if entry[0] in hashes]
+
+    def of(self, builds: Iterable[DatasetBuilt]) -> list[tuple[str, bool]]:
+        """The verified loads of ``builds``' manifests."""
+        return self._of(self.loads, builds)
+
+    def requested(self, builds: Iterable[DatasetBuilt]) -> list[tuple[str, bool]]:
+        return self._of(self.requests, builds)
+
+    def bars_of(self, builds: Iterable[DatasetBuilt]) -> list[tuple[str, bool]]:
+        return self._of(self.bars, builds)
+
+    def touched(self, builds: Iterable[DatasetBuilt]) -> list[tuple[str, bool]]:
+        """Every request, verified load or bar read of ``builds``' manifests."""
+        items = tuple(builds)
+        return [*self.requested(items), *self.of(items), *self.bars_of(items)]
+
+
+def _recorded(
+    w: ds.World, monkeypatch: pytest.MonkeyPatch, cache: VerifiedManifestCache | None = None
+) -> tuple[DatasetCatalog, LoadRecorder]:
+    catalog = _catalog(w, cache)
+    return catalog, LoadRecorder(monkeypatch, catalog.builder)
 
 
 @pytest.fixture
@@ -440,10 +527,27 @@ def _check_ingest(records: tuple[LoopRecord, ...], manifests: Manifests) -> None
         assert datetime.fromisoformat(summary["latest_available_time"]) <= record.as_of
         assert summary["research_bars"] > 0 and summary["decision_times"] > 0
     first, second = (_stage(r, "ingest").summary for r in records)
-    # the research data grows with the rounds; only round 1 reaches into the sealed window
+    # the research data grows with the rounds; only round 1 declares a (withheld) sealed manifest
     assert first["research_bars"] < second["research_bars"]
-    assert first["sealed_bars_withheld"] == 0
-    assert second["sealed_bars_withheld"] == DAY2_BARS - 1  # the last bar is known after 01:00
+    # the sealed window is recorded as a declaration only (review fixes 4): its hash and the
+    # Profile's window; nothing of it is read, so nothing is counted
+    window = [BOUNDARY.isoformat(), (BOUNDARY + timedelta(days=1)).isoformat()]
+    assert first["sealed_window"] == second["sealed_window"] == window
+    assert first["sealed_manifest_hash"] is None
+    assert second["sealed_manifest_hash"] == manifests.sealed.manifest.content_hash()
+    assert first["sealed_bars_withheld"] is None and second["sealed_bars_withheld"] is None
+    assert "unused_bars" not in first and "unused_bars" not in second
+
+
+def _check_sealed_never_read(recorder: LoadRecorder, manifests: Manifests) -> None:
+    """The withheld sealed manifest is never requested, loaded or read as bars, while the
+    research pairs are (the recorder does see the loop's reads)."""
+    assert recorder.touched((manifests.sealed,)) == []
+    pairs = [built for pair in manifests.pairs for built in pair]
+    assert recorder.requested(pairs) and recorder.of(pairs) and recorder.bars_of(pairs)
+    assert {key for key, _ in recorder.bars} == {
+        point.manifest.content_hash() for _, point in manifests.pairs
+    }
 
 
 def _check_no_future_and_no_sealed(records: tuple[LoopRecord, ...], memory: ResearchMemory) -> None:
@@ -516,7 +620,9 @@ def _check_lifecycle(loop: Any) -> None:
 # =========================================================================================
 
 
-def test_two_unattended_rounds_run_on_verified_pit_datasets(pg: ds.World, tmp_path: Path) -> None:
+def test_two_unattended_rounds_run_on_verified_pit_datasets(
+    pg: ds.World, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _ingest(pg)
     manifests = _build(pg)
     assert not manifests.pairs[0][0].replayed
@@ -528,15 +634,18 @@ def test_two_unattended_rounds_run_on_verified_pit_datasets(pg: ds.World, tmp_pa
     # ---- first run: two unattended rounds, durable, with the opt-in verified-manifest cache ----
     state_dir = tmp_path / "state-1"
     cache = VerifiedManifestCache()
-    durable = _open(pg, config, state_dir, cache)
+    catalog, recorder = _recorded(pg, monkeypatch, cache)
+    durable = _open(pg, config, state_dir, catalog=catalog)
     records = durable.loop.run_unattended(2)
-    # each round loads its price manifest, the pair (feature + price), the feature manifest, the
-    # price manifest's bars and (round 1) the sealed manifest: 5 distinct manifests are proven once
-    # (nothing is written to the catalog in between, so every miss is stored), 6 loads reuse them
+    # each round loads its price manifest, the pair (feature + price), the feature manifest and
+    # the price manifest's bars; the withheld sealed manifest of round 1 is never loaded: 4
+    # distinct manifests are proven once (nothing is written to the catalog in between, so every
+    # miss is stored), 6 loads reuse them
     stats = cache.stats
-    assert (stats.hits, stats.misses, stats.stored, stats.uncacheable) == (6, 5, 5, 0)
+    assert (stats.hits, stats.misses, stats.stored, stats.uncacheable) == (6, 4, 4, 0)
     _check_audit(records, state_dir)
     _check_ingest(records, manifests)
+    _check_sealed_never_read(recorder, manifests)
     _check_no_future_and_no_sealed(records, durable.memory)
     _check_reports(records, durable.memory)
     _check_lifecycle(durable.loop)
@@ -557,10 +666,16 @@ def test_two_unattended_rounds_run_on_verified_pit_datasets(pg: ds.World, tmp_pa
     rerun_dir = tmp_path / "state-2"
     with _open(pg, config, rerun_dir) as opened:
         [first] = opened.loop.run_unattended(1)
-    with _open(pg, config, rerun_dir) as reopened:
+    rerun_catalog, rerun_recorder = _recorded(pg, monkeypatch)  # every load verified (no cache)
+    with _open(pg, config, rerun_dir, catalog=rerun_catalog) as reopened:
         [second] = reopened.loop.run_unattended(1)
         _check_lifecycle(reopened.loop)
     assert [first.record_hash, second.record_hash] == [r.record_hash for r in records]
+    # round 1 (the withheld declaration) again: the sealed manifest is never touched
+    assert rerun_recorder.touched((manifests.sealed,)) == []
+    assert rerun_recorder.requested(manifests.pairs[1]) and rerun_recorder.bars_of(
+        manifests.pairs[1]
+    )
 
     # ---- a declared pair whose view is after the round's as_of is refused at ingest ----
     early = _config((manifests.rounds[1],))  # round 0 (as of 21:00) declares the 01:00 view

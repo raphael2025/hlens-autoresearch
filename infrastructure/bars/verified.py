@@ -37,6 +37,16 @@ runs the full verified load (a stale entry is replaced only by a new success). A
 (unknown hash, forged row, a verification that does not prove) is never stored, and a forged row
 under a cached hash moves the manifests head, so it misses and the store refuses it again.
 
+**Hit-path time of check / time of use** (review fixes 4, 2026-09-26): a hit compares the recorded
+heads once and then returns the stored manifest; a head that advances concurrently **after** that
+comparison is not observed by that hit (the next load sees it and misses). This does not make the
+returned manifest wrong: its content is fixed by its hash, and every snapshot the proof read
+through it is pinned (``snapshot_bindings``, the dataset's own ``snapshot_id``: immutable table
+states), so the hit hands out exactly the manifest a full verified load would have proven at the
+moment of the head comparison — the same answer a plain ``load_manifest`` gives when a writer
+commits just after it returns. What such a late head move could change (a forged manifest row, a
+new evidence or gap row) is judged by the next load, never retroactively by one already served.
+
 **Limits**: process-local and unbounded (one entry per distinct builder x manifest; the caller
 drops the cache to free it); the builder's catalog is read through its private ``_adapter``
 attribute — a builder without it is never cached (plain verified loads, counted as

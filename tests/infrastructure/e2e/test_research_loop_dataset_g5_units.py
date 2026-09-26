@@ -3,20 +3,30 @@
 The end-to-end behaviour on the PostgreSQL test catalog is in
 ``tests/infrastructure/e2e/test_research_loop_real_data_g5.py``; here: the ``DatasetRound``
 declaration, the unseal budget / fingerprint of ``DatasetLoopConfig``, and that a
-``SealedDatasetPair`` decides ``evaluable`` and refuses every read without touching storage.
+``SealedDatasetPair`` decides ``evaluable`` and refuses every read without touching storage; a
+withheld-only declaration holds no data; the membership check of the validated instrument.
 """
 
 from __future__ import annotations
 
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
 
+from core.contracts.universe import (
+    DegradedEpisodeKey,
+    EpisodeIdentityBasis,
+    StableEpisodeKey,
+    UniverseMember,
+)
+from core.domain.specs import InstrumentType
 from research.loop import DatasetRound, OosUnsealBudget
 from research.loop.dataset_compose import dataset_loop_fingerprint
-from research.loop.dataset_source import SealedDatasetPair, WithheldSealedBars
+from research.loop.dataset_source import SealedDatasetPair, WithheldSealedWindow, _require_member
+from research.loop.segment import SealedDataRefused
 from research.validation.sealed_oos import SealedEvaluation, SealedOosLocked, SealedWindow
 from tests.infrastructure.e2e import test_research_loop_real_data as base
 
@@ -111,7 +121,47 @@ def test_a_sealed_pair_decides_evaluable_and_refuses_reads_without_storage() -> 
 
 
 def test_a_withheld_only_sealed_window_is_never_evaluable_or_released() -> None:
-    withheld = WithheldSealedBars((), (START, END))
+    """Review fixes 4: a withheld-only declaration holds the declaration and no data."""
+    withheld = WithheldSealedWindow((START, END), E)
+    assert withheld.window == (START, END) and withheld.manifest_hash == E
     assert "no sealed manifest pair" in (withheld.evaluable(END) or "")
+    evaluation = SealedEvaluation(base.FAMILY, SealedWindow(START, END))
     with pytest.raises(SealedOosLocked):
-        withheld.release(SealedEvaluation(base.FAMILY, SealedWindow(START, END)))
+        withheld.release(evaluation)
+    assert not evaluation.taken("bars")
+    # nothing but the declaration: no bars, no catalog, no manifest object
+    assert set(vars(withheld)) == {"_window", "manifest_hash"}
+    assert WithheldSealedWindow((START, END), None).manifest_hash is None
+
+
+def _member(episode: DegradedEpisodeKey | StableEpisodeKey) -> UniverseMember:
+    return UniverseMember(episode=episode, listing_revision_id="listing-r1")
+
+
+def _degraded(symbol: str, venue: str = "binance") -> DegradedEpisodeKey:
+    return DegradedEpisodeKey(
+        basis=EpisodeIdentityBasis.DEGRADED_SYMBOL_START,
+        venue=venue,
+        instrument_type=InstrumentType.SPOT,
+        symbol=symbol,
+        tradable_from=START - timedelta(days=30),
+    )
+
+
+def test_the_validated_instrument_must_be_a_member_by_its_episode() -> None:
+    """Review fixes 4: membership of the validated instrument, matched by venue, type and
+    Canonical symbol of a degraded episode key; anything else refuses (fail closed)."""
+    btc, eth = _member(_degraded("BTC-USDT")), _member(_degraded("ETH-USDT"))
+    _require_member(cast(Any, SimpleNamespace(members=(eth, btc))), "BTC-USDT", "sealed pair")
+    stable = _member(
+        StableEpisodeKey(
+            basis=EpisodeIdentityBasis.STABLE_PRODUCT_ID,
+            venue="binance",
+            instrument_type=InstrumentType.SPOT,
+            venue_product_id="BTC-USDT",
+        )
+    )
+    other_venue = _member(_degraded("BTC-USDT", venue="elsewhere"))
+    for members in ((eth,), (), (stable,), (other_venue,)):
+        with pytest.raises(SealedDataRefused, match="BTC-USDT is not a member of the sealed pair"):
+            _require_member(cast(Any, SimpleNamespace(members=members)), "BTC-USDT", "sealed pair")

@@ -33,6 +33,14 @@ unseal quota is refused — raising a budget is a human decision and takes a new
 directory's head after every recorded round and refuses a directory that was rolled back or
 diverged (``research.loop.durable``, **External anchor**).
 
+Durable unsealing (ADR-0049 implementation note, review fixes 4, 2026-09-26): an
+``OosUnsealBudget`` runs only against a ``DurableUnsealingLedger`` — a ``state_dir``'s
+``sealed_oos.jsonl``, or one the caller passes as ``ResearchMemory(oos_ledger=...)`` — because an
+in-memory ledger forgets its unsealings on a restart (``ValidationStage`` refuses the
+combination). The TEST-ONLY ``OosUnsealBudget(ephemeral_unseal_for_tests=True)`` is the one
+exception for an in-memory loop; it is fingerprinted and marked in every G5 status it touches, and
+a ``state_dir`` refuses it before writing anything.
+
 Approvals between rounds (ADR-0049 implementation note, 2026-09-26): a human approval on the
 restored memory (``DurableLoop.memory.reviews.approve``) is refused while a round runs and, once
 journaled, immediately writes a between-rounds checkpoint line and moves the anchor; reopening
@@ -131,6 +139,7 @@ __all__ = [
     "compose_loop",
     "loop_fingerprint",
     "open_synthetic_loop",
+    "refuse_ephemeral_unseal",
     "run_unattended_and_report",
     "settings_fingerprint",
 ]
@@ -491,6 +500,7 @@ def open_synthetic_loop(
     is not durable: the audit's rounds are replayed into it; module docs, **Injected buses**) and
     stays open.
     """
+    refuse_ephemeral_unseal(config)
     wiring = config.wiring
     state = open_state(
         state_dir,
@@ -539,12 +549,28 @@ def compose_durable(
 
 
 def _unseal_payload(budget: OosUnsealBudget | None) -> dict[str, Any] | None:
+    """The budget as fingerprinted; the TEST-ONLY ``ephemeral_unseal_for_tests`` flag appears
+    only when set (so every durable fingerprint stays as it was)."""
     if budget is None:
         return None
-    return {
+    payload: dict[str, Any] = {
         "max_unsealings": budget.max_unsealings,
         "approved_families": dict(sorted(budget.approved_families.items())),
     }
+    if budget.ephemeral_unseal_for_tests:
+        payload["ephemeral_unseal_for_tests"] = True
+    return payload
+
+
+def refuse_ephemeral_unseal(config: LoopSettings) -> None:
+    """A state directory's unsealing ledger is durable: the TEST-ONLY ephemeral flag is refused
+    before anything is written to the directory (review fixes 4)."""
+    budget = config.wiring.oos_unseal
+    if budget is not None and budget.ephemeral_unseal_for_tests:
+        raise ValueError(
+            "ephemeral_unseal_for_tests is a TEST-ONLY flag for an in-memory loop; a state_dir "
+            "keeps a durable unsealing ledger: drop the flag"
+        )
 
 
 def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
