@@ -147,8 +147,7 @@
 | P10-ELIG | 路由资格信任调用方给出的生命周期映射；把资格绑定到验证报告证据若需改契约则须 ADR（engines 通道在不改契约的前提下尽量加可选核对） | ADR-0043、`core/contracts` | 见 engines 通道报告 | — | 路由仍只接受调用方声明为已验证的对象 |
 
 **10.2 状态更新（K2，2026-09-26）**：P05-WRITE → ADR-0058 Accepted、已集成（B15，`f1e71ba`）；P10-ELIG → 研究层证据模式已集成（B16，`49ccefb`）；
-P3-EVTABLE → ADR-0056 Accepted、已集成（B17，`7193b65` / `af7a351`）；P3-MULTISYM → ADR-0057 代码已集成（B23，`dd2bc6a`），但在 2.0.0 下，按 Codex K3 / K5 **未接受**、待 2.1.0 重新声明；ADR-0052-IMPL → core 通道交付阻断证据（B23，`31943c5`），
-Codex 授权在独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` 实施版本化重放（M0 设计 `ed1a202` 已获 Codex 条件认可，M1～M3 进行中）；ADR-0054 同样须审查 2.1.0 规则；P5-PLUGIN、Profile 数值、实盘、合并 `main` → 决定不做（见自主决策记录）；D-LIST → 原则接受、推迟到 Phase 1 验收后。
+P3-EVTABLE → ADR-0056 Accepted、已集成（B17，`7193b65` / `af7a351`）；P3-MULTISYM → ADR-0057 代码已集成（B23，`dd2bc6a`），但在 2.0.0 下，按 Codex K3 / K5 **未接受**、待 2.1.0 重新声明；ADR-0052-IMPL → 已实施：独立 Phase 1 分支 `phase1/adr-0052-versioned-replay`（M0～M3，`8a7655e`，门禁修复 `22392ea`，B38 / B40）并经 core 合并通道合入本分支（B41）；ADR-0054 / 0057 已以 2.1.0 重新声明（B41）；P5-PLUGIN、Profile 数值、实盘、合并 `main` → 决定不做（见自主决策记录）；D-LIST → 原则接受、推迟到 Phase 1 验收后。
 
 ### 10.3 批次记录
 
@@ -502,3 +501,17 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   在 `contract_schema_version_scope("2.0.0")` 内重建回测，断言记录的 v1 哈希（`fada3325…` / `766b48ff…` / `ab8bd307…`）不变，并断言 2.1.0 运行除版本字段及其上的哈希外内容相同，另固定 2.1.0 哈希（注明 ADR-0052 M2）。
 - 修复通道实际运行：`pytest -m "not postgres" tests/apps tests/plugins tests/test_*.py tests/contract_suites` → 3310 passed；ruff / format（613 files）/ mypy（474 files）通过；`npm run build` ✓（该分支无 `npm test` 脚本）。
   已请集成会话在 `22392ea` 上重跑严格 PostgreSQL 门禁（仅作证据）。
+
+**B41 — 契约 2.1.0 合入全代码分支（core 合并通道 `core/adr-0052-into-full-code` → 本分支合并提交 `589a53a`）**（`CODE_COMPLETE / DEBUG_PENDING`；未经 Codex 复核）
+
+- `6c4149e` 合并 ADR-0052 分支（`8a7655e`；M0 重复材料逐字节相同只留一份，原 strict-xfail 通过，Schema 135 份）；`eae65a4` ADR-0054（`PriceBar.volume`、`BacktestResult.remainders`、`FillRemainder`、新执行模型值）
+  与 ADR-0057（`subject`，大小写敏感 opaque ID）**以 2.1.0 重新声明**：2.0.0 信封携带这些字段 / 值即拒绝（`_FIELDS_SINCE`、新增 `_VALUES_SINCE`），旧 2.0.0 载荷照常读取且哈希不变（`tests/test_adr_0054_0057_versions.py`）；
+  `9f23a88` 修复真实缺陷：`event.events` 按在用版本重建已存运行，升版后 2.0.0 运行无法重建——现每次运行记录其 `contract_schema_version`（运行块字段 16），混合信封的运行写入前拒绝；
+  `7878310` 研究侧取值：门比较按 `hlens.validation.gate-value-quantization@1.0.0`（12 位小数、银行家舍入；表示规则非阈值）精确比较；Profile 字段存在时同时给显式 `param:` 即拒绝（C-A4），覆盖 G1 负对照、CSCV 分块、
+  容量（含冲击模型）、跨资产、欠采样收益占比、封存 OOS 预算；旧 Profile 逐位不变（22 项测试）；`35d3092` 合入 L7、`4367419` 合入 Phase 1 修复 `22392ea`；`182d89e` 因 2.1.0 信封变化的测试固定值：
+  以"在 2.0.0 作用域内重建仍得旧值 + 旁置 2.1.0 新值"或"改为 2.1.0 并在注释保留旧值"两种方式处理（完整清单见 ADR-0052 实施说明与该提交；每个旧值都经 2.0.0 重建复现，证明变化只来自信封）；
+  文档：`07-validation.md` §5、`02-domain.md` §3.3、ADR-0052 / 0056 实施说明。
+- 合并通道实际运行（`cc030ec`，本分支合并后代码树与之相同，仅多计划文档）：`uv run pytest -q -m "not postgres" -p no:cacheprovider` → **6749 passed, 136 deselected, 1 warning in 2952.64s (0:49:12)**；
+  `ruff check .` → All checks passed；`ruff format --check .` → 736 files already formatted；`mypy` → no issues in 580 source files；Schema 135 份且重新导出无差异；`npm test` → 96 / 96；`npm run build` ✓；`gen:api` 重跑无差异。
+- 未覆盖：PostgreSQL 标记测试（本分支从不跑真实数据库；独立 Phase 1 分支由集成会话以真实 PostgreSQL 测试 catalog 取证）；ADR-0053 是状态机规则而非契约字段，未做版本门控；五个旧控制台夹具有意保留 2.0.0 以证明旧报告可读。
+

@@ -164,3 +164,8 @@ Phase 1 的 PIT 边重复（Codex K4）不在本分支修改。
 **F 节续（2026-09-26 晚）**：B22 横截面动量（研究层）、B23 ADR-0053 / 0054 / 0057 集成与 ADR-0052 阻断证据、B24 最终全量门禁（`564c87c`：6142 passed, 136 deselected, 1 xfailed）。
 ADR-0057 / 0054 的新契约字段在 2.0.0 下写成，按 Codex K3 / K5 不接受为契约完成；ADR-0052 版本化重放在独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` 进行，完成后以 2.1.0 重新声明。
 
+**F 节续（2026-09-26 深夜）**：B25～B41——ADR-0059（G4 跨资产 × 横截面，Accepted 并实施）、ADR-0005 Promotion 链（Registry / Promotion 服务 / Equivalence Gate，失败关闭）、P6 逐单元条件验证、P9 多标的校准、
+P7 严格草稿 / 被拒调用记录 / 批次 / 知识检索来源、P11 跨进程测试与状态目录单写者锁（真实缺陷修复）、P14 金标准实验重放、P13 风险 / 告警重放、P10 纸面偏差与路由自身验证、全栈 API ↔ 契约一致性、
+劣化检查报告、ADR-0060（C-T4 市场基准，循环强制启用）、ADR-0061（交互 DSL）、Web 组件测试、ADR-0052 契约 2.1.0（按记录版本重放）与 ADR-0054 / 0057 的 2.1.0 重新声明。全部 `CODE_COMPLETE / DEBUG_PENDING`；
+最近全量非 PostgreSQL 门禁 `cc030ec`：6749 passed, 136 deselected。
+
