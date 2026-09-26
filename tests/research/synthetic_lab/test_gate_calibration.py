@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import json
 import math
+import subprocess
+import sys
 from collections.abc import Iterator, Mapping
 from dataclasses import replace
 from decimal import Decimal
@@ -370,6 +372,32 @@ def test_the_cli_writes_the_report(tmp_path: Path, capsys: pytest.CaptureFixture
     assert loaded["disclaimer"] == DISCLAIMER
     assert path.stem == loaded["report_hash"]
     assert "gate_calibration/" in capsys.readouterr().out
+
+
+def test_python_dash_m_loads_the_setup_factory(tmp_path: Path) -> None:
+    """The documented ``python -m`` form (a separate process): it used to refuse every setup,
+    because ``-m`` ran a second copy of the module whose setup classes a factory never builds."""
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "research.synthetic_lab.gate_calibration",
+            "--setup",
+            "tests.research.synthetic_lab.gate_fixtures:cli_setup",
+            "--out",
+            str(tmp_path),
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=Path(__file__).resolve().parents[3],
+        timeout=600,
+    )
+    assert completed.returncode == 0, completed.stderr
+    (path,) = (tmp_path / "gate_calibration").iterdir()
+    loaded = json.loads(path.read_text(encoding="utf-8"))
+    assert path.stem == loaded["report_hash"] and loaded["disclaimer"] == DISCLAIMER
+    assert "gate_calibration/" in completed.stdout
 
 
 def test_the_setup_refuses_ambiguous_inputs() -> None:

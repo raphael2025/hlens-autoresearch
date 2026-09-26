@@ -15,9 +15,9 @@ README): ``main(["--setup",
 "tests.research.synthetic_lab.evidence_setups:single_instrument_evidence", "--out", DIR])`` and
 the same with ``multi_instrument_evidence``.
 
-(``python -m research.synthetic_lab.gate_calibration`` cannot load these factories: the package
-``__init__`` already imports the module, so ``-m`` re-executes it as ``__main__`` with distinct
-setup classes and its ``isinstance`` check refuses every setup.)
+(``python -m research.synthetic_lab.gate_calibration`` works too since B52: its ``__main__``
+block runs the package module's ``main``; before, ``-m`` re-executed the module as ``__main__``
+with distinct setup classes and refused every setup.)
 
 The ``*_probe`` factories are the 4-seed timing probes used to choose the seed counts.
 """

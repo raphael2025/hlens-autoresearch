@@ -1803,5 +1803,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     return 0
 
 
-if __name__ == "__main__":  # pragma: no cover
-    raise SystemExit(main())
+if __name__ == "__main__":  # pragma: no cover - run by the CLI subprocess test
+    # ``python -m`` executes this file as ``__main__``: a second copy of the module whose setup
+    # classes are not the ones a factory builds (factories import ``research.synthetic_lab``, which
+    # imports this module under its own name), so ``_load_setup`` would refuse every setup. Run
+    # the package module's ``main`` instead.
+    from research.synthetic_lab import gate_calibration as _module
+
+    raise SystemExit(_module.main())
