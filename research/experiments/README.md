@@ -10,6 +10,14 @@ ExperimentSpec 定义与 Runner 编排（06-experiment.md）。
 | `backtest_returns` | W1 接线：P5 `BacktestResult` 的权益曲线 → 逐 bar 简单收益，键为区间**起点** `t`（`(t, t_next]` 的收益 = `e_next / e_t − 1`，已含该 bar 的费用与滑点）；首根 bar 没有更早的估值点，不归属 |
 | `matrix_from_backtest` | W1 接线：P5 回测 + P2 `StateResult` → 矩阵；收益归属 **t 时刻已知**的状态；缺状态评估即拒绝；矩阵记录回测与状态结果的 `result_hash`，`matrix_hash` 绑定全部内容 |
 | `register_conditionals` | 每个被研究的条件化变体登记为 `conditioning` 假设（`TrialLedger`，C-T1） |
+| `register_matrix_conditionals` | 预先承诺的单元（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：单元 = 矩阵所属状态的**声明** `StateSpec.state_space` + 未知状态单元，与调用方选择、与结果无关；全部登记或全部不登记（与账本已有条目内容冲突 → `LedgerError`，什么也不登记；同内容重登记不增加 trial）；声明之外的标签、规格与矩阵状态不符即拒绝。逐单元报告样本支持 `CellSupport`：`min_support` 是必填参数、**无默认值**（缺省即 `TypeError`）；显式 `None` = 未声明阈值 → 所有单元 `no_support_threshold`、不支持；低于阈值 → `below_min_support`，保留并报告，从不丢弃。不产出判定（Validation Profile，P4 / P8）；未接入 `research/loop` |
+| `conditional_hypotheses` | 只由声明状态空间生成上述单元假设（结果之前即可预登记）；标签单元的假设与 `register_conditionals` 对同一标签生成的完全相同 |
 
 跨 Phase 冒烟：`tests/research/test_cross_phase_e2e.py`（P9 合成市场 → F4 → P2 → P5 → P6 + P7 登记 → P10 纸面运行；
 确定性、无未来函数、逐步输入绑定）。它只检验接线，不是验证；合成结果不支持任何真实市场结论。
+
+**网格对齐（真实数据冒烟 E2，设计如此）**：矩阵按权益点时间（= bar `interval_end`）归属收益，状态必须恰好在该网格上评估；
+ADR-0032 下 bar 收盘后 5 s 才可见，因此在该网格上特征 / 状态 / 策略输入都滞后一根 bar。这是因果、无未来函数的结果，
+不是缺陷；"按 t 时刻已知的最近状态归属"尚未实现。
+
+状态：`register_matrix_conditionals` / `conditional_hypotheses` 为 CODE_COMPLETE / DEBUG_PENDING（`tests/research/experiments/test_matrix_conditionals.py`）。

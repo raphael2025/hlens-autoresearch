@@ -16,6 +16,16 @@ the **start** of the period they are realized over: consecutive equity points ``
 decided at or before ``t`` under ``next_bar_open``, and its return includes that bar's fees and
 slippage). The first bar has no earlier mark in the result, so its return is not attributed. The
 matrix records the ``result_hash`` of the backtest and of the state result it was built from.
+
+Pre-committed cells (code completion, 2026-09-26): ``register_matrix_conditionals`` derives the
+conditioning hypotheses from the declared ``StateSpec.state_space`` of the matrix's state plus the
+unknown-state cell — never from caller-chosen labels, never filtered by results — and registers
+all of them in the ``TrialLedger`` (all or none) before it reports anything per cell. A declared
+label the returns never visited is a zero-support cell and is still a trial. Sample support is
+reported per cell against ``min_support``, a required caller parameter with no default: ``None``
+reports every cell as unsupported (no stated threshold), and a cell below the threshold is
+reported unsupported, never dropped. No verdict is produced here (Validation Profile, P4 / P8).
+``register_conditionals`` (caller-supplied labels) is kept for compatibility.
 """
 
 from __future__ import annotations
@@ -25,20 +35,27 @@ from dataclasses import dataclass, replace
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from itertools import pairwise
-from typing import Final
+from typing import Final, Literal
 
 from core.contracts.state import StateResult
 from core.contracts.strategy import BacktestResult
 from core.domain.base import Ref, content_hash
-from research.hypotheses import TrialLedger, conditioning
+from core.domain.research import Hypothesis
+from core.domain.specs import StateSpec
+from research.hypotheses import LedgerError, TrialLedger, conditioning
 
 __all__ = [
     "RETURN_QUANTUM",
+    "UNKNOWN_STATE_VALUE",
+    "CellSupport",
+    "ConditionalRegistration",
     "StateCell",
     "StateStrategyMatrix",
     "backtest_returns",
+    "conditional_hypotheses",
     "matrix_from_backtest",
     "register_conditionals",
+    "register_matrix_conditionals",
     "state_strategy_matrix",
 ]
 
@@ -255,3 +272,149 @@ def register_conditionals(
             )
         )
     return ledger.trials(family_id)
+
+
+#: The ``state_value`` text of the unknown-state (``None``) cell's conditioning hypothesis.
+UNKNOWN_STATE_VALUE: Final = "<unknown>"
+
+type SupportReason = Literal["no_support_threshold", "below_min_support", "meets_min_support"]
+
+
+@dataclass(frozen=True, slots=True)
+class CellSupport:
+    """One pre-registered cell: its trial and its sample support (no verdict)."""
+
+    state: str | None
+    count: int
+    #: ``Ref`` string of the cell's registered conditioning hypothesis.
+    hypothesis: str
+    #: 1-based position of the cell's registration among the family's trials.
+    trial_index: int
+    supported: bool
+    reason: SupportReason
+
+
+@dataclass(frozen=True, slots=True)
+class ConditionalRegistration:
+    """Every cell of one matrix registered as a trial, with per-cell sample support."""
+
+    matrix_hash: str
+    family_id: str
+    #: The caller's support threshold (``None``: not stated -> every cell unsupported).
+    min_support: int | None
+    #: Declared state-space order, then the unknown-state cell; never filtered.
+    cells: tuple[CellSupport, ...]
+    #: Hypotheses this call added to the ledger (0 when every cell was already registered).
+    newly_registered: int
+    #: ``TrialLedger.trials(family_id)`` after the registration.
+    family_trials: int
+
+
+def _conditional_name(strategy: Ref, state: Ref, label: str | None) -> str:
+    suffix = "unknown_state" if label is None else label
+    return f"h_{strategy.name}_given_{state.name}_{suffix}"
+
+
+def conditional_hypotheses(
+    *, strategy: Ref, state_spec: StateSpec, family_id: str, minimum_effect: str
+) -> tuple[tuple[str | None, Hypothesis], ...]:
+    """One conditioning hypothesis per declared label, then one for the unknown-state cell.
+
+    Depends only on the declared state space (known before any result); a label cell's
+    hypothesis is exactly the one ``register_conditionals`` registers for that label.
+    """
+    if not isinstance(state_spec, StateSpec):
+        raise ValueError("conditional_hypotheses needs the StateSpec that declares the states")
+    cells: list[str | None] = [*state_spec.state_space, None]
+    names = [_conditional_name(strategy, state_spec.ref, label) for label in cells]
+    if len(set(names)) != len(names):
+        raise ValueError(f"cell hypothesis names collide: {sorted(names)}")
+    return tuple(
+        (
+            label,
+            conditioning(
+                name,
+                family_id,
+                strategy,
+                state_spec.ref,
+                UNKNOWN_STATE_VALUE if label is None else label,
+                minimum_effect,
+            ),
+        )
+        for label, name in zip(cells, names, strict=True)
+    )
+
+
+def _support(count: int, min_support: int | None) -> tuple[bool, SupportReason]:
+    if min_support is None:
+        return False, "no_support_threshold"
+    if count < min_support:
+        return False, "below_min_support"
+    return True, "meets_min_support"
+
+
+def register_matrix_conditionals(
+    ledger: TrialLedger,
+    matrix: StateStrategyMatrix,
+    *,
+    state_spec: StateSpec,
+    family_id: str,
+    minimum_effect: str,
+    min_support: int | None,
+) -> ConditionalRegistration:
+    """Register every cell of ``matrix`` as a trial, then report per-cell sample support.
+
+    The cells are the declared ``state_spec.state_space`` plus the unknown-state cell, whatever
+    the returns visited (module docs). ``state_spec`` must be the matrix's state; a matrix cell
+    outside the declared space is refused. Registration is all or none: a conflict with an
+    existing ledger entry (same name and version, other content) raises ``LedgerError`` before
+    anything is registered; re-registering identical cells adds no trial. ``min_support`` is
+    required (no default) and, when given, a positive int.
+    """
+    if not isinstance(matrix, StateStrategyMatrix):
+        raise ValueError("register_matrix_conditionals needs a StateStrategyMatrix")
+    if min_support is not None and (
+        isinstance(min_support, bool) or not isinstance(min_support, int) or min_support < 1
+    ):
+        raise ValueError("min_support must be a positive int, or None when no threshold is stated")
+    if not isinstance(state_spec, StateSpec) or state_spec.ref != matrix.state:
+        raise ValueError(f"state_spec must declare the matrix's state {matrix.state}")
+    declared = set(state_spec.state_space)
+    stray = sorted(c.state for c in matrix.cells if c.state is not None and c.state not in declared)
+    if stray:
+        raise ValueError(f"matrix cells outside the declared state space: {stray}")
+    planned = conditional_hypotheses(
+        strategy=matrix.strategy,
+        state_spec=state_spec,
+        family_id=family_id,
+        minimum_effect=minimum_effect,
+    )
+    existing = {(h.name, h.version): h for h in ledger.hypotheses}
+    for _, hypothesis in planned:
+        known = existing.get((hypothesis.name, hypothesis.version))
+        if known is not None and known.content_hash() != hypothesis.content_hash():
+            raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+    newly = sum(1 for _, hypothesis in planned if ledger.register(hypothesis))
+    counts = {cell.state: cell.count for cell in matrix.cells}
+    cells: list[CellSupport] = []
+    for label, hypothesis in planned:
+        count = counts.get(label, 0)
+        supported, reason = _support(count, min_support)
+        cells.append(
+            CellSupport(
+                state=label,
+                count=count,
+                hypothesis=str(hypothesis.ref),
+                trial_index=ledger.trial_index(hypothesis),
+                supported=supported,
+                reason=reason,
+            )
+        )
+    return ConditionalRegistration(
+        matrix_hash=matrix.matrix_hash,
+        family_id=family_id,
+        min_support=min_support,
+        cells=tuple(cells),
+        newly_registered=newly,
+        family_trials=ledger.trials(family_id),
+    )
