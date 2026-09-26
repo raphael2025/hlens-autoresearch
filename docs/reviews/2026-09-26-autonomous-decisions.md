@@ -35,4 +35,7 @@
 |---|---|---|---|---|
 | ADR-0059 | G4 跨资产检查对横截面策略结构性 FAIL | **Accepted**：C（零敞口单标的重跑 → INCONCLUSIVE）+ A（显式声明的横截面策略按子宇宙检验） | C 只把结构性不适用的 FAIL 变为 INCONCLUSIVE，仍阻止晋升，不多放行；A 是更强的 C-R3 检验 | B29 |
 | ADR-0005 实施 | Promotion 链无代码 | 按已 Accepted 的 ADR-0005 直接实施 Registry / Promotion 服务 / Equivalence Gate，失败关闭 | 无新决策；开放选择写入 ADR-0005 实施说明 | B28 |
+| ADR-0060 | C-T4 `market_benchmark_rule` / `inverse_control_reported` 无语义、无代码读取 | **Accepted**：已登记的规则名（`none` / `buy_and_hold_equal_weight` / `flat`，未知 → INCONCLUSIVE）；市场基准与反向对照为报告项，不作否决 | C-T4 的门槛是空模型（已实施）；给每个类别发明超额阈值会违反"阈值只来自 Profile" | 待实施（下一空闲通道） |
+| ADR-0061 | Phase 3 交互 DSL 缺失 | **Accepted**：JSON 表达式树（`ref` + `seq` / `and` / `not` / `count`），编译为普通交互规格，逐跳复用上游核对；`not` 的事件时间取窗口结束 | 数据而非代码，只到已审阅算子；无契约变化 | 待实施（下一空闲通道） |
+| API → Worker 端到端 | 计划要求"至少一条端到端流程从 API 进入 Worker 再由 Web 读回"，但 ADR-0048 规定 API 只读 | **维持只读**：端到端流程定义为 Worker 作业 → 结果日志 / 报告文件 → 只读 API（`/jobs`、`/reports`）→ Web；不增加写端点 | 写端点会让 Web 能触发研究运行，扩大攻击面且无审批通道；只读链路已有测试（`test_api_jobs.py`、`test_reports_hook.py`、node 测试） | 无代码变化；记录于此 |
 

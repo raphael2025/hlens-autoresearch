@@ -63,6 +63,8 @@
 | [0057](0057-event-request-subject.md) | 事件请求的标的键 `EventRequest.subject`（P3-MULTISYM，additive） | Accepted（2026-09-26；Claude 依 Raphael 授权决定）；代码已写，待按 2.1.0 重新声明（Codex K3 / K5），未作为契约完成 |
 | [0058](0058-knowledge-reviewed-write-path.md) | 知识库经人工审阅的写入路径（Python API / CLI，无 HTTP 写端点） | Accepted（2026-09-26；Claude 依 Raphael 明确授权） |
 | [0059](0059-cross-asset-check-for-cross-sectional-strategies.md) | G4 跨资产检查（C-R3）对横截面策略的适用方式 | Accepted（2026-09-26；Claude 依 Raphael 授权决定，含红线）；C + A 已实施，CODE_COMPLETE / DEBUG_PENDING |
+| [0060](0060-market-benchmark-rule-semantics.md) | C-T4 市场基准规则与反向对照的语义（报告项，不作否决） | Accepted（2026-09-26；Claude 依 Raphael 授权） |
+| [0061](0061-interaction-dsl.md) | 事件交互 DSL（数据表达式树，编译到已审阅算子） | Accepted（2026-09-26；Claude 依 Raphael 授权） |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

@@ -423,3 +423,12 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   → **350 passed, 1 warning (374.81 s)**；`ruff check .` → 通过；mypy（50 files）→ no issues。
 - 限制：仅按名称分组（不考虑流动性 / 板块）；4 个标的时比例只能取 0 / 0.5 / 1；阈值未校准；声明是研究层名称集合（无契约字段）。
 
+**B30 — 全代码缺口审计与新一轮派发（2026-09-26 晚）**
+
+- 只读审计（HEAD `7703fba`）逐条核对 §4 验收列：大部分为已实现；缺口与处理——P7 被拒 LLM 调用记录 / 严格解析、批量生成 + 可执行 DSL、KnowledgeProvider 接线（L1 通道）；
+  P11 跨进程测试、P14 金标准实验重放（L2 通道，仅测试）；全栈 API ↔ 契约一致性、P10 纸面偏差报告、P11 劣化报告（L3 通道）；P13 风险 / 告警重放、P10 路由自身验证适配器（L4 通道）；
+  Web 组件测试（排队，用已安装的 esbuild，不加依赖）。
+- 需要决策的缺口已由 Claude 通过 ADR 决定：ADR-0060（C-T4 市场基准语义，Accepted，待实施）、ADR-0061（交互 DSL，Accepted，待实施）、API → Worker 维持只读（记录于自主决策记录）。
+- 仍阻塞：ADR-0055（知识库 tag / 资产检索，需改契约，集成会话的 Proposed ADR）；真实数据 bar 成交量（Phase 1 `infrastructure/bars`）与 D-PFIELDS（待 ADR-0052 2.1.0）；
+  D-09 Profile 数值、D-10 NATS、D-08 实盘、P5-PLUGIN（无证据不晋升）。
+
