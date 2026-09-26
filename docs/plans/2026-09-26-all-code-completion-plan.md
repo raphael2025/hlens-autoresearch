@@ -559,3 +559,18 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 `uv run ruff check .` → All checks passed；`uv run ruff format --check .` → 736 files already formatted；`uv run mypy` → Success: no issues found in 580 source files；Schema 135 份；`uv lock --check --offline` → OK；
 `npm test` → lib 55 / 55、组件 96 / 96；`npm run build` → ✓。136 个 deselected 是 PostgreSQL 标记测试：本分支不接触真实数据库；ADR-0052 的独立 Phase 1 分支已由集成会话以真实 PostgreSQL 测试 catalog 取证（`22392ea`：5852 passed）。
 
+
+### 10.7 审计后续（2026-09-26 晚，新目标"继续自主开发直到所有已授权可推进工作完成"）
+
+- 开工核实：远端 `wip/all-code-completion` = 本地 `c36005b`，工作区干净；`c36005b` 是 `8983ead` 的后代，差异只有计划 / STATUS / MEMORY 三个文档文件，故 `8983ead` 的全量门禁（6749 passed）覆盖 `c36005b` 的全部代码。
+  两个 Cursor worktree（`codex-research-loop-ui`、`codex-d3e-pit-tests`）自 09:50 起空闲且干净；前者的研究循环图表按维度分轴的改进由 apps 修复通道移植（不动其 worktree）。
+- 两个只读审计：B（全栈 + 文档一致性，32 项）与 A（研究 / 基础设施 B1～B43 主张 vs 证据，15 项）。文档类发现已由 `820d771`、`4596c38` 修正；代码类发现分派给以下通道。
+
+**B44 — 真实后端冒烟（`d368d16` 的 cherry-pick）**（`CODE_COMPLETE / DEBUG_PENDING`；仅测试 / 工具）
+
+- `tests/apps/live_server.py`：标准库 asyncio 的测试用 HTTP/1.1 服务器（uvicorn 不是项目依赖，未新增依赖；非生产服务器），在**独立子进程**里运行真实 `create_app(...)`，只绑定 127.0.0.1、临时端口。
+- `tests/apps/test_live_backend_smoke.py`：以真实 writer 产出的全部 10 种报告（+1 个坏文件）、真实 `JobRunner` 结果日志、知识目录，起两个服务器（第二个无知识 Provider / 无任务日志），经真实 HTTP 覆盖 openapi 的每个操作：
+  列表 / 详情、invalid、400 / 404 / 422、jobs、知识 200 / 422 / 503；活的 `/openapi.json` 必须等于已提交文件；每个响应体按声明的 schema 与 pydantic 模型逐字段往返校验。
+  `apps/web/scripts/live-smoke.mjs`（`npm run smoke:live`）：用已安装 esbuild 打包控制台自身的 `api.ts`、`src/lib` 与 14 个页面，对两个活服务器逐页服务端渲染，要求无加载残留 / 无错误态 / 无原始 JSON 回退。
+- 不证明：真实浏览器（像素、布局、ECharts 绘制、交互、vite 代理）——手工浏览器验收仍未做（本机无浏览器）；502 与 500（篡改日志）仍只在进程内 TestClient 覆盖。
+- 实际运行：子代理 `pytest -m "not postgres" tests/apps` → 278 passed；`npm test` → 55 / 55 + 96 / 96；build ✓；本分支集成后 `pytest tests/apps/test_live_backend_smoke.py tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → 20 passed；ruff / mypy（19 files）通过。
