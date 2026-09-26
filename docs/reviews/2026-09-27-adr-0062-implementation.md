@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 性质 | 实施记录，**不是验收结论**；ADR-0062 仍为 **Proposed**，等待 Codex 对代码、测试与门禁的最终复核 |
+| 性质 | 实施记录；ADR-0062 **Accepted（2026-09-27，Codex 依 Raphael 授权，基于 B56 代码 `6e482e2` / `a89b00a` / `7f93629` 的复核、扩大门禁与文档检查接受）**。ADR / 实现的接受**不等于** Phase 4 或 Phase 5 验收：冻结登记仍为空（没有任何 `profile.frozen` 记录，所有 Promotion 仍以 `profile_not_frozen` 被拒），Validation Profile 数值（D-09 TBD-1..5）仍未冻结 |
 | 决定来源 | Codex 依 Raphael 全权授权（2026-09-27）：`ValidationProfile.status` 不进内容哈希（ADR-0008），Promotion 不能把调用方给的 `status = FROZEN` 当作权威；设计问题 Q1 = A（独立登记）、Q2 = A（校准证据只验真实性与引用一致），复核后追加"目录外锚点必需" |
 | 实施者 | Claude Code（Opus），只实现，不改变决定 |
 | 分支 | 本地 `claude/adr-0055-integration`，逐批普通快进推送到 `origin/wip/all-code-completion` |
@@ -16,7 +16,7 @@
 | `6e482e2` | 阶段 1：`infrastructure/registry/profile_freeze.py`（`ProfileFreezeRegistry`）与测试 | Codex 发现两处阻断（见 §3） |
 | `a89b00a` | 阶段 1 返修：追加路径失败即作废实例；写任何 blob 之前先跑全部规则 | Codex 复核通过 |
 | `7f93629` | 阶段 2：`research/promotion` 以冻结登记为权威冻结来源 | Codex 复核通过 |
-| 本提交 | 阶段 3：文档同步（本说明、完成计划、STATUS、MEMORY、ADR 索引与说明） | 待复核 |
+| `0cdf19f` + `3c344df` | 阶段 3：文档同步（本说明、完成计划、STATUS、MEMORY、ADR 索引与说明）+ 最后更新日期修正 | Codex 复核通过 |
 
 ## 2. 实现了什么
 
@@ -71,4 +71,9 @@ Codex 复核 `6e482e2` 的两处阻断，均在 `a89b00a` 修复（不改写历�
   本批不选择、不冻结任何 Profile 数值。
 - 没有解冻 / supersede / 撤销记录类型；Profile 从 FROZEN 到 SUPERSEDED 的登记需要另立决定。
 - 校准报告是否适用于该 Profile 不由登记判断（ADR-0062 Q2 = A），由具名批准承担。
-- 未改 Domain Contract、Schema、Profile 结构 / 数值 / 哈希、Constitution、ADR-0008；ADR-0062 仍为 Proposed。
+- 未改 Domain Contract、Schema、Profile 结构 / 数值 / 哈希、Constitution、ADR-0008。
+
+## 6. 接受（2026-09-27）
+
+Codex 依 Raphael 授权接受 ADR-0062 的架构与实现方案：阶段 1 / 2 代码复核通过，扩大门禁 4615 passed（退出码 0），阶段 3 文档检查通过并已推送到
+`3c344df`。ADR / 实现的接受**不等于** Phase 4 或 Phase 5 验收：冻结登记仍为空（没有任何 `profile.frozen` 记录，所有 Promotion 仍以 `profile_not_frozen` 被拒），Validation Profile 数值（D-09 TBD-1..5）仍未冻结；批准人只是声明、不认证身份；登记不是生产 Control Plane，不授权实盘 / 资金 / 部署。

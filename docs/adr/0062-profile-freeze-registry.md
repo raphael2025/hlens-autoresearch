@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**——Codex 依 Raphael 全权授权作出本批架构决定（2026-09-27，B56；设计问题 Q1 = A、Q2 = A 由 Codex 选定）；实现与测试完成后待 Codex 最终复核再改变状态 |
+| 状态 | **Accepted（2026-09-27，Codex 依 Raphael 授权，基于 B56 代码 `6e482e2` / `a89b00a` / `7f93629` 的复核、扩大门禁与文档检查接受）**；架构决定由 Codex 依 Raphael 全权授权作出（2026-09-27，B56；Q1 = A、Q2 = A）；ADR / 实现的接受**不等于** Phase 4 或 Phase 5 验收：冻结登记仍为空（没有任何 `profile.frozen` 记录，所有 Promotion 仍以 `profile_not_frozen` 被拒），Validation Profile 数值（D-09 TBD-1..5）仍未冻结 |
 | 日期 | 2026-09-27 |
 | 决策者 | Codex（Raphael 2026-09-23 授权的技术协调者） |
 | 起草者 | Claude Code（Opus），只起草与实现，不改变决定 |
@@ -96,10 +96,17 @@ Promotion 成功（完整 TEST ONLY 证据 + 有效登记）与 fail closed（`s
 - [x] 不修改 Validation Constitution 或 ADR-0008
 - [x] Domain 层无新依赖；`infrastructure/` 不 import `research/` / `apps/`
 - [x] 不触网、不涉及实盘 / 资金 / 生产部署
-- [ ] Codex 最终复核（待定）
+- [x] Codex 最终复核（2026-09-27 接受；ADR / 实现的接受**不等于** Phase 4 或 Phase 5 验收：冻结登记仍为空（没有任何 `profile.frozen` 记录，所有 Promotion 仍以 `profile_not_frozen` 被拒），Validation Profile 数值（D-09 TBD-1..5）仍未冻结）
 
-## 实施记录（B56，2026-09-27；ADR 仍为 Proposed）
+## 实施记录（B56，2026-09-27）
 
 - `3e1dca8` 本 ADR；`6e482e2` `ProfileFreezeRegistry`；`a89b00a` 复核返修（写路径失败即作废实例、任何写入之前执行全部规则）；
   `7f93629` Promotion 以登记为权威冻结来源。状态 CODE_COMPLETE / DEBUG_PENDING；登记为空，所有晋升仍被拒。
 - 详见 [ADR-0062 实施说明](../reviews/2026-09-27-adr-0062-implementation.md)（测试、变异、原样门禁结果与未完成边界）。
+
+## 接受记录（2026-09-27）
+
+- 接受者：Codex（依 Raphael 2026-09-23 授权）。依据：阶段 1（`6e482e2`，复核返修 `a89b00a`）与阶段 2（`7f93629`）代码复核通过；
+  阶段 2 提交前扩大门禁 `pytest -m "not postgres" tests/promotion tests/research tests/apps tests/test_*.py` → 4615 passed（退出码 0），
+  ruff / format / mypy 退出码 0；阶段 3 文档（`0cdf19f`、`3c344df`）检查通过。
+- 范围：接受的是本 ADR 的架构与实现方案；ADR / 实现的接受**不等于** Phase 4 或 Phase 5 验收：冻结登记仍为空（没有任何 `profile.frozen` 记录，所有 Promotion 仍以 `profile_not_frozen` 被拒），Validation Profile 数值（D-09 TBD-1..5）仍未冻结；批准人只是声明、不认证身份；登记不是生产 Control Plane，不授权实盘 / 资金 / 部署。

@@ -49,7 +49,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
 | 3 | Event & Interaction Engine | 🧱 框架已实现（ADR-0036）；事件运行存储、统计序列化、物理表 `event.events`（ADR-0056；只读核实从未建表）CODE_COMPLETE / DEBUG_PENDING；`subject`（ADR-0057）已以 2.1.0 声明（B41），交互 DSL（ADR-0061）CODE_COMPLETE / DEBUG_PENDING |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照 CODE_COMPLETE / DEBUG_PENDING；ADR-0052 契约 2.1.0 与研究侧取值（精确比较、C-A4）已实施、待 Codex 复核；ADR-0060 市场基准；Profile 数值 TBD |
-| 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Proposed**，B56，CODE_COMPLETE / DEBUG_PENDING；登记为空）；无策略晋升 |
+| 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；无策略晋升 |
 | 6 | State × Strategy | 🧱 框架已实现（ADR-0039）；矩阵条件假设全单元预登记、可选接入循环、逐单元验证（B27）CODE_COMPLETE / DEBUG_PENDING |
 | 7 | Dynamic Discovery | 🧱 框架已实现（ADR-0040）；LLM 调用内容存储与循环内可取回核对；严格草稿、被拒调用记录、声明式批次、知识检索来源（B33）CODE_COMPLETE / DEBUG_PENDING |
 | 8 | Validation & Robustness | 🧱 框架已实现（ADR-0041）；G4 逐检查异常隔离、多标的验证、横截面跨资产（ADR-0059，B29）CODE_COMPLETE / DEBUG_PENDING |
@@ -232,7 +232,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | B56：ADR-0062（Codex 决定，Proposed）——Validation Profile 冻结登记：追加式、哈希链、单写者、**必需**目录外锚点；登记绑定 Profile ref + 内容哈希、校准报告原始字节 / 自哈希 / 与 provenance 逐字相等、具名批准人与 UTC 时间；写路径失败即作废实例；Promotion 不再信任对象的 `status = FROZEN`，必须有有效登记，否则 `profile_not_frozen` | CODE_COMPLETE / DEBUG_PENDING；登记为空，所有晋升仍被拒；不认证身份、不是生产控制面；未改契约 / Schema / Profile 数值 / 哈希；ADR 待 Codex 最终复核 |
+| 2026-09-27 | B56：ADR-0062（Codex 决定，2026-09-27 **Accepted**）——Validation Profile 冻结登记：追加式、哈希链、单写者、**必需**目录外锚点；登记绑定 Profile ref + 内容哈希、校准报告原始字节 / 自哈希 / 与 provenance 逐字相等、具名批准人与 UTC 时间；写路径失败即作废实例；Promotion 不再信任对象的 `status = FROZEN`，必须有有效登记，否则 `profile_not_frozen` | CODE_COMPLETE / DEBUG_PENDING；登记为空，所有晋升仍被拒；不认证身份、不是生产控制面；未改契约 / Schema / Profile 数值 / 哈希；ADR 接受不等于 Phase 4 / 5 验收 |
 | 2026-09-26 | B55：ADR-0055 知识标签 / 资产检索（契约 2.2.0：`tags_all` AND、`assets_any` OR 精确；2.1.0 固定向量逐位复现；控制台筛选）经 Codex 复核进入整合；组合分支 `claude/adr-0055-integration` 从 `a5836b2` cherry-pick，三处 fixture 冲突保留 B46 变体与两代遗留；Phase 9 证据改为按记录版本 2.1.0 核对 | CODE_COMPLETE / DEBUG_PENDING；ADR-0055 Accepted（Codex，2026-09-26，`c08c589` 门禁 7179 passed、退出码 0）；已 fast-forward 推送到 `wip/all-code-completion`；种子尚无具名人工审阅的标签 / 资产，Phase 0.5 未验收 |
 | 2026-09-26 | 审计后续（B44～B52）：真实 HTTP 冒烟（含 502 / 500）；报告存储解码缺陷修复；Promotion 要求冻结且带校准的 Profile 与市场基准项；替换提案作业（循环之外）；研究循环内容核对失败记录调用、核对模式写入指纹；持久审计须显式选择 `record_marks`；劣化证据不足绝不显示为健康；Phase 9 中等规模证据；`-m` 校准 CLI 修复 | 全部 CODE_COMPLETE / DEBUG_PENDING；新待决 D-DEG-IE；未合并 `phase/1` / `main` |
 | 2026-09-26 | 全代码批次收尾（B25～B43）：ADR-0059 / 0060 / 0061 实施、ADR-0005 Promotion 链、P6 逐单元验证、P7 批次与知识来源、P11 跨进程测试与状态目录单写者锁、P13 风险重放、P10 路由自身验证与纸面偏差、全栈契约核对与组件测试、契约 2.1.0 合入；D-LIST 恢复 Raphael 暂缓；最终门禁 `8983ead` 6749 passed | 全部 CODE_COMPLETE / DEBUG_PENDING，待 Cursor 调试与 Codex 复核；未合并 `phase/1` / `main` |
@@ -269,5 +269,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > Claude 下一步可以执行什么？
 
 1. 审计后续（2026-09-26 晚）：处理全代码审计发现（控制台研究循环图表按维度分轴、5 个报告种类夹具由代码生成、错误体路径清理与 500 处理、真实后端冒烟、P12 提案接入循环、P9 中等规模校准证据），逐项提交推送。
-2. 交 Cursor：全部 CODE_COMPLETE 项的独立调试与对抗复测；交 Codex：ADR-0052 / 0054 / 0056～0061 与 Promotion 链复核；ADR-0062（B56，Proposed）最终复核后再决定是否 Accepted；ADR-0055 已由 Codex 接受并推送（Phase 0.5 整体验收仍待 Codex / Raphael）；交 Raphael：D-LIST（ADR-0051）、Profile 数值、合并 `main` / tag；种子标签 / 资产需具名人工审阅者经 ADR-0058 写入路径提交。
+2. 交 Cursor：全部 CODE_COMPLETE 项的独立调试与对抗复测；交 Codex：ADR-0052 / 0054 / 0056～0061 与 Promotion 链复核；ADR-0062 已由 Codex 接受（B56；登记为空、Profile 数值未冻结，Phase 4 / 5 未验收）；ADR-0055 已由 Codex 接受并推送（Phase 0.5 整体验收仍待 Codex / Raphael）；交 Raphael：D-LIST（ADR-0051）、Profile 数值、合并 `main` / tag；种子标签 / 资产需具名人工审阅者经 ADR-0058 写入路径提交。
 3. 不得：实盘、凭据、下单、猜测 Profile 数值、合并 Phase 1 或 `main`、打 tag、force push；不修改 Phase 1 基础设施（Codex 复核中）。
