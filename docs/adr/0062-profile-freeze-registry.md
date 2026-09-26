@@ -97,3 +97,9 @@ Promotion 成功（完整 TEST ONLY 证据 + 有效登记）与 fail closed（`s
 - [x] Domain 层无新依赖；`infrastructure/` 不 import `research/` / `apps/`
 - [x] 不触网、不涉及实盘 / 资金 / 生产部署
 - [ ] Codex 最终复核（待定）
+
+## 实施记录（B56，2026-09-27；ADR 仍为 Proposed）
+
+- `3e1dca8` 本 ADR；`6e482e2` `ProfileFreezeRegistry`；`a89b00a` 复核返修（写路径失败即作废实例、任何写入之前执行全部规则）；
+  `7f93629` Promotion 以登记为权威冻结来源。状态 CODE_COMPLETE / DEBUG_PENDING；登记为空，所有晋升仍被拒。
+- 详见 [ADR-0062 实施说明](../reviews/2026-09-27-adr-0062-implementation.md)（测试、变异、原样门禁结果与未完成边界）。

@@ -681,13 +681,25 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 代码冻结提交 `c08c589` 的全量非 PostgreSQL 门禁（`systemd-run --user --scope -q -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest -q -m "not postgres" -p no:cacheprovider -rs`）→ `7179 passed, 136 deselected, 1 warning in 2906.24s (0:48:26)`，退出码 0；起止 SHA 均为 `c08c5895b4a60916715c2f88f65d061c40724b96`、dirty=0（2026-09-26T20:07:01Z → 20:55:29Z）；其后的 docs-only 提交**不在**该门禁覆盖范围内。
 - Codex 于 2026-09-26 基于组合代码 `c08c589` 与上述门禁接受 ADR-0055（Accepted）；ADR / 代码接受**不等于** Phase 0.5 整体验收：仓库种子仍无具名人工审阅的标签 / 资产分类（只有实施说明 §5 的提案），Phase 0.5 验收仍待 Codex / Raphael。
 
+**B56 — ADR-0062：Validation Profile 冻结登记（Codex 决定，Proposed；本地整合分支，逐批快进推送到 `wip/all-code-completion`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 背景：`ValidationProfile.status` 不进内容哈希（ADR-0008），Promotion 原先信任调用方给的 `status = FROZEN`（B51 已指出需 Profile 注册表）。
+- `3e1dca8` ADR-0062（Proposed，Q1 = A 独立登记，Q2 = A 校准证据验真实性与引用一致；目录外锚点必需）；`6e482e2` `ProfileFreezeRegistry`
+  （追加式哈希链、单写者、必需锚点、校准报告原始字节固化、重放同一套规则）；`a89b00a` Codex 复核返修（写路径失败即作废实例；写任何 blob 之前
+  执行全部规则；故障注入测试）；`7f93629` Promotion 以登记为权威冻结来源（无有效登记 → `profile_not_frozen`；`created_at` 不早于冻结批准）。
+- 实际运行：阶段 1 返修后定向 `172 passed`、冻结登记测试 `56 passed`；阶段 2 提交前 `pytest -m "not postgres" tests/promotion tests/research
+  tests/apps tests/test_*.py` → `4615 passed, 1 warning in 1293.77s`（退出码 0），ruff / format（760 files）/ mypy（595 files）退出码 0；
+  变异检查见 [ADR-0062 实施说明](../reviews/2026-09-27-adr-0062-implementation.md)。
+- 边界：批准人只是声明（不认证身份）；不是生产 Control Plane；不授权实盘 / 资金 / 部署；登记为空，所有晋升仍被拒；未改契约 / Schema /
+  Profile 数值 / 哈希 / ADR-0008。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
 |---|---|---|
 | 7 | 内容核对失败记录调用、核对模式写入状态目录指纹（B50） | 只有脚本化 LLM |
 | 6 | 数据集组合根上的条件计划端到端测试（B50） | 同 10.6 |
-| 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51） | 今天没有冻结的 Profile → 所有晋升被拒（设计如此）；Profile `status` 不在其哈希内，需 Profile 注册表才是真正权威 |
+| 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51）；冻结以 ADR-0062 的追加式、带锚点的 Profile 冻结登记为权威（B56，ADR Proposed） | 今天登记为空 → 所有晋升被拒（设计如此）；批准人只是声明，登记不是生产 Control Plane |
 | 0.5 | 按标签 / 资产检索（ADR-0055 Accepted，契约 2.2.0，含控制台；B55） | Phase 0.5 未验收：种子尚无具名人工审阅的标签 / 资产 |
 | 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告未重跑复现 |
 | 10 | 证据模式要求报告的 Profile 与市场基准项（B51） | 证据模式不要求 FROZEN；不要求 `G2.inverse_control` |

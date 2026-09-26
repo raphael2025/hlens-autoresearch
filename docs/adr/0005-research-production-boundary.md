@@ -166,3 +166,7 @@ Revalidation 使用**登记时的** Profile 版本；是否同时报告新版本
    PRODUCTION_CANDIDATE / ACTIVE 时写入；`deployment_id` = §3 的 `{artifact_id, 生产 commit + tree, config_hash}` 规范 JSON 的
    SHA-256（契约未冻结算法，这是本实现的选择）。部署记录只是审计记录，不运行任何东西。
 5. 未决问题 Q-1 / Q-2 / Q-3 / Q-7 不因本实现而决定；`strategies/`、`risk/`、`plugins/` 未放入任何策略。
+
+**2026-09-27 补记（ADR-0062，Proposed；B56）**：Promotion 不再以调用方交来的 Profile 对象的 `status = FROZEN` 作为冻结依据（`status` 不在
+内容哈希内，ADR-0008）；权威来源是追加式、带必需目录外锚点的 Profile 冻结登记（`infrastructure/registry/profile_freeze.py`）。
+没有对应 Profile ref + 内容哈希、引用其校准报告的有效登记 → `profile_not_frozen`。本 ADR 的决定不变。
