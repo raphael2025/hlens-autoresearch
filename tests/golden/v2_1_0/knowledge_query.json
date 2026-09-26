@@ -1,0 +1,19 @@
+{
+  "content_hash": "e99603b49c3f72470037a772a0b5f5486468ee9a555ec3a0d38be16d307d5f8c",
+  "contract_schema_version": "2.1.0",
+  "generated_at_commit": "1cd3284",
+  "model": "KnowledgeQuery",
+  "payload": {
+    "evidence_at_least": "E1",
+    "limit": 10,
+    "name_prefix": "strategy_",
+    "schema_version": "2.1.0",
+    "statuses": [
+      "supported",
+      "unverified"
+    ],
+    "terms": [
+      "momentum"
+    ]
+  }
+}

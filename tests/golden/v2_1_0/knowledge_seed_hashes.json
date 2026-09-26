@@ -1,0 +1,21 @@
+{
+  "contract_schema_version": "2.1.0",
+  "full_search": {
+    "provider": "hlens_knowledge_local@1.0.0",
+    "query": {
+      "limit": 1000
+    },
+    "query_hash": "a72872c0d1970f44bb72c489415ccd3ac26f3e4bdc382dff882cb0a9dbf4fa49",
+    "result_hash": "e5ea8dcd5721c8bc75f46547cdd72e522ab375cb6c0ac7795ad8dba5f340ea10"
+  },
+  "generated_at_commit": "1cd3284",
+  "items": {
+    "factor_crypto_market_size_momentum@1.0.0": "1f55ae4fdd50412e81d489d595654bc551a35c40aed5029f6701bfdb8f2b107a",
+    "risk_volatility_managed_portfolios@1.0.0": "c820e822ecdfc704a1ac5fd9165af33a1a9a1f73291956c9eef87c787cb384e7",
+    "risk_volatility_managed_portfolios_out_of_sample@1.0.0": "507692f39d0b212a03ddecf2a152b07c5e9c6bd9965a0224b697e89d0fa3a604",
+    "state_cross_exchange_price_deviations@1.0.0": "5efe53b935efcb145da01ede51d8dbaa97348de53af86cfa29c29d8bfe039f12",
+    "strategy_crypto_time_series_momentum@1.0.0": "aed6ca02bc69a4d235e41a522ef33d2dbaf3c4b6141f7a45c2f55827ab897b22",
+    "strategy_time_series_momentum@1.0.0": "3db0829c0e7c10ae9b2fef89baa1916e978ee48c359892d2009dc182e0769ad9"
+  },
+  "note": "content_hash of every reviewed seed item as the 2.1.0 code served it (envelope defaulted to 2.1.0)"
+}

@@ -1,0 +1,31 @@
+{
+  "content_hash": "5fd31cb590d78ec1072b6fca604d4ab378e9ac2a9ba301e245384627c13e2571",
+  "contract_schema_version": "2.1.0",
+  "generated_at_commit": "1cd3284",
+  "model": "KnowledgeItem",
+  "payload": {
+    "claim": "Past returns predict future returns.",
+    "conditions": [
+      "BTC, ETH market data",
+      "weekly horizons"
+    ],
+    "created_at": "2026-09-26T00:00:00Z",
+    "evidence_level": "E2",
+    "kind": "knowledge",
+    "license": "fixture; no full text",
+    "lineage": [],
+    "links": [
+      {
+        "kind": "strategy",
+        "name": "tsmom_bars",
+        "schema_version": "2.1.0",
+        "version": "1.0.0"
+      }
+    ],
+    "name": "strategy_golden_momentum",
+    "schema_version": "2.1.0",
+    "source": "Golden fixture (not a real citation)",
+    "status": "supported",
+    "version": "1.0.0"
+  }
+}

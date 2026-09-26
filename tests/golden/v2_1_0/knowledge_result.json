@@ -1,0 +1,55 @@
+{
+  "content_hash": "301a9eced6ee606d42091b4acd1c1eb3eeed67c0c47b3efb07087d1a347ebfd2",
+  "contract_schema_version": "2.1.0",
+  "generated_at_commit": "1cd3284",
+  "model": "KnowledgeResult",
+  "payload": {
+    "items": [
+      {
+        "claim": "Minimal item.",
+        "conditions": [],
+        "created_at": "2026-09-26T00:00:00Z",
+        "evidence_level": "E0",
+        "kind": "knowledge",
+        "license": "fixture; no full text",
+        "lineage": [],
+        "links": [],
+        "name": "risk_golden_minimal",
+        "schema_version": "2.1.0",
+        "source": "Golden fixture (not a real citation)",
+        "status": "unverified",
+        "version": "1.0.0"
+      },
+      {
+        "claim": "Past returns predict future returns.",
+        "conditions": [
+          "BTC, ETH market data",
+          "weekly horizons"
+        ],
+        "created_at": "2026-09-26T00:00:00Z",
+        "evidence_level": "E2",
+        "kind": "knowledge",
+        "license": "fixture; no full text",
+        "lineage": [],
+        "links": [
+          {
+            "kind": "strategy",
+            "name": "tsmom_bars",
+            "schema_version": "2.1.0",
+            "version": "1.0.0"
+          }
+        ],
+        "name": "strategy_golden_momentum",
+        "schema_version": "2.1.0",
+        "source": "Golden fixture (not a real citation)",
+        "status": "supported",
+        "version": "1.0.0"
+      }
+    ],
+    "provider": "hlens_knowledge_local@1.0.0",
+    "query_hash": "e99603b49c3f72470037a772a0b5f5486468ee9a555ec3a0d38be16d307d5f8c",
+    "result_hash": "cf72286cfa23b31a5178a92a99de770fcce908131edae259836040c9a3871332",
+    "schema_version": "2.1.0"
+  },
+  "result_hash": "cf72286cfa23b31a5178a92a99de770fcce908131edae259836040c9a3871332"
+}

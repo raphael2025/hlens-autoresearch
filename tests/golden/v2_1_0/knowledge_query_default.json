@@ -1,0 +1,14 @@
+{
+  "content_hash": "ab93980cd243d4bb9f62417842203c70066044806328915ddc052d8f3b55b22b",
+  "contract_schema_version": "2.1.0",
+  "generated_at_commit": "1cd3284",
+  "model": "KnowledgeQuery",
+  "payload": {
+    "evidence_at_least": null,
+    "limit": 50,
+    "name_prefix": "",
+    "schema_version": "2.1.0",
+    "statuses": [],
+    "terms": []
+  }
+}
