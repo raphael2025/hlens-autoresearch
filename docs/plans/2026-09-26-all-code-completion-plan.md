@@ -432,3 +432,12 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 仍阻塞：ADR-0055（知识库 tag / 资产检索，需改契约，集成会话的 Proposed ADR）；真实数据 bar 成交量（Phase 1 `infrastructure/bars`）与 D-PFIELDS（待 ADR-0052 2.1.0）；
   D-09 Profile 数值、D-10 NATS、D-08 实盘、P5-PLUGIN（无证据不晋升）。
 
+
+**B31 — L4 通道：P13 风险 / 告警重放、P10 路由自身验证**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 `80ac8b2`、`edb0c3d` 的 cherry-pick）
+
+- P13：apps 本地 `MarkRecord`（opt-in `ExecutionService(record_marks=...)`，默认不写，既有审计头不变——固定测试）；`apps/execution/risk_replay.py` 的 `replay_risk` 按审计顺序以新的
+  `SecondLineRisk` / `Monitor` 重放，逐字段复现每条拒绝、每笔成交对应已接受订单、每条告警；任何分歧 → `RiskReplayDiverged`（指出首个分歧记录）；有订单无标记的审计被拒。仍只模拟。
+- P10：`research/router/validation.py`——`router_strategy_spec`（路由器以 `StrategySpec` 呈现，搜索空间为空 = 每个路由规格一个 trial）、`RouterTrialRunner`（普通调用即 `paper_run`，验证净纸面结果）、
+  `validate_router`（核对规格与运行、`run.verify()`、验证并返回绑定哈希）。限制：引用 `paper.py` 两个私有帮助函数；宽松夹具上 G3 FAIL，G4 计数经 `robustness_input` 核对；尚无组件开启 `record_marks`。
+- 子代理：109 passed；本分支集成后 `pytest -m "not postgres" tests/apps/test_execution*.py tests/research/router tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → **116 passed**；
+  `ruff check .` → 通过；mypy（38 files）→ no issues。
