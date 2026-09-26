@@ -20,11 +20,13 @@ declarations — is a constructor parameter; validation thresholds are read from
 - ``HypothesisStage``: pre-registers knowledge hypotheses and human-reviewed LLM drafts
   (IDEA → CANDIDATE), pre-registers re-evaluations of still-open (VALIDATION / INCONCLUSIVE)
   hypotheses as new trials when the research data has grown, and asks the LLM for one new draft,
-  which only goes to the review queue (a schema-invalid output is recorded with its ``LlmCall``'s
-  content hash and refs next to the rejection reason, never registered); an optional declared
-  ``HypothesisBatch`` (``research.hypotheses.batch``) is pre-registered as a whole the first round
-  it runs; an optional ``KnowledgeSource`` is searched once per round and its items join the
-  declared knowledge, with the query hash and ``result_hash`` recorded as their origin;
+  which only goes to the review queue (a schema-invalid output, or with ``ContentVerifiedLLM`` an
+  unverifiable one — ``LlmContentUnverified`` — is recorded with its ``LlmCall``'s content hash and
+  refs next to the rejection reason, never registered; any other provider error fails the stage);
+  an optional declared ``HypothesisBatch`` (``research.hypotheses.batch``) is pre-registered as a
+  whole the first round it runs; an optional ``KnowledgeSource`` is searched once per round and its
+  items join the declared knowledge, with the query hash and ``result_hash`` recorded as their
+  origin;
 - ``EvolutionStage`` (optional, ``research/loop/evolution.py``): offspring of the best earlier
   candidates, registered as new hypotheses and validated afresh this round;
 - ``ExperimentStage`` / ``ValidationStage`` (``research/loop/trials.py``): the reproducible
@@ -91,7 +93,7 @@ from research.hypotheses import (
     preregister_batch,
 )
 from research.loop.evolution import EvolutionPlan, EvolutionStage
-from research.loop.llm_content import verify_call_content
+from research.loop.llm_content import LlmContentUnverified, verify_call_content
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
     ResearchPiece,
@@ -444,6 +446,10 @@ class HypothesisStage:
     ) -> None:
         if (llm is None) != (llm_prompt is None):
             raise ValueError("an LLM source needs both a provider and a prompt")
+        if llm_prompt is not None and (not isinstance(llm_prompt, str) or not llm_prompt):
+            # refused here: an empty prompt is a configuration error, never an LLM rejection (the
+            # round's LlmRequest would refuse it; the stage records only typed rejections)
+            raise ValueError("the LLM prompt must be a non-empty str")
         reevaluations = max_reevaluations_per_round
         if (
             isinstance(reevaluations, bool)
@@ -552,14 +558,15 @@ class HypothesisStage:
             }
             try:
                 draft = from_llm(self._llm, self._prompt, context, self._family)
-            except LlmDraftRejected as exc:  # schema-invalid output: recorded, never registered
+            # schema-invalid output, or (ContentVerifiedLLM) content that is not retrievable or not
+            # what was exchanged: recorded with its call, never registered. Any other error of the
+            # provider (a ValueError included) fails the stage, like a RuntimeError always did.
+            except (LlmDraftRejected, LlmContentUnverified) as exc:
                 llm_summary = {
                     "rejected": exc.reason[:500],
                     "call_hash": exc.call.content_hash(),
                     "call": exc.call.model_dump(mode="json"),
                 }
-            except ValueError as exc:  # no answer to record (e.g. unverifiable call content)
-                llm_summary = {"rejected": str(exc)[:500]}
             else:
                 llm_summary = {
                     "draft": str(draft.hypothesis.ref),

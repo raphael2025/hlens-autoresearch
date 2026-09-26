@@ -67,12 +67,21 @@ being behind is expected, not evidence of truncation. The audit's missing rounds
 into it (every one, in order), so it too holds exactly the audit's rounds before the loop runs; a
 foreign, reordered or ahead message is still refused. Any other bus type is treated as durable
 (fail closed).
+
+LLM content verification (Phase 7, 2026-09-26): whether ``llm`` is a
+``research.loop.llm_content.ContentVerifiedLLM`` is part of a state directory's identity.
+``open_synthetic_loop`` / ``open_dataset_loop`` add ``llm_content_verified: true`` to the
+fingerprint in that case only (``llm_content_fingerprint``; every other fingerprint is
+byte-identical to before), so a directory opened with verification is refused when reopened with a
+plain LLM or none — the reviewed drafts it holds would otherwise be taken unverified — and a
+directory opened without it is refused when reopened with it. ``compose_durable`` checks the
+recorded header against its ``llm`` as well (a caller composing an ``open_state`` directly).
 """
 
 from __future__ import annotations
 
 import weakref
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -104,6 +113,7 @@ from core.domain.specs import FeatureSpec, StateSpec
 from infrastructure.event_bus import FileEventBus, InMemoryEventBus
 from research.hypotheses import HypothesisBatch, KnowledgeSource
 from research.loop.durable import (
+    LOOP_STATE_OPENED,
     DurableState,
     FileAnchor,
     LoopStateInconsistent,
@@ -141,6 +151,7 @@ __all__ = [
     "check_round_bus",
     "compose_durable",
     "compose_loop",
+    "llm_content_fingerprint",
     "loop_fingerprint",
     "open_synthetic_loop",
     "refuse_ephemeral_unseal",
@@ -154,6 +165,8 @@ BUS_DIR = "bus"
 #: The consumer that reads ``research_loop.round`` to cross-check it; it never acknowledges, so
 #: every check reads the whole topic from the start (other consumers are independent).
 BUS_AUDIT_CONSUMER = "research_loop_bus_audit"
+#: The fingerprint key of the LLM content-verification mode (present, ``True``, only when on).
+LLM_CONTENT_VERIFIED = "llm_content_verified"
 
 
 @dataclass(frozen=True)
@@ -545,7 +558,7 @@ def open_synthetic_loop(
     wiring = config.wiring
     state = open_state(
         state_dir,
-        fingerprint=loop_fingerprint(config),
+        fingerprint={**loop_fingerprint(config), **llm_content_fingerprint(llm)},
         strategies=wiring.strategies,
         provider=provider,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
@@ -571,12 +584,15 @@ def compose_durable(
     **Injected buses**), then used; closing it is the caller's job. Omitted: the composition's own
     ``FileEventBus(state_dir / "bus")``, cross-checked the same way and released by
     ``DurableLoop.close()`` or when the loop is dropped (module docs, **Durable bus**);
-    ``bus_anchor`` (own bus only) is that bus's external topic-head anchor.
+    ``bus_anchor`` (own bus only) is that bus's external topic-head anchor. The directory's
+    recorded LLM content-verification mode must be ``llm``'s (module docs, **LLM content
+    verification**; ``LoopStateInconsistent`` otherwise).
     """
     if bus is not None and bus_anchor is not None:
         raise ValueError(
             "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
         )
+    _check_llm_content_mode(state, llm)
     if bus is not None:
         durable = not isinstance(bus, InMemoryEventBus)
         check_round_bus(bus, config.loop_id, state.audit.records, durable=durable)
@@ -600,6 +616,30 @@ def compose_durable(
         owned_bus=owned,
         state_lock=state.lock,
     )
+
+
+def llm_content_fingerprint(llm: LLMProvider | None) -> dict[str, Any]:
+    """The fingerprint component of the LLM content-verification mode.
+
+    ``{"llm_content_verified": True}`` for a ``ContentVerifiedLLM``, else nothing (so every
+    unverified fingerprint stays exactly as it was)."""
+    return {LLM_CONTENT_VERIFIED: True} if isinstance(llm, ContentVerifiedLLM) else {}
+
+
+def _check_llm_content_mode(state: DurableState, llm: LLMProvider | None) -> None:
+    """The header's recorded verification mode is ``llm``'s (module docs)."""
+    header = state.checkpoint.journal.entries[0]
+    recorded = header.payload.get("fingerprint") if header.type == LOOP_STATE_OPENED else None
+    if not isinstance(recorded, Mapping):
+        raise LoopStateInconsistent(f"{state.root} has no readable configuration fingerprint")
+    verified = recorded.get(LLM_CONTENT_VERIFIED, False) is True
+    if verified != isinstance(llm, ContentVerifiedLLM):
+        raise LoopStateInconsistent(
+            f"{state.root} was opened with LLM content verification "
+            f"{'on' if verified else 'off'}; this composition has it "
+            f"{'off' if verified else 'on'}: the verification mode is part of the state "
+            "directory (reviewed drafts would be taken under another check)"
+        )
 
 
 def _unseal_payload(budget: OosUnsealBudget | None) -> dict[str, Any] | None:
@@ -635,7 +675,8 @@ def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
     refused (a new budget is a human decision: a new ``state_dir`` / ``loop_id``). The cadence is
     exact (whole microseconds, ``timedelta``'s resolution), and so are the decision / warm-up /
     sealed decision steps; the evolution plan's numbers, the initial equity, the feature chunk size
-    and the explicit G4 parameters are bound too. Compute declarations and the LLM provider are not.
+    and the explicit G4 parameters are bound too. Compute declarations and the LLM provider are not
+    (its content-verification mode is: the opening functions add ``llm_content_fingerprint``).
     """
     return {
         **settings_fingerprint(config),

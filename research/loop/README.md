@@ -170,9 +170,16 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 
 `research/loop/llm_content.py`：可选的 `ContentVerifiedLLM(inner, resolver)`（`LLMProvider` 包装）。内层提供者作答后，调用的 prompt / input / output 三个引用必须经
 `resolver`（如 `infrastructure.content.LocalContentStore`，`verify_llm_call` 逐个重算哈希并核对大小）取回，且取回的载荷必须**等于**实际交换的 prompt、请求 input 与响应 output；
-否则 `ValueError`——`from_llm` 与假设阶段按"被拒草稿"记录、从不登记。组合根把 resolver 交给假设阶段：人工审阅过的草稿在被取用时再核对一次，内容在审阅与使用之间消失或变化
+否则 `LlmContentUnverified`（`ValueError` 子类，携带该次 `LlmCall`）——假设阶段与结构不合的草稿一样记 `rejected` / `call_hash` / `call`、从不登记。组合根把 resolver 交给假设阶段：人工审阅过的草稿在被取用时再核对一次，内容在审阅与使用之间消失或变化
 → 该轮假设阶段 FAILED、其后阶段 SKIPPED、草稿不登记（fail closed）。约定：提供者须把每个载荷存为其规范 JSON（`plugins.llm.ScriptedLLMProvider(store=...)` 即如此）。
 不用包装时行为与记录哈希不变。测试：`tests/research/loop/test_llm_content.py`。
+
+审计修复（2026-09-26）：
+- 假设阶段只捕获 `LlmDraftRejected` 与 `LlmContentUnverified`；提供者的其他错误（含其他 `ValueError`）使该阶段 FAILED（此前被宽泛的 `except ValueError`
+  吞掉、只记原因）。空 `llm_prompt` 此前在每轮以 `LlmRequest` 校验错误被记为"被拒"，现在构造 `HypothesisStage` 时即拒绝（配置错误）。
+- **校验模式属于状态目录**：`llm` 为 `ContentVerifiedLLM` 时 `open_synthetic_loop` / `open_dataset_loop` 在指纹中加入 `llm_content_verified: true`
+  （`llm_content_fingerprint`；未开启时指纹逐字节不变，固定指纹不动）。以校验模式开的目录用普通 LLM 或 `llm=None` 重开被拒（否则已审阅草稿会不经核对被取用），
+  反之亦然；`compose_durable` 也按目录头核对其 `llm`（直接 `open_state` + `compose_durable` 的调用方）。测试：`test_llm_content.py`、`test_loop_llm_rejection.py`。
 
 
 ## 条件化假设（Phase 6 进入循环，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
@@ -219,8 +226,9 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   单元 FAIL 也不写 FailureRecord（结果在审计中）。试验自身的生命周期只由它自己的报告决定，与没有计划时相同。
 - **预算**：每个被验证的单元按一次 `validation_compute_seconds` 计费（声明 = 本轮已完成试验的全部有支持单元，上界）；不增加任何 trial。
 
-**未做（后续）**：单元假设的生命周期（G4 / G5 路径）；数据集组合的端到端测试（代码路径共用 `compose_loop`，指纹共用 `settings_fingerprint`）。
-测试：`tests/research/loop/test_loop_conditional.py`、`tests/research/loop/test_loop_cell_validation.py`、`tests/research/experiments/test_trial_conditionals.py`。
+**未做（后续）**：单元假设的生命周期（G4 / G5 路径）。
+测试：`tests/research/loop/test_loop_conditional.py`、`tests/research/loop/test_loop_cell_validation.py`、`tests/research/experiments/test_trial_conditionals.py`；
+数据集组合根的端到端（离线，SQLite 测试 catalog，无网络）：`tests/infrastructure/e2e/test_research_loop_dataset_conditional.py`。
 
 ### 跨进程持久性测试（Phase 11 验收，2026-09-26，仅测试；CODE_COMPLETE / DEBUG_PENDING）
 
@@ -238,7 +246,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 
 - **被拒的 LLM 输出**：`from_llm` 的草稿结构是严格的（多余键拒绝、不做类型强制转换）；不合结构时 `LlmDraftRejected` 带着该次 `LlmCall`，
   hypothesis 阶段摘要 `llm` 记 `rejected`（原因）、`call_hash`（调用内容哈希）与 `call`（provider、model、prompt / input / output 引用、`called_at`）。
-  只有出现被拒输出的轮次记录会变；其余记录逐字节不变（固定哈希测试）。`ContentVerifiedLLM` 的内容校验失败时 provider 不返回调用，仍只记原因。
+  只有出现被拒输出的轮次记录会变；其余记录逐字节不变（固定哈希测试）。`ContentVerifiedLLM` 的内容校验失败（`LlmContentUnverified`）同样记原因、`call_hash` 与 `call`。
 - **假设批次**（`LoopWiring.hypothesis_batch`，可选，`None` 时记录与指纹逐字节不变）：`research.hypotheses.batch` 把声明的网格
   （算子 × 输入策略 × 参数点，全部显式、无默认值）展开为条件只有 `strategy = <name@version>` / `param <k> = <v>` 的假设；算子必须在声明的、带版本的
   已审阅算子白名单（`ReviewedOperators`，含审阅人）上且内容与审阅时一致，`trial_point` 跑不了的 DSL 算子种类、策略不接受的参数点在构造批次时即拒绝。

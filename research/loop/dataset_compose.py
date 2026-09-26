@@ -57,6 +57,7 @@ from research.loop.compose import (
     LoopWiring,
     compose_durable,
     compose_loop,
+    llm_content_fingerprint,
     refuse_ephemeral_unseal,
     settings_fingerprint,
 )
@@ -189,7 +190,7 @@ def open_dataset_loop(
     wiring = config.wiring
     state = open_state(
         state_dir,
-        fingerprint=dataset_loop_fingerprint(config),
+        fingerprint={**dataset_loop_fingerprint(config), **llm_content_fingerprint(llm)},
         strategies=wiring.strategies,
         provider=None,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
