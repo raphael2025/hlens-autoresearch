@@ -679,3 +679,8 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 架构边界：本轮（`c36005b..` 最终 HEAD）没有改动 `core/` 或 `schemas/`（Schema 仍 135 份，契约 2.1.0）；新增 `plugins/` / `infrastructure/` 不得 import `research/` 的边界测试（B51）。
 
 工作树协调：2026-09-26 19:39 起集成会话（依 Codex 复核）在同一工作树中直接 cherry-pick / 提交（B53：`695add6`、`ed25d2b`、`7157461`、`4e6c220`、`90edc6b`、`ec2a8b0`），与本会话提交交错；本会话首次在 `dd158c9` 上启动的全量门禁在 5% 处被 SIGTERM 终止（退出码 143，HEAD 已移至 `ec2a8b0`），不计为结果。最终门禁见下。
+
+**最终门禁（审计后续，HEAD `3be497b`）**：在该提交的独立 detached checkout 中（本工作树的门禁被外部按命令行模式发出的 SIGTERM 连续终止四次——三次约 2.5 分钟、一次 25 分钟，均退出码 143、无 OOM、峰值内存 < 700 MB，不计为结果；已通知相关会话），
+经 `pytest.main(["-q", "-m", "not postgres", "-p", "no:cacheprovider", "tests"])` 包装脚本、6 GB 上限运行 → **7031 passed, 136 deselected, 1 warning in 3048.69s (0:50:48)，退出码 0**（无 skip：控制台 live smoke 也实际运行）。
+同一 HEAD：`ruff check .` 通过；`ruff format --check .` → 751 files already formatted；`mypy` → no issues in 590 source files；`uv lock --check --offline` 通过；Schema 135 份（`core/` / `schemas/` 自 `c36005b` 未变）；`npm test` → lib 80 / 80、组件 105 / 105；`npm run build` ✓。
+136 个 deselected 为 PostgreSQL 标记测试（本分支不接触真实数据库）。

@@ -12,7 +12,7 @@
 | 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B52，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B54，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-26 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -105,7 +105,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ⏸ Phase 1：实现与红队返修完成，等待 Codex / Raphael 验收（证据：`docs/reviews/2026-09-25-phase1-close-evidence.md`、`phase1-review-guide.md`）；Codex K4（PIT 边重复）为独立阻断项，不在全代码分支修改
 - 🔨 **全阶段代码完成批次（2026-09-26，Claude，`wip/all-code-completion`）**：B1～B52 已补齐 Phase 0.5、2～14 与前后端的剩余代码缺口（逐批见完成计划 §10；B44～B52 为两次只读审计的后续修复，§10.7 / §10.8）；
   Raphael 2026-09-26 授权 Claude 自主决策（含红线），逐项裁决见 [自主决策记录](docs/reviews/2026-09-26-autonomous-decisions.md)；Codex 全代码复核（`docs/reviews/2026-09-26-codex-full-code-review.md`）K1 已修，
-  K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）已实施（B38 / B40 / B41），待 Codex 复核；全量非 PostgreSQL 门禁：`8983ead` 6749 passed → 审计修复后 `1cd3284` 6889 passed / 136 deselected，退出码 0；最终 HEAD 门禁见完成计划 §10.8；契约 **2.1.0**（ADR-0052 按记录版本重放，独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`，已合入全代码分支）；ADR-0054 / 0057 已以 2.1.0 重新声明；均待 Codex 复核
+  K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）已实施（B38 / B40 / B41），待 Codex 复核；全量非 PostgreSQL 门禁：`8983ead` 6749 passed → 审计后续最终 `3be497b` **7031 passed** / 136 deselected，退出码 0（完成计划 §10.8）；契约 **2.1.0**（ADR-0052 按记录版本重放，独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`，已合入全代码分支）；ADR-0054 / 0057 已以 2.1.0 重新声明；均待 Codex 复核
 
 ## 5. 下一步
 
