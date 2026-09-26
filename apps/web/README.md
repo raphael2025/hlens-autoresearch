@@ -28,7 +28,7 @@
 | Degradation Checks | 退化检查列表 + 详情（subject、window、每个指标的状态 / 方向 / baseline / recent / decline / 允许下降 / 阈值来源）；missing = 证据不足而非健康；只作证据、不改生命周期 | `/reports/degradation_check[/​{id}]` |
 | Lifecycle | 允许的状态转移表 | `/lifecycle/transitions` |
 | Jobs | worker 结果日志的任务列表（按状态筛选）+ 详情（params、result / error），只读 | `/jobs[/​{job_id}]` |
-| Knowledge Search | 知识条目检索（待检验主张，非结论） | `/knowledge/search` |
+| Knowledge Search | 知识条目检索（待检验主张，非结论）；关键词 + 标签（全部满足）+ 资产（任一满足，精确；ADR-0055） | `/knowledge/search` |
 
 State × Strategy Matrices 与 Router Paper Runs 同样带 `SIMULATED / NOT_VALIDATED` 横幅（`src/components/Banner.tsx`）；Router Paper Runs 额外标注 PAPER ONLY —— 两者都不含任何下单 / 转账 / 实盘账户 UI（H10）。
 
@@ -101,6 +101,14 @@ Knowledge Search 需要 `--knowledge docs/research/knowledge`（注入 `LocalKno
 （validation 的一份带测试用精确门值）。报告解析在 `src/lib/validationReport.ts` / `stateStrategyMatrix.ts` /
 `routerPaperRun.ts`（`node --test`）；Validation Reports 在有 `value_exact` / `threshold_exact` 时显示精确值，2.0.0 报告回退到浮点，
 并显示 exact / float、`threshold_source` 与契约版本。Python 测试、node 测试与报告页面的详情测试读取每个种类的全部 fixture。
+ADR-0055（契约 2.2.0）补充：信封变化使六种报告（validation / matrix / router paper run / gate calibration / router stop /
+paper deviation）的当前 fixture 变为 2.2.0 新文件；变化前的 2.1.0 文件作为第二代遗留 fixture 保留（`LEGACY_2_1_0`，
+`regenerate_legacy("2.1.0")` 逐字节重建），见 [fixtures/README.md](fixtures/README.md)。`KnowledgeQuery` 新增 `tags_all` /
+`assets_any`（`src/api.d.ts` 已按 OpenAPI 手工同步；本批次未运行 `npm run gen:api` 与 node 测试——本机无 `node_modules`）。
+Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一满足，精确）"两个输入框：空格分隔，由 `src/lib/knowledgeQuery.ts`
+按后端同一规则（小写 snake case、严格升序、无重复）先行检查——**不**改写大小写、不排序、不去重；不合法即以 `role="alert"` 列出原因、
+不发送请求，后端 422 同样作为错误显示。按标签 / 资产筛选为空时页面注明"可能只说明条目尚未分类"：仓库种子目前没有经人工审阅的
+标签 / 资产。
 
 ## 代码分割（Code splitting）
 

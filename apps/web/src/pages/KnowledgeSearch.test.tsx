@@ -78,3 +78,54 @@ test("503 (no provider) and 502 (provider cannot answer honestly) are errors, no
   });
   assert.ok(dishonest.html.includes("上游 provider 无法诚实回答（HTTP 502）：provider returned a truncated index"));
 });
+
+// --- ADR-0055: tag (AND) / asset (OR, exact) filters -------------------------------------------
+
+test("submitted filters: POST /knowledge/search carries tags_all and assets_any exactly as typed", async () => {
+  const tagged: KnowledgeItem = { ...ITEM, tags: ["momentum", "trend"], assets: ["btc", "crypto"] };
+  const { html, requests } = await renderSettled(
+    <KnowledgeSearch initialTags="momentum trend" initialAssets="btc crypto" />,
+    { routes: [api.knowledge({ ...RESULT, items: [tagged] })], selected: "momentum" },
+  );
+  assert.deepEqual(requests, [
+    'POST /api/knowledge/search {"terms":["momentum"],"tags_all":["momentum","trend"],"assets_any":["btc","crypto"],"limit":50}',
+  ]);
+  assert.ok(html.includes('value="momentum trend"') && html.includes('value="btc crypto"'));
+  assert.ok(html.includes("标签 momentum trend") && html.includes("资产 btc crypto"));
+});
+
+test("invalid filters: no request, the reasons shown as an alert (no case folding, sorting or dedup)", async () => {
+  const { html, requests } = await renderSettled(
+    <KnowledgeSearch initialTags="trend momentum" initialAssets="BTC btc btc" />,
+    { routes: [], selected: "momentum" },
+  );
+  assert.deepEqual(requests, []);
+  assert.ok(html.includes('role="alert"'));
+  assert.ok(html.includes("检索条件不合法，未发送请求："));
+  assert.ok(html.includes(escaped("标签（全部满足）：必须按升序填写（不会自动排序），例如 momentum trend")));
+  assert.ok(html.includes(escaped('资产（任一满足）："BTC" 不是规范值')));
+  assert.ok(html.includes(escaped('资产（任一满足）：重复的值 "btc"')));
+  assert.ok(!html.includes("输入关键词后检索。"));
+});
+
+test("a filtered search with no match says the seed may simply be uncategorized", async () => {
+  const filtered = await renderSettled(<KnowledgeSearch initialAssets="btc" />, {
+    routes: [api.knowledge({ ...RESULT, items: [] })],
+    selected: "momentum",
+  });
+  assert.ok(filtered.html.includes("（没有匹配的知识条目）按标签 / 资产筛选为空，可能只说明条目尚未分类"));
+  const plain = await renderSettled(<KnowledgeSearch />, {
+    routes: [api.knowledge({ ...RESULT, items: [] })],
+    selected: "momentum",
+  });
+  assert.ok(!plain.html.includes("尚未分类"));
+});
+
+test("a 422 from apps/api (a query it refuses) is an error with the server's reasons", async () => {
+  const { html } = await renderSettled(<KnowledgeSearch initialTags="momentum" />, {
+    routes: [api.fail("POST", "/knowledge/search", 422, "tags_all 必须严格升序")],
+    selected: "momentum",
+  });
+  assert.ok(html.includes(escaped("数据不合法（HTTP 422）：tags_all 必须严格升序")));
+  assert.ok(!html.includes("（没有匹配的知识条目）"));
+});
