@@ -53,7 +53,9 @@ DRAFT = "h_llm_0@1.0.0"
 REVIEWER = "test-human"
 LLM_LOOKBACKS = (None, 240, 1440)
 #: TEST ONLY plan numbers (arbitrary; a reporting threshold, not a Profile number).
-PLAN = ConditionalPlan(minimum_effect="net mean return above costs (test only)", min_support=5)
+PLAN = ConditionalPlan(
+    minimum_effect="net mean return above costs (test only)", min_support=5, validate_cells=False
+)
 #: TEST ONLY budget: room for 4 conditional trials per trial of a round.
 BUDGET = LoopBudget(
     max_trials_per_round=30,
@@ -105,15 +107,28 @@ def test_both_plan_fields_are_required_and_checked() -> None:
         ConditionalPlan(minimum_effect="x")  # type: ignore[call-arg]
     with pytest.raises(TypeError, match="minimum_effect"):
         ConditionalPlan(min_support=5)  # type: ignore[call-arg]
+    with pytest.raises(TypeError, match="validate_cells"):
+        ConditionalPlan(minimum_effect="x", min_support=5)  # type: ignore[call-arg]
     for effect in ("", "  ", None, 1):
         with pytest.raises(ValueError, match="minimum_effect"):
-            ConditionalPlan(minimum_effect=effect, min_support=5)  # type: ignore[arg-type]
+            ConditionalPlan(minimum_effect=effect, min_support=5, validate_cells=False)  # type: ignore[arg-type]
     for support in (0, -1, True, "5", 2.0):
         with pytest.raises(ValueError, match="min_support"):
-            ConditionalPlan(minimum_effect="x", min_support=support)  # type: ignore[arg-type]
-    assert ConditionalPlan(minimum_effect="x", min_support=None).payload() == {
+            ConditionalPlan(minimum_effect="x", min_support=support, validate_cells=False)  # type: ignore[arg-type]
+    for validate in (None, 1, "yes"):
+        with pytest.raises(ValueError, match="validate_cells"):
+            ConditionalPlan(minimum_effect="x", min_support=5, validate_cells=validate)  # type: ignore[arg-type]
+    # a registration-only plan's payload is exactly what it was before per-cell validation
+    assert ConditionalPlan(
+        minimum_effect="x", min_support=None, validate_cells=False
+    ).payload() == {
         "minimum_effect": "x",
         "min_support": None,
+    }
+    assert ConditionalPlan(minimum_effect="x", min_support=None, validate_cells=True).payload() == {
+        "minimum_effect": "x",
+        "min_support": None,
+        "validate_cells": True,
     }
     wiring_default = {f.name: f.default for f in dataclasses.fields(LoopWiring)}["conditional"]
     assert wiring_default is None and fx.wiring().conditional is None
@@ -152,7 +167,9 @@ def test_the_plan_is_fingerprinted_only_when_set() -> None:
     with_plan = loop_fingerprint(_config())
     assert with_plan["conditional"] == PLAN.payload()
     other = loop_fingerprint(
-        _config(ConditionalPlan(minimum_effect=PLAN.minimum_effect, min_support=6))
+        _config(
+            ConditionalPlan(minimum_effect=PLAN.minimum_effect, min_support=6, validate_cells=False)
+        )
     )
     assert other != with_plan
 
@@ -241,7 +258,7 @@ def test_conditional_hypotheses_never_enter_the_lifecycle(planned: Run) -> None:
     assert subjects and not any("_given_" in subject for subject in subjects)
     assert all(
         "_given_" not in str(t.hypothesis.ref) for t in planned.memory.trials
-    )  # no trial of a cell hypothesis ran (per-cell validation is a follow-up)
+    )  # no trial of a cell hypothesis ran (a registration-only plan: validate_cells=False)
     states = {h.transitions[-1].to_state for h in planned.loop.guard.histories}
     assert LifecycleState.FAILED in states  # the errored draft: the lifecycle still works
 
@@ -311,7 +328,7 @@ def test_registering_a_recorded_look_again_on_reopening_adds_nothing(restarted: 
 
 
 def test_reopening_with_another_plan_or_without_one_is_refused(restarted: Path) -> None:
-    other = ConditionalPlan(minimum_effect=PLAN.minimum_effect, min_support=6)
+    other = ConditionalPlan(minimum_effect=PLAN.minimum_effect, min_support=6, validate_cells=False)
     for plan in (other, None):
         with pytest.raises(LoopStateInconsistent, match="conditional"):
             _open(restarted, consumed=ROUNDS, plan=plan)

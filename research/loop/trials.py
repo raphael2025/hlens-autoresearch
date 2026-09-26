@@ -56,9 +56,43 @@ experiment row carries ``conditional``: the registrations (hypothesis, trial ind
 verdict. An errored trial has no matrix, so nothing is registered for it (``conditional: null``).
 The stage declares ``trials = cells × trials this round`` (an upper bound: the runner charges
 ``max(estimate, usage)``), so the conditional trials are charged to the ``LoopBudget`` like every
-other registration. **Per-cell validation is not run** (no gate sees a cell's returns): the
-registrations are the pre-commitment and the honest trial count; validating a cell hypothesis is a
-follow-up.
+other registration. With ``ConditionalPlan.validate_cells=False`` **per-cell validation is not
+run** (no gate sees a cell's returns; ``validation`` = ``PER_CELL_VALIDATION``): the registrations
+are the pre-commitment and the honest trial count.
+
+Per-cell validation (P6, opt-in, 2026-09-26, CODE_COMPLETE / DEBUG_PENDING — decided by Claude
+under Raphael's 2026-09-26 autonomous-decision instruction; no core / contract / Schema change).
+With ``validate_cells=True`` the experiment row's ``validation`` is ``PER_CELL_VALIDATION_RUN``
+and ``ValidationStage`` validates the cells of every completed trial it validates, right after
+the trial's own report, in the same stage (so every cell of every trial of the round is already
+in the family count):
+
+- the cells are exactly the experiment row's registrations (declared state space + unknown cell,
+  in order); a cell whose recorded support is not ``meets_min_support`` (below ``min_support``,
+  or ``min_support=None``) is recorded ``unsupported`` and **never validated** (no gate, no
+  verdict — never a PASS);
+- a supported cell's evidence is the trial's non-flat targets (one re-run of the chosen point per
+  trial, shared by its cells) whose decision time the state stage attributed to that cell — the
+  same causal ``evaluation_time -> state`` attribution the matrix used (the ``state`` stage's
+  ``labels``; nothing is recomputed); a decision time with no attributed state belongs to no cell
+  (counted as ``unattributed_traded``);
+- the gates are the trial report's adapter gates (``G0.backtest_cost_model``, the instrument gate,
+  ``G0.execution_model`` / ``G0.manifest_binding`` when present — computed on the same re-run
+  bars), then ``research.validation.run_in_sample`` (G0 → G3) on the cell's labels, with
+  ``trial_index`` = the cell's registered trial index and ``family_trial_count`` = **the same**
+  count the trial's own report used (every cell already counted: the G3 correction covers them);
+  a cell without a non-flat target is ``G0.data_available`` = ``INCONCLUSIVE``; a non-PASS
+  adapter gate stops there, as in ``PipelineBacktestValidator``;
+- G4 and G5 are **not run** for a cell (recorded ``not_run`` with the reason): its verdict is the
+  G0 – G3 in-sample verdict only. A cell whose trial's validation errored is ``not_run``;
+- the per-cell rows are recorded in the validation report row (``conditional_cells``), hence in
+  the audit and the durable checkpoint. **No cell verdict moves any lifecycle state** and no cell
+  FAIL files a ``FailureRecord``: a cell hypothesis is not a lifecycle subject (it is registered,
+  never advanced), and a PASS on in-sample G0 – G3 alone would need its own G4 robustness and G5
+  sealed-OOS path before it could mean anything — which does not exist for cell hypotheses. The
+  trial's own lifecycle move depends only on the trial's own report, as without the plan;
+- compute: each validated cell is charged one ``compute_seconds_per_validation`` (the estimate
+  counts every supported cell of the round's completed trials; an upper bound).
 
 ``ValidationStage`` — ``PipelineBacktestValidator`` (G0 → G3, then G4 robustness) for every
 completed trial, with a ``ValidationContext`` bound to the trial's run and an ``ExperimentMetadata``
@@ -168,15 +202,17 @@ from research.strategies.validation import (
     binding_mismatches,
 )
 from research.validation import (
+    InSampleInput,
     RobustnessParams,
     SealedOosInput,
     ValidationContext,
     build_report,
     reason_for_gate,
+    run_in_sample,
     run_sealed_oos,
 )
 from research.validation.controls import FixedSides
-from research.validation.gates import flag_gate
+from research.validation.gates import flag_gate, inconclusive_gate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT, sealed_oos_without_result
 from research.validation.sealed_oos import (
     DurableUnsealingLedger,
@@ -188,7 +224,11 @@ from research.validation.sealed_oos import (
 
 __all__ = [
     "EPHEMERAL_UNSEAL_MARK",
+    "CELL_G4_NOT_RUN",
+    "CELL_G5_NOT_RUN",
+    "CELL_LIFECYCLE",
     "PER_CELL_VALIDATION",
+    "PER_CELL_VALIDATION_RUN",
     "ConditionalPlan",
     "ExperimentStage",
     "OosUnsealBudget",
@@ -235,6 +275,28 @@ class TrialComponents:
 
 #: What the loop records about the validation of a registered cell hypothesis (module docs).
 PER_CELL_VALIDATION: Final = "not_run: registration only (per-cell validation is a follow-up)"
+#: ... with ``ConditionalPlan.validate_cells=True`` (module docs, **Per-cell validation**).
+PER_CELL_VALIDATION_RUN: Final = (
+    "in_sample_g0_g3: supported cells validated by the validation stage (conditional_cells); "
+    "G4 / G5 not run"
+)
+#: Why a cell's G4 / G5 are not run, and why its verdict moves nothing (module docs).
+CELL_G4_NOT_RUN: Final = "not_run: per-cell validation is in-sample G0 - G3 only"
+CELL_G5_NOT_RUN: Final = "not_run: a cell hypothesis has no sealed OOS path"
+CELL_LIFECYCLE: Final = (
+    "unchanged: a cell hypothesis is not a lifecycle subject; a G0 - G3 verdict alone would need "
+    "its own G4 / G5 path"
+)
+#: The trial report's adapter gates a cell report repeats (``PipelineBacktestValidator``).
+_ADAPTER_GATES: Final = frozenset(
+    {
+        "G0.backtest_cost_model",
+        "G0.single_instrument_adapter",
+        "G0.instrument_scope",
+        "G0.execution_model",
+        "G0.manifest_binding",
+    }
+)
 _LABEL: Final = re.compile(r"[a-z0-9_]+")
 
 
@@ -242,15 +304,20 @@ _LABEL: Final = re.compile(r"[a-z0-9_]+")
 class ConditionalPlan:
     """Opt-in: register every cell of each trial's State × Strategy matrix (module docs).
 
-    Both fields are required (no defaults): ``minimum_effect`` is the conditioning hypotheses'
+    Every field is required (no defaults): ``minimum_effect`` is the conditioning hypotheses'
     declared minimum meaningful effect (non-blank text); ``min_support`` is the per-cell sample
     support threshold the stage summary reports against (a positive int, or an explicit ``None``:
-    no threshold stated, every cell reported ``no_support_threshold``). ``min_support`` only
-    labels the report — it is not a Validation Profile number and gates nothing.
+    no threshold stated, every cell reported ``no_support_threshold``). ``min_support`` is not a
+    Validation Profile number and loosens no gate: it only decides which cells are *eligible* for
+    per-cell validation (a cell below it — every cell when it is ``None`` — is never validated).
+    ``validate_cells`` (a ``bool``): ``False`` registers the cells only (as before per-cell
+    validation existed); ``True`` also runs the in-sample G0 – G3 gates on every supported cell
+    (module docs, **Per-cell validation**).
     """
 
     minimum_effect: str
     min_support: int | None
+    validate_cells: bool
 
     def __post_init__(self) -> None:
         if not isinstance(self.minimum_effect, str) or not self.minimum_effect.strip():
@@ -260,10 +327,22 @@ class ConditionalPlan:
             isinstance(support, bool) or not isinstance(support, int) or support < 1
         ):
             raise ValueError("min_support must be a positive int, or None when none is stated")
+        if not isinstance(self.validate_cells, bool):
+            raise ValueError("validate_cells must be a bool")
 
     def payload(self) -> dict[str, Any]:
-        """The plan as fingerprinted and recorded."""
-        return {"minimum_effect": self.minimum_effect, "min_support": self.min_support}
+        """The plan as fingerprinted and recorded.
+
+        ``validate_cells`` appears only when ``True``: a registration-only plan's payload (hence
+        its fingerprint and every record) is exactly what it was before per-cell validation, and
+        the two settings still fingerprint differently (a state directory is bound to one)."""
+        payload: dict[str, Any] = {
+            "minimum_effect": self.minimum_effect,
+            "min_support": self.min_support,
+        }
+        if self.validate_cells:
+            payload["validate_cells"] = True
+        return payload
 
 
 @dataclass(frozen=True)
@@ -640,7 +719,7 @@ class ExperimentStage:
                 }
                 for cell in registration.cells
             ],
-            "validation": PER_CELL_VALIDATION,
+            "validation": PER_CELL_VALIDATION_RUN if plan.validate_cells else PER_CELL_VALIDATION,
         }
 
     # ------------------------------------------------------------------------------------------
@@ -901,33 +980,53 @@ class ValidationStage:
         compute_seconds_per_validation: Decimal,
         oos_unseal: OosUnsealBudget | None = None,
         sealed_decision_step: timedelta | None = None,
+        conditional: ConditionalPlan | None = None,
     ) -> None:
         if (oos_unseal is None) != (sealed_decision_step is None):
             raise ValueError("an unseal budget needs a sealed decision step and vice versa")
+        if conditional is not None and not isinstance(conditional, ConditionalPlan):
+            raise ValueError("conditional must be a ConditionalPlan (or None)")
         require_durable_unsealing(oos_unseal, memory.oos_ledger)
         self._memory = memory
         self._c = components
         self._per = compute_seconds_per_validation
         self._unseal = oos_unseal
         self._sealed_step = sealed_decision_step
+        #: per-cell validation only with an explicit ``validate_cells=True`` plan (module docs)
+        self._cells = conditional is not None and conditional.validate_cells
+        self._cells_validated = 0
 
     @staticmethod
     def _completed(ctx: RoundContext) -> tuple[TrialOutcome, ...]:
         outcomes: tuple[TrialOutcome, ...] = ctx.artifact("experiment", "outcomes")
         return tuple(o for o in outcomes if o.completed)
 
+    def _supported_cells(self, ctx: RoundContext) -> int:
+        """Cells this round can validate: every supported cell of a completed trial."""
+        if not self._cells:
+            return 0
+        return sum(
+            1
+            for o in self._completed(ctx)
+            for cell in (o.summary.get("conditional") or {}).get("cells", ())
+            if cell["supported"]
+        )
+
     def estimate(self, ctx: RoundContext) -> StageUsage:
-        return StageUsage(compute_seconds=self._per * len(self._completed(ctx)))
+        validations = len(self._completed(ctx)) + self._supported_cells(ctx)
+        return StageUsage(compute_seconds=self._per * validations)
 
     def run(self, ctx: RoundContext) -> StageResult:
         results: list[ValidationOutcome] = []
+        self._cells_validated = 0
         try:
             for outcome in self._completed(ctx):
                 results.append(self._validate(ctx, outcome))
         except Exception as exc:
+            spent = len(results) + 1 + (self._supported_cells(ctx) if self._cells else 0)
             raise StageFailed(
                 f"{type(exc).__name__}: {exc}",
-                usage=StageUsage(compute_seconds=self._per * (len(results) + 1)),
+                usage=StageUsage(compute_seconds=self._per * spent),
             ) from exc
         self._memory.validations.extend(results)
         summary = {
@@ -940,7 +1039,7 @@ class ValidationStage:
             summary["unseal_ledger"] = EPHEMERAL_UNSEAL_MARK
         return StageResult(
             summary,
-            StageUsage(compute_seconds=self._per * len(results)),
+            StageUsage(compute_seconds=self._per * (len(results) + self._cells_validated)),
             {"validations": tuple(results)},
         )
 
@@ -1014,6 +1113,10 @@ class ValidationStage:
         except Exception as exc:  # noqa: BLE001 - a validator error is a FAILED trial, recorded
             error = f"{type(exc).__name__}: {exc}"
             summary = {**base, "verdict": None, "error": error[:500]}
+            if self._validates_cells(outcome):
+                summary["conditional_cells"] = self._cells_block(
+                    ctx, outcome, context, setup, labels, None
+                )
             return ValidationOutcome(
                 ctx.round_index, outcome, None, None, None, {"status": "not_run"}, summary, error
             )
@@ -1041,6 +1144,10 @@ class ValidationStage:
                 "gates": [] if sealed_report is None else _gates(sealed_report),
             },
         }
+        if self._validates_cells(outcome):  # the key exists only then (records unchanged)
+            summary["conditional_cells"] = self._cells_block(
+                ctx, outcome, context, setup, labels, report
+            )
         return ValidationOutcome(
             ctx.round_index,
             outcome,
@@ -1050,6 +1157,192 @@ class ValidationStage:
             sealed_status,
             summary,
         )
+
+    # ------------------------------------------------------------------ per-cell validation
+
+    def _validates_cells(self, outcome: TrialOutcome) -> bool:
+        """Only with a ``validate_cells=True`` plan and a trial that registered cells."""
+        return self._cells and bool(outcome.summary.get("conditional"))
+
+    def _cells_block(
+        self,
+        ctx: RoundContext,
+        outcome: TrialOutcome,
+        context: ValidationContext,
+        setup: ValidatorSetup,
+        labels: Mapping[datetime, str | None],
+        report: ValidationReport | None,
+    ) -> dict[str, Any]:
+        """The ``conditional_cells`` row of one trial (module docs, **Per-cell validation**)."""
+        conditional: Mapping[str, Any] = outcome.summary["conditional"]
+        attempt = conditional["attempt"]
+        ledger = self._memory.ledger
+        hypotheses = {str(h.ref): h for h in ledger.hypotheses}
+        cells: Sequence[Mapping[str, Any]] = conditional["cells"]
+        registered: list[Hypothesis] = []
+        for cell in cells:  # exactly the recorded registrations, or the stage fails
+            hypothesis = hypotheses.get(cell["hypothesis"])
+            if (
+                attempt != outcome.attempt
+                or hypothesis is None
+                or not ledger.is_registered(hypothesis, attempt)
+                or ledger.trial_index(hypothesis, attempt) != cell["trial_index"]
+            ):
+                raise ValueError(
+                    f"cell {cell['hypothesis']} ({attempt}) is not in the trial ledger as recorded"
+                )
+            registered.append(hypothesis)
+        block: dict[str, Any] = {
+            "scope": "in-sample G0 - G3 per supported cell; G4 / G5 not run",
+            "family_trial_count": context.metadata.family_trial_count,
+            "g4": CELL_G4_NOT_RUN,
+            "g5": CELL_G5_NOT_RUN,
+            "lifecycle": CELL_LIFECYCLE,
+        }
+        rows = [
+            {
+                "state": cell["state"],
+                "hypothesis": cell["hypothesis"],
+                "trial_index": cell["trial_index"],
+                "count": cell["count"],
+                "support": cell["support"],
+            }
+            for cell in cells
+        ]
+        supported = [i for i, cell in enumerate(cells) if cell["supported"]]
+        for index, cell in enumerate(cells):
+            if not cell["supported"]:
+                rows[index].update(status="unsupported", reason=cell["support"], verdict=None)
+        if report is None:
+            for index in supported:
+                rows[index].update(
+                    status="not_run", reason="the trial's validation errored", verdict=None
+                )
+            return {**block, "rerun_result_hash": None, "cells": rows}
+        adapter = tuple(g for g in report.gates if g.gate_id in _ADAPTER_GATES)
+        rerun: TrialRun | None = None
+        if supported:
+            try:
+                rerun = setup.trials.run(dict(outcome.request_params))
+            except Exception as exc:  # noqa: BLE001 - recorded per cell, never a PASS
+                error = f"{type(exc).__name__}: {exc}"[:500]
+                for index in supported:
+                    rows[index].update(status="error", error=error, verdict=None)
+                return {**block, "rerun_result_hash": None, "cells": rows}
+        traded = () if rerun is None else tuple(t for t in rerun.targets if _side(t.target_weight))
+        block["rerun_result_hash"] = None if rerun is None else rerun.backtest.result_hash
+        block["unattributed_traded"] = (
+            None if rerun is None else sum(1 for t in traded if t.decision_time not in labels)
+        )
+        for index in supported:
+            assert rerun is not None
+            state = cells[index]["state"]
+            mine = tuple(
+                t for t in traded if t.decision_time in labels and labels[t.decision_time] == state
+            )
+            rows[index]["traded_decisions"] = len(mine)
+            try:
+                cell_report = self._cell_report(
+                    ctx, outcome, context, setup, registered[index], adapter, rerun, mine
+                )
+            except Exception as exc:  # noqa: BLE001 - recorded per cell, never a PASS
+                rows[index].update(
+                    status="error", error=f"{type(exc).__name__}: {exc}"[:500], verdict=None
+                )
+                continue
+            self._cells_validated += 1
+            rows[index].update(
+                status="validated",
+                report_id=cell_report.report_id,
+                report_hash=cell_report.content_hash(),
+                verdict=cell_report.verdict.value,
+                stopped_at=next(
+                    (g.gate_id for g in cell_report.gates if g.verdict is Verdict.FAIL), None
+                ),
+                gates=_gates(cell_report),
+            )
+        return {**block, "cells": rows}
+
+    def _cell_report(
+        self,
+        ctx: RoundContext,
+        outcome: TrialOutcome,
+        context: ValidationContext,
+        setup: ValidatorSetup,
+        cell: Hypothesis,
+        adapter: tuple[GateResult, ...],
+        rerun: TrialRun,
+        traded: tuple[TargetPosition, ...],
+    ) -> ValidationReport:
+        """G0 – G3 of one supported cell under the trial's family count (module docs)."""
+        trial = outcome.trial
+        assert trial is not None and outcome.candidate is not None
+        metadata = ExperimentMetadata.model_validate(
+            {
+                **context.metadata.model_dump(),
+                "trial_index": self._memory.ledger.trial_index(cell, outcome.attempt),
+            }
+        )
+        cell_context = replace(
+            context,
+            report_id=content_hash(
+                {"run": outcome.run.run_id, "stage": "in_sample", "cell": str(cell.ref)}
+            ),
+            metadata=metadata,
+            created_at=ctx.as_of,
+        )
+        if not adapter:  # the trial's report always opens with them: fail closed
+            raise ValueError("the trial's report carries no adapter gate")
+        if any(gate.verdict is not Verdict.PASS for gate in adapter):
+            return build_report(cell_context, adapter)
+        if not traded:
+            gate = inconclusive_gate("G0.data_available", "non_flat_targets", 0.0)
+            return build_report(cell_context, (*adapter, gate))
+        bars = tuple(
+            OutcomePriceBar(
+                interval_start=bar.interval_start,
+                interval_end=bar.interval_end,
+                available_time=bar.available_time,
+                open=bar.open,
+                high=bar.high,
+                low=bar.low,
+                close=bar.close,
+            )
+            for bar in sorted(rerun.bars, key=lambda item: item.interval_start)
+            if bar.instrument == setup.instrument
+        )
+        table = materialize(
+            self._c.outcome_provider,
+            OutcomeRequest(
+                label_spec=context.label_spec,
+                manifest_content_hash=setup.manifest_content_hash,
+                price_cutoff=max(bar.available_time for bar in bars),
+                events=tuple(
+                    OutcomeEvent(event_key=_event_key(t), event_time=t.decision_time)
+                    for t in traded
+                ),
+                bars=bars,
+            ),
+        )
+        seed = int(
+            content_hash({"validation_seed": outcome.validation_seed, "cell": str(cell.ref)})[:8],
+            16,
+        )
+        gates = run_in_sample(
+            InSampleInput(
+                context=cell_context,
+                outcomes=table,
+                study=FixedSides(
+                    refs=tuple(outcome.candidate.spec.signals),
+                    by_event={_event_key(t): _side(t.target_weight) for t in traded},
+                ),
+                seed=seed,
+                reproduce=lambda: rerun.backtest.result_hash,
+                recorded_result_hash=trial.backtest.result_hash,
+                control_seeds=setup.control_seeds,
+            )
+        )
+        return build_report(cell_context, (*adapter, *gates))
 
     def _sealed_oos(
         self,

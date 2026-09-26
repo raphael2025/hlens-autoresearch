@@ -172,9 +172,10 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 
 决策：Claude，依据 Raphael 2026-09-26 的自主决策指示（非红线事项；无 core / 契约 / Schema 变更，无 Profile 数字或阈值，无门放宽）。
 
-**显式 opt-in**：`LoopWiring.conditional: ConditionalPlan | None = None`（`research/loop/trials.py`）。`ConditionalPlan(minimum_effect, min_support)`
-两个字段都必填、无默认值（缺省即 `TypeError`）：`minimum_effect` 为非空文本（条件化假设声明的最小有意义效应）；`min_support` 为正整数，
-或显式 `None`（未声明阈值 → 每个单元 `no_support_threshold`）。`min_support` 只标注报告，不是 Validation Profile 数字，不参与任何门。
+**显式 opt-in**：`LoopWiring.conditional: ConditionalPlan | None = None`（`research/loop/trials.py`）。`ConditionalPlan(minimum_effect, min_support, validate_cells)`
+三个字段都必填、无默认值（缺省即 `TypeError`）：`minimum_effect` 为非空文本（条件化假设声明的最小有意义效应）；`min_support` 为正整数，
+或显式 `None`（未声明阈值 → 每个单元 `no_support_threshold`）。`min_support` 不是 Validation Profile 数字，不放宽任何门：它标注报告，并决定哪些单元
+**有资格**做逐单元验证（见下「逐单元验证」）；`validate_cells` 为 `bool`。
 
 - **`None`（默认）**：什么都不发生；记录、指纹与结果与没有该字段时逐字节相同（`test_loop_e2e.py::test_records_without_a_conditional_plan_are_pinned`
   钉住 1fb7918 的默认 planted 三轮记录哈希与配置指纹）。指纹只在设置时多出 `conditional` 键。
@@ -184,7 +185,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   父假设的重新评估（attempt `loop_round:<loop>:<round>`）→ 每个单元以同一 attempt `register_reevaluation` 一次。全部或全不登记；同一观察再登记不增加 trial。
 - 这些 trial 进入**同一族**的 trial 数：验证阶段交给 G3 的 `family_trial_count` 从本轮起就包含它们（多重检验校正更严格）。
 - 实验行 `conditional`：父假设、attempt、族、状态、计划参数、`matrix_hash`、`newly_registered`、`family_trials`、逐单元（假设 ref、`trial_index`、样本数、
-  `supported` / `support` = `meets_min_support` / `below_min_support` / `no_support_threshold`）与 `validation: PER_CELL_VALIDATION`（未运行）。
+  `supported` / `support` = `meets_min_support` / `below_min_support` / `no_support_threshold`）与 `validation: PER_CELL_VALIDATION`（`validate_cells=False`：未运行）或 `PER_CELL_VALIDATION_RUN`（`True`：见下）。
   出错的试验没有矩阵 → `conditional: null`、不登记。条件化假设不进入生命周期，也不会被重新评估或进化。
 - **预算**：实验阶段声明 `trials = 单元数 × 本轮试验数`（上界；运行器按 max(声明, 实际) 计费），条件化 trial 与其他登记一样计入 `LoopBudget`
   （P11：不得无限扩大 trial 预算）。启用时需要相应更大的 trial 预算，否则实验阶段 `REFUSED_BUDGET`。
@@ -192,5 +193,24 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   对已记录的观察再次登记为幂等（0 个新 trial、账本不追加）；交叉校验 6 追加：实验行登记的每个单元必须在账本中（按其 attempt）。
   计划写入指纹：以其他计划或去掉计划重开同一目录被拒。
 
-**未做（后续）**：逐单元验证（没有任何门看单元收益；登记 = 预先承诺 + 诚实的 trial 计数）；单元假设的生命周期；数据集组合的端到端测试（代码路径共用 `compose_loop`，
-指纹共用 `settings_fingerprint`）。测试：`tests/research/loop/test_loop_conditional.py`、`tests/research/experiments/test_trial_conditionals.py`。
+### 逐单元验证（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+决策：Claude，依据同一自主决策指示（无 core / 契约 / Schema 变更，无 Profile 数字或阈值，无门放宽）。`ConditionalPlan` 新增**必填** `validate_cells: bool`
+（无默认值）：`False` = 上文的只登记行为（载荷、指纹与记录与此前逐字节相同，实验行 `validation: PER_CELL_VALIDATION`）；`True` = 另外做逐单元样本内验证
+（载荷多出 `validate_cells: true`，因此两种设置的状态目录互相拒绝；实验行 `validation: PER_CELL_VALIDATION_RUN`）。
+
+- **位置**：`ValidationStage`，紧接每个已完成试验自身的报告（同一阶段、同一 `family_trial_count`——本轮全部单元此时都已登记，G3 校正覆盖它们）。
+- **只验证有支持的单元**：实验行记录的 `support` 为 `meets_min_support` 的单元；低于 `min_support` 或 `min_support=None` → `status: unsupported`、无门、无判定，永不 PASS。
+- **证据**：每个试验重跑一次所选参数点（该试验的全部单元共用），取非零目标中决策时刻被状态阶段归到该单元的那部分——即矩阵所用的同一个因果
+  `evaluation_time → state` 归属（`state` 阶段的 `labels`，不重新计算状态）；无归属状态的决策时刻不属于任何单元（`unattributed_traded` 计数）。
+- **门**：试验报告中的适配门（`G0.backtest_cost_model`、单品种门、存在时的 `G0.execution_model` / `G0.manifest_binding`，同一重跑 bar），然后
+  `research.validation.run_in_sample`（G0 → G3）作用于该单元的标签；`trial_index` = 单元登记的 trial 序号。适配门非 PASS 即停；没有非零目标 → `G0.data_available` INCONCLUSIVE。
+  **G4 / G5 不运行**（`CELL_G4_NOT_RUN` / `CELL_G5_NOT_RUN`），单元判定只是 G0 – G3 样本内判定；试验自身验证出错 → 单元 `not_run`。
+- **记录**：验证报告行的 `conditional_cells`（范围、`family_trial_count`、`rerun_result_hash`、逐单元状态 / 报告 id 与哈希 / 判定 / 门），随审计与持久检查点保存；
+  交叉校验 6 追加：验证行里的每个单元都必须在账本中（按其 attempt）。
+- **不移动生命周期**（`CELL_LIFECYCLE`）：单元假设不是生命周期主体；仅凭样本内 G0 – G3 的 PASS 还需要它自己的 G4 稳健性与 G5 封存 OOS 路径，而单元假设没有这条路径。
+  单元 FAIL 也不写 FailureRecord（结果在审计中）。试验自身的生命周期只由它自己的报告决定，与没有计划时相同。
+- **预算**：每个被验证的单元按一次 `validation_compute_seconds` 计费（声明 = 本轮已完成试验的全部有支持单元，上界）；不增加任何 trial。
+
+**未做（后续）**：单元假设的生命周期（G4 / G5 路径）；数据集组合的端到端测试（代码路径共用 `compose_loop`，指纹共用 `settings_fingerprint`）。
+测试：`tests/research/loop/test_loop_conditional.py`、`tests/research/loop/test_loop_cell_validation.py`、`tests/research/experiments/test_trial_conditionals.py`。

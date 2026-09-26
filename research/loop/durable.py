@@ -59,7 +59,8 @@ round's record **before** the audit records it. The checkpoint line holds
    from its parent;
 6. audit ↔ ledgers: every hypothesis the audit registered or re-evaluated is in the trial ledger
    (the re-evaluation under its attempt), and so is every conditional cell hypothesis an
-   experiment row registered (opt-in ``ConditionalPlan``; under the row's attempt); every
+   experiment row registered (opt-in ``ConditionalPlan``; under the row's attempt) or a
+   validation row validated (``conditional_cells``, ``validate_cells=True``); every
    offspring's child and parent spec is in the lineage
    with the recorded spec hash; every ``human_review:<who>`` evidence has that human's approval of
    that draft in the review queue, taken; every unsealed / consumed sealed-OOS report has the
@@ -1218,6 +1219,9 @@ def _check_ledgers(memory: ResearchMemory, records: Sequence[LoopRecord]) -> Non
                 registered(cell["hypothesis"], conditional["attempt"], index)
         stage = _summary(record, "validation")
         for row in [] if stage is None else stage["reports"]:
+            cells = row.get("conditional_cells")  # opt-in validate_cells rows only
+            for cell in [] if not cells else cells["cells"]:
+                registered(cell["hypothesis"], row["attempt"], index)
             sealed = row.get("sealed_oos") or {}
             if sealed.get("status") not in _UNSEALED:
                 continue

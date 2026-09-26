@@ -33,7 +33,9 @@ registers the same declared cells, keyed by the hypothesis whose trial produced 
 (``trial_conditional_hypotheses``), in that hypothesis's family, one trial per cell and look —
 the parent's first trial registers the cells, a re-evaluation (``attempt``) registers one
 re-evaluation of every cell under the same key. Used by ``research/loop`` only with an explicit
-``ConditionalPlan``. Per-cell validation is not done here or there (a follow-up).
+``ConditionalPlan``. Per-cell validation is not done here: the loop's ``ValidationStage`` runs
+in-sample G0 – G3 on each supported cell only when the plan says ``validate_cells=True``
+(``research.loop.trials``, **Per-cell validation**).
 """
 
 from __future__ import annotations

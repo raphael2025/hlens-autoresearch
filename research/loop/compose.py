@@ -184,7 +184,9 @@ class LoopWiring:
     #: ``None`` (the default): no conditional hypothesis is formed and every record, fingerprint
     #: and outcome is byte-identical to a loop without this field. A ``ConditionalPlan``: every
     #: cell of each trial's State × Strategy matrix is pre-registered as a trial of the trial's
-    #: family (``research.loop.trials``, **Conditional hypotheses**); fingerprinted.
+    #: family (``research.loop.trials``, **Conditional hypotheses**); fingerprinted. With
+    #: ``validate_cells=True`` the validation stage also runs in-sample G0 – G3 on every supported
+    #: cell (**Per-cell validation**; no lifecycle move).
     conditional: ConditionalPlan | None = None
 
 
@@ -382,6 +384,7 @@ def compose_loop(
             compute_seconds_per_validation=config.validation_compute_seconds,
             oos_unseal=wiring.oos_unseal,
             sealed_decision_step=wiring.sealed_decision_step,
+            conditional=wiring.conditional,
         ),
         MemoryStage(memory),
     )
