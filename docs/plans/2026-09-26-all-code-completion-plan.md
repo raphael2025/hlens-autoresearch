@@ -633,3 +633,15 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 集成修正：B49 的替换作业调用 `check_report`，F4 后必须传 `profiles` → `propose_replacements` 增加必填 `profiles`，新增 `profile_not_found` / `market_benchmark_missing` 拒绝测试。ADR-0005 与 `research/README.md` 的库策略拒绝说明同步。
 - 实际运行：子代理在其基线（`820d771`）上全量非 PG → 6785 passed, 136 deselected (3091 s)；本分支集成后 `pytest -m "not postgres" tests/research/evolution tests/research/router tests/promotion tests/apps tests/research/reports` + 边界 + 文档一致性 → 624 passed；ruff / format / mypy（586 files）通过。本分支全量门禁见后续批次。
 - 遗留：Profile 的 `status` 不在其内容哈希内，Promotion 信任调用方给出的对象上的状态（需 Profile 注册表才是真正权威）；路由证据模式不要求 FROZEN；两者都不要求 `inverse_control_reported` 时的 `G2.inverse_control`；控制台对新拒绝码与证据不足的显示由 web 通道处理。
+
+**B52 — 控制台显示新拒绝码 / 证据不足；Phase 9 中等规模证据；`-m` CLI 缺陷（`a586406` / `5650358` 的 cherry-pick → `b1a3e08` / `dd6c8e1`；修复 `93477c6`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 全量门禁（本批之前的 HEAD `1cd3284`，含 B44～B51）：`uv run pytest -q -m "not postgres" -p no:cacheprovider`（6 GB 上限）→ **6889 passed, 136 deselected, 1 warning in 3036.72s (0:50:36)，退出码 0**。
+- Web：`routerEligibility.ts` 为 `profile_not_found` / `market_benchmark_missing` 提供文案；G5 状态按拒绝码含义推断（不再假定 G5 是最后一项检查；未知码显示"未知"）。`degradationCheck.ts` 的 `checkStatus`：`insufficient_evidence: true`（或所有指标缺失的旧文件）显示 `INSUFFICIENT EVIDENCE` 与独立提示，绝不显示为 ok；非法组合（键不为 true、或与 `degraded: true` 同时出现）拒绝解析。
+  新 fixture `degradation_check/50f53688…`（真实 writer 经提交的生成器产生，变体机制 `VARIANT_WRITERS` / `VARIANTS`；既有 fixture 全部未变）；新组件测试 `DegradationChecks.test.tsx` / `RouterStops.test.tsx`。
+- Phase 9 证据（仅证据，不提阈值；`docs/research/calibration/`，驱动 `tests/research/synthetic_lab/evidence_setups.py`，TEST ONLY lax / strict Profile，95% Clopper-Pearson）：
+  单标的（G5 开，每臂 250 种子，4320 根 1 分钟 bar）：lax 噪声 PASS 1/250 [0.000, 0.022]（G0–G5 0/250）；强度 0.2 检出 13/250 = 0.052 [0.028, 0.087]；强度 0.5 检出 125/250 = 0.500 [0.436, 0.564]；strict 各臂 0/250。
+  双标的（每臂 200 种子）：lax all_noise 0/200、all_planted 51/200 = 0.255 [0.196, 0.321]、mixed 0/200；strict 各臂 0/200；池化 G1 负对照失败率 lax shuffle 0.060 / 0.090 / 0.060、shift 0.045 / 0.100 / 0.080。
+  这些数字只描述 TEST ONLY 夹具在简单生成器上的行为，不据此选择阈值或 Profile。800 / 400 种子的尝试超时被停止，未写报告。
+- 通道发现的缺陷：`python -m research.synthetic_lab.gate_calibration` 拒绝一切 setup（`-m` 以 `__main__` 执行第二份模块，setup 类不同）。修复：`__main__` 块转调包内模块的 `main`；新子进程测试修复前失败、修复后通过。
+- 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/synthetic_lab tests/apps tests/research/reports` + 边界 + 文档一致性 → 584 passed, 1 warning (140 s)；`npm test` → lib 80 / 80、组件 105 / 105；`npm run build` ✓；ruff / format（746 files）/ mypy（588 files）通过。
