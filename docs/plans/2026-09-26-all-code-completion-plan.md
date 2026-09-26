@@ -574,3 +574,11 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   `apps/web/scripts/live-smoke.mjs`（`npm run smoke:live`）：用已安装 esbuild 打包控制台自身的 `api.ts`、`src/lib` 与 14 个页面，对两个活服务器逐页服务端渲染，要求无加载残留 / 无错误态 / 无原始 JSON 回退。
 - 不证明：真实浏览器（像素、布局、ECharts 绘制、交互、vite 代理）——手工浏览器验收仍未做（本机无浏览器）；502 与 500（篡改日志）仍只在进程内 TestClient 覆盖。
 - 实际运行：子代理 `pytest -m "not postgres" tests/apps` → 278 passed；`npm test` → 55 / 55 + 96 / 96；build ✓；本分支集成后 `pytest tests/apps/test_live_backend_smoke.py tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → 20 passed；ruff / mypy（19 files）通过。
+
+**B45 — Phase 9：校准不再吞掉配置错误（审计 A 发现 3；`20b6301` 的 cherry-pick）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 缺陷：`calibrate()` / 单标的 / 多标的 / G5 的 `except Exception` 也吞掉 `ProfileFieldMissing`、`UnsupportedMethod` 等配置错误，缺字段的候选 Profile 会得到全 INCONCLUSIVE、噪声假阳性率 0/n（偏乐观的证据），与 B1 "配置错误仍抛出"的承诺不符。
+- 修复：沿用流水线自身分类——`PROPAGATED_ERRORS = (ValueError, TypeError, MemoryError)`（与 `research/validation/g4.py` 一致，漂移测试固定），原样重新抛出（附臂 / 种子 / 候选说明）；真正的运行时失败仍记 INCONCLUSIVE + `detector_error`；
+  有检测器错误的臂新增 `pass_rate_bounds: [passed/n, (passed+errors)/n]`（向外取整到 6 位；无错误时不出现，既有报告哈希不变）。唯一重新固定的哈希 `PRE_G5_RAISING_HASH`（`e31fc17f…` → `03fcfad6…`）是唯一含检测器错误的报告，去掉新键即复现旧哈希。
+- 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/synthetic_lab` → 79 passed, 1 warning (120 s)；`ruff check .` → 通过；`mypy research/synthetic_lab tests/research/synthetic_lab` → no issues in 10 files。
+- 遗留：G5 逐臂证据（`SealedArmEvidence`）尚无同样的区间字段。
