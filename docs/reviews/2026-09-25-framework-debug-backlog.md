@@ -83,7 +83,12 @@
   ~~最后一轮之后未被取用的人工审批不被检查点或锚点引用~~ ✅ 已修（2026-09-26）：每次轮间审批立即写一条 `between_rounds` 检查点并移动锚点
   （`StateHead.memory_seq`），轮中审批被拒；重新打开时每条审批都须有检查点指向、审阅日志不早于锚点，否则拒绝（ADR-0049 实施说明
   approvals between rounds）。剩余限制：无锚点时审批连同其检查点一起删去 = "尚未审批"；遵循格式写目录的人可追加带检查点的审批（需认证审批通道）。
-  仍未做：审计记录与记忆检查点尚不是版本化契约（ADR-0050 进行中）；持久组合只有合成市场组合根。
+  ~~持久组合只有合成市场组合根~~ ✅ 已补（2026-09-26）：数据集组合根 `research/loop/dataset_compose.py`（`build_dataset_loop` /
+  `open_dataset_loop`）以 `DatasetIngestStage` 为轮次数据源——每轮只经验证型 `ManifestStore` 读取声明的特征 / 价格 manifest 对（`pair_manifests`、
+  `backtest_bars_from_dataset`、`feature_request_from_dataset`），视图晚于本轮 `as_of` 或窗口越出研究窗口即拒绝，可选封存 manifest 的 bar 被扣留；
+  每份报告运行 `G0.manifest_binding`；与合成组合共用同一组阶段、预算、护栏、审计、持久目录与自动总线（`compose_loop` / `compose_durable`；
+  摄取之后的阶段只经 `segment.RoundData` 读数据，合成记录哈希逐字节不变）（ADR-0049 实施说明 dataset-backed loop；见 E 节 E8）。
+  仍未做：审计记录与记忆检查点尚不是版本化契约（ADR-0050 进行中）；数据集轮次上的 G5（需要封存窗口的特征 manifest）。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：
   `tests/infrastructure/bars/test_dataset_bars_postgres.py` / `test_manifest_pair_postgres.py`，与 SQLite 侧同一套测试函数对象、
@@ -95,7 +100,7 @@
 1. 在最新 HEAD 上跑严格门禁（ruff / format / mypy / `uv lock --check` / 全量 pytest），修复任何失败。
 2. 逐 Phase 跑端到端冒烟：合成市场 → 特征 → 状态 → 事件 → Outcome → 策略 → 回测 → 验证（G0–G4）→ 矩阵 → 路由 → 循环 → 模拟执行。
 3. 处理 C 节缺口中不需要 Raphael 决定的部分；B 节等 Raphael 决定。
-4. 在小规模真实数据集（≤ 2 万行）上重复第 2 步，只作能力验证，不形成任何市场结论（Profile 数值未冻结）。
+4. 在小规模真实数据集（≤ 2 万行）上重复第 2 步，只作能力验证，不形成任何市场结论（Profile 数值未冻结）。（真实格式夹具上：单链见 E 节；循环见 E8。）
 
 ## E. 真实数据冒烟发现（Real-data smoke findings）
 
@@ -112,3 +117,4 @@
 | E5 | 中 | `research/strategies/validation.py`（`ValidatorSetup.manifest_content_hash`） | 验证器构造 `OutcomeRequest` 时 manifest 哈希由调用方给出、按信任接受，并未证明试验 bar 就是该 manifest 的 bar；`BacktestRequest` 也没有 manifest 槽位（只在 `DatasetPriceBars` 旁路记录） | ✅ 已修：`ValidatorSetup.dataset_bars: DatasetPriceBars` 给出时新增适配器门 `G0.manifest_binding`（哈希一致、每根重跑 bar 属于包装、标的有 bar、不晚于 `price_cutoff`），不符判 FAIL（G0 → REJECTED / CONTRACT_VIOLATION）；`None` = 合成路径，视图标注 `synthetic_unverified`；冒烟传入 `DatasetPriceBars`；回归测试 `test_a_mismatched_manifest_hash_is_refused_at_g0`、`test_a_matching_manifest_passes_the_g0_binding_and_changes_nothing_else`、`test_bars_outside_the_manifest_are_refused`、`test_the_synthetic_path_is_labelled_unverified`（ADR-0041 Implementation note E4/E5） |
 | E6 | 低 | `research/validation/stats.py`（`overlap-clusters`） | 每分钟决策 + 15 分钟标签窗口使全部标签连成一个重叠簇，有效样本数 = 1（G2 INCONCLUSIVE）。这是保守方法的正确结果，但意味着"持续持仓"类策略需要稀疏的决策节奏才能得到有效样本 | 研究设计问题（决策节奏 vs 标签窗口），非代码缺陷；记录 |
 | E7 | 低 | `infrastructure/strategy/signals.py` | `signals_from_features` 给所有信号同一个 `knowledge_time`（调用方给出的单值），知识轴因此很粗；可见性只按 `available_time`，不影响因果 | 记录；需要逐值知识时间时再扩展 |
+| E8 | 中 | `research/loop/dataset_source.py`、`dataset_compose.py`（P11 × 数据集） | 循环只有合成市场数据源，没有经验证数据集的组合根；真实格式数据上的两轮循环因而无法跑 | ✅ 已补：数据集组合根（见 C 节 P11）；冒烟 `tests/infrastructure/e2e/test_research_loop_real_data.py`（`postgres`；BTCUSDT / ETHUSDT 各 420 根 1m kline 跨两个 UTC 日，第 1 轮越过 TEST ONLY Profile 的封存边界）：两轮完成、审计哈希链、每份报告 `G0.manifest_binding` PASS、无截止之后的数据、59 根封存 bar 被扣留且从不进入研究、新进程重跑记录哈希相同、无 PAPER / ACTIVE。剩余：数据集轮次的 G5 未接线（`OosUnsealBudget` 被拒绝）；每轮 6 – 7 次验证型 manifest 加载（每次重新推导整个构建含质量报告，约 5 s），冒烟约 4 分钟——需要 manifest 验证缓存时再做；manifest 由数据平面预先构建，每轮声明（循环不构建数据集） |

@@ -50,33 +50,30 @@ from decimal import Decimal
 from typing import Any, Final
 
 from apps.worker.loop import RoundContext, StageResult, StageUsage
-from core.contracts.feature import FeatureObservation, FeatureProvider
+from core.contracts.feature import FeatureProvider
 from core.contracts.llm import LLMProvider
 from core.contracts.state import StateProvider, StateResult
-from core.contracts.strategy import SignalObservation
 from core.contracts.synthetic import (
     SyntheticBar,
     SyntheticMarketProvider,
     SyntheticMarketSpec,
 )
 from core.contracts.validation_profile import ValidationProfile
-from core.domain.base import Ref, content_hash
+from core.domain.base import Ref
 from core.domain.research import FailureRecord, Hypothesis, KnowledgeItem, LlmCall, Verdict
 from core.domain.specs import FeatureSpec, StateSpec
 from core.errors import ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.state import run_state, state_inputs, state_request
-from infrastructure.strategy.signals import signals_from_features
 from research.hypotheses import HypothesisDraft, from_knowledge, from_llm
 from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
     ResearchPiece,
+    RoundData,
     SealedBars,
     Segment,
     decision_grid,
-    feature_pairs,
-    observations,
 )
 from research.loop.trials import (
     ExperimentStage,
@@ -244,91 +241,34 @@ class StateStage:
         self._state_spec = state_spec
         self._chunk = _positive_int(feature_chunk_bars, "feature_chunk_bars")
         self._compute = compute_seconds
-        # Pure caches (same inputs, same outputs): feature runs per research piece, and the last
-        # state result keyed by the research data hash.
-        self._piece_features: dict[str, tuple[tuple[Any, ...], tuple[SignalObservation, ...]]] = {}
+        # Pure caches (same inputs, same outputs): the round data source's feature runs (per
+        # research piece on the synthetic path), and the last state result keyed by the research
+        # data hash.
+        self._feature_cache: dict[str, Any] = {}
         self._last_state: tuple[str, StateResult] | None = None
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
         return StageUsage(compute_seconds=self._compute)
 
-    def _features(
-        self,
-        symbol: str,
-        rows: Sequence[FeatureObservation],
-        prefix: FeatureObservation | None,
-        manifest: str,
-    ) -> tuple[tuple[Any, ...], tuple[SignalObservation, ...]]:
-        pairs = feature_pairs(
-            self._feature_provider,
-            self._feature_spec,
-            rows,
-            chunk=self._chunk,
-            manifest=manifest,
-            prefix=prefix,
-        )
-        signals = tuple(
-            signal
-            for _, result in pairs
-            for signal in signals_from_features(
-                result,
-                feature=self._feature_spec.ref,
-                instrument=symbol,
-                knowledge_time=result.values[-1].evaluation_time,
-            )
-        )
-        return pairs, signals
-
-    def _research_features(
-        self, segment: Segment
-    ) -> tuple[tuple[Any, ...], tuple[SignalObservation, ...], FeatureObservation | None]:
-        """Feature runs over the accumulated research data, piece by piece.
-
-        A piece's features depend only on its own bars and the last bar before it (both fixed
-        once ingested), so each piece is evaluated once and reused in later rounds; its requests
-        are labelled with the piece's own market hash.
-        """
-        pairs: list[Any] = []
-        signals: list[SignalObservation] = []
-        prefix: FeatureObservation | None = None
-        previous: dict[str, object] | None = None
-        for piece in segment.pieces:
-            key = content_hash({"piece": piece.identity(), "after": previous})
-            cached = self._piece_features.get(key)
-            if cached is None:
-                rows = observations(piece.market, piece.bars, segment.symbol)
-                cached = self._features(segment.symbol, rows, prefix, piece.market.market_hash)
-                self._piece_features[key] = cached
-            pairs.extend(cached[0])
-            signals.extend(cached[1])
-            [prefix] = observations(piece.market, piece.bars[-1:], segment.symbol)
-            previous = piece.identity()
-        return tuple(pairs), tuple(signals), prefix
-
     def run(self, ctx: RoundContext) -> StageResult:
-        segment: Segment = ctx.artifact("ingest", "segment")
+        segment: RoundData = ctx.artifact("ingest", "segment")
         plugins = {
-            segment.provider_key: segment.provider_hash,
+            **segment.plugins,
             **_plugin(self._feature_provider.descriptor),
             **_plugin(self._state_provider.descriptor),
         }
-        pairs, signals, last_row = self._research_features(segment)
-
-        def signals_with(extra: Sequence[SyntheticBar]) -> tuple[SignalObservation, ...]:
-            """Signals over the research data followed by ``extra`` bars of this round's market
-            (the released sealed bars of a claimed G5 evaluation)."""
-            more = observations(segment.market, extra, segment.symbol)
-            return (
-                signals
-                + self._features(segment.symbol, more, last_row, segment.market.market_hash)[1]
-            )
-
+        pairs, signals, signals_with = segment.feature_runs(
+            self._feature_provider, self._feature_spec, chunk=self._chunk, cache=self._feature_cache
+        )
         artifacts: dict[str, Any] = {
             "spec_ref": self._state_spec.ref,
             "plugins": plugins,
             "signals_with": signals_with,
+            # the manifest hash of every feature request behind the signals (G0.manifest_binding
+            # compares them with the round's manifest pair on the dataset path)
+            "feature_manifest_hashes": tuple(request.manifest_content_hash for request, _ in pairs),
         }
-        if not segment.research or segment.research_end is None:
+        if not segment.research_bars or segment.research_end is None:
             summary: dict[str, Any] = {
                 "state": str(self._state_spec.ref),
                 "label": None,
@@ -481,7 +421,7 @@ class HypothesisStage:
             for h in from_knowledge(self._knowledge, self._family)
             if (h.name, h.version) not in known
         )[: self._max_new]
-        segment: Segment = ctx.artifact("ingest", "segment")
+        segment: RoundData = ctx.artifact("ingest", "segment")
         again = reevaluation_candidates(
             self._memory, ctx.state_of, segment.research_end, self._max_reevaluations
         )

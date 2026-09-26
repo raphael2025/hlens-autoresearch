@@ -1,19 +1,23 @@
 # research/loop
 
-Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-continuous-research-loop.md)，含 2026-09-25 W2、review fixes 2 与累计验证窗口实施说明）。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-continuous-research-loop.md)，含 2026-09-25 W2、review fixes 2、累计验证窗口与 2026-09-26 dataset-backed loop 实施说明）。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
 
 通用机制（调度、预算、生命周期护栏、审计、事件发布）在 `apps/worker/loop.py`；本目录只提供阶段实现与组合根，
 依赖方向 research → apps/worker（反向禁止）。一轮：`ingest → state → hypothesis → [evolution] → experiment → validation → memory`
 （`evolution` 可选，位置固定）。
+`ingest` 是可插拔的**轮次数据源**：合成市场（`IngestStage`）或经验证的 Research Dataset manifest（`DatasetIngestStage`）；
+其后各阶段只经 `segment.RoundData` 协议读本轮数据，两种来源共用同一组合（`compose.compose_loop`）。
 
 | 文件 | 内容 |
 |---|---|
-| `segment.py` | `Segment`（本轮数据：**累计研究数据**——截至 `as_of` 摄取的全部研究窗口 bar，每个摄取市场一个 `ResearchPiece`——+ 本轮被扣留的封存段 `SealedBars`，只凭 vault 发出的一次性 `SealedEvaluation` 释放——该凭据在释放前已把该族的唯一评估记为消耗）、决策网格、合成 bar → `FeatureObservation`、分块 F4 特征运行、`trial_point`（假设条件 `strategy = name@version` / `param k = v`，其他条件一律拒绝）、`decimal_text`（进入哈希记录的浮点先转固定量化的 Decimal 文本） |
+| `segment.py` | `RoundData` 协议（摄取之后各阶段读本轮数据的唯一入口：研究 bar、决策网格、扣留的封存段、特征运行、复现快照、验证器绑定）；`Segment`（合成实现，本轮数据：**累计研究数据**——截至 `as_of` 摄取的全部研究窗口 bar，每个摄取市场一个 `ResearchPiece`——+ 本轮被扣留的封存段 `SealedBars`，只凭 vault 发出的一次性 `SealedEvaluation` 释放——该凭据在释放前已把该族的唯一评估记为消耗）、决策网格、合成 bar → `FeatureObservation`、分块 F4 特征运行、`trial_point`（假设条件 `strategy = name@version` / `param k = v`，其他条件一律拒绝）、`decimal_text`（进入哈希记录的浮点先转固定量化的 Decimal 文本） |
 | `stages.py` | `IngestStage`（新市场接续上一轮价格路径；按 Profile 固定日历切分：研究窗口 bar 并入累计研究数据，封存 bar 扣留）、`StateStage`（F4 `bar_log_return` 经 `run_feature` → Phase 2 `StateProvider` 经 `run_state`，都在累计研究数据上；同一特征值经 `signals_from_features` 成为策略信号；按研究段缓存特征）、`HypothesisStage`（知识假设 + 已人工审阅的 LLM 草稿预登记；仍开放的假设在数据增长后作为新 trial 重新登记（`reevaluation_candidates`）；新草稿只入审阅队列）、`MemoryStage`（出错 → FAILED、FAIL → REJECTED，均写 FailureRecord；样本内 PASS → OOS——OOS 表示「正在经过 / 有资格进入封存样本外检验」，不是「已通过 OOS」，证据为样本内报告；封存 OOS 失败 → REJECTED，G5 未运行 / INCONCLUSIVE / PASS 均留在 OOS；INCONCLUSIVE 留在 VALIDATION） |
 | `trials.py` | `ExperimentStage`（先核对已在 TrialLedger 预登记（重新评估按 attempt 核对），在累计研究数据上，再生成 06-experiment.md §2 复现元组的 `ExperimentSpec` / `ExperimentRun`，经 `CandidateTrialRunner` 跑策略 → 风控 → 回测，按决策期把收益归到 Phase 2 状态上做 Phase 6 矩阵）、`ValidationStage`（`PipelineBacktestValidator` G0 – G4；G5 仅在显式 `OosUnsealBudget` 列出该族、样本内 PASS、本轮有封存段且该族未开封时运行；开封后先 `claim_evaluation` 原子消耗唯一评估，提前结束或出错 → INCONCLUSIVE `consumed_without_result`，窗口永久关闭）、`TrialComponents`、`OosUnsealBudget`（全局次数 + `approved_families`：族 → 批准人） |
 | `evolution.py` | `EvolutionStage` / `EvolutionPlan`：从更早轮次未被否证（按各假设最近一次验证：PASS / INCONCLUSIVE）的最佳候选出发 `mutate`，`require_new_version` 与目录防覆盖，`LineageGraph` 可追溯；后代作为新假设先登记、IDEA → CANDIDATE、本轮在累计研究数据上重新验证，不继承父代结论 |
 | `memory.py` | `ResearchMemory`（TrialLedger、ReviewQueue、FailureRegistry、策略目录、试验 / 验证记录、谱系、封存开封账本、摄取市场（及其生成规格）与累计研究数据）；`ReviewQueue.approve` 要求非空且非自动化身份（非循环自身 actor、非 `research_loop:` 前缀），并记录审批；`ReviewQueue(path)` 把入队 / 审批 / 取用逐行写入哈希链日志，重放时重新核验（自动化身份的审批、草稿或调用哈希不符的审批 → `JournalCorrupted`）；`ReviewQueue.observe(ReviewObserver)` 绑定唯一观察者（持久状态目录：审批前拒绝轮中审批、审批后立即写轮间检查点并移动锚点） |
-| `compose.py` | `SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：研究侧组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir, bus, owned_bus)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop）；不给 `bus` 时自动使用 `state_dir/bus` 并与审计交叉核对（`check_round_bus`） |
+| `compose.py` | `compose_loop` / `compose_durable`（两种数据源共用的组合：同一组阶段、预算、护栏、审计、持久钩子与自动持久总线）+ `LoopSettings` / `settings_fingerprint`；`SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：合成组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir, bus, owned_bus)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop）；不给 `bus` 时自动使用 `state_dir/bus` 并与审计交叉核对（`check_round_bus`） |
+| `dataset_source.py` | `DatasetIngestStage` / `DatasetRound` / `DatasetSegment` / `DatasetCatalog`：每轮从声明的 manifest 读数据（见下「数据集组合」） |
+| `dataset_compose.py` | `DatasetLoopConfig` + `build_dataset_loop` / `open_dataset_loop` / `dataset_loop_fingerprint`：数据集组合根 |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 
 要点：
@@ -92,7 +96,25 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   自动总线的重启与不中断运行相同且总线重放每轮 `record_hash`、审计与总线之间崩溃后补发并续跑相同、总线少一轮补发 / 少两轮或丢失被拒、
   外来记录 / 乱序 / 超前的总线被拒）。
 
-未完成（调试批次）：NATS、研究仪表盘；持久组合只覆盖合成市场组合根（真实数据集组合根另做）；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
+## 数据集组合（ADR-0049 实施说明 dataset-backed loop，2026-09-26）
+
+`build_dataset_loop(config, catalog=DatasetCatalog(adapter, storage, builder), bus=..., memory=... | state_dir=...)` /
+`open_dataset_loop(...)`：与合成组合相同的阶段、预算、护栏（最多 OOS）、审计、持久状态目录与锚点；只有轮次数据源不同。
+
+- **每轮声明的 manifest**：`DatasetLoopConfig.rounds[i]` = `DatasetRound(feature_manifest_hash, price_manifest_hash, sealed_manifest_hash=None)`。
+  哈希只是声明：全部经 `DatasetBuilder` 自己的验证型 `ManifestStore` 加载（`load_manifest` / `pair_manifests` /
+  `backtest_bars_from_dataset` / `feature_request_from_dataset`），从不按信任接受。循环不构建数据集（数据平面预先构建）。
+- **截止**：价格 manifest 的视图（= 特征区间终点）晚于本轮 `as_of` → 摄取拒绝；每根 bar、每条特征观测再次核对。
+- **研究窗口**：pair 的数据窗口必须在 Profile 研究窗口之内，研究 manifest 从不含封存窗口的行。可选封存 manifest 的 bar 按固定日历扣留在
+  `SealedBars`，永不进入研究数据；数据集轮次上的 G5 未接线（`OosUnsealBudget` 被拒绝，封存窗口保持封存）。
+- **绑定**：验证器拿到已证明的 bar、`ManifestPair` 与每个特征请求的 manifest 哈希 → 每份报告运行 `G0.manifest_binding`；复现元组的数据集快照
+  为两份 manifest 的 `DatasetRef`；实验摘要写明 manifest 与 pair 哈希。
+- **持久**：不保存摄取记忆（每轮重读声明的 manifest；检查点 `markets` / `research_data` 为空）；指纹绑定标的与每轮全部声明哈希；
+  重新打开时每条已记录摄取须读了该轮声明的 manifest。
+- 冒烟测试：`tests/infrastructure/e2e/test_research_loop_real_data.py`（`postgres` 标记，测试 catalog；Binance 格式 kline 经真实入库路径，
+  两轮、跨封存边界、重跑哈希一致；约 4 分钟）。
+
+未完成（调试批次）：NATS、研究仪表盘；数据集组合的 G5（需要封存窗口的特征 manifest）、每轮约 6 – 7 次验证型 manifest 加载（无缓存）；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；
 封存 bar 只取本轮段内的（跨轮累计封存数据未做）；`matrix_from_backtest` 的逐 bar 归因需要逐 bar 状态（本循环按决策期归因）；
 验证阶段的技术失败（`VALIDATION → FAILED` 不是 ADR-0006 的边）只记 FailureRecord、生命周期不动。

@@ -310,3 +310,42 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
    `record_hash`、全部轮次任务已确认，一致目录重开不写任何东西；审计与总线之间崩溃（第 1 轮）→ 重开补发第 1 轮、按审计确认其任务、续跑结果与不中断
    运行相同；总线尾部少一轮 → 补发，少两轮 → 拒绝且文件不变、锁已释放；外来记录、乱序、超前、总线目录丢失 → 拒绝；纯内存组合缺 `bus` → 拒绝。
    `tests/apps/test_research_loop_durable.py`——轮次发布失败 → 该轮已记录、循环停止、总线只少这一轮。
+
+## Implementation note (dataset-backed loop, 2026-09-26)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；无契约 / Schema / 生命周期 / Constitution / Profile 变更；
+不改 `core/`、`infrastructure/dataset/*`、`infrastructure/feature/dataset.py`；`LoopRecord` 载荷与哈希规则不变。状态仍为
+FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。补上调试待办 C 节 P11「持久组合只有合成市场组合根」与 D 节第 4 步的循环部分。
+
+1. **可插拔的轮次数据源**：摄取阶段之后的阶段只经 `research.loop.segment.RoundData` 协议读本轮数据（研究 bar 与决策网格、被扣留的
+   `SealedBars`、研究数据上的特征运行、复现元组的数据集快照、验证器 outcome 请求的 manifest 哈希、`G0.manifest_binding` 的数据集绑定）。
+   `Segment` 是合成实现（原 `StateStage` / `ExperimentStage` / `ValidationStage` 中的合成专用代码移入其方法，逐字节等价）；
+   `compose.compose_loop(settings, ingest, ...)` / `compose_durable(...)` 是两种组合根共用的组合（`LoopSettings` 协议、`settings_fingerprint`）。合成记录哈希不变：
+   重构前后在规划 / 纯噪声 3 轮、封存无预算、显式开封 G5、持久重启五种配置上逐一比对，记录哈希完全相同；`tests/research/loop` 全部通过。
+2. **数据集数据源**（`research/loop/dataset_source.py`）：`DatasetIngestStage` 每轮读取 `DatasetRound` 声明的 manifest（哈希只是声明，
+   全部经 `DatasetBuilder` 自己的验证型 `ManifestStore` 加载，从不按信任接受）：先加载价格 manifest，其视图（`simulation_time`）晚于本轮
+   `as_of` → 拒绝（本轮不读任何截止时刻之后的数据）；数据窗口必须在 Profile 研究窗口 `[research_window_start, sealed_oos_boundary)` 之内
+   （研究 manifest 从不含封存窗口的行，因而特征请求——必须携带该标的全部数据集行——与回测都见不到封存数据）；`pair_manifests` 证明特征 /
+   价格 manifest 为同一数据的一对；回测 bar 来自 `backtest_bars_from_dataset`，特征只经 `feature_request_from_dataset`（区间 manifest 自身
+   PIT 选择的 `bar_observations`，在每根研究 bar 收盘时评估）；每根 bar、每条观测再次核对不晚于截止。可选的 `sealed_manifest_hash`
+   （封存窗口的点时刻 manifest）按与合成摄取相同的固定日历切分：封存窗口 bar 扣留在 `SealedBars`，永不进入研究数据。一轮的累计研究数据即
+   该轮 pair 覆盖的研究窗口（逐轮截止时刻后移，数据随轮次增长，重新评估照常）。
+3. **绑定**：验证器拿到 `dataset_bars`（已证明的 bar）、本轮 `ManifestPair` 与每个特征请求的 manifest 哈希（状态阶段产物
+   `feature_manifest_hashes`），因此每份报告都运行 `G0.manifest_binding`；复现元组的数据集快照为两份 manifest 的 `DatasetRef`；实验摘要行
+   写明特征 / 价格 manifest 与 pair 哈希；`plugin_versions` 记录配对规则（`research_dataset_manifest_pair@1.0.0` → `PAIR_RULE_HASH`）。
+4. **组合根**（`research/loop/dataset_compose.py`）：`DatasetLoopConfig`（与 `SyntheticLoopConfig` 相同的设置，市场换成 Canonical
+   `symbol`、声明的 `rounds`（第 `i` 轮读 `rounds[i]`，超出即该轮摄取失败并被记录）与摄取算力声明）、`build_dataset_loop` /
+   `open_dataset_loop`（经共用的 `compose_durable`：与合成组合相同的预算、生命周期护栏（最多 OOS，从不 PAPER / ACTIVE）、审计、持久状态目录、锚点与自动持久总线）、
+   `dataset_loop_fingerprint`（共用部分 + 来源、标的与每轮声明的全部 manifest 哈希）。持久状态不保存摄取记忆（`open_state(provider=None)`：
+   每个检查点的 `markets` / `research_data` 必须为空）；重新打开时每条已记录的摄取须恰好读了配置为该轮声明的 manifest，否则
+   `LoopStateInconsistent`。
+5. **未接线（fail closed）**：数据集轮次上的 G5 需要释放的封存 bar 上的信号，即封存窗口的特征 manifest；`DatasetLoopConfig` 拒绝
+   `OosUnsealBudget`，`signals_with` 拒绝，封存窗口保持封存（与没有开封预算的合成循环相同）。每轮约 6 – 7 次验证型 manifest 加载
+   （每次重新推导整个构建，含质量报告），是本组合的主要耗时；manifest 由数据平面预先构建，循环不构建数据集。
+6. **测试**（`tests/infrastructure/e2e/test_research_loop_real_data.py`，`postgres` 标记，PostgreSQL 测试 catalog + `tmp_path`
+   warehouse；TEST ONLY Profile / 参数 / 预算）：Binance 格式 1m kline（BTCUSDT / ETHUSDT 各 420 根，跨两个 UTC 日：研究窗口
+   2023-11-14 18:00 – 24:00，封存窗口 2023-11-15 00:00 – 01:00）经真实入库路径进入隔离 catalog；两轮无人值守（截止 21:00 与次日 01:00）：
+   全部阶段完成、审计哈希链可重放；每份验证报告 `G0.manifest_binding` PASS、判定属于已定义判定（从不断言 PASS）；试验 bar / 信号 / 决策
+   时刻均不晚于本轮截止、没有封存窗口 bar，第 1 轮扣留 59 根封存 bar，开封账本为空；复现元组引用研究数据集快照；新进程重跑（只按声明哈希
+   读取已持久的 manifest，两轮之间重新打开状态目录）记录哈希完全相同；换一组声明的轮次重新打开被拒；声明视图晚于本轮截止的一轮在摄取时被拒；
+   无 PAPER / ACTIVE；自动持久总线与审计一致（`check_round_bus`）。约 4 分钟、< 2 GB。

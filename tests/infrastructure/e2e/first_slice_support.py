@@ -161,10 +161,12 @@ def ingest_bars_for(
     tag: str,
     base: str,
     items: list[list[Any]] | None = None,
+    day: date = ss.DAY,
 ) -> None:
     """Archive + REST 1m klines, normalized on both channels, reconciled (D-33 edge).
 
-    ``items`` (contiguous 1m klines of ``ss.DAY``) replaces the default ``KLINE_COUNT`` run.
+    ``items`` (contiguous 1m klines of ``day``, default ``ss.DAY``) replaces the default
+    ``KLINE_COUNT`` run.
     """
     if items is None:
         items = klines(KLINE_COUNT, KLINE_START_MS, base=base)
@@ -176,6 +178,7 @@ def ingest_bars_for(
         ss.archive_kline_lines(items),
         knowledge=ds.K_A,
         request_id=f"archive-klines-{tag}",
+        day=day,
     )
     [response_revision] = ingest_rest_for(
         w.h,
@@ -193,4 +196,4 @@ def ingest_bars_for(
     c.normalizer(w.h, clock=ss.StepClock(start=ds.N_R)).normalize_unit(
         c.REST_KLINES.table, response_revision
     )
-    w.h.reconciler(clock=ss.StepClock(start=ds.K_E)).reconcile("klines_1m", symbol, ss.DAY)
+    w.h.reconciler(clock=ss.StepClock(start=ds.K_E)).reconcile("klines_1m", symbol, day)

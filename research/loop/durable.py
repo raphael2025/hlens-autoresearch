@@ -665,14 +665,17 @@ def open_state(
     *,
     fingerprint: Mapping[str, Any],
     strategies: Sequence[StrategyCandidate],
-    provider: SyntheticMarketProvider,
+    provider: SyntheticMarketProvider | None,
     provider_for: Callable[[StrategySpec], Any] | None,
     anchor: StateAnchor | None = None,
 ) -> DurableState:
     """Open (or create) a loop state directory and restore the research memory from it.
 
     ``strategies``: the configured library catalog (added before the restored offspring);
-    ``provider``: regenerates the ingested markets; ``provider_for``: serves an offspring spec
+    ``provider``: regenerates the ingested markets (``None``: a round data source that keeps no
+    ingest memory — the dataset-backed loop re-reads each round's verified manifests — so every
+    checkpoint's ``markets`` / ``research_data`` must be empty); ``provider_for``: serves an
+    offspring spec
     (the evolution plan's; ``None`` without evolution); ``anchor``: the optional external anchor
     (module docs; a ``FileAnchor`` must lie outside ``state_dir``). Raises
     ``LoopStateInconsistent`` when the files disagree with each other, the configuration or the
@@ -1004,7 +1007,7 @@ def _restore_round(
     memory: ResearchMemory,
     record: LoopRecord,
     delta: Any,
-    provider: SyntheticMarketProvider,
+    provider: SyntheticMarketProvider | None,
     provider_for: Callable[[StrategySpec], Any] | None,
 ) -> None:
     """Re-apply one round's delta, checking it against the audit record (cross-check 5)."""
@@ -1036,8 +1039,15 @@ def _restore_round(
 
 
 def _restore_markets(
-    memory: ResearchMemory, record: LoopRecord, delta: Any, provider: SyntheticMarketProvider
+    memory: ResearchMemory,
+    record: LoopRecord,
+    delta: Any,
+    provider: SyntheticMarketProvider | None,
 ) -> None:
+    if provider is None:  # a source without ingest memory (dataset-backed loop): nothing to add
+        if delta["markets"] or delta["research_data"]:
+            raise ValueError("this loop's ingest keeps no markets or research pieces")
+        return
     for row in delta["markets"]:
         spec = SyntheticMarketSpec.model_validate(row["spec"])
         market = provider.generate(spec)

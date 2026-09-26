@@ -86,17 +86,15 @@ from core.domain.research import (
     Verdict,
 )
 from core.domain.selection import ProfileSelection
-from core.domain.specs import DatasetRef, Zone
 from core.errors import ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from research.experiments import RETURN_QUANTUM, backtest_returns, state_strategy_matrix
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
     Param,
-    Segment,
+    RoundData,
     decimal_text,
     decision_grid,
-    price_bar,
     trial_point,
 )
 from research.outcomes.table import materialize
@@ -376,7 +374,7 @@ class ExperimentStage:
         hypothesis: Hypothesis,
         candidate: StrategyCandidate | None,
         params: Mapping[str, Param],
-        segment: Segment,
+        segment: RoundData,
         plugins: Mapping[str, str],
         seed: int,
     ) -> ReproducibilityTuple:
@@ -399,25 +397,7 @@ class ExperimentStage:
         first = segment.research_start or ctx.as_of
         last = segment.research_end or ctx.as_of
         boundary = profile.data_split.sealed_oos_boundary.isoformat()
-        table = f"synthetic.{segment.provider_key}"
-        snapshots = tuple(
-            DatasetRef(
-                zone=Zone.CANONICAL,
-                table=table,
-                snapshot_id=piece.market.market_hash,
-                time_range_start=piece.bars[0].interval_start,
-                time_range_end=piece.bars[-1].interval_end,
-            )
-            for piece in segment.pieces
-        ) or (
-            DatasetRef(
-                zone=Zone.CANONICAL,
-                table=table,
-                snapshot_id=segment.market.market_hash,
-                time_range_start=first,
-                time_range_end=last,
-            ),
-        )
+        snapshots = segment.dataset_snapshots(ctx.as_of)
         return ReproducibilityTuple(
             hypothesis_ref=hypothesis.ref,
             strategy_ref=None if spec is None else spec.ref,
@@ -447,7 +427,7 @@ class ExperimentStage:
     def _trial(
         self, ctx: RoundContext, hypothesis: Hypothesis, origin: str, attempt: str | None
     ) -> TrialOutcome:
-        segment: Segment = ctx.artifact("ingest", "segment")
+        segment: RoundData = ctx.artifact("ingest", "segment")
         signals: tuple[SignalObservation, ...] = ctx.artifact("state", "signals")
         states: StateResult = ctx.artifact("state", "result")
         state_ref: Ref = ctx.artifact("state", "spec_ref")
@@ -536,11 +516,11 @@ class ExperimentStage:
             "run_id": run_id,
             "run_state": state.value,
             "attempt": attempt,
-            "market_hash": segment.market.market_hash,
+            **segment.source_fields(),
             "research_data_hash": segment.data_hash,
             "research_start": _iso(segment.research_start),
             "research_end": _iso(segment.research_end),
-            "research_bars": len(segment.research),
+            "research_bars": len(segment.research_bars),
             "error": None if error is None else error[:500],
         }
         if trial is not None:
@@ -690,25 +670,27 @@ class ValidationStage:
         )
 
     def _validate(self, ctx: RoundContext, outcome: TrialOutcome) -> ValidationOutcome:
-        segment: Segment = ctx.artifact("ingest", "segment")
+        segment: RoundData = ctx.artifact("ingest", "segment")
         labels: Mapping[datetime, str | None] = ctx.artifact("state", "labels")
+        feature_manifests: Sequence[str] = ctx.artifact("state", "feature_manifest_hashes")
         candidate, inputs, trial = outcome.candidate, outcome.inputs, outcome.trial
         assert candidate is not None and inputs is not None and trial is not None
         context = self._context(ctx, outcome)
         setup = ValidatorSetup(
             context=context,
             outcome_provider=self._c.outcome_provider,
-            manifest_content_hash=segment.data_hash,
+            manifest_content_hash=segment.manifest_content_hash,
             instrument=segment.symbol,
             trials=CandidateTrialRunner(candidate, inputs, self._c.backtester),
             chosen_params=dict(outcome.request_params),
             seed=outcome.validation_seed,
             robustness=self._c.robustness,
             state_of=lambda t: labels.get(t) or "unknown",
-            bar_volume={
-                (segment.symbol, bar.interval_start): bar.volume for bar in segment.research
-            },
+            bar_volume=segment.bar_volume(),
             declared_instruments=(segment.symbol,),
+            # the dataset path's proven bars, manifest pair and feature manifests
+            # (G0.manifest_binding); nothing on the synthetic path
+            **segment.validator_binding(feature_manifests),
         )
         base: dict[str, Any] = {
             "hypothesis": str(outcome.hypothesis.ref),
@@ -769,7 +751,7 @@ class ValidationStage:
         ctx: RoundContext,
         outcome: TrialOutcome,
         context: ValidationContext,
-        segment: Segment,
+        segment: RoundData,
     ) -> tuple[ValidationReport | None, dict[str, Any]]:
         unseal, step = self._unseal, self._sealed_step
         if unseal is None or step is None:
@@ -821,7 +803,7 @@ class ValidationStage:
         self,
         ctx: RoundContext,
         outcome: TrialOutcome,
-        segment: Segment,
+        segment: RoundData,
         vault: SealedOosVault,
         evaluation: SealedEvaluation,
         g5_context: ValidationContext,
@@ -836,7 +818,7 @@ class ValidationStage:
         )
         candidate, inputs = outcome.candidate, outcome.inputs
         assert candidate is not None and inputs is not None
-        bars = (*segment.research, *sealed_bars)
+        bars = (*segment.research_bars, *segment.as_price_bars(sealed_bars))
         decisions = decision_grid(
             sealed_bars, step=step, warmup=step, horizon=self._c.label_spec.horizon
         )
@@ -845,7 +827,7 @@ class ValidationStage:
             return "no sealed decision time"
         sealed_inputs = replace(
             inputs,
-            bars=tuple(price_bar(segment.symbol, bar) for bar in bars),
+            bars=bars,
             decision_times=decisions,
             knowledge_cutoff=sealed_bars[-1].interval_end,
             signals=signals_with(sealed_bars),
@@ -858,7 +840,7 @@ class ValidationStage:
             OutcomePriceBar(
                 interval_start=bar.interval_start,
                 interval_end=bar.interval_end,
-                available_time=bar.interval_end,
+                available_time=bar.available_time,
                 open=bar.open,
                 high=bar.high,
                 low=bar.low,
@@ -872,9 +854,7 @@ class ValidationStage:
             self._c.outcome_provider,
             OutcomeRequest(
                 label_spec=self._c.label_spec,
-                manifest_content_hash=content_hash(
-                    {"research": segment.data_hash, "sealed": segment.market.market_hash}
-                ),
+                manifest_content_hash=segment.sealed_manifest_label(),
                 price_cutoff=max(bar.available_time for bar in outcome_bars),
                 events=tuple(
                     OutcomeEvent(event_key=_event_key(t), event_time=t.decision_time)

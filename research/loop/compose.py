@@ -63,7 +63,7 @@ from decimal import Decimal
 from os import PathLike
 from pathlib import Path
 from types import TracebackType
-from typing import Any
+from typing import Any, Protocol
 
 from apps.worker.loop import (
     ROUND_TOPIC,
@@ -114,13 +114,17 @@ __all__ = [
     "BUS_AUDIT_CONSUMER",
     "BUS_DIR",
     "DurableLoop",
+    "LoopSettings",
     "LoopWiring",
     "SyntheticLoopConfig",
     "build_synthetic_loop",
     "check_round_bus",
+    "compose_durable",
+    "compose_loop",
     "loop_fingerprint",
     "open_synthetic_loop",
     "run_unattended_and_report",
+    "settings_fingerprint",
 ]
 
 
@@ -158,6 +162,52 @@ class LoopWiring:
     #: the families it lists (each with its approving human) may be unsealed.
     oos_unseal: OosUnsealBudget | None = None
     sealed_decision_step: timedelta | None = None
+
+
+class LoopSettings(Protocol):
+    """What every composition of the loop binds, whatever its round data source.
+
+    ``SyntheticLoopConfig`` (synthetic markets) and ``DatasetLoopConfig``
+    (``research.loop.dataset_compose``, verified Research Dataset manifests) both provide these;
+    only the ingest stage and the source's part of the fingerprint differ.
+    """
+
+    @property
+    def loop_id(self) -> str: ...
+    @property
+    def seed(self) -> int: ...
+    @property
+    def epoch(self) -> datetime: ...
+    @property
+    def cadence(self) -> timedelta: ...
+    @property
+    def budget(self) -> LoopBudget: ...
+    @property
+    def wiring(self) -> LoopWiring: ...
+    @property
+    def family_id(self) -> str: ...
+    @property
+    def knowledge(self) -> Sequence[KnowledgeItem]: ...
+    @property
+    def max_new_hypotheses_per_round(self) -> int: ...
+    @property
+    def max_reevaluations_per_round(self) -> int: ...
+    @property
+    def hypothesis_compute_seconds(self) -> Decimal: ...
+    @property
+    def compute_seconds_per_trial(self) -> Decimal: ...
+    @property
+    def validation_compute_seconds(self) -> Decimal: ...
+    @property
+    def state_compute_seconds(self) -> Decimal: ...
+    @property
+    def profile(self) -> ValidationProfile: ...
+    @property
+    def constitution_version(self) -> str: ...
+    @property
+    def llm_prompt(self) -> str | None: ...
+    @property
+    def llm_cost_units_per_call(self) -> Decimal: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,17 +267,40 @@ def build_synthetic_loop(
     if bus is None:
         raise ValueError("an in-memory loop needs a bus (only a state_dir provides its own)")
     assert memory is not None
-    return _compose(config, provider, bus, memory, llm, None)
+    return compose_loop(config, _synthetic_ingest(config, provider, memory), bus, memory, llm, None)
 
 
-def _compose(
-    config: SyntheticLoopConfig,
-    provider: SyntheticMarketProvider,
+def _synthetic_ingest(
+    config: SyntheticLoopConfig, provider: SyntheticMarketProvider, memory: ResearchMemory
+) -> IngestStage:
+    wiring = config.wiring
+    return IngestStage(
+        memory,
+        provider,
+        config.market,
+        config.profile,
+        minutes_per_round=config.minutes_per_round,
+        compute_seconds_per_bar=config.compute_seconds_per_bar,
+        decision_step=wiring.decision_step,
+        decision_warmup=wiring.decision_warmup,
+        label_horizon=wiring.label_spec.horizon,
+    )
+
+
+def compose_loop(
+    config: LoopSettings,
+    ingest: LoopStage,
     bus: EventBusAdapter,
     memory: ResearchMemory,
     llm: LLMProvider | None,
     state: DurableState | None,
 ) -> ResearchLoop:
+    """The loop over ``memory`` with ``ingest`` as its round data source (shared composition).
+
+    ``ingest`` is the round's data source stage (named ``ingest``; its ``segment`` artifact is a
+    ``research.loop.segment.RoundData``); every other stage, the budget, the lifecycle guard, the
+    audit and the durable hooks are the same for every source.
+    """
     wiring = config.wiring
     for candidate in wiring.strategies:
         memory.add_strategy(candidate)
@@ -249,17 +322,7 @@ def _compose(
         () if wiring.evolution is None else (EvolutionStage(memory, wiring.evolution),)
     )
     stages: tuple[LoopStage, ...] = (
-        IngestStage(
-            memory,
-            provider,
-            config.market,
-            config.profile,
-            minutes_per_round=config.minutes_per_round,
-            compute_seconds_per_bar=config.compute_seconds_per_bar,
-            decision_step=wiring.decision_step,
-            decision_warmup=wiring.decision_warmup,
-            label_horizon=wiring.label_spec.horizon,
-        ),
+        ingest,
         StateStage(
             memory,
             feature_provider=wiring.feature_provider,
@@ -419,13 +482,31 @@ def open_synthetic_loop(
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
     )
+    return compose_durable(
+        config, state, _synthetic_ingest(config, provider, state.memory), bus, llm
+    )
+
+
+def compose_durable(
+    config: LoopSettings,
+    state: DurableState,
+    ingest: LoopStage,
+    bus: EventBusAdapter | None,
+    llm: LLMProvider | None,
+) -> DurableLoop:
+    """``compose_loop`` over an opened state directory, with its bus (shared by every source).
+
+    ``bus`` given: used as is. Omitted: the composition's own ``FileEventBus(state_dir / "bus")``,
+    cross-checked against the verified audit first (``check_round_bus``) and released by
+    ``DurableLoop.close()`` or when the loop is dropped (module docs, **Durable bus**).
+    """
     if bus is not None:
-        loop = _compose(config, provider, bus, state.memory, llm, state)
+        loop = compose_loop(config, ingest, bus, state.memory, llm, state)
         return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root, bus=bus)
     owned = FileEventBus(state.root / BUS_DIR)
     try:
         check_round_bus(owned, config.loop_id, state.audit.records)
-        loop = _compose(config, provider, owned, state.memory, llm, state)
+        loop = compose_loop(config, ingest, owned, state.memory, llm, state)
     except BaseException:
         owned.close()
         raise
@@ -454,6 +535,15 @@ def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
     sealed decision steps; the evolution plan's numbers, the initial equity, the feature chunk size
     and the explicit G4 parameters are bound too. Compute declarations and the LLM provider are not.
     """
+    return {
+        **settings_fingerprint(config),
+        "market": config.market.content_hash(),
+        "minutes_per_round": config.minutes_per_round,
+    }
+
+
+def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
+    """The part of a state directory's fingerprint every round data source shares."""
     wiring = config.wiring
     return {
         "loop_id": config.loop_id,
@@ -465,8 +555,6 @@ def loop_fingerprint(config: SyntheticLoopConfig) -> dict[str, Any]:
         "family_id": config.family_id,
         "profile": config.profile.content_hash(),
         "constitution_version": config.constitution_version,
-        "market": config.market.content_hash(),
-        "minutes_per_round": config.minutes_per_round,
         "knowledge": [item.content_hash() for item in config.knowledge],
         "strategies": [c.spec.content_hash() for c in wiring.strategies],
         "feature_spec": wiring.feature_spec.content_hash(),

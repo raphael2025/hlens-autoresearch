@@ -19,17 +19,25 @@
 - ``decimal_text``: floats that enter hashed loop records are first turned into Decimal text with
   a fixed quantization (``RECORD_QUANTUM``, half-even), so a record hash never depends on float
   formatting.
+
+Round data sources (ADR-0049 implementation note, dataset-backed loop, 2026-09-26). The stages
+after the ingest read a round's data only through ``RoundData``: the research bars and their
+decision grid, the withheld ``SealedBars``, the feature runs over the research data, and what the
+reproducibility tuple and the validator bind (dataset snapshots, the manifest hash of the labels,
+the dataset binding of ``G0.manifest_binding``). ``Segment`` is the synthetic implementation
+(``IngestStage``; its record hashes are unchanged by the refactor), ``DatasetSegment``
+(``research.loop.dataset_source``) the one over verified Research Dataset manifests.
 """
 
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from functools import cached_property
-from typing import Final
+from typing import Any, Final, Protocol
 
 from core.contracts.feature import (
     FeatureObservation,
@@ -37,21 +45,25 @@ from core.contracts.feature import (
     FeatureRequest,
     FeatureResult,
 )
-from core.contracts.strategy import PriceBar
+from core.contracts.strategy import PriceBar, SignalObservation
 from core.contracts.synthetic import SyntheticBar, SyntheticMarket
 from core.contracts.universe import SelectedRevisionLineage
 from core.domain.base import FrozenMapping, content_hash
 from core.domain.research import Hypothesis
-from core.domain.specs import FeatureSpec
+from core.domain.specs import DatasetRef, FeatureSpec, Zone
 from infrastructure.feature.runner import run_feature
+from infrastructure.strategy.signals import signals_from_features
 from research.validation.sealed_oos import SealedEvaluation, SealedOosLocked
 
 __all__ = [
     "RECORD_QUANTUM",
+    "FeatureRuns",
     "Param",
     "ResearchPiece",
+    "RoundData",
     "SealedBars",
     "Segment",
+    "Timed",
     "TrialPoint",
     "decimal_text",
     "decision_grid",
@@ -99,7 +111,17 @@ def price_bar(symbol: str, bar: SyntheticBar) -> PriceBar:
     )
 
 
-class SealedBars:
+class Timed(Protocol):
+    """A bar's interval (``SyntheticBar`` and ``PriceBar`` both have one)."""
+
+    @property
+    def interval_start(self) -> datetime: ...
+
+    @property
+    def interval_end(self) -> datetime: ...
+
+
+class SealedBars[BarT: Timed]:
     """Bars inside the sealed OOS window; released only against a claimed one-shot evaluation.
 
     ``release`` needs the family's ``SealedEvaluation`` (``SealedOosVault.claim_evaluation``),
@@ -108,18 +130,102 @@ class SealedBars:
     The claim hands the bars out once.
     """
 
-    def __init__(self, bars: Sequence[SyntheticBar], window: tuple[datetime, datetime]) -> None:
+    def __init__(self, bars: Sequence[BarT], window: tuple[datetime, datetime]) -> None:
         self._bars = tuple(bars)
         self.window = window
 
     def __len__(self) -> int:
         return len(self._bars)
 
-    def release(self, evaluation: SealedEvaluation) -> tuple[SyntheticBar, ...]:
+    def release(self, evaluation: SealedEvaluation) -> tuple[BarT, ...]:
         if (evaluation.window.start, evaluation.window.end) != self.window:
             raise SealedOosLocked("the evaluation was claimed for another sealed window")
         evaluation.take("bars")
         return self._bars
+
+
+#: A round's feature runs over its research data: the (request, result) pairs, the strategy
+#: signals of those values, and ``signals_with(extra)`` — the same signals followed by signals over
+#: ``extra`` released sealed bars (G5 only).
+type FeatureRuns = tuple[
+    tuple[tuple[FeatureRequest, FeatureResult], ...],
+    tuple[SignalObservation, ...],
+    Callable[[Sequence[Any]], tuple[SignalObservation, ...]],
+]
+
+
+class RoundData(Protocol):
+    """What the stages after the ingest read of one round's data (module docs)."""
+
+    @property
+    def symbol(self) -> str: ...
+
+    @property
+    def decision_times(self) -> tuple[datetime, ...]: ...
+
+    @property
+    def sealed(self) -> SealedBars[Any]: ...
+
+    @property
+    def research_bars(self) -> tuple[PriceBar, ...]:
+        """The accumulated research bars (time order); never a sealed-window bar."""
+        ...
+
+    @property
+    def research_start(self) -> datetime | None: ...
+
+    @property
+    def research_end(self) -> datetime | None: ...
+
+    @property
+    def data_hash(self) -> str:
+        """Identity of the accumulated research data."""
+        ...
+
+    @property
+    def manifest_content_hash(self) -> str:
+        """The manifest hash the validator's outcome request carries (a label when synthetic)."""
+        ...
+
+    @property
+    def plugins(self) -> Mapping[str, str]:
+        """The data source's plugin / rule versions for the reproducibility tuple."""
+        ...
+
+    def source_fields(self) -> dict[str, Any]:
+        """The data source's identity in every experiment summary row."""
+        ...
+
+    def dataset_snapshots(self, as_of: datetime) -> tuple[DatasetRef, ...]:
+        """The reproducibility tuple's dataset snapshots of the research data."""
+        ...
+
+    def bar_volume(self) -> Mapping[tuple[str, datetime], Decimal] | None:
+        """Traded quantity per ``(instrument, interval_start)`` of the research bars."""
+        ...
+
+    def validator_binding(self, feature_manifest_hashes: Sequence[str]) -> dict[str, Any]:
+        """The ``ValidatorSetup`` dataset-binding fields (empty on the synthetic path)."""
+        ...
+
+    def feature_runs(
+        self,
+        provider: FeatureProvider,
+        spec: FeatureSpec,
+        *,
+        chunk: int,
+        cache: MutableMapping[str, Any],
+    ) -> FeatureRuns:
+        """``spec`` over the research data; ``cache`` is the caller's (pure) per-stage cache."""
+        ...
+
+    def as_price_bars(self, bars: Sequence[Any]) -> tuple[PriceBar, ...]:
+        """Released sealed bars as backtest ``PriceBar``s."""
+        ...
+
+    def sealed_manifest_label(self) -> str:
+        """The manifest hash of the G5 outcome request over research + released sealed bars."""
+        ...
 
 
 @dataclass(frozen=True)
@@ -156,7 +262,7 @@ class Segment:
     provider_key: str
     provider_hash: str
     pieces: tuple[ResearchPiece, ...]
-    sealed: SealedBars
+    sealed: SealedBars[SyntheticBar]
     decision_times: tuple[datetime, ...]
 
     @cached_property
@@ -186,9 +292,127 @@ class Segment:
         """Identity of the accumulated research data (every piece's market hash and range)."""
         return content_hash([piece.identity() for piece in self.pieces])
 
+    # ------------------------------------------------------------------ RoundData (synthetic)
+
+    @property
+    def manifest_content_hash(self) -> str:
+        """The research data hash: an unverified label (``synthetic_unverified`` path)."""
+        return self.data_hash
+
+    @property
+    def plugins(self) -> Mapping[str, str]:
+        return {self.provider_key: self.provider_hash}
+
+    def source_fields(self) -> dict[str, Any]:
+        return {"market_hash": self.market.market_hash}
+
+    def dataset_snapshots(self, as_of: datetime) -> tuple[DatasetRef, ...]:
+        """One snapshot per ingested market contributing research bars (else this round's)."""
+        table = f"synthetic.{self.provider_key}"
+        return tuple(
+            DatasetRef(
+                zone=Zone.CANONICAL,
+                table=table,
+                snapshot_id=piece.market.market_hash,
+                time_range_start=piece.bars[0].interval_start,
+                time_range_end=piece.bars[-1].interval_end,
+            )
+            for piece in self.pieces
+        ) or (
+            DatasetRef(
+                zone=Zone.CANONICAL,
+                table=table,
+                snapshot_id=self.market.market_hash,
+                time_range_start=self.research_start or as_of,
+                time_range_end=self.research_end or as_of,
+            ),
+        )
+
+    def bar_volume(self) -> Mapping[tuple[str, datetime], Decimal]:
+        return {(self.symbol, bar.interval_start): bar.volume for bar in self.research}
+
+    def validator_binding(self, feature_manifest_hashes: Sequence[str]) -> dict[str, Any]:
+        """Nothing to bind: the synthetic path's manifest hash is a label (never verified)."""
+        return {}
+
+    def as_price_bars(self, bars: Sequence[Any]) -> tuple[PriceBar, ...]:
+        return tuple(price_bar(self.symbol, bar) for bar in bars)
+
+    def sealed_manifest_label(self) -> str:
+        return content_hash({"research": self.data_hash, "sealed": self.market.market_hash})
+
+    def feature_runs(
+        self,
+        provider: FeatureProvider,
+        spec: FeatureSpec,
+        *,
+        chunk: int,
+        cache: MutableMapping[str, Any],
+    ) -> FeatureRuns:
+        """Feature runs over the accumulated research data, piece by piece.
+
+        A piece's features depend only on its own bars and the last bar before it (both fixed
+        once ingested), so each piece is evaluated once and reused in later rounds (``cache``);
+        its requests are labelled with the piece's own market hash.
+        """
+        pairs: list[Any] = []
+        signals: list[SignalObservation] = []
+        prefix: FeatureObservation | None = None
+        previous: dict[str, object] | None = None
+        for piece in self.pieces:
+            key = content_hash({"piece": piece.identity(), "after": previous})
+            cached = cache.get(key)
+            if cached is None:
+                rows = observations(piece.market, piece.bars, self.symbol)
+                cached = _synthetic_features(
+                    provider, spec, self.symbol, rows, prefix, piece.market.market_hash, chunk
+                )
+                cache[key] = cached
+            pairs.extend(cached[0])
+            signals.extend(cached[1])
+            [prefix] = observations(piece.market, piece.bars[-1:], self.symbol)
+            previous = piece.identity()
+        found, last_row = tuple(signals), prefix
+
+        def signals_with(extra: Sequence[Any]) -> tuple[SignalObservation, ...]:
+            """Signals over the research data followed by ``extra`` bars of this round's market
+            (the released sealed bars of a claimed G5 evaluation)."""
+            more = observations(self.market, extra, self.symbol)
+            return (
+                found
+                + _synthetic_features(
+                    provider, spec, self.symbol, more, last_row, self.market.market_hash, chunk
+                )[1]
+            )
+
+        return tuple(pairs), found, signals_with
+
+
+def _synthetic_features(
+    provider: FeatureProvider,
+    spec: FeatureSpec,
+    symbol: str,
+    rows: Sequence[FeatureObservation],
+    prefix: FeatureObservation | None,
+    manifest: str,
+    chunk: int,
+) -> tuple[tuple[tuple[FeatureRequest, FeatureResult], ...], tuple[SignalObservation, ...]]:
+    pairs = feature_pairs(provider, spec, rows, chunk=chunk, manifest=manifest, prefix=prefix)
+    signals = tuple(
+        signal
+        for _, result in pairs
+        for signal in signals_from_features(
+            result,
+            feature=spec.ref,
+            instrument=symbol,
+            knowledge_time=result.values[-1].evaluation_time,
+        )
+    )
+    return pairs, signals
+
 
 def decision_grid(
-    bars: Sequence[SyntheticBar], *, step: timedelta, warmup: timedelta, horizon: timedelta
+    bars: Sequence[Timed], *, step: timedelta, warmup: timedelta, horizon: timedelta
 ) -> tuple[datetime, ...]:
     """``start + warmup + k * step`` while its label (``horizon``) ends before the last bar ends."""
     if not bars:
