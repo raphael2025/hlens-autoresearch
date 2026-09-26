@@ -38,4 +38,7 @@
 | ADR-0060 | C-T4 `market_benchmark_rule` / `inverse_control_reported` 无语义、无代码读取 | **Accepted**：已登记的规则名（`none` / `buy_and_hold_equal_weight` / `flat`，未知 → INCONCLUSIVE）；市场基准与反向对照为报告项，不作否决 | C-T4 的门槛是空模型（已实施）；给每个类别发明超额阈值会违反"阈值只来自 Profile" | 待实施（下一空闲通道） |
 | ADR-0061 | Phase 3 交互 DSL 缺失 | **Accepted**：JSON 表达式树（`ref` + `seq` / `and` / `not` / `count`），编译为普通交互规格，逐跳复用上游核对；`not` 的事件时间取窗口结束 | 数据而非代码，只到已审阅算子；无契约变化 | 待实施（下一空闲通道） |
 | API → Worker 端到端 | 计划要求"至少一条端到端流程从 API 进入 Worker 再由 Web 读回"，但 ADR-0048 规定 API 只读 | **维持只读**：端到端流程定义为 Worker 作业 → 结果日志 / 报告文件 → 只读 API（`/jobs`、`/reports`）→ Web；不增加写端点 | 写端点会让 Web 能触发研究运行，扩大攻击面且无审批通道；只读链路已有测试（`test_api_jobs.py`、`test_reports_hook.py`、node 测试） | 无代码变化；记录于此 |
+| D-L6-1（ADR-0061） | `not` 无法用单一交互规格表达而不引入未来函数 | 编译为 `event_window_end` → `event_absence` 两个规格；ADR-0061 §2 修订 | 契约只有一个 `observable_lag`；两规格形式在窗口结束触发且窗口内所有 B 可见 | B36 |
+| D-L5-1（ADR-0060） | 市场基准是否默认启用 | 先作为显式 opt-in 集成；随后在循环 / 合成校准 / 夹具中强制启用并把 TEST ONLY 夹具改为已登记规则名（L7 通道，固定哈希按此有意重新固定） | 未登记规则名须 INCONCLUSIVE；夹具使用占位名 | B35 / L7 |
+| 状态目录单写者锁 | L2 跨进程测试发现 `state_dir` 无自身锁 | 实施 `state.lock`（实现缺陷修复，非架构决定） | 注入总线时第二个进程可并发写 | B32 |
 

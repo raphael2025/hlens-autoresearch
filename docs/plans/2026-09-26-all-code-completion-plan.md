@@ -451,3 +451,22 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   `research/loop/compose.py` 的 `DurableLoop.state_lock` 在 `close()` 时释放。xfail 转为通过；原先在同一进程中未释放第一个写者就重开同一目录的 5 个测试改为先 `close()`（它们断言的重开语义不变）；跨进程测试中第二进程的拒绝现由 `LoopStateLocked`（先于总线锁）给出。
 - 实际运行：L2 子代理 `79 passed, 1 xfailed`；修复后 `pytest -m "not postgres" tests/research/loop/test_loop_durable.py tests/research/loop/test_loop_cross_process.py tests/research/loop/test_llm_content.py tests/apps/test_research_loop_durable.py`
   → **112 passed**；`ruff check` → 通过；`mypy research/loop` → no issues in 11 files。
+
+**B33～B37 — L1 / L3 / L5 / L6 / L8 通道集成**（全部 `CODE_COMPLETE / DEBUG_PENDING`；cherry-pick 集成）
+
+- B33 Phase 7（L1：`264a3bc`、`cf5e4e4`、`877e2d8`）：严格草稿结构（多余键拒绝、不强制类型），被拒 LLM 调用的 `LlmCall`（哈希与引用）记入假设阶段摘要；`research/hypotheses/batch.py` 声明式批次
+  （算子 × 策略 × 参数点，经 `ReviewedOperators` 版本化白名单，构建时拒绝 `trial_point` 不能执行的条件，整批首轮预登记并按单元计预算）；`KnowledgeSource`（调用 `KnowledgeProvider.search`，
+  记录查询哈希与结果哈希为假设来源）。均为可选，未设置时记录与指纹逐位不变。子代理 `tests/research/hypotheses tests/research/loop` → 202 passed。
+- B34 全栈（L3：`40bf02c`、`347c9b8`、`81e6802`）：API 对 `validation_report` 按核心契约校验、文件 id = 载荷身份哈希（各种类）、错误体不含服务器路径、422 声明 `ApiError`、`/health` 等补响应模型；
+  P10 纸面偏差 `research/router/deviation.py` + 报告种类 `paper_deviation` + 页面；P11 劣化检查报告 `degradation_check` + 页面（写入前重跑监控复核）。子代理 → 380 passed；npm 55 / 55。
+- B35 C-T4（L5：`4139e22`）：ADR-0060 实施——规则注册表（`none` / `buy_and_hold_equal_weight` / `flat`，未知 → INCONCLUSIVE），报告项 `G2.market_benchmark.<rule>`、`G2.inverse_control`（不影响判定、不增加 trial）；
+  当前为显式 opt-in `ValidatorSetup.market_benchmark`，循环 / 夹具的强制启用由 L7 通道进行。子代理 → 369 passed；既有固定哈希不变。
+- B36 Phase 3（L6：`e3cb510`）：ADR-0061 交互 DSL（`plugins/events/dsl.py`、`windows.py`：`seq` / `and` 复用既有算子，新增 `event_window_end` / `event_absence` / `event_count`；编译结果可重算核对；
+  逐跳 `require_full=True` 端到端；未来扰动不改变过去各层事件；`not` 在窗口结束前不存在）。D-L6-1 见 ADR-0061 补记。子代理 → 544 passed。
+- B37 Web 组件测试（L8：`72ecc0d` 的 cherry-pick）：用已安装的 esbuild 打包 `*.test.tsx` 后 `node --test`，`renderToStaticMarkup` 渲染 States / ReportBrowser / 全部页面的首屏、加载后、空、错误状态；
+  测试种子与初始选择经 `ApiSeedContext` / `InitialSelectionContext` 注入（默认行为不变）；`package-lock.json` 未变；变异验证（破坏三处代码均被发现）。
+- 集成后实际运行（本分支）：`ruff check .` → All checks passed；`ruff format --check .` → 722 files already formatted；`mypy` → no issues in 567 source files；`npm test` → lib 55 / 55、组件 96 / 96；`npm run build` → ✓；
+  组合 pytest（`tests/research tests/apps tests/plugins tests/infrastructure/{event,migration,event_bus,content} tests/promotion` + 边界 / 文档 / 事件契约）→ **1830 passed, 4 failed**（1168 s）：
+  4 个失败都是 P6 新测试在同一进程中未释放前一测试的循环就重开模块级状态目录（B32 的单写者锁正确拒绝）；加 `tests/research/loop/conftest.py`（每个测试后 `gc.collect()` 释放已丢弃的写者，不改断言）后
+  这两个文件 → **26 passed**。全量门禁将在全部通道集成后于最终 HEAD 运行。
+
