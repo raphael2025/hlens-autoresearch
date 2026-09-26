@@ -13,6 +13,7 @@ Research Plane。探索性研究代码与实验编排。**研究代码不得直�
 | `features/` | Phase 1 F4（ADR-0030） | 仅规划说明（首批特征实现在 `plugins/features/`，执行器在 `infrastructure/feature/`） |
 | `states/` | Phase 2（ADR-0035） | 状态稳定性诊断（分布、持续时间、转移矩阵、标签闪烁），见 [states/README.md](states/README.md) |
 | `events/` | Phase 3（ADR-0036） | 事件频率、共现、领先滞后与重叠诊断（只描述，无阈值） |
+| `promotion/` | ADR-0005 Promotion | 由验证证据（G0–G4 PASS + G5 PASS）、PAPER 及以后的生命周期与研究 provider 计算的金标准数据构建 `StrategyArtifact`；缺任何证据即类型化拒绝，今天所有库策略都被拒（`no_validation_report`）。见 [promotion/README.md](promotion/README.md) |
 | `outcomes/` | Phase 4（ADR-0037） | Outcome 物化：只在标签已知后返回的标签表 |
 | `validation/` | Phase 4 / 8（ADR-0037 / 0041） | Validation Pipeline：G0–G3、封存样本外门、purge / embargo 切分、负对照、成本；Phase 8 稳健性扩展 |
 | `strategies/` | Phase 5（ADR-0038） | 研究策略库：时间序列动量、波动率目标风控、策略 → 风控 → 回测 → 验证 → Failure Registry 流水线 |

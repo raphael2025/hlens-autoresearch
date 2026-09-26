@@ -393,3 +393,21 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 限制：不跑 G5；全噪声臂中池化阶段先失败时逐标的子门为 `not_evaluated`；按门 id `G0.single_instrument_adapter` 识别走错路径。
 - 子代理：`pytest tests/research/synthetic_lab tests/research/strategies/test_multi_instrument_validation.py` → 64 passed；边界 / 文档 → 18 passed；ruff / format / mypy（10 files）通过。
 - 本分支集成后：`pytest -m "not postgres" tests/research/synthetic_lab tests/research/strategies/test_multi_instrument_validation.py tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → 82 passed, 1 warning (124 s)；ruff / mypy 通过。
+
+**B27 — Phase 6：条件假设逐单元验证（可选）**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 P6 通道 `0fa4e55` 的 cherry-pick）
+
+- `ConditionalPlan.validate_cells: bool`（必填无默认；`False` 时载荷 / 指纹 / 记录逐位不变）；`True` 时在 `ValidationStage` 中对达到 `min_support` 的单元用同一 `family_trial_count` 跑 G0–G3
+  （单元证据 = 状态阶段因果归属到该单元的已交易决策，不重算状态），不足支持 / 无阈值的单元记 `unsupported`、从不 PASS；G4 / G5 记 `not_run`；单元结果写入报告行 `conditional_cells` 并入审计 / 检查点；
+  单元判定不改变任何生命周期、不写 FailureRecord。限制：适配器门复制自试验报告（`PipelineBacktestValidator` 无公开子集入口）；数据集组合根未做端到端测试。
+- 子代理：`pytest tests/research/loop tests/research/experiments` → 160 passed (586 s)；最终代码复跑 → 27 passed；ruff / format / mypy（27 files）通过。
+- 本分支集成后：`pytest -m "not postgres" tests/research/loop tests/research/experiments tests/test_architecture_boundaries.py` → **171 passed, 1 warning (561.80 s)**；ruff / mypy 通过。
+
+**B28 — ADR-0005 Promotion 链：Strategy Registry、Promotion 服务、Equivalence Gate**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 promotion 通道 `ad09332` 的 cherry-pick）
+
+- 分层：`infrastructure/registry/`（只追加哈希链 Registry，只依赖 `core`）、`research/promotion/`（由验证证据构建 `StrategyArtifact`）、`apps/promotion/`（Equivalence Gate 与 `DeploymentRecord`，不 import `research/`）。
+- 失败关闭：缺任一证据（报告 PASS 覆盖 G0–G4 且至少一份含 G5、实验与 spec / 宪法 / Profile / 研究提交一致、依赖哈希、经人工批准的 OOS → PAPER、确定性金标准）即类型化拒绝、不写入；
+  门精确比较（契约无容差）；今天所有库策略都被拒（`no_validation_report`）；没有任何策略被晋升，`strategies/` / `risk/` 仍无代码（边界测试固定）。ADR-0005 已追加实施说明（开放选择逐条记录）。
+- 实际运行：子代理与本分支集成后 `pytest -m "not postgres" tests/promotion tests/test_architecture_boundaries.py tests/test_lifecycle.py tests/test_lifecycle_evidence.py tests/apps/test_execution.py tests/test_docs_consistency.py`
+  → **202 passed**；`ruff check .` → All checks passed；mypy（14 files）→ no issues。
+- 限制：Registry 迁 PostgreSQL 待 D-01 / D-02；不核对 Git commit / tree 是否存在；重开时不复核 blob 内容（注册与读取时核对）；仅 POSIX flock。
+
