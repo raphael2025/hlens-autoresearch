@@ -180,9 +180,13 @@ Then, through that same backtester, cost model, bars and initial equity:
 - the inverse control: every re-run target with its weight negated (flat stays flat).
 
 These are backtests of the same trial, not ``TrialRunner`` calls: ``family_trial_count`` and the
-runner's call sequence are unchanged. ``False`` (every pre-existing caller: the loop, the synthetic
-lab, the e2e tests) adds nothing, so their reports are byte-identical (hashes pinned in
-``tests/research/strategies/test_market_benchmark.py``).
+runner's call sequence are unchanged. ``False`` (the default) adds nothing, so a caller that
+does not opt in gets byte-identical reports (hashes pinned in
+``tests/research/strategies/test_market_benchmark.py``). Since 2026-09-26 (B39) the continuous
+loop builds its setups with ``market_benchmark=True`` and the synthetic-lab pipeline detectors
+refuse a setup without it, so C-T4 is enforced wherever research runs; the default stays
+``False`` because a router self-validation re-run cannot be reproduced by a plain
+``BarBacktester`` (it would make every such report ``INCONCLUSIVE``).
 
 Known limit (DEBUG_PENDING): the pooled G1 negative controls permute / circularly shift the
 pooled label sequence, which interleaves instruments by time, so a control may pair one
