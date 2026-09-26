@@ -77,9 +77,9 @@ spent budget is never retried; a duplicate submission is absorbed by the job's c
 **Durable bus** (ADR-0044 / ADR-0049 implementation notes, durable jobs and bus wiring,
 2026-09-26). The audit is the durable result of a round job: a loop continuing an audit
 acknowledges, when it is constructed, every still-unacknowledged round job (``ROUND_JOB`` on
-``JOB_TOPIC``) of **this** loop whose round the audit already recorded (a durable bus re-delivers the job of a
-process that died between recording the round and acking its message); such a job is never run
-again. Jobs of other loops, of unrecorded rounds or with another content are left alone.
+``JOB_TOPIC``) of **this** loop whose round the audit already recorded (a durable bus
+re-delivers the job of a process that died between recording the round and acking its message);
+such a job is never run again. Jobs of other loops, of unrecorded rounds or with another content are left alone.
 Each recorded round is published on ``research_loop.round`` as ``round_message(loop_id, record)``
 right after the audit (and ``after_record``); if that publish fails, the round stays recorded and
 the loop stops (fail closed), so a bus is never more than the last round behind its audit. The
