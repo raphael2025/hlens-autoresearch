@@ -173,6 +173,7 @@ def open_dataset_loop(
     bus: EventBusAdapter | None = None,
     llm: LLMProvider | None = None,
     anchor: StateAnchor | Path | None = None,
+    bus_anchor: Path | None = None,
 ) -> DurableLoop:
     """The dataset-backed loop over ``state_dir`` (``open_synthetic_loop``'s contract).
 
@@ -180,6 +181,10 @@ def open_dataset_loop(
     manifests ``config.rounds`` declares for its round. ``bus`` omitted: the composition's own
     ``FileEventBus(state_dir / "bus")``, cross-checked against the audit (``compose_durable``).
     """
+    if bus is not None and bus_anchor is not None:  # before anything under state_dir is touched
+        raise ValueError(
+            "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
+        )
     refuse_ephemeral_unseal(config)
     wiring = config.wiring
     state = open_state(
@@ -192,7 +197,7 @@ def open_dataset_loop(
     )
     for record in state.audit.records:
         _check_recorded_ingest(state.root, config, record)
-    return compose_durable(config, state, _ingest(config, catalog), bus, llm)
+    return compose_durable(config, state, _ingest(config, catalog), bus, llm, bus_anchor)
 
 
 def _check_recorded_ingest(root: Path, config: DatasetLoopConfig, record: LoopRecord) -> None:

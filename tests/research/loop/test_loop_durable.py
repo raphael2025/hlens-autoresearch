@@ -1135,3 +1135,48 @@ def test_an_injected_in_memory_bus_is_not_durable_and_gets_every_round_replayed(
     with pytest.raises(LoopStateInconsistent, match="foreign or reordered"):
         _open_injected(state_dir, foreign)
     assert len(foreign.poll("auditor", ROUND_TOPIC, 100)) == 1  # nothing replayed on a refusal
+
+
+# ------------------------------------------------ bus anchor (FileEventBus anchor=, 2026-09-26)
+
+
+def test_the_automatic_bus_can_be_anchored_outside_the_state_dir(tmp_path: Path) -> None:
+    from infrastructure.event_bus import BusCorrupted
+    from infrastructure.event_bus.journal import AppendOnlyJournal as BusJournal
+
+    state_dir, bus_anchor = tmp_path / "state", tmp_path / "bus-anchor.jsonl"
+
+    def open_anchored(consumed: int) -> DurableLoop:
+        opened: DurableLoop = open_synthetic_loop(
+            _config(),
+            state_dir=state_dir,
+            provider=RandomWalkMarket(),
+            llm=_llm(consumed),
+            bus_anchor=bus_anchor,
+        )
+        return opened
+
+    with open_anchored(0) as first:
+        first.loop.run_unattended(1)
+    heads = [e.payload for e in BusJournal(bus_anchor).entries]
+    assert ROUND_TOPIC in {head["topic"] for head in heads}
+    with open_anchored(1) as reopened:  # consistent: opens
+        assert len(reopened.loop.audit.records) == 1
+    log = state_dir / ROUND_LOG
+    lines = log.read_text(encoding="utf-8").splitlines(keepends=True)
+    log.write_text("".join(lines[:-1]), encoding="utf-8")
+    with pytest.raises(BusCorrupted, match="dropped"):
+        open_anchored(1)
+
+
+def test_a_bus_anchor_is_refused_with_a_callers_bus(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="bus_anchor"):
+        open_synthetic_loop(
+            _config(),
+            state_dir=tmp_path / "state",
+            provider=RandomWalkMarket(),
+            bus=InMemoryEventBus(),
+            llm=_llm(),
+            bus_anchor=tmp_path / "bus-anchor.jsonl",
+        )
+    assert not (tmp_path / "state").exists()  # refused before the state directory is touched

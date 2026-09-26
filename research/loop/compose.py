@@ -471,6 +471,7 @@ def open_synthetic_loop(
     bus: EventBusAdapter | None = None,
     llm: LLMProvider | None = None,
     anchor: StateAnchor | Path | None = None,
+    bus_anchor: Path | None = None,
 ) -> DurableLoop:
     """Compose the loop over ``state_dir`` (created when missing), restoring every stateful part.
 
@@ -498,8 +499,15 @@ def open_synthetic_loop(
     up after a crash, anything else inconsistent is refused) and released by
     ``DurableLoop.close()``. A caller's bus is cross-checked the same way (an ``InMemoryEventBus``
     is not durable: the audit's rounds are replayed into it; module docs, **Injected buses**) and
-    stays open.
+    stays open. ``bus_anchor``: only with the composition's own bus — a path **outside**
+    ``state_dir`` given to ``FileEventBus(..., anchor=)``, so lines dropped from the end of *any*
+    bus topic (not only ``research_loop.round``, which the audit already covers) are refused on
+    reopening (``BusCorrupted``).
     """
+    if bus is not None and bus_anchor is not None:  # before anything under state_dir is touched
+        raise ValueError(
+            "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
+        )
     refuse_ephemeral_unseal(config)
     wiring = config.wiring
     state = open_state(
@@ -511,7 +519,7 @@ def open_synthetic_loop(
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
     )
     return compose_durable(
-        config, state, _synthetic_ingest(config, provider, state.memory), bus, llm
+        config, state, _synthetic_ingest(config, provider, state.memory), bus, llm, bus_anchor
     )
 
 
@@ -521,6 +529,7 @@ def compose_durable(
     ingest: LoopStage,
     bus: EventBusAdapter | None,
     llm: LLMProvider | None,
+    bus_anchor: Path | None = None,
 ) -> DurableLoop:
     """``compose_loop`` over an opened state directory, with its bus (shared by every source).
 
@@ -528,14 +537,19 @@ def compose_durable(
     ``InMemoryEventBus`` is not durable and gets the audit's rounds replayed, module docs,
     **Injected buses**), then used; closing it is the caller's job. Omitted: the composition's own
     ``FileEventBus(state_dir / "bus")``, cross-checked the same way and released by
-    ``DurableLoop.close()`` or when the loop is dropped (module docs, **Durable bus**).
+    ``DurableLoop.close()`` or when the loop is dropped (module docs, **Durable bus**);
+    ``bus_anchor`` (own bus only) is that bus's external topic-head anchor.
     """
+    if bus is not None and bus_anchor is not None:
+        raise ValueError(
+            "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
+        )
     if bus is not None:
         durable = not isinstance(bus, InMemoryEventBus)
         check_round_bus(bus, config.loop_id, state.audit.records, durable=durable)
         loop = compose_loop(config, ingest, bus, state.memory, llm, state)
         return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root, bus=bus)
-    owned = FileEventBus(state.root / BUS_DIR)
+    owned = FileEventBus(state.root / BUS_DIR, anchor=bus_anchor)
     try:
         check_round_bus(owned, config.loop_id, state.audit.records)
         loop = compose_loop(config, ingest, owned, state.memory, llm, state)

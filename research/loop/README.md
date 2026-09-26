@@ -96,6 +96,10 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   组合根在任何新轮次之前补齐；消息是已校验记录的纯函数）；**落后两轮及以上**（总线被截断 / 替换 / 从未用于此目录）→ 拒绝，拒绝时不写任何东西。
   同时机制侧在续接审计时确认本循环已记录轮次的未确认轮次任务（崩溃于记录与确认之间）——审计就是它们的持久结果，从不重跑。
   纯内存组合仍必须传 `bus`。
+- **总线外部锚点**（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`open_synthetic_loop` / `open_dataset_loop` / `compose_durable` 新增可选
+  `bus_anchor=<state_dir 之外的路径>`，交给自动总线 `FileEventBus(..., anchor=)`：任何主题（不只审计已覆盖的 `research_loop.round`）的尾部整行删除
+  在重开时被拒绝（`BusCorrupted`）；与调用方自带总线同时给出即拒绝，且在触碰 `state_dir` 之前拒绝。不给时行为与记录哈希不变。测试见
+  `tests/research/loop/test_loop_durable.py` 末尾两项。
 - **调用方自带的总线**（ADR-0049 实施说明 review fixes 3，2026-09-26）：持久模式下调用方传入的总线与自动总线**同样**经 `check_round_bus`
   核对（同样的拒绝、同样只补发最后一轮；拒绝时不写入；关闭仍是调用方的事）。例外是 `InMemoryEventBus`：它**不是持久总线**（新进程里必然为空，
   落后不是截断的证据），审计缺少的**全部**轮次按序补发进去（`check_round_bus(..., durable=False)`），外来 / 乱序 / 超前仍拒绝；
