@@ -44,6 +44,10 @@ Phase 12 Strategy Evolution（[ADR-0045](../../docs/adr/0045-strategy-evolution.
 - `ProposalLedger`：单写者（`<path>.lock` 的 `flock`，`ProposalLedgerLocked`）；可选外部锚点 `anchor=`（`ProposalAnchor`，须在账本目录之外）：
   重开时账本少于锚点（尾部删行、删除、回滚）、锚点位置另有一行、或锚点为空而账本有行 → `ProposalLedgerInconsistent`；账本领先锚点（追加后锚定前崩溃）
   被接受并锚定。无锚点时整行尾部截断仍无法发现（已记录的限制）；锚点发现丢失，不认证新增。
+- `ProposalAnchor`（B49）：一个锚点只属于一个账本，不是多账本汇总器。锚点有自己的跨进程 `flock`（`<anchor>.lock`，与任何账本锁无关；读共享、写独占），
+  每次 `load` / 发布都在锁内从磁盘重新构造并逐行核验 `AppendOnlyJournal`（无缓存）。发布新 head 前，每个已锚定的 `(count, head)` 都必须等于目标账本
+  第 `count` 行的哈希；账本短于锚点或在已锚定位置不同（回滚、改写、或另一个账本共用同一锚点）即拒绝，且被拒绝的 `record` 既不写账本也不写锚点。
+  `record` 在锚点锁内完成"核对 → 追加账本行 → 锚定"。锚点 count / head 永不回退、不横移；账本因崩溃领先锚点时重开仍会补锚。
 - `propose_replacement` 的谱系检查只要求**策略**祖先完整：库策略的 `lineage` 同时引用其来源知识条目（`Kind.KNOWLEDGE`），它们不是策略版本，
   从不在策略谱系图中（循环的演化阶段同样只检查策略链接）；缺失的策略祖先仍被拒绝。
 

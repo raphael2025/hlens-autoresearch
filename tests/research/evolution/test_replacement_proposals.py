@@ -347,9 +347,9 @@ def test_an_anchor_inside_the_ledger_directory_is_refused(tmp_path: Path) -> Non
 
 def test_the_anchor_never_moves_back_or_sideways(tmp_path: Path) -> None:
     anchor = ProposalAnchor(tmp_path / "anchor.jsonl")
-    anchor.publish(2, "h2")
-    anchor.publish(2, "h2")  # the same head: no-op
-    for count, head in ((0, "h0"), (1, "h1"), (2, "other")):
-        with pytest.raises(ProposalLedgerInconsistent, match="never moves back"):
-            anchor.publish(count, head)
+    anchor.publish(("h1", "h2"))  # a deliberate anchoring of a chain on an empty anchor
+    anchor.publish(("h1", "h2"))  # the same head: no-op
+    for chain in ((), ("h1",), ("h1", "other"), ("h1", "other", "h3")):
+        with pytest.raises(ProposalLedgerInconsistent, match="never moves back or sideways"):
+            anchor.publish(chain)
     assert len(AppendOnlyJournal(tmp_path / "anchor.jsonl").entries) == 1

@@ -20,9 +20,10 @@ human through the normal Promotion path (ADR-0005 / ADR-0006), outside the resea
 (``research.persistence.AppendOnlyJournal``); reopening replays and re-verifies every proposal
 hash. Re-recording an identical proposal is a no-op; nothing is ever edited or removed.
 The ledger has a single writer (an ``flock`` on ``<path>.lock``, ``ProposalLedgerLocked``) and an
-optional external anchor (``anchor=``, a ``ProposalAnchor`` outside the ledger's directory) that
-turns a truncated, deleted or rolled-back ledger into a refusal on reopening
-(``ProposalLedgerInconsistent``); see ``ProposalLedger``. The research job that feeds it from a
+optional external anchor (``anchor=``, a ``ProposalAnchor`` outside the ledger's directory, with
+its own ``flock`` and no cache) that turns a truncated, deleted, rolled-back or diverged ledger —
+or a second ledger sharing the anchor — into a refusal (``ProposalLedgerInconsistent``); see
+``ProposalLedger`` and ``ProposalAnchor``. The research job that feeds it from a
 loop's durable lineage and verified validation reports is ``research.evolution.replacement_job``.
 """
 
@@ -31,6 +32,8 @@ from __future__ import annotations
 import fcntl
 import os
 import weakref
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -286,45 +289,120 @@ class ProposalAnchor:
     """The ledger's head kept **outside** the ledger's directory (a hash-chained journal).
 
     Every publish is one ``proposal_ledger_head`` line ``{"count", "head"}`` (number of ledger
-    lines and the ledger's chain head). Publishing the current head again is a no-op; a head with
-    fewer lines, or another head at the same count, is refused: the anchor never moves back or
-    sideways.
+    lines and the ledger's chain head); the counts strictly increase. An anchor belongs to **one**
+    ledger: it is not an aggregator of several.
+
+    **No cache, its own lock**: every ``load`` / publish takes an OS ``flock`` on
+    ``<anchor>.lock`` (shared to read, exclusive to write; independent of any ledger's lock, so
+    two ledgers — or two processes, or two stale ``ProposalAnchor`` objects — sharing one anchor
+    serialize on it), then replays a fresh ``AppendOnlyJournal`` from disk and verifies every line
+    before it answers or appends. A process that dies releases the lock (kernel).
+
+    **Prefix rule**: a new head is kept only for the chain of the ledger that already produced
+    every anchored head — each anchored ``(count, head)`` must be the hash of that ledger's line
+    ``count``. A chain that is shorter than the anchor (the ledger lost lines, or it is another
+    ledger) or has another line at an anchored position (diverged, or another ledger sharing the
+    anchor) is refused (``ProposalLedgerInconsistent``) and nothing is written: the anchor never
+    moves back or sideways. Publishing a chain already anchored is a no-op; a longer one moves
+    the anchor up to it (e.g. a ledger that appended before a crash and reopened).
     """
 
     def __init__(self, path: Path) -> None:
-        self._journal = AppendOnlyJournal(Path(path))
+        self._path = Path(path)
+        self._lock_path = self._path.with_name(f"{self._path.name}.lock")
 
     @property
     def path(self) -> Path:
-        return self._journal.path
+        return self._path
+
+    @contextmanager
+    def _locked(self, operation: int) -> Iterator[AppendOnlyJournal]:
+        """Hold the anchor's ``flock`` and yield a journal freshly replayed from disk under it."""
+        self._path.parent.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self._lock_path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, operation)  # blocks until the holder (this or another process) is done
+            yield AppendOnlyJournal(self._path)
+        finally:
+            os.close(fd)  # closing the descriptor drops the lock
+
+    def _heads(self, journal: AppendOnlyJournal) -> list[tuple[int, str]]:
+        """Every anchored head, verified: the right type and shape, counts strictly increasing."""
+        heads: list[tuple[int, str]] = []
+        for entry in journal.entries:
+            payload = entry.payload
+            if (
+                entry.type != _ANCHOR_TYPE
+                or set(payload) != {"count", "head"}
+                or isinstance(payload["count"], bool)
+                or not isinstance(payload["count"], int)
+                or payload["count"] < 1
+                or not isinstance(payload["head"], str)
+            ):
+                raise ProposalLedgerInconsistent(f"{self._path}:{entry.seq} is not a ledger head")
+            if heads and payload["count"] <= heads[-1][0]:
+                raise ProposalLedgerInconsistent(
+                    f"{self._path}:{entry.seq} moves the anchor back or sideways"
+                )
+            heads.append((payload["count"], payload["head"]))
+        return heads
+
+    def _require_prefix(self, heads: list[tuple[int, str]], chain: Sequence[str], of: str) -> None:
+        """Every anchored head is the hash of ``chain``'s line at its count (see class docs)."""
+        for count, head in heads:
+            if count > len(chain):
+                raise ProposalLedgerInconsistent(
+                    f"{of} holds {len(chain)} line(s) but its anchor {self._path} recorded "
+                    f"{count}: the ledger was truncated, deleted or rolled back, or the anchor "
+                    "belongs to another ledger (the anchor never moves back or sideways)"
+                )
+            if chain[count - 1] != head:
+                raise ProposalLedgerInconsistent(
+                    f"{of} has diverged from its anchor {self._path} at line {count}: the ledger "
+                    "was rewritten, or another ledger shares the anchor (the anchor never moves "
+                    "back or sideways)"
+                )
 
     def load(self) -> tuple[int, str] | None:
-        entries = self._journal.entries
-        if not entries:
-            return None
-        last = entries[-1]
-        payload = last.payload
-        if (
-            last.type != _ANCHOR_TYPE
-            or set(payload) != {"count", "head"}
-            or isinstance(payload["count"], bool)
-            or not isinstance(payload["count"], int)
-            or payload["count"] < 1
-            or not isinstance(payload["head"], str)
-        ):
-            raise ProposalLedgerInconsistent(f"{self.path}:{last.seq} is not a ledger head")
-        return payload["count"], payload["head"]
+        """The anchored ``(count, head)``, read and verified from disk under the lock."""
+        with self._locked(fcntl.LOCK_SH) as journal:
+            heads = self._heads(journal)
+        return heads[-1] if heads else None
 
-    def publish(self, count: int, head: str) -> None:
-        last = self.load()
-        if last == (count, head) or (last is None and count == 0):
-            return  # the same head again, or an empty ledger: nothing to keep
-        if last is not None and count <= last[0]:
-            raise ProposalLedgerInconsistent(
-                f"the anchor {self.path} is at ledger line {last[0]}; it never moves back or "
-                f"sideways (asked to keep line {count})"
-            )
-        self._journal.append(_ANCHOR_TYPE, {"count": count, "head": head})
+    def publish(self, chain: Sequence[str]) -> None:
+        """Anchor a ledger's verified chain (its line hashes in order; the head is the last).
+
+        On an empty anchor this is a deliberate anchoring of that chain; otherwise the prefix
+        rule applies (class docs).
+        """
+        self._advance(chain, of="the published chain", adopt=True)
+
+    def _advance(
+        self,
+        chain: Sequence[str],
+        *,
+        of: str,
+        adopt: bool,
+        append: Callable[[], str] | None = None,
+    ) -> None:
+        """Under the exclusive lock: verify, check ``chain`` against every anchored head, then
+        (optionally) ``append`` one ledger line — it returns that line's hash — and anchor the
+        new head. ``adopt=False`` refuses a non-empty chain on an empty anchor (a ledger never
+        attaches itself late; a human anchors it deliberately with ``publish``)."""
+        with self._locked(fcntl.LOCK_EX) as journal:
+            heads = self._heads(journal)
+            if heads:
+                self._require_prefix(heads, chain, of)
+            elif chain and not adopt:
+                raise ProposalLedgerInconsistent(
+                    f"the anchor {self._path} holds no head but {of} holds {len(chain)} "
+                    "line(s): the anchor was lost or attached late (a human checks the ledger "
+                    "and anchors it deliberately)"
+                )
+            if append is not None:
+                chain = (*chain, append())
+            if chain and (not heads or len(chain) > heads[-1][0]):
+                journal.append(_ANCHOR_TYPE, {"count": len(chain), "head": chain[-1]})
 
 
 class ProposalLedger:
@@ -337,12 +415,15 @@ class ProposalLedger:
 
     **External anchor** (optional ``anchor=``, a path outside the ledger's directory): after every
     new line and after a verified opening, the anchor keeps the ledger's line count and chain head
-    (``ProposalAnchor``). On opening, a ledger with fewer lines than the anchor (lines dropped from
-    its end, the file deleted or replaced by an older copy), another line at the anchored position,
-    or any line while the anchor is empty (lost, or attached to a ledger that already had lines) is
-    refused (``ProposalLedgerInconsistent``). A ledger ahead of its anchor (e.g. the process died
-    between appending and anchoring) is accepted and the anchor moves up: an anchor detects lost
-    lines, it does not authenticate added ones (the journal is a hash chain, not a signature).
+    (``ProposalAnchor``, with its own cross-process lock and no cache). On opening **and before
+    every new line** (under the anchor's lock, which is held until the line is anchored), a ledger
+    with fewer lines than the anchor (lines dropped from its end, the file deleted or replaced by an
+    older copy, or another ledger's anchor), another line at an anchored position (rewritten, or
+    another ledger sharing the anchor), or any line while the anchor is empty (lost, or attached to
+    a ledger that already had lines) is refused (``ProposalLedgerInconsistent``) — and a refused
+    ``record`` writes nothing. A ledger ahead of its anchor (e.g. the process died between appending
+    and anchoring) is accepted and the anchor moves up: an anchor detects lost lines, it does not
+    authenticate added ones (the journal is a hash chain, not a signature).
     **Without** an anchor a whole-line truncation of the end of the file is a valid shorter chain
     and cannot be told from an older ledger (a rewritten or partially cut line is
     ``JournalCorrupted`` either way).
@@ -381,40 +462,29 @@ class ProposalLedger:
             self._proposals[proposal.proposal_hash] = proposal
 
     def _check_anchor(self, path: Path) -> None:
-        if self._anchor is None:
-            return
-        entries = self._journal.entries
-        anchored = self._anchor.load()
-        if anchored is None:
-            if entries:
-                raise ProposalLedgerInconsistent(
-                    f"the anchor {self._anchor.path} holds no head but {path} holds "
-                    f"{len(entries)} line(s): the anchor was lost or attached late (a human "
-                    "checks the ledger and anchors it deliberately)"
-                )
-            return
-        count, head = anchored
-        if count > len(entries):
-            raise ProposalLedgerInconsistent(
-                f"{path} holds {len(entries)} line(s) but its anchor recorded {count}: the ledger "
-                "was truncated, deleted or rolled back (proposals would be lost)"
-            )
-        if entries[count - 1].hash != head:
-            raise ProposalLedgerInconsistent(f"{path} has diverged from its anchor at line {count}")
-        self._publish()
-
-    def _publish(self) -> None:
         if self._anchor is not None:
-            self._anchor.publish(len(self._journal.entries), self._journal.head_hash)
+            self._anchor._advance(self._chain(), of=str(path), adopt=False)
+
+    def _chain(self) -> tuple[str, ...]:
+        return tuple(entry.hash for entry in self._journal.entries)
+
+    def _append(self, proposal: ReplacementProposal) -> str:
+        entry = self._journal.append(_RECORD_TYPE, proposal.to_payload())
+        self._proposals[proposal.proposal_hash] = proposal
+        return entry.hash
 
     def record(self, proposal: ReplacementProposal) -> None:
         if not self._lock.held:
             raise ProposalLedgerLocked("this ledger was closed: open it again to record")
         if proposal.proposal_hash in self._proposals:
             return
-        self._journal.append(_RECORD_TYPE, proposal.to_payload())
-        self._proposals[proposal.proposal_hash] = proposal
-        self._publish()
+        if self._anchor is None:
+            self._append(proposal)
+            return
+        # checked against the anchor on disk first; the line is appended and anchored under its lock
+        self._anchor._advance(
+            self._chain(), of=str(self.path), adopt=False, append=lambda: self._append(proposal)
+        )
 
     def close(self) -> None:
         """Release the single-writer lock (idempotent); a closed ledger can still be read."""
