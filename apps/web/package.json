@@ -8,7 +8,9 @@
     "dev": "vite",
     "build": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && vite build",
     "preview": "vite preview",
-    "test": "node --test src/lib/"
+    "test": "npm run test:lib && npm run test:components",
+    "test:lib": "node --test src/lib/",
+    "test:components": "node scripts/test-components.mjs"
   },
   "dependencies": {
     "echarts": "^5.5.0",

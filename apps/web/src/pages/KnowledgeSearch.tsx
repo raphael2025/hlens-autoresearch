@@ -1,18 +1,27 @@
-import { useState } from "react";
+import { useContext, useState } from "react";
 import { searchKnowledge, type KnowledgeQuery } from "../api";
 import { SimulatedBanner } from "../components/Banner";
 import { AsyncView } from "../components/States";
+import { InitialSelectionContext } from "../lib/initialSelection";
 import { useApi } from "../lib/useApi";
+
+function toQuery(terms: string): Partial<KnowledgeQuery> {
+  return { terms: terms.split(/\s+/).filter(Boolean), limit: 50 };
+}
 
 // apps/api answers 503 when no knowledge provider is configured and 502 when the provider cannot
 // answer honestly; both reach the error state with the server's `detail` (src/lib/errors.ts).
 export function KnowledgeSearch() {
-  const [terms, setTerms] = useState<string>("momentum");
-  const [query, setQuery] = useState<Partial<KnowledgeQuery> | null>(null);
+  // `submitted` is null in the console (nothing searched yet); only component tests set it.
+  const submitted = useContext(InitialSelectionContext);
+  const [terms, setTerms] = useState<string>(submitted ?? "momentum");
+  const [query, setQuery] = useState<Partial<KnowledgeQuery> | null>(
+    submitted === null ? null : toQuery(submitted),
+  );
   // a new object per click, so searching the same terms again re-runs the request
   const result = useApi(query === null ? null : () => searchKnowledge(query), [query]);
 
-  const search = () => setQuery({ terms: terms.split(/\s+/).filter(Boolean), limit: 50 });
+  const search = () => setQuery(toQuery(terms));
 
   return (
     <section>

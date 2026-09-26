@@ -1,8 +1,9 @@
 // The list + detail layout every report page shares: GET /reports/{kind} (with its invalid files
 // shown as a warning) on the left, GET /reports/{kind}/{id} of the selected report on the right,
 // each with explicit loading / empty / error states (src/components/States.tsx).
-import { useState, type ReactNode } from "react";
+import { useContext, useState, type ReactNode } from "react";
 import { getReport, listReports, type ReportEnvelope, type ReportKind } from "../api";
+import { InitialSelectionContext } from "../lib/initialSelection";
 import { useApi } from "../lib/useApi";
 import { AsyncView, InvalidReports } from "./States";
 
@@ -24,7 +25,7 @@ export function ReportBrowser({
   renderDetail: (report: ReportEnvelope) => ReactNode;
   listWidth?: number;
 }) {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(useContext(InitialSelectionContext));
   const listing = useApi(() => listReports(kind), [kind]);
   const detail = useApi(
     selectedId === null ? null : () => getReport(kind, selectedId),

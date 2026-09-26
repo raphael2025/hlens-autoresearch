@@ -3,6 +3,6 @@
   "compilerOptions": {
     "allowImportingTsExtensions": true
   },
-  "include": ["src/lib", "test-types"],
+  "include": ["src/lib", "src/**/*.test.tsx", "src/**/*.test-util.tsx", "test-types"],
   "exclude": []
 }

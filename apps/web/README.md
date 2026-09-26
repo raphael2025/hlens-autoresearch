@@ -47,7 +47,9 @@ npm install                 # 项目本地安装，node_modules/ 已 gitignore�
 npm run gen:api              # 从 ../api/openapi.json 生成 src/api.d.ts（提交该生成文件）
 npm run dev                  # 本地开发服务器；/api/* 反代到 http://127.0.0.1:8000（vite.config.ts）
 npm run build                # tsc（应用 + 测试文件）&& vite build -> dist/
-npm test                     # node --test src/lib/（Node 原生运行 TypeScript，无新依赖）
+npm test                     # = npm run test:lib && npm run test:components（两套都跑）
+npm run test:lib             # node --test src/lib/（Node 原生运行 TypeScript，无新依赖）
+npm run test:components      # 组件测试：esbuild 打包 src/**/*.test.tsx 后 node --test（见下文「组件测试」）
 ```
 
 内存受限环境下（WSL，16GB 共享）用 `systemd-run` 包裹每条 npm 命令：
@@ -163,3 +165,33 @@ jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge S
   `fixtures/degradation_check/`）。指标按 breached → missing → within 排序；missing 明示「证据不足，不是健康」；
   每个阈值显示其来源。纯表格，不引入 ECharts。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（只跑了 `npm run build` 与 `npm test`）。
+
+## 组件测试（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+`npm run test:components`（`npm test` 也会跑）对共享组件与全部 14 个页面做渲染测试，**无新依赖**，
+`package-lock.json` 未变：
+
+- **运行器** `scripts/test-components.mjs`：Node 不能剥离 JSX，所以用已安装的 esbuild（vite 自带依赖）的 JS API
+  把每个 `src/**/*.test.tsx` 打包成 ESM（platform node、jsx automatic、共享 chunk 拆分）到
+  `node_modules/.component-tests/`（已 gitignore，每次清空；与 `src/lib/` 同为 apps/web 下两层，因此
+  `fixtures.test-util.ts` 的相对路径照样指向 `apps/web/fixtures/`，产物平铺、测试文件不得重名），再
+  `node --test` 运行。额外参数透传给 `node --test`（如 `npm run test:components -- --test-name-pattern=Jobs`）。
+- **渲染**：`react-dom/server` 的 `renderToStaticMarkup`（不需要 DOM）。`src/components/render.test-util.tsx`：
+  `renderInitial` = 浏览器首帧（全部请求 `loading`，且断言尚未发出任何请求）；`renderSettled` 安装 fetch stub，
+  经 `useApi` 的测试接缝反复渲染直到所有请求都已完成，得到 loaded / empty / error 状态。
+- **两个测试接缝（生产默认行为不变）**：`ApiSeedContext`（`src/lib/useApi.ts`：provider 可给出请求的初始状态；
+  控制台从不提供，所以仍然从 `loading` 开始、由 effect 发请求）与 `InitialSelectionContext`
+  （`src/lib/initialSelection.ts`：ReportBrowser / Jobs 的初始选中 id、Knowledge Search 的已提交检索词；
+  默认 `null` = 未选中 / 未检索，与之前相同）。
+- **覆盖**：`States.test.tsx`（Loading / ErrorState / Empty / InvalidReports / AsyncView 各状态）、
+  `ReportBrowser.test.tsx`（列表 + 无效文件警告、默认 / 自定义 label、选中详情、空、列表错误、网络错误、详情 404）、
+  `pages/reportPages.test.tsx`（9 个 ReportBrowser 页面逐一：首帧、真实 fixture 列表及其由 payload 推出的 label、
+  选中 fixture 的详情确实被解析（不是原始 JSON 回退）、空、500、详情 404），以及 `Dashboard` / `ResearchLoop` /
+  `Lifecycle` / `Jobs` / `KnowledgeSearch` 各自的首帧、loaded、empty、error（含 503 / 502 / 500 的状态含义）。
+  报告页面的 loaded 状态用 `apps/web/fixtures/` 的真实报告；Jobs / Lifecycle / Knowledge / Dashboard 的非报告
+  响应体在测试中内联构造。
+- **API 契约检查**：stub 只通过 `render.test-util.tsx` 的 `api.*` 路由构造，每个响应体的类型取自
+  `src/api.d.ts`（经 `src/api.ts`），路径与 `src/api.ts` 对应的客户端函数一致；`tsconfig.test.json` 包含
+  `src/**/*.test.tsx` 与 `*.test-util.tsx`，所以 `npm run build` 的 `tsc -p tsconfig.test.json` 在 fixture / 内联
+  响应体与页面解析所依据的 API 类型不符时直接失败。
+- 局限：服务端渲染不执行 effect，ECharts 图表只验证容器存在，不验证绘制结果；点击等交互未覆盖（初始选中通过接缝注入）。

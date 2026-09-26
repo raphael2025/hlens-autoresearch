@@ -1,8 +1,9 @@
-import { useMemo, useState } from "react";
+import { useContext, useMemo, useState } from "react";
 import { getJob, listJobs, type JobList, type JobStatus, type JobView } from "../api";
 import { SimulatedBanner } from "../components/Banner";
 import { AsyncView } from "../components/States";
 import { JOB_STATUS_LABELS, jobRow, jobRows, statusCounts } from "../lib/jobs";
+import { InitialSelectionContext } from "../lib/initialSelection";
 import { useApi } from "../lib/useApi";
 
 // Read-only view of the worker's verified results journal (GET /jobs, GET /jobs/{job_id}).
@@ -127,7 +128,7 @@ function JobDetail({ job }: { job: JobView }) {
 }
 
 export function Jobs() {
-  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(useContext(InitialSelectionContext));
   const list = useApi(listJobs, []);
   const detail = useApi(selectedId === null ? null : () => getJob(selectedId), [selectedId]);
 
