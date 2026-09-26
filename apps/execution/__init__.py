@@ -50,6 +50,7 @@ from apps.execution.service import (
     TOPICS,
     ExecutionReport,
     ExecutionService,
+    MarksChoiceRequired,
     TargetPositionSource,
 )
 from apps.execution.strategy_source import (
@@ -91,6 +92,7 @@ __all__ = [
     "LinearCostModel",
     "MarkPrice",
     "MarkRecord",
+    "MarksChoiceRequired",
     "LiveExecutionRefused",
     "KillSwitchEngaged",
     "Monitor",

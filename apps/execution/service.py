@@ -15,8 +15,11 @@ admitted deployments are *not* rebuilt from it, so the new instance trips its ki
 flow needs a fresh audit path chosen by a human; ``replay_audit`` rebuilds what the old trail
 proves for inspection. With ``record_marks=True`` every batch's prices are also recorded (a
 ``MarkRecord``, before they are applied) so that ``apps.execution.risk_replay.replay_risk`` can
-re-derive every rejection, acceptance and alert; the default (``False``) writes exactly the records
-it wrote before, so existing audit heads are unchanged. The service
+re-derive every rejection, acceptance and alert. With a **durable** audit the choice must be
+explicit (``record_marks=True`` or ``False``; omitting it raises ``MarksChoiceRequired``), because a
+durable trail without marks cannot be risk-replayed and that must be a decision, not a default.
+With the in-memory audit it defaults to ``False``. ``record_marks=False`` writes exactly the
+records it wrote before, so existing audit heads are unchanged. The service
 refuses ``ExecutionMode.LIVE`` and any venue that is not exactly ``SimulatedVenue``; it performs no
 network I/O and holds no credentials. It never imports ``research/`` (tests/test_architecture_
 boundaries.py): the research plane cannot reach it, only a ``TargetPositionSource`` can.
@@ -60,6 +63,7 @@ from core.lifecycle.strategy import LifecycleHistory, LifecycleState
 
 __all__ = [
     "RESTORE_TRIPPED_BY",
+    "MarksChoiceRequired",
     "RUNNABLE_LIFECYCLE_STATES",
     "TOPICS",
     "ExecutionReport",
@@ -84,6 +88,10 @@ TOPICS: Mapping[type, str] = {
     LadderGateRecord: "execution.ladder",
     MarkRecord: "execution.mark",
 }
+
+
+class MarksChoiceRequired(ValueError):
+    """A durable audit was given without an explicit ``record_marks`` choice (module docs)."""
 
 
 class TargetPositionSource(Protocol):
@@ -125,8 +133,17 @@ class ExecutionService:
         bus: EventBusAdapter,
         clock: Callable[[], datetime],
         audit: AuditTrail | None = None,
-        record_marks: bool = False,
+        record_marks: bool | None = None,
     ) -> None:
+        if record_marks is None:
+            if audit is not None and audit.durable:
+                raise MarksChoiceRequired(
+                    "a durable audit needs an explicit record_marks=True/False: without marks "
+                    "apps.execution.risk_replay.replay_risk cannot replay a trail that holds orders"
+                )
+            record_marks = False
+        if not isinstance(record_marks, bool):
+            raise MarksChoiceRequired(f"record_marks must be a bool, not {record_marks!r}")
         if mode is not ExecutionMode.SIMULATED:
             raise LiveExecutionRefused(
                 f"execution mode {mode} refused: this build is SIMULATED only (ADR-0046, H10)"

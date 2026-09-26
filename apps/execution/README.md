@@ -53,7 +53,9 @@
 ## 风险与告警重放（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 
 - `MarkRecord`（`records.py`，应用层记录，非冻结领域契约）：`ExecutionService(..., record_marks=True)` 时，每批 `submit_targets` 的全部价格
-  （按键排序）在价格校验之后、施加到监控之前写入审计并发布到 `execution.mark`。**默认 `record_marks=False`**：写入的记录与此前逐条相同，
+  （按键排序）在价格校验之后、施加到监控之前写入审计并发布到 `execution.mark`。**持久审计（`AuditTrail(path)`）必须显式给出
+  `record_marks=True/False`**，省略即抛 `MarksChoiceRequired`（没有 mark 的持久审计无法做风险重放，这必须是决定而不是默认值）；
+  内存审计仍默认 `record_marks=False`。`record_marks=False` 时写入的记录与此前逐条相同，
   既有审计 head 不变（`test_marks_are_opt_in_and_the_default_audit_head_is_unchanged` 同时钉住旧/新：开启后仅多出 `MarkRecord`，其余记录与时间戳不变）。
 - `risk_replay.replay_risk(path | AuditTrail, limits, *, max_drawdown, monitor_capital=None)`：用调用者声明的限额与监控参数新建
   `SecondLineRisk` / `Monitor`，按审计顺序重跑标价、订单、成交与 Kill Switch 触发，要求每条已记录的拒绝、每笔成交对应的接受、每条告警都被逐字段复现
@@ -65,8 +67,8 @@
 
 | 模块 | 内容 |
 |---|---|
-| `records.py` 的 `MarkRecord` / `MarkPrice` | apps 本地的价格标记记录；`ExecutionService(record_marks=True)` 时每批目标写入（默认不写，既有审计头不变） |
+| `records.py` 的 `MarkRecord` / `MarkPrice` | apps 本地的价格标记记录；`ExecutionService(record_marks=True)` 时每批目标写入（内存审计默认不写；持久审计必须显式选择；`False` 时既有审计头不变） |
 | `risk_replay.py` | `replay_risk(path \| AuditTrail, limits, *, max_drawdown, monitor_capital=None)`：按审计顺序以新的二线风控与监控重放，逐字段复现每条拒绝、每笔成交与每条告警；分歧 → `RiskReplayDiverged`（指出首个分歧记录）；有订单无标记的审计被拒 |
 
-测试：`tests/apps/test_execution_risk_replay.py`。仍只模拟；目前没有组件默认开启 `record_marks`。
+测试：`tests/apps/test_execution_risk_replay.py`、`tests/apps/test_execution_marks_required.py`。仍只模拟；目前没有组件默认开启 `record_marks`。
 

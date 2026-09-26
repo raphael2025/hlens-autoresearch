@@ -57,6 +57,7 @@ def _service(
         bus=bus or InMemoryEventBus(),
         clock=_clock(),
         audit=AuditTrail(path),
+        record_marks=False,  # explicit for a durable audit; False keeps the pinned heads
     )
 
 
