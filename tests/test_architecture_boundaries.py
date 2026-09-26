@@ -178,6 +178,17 @@ def test_production_packages_do_not_import_research() -> None:
         assert not leaked, f"{path.relative_to(REPO)} 直接引用了研究代码"
 
 
+@pytest.mark.parametrize("package", ["plugins", "infrastructure"])
+def test_plugins_and_infrastructure_do_not_import_research(package: str) -> None:
+    """依赖方向 `apps → application → domain ← plugins / infrastructure`（CLAUDE.md §4、
+    01-system.md §3）：plugins/ 与 infrastructure/ 同样不得 import research/。"""
+    files = _python_files(package)
+    assert files, f"{package}/ 不存在"
+    for path in files:
+        leaked = _imported_roots(path) & {"research"}
+        assert not leaked, f"{path.relative_to(REPO)} 引用了研究代码"
+
+
 @pytest.mark.parametrize(
     "package",
     ["core", "core/domain", "core/contracts", "core/lifecycle", "core/compat"],
