@@ -13,7 +13,7 @@
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B56，B55 = ADR-0055，契约 2.2.0；B56 = ADR-0062 Profile 冻结登记；均经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
-| 最后更新时间 | 2026-09-26 |
+| 最后更新时间 | 2026-09-27 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
 领域契约、状态机、三层验证契约、错误分类、Schema 导出与工程基线均已实现并通过两轮关闭复审
