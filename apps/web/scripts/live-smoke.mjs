@@ -15,8 +15,12 @@
 // Optional: BARE_BASE_URL = an apps/api with no knowledge provider and no jobs journal (the 503
 // paths, through the client and the rendered pages); EXPECT_INVALID = "<kind>/<id>" of a malformed
 // report file BASE_URL must list as invalid (and answer 422 for); EXPECT_JOBS = JSON
-// {status: job_id} the journal must hold. tests/apps/test_live_backend_smoke.py starts both
-// servers (real subprocesses on 127.0.0.1) and runs this script against them.
+// {status: job_id} the journal must hold. BROKEN_BASE_URL = an apps/api whose knowledge provider
+// fails (502), whose jobs journal is tampered (500) and whose report reads raise (the catch-all
+// 500), with EXPECT_BROKEN = JSON {knowledge, jobs, internal: the declared details; job_id;
+// report: "<kind>/<id>"; forbidden: strings that must never reach the client or a page} (the
+// error paths through the client and the rendered pages). tests/apps/test_live_backend_smoke.py
+// starts all three servers (real subprocesses on 127.0.0.1) and runs this script against them.
 //
 // What this does NOT prove: pixel rendering, effects (ECharts drawing), clicks or navigation in a
 // real browser. Manual browser acceptance stays open.
@@ -30,8 +34,13 @@ const BASE_URL = process.env.BASE_URL;
 const BARE_BASE_URL = process.env.BARE_BASE_URL;
 const EXPECT_INVALID = process.env.EXPECT_INVALID;
 const EXPECT_JOBS = process.env.EXPECT_JOBS ? JSON.parse(process.env.EXPECT_JOBS) : null;
-if (!BASE_URL) {
-  console.error("usage: BASE_URL=http://127.0.0.1:<port> [BARE_BASE_URL=...] node scripts/live-smoke.mjs");
+const BROKEN_BASE_URL = process.env.BROKEN_BASE_URL;
+const EXPECT_BROKEN = process.env.EXPECT_BROKEN ? JSON.parse(process.env.EXPECT_BROKEN) : null;
+if (!BASE_URL || Boolean(BROKEN_BASE_URL) !== (EXPECT_BROKEN !== null)) {
+  console.error(
+    "usage: BASE_URL=http://127.0.0.1:<port> [BARE_BASE_URL=...] " +
+      "[BROKEN_BASE_URL=... EXPECT_BROKEN=<json>] node scripts/live-smoke.mjs",
+  );
   process.exit(2);
 }
 
@@ -284,7 +293,39 @@ if (BARE_BASE_URL) {
   step("unconfigured server: knowledge / jobs 503 through the client");
 }
 
+let broken = null;
+if (BROKEN_BASE_URL) {
+  const [kind, id] = EXPECT_BROKEN.report.split("/");
+  broken = await against(BROKEN_BASE_URL, async () => ({
+    kind,
+    id,
+    knowledge: await rejects(api.searchKnowledge({ terms: ["momentum"] }), 502),
+    jobs: await rejects(api.listJobs(), 500),
+    job: await rejects(api.getJob(EXPECT_BROKEN.job_id), 500),
+    listing: await rejects(api.listReports(kind), 500),
+    report: await rejects(api.getReport(kind, id), 500),
+  }));
+  assert.equal(broken.knowledge.detail, EXPECT_BROKEN.knowledge);
+  for (const error of [broken.jobs, broken.job]) assert.equal(error.detail, EXPECT_BROKEN.jobs);
+  for (const error of [broken.listing, broken.report]) assert.equal(error.detail, EXPECT_BROKEN.internal);
+  for (const error of [broken.knowledge, broken.jobs, broken.job, broken.listing, broken.report]) {
+    const line = c.errors.describeError(error);
+    for (const leak of EXPECT_BROKEN.forbidden) assert.ok(!line.includes(leak), `client error leaks ${leak}`);
+  }
+  step("broken server: knowledge 502, tampered jobs journal 500, catch-all report 500 through the client");
+}
+
 // --- 2. every page server-rendered over the live answers ---------------------------------------
+
+/** Text as react-dom/server escapes it in markup. */
+function escaped(text) {
+  return text
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#x27;");
+}
 
 // src/components/States.tsx ErrorState as react-dom/server renders it (other crimson cells, e.g. a
 // failed job's status, are data, not an error state).
@@ -377,5 +418,27 @@ if (BARE_BASE_URL) {
   step("unconfigured server: Knowledge Search / Jobs pages show the 503 error state");
 }
 
+if (BROKEN_BASE_URL) {
+  const reportPage = Object.keys(REPORT_PAGES).find((page) => REPORT_PAGES[page] === broken.kind);
+  assert.ok(reportPage !== undefined, `no page shows ${broken.kind}`);
+  const cases = [
+    ["KnowledgeSearch", "momentum", 502, broken.knowledge.detail],
+    ["Jobs", EXPECT_BROKEN.job_id, 500, broken.jobs.detail],
+    [reportPage, broken.id, 500, broken.listing.detail],
+  ];
+  await against(BROKEN_BASE_URL, async () => {
+    for (const [page, selected, status, detail] of cases) {
+      const { html } = await renderLive(page, selected);
+      assert.ok(html.includes(ERROR_STATE), `${page}: no error state`);
+      assert.ok(html.includes(`HTTP ${status}`), `${page}: HTTP ${status} not shown`);
+      assert.ok(html.includes(escaped(detail)), `${page}: the declared detail is not shown`);
+      assert.ok(!html.includes('role="status"'), `${page}: a request is still loading`);
+      for (const leak of EXPECT_BROKEN.forbidden) assert.ok(!html.includes(leak), `${page}: leaks ${leak}`);
+    }
+  });
+  step(`broken server: ${cases.map(([page]) => page).join(" / ")} pages show the 502 / 500 error state`);
+}
+
 for (const name of checked) console.log(`live-smoke: ok - ${name}`);
-console.log(`live-smoke: OK (${BASE_URL}${BARE_BASE_URL ? ` + ${BARE_BASE_URL}` : ""})`);
+const servers = [BASE_URL, BARE_BASE_URL, BROKEN_BASE_URL].filter(Boolean);
+console.log(`live-smoke: OK (${servers.join(" + ")})`);

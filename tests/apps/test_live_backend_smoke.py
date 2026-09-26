@@ -26,8 +26,10 @@ fixture files directly. This module is the full-stack evidence without a browser
   raises an exception nothing maps (the test server's test-only ``--fault-report-read``); each body
   is the declared ``ApiError`` and carries no server path, traceback or exception type;
 - ``apps/web/scripts/live-smoke.mjs`` then runs the console's own client (``src/api.ts``),
-  view-model helpers (``src/lib``) and a server-side render of every page against both live
-  servers (skipped with a reason when ``node`` / the installed ``apps/web/node_modules`` is absent).
+  view-model helpers (``src/lib``) and a server-side render of every page against the full
+  server, and the error paths of the unconfigured (503) and broken (502 / 500) servers through the
+  client and the pages that show them (skipped with a reason when ``node`` / the installed
+  ``apps/web/node_modules`` is absent).
 
 Not proven here: pixel rendering, browser effects, user interaction — manual browser acceptance
 stays open (apps/web/README.md, apps/api/README.md "Live-backend smoke").
@@ -579,6 +581,27 @@ def test_the_console_client_and_view_models_run_against_the_live_api(live: Live)
         "BARE_BASE_URL": live.bare.base_url,
         "EXPECT_INVALID": f"{MALFORMED_KIND.value}/{MALFORMED_ID}",
         "EXPECT_JOBS": json.dumps(live.jobs),
+        "BROKEN_BASE_URL": live.broken.base_url,
+        "EXPECT_BROKEN": json.dumps(
+            {
+                "knowledge": KNOWLEDGE_FAILURE_DETAIL,
+                "jobs": TAMPERED_DETAIL,
+                "internal": INTERNAL_ERROR,
+                "job_id": live.jobs["succeeded"],
+                "report": f"{ODD_KIND.value}/{ODD_ID}",
+                # what the server knows and the client must never see
+                "forbidden": [
+                    str(live.work),
+                    str(REPO),
+                    "Traceback",
+                    "injected",
+                    "secret",
+                    "KnowledgeProviderError",
+                    "JournalCorrupted",
+                    "RuntimeError",
+                ],
+            }
+        ),
     }
     completed = subprocess.run(
         [node, str(LIVE_SMOKE_JS)],
@@ -592,3 +615,10 @@ def test_the_console_client_and_view_models_run_against_the_live_api(live: Live)
     print(completed.stdout)  # the per-step "live-smoke: ok - ..." lines (pytest -s / -rP)
     assert completed.returncode == 0, completed.stdout + completed.stderr
     assert "live-smoke: OK" in completed.stdout, completed.stdout
+    # the error paths really ran (the script skips each block without its server)
+    for step in (
+        "unconfigured server: Knowledge Search / Jobs pages show the 503 error state",
+        "broken server: knowledge 502, tampered jobs journal 500, catch-all report 500",
+        "broken server: KnowledgeSearch / Jobs / StateStrategyMatrices pages show the 502 / 500",
+    ):
+        assert f"live-smoke: ok - {step}" in completed.stdout, completed.stdout

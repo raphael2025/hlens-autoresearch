@@ -12,7 +12,7 @@
 | 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B58，B55 = ADR-0055，契约 2.2.0；B56 = ADR-0062 Profile 冻结登记；B57 = 冻结 WIP 门禁与证据复现；B58 = 路由证据模式反向对照项；B59 = Promotion 反向对照项；均经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B58，B55 = ADR-0055，契约 2.2.0；B56 = ADR-0062 Profile 冻结登记；B57 = 冻结 WIP 门禁与证据复现；B58 = 路由证据模式反向对照项；B59 = Promotion 反向对照项；B60 = 控制台对真实后端 502 / 500 的冒烟；均经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -234,11 +234,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | B60：控制台冒烟也访问故障后端：知识检索 502、任务日志 500、报告兜底 500 经控制台客户端与页面渲染显示为错误状态，不泄露服务器路径 | 只改测试；仍不是浏览器验收（人工浏览器验收仍未做） |
 | 2026-09-27 | B59：Promotion 在 Profile 要求反向对照时，拒绝评估了 G2 却缺少 `G2.inverse_control` 的报告（`inverse_control_missing`，只要求存在） | CODE_COMPLETE / DEBUG_PENDING；无契约 / Schema / 阈值 / Profile 数值变化；登记为空，所有晋升仍被拒 |
 | 2026-09-27 | B58：路由证据模式在 Profile 要求反向对照时，拒绝缺少 `G2.inverse_control` 的报告（`inverse_control_missing`，只要求存在）；控制台显示该拒绝 | CODE_COMPLETE / DEBUG_PENDING；无契约 / Schema / 阈值 / Profile 数值变化；Promotion 尚未要求该项 |
 | 2026-09-27 | B57：冻结 WIP `1551b30` 全量非 PostgreSQL 门禁 7244 passed / 136 deselected，静态检查、Schema、控制台测试与构建全部退出码 0；B52 双标的证据在原基线 `dd6c8e1` 上逐字节复现；后代 G5 记录为未决设计边界 | 只作证据与恢复点；未选阈值、未冻结 Profile；docs-only |
 | 2026-09-27 | B56：ADR-0062（Codex 决定，2026-09-27 **Accepted**）——Validation Profile 冻结登记：追加式、哈希链、单写者、**必需**目录外锚点；登记绑定 Profile ref + 内容哈希、校准报告原始字节 / 自哈希 / 与 provenance 逐字相等、具名批准人与 UTC 时间；写路径失败即作废实例；Promotion 不再信任对象的 `status = FROZEN`，必须有有效登记，否则 `profile_not_frozen` | CODE_COMPLETE / DEBUG_PENDING；登记为空，所有晋升仍被拒；不认证身份、不是生产控制面；未改契约 / Schema / Profile 数值 / 哈希；ADR 接受不等于 Phase 4 / 5 验收 |
-| 2026-09-26 | B55：ADR-0055 知识标签 / 资产检索（契约 2.2.0：`tags_all` AND、`assets_any` OR 精确；2.1.0 固定向量逐位复现；控制台筛选）经 Codex 复核进入整合；组合分支 `claude/adr-0055-integration` 从 `a5836b2` cherry-pick，三处 fixture 冲突保留 B46 变体与两代遗留；Phase 9 证据改为按记录版本 2.1.0 核对 | CODE_COMPLETE / DEBUG_PENDING；ADR-0055 Accepted（Codex，2026-09-26，`c08c589` 门禁 7179 passed、退出码 0）；已 fast-forward 推送到 `wip/all-code-completion`；种子尚无具名人工审阅的标签 / 资产，Phase 0.5 未验收 |
 
 ## 10. 下一阶段进入条件
 

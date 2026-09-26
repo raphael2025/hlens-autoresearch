@@ -758,6 +758,21 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 边界：未改契约 / Schema / 阈值 / Profile 数值 / ADR-0008；未改冻结登记；不据此冻结任何 Profile。`research/promotion/README.md` 顺带把 ADR-0062
   的状态由过时的 Proposed 更正为 Accepted。
 
+**B60 — 全栈：控制台对真实后端 502 / 500 的呈现（live-backend smoke 覆盖 broken 服务器；隔离分支，基于 `dcea010`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 缺口（§10.8 全栈行）：`live-smoke.mjs` 只访问完整与未配置两个服务器，控制台对 502 / 500 的呈现未经真实后端。
+- 修复（只改测试脚本与其 pytest 驱动，未改 `apps/` 或 `src/`）：`BROKEN_BASE_URL` + `EXPECT_BROKEN`（声明的 detail、任务 id、报告
+  `<kind>/<id>`、不得外泄的字符串：工作目录与仓库路径、`Traceback`、`injected`、`secret`、异常类型名）。客户端：知识检索 502、`/jobs` 列表 / 详情 500、
+  报告列表 / 详情兜底 500，detail 逐字等于声明值、`describeError` 不外泄；页面：Knowledge Search / Jobs / State × Strategy Matrices 服务端渲染显示错误状态、
+  HTTP 状态与声明的 detail（按 react-dom 转义比较），无残留 loading、无外泄。两个环境变量须同时给出，否则退出码 2。pytest 核对 503 / 502 / 500 步骤确已输出。
+- 实际运行：`systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline pytest -q -p no:cacheprovider -rs
+  tests/apps/test_live_backend_smoke.py -s` → `3 passed in 2.55s`（11 个 `live-smoke: ok` 步骤，三个服务器）；负对照：把期望的 502 detail 临时改错 →
+  `1 failed`（`ERR_ASSERTION`），恢复后通过。
+- 仍未证明：真实浏览器（像素、effect、交互）；人工浏览器验收仍 open；生产 ASGI 服务器未选定。
+- 另跑：`pytest -q -rs -m "not postgres" tests/apps tests/test_docs_consistency.py tests/test_architecture_boundaries.py`（6 GB 上限）→
+  `386 passed, 1 warning in 8.62s`，退出码 0，无 skip；`ruff check .` → `All checks passed!`；`ruff format --check .` → `761 files already formatted`；
+  `npm test` → lib 88 / 88、组件 110 / 110（`src/` 未改）。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
@@ -770,7 +785,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | 证据模式不要求 FROZEN |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
 | 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案（有意：每个 family 只评估一次密封 OOS；未决设计边界见 B57）；锚点不认证新增行 |
-| 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做；控制台对 502 / 500 的呈现未经真实后端；生产 ASGI 服务器未选定 |
+| 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做（控制台对 502 / 500 的呈现已经真实后端 + 服务端渲染验证，B60，非浏览器）；生产 ASGI 服务器未选定 |
 
 架构边界：本轮（`c36005b..` 最终 HEAD `3be497b`）没有改动 `core/` 或 `schemas/`（Schema 仍 135 份，契约 2.1.0）；B55 在组合分支上改动 `core/`（契约 2.2.0，ADR-0055）与全部 135 份 Schema 的信封默认值及三份知识 Schema；新增 `plugins/` / `infrastructure/` 不得 import `research/` 的边界测试（B51）。
 

@@ -141,6 +141,6 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
 
 **不证明的内容**：502 只用测试服务器注入的失败 provider 触发，未用真实 `LocalKnowledgeProvider` 的故障（如不可读的
 条目文件）触发；兜底 500 经真实 HTTP 只用注入的 `RuntimeError` 验证，没有已知的真实数据能触发它（能找到的都已作为
-缺陷修复）；日志 500 只覆盖哈希链断裂这一种篡改；`live-smoke.mjs`（控制台侧）
-不访问 broken 服务器，控制台对 502 / 500 的呈现未经真实后端验证。没有并发 / 长连接 / 性能测试；也不代表任何生产服务器
+缺陷修复）；日志 500 只覆盖哈希链断裂这一种篡改；`live-smoke.mjs`（控制台侧）自 2026-09-27（B60）起也访问 broken
+服务器（客户端 + 服务端渲染的 Knowledge Search / Jobs / State × Strategy Matrices 页面），但仍不是浏览器验证。没有并发 / 长连接 / 性能测试；也不代表任何生产服务器
 配置已被验证。

@@ -218,21 +218,26 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
 ## Live-backend smoke（真实后端进程，无浏览器；2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 
 `scripts/live-smoke.mjs`（`BASE_URL=http://127.0.0.1:<port> npm run smoke:live`，可选 `BARE_BASE_URL` = 一个未配置
-知识 provider / 任务日志的后端）对**正在运行的真实 `apps/api`** 做一遍控制台侧检查，**无新依赖**：
+知识 provider / 任务日志的后端；可选 `BROKEN_BASE_URL` + `EXPECT_BROKEN` = 知识 provider 失败、任务日志被篡改、报告读取抛
+异常的后端及其应答的 detail 与不得外泄的字符串）对**正在运行的真实 `apps/api`** 做一遍控制台侧检查，**无新依赖**：
 
 1. 用已安装的 esbuild（同 `scripts/test-components.mjs`）把控制台自己的 `src/api.ts`、全部 `src/lib` 视图模型与
    全部 14 个页面打包到 `node_modules/.live-smoke/`（已 gitignore）；
 2. 把 `fetch` 按开发代理的规则改写（`/api/<path>` → `BASE_URL/<path>`，同 `vite.config.ts`），调用控制台真实的
-   客户端函数：每种报告的列表 + 每个详情、`/jobs` 列表 + 详情、知识检索、422 / 400 / 404，以及 `BARE_BASE_URL`
-   上的两个 503（`ApiRequestError` + `describeError`）；
+   客户端函数：每种报告的列表 + 每个详情、`/jobs` 列表 + 详情、知识检索、422 / 400 / 404，`BARE_BASE_URL`
+   上的两个 503，以及 `BROKEN_BASE_URL` 上的知识检索 502、`/jobs` 列表 / 详情 500（日志篡改）与报告列表 / 详情兜底 500
+   （`ApiRequestError` + `describeError`；detail 逐字等于声明值、不含服务器路径 / traceback / 异常类型）；
 3. 在这些线上响应上运行每个页面的 `src/lib` 视图模型函数（payload 解析器不得拒绝、行 / 标签 / 图表序列可构建）；
 4. 用 `react-dom/server` 渲染全部 14 个页面，经 `ApiSeedContext` 接缝以线上响应逐轮填充（与
    `render.test-util.tsx` 的 settle 循环相同，但走真实 HTTP）：没有残留的 loading、没有错误状态、报告页确实请求了
-   列表与所选详情且没有退回原始 JSON；未配置的后端上 Knowledge Search / Jobs 页面显示 503 错误状态。
+   列表与所选详情且没有退回原始 JSON；未配置的后端上 Knowledge Search / Jobs 页面显示 503 错误状态；broken 后端上
+   Knowledge Search（502）、Jobs（500）与 State × Strategy Matrices（兜底 500）页面显示错误状态、HTTP 状态与声明的
+   detail（按 react-dom 转义比较），不残留 loading，不含不得外泄的字符串（B60，2026-09-27）。
 
 `tests/apps/test_live_backend_smoke.py` 启动三个真实后端子进程（`tests/apps/live_server.py`，仅测试用的最小
-stdlib 服务器，127.0.0.1 + 临时端口），本脚本只对其中完整配置与未配置的两个运行（第三个 broken 服务器只由 pytest
-检查 502 / 500 错误路径，见 [apps/api/README.md](../api/README.md)「Live-backend smoke」）；没有 `node` 或未安装 `node_modules` 时该用例带原因 skip。
+stdlib 服务器，127.0.0.1 + 临时端口），本脚本对三个都运行（broken 服务器的 502 / 500 由 pytest 在 HTTP 层、本脚本在
+控制台客户端与页面层各检查一次，见 [apps/api/README.md](../api/README.md)「Live-backend smoke」；pytest 还核对脚本确实
+输出了 503 / 502 / 500 各步骤）；没有 `node` 或未安装 `node_modules` 时该用例带原因 skip。
 
 **证明了什么**：真实 `apps/api` 进程经真实 socket 返回的 JSON，能被控制台自己的客户端、错误映射、视图模型和页面
 组件（服务端渲染）完整消费，与 fixtures 上的测试结论一致。**没有证明什么**：没有真实浏览器 —— 不验证像素 / 布局 /
