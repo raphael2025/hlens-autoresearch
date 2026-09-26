@@ -1,6 +1,8 @@
 // View model of the Router Stops page. Payload shape written by research/reports/router.py
 // (write_router_stop) for research/router/paper.py's RouterStop — a paper run that did NOT happen
-// because the router stopped (no validated candidate, or every route flat). Hand-typed since
+// because the router stopped (no validated candidate, every route flat, or — evidence mode — a
+// routed strategy's eligibility not evidenced; the per-strategy checks of the optional
+// `eligibility` key are read by src/lib/routerEligibility.ts). Hand-typed since
 // /reports/{kind} has no per-kind OpenAPI schema (ReportEnvelope.payload is `dict[str, Any]`).
 // Pure: tested by routerStop.test.ts with `node --test`.
 
@@ -40,6 +42,7 @@ export function asRouterStopPayload(
 const REASONS: Record<string, string> = {
   no_validated_candidate: "没有已验证的候选策略",
   all_routes_flat: "所有状态路由与 fallback 对每个策略的权重都为零",
+  eligibility_not_evidenced: "证据模式：至少一个可路由策略的资格未被其验证报告证实",
 };
 
 /** The stop reason in words, with the raw value kept (an unknown reason is shown as-is). */

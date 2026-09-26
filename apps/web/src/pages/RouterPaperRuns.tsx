@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { ReportEnvelope } from "../api";
 import { SimulatedBanner } from "../components/Banner";
+import { EligibilityEvidence, ValidationReportBinding } from "../components/EligibilityEvidence";
 import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 
@@ -168,6 +169,8 @@ function RunDetail({ envelope }: { envelope: ReportEnvelope }) {
         initial_equity {payload.initial_equity} · final_equity {payload.final_equity} · pnl{" "}
         <strong>{payload.pnl}</strong> · total_switching_cost {payload.total_switching_cost}
       </p>
+      <ValidationReportBinding payload={envelope.payload} />
+      <EligibilityEvidence payload={envelope.payload} />
       <h3>Weights / switch timeline</h3>
       <WeightsTimelineChart payload={payload} />
       <h3>Equity: gross vs. net of switching cost</h3>

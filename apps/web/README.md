@@ -19,8 +19,8 @@
 | Validation Reports | 报告列表 + 详情（gate 结果表） | `/reports/validation_report[/​{id}]` |
 | Research Loop | round 表（status、未完成阶段及其 error、round_usage / total_usage、overrun）+ 用量图表 | `/reports/research_loop_round` |
 | State × Strategy Matrices | 矩阵列表 + 详情（per-state 指标热力图、样本数） | `/reports/state_strategy_matrix[/​{id}]` |
-| Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比） | `/reports/router_paper_run[/​{id}]` |
-| Router Stops | 停止记录列表 + 详情（停止原因、spec / 状态结果哈希、每个策略的 lifecycle / 结果哈希 / 验证报告绑定）；没有模拟任何运行 | `/reports/router_stop[/​{id}]` |
+| Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比；证据模式下的资格证据与验证报告绑定） | `/reports/router_paper_run[/​{id}]` |
+| Router Stops | 停止记录列表 + 详情（停止原因、spec / 状态结果哈希、每个策略的 lifecycle / 结果哈希 / 验证报告绑定；证据模式下每个策略的资格核验结果与拒绝原因）；没有模拟任何运行 | `/reports/router_stop[/​{id}]` |
 | Gate Calibration | 报告列表 + 详情（每个候选 Profile、每个 gate 的 FPR / power 表，附 Clopper-Pearson 区间） | `/reports/gate_calibration[/​{id}]` |
 | State Diagnostics | 诊断报告列表 + 详情（每个状态的计数 / 占比 / run 持续时间、转移矩阵、flicker、runs 表）；只描述、无阈值 | `/reports/state_diagnostics[/​{id}]` |
 | Event Statistics | 报告列表 + 详情（来源事件运行哈希；频率分桶、共现、领先-滞后直方、重叠 / 独立性诊断）；只描述、非 Profile 输入 | `/reports/event_statistics[/​{id}]` |
@@ -145,4 +145,11 @@ jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge S
   `src/lib/eventStatistics.ts`（`node --test`，输入是对应 fixtures）。未定义值（`null`）显示为 “—”，从不显示为 0；
   未知的统计种类逐字段显示而不是丢弃。纯表格，不引入 ECharts。`src/api.ts` 的 `REPORT_KINDS` 现在以
   `Record<ReportKind, …>` 定义：`apps/api` 新增 kind 而控制台未列出时 `tsc` 直接失败（Dashboard 按它计数）。
+- **路由资格证据显示**（P10-ELIG 证据模式，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：Router Stops 的停止原因
+  （`no_validated_candidate` / `all_routes_flat` / `eligibility_not_evidenced`）以中文说明 + 原始值显示；当报告载荷带
+  附加的 `eligibility` 键时，Router Stops 与 Router Paper Runs 详情多一张「资格证据」表（每个策略：声明的 lifecycle、
+  报告哈希、subject、判定、G5 状态、核验结果 / 拒绝原因的中文说明 + 原始代码、detail），Router Paper Runs 另显示
+  `validation_reports` 绑定；信任模式载荷（无该键）不显示任何额外内容。视图模型在 `src/lib/routerEligibility.ts`
+  （`node --test`，证据模式载荷在测试中按 `research/reports/router.py` 的形状内联构造；fixtures 未改），表格组件在
+  `src/components/EligibilityEvidence.tsx`。无法解析的检查记录被计数并警告，从不当作「无证据」。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（只跑了 `npm run build` 与 `npm test`）。

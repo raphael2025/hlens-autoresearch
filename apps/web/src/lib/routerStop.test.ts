@@ -50,8 +50,10 @@ test("supplied validation reports and strategies missing a field show up, as nul
   });
 });
 
-test("reasons: both known reasons are described; an unknown one is shown verbatim", () => {
-  assert.match(reasonText("no_validated_candidate"), /（no_validated_candidate）$/);
+test("reasons: every known reason is described; an unknown one is shown verbatim", () => {
+  assert.equal(reasonText("no_validated_candidate"), "没有已验证的候选策略（no_validated_candidate）");
+  assert.match(reasonText("all_routes_flat"), /（all_routes_flat）$/);
+  assert.match(reasonText("eligibility_not_evidenced"), /^证据模式：.+（eligibility_not_evidenced）$/);
   assert.equal(reasonText("something_new"), "something_new");
 });
 

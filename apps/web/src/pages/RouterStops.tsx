@@ -1,5 +1,6 @@
 import type { ReportEnvelope } from "../api";
 import { SimulatedBanner } from "../components/Banner";
+import { EligibilityEvidence } from "../components/EligibilityEvidence";
 import { ReportBrowser } from "../components/ReportBrowser";
 import { asRouterStopPayload, reasonText, routerStopLabel, strategyRows } from "../lib/routerStop";
 
@@ -56,6 +57,7 @@ function StopDetail({ envelope }: { envelope: ReportEnvelope }) {
       {stop.validation_reports === null && (
         <p style={{ color: "#555", fontSize: 13 }}>未提供验证报告绑定（validation_reports = null）。</p>
       )}
+      <EligibilityEvidence payload={envelope.payload} />
     </>
   );
 }
