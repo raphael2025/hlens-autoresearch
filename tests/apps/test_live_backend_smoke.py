@@ -22,8 +22,8 @@ fixture files directly. This module is the full-stack evidence without a browser
 - a third ("broken") server answers the remaining error paths over real HTTP: 502 from a knowledge
   provider raising ``KnowledgeProviderError`` (injected by the test server's test-only
   ``--knowledge-error`` flag; no hook in ``apps/``), 500 from ``/jobs`` / ``/jobs/{id}`` on a copy
-  of the real journal whose hash chain is broken, and the catch-all 500 from a report file whose
-  JSON makes the store's read raise an exception it does not map (real data, no hook); each body
+  of the real journal whose hash chain is broken, and the catch-all 500 from a report read that
+  raises an exception nothing maps (the test server's test-only ``--fault-report-read``); each body
   is the declared ``ApiError`` and carries no server path, traceback or exception type;
 - ``apps/web/scripts/live-smoke.mjs`` then runs the console's own client (``src/api.ts``),
   view-model helpers (``src/lib``) and a server-side render of every page against both live
@@ -79,15 +79,15 @@ LIVE_SMOKE_JS = WEB / "scripts" / "live-smoke.mjs"
 MALFORMED_KIND = ReportKind.VALIDATION_REPORT
 MALFORMED_ID = "f" * 64
 
-#: The broken server's unmapped-exception trigger (real data, no production hook): a report file
-#: whose JSON holds an integer literal longer than CPython's int-conversion limit (4300 digits).
-#: ``json.loads`` raises a plain ``ValueError`` (not ``JSONDecodeError``), which ``ReportStore``
-#: does not map, so the listing and the detail of that kind reach the app's catch-all 500. Should
-#: the store ever map it to a malformed entry, this test must pick another unmapped trigger.
+#: The broken server's unmapped-exception trigger: the test server's test-only
+#: ``--fault-report-read`` makes every ``ReportStore`` read raise ``RuntimeError(FAULT)`` in that
+#: process (no hook in ``apps/``), so the listing and the detail of a kind with one report file
+#: reach the app's catch-all 500. ``FAULT`` names a server path (``{root}`` = the temporary work
+#: directory) that must not reach the client. (The earlier real-data trigger -- an integer literal
+#: over the int-conversion limit -- was a store bug, now fixed: malformed entry, see test_reports.)
 ODD_KIND = ReportKind.STATE_STRATEGY_MATRIX
 ODD_ID = "e" * 64
-ODD_JSON = '{"n": ' + "1" * 5000 + "}"
-ODD_MESSAGE = "Exceeds the limit (4300 digits) for integer string conversion"
+FAULT = "injected report read fault at {root}/secret.json"
 
 #: The broken server's journal: a copy of the real one whose line 2 no longer links to line 1.
 TAMPERED_DETAIL = "job results journal failed verification: results.jsonl:2 breaks the hash chain"
@@ -246,7 +246,7 @@ def live(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Live]:
     jobs = _write_jobs(results)
     broken_reports = work / "reports_broken"
     (broken_reports / ODD_KIND.value).mkdir(parents=True)
-    (broken_reports / ODD_KIND.value / f"{ODD_ID}.json").write_text(ODD_JSON, encoding="utf-8")
+    (broken_reports / ODD_KIND.value / f"{ODD_ID}.json").write_text("{}", encoding="utf-8")
     tampered = work / "jobs_tampered" / "results.jsonl"
     tampered.parent.mkdir()
     _break_chain(results, tampered)
@@ -267,6 +267,8 @@ def live(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Live]:
             str(tampered),
             "--knowledge-error",
             KNOWLEDGE_FAILURE.format(root=knowledge),
+            "--fault-report-read",
+            FAULT.format(root=work),
         ],
     }
     servers: dict[str, Server] = {}
@@ -545,15 +547,16 @@ def test_the_error_paths_answer_declared_api_errors_over_real_http(live: Live) -
         assert data == {"detail": TAMPERED_DETAIL}
         _assert_api_error_without_leaks(data, "GET", path, 500, live.work)
 
-    # catch-all 500: reading the odd report file raises an exception no route maps
+    # catch-all 500: the (injected) report read raises an exception no route maps
     for path in (f"/reports/{ODD_KIND.value}", f"/reports/{ODD_KIND.value}/{ODD_ID}"):
         data = broken.call("GET", path, 500)
         assert data == {"detail": INTERNAL_ERROR}
         _assert_api_error_without_leaks(data, "GET", path, 500, live.work)
-        assert "4300" not in json.dumps(data) and "limit" not in json.dumps(data)
+        assert "injected" not in json.dumps(data) and "secret" not in json.dumps(data)
     # it really was the unmapped exception: the server's log (never the client) has its traceback
     log = live.broken.stderr.read_text(errors="replace")
-    assert log.count(f"ValueError: {ODD_MESSAGE}") == 2 and "Traceback" in log, log
+    fault = FAULT.format(root=live.work)
+    assert log.count(f"RuntimeError: {fault}") == 2 and "Traceback" in log, log
 
     assert broken.seen == {
         ("POST", "/knowledge/search", 502),

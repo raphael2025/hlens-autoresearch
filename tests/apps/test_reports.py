@@ -236,6 +236,33 @@ def test_listing_reports_every_malformed_file_with_its_reason(tmp_path: Path) ->
     assert all(str(tmp_path) not in reason for reason in reasons.values())  # no server paths
 
 
+def test_json_the_decoder_refuses_without_a_decode_error_is_listed_as_malformed(
+    tmp_path: Path,
+) -> None:
+    """An integer literal over CPython's int-conversion limit raises a plain ``ValueError`` and
+    JSON nested past the recursion limit a ``RecursionError`` -- neither a ``JSONDecodeError``.
+    Both are malformed entries of the listing (and a 422 detail), never a 500 for the whole kind."""
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "good", {"ok": True})
+    directory = tmp_path / ReportKind.STATE_STRATEGY_MATRIX.value
+    (directory / "huge-int.json").write_text('{"n": ' + "1" * 5000 + "}", encoding="utf-8")
+    (directory / "deep.json").write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
+    store = ReportStore(tmp_path)
+    listing = store.listing(ReportKind.STATE_STRATEGY_MATRIX)
+    assert [env.id for env in listing.reports] == ["good"]
+    assert {item.id: item.reason for item in listing.invalid} == {
+        "deep": "unreadable or not well-formed JSON",
+        "huge-int": "unreadable or not well-formed JSON",
+    }
+    for report_id in ("huge-int", "deep"):
+        with pytest.raises(ReportMalformed, match="not well-formed JSON"):
+            store.get(ReportKind.STATE_STRATEGY_MATRIX, report_id)
+    client = TestClient(create_app(reports_root=tmp_path))
+    kind = ReportKind.STATE_STRATEGY_MATRIX.value
+    assert client.get(f"/reports/{kind}").status_code == 200
+    response = client.get(f"/reports/{kind}/huge-int")
+    assert response.status_code == 422 and "4300" not in response.text
+
+
 def test_listing_of_a_clean_directory_has_no_invalid_entries(tmp_path: Path) -> None:
     _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "a", {"v": 1})
     _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "b", {"v": 2})

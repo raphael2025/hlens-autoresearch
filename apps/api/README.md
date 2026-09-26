@@ -124,12 +124,14 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
     Permission denied: 'items.json'`。
   - **500（日志被篡改）**：真实 `JobRunner` 结果日志的副本，第 2 行 `prev_hash` 被改写（哈希链断裂）；`GET /jobs` 与
     `GET /jobs/{job_id}` 的 `detail` 必须恰为 `job results journal failed verification: results.jsonl:2 breaks the hash chain`。
-  - **兜底 500**：报告目录里一个真实的"怪"文件——JSON 中的整数字面量超过 CPython 的整数转换上限（4300 位），
-    `json.loads` 抛出普通 `ValueError`（不是 `JSONDecodeError`），`ReportStore` 不映射它，于是
+  - **兜底 500**：`live_server.py` 的**仅测试用** `--fault-report-read MESSAGE` 参数只在该服务器进程内让
+    `ReportStore._read` 抛 `RuntimeError(MESSAGE)`（无路由映射它；MESSAGE 含临时目录路径），于是真实路由
     `GET /reports/{kind}` 与 `GET /reports/{kind}/{report_id}` 都落入兜底处理器，body 必须恰为
     `{"detail": "internal server error"}`；同时断言异常与 traceback 只出现在服务器 stderr，确认走的确实是未处理异常路径。
-    没有使用任何生产钩子。（`live_server.py` 现在像 ASGI 服务器那样处理 Starlette 在兜底处理器发出响应后重新抛出的异常：
-    写 stderr，并把应用已发出的响应交给客户端。）
+    `apps/` 中没有注入钩子。（最初用超长整数字面量的报告文件触发——那其实是存储缺陷：`json.loads` 抛的普通
+    `ValueError` / 过深嵌套的 `RecursionError` 未被映射，整类列表 500。已修复为 malformed 条目，
+    `tests/apps/test_reports.py` 覆盖。`live_server.py` 像 ASGI 服务器那样处理 Starlette 在兜底处理器发出响应后
+    重新抛出的异常：写 stderr，并把应用已发出的响应交给客户端。）
   - 每个用例：该状态码在 committed `openapi.json` 中对该 operation 声明为 `ApiError`，body 通过 schema 与
     `ApiError` 模型往返校验，且不含临时目录 / 仓库路径、`Traceback`、`File "`、`.py` 或异常类型名。兜底 500 的 body
     不含异常消息；502 与日志 500 的 `detail` 按设计带有**去路径后的**原因（见上文错误映射），测试逐字固定它。
@@ -137,7 +139,7 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
   视图模型与页面渲染，见 [apps/web/README.md](../web/README.md)「Live-backend smoke」），否则带原因 skip。
 
 **不证明的内容**：502 只用测试服务器注入的失败 provider 触发，未用真实 `LocalKnowledgeProvider` 的故障（如不可读的
-条目文件）触发；兜底 500 只用一种未映射异常（超长整数的 `ValueError`）经真实 HTTP 验证，其他未处理异常（如 I/O
-错误、代码 bug）仍只由 `TestClient` 测试覆盖；日志 500 只覆盖哈希链断裂这一种篡改；`live-smoke.mjs`（控制台侧）
+条目文件）触发；兜底 500 经真实 HTTP 只用注入的 `RuntimeError` 验证，没有已知的真实数据能触发它（能找到的都已作为
+缺陷修复）；日志 500 只覆盖哈希链断裂这一种篡改；`live-smoke.mjs`（控制台侧）
 不访问 broken 服务器，控制台对 502 / 500 的呈现未经真实后端验证。没有并发 / 长连接 / 性能测试；也不代表任何生产服务器
 配置已被验证。

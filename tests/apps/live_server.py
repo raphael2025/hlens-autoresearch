@@ -4,7 +4,8 @@
 real socket and a process boundary::
 
     python -m tests.apps.live_server --port 0 --reports-root DIR --jobs-results FILE \\
-        (--knowledge DIR | --knowledge-error MESSAGE) [--jobs-idempotent NAME ...]
+        (--knowledge DIR | --knowledge-error MESSAGE) [--jobs-idempotent NAME ...] \\
+        [--fault-report-read MESSAGE]
 
 It binds ``127.0.0.1`` only, prints ``{"port": <bound port>}`` on stdout once listening, and exits
 0 on SIGTERM / SIGINT. uvicorn is not a project dependency, so this is an ``asyncio`` TCP server
@@ -15,10 +16,14 @@ drives ``create_app(...)`` through the ASGI ``http`` protocol (``http.request`` 
 
 ``--knowledge-error MESSAGE`` is a **test-only fault injection** (it exists nowhere in ``apps/``):
 the app gets a knowledge provider whose ``search`` raises ``KnowledgeProviderError(MESSAGE)``, so
-the API's 502 path runs over real HTTP. An exception the app re-raises after answering (Starlette's
-``ServerErrorMiddleware`` re-raises once the catch-all handler has sent its 500, for the server to
-log) is printed to stderr with its traceback, and the answer the app already sent is delivered --
-as an ASGI server does; when the app sent no response start, the client gets a bare text 500.
+the API's 502 path runs over real HTTP. ``--fault-report-read MESSAGE`` is another one: in this
+process only, ``ReportStore._read`` raises ``RuntimeError(MESSAGE)`` -- an exception no route
+maps -- so the app's catch-all 500 runs over real HTTP on the real report routes.
+
+An exception the app re-raises after answering (Starlette's ``ServerErrorMiddleware`` re-raises
+once the catch-all handler has sent its 500, for the server to log) is printed to stderr with its
+traceback, and the answer the app already sent is delivered -- as an ASGI server does; when the app
+sent no response start, the client gets a bare text 500.
 
 This is **not a production server**: no keep-alive, chunked request bodies, TLS, timeouts,
 lifespan events or back-pressure. A production deployment of ``apps/api`` would use an ASGI server
@@ -36,7 +41,7 @@ import traceback
 from collections.abc import Sequence
 from http import HTTPStatus
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 from urllib.parse import unquote
 
 if TYPE_CHECKING:
@@ -172,6 +177,17 @@ class _FailingKnowledgeProvider:
         raise KnowledgeProviderError(self._message)
 
 
+def _fault_report_reads(message: str) -> None:
+    """TEST-ONLY fault injection, in this server process only: every ``ReportStore`` read raises
+    ``RuntimeError(message)``, which neither the store nor any route maps to an HTTP error."""
+    from apps.api.store import ReportStore
+
+    def _read(self: ReportStore, kind: object, path: Path) -> NoReturn:
+        raise RuntimeError(message)
+
+    ReportStore._read = _read  # type: ignore[method-assign]
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=0)
@@ -185,6 +201,11 @@ def main(argv: Sequence[str] | None = None) -> None:
         help="TEST-ONLY: a provider whose search raises KnowledgeProviderError(MESSAGE)",
     )
     parser.add_argument("--jobs-idempotent", nargs="*", default=[])
+    parser.add_argument(
+        "--fault-report-read",
+        metavar="MESSAGE",
+        help="TEST-ONLY: every report read raises RuntimeError(MESSAGE) (unmapped by the app)",
+    )
     args = parser.parse_args(argv)
 
     from apps.api import create_app
@@ -196,6 +217,8 @@ def main(argv: Sequence[str] | None = None) -> None:
         provider = LocalKnowledgeProvider(args.knowledge)
     elif args.knowledge_error is not None:
         provider = _FailingKnowledgeProvider(args.knowledge_error)
+    if args.fault_report_read is not None:
+        _fault_report_reads(args.fault_report_read)
     app = create_app(
         knowledge=provider,
         reports_root=args.reports_root,

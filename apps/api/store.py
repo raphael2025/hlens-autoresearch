@@ -332,7 +332,9 @@ class ReportStore:
             # inside the guard: a file removed / made unreadable between the directory scan (or the
             # read) and this stat is a malformed entry of the listing, never an unhandled 500
             modified = path.stat().st_mtime
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+        # ValueError covers JSONDecodeError, UnicodeDecodeError and the plain ValueError of an
+        # integer literal over the int-conversion limit; RecursionError: JSON nested too deeply
+        except (OSError, ValueError, RecursionError) as exc:
             raise ReportMalformed(path, "unreadable or not well-formed JSON") from exc
         if not isinstance(payload, dict):
             raise ReportMalformed(path, "JSON root must be an object")
