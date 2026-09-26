@@ -1,6 +1,6 @@
 """``apps/web/fixtures/`` for ``router_stop`` / ``state_diagnostics`` / ``event_statistics`` /
-``paper_deviation`` are exactly what the real ``research/reports`` writers produce for small,
-existing test objects.
+``paper_deviation`` / ``degradation_check`` are exactly what the real ``research/reports`` writers
+produce for small, existing test objects.
 
 The committed files are never hand-written: this module builds the objects from the existing
 research test fixtures, writes them with the real writers into a temporary report root, and
@@ -34,6 +34,7 @@ from research.router.deviation import PaperDeviation
 from research.router.paper import RouterStop
 from research.states.diagnostics import StateDiagnostics, diagnose
 from tests.research.events.test_event_stats import _all_statistics
+from tests.research.reports.test_degradation_writer import write_fixture as write_degradation
 from tests.research.router.test_paper import LIFECYCLE
 from tests.research.router.test_paper_deviation import deviation
 from tests.research.router.test_router_completion import FLAT, _or_stop
@@ -70,6 +71,8 @@ WRITERS: dict[str, Callable[[Path], WrittenReport]] = {
     "state_diagnostics": lambda root: write_state_diagnostics(root, state_diagnostics()),
     "event_statistics": lambda root: write_event_statistics(root, event_statistics_report()),
     "paper_deviation": lambda root: write_paper_deviation(root, paper_deviation()),
+    # TEST ONLY thresholds / metrics (tests/research/reports/test_degradation_writer.py)
+    "degradation_check": write_degradation,
 }
 
 

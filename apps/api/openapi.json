@@ -497,7 +497,7 @@
         "type": "object"
       },
       "ReportKind": {
-        "description": "The report kinds the console serves ((a)-(d), Phase 9 gate calibration evidence, and the\nPhase 10 router stop / paper deviation, Phase 2 state diagnostics, Phase 3 event statistics).",
+        "description": "The report kinds the console serves ((a)-(d), Phase 9 gate calibration evidence, and the\nPhase 10 router stop / paper deviation, Phase 2 state diagnostics, Phase 3 event statistics,\nPhase 11 degradation checks).",
         "enum": [
           "validation_report",
           "research_loop_round",
@@ -507,6 +507,7 @@
           "router_stop",
           "state_diagnostics",
           "event_statistics",
+          "degradation_check",
           "paper_deviation"
         ],
         "title": "ReportKind",

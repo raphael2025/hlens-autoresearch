@@ -93,6 +93,7 @@ const REPORT_KIND_ORDER: Record<ReportKind, number> = {
   state_diagnostics: 6,
   event_statistics: 7,
   paper_deviation: 8,
+  degradation_check: 9,
 };
 
 export const REPORT_KINDS: ReportKind[] = (Object.keys(REPORT_KIND_ORDER) as ReportKind[]).sort(

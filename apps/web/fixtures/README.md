@@ -47,6 +47,11 @@ hash — delete the stale file under the affected `<kind>/` directory first).
   alone through the same backtester (the declared reference). Generated and pinned by the same
   committed module (`tests/research/reports/test_console_fixture_writers.py`).
 
+- `degradation_check/` (2026-09-26): `write_degradation_check` over the check of
+  `tests/research/reports/test_degradation_writer.py` (`write_fixture`) — TEST ONLY thresholds and
+  metrics (one breached, one within, one missing), not Profile values. Generated and pinned by
+  the same committed module.
+
 `tests/apps/test_console_fixtures.py` loads every fixture here through `apps.api`'s `ReportStore`
 (and the `/reports/...` HTTP endpoints) and fails if any `ReportKind` has no fixture file, so this
 directory cannot silently drift out of sync with `ReportKind`.

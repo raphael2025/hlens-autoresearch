@@ -6,9 +6,9 @@
 
 > 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；实现说明 2026-09-25 补充，
 > 控制台页面 2026-09-25 再补充，Gate Calibration 页面与剩余报告种类的 fixtures 2026-09-26 再补充）：
-> 13 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
+> 14 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
 > Router Paper Runs、Router Stops、Paper Deviation（2026-09-26）、Gate Calibration、State Diagnostics、Event Statistics（后三者与
-> Router Stops 2026-09-26，CODE_COMPLETE / DEBUG_PENDING）、Lifecycle、Jobs（2026-09-26）、Knowledge Search。依赖已本地安装
+> Router Stops 2026-09-26，CODE_COMPLETE / DEBUG_PENDING）、Degradation Checks（2026-09-26）、Lifecycle、Jobs（2026-09-26）、Knowledge Search。依赖已本地安装
 > （`node_modules/`，已 gitignore），`npm run gen:api` 与 `npm run build` 均已跑通。
 
 ## 页面
@@ -25,6 +25,7 @@
 | Gate Calibration | 报告列表 + 详情（每个候选 Profile、每个 gate 的 FPR / power 表，附 Clopper-Pearson 区间） | `/reports/gate_calibration[/​{id}]` |
 | State Diagnostics | 诊断报告列表 + 详情（每个状态的计数 / 占比 / run 持续时间、转移矩阵、flicker、runs 表）；只描述、无阈值 | `/reports/state_diagnostics[/​{id}]` |
 | Event Statistics | 报告列表 + 详情（来源事件运行哈希；频率分桶、共现、领先-滞后直方、重叠 / 独立性诊断）；只描述、非 Profile 输入 | `/reports/event_statistics[/​{id}]` |
+| Degradation Checks | 退化检查列表 + 详情（subject、window、每个指标的状态 / 方向 / baseline / recent / decline / 允许下降 / 阈值来源）；missing = 证据不足而非健康；只作证据、不改生命周期 | `/reports/degradation_check[/​{id}]` |
 | Lifecycle | 允许的状态转移表 | `/lifecycle/transitions` |
 | Jobs | worker 结果日志的任务列表（按状态筛选）+ 详情（params、result / error），只读 | `/jobs[/​{job_id}]` |
 | Knowledge Search | 知识条目检索（待检验主张，非结论） | `/knowledge/search` |
@@ -82,7 +83,7 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 
 `apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了全部报告种类的示例
 （`validation_report/`、`research_loop_round/`、`state_strategy_matrix/`、`router_paper_run/`、
-`gate_calibration/`、`router_stop/`、`state_diagnostics/`、`event_statistics/`、`paper_deviation/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
+`gate_calibration/`、`router_stop/`、`state_diagnostics/`、`event_statistics/`、`paper_deviation/`、`degradation_check/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
 `ReportStore` 实际读到的文件逐字节一致，不是手写的示例数据（生成方式见
 [fixtures/README.md](fixtures/README.md)）。可以直接把它当 `reports_root` 起后端：
 
@@ -157,4 +158,8 @@ jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge S
   `ReportBrowser` / `useApi` / `States.tsx`；视图模型 `src/lib/paperDeviation.ts`（`node --test`，输入是
   `fixtures/paper_deviation/`）。表格显示 payload 的精确十进制文本（`decimalText` 去掉 `0E-18` 之类的指数与尾零，不做舍入），
   不可计算值（`null`）显示为 “—”；ECharts 折线 / 柱图只用于图形。
+- **Degradation Checks**（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`src/pages/DegradationChecks.tsx`，经由
+  `ReportBrowser` / `useApi` / `States.tsx`；视图模型 `src/lib/degradationCheck.ts`（`node --test`，输入是
+  `fixtures/degradation_check/`）。指标按 breached → missing → within 排序；missing 明示「证据不足，不是健康」；
+  每个阈值显示其来源。纯表格，不引入 ECharts。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（只跑了 `npm run build` 与 `npm test`）。

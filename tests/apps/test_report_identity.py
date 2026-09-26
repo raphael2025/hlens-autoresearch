@@ -34,6 +34,7 @@ IDENTIFIED = (
     ReportKind.EVENT_STATISTICS,
     ReportKind.GATE_CALIBRATION,
     ReportKind.PAPER_DEVIATION,
+    ReportKind.DEGRADATION_CHECK,
 )
 
 
@@ -171,6 +172,11 @@ HASH_EDITS: dict[str, tuple[ReportKind, str, Callable[[Payload], Payload]]] = {
         ReportKind.PAPER_DEVIATION,
         "deviation_hash",
         lambda p: {**p, "summary": {**p["summary"], "tracking_error": "0"}},
+    ),
+    "degradation-check": (
+        ReportKind.DEGRADATION_CHECK,
+        "check_hash",
+        lambda p: {**p, "degraded": not p["degraded"]},
     ),
 }
 

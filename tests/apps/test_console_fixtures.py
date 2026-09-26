@@ -147,3 +147,21 @@ def test_paper_deviation_fixture_compares_every_mark() -> None:
     assert [mark["time"] for mark in payload["marks"]] == [
         point["time"] for point in run.payload["net_equity_curve"]
     ]
+
+
+def test_degradation_check_fixture_names_its_rules_and_sources() -> None:
+    store = ReportStore(FIXTURES_ROOT)
+    (envelope,) = store.list(ReportKind.DEGRADATION_CHECK)
+    payload = envelope.payload
+    assert payload["kind"] == "degradation_check"
+    assert payload["check_hash"] == envelope.id
+    assert payload["degraded"] is True and payload["breaches"]
+    metrics = payload["metrics"]
+    assert isinstance(metrics, list) and metrics
+    for metric in metrics:
+        assert metric["threshold_source"]  # every threshold names where it came from
+        assert metric["direction"] in {"higher_is_better", "lower_is_better"}
+        assert (metric["recent"] is None) == metric["missing"]
+    assert {item["metric"] for item in metrics if item["breached"]} == {
+        breach["metric"] for breach in payload["breaches"]
+    }

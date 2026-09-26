@@ -40,6 +40,9 @@ const EventStatistics = lazy(() =>
 const PaperDeviations = lazy(() =>
   import("./pages/PaperDeviations").then((m) => ({ default: m.PaperDeviations })),
 );
+const DegradationChecks = lazy(() =>
+  import("./pages/DegradationChecks").then((m) => ({ default: m.DegradationChecks })),
+);
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", render: () => <Dashboard /> },
@@ -52,6 +55,7 @@ const TABS = [
   { key: "gate-calibration", label: "Gate Calibration", render: () => <GateCalibration /> },
   { key: "state-diagnostics", label: "State Diagnostics", render: () => <StateDiagnostics /> },
   { key: "event-statistics", label: "Event Statistics", render: () => <EventStatistics /> },
+  { key: "degradation-check", label: "Degradation Checks", render: () => <DegradationChecks /> },
   { key: "lifecycle", label: "Lifecycle", render: () => <Lifecycle /> },
   { key: "jobs", label: "Jobs", render: () => <Jobs /> },
   { key: "knowledge", label: "Knowledge Search", render: () => <KnowledgeSearch /> },
