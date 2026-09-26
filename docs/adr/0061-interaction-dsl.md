@@ -32,3 +32,35 @@ CLAUDE.md §5 要求新插件能力先有 ADR。
 
 - [x] 无契约 / Schema 变化；LLM 不执行代码（DSL 是数据，只编译到已审阅算子）
 - [x] 事件时间不早于可观测时间（`not` 取窗口结束）
+
+## Implementation note (DSL compiler and window operators, 2026-09-26)
+
+不改 `core/`（`EventSpec` / `EventRequest` / `EventProvider` 冻结）、不改 `infrastructure/event`、无 Schema 变化；
+既有 `event_sequence` / `event_co_occurrence` 规格与哈希不变（`tests/plugins/events/test_dsl.py` 钉住）。
+
+- `plugins/events/dsl.py`：`parse_expression` / `compile_expression` / `verify_compilation` / `hops`。节点形式
+  `{"ref": "event:<name>@<semver>"}`、`{"op": "seq"|"and"|"not", "a", "b", "within_us"}`、
+  `{"op": "count", "a", "at_least", "within_us"}`（`within_us` 为正整数微秒，`at_least` 为正整数）；字段必须恰好如此，
+  未知节点 / 算子 / 字段、浮点、JSON 常量、重复键、类型不符一律 `DslError`。`CompileLimits(max_depth, max_nodes)`
+  两者必填，解析时检查（叶子深度为 1；节点数含叶子）。`ref` 必须是传入 registry 中已有的事件规格。
+- 编译（后序）：`seq` → `event_sequence`，`and` → `event_co_occurrence`（操作数按 spec hash 排序），`count` →
+  `event_count`（新）。编译出的规格名由内容派生（`dsl_<op>_<hash16>`，`1.0.0`，`observable_lag = 0`），
+  相同子表达式共享一个规格；两个操作数是同一定义（如 `seq(a, a)`）即拒绝；裸 `ref` 表达式编译为零个规格。
+  `Compilation.record()` 记录表达式哈希、限额、叶子 `(ref, spec hash)`、每个编译规格与根的哈希；
+  `verify_compilation` 由记录的规范表达式重新编译并逐项比较。
+- `plugins/events/windows.py`（新 Provider，同一基类、同一 `<name>` / `<name>_hash` 绑定，contract suite 通过）：
+  `event_window_end`（每个上游事件的窗口结束时刻一个事件；`observable_lag` 恰为窗口）、`event_absence`
+  （锚事件且 `[锚 - window, 锚]` 内无另一事件，闭区间，只引用锚）、`event_count`（在事件 e 处 `[e - window, e]`
+  内至少 `at_least` 个事件，闭区间，引用窗口内全部事件并记录 `count`）。
+- 每一跳经 `run_events(..., upstream_specs=hop.upstream, upstream_results=..., require_full=True)` 核对
+  （`tests/infrastructure/event/test_interaction_dsl.py`：真实 feature → state → 叶子事件 → 五跳表达式，逐跳全量核对；
+  未来行情扰动不改变任何一层过去的事件表（事件 id 逐位相同）；`not` 在窗口结束前一微秒不存在）。
+
+**与 §2 字面的偏离（待 Codex 追认）**：`not(a, b, within)` 编译为**两个**规格——`w = event_window_end(a, within)`
+与 `n = event_absence(anchor=w, absent=b, window=within)`，`n.lineage = (w, b)` 而非 `(a, b)`。原因是契约：
+`check_answers` 要求事件时间恰为所引用输入的最晚可见时刻 + 规格的唯一 `observable_lag`，执行器又以同一个 lag 截断
+全部上游事件（`EventRequest.visible_at`）。单个规格若以 lag = within 把事件定在窗口结束，它在该时刻看不到窗口内的
+B（B 也被推迟 within）；若 lag = 0 则事件只能定在 A 的时刻（未来函数）。两跳构造满足 §4（事件时间 = 窗口结束，
+此时窗口内全部 B 可见），且每一跳仍是普通交互规格、仍经上游核对，追溯链为 `n → w → a`。
+其他实现选择（字段名 `op` / `within_us`、闭区间边界、`count` 在每个满足条件的 A 处触发）同样记录于此，
+状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。

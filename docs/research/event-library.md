@@ -42,6 +42,25 @@
 | `state_switch` | State 标签在相邻两个可计算点之间改变（可限定 `from_state` / `to_state`） | 1 个 State | 新状态点可见 + lag | `state_switch@1.0.0` | ADR-0036 | UNVERIFIED |
 | `event_sequence` | A 之后 `window` 内的 B（交互：每个 B 链接之前最近的 A） | 2 个上游事件定义 | B 的事件时间 + lag | `event_sequence@1.0.0` | ADR-0036 | UNVERIFIED |
 | `event_co_occurrence` | A、B 相距不超过 `window`（任一顺序） | 2 个上游事件定义 | 较晚者的事件时间 + lag | `event_co_occurrence@1.0.0` | ADR-0036 | UNVERIFIED |
+| `event_window_end` | 每个上游事件 A 的窗口结束：事件时间 = A + `window`（`observable_lag` 恰为 `window`） | 1 个上游事件定义 | A 的事件时间 + `window` | `event_window_end@1.0.0` | ADR-0061 | UNVERIFIED |
+| `event_absence` | 锚事件，且 `[锚 - window, 锚]`（闭区间）内无 `absent` 事件 | 2 个上游事件定义 | 锚的事件时间 + lag | `event_absence@1.0.0` | ADR-0061 | UNVERIFIED |
+| `event_count` | 在事件 e 处，`[e - window, e]`（闭区间）内至少 `at_least` 个上游事件 | 1 个上游事件定义 | e 的事件时间 + lag | `event_count@1.0.0` | ADR-0061 | UNVERIFIED |
+
+### 交互 DSL（ADR-0061）
+
+交互表达式是**数据**（JSON 树，`plugins/events/dsl.py`），不是代码：叶子 `{"ref": "event:<name>@<semver>"}` 引用已登记的事件规格，
+内部节点只有四个已审阅算子，参数全部显式、无默认，未知节点 / 算子 / 字段即拒绝；编译限额 `max_depth` / `max_nodes` 必填。
+编译按后序生成上表中的普通交互规格（名称由内容派生，`dsl_<op>_<hash16>`），每一跳经执行器的上游核对。
+
+| DSL 算子 | 语义 | 编译为 | 事件时间 |
+|---|---|---|---|
+| `seq(a, b, within_us)` | A 之后 `within` 内的 B | `event_sequence` | B 的事件时间 |
+| `and(a, b, within_us)` | A、B 相距不超过 `within`（操作数按 spec hash 规范排序） | `event_co_occurrence` | 较晚者的事件时间 |
+| `not(a, b, within_us)` | A 发生，且 `[A, A + within]` 内无 B | `event_window_end(a)` → `event_absence(·, b)`（两跳） | 窗口结束 A + `within` |
+| `count(a, at_least, within_us)` | 在 A 处，`[A - within, A]` 内至少 `at_least` 个 A | `event_count` | 该 A 的事件时间 |
+
+同一表达式（同一 registry）永远编译成同一组规格与哈希；`Compilation.record()` 记录表达式哈希与全部规格哈希，
+`verify_compilation` 可重算核对。每个组合计入 trial count（04-research-loop.md §4）。
 
 已知失败模式（roadmap）：事件重叠导致样本非独立（`overlap_diagnostics` 描述）、组合爆炸（每个交互组合计入 trial count，
 04-research-loop.md §4）、事件频率过低（`event_frequency` 描述）。
