@@ -60,3 +60,13 @@
   （时间取自审计：时间是输入，不是决策）；多出、缺失或决策不同即 `RiskReplayDiverged`（`AuditCorrupted` 子类，`.record` / `.index` 指向第一条分歧记录）。
   `RESTORE_TRIPPED_BY` 触发开始新会话（风险簿与监控重新开始，假定参数相同）。有订单而无 `MarkRecord` 的审计直接拒绝。无终态记录的订单照常重算以保持状态，但列为未验证。
 - 仅模拟、只读证据；不下单、无网络。测试：`tests/apps/test_execution_risk_replay.py`。
+
+## 风险 / 告警重放（2026-09-26，B31，CODE_COMPLETE / DEBUG_PENDING）
+
+| 模块 | 内容 |
+|---|---|
+| `records.py` 的 `MarkRecord` / `MarkPrice` | apps 本地的价格标记记录；`ExecutionService(record_marks=True)` 时每批目标写入（默认不写，既有审计头不变） |
+| `risk_replay.py` | `replay_risk(path \| AuditTrail, limits, *, max_drawdown, monitor_capital=None)`：按审计顺序以新的二线风控与监控重放，逐字段复现每条拒绝、每笔成交与每条告警；分歧 → `RiskReplayDiverged`（指出首个分歧记录）；有订单无标记的审计被拒 |
+
+测试：`tests/apps/test_execution_risk_replay.py`。仍只模拟；目前没有组件默认开启 `record_marks`。
+

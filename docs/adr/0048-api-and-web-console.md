@@ -204,3 +204,17 @@ this batch's pages need).
   `tests/test_architecture_boundaries.py`, `tests/test_docs_consistency.py`, `ruff check`, `ruff
   format --check`, `mypy` (all pass), and `npm ci` / `npm run gen:api` (no diff — no `apps/api`
   endpoint changed) / `npm run build` (all under the `MemoryMax=2G` cap).
+
+## Implementation note（2026-09-26，全代码批次；CODE_COMPLETE / DEBUG_PENDING）
+
+本 ADR 正文所说的"四种报告"已扩展，只读边界不变。现状（逐批证据见完成计划 §10）：
+
+- 报告种类共 10 种：`validation_report`、`research_loop_round`、`state_strategy_matrix`、`router_paper_run`、`gate_calibration`、`router_stop`、`state_diagnostics`、`event_statistics`、
+  `paper_deviation`、`degradation_check`（B12 / B34）。除 `state_strategy_matrix`（哈希无法由载荷单独重算，按原样提供）外，各种类文件名须等于载荷身份哈希，`validation_report` 与 `research_loop_round` 须通过核心契约校验；
+  不合格文件列入 `GET /reports/{kind}` 的 `invalid`（不再静默跳过），其详情返回 422（B9 / B34）。
+- 只读任务端点 `GET /jobs`、`GET /jobs/{job_id}`（经 worker 的已校验结果日志；未配置 503、日志不可信 500、非法 id 400、未知 404；B9）。
+- 错误体统一为 `ApiError {detail}`，不含服务器路径；知识检索无 Provider → 503、Provider 错误 → 502（B9 / B34）。
+- 唯一的非 GET 路由仍是 `POST /knowledge/search`（只读查询）；**不**增加任何写入 / 触发端点——"API → Worker"端到端流程定义为 Worker 作业 → 结果日志 / 报告文件 → 只读 API → Web
+  （决定记录于 `docs/reviews/2026-09-26-autonomous-decisions.md`）。
+- 控制台共 14 个页面，均有加载 / 空 / 错误状态；`node --test` 覆盖映射逻辑，组件测试（已安装 esbuild 打包、`renderToStaticMarkup`）覆盖全部页面（B37）。
+- 未完成：真实浏览器对真实后端的手工验收（本机无浏览器）。
