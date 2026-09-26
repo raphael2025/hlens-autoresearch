@@ -8,6 +8,7 @@ Status: **CODE_COMPLETE / DEBUG_PENDING** (2026-09-26). No contract, Schema or l
 | `registry.py` | `StrategyRegistry(root, anchor=None)`: hash-chained journal (`registry.jsonl`, the shared on-disk contract of `infrastructure.event_bus.journal`), records `artifact.registered` / `equivalence.recorded` / `deployment.recorded`; single writer (`.lock`) |
 | `blobs.py` | `BlobStore`: write-once, SHA-256-named canonical-JSON blobs (`registry-blob:sha256:<hex>`) |
 | `golden.py` | The golden payload encoding shared by the packer (`research.promotion`) and the Equivalence Gate (`apps.promotion`) |
+| `profile_freeze.py` | `ProfileFreezeRegistry(root, anchor=...)` (ADR-0062, Proposed; B56): the append-only record that a **named** approver approved freezing one exact Validation Profile (ref + content hash) on one calibration report (original bytes stored write-once, kind / self-hash / `provenance.calibration_report` verified); the external anchor is **mandatory**; Promotion's authoritative freeze source |
 
 ## Rules (fail closed)
 
@@ -30,4 +31,16 @@ Control Plane storage belongs to Infrastructure (01-system.md §3–§4); it imp
 It is a stand-in for the PostgreSQL + object-storage registry of ADR-0005 §7 (D-01 / D-02 open).
 Keep `root` outside Git (tests use `tmp_path`).
 
-Tests: `tests/promotion/test_strategy_registry.py`.
+## Profile freeze registry (ADR-0062)
+
+- Separate directory (`freezes.jsonl`, `blobs/`, `.lock`) and a **mandatory** anchor outside it — without an
+  anchor, dropped trailing records are undetectable, so an unanchored registry cannot back Promotion.
+- One record type `profile.frozen` with exact keys (`format_version` 1.0.0, Profile JSON / ref / hash, calibration
+  kind / report_hash / sha256 / uri, `approved_by`, UTC `approved_at`, `freeze_id`); the same rules on append and
+  replay (calibration blobs are re-verified on replay); duplicate → `DuplicateRecord`, same ref under another hash →
+  `FreezeConflict`; on open any broken rule → `RegistryCorrupted`. No edit, delete, unfreeze or supersede.
+- Honest boundary: `approved_by` is a declared name (no OS / identity authentication); not the production Control
+  Plane; grants no live / funds / deployment authority; freezes no Profile value (D-09 stays Raphael's). Rolling the
+  anchor back together with the registry is still undetectable.
+
+Tests: `tests/promotion/test_strategy_registry.py`, `tests/promotion/test_profile_freeze_registry.py`.

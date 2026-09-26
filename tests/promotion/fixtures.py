@@ -24,7 +24,7 @@ from core.contracts.validation_profile import (
     Provenance,
     ValidationProfile,
 )
-from core.domain.base import FrozenMapping, Ref
+from core.domain.base import FrozenMapping, Ref, canonical_json, content_hash
 from core.domain.research import ExperimentSpec, GateResult, ValidationReport, Verdict
 from core.domain.specs import StrategySpec
 from core.lifecycle.strategy import (
@@ -220,6 +220,26 @@ def toy_evidence(**overrides: object) -> PromotionEvidence:
         signal_dependencies={str(SIGNAL_REF): HASH_E},
     )
     return replace(evidence, **overrides)  # type: ignore[arg-type]
+
+
+def toy_calibration_report(note: str = "TEST ONLY") -> tuple[bytes, str]:
+    """A TEST ONLY ``gate_calibration`` report file (canonical JSON bytes) and its ``report_hash``.
+
+    Only the parts the Profile freeze registry verifies are real — ``kind`` and the self-hash
+    ``report_hash = content_hash(<report without report_hash>)`` (ADR-0062 decision 3); it carries
+    no calibration runs and supports no Profile decision.
+    """
+    body: dict[str, object] = {
+        "kind": "gate_calibration",
+        "schema_version": "1.0.0",
+        "status": "TEST ONLY",
+        "disclaimer": "evidence only — not a Profile decision",
+        "note": note,
+        "inputs": {},
+        "candidates": [],
+    }
+    report_hash = content_hash(body)
+    return canonical_json({**body, "report_hash": report_hash}).encode("utf-8"), report_hash
 
 
 type PositionTransform = Callable[[TargetPosition], TargetPosition]
