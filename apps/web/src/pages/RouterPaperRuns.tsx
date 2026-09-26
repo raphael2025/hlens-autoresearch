@@ -4,105 +4,49 @@ import { SimulatedBanner } from "../components/Banner";
 import { EligibilityEvidence, ValidationReportBinding } from "../components/EligibilityEvidence";
 import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
+import {
+  asRouterPayload,
+  equitySeries,
+  runLabel,
+  shortTime,
+  weightSeries,
+  type RouterPayload,
+} from "../lib/routerPaperRun";
 
-// Payload shape written by research/reports/router.py (write_router_paper_run), read back opaquely
-// by apps/api/store.py — hand-typed the same way ValidationReports.tsx types Gate (no per-kind
-// OpenAPI schema; ReportEnvelope.payload is `dict[str, Any]`).
-type RouterDecision = {
-  at: string;
-  state: string | null;
-  weights: Record<string, string>;
-  turnover: string;
-  switching_cost: string;
-};
-
-type RouterCharge = {
-  decision_time: string;
-  turnover: string;
-  rate: string;
-  equity_base: string;
-  amount: string;
-  charged_at: string | null;
-};
-
-type RouterEquityPoint = {
-  time: string;
-  cash: string;
-  equity: string;
-  gross_exposure: string;
-};
-
-type RouterPayload = {
-  router: string;
-  router_spec_hash: string;
-  state_result_hash: string;
-  strategy_result_hashes: Record<string, string>;
-  decisions: RouterDecision[];
-  charges: RouterCharge[];
-  total_switching_cost: string;
-  request_hash: string;
-  gross_result_hash: string;
-  result_hash: string;
-  initial_equity: string;
-  final_equity: string;
-  pnl: string;
-  gross_equity_curve: RouterEquityPoint[];
-  net_equity_curve: RouterEquityPoint[];
-  run_hash: string;
-};
-
-function asRouterPayload(payload: Record<string, unknown> | undefined): RouterPayload | null {
-  if (payload === undefined || !Array.isArray(payload.decisions)) return null;
-  return payload as unknown as RouterPayload;
-}
-
-function asNumber(value: string | undefined): number {
-  const n = Number(value ?? "0");
-  return Number.isFinite(n) ? n : 0;
-}
-
-function shortTime(iso: string): string {
-  // "2026-01-01T00:01:00+00:00" -> "00:01:00" when same day is implied by context; keep it simple
-  // and just drop the timezone suffix so the axis stays readable without losing information.
-  return iso.replace("T", " ").replace(/\+00:00$/, "Z");
-}
+// Parsing and the chart series live in src/lib/routerPaperRun.ts (node-tested over the fixture).
 
 function WeightsTimelineChart({ payload }: { payload: RouterPayload }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
-  const strategyKeys = useMemo(
-    () =>
-      Array.from(new Set(payload.decisions.flatMap((decision) => Object.keys(decision.weights)))).sort(),
-    [payload],
-  );
+  const series = useMemo(() => weightSeries(payload), [payload]);
 
   useEffect(() => {
     if (chartRef.current === null || payload.decisions.length === 0) return;
     const chart = echarts.init(chartRef.current);
-    const categories = payload.decisions.map((decision) => shortTime(decision.at));
-    const weightSeries = strategyKeys.map((key) => ({
-      name: key,
-      type: "line" as const,
-      stack: "weights",
-      areaStyle: {},
-      data: payload.decisions.map((decision) => asNumber(decision.weights[key])),
-    }));
-    const turnoverSeries = {
-      name: "turnover (switch)",
-      type: "bar" as const,
-      yAxisIndex: 1,
-      data: payload.decisions.map((decision) => asNumber(decision.turnover)),
-      itemStyle: { color: "#c2410c", opacity: 0.5 },
-    };
     chart.setOption({
       tooltip: { trigger: "axis" },
       legend: { top: 0 },
       grid: { left: 56, right: 56, top: 40, bottom: 48 },
-      xAxis: { type: "category", data: categories, name: "decision time" },
+      xAxis: { type: "category", data: series.categories, name: "decision time" },
       yAxis: [
         { type: "value", name: "weight" },
         { type: "value", name: "turnover" },
       ],
-      series: [...weightSeries, turnoverSeries],
+      series: [
+        ...series.weights.map((weight) => ({
+          name: weight.key,
+          type: "line" as const,
+          stack: "weights",
+          areaStyle: {},
+          data: weight.data,
+        })),
+        {
+          name: "turnover (switch)",
+          type: "bar" as const,
+          yAxisIndex: 1,
+          data: series.turnover,
+          itemStyle: { color: "#c2410c", opacity: 0.5 },
+        },
+      ],
     });
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
@@ -110,35 +54,35 @@ function WeightsTimelineChart({ payload }: { payload: RouterPayload }) {
       window.removeEventListener("resize", onResize);
       chart.dispose();
     };
-  }, [payload, strategyKeys]);
+  }, [payload, series]);
 
   return <div ref={chartRef} style={{ width: "100%", height: 280, margin: "16px 0" }} />;
 }
 
 function EquityChart({ payload }: { payload: RouterPayload }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
+  const series = useMemo(() => equitySeries(payload), [payload]);
 
   useEffect(() => {
     if (chartRef.current === null || payload.gross_equity_curve.length === 0) return;
     const chart = echarts.init(chartRef.current);
-    const categories = payload.gross_equity_curve.map((point) => shortTime(point.time));
     chart.setOption({
       tooltip: { trigger: "axis" },
       legend: { top: 0 },
       grid: { left: 64, right: 24, top: 40, bottom: 48 },
-      xAxis: { type: "category", data: categories, name: "time" },
+      xAxis: { type: "category", data: series.categories, name: "time" },
       yAxis: { type: "value", name: "equity", scale: true },
       series: [
         {
           name: "gross (before switching cost)",
           type: "line",
-          data: payload.gross_equity_curve.map((point) => asNumber(point.equity)),
+          data: series.gross,
           itemStyle: { color: "#64748b" },
         },
         {
           name: "net (after switching cost)",
           type: "line",
-          data: payload.net_equity_curve.map((point) => asNumber(point.equity)),
+          data: series.net,
           itemStyle: { color: "#1d4ed8" },
         },
       ],
@@ -149,7 +93,7 @@ function EquityChart({ payload }: { payload: RouterPayload }) {
       window.removeEventListener("resize", onResize);
       chart.dispose();
     };
-  }, [payload]);
+  }, [payload, series]);
 
   return <div ref={chartRef} style={{ width: "100%", height: 280, margin: "16px 0" }} />;
 }
@@ -229,11 +173,6 @@ function RunDetail({ envelope }: { envelope: ReportEnvelope }) {
   );
 }
 
-function runLabel(run: ReportEnvelope): string {
-  const payload = asRouterPayload(run.payload);
-  return payload !== null ? `${payload.router} (pnl ${payload.pnl})` : run.id;
-}
-
 export function RouterPaperRuns() {
   return (
     <section>
@@ -246,7 +185,7 @@ export function RouterPaperRuns() {
         kind="router_paper_run"
         empty="（无路由运行报告 — 未配置报告目录或目录为空）"
         prompt="选择一次运行查看详情。"
-        label={runLabel}
+        label={(run) => runLabel(run.id, run.payload)}
         renderDetail={(detail) => <RunDetail envelope={detail} />}
         listWidth={260}
       />

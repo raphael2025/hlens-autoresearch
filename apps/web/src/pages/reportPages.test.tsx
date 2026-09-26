@@ -9,6 +9,7 @@ import { asCalibrationPayload } from "../lib/gateCalibration.ts";
 import { asPaperDeviationPayload, deviationLabel, summaryRows } from "../lib/paperDeviation.ts";
 import { asRouterStopPayload, reasonText, routerStopLabel, strategyRows } from "../lib/routerStop.ts";
 import { asStateDiagnosticsPayload, diagnosticsLabel } from "../lib/stateDiagnostics.ts";
+import { asValidationReportPayload, gateRows } from "../lib/validationReport.ts";
 import { DegradationChecks } from "./DegradationChecks.tsx";
 import { EventStatistics } from "./EventStatistics.tsx";
 import { GateCalibration } from "./GateCalibration.tsx";
@@ -61,7 +62,13 @@ const CASES: Case[] = [
       `整体判定：`,
       String(r.payload.verdict),
       hash12(r.content_hash),
+      `contract ${String(r.payload.schema_version)}`,
       ...(r.payload.gates as Gate[]).flatMap((gate) => [gate.gate_id, gate.metric]),
+      // the authoritative exact text when present (2.1.0), else the float (2.0.0)
+      ...gateRows(must(asValidationReportPayload(r.payload), "validation_report")).flatMap((row) => [
+        row.value.text,
+        row.representation,
+      ]),
     ],
   },
   {
@@ -282,3 +289,37 @@ for (const c of CASES) {
     });
   });
 }
+
+describe("ValidationReports: exact gate values (ADR-0052 §1)", () => {
+  const reports = fixtureEnvelopes("validation_report");
+  const byVersion = (version: string): ReportEnvelope => {
+    const found = reports.find((r) => r.payload.schema_version === version);
+    assert.ok(found !== undefined, `a ${version} validation_report fixture`);
+    return found;
+  };
+
+  async function detailOf(report: ReportEnvelope): Promise<string> {
+    const { html } = await renderSettled(<ValidationReports />, {
+      routes: [api.listing("validation_report", reports), api.report(report)],
+      selected: report.id,
+    });
+    return html;
+  }
+
+  const EXACT = '<code title="exact decimal (ADR-0052)">';
+
+  test("2.1.0: value_exact / threshold_exact are shown, not the derived float", async () => {
+    const html = await detailOf(byVersion("2.1.0"));
+    assert.ok(html.includes("contract 2.1.0"));
+    assert.ok(html.includes(`<td>${EXACT}0.0300000000000000001</code></td><td>${EXACT}0.05</code></td><td>exact</td>`));
+    assert.ok(!html.includes("<td>0.03</td>"), "the float of an exact gate is not shown");
+    assert.ok(html.includes("<td>10</td><td>5</td><td>float</td>"), "a float-only gate keeps its floats");
+  });
+
+  test("2.0.0 legacy: no exact keys, the floats are shown", async () => {
+    const html = await detailOf(byVersion("2.0.0"));
+    assert.ok(html.includes("contract 2.0.0"));
+    assert.ok(html.includes("<td>10</td><td>5</td><td>float</td>"));
+    assert.ok(!html.includes("<td>exact</td>") && !html.includes(EXACT));
+  });
+});
