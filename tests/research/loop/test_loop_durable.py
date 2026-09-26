@@ -23,12 +23,14 @@ from typing import Any, Literal
 import pytest
 
 from apps.worker import LoopAuditLog, LoopBudget, ResearchLoop
-from apps.worker.loop import ROUND_TOPIC
+from apps.worker.loop import JOB_TOPIC, ROUND_TOPIC
+from core.contracts.event_bus import BusMessage
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import FileEventBus, InMemoryEventBus
 from plugins.llm import ScriptedLLMProvider
 from plugins.synthetic import RandomWalkMarket
 from research.loop import (
+    DurableLoop,
     FileAnchor,
     LoopStateInconsistent,
     OosUnsealBudget,
@@ -36,9 +38,11 @@ from research.loop import (
     ReviewQueue,
     SyntheticLoopConfig,
     build_synthetic_loop,
+    check_round_bus,
     loop_fingerprint,
     open_synthetic_loop,
 )
+from research.loop.compose import BUS_DIR
 from research.loop.durable import (
     AUDIT_FILE,
     BETWEEN_ROUNDS,
@@ -849,3 +853,171 @@ def test_a_file_bus_under_the_state_directory_survives_the_restart_unchanged(
     with FileEventBus(state_dir / "bus") as bus:
         rounds = bus.poll("auditor", ROUND_TOPIC, 100)
     assert [m.payload["record_hash"] for m in rounds] == outcome.record_hashes
+
+
+# ---------------------- automatic bus (ADR-0044 / ADR-0049 notes, durable jobs and bus wiring)
+
+ROUND_LOG = Path(BUS_DIR) / "topics" / f"{ROUND_TOPIC}.jsonl"
+
+
+class _Crash(BaseException):
+    """A process death: neither the job runner nor the loop catches it."""
+
+
+def _open_auto(state_dir: Path, *, consumed: int = 0) -> DurableLoop:
+    """Durable mode without a caller's bus: the composition opens ``state_dir / "bus"``."""
+    opened: DurableLoop = open_synthetic_loop(
+        _config(), state_dir=state_dir, provider=RandomWalkMarket(), llm=_llm(consumed)
+    )
+    return opened
+
+
+def _round_hashes(state_dir: Path) -> list[str]:
+    with FileEventBus(state_dir / BUS_DIR) as bus:
+        return [m.payload["record_hash"] for m in bus.poll("auditor", ROUND_TOPIC, 100)]
+
+
+@pytest.fixture(scope="module")
+def auto_bus(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, Outcome]:
+    """``restarted`` with the automatic bus: round 0, the approval, the first loop dropped without
+    ``close()`` (dropping the loop releases the bus lock), reopened, rounds 1-2."""
+    state_dir = tmp_path_factory.mktemp("auto_bus") / "state"
+    first = _open_auto(state_dir)
+    assert first.owned_bus is not None and first.bus is first.owned_bus
+    first.loop.run_unattended(1)
+    first.memory.reviews.approve(DRAFT, reviewer=REVIEWER)
+    del first
+    gc.collect()
+    with _open_auto(state_dir, consumed=1) as second:
+        second.loop.run_unattended(ROUNDS - 1)
+        outcome = _outcome(second.loop, second.memory)
+    return state_dir, outcome
+
+
+def test_a_restart_with_the_automatic_bus_equals_the_uninterrupted_run(
+    auto_bus: tuple[Path, Outcome], uninterrupted: Outcome
+) -> None:
+    state_dir, outcome = auto_bus
+    assert outcome == uninterrupted
+    assert (state_dir / BUS_DIR / "bus.json").is_file()
+    assert _round_hashes(state_dir) == outcome.record_hashes
+    with FileEventBus(state_dir / BUS_DIR) as bus:  # every round job was acknowledged
+        assert bus.poll("research_loop_worker", JOB_TOPIC, 100) == ()
+    with _open_auto(state_dir, consumed=ROUNDS) as reopened:  # consistent: opens, adds nothing
+        assert len(reopened.loop.audit.records) == ROUNDS
+    assert _round_hashes(state_dir) == outcome.record_hashes
+
+
+def test_a_crash_between_the_audit_and_the_bus_is_caught_up_on_reopening(
+    uninterrupted: Outcome, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process dies after the audit recorded round 1 and before the bus saw it (and before its
+    job was acknowledged): reopening publishes round 1 from the audit, settles its job from the
+    audit, and the run continues exactly like the uninterrupted one."""
+    state_dir = tmp_path / "state"
+    first = _open_auto(state_dir)
+    first.loop.run_unattended(1)
+    first.memory.reviews.approve(DRAFT, reviewer=REVIEWER)
+    real_publish = FileEventBus.publish
+
+    def die_on_round_one(bus: FileEventBus, message: Any) -> None:
+        if message.topic == ROUND_TOPIC and message.key.endswith(":1"):
+            raise _Crash
+        real_publish(bus, message)
+
+    monkeypatch.setattr(FileEventBus, "publish", die_on_round_one)
+    with pytest.raises(_Crash):
+        first.loop.run_unattended(1)
+    monkeypatch.undo()
+    first.close()  # the process is gone: the kernel drops its lock
+    assert len(LoopAuditLog(state_dir / AUDIT_FILE).records) == 2
+    assert len(_round_hashes(state_dir)) == 1  # the bus is one round behind the audit
+    with FileEventBus(state_dir / BUS_DIR) as bus:
+        assert len(bus.poll("research_loop_worker", JOB_TOPIC, 100)) == 1  # round 1's job
+
+    with _open_auto(state_dir, consumed=2) as second:
+        second.loop.run_unattended(ROUNDS - 2)
+        outcome = _outcome(second.loop, second.memory)
+    assert outcome == uninterrupted
+    assert _round_hashes(state_dir) == outcome.record_hashes
+    with FileEventBus(state_dir / BUS_DIR) as bus:
+        assert bus.poll("research_loop_worker", JOB_TOPIC, 100) == ()
+
+
+def test_a_bus_one_round_short_is_caught_up_and_two_rounds_short_is_refused(
+    auto_bus: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir, outcome = auto_bus
+    one_short = _copy(state_dir, tmp_path / "one")
+    _drop_trailing_lines(one_short / ROUND_LOG, 1)
+    with _open_auto(one_short, consumed=ROUNDS):
+        pass
+    assert _round_hashes(one_short) == outcome.record_hashes  # caught up from the audit
+
+    two_short = _copy(state_dir, tmp_path / "two")
+    _drop_trailing_lines(two_short / ROUND_LOG, 2)
+    before = (two_short / ROUND_LOG).read_bytes()
+    with pytest.raises(LoopStateInconsistent, match="2 rounds behind"):
+        _open_auto(two_short, consumed=ROUNDS)
+    assert (two_short / ROUND_LOG).read_bytes() == before  # nothing written on a refusal
+    FileEventBus(two_short / BUS_DIR).close()  # the refused open released the lock
+
+
+def test_a_bus_with_a_foreign_record_or_ahead_of_the_audit_is_refused(
+    auto_bus: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir, outcome = auto_bus
+    with FileEventBus(state_dir / BUS_DIR) as bus:
+        real = bus.poll("auditor", ROUND_TOPIC, 100)
+    loop_id = _config().loop_id
+
+    foreign = _copy(state_dir, tmp_path / "foreign")
+    shutil.rmtree(foreign / BUS_DIR)
+    with FileEventBus(foreign / BUS_DIR) as bus:  # a valid bus holding another round 1
+        bus.publish(real[0])
+        bus.publish(
+            BusMessage.build(
+                ROUND_TOPIC,
+                f"{loop_id}:1",
+                {
+                    "record_hash": "f" * 64,
+                    "record": real[1].model_dump(mode="json")["payload"]["record"],
+                },
+            )
+        )
+        bus.publish(real[2])
+    with pytest.raises(LoopStateInconsistent, match="foreign or reordered"):
+        _open_auto(foreign, consumed=ROUNDS)
+
+    reordered = _copy(state_dir, tmp_path / "reordered")
+    shutil.rmtree(reordered / BUS_DIR)
+    with FileEventBus(reordered / BUS_DIR) as bus:
+        for message in (real[1], real[0], real[2]):
+            bus.publish(message)
+    with pytest.raises(LoopStateInconsistent, match="foreign or reordered"):
+        _open_auto(reordered, consumed=ROUNDS)
+
+    ahead = _copy(state_dir, tmp_path / "ahead")
+    with FileEventBus(ahead / BUS_DIR) as bus:  # a round the audit never recorded
+        bus.publish(BusMessage.build(ROUND_TOPIC, f"{loop_id}:3", {"record_hash": "e" * 64}))
+    with pytest.raises(LoopStateInconsistent, match="ahead of the audit"):
+        _open_auto(ahead, consumed=ROUNDS)
+
+    missing = _copy(state_dir, tmp_path / "missing")
+    shutil.rmtree(missing / BUS_DIR)  # a directory whose bus was lost (or never used)
+    with pytest.raises(LoopStateInconsistent, match="3 rounds behind"):
+        _open_auto(missing, consumed=ROUNDS)
+
+
+def test_an_in_memory_loop_still_needs_a_bus(tmp_path: Path) -> None:
+    memory = ResearchMemory(failures=FailureRegistry(tmp_path / "failures.jsonl"))
+    with pytest.raises(ValueError, match="needs a bus"):
+        build_synthetic_loop(_config(), provider=RandomWalkMarket(), memory=memory)
+
+
+def test_check_round_bus_is_exact_on_an_empty_audit() -> None:
+    bus = InMemoryEventBus()
+    assert check_round_bus(bus, "synthetic_loop", ()) == 0
+    bus.publish(BusMessage.build(ROUND_TOPIC, "synthetic_loop:0", {"record_hash": "a" * 64}))
+    with pytest.raises(LoopStateInconsistent, match="ahead"):
+        check_round_bus(bus, "synthetic_loop", ())

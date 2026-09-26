@@ -31,8 +31,18 @@ from apps.worker import (
     StageStatus,
     StageUsage,
 )
-from apps.worker.loop import METRICS_TOPIC, ROUND_RECORDED, ROUND_STARTED
+from apps.worker.jobs import JobSpec
+from apps.worker.loop import (
+    JOB_TOPIC,
+    METRICS_TOPIC,
+    ROUND_JOB,
+    ROUND_RECORDED,
+    ROUND_STARTED,
+    ROUND_TOPIC,
+    round_message,
+)
 from apps.worker.metrics import Clock
+from core.contracts.event_bus import BusMessage
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
 from tests.apps.test_research_loop import (
@@ -491,3 +501,109 @@ def test_a_failing_after_record_hook_keeps_the_round_and_stops_the_loop(tmp_path
     assert len(reopened.records) == 2 and reopened.open_round is None  # recorded, not interrupted
     with pytest.raises(LoopHalted):
         loop.submit_round(2)
+
+
+# ------------------------------- durable bus (ADR-0044 / ADR-0049 notes, durable jobs, 2026-09-26)
+
+
+class _Crash(BaseException):
+    """A process death: neither the job runner nor the loop catches it."""
+
+
+def _on_bus(stages: list[FakeStage], path: Path, bus: InMemoryEventBus) -> ResearchLoop:
+    return ResearchLoop(
+        loop_id="fake_loop",
+        stages=stages,
+        budget=TEST_ONLY_BUDGET,
+        bus=bus,
+        seed=7,
+        epoch=EPOCH,
+        cadence=timedelta(hours=1),
+        audit=LoopAuditLog(path),
+    )
+
+
+def test_a_recorded_rounds_redelivered_job_is_acked_from_the_audit_not_rerun(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The process dies after the audit recorded round 1 but before its job was acknowledged: a
+    durable bus re-delivers that job. The restarted loop acknowledges it from the audit (its
+    durable result), never runs it, and continues exactly like an uninterrupted loop."""
+    path = tmp_path / "audit.jsonl"
+    bus = InMemoryEventBus()  # shared across the "restart": it stands for a durable bus
+    first = _on_bus(_durable_stages(), path, bus)
+    first.run_unattended(1)
+    real_publish = bus.publish
+
+    def die_on_round(message: BusMessage) -> None:
+        if message.topic == ROUND_TOPIC:
+            raise _Crash
+        real_publish(message)
+
+    monkeypatch.setattr(bus, "publish", die_on_round)
+    with pytest.raises(_Crash):
+        first.run_unattended(1)
+    monkeypatch.undo()
+    assert len(LoopAuditLog(path).records) == 2
+    [pending] = bus.poll("research_loop_worker", JOB_TOPIC, 10)  # round 1's job, unacked
+    assert pending.payload["params"]["round"] == 1
+
+    stages = _durable_stages()
+    restarted = _on_bus(stages, path, bus)
+    assert bus.poll("research_loop_worker", JOB_TOPIC, 10) == ()  # settled from the audit
+    after = restarted.run_unattended(2)
+    assert [r.round_index for r in after] == [2, 3]
+    assert all(stage.runs == 2 for stage in stages)  # rounds 0 and 1 never ran again
+
+    uninterrupted, _ = _loop(_durable_stages())
+    expected = [r.record_hash for r in uninterrupted.run_unattended(4)]
+    assert [r.record_hash for r in LoopAuditLog(path).records] == expected
+
+
+def test_only_this_loops_recorded_round_jobs_are_settled(tmp_path: Path) -> None:
+    path = tmp_path / "audit.jsonl"
+    _loop(_durable_stages(), LoopAuditLog(path))[0].run_unattended(2)
+    bus = InMemoryEventBus()
+    foreign = [
+        JobSpec(ROUND_JOB, {"loop_id": "other_loop", "round": 0}),  # another loop
+        JobSpec(ROUND_JOB, {"loop_id": "fake_loop", "round": 2}),  # not recorded yet
+        JobSpec(ROUND_JOB, {"loop_id": "fake_loop", "round": 0, "extra": 1}),  # other content
+    ]
+    for job in (*foreign, JobSpec(ROUND_JOB, {"loop_id": "fake_loop", "round": 1})):
+        bus.publish(job.message(JOB_TOPIC))
+    _on_bus(_durable_stages(), path, bus)
+    left = bus.poll("research_loop_worker", JOB_TOPIC, 10)
+    assert [m.key for m in left] == [job.job_id for job in foreign]
+
+
+def test_a_failed_round_publish_keeps_the_round_and_stops_the_loop(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A bus that missed a recorded round must not fall further behind: the loop stops."""
+    path = tmp_path / "audit.jsonl"
+    bus = InMemoryEventBus()
+    loop = _on_bus(_durable_stages(), path, bus)
+    real_publish = bus.publish
+
+    def fail_round_one(message: BusMessage) -> None:
+        if message.topic == ROUND_TOPIC and message.key == "fake_loop:1":
+            raise OSError("bus unreachable")
+        real_publish(message)
+
+    monkeypatch.setattr(bus, "publish", fail_round_one)
+    with pytest.raises(RuntimeError, match="bus unreachable"):
+        loop.run_unattended(3)
+    assert loop.stopped is not None and "publishing it on research_loop.round" in loop.stopped
+    assert len(LoopAuditLog(path).records) == 2
+    with pytest.raises(LoopHalted):
+        loop.submit_round(2)
+    published = [m.payload["record_hash"] for m in bus.poll("reader", ROUND_TOPIC, 10)]
+    assert published == [LoopAuditLog(path).records[0].record_hash]
+
+
+def test_the_round_message_is_a_pure_function_of_the_record(tmp_path: Path) -> None:
+    loop, bus = _loop(_durable_stages(), LoopAuditLog(tmp_path / "audit.jsonl"))
+    records = loop.run_unattended(2)
+    assert bus.poll("reader", ROUND_TOPIC, 10) == tuple(
+        round_message("fake_loop", record) for record in records
+    )

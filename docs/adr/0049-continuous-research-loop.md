@@ -282,3 +282,31 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
    日志为 0、1、1、2、3 轮（`memory_seq` 1 – 5）；最后一轮之后的审批使锚点前进一行且重启后仍在；只删审批行被拒（有无锚点）；审批连同检查点一起删
    在有锚点时被拒且锚点不变（无锚点可打开：已记录的限制）；无检查点的伪造审批（最后一轮之后，有无锚点；早先轮次内）被拒；检查点指向别的审批
    被拒；轮中审批被拒且不写任何文件；检查点失败 → 下一轮不被记录、重新打开被拒；`FileAnchor` 拒绝更早的记忆行、同一行不同内容与更少的轮数。
+
+## Implementation note (durable jobs and bus wiring, 2026-09-26)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；无契约 / Schema / 生命周期 / Constitution / Profile 变更；
+`LoopRecord` 载荷与哈希规则不变（同一种子的记录哈希不变）。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。补上 ADR-0044「file-backed bus」
+第 6 点记录的后续工作（组合根自动使用 `state_dir/bus` 并与审计交叉校验）；任务结果持久化见 ADR-0044 同名实施说明。
+
+1. **自动总线**：`open_synthetic_loop(config, state_dir=...)`（及 `build_synthetic_loop(..., state_dir=...)`）不给 `bus` 时打开
+   `FileEventBus(state_dir / "bus")`，由组合根持有：`DurableLoop.bus` / `owned_bus`，`DurableLoop.close()`、`with` 块或循环对象被回收
+   （`weakref.finalize`）释放总线锁。调用方自带的总线照旧使用、**不**核对（它可能是内存总线或多个循环共享，组合根无权判断）；纯内存组合仍必须传 `bus`。
+2. **交叉核对**（`check_round_bus`，在组合循环**之前**；审计已由 `open_state` 校验）：用一个从不确认的专用消费者（`research_loop_bus_audit`，
+   与其他消费者独立）读 `research_loop.round`，每条消息必须等于审计对应轮次的 `apps.worker.loop.round_message(loop_id, record)`——同键、
+   同 `record_hash`、同记录（比较 `message_id`，即主题 + 键 + 载荷的内容哈希），按顺序。
+3. **取舍：落后多少可以补**。循环只在审计 fsync 该轮**之后**才发布轮次消息；本批让轮次发布失败也使循环 `stopped`（该轮已记录，fail closed，
+   与 `after_record` 失败相同）；组合根在任何新轮次之前补齐。所以健康的历史里总线最多落后审计**最后一轮**（进程死于审计与发布之间）。
+   决定：**恰好落后最后一轮 → 从审计补发**（消息是已校验记录的纯函数，补发的就是不中断运行本应发布的那条，不会引入新内容）；
+   **落后两轮及以上 → 拒绝**（总线被截断、替换、丢失或从未用于此目录；空总线而审计已有两轮以上同样拒绝），须人工核对；
+   **超前**（消息多于审计轮数：审计被回滚，或换了别的总线）→ 拒绝——总线在此充当审计之外的见证，超前正是它能发现的回滚；
+   **外来 / 乱序**记录（任一位置的消息不等于审计该轮）→ 拒绝。拒绝时（`LoopStateInconsistent`）不向总线写任何东西、释放锁。
+4. **记录与确认之间的崩溃**：持久总线会重投该轮的轮次任务；`ResearchLoop` 续接审计时按审计确认它（ADR-0044 同名实施说明第 5 点），
+   不重跑，下一次 `run_unattended` 正常续跑。
+5. **仍未做 / 限制**：只有 `research_loop.round` 被核对；`research_loop.stage` / `metrics` / `jobs` 主题的尾部删除仍受 ADR-0044 所述限制
+   （最后一次写消费者状态之后追加、又被删除的消息不可发现）；审计与总线**一起**一致截回更早轮次仍需外部锚点才能发现（已记录的限制）；
+   只有合成市场组合根。
+6. **测试**：`tests/research/loop/test_loop_durable.py`——自动总线的重启（第一个循环不调用 `close()`、只被丢弃）与不中断运行完全相同，总线重放每轮
+   `record_hash`、全部轮次任务已确认，一致目录重开不写任何东西；审计与总线之间崩溃（第 1 轮）→ 重开补发第 1 轮、按审计确认其任务、续跑结果与不中断
+   运行相同；总线尾部少一轮 → 补发，少两轮 → 拒绝且文件不变、锁已释放；外来记录、乱序、超前、总线目录丢失 → 拒绝；纯内存组合缺 `bus` → 拒绝。
+   `tests/apps/test_research_loop_durable.py`——轮次发布失败 → 该轮已记录、循环停止、总线只少这一轮。

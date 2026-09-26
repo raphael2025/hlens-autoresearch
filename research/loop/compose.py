@@ -37,19 +37,42 @@ Approvals between rounds (ADR-0049 implementation note, 2026-09-26): a human app
 restored memory (``DurableLoop.memory.reviews.approve``) is refused while a round runs and, once
 journaled, immediately writes a between-rounds checkpoint line and moves the anchor; reopening
 refuses an approval no such line names (``research.loop.durable``, **Approvals between rounds**).
+
+Durable bus (ADR-0044 / ADR-0049 implementation notes, durable jobs and bus wiring, 2026-09-26):
+with a ``state_dir`` and no ``bus`` the composition opens its own ``FileEventBus(state_dir /
+"bus")`` (``DurableLoop.bus``; ``DurableLoop.close()`` or dropping the loop releases its lock) and,
+before composing, cross-checks it against the verified audit (``check_round_bus``): the bus's
+``research_loop.round`` messages must be exactly the audit's recorded rounds
+(``apps.worker.loop.round_message``: same key, ``record_hash`` and record), in order. A bus
+**ahead** of the audit (more messages, e.g. an audit rolled back) or holding any foreign message is
+refused (``LoopStateInconsistent``). A bus **behind** by exactly the last recorded round is caught
+up from the audit -- the only state a crash can leave (the loop publishes a round only after the
+audit fsync'd it, stops when that publish fails, and the composition catches up before any new
+round runs), and the message is a pure function of the verified record. Behind by more than one
+round (a truncated or replaced bus, or one that never saw this directory) is refused. A bus the
+caller passes is the caller's: it is used as given and not cross-checked.
 """
 
 from __future__ import annotations
 
+import weakref
 from collections.abc import Sequence
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
 from os import PathLike
 from pathlib import Path
+from types import TracebackType
 from typing import Any
 
-from apps.worker.loop import LoopBudget, LoopRecord, LoopStage, ResearchLoop
+from apps.worker.loop import (
+    ROUND_TOPIC,
+    LoopBudget,
+    LoopRecord,
+    LoopStage,
+    ResearchLoop,
+    round_message,
+)
 from core.contracts.cost_model import CostModelSpec
 from core.contracts.event_bus import EventBusAdapter
 from core.contracts.feature import FeatureProvider
@@ -62,7 +85,14 @@ from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import KnowledgeItem
 from core.domain.selection import ProfileSelection
 from core.domain.specs import FeatureSpec, StateSpec
-from research.loop.durable import DurableState, FileAnchor, StateAnchor, open_state
+from infrastructure.event_bus import FileEventBus
+from research.loop.durable import (
+    DurableState,
+    FileAnchor,
+    LoopStateInconsistent,
+    StateAnchor,
+    open_state,
+)
 from research.loop.memory import ResearchMemory
 from research.loop.stages import (
     EvolutionPlan,
@@ -81,14 +111,24 @@ from research.strategies.pipeline import StrategyCandidate
 from research.validation import RobustnessParams
 
 __all__ = [
+    "BUS_AUDIT_CONSUMER",
+    "BUS_DIR",
     "DurableLoop",
     "LoopWiring",
     "SyntheticLoopConfig",
     "build_synthetic_loop",
+    "check_round_bus",
     "loop_fingerprint",
     "open_synthetic_loop",
     "run_unattended_and_report",
 ]
+
+
+#: The composition's own bus, under the state directory (durable mode without a caller's bus).
+BUS_DIR = "bus"
+#: The consumer that reads ``research_loop.round`` to cross-check it; it never acknowledges, so
+#: every check reads the whole topic from the start (other consumers are independent).
+BUS_AUDIT_CONSUMER = "research_loop_bus_audit"
 
 
 @dataclass(frozen=True)
@@ -151,7 +191,7 @@ def build_synthetic_loop(
     config: SyntheticLoopConfig,
     *,
     provider: SyntheticMarketProvider,
-    bus: EventBusAdapter,
+    bus: EventBusAdapter | None = None,
     memory: ResearchMemory | None = None,
     llm: LLMProvider | None = None,
     state_dir: Path | None = None,
@@ -161,7 +201,10 @@ def build_synthetic_loop(
 
     Exactly one of ``memory`` / ``state_dir``. ``state_dir`` is ``open_synthetic_loop(...).loop``;
     use ``open_synthetic_loop`` directly when the caller needs the restored memory (e.g. to
-    approve LLM drafts between rounds). ``anchor`` only with ``state_dir``.
+    approve LLM drafts between rounds) or to close the automatic bus. ``anchor`` only with
+    ``state_dir``. ``bus``: required in memory; with ``state_dir`` it may be omitted (the
+    composition's own ``FileEventBus(state_dir / "bus")``, cross-checked against the audit; its
+    lock is released when the returned loop is garbage-collected or the process exits).
     """
     if (memory is None) == (state_dir is None):
         raise ValueError("pass exactly one of memory (in memory) or state_dir (durable)")
@@ -171,6 +214,8 @@ def build_synthetic_loop(
         ).loop
     if anchor is not None:
         raise ValueError("an anchor keeps a state directory's head: it needs state_dir")
+    if bus is None:
+        raise ValueError("an in-memory loop needs a bus (only a state_dir provides its own)")
     assert memory is not None
     return _compose(config, provider, bus, memory, llm, None)
 
@@ -269,11 +314,65 @@ def _compose(
 
 @dataclass(frozen=True)
 class DurableLoop:
-    """A loop composed over a state directory, with the research memory restored from it."""
+    """A loop composed over a state directory, with the research memory restored from it.
+
+    ``bus`` is the bus the loop publishes on; ``owned_bus`` is set when the composition opened it
+    (``state_dir / "bus"``): ``close()`` (or leaving a ``with`` block) releases its lock, as does
+    dropping the loop. Closing a caller's bus is the caller's job."""
 
     loop: ResearchLoop
     memory: ResearchMemory
     state_dir: Path
+    bus: EventBusAdapter
+    owned_bus: FileEventBus | None = None
+
+    def close(self) -> None:
+        """Release the composition's own bus (idempotent; nothing for a caller's bus)."""
+        if self.owned_bus is not None:
+            self.owned_bus.close()
+
+    def __enter__(self) -> DurableLoop:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+
+def check_round_bus(bus: EventBusAdapter, loop_id: str, records: Sequence[LoopRecord]) -> int:
+    """Cross-check ``research_loop.round`` on ``bus`` against the verified audit ``records``;
+    return how many rounds were caught up from the audit (0 or 1). See the module docs, **Durable
+    bus**: ahead, foreign or reordered messages, or a bus more than one round behind, are
+    ``LoopStateInconsistent``; nothing is published unless every present message matches."""
+    expected = [round_message(loop_id, record) for record in records]
+    published = bus.poll(BUS_AUDIT_CONSUMER, ROUND_TOPIC, len(expected) + 1)
+    if len(published) > len(expected):
+        raise LoopStateInconsistent(
+            f"the bus holds more {ROUND_TOPIC} messages than the {len(expected)} rounds the "
+            "audit records: the bus is ahead of the audit (audit rolled back, or another bus)"
+        )
+    for index, message in enumerate(published):
+        if message.message_id != expected[index].message_id:
+            raise LoopStateInconsistent(
+                f"{ROUND_TOPIC} message {index} ({message.key!r}, record_hash "
+                f"{str(message.payload.get('record_hash'))[:12]}) is not the audit's round "
+                f"{index} (record_hash {records[index].record_hash[:12]}): a foreign or "
+                "reordered record"
+            )
+    missing = expected[len(published) :]
+    if len(missing) > 1:
+        raise LoopStateInconsistent(
+            f"the bus is {len(missing)} rounds behind the audit (it holds {len(published)} of "
+            f"{len(expected)}): only the last recorded round can be missing after a crash, so "
+            "the bus was truncated, replaced or never used for this directory"
+        )
+    for message in missing:
+        bus.publish(message)
+    return len(missing)
 
 
 def open_synthetic_loop(
@@ -281,7 +380,7 @@ def open_synthetic_loop(
     *,
     state_dir: Path,
     provider: SyntheticMarketProvider,
-    bus: EventBusAdapter,
+    bus: EventBusAdapter | None = None,
     llm: LLMProvider | None = None,
     anchor: StateAnchor | Path | None = None,
 ) -> DurableLoop:
@@ -305,6 +404,11 @@ def open_synthetic_loop(
     reopened directory behind it (rolled back) or diverged from it is refused. Without it a
     consistent truncation of every file to an earlier round boundary is not detectable (the
     documented limit of ``research.loop.durable``).
+
+    ``bus``: omitted -> the composition's own ``FileEventBus(state_dir / "bus")``, cross-checked
+    against the audit before the loop is composed (``check_round_bus``: the last round is caught
+    up after a crash, anything else inconsistent is refused) and released by
+    ``DurableLoop.close()``. A caller's bus is used as given, unchecked.
     """
     wiring = config.wiring
     state = open_state(
@@ -315,8 +419,20 @@ def open_synthetic_loop(
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
     )
-    loop = _compose(config, provider, bus, state.memory, llm, state)
-    return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root)
+    if bus is not None:
+        loop = _compose(config, provider, bus, state.memory, llm, state)
+        return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root, bus=bus)
+    owned = FileEventBus(state.root / BUS_DIR)
+    try:
+        check_round_bus(owned, config.loop_id, state.audit.records)
+        loop = _compose(config, provider, owned, state.memory, llm, state)
+    except BaseException:
+        owned.close()
+        raise
+    weakref.finalize(loop, owned.close)  # a dropped loop releases the bus lock
+    return DurableLoop(
+        loop=loop, memory=state.memory, state_dir=state.root, bus=owned, owned_bus=owned
+    )
 
 
 def _unseal_payload(budget: OosUnsealBudget | None) -> dict[str, Any] | None:

@@ -13,7 +13,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `trials.py` | `ExperimentStage`（先核对已在 TrialLedger 预登记（重新评估按 attempt 核对），在累计研究数据上，再生成 06-experiment.md §2 复现元组的 `ExperimentSpec` / `ExperimentRun`，经 `CandidateTrialRunner` 跑策略 → 风控 → 回测，按决策期把收益归到 Phase 2 状态上做 Phase 6 矩阵）、`ValidationStage`（`PipelineBacktestValidator` G0 – G4；G5 仅在显式 `OosUnsealBudget` 列出该族、样本内 PASS、本轮有封存段且该族未开封时运行；开封后先 `claim_evaluation` 原子消耗唯一评估，提前结束或出错 → INCONCLUSIVE `consumed_without_result`，窗口永久关闭）、`TrialComponents`、`OosUnsealBudget`（全局次数 + `approved_families`：族 → 批准人） |
 | `evolution.py` | `EvolutionStage` / `EvolutionPlan`：从更早轮次未被否证（按各假设最近一次验证：PASS / INCONCLUSIVE）的最佳候选出发 `mutate`，`require_new_version` 与目录防覆盖，`LineageGraph` 可追溯；后代作为新假设先登记、IDEA → CANDIDATE、本轮在累计研究数据上重新验证，不继承父代结论 |
 | `memory.py` | `ResearchMemory`（TrialLedger、ReviewQueue、FailureRegistry、策略目录、试验 / 验证记录、谱系、封存开封账本、摄取市场（及其生成规格）与累计研究数据）；`ReviewQueue.approve` 要求非空且非自动化身份（非循环自身 actor、非 `research_loop:` 前缀），并记录审批；`ReviewQueue(path)` 把入队 / 审批 / 取用逐行写入哈希链日志，重放时重新核验（自动化身份的审批、草稿或调用哈希不符的审批 → `JournalCorrupted`）；`ReviewQueue.observe(ReviewObserver)` 绑定唯一观察者（持久状态目录：审批前拒绝轮中审批、审批后立即写轮间检查点并移动锚点） |
-| `compose.py` | `SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：研究侧组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop） |
+| `compose.py` | `SyntheticLoopConfig` + `LoopWiring` + `build_synthetic_loop`：研究侧组合根，所有数字来自配置；`open_synthetic_loop(config, state_dir=...)` → `DurableLoop(loop, memory, state_dir, bus, owned_bus)`（`build_synthetic_loop(..., state_dir=...)` 等价，只返回 loop）；不给 `bus` 时自动使用 `state_dir/bus` 并与审计交叉核对（`check_round_bus`） |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
 
 要点：
@@ -76,11 +76,21 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   **任何锚点都无法发现**：能写目录并遵循格式的人（在 `open_state` 打开的状态上调用 `approve`，或手写同样的两行）可以追加一条带检查点的审批——
   日志是哈希链不是签名，审批人身份只是声明；这需要经过认证的审批通道（不在范围内）。
 - LLM 提供者属外部：其自身状态（如脚本化提供者的位置）不是循环状态，由调用方续接。
+- **自动持久总线**（ADR-0044 / ADR-0049 实施说明 durable jobs and bus wiring，2026-09-26）：给 `state_dir` 而不给 `bus` 时，组合根自己打开
+  `FileEventBus(state_dir / "bus")`（`DurableLoop.bus` / `owned_bus`；`DurableLoop.close()`、`with` 块或丢弃循环对象释放总线锁），并在组合**之前**
+  用 `check_round_bus` 把总线与已校验的审计交叉核对：`research_loop.round` 上的消息必须恰好是审计已记录轮次的
+  `apps.worker.loop.round_message`（同键、同 `record_hash`、同记录），按顺序。**超前**（消息多于审计轮数，例如审计被回滚）或任何**外来 / 乱序**
+  记录 → `LoopStateInconsistent`；**落后恰好最后一轮** → 从审计补发（这是崩溃唯一能留下的状态：循环在审计 fsync 之后才发布，发布失败即停机，
+  组合根在任何新轮次之前补齐；消息是已校验记录的纯函数）；**落后两轮及以上**（总线被截断 / 替换 / 从未用于此目录）→ 拒绝，拒绝时不写任何东西。
+  同时机制侧在续接审计时确认本循环已记录轮次的未确认轮次任务（崩溃于记录与确认之间）——审计就是它们的持久结果，从不重跑。
+  调用方自己传入的总线照旧使用、不做交叉核对（例如内存总线）；纯内存组合仍必须传 `bus`。
 - 回归测试：`tests/research/loop/test_loop_durable.py`（重启 e2e 与不中断运行的审计哈希 / trial 数 / 生命周期 / 封存 OOS 完全相同；
   删除账本、审计超前账本、篡改审批、逐文件尾部截断、一致截断（已记录的限制）、中断轮次、换配置、删检查点文件、篡改检查点增量；
   换预算 / 开封额度 / 获准族 / 批准人被拒绝、相同预算接受、节奏精确；带锚点的重启、一致截断 / 删目录 / 分叉 / 锚点丢失或在目录内被拒绝、锚点不后退；
   轮间审批立即有检查点并移动锚点、最后一轮之后的审批重启后仍在、只删审批被拒、审批连同检查点一起删在有锚点时被拒（无锚点为已记录的限制）、
-  无检查点的伪造审批（最后一轮之后 / 早先轮次内）被拒、检查点指向别的审批被拒、轮中审批被拒、检查点失败使下一轮不被记录）。
+  无检查点的伪造审批（最后一轮之后 / 早先轮次内）被拒、检查点指向别的审批被拒、轮中审批被拒、检查点失败使下一轮不被记录；
+  自动总线的重启与不中断运行相同且总线重放每轮 `record_hash`、审计与总线之间崩溃后补发并续跑相同、总线少一轮补发 / 少两轮或丢失被拒、
+  外来记录 / 乱序 / 超前的总线被拒）。
 
 未完成（调试批次）：NATS、研究仪表盘；持久组合只覆盖合成市场组合根（真实数据集组合根另做）；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；

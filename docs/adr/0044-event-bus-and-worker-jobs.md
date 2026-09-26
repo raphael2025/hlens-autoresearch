@@ -58,3 +58,31 @@
    是后续工作（未做）。
 7. **不改变 D-10**（ADR-0021）：这是在无 NATS 期间的本地持久选项，不是 NATS 引入门的决定；外部总线仍按同一 Protocol 与 suite 接入，
    安装任何系统软件仍须 Raphael 授权（H12）。
+
+## Implementation note (durable jobs and bus wiring, 2026-09-26)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；`core/contracts`（冻结）、Schema、生命周期、Constitution、
+Profile 均不变；不安装任何软件。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。调试待办 C 节 P11（`JobRunner` 结果只在内存；组合根未自动
+使用并核对 `state_dir/bus`，见上一条第 6 点）。
+
+1. **持久任务结果（可选）**：`JobRunner(..., results=<path>, idempotent=<处理器名>)`。结果日志复用 `apps/worker/journal.py`（与审计同一哈希链
+   磁盘契约）：处理器运行**前**写 `job_started`（`job_id`、`name`、`params`），结果已知、确认消息**前**写 `job_result`（`job_id`、`name`、
+   `succeeded`、`attempts`、`result`、`error`）。不给 `results` = 原行为（内存结果表）。
+2. **重启语义**：已有 `job_result` 的任务**永不重跑**——重投的消息直接按存储的结果确认（解决"记录与确认之间崩溃会重跑一次"）。
+3. **只开始、无结果的任务**（处理器内或写结果前进程死亡；已做了什么未知）——按本 ADR 第 3 条"重复只运行一次、幂等吸收"的规则选择：
+   运行器无法知道处理器已产生的副作用，所以幂等性必须由调用方**声明**，不能推定。声明为幂等的处理器（`idempotent=`，无默认）在消息重投时重跑
+   （再写一行 `job_started`）；其余一律停机待人工审查：`run_pending` 在轮询之前抛 `JobInterrupted`，消息不确认，`JobRunner.interrupted` 列出
+   这些任务；解决方式是人工审查后换新的结果文件。与 ADR-0049 "只 started 未 recorded 的轮次 → 停机" 的原则一致（fail closed）。
+4. **fail closed**：重开时先校验链（篡改 / 截断的行 → `JournalCorrupted`），再逐行做语义校验（未知行类型、字段不全或多余、`job_id` 不是名称 +
+   参数的内容哈希、没有开始的结果、同一任务第二个结果、结果之后又开始、未声明幂等的任务被开始两次、不合法的结果字段 → `JobResultsCorrupted`，
+   是 `JournalCorrupted` 的子类），从不跳过或修复。持久结果必须是 JSON（存储与返回的都是其 JSON 形式，重启前后相同）；持久写入失败 → 运行器
+   停止、消息不确认；持久模式下键不是其内容身份的消息被拒（`ValueError`，否则其日志行重开时无法校验）。
+5. **研究循环的轮次任务**：`ResearchLoop` 的轮次任务结果就是审计本身（ADR-0049），不另写结果日志。续接审计时，构造函数确认本循环已记录轮次
+   的未确认轮次任务（内容身份逐一匹配；别的循环、未记录的轮次或其他内容的任务不动），因此持久总线在"记录与确认之间崩溃"后不会让下一次
+   `run_unattended` 因"乱序"失败，也从不重跑。显式重复提交旧轮次仍按原样失败（"out of order"，阶段不运行）。
+6. **接线**：上一条第 6 点的后续工作完成——`research/loop/compose.py` 在持久模式下不给 `bus` 时自动使用 `FileEventBus(state_dir/"bus")` 并与审计
+   交叉核对（细节与取舍见 ADR-0049 同名实施说明）。调用方自带的总线照旧，不核对。
+7. **测试**：`tests/apps/test_worker_jobs.py`（记录与确认之间崩溃后不重跑并按存储结果确认、内存模式仍重跑一次（原行为）、未声明幂等的中断任务
+   停机且重启后仍停机、声明幂等的重跑一次并记录、篡改结果文件被拒、9 种重新成链的伪造历史被拒、非 JSON 结果与键不符的消息被拒、模块只依赖
+   `apps` / `core` / 标准库）；`tests/apps/test_research_loop_durable.py`（重投的已记录轮次任务按审计确认、续跑与不中断相同；只确认本循环已记录轮次的
+   任务；轮次发布失败停机；轮次消息是记录的纯函数）。

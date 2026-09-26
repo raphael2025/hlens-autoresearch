@@ -2,7 +2,13 @@
 the degradation monitor. Never imports research/ (stages are injected by a composition root)."""
 
 from apps.worker.degradation import DegradationCheck, DegradationMonitor
-from apps.worker.jobs import JobOutcome, JobRunner, JobSpec
+from apps.worker.jobs import (
+    JobInterrupted,
+    JobOutcome,
+    JobResultsCorrupted,
+    JobRunner,
+    JobSpec,
+)
 from apps.worker.journal import AppendOnlyJournal, JournalCorrupted
 from apps.worker.loop import (
     AUTOMATABLE_TARGETS,
@@ -37,7 +43,9 @@ __all__ = [
     "AutomationForbidden",
     "DegradationCheck",
     "DegradationMonitor",
+    "JobInterrupted",
     "JobOutcome",
+    "JobResultsCorrupted",
     "JobRunner",
     "JobSpec",
     "JournalCorrupted",

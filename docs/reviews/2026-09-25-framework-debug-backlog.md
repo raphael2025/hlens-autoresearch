@@ -71,8 +71,15 @@
   offset / 确认集（绑定写入时的日志长度与头哈希），通过同一 bus contract suite，与内存总线差分等价（发布端不去重，与 Protocol 一致），
   重开后重放、未确认即重投，篡改 / 断链 / 半行 / 尾部删到消费者见过的长度以下 / 被编辑的状态一律拒绝，`fcntl.flock` 单写者锁
   （ADR-0044 Implementation note, file-backed bus；`tests/infrastructure/event_bus/test_file_event_bus.py`）；调用方可向持久组合传
-  `bus=FileEventBus(state_dir / "bus")`，记录哈希不变（`test_loop_durable.py`）。仍未做：组合根在持久模式下自动使用 `state_dir/bus`
-  并与审计交叉校验；最后一次写消费者状态之后追加、又被尾部删除的消息不可发现；NATS / Control Plane 持久化（D-10）。
+  `bus=FileEventBus(state_dir / "bus")`，记录哈希不变（`test_loop_durable.py`）。
+  ~~组合根在持久模式下自动使用 `state_dir/bus` 并与审计交叉校验~~ ✅ 已修（2026-09-26）：不给 `bus` 时组合根打开 `FileEventBus(state_dir/"bus")`，
+  组合前核对 `research_loop.round` 与审计（同键 / 同 `record_hash` / 同记录、按序）：超前、外来或乱序记录拒绝；只落后最后一轮（崩溃唯一能留下的状态）
+  从审计补发；落后两轮及以上拒绝；轮次发布失败使循环停止；续接审计时本循环已记录轮次的未确认轮次任务按审计确认、不重跑。
+  ~~`JobRunner` 结果只在内存（崩溃于记录与确认之间会重跑）~~ ✅ 已修（2026-09-26）：可选 `results=` 哈希链结果日志，已有结果的任务重投时按存储结果确认、
+  从不重跑；只开始无结果的任务仅在声明幂等时重跑，否则 `JobInterrupted` 待人工审查；篡改 / 伪造历史拒绝（ADR-0044 / ADR-0049 Implementation note,
+  durable jobs and bus wiring；`tests/apps/test_worker_jobs.py`、`tests/apps/test_research_loop_durable.py`、`tests/research/loop/test_loop_durable.py`）。
+  仍未做：最后一次写消费者状态之后追加、又被尾部删除的消息不可发现（`research_loop.round` 由审计核对补上，其他主题仍是该限制）；
+  调用方自带的总线不做交叉核对；NATS / Control Plane 持久化（D-10）。
   ~~最后一轮之后未被取用的人工审批不被检查点或锚点引用~~ ✅ 已修（2026-09-26）：每次轮间审批立即写一条 `between_rounds` 检查点并移动锚点
   （`StateHead.memory_seq`），轮中审批被拒；重新打开时每条审批都须有检查点指向、审阅日志不早于锚点，否则拒绝（ADR-0049 实施说明
   approvals between rounds）。剩余限制：无锚点时审批连同其检查点一起删去 = "尚未审批"；遵循格式写目录的人可追加带检查点的审批（需认证审批通道）。

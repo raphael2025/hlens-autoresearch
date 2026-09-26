@@ -5,8 +5,17 @@
 > 框架已实现（ADR-0044，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`jobs.py` 的 `JobRunner`（内容寻址任务 ID、至少一次消息 + 幂等执行、有界重试、失败记录不丢弃），总线为 `infrastructure/event_bus/InMemoryEventBus`。
 > 持久总线（ADR-0044 Implementation note, file-backed bus, 2026-09-26）：`infrastructure/event_bus/FileEventBus(root)` 是同一 Protocol 的
 > 落盘实现（哈希链主题日志 + 原子替换的消费者 offset，语义与内存总线一致，损坏即拒绝，单写者锁）；`JobRunner` 与 `ResearchLoop`
-> 不需任何改动——总线由组合根注入。重启后未确认的任务消息重投，`JobRunner` 的幂等执行照常吸收；`JobRunner` 的结果表本身仍在内存中，
-> 因此"已确认"是跨重启的唯一去重依据（先记录结果、后确认，崩溃于两者之间时重启会重跑该任务一次）。本目录仍只依赖 `core` 与标准库。
+> 不需任何改动——总线由组合根注入。重启后未确认的任务消息重投，`JobRunner` 的幂等执行照常吸收。本目录仍只依赖 `core` 与标准库。
+> 持久任务结果（ADR-0044 Implementation note, durable jobs and bus wiring, 2026-09-26）：`JobRunner(..., results=<path>, idempotent=...)`
+> 把每个任务写入哈希链只追加日志（`journal.py`，与审计同一磁盘契约）：处理器运行**前** `job_started`、结果已知且确认消息**前** `job_result`。
+> 重开时重放校验（链、行类型与字段、`job_id` = 名称 + 参数的内容哈希、结果只在开始之后且每个任务至多一个），不符即 `JobResultsCorrupted`。
+> 已有结果的任务永不重跑：重投的消息直接按存储的结果确认（崩溃于记录与确认之间）。只开始、没有结果的任务（处理器中途进程死亡）：
+> 调用方以 `idempotent=` 声明为幂等的处理器在重投时重跑；其余一律使 `run_pending` 抛 `JobInterrupted`（不轮询），等人工审查
+> （`JobRunner.interrupted` 列出这些任务）。持久结果必须是 JSON（存储与返回的都是其 JSON 形式）；持久写入失败 → 运行器停止、消息不确认。
+> 不给 `results` 时行为不变（结果表在内存中，崩溃于记录与确认之间会重跑一次）。
+> `ResearchLoop` 的轮次任务以审计为持久结果：续接审计时，本循环已记录轮次的未确认轮次任务在构造时被确认、从不重跑；轮次记录后在
+> `research_loop.round` 发布 `round_message(loop_id, record)`（记录的纯函数），发布失败 → 该轮已记录、循环 `stopped`，所以总线最多落后审计最后一轮
+> （研究侧组合根重开时补齐并交叉核对，见 `research/loop/README.md`）。
 
 > 持续研究循环机制（[ADR-0049](../../docs/adr/0049-continuous-research-loop.md)，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：
 >

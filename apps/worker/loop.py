@@ -74,6 +74,17 @@ than the configured ``compute_tolerance_seconds`` is flagged there (no default: 
 Rounds are driven as ``JobRunner`` jobs (one job per round, ``max_attempts = 1``: a round that
 spent budget is never retried; a duplicate submission is absorbed by the job's content identity).
 
+**Durable bus** (ADR-0044 / ADR-0049 implementation notes, durable jobs and bus wiring,
+2026-09-26). The audit is the durable result of a round job: a loop continuing an audit
+acknowledges, when it is constructed, every still-unacknowledged round job (``ROUND_JOB`` on
+``JOB_TOPIC``) of **this** loop whose round the audit already recorded (a durable bus re-delivers the job of a
+process that died between recording the round and acking its message); such a job is never run
+again. Jobs of other loops, of unrecorded rounds or with another content are left alone.
+Each recorded round is published on ``research_loop.round`` as ``round_message(loop_id, record)``
+right after the audit (and ``after_record``); if that publish fails, the round stays recorded and
+the loop stops (fail closed), so a bus is never more than the last round behind its audit. The
+research composition cross-checks its own bus against the audit on reopening.
+
 **Lifecycle guard.** Stages receive no lifecycle object; they can only call
 ``RoundContext.open_subject`` / ``RoundContext.advance``, which go through ``LifecycleGuard``. The
 guard only moves subjects it opened itself (from ``IDEA``), never sets ``approved_by`` and only
@@ -143,6 +154,7 @@ __all__ = [
     "StageUsage",
     "automation_reachable_states",
     "check_stage_order",
+    "round_message",
 ]
 
 # ``STAGE_ORDER`` / ``OPTIONAL_STAGES`` / ``EXTENDED_STAGE_ORDER`` / ``check_stage_order`` live in
@@ -846,6 +858,16 @@ class LoopAuditLog:
 # --------------------------------------------------------------------------- the loop
 
 
+def round_message(loop_id: str, record: LoopRecord) -> BusMessage:
+    """The ``research_loop.round`` message a loop publishes for a recorded round (a pure function
+    of the audit record, so a bus can be checked against, or caught up from, the audit)."""
+    return BusMessage.build(
+        ROUND_TOPIC,
+        f"{loop_id}:{record.round_index}",
+        {"record_hash": record.record_hash, "record": record.payload()},
+    )
+
+
 def _round_seed(loop_seed: int, round_index: int) -> int:
     return int(content_hash({"loop_seed": loop_seed, "round": round_index})[:12], 16)
 
@@ -915,6 +937,7 @@ class ResearchLoop:
             handlers={ROUND_JOB: self._handle_round},
             max_attempts=1,
         )
+        self._settle_recorded_jobs(consumer)
 
     @property
     def audit(self) -> LoopAuditLog:
@@ -1031,6 +1054,27 @@ class ResearchLoop:
         last = records[-1].status
         self._halted = last if last in HALTING else None
 
+    def _settle_recorded_jobs(self, consumer: str) -> None:
+        """Acknowledge this loop's pending round jobs whose round the audit already recorded (see
+        module docs, **Durable bus**): the audit holds their result; they never run again."""
+        recorded = len(self._audit.records)
+        if recorded == 0:
+            return
+        done = {
+            JobSpec(ROUND_JOB, {"loop_id": self._loop_id, "round": index})
+            .message(JOB_TOPIC)
+            .message_id
+            for index in range(recorded)
+        }
+        batch_size = 100
+        while True:
+            batch = self._bus.poll(consumer, JOB_TOPIC, batch_size)
+            settled = [message for message in batch if message.message_id in done]
+            for message in settled:
+                self._bus.ack(consumer, JOB_TOPIC, message.message_id)
+            if not settled or len(batch) < batch_size:
+                return
+
     def _replay_transition(self, transition: LifecycleTransition) -> None:
         subject = transition.subject
         if transition.from_state is S.IDEA and self._guard.state_of(subject) is None:
@@ -1077,13 +1121,15 @@ class ResearchLoop:
                     f"({_error(exc)}); the loop does not continue until a human reviews it"
                 )
                 raise
-        self._bus.publish(
-            BusMessage.build(
-                ROUND_TOPIC,
-                f"{self._loop_id}:{round_index}",
-                {"record_hash": record.record_hash, "record": record.payload()},
+        try:
+            self._bus.publish(round_message(self._loop_id, record))
+        except Exception as exc:
+            # the round is recorded; the bus is now one round behind the audit
+            self._stopped = (
+                f"round {round_index} was recorded, but publishing it on {ROUND_TOPIC} failed "
+                f"({_error(exc)}); the loop does not continue until its bus is caught up"
             )
-        )
+            raise
         metrics = RoundMetrics(
             loop_id=self._loop_id,
             round_index=round_index,
