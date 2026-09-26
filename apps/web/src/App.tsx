@@ -4,7 +4,7 @@ import { lazy, Suspense, useState } from "react";
 // UI of any kind lives here or ever will (H10) — see each page's SIMULATED / NOT_VALIDATED banner.
 //
 // Every page is code-split with React.lazy (apps/web README "Code splitting"): most pages pull in
-// ECharts (apps/web/src/lib/echarts.ts), and bundling all nine into the initial chunk pushed the
+// ECharts (apps/web/src/lib/echarts.ts), and bundling them all into the initial chunk pushed the
 // vite build over the 500 kB warning threshold. Loading each tab's module on first visit keeps the
 // entry chunk small; visited pages stay cached by the browser for the rest of the session.
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
@@ -28,6 +28,15 @@ const GateCalibration = lazy(() =>
   import("./pages/GateCalibration").then((m) => ({ default: m.GateCalibration })),
 );
 const Jobs = lazy(() => import("./pages/Jobs").then((m) => ({ default: m.Jobs })));
+const RouterStops = lazy(() =>
+  import("./pages/RouterStops").then((m) => ({ default: m.RouterStops })),
+);
+const StateDiagnostics = lazy(() =>
+  import("./pages/StateDiagnostics").then((m) => ({ default: m.StateDiagnostics })),
+);
+const EventStatistics = lazy(() =>
+  import("./pages/EventStatistics").then((m) => ({ default: m.EventStatistics })),
+);
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", render: () => <Dashboard /> },
@@ -35,7 +44,10 @@ const TABS = [
   { key: "research-loop", label: "Research Loop", render: () => <ResearchLoop /> },
   { key: "state-strategy", label: "State × Strategy Matrices", render: () => <StateStrategyMatrices /> },
   { key: "router-paper", label: "Router Paper Runs", render: () => <RouterPaperRuns /> },
+  { key: "router-stop", label: "Router Stops", render: () => <RouterStops /> },
   { key: "gate-calibration", label: "Gate Calibration", render: () => <GateCalibration /> },
+  { key: "state-diagnostics", label: "State Diagnostics", render: () => <StateDiagnostics /> },
+  { key: "event-statistics", label: "Event Statistics", render: () => <EventStatistics /> },
   { key: "lifecycle", label: "Lifecycle", render: () => <Lifecycle /> },
   { key: "jobs", label: "Jobs", render: () => <Jobs /> },
   { key: "knowledge", label: "Knowledge Search", render: () => <KnowledgeSearch /> },

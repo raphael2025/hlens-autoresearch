@@ -1,6 +1,6 @@
 # apps/web/fixtures
 
-Example report files for all five console report kinds, laid out exactly like a real report root
+Example report files for all eight console report kinds, laid out exactly like a real report root
 (`<kind>/<id>.json`) so this directory can be passed straight to
 `apps.api.create_app(reports_root=...)` for local `npm run dev` use — see
 [../README.md](../README.md) "用 `apps/web/fixtures/` 快速起一个有数据的后端".
@@ -24,7 +24,18 @@ hand-written example data:
   stays small while still exercising both a noise arm (false-positive rate) and a planted-effect
   arm (power) under two candidate Profiles (`TOY_LAX` / `TOY_STRICT`).
 
-Produced by a throwaway script (not committed) that imported each writer plus the fixture
+- `router_stop/`, `state_diagnostics/`, `event_statistics/` (2026-09-26): `write_router_stop` /
+  `write_state_diagnostics` / `write_event_statistics` over, respectively, the all-routes-flat stop
+  of `tests/research/router/test_router_completion.py` (`_or_stop(FLAT, LIFECYCLE)`), the
+  hand-checked two-state series of `tests/research/states/test_state_diagnostics.py`
+  (`diagnose(SERIES, SPACE, min_run=2)`) and the four statistics of
+  `tests/research/events/test_event_stats.py` bound to two run hashes. These three are generated
+  by a committed module instead of a throwaway script, and pinned by a test:
+  `uv run python -m tests.research.reports.test_console_fixture_writers` regenerates them, and
+  that module's pytest fails unless each of these directories holds exactly the file the real
+  writer produces for those objects, byte for byte.
+
+The other five were produced by a throwaway script (not committed) that imported each writer plus the fixture
 builder(s) above and called `write_*(Path("apps/web/fixtures"), <object>)` for each report kind, in
 a `uv run python` process from the repo root. Regenerate the same way after changing a writer's
 payload shape or a reused fixture builder (the writer's append-only rule refuses a conflicting

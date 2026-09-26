@@ -19,7 +19,10 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 | GET | `/jobs` | worker 持久结果日志里的全部任务（见下；未配置 → 503，日志校验失败 → 500） |
 | GET | `/jobs/{job_id}` | 单个任务（`job_id` 非 64 位小写十六进制 → 400，不存在 → 404） |
 
-`{kind}` ∈ `validation_report` \| `research_loop_round` \| `state_strategy_matrix` \| `router_paper_run`。
+`{kind}` ∈ `validation_report` \| `research_loop_round` \| `state_strategy_matrix` \| `router_paper_run` \|
+`gate_calibration` \| `router_stop` \| `state_diagnostics` \| `event_statistics`（后三种 2026-09-26 加入，
+CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳定性诊断、Phase 3 事件统计；写入方见
+`research/reports/README.md`，与其他非 `research_loop_round` 的 kind 一样不透明提供）。
 
 ## Report 端点（研究控制台，2026-09-25 新增）
 

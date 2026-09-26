@@ -78,10 +78,19 @@ export function searchKnowledge(query: Partial<KnowledgeQuery>): Promise<Knowled
   });
 }
 
-export const REPORT_KINDS: ReportKind[] = [
-  "validation_report",
-  "research_loop_round",
-  "state_strategy_matrix",
-  "router_paper_run",
-  "gate_calibration",
-];
+// Keyed by ReportKind so `tsc` fails when apps/api adds a kind the console does not list
+// (the Dashboard counts every kind in this order).
+const REPORT_KIND_ORDER: Record<ReportKind, number> = {
+  validation_report: 0,
+  research_loop_round: 1,
+  state_strategy_matrix: 2,
+  router_paper_run: 3,
+  router_stop: 4,
+  gate_calibration: 5,
+  state_diagnostics: 6,
+  event_statistics: 7,
+};
+
+export const REPORT_KINDS: ReportKind[] = (Object.keys(REPORT_KIND_ORDER) as ReportKind[]).sort(
+  (a, b) => REPORT_KIND_ORDER[a] - REPORT_KIND_ORDER[b],
+);

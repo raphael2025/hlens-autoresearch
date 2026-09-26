@@ -97,3 +97,36 @@ def test_gate_calibration_fixture_carries_the_evidence_only_disclaimer() -> None
     for candidate in candidates:
         assert candidate["pipeline"]  # at least the noise arm
         assert candidate["gates"]
+
+
+def test_router_stop_fixture_names_its_reason_and_hash() -> None:
+    store = ReportStore(FIXTURES_ROOT)
+    (envelope,) = store.list(ReportKind.ROUTER_STOP)
+    assert envelope.payload["reason"] in {"no_validated_candidate", "all_routes_flat"}
+    assert envelope.payload["stop_hash"] == envelope.id
+    assert isinstance(envelope.payload["lifecycle"], dict) and envelope.payload["lifecycle"]
+
+
+def test_state_diagnostics_fixture_has_runs_and_transitions() -> None:
+    store = ReportStore(FIXTURES_ROOT)
+    (envelope,) = store.list(ReportKind.STATE_DIAGNOSTICS)
+    payload = envelope.payload
+    assert payload["kind"] == "state_diagnostics"
+    space = payload["state_space"]
+    assert isinstance(space, list) and space
+    assert set(payload["counts"]) == set(space) == set(payload["transitions"])
+    assert isinstance(payload["runs"], list) and payload["runs"]
+
+
+def test_event_statistics_fixture_binds_its_runs() -> None:
+    store = ReportStore(FIXTURES_ROOT)
+    (envelope,) = store.list(ReportKind.EVENT_STATISTICS)
+    payload = envelope.payload
+    assert payload["report_hash"] == envelope.id
+    assert payload["source_result_hashes"]
+    assert {item["kind"] for item in payload["statistics"]} == {
+        "event_frequency",
+        "co_occurrence",
+        "lead_lag",
+        "overlap_diagnostics",
+    }

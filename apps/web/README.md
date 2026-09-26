@@ -6,8 +6,9 @@
 
 > 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；实现说明 2026-09-25 补充，
 > 控制台页面 2026-09-25 再补充，Gate Calibration 页面与剩余报告种类的 fixtures 2026-09-26 再补充）：
-> 9 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
-> Router Paper Runs、Gate Calibration、Lifecycle、Jobs（2026-09-26）、Knowledge Search。依赖已本地安装
+> 12 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
+> Router Paper Runs、Router Stops、Gate Calibration、State Diagnostics、Event Statistics（后三者与
+> Router Stops 2026-09-26，CODE_COMPLETE / DEBUG_PENDING）、Lifecycle、Jobs（2026-09-26）、Knowledge Search。依赖已本地安装
 > （`node_modules/`，已 gitignore），`npm run gen:api` 与 `npm run build` 均已跑通。
 
 ## 页面
@@ -19,7 +20,10 @@
 | Research Loop | round 表（status、未完成阶段及其 error、round_usage / total_usage、overrun）+ 用量图表 | `/reports/research_loop_round` |
 | State × Strategy Matrices | 矩阵列表 + 详情（per-state 指标热力图、样本数） | `/reports/state_strategy_matrix[/​{id}]` |
 | Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比） | `/reports/router_paper_run[/​{id}]` |
+| Router Stops | 停止记录列表 + 详情（停止原因、spec / 状态结果哈希、每个策略的 lifecycle / 结果哈希 / 验证报告绑定）；没有模拟任何运行 | `/reports/router_stop[/​{id}]` |
 | Gate Calibration | 报告列表 + 详情（每个候选 Profile、每个 gate 的 FPR / power 表，附 Clopper-Pearson 区间） | `/reports/gate_calibration[/​{id}]` |
+| State Diagnostics | 诊断报告列表 + 详情（每个状态的计数 / 占比 / run 持续时间、转移矩阵、flicker、runs 表）；只描述、无阈值 | `/reports/state_diagnostics[/​{id}]` |
+| Event Statistics | 报告列表 + 详情（来源事件运行哈希；频率分桶、共现、领先-滞后直方、重叠 / 独立性诊断）；只描述、非 Profile 输入 | `/reports/event_statistics[/​{id}]` |
 | Lifecycle | 允许的状态转移表 | `/lifecycle/transitions` |
 | Jobs | worker 结果日志的任务列表（按状态筛选）+ 详情（params、result / error），只读 | `/jobs[/​{job_id}]` |
 | Knowledge Search | 知识条目检索（待检验主张，非结论） | `/knowledge/search` |
@@ -75,9 +79,9 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 
 ### 用 `apps/web/fixtures/` 快速起一个有数据的后端
 
-`apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了全部五种报告种类的示例
+`apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了全部八种报告种类的示例
 （`validation_report/`、`research_loop_round/`、`state_strategy_matrix/`、`router_paper_run/`、
-`gate_calibration/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
+`gate_calibration/`、`router_stop/`、`state_diagnostics/`、`event_statistics/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
 `ReportStore` 实际读到的文件逐字节一致，不是手写的示例数据（生成方式见
 [fixtures/README.md](fixtures/README.md)）。可以直接把它当 `reports_root` 起后端：
 
@@ -136,4 +140,9 @@ jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge S
   （`src/lib/fixtures.test-util.ts`；Jobs 的响应体在测试中内联构造，因为 fixtures 目录只放报告种类）。测试文件被
   `tsconfig.json` 排除、不进 vite 包；`tsconfig.test.json` + `test-types/node-test.d.ts`（几行 Node 内置模块的
   最小声明，代替 `@types/node`）让 `npm run build` 同时对测试文件做类型检查。`package-lock.json` 未变。
+- **Router Stops / State Diagnostics / Event Statistics**（2026-09-26）：三个只读页面，同样经由
+  `ReportBrowser` / `useApi` / `States.tsx`；视图模型在 `src/lib/routerStop.ts`、`src/lib/stateDiagnostics.ts`、
+  `src/lib/eventStatistics.ts`（`node --test`，输入是对应 fixtures）。未定义值（`null`）显示为 “—”，从不显示为 0；
+  未知的统计种类逐字段显示而不是丢弃。纯表格，不引入 ECharts。`src/api.ts` 的 `REPORT_KINDS` 现在以
+  `Record<ReportKind, …>` 定义：`apps/api` 新增 kind 而控制台未列出时 `tsc` 直接失败（Dashboard 按它计数）。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（只跑了 `npm run build` 与 `npm test`）。

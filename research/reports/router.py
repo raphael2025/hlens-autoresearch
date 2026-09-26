@@ -17,7 +17,7 @@ __all__ = ["KIND", "STOP_KIND", "write_router_paper_run", "write_router_stop"]
 
 #: Directory name under the report root; matches ``apps.api.store.ReportKind.ROUTER_PAPER_RUN``.
 KIND = "router_paper_run"
-#: Directory name of router stops (the API / console exposure is a separate step).
+#: Directory name of router stops; matches ``apps.api.store.ReportKind.ROUTER_STOP``.
 STOP_KIND = "router_stop"
 
 

@@ -2,7 +2,8 @@
 
 ``apps/api`` never imports ``research/`` (01-system.md §3): the research plane writes its
 artifacts — validation reports, research-loop round audit records, state x strategy matrices,
-router paper runs — as JSON files under a configured directory, and this module only reads them
+router paper runs and stops, gate calibration evidence, state diagnostics, event statistics — as
+JSON files under a configured directory, and this module only reads them
 back. The payload is served as ``payload`` inside a small envelope (``kind``, ``id``, ``created``,
 ``payload``, ``content_hash``); adding a new report kind never requires a contract change here.
 
@@ -55,13 +56,17 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 
 class ReportKind(StrEnum):
-    """The report kinds the console serves ((a)-(d) plus Phase 9 gate calibration evidence)."""
+    """The report kinds the console serves ((a)-(d), Phase 9 gate calibration evidence, and the
+    Phase 10 router stop / Phase 2 state diagnostics / Phase 3 event statistics records)."""
 
     VALIDATION_REPORT = "validation_report"
     RESEARCH_LOOP_ROUND = "research_loop_round"
     STATE_STRATEGY_MATRIX = "state_strategy_matrix"
     ROUTER_PAPER_RUN = "router_paper_run"
     GATE_CALIBRATION = "gate_calibration"
+    ROUTER_STOP = "router_stop"
+    STATE_DIAGNOSTICS = "state_diagnostics"
+    EVENT_STATISTICS = "event_statistics"
 
 
 class InvalidReportId(ValueError):

@@ -253,3 +253,52 @@ def test_the_list_endpoint_reports_malformed_files_alongside_good_ones(tmp_path:
     assert listing["invalid"] == [{"id": "broken", "reason": "unreadable or not well-formed JSON"}]
     detail = client.get("/reports/gate_calibration/broken")
     assert detail.status_code == 422 and isinstance(detail.json()["detail"], str)
+
+
+# --- router_stop / state_diagnostics / event_statistics kinds (2026-09-26) ------------------
+
+NEW_KINDS = (ReportKind.ROUTER_STOP, ReportKind.STATE_DIAGNOSTICS, ReportKind.EVENT_STATISTICS)
+
+
+def test_the_new_report_kinds_have_their_directory_names() -> None:
+    assert [kind.value for kind in NEW_KINDS] == [
+        "router_stop",
+        "state_diagnostics",
+        "event_statistics",
+    ]
+
+
+@pytest.mark.parametrize("kind", NEW_KINDS)
+def test_the_new_kinds_are_served_opaquely_and_scoped_per_kind(
+    tmp_path: Path, kind: ReportKind
+) -> None:
+    _write(tmp_path, kind, "r1", {"kind": kind.value, "n": 1})
+    store = ReportStore(tmp_path)
+    assert store.get(kind, "r1").payload == {"kind": kind.value, "n": 1}
+    for other in ReportKind:
+        if other is not kind:
+            assert store.list(other) == []  # never leaks into another kind's listing
+    client = TestClient(create_app(reports_root=tmp_path))
+    assert client.get(f"/reports/{kind.value}/r1").json()["payload"]["n"] == 1
+    assert client.get(f"/reports/{kind.value}/missing").status_code == 404
+    assert client.get(f"/reports/{kind.value}/..%2Fsecret").status_code in (400, 404)
+
+
+@pytest.mark.parametrize("kind", NEW_KINDS)
+def test_the_new_kinds_list_malformed_files_as_invalid(tmp_path: Path, kind: ReportKind) -> None:
+    _write(tmp_path, kind, "good", {"ok": True})
+    (tmp_path / kind.value / "broken.json").write_text("{", "utf-8")
+    listing = TestClient(create_app(reports_root=tmp_path)).get(f"/reports/{kind.value}").json()
+    assert listing["kind"] == kind.value
+    assert [env["id"] for env in listing["reports"]] == ["good"]
+    assert listing["invalid"] == [{"id": "broken", "reason": "unreadable or not well-formed JSON"}]
+
+
+def test_the_new_kinds_are_empty_without_a_report_root() -> None:
+    client = TestClient(create_app())
+    for kind in NEW_KINDS:
+        assert client.get(f"/reports/{kind.value}").json() == {
+            "kind": kind.value,
+            "reports": [],
+            "invalid": [],
+        }

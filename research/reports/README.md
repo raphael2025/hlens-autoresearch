@@ -14,8 +14,13 @@ import——两边只通过这份文件格式约定耦合。
 | `validation.py` | `write_validation_report`：Phase 4 `ValidationReport`（`research/validation/pipeline.py` 的 `build_report`） |
 | `loop.py` | `write_research_loop_round[s]`：Phase 11 `LoopRecord`（`apps/worker/loop.py`，经 `research/loop/compose.py` 组合） |
 | `matrix.py` | `write_state_strategy_matrix`：Phase 6 `StateStrategyMatrix`（`research/experiments/state_strategy.py` 的 `matrix_from_backtest`） |
-| `router.py` | `write_router_paper_run`：Phase 10 `RouterPaperRun`（`research/router/paper.py` 的 `paper_run`） |
-| `gate_calibration.py` | `write_gate_calibration_report`：Phase 9 `GateCalibrationReport`（`research/synthetic_lab/gate_calibration.py`；id = `report_hash`；`apps/api` 尚无此 kind） |
+| `router.py` | `write_router_paper_run`：Phase 10 `RouterPaperRun`（`research/router/paper.py` 的 `paper_run`）；`write_router_stop`：Phase 10 `RouterStop`（`paper_run_or_stop` 的停止记录，kind `router_stop`，id = `stop_hash`） |
+| `gate_calibration.py` | `write_gate_calibration_report`：Phase 9 `GateCalibrationReport`（`research/synthetic_lab/gate_calibration.py`；id = `report_hash`） |
+| `state_diagnostics.py` | `write_state_diagnostics`：Phase 2 `StateDiagnostics`（`research/states/diagnostics.py`；kind `state_diagnostics`，id = `diagnostics_hash`；写入前经 JSON 往返 `from_payload(..., expected_hash=)` 校验，不能往返的报告拒绝写入） |
+| `event_statistics.py` | `write_event_statistics`：Phase 3 `EventStatsReport`（`research/events/stats.py`；kind `event_statistics`，id = `report_hash`；写入前从 payload 重算哈希，不符拒绝写入） |
+
+以上八种 kind 都是 `apps/api` `ReportKind` 的成员（2026-09-26：`router_stop` / `state_diagnostics` /
+`event_statistics` 加入只读 API 与控制台页面；payload 仍由 `apps/api` 不透明地提供）。
 
 ## 信封 / 哈希规则
 
@@ -34,7 +39,9 @@ SHA-256），因此写入方**不需要**复现它的信封或逐字节匹配它
 
 `id` 一律取**对象自身已有的内容 / 结果哈希**，四种报告分别是：`ValidationReport.content_hash()`
 （不是外部赋予、非内容身份的 `report_id`，见该模型自身文档字符串）、`LoopRecord.record_hash`、
-`StateStrategyMatrix.matrix_hash`、`RouterPaperRun.run_hash`（Phase 9 的 `gate_calibration` 同理用 `GateCalibrationReport.report_hash`）。同一对象重复写入因此天然幂等；
+`StateStrategyMatrix.matrix_hash`、`RouterPaperRun.run_hash`（Phase 9 的 `gate_calibration` 同理用 `GateCalibrationReport.report_hash`；
+`router_stop` / `state_diagnostics` / `event_statistics` 分别用 `RouterStop.stop_hash`、`StateDiagnostics.diagnostics_hash`、
+`EventStatsReport.report_hash`）。同一对象重复写入因此天然幂等；
 两个不同内容的对象天然拿到不同 id，不会互相覆盖——`ReportConflict` 主要是防御性的（例如手工损坏的
 文件），并由 `envelope.py` 的单元测试直接触发验证。
 

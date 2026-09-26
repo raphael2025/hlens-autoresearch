@@ -10,21 +10,25 @@ rules shared by all of them.
 from __future__ import annotations
 
 from research.reports.envelope import ReportConflict, WrittenReport, write_report_file
+from research.reports.event_statistics import write_event_statistics
 from research.reports.gate_calibration import write_gate_calibration_report
 from research.reports.loop import write_research_loop_round, write_research_loop_rounds
 from research.reports.matrix import write_state_strategy_matrix
 from research.reports.router import write_router_paper_run, write_router_stop
+from research.reports.state_diagnostics import write_state_diagnostics
 from research.reports.validation import write_validation_report
 
 __all__ = [
     "ReportConflict",
     "WrittenReport",
+    "write_event_statistics",
     "write_gate_calibration_report",
     "write_report_file",
     "write_research_loop_round",
     "write_research_loop_rounds",
     "write_router_paper_run",
     "write_router_stop",
+    "write_state_diagnostics",
     "write_state_strategy_matrix",
     "write_validation_report",
 ]
