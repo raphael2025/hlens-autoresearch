@@ -293,3 +293,13 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   信任模式（默认）5 个既有哈希固定不变。研究层关闭 P10-ELIG；生产资格仍属 Control Plane。控制台对新原因 / `eligibility` 键只显示原值（待 UI 标签）。
 - 子代理：`pytest tests/research/router tests/research/reports tests/research/test_cross_phase_e2e.py` → 86 passed；边界 / 文档 → 18 passed；ruff / format（636 files）/ mypy（18 files）通过。
 - 本分支集成后：`pytest -m "not postgres" tests/research/router tests/research/reports tests/research/test_cross_phase_e2e.py tests/apps/test_reports.py tests/apps/test_console_fixtures.py` → 149 passed, 1 warning；ruff / mypy 通过。
+
+**B17 — Phase 3：物理事件表 `event.events`（ADR-0056 Accepted）**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 `7193b65`、`af7a351`）
+
+- ADR-0056：9 列逻辑事件表 + 运行块（`event_index`、`event_count`、`request_hash`、`provider_hash`、`as_of`，表本身即可重建并复核整个 `EventResult`）；`month(event_time)` 分区（事件稀疏，`day` 列为被拒备选）；
+  一次运行一个批次 `event.{result_hash}`，相同重写无操作、不同内容拒绝、提交竞争有界重试、空运行不写（留在 `EventResultStore`）；读取钉住快照并重建复核。
+- 代码：`infrastructure/event/table_definition.py`（只读复用 catalog 帮助函数；`ensure_event_tables` 是唯一建表入口，测试之外无人调用）、`infrastructure/event/iceberg.py`；
+  `docs/architecture/03-data.md` 末尾新增 §8。未改 `core/`、Schema、15 张 Phase 1 表及其哈希、`infrastructure/catalog/`、PIT 规则、供给脚本；真实 catalog 未建表。
+- 实际运行：子代理 `pytest -m "not postgres" tests/infrastructure/event tests/infrastructure/catalog tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → 246 passed, 55 deselected；
+  本分支集成后 `pytest -m "not postgres" tests/infrastructure/event tests/research/events tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → 95 passed；ruff / mypy（14 files）通过。
+- 限制：只在 SQLite catalog 上测过（PostgreSQL catalog 与真实建表需单独执行）；表无 subject 列（多标的见 ADR-0057 核心通道）；按运行读取扫描全部月份分区，规模性能未测。
