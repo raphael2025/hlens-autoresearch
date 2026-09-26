@@ -22,6 +22,7 @@ from core.contracts.strategy import (
     PriceBar,
     TargetPosition,
 )
+from core.domain.base import contract_schema_version_scope
 from plugins.backtest import (
     EXECUTION_VERSION,
     MONEY_QUANTUM,
@@ -32,7 +33,7 @@ from plugins.backtest import (
 from tests.contract_suites import backtest as backtest_suite
 from tests.contract_suites._support import ContractSuiteFailure
 from tests.contract_suites.backtest import BacktestProviderContract, BacktestSubject
-from tests.contract_version_support import at_pre_bump, built_at_pre_bump
+from tests.contract_version_support import PRE_BUMP_VERSION, at_pre_bump
 from tests.strategy_fixtures import COSTS, MINUTE, T0, make_bars, wave_closes
 
 ZERO = backtest_suite.ZERO_COST
@@ -121,19 +122,49 @@ def _golden_requests() -> dict[str, BacktestRequest]:
     }
 
 
-#: ``result_hash`` of each request under the v1 backtester, recorded before the variant existed.
+#: ``result_hash`` of each request under the v1 backtester, recorded before the variant existed
+#: (contract 2.0.0). Kept as the byte-identity evidence: checked on what the 2.0.0 code built from
+#: the same inputs (2.0.0 construction scope; ADR-0052 M2 implementation note).
 _GOLDEN = {
     "alternating": "fada3325c90eff57fb8c16cb2c566e75daab6b3243c841e162b0039b2f97cdd9",
     "two_instruments": "766b48ff30d19bebd225126fe1d2753f007065dbcd7c351c6431653003ba7dba",
     "leverage_and_gaps": "ab8bd3072cdf780ada18cd2ec67eecb7c9cb10b54dded4414c6ad3986175ca92",
 }
-#: The same objects built now carry the 2.1.0 envelope (ADR-0052 M2: new objects are 2.1.0
-#: and the envelope is part of every content hash); pinned next to the 2.0.0 evidence above.
+
+#: The same runs at contract 2.1.0 (ADR-0052 M2): every envelope is 2.1.0, so ``request_hash``,
+#: ``provider_hash`` and the nested fill / equity-point dumps (hence ``result_hash``) move; every
+#: other value is the 2.0.0 run's (asserted in the test).
 _GOLDEN_2_1_0 = {
     "alternating": "39656b499ec3c94686c97e567063c1d0ef05670178a73c17e87ab0f14c351f91",
     "two_instruments": "0f598ad5ac0056525cfdce35c41c78ab619ed83ac78061ba1dc46798b9622485",
     "leverage_and_gaps": "bd5b4088c4f7bc844889997b6c616a686326dedf30c4fe690c9f0ab059619b17",
 }
+
+#: Envelopes and the hashes taken over envelope-carrying objects.
+_ENVELOPE_DERIVED = frozenset({"schema_version", "request_hash", "provider_hash", "result_hash"})
+
+
+def _content(value: object) -> object:
+    """``value`` without any envelope or envelope-derived hash (nested included)."""
+    if isinstance(value, dict):
+        return {k: _content(v) for k, v in value.items() if k not in _ENVELOPE_DERIVED}
+    if isinstance(value, list | tuple):
+        return [_content(item) for item in value]
+    return value
+
+
+def _run_at_2_0_0(
+    factory: Callable[[], BarBacktester], request: BacktestRequest
+) -> tuple[BacktestResult, ExecutionReport]:
+    """What the 2.0.0 code built: backtester and request constructed at 2.0.0 (ADR-0052 M2)."""
+    with contract_schema_version_scope(PRE_BUMP_VERSION):
+        backtester = factory()
+        assert backtester.descriptor.schema_version == PRE_BUMP_VERSION
+        result, report = _run(backtester, at_pre_bump(request))
+    assert result.schema_version == PRE_BUMP_VERSION
+    assert {fill.schema_version for fill in result.fills} <= {PRE_BUMP_VERSION}
+    assert {point.schema_version for point in result.equity_curve} == {PRE_BUMP_VERSION}
+    return result, report
 
 
 @pytest.mark.parametrize("name", sorted(_GOLDEN))
@@ -143,17 +174,17 @@ _GOLDEN_2_1_0 = {
 def test_the_default_backtester_is_byte_identical_to_v1(
     name: str, factory: Callable[[], BarBacktester]
 ) -> None:
-    # Recorded at contract 2.0.0: rebuilt exactly as the 2.0.0 code built it (every envelope
-    # 2.0.0, ADR-0052 §4), the v1 result is still byte-identical to the pin.
-    with built_at_pre_bump():
-        backtester = factory()
-        request = at_pre_bump(_golden_requests()[name])
-        assert backtester.descriptor.version == "1.0.0"
-        result, report = _run(backtester, request)
-        assert result.result_hash == _GOLDEN[name]
-        assert backtester.run(request) == result
-    current = factory().run(_golden_requests()[name])
-    assert current.schema_version == "2.1.0" and current.result_hash == _GOLDEN_2_1_0[name]
+    backtester = factory()
+    assert backtester.descriptor.version == "1.0.0"
+    result, report = _run(backtester, _golden_requests()[name])
+    # v1 evidence: the 2.0.0 run hashes exactly as the v1 backtester recorded.
+    v1_result, v1_report = _run_at_2_0_0(factory, _golden_requests()[name])
+    assert v1_result.result_hash == _GOLDEN[name]
+    assert v1_report.execution_fingerprint is None
+    # 2.1.0 (ADR-0052 M2): the same content; only envelopes and the hashes over them differ.
+    assert _content(result.model_dump(mode="json")) == _content(v1_result.model_dump(mode="json"))
+    assert result.result_hash == _GOLDEN_2_1_0[name]
+    assert backtester.run(_golden_requests()[name]) == result
     assert report.execution_fingerprint is None
     assert (report.fills, report.remainders, report.funding) == ((), (), ())
     assert report.total_impact == 0 and report.total_funding == 0
