@@ -1,5 +1,6 @@
 """Promotion service (``research.promotion``, ADR-0005): the happy path on TEST ONLY evidence and a
-typed refusal for every missing / non-PASS / mismatched piece; no library strategy is promotable."""
+typed refusal for every missing / non-PASS / mismatched piece (including a Profile that is not
+frozen and calibrated, C-A8); no library strategy is promotable."""
 
 from __future__ import annotations
 
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 
+from core.contracts.validation_profile import ProfileStatus, ValidationProfile
 from core.domain.artifact import StrategyArtifact
 from core.domain.base import FrozenMapping, Kind, Ref
 from core.domain.research import ValidationReport, Verdict
@@ -40,6 +42,7 @@ from tests.promotion.fixtures import (
     history,
     toy_evidence,
     toy_experiment,
+    toy_profile,
     toy_report,
     toy_spec,
 )
@@ -271,6 +274,90 @@ def test_conflicting_dependency_hashes_are_refused() -> None:
     assert _refusal(evidence).reason is R.DEPENDENCY_CONFLICT
 
 
+# ---- validation profile (C-A8) ---------------------------------------------------------
+
+
+def _rebound(evidence: PromotionEvidence, profile: ValidationProfile) -> PromotionEvidence:
+    """``evidence`` with its reports and experiment re-run under ``profile``."""
+    spec = evidence.spec
+    experiment = toy_experiment(spec, profile=profile)
+    reports = tuple(
+        toy_report(spec, experiment, r.report_id, sorted({g.gate_id[:2] for g in r.gates}))
+        for r in evidence.reports
+    )
+    return replace(evidence, reports=reports, experiments=(experiment,), profiles=(profile,))
+
+
+def _under(profile: ValidationProfile) -> PromotionEvidence:
+    return _rebound(toy_evidence(), profile)
+
+
+def test_the_toy_happy_path_runs_under_a_frozen_calibrated_profile() -> None:
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    assert profile.status is ProfileStatus.FROZEN
+    assert profile.provenance.calibration_report is not None
+    assert {r.validation_profile_hash for r in evidence.reports} == {profile.content_hash()}
+    build_artifact(_under(profile))
+
+
+def test_a_draft_profile_is_refused() -> None:
+    draft = toy_profile(status=ProfileStatus.DRAFT)
+    assert draft.content_hash() == toy_profile().content_hash()  # status is not in the hash
+    refused = _refusal(_under(draft))
+    assert refused.reason is R.PROFILE_NOT_FROZEN
+    assert refused.reason.value == "profile_not_frozen"
+    uncalibrated_draft = toy_profile(status=ProfileStatus.DRAFT, calibration_report=None)
+    assert _refusal(_under(uncalibrated_draft)).reason is R.PROFILE_NOT_FROZEN
+
+
+def test_a_superseded_profile_is_refused() -> None:
+    superseded = toy_profile(status=ProfileStatus.SUPERSEDED)
+    assert _refusal(_under(superseded)).reason is R.PROFILE_NOT_FROZEN
+
+
+@pytest.mark.parametrize("calibration", [None, "   "])
+def test_a_frozen_profile_without_calibration_provenance_is_refused(
+    calibration: str | None,
+) -> None:
+    # the contract refuses FROZEN without calibration_report; a constructed object bypasses it
+    real = toy_profile(status=ProfileStatus.DRAFT, calibration_report=calibration)
+    forged = ValidationProfile.model_construct(**{**dict(real), "status": ProfileStatus.FROZEN})
+    refused = _refusal(_under(forged))
+    assert refused.reason is R.PROFILE_NOT_CALIBRATED
+    assert refused.reason.value == "profile_not_calibrated"
+
+
+def test_a_missing_profile_is_refused() -> None:
+    assert _refusal(toy_evidence(profiles=())).reason is R.PROFILE_MISSING
+    unrelated = toy_profile(name="other_scope")
+    assert _refusal(toy_evidence(profiles=(unrelated,))).reason is R.PROFILE_MISSING
+
+
+def test_a_profile_whose_hash_differs_from_the_reports_is_refused() -> None:
+    other = toy_profile(calibration_report="TEST-ONLY-another-calibration-reference")
+    assert other.ref == toy_profile().ref
+    assert other.content_hash() != toy_profile().content_hash()
+    refused = _refusal(toy_evidence(profiles=(other,)))
+    assert refused.reason is R.PROFILE_HASH_MISMATCH
+    assert refused.reason.value == "profile_hash_mismatch"
+
+
+def test_an_uncited_or_repeated_profile_is_refused() -> None:
+    extra = toy_profile(name="other_scope")
+    assert _refusal(toy_evidence(profiles=(toy_profile(), extra))).reason is (
+        R.PROFILE_NOT_EVIDENCED
+    )
+    assert _refusal(toy_evidence(profiles=(toy_profile(), toy_profile()))).reason is (
+        R.PROFILE_NOT_EVIDENCED
+    )
+
+
+def test_something_other_than_a_profile_is_refused() -> None:
+    evidence = toy_evidence(profiles=("not a profile",))
+    assert _refusal(evidence).reason is R.EVIDENCE_INVALID
+
+
 # ---- lifecycle -------------------------------------------------------------------------
 
 
@@ -368,25 +455,42 @@ def test_a_non_deterministic_provider_is_refused() -> None:
 
 @pytest.mark.parametrize("entry", library_entries(), ids=lambda entry: entry.spec.name)
 def test_no_library_strategy_can_be_promoted_today(entry: object, tmp_path: Path) -> None:
-    """No library strategy has a ValidationReport (let alone G0–G5 PASS) or a lifecycle past
-    IDEA: the promotion service refuses each with ``no_validation_report``, writing nothing."""
+    """Complete TEST ONLY evidence for each library strategy (G0–G4 + G5 PASS reports, the bound
+    experiment, a human-approved lifecycle, golden inputs, every dependency bound) run under a
+    Profile that is not frozen — as every Profile is today — is refused with the Profile reason
+    (C-A8), writing nothing."""
     from research.strategies.library import LibraryEntry
 
     assert isinstance(entry, LibraryEntry)
     spec = entry.spec
+    draft = toy_profile(status=ProfileStatus.DRAFT, calibration_report=None)
+    experiment = toy_experiment(spec, profile=draft)
+    required = [*spec.signals, *([spec.risk_policy] if spec.risk_policy is not None else [])]
     evidence = PromotionEvidence(
         spec=spec,
-        reports=(),
-        experiments=(),
-        lifecycle=LifecycleHistory(subject=spec.ref),
+        reports=(
+            toy_report(spec, experiment, "TEST-ONLY-in-sample", ("G0", "G1", "G2", "G3", "G4")),
+            toy_report(spec, experiment, "TEST-ONLY-sealed-oos", ("G5",)),
+        ),
+        profiles=(draft,),
+        experiments=(experiment,),
+        lifecycle=history(spec.ref, PATH_TO_PRODUCTION_CANDIDATE),
         research_code=git_code_revision(),
         research_provider=entry.candidate().strategy,
-        golden_inputs=(),
-        dataset_snapshot_id="",
+        golden_inputs=(golden_request(spec),),
+        dataset_snapshot_id=TEST_ONLY_SNAPSHOT,
         created_at=ARTIFACT_TIME,
+        signal_dependencies={str(ref): HASH_A for ref in required},
     )
     with StrategyRegistry(tmp_path / "registry") as registry:
         with pytest.raises(PromotionRefused) as caught:
             promote(evidence, registry)
-        assert caught.value.reason is R.NO_VALIDATION_REPORT
+        assert caught.value.reason is R.PROFILE_NOT_FROZEN
+        assert str(draft.ref) in caught.value.detail
         assert len(registry) == 0
+    # the same bundle under the (TEST ONLY) frozen twin of the Profile gets past the Profile
+    # check: the refusal above is the Profile's, not a gap elsewhere in the bundle
+    try:
+        build_artifact(_rebound(evidence, toy_profile()))
+    except PromotionRefused as refused:
+        assert not refused.reason.value.startswith("profile_")

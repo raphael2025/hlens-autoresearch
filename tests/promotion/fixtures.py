@@ -18,6 +18,7 @@ from core.contracts.strategy import (
     TargetPosition,
     UnsupportedStrategy,
 )
+from core.contracts.validation_profile import ProfileStatus, Provenance, ValidationProfile
 from core.domain.base import FrozenMapping, Ref
 from core.domain.research import ExperimentSpec, GateResult, ValidationReport, Verdict
 from core.domain.specs import StrategySpec
@@ -37,6 +38,7 @@ from tests.factories import (
     hypothesis_ref,
     outcome_ref,
     repro_tuple,
+    validation_profile,
     validation_report,
 )
 from tests.fake_strategy import SIGNAL_REF, FakeSignStrategy, fake_strategy_spec
@@ -44,6 +46,9 @@ from tests.fake_strategy import SIGNAL_REF, FakeSignStrategy, fake_strategy_spec
 S = LifecycleState
 
 TEST_ONLY_SNAPSHOT = "TEST-ONLY-synthetic-golden-snapshot"
+#: A TEST ONLY calibration reference: no calibration report exists; it only lets the toy Profile be
+#: marked FROZEN so the happy path of the promotion chain is exercised (C-A8 is checked, not met).
+TEST_ONLY_CALIBRATION = "TEST-ONLY-no-real-calibration-report"
 REPORT_TIME = datetime(2026, 2, 1, tzinfo=UTC)
 LIFECYCLE_START = datetime(2026, 2, 2, tzinfo=UTC)
 ARTIFACT_TIME = datetime(2026, 3, 1, tzinfo=UTC)
@@ -77,13 +82,31 @@ def history(
     return LifecycleHistory(subject=subject, transitions=transitions)
 
 
-def toy_experiment(spec: StrategySpec, **overrides: object) -> ExperimentSpec:
+def toy_profile(
+    status: ProfileStatus = ProfileStatus.FROZEN,
+    calibration_report: str | None = TEST_ONLY_CALIBRATION,
+    **overrides: object,
+) -> ValidationProfile:
+    """The TEST ONLY Profile the toy reports ran under; FROZEN with a TEST ONLY calibration
+    reference by default (``tests.factories.validation_profile`` values — not calibrated)."""
+    provenance = Provenance(calibration_report=calibration_report, approval_adr="TEST-ONLY")
+    payload: dict[str, object] = {"status": status, "provenance": provenance}
+    payload.update(overrides)
+    return validation_profile(**payload)
+
+
+def toy_experiment(
+    spec: StrategySpec, *, profile: ValidationProfile | None = None, **overrides: object
+) -> ExperimentSpec:
     deps = dependency_hashes(hypothesis_ref(), spec.ref, outcome_ref(), cost_model_ref())
     deps[str(spec.ref)] = spec.content_hash()
+    bound = toy_profile() if profile is None else profile
     payload: dict[str, object] = {
         "strategy_ref": spec.ref,
         "risk_policy_ref": None,
         "dependency_hashes": deps,
+        "validation_profile": bound.ref,
+        "validation_profile_hash": bound.content_hash(),
     }
     payload.update(overrides)
     return experiment_spec(repro=repro_tuple(**payload))
@@ -109,6 +132,8 @@ def toy_report(
     )
     derived = verdict if failing is not None else Verdict.PASS
     payload: dict[str, object] = {
+        "validation_profile": experiment.repro.validation_profile,
+        "validation_profile_hash": experiment.repro.validation_profile_hash,
         "report_id": report_id,
         "run_id": f"run-{report_id}",
         "subject": spec.ref,
@@ -163,6 +188,7 @@ def toy_evidence(**overrides: object) -> PromotionEvidence:
             toy_report(spec, experiment, "TEST-ONLY-in-sample", ("G0", "G1", "G2", "G3", "G4")),
             toy_report(spec, experiment, "TEST-ONLY-sealed-oos", ("G5",)),
         ),
+        profiles=(toy_profile(),),
         experiments=(experiment,),
         lifecycle=history(spec.ref, PATH_TO_PRODUCTION_CANDIDATE),
         research_code=git_code_revision(),

@@ -25,13 +25,21 @@ partial artifact exists):
 3. the ``ExperimentSpec`` of every report's ``experiment_hash`` (no more, no fewer): each binds the
    spec (``strategy_ref`` and its dependency hash = the spec's content hash) and the report's
    Constitution / Profile binding; all were run on ``research_code.commit_oid``;
-4. the dependency closure: the union of the experiments' ``dependency_hashes`` and the caller's
+4. the ``ValidationProfile`` object of every report (``profiles``; no more, no fewer): the object's
+   ``content_hash()`` equals the report's ``validation_profile_hash`` and its ref is the report's
+   ``validation_profile`` (``profile_missing`` / ``profile_hash_mismatch``); its ``status`` is
+   ``FROZEN`` (``profile_not_frozen``) and ``provenance.calibration_report`` is present
+   (``profile_not_calibrated``) — Constitution C-A8: promotion needs a frozen, calibrated Profile.
+   ``status`` is excluded from the Profile content hash (ADR-0008), so a report cannot show it by
+   itself; the Profile object is the evidence. No Profile is frozen today, so **every** promotion is
+   refused here (correct: Step 2 calibration has not happened);
+5. the dependency closure: the union of the experiments' ``dependency_hashes`` and the caller's
    ``signal_dependencies`` without conflicting hashes, covering every signal and the risk policy
    of the spec;
-5. the lifecycle history (ADR-0006): re-validated (so every transition is a legal edge with the
+6. the lifecycle history (ADR-0006): re-validated (so every transition is a legal edge with the
    required human approvals, in time order), about this spec, having passed ``OOS → PAPER``
    (human-approved) and now in ``PAPER`` / ``PRODUCTION_CANDIDATE`` / ``ACTIVE``;
-6. golden outputs computed here, deterministically, by the research provider on the declared golden
+7. golden outputs computed here, deterministically, by the research provider on the declared golden
    input set: every golden request asks for this spec and hash with the spec's **fixed** params
    (``params`` empty), no duplicates; the provider declares the spec; every answer passes
    ``StrategyResult.check_answers``; a second run gives byte-identical results
@@ -41,8 +49,9 @@ partial artifact exists):
 ``created_at`` is explicit (the artifact id is a content hash) and may not precede its evidence.
 The artifact's ``name`` / ``version`` are the spec's.
 
-**Status.** No library strategy (``research.strategies.library``) has any report today, so none
-can be promoted (``no_validation_report``; tested). Nothing here places code in ``strategies/`` or
+**Status.** No library strategy (``research.strategies.library``) can be promoted today: even
+complete TEST ONLY evidence is refused because no Profile is frozen (``profile_not_frozen``;
+tested). Nothing here places code in ``strategies/`` or
 ``plugins/`` and nothing touches execution.
 """
 
@@ -57,6 +66,7 @@ from typing import Any, Final
 from pydantic import BaseModel, ValidationError
 
 from core.contracts.strategy import StrategyProvider, StrategyRequest, StrategyResult
+from core.contracts.validation_profile import ProfileStatus, ValidationProfile
 from core.domain.artifact import GoldenOutputs, StrategyArtifact
 from core.domain.base import FrozenMapping, GitCodeRevision, Ref
 from core.domain.research import ExperimentSpec, ValidationReport
@@ -109,6 +119,11 @@ class PromotionRefusal(StrEnum):
     EXPERIMENT_NOT_EVIDENCED = "experiment_not_evidenced"
     EXPERIMENT_MISMATCH = "experiment_mismatch"
     RESEARCH_CODE_MISMATCH = "research_code_mismatch"
+    PROFILE_MISSING = "profile_missing"
+    PROFILE_HASH_MISMATCH = "profile_hash_mismatch"
+    PROFILE_NOT_EVIDENCED = "profile_not_evidenced"
+    PROFILE_NOT_FROZEN = "profile_not_frozen"
+    PROFILE_NOT_CALIBRATED = "profile_not_calibrated"
     DEPENDENCY_CONFLICT = "dependency_conflict"
     DEPENDENCY_UNBOUND = "dependency_unbound"
     LIFECYCLE_SUBJECT_MISMATCH = "lifecycle_subject_mismatch"
@@ -136,6 +151,8 @@ class PromotionEvidence:
 
     spec: StrategySpec
     reports: Sequence[ValidationReport]
+    #: The Validation Profile(s) the reports were produced under (C-A8: frozen and calibrated).
+    profiles: Sequence[ValidationProfile]
     experiments: Sequence[ExperimentSpec]
     lifecycle: LifecycleHistory
     research_code: GitCodeRevision
@@ -259,6 +276,66 @@ def _check_experiments(
                 f"not {research_code.commit_oid}",
             )
     return tuple(by_hash[h] for h in sorted(cited))
+
+
+def _check_profiles(
+    reports: Sequence[ValidationReport], profiles: Sequence[ValidationProfile]
+) -> None:
+    """Every report's Profile is given, is the one it hashes to, and is FROZEN + calibrated."""
+    by_hash: dict[str, ValidationProfile] = {}
+    for index, given in enumerate(profiles):
+        if not isinstance(given, ValidationProfile):
+            raise _refuse(PromotionRefusal.EVIDENCE_INVALID, f"profile {index} is not a Profile")
+        by_hash.setdefault(given.content_hash(), given)
+    cited: set[str] = set()
+    for report in reports:
+        wanted = report.validation_profile_hash
+        profile = by_hash.get(wanted)
+        if profile is None:
+            same_ref = any(_same_target(p.ref, report.validation_profile) for p in profiles)
+            raise _refuse(
+                PromotionRefusal.PROFILE_HASH_MISMATCH
+                if same_ref
+                else PromotionRefusal.PROFILE_MISSING,
+                f"report {report.report_id} ran under {report.validation_profile} / {wanted}; "
+                + (
+                    "the given Profile of that ref hashes differently"
+                    if same_ref
+                    else "no such Profile is in the evidence"
+                ),
+            )
+        if not _same_target(profile.ref, report.validation_profile):
+            raise _refuse(
+                PromotionRefusal.PROFILE_HASH_MISMATCH,
+                f"report {report.report_id} names {report.validation_profile}, the Profile of "
+                f"hash {wanted} is {profile.ref}",
+            )
+        # status / provenance before re-validation: the typed reason, not evidence_invalid
+        if profile.status is not ProfileStatus.FROZEN:
+            raise _refuse(
+                PromotionRefusal.PROFILE_NOT_FROZEN,
+                f"report {report.report_id} ran under {profile.ref}, which is "
+                f"{profile.status!s}; C-A8 requires a frozen Profile",
+            )
+        calibration = profile.provenance.calibration_report
+        if calibration is None or not calibration.strip():
+            raise _refuse(
+                PromotionRefusal.PROFILE_NOT_CALIBRATED,
+                f"{profile.ref} has no provenance.calibration_report (C-A8)",
+            )
+        checked = _revalidated(profile, f"profile {profile.ref}")
+        if checked.content_hash() != wanted:
+            raise _refuse(
+                PromotionRefusal.PROFILE_HASH_MISMATCH,
+                f"{profile.ref} does not re-validate to hash {wanted}",
+            )
+        cited.add(wanted)
+    unused = sorted(set(by_hash) - cited)
+    if unused or len(by_hash) != len(profiles):
+        raise _refuse(
+            PromotionRefusal.PROFILE_NOT_EVIDENCED,
+            f"profile(s) {unused} are cited by no report, or a Profile is given twice",
+        )
 
 
 def _dependencies(
@@ -399,6 +476,7 @@ def build_artifact(evidence: PromotionEvidence) -> PromotionPackage:
     )
     research_code = _revalidated(evidence.research_code, "research code revision")
     cited = _check_experiments(spec, reports, experiments, research_code)
+    _check_profiles(reports, evidence.profiles)
     dependencies = _dependencies(spec, cited, evidence.signal_dependencies)
     lifecycle = _revalidated(evidence.lifecycle, "lifecycle history")
     _check_lifecycle(spec, lifecycle)
