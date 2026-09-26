@@ -1383,7 +1383,11 @@ def test_codex_b_a_competing_response_with_time_and_policy_drift_is_refused(
         ({"request_query": "limit=1000&startTime=1&symbol=BTCUSDT"}, "is not published"),
         ({"page_identity_sha256": "c" * 64}, r"\['page_identity_sha256'\]"),
         ({"symbol": "ETHUSDT"}, r"\['symbol'\]"),
-        ({"contract_schema_version": "9.9.9"}, r"\['contract_schema_version'\]"),
+        # A response row is rebuilt at its recorded version, which must be published (ADR-0052).
+        (
+            {"contract_schema_version": "9.9.9"},
+            r"contract version '9\.9\.9', not one of the published",
+        ),
         ({"supersedes": ["rev1-" + "a" * 64]}, r"\['supersedes'\]"),
         ({"precedence_evidence": [PRECEDENCE_ITEM]}, r"\['precedence_evidence'\]"),
         (

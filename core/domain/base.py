@@ -9,6 +9,8 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Annotated, Any, Self, get_args
@@ -21,11 +23,13 @@ from pydantic import (
     GetCoreSchemaHandler,
     PlainSerializer,
     field_validator,
+    model_validator,
 )
 
 __all__ = [
     "CONTRACT_SCHEMA_MAJOR",
     "CONTRACT_SCHEMA_VERSION",
+    "PUBLISHED_CONTRACT_SCHEMA_VERSIONS",
     "GIT_OID_PATTERN",
     "PLUGIN_KEY_PATTERN",
     "REF_KEY_PATTERN",
@@ -48,7 +52,9 @@ __all__ = [
     "VersionedSpec",
     "canonical_json",
     "content_hash",
+    "contract_schema_version_scope",
     "parse_semver",
+    "scoped_contract_schema_version",
     "validate_ref_keyed_hashes",
 ]
 
@@ -58,6 +64,10 @@ CONTRACT_SCHEMA_VERSION = "2.0.0"
 
 #: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
 CONTRACT_SCHEMA_MAJOR = 2
+
+#: major 2 内**已发布**的版本（升序，最后一项即 `CONTRACT_SCHEMA_VERSION`）。持久化对象按其
+#: 记录版本重放时，记录版本必须在此之中（ADR-0052 Implementation note — versioned replay，V1）。
+PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = ("2.0.0",)
 
 # ---------------------------------------------------------------------------------------
 # 规范版本语法（ADR-0010 §D-14）
@@ -339,6 +349,46 @@ def _memo_set(slot: Any, model: BaseModel, value: str) -> str:
     return value
 
 
+#: 重建作用域的契约版本（ADR-0052 versioned replay，机制）；`None` = 不在任何重建作用域内。
+_SCOPED_SCHEMA_VERSION: ContextVar[str | None] = ContextVar(
+    "hlens_contract_schema_version", default=None
+)
+
+
+@contextmanager
+def contract_schema_version_scope(version: str) -> Iterator[str]:
+    """重建 / 校验**已持久化**对象时，按其记录版本构造契约对象（ADR-0052 versioned replay）。
+
+    只用于重建已提交的对象（Codex M0 复核条件 1）：作用域内构造、且**缺省** `schema_version`
+    的契约对象（含嵌套的字典形式子对象）取 `version`；显式给出的版本与已构造的嵌套对象一律不改写
+    （条件 2）。离开作用域即由 context manager 恢复（`ContextVar` 的 token，`finally` 中复位；
+    线程 / 协程各自独立，可嵌套）。无作用域时构造行为与没有本机制时逐位相同，字段默认值与
+    JSON Schema 不变。
+
+    `version` 必须是已发布版本（`PUBLISHED_CONTRACT_SCHEMA_VERSIONS`），否则拒绝（条件 3）：
+    本代码从未发布的版本无法被它忠实重建。新写入组的写入者不得在作用域内运行（见
+    `scoped_contract_schema_version`，作用域泄漏由写入者 fail closed）。
+    """
+    if not isinstance(version, str) or version not in PUBLISHED_CONTRACT_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"契约版本 {version!r} 不是已发布版本 {list(PUBLISHED_CONTRACT_SCHEMA_VERSIONS)}："
+            "无法按它重建"
+        )
+    token = _SCOPED_SCHEMA_VERSION.set(version)
+    try:
+        yield version
+    finally:
+        _SCOPED_SCHEMA_VERSION.reset(token)
+
+
+def scoped_contract_schema_version() -> str | None:
+    """当前生效的重建作用域版本；不在任何重建作用域内时为 `None`。
+
+    新写入组的写入者据此检测作用域泄漏：新对象永不继承历史版本（Codex M0 复核条件 1 / 3）。
+    """
+    return _SCOPED_SCHEMA_VERSION.get()
+
+
 class Contract(BaseModel):
     """所有契约模型的基类：不可变、禁止未声明字段、拒绝非法浮点数、带 schema_version。
 
@@ -413,6 +463,15 @@ class Contract(BaseModel):
             return super().model_copy(deep=deep)
         payload: dict[str, Any] = {**self.__dict__, **dict(update)}
         return type(self).model_validate(payload)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _scoped_schema_version(cls, data: Any) -> Any:
+        """在 `contract_schema_version_scope` 内，缺省的信封取作用域版本（否则不改动输入）。"""
+        scoped = _SCOPED_SCHEMA_VERSION.get()
+        if scoped is not None and isinstance(data, dict) and "schema_version" not in data:
+            return {**data, "schema_version": scoped}
+        return data
 
     @field_validator("schema_version")
     @classmethod

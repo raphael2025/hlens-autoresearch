@@ -38,6 +38,7 @@ from core.contracts.storage import (
     StorageError,
 )
 from core.domain.base import FrozenMapping
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.settings import Settings
 
 __all__ = [
@@ -52,6 +53,7 @@ __all__ = [
 COLLECTOR_ID: Final[str] = "binance.spot.public-archive"
 COLLECTOR_VERSION: Final[str] = "1.1.0"
 ARCHIVE_SOURCE: Final[SourceBinding] = SourceBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     source_id="binance.public.spot.archive",
     version="1.0.0",
 )

@@ -80,6 +80,7 @@ from core.contracts.storage import (
     StorageError,
 )
 from core.domain.base import FrozenMapping, canonical_json
+from infrastructure import contract_version
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -431,11 +432,18 @@ def committed_request(reader: Any, request_id: str) -> CollectionRequest:
             raise CheckpointMissing(f"request {request_id!r} has no committed collection")
         document = d3d._parse_checkpoint(payload, d3d.COLLECTION_CHECKPOINT_KIND)
         fingerprint = d3d._mapping_field(document, "request")
+        named = (fingerprint["source_id"], fingerprint["source_version"])
+        # A published binding named by its id and version is the registered object itself,
+        # whatever contract version is current (ADR-0052 versioned replay, V3); any other name
+        # is built only to be refused by the reader.
+        source = (
+            d3d.REST_SOURCE
+            if named == (d3d.REST_SOURCE.source_id, d3d.REST_SOURCE.version)
+            else SourceBinding(source_id=named[0], version=named[1])
+        )
         request = CollectionRequest(
             request_id=fingerprint["request_id"],
-            source=SourceBinding(
-                source_id=fingerprint["source_id"], version=fingerprint["source_version"]
-            ),
+            source=source,
             data_type=fingerprint["data_type"],
             symbols=tuple(fingerprint["symbols"]),
             coverage_start=datetime.fromisoformat(fingerprint["coverage_start"]),
@@ -646,8 +654,13 @@ def response_columns(
     base: int,
     knowledge_time: datetime,
     provenance: Mapping[str, Any],
+    contract_schema_version: str | None = None,
 ) -> dict[str, Any]:
-    """Every column of one response revision from its inputs (the single builder, s1)."""
+    """Every column of one response revision from its inputs (the single builder, s1).
+
+    ``contract_schema_version``: the version a committed revision records when it is rebuilt,
+    ``None`` for a new revision (the current version; ADR-0052 versioned replay, V1 / V2).
+    """
     body_key, body_uri, body_sha256, body_size = body
     observation_key = rest_identity.response_observation_key(page_identity)
     source = rest_identity.rest_source_identity()
@@ -661,6 +674,7 @@ def response_columns(
         knowledge_time=knowledge_time,
     )
     record = RevisionRecord(
+        schema_version=_group_version(contract_schema_version),
         observation_key=observation_key,
         revision_id=rest_identity.revision_id(observation_key, source, body_sha256),
         source_id=source,
@@ -696,6 +710,13 @@ def response_columns(
         }
     )
     return row
+
+
+def _group_version(recorded: str | None) -> str:
+    """A rebuilt revision's recorded version (checked), or a new revision's current one."""
+    if recorded is None:
+        return contract_version.new_group_version()
+    return contract_version.replay_version(recorded, what="a rebuilt Raw revision")
 
 
 def _revision_block(record: RevisionRecord) -> dict[str, Any]:
@@ -759,6 +780,7 @@ def element_columns(
     base: int,
     ingest_time: datetime,
     knowledge_time: datetime,
+    contract_schema_version: str | None = None,
 ) -> tuple[str, str, str, Mapping[str, Any]]:
     """``(key, revision id, payload hash, normalised row)`` of one element of a response.
 
@@ -788,6 +810,8 @@ def element_columns(
             knowledge_time=knowledge_time,
         )
     record = RevisionRecord(
+        # An element is written, and rebuilt, at its response revision's version (one group).
+        schema_version=_group_version(contract_schema_version),
         observation_key=key,
         revision_id=revision_id,
         source_id=source,
@@ -1109,6 +1133,11 @@ class PersistedRowVerifier:
         version, empty edges and ``supersedes`` — is derived from the frozen rules and compared.
         """
         revision = stored.get("revision_id")
+        # Rebuilt at the version the row was committed with (ADR-0052 versioned replay, V1).
+        version = contract_version.replay_version(
+            stored.get("contract_schema_version"),
+            what=f"committed response revision {revision}",
+        )
         try:
             check_block_base(stored["arrival_seq"])
             data_type = stored["data_type"]
@@ -1140,6 +1169,7 @@ class PersistedRowVerifier:
                 base=stored["arrival_seq"],
                 knowledge_time=stored["knowledge_time"],
                 provenance=provenance,
+                contract_schema_version=version,
             )
         except (KeyError, TypeError, ValueError, OverflowError) as exc:
             raise CatalogIntegrityError(
@@ -1168,6 +1198,7 @@ class PersistedRowVerifier:
                 base=stored["arrival_seq"],
                 knowledge_time=stored["knowledge_time"],
                 provenance=page_provenance(request, page),
+                contract_schema_version=version,
             )
         except (CommittedCheckpointError, KeyError, TypeError, ValueError) as exc:
             raise CatalogIntegrityError(
@@ -1294,6 +1325,7 @@ class PersistedRowVerifier:
                     base=response["arrival_seq"],
                     ingest_time=response["ingest_time"],
                     knowledge_time=response["knowledge_time"],
+                    contract_schema_version=response["contract_schema_version"],
                 )
             except (KeyError, TypeError, ValueError, OverflowError) as exc:
                 raise CatalogIntegrityError(
@@ -1558,6 +1590,11 @@ class PersistedRowVerifier:
         bindings, the availability decision under the frozen policy, no precedence edge.
         """
         revision = stored.get("revision_id")
+        # Rebuilt at the version the row was committed with (ADR-0052 versioned replay, V1).
+        version = contract_version.replay_version(
+            stored.get("contract_schema_version"),
+            what=f"committed archive revision {revision}",
+        )
         try:
             _check_archive_arrival_seq(stored["arrival_seq"])
             if (stored["collector_id"], stored["collector_version"]) != (
@@ -1603,6 +1640,7 @@ class PersistedRowVerifier:
                 binding=AVAILABILITY_BINDING,
             )
             record = RevisionRecord(
+                schema_version=version,
                 observation_key=observation_key,
                 revision_id=revision_id,
                 source_id=archive_identity.archive_source_identity(),
@@ -1690,6 +1728,8 @@ class PersistedRowVerifier:
                 times=_times_from_row(archive.row),
                 subject=_ARCHIVE_ROW_SUBJECTS[data_type],
                 binding=AVAILABILITY_BINDING,
+                # One write group: the rows inherit their archive revision's version (V1).
+                contract_schema_version=archive.row["contract_schema_version"],
             )
             expected = batch_rows(_row_batch(definition, records, chunk, data_type))
         except (RevisionStoreError, KeyError, TypeError, ValueError, OverflowError) as exc:

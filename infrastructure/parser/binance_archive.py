@@ -41,6 +41,7 @@ from core.contracts.collector import CollectedObject
 from core.contracts.revision import PolicyBinding, PolicyRole
 from core.contracts.storage import IntegrityViolation, ObjectRef, StorageAdapter
 from core.domain.base import canonical_json
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 
 __all__ = [
     "AGG_TRADES_ROW_SCHEMA",
@@ -344,6 +345,7 @@ PARSER_SPEC: Final[dict[str, Any]] = {
 
 #: ``PolicyBinding(role=parser)``：哈希由 ``PARSER_SPEC`` 的规范 JSON 派生。
 PARSER_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PARSER,
     policy_id=PARSER_ID,
     version=PARSER_VERSION,

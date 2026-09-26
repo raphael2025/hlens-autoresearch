@@ -782,7 +782,10 @@ class ChannelReconciler:
                     comparison.rest, snapshot_id=row["superseded_snapshot_id"]
                 )
                 rebuilt = build_channel_edge(
-                    compare_channels(archive, rest), knowledge_time=row["knowledge_time"]
+                    compare_channels(archive, rest),
+                    knowledge_time=row["knowledge_time"],
+                    # at the version the edge row was committed with (ADR-0052, V1)
+                    contract_schema_version=row["contract_schema_version"],
                 )
             except (ChannelPrecedenceViolation, ValueError) as exc:
                 raise CatalogIntegrityError(

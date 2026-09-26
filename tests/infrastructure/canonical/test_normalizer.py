@@ -19,7 +19,7 @@ from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, In
 
 from core.contracts.catalog import CommitRequest
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
-from core.domain.base import canonical_json
+from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
 from infrastructure.canonical import normalizer as nz
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
@@ -666,7 +666,13 @@ def test_batches_whose_rows_were_deleted_fail_closed_without_a_clock_reading(
 def _forged_row(h: RestHarness, index: int) -> dict[str, Any]:
     channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
     raw = sorted(h.rows(c.ARCHIVE_AGGS), key=lambda row: row["archive_line_number"])
-    return rules.canonical_row(channel, raw[index], base=0, ready_time=K_NORM)
+    return rules.canonical_row(
+        channel,
+        raw[index],
+        base=0,
+        ready_time=K_NORM,
+        contract_schema_version=CONTRACT_SCHEMA_VERSION,
+    )
 
 
 @pytest.mark.parametrize(

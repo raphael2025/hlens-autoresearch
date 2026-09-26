@@ -51,6 +51,7 @@ from core.contracts.revision import (
     RevisionRecord,
 )
 from core.domain.base import canonical_json
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 
 __all__ = [
     "PRECEDENCE_BINDING",
@@ -294,6 +295,7 @@ PRECEDENCE_SPEC: Final[Mapping[str, Any]] = {
 }
 PRECEDENCE_HASH: Final = hashlib.sha256(canonical_json(PRECEDENCE_SPEC).encode("utf-8")).hexdigest()
 PRECEDENCE_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PRECEDENCE,
     policy_id=PRECEDENCE_POLICY_ID,
     version=PRECEDENCE_POLICY_VERSION,

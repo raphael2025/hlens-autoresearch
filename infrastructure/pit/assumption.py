@@ -24,6 +24,7 @@ from typing import Any, Final
 from core.contracts.revision import PointInTimeSpec, PolicyBinding, PolicyRole
 from core.domain.base import canonical_json
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_AGG_TRADES, BINANCE_SPOT_KLINES_1M
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.revision.availability import AVAILABILITY_POLICY_ID, AVAILABILITY_POLICY_VERSION
 
 __all__ = [
@@ -62,6 +63,7 @@ ASSUMPTION_SPEC: Final[dict[str, Any]] = {
     "unchanged": "stored revisions, evidence gaps (still listed and bound), knowledge axis",
 }
 ASSUMPTION_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.AVAILABILITY,
     policy_id=ASSUMPTION_ID,
     version=ASSUMPTION_VERSION,

@@ -57,6 +57,7 @@ from core.contracts.storage import (
 )
 from core.domain.base import canonical_json
 from infrastructure.collector import binance_rest as d3d
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.parser.binance_exchange_info import (
     EXCHANGE_INFO_DECODER_BINDING,
     MAX_BODY_LIMIT_BYTES,
@@ -98,7 +99,9 @@ __all__ = [
 EXCHANGE_INFO_COLLECTOR_ID: Final = "binance.spot.public-exchange-info"
 EXCHANGE_INFO_COLLECTOR_VERSION: Final = "1.0.0"
 EXCHANGE_INFO_SOURCE: Final = SourceBinding(
-    source_id=EXCHANGE_INFO_SOURCE_ID, version=EXCHANGE_INFO_SOURCE_VERSION
+    schema_version=PHASE1_PUBLICATION_VERSION,
+    source_id=EXCHANGE_INFO_SOURCE_ID,
+    version=EXCHANGE_INFO_SOURCE_VERSION,
 )
 
 CHECKPOINT_PREFIX: Final = "raw/binance/spot/exchange-info/collections"

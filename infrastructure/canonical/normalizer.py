@@ -65,6 +65,7 @@ from core.contracts.catalog import (
     TableNotFound,
 )
 from core.contracts.storage import StorageAdapter
+from infrastructure import contract_version
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit.view import PinnedCatalogView
@@ -212,6 +213,8 @@ class _UnitFacts:
     plan: _CommittedPlan | None
     base: int | None
     ready: datetime | None
+    #: The contract version the unit's committed rows record (ADR-0052 versioned replay, V1).
+    version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -231,6 +234,9 @@ class _Survey:
     committed_ids: tuple[str, ...]
     #: The unit's Raw positions, ascending and distinct (batches are rank slices of them).
     positions: tuple[int, ...] = ()
+    #: Recovered from the committed rows when ``plan`` is set: the unit is rebuilt, and
+    #: completed, at this contract version (ADR-0052 versioned replay, V1 / V2).
+    version: str | None = None
 
 
 class CanonicalNormalizer:
@@ -290,12 +296,16 @@ class CanonicalNormalizer:
                 assert survey.raw_floor is not None
                 base, ready = self._allocate(channel, survey.raw_floor)
                 chunk = self._microbatch
+                # A unit with nothing committed is a new write group: the current version (V2).
+                version = contract_version.new_group_version()
             else:
                 assert survey.base is not None and survey.ready is not None
+                assert survey.version is not None
                 base, ready, chunk = survey.base, survey.ready, survey.plan.chunk
+                version = survey.version  # completed at its recorded version, never mixed
             try:
                 commits, revision_ids = self._write(
-                    pin, channel, source_revision_id, survey, base, ready, chunk
+                    pin, channel, source_revision_id, survey, (base, ready, version), chunk
                 )
             except CommitConflict as exc:
                 last_error = exc  # another writer moved the table: start over, adopt its work
@@ -369,6 +379,7 @@ class CanonicalNormalizer:
         facts = self._unit_facts(pin, channel, source_revision_id)
         if facts.plan is None or facts.base is None or facts.ready is None:
             return ()
+        assert facts.version is not None
         plan, base, ready = facts.plan, facts.base, facts.ready
         _require_complete(channel, source_revision_id, plan, len(facts.positions))
         wanted = _batches_holding(facts.positions, plan.chunk, base, seqs) & set(plan.batches)
@@ -382,7 +393,7 @@ class CanonicalNormalizer:
             low, high, _ = _batch_window(facts.positions, plan.chunk, index)
             raw = self._raw_window(pin, channel, source_revision_id, low, high)
             self._prove(pin, channel, raw)
-            planned = self._planned(channel, raw, base, ready)
+            planned = self._planned(channel, raw, base, ready, facts.version)
             check_batch_snapshot(
                 channel.canonical,
                 unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
@@ -412,7 +423,7 @@ class CanonicalNormalizer:
             self._prove_source(pin, channel, source_revision_id)
         self._check_positions(pin, channel, source_revision_id, positions, symbol)
         plan = self._committed_plan(pin, channel, source_revision_id)
-        seqs, readies = self._committed_times(pin, channel, source_revision_id)
+        seqs, readies, versions = self._committed_times(pin, channel, source_revision_id)
         facts = _UnitFacts(tuple(positions), None, None, None)
         if not positions:
             if len(seqs) or plan is not None:
@@ -426,7 +437,9 @@ class CanonicalNormalizer:
                     f"{table}: unit {source_revision_id} has committed rows but no committed batch"
                 )
         else:
-            base, ready = self._recover(channel, source_revision_id, seqs, readies)
+            base, ready, version = self._recover(
+                channel, source_revision_id, seqs, readies, versions
+            )
             if plan.unit_rows != len(positions):
                 raise CatalogIntegrityError(
                     f"{table}: unit {source_revision_id} was normalized as {plan.unit_rows} rows "
@@ -448,7 +461,7 @@ class CanonicalNormalizer:
                     f"{table}: the committed rows of unit {source_revision_id} are not exactly "
                     "the rows of its committed batches (rows deleted or added)"
                 )
-            facts = _UnitFacts(tuple(positions), plan, base, ready)
+            facts = _UnitFacts(tuple(positions), plan, base, ready, version)
         self._check_rest_unit(pin, channel, source_revision_id, positions)
         if self._frozen:
             while len(self._facts) >= _FACT_CACHE:
@@ -531,7 +544,7 @@ class CanonicalNormalizer:
             self._prove_source(pin, channel, source_revision_id)
         self._check_positions(pin, channel, source_revision_id, positions, symbol)
         plan = self._committed_plan(pin, channel, source_revision_id)
-        seqs, readies = self._committed_times(pin, channel, source_revision_id)
+        seqs, readies, versions = self._committed_times(pin, channel, source_revision_id)
         if unit_rows == 0:
             if len(seqs) or plan is not None:
                 raise CatalogIntegrityError(
@@ -545,7 +558,7 @@ class CanonicalNormalizer:
                     f"{table}: unit {source_revision_id} has committed rows but no committed batch"
                 )
             return _Survey(unit_rows, floor, None, None, None, (), (), tuple(positions))
-        base, ready = self._recover(channel, source_revision_id, seqs, readies)
+        base, ready, version = self._recover(channel, source_revision_id, seqs, readies, versions)
         if plan.unit_rows != unit_rows:
             raise CatalogIntegrityError(
                 f"{table}: unit {source_revision_id} was normalized as {plan.unit_rows} rows but "
@@ -566,7 +579,7 @@ class CanonicalNormalizer:
         for index in indices:
             low, high, _ = _batch_window(positions, plan.chunk, index)
             raw = self._raw_window(pin, channel, source_revision_id, low, high)
-            planned = self._planned(channel, raw, base, ready)
+            planned = self._planned(channel, raw, base, ready, version)
             check_batch_snapshot(
                 channel.canonical,
                 unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
@@ -586,7 +599,7 @@ class CanonicalNormalizer:
                 "rows of its committed batches (rows deleted or added)"
             )
         return _Survey(
-            unit_rows, floor, plan, base, ready, tuple(kept), tuple(ids), tuple(positions)
+            unit_rows, floor, plan, base, ready, tuple(kept), tuple(ids), tuple(positions), version
         )
 
     def _positions(
@@ -747,14 +760,19 @@ class CanonicalNormalizer:
 
     def _committed_times(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
-    ) -> tuple[pa.Array, pa.Array]:
-        """``arrival_seq`` and ``knowledge_time`` of every committed row of the unit (Arrow)."""
+    ) -> tuple[pa.Array, pa.Array, pa.Array]:
+        """``arrival_seq``, ``knowledge_time`` and ``contract_schema_version`` of every committed
+        row of the unit (Arrow)."""
         found = pin.catalog.scan_columns(
             channel.canonical.table,
-            columns=("arrival_seq", "knowledge_time"),
+            columns=("arrival_seq", "knowledge_time", "contract_schema_version"),
             row_filter=self._unit_filter(channel, source_revision_id),
         )
-        return found.column("arrival_seq"), found.column("knowledge_time")
+        return (
+            found.column("arrival_seq"),
+            found.column("knowledge_time"),
+            found.column("contract_schema_version"),
+        )
 
     def _recover(
         self,
@@ -762,8 +780,10 @@ class CanonicalNormalizer:
         source_revision_id: str,
         seqs: pa.Array,
         readies: pa.Array,
-    ) -> tuple[int, datetime]:
-        """Block base and ready time of a unit with committed batches: from its rows, never read."""
+        versions: pa.Array,
+    ) -> tuple[int, datetime, str]:
+        """Block base, ready time and contract version of a unit with committed batches: from its
+        rows, never read (the version: ADR-0052 versioned replay, V1)."""
         table = channel.canonical.table
         if not len(seqs):
             raise CatalogIntegrityError(
@@ -779,9 +799,13 @@ class CanonicalNormalizer:
                 "knowledge_time"
             )
         try:
-            return rules.check_block_base(base), distinct[0]
+            checked = rules.check_block_base(base)
         except rules.CanonicalRuleViolation as exc:
             raise CatalogIntegrityError(f"{table}: {exc}") from None
+        version = contract_version.recorded_version(
+            pc.unique(versions).to_pylist(), what=f"{table}: unit {source_revision_id}"
+        )
+        return checked, distinct[0], version
 
     def _planned(
         self,
@@ -789,11 +813,16 @@ class CanonicalNormalizer:
         raw_rows: Sequence[Mapping[str, Any]],
         base: int,
         ready: datetime,
+        version: str,
     ) -> list[Mapping[str, Any]]:
-        """The window's Canonical rows, in Raw position order, as the table stores them."""
+        """The window's Canonical rows, in Raw position order, as the table stores them, built at
+        the unit's contract ``version`` (ADR-0052 versioned replay, V1 / V2)."""
         try:
             built = [
-                rules.canonical_row(channel, row, base=base, ready_time=ready) for row in raw_rows
+                rules.canonical_row(
+                    channel, row, base=base, ready_time=ready, contract_schema_version=version
+                )
+                for row in raw_rows
             ]
         except rules.CanonicalRuleViolation as exc:
             raise CanonicalNormalizeError(f"unit cannot be normalized: {exc}") from None
@@ -842,11 +871,14 @@ class CanonicalNormalizer:
         channel: rules.RawChannel,
         source_revision_id: str,
         survey: _Survey,
-        base: int,
-        ready: datetime,
+        block: tuple[int, datetime, str],
         chunk: int,
     ) -> tuple[list[BatchCommit], tuple[str, ...]]:
-        """Commit the plan's missing batches in order, each read back at its own snapshot."""
+        """Commit the plan's missing batches in order, each read back at its own snapshot.
+
+        ``block`` is the unit's block base, ready time and contract version.
+        """
+        base, ready, version = block
         definition = channel.canonical
         unit_rows = survey.unit_rows
         done = {} if survey.plan is None else dict(survey.plan.batches)
@@ -873,6 +905,7 @@ class CanonicalNormalizer:
                 self._raw_window(pin, channel, source_revision_id, low, high),
                 base,
                 ready,
+                version,
             )
             table = batch(definition, planned)
             request = CommitRequest(

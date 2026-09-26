@@ -202,12 +202,17 @@ universe spec）随 minor 改变身份；(c) 由登记对象派生的投影（`U
   或同一组出现两个版本，一律 `CatalogIntegrityError`（fail closed）。比较的严格性不变（批次指纹、逐列 `_exact`）。
 - **V2 新对象按当前版本写。** 没有任何已提交成员的组按当前版本写入（M2 起 2.1.0）；部分提交的组（写到一半停止的单元）
   按其**已记录**版本补完，绝不在一个组内混版本。
-- **机制。** `core/domain/base.py` 增加 `contract_schema_version_scope(version)`（`ContextVar`）与
-  `current_contract_schema_version()`：作用域内构造、且未显式给出 `schema_version` 的契约对象取作用域版本（`Contract` 的
-  before 校验器只在字段缺省时填入，显式值与已构造的嵌套对象不受影响；无作用域时行为与今天逐位相同，默认值与 Schema 不变）。
-  重放 / 校验入口在"记录版本"的作用域内重建；新组的写入者盖 `current_contract_schema_version()`。`canonical_row` 改为盖它自己
-  构造的 `RevisionRecord` 的版本，不再导入实时常量。选择作用域而不是逐参数传递，是因为重建会经过不应修改的代码
-  （例如 PIT selector 内构造的 `SelectedRevisionLineage`、universe builder 的成员），逐参数传递到不了那里。
+- **机制（按 Codex M0 复核条件细化）。** 各单一行构造器显式接收写入组版本：`rules.canonical_row(...,
+  contract_schema_version=...)`（必填，`CanonicalNormalizer` 的 `_survey` / `_verify_batches` / `_planned` / `_write`
+  逐层传递）、`response_columns` / `element_columns` / `_row_records` / `snapshot_columns` / `listing_columns` /
+  `build_channel_edge`（缺省 `None` = 新组）；构造器用该版本构造 `RevisionRecord` / `ListingRevision` /
+  `PrecedenceEvidence`，行的 `contract_schema_version` 列即该对象的信封（同源，不分叉）。新组版本只来自
+  `infrastructure.contract_version.new_group_version()`（= 当前版本；在重建作用域内调用即 `ContractVersionScopeLeak`）；
+  记录版本经 `recorded_version` / `replay_version` 校验（唯一、已发布）。`core/domain/base.py` 的
+  `contract_schema_version_scope(version)`（`ContextVar`，context manager 复位，只接受已发布版本）只包住**已持久化对象**
+  的重建 / 校验——manifest 的复核与重放（重建会经过 PIT selector、universe builder 内部构造的对象，逐参数传递到不了）
+  以及从行重建 `RevisionRecord` / 边；作用域内只有**缺省**的 `schema_version` 取作用域版本，显式版本与已构造的嵌套对象
+  不改写；无作用域时构造与今天逐位相同，默认值与 Schema 不变。
 - **V3 已发布的身份冻结。** 被持久化数据按内容引用的代码登记对象——Phase 1 全部 `PolicyBinding` 常量、`SourceBinding`
   常量、`FIRST_SLICE_UNIVERSE`——是已发布对象：其信封版本固定为发布时的 `2.0.0`（显式写出），是身份的一部分；
   minor 升版不重新发布它们。规则的新版本在其发布时的当前契约版本下发布。
@@ -247,3 +252,19 @@ V3 要求把 `infrastructure/pit/selector.py` 的 `PIT_BINDING` 常量写出 `sc
   PIT 读取 / manifest 哈希回归、2.0.0 黄金向量逐字节不变、Schema 重导出（`schemas/v1` 与 v1 向量逐字节不变）。
 - **M3**：本 ADR §1 ~ §3 的契约字段（2.1.0，方案 B）；研究侧取值（`research/validation` 来源规则、C-A4 拒绝同时给出 `param:`）
   不在本 lane，由协调者在全代码分支完成。
+
+### M1 实施记录（仍为 2.0.0；2026-09-26）
+
+- 机制：`core/domain/base.py`（`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0",)`、`contract_schema_version_scope`、
+  `scoped_contract_schema_version`、`Contract` 的缺省信封 before 校验器）；`infrastructure/contract_version.py`
+  （`new_group_version`、`recorded_version` / `replay_version`、`PHASE1_PUBLICATION_VERSION`、`ContractVersionScopeLeak`）。
+- V1 / V2 入口：Canonical normalizer（从已提交行恢复单元版本，显式传给 `canonical_row`）；archive store 与
+  `PersistedRowVerifier`（archive revision / 行、REST response / element）；REST store（采纳与补完 elements）；
+  exchangeInfo store；listing 派生（按批次记录版本复核）；channel 边（`_existing_edges` 按行版本重建）；
+  dataset builder（V7：`verify_manifest` / `_check_manifest` 在 manifest 版本作用域内，重放的数据集批次采用已持久化
+  manifest 的版本）。
+- V3：Phase 1 全部 `PolicyBinding`、`SourceBinding` 常量与 `FIRST_SLICE_UNIVERSE` 显式 `schema_version="2.0.0"`，
+  内容哈希以测试钉住；`committed_request` 把 (id, version) 解析为登记的 `REST_SOURCE` 对象。V4：`binding()` 继承信封。
+- 证据：跨进程探查（2.0.0 写入 first slice，常量临时改为 2.1.0 后重放 24 步）：**0 失败、无任何表 head 移动、
+  数据集重建 `replayed=True`、全部行仍为 2.0.0**（M0 时为 23 / 24 失败）。M0 的 strict-xfail 测试以"后续写入者版本"
+  模拟升版后转为通过（真实升版在 M2 复证）。Schema 导出与提交版本逐字节相同（134 + `v1/`）。

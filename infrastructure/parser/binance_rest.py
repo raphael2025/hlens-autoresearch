@@ -62,6 +62,7 @@ from typing import Any, Final
 
 from core.contracts.revision import PolicyBinding, PolicyRole
 from core.domain.base import canonical_json
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.revision.rest_identity import (
     DATA_TYPES,
     DECLARED_TIME_UNIT,
@@ -1479,6 +1480,7 @@ DECODER_HASH: Final = hashlib.sha256(canonical_json(DECODER_SPEC).encode("utf-8"
 
 #: ``PolicyBinding(role=parser)`` for the decoder; the hash is derived, never written down.
 DECODER_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PARSER,
     policy_id=DECODER_ID,
     version=DECODER_VERSION,

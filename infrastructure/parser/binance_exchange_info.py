@@ -36,6 +36,7 @@ from typing import Any, Final
 
 from core.contracts.revision import PolicyBinding, PolicyRole
 from core.domain.base import canonical_json
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 
 __all__ = [
     "EXCHANGE_INFO_DECODER_BINDING",
@@ -330,6 +331,7 @@ EXCHANGE_INFO_DECODER_HASH: Final = hashlib.sha256(
     canonical_json(EXCHANGE_INFO_DECODER_SPEC).encode("utf-8")
 ).hexdigest()
 EXCHANGE_INFO_DECODER_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PARSER,
     policy_id=EXCHANGE_INFO_DECODER_ID,
     version=EXCHANGE_INFO_DECODER_VERSION,
