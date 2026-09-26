@@ -190,3 +190,15 @@
 - 实际运行：`uv run pytest -q tests/infrastructure/event` → 49 passed；`uv run pytest -q tests/research/events` → 7 passed；`ruff check` / `ruff format --check` → 通过；
   `mypy infrastructure/event tests/infrastructure/event` → no issues in 11 files；`mypy research/events tests/research/events` → no issues in 4 files。
 
+
+**B6 — engines 子代理：Phase 2 / 6 / 10**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 `02daca7`、`ed11958`、`d0c940c`）
+
+- Phase 2（`02daca7`）：`StateDiagnostics.to_payload()` / `diagnostics_hash` / `from_payload(expected_hash=)`（Decimal 精确文本、UTC ISO、拒绝浮点 / 非规范 / 哈希不符），`diagnose()` 不变；9 项新测试。
+- Phase 6（`ed11958`）：`register_matrix_conditionals(ledger, matrix, *, state_spec, family_id, minimum_effect, min_support)`——单元来自声明的 `state_space` + 未知状态单元，
+  先全部核对再登记（冲突即一条不登记），`min_support` 必填无默认（`None` = 全部报告为无支持阈值），低于阈值保留并标注；无按结果选标签的入口；9 项新测试。未接入循环。
+- Phase 10（`d0c940c`）：`RouterStopped`（`no_validated_candidate` / `all_routes_flat`）与 `paper_run_or_stop` 返回带哈希的 `RouterStop`；`RouterPaperRun.expected_run_hash()` / `verify()`
+  及逐项篡改测试；可选 `validation_reports`（给出时每个可路由策略须恰有一个报告哈希，记录并入哈希）；既有 run hash 固定测试不变；13 项新测试。
+  剩余：生命周期映射未入 `run_hash`（入则改既有哈希）；`research/reports/router.py` 尚未写出 `validation_reports` / `RouterStop`；P10-ELIG 仍待决定。
+- 子代理实际运行：`pytest tests/research/states tests/research/experiments tests/research/router tests/research/reports/test_writers.py tests/research/test_cross_phase_e2e.py -m "not postgres"` → 77 passed；
+  `tests/research/loop/test_loop_units.py` → 4 passed；ruff / format / mypy（15 files）通过。集成后本分支复跑 `tests/research/{states,experiments,router,reports}` + cross-phase e2e → 77 passed, 1 warning；
+  `ruff check research tests/research` → All checks passed；mypy（15 files）→ no issues。
