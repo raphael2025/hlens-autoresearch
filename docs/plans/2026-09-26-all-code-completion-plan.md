@@ -525,7 +525,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 **B43 — ARCHITECTURE_DECISION_REQUIRED：D-LIST / ADR-0051（撤回 Claude 的接受）**
 
 - 冲突：Claude 依 Raphael 的一般授权（"所有决策由你决定，含红线"）一度接受 ADR-0051 方案 A 并开独立 Phase 1 分支 `phase1/adr-0051-listing-assumption` 实施；集成会话指出 Raphael 2026-09-26 曾对 D-LIST **明确暂缓**
-  （"后面再授权 我不知道这个是什么"，见 PROJECT_STATUS §6 与 ADR-0051 状态行）。具体暂缓优先于一般授权；按 CLAUDE.md §0 文档冲突即停止并提出决策包。已令该通道停止：不推送、ADR-0051 状态恢复 Proposed / 暂缓、草稿只作本地 WIP（NOT APPROVED）。
+  （"后面再授权 我不知道这个是什么"，见 PROJECT_STATUS §6 与 ADR-0051 状态行）。具体暂缓优先于一般授权；按 CLAUDE.md §0 文档冲突即停止并提出决策包。已令该通道停止：该通道停止时尚未写任何代码、未提交、未推送，ADR-0051 状态从未被改动（仍为 Proposed / Raphael 暂缓）；其阅读后的设计要点（策略名 `hlens.listing.observed-state-backfill-assumption@1.0.0`、绑定位置 `PointInTimeSpec.availability_bindings`、`UniverseMember` 需一个 2.1.0 可选字段——与 ADR-0051"不改契约"一句冲突、需实施说明）留待 Raphael 批准后使用。
 - 决策包：**问题**——是否授权 ADR-0051 方案 A（一次公开 `exchangeInfo` 调用 + 显式绑定、写入清单的"上市历史假设"，仿 ADR-0032）？**为什么重要**——没有上市历史，真实历史数据建不成研究数据集（D-NET 停在 PIT 选择）；
   **选项**——A：授权（草稿实现可在批准后完成、跑严格门禁再并入）；B：只从今天起前向采集，不用历史上市假设；**推荐**：A（默认保守：不绑定即维持现行拒绝）；**不决定时**：保持现状，真实数据只到 PIT 选择。
 
