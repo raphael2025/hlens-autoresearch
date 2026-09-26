@@ -36,10 +36,12 @@ from apps.worker.loop import (
     ROUND_TOPIC,
     STAGE_TOPIC,
     automation_reachable_states,
+    missing_validation_failed_evidence,
 )
 from core.contracts.validation_profile import LifecycleParams
 from core.domain.base import FrozenMapping, Kind, Ref
-from core.lifecycle.strategy import LifecycleState
+from core.errors import LifecycleViolation
+from core.lifecycle.strategy import ALLOWED_TRANSITIONS, LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
 from tests import factories
 
@@ -338,6 +340,80 @@ def test_automation_cannot_reach_any_human_or_production_state() -> None:
         {LifecycleState.PAPER, LifecycleState.PRODUCTION_CANDIDATE, LifecycleState.RETIRED}
     )
     assert reachable - {LifecycleState.IDEA} == AUTOMATABLE_TARGETS
+
+
+def test_adr_0053_leaves_the_automation_reachable_states_unchanged() -> None:
+    """ADR-0053 §4: FAILED was already reachable (CANDIDATE → FAILED); the new edge adds no
+    state, and PAPER / PRODUCTION_CANDIDATE / ACTIVE stay out of reach."""
+    assert (LifecycleState.VALIDATION, LifecycleState.FAILED) in ALLOWED_TRANSITIONS
+    assert automation_reachable_states() == {
+        LifecycleState.IDEA,
+        LifecycleState.CANDIDATE,
+        LifecycleState.VALIDATION,
+        LifecycleState.OOS,
+        LifecycleState.REJECTED,
+        LifecycleState.FAILED,
+    }
+    assert automation_reachable_states().isdisjoint(FORBIDDEN_TARGETS)
+
+
+def _in_validation() -> LifecycleGuard:
+    guard = LifecycleGuard(actor="loop")
+    guard.open(SUBJECT)
+    for state in (LifecycleState.CANDIDATE, LifecycleState.VALIDATION):
+        guard.advance(SUBJECT, state, reason="r", evidence=("e",), occurred_at=EPOCH)
+    return guard
+
+
+ADR_0053_EVIDENCE = ("validation_report:r-1", "failure_record:abc", "loop_round:loop:0")
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        ("e",),
+        ADR_0053_EVIDENCE[1:],  # no report / run
+        (ADR_0053_EVIDENCE[0], ADR_0053_EVIDENCE[2]),  # no FailureRecord hash
+        ADR_0053_EVIDENCE[:2],  # no round
+        ("validation_report: ", "failure_record:abc", "loop_round:loop:0"),  # empty reference
+    ],
+)
+def test_the_guard_refuses_validation_to_failed_without_the_adr_0053_evidence(
+    evidence: tuple[str, ...],
+) -> None:
+    guard = _in_validation()
+    assert missing_validation_failed_evidence(evidence)
+    with pytest.raises(AutomationForbidden, match="ADR-0053"):
+        guard.advance(
+            SUBJECT, LifecycleState.FAILED, reason="r", evidence=evidence, occurred_at=EPOCH
+        )
+    assert guard.state_of(SUBJECT) is LifecycleState.VALIDATION
+
+
+@pytest.mark.parametrize(
+    "evidence",
+    [ADR_0053_EVIDENCE, ("run:loop:1:h@1.0.0", "failure_record:abc", "loop_round:loop:1")],
+)
+def test_the_guard_moves_validation_to_failed_with_the_adr_0053_evidence(
+    evidence: tuple[str, ...],
+) -> None:
+    guard = _in_validation()
+    assert missing_validation_failed_evidence(evidence) == ()
+    transition = guard.advance(
+        SUBJECT, LifecycleState.FAILED, reason="r", evidence=evidence, occurred_at=EPOCH
+    )
+    assert transition.approved_by is None and guard.state_of(SUBJECT) is LifecycleState.FAILED
+    for target in FORBIDDEN_TARGETS | {LifecycleState.CANDIDATE}:  # FAILED is terminal
+        with pytest.raises(LifecycleViolation):
+            guard.advance(SUBJECT, target, reason="r", evidence=evidence, occurred_at=EPOCH)
+
+
+def test_the_guard_keeps_candidate_to_failed_as_it_was() -> None:
+    guard = LifecycleGuard(actor="loop")
+    guard.open(SUBJECT)
+    guard.advance(SUBJECT, LifecycleState.CANDIDATE, reason="r", evidence=("e",), occurred_at=EPOCH)
+    guard.advance(SUBJECT, LifecycleState.FAILED, reason="r", evidence=("e",), occurred_at=EPOCH)
+    assert guard.state_of(SUBJECT) is LifecycleState.FAILED
 
 
 def test_budget_configuration_has_no_defaults() -> None:

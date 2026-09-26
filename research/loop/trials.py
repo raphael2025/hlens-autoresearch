@@ -27,7 +27,17 @@ ADR-0049 accumulated-window note):
    result; the matrix binds the backtest and state result hashes);
 6. a completed first trial moves CANDIDATE → VALIDATION (a re-evaluation is already there); an
    errored one is left for the memory stage (CANDIDATE → FAILED + FailureRecord; an errored
-   re-evaluation only files its FailureRecord).
+   re-evaluation moves VALIDATION → FAILED only when the subject's own code caused the error,
+   ADR-0053 §2 — see ``TrialOutcome.subject_fault``; otherwise it only files its FailureRecord).
+
+Fault attribution (ADR-0053 §2 ``RUN_ERRORED``): the experiment run calls the candidate's own
+providers (strategy, risk) through ``_OwnStrategy`` / ``_OwnRisk``, which run the provider **and**
+its ``check_answers`` inside ``_subject_code``: an error there is the subject's
+(``SubjectRunError``, ``TrialOutcome.subject_fault = True``). Every other error of the trial —
+building the request from the round's data, the shared backtester, the State × Strategy matrix, a
+segment without a decision time — and any ``MemoryError`` / ``OSError`` even inside the provider is
+infrastructure, never attributed to the subject. The proxies keep the providers' descriptors, so
+every recorded hash is unchanged; the validator re-runs the unwrapped candidate.
 
 Conditional hypotheses (P6 in the loop; opt-in, 2026-09-26, CODE_COMPLETE / DEBUG_PENDING —
 decided by Claude under Raphael's 2026-09-26 autonomous-decision instruction). Only with an
@@ -82,7 +92,8 @@ scheduled time, and floats are written as quantized Decimal text (``segment.deci
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
@@ -102,7 +113,15 @@ from core.contracts.state import StateResult
 from core.contracts.strategy import (
     BacktestCostModel,
     BacktestProvider,
+    RiskProvider,
+    RiskProviderDescriptor,
+    RiskRequest,
+    RiskResult,
     SignalObservation,
+    StrategyProvider,
+    StrategyProviderDescriptor,
+    StrategyRequest,
+    StrategyResult,
     TargetPosition,
 )
 from core.contracts.validation_profile import ValidationProfile
@@ -173,6 +192,7 @@ __all__ = [
     "ConditionalPlan",
     "ExperimentStage",
     "OosUnsealBudget",
+    "SubjectRunError",
     "TrialComponents",
     "TrialOutcome",
     "ValidationOutcome",
@@ -299,6 +319,66 @@ class OosUnsealBudget:
         return self.approved_families.get(family_id)
 
 
+class SubjectRunError(Exception):
+    """ADR-0053 §2 ``RUN_ERRORED``: the candidate's own provider raised, or its answer failed
+    ``check_answers``. The original error is ``__cause__`` (module docs, "Fault attribution")."""
+
+
+#: Never attributed to the subject, even when raised inside its provider: memory, storage and
+#: network faults are infrastructure (ADR-0053 §2).
+_INFRASTRUCTURE_ERRORS: Final = (MemoryError, OSError)
+
+
+@contextmanager
+def _subject_code() -> Iterator[None]:
+    try:
+        yield
+    except _INFRASTRUCTURE_ERRORS:
+        raise
+    except Exception as exc:
+        raise SubjectRunError(f"{type(exc).__name__}: {exc}") from exc
+
+
+class _OwnStrategy:
+    """The candidate's strategy provider with fault attribution (same descriptor)."""
+
+    def __init__(self, inner: StrategyProvider) -> None:
+        self._inner = inner
+
+    @property
+    def descriptor(self) -> StrategyProviderDescriptor:
+        return self._inner.descriptor
+
+    def target_positions(self, request: StrategyRequest) -> StrategyResult:
+        with _subject_code():
+            answer = self._inner.target_positions(request)
+            answer.check_answers(request, self._inner.descriptor)
+        return answer
+
+
+class _OwnRisk:
+    """The candidate's risk provider with fault attribution (same descriptor)."""
+
+    def __init__(self, inner: RiskProvider) -> None:
+        self._inner = inner
+
+    @property
+    def descriptor(self) -> RiskProviderDescriptor:
+        return self._inner.descriptor
+
+    def constrain(self, request: RiskRequest) -> RiskResult:
+        with _subject_code():
+            answer = self._inner.constrain(request)
+            answer.check_answers(request, self._inner.descriptor)
+        return answer
+
+
+def _attributed(candidate: StrategyCandidate) -> StrategyCandidate:
+    """``candidate`` whose own providers raise ``SubjectRunError`` (module docs)."""
+    risk = None if candidate.risk is None else _OwnRisk(candidate.risk)
+    return replace(candidate, strategy=_OwnStrategy(candidate.strategy), risk=risk)
+
+
 @dataclass(frozen=True)
 class TrialOutcome:
     """One trial of one round: its reproducibility records and what the run produced."""
@@ -324,6 +404,10 @@ class TrialOutcome:
     #: durable state directory (``research.loop.durable``) carries no in-memory ``inputs`` /
     #: ``trial`` artifacts — only what later rounds read.
     knowledge_cutoff: datetime | None = None
+    #: ADR-0053 §2: the run errored in the subject's own code (``SubjectRunError``), not in the
+    #: infrastructure. Only an errored run of this process can set it; a trial restored from a
+    #: durable state directory keeps ``False`` (its lifecycle move is already in the audit).
+    subject_fault: bool = False
 
     @property
     def completed(self) -> bool:
@@ -633,6 +717,7 @@ class ExperimentStage:
         params: dict[str, Param] = {}
         error: str | None = None
         reason: ReasonCode | None = None
+        subject_fault = False
         if not self._pre_registered(hypothesis, attempt):
             error, reason = (
                 f"{hypothesis.ref} was not pre-registered"
@@ -675,7 +760,9 @@ class ExperimentStage:
                     params=params,
                 )
                 try:
-                    trial = CandidateTrialRunner(candidate, inputs, self._c.backtester).run(params)
+                    trial = CandidateTrialRunner(
+                        _attributed(candidate), inputs, self._c.backtester
+                    ).run(params)
                     matrix = state_strategy_matrix(
                         candidate.spec.ref,
                         state_ref,
@@ -683,6 +770,15 @@ class ExperimentStage:
                         states,
                     )
                     matrix = replace(matrix, backtest_result_hash=trial.backtest.result_hash)
+                except SubjectRunError as exc:  # the subject's own code (ADR-0053 §2)
+                    cause = exc.__cause__ if exc.__cause__ is not None else exc
+                    error, reason, trial, matrix = (
+                        f"{type(cause).__name__}: {cause}",
+                        ReasonCode.RUN_ERRORED,
+                        None,
+                        None,
+                    )
+                    subject_fault = True
                 except Exception as exc:  # noqa: BLE001 - an errored trial is recorded, not dropped
                     error, reason, trial, matrix = (
                         f"{type(exc).__name__}: {exc}",
@@ -763,6 +859,7 @@ class ExperimentStage:
             reason=reason,
             attempt=attempt,
             knowledge_cutoff=None if inputs is None else inputs.knowledge_cutoff,
+            subject_fault=subject_fault,
         )
 
 

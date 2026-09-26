@@ -46,7 +46,8 @@ AUTHORIZED_AT = datetime(2026, 1, 1, tzinfo=UTC)
 CHANGED_AT = datetime(2026, 1, 15, tzinfo=UTC)
 VALID_UNTIL = datetime(2026, 2, 1, tzinfo=UTC)
 
-#: ADR-0006 状态机的独立副本（C-1 选项 B：PAPER 在 PRODUCTION_CANDIDATE 之前）。
+#: ADR-0006 状态机的独立副本（C-1 选项 B：PAPER 在 PRODUCTION_CANDIDATE 之前），
+#: 加上 ADR-0053 补充的 `VALIDATION → FAILED`。
 EXPECTED_TRANSITIONS = {
     (S.IDEA, S.CANDIDATE),
     (S.CANDIDATE, S.VALIDATION),
@@ -62,6 +63,7 @@ EXPECTED_TRANSITIONS = {
     (S.PAPER, S.RETIRED),
     (S.IDEA, S.REJECTED),
     (S.CANDIDATE, S.FAILED),
+    (S.VALIDATION, S.FAILED),  # ADR-0053（Raphael 2026-09-26 批准）
     (S.VALIDATION, S.REJECTED),
     (S.OOS, S.REJECTED),
     (S.PAPER, S.REJECTED),
@@ -461,3 +463,37 @@ def test_paper_period_is_not_a_threshold_here() -> None:
     text = open(source, encoding="utf-8").read()
     assert "timedelta(" not in text, "生命周期状态机中不应出现时长常量"
     assert timedelta(days=1) > timedelta(0)  # 仅确认 import 可用
+
+
+# ======================================================================================
+# ADR-0053：VALIDATION → FAILED（验证中的 C-P3 技术失败）
+# ======================================================================================
+
+
+def test_validation_to_failed_is_the_only_edge_adr_0053_adds() -> None:
+    """只加这一条边：不加 OOS / REVALIDATION → FAILED，不进人工批准集合，终态不变。"""
+    assert (S.VALIDATION, S.FAILED) in ALLOWED_TRANSITIONS
+    assert (S.VALIDATION, S.FAILED) not in HUMAN_APPROVAL_TRANSITIONS
+    validate_transition(S.VALIDATION, S.FAILED, approved_by=None)
+    for source in (S.OOS, S.REVALIDATION, S.PAPER, S.PRODUCTION_CANDIDATE, S.ACTIVE):
+        with pytest.raises(LifecycleViolation):
+            validate_transition(source, S.FAILED, approved_by="raphael")
+    into_failed = {pair for pair in ALLOWED_TRANSITIONS if pair[1] is S.FAILED}
+    assert into_failed == {(S.CANDIDATE, S.FAILED), (S.VALIDATION, S.FAILED)}
+    assert TERMINAL_STATES == {S.RETIRED, S.REJECTED, S.FAILED}
+    for target in S:
+        with pytest.raises(LifecycleViolation):
+            validate_transition(S.FAILED, target, approved_by="raphael")
+
+
+def test_a_history_can_end_failed_in_validation_and_stays_terminal() -> None:
+    history = LifecycleHistory(subject=SUBJECT)
+    for step, (a, b) in enumerate(
+        ((S.IDEA, S.CANDIDATE), (S.CANDIDATE, S.VALIDATION), (S.VALIDATION, S.FAILED))
+    ):
+        history = history.append(
+            _transition(a, b, approved_by=None, occurred_at=AUTHORIZED_AT + timedelta(hours=step))
+        )
+    assert history.current_state is S.FAILED
+    with pytest.raises(LifecycleViolation):
+        history.append(_transition(S.FAILED, S.CANDIDATE, approved_by=None))

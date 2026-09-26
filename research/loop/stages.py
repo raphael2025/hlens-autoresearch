@@ -29,7 +29,8 @@ declarations — is a constructor parameter; validation thresholds are read from
 - ``MemoryStage``: every outcome into memory and the lifecycle: errored trial → FAILED; FAIL →
   REJECTED (both with a FailureRecord); in-sample PASS → OOS (the furthest the loop can go; OOS
   means *under / eligible for* sealed OOS evaluation, not "passed OOS" — see ``MemoryStage``);
-  a failed sealed OOS → REJECTED; INCONCLUSIVE stays in VALIDATION.
+  a failed sealed OOS → REJECTED; INCONCLUSIVE stays in VALIDATION; a technical failure in
+  VALIDATION → FAILED only for the causes ADR-0053 §2 allows (``validation_failed_refusal``).
 
 Accumulated research window (ADR-0049 accumulated-window note, 2026-09-25): every round's
 experiment and validation stages evaluate on all research-window bars ingested up to the round's
@@ -62,9 +63,16 @@ from core.contracts.synthetic import (
 )
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import Ref
-from core.domain.research import FailureRecord, Hypothesis, KnowledgeItem, LlmCall, Verdict
+from core.domain.research import (
+    FailureRecord,
+    Hypothesis,
+    KnowledgeItem,
+    LlmCall,
+    ValidationReport,
+    Verdict,
+)
 from core.domain.specs import FeatureSpec, StateSpec
-from core.errors import ReasonCode
+from core.errors import LifecycleViolation, ReasonCategory, ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.content import ContentResolver
 from infrastructure.state import run_state, state_inputs, state_request
@@ -91,6 +99,7 @@ from research.loop.trials import (
 from research.validation.splits import midnight_utc
 
 __all__ = [
+    "NOT_REPRODUCIBLE_GATES",
     "EvolutionPlan",
     "EvolutionStage",
     "ExperimentStage",
@@ -103,6 +112,8 @@ __all__ = [
     "ValidationStage",
     "reevaluation_attempt",
     "reevaluation_candidates",
+    "validation_failed_evidence",
+    "validation_failed_refusal",
 ]
 
 _MINUTE: Final = timedelta(minutes=1)
@@ -527,9 +538,81 @@ class HypothesisStage:
         )
 
 
-#: A technical failure (``FAILED`` terminal state) after VALIDATION has no ADR-0006 edge
-#: (``VALIDATION → FAILED`` does not exist): the record is filed, the lifecycle stays put.
-_NO_FAILED_EDGE: Final = frozenset({LifecycleState.VALIDATION, LifecycleState.OOS})
+#: A technical failure (``FAILED`` terminal state) in OOS has no lifecycle edge (``OOS → FAILED``
+#: does not exist; ADR-0053 alternative C, not decided): the record is filed, the lifecycle stays
+#: put. ``VALIDATION → FAILED`` exists since ADR-0053, for the causes ``validation_failed_refusal``
+#: allows.
+_NO_FAILED_EDGE: Final = frozenset({LifecycleState.OOS})
+
+#: ADR-0053 §2: the G0 gates whose FAIL is a validation-time ``NOT_REPRODUCIBLE`` failure.
+NOT_REPRODUCIBLE_GATES: Final = frozenset({"G0.reproducibility", "G0.signal_determinism"})
+
+
+def validation_failed_refusal(
+    record: FailureRecord,
+    *,
+    report: ValidationReport | None = None,
+    subject_fault: bool = False,
+) -> str | None:
+    """Why ``record`` may **not** move its subject ``VALIDATION → FAILED``; ``None`` if it may.
+
+    ADR-0053 §2 (exhaustive): a ``FAILED`` record of the ``REPRODUCIBILITY`` class and either
+
+    - ``NOT_REPRODUCIBLE`` at a FAIL ``G0.reproducibility`` / ``G0.signal_determinism`` gate of
+      ``report`` (the validation report that failed it), or
+    - ``RUN_ERRORED`` of a run that errored in the subject's own code (``subject_fault``; module
+      docs of ``research.loop.trials``), with no report.
+
+    Everything else is refused: a statistical / robustness / sealed OOS FAIL (→ REJECTED), a
+    technical failure of another class (e.g. ``CONTRACT_VIOLATION``), a ``RUN_ERRORED`` found by a
+    validation gate (``G0.run_state``) and every infrastructure error — among them the
+    validator's own error (no report) and a run error outside the subject's code.
+    """
+    if record.terminal_state != "FAILED":
+        return f"a {record.terminal_state} record is not a technical failure"
+    code = record.reason_code
+    if code.category is not ReasonCategory.REPRODUCIBILITY:
+        return f"{code.value} is not a reproducibility failure (C-P3)"
+    if code is ReasonCode.NOT_REPRODUCIBLE:
+        if report is None:
+            return "NOT_REPRODUCIBLE needs the validation report that failed a G0 gate"
+        failed = {g.gate_id for g in report.gates if g.verdict is Verdict.FAIL}
+        if record.gate_id not in NOT_REPRODUCIBLE_GATES or record.gate_id not in failed:
+            return f"gate {record.gate_id} is not a failed reproducibility gate of the report"
+        return None
+    if report is not None:
+        return "RUN_ERRORED is a run error of the subject, not a validation gate"
+    if not subject_fault:
+        return "the run error is not attributable to the subject (infrastructure)"
+    return None
+
+
+def validation_failed_evidence(
+    record: FailureRecord,
+    round_ref: str,
+    *,
+    report: ValidationReport | None = None,
+    run_id: str | None = None,
+    subject_fault: bool = False,
+) -> tuple[str, ...]:
+    """The ADR-0053 §3 evidence of a ``VALIDATION → FAILED`` move.
+
+    ``validation_report:<id>`` (``NOT_REPRODUCIBLE``) or ``run:<run_id>`` (``RUN_ERRORED``), the
+    FailureRecord's ``failure_record:<content hash>`` and the round's ``loop_round:<loop>:<index>``.
+    A cause ``validation_failed_refusal`` refuses raises ``LifecycleViolation``.
+    """
+    refusal = validation_failed_refusal(record, report=report, subject_fault=subject_fault)
+    if refusal is not None:
+        raise LifecycleViolation(f"VALIDATION → FAILED refused (ADR-0053 §2): {refusal}")
+    if not round_ref.startswith("loop_round:"):
+        raise LifecycleViolation("VALIDATION → FAILED needs the round reference loop_round:<...>")
+    if report is not None:
+        cited = f"validation_report:{report.report_id}"
+    elif run_id:
+        cited = f"run:{run_id}"
+    else:
+        raise LifecycleViolation("a RUN_ERRORED VALIDATION → FAILED needs the errored run")
+    return (cited, f"failure_record:{record.content_hash()}", round_ref)
 
 
 class MemoryStage:
@@ -550,8 +633,15 @@ class MemoryStage:
       ``LifecycleGuard`` refuses it, so nothing beyond ``OOS`` ever happens in the loop.
 
     A re-evaluation (ADR-0049 accumulated-window note) is settled the same way from ``VALIDATION``:
-    PASS → OOS, FAIL → REJECTED, INCONCLUSIVE stays; an errored re-evaluation run has no
-    ``VALIDATION → FAILED`` edge, so its FailureRecord is filed and the lifecycle stays put.
+    PASS → OOS, FAIL → REJECTED, INCONCLUSIVE stays.
+
+    Technical failures in ``VALIDATION`` (ADR-0053): the FailureRecord is always filed; the subject
+    moves ``VALIDATION → FAILED`` (evidence: ``validation_failed_evidence``) only for a cause
+    ``validation_failed_refusal`` allows — a failed ``G0.reproducibility`` /
+    ``G0.signal_determinism`` gate, or an errored re-evaluation whose error is the subject's own.
+    An infrastructure error (the validator's own error, a run error outside the subject's code)
+    and a technical failure in ``OOS`` leave the lifecycle unchanged
+    (``technical_failures_lifecycle_unchanged``).
     """
 
     name = "memory"
@@ -579,21 +669,29 @@ class MemoryStage:
                 continue
             hypothesis = outcome.hypothesis
             evidence = (f"run:{outcome.run.run_id}", round_ref)
-            failures.append(
-                self._record(
-                    FailureRecord(
-                        subject_ref=hypothesis.ref,
-                        terminal_state="FAILED",
-                        reason_code=outcome.reason or ReasonCode.RUN_ERRORED,
-                        evidence=evidence,
-                        hypothesis_family_id=hypothesis.family_id,
-                        lessons=None if outcome.error is None else outcome.error[:2000],
-                        recorded_at=ctx.as_of,
-                    )
-                )
+            record = FailureRecord(
+                subject_ref=hypothesis.ref,
+                terminal_state="FAILED",
+                reason_code=outcome.reason or ReasonCode.RUN_ERRORED,
+                evidence=evidence,
+                hypothesis_family_id=hypothesis.family_id,
+                lessons=None if outcome.error is None else outcome.error[:2000],
+                recorded_at=ctx.as_of,
             )
-            if ctx.state_of(hypothesis.ref) in _NO_FAILED_EDGE:  # an errored re-evaluation
+            failures.append(self._record(record))
+            current = ctx.state_of(hypothesis.ref)
+            if current in _NO_FAILED_EDGE:
                 lifecycle_unchanged.append(str(hypothesis.ref))
+                continue
+            if current is LifecycleState.VALIDATION:  # an errored re-evaluation (ADR-0053)
+                self._fail_validation(
+                    ctx,
+                    record,
+                    round_ref,
+                    lifecycle_unchanged,
+                    run_id=outcome.run.run_id,
+                    subject_fault=outcome.subject_fault,
+                )
                 continue
             ctx.advance(
                 hypothesis.ref, LifecycleState.FAILED, reason="trial errored", evidence=evidence
@@ -658,26 +756,49 @@ class MemoryStage:
         state, reason, gate_id = failure
         report = result.sealed_report if result.sealed_report is not None else result.report
         evidence = (f"validation_report:{report.report_id}", round_ref)
-        failures.append(
-            self._record(
-                FailureRecord(
-                    subject_ref=hypothesis.ref,
-                    terminal_state=state,
-                    reason_code=reason,
-                    gate_id=gate_id,
-                    evidence=evidence,
-                    hypothesis_family_id=hypothesis.family_id,
-                    recorded_at=ctx.as_of,
-                )
-            )
+        record = FailureRecord(
+            subject_ref=hypothesis.ref,
+            terminal_state=state,
+            reason_code=reason,
+            gate_id=gate_id,
+            evidence=evidence,
+            hypothesis_family_id=hypothesis.family_id,
+            recorded_at=ctx.as_of,
         )
-        current = ctx.state_of(hypothesis.ref)
-        if state == "FAILED" and current in _NO_FAILED_EDGE:
-            unchanged.append(subject)
+        failures.append(self._record(record))
+        if state == "FAILED":  # technical: never REJECTED (ADR-0053 alternative D)
+            if ctx.state_of(hypothesis.ref) in _NO_FAILED_EDGE:
+                unchanged.append(subject)
+            else:
+                self._fail_validation(ctx, record, round_ref, unchanged, report=report)
             return
         ctx.advance(
             hypothesis.ref,
             LifecycleState.REJECTED,
             reason=f"validation gate {gate_id} failed",
             evidence=evidence,
+        )
+
+    @staticmethod
+    def _fail_validation(
+        ctx: RoundContext,
+        record: FailureRecord,
+        round_ref: str,
+        unchanged: list[str],
+        *,
+        report: ValidationReport | None = None,
+        run_id: str | None = None,
+        subject_fault: bool = False,
+    ) -> None:
+        """``VALIDATION → FAILED`` for a cause ADR-0053 §2 allows; otherwise the lifecycle stays."""
+        if validation_failed_refusal(record, report=report, subject_fault=subject_fault):
+            unchanged.append(str(record.subject_ref))
+            return
+        ctx.advance(
+            record.subject_ref,
+            LifecycleState.FAILED,
+            reason=f"technical failure during validation: {record.reason_code.value} (C-P3)",
+            evidence=validation_failed_evidence(
+                record, round_ref, report=report, run_id=run_id, subject_fault=subject_fault
+            ),
         )

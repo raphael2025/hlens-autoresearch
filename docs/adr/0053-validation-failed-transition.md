@@ -104,3 +104,34 @@ Registry / Control Plane 在授权服务落地后核验这些引用的存在与�
 - [x] 不修改 Validation Constitution（落实 C-P3，不改原则）
 - [x] 不引入任何数值阈值
 - [ ] 由 Raphael 本人批准（红线）——待定
+
+## Implementation note (2026-09-26)
+
+实施者：Claude Code（Opus），按本 ADR 裁决逐条实施，不增加裁决以外的内容。状态：已实施；循环行为为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED
+（合成数据冒烟，未在真实研究中检验）。
+
+- **状态机**（`core/lifecycle/strategy.py`）：`ALLOWED_TRANSITIONS` 增加 `(VALIDATION, FAILED)`，不进 `HUMAN_APPROVAL_TRANSITIONS`；
+  终态、其余边、批准集合不变；没有 `OOS → FAILED` / `REVALIDATION → FAILED`。契约层仍只要求非空证据（ADR-0019）。
+  导出 Schema 逐字节不变（重新导出 134 个 Schema，无差异）；未新增模型，Schema 计数不变；不升契约版本。
+- **护栏**（`apps/worker/loop.py`）：`LifecycleGuard.advance` 对 `VALIDATION → FAILED` 要求证据同时含 §3 的三类引用
+  （`validation_report:` 或 `run:`、`failure_record:`、`loop_round:`，`VALIDATION_FAILED_EVIDENCE` /
+  `missing_validation_failed_evidence`），缺任一项即 `AutomationForbidden`。`AUTOMATABLE_TARGETS` 未放宽，
+  `automation_reachable_states()` 不变（测试断言其结果仍是 IDEA / CANDIDATE / VALIDATION / OOS / REJECTED / FAILED）。
+- **允许的情形**（`research/loop/stages.py`）：`validation_failed_refusal` 按 §2 穷举判断——`FAILED` 记录、`REPRODUCIBILITY` 类原因码，且
+  (a) `NOT_REPRODUCIBLE` 在报告中 FAIL 的 `G0.reproducibility` / `G0.signal_determinism`，或 (b) `RUN_ERRORED` 且错误属于对象自身、无报告。
+  其余一律拒绝（统计 / 稳健性 / 封存 OOS FAIL、`CONTRACT_VIOLATION` 等其他类别、验证门 `G0.run_state` 发现的 `RUN_ERRORED`、基础设施故障）。
+  `validation_failed_evidence` 生成 §3 证据（被拒的情形抛 `LifecycleViolation`）。`_NO_FAILED_EDGE` 只剩 `OOS`；
+  FAILED 类记录不再有落到 REJECTED 的分支（备选 D 被拒）。
+- **对象自身的运行出错**（`research/loop/trials.py`）：实验运行经 `_OwnStrategy` / `_OwnRisk` 调用候选自身的 Provider，
+  Provider 调用与其 `check_answers` 在 `_subject_code` 内执行；此处的异常记为 `SubjectRunError`（`TrialOutcome.subject_fault = True`），
+  错误摘要保持原异常文本。请求构建、共享回测器、State × Strategy 矩阵、无决策时刻，以及 Provider 内的 `MemoryError` / `OSError`
+  都算基础设施。代理保留 descriptor，所有记录哈希不变；验证器重跑用未包装的候选。
+- **研究循环**：出错的重新评估（VALIDATION 中）只有 `subject_fault` 时转 FAILED（证据 `run:` + FailureRecord 哈希 + 本轮）；
+  G0 复现门 FAIL 转 FAILED（证据 `validation_report:` + FailureRecord 哈希 + 本轮）；验证器自身出错（`report is None`）、
+  基础设施运行错误与 OOS 中的技术失败只写 FailureRecord，列入 `technical_failures_lifecycle_unchanged`。`CANDIDATE → FAILED` 行为不变。
+- **测试**：`tests/test_lifecycle.py`（逐边枚举含新边、无人工批准、FAILED 仍是终态、只加这一条边）、`tests/test_lifecycle_evidence.py`
+  （新边空证据拒绝）、`tests/apps/test_research_loop.py`（护栏缺证据拒绝、`automation_reachable_states()` 不变）、
+  `tests/research/loop/test_loop_validation_failed.py`（不可复现 → FAILED 且证据逐项核对、对象代码出错 / 输出违约的重新评估 → FAILED、
+  共享回测器 / 内存 / 网络错误与验证器自身出错保持 VALIDATION、被拒的原因逐项、无 PAPER / ACTIVE 路径）。
+- **文档**：`docs/architecture/07-validation.md` §3 状态图与规则、`docs/research/failure-registry.md`、`research/loop/README.md`、
+  ADR 索引（ADR-0006 注明被本 ADR 补充）、调试待办 D-VFAIL。ADR-0006 正文不改。

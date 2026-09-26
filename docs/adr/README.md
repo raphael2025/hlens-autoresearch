@@ -11,7 +11,7 @@
 | [0003](0003-python-version-and-uv.md) | Python 3.13 + uv（D-06） | Accepted |
 | [0004](0004-git-repository-baseline.md) | 本地 Git 仓库与 Bootstrap Baseline（D-07） | Accepted（第 3 条"暂不决定远程"被 ADR-0025 取代） |
 | [0005](0005-research-production-boundary.md) | Research / Production Boundary（D-03） | Accepted（2026-09-23） |
-| [0006](0006-strategy-lifecycle.md) | Strategy Lifecycle v2（D-05） | Accepted（2026-09-23）；取代 ADR-0002 第 5 条 |
+| [0006](0006-strategy-lifecycle.md) | Strategy Lifecycle v2（D-05） | Accepted（2026-09-23）；取代 ADR-0002 第 5 条；被 ADR-0053 补充（`VALIDATION → FAILED`） |
 | [0007](0007-validation-architecture-three-layers.md) | 三层验证架构与两步冻结（D-09 结构部分） | Accepted（2026-09-23） |
 | [0008](0008-contract-payload-immutability.md) | 契约载荷的只读表示与内容哈希载荷定义 | Accepted（2026-09-23，Codex 依授权批准方案 A） |
 | [0009](0009-experiment-identity-binding.md) | 实验规格身份、运行标识与依赖内容绑定 | Accepted（2026-09-23，Codex 依授权批准方案 A） |
@@ -57,7 +57,7 @@
 | [0050](0050-loop-audit-record-contract.md) | 持续研究循环审计记录的版本化契约（Phase 11，只追加） | Accepted（2026-09-26；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0051](0051-listing-history-assumption.md) | 上市历史的"观察状态回填"假设（PIT 叠加层，D-LIST） | Proposed（2026-09-26；Raphael 暂缓） |
 | [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准） |
-| [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准） |
+| [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准）；已实施 |
 | [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准） |
 | [0056](0056-event-table.md) | 物理 Event 表 `event.events`（Phase 3，只追加，按 `result_hash` 幂等） | Accepted（2026-09-26；Claude 依 Raphael 明确授权决定）；CODE_COMPLETE / DEBUG_PENDING |
 | [0058](0058-knowledge-reviewed-write-path.md) | 知识库经人工审阅的写入路径（Python API / CLI，无 HTTP 写端点） | Accepted（2026-09-26；Claude 依 Raphael 明确授权） |

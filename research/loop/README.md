@@ -157,7 +157,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 空仓）——保守、不跨边界，但短封存窗口可能以 `consumed_without_result` 结束；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；
 封存 bar 只取本轮段内的（跨轮累计封存数据未做）；`matrix_from_backtest` 的逐 bar 归因需要逐 bar 状态（本循环按决策期归因）；
-验证阶段的技术失败（`VALIDATION → FAILED` 不是 ADR-0006 的边）只记 FailureRecord、生命周期不动。
+~~验证阶段的技术失败只记 FailureRecord、生命周期不动~~ ✅ ADR-0053（2026-09-26）：`G0.reproducibility` / `G0.signal_determinism` FAIL 或对象自身的运行出错 → `VALIDATION → FAILED`（证据：报告或 Run、FailureRecord 哈希、本轮引用）；基础设施故障与 OOS 中的技术失败仍只记 FailureRecord、生命周期不动（`technical_failures_lifecycle_unchanged`）。
 
 ## LLM 调用内容可取回（Phase 7，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 

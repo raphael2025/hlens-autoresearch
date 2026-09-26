@@ -143,6 +143,7 @@ Profile 数值（D-09 TBD-1..5）是两步冻结的 Step 2，**由 Raphael 决�
 ## 3. Experiment / Validation Lifecycle（D6）
 
 > 状态：**已冻结**，对应 [ADR-0006](../adr/0006-strategy-lifecycle.md)（Accepted，2026-09-23，取代 ADR-0002 第 5 条）。修改需新 ADR。
+> [ADR-0053](../adr/0053-validation-failed-transition.md)（Accepted，2026-09-26，Raphael 批准）补充一条边 `VALIDATION → FAILED`。
 
 研究对象（Hypothesis、Strategy、Feature 组合等）的晋升状态机：
 
@@ -164,6 +165,7 @@ stateDiagram-v2
 
     IDEA --> REJECTED : not falsifiable or duplicate
     CANDIDATE --> FAILED : errored or not reproducible
+    VALIDATION --> FAILED : technical failure during validation (C-P3, ADR-0053)
     VALIDATION --> REJECTED : gate failed
     OOS --> REJECTED : OOS failed
     PAPER --> REJECTED : paper trading acceptance failed
@@ -187,10 +189,11 @@ stateDiagram-v2
 | REVALIDATION | 正在重新验证 |
 | RETIRED | 正常退役（≠ FAILED） |
 | REJECTED | 验证未通过或被否决 |
-| FAILED | 技术失败：运行错误 / 不可复现 |
+| FAILED | 技术失败：运行错误 / 不可复现（在 CANDIDATE 或 VALIDATION 中发现，ADR-0053） |
 
 **规则**
 - 只允许图中列出的转移；DEGRADED 永远不能直接转为 ACTIVE，必须经过 REVALIDATION。
+- `VALIDATION → FAILED`（ADR-0053）只用于验证中的 C-P3 技术失败：`G0.reproducibility` / `G0.signal_determinism` FAIL（`NOT_REPRODUCIBLE`），或对象自身的运行出错（Provider 输出被 `check_answers` 拒绝、对象代码抛出异常，`RUN_ERRORED`）。统计 / 稳健性 / 封存 OOS 的 FAIL 仍是 `VALIDATION → REJECTED`；INCONCLUSIVE 留在 VALIDATION；基础设施故障（验证器自身出错、存储 / 网络 / 内存错误等不能归因于对象的错误）不转移。不需要人工批准。自动触发者必须给出：失败的验证报告或出错的 Run、对应 FailureRecord 的内容哈希、本轮引用（ADR-0053 §3）。没有 `OOS → FAILED` / `REVALIDATION → FAILED`。
 - `LIVE` 不是生命周期状态，而是 ACTIVE 的 `execution_mode`。Phase 13 之前只允许 `SIMULATED`；`LIVE` 需要独立 Risk Gate + 明确的授权记录。
 - 契约层校验的是**证据结构**（ADR-0011 D-17.3）：Risk Gate 与授权记录必须属于同一个 subject，授权必须覆盖变更时刻，Risk Gate 不得晚于它批准的变更，且变更事件必须真的改变模式。
 - **执行点**："Phase 13 之前禁止真实生产交易"由未来 Control Plane 的可信配置与人类授权执行，**不**由载荷自证（ADR-0011 D-17.4 删除了自报的 `live_execution_enabled`）。

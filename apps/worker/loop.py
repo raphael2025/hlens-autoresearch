@@ -94,7 +94,11 @@ research composition cross-checks its own bus against the audit on reopening.
 guard only moves subjects it opened itself (from ``IDEA``), never sets ``approved_by`` and only
 targets ``AUTOMATABLE_TARGETS`` (the states reachable from ``IDEA`` before the first human approval
 gate ``OOS -> PAPER``). ``PAPER``, ``PRODUCTION_CANDIDATE`` and ``ACTIVE`` are therefore unreachable
-for the loop by construction (roadmap Phase 11: no automatic promotion to ACTIVE).
+for the loop by construction (roadmap Phase 11: no automatic promotion to ACTIVE). A
+``VALIDATION -> FAILED`` move (ADR-0053) is refused unless its evidence carries every kind
+``VALIDATION_FAILED_EVIDENCE`` names (ADR-0053 §3: the failed validation report or the errored
+run, the FailureRecord's content hash, the round); which technical failures qualify (ADR-0053 §2)
+is decided by the research loop that files the FailureRecord.
 """
 
 from __future__ import annotations
@@ -140,6 +144,7 @@ __all__ = [
     "ROUND_TOPIC",
     "STAGE_ORDER",
     "STAGE_TOPIC",
+    "VALIDATION_FAILED_EVIDENCE",
     "AutomationForbidden",
     "LifecycleGuard",
     "LoopAuditCorrupted",
@@ -158,6 +163,7 @@ __all__ = [
     "StageUsage",
     "automation_reachable_states",
     "check_stage_order",
+    "missing_validation_failed_evidence",
     "round_message",
 ]
 
@@ -184,6 +190,29 @@ AUTOMATABLE_TARGETS: Final[frozenset[LifecycleState]] = frozenset(
 FORBIDDEN_TARGETS: Final[frozenset[LifecycleState]] = frozenset(
     {S.PAPER, S.PRODUCTION_CANDIDATE, S.ACTIVE, S.DEGRADED, S.REVALIDATION, S.RETIRED}
 )
+
+
+#: ADR-0053 §3: evidence kinds (prefixes) an automatic ``VALIDATION -> FAILED`` move must all carry:
+#: the validation report with the failed G0 gate (``NOT_REPRODUCIBLE``) or the errored run
+#: (``RUN_ERRORED``), the content hash of the FailureRecord, and the round that moved it.
+VALIDATION_FAILED_EVIDENCE: Final[tuple[tuple[str, ...], ...]] = (
+    ("validation_report:", "run:"),
+    ("failure_record:",),
+    ("loop_round:",),
+)
+
+
+def missing_validation_failed_evidence(evidence: Sequence[str]) -> tuple[str, ...]:
+    """The ``VALIDATION_FAILED_EVIDENCE`` kinds ``evidence`` lacks (empty: complete)."""
+    return tuple(
+        " | ".join(kind)
+        for kind in VALIDATION_FAILED_EVIDENCE
+        if not any(
+            item.startswith(prefix) and item[len(prefix) :].strip()
+            for item in evidence
+            for prefix in kind
+        )
+    )
 
 
 def automation_reachable_states() -> frozenset[LifecycleState]:
@@ -411,6 +440,12 @@ class LifecycleGuard:
         from_state = history.current_state
         if (from_state, to_state) in HUMAN_APPROVAL_TRANSITIONS:
             raise AutomationForbidden(f"{from_state} → {to_state} needs a human approval")
+        if (from_state, to_state) == (S.VALIDATION, S.FAILED):
+            missing = missing_validation_failed_evidence(evidence)
+            if missing:
+                raise AutomationForbidden(
+                    f"VALIDATION → FAILED of {subject} lacks the ADR-0053 evidence {list(missing)}"
+                )
         transition = LifecycleTransition(
             subject=subject,
             from_state=from_state,
