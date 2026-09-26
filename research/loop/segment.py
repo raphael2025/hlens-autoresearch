@@ -24,9 +24,12 @@ Round data sources (ADR-0049 implementation note, dataset-backed loop, 2026-09-2
 after the ingest read a round's data only through ``RoundData``: the research bars and their
 decision grid, the withheld ``SealedBars``, the feature runs over the research data, and what the
 reproducibility tuple and the validator bind (dataset snapshots, the manifest hash of the labels,
-the dataset binding of ``G0.manifest_binding``). ``Segment`` is the synthetic implementation
-(``IngestStage``; its record hashes are unchanged by the refactor), ``DatasetSegment``
-(``research.loop.dataset_source``) the one over verified Research Dataset manifests.
+the dataset binding of ``G0.manifest_binding``). The sealed window is a ``SealedSource``: whether a
+round could evaluate it is decided without reading sealed data (``evaluable``), and its data leaves
+storage only on ``release`` against a claimed evaluation (ADR-0049 implementation note, dataset
+G5). ``Segment`` is the synthetic implementation (``IngestStage``; its record hashes are unchanged
+by the refactor), ``DatasetSegment`` (``research.loop.dataset_source``) the one over verified
+Research Dataset manifests.
 """
 
 from __future__ import annotations
@@ -62,6 +65,8 @@ __all__ = [
     "ResearchPiece",
     "RoundData",
     "SealedBars",
+    "SealedDataRefused",
+    "SealedSource",
     "Segment",
     "Timed",
     "TrialPoint",
@@ -121,6 +126,31 @@ class Timed(Protocol):
     def interval_end(self) -> datetime: ...
 
 
+class SealedDataRefused(Exception):
+    """The sealed window's data cannot honestly be released for a claimed evaluation.
+
+    Raised by a ``SealedSource.release`` **after** the claim (the evaluation is consumed): the
+    validation stage records the G5 report as ``consumed_without_result:sealed_data_refused``.
+    """
+
+
+class SealedSource(Protocol):
+    """A round's sealed OOS window as the validation stage sees it (ADR-0049 dataset G5 note).
+
+    ``evaluable`` decides — **without reading any sealed data** — whether this round could
+    evaluate the window at all (``None``) or why it stays sealed (the reason, recorded).
+    ``release`` hands the window's bars out only against the family's claimed one-shot
+    ``SealedEvaluation``; a source that reads storage reads it only there, after the claim.
+    """
+
+    @property
+    def window(self) -> tuple[datetime, datetime]: ...
+
+    def evaluable(self, as_of: datetime) -> str | None: ...
+
+    def release(self, evaluation: SealedEvaluation) -> tuple[Any, ...]: ...
+
+
 class SealedBars[BarT: Timed]:
     """Bars inside the sealed OOS window; released only against a claimed one-shot evaluation.
 
@@ -132,10 +162,18 @@ class SealedBars[BarT: Timed]:
 
     def __init__(self, bars: Sequence[BarT], window: tuple[datetime, datetime]) -> None:
         self._bars = tuple(bars)
-        self.window = window
+        self._window = window
+
+    @property
+    def window(self) -> tuple[datetime, datetime]:
+        return self._window
 
     def __len__(self) -> int:
         return len(self._bars)
+
+    def evaluable(self, as_of: datetime) -> str | None:
+        """``None`` when the round withheld sealed-window bars, else why it stays sealed."""
+        return None if self._bars else "no sealed-window data in this round"
 
     def release(self, evaluation: SealedEvaluation) -> tuple[BarT, ...]:
         if (evaluation.window.start, evaluation.window.end) != self.window:
@@ -164,7 +202,7 @@ class RoundData(Protocol):
     def decision_times(self) -> tuple[datetime, ...]: ...
 
     @property
-    def sealed(self) -> SealedBars[Any]: ...
+    def sealed(self) -> SealedSource: ...
 
     @property
     def research_bars(self) -> tuple[PriceBar, ...]:
@@ -225,6 +263,11 @@ class RoundData(Protocol):
 
     def sealed_manifest_label(self) -> str:
         """The manifest hash of the G5 outcome request over research + released sealed bars."""
+        ...
+
+    def sealed_binding(self) -> dict[str, Any]:
+        """The ``ValidatorSetup`` dataset-binding fields of the **released** sealed data (G5's
+        ``G0.manifest_binding``); empty when there is nothing to bind (synthetic path)."""
         ...
 
 
@@ -340,6 +383,10 @@ class Segment:
 
     def sealed_manifest_label(self) -> str:
         return content_hash({"research": self.data_hash, "sealed": self.market.market_hash})
+
+    def sealed_binding(self) -> dict[str, Any]:
+        """Nothing to bind: the synthetic sealed bars are a generated market's."""
+        return {}
 
     def feature_runs(
         self,

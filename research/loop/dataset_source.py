@@ -24,10 +24,13 @@ hashes taken on trust, every manifest is loaded through the ``DatasetBuilder``'s
    ``bar_observations`` of its own PIT selection; the state stage turns them into a request only
    through ``infrastructure.feature.feature_request_from_dataset`` (proven to be exactly the
    dataset's rows, membership checked), evaluated at every research bar's close;
-6. **sealed window** — an optional ``sealed_manifest_hash`` (a point manifest over the Profile's
-   sealed OOS window) is loaded like the bars and split by the fixed calendar exactly as the
-   synthetic ingest splits its market: sealed-window bars are **withheld** in ``SealedBars`` and
-   never join the research data, other bars are unused (counted).
+6. **sealed window** — either (a) an optional ``sealed_manifest_hash`` (a point manifest over the
+   Profile's sealed OOS window), loaded like the bars and split by the fixed calendar exactly as
+   the synthetic ingest splits its market: sealed-window bars are **withheld** and never join the
+   research data, other bars are unused (counted); G5 cannot run on it (no sealed-window
+   features), so it stays sealed; or (b) a declared **sealed manifest pair**
+   (``sealed_feature_manifest_hash`` + ``sealed_price_manifest_hash``), which the ingest does
+   **not read at all** (``SealedDatasetPair``, below).
 
 The accumulated research data of a round is its own pair's research bars: each round's pair covers
 the research window up to that round's cutoff, so the data grows with the rounds as the synthetic
@@ -42,16 +45,50 @@ manifests' ``DatasetRef``.
 explicit ``infrastructure.bars.VerifiedManifestCache`` for the loads of steps 1, 3, 4 and 6: a
 proof is reused only by the same builder while every snapshot it read is unchanged, so the rounds'
 data, summaries and record hashes are identical with or without it. The feature request's own load
-(``feature_request_from_dataset``, Phase 1) always re-verifies.
+(``feature_request_from_dataset``, Phase 1) always re-verifies, and so do the sealed pair's
+loads (G5, below).
 
-**Not wired** (fail closed): G5 on dataset rounds would need signals over the released sealed bars,
-hence a sealed-window feature manifest; ``DatasetLoopConfig`` refuses an ``OosUnsealBudget`` and
-``signals_with`` refuses, so the sealed window simply stays sealed.
+Sealed OOS (G5) on dataset rounds (ADR-0049 implementation note, dataset G5, 2026-09-26). A round
+that declares a sealed manifest pair hands the validation stage a ``SealedDatasetPair``. Nothing of
+it is read before the family's single evaluation is claimed (``SealedOosVault.claim_evaluation``,
+which records the evaluation as consumed): before the claim the stage only asks ``evaluable`` —
+decided from the declaration, the Profile's window and the round's cutoff (the window must have
+ended by ``as_of``), never from storage. ``release`` (after the claim) then:
+
+1. loads both sealed manifests through the builder's verifying ``ManifestStore``;
+2. proves they share the research pair's upstream state: equal ``snapshot_bindings``, equal
+   ``knowledge_cutoff``, the same ADR-0032 assumption choice and equal availability, precedence,
+   parser and PIT-rule bindings, the same universe spec binding, the same Research Dataset table
+   and the same set of Canonical tables in the lineage;
+3. proves they cover **exactly** the Profile's sealed window (data window
+   ``[boundary, boundary + sealed_oos_length)``) and that the price view is known by the round's
+   cutoff and not before the window's end (``window end <= view <= as_of``);
+4. proves the two are one chain with ``pair_manifests`` (the research pair's own rule);
+5. reads the proven sealed bars (``backtest_bars_from_dataset``) and the sealed feature
+   manifest's own observations; each is re-checked against the cutoff.
+
+Any refusal raises ``SealedDataRefused`` after the claim: the G5 report is ``INCONCLUSIVE`` with
+``consumed_without_result:sealed_data_refused`` and the family's window stays closed (fail closed:
+a misdeclared pair costs the family its unsealing; it is never re-opened). ``signals_with`` then
+runs the feature over the sealed feature manifest only through ``feature_request_from_dataset``
+(evaluated at every released bar's close; the request must carry every dataset row of the symbol
+and no other, so no feature bridges the boundary: the first sealed evaluations are not computable
+and a strategy warms up again inside the sealed window — conservative; a window shorter than the
+warm-up ends as ``consumed_without_result``), and ``sealed_binding``
+gives the validator the sealed ``DatasetPriceBars``, the sealed ``ManifestPair`` and the sealed
+feature requests' manifest hashes, so the G5 report carries ``G0.manifest_binding`` for the sealed
+pair (and for the research bars G5 re-runs on).
+
+**Not provable across the two pairs from manifest fields** (documented, not checked): the member /
+exclusion sets (a listing may legitimately change between the research and the sealed window; the
+bar path refuses a symbol without rows), the quality report ids (per-day partitions differ by
+construction), lineage revisions and evidence gaps (different data). Within the sealed pair,
+``pair_manifests`` checks all of them.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Mapping, MutableMapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -78,14 +115,25 @@ from infrastructure.bars import (
 )
 from infrastructure.canonical import rules
 from infrastructure.dataset.builder import DatasetBuilder
-from infrastructure.feature.dataset import feature_request_from_dataset
+from infrastructure.feature.dataset import (
+    DatasetBindingError,
+    feature_request_from_dataset,
+    load_manifest,
+)
 from infrastructure.feature.observations import bar_observations
 from infrastructure.feature.runner import run_feature
+from infrastructure.pit.assumption import assumption_bound
 from infrastructure.pit.selector import PitSelector
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.strategy.signals import signals_from_features
-from research.loop.segment import FeatureRuns, SealedBars, decision_grid
-from research.validation.sealed_oos import SealedOosLocked
+from research.loop.segment import (
+    FeatureRuns,
+    SealedBars,
+    SealedDataRefused,
+    SealedSource,
+    decision_grid,
+)
+from research.validation.sealed_oos import SealedEvaluation, SealedOosLocked
 from research.validation.splits import midnight_utc
 
 __all__ = [
@@ -95,6 +143,8 @@ __all__ = [
     "DatasetRound",
     "DatasetRoundRefused",
     "DatasetSegment",
+    "SealedDatasetPair",
+    "WithheldSealedBars",
 ]
 
 #: The ``source`` label of a dataset-backed round (ingest summary, fingerprint).
@@ -113,29 +163,57 @@ class DatasetRoundRefused(ValueError):
 class DatasetRound:
     """The manifests one round reads: a feature / price pair and optionally the sealed window's.
 
-    Hashes are declarations, never trusted: the ingest loads every one through the builder's
-    verifying ``ManifestStore`` and refuses the round when any does not prove (module docs).
+    The sealed window is declared either as ``sealed_manifest_hash`` (a point manifest whose bars
+    are withheld; G5 cannot run on it) or as a sealed **pair** (``sealed_feature_manifest_hash`` +
+    ``sealed_price_manifest_hash``: an interval and a point manifest over exactly the Profile's
+    sealed window, read only after a claimed G5 evaluation), never both. Hashes are declarations,
+    never trusted: every one is loaded through the builder's verifying ``ManifestStore``, and the
+    round (the claimed evaluation, for the sealed pair) is refused when any does not prove.
     """
 
     feature_manifest_hash: str
     price_manifest_hash: str
     sealed_manifest_hash: str | None = None
+    sealed_feature_manifest_hash: str | None = None
+    sealed_price_manifest_hash: str | None = None
 
     def __post_init__(self) -> None:
         for name in ("feature_manifest_hash", "price_manifest_hash"):
             value = getattr(self, name)
             if not isinstance(value, str) or not value.strip():
                 raise ValueError(f"{name} must be a manifest content hash")
-        sealed = self.sealed_manifest_hash
-        if sealed is not None and (not isinstance(sealed, str) or not sealed.strip()):
-            raise ValueError("sealed_manifest_hash must be a manifest content hash or None")
+        for name in (
+            "sealed_manifest_hash",
+            "sealed_feature_manifest_hash",
+            "sealed_price_manifest_hash",
+        ):
+            value = getattr(self, name)
+            if value is not None and (not isinstance(value, str) or not value.strip()):
+                raise ValueError(f"{name} must be a manifest content hash or None")
+        if (self.sealed_feature_manifest_hash is None) != (self.sealed_price_manifest_hash is None):
+            raise ValueError("a sealed manifest pair needs both its feature and price manifest")
+        if self.has_sealed_pair and self.sealed_manifest_hash is not None:
+            raise ValueError(
+                "declare the sealed window either as sealed_manifest_hash (withheld only) or as "
+                "a sealed manifest pair, not both"
+            )
+
+    @property
+    def has_sealed_pair(self) -> bool:
+        return self.sealed_feature_manifest_hash is not None
 
     def payload(self) -> dict[str, str | None]:
-        return {
+        """The declaration (fingerprint). The sealed pair's keys appear only when a pair is
+        declared, so a round without one keeps its earlier payload."""
+        out = {
             "feature_manifest_hash": self.feature_manifest_hash,
             "price_manifest_hash": self.price_manifest_hash,
             "sealed_manifest_hash": self.sealed_manifest_hash,
         }
+        if self.has_sealed_pair:
+            out["sealed_feature_manifest_hash"] = self.sealed_feature_manifest_hash
+            out["sealed_price_manifest_hash"] = self.sealed_price_manifest_hash
+        return out
 
 
 @dataclass(frozen=True)
@@ -156,9 +234,226 @@ def _iso(moment: datetime | None) -> str | None:
     return None if moment is None else moment.isoformat()
 
 
+class WithheldSealedBars(SealedBars[PriceBar]):
+    """The sealed-window bars of a withheld-only declaration (``sealed_manifest_hash``, or none).
+
+    Never evaluable: without a sealed-window feature manifest there are no signals over the
+    sealed bars, so G5 cannot run and the window stays sealed (the bars are only counted).
+    """
+
+    def evaluable(self, as_of: datetime) -> str | None:
+        return "no sealed manifest pair is declared for this round (the sealed window stays sealed)"
+
+    def release(self, evaluation: SealedEvaluation) -> tuple[PriceBar, ...]:
+        raise SealedOosLocked("a withheld-only sealed window is never released")
+
+
+@dataclass(frozen=True)
+class _ReleasedSealed:
+    """What one claimed evaluation read of a sealed pair (after the claim)."""
+
+    pair: ManifestPair
+    feature_manifest: ResearchDatasetManifest
+    prices: DatasetPriceBars
+    observations: tuple[FeatureObservation, ...]
+    feature_hashes: list[str]
+
+
+class SealedDatasetPair:
+    """A round's declared sealed-window manifest pair, read only after a claimed evaluation.
+
+    See the module docs ("Sealed OOS (G5) on dataset rounds"). Before ``release`` nothing is read:
+    ``evaluable`` uses the declaration, the Profile's window and the round's cutoff only. Every
+    ``release`` (one per claimed evaluation) loads and proves the pair afresh, so no family's
+    sealed data is ever read before that family's own claim.
+    """
+
+    def __init__(
+        self,
+        catalog: DatasetCatalog,
+        *,
+        symbol: str,
+        feature_manifest_hash: str,
+        price_manifest_hash: str,
+        window: tuple[datetime, datetime],
+        as_of: datetime,
+        research_price: ResearchDatasetManifest,
+    ) -> None:
+        self._catalog = catalog
+        self._symbol = symbol
+        self.feature_manifest_hash = feature_manifest_hash
+        self.price_manifest_hash = price_manifest_hash
+        self._window = window
+        self._as_of = as_of
+        self._research = research_price
+        self._released: _ReleasedSealed | None = None
+
+    @property
+    def window(self) -> tuple[datetime, datetime]:
+        return self._window
+
+    def evaluable(self, as_of: datetime) -> str | None:
+        """``None`` once the Profile's sealed window has ended by the round's cutoff (then the
+        whole window can be known by ``as_of``); decided without reading anything."""
+        if as_of < self._window[1]:
+            return (
+                f"the sealed window ends at {self._window[1].isoformat()}, after this round's "
+                f"cutoff {as_of.isoformat()}"
+            )
+        return None
+
+    def release(self, evaluation: SealedEvaluation) -> tuple[PriceBar, ...]:
+        """The proven sealed bars of the claimed ``evaluation`` (loads and proves the pair now)."""
+        if (evaluation.window.start, evaluation.window.end) != self._window:
+            raise SealedOosLocked("the evaluation was claimed for another sealed window")
+        evaluation.take("bars")
+        self._released = None
+        self._released = self._load()
+        return self._released.prices.bars
+
+    def signals(
+        self, provider: FeatureProvider, spec: FeatureSpec, extra: Sequence[Any]
+    ) -> tuple[SignalObservation, ...]:
+        """``spec`` over the sealed feature manifest, evaluated at every released bar's close."""
+        state = self._released
+        if state is None:
+            raise SealedOosLocked("the sealed pair has not been released for a claimed evaluation")
+        bars = tuple(extra)
+        if bars != state.prices.bars:
+            raise SealedOosLocked("sealed signals run only over the released sealed bars")
+        if not bars:
+            return ()
+        times = tuple(bar.interval_end for bar in bars)
+        catalog = self._catalog
+        request = feature_request_from_dataset(
+            catalog.adapter,
+            catalog.storage,
+            builder=catalog.builder,
+            manifest_content_hash=state.pair.feature_manifest_hash,
+            pit_spec=state.feature_manifest.point_in_time,
+            observations=state.observations,
+            feature=spec,
+            evaluation_times=times,
+        )
+        state.feature_hashes.append(request.manifest_content_hash)
+        result = run_feature(provider, spec, request)
+        return signals_from_features(
+            result, feature=spec.ref, instrument=self._symbol, knowledge_time=times[-1]
+        )
+
+    def binding(self) -> dict[str, Any]:
+        """The released data's ``ValidatorSetup`` binding fields (empty before a release)."""
+        state = self._released
+        if state is None:
+            return {}
+        return {
+            "manifest_content_hash": state.prices.manifest_content_hash,
+            "dataset_bars": state.prices,
+            "manifest_pair": state.pair,
+            "feature_manifest_hashes": tuple(state.feature_hashes),
+        }
+
+    # ------------------------------------------------------------------------------------------
+
+    def _load(self) -> _ReleasedSealed:
+        catalog, symbol, as_of = self._catalog, self._symbol, self._as_of
+        start, end = self._window
+        try:  # 1. verified loads
+            price = load_manifest(catalog.builder, self.price_manifest_hash)
+            feature = load_manifest(catalog.builder, self.feature_manifest_hash)
+        except DatasetBindingError as exc:
+            raise SealedDataRefused(f"a sealed manifest does not load: {exc}") from exc
+        for name, manifest in (("feature", feature), ("price", price)):
+            self._require_shared_upstream(name, manifest)  # 2.
+            data = manifest.dataset  # 3. exactly the Profile's sealed window
+            if (data.time_range_start, data.time_range_end) != (start, end):
+                raise SealedDataRefused(
+                    f"the sealed {name} manifest covers [{data.time_range_start.isoformat()}, "
+                    f"{data.time_range_end.isoformat()}), not exactly the Profile's sealed "
+                    f"window [{start.isoformat()}, {end.isoformat()})"
+                )
+        view = price.point_in_time.simulation_time
+        if view is None:
+            raise SealedDataRefused("the sealed price manifest is not a point simulation")
+        if view < end or view > as_of:
+            raise SealedDataRefused(
+                f"the sealed price view {view.isoformat()} is not within [the window's end "
+                f"{end.isoformat()}, the round's cutoff {as_of.isoformat()}]"
+            )
+        try:  # 4. one chain (the research pair's rule); 5. the proven sealed bars
+            pair = pair_manifests(catalog.builder, feature.content_hash(), price.content_hash())
+            prices = backtest_bars_from_dataset(
+                catalog.adapter,
+                catalog.storage,
+                builder=catalog.builder,
+                manifest_content_hash=pair.price_manifest_hash,
+                symbols=(symbol,),
+            )
+        except DatasetBindingError as exc:
+            raise SealedDataRefused(f"the sealed pair does not prove: {exc}") from exc
+        if prices.price_cutoff > as_of or any(
+            bar.available_time > as_of or bar.interval_start < start or bar.interval_end > end
+            for bar in prices.bars
+        ):
+            raise SealedDataRefused("a sealed bar is after the cutoff or outside the window")
+        selection = PitSelector(catalog.adapter, catalog.storage).select(
+            feature.point_in_time, _DATA_TYPE, _VENUE[symbol], start, end
+        )
+        selection.require_no_conflict()
+        rows = bar_observations(selection, feature.point_in_time)
+        if any(row.available_time > as_of for row in rows):
+            raise SealedDataRefused("a sealed feature observation is available after the cutoff")
+        return _ReleasedSealed(pair, feature, prices, rows, [])
+
+    def _require_shared_upstream(self, name: str, sealed: ResearchDatasetManifest) -> None:
+        """The research pair's upstream state (the research pair's two manifests are equal in
+        all of these by ``pair_manifests``, so its price manifest stands for both)."""
+        research = self._research
+        s_spec, r_spec = sealed.point_in_time, research.point_in_time
+        if s_spec.snapshot_bindings != r_spec.snapshot_bindings:
+            tables = sorted(
+                table
+                for table in {*s_spec.snapshot_bindings, *r_spec.snapshot_bindings}
+                if s_spec.snapshot_bindings.get(table) != r_spec.snapshot_bindings.get(table)
+            )
+            raise SealedDataRefused(
+                f"the sealed {name} manifest's upstream snapshots differ from the research "
+                f"pair's for {tables}"
+            )
+        if s_spec.knowledge_cutoff != r_spec.knowledge_cutoff:
+            raise SealedDataRefused(
+                f"the sealed {name} manifest's knowledge cutoff differs from the research pair's"
+            )
+        if assumption_bound(s_spec) != assumption_bound(r_spec):
+            raise SealedDataRefused(
+                f"the ADR-0032 assumption choice of the sealed {name} manifest differs from the "
+                "research pair's"
+            )
+        for field in (
+            "availability_bindings",
+            "precedence_bindings",
+            "parser_bindings",
+            "point_in_time_binding",
+        ):
+            if getattr(s_spec, field) != getattr(r_spec, field):
+                raise SealedDataRefused(
+                    f"{field} of the sealed {name} manifest differ from the research pair's"
+                )
+        if sealed.universe_spec != research.universe_spec:
+            raise SealedDataRefused(f"the sealed {name} manifest binds another universe spec")
+        if sealed.dataset.table != research.dataset.table:
+            raise SealedDataRefused(f"the sealed {name} manifest is of another dataset table")
+        tables_of = {item.canonical_table for item in sealed.lineage}
+        if tables_of != {item.canonical_table for item in research.lineage}:
+            raise SealedDataRefused(
+                f"the sealed {name} manifest's lineage spans other Canonical tables"
+            )
+
+
 @dataclass(frozen=True)
 class DatasetSegment:
-    """One dataset-backed round: the pair's proven research bars and the withheld sealed bars."""
+    """One dataset-backed round: the pair's proven research bars and the sealed window (withheld
+    bars, or the declared sealed pair — unread until a claimed evaluation releases it)."""
 
     catalog: DatasetCatalog
     symbol: str
@@ -167,7 +462,9 @@ class DatasetSegment:
     price_manifest: ResearchDatasetManifest
     prices: DatasetPriceBars
     observations: tuple[FeatureObservation, ...]
-    sealed: SealedBars[PriceBar]
+    sealed: SealedSource
+    #: The sealed data's manifest (the withheld point manifest, or the sealed pair's price
+    #: manifest): the G5 outcome request's label.
     sealed_manifest_hash: str | None
     decision_times: tuple[datetime, ...]
 
@@ -237,6 +534,11 @@ class DatasetSegment:
             {"research": self.manifest_content_hash, "sealed": self.sealed_manifest_hash}
         )
 
+    def sealed_binding(self) -> dict[str, Any]:
+        """The released sealed pair's binding (G5's ``G0.manifest_binding``); empty otherwise."""
+        sealed = self.sealed
+        return sealed.binding() if isinstance(sealed, SealedDatasetPair) else {}
+
     def feature_runs(
         self,
         provider: FeatureProvider,
@@ -250,7 +552,7 @@ class DatasetSegment:
         does not apply: the request must carry every dataset row of the symbol)."""
         times = tuple(bar.interval_end for bar in self.research_bars)
         if not times:
-            return (), (), _no_sealed_signals
+            return (), (), self._signals_with(provider, spec, ())
         key = content_hash(
             {
                 "pair": self.pair.pair_hash,
@@ -276,14 +578,27 @@ class DatasetSegment:
             )
             cached = (((request, result),), signals)
             cache[key] = cached
-        return cached[0], cached[1], _no_sealed_signals
+        return cached[0], cached[1], self._signals_with(provider, spec, cached[1])
 
+    def _signals_with(
+        self,
+        provider: FeatureProvider,
+        spec: FeatureSpec,
+        found: tuple[SignalObservation, ...],
+    ) -> Callable[[Sequence[Any]], tuple[SignalObservation, ...]]:
+        """The research signals followed by signals over the released sealed bars (G5 only; only
+        a released ``SealedDatasetPair`` has any)."""
 
-def _no_sealed_signals(extra: Sequence[Any]) -> tuple[SignalObservation, ...]:
-    raise SealedOosLocked(
-        "G5 on dataset-backed rounds is not wired (it needs a sealed-window feature manifest): "
-        "the sealed window stays sealed"
-    )
+        def signals_with(extra: Sequence[Any]) -> tuple[SignalObservation, ...]:
+            sealed = self.sealed
+            if not isinstance(sealed, SealedDatasetPair):
+                raise SealedOosLocked(
+                    "no sealed manifest pair is declared for this round: the sealed window "
+                    "stays sealed"
+                )
+            return found + sealed.signals(provider, spec, extra)
+
+        return signals_with
 
 
 def _refuse(ctx: RoundContext, message: str) -> DatasetRoundRefused:
@@ -391,10 +706,23 @@ class DatasetIngestStage:
         rows = bar_observations(selection, feature.point_in_time)
         if any(row.available_time > ctx.as_of for row in rows):
             raise _refuse(ctx, "a feature observation becomes available after the cutoff")
-        # 6. the sealed window: withheld, never research data
+        # 6. the sealed window: withheld, never research data; a declared sealed pair is not read
+        # here at all (only after a claimed G5 evaluation, SealedDatasetPair)
         sealed: list[PriceBar] = []
         unused = 0
-        if declared.sealed_manifest_hash is not None:
+        source: SealedSource
+        if declared.sealed_price_manifest_hash is not None:
+            assert declared.sealed_feature_manifest_hash is not None  # both or neither
+            source = SealedDatasetPair(
+                catalog,
+                symbol=symbol,
+                feature_manifest_hash=declared.sealed_feature_manifest_hash,
+                price_manifest_hash=declared.sealed_price_manifest_hash,
+                window=window,
+                as_of=ctx.as_of,
+                research_price=price,
+            )
+        elif declared.sealed_manifest_hash is not None:
             held = backtest_bars_from_dataset(
                 catalog.adapter,
                 catalog.storage,
@@ -410,6 +738,9 @@ class DatasetIngestStage:
                     sealed.append(bar)
                 else:
                     unused += 1
+            source = WithheldSealedBars(sealed, window)
+        else:
+            source = WithheldSealedBars((), window)
         segment = DatasetSegment(
             catalog=catalog,
             symbol=symbol,
@@ -418,8 +749,9 @@ class DatasetIngestStage:
             price_manifest=price,
             prices=prices,
             observations=rows,
-            sealed=SealedBars(sealed, window),
-            sealed_manifest_hash=declared.sealed_manifest_hash,
+            sealed=source,
+            sealed_manifest_hash=declared.sealed_manifest_hash
+            or declared.sealed_price_manifest_hash,
             decision_times=decision_grid(
                 prices.bars, step=self._step, warmup=self._warmup, horizon=self._horizon
             ),
@@ -439,9 +771,13 @@ class DatasetIngestStage:
             "feature_observations": len(rows),
             "research_bars": len(prices.bars),
             "accumulated_research_bars": len(prices.bars),
-            "sealed_bars_withheld": len(sealed),
+            # a declared sealed pair is not read by the ingest: nothing withheld to count
+            "sealed_bars_withheld": None if declared.has_sealed_pair else len(sealed),
             "unused_bars": unused,
             "research_data_hash": segment.data_hash,
             "decision_times": len(segment.decision_times),
         }
+        if declared.has_sealed_pair:
+            summary["sealed_feature_manifest_hash"] = declared.sealed_feature_manifest_hash
+            summary["sealed_price_manifest_hash"] = declared.sealed_price_manifest_hash
         return StageResult(summary, self.estimate(ctx), {"segment": segment})

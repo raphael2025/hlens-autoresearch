@@ -20,9 +20,19 @@ instead of generating a synthetic market. What that changes downstream:
 ``DatasetLoopConfig`` binds everything ``SyntheticLoopConfig`` binds except the market: the
 Canonical ``symbol``, the declared ``rounds`` (round ``i`` reads ``rounds[i]``; a round beyond them
 fails its ingest stage, recorded) and the ingest's declared compute. The fingerprint of a state
-directory binds the symbol and every declared manifest hash. An ``OosUnsealBudget`` is refused:
-G5 over dataset rounds is not wired (``research.loop.dataset_source``), so the sealed OOS window
-stays sealed, exactly as a synthetic loop without an unseal budget.
+directory binds the symbol and every declared manifest hash (the sealed pairs included).
+
+Sealed OOS (ADR-0049 implementation note, dataset G5, 2026-09-26). An ``OosUnsealBudget`` (with
+its ``sealed_decision_step``) is accepted only when at least one declared round has a sealed
+manifest pair (``DatasetRound.sealed_feature_manifest_hash`` / ``sealed_price_manifest_hash``);
+without one, G5 has nothing to run on and the budget is refused. G5 then runs exactly as on the
+synthetic path (``research.loop.trials.ValidationStage``): only for a family on the budget's
+approved list with its human approver, only after an in-sample PASS, at most once per family (the
+evaluation is claimed — recorded as consumed — before any sealed manifest, bar or feature is read;
+an early end is ``consumed_without_result``), bounded by ``max_unsealings``; the unsealing ledger
+is the durable ``sealed_oos.jsonl`` of the state directory, so a restart never unseals again, and
+the budget is part of the fingerprint. What is read and proven after the claim:
+``research.loop.dataset_source.SealedDatasetPair``.
 """
 
 from __future__ import annotations
@@ -97,10 +107,15 @@ class DatasetLoopConfig:
         if not rounds or not all(isinstance(item, DatasetRound) for item in rounds):
             raise ValueError("a dataset loop needs at least one declared DatasetRound")
         object.__setattr__(self, "rounds", rounds)
-        if self.wiring.oos_unseal is not None or self.wiring.sealed_decision_step is not None:
+        unsealing = (
+            self.wiring.oos_unseal is not None or self.wiring.sealed_decision_step is not None
+        )
+        if unsealing and not any(item.has_sealed_pair for item in rounds):
             raise ValueError(
-                "G5 over dataset rounds is not wired: a dataset loop takes no OosUnsealBudget "
-                "(the sealed OOS window stays sealed)"
+                "G5 over dataset rounds is not wired without a sealed manifest pair: an "
+                "OosUnsealBudget needs at least one DatasetRound declaring "
+                "sealed_feature_manifest_hash and sealed_price_manifest_hash (otherwise the "
+                "sealed OOS window stays sealed)"
             )
 
 
@@ -190,12 +205,16 @@ def _check_recorded_ingest(root: Path, config: DatasetLoopConfig, record: LoopRe
         summary.get("feature_manifest_hash"),
         summary.get("price_manifest_hash"),
         summary.get("sealed_manifest_hash"),
+        summary.get("sealed_feature_manifest_hash"),
+        summary.get("sealed_price_manifest_hash"),
     ) != (
         DATASET_SOURCE,
         config.symbol,
         declared.feature_manifest_hash,
         declared.price_manifest_hash,
         declared.sealed_manifest_hash,
+        declared.sealed_feature_manifest_hash,
+        declared.sealed_price_manifest_hash,
     ):
         raise LoopStateInconsistent(
             f"{root}: round {record.round_index} read other manifests than the configuration "

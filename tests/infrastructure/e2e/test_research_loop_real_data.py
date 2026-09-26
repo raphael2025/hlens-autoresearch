@@ -217,8 +217,8 @@ SELECTION: Final = ProfileSelection(
 # =========================================================================================
 
 
-def _klines(base: int, seed: int) -> list[list[Any]]:
-    """``DAY1_BARS + DAY2_BARS`` contiguous Binance 12-slot klines from ``FIRST_BAR``.
+def _klines(base: int, seed: int, day2_bars: int = DAY2_BARS) -> list[list[Any]]:
+    """``DAY1_BARS + day2_bars`` contiguous Binance 12-slot klines from ``FIRST_BAR``.
 
     Deterministic integer LCG, exact ``Decimal`` prices (cents), strings as the venue sends them;
     trend flips and volatility clusters so the TEST ONLY state model sees more than one regime.
@@ -228,7 +228,7 @@ def _klines(base: int, seed: int) -> list[list[Any]]:
     price = Decimal(base)
     cent = Decimal("0.01")
     out: list[list[Any]] = []
-    for index in range(DAY1_BARS + DAY2_BARS):
+    for index in range(DAY1_BARS + day2_bars):
         state = (state * 6364136223846793005 + 1442695040888963407) % 2**64
         drift = Decimal(base) / 20_000 * (1 if (index // 45) % 2 == 0 else -1)
         scale = Decimal(1 + (index // 70) % 3)
@@ -255,11 +255,11 @@ def _klines(base: int, seed: int) -> list[list[Any]]:
     return out
 
 
-def _ingest(w: ds.World) -> None:
+def _ingest(w: ds.World, day2_bars: int = DAY2_BARS) -> None:
     """E2 listings, then archive + REST klines of both symbols on both days, reports."""
     w.listed(ds.TRADING, ds.L1)
     for venue, tag, base, seed in ((BTC, "btc", 36_000, 20231114), (ETH, "eth", 2_000, 20231115)):
-        items = _klines(base, seed)
+        items = _klines(base, seed, day2_bars)
         ingest_klines(w, venue, tag=f"{tag}-d1", base="0", items=items[:DAY1_BARS])
         ingest_klines(w, venue, tag=f"{tag}-d2", base="0", items=items[DAY1_BARS:], day=DAY2)
     w.report("klines_1m", symbols=(BTC, ETH), days=(DAY1, DAY2), listing=True)

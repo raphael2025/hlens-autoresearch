@@ -40,8 +40,12 @@ the family is unsealed, its single evaluation is claimed (``SealedOosVault.claim
 before any sealed bar is released, so it is consumed atomically: if the sealed run then ends
 without a statistic (no sealed decision time, no non-flat target, an error) the G5 report is
 ``INCONCLUSIVE`` with ``G5.oos_evaluation`` = ``consumed_without_result:<reason>`` and the window
-stays closed for good (ADR-0049 review fixes 2). The stage makes no lifecycle move; the memory
-stage does (PASS → OOS at most; FAIL → REJECTED).
+stays closed for good (ADR-0049 review fixes 2). Whether a round could evaluate the window at all
+is asked of its ``RoundData.sealed`` source (``evaluable``) without reading any sealed data; a
+dataset source reads its sealed manifest pair only on ``release``, after the claim, and a refused
+pair ends as ``consumed_without_result:sealed_data_refused``; its G5 report also carries
+``G0.manifest_binding`` for the sealed pair (ADR-0049 implementation note, dataset G5). The stage
+makes no lifecycle move; the memory stage does (PASS → OOS at most; FAIL → REJECTED).
 
 Record hashes never depend on the wall clock: reports and metadata are stamped with the round's
 scheduled time, and floats are written as quantized Decimal text (``segment.decimal_text``).
@@ -93,6 +97,7 @@ from research.loop.memory import ResearchMemory
 from research.loop.segment import (
     Param,
     RoundData,
+    SealedDataRefused,
     decimal_text,
     decision_grid,
     trial_point,
@@ -104,6 +109,7 @@ from research.strategies.validation import (
     PipelineBacktestValidator,
     TrialRun,
     ValidatorSetup,
+    binding_mismatches,
 )
 from research.validation import (
     RobustnessParams,
@@ -114,6 +120,7 @@ from research.validation import (
     run_sealed_oos,
 )
 from research.validation.controls import FixedSides
+from research.validation.gates import flag_gate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT, sealed_oos_without_result
 from research.validation.sealed_oos import OosBudgetExhausted, SealedEvaluation, SealedOosVault
 
@@ -716,7 +723,7 @@ class ValidationStage:
         sealed_report: ValidationReport | None = None
         sealed_status: dict[str, Any] = {"status": "not_run", "reason": "in-sample verdict"}
         if report.verdict is Verdict.PASS:
-            sealed_report, sealed_status = self._sealed_oos(ctx, outcome, context, segment)
+            sealed_report, sealed_status = self._sealed_oos(ctx, outcome, context, segment, setup)
         summary = {
             **base,
             "report_id": report.report_id,
@@ -752,12 +759,15 @@ class ValidationStage:
         outcome: TrialOutcome,
         context: ValidationContext,
         segment: RoundData,
+        setup: ValidatorSetup,
     ) -> tuple[ValidationReport | None, dict[str, Any]]:
         unseal, step = self._unseal, self._sealed_step
         if unseal is None or step is None:
             return None, {"status": "sealed", "reason": "no unseal budget configured"}
-        if not len(segment.sealed):
-            return None, {"status": "sealed", "reason": "no sealed-window data in this round"}
+        # decided without reading any sealed data (a dataset source reads it only on release)
+        closed = segment.sealed.evaluable(ctx.as_of)
+        if closed is not None:
+            return None, {"status": "sealed", "reason": closed}
         family = outcome.hypothesis.family_id
         approver = unseal.approver_of(family)
         if approver is None:
@@ -775,7 +785,9 @@ class ValidationStage:
         except OosBudgetExhausted as exc:
             return None, {"status": "sealed", "reason": str(exc)}
         # From here on the family's single evaluation is consumed, whatever happens next: the
-        # claim marks it evaluated before any sealed bar leaves the vault (review fixes 2).
+        # claim marks it evaluated before any sealed bar leaves the vault — or, on the dataset
+        # path, before any sealed manifest, bar or feature is read from storage (review fixes 2;
+        # dataset G5 note).
         evaluation = vault.claim_evaluation(family)
         g5_context = replace(
             context,
@@ -786,8 +798,11 @@ class ValidationStage:
         result: tuple[GateResult, ...] | str
         try:
             result = self._sealed_gates(
-                ctx, outcome, segment, vault, evaluation, g5_context, status
+                ctx, outcome, segment, vault, evaluation, g5_context, status, setup
             )
+        except SealedDataRefused as exc:  # the claimed window's data did not prove (dataset)
+            status["error"] = f"{type(exc).__name__}: {exc}"[:500]
+            result = "sealed data refused"
         except Exception as exc:  # noqa: BLE001 - the consumed evaluation is recorded, not lost
             status["error"] = f"{type(exc).__name__}: {exc}"[:500]
             result = "sealed run errored"
@@ -808,8 +823,13 @@ class ValidationStage:
         evaluation: SealedEvaluation,
         g5_context: ValidationContext,
         status: dict[str, Any],
+        setup: ValidatorSetup,
     ) -> tuple[GateResult, ...] | str:
-        """G5 gates of the claimed evaluation, or why it ended without a result."""
+        """G5 gates of the claimed evaluation, or why it ended without a result.
+
+        On the dataset path the report also carries ``G0.manifest_binding`` over the data G5 ran
+        on: the research bars against the round's pair and the released sealed bars and sealed
+        feature requests against the sealed pair (``RoundData.sealed_binding``)."""
         step = self._sealed_step
         assert step is not None
         sealed_bars = segment.sealed.release(evaluation)
@@ -818,7 +838,8 @@ class ValidationStage:
         )
         candidate, inputs = outcome.candidate, outcome.inputs
         assert candidate is not None and inputs is not None
-        bars = (*segment.research_bars, *segment.as_price_bars(sealed_bars))
+        sealed_price_bars = segment.as_price_bars(sealed_bars)
+        bars = (*segment.research_bars, *sealed_price_bars)
         decisions = decision_grid(
             sealed_bars, step=step, warmup=step, horizon=self._c.label_spec.horizon
         )
@@ -867,7 +888,25 @@ class ValidationStage:
             refs=tuple(candidate.spec.signals),
             by_event={_event_key(t): _side(t.target_weight) for t in traded},
         )
-        return run_sealed_oos(SealedOosInput(g5_context, vault, table, study, evaluation))
+        gates = run_sealed_oos(SealedOosInput(g5_context, vault, table, study, evaluation))
+        binding = segment.sealed_binding()
+        if not binding:  # synthetic path: nothing to bind (unchanged report)
+            return gates
+        mismatches = [
+            *(f"research:{name}" for name in binding_mismatches(setup, segment.research_bars)),
+            *(
+                f"sealed:{name}"
+                for name in binding_mismatches(replace(setup, **binding), sealed_price_bars)
+            ),
+        ]
+        status["manifest_binding_mismatches"] = mismatches
+        gate = flag_gate(
+            "G0.manifest_binding",
+            "manifest_binding_mismatch_count",
+            not mismatches,
+            float(len(mismatches)),
+        )
+        return (gate, *gates)
 
 
 def failure_of(result: ValidationOutcome) -> tuple[str, ReasonCode, str] | None:

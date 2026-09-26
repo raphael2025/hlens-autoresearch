@@ -378,3 +378,40 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。补上调试待办 C 节 P11「持久组
    `tests/apps/test_research_loop_durable.py`——150 条外来任务排在一条已记录轮次任务（及其重复）之前：构造时该任务被确认、外来任务全部
    保留且顺序不变（内存与文件总线各一次；旧实现两者都失败）。`tests/apps/test_worker_jobs.py`——两次中断后重跑：日志为
    `job_started, job_rerun(1), job_rerun(2), job_result`，`reruns` 重开后仍为 2，撤销幂等声明后重开被拒；伪造的重跑历史逐项被拒；误用声明被拒。
+
+## Implementation note (dataset G5, 2026-09-26)
+
+不改 `core/`、`infrastructure/dataset/*`、`infrastructure/feature/dataset.py`；`LoopRecord` 载荷与哈希规则不变，合成路径的记录哈希不变
+（`tests/research/loop` 全部通过）。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。取代上一条实施说明第 5 点（「未接线」）。
+
+1. **封存 manifest 对**：`DatasetRound` 新增 `sealed_feature_manifest_hash` + `sealed_price_manifest_hash`（二者同在或同缺；与只扣留的
+   `sealed_manifest_hash` 互斥）。未声明时 `payload()` 与摄取摘要不变（旧指纹 / 记录不变）；声明时两哈希进入指纹与摄取摘要，重新打开时
+   已记录摄取须与声明一致。`DatasetLoopConfig` 只在至少一轮声明了封存对时接受 `OosUnsealBudget`（否则仍以「G5 over dataset rounds is not wired」拒绝）。
+2. **开封前不读任何封存数据**：`segment.SealedSource` 协议（`evaluable(as_of)` / `release(evaluation)`）取代验证阶段对 `len(segment.sealed)`
+   的判断；`SealedBars.evaluable` 与原判断相同（原因文本不变）。摄取阶段**完全不读**封存对（`dataset_source.SealedDatasetPair`，摘要
+   `sealed_bars_withheld = None`）；`evaluable` 只按声明、Profile 窗口与本轮截止判断（窗口终点须不晚于 `as_of`）。验证阶段的顺序不变：无预算 →
+   不可评估 → 族未获准 → 已开封 → 全局额度用尽；随后 `unseal` → `claim_evaluation`（记为已消耗）→ `release`。`release` 才经验证型
+   `ManifestStore` 加载两份封存 manifest。
+3. **开封后的证明**（任一不符 → `segment.SealedDataRefused`，验证阶段记为 INCONCLUSIVE `consumed_without_result:sealed_data_refused`，
+   该族窗口永久关闭）：(a) 两份封存 manifest 与研究 pair 的 `snapshot_bindings`、`knowledge_cutoff`、ADR-0032 选择、availability /
+   precedence / parser / PIT 规则绑定、universe spec、数据集表、lineage 的 Canonical 表集合相同（研究 pair 两份在这些字段上已由 `pair_manifests`
+   证明相等，故与其价格 manifest 比较）；(b) 两份的数据窗口**恰好**为 Profile 封存窗口 `[boundary, boundary + sealed_oos_length)`；(c) 价格视图在
+   `[窗口终点, as_of]` 内；(d) `pair_manifests` 证明二者为同一链；(e) 封存 bar 经 `backtest_bars_from_dataset`，特征观测为封存区间 manifest
+   自身 PIT 选择的 `bar_observations`，逐条核对不晚于截止。**无法由 manifest 字段跨两对证明、未核对**：成员 / 排除集合（上市状态可在两个窗口间
+   合法变化；bar 路径拒绝无行的标的）、质量报告 id（按日分区，必然不同）、lineage 修订与证据缺口（数据不同）——封存对内部由 `pair_manifests` 核对。
+4. **G5 信号与绑定**：`signals_with` 在封存区间 manifest 上只经 `feature_request_from_dataset` 求值（每根已释放 bar 收盘时），研究信号在前。请求只能
+   携带该 manifest 的行，**没有跨边界的前置 bar**：封存窗口开头的前几次评估不可计算，策略在窗口内重新预热（保守；短于预热的窗口以
+   `consumed_without_result` 结束）。G5 报告首个门为 `G0.manifest_binding`（`research.strategies.validation.binding_mismatches`：研究 bar 对研究
+   pair、已释放的封存 bar 与封存特征请求对封存 pair，名称前缀 `research:` / `sealed:`，计数为值；不符 FAIL → `OOS → REJECTED` / CONTRACT_VIOLATION），
+   摘要写 `manifest_binding_mismatches`；合成路径不加此门（`sealed_binding()` 为空，报告不变）。G5 结局标签的 manifest 哈希为
+   `content_hash({research: 研究价格 manifest, sealed: 封存价格 manifest})`。
+5. **取舍**：「开封前一字节都不读」的代价是配置错误的封存对也会花掉该族唯一的开封（开封后才能证明它）；不选「开封前先加载 manifest 核对」，
+   因为验证型加载会重新推导整个构建，即读取封存窗口的数据。其余保证沿用合成路径与持久状态：只开封获准族（人类批准人）、样本内 PASS 才开封、
+   每次开封一次评估、提前结束 `consumed_without_result`、开封账本为状态目录的 `sealed_oos.jsonl`（重启不再开封）、开封预算与封存对在指纹中。
+   一次开封另加约 6 次验证型 manifest 加载（加载两份、`pair_manifests` 两次、bar 路径与特征请求各一次）。
+6. **测试**：`tests/infrastructure/e2e/test_research_loop_real_data_g5.py`（`postgres`；模块级夹具一次入库 + 六次构建；夹具数据同 dataset-backed
+   冒烟，但第二天 5 小时 = TEST ONLY 封存窗口，供 240 根回看预热；TEST ONLY 宽松 Profile 与近零成本模型只为让样本内 PASS 可达，不是市场结论）：
+   获准族开封一次，G5 报告含 G5 门与 PASS 的 `G0.manifest_binding`、审计同样记录；开封前没有任何封存 manifest 被加载（记录每次验证型加载及其时刻
+   该族是否已认领）；新进程重开状态目录后同族的后续样本内 PASS 不再开封（`the family already used its unsealing`），且不读封存对；未获准族从不开封、
+   不读封存对；上游 snapshot 不同的封存对在认领后被拒（只有两次 manifest 加载，无 bar 读取，窗口已消耗，留在 OOS）。约 4 分钟、< 2 GB。无数据库单元：
+   `tests/infrastructure/e2e/test_research_loop_dataset_g5_units.py`（声明规则、预算需封存对、指纹、`evaluable` 与释放前的拒绝不触及存储）。
