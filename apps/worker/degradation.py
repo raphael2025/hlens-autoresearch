@@ -17,9 +17,9 @@ comparators in ``research/validation/gates.py``):
 A metric with a threshold but no recent value is reported as ``missing`` (evidence insufficient),
 never as healthy and never as degraded. When **every** ruled metric is missing the check as a whole
 is ``insufficient_evidence`` (``status``), never "not degraded": there is no evidence either way.
-``observe`` then publishes on ``DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC`` — a separate topic, so a
-consumer of ``DEGRADATION_TOPIC`` (the Control Plane's degradation evidence) never mistakes it for
-a degradation.
+``observe`` publishes only degradations (``DEGRADATION_TOPIC``, ADR-0049); an insufficient-evidence
+check is returned to the caller (and written into the ``degradation_check`` report), not published:
+a separate event topic would extend ADR-0049's event surface and is left to a decision.
 """
 
 from __future__ import annotations
@@ -35,7 +35,6 @@ from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import Ref
 
 __all__ = [
-    "DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC",
     "DEGRADATION_TOPIC",
     "DegradationCheck",
     "DegradationMonitor",
@@ -44,8 +43,6 @@ __all__ = [
 ]
 
 DEGRADATION_TOPIC: Final = "research_loop.degradation"
-#: Where ``observe`` reports a check without any recent value (not a degradation event).
-DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC: Final = "research_loop.degradation_insufficient_evidence"
 
 type DegradationStatus = Literal["degraded", "insufficient_evidence", "not_degraded"]
 _KEY: Final = re.compile(r"^(?P<metric>[A-Za-z0-9_.]+)(?:\[(?P<op><=|>=)\])?$")
@@ -177,19 +174,16 @@ class DegradationMonitor:
         *,
         window: str,
     ) -> DegradationCheck:
-        """``check`` and publish a degradation event when degraded, or an insufficient-evidence
-        event (its own topic) when no ruled metric has a recent value (``window`` names the data).
+        """``check`` and publish a degradation event when degraded (``window`` names the data).
+        An insufficient-evidence result is returned, never published and never "not degraded".
         """
         result = self.check(subject, baseline, recent)
-        if result.degraded or result.insufficient_evidence:
+        if result.degraded:
             if self._bus is None:
                 raise ValueError(f"observe needs a bus to publish the {result.status} event")
-            topic = (
-                DEGRADATION_TOPIC if result.degraded else DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC
-            )
             self._bus.publish(
                 BusMessage.build(
-                    topic,
+                    DEGRADATION_TOPIC,
                     f"{subject}:{window}",
                     {
                         "subject": str(subject),

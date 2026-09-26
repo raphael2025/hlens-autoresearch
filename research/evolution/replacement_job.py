@@ -17,6 +17,9 @@ directory) is read here, read-only.
   validation reports that back it;
 - ``reports``: a resolver ``report hash -> ValidationReport | None`` (e.g.
   ``research.router.evidence.report_store_resolver(root)``, or ``reports_by_hash(...)``);
+- ``profiles``: the ``ValidationProfile`` objects the reports were produced under (required, no
+  default: ``check_report`` refuses a report whose Profile is not among them, and one missing the
+  ADR-0060 ``G2.market_benchmark`` item its Profile's rule requires);
 - ``lineage``: the loop's lineage (``read_lineage(state_dir / LINEAGE_FILE)``: a verified,
   in-memory copy of the hash-chained journal; nothing is written to the loop's directory);
 - ``ledger``: the durable ``ProposalLedger`` (single writer, optional external anchor);
@@ -28,7 +31,8 @@ lineage is ``not_descendant`` (no proposal); a pair already in the ledger is ``a
 (never proposed twice: idempotent across runs and restarts); a candidate not ``PAPER`` /
 ``PRODUCTION_CANDIDATE`` on the Promotion path is refused (no proposal); otherwise every claimed
 report must pass ``research.router.evidence.check_report`` — found, well-formed, hashing to the
-claimed hash, ``subject`` = the candidate, verdict PASS **including G5** (sealed OOS) — and then
+claimed hash, ``subject`` = the candidate, verdict PASS **including G5** (sealed OOS), its Profile
+given and its market benchmark item present — and then
 ``propose_replacement`` must accept the pair (incumbent ACTIVE / DEGRADED, candidate PAPER /
 PRODUCTION_CANDIDATE on its own history, new version, traceable lineage); the proposal (evidence
 ``validation_report:<hash>`` per verified report) is recorded. Any refusal is returned in
@@ -44,6 +48,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
+from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import ValidationReport
 from core.domain.specs import StrategySpec
 from core.lifecycle.strategy import LifecycleHistory
@@ -158,7 +163,9 @@ def _check_template(reason: str, proposed_by: str) -> None:
 
 
 def _evidence(
-    candidate: ReplacementCandidate, reports: ReportResolver
+    candidate: ReplacementCandidate,
+    reports: ReportResolver,
+    profiles: Sequence[ValidationProfile],
 ) -> tuple[tuple[str, ...], str | None]:
     """The verified evidence references, or the refusal reason."""
     if not candidate.report_hashes:
@@ -166,7 +173,7 @@ def _evidence(
     strategy = str(candidate.spec.ref)
     state = candidate.history.current_state.value
     for report_hash in candidate.report_hashes:
-        check = check_report(strategy, state, report_hash, reports)
+        check = check_report(strategy, state, report_hash, reports, profiles=profiles)
         if not check.verified:
             return (), f"report {report_hash}: {check.refusal} ({check.detail})"
     return tuple(f"validation_report:{h}" for h in candidate.report_hashes), None
@@ -177,6 +184,7 @@ def propose_replacements(
     incumbents: Sequence[Incumbent],
     candidates: Sequence[ReplacementCandidate],
     reports: ReportResolver,
+    profiles: Sequence[ValidationProfile],
     lineage: LineageGraph,
     ledger: ProposalLedger,
     reason: str,
@@ -207,7 +215,7 @@ def propose_replacements(
             if state not in CANDIDATE_STATES:
                 refused.append((ref, child, f"not re-validated through the human gate: {state}"))
                 continue
-            evidence, refusal = _evidence(candidate, reports)
+            evidence, refusal = _evidence(candidate, reports, profiles)
             if refusal is not None:
                 refused.append((ref, child, refusal))
                 continue

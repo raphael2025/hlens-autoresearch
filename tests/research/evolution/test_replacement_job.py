@@ -43,6 +43,7 @@ from tests.promotion.fixtures import (
     PATH_TO_PRODUCTION_CANDIDATE,
     history,
     toy_experiment,
+    toy_profile,
     toy_report,
 )
 from tests.research.loop import loop_fixtures as fx
@@ -85,6 +86,7 @@ def _run(ledger: ProposalLedger, lineage: LineageGraph, **overrides: Any) -> Any
             ),
         ),
         "reports": reports_by_hash((report,)),
+        "profiles": (toy_profile(),),
         "lineage": lineage,
         "ledger": ledger,
         "reason": REASON,
@@ -175,13 +177,19 @@ def test_a_production_candidate_may_be_proposed_against_a_degraded_incumbent(
     assert result.not_descendant == ((str(INCUMBENT.ref), str(child.ref)),)
 
 
-def _refusal(tmp_path: Path, reports: tuple[ValidationReport, ...], hashes: tuple[str, ...]) -> str:
+def _refusal(
+    tmp_path: Path,
+    reports: tuple[ValidationReport, ...],
+    hashes: tuple[str, ...],
+    **overrides: Any,
+) -> str:
     with ProposalLedger(tmp_path / "p.jsonl") as ledger:
         result = _run(
             ledger,
             _lineage(tmp_path),
             candidates=(ReplacementCandidate(CHILD, history(CHILD.ref, PATH_TO_PAPER), hashes),),
             reports=reports_by_hash(reports),
+            **overrides,
         )
         assert result.recorded == () and ledger.proposals == ()
     [(incumbent, candidate, reason)] = result.refused
@@ -207,6 +215,16 @@ def test_evidence_must_be_verified_reports(tmp_path: Path) -> None:
     # every claimed report must verify, not just one of them
     assert "sealed_oos_not_evaluated" in _refusal(
         tmp_path / "f", (good, no_g5), (good.content_hash(), no_g5.content_hash())
+    )
+    # the report's Profile must be given, and its ADR-0060 market benchmark item present
+    assert "profile_not_found" in _refusal(
+        tmp_path / "g", (good,), (good.content_hash(),), profiles=()
+    )
+    no_benchmark = toy_report(
+        CHILD, toy_experiment(CHILD), "rep-no-mb", ALL_STAGES, market_benchmark=None
+    )
+    assert "market_benchmark_missing" in _refusal(
+        tmp_path / "h", (no_benchmark,), (no_benchmark.content_hash(),)
     )
 
 
@@ -325,6 +343,7 @@ def test_the_job_reads_a_loop_state_directory_and_leaves_it_untouched(
                 ReplacementCandidate(child, paper, tuple(r.content_hash() for r in loop_reports)),
             ),
             reports=reports_by_hash(loop_reports),
+            profiles=(fx.loop_profile(boundary_day=3), toy_profile()),
             lineage=lineage,
             ledger=ledger,
             reason=REASON,
@@ -339,6 +358,7 @@ def test_the_job_reads_a_loop_state_directory_and_leaves_it_untouched(
             incumbents=incumbents,
             candidates=(ReplacementCandidate(child, paper, (report.content_hash(),)),),
             reports=reports_by_hash((report,)),
+            profiles=(toy_profile(),),
             lineage=lineage,
             ledger=ledger,
             reason=REASON,

@@ -30,7 +30,6 @@ from apps.worker import (
     StageUsage,
 )
 from apps.worker.degradation import (
-    DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC,
     DEGRADATION_TOPIC,
     DegradationCheck,
 )
@@ -469,19 +468,20 @@ def test_a_check_with_every_metric_missing_is_insufficient_evidence_never_health
     empty = monitor.observe(SUBJECT, baseline, {}, window="w0")
     assert empty.insufficient_evidence and empty.status == "insufficient_evidence"
     assert not empty.degraded and empty.missing == ("max_drawdown", "sharpe")
-    [event] = bus.poll("ops", DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC, 10)
-    assert list(event.payload["missing"]) == ["max_drawdown", "sharpe"]
-    assert bus.poll("ops", DEGRADATION_TOPIC, 10) == ()  # never a degradation event
+    # never a degradation event (ADR-0049's only topic); the status is the caller's evidence
+    assert bus.poll("ops", DEGRADATION_TOPIC, 10) == ()
     # partial evidence is not "insufficient" as a whole; the missing metric is still named
     partial = monitor.observe(SUBJECT, baseline, {"sharpe": Decimal("1.1")}, window="w1")
     assert not partial.insufficient_evidence and partial.status == "not_degraded"
     assert partial.missing == ("max_drawdown",)
-    assert bus.poll("ops", DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC, 10) == (event,)
+    assert bus.poll("ops", DEGRADATION_TOPIC, 10) == ()
     worse = monitor.check(SUBJECT, baseline, {"sharpe": Decimal("0.1")})
     assert worse.status == "degraded" and not worse.insufficient_evidence
-    # without a bus an insufficient-evidence observation is not silently dropped
-    with pytest.raises(ValueError, match="insufficient_evidence"):
-        DegradationMonitor({"sharpe": 0.5}, source="t").observe(SUBJECT, baseline, {}, window="w")
+    # without a bus the insufficient-evidence status is still returned (nothing to publish)
+    alone = DegradationMonitor({"sharpe": 0.5}, source="t").observe(
+        SUBJECT, baseline, {}, window="w"
+    )
+    assert alone.status == "insufficient_evidence"
     # the state cannot be claimed with a breach or without missing metrics
     with pytest.raises(ValueError, match="insufficient evidence"):
         DegradationCheck(SUBJECT, worse.breaches, ("sharpe",), insufficient_evidence=True)

@@ -63,6 +63,6 @@
 >   阶段摘要因此必须是键为字符串的 JSON 对象。
 > - `degradation.py`：`DegradationMonitor` 用 `ValidationProfile.lifecycle.degradation_thresholds` 对比近期指标与验证基线，
 >   越限发布 `research_loop.degradation` 事件（不做生命周期转移）。所有指标都没有近期值时，检查为 `insufficient_evidence`
-  （`DegradationCheck.status`），绝不报告为"未退化"；`observe` 在独立主题 `research_loop.degradation_insufficient_evidence`
-  上发布（不会被当作退化证据）。
+  （`DegradationCheck.status`，并写入 `degradation_check` 报告），绝不报告为"未退化"；`observe` 只发布退化事件
+  （ADR-0049 的唯一主题），证据不足的结果返回调用方、不发布（新增事件主题需另行决定）。
 > - 本目录只依赖 `core` 与标准库；具体研究阶段在 `research/loop/`，由研究侧组合根注入（apps 不 import research）。
