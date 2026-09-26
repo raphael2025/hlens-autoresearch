@@ -32,6 +32,8 @@ from apps.execution.records import (
     FillRecord,
     KillSwitchTrip,
     LadderGateRecord,
+    MarkPrice,
+    MarkRecord,
     OrderRecord,
     RejectionRecord,
     RejectionSource,
@@ -41,6 +43,7 @@ from apps.execution.records import (
     instrument_key,
 )
 from apps.execution.risk import RISK_POLICY_LIMIT_KEYS, RiskLimits, SecondLineRisk
+from apps.execution.risk_replay import RiskReplay, RiskReplayDiverged, replay_risk
 from apps.execution.service import (
     RESTORE_TRIPPED_BY,
     RUNNABLE_LIFECYCLE_STATES,
@@ -86,6 +89,8 @@ __all__ = [
     "LadderGateRecord",
     "LadderGateRefused",
     "LinearCostModel",
+    "MarkPrice",
+    "MarkRecord",
     "LiveExecutionRefused",
     "KillSwitchEngaged",
     "Monitor",
@@ -95,6 +100,8 @@ __all__ = [
     "RejectionRecord",
     "RejectionSource",
     "RiskLimits",
+    "RiskReplay",
+    "RiskReplayDiverged",
     "SecondLineRisk",
     "Side",
     "SimulatedVenue",
@@ -107,5 +114,6 @@ __all__ = [
     "TargetPositions",
     "instrument_key",
     "replay_audit",
+    "replay_risk",
     "run_kill_switch_drill",
 ]

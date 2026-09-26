@@ -13,7 +13,10 @@ durable ``audit`` (``AuditTrail(path)``) the records survive the process. Reopen
 admitted deployments are *not* rebuilt from it, so the new instance trips its kill switch at once
 (a recorded ``KillSwitchTrip`` by ``RESTORE_TRIPPED_BY``) and never sends an order. Resuming order
 flow needs a fresh audit path chosen by a human; ``replay_audit`` rebuilds what the old trail
-proves for inspection. The service
+proves for inspection. With ``record_marks=True`` every batch's prices are also recorded (a
+``MarkRecord``, before they are applied) so that ``apps.execution.risk_replay.replay_risk`` can
+re-derive every rejection, acceptance and alert; the default (``False``) writes exactly the records
+it wrote before, so existing audit heads are unchanged. The service
 refuses ``ExecutionMode.LIVE`` and any venue that is not exactly ``SimulatedVenue``; it performs no
 network I/O and holds no credentials. It never imports ``research/`` (tests/test_architecture_
 boundaries.py): the research plane cannot reach it, only a ``TargetPositionSource`` can.
@@ -38,6 +41,8 @@ from apps.execution.records import (
     FillRecord,
     KillSwitchTrip,
     LadderGateRecord,
+    MarkPrice,
+    MarkRecord,
     OrderRecord,
     RejectionRecord,
     RejectionSource,
@@ -77,6 +82,7 @@ TOPICS: Mapping[type, str] = {
     KillSwitchTrip: "execution.kill_switch",
     Alert: "execution.alert",
     LadderGateRecord: "execution.ladder",
+    MarkRecord: "execution.mark",
 }
 
 
@@ -119,6 +125,7 @@ class ExecutionService:
         bus: EventBusAdapter,
         clock: Callable[[], datetime],
         audit: AuditTrail | None = None,
+        record_marks: bool = False,
     ) -> None:
         if mode is not ExecutionMode.SIMULATED:
             raise LiveExecutionRefused(
@@ -138,6 +145,8 @@ class ExecutionService:
         self._deployments: dict[str, _Admitted] = {}
         prior = self._audit.entries
         self._sequence = 1 + max((o.sequence for o in self._audit.orders), default=-1)
+        self._record_marks = record_marks
+        self._mark_sequence = 1 + max((m.sequence for m in self._audit.marks), default=-1)
         kill_switch.subscribe(self._on_trip)
         monitor.add_alert_hook(self._record)
         if prior:
@@ -228,7 +237,17 @@ class ExecutionService:
             if key not in prices:
                 raise ExecutionRefused(f"no price supplied for {key}")
         now = self._clock()
-        self._risk.mark(prices)
+        self._risk.mark(prices)  # validates every price before anything is recorded
+        if self._record_marks:
+            self._record(
+                MarkRecord(
+                    sequence=self._mark_sequence,
+                    deployment_id=targets.deployment_id,
+                    prices=tuple(MarkPrice(key=k, price=p) for k, p in sorted(prices.items())),
+                    marked_at=now,
+                )
+            )
+            self._mark_sequence += 1
         self._monitor.mark(prices, now)
 
         orders: list[OrderRecord] = []

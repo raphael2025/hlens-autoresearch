@@ -49,3 +49,14 @@
 - 测试：`tests/apps/test_execution_durable_audit.py`（10 项：内存与持久等价、重放持持仓 / 费用、重开即停且不成交、空审计不触发、篡改 / 半行 / id 不符 /
   未知类型 / 重复 / 无订单的成交均拒绝、默认内存行为不变）。
 
+
+## 风险与告警重放（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+- `MarkRecord`（`records.py`，应用层记录，非冻结领域契约）：`ExecutionService(..., record_marks=True)` 时，每批 `submit_targets` 的全部价格
+  （按键排序）在价格校验之后、施加到监控之前写入审计并发布到 `execution.mark`。**默认 `record_marks=False`**：写入的记录与此前逐条相同，
+  既有审计 head 不变（`test_marks_are_opt_in_and_the_default_audit_head_is_unchanged` 同时钉住旧/新：开启后仅多出 `MarkRecord`，其余记录与时间戳不变）。
+- `risk_replay.replay_risk(path | AuditTrail, limits, *, max_drawdown, monitor_capital=None)`：用调用者声明的限额与监控参数新建
+  `SecondLineRisk` / `Monitor`，按审计顺序重跑标价、订单、成交与 Kill Switch 触发，要求每条已记录的拒绝、每笔成交对应的接受、每条告警都被逐字段复现
+  （时间取自审计：时间是输入，不是决策）；多出、缺失或决策不同即 `RiskReplayDiverged`（`AuditCorrupted` 子类，`.record` / `.index` 指向第一条分歧记录）。
+  `RESTORE_TRIPPED_BY` 触发开始新会话（风险簿与监控重新开始，假定参数相同）。有订单而无 `MarkRecord` 的审计直接拒绝。无终态记录的订单照常重算以保持状态，但列为未验证。
+- 仅模拟、只读证据；不下单、无网络。测试：`tests/apps/test_execution_risk_replay.py`。

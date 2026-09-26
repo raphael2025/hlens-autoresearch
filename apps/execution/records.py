@@ -30,6 +30,8 @@ __all__ = [
     "FillRecord",
     "KillSwitchTrip",
     "LadderGateRecord",
+    "MarkPrice",
+    "MarkRecord",
     "OrderRecord",
     "RejectionRecord",
     "RejectionSource",
@@ -148,6 +150,37 @@ class FillRecord(_Record):
     @property
     def signed_quantity(self) -> Decimal:
         return self.quantity * self.side.sign
+
+
+class MarkPrice(Contract):
+    """One marked price inside a ``MarkRecord`` (``key`` is an ``instrument_key``)."""
+
+    key: str = Field(min_length=1)
+    price: Decimal = Field(gt=0)
+
+
+class MarkRecord(_Record):
+    """The prices the service marked its risk book and monitor with (P13 risk / alert replay).
+
+    Written only by a service built with ``record_marks=True``, immediately before the marks are
+    applied, so every drawdown alert they cause follows it in the audit. ``prices`` holds every
+    supplied price, sorted by key. ``sequence`` keeps two identical marks distinct.
+    """
+
+    sequence: int = Field(ge=0)
+    deployment_id: str = Field(min_length=1)
+    prices: tuple[MarkPrice, ...] = Field(min_length=1)
+    marked_at: UtcDatetime
+
+    @model_validator(mode="after")
+    def _sorted_unique(self) -> MarkRecord:
+        keys = [p.key for p in self.prices]
+        if keys != sorted(set(keys)):
+            raise ValueError("MarkRecord prices must be sorted by key and unique")
+        return self
+
+    def price_map(self) -> dict[str, Decimal]:
+        return {p.key: p.price for p in self.prices}
 
 
 class RejectionSource(StrEnum):

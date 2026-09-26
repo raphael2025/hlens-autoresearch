@@ -12,6 +12,9 @@ externally kept ``head_hash`` detects that (same honest boundary as the worker j
 ``replay_audit`` rebuilds, from a durable trail alone, what the service did: per-deployment
 positions and fees from the fills, orders without exactly one terminal record, kill switch trips
 and ladder decisions. It is read-only evidence; it never re-executes anything.
+``apps.execution.risk_replay.replay_risk`` goes further for a trail that holds ``MarkRecord``s: it
+re-runs second-line risk and the monitor over the audited records and requires every recorded
+rejection, acceptance and alert to be reproduced exactly.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from apps.execution.records import (
     FillRecord,
     KillSwitchTrip,
     LadderGateRecord,
+    MarkRecord,
     OrderRecord,
     RejectionRecord,
     instrument_key,
@@ -35,11 +39,27 @@ from core.domain.base import content_hash
 
 __all__ = ["AuditCorrupted", "AuditRecord", "AuditReplay", "AuditTrail", "replay_audit"]
 
-AuditRecord = OrderRecord | FillRecord | RejectionRecord | KillSwitchTrip | Alert | LadderGateRecord
+AuditRecord = (
+    OrderRecord
+    | FillRecord
+    | RejectionRecord
+    | KillSwitchTrip
+    | Alert
+    | LadderGateRecord
+    | MarkRecord
+)
 
 _KINDS: Final[Mapping[str, type[AuditRecord]]] = {
     kind.__name__: kind
-    for kind in (OrderRecord, FillRecord, RejectionRecord, KillSwitchTrip, Alert, LadderGateRecord)
+    for kind in (
+        OrderRecord,
+        FillRecord,
+        RejectionRecord,
+        KillSwitchTrip,
+        Alert,
+        LadderGateRecord,
+        MarkRecord,
+    )
 }
 
 
@@ -123,6 +143,10 @@ class AuditTrail:
     @property
     def ladder_gates(self) -> tuple[LadderGateRecord, ...]:
         return self._of(LadderGateRecord)
+
+    @property
+    def marks(self) -> tuple[MarkRecord, ...]:
+        return self._of(MarkRecord)
 
     def incomplete_orders(self) -> tuple[str, ...]:
         """Order ids without exactly one terminal record (a fill or a rejection)."""
