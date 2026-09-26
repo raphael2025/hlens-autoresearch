@@ -23,8 +23,9 @@ from typing import Any, Literal
 import pytest
 
 from apps.worker import LoopAuditLog, LoopBudget, ResearchLoop
+from apps.worker.loop import ROUND_TOPIC
 from core.lifecycle.strategy import LifecycleState
-from infrastructure.event_bus import InMemoryEventBus
+from infrastructure.event_bus import FileEventBus, InMemoryEventBus
 from plugins.llm import ScriptedLLMProvider
 from plugins.synthetic import RandomWalkMarket
 from research.loop import (
@@ -629,3 +630,38 @@ def test_the_file_anchor_never_moves_back(
     with pytest.raises(LoopStateInconsistent, match="never moves back"):
         anchor.publish(replace(head, rounds=1))
     assert anchor.load() == head
+
+
+# ------------------------------------------------------ durable bus (ADR-0044 file-backed note)
+
+
+def test_a_file_bus_under_the_state_directory_survives_the_restart_unchanged(
+    uninterrupted: Outcome, tmp_path: Path
+) -> None:
+    """The caller injects ``FileEventBus(state_dir / "bus")`` (no composition change): the rounds
+    are exactly the in-memory-bus rounds, and the bus replays every round's record hash."""
+    state_dir = tmp_path / "state"
+
+    def open_with_file_bus(bus: FileEventBus, consumed: int) -> Any:
+        return open_synthetic_loop(
+            _config(),
+            state_dir=state_dir,
+            provider=RandomWalkMarket(),
+            bus=bus,
+            llm=_llm(consumed),
+        )
+
+    with FileEventBus(state_dir / "bus") as bus:
+        first = open_with_file_bus(bus, 0)
+        first.loop.run_unattended(1)
+        first.memory.reviews.approve(DRAFT, reviewer=REVIEWER)
+    del first
+    gc.collect()
+    with FileEventBus(state_dir / "bus") as bus:
+        second = open_with_file_bus(bus, 1)
+        second.loop.run_unattended(ROUNDS - 1)
+        outcome = _outcome(second.loop, second.memory)
+    assert outcome == uninterrupted  # the bus is outside every hashed record
+    with FileEventBus(state_dir / "bus") as bus:
+        rounds = bus.poll("auditor", ROUND_TOPIC, 100)
+    assert [m.payload["record_hash"] for m in rounds] == outcome.record_hashes

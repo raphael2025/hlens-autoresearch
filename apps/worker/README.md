@@ -3,6 +3,10 @@
 异步任务执行：采集、计算、实验运行、验证。任务必须幂等可重试。事件总线通过 EventBusAdapter 访问（NATS 引入时机见待决 D-10）。
 
 > 框架已实现（ADR-0044，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`jobs.py` 的 `JobRunner`（内容寻址任务 ID、至少一次消息 + 幂等执行、有界重试、失败记录不丢弃），总线为 `infrastructure/event_bus/InMemoryEventBus`。
+> 持久总线（ADR-0044 Implementation note, file-backed bus, 2026-09-26）：`infrastructure/event_bus/FileEventBus(root)` 是同一 Protocol 的
+> 落盘实现（哈希链主题日志 + 原子替换的消费者 offset，语义与内存总线一致，损坏即拒绝，单写者锁）；`JobRunner` 与 `ResearchLoop`
+> 不需任何改动——总线由组合根注入。重启后未确认的任务消息重投，`JobRunner` 的幂等执行照常吸收；`JobRunner` 的结果表本身仍在内存中，
+> 因此"已确认"是跨重启的唯一去重依据（先记录结果、后确认，崩溃于两者之间时重启会重跑该任务一次）。本目录仍只依赖 `core` 与标准库。
 
 > 持续研究循环机制（[ADR-0049](../../docs/adr/0049-continuous-research-loop.md)，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：
 >

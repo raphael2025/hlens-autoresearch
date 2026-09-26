@@ -67,7 +67,13 @@
   `OosUnsealBudget`（额度、获准族、批准人）及精确节奏，任何变化拒绝（提高预算须新 `state_dir` / `loop_id`），机制侧续接审计也核对 `budget_hash`；
   ~~所有文件一致截回更早轮次边界无法发现~~ ✅ 可选外部锚点（`anchor=`，目录外 `FileAnchor` 或任一 `StateAnchor`）：落后 / 分叉 / 锚点丢失即拒绝；
   不给锚点时仍是已记录的限制（ADR-0049 实施说明 durable review fixes）。
-  仍未做：总线只在内存中（NATS / Control Plane 持久化待做）；最后一轮之后未被取用的人工审批不被检查点或锚点引用；
+  ~~总线只在内存中~~ ✅ 已修（2026-09-26）：`infrastructure/event_bus/FileEventBus(root)`——每主题哈希链只追加日志、每（消费者，主题）原子替换的
+  offset / 确认集（绑定写入时的日志长度与头哈希），通过同一 bus contract suite，与内存总线差分等价（发布端不去重，与 Protocol 一致），
+  重开后重放、未确认即重投，篡改 / 断链 / 半行 / 尾部删到消费者见过的长度以下 / 被编辑的状态一律拒绝，`fcntl.flock` 单写者锁
+  （ADR-0044 Implementation note, file-backed bus；`tests/infrastructure/event_bus/test_file_event_bus.py`）；调用方可向持久组合传
+  `bus=FileEventBus(state_dir / "bus")`，记录哈希不变（`test_loop_durable.py`）。仍未做：组合根在持久模式下自动使用 `state_dir/bus`
+  并与审计交叉校验；最后一次写消费者状态之后追加、又被尾部删除的消息不可发现；NATS / Control Plane 持久化（D-10）。
+  仍未做：最后一轮之后未被取用的人工审批不被检查点或锚点引用；
   审计记录与记忆检查点尚不是版本化契约；持久组合只有合成市场组合根。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：
