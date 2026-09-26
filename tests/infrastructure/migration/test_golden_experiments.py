@@ -29,7 +29,11 @@ REPO = Path(__file__).resolve().parents[3]
 #: ``market_benchmark=True`` under a Profile naming ``buy_and_hold_equal_weight`` with the inverse
 #: control, which adds exactly the five reported-only ``G2.market_benchmark.*`` /
 #: ``G2.inverse_control`` gates (32 -> 37); every other output, and the verdict, is unchanged.
-GOLDEN_HASH = "c8d129e6d8a2d6bb4becf15b6e25355228ea28d83dd7d43fd525b0be4bd4495a"
+#: Regenerated for contract 2.1.0 (ADR-0052 §4, 2026-09-26; was ``c8d129e6…0be4bd4495a``): the one
+#: changed output is ``backtest.result_hash`` (the 2.1.0 envelope is part of the request and
+#: result content); every gate value, threshold and verdict is unchanged, and the old record is
+#: still reproduced bit-exactly when the run builds every contract object at 2.0.0.
+GOLDEN_HASH = "fe69500fbefc56f5df5de4484b3176b78206f19de236e5b5af982d1e0d6032ac"
 ZERO = Decimal(0)
 
 

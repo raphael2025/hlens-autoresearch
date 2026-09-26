@@ -16,7 +16,13 @@ from typing import Any
 
 from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, contract_schema_version_scope
 
-__all__ = ["PRE_BUMP_VERSION", "as_published_at_2_0_0", "at_pre_bump", "built_at_pre_bump"]
+__all__ = [
+    "PRE_BUMP_VERSION",
+    "as_published_at_2_0_0",
+    "at_pre_bump",
+    "built_at_pre_bump",
+    "envelopes_at_pre_bump",
+]
 
 PRE_BUMP_VERSION = "2.0.0"
 
@@ -42,6 +48,15 @@ def _envelopes_at(value: Any, version: str) -> Any:
     if isinstance(value, list | tuple):
         return [_envelopes_at(item, version) for item in value]
     return value
+
+
+def envelopes_at_pre_bump(data: Any) -> Any:
+    """JSON-like ``data`` (e.g. a ``to_dict()`` report) with every ``schema_version`` at 2.0.0.
+
+    For byte pins of reports taken before the bump: the one difference the 2.1.0 envelope makes
+    to such a report is its embedded envelopes; everything else must still match the pin.
+    """
+    return _envelopes_at(data, PRE_BUMP_VERSION)
 
 
 def at_pre_bump[C: Contract](obj: C) -> C:

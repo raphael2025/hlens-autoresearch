@@ -38,7 +38,12 @@ from tests.research.router.test_paper import (
 )
 
 #: ``_run()``'s run hash before this change: an omitted ``validation_reports`` keeps it.
-BASELINE_RUN_HASH = "0744ad2605f155ab92a7c7cc9fdc2c7380fe358bff76ab445f0a8bb904cdb701"
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values still hold when the same test builds every object at 2.0.0
+#: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
+#: 2.0.0 values (evidence, git history): 0744ad26…
+BASELINE_RUN_HASH = "7f30d3d4c10238b5d5f9f4c9138b5518e633d5e7d3ba448a9aa6695a9179d8d2"
 REPORT_A = content_hash({"validation_report": "trend_a"})
 REPORT_B = content_hash({"validation_report": "revert_b"})
 STATE_SPEC_HASH = content_hash({"fixture": "state"})  # as test_paper._states

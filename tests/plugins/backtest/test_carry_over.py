@@ -119,6 +119,26 @@ _GOLDEN_REQUESTS = {
 }
 _GOLDEN_FIRST_BAR = "1323628a47020bdd4378bc3aabccdf482a7b5e6eff9b008124d5a2a7b852dd96"
 _GOLDEN_V1_DESCRIPTOR = "6f856ab5f3223e1f3e81439e844a337410406836f2958cbeb54dc2adad6ae3e1"
+#: The same objects built now carry the 2.1.0 envelope (ADR-0052 M2: new objects are 2.1.0
+#: and the envelope is part of every content hash); pinned next to the 2.0.0 evidence above.
+_GOLDEN_REQUESTS_2_1_0 = {
+    "alternating": "e07ea0fc9b221b0bb53dd4081eb4923ac71a6bae91561a0fe8666f13cc581382",
+    "leverage_and_gaps": "5ef45bdf68dff98f9acad6a3a0b319f0f5abf3e2e2061694ad4339fdff769bb4",
+    "two_instruments": "b334a7827898190dc5c247d527a92212f55149abdbc7a354976208e4944fc637",
+}
+_GOLDEN_FIRST_BAR_2_1_0 = "ac03375206ec6f7692fccb3e620f984a3f69a499ae43cb171079b70eea8d7442"
+_GOLDEN_V1_DESCRIPTOR_2_1_0 = "281355118786ddde8fc956c101888be0d0c0ff7fcebc12f406c6c7d59199da58"
+#: ``(provider_hash, result_hash)`` of the truncating variants at 2.1.0 (fingerprints unchanged).
+_GOLDEN_TRUNCATING_2_1_0 = {
+    "all_active": (
+        "082ec9936fc9b046dd4fcc9604b9e4a324f42f9420cb6314045e989b8fda591c",
+        "1ef8b2d4ddf9e521ca347fc9b9e1cef6819562a8236ddae6711a191d243075a4",
+    ),
+    "cap_and_impact": (
+        "a116db0b1ead46de07a4bdc3578cecfc20bac43cf766e595b846df21d01aaa92",
+        "b59c541578d301cd16bad5dfb8c7e7716e54ad3bdd1dc12e34440b09183d181c",
+    ),
+}
 #: ``(fingerprint, provider_hash, result_hash)`` of the truncating variants on one fixed request.
 _GOLDEN_TRUNCATING = {
     "all_active": (
@@ -145,6 +165,9 @@ def test_request_hashes_are_unchanged_when_no_bar_carries_volume(name: str) -> N
     assert request.bars[0].content_hash() == _GOLDEN_FIRST_BAR
     assert "volume" not in request.bars[0].model_dump(mode="json")
     assert result.schema_version == "2.0.0"
+    current = _golden_requests()[name]
+    assert current.content_hash() == _GOLDEN_REQUESTS_2_1_0[name]
+    assert current.bars[0].content_hash() == _GOLDEN_FIRST_BAR_2_1_0
     assert result.remainders == ()
     assert "remainders" not in result.model_dump(mode="json")
     assert "remainders" not in result._hashed_fields()
@@ -155,6 +178,7 @@ def test_the_default_descriptor_is_unchanged() -> None:
         descriptor = BarBacktester().descriptor
     assert descriptor.execution_model == "next_bar_open"
     assert descriptor.content_hash() == _GOLDEN_V1_DESCRIPTOR
+    assert BarBacktester().descriptor.content_hash() == _GOLDEN_V1_DESCRIPTOR_2_1_0
 
 
 @pytest.mark.parametrize("name", sorted(_GOLDEN_TRUNCATING))
@@ -169,6 +193,10 @@ def test_the_truncating_variants_are_unchanged(name: str) -> None:
     )
     assert backtester.descriptor.execution_model == "next_bar_open"
     assert result.remainders == ()
+    now = BarBacktester(execution=model)
+    fresh = tuple(_target(i, "1.5" if i % 3 else "-1") for i in range(12))  # 2.1.0 targets
+    current = now.run(_request(_SUITE_BARS, fresh, COSTS))
+    assert (now.descriptor.content_hash(), current.result_hash) == _GOLDEN_TRUNCATING_2_1_0[name]
 
 
 def test_a_bar_volume_changes_the_bar_and_request_hashes() -> None:

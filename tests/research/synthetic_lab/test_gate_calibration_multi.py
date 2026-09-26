@@ -169,7 +169,12 @@ def _toy_multi(detector: object = None, **fields: object) -> MultiInstrumentCali
 
 #: The toy multi-instrument report, pinned at its first computation (mode-on determinism across
 #: processes; independent of the validation pipeline).
-TOY_MULTI_HASH = "7b81912a8907e1f5f2977d76c3f08b5822921cb669635870713585aae02cd55d"
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values still hold when the same test builds every object at 2.0.0
+#: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
+#: 2.0.0 values (evidence, git history): 7b81912a…
+TOY_MULTI_HASH = "f10b41aa3c13e340ecfcfe45f7185455c3e5b906ccfe23a3b8b6d7936a4e2492"
 
 
 def test_mode_on_is_deterministic_and_pinned() -> None:

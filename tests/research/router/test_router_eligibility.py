@@ -45,10 +45,14 @@ from tests.research.router.test_router_completion import (
 )
 
 #: Trust-mode hashes computed with the code before this change (1fb7918): unchanged.
-TRUST_REPORTS_RUN_HASH = "d832b544d7fa08b453a67134fd2aeeb7a8e79398e2d0fec489347567d02f1e6a"
-TRUST_STOP_FLAT = "6f342bc717a0fc89fed62b2f2582a1e9c56ec8a6b7cedad89c9510a40fb37b02"
-TRUST_STOP_NO_CANDIDATE = "577d66c437fdbe95910fc642ba6cfa4026bf1fcd23a072e08881d3a8bd51dcc7"
-TRUST_STOP_FLAT_WITH_REPORTS = "918770b0774665fb3d5f9b7343b214e8a92434c8a23d6b8621fe565490c36694"
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values (d832b544…, 6f342bc7…, 577d66c4…, 918770b0…) still hold when the same test
+#: builds every object at 2.0.0 (verified inside ``contract_schema_version_scope("2.0.0")``).
+TRUST_REPORTS_RUN_HASH = "d3c8cc3b5b7e97e6883b0f285b2cfad16f898cd7201bac0a4bbab2b3f5105954"
+TRUST_STOP_FLAT = "64c340616747be0377f0b48e4d4baeecbf1f72d41547bc7961fe24b2478ed4d9"
+TRUST_STOP_NO_CANDIDATE = "6528f56bf3fd98372459e1965e7fb73e24ff243cc02c62fd629c64a7e46aafdb"
+TRUST_STOP_FLAT_WITH_REPORTS = "cbc771dc96c37792f354cca39b6af9dedb35179b13ffea4304b8318772ed9358"
 CREATED = datetime(2026, 9, 1, tzinfo=UTC)
 
 

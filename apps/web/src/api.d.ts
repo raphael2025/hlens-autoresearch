@@ -279,7 +279,7 @@ export interface components {
             name: string;
             /**
              * Schema Version
-             * @default 2.0.0
+             * @default 2.1.0
              */
             schema_version: string;
             /** Source */
@@ -313,7 +313,7 @@ export interface components {
             name_prefix: string;
             /**
              * Schema Version
-             * @default 2.0.0
+             * @default 2.1.0
              */
             schema_version: string;
             /**
@@ -342,7 +342,7 @@ export interface components {
             result_hash: string;
             /**
              * Schema Version
-             * @default 2.0.0
+             * @default 2.1.0
              */
             schema_version: string;
         };
@@ -371,7 +371,7 @@ export interface components {
             name: string;
             /**
              * Schema Version
-             * @default 2.0.0
+             * @default 2.1.0
              */
             schema_version: string;
             /** Version */

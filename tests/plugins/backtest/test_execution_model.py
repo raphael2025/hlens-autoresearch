@@ -127,6 +127,13 @@ _GOLDEN = {
     "two_instruments": "766b48ff30d19bebd225126fe1d2753f007065dbcd7c351c6431653003ba7dba",
     "leverage_and_gaps": "ab8bd3072cdf780ada18cd2ec67eecb7c9cb10b54dded4414c6ad3986175ca92",
 }
+#: The same objects built now carry the 2.1.0 envelope (ADR-0052 M2: new objects are 2.1.0
+#: and the envelope is part of every content hash); pinned next to the 2.0.0 evidence above.
+_GOLDEN_2_1_0 = {
+    "alternating": "39656b499ec3c94686c97e567063c1d0ef05670178a73c17e87ab0f14c351f91",
+    "two_instruments": "0f598ad5ac0056525cfdce35c41c78ab619ed83ac78061ba1dc46798b9622485",
+    "leverage_and_gaps": "bd5b4088c4f7bc844889997b6c616a686326dedf30c4fe690c9f0ab059619b17",
+}
 
 
 @pytest.mark.parametrize("name", sorted(_GOLDEN))
@@ -145,6 +152,8 @@ def test_the_default_backtester_is_byte_identical_to_v1(
         result, report = _run(backtester, request)
         assert result.result_hash == _GOLDEN[name]
         assert backtester.run(request) == result
+    current = factory().run(_golden_requests()[name])
+    assert current.schema_version == "2.1.0" and current.result_hash == _GOLDEN_2_1_0[name]
     assert report.execution_fingerprint is None
     assert (report.fills, report.remainders, report.funding) == ((), (), ())
     assert report.total_impact == 0 and report.total_funding == 0

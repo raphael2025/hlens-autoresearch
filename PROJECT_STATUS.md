@@ -230,11 +230,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-26 | ADR-0052 契约 2.1.0（按记录版本重放）合入全代码分支（`core/adr-0052-into-full-code`）；ADR-0054 / 0057 的新字段改为 2.1.0 声明；验证的研究侧取值完成（精确比较、Profile 字段优先且不可被显式参数覆盖、负对照独立阈值）；事件表记录契约版本；因信封变化而变的测试钉值逐一核实后改钉 | CODE_COMPLETE / DEBUG_PENDING；待协调者集成与 Codex 复核 |
 | 2026-09-26 | B22～B24：横截面动量（研究层）；ADR-0053 / 0054 / 0057 集成（后两者新字段在 2.0.0 下，按 Codex K3 / K5 未接受）；ADR-0052 阻断证据 → Codex 授权独立 Phase 1 分支版本化重放（M0 已推送）；`564c87c` 全量非 PostgreSQL 门禁 6142 passed / 136 deselected / 1 xfailed | `564c87c` 为保留恢复点；待 2.1.0 版本机制后重新声明 ADR-0054 / 0057 |
 | 2026-09-26 | 全阶段代码完成批次（Claude，`wip/all-code-completion`）：B1～B24 补齐 Phase 0.5、2～14 与前后端剩余代码（CODE_COMPLETE / DEBUG_PENDING）；Raphael 授权 Claude 自主决策（含红线），ADR-0056 / 0058 由 Claude 接受；Codex 全代码复核 K1 已修、K2 同步、K3（ADR-0052 以 2.1.0）进行中；全量非 PostgreSQL 门禁 5861 passed（`8d0d26d`） | 最新 HEAD 门禁待全部代码完成后重跑；Phase 1 仍待 Codex（K4） |
 | 2026-09-26 | 依 Codex 复核 K4 集成 PIT 跨日边去重修复（`9baad12` / `50cdc49`：同一 Raw 边只映射一次，内容不一致即拒绝）；严格全量门禁 5753 项通过（`50cdc49`） | K4 的代码复核待 Codex；Phase 1 仍未验收 |
 | 2026-09-26 | Phase 1 修复批次：D3E-R3 跨日错误修复（`69f0bf0`，13 项跨午夜回归，旧代码全失败、新代码全过，独立复核 ACCEPTABLE）；D-NET 工具不再消费失败 / 旧状态并记录代码版本与 snapshot 头（`d1e6e73`）；严格全量门禁 5738 项通过（`8b6fbaf`） | D3E 仍待 Codex 验收；Phase 1 未关闭 |
-| 2026-09-26 | D-NET 执行（Raphael 批准）：真实下载 BTC / ETH 两天 1 分钟 K 线官方归档，入库 → 规范化 → 质量报告 → PIT 选择全部跑通（每天 1440 分钟齐全、无缺口无冲突）；建研究数据集需上市历史，停下待 D-LIST。复核第六轮修复后严格全量门禁 5718 项通过（1d4fe0e） | 待 Raphael 决定 D-LIST |
 
 ## 10. 下一阶段进入条件
 

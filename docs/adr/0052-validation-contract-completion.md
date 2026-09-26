@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意推荐方案"），起草: Claude Code（Opus）；**契约部分已实施（2.1.0，分支 `phase1/adr-0052-versioned-replay`，M1 ~ M3，未验收）**：按记录版本重放（Implementation note — versioned replay）+ §1 ~ §3 字段；研究侧取值（C-A4、精确比较、负对照）待协调者 |
+| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意推荐方案"），起草: Claude Code（Opus）；**已实施（2.1.0；契约 M1 ~ M3 于 `phase1/adr-0052-versioned-replay`，研究侧取值于 `core/adr-0052-into-full-code`）**；CODE_COMPLETE / DEBUG_PENDING，未验收 |
 | 日期 | 2026-09-26 |
 | 决策者 | **Raphael**（H1 Domain Contract、H2 Validation Profile 结构，红线） |
 | 起草者 | Claude Code（Opus） |
@@ -299,3 +299,33 @@ V3 要求把 `infrastructure/pit/selector.py` 的 `PIT_BINDING` 常量写出 `sc
   当作"没有该字段"（与字段存在之前相同的 `profile_field_missing`）。**未实施（交协调者）**：精确比较
   `compare_gate` 与量化规则 `hlens.validation.gate-value-quantization@1.0.0`（停放分支已有草稿）、Profile 字段优先与
   同时给 `param:` 即拒绝（C-A4）、G1 负对照改用 `negative_control_threshold`、G4 / 封存 OOS 取值。
+
+### 全代码分支合入与研究侧取值（2026-09-26，分支 `core/adr-0052-into-full-code`）
+
+合入 `phase1/adr-0052-versioned-replay`（`8a7655e`）到全代码分支（`f16728a`，随后合入 `2d852b3` L7）。状态：CODE_COMPLETE / DEBUG_PENDING。
+
+- **ADR-0054 / ADR-0057 按 2.1.0 重新声明**：`PriceBar.volume`、`BacktestResult.remainders`、`FillRemainder`（`_MODEL_SINCE`）、
+  `execution_model="next_bar_open_participation"`（新增 `Contract._VALUES_SINCE`）与 `Event` / `EventRequest` / `EventResult` 的
+  `subject` 自 2.1.0 起；`_FIELDS_SINCE` 的"存在"改为"出现在载荷中"（非 `None` 且未被 `exclude_if` 省略），对本 ADR 的字段行为不变。
+  测试 `tests/test_adr_0054_0057_versions.py`。
+- **`event.events` 记录运行版本**（V1）：运行块新增 `contract_schema_version`，按记录版本重建（见 ADR-0056 补充说明）。
+- **研究侧取值（§1 ~ §3）**：`research/validation/gates.py`（量化规则 `hlens.validation.gate-value-quantization@1.0.0`，12 位小数、
+  半偶舍入；精确 `compare_gate`；`sourced_threshold` / `sourced_parameter` 与 `ExplicitParamRefused`，C-A4）、`pipeline.py`（G1 负对照
+  `negative_control_threshold`）、`g4.py` / `robustness.py`（CSCV 分块数、容量、冲击系数与模型、跨资产、欠采样占比）、`sealed_oos.py`
+  （开封预算；旧 Profile 缺显式参数仍为 `TypeError`）、`research/loop/trials.py`（`OosUnsealBudget.max_unsealings = None` = 取 Profile）。
+  没有这些字段的 Profile 走原路径，逐位不变。测试 `tests/research/validation/test_adr_0052_sourcing.py`。
+- **已发布身份（V3）之外的钉值**：核查后，Phase 1 之外没有任何研究 / 插件常量的内容哈希被持久化在真实存储中（唯一的真实数据是
+  D-NET 的 Phase 1 表与数据集 manifest，已由 M1 处理）；因此没有把研究 / 插件常量钉在 2.0.0。测试钉值按用途处理：
+  - "旧对象逐位不变"类钉值保留 2.0.0 原值并在 2.0.0 构造作用域（`tests/contract_version_support.built_at_pre_bump` / `at_pre_bump` /
+    `envelopes_at_pre_bump`）中复核，同时旁置 2.1.0 值：`test_event_subject.PRE_ADR_0057`、`test_carry_over` 的请求 / 首根 bar /
+    descriptor / 截断变体、`test_execution_model._GOLDEN`（v1 结果）、`test_scripted_store` 的调用 / 响应哈希、`test_dsl` 的交互 spec
+    哈希、`test_multi_seed_controls.PINNED`、`test_g4_check_isolation.PINNED`。
+  - 回归钉值改钉到 2.1.0（注释写明原因与原值）：`test_dsl` 编译哈希（`637ef43e`→`d5457212`、`db08263d`→`7abb8b4e`，2.0.0 值仍以
+    `*_2_0_0` 断言）、`event.events` 定义哈希（`7c4372c0`→`c7c494cd`，新列）、循环记录哈希（`9b5e9e8c`/`96e58aff`/`1df0bc1c`→
+    `e241ceb2`/`86b2adda`/`a0dc0b91`）与配置指纹（`f7a137b2`→`175c1a47`）、router `BASELINE_RUN_HASH`（`0744ad26`→`7f30d3d4`）与
+    trust-mode 哈希（`d832b544`→`d3c8cc3b`、`6f342bc7`→`64c34061`、`577d66c4`→`6528f56b`、`918770b0`→`cbc771dc`）、策略报告 / 视图 / G4
+    诊断哈希（`test_cross_sectional_g4`、`test_market_benchmark`、`test_multi_instrument_validation`）、合成实验室报告哈希
+    （`deaba504`→`c5147ea3`、`358eb551`→`e31fc17f`、`dc7816c9`→`4cc8dc82`、`7b81912a`→`f10b41aa`）、黄金实验
+    （`c8d129e6`→`fe69500f`，唯一变化的输出是 `backtest.result_hash`）、控制台夹具 `router_stop` / `paper_deviation` / `router_paper_run`
+    重新生成。每一个改钉的旧值都已实测：在整个测试会话以 2.0.0 构造全部对象（`contract_schema_version_scope("2.0.0")` 插件，
+    不入库）时原值全部复现——变化只来自 2.1.0 信封。

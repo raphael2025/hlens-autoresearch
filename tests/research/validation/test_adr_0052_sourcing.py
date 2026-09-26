@@ -380,7 +380,7 @@ def test_a_profile_coefficient_disagreeing_with_the_execution_model_is_a_mismatc
 def test_the_sealed_oos_budget_present_absent_conflict() -> None:
     old = SealedOosVault(TEST_ONLY_PROFILE, InMemoryUnsealingLedger(), max_unsealings=2)
     assert (old.max_unsealings, old.budget_source) == (2, "param:max_unsealings")
-    with pytest.raises(ValueError, match="max_unsealings"):
+    with pytest.raises(TypeError, match="max_unsealings"):  # unchanged for old Profiles
         SealedOosVault(TEST_ONLY_PROFILE, InMemoryUnsealingLedger())
     profile = _with(TEST_ONLY_PROFILE, "data_split", sealed_oos_max_unsealings=1)
     vault = SealedOosVault(profile, InMemoryUnsealingLedger())

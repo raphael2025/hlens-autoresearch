@@ -367,4 +367,18 @@ def test_existing_interaction_specs_and_hashes_are_unchanged() -> None:
         "934d1c77a283bdd2be96cb7ee8ef7cb11cd08dcd8fb3a455a00716050eb31558"
     )
     assert sequence.name == "x_cross_up_then_regime_switch"
+    # The same specs built now are 2.1.0 (ADR-0052 M2; the envelope is in every content hash).
+    now_sequence = EventSequenceProvider.spec(CROSS_UP, SWITCH, 3 * MINUTE, observable_lag=LAG)
+    now_co_occur = EventCoOccurrenceProvider.spec(CROSS_UP, SWITCH, MINUTE, observable_lag=LAG)
+    assert (
+        CROSS_UP.content_hash(),
+        SWITCH.content_hash(),
+        now_sequence.content_hash(),
+        now_co_occur.content_hash(),
+    ) == (
+        "6579b3f26b2d3767c97acf4acc3d2b6a79c8007b5f2846012f94965c97f18de6",
+        "f9738dcbc9823a16e6484522c87f99dbb16b425f81e1637a34542d8bdbc9677f",
+        "805b92185be9e55b08b672122b8e1b700814d46e5f7783803009636e5ebf01b4",
+        "8cde62efeb31103c45d9e738baefc99ab5f82a2e8cca6ee12aabc8c88c1e44c8",
+    )
     assert co_occur.name == "x_cross_up_with_regime_switch"

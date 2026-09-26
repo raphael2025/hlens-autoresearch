@@ -29,6 +29,7 @@ from research.validation.g4 import CHECK_ERROR, CHECKS, check_error
 from research.validation.gates import ProfileFieldMissing, flag_gate
 from research.validation.robustness import CheckStatus, RobustnessCheck
 from research.validation.stats import UnsupportedMethod
+from tests.contract_version_support import envelopes_at_pre_bump
 from tests.research.validation import robustness_fixtures as rf
 from tests.research.validation.fixtures import context
 from tests.research.validation.test_robustness import _p4_input
@@ -40,6 +41,12 @@ from tests.research.validation.test_robustness import _p4_input
 PINNED = {
     "momentum": "6290e21f9cd2ee7e46c476f3c86ea620dc0748b57c91e7413cc9769ebd4b02e0",
     "noise": "217028ecd767b95fde38036b612a64fe16c36ed70821be3c287ef260cb06dd8f",
+}
+#: The same objects built now carry the 2.1.0 envelope (ADR-0052 M2: new objects are 2.1.0
+#: and the envelope is part of every content hash); pinned next to the 2.0.0 evidence above.
+PINNED_2_1_0 = {
+    "momentum": "cc56d5963671bf705dfce3e57fbbf3ddb03ec4b195133f83c38e3bdc6cdddfc4",
+    "noise": "ef9f32a6f3534b8ead4c00c843167d4c68633e131fa9273e717e3e30f450d090",
 }
 #: The module-level name ``run_robustness`` calls for every check id.
 FUNCTIONS = {
@@ -66,7 +73,9 @@ def _input(family: str):  # type: ignore[no-untyped-def]
 
 
 def _digest(result: RobustnessResult) -> str:
-    return hashlib.sha256(to_json(result.to_dict()).encode()).hexdigest()
+    # The pins predate contract 2.1.0 (ADR-0052 §4): the gates' embedded envelopes are compared
+    # as 2.0.0; any other byte of the output must still match.
+    return hashlib.sha256(to_json(envelopes_at_pre_bump(result.to_dict())).encode()).hexdigest()
 
 
 def _raiser(error: BaseException):  # type: ignore[no-untyped-def]
@@ -93,6 +102,8 @@ def _passing(check_id: str, principles: tuple[str, ...], prefix: str):  # type: 
 def test_without_an_exception_the_output_is_byte_identical(family: str) -> None:
     result = run_robustness(_input(family))
     assert _digest(result) == PINNED[family]
+    raw = hashlib.sha256(to_json(result.to_dict()).encode()).hexdigest()
+    assert raw == PINNED_2_1_0[family]
     assert all(CHECK_ERROR not in gate.gate_id for gate in result.gates)
 
 

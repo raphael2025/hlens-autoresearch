@@ -51,14 +51,19 @@ BH = "G2.market_benchmark.buy_and_hold_equal_weight"
 #: ADR-0060 enforcement (2026-09-26): the TEST ONLY fixture Profiles' ``benchmark`` block now
 #: names ``buy_and_hold_equal_weight`` + inverse control (was the placeholder ``"test-only"``),
 #: which changes the Profile the reports bind; still no opt-in here, still no benchmark item.
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values still hold when the same test builds every object at 2.0.0
+#: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
+#: 2.0.0 values (evidence, git history): 6dd0103a…, 150814f2…, 53bb8fe3…, 2e445144…
 PINNED = {
     "single": (
-        "6dd0103a1dc9eeaa748c2a12b6e45a44a305ae0960e77b4b807ec811aba235e3",
-        "150814f2f5605665b070187b718b1fde22923a2fb3a0c90c27aa09ecffacb596",
+        "d5ca922f79b7c69b4bb6dd7364803b1e4a9cb76f9580cf07a3ca96cca4c94e88",
+        "ab660a9f796234ed07048cac342d50f8f296361598ecdd1dbe0a772ff4e25b08",
     ),
     "multi": (
-        "53bb8fe3f626f8be6461e666a71cee001f76525cece4c7721e874d0841d31f25",
-        "2e445144d38d917993c50627aafedb5d16c09a2ad77164fcc0e11bbb557f0744",
+        "c90fb6994c3023f5d7399b785ce3af5c3da52a8c85ce0e781ee23d07ee621735",
+        "679840ded32bbca99a871439caa834efc8a885f58386277cf6bedca07841ef93",
     ),
 }
 

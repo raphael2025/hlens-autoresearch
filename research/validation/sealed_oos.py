@@ -276,7 +276,12 @@ class SealedOosVault:
         budget, source = sourced_parameter(
             profile, MAX_UNSEALINGS_FIELD, max_unsealings, "max_unsealings"
         )
-        if budget is None or isinstance(budget, bool) or budget < 1:
+        if budget is None:  # an old Profile: the explicit argument stays required, as before
+            raise TypeError(
+                "SealedOosVault() missing required keyword argument 'max_unsealings' "
+                f"(the Profile has no {MAX_UNSEALINGS_FIELD})"
+            )
+        if isinstance(budget, bool) or budget < 1:
             raise ValueError("max_unsealings must be a positive int")
         self.window = SealedWindow.from_profile(profile)
         self.max_unsealings: int = budget

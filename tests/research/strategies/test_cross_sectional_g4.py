@@ -66,15 +66,21 @@ def _sha(text: str) -> str:
 #: placeholder ``"test-only"`` to ``buy_and_hold_equal_weight`` + inverse control, so every
 #: report / view hash (they bind the Profile) changed; nothing here opts in, and the G4
 #: diagnostic hashes are unchanged.
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values still hold when the same test builds every object at 2.0.0
+#: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
+#: 2.0.0 values (evidence, git history): 6dd0103a…, 150814f2…, 53bb8fe3…, 2e445144…,
+#: 92190e46…, b84dede4…, 95a83d79…, 9a0142ee…
 PINNED = {
-    "single_planted_report": "6dd0103a1dc9eeaa748c2a12b6e45a44a305ae0960e77b4b807ec811aba235e3",
-    "single_planted_view": "150814f2f5605665b070187b718b1fde22923a2fb3a0c90c27aa09ecffacb596",
-    "multi_p,p_report": "53bb8fe3f626f8be6461e666a71cee001f76525cece4c7721e874d0841d31f25",
-    "multi_p,p_view": "2e445144d38d917993c50627aafedb5d16c09a2ad77164fcc0e11bbb557f0744",
-    "multi_p,p_g4": "92190e46587629c968ac05a2728782e3263232cfc5d7671b274405f7d26504ea",
-    "multi_p,n,p_report": "b84dede4f1e0c5eb8b7971ef9bd99a8f2bdd98e86a4393432e10339da52f704a",
-    "multi_p,n,p_view": "95a83d79a77a1b94cdf90ecb1b6b963efa337c643cdc64005ff30520b87de47b",
-    "multi_p,n,p_g4": "9a0142eea9d9f48cd06b76dde307db30b077bb193e2fb62e4ed65daf8aa01ddb",
+    "single_planted_report": "d5ca922f79b7c69b4bb6dd7364803b1e4a9cb76f9580cf07a3ca96cca4c94e88",
+    "single_planted_view": "ab660a9f796234ed07048cac342d50f8f296361598ecdd1dbe0a772ff4e25b08",
+    "multi_p,p_report": "c90fb6994c3023f5d7399b785ce3af5c3da52a8c85ce0e781ee23d07ee621735",
+    "multi_p,p_view": "679840ded32bbca99a871439caa834efc8a885f58386277cf6bedca07841ef93",
+    "multi_p,p_g4": "e95b1e91393213608ca9e06527fc3a48adca51ce273f43755f81a1b289920629",
+    "multi_p,n,p_report": "4d2a52e5b8826843fbd3030573c3543cea7cc36ac57127f30ec6811367b75b8d",
+    "multi_p,n,p_view": "c941d036f46b081479503dba9b4171f168cf4833c3ba828d387233a807c7965f",
+    "multi_p,n,p_g4": "87af742d10d892831e0b45e96ea5f0cd385228db24a5a0ad8808aaa3aeda37a3",
 }
 
 

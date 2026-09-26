@@ -347,12 +347,17 @@ def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) ->
 #: inverse control reported (was the unregistered placeholder ``"test-only"``), so every report
 #: carries the reported-only ``G2.market_benchmark.*`` / ``G2.inverse_control`` items and the
 #: configuration fingerprint (which binds the Profile) changed.
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values still hold when the same test builds every object at 2.0.0
+#: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
+#: 2.0.0 values (evidence, git history): 9b5e9e8c…, 96e58aff…, 1df0bc1c…; fingerprint f7a137b2…
 PINNED_RECORD_HASHES = [
-    "9b5e9e8c8fcb1dd4e2140726a930cddc529816bba041019282781c9132876d0d",
-    "96e58affe8c2726a97f5c838db2ddb55957e6c48f1a45264dd12a4a6650b51c4",
-    "1df0bc1c0282aa00c3006f977f213841f8db09038506cb644445fd7775edcffa",
+    "e241ceb227176d212c33c9a67a0532c04a554882ef4c3566ed306cb5cffcc881",
+    "86b2adda7356a93a02b8ad25b8ce1e73168b02347f3b872befb48fab2704e8bb",
+    "a0dc0b91496869215294bb0af8dfb0a39f719c7aa63df6eff81b9d425b145401",
 ]
-PINNED_FINGERPRINT_HASH = "f7a137b21eb020b70bdca4a5e1608a5793308a1263b251a7058d4f6f4afdc342"
+PINNED_FINGERPRINT_HASH = "175c1a475a804bab4ad90b456e4df52683ff4729446c2540c42a8fc241669181"
 
 
 def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:
