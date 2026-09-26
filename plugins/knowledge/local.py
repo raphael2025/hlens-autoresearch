@@ -26,7 +26,7 @@ from core.contracts.knowledge import (
 )
 from core.domain.research import KnowledgeItem
 
-__all__ = ["DEFAULT_ITEMS_DIR", "LocalKnowledgeProvider"]
+__all__ = ["DEFAULT_ITEMS_DIR", "LocalKnowledgeProvider", "load_items"]
 
 DEFAULT_ITEMS_DIR: Final = Path(__file__).resolve().parents[2] / "docs" / "research" / "knowledge"
 _NAME: Final = "hlens_knowledge_local"
@@ -37,7 +37,7 @@ class LocalKnowledgeProvider:
     """Offline retrieval over reviewed item files; deterministic."""
 
     def __init__(self, items_dir: Path = DEFAULT_ITEMS_DIR) -> None:
-        self._items = _load(sorted(Path(items_dir).glob("*.json")))
+        self._items = load_items(sorted(Path(items_dir).glob("*.json")))
         self._descriptor = KnowledgeProviderDescriptor(
             name=_NAME,
             version=_VERSION,
@@ -76,7 +76,8 @@ class LocalKnowledgeProvider:
         return KnowledgeResult.build(query, self._descriptor.plugin_key, tuple(hits[: query.limit]))
 
 
-def _load(paths: Iterable[Path]) -> tuple[KnowledgeItem, ...]:
+def load_items(paths: Iterable[Path]) -> tuple[KnowledgeItem, ...]:
+    """Load and validate item files (the fail-closed rules of the module docstring)."""
     items: dict[tuple[str, str], KnowledgeItem] = {}
     for path in paths:
         try:
