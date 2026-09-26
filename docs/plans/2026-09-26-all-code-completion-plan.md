@@ -483,3 +483,14 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 子代理实际运行（最终）：`tests/infrastructure`（非 PostgreSQL，含 D-NET / tools）→ **2041 passed, 136 deselected (1557.69 s)**；`tests/test_*.py tests/contract_suites tests/research/validation tests/research/strategies/test_backtest_validation.py` → **3061 passed**；
   ruff / format（613 files）/ mypy（474 files）通过。集成会话正在该提交上跑真实 PostgreSQL 严格全量门禁（仅作证据，按 K3 未经 Codex 复核不并入候选）。
 - 后续（core 合并通道进行中）：把该分支合并进全代码分支；以 2.1.0 重新声明 ADR-0054 / 0057 字段；固定全代码分支上已发布于 2.0.0 的研究 / 插件身份（如 `BarRealizedVolatilityProvider.spec()`）；研究侧 ADR-0052 取值（精确比较、C-A4、负对照独立阈值、G4 / 封存 OOS 字段）；最终全量门禁。
+
+**B39 — ADR-0060 在循环与合成校准中强制启用（L7：`90a0be0` 的 cherry-pick，本分支 `2d852b3`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 循环 `ValidatorSetup(market_benchmark=True)`；`StrategyValidatorDetector` / `MultiInstrumentValidatorDetector` 对未启用的设置拒绝（`DetectorConfigurationError`），保证校准与循环同一流水线；
+  `ValidatorSetup.market_benchmark` 默认仍为 `False`（默认启用会使路由自身验证全部 INCONCLUSIVE——路由回测无法用普通 `BarBacktester` 重跑复现）。
+- TEST ONLY 夹具 Profile（循环、校准宽 / 严、`test_backtest_validation`、三个 PostgreSQL e2e）改为 `buy_and_hold_equal_weight` + `inverse_control_reported=True`；`tests/research/validation/fixtures.py` 与玩具检测器 Profile 有意保留 `"test-only"`（前者被未登记规则单测使用，后者保持已提交的控制台夹具逐字节不变）。
+- 有意重新固定的哈希（每处带注释）：循环 3 个记录哈希与配置指纹；`PRE_G5_PIPELINE_ONE_SEED_HASH`；横截面 G4、多标的验证、市场基准测试的报告 / 视图哈希（仅因绑定新 Profile）；金标准实验重新生成
+  `be2430e6…` → `c8d129e6…`（只多 5 个报告项 G2 门，32 → 37，其余输出与判定不变）。
+- 实际运行：本分支集成后 `pytest -m "not postgres" tests/research tests/infrastructure/migration tests/golden tests/test_docs_consistency.py` → **858 passed, 1 warning (1376.94 s)**（L7 子代理报告的 4 个 `LoopStateLocked` 失败已由 B37 的 `conftest.py` 修复）；
+  `ruff check .` → 通过；`mypy research tests/research` → no issues in 168 files。PostgreSQL e2e 的 Profile 变化未经验证（其中 `test_research_loop_real_data_g5` 断言 PASS）。
+- 遗留：`research/strategies/validation.py` / `pipeline.py` 文档字符串仍称循环与校准未启用（待更新）；`07-validation.md` §G2 门清单待同步。
