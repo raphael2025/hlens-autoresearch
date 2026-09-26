@@ -10,6 +10,11 @@ Before anything is written the check is recomputed: ``monitor.check(check.subjec
 recent)`` must equal ``check`` (a check that is not what this monitor gives for these metrics is
 refused, ``ValueError``), so the report cannot pair a result with inputs it did not come from.
 
+A check in which every ruled metric is missing is ``insufficient_evidence``: the payload then
+carries ``"insufficient_evidence": true`` (the key is added **only** in that case, so every other
+payload and its ``check_hash`` are unchanged) next to ``"degraded": false`` — a reader must not
+show it as healthy.
+
 The payload is deterministic and JSON-ready (``Decimal`` as exact text); ``check_hash`` is the
 content hash of the rest of it and the report id. ``apps/api``'s ``ReportStore`` serves it as the
 ``degradation_check`` kind and recomputes ``check_hash``. Evidence only: a degradation check never
@@ -103,6 +108,8 @@ def degradation_check_payload(
         "breaches": [dict(sorted(breach.items())) for breach in check.breaches],
         "missing": list(check.missing),
     }
+    if check.insufficient_evidence:
+        body["insufficient_evidence"] = True
     return {**body, "check_hash": content_hash(body)}
 
 

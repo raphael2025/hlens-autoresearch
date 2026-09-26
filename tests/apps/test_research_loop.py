@@ -29,7 +29,11 @@ from apps.worker import (
     StageStatus,
     StageUsage,
 )
-from apps.worker.degradation import DEGRADATION_TOPIC
+from apps.worker.degradation import (
+    DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC,
+    DEGRADATION_TOPIC,
+    DegradationCheck,
+)
 from apps.worker.loop import (
     EXTENDED_STAGE_ORDER,
     FORBIDDEN_TARGETS,
@@ -455,6 +459,34 @@ def test_degradation_monitor_uses_profile_thresholds_and_publishes() -> None:
         DegradationMonitor({}, source="none")
     with pytest.raises(ValueError, match="lacks"):
         monitor.check(SUBJECT, {"sharpe": 1}, {})
+
+
+def test_a_check_with_every_metric_missing_is_insufficient_evidence_never_healthy() -> None:
+    # TEST ONLY thresholds (arbitrary numbers, not a proposal).
+    bus = InMemoryEventBus()
+    monitor = DegradationMonitor({"sharpe": 0.5, "max_drawdown[<=]": 0.1}, source="t", bus=bus)
+    baseline = {"sharpe": Decimal("1.2"), "max_drawdown": Decimal("0.10")}
+    empty = monitor.observe(SUBJECT, baseline, {}, window="w0")
+    assert empty.insufficient_evidence and empty.status == "insufficient_evidence"
+    assert not empty.degraded and empty.missing == ("max_drawdown", "sharpe")
+    [event] = bus.poll("ops", DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC, 10)
+    assert list(event.payload["missing"]) == ["max_drawdown", "sharpe"]
+    assert bus.poll("ops", DEGRADATION_TOPIC, 10) == ()  # never a degradation event
+    # partial evidence is not "insufficient" as a whole; the missing metric is still named
+    partial = monitor.observe(SUBJECT, baseline, {"sharpe": Decimal("1.1")}, window="w1")
+    assert not partial.insufficient_evidence and partial.status == "not_degraded"
+    assert partial.missing == ("max_drawdown",)
+    assert bus.poll("ops", DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC, 10) == (event,)
+    worse = monitor.check(SUBJECT, baseline, {"sharpe": Decimal("0.1")})
+    assert worse.status == "degraded" and not worse.insufficient_evidence
+    # without a bus an insufficient-evidence observation is not silently dropped
+    with pytest.raises(ValueError, match="insufficient_evidence"):
+        DegradationMonitor({"sharpe": 0.5}, source="t").observe(SUBJECT, baseline, {}, window="w")
+    # the state cannot be claimed with a breach or without missing metrics
+    with pytest.raises(ValueError, match="insufficient evidence"):
+        DegradationCheck(SUBJECT, worse.breaches, ("sharpe",), insufficient_evidence=True)
+    with pytest.raises(ValueError, match="insufficient evidence"):
+        DegradationCheck(SUBJECT, (), (), insufficient_evidence=True)
 
 
 def test_worker_loop_modules_depend_only_on_core_and_the_stdlib() -> None:

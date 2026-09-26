@@ -15,7 +15,11 @@ comparators in ``research/validation/gates.py``):
   the threshold.
 
 A metric with a threshold but no recent value is reported as ``missing`` (evidence insufficient),
-never as healthy and never as degraded.
+never as healthy and never as degraded. When **every** ruled metric is missing the check as a whole
+is ``insufficient_evidence`` (``status``), never "not degraded": there is no evidence either way.
+``observe`` then publishes on ``DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC`` — a separate topic, so a
+consumer of ``DEGRADATION_TOPIC`` (the Control Plane's degradation evidence) never mistakes it for
+a degradation.
 """
 
 from __future__ import annotations
@@ -24,15 +28,26 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from decimal import Decimal
-from typing import Final
+from typing import Final, Literal
 
 from core.contracts.event_bus import BusMessage, EventBusAdapter
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import Ref
 
-__all__ = ["DEGRADATION_TOPIC", "DegradationCheck", "DegradationMonitor", "DegradationRule"]
+__all__ = [
+    "DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC",
+    "DEGRADATION_TOPIC",
+    "DegradationCheck",
+    "DegradationMonitor",
+    "DegradationRule",
+    "DegradationStatus",
+]
 
 DEGRADATION_TOPIC: Final = "research_loop.degradation"
+#: Where ``observe`` reports a check without any recent value (not a degradation event).
+DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC: Final = "research_loop.degradation_insufficient_evidence"
+
+type DegradationStatus = Literal["degraded", "insufficient_evidence", "not_degraded"]
 _KEY: Final = re.compile(r"^(?P<metric>[A-Za-z0-9_.]+)(?:\[(?P<op><=|>=)\])?$")
 
 
@@ -49,10 +64,24 @@ class DegradationCheck:
     subject: Ref
     breaches: tuple[dict[str, str], ...]
     missing: tuple[str, ...]
+    #: every ruled metric lacked a recent value: no evidence either way (never "not degraded")
+    insufficient_evidence: bool = False
+
+    def __post_init__(self) -> None:
+        if self.insufficient_evidence and (self.breaches or not self.missing):
+            raise ValueError("insufficient evidence means every metric is missing, none breached")
 
     @property
     def degraded(self) -> bool:
         return bool(self.breaches)
+
+    @property
+    def status(self) -> DegradationStatus:
+        if self.breaches:
+            return "degraded"
+        if self.insufficient_evidence:
+            return "insufficient_evidence"
+        return "not_degraded"
 
 
 def _to_decimal(value: Decimal | float | int, name: str) -> Decimal:
@@ -133,7 +162,12 @@ class DegradationMonitor:
                         "threshold_source": rule.source,
                     }
                 )
-        return DegradationCheck(subject, tuple(breaches), tuple(missing))
+        return DegradationCheck(
+            subject,
+            tuple(breaches),
+            tuple(missing),
+            insufficient_evidence=len(missing) == len(self._rules),
+        )
 
     def observe(
         self,
@@ -143,14 +177,19 @@ class DegradationMonitor:
         *,
         window: str,
     ) -> DegradationCheck:
-        """``check`` and publish a degradation event when degraded (``window`` names the data)."""
+        """``check`` and publish a degradation event when degraded, or an insufficient-evidence
+        event (its own topic) when no ruled metric has a recent value (``window`` names the data).
+        """
         result = self.check(subject, baseline, recent)
-        if result.degraded:
+        if result.degraded or result.insufficient_evidence:
             if self._bus is None:
-                raise ValueError("observe needs a bus to publish the degradation event")
+                raise ValueError(f"observe needs a bus to publish the {result.status} event")
+            topic = (
+                DEGRADATION_TOPIC if result.degraded else DEGRADATION_INSUFFICIENT_EVIDENCE_TOPIC
+            )
             self._bus.publish(
                 BusMessage.build(
-                    DEGRADATION_TOPIC,
+                    topic,
                     f"{subject}:{window}",
                     {
                         "subject": str(subject),

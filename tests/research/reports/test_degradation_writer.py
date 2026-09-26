@@ -124,6 +124,29 @@ def test_a_healthy_check_is_reported_too() -> None:
     assert payload["degraded"] is False and payload["breaches"] == [] and payload["missing"] == []
 
 
+def test_a_check_without_any_recent_value_is_reported_as_insufficient_evidence() -> None:
+    empty = monitor().check(SUBJECT, BASELINE, {})
+    payload = degradation_check_payload(
+        empty, monitor=monitor(), baseline=BASELINE, recent={}, window=WINDOW
+    )
+    assert payload["insufficient_evidence"] is True and payload["degraded"] is False
+    assert payload["missing"] == ["hit_rate", "max_drawdown", "sharpe"]
+    assert all(item["missing"] and item["recent"] is None for item in payload["metrics"])
+    body = {key: value for key, value in payload.items() if key != "check_hash"}
+    assert payload["check_hash"] == content_hash(body)
+    # the key is additive: only an insufficient-evidence check carries it
+    assert "insufficient_evidence" not in _payload()
+
+
+def test_an_insufficient_evidence_check_is_served_by_the_store(tmp_path: Path) -> None:
+    empty = monitor().check(SUBJECT, BASELINE, {})
+    written = write_degradation_check(
+        tmp_path, empty, monitor=monitor(), baseline=BASELINE, recent={}, window=WINDOW
+    )
+    envelope = ReportStore(tmp_path).get(ReportKind.DEGRADATION_CHECK, written.id)
+    assert envelope.payload["insufficient_evidence"] is True
+
+
 def test_written_under_its_hash_and_served_by_the_api(tmp_path: Path) -> None:
     written = write_fixture(tmp_path)
     payload = json.loads(written.path.read_text(encoding="utf-8"))

@@ -18,7 +18,7 @@ import——两边只通过这份文件格式约定耦合。
 | `gate_calibration.py` | `write_gate_calibration_report`：Phase 9 `GateCalibrationReport`（`research/synthetic_lab/gate_calibration.py`；id = `report_hash`） |
 | `state_diagnostics.py` | `write_state_diagnostics`：Phase 2 `StateDiagnostics`（`research/states/diagnostics.py`；kind `state_diagnostics`，id = `diagnostics_hash`；写入前经 JSON 往返 `from_payload(..., expected_hash=)` 校验，不能往返的报告拒绝写入） |
 | `deviation.py` | `write_paper_deviation`：Phase 10 `PaperDeviation`（`research/router/deviation.py`；kind `paper_deviation`，id = `deviation_hash`；写入前从 payload 重算哈希，不符拒绝写入；2026-09-26，CODE_COMPLETE / DEBUG_PENDING） |
-| `degradation.py` | `write_degradation_check`：Phase 11 `DegradationCheck`（`apps/worker/degradation.py` 的 `DegradationMonitor.check`；kind `degradation_check`，id = `check_hash`；payload 记录每条规则的 metric / 方向 / baseline / recent / decline / 允许下降 / 阈值来源、breaches、missing 与 `window`；写入前用同一 monitor 重算 check，不一致拒绝写入；只作证据、不改生命周期；未接入 research loop；2026-09-26，CODE_COMPLETE / DEBUG_PENDING） |
+| `degradation.py` | `write_degradation_check`：Phase 11 `DegradationCheck`（`apps/worker/degradation.py` 的 `DegradationMonitor.check`；kind `degradation_check`，id = `check_hash`；payload 记录每条规则的 metric / 方向 / baseline / recent / decline / 允许下降 / 阈值来源、breaches、missing 与 `window`；所有指标都缺近期值时附加 `"insufficient_evidence": true`（仅此情形才有该键，其余载荷与哈希不变）；写入前用同一 monitor 重算 check，不一致拒绝写入；只作证据、不改生命周期；未接入 research loop；2026-09-26，CODE_COMPLETE / DEBUG_PENDING） |
 | `event_statistics.py` | `write_event_statistics`：Phase 3 `EventStatsReport`（`research/events/stats.py`；kind `event_statistics`，id = `report_hash`；写入前从 payload 重算哈希，不符拒绝写入） |
 
 以上 kind 都是 `apps/api` `ReportKind` 的成员（2026-09-26：`router_stop` / `state_diagnostics` / `event_statistics` / `paper_deviation` /
