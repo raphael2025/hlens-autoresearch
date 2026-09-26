@@ -515,3 +515,9 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   `ruff check .` → All checks passed；`ruff format --check .` → 736 files already formatted；`mypy` → no issues in 580 source files；Schema 135 份且重新导出无差异；`npm test` → 96 / 96；`npm run build` ✓；`gen:api` 重跑无差异。
 - 未覆盖：PostgreSQL 标记测试（本分支从不跑真实数据库；独立 Phase 1 分支由集成会话以真实 PostgreSQL 测试 catalog 取证）；ADR-0053 是状态机规则而非契约字段，未做版本门控；五个旧控制台夹具有意保留 2.0.0 以证明旧报告可读。
 
+
+**B42 — ADR-0052 Phase 1 分支的真实 PostgreSQL 严格门禁（集成会话取证）**
+
+- `22392ea`（钉住 worktree、真实 PostgreSQL 测试 catalog）：**GATE OK** —— ruff All checks passed；613 files already formatted；mypy no issues in 474 source files；lock ok；
+  **pytest 5852 passed, 1 warning in 3216.90s (0:53:36)**。（此前 `8a7655e` 为 7 failed / 5845 passed，B40 修复。）仅作证据：按 Codex K3，集成会话在 Codex 复核前不并入 Phase 1 候选或 `wip/phase-1-unreviewed`。
+- 另：`dc89d1e` 更正验证器文档字符串与 `07-validation.md` G2 行（ADR-0060 已在循环 / 合成校准强制启用）。
