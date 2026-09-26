@@ -45,6 +45,18 @@ ref already frozen under another hash (``FreezeConflict``). Blobs are re-verifie
 Tampering, a broken chain, a partial trailing line (a crash mid-write) or a shrunken file are
 ``RegistryCorrupted`` via the journal. There is no edit, delete, unfreeze or supersede operation.
 
+**Append path.** ``register_freeze`` runs every rule — including status, provenance, duplicate /
+conflict and the calibration report's kind and self-hash, checked on the given bytes — **before
+anything is written**, so a refused registration leaves the journal, the anchor and ``blobs/``
+unchanged. Only then does it store the report blob, append the journal record, append the anchor
+and, last, admit the freeze in memory. If anything fails once the disk may have changed (the blob,
+the journal record or the anchor), the instance is **poisoned** and closed: every read that could
+carry authority (``frozen_record``, ``freeze_of``, ``freezes``, ``len``) and every further write
+raise ``RegistryCorrupted`` until a fresh ``ProfileFreezeRegistry`` replays and verifies the disk —
+a record fully written but not anchored is the one crash window and is re-anchored; a partial
+trailing line makes the registry unopenable. The in-memory view is never used after such a
+failure.
+
 **Honest boundary** (ADR-0062 decision 6): ``approved_by`` is a declared name — the registry does
 not authenticate an operating-system user or prove the approver's authority. It is not the
 production Control Plane and grants no live trading, funds or production-deployment authority. It
@@ -56,6 +68,7 @@ storage the registry's writer cannot roll back.
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
@@ -193,6 +206,8 @@ class ProfileFreezeRegistry:
         if anchor_path.resolve().is_relative_to(self._root.resolve()):
             raise ValueError("the freeze registry anchor must live outside the registry directory")
         self._root.mkdir(parents=True, exist_ok=True)
+        #: Why this instance may no longer be trusted (a failed append; see module docs).
+        self._poisoned: str | None = None
         self._lock_fd: int | None = os.open(self._root / ".lock", os.O_RDWR | os.O_CREAT, 0o600)
         try:
             fcntl.flock(self._lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
@@ -238,8 +253,17 @@ class ProfileFreezeRegistry:
         self.close()
 
     def _require_open(self) -> None:
+        if self._poisoned is not None:
+            raise RegistryCorrupted(
+                f"this freeze registry instance is poisoned ({self._poisoned}); open a new one to "
+                "replay and verify the disk"
+            )
         if self._lock_fd is None:
             raise RegistryError("the freeze registry is closed")
+
+    def _poison(self, reason: str) -> None:
+        self._poisoned = reason
+        self.close()
 
     # ---- anchor (mandatory) -------------------------------------------------------------
 
@@ -286,8 +310,14 @@ class ProfileFreezeRegistry:
 
     # ---- rules (shared by append and replay) ----------------------------------------------
 
-    def _apply(self, type_: str, payload: Mapping[str, Any]) -> Callable[[], None]:
-        """Check one record against every rule; returns the commit that admits it in memory."""
+    def _apply(
+        self, type_: str, payload: Mapping[str, Any], *, report: object = None
+    ) -> Callable[[], None]:
+        """Check one record against every rule; returns the commit that admits it in memory.
+
+        ``report`` (register only): the calibration report parsed from the given bytes, checked in
+        place of the not-yet-stored blob; on replay (``None``) the blob is read and verified.
+        """
         if type_ != PROFILE_FROZEN:
             raise RegistryRefused(f"unknown record type {type_!r}")
         if set(payload) != _KEYS:
@@ -320,12 +350,11 @@ class ProfileFreezeRegistry:
                 f"{profile_ref} cites calibration report {profile.provenance.calibration_report!r}"
                 f", not {report_hash}"
             )
-        try:
-            report = self._blobs.get(calibration["uri"], sha256)
-        except BlobMissing as exc:
-            raise RegistryRefused(f"calibration report blob: {exc}") from exc
-        except BlobCorrupted as exc:
-            raise RegistryRefused(f"calibration report blob: {exc}") from exc
+        if report is None:
+            try:
+                report = self._blobs.get(calibration["uri"], sha256)
+            except (BlobMissing, BlobCorrupted) as exc:
+                raise RegistryRefused(f"calibration report blob: {exc}") from exc
         _check_report(report, report_hash)
         approved_by = _check_approver(payload["approved_by"])
         approved_at = _parse_utc(payload["approved_at"])
@@ -392,7 +421,7 @@ class ProfileFreezeRegistry:
         report_hash = report.get("report_hash")
         if not isinstance(report_hash, str):
             raise RegistryRefused("the calibration report has no report_hash")
-        _check_report(report, report_hash)
+        sha256 = hashlib.sha256(calibration_report).hexdigest()
         body: dict[str, Any] = {
             "format_version": FORMAT_VERSION,
             "profile": profile.model_dump(mode="json"),
@@ -401,42 +430,44 @@ class ProfileFreezeRegistry:
             "calibration": {
                 "kind": CALIBRATION_KIND,
                 "report_hash": report_hash,
-                "sha256": "",  # filled below, once the bytes are stored
-                "uri": "",
+                "sha256": sha256,
+                "uri": blob_uri(sha256),
             },
             "approved_by": approved_by,
             "approved_at": _utc_text(approved_at),
         }
-        if profile.provenance.calibration_report != report_hash:  # before storing anything
-            raise RegistryRefused(
-                f"{profile.ref} cites calibration report {profile.provenance.calibration_report!r}"
-                f", not {report_hash}"
-            )
-        existing = self._by_ref.get(str(profile.ref))
-        if existing is not None:  # the same check runs again in _apply; this one writes nothing
-            if existing.profile_hash == profile.content_hash():
-                raise DuplicateRecord(f"{profile.ref} is already frozen")
-            raise FreezeConflict(f"{profile.ref} is already frozen as {existing.profile_hash}")
-        uri, sha256 = self._blobs.put(report)
-        body["calibration"]["sha256"], body["calibration"]["uri"] = sha256, uri
         payload = {**body, "freeze_id": content_hash(body)}
-        commit = self._apply(PROFILE_FROZEN, payload)  # every rule before the journal write
+        # every rule — status, provenance, duplicate / conflict, the report — on the given bytes,
+        # before anything is written: a refusal leaves the journal, the anchor and blobs/ unchanged
+        commit = self._apply(PROFILE_FROZEN, payload, report=report)
         try:
+            stored = self._blobs.put(report)
+            if stored != (blob_uri(sha256), sha256):  # pragma: no cover - canonical bytes checked
+                raise RegistryCorrupted("the blob store stored other bytes than were given")
             self._journal.append(PROFILE_FROZEN, payload)
-        except JournalCorrupted as exc:
-            raise RegistryCorrupted(f"freeze journal: {exc}") from exc
-        commit()
-        self._write_anchor(self._anchor)
+            self._write_anchor(self._anchor)
+        except BaseException as exc:
+            # the disk may have changed: never trust this instance's memory again
+            self._poison(f"register_freeze failed after writing began: {type(exc).__name__}")
+            if isinstance(exc, RegistryError):
+                raise
+            raise RegistryCorrupted(
+                f"register_freeze failed after writing began ({type(exc).__name__}: {exc}); this "
+                "instance is closed — open a new one to replay and verify the disk"
+            ) from exc
+        commit()  # admitted in memory only once the record and its anchor are durable
         return self._by_ref[str(profile.ref)]
 
     # ---- reads --------------------------------------------------------------------------
 
     def __len__(self) -> int:
+        self._require_open()
         return len(self._journal)
 
     @property
     def freezes(self) -> tuple[ProfileFreeze, ...]:
         """Every verified record, in journal order."""
+        self._require_open()
         return tuple(self._by_ref[ref] for ref in self._order)
 
     def freeze_of(self, ref: Ref | str) -> ProfileFreeze | None:
