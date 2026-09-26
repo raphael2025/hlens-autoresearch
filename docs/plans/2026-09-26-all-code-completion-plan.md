@@ -183,3 +183,10 @@
   限制：锚点与日志一起被尾删仍不可发现；持久循环组合根尚未自动给总线配锚点（跨阶段接线，后续）。
 - 实际运行：`uv run pytest -q tests/infrastructure/event_bus` → 43 passed；`ruff check` → All checks passed；`mypy infrastructure/event_bus tests/infrastructure/event_bus` → no issues in 6 files。
 
+**B5 — Phase 3：事件运行存储与统计序列化**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 文件：`infrastructure/event/store.py`（新）、`infrastructure/event/__init__.py`、`research/events/stats.py`、`research/events/README.md`；
+  测试 `tests/infrastructure/event/test_event_store.py`（新，6 项）、`tests/research/events/test_event_stats.py`（+2）。未触及 `core/`、契约、Schema、ADR；Iceberg `event.*` 表仍待 ADR（P3-EVTABLE）。
+- 实际运行：`uv run pytest -q tests/infrastructure/event` → 49 passed；`uv run pytest -q tests/research/events` → 7 passed；`ruff check` / `ruff format --check` → 通过；
+  `mypy infrastructure/event tests/infrastructure/event` → no issues in 11 files；`mypy research/events tests/research/events` → no issues in 4 files。
+

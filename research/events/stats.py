@@ -11,30 +11,40 @@ tables they are given. Exact where possible: times in whole microseconds, counts
 as ``Decimal`` in a fixed 28-digit context (deterministic, platform independent). A ratio whose
 denominator is zero is ``None`` (undefined), never 0.
 
+Serialisation (2026-09-26): ``statistic_payload`` turns any of the four results into
+deterministic JSON-ready data (times as ISO-8601 UTC, durations as integer microseconds,
+``Decimal`` as exact text, ``None`` kept) tagged with its ``kind``; ``EventStatsReport`` binds a
+set of statistics to the ``EventResult.result_hash`` values of the event runs they were computed
+from, and ``report_hash`` covers the whole payload — so a number in a report traces to its runs.
+
 Research code (``research/``): never imported by production packages (ADR-0005).
 """
 
 from __future__ import annotations
 
+import re
 from bisect import bisect_left, bisect_right
 from collections.abc import Sequence
-from dataclasses import dataclass
-from datetime import datetime, timedelta
+from dataclasses import dataclass, field, fields
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from itertools import pairwise
-from typing import Final
+from typing import Any, Final
 
 from core.contracts.event import Event
+from core.domain.base import content_hash
 
 __all__ = [
     "CoOccurrence",
     "EventFrequency",
+    "EventStatsReport",
     "LeadLag",
     "OverlapDiagnostics",
     "co_occurrence",
     "event_frequency",
     "lead_lag",
     "overlap_diagnostics",
+    "statistic_payload",
 ]
 
 _US: Final = timedelta(microseconds=1)
@@ -268,3 +278,77 @@ def overlap_diagnostics(events: Sequence[Event], *, horizon: timedelta) -> Overl
         mean_gap_seconds=mean,
         dispersion=dispersion,
     )
+
+
+# ======================================================================================
+# Serialisation
+# ======================================================================================
+
+_KINDS: Final = {
+    "EventFrequency": "event_frequency",
+    "CoOccurrence": "co_occurrence",
+    "LeadLag": "lead_lag",
+    "OverlapDiagnostics": "overlap_diagnostics",
+}
+_HASH_RE: Final = re.compile(r"^[0-9a-f]{64}$")
+Statistic = EventFrequency | CoOccurrence | LeadLag | OverlapDiagnostics
+
+
+def _plain(value: object) -> object:
+    if isinstance(value, datetime):
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("statistic times must be timezone-aware")
+        return value.astimezone(UTC).isoformat()
+    if isinstance(value, timedelta):
+        return _us(value)
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("statistic values must be finite")
+        return str(value)
+    if isinstance(value, tuple):
+        return [_plain(item) for item in value]
+    if value is None or isinstance(value, int | str):
+        return value
+    raise TypeError(f"cannot serialise {type(value).__name__}")
+
+
+def statistic_payload(statistic: Statistic) -> dict[str, Any]:
+    """Deterministic JSON-ready form of one statistic (see module docs)."""
+    kind = _KINDS.get(type(statistic).__name__)
+    if kind is None:
+        raise TypeError(f"not an event statistic: {type(statistic).__name__}")
+    body: dict[str, Any] = {"kind": kind}
+    for item in fields(statistic):
+        body[item.name] = _plain(getattr(statistic, item.name))
+    return body
+
+
+@dataclass(frozen=True)
+class EventStatsReport:
+    """Statistics bound to the event runs (``EventResult.result_hash``) they describe."""
+
+    source_result_hashes: tuple[str, ...]
+    statistics: tuple[Statistic, ...]
+    report_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        if not self.source_result_hashes or not self.statistics:
+            raise ValueError("a report binds at least one event run and one statistic")
+        if any(not _HASH_RE.match(h) for h in self.source_result_hashes):
+            raise ValueError("source_result_hashes must be content hashes")
+        if len(set(self.source_result_hashes)) != len(self.source_result_hashes):
+            raise ValueError("source_result_hashes must be distinct")
+        object.__setattr__(self, "report_hash", content_hash(self._body()))
+
+    def _body(self) -> dict[str, Any]:
+        return {
+            "kind": "event_statistics",
+            "schema_version": "1.0.0",
+            "status": "FRAMEWORK_IMPLEMENTED / NOT_VALIDATED",
+            "note": "descriptive only; no validation threshold; not a Validation Profile input",
+            "source_result_hashes": sorted(self.source_result_hashes),
+            "statistics": [statistic_payload(item) for item in self.statistics],
+        }
+
+    def to_payload(self) -> dict[str, Any]:
+        return {**self._body(), "report_hash": self.report_hash}

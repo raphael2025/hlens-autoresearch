@@ -36,4 +36,8 @@ State 序列目前以本地最小形状输入（`infrastructure/event/inputs.py`
 
 - 一个请求对应一个标的；多标的事件表需要 subject 键。
 - 执行器默认检查点的成本为 O(检查点 × 可见集合)。
-- 物理 Event 表未登记；统计未在真实数据上校准；事件频率过低 / 组合爆炸（roadmap 失败模式）尚无自动诊断之外的处理。
+- ✅（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）统计可序列化：`statistic_payload`（时间 ISO-8601 UTC、时长整数微秒、`Decimal` 精确文本）与
+  `EventStatsReport`（绑定所统计事件运行的 `result_hash`，`report_hash` 覆盖全部载荷）；事件运行可存取：`infrastructure/event/store.py` 的
+  `EventResultStore`（`<root>/<result_hash>.json` 规范 JSON，原子发布、从不覆盖，读取时重建 `EventResult` 复核哈希并要求字节即规范形式）。
+  这是**产物存储**，不是数据平面表。
+- 物理 Event 表（Iceberg `event.*`）未登记——需先立 ADR（计划执行记录 P3-EVTABLE）；统计未在真实数据上校准；事件频率过低 / 组合爆炸（roadmap 失败模式）尚无自动诊断之外的处理。

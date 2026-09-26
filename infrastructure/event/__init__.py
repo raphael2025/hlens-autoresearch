@@ -12,7 +12,9 @@
   each returns an ``UpstreamVerification`` naming the checks performed / not performed, and
   ``verify_upstream(..., require_full=True)`` (``run_events(..., require_full=True)``) refuses a
   run whose evidence for any applicable check is missing;
-- ``table``: ``event_table`` flattens a result into Event-table rows.
+- ``table``: ``event_table`` flattens a result into Event-table rows;
+- ``store``: ``EventResultStore`` — local content-addressed artifact store of whole event runs
+  (``<root>/<result_hash>.json``, never overwritten, verified on read); not an Iceberg table.
 
 Providers are injected through the ``core.contracts.event.EventProvider`` Protocol; nothing here
 imports a plugin.

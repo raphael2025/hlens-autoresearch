@@ -85,3 +85,50 @@ def test_statistics_are_order_independent() -> None:
     )
     assert forward == backward
     assert isinstance(T0, datetime)
+
+
+# -- serialisation ---------------------------------------------------------------------------
+
+
+def _all_statistics() -> tuple[object, ...]:
+    return (
+        event_frequency(EVENTS_A, start=T0, end=END, bucket=20 * MINUTE),
+        co_occurrence(EVENTS_A, EVENTS_B, window=2 * MINUTE, start=T0, end=END),
+        lead_lag(EVENTS_A, EVENTS_B, max_lag=5 * MINUTE, bin=MINUTE),
+        overlap_diagnostics(EVENTS_A, horizon=5 * MINUTE),
+    )
+
+
+def test_every_statistic_has_a_deterministic_json_payload() -> None:
+    import json
+
+    from research.events.stats import statistic_payload
+
+    payloads = [statistic_payload(stat) for stat in _all_statistics()]  # type: ignore[arg-type]
+    assert [p["kind"] for p in payloads] == [
+        "event_frequency", "co_occurrence", "lead_lag", "overlap_diagnostics",
+    ]  # fmt: skip
+    assert json.loads(json.dumps(payloads)) == payloads  # JSON-ready, no floats
+    frequency = payloads[0]
+    assert frequency["per_day"] == "120" and frequency["start"] == T0.isoformat()
+    assert frequency["buckets"][0] == [T0.isoformat(), 2]
+    assert payloads[2]["max_lag"] == 5 * 60 * 1_000_000  # microseconds
+    assert [statistic_payload(s) for s in _all_statistics()] == payloads  # type: ignore[arg-type]
+    with pytest.raises(TypeError):
+        statistic_payload(object())  # type: ignore[arg-type]
+
+
+def test_a_stats_report_binds_its_event_runs() -> None:
+    from research.events.stats import EventStatsReport
+
+    runs = (content_hash({"run": 1}), content_hash({"run": 2}))
+    stats = _all_statistics()
+    report = EventStatsReport(runs, stats)  # type: ignore[arg-type]
+    assert report.to_payload()["source_result_hashes"] == sorted(runs)
+    assert EventStatsReport(runs[::-1], stats).report_hash == report.report_hash  # type: ignore[arg-type]
+    assert EventStatsReport(runs[:1], stats).report_hash != report.report_hash  # type: ignore[arg-type]
+    for bad in ((), ("nope",), (runs[0], runs[0])):
+        with pytest.raises(ValueError):
+            EventStatsReport(bad, stats)  # type: ignore[arg-type]
+    with pytest.raises(ValueError):
+        EventStatsReport(runs, ())
