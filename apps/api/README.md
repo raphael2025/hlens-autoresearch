@@ -90,7 +90,8 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
 - **错误体不含服务器路径**：malformed 报告的 422 `detail` 为 `<kind>/<id> is malformed: <原因>`；本层所有
   `HTTPException` 经同一处理器把绝对路径缩成最后一段（`public_detail`），知识 provider 的 `OSError` 文本同样如此。
   2026-09-26 审计补充：`file:/…`、`file:///…`、`file://host/…` URI，`~/`、`~user/` 路径，以及紧跟冒号的路径也只保留
-  文件名；`https://host/…` 与 `1/2` 之类的文本不变（`tests/apps/test_api.py`）。
+  文件名；`https://host/…` 与 `1/2` 之类的文本不变（`tests/apps/test_api.py`）。`file:` scheme 按 RFC 3986
+  大小写不敏感匹配（`FILE:`、`FiLe:` 与小写同样脱敏，B46 复核修复），authority / 路径边界不变。
 - **兜底 500**：任何未处理异常一律返回 500 `{"detail": "internal server error"}`，不带异常消息、路径或 traceback；
   报告读取的 `path.stat()` 移入同一错误保护内。因为兜底处理器作用于全部路由，每个 operation 都在 OpenAPI 中声明 500
   为 `ApiError`（`openapi.json` 与 `apps/web/src/api.d.ts` 已重新生成）。

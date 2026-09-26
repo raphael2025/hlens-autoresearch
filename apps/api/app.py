@@ -20,13 +20,13 @@ only FastAPI's own request validation answers 422 with a list ``detail``:
 
 No error body carries a server filesystem path (2026-09-26): a malformed report answers with the
 store's path-free reason, a broken jobs journal with the file name only; ``public_detail`` also
-reduces ``file:`` URIs, ``~`` paths and a path directly after a ``:`` to their last component. An
-exception no route maps (a bug, an I/O failure) answers 500 with ``{"detail": INTERNAL_ERROR}``:
-never its message, a path or a traceback. Every route declares that 500 as ``ApiError``. The 422 of
-``GET /reports/{kind}/{report_id}`` is declared as ``ApiError | HTTPValidationError`` (the store's
-refusal, or FastAPI's request validation of an unknown ``kind``). ``/health``, ``/contracts`` and
-``/lifecycle/transitions`` have named response models (``Health``, ``ContractNames``,
-``LifecycleTransition``); their JSON is unchanged.
+reduces ``file:`` URIs (their scheme in any case), ``~`` paths and a path directly after a ``:`` to
+their last component. An exception no route maps (a bug, an I/O failure) answers 500 with
+``{"detail": INTERNAL_ERROR}``: never its message, a path or a traceback. Every route declares that
+500 as ``ApiError``. The 422 of ``GET /reports/{kind}/{report_id}`` is declared as
+``ApiError | HTTPValidationError`` (the store's refusal, or FastAPI's request validation of an
+unknown ``kind``). ``/health``, ``/contracts`` and ``/lifecycle/transitions`` have named response
+models (``Health``, ``ContractNames``, ``LifecycleTransition``); their JSON is unchanged.
 """
 
 from __future__ import annotations
@@ -88,14 +88,15 @@ _JOB_ID = re.compile(r"^[0-9a-f]{64}$")
 
 #: An absolute POSIX path inside an error message, as the named group ``path``, preceded by:
 #:
-#: - a ``file:`` URI's scheme and authority (``file:/p``, ``file:///p``, ``file://host/p``);
+#: - a ``file:`` URI's scheme and authority (``file:/p``, ``file:///p``, ``file://host/p``); the
+#:   scheme matches in any case (``FILE:``, ``FiLe:``; RFC 3986 §3.1), authority / path as above;
 #: - any other ``:`` directly followed by the path or by an empty authority (``x:/p``, ``x:///p``)
 #:   -- a URL's ``://host/...`` is not a path (its first ``/`` is followed by another ``/``);
 #: - a home-relative ``~`` / ``~user`` (``~/p``);
 #: - otherwise nothing: the first ``/`` must not follow a word character, ``.``, ``~``, ``:``,
 #:   ``-`` or another ``/`` (not the ``//`` or ``/v/...`` of a URL, nor a ratio ``1/2``).
 _ABSOLUTE_PATH = re.compile(
-    r"(?:\bfile:(?://[^/\s'\"(),;]*)?"
+    r"(?:\b(?i:file):(?://[^/\s'\"(),;]*)?"
     r"|(?<=:)(?://)?"
     r"|(?<![\w.~:/-])~[\w.-]*"
     r"|(?<![\w.~:/-]))"

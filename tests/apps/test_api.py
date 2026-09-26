@@ -209,6 +209,59 @@ def test_public_detail_reduces_uri_home_and_colon_prefixed_paths(detail: str, pu
     assert "/home" not in public_detail(detail) and "/srv" not in public_detail(detail)
 
 
+# B46 (Codex review 2026-09-26): a URI scheme is case-insensitive (RFC 3986 §3.1), so an upper- or
+# mixed-case ``file:`` URI is reduced exactly as the lowercase one; authority / path unchanged.
+@pytest.mark.parametrize("scheme", ["file", "FILE", "File", "FiLe", "fILE"])
+@pytest.mark.parametrize(
+    ("template", "public"),
+    [
+        ("cannot read {s}:/home/raphael/private/x.json", "cannot read x.json"),
+        ("cannot read {s}:///home/raphael/private/x.json", "cannot read x.json"),
+        ("failed {s}://host/home/raphael/private/report.json", "failed report.json"),
+        ("cannot read '{s}://host/srv/r/x.json'", "cannot read 'x.json'"),
+        ("cannot read {s}://host/home/raphael/private/dir/", "cannot read dir"),
+        (
+            "{s}:///home/raphael/private/a.json vs https://host/path, ratio 1/2, ~/p/b.json",
+            "a.json vs https://host/path, ratio 1/2, b.json",
+        ),
+    ],
+)
+def test_public_detail_reduces_file_uris_whatever_the_scheme_case(
+    scheme: str, template: str, public: str
+) -> None:
+    assert public_detail(template.format(s=scheme)) == public
+
+
+@pytest.mark.parametrize(
+    "not_a_path",
+    [
+        "see https://host/path",
+        "see HTTPS://Host/Path",
+        "ratio 1/2",
+        "the FILE was unreadable: permission denied",
+        "profile://host/x.json",
+        "PROFILE://host/x.json",
+    ],
+)
+def test_public_detail_leaves_urls_ratios_and_text_unchanged(not_a_path: str) -> None:
+    assert public_detail(not_a_path) == not_a_path
+
+
+class _UriLeakingProvider(_FailingProvider):
+    def search(self, query: KnowledgeQuery) -> KnowledgeResult:
+        raise KnowledgeProviderError("unreadable: FiLe://host/home/raphael/private/report.json")
+
+
+def test_an_error_body_reduces_a_mixed_case_file_uri() -> None:
+    response = TestClient(create_app(knowledge=_UriLeakingProvider())).post(
+        "/knowledge/search", json={"terms": ["x"]}
+    )
+    assert response.status_code == 502
+    assert response.json() == {
+        "detail": "knowledge provider could not answer: unreadable: report.json"
+    }
+
+
 class _PathLeakingProvider(_FailingProvider):
     def search(self, query: KnowledgeQuery) -> KnowledgeResult:
         raise KnowledgeProviderError("items.json: unreadable: [Errno 13] '/srv/k/items.json'")
