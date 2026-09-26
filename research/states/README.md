@@ -13,7 +13,7 @@
 | `core/contracts/state.py` | `StateProvider` Protocol 与 5 个 DTO（`StateInput`、`StateRequest`、`StateValue`、`StateResult`、`StateProviderDescriptor`）；method 参数编码 `state_method` / `parse_state_method` |
 | `infrastructure/state/` | `run_state`（每个评估时刻只把可见输入交给 Provider：`evaluation_time <= t`，训练型再限于 `(t - training_window, t]`）；`state_inputs`（由已回答的 Feature 请求 / 结果构造输入）；`state_table`（Arrow 物化） |
 | `plugins/states/` | 首批 Provider：`VolatilityRegimeProvider`、`LiquidityRegimeProvider`（尾随窗口经验分位分桶）、`TrendRangeProvider`（效率比） |
-| `research/states/diagnostics.py`（本目录） | 状态分布、持续时间、转移矩阵、标签闪烁（短 run 占比、切换率）；`render_markdown` 报告 |
+| `research/states/diagnostics.py`（本目录） | 状态分布、持续时间、转移矩阵、标签闪烁（短 run 占比、切换率）；`render_markdown` 报告；`StateDiagnostics.to_payload()` / `diagnostics_hash` / `from_payload` |
 
 ## 规则
 
@@ -23,3 +23,15 @@
 - 模型参数（分位切点、最少历史、阈值）是规格参数，写在 `StateSpec.method` 中并受 spec hash 绑定；
   诊断报告的 `min_run` 由调用方给出。二者都不是验证阈值。
 - 诊断只描述序列，不判定状态"好坏"；任何判定阈值属于 ValidationProfile。
+
+## 实现说明：诊断载荷与哈希（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+- `StateDiagnostics.to_payload()`：确定性、可直接 JSON 化的载荷（`kind = state_diagnostics`、`schema_version = 1.0.0`、
+  `probability_places`）；`Decimal` 写成其精确文本，时间写成 ISO-8601 UTC（非 UTC 时区换算为 UTC，无时区的时间拒绝），
+  逐状态映射按键排序；`state_space`（声明顺序）与 `runs`（时间顺序）保留语义顺序。
+- `diagnostics_hash`：载荷的 `content_hash`。`from_payload(payload, expected_hash=None)` 重建报告：键集合、类型、
+  版本逐项校验，载荷必须恰好是重建结果的规范形式（非规范时间文本、浮点数、篡改后的哈希不符都拒绝）。
+- 诊断没有自己的窗口：它只描述调用方给出的序列，因此某时刻之后的数据变化不会改变截至该时刻的报告（有测试）。
+
+剩余限制（留待调试阶段）：载荷只供研究侧存档，尚无 `research/reports` 写入器（该目录不在本批次范围）；报告不记录
+来源 `StateResult.result_hash`（调用方需自行关联）；未在真实 Research Dataset 上运行。

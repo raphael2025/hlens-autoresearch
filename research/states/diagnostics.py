@@ -17,20 +17,31 @@ parameter of the report, stated by the caller.
   computable adjacent pair).
 
 Pure and deterministic: no clock, no randomness, exact arithmetic.
+
+Persistence (code completion, 2026-09-26): ``StateDiagnostics.to_payload()`` is a deterministic
+JSON-ready form (``Decimal`` as its exact text, times as ISO-8601 UTC, per-state maps with sorted
+keys; ``state_space`` and ``runs`` keep their semantic order) and ``diagnostics_hash`` its content
+hash. ``StateDiagnostics.from_payload`` rebuilds the report and refuses a payload that is not
+exactly the canonical form of what it rebuilds (or whose hash differs from ``expected_hash``).
+The report describes exactly the series it was given; it holds no window of its own, so a later
+change to evaluations after the series' last time cannot alter an already computed report.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterable, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from itertools import pairwise
 from typing import Final
 
 from core.contracts.state import StateResult
+from core.domain.base import content_hash
 
 __all__ = [
+    "PAYLOAD_KIND",
+    "PAYLOAD_SCHEMA_VERSION",
     "PROBABILITY_PLACES",
     "StateDiagnostics",
     "StateRun",
@@ -44,6 +55,9 @@ __all__ = [
 #: Decimal places of reported shares / probabilities.
 PROBABILITY_PLACES: Final = 6
 _QUANTUM: Final = Decimal(1).scaleb(-PROBABILITY_PLACES)
+#: ``kind`` and SemVer of the ``StateDiagnostics.to_payload`` layout (breaking change = major).
+PAYLOAD_KIND: Final = "state_diagnostics"
+PAYLOAD_SCHEMA_VERSION: Final = "1.0.0"
 
 type Labelled = tuple[datetime, str | None]
 
@@ -79,6 +93,202 @@ class StateDiagnostics:
     min_run: int
     short_run_share: Decimal | None
     switch_rate: Decimal | None
+
+    def to_payload(self) -> dict[str, object]:
+        """Deterministic JSON-ready form (module docs); times must be timezone-aware."""
+
+        def per_state[V](values: Mapping[str, V], encode: _Encoder[V]) -> dict[str, object]:
+            return {key: encode(values[key]) for key in sorted(values)}
+
+        return {
+            "kind": PAYLOAD_KIND,
+            "schema_version": PAYLOAD_SCHEMA_VERSION,
+            "probability_places": PROBABILITY_PLACES,
+            "state_space": list(self.state_space),
+            "evaluations": self.evaluations,
+            "not_computable": self.not_computable,
+            "counts": per_state(self.counts, _same),
+            "shares": per_state(self.shares, _decimal_text),
+            "runs": [
+                {
+                    "state": run.state,
+                    "start": _utc_text(run.start),
+                    "end": _utc_text(run.end),
+                    "steps": run.steps,
+                }
+                for run in self.runs
+            ],
+            "mean_steps": per_state(self.mean_steps, _decimal_text),
+            "max_steps": per_state(self.max_steps, _same),
+            "transitions": {
+                a: per_state(self.transitions[a], _same) for a in sorted(self.transitions)
+            },
+            "transition_probabilities": {
+                a: per_state(self.transition_probabilities[a], _decimal_text)
+                for a in sorted(self.transition_probabilities)
+            },
+            "min_run": self.min_run,
+            "short_run_share": _decimal_text(self.short_run_share),
+            "switch_rate": _decimal_text(self.switch_rate),
+        }
+
+    @property
+    def diagnostics_hash(self) -> str:
+        """Content hash of ``to_payload()``."""
+        return content_hash(self.to_payload())
+
+    @classmethod
+    def from_payload(
+        cls, payload: Mapping[str, object], *, expected_hash: str | None = None
+    ) -> StateDiagnostics:
+        """Rebuild a report from ``to_payload()`` output; ``ValueError`` on anything else.
+
+        The payload must be exactly the canonical form of the rebuilt report (same keys, same
+        encodings), and its hash must equal ``expected_hash`` when one is given.
+        """
+        if not isinstance(payload, Mapping):
+            raise ValueError("a state diagnostics payload must be a mapping")
+        if set(payload) != _PAYLOAD_KEYS:
+            raise ValueError(
+                f"payload keys differ: missing {sorted(_PAYLOAD_KEYS - set(payload))}, "
+                f"unexpected {sorted(set(payload) - _PAYLOAD_KEYS)}"
+            )
+        if payload["kind"] != PAYLOAD_KIND or payload["schema_version"] != PAYLOAD_SCHEMA_VERSION:
+            raise ValueError(
+                f"not a {PAYLOAD_KIND}@{PAYLOAD_SCHEMA_VERSION} payload: "
+                f"{payload['kind']!r}@{payload['schema_version']!r}"
+            )
+        if payload["probability_places"] != PROBABILITY_PLACES:
+            raise ValueError(f"probability_places must be {PROBABILITY_PLACES}")
+        space = payload["state_space"]
+        if not isinstance(space, list) or not all(isinstance(label, str) for label in space):
+            raise ValueError("state_space must be a list of labels")
+        runs = payload["runs"]
+        if not isinstance(runs, list):
+            raise ValueError("runs must be a list")
+        report = cls(
+            state_space=tuple(space),
+            evaluations=_int(payload["evaluations"], "evaluations"),
+            not_computable=_int(payload["not_computable"], "not_computable"),
+            counts=_per_state(payload["counts"], space, "counts", _int),
+            shares=_per_state(payload["shares"], space, "shares", _optional_decimal),
+            runs=tuple(_run(item) for item in runs),
+            mean_steps=_per_state(payload["mean_steps"], space, "mean_steps", _optional_decimal),
+            max_steps=_per_state(payload["max_steps"], space, "max_steps", _int),
+            transitions=_per_state(
+                payload["transitions"],
+                space,
+                "transitions",
+                lambda row, where: _per_state(row, space, where, _int),
+            ),
+            transition_probabilities=_per_state(
+                payload["transition_probabilities"],
+                space,
+                "transition_probabilities",
+                lambda row, where: _per_state(row, space, where, _optional_decimal),
+            ),
+            min_run=_int(payload["min_run"], "min_run"),
+            short_run_share=_optional_decimal(payload["short_run_share"], "short_run_share"),
+            switch_rate=_optional_decimal(payload["switch_rate"], "switch_rate"),
+        )
+        if report.to_payload() != dict(payload):
+            raise ValueError("the payload is not the canonical form of the report it encodes")
+        if expected_hash is not None and report.diagnostics_hash != expected_hash:
+            raise ValueError(
+                f"diagnostics hash {report.diagnostics_hash} differs from {expected_hash}"
+            )
+        return report
+
+
+type _Encoder[V] = Callable[[V], object]
+type _Decoder[V] = Callable[[object, str], V]
+
+_PAYLOAD_KEYS: Final = frozenset(
+    {
+        "kind",
+        "schema_version",
+        "probability_places",
+        "state_space",
+        "evaluations",
+        "not_computable",
+        "counts",
+        "shares",
+        "runs",
+        "mean_steps",
+        "max_steps",
+        "transitions",
+        "transition_probabilities",
+        "min_run",
+        "short_run_share",
+        "switch_rate",
+    }
+)
+_RUN_KEYS: Final = frozenset({"state", "start", "end", "steps"})
+
+
+def _same[V](value: V) -> V:
+    return value
+
+
+def _decimal_text(value: Decimal | None) -> str | None:
+    return None if value is None else str(value)
+
+
+def _utc_text(value: datetime) -> str:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{value!r} is not timezone-aware: diagnostics times must be UTC")
+    return value.astimezone(UTC).isoformat()
+
+
+def _int(value: object, where: str) -> int:
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ValueError(f"{where} must be an int")
+    return value
+
+
+def _optional_decimal(value: object, where: str) -> Decimal | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError(f"{where} must be a decimal string or null")
+    try:
+        number = Decimal(value)
+    except ArithmeticError as exc:
+        raise ValueError(f"{where}: {value!r} is not a decimal") from exc
+    if not number.is_finite():
+        raise ValueError(f"{where} must be finite")
+    return number
+
+
+def _utc_time(value: object, where: str) -> datetime:
+    if not isinstance(value, str):
+        raise ValueError(f"{where} must be an ISO-8601 string")
+    parsed = datetime.fromisoformat(value)
+    if parsed.utcoffset() != timedelta(0):
+        raise ValueError(f"{where} must be UTC")
+    return parsed
+
+
+def _per_state[V](
+    value: object, space: Sequence[str], where: str, decode: _Decoder[V]
+) -> dict[str, V]:
+    if not isinstance(value, Mapping) or set(value) != set(space):
+        raise ValueError(f"{where} must map exactly the state space")
+    return {label: decode(value[label], f"{where}[{label}]") for label in space}
+
+
+def _run(value: object) -> StateRun:
+    if not isinstance(value, Mapping) or set(value) != _RUN_KEYS:
+        raise ValueError(f"a run must have exactly the keys {sorted(_RUN_KEYS)}")
+    state = value["state"]
+    if not isinstance(state, str):
+        raise ValueError("a run's state must be a label")
+    return StateRun(
+        state=state,
+        start=_utc_time(value["start"], "run start"),
+        end=_utc_time(value["end"], "run end"),
+        steps=_int(value["steps"], "run steps"),
+    )
 
 
 def _share(part: int, whole: int) -> Decimal | None:
