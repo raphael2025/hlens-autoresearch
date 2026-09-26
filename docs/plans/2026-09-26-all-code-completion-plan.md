@@ -605,3 +605,20 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - G5 的配置错误传播核实已与 `calibrate()` 一致（`PROPAGATED_ERRORS` 原样重抛），新增测试固定该行为。
 - 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/synthetic_lab tests/research/reports` → 153 passed, 1 warning (134 s)；ruff / mypy（582 files）通过。
 - 遗留：端到端 G0–G5 率（`end_to_end_g0_g5`）仍无区间。
+
+**B49 — Phase 12：替换提案作业（循环之外；`a6b27ec` 的 cherry-pick → `b3a68e4`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 核实循环生命周期守卫止于 OOS，循环内不会有 PAPER 后代，故不接入循环：新增独立研究作业 `research/evolution/replacement_job.py` `propose_replacements(...)`，全部输入由调用方给出（在任者须 ACTIVE / DEGRADED；候选的生命周期来自人工 Promotion 路径与其报告哈希；`read_lineage` 只读核验循环的 `lineage.jsonl` 哈希链）。
+  证据：每个声明的报告须经 `research.router.evidence.check_report`（含 G5 的 PASS、subject = 候选、哈希一致）；非后代 / 未到 PAPER / 已提议的候选不产生提案，拒绝原因写入结果；提案恒为待人工批准，不改生命周期。
+- `ProposalLedger`：`<path>.lock` 单写者锁 + 可选外部锚点（须在账本目录之外；截断 / 删除 / 回滚 / 分叉 / 锚点丢失在重开时拒绝；无锚点时尾部整行删除仍不可发现）。
+- 通道发现并修复的缺陷：`propose_replacement` 要求库策略谱系中的知识条目也在策略谱系图里，导致库策略的每个后代都被拒绝；现在只要求缺失的**策略**祖先已记录。
+- 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/evolution tests/research/router tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → 131 passed；`tests/research/loop` → 161 passed, 1 warning (781 s)；ruff / format（740 files）/ mypy（584 files）通过。
+- 遗留：循环自身的报告永远不含后代的 G5（每族一次密封 OOS），所以集成测试用测试专用的含 G5 PASS 报告支撑提案；锚点不认证新增行；循环状态目录与提案账本之间除谱系外无绑定。
+
+**B50 — Phase 7 / 6：研究循环审计 A 发现 1 / 2 / 14（`bb9e696` 的 cherry-pick → `0220f9a`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 发现 1：内容核对失败改抛 `LlmContentUnverified(ValueError)`（携带 `.reason` / `.call`）；假设阶段只捕获 `(LlmDraftRejected, LlmContentUnverified)` 并记录 `rejected` / `call_hash` / `call`，其他 provider 错误（含普通 `ValueError`）使该阶段失败。
+  行为变化：空 `llm_prompt` 原先每轮被当作拒绝记录，现在构造 `HypothesisStage` 时即拒绝（代码 / README / 测试已写明）。
+- 发现 2：`llm_content_fingerprint(llm)` 仅对 `ContentVerifiedLLM` 给出 `{"llm_content_verified": true}`，并入状态目录指纹；以另一模式重开（两个方向）被拒绝，`compose_durable` 直接调用同样核对。未核验运行的指纹不变（`PINNED_FINGERPRINT_HASH`、`PINNED_RECORD_HASHES` 均未改）。
+- 发现 14：新增 `tests/infrastructure/e2e/test_research_loop_dataset_conditional.py`：`ConditionalPlan(validate_cells=True)` 经 `open_dataset_loop`（SQLite 夹具，无网络 / PostgreSQL）端到端：全部单元登记、`conditional_cells` 记录、支持的单元仅以 G0–G3 验证并绑定本轮清单、重开复原相同的 trial 日志与记录哈希。
+- 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/loop tests/research/hypotheses tests/infrastructure/e2e/test_research_loop_dataset_conditional.py` → 230 passed, 1 warning (875 s)；`ruff check .` / `ruff format --check .`（741 files）/ `mypy`（585 files）通过。
