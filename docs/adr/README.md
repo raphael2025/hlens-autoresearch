@@ -66,6 +66,7 @@
 | [0059](0059-cross-asset-check-for-cross-sectional-strategies.md) | G4 跨资产检查（C-R3）对横截面策略的适用方式 | Accepted（2026-09-26；Claude 依 Raphael 授权决定，含红线）；C + A 已实施，CODE_COMPLETE / DEBUG_PENDING |
 | [0060](0060-market-benchmark-rule-semantics.md) | C-T4 市场基准规则与反向对照的语义（报告项，不作否决） | Accepted（2026-09-26；Claude 依 Raphael 授权）；已实施（B35 / B39），CODE_COMPLETE / DEBUG_PENDING |
 | [0061](0061-interaction-dsl.md) | 事件交互 DSL（数据表达式树，编译到已审阅算子） | Accepted（2026-09-26；Claude 依 Raphael 授权）；已实施（B36），CODE_COMPLETE / DEBUG_PENDING |
+| [0062](0062-profile-freeze-registry.md) | Validation Profile 冻结登记（file-backed 追加式）作为 Promotion 的权威冻结来源 | **Proposed**（2026-09-27；Codex 依 Raphael 授权决定，Q1 = A、Q2 = A）；B56 实施中，待 Codex 最终复核 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
