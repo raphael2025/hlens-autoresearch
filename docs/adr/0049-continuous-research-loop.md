@@ -48,6 +48,8 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
    `ValidationProfile.lifecycle.degradation_thresholds`（或同形映射，无默认）；键 `metric` / `metric[>=]` 越高越好，
    `metric[<=]` 越低越好；缺少近期值报 `missing`（证据不足），不算健康也不算劣化。越限时在
    `research_loop.degradation` 发布事件；**不**做 `ACTIVE → DEGRADED` 转移（Control Plane 以事件为证据执行）。
+   所有规则指标都缺近期值（`insufficient_evidence`）时，在独立主题 `research_loop.degradation.insufficient_evidence`
+   发布“监控无法判定”告警（D-DEG-IE，见文末实施说明）；它不是劣化、不是健康，也不触发任何生命周期转换。
 
 ## 后果
 
@@ -456,3 +458,27 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。修正封存 OOS 处理的只读复核�
    与持久账本或 `state_dir` 同用被拒（目录未创建）、非布尔被拒；摄取之后的阶段在只暴露 `RoundData` 成员的代理上跑完整一轮（含 G5），封存 bar 在认领后
    只释放一次，记录哈希与无代理运行相同；源码扫描确认 `IngestStage` 之外不访问 `market` / `markets`。原内存 G5 测试改用 TEST ONLY 标志并断言其可见，
    `test_loop_durable.py` 的不中断对照改为显式持久账本（与重启运行的记录哈希比较不变），新增持久重启后不再开封。
+
+## Implementation note (D-DEG-IE insufficient-evidence alert, 2026-09-26)
+
+决策者 Codex（依 Raphael 授权，决定文档 `docs/reviews/2026-09-26-d-deg-ie-codex-decision.md`，位于分支
+`codex/full-code-review-2026-09-26`）；实施者 Claude Code。不新增 ADR：本节扩展本 ADR 第 7 条的事件面。
+无契约 / Schema / 生命周期 / Constitution / Profile / 阈值变更；`DegradationCheck` 状态定义、`research_loop.degradation`
+的语义、payload 与消息身份均不变；缺失值不当作零。状态仍为 CODE_COMPLETE / DEBUG_PENDING。
+
+1. **事件主题清单**（`apps/worker/degradation.py`）：
+   - `research_loop.degradation`（`DEGRADATION_TOPIC`）：一项或多项阈值实际越限；payload `subject` / `window` /
+     `breaches` / `missing`（不变）。
+   - `research_loop.degradation.insufficient_evidence`（`INSUFFICIENT_EVIDENCE_TOPIC`，新增）：**所有**规则指标都没有近期值、
+     `DegradationCheck.status == "insufficient_evidence"`；payload `subject`、`window`、`status`（恒为 `insufficient_evidence`）、
+     `missing`（排序）、`required`（本次检查的规则指标，排序）。key 均为 `subject:window`，信封为既有 `BusMessage`（无新 DTO）。
+     总线按主题精确匹配，订阅 `research_loop.degradation` 的消费者收不到新主题。
+2. **`observe()`**：实际越限只发布既有主题（附缺失清单）；全部缺失只发布新主题、恰好一条；部分缺失且无越限不发布任何事件
+   （报告保留缺失值，行为不变）。两种需要发布的情形没有 event bus 时都抛 `ValueError`（fail closed，不静默丢通知）。
+   `check()` 仍是纯函数，不发布。`degradation_check` 报告不变（全部缺失时仍写 `"insufficient_evidence": true`）。
+3. **不做生命周期转换**：两个主题都只是告警 / 证据输入；monitor 不接触生命周期对象，不能触发 `ACTIVE → DEGRADED`、替换、
+   批准或任何其他转换。Control Plane 或操作人员只能把证据不足事件当作告警，不能据此自动淘汰、替换或晋升策略。
+4. **测试**（`tests/apps/test_research_loop.py`）：全部缺失 → 恰好一条新主题事件，信封（topic / key / payload / message_id）逐字段相等、
+   `check()` 结果相同且不发布；payload 排序与键的给出顺序无关；无 bus 时全部缺失与实际越限均被拒、健康结果无需 bus；
+   越限只发布既有主题且 payload 不变；部分缺失无越限不发布；模块 import 与 payload 不含生命周期入口。
+   实施说明：[D-DEG-IE implementation](../reviews/2026-09-26-d-deg-ie-implementation.md)。

@@ -31,6 +31,7 @@ from apps.worker import (
 )
 from apps.worker.degradation import (
     DEGRADATION_TOPIC,
+    INSUFFICIENT_EVIDENCE_TOPIC,
     DegradationCheck,
 )
 from apps.worker.loop import (
@@ -41,6 +42,7 @@ from apps.worker.loop import (
     automation_reachable_states,
     missing_validation_failed_evidence,
 )
+from core.contracts.event_bus import BusMessage
 from core.contracts.validation_profile import LifecycleParams
 from core.domain.base import FrozenMapping, Kind, Ref
 from core.errors import LifecycleViolation
@@ -460,33 +462,145 @@ def test_degradation_monitor_uses_profile_thresholds_and_publishes() -> None:
         monitor.check(SUBJECT, {"sharpe": 1}, {})
 
 
+class _RecordingBus(InMemoryEventBus):
+    """Every published message, whatever its topic (a lifecycle side effect would show here)."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.published: list[BusMessage] = []
+
+    def publish(self, message: BusMessage) -> None:
+        super().publish(message)
+        self.published.append(message)
+
+
 def test_a_check_with_every_metric_missing_is_insufficient_evidence_never_healthy() -> None:
     # TEST ONLY thresholds (arbitrary numbers, not a proposal).
-    bus = InMemoryEventBus()
+    bus = _RecordingBus()
     monitor = DegradationMonitor({"sharpe": 0.5, "max_drawdown[<=]": 0.1}, source="t", bus=bus)
     baseline = {"sharpe": Decimal("1.2"), "max_drawdown": Decimal("0.10")}
+    # check() is pure: the same result, nothing published
+    pure = monitor.check(SUBJECT, baseline, {})
+    assert pure.status == "insufficient_evidence" and bus.published == []
     empty = monitor.observe(SUBJECT, baseline, {}, window="w0")
+    assert empty == pure
     assert empty.insufficient_evidence and empty.status == "insufficient_evidence"
     assert not empty.degraded and empty.missing == ("max_drawdown", "sharpe")
-    # never a degradation event (ADR-0049's only topic); the status is the caller's evidence
+    # exactly one alert on the distinct topic (D-DEG-IE), never a degradation event
     assert bus.poll("ops", DEGRADATION_TOPIC, 10) == ()
-    # partial evidence is not "insufficient" as a whole; the missing metric is still named
-    partial = monitor.observe(SUBJECT, baseline, {"sharpe": Decimal("1.1")}, window="w1")
-    assert not partial.insufficient_evidence and partial.status == "not_degraded"
-    assert partial.missing == ("max_drawdown",)
-    assert bus.poll("ops", DEGRADATION_TOPIC, 10) == ()
+    [alert] = bus.published
+    assert alert.topic == INSUFFICIENT_EVIDENCE_TOPIC
+    assert INSUFFICIENT_EVIDENCE_TOPIC == "research_loop.degradation.insufficient_evidence"
+    assert alert.key == f"{SUBJECT}:w0"
+    # the exact envelope: topic, key, payload and content-derived message_id
+    assert alert == BusMessage.build(
+        INSUFFICIENT_EVIDENCE_TOPIC,
+        f"{SUBJECT}:w0",
+        {
+            "subject": str(SUBJECT),
+            "window": "w0",
+            "status": "insufficient_evidence",
+            "missing": ["max_drawdown", "sharpe"],
+            "required": ["max_drawdown", "sharpe"],
+        },
+    )
+    assert set(alert.payload) == {"subject", "window", "status", "missing", "required"}
+    assert bus.poll("ops", INSUFFICIENT_EVIDENCE_TOPIC, 10) == (alert,)
+    # the state cannot be claimed with a breach or without missing metrics
     worse = monitor.check(SUBJECT, baseline, {"sharpe": Decimal("0.1")})
     assert worse.status == "degraded" and not worse.insufficient_evidence
-    # without a bus the insufficient-evidence status is still returned (nothing to publish)
-    alone = DegradationMonitor({"sharpe": 0.5}, source="t").observe(
-        SUBJECT, baseline, {}, window="w"
-    )
-    assert alone.status == "insufficient_evidence"
-    # the state cannot be claimed with a breach or without missing metrics
     with pytest.raises(ValueError, match="insufficient evidence"):
         DegradationCheck(SUBJECT, worse.breaches, ("sharpe",), insufficient_evidence=True)
     with pytest.raises(ValueError, match="insufficient evidence"):
         DegradationCheck(SUBJECT, (), (), insufficient_evidence=True)
+
+
+def test_insufficient_evidence_payload_order_is_deterministic() -> None:
+    # TEST ONLY thresholds; keys given out of order and with both direction spellings.
+    bus = _RecordingBus()
+    thresholds = {"zeta[<=]": 0.2, "alpha[>=]": 0.1, "mid": 0.3}
+    DegradationMonitor(thresholds, source="t", bus=bus).observe(
+        SUBJECT, {"zeta": 1, "alpha": 1, "mid": 1}, {}, window="w"
+    )
+    [alert] = bus.published
+    assert tuple(alert.payload["missing"]) == ("alpha", "mid", "zeta")
+    assert tuple(alert.payload["required"]) == ("alpha", "mid", "zeta")
+
+
+def test_observe_without_a_bus_fails_closed_but_check_stays_pure() -> None:
+    # TEST ONLY thresholds (arbitrary numbers, not a proposal).
+    monitor = DegradationMonitor({"sharpe": 0.5}, source="t")
+    baseline = {"sharpe": Decimal("1.2")}
+    assert monitor.check(SUBJECT, baseline, {}).status == "insufficient_evidence"
+    assert monitor.check(SUBJECT, baseline, {"sharpe": 0}).status == "degraded"
+    with pytest.raises(ValueError, match="needs a bus to publish the insufficient_evidence event"):
+        monitor.observe(SUBJECT, baseline, {}, window="w")
+    with pytest.raises(ValueError, match="needs a bus to publish the degraded event"):
+        monitor.observe(SUBJECT, baseline, {"sharpe": 0}, window="w")
+    # nothing to publish -> no bus needed
+    healthy = monitor.observe(SUBJECT, baseline, {"sharpe": Decimal("1.1")}, window="w")
+    assert healthy.status == "not_degraded"
+
+
+def test_a_breach_publishes_only_the_degradation_topic() -> None:
+    # TEST ONLY thresholds (arbitrary numbers, not a proposal).
+    bus = _RecordingBus()
+    monitor = DegradationMonitor({"sharpe": 0.5, "max_drawdown[<=]": 0.1}, source="t", bus=bus)
+    baseline = {"sharpe": Decimal("1.2"), "max_drawdown": Decimal("0.10")}
+    # a breach with a missing metric: the existing event and payload, the missing list attached
+    worse = monitor.observe(SUBJECT, baseline, {"sharpe": Decimal("0.5")}, window="w2")
+    assert worse.status == "degraded" and worse.missing == ("max_drawdown",)
+    [event] = bus.published
+    assert event.topic == DEGRADATION_TOPIC and event.key == f"{SUBJECT}:w2"
+    assert event == BusMessage.build(
+        DEGRADATION_TOPIC,
+        f"{SUBJECT}:w2",
+        {
+            "subject": str(SUBJECT),
+            "window": "w2",
+            "breaches": list(worse.breaches),
+            "missing": ["max_drawdown"],
+        },
+    )
+    assert bus.poll("ops", INSUFFICIENT_EVIDENCE_TOPIC, 10) == ()
+
+
+def test_partial_missing_without_a_breach_publishes_nothing() -> None:
+    # TEST ONLY thresholds (arbitrary numbers, not a proposal).
+    bus = _RecordingBus()
+    monitor = DegradationMonitor({"sharpe": 0.5, "max_drawdown[<=]": 0.1}, source="t", bus=bus)
+    baseline = {"sharpe": Decimal("1.2"), "max_drawdown": Decimal("0.10")}
+    partial = monitor.observe(SUBJECT, baseline, {"sharpe": Decimal("1.1")}, window="w1")
+    assert not partial.insufficient_evidence and partial.status == "not_degraded"
+    assert partial.missing == ("max_drawdown",)
+    assert bus.published == []
+
+
+def test_degradation_events_never_move_lifecycle_state() -> None:
+    # The monitor has no lifecycle access: it imports nothing lifecycle-related and holds no
+    # guard / subject store, so neither topic can trigger ACTIVE -> DEGRADED, replacement, or
+    # approval. Control Plane / an operator treats the events as evidence only (ADR-0049).
+    tree = ast.parse((REPO / "apps" / "worker" / "degradation.py").read_text(encoding="utf-8"))
+    modules = {node.module for node in ast.walk(tree) if isinstance(node, ast.ImportFrom)}
+    assert modules == {
+        "__future__",
+        "collections.abc",
+        "dataclasses",
+        "decimal",
+        "typing",
+        "core.contracts.event_bus",
+        "core.contracts.validation_profile",
+        "core.domain.base",
+    }
+    names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+    assert not names & {"LifecycleState", "LifecycleGuard", "RoundContext", "approved_by"}
+    bus = _RecordingBus()
+    monitor = DegradationMonitor({"sharpe": 0.5}, source="t", bus=bus)
+    monitor.observe(SUBJECT, {"sharpe": 1}, {}, window="a")
+    monitor.observe(SUBJECT, {"sharpe": 1}, {"sharpe": 0}, window="b")
+    assert [m.topic for m in bus.published] == [INSUFFICIENT_EVIDENCE_TOPIC, DEGRADATION_TOPIC]
+    for message in bus.published:
+        assert not {"state", "target", "transition", "approved_by"} & set(message.payload)
 
 
 def test_worker_loop_modules_depend_only_on_core_and_the_stdlib() -> None:
