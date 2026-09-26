@@ -215,3 +215,18 @@
 - 文件：`research/loop/compose.py`、`research/loop/dataset_compose.py`、`research/loop/README.md`；测试 `tests/research/loop/test_loop_durable.py`（+2）。
 - `open_synthetic_loop` / `open_dataset_loop` / `compose_durable` 新增可选 `bus_anchor`，交给自有 `FileEventBus(..., anchor=)`；与调用方总线同给即拒绝（在触碰 `state_dir` 之前）。不给时行为与记录哈希不变。
 - 实际运行：`uv run pytest -q tests/research/loop/test_loop_durable.py` → 58 passed (75 s)；`ruff check research/loop tests/research/loop` → 通过；`mypy research/loop tests/research/loop/test_loop_durable.py` → no issues in 11 files。
+
+**B9 — apps 子代理：API / Worker 读端点 / Web 控制台**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 apps 两个提交 + 本提交的 3 处研究测试形状修正）
+
+- API（`apps/api/app.py`、`store.py`）：知识检索无 Provider → 503、Provider 错误 → 502、`response_model=KnowledgeResult` 与统一 `ApiError`；`GET /reports/{kind}` 改为
+  `{kind, reports, invalid:[{id, reason}]}`（坏文件不再静默跳过，非 UTF-8 也归为 invalid，理由不含服务器路径）；只读 `GET /jobs`、`GET /jobs/{job_id}`（经 worker 的
+  `read_job_results` 复核哈希链；未配置 503、日志不可信 500、非法 id 400、未知 404；`jobs_idempotent` 须与运行器一致，否则有重跑行时 500——已写入文档）。
+  API 仍只读（测试断言唯一 POST 是知识检索）。`openapi.json` 由 `python -m apps.api.openapi` 重生成，`src/api.d.ts` 由 `npm run gen:api` 生成。
+- Worker（`apps/worker/jobs.py`）：重放逻辑抽为 `_Replay`（运行器行为不变），公开只读 `read_job_results` → `JobHistory` / `JobRecord`（`JobStatus` 字面量）。
+- Web：修复研究循环页读取不存在字段（`budget_used` / `failures`）的缺陷，改读 `status`、未完成阶段及错误、轮次 / 累计用量、超支、转移；全部 9 页显式加载 / 空 / 错误状态
+  （`src/lib/useApi.ts`、`loadState.ts`、`components/States.tsx`、`ReportBrowser.tsx`）；列表页显示 invalid 警告；知识检索显示 503 / 502；新增只读 Jobs 页；
+  校准页显示 `detector_errors` / `detector_error`；纯逻辑 `src/lib/*.ts` 用 `node --test`（无新依赖，`package-lock.json` 不变，`tsconfig.test.json` 让 tsc 检查测试文件）。
+- 本分支集成后实际运行：`pytest -m "not postgres" tests/apps tests/research/reports tests/research/synthetic_lab tests/test_architecture_boundaries.py tests/test_docs_consistency.py`
+  → 240 passed, 1 warning；`ruff check apps tests/apps tests/research` → All checks passed；`ruff format --check apps tests` → 273 files already formatted；
+  `mypy apps tests/apps` → no issues in 36 files；`npm ci --offline` → 成功；`npm test` → tests 21 / pass 21 / fail 0；`npm run build` → ✓ built（最大 chunk echarts 375.43 kB）。
+- 待 Cursor：未在浏览器对真实后端手工验证；`GET /reports/{kind}/{id}` 的 422 消息仍含文件路径（既有行为）。

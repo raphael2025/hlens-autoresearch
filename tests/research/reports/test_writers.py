@@ -129,7 +129,7 @@ def test_validation_report_round_trips_through_the_store(tmp_path: Path) -> None
     detail = client.get(f"/reports/validation_report/{written.id}").json()
     assert detail["payload"]["verdict"] == "PASS"
     assert detail["payload"]["report_id"] == "run-report-1"
-    listed = client.get("/reports/validation_report").json()
+    listed = client.get("/reports/validation_report").json()["reports"]
     assert {item["id"] for item in listed} == {written.id}
 
 
@@ -265,7 +265,7 @@ def test_router_paper_run_round_trips_through_the_store(tmp_path: Path) -> None:
     assert Decimal(first_gross_point["equity"]) == run.gross.equity_curve[0].equity
 
     client = TestClient(create_app(reports_root=tmp_path))
-    listed = client.get("/reports/router_paper_run").json()
+    listed = client.get("/reports/router_paper_run").json()["reports"]
     assert {item["id"] for item in listed} == {written.id}
 
 

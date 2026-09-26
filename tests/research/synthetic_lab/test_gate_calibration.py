@@ -310,7 +310,7 @@ def test_the_console_serves_the_written_report(
     envelope = ReportStore(tmp_path).get(ReportKind.GATE_CALIBRATION, toy_report.report_hash)
     assert envelope.payload == json.loads(json.dumps(toy_report.to_payload()))
     client = TestClient(create_app(reports_root=tmp_path))
-    listed = client.get("/reports/gate_calibration").json()
+    listed = client.get("/reports/gate_calibration").json()["reports"]
     assert [item["id"] for item in listed] == [toy_report.report_hash]
 
 
