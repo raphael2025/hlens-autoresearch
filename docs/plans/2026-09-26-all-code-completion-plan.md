@@ -383,3 +383,13 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   `tests/research/strategies/test_cross_sectional_momentum.py` 固定现状）。属于验证规则变化（H2 / H3），按仓库规定只写 Proposed ADR、推荐 C（零敞口单标的 → INCONCLUSIVE）再 A（子宇宙检验），批准前不改代码。
 - 并行进行（不涉及 `core/`）：P9 多标的校准臂、P6 逐单元条件验证两个子代理；ADR-0052 版本化重放（独立 Phase 1 分支）子代理独占 `core/` 与 Phase 1 基础设施。
 
+
+**B26 — Phase 9：多标的校准模式**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 P9 通道 `f629b97` 的 cherry-pick）
+
+- `MultiInstrumentCalibrationSetup` / `run_multi_instrument_calibration`（`GateCalibrationSetup` 不变，关闭时报告哈希逐位不变）；每次运行 k ≥ 2 个合成标的（`instrument_seed` 规则入报告）；
+  调用方声明各臂（`all_noise` / `all_planted` / `mixed`，无默认）；`MultiInstrumentValidatorDetector` 走完整多标的验证路径；报告逐臂 / 逐标的 / 逐门（含池化 G1 负对照与逐标的子门）比率。
+- 冒烟规模证据（非校准结果；k = 2、每臂 8 种子、TEST ONLY 宽松 Profile，报告 `d7b5df2d…`）：池化 `G1.shuffle_control` FAIL——噪声 1/8、植入 0/8、混合 0/8；`G1.shift_control` FAIL——噪声 0/8、植入 1/8、混合 2/8；
+  区间极宽，不支持任何阈值或 Profile 选择。
+- 限制：不跑 G5；全噪声臂中池化阶段先失败时逐标的子门为 `not_evaluated`；按门 id `G0.single_instrument_adapter` 识别走错路径。
+- 子代理：`pytest tests/research/synthetic_lab tests/research/strategies/test_multi_instrument_validation.py` → 64 passed；边界 / 文档 → 18 passed；ruff / format / mypy（10 files）通过。
+- 本分支集成后：`pytest -m "not postgres" tests/research/synthetic_lab tests/research/strategies/test_multi_instrument_validation.py tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → 82 passed, 1 warning (124 s)；ruff / mypy 通过。
