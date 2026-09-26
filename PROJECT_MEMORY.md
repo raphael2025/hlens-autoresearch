@@ -48,7 +48,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - D3E / R1 / R2 待复核；D4 提案：Phase 1 首切片不启用 WebSocket live tail（ADR-0022 三项前置未全验收、无实时消费者；`docs/reviews/2026-09-25-d4-live-tail-gate.md`，待复核）；E0 等 Codex 验收 D3E 与 D4 后开放；无 Codex 时 Claude 的提交只推 `wip/phase-<n>-unreviewed`，不推正式 `phase/<n>`
-- Current Blocker：无架构阻塞；已知实现缺陷——D3E-R3 跨日错误：`_verify_edge_provenance`（`infrastructure/revision/channel_reconcile.py`）按天分区只遍历自己所在天的证据边批次前缀，aggTrade 观察键的 REST revision 跨 UTC 日边界时会把另一天已合法提交的边误判为伪造/缺失；修复中，未合入。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
+- Current Blocker：无架构阻塞；D3E-R3 跨日错误（aggTrade 观察键的 REST revision 跨 UTC 日时另一天的边被误判）已由 `69f0bf0` 修复，待 Codex 复核；D3E 仍未验收。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
 - Next Milestone：Codex 对抗复核 D3E（含 R1/R2/R3），决定是否接受并开放 D4 / E
 
 ## 5. Active Decisions

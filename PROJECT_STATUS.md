@@ -195,7 +195,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ 来源若不提供修订关系或修订时间，同一观察的不同版本会成为 competing heads 并使数据集构建 fail closed；需要各来源的 precedence policy 与证据
 - ⚠️ **D2 的证据结论**：Binance 官方资料没有给出任何具体 revision 的公开时刻，因此 `binance.spot.publication@1.0.0` 三类主体全部保守取 `available_time = ingest_time` 并写证据缺口；在出现可引用的官方上界并发布新 policy 版本之前，早于本机 ingest 的历史可用区间为空。归档替换同样无法证明先后，一律 competing heads（数据全部保留，但任何“最新”结论 fail closed）
 - ⚠️ REST 补尾的四张新表、身份与跨通道纯 policy、严格 decoder 和可重放 collector 已由 D3B～D3D 实现并验收；D3E store / reconciler 及 R1 / R2 / R3 返修已实现、尚待 Codex 复核，验收前 REST 数据不能进入任何数据集
-- ⚠️ D3E-R3（`7e9e084`）已关闭 D3E-R1 / R2 留下的边界：REST 元素行现在会重新读取并严格重新解码其首次交付页（已提交的 D3D collection checkpoint，`infrastructure/revision/row_integrity.py::PersistedRowVerifier.verify_rest_elements` / `lawful_response_row`），不再只信"原样批次内容"；归档行同理改用 D1 严格重新解析已发布的归档对象（`verify_archive_elements`）。reconciler 的 `_pinned_read` / `_verify_edge_provenance` 额外按显式 `snapshot_id` 时间旅行重读已提交的证据边批次，核对 R3 覆盖的五张表头。**这仍是未验收的实现**：D3E（含 R1 / R2 / R3）没有 Codex 接受门 commit。**新发现待修的阻塞（D3E-R3 跨日错误）**：`_verify_edge_provenance` 按分区（data_type / symbol / day）只遍历自己那一天的证据边批次前缀；若同一个 aggTrade 观察键的 REST revision 跨 UTC 日边界，会把另一天已合法提交的边判定为伪造 / 缺失，破坏该日期的 reconcile / `verified_edges` / PIT。修复进行中，尚未合入
+- ⚠️ D3E-R3（`7e9e084`）已关闭 D3E-R1 / R2 留下的边界：REST 元素行现在会重新读取并严格重新解码其首次交付页（已提交的 D3D collection checkpoint，`infrastructure/revision/row_integrity.py::PersistedRowVerifier.verify_rest_elements` / `lawful_response_row`），不再只信"原样批次内容"；归档行同理改用 D1 严格重新解析已发布的归档对象（`verify_archive_elements`）。reconciler 的 `_pinned_read` / `_verify_edge_provenance` 额外按显式 `snapshot_id` 时间旅行重读已提交的证据边批次，核对 R3 覆盖的五张表头。**这仍是未验收的实现**：D3E（含 R1 / R2 / R3）没有 Codex 接受门 commit。**D3E-R3 跨日错误（2026-09-26 发现）**：`_verify_edge_provenance` 按分区（data_type / symbol / day）只遍历自己那一天的证据边批次前缀；若同一个 aggTrade 观察键的 REST revision 跨 UTC 日边界，会把另一天已合法提交的边判定为伪造 / 缺失，破坏该日期的 reconcile / `verified_edges` / PIT。已由 `69f0bf0` 修复（候选分支 `claude/hlens-autorecearch-dev-c05c2b`；只改 `channel_reconcile.py`：同一观察键跨日时，另一天写入的证据边批次按写入它的那一天的完整键集重读并逐项复核，完整性校验不放宽；新增 13 项跨午夜回归，旧代码 13 项全部失败、新代码全部通过；独立只读复核判定 ACCEPTABLE），仍待 Codex 复核，D3E 仍未验收
 - ⚠️ **容量**：2026-09-25 探针显示规范化按"整个单元一次性读入"约每行 19 KB（BTC 一整天 100～300 万行会超出 WSL 约 15 GB 内存）。G3-S 已改为固定快照 + 分批窗口：30 万行规范化新增常驻约 0.8 GB、每行边际约 0.7 KB（外推一整天约 2～3 GB）。G3-S2 让时点选择只证明读到的批次、并允许任意 UTC 时段：6 万行实测，选 1 小时峰值约 0.27 GB；但选择结果本身每行约 11 KB，**成交数据必须按小时（或更短）分段选择**，整天选择（约 30 GB）不可行。质量报告已按小时分段证明（G3-S3），但报告行内逐条列出的证据缺口在成交整天规模下仍放不下（D-QGAP）；在决定之前不得对成交数据做整天规模的报告，数据集构建须按小时分段
 - ⚠️ **G2 红队发现（2026-09-25，92 个跨阶段攻击中 6 个成功，已以严格 xfail 固定并逐个返修中）**：RT-1 规范化崩溃后读取方把已提交前缀当完整单元（高）；RT-3 REST 页中途崩溃时规范化接受缺元素的页（高）；RT-2 替换归档尚未规范化时数据集仍选旧版（中）；RT-4 伪造清单（删排除项）可被保存 / 读取（中）；RT-5 首条证据边出现后旧清单无法重建（中）；RT-6 特征运行信任未验证的清单哈希（中）。修复前不得用这些路径产出正式数据集
 - ⚠️ **键闭包的已知边界**：同一笔成交的副本之间若有超过一天的空档（链断开），两段各自被当作独立记录（冲突看不到）；相邻两天的质量报告会各自列出跨天冲突（按设计）；这种数据只能是严重损坏，需以后的质量规则专门检测；另外按小时选择时现在要读前后各一天的分区，生产规模下的耗时尚未测量
@@ -226,11 +226,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-26 | Phase 1 修复批次：D3E-R3 跨日错误修复（`69f0bf0`，13 项跨午夜回归，旧代码全失败、新代码全过，独立复核 ACCEPTABLE）；D-NET 工具不再消费失败 / 旧状态并记录代码版本与 snapshot 头（`d1e6e73`）；严格全量门禁 5738 项通过（`8b6fbaf`） | D3E 仍待 Codex 验收；Phase 1 未关闭 |
 | 2026-09-26 | 文档事实核对（D3E）：REST 首次交付页重新解码、归档对象重新解析已由 D3E-R3（`7e9e084`）实现，PROJECT_STATUS / close-evidence 中"未重新解码 / 解析"的旧描述已更正；仍为 REVIEW_PENDING（无验收门）。新发现待修阻塞：D3E-R3 跨日错误（`_verify_edge_provenance` 按天分区遍历证据边批次，aggTrade 跨 UTC 日边界的观察键会被误判） | 不影响验收状态；D3E 仍等 Codex 复核，跨日错误修复中 |
 | 2026-09-26 | D-NET 执行（Raphael 批准）：真实下载 BTC / ETH 两天 1 分钟 K 线官方归档，入库 → 规范化 → 质量报告 → PIT 选择全部跑通（每天 1440 分钟齐全、无缺口无冲突）；建研究数据集需上市历史，停下待 D-LIST。复核第六轮修复后严格全量门禁 5718 项通过（1d4fe0e） | 待 Raphael 决定 D-LIST |
 | 2026-09-26 | 调试第六轮：数据集路径 G5（封存数据在开封登记前不读）；可选的清单校验缓存；第四、五轮复核修复。严格全量门禁 5709 项通过（67ee304） | 仍无任何策略被验证或晋升；7 项待 Raphael 决定 |
 | 2026-09-26 | 调试第五轮：worker 任务结果落盘、持久模式自动使用文件事件总线并与审计核对；验证器按原回测的执行模型重跑（`G0.execution_model`）；持续循环新增经校验 PIT 数据集来源（合成市场哈希不变）。严格全量门禁 5646 项通过（c63baa0） | 数据集路径暂不做 G5（缺封存窗口特征清单） |
-| 2026-09-26 | 调试第三、四轮：持续循环的状态目录绑定预算与参数、可选目录外锚点、轮间审批即时检查点；文件型持久事件总线；回测器可选成交量上限 / 冲击 / 融资；循环审计记录成为版本化契约（ADR-0050）。严格全量门禁 5619 项通过（5432b2f） | 新增待决 D-PARTIAL；共 7 项待 Raphael 决定 |
 
 ## 10. 下一阶段进入条件
 

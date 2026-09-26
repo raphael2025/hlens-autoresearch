@@ -354,7 +354,7 @@ uv run pytest tests/test_docs_consistency.py tests/test_architecture_boundaries.
 | **键闭包可达范围** | 同一笔成交的副本之间若有超过一天的空档（链断开），两段各自被当作独立记录，冲突看不到；相邻两天的质量报告会各自列出跨天冲突（按设计）；这种数据只能是严重损坏，需要以后专门的质量规则检测。另外按小时选择时现在要读前后各一天的分区，生产规模下的耗时尚未测量。G3-S3-R1（`0fe7471`）已把"同一观察键、相邻不超过一天"的全部 revision 一起纳入选择（传递闭包），但闭包本身的**跨度上限仍是一天**，超过这个跨度的断链仍是已知边界。 | `PROJECT_STATUS.md` §7 |
 | **D-QGAP / 证据缺口独立表大小** | 成交一天 100～300 万条都有缺口（D-HIST），报告行如果逐条内嵌证据缺口会到数 GB；已决定方案 A——缺口改写进独立只追加表（ADR-0031，QG-1/QG-2），报告行只存引用与计数。 | `PROJECT_STATUS.md` §6 |
 | **容量基线（G3-S 系列 + G3-P）** | 规范化"整个单元一次性读入"约每行 19 KB（BTC 一整天 100～300 万行会超出 WSL 约 15 GB 内存）；改为固定快照 + 分批窗口后，30 万行规范化新增常驻约 0.8 GB；时点选择按小时约 0.27 GB 峰值，但**选择结果本身每行约 11 KB，成交数据必须按小时（或更短）分段选择，整天选择（约 30 GB）不可行**。G3-P（`dcfe8b7`）在 ≤ 1 万行规模上把 PIT key closure 与行证明加速了 2～4 倍，但**没有**在生产规模（百万行级）下重新测过；多批次场景的 PyIceberg manifest 重读成本（40 批约 15 s）明确未处理。 | `PROJECT_STATUS.md` §7；本文档 §3 |
-| **D3E-R3 已绑定持久行到不可变来源（原"D3E provenance 边界"已关闭）** | D3E-R1/R2 遗留的边界——元素行只证明"仍是那一页已提交批次的原样内容"、不重新解码正文；归档行同理不重新解析归档对象——已由 D3E-R3（`7e9e084`）关闭：REST 元素 / 响应行现在重新读取并严格重新解码其首次交付页（已提交的 D3D collection checkpoint，`infrastructure/revision/row_integrity.py::PersistedRowVerifier.verify_rest_elements` / `lawful_response_row`）；归档行改用 D1 严格重新解析已发布的归档对象（`verify_archive_elements`）；reconciler 的 `_pinned_read` / `_verify_edge_provenance` 额外按显式 `snapshot_id` 时间旅行重读已提交的证据边批次，核对 R3 覆盖的五张表头。**这仍是未验收的实现**：D3E（含 R1/R2/R3）没有 Codex 接受门 commit。**新发现待修的阻塞（D3E-R3 跨日错误）**：`_verify_edge_provenance` 按分区（data_type/symbol/day）只遍历自己那一天的证据边批次前缀；若同一个 aggTrade 观察键的 REST revision 跨 UTC 日边界，会把另一天已合法提交的边判定为伪造/缺失，破坏该日期的 reconcile / `verified_edges` / PIT。修复进行中，尚未合入。 | `infrastructure/revision/row_integrity.py`；`infrastructure/revision/channel_reconcile.py::_verify_edge_provenance`；`PROJECT_STATUS.md` §7 |
+| **D3E-R3 已绑定持久行到不可变来源（原"D3E provenance 边界"已关闭）** | D3E-R1/R2 遗留的边界——元素行只证明"仍是那一页已提交批次的原样内容"、不重新解码正文；归档行同理不重新解析归档对象——已由 D3E-R3（`7e9e084`）关闭：REST 元素 / 响应行现在重新读取并严格重新解码其首次交付页（已提交的 D3D collection checkpoint，`infrastructure/revision/row_integrity.py::PersistedRowVerifier.verify_rest_elements` / `lawful_response_row`）；归档行改用 D1 严格重新解析已发布的归档对象（`verify_archive_elements`）；reconciler 的 `_pinned_read` / `_verify_edge_provenance` 额外按显式 `snapshot_id` 时间旅行重读已提交的证据边批次，核对 R3 覆盖的五张表头。**这仍是未验收的实现**：D3E（含 R1/R2/R3）没有 Codex 接受门 commit。**D3E-R3 跨日错误（2026-09-26 发现）**：`_verify_edge_provenance` 按分区（data_type/symbol/day）只遍历自己那一天的证据边批次前缀；若同一个 aggTrade 观察键的 REST revision 跨 UTC 日边界，会把另一天已合法提交的边判定为伪造/缺失，破坏该日期的 reconcile / `verified_edges` / PIT。已由 `69f0bf0` 修复（候选分支 `claude/hlens-autorecearch-dev-c05c2b`；只改 `channel_reconcile.py`：同一观察键跨日时，另一天写入的证据边批次按写入它的那一天的完整键集重读并逐项复核，完整性校验不放宽；新增 13 项跨午夜回归，旧代码 13 项全部失败、新代码全部通过；独立只读复核判定 ACCEPTABLE），仍待 Codex 复核，D3E 仍未验收。 | `infrastructure/revision/row_integrity.py`；`infrastructure/revision/channel_reconcile.py::_verify_edge_provenance`；`PROJECT_STATUS.md` §7 |
 | **D-33 精确比较的代价** | REST 以毫秒交付、2025 年起归档为微秒，同一笔成交若带亚毫秒位就无法证明相等，只能 fail closed——正确但降低 REST 补尾的价值；是否改请求微秒需要以后单独验证并批准。 | `PROJECT_STATUS.md` §7 |
 | **D-HIST 假设叠加层** | 早于本机采集的历史行情默认仍取 `available_time = ingest_time`（保守）；ADR-0032 的"事件时间 + 5 秒可用"假设必须由数据集规格显式绑定才生效，不绑定就维持保守——这是设计如此，不是 bug，但意味着**任何不显式绑定该假设的数据集都用不了 D-HIST 之前的历史数据**。 | `PROJECT_STATUS.md` §6 |
 | **D3D/D0 大体量吞吐未测** | D1 已真实验证两个单位边界日的 kline 与 aggTrades；大体量 BTC 日归档尚未做内存/吞吐基线，批量 backfill 前必须先完成容量检查与可恢复 checkpoint；G3-P 的规模测量同样只到 1 万行。 | `PROJECT_STATUS.md` §7 |
@@ -372,6 +372,31 @@ uv run pytest tests/test_docs_consistency.py tests/test_architecture_boundaries.
 4. **本次（G3-D）范围内自查通过，不改变以上结论**：只更新三份文档（本文件、新增的复核指南、`infrastructure/README.md`），未改动任何生产 / 测试代码；`tests/test_docs_consistency.py` + `tests/test_architecture_boundaries.py` 17 passed。
 5. **已知限制清单（§5）新增四条**：D-33-CAP（RT-3 修复路径的容量残留，未修、已记录）、ad-hoc 特征路径与数据集绑定路径长期并存、单 writer 假设从未在并发场景下被测试过；连同既有的 D-MAN、键闭包可达范围一起，构成 Codex 复核时应重点核对的边界清单。
 6. **给 Codex 的建议顺序**（仅为建议，不代替决策）：D3E（含 R1/R2/R3）与其上的 G2 六项修复是后续一切的地基，逻辑上应先补上验收门，再评估 E0～G3-P 这一整段是否可以一次性批量复核，还是要拆回逐批复核；详细的复核分组建议见 [`2026-09-25-phase1-review-guide.md`](2026-09-25-phase1-review-guide.md)。
+
+---
+
+## 7. 2026-09-26 Phase 1 修复批次（候选分支，未验收）
+
+依 Raphael 2026-09-26 的修复指令执行；范围只限 Phase 1，不改 `core/`、冻结契约、Constitution 或 ADR 决策。**本节是实现与自查记录，不是验收结论**；D3E 及其后批次仍为 REVIEW_PENDING。
+
+| 提交 | 内容 | 对应验收项 |
+|---|---|---|
+| `69f0bf0` | D3E-R3 跨日错误修复：同一 aggTrade 观察键的 REST revision 跨 UTC 日时，`_verify_edge_provenance` 把"另一天分区写入的证据边批次"也纳入核对，并用**写入它的那一天**的完整键集（在固定的 REST snapshot 上读取）重读该批次，行数、内容派生批次号、指纹逐项复核；重复、伪造、改时间、删除的边从两天都拒绝。批次号格式、表结构、契约不变 | #13（D3E）、#18（PIT 依赖 `verified_edges`） |
+| `d1e6e73` | D-NET 工具：前一步失败时删除旧的成功记录，后续步骤只读 `status=ok` 且日期一致的前一步记录；每条记录附代码版本（commit + 是否有未提交改动）与前后 snapshot 头；离线测试证明 F2 不发起网络请求 | 运维工具（D-NET 能力记录），不是验收矩阵条目 |
+| `8b6fbaf` | 文档事实同步：REST 首次交付页重新解码、归档对象重新解析、证据边批次按 snapshot 重读均已实现（仍未验收） | 文档 |
+
+**跨日回归（`tests/infrastructure/revision/test_channel_reconcile.py`，13 项）**：两种 reconcile 顺序；重跑幂等（边复用、首个 knowledge_time 保留、不读时钟、不提交）；`verified_edges` 实时与固定视图（含固定在两批之间的视图）；PIT 选择；两种顺序得到同一边集；伪造第二行、改早时间重提交、删除、以另一天批次重复提交、冒用另一天前缀的不可复现批次，都从两天各自拒绝。
+
+**实际运行结果（原样摘要）**：
+
+- 旧代码（`50a43a4` 的 `channel_reconcile.py`）+ 新测试：`13 failed, 111 deselected`，每项均为 `CatalogIntegrityError: evidence edge … is not exactly what an edge batch of this partition committed`；
+- 新代码：`13 passed, 111 deselected`；独立只读复核在隔离副本中复现同一结论，判定 **ACCEPTABLE**；
+- 定向（候选分支 `8b6fbaf`）：`pytest tests/infrastructure/revision tests/infrastructure/pit tests/infrastructure/tools/test_dnet_capability_run.py` → `621 passed, 21 skipped in 207.33s`；`ruff check .` → `All checks passed!`；`ruff format --check .` → `600 files already formatted`；`mypy` → `Success: no issues found in 462 source files`；
+- 完整严格门禁（固定 worktree，真实 PostgreSQL 测试 catalog）：`GATE OK @8b6fbaf | ruff: All checks passed! | 599 files already formatted | Success: no issues found in 462 source files | lock ok | pytest: 5738 passed, 1 warning in 3079.52s (0:51:19)`。该结果只对应 `8b6fbaf`；其后的提交只改文档
+
+**已知取舍**：以另一天的有效批次重复提交同一条边，现在会被判为"committed twice"（旧代码对原始那天会放过）；固定视图若 REST snapshot 早于外日批次所依据的 REST 状态，会 fail closed（与本日批次一致）。只有跨日的键才产生额外读取：每多一天一次 REST 当天键扫描，加上该天每个批次两次证据表扫描。
+
+**Phase 1 仍未满足的验收项（独立复核 2026-09-26 核实，与 §6 一致）**：#9 后半、#13 后半（D3E 含 R1/R2/R3 及本次修复）、#14、#15、#16、#17 后半、#18、#19、#20、#21 均无 `phase1: accept …` 验收门 commit；最后一个实现验收门仍是 `300bf33`（接受 D3D、开放 D3E）。另有：roadmap"门未通过不得进入下一批"与实际开发顺序不一致，需 Codex 裁决；D-33-CAP 容量残留与单 writer 并发假设未测。
 
 ---
 
