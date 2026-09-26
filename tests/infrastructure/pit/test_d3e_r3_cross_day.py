@@ -18,6 +18,7 @@ Real harness, real D2 / D3D / D3E / normalizer / reconciler; no private
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
+from dataclasses import replace
 from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Any
@@ -26,10 +27,11 @@ import pytest
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from infrastructure.canonical import rules
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_PRECEDENCE_EVIDENCE
 from infrastructure.pit.selector import PIT_BINDING, PitSelector
 from infrastructure.pit.view import PinnedCatalogView
-from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
+from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
 from infrastructure.revision.channel_reconcile import ChannelReconciler
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.collector import rest_support as cs
@@ -430,6 +432,96 @@ def test_a_pit_selector_must_not_duplicate_cross_day_mapped_edges(h: RestHarness
     )
     mapped_raw = _raw_edge_ids(out.edges[SPANNING])
     assert len(mapped_raw) == len(set(mapped_raw)) == 2
+
+
+def test_a_pit_selector_maps_each_three_day_edge_once(h: RestHarness) -> None:
+    """Each Raw edge_id is mapped once however many UTC days' partitions return it."""
+    _cross_three_days(h)
+    _reconcile_days(h, (DAY_1, DAY_2, DAY))
+    spanning = {edge_id for edge_id, _, _ in _spanning_edge_triples(h)}
+    assert len(spanning) == 3
+    spec = _spec(h, cutoff=FAR)
+    out = PitSelector(h.adapter, h.storage).select(
+        spec, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17)
+    )
+    for key, edges in out.edges.items():
+        mapped = _raw_edge_ids(edges)
+        assert len(mapped) == len(set(mapped)), key
+    mapped_spanning = _raw_edge_ids(out.edges[SPANNING])
+    assert len(mapped_spanning) == 3 and set(mapped_spanning) == spanning
+    # Deterministic: a fresh selector at the same manifest answers bitwise the same.
+    assert (
+        PitSelector(h.adapter, h.storage).select(
+            spec, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17)
+        )
+        == out
+    )
+
+
+def _doctor(edge: ChannelEdge, change: str) -> ChannelEdge:
+    item = edge.evidence
+    if change == "knowledge_time":
+        return replace(
+            edge,
+            evidence=item.model_copy(
+                update={"knowledge_time": item.knowledge_time + timedelta(seconds=1)}
+            ),
+        )
+    if change == "evidence":
+        return replace(
+            edge, evidence=item.model_copy(update={"evidence": (*item.evidence, "forged")})
+        )
+    if change == "superseded_revision_id":
+        return replace(
+            edge,
+            evidence=item.model_copy(update={"superseded_revision_id": item.revision_id + "x"}),
+        )
+    if change == "superseded_table":
+        return replace(edge, superseded_table=edge.superseded_table + "_x")
+    if change == "revision_snapshot_id":
+        return replace(edge, revision_snapshot_id=edge.revision_snapshot_id + "0")
+    if change == "projection_sha256":
+        return replace(edge, projection_sha256="0" * 64)
+    raise AssertionError(change)
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "knowledge_time",
+        "evidence",
+        "superseded_revision_id",
+        "superseded_table",
+        "revision_snapshot_id",
+        "projection_sha256",
+    ],
+)
+def test_a_pit_selector_fails_closed_on_inconsistent_duplicate_edge_id(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch, change: str
+) -> None:
+    """A Raw edge_id returned by two days with any differing content is not merged: fail closed."""
+    _cross_midnight_two_days(h)
+    _reconcile_days(h, (DAY, DAY_1), clocks=(K_E, K_E2))
+    spec = _spec(h, cutoff=FAR)
+    window = (utc(2023, 11, 14), utc(2023, 11, 15))
+    assert PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, *window)
+
+    genuine = ChannelReconciler.verified_edges
+
+    def doctored(
+        self: ChannelReconciler, data_type: str, symbol: str, day: date
+    ) -> tuple[ChannelEdge, ...]:
+        edges = genuine(self, data_type, symbol, day)
+        if day != DAY_1:
+            return edges
+        return tuple(
+            _doctor(edge, change) if edge.evidence.observation_key == SPANNING else edge
+            for edge in edges
+        )
+
+    monkeypatch.setattr(ChannelReconciler, "verified_edges", doctored)
+    with pytest.raises(CatalogIntegrityError, match="different content"):
+        PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, *window)
 
 
 # =========================================================================================
