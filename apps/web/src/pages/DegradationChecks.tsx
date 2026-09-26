@@ -3,6 +3,7 @@ import { SimulatedBanner } from "../components/Banner";
 import { ReportBrowser } from "../components/ReportBrowser";
 import {
   asDegradationCheckPayload,
+  checkStatus,
   checkSummary,
   degradationLabel,
   directionText,
@@ -17,21 +18,36 @@ import {
 // helpers live in src/lib/degradationCheck.ts.
 
 const STATUS_COLOR = { breached: "#b91c1c", missing: "#92400e", within: "#166534" } as const;
-
 function CheckDetail({ envelope }: { envelope: ReportEnvelope }) {
   const check = asDegradationCheckPayload(envelope.payload);
   if (check === null) {
     return <pre>{JSON.stringify(envelope.payload, null, 2)}</pre>;
   }
+  const status = checkStatus(check);
   return (
     <>
       <p>
         subject <strong>{check.subject}</strong> · window {check.window} · check_hash{" "}
         <code>{`${check.check_hash.slice(0, 12)}…`}</code>
       </p>
-      <p>
-        <strong>{checkSummary(check)}</strong>
-      </p>
+      {status === "insufficient_evidence" ? (
+        <div
+          role="note"
+          data-check-status="insufficient_evidence"
+          style={{ background: "#fef3c7", border: "1px solid #92400e", color: "#92400e", padding: "8px 12px" }}
+        >
+          <strong>INSUFFICIENT EVIDENCE（证据不足）</strong>
+          <p style={{ margin: "4px 0 0" }}>{checkSummary(check)}</p>
+          <p style={{ margin: "4px 0 0", fontSize: 13 }}>
+            没有任何指标的近期值可与基线比较：这次检查既不能说明退化，也不能说明健康（degraded = false 只表示没有
+            breach）。
+          </p>
+        </div>
+      ) : (
+        <p>
+          <strong>{checkSummary(check)}</strong>
+        </p>
+      )}
       <p style={{ color: "#555", fontSize: 13 }}>
         {check.status} — {check.note}
       </p>
@@ -84,7 +100,7 @@ export function DegradationChecks() {
       <h2>Degradation Checks（退化检查）</h2>
       <p style={{ color: "#555", fontSize: 14 }}>
         近期指标与验证基线的对比；阈值只来自所列来源（Validation Profile 或显式映射）。只作证据：不改变生命周期状态，
-        缺少近期值表示证据不足而不是健康；没有任何下单、账户或转账能力（H10）。
+        缺少近期值表示证据不足而不是健康（全部指标都缺少时整次检查显示为 INSUFFICIENT EVIDENCE）；没有任何下单、账户或转账能力（H10）。
       </p>
       <ReportBrowser
         kind="degradation_check"

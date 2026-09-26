@@ -19,6 +19,10 @@ Two generations (contract 2.1.0, ADR-0052 §4):
   their ids are pinned in ``tests/apps/report_fixtures.py`` (``LEGACY_2_0_0``).
   ``research_loop_round`` and ``router_paper_run`` have no legacy file: their committed payloads
   are identical under both versions' current writers (nothing versioned is serialized).
+- ``VARIANT_WRITERS`` — named further current fixtures of a kind, for a state the console must
+  show distinctly (the ``degradation_check`` with every metric missing:
+  ``insufficient_evidence``); their ids are pinned in ``tests/apps/report_fixtures.py``
+  (``VARIANTS``).
 
 Regenerate after a payload change (delete the stale ``<kind>/`` file first; writers are
 append-only)::
@@ -64,9 +68,12 @@ from research.router.deviation import PaperDeviation
 from research.router.paper import RouterStop
 from research.states.diagnostics import StateDiagnostics, diagnose
 from research.synthetic_lab.gate_calibration import run_gate_calibration
-from tests.apps.report_fixtures import LEGACY_2_0_0
+from tests.apps.report_fixtures import LEGACY_2_0_0, VARIANTS
 from tests.research.events.test_event_stats import _all_statistics
 from tests.research.reports.test_degradation_writer import write_fixture as write_degradation
+from tests.research.reports.test_degradation_writer import (
+    write_insufficient_evidence_fixture as write_degradation_insufficient_evidence,
+)
 from tests.research.reports.test_writers import (
     _loop_record,
     _matrix_with_backtest,
@@ -159,6 +166,21 @@ WRITERS: dict[str, Writer] = {
 }
 
 
+#: Named variant fixtures: further current reports of a kind in a distinct state.
+VARIANT_WRITERS: dict[str, dict[str, Writer]] = {
+    # the same TEST ONLY monitor with no recent value at all: every metric missing
+    "degradation_check": {"insufficient_evidence": write_degradation_insufficient_evidence},
+}
+
+
+def _variant_writers() -> list[tuple[str, str, Writer]]:
+    return [
+        (kind, name, write)
+        for kind, named in VARIANT_WRITERS.items()
+        for name, write in named.items()
+    ]
+
+
 #: The legacy readable 2.0.0 fixtures: the float-only validation report (no exact gate: 2.0.0
 #: has no ``value_exact``), and the matrix / calibration builders unchanged.
 LEGACY_WRITERS: dict[str, Writer] = {
@@ -204,24 +226,60 @@ def regenerate_legacy(root: Path = FIXTURES_ROOT) -> list[WrittenReport]:
 
 def regenerate(root: Path = FIXTURES_ROOT) -> list[WrittenReport]:
     """Write every fixture of every kind under ``root`` (append-only, idempotent)."""
-    return [write(root) for write in WRITERS.values()] + regenerate_legacy(root)
+    return (
+        [write(root) for write in WRITERS.values()]
+        + [write(root) for _, _, write in _variant_writers()]
+        + regenerate_legacy(root)
+    )
 
 
 def test_every_report_kind_has_a_generated_fixture() -> None:
     assert set(WRITERS) == {kind.value for kind in ReportKind}
     assert {kind.value for kind in LEGACY_2_0_0} == set(LEGACY_WRITERS)
+    assert {kind.value: set(named) for kind, named in VARIANTS.items()} == {
+        kind: set(named) for kind, named in VARIANT_WRITERS.items()
+    }
 
 
 @pytest.mark.parametrize("kind", list(WRITERS))
 def test_the_committed_fixture_is_what_the_real_writer_produces(tmp_path: Path, kind: str) -> None:
     written = WRITERS[kind](tmp_path)
     assert written.kind == kind
+    variants = [write(tmp_path) for write in VARIANT_WRITERS.get(kind, {}).values()]
+    assert all(variant.kind == kind and variant.written for variant in variants)
     committed_dir = FIXTURES_ROOT / kind
     committed = sorted(path.name for path in committed_dir.glob("*.json"))
     legacy = LEGACY_2_0_0.get(ReportKind(kind), "")
-    expected = sorted([written.path.name, *([f"{legacy}.json"] if legacy else [])])
+    expected = sorted(
+        [
+            written.path.name,
+            *(variant.path.name for variant in variants),
+            *([f"{legacy}.json"] if legacy else []),
+        ]
+    )
     assert committed == expected, "stale or missing fixture; regenerate (module docs)"
-    assert (committed_dir / written.path.name).read_bytes() == written.path.read_bytes()
+    for item in [written, *variants]:
+        assert (committed_dir / item.path.name).read_bytes() == item.path.read_bytes()
+
+
+@pytest.mark.parametrize(("kind", "name", "write"), _variant_writers())
+def test_each_variant_fixture_is_pinned_by_id(
+    tmp_path: Path, kind: str, name: str, write: Writer
+) -> None:
+    written = write(tmp_path)
+    assert written.id == VARIANTS[ReportKind(kind)][name]
+    assert written.id != WRITERS[kind](tmp_path).id  # a separate file next to the current one
+
+
+def test_the_insufficient_evidence_degradation_fixture_is_flagged_and_never_healthy(
+    tmp_path: Path,
+) -> None:
+    written = VARIANT_WRITERS["degradation_check"]["insufficient_evidence"](tmp_path)
+    payload = json.loads(written.path.read_text(encoding="utf-8"))
+    assert payload["insufficient_evidence"] is True and payload["degraded"] is False
+    assert payload["breaches"] == [] and payload["metrics"]
+    assert payload["missing"] == sorted(item["metric"] for item in payload["metrics"])
+    assert all(item["missing"] and item["recent"] is None for item in payload["metrics"])
 
 
 @pytest.fixture(scope="module")
@@ -273,7 +331,11 @@ def test_the_current_validation_report_carries_an_exact_gate(
 
 def test_regenerate_writes_every_kind_once_and_is_idempotent(tmp_path: Path) -> None:
     first = regenerate(tmp_path)
-    assert [item.kind for item in first] == [*WRITERS, *LEGACY_WRITERS]
+    assert [item.kind for item in first] == [
+        *WRITERS,
+        *(kind for kind, _, _ in _variant_writers()),
+        *LEGACY_WRITERS,
+    ]
     assert all(item.written for item in first)
     assert not any(item.written for item in regenerate(tmp_path))
 

@@ -79,7 +79,11 @@ export function eligibilityOf(payload: Record<string, unknown> | undefined): Eli
   return { checks, malformed };
 }
 
-/** The refusal codes of research/router/evidence.py, in check order (the first failure wins). */
+/**
+ * The refusal codes of research/router/evidence.py (`EligibilityRefusal`), in check order (the
+ * first failure wins): hash / report / subject / verdict, then G5 (sealed OOS), then the report's
+ * Validation Profile and the ADR-0060 market benchmark item that Profile calls for.
+ */
 export const REFUSAL_ORDER = [
   "report_hash_missing",
   "report_not_found",
@@ -89,9 +93,13 @@ export const REFUSAL_ORDER = [
   "verdict_not_pass",
   "sealed_oos_not_evaluated",
   "sealed_oos_not_passed",
+  "profile_not_found",
+  "market_benchmark_missing",
 ] as const;
 
-const REFUSALS: Record<string, string> = {
+export type RefusalCode = (typeof REFUSAL_ORDER)[number];
+
+const REFUSALS: Record<RefusalCode, string> = {
   report_hash_missing: "未声明验证报告哈希",
   report_not_found: "找不到声明哈希对应的验证报告",
   report_invalid: "验证报告格式无效",
@@ -100,12 +108,18 @@ const REFUSALS: Record<string, string> = {
   verdict_not_pass: "验证报告判定不是 PASS",
   sealed_oos_not_evaluated: "验证报告没有 G5（密封样本外）门",
   sealed_oos_not_passed: "G5（密封样本外）门未全部通过",
+  profile_not_found: "未提供验证报告所用的 Validation Profile（内容哈希与 ref 须与报告一致）",
+  market_benchmark_missing:
+    "Profile 的市场基准规则要求的 G2.market_benchmark 项在验证报告中缺失（ADR-0060）",
 };
+
+function isRefusalCode(refusal: string): refusal is RefusalCode {
+  return (REFUSAL_ORDER as readonly string[]).includes(refusal);
+}
 
 /** A refusal code in words, with the raw code kept (an unknown code is shown as-is). */
 export function refusalText(refusal: string): string {
-  const text = REFUSALS[refusal];
-  return text === undefined ? refusal : `${text}（${refusal}）`;
+  return isRefusalCode(refusal) ? `${REFUSALS[refusal]}（${refusal}）` : refusal;
 }
 
 /** The check's result in words: verified, or refused with the reason. */
@@ -113,17 +127,34 @@ export function checkResultText(check: EligibilityCheck): string {
   return check.refusal === null ? "已核验（PASS 且含 G5）" : `拒绝：${refusalText(check.refusal)}`;
 }
 
-export type SealedOosStatus = "passed" | "not_passed" | "not_evaluated" | "not_checked";
+export type SealedOosStatus = "passed" | "not_passed" | "not_evaluated" | "not_checked" | "unknown";
 
 /**
- * Where the check got with G5 (sealed OOS). G5 is checked last, so a refusal at an earlier step
- * (hash, report, subject, verdict) leaves it `not_checked` — even when the report lists G5 gates.
+ * What each refusal says about G5 (sealed OOS) — by what the refusal is, not by its position in
+ * the check order: a refusal before G5 (hash, report, subject, verdict) leaves it `not_checked`,
+ * even when the report lists G5 gates; the two G5 refusals are G5's own outcome; the Profile and
+ * market benchmark checks run only after every G5 gate passed, so G5 is `passed` there.
+ */
+const SEALED_OOS_BY_REFUSAL: Record<RefusalCode, SealedOosStatus> = {
+  report_hash_missing: "not_checked",
+  report_not_found: "not_checked",
+  report_invalid: "not_checked",
+  report_hash_mismatch: "not_checked",
+  subject_mismatch: "not_checked",
+  verdict_not_pass: "not_checked",
+  sealed_oos_not_evaluated: "not_evaluated",
+  sealed_oos_not_passed: "not_passed",
+  profile_not_found: "passed",
+  market_benchmark_missing: "passed",
+};
+
+/**
+ * Where the check got with G5 (sealed OOS): `passed` when verified, otherwise what its refusal
+ * says (`SEALED_OOS_BY_REFUSAL`). An unknown refusal code is `unknown`, never assumed either way.
  */
 export function sealedOosStatus(check: EligibilityCheck): SealedOosStatus {
   if (check.refusal === null) return "passed";
-  if (check.refusal === "sealed_oos_not_passed") return "not_passed";
-  if (check.refusal === "sealed_oos_not_evaluated") return "not_evaluated";
-  return "not_checked";
+  return isRefusalCode(check.refusal) ? SEALED_OOS_BY_REFUSAL[check.refusal] : "unknown";
 }
 
 const SEALED_OOS_TEXT: Record<SealedOosStatus, string> = {
@@ -131,6 +162,7 @@ const SEALED_OOS_TEXT: Record<SealedOosStatus, string> = {
   not_passed: "未通过",
   not_evaluated: "未评估（无 G5 门）",
   not_checked: "未核验（更早的检查已拒绝）",
+  unknown: "未知（无法识别的拒绝代码）",
 };
 
 /** G5 status in words, followed by the report's G5 gate ids when there are any. */

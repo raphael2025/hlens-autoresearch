@@ -57,6 +57,15 @@ def write_fixture(root: Path) -> WrittenReport:
     )
 
 
+def write_insufficient_evidence_fixture(root: Path) -> WrittenReport:
+    """The second console fixture: the same monitor with no recent value at all (every metric
+    missing -> ``insufficient_evidence``)."""
+    empty = monitor().check(SUBJECT, BASELINE, {})
+    return write_degradation_check(
+        root, empty, monitor=monitor(), baseline=BASELINE, recent={}, window=WINDOW
+    )
+
+
 def _payload() -> dict[str, Any]:
     return degradation_check_payload(
         check(), monitor=monitor(), baseline=BASELINE, recent=RECENT, window=WINDOW
@@ -145,6 +154,8 @@ def test_an_insufficient_evidence_check_is_served_by_the_store(tmp_path: Path) -
     )
     envelope = ReportStore(tmp_path).get(ReportKind.DEGRADATION_CHECK, written.id)
     assert envelope.payload["insufficient_evidence"] is True
+    # the console fixture builder writes exactly this report
+    assert not write_insufficient_evidence_fixture(tmp_path).written
 
 
 def test_written_under_its_hash_and_served_by_the_api(tmp_path: Path) -> None:

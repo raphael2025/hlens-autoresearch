@@ -49,7 +49,11 @@ One per kind, built at the current contract version:
   alone through the same backtester (the declared reference).
 - `degradation_check/`: `write_degradation_check` over the check of
   `tests/research/reports/test_degradation_writer.py` (`write_fixture`) — TEST ONLY thresholds and
-  metrics (one breached, one within, one missing), not Profile values.
+  metrics (one breached, one within, one missing), not Profile values. A second, **variant**
+  file `50f536888a5b49fec15e11737bd107101d909617449b16881de60d5139f37d9d.json` is the same monitor
+  with no recent value at all (`write_insufficient_evidence_fixture`: every metric missing,
+  `"insufficient_evidence": true`); it is produced by the generator's `VARIANT_WRITERS` and pinned
+  by id in `tests/apps/report_fixtures.py` (`VARIANTS`).
 
 ## Legacy readable fixtures (contract 2.0.0)
 

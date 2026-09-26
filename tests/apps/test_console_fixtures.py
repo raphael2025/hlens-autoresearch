@@ -20,7 +20,14 @@ from fastapi.testclient import TestClient
 
 from apps.api import create_app
 from apps.api.store import ReportKind, ReportStore
-from tests.apps.report_fixtures import LEGACY_2_0_0, fixture, fixtures, legacy_fixture
+from tests.apps.report_fixtures import (
+    LEGACY_2_0_0,
+    VARIANTS,
+    fixture,
+    fixtures,
+    legacy_fixture,
+    variant_fixture,
+)
 
 FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "apps" / "web" / "fixtures"
 
@@ -111,9 +118,11 @@ def test_gate_calibration_fixtures_carry_the_evidence_only_disclaimer() -> None:
 def test_every_kind_has_one_current_fixture_and_its_pinned_legacy_one(kind: ReportKind) -> None:
     ids = {item.id for item in fixtures(kind)}
     legacy = LEGACY_2_0_0.get(kind)
-    assert ids - {legacy} == {fixture(kind).id}
+    variants = set(VARIANTS.get(kind, {}).values())
+    assert ids - {legacy} - variants == {fixture(kind).id}
     if legacy is not None:
         assert legacy in ids and legacy != fixture(kind).id
+    assert variants <= ids and fixture(kind).id not in variants
 
 
 @pytest.mark.parametrize("kind", list(LEGACY_2_0_0))
@@ -189,17 +198,35 @@ def test_paper_deviation_fixture_compares_every_mark() -> None:
 
 def test_degradation_check_fixture_names_its_rules_and_sources() -> None:
     store = ReportStore(FIXTURES_ROOT)
-    (envelope,) = store.list(ReportKind.DEGRADATION_CHECK)
-    payload = envelope.payload
-    assert payload["kind"] == "degradation_check"
-    assert payload["check_hash"] == envelope.id
-    assert payload["degraded"] is True and payload["breaches"]
-    metrics = payload["metrics"]
-    assert isinstance(metrics, list) and metrics
-    for metric in metrics:
-        assert metric["threshold_source"]  # every threshold names where it came from
-        assert metric["direction"] in {"higher_is_better", "lower_is_better"}
-        assert (metric["recent"] is None) == metric["missing"]
-    assert {item["metric"] for item in metrics if item["breached"]} == {
-        breach["metric"] for breach in payload["breaches"]
-    }
+    envelopes = {envelope.id: envelope for envelope in store.list(ReportKind.DEGRADATION_CHECK)}
+    assert len(envelopes) == 2  # the degraded check and the insufficient-evidence variant
+    for envelope in envelopes.values():
+        payload = envelope.payload
+        assert payload["kind"] == "degradation_check"
+        assert payload["check_hash"] == envelope.id
+        metrics = payload["metrics"]
+        assert isinstance(metrics, list) and metrics
+        for metric in metrics:
+            assert metric["threshold_source"]  # every threshold names where it came from
+            assert metric["direction"] in {"higher_is_better", "lower_is_better"}
+            assert (metric["recent"] is None) == metric["missing"]
+        assert {item["metric"] for item in metrics if item["breached"]} == {
+            breach["metric"] for breach in payload["breaches"]
+        }
+    degraded = envelopes[fixture(ReportKind.DEGRADATION_CHECK).id].payload
+    assert degraded["degraded"] is True and degraded["breaches"]
+    assert "insufficient_evidence" not in degraded  # the key is additive: absent unless all missing
+
+
+def test_the_insufficient_evidence_degradation_fixture_is_served_as_such() -> None:
+    variant = variant_fixture(ReportKind.DEGRADATION_CHECK, "insufficient_evidence")
+    response = TestClient(create_app(reports_root=FIXTURES_ROOT)).get(
+        f"/reports/degradation_check/{variant.id}"
+    )
+    assert response.status_code == 200
+    payload = response.json()["payload"]
+    assert payload == variant.payload
+    assert payload["insufficient_evidence"] is True and payload["degraded"] is False
+    assert payload["breaches"] == []
+    assert all(metric["missing"] for metric in payload["metrics"])
+    assert payload["missing"] == sorted(metric["metric"] for metric in payload["metrics"])

@@ -151,6 +151,9 @@ test("every refusal code has words and a G5 status; an unknown code is shown ver
     verdict_not_pass: "not_checked",
     sealed_oos_not_evaluated: "not_evaluated",
     sealed_oos_not_passed: "not_passed",
+    // checked after G5 (research/router/evidence.py): reaching them means every G5 gate passed
+    profile_not_found: "passed",
+    market_benchmark_missing: "passed",
   } as const;
   assert.deepEqual([...REFUSAL_ORDER], Object.keys(expectedG5));
   for (const code of REFUSAL_ORDER) {
@@ -160,6 +163,43 @@ test("every refusal code has words and a G5 status; an unknown code is shown ver
   }
   assert.equal(refusalText("something_new"), "something_new");
   assert.equal(checkResultText(check({ refusal: "something_new" })), "拒绝：something_new");
+  // an unknown code says nothing about G5: neither passed nor "not checked"
+  assert.equal(sealedOosStatus(check({ refusal: "something_new" })), "unknown");
+  assert.equal(sealedOosText(check({ refusal: "something_new" })), "未知（无法识别的拒绝代码） · G5.fixture");
+});
+
+test("Profile / market benchmark refusals come after G5: G5 passed, the claim still refused", () => {
+  const view = eligibilityOf({
+    eligibility: [
+      check({
+        refusal: "profile_not_found",
+        detail: `no given Profile is profile:default@1.0.0 / ${H("c")}`,
+      }),
+      check({
+        strategy: B,
+        subject: B,
+        sealed_oos_gates: ["G5.a", "G5.b"],
+        refusal: "market_benchmark_missing",
+        detail:
+          "benchmark.market_benchmark_rule=buy_and_hold_equal_weight calls for " +
+          "G2.market_benchmark.buy_and_hold_equal_weight, " +
+          "which the report lacks (ADR-0060)",
+      }),
+    ],
+  });
+  assert.ok(view !== null);
+  assert.equal(eligibilitySummary(view), "2 个策略中 0 个已核验，2 个被拒绝");
+  const [noProfile, noBenchmark] = view.checks;
+  assert.equal(
+    checkResultText(noProfile),
+    "拒绝：未提供验证报告所用的 Validation Profile（内容哈希与 ref 须与报告一致）（profile_not_found）",
+  );
+  assert.equal(sealedOosText(noProfile), "通过 · G5.fixture");
+  assert.equal(
+    checkResultText(noBenchmark),
+    "拒绝：Profile 的市场基准规则要求的 G2.market_benchmark 项在验证报告中缺失（ADR-0060）（market_benchmark_missing）",
+  );
+  assert.equal(sealedOosText(noBenchmark), "通过 · G5.a, G5.b");
 });
 
 test("refusals before any report was found carry no evidence; G5 text says why", () => {

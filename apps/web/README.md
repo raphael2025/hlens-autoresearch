@@ -163,6 +163,16 @@ Knowledge Search 需要 `--knowledge docs/research/knowledge`（注入 `LocalKno
   `ReportBrowser` / `useApi` / `States.tsx`；视图模型 `src/lib/degradationCheck.ts`（`node --test`，输入是
   `fixtures/degradation_check/`）。指标按 breached → missing → within 排序；missing 明示「证据不足，不是健康」；
   每个阈值显示其来源。纯表格，不引入 ECharts。
+- **退化检查的「证据不足」状态**（2026-09-26）：全部指标都缺少近期值时，`DegradationCheck.status` 为
+  `insufficient_evidence`，payload 带 `"insufficient_evidence": true`（只在该情况出现，与 `"degraded": false` 并存）。
+  控制台（`checkStatus`）把它显示为独立状态：列表标签 `INSUFFICIENT EVIDENCE`（从不是 `ok`），详情为黄色
+  `INSUFFICIENT EVIDENCE（证据不足）` 提示框，从不显示「未发现超出允许下降的指标」；没有该键但全部指标缺失的旧 payload
+  同样按证据不足显示。部分缺失不变（缺失指标列为证据不足）。对应 fixture 是第二份 `degradation_check`，同样由提交的
+  生成器以真实 writer 产生（`VARIANT_WRITERS` / `tests/apps/report_fixtures.py` 的 `VARIANTS`），原有 fixture 与哈希不变。
+- **路由资格的 Profile / 市场基准拒绝**（2026-09-26）：`research/router/evidence.py` 在 G5 之后还核对报告所用的
+  Validation Profile（`profile_not_found`）与该 Profile 市场基准规则要求的 ADR-0060 项（`market_benchmark_missing`），
+  两者都有中文说明 + 原始代码。G5 状态按拒绝代码的含义判定（`SEALED_OOS_BY_REFUSAL`），不再假设 G5 是最后一项检查：
+  这两种拒绝下 G5 显示为「通过」；无法识别的代码显示为「未知」。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（已跑 `npm run build`、`npm test` 与下文的 live-backend
   smoke；后者不是浏览器验收）。
 

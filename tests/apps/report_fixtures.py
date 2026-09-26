@@ -7,7 +7,9 @@ not import ``research/``) read them to get valid payloads to serve or to tamper 
 
 Each kind has one **current** fixture (contract 2.1.0). Three kinds also keep a **legacy
 readable** 2.0.0 fixture (``LEGACY_2_0_0``): the files committed before 2.1.0, kept so the API and
-the console keep proving they read a 2.0.0 report.
+the console keep proving they read a 2.0.0 report. A kind may also have named **variant**
+fixtures (``VARIANTS``): further current reports of a distinct state the console must show, e.g.
+an insufficient-evidence degradation check.
 """
 
 from __future__ import annotations
@@ -34,6 +36,17 @@ LEGACY_2_0_0: Final[dict[ReportKind, str]] = {
     ),
 }
 
+#: Named variant fixture ids per kind (``apps/web/fixtures/README.md``): current reports of a
+#: distinct state, next to the kind's one current fixture.
+VARIANTS: Final[dict[ReportKind, dict[str, str]]] = {
+    ReportKind.DEGRADATION_CHECK: {
+        # every ruled metric missing: ``"insufficient_evidence": true`` (never healthy)
+        "insufficient_evidence": (
+            "50f536888a5b49fec15e11737bd107101d909617449b16881de60d5139f37d9d"
+        ),
+    },
+}
+
 
 @dataclass(frozen=True, slots=True)
 class Fixture:
@@ -51,12 +64,18 @@ def fixtures(kind: ReportKind) -> list[Fixture]:
 
 
 def fixture(kind: ReportKind) -> Fixture:
-    """The one current (2.1.0) committed fixture of ``kind`` (a fresh copy of its payload)."""
-    legacy = LEGACY_2_0_0.get(kind)
-    (current,) = [item for item in fixtures(kind) if item.id != legacy]
+    """The one current (2.1.0) committed fixture of ``kind`` (a fresh copy of its payload); not a
+    legacy or variant one."""
+    pinned = {LEGACY_2_0_0.get(kind), *VARIANTS.get(kind, {}).values()}
+    (current,) = [item for item in fixtures(kind) if item.id not in pinned]
     return current
 
 
 def legacy_fixture(kind: ReportKind) -> Fixture:
     """The legacy readable 2.0.0 fixture of ``kind`` (``LEGACY_2_0_0``)."""
     return _load(FIXTURES_ROOT / kind.value / f"{LEGACY_2_0_0[kind]}.json")
+
+
+def variant_fixture(kind: ReportKind, name: str) -> Fixture:
+    """The variant fixture ``name`` of ``kind`` (``VARIANTS``)."""
+    return _load(FIXTURES_ROOT / kind.value / f"{VARIANTS[kind][name]}.json")
