@@ -645,3 +645,13 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   这些数字只描述 TEST ONLY 夹具在简单生成器上的行为，不据此选择阈值或 Profile。800 / 400 种子的尝试超时被停止，未写报告。
 - 通道发现的缺陷：`python -m research.synthetic_lab.gate_calibration` 拒绝一切 setup（`-m` 以 `__main__` 执行第二份模块，setup 类不同）。修复：`__main__` 块转调包内模块的 `main`；新子进程测试修复前失败、修复后通过。
 - 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/synthetic_lab tests/apps tests/research/reports` + 边界 + 文档一致性 → 584 passed, 1 warning (140 s)；`npm test` → lib 80 / 80、组件 105 / 105；`npm run build` ✓；ruff / format（746 files）/ mypy（588 files）通过。
+
+**B53 — Codex 复核通过的四个修复（精确 cherry-pick，本地提交，未推送）**（`CODE_COMPLETE / DEBUG_PENDING`；复核结论见各 `docs/reviews/2026-09-26-*-implementation.md`）
+
+- 基线：`1cd3284` 全量非 PostgreSQL 门禁（PID 1078055，唯一一次针对该 SHA 的全量运行）→ 6889 passed, 136 deselected, 1 warning in 3036.72s，退出码 0；只作基线证据。
+- `a32a9b6` → `695add6`（B45）：`CalibrationReport` 区间在局部 28 位上下文中向外取整。定向：`pytest -m "not postgres" tests/research/synthetic_lab` + 边界 + 文档一致性 → 193 passed；ruff / format（746）/ mypy（588）通过。
+- `dd4fada` → `ed25d2b`（B46）：`public_detail` 对 `file:` 协议名大小写不敏感。定向：`tests/apps tests/research/reports` + 边界 + 文档一致性 → 447 passed；ruff / format（747）/ mypy（588）通过。
+- `558b099` → `7157461`（B49）：`ProposalAnchor` 自带 flock、从磁盘重读锚点、拒绝分叉或外来账本。定向：`tests/research/evolution tests/research/router` + 边界 + 文档一致性 → 149 passed；ruff / format（750）/ mypy（590）通过。
+- `d389a39` → `4e6c220`（D-DEG-IE，Codex 决定）：所有指标缺失的劣化检查在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 相应修订（取代 B51 中"不发布、待决定"的临时处理）。定向：`tests/apps tests/research/reports` + 边界 + 文档一致性 → 452 passed；ruff / format（751）/ mypy（590）通过。
+- 每次 cherry-pick 后工作区干净、只含该提交的文件；新增 import 只来自标准库 / 本包（无跨平面依赖）。未改 `core/`、Schema、KnowledgeProvider 或 ADR-0055 状态。
+- 注意：同一工作树中另一会话（2026-09-26 全阶段代码完成计划）并行提交了 `b1a3e08`、`dd6c8e1`、`93477c6`、`21ae9d8`、`dd158c9`，并把 `21ae9d8` 推到 `wip/all-code-completion`；这些提交不在 B53 范围内。
