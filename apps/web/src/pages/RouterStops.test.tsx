@@ -9,8 +9,8 @@ import { RouterStops } from "./RouterStops.tsx";
 // stop; a paper run carries only verified checks). The committed router_stop fixture is trust-mode
 // (no `eligibility` key), so the evidence-mode payload is built inline in the shape
 // research/reports/router.py's `_stop_payload` writes (EligibilityCheck.to_dict() records), as in
-// src/lib/routerEligibility.test.ts: the two refusals that come after G5 (`profile_not_found`,
-// `market_benchmark_missing`) are shown in words, with G5 as passed.
+// src/lib/routerEligibility.test.ts: the refusals that come after G5 (`profile_not_found`,
+// `market_benchmark_missing`, `inverse_control_missing`) are shown in words, with G5 as passed.
 
 const A = "strategy:alpha@1.0.0";
 const B = "strategy:beta@1.0.0";
@@ -98,6 +98,27 @@ describe("RouterStops evidence mode: Profile / market benchmark refusals", () =>
     assert.ok(html.includes(escaped(STOP_DETAIL)));
     assertRefusalRows(html);
     assert.ok(html.indexOf(escaped(PROFILE_TEXT)) < html.indexOf(escaped(BENCHMARK_TEXT)), "alpha before beta");
+  });
+
+  test("an inverse control refusal in words with its raw code, G5 shown as passed", async () => {
+    const [trust] = fixtureEnvelopes("router_stop");
+    const noInverse = check({
+      refusal: "inverse_control_missing",
+      detail: "benchmark.inverse_control_reported=true calls for G2.inverse_control, which the report lacks (ADR-0060)",
+    });
+    const payload = {
+      ...trust.payload,
+      reason: "eligibility_not_evidenced",
+      detail: `${A}: inverse_control_missing (${String(noInverse.detail)})`,
+      lifecycle: { [A]: "active" },
+      strategy_result_hashes: { [A]: H("3") },
+      eligibility: [noInverse],
+    };
+    const html = await detailOf(RouterStops, envelope(H("7"), payload));
+    assert.ok(html.includes(escaped("1 个策略中 0 个已核验，1 个被拒绝")));
+    assert.ok(html.includes(escaped("拒绝：Profile 要求报告反向对照（inverse_control_reported），验证报告缺少 G2.inverse_control 项（ADR-0060）（inverse_control_missing）")));
+    assert.ok(html.includes(`<td>${escaped("通过 · G5.fixture")}</td>`));
+    assert.ok(!html.includes(">拒绝：inverse_control_missing<"));
   });
 
   test("an unknown refusal code is shown verbatim with G5 unknown, never passed or not checked", async () => {

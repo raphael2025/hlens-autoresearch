@@ -23,3 +23,8 @@
   在决策之后的第一个估值点从现金扣除（叠加在成本模型之上）。返回路由器**自身**的 `BacktestResult`（归属
   `research_router_paper@0.1.0`），使路由器成为可被验证的策略对象；`RouterPaperRun.run_hash` 绑定路由规格、状态结果、策略结果、
   gross / net 结果与切换成本明细。仍只是纸面 / 模拟；无契约变化、无阈值。语义细节见 `research/router/README.md`。
+- **证据模式的反向对照项（B58，2026-09-27，P10）**：`research/router/evidence.py::check_report` 在市场基准项之后新增最后一项检查：
+  报告所用 Profile 的 `benchmark.inverse_control_reported` 为 true 而报告没有 ADR-0060 的 `G2.inverse_control` 门（逐字精确）→
+  `inverse_control_missing`（`EligibilityRefusal` 新值；`RouterEligibilityRefused` / `RouterStop` 照常记录，拒绝码进入 `stop_hash`）。
+  只要求存在（只报告项，无新阈值、不改判定）；为 false 时行为不变。信任模式哈希不变；无契约 / Schema / Profile 数值变化。
+  控制台 `routerEligibility.ts` 增加该码的中文说明（G5 显示为「通过」）。Promotion（`research/promotion/service.py`）的同类检查尚未要求该项，另行处理。

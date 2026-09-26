@@ -61,17 +61,23 @@ TRUST_STOP_FLAT_WITH_REPORTS = "2e8a462646ba73292be204afb568744907d4290979f70c1c
 CREATED = datetime(2026, 9, 1, tzinfo=UTC)
 
 
-def _profile(rule: str) -> ValidationProfile:
-    """A TEST ONLY Profile (factory values, not calibrated) with ``market_benchmark_rule=rule``."""
+def _profile(rule: str, *, inverse: bool = False) -> ValidationProfile:
+    """A TEST ONLY Profile (factory values, not calibrated) with ``market_benchmark_rule=rule``
+    and ``inverse_control_reported=inverse`` (the factory's own default is ``True``)."""
     base = validation_profile().benchmark
     return validation_profile(
         benchmark=BenchmarkParams.model_validate(
-            {**base.model_dump(), "market_benchmark_rule": rule}
+            {
+                **base.model_dump(),
+                "market_benchmark_rule": rule,
+                "inverse_control_reported": inverse,
+            }
         )
     )
 
 
-#: The fixture reports ran under this Profile: rule ``none`` needs no ADR-0060 item.
+#: The fixture reports ran under this Profile: rule ``none`` and no inverse control need no
+#: ADR-0060 item.
 PROFILE = _profile("none")
 
 
@@ -493,6 +499,125 @@ def test_a_report_with_its_profiles_market_benchmark_item_routes() -> None:
     router = _router(_with_b(report, profile))
     assert router.eligibility is not None
     assert all(check.verified for check in router.eligibility)
+
+
+# ------------------------------------------ ADR-0060 inverse control (reported only, presence)
+
+INVERSE = "G2.inverse_control"
+
+
+def _with_gates(report: ValidationReport, *gates: GateResult, verdict: Verdict) -> ValidationReport:
+    """``report`` with ``gates`` appended and ``verdict`` (a validated, re-built report)."""
+    data = report.model_dump()
+    data["gates"] = (*report.gates, *gates)
+    data["verdict"] = verdict
+    return ValidationReport.model_validate(data)
+
+
+def test_a_report_without_the_inverse_control_its_profile_asks_for_is_refused() -> None:
+    profile = _profile("none", inverse=True)
+    refused = _refusal(_with_b(_report(B, profile=profile), profile))
+    assert refused.refusal == "inverse_control_missing" and refused.strategy == str(B)
+    assert refused.refusals == {str(B): "inverse_control_missing"}
+    assert "G2.inverse_control" in refused.detail and "ADR-0060" in refused.detail
+    assert refused.eligibility is not None
+    [check_b] = [c for c in refused.eligibility if c.strategy == str(B)]
+    assert (check_b.verdict, check_b.sealed_oos_gates) == ("PASS", ("G5.fixture",))
+    # the gate id must match exactly: no prefix, suffix or case folding
+    for near in (
+        "G2.inverse_control.flat",
+        "G2.inverse",
+        "g2.inverse_control",
+        "G3.inverse_control",
+    ):
+        near_miss = _report(B, profile=profile, extra=(near,))
+        assert _refusal(_with_b(near_miss, profile)).refusal == "inverse_control_missing"
+
+
+def test_a_report_with_the_inverse_control_its_profile_asks_for_routes() -> None:
+    profile = _profile("none", inverse=True)
+    report = _report(B, profile=profile, extra=(INVERSE,))
+    router = _router(_with_b(report, profile))
+    assert router.eligibility is not None
+    assert all(check.verified for check in router.eligibility)
+    # with a market benchmark rule as well, both items are needed, each on its own
+    both = _profile("flat", inverse=True)
+    complete = _report(B, profile=both, extra=("G2.market_benchmark.flat", INVERSE))
+    checked = _router(_with_b(complete, both)).eligibility
+    assert checked is not None and all(check.verified for check in checked)
+    only_market = _report(B, profile=both, extra=("G2.market_benchmark.flat",))
+    assert _refusal(_with_b(only_market, both)).refusal == "inverse_control_missing"
+    only_inverse = _report(B, profile=both, extra=(INVERSE,))
+    assert _refusal(_with_b(only_inverse, both)).refusal == "market_benchmark_missing"
+
+
+def test_a_profile_that_does_not_ask_for_the_inverse_control_does_not_need_it() -> None:
+    assert not PROFILE.benchmark.inverse_control_reported
+    assert all(INVERSE not in {g.gate_id for g in r.gates} for r in GOOD.values())
+    checked = _router(_evidence()).eligibility
+    assert checked is not None and all(check.verified for check in checked)
+    # an item the Profile did not ask for is not refused either
+    unasked = _router(_with_b(_report(B, extra=(INVERSE,)))).eligibility
+    assert unasked is not None and all(check.verified for check in unasked)
+    flat = _profile("flat")
+    market_only = _report(B, profile=flat, extra=("G2.market_benchmark.flat",))
+    routed = _router(_with_b(market_only, flat)).eligibility
+    assert routed is not None and all(check.verified for check in routed)
+
+
+def test_the_inverse_control_is_presence_only_and_its_verdict_is_the_reports() -> None:
+    """ADR-0060: the item is reported only — no threshold on its value; an INCONCLUSIVE item
+    (``benchmark_unavailable``) makes the validator's verdict INCONCLUSIVE, refused before."""
+    profile = _profile("none", inverse=True)
+    base = _report(B, profile=profile)
+    for verdict in (Verdict.INCONCLUSIVE, Verdict.FAIL):
+        not_pass = _with_gates(base, _gate(INVERSE, verdict), verdict=verdict)
+        assert _refusal(_with_b(not_pass, profile)).refusal == "verdict_not_pass"
+    # a PASS report cannot carry a not-PASS item (the verdict is derived from every gate), so
+    # a present item in a PASS report is a computed one; this check asks only for presence
+    with pytest.raises(ValueError, match="verdict"):
+        _with_gates(base, _gate(INVERSE, Verdict.INCONCLUSIVE), verdict=Verdict.PASS)
+    # any computed value routes: no threshold on the inverse control's return (ADR-0060)
+    negative = GateResult(
+        gate_id=INVERSE, metric="inverse_net_return", value=-0.5, verdict=Verdict.PASS
+    )
+    losing = _with_gates(base, negative, verdict=Verdict.PASS)
+    checked = _router(_with_b(losing, profile)).eligibility
+    assert checked is not None and all(check.verified for check in checked)
+
+
+def test_the_inverse_control_is_checked_after_the_profile_and_the_market_benchmark() -> None:
+    both = _profile("buy_and_hold_equal_weight", inverse=True)
+    neither = _report(B, profile=both)
+    assert _refusal(_with_b(neither, both)).refusal == "market_benchmark_missing"
+    # the Profile is not given: its flags cannot be read, so profile_not_found comes first
+    assert _refusal(_with_b(neither)).refusal == "profile_not_found"
+    inverse_only = _profile("none", inverse=True)
+    earlier = _report(B, profile=inverse_only, sealed_oos=None)
+    assert _refusal(_with_b(earlier, inverse_only)).refusal == "sealed_oos_not_evaluated"
+
+
+def test_an_inverse_control_refusal_is_recorded_as_a_router_stop(tmp_path: Path) -> None:
+    profile = _profile("none", inverse=True)
+    missing = _report(B, profile=profile)
+    evidence = _with_b(missing, profile)
+    stop = _or_stop(SPEC, evidence=evidence)
+    assert isinstance(stop, RouterStop)
+    assert stop.reason == "eligibility_not_evidenced" and "inverse_control_missing" in stop.detail
+    assert stop.eligibility is not None
+    assert {c.strategy: c.refusal for c in stop.eligibility} == {
+        str(A): None,
+        str(B): "inverse_control_missing",
+    }
+    assert stop == _or_stop(SPEC, evidence=evidence)  # deterministic
+    payload = json.loads(write_router_stop(tmp_path, stop).path.read_text(encoding="utf-8"))
+    assert payload["stop_hash"] == stop.stop_hash
+    assert payload["eligibility"] == [c.to_dict() for c in stop.eligibility]
+    [record] = [c for c in payload["eligibility"] if c["strategy"] == str(B)]
+    assert record["refusal"] == "inverse_control_missing"
+    # the same report with the item routes
+    present = _report(B, profile=profile, extra=(INVERSE,))
+    assert isinstance(_or_stop(SPEC, evidence=_with_b(present, profile)), RouterPaperRun)
 
 
 def test_profiles_that_are_not_profiles_are_a_plain_error() -> None:

@@ -27,9 +27,13 @@ checked anyway), then the report's Profile among ``profiles`` (content hash = th
 ``validation_profile_hash``, same ref; ``profile_not_found``) and, when that Profile's
 ``benchmark.market_benchmark_rule`` is not ``none``, the ADR-0060 item it calls for in the report
 (``G2.market_benchmark.<rule>`` for a registered rule, the bare ``G2.market_benchmark`` for an
-unregistered one; ``market_benchmark_missing``) — the validator's ``ValidatorSetup
+unregistered one; ``market_benchmark_missing``) and, when that Profile's
+``benchmark.inverse_control_reported`` is true, the ADR-0060 inverse-control item
+``G2.inverse_control`` (``inverse_control_missing``) — the validator's ``ValidatorSetup
 .market_benchmark`` stays opt-in (default ``False``), evidence mode does not accept a report made
-without it. A PASS report including G5 is the research-level prerequisite of the routable
+without it. Both items are reported only (ADR-0060): only their presence is required, never a
+value; an item that is INCONCLUSIVE makes the report's verdict INCONCLUSIVE, which is already
+``verdict_not_pass``. A PASS report including G5 is the research-level prerequisite of the routable
 lifecycle states (in-sample + sealed OOS passed); the human / Control-Plane review steps that
 make a strategy PRODUCTION_CANDIDATE or ACTIVE stay a caller claim — production eligibility
 belongs to the Control Plane, not to this module. Nothing here has a threshold.
@@ -47,7 +51,11 @@ from typing import Final, Literal
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import SHA256_PATTERN, Ref
 from core.domain.research import ValidationReport, Verdict
-from research.validation.benchmark import MARKET_BENCHMARK_GATE, resolve_market_benchmark
+from research.validation.benchmark import (
+    INVERSE_CONTROL_GATE,
+    MARKET_BENCHMARK_GATE,
+    resolve_market_benchmark,
+)
 from research.validation.report import (
     SEALED_OOS_NOT_EVALUATED,
     VERDICT_NOT_PASS,
@@ -77,6 +85,7 @@ type EligibilityRefusal = Literal[
     "sealed_oos_not_passed",
     "profile_not_found",
     "market_benchmark_missing",
+    "inverse_control_missing",
 ]
 #: report content hash -> the report, or ``None`` when the source has no such report.
 type ReportResolver = Callable[[str], ValidationReport | None]
@@ -303,6 +312,18 @@ def check_report(
             "market_benchmark_missing",
             f"benchmark.market_benchmark_rule={profile.benchmark.market_benchmark_rule} "
             f"calls for {item}, which the report lacks (ADR-0060)",
+            report,
+        )
+    if profile.benchmark.inverse_control_reported and not any(
+        g.gate_id == INVERSE_CONTROL_GATE for g in report.gates
+    ):
+        return _refused(
+            strategy,
+            lifecycle,
+            report_hash,
+            "inverse_control_missing",
+            f"benchmark.inverse_control_reported=true calls for {INVERSE_CONTROL_GATE}, "
+            "which the report lacks (ADR-0060)",
             report,
         )
     return EligibilityCheck(

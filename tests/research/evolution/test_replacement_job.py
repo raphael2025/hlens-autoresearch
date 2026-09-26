@@ -226,6 +226,14 @@ def test_evidence_must_be_verified_reports(tmp_path: Path) -> None:
     assert "market_benchmark_missing" in _refusal(
         tmp_path / "h", (no_benchmark,), (no_benchmark.content_hash(),)
     )
+    # and, since the toy Profile reports the inverse control, its ADR-0060 item too
+    assert toy_profile().benchmark.inverse_control_reported
+    no_inverse = toy_report(
+        CHILD, toy_experiment(CHILD), "rep-no-inverse", ALL_STAGES, inverse_control=None
+    )
+    assert "inverse_control_missing" in _refusal(
+        tmp_path / "i", (no_inverse,), (no_inverse.content_hash(),)
+    )
 
 
 def test_incumbents_and_the_job_have_no_defaults_and_are_checked(tmp_path: Path) -> None:

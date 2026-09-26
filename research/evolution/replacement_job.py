@@ -19,7 +19,8 @@ directory) is read here, read-only.
   ``research.router.evidence.report_store_resolver(root)``, or ``reports_by_hash(...)``);
 - ``profiles``: the ``ValidationProfile`` objects the reports were produced under (required, no
   default: ``check_report`` refuses a report whose Profile is not among them, and one missing the
-  ADR-0060 ``G2.market_benchmark`` item its Profile's rule requires);
+  ADR-0060 ``G2.market_benchmark`` item its Profile's rule requires or the ``G2.inverse_control``
+  item its Profile's ``inverse_control_reported`` requires);
 - ``lineage``: the loop's lineage (``read_lineage(state_dir / LINEAGE_FILE)``: a verified,
   in-memory copy of the hash-chained journal; nothing is written to the loop's directory);
 - ``ledger``: the durable ``ProposalLedger`` (single writer, optional external anchor);
@@ -32,7 +33,7 @@ lineage is ``not_descendant`` (no proposal); a pair already in the ledger is ``a
 ``PRODUCTION_CANDIDATE`` on the Promotion path is refused (no proposal); otherwise every claimed
 report must pass ``research.router.evidence.check_report`` — found, well-formed, hashing to the
 claimed hash, ``subject`` = the candidate, verdict PASS **including G5** (sealed OOS), its Profile
-given and its market benchmark item present — and then
+given and the ADR-0060 items it calls for present — and then
 ``propose_replacement`` must accept the pair (incumbent ACTIVE / DEGRADED, candidate PAPER /
 PRODUCTION_CANDIDATE on its own history, new version, traceable lineage); the proposal (evidence
 ``validation_report:<hash>`` per verified report) is recorded. Any refusal is returned in

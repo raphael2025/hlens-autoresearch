@@ -38,6 +38,7 @@ from core.lifecycle.strategy import (
 )
 from infrastructure.registry import ProfileFreezeRegistry
 from research.promotion import PromotionEvidence
+from research.validation.benchmark import INVERSE_CONTROL_GATE
 from tests.factories import (
     HASH_E,
     cost_model_ref,
@@ -174,11 +175,16 @@ def toy_report(
     failing: str | None = None,
     verdict: Verdict = Verdict.FAIL,
     market_benchmark: str | None = f"G2.market_benchmark.{TOY_BENCHMARK_RULE}",
+    inverse_control: str | None = INVERSE_CONTROL_GATE,
     **overrides: object,
 ) -> ValidationReport:
     ids = [(stage, f"{stage}.test_only") for stage in stages]
     if market_benchmark is not None and "G2" in stages:
         ids.append(("G2", market_benchmark))  # ADR-0060 reported-only item
+    if inverse_control is not None and "G2" in stages:
+        # ADR-0060 reported-only item: the toy Profile keeps the factory's
+        # inverse_control_reported=True
+        ids.append(("G2", inverse_control))
     gates = tuple(
         gate(gate_id, verdict if stage == failing else Verdict.PASS) for stage, gate_id in ids
     )

@@ -63,7 +63,10 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
   判定 PASS（`verdict_not_pass`）→ 至少一个 G5 密封 OOS 门（`sealed_oos_not_evaluated`，复用 `research.validation.report.promotion_blocked_reason`）→
   所有 G5 门 PASS（`sealed_oos_not_passed`，防御性）→ 报告所用 Profile 在 `EligibilityEvidence.profiles` 中（内容哈希 = 报告的
   `validation_profile_hash`、同 ref；`profile_not_found`；`profiles` 无默认值）→ 该 Profile 的 `benchmark.market_benchmark_rule` 不是 `none` 时，
-  报告含 ADR-0060 所要求的项（已注册规则为 `G2.market_benchmark.<rule>`，未注册为 `G2.market_benchmark`；`market_benchmark_missing`）。
+  报告含 ADR-0060 所要求的项（已注册规则为 `G2.market_benchmark.<rule>`，未注册为 `G2.market_benchmark`；`market_benchmark_missing`）→
+  该 Profile 的 `benchmark.inverse_control_reported` 为 true 时，报告含 ADR-0060 反向对照项 `G2.inverse_control`（逐字精确匹配；
+  `inverse_control_missing`；为 false 时不要求）。两项都是只报告项：只要求存在、不对数值设任何阈值；INCONCLUSIVE 的项会使报告判定
+  INCONCLUSIVE（`ValidationReport` 要求判定由全部门确定性导出），因此已在更早的 `verdict_not_pass` 被拒。
   验证器的 `ValidatorSetup.market_benchmark` 默认仍为 `False`；证据模式只是不接受缺该项的报告。
 - **拒绝**：任一失败抛 `RouterEligibilityRefused`（`RouterStopped` 子类，`reason = eligibility_not_evidenced`，`refusal` / `refusals` 给出具体原因，
   `eligibility` 含全部检查），绝不静默路由。`paper_run_or_stop(..., evidence=...)` 把它记录为 `RouterStop`（`eligibility` 计入 `stop_hash`）。

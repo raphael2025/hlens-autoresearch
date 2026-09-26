@@ -180,7 +180,8 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
 - **路由资格的 Profile / 市场基准拒绝**（2026-09-26）：`research/router/evidence.py` 在 G5 之后还核对报告所用的
   Validation Profile（`profile_not_found`）与该 Profile 市场基准规则要求的 ADR-0060 项（`market_benchmark_missing`），
   两者都有中文说明 + 原始代码。G5 状态按拒绝代码的含义判定（`SEALED_OOS_BY_REFUSAL`），不再假设 G5 是最后一项检查：
-  这两种拒绝下 G5 显示为「通过」；无法识别的代码显示为「未知」。
+  这两种拒绝下 G5 显示为「通过」；无法识别的代码显示为「未知」。2026-09-27（B58）起还有 Profile 要求反向对照而报告缺
+  `G2.inverse_control` 的 `inverse_control_missing`（最后一项检查，G5 同样显示为「通过」）。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（已跑 `npm run build`、`npm test` 与下文的 live-backend
   smoke；后者不是浏览器验收）。
 

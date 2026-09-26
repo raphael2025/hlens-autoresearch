@@ -154,6 +154,7 @@ test("every refusal code has words and a G5 status; an unknown code is shown ver
     // checked after G5 (research/router/evidence.py): reaching them means every G5 gate passed
     profile_not_found: "passed",
     market_benchmark_missing: "passed",
+    inverse_control_missing: "passed",
   } as const;
   assert.deepEqual([...REFUSAL_ORDER], Object.keys(expectedG5));
   for (const code of REFUSAL_ORDER) {
@@ -200,6 +201,27 @@ test("Profile / market benchmark refusals come after G5: G5 passed, the claim st
     "拒绝：Profile 的市场基准规则要求的 G2.market_benchmark 项在验证报告中缺失（ADR-0060）（market_benchmark_missing）",
   );
   assert.equal(sealedOosText(noBenchmark), "通过 · G5.a, G5.b");
+});
+
+test("an inverse control refusal comes after G5 and the market benchmark: G5 passed, still refused", () => {
+  const view = eligibilityOf({
+    eligibility: [
+      check({
+        refusal: "inverse_control_missing",
+        detail: "benchmark.inverse_control_reported=true calls for G2.inverse_control, which the report lacks (ADR-0060)",
+      }),
+    ],
+  });
+  assert.ok(view !== null);
+  assert.equal(eligibilitySummary(view), "1 个策略中 0 个已核验，1 个被拒绝");
+  const [noInverse] = view.checks;
+  assert.equal(
+    checkResultText(noInverse),
+    "拒绝：Profile 要求报告反向对照（inverse_control_reported），验证报告缺少 G2.inverse_control 项（ADR-0060）（inverse_control_missing）",
+  );
+  assert.equal(sealedOosText(noInverse), "通过 · G5.fixture");
+  // it is the last check: after the Profile and the market benchmark item
+  assert.deepEqual(REFUSAL_ORDER.slice(-3), ["profile_not_found", "market_benchmark_missing", "inverse_control_missing"]);
 });
 
 test("refusals before any report was found carry no evidence; G5 text says why", () => {

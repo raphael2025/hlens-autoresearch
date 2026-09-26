@@ -82,7 +82,8 @@ export function eligibilityOf(payload: Record<string, unknown> | undefined): Eli
 /**
  * The refusal codes of research/router/evidence.py (`EligibilityRefusal`), in check order (the
  * first failure wins): hash / report / subject / verdict, then G5 (sealed OOS), then the report's
- * Validation Profile and the ADR-0060 market benchmark item that Profile calls for.
+ * Validation Profile and the ADR-0060 items that Profile calls for (market benchmark, then
+ * inverse control).
  */
 export const REFUSAL_ORDER = [
   "report_hash_missing",
@@ -95,6 +96,7 @@ export const REFUSAL_ORDER = [
   "sealed_oos_not_passed",
   "profile_not_found",
   "market_benchmark_missing",
+  "inverse_control_missing",
 ] as const;
 
 export type RefusalCode = (typeof REFUSAL_ORDER)[number];
@@ -111,6 +113,8 @@ const REFUSALS: Record<RefusalCode, string> = {
   profile_not_found: "未提供验证报告所用的 Validation Profile（内容哈希与 ref 须与报告一致）",
   market_benchmark_missing:
     "Profile 的市场基准规则要求的 G2.market_benchmark 项在验证报告中缺失（ADR-0060）",
+  inverse_control_missing:
+    "Profile 要求报告反向对照（inverse_control_reported），验证报告缺少 G2.inverse_control 项（ADR-0060）",
 };
 
 function isRefusalCode(refusal: string): refusal is RefusalCode {
@@ -133,7 +137,8 @@ export type SealedOosStatus = "passed" | "not_passed" | "not_evaluated" | "not_c
  * What each refusal says about G5 (sealed OOS) — by what the refusal is, not by its position in
  * the check order: a refusal before G5 (hash, report, subject, verdict) leaves it `not_checked`,
  * even when the report lists G5 gates; the two G5 refusals are G5's own outcome; the Profile and
- * market benchmark checks run only after every G5 gate passed, so G5 is `passed` there.
+ * ADR-0060 item checks (market benchmark, inverse control) run only after every G5 gate passed,
+ * so G5 is `passed` there.
  */
 const SEALED_OOS_BY_REFUSAL: Record<RefusalCode, SealedOosStatus> = {
   report_hash_missing: "not_checked",
@@ -146,6 +151,7 @@ const SEALED_OOS_BY_REFUSAL: Record<RefusalCode, SealedOosStatus> = {
   sealed_oos_not_passed: "not_passed",
   profile_not_found: "passed",
   market_benchmark_missing: "passed",
+  inverse_control_missing: "passed",
 };
 
 /**
