@@ -202,3 +202,10 @@
 - 子代理实际运行：`pytest tests/research/states tests/research/experiments tests/research/router tests/research/reports/test_writers.py tests/research/test_cross_phase_e2e.py -m "not postgres"` → 77 passed；
   `tests/research/loop/test_loop_units.py` → 4 passed；ruff / format / mypy（15 files）通过。集成后本分支复跑 `tests/research/{states,experiments,router,reports}` + cross-phase e2e → 77 passed, 1 warning；
   `ruff check research tests/research` → All checks passed；mypy（15 files）→ no issues。
+
+**B7 — Phase 10 报告：`router_stop` 报告种类与验证报告绑定写出**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 文件：`research/reports/router.py`、`research/reports/__init__.py`；测试 `tests/research/reports/test_router_stop_writer.py`（新，2 项）。
+- `write_router_stop` 写 `<root>/router_stop/<stop_hash>.json`（独立种类，不与纸面运行混形）；纸面运行载荷仅在提供时写 `validation_reports`（未提供的载荷逐字节不变）。
+  API / 控制台对 `router_stop` 的展示待 apps 通道合入后串行接线。
+- 实际运行：`uv run pytest -q tests/research/reports tests/research/router` → 43 passed, 1 warning；`ruff check` → 通过；`mypy research/reports tests/research/reports` → no issues in 10 files。

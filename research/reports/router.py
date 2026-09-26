@@ -1,4 +1,8 @@
-"""Writer for Phase 10 router paper runs (``research/router/paper.py``)."""
+"""Writers for Phase 10 router paper runs and router stops (``research/router/paper.py``).
+
+A ``RouterStop`` (the router refused to run: no validated candidate, or every route flat) is its
+own report kind, ``router_stop``, never a ``router_paper_run`` with missing fields.
+"""
 
 from __future__ import annotations
 
@@ -7,12 +11,14 @@ from typing import Any
 
 from core.contracts.strategy import EquityPoint
 from research.reports.envelope import WrittenReport, write_report_file
-from research.router.paper import RouterPaperRun
+from research.router.paper import RouterPaperRun, RouterStop
 
-__all__ = ["KIND", "write_router_paper_run"]
+__all__ = ["KIND", "STOP_KIND", "write_router_paper_run", "write_router_stop"]
 
 #: Directory name under the report root; matches ``apps.api.store.ReportKind.ROUTER_PAPER_RUN``.
 KIND = "router_paper_run"
+#: Directory name of router stops (the API / console exposure is a separate step).
+STOP_KIND = "router_stop"
 
 
 def _equity_curve(points: tuple[EquityPoint, ...]) -> list[dict[str, Any]]:
@@ -28,6 +34,13 @@ def _equity_curve(points: tuple[EquityPoint, ...]) -> list[dict[str, Any]]:
 
 
 def _payload(run: RouterPaperRun) -> dict[str, Any]:
+    payload = _run_payload(run)
+    if run.validation_reports is not None:  # only when supplied: earlier payloads are unchanged
+        payload["validation_reports"] = dict(sorted(run.validation_reports.items()))
+    return payload
+
+
+def _run_payload(run: RouterPaperRun) -> dict[str, Any]:
     return {
         "router": run.router,
         "router_spec_hash": run.router_spec_hash,
@@ -80,3 +93,24 @@ def write_router_paper_run(root: Path, run: RouterPaperRun) -> WrittenReport:
     results (``gross_result_hash`` / ``result_hash``); they carry no additional identity.
     """
     return write_report_file(root, KIND, run.run_hash, _payload(run))
+
+
+def _stop_payload(stop: RouterStop) -> dict[str, Any]:
+    return {
+        "router": stop.router,
+        "router_spec_hash": stop.router_spec_hash,
+        "reason": str(stop.reason),
+        "detail": stop.detail,
+        "lifecycle": dict(sorted(stop.lifecycle.items())),
+        "state_result_hash": stop.state_result_hash,
+        "strategy_result_hashes": dict(sorted(stop.strategy_result_hashes.items())),
+        "validation_reports": None
+        if stop.validation_reports is None
+        else dict(sorted(stop.validation_reports.items())),
+        "stop_hash": stop.stop_hash,
+    }
+
+
+def write_router_stop(root: Path, stop: RouterStop) -> WrittenReport:
+    """Write at ``<root>/router_stop/<stop_hash>.json`` (``stop_hash`` binds every field)."""
+    return write_report_file(root, STOP_KIND, stop.stop_hash, _stop_payload(stop))
