@@ -8,12 +8,18 @@ from research.hypotheses.dsl import (
     temporal,
     transformation,
 )
-from research.hypotheses.generator import HypothesisDraft, from_knowledge, from_llm
+from research.hypotheses.generator import (
+    HypothesisDraft,
+    LlmDraftRejected,
+    from_knowledge,
+    from_llm,
+)
 from research.hypotheses.ledger import LedgerError, TrialEntry, TrialLedger
 
 __all__ = [
     "HypothesisDraft",
     "LedgerError",
+    "LlmDraftRejected",
     "TrialEntry",
     "TrialLedger",
     "conditioning",

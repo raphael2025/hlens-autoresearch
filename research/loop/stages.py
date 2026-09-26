@@ -20,7 +20,8 @@ declarations — is a constructor parameter; validation thresholds are read from
 - ``HypothesisStage``: pre-registers knowledge hypotheses and human-reviewed LLM drafts
   (IDEA → CANDIDATE), pre-registers re-evaluations of still-open (VALIDATION / INCONCLUSIVE)
   hypotheses as new trials when the research data has grown, and asks the LLM for one new draft,
-  which only goes to the review queue;
+  which only goes to the review queue (a schema-invalid output is recorded with its ``LlmCall``'s
+  content hash and refs next to the rejection reason, never registered);
 - ``EvolutionStage`` (optional, ``research/loop/evolution.py``): offspring of the best earlier
   candidates, registered as new hypotheses and validated afresh this round;
 - ``ExperimentStage`` / ``ValidationStage`` (``research/loop/trials.py``): the reproducible
@@ -76,7 +77,7 @@ from core.errors import LifecycleViolation, ReasonCategory, ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.content import ContentResolver
 from infrastructure.state import run_state, state_inputs, state_request
-from research.hypotheses import HypothesisDraft, from_knowledge, from_llm
+from research.hypotheses import HypothesisDraft, LlmDraftRejected, from_knowledge, from_llm
 from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.llm_content import verify_call_content
 from research.loop.memory import ResearchMemory
@@ -458,7 +459,13 @@ class HypothesisStage:
             }
             try:
                 draft = from_llm(self._llm, self._prompt, context, self._family)
-            except ValueError as exc:  # schema-invalid output: recorded, never registered
+            except LlmDraftRejected as exc:  # schema-invalid output: recorded, never registered
+                llm_summary = {
+                    "rejected": exc.reason[:500],
+                    "call_hash": exc.call.content_hash(),
+                    "call": exc.call.model_dump(mode="json"),
+                }
+            except ValueError as exc:  # no answer to record (e.g. unverifiable call content)
                 llm_summary = {"rejected": str(exc)[:500]}
             else:
                 llm_summary = {
