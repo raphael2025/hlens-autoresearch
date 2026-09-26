@@ -7,7 +7,7 @@ Phase 9 Synthetic Market Lab（[ADR-0042](../../docs/adr/0042-synthetic-market-p
 | 模块 | 内容 |
 |---|---|
 | `calibration.py` | `calibrate`：任意 `market -> bool` 检测器的假阳性率与检出力（最小框架） |
-| `gate_calibration.py` | 验证门校准 harness：候选 Profile × 门的假阳性率、检出力、INCONCLUSIVE 率、封存 OOS 消耗率；可选 G5 模式（端到端 G0 – G5 率）；`StrategyValidatorDetector`（完整 G0 → G4，配 `sealed_inputs_for` 时含 G5）；CLI |
+| `gate_calibration.py` | 验证门校准 harness：候选 Profile × 门的假阳性率、检出力、INCONCLUSIVE 率、封存 OOS 消耗率；可选 G5 模式（端到端 G0 – G5 率）；可选多标的模式（`MultiInstrumentCalibrationSetup`）；`StrategyValidatorDetector`（完整 G0 → G4，配 `sealed_inputs_for` 时含 G5）、`MultiInstrumentValidatorDetector`；CLI |
 | `intervals.py` | 精确二项比率与 Clopper-Pearson 区间（有理数运算，`Decimal` 输出） |
 
 ## 证据，不是决定
@@ -67,5 +67,33 @@ python -m research.synthetic_lab.gate_calibration --setup package.module:factory
 `sealed_oos_g5`（到达 G5 的数量；以到达数为分母的 G5 通过 / INCONCLUSIVE / 失败率，Clopper-Pearson；`consumed_without_result`
 与 `detector_errors` 计数；`end_to_end_g0_g5`：以该组全部运行为分母的 G0 – G5 通过率，噪声组即假阳性率、植入组即检出力），
 每个运行的 `sealed_oos_g5` 记录，逐门统计包含 G5 门。仍只是证据，不排名、不推荐。测试：`test_gate_calibration_g5.py`。
+
+~~多标的负对照假阳性率未校准~~ ✅ 可选多标的模式（2026-09-26，CODE_COMPLETE / DEBUG_PENDING；无 core / 契约 / Schema 变更）：
+Phase 8 的多标的验证（`ValidatorSetup.instruments`、`research/validation/instruments.py`）中，池化的 G1 负对照
+（`G1.shuffle_control` / `G1.shift_control`）按时间混合标的，完全植入的标的对上偶见失败，假警报率此前未校准（计划 B20 风险）。
+新增独立的 `MultiInstrumentCalibrationSetup` + `run_multi_instrument_calibration`（显式开启；`GateCalibrationSetup` 的报告与
+`report_hash` 完全不变，测试钉住了改动前的哈希）。每次运行生成 k ≥ 2 个独立合成标的（`base` 只改 `symbol` / `seed` / `effects`；
+符号互不相同、不含 `|`；各标的生成种子由运行种子确定性导出：`instrument_seed(run_seed, index, symbol)`，规则记录在报告输入中），
+经 `MultiInstrumentGateDetector.detect_instruments` 走多标的路径一起验证（`MultiInstrumentValidatorDetector`：完整流水线，setup
+必须恰好验证本批标的；报告走了单标的路径 → `DetectorConfigurationError`）。组（`MultiInstrumentArm`）由调用方逐个声明：
+`kind`（`all_noise` / `all_planted` / `mixed`）+ 每个符号一个 `PlantedEffect | None` + 种子，无任何默认；`kind` 与效应不符、
+k < 2、符号重复、组为空或重名、效应条目数与符号数不符、检测器没有 `detect_instruments` 均拒绝（`ValueError`）。
+报告（仅此模式新增的键）：每组 `kind`、流水线 `fail_rate`、每个标的自己的判定率（`instruments`：角色、通过 / INCONCLUSIVE /
+失败率、池化阶段先失败时的 `not_evaluated`）；每个门（含池化 `G1.shuffle_control` / `G1.shift_control` 及各
+`<gate>.instrument.<symbol>` 子门）增加 `fail_rate`；通过率按组类型命名（`false_positive_rate` / `power` / 混合组 `pass_rate`），
+逐标的子门按该标的角色命名；每个运行记录各标的种子、市场哈希与自身判定。检测器异常仍记为无门的 INCONCLUSIVE；池化 PASS 同样
+消耗该运行族的开封。此模式不提供 G5。仍只是证据：不设阈值、不选 Profile、不改任何门。测试：`test_gate_calibration_multi.py`。
+
+冒烟规模证据（**不是校准结果**；TEST ONLY 宽松 Profile `test_only_lax_uncalibrated` + TEST ONLY `MULTI_TEST_ONLY_PARAMS`，
+k = 2，每组 8 个种子，`gate_fixtures.multi_setup(8)`，报告哈希 `d7b5df2d…612b75`；区间为 Clopper-Pearson 95%）：
+
+| 组 | 池化 `G1.shuffle_control` FAIL | 池化 `G1.shift_control` FAIL | 逐标的 G1 子门 FAIL（S0 / S1，shuffle · shift） | 流水线 PASS |
+|---|---|---|---|---|
+| all_noise | 1/8 [0.003, 0.527] | 0/8 [0, 0.369] | 未评估（8/8 池化阶段先失败） | 0/8 |
+| all_planted（强度 0.5） | 0/8 [0, 0.369] | 1/8 [0.003, 0.527] | S0 1 · 1，S1 0 · 1（各 1 次未评估） | 2/8 |
+| mixed（S0 植入、S1 噪声） | 0/8 [0, 0.369] | 2/8 [0.032, 0.651] | S0 1 · 1，S1 0 · 0（各 6 次未评估） | 0/8 |
+
+8 个种子只能说明：池化对照在全植入与混合标的对上确实会失败（与 B20 观察一致），区间宽到不能区分任何名义水平；
+不得据此选择阈值或 Profile。
 
 仍未完成：生成器过于简单（高斯噪声 + 线性自相关），测试的种子数与市场长度只够冒烟。

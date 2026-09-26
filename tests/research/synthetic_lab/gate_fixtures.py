@@ -8,12 +8,15 @@ frozen by Raphael after calibration). ``TEST_ONLY_PARAMS`` and ``TEST_ONLY_ALPHA
 arbitrary TEST ONLY values.
 
 The detector is the full G0 → G4 pipeline through ``PipelineBacktestValidator`` on a 60-bar TSMOM
-(the first library entry) over the research window of a two-day ``RandomWalkMarket``.
+(the first library entry) over the research window of a two-day ``RandomWalkMarket``. The
+multi-instrument detector (``multi_detector``) runs the same candidate over one such market per
+symbol through the Phase 8 multi-instrument path (``ValidatorSetup.instruments``), with the TEST
+ONLY ``MULTI_TEST_ONLY_PARAMS``; ``multi_arms`` are TEST ONLY arms, not a calibration design.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -49,6 +52,9 @@ from research.strategies.signals import bar_signals
 from research.strategies.validation import TrialRunner, ValidatorSetup
 from research.synthetic_lab.gate_calibration import (
     GateCalibrationSetup,
+    MultiInstrumentArm,
+    MultiInstrumentCalibrationSetup,
+    MultiInstrumentValidatorDetector,
     SealedInputsFactory,
     StrategyValidatorDetector,
 )
@@ -380,3 +386,117 @@ def setup(
 def cli_setup() -> GateCalibrationSetup:
     """The ``--setup`` factory the CLI test loads (one seed, one planted arm, lax only)."""
     return setup(1, candidates=(LAX_TEST_ONLY_PROFILE,), planted=(STRONG,))
+
+
+# ======================================================================================
+# Multi-instrument mode (TEST ONLY; mirrors tests/research/strategies/
+# test_multi_instrument_validation.py)
+# ======================================================================================
+
+MULTI_SYMBOLS = ("S0-USDT", "S1-USDT")
+#: TEST ONLY — the lax parameters with an explicit cross-asset fraction (otherwise the C-R3
+#: consistency gate is ``profile_field_missing`` and no multi-instrument run can PASS).
+MULTI_TEST_ONLY_PARAMS = replace(TEST_ONLY_PARAMS, cross_asset_min_positive_fraction=0.5)
+
+
+def _instrument_bars(symbol: str, bars: Sequence[SyntheticBar]) -> tuple[PriceBar, ...]:
+    return tuple(
+        PriceBar(
+            instrument=symbol,
+            interval_start=bar.interval_start,
+            interval_end=bar.interval_end,
+            available_time=bar.interval_end,
+            open=bar.open,
+            high=bar.high,
+            low=bar.low,
+            close=bar.close,
+        )
+        for bar in bars
+        if bar.interval_end <= BOUNDARY
+    )
+
+
+def multi_inputs(markets: Mapping[str, SyntheticMarket]) -> EvaluationInputs:
+    """Research-window inputs over every instrument of the book (hourly decisions)."""
+    names = tuple(sorted(markets))
+    bars = tuple(bar for name in names for bar in _instrument_bars(name, markets[name].bars))
+    return replace(
+        inputs(next(iter(markets.values()))),
+        instruments=names,
+        bars=bars,
+        signals=bar_signals(bars),
+    )
+
+
+def multi_detector() -> MultiInstrumentValidatorDetector:
+    strategy = candidate()
+
+    def setup_for(
+        markets: Mapping[str, SyntheticMarket], profile: ValidationProfile, runner: TrialRunner
+    ) -> ValidatorSetup:
+        names = tuple(sorted(markets))
+        return ValidatorSetup(
+            context=context(strategy, profile),
+            outcome_provider=ForwardReturnOutcome((LABEL_SPEC,)),
+            manifest_content_hash="7" * 64,
+            instrument=names[0],
+            trials=runner,
+            chosen_params=CHOSEN,
+            seed=11,
+            robustness=MULTI_TEST_ONLY_PARAMS,
+            state_of=lambda t: "am" if t.hour < 12 else "pm",
+            bar_volume={
+                (name, bar.interval_start): bar.volume
+                for name, market in markets.items()
+                for bar in market.bars
+            },
+            declared_instruments=names,
+            instruments=names,
+        )
+
+    return MultiInstrumentValidatorDetector(
+        name="tsmom60_multi_instrument_pipeline",
+        candidate=strategy,
+        backtester=BarBacktester(),
+        inputs_for=multi_inputs,
+        setup_for=setup_for,
+    )
+
+
+def multi_arms(
+    seeds: int, *, symbols: tuple[str, ...] = MULTI_SYMBOLS
+) -> tuple[MultiInstrumentArm, ...]:
+    """TEST ONLY arms: all noise, all planted (``STRONG``), mixed (first planted, rest noise)."""
+    k = len(symbols)
+    return (
+        MultiInstrumentArm("all_noise", "all_noise", (None,) * k, tuple(range(seeds))),
+        MultiInstrumentArm(
+            "all_planted", "all_planted", (STRONG,) * k, tuple(range(100, 100 + seeds))
+        ),
+        MultiInstrumentArm(
+            "mixed", "mixed", (STRONG, *(None,) * (k - 1)), tuple(range(200, 200 + seeds))
+        ),
+    )
+
+
+def multi_setup(
+    seeds: int,
+    *,
+    symbols: tuple[str, ...] = MULTI_SYMBOLS,
+    candidates: tuple[ValidationProfile, ...] = (LAX_TEST_ONLY_PROFILE,),
+    arms: tuple[MultiInstrumentArm, ...] | None = None,
+) -> MultiInstrumentCalibrationSetup:
+    return MultiInstrumentCalibrationSetup(
+        provider=RandomWalkMarket(),
+        base=BASE_SPEC,
+        detector=multi_detector(),
+        candidates=candidates,
+        symbols=symbols,
+        arms=multi_arms(seeds, symbols=symbols) if arms is None else arms,
+        alpha=TEST_ONLY_ALPHA,
+    )
+
+
+def multi_cli_setup() -> MultiInstrumentCalibrationSetup:
+    """The ``--setup`` factory of the multi-instrument CLI test (one seed per arm, lax only)."""
+    return multi_setup(1)
