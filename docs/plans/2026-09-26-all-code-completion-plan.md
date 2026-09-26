@@ -230,3 +230,17 @@
   → 240 passed, 1 warning；`ruff check apps tests/apps tests/research` → All checks passed；`ruff format --check apps tests` → 273 files already formatted；
   `mypy apps tests/apps` → no issues in 36 files；`npm ci --offline` → 成功；`npm test` → tests 21 / pass 21 / fail 0；`npm run build` → ✓ built（最大 chunk echarts 375.43 kB）。
 - 待 Cursor：未在浏览器对真实后端手工验证；`GET /reports/{kind}/{id}` 的 422 消息仍含文件路径（既有行为）。
+
+**B10 — validation 子代理：Phase 8 / Phase 4**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 `b69dcf3`、`bef83a8`、`fbf2ab3`、`f527d3e`）
+
+- Phase 8（`b69dcf3`）：G4 九项检查各自隔离，意外异常 → 该检查唯一的 INCONCLUSIVE `<prefix>.check_error` 门（异常类型 + 确定性短消息），其余检查继续，整体至多 INCONCLUSIVE；
+  `ValueError`（含 `UnsupportedMethod` / `ProfileFieldMissing`）、`TypeError`、`MemoryError` 仍抛出，`KeyboardInterrupt` 从不捕获；无异常时输出逐字节不变（momentum / noise 夹具哈希固定）。
+  行为变化：以前意外异常会从 `validate` 传出；现在是报告中的 INCONCLUSIVE 门、不写 Failure Registry。
+- Phase 4（`bef83a8`）：可选 `InSampleInput.control_seeds` / `ValidatorSetup.control_seeds`（无默认种子列表）；逐种子门 `G1.shuffle_control.seed.<s>`、`G1.shift_control.seed.<s>` 在基门 id 下判定（Profile 区间适用），
+  基门按标准规则聚合并报告最小 p 值；不给时门逐字节不变（planted / noise / leaky 夹具哈希固定）；G2 空模型仍单种子。
+- Phase 4（`fbf2ab3`）：`research/outcomes/store.py` 写一次、内容寻址的 Outcome 表持久化（`<root>/<table_hash>.json`，临时文件 + `os.link`，从不覆盖；读取重算表哈希并重建 `OutcomeResult` 复核；
+  篡改 / 截断 / 非规范 / 伪造哈希 / NaN / 重复键均拒绝）；`OutcomeTable` 新增可选 `request_hash` / `provider_hash`，`rows()` 不变；Outcome 不作输入的守卫不变。
+- 子代理实际运行：`pytest tests/research/validation tests/research/outcomes tests/research/strategies/test_backtest_validation.py -m "not postgres"` → 204 passed；边界 / 信息流 / 验证架构 / outcome 契约 → 263 passed；ruff / format / mypy（38 files）通过。
+- 本分支集成后实际运行：`pytest -m "not postgres" tests/research/validation tests/research/outcomes tests/research/strategies tests/research/loop/test_loop_units.py tests/research/synthetic_lab tests/test_architecture_boundaries.py tests/test_information_flow.py tests/test_validation_architecture.py tests/test_outcome_contracts.py`
+  → 511 passed, 1 warning (142.8 s)；`ruff check research tests/research` → 通过；mypy（validation / outcomes / strategies.validation + 测试）→ no issues。
+- 限制：固定的哈希来自浮点，跨平台可能需重新固定（同 D-FLOAT）；浮点正态近似与 G1 / G3 共用阈值仍待 ADR-0052 实施（被 10.2 的 ADR-0052-IMPL 阻塞）。
