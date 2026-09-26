@@ -377,3 +377,9 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - ADR-0052：独立 Phase 1 分支 `phase1/adr-0052-versioned-replay`（基于候选 `b4d63c4`）M0 `ed1a202` 已推送；Codex 条件认可 ContextVar 版本作用域（仅包住已持久化对象重建 / 校验、`try/finally`、
   只取缺省版本、泄漏 / 未发布版本 / 组内不一致 fail closed、Canonical 列与 `RevisionRecord.schema_version` 同源），M1～M3 进行中。
 
+**B25 — ADR-0059（Proposed）：G4 跨资产检查对横截面策略的适用方式**
+
+- 发现：`cross_asset_check` 逐标的单独重跑；横截面策略在单标的宇宙恒为空仓，给出阈值时 G4 跨资产对任何横截面策略结构性 FAIL（证据：`research/validation/robustness.py:987` 起、
+  `tests/research/strategies/test_cross_sectional_momentum.py` 固定现状）。属于验证规则变化（H2 / H3），按仓库规定只写 Proposed ADR、推荐 C（零敞口单标的 → INCONCLUSIVE）再 A（子宇宙检验），批准前不改代码。
+- 并行进行（不涉及 `core/`）：P9 多标的校准臂、P6 逐单元条件验证两个子代理；ADR-0052 版本化重放（独立 Phase 1 分支）子代理独占 `core/` 与 Phase 1 基础设施。
+
