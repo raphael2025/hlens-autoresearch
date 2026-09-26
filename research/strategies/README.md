@@ -23,3 +23,11 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 冲击与 G4 容量检查（`research/validation/robustness.py` 的 `capacity_check`）同一公式，`bar_volume` 与 `ValidatorSetup.bar_volume` 同形；
 参与上限只在执行 bar 截断（剩余量报告、不结转，D-PARTIAL），策略每个决策时刻重发目标即逐 bar 收敛。变体的参数由 `provider_hash` 绑定，
 因此同一候选在两种执行模型下的回测结果可区分（ADR-0038 实施说明 execution realism）。
+
+**验证器接线**（ADR-0041 实施说明 execution model in validation, 2026-09-26）：用变体回测的候选，验证时应把同一执行模型显式声明给
+`validation.ValidatorSetup.backtester`（任一 `BacktestProvider`）或 `.execution`（只给 `ExecutionModel`，验证器自行包一层
+`BarBacktester`），二者互斥、都可选、默认 `None`。给出时，`PipelineBacktestValidator` 新增适配器门 `G0.execution_model`：直接核对
+`validate` 收到的 `backtest.provider_hash` 就是声明模型的 descriptor 哈希，不符在 G0 判 FAIL（`REJECTED` / `CONTRACT_VIOLATION`），
+比先重跑再靠 `G0.reproducibility` 间接发现更早、更具体；`robustness_input` 同样先做这个核对再重跑参数网格。声明的模型带
+`impact_coefficient` 时，G4 容量检查读它而不是只读显式的 `RobustnessParams.impact_coefficient`——两者都给出且不同时判
+`INCONCLUSIVE`（`impact_coefficient_mismatch`），不静默择一。两个字段都不给时（每个既有调用方）不加任何门，报告逐字节不变。

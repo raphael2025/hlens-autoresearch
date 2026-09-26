@@ -13,6 +13,14 @@ report view labels it ``promotion.blocked_reason = "sealed_oos_not_evaluated"`` 
 ``RobustnessParams`` are the explicit parameters for rules the Profile contract has **no field**
 for. Every field is required (``None`` = not given → ``profile_field_missing``); nothing here has a
 default value, and every value that is used is recorded with the source ``param:<name>``.
+
+``RobustnessInput.execution_impact_coefficient`` (implementation note, 2026-09-26): when the
+candidate's backtest used a ``plugins.backtest.execution.ExecutionModel`` with its own impact
+coefficient, ``research.strategies.validation`` passes it here; ``run_robustness`` then resolves
+the capacity check's coefficient itself (``_resolved_impact``) — the model's value takes
+priority, and a disagreeing explicit ``RobustnessParams.impact_coefficient`` is never silently
+overridden: it becomes ``G4.capacity.impact_estimated`` = ``INCONCLUSIVE`` (metric
+``impact_coefficient_mismatch``). ``None`` (every caller that predates this) is unaffected.
 """
 
 from __future__ import annotations
@@ -115,6 +123,12 @@ class RobustnessInput:
     #: the larger of the Outcome label horizon and the longest holding period of the evaluated
     #: trades. Required (no default): the CSCV purge is at least this wide (review fixes 2).
     holding_horizon: timedelta
+    #: The backtest's execution model's own impact coefficient (ADR-0038 execution note), when
+    #: the candidate was backtested with one; ``None`` when there is none (default — every
+    #: existing caller is unaffected). ``capacity_check`` must use it instead of, and never
+    #: silently alongside, a differing explicit ``params.impact_coefficient`` (implementation
+    #: note, 2026-09-26): see ``run_robustness``.
+    execution_impact_coefficient: float | None = None
 
     def __post_init__(self) -> None:
         if self.family_trial_count < 1:
@@ -141,9 +155,27 @@ class RobustnessResult:
         }
 
 
+def _resolved_impact(
+    params: RobustnessParams, model_coefficient: float | None
+) -> tuple[float | None, str, tuple[float, float] | None]:
+    """``(coefficient to use, its source, conflict)`` for ``capacity_check`` (implementation note,
+    2026-09-26): the execution model's coefficient takes priority whenever the backtest carries
+    one; an explicit ``params.impact_coefficient`` that disagrees with it is never overridden
+    silently — it is reported as a conflict instead, and neither value is used."""
+    explicit = params.impact_coefficient
+    if explicit is not None and model_coefficient is not None and explicit != model_coefficient:
+        return None, "", (explicit, model_coefficient)
+    if model_coefficient is not None:
+        return model_coefficient, "execution_model", None
+    return explicit, "param:capacity.impact_coefficient", None
+
+
 def run_robustness(inp: RobustnessInput) -> RobustnessResult:
     """Every G4 check in a fixed order (C-T1 / C-R1, C-R1, C-R4, C-S4 / C-R3, C-R2, C-R5, C-R3)."""
     profile, params = inp.profile, inp.params
+    coefficient, impact_source, impact_conflict = _resolved_impact(
+        params, inp.execution_impact_coefficient
+    )
     key = param_key(inp.chosen)
     chosen = next((trial for trial in inp.trials if trial.key() == key), None)
     if chosen is None:
@@ -172,7 +204,9 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
             len(returns),
             max_participation=params.max_participation,
             min_capacity=params.capacity_floor,
-            impact_coefficient=params.impact_coefficient,
+            impact_coefficient=coefficient,
+            impact_coefficient_source=impact_source,
+            impact_conflict=impact_conflict,
         ),
         cross_asset_check(
             profile, inp.per_asset, inp.declared_instruments, params.cross_asset_fraction

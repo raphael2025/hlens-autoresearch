@@ -14,6 +14,7 @@ capture) or pure noise. Only the research window (before the sealed boundary) is
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -22,7 +23,7 @@ import pytest
 
 from core.contracts.cost_model import CostModelSpec
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
-from core.contracts.strategy import BacktestCostModel, PriceBar
+from core.contracts.strategy import BacktestCostModel, BacktestProvider, PriceBar
 from core.contracts.synthetic import PlantedEffect, SyntheticMarket, SyntheticMarketSpec
 from core.contracts.validation_profile import (
     BenchmarkParams,
@@ -38,7 +39,7 @@ from core.domain.research import RunState, Verdict, derive_verdict
 from core.domain.specs import OutcomeSpec
 from core.errors import ReasonCode
 from infrastructure.bars import DatasetPriceBars, ManifestPair, pair_hash_of
-from plugins.backtest import BarBacktester
+from plugins.backtest import BarBacktester, ExecutionModel
 from plugins.outcomes import ForwardReturnOutcome
 from plugins.synthetic import RandomWalkMarket
 from research.strategies.failure_registry import FailureRegistry
@@ -57,6 +58,7 @@ from research.strategies.validation import (
     PRICE_BINDING_DATASET,
     PRICE_BINDING_SYNTHETIC,
     PipelineBacktestValidator,
+    TrialRunner,
     ValidatorSetup,
     binding_mismatches,
 )
@@ -250,6 +252,10 @@ def _setup(
     dataset_bars: DatasetPriceBars | None = None,
     manifest_pair: ManifestPair | None = None,
     feature_manifest_hashes: tuple[str, ...] = (),
+    trials: TrialRunner | None = None,
+    robustness: RobustnessParams = E2E_TEST_ONLY_PARAMS,
+    backtester: BacktestProvider | None = None,
+    execution: ExecutionModel | None = None,
 ) -> ValidatorSetup:
     return ValidatorSetup(
         context=context or _context(candidate),
@@ -259,25 +265,31 @@ def _setup(
         manifest_pair=manifest_pair,
         feature_manifest_hashes=feature_manifest_hashes,
         instrument=SYMBOL,
-        trials=CandidateTrialRunner(candidate, _inputs(market), BarBacktester()),
+        trials=trials or CandidateTrialRunner(candidate, _inputs(market), BarBacktester()),
         chosen_params=CHOSEN,
         seed=11,
-        robustness=E2E_TEST_ONLY_PARAMS,
+        robustness=robustness,
         state_of=lambda t: "am" if t.hour < 12 else "pm",
         bar_volume={(SYMBOL, bar.interval_start): bar.volume for bar in market.bars},
         declared_instruments=(SYMBOL,),
+        backtester=backtester,
+        execution=execution,
     )
 
 
 def _evaluate(
-    market: SyntheticMarket, tmp_path: Path, **setup: object
+    market: SyntheticMarket,
+    tmp_path: Path,
+    *,
+    run_backtester: BacktestProvider | None = None,
+    **setup: object,
 ) -> tuple[StrategyEvaluation, FailureRegistry]:
     candidate = library_entries()[0].candidate()
     registry = FailureRegistry(tmp_path / "failures.jsonl")
     result = evaluate_strategy(
         candidate,
         _inputs(market),
-        backtester=BarBacktester(),
+        backtester=run_backtester or BarBacktester(),
         registry=registry,
         validator=PipelineBacktestValidator(_setup(market, candidate, **setup)),  # type: ignore[arg-type]
     )
@@ -735,3 +747,152 @@ def test_a_diagnostic_g4_after_a_fail_is_report_only() -> None:
         before.report.gates,
         before.report.verdict,
     )
+
+
+# =========================================================================================
+# implementation note (2026-09-26): the validator's declared execution model
+# (``ValidatorSetup.backtester`` / ``.execution``, ``G0.execution_model``, G4 capacity coefficient)
+# =========================================================================================
+
+
+def _volumes(market: SyntheticMarket) -> dict[tuple[str, datetime], Decimal]:
+    return {(SYMBOL, bar.interval_start): bar.volume for bar in market.bars}
+
+
+def _variant(market: SyntheticMarket, coefficient: str = "0.1") -> BarBacktester:
+    """A ``BarBacktester`` with an opt-in square-root impact model (TEST ONLY coefficients).
+
+    The participation cap keeps every fill's participation small (bar volume is tiny relative to
+    the strategy's equity here): without it the impact could push the fill price to zero or below.
+    """
+    return BarBacktester(
+        execution=ExecutionModel(
+            max_participation_rate=Decimal("0.01"),
+            impact_coefficient=Decimal(coefficient),
+            bar_volume=_volumes(market),
+        )
+    )
+
+
+def test_no_declared_execution_model_adds_no_gate_and_the_report_is_reproducible(
+    tmp_path: Path,
+) -> None:
+    """The default path (neither ``backtester`` nor ``execution`` declared) is byte-identical,
+    including the report hash: it gets no ``G0.execution_model`` gate, and — with a fixed report
+    timestamp (backlog E3) — the same inputs give the same report content hash every time."""
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    ctx = replace(_context(candidate), created_at=T0)
+    first, _ = _evaluate(market, tmp_path / "a", context=ctx)
+    second, _ = _evaluate(market, tmp_path / "b", context=ctx)
+    assert first.validation is not None and second.validation is not None
+    assert first.validation.report.content_hash() == second.validation.report.content_hash()
+    assert "G0.execution_model" not in {g.gate_id for g in first.validation.report.gates}
+
+
+def test_a_matching_execution_model_passes_g0_execution_model(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    variant = _variant(market)
+    trials = CandidateTrialRunner(candidate, _inputs(market), variant)
+    result, _ = _evaluate(
+        market, tmp_path, run_backtester=variant, trials=trials, execution=variant.execution
+    )
+    assert result.validation is not None
+    gates = {g.gate_id: g for g in result.validation.report.gates}
+    assert gates["G0.execution_model"].verdict is Verdict.PASS
+    assert gates["G0.reproducibility"].verdict is Verdict.PASS
+    # Declaring the equivalent full provider instead of just the execution model agrees.
+    same_provider = _setup(market, candidate, trials=trials, backtester=variant)
+    assert same_provider.execution is None and same_provider.backtester is variant
+
+
+def test_a_mismatched_execution_model_is_refused_at_g0(tmp_path: Path) -> None:
+    """A candidate actually backtested with the variant, but validated against the plain v1
+    backtester, is refused at ``G0.execution_model`` — before G0.reproducibility even runs."""
+    market = _market(seed=7, planted=True)
+    variant = _variant(market)
+    result, registry = _evaluate(
+        market, tmp_path, run_backtester=variant, backtester=BarBacktester()
+    )
+    assert result.status is EvaluationStatus.REJECTED
+    assert result.validation is not None
+    report = result.validation.report
+    assert report.verdict is Verdict.FAIL
+    gate = next(g for g in report.gates if g.gate_id == "G0.execution_model")
+    assert (gate.verdict, gate.value) == (Verdict.FAIL, 0.0)
+    # Refused before any re-run-dependent gate is even computed: only the adapter gates exist.
+    assert {g.gate_id.split(".")[0] for g in report.gates} == {"G0"}
+    (record,) = registry.records()
+    assert (record.gate_id, record.terminal_state, record.reason_code) == (
+        "G0.execution_model",
+        "REJECTED",
+        ReasonCode.CONTRACT_VIOLATION,
+    )
+
+
+def test_a_setup_cannot_declare_both_backtester_and_execution(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    variant = _variant(market)
+    with pytest.raises(ValueError, match="either backtester or execution"):
+        _setup(market, candidate, backtester=variant, execution=variant.execution)
+
+
+def test_robustness_input_refuses_a_declared_execution_model_mismatch() -> None:
+    """``robustness_input`` refuses the mismatch itself, before re-running the parameter grid."""
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    variant = _variant(market)
+    backtest = CandidateTrialRunner(candidate, _inputs(market), variant).run(CHOSEN).backtest
+    validator = PipelineBacktestValidator(_setup(market, candidate, backtester=BarBacktester()))
+    with pytest.raises(ValueError, match="execution model does not match"):
+        validator.robustness_input(candidate.spec, backtest)
+
+
+def test_an_impact_coefficient_conflict_is_inconclusive() -> None:
+    """A backtest's execution model impact coefficient disagreeing with an explicit
+    ``RobustnessParams.impact_coefficient`` is never resolved silently (implementation note,
+    2026-09-26): the capacity check reports the conflict and is ``INCONCLUSIVE``."""
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    variant = _variant(market, coefficient="0.1")
+    trials = CandidateTrialRunner(candidate, _inputs(market), variant)
+    conflicting = replace(E2E_TEST_ONLY_PARAMS, impact_coefficient=0.5)
+    setup = _setup(
+        market, candidate, trials=trials, execution=variant.execution, robustness=conflicting
+    )
+    validator = PipelineBacktestValidator(setup)
+    backtest = trials.run(CHOSEN).backtest
+    result = run_robustness(validator.robustness_input(candidate.spec, backtest))
+    gate = next(g for g in result.gates if g.gate_id == "G4.capacity.impact_estimated")
+    assert gate.verdict is Verdict.INCONCLUSIVE
+    assert gate.metric == "impact_coefficient_mismatch"
+    checks = {c.check_id: c for c in result.checks}
+    assert checks["capacity"].details["impact_coefficient_conflict"] == {
+        "param_capacity_impact_coefficient": 0.5,
+        "execution_model_impact_coefficient": 0.1,
+    }
+    assert checks["capacity"].details["impact_cost_per_period_at_capacity"] is None
+
+
+def test_the_capacity_check_uses_the_execution_models_coefficient() -> None:
+    """With no explicit ``impact_coefficient`` (``None``), the capacity check reads the
+    execution model's coefficient instead of leaving the impact estimate unreported."""
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    variant = _variant(market, coefficient="0.2")
+    trials = CandidateTrialRunner(candidate, _inputs(market), variant)
+    no_explicit = replace(E2E_TEST_ONLY_PARAMS, impact_coefficient=None)
+    setup = _setup(
+        market, candidate, trials=trials, execution=variant.execution, robustness=no_explicit
+    )
+    validator = PipelineBacktestValidator(setup)
+    backtest = trials.run(CHOSEN).backtest
+    result = run_robustness(validator.robustness_input(candidate.spec, backtest))
+    checks = {c.check_id: c for c in result.checks}
+    details = checks["capacity"].details
+    assert details["impact_coefficient_source"] == "execution_model"
+    assert details["impact_cost_per_period_at_capacity"] is not None
+    # A successfully resolved coefficient is never gated (an estimate is reported, not a pass).
+    assert "G4.capacity.impact_estimated" not in {g.gate_id for g in result.gates}

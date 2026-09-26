@@ -44,6 +44,13 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   manifest 哈希、pair 的特征哈希即 `ValidatorSetup.feature_manifest_hashes` 中每个特征请求的 `manifest_content_hash`（信号不带
   manifest 哈希，须由调用方显式传入且至少一个）、pair 哈希可按规则重算（`pair_hash_of`）。给 pair 无 `dataset_bars`、给特征哈希无 pair
   均视为不一致的 setup；任一不符判 **FAIL**。不给 pair 时 E5 行为不变；真实数据冒烟走 pair 路径。
+- **声明的执行模型**（ADR-0041 Implementation note, execution model in validation, 2026-09-26）：`ValidatorSetup.backtester` /
+  `.execution`（互斥，都可选，默认 `None`）显式声明候选实际用哪个 `plugins.backtest.execution.ExecutionModel` 回测。给出时，
+  适配器门 `G0.execution_model` 核对给定 `backtest.provider_hash` 就是该模型的 descriptor 哈希，不符判 **FAIL**（`REJECTED` /
+  `CONTRACT_VIOLATION`），`robustness_input` 在重跑参数网格前也做同一拒绝；G4 容量检查（`capacity_check`）随之读取该模型自己的
+  `impact_coefficient`，优先于显式的 `RobustnessParams.impact_coefficient`——二者都给出且不同时不静默择一，`G4.capacity.impact_estimated`
+  = `INCONCLUSIVE`（具名原因 `impact_coefficient_mismatch`，两个值都记录）。两个字段都不给（每个既有调用方）时不加任何门，报告
+  （含内容哈希）逐字节不变。
 
 ### 落盘的开封账本（调试批次，2026-09-25，ADR-0041 实施说明）
 

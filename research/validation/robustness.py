@@ -16,7 +16,13 @@ No silent pass (ADR-0041 review fixes, 2026-09-25):
   declared instrument) is a ``configuration_missing:<what>`` gate (``INCONCLUSIVE``), never
   ``gates=()``; ``RobustnessCheck`` refuses a gate-less check without a recorded reason and a
   missing field that no ``INCONCLUSIVE`` gate carries;
-- computing an estimate (capacity, impact, P&L shares) is reported, never a PASS gate by itself.
+- computing an estimate (capacity, impact, P&L shares) is reported, never a PASS gate by itself;
+- when the backtest's execution model carries its own impact coefficient (ADR-0038 execution
+  note; ``research.strategies.validation``) and an explicit ``param:capacity.impact_coefficient``
+  is also given, the two must agree: a disagreement is never resolved by picking one silently
+  (implementation note, 2026-09-26); ``capacity_check``'s ``impact_conflict`` makes
+  ``G4.capacity.impact_estimated`` ``INCONCLUSIVE`` with the named reason
+  ``impact_coefficient_mismatch``.
 
 Checks (principle → gate ids → threshold sources):
 
@@ -866,12 +872,16 @@ def capacity_check(
     max_participation: Threshold | None,
     min_capacity: Threshold | None,
     impact_coefficient: float | None,
+    impact_coefficient_source: str = "param:capacity.impact_coefficient",
+    impact_conflict: tuple[float, float] | None = None,
 ) -> RobustnessCheck:
     """Capacity = ``max_participation * min(bar volume / traded fraction)`` over the fills.
 
     The Profile contract has no capacity field: the participation limit and any required capacity
     are explicit parameters (``param:``) or missing. The impact estimate uses a square-root model
     ``coefficient * sqrt(participation)`` per unit traded, only when a coefficient is given.
+    ``impact_coefficient_source`` records where the resolved coefficient came from (the caller's
+    ``param:`` or, when a backtest execution model supplied it, ``"execution_model"``).
 
     Computing a number is never by itself a pass (ADR-0041 review fix): the estimates are
     reported in ``details`` only. ``G4.capacity.estimated`` exists only as ``INCONCLUSIVE`` when
@@ -879,7 +889,17 @@ def capacity_check(
     ``param:capacity.min_capacity`` (missing → ``profile_field_missing``, INCONCLUSIVE) and
     ``G4.capacity.impact_estimated`` is ``profile_field_missing`` when no impact coefficient is
     given (C-R5 requires the impact estimate as well).
+
+    ``impact_conflict`` (ADR-0041 implementation note, 2026-09-26): the caller resolves it, never
+    this function — when a backtest's execution model carries its own impact coefficient *and* an
+    explicit ``param:capacity.impact_coefficient`` is also given and the two disagree, the caller
+    passes both values here instead of a resolved ``impact_coefficient`` (which must then be
+    ``None``): the impact estimate is not computed and ``G4.capacity.impact_estimated`` is
+    ``INCONCLUSIVE`` with the named reason ``impact_coefficient_mismatch`` — never a silent choice
+    of one value over the other.
     """
+    if impact_conflict is not None and impact_coefficient is not None:
+        raise ValueError("capacity_check: pass either impact_coefficient or impact_conflict")
     missing: list[str] = []
     uses: list[ThresholdUse] = []
     details: dict[str, object] = {"periods": periods}
@@ -905,13 +925,28 @@ def capacity_check(
         ]
         capacity = max_participation.value * min(ratios)
         details["capacity"] = capacity  # an estimate, reported only (not a gate)
-        if impact_coefficient is not None:
+        if impact_conflict is not None:
+            explicit_value, model_value = impact_conflict
+            details["impact_cost_per_period_at_capacity"] = None
+            details["impact_not_estimated"] = "impact_coefficient_mismatch"
+            details["impact_coefficient_conflict"] = {
+                "param_capacity_impact_coefficient": explicit_value,
+                "execution_model_impact_coefficient": model_value,
+            }
+            gates.append(
+                inconclusive_gate(
+                    "G4.capacity.impact_estimated",
+                    "impact_coefficient_mismatch",
+                    abs(explicit_value - model_value),
+                )
+            )
+        elif impact_coefficient is not None:
             impact = sum(
                 impact_coefficient * (capacity / ratio) ** 0.5 * float(fill.traded_fraction)
                 for fill, ratio in zip(traded, ratios, strict=True)
             )
             details["impact_cost_per_period_at_capacity"] = impact / periods if periods else None
-            details["impact_coefficient_source"] = "param:capacity.impact_coefficient"
+            details["impact_coefficient_source"] = impact_coefficient_source
         else:
             details["impact_cost_per_period_at_capacity"] = None
             details["impact_not_estimated"] = "param:capacity.impact_coefficient not given"

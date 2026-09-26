@@ -254,3 +254,36 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值无变化，本说明不�
 特征哈希不符、伪造 pair 哈希、无 `dataset_bars` 的 pair 均在 G0 判 FAIL 并以 CONTRACT_VIOLATION 入册；各项不符逐一检出；合成路径不变）。
 真实数据冒烟 `tests/infrastructure/e2e/test_research_pipeline_real_data.py` 改为传入 pair 与两个特征请求的 manifest 哈希，断言
 `G0.manifest_binding` PASS 且视图记录 pair。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (execution model in validation, 2026-09-26)
+
+不新增 ADR，不改契约、`core/domain`、Profile 或阈值。调试批次的发现（backlog P5/P8）：`plugins/backtest/execution.py` 的
+`ExecutionModel`（2026-09-26 已补，参与上限、平方根冲击、融资，全部可选、默认关闭）接入 `BarBacktester` 后，验证器一侧一直没有接线——
+`PipelineBacktestValidator` 只经调用方传入的 `TrialRunner`（通常是 `pipeline.CandidateTrialRunner(..., backtester=...)`）重跑，从未显式知道
+该 `backtester` 用了哪个执行模型；一处不一致（例如候选实际用变体回测、但重跑用的 `TrialRunner` 悄悄换成默认 v1）此前只会在
+`G0.reproducibility` 上表现为一个泛化的“不可复现”（`NOT_REPRODUCIBLE` / `FAILED`），而不是一个可诊断的、说明原因的门；G4 容量检查
+（`research/validation/robustness.py` 的 `capacity_check`）与执行模型的冲击系数则完全互不知情，二者给出不同的值时也没有任何检测。
+
+1. **声明执行模型**：`ValidatorSetup` 新增两个互斥的可选字段（默认都是 `None`，不影响任何既有调用方）：`backtester: BacktestProvider | None`
+   （任意 `BacktestProvider`，包含但不限于 `BarBacktester(execution=...)`）与 `execution: ExecutionModel | None`（验证器内部包一层
+   `BarBacktester(execution=...)`）。给出两者会在构造时拒绝（`ValueError`）。
+2. **`G0.execution_model`**：给出任一字段时，适配器门新增该项：核对 `validate` 收到的 `backtest.provider_hash` 就是声明模型的
+   descriptor 哈希（`PipelineBacktestValidator._execution_model_gate`，直接比较，不需要重跑）；不符判 **FAIL**（`reason_for_gate` 的
+   `G0.` 通配行，`REJECTED` / `CONTRACT_VIOLATION`），且在 G0 – G4 的任何其它门之前就拒绝，与 `G0.manifest_binding`（E5）同一套路。
+   `robustness_input(spec, backtest)`（backlog E4 的公开构建器）在重跑声明的参数网格之前也做同一核对，同样拒绝不符（`ValueError`）——
+   不必先花时间重跑整族再靠 `G0.reproducibility` 间接发现。两个字段都不给（每个既有调用方）时不加任何门，报告与之前逐字节相同
+   （含报告内容哈希）。
+3. **G4 容量检查读同一冲击系数**：声明的执行模型带 `impact_coefficient` 时，`research/validation/g4.py` 的 `run_robustness`
+   （`_resolved_impact`）把它交给 `capacity_check`，优先于 `RobustnessParams.impact_coefficient`；显式参数与模型系数都给出且不同时，
+   **不静默择一**——`capacity_check` 新增 `impact_conflict` 入参，此时 `G4.capacity.impact_estimated` = `INCONCLUSIVE`（具名原因
+   `impact_coefficient_mismatch`），`details.impact_coefficient_conflict` 同时记录两个值，冲击估计不计算。两者一致或只给一个时按原有
+   逻辑估算，`details.impact_coefficient_source` 记为 `"execution_model"` 或 `"param:capacity.impact_coefficient"`。
+4. **限制**：验证器仍不能强制 `ValidatorSetup.trials`（一个不透明的 `TrialRunner` Protocol）内部确实用了声明的执行模型——这仍由
+   `G0.reproducibility` 兜底（重跑哈希必须等于 `backtest.result_hash`，而 `provider_hash` 是该哈希的一部分）；`G0.execution_model`
+   只核对给定的 `backtest` 与声明是否一致，是一层更早、更具体的检查，不是取代 `G0.reproducibility`。
+
+回归测试：`tests/research/strategies/test_backtest_validation.py`（默认路径不加门且报告哈希可复现；声明变体与实际用同一变体回测时
+`G0.execution_model` 与 `G0.reproducibility` 都 PASS；实际用变体、声明默认 v1 时在 `G0.execution_model` 判 FAIL 并以
+CONTRACT_VIOLATION 入册；同时给两个字段被拒绝；`robustness_input` 对不符声明的拒绝；显式参数与模型冲击系数冲突时
+`G4.capacity.impact_estimated` = INCONCLUSIVE 且两个值都记录；只给模型系数时容量检查按其估算）。状态仍为
+FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值无变化，本说明不涉及任何验证规则或阈值。

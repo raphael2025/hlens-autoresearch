@@ -16,7 +16,10 @@ validator states it) and, optionally, the JSON-ready report view for later visua
 2. adapter gates (G0): the backtest's cost model has the same rates as the bound ``CostModelSpec``
    (``G0.backtest_cost_model``), and the adapter validates exactly one instrument
    (``G0.single_instrument_adapter``; several instruments are ``INCONCLUSIVE`` — the Outcome
-   request is single-instrument, a known gap);
+   request is single-instrument, a known gap); when the setup declares the backtest's execution
+   model (``ValidatorSetup.backtester`` / ``.execution``, implementation note, 2026-09-26), also
+   ``G0.execution_model`` — the given ``backtest.provider_hash`` must be exactly the declared
+   model's, refused (FAIL) otherwise; unset, no gate is added (byte-identical to before the note);
 3. every non-flat target becomes an ``OutcomeEvent`` at its decision time; the bound
    ``OutcomeProvider`` labels it over the same bars (``next_bar_open`` entry = the backtester's);
    the sides are ``FixedSides`` built **only** from contract-checked ``TargetPosition`` rows (their
@@ -83,6 +86,31 @@ Provenance limit (ADR-0041): ``G1.label_blind_sides`` cannot detect a ``FixedSid
 pre-filled from outcome signs outside the pipeline (the sides would be identical under blinded
 and real labels). The defence is provenance: this adapter builds its ``FixedSides`` only from
 contract-checked ``TargetPosition`` rows, never from labels.
+
+Execution model wiring (implementation note, 2026-09-26). Before this note, a candidate backtested
+with an opt-in ``plugins.backtest.execution.ExecutionModel`` (ADR-0038 execution note: bar-volume
+participation cap, square-root impact, funding) was validated by re-running it through whatever
+``TrialRunner`` the caller wired into ``ValidatorSetup.trials`` — nothing checked that the
+``TrialRunner``'s own backtester actually matched, so a mismatch surfaced only indirectly, as a
+generic ``G0.reproducibility`` failure (``NOT_REPRODUCIBLE`` / ``FAILED``, C-P3) indistinguishable
+from any other cause of a differing hash. ``ValidatorSetup.backtester`` / ``.execution`` (mutually
+exclusive; both optional, default ``None``) now let a caller **declare** the execution model the
+candidate was backtested with:
+
+- ``G0.execution_model`` checks the given ``backtest.provider_hash`` against the declared model's
+  descriptor hash directly (no re-run needed) — a mismatch is refused (FAIL → REJECTED /
+  CONTRACT_VIOLATION), before any of G0 – G4 runs; ``robustness_input`` refuses the same mismatch
+  before re-running the declared parameter grid;
+- the G4 capacity check (``research.validation.robustness.capacity_check``) then reads its impact
+  coefficient from the same declared model instead of only ``RobustnessParams.impact_coefficient``
+  (``research.validation.g4._resolved_impact``): the model's value takes priority when given, and
+  an explicit ``RobustnessParams.impact_coefficient`` that disagrees with it is never silently
+  overridden — ``G4.capacity.impact_estimated`` becomes ``INCONCLUSIVE`` (metric
+  ``impact_coefficient_mismatch``) instead, reporting both values.
+
+Neither field is set by any pre-existing caller (``bar_volume`` remains a separate, unrelated
+field used for the causal state / capacity plumbing): the default path — plain ``BarBacktester()``,
+no declared execution model — adds no new gate and is byte-identical, including the report hash.
 """
 
 from __future__ import annotations
@@ -96,13 +124,20 @@ from typing import Protocol
 
 from core.contracts.feature import ObservationScalar
 from core.contracts.outcome import OutcomeEvent, OutcomePriceBar, OutcomeProvider, OutcomeRequest
-from core.contracts.strategy import BacktestCostModel, BacktestResult, PriceBar, TargetPosition
+from core.contracts.strategy import (
+    BacktestCostModel,
+    BacktestProvider,
+    BacktestResult,
+    PriceBar,
+    TargetPosition,
+)
 from core.domain.base import Ref
 from core.domain.research import GateResult, ValidationReport, Verdict
 from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
 from infrastructure.bars.dataset import DatasetPriceBars
 from infrastructure.bars.pair import ManifestPair, pair_hash_of
+from plugins.backtest import BarBacktester, ExecutionModel
 from research.outcomes.table import materialize
 from research.validation.controls import FixedSides
 from research.validation.g4 import (
@@ -224,10 +259,23 @@ class ValidatorSetup:
       ``feature_manifest_hashes``;
     - ``feature_manifest_hashes``: the ``manifest_content_hash`` of each feature request whose
       values feed the signals (the validator cannot see them otherwise); compared with the
-      pair's feature hash.
+      pair's feature hash;
+    - ``backtester`` / ``execution`` (implementation note, 2026-09-26): the execution model the
+      candidate was actually backtested with — either the full ``BacktestProvider`` (any variant,
+      e.g. a ``plugins.backtest.bar.BarBacktester(execution=...)``, or another provider entirely),
+      or, for the common case, just the ``plugins.backtest.execution.ExecutionModel`` (the
+      validator wraps it in a plain ``BarBacktester``). At most one of the two may be given.
+      When either is given, the adapter gate ``G0.execution_model`` refuses (FAIL) a ``backtest``
+      whose ``provider_hash`` does not match it, and ``robustness_input`` refuses the same
+      mismatch before re-running the declared parameter grid; the G4 capacity check then reads its
+      impact coefficient from the same model (see ``robustness.capacity_check``). Neither field is
+      required to reproduce a plain ``BarBacktester()`` backtest (the pre-existing behaviour is
+      untouched): they exist to make an *opt-in* execution model an explicit, checked part of the
+      setup instead of an unstated assumption of whatever ``TrialRunner`` the caller wired in.
 
-    Only the last three fields have defaults (``None`` / empty): they keep the synthetic callers
-    unchanged, and the view always labels the path taken.
+    Only the last five fields have defaults (``None`` / empty): they keep the synthetic callers
+    and the pre-existing (no execution model) callers unchanged, and the view always labels the
+    path taken.
     """
 
     context: ValidationContext
@@ -244,6 +292,12 @@ class ValidatorSetup:
     dataset_bars: DatasetPriceBars | None = None
     manifest_pair: ManifestPair | None = None
     feature_manifest_hashes: tuple[str, ...] = ()
+    backtester: BacktestProvider | None = None
+    execution: ExecutionModel | None = None
+
+    def __post_init__(self) -> None:
+        if self.backtester is not None and self.execution is not None:
+            raise ValueError("ValidatorSetup takes either backtester or execution, not both")
 
 
 def _binding_declared(setup: ValidatorSetup) -> bool:
@@ -406,7 +460,7 @@ class PipelineBacktestValidator:
             raise ValueError(f"the spec {spec.ref} is not the subject {subject}")
         chosen = _full(spec, setup.chosen_params)
         rerun = setup.trials.run(_request(spec, chosen))
-        adapter = self._adapter_gates(rerun)
+        adapter = self._adapter_gates(rerun, backtest)
         if any(gate.verdict is not Verdict.PASS for gate in adapter):
             return self._answer(build_report(ctx, adapter), None, rerun)
         traded = [t for t in rerun.targets if _side(t.target_weight) != 0]
@@ -444,11 +498,20 @@ class PipelineBacktestValidator:
         """The G4 input ``validate`` would build for ``backtest`` under this setup (backlog E4).
 
         Re-runs the setup's chosen point; a backtest the re-run does not reproduce is refused
-        (``ValueError``): the input would describe another backtest.
+        (``ValueError``): the input would describe another backtest. A ``backtest`` whose
+        ``provider_hash`` does not match the setup's declared ``backtester`` / ``execution``
+        (implementation note, 2026-09-26) is refused the same way, before the (possibly expensive)
+        re-run of the declared parameter grid.
         """
         subject = self._setup.context.subject
         if spec.ref.target_identity() != subject.target_identity():
             raise ValueError(f"the validation context is about {subject}, not {spec.ref}")
+        declared = self._declared_backtester()
+        if declared is not None and backtest.provider_hash != declared.descriptor.content_hash():
+            raise ValueError(
+                "the backtest's execution model does not match the validator's backtester: "
+                "no G4 input"
+            )
         chosen = _full(spec, self._setup.chosen_params)
         rerun = self._setup.trials.run(_request(spec, chosen))
         if rerun.backtest.result_hash != backtest.result_hash:
@@ -466,7 +529,40 @@ class PipelineBacktestValidator:
 
     # ----------------------------------------------------------------------------------
 
-    def _adapter_gates(self, rerun: TrialRun) -> tuple[GateResult, ...]:
+    def _declared_backtester(self) -> BacktestProvider | None:
+        """The setup's declared execution model as a full provider, or ``None`` (implementation
+        note, 2026-09-26): unset by every pre-existing caller, so ``_execution_model_gate`` adds
+        no gate for them and the report stays byte-identical."""
+        setup = self._setup
+        if setup.backtester is not None:
+            return setup.backtester
+        if setup.execution is not None:
+            return BarBacktester(execution=setup.execution)
+        return None
+
+    def _declared_execution(self) -> ExecutionModel | None:
+        """The declared ``ExecutionModel``, if any (directly, or via a ``BarBacktester``); the G4
+        capacity check's impact coefficient is read from it (implementation note, 2026-09-26)."""
+        setup = self._setup
+        if setup.execution is not None:
+            return setup.execution
+        backtester = setup.backtester
+        return backtester.execution if isinstance(backtester, BarBacktester) else None
+
+    def _execution_model_gate(self, backtest: BacktestResult) -> GateResult | None:
+        """``G0.execution_model`` (implementation note, 2026-09-26): ``None`` when the setup
+        declares no ``backtester`` / ``execution`` (the pre-existing, byte-identical path);
+        otherwise a structural check that ``backtest.provider_hash`` is exactly the declared
+        model's — a mismatch is refused (FAIL → REJECTED / CONTRACT_VIOLATION), never silently
+        trusted just because ``G0.reproducibility`` would eventually catch it too."""
+        declared = self._declared_backtester()
+        if declared is None:
+            return None
+        expected = declared.descriptor.content_hash()
+        match = backtest.provider_hash == expected
+        return flag_gate("G0.execution_model", "provider_hash_equal", match, 1.0 if match else 0.0)
+
+    def _adapter_gates(self, rerun: TrialRun, backtest: BacktestResult) -> tuple[GateResult, ...]:
         spec = self._setup.context.cost_model
         same = (rerun.cost_model.fee_rate, rerun.cost_model.slippage_rate) == (
             spec.fee_rate_per_side,
@@ -474,16 +570,19 @@ class PipelineBacktestValidator:
         )
         instruments = {target.instrument for target in rerun.targets}
         single = instruments == {self._setup.instrument}
-        gates = (
+        gates = [
             flag_gate("G0.backtest_cost_model", "cost_rates_equal", same, float(same)),
             flag_gate("G0.single_instrument_adapter", "instruments", True, 1.0)
             if single
             else inconclusive_gate(
                 "G0.single_instrument_adapter", "instruments", float(len(instruments))
             ),
-        )
+        ]
+        execution_gate = self._execution_model_gate(backtest)
+        if execution_gate is not None:
+            gates.append(execution_gate)
         if not _binding_declared(self._setup):  # synthetic path: labelled in the view, no gate
-            return gates
+            return tuple(gates)
         mismatches = binding_mismatches(self._setup, rerun.bars)
         binding = flag_gate(
             "G0.manifest_binding",
@@ -491,7 +590,8 @@ class PipelineBacktestValidator:
             not mismatches,
             float(len(mismatches)),
         )
-        return (*gates, binding)
+        gates.append(binding)
+        return tuple(gates)
 
     def _answer(
         self, report: ValidationReport, robustness: RobustnessResult | None, rerun: TrialRun
@@ -585,7 +685,16 @@ class PipelineBacktestValidator:
             holding_horizon=max(
                 setup.context.label_spec.horizon, _longest_holding(rerun.targets, base)
             ),
+            execution_impact_coefficient=self._execution_impact_coefficient(),
         )
+
+    def _execution_impact_coefficient(self) -> float | None:
+        """The declared execution model's impact coefficient, if any (implementation note,
+        2026-09-26): ``None`` unless the setup declares ``backtester`` / ``execution`` with one."""
+        execution = self._declared_execution()
+        if execution is None or execution.impact_coefficient is None:
+            return None
+        return float(execution.impact_coefficient)
 
     def _state_trades(self, rerun: TrialRun, base: PeriodReturns) -> tuple[StateTrade, ...] | None:
         state_of = self._setup.state_of
