@@ -240,16 +240,19 @@ for (const c of CASES) {
       );
     });
 
-    test("selected fixture: the detail pane parses the real payload (no raw-JSON fallback)", async () => {
-      const { html, requests } = await renderSettled(<c.Page />, {
-        routes: [api.listing(c.kind, reports), api.report(fixture)],
-        selected: fixture.id,
-      });
-      assert.ok(requests.includes(`GET /api/reports/${c.kind}/${fixture.id}`));
-      assert.ok(!html.includes("<pre>{"), "the detail is not the raw-payload fallback");
-      assert.ok(!html.includes('role="alert"'));
-      assert.ok(!html.includes(escaped(c.prompt)));
-      assertIncludes(html, c.detail(fixture), "detail");
+    // every fixture of the kind: the current (2.1.0) one and, where kept, the legacy 2.0.0 one
+    test("each selected fixture: the detail pane parses the real payload (no raw-JSON fallback)", async () => {
+      for (const report of reports) {
+        const { html, requests } = await renderSettled(<c.Page />, {
+          routes: [api.listing(c.kind, reports), api.report(report)],
+          selected: report.id,
+        });
+        assert.ok(requests.includes(`GET /api/reports/${c.kind}/${report.id}`));
+        assert.ok(!html.includes("<pre>{"), `${report.id}: the detail is not the raw-payload fallback`);
+        assert.ok(!html.includes('role="alert"'));
+        assert.ok(!html.includes(escaped(c.prompt)));
+        assertIncludes(html, c.detail(report), `detail ${report.id}`);
+      }
     });
 
     test("empty listing: the page's empty text", async () => {

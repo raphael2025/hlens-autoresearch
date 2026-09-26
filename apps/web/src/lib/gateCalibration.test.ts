@@ -10,7 +10,20 @@ import {
   passRate,
 } from "./gateCalibration.ts";
 
-const [fixture] = fixtureEnvelopes("gate_calibration");
+// The current (contract 2.1.0) report and the legacy readable 2.0.0 one (apps/web/fixtures/README.md).
+const fixtures = fixtureEnvelopes("gate_calibration");
+const [fixture] = fixtures;
+
+test("both committed fixtures (2.1.0 and legacy 2.0.0) parse with every candidate", () => {
+  assert.equal(fixtures.length, 2);
+  for (const envelope of fixtures) {
+    const payload = asCalibrationPayload(envelope.payload);
+    assert.ok(payload !== null, envelope.id);
+    assert.equal(payload.report_hash, envelope.id);
+    assert.equal(payload.candidates.length, 2);
+    assert.equal(passRate(payload.candidates[0].pipeline.noise)?.label, "false_positive_rate");
+  }
+});
 
 function payloadOf(envelope: typeof fixture) {
   const payload = asCalibrationPayload(envelope.payload);

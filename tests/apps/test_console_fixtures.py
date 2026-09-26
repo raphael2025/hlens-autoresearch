@@ -12,6 +12,7 @@ enforced by ``tests/test_architecture_boundaries.py``).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from fastapi.testclient import TestClient
 
 from apps.api import create_app
 from apps.api.store import ReportKind, ReportStore
+from tests.apps.report_fixtures import LEGACY_2_0_0, fixture, fixtures, legacy_fixture
 
 FIXTURES_ROOT = Path(__file__).resolve().parents[2] / "apps" / "web" / "fixtures"
 
@@ -59,11 +61,13 @@ def test_every_fixture_round_trips_through_the_store_and_the_api(kind: ReportKin
         assert detail.json()["payload"] == envelope.payload
 
 
-def test_validation_report_fixture_has_a_verdict() -> None:
+def test_validation_report_fixtures_have_a_verdict() -> None:
     store = ReportStore(FIXTURES_ROOT)
-    (envelope,) = store.list(ReportKind.VALIDATION_REPORT)
-    assert envelope.payload["verdict"] in {"PASS", "FAIL", "INCONCLUSIVE"}
-    assert isinstance(envelope.payload["gates"], list) and envelope.payload["gates"]
+    envelopes = store.list(ReportKind.VALIDATION_REPORT)
+    assert len(envelopes) == 2  # the current 2.1.0 report and the legacy readable 2.0.0 one
+    for envelope in envelopes:
+        assert envelope.payload["verdict"] in {"PASS", "FAIL", "INCONCLUSIVE"}
+        assert isinstance(envelope.payload["gates"], list) and envelope.payload["gates"]
 
 
 def test_research_loop_round_fixture_has_a_status() -> None:
@@ -73,11 +77,13 @@ def test_research_loop_round_fixture_has_a_status() -> None:
     assert envelope.payload["status"]
 
 
-def test_state_strategy_matrix_fixture_has_cells() -> None:
+def test_state_strategy_matrix_fixtures_have_cells() -> None:
     store = ReportStore(FIXTURES_ROOT)
-    (envelope,) = store.list(ReportKind.STATE_STRATEGY_MATRIX)
-    assert envelope.payload["matrix_hash"]
-    assert isinstance(envelope.payload["cells"], list) and envelope.payload["cells"]
+    envelopes = store.list(ReportKind.STATE_STRATEGY_MATRIX)
+    assert len(envelopes) == 2  # current and legacy readable 2.0.0
+    for envelope in envelopes:
+        assert envelope.payload["matrix_hash"] == envelope.id
+        assert isinstance(envelope.payload["cells"], list) and envelope.payload["cells"]
 
 
 def test_router_paper_run_fixture_has_equity_curves() -> None:
@@ -88,15 +94,47 @@ def test_router_paper_run_fixture_has_equity_curves() -> None:
     assert envelope.payload["net_equity_curve"]
 
 
-def test_gate_calibration_fixture_carries_the_evidence_only_disclaimer() -> None:
+def test_gate_calibration_fixtures_carry_the_evidence_only_disclaimer() -> None:
     store = ReportStore(FIXTURES_ROOT)
-    (envelope,) = store.list(ReportKind.GATE_CALIBRATION)
-    assert envelope.payload["disclaimer"] == "evidence only — not a Profile decision"
-    candidates = envelope.payload["candidates"]
-    assert isinstance(candidates, list) and len(candidates) >= 2
-    for candidate in candidates:
-        assert candidate["pipeline"]  # at least the noise arm
-        assert candidate["gates"]
+    envelopes = store.list(ReportKind.GATE_CALIBRATION)
+    assert len(envelopes) == 2  # current and legacy readable 2.0.0
+    for envelope in envelopes:
+        assert envelope.payload["disclaimer"] == "evidence only — not a Profile decision"
+        candidates = envelope.payload["candidates"]
+        assert isinstance(candidates, list) and len(candidates) >= 2
+        for candidate in candidates:
+            assert candidate["pipeline"]  # at least the noise arm
+            assert candidate["gates"]
+
+
+@pytest.mark.parametrize("kind", list(ReportKind))
+def test_every_kind_has_one_current_fixture_and_its_pinned_legacy_one(kind: ReportKind) -> None:
+    ids = {item.id for item in fixtures(kind)}
+    legacy = LEGACY_2_0_0.get(kind)
+    assert ids - {legacy} == {fixture(kind).id}
+    if legacy is not None:
+        assert legacy in ids and legacy != fixture(kind).id
+
+
+@pytest.mark.parametrize("kind", list(LEGACY_2_0_0))
+def test_the_legacy_2_0_0_fixture_is_still_served(kind: ReportKind) -> None:
+    old = legacy_fixture(kind)
+    text = json.dumps(old.payload, sort_keys=True, separators=(",", ":"))
+    assert '"schema_version":"2.0.0"' in text or kind is ReportKind.STATE_STRATEGY_MATRIX
+    response = TestClient(create_app(reports_root=FIXTURES_ROOT)).get(
+        f"/reports/{kind.value}/{old.id}"
+    )
+    assert response.status_code == 200 and response.json()["payload"] == old.payload
+
+
+def test_the_current_validation_report_has_exact_gate_values() -> None:
+    gates = fixture(ReportKind.VALIDATION_REPORT).payload["gates"]
+    exact = [gate for gate in gates if "value_exact" in gate]
+    assert exact and all(isinstance(gate["value_exact"], str) for gate in exact)
+    assert all(
+        "value_exact" not in gate
+        for gate in legacy_fixture(ReportKind.VALIDATION_REPORT).payload["gates"]
+    )
 
 
 def test_router_stop_fixture_names_its_reason_and_hash() -> None:
