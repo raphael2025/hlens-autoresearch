@@ -212,8 +212,9 @@ SMOKE_TEST_ONLY_PROFILE: Final = factories.validation_profile(
         null_model="random-entry",
         null_model_simulations=50,
         null_model_percentile=90.0,
-        market_benchmark_rule="test-only",
-        inverse_control_reported=False,
+        # ADR-0060 enforcement: a registered rule (the "test-only" placeholder is INCONCLUSIVE)
+        market_benchmark_rule="buy_and_hold_equal_weight",
+        inverse_control_reported=True,
     ),
     parameter_stability=ParameterStabilityParams(
         neighborhood_definition="adjacent_grid",
@@ -501,6 +502,7 @@ def run_chain(w: ds.World, report_root: Path, registry_path: Path) -> Chain:
         state_of=lambda at: by_time.get(at) or "unknown",
         bar_volume=volumes,
         declared_instruments=(BTC_C,),
+        market_benchmark=True,  # ADR-0060 enforced (C-T4 reported-only items)
         dataset_bars=price_bars,  # G0.manifest_binding: the labels' manifest is the bars' (E5)
         # E1 follow-up: the chain's pair binds the bars' manifest to the features' (the
         # signals carry no manifest hash, so each feature request's is passed explicitly).

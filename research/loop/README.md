@@ -30,6 +30,12 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   族 trial 数随之增长，G3 的多重检验校正随之加强。只有 VALIDATION 中最近报告为 INCONCLUSIVE、且数据比上次评估更长的假设才会被
   重新评估（每轮至多 `max_reevaluations_per_round` 个）；REJECTED / FAILED 永不重新评估，OOS 不再做样本内重跑。封存窗口永不进入研究数据。
 - 验证阈值只来自绑定的 Validation Profile 或显式 `RobustnessParams`（测试用 TEST ONLY 数值）。
+- **C-T4 市场基准（ADR-0060 在循环中强制，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）**：`ValidationStage` 以 `market_benchmark=True` 构造
+  `ValidatorSetup`，每个试验报告都带绑定 Profile 的 `benchmark.market_benchmark_rule` / `.inverse_control_reported` 所要求的报告项
+  （`G2.market_benchmark.<规则>` / `G2.inverse_control`，只报告、无阈值）。未登记的规则名 → `G2.market_benchmark` INCONCLUSIVE，
+  与其他 INCONCLUSIVE 门一样使报告 INCONCLUSIVE；基准重跑用验证器声明的回测器或 `BarBacktester()`，必须逐字节复现试验的
+  `result_hash`，否则该项 INCONCLUSIVE。基准与反向对照是同一试验的回测，不增加 trial。TEST ONLY 夹具 Profile 使用
+  `buy_and_hold_equal_weight` + `inverse_control_reported=True`。
 - 生命周期最多到 OOS；OOS → PAPER 需要人工批准，循环在结构上无法产生 PAPER / ACTIVE。
 - 封存 OOS 默认永不开封；只有显式 `OosUnsealBudget`（全局次数 + 逐族批准人名单，自动化身份被拒）列出的族才开封，每族一次；
   开封即消耗该族唯一的一次评估（即使之后没有结果），之后无人能再读该窗口。

@@ -59,3 +59,28 @@
   都用未登记的占位名 `"test-only"`：自动启用会把这些报告全部变为 `INCONCLUSIVE`，而这些夹具与 `research/loop` 不在本批次的文件边界内。
   研究循环接入（`research/loop` 设置 `market_benchmark=True`）并把这些夹具改为已登记的规则名、重新固定其记录哈希，需另行批准；在此之前，
   未开启的调用方不会因未登记规则名而得到 `INCONCLUSIVE`。`docs/architecture/07-validation.md` §G2 的门清单尚未同步（不在本批次边界内）。
+
+## Implementation note addendum — 研究循环与合成实验室强制执行（2026-09-26）
+
+状态 **CODE_COMPLETE / DEBUG_PENDING**。协调者决定"现在强制执行"。无 core / 契约 / Schema 变化，无新数值阈值，未放宽任何门。
+
+- **研究循环**：`research/loop/trials.py` 的 `ValidationStage` 以 `market_benchmark=True` 构造 `ValidatorSetup`。逐单元（纯标签）验证没有价格路径，
+  不计算基准。
+- **合成实验室**：`StrategyValidatorDetector` 与 `MultiInstrumentValidatorDetector` 拒绝（`DetectorConfigurationError`）没有
+  `market_benchmark=True` 的 setup——被校准的流水线就是循环运行的流水线。
+- **`ValidatorSetup.market_benchmark` 的默认值保持 `False`（刻意不改）**：按实现，未登记规则名的 `G2.market_benchmark` 与
+  `benchmark_unavailable` 项都是 `INCONCLUSIVE`，而 `derive_verdict` 让任何 INCONCLUSIVE 门决定整体判定——它们**参与判定**（只有已计算的项
+  是 `PASS` = 已计算）。默认改为 `True` 会让 `research/router` 的路由器自验证（ADR-0043，其回测是扣除切换成本的 `ROUTER_PAPER_BACKTEST`，
+  `BarBacktester` 重跑无法复现 `result_hash`）的每份报告都变成 `INCONCLUSIVE`；这是路由器批次的决定，不在本批次边界内。
+- **TEST ONLY 夹具**：循环、合成实验室（宽松 / 严格）、`test_backtest_validation`、真实数据 e2e（postgres 标记，本批次未运行）的 Profile 由占位名
+  `"test-only"` 改为已登记的 `buy_and_hold_equal_weight`，`inverse_control_reported=True`（让反向对照也被运行）。刻意保留占位名的：
+  `tests/research/validation/fixtures.py`（纯标签流水线，没有证据源时从不读取该字段；未登记规则的单元测试依赖它）；玩具检测器 Profile
+  （`test_gate_calibration._TOY_BENCHMARK`：不运行验证器，保持报告哈希与已提交的控制台夹具 `apps/web/fixtures/gate_calibration/` 不变）。
+- **重新固定的哈希**（原因都是本强制执行）：`tests/research/loop/test_loop_e2e.py` 的三条记录哈希与配置指纹；
+  `test_gate_calibration_g5.py` 的 `PRE_G5_PIPELINE_ONE_SEED_HASH`（玩具 / raising 哈希不变）；`test_cross_sectional_g4.py`、
+  `test_multi_instrument_validation.py`、`strategies/test_market_benchmark.py` 的报告 / 视图哈希（这些路径未开启，只因报告绑定的 Profile 变了；
+  G4 诊断哈希不变）。黄金实验 `tests/golden/experiments/` 以其助手重新生成（`be2430e6…` → `c8d129e6…`）：只新增 5 个报告项门（32 → 37），
+  其余输出与判定不变。
+- **已知限制**：循环未在 `ValidatorSetup` 中声明其回测器；若循环接线使用非默认执行模型的回测器，基准重跑无法复现 `result_hash`，
+  相关项为 `benchmark_unavailable` INCONCLUSIVE（从不以另一执行模型计算）。当前仓库没有这样的生产接线。
+  `docs/architecture/07-validation.md` §G2 门清单仍未同步。

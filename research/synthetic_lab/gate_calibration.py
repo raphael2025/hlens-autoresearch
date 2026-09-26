@@ -75,6 +75,15 @@ Pieces:
   by the arm's kind (``false_positive_rate`` / ``power`` / ``pass_rate`` for ``mixed``) or, for a
   per-instrument gate, by that instrument's role. Evidence only: no threshold, no Profile, no gate
   change. G5 mode is not offered in this mode.
+- C-T4 market benchmark (ADR-0060 enforced, 2026-09-26; CODE_COMPLETE / DEBUG_PENDING): both
+  pipeline detectors refuse (``DetectorConfigurationError``) a setup without
+  ``ValidatorSetup.market_benchmark=True``, so the calibrated pipeline is the one the research loop
+  runs: every report carries what the candidate Profile's ``benchmark`` block calls for
+  (``G2.market_benchmark.<rule>`` / ``G2.inverse_control``, reported only, no threshold), and an
+  unregistered ``market_benchmark_rule`` is ``G2.market_benchmark`` = ``INCONCLUSIVE`` (which,
+  like every INCONCLUSIVE gate, makes the run INCONCLUSIVE). The benchmark re-runs are backtests of
+  the same trial through the setup's declared backtester (or a plain ``BarBacktester()``); a
+  detector whose ``backtester`` differs gets ``benchmark_unavailable`` INCONCLUSIVE items.
 - ``GateCalibrationReport``: deterministic, JSON-ready, content-hashed (``report_hash``); it
   records every input (generator, detector, base spec, seeds, planted effects, candidate Profile
   refs and hashes, interval method and ``alpha``).
@@ -314,6 +323,14 @@ SetupFactory = Callable[[SyntheticMarket, ValidationProfile, TrialRunner], Valid
 SealedInputsFactory = Callable[[EvaluationInputs, tuple[SyntheticBar, ...]], EvaluationInputs]
 
 
+def _require_market_benchmark(setup: ValidatorSetup) -> None:
+    """ADR-0060 is enforced in the lab: the calibrated pipeline is the one the loop runs."""
+    if not setup.market_benchmark:
+        raise DetectorConfigurationError(
+            "setup_for must hold the validator to ADR-0060 (ValidatorSetup.market_benchmark=True)"
+        )
+
+
 def _side(weight: Decimal) -> int:
     return int(weight > 0) - int(weight < 0)
 
@@ -396,6 +413,7 @@ class StrategyValidatorDetector:
             raise DetectorConfigurationError(
                 "setup_for must bind the candidate Profile it is given"
             )
+        _require_market_benchmark(setup)
         return setup
 
     def _request(self, setup: ValidatorSetup) -> dict[str, ObservationScalar]:
@@ -571,6 +589,7 @@ class MultiInstrumentValidatorDetector:
                 "setup_for must validate exactly the book's instruments "
                 "(ValidatorSetup.instruments)"
             )
+        _require_market_benchmark(setup)
         spec = self._candidate.spec
         backtest = runner.run(_requested_point(self._candidate, setup)).backtest
         return PipelineBacktestValidator(setup).validate(spec.ref, spec, backtest).report

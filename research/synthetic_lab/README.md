@@ -93,7 +93,19 @@ k = 2，每组 8 个种子，`gate_fixtures.multi_setup(8)`，报告哈希 `d7b5
 | all_planted（强度 0.5） | 0/8 [0, 0.369] | 1/8 [0.003, 0.527] | S0 1 · 1，S1 0 · 1（各 1 次未评估） | 2/8 |
 | mixed（S0 植入、S1 噪声） | 0/8 [0, 0.369] | 2/8 [0.032, 0.651] | S0 1 · 1，S1 0 · 0（各 6 次未评估） | 0/8 |
 
+（该表在 ADR-0060 于实验室强制之前计算：当时 Profile 的 `market_benchmark_rule` 为占位名 `"test-only"`、检测器未开启市场基准；
+强制之后同一设置的报告哈希不同，表中的门统计未重新计算。）
+
 8 个种子只能说明：池化对照在全植入与混合标的对上确实会失败（与 B20 观察一致），区间宽到不能区分任何名义水平；
 不得据此选择阈值或 Profile。
+
+**C-T4 市场基准（ADR-0060 在实验室强制，2026-09-26，CODE_COMPLETE / DEBUG_PENDING；无 core / 契约 / Schema 变更）**：
+`StrategyValidatorDetector` 与 `MultiInstrumentValidatorDetector` 拒绝（`DetectorConfigurationError`）没有
+`ValidatorSetup.market_benchmark=True` 的 setup，使被校准的流水线就是研究循环运行的流水线：每个报告都带候选 Profile 的
+`benchmark` 块所要求的报告项（`G2.market_benchmark.<规则>` / `G2.inverse_control`，只报告、无阈值），未登记的规则名 →
+`G2.market_benchmark` INCONCLUSIVE（与其他 INCONCLUSIVE 门一样使该运行 INCONCLUSIVE）。基准重跑用 setup 声明的回测器或
+`BarBacktester()`，检测器的 `backtester` 与之不同 → `benchmark_unavailable` INCONCLUSIVE。TEST ONLY 夹具 Profile 使用
+`buy_and_hold_equal_weight` + `inverse_control_reported=True`；玩具检测器不运行验证器，其 Profile 保留原基准块（报告哈希与
+控制台夹具不变）。测试：`test_gate_calibration.py`、`test_gate_calibration_multi.py`。
 
 仍未完成：生成器过于简单（高斯噪声 + 线性自相关），测试的种子数与市场长度只够冒烟。
