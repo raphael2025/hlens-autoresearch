@@ -44,7 +44,19 @@ repairs — on a tampered, reordered or partial log line, a broken chain, a reco
 longer matches the log (lines dropped from the end, or a different log), an offset that disagrees
 with the log and acked set, an unknown file in the bus directories, or a non-empty directory that is
 not a bus. Honest boundary: whole lines dropped from the end of a topic log **after** the last
-consumer state was written are not detectable (no anchor saw them).
+consumer state was written are not detectable (no anchor saw them) — unless an external anchor is
+used.
+
+External anchor (optional, ``anchor=<path>``; 2026-09-26): a hash-chained journal file **outside**
+``root``. After every ``publish`` the topic's new length and head hash are appended to it as one
+``topic_head`` line (fsync'd). Opening the bus verifies every anchored topic: its log must still
+have at least the anchored length and the entry at that length must carry the anchored head hash;
+a topic the anchor knows but whose log is gone is refused too — all ``BusCorrupted``. This detects
+lines dropped from the end of *any* topic, including ones no consumer has acknowledged. A log
+longer than its anchor is the one legitimate crash window (the message was fsync'd, the anchor line
+was not) and is re-anchored on opening. The anchor file itself is append-only and hash-chained;
+removing lines from *its* end together with the matching log lines stays undetectable — keep it
+on storage the bus directory's writer cannot roll back.
 
 Concurrency: one writer. The constructor takes a non-blocking exclusive ``fcntl.flock`` on
 ``root/.lock`` and raises ``BusLocked`` if another ``FileEventBus`` (in this or any process) holds
@@ -80,6 +92,7 @@ __all__ = ["BUS_FORMAT", "BUS_SCHEMA_VERSION", "BusCorrupted", "BusLocked", "Fil
 BUS_FORMAT: Final = "hlens.file_event_bus"
 BUS_SCHEMA_VERSION: Final = "1.0.0"
 MESSAGE_RECORD: Final = "bus_message"
+ANCHOR_RECORD: Final = "topic_head"
 
 _MARKER: Final = "bus.json"
 _LOCK: Final = ".lock"
@@ -131,17 +144,24 @@ class _Consumer:
 class FileEventBus:
     """``EventBusAdapter`` over a directory; see the module docstring for the disk contract."""
 
-    def __init__(self, root: Path) -> None:
+    def __init__(self, root: Path, *, anchor: Path | None = None) -> None:
         self._root = Path(root)
         self._root.mkdir(parents=True, exist_ok=True)
+        if anchor is not None:
+            resolved_root, resolved_anchor = self._root.resolve(), Path(anchor).resolve()
+            if resolved_anchor.is_relative_to(resolved_root):
+                raise ValueError("the bus anchor must live outside the bus directory")
         self._lock_fd: int | None = self._acquire_lock()
         try:
             self._logs: dict[str, AppendOnlyJournal] = {}
             self._messages: dict[str, list[BusMessage]] = {}
             self._consumers: dict[tuple[str, str], _Consumer] = {}
+            self._anchor: AppendOnlyJournal | None = None
             self._open_layout()
             self._load_topics()
             self._load_consumers()
+            if anchor is not None:
+                self._open_anchor(Path(anchor))
         except BaseException:
             self.close()
             raise
@@ -286,6 +306,55 @@ class FileEventBus:
             raise BusCorrupted(f"{path}: offset disagrees with the log and the acked set")
         return consumer, topic, _Consumer(acked_set, offset)
 
+    def _open_anchor(self, path: Path) -> None:
+        try:
+            anchor = AppendOnlyJournal(path)
+        except JournalCorrupted as exc:
+            raise BusCorrupted(f"bus anchor: {exc}") from exc
+        anchored: dict[str, tuple[int, str]] = {}
+        for entry in anchor.entries:
+            payload = entry.payload
+            if entry.type != ANCHOR_RECORD or set(payload) != {"topic", "length", "head_hash"}:
+                raise BusCorrupted(f"{path}:{entry.seq} is not a topic head")
+            topic, length, head = payload["topic"], payload["length"], payload["head_hash"]
+            if (
+                not isinstance(topic, str)
+                or not _TOPIC_RE.match(topic)
+                or not isinstance(length, int)
+                or isinstance(length, bool)
+                or length < 1
+                or not isinstance(head, str)
+            ):
+                raise BusCorrupted(f"{path}:{entry.seq} is not a valid topic head")
+            previous = anchored.get(topic)
+            if previous is not None and length <= previous[0]:
+                raise BusCorrupted(f"{path}:{entry.seq} moves topic {topic!r} backwards")
+            anchored[topic] = (length, head)
+        for topic, (length, head) in sorted(anchored.items()):
+            log = self._logs.get(topic)
+            have = len(log) if log is not None else 0
+            if log is None or have < length:
+                raise BusCorrupted(
+                    f"topic {topic!r} was anchored at {length} messages, the log now has {have} "
+                    "(lines were dropped from its end)"
+                )
+            if log.entry(length - 1).hash != head:
+                raise BusCorrupted(f"topic {topic!r} is not the log the anchor saw")
+        self._anchor = anchor
+        for topic, log in sorted(self._logs.items()):  # re-anchor the legitimate crash window
+            if len(log) and anchored.get(topic, (0, ""))[0] < len(log):
+                self._publish_anchor(topic, log)
+
+    def _publish_anchor(self, topic: str, log: AppendOnlyJournal) -> None:
+        if self._anchor is None:
+            return
+        try:
+            self._anchor.append(
+                ANCHOR_RECORD, {"topic": topic, "length": len(log), "head_hash": log.head_hash}
+            )
+        except JournalCorrupted as exc:
+            raise BusCorrupted(f"bus anchor: {exc}") from exc
+
     # -- EventBusAdapter ---------------------------------------------------------------------
 
     def publish(self, message: BusMessage) -> None:
@@ -302,6 +371,7 @@ class FileEventBus:
             raise BusCorrupted(f"topic {message.topic!r}: {exc}") from exc
         self._logs[message.topic] = log
         self._messages.setdefault(message.topic, []).append(stored)
+        self._publish_anchor(message.topic, log)
 
     def poll(self, consumer: str, topic: str, limit: int) -> tuple[BusMessage, ...]:
         if limit < 1:

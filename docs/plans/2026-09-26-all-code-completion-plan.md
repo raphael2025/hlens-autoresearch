@@ -174,3 +174,12 @@
   产出 `status` 恒为 `PENDING_HUMAN_APPROVAL` 的 `ReplacementProposal`；`ProposalLedger` 哈希链只追加、无批准方法。限制：`require_new_version` 拒绝同版本号候选（保守，未改）；未接入循环。
 - 实际运行：`uv run pytest -q tests/research/evolution` → 34 passed；此前同批 `tests/research/evolution tests/research/loop/test_loop_e2e.py` → 56 passed + 1 failed（修复前的测试夹具错误，已修，evolution 目录复跑 34 passed）；
   `ruff check` → All checks passed；`ruff format --check` → 9 files already formatted；`mypy research/evolution tests/research/evolution` → no issues in 8 files。
+
+**B4 — Phase 11：文件事件总线的外部锚点（任意主题的尾部删除可发现）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 文件：`infrastructure/event_bus/file.py`、`infrastructure/README.md`；测试 `tests/infrastructure/event_bus/test_file_event_bus_anchor.py`（新，16 项，含锚定总线通过同一 bus contract suite）。
+  未触及 `core/`、契约、Schema、ADR；不给 `anchor` 时磁盘布局与行为不变。
+- 关闭 backlog C「P11 仍未做：最后一次写消费者状态之后追加、又被尾部删除的消息不可发现（`research_loop.round` 之外的主题）」——在给出锚点时。
+  限制：锚点与日志一起被尾删仍不可发现；持久循环组合根尚未自动给总线配锚点（跨阶段接线，后续）。
+- 实际运行：`uv run pytest -q tests/infrastructure/event_bus` → 43 passed；`ruff check` → All checks passed；`mypy infrastructure/event_bus tests/infrastructure/event_bus` → no issues in 6 files。
+
