@@ -258,3 +258,19 @@
 - 实际运行：`pytest -m "not postgres" tests/infrastructure/content tests/plugins tests/infrastructure/migration tests/infrastructure/event_bus tests/test_architecture_boundaries.py tests/test_feature_contracts.py tests/test_llm_call_bindings.py tests/test_docs_consistency.py tests/research/hypotheses`
   → 487 passed；`pytest -m "not postgres" tests/research/loop tests/research/hypotheses tests/apps/test_research_loop_durable.py tests/test_architecture_boundaries.py` → 154 passed, 1 warning (312 s)；
   `tests/research/loop/test_llm_content.py` → 5 passed；ruff check → 通过；mypy（content / migration / plugins.llm + 测试 15 files；research/loop + 新测试 12 files）→ no issues。
+
+**B12 — reports 子代理：三个新报告种类端到端**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 `1bd1dd3`）
+
+- `research/reports/state_diagnostics.py`（`write_state_diagnostics`，写前 `from_payload(expected_hash=)` 往返校验）、`event_statistics.py`（`write_event_statistics`，重算哈希不符即拒）、`router_stop`；
+  `apps/api/store.py` 的 `ReportKind` 新增 `ROUTER_STOP` / `STATE_DIAGNOSTICS` / `EVENT_STATISTICS`（仍只读，无新端点）；`openapi.json` / `api.d.ts` 重生成；控制台新页 `RouterStops` / `StateDiagnostics` / `EventStatistics`
+  （复用 `ReportBrowser` / `useApi` / `States`，`REPORT_KINDS` 以 `ReportKind` 为键，API 新增种类而控制台未列出时 tsc 失败）；夹具由真实 writer 生成并有逐字节比对测试（`tests/research/reports/test_console_fixture_writers.py`）。
+- 限制：未在浏览器对真实后端手工验证；API 不核对文件名与载荷哈希一致（既有种类亦然）；event_statistics 夹具用测试中的替身运行哈希；ADR-0048 仍写"四种"（ADR 未改）。
+
+**B13 — calibration 子代理：Phase 9 校准可选运行 G5**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 `dd195a2`）
+
+- `GateCalibrationSetup.sealed_oos_g5`（默认 False；关闭时 3 个既有报告哈希固定不变）；开启时只有 G0–G4 PASS 的运行开封本族并认领唯一评估后才释放封存 bar（`SealedRelease`），
+  `StrategyValidatorDetector.detect_sealed` 仿循环在研究 + 已释放封存 bar 上重跑并调用 `run_sealed_oos`；报告逐组 G5 通过 / 不确定 / 失败率与端到端 G0–G5 假阳性率 / 检出力（Clopper-Pearson）；
+  提前结束 → `consumed_without_result`，`detect_sealed` 异常 → 无门 INCONCLUSIVE + `detector_error`；检测器配置错误仍抛出；没有 `detect_sealed` 的检测器在开启时被拒。仍只是证据、不选 Profile。
+- 限制：每次运行是独立的模拟族（G5 上下文以 harness 族覆盖元数据族 id，已文档化）；种子数少、市场 3 天，只够冒烟。
+- 两个通道合入后本分支实际运行：`pytest -m "not postgres" tests/apps tests/research/reports tests/research/synthetic_lab tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → 290 passed, 1 warning；
+  `ruff check .` → All checks passed；`ruff format --check .` → 634 files already formatted；mypy（apps / research.reports / research.synthetic_lab + 测试，59 files）→ no issues；`npm test` → 36 / 36 pass；`npm run build` → ✓ built。
