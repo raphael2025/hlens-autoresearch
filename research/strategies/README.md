@@ -9,6 +9,7 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 | 模块 | 内容 |
 |---|---|
 | `time_series_momentum.py` | `TimeSeriesMomentumProvider`（StrategyProvider）；`tsmom_bars@1.0.0`、`tsmom_bars_vol_scaled@1.0.0`；lineage 为知识库条目 |
+| `cross_sectional_momentum.py` | `CrossSectionalMomentumProvider`（StrategyProvider）；`xsmom_bars@1.0.0`；lineage 为 `factor_crypto_market_size_momentum@1.0.0` |
 | `volatility_target.py` | `VolatilityTargetRiskProvider`（RiskProvider）；`vol_target_bars@1.0.0` 与其声明的参数空间 |
 | `signals.py` | 从 `PriceBar` 派生 `bar_log_return` / `bar_realized_vol_<n>` 信号观察（探索用；生产路径走 FeatureProvider runner） |
 | `pipeline.py` | 策略 → 风控 → 回测 → 验证 → Failure Registry；`CandidateTrialRunner`（任一声明参数点重跑，可延迟 k bar、平移决策网格、限定标的） |
@@ -40,3 +41,14 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 **每个标的一份请求**，标签的 `event_key`（`<标的>|<时间>`）自带标的；合并与判定见 `research/validation/README.md`「多标的验证」。每个试验仍只计一次：
 逐标的证据复用同一次重跑、不新增 `TrialRunner` 调用，G3 调整用不变的 `family_trial_count`。G4 跨资产检查对每个声明标的使用它自己的单独重跑，
 多标的基准回测永不被当作某一个标的的收益。
+
+**截面动量**（Phase 5，2026-09-26；状态 **CODE_COMPLETE / DEBUG_PENDING / NOT_VALIDATED**；未改 core / 契约 / Schema）：`xsmom_bars@1.0.0`
+在请求的标的集合上按 `lookback` 根 `bar_log_return` 之和（尾随对数收益）降序排名（同值按标的名升序），做多前 `k`、做空后 `k`
+（`long_only` 时只做多），`k = min(top_n, 可计算标的数 // 2)`；绝对权重合计为声明的 `gross_exposure`；不足两个可计算标的或无截面离散时全部空仓。
+参数空间 `lookback ∈ {60, 240, 1440}`、`long_only ∈ {False, True}`、`top_n ∈ {1, 2}`、`gross_exposure ∈ {1}`（int：规格不存 Decimal、请求拒收数值文本），
+试验数 12；这些是策略参数，不是验证阈值。库条目 `hypothesis_family_id = "xsmom_bars"`（独立于 `tsmom_bars`）。它至少需要两个标的，
+端到端测试走多标的验证路径（`ValidatorSetup.instruments`）。注意：G4 跨资产检查对每个标的单独重跑，截面策略在单标的上按定义空仓，
+因此其跨资产证据对此类策略结构上无信息量（记录为验证设计待办，未改任何门）。
+
+**未实现**：`state_cross_exchange_price_deviations`（Makarov & Schoar 2020，跨交易所价差）需要多交易所数据，超出已批准的数据范围
+（ADR-0022：仅 Binance），因此不在本库实现；数据范围扩大需先有 ADR。

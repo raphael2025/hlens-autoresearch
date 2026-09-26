@@ -1,6 +1,7 @@
 """Phase 5 research strategy library (ADR-0038). Research code — never production (H5, ADR-0005).
 
 - ``time_series_momentum``: ``TimeSeriesMomentumProvider`` (StrategyProvider) and its specs;
+- ``cross_sectional_momentum``: ``CrossSectionalMomentumProvider`` and ``xsmom_bars``;
 - ``volatility_target``: ``VolatilityTargetRiskProvider`` (RiskProvider) and ``vol_target_bars``;
 - ``signals``: bar-derived signal observations for exploration;
 - ``pipeline``: strategy → risk → backtest → validation hook → Failure Registry;

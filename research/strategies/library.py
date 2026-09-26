@@ -9,13 +9,18 @@ frozen Profile numbers. Nothing here is promoted;
 
 from __future__ import annotations
 
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
 
 from core.contracts.knowledge import KnowledgeProvider, KnowledgeQuery
+from core.contracts.strategy import StrategyProvider
 from core.domain.base import Kind, Ref
 from core.domain.research import KnowledgeItem
 from core.domain.specs import RiskPolicy, StrategySpec
+from research.strategies.cross_sectional_momentum import (
+    CrossSectionalMomentumProvider,
+    xsmom_spec,
+)
 from research.strategies.pipeline import StrategyCandidate
 from research.strategies.time_series_momentum import (
     TimeSeriesMomentumProvider,
@@ -42,6 +47,8 @@ class LibraryEntry:
     family: str
     hypothesis_family_id: str
     risk_policy: RiskPolicy | None = None
+    #: Builds the entry's ``StrategyProvider`` from its spec (TSMOM unless the entry says so).
+    provider: Callable[[Sequence[StrategySpec]], StrategyProvider] = TimeSeriesMomentumProvider
 
     @property
     def sources(self) -> tuple[Ref, ...]:
@@ -59,7 +66,7 @@ class LibraryEntry:
         )
         return StrategyCandidate(
             spec=self.spec,
-            strategy=TimeSeriesMomentumProvider((self.spec,)),
+            strategy=self.provider((self.spec,)),
             hypothesis_family_id=self.hypothesis_family_id,
             risk_policy=self.risk_policy,
             risk=risk,
@@ -78,6 +85,12 @@ def library_entries() -> tuple[LibraryEntry, ...]:
             family="trend",
             hypothesis_family_id="tsmom_bars",
             risk_policy=vol_target_policy(),
+        ),
+        LibraryEntry(
+            spec=xsmom_spec(),
+            family="cross_sectional_momentum",
+            hypothesis_family_id="xsmom_bars",
+            provider=CrossSectionalMomentumProvider,
         ),
     )
 
