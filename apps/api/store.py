@@ -329,6 +329,9 @@ class ReportStore:
     def _read(self, kind: ReportKind, path: Path) -> ReportEnvelope:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
+            # inside the guard: a file removed / made unreadable between the directory scan (or the
+            # read) and this stat is a malformed entry of the listing, never an unhandled 500
+            modified = path.stat().st_mtime
         except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
             raise ReportMalformed(path, "unreadable or not well-formed JSON") from exc
         if not isinstance(payload, dict):
@@ -336,7 +339,7 @@ class ReportStore:
         check = _CHECKS.get(kind)
         if check is not None:
             check(path, payload)
-        created = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
+        created = datetime.fromtimestamp(modified, tz=UTC)
         return ReportEnvelope(
             kind=kind,
             id=path.stem,

@@ -2,7 +2,7 @@
   "components": {
     "schemas": {
       "ApiError": {
-        "description": "The error body of every status this API raises itself (400/404/422/500/502/503).",
+        "description": "The error body of every status this API answers itself (400/404/422/500/502/503).\n\nIncludes the catch-all 500 of an unexpected exception, whose ``detail`` is always\n\"internal server error\" (no message, path or traceback).",
         "properties": {
           "detail": {
             "title": "Detail",
@@ -603,6 +603,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           }
         },
         "summary": "Contracts"
@@ -621,6 +631,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           }
         },
         "summary": "Health"
@@ -777,6 +797,16 @@
             },
             "description": "Validation Error"
           },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
           "502": {
             "content": {
               "application/json": {
@@ -818,6 +848,16 @@
               }
             },
             "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           }
         },
         "summary": "Transitions"
@@ -856,6 +896,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           }
         },
         "summary": "List Reports"
@@ -930,6 +980,16 @@
               }
             },
             "description": "The report file is malformed or fails its kind's contract / identity check (ApiError), or the request is invalid (HTTPValidationError)"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
           }
         },
         "summary": "Get Report"

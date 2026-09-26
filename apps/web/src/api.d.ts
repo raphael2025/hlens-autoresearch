@@ -146,7 +146,10 @@ export interface components {
     schemas: {
         /**
          * ApiError
-         * @description The error body of every status this API raises itself (400/404/422/500/502/503).
+         * @description The error body of every status this API answers itself (400/404/422/500/502/503).
+         *
+         *     Includes the catch-all 500 of an unexpected exception, whose ``detail`` is always
+         *     "internal server error" (no message, path or traceback).
          */
         ApiError: {
             /** Detail */
@@ -457,6 +460,15 @@ export interface operations {
                     "application/json": components["schemas"]["ContractNames"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
         };
     };
     health_health_get: {
@@ -475,6 +487,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["Health"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
                 };
             };
         };
@@ -615,6 +636,15 @@ export interface operations {
                     "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
             /** @description Bad Gateway */
             502: {
                 headers: {
@@ -653,6 +683,15 @@ export interface operations {
                     "application/json": components["schemas"]["LifecycleTransition"][];
                 };
             };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
         };
     };
     list_reports_reports__kind__get: {
@@ -682,6 +721,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
                 };
             };
         };
@@ -732,6 +780,15 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ApiError"] | components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
                 };
             };
         };
