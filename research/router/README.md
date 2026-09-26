@@ -6,6 +6,7 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
 | 模块 | 内容 |
 |---|---|
 | `router.py` | `StrategyRouter`：只路由 ACTIVE / PRODUCTION_CANDIDATE 策略；t 时刻权重来自 **t 时刻已知**的状态查表（未知走回退）；每次权重变化计换手 `Σ\|Δw\|` 与切换成本；`RouterSpec.spec_hash()` |
+| `evidence.py` | P10-ELIG 证据模式：逐个被路由策略核对其真实 `ValidationReport`（哈希、subject、PASS、密封 OOS G5）；`report_store_resolver(root)` 读取报告库文件 |
 | `paper.py` | W1 接线：`paper_run` —— 路由权重 × 各策略的 P5 目标仓位 → 组合目标仓位 → 注入的 `BacktestProvider` → 扣除切换成本后的路由器**自身** `BacktestResult` |
 
 ## `paper_run` 语义
@@ -35,5 +36,25 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
 - **验证报告绑定（可选）**：`paper_run(..., validation_reports={策略 ref: 报告内容哈希})`；给出时每个可被路由的策略必须恰有一份（缺 / 多即拒绝），
   映射记录在 `RouterPaperRun.validation_reports` 并计入 `run_hash`；本模块只记录引用，不打开、不判定报告。
 
-仍未做：生命周期映射本身不进入 `run_hash`（改变既有哈希；资格绑定到验证证据的正式方案见执行计划 P10-ELIG）；
-`research/reports/router.py` 的报告载荷尚未包含 `validation_reports` / `RouterStop`（该文件不在本通道范围）。
+## 资格绑定验证证据（P10-ELIG，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+由 Claude 在 Raphael 2026-09-26 自主决定授权（autonomous-decision instruction）下设计与实现；无 core / 契约 / Schema 变更，无阈值，路由器仍只做纸面运行。
+
+- **两种模式**：默认**信任模式**照旧只看调用方的生命周期映射，所有既有哈希（`run_hash`、`stop_hash`、报告载荷）逐字节不变
+  （`tests/research/router/test_router_eligibility.py` 用变更前代码算出的哈希钉住）。
+  **证据模式**：`StrategyRouter(spec, lifecycle, evidence=EligibilityEvidence(report_hashes=..., reports=...))`，
+  `reports` 为「策略 ref → `ValidationReport` 对象」或「报告哈希 → 报告」的解析器；`report_store_resolver(root)` 读取
+  `<root>/validation_report/<hash>.json`（`research/reports/validation.py` 写入的布局；不 import `apps`）。
+- **逐策略检查**（规格可路由的每个策略，按 ref 排序；第一个失败即拒绝原因）：有声明哈希（`report_hash_missing`）→ 找到报告（`report_not_found`）→
+  是合法 `ValidationReport`（`report_invalid`）→ 内容哈希等于声明哈希（`report_hash_mismatch`）→ `subject` 等于被路由 ref（`subject_mismatch`）→
+  判定 PASS（`verdict_not_pass`）→ 至少一个 G5 密封 OOS 门（`sealed_oos_not_evaluated`，复用 `research.validation.report.promotion_blocked_reason`）→
+  所有 G5 门 PASS（`sealed_oos_not_passed`，防御性）。
+- **拒绝**：任一失败抛 `RouterEligibilityRefused`（`RouterStopped` 子类，`reason = eligibility_not_evidenced`，`refusal` / `refusals` 给出具体原因，
+  `eligibility` 含全部检查），绝不静默路由。`paper_run_or_stop(..., evidence=...)` 把它记录为 `RouterStop`（`eligibility` 计入 `stop_hash`）。
+  输入格式错误（多余的哈希 / 报告、非 sha256、非 `EligibilityEvidence`）与路由到生命周期未验证策略仍是普通 `RouterError`。
+- **记录**：仅证据模式下，`RouterPaperRun.eligibility`（每策略：声明的生命周期、报告哈希、subject、判定、G5 门）与验证过的
+  `validation_reports` 计入 `run_hash`；另给出的 `validation_reports` 必须与证据一致。报告载荷（`research/reports/router.py`）仅在证据模式下附加 `eligibility` 键。
+- **边界**：PASS 且含 G5 通过的报告只证明可路由状态的研究层前提（样本内 + 密封 OOS 通过）；PRODUCTION_CANDIDATE / ACTIVE 所需的人工 / Control Plane 审查仍是调用方声明。
+  **P10-ELIG 在研究层关闭；生产资格仍归 Control Plane。**
+
+仍未做：信任模式下生命周期映射本身不进入 `run_hash`（改变既有哈希）；web 控制台对 `eligibility_not_evidenced` 原因与 `eligibility` 键只按原样显示（`apps/web` 不在本通道范围）。

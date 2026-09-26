@@ -42,17 +42,24 @@ Code completion (2026-09-26, CODE_COMPLETE / DEBUG_PENDING):
   can route must have exactly one report (missing or extra entries are refused), and the mapping
   is recorded in ``RouterPaperRun.validation_reports`` and bound into ``run_hash``. When omitted
   (``None``, the default) nothing is recorded and ``run_hash`` is byte-identical to before. The
-  hashes are recorded evidence references; this module does not open or judge the reports.
+  hashes are recorded evidence references; in trust mode nothing opens or judges the reports.
 - **Explicit stop.** ``paper_run_or_stop(spec, lifecycle, ...)`` builds the router and, when it
   is ``RouterStopped`` (no validated candidate, or every route flat; ``router.py``), returns a
   ``RouterStop`` record — reason, spec hash, lifecycle snapshot, input hashes and its own
   ``stop_hash`` — instead of a flat run that could be mistaken for a result. Nothing is simulated
   for a stopped router. Otherwise it is exactly ``paper_run``.
+- **Eligibility evidence (optional, P10-ELIG).** A router built in evidence mode
+  (``StrategyRouter(..., evidence=...)``, ``evidence.py``) has verified every routed strategy's
+  ``ValidationReport``. ``paper_run`` then records ``RouterPaperRun.eligibility`` (per strategy:
+  claimed lifecycle, report hash, subject, verdict, G5 gates) and the verified report hashes as
+  ``validation_reports`` (a supplied ``validation_reports`` must equal them), both bound into
+  ``run_hash``. ``paper_run_or_stop(..., evidence=...)`` records an evidence refusal as a
+  ``RouterStop`` with reason ``eligibility_not_evidenced`` and every check (``eligibility``,
+  bound into ``stop_hash``). Trust mode records nothing new: its hashes are unchanged.
 """
 
 from __future__ import annotations
 
-import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -71,8 +78,9 @@ from core.contracts.strategy import (
     StrategyResult,
     TargetPosition,
 )
-from core.domain.base import SHA256_PATTERN, Ref, content_hash
+from core.domain.base import Ref, content_hash
 from core.lifecycle.strategy import LifecycleState
+from research.router.evidence import EligibilityCheck, EligibilityEvidence
 from research.router.router import (
     RouterError,
     RouterSpec,
@@ -80,6 +88,7 @@ from research.router.router import (
     RouterStopReason,
     RoutingDecision,
     StrategyRouter,
+    normalize_report_hashes,
 )
 
 __all__ = [
@@ -107,7 +116,6 @@ ROUTER_PAPER_BACKTEST: Final = BacktestProviderDescriptor(
     execution_model="next_bar_open",
 )
 _CONTEXT: Final = Context(prec=50, rounding=ROUND_HALF_EVEN)
-_SHA256: Final = re.compile(SHA256_PATTERN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -141,6 +149,9 @@ class RouterPaperRun:
     #: strategy ref string -> validation report content hash, when the caller supplied them
     #: (``None``: not supplied, not recorded, not hashed).
     validation_reports: Mapping[str, str] | None = None
+    #: Evidence mode only: the verified eligibility check of every routable strategy
+    #: (``None``: trust mode, not recorded, not hashed).
+    eligibility: tuple[EligibilityCheck, ...] | None = None
 
     @property
     def total_switching_cost(self) -> Decimal:
@@ -159,6 +170,7 @@ class RouterPaperRun:
             charges=self.charges,
             result_hash=self.result.result_hash,
             validation_reports=self.validation_reports,
+            eligibility=self.eligibility,
         )
 
     def verify(self) -> None:
@@ -184,6 +196,9 @@ class RouterStop:
     strategy_result_hashes: Mapping[str, str]
     validation_reports: Mapping[str, str] | None
     stop_hash: str
+    #: Evidence mode only: every eligibility check that was run (empty: the router stopped
+    #: before verifying evidence); ``None`` in trust mode (not recorded, not hashed).
+    eligibility: tuple[EligibilityCheck, ...] | None = None
 
 
 def _positions_by_strategy(
@@ -302,6 +317,7 @@ def _run_hash(
     charges: Sequence[SwitchingCharge],
     result_hash: str,
     validation_reports: Mapping[str, str] | None,
+    eligibility: Sequence[EligibilityCheck] | None = None,
 ) -> str:
     payload: dict[str, object] = {
         "router": router,
@@ -334,24 +350,9 @@ def _run_hash(
     }
     if validation_reports is not None:  # no key when not supplied: earlier hashes are unchanged
         payload["validation_reports"] = dict(validation_reports)
+    if eligibility is not None:  # evidence mode only: trust-mode hashes are unchanged
+        payload["eligibility"] = [check.to_dict() for check in eligibility]
     return content_hash(payload)
-
-
-def _report_hashes(reports: Mapping[Ref, str] | Mapping[str, str]) -> dict[str, str]:
-    """Normalize ``strategy ref -> validation report hash``; refuse ill-formed entries."""
-    if not isinstance(reports, Mapping):
-        raise RouterError("validation_reports must map strategy refs to report hashes")
-    out: dict[str, str] = {}
-    for key, value in reports.items():
-        name = str(key) if isinstance(key, Ref) else key
-        if not isinstance(name, str) or not name:
-            raise RouterError(f"validation_reports: {key!r} is not a strategy ref")
-        if name in out:
-            raise RouterError(f"validation_reports: {name} is given twice")
-        if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
-            raise RouterError(f"validation_reports: {name} needs a sha256 report hash")
-        out[name] = value
-    return dict(sorted(out.items()))
 
 
 def _check_reports(router: StrategyRouter, reports: Mapping[str, str]) -> None:
@@ -379,7 +380,12 @@ def paper_run(
     if not isinstance(router, StrategyRouter) or not isinstance(states, StateResult):
         raise RouterError("paper_run needs a StrategyRouter and a StateResult")
     positions = _positions_by_strategy(router, strategies)
-    reports = None if validation_reports is None else _report_hashes(validation_reports)
+    reports = None if validation_reports is None else normalize_report_hashes(validation_reports)
+    if router.report_hashes is not None:  # evidence mode: record the verified hashes
+        if reports is None:
+            reports = dict(router.report_hashes)
+        elif reports != router.report_hashes:
+            raise RouterError("validation_reports differ from the router's verified evidence")
     if reports is not None:
         _check_reports(router, reports)
     decisions = router.route([(value.evaluation_time, value.state) for value in states.values])
@@ -426,8 +432,10 @@ def paper_run(
             charges=charges,
             result_hash=result.result_hash,
             validation_reports=reports,
+            eligibility=router.eligibility,
         ),
         validation_reports=reports,
+        eligibility=router.eligibility,
     )
 
 
@@ -442,14 +450,23 @@ def paper_run_or_stop(
     initial_equity: Decimal,
     backtester: BacktestProvider,
     validation_reports: Mapping[Ref, str] | Mapping[str, str] | None = None,
+    evidence: EligibilityEvidence | None = None,
 ) -> RouterPaperRun | RouterStop:
-    """``paper_run`` of ``StrategyRouter(spec, lifecycle)``, or the ``RouterStop`` it records.
+    """``paper_run`` of ``StrategyRouter(spec, lifecycle, evidence=evidence)``, or its stop.
 
-    Only ``RouterStopped`` becomes a record; any other ``RouterError`` (an unvalidated strategy,
-    an ill-formed table or input) is raised as before.
+    Only ``RouterStopped`` (including an evidence refusal, ``RouterEligibilityRefused``) becomes
+    a record; any other ``RouterError`` (an unvalidated strategy, an ill-formed table or input)
+    is raised as before. In evidence mode a supplied ``validation_reports`` must equal
+    ``evidence.report_hashes``; the stop records the evidence hashes.
     """
+    if isinstance(evidence, EligibilityEvidence):
+        claimed = normalize_report_hashes(evidence.report_hashes)
+        supplied = validation_reports
+        if supplied is not None and normalize_report_hashes(supplied) != claimed:
+            raise RouterError("validation_reports differ from evidence.report_hashes")
+        validation_reports = claimed
     try:
-        router = StrategyRouter(spec, lifecycle)
+        router = StrategyRouter(spec, lifecycle, evidence=evidence)
     except RouterStopped as stopped:
         return _stop_record(stopped, lifecycle, states, strategies, validation_reports)
     return paper_run(
@@ -476,10 +493,10 @@ def _stop_record(
     for key, answer in strategies.items():
         if not isinstance(answer, StrategyResult):
             raise RouterError(f"{key}: expected a StrategyResult") from stopped
-    reports = None if validation_reports is None else _report_hashes(validation_reports)
+    reports = None if validation_reports is None else normalize_report_hashes(validation_reports)
     snapshot = {str(ref): LifecycleState(state).value for ref, state in lifecycle.items()}
     strategy_hashes = {str(ref): answer.result_hash for ref, answer in strategies.items()}
-    record = {
+    record: dict[str, object] = {
         "kind": "router_stop",
         "router": stopped.router,
         "router_spec_hash": stopped.spec_hash,
@@ -490,6 +507,8 @@ def _stop_record(
         "strategy_result_hashes": strategy_hashes,
         "validation_reports": reports,
     }
+    if stopped.eligibility is not None:  # evidence mode only: trust-mode stop hashes unchanged
+        record["eligibility"] = [check.to_dict() for check in stopped.eligibility]
     return RouterStop(
         router=stopped.router,
         router_spec_hash=stopped.spec_hash,
@@ -500,4 +519,5 @@ def _stop_record(
         strategy_result_hashes=dict(sorted(strategy_hashes.items())),
         validation_reports=reports,
         stop_hash=content_hash(record),
+        eligibility=stopped.eligibility,
     )

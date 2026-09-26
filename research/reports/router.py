@@ -2,6 +2,10 @@
 
 A ``RouterStop`` (the router refused to run: no validated candidate, or every route flat) is its
 own report kind, ``router_stop``, never a ``router_paper_run`` with missing fields.
+
+Evidence mode (P10-ELIG, ``research/router/evidence.py``): a run or stop made with eligibility
+evidence carries an additive ``eligibility`` key (the per-strategy checks bound into its hash);
+trust-mode payloads are unchanged.
 """
 
 from __future__ import annotations
@@ -37,6 +41,8 @@ def _payload(run: RouterPaperRun) -> dict[str, Any]:
     payload = _run_payload(run)
     if run.validation_reports is not None:  # only when supplied: earlier payloads are unchanged
         payload["validation_reports"] = dict(sorted(run.validation_reports.items()))
+    if run.eligibility is not None:  # evidence mode only (P10-ELIG): additive key
+        payload["eligibility"] = [check.to_dict() for check in run.eligibility]
     return payload
 
 
@@ -96,6 +102,13 @@ def write_router_paper_run(root: Path, run: RouterPaperRun) -> WrittenReport:
 
 
 def _stop_payload(stop: RouterStop) -> dict[str, Any]:
+    payload = _stop_base_payload(stop)
+    if stop.eligibility is not None:  # evidence mode only (P10-ELIG): additive key
+        payload["eligibility"] = [check.to_dict() for check in stop.eligibility]
+    return payload
+
+
+def _stop_base_payload(stop: RouterStop) -> dict[str, Any]:
     return {
         "router": stop.router,
         "router_spec_hash": stop.router_spec_hash,

@@ -15,6 +15,13 @@
   strategy. A table whose *some* states (or the fallback) are flat is legitimate per-state
   routing and is kept, as long as at least one entry routes positive weight to a validated
   strategy.
+- Evidence mode (P10-ELIG, code completion 2026-09-26; ``evidence.py``): with
+  ``StrategyRouter(spec, lifecycle, evidence=EligibilityEvidence(...))`` every strategy the spec
+  can route must also be backed by its actual ``ValidationReport`` (claimed hash = content hash,
+  subject = the routed ref, verdict PASS, a passed G5 sealed-OOS gate). Any refusal raises
+  ``RouterEligibilityRefused`` (a ``RouterStopped``, reason ``eligibility_not_evidenced``, with the
+  specific per-strategy ``refusal``); the verified checks are ``StrategyRouter.eligibility``.
+  Without ``evidence`` (trust mode) nothing changes.
 
 ``paper.py`` (W1 wiring) turns the routing weights into combined P5 target positions and runs them
 through a ``BacktestProvider``, charging the switching cost on the simulated book.
@@ -22,38 +29,60 @@ through a ``BacktestProvider``, charging the switching cost on the simulated boo
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
-from typing import Literal
+from typing import Final, Literal
 
-from core.domain.base import Ref, content_hash
+from core.domain.base import SHA256_PATTERN, Ref, content_hash
+from core.domain.research import ValidationReport
 from core.lifecycle.strategy import LifecycleState
+from research.router.evidence import (
+    EligibilityCheck,
+    EligibilityEvidence,
+    EligibilityRefusal,
+    ReportResolver,
+    check_report,
+)
 
 __all__ = [
+    "RouterEligibilityRefused",
     "RouterError",
     "RouterSpec",
     "RouterStopReason",
     "RouterStopped",
     "RoutingDecision",
     "StrategyRouter",
+    "normalize_report_hashes",
 ]
 
 ROUTABLE = frozenset({LifecycleState.ACTIVE, LifecycleState.PRODUCTION_CANDIDATE})
+_SHA256: Final = re.compile(SHA256_PATTERN)
 
 
 class RouterError(ValueError):
     """The router would route to an unvalidated strategy or an ill-formed table."""
 
 
-type RouterStopReason = Literal["no_validated_candidate", "all_routes_flat"]
+type RouterStopReason = Literal[
+    "no_validated_candidate", "all_routes_flat", "eligibility_not_evidenced"
+]
 
 
 class RouterStopped(RouterError):
     """The router has nothing to route: an explicit stop, never a silent flat router."""
 
-    def __init__(self, reason: RouterStopReason, router: str, spec_hash: str, detail: str) -> None:
+    def __init__(
+        self,
+        reason: RouterStopReason,
+        router: str,
+        spec_hash: str,
+        detail: str,
+        *,
+        eligibility: tuple[EligibilityCheck, ...] | None = None,
+    ) -> None:
         super().__init__(f"router {router} stopped ({reason}): {detail}")
         self.reason: RouterStopReason = reason
         #: ``name@version`` of the stopped router spec.
@@ -61,6 +90,28 @@ class RouterStopped(RouterError):
         #: ``RouterSpec.spec_hash()`` of the stopped spec.
         self.spec_hash = spec_hash
         self.detail = detail
+        #: Evidence mode only (``None`` in trust mode): every eligibility check that was run —
+        #: empty when the router stopped before verifying evidence.
+        self.eligibility = eligibility
+
+
+class RouterEligibilityRefused(RouterStopped):
+    """Evidence mode: a routed strategy's claimed eligibility is not backed by its report."""
+
+    def __init__(self, router: str, spec_hash: str, checks: tuple[EligibilityCheck, ...]) -> None:
+        refused = [check for check in checks if check.refusal is not None]
+        if not refused:
+            raise ValueError("RouterEligibilityRefused needs at least one refused check")
+        detail = "; ".join(f"{c.strategy}: {c.refusal} ({c.detail})" for c in refused)
+        super().__init__("eligibility_not_evidenced", router, spec_hash, detail, eligibility=checks)
+        first = refused[0]
+        #: the first refused strategy (ref string order) and its specific reason
+        self.strategy = first.strategy
+        self.refusal: EligibilityRefusal | None = first.refusal
+        #: every refused strategy -> its reason
+        self.refusals: dict[str, EligibilityRefusal | None] = {
+            c.strategy: c.refusal for c in refused
+        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -112,8 +163,61 @@ def _check_weights(weights: Mapping[str, Decimal], where: str) -> None:
         raise RouterError(f"{where}: weights must sum to at most 1 (no leverage)")
 
 
+def normalize_report_hashes(reports: Mapping[Ref, str] | Mapping[str, str]) -> dict[str, str]:
+    """Normalize ``strategy ref -> validation report hash``; refuse ill-formed entries."""
+    if not isinstance(reports, Mapping):
+        raise RouterError("validation_reports must map strategy refs to report hashes")
+    out: dict[str, str] = {}
+    for key, value in reports.items():
+        name = str(key) if isinstance(key, Ref) else key
+        if not isinstance(name, str) or not name:
+            raise RouterError(f"validation_reports: {key!r} is not a strategy ref")
+        if name in out:
+            raise RouterError(f"validation_reports: {name} is given twice")
+        if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+            raise RouterError(f"validation_reports: {name} needs a sha256 report hash")
+        out[name] = value
+    return dict(sorted(out.items()))
+
+
+def _evidence_reports(
+    evidence: EligibilityEvidence, routed: frozenset[str]
+) -> tuple[dict[str, str], Mapping[str, ValidationReport] | ReportResolver]:
+    """Normalize evidence-mode inputs; ill-formed input is a plain ``RouterError``."""
+    if not isinstance(evidence, EligibilityEvidence):
+        raise RouterError("evidence must be an EligibilityEvidence")
+    hashes = normalize_report_hashes(evidence.report_hashes)
+    extra = sorted(set(hashes) - routed)
+    if extra:
+        raise RouterError(f"validation reports for strategies the router never routes: {extra}")
+    if not isinstance(evidence.reports, Mapping):
+        if not callable(evidence.reports):
+            raise RouterError("evidence.reports must be a mapping or a resolver")
+        return hashes, evidence.reports
+    reports: dict[str, ValidationReport] = {}
+    for key, report in evidence.reports.items():
+        name = str(key) if isinstance(key, Ref) else key
+        if not isinstance(name, str) or not name:
+            raise RouterError(f"evidence.reports: {key!r} is not a strategy ref")
+        if name in reports:
+            raise RouterError(f"evidence.reports: {name} is given twice")
+        reports[name] = report
+    stray = sorted(set(reports) - routed)
+    if stray:
+        raise RouterError(f"reports for strategies the router never routes: {stray}")
+    return hashes, reports
+
+
 class StrategyRouter:
-    def __init__(self, spec: RouterSpec, lifecycle: Mapping[Ref, LifecycleState]) -> None:
+    def __init__(
+        self,
+        spec: RouterSpec,
+        lifecycle: Mapping[Ref, LifecycleState],
+        *,
+        evidence: EligibilityEvidence | None = None,
+    ) -> None:
+        normalized = None if evidence is None else _evidence_reports(evidence, spec.strategies())
+        stopped_before_evidence = None if evidence is None else ()
         routable = {str(ref) for ref, state in lifecycle.items() if state in ROUTABLE}
         entries = (*spec.table.items(), ("<fallback>", spec.fallback))
         for label, weights in entries:
@@ -127,6 +231,7 @@ class StrategyRouter:
                 name,
                 spec.spec_hash(),
                 "the lifecycle map declares no ACTIVE / PRODUCTION_CANDIDATE strategy",
+                eligibility=stopped_before_evidence,
             )
         for label, weights in entries:
             unvalidated = sorted(set(weights) - routable)
@@ -138,12 +243,36 @@ class StrategyRouter:
                 name,
                 spec.spec_hash(),
                 "every state entry and the fallback give zero weight to every strategy",
+                eligibility=stopped_before_evidence,
             )
         self._spec = spec
+        self._report_hashes: dict[str, str] | None = None
+        self._eligibility: tuple[EligibilityCheck, ...] | None = None
+        if normalized is not None:
+            hashes, reports = normalized
+            claimed = {str(ref): LifecycleState(state).value for ref, state in lifecycle.items()}
+            checks = tuple(
+                check_report(key, claimed[key], hashes.get(key), reports)
+                for key in sorted(spec.strategies())
+            )
+            if not all(check.verified for check in checks):
+                raise RouterEligibilityRefused(name, spec.spec_hash(), checks)
+            self._report_hashes = hashes
+            self._eligibility = checks
 
     @property
     def spec(self) -> RouterSpec:
         return self._spec
+
+    @property
+    def eligibility(self) -> tuple[EligibilityCheck, ...] | None:
+        """Evidence mode: the verified check of every routable strategy (``None``: trust mode)."""
+        return self._eligibility
+
+    @property
+    def report_hashes(self) -> Mapping[str, str] | None:
+        """Evidence mode: the verified strategy ref -> report hash map (``None``: trust mode)."""
+        return None if self._report_hashes is None else dict(self._report_hashes)
 
     def route(self, states: Sequence[tuple[datetime, str | None]]) -> tuple[RoutingDecision, ...]:
         decisions: list[RoutingDecision] = []
