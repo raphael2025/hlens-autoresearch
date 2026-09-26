@@ -582,3 +582,11 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   有检测器错误的臂新增 `pass_rate_bounds: [passed/n, (passed+errors)/n]`（向外取整到 6 位；无错误时不出现，既有报告哈希不变）。唯一重新固定的哈希 `PRE_G5_RAISING_HASH`（`e31fc17f…` → `03fcfad6…`）是唯一含检测器错误的报告，去掉新键即复现旧哈希。
 - 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/synthetic_lab` → 79 passed, 1 warning (120 s)；`ruff check .` → 通过；`mypy research/synthetic_lab tests/research/synthetic_lab` → no issues in 10 files。
 - 遗留：G5 逐臂证据（`SealedArmEvidence`）尚无同样的区间字段。
+
+**B46 — apps：审计 B 代码发现 1～7（`588342c` / `4b9bd69` / `409f5ab` / `a83f2ab` 的 cherry-pick → `7f6af4f` / `bf43412` / `5798c36` / `4658357`；README `d45161f`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- API：`file:` URI、`~/` / `~user/`、冒号后路径只留文件名；兜底 500 `{"detail": "internal server error"}`（不含消息 / 路径 / traceback），`path.stat()` 移入读取保护；每个 operation 声明 500 为 `ApiError`（`openapi.json` / `api.d.ts` 重新生成）；只读测试遍历 `app.routes`，能发现 `include_in_schema=False` 的隐藏 DELETE。
+- Fixtures：十种报告全部由提交的生成器产出；三份 2.0.0 文件保留为遗留（内容哈希文件名，`LEGACY_2_0_0`，`regenerate_legacy()` 在新进程 2.0.0 作用域逐字节重建）并各加 2.1.0 版本；Python / node / 页面详情测试读取每个种类的全部 fixture。
+- Web：validation / matrix / router 解析移入 `src/lib`（`node --test`）；Validation Reports 显示精确门值（2.0.0 回退浮点）；Research Loop 每个用量维度一张带单位的图（每轮柱 + 累计线，分轴）。
+- 实际运行（本分支集成后）：`pytest -m "not postgres" tests/apps tests/research/reports` → 372 passed, 1 warning；`tests/apps/test_live_backend_smoke.py` → 2 passed（含 `live-smoke.mjs`）；`npm test` → lib 75 / 75、组件 99 / 99；`npm run build` ✓；`ruff check .` / `ruff format --check .`（738 files）/ `mypy`（582 files）通过；重新生成 openapi / api.d.ts 无差异（子代理）。
+- 仍不证明：真实浏览器渲染；502 / 500 仍未经真实 HTTP。
