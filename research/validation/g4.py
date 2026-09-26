@@ -29,14 +29,31 @@ shortest text that round-trips, e.g. ``0.1`` -> ``Decimal("0.1")``), an ``int`` 
 as itself. So ``0.1`` and ``Decimal("0.10")`` agree, while a model coefficient that differs from
 the parameter only beyond ``float`` precision is a mismatch (a ``float`` round trip used to hide
 it). Only the resolved value handed to ``capacity_check`` (a ``float`` estimate) is converted.
+
+Check isolation (debugging pass, 2026-09-26; CODE_COMPLETE / DEBUG_PENDING): ``run_robustness``
+runs each check on its own. An **unexpected** exception inside one check neither aborts the
+suite nor passes: that check becomes a ``RobustnessCheck`` with one ``INCONCLUSIVE`` gate
+``<gate prefix>.check_error`` (metric ``check_error:<exception type>``) and the exception type
+plus a short, deterministic message (memory addresses masked, cut to ``_ERROR_MESSAGE_CHARS``
+characters) in its ``details``; every other check still runs, so the G4 verdict is at best
+``INCONCLUSIVE``. **Deliberate refusals still raise** (``_PROPAGATED``): ``ValueError`` — which
+includes ``UnsupportedMethod`` (an unimplemented Profile method), ``ProfileFieldMissing`` and the
+documented input refusals (e.g. trials on different period grids) — and ``TypeError`` are
+configuration / input-contract errors of the caller, not evidence about the candidate, and have
+always been raised (tests pin them); ``MemoryError`` is a resource failure whose occurrence is not
+reproducible, so recording it would make the result depend on the machine. Anything else
+(arithmetic, lookup, attribute, runtime, assertion errors, ...) is the broken-check case.
+Nothing changes when no check raises: the checks, their gates and ``to_dict`` are identical.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
 from decimal import Decimal
+from typing import Final
 
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, Verdict
@@ -59,10 +76,13 @@ from research.validation.robustness import (
 )
 
 __all__ = [
+    "CHECKS",
+    "CHECK_ERROR",
     "RobustnessInput",
     "RobustnessParams",
     "RobustnessResult",
     "ValidationRun",
+    "check_error",
     "run_robustness",
     "run_validation",
 ]
@@ -198,8 +218,65 @@ def _resolved_impact(
     )
 
 
+#: Exceptions a check raises deliberately (configuration / input-contract refusals) or that are
+#: not reproducible (resources): they propagate out of ``run_robustness`` (module docs, **Check
+#: isolation**). ``UnsupportedMethod`` and ``ProfileFieldMissing`` are ``ValueError`` subclasses.
+_PROPAGATED: Final = (ValueError, TypeError, MemoryError)
+#: Metric prefix of the ``INCONCLUSIVE`` gate of a check that raised unexpectedly.
+CHECK_ERROR: Final = "check_error"
+#: Report formatting only (not a validation threshold): how much of the message is recorded.
+_ERROR_MESSAGE_CHARS: Final = 200
+_ADDRESS = re.compile(r"0x[0-9A-Fa-f]+")
+
+#: check id -> (principles, gate-id prefix) of every G4 check, in ``run_robustness`` order; the
+#: same ids / principles / prefixes the checks themselves use (``robustness`` module docs).
+CHECKS: Final[tuple[tuple[str, tuple[str, ...], str], ...]] = (
+    ("overfitting", ("C-T1", "C-R1"), "G4.overfitting"),
+    ("parameter_neighborhood", ("C-R1",), "G4.param_neighborhood"),
+    ("time_alignment", ("C-R1",), "G4.time_alignment"),
+    ("delay_stress", ("C-R4",), "G4.delay_stress"),
+    ("cost_stress", ("C-R4",), "G4.cost_stress"),
+    ("walk_forward", ("C-S4", "C-R3"), "G4.walk_forward"),
+    ("state_decomposition", ("C-R2",), "G4.state"),
+    ("capacity", ("C-R5",), "G4.capacity"),
+    ("cross_asset", ("C-R3",), "G4.cross_asset"),
+)
+
+
+def _error_message(error: BaseException) -> str:
+    """A deterministic, short rendering of ``error`` (memory addresses masked, one line)."""
+    text = " ".join(_ADDRESS.sub("0x?", str(error)).split())
+    return text[:_ERROR_MESSAGE_CHARS]
+
+
+def check_error(check_id: str, error: Exception) -> RobustnessCheck:
+    """The ``INCONCLUSIVE`` stand-in of a check that raised ``error`` unexpectedly."""
+    spec = next((item for item in CHECKS if item[0] == check_id), None)
+    if spec is None:
+        raise ValueError(f"unknown G4 check {check_id!r}")
+    _, principles, prefix = spec
+    kind = type(error).__name__
+    return RobustnessCheck(
+        check_id=check_id,
+        principles=principles,
+        gates=(inconclusive_gate(f"{prefix}.{CHECK_ERROR}", f"{CHECK_ERROR}:{kind}", 0.0),),
+        details={"check_error": {"type": kind, "message": _error_message(error)}},
+        note=f"{CHECK_ERROR}: the check raised {kind}; recorded as INCONCLUSIVE, never a PASS",
+    )
+
+
+def _isolated(check_id: str, run: Callable[[], RobustnessCheck]) -> RobustnessCheck:
+    try:
+        return run()
+    except _PROPAGATED:
+        raise
+    except Exception as error:  # noqa: BLE001 - a broken check is INCONCLUSIVE (module docs)
+        return check_error(check_id, error)
+
+
 def run_robustness(inp: RobustnessInput) -> RobustnessResult:
-    """Every G4 check in a fixed order (C-T1 / C-R1, C-R1, C-R4, C-S4 / C-R3, C-R2, C-R5, C-R3)."""
+    """Every G4 check in a fixed order (C-T1 / C-R1, C-R1, C-R4, C-S4 / C-R3, C-R2, C-R5, C-R3);
+    each one isolated (module docs, **Check isolation**)."""
     profile, params = inp.profile, inp.params
     coefficient, impact_source, impact_conflict = _resolved_impact(
         params, inp.execution_impact_coefficient
@@ -209,8 +286,8 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
     if chosen is None:
         raise ValueError(f"no trial holds the chosen parameters {dict(inp.chosen)}")
     returns = chosen.returns
-    checks = (
-        overfitting_check(
+    runs: dict[str, Callable[[], RobustnessCheck]] = {
+        "overfitting": lambda: overfitting_check(
             profile,
             inp.trials,
             inp.chosen,
@@ -218,15 +295,17 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
             params.cscv_partitions,
             horizon=inp.holding_horizon,
         ),
-        parameter_neighborhood_check(profile, inp.trials, inp.chosen, inp.param_space),
-        time_alignment_check(profile, returns, inp.time_shifted),
-        delay_stress_check(profile, inp.delayed),
-        cost_stress_check(profile, returns),
-        walk_forward_check(profile, returns),
-        state_decomposition_check(
+        "parameter_neighborhood": lambda: parameter_neighborhood_check(
+            profile, inp.trials, inp.chosen, inp.param_space
+        ),
+        "time_alignment": lambda: time_alignment_check(profile, returns, inp.time_shifted),
+        "delay_stress": lambda: delay_stress_check(profile, inp.delayed),
+        "cost_stress": lambda: cost_stress_check(profile, returns),
+        "walk_forward": lambda: walk_forward_check(profile, returns),
+        "state_decomposition": lambda: state_decomposition_check(
             profile, inp.state_trades, max_undersampled_share=params.undersampled_share
         ),
-        capacity_check(
+        "capacity": lambda: capacity_check(
             profile,
             inp.capacity_fills,
             len(returns),
@@ -236,10 +315,11 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
             impact_coefficient_source=impact_source,
             impact_conflict=impact_conflict,
         ),
-        cross_asset_check(
+        "cross_asset": lambda: cross_asset_check(
             profile, inp.per_asset, inp.declared_instruments, params.cross_asset_fraction
         ),
-    )
+    }
+    checks = tuple(_isolated(check_id, runs[check_id]) for check_id, _, _ in CHECKS)
     return RobustnessResult(checks=checks, params=params)
 
 
