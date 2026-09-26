@@ -285,3 +285,11 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 
 **B15 — Phase 0.5 写入路径（ADR-0058）**：集成 infra 通道 `0c10a65`（`plugins/knowledge/store.py`、`cli.py`、`local.py` 的 `load_items`、测试）与其 README；
 `uv run pytest -q -m "not postgres" tests/plugins/knowledge tests/test_docs_consistency.py tests/test_architecture_boundaries.py tests/apps/test_api.py` → 75 passed, 1 warning；ruff / mypy 通过。
+
+**B16 — P10-ELIG：路由资格证据模式**（`CODE_COMPLETE / DEBUG_PENDING`；集成为本次 cherry-pick）
+
+- `research/router/evidence.py`（`EligibilityEvidence`、`report_store_resolver`）：每个可路由策略须有报告哈希、报告可取、结构合法、内容哈希一致、`subject` 为该策略、`PASS`、含且通过 G5；
+  首个失败即 `RouterEligibilityRefused`（`RouterStopped`，原因 `eligibility_not_evidenced`，逐项检查入记录）；证据模式下检查结果与已核验报告入 `run_hash` / `stop_hash`；
+  信任模式（默认）5 个既有哈希固定不变。研究层关闭 P10-ELIG；生产资格仍属 Control Plane。控制台对新原因 / `eligibility` 键只显示原值（待 UI 标签）。
+- 子代理：`pytest tests/research/router tests/research/reports tests/research/test_cross_phase_e2e.py` → 86 passed；边界 / 文档 → 18 passed；ruff / format（636 files）/ mypy（18 files）通过。
+- 本分支集成后：`pytest -m "not postgres" tests/research/router tests/research/reports tests/research/test_cross_phase_e2e.py tests/apps/test_reports.py tests/apps/test_console_fixtures.py` → 149 passed, 1 warning；ruff / mypy 通过。
