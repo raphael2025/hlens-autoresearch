@@ -45,5 +45,10 @@ python -m research.synthetic_lab.gate_calibration --setup package.module:factory
 
 ## 未完成（调试批次）
 
-检测器异常直接抛出；未运行 G5；`apps/api` 的 `ReportStore` 尚未提供 `gate_calibration` 类型；生成器过于简单
+~~检测器异常直接抛出~~ ✅ 已修（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`detect` 抛出的异常是被校准方法在该市场上的失败，
+记为无门的 `INCONCLUSIVE` 运行（各门 `not_evaluated`），`detector_error` 记录异常类型与消息（折叠空白、截断 200 字符），每组报告
+`detector_errors` 计数，永不计为通过、不消耗封存 OOS；两个新键只在出现错误时写入，无错误报告的哈希不变。harness 自身配置错误
+（`DetectorConfigurationError`、报告不在该候选 Profile 下、市场真值不是植入效应）仍直接抛出。`calibrate` 的检测器异常计入
+`noise_errors` / `planted_errors`，不算检出，仍在 `trials` 分母内。测试：`tests/research/synthetic_lab/test_gate_calibration.py`、
+`test_calibration.py`。未运行 G5；生成器过于简单
 （高斯噪声 + 线性自相关），测试的种子数与市场长度只够冒烟。

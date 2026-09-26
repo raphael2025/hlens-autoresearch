@@ -17,6 +17,7 @@ import math
 from collections.abc import Iterator, Mapping
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -339,3 +340,91 @@ def test_the_setup_refuses_ambiguous_inputs() -> None:
         GateCalibrationSetup(**{**base.__dict__, "alpha": Decimal(0)})
     with pytest.raises(ValueError, match="distinct"):
         GateCalibrationSetup(**{**base.__dict__, "noise_seeds": (1, 1)})
+
+
+# --------------------------------------------------------------------------------------
+# Detector failures are INCONCLUSIVE evidence; harness misconfiguration still raises
+# --------------------------------------------------------------------------------------
+
+
+class _RaisingOnPlantedDetector(_ToyDetector):
+    """TEST ONLY: the toy detector, except it raises on every market with a planted effect."""
+
+    name = "toy_raising_on_planted"
+
+    def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport:
+        if market.truth:
+            raise ZeroDivisionError("toy detector broke on\nthis market")
+        return super().detect(market, profile)
+
+
+def _raising_setup() -> GateCalibrationSetup:
+    return GateCalibrationSetup(
+        **{**_toy_setup().__dict__, "detector": _RaisingOnPlantedDetector()}
+    )
+
+
+def test_a_raising_detector_yields_inconclusive_runs_not_an_exception() -> None:
+    report = run_gate_calibration(_raising_setup())
+    arm = planted_arm_id(TOY_EFFECT)
+    for profile in (TOY_LAX, TOY_STRICT):
+        candidate = report.candidate(profile)
+        planted = candidate.arm(arm)
+        assert planted.passed.count == 0 and planted.failed == 0
+        assert planted.inconclusive.count == SEEDS and planted.detector_errors == SEEDS
+        assert candidate.arm(NOISE_ARM).detector_errors == 0
+        gate = candidate.gate("T0.autocorrelation", arm)
+        assert gate.not_evaluated == SEEDS and gate.passed.count == 0
+        errored = [run for run in candidate.runs if run.arm == arm]
+        assert all(run.detector_error == "ZeroDivisionError: toy detector broke on this market"
+                   for run in errored)  # fmt: skip
+        assert not any(run.sealed_oos_unsealed for run in errored)
+    payload: Any = json.loads(json.dumps(report.to_payload()))
+    lax = next(c for c in payload["candidates"] if c["profile_hash"] == TOY_LAX.content_hash())
+    assert lax["pipeline"][arm]["detector_errors"] == SEEDS
+    assert "detector_errors" not in lax["pipeline"][NOISE_ARM]
+    assert run_gate_calibration(_raising_setup()).report_hash == report.report_hash
+
+
+def test_reports_without_detector_errors_have_no_error_keys(
+    toy_report: GateCalibrationReport,
+) -> None:
+    text = json.dumps(toy_report.to_payload())
+    assert "detector_error" not in text
+
+
+def test_an_errored_run_record_must_be_inconclusive_without_gates() -> None:
+    from research.synthetic_lab.gate_calibration import RunRecord
+
+    fields = {
+        "arm": NOISE_ARM, "seed": 0, "market_spec_hash": "a", "market_hash": "b",
+        "gates_hash": content_hash([]), "detector_error": "RuntimeError: x",
+    }  # fmt: skip
+    with pytest.raises(ValueError, match="INCONCLUSIVE"):
+        RunRecord(verdict=Verdict.FAIL, gates=(), **fields)  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="INCONCLUSIVE"):
+        RunRecord(
+            verdict=Verdict.INCONCLUSIVE,
+            gates=(("G1.x", Verdict.INCONCLUSIVE),),
+            **fields,  # type: ignore[arg-type]
+        )
+
+
+def test_harness_misconfiguration_still_raises() -> None:
+    from research.synthetic_lab.gate_calibration import DetectorConfigurationError
+
+    class _Misconfigured(_ToyDetector):
+        def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport:
+            raise DetectorConfigurationError("setup_for must use the trial runner it is given")
+
+    setup = GateCalibrationSetup(**{**_toy_setup().__dict__, "detector": _Misconfigured()})
+    with pytest.raises(DetectorConfigurationError):
+        run_gate_calibration(setup)
+
+    class _WrongProfile(_ToyDetector):
+        def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport:
+            return super().detect(market, TOY_STRICT if profile is TOY_LAX else TOY_LAX)
+
+    setup = GateCalibrationSetup(**{**_toy_setup().__dict__, "detector": _WrongProfile()})
+    with pytest.raises(ValueError, match="report is not under"):
+        run_gate_calibration(setup)

@@ -28,6 +28,12 @@ Pieces:
   G0 – G4 ``PASS`` may reach. Each passing run unseals its own family in a fresh in-memory vault
   per candidate; the vault's capacity is the number of runs (a bookkeeping bound, not a budget
   choice). G5 itself is not run here.
+- Detector failures: an exception raised by ``detect`` is a failure of the method under
+  calibration on that market, not of the harness. The run is recorded as ``INCONCLUSIVE`` with no
+  gates (every gate ``not_evaluated``) and the exception type / message in ``detector_error``;
+  each arm reports its ``detector_errors`` count. It is never a pass. Misconfiguration of the
+  harness itself (``DetectorConfigurationError``, a report under another Profile, a market whose
+  truth is not the planted effects) still raises: those are caller bugs, not evidence.
 - ``GateCalibrationReport``: deterministic, JSON-ready, content-hashed (``report_hash``); it
   records every input (generator, detector, base spec, seeds, planted effects, candidate Profile
   refs and hashes, interval method and ``alpha``).
@@ -74,6 +80,7 @@ __all__ = [
     "ArmEvidence",
     "CachingTrialRunner",
     "CandidateEvidence",
+    "DetectorConfigurationError",
     "GateCalibrationReport",
     "GateCalibrationSetup",
     "GateDetector",
@@ -97,6 +104,12 @@ NOTE: Final = (
 )
 NOISE_ARM: Final = "noise"
 _UNSEALED_BY: Final = "gate_calibration_harness(simulated)"
+#: Upper bound on the recorded exception message (the report must stay small and deterministic).
+_ERROR_MESSAGE_LIMIT: Final = 200
+
+
+class DetectorConfigurationError(ValueError):
+    """The detector was wired wrongly by the caller; a harness bug, never counted as evidence."""
 
 
 # ======================================================================================
@@ -205,9 +218,11 @@ class StrategyValidatorDetector:
         runner = self._runner(market)
         setup = self._setup_for(market, profile, runner)
         if setup.trials is not runner:
-            raise ValueError("setup_for must use the trial runner it is given")
+            raise DetectorConfigurationError("setup_for must use the trial runner it is given")
         if setup.context.profile.content_hash() != profile.content_hash():
-            raise ValueError("setup_for must bind the candidate Profile it is given")
+            raise DetectorConfigurationError(
+                "setup_for must bind the candidate Profile it is given"
+            )
         spec = self._candidate.spec
         # The point the validator re-runs (G0 reproducibility compares the two result hashes):
         # spec defaults overridden by the chosen point, declared keys only.
@@ -312,9 +327,17 @@ class RunRecord:
     gates: tuple[tuple[str, Verdict], ...]
     gates_hash: str
     sealed_oos_unsealed: bool = False
+    #: ``"<ExceptionType>: <message>"`` when ``detect`` raised (the run is then ``INCONCLUSIVE``).
+    detector_error: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.detector_error is not None and (
+            self.verdict is not Verdict.INCONCLUSIVE or self.gates
+        ):
+            raise ValueError("a detector error is an INCONCLUSIVE run without gates")
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "arm": self.arm,
             "seed": self.seed,
             "market_spec_hash": self.market_spec_hash,
@@ -325,6 +348,10 @@ class RunRecord:
             "inconclusive_gates": [g for g, v in self.gates if v is Verdict.INCONCLUSIVE],
             "sealed_oos_unsealed": self.sealed_oos_unsealed,
         }
+        # Additive and only when present: reports without detector errors keep their hashes.
+        if self.detector_error is not None:
+            payload["detector_error"] = self.detector_error
+        return payload
 
 
 def _pass_key(arm: str) -> str:
@@ -341,15 +368,20 @@ class ArmEvidence:
     inconclusive: BinomialRate
     failed: int
     sealed_oos_consumed: BinomialRate
+    #: Runs whose detector raised (already counted in ``inconclusive``).
+    detector_errors: int = 0
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "runs": self.passed.n,
             _pass_key(self.arm): self.passed.to_payload(),
             "inconclusive_rate": self.inconclusive.to_payload(),
             "failed": self.failed,
             "sealed_oos_consumption_rate": self.sealed_oos_consumed.to_payload(),
         }
+        if self.detector_errors:
+            payload["detector_errors"] = self.detector_errors
+        return payload
 
 
 @dataclass(frozen=True, slots=True)
@@ -458,6 +490,21 @@ def _record(arm: str, seed: int, market: SyntheticMarket, report: ValidationRepo
     )
 
 
+def _errored(arm: str, seed: int, market: SyntheticMarket, error: Exception) -> RunRecord:
+    """A run whose detector raised: ``INCONCLUSIVE``, no gates, the error recorded."""
+    message = " ".join(str(error).split())[:_ERROR_MESSAGE_LIMIT]
+    return RunRecord(
+        arm=arm,
+        seed=seed,
+        market_spec_hash=market.spec_hash,
+        market_hash=market.market_hash,
+        verdict=Verdict.INCONCLUSIVE,
+        gates=(),
+        gates_hash=content_hash([]),
+        detector_error=f"{type(error).__name__}: {message}" if message else type(error).__name__,
+    )
+
+
 def _consume_sealed_oos(profile: ValidationProfile, runs: Sequence[RunRecord]) -> list[RunRecord]:
     """Each passing run spends its family's single unsealing (see module docs)."""
     vault = SealedOosVault(profile, InMemoryUnsealingLedger(), max_unsealings=len(runs))
@@ -477,6 +524,7 @@ def _consume_sealed_oos(profile: ValidationProfile, runs: Sequence[RunRecord]) -
                 gates=run.gates,
                 gates_hash=run.gates_hash,
                 sealed_oos_unsealed=unsealed,
+                detector_error=run.detector_error,
             )
         )
     return out
@@ -502,6 +550,7 @@ def _evidence(
                 sealed_oos_consumed=binomial_rate(
                     sum(run.sealed_oos_unsealed for run in mine), n, alpha
                 ),
+                detector_errors=sum(run.detector_error is not None for run in mine),
             )
         )
         for gate_id in gate_ids:
@@ -536,7 +585,13 @@ def run_gate_calibration(setup: GateCalibrationSetup) -> GateCalibrationReport:
             if market.truth != effects:
                 raise ValueError(f"{arm}/{seed}: the market's truth is not the planted effects")
             for profile in setup.candidates:
-                report = setup.detector.detect(market, profile)
+                try:
+                    report = setup.detector.detect(market, profile)
+                except DetectorConfigurationError:
+                    raise
+                except Exception as error:  # the method failed on this market: evidence
+                    runs[profile.content_hash()].append(_errored(arm, seed, market, error))
+                    continue
                 if report.validation_profile_hash != profile.content_hash():
                     raise ValueError(f"{setup.detector.name}: report is not under {profile.ref}")
                 runs[profile.content_hash()].append(_record(arm, seed, market, report))

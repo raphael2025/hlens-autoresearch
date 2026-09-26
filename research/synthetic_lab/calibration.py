@@ -7,6 +7,11 @@ markets (seeds ``seed_base ... seed_base + trials - 1``) and on as many markets 
 effect, and reports the empirical false-positive rate and power. The declared level the pipeline
 must meet is a Validation Profile number (not set here); synthetic results never support claims
 about real markets (roadmap P9).
+
+A detector that raises on a market has neither found nor missed an effect: the market is counted
+in ``noise_errors`` / ``planted_errors`` (never as a detection) and stays in the ``trials``
+denominator, so the reported rates are exact counts over every generated market and the error
+counts show how much of the evidence is missing.
 """
 
 from __future__ import annotations
@@ -34,6 +39,16 @@ class CalibrationReport:
     false_positive_rate: Decimal
     power: Decimal
     planted: PlantedEffect
+    noise_errors: int = 0
+    planted_errors: int = 0
+
+
+def _detected(detector: Callable[[SyntheticMarket], bool], market: SyntheticMarket) -> bool | None:
+    """``None`` when the detector raised (see module docs)."""
+    try:
+        return bool(detector(market))
+    except Exception:
+        return None
 
 
 def calibrate(
@@ -50,15 +65,17 @@ def calibrate(
         raise ValueError("trials must be positive")
     if base.effects:
         raise ValueError("the base spec must be pure noise (no planted effects)")
-    false_positives = detections = 0
+    false_positives = detections = noise_errors = planted_errors = 0
     for offset in range(trials):
         seed = seed_base + offset
         noise = provider.generate(base.model_copy(update={"seed": seed}))
-        if detector(noise):
-            false_positives += 1
+        found = _detected(detector, noise)
+        false_positives += found is True
+        noise_errors += found is None
         effect = provider.generate(base.model_copy(update={"seed": seed, "effects": (planted,)}))
-        if detector(effect):
-            detections += 1
+        found = _detected(detector, effect)
+        detections += found is True
+        planted_errors += found is None
     return CalibrationReport(
         detector=detector_name,
         trials=trials,
@@ -67,4 +84,6 @@ def calibrate(
         false_positive_rate=Decimal(false_positives) / trials,
         power=Decimal(detections) / trials,
         planted=planted,
+        noise_errors=noise_errors,
+        planted_errors=planted_errors,
     )

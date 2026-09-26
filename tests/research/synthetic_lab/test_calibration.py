@@ -55,3 +55,21 @@ def test_the_base_must_be_noise() -> None:
             RandomWalkMarket(), BASE.model_copy(update={"effects": (EFFECT,)}), EFFECT,
             lambda _: False, detector_name="x", trials=1,
         )  # fmt: skip
+
+
+def test_a_raising_detector_is_counted_as_an_error_never_as_a_detection() -> None:
+    def flaky(market: SyntheticMarket) -> bool:
+        if market.truth:
+            raise RuntimeError("detector crashed on this market")
+        return True
+
+    report = calibrate(RandomWalkMarket(), BASE, EFFECT, flaky, detector_name="flaky", trials=3)
+    assert report.planted_errors == 3 and report.detections == 0 and report.power == 0
+    assert report.noise_errors == 0 and report.false_positive_rate == Decimal(1)
+
+
+def test_a_detector_without_errors_reports_zero_errors() -> None:
+    report = calibrate(
+        RandomWalkMarket(), BASE, EFFECT, lambda _: False, detector_name="never", trials=2
+    )
+    assert (report.noise_errors, report.planted_errors) == (0, 0)
