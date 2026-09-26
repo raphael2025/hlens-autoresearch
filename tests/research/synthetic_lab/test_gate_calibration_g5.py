@@ -15,6 +15,7 @@ import json
 import math
 from collections.abc import Iterator, Sequence
 from dataclasses import replace
+from decimal import Decimal
 from typing import Any, ClassVar
 
 import pytest
@@ -24,15 +25,18 @@ from core.contracts.synthetic import SyntheticBar, SyntheticMarket
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, ValidationReport, Verdict
 from research.synthetic_lab import gate_calibration as gc
+from research.synthetic_lab.calibration import PROPAGATED_ERRORS
 from research.synthetic_lab.gate_calibration import (
     NOISE_ARM,
     DetectorConfigurationError,
     GateCalibrationReport,
     GateCalibrationSetup,
+    SealedArmEvidence,
     SealedRelease,
     planted_arm_id,
     run_gate_calibration,
 )
+from research.synthetic_lab.intervals import binomial_rate
 from research.validation import build_report, sealed_oos_without_result
 from research.validation.gates import ProfileFieldMissing, profile_value
 from research.validation.sealed_oos import InMemoryUnsealingLedger
@@ -466,6 +470,101 @@ def test_a_g5_record_can_never_be_a_consumed_pass() -> None:
         gc.SealedRunRecord(
             verdict=Verdict.FAIL, consumed_without_result=True, detector_error="E: x", **fields
         )
+
+
+class _RaisingOnPlanted(_ToySealedDetector):
+    """TEST ONLY: the toy G5, except that it fails at runtime on every planted family."""
+
+    name = "toy_g5_raising_on_planted"
+
+    def detect_sealed(
+        self, market: SyntheticMarket, profile: ValidationProfile, sealed: SealedRelease
+    ) -> ValidationReport:
+        if sealed.family_id.startswith(f"gate_calibration:{planted_arm_id(TOY_EFFECT)}:"):
+            raise ZeroDivisionError("toy G5 divided by zero")
+        return super().detect_sealed(market, profile, sealed)
+
+
+@pytest.mark.parametrize(
+    "error", [ValueError("toy G5 refused"), TypeError("toy G5 input"), MemoryError()]
+)
+def test_every_propagated_error_of_a_g5_raises_instead_of_being_recorded(
+    error: BaseException,
+) -> None:
+    # The same classification as ``calibration.calibrate`` (``PROPAGATED_ERRORS``).
+    assert isinstance(error, PROPAGATED_ERRORS)
+
+    class _Raising(_ToySealedDetector):
+        name = "toy_g5_propagated_error"
+
+        def detect_sealed(
+            self, market: SyntheticMarket, profile: ValidationProfile, sealed: SealedRelease
+        ) -> ValidationReport:
+            raise error
+
+    with pytest.raises(type(error)) as caught:
+        run_gate_calibration(_toy_g5_setup(_Raising()))
+    assert caught.value is error
+    assert any(note.startswith("gate calibration G5: gate_calibration:")
+               for note in caught.value.__notes__)  # fmt: skip
+
+
+def test_g5_detector_errors_report_bounded_g5_pass_rates() -> None:
+    report = run_gate_calibration(_toy_g5_setup(_RaisingOnPlanted()))
+    planted = planted_arm_id(TOY_EFFECT)
+    payload: Any = json.loads(json.dumps(report.to_payload()))
+    seen_bounds = 0
+    for profile, candidate_payload in zip(
+        (TOY_LAX, TOY_STRICT), payload["candidates"], strict=True
+    ):
+        candidate = report.candidate(profile)
+        for arm in (NOISE_ARM, planted):
+            g5 = candidate.g5(arm)
+            block = candidate_payload["pipeline"][arm]["sealed_oos_g5"]
+            if arm == planted:  # every planted G5 raised: errors == reached
+                assert g5.detector_errors == g5.reached
+            else:  # the noise G5s ran normally: no errors
+                assert g5.detector_errors == 0
+            if g5.detector_errors:
+                assert g5.passed is not None and g5.passed.count == 0
+                assert g5.pass_rate_bounds == (Decimal(0), Decimal(1))  # 0 passed, all errored
+                assert block["pass_rate_bounds"] == ["0.000000", "1.000000"]
+                seen_bounds += 1
+            else:
+                assert "pass_rate_bounds" not in block
+    assert seen_bounds  # the planted arm reached G5 under at least one candidate
+
+
+def test_g5_reports_without_g5_detector_errors_have_no_g5_bounds() -> None:
+    report = run_gate_calibration(_toy_g5_setup())
+    for profile in (TOY_LAX, TOY_STRICT):
+        for arm in (NOISE_ARM, planted_arm_id(TOY_EFFECT)):
+            assert report.candidate(profile).g5(arm).detector_errors == 0
+    assert "pass_rate_bounds" not in json.dumps(report.to_payload())
+
+
+def test_g5_pass_rate_bounds_round_outward() -> None:
+    alpha = fx.TEST_ONLY_ALPHA
+    g5 = SealedArmEvidence(
+        arm=NOISE_ARM,
+        reached=7,
+        passed=binomial_rate(3, 7, alpha),
+        inconclusive=binomial_rate(2, 7, alpha),
+        failed=binomial_rate(2, 7, alpha),
+        consumed_without_result=2,
+        detector_errors=2,
+        end_to_end=binomial_rate(3, 9, alpha),
+    )
+    # 3/7 = 0.4285714... (down), 5/7 = 0.7142857... (up); n is ``reached``, not every run
+    assert g5.pass_rate_bounds == (Decimal("0.428571"), Decimal("0.714286"))
+    assert g5.to_payload()["pass_rate_bounds"] == ["0.428571", "0.714286"]
+    assert "pass_rate_bounds" not in replace(g5, detector_errors=0).to_payload()
+    unreached = replace(g5, reached=0, passed=None, inconclusive=None, failed=None,
+                        consumed_without_result=0, detector_errors=0)  # fmt: skip
+    assert unreached.pass_rate_bounds is None
+    assert "pass_rate_bounds" not in unreached.to_payload()
+    with pytest.raises(ValueError, match="reached G5"):
+        replace(g5, detector_errors=8)
 
 
 # --------------------------------------------------------------------------------------

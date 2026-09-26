@@ -68,7 +68,10 @@ Pieces:
   reports ``pass_rate_bounds``: ``[passed / n, (passed + detector_errors) / n]`` (Decimal
   strings; lower bound rounded down, upper bound up, to ``intervals.PLACES``), the range of its
   pipeline pass rate had every errored run gone either way. The key is absent without errors, so
-  every error-free report keeps its hash.
+  every error-free report keeps its hash. In G5 mode the arm's ``sealed_oos_g5`` block does the
+  same for G5: with ``detector_errors > 0`` (``detect_sealed`` raised) it adds
+  ``pass_rate_bounds`` ``[passed / reached, (passed + detector_errors) / reached]``, rounded
+  outward the same way, and omits it otherwise.
 - Multi-instrument mode (Phase 9 implementation note, 2026-09-26; CODE_COMPLETE /
   DEBUG_PENDING; opt-in: a separate ``MultiInstrumentCalibrationSetup`` run by
   ``run_multi_instrument_calibration``, so every ``GateCalibrationSetup`` report and hash is
@@ -1074,8 +1077,24 @@ class SealedArmEvidence:
     detector_errors: int
     end_to_end: BinomialRate
 
+    def __post_init__(self) -> None:
+        if not 0 <= self.detector_errors <= self.reached:
+            raise ValueError("G5 detector errors are counted among the runs that reached G5")
+
+    @property
+    def pass_rate_bounds(self) -> tuple[Decimal, Decimal] | None:
+        """``[passed / reached, (passed + detector_errors) / reached]``, rounded outward to
+        ``PLACES``: the G5 pass rate had every errored G5 failed / passed (module docs, as
+        ``ArmEvidence.pass_rate_bounds``); ``None`` when no run reached G5."""
+        if self.passed is None:
+            return None
+        return (
+            _bound(self.passed.count, self.reached, ceiling=False),
+            _bound(self.passed.count + self.detector_errors, self.reached, ceiling=True),
+        )
+
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "reached": self.reached,
             "pass_rate": _rate_payload(self.passed),
             "inconclusive_rate": _rate_payload(self.inconclusive),
@@ -1084,6 +1103,11 @@ class SealedArmEvidence:
             "detector_errors": self.detector_errors,
             "end_to_end_g0_g5": {_pass_key(self.arm): self.end_to_end.to_payload()},
         }
+        # Additive and only with G5 detector errors: every error-free G5 report keeps its hash.
+        bounds = self.pass_rate_bounds
+        if self.detector_errors and bounds is not None:
+            payload["pass_rate_bounds"] = [str(bound) for bound in bounds]
+        return payload
 
 
 #: Multi-instrument arm kinds and the name of their pipeline pass rate. A ``mixed`` PASS needs
