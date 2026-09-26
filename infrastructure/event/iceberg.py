@@ -18,6 +18,12 @@
   stored logical columns; any disagreement is ``EventTableCorrupted`` (never repaired). A run the
   snapshot does not hold is ``None``.
 
+Contract versions (ADR-0052 versioned replay, V1): a run is one write group with one recorded
+envelope, the run column ``contract_schema_version``: the ``EventResult``, every event and every
+event ref carry it (a run mixing envelopes cannot be represented and is refused before anything is
+written). A run is rebuilt at its recorded version, never the live one, so a 2.0.0 run stays
+readable with its hashes after a minor bump; an unpublished recorded version is corrupted.
+
 There is no delete / overwrite / update path. The adapter must be a catalog adapter whose
 registry contains ``PHASE3_TABLES`` (see ``table_definition``); this module never creates tables.
 """
@@ -43,7 +49,7 @@ from core.contracts.catalog import (
     TableNotFound,
 )
 from core.contracts.event import EventResult
-from core.domain.base import Ref
+from core.domain.base import PUBLISHED_CONTRACT_SCHEMA_VERSIONS, Ref
 from infrastructure.event.table import EventTableRow, event_table
 from infrastructure.event.table_definition import EVENT_EVENTS
 
@@ -70,6 +76,7 @@ _RUN_KEYS: Final = (
     "provider_hash",
     "as_of",
     "subject",  # one request per subject (ADR-0057): every row of a run has the run's subject
+    "contract_schema_version",  # one write group, one recorded envelope (ADR-0052 V1)
 )
 _ATTEMPTS: Final = 8
 
@@ -118,6 +125,7 @@ def event_rows_batch(result: EventResult) -> pa.Table:
     if not isinstance(result, EventResult):
         raise TypeError("event rows need an EventResult")
     rows = event_table(result)
+    version = _run_version(result)
     records = [
         {
             "event_id": row.event_id,
@@ -135,10 +143,27 @@ def event_rows_batch(result: EventResult) -> pa.Table:
             "request_hash": result.request_hash,
             "provider_hash": result.provider_hash,
             "as_of": result.as_of,
+            "contract_schema_version": version,
         }
         for index, row in enumerate(rows)
     ]
     return pa.Table.from_pylist(records, schema=EVENT_EVENTS.arrow_schema)
+
+
+def _run_version(result: EventResult) -> str:
+    """The run's single contract envelope (ADR-0052 V1): result, events and event refs agree."""
+    versions = {result.schema_version}
+    for item in result.events:
+        versions.update((item.schema_version, item.event.schema_version))
+    if len(versions) != 1:
+        raise EventTableError(
+            f"event run {result.result_hash} mixes contract envelopes {sorted(versions)}; "
+            "event.events records one version per run (ADR-0052 versioned replay)"
+        )
+    (version,) = versions
+    if version not in PUBLISHED_CONTRACT_SCHEMA_VERSIONS:
+        raise EventTableError(f"event run {result.result_hash}: unpublished version {version}")
+    return version
 
 
 def _logical_row(row: dict[str, Any]) -> EventTableRow:
@@ -169,15 +194,26 @@ def _rebuild(result_hash: str, rows: list[dict[str, Any]]) -> EventResult:
         raise EventTableCorrupted(
             f"event run {result_hash}: {len(rows)} rows but event_count {head['event_count']}"
         )
+    version = head["contract_schema_version"]
+    if version not in PUBLISHED_CONTRACT_SCHEMA_VERSIONS:
+        raise EventTableCorrupted(
+            f"event run {result_hash}: recorded contract version {version!r} is not published"
+        )
     try:
+        # Rebuilt at the run's recorded envelope (ADR-0052 V1), never the live version.
         document = {
+            "schema_version": version,
             "request_hash": head["request_hash"],
             "provider": head["provider"],
             "provider_hash": head["provider_hash"],
             "as_of": head["as_of"].isoformat(),
             "events": [
                 {
-                    "event": Ref.parse(row["event"]).model_dump(mode="json"),
+                    "schema_version": version,
+                    "event": {
+                        **Ref.parse(row["event"]).model_dump(mode="json"),
+                        "schema_version": version,
+                    },
                     "spec_hash": row["spec_hash"],
                     "event_time": row["event_time"].isoformat(),
                     "attributes": json.loads(row["attributes_json"]),
@@ -194,6 +230,8 @@ def _rebuild(result_hash: str, rows: list[dict[str, Any]]) -> EventResult:
         result = EventResult.model_validate_json(json.dumps(document))
     except (ValidationError, ValueError, TypeError) as exc:
         raise EventTableCorrupted(f"event run {result_hash} does not rebuild") from exc
+    if _run_version(result) != version:  # pragma: no cover - every envelope is explicit above
+        raise EventTableCorrupted(f"event run {result_hash}: rebuilt at another version")
     if event_table(result) != tuple(_logical_row(row) for row in rows):
         raise EventTableCorrupted(f"event run {result_hash}: columns disagree with the rebuild")
     return result

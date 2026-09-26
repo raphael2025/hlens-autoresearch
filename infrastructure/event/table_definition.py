@@ -3,10 +3,12 @@
 One row per event of one event run (``EventResult``): the ten columns of the logical Event table
 (``infrastructure.event.table.EVENT_TABLE_COLUMNS``, same names, same order, field IDs 1-10; the
 tenth, optional ``subject``, is ADR-0057) plus the **run block** (``event_index``,
-``event_count``, ``request_hash``, ``provider_hash``, ``as_of``; field IDs 11-15; list element
-IDs 16-17) that lets the table alone rebuild and re-verify the ``EventResult``. The IDs were fixed
-before the table was ever created: a read-only check of every persistent catalog (2026-09-26,
-ADR-0056 implementation note) found no ``event.events`` anywhere. There
+``event_count``, ``request_hash``, ``provider_hash``, ``as_of``, ``contract_schema_version``;
+field IDs 11-16; list element IDs 17-18) that lets the table alone rebuild and re-verify the
+``EventResult``. ``contract_schema_version`` is the run's recorded contract envelope (ADR-0052
+versioned replay, V1): a run is rebuilt at the version it was written with, never the live one.
+The IDs were fixed before the table was ever created: a read-only check of every persistent
+catalog (2026-09-26, ADR-0056 implementation note) found no ``event.events`` anywhere. There
 is no ingest-time column (rows are a pure function of the run, so the batch fingerprint is
 deterministic and a rewrite is an idempotent replay; write time is the snapshot's
 ``committed_at``) and no revision block (a run is immutable; a new run has a new
@@ -58,7 +60,14 @@ PHASE3_DEFINITION_VERSION: Final = "1.0.0"
 #: Non-binding table properties (part of the definition hash); same value as Phase 1.
 PHASE3_TABLE_PROPERTIES: Final[Mapping[str, str]] = {"write.parquet.compression-codec": "zstd"}
 #: The run block: constant per run except ``event_index``.
-EVENT_RUN_COLUMNS: Final = ("event_index", "event_count", "request_hash", "provider_hash", "as_of")
+EVENT_RUN_COLUMNS: Final = (
+    "event_index",
+    "event_count",
+    "request_hash",
+    "provider_hash",
+    "as_of",
+    "contract_schema_version",
+)
 
 _S: Final = StringType()
 _L: Final = LongType()
@@ -79,8 +88,8 @@ _SCHEMA: Final = Schema(
     _req(3, "spec_hash", _S, "Event.spec_hash: content hash of the event definition"),
     _req(4, "event_time", _T, "Event.event_time: observable time (UTC)"),
     _req(5, "attributes_json", _S, "contract canonical JSON of Event.attributes"),
-    _req(6, "input_ids", _hashes(16), "Event.input_ids (strictly ascending)"),
-    _req(7, "upstream_event_ids", _hashes(17), "Event.upstream_event_ids (strictly ascending)"),
+    _req(6, "input_ids", _hashes(17), "Event.input_ids (strictly ascending)"),
+    _req(7, "upstream_event_ids", _hashes(18), "Event.upstream_event_ids (strictly ascending)"),
     _req(8, "provider", _S, "EventResult.provider (plugin key)"),
     _req(9, "result_hash", _S, "EventResult.result_hash: the run; one batch per value"),
     NestedField(
@@ -91,6 +100,12 @@ _SCHEMA: Final = Schema(
     _req(13, "request_hash", _S, "EventResult.request_hash"),
     _req(14, "provider_hash", _S, "EventResult.provider_hash"),
     _req(15, "as_of", _T, "EventResult.as_of (UTC)"),
+    _req(
+        16,
+        "contract_schema_version",
+        _S,
+        "recorded contract envelope of the run, its events and their refs (ADR-0052 V1)",
+    ),
 )
 
 _SPEC: Final = PartitionSpec(
