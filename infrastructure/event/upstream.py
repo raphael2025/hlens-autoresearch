@@ -26,6 +26,7 @@ spec (one whose ``lineage`` names ``kind=event`` refs, or whose request carries 
   so a Feature / State beyond the union would be a declared input no computation can use — a
   false lineage claim;
 - with ``upstream_results``: every upstream event of the request is one of those results' events
+  (and every supplied result answers the request's own ``subject``, ADR-0057)
   (identical), and every supplied result holds only events of declared upstream specs.
 
 A non-interaction spec must receive neither upstream events nor upstream specs.
@@ -275,6 +276,11 @@ def verify_interaction(
     for result in upstream_results:
         if not isinstance(result, EventResult):
             raise UpstreamVerificationError("upstream results must be EventResult instances")
+        if result.subject != request.subject:  # ADR-0057: one request per subject
+            raise UpstreamVerificationError(
+                f"an upstream result for subject {result.subject!r} was supplied to a request "
+                f"for subject {request.subject!r}"
+            )
         _require_declared_events(spec, result.events, supplied)
         known.update((item.event_id, item) for item in result.events)
     for item in request.upstream_events:

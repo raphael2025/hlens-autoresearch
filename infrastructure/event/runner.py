@@ -36,6 +36,10 @@ recomputes from its run (per-point ``source_lineage_hash``). Any mismatch raises
 ``UpstreamVerificationError`` (fail closed). ``require_full=True`` also refuses a run whose
 optional evidence is missing (an applicable check that could not be performed).
 
+Subject (ADR-0057): a request's optional ``subject`` is kept by every truncated sub-request, so
+every sub-result and the returned result are bound to it (``EventResult.build`` /
+``check_answers``); an upstream result for another subject is refused by ``verify_upstream``.
+
 Pure: no catalog, no clock, no randomness.
 """
 

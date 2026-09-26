@@ -31,6 +31,13 @@ Feature / State 输入。
 **数值**：输入值与事件属性一律为 `Decimal` / `int` / `bool` / 非数值文本（与 `FeatureObservation`
 同一规则，ADR-0013）；浮点、NaN / ±Infinity 被拒绝。
 
+**标的（subject，ADR-0057）**：可选的 `EventRequest.subject` 指明该请求所属的标的 / 序列（例如
+一个 instrument）。一个请求只对应一个标的（ADR-0036 §4 原则），多标的事件表 = 每个标的一个请求，
+其事件按 `subject` 键合并。给出时：`Event.subject` / `EventResult.subject` 必须与请求相同
+（`EventResult.build` 把未绑定的事件绑定到请求的标的，冲突即拒绝），上游事件也必须属于同一标的；
+`subject` 进入请求哈希、`event_id` 与 `result_hash`。缺失（`None`）时从载荷与哈希输入中省略：
+既有请求、事件与结果的哈希逐位不变。
+
 **诚实边界**：DTO 只证明形状与请求 / 结果之间可局部检查的关系。事件是否只依赖可见集合、确定性、
 截至不同时刻的表是否一致，由执行器（`infrastructure/event/runner.py`）与 contract suite
 （`tests/contract_suites/event.py`）对具体实现检查。`source_lineage_hash` 是否真的对应一份
@@ -71,6 +78,7 @@ __all__ = [
     "EventProviderError",
     "EventRequest",
     "EventResult",
+    "SubjectName",
     "UnsupportedEvent",
 ]
 
@@ -79,6 +87,15 @@ EVENT_REF_KEY_PATTERN = rf"^event:{PLUGIN_KEY_PATTERN.removeprefix('^')}"
 
 ValueName = Annotated[str, Field(pattern=NAME_PATTERN)]
 EventRefKey = Annotated[str, Field(pattern=EVENT_REF_KEY_PATTERN)]
+
+
+def _omit_none(value: object) -> bool:
+    """ADR-0057：可选的 `subject` 为 `None` 时从载荷中省略，使既有载荷与哈希逐位不变。"""
+    return value is None
+
+
+#: 请求 / 事件 / 结果所属的标的或序列名（ADR-0057）；非空（纯空白经去空白后同样拒绝）。
+SubjectName = Annotated[str, Field(min_length=1)]
 
 #: `EventInputPoint.source` 允许的 `Ref.kind`（EventSpec 只能依赖 Feature / State，ADR-0012）。
 EVENT_INPUT_KINDS = frozenset({Kind.FEATURE, Kind.STATE})
@@ -156,6 +173,7 @@ class Event(Contract):
     - `attributes`：事件的描述性内容（方向、前后状态、阈值……）；
     - `input_ids`：所用输入点的 `point_id`，严格升序；`upstream_event_ids`：所用上游事件的
       `event_id`，严格升序；两者至少一个非空；
+    - `subject`：可选，事件所属的标的（ADR-0057）；给出时进入 `event_id`，缺失时省略（旧 id 不变）；
     - `event_id`：以上内容的哈希，构造时复核（不接受自报的哈希）。
     """
 
@@ -168,6 +186,7 @@ class Event(Contract):
     input_ids: tuple[ContentHash, ...] = ()
     upstream_event_ids: tuple[ContentHash, ...] = ()
     event_id: ContentHash
+    subject: SubjectName | None = Field(default=None, exclude_if=_omit_none)
 
     @field_validator("input_ids")
     @classmethod
@@ -199,6 +218,7 @@ class Event(Contract):
         attributes: dict[str, Any] | None = None,
         inputs: Iterable[EventInputPoint] = (),
         upstream: Iterable[Event] = (),
+        subject: str | None = None,
     ) -> Event:
         """由所用输入点与上游事件构造（计算 `input_ids`、`upstream_event_ids` 与 `event_id`）。"""
         fields: dict[str, Any] = {
@@ -209,9 +229,25 @@ class Event(Contract):
             "input_ids": tuple(sorted({item.point_id for item in inputs})),
             "upstream_event_ids": tuple(sorted({item.event_id for item in upstream})),
         }
+        if subject is not None:
+            fields["subject"] = subject
         # 同形的无 id 模型先完整校验并规范化载荷，再由其 JSON 形式计算 id。
         probe = _EventProbe(**fields).model_dump(mode="json")
         return cls(**fields, event_id=_event_id(probe))
+
+    def bound_to(self, subject: str | None) -> Event:
+        """绑定到 `subject` 的同一事件（ADR-0057）：已是该标的 → 自身；未绑定 → 重算 `event_id`；
+        已绑定到另一个标的 → `ValueError`（不改写别的标的的事件）。`None` 只接受未绑定的事件。"""
+        if self.subject == subject:
+            return self
+        if subject is None or self.subject is not None:
+            raise ValueError(
+                f"事件 {self.event_id[:12]} 属于标的 {self.subject!r}，不能绑定到 {subject!r}"
+            )
+        fields = self.model_dump(exclude={"event_id", "schema_version"})
+        fields["subject"] = subject
+        probe = _EventProbe(**fields).model_dump(mode="json")
+        return type(self)(**fields, event_id=_event_id(probe))
 
 
 class _EventProbe(Contract):
@@ -228,6 +264,7 @@ class _EventProbe(Contract):
     )
     input_ids: tuple[ContentHash, ...] = ()
     upstream_event_ids: tuple[ContentHash, ...] = ()
+    subject: SubjectName | None = Field(default=None, exclude_if=_omit_none)
 
 
 def _input_order(item: EventInputPoint) -> tuple[datetime, str, datetime]:
@@ -245,7 +282,9 @@ class EventRequest(Contract):
     - `inputs`：按 `(available_time, source, evaluation_time)` 规范排序；
       `(source, evaluation_time)` 重复即拒绝；每条序列只追加（同一 source 按 `evaluation_time`
       排序后 `available_time` 不递减）；
-    - `upstream_events`：交互算子的上游事件，按 `(event_time, event_id)` 规范排序，`event_id` 唯一。
+    - `upstream_events`：交互算子的上游事件，按 `(event_time, event_id)` 规范排序，`event_id` 唯一；
+    - `subject`：可选，请求所属的标的（ADR-0057）。一个请求只对应一个标的：上游事件的 `subject`
+      必须与请求相同（都缺失亦可）。缺失时从载荷省略，既有请求哈希逐位不变。
 
     同一请求内容 → 同一 `content_hash()`（输入顺序不影响）。
     """
@@ -255,6 +294,7 @@ class EventRequest(Contract):
     as_of: UtcDatetime
     inputs: tuple[EventInputPoint, ...] = ()
     upstream_events: tuple[Event, ...] = ()
+    subject: SubjectName | None = Field(default=None, exclude_if=_omit_none)
 
     @field_validator("inputs")
     @classmethod
@@ -295,6 +335,14 @@ class EventRequest(Contract):
             raise ValueError(f"event 必须是 kind=event 的引用，收到 {self.event}")
         if any(item.event == self.event for item in self.upstream_events):
             raise ValueError("事件不得以自身的输出为上游输入")
+        foreign = sorted(
+            {repr(item.subject) for item in self.upstream_events if item.subject != self.subject}
+        )
+        if foreign:
+            raise ValueError(
+                f"上游事件的标的 {foreign} 与请求的标的 {self.subject!r} 不同"
+                "（一个请求只对应一个标的，ADR-0057）"
+            )
         return self
 
     def visible_at(
@@ -318,6 +366,7 @@ class EventRequest(Contract):
             as_of=at,
             inputs=points,
             upstream_events=upstream,
+            subject=self.subject,
         )
 
 
@@ -349,24 +398,32 @@ class EventProviderDescriptor(Contract):
 
 
 def _result_hash(
-    request_hash: str, provider: str, provider_hash: str, as_of: datetime, events: Iterable[Event]
+    request_hash: str,
+    provider: str,
+    provider_hash: str,
+    as_of: datetime,
+    events: Iterable[Event],
+    subject: str | None = None,
 ) -> str:
-    return content_hash(
-        {
-            "request_hash": request_hash,
-            "provider": provider,
-            "provider_hash": provider_hash,
-            "as_of": as_of.isoformat(),
-            "events": [item.event_id for item in events],
-        }
-    )
+    payload: dict[str, Any] = {
+        "request_hash": request_hash,
+        "provider": provider,
+        "provider_hash": provider_hash,
+        "as_of": as_of.isoformat(),
+        "events": [item.event_id for item in events],
+    }
+    if subject is not None:  # ADR-0057：缺失时不进入哈希输入，既有 result_hash 不变
+        payload["subject"] = subject
+    return content_hash(payload)
 
 
 class EventResult(Contract):
     """一次 `detect` 的结果：截至 `as_of` 的事件表。
 
     - `events`：按 `(event_time, event_id)` 严格升序（`event_id` 唯一），且 `event_time <= as_of`；
-    - `result_hash`：请求哈希、Provider 身份、`as_of` 与事件 id 序列的哈希，构造时复核。
+    - `subject`：可选，所答请求的标的（ADR-0057）；给出时每个事件都属于它，并进入 `result_hash`；
+    - `result_hash`：请求哈希、Provider 身份、`as_of`、事件 id 序列（与 `subject`，若有）的哈希，
+      构造时复核。
 
     同一请求 + 同一 Provider 版本 → 同一 `result_hash`（确定性由 contract suite 检查）。
     """
@@ -377,6 +434,7 @@ class EventResult(Contract):
     as_of: UtcDatetime
     events: tuple[Event, ...] = ()
     result_hash: ContentHash
+    subject: SubjectName | None = Field(default=None, exclude_if=_omit_none)
 
     @model_validator(mode="after")
     def _invariants(self) -> EventResult:
@@ -387,8 +445,15 @@ class EventResult(Contract):
             raise ValueError("events 的 event_id 重复")
         if any(item.event_time > self.as_of for item in self.events):
             raise ValueError("事件的 event_time 不得晚于 as_of")
+        if any(item.subject != self.subject for item in self.events):
+            raise ValueError("事件的 subject 必须与结果的 subject 相同（ADR-0057）")
         expected = _result_hash(
-            self.request_hash, self.provider, self.provider_hash, self.as_of, self.events
+            self.request_hash,
+            self.provider,
+            self.provider_hash,
+            self.as_of,
+            self.events,
+            self.subject,
         )
         if self.result_hash != expected:
             raise ValueError("result_hash 与结果内容不符")
@@ -401,11 +466,19 @@ class EventResult(Contract):
         descriptor: EventProviderDescriptor,
         events: Iterable[Event],
     ) -> EventResult:
-        """由请求、descriptor 与事件构造结果（事件按规范顺序排列，重复的同一事件合并）。"""
-        unique = {item.event_id: item for item in events}
+        """由请求、descriptor 与事件构造结果（事件按规范顺序排列，重复的同一事件合并）。
+
+        请求有 `subject` 时，未绑定的事件绑定到它（`Event.bound_to`），属于别的标的的事件拒绝。
+        """
+        unique = {
+            bound.event_id: bound for bound in (item.bound_to(request.subject) for item in events)
+        }
         items = tuple(sorted(unique.values(), key=_event_order))
         request_hash = request.content_hash()
         provider_hash = descriptor.content_hash()
+        fields: dict[str, Any] = {}
+        if request.subject is not None:
+            fields["subject"] = request.subject
         return cls(
             request_hash=request_hash,
             provider=descriptor.plugin_key,
@@ -413,8 +486,14 @@ class EventResult(Contract):
             as_of=request.as_of,
             events=items,
             result_hash=_result_hash(
-                request_hash, descriptor.plugin_key, provider_hash, request.as_of, items
+                request_hash,
+                descriptor.plugin_key,
+                provider_hash,
+                request.as_of,
+                items,
+                request.subject,
             ),
+            **fields,
         )
 
     def restricted_to(self, at: datetime) -> tuple[Event, ...]:
@@ -444,6 +523,8 @@ class EventResult(Contract):
             raise ValueError("provider / provider_hash 与 descriptor 不符")
         if self.as_of != request.as_of:
             raise ValueError("as_of 与请求不符")
+        if self.subject != request.subject:
+            raise ValueError("subject 与请求不符（ADR-0057）")
         points = {item.point_id: item for item in request.inputs}
         upstream = {item.event_id: item for item in request.upstream_events}
         for item in self.events:

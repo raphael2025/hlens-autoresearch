@@ -135,7 +135,9 @@ def test_event_table_rows() -> None:
         FeatureThresholdCrossProvider((CROSS,)), CROSS, request(CROSS, inputs=X_INPUTS)
     )
     rows = event_table(result)
-    assert EVENT_TABLE_COLUMNS[0] == "event_id" and len(EVENT_TABLE_COLUMNS) == 9
+    assert EVENT_TABLE_COLUMNS[0] == "event_id" and len(EVENT_TABLE_COLUMNS) == 10
+    assert EVENT_TABLE_COLUMNS[-1] == "subject"  # ADR-0057: appended, the other nine unchanged
+    assert all(row.subject is None for row in rows)  # no subject requested
     assert [row.event_id for row in rows] == [item.event_id for item in result.events]
     assert all(
         row.result_hash == result.result_hash and row.event == str(CROSS.ref) for row in rows

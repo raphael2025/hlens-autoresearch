@@ -13,6 +13,7 @@
 检查只看可观察行为：descriptor、`detect` 的结果，以及对请求的截断 / 扰动 / 变体下结果如何变化。
 核心检查是**不得未来确认**（`check_point_in_time_consistency`）：截至 t 的事件表必须恰好是截至更晚
 时刻的表在 `event_time <= t` 上的限制，且每个事件在截至它自己的 `event_time` 时已经出现。
+`check_subject_is_bound`（ADR-0057）：带 `subject` 的请求，结果与事件都绑定该标的。
 """
 
 from __future__ import annotations
@@ -87,6 +88,7 @@ def _request(
     as_of: datetime | None = None,
     inputs: Sequence[EventInputPoint] | None = None,
     upstream_events: Sequence[Event] | None = None,
+    subject_name: str | None = None,
     **overrides: Any,
 ) -> EventRequest:
     fields: dict[str, Any] = {
@@ -98,6 +100,8 @@ def _request(
             subject.upstream_events if upstream_events is None else upstream_events
         ),
     }
+    if subject_name is not None:  # the request's own subject (ADR-0057)
+        fields["subject"] = subject_name
     fields.update(overrides)
     return call_ok("构造 EventRequest（夹具）", lambda: EventRequest(**fields))
 
@@ -350,6 +354,45 @@ def check_non_finite_numbers_are_refused(subject: EventSubject) -> None:
             )
 
 
+#: 检查用的两个标的名（ADR-0057）；只是互不相同的标签，没有市场含义。
+_SUBJECTS = ("suite-subject-a", "suite-subject-b")
+
+
+def _event_shape(item: Event) -> tuple[object, ...]:
+    """事件去掉身份与标的后的可比较内容（标的绑定只改变 id，不改变识别出的事件）。"""
+    return (item.event, item.spec_hash, item.event_time, dict(item.attributes), item.input_ids)
+
+
+def check_subject_is_bound(subject: EventSubject) -> None:
+    """带 `subject` 的请求（ADR-0057）：结果与每个事件都绑定该标的；识别出的事件与不带标的时相同；
+    标的进入 result_hash（两个标的 → 两个 result_hash）；不带标的时结果与事件都不带标的。"""
+    provider = subject.open()
+    plain = _detect(subject, provider, _request(subject))
+    require(
+        plain.subject is None and all(item.subject is None for item in plain.events),
+        "不带 subject 的请求，结果与事件都不得带 subject",
+    )
+    hashes = {plain.result_hash}
+    for name in _SUBJECTS:
+        upstream = tuple(item.bound_to(name) for item in subject.upstream_events)
+        bound = _detect(
+            subject, provider, _request(subject, upstream_events=upstream, subject_name=name)
+        )
+        require(bound.subject == name, f"结果必须回显请求的 subject {name!r}")
+        require(
+            all(item.subject == name for item in bound.events),
+            f"每个事件都必须绑定请求的 subject {name!r}",
+        )
+        # Same-time events are ordered by event_id, which the binding changes: compare as sets.
+        require(
+            sorted(map(repr, map(_event_shape, bound.events)))
+            == sorted(map(repr, map(_event_shape, plain.events))),
+            "绑定标的不得改变识别出的事件（只改变身份）",
+        )
+        require(bound.result_hash not in hashes, "subject 必须进入 result_hash")
+        hashes.add(bound.result_hash)
+
+
 EVENT_CHECKS: tuple[EventCheck, ...] = (
     check_descriptor_declares_the_spec,
     check_fixture_has_events,
@@ -360,6 +403,7 @@ EVENT_CHECKS: tuple[EventCheck, ...] = (
     check_hash_sensitivity,
     check_unsupported_event_is_refused,
     check_non_finite_numbers_are_refused,
+    check_subject_is_bound,
 )
 
 

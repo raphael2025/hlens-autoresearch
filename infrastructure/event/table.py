@@ -3,7 +3,9 @@
 ``event_table(result)`` flattens an ``EventResult`` into rows of the logical Event table — one row
 per event, with its definition (``event`` + ``spec_hash``), observable ``event_time``, attributes
 (canonical JSON), lineage (``input_ids`` / ``upstream_event_ids``) and the producing run
-(``provider`` / ``result_hash``). Rows are plain, immutable values in the result's canonical order.
+(``provider`` / ``result_hash``) and its ``subject`` (ADR-0057; one request per subject, so a
+multi-subject table is the concatenation of per-subject results). Rows are plain, immutable values
+in the result's canonical order.
 
 This is the in-memory materialization. The physical Iceberg table ``event.events`` (ADR-0056;
 ``table_definition`` + ``iceberg``) stores exactly these columns plus a run block.
@@ -32,6 +34,9 @@ class EventTableRow:
     upstream_event_ids: tuple[str, ...]
     provider: str
     result_hash: str
+    #: The event's subject (ADR-0057): the key of a multi-subject Event table; ``None`` when the
+    #: request named none (every table built before ADR-0057).
+    subject: str | None = None
 
 
 #: Column order of the logical Event table.
@@ -51,6 +56,7 @@ def event_table(result: EventResult) -> tuple[EventTableRow, ...]:
             upstream_event_ids=item.upstream_event_ids,
             provider=result.provider,
             result_hash=result.result_hash,
+            subject=item.subject,
         )
         for item in result.events
     )

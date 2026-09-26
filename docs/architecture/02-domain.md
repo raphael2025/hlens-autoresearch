@@ -346,6 +346,7 @@ PnL 是否按成本模型计算，由 contract suite 对具体实现检查，契
 | `EventResult` | 截至 `as_of` 的事件表 | 事件按 `(event_time, event_id)` 严格升序且不晚于 `as_of`；`result_hash` 复核；`check_answers` 核对事件时间 = 可观测时间、引用的输入在当时可见且在请求中、属于请求的事件定义 |
 | `EventProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_events` 非空，`event:name@semver → spec hash` |
 
+可选的 `subject`（ADR-0057）：请求所属的标的；给出时 `Event` / `EventResult` 必须绑定同一标的并进入 `event_id` / `result_hash`，缺省时省略（旧哈希不变）。
 执行器 `infrastructure/event/runner.py` 对每个检查点只交出可见集合，并要求相邻检查点的事件表一致（不得回填 / 撤回：不得未来确认）。
 provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实边界**：`source_lineage_hash` 是否对应已登记的上游值、
 交互规格声明的 Feature / State 并集是否与上游规格一致，属 Registry。

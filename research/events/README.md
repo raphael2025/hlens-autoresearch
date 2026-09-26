@@ -34,7 +34,7 @@ State 序列目前以本地最小形状输入（`infrastructure/event/inputs.py`
 
 ## 已知缺口
 
-- 一个请求对应一个标的；多标的事件表需要 subject 键。
+- ~~一个请求对应一个标的；多标的事件表需要 subject 键。~~ ✅ ADR-0057（2026-09-26）：可选 `EventRequest.subject`，一个请求仍只对应一个标的，结果与事件绑定该标的，逻辑事件表加 `subject` 列；缺省时哈希不变。
 - 执行器默认检查点的成本为 O(检查点 × 可见集合)。
 - ✅（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）统计可序列化：`statistic_payload`（时间 ISO-8601 UTC、时长整数微秒、`Decimal` 精确文本）与
   `EventStatsReport`（绑定所统计事件运行的 `result_hash`，`report_hash` 覆盖全部载荷）；事件运行可存取：`infrastructure/event/store.py` 的
