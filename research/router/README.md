@@ -58,3 +58,18 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
   **P10-ELIG 在研究层关闭；生产资格仍归 Control Plane。**
 
 仍未做：信任模式下生命周期映射本身不进入 `run_hash`（改变既有哈希）；web 控制台对 `eligibility_not_evidenced` 原因与 `eligibility` 键只按原样显示（`apps/web` 不在本通道范围）。
+
+## 路由器自验证（P10，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+无 core / 契约 / Schema 变更；未改 `router.py` / `paper.py` / `evidence.py` / `__init__.py`，通过模块路径 `research.router.validation` 暴露。
+
+- `router_strategy_spec(spec, state=...)`：把路由器表示为普通 `StrategySpec`（同名同版本，唯一信号为其状态，`params = {"router_spec_hash": RouterSpec.spec_hash()}`，
+  `param_search_space` 为空）。路由表 / 回退 / 切换费率一变，策略规格内容哈希即变，经 `ValidationContext` 的复现元组绑定进报告的 `experiment_hash`。
+  试验计数与策略相同：每个路由规格恰 1 次试验（`ROUTER_TRIALS_PER_SPEC`）。
+- `RouterTrialRunner`：`research.strategies.validation.TrialRunner` 实现。无压力的调用**就是** `paper_run`（其 `backtest` 即 `RouterPaperRun.result`，
+  净切换成本），因此 `G0.reproducibility` 比较记录的路由器结果与重新 `paper_run` 的结果。G4 压力调用复用同一流程（路由 → `combine_targets` → 回测器 →
+  与 `paper_run` 相同的切换成本记账）：`decision_offset` 在平移后的时刻按当时已知状态重新路由；`delay_bars` 把组合目标（及其切换费用）推迟执行；
+  `instruments` 只保留这些标的。非空 `params` 一律拒绝（路由器没有搜索参数）。
+- `validate_router(validator, strategy_spec, run)`：核对策略规格属于该路由器、`run.verify()`，再验证 `run.result`；
+  `RouterValidation.binding_hash` 绑定报告哈希、路由规格哈希、路由策略规格哈希与 `run_hash`。本模块不含阈值、不判定 verdict。
+- 测试：`tests/research/router/test_router_validation.py`（TEST ONLY 宽松 Profile；只断言结构与绑定、G0 重跑可复现、篡改重跑 G0 失败、试验计数，不断言 verdict）。
