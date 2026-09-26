@@ -41,6 +41,7 @@
 | D-L6-1（ADR-0061） | `not` 无法用单一交互规格表达而不引入未来函数 | 编译为 `event_window_end` → `event_absence` 两个规格；ADR-0061 §2 修订 | 契约只有一个 `observable_lag`；两规格形式在窗口结束触发且窗口内所有 B 可见 | B36 |
 | D-L5-1（ADR-0060） | 市场基准是否默认启用 | 先作为显式 opt-in 集成；随后在循环 / 合成校准 / 夹具中强制启用并把 TEST ONLY 夹具改为已登记规则名（L7 通道，固定哈希按此有意重新固定） | 未登记规则名须 INCONCLUSIVE；夹具使用占位名 | B35 / L7 |
 | 状态目录单写者锁 | L2 跨进程测试发现 `state_dir` 无自身锁 | 实施 `state.lock`（实现缺陷修复，非架构决定） | 注入总线时第二个进程可并发写 | B32 |
+| D-DEG-IE（ADR-0049） | 劣化检查所有指标缺失时是否在新事件主题 `research_loop.degradation_insufficient_evidence` 上发布 | **不发布（待 Codex 决定）**：只以 `DegradationCheck.status = insufficient_evidence` 返回调用方并写入 `degradation_check` 报告；不新增主题 | 新主题扩展已 Accepted 的 ADR-0049 事件面，属接口变化；报告 / 返回值已保证「绝不当作健康」 | B51（通道的新主题实现被撤回） |
 
 **结果更新（2026-09-26 深夜）**：ADR-0052 已按 Codex K3 以 2.1.0 实施（独立 Phase 1 分支 M0～M3 + 门禁修复，B38 / B40），并与 ADR-0054 / 0057 的 2.1.0 重新声明一起合入全代码分支（B41）；
 上表 ADR-0052 "阻断"、P3-MULTISYM "未接受"、D-PARTIAL "不升契约版本"与"开放项（交 Codex）"的状态因此变为"已实施（2.1.0）、待 Codex 复核"；ADR-0060 / 0061 已实施（B35 / B39 / B36）。Phase 1 候选与 `main` 均未合并。

@@ -622,3 +622,14 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 发现 2：`llm_content_fingerprint(llm)` 仅对 `ContentVerifiedLLM` 给出 `{"llm_content_verified": true}`，并入状态目录指纹；以另一模式重开（两个方向）被拒绝，`compose_durable` 直接调用同样核对。未核验运行的指纹不变（`PINNED_FINGERPRINT_HASH`、`PINNED_RECORD_HASHES` 均未改）。
 - 发现 14：新增 `tests/infrastructure/e2e/test_research_loop_dataset_conditional.py`：`ConditionalPlan(validate_cells=True)` 经 `open_dataset_loop`（SQLite 夹具，无网络 / PostgreSQL）端到端：全部单元登记、`conditional_cells` 记录、支持的单元仅以 G0–G3 验证并绑定本轮清单、重开复原相同的 trial 日志与记录哈希。
 - 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/loop tests/research/hypotheses tests/infrastructure/e2e/test_research_loop_dataset_conditional.py` → 230 passed, 1 warning (875 s)；`ruff check .` / `ruff format --check .`（741 files）/ `mypy`（585 files）通过。
+
+**B51 — 证据严格性：审计 A 发现 4 / 5 / 6 / 8 / 9 / 13（`a376da0` / `8e8799f` / `1d7b69b` / `06a3ec4` / `949cef8` 的 cherry-pick → `140b498` / `7302300` / `1d8fc8c` / `29a0592` / `1d7c90c`；集成修正 `b18fb94`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- F5 + F6（Promotion，C-A8）：`PromotionEvidence.profiles` 必填；每份报告的 Profile 须哈希 / ref 一致、状态 FROZEN、带 `provenance.calibration_report`，否则类型化拒绝（`profile_missing` / `profile_hash_mismatch` / `profile_not_frozen` / `profile_not_calibrated` / `profile_not_evidenced`）。今天没有冻结的 Profile → 所有真实晋升在此被拒；库策略即使有完整 TEST ONLY 证据也以 `profile_not_frozen` 被拒（替换原先的弱测试）。
+- F4（ADR-0060）：Promotion 与路由证据模式要求报告含 Profile 规则对应的 `G2.market_benchmark.<rule>`（规则未登记时为裸 `G2.market_benchmark`），否则 `market_benchmark_missing`；证据模式 `EligibilityEvidence.profiles` 必填，报告的 Profile 未给出 → `profile_not_found`。验证器默认值与信任模式固定哈希不变。
+- F9：持久 `AuditTrail(path)` 必须显式给出 `record_marks`（否则 `MarksChoiceRequired`）；内存审计默认不变，显式 `False` 保持固定审计头。
+- F8：`DegradationCheck.insufficient_evidence` / `status`；所有指标缺失时绝不报告为健康，报告写 `"insufficient_evidence": true`（仅此情形，其余载荷与 `check_hash` 不变）。通道另加的新事件主题**未采纳**（扩展 ADR-0049 事件面，记为 D-DEG-IE 待 Codex）：`observe` 仍只发布退化事件。
+- F13：边界测试确认 `plugins/` 与 `infrastructure/` 不 import `research/`。
+- 集成修正：B49 的替换作业调用 `check_report`，F4 后必须传 `profiles` → `propose_replacements` 增加必填 `profiles`，新增 `profile_not_found` / `market_benchmark_missing` 拒绝测试。ADR-0005 与 `research/README.md` 的库策略拒绝说明同步。
+- 实际运行：子代理在其基线（`820d771`）上全量非 PG → 6785 passed, 136 deselected (3091 s)；本分支集成后 `pytest -m "not postgres" tests/research/evolution tests/research/router tests/promotion tests/apps tests/research/reports` + 边界 + 文档一致性 → 624 passed；ruff / format / mypy（586 files）通过。本分支全量门禁见后续批次。
+- 遗留：Profile 的 `status` 不在其内容哈希内，Promotion 信任调用方给出的对象上的状态（需 Profile 注册表才是真正权威）；路由证据模式不要求 FROZEN；两者都不要求 `inverse_control_reported` 时的 `G2.inverse_control`；控制台对新拒绝码与证据不足的显示由 web 通道处理。

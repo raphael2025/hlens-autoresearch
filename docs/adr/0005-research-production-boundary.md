@@ -155,7 +155,7 @@ Revalidation 使用**登记时的** Profile 版本；是否同时报告新版本
    spec 及其内容哈希、同一 Constitution / Profile、同一研究 commit）、依赖闭包（无冲突，覆盖 spec 的信号与风控）、生命周期
    （合法历史、经人工批准的 OOS → PAPER，当前为 PAPER / PRODUCTION_CANDIDATE / ACTIVE）以及研究 Provider 在声明的 golden 输入上
    **确定性**（跑两次逐字节相同）算出的 golden 输出构建 Artifact；任一缺失 / 非 PASS / 不符 → `PromotionRefused(reason)`，
-   不写任何东西、不产生部分 Artifact。今天 `research/strategies/library.py` 的策略**全部**以 `no_validation_report` 被拒（有测试）。
+   不写任何东西、不产生部分 Artifact。今天 `research/strategies/library.py` 的策略**全部**以 `no_validation_report` 被拒（有测试）；2026-09-26 起 Promotion 还要求每份报告的 Profile 为 FROZEN 且带 `provenance.calibration_report`（C-A8），并要求报告含 ADR-0060 市场基准项——今天没有冻结的 Profile，所以即使给出完整的测试证据也以 `profile_not_frozen` 被拒（有测试）。
 3. **Golden 编码**（`infrastructure/registry/golden.py`，实现选择，非冻结）：在 StrategyProvider 层，"signals" = golden 请求
    （`StrategyRequest`，含其信号观察序列与固定参数），"positions" = 每个请求的 `request_hash` + `TargetPosition` 序列，不含
    Provider 身份。
