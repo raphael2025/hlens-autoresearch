@@ -61,3 +61,22 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
 重新打开文件会重放并校验整条哈希链后恢复状态。效果：某族在进程 A 开封后，进程 B 打开同一文件无法再次开封该族；
 在进程 A 里 `claim_evaluation` 消耗的评估，进程 B 也无法再次领取；全局 `max_unsealings` 预算跨重启累计计数。
 链被篡改、截断或出现未知记录类型一律 `research.persistence.JournalCorrupted`，不静默修复。
+
+### 调试批次（2026-09-26）：G4 检查隔离与多种子负对照
+
+> 状态：**CODE_COMPLETE / DEBUG_PENDING**（代码与测试完成，尚待调试 / 复核；未改变任何契约、Schema、Profile 数值或门的放行条件）。
+
+- **G4 逐检查异常隔离**（`g4.py`，Phase 8）：`run_robustness` 按固定顺序（`CHECKS`）逐个隔离运行 9 项检查。某项检查抛出**意外**异常时，
+  该检查只产生一个 `INCONCLUSIVE` 门 `<前缀>.check_error`（metric `check_error:<异常类型>`；`details` 记录类型与一行、屏蔽内存地址、
+  不超过 200 字符的确定性消息），其余检查照常运行，因此 G4 最好也只是 `INCONCLUSIVE`，别处的 FAIL 仍然 FAIL。**有意的拒绝照旧抛出**：
+  `ValueError`（含 `UnsupportedMethod`、`ProfileFieldMissing`）、`TypeError`、`MemoryError`；`BaseException` 从不捕获。没有异常时输出逐字节不变
+  （测试固定了两份夹具的结果哈希）。注意：此前意外异常会从 `validate` 传播出去，现在变为报告内的 INCONCLUSIVE 门（不写 Failure Registry）。
+- **多种子负对照**（`pipeline.py`，Phase 4；backlog C「负对照为单次固定种子」）：`InSampleInput.control_seeds` / `ValidatorSetup.control_seeds`
+  可选，**没有默认种子列表**。`None`（默认）= 原单次抽取（shuffle 用 `seed`、shift 用 `seed + 1`），门逐字节不变（测试固定哈希）。给出非空、
+  互不相同的 `int` 元组时，两种对照对每个种子各跑一次（直接使用该种子，门 id 中的种子就是实际种子）：逐种子门
+  `G1.shuffle_control.seed.<s>` / `G1.shift_control.seed.<s>` 按**基础门 id** 判定（Profile 对 `G1.shuffle_control` / `G1.shift_control` 的
+  inconclusive band 适用于每个种子），阈值仍为 `significance.multiple_testing_threshold`；基础门按标准规则汇总（任一 FAIL → FAIL，否则任一
+  INCONCLUSIVE → INCONCLUSIVE），报告最小 p 值（metric `..._timing_p_value_min_over_seeds[>=]`）。种子越多只会增加失败的途径，从不放宽；
+  G2 空模型仍为单种子（`seed + 2`）。
+- **仍然存在（受阻）**：统计仍是 `float` 上的 HAC 正态近似（ADR-0037 §5）；替换为精确 / Decimal 实现须先按 ADR-0052 补全契约（`core/`，超出本批次文件边界），本批次未改动，仍受阻。
+  负对照与 G3 仍共用 `significance.multiple_testing_threshold`（D-CTRL；独立阈值字段同属 ADR-0052 的契约补全，未实施）。
