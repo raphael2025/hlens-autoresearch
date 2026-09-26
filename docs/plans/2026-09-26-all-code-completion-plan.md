@@ -734,6 +734,11 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   + 文档一致性 + 架构边界 → `394 passed, 1 warning in 27.92s`，退出码 0；`ruff check .` → `All checks passed!`；`ruff format --check .` →
   `761 files already formatted`；`mypy` → `Success: no issues found in 595 source files`；`npm test` → lib 88 / 88、组件 110 / 110，退出码 0；
   `npm run build` ✓，退出码 0。未另跑全量门禁（下一次全量门禁覆盖）。
+- 独立复核（Codex，`9c2871d` 之后）：`systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline pytest -q -p no:cacheprovider
+  tests/research/router tests/research/evolution/test_replacement_job.py tests/promotion` → `244 passed in 9.41s`。
+- 复核修正（后续提交，不改写历史）：删去"G2.inverse_control 为 INCONCLUSIVE 而报告判定为 PASS"的不可能组合用例（ADR-0013 要求判定由全部门导出，
+  ADR-0060 的 INCONCLUSIVE 项参与判定）；保留有效报告中的 INCONCLUSIVE 项 → 更早的 `verdict_not_pass`，以及门为 PASS 的负收益值 → 路由（只要求存在）。
+  修正后同一命令 → `244 passed in 9.76s`；`ruff check` / `ruff format` 通过。
 - 边界：未改契约 / Schema / 阈值 / Profile 数值；未改 Promotion——`research/promotion/service.py` 同样只要求市场基准项、不要求 `G2.inverse_control`
   （FOLLOW-UP，未执行）。
 

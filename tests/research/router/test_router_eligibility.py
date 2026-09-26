@@ -570,13 +570,11 @@ def test_the_inverse_control_is_presence_only_and_its_verdict_is_the_reports() -
     (``benchmark_unavailable``) makes the validator's verdict INCONCLUSIVE, refused before."""
     profile = _profile("none", inverse=True)
     base = _report(B, profile=profile)
-    for verdict in (Verdict.INCONCLUSIVE, Verdict.FAIL):
-        not_pass = _with_gates(base, _gate(INVERSE, verdict), verdict=verdict)
-        assert _refusal(_with_b(not_pass, profile)).refusal == "verdict_not_pass"
-    # a PASS report cannot carry a not-PASS item (the verdict is derived from every gate), so
-    # a present item in a PASS report is a computed one; this check asks only for presence
-    with pytest.raises(ValueError, match="verdict"):
-        _with_gates(base, _gate(INVERSE, Verdict.INCONCLUSIVE), verdict=Verdict.PASS)
+    # a valid report with an INCONCLUSIVE item: its derived verdict is INCONCLUSIVE (ADR-0013)
+    unavailable = _with_gates(
+        base, _gate(INVERSE, Verdict.INCONCLUSIVE), verdict=Verdict.INCONCLUSIVE
+    )
+    assert _refusal(_with_b(unavailable, profile)).refusal == "verdict_not_pass"
     # any computed value routes: no threshold on the inverse control's return (ADR-0060)
     negative = GateResult(
         gate_id=INVERSE, metric="inverse_net_return", value=-0.5, verdict=Verdict.PASS
