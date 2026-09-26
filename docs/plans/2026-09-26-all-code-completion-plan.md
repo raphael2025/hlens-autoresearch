@@ -321,3 +321,13 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 回归测试 `test_cli_verify_fails_on_an_orphan_review_and_the_same_add_recovers`（断言退出码、stderr、同内容 `add` 恢复后 `verify` 为 0）。
 - 旧版本复现（把 `HEAD:plugins/knowledge/cli.py` 载入临时模块，同一孤立审阅目录）：`old verify exit code: 0`；修复后 `new verify exit code: 1`。
 - 实际运行：`uv run pytest -q -m "not postgres" tests/plugins/knowledge` → 50 passed in 0.14s；`ruff check` → All checks passed；`mypy plugins/knowledge tests/plugins/knowledge` → no issues in 8 files。
+
+**B20 — Phase 8：多标的验证**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 P8 通道 `7e2b4ec` 的 cherry-pick）
+
+- `ValidatorSetup.instruments`（默认 `None` = 单标的路径，逐字节不变；4 个夹具报告哈希前后一致，2 个固定进测试）；`G0.instrument_scope`（重跑交易超出声明集合 → INCONCLUSIVE、不计算标签）；
+  逐标的 manifest 绑定检查；标签事件键本就是 `<instrument>|<time>`，逐标的一个 Outcome 请求后池化（`research/validation/instruments.py`：`pool_outcomes`、`run_multi_instrument_validation`）；
+  池化 G0–G3 + 各标的 G0–G3（`<gate>.instrument.<name>`，按基门 id 判定）+ 无失败才 G4，PASS 需每个标的都通过；trial 计数不变；G4 跨资产用各标的自己的重跑。
+- 风险：池化的负对照按时间混合标的，完全植入的标的对上偶见失败（种子 7、17），多标的假阳性率未校准（Phase 9 待做）；多标的测试用 TEST ONLY 宽松 Profile。
+- 子代理：`pytest tests/research/strategies tests/research/validation tests/research/loop/test_loop_units.py tests/test_architecture_boundaries.py` → 235 passed；synthetic_lab → 38 passed；ruff / format / mypy（45 files）通过。
+- 本分支集成后：`pytest -m "not postgres" tests/research/strategies tests/research/validation tests/research/synthetic_lab tests/research/loop/test_loop_units.py tests/test_architecture_boundaries.py tests/test_docs_consistency.py`
+  → 280 passed, 1 warning (187 s)；`ruff check research tests/research` → 通过；mypy（45 files）→ no issues。
