@@ -17,6 +17,10 @@
 （`<out>/gate_calibration/<report_hash>.json`，规范 JSON），逐字节复制到此处并按工厂命名。
 `tests/research/synthetic_lab/test_evidence_setups.py` 钉住两个 setup 的 `inputs_payload` 哈希，并检查这里的报告可解析、
 `report_hash` 等于内容哈希、`inputs` 等于 setup 的 `inputs_payload`。完整再生成不是测试（见下）。
+**记录版本**：两份报告由契约 **2.1.0** 的代码生成；setup 的 `inputs_payload` 内嵌 Profile / spec 的信封与内容哈希。
+契约升到 2.2.0（ADR-0055）后，测试在新进程中于 `contract_schema_version_scope("2.1.0")` 内构造 setup 再与报告比对
+（报告与钉值不重生成、不重钉），并检查当前代码构造的 setup 除信封及其上的哈希外与记录的相同。用当前代码重跑会得到
+新的 `inputs` 与 `report_hash`（信封变化），属于新证据文件，不是对本目录报告的"修正"。
 
 ## 设置（全部显式，驱动模块 [`evidence_setups.py`](../../../tests/research/synthetic_lab/evidence_setups.py)）
 

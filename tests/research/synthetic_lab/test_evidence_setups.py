@@ -7,17 +7,29 @@ hashes pinned), and the committed reports under ``docs/research/calibration/`` p
 pipeline over thousands of markets (tens of minutes) and is a documented manual command
 (``docs/research/calibration/README.md``), not a test; a reduced-seed regeneration would not
 reproduce the committed bytes and is deliberately not attempted.
+
+Recorded version (ADR-0055): the reports and the ``INPUTS_HASHES`` pins were produced by the
+contract 2.1.0 code, and a setup's ``inputs_payload`` embeds envelopes and content hashes of its
+Profiles / specs. They are therefore checked against the setups built by the 2.1.0 code — a fresh
+interpreter that imports the setup modules inside ``contract_schema_version_scope("2.1.0")`` (as
+``regenerate_legacy`` does for the console fixtures) — never regenerated or re-pinned. The setups
+built by the current code must still be deterministic and differ from the recorded ones only by
+their envelopes and the content hashes taken over them (so the same seeds, effects, candidates and
+parameters).
 """
 
 from __future__ import annotations
 
 import json
+import subprocess
+import sys
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
 
-from core.domain.base import content_hash
+from core.domain.base import CONTRACT_SCHEMA_VERSION, content_hash
 from research.synthetic_lab.gate_calibration import (
     DISCLAIMER,
     GateCalibrationSetup,
@@ -26,7 +38,10 @@ from research.synthetic_lab.gate_calibration import (
 from tests.research.synthetic_lab import evidence_setups as ev
 from tests.research.synthetic_lab import gate_fixtures as fx
 
-CALIBRATION_DIR = Path(__file__).resolve().parents[3] / "docs" / "research" / "calibration"
+REPO_ROOT = Path(__file__).resolve().parents[3]
+CALIBRATION_DIR = REPO_ROOT / "docs" / "research" / "calibration"
+#: The contract version whose code produced the committed reports and the pins below.
+RECORDED_VERSION = "2.1.0"
 
 AnySetup = GateCalibrationSetup | MultiInstrumentCalibrationSetup
 
@@ -59,11 +74,71 @@ FACTORIES: dict[str, Callable[[], AnySetup]] = {
 }
 
 
+_RECORDED_PROGRAM = """\
+import json, sys
+from core.domain.base import contract_schema_version_scope
+version = sys.argv[1]
+with contract_schema_version_scope(version):
+    from tests.research.synthetic_lab import evidence_setups as ev
+    names = sys.argv[2:]
+    print(json.dumps({name: getattr(ev, name)().inputs_payload() for name in names}))
+"""
+
+
+@pytest.fixture(scope="module")
+def recorded() -> dict[str, Any]:
+    """Every setup's ``inputs_payload`` as the ``RECORDED_VERSION`` code builds it (JSON form)."""
+    result = subprocess.run(
+        [sys.executable, "-c", _RECORDED_PROGRAM, RECORDED_VERSION, *sorted(FACTORIES)],
+        cwd=REPO_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    lines = [line for line in result.stdout.splitlines() if line.startswith("{")]
+    payloads: dict[str, Any] = json.loads(lines[-1])
+    return payloads
+
+
+def _envelopes(value: object) -> list[str]:
+    if isinstance(value, dict):
+        own = [value["schema_version"]] if "schema_version" in value else []
+        return own + [v for item in value.values() for v in _envelopes(item)]
+    if isinstance(value, list):
+        return [v for item in value for v in _envelopes(item)]
+    return []
+
+
+def _without_envelopes(value: object) -> object:
+    """``value`` without envelopes and the ``*_hash`` values taken over enveloped objects."""
+    if isinstance(value, dict):
+        return {
+            key: _without_envelopes(item)
+            for key, item in value.items()
+            if key != "schema_version" and not key.endswith("_hash")
+        }
+    if isinstance(value, list):
+        return [_without_envelopes(item) for item in value]
+    return value
+
+
 @pytest.mark.parametrize("name", sorted(FACTORIES))
-def test_the_evidence_setups_are_deterministic(name: str) -> None:
+def test_the_current_setups_are_the_recorded_ones_but_for_envelopes(
+    name: str, recorded: dict[str, Any]
+) -> None:
+    current = json.loads(json.dumps(FACTORIES[name]().inputs_payload()))
+    assert current != recorded[name]  # the current envelope is part of the payload
+    assert set(_envelopes(current)) == {CONTRACT_SCHEMA_VERSION}
+    assert _without_envelopes(current) == _without_envelopes(recorded[name])
+
+
+@pytest.mark.parametrize("name", sorted(FACTORIES))
+def test_the_evidence_setups_are_deterministic(name: str, recorded: dict[str, Any]) -> None:
     first, second = FACTORIES[name](), FACTORIES[name]()
     assert first.inputs_payload() == second.inputs_payload()
-    assert content_hash(first.inputs_payload()) == INPUTS_HASHES[name]
+    # the pins describe what the recorded-version code builds (see module docs)
+    assert content_hash(recorded[name]) == INPUTS_HASHES[name]
+    assert set(_envelopes(recorded[name])) == {RECORDED_VERSION}
 
 
 def test_the_candidates_are_only_the_test_only_fixtures() -> None:
@@ -116,13 +191,15 @@ def test_the_committed_reports_are_exactly_the_listed_ones() -> None:
 
 
 @pytest.mark.parametrize("name", sorted(REPORT_HASHES))
-def test_a_committed_report_matches_its_content_and_its_setup(name: str) -> None:
+def test_a_committed_report_matches_its_content_and_its_setup(
+    name: str, recorded: dict[str, Any]
+) -> None:
     payload = json.loads((CALIBRATION_DIR / f"{name}.json").read_text(encoding="utf-8"))
     body = {key: value for key, value in payload.items() if key != "report_hash"}
     assert payload["report_hash"] == content_hash(body) == REPORT_HASHES[name]
     assert payload["kind"] == "gate_calibration"
     assert payload["disclaimer"] == DISCLAIMER
-    assert payload["inputs"] == json.loads(json.dumps(FACTORIES[name]().inputs_payload()))
+    assert payload["inputs"] == recorded[name]  # produced by the recorded-version code
     assert [item["profile"] for item in payload["candidates"]] == [
         str(fx.LAX_TEST_ONLY_PROFILE.ref),
         str(fx.STRICT_TEST_ONLY_PROFILE.ref),
