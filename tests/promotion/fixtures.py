@@ -127,14 +127,20 @@ def toy_profile(
     calibration_report: str | None = TEST_ONLY_CALIBRATION,
     *,
     market_benchmark_rule: str = TOY_BENCHMARK_RULE,
+    inverse_control_reported: bool = True,
     **overrides: object,
 ) -> ValidationProfile:
     """The TEST ONLY Profile the toy reports ran under; FROZEN with a TEST ONLY calibration
-    reference by default (``tests.factories.validation_profile`` values — not calibrated)."""
+    reference by default (``tests.factories.validation_profile`` values — not calibrated;
+    ``inverse_control_reported`` keeps the factory's ``True`` unless given)."""
     provenance = Provenance(calibration_report=calibration_report, approval_adr="TEST-ONLY")
     base = validation_profile().benchmark
     benchmark = BenchmarkParams.model_validate(
-        {**base.model_dump(), "market_benchmark_rule": market_benchmark_rule}
+        {
+            **base.model_dump(),
+            "market_benchmark_rule": market_benchmark_rule,
+            "inverse_control_reported": inverse_control_reported,
+        }
     )
     payload: dict[str, object] = {
         "status": status,

@@ -742,16 +742,32 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 边界：未改契约 / Schema / 阈值 / Profile 数值；未改 Promotion——`research/promotion/service.py` 同样只要求市场基准项、不要求 `G2.inverse_control`
   （FOLLOW-UP，未执行）。
 
+**B59 — Promotion 要求 Profile 所要求的 ADR-0060 反向对照项（隔离分支 `claude/p10-inverse-control`，基于 `2636f4a`，快进推送到 `wip/all-code-completion`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 缺口（B58 FOLLOW-UP）：`research/promotion/service.py::_check_profiles` 只要求市场基准项；与路由证据模式相同的 ADR-0060 遗漏。
+- 修复：Profile 校验、冻结登记与市场基准项之后，报告评估 G2 且 `checked.benchmark.inverse_control_reported` 为 true 而没有逐字相同的
+  `G2.inverse_control` 门 → `PromotionRefusal.INVERSE_CONTROL_MISSING`（`inverse_control_missing`；detail 写明报告、Profile 与所缺的项）。
+  只要求存在；首个失败的顺序不变（冻结 → 市场基准 → 反向对照）；不评估 G2 的报告（密封 OOS）不要求。生产侧仍完全失败关闭（登记为空）。
+- 测试：缺失 → 拒绝（近似 id 也拒绝），密封 OOS 报告不要求；两项都缺 → `market_benchmark_missing`；未冻结 → `profile_not_frozen` 在前；
+  标志为 false → 无需该项、可构建。`toy_profile` 新增 `inverse_control_reported`（默认 true = 工厂默认，默认 Profile 哈希不变）。
+  在修复前的 `service.py` 上新增的缺失用例失败，修复后通过。
+- 实际运行（隔离 worktree）：`systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline pytest -q -p no:cacheprovider
+  -m "not postgres" tests/promotion tests/research/router tests/research/evolution tests/test_docs_consistency.py tests/test_architecture_boundaries.py`
+  → `319 passed in 10.62s`，退出码 0；`tests/promotion` 单独 → `164 passed in 1.26s`；`ruff check .` → `All checks passed!`；`ruff format --check .` →
+  `761 files already formatted`；`mypy` → `Success: no issues found in 595 source files`。无控制台改动（Promotion 拒绝码不在控制台显示），未跑 web。
+- 边界：未改契约 / Schema / 阈值 / Profile 数值 / ADR-0008；未改冻结登记；不据此冻结任何 Profile。`research/promotion/README.md` 顺带把 ADR-0062
+  的状态由过时的 Proposed 更正为 Accepted。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
 |---|---|---|
 | 7 | 内容核对失败记录调用、核对模式写入状态目录指纹（B50） | 只有脚本化 LLM |
 | 6 | 数据集组合根上的条件计划端到端测试（B50） | 同 10.6 |
-| 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51）；冻结以 ADR-0062 的追加式、带锚点的 Profile 冻结登记为权威（B56，ADR-0062 Accepted） | 今天登记为空 → 所有晋升被拒（设计如此）；批准人只是声明，登记不是生产 Control Plane |
+| 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51）；冻结以 ADR-0062 的追加式、带锚点的 Profile 冻结登记为权威（B56，ADR-0062 Accepted）；Profile 要求时还须有 `G2.inverse_control`（B59） | 今天登记为空 → 所有晋升被拒（设计如此）；批准人只是声明，登记不是生产 Control Plane |
 | 0.5 | 按标签 / 资产检索（ADR-0055 Accepted，契约 2.2.0，含控制台；B55） | Phase 0.5 未验收：种子尚无具名人工审阅的标签 / 资产 |
 | 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告已在原基线 `dd6c8e1` 上逐字节复现（B57，只作证据） |
-| 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | 证据模式不要求 FROZEN；Promotion 尚不要求 `G2.inverse_control` |
+| 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | 证据模式不要求 FROZEN |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
 | 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案（有意：每个 family 只评估一次密封 OOS；未决设计边界见 B57）；锚点不认证新增行 |
 | 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做；控制台对 502 / 500 的呈现未经真实后端；生产 ASGI 服务器未选定 |

@@ -27,4 +27,4 @@
   报告所用 Profile 的 `benchmark.inverse_control_reported` 为 true 而报告没有 ADR-0060 的 `G2.inverse_control` 门（逐字精确）→
   `inverse_control_missing`（`EligibilityRefusal` 新值；`RouterEligibilityRefused` / `RouterStop` 照常记录，拒绝码进入 `stop_hash`）。
   只要求存在（只报告项，无新阈值、不改判定）；为 false 时行为不变。信任模式哈希不变；无契约 / Schema / Profile 数值变化。
-  控制台 `routerEligibility.ts` 增加该码的中文说明（G5 显示为「通过」）。Promotion（`research/promotion/service.py`）的同类检查尚未要求该项，另行处理。
+  控制台 `routerEligibility.ts` 增加该码的中文说明（G5 显示为「通过」）。Promotion（`research/promotion/service.py`）的同类检查已于 B59 补上（ADR-0005 补记）。

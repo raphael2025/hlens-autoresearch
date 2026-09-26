@@ -408,6 +408,72 @@ def test_an_unregistered_rule_needs_its_inconclusive_item() -> None:
     assert refused.detail.endswith("G2.market_benchmark")
 
 
+def _without_inverse(evidence: PromotionEvidence, item: str | None = None) -> PromotionEvidence:
+    """``evidence`` whose G2 report carries ``item`` (default: none) for G2.inverse_control."""
+    spec, experiment, in_sample = evidence.spec, evidence.experiments[0], evidence.reports[0]
+    bare = toy_report(
+        spec, experiment, in_sample.report_id, _stages(in_sample), inverse_control=item
+    )
+    return replace(evidence, reports=(bare, *evidence.reports[1:]))
+
+
+def test_a_g2_report_without_the_inverse_control_item_is_refused() -> None:
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    assert profile.benchmark.inverse_control_reported  # the toy Profile reports it
+    in_sample, sealed = evidence.reports
+    assert "G2.inverse_control" in {g.gate_id for g in in_sample.gates}
+    # the sealed-OOS report does not evaluate G2, so it needs no G2 item (the happy path)
+    assert "G2" not in _stages(sealed)
+    assert "G2.inverse_control" not in {g.gate_id for g in sealed.gates}
+    # frozen (registered) by _build, so the refusal is the inverse control's, not the freeze's
+    refused = _refusal(_without_inverse(evidence))
+    assert refused.reason is R.INVERSE_CONTROL_MISSING
+    assert refused.reason.value == "inverse_control_missing"
+    assert "TEST-ONLY-in-sample" in refused.detail
+    assert "benchmark.inverse_control_reported=true" in refused.detail
+    assert refused.detail.endswith("without the ADR-0060 item G2.inverse_control")
+    # the gate id must match exactly: no prefix, suffix or case folding
+    for near in ("G2.inverse_control.flat", "G2.inverse", "g2.inverse_control"):
+        near_miss = _refusal(_without_inverse(evidence, near))
+        assert near_miss.reason is R.INVERSE_CONTROL_MISSING, near
+
+
+def test_the_inverse_control_is_checked_after_the_freeze_and_the_market_benchmark() -> None:
+    evidence = toy_evidence()
+    spec, experiment, in_sample = evidence.spec, evidence.experiments[0], evidence.reports[0]
+    neither = toy_report(
+        spec,
+        experiment,
+        in_sample.report_id,
+        _stages(in_sample),
+        market_benchmark=None,
+        inverse_control=None,
+    )
+    both_missing = replace(evidence, reports=(neither, evidence.reports[1]))
+    assert _refusal(both_missing).reason is R.MARKET_BENCHMARK_MISSING
+    # not frozen in the registry (another Profile is): the freeze refusal comes first
+    other = toy_profile(market_benchmark_rule="none")
+    assert other.content_hash() != toy_profile().content_hash()
+    assert _refusal(_without_inverse(evidence), other).reason is R.PROFILE_NOT_FROZEN
+
+
+def test_a_profile_that_does_not_report_the_inverse_control_needs_no_item() -> None:
+    profile = toy_profile(inverse_control_reported=False)
+    assert profile.content_hash() != toy_profile().content_hash()
+    evidence = toy_evidence()
+    spec = evidence.spec
+    experiment = toy_experiment(spec, profile=profile)
+    reports = tuple(
+        toy_report(spec, experiment, r.report_id, _stages(r), inverse_control=None)
+        for r in evidence.reports
+    )
+    _build(
+        replace(evidence, reports=reports, experiments=(experiment,), profiles=(profile,)),
+        profile,
+    )
+
+
 def test_a_profile_with_rule_none_needs_no_market_benchmark_item() -> None:
     profile = toy_profile(market_benchmark_rule="none")
     evidence = toy_evidence()

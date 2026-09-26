@@ -10,14 +10,18 @@ Status: **CODE_COMPLETE / DEBUG_PENDING** (2026-09-26). No contract, Schema or l
   OOS — `research.validation.report.promotion_blocked_reason`); the `ExperimentSpec` of every report; the
   `ValidationProfile` of every report (`profiles`: hash = the report's `validation_profile_hash`, status
   `FROZEN`, `provenance.calibration_report` present — Constitution C-A8; `profile_missing` /
-  `profile_hash_mismatch` / `profile_not_frozen` / `profile_not_calibrated` / `profile_not_evidenced`); the
+  `profile_hash_mismatch` / `profile_not_frozen` / `profile_not_calibrated` / `profile_not_evidenced`); a
+  report that evaluates G2 carries the ADR-0060 items its Profile calls for — the market benchmark item of
+  `benchmark.market_benchmark_rule` (`market_benchmark_missing`), then, when
+  `benchmark.inverse_control_reported` is true, the exact `G2.inverse_control` (`inverse_control_missing`;
+  presence only, no threshold; B59); the
   research `GitCodeRevision`; dependency hashes; the `LifecycleHistory` (human-approved OOS → PAPER, now
   PAPER / PRODUCTION_CANDIDATE / ACTIVE); the research `StrategyProvider` and the declared golden inputs.
 - Anything missing / non-PASS / mismatched → `PromotionRefused(reason: PromotionRefusal, detail)`;
   nothing is written, no partial artifact exists.
 - Today **no** library strategy (`research/strategies/library.py`) can be promoted: complete TEST ONLY
   evidence under a non-frozen Profile is refused `profile_not_frozen` (tested; no Profile is frozen yet).
-  **ADR-0062 (Proposed; B56):** `build_artifact(evidence, *, freezes)` / `promote(evidence, registry, *, freezes)`
+  **ADR-0062 (Accepted 2026-09-27; B56):** `build_artifact(evidence, *, freezes)` / `promote(evidence, registry, *, freezes)`
   take an open, anchored `infrastructure.registry.ProfileFreezeRegistry`. A Profile's own `status = FROZEN` is not
   authoritative (`status` is outside its content hash, ADR-0008): each report's Profile must also have a verified
   `profile.frozen` record for exactly its ref **and** content hash whose calibration report is the one

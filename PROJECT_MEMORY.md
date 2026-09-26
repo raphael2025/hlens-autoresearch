@@ -60,7 +60,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0003（D-06）：Python 3.13 + uv，与系统 Python 隔离
 - ADR-0004（D-07）：本地 Git 仓库；不改全局配置；一次性提交身份（第 3 条"远程待定"被 ADR-0025 取代）
 - ADR-0025：远程 = 私有 GitHub `raphael2025/hlens-autoresearch`；正式分支由 Codex 复核后推送；Claude 只快进推送 `wip/*` 与独立 `phase1/*` 工作分支（D-PUSH）；PR / CI 未配置
-- ADR-0005（D-03）：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Promotion 链（Registry / Promotion 服务 / Equivalence Gate）已实施（B28，失败关闭，今天拒绝所有策略）；Profile 是否冻结以 ADR-0062 的冻结登记为准（B56）；Q-1 / Q-2 / Q-3 / Q-7 开放
+- ADR-0005（D-03）：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Promotion 链（Registry / Promotion 服务 / Equivalence Gate）已实施（B28，失败关闭，今天拒绝所有策略）；Profile 是否冻结以 ADR-0062 的冻结登记为准（B56）；评估 G2 的报告须含 Profile 所要求的 ADR-0060 市场基准 / 反向对照报告项（B51 / B59，路由证据模式同，B58）；Q-1 / Q-2 / Q-3 / Q-7 开放
 - ADR-0006（D-05）：生命周期 v2（C-1：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；C-2：ACTIVE 带
   `execution_mode` SIMULATED|LIVE，不设 LIVE 状态）；RETIRED 进退役记录，REJECTED / FAILED 进 Failure Registry；Q-4 ~ Q-6 开放
 - ADR-0007（D-09 结构）：三层验证（Constitution / Validation Profile / Experiment Metadata）+ 两步冻结；

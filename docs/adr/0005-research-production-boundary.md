@@ -170,3 +170,7 @@ Revalidation 使用**登记时的** Profile 版本；是否同时报告新版本
 **2026-09-27 补记（ADR-0062，B56；同日由 Codex Accepted）**：Promotion 不再以调用方交来的 Profile 对象的 `status = FROZEN` 作为冻结依据（`status` 不在
 内容哈希内，ADR-0008）；权威来源是追加式、带必需目录外锚点的 Profile 冻结登记（`infrastructure/registry/profile_freeze.py`）。
 没有对应 Profile ref + 内容哈希、引用其校准报告的有效登记 → `profile_not_frozen`。本 ADR 的决定不变。
+
+**2026-09-27 补记（ADR-0060 反向对照项，B59）**：评估 G2 的报告，若其 Profile 的 `benchmark.inverse_control_reported` 为 true，还必须含逐字相同的
+`G2.inverse_control` 门，否则 `inverse_control_missing`（在市场基准项之后检查；只要求存在，不设阈值、不改判定；为 false 时不要求）。
+与路由证据模式（B58）一致。冻结检查仍在其前：今天登记为空，所有晋升仍以 `profile_not_frozen` 被拒。本 ADR 的决定不变。

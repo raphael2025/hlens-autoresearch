@@ -42,8 +42,12 @@ partial artifact exists):
    evaluates stage G2 under a Profile whose ``benchmark.market_benchmark_rule`` is not ``none``
    must carry the item that rule calls for — ``G2.market_benchmark.<rule>`` for a registered rule,
    the bare ``G2.market_benchmark`` (INCONCLUSIVE) for an unregistered one
-   (``market_benchmark_missing``). The validator keeps ``ValidatorSetup.market_benchmark=False``
-   as its default; promotion simply does not accept a report produced without it;
+   (``market_benchmark_missing``); and when that Profile's ``benchmark.inverse_control_reported``
+   is true, the exact ADR-0060 inverse-control item ``G2.inverse_control``
+   (``inverse_control_missing``; checked after the market benchmark item; presence only — a
+   reported-only item, no threshold on its value). The validator keeps
+   ``ValidatorSetup.market_benchmark=False`` as its default; promotion simply does not accept a
+   report produced without them;
 5. the dependency closure: the union of the experiments' ``dependency_hashes`` and the caller's
    ``signal_dependencies`` without conflicting hashes, covering every signal and the risk policy
    of the spec;
@@ -96,7 +100,11 @@ from infrastructure.registry import (
     payload_hash,
 )
 from infrastructure.registry.blobs import blob_uri
-from research.validation.benchmark import MARKET_BENCHMARK_GATE, resolve_market_benchmark
+from research.validation.benchmark import (
+    INVERSE_CONTROL_GATE,
+    MARKET_BENCHMARK_GATE,
+    resolve_market_benchmark,
+)
 from research.validation.report import (
     SEALED_OOS_NOT_EVALUATED,
     STAGES,
@@ -142,6 +150,7 @@ class PromotionRefusal(StrEnum):
     PROFILE_NOT_FROZEN = "profile_not_frozen"
     PROFILE_NOT_CALIBRATED = "profile_not_calibrated"
     MARKET_BENCHMARK_MISSING = "market_benchmark_missing"
+    INVERSE_CONTROL_MISSING = "inverse_control_missing"
     DEPENDENCY_CONFLICT = "dependency_conflict"
     DEPENDENCY_UNBOUND = "dependency_unbound"
     LIFECYCLE_SUBJECT_MISMATCH = "lifecycle_subject_mismatch"
@@ -397,6 +406,17 @@ def _check_profiles(
                 f"report {report.report_id} evaluates G2 under {profile.ref} "
                 f"(benchmark.market_benchmark_rule={checked.benchmark.market_benchmark_rule}) "
                 f"without the ADR-0060 item {item}",
+            )
+        if (
+            checked.benchmark.inverse_control_reported
+            and evaluates_g2
+            and not any(gate.gate_id == INVERSE_CONTROL_GATE for gate in report.gates)
+        ):
+            raise _refuse(
+                PromotionRefusal.INVERSE_CONTROL_MISSING,
+                f"report {report.report_id} evaluates G2 under {profile.ref} "
+                "(benchmark.inverse_control_reported=true) without the ADR-0060 item "
+                f"{INVERSE_CONTROL_GATE}",
             )
         cited.add(wanted)
     unused = sorted(set(by_hash) - cited)
