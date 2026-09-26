@@ -44,12 +44,13 @@
 | D-CTRL | 校准证据（P9 × P8）：`significance.multiple_testing_threshold` 被两处反向使用——G3 要求校正后 p ≤ 阈值，G1 负对照要求对照 p ≥ 阈值；因此"放宽"阈值反而让负对照全部失败，Profile 无法单独调节两者 | 与 D-PFIELDS 合并起 ADR：为负对照增加独立字段 | 保持：两者共用一个阈值（偏保守，不会多放行） |
 | D-VFAIL | 生命周期只允许 CANDIDATE → FAILED；验证阶段的技术故障（C-P3）无法把对象标为 FAILED（ADR-0006 状态机属冻结契约） | 另起 ADR 增加 VALIDATION → FAILED（需证据） | 失败记录照写进 Failure Registry，生命周期停在 VALIDATION |
 | D-MINEFF | P6 条件假设登记要求 `minimum_effect`（测试中用 `"0.1"`）：它是假设字段还是验证阈值？ | 视为预登记的假设字段（研究者声明），不作为验证门槛 | 测试用值只存在于测试中；生产路径不设默认 |
+| D-PARTIAL | 回测部分成交的剩余量能否跨 bar 结转？冻结契约不允许：`BacktestResult.check_answers` 要求每笔成交都在该目标的执行 bar、每个目标至多一笔成交（`成交数 + 未执行目标数 <= 目标数`），结果无剩余量字段，`PriceBar` 无成交量字段，descriptor 的 `execution_model` 只有 `next_bar_open` | 另起 ADR（additive，Codex 可在授权内批准）：新增执行模型字面量（如 `next_bar_open_participation`）、按执行模型放宽成交 bar 规则与一目标一成交的计数、结果增加剩余量字段、`PriceBar` 增加可选 `volume`（须证明省略时既有哈希不变） | 保持现状：`ExecutionModel` 在执行 bar 截断并取消剩余量、在 `ExecutionReport` 中报告；策略每个决策时刻重发目标即按实际持仓逐 bar 收敛 |
 
 ## C. 各批次自报的已知缺口（调试时逐个处理）
 
 - **P3 事件**：一次请求只覆盖一个标的；检查点网格代价约为检查点数 × 可见输入数；~~交互规格声明的上游只做形式检查~~ ✅ 已修（2026-09-26）：`run_events` 经 `infrastructure/event/upstream.py` 核对交互的上游规格（恰为声明的 `lineage` 事件引用、spec hash 被 trigger 绑定、上游事件属于它们且哈希一致、Feature / State 声明**等于**上游并集，可选核对上游结果），给出特征 / 状态运行时逐点重算 `source_lineage_hash`；任一不符 fail closed（ADR-0036 Implementation note, interaction upstream verification；回归测试 `tests/infrastructure/event/test_upstream_verification.py`）；~~spec hash 按 trigger 子串匹配（重叠十六进制可误判）~~ ✅ 已修（2026-09-26）：解析规范 JSON trigger，`<name>` / `<name>_hash` 字段逐字相等才算绑定；核对函数返回已做 / 未做 / 不适用的核对，`run_events(..., require_full=True)` 在缺证据时拒绝，P3 冒烟改用它（ADR-0036 Implementation note, durable review fixes）；尚无物理 Event 表。
 - **P4 Outcome / 最小验证门**：负对照为单次固定种子；开封记录与 Outcome 表只在内存中；统计用浮点正态近似。
-- **P5 策略 / 回测**：执行模型单一（下一根开盘成交、无部分成交 / 融资 / 冲击）；尚无 `plugins/` 下的生产 StrategyProvider（TSMOM 在 research/，须经 Promotion，H5）。
+- **P5 策略 / 回测**：~~执行模型单一（下一根开盘成交、无部分成交 / 融资 / 冲击）~~ ✅ 已补（2026-09-26，可选）：`BarBacktester(execution=ExecutionModel(...))` 提供 bar 成交量参与上限、与 G4 容量检查同一公式的平方根冲击、逐 bar 步借券 / 现金融资（计入权益），全部参数显式、无默认，经 version `1.1.0+exec.<fingerprint>` 绑定进 `provider_hash`；默认构造与 v1 逐字节相同（ADR-0038 实施说明 execution realism；`tests/plugins/backtest/test_execution_model.py`）。仍未做：同一目标剩余量的跨 bar 结转（冻结契约无法表达，见 B 节 D-PARTIAL；现为执行 bar 截断 + 报告，策略重发目标即逐 bar 收敛）；bar 成交量由调用方另行提供（`PriceBar` 无成交量字段）；尚无 `plugins/` 下的生产 StrategyProvider（TSMOM 在 research/，须经 Promotion，H5）。
 - **P6 / P10（W1）**：路由结果的身份只由 `run_hash` 绑定；切换成本在回测成本之外另计且不重设仓位；端到端测试中的 ACTIVE 生命周期只是测试夹具。
 - **P9 校准**：检测器抛出异常时直接传播而不计为 INCONCLUSIVE；G5 未实际运行（开封消耗由 G0–G4 通过推断）；（控制台 `gate_calibration` 报告种类已补上）；8 个种子 × 2 天只是冒烟规模。
 - **P8 稳健性**：~~CSCV 分块之间不做 purge~~（R17 已修）；回测适配器只验证单标的；状态标签由调用方提供，必须是因果的；

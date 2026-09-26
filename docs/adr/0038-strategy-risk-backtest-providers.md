@@ -89,3 +89,37 @@ Kill Switch 仍能止住订单流。
 `DatasetPriceBars(manifest_content_hash, price_cutoff, bars)`，由调用方记入复现元组；未改契约、无新 ADR。缺失分钟不填补
 （回测器保持最后一次标记）。测试：`tests/infrastructure/bars/test_dataset_bars.py`（数据集 → `BarBacktester`、重跑 `result_hash`
 一致、缺标的 / 非 bar 数据集 fail closed）。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (execution realism, 2026-09-26)
+
+调试批次（backlog P5"执行模型单一"）。**裁决不变、契约未改、无新 ADR**：`core/contracts/strategy.py` 逐字节不变。
+
+- **可选执行模型**：`plugins/backtest/execution.py` 的 `ExecutionModel`，经 `BarBacktester(execution=...)` 显式开启；每项行为只在其参数
+  显式给出时生效，`None` = 关闭，**没有任何充当阈值的数值默认**。三项行为：
+  1. **成交量参与上限**（`max_participation_rate ∈ (0, 1]` + `bar_volume`）：一根 bar 上最多成交 `max_participation_rate × bar 成交量`；
+  2. **平方根冲击**（`impact_coefficient >= 0` + `bar_volume`）：冲击比例 = `impact_coefficient × sqrt(participation)`，
+     `participation = |quantity| / bar 成交量`（= 成交名义额 / bar 成交名义额）——与 G4 容量检查
+     `research.validation.robustness.capacity_check`（ADR-0041，C-R5）假设的 `coefficient * sqrt(participation)` 同一公式；
+     与成本模型滑点相加：买 `open × (1 + slippage_rate + impact)`、卖 `open × (1 − slippage_rate − impact)`，因此冲击计入
+     `Fill.slippage_cost`；卖价会被推到非正即拒绝；
+  3. **融资 / 借券成本**（`short_borrow_rate`、`cash_borrow_rate ∈ [0, 1)`，**每个 bar 步**，年化换算由调用方负责）：每个 bar 步在开盘
+     成交之后、按开盘标记，从现金扣除 `short_borrow_rate × Σ|空头数量 × 标记价| + cash_borrow_rate × max(0, −cash)`。
+     `BacktestResult` 没有融资字段（契约冻结），故成本出现在 `EquityPoint.cash` / `equity`、`final_equity` 与 PnL 中，
+     **不**计入 `total_fees` / `total_slippage`。
+- **bar 成交量**不在冻结的 `PriceBar` 中，由 `ExecutionModel.bar_volume`（每 `(instrument, interval_start)` 的成交数量，与
+  `ValidatorSetup.bar_volume` 同形）提供；需要成交时缺失即 `BacktestInputError`，从不填补。
+- **身份绑定**：descriptor 只有 name / version 可变（`execution_model` 仍为 `next_bar_open`：变体的每笔成交仍在执行 bar、以其开盘价为
+  参考价），因此变体 version = `1.1.0+exec.<fingerprint>`，`fingerprint` = 全部参数与全部成交量的规范 JSON 的 SHA-256——参数或成交量
+  任何变化都改变 `provider_hash`。默认构造保持 `1.0.0`，结果与 v1 **逐字节相同**（测试以 v1 在 9c0b851 记录的 `result_hash` 金值证明）。
+- **报告**：`run_with_report(request) → (BacktestResult, ExecutionReport)`；报告以 `result_hash` 绑定结果，逐笔给出参与率与冲击成本，
+  列出被截断的剩余量（`UnfilledRemainder`）与逐 bar 步的融资扣款（`FundingCharge`）。`run` 只返回结果（Protocol 不变）。
+- **契约限制（未绕过，列为决定 D-PARTIAL）**：`BacktestResult.check_answers` 要求每笔成交都在该目标的执行 bar，且
+  `成交数 + 未执行目标数 <= 目标数`（每个目标至多一笔成交）；`BacktestResult` 也没有剩余量字段。因此**同一目标的剩余量跨 bar 结转无法
+  表达**：变体在执行 bar 截断、取消剩余量并在报告中列出；策略在下一决策时刻重发目标时按实际持仓重新定量（re-targeting），仓位逐 bar
+  收敛。容量被截为 0 的目标计为未执行。要支持真正的跨 bar 结转需另起 ADR（additive：新执行模型字面量、放宽成交 bar 规则、剩余量字段、
+  `PriceBar` 可选成交量），由 Codex / Raphael 决定。
+- **contract suite**：变体（参与上限生效但不约束、借券开启）通过完整 `tests/contract_suites/backtest.py`；冲击 / 约束性上限 / 现金融资
+  开启时，买入持有闭式解按设计不再成立（测试断言其失败，证明执行确被改变），与成本语义无关的检查（descriptor、确定性、零仓位、无未来
+  函数；冲击 + 上限时还有平价往返恰亏费用 + 滑点）全部通过。测试：`tests/plugins/backtest/test_execution_model.py`（默认逐字节相同、
+  分片成交累计等于目标、剩余量报告、重定目标、零 / 缺失成交量、冲击随规模单调、冲击公式、零系数等价 v1 价格、融资降低空头 / 杠杆权益、
+  未来价格与成交量不影响 `t` 之前的任何输出、参数绑定进 `provider_hash`）。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
