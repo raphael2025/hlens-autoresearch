@@ -13,9 +13,13 @@ contract 2.1.0 code, and a setup's ``inputs_payload`` embeds envelopes and conte
 Profiles / specs. They are therefore checked against the setups built by the 2.1.0 code — a fresh
 interpreter that imports the setup modules inside ``contract_schema_version_scope("2.1.0")`` (as
 ``regenerate_legacy`` does for the console fixtures) — never regenerated or re-pinned. The setups
-built by the current code must still be deterministic and differ from the recorded ones only by
-their envelopes and the content hashes taken over them (so the same seeds, effects, candidates and
-parameters).
+built by the current code must still be deterministic and reproduce the recorded payload
+**exactly** once taken back to 2.1.0: every envelope written back as 2.1.0 and every derived hash
+(``base_spec_hash``, ``detector.strategy_hash``, each ``effect_hash``, each ``profile_hash``)
+replaced by the content hash of the 2.1.0 twin of the very object it hashes. No field is dropped
+from the comparison, and every ``*_hash`` of the payload must be one of those derived hashes (a
+hash of an object the payload shows only by ref -- the strategy spec, the Profiles -- is therefore
+still checked against that object's content).
 """
 
 from __future__ import annotations
@@ -29,12 +33,13 @@ from typing import Any
 
 import pytest
 
-from core.domain.base import CONTRACT_SCHEMA_VERSION, content_hash
+from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, Kind, Ref, content_hash
 from research.synthetic_lab.gate_calibration import (
     DISCLAIMER,
     GateCalibrationSetup,
     MultiInstrumentCalibrationSetup,
 )
+from tests.contract_version_support import at_version, envelopes_at
 from tests.research.synthetic_lab import evidence_setups as ev
 from tests.research.synthetic_lab import gate_fixtures as fx
 
@@ -109,27 +114,114 @@ def _envelopes(value: object) -> list[str]:
     return []
 
 
-def _without_envelopes(value: object) -> object:
-    """``value`` without envelopes and the ``*_hash`` values taken over enveloped objects."""
+JsonPath = tuple[str | int, ...]
+
+
+def _derived(setup: AnySetup) -> dict[JsonPath, Contract]:
+    """Every hash the payload derives from an envelope-carrying object: path -> that object."""
+    derived: dict[JsonPath, Contract] = {
+        ("base_spec_hash",): setup.base,
+        # the detector's candidate is the gate fixtures' candidate (its ref is checked below)
+        ("detector", "strategy_hash"): fx.candidate().spec,
+    }
+    for index, profile in enumerate(setup.candidates):
+        derived[("candidate_profiles", index, "profile_hash")] = profile
+    if isinstance(setup, GateCalibrationSetup):
+        for index, effect in enumerate(setup.planted):
+            derived[("planted_effects", index, "effect_hash")] = effect
+    else:
+        for a, arm in enumerate(setup.arms):
+            for j, maybe in enumerate(arm.effects):
+                if maybe is not None:
+                    path = ("multi_instrument", "arms", a, "instruments", j, "effect_hash")
+                    derived[path] = maybe
+    return derived
+
+
+def _hash_paths(value: object, path: JsonPath = ()) -> set[JsonPath]:
+    """The path of every non-null ``*_hash`` value in a JSON-like payload."""
+    found: set[JsonPath] = set()
     if isinstance(value, dict):
-        return {
-            key: _without_envelopes(item)
-            for key, item in value.items()
-            if key != "schema_version" and not key.endswith("_hash")
-        }
-    if isinstance(value, list):
-        return [_without_envelopes(item) for item in value]
-    return value
+        for key, item in value.items():
+            if key.endswith("_hash") and item is not None:
+                found.add((*path, key))
+            found |= _hash_paths(item, (*path, key))
+    elif isinstance(value, list):
+        for index, item in enumerate(value):
+            found |= _hash_paths(item, (*path, index))
+    return found
+
+
+def _at(payload: Any, path: JsonPath) -> Any:
+    for step in path:
+        payload = payload[step]
+    return payload
+
+
+def _as_recorded(setup: AnySetup) -> Any:
+    """The current setup's payload taken back to ``RECORDED_VERSION`` (see module docs)."""
+    current = json.loads(json.dumps(setup.inputs_payload()))
+    derived = _derived(setup)
+    assert set(derived) == _hash_paths(current)  # no hash escapes the check
+    for path, obj in derived.items():
+        assert _at(current, path) == obj.content_hash()  # the current value hashes that object
+    twin = envelopes_at(current, RECORDED_VERSION)
+    for path, obj in derived.items():
+        _at(twin, path[:-1])[path[-1]] = at_version(obj, RECORDED_VERSION).content_hash()
+    return twin
 
 
 @pytest.mark.parametrize("name", sorted(FACTORIES))
-def test_the_current_setups_are_the_recorded_ones_but_for_envelopes(
+def test_the_current_setups_are_the_recorded_ones_taken_back_to_2_1_0(
     name: str, recorded: dict[str, Any]
 ) -> None:
-    current = json.loads(json.dumps(FACTORIES[name]().inputs_payload()))
+    setup = FACTORIES[name]()
+    current = json.loads(json.dumps(setup.inputs_payload()))
     assert current != recorded[name]  # the current envelope is part of the payload
     assert set(_envelopes(current)) == {CONTRACT_SCHEMA_VERSION}
-    assert _without_envelopes(current) == _without_envelopes(recorded[name])
+    assert current["detector"]["strategy"] == str(fx.candidate().spec.ref)
+    assert _as_recorded(setup) == recorded[name]  # exact: nothing dropped
+
+
+def test_the_strategy_hash_is_compared_not_dropped(recorded: dict[str, Any]) -> None:
+    """``detector.strategy_hash`` is the strategy spec's content hash -- envelope included, so it
+    differs between 2.1.0 and 2.2.0 -- and the comparison binds it to that spec's content."""
+    name = "single_instrument_evidence"
+    spec = fx.candidate().spec
+    recorded_hash = recorded[name]["detector"]["strategy_hash"]
+    assert recorded_hash == at_version(spec, RECORDED_VERSION).content_hash()
+    assert recorded_hash != spec.content_hash()  # envelope-derived: 2.1.0 != 2.2.0
+    # a semantic change to the spec (its params) is visible although its ref is unchanged
+    changed = spec.model_copy(update={"params": {**dict(spec.params), "lookback": 241}})
+    assert changed.ref == spec.ref
+    assert at_version(changed, RECORDED_VERSION).content_hash() != recorded_hash
+    # and a tampered recorded strategy hash no longer matches the current setup
+    tampered = json.loads(json.dumps(recorded[name]))
+    tampered["detector"]["strategy_hash"] = "0" * 64
+    assert _as_recorded(FACTORIES[name]()) != tampered
+
+
+def test_a_profile_hash_binds_the_profile_content(recorded: dict[str, Any]) -> None:
+    """A Profile appears only by ref and hash: a content change under the same ref is detected."""
+    profile = fx.LAX_TEST_ONLY_PROFILE
+    [entry] = [
+        item
+        for item in recorded["single_instrument_evidence"]["candidate_profiles"]
+        if item["profile"] == str(profile.ref)
+    ]
+    assert entry["profile_hash"] == at_version(profile, RECORDED_VERSION).content_hash()
+    extra = Ref(kind=Kind.PROFILE, name="test_only_lineage_probe", version="1.0.0")
+    changed = profile.model_copy(update={"lineage": (*profile.lineage, extra)})
+    assert changed.ref == profile.ref
+    assert at_version(changed, RECORDED_VERSION).content_hash() != entry["profile_hash"]
+
+
+def test_every_hash_of_a_payload_is_a_derived_one() -> None:
+    for factory in FACTORIES.values():
+        setup = factory()
+        paths = _hash_paths(json.loads(json.dumps(setup.inputs_payload())))
+        assert paths == set(_derived(setup))
+        assert ("detector", "strategy_hash") in paths
 
 
 @pytest.mark.parametrize("name", sorted(FACTORIES))

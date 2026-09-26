@@ -106,7 +106,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 🔨 **全阶段代码完成批次（2026-09-26，Claude，`wip/all-code-completion`）**：B1～B52 已补齐 Phase 0.5、2～14 与前后端的剩余代码缺口（逐批见完成计划 §10；B44～B52 为两次只读审计的后续修复，§10.7 / §10.8）；
   Raphael 2026-09-26 授权 Claude 自主决策（含红线），逐项裁决见 [自主决策记录](docs/reviews/2026-09-26-autonomous-decisions.md)；Codex 全代码复核（`docs/reviews/2026-09-26-codex-full-code-review.md`）K1 已修，
   K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）已实施（B38 / B40 / B41），待 Codex 复核；全量非 PostgreSQL 门禁：`8983ead` 6749 passed → 审计后续最终 `3be497b` **7031 passed** / 136 deselected，退出码 0（完成计划 §10.8）；契约 2.1.0（ADR-0052 按记录版本重放，独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`，已合入全代码分支）；ADR-0054 / 0057 已以 2.1.0 重新声明；均待 Codex 复核。
-  ADR-0055（B55）：组合分支 `claude/adr-0055-integration`（基于 `a5836b2`）把契约升为 **2.2.0**（知识标签 / 资产，2.0.0 / 2.1.0 按记录版本重放），Codex 已接受独立实现进入整合（检查点 `origin/claude/adr-0055-tags-assets` = `ed8e694`）；组合分支门禁与复核待 Codex，ADR 仍 Proposed
+  ADR-0055（B55）：组合分支 `claude/adr-0055-integration`（基于 `a5836b2`）把契约升为 **2.2.0**（知识标签 / 资产，2.0.0 / 2.1.0 按记录版本重放），Codex 已接受独立实现进入整合（检查点 `origin/claude/adr-0055-tags-assets` = `ed8e694`）；组合分支 `1367dc8` 全量非 PostgreSQL 门禁 7176 passed / 136 deselected、退出码 0（无 skip）；Codex 复核提出的证据测试收窄（哈希逐一绑定对象、不再整类删除）已实现，待复核后提交；ADR 仍 Proposed
 
 ## 5. 下一步
 

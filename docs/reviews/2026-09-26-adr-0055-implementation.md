@@ -163,5 +163,8 @@ setup 的 `inputs_payload` 内嵌 Profile / spec 的信封与内容哈希，组�
 web（组合 worktree，`node_modules` 为本地复制，见 §4.1）：`npm run gen:api` → `src/api.d.ts` 无差异；`npm test` → lib `tests 87 / pass 87 / fail 0`、
 组件 `tests 109 / pass 109 / fail 0`，exit 0；`npm run build` → `✓ built`，exit 0；`pytest tests/apps/test_live_backend_smoke.py` → `3 passed`（未跳过）。
 
-组合分支的最终全量门禁在全部合并与文档提交之后、于冻结的 HEAD 上运行；结果连同起止 SHA 与 dirty 状态记录在交付报告中（本文件不自引用
-其所在提交的门禁结果），待 Codex 复核组合分支后再决定 ADR-0055 是否 Accepted。
+组合分支的全量门禁（`1367dc8`，全部合并与文档提交之后、冻结的 HEAD）：`START_SHA 1367dc8899353c329a0f646780b14f57fed69cee dirty=0 2026-09-26T19:12:36Z` → `7176 passed, 136 deselected, 1 warning in 2921.41s (0:48:41)`，`EXIT 0`（无 skip：live smoke 实际运行）→ `END_SHA 1367dc8899353c329a0f646780b14f57fed69cee dirty=0 2026-09-26T20:01:20Z`。同一 HEAD：ruff / format（757 files）/ mypy（593 files）通过，`uv lock --check --offline` 通过，Schema 135 份与 OpenAPI、`gen:api` 重新导出均无差异，`npm test`（lib 87 / 87、组件 109 / 109）与 `npm run build` 通过。
+
+Codex 复核（门禁运行期间提出，门禁结束后才改文件）：`_without_envelopes()` 删除所有 `*_hash` 字段，会漏检。核实：`detector.strategy_hash` 是 `StrategySpec.content_hash()`（`gate_calibration.py` 的 `describe()`），含信封，2.1.0 → 2.2.0 确实变化（`0526ac90…` → `32443744…`），因此不能原样保留比较；但弱点是真的：策略 spec 与候选 Profile 在载荷中只以 ref + 哈希出现，整类删除会放过它们的任何内容变化（演示：旧过滤对篡改的 `strategy_hash` / `profile_hash` 都返回相等，新检查都拒绝，未篡改的通过）。修正：不再删除任何哈希——当前载荷回到 2.1.0 时，每个派生哈希替换为**它所哈希的那个对象**的 2.1.0 孪生哈希（`base_spec_hash` ← `setup.base`，`detector.strategy_hash` ← `gate_fixtures.candidate().spec`，`effect_hash` ← 对应 effect，`profile_hash` ← 对应 Profile），并要求与记录载荷**逐字段相等**；载荷中每个非空 `*_hash` 的路径必须恰为这些派生路径；当前值必须等于对象当前的内容哈希。新增断言：策略哈希等于 spec 的 2.1.0 孪生哈希且不等于当前哈希；同 ref 下改 `params` 即不匹配；篡改记录的策略哈希即不匹配；同 ref 下改 Profile 内容（`lineage`）即不匹配。报告与钉值均未改动。
+
+此修正之后的门禁结果记录在交付报告中（本文件不自引用其所在提交的门禁结果）；待 Codex 复核组合分支后再决定 ADR-0055 是否 Accepted。

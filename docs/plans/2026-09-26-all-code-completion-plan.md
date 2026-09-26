@@ -676,7 +676,8 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   新增 `62256b6`：Phase 9 证据（`dd6c8e1`）的报告与钉值由 2.1.0 代码生成，测试改为在新进程中按 2.1.0 构造 setup 核对（未修改的测试在该作用域内 11 passed），不重生成、不重钉。
 - 实际运行（组合分支，文档提交前）：定向 `pytest -m "not postgres"` tests/apps、reports、synthetic_lab、evolution、router、ADR-0055 / 契约 / 文档 → `6 failed, 1710 passed, 1 skipped`（6 项为上述证据测试，修复后该文件 + 文档一致性 22 passed）；
   `npm run gen:api` 无差异；`npm test` → lib 87 / 87、组件 109 / 109；`npm run build` ✓；live-backend smoke 3 passed（组合 worktree 的 `node_modules` 为本地复制，锁文件相同，未安装）。
-- 最终全量门禁：在全部组合与文档提交之后于冻结的 HEAD 上运行，结果（含起止 SHA 与 dirty）见交付报告；本计划不自引用其所在提交的门禁。
+- 组合全量门禁（`1367dc8`，冻结 HEAD）：`START_SHA 1367dc8899353c329a0f646780b14f57fed69cee dirty=0 2026-09-26T19:12:36Z` → `7176 passed, 136 deselected, 1 warning in 2921.41s (0:48:41)`，`EXIT 0`（无 skip：live smoke 实际运行）→ `END_SHA 1367dc8899353c329a0f646780b14f57fed69cee dirty=0 2026-09-26T20:01:20Z`；静态检查、Schema、web 全部通过。
+- Codex 复核修正（`test_evidence_setups.py`）：证据比较不再整类删除 `*_hash`，而是把每个派生哈希（含 `detector.strategy_hash`、`profile_hash`）绑定到其对象的 2.1.0 孪生哈希并逐字段比较；新增策略 / Profile 语义变化与篡改的反例；报告与钉值未改动（详见 [ADR-0055 实施说明](../reviews/2026-09-26-adr-0055-implementation.md) §9）。此修正之后的门禁见交付报告。
 
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
