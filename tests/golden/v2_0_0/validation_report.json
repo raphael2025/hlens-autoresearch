@@ -1,0 +1,57 @@
+{
+  "content_hash": "d0fe99decd1f225e588def01724ded1c4677c751c704265682e0c9bcda57c3aa",
+  "contract_schema_version": "2.0.0",
+  "generated_at_commit": "86bdcb6",
+  "model": "ValidationReport",
+  "payload": {
+    "constitution_version": "0.2.0-draft",
+    "created_at": "2024-01-01T00:00:00Z",
+    "experiment_hash": "2222222222222222222222222222222222222222222222222222222222222222",
+    "gates": [
+      {
+        "gate_id": "G0",
+        "metric": "reproducible",
+        "schema_version": "2.0.0",
+        "threshold": 1.0,
+        "threshold_source": "significance.multiple_testing_threshold",
+        "value": 1.0,
+        "verdict": "PASS"
+      },
+      {
+        "gate_id": "G3.adjusted_p_value",
+        "metric": "net_mean_hac_p_greater_adjusted[<=]",
+        "schema_version": "2.0.0",
+        "threshold": 0.5,
+        "threshold_source": "significance.multiple_testing_threshold",
+        "value": 0.012345678901234567,
+        "verdict": "PASS"
+      },
+      {
+        "gate_id": "G4.state.sufficient_states",
+        "metric": "states_with_enough_trades",
+        "schema_version": "2.0.0",
+        "threshold": null,
+        "threshold_source": null,
+        "value": 3.0,
+        "verdict": "PASS"
+      }
+    ],
+    "report_id": "rep-1",
+    "run_id": "run-1",
+    "schema_version": "2.0.0",
+    "subject": {
+      "kind": "strategy",
+      "name": "s_example",
+      "schema_version": "2.0.0",
+      "version": "1.0.0"
+    },
+    "validation_profile": {
+      "kind": "profile",
+      "name": "test_scope",
+      "schema_version": "2.0.0",
+      "version": "1.0.0"
+    },
+    "validation_profile_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+    "verdict": "PASS"
+  }
+}

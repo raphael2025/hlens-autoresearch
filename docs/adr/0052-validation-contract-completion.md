@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意推荐方案"），起草: Claude Code（Opus） |
+| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意推荐方案"），起草: Claude Code（Opus）；**未实施：§4 前置盘点失败，见 Implementation blocker (2026-09-26)** |
 | 日期 | 2026-09-26 |
 | 决策者 | **Raphael**（H1 Domain Contract、H2 Validation Profile 结构，红线） |
 | 起草者 | Claude Code（Opus） |
@@ -122,3 +122,49 @@ Profile 字段与 `param:` 同时给出即拒绝；旧 Profile 重放逐位不�
 - [x] 不修改 Validation Constitution；动机不是让某实验通过
 - [x] Domain 层仍只依赖标准库与 Pydantic
 - [ ] 由 Raphael 本人批准（H1 / H2 红线）——待定
+
+## Implementation blocker (2026-09-26)
+
+决策者: Claude Code（Opus），依 Raphael 2026-09-26 明确授权（"所有的决策都由你来决定，包括红线"）；按协调者转达的 Codex review K3 规则
+（本 ADR 必须按 §4 升到 **2.1.0**，不得把新字段伪装成 2.0.0；§4 的盘点若要求修改 Phase 1 基础设施则停止并提交证据）。
+**结论：规则 (c) 适用——§4 的前置盘点失败，本 ADR 未实施**（状态仍为 Accepted、未实施）；契约、Schema 与研究代码保持 2.0.0 旧行为。
+
+**证据**（`tests/infrastructure/canonical/test_contract_version_replay.py`，实际运行
+`pytest -m "not postgres" -rxX tests/infrastructure/canonical/test_contract_version_replay.py` → `2 passed, 1 xfailed`）：
+
+- 以当前版本规范化一个 Raw 单元并提交后，把规范化器读取的版本改为 `2.1.0`（只打补丁 `infrastructure.canonical.rules.CONTRACT_SCHEMA_VERSION`，
+  其余一切不变）再重放同一单元：`CatalogIntegrityError: batch hlens.canonical.binance-spot.normalizer@1.0.0.rev1-… of canonical.trades was
+  committed with other content`，表未被写入。对照：不改版本时同一重放幂等（`replayed`、head 与行不变）。
+- 期望性质 `test_replay_after_a_minor_bump_is_idempotent` 以 `xfail(strict=True, raises=CatalogIntegrityError)` 提交：旧版本重放路径实现后它会
+  XPASS 并迫使移除标记。
+
+**机制与必须修改的位置（全部属 Phase 1 基础设施，正在 Codex 审阅，本批次不得修改）**：
+
+1. `infrastructure/canonical/rules.py:40` 导入、`:670`（`canonical_row`）把**实时**的 `CONTRACT_SCHEMA_VERSION` 写入每行
+   `contract_schema_version`；
+2. `infrastructure/revision/row_integrity.py:347-360`（`check_batch_snapshot`，由 `infrastructure/canonical/normalizer.py:386`、`:570` 调用）
+   用重建的行重算已提交批次的指纹——版本列变化即"committed with other content"；
+3. `infrastructure/canonical/normalizer.py:1212`（`_exact`）逐列比较已提交行与重建行（下一道关口，会报 `['contract_schema_version']`）；
+4. 同类"新对象信封 = 实时版本"的写入点，升版后新建对象的身份也会漂移：`infrastructure/canonical/listing_rules.py:709`、
+   `infrastructure/revision/channel_precedence.py:496`、`infrastructure/revision/exchange_info_store.py:189`、
+   `infrastructure/revision/row_integrity.py:726`、`infrastructure/revision/store.py:977`、`infrastructure/dataset/manifests.py:61`
+   （`ResearchDatasetManifest` 的内容哈希含信封版本：升版后重建同一 manifest 得到不同哈希）。
+
+**提议的旧版本重放设计**（待 Codex 审阅 Phase 1 后，由其批次实施；之后本 ADR 才能按 2.1.0 实施）：
+
+1. Canonical 行的 `contract_schema_version` 与实时常量解耦：规范化器持有一个钉住的行契约版本，写进 `NORMALIZER_SPEC`（因而进入
+   `NORMALIZER_HASH` / 规则版本）；改变它是一次显式的规范化规则版本变更，而不是契约 minor 的副作用。
+2. 重放已提交单元时，用该单元**记录的**版本（其已提交行的 `contract_schema_version`，同一单元必须唯一）重建计划行，然后照旧做批次指纹与
+   逐列比较（严格性不变）；新单元用当前钉住的版本。从行重建 `RevisionRecord` / `ObservationTimes` 时保留行上的版本（`channel_reconcile`、
+   `listing_record_from_row` 已如此）。
+3. 其余写入点与 manifest 同理：重建已提交对象时沿用其记录版本；契约层已接受任何 2.x 信封（`_supported_major`），读取不改写版本
+   （`tests/test_v2_golden_vectors.py` 证明 2.0.0 载荷按记录版本读取、哈希逐位不变）。
+4. 验收：上面的 strict-xfail 测试转为通过；新增"2.1.0 新单元 + 2.0.0 旧单元同表"的重放与 PIT 读取测试；D-NET 已提交数据重放。
+
+**已完成且保留的前置工作**：`tests/golden/v2_0_0/`（`GateResult`、`ValidationReport`、`ValidationProfile`×2、Canonical 行背后的
+`RevisionRecord` 的 2.0.0 载荷与哈希，在任何改动前生成）与 `tests/test_v2_golden_vectors.py`。部分实现（`ExactDecimal`、精确兄弟字段、
+精确 `compare_gate`；按旧指示在 2.0.0 下）停放在本地分支 `wip/adr-0052-exact-fields`（commit `8e4a71c`，未合并、不得合并），
+解除阻塞并升到 2.1.0 后可作为起点。
+
+**同一问题的已知关联**：ADR-0054（部分成交结转）按其批准时的指示以 2.0.0 发布了可选字段（见其实施说明）；若 K3 的"新字段不得以 2.0.0
+发布"规则也适用于它，需随本阻塞一并处理。
