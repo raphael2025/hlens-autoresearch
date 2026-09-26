@@ -590,3 +590,18 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - Web：validation / matrix / router 解析移入 `src/lib`（`node --test`）；Validation Reports 显示精确门值（2.0.0 回退浮点）；Research Loop 每个用量维度一张带单位的图（每轮柱 + 累计线，分轴）。
 - 实际运行（本分支集成后）：`pytest -m "not postgres" tests/apps tests/research/reports` → 372 passed, 1 warning；`tests/apps/test_live_backend_smoke.py` → 2 passed（含 `live-smoke.mjs`）；`npm test` → lib 75 / 75、组件 99 / 99；`npm run build` ✓；`ruff check .` / `ruff format --check .`（738 files）/ `mypy`（582 files）通过；重新生成 openapi / api.d.ts 无差异（子代理）。
 - 仍不证明：真实浏览器渲染；502 / 500 仍未经真实 HTTP。
+
+**B47 — apps：错误路径经真实 HTTP + 存储缺陷修复（`d1d22b1` 的 cherry-pick → `81161a1`；修复 `f5960a6`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 冒烟新增第三个 "broken" 子进程服务器：502（测试服务器仅测试用 `--knowledge-error` 注入失败 provider；`apps/` 无钩子）、篡改日志 500（真实 `JobRunner` 日志副本的哈希链断裂）、兜底 500；每项断言状态码在 openapi 中声明为 `ApiError`、schema / 模型往返、body 不含路径 / traceback / 异常类型名。
+- 通道发现的**真实缺陷**：报告 JSON 含超过 4300 位的整数字面量时 `json.loads` 抛普通 `ValueError`（嵌套过深抛 `RecursionError`），存储未映射，整个种类的列表 500。修复：存储捕获 `ValueError`（含 `JSONDecodeError` / `UnicodeDecodeError`）与 `RecursionError` 为 malformed 条目；回归测试在修复前失败。
+  冒烟的兜底 500 改用测试服务器仅测试用 `--fault-report-read`（仅该进程内 `ReportStore._read` 抛 `RuntimeError`，经真实路由）。
+- 实际运行（本分支）：`pytest -m "not postgres" tests/apps tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → 324 passed, 1 warning；`ruff check .` / `ruff format --check .`（738 files）/ `mypy`（582 files）通过。
+- 仍不证明：控制台对 502 / 500 的呈现（`live-smoke.mjs` 不访问 broken 服务器）；兜底 500 经真实 HTTP 只以注入异常验证。
+
+**B48 — Phase 9：G5 逐臂证据区间（`40afaba` 的 cherry-pick）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- `SealedArmEvidence.pass_rate_bounds = [passed/reached, (passed+detector_errors)/reached]`（与 `ArmEvidence` 同一向外取整）；仅在检测器错误 > 0 时写入 `sealed_oos_g5`，无运行到达 G5 时为 `None`；拒绝 `detector_errors` 超出 `[0, reached]`。没有固定哈希改变（没有固定报告使用 G5 模式）。
+- G5 的配置错误传播核实已与 `calibrate()` 一致（`PROPAGATED_ERRORS` 原样重抛），新增测试固定该行为。
+- 实际运行（本分支集成后）：`pytest -m "not postgres" tests/research/synthetic_lab tests/research/reports` → 153 passed, 1 warning (134 s)；ruff / mypy（582 files）通过。
+- 遗留：端到端 G0–G5 率（`end_to_end_g0_g5`）仍无区间。
