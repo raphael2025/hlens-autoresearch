@@ -274,3 +274,14 @@
 - 限制：每次运行是独立的模拟族（G5 上下文以 harness 族覆盖元数据族 id，已文档化）；种子数少、市场 3 天，只够冒烟。
 - 两个通道合入后本分支实际运行：`pytest -m "not postgres" tests/apps tests/research/reports tests/research/synthetic_lab tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → 290 passed, 1 warning；
   `ruff check .` → All checks passed；`ruff format --check .` → 634 files already formatted；mypy（apps / research.reports / research.synthetic_lab + 测试，59 files）→ no issues；`npm test` → 36 / 36 pass；`npm run build` → ✓ built。
+
+### 10.4 授权变更（2026-09-26 晚）
+
+Raphael 设定新目标："所有的决策都由你来决定，包括红线的事情……每个步骤推一下 git，最大允许 6 个子 agent，允许与另一会话沟通"。逐项裁决见
+[自主决策记录](../reviews/2026-09-26-autonomous-decisions.md)。10.2 表中的阻塞项据此重新处理：ADR-0052 / 0053 / 0054 / 0056 / 0057 由 core 与 P3 通道实施，
+P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1 复核之后（集成会话要求复核期间不改 Phase 1 基础设施），P5-PLUGIN / Profile 数值 / 实盘 / 合并 `main` 决定不做。
+
+**B14 — 全量门禁（不含 PostgreSQL）**：`uv run pytest -q -m "not postgres"`（HEAD `8d0d26d` 起跑，5 GB 上限）→ **5861 passed, 136 deselected, 1 warning in 1876.31s (0:31:16)**。
+
+**B15 — Phase 0.5 写入路径（ADR-0058）**：集成 infra 通道 `0c10a65`（`plugins/knowledge/store.py`、`cli.py`、`local.py` 的 `load_items`、测试）与其 README；
+`uv run pytest -q -m "not postgres" tests/plugins/knowledge tests/test_docs_consistency.py tests/test_architecture_boundaries.py tests/apps/test_api.py` → 75 passed, 1 warning；ruff / mypy 通过。

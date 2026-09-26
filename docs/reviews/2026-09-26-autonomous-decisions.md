@@ -1,0 +1,27 @@
+# Claude 自主决策记录（2026-09-26）
+
+授权来源：Raphael 于 2026-09-26 在会话 "2026-09-26 全阶段代码完成计划" 中设定目标——"完成这个项目的所有代码工作，**所有的决策都由你来决定，包括红线的事情**，并生成相关的文档"。
+决策者：Claude Code（Opus）。本文件逐项记录此前挂起的决定、裁决、理由与实施位置，供 Raphael / Codex 事后复核或推翻。
+"决定不做"也是决定：凡属不可逆、对外或缺乏证据的事项，本记录选择保守方案并写明理由。
+
+| ID | 问题 | 裁决 | 理由 | 实施 |
+|---|---|---|---|---|
+| D-FLOAT / D-PFIELDS / D-CTRL（ADR-0052） | 验证契约精确小数、Profile 新字段、负对照独立阈值 | 实施方案 B（可选字段、缺省时不入哈希）；**修订 §4：`CONTRACT_SCHEMA_VERSION` 保持 2.0.0，不升 minor** | 版本号写入每行 Canonical，重新规范化逐列比较；升版会使已提交 D-NET 行不可重放。字段可选且缺省不进哈希时，旧载荷哈希与重放逐位不变，升版无收益 | core 通道（ADR-0052 实施说明） |
+| D-VFAIL（ADR-0053） | VALIDATION → FAILED | 集成集成会话已完成的实现（`0d5a975`） | 已由 Raphael 批准的 ADR，实现现成，避免重复 | core 通道 |
+| D-PARTIAL（ADR-0054） | 部分成交跨 bar 结转 | 集成现成实现（`d640eff`，不升契约版本） | 同上 | core 通道 |
+| P3-EVTABLE（ADR-0056） | 物理 Iceberg 事件表 | **Accepted** 并实现（新模块在 `infrastructure/event/`，不改 Phase 1 表 / 定义 / 供给脚本，不在真实 catalog 建表） | roadmap Phase 3 需要持久事件表；同 ADR-0031 / 0033 的只追加表先例 | P3 通道 |
+| P3-MULTISYM（ADR-0057） | `EventRequest` 多标的 | **Accepted**：可选 `subject` 字段，缺省不入哈希 | 可加性变更，既有哈希不变 | core 通道 |
+| P05-WRITE（ADR-0058） | 知识库写入路径 | **Accepted**：只有 Python API / CLI、每次写入要求审阅人、只追加；无 HTTP 写端点、无新 Protocol | 满足 knowledge-base.md "人工审阅后入库"，且不越过 ADR-0048 只读边界 | `plugins/knowledge/store.py`、`cli.py` |
+| P10-ELIG | 路由资格绑定验证证据 | 研究层可选"证据模式"：核对报告哈希、主体、PASS 与 G5；信任模式哈希不变 | 不改契约即可关闭研究侧缺口；生产资格仍属 Control Plane | P10 通道 |
+| P8 单标的 | 回测验证只支持单标的 | 研究层按标的拆分 Outcome 请求并保守合并；单标的路径逐字节不变 | 不改契约 | P8 通道 |
+| P6 条件假设入循环 | 是否把矩阵条件假设接入持续循环 | 可选开关（默认关闭）：开启时先登记全部单元再看结果，计入族 trial 数 | 预先承诺 + 诚实的 trial 计数；默认关闭保持既有记录哈希 | P6 通道 |
+| D-MINEFF | 条件假设的 `minimum_effect` 是假设内容还是门槛 | **假设内容**（研究者预先声明），不作验证门槛；生产路径无默认值 | 与宪法"阈值只来自 Profile"一致 | 无代码变化（现状即如此） |
+| D-DEP（ADR-0049） | research 依赖 apps/worker | **维持** | apps 不依赖 research，边界测试不变；迁移成本高、无收益 | 无 |
+| D-LIST（ADR-0051） | 上市历史假设 + 一次 exchangeInfo | **接受方案 A 的原则**，但**推迟实施**到 Codex 完成 Phase 1 复核之后；本会话不发起任何网络调用 | 实施须改 `infrastructure/universe`，该目录正在 Codex 复核中；与集成会话协调后不在复核期间改动 | 待 Phase 1 验收后实施 |
+| P5-PLUGIN | 把 TSMOM 放进 `plugins/` 作生产 StrategyProvider | **不做** | 晋升须有 G0–G5 + 纸面证据；目前没有任何策略通过验证，无证据晋升违背宪法证据原则 | 无 |
+| D-09 TBD-1..5 | Validation Profile 数值 | **不冻结** | 只有合成市场的冒烟规模校准证据，没有真实数据校准；此时定数值等于猜测，会让之后的验证结论失去意义 | 无；Phase 9 工具已能产出冻结所需证据 |
+| H10 实盘 | 交易端点、账户凭据、真实下单 | **不做** | 不可逆的资金风险；没有风险预算与账户授权；Phase 13 保持模拟 | 无 |
+| 合并 `main` / tag | 是否合入 `main`、打 tag | **不做** | Phase 1 仍在 Codex 复核，其他 Phase 未验收；只推 WIP 分支 | 无 |
+| 宪法原则 | 是否修改 | **不改** | 无需要修改的发现 | 无 |
+
+复核建议：以上"不做 / 推迟"项都可以由 Raphael 随时推翻；推翻时只需在本表对应行记录新裁决并按 ADR 流程实施。

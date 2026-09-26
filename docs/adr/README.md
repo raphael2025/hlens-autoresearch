@@ -59,6 +59,7 @@
 | [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准） |
 | [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准） |
 | [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准） |
+| [0058](0058-knowledge-reviewed-write-path.md) | 知识库经人工审阅的写入路径（Python API / CLI，无 HTTP 写端点） | Accepted（2026-09-26；Claude 依 Raphael 明确授权） |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
