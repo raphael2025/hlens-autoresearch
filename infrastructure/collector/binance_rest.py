@@ -72,6 +72,7 @@ from core.contracts.storage import (
     StorageError,
 )
 from core.domain.base import FrozenMapping, canonical_json
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.parser.binance_rest import (
     DECODER_BINDING,
     MAX_BODY_LIMIT_BYTES,
@@ -120,6 +121,7 @@ __all__ = [
 REST_COLLECTOR_ID: Final[str] = "binance.spot.public-rest"
 REST_COLLECTOR_VERSION: Final[str] = "1.0.0"
 REST_SOURCE: Final[SourceBinding] = SourceBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     source_id="binance.public.spot.rest",
     version="1.0.0",
 )

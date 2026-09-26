@@ -63,6 +63,8 @@ from core.contracts.revision import (
     RevisionRecord,
 )
 from core.contracts.storage import StorageAdapter
+from core.domain.base import contract_schema_version_scope
+from infrastructure import contract_version
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -376,11 +378,19 @@ class RawRevisionStore:
 
         stored = self._stored_archive_row(revision_id)
         if stored is None:
+            # A new write group: the archive revision and its rows at the current version.
+            version = contract_version.new_group_version()
             base, times, archive_commit, supersedes = self._append_archive(
-                collected, context, observation_key, revision_id
+                collected, context, observation_key, revision_id, version
             )
         else:
             self._verify_stored_archive(stored, collected, context, observation_key)
+            # Its rows are written / replayed at the version it was committed with
+            # (ADR-0052 versioned replay, V1 / V2).
+            version = contract_version.replay_version(
+                stored.get("contract_schema_version"),
+                what=f"committed archive revision {revision_id}",
+            )
             base = int(stored["arrival_seq"])
             times = _times_from_row(stored)
             supersedes = tuple(stored["supersedes"])
@@ -394,7 +404,9 @@ class RawRevisionStore:
                 row_count=1,
             )
 
-        row_commits, row_revisions = self._append_rows(outcome, context, revision_id, base, times)
+        row_commits, row_revisions = self._append_rows(
+            outcome, context, revision_id, base, times, version
+        )
         heads, competing = self._heads(observation_key)
         gaps = self._gap_summaries(context, row_revisions)
         return ArchiveIngested(
@@ -442,6 +454,7 @@ class RawRevisionStore:
         context: ArchiveContext,
         observation_key: str,
         revision_id: str,
+        version: str,
     ) -> tuple[int, ObservationTimes, BatchCommit, tuple[str, ...]]:
         """Allocate a block, build the one-row batch and commit it (the allocation itself)."""
         definition = BINANCE_SPOT_ARCHIVES
@@ -472,6 +485,7 @@ class RawRevisionStore:
             except PrecedenceViolation as exc:
                 raise RevisionStoreConflict(str(exc)) from exc
             record = RevisionRecord(
+                schema_version=version,
                 observation_key=observation_key,
                 revision_id=revision_id,
                 source_id=identity.archive_source_identity(),
@@ -570,6 +584,7 @@ class RawRevisionStore:
         revision_id: str,
         base: int,
         times: ObservationTimes,
+        version: str,
     ) -> tuple[tuple[BatchCommit, ...], int]:
         definition = _ROW_DEFINITIONS[context.data_type]
         subject = _ROW_SUBJECTS[context.data_type]
@@ -589,6 +604,7 @@ class RawRevisionStore:
                 times=times,
                 subject=subject,
                 binding=self._availability,
+                contract_schema_version=version,
             )
             # Cross-record invariants (unique ids and sequence numbers, no duplicate payload,
             # no cycles) are proven on the contracts, not on the Arrow batch. Uniqueness across
@@ -856,20 +872,34 @@ def _decision_from_row(row: Mapping[str, Any]) -> AvailabilityDecision:
 
 
 def _record_from_row(row: Mapping[str, Any]) -> RevisionRecord:
-    return RevisionRecord(
-        observation_key=row["observation_key"],
-        revision_id=row["revision_id"],
-        source_id=row["source_id"],
-        payload_hash=row["payload_hash"],
-        arrival_seq=row["arrival_seq"],
-        supersedes=tuple(row["supersedes"]),
-        source_revision_id=row["source_revision_id"],
-        source_revision_time=row["source_revision_time"],
-        availability=_decision_from_row(row),
+    """The contract record of a persisted row, rebuilt at the row's recorded version (V1)."""
+    version = contract_version.replay_version(
+        row["contract_schema_version"], what=f"archive revision {row['revision_id']}"
     )
+    with contract_schema_version_scope(version):
+        return RevisionRecord(
+            observation_key=row["observation_key"],
+            revision_id=row["revision_id"],
+            source_id=row["source_id"],
+            payload_hash=row["payload_hash"],
+            arrival_seq=row["arrival_seq"],
+            supersedes=tuple(row["supersedes"]),
+            source_revision_id=row["source_revision_id"],
+            source_revision_time=row["source_revision_time"],
+            availability=_decision_from_row(row),
+        )
 
 
 def _evidence_from_row(row: Mapping[str, Any]) -> tuple[PrecedenceEvidence, ...]:
+    """The row's in-row edges, rebuilt at the row's recorded version (V1)."""
+    version = contract_version.replay_version(
+        row["contract_schema_version"], what=f"archive revision {row['revision_id']}"
+    )
+    with contract_schema_version_scope(version):
+        return _edges_of(row)
+
+
+def _edges_of(row: Mapping[str, Any]) -> tuple[PrecedenceEvidence, ...]:
     return tuple(
         PrecedenceEvidence(
             observation_key=row["observation_key"],
@@ -899,8 +929,18 @@ def _row_records(
     times: ObservationTimes,
     subject: AvailabilitySubject,
     binding: PolicyBinding,
+    contract_schema_version: str | None = None,
 ) -> tuple[RevisionRecord, ...]:
-    """One ``RevisionRecord`` per parsed row, validated before anything is mapped to Arrow."""
+    """One ``RevisionRecord`` per parsed row, validated before anything is mapped to Arrow.
+
+    ``contract_schema_version`` is the archive revision's (one write group, ADR-0052 versioned
+    replay, V1 / V2); ``None`` only for the rows of a new archive revision (the current version).
+    """
+    version = (
+        contract_version.new_group_version()
+        if contract_schema_version is None
+        else contract_version.replay_version(contract_schema_version, what="an archive revision")
+    )
     records: list[RevisionRecord] = []
     for row in chunk.to_pylist():
         if data_type == "agg_trades":
@@ -921,6 +961,7 @@ def _row_records(
         )
         records.append(
             RevisionRecord(
+                schema_version=version,
                 observation_key=observation_key,
                 revision_id=identity.revision_id(observation_key, source_identity, payload_hash),
                 source_id=source_identity,
@@ -1150,6 +1191,7 @@ _ARCHIVE_LOOKUP_COLUMNS: Final[tuple[str, ...]] = (
     "object_size_bytes",
     "source_binding_id",
     "source_binding_version",
+    "contract_schema_version",
 )
 #: Columns needed to rebuild the ``RevisionRecord`` / ``PrecedenceEvidence`` graph of one key.
 _ARCHIVE_REVISION_COLUMNS: Final[tuple[str, ...]] = (
@@ -1174,4 +1216,5 @@ _ARCHIVE_REVISION_COLUMNS: Final[tuple[str, ...]] = (
     "availability_evidence",
     "availability_evidence_gap",
     "precedence_evidence",
+    "contract_schema_version",
 )

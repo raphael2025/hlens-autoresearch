@@ -643,7 +643,10 @@ def manifest(tag: str = "a") -> ResearchDatasetManifest:
 
 
 def manifest_row(tag: str = "a") -> dict[str, Any]:
-    item = manifest(tag)
+    return manifest_row_of(manifest(tag))
+
+
+def manifest_row_of(item: ResearchDatasetManifest) -> dict[str, Any]:
     pit = item.point_in_time
     return {
         "manifest_content_hash": item.content_hash(),
@@ -993,7 +996,7 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     DATASET_SELECTIONS.table: dataset_selection_row,
 }
 assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
-assert CONTRACT_SCHEMA_VERSION == "2.0.0"
+assert CONTRACT_SCHEMA_VERSION == "2.1.0"  # ADR-0052 §4 (rows carry their recorded version)
 
 
 def batch_for(definition: RegisteredTableDefinition, rows: list[dict[str, Any]]) -> pa.Table:

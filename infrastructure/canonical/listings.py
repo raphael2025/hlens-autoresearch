@@ -54,6 +54,7 @@ from core.contracts.universe import (
     ListingRevision,
     SelectedRevisionLineage,
 )
+from infrastructure import contract_version
 from infrastructure.canonical import listing_rules as lr
 from infrastructure.canonical.rules import SYMBOLS
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
@@ -396,9 +397,20 @@ class ListingDeriver:
                 f"{LISTINGS_TABLE} batch {snapshot.batch_id} is known before a Raw row it read"
             )
         base = 0 if largest is None else largest + 1
+        # One batch is one write group: re-derived at the version it was committed with
+        # (ADR-0052 versioned replay, V1).
+        version = contract_version.recorded_version(
+            [row["contract_schema_version"] for row in new.values()],
+            what=f"{LISTINGS_TABLE} batch {snapshot.batch_id}",
+        )
         try:
             rebuilt = [
-                lr.listing_columns(item, arrival_seq=base + index, knowledge_time=ready)
+                lr.listing_columns(
+                    item,
+                    arrival_seq=base + index,
+                    knowledge_time=ready,
+                    contract_schema_version=version,
+                )
                 for index, item in enumerate(planned)
             ]
         except lr.ListingRuleViolation as exc:

@@ -44,6 +44,7 @@ from core.contracts.revision import (
     PolicyRole,
 )
 from core.domain.base import canonical_json
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 
 __all__ = [
     "AVAILABILITY_BINDING",
@@ -256,6 +257,7 @@ AVAILABILITY_HASH: Final = hashlib.sha256(
     canonical_json(AVAILABILITY_SPEC).encode("utf-8")
 ).hexdigest()
 AVAILABILITY_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.AVAILABILITY,
     policy_id=AVAILABILITY_POLICY_ID,
     version=AVAILABILITY_POLICY_VERSION,

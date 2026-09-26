@@ -3,7 +3,7 @@
   "description": "一次 staging 请求：目标 key + 预期 SHA-256（必填）+ 可选的预期字节数。\n\n内容本身不在 DTO 内：字节块流作为 `StorageAdapter.stage` 的独立参数传入，不把完整文件放进模型。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.1.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

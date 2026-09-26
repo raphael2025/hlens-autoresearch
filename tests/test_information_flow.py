@@ -598,8 +598,9 @@ def test_contract_schema_version_is_unchanged_by_this_batch() -> None:
     """ADR-0012 §「为什么仍是 2.0.0」（D-25）：收窄的是同一个**尚未发布**的版本。"""
     from core.domain.base import CONTRACT_SCHEMA_VERSION
 
-    assert CONTRACT_SCHEMA_VERSION == "2.0.0"
-    assert feature().schema_version == "2.0.0"
+    # ADR-0052 §4 raised the minor to 2.1.0; this batch itself changed no version.
+    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
+    assert feature().schema_version == "2.1.0"  # a new object: the current envelope
 
 
 # ======================================================================================

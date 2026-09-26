@@ -37,7 +37,7 @@ from core.contracts.revision import (
     PrecedenceEvidence,
     RevisionRecord,
 )
-from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
+from core.domain.base import canonical_json
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
@@ -50,6 +50,7 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_BARS_1M,
     CANONICAL_TRADES,
 )
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 
 __all__ = [
     "ARRIVAL_SEQ_LIMIT",
@@ -252,6 +253,7 @@ NORMALIZER_SPEC: Final[dict[str, Any]] = {
 }
 NORMALIZER_HASH: Final = _digest(NORMALIZER_SPEC)
 NORMALIZER_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PARSER,
     policy_id=NORMALIZER_ID,
     version=NORMALIZER_VERSION,
@@ -328,6 +330,7 @@ AVAILABILITY_SPEC: Final[dict[str, Any]] = {
 }
 AVAILABILITY_HASH: Final = _digest(AVAILABILITY_SPEC)
 AVAILABILITY_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.AVAILABILITY,
     policy_id=AVAILABILITY_ID,
     version=AVAILABILITY_VERSION,
@@ -358,6 +361,7 @@ PRECEDENCE_MAP_SPEC: Final[dict[str, Any]] = {
 }
 PRECEDENCE_MAP_HASH: Final = _digest(PRECEDENCE_MAP_SPEC)
 PRECEDENCE_MAP_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PRECEDENCE,
     policy_id=PRECEDENCE_MAP_ID,
     version=PRECEDENCE_MAP_VERSION,
@@ -614,12 +618,21 @@ def position_of(channel: RawChannel, raw: Mapping[str, Any]) -> int:
 
 
 def canonical_row(
-    channel: RawChannel, raw: Mapping[str, Any], *, base: int, ready_time: datetime
+    channel: RawChannel,
+    raw: Mapping[str, Any],
+    *,
+    base: int,
+    ready_time: datetime,
+    contract_schema_version: str,
 ) -> dict[str, Any]:
     """Every column of the Canonical revision of one verified Raw element row.
 
     ``raw`` must already be proven (``PersistedRowVerifier``); this only maps it. A Raw row with
     an in-row edge cannot be mapped by normalizer 1.0.0 (ADR-0028 §3.1) and fails closed.
+
+    ``contract_schema_version`` is the unit's contract version — recorded by its committed rows,
+    or the current one for a new unit (ADR-0052 versioned replay, V1 / V2); it is the envelope of
+    the ``RevisionRecord`` built here, and that envelope is the row's column: one source.
     """
     if raw["supersedes"] or raw["precedence_evidence"]:
         raise CanonicalRuleViolation(
@@ -635,6 +648,7 @@ def canonical_row(
     decision = decide_availability(channel.data_type, raw_table, raw, ready_time=ready_time)
     try:
         record = RevisionRecord(
+            schema_version=contract_schema_version,
             observation_key=key,
             revision_id=revision_id(key, source, digest),
             source_id=source,
@@ -667,7 +681,7 @@ def canonical_row(
         "availability_evidence": list(decision.evidence),
         "availability_evidence_gap": decision.evidence_gap,
         "precedence_evidence": [],
-        "contract_schema_version": CONTRACT_SCHEMA_VERSION,
+        "contract_schema_version": record.schema_version,
         "lineage_raw_table": raw_table,
         "lineage_raw_revision_id": raw["revision_id"],
         "lineage_source_table": channel.source.table,

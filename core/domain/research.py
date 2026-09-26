@@ -8,7 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Literal
+from typing import Final, Literal
 
 from pydantic import Field, model_validator
 
@@ -17,6 +17,8 @@ from core.domain.base import (
     ContentBlobRef,
     ContentHash,
     Contract,
+    ExactBacked,
+    ExactDecimal,
     FrozenMapping,
     GitOid,
     Kind,
@@ -25,12 +27,16 @@ from core.domain.base import (
     RefKey,
     UtcDatetime,
     VersionedSpec,
+    omit_none,
     validate_ref_keyed_hashes,
 )
 from core.domain.execution import ExecutionMode
 from core.domain.selection import ProfileSelection
 from core.domain.specs import DatasetRef
 from core.errors import ReasonCode
+
+#: The minor that introduced this module's ADR-0052 fields (never under 2.0.0).
+ADR_0052_VERSION: Final = "2.1.0"
 
 __all__ = [
     "EvidenceLevel",
@@ -309,11 +315,20 @@ class Verdict(StrEnum):
     INCONCLUSIVE = "INCONCLUSIVE"
 
 
-class GateResult(Contract):
+class GateResult(ExactBacked):
     """单个验证门的结构化结果（07-validation.md §2）。
 
     `threshold_source` 指向 Validation Profile 中的字段路径：阈值不得写死在流水线里。
+
+    精确表示（ADR-0052 §1，D-FLOAT）：可选的 `value_exact` / `threshold_exact`。存在时浮点字段
+    必须恰为 `float(精确值)`（否则拒绝），哈希载荷排除对应浮点字段，判定由产生方用精确值比较；
+    不存在时省略出载荷，旧载荷哈希逐位不变。一个带阈值的门要么两者都精确、要么都不精确
+    （混合表示的比较不可复核，拒绝）。浮点字段弃用，保留到下一次因其他原因发生的 major。
     """
+
+    _FIELDS_SINCE = {"value_exact": ADR_0052_VERSION, "threshold_exact": ADR_0052_VERSION}
+
+    _EXACT_SIBLINGS = (("value", "value_exact"), ("threshold", "threshold_exact"))
 
     gate_id: str = Field(min_length=1)
     metric: str = Field(min_length=1)
@@ -321,6 +336,20 @@ class GateResult(Contract):
     threshold: float | None = None
     threshold_source: str | None = None
     verdict: Verdict
+    value_exact: ExactDecimal | None = Field(default=None, exclude_if=omit_none)
+    threshold_exact: ExactDecimal | None = Field(default=None, exclude_if=omit_none)
+
+    @model_validator(mode="after")
+    def _exact_representation_is_whole(self) -> GateResult:
+        """带阈值的门：`value_exact` 与 `threshold_exact` 同时存在或同时缺失（ADR-0052 §1）。"""
+        if self.threshold_exact is not None and self.value_exact is None:
+            raise ValueError("threshold_exact 需要 value_exact：精确阈值只能与精确值比较")
+        if self.value_exact is not None and self.threshold is not None:
+            if self.threshold_exact is None:
+                raise ValueError(
+                    "value_exact 与浮点阈值混用：带阈值的精确门必须给出 threshold_exact"
+                )
+        return self
 
     @model_validator(mode="after")
     def _threshold_and_source_are_paired(self) -> GateResult:

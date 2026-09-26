@@ -43,12 +43,14 @@ from typing import Any, Final
 
 from core.contracts.revision import PolicyBinding, PolicyRole, PrecedenceEvidence
 from core.domain.base import canonical_json
+from infrastructure import contract_version
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_KLINES_1M,
     BINANCE_SPOT_REST_AGG_TRADES,
     BINANCE_SPOT_REST_KLINES_1M,
 )
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision import rest_identity
 
@@ -497,8 +499,16 @@ class ChannelEdge:
         }
 
 
-def build_channel_edge(comparison: ChannelComparison, *, knowledge_time: datetime) -> ChannelEdge:
+def build_channel_edge(
+    comparison: ChannelComparison,
+    *,
+    knowledge_time: datetime,
+    contract_schema_version: str | None = None,
+) -> ChannelEdge:
     """The evidence-only edge ``archive supersedes REST`` for an ``EQUAL`` comparison.
+
+    ``contract_schema_version``: the version a committed edge row records when it is re-derived,
+    ``None`` for a new edge (the current version; ADR-0052 versioned replay, V1 / V2).
 
     The comparison is **not trusted**: it is re-evaluated from its two revisions (current rows,
     channels, data type, observation key, identities) and every stored field — outcome, kind,
@@ -545,6 +555,11 @@ def build_channel_edge(comparison: ChannelComparison, *, knowledge_time: datetim
             "backfilled before both sides were known"
         )
     evidence = PrecedenceEvidence(
+        schema_version=(
+            contract_version.new_group_version()
+            if contract_schema_version is None
+            else contract_version.replay_version(contract_schema_version, what="an evidence edge")
+        ),
         observation_key=fresh.observation_key,
         revision_id=archive.revision_id,
         superseded_revision_id=rest.revision_id,
@@ -699,6 +714,7 @@ DELIVERY_CHANNEL_HASH: Final = hashlib.sha256(
     canonical_json(DELIVERY_CHANNEL_SPEC).encode("utf-8")
 ).hexdigest()
 DELIVERY_CHANNEL_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PRECEDENCE,
     policy_id=DELIVERY_CHANNEL_POLICY_ID,
     version=DELIVERY_CHANNEL_POLICY_VERSION,

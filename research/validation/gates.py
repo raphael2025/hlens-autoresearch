@@ -73,9 +73,14 @@ def profile_value(profile: ValidationProfile, path: str) -> object:
         raise ValueError(f"not a Profile field path: {path!r}")
     value: object = profile
     for name in match.group("attrs").split("."):
-        if name not in type(value).model_fields:  # type: ignore[attr-defined]
+        model = type(value)
+        if name not in model.model_fields:  # type: ignore[attr-defined]
             raise ProfileFieldMissing(f"the Profile has no field {path!r}")
         value = getattr(value, name)
+        if value is None and name in getattr(model, "_FIELDS_SINCE", {}):
+            # An optional ADR-0052 field this Profile does not carry is a missing field, exactly
+            # as before the field existed (ADR-0041 §1 behaviour of an old Profile unchanged).
+            raise ProfileFieldMissing(f"the Profile has no field {path!r}")
     index = match.group("index")
     if index is not None:
         if not isinstance(value, tuple):

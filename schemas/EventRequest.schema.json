@@ -5,7 +5,7 @@
       "description": "一个离散事件（Event 表的一行）。\n\n- `event` / `spec_hash`：产出它的事件定义（版本化，内容哈希绑定参数）；\n- `event_time`：可观测时间（见模块文档）；\n- `attributes`：事件的描述性内容（方向、前后状态、阈值……）；\n- `input_ids`：所用输入点的 `point_id`，严格升序；`upstream_event_ids`：所用上游事件的\n  `event_id`，严格升序；两者至少一个非空；\n- `subject`：可选，事件所属的标的（ADR-0057）；给出时进入 `event_id`，缺失时省略（旧 id 不变）；\n- `event_id`：以上内容的哈希，构造时复核（不接受自报的哈希）。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.1.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -98,7 +98,7 @@
       "description": "上游序列上的一个点：一个 Feature 值或 State 标签（ADR-0036 §1）。\n\n- `source`：`kind=feature` 或 `kind=state` 的引用；序列身份即 `str(source)`；\n- `source_lineage_hash`：该点来源的哈希（例如上游规格 + 数据集 + Provider + 该时刻的值，见\n  `infrastructure.event.inputs`）；只能依赖 `available_time` 时已知的信息，因此过去的点与\n  引用它们的事件的身份不随未来数据改变；\n- `evaluation_time`：该值所描述的时刻；`available_time`：它可被观测的最早时刻，不早于\n  `evaluation_time`；\n- `value`：`None` 表示上游显式\"不可计算\"；State 标签以非数值文本给出。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.1.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -180,7 +180,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.1.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -212,7 +212,7 @@
   "description": "一次事件识别请求：截至 `as_of` 的事件表。\n\n- `event` 必须是 `kind=event` 的引用，`spec_hash` 为该 `EventSpec` 的内容哈希；\n- `inputs`：按 `(available_time, source, evaluation_time)` 规范排序；\n  `(source, evaluation_time)` 重复即拒绝；每条序列只追加（同一 source 按 `evaluation_time`\n  排序后 `available_time` 不递减）；\n- `upstream_events`：交互算子的上游事件，按 `(event_time, event_id)` 规范排序，`event_id` 唯一；\n- `subject`：可选，请求所属的标的（ADR-0057）。一个请求只对应一个标的：上游事件的 `subject`\n  必须与请求相同（都缺失亦可）。缺失时从载荷省略，既有请求哈希逐位不变。\n\n同一请求内容 → 同一 `content_hash()`（输入顺序不影响）。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.1.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

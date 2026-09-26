@@ -98,6 +98,15 @@ def _round_trip(payload: Any) -> Any:
     return json.loads(json.dumps(payload, default=str))
 
 
+def _ok_record(*, step: str, days: list[str], result: Any) -> dict[str, Any]:
+    return {
+        "step": step,
+        "status": "ok",
+        "days": days,
+        "result": result,
+    }
+
+
 def test_every_step_runs_offline_and_stops_at_the_universe(
     world: tuple[PyIcebergCatalogAdapter, LocalFileStorageAdapter],
     monkeypatch: pytest.MonkeyPatch,
@@ -160,3 +169,143 @@ def test_days_must_be_consecutive(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     day, later = DAY.isoformat(), (DAY + timedelta(days=2)).isoformat()
     with pytest.raises(SystemExit):
         tool.main(["--state-dir", str(tmp_path / "state"), "--day", day, "--day", later, "f2"])
+
+
+def test_failed_prior_step_refuses_stale_json(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    days = [DAY.isoformat()]
+    ok = _ok_record(
+        step="collect", days=days, result={"objects": [], "gaps": [], "per_request": []}
+    )
+    (state / "collect.json").write_text(json.dumps(ok), encoding="utf-8")
+    # Simulate a later failure that invalidates success: remove ok, write failed (fail-closed path).
+    tool._invalidate_ok_state(state, "collect")
+    failed = {**ok, "status": "failed", "result": {"error": "boom"}}
+    (state / "collect.failed.json").write_text(json.dumps(failed), encoding="utf-8")
+    with pytest.raises(SystemExit, match="missing prior step state|failed record"):
+        tool._load_prior(state, "collect", [DAY])
+
+    # Stale success left in place while a newer failed record exists: still refuse.
+    (state / "collect.json").write_text(json.dumps(ok), encoding="utf-8")
+    # Ensure failed mtime is >= ok mtime.
+    failed_path = state / "collect.failed.json"
+    failed_path.write_text(json.dumps(failed), encoding="utf-8")
+    ok_path = state / "collect.json"
+    ok_path.touch()
+    failed_path.touch()
+    with pytest.raises(SystemExit, match="failed record"):
+        tool._load_prior(state, "collect", [DAY])
+
+
+def test_day_mismatch_between_steps_is_refused(tmp_path: Path) -> None:
+    state = tmp_path / "state"
+    state.mkdir()
+    other = DAY + timedelta(days=1)
+    ok = _ok_record(
+        step="collect",
+        days=[DAY.isoformat()],
+        result={"objects": [], "gaps": [], "per_request": []},
+    )
+    (state / "collect.json").write_text(json.dumps(ok), encoding="utf-8")
+    with pytest.raises(SystemExit, match="do not match current --day set"):
+        tool._load_prior(state, "collect", [DAY, other])
+
+
+def test_record_contains_code_revision_and_snapshot_heads(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
+    monkeypatch.setenv("HLENS_WAREHOUSE_URI", (tmp_path / "warehouse").as_uri())
+    monkeypatch.setenv("HLENS_STAGING_URI", (tmp_path / "staging").as_uri())
+    monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)
+    monkeypatch.setattr(
+        tool,
+        "_collect",
+        lambda *a, **k: {"objects": [], "gaps": [], "per_request": []},
+    )
+    state = tmp_path / "state"
+    code = tool.main(["--state-dir", str(state), "--day", DAY.isoformat(), "collect"])
+    assert code == 0
+    record = json.loads((state / "collect.json").read_text(encoding="utf-8"))
+    assert record["status"] == "ok"
+    assert "commit" in record["code_revision"]
+    assert "dirty" in record["code_revision"]
+    # collect has no catalog adapter open → heads are null.
+    assert record["snapshot_heads_before"] is None
+    assert record["snapshot_heads_after"] is None
+
+    # Catalog step: heads are dicts (may be empty) when an adapter is open.
+    heads = {"raw.some_table": "1"}
+    monkeypatch.setattr(
+        tool,
+        "_run",
+        lambda args: tool._StepOutcome({"units": []}, heads, {**heads, "raw.other": "2"}),
+    )
+    code = tool.main(["--state-dir", str(state), "--day", DAY.isoformat(), "ingest"])
+    assert code == 0
+    ingest_record = json.loads((state / "ingest.json").read_text(encoding="utf-8"))
+    assert "commit" in ingest_record["code_revision"]
+    assert "dirty" in ingest_record["code_revision"]
+    assert ingest_record["snapshot_heads_before"] == heads
+    assert ingest_record["snapshot_heads_after"] == {**heads, "raw.other": "2"}
+
+
+def test_f2_performs_no_network_call(
+    world: tuple[PyIcebergCatalogAdapter, LocalFileStorageAdapter],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter, storage = world
+    monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
+    monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)
+    settings = Settings(_env_file=None)  # type: ignore[call-arg]
+    site = _Site()
+    collected = tool._collect(
+        settings, storage, [DAY], http_transport=httpx.MockTransport(site.handler)
+    )
+    ingested = tool._ingest(adapter, storage, collected)
+    tool._normalize(adapter, storage, ingested)
+    tool._report(adapter, storage, [DAY])
+    archive_requests = len(site.requests)
+
+    requests: list[object] = []
+
+    def _reject_send(self: object, request: object, *args: object, **kwargs: object) -> object:
+        requests.append(request)
+        raise AssertionError(f"unexpected network request: {request!r}")
+
+    def _reject_handle(self: object, request: object) -> object:
+        requests.append(request)
+        raise AssertionError(f"unexpected network request: {request!r}")
+
+    monkeypatch.setattr(httpx.Client, "send", _reject_send)
+    monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _reject_handle)
+
+    stopped = tool._f2("https://market-data.test", adapter, storage, [DAY])
+    assert requests == []
+    assert len(site.requests) == archive_requests  # f2 added none
+    assert stopped["outcome"] == "stopped"
+    assert stopped["error_type"].endswith("UniverseSpecError")
+    assert "tables_without_snapshot" in stopped
+
+
+def test_failed_step_removes_prior_ok_json(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
+    monkeypatch.setenv("HLENS_WAREHOUSE_URI", (tmp_path / "warehouse").as_uri())
+    monkeypatch.setenv("HLENS_STAGING_URI", (tmp_path / "staging").as_uri())
+    monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)
+    state = tmp_path / "state"
+    state.mkdir()
+    ok = _ok_record(step="collect", days=[DAY.isoformat()], result={"objects": []})
+    (state / "collect.json").write_text(json.dumps(ok), encoding="utf-8")
+
+    def _boom(*_a: object, **_k: object) -> tool._StepOutcome:
+        raise RuntimeError("collect failed")
+
+    monkeypatch.setattr(tool, "_run", _boom)
+    code = tool.main(["--state-dir", str(state), "--day", DAY.isoformat(), "collect"])
+    assert code == 1
+    assert not (state / "collect.json").exists()
+    assert (state / "collect.failed.json").is_file()
+    with pytest.raises(SystemExit, match="missing prior step state"):
+        tool._load_prior(state, "collect", [DAY])
