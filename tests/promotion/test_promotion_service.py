@@ -16,6 +16,8 @@ from core.domain.base import FrozenMapping, Kind, Ref
 from core.domain.research import ValidationReport, Verdict
 from core.lifecycle.strategy import LifecycleHistory, LifecycleState, LifecycleTransition
 from infrastructure.registry import (
+    ProfileFreezeRegistry,
+    RegistryCorrupted,
     StrategyRegistry,
     decode_golden_positions,
     decode_golden_signals,
@@ -23,6 +25,7 @@ from infrastructure.registry import (
 )
 from research.promotion import (
     PromotionEvidence,
+    PromotionPackage,
     PromotionRefusal,
     PromotionRefused,
     build_artifact,
@@ -36,12 +39,17 @@ from tests.promotion.fixtures import (
     PATH_TO_PAPER,
     PATH_TO_PRODUCTION_CANDIDATE,
     REPORT_TIME,
+    TEST_ONLY_CALIBRATION,
     TEST_ONLY_SNAPSHOT,
+    TOY_CALIBRATION_REPORT,
+    TOY_FREEZE_APPROVER,
+    TOY_FREEZE_TIME,
     FlakyStrategy,
     golden_request,
     history,
     toy_evidence,
     toy_experiment,
+    toy_freezes,
     toy_profile,
     toy_report,
     toy_spec,
@@ -52,9 +60,22 @@ R = PromotionRefusal
 OTHER_STRATEGY = Ref(kind=Kind.STRATEGY, name="someone_else", version="1.0.0")
 
 
-def _refusal(evidence: PromotionEvidence) -> PromotionRefused:
+def _build(evidence: PromotionEvidence, *frozen: ValidationProfile) -> PromotionPackage:
+    """``build_artifact`` against a TEST ONLY freeze registry in which ``frozen`` (default: the toy
+    Profile) — and nothing else — is registered as frozen (ADR-0062)."""
+    with toy_freezes(*frozen) as freezes:
+        return build_artifact(evidence, freezes=freezes)
+
+
+def _promote(evidence: PromotionEvidence, registry: StrategyRegistry) -> StrategyArtifact:
+    """``promote`` against a TEST ONLY freeze registry holding the toy Profile (ADR-0062)."""
+    with toy_freezes() as freezes:
+        return promote(evidence, registry, freezes=freezes)
+
+
+def _refusal(evidence: PromotionEvidence, *frozen: ValidationProfile) -> PromotionRefused:
     with pytest.raises(PromotionRefused) as caught:
-        build_artifact(evidence)
+        _build(evidence, *frozen)
     return caught.value
 
 
@@ -63,7 +84,7 @@ def _refusal(evidence: PromotionEvidence) -> PromotionRefused:
 
 def test_the_toy_strategy_builds_a_deterministic_artifact() -> None:
     evidence = toy_evidence()
-    package = build_artifact(evidence)
+    package = _build(evidence)
     artifact = package.artifact
     spec = evidence.spec
     assert artifact.strategy_spec == spec.ref
@@ -82,7 +103,7 @@ def test_the_toy_strategy_builds_a_deterministic_artifact() -> None:
     expected = [FakeSignStrategy([spec]).target_positions(r) for r in evidence.golden_inputs]
     assert [a.positions for a in answers] == [r.positions for r in expected]
     # same evidence → same artifact id (content addressed; created_at is explicit)
-    assert build_artifact(toy_evidence()).artifact.artifact_id == artifact.artifact_id
+    assert _build(toy_evidence()).artifact.artifact_id == artifact.artifact_id
     # the artifact round-trips as its contract
     assert StrategyArtifact.model_validate(artifact.model_dump(mode="json")) == artifact
 
@@ -94,16 +115,16 @@ def test_paper_is_the_earliest_promotable_state() -> None:
         PATH_TO_PRODUCTION_CANDIDATE,
         (*PATH_TO_PRODUCTION_CANDIDATE, S.ACTIVE),
     ):
-        build_artifact(toy_evidence(lifecycle=history(spec.ref, path)))
+        _build(toy_evidence(lifecycle=history(spec.ref, path)))
 
 
 def test_promote_stores_blobs_and_registers(tmp_path: Path) -> None:
     with StrategyRegistry(tmp_path / "registry") as registry:
-        artifact = promote(toy_evidence(), registry)
+        artifact = _promote(toy_evidence(), registry)
         assert registry.artifact(artifact.artifact_id) == artifact
         assert len(registry) == 1
         with pytest.raises(PromotionRefused) as caught:
-            promote(toy_evidence(), registry)
+            _promote(toy_evidence(), registry)
         assert caught.value.reason is R.ALREADY_REGISTERED
         assert len(registry) == 1
     with StrategyRegistry(tmp_path / "registry") as reopened:
@@ -113,7 +134,7 @@ def test_promote_stores_blobs_and_registers(tmp_path: Path) -> None:
 def test_a_refused_promotion_writes_nothing(tmp_path: Path) -> None:
     with StrategyRegistry(tmp_path / "registry") as registry:
         with pytest.raises(PromotionRefused):
-            promote(toy_evidence(reports=()), registry)
+            _promote(toy_evidence(reports=()), registry)
         assert len(registry) == 0
     assert not (tmp_path / "registry" / "blobs").exists()
 
@@ -298,7 +319,7 @@ def test_the_toy_happy_path_runs_under_a_frozen_calibrated_profile() -> None:
     assert profile.status is ProfileStatus.FROZEN
     assert profile.provenance.calibration_report is not None
     assert {r.validation_profile_hash for r in evidence.reports} == {profile.content_hash()}
-    build_artifact(_under(profile))
+    _build(_under(profile))
 
 
 def test_a_draft_profile_is_refused() -> None:
@@ -372,7 +393,8 @@ def test_a_g2_report_without_the_market_benchmark_item_is_refused() -> None:
 
 def test_the_market_benchmark_item_must_be_the_profiles_rule() -> None:
     profile = toy_profile(market_benchmark_rule="buy_and_hold_equal_weight")
-    refused = _refusal(_under(profile))  # the toy reports carry G2.market_benchmark.flat only
+    # frozen (registered), so the refusal is the benchmark item's, not the freeze's
+    refused = _refusal(_under(profile), profile)  # the toy reports carry .flat only
     assert refused.reason is R.MARKET_BENCHMARK_MISSING
     assert "G2.market_benchmark.buy_and_hold_equal_weight" in refused.detail
 
@@ -381,7 +403,7 @@ def test_an_unregistered_rule_needs_its_inconclusive_item() -> None:
     # an unregistered rule is reported as a bare INCONCLUSIVE G2.market_benchmark; a report that
     # lacks even that is refused as missing (with it, the verdict is not PASS anyway)
     profile = toy_profile(market_benchmark_rule="TEST-ONLY-unregistered")
-    refused = _refusal(_under(profile))
+    refused = _refusal(_under(profile), profile)
     assert refused.reason is R.MARKET_BENCHMARK_MISSING
     assert refused.detail.endswith("G2.market_benchmark")
 
@@ -395,8 +417,9 @@ def test_a_profile_with_rule_none_needs_no_market_benchmark_item() -> None:
         toy_report(spec, experiment, r.report_id, _stages(r), market_benchmark=None)
         for r in evidence.reports
     )
-    build_artifact(
-        replace(evidence, reports=reports, experiments=(experiment,), profiles=(profile,))
+    _build(
+        replace(evidence, reports=reports, experiments=(experiment,), profiles=(profile,)),
+        profile,
     )
 
 
@@ -531,13 +554,116 @@ def test_no_library_strategy_can_be_promoted_today(entry: object, tmp_path: Path
     )
     with StrategyRegistry(tmp_path / "registry") as registry:
         with pytest.raises(PromotionRefused) as caught:
-            promote(evidence, registry)
+            _promote(evidence, registry)
         assert caught.value.reason is R.PROFILE_NOT_FROZEN
         assert str(draft.ref) in caught.value.detail
         assert len(registry) == 0
     # the same bundle under the (TEST ONLY) frozen twin of the Profile gets past the Profile
     # check: the refusal above is the Profile's, not a gap elsewhere in the bundle
     try:
-        build_artifact(_rebound(evidence, toy_profile()))
+        _build(_rebound(evidence, toy_profile()))
     except PromotionRefused as refused:
         assert not refused.reason.value.startswith("profile_")
+
+
+# ---- ADR-0062: the Profile freeze registry is the authoritative freeze source ----------------
+
+
+def _empty_freezes(tmp_path: Path) -> ProfileFreezeRegistry:
+    """An open, anchored, **empty** Profile freeze registry (temp dir + sibling anchor)."""
+    return ProfileFreezeRegistry(tmp_path / "freezes", anchor=tmp_path / "freezes.anchor.jsonl")
+
+
+def test_a_registered_freeze_lets_complete_evidence_promote(tmp_path: Path) -> None:
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    with toy_freezes(profile, root=tmp_path) as freezes:
+        record = freezes.frozen_record(profile)
+        assert record is not None and record.approved_by == TOY_FREEZE_APPROVER
+        package = build_artifact(evidence, freezes=freezes)
+        with StrategyRegistry(tmp_path / "registry") as registry:
+            artifact = promote(evidence, registry, freezes=freezes)
+            assert registry.has_artifact(artifact.artifact_id)
+    assert artifact == package.artifact
+
+
+def test_status_frozen_without_a_registered_freeze_is_refused(tmp_path: Path) -> None:
+    """ADR-0008: ``status`` is not in the content hash, so the object's FROZEN is not evidence."""
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    assert profile.status is ProfileStatus.FROZEN
+    assert profile.provenance.calibration_report is not None
+    with _empty_freezes(tmp_path) as freezes:
+        with pytest.raises(PromotionRefused) as caught:
+            build_artifact(evidence, freezes=freezes)
+        with StrategyRegistry(tmp_path / "registry") as registry:
+            with pytest.raises(PromotionRefused):
+                promote(evidence, registry, freezes=freezes)
+            assert len(registry) == 0  # nothing written
+    assert caught.value.reason is R.PROFILE_NOT_FROZEN
+    assert "not authoritative" in caught.value.detail
+
+
+def test_a_freeze_of_another_content_hash_of_the_ref_is_refused() -> None:
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    other = toy_profile(market_benchmark_rule="buy_and_hold_equal_weight")  # same ref, other hash
+    assert other.ref == profile.ref and other.content_hash() != profile.content_hash()
+    refused = _refusal(evidence, other)
+    assert refused.reason is R.PROFILE_NOT_FROZEN
+    assert profile.content_hash() in refused.detail
+
+
+def test_a_draft_twin_of_a_registered_profile_is_still_refused() -> None:
+    """The record answers for the content (hash); the object's own status must also be FROZEN."""
+    frozen = toy_profile()
+    draft = toy_profile(
+        status=ProfileStatus.DRAFT, calibration_report=frozen.provenance.calibration_report
+    )
+    assert draft.content_hash() == frozen.content_hash()
+    assert _refusal(_under(draft), frozen).reason is R.PROFILE_NOT_FROZEN
+
+
+def test_a_closed_or_poisoned_freeze_registry_cannot_support_promotion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    evidence = toy_evidence()
+    with toy_freezes(root=tmp_path / "closed") as closed:
+        pass  # closed on exit
+    with pytest.raises(PromotionRefused) as caught:
+        build_artifact(evidence, freezes=closed)
+    assert caught.value.reason is R.PROFILE_NOT_FROZEN and "cannot answer" in caught.value.detail
+
+    other = toy_profile(name="test_only_poison_trigger", calibration_report=TEST_ONLY_CALIBRATION)
+    with toy_freezes(root=tmp_path / "poisoned") as poisoned:
+        monkeypatch.setattr(poisoned._anchor, "append", _failing_append)
+        with pytest.raises(RegistryCorrupted):
+            poisoned.register_freeze(
+                other,
+                TOY_CALIBRATION_REPORT,
+                approved_by=TOY_FREEZE_APPROVER,
+                approved_at=TOY_FREEZE_TIME,
+            )
+        with pytest.raises(PromotionRefused) as caught:
+            build_artifact(evidence, freezes=poisoned)  # its memory still holds the toy freeze
+    assert caught.value.reason is R.PROFILE_NOT_FROZEN and "poisoned" in caught.value.detail
+
+
+def _failing_append(*_args: object, **_kwargs: object) -> None:
+    raise OSError("TEST ONLY: the anchor disk is gone")
+
+
+@pytest.mark.parametrize("freezes", [None, "a path, not a registry", object()])
+def test_without_a_freeze_registry_nothing_is_promoted(freezes: object) -> None:
+    with pytest.raises(PromotionRefused) as caught:
+        build_artifact(toy_evidence(), freezes=freezes)  # type: ignore[arg-type]
+    assert caught.value.reason is R.PROFILE_NOT_FROZEN
+
+
+def test_an_artifact_may_not_predate_the_profile_freeze_approval(tmp_path: Path) -> None:
+    evidence = toy_evidence(created_at=TOY_FREEZE_TIME - timedelta(seconds=1))
+    assert evidence.created_at > REPORT_TIME  # after every report: only the freeze is later
+    with toy_freezes(root=tmp_path) as freezes, pytest.raises(PromotionRefused) as caught:
+        build_artifact(evidence, freezes=freezes)
+    assert caught.value.reason is R.EVIDENCE_INVALID
+    assert "freeze approval" in caught.value.detail

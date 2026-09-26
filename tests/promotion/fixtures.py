@@ -5,10 +5,13 @@ lifecycle transition and golden input is fabricated to exercise the fail-closed 
 
 from __future__ import annotations
 
-from collections.abc import Callable, Sequence
+import tempfile
+from collections.abc import Callable, Iterator, Sequence
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 from core.contracts.strategy import (
     SignalObservation,
@@ -33,6 +36,7 @@ from core.lifecycle.strategy import (
     LifecycleState,
     LifecycleTransition,
 )
+from infrastructure.registry import ProfileFreezeRegistry
 from research.promotion import PromotionEvidence
 from tests.factories import (
     HASH_E,
@@ -51,9 +55,36 @@ from tests.fake_strategy import SIGNAL_REF, FakeSignStrategy, fake_strategy_spec
 S = LifecycleState
 
 TEST_ONLY_SNAPSHOT = "TEST-ONLY-synthetic-golden-snapshot"
-#: A TEST ONLY calibration reference: no calibration report exists; it only lets the toy Profile be
-#: marked FROZEN so the happy path of the promotion chain is exercised (C-A8 is checked, not met).
-TEST_ONLY_CALIBRATION = "TEST-ONLY-no-real-calibration-report"
+
+
+def toy_calibration_report(note: str = "TEST ONLY") -> tuple[bytes, str]:
+    """A TEST ONLY ``gate_calibration`` report file (canonical JSON bytes) and its ``report_hash``.
+
+    Only the parts the Profile freeze registry verifies are real — ``kind`` and the self-hash
+    ``report_hash = content_hash(<report without report_hash>)`` (ADR-0062 decision 3); it carries
+    no calibration runs and supports no Profile decision.
+    """
+    body: dict[str, object] = {
+        "kind": "gate_calibration",
+        "schema_version": "1.0.0",
+        "status": "TEST ONLY",
+        "disclaimer": "evidence only — not a Profile decision",
+        "note": note,
+        "inputs": {},
+        "candidates": [],
+    }
+    report_hash = content_hash(body)
+    return canonical_json({**body, "report_hash": report_hash}).encode("utf-8"), report_hash
+
+
+#: The TEST ONLY calibration report file and the ``report_hash`` the toy Profile cites in
+#: ``provenance.calibration_report``: no calibration was run; it only lets the toy Profile be marked
+#: FROZEN and registered in a temporary Profile freeze registry (ADR-0062), so the happy path of the
+#: promotion chain is exercised (C-A8 is checked, not met).
+TOY_CALIBRATION_REPORT, TEST_ONLY_CALIBRATION = toy_calibration_report()
+#: The TEST ONLY approver and time of the toy Profile's registered freeze (a declared name only).
+TOY_FREEZE_APPROVER = "TEST-ONLY approver"
+TOY_FREEZE_TIME = datetime(2026, 2, 15, tzinfo=UTC)
 #: The (registered, ADR-0060) market benchmark rule of the toy Profile; a toy report that evaluates
 #: G2 carries its reported-only item ``G2.market_benchmark.flat`` unless told not to.
 TOY_BENCHMARK_RULE = "flat"
@@ -222,24 +253,25 @@ def toy_evidence(**overrides: object) -> PromotionEvidence:
     return replace(evidence, **overrides)  # type: ignore[arg-type]
 
 
-def toy_calibration_report(note: str = "TEST ONLY") -> tuple[bytes, str]:
-    """A TEST ONLY ``gate_calibration`` report file (canonical JSON bytes) and its ``report_hash``.
-
-    Only the parts the Profile freeze registry verifies are real — ``kind`` and the self-hash
-    ``report_hash = content_hash(<report without report_hash>)`` (ADR-0062 decision 3); it carries
-    no calibration runs and supports no Profile decision.
-    """
-    body: dict[str, object] = {
-        "kind": "gate_calibration",
-        "schema_version": "1.0.0",
-        "status": "TEST ONLY",
-        "disclaimer": "evidence only — not a Profile decision",
-        "note": note,
-        "inputs": {},
-        "candidates": [],
-    }
-    report_hash = content_hash(body)
-    return canonical_json({**body, "report_hash": report_hash}).encode("utf-8"), report_hash
+@contextmanager
+def toy_freezes(
+    *profiles: ValidationProfile, root: Path | None = None
+) -> Iterator[ProfileFreezeRegistry]:
+    """An open TEST ONLY Profile freeze registry (a temporary directory and a sibling anchor file)
+    in which ``profiles`` (default: ``toy_profile()``) are frozen on the TEST ONLY calibration
+    report by ``TOY_FREEZE_APPROVER`` — the ADR-0062 record Promotion requires."""
+    with tempfile.TemporaryDirectory() as tmp:
+        base = Path(tmp) if root is None else root
+        registry = ProfileFreezeRegistry(base / "freezes", anchor=base / "freezes.anchor.jsonl")
+        with registry:
+            for profile in profiles or (toy_profile(),):
+                registry.register_freeze(
+                    profile,
+                    TOY_CALIBRATION_REPORT,
+                    approved_by=TOY_FREEZE_APPROVER,
+                    approved_at=TOY_FREEZE_TIME,
+                )
+            yield registry
 
 
 type PositionTransform = Callable[[TargetPosition], TargetPosition]

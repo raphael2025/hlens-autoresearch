@@ -19,11 +19,28 @@ from infrastructure.registry import (
     StrategyRegistry,
     UnknownArtifact,
 )
-from research.promotion import build_artifact, promote
+from research.promotion import (
+    PromotionEvidence,
+    PromotionPackage,
+    build_artifact,
+    promote,
+)
 from tests.factories import HASH_A, deployment_record, equivalence_check
-from tests.promotion.fixtures import toy_evidence
+from tests.promotion.fixtures import toy_evidence, toy_freezes
 
 OTHER_STRATEGY = Ref(kind=Kind.STRATEGY, name="someone_else", version="1.0.0")
+
+
+def _build(evidence: PromotionEvidence) -> PromotionPackage:
+    """``build_artifact`` against a TEST ONLY freeze registry holding the toy Profile (ADR-0062)."""
+    with toy_freezes() as freezes:
+        return build_artifact(evidence, freezes=freezes)
+
+
+def _promote(evidence: PromotionEvidence, registry: StrategyRegistry) -> StrategyArtifact:
+    """``promote`` against a TEST ONLY freeze registry holding the toy Profile (ADR-0062)."""
+    with toy_freezes() as freezes:
+        return promote(evidence, registry, freezes=freezes)
 
 
 def _journal(root: Path) -> Path:
@@ -32,7 +49,7 @@ def _journal(root: Path) -> Path:
 
 def _promoted(root: Path) -> StrategyArtifact:
     with StrategyRegistry(root) as registry:
-        return promote(toy_evidence(), registry)
+        return _promote(toy_evidence(), registry)
 
 
 def _rewrite_line(path: Path, index: int, mutate: object) -> None:
@@ -103,7 +120,7 @@ def test_dangling_references_are_refused(tmp_path: Path) -> None:
 
 
 def test_an_artifact_without_its_golden_blobs_is_refused(tmp_path: Path) -> None:
-    package = build_artifact(toy_evidence())
+    package = _build(toy_evidence())
     with StrategyRegistry(tmp_path / "registry") as registry:
         with pytest.raises(RegistryRefused, match="golden signals blob"):
             registry.register_artifact(package.artifact)
@@ -118,7 +135,7 @@ def test_an_artifact_without_its_golden_blobs_is_refused(tmp_path: Path) -> None
 def test_an_artifact_whose_golden_data_answers_another_strategy_is_refused(
     tmp_path: Path,
 ) -> None:
-    package = build_artifact(toy_evidence())
+    package = _build(toy_evidence())
     payload = package.artifact.model_dump(mode="json")
     payload["strategy_spec"] = OTHER_STRATEGY.model_dump(mode="json")
     payload["dependencies"] = {**payload["dependencies"], str(OTHER_STRATEGY): HASH_A}
@@ -203,7 +220,7 @@ def test_a_partial_trailing_line_is_refused(tmp_path: Path) -> None:
 def test_whole_line_truncation_needs_the_anchor(tmp_path: Path) -> None:
     root, anchor = tmp_path / "registry", tmp_path / "anchor.jsonl"
     with StrategyRegistry(root, anchor=anchor) as registry:
-        artifact = promote(toy_evidence(), registry)
+        artifact = _promote(toy_evidence(), registry)
         registry.record_equivalence(equivalence_check(artifact_id=artifact.artifact_id))
     lines = _journal(root).read_text(encoding="utf-8").splitlines(keepends=True)
     _journal(root).write_text("".join(lines[:1]), encoding="utf-8")
@@ -219,7 +236,7 @@ def test_the_anchor_detects_a_rewritten_history_and_heals_one_crash_record(
 ) -> None:
     root, anchor = tmp_path / "registry", tmp_path / "anchor.jsonl"
     with StrategyRegistry(root, anchor=anchor) as registry:
-        artifact = promote(toy_evidence(), registry)
+        artifact = _promote(toy_evidence(), registry)
     # one record written without its anchor line: the legitimate crash window
     with StrategyRegistry(root) as registry:
         registry.record_equivalence(equivalence_check(artifact_id=artifact.artifact_id))

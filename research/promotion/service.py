@@ -30,9 +30,15 @@ partial artifact exists):
    ``validation_profile`` (``profile_missing`` / ``profile_hash_mismatch``); its ``status`` is
    ``FROZEN`` (``profile_not_frozen``) and ``provenance.calibration_report`` is present
    (``profile_not_calibrated``) — Constitution C-A8: promotion needs a frozen, calibrated Profile.
-   ``status`` is excluded from the Profile content hash (ADR-0008), so a report cannot show it by
-   itself; the Profile object is the evidence. No Profile is frozen today, so **every** promotion is
-   refused here (correct: Step 2 calibration has not happened). ADR-0060 C-T4: a report that
+   ``status`` is excluded from the Profile content hash (ADR-0008), so neither a report nor the
+   Profile object's own ``status`` proves the freeze: the **authoritative** source is the
+   anchored ``ProfileFreezeRegistry`` (ADR-0062). Each Profile must have a verified
+   ``profile.frozen`` record for exactly its ref **and** content hash whose calibration report is
+   the one ``provenance.calibration_report`` cites (``frozen_record``); none, or a registry that is
+   closed / poisoned → ``profile_not_frozen``, whatever the object says. The registry records a
+   named human approval; it does not authenticate identity and is not a production Control Plane
+   (ADR-0062 decision 6). No Profile is frozen today, so **every** promotion is refused here
+   (correct: Step 2 calibration has not happened). ADR-0060 C-T4: a report that
    evaluates stage G2 under a Profile whose ``benchmark.market_benchmark_rule`` is not ``none``
    must carry the item that rule calls for — ``G2.market_benchmark.<rule>`` for a registered rule,
    the bare ``G2.market_benchmark`` (INCONCLUSIVE) for an unregistered one
@@ -51,12 +57,14 @@ partial artifact exists):
    (``golden_output_not_deterministic`` otherwise). The payload encoding is
    ``infrastructure.registry.golden``.
 
-``created_at`` is explicit (the artifact id is a content hash) and may not precede its evidence.
+``created_at`` is explicit (the artifact id is a content hash) and may not precede its evidence
+(reports, lifecycle transitions and the Profiles' freeze approvals).
 The artifact's ``name`` / ``version`` are the spec's.
 
 **Status.** No library strategy (``research.strategies.library``) can be promoted today: even
-complete TEST ONLY evidence is refused because no Profile is frozen (``profile_not_frozen``;
-tested). Nothing here places code in ``strategies/`` or
+complete TEST ONLY evidence is refused because no Profile is frozen — no record exists in any
+Profile freeze registry (``profile_not_frozen``; tested). The happy path is exercised only with a
+TEST ONLY freeze in a temporary registry. Nothing here places code in ``strategies/`` or
 ``plugins/`` and nothing touches execution.
 """
 
@@ -79,6 +87,9 @@ from core.domain.specs import StrategySpec
 from core.errors import HlensError
 from core.lifecycle.strategy import LifecycleHistory, LifecycleState
 from infrastructure.registry import (
+    ProfileFreeze,
+    ProfileFreezeRegistry,
+    RegistryError,
     StrategyRegistry,
     golden_positions_payload,
     golden_signals_payload,
@@ -294,10 +305,38 @@ def _market_benchmark_item(profile: ValidationProfile) -> str | None:
     return f"{MARKET_BENCHMARK_GATE}.{name}" if registered else MARKET_BENCHMARK_GATE
 
 
+def _freeze_record(freezes: ProfileFreezeRegistry, profile: ValidationProfile) -> ProfileFreeze:
+    """The registry's verified freeze of exactly ``profile`` (ADR-0062), or refuse."""
+    try:
+        record = freezes.frozen_record(profile)
+    except RegistryError as exc:  # closed or poisoned: it cannot answer, so nothing is frozen
+        raise _refuse(
+            PromotionRefusal.PROFILE_NOT_FROZEN,
+            f"the Profile freeze registry cannot answer for {profile.ref}: {exc}",
+        ) from exc
+    if record is None:
+        raise _refuse(
+            PromotionRefusal.PROFILE_NOT_FROZEN,
+            f"{profile.ref} ({profile.content_hash()}) has no profile.frozen record citing its "
+            "calibration report in the Profile freeze registry (ADR-0062); its own status is not "
+            "authoritative",
+        )
+    return record
+
+
 def _check_profiles(
-    reports: Sequence[ValidationReport], profiles: Sequence[ValidationProfile]
-) -> None:
-    """Every report's Profile is given, is the one it hashes to, and is FROZEN + calibrated."""
+    reports: Sequence[ValidationReport],
+    profiles: Sequence[ValidationProfile],
+    freezes: ProfileFreezeRegistry,
+) -> tuple[ProfileFreeze, ...]:
+    """Every report's Profile is given, is the one it hashes to, is FROZEN + calibrated, and its
+    freeze is registered (ADR-0062). Returns the freeze records (for the time check)."""
+    if not isinstance(freezes, ProfileFreezeRegistry):
+        raise _refuse(
+            PromotionRefusal.PROFILE_NOT_FROZEN,
+            "no Profile freeze registry was given (ADR-0062: the authoritative freeze source)",
+        )
+    records: dict[str, ProfileFreeze] = {}
     by_hash: dict[str, ValidationProfile] = {}
     for index, given in enumerate(profiles):
         if not isinstance(given, ValidationProfile):
@@ -345,6 +384,7 @@ def _check_profiles(
                 PromotionRefusal.PROFILE_HASH_MISMATCH,
                 f"{profile.ref} does not re-validate to hash {wanted}",
             )
+        records[wanted] = _freeze_record(freezes, checked)
         item = _market_benchmark_item(checked)
         evaluates_g2 = any(gate.gate_id.split(".")[0] == "G2" for gate in report.gates)
         if (
@@ -365,6 +405,7 @@ def _check_profiles(
             PromotionRefusal.PROFILE_NOT_EVIDENCED,
             f"profile(s) {unused} are cited by no report, or a Profile is given twice",
         )
+    return tuple(records[key] for key in sorted(records))
 
 
 def _dependencies(
@@ -485,18 +526,24 @@ def _check_time(
     created_at: datetime,
     reports: Sequence[ValidationReport],
     lifecycle: LifecycleHistory,
+    freezes: Sequence[ProfileFreeze],
 ) -> None:
     times = [report.created_at for report in reports]
     times.extend(t.occurred_at for t in lifecycle.transitions)
+    times.extend(record.approved_at for record in freezes)
     if created_at.tzinfo is None or any(created_at < t for t in times):
         raise _refuse(
             PromotionRefusal.EVIDENCE_INVALID,
-            "created_at must be UTC and not precede any report or lifecycle transition",
+            "created_at must be UTC and not precede any report, lifecycle transition or Profile "
+            "freeze approval",
         )
 
 
-def build_artifact(evidence: PromotionEvidence) -> PromotionPackage:
-    """Build the artifact and its golden payloads, or raise ``PromotionRefused``. No I/O."""
+def build_artifact(
+    evidence: PromotionEvidence, *, freezes: ProfileFreezeRegistry
+) -> PromotionPackage:
+    """Build the artifact and its golden payloads, or raise ``PromotionRefused``. No I/O: the
+    open, anchored ``freezes`` registry answers from its replayed, verified records."""
     spec = _revalidated(evidence.spec, "strategy spec")
     reports = tuple(_revalidated(r, f"report {i}") for i, r in enumerate(evidence.reports))
     _check_reports(spec, reports)
@@ -505,11 +552,11 @@ def build_artifact(evidence: PromotionEvidence) -> PromotionPackage:
     )
     research_code = _revalidated(evidence.research_code, "research code revision")
     cited = _check_experiments(spec, reports, experiments, research_code)
-    _check_profiles(reports, evidence.profiles)
+    freeze_records = _check_profiles(reports, evidence.profiles, freezes)
     dependencies = _dependencies(spec, cited, evidence.signal_dependencies)
     lifecycle = _revalidated(evidence.lifecycle, "lifecycle history")
     _check_lifecycle(spec, lifecycle)
-    _check_time(evidence.created_at, reports, lifecycle)
+    _check_time(evidence.created_at, reports, lifecycle, freeze_records)
     requests = _check_golden_inputs(spec, evidence.golden_inputs, evidence.dataset_snapshot_id)
     signals, positions = _golden_outputs(spec, evidence.research_provider, requests)
     signals_hash, positions_hash = payload_hash(signals), payload_hash(positions)
@@ -538,13 +585,19 @@ def build_artifact(evidence: PromotionEvidence) -> PromotionPackage:
     return PromotionPackage(artifact, signals, positions)
 
 
-def promote(evidence: PromotionEvidence, registry: StrategyRegistry) -> StrategyArtifact:
-    """Build the artifact (``build_artifact``), store its golden blobs, register it.
+def promote(
+    evidence: PromotionEvidence,
+    registry: StrategyRegistry,
+    *,
+    freezes: ProfileFreezeRegistry,
+) -> StrategyArtifact:
+    """Build the artifact (``build_artifact``, checked against the ``freezes`` registry), store
+    its golden blobs, register it.
 
     Every evidence check runs before anything is written. Re-promoting the same evidence is
     ``already_registered`` (the registry is append-only; nothing is overwritten).
     """
-    package = build_artifact(evidence)
+    package = build_artifact(evidence, freezes=freezes)
     artifact = package.artifact
     if registry.has_artifact(artifact.artifact_id):
         raise _refuse(

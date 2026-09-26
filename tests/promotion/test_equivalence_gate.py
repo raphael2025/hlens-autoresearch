@@ -20,7 +20,7 @@ from core.domain.artifact import StrategyArtifact
 from core.domain.base import Kind, Ref
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.registry import DuplicateRecord, RegistryCorrupted, StrategyRegistry
-from research.promotion import promote
+from research.promotion import PromotionEvidence, promote
 from research.strategies.library import library_entries
 from tests.factories import HASH_A, HASH_CONFIG, git_code_revision
 from tests.promotion.fixtures import (
@@ -31,6 +31,7 @@ from tests.promotion.fixtures import (
     flip_sign,
     history,
     toy_evidence,
+    toy_freezes,
     toy_spec,
     widen_exponent,
 )
@@ -43,10 +44,16 @@ PRODUCTION_CODE = git_code_revision(
 OTHER_STRATEGY = Ref(kind=Kind.STRATEGY, name="someone_else", version="1.0.0")
 
 
+def _promote(evidence: PromotionEvidence, registry: StrategyRegistry) -> StrategyArtifact:
+    """``promote`` against a TEST ONLY freeze registry holding the toy Profile (ADR-0062)."""
+    with toy_freezes() as freezes:
+        return promote(evidence, registry, freezes=freezes)
+
+
 @pytest.fixture
 def registered(tmp_path: Path) -> Iterator[tuple[StrategyRegistry, StrategyArtifact]]:
     with StrategyRegistry(tmp_path / "registry") as registry:
-        yield registry, promote(toy_evidence(), registry)
+        yield registry, _promote(toy_evidence(), registry)
 
 
 def test_a_faithful_reimplementation_passes_and_can_be_deployed(
@@ -217,7 +224,7 @@ def test_deployment_needs_the_strategy_at_production_candidate_or_active(
 def test_corrupted_golden_data_is_an_error_not_a_check(tmp_path: Path) -> None:
     root = tmp_path / "registry"
     with StrategyRegistry(root) as registry:
-        artifact = promote(toy_evidence(), registry)
+        artifact = _promote(toy_evidence(), registry)
     blob = root / "blobs" / f"{artifact.golden_outputs.positions_hash}.json"
     blob.write_bytes(blob.read_bytes() + b" ")
     with StrategyRegistry(root) as registry, pytest.raises(RegistryCorrupted):
