@@ -176,7 +176,8 @@ def test_sourced_parameter_present_absent_conflict() -> None:
         "param:cscv_partitions",
     )
     profile = _with(TEST_ONLY_PROFILE, "significance", cscv_partitions=8)
-    assert sourced_parameter(profile, path, None, "cscv_partitions") == (8, path)
+    absent: int | None = None
+    assert sourced_parameter(profile, path, absent, "cscv_partitions") == (8, path)
     with pytest.raises(ExplicitParamRefused):
         sourced_parameter(profile, path, 10, "cscv_partitions")
 
