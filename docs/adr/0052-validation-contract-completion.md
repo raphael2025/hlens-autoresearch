@@ -268,3 +268,18 @@ V3 要求把 `infrastructure/pit/selector.py` 的 `PIT_BINDING` 常量写出 `sc
 - 证据：跨进程探查（2.0.0 写入 first slice，常量临时改为 2.1.0 后重放 24 步）：**0 失败、无任何表 head 移动、
   数据集重建 `replayed=True`、全部行仍为 2.0.0**（M0 时为 23 / 24 失败）。M0 的 strict-xfail 测试以"后续写入者版本"
   模拟升版后转为通过（真实升版在 M2 复证）。Schema 导出与提交版本逐字节相同（134 + `v1/`）。
+
+### M2 实施记录（升到 2.1.0；2026-09-26）
+
+- `CONTRACT_SCHEMA_VERSION = "2.1.0"`，`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0")`；Schema 重导出
+  （134 份，只有信封 `default` 由 2.0.0 变为 2.1.0；`schemas/v1/`、`tests/vectors/` 与 `tests/golden/v2_0_0/`
+  逐字节不变）。`docs/architecture/02-domain.md` 开头与 §3.3 写明版本与重放规则。
+- 真实升版证据（测试用 `tests/infrastructure/contract_era.written_at("2.0.0")` 以 2.0.0 代码的方式写入）：
+  已提交 2.0.0 单元升版后重放幂等、仍为 2.0.0（原 strict-xfail 性质）；2.0.0 部分提交单元在 2.1.0 下按 2.0.0 补完；
+  单元内 2.0.0 + 2.1.0 混版 fail closed；同表 2.0.0 与 2.1.0 单元并存且各自校验 / 重放；整个 first slice 以 2.0.0
+  写入后由 2.1.0 代码逐步重跑——所有表 head 与行不变、manifest 以原内容哈希加载、以其自带 PIT spec 重建为重放、
+  PIT 选择与首次读取相同且记录保持 2.0.0；随后 2.1.0 写入的新数据与 2.0.0 行同表，PIT 选择与新 manifest（2.1.0）
+  均有定义；D-NET 离线步骤（mock 归档站、临时 SQLite catalog，无下载、无 REST / exchangeInfo）以 2.0.0 写入后在
+  2.1.0 重跑：ingest 全部重放、所有 snapshot 与行不变、quality / PIT / f2 的回答除耗时外相同。
+- 升版前取的钉值：Schema 字节钉值按"信封默认值写回 2.0.0"比较（其余任何变化仍会失败）；内容哈希钉值用同一对象的
+  2.0.0 孪生体（或在 2.0.0 构造作用域内构造）比较——2.0.0 对象的哈希逐位不变。新对象的期望版本改为当前版本。

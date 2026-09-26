@@ -60,14 +60,16 @@ __all__ = [
 
 #: 本次发布的契约 Schema 版本（SemVer）。破坏性变更 = major + ADR。
 #: 2.0.0 由 ADR-0008 与 ADR-0009 共同定义；与 1.x 的内容哈希**不可比较**。
-CONTRACT_SCHEMA_VERSION = "2.0.0"
+#: 2.1.0（minor，ADR-0052 §4）：只增加可选字段；2.0.0 载荷保留自己的信封、哈希逐位不变，
+#: 已持久化对象按记录版本重放（ADR-0052 Implementation note — versioned replay）。
+CONTRACT_SCHEMA_VERSION = "2.1.0"
 
 #: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
 CONTRACT_SCHEMA_MAJOR = 2
 
 #: major 2 内**已发布**的版本（升序，最后一项即 `CONTRACT_SCHEMA_VERSION`）。持久化对象按其
 #: 记录版本重放时，记录版本必须在此之中（ADR-0052 Implementation note — versioned replay，V1）。
-PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = ("2.0.0",)
+PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = ("2.0.0", "2.1.0")
 
 # ---------------------------------------------------------------------------------------
 # 规范版本语法（ADR-0010 §D-14）

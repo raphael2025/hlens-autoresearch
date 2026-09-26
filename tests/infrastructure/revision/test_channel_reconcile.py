@@ -31,7 +31,7 @@ from core.contracts.revision import (
     RevisionGraph,
     RevisionRecord,
 )
-from core.domain.base import canonical_json
+from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
@@ -371,7 +371,7 @@ def test_the_edge_row_is_exact_and_points_archive_to_rest(h: RestHarness) -> Non
         "revision_snapshot_id": archive_snapshot,
         "superseded_snapshot_id": rest_snapshot,
         "projection_sha256": digest,
-        "contract_schema_version": "2.0.0",
+        "contract_schema_version": CONTRACT_SCHEMA_VERSION,  # a new edge (ADR-0052 V2)
     }
     assert row["knowledge_time"] >= max(archive["knowledge_time"], rest["knowledge_time"])
     assert "not a source-declared revision order" in POLICY_STATEMENT

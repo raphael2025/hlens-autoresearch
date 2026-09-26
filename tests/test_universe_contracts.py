@@ -73,6 +73,7 @@ from core.domain.base import (
     content_hash,
 )
 from core.domain.specs import DatasetRef, Instrument, InstrumentType, Zone
+from tests.contract_version_support import as_published_at_2_0_0
 
 REPO = Path(__file__).resolve().parents[1]
 CURRENT_SCHEMA_DIR = REPO / "schemas"
@@ -1508,7 +1509,7 @@ def test_content_hash_is_stable_and_value_sensitive(model: type[Contract]) -> No
     first = valid_instances()[model]
     second = valid_instances()[model]
     assert first.content_hash() == second.content_hash()
-    bumped = first.model_copy(update={"schema_version": "2.1.0"})
+    bumped = first.model_copy(update={"schema_version": "2.99.0"})  # another envelope
     assert first.content_hash() != bumped.content_hash()
 
 
@@ -1656,9 +1657,10 @@ def test_b2_only_appends_to_the_registry() -> None:
 
 @pytest.mark.parametrize("name", sorted(FROZEN_SCHEMA_SHA256))
 def test_frozen_contract_schemas_are_byte_identical_to_pre_b2(name: str, tmp_path: Path) -> None:
-    committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
+    # ADR-0052 §4: the 2.1.0 bump may change only the envelope default of these schemas.
+    committed = as_published_at_2_0_0((CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes())
     assert hashlib.sha256(committed).hexdigest() == FROZEN_SCHEMA_SHA256[name]
-    regenerated = export_json_schemas(tmp_path)[name].read_bytes()
+    regenerated = as_published_at_2_0_0(export_json_schemas(tmp_path)[name].read_bytes())
     assert hashlib.sha256(regenerated).hexdigest() == FROZEN_SCHEMA_SHA256[name]
 
 
@@ -1683,7 +1685,8 @@ def test_frozen_contract_fields_are_unchanged() -> None:
 
 def test_contract_version_and_kind_are_unchanged() -> None:
     """ADR-0024 §5：不新增 `Kind`；版本策略：`CONTRACT_SCHEMA_VERSION` 保持 2.0.0。"""
-    assert CONTRACT_SCHEMA_VERSION == "2.0.0"
+    # ADR-0052 §4 raised the minor to 2.1.0; this batch itself changed no version.
+    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
     assert {kind.value for kind in Kind} == {
         "dataset",
         "representation",

@@ -13,7 +13,7 @@ from __future__ import annotations
 import copy
 import inspect
 import pickle
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
@@ -28,10 +28,13 @@ from core.domain.base import (
     Ref,
     canonical_json,
     content_hash,
+    contract_schema_version_scope,
 )
+from core.domain.specs import FeatureSpec
 from infrastructure.feature.runner import run_feature
 from plugins.features import BarRealizedVolatilityProvider, BarVolumeSumProvider
 from tests import factories, fake_features
+from tests.contract_version_support import at_pre_bump
 from tests.plugins.features.test_bar_features import CUTOFF, MANIFEST, MINUTE, SUITE_BARS, T0, bar
 
 _MEMO_SLOTS = ("_content_hash_memo", "_canonical_dump_memo")
@@ -54,8 +57,24 @@ def _has_slot(item: Contract, name: str) -> bool:
     return True
 
 
-def _bar_request(bars: tuple[FeatureObservation, ...], *times: datetime) -> FeatureRequest:
-    spec = BarRealizedVolatilityProvider.spec(2, available_lag=timedelta(minutes=1))
+def _same(item: Any) -> Any:
+    return item
+
+
+def _bar_spec(inputs: Callable[[Any], Any] = _same) -> FeatureSpec:
+    """The provider's spec, mapped by ``inputs`` (its input Ref is an import-time constant)."""
+    spec: FeatureSpec = inputs(
+        BarRealizedVolatilityProvider.spec(2, available_lag=timedelta(minutes=1))
+    )
+    return spec
+
+
+def _bar_request(
+    bars: tuple[FeatureObservation, ...],
+    *times: datetime,
+    inputs: Callable[[Any], Any] = _same,
+) -> FeatureRequest:
+    spec = _bar_spec(inputs)
     return FeatureRequest(
         feature=spec.ref,
         spec_hash=spec.content_hash(),
@@ -89,7 +108,7 @@ def _odd_observations() -> tuple[FeatureObservation, ...]:
     )
 
 
-def _feature_samples() -> Iterator[tuple[str, Contract]]:
+def _feature_samples(inputs: Callable[[Any], Any]) -> Iterator[tuple[str, Contract]]:
     spec = fake_features.fake_spec("latest_x")
     request = FeatureRequest(
         feature=spec.ref,
@@ -97,7 +116,7 @@ def _feature_samples() -> Iterator[tuple[str, Contract]]:
         manifest_content_hash=fake_features.MANIFEST,
         knowledge_cutoff=fake_features.CUTOFF,
         evaluation_times=fake_features.EVALUATION_TIMES,
-        observations=fake_features.OBSERVATIONS,
+        observations=tuple(inputs(item) for item in fake_features.OBSERVATIONS),
     )
     yield "fake_spec", spec
     yield "fake_request", request
@@ -106,14 +125,14 @@ def _feature_samples() -> Iterator[tuple[str, Contract]]:
     yield "fake_result", provider.compute(request)
     yield "fake_run", run_feature(provider, spec, request)
     times = tuple(T0 + minute * MINUTE for minute in range(0, 17))
-    bars = _bar_request(SUITE_BARS, *times)
+    bars = _bar_request(tuple(inputs(item) for item in SUITE_BARS), *times, inputs=inputs)
     yield "bar_request", bars
-    bar_spec = BarRealizedVolatilityProvider.spec(2, available_lag=timedelta(minutes=1))
+    bar_spec = _bar_spec(inputs)
     yield "bar_run", run_feature(BarRealizedVolatilityProvider((bar_spec,)), bar_spec, bars)
     odd = _odd_observations()
-    yield "odd_request", _bar_request(odd, T0 + 5 * MINUTE)
-    yield "empty_request", _bar_request((), T0)
-    volume = BarVolumeSumProvider.spec(3, available_lag=timedelta(minutes=1))
+    yield "odd_request", _bar_request(odd, T0 + 5 * MINUTE, inputs=inputs)
+    yield "empty_request", _bar_request((), T0, inputs=inputs)
+    volume = inputs(BarVolumeSumProvider.spec(3, available_lag=timedelta(minutes=1)))
     yield "volume_spec", volume
 
 
@@ -131,8 +150,12 @@ def _walk(name: str, item: Any) -> Iterator[tuple[str, Contract]]:
             yield from _walk(f"{name}[{key!r}]", item[key])
 
 
-def golden_sample() -> list[tuple[str, Contract]]:
-    """`tests/factories.py` 的全部无参构造器 + F4 特征 DTO，连同它们的全部嵌套契约。"""
+def golden_sample(inputs: Callable[[Any], Any] = _same) -> list[tuple[str, Contract]]:
+    """`tests/factories.py` 的全部无参构造器 + F4 特征 DTO，连同它们的全部嵌套契约。
+
+    ``inputs`` maps the module-level input objects built at import time (the pinned values were
+    taken at 2.0.0: ``at_pre_bump`` gives their 2.0.0 twins; ADR-0052 §4).
+    """
     roots: list[tuple[str, Contract]] = []
     for name, factory in sorted(vars(factories).items()):
         if not inspect.isfunction(factory) or factory.__module__ != factories.__name__:
@@ -146,8 +169,8 @@ def golden_sample() -> list[tuple[str, Contract]]:
             continue
         made = factory()
         if isinstance(made, Contract):
-            roots.append((name, made))
-    roots.extend(_feature_samples())
+            roots.append((name, inputs(made)))
+    roots.extend(_feature_samples(inputs))
     sample: list[tuple[str, Contract]] = []
     for name, root in roots:
         sample.extend(_walk(name, root))
@@ -215,7 +238,11 @@ def test_memoized_hashes_equal_the_previous_algorithm() -> None:
 
 
 def test_memoized_hashes_equal_the_values_pinned_before_the_change() -> None:
-    hashes = {name: item.content_hash() for name, item in golden_sample()}
+    # Pinned at 2.0.0: the same objects, built by the 2.0.0 code (every envelope 2.0.0),
+    # hash as pinned (ADR-0052 §4).
+    with contract_schema_version_scope("2.0.0"):
+        sample = golden_sample(inputs=at_pre_bump)
+    hashes = {name: item.content_hash() for name, item in sample}
     assert GOLDEN
     for name, expected in GOLDEN.items():
         assert hashes[name] == expected, name
@@ -235,10 +262,18 @@ def test_feature_request_fragments_are_byte_identical_to_the_base_algorithm() ->
 
 
 def test_runner_sub_requests_hash_as_before() -> None:
-    """执行器的每个子请求（同一批观察实例的前缀）都与基类算法一致；与改动前的值一致。"""
+    """执行器的每个子请求（同一批观察实例的前缀）都与基类算法一致；与改动前的值一致。
+
+    改动前的值在 2.0.0 下生成：本测试在 2.0.0 构造作用域内复算（ADR-0052 §4）。
+    """
+    with contract_schema_version_scope("2.0.0"):
+        _runner_sub_requests_hash_as_before()
+
+
+def _runner_sub_requests_hash_as_before() -> None:
     bars = tuple(bar(i, str(100 + i % 7)) for i in range(40))
     times = tuple(T0 + (i + 1) * MINUTE for i in range(40))
-    request = _bar_request(bars, *times)
+    request = _bar_request(bars, *times, inputs=at_pre_bump)
     seen: list[FeatureRequest] = []
 
     class Spy(BarRealizedVolatilityProvider):
@@ -246,7 +281,7 @@ def test_runner_sub_requests_hash_as_before() -> None:
             seen.append(request)
             return super().compute(request)
 
-    spec = BarRealizedVolatilityProvider.spec(2, available_lag=timedelta(minutes=1))
+    spec = _bar_spec(at_pre_bump)
     result = run_feature(Spy((spec,)), spec, request)
     assert len(seen) == len(times)
     for sub in seen:

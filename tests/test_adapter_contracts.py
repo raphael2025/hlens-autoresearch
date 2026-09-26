@@ -65,6 +65,7 @@ from core.contracts.storage import (
 from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, FrozenMapping
 from tests.contract_suites.catalog import INVALID_TABLE_NAMES
 from tests.contract_suites.storage import INVALID_OBJECT_KEYS
+from tests.contract_version_support import as_published_at_2_0_0
 
 REPO = Path(__file__).resolve().parents[1]
 CURRENT_SCHEMA_DIR = REPO / "schemas"
@@ -1542,9 +1543,10 @@ def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize("name", sorted(PRE_B3_SCHEMA_SHA256))
 def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) -> None:
-    committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
+    # ADR-0052 §4: the 2.1.0 bump may change only the envelope default of these schemas.
+    committed = as_published_at_2_0_0((CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes())
     assert hashlib.sha256(committed).hexdigest() == PRE_B3_SCHEMA_SHA256[name]
-    regenerated = export_json_schemas(tmp_path)[name].read_bytes()
+    regenerated = as_published_at_2_0_0(export_json_schemas(tmp_path)[name].read_bytes())
     assert hashlib.sha256(regenerated).hexdigest() == PRE_B3_SCHEMA_SHA256[name]
 
 
@@ -1561,7 +1563,8 @@ def test_v1_snapshots_and_vectors_are_byte_identical() -> None:
 
 
 def test_contract_version_and_reused_patterns_are_unchanged() -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.0.0"
+    # ADR-0052 §4 raised the minor to 2.1.0; this batch itself changed no version.
+    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
     assert revision.SNAPSHOT_TABLE_PATTERN == r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"
     assert revision.BINDING_ID_PATTERN == r"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$"
 

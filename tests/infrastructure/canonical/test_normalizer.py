@@ -204,7 +204,7 @@ def test_archive_and_rest_units_map_one_to_one_with_every_frozen_column(h: RestH
     )
     assert a["availability_evidence_gap"].endswith(archive_row["availability_evidence_gap"])
     assert a["supersedes"] == a["precedence_evidence"] == r["supersedes"] == []
-    assert a["contract_schema_version"] == "2.0.0"
+    assert a["contract_schema_version"] == CONTRACT_SCHEMA_VERSION  # a new unit (ADR-0052 V2)
     assert a["declared_latency_us"] == 0 and a["source_time"] is None
     # Every Canonical row maps back to a lawful contract record.
     for row in rows.values():

@@ -5,7 +5,7 @@
       "description": "一个选中 Canonical revision 的来源链：Canonical revision → Raw row revision → Raw source\npayload revision。\n\n第三跳是通用的来源 hop：首切片归档路径中 source 即归档文件 revision\n（`raw.binance_spot_archives`）；D3 REST 补尾的 Raw 响应载荷同样用这一跳表达（ADR-0022）。\n契约只表达 hop 的形状，具体 source 类型与其内容由未来 Collector / 表实现证明。\n\n表名为 Iceberg `namespace.table`：`canonical_table` 必须在 `canonical` namespace，`raw_table` 与\n`source_table` 必须在 `raw` namespace（03-data.md §7.1）。稳定身份为\n`(canonical_table, canonical_revision_id)`。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.1.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -57,7 +57,7 @@
   "description": "交给 Provider 的一条输入观察：一个 PIT 选中的 Canonical revision（或其确定性派生）。\n\n- `observation_key`：业务观察的稳定键；`event_time` / `event_end_time`：事件时刻或半开区间\n  `[event_time, event_end_time)`（区间型数据，例如 bar）；\n- `available_time`（历史轴）不早于观察本身可被观察的时刻（区间取结束端）；`knowledge_time`\n  （知识轴）由请求的 `knowledge_cutoff` 约束；\n- `values`：市场内容，键为小写标识符，值为 `Decimal | int | bool | str`（数值规则见模块文档）；\n- `lineage`：Canonical revision → Raw row → Raw source 的来源链。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.1.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

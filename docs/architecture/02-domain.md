@@ -1,8 +1,8 @@
 # 02 — Domain Model
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
-> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.0.0`（ADR-0008 + ADR-0009 共同定义；
-> ADR-0011 ~ 0016 与 ADR-0018 在同一个**尚未发布**的版本内继续收紧，不升 major，理由见各 ADR 的版本小节）。
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.1.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
+> ADR-0018 在其内收紧，不升 major）；2.1.0 是 ADR-0052 §4 的 minor（只加可选字段），已发布版本见 §3.3。
 
 ## 1. 统一标识与版本化
 
@@ -474,7 +474,8 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
-当前 `CONTRACT_SCHEMA_VERSION = 2.0.0`。模型校验**只接受同 major**（`2.x`），
+当前 `CONTRACT_SCHEMA_VERSION = 2.1.0`；major 2 内已发布的版本为
+`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0")`。模型校验**只接受同 major**（`2.x`），
 其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
 
 | 资产 | 位置 |
@@ -491,6 +492,16 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-15）：用已提交的
 `schemas/v1/<Model>.schema.json` 检查 `required` 齐全、未知顶层字段被拒，快照缺失时
 **fail closed**。这**不是完整的 JSON Schema 递归校验**，不校验嵌套结构与取值。
+
+**按记录版本重放（ADR-0052 Implementation note — versioned replay）**：2.0.0 载荷保留自己的信封，读取不改写版本，
+内容哈希逐位不变（`tests/golden/v2_0_0/`）。已持久化的行 / 对象（Phase 1 各表的 `contract_schema_version` 列、
+manifest 的 `schema_version`）按其**提交时记录的版本**重建与比较；一个写入组（Canonical 单元、REST response 及其
+elements、archive revision 及其行、exchangeInfo snapshot、listing 批次、边、manifest）只有一个版本，未发布版本或
+组内混版一律 fail closed；只有无任何已提交成员的新组按当前版本写入。重建经过的深层对象用
+`contract_schema_version_scope(<记录版本>)` 构造（只影响缺省信封，只接受已发布版本，新组不得在其中写入）。
+代码中登记、被持久化数据按内容引用的身份（Phase 1 的 `PolicyBinding` / `SourceBinding` 常量、登记的 universe spec）
+保持其发布时的信封（2.0.0）；由 spec 投影出的 `UniverseSpecBinding` 携带 spec 的信封。同表 2.0.0 与 2.1.0 的行
+并存，选择与 precedence 不读信封，从行重建的记录保留行上的版本。
 
 **"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.1.0` 这样的版本号
 **可被识别**，但这不是前向兼容承诺——载荷里出现当前实现未知字段仍然 fail closed

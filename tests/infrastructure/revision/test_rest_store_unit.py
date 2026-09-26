@@ -22,7 +22,7 @@ import pytest
 
 from core.contracts.catalog import CommitConflict, CommitOutcome, CommitRequest
 from core.contracts.collector import CollectionFailed, CollectionResult
-from core.domain.base import canonical_json
+from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
@@ -147,7 +147,7 @@ def test_agg_page_response_and_elements_carry_every_frozen_field(h: RestHarness)
         "availability_evidence": [],
         "availability_evidence_gap": row["availability_evidence_gap"],
         "precedence_evidence": [],
-        "contract_schema_version": "2.0.0",
+        "contract_schema_version": CONTRACT_SCHEMA_VERSION,  # a new revision (ADR-0052 V2)
         "source_binding_id": "binance.public.spot.rest",
         "source_binding_version": "1.0.0",
         "collector_id": "binance.spot.public-rest",

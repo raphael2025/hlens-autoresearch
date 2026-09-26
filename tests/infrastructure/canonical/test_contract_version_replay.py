@@ -20,18 +20,21 @@ the persisted rows are real committed Iceberg snapshots (SQLite catalog).
 
 from __future__ import annotations
 
+from datetime import timedelta
 from typing import Any
 
 import pytest
 from pyiceberg.expressions import EqualTo
 
-from core.domain.base import CONTRACT_SCHEMA_VERSION
+from core.domain.base import CONTRACT_SCHEMA_VERSION, PUBLISHED_CONTRACT_SCHEMA_VERSIONS
 from infrastructure import contract_version
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import DEFAULT_MICROBATCH_ROWS, unit_batch_id
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.revision.row_integrity import batch, batch_rows, check_batch_snapshot
 from tests.infrastructure.canonical import canonical_support as c
+from tests.infrastructure.contract_era import written_at
+from tests.infrastructure.e2e import first_slice_support as fs
 from tests.infrastructure.revision import rest_store_support as ss
 from tests.infrastructure.revision.rest_store_support import (
     Crash,
@@ -67,13 +70,13 @@ def _later_writer(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     return calls
 
 
-def _committed_unit(h: RestHarness) -> str:
+def _committed_unit(h: RestHarness, version: str = CONTRACT_SCHEMA_VERSION) -> str:
     archive = c.ingest_archive(
         h, "agg_trades", ss.archive_agg_lines(ss.agg_items(3)), knowledge=K_ARCHIVE
     )
     c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     rows = h.rows(c.TRADES)
-    assert rows and _versions(h) == {CONTRACT_SCHEMA_VERSION}
+    assert rows and _versions(h) == {version}
     return archive
 
 
@@ -245,3 +248,113 @@ def test_committed_batches_without_version_evidence_fail_closed(h: RestHarness) 
     with pytest.raises(CatalogIntegrityError, match="rows are gone"):
         c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert clock.calls == 0 and _state(h) == before
+
+
+# =========================================================================================
+# the real bump (M2): 2.0.0 units committed by the pre-bump code, read and replayed at 2.1.0
+# =========================================================================================
+
+OLD = "2.0.0"
+
+
+def test_the_bump_is_real() -> None:
+    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
+    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (OLD, "2.1.0")
+
+
+def test_a_committed_2_0_0_unit_replays_unchanged_after_the_bump(h: RestHarness) -> None:
+    with written_at(OLD):
+        archive = _committed_unit(h, OLD)
+    before = _state(h)
+    clock = StepClock(start=K_NORM)
+    again = c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert again.replayed and clock.calls == 0
+    assert _state(h) == before and _versions(h) == {OLD}
+    verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
+        c.ARCHIVE_AGGS.table, archive
+    )
+    assert {row["contract_schema_version"] for row in verified} == {OLD}
+    records = c.records(h, verified[0]["observation_key"])
+    assert {record.schema_version for record in records} == {OLD}  # read as recorded
+
+
+def test_a_2_0_0_partial_unit_is_completed_at_2_0_0_after_the_bump(h: RestHarness) -> None:
+    with written_at(OLD):
+        archive = _crash_partial(h, 5, 2)
+    assert _versions(h) == {OLD}
+    clock = StepClock(start=K_NORM + timedelta(hours=1))
+    out = c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert [commit.replayed for commit in out.commits] == [True, False, False]
+    assert clock.calls == 0 and len(h.rows(c.TRADES)) == 5
+    assert _versions(h) == {OLD}  # never a mixed unit
+
+
+def test_a_unit_mixing_2_0_0_and_2_1_0_fails_closed(h: RestHarness) -> None:
+    with written_at(OLD):
+        archive = _crash_partial(h, 5, 2)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    [base] = {row["arrival_seq"] // rules.ARRIVAL_SEQ_STRIDE for row in h.rows(c.TRADES)}
+    forged = [
+        rules.canonical_row(
+            channel,
+            raw,
+            base=base * rules.ARRIVAL_SEQ_STRIDE,
+            ready_time=K_NORM,
+            contract_schema_version=CONTRACT_SCHEMA_VERSION,
+        )
+        for raw in _raw(h)[2:4]
+    ]
+    h.forge_rows(c.TRADES, forged, unit_batch_id(archive, 5, 2, 1))
+    before = _state(h)
+    clock = StepClock(start=K_NORM)
+    with pytest.raises(CatalogIntegrityError, match="records 2 contract versions"):
+        c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert clock.calls == 0 and _state(h) == before
+
+
+def test_2_0_0_and_2_1_0_units_share_one_table(h: RestHarness) -> None:
+    """V6: a 2.0.0 unit and a 2.1.0 unit side by side; both verify, replay and PIT-select."""
+    with written_at(OLD):
+        btc = fs.ingest_archive_for(
+            h,
+            "agg_trades",
+            "BTCUSDT",
+            ss.archive_agg_lines(ss.agg_items(3)),
+            knowledge=K_ARCHIVE,
+            request_id="archive-btc",
+        )
+        c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, btc)
+    eth = fs.ingest_archive_for(
+        h,
+        "agg_trades",
+        "ETHUSDT",
+        ss.archive_agg_lines(ss.agg_items(2)),
+        knowledge=K_ARCHIVE,
+        request_id="archive-eth",
+    )
+    c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(c.ARCHIVE_AGGS.table, eth)
+    by_symbol: dict[str, set[str]] = {}
+    for row in h.rows(c.TRADES):
+        by_symbol.setdefault(row["symbol"], set()).add(row["contract_schema_version"])
+    assert by_symbol == {"BTC-USDT": {OLD}, "ETH-USDT": {CONTRACT_SCHEMA_VERSION}}
+    raw_versions = {row["contract_schema_version"] for row in h.rows(c.ARCHIVES)}
+    assert raw_versions == {OLD, CONTRACT_SCHEMA_VERSION}
+
+    before = _state(h)
+    for unit in (btc, eth):
+        n = c.normalizer(h, clock=StepClock(start=K_NORM))
+        assert n.normalize_unit(c.ARCHIVE_AGGS.table, unit).replayed
+        assert n.verify_unit(c.ARCHIVE_AGGS.table, unit)
+    assert _state(h) == before
+
+    for unit, version in ((btc, OLD), (eth, CONTRACT_SCHEMA_VERSION)):
+        verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
+            c.ARCHIVE_AGGS.table, unit
+        )
+        assert {row["contract_schema_version"] for row in verified} == {version}
+        for committed in verified:
+            [record] = [
+                item for item in c.records(h, committed["observation_key"])
+                if item.revision_id == committed["revision_id"]
+            ]  # fmt: skip
+            assert record.schema_version == version

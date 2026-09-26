@@ -24,6 +24,7 @@ from core.contracts.feature import (
 )
 from core.contracts.registry import CONTRACT_MODELS, export_json_schemas
 from core.domain.base import Kind, Ref, content_hash
+from tests.contract_version_support import as_published_at_2_0_0
 from tests.fake_features import (
     CUTOFF,
     EVALUATION_TIMES,
@@ -73,7 +74,8 @@ def test_f4_only_appends_five_models_to_the_registry(tmp_path: Path) -> None:
 
 
 def test_feature_spec_schema_is_unchanged() -> None:
-    committed = (CURRENT_SCHEMA_DIR / "FeatureSpec.schema.json").read_bytes()
+    # ADR-0052 §4: the 2.1.0 bump may change only the envelope default of this schema.
+    committed = as_published_at_2_0_0((CURRENT_SCHEMA_DIR / "FeatureSpec.schema.json").read_bytes())
     assert hashlib.sha256(committed).hexdigest() == FEATURE_SPEC_SCHEMA_SHA256
 
 
