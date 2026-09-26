@@ -333,3 +333,13 @@ F2 / F3 实现要点（`infrastructure/universe/`、`infrastructure/dataset/`）
   `raw.binance_spot_precedence_evidence` snapshot 一对一映射。Canonical payload 相等永远不是 precedence 证据。
 - 时间按 ADR-0023 §3 传播，normalizer 每个单元读一次注入时钟、重跑复用；`arrival_seq` 每张 Canonical 表独立分块，
   不复制 Raw。使用 Canonical 的 PIT 必须绑定 Canonical、所涉 Raw 元素与 source 表以及 Raw 证据表的 snapshot。
+
+## 8. Phase 3 物理 Event 表（[ADR-0056](../adr/0056-event-table.md)，Accepted 2026-09-26）
+
+| 表 | 内容 | 初始分区 |
+|---|---|---|
+| `event.events` | 一次事件运行（`EventResult`）的全部事件，一行一个事件：逻辑 Event 表 9 列（`infrastructure/event/table.py` 的 `EVENT_TABLE_COLUMNS`）+ 运行块（`event_index`、`event_count`、`request_hash`、`provider_hash`、`as_of`），可由表内容单独重建并复核 `EventResult`；一次运行一个批次（`batch_id = event.{result_hash}`），同运行重写为 no-op，同 `result_hash` 不同内容 fail closed，读取固定在一个 snapshot 上 | `month(event_time)` |
+
+- 定义在 `infrastructure/event/table_definition.py`（`PHASE3_TABLES` / `PHASE3_REGISTRY`），**不**属于 §7.1 的 Phase 1
+  清单，Phase 1 的 15 张表与其哈希不变；只通过显式的 `ensure_event_tables(adapter)` 建表，不接入 Phase 1 的建表脚本。
+- 空运行（0 个事件）不写入表（`CommitRequest.row_count >= 1`），整次运行由 `EventResultStore` 制品存储保存。
