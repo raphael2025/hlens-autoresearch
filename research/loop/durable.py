@@ -7,8 +7,9 @@ continues exactly where it stopped:
 
 =====================  ==========================================================================
 ``audit.jsonl``        ``apps.worker.LoopAuditLog`` — the hash-chained round records
-``memory.jsonl``       this module — a header (``loop_state_opened``: the configuration fingerprint)
-                       and one ``round_memory`` checkpoint per recorded round
+``memory.jsonl``       this module — a header (``loop_state_opened``: the configuration
+                       fingerprint), one ``round_memory`` checkpoint per recorded round and one
+                       ``between_rounds`` checkpoint per human approval made between rounds
 ``trial_ledger.jsonl`` ``TrialLedger(path)`` — registrations and pre-registered re-evaluations
 ``sealed_oos.jsonl``   ``DurableUnsealingLedger`` — the sealed-OOS unsealings and evaluations
 ``lineage.jsonl``      ``LineageGraph(path=...)`` — every strategy spec the loop evolved from / into
@@ -43,10 +44,14 @@ round's record **before** the audit records it. The checkpoint line holds
 2. no interrupted round: an audit round started but never recorded is refused (what it spent is
    unknown; a human reviews it);
 3. audit ↔ checkpoint: exactly one checkpoint per recorded round, same index and record hash;
-4. positions: every checkpoint's position of every journal exists in that journal (same sequence
-   number and chain hash), positions never go back, and the last checkpoint's position is the
-   journal's end — except ``reviews.jsonl``, which may hold human approvals made after the last
-   round (nothing else); the failure registry's count / digest likewise;
+4. positions: every checkpoint's (round or between-rounds) position of every journal exists in
+   that journal (same sequence number and chain hash), positions never go back, and the last
+   checkpoint's position is the journal's end (for ``reviews.jsonl`` too: an approval after the
+   last round is named by its between-rounds checkpoint); the failure registry's count / digest
+   likewise; every between-rounds checkpoint follows its round (count and audit head), keeps every
+   other file where the previous checkpoint left it and moves ``reviews.jsonl`` by exactly the one
+   approval it names; every approval line of ``reviews.jsonl`` is named by a between-rounds
+   checkpoint (see **Approvals between rounds**);
 5. content: each round's restored delta equals what the audit record's hashed stage summaries say
    (ingest market and spec hash, the state summary, every experiment row = its trial's summary,
    every validation report row, every offspring row), trial / validation / hypothesis / report
@@ -60,8 +65,9 @@ round's record **before** the audit records it. The checkpoint line holds
    lists is in the failure registry;
 7. after the loop replayed the audit into its guard: every lifecycle subject is a registered
    hypothesis;
-8. with an anchor: the directory is at or after the anchored head, with the same history up to it
-   (see **External anchor**).
+8. with an anchor: every file (the review journal included) is at or after its anchored position
+   with the same line there, and the directory is at or after the anchored head with the same
+   history up to it (see **External anchor**).
 
 **Tail truncation.** Deleting whole trailing lines of one journal leaves a valid shorter chain
 (the journal alone cannot tell). Across files it is detected: the checkpoint names the position of
@@ -73,21 +79,53 @@ checkpoint per record).
 *every* file consistently back to an earlier round boundary yields a valid, shorter history: the
 directory alone cannot tell, and those rounds could then run again (re-register trials, re-spend
 the budget, re-unseal the sealed OOS window). An optional ``StateAnchor`` outside the directory
-closes that: after every recorded round it receives the directory's ``StateHead`` — the number of
-recorded rounds, the audit head (last ``record_hash``), the memory journal's chain head and every
-other file's position at the end of that round (the checkpoint's ``heads``). On reopening with an
-anchor, the directory must be **at or after** the anchored round with the **same history up to
-it** (that round's record hash, the memory journal line at that position and the checkpoint's
-positions); behind it (rolled back) or diverged is refused (``LoopStateInconsistent``), and so is
-an anchor that holds no head while the directory already holds recorded rounds (the anchor was
-lost, or attached to a running directory: a human decides). After the checks the anchor is moved
+closes that: after every recorded round (and every between-rounds approval) it receives the
+directory's ``StateHead`` — the number of recorded rounds, the audit head (last ``record_hash``),
+the memory journal's length and chain head, and every other file's position at that line (the
+checkpoint's ``heads``). On reopening with an anchor, every file must be at or after its anchored
+position with the same line there, and the directory **at or after** the anchored head with the
+**same history up to it** (that round's record hash, the memory journal line at that position and
+its positions); behind it (rolled back) or diverged is refused (``LoopStateInconsistent``), and
+so is an anchor that holds no head while the directory already holds recorded rounds (the anchor
+was lost, or attached to a running directory: a human decides). After the checks the anchor is moved
 up to the directory's head (a round recorded while the anchor could not be updated is accepted
 once, then anchored). ``FileAnchor(path)`` keeps the heads in a hash-chained journal file, which
 must lie outside the state directory; any object with ``load`` / ``publish`` (e.g. one that
 publishes on a bus or to another host) works. **Without an anchor** the behaviour is unchanged and
-the limit stands: a consistent truncation opens as the shorter history. Either way, human
-approvals appended after the last round are not named by any checkpoint (nor anchor) until a
-round takes them, so dropping only those is indistinguishable from "not approved yet".
+the limit stands: a consistent truncation opens as the shorter history.
+
+**Approvals between rounds** (ADR-0049 implementation note, approvals between rounds,
+2026-09-26). A human approval is the one legitimate write between rounds. ``open_state`` binds the
+``DurableState`` as the review queue's observer, so every ``ReviewQueue.approve`` on the restored
+memory (``DurableLoop.memory.reviews.approve``) is refused while a round is running, and once
+journaled immediately writes a ``between_rounds`` line to ``memory.jsonl`` — the recorded round
+count, the audit head, every file's position (``heads``) and the approval it covers (its review
+journal line: ``seq`` / ``hash``, key, reviewer) — and publishes the new ``StateHead`` to the
+anchor (``memory_seq`` grows by one, ``rounds`` stays). So on reopening:
+
+- every approval line of ``reviews.jsonl`` must be named by a between-rounds checkpoint: an
+  approval appended without one (forged, or the process died between approving and checkpointing,
+  or made while a round ran) is refused, with or without an anchor; a round checkpoint refuses too
+  (the round is not recorded) when an approval of the running process was never checkpointed;
+- dropping the approval alone leaves its checkpoint pointing past the end of ``reviews.jsonl``:
+  refused;
+- with an anchor, dropping the approval **and** its checkpoint line (a consistent truncation of
+  the between-rounds action) leaves ``reviews.jsonl`` (and ``memory.jsonl``) behind the anchor:
+  refused.
+
+Nothing else is written between rounds: the sealed-OOS approvals are configuration (the
+``OosUnsealBudget`` in the fingerprint, i.e. the anchored header), and the unsealing ledger, trial
+ledger, lineage and failure registry grow only inside rounds, so any line they hold beyond the last
+checkpoint is refused whether or not a between-rounds line names it.
+
+**What stays undetectable without an anchor** (and what no anchor can tell): dropping an approval
+together with its between-rounds line (and nothing after them) is a valid shorter history — it
+opens as "not approved yet" (the consistent-truncation limit, one action wide); and anyone who can
+write the directory and follows the format (``ReviewQueue.approve`` on a state opened by
+``open_state``, or the same lines by hand) can add an approval with its checkpoint — the journals
+are hash chains, not signatures, so a reviewer identity is an assertion. An anchor turns the first
+into a refusal (the directory is behind it); the second, like a forged whole round, is ahead of the
+anchor and accepted — it needs an authenticated approval channel (not in scope).
 
 **Budgets are part of the configuration.** The fingerprint binds the ``LoopBudget`` and the whole
 sealed-OOS ``OosUnsealBudget`` (``max_unsealings``, every approved family and its approver), so
@@ -121,10 +159,10 @@ from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
 from research.evolution import LineageGraph
 from research.hypotheses import TrialLedger
-from research.loop.memory import REVIEW_APPROVED, ResearchMemory, ReviewQueue
+from research.loop.memory import REVIEW_APPROVED, ResearchMemory, ReviewApproval, ReviewQueue
 from research.loop.segment import ResearchPiece
 from research.loop.trials import TrialOutcome, ValidationOutcome
-from research.persistence import GENESIS_HASH, AppendOnlyJournal
+from research.persistence import GENESIS_HASH, AppendOnlyJournal, JournalEntry
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import StrategyCandidate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
@@ -133,6 +171,7 @@ from research.validation.sealed_oos import DurableUnsealingLedger
 __all__ = [
     "ANCHOR_HEAD",
     "AUDIT_FILE",
+    "BETWEEN_ROUNDS",
     "FAILURES_FILE",
     "LEDGER_FILE",
     "LINEAGE_FILE",
@@ -162,11 +201,14 @@ FAILURES_FILE: Final = "failures.jsonl"
 #: Memory journal line types.
 LOOP_STATE_OPENED: Final = "loop_state_opened"
 ROUND_MEMORY: Final = "round_memory"
+BETWEEN_ROUNDS: Final = "between_rounds"
 #: Anchor journal line type (``FileAnchor``).
 ANCHOR_HEAD: Final = "loop_state_head"
 #: Version of the memory journal's payload layout (2: the fingerprint binds the budgets and the
-#: exact cadence; a version-1 directory is refused, its budgets were never bound).
-STATE_VERSION: Final = 2
+#: exact cadence; a version-1 directory is refused, its budgets were never bound. 3: every human
+#: approval between rounds has a ``between_rounds`` checkpoint; a version-2 directory is refused,
+#: its between-round approvals were never checkpointed).
+STATE_VERSION: Final = 3
 
 #: Fingerprint fields that are budgets (a change is a human decision: a new directory).
 _BUDGET_FIELDS: Final = {
@@ -183,6 +225,8 @@ _JOURNALS: Final = (
     ("reviews", REVIEWS_FILE),
 )
 _ROUND_KEYS: Final = frozenset({"round_index", "record_hash", "heads", "delta"})
+_BETWEEN_KEYS: Final = frozenset({"rounds", "audit_head", "heads", "action"})
+_ACTION_KEYS: Final = frozenset({"type", "seq", "hash", "key", "reviewer"})
 _DELTA_KEYS: Final = frozenset(
     {
         "markets",
@@ -378,16 +422,28 @@ def _delta(memory: ResearchMemory, marks: _Marks) -> Any:
     )
 
 
+def _approval_lines(memory: ResearchMemory) -> int:
+    return sum(1 for entry in _journals(memory)["reviews"].entries if entry.type == REVIEW_APPROVED)
+
+
 class MemoryCheckpoint:
-    """``ResearchLoop(checkpoint=...)``: one ``round_memory`` line per finished round."""
+    """``ResearchLoop(checkpoint=...)``: one ``round_memory`` line per finished round; plus one
+    ``between_rounds`` line per human approval between rounds (``between_rounds``)."""
 
     def __init__(self, journal: AppendOnlyJournal, memory: ResearchMemory) -> None:
         self._journal = journal
         self._memory = memory
         self._marks = _Marks.of(memory)
+        self._covered = _approval_lines(memory)  # opening verified every one is checkpointed
 
     def __call__(self, record: LoopRecord) -> None:
         memory = self._memory
+        if _approval_lines(memory) != self._covered:
+            raise LoopStateInconsistent(
+                f"round {record.round_index}: the review journal holds a human approval no "
+                "between-rounds checkpoint names (its checkpoint failed, or it was written past "
+                "the review queue); the round is not recorded"
+            )
         self._journal.append(
             ROUND_MEMORY,
             {
@@ -398,6 +454,28 @@ class MemoryCheckpoint:
             },
         )
         self._marks = _Marks.of(memory)
+
+    def between_rounds(self, rounds: int, audit_head: str | None, approval: ReviewApproval) -> None:
+        """Checkpoint the human approval just journaled (the review journal's last line)."""
+        line = _journals(self._memory)["reviews"].entries[-1]
+        if line.type != REVIEW_APPROVED or line.payload.get("key") != approval.key:
+            raise LoopStateInconsistent("the review journal's last line is not this approval")
+        self._journal.append(
+            BETWEEN_ROUNDS,
+            {
+                "rounds": rounds,
+                "audit_head": audit_head,
+                "heads": heads(self._memory),
+                "action": {
+                    "type": REVIEW_APPROVED,
+                    "seq": line.seq,
+                    "hash": line.hash,
+                    "key": approval.key,
+                    "reviewer": approval.reviewer,
+                },
+            },
+        )
+        self._covered += 1
 
     @property
     def journal(self) -> AppendOnlyJournal:
@@ -412,14 +490,16 @@ class StateHead:
     """Where a state directory's history ends (what an external anchor keeps; module docs).
 
     ``rounds``: recorded rounds; ``audit_head``: the last ``record_hash`` (``None`` before the
-    first round); ``memory_head``: the memory journal's chain head (header + one checkpoint per
-    round); ``heads``: every other file's position at the end of the last round (the last
-    checkpoint's ``heads``; empty before the first round).
+    first round); ``memory_head`` / ``memory_seq``: the memory journal's chain head and length
+    (header + one checkpoint per round + one per between-rounds approval); ``heads``: every other
+    file's position at the memory journal's last line (that checkpoint's ``heads``; empty while
+    the journal holds only its header).
     """
 
     rounds: int
     audit_head: str | None
     memory_head: str
+    memory_seq: int
     heads: Mapping[str, Any]
 
     def payload(self) -> dict[str, Any]:
@@ -427,6 +507,7 @@ class StateHead:
             "rounds": self.rounds,
             "audit_head": self.audit_head,
             "memory_head": self.memory_head,
+            "memory_seq": self.memory_seq,
             "heads": _json(dict(self.heads)),
         }
 
@@ -435,16 +516,19 @@ class StateHead:
         if not isinstance(raw, Mapping) or set(raw) != _HEAD_KEYS:
             raise _refuse(f"an anchored head must have exactly the fields {sorted(_HEAD_KEYS)}")
         rounds, audit_head, memory_head = raw["rounds"], raw["audit_head"], raw["memory_head"]
+        memory_seq = raw["memory_seq"]
         if isinstance(rounds, bool) or not isinstance(rounds, int) or rounds < 0:
             raise _refuse("an anchored head's round count must be a non-negative int")
+        if isinstance(memory_seq, bool) or not isinstance(memory_seq, int) or memory_seq <= rounds:
+            raise _refuse("an anchored head's memory length must exceed its round count")
         if (audit_head is None) != (rounds == 0) or not isinstance(audit_head, str | None):
             raise _refuse("an anchored head names an audit head exactly when it has rounds")
         if not isinstance(memory_head, str) or not isinstance(raw["heads"], Mapping):
             raise _refuse("an anchored head needs a memory head and the file positions")
-        return cls(rounds, audit_head, memory_head, _json(dict(raw["heads"])))
+        return cls(rounds, audit_head, memory_head, memory_seq, _json(dict(raw["heads"])))
 
 
-_HEAD_KEYS: Final = frozenset({"rounds", "audit_head", "memory_head", "heads"})
+_HEAD_KEYS: Final = frozenset({"rounds", "audit_head", "memory_head", "memory_seq", "heads"})
 
 
 class StateAnchor(Protocol):
@@ -455,7 +539,8 @@ class StateAnchor(Protocol):
         ...
 
     def publish(self, head: StateHead) -> None:
-        """Keep ``head`` (called after every recorded round and after a verified reopening)."""
+        """Keep ``head`` (called after every recorded round, every between-rounds approval and
+        a verified reopening)."""
         ...
 
 
@@ -464,7 +549,8 @@ class FileAnchor:
 
     Every published head is one ``loop_state_head`` line (``AppendOnlyJournal``: a tampered or
     shrunk file is ``JournalCorrupted``). Publishing the current head again is a no-op; a head
-    behind (or diverging from) the last one is refused — the anchor never moves backwards.
+    that is not strictly further (a memory journal no longer than the last head's, or fewer
+    rounds) is refused — the anchor never moves backwards or sideways.
     """
 
     def __init__(self, path: Path | str) -> None:
@@ -487,10 +573,11 @@ class FileAnchor:
         last = self.load()
         if last == head:
             return
-        if last is not None and head.rounds <= last.rounds:
+        if last is not None and (head.memory_seq <= last.memory_seq or head.rounds < last.rounds):
             raise _refuse(
-                f"the anchor {self.path} is at round count {last.rounds}; it never moves back "
-                f"or sideways (asked to keep {head.rounds})"
+                f"the anchor {self.path} is at round count {last.rounds}, memory line "
+                f"{last.memory_seq}; it never moves back or sideways (asked to keep round count "
+                f"{head.rounds}, memory line {head.memory_seq})"
             )
         self._journal.append(ANCHOR_HEAD, head.payload())
 
@@ -509,20 +596,37 @@ class DurableState:
     anchor: StateAnchor | None = None
 
     def head(self) -> StateHead:
-        """The directory's current head (after the last recorded round)."""
+        """The directory's current head (after the last recorded round or between-rounds line)."""
         entries = self.checkpoint.journal.entries
         rounds = len(self.audit.records)
-        if len(entries) != rounds + 1:
+        checkpoints = sum(1 for entry in entries if entry.type == ROUND_MEMORY)
+        if checkpoints != rounds:
             raise _refuse(
-                f"the memory journal holds {len(entries) - 1} checkpoint(s) for {rounds} "
+                f"the memory journal holds {checkpoints} round checkpoint(s) for {rounds} "
                 "recorded round(s): a round was checkpointed but not recorded"
             )
         return StateHead(
             rounds=rounds,
             audit_head=self.audit.head,
             memory_head=entries[-1].hash,
-            heads=_json(dict(entries[-1].payload["heads"])) if rounds else {},
+            memory_seq=len(entries),
+            heads=_line_heads(entries[-1]),
         )
+
+    # -- ReviewObserver: human approvals between rounds (module docs) --------------------------
+
+    def before_approval(self, key: str) -> None:
+        """Refuse an approval while a round is running (approvals are made between rounds)."""
+        if self.audit.open_round is not None:
+            raise ValueError(
+                f"round {self.audit.open_round} is running (or was interrupted): {key} can only "
+                "be approved between rounds"
+            )
+
+    def after_approval(self, approval: ReviewApproval) -> None:
+        """Checkpoint the journaled approval and move the anchor up to it, immediately."""
+        self.checkpoint.between_rounds(len(self.audit.records), self.audit.head, approval)
+        self.publish_anchor()
 
     def publish_anchor(self, record: LoopRecord | None = None) -> None:
         """Move the anchor up to the current head (no anchor: nothing).
@@ -551,6 +655,11 @@ def _refuse(message: str) -> LoopStateInconsistent:
     return LoopStateInconsistent(message)
 
 
+def _line_heads(entry: JournalEntry) -> Any:
+    """The file positions a memory journal line names (none for the header)."""
+    return {} if entry.type == LOOP_STATE_OPENED else _json(dict(entry.payload["heads"]))
+
+
 def open_state(
     state_dir: Path,
     *,
@@ -569,7 +678,9 @@ def open_state(
     ``LoopStateInconsistent`` when the files disagree with each other, the configuration or the
     anchor (see module docs), ``JournalCorrupted`` when one file is itself corrupt. The anchor is
     only verified here; ``DurableState.publish_anchor`` moves it up once the caller's own checks
-    (the lifecycle guard) passed too.
+    (the lifecycle guard) passed too. The returned state observes the restored review queue:
+    every later approval is checkpointed and anchored at once (module docs, **Approvals between
+    rounds**).
     """
     root = Path(state_dir)
     if isinstance(anchor, FileAnchor) and anchor.path.resolve().is_relative_to(root.resolve()):
@@ -596,11 +707,12 @@ def open_state(
     entries = journal.entries
     if not entries:
         _require_empty(audit, memory)
-        if anchored is not None and anchored.rounds:
-            raise _behind(root, 0, anchored)
+        if anchored is not None and anchored.memory_seq > 1:
+            raise _behind(root, 0, 0, anchored)
         journal.append(LOOP_STATE_OPENED, {"state_version": STATE_VERSION, "fingerprint": expected})
         state = DurableState(root, memory, audit, MemoryCheckpoint(journal, memory), anchor)
-        _check_anchor(state, anchored, ())
+        _check_anchor(state, anchored)
+        memory.reviews.observe(state)
         return state
     header = entries[0]
     if header.type != LOOP_STATE_OPENED:
@@ -612,18 +724,35 @@ def open_state(
             "state directory"
         )
     _check_fingerprint(root, header.payload.get("fingerprint"), expected)
-    checkpoints = []
+    if anchored is not None:
+        _check_anchored_files(root, memory, anchored)
+    checkpoints: list[Mapping[str, Any]] = []
+    marks: list[tuple[str, JournalEntry]] = []  # every checkpoint line, round or between rounds
     for entry in entries[1:]:
-        if entry.type != ROUND_MEMORY or set(entry.payload) != _ROUND_KEYS:
-            raise _refuse(f"{journal.path}:{entry.seq} is not a round memory checkpoint")
-        checkpoints.append(entry.payload)
+        if entry.type == ROUND_MEMORY and set(entry.payload) == _ROUND_KEYS:
+            marks.append((f"the checkpoint of round {len(checkpoints)}", entry))
+            checkpoints.append(entry.payload)
+        elif entry.type == BETWEEN_ROUNDS and set(entry.payload) == _BETWEEN_KEYS:
+            after = f"after round {len(checkpoints) - 1}" if checkpoints else "before round 0"
+            marks.append(
+                (f"the between-rounds checkpoint (memory line {entry.seq}, {after})", entry)
+            )
+        else:
+            raise _refuse(
+                f"{journal.path}:{entry.seq} is neither a round nor a between-rounds checkpoint"
+            )
     _check_rounds(audit, checkpoints)
-    _check_positions(memory, checkpoints)
+    try:
+        _check_between_rounds(audit, marks)
+        _check_positions(memory, marks)
+    except (KeyError, LookupError, TypeError) as exc:
+        raise _refuse(f"a checkpoint of {journal.path} names unreadable positions: {exc}") from exc
     for record, checkpoint in zip(audit.records, checkpoints, strict=True):
         _restore_round(memory, record, checkpoint["delta"], provider, provider_for)
     _check_ledgers(memory, audit.records)
     state = DurableState(root, memory, audit, MemoryCheckpoint(journal, memory), anchor)
-    _check_anchor(state, anchored, checkpoints)
+    _check_anchor(state, anchored)
+    memory.reviews.observe(state)
     return state
 
 
@@ -648,46 +777,78 @@ def _check_fingerprint(root: Path, recorded: Any, expected: Any) -> None:
     )
 
 
-def _behind(root: Path, rounds: int, anchored: StateHead) -> LoopStateInconsistent:
+def _behind(root: Path, rounds: int, lines: int, anchored: StateHead) -> LoopStateInconsistent:
     return _refuse(
-        f"{root} holds {rounds} recorded round(s) but its external anchor recorded "
-        f"{anchored.rounds}: the directory is behind its anchor (rolled back / consistently "
-        "truncated, or replaced) and those rounds would run again"
+        f"{root} holds {rounds} recorded round(s) ({lines} memory line(s)) but its external anchor "
+        f"recorded {anchored.rounds} ({anchored.memory_seq}): the directory is behind its anchor "
+        "(rolled back / consistently truncated, or replaced) and those rounds or between-round "
+        "approvals would be lost or run again"
     )
 
 
-def _check_anchor(
-    state: DurableState, anchored: StateHead | None, checkpoints: Sequence[Mapping[str, Any]]
-) -> None:
+def _check_anchored_files(root: Path, memory: ResearchMemory, anchored: StateHead) -> None:
+    """Cross-check 8, first part: every file is at or after its anchored position, with the same
+    line there (the review journal at or after the anchored review head)."""
+    if not anchored.heads:
+        return
+    try:
+        for name, journal in _journals(memory).items():
+            entries = journal.entries
+            seq, expected = anchored.heads[name]["seq"], anchored.heads[name]["hash"]
+            if seq > len(entries):
+                raise _refuse(
+                    f"{name} in {root} holds {len(entries)} line(s) but its external anchor "
+                    f"recorded {seq}: the directory is behind its anchor (rolled back or "
+                    "truncated), and what those lines recorded (a human approval, a registered "
+                    "trial, an unsealing) would be lost or done again"
+                )
+            if (entries[seq - 1].hash if seq else GENESIS_HASH) != expected:
+                raise _refuse(
+                    f"{name} in {root} has diverged from its external anchor (another line {seq})"
+                )
+        hashes = _failure_hashes(memory.failures.records())
+        count, digest = anchored.heads["failures"]["count"], anchored.heads["failures"]["digest"]
+    except (KeyError, TypeError) as exc:
+        raise _refuse(f"the anchored head names unreadable file positions: {exc}") from exc
+    if count > len(hashes):
+        raise _refuse(
+            f"failures in {root} holds {len(hashes)} record(s) but its external anchor recorded "
+            f"{count}: the directory is behind its anchor (rolled back or truncated)"
+        )
+    if content_hash(hashes[:count]) != digest:
+        raise _refuse(f"failures in {root} has diverged from its external anchor")
+
+
+def _check_anchor(state: DurableState, anchored: StateHead | None) -> None:
     """Cross-check 8: the directory is at or after the anchored head, on the same history."""
     if state.anchor is None:
         return
     records = state.audit.records
+    entries = state.checkpoint.journal.entries
     if anchored is None:
-        if records:
+        if records or len(entries) > 1:
             raise _refuse(
                 f"the external anchor holds no head, but {state.root} holds {len(records)} "
-                "recorded round(s): the anchor was lost or attached to a running directory "
-                "(a human checks the directory and re-anchors it deliberately)"
+                f"recorded round(s) ({len(entries)} memory line(s)): the anchor was lost or "
+                "attached to a running directory (a human checks the directory and re-anchors "
+                "it deliberately)"
             )
         return
-    count = anchored.rounds
-    if count > len(records):
-        raise _behind(state.root, len(records), anchored)
-    entries = state.checkpoint.journal.entries
-    same = entries[count].hash == anchored.memory_head and (
-        count == 0
-        or (
-            records[count - 1].record_hash == anchored.audit_head
-            and _json(dict(checkpoints[count - 1]["heads"])) == anchored.heads
-        )
+    count, lines = anchored.rounds, anchored.memory_seq
+    if count > len(records) or lines > len(entries):
+        raise _behind(state.root, len(records), len(entries), anchored)
+    entry = entries[lines - 1]
+    same = (
+        entry.hash == anchored.memory_head
+        and sum(1 for e in entries[:lines] if e.type == ROUND_MEMORY) == count
+        and (count == 0 or records[count - 1].record_hash == anchored.audit_head)
+        and _line_heads(entry) == anchored.heads
     )
     if not same:
         raise _refuse(
-            f"{state.root} has diverged from its external anchor: its history up to round "
-            f"{count - 1} differs from the anchored one (audit / memory / file positions)"
-            if count
-            else f"{state.root} has diverged from its external anchor (another header)"
+            f"{state.root} has diverged from its external anchor: its history up to memory line "
+            f"{lines} (round count {count}) differs from the anchored one (audit / memory / file "
+            "positions)"
         )
 
 
@@ -723,58 +884,114 @@ def _check_rounds(audit: LoopAuditLog, checkpoints: Sequence[Mapping[str, Any]])
             raise _refuse(f"the memory checkpoint of round {index} names another audit record")
 
 
-def _check_positions(memory: ResearchMemory, checkpoints: Sequence[Mapping[str, Any]]) -> None:
+def _check_between_rounds(audit: LoopAuditLog, marks: Sequence[tuple[str, JournalEntry]]) -> None:
+    """Every between-rounds checkpoint follows its round and names one human approval."""
+    records = audit.records
+    rounds = 0
+    for label, mark in marks:
+        if mark.type == ROUND_MEMORY:
+            rounds += 1
+            continue
+        payload = mark.payload
+        if (payload["rounds"], payload["audit_head"]) != (
+            rounds,
+            records[rounds - 1].record_hash if rounds else None,
+        ):
+            raise _refuse(f"{label} names another round boundary (round count / audit head)")
+        action = payload["action"]
+        if (
+            not isinstance(action, Mapping)
+            or set(action) != _ACTION_KEYS
+            or action["type"] != REVIEW_APPROVED
+        ):
+            raise _refuse(f"{label} names no human approval (the only action between rounds)")
+
+
+def _check_positions(memory: ResearchMemory, marks: Sequence[tuple[str, JournalEntry]]) -> None:
     """Cross-check 4: every file is exactly where the checkpoints say it was."""
     for name, journal in _journals(memory).items():
         entries = journal.entries
         previous = 0
-        for index, checkpoint in enumerate(checkpoints):
-            position = checkpoint["heads"][name]
+        for label, mark in marks:
+            position = mark.payload["heads"][name]
             seq = position["seq"]
             if not isinstance(seq, int) or isinstance(seq, bool) or seq < previous:
-                raise _refuse(f"the checkpoint of round {index} moves {name} backwards")
+                raise _refuse(f"{label} moves {name} backwards")
             if seq > len(entries):
                 raise _refuse(
-                    f"{name} holds {len(entries)} line(s) but the checkpoint of round {index} "
-                    f"recorded {seq}: {name} was truncated or deleted (the audit is ahead of it)"
+                    f"{name} holds {len(entries)} line(s) but {label} recorded {seq}: {name} was "
+                    "truncated or deleted (the audit is ahead of it)"
                 )
             head = entries[seq - 1].hash if seq else GENESIS_HASH
             if head != position["hash"]:
-                raise _refuse(
-                    f"{name} does not match the checkpoint of round {index}: its history was "
-                    "rewritten"
-                )
+                raise _refuse(f"{name} does not match {label}: its history was rewritten")
+            if mark.type == BETWEEN_ROUNDS:
+                _check_between_move(name, label, entries, previous, seq, mark.payload["action"])
             previous = seq
-        extra = entries[previous:]
         if name == "reviews":
-            if any(entry.type != REVIEW_APPROVED for entry in extra):
+            named = {
+                mark.payload["action"]["seq"] for _, mark in marks if mark.type == BETWEEN_ROUNDS
+            }
+            stray = [e.seq for e in entries if e.type == REVIEW_APPROVED and e.seq not in named]
+            if stray:
                 raise _refuse(
-                    "reviews holds lines after the last recorded round other than human "
-                    "approvals: the audit is behind it (truncated) or a round was interrupted"
+                    f"reviews line(s) {stray} are human approvals no between-rounds checkpoint "
+                    "names: appended past the review queue (forged), made while a round ran, or "
+                    "the process died between approving and checkpointing (a human checks it)"
                 )
-        elif extra:
+        extra = entries[previous:]
+        if extra:
             raise _refuse(
-                f"{name} holds {len(extra)} line(s) no recorded round accounts for: the audit "
-                "or the memory checkpoint is behind it (truncated), or a round was interrupted"
+                f"{name} holds {len(extra)} line(s) no checkpoint accounts for: the audit or the "
+                "memory checkpoint is behind it (truncated), or a round was interrupted"
             )
     hashes = _failure_hashes(memory.failures.records())
     previous = 0
-    for index, checkpoint in enumerate(checkpoints):
-        position = checkpoint["heads"]["failures"]
+    for label, mark in marks:
+        position = mark.payload["heads"]["failures"]
         count = position["count"]
         if not isinstance(count, int) or isinstance(count, bool) or count < previous:
-            raise _refuse(f"the checkpoint of round {index} moves failures backwards")
+            raise _refuse(f"{label} moves failures backwards")
         if count > len(hashes):
             raise _refuse(
-                f"failures holds {len(hashes)} record(s) but the checkpoint of round {index} "
-                f"recorded {count}: failures was truncated or deleted (the audit is ahead of it)"
+                f"failures holds {len(hashes)} record(s) but {label} recorded {count}: failures "
+                "was truncated or deleted (the audit is ahead of it)"
             )
         if content_hash(hashes[:count]) != position["digest"]:
-            raise _refuse(f"failures does not match the checkpoint of round {index}")
+            raise _refuse(f"failures does not match {label}")
+        if mark.type == BETWEEN_ROUNDS and count != previous:
+            raise _refuse(f"{label} moves failures: only human approvals are made between rounds")
         previous = count
     if len(hashes) != previous:
         raise _refuse(
             f"failures holds {len(hashes) - previous} record(s) no recorded round accounts for"
+        )
+
+
+def _check_between_move(
+    name: str,
+    label: str,
+    entries: Sequence[JournalEntry],
+    previous: int,
+    seq: int,
+    action: Mapping[str, Any],
+) -> None:
+    """A between-rounds checkpoint moves ``reviews`` by its one approval and nothing else."""
+    if name != "reviews":
+        if seq != previous:
+            raise _refuse(f"{label} moves {name}: only human approvals are made between rounds")
+        return
+    line = entries[seq - 1] if seq else None
+    if (
+        seq != previous + 1
+        or line is None
+        or line.type != REVIEW_APPROVED
+        or (action["seq"], action["hash"]) != (line.seq, line.hash)
+        or (action["key"], action["reviewer"]) != (line.payload["key"], line.payload["reviewer"])
+    ):
+        raise _refuse(
+            f"{label} does not name exactly the one human approval that follows the previous "
+            "checkpoint in reviews"
         )
 
 

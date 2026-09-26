@@ -41,12 +41,14 @@ from research.loop import (
 )
 from research.loop.durable import (
     AUDIT_FILE,
+    BETWEEN_ROUNDS,
     FAILURES_FILE,
     LEDGER_FILE,
     LINEAGE_FILE,
     MEMORY_FILE,
     REVIEWS_FILE,
     SEALED_OOS_FILE,
+    MemoryCheckpoint,
 )
 from research.loop.memory import REVIEW_APPROVED
 from research.persistence import AppendOnlyJournal, JournalCorrupted
@@ -200,11 +202,13 @@ def _drop_trailing_lines(path: Path, count: int) -> None:
 
 
 def _truncate_to_round_0(state_dir: Path) -> None:
-    """Cut every file consistently back to the end of round 0 (plus the later human approval)."""
+    """Cut every file consistently back to the end of round 0 plus the later human approval (and
+    its between-rounds checkpoint)."""
     memory_lines = (state_dir / MEMORY_FILE).read_text(encoding="utf-8").splitlines(keepends=True)
     heads = json.loads(memory_lines[1])["payload"]["heads"]  # the checkpoint of round 0
+    assert json.loads(memory_lines[2])["type"] == BETWEEN_ROUNDS  # the approval after round 0
     keep = {
-        MEMORY_FILE: 2,  # header + round 0
+        MEMORY_FILE: 3,  # header + round 0 + the approval's between-rounds checkpoint
         AUDIT_FILE: 2,  # started + recorded round 0
         LEDGER_FILE: heads["trial_ledger"]["seq"],
         SEALED_OOS_FILE: heads["sealed_oos"]["seq"],
@@ -573,8 +577,9 @@ def test_an_anchored_restart_ends_like_an_uninterrupted_one(
     state_dir, anchor, outcome = anchored
     assert outcome == uninterrupted  # the anchor changes nothing a round does
     heads = [json.loads(line)["payload"] for line in anchor.read_text("utf-8").splitlines()]
-    # opened (0), round 0 (1), reopened (no new line), rounds 1 and 2
-    assert [head["rounds"] for head in heads] == [0, 1, 2, 3]
+    # opened (0), round 0 (1), the approval (still 1), reopened (no new line), rounds 1 and 2
+    assert [head["rounds"] for head in heads] == [0, 1, 1, 2, 3]
+    assert [head["memory_seq"] for head in heads] == [1, 2, 3, 4, 5]
     head = FileAnchor(anchor).load()
     assert head is not None and head.audit_head == outcome.record_hashes[-1]
     assert head.memory_head == AppendOnlyJournal(state_dir / MEMORY_FILE).head_hash
@@ -629,7 +634,186 @@ def test_the_file_anchor_never_moves_back(
     anchor.publish(head)  # the same head again: a no-op
     with pytest.raises(LoopStateInconsistent, match="never moves back"):
         anchor.publish(replace(head, rounds=1))
+    for behind in (
+        replace(head, memory_seq=head.memory_seq - 1),  # an earlier memory line
+        replace(head, memory_head="0" * 64),  # sideways: same line, other content
+        replace(head, memory_seq=head.memory_seq + 1, rounds=head.rounds - 1),  # fewer rounds
+    ):
+        with pytest.raises(LoopStateInconsistent, match="never moves back or sideways"):
+            anchor.publish(behind)
     assert anchor.load() == head
+    assert len(AppendOnlyJournal(path).entries) == 5  # nothing was appended
+
+
+# ---------------------------------------------------------------- approvals between rounds
+
+
+def _between_rounds_lines(state_dir: Path) -> list[Any]:
+    return [
+        e.payload
+        for e in AppendOnlyJournal(state_dir / MEMORY_FILE).entries
+        if e.type == BETWEEN_ROUNDS
+    ]
+
+
+def test_a_between_rounds_approval_is_checkpointed_at_once(
+    restarted: tuple[Path, Outcome],
+) -> None:
+    """The legitimate approval of the restart scenario has its own checkpoint line, which names
+    the review journal line of the approval; the restart still equals the uninterrupted run
+    (``test_a_restarted_loop_ends_exactly_like_an_uninterrupted_one``)."""
+    state_dir = restarted[0]
+    [line] = _between_rounds_lines(state_dir)
+    reviews = AppendOnlyJournal(state_dir / REVIEWS_FILE).entries
+    approval = reviews[line["action"]["seq"] - 1]
+    assert approval.type == REVIEW_APPROVED and approval.hash == line["action"]["hash"]
+    assert (line["action"]["key"], line["action"]["reviewer"]) == (DRAFT, REVIEWER)
+    assert line["rounds"] == 1 and line["heads"]["reviews"]["seq"] == approval.seq
+    memory = AppendOnlyJournal(state_dir / MEMORY_FILE).entries
+    assert [e.type for e in memory[1:]] == [
+        "round_memory",
+        BETWEEN_ROUNDS,
+        "round_memory",
+        "round_memory",
+    ]
+
+
+@pytest.fixture
+def approved_after_last_round(
+    anchored: tuple[Path, Path, Outcome], tmp_path: Path
+) -> tuple[Path, Path]:
+    """The anchored directory after its three rounds, plus a human approval of ``h_llm_1``."""
+    state_dir, anchor = _copy_anchored(anchored, tmp_path)
+    before = FileAnchor(anchor).load()
+    reopened = _open(state_dir, consumed=ROUNDS, anchor=anchor)
+    reopened.memory.reviews.approve("h_llm_1@1.0.0", reviewer=REVIEWER)
+    head = FileAnchor(anchor).load()
+    assert before is not None and head is not None
+    # the anchor moved up at once: one memory line further, same round count
+    assert (head.rounds, head.memory_seq) == (before.rounds, before.memory_seq + 1)
+    assert head.heads["reviews"]["seq"] == before.heads["reviews"]["seq"] + 1
+    return state_dir, anchor
+
+
+def test_an_approval_after_the_last_round_survives_a_restart(
+    approved_after_last_round: tuple[Path, Path],
+) -> None:
+    state_dir, anchor = approved_after_last_round
+    reopened = _open(state_dir, consumed=ROUNDS, anchor=anchor)
+    assert [a.key for a in reopened.memory.reviews.approvals] == [DRAFT, "h_llm_1@1.0.0"]
+    assert [a.key for a in _open(state_dir, consumed=ROUNDS).memory.reviews.approvals] == [
+        DRAFT,
+        "h_llm_1@1.0.0",
+    ]
+
+
+def test_dropping_an_approval_is_refused(approved_after_last_round: tuple[Path, Path]) -> None:
+    """Its between-rounds checkpoint points past the end of the review journal."""
+    state_dir, anchor = approved_after_last_round
+    _drop_trailing_lines(state_dir / REVIEWS_FILE, 1)
+    with pytest.raises(LoopStateInconsistent, match="reviews .*truncated"):
+        _open(state_dir, consumed=ROUNDS)
+    with pytest.raises(LoopStateInconsistent, match="reviews .*behind its anchor"):
+        _open(state_dir, consumed=ROUNDS, anchor=anchor)
+
+
+def test_dropping_an_approval_and_its_checkpoint_is_refused_with_an_anchor(
+    approved_after_last_round: tuple[Path, Path],
+) -> None:
+    state_dir, anchor = approved_after_last_round
+    before = anchor.read_bytes()
+    _drop_trailing_lines(state_dir / REVIEWS_FILE, 1)
+    _drop_trailing_lines(state_dir / MEMORY_FILE, 1)
+    with pytest.raises(LoopStateInconsistent, match="reviews .*behind its anchor"):
+        _open(state_dir, consumed=ROUNDS, anchor=anchor)
+    assert anchor.read_bytes() == before  # the anchor never moves back
+    # without the anchor it is a valid shorter history: "not approved yet" (documented limit)
+    reopened = _open(state_dir, consumed=ROUNDS)
+    assert "h_llm_1@1.0.0" in reopened.memory.reviews.pending
+
+
+def test_a_forged_approval_without_a_checkpoint_is_refused(
+    restarted: tuple[Path, Outcome], anchored: tuple[Path, Path, Outcome], tmp_path: Path
+) -> None:
+    """An approval appended to the review journal past the queue of an opened state directory
+    (a valid chain, a human identity, the right draft hashes) names no between-rounds checkpoint."""
+    state_dir = _copy(restarted[0], tmp_path)
+    ReviewQueue(state_dir / REVIEWS_FILE).approve("h_llm_1@1.0.0", reviewer="mallory")
+    with pytest.raises(LoopStateInconsistent, match="no between-rounds checkpoint names"):
+        _open(state_dir, consumed=ROUNDS)
+    (tmp_path / "anchored").mkdir()
+    state_dir, anchor = _copy_anchored(anchored, tmp_path / "anchored")
+    ReviewQueue(state_dir / REVIEWS_FILE).approve("h_llm_1@1.0.0", reviewer="mallory")
+    with pytest.raises(LoopStateInconsistent, match="no between-rounds checkpoint names"):
+        _open(state_dir, consumed=ROUNDS, anchor=anchor)
+
+
+def test_a_forged_approval_inside_an_earlier_round_is_refused(
+    restarted: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    """The between-rounds line removed and the approval kept (both files re-chained so every
+    position still matches): an approval inside a round's range that no checkpoint names."""
+    state_dir = _copy(restarted[0], tmp_path)
+    path = state_dir / MEMORY_FILE
+    entries = AppendOnlyJournal(path).entries
+    path.unlink()
+    rewritten = AppendOnlyJournal(path)
+    for entry in entries:
+        if entry.type != BETWEEN_ROUNDS:
+            rewritten.append(entry.type, json.loads(json.dumps(entry.payload)))
+    with pytest.raises(LoopStateInconsistent, match="no between-rounds checkpoint names"):
+        _open(state_dir, consumed=ROUNDS)
+
+
+def test_a_checkpoint_naming_another_line_is_refused(
+    restarted: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir = _copy(restarted[0], tmp_path)
+
+    def edit(kind: str, payload: dict[str, Any]) -> dict[str, Any]:
+        if kind == BETWEEN_ROUNDS:
+            payload["action"]["reviewer"] = "mallory"
+        return payload
+
+    _rechain(state_dir / MEMORY_FILE, edit)
+    with pytest.raises(LoopStateInconsistent, match="exactly the one human approval"):
+        _open(state_dir, consumed=ROUNDS)
+
+
+def test_an_approval_while_a_round_runs_is_refused(
+    restarted: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir = _copy(restarted[0], tmp_path)
+    reopened = _open(state_dir, consumed=ROUNDS)
+    before = {name: (state_dir / name).read_bytes() for name in ALL_FILES}
+    reopened.loop.audit.begin_round("synthetic_loop", ROUNDS)  # a round is running
+    before[AUDIT_FILE] = (state_dir / AUDIT_FILE).read_bytes()
+    with pytest.raises(ValueError, match="only be approved between rounds"):
+        reopened.memory.reviews.approve("h_llm_1@1.0.0", reviewer=REVIEWER)
+    assert {name: (state_dir / name).read_bytes() for name in ALL_FILES} == before
+    assert reopened.memory.reviews.pending == ("h_llm_1@1.0.0", "h_llm_2@1.0.0")
+
+
+def test_a_failed_between_rounds_checkpoint_stops_the_loop(
+    restarted: tuple[Path, Outcome], tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The approval is journaled but its checkpoint fails: the next round is not recorded (the
+    loop stops) and the directory is refused on reopening — never silently accepted."""
+    state_dir = _copy(restarted[0], tmp_path)
+    reopened = _open(state_dir, consumed=ROUNDS)
+
+    def fail(*_: Any) -> None:
+        raise OSError("disk full")
+
+    monkeypatch.setattr(MemoryCheckpoint, "between_rounds", fail)
+    with pytest.raises(OSError, match="disk full"):
+        reopened.memory.reviews.approve("h_llm_1@1.0.0", reviewer=REVIEWER)
+    monkeypatch.undo()
+    with pytest.raises(RuntimeError, match="no between-rounds checkpoint names"):
+        reopened.loop.run_unattended(1)
+    assert len(reopened.loop.audit.records) == ROUNDS  # the round was not recorded
+    with pytest.raises(LoopStateInconsistent):  # interrupted round, uncheckpointed approval
+        _open(state_dir, consumed=ROUNDS)
 
 
 # ------------------------------------------------------ durable bus (ADR-0044 file-backed note)

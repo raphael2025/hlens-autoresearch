@@ -73,8 +73,10 @@
   （ADR-0044 Implementation note, file-backed bus；`tests/infrastructure/event_bus/test_file_event_bus.py`）；调用方可向持久组合传
   `bus=FileEventBus(state_dir / "bus")`，记录哈希不变（`test_loop_durable.py`）。仍未做：组合根在持久模式下自动使用 `state_dir/bus`
   并与审计交叉校验；最后一次写消费者状态之后追加、又被尾部删除的消息不可发现；NATS / Control Plane 持久化（D-10）。
-  仍未做：最后一轮之后未被取用的人工审批不被检查点或锚点引用；
-  审计记录与记忆检查点尚不是版本化契约；持久组合只有合成市场组合根。
+  ~~最后一轮之后未被取用的人工审批不被检查点或锚点引用~~ ✅ 已修（2026-09-26）：每次轮间审批立即写一条 `between_rounds` 检查点并移动锚点
+  （`StateHead.memory_seq`），轮中审批被拒；重新打开时每条审批都须有检查点指向、审阅日志不早于锚点，否则拒绝（ADR-0049 实施说明
+  approvals between rounds）。剩余限制：无锚点时审批连同其检查点一起删去 = "尚未审批"；遵循格式写目录的人可追加带检查点的审批（需认证审批通道）。
+  仍未做：审计记录与记忆检查点尚不是版本化契约（ADR-0050 进行中）；持久组合只有合成市场组合根。
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：
   `tests/infrastructure/bars/test_dataset_bars_postgres.py` / `test_manifest_pair_postgres.py`，与 SQLite 侧同一套测试函数对象、

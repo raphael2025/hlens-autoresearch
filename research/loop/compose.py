@@ -32,6 +32,11 @@ unseal quota is refused — raising a budget is a human decision and takes a new
 ``loop_id``. ``anchor=`` (a path outside ``state_dir`` or any ``StateAnchor``) keeps the
 directory's head after every recorded round and refuses a directory that was rolled back or
 diverged (``research.loop.durable``, **External anchor**).
+
+Approvals between rounds (ADR-0049 implementation note, 2026-09-26): a human approval on the
+restored memory (``DurableLoop.memory.reviews.approve``) is refused while a round runs and, once
+journaled, immediately writes a between-rounds checkpoint line and moves the anchor; reopening
+refuses an approval no such line names (``research.loop.durable``, **Approvals between rounds**).
 """
 
 from __future__ import annotations
@@ -288,7 +293,9 @@ def open_synthetic_loop(
     against this configuration, and refuses (``LoopStateInconsistent``) on any disagreement; the
     loop then continues after the last recorded round. ``llm`` is external: resuming its own state
     (e.g. a scripted provider's position) is the caller's job. Human review approvals go through
-    ``DurableLoop.memory.reviews.approve`` (journaled).
+    ``DurableLoop.memory.reviews.approve`` between rounds: journaled, then checkpointed (a
+    ``between_rounds`` line) and anchored at once; an approval written any other way is refused
+    on reopening.
 
     The budgets are part of the configuration: reopening with another ``LoopBudget`` or
     ``OosUnsealBudget`` (a larger quota, another approved family or approver — or a smaller one)

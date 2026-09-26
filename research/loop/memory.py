@@ -24,13 +24,20 @@ fsync'd), the failure registry is its own append-only file, and everything else 
 from the per-round memory checkpoint. ``ReviewQueue(path)`` journals every enqueue, approval and
 take; reopening replays and re-verifies them (an approval by an automation identity, or whose
 draft / call hash does not match the enqueued draft, is corruption — refused).
+
+Approvals between rounds (ADR-0049 implementation note, approvals between rounds, 2026-09-26): a
+durable state directory binds a ``ReviewObserver`` to the queue (``ReviewQueue.observe``). Every
+``approve`` then asks it first (``before_approval``: refused while a round is running) and tells it
+once the approval is journaled (``after_approval``: the state directory writes a between-rounds
+checkpoint line and moves its external anchor), so no human approval exists that no checkpoint
+names.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, Protocol
 
 from core.contracts.synthetic import SyntheticMarket, SyntheticMarketSpec
 from core.domain.research import Hypothesis, LlmCall
@@ -53,6 +60,7 @@ __all__ = [
     "REVIEW_TAKEN",
     "ResearchMemory",
     "ReviewApproval",
+    "ReviewObserver",
     "ReviewQueue",
 ]
 
@@ -76,11 +84,24 @@ class ReviewApproval:
     call_hash: str
 
 
+class ReviewObserver(Protocol):
+    """Told about every human approval of a queue it observes (a durable state directory)."""
+
+    def before_approval(self, key: str) -> None:
+        """Called before the approval is journaled; raising refuses it (nothing is written)."""
+        ...
+
+    def after_approval(self, approval: ReviewApproval) -> None:
+        """Called once the approval is journaled and admitted (checkpoint it, anchor it)."""
+        ...
+
+
 class ReviewQueue:
     """LLM drafts awaiting human review, keyed by ``name@version`` (first draft wins).
 
     ``path=None`` (the default): in memory only. With a ``path`` every enqueue, approval and take
     is first appended to a hash-chained journal (see module docs) and reopening replays it.
+    ``observe`` binds the one ``ReviewObserver`` told about every later approval.
     """
 
     def __init__(self, path: Path | None = None) -> None:
@@ -90,6 +111,7 @@ class ReviewQueue:
         self._taken: set[str] = set()
         self._automation: set[str] = set()
         self._journal: AppendOnlyJournal | None = None
+        self._observer: ReviewObserver | None = None
         if path is not None:
             journal = AppendOnlyJournal(path)
             for entry in journal.entries:
@@ -104,6 +126,12 @@ class ReviewQueue:
     @staticmethod
     def _key(draft: HypothesisDraft) -> str:
         return f"{draft.hypothesis.name}@{draft.hypothesis.version}"
+
+    def observe(self, observer: ReviewObserver) -> None:
+        """Bind the observer of every later approval (once; a second observer is refused)."""
+        if self._observer is not None:
+            raise ValueError("the review queue already has an observer")
+        self._observer = observer
 
     def bind_loop_actor(self, actor: str) -> None:
         """Declare an automation identity (the loop's actor) that may never approve a draft."""
@@ -141,6 +169,8 @@ class ReviewQueue:
         draft = self._drafts[key]
         if draft.reviewed:
             raise ValueError(f"{key} was already approved by {self._reviewers[key]!r}")
+        if self._observer is not None:
+            self._observer.before_approval(key)
         approval = ReviewApproval(
             key=key,
             reviewer=identity,
@@ -157,7 +187,10 @@ class ReviewQueue:
                     "call_hash": approval.call_hash,
                 },
             )
-        return self._admit(approval)
+        reviewed = self._admit(approval)
+        if self._observer is not None:
+            self._observer.after_approval(approval)
+        return reviewed
 
     def _human(self, reviewer: object) -> str:
         identity = reviewer.strip() if isinstance(reviewer, str) else ""
