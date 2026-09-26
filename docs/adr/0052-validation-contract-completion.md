@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意推荐方案"），起草: Claude Code（Opus）；§4 前置盘点曾失败（Implementation blocker）；**实施中**：Codex K3 授权按记录版本重放，见 Implementation note — versioned replay (2026-09-26) |
+| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意推荐方案"），起草: Claude Code（Opus）；**契约部分已实施（2.1.0，分支 `phase1/adr-0052-versioned-replay`，M1 ~ M3，未验收）**：按记录版本重放（Implementation note — versioned replay）+ §1 ~ §3 字段；研究侧取值（C-A4、精确比较、负对照）待协调者 |
 | 日期 | 2026-09-26 |
 | 决策者 | **Raphael**（H1 Domain Contract、H2 Validation Profile 结构，红线） |
 | 起草者 | Claude Code（Opus） |
@@ -283,3 +283,19 @@ V3 要求把 `infrastructure/pit/selector.py` 的 `PIT_BINDING` 常量写出 `sc
   2.1.0 重跑：ingest 全部重放、所有 snapshot 与行不变、quality / PIT / f2 的回答除耗时外相同。
 - 升版前取的钉值：Schema 字节钉值按"信封默认值写回 2.0.0"比较（其余任何变化仍会失败）；内容哈希钉值用同一对象的
   2.0.0 孪生体（或在 2.0.0 构造作用域内构造）比较——2.0.0 对象的哈希逐位不变。新对象的期望版本改为当前版本。
+
+### M3 实施记录（§1 ~ §3 契约字段，2.1.0；2026-09-26）
+
+- `core/domain/base.py`：`ExactDecimal`（`exact_decimal` / `exact_decimal_text` / `EXACT_DECIMAL_PATTERN`）、`omit_none`、
+  `ExactBacked`（浮点兄弟必须恰为精确值的派生值；精确值存在时内容哈希载荷排除该浮点，嵌套同样生效）、
+  `Contract._FIELDS_SINCE` / `_MODEL_SINCE`（2.0.0 信封带 2.1.0 字段或模型即拒绝）。起点为停放分支
+  `wip/adr-0052-exact-fields`（`8e4a71c`）的核心部分。
+- `GateResult.value_exact` / `threshold_exact`；Profile 全部 `*_exact` 兄弟、`capacity`（`CapacityParams`）、
+  `cross_asset`（`CrossAssetParams`）、`significance.cscv_partitions` / `negative_control_threshold`、
+  `data_split.sealed_oos_max_unsealings`、`sample_size.max_undersampled_pnl_share`——只有结构范围，没有数值。
+- Schema：`GateResult`、`ValidationReport`、`ValidationProfile`、`ExperimentMetadata` 重导出（共 134 份）；
+  2.0.0 黄金向量逐字节不变。
+- 旧 Profile 行为逐位不变：`research/validation/gates.py::profile_value` 把 Profile 未携带的 ADR-0052 可选字段
+  当作"没有该字段"（与字段存在之前相同的 `profile_field_missing`）。**未实施（交协调者）**：精确比较
+  `compare_gate` 与量化规则 `hlens.validation.gate-value-quantization@1.0.0`（停放分支已有草稿）、Profile 字段优先与
+  同时给 `param:` 即拒绝（C-A4）、G1 负对照改用 `negative_control_threshold`、G4 / 封存 OOS 取值。

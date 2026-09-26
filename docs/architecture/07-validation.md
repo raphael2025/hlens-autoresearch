@@ -260,6 +260,22 @@ Profile 引用格式：`Ref` 的规范串 `profile:{name}@{semver}`，例如 `pr
 | 生命周期 | PAPER 观察期长度、PAPER 验收标准、劣化监控阈值 | 对应 C-G3（ADR-0006 Q-6 仍开放） |
 | 溯源 | 校准报告引用、批准 ADR、前一版本 | Step 2 冻结依据 |
 
+**ADR-0052（契约 2.1.0，可选字段；2.0.0 Profile 载荷与哈希不变）**：
+
+| 新增 | 结构范围 | 说明 |
+|---|---|---|
+| 每个浮点阈值的 `*_exact` 兄弟（映射 / 序列逐键 / 逐项） | 同浮点字段 | `ExactDecimal`（规范十进制文本）；存在时浮点字段必须恰为其派生值，内容哈希只含精确值；浮点字段弃用 |
+| `capacity.{min_capacity, max_participation_rate, impact_coefficient, impact_model}` | `> 0`、`(0, 1]`、`>= 0`、非空；给出 `capacity` 至少一项 | C-R5 |
+| `cross_asset.min_positive_fraction` | `[0, 1]` | C-R3 |
+| `significance.cscv_partitions` | 偶数且 `>= 2` | C-T1 / C-R1 |
+| `significance.negative_control_threshold` | `[0, 1]` | C-L6（D-CTRL：负对照独立阈值） |
+| `data_split.sealed_oos_max_unsealings` | `> 0` | C-S2 |
+| `sample_size.max_undersampled_pnl_share` | `[0, 1]` | C-R2 |
+
+这些字段与模型只随 2.1.0 发布：2.0.0 信封的载荷带有它们即拒绝。Profile 没有某字段时，研究侧维持 ADR-0041 §1
+的现行行为（`param:` 或 `INCONCLUSIVE`）；Profile 有字段时的来源规则（同时给 `param:` 即拒绝，C-A4）与
+精确比较由研究侧实施（ADR-0052 实施记录）。
+
 > 本文件与 Profile 契约都**不含具体数值**；数值在 Phase 4 校准后写入具体 Profile 版本。
 > `[0, 1]` 这类范围是**结构上的合法取值区间**，不是校准值，也不构成对任何阈值的选择。
 > 与数值无关的普适结构不变量（符号约束、`cost_model` 的 kind）见 §5.4。

@@ -34,6 +34,19 @@
         "inverse_control_reported": {
           "title": "Inverse Control Reported",
           "type": "boolean"
+        },
+        "null_model_percentile_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Null Model Percentile Exact"
         }
       },
       "required": [
@@ -44,6 +57,72 @@
         "inverse_control_reported"
       ],
       "title": "BenchmarkParams",
+      "type": "object"
+    },
+    "CapacityParams": {
+      "additionalProperties": false,
+      "description": "对应 Constitution C-R5：容量与冲击（ADR-0052 §2；只有字段与结构范围，没有数值）。\n\n每个字段可选（缺失的项由 G4 按 ADR-0041 §1 处理：`param:` 或 `INCONCLUSIVE`），但给出\n`capacity` 就至少给一项——空块不是配置。`impact_model` 必须是研究代码已实现的方法名\n（运行时由 G4 拒绝未实现的方法；契约层只约束非空）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "min_capacity": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Capacity"
+        },
+        "max_participation_rate": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Participation Rate"
+        },
+        "impact_coefficient": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Impact Coefficient"
+        },
+        "impact_model": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Impact Model"
+        }
+      },
+      "title": "CapacityParams",
       "type": "object"
     },
     "CostStressParams": {
@@ -91,6 +170,51 @@
           "exclusiveMinimum": 0.0,
           "title": "Min Breakeven Cost Multiple",
           "type": "number"
+        },
+        "stress_multipliers_exact": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Stress Multipliers Exact"
+        },
+        "reported_only_multipliers_exact": {
+          "anyOf": [
+            {
+              "items": {
+                "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+                "type": "string"
+              },
+              "type": "array"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reported Only Multipliers Exact"
+        },
+        "min_breakeven_cost_multiple_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Breakeven Cost Multiple Exact"
         }
       },
       "required": [
@@ -101,6 +225,28 @@
         "min_breakeven_cost_multiple"
       ],
       "title": "CostStressParams",
+      "type": "object"
+    },
+    "CrossAssetParams": {
+      "additionalProperties": false,
+      "description": "对应 Constitution C-R3：声明范围内跨资产一致性（ADR-0052 §2）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "min_positive_fraction": {
+          "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+          "title": "Min Positive Fraction",
+          "type": "string"
+        }
+      },
+      "required": [
+        "min_positive_fraction"
+      ],
+      "title": "CrossAssetParams",
       "type": "object"
     },
     "DataSplitParams": {
@@ -140,6 +286,19 @@
         },
         "walk_forward": {
           "$ref": "#/$defs/WalkForwardParams"
+        },
+        "sealed_oos_max_unsealings": {
+          "anyOf": [
+            {
+              "exclusiveMinimum": 0,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Sealed Oos Max Unsealings"
         }
       },
       "required": [
@@ -201,6 +360,22 @@
           },
           "title": "Degradation Thresholds",
           "type": "object"
+        },
+        "degradation_thresholds_exact": {
+          "anyOf": [
+            {
+              "additionalProperties": {
+                "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+                "type": "string"
+              },
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Degradation Thresholds Exact"
         }
       },
       "required": [
@@ -243,6 +418,32 @@
           },
           "title": "Time Alignment Offsets",
           "type": "array"
+        },
+        "min_neighborhood_performance_ratio_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Neighborhood Performance Ratio Exact"
+        },
+        "min_positive_neighbor_fraction_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Positive Neighbor Fraction Exact"
         }
       },
       "required": [
@@ -418,6 +619,19 @@
           "minLength": 1,
           "title": "Min Regime Coverage",
           "type": "string"
+        },
+        "max_undersampled_pnl_share": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Undersampled Pnl Share"
         }
       },
       "required": [
@@ -474,6 +688,57 @@
           },
           "title": "Reported Only Metrics",
           "type": "array"
+        },
+        "multiple_testing_threshold_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Multiple Testing Threshold Exact"
+        },
+        "overfitting_threshold_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Overfitting Threshold Exact"
+        },
+        "cscv_partitions": {
+          "anyOf": [
+            {
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Cscv Partitions"
+        },
+        "negative_control_threshold": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Negative Control Threshold"
         }
       },
       "required": [
@@ -522,6 +787,32 @@
           "maximum": 1.0,
           "title": "Max Single Window Pnl Share",
           "type": "number"
+        },
+        "min_positive_window_fraction_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Min Positive Window Fraction Exact"
+        },
+        "max_single_window_pnl_share_exact": {
+          "anyOf": [
+            {
+              "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Max Single Window Pnl Share Exact"
         }
       },
       "required": [
@@ -616,6 +907,44 @@
         "approval_adr": null,
         "previous_version": null
       }
+    },
+    "inconclusive_bands_exact": {
+      "anyOf": [
+        {
+          "additionalProperties": {
+            "pattern": "^(?:0|-?[1-9][0-9]*(?:\\.[0-9]*[1-9])?|-?0\\.[0-9]*[1-9])$",
+            "type": "string"
+          },
+          "type": "object"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Inconclusive Bands Exact"
+    },
+    "capacity": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CapacityParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
+    "cross_asset": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/CrossAssetParams"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
     }
   },
   "required": [

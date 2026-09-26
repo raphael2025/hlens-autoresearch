@@ -109,7 +109,10 @@ def test_profile_contract_module_contains_no_threshold_defaults() -> None:
         if not stripped or stripped.startswith("#") or ":" not in stripped:
             continue
         if "Field(" in stripped and "=" in stripped.split("Field(")[0]:
-            assert "default=" not in stripped, f"契约字段不得预设数值：{stripped}"
+            # ADR-0052 §2: an optional field is absent by default (`default=None`, omitted from
+            # the payload) — absence, never a value; every other default is still refused.
+            unset = stripped.replace("Field(default=None, exclude_if=omit_none", "Field(")
+            assert "default=" not in unset, f"契约字段不得预设数值：{stripped}"
 
 
 def test_report_and_tuple_agree_on_rule_versions() -> None:

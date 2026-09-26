@@ -56,7 +56,7 @@
 | [0049](0049-continuous-research-loop.md) | 持续研究循环：调度、预算、生命周期护栏、审计与劣化监控（Phase 11 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0050](0050-loop-audit-record-contract.md) | 持续研究循环审计记录的版本化契约（Phase 11，只追加） | Accepted（2026-09-26；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0051](0051-listing-history-assumption.md) | 上市历史的"观察状态回填"假设（PIT 叠加层，D-LIST） | Proposed（2026-09-26；Raphael 暂缓） |
-| [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准）；实施中：按记录版本重放后升 2.1.0（见 Implementation note — versioned replay） |
+| [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准）；契约部分已实施于 2.1.0（按记录版本重放 + §1 ~ §3 字段；未验收），研究侧取值待办 |
 | [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准） |
 | [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准） |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
