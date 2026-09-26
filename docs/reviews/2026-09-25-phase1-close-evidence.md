@@ -394,6 +394,11 @@ uv run pytest tests/test_docs_consistency.py tests/test_architecture_boundaries.
 - 定向（候选分支 `8b6fbaf`）：`pytest tests/infrastructure/revision tests/infrastructure/pit tests/infrastructure/tools/test_dnet_capability_run.py` → `621 passed, 21 skipped in 207.33s`；`ruff check .` → `All checks passed!`；`ruff format --check .` → `600 files already formatted`；`mypy` → `Success: no issues found in 462 source files`；
 - 完整严格门禁（固定 worktree，真实 PostgreSQL 测试 catalog）：`GATE OK @8b6fbaf | ruff: All checks passed! | 599 files already formatted | Success: no issues found in 462 source files | lock ok | pytest: 5738 passed, 1 warning in 3079.52s (0:51:19)`。该结果只对应 `8b6fbaf`；其后的提交只改文档
 
+**K4 集成（2026-09-26，依 Codex 复核 `942160c` K4）**：PIT 跨日边去重修复 `60246a5`（测试）+ `d6a92fe`（`infrastructure/pit/selector.py`：各日已验证边按 `edge_id` 收集一次，同一 `edge_id` 各份拷贝须完全相同否则 fail closed）按远端 `fix/d3e-pit-edge-dedup` 的已推送 head 集成进候选分支，为 `9baad12` / `50cdc49`（内容不变的 cherry-pick）。修复拥有者尚未回复确认该 head 为最终检查点；若其后有新版本，需重新集成与重跑。
+- 定向：`pytest tests/infrastructure/pit tests/infrastructure/revision/test_channel_reconcile.py` → `196 passed, 1 skipped in 213.53s`；
+- 完整严格门禁：`GATE OK @50cdc49 | ruff: All checks passed! | 601 files already formatted | Success: no issues found in 463 source files | lock ok | pytest: 5753 passed, 1 warning in 3188.63s (0:53:08)`。
+- K4 所要求的"代码复核"仍待 Codex；Phase 1 仍未验收。
+
 **已知取舍**：以另一天的有效批次重复提交同一条边，现在会被判为"committed twice"（旧代码对原始那天会放过）；固定视图若 REST snapshot 早于外日批次所依据的 REST 状态，会 fail closed（与本日批次一致）。只有跨日的键才产生额外读取：每多一天一次 REST 当天键扫描，加上该天每个批次两次证据表扫描。
 
 **Phase 1 仍未满足的验收项（独立复核 2026-09-26 核实，与 §6 一致）**：#9 后半、#13 后半（D3E 含 R1/R2/R3 及本次修复）、#14、#15、#16、#17 后半、#18、#19、#20、#21 均无 `phase1: accept …` 验收门 commit；最后一个实现验收门仍是 `300bf33`（接受 D3D、开放 D3E）。另有：roadmap"门未通过不得进入下一批"与实际开发顺序不一致，需 Codex 裁决；D-33-CAP 容量残留与单 writer 并发假设未测。

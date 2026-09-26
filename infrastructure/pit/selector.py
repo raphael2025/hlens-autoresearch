@@ -68,7 +68,7 @@ from infrastructure.pit.assumption import (
     effective_available_times,
 )
 from infrastructure.pit.view import PinnedCatalogView
-from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
+from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
 from infrastructure.revision.channel_reconcile import ChannelReconciler, revision_record_from_row
 from infrastructure.revision.precedence import maximal_heads
 from infrastructure.revision.store import RevisionCatalog
@@ -226,7 +226,7 @@ class PitSelector:
         self._bound: tuple[tuple[str, str], ...] | None = None
         self._view: PinnedCatalogView | None = None
         self._normalizer: CanonicalNormalizer | None = None
-        self._edges: dict[tuple[str, str, date], tuple[Any, ...]] = {}
+        self._edges: dict[tuple[str, str, date], tuple[ChannelEdge, ...]] = {}
 
     def _pinned(self, spec: PointInTimeSpec) -> PinnedCatalogView:
         bound = tuple(sorted(spec.snapshot_bindings.items()))
@@ -436,42 +436,54 @@ class PitSelector:
             # it has a snapshot — and ``PitSelection.evidence_bound`` records which case this is.
             return {}
         reconciler = ChannelReconciler(view, self._storage)
-        mapped: dict[str, list[PrecedenceEvidence]] = {}
+        # A key's REST revisions may fall on several UTC days, and every such day's partition
+        # returns the key's edges (D3E-R3): one Raw edge is mapped once, by its stable edge_id,
+        # and every copy of it must be the same verified edge (anything else fails closed).
+        unique: dict[str, ChannelEdge] = {}
         for day in days:
             verified = self._edges.get((data_type, symbol, day))
             if verified is None:
                 verified = tuple(reconciler.verified_edges(data_type, symbol, day))
                 self._edges[(data_type, symbol, day)] = verified
             for edge in verified:
-                raw = edge.evidence
-                rows = by_key.get(raw.observation_key, ())
-                ends = []
-                for table, revision in (
-                    (edge.revision_table, raw.revision_id),
-                    (edge.superseded_table, raw.superseded_revision_id),
-                ):
-                    found = [
-                        row
-                        for row in rows
-                        if row["lineage_raw_table"] == table
-                        and row["lineage_raw_revision_id"] == revision
-                    ]
-                    if len(found) > 1:
-                        raise CatalogIntegrityError(
-                            f"Raw revision {revision} has {len(found)} Canonical images"
-                        )
-                    ends.append(found[0] if found else None)
-                if ends[0] is None or ends[1] is None:
-                    continue  # an endpoint not normalized at these snapshots: no Canonical edge
-                mapped.setdefault(raw.observation_key, []).append(
-                    rules.map_channel_edge(
-                        raw,
-                        edge.edge_id,
-                        evidence_snapshot,
-                        revision_record_from_row(ends[0]),
-                        revision_record_from_row(ends[1]),
+                seen = unique.setdefault(edge.edge_id, edge)
+                if seen != edge or seen.row() != edge.row():
+                    raise CatalogIntegrityError(
+                        f"Raw edge {edge.edge_id} is verified with different content on "
+                        "different days at the bound snapshots"
                     )
+        mapped: dict[str, list[PrecedenceEvidence]] = {}
+        for edge_id in sorted(unique):
+            edge = unique[edge_id]
+            raw = edge.evidence
+            rows = by_key.get(raw.observation_key, ())
+            ends = []
+            for table, revision in (
+                (edge.revision_table, raw.revision_id),
+                (edge.superseded_table, raw.superseded_revision_id),
+            ):
+                found = [
+                    row
+                    for row in rows
+                    if row["lineage_raw_table"] == table
+                    and row["lineage_raw_revision_id"] == revision
+                ]
+                if len(found) > 1:
+                    raise CatalogIntegrityError(
+                        f"Raw revision {revision} has {len(found)} Canonical images"
+                    )
+                ends.append(found[0] if found else None)
+            if ends[0] is None or ends[1] is None:
+                continue  # an endpoint not normalized at these snapshots: no Canonical edge
+            mapped.setdefault(raw.observation_key, []).append(
+                rules.map_channel_edge(
+                    raw,
+                    edge.edge_id,
+                    evidence_snapshot,
+                    revision_record_from_row(ends[0]),
+                    revision_record_from_row(ends[1]),
                 )
+            )
         return mapped
 
 
