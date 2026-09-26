@@ -19,16 +19,25 @@ human through the normal Promotion path (ADR-0005 / ADR-0006), outside the resea
 ``ProposalLedger(path)`` keeps proposals in a hash-chained append-only journal
 (``research.persistence.AppendOnlyJournal``); reopening replays and re-verifies every proposal
 hash. Re-recording an identical proposal is a no-op; nothing is ever edited or removed.
+The ledger has a single writer (an ``flock`` on ``<path>.lock``, ``ProposalLedgerLocked``) and an
+optional external anchor (``anchor=``, a ``ProposalAnchor`` outside the ledger's directory) that
+turns a truncated, deleted or rolled-back ledger into a refusal on reopening
+(``ProposalLedgerInconsistent``); see ``ProposalLedger``. The research job that feeds it from a
+loop's durable lineage and verified validation reports is ``research.evolution.replacement_job``.
 """
 
 from __future__ import annotations
 
+import fcntl
+import os
+import weakref
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
+from types import TracebackType
 from typing import Any, Final
 
-from core.domain.base import content_hash
+from core.domain.base import Kind, content_hash
 from core.domain.specs import StrategySpec
 from core.lifecycle.strategy import LifecycleHistory, LifecycleState
 from research.evolution.lineage import LineageGraph
@@ -39,7 +48,10 @@ __all__ = [
     "CANDIDATE_STATES",
     "INCUMBENT_STATES",
     "PENDING_HUMAN_APPROVAL",
+    "ProposalAnchor",
     "ProposalLedger",
+    "ProposalLedgerInconsistent",
+    "ProposalLedgerLocked",
     "ReplacementProposal",
     "propose_replacement",
 ]
@@ -51,6 +63,7 @@ INCUMBENT_STATES: Final = frozenset({LifecycleState.ACTIVE, LifecycleState.DEGRA
 #: The candidate passed the in-sample gates and the sealed OOS on its own history.
 CANDIDATE_STATES: Final = frozenset({LifecycleState.PAPER, LifecycleState.PRODUCTION_CANDIDATE})
 _RECORD_TYPE: Final = "replacement_proposal"
+_ANCHOR_TYPE: Final = "proposal_ledger_head"
 
 
 @dataclass(frozen=True)
@@ -152,7 +165,16 @@ def _lineage_path(
     recorded = next(s for s in lineage.specs if s.ref == candidate.ref)
     if recorded.content_hash() != candidate.content_hash():
         raise EvolutionError(f"{candidate.ref} differs from the spec recorded in the lineage")
-    unrecorded = sorted((a for a in lineage.ancestors(candidate.ref) if a not in known), key=str)
+    # Strategy ancestry must be complete; a library spec's lineage also cites non-strategy
+    # provenance (e.g. the knowledge items it was derived from), which is not a strategy version
+    # and is never in a strategy lineage graph (the loop's evolution stage checks the same).
+    unrecorded = sorted(
+        (
+            str(a)
+            for a in lineage.ancestors(candidate.ref)
+            if a not in known and a.kind is Kind.STRATEGY
+        ),
+    )
     if unrecorded:
         raise EvolutionError(f"ancestors {unrecorded} of {candidate.ref} are not recorded")
     frontier: list[tuple[Any, tuple[Any, ...]]] = [(candidate.ref, (candidate.ref,))]
@@ -224,12 +246,129 @@ def propose_replacement(
     )
 
 
-class ProposalLedger:
-    """Append-only record of proposals (module docs); there is no approve / edit / delete."""
+class ProposalLedgerLocked(RuntimeError):
+    """Another live ledger object (this or another process) holds the ledger (single writer)."""
+
+
+class ProposalLedgerInconsistent(JournalCorrupted):
+    """The ledger is behind or diverged from its external anchor (rolled back / truncated)."""
+
+
+class _Flock:
+    """An exclusive, non-blocking ``fcntl.flock`` on a lock file; ``release`` is idempotent."""
 
     def __init__(self, path: Path) -> None:
-        self._journal = AppendOnlyJournal(path)
-        self._proposals: dict[str, ReplacementProposal] = {}
+        fd = os.open(path, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            os.close(fd)
+            raise ProposalLedgerLocked(f"{path} is held by another ledger (single writer)") from exc
+        except BaseException:
+            os.close(fd)
+            raise
+        self._fd: int | None = fd
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def release(self) -> None:
+        if self._fd is not None:
+            fd, self._fd = self._fd, None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+
+class ProposalAnchor:
+    """The ledger's head kept **outside** the ledger's directory (a hash-chained journal).
+
+    Every publish is one ``proposal_ledger_head`` line ``{"count", "head"}`` (number of ledger
+    lines and the ledger's chain head). Publishing the current head again is a no-op; a head with
+    fewer lines, or another head at the same count, is refused: the anchor never moves back or
+    sideways.
+    """
+
+    def __init__(self, path: Path) -> None:
+        self._journal = AppendOnlyJournal(Path(path))
+
+    @property
+    def path(self) -> Path:
+        return self._journal.path
+
+    def load(self) -> tuple[int, str] | None:
+        entries = self._journal.entries
+        if not entries:
+            return None
+        last = entries[-1]
+        payload = last.payload
+        if (
+            last.type != _ANCHOR_TYPE
+            or set(payload) != {"count", "head"}
+            or isinstance(payload["count"], bool)
+            or not isinstance(payload["count"], int)
+            or payload["count"] < 1
+            or not isinstance(payload["head"], str)
+        ):
+            raise ProposalLedgerInconsistent(f"{self.path}:{last.seq} is not a ledger head")
+        return payload["count"], payload["head"]
+
+    def publish(self, count: int, head: str) -> None:
+        last = self.load()
+        if last == (count, head) or (last is None and count == 0):
+            return  # the same head again, or an empty ledger: nothing to keep
+        if last is not None and count <= last[0]:
+            raise ProposalLedgerInconsistent(
+                f"the anchor {self.path} is at ledger line {last[0]}; it never moves back or "
+                f"sideways (asked to keep line {count})"
+            )
+        self._journal.append(_ANCHOR_TYPE, {"count": count, "head": head})
+
+
+class ProposalLedger:
+    """Append-only record of proposals (module docs); there is no approve / edit / delete.
+
+    **Single writer**: the constructor takes an exclusive ``flock`` on ``<path>.lock`` before it
+    reads the file (``ProposalLedgerLocked`` while another live ledger object — in this or another
+    process — holds it); ``close()`` / leaving a ``with`` block / dropping the object releases it
+    (the kernel drops it when a process dies: no stale lock).
+
+    **External anchor** (optional ``anchor=``, a path outside the ledger's directory): after every
+    new line and after a verified opening, the anchor keeps the ledger's line count and chain head
+    (``ProposalAnchor``). On opening, a ledger with fewer lines than the anchor (lines dropped from
+    its end, the file deleted or replaced by an older copy), another line at the anchored position,
+    or any line while the anchor is empty (lost, or attached to a ledger that already had lines) is
+    refused (``ProposalLedgerInconsistent``). A ledger ahead of its anchor (e.g. the process died
+    between appending and anchoring) is accepted and the anchor moves up: an anchor detects lost
+    lines, it does not authenticate added ones (the journal is a hash chain, not a signature).
+    **Without** an anchor a whole-line truncation of the end of the file is a valid shorter chain
+    and cannot be told from an older ledger (a rewritten or partially cut line is
+    ``JournalCorrupted`` either way).
+    """
+
+    def __init__(self, path: Path, *, anchor: Path | None = None) -> None:
+        path = Path(path)
+        if anchor is not None and Path(anchor).resolve().is_relative_to(path.parent.resolve()):
+            raise ValueError(
+                f"the anchor {anchor} lies in the ledger's directory {path.parent}: it must live "
+                "outside it (it has to survive a rollback of that directory)"
+            )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = _Flock(path.with_name(f"{path.name}.lock"))
+        try:
+            self._journal = AppendOnlyJournal(path)
+            self._anchor = None if anchor is None else ProposalAnchor(anchor)
+            self._proposals: dict[str, ReplacementProposal] = {}
+            self._replay(path)
+            self._check_anchor(path)
+        except BaseException:
+            self._lock.release()
+            raise
+        weakref.finalize(self, self._lock.release)
+
+    def _replay(self, path: Path) -> None:
         for entry in self._journal.entries:
             if entry.type != _RECORD_TYPE:
                 raise JournalCorrupted(f"{path}: unknown record type {entry.type!r}")
@@ -241,12 +380,72 @@ class ProposalLedger:
                 raise JournalCorrupted(f"{path}: line {entry.seq} repeats a proposal")
             self._proposals[proposal.proposal_hash] = proposal
 
+    def _check_anchor(self, path: Path) -> None:
+        if self._anchor is None:
+            return
+        entries = self._journal.entries
+        anchored = self._anchor.load()
+        if anchored is None:
+            if entries:
+                raise ProposalLedgerInconsistent(
+                    f"the anchor {self._anchor.path} holds no head but {path} holds "
+                    f"{len(entries)} line(s): the anchor was lost or attached late (a human "
+                    "checks the ledger and anchors it deliberately)"
+                )
+            return
+        count, head = anchored
+        if count > len(entries):
+            raise ProposalLedgerInconsistent(
+                f"{path} holds {len(entries)} line(s) but its anchor recorded {count}: the ledger "
+                "was truncated, deleted or rolled back (proposals would be lost)"
+            )
+        if entries[count - 1].hash != head:
+            raise ProposalLedgerInconsistent(f"{path} has diverged from its anchor at line {count}")
+        self._publish()
+
+    def _publish(self) -> None:
+        if self._anchor is not None:
+            self._anchor.publish(len(self._journal.entries), self._journal.head_hash)
+
     def record(self, proposal: ReplacementProposal) -> None:
+        if not self._lock.held:
+            raise ProposalLedgerLocked("this ledger was closed: open it again to record")
         if proposal.proposal_hash in self._proposals:
             return
         self._journal.append(_RECORD_TYPE, proposal.to_payload())
         self._proposals[proposal.proposal_hash] = proposal
+        self._publish()
+
+    def close(self) -> None:
+        """Release the single-writer lock (idempotent); a closed ledger can still be read."""
+        self._lock.release()
+
+    def __enter__(self) -> ProposalLedger:
+        return self
+
+    def __exit__(
+        self,
+        exc_type: type[BaseException] | None,
+        exc: BaseException | None,
+        tb: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    @property
+    def path(self) -> Path:
+        return self._journal.path
 
     @property
     def proposals(self) -> tuple[ReplacementProposal, ...]:
         return tuple(self._proposals.values())
+
+    def proposal_for(self, incumbent: str, candidate: str) -> ReplacementProposal | None:
+        """The recorded proposal for this (incumbent, candidate) pair, if any."""
+        return next(
+            (
+                p
+                for p in self._proposals.values()
+                if (p.incumbent, p.candidate) == (incumbent, candidate)
+            ),
+            None,
+        )

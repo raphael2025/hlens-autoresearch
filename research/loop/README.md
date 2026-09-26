@@ -37,6 +37,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
   `result_hash`，否则该项 INCONCLUSIVE。基准与反向对照是同一试验的回测，不增加 trial。TEST ONLY 夹具 Profile 使用
   `buy_and_hold_equal_weight` + `inverse_control_reported=True`。
 - 生命周期最多到 OOS；OOS → PAPER 需要人工批准，循环在结构上无法产生 PAPER / ACTIVE。
+  因此替换提案不在循环内：`research/evolution/replacement_job.py` 是调用方显式运行的作业，只读循环的 `lineage.jsonl`（ADR-0045 实施说明 2026-09-26）。
 - 封存 OOS 默认永不开封；只有显式 `OosUnsealBudget`（全局次数 + 逐族批准人名单，自动化身份被拒）列出的族才开封，每族一次；
   开封即消耗该族唯一的一次评估（即使之后没有结果），之后无人能再读该窗口。
   **开封账本必须持久**（review fixes 4）：`OosUnsealBudget` 只与 `DurableUnsealingLedger`（`state_dir` 的 `sealed_oos.jsonl`，或显式传入

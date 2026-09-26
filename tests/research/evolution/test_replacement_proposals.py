@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -16,13 +17,16 @@ from research.evolution import (
     PENDING_HUMAN_APPROVAL,
     EvolutionError,
     LineageGraph,
+    ProposalAnchor,
     ProposalLedger,
+    ProposalLedgerInconsistent,
+    ProposalLedgerLocked,
     ReplacementProposal,
     combine,
     mutate,
     propose_replacement,
 )
-from research.persistence import JournalCorrupted
+from research.persistence import AppendOnlyJournal, JournalCorrupted
 
 S = LifecycleState
 T0 = datetime(2026, 9, 1, tzinfo=UTC)
@@ -223,7 +227,9 @@ def test_the_ledger_is_append_only_idempotent_and_verified_on_reopen(tmp_path: P
     ledger.record(proposal)
     ledger.record(proposal)  # identical re-record: no new line
     assert len(path.read_text(encoding="utf-8").splitlines()) == 1
-    assert ProposalLedger(path).proposals == (proposal,)
+    ledger.close()  # single writer: release before reopening
+    with ProposalLedger(path) as reopened:
+        assert reopened.proposals == (proposal,)
     text = path.read_text(encoding="utf-8")
     path.write_text(text.replace("incumbent degrading", "incumbent excellent"), encoding="utf-8")
     with pytest.raises(JournalCorrupted):
@@ -231,8 +237,6 @@ def test_the_ledger_is_append_only_idempotent_and_verified_on_reopen(tmp_path: P
 
 
 def test_a_ledger_line_approving_a_proposal_is_refused(tmp_path: Path) -> None:
-    from research.persistence import AppendOnlyJournal
-
     path = tmp_path / "proposals.jsonl"
     AppendOnlyJournal(path).append(
         "replacement_proposal", {**_propose().to_payload(), "status": "APPROVED"}
@@ -243,3 +247,109 @@ def test_a_ledger_line_approving_a_proposal_is_refused(tmp_path: Path) -> None:
     AppendOnlyJournal(other).append("approve", {"proposal_hash": "x"})
     with pytest.raises(JournalCorrupted, match="unknown record type"):
         ProposalLedger(other)
+
+
+def test_non_strategy_provenance_in_the_lineage_is_not_a_missing_ancestor() -> None:
+    """A library spec cites the knowledge items it was derived from in its ``lineage``; they are
+    not strategy versions and never in a strategy lineage graph. A missing *strategy* ancestor is
+    still refused (``test_a_missing_ancestor_or_an_unrecorded_candidate_is_refused``)."""
+    knowledge = Ref(kind=Kind.KNOWLEDGE, name="k_tsmom", version="1.0.0")
+    parent = StrategySpec.model_validate({**_spec().model_dump(), "lineage": (knowledge,)})
+    child = mutate(parent, "lookback", 40).spec
+    assert knowledge in child.lineage
+    proposal = _propose(
+        incumbent=parent,
+        incumbent_history=_history(parent, S.ACTIVE),
+        candidate=child,
+        candidate_history=_history(child, S.PAPER),
+        lineage=LineageGraph((parent, child)),
+    )
+    assert proposal.lineage_path == (str(child.ref), str(parent.ref))
+
+
+def test_the_ledger_has_a_single_writer(tmp_path: Path) -> None:
+    path = tmp_path / "proposals.jsonl"
+    ledger = ProposalLedger(path)
+    with pytest.raises(ProposalLedgerLocked):
+        ProposalLedger(path)
+    ledger.close()
+    ledger.close()  # idempotent
+    with pytest.raises(ProposalLedgerLocked, match="closed"):
+        ledger.record(_propose())  # a closed ledger no longer writes
+    with ProposalLedger(path) as again:
+        again.record(_propose())
+    dropped = ProposalLedger(path)
+    assert len(dropped.proposals) == 1
+    del dropped  # dropping a ledger releases its lock too
+    gc.collect()
+    with ProposalLedger(path) as last:
+        assert len(last.proposals) == 1
+
+
+def _anchored(tmp_path: Path) -> tuple[Path, Path]:
+    """A ledger with two proposals, anchored outside its directory."""
+    path, anchor = tmp_path / "ledger" / "proposals.jsonl", tmp_path / "anchor.jsonl"
+    with ProposalLedger(path, anchor=anchor) as ledger:
+        ledger.record(_propose())
+        ledger.record(_propose(reason="a second, distinct proposal"))
+    assert ProposalAnchor(anchor).load() == (2, AppendOnlyJournal(path).head_hash)
+    return path, anchor
+
+
+def test_an_anchored_ledger_reopens_and_the_anchor_follows(tmp_path: Path) -> None:
+    path, anchor = _anchored(tmp_path)
+    with ProposalLedger(path, anchor=anchor) as ledger:
+        assert len(ledger.proposals) == 2
+        ledger.record(_propose(reason="a third"))
+    assert ProposalAnchor(anchor).load() == (3, AppendOnlyJournal(path).head_hash)
+
+
+def test_a_ledger_ahead_of_its_anchor_is_accepted_and_anchored(tmp_path: Path) -> None:
+    """The process died between appending and anchoring: the ledger is ahead by one line."""
+    path, anchor = _anchored(tmp_path)
+    AppendOnlyJournal(path).append("replacement_proposal", _propose(reason="late").to_payload())
+    with ProposalLedger(path, anchor=anchor) as ledger:
+        assert len(ledger.proposals) == 3
+    assert ProposalAnchor(anchor).load() == (3, AppendOnlyJournal(path).head_hash)
+
+
+@pytest.mark.parametrize("how", ["drop_last_line", "empty", "delete"])
+def test_a_truncated_or_deleted_anchored_ledger_is_refused(tmp_path: Path, how: str) -> None:
+    path, anchor = _anchored(tmp_path)
+    lines = path.read_text(encoding="utf-8").splitlines(keepends=True)
+    if how == "delete":
+        path.unlink()
+    else:
+        path.write_text("".join(lines[:1] if how == "drop_last_line" else []), encoding="utf-8")
+    with pytest.raises(ProposalLedgerInconsistent, match="truncated"):
+        ProposalLedger(path, anchor=anchor)
+
+
+def test_a_diverged_or_unanchored_ledger_is_refused(tmp_path: Path) -> None:
+    path, anchor = _anchored(tmp_path)
+    first = AppendOnlyJournal(path).entries[0]
+    path.unlink()
+    rewritten = AppendOnlyJournal(path)  # a valid chain with another second line
+    rewritten.append(first.type, dict(first.payload))
+    rewritten.append(first.type, _propose(reason="another second line").to_payload())
+    with pytest.raises(ProposalLedgerInconsistent, match="diverged"):
+        ProposalLedger(path, anchor=anchor)
+    # an anchor that holds nothing while the ledger holds lines: lost, or attached late
+    with pytest.raises(ProposalLedgerInconsistent, match="holds no head"):
+        ProposalLedger(path, anchor=tmp_path / "fresh_anchor.jsonl")
+
+
+def test_an_anchor_inside_the_ledger_directory_is_refused(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="outside"):
+        ProposalLedger(tmp_path / "proposals.jsonl", anchor=tmp_path / "anchor.jsonl")
+    assert not (tmp_path / "proposals.jsonl.lock").exists()  # refused before anything is touched
+
+
+def test_the_anchor_never_moves_back_or_sideways(tmp_path: Path) -> None:
+    anchor = ProposalAnchor(tmp_path / "anchor.jsonl")
+    anchor.publish(2, "h2")
+    anchor.publish(2, "h2")  # the same head: no-op
+    for count, head in ((0, "h0"), (1, "h1"), (2, "other")):
+        with pytest.raises(ProposalLedgerInconsistent, match="never moves back"):
+            anchor.publish(count, head)
+    assert len(AppendOnlyJournal(tmp_path / "anchor.jsonl").entries) == 1

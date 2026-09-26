@@ -31,3 +31,21 @@
 
 回归测试：`tests/research/evolution/test_durable_lineage.py`（父子关系跨重启持续；重启后 `add` 仍落盘；重放后幂等 re-add 与换内容
 拒绝；篡改文件拒绝；确定性重放）。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## Implementation note (replacement proposal job, 2026-09-26)
+
+不新增 ADR，不改 core / 契约 / Schema，不改循环。状态 CODE_COMPLETE / DEBUG_PENDING。
+
+- **为什么不接入持续循环**：循环的 `LifecycleGuard` 只能到 `OOS`（`OOS → PAPER` 是人工批准，ADR-0006），循环里的演化后代永远不会是
+  `PAPER` / `PRODUCTION_CANDIDATE`，因此没有循环内的提案触发点。替换提案改为调用方显式运行的研究作业
+  `research/evolution/replacement_job.py::propose_replacements`；`research/loop` 未改动，其记录哈希与指纹逐字节不变。
+- **输入全部来自循环之外**：现任 `Incumbent`（`ACTIVE` / `DEGRADED`，构造即校验）、候选 `ReplacementCandidate`（人工 Promotion 路径的生命周期 +
+  报告哈希）、报告解析器、`read_lineage`（只读、已校验的循环持久谱系副本）、`ProposalLedger`、理由模板、提出者、时间（均无默认值）。
+- **证据须是经核验的报告**：复用 `research.router.evidence.check_report`（存在、格式、哈希、`subject` = 候选、PASS 且含 G5）；任一不通过即拒绝；
+  记录 `validation_report:<hash>`。非后代、未到 `PAPER`、已提议过的对不产生提案；拒绝写入结果，不抛出。提案恒为 `PENDING_HUMAN_APPROVAL`。
+- **账本**：`ProposalLedger` 增加单写者 `flock`（`<path>.lock`）与可选外部锚点（`ProposalAnchor`，账本目录之外）：截断 / 删除 / 回滚 / 分叉 / 锚点丢失
+  在重开时拒绝（`ProposalLedgerInconsistent`）；无锚点时整行尾部截断仍无法发现（已记录的限制）。
+- **谱系检查修正**：`propose_replacement` 只要求**策略**祖先均已记录；库策略 `lineage` 中的知识来源引用（`Kind.KNOWLEDGE`）不是策略版本，此前使
+  任何源自库策略的后代都被拒绝（在真实循环状态目录上发现）。缺失的策略祖先仍被拒绝。
+
+测试：`tests/research/evolution/test_replacement_job.py`、`tests/research/evolution/test_replacement_proposals.py`。

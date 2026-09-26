@@ -7,7 +7,8 @@ Phase 12 Strategy Evolution（[ADR-0045](../../docs/adr/0045-strategy-evolution.
 |---|---|
 | `operators.py` | `mutate`（只在声明的搜索空间内移动参数）、`combine`（参数冲突即拒绝）、`require_new_version`（拒绝就地修改 ACTIVE）、`retire`（追加式 `RetirementRecord`） |
 | `lineage.py` | `LineageGraph`：祖先 / 后代 / 缺失祖先；可选持久（哈希链只追加日志） |
-| `proposals.py` | 替换提案：`propose_replacement`、`ReplacementProposal`、`ProposalLedger` |
+| `proposals.py` | 替换提案：`propose_replacement`、`ReplacementProposal`、`ProposalLedger`（单写者锁、可选外部锚点 `ProposalAnchor`） |
+| `replacement_job.py` | 替换提案作业 `propose_replacements`（循环之外；见下） |
 
 后代是新版本、从 `IDEA` 重新进入生命周期并重新验证；父代不变。循环中的调度见 `research/loop/evolution.py`。
 
@@ -25,5 +26,25 @@ Phase 12 Strategy Evolution（[ADR-0045](../../docs/adr/0045-strategy-evolution.
 `ProposalLedger(path)`：哈希链只追加日志，重开时逐条重建并复核哈希；相同提案重复记录不追加；没有批准 / 编辑 / 删除方法，
 未知记录类型或写入"已批准"的行一律 `JournalCorrupted`。
 
-已知限制：`require_new_version` 拒绝与现任**版本号相同**的候选（即使名称不同），因此 `combine` 产出的 `1.0.0` 不能替换 `1.0.0` 的现任——保守，保持不变；
-提案尚未接入持续循环（跨阶段接线，后续串行处理）。测试：`tests/research/evolution/test_replacement_proposals.py`。
+已知限制：`require_new_version` 拒绝与现任**版本号相同**的候选（即使名称不同），因此 `combine` 产出的 `1.0.0` 不能替换 `1.0.0` 的现任——保守，保持不变。
+测试：`tests/research/evolution/test_replacement_proposals.py`。
+
+## 替换提案作业（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+`replacement_job.py`：`propose_replacements(...)`，由调用方显式运行的**研究作业**，不在持续循环内。原因：循环的生命周期护栏最多到 `OOS`
+（`OOS → PAPER` 需人工批准），循环里的后代永远不会是 `PAPER` / `PRODUCTION_CANDIDATE`，没有循环内触发点；循环保持不变（记录与指纹逐字节不变）。
+
+- 输入全部来自循环之外：`Incumbent(spec, history)`（生产侧声明，`ACTIVE` / `DEGRADED`，否则构造即拒绝）、
+  `ReplacementCandidate(spec, history, report_hashes)`（人工 Promotion 路径记录的生命周期 + 支撑它的报告哈希）、报告解析器
+  （`research.router.evidence.report_store_resolver` 或 `reports_by_hash`）、`read_lineage(state_dir / LINEAGE_FILE)`（循环持久谱系的已校验内存副本，只读，
+  不写循环目录）、`ProposalLedger`、理由模板（`{incumbent}` / `{incumbent_state}` / `{candidate}` / `{candidate_state}`）、提出者、时间，均无默认值。
+- 每个（候选，现任）对：非后代 → `not_descendant`；账本已有 → `already_proposed`（跨运行与重启幂等）；候选不在 `PAPER` / `PRODUCTION_CANDIDATE` →
+  拒绝；每个声明的报告都须通过 `check_report`（存在、格式正确、哈希一致、`subject` = 候选、PASS **且含 G5**）；再经 `propose_replacement`；
+  证据为 `validation_report:<hash>`。拒绝写入结果的 `refused`，从不抛出；提案恒为 `PENDING_HUMAN_APPROVAL`，不改变任何生命周期。
+- `ProposalLedger`：单写者（`<path>.lock` 的 `flock`，`ProposalLedgerLocked`）；可选外部锚点 `anchor=`（`ProposalAnchor`，须在账本目录之外）：
+  重开时账本少于锚点（尾部删行、删除、回滚）、锚点位置另有一行、或锚点为空而账本有行 → `ProposalLedgerInconsistent`；账本领先锚点（追加后锚定前崩溃）
+  被接受并锚定。无锚点时整行尾部截断仍无法发现（已记录的限制）；锚点发现丢失，不认证新增。
+- `propose_replacement` 的谱系检查只要求**策略**祖先完整：库策略的 `lineage` 同时引用其来源知识条目（`Kind.KNOWLEDGE`），它们不是策略版本，
+  从不在策略谱系图中（循环的演化阶段同样只检查策略链接）；缺失的策略祖先仍被拒绝。
+
+测试：`tests/research/evolution/test_replacement_job.py`（含对真实循环状态目录的只读运行）、`tests/research/evolution/test_replacement_proposals.py`。
