@@ -2,7 +2,7 @@
 
 FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，暴露 OpenAPI。只做编排与校验，不含业务规则。
 
-> 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`app.py` 的 `create_app`（`/health`、`/contracts`、`/lifecycle/transitions`、`/knowledge/search`），OpenAPI 由 `python -m apps.api.openapi` 导出到 `openapi.json`（测试校验其为最新）。
+> 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`app.py` 的 `create_app`（`/health`、`/contracts`、`/lifecycle/transitions`、`/knowledge/search`、`/reports/{kind}`、`/reports/{kind}/{id}`、`/jobs`、`/jobs/{job_id}`；见下方「端点一览」），OpenAPI 由 `python -m apps.api.openapi` 导出到 `openapi.json`（测试校验其为最新）。
 
 ## 端点一览
 
@@ -21,8 +21,8 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 
 `{kind}` ∈ `validation_report` \| `research_loop_round` \| `state_strategy_matrix` \| `router_paper_run` \|
 `gate_calibration` \| `router_stop` \| `state_diagnostics` \| `event_statistics` \| `paper_deviation` \| `degradation_check`（后五种 2026-09-26 加入，
-CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳定性诊断、Phase 3 事件统计；写入方见
-`research/reports/README.md`）。除 `state_strategy_matrix` 外，每个 kind 都做契约 / 身份校验（见下）。
+CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳定性诊断、Phase 3 事件统计、Phase 10 纸面偏差、
+Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `state_strategy_matrix` 外，每个 kind 都做契约 / 身份校验（见下）。
 
 ## Report 端点（研究控制台，2026-09-25 新增）
 
@@ -39,7 +39,8 @@ CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳�
   列表中列入 `invalid`、单条读取返回 422。
 - `content_hash`：payload 规范 JSON（排序键、紧凑分隔符）的 SHA-256。
 - 拒绝路径穿越：`id` 必须匹配安全文件名模式且解析后仍在对应 `kind` 目录内，否则 400；未知
-  `kind` 由 FastAPI 的枚举校验直接 422；损坏的 JSON 文件在列表接口中被跳过，在详情接口中报错。
+  `kind` 由 FastAPI 的枚举校验直接 422；损坏的 JSON 文件在列表接口中列入 `invalid`（`{id, reason}`，不再静默跳过），
+  在详情接口中返回 422。
 - 目前没有任何写端点；实验登记 / 生命周期推进留待 P7 / P8 / P11 框架与授权服务就绪后再暴露。
 
 ## 错误映射、报告列表与任务端点（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
@@ -91,3 +92,26 @@ CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳�
 - **OpenAPI**：`GET /reports/{kind}/{id}` 的 422 声明为 `ApiError | HTTPValidationError`（存储拒绝，或未知
   `kind` 的请求校验）。`/health` → `Health`、`/contracts` → `ContractNames`、`/lifecycle/transitions` →
   `LifecycleTransition[]`，JSON 与之前逐字段相同。
+
+## Live-backend smoke（真实进程 + 真实 HTTP，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+`tests/apps/test_live_backend_smoke.py`（默认 `pytest` 运行，约 2 秒，不需要 PostgreSQL、不访问外网）：
+
+- **数据**：临时报告目录 = `apps/web/fixtures/` 的副本（每个 `ReportKind`，均为 `research/reports` 真实 writer 的输出）
+  + 一个损坏文件；真实 `JobRunner` 写的结果日志（succeeded / failed / interrupted 各一）；知识目录 =
+  `docs/research/knowledge/` 的副本。
+- **服务器**：`create_app(...)` 在**子进程**中运行（`python -m tests.apps.live_server --port 0 ...`），只绑定
+  `127.0.0.1`、临时端口，等 `/health` 后测试，最后 SIGTERM 并要求退出码 0。`tests/apps/live_server.py` 是**仅供测试的
+  最小 stdlib 服务器**（asyncio 解析简单 HTTP/1.1 请求，经 ASGI `http` 协议驱动真实应用，每连接一个请求、
+  `Connection: close`）——不是生产服务器；uvicorn 不是项目依赖，生产部署用哪个 ASGI 服务器留待后续决定。
+- **覆盖**：`httpx` 走真实 socket 调用 committed `openapi.json` 的**每个 operation**（全部至少一次 200）：每种报告的
+  列表 + 每个详情、`invalid` 列表与损坏文件的 422、非法 id 400、不存在 404、未知 kind 422；`/jobs` 列表 / 详情 /
+  400 / 404；知识检索 200 与请求校验 422；第二个未配置 provider / 日志的服务器给出知识检索与 `/jobs` 的 503。线上
+  `/openapi.json` 必须与 committed 文件完全相同；每个响应的状态码必须在该 operation 中声明，响应体必须符合 committed
+  schema（`jsonschema` 未安装：用覆盖该文档全部关键字的小型子集校验器，遇到未知关键字即失败），并且经应用声明的
+  pydantic 响应模型校验后重新序列化必须与返回的 JSON 完全一致（多余字段也会被发现）。
+- 随后在有 `node` 与已安装的 `apps/web/node_modules` 时运行 `apps/web/scripts/live-smoke.mjs`（控制台自己的客户端、
+  视图模型与页面渲染，见 [apps/web/README.md](../web/README.md)「Live-backend smoke」），否则带原因 skip。
+
+**不证明的内容**：502（provider 失败）与 500（日志被篡改）两条错误路径只由 `TestClient` 测试覆盖，这里未经真实
+HTTP 走一遍；没有并发 / 长连接 / 性能测试；也不代表任何生产服务器配置已被验证。

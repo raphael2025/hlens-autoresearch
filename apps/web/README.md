@@ -60,22 +60,18 @@ systemd-run --user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0 npm run ge
 systemd-run --user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0 npm run build
 ```
 
-后端需单独启动才能让 `npm run dev` 的代理生效（例如 `uvicorn` 跑 `apps.api.app:create_app`
-的一个工厂实例，`reports_root` 指向一个写有 JSON 报告文件的目录）。这个目录由研究侧的
-`research/reports`（[README](../../research/reports/README.md)）写入 —— `apps/api` 从不 import
-`research/`，两边只通过 `<reports_root>/<kind>/<id>.json` 这份文件格式约定耦合。启动示例：
+后端需单独启动才能让 `npm run dev` 的代理生效（`apps.api.create_app` 的一个工厂实例，`reports_root` 指向一个
+写有 JSON 报告文件的目录）。这个目录由研究侧的 `research/reports`（[README](../../research/reports/README.md)）
+写入 —— `apps/api` 从不 import `research/`，两边只通过 `<reports_root>/<kind>/<id>.json` 这份文件格式约定耦合。
 
-```python
-# 先用研究侧的 writer 把报告写进某个目录，例如：
-#   from research.reports import write_validation_report
-#   write_validation_report(Path("var/reports"), report)
-# 再让 apps/api 指向同一个目录：
-import uvicorn
-from pathlib import Path
-from apps.api import create_app
+项目**没有**选定或依赖任何 ASGI 生产服务器（uvicorn 不是项目依赖，留待后续决定）。本地开发可用仅供测试的最小
+stdlib 服务器 `tests/apps/live_server.py`（只绑定 127.0.0.1，每连接一个请求，不是生产服务器）：
 
-app = create_app(reports_root=Path("var/reports"))
-uvicorn.run(app, host="127.0.0.1", port=8000)
+```bash
+# 先用研究侧的 writer 把报告写进某个目录（例如 research.reports.write_validation_report(Path("var/reports"), report)），
+# 再让 apps/api 指向同一个目录（仓库根目录下运行）：
+uv run python -m tests.apps.live_server --port 8000 --reports-root var/reports
+# 可选：--jobs-results <worker 结果日志> [--jobs-idempotent 名字 ...]、--knowledge docs/research/knowledge
 ```
 
 `reports_root=None`（工厂默认值）等价于没有配置报告目录：所有 `/reports/*` 端点返回空列表 / 404，
@@ -89,24 +85,20 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 `ReportStore` 实际读到的文件逐字节一致，不是手写的示例数据（生成方式见
 [fixtures/README.md](fixtures/README.md)）。可以直接把它当 `reports_root` 起后端：
 
-```python
-import uvicorn
-from pathlib import Path
-from apps.api import create_app
-
-app = create_app(reports_root=Path("apps/web/fixtures"))
-uvicorn.run(app, host="127.0.0.1", port=8000)
+```bash
+uv run python -m tests.apps.live_server --port 8000 --reports-root apps/web/fixtures
 ```
 
-再在另一个终端 `npm run dev`，各报告页面都能看到数据（Jobs 需要另给 `create_app(jobs_results=<worker 结果日志>,
-jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge Search 需要注入 provider，否则显示 503）。
+再在另一个终端 `npm run dev`，各报告页面都能看到数据（Jobs 需要另给 `--jobs-results <worker 结果日志>
+[--jobs-idempotent <与运行器相同的名字>]`，即 `create_app(jobs_results=..., jobs_idempotent=...)`，否则显示 503；
+Knowledge Search 需要 `--knowledge docs/research/knowledge`（注入 `LocalKnowledgeProvider`），否则显示 503）。
 `tests/apps/test_console_fixtures.py` 保证每个 `ReportKind` 在这个目录下至少有一份 fixture，并且每份
 都能通过 `ReportStore` 与 `/reports/...` 端点正常读回。
 
 ## 代码分割（Code splitting）
 
 每个页面在 `src/App.tsx` 里用 `React.lazy` 单独懒加载：大多数页面都会拉入 ECharts
-（`src/lib/echarts.ts`，只 `echarts/core` + 用到的 chart / component 子集，而不是整个包），把八个
+（`src/lib/echarts.ts`，只 `echarts/core` + 用到的 chart / component 子集，而不是整个包），把全部 14 个
 页面都塞进入口 chunk 会让构建产物超过 500 kB 的警告阈值。Gate Calibration 页面本身不用 ECharts（纯
 表格），所以它的 chunk 很小（约 4 kB），不需要额外拆分。`vite.config.ts` 的
 `build.rollupOptions.output.manualChunks` 额外把 `zrender`（ECharts 的渲染层依赖）拆成独立 chunk ——
@@ -164,7 +156,8 @@ jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge S
   `ReportBrowser` / `useApi` / `States.tsx`；视图模型 `src/lib/degradationCheck.ts`（`node --test`，输入是
   `fixtures/degradation_check/`）。指标按 breached → missing → within 排序；missing 明示「证据不足，不是健康」；
   每个阈值显示其来源。纯表格，不引入 ECharts。
-- DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（只跑了 `npm run build` 与 `npm test`）。
+- DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（已跑 `npm run build`、`npm test` 与下文的 live-backend
+  smoke；后者不是浏览器验收）。
 
 ## 组件测试（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 
@@ -195,3 +188,26 @@ jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge S
   `src/**/*.test.tsx` 与 `*.test-util.tsx`，所以 `npm run build` 的 `tsc -p tsconfig.test.json` 在 fixture / 内联
   响应体与页面解析所依据的 API 类型不符时直接失败。
 - 局限：服务端渲染不执行 effect，ECharts 图表只验证容器存在，不验证绘制结果；点击等交互未覆盖（初始选中通过接缝注入）。
+
+## Live-backend smoke（真实后端进程，无浏览器；2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+`scripts/live-smoke.mjs`（`BASE_URL=http://127.0.0.1:<port> npm run smoke:live`，可选 `BARE_BASE_URL` = 一个未配置
+知识 provider / 任务日志的后端）对**正在运行的真实 `apps/api`** 做一遍控制台侧检查，**无新依赖**：
+
+1. 用已安装的 esbuild（同 `scripts/test-components.mjs`）把控制台自己的 `src/api.ts`、全部 `src/lib` 视图模型与
+   全部 14 个页面打包到 `node_modules/.live-smoke/`（已 gitignore）；
+2. 把 `fetch` 按开发代理的规则改写（`/api/<path>` → `BASE_URL/<path>`，同 `vite.config.ts`），调用控制台真实的
+   客户端函数：每种报告的列表 + 每个详情、`/jobs` 列表 + 详情、知识检索、422 / 400 / 404，以及 `BARE_BASE_URL`
+   上的两个 503（`ApiRequestError` + `describeError`）；
+3. 在这些线上响应上运行每个页面的 `src/lib` 视图模型函数（payload 解析器不得拒绝、行 / 标签 / 图表序列可构建）；
+4. 用 `react-dom/server` 渲染全部 14 个页面，经 `ApiSeedContext` 接缝以线上响应逐轮填充（与
+   `render.test-util.tsx` 的 settle 循环相同，但走真实 HTTP）：没有残留的 loading、没有错误状态、报告页确实请求了
+   列表与所选详情且没有退回原始 JSON；未配置的后端上 Knowledge Search / Jobs 页面显示 503 错误状态。
+
+`tests/apps/test_live_backend_smoke.py` 启动两个真实后端子进程（`tests/apps/live_server.py`，仅测试用的最小
+stdlib 服务器，127.0.0.1 + 临时端口）并运行本脚本；没有 `node` 或未安装 `node_modules` 时该用例带原因 skip。
+
+**证明了什么**：真实 `apps/api` 进程经真实 socket 返回的 JSON，能被控制台自己的客户端、错误映射、视图模型和页面
+组件（服务端渲染）完整消费，与 fixtures 上的测试结论一致。**没有证明什么**：没有真实浏览器 —— 不验证像素 / 布局 /
+样式、不执行 effect（ECharts 实际绘制、`useApi` 的 effect 路径）、没有点击 / 切换 tab / 输入等交互、不经过 vite
+开发代理本身。**人工浏览器验收仍然未完成（open）。**

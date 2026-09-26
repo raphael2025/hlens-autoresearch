@@ -10,7 +10,8 @@
     "preview": "vite preview",
     "test": "npm run test:lib && npm run test:components",
     "test:lib": "node --test src/lib/",
-    "test:components": "node scripts/test-components.mjs"
+    "test:components": "node scripts/test-components.mjs",
+    "smoke:live": "node scripts/live-smoke.mjs"
   },
   "dependencies": {
     "echarts": "^5.5.0",
