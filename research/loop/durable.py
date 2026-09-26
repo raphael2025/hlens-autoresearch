@@ -141,7 +141,10 @@ state and is the caller's to resume.
 
 from __future__ import annotations
 
+import fcntl
 import json
+import os
+import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, fields
 from datetime import datetime
@@ -247,6 +250,42 @@ _UNSEALED: Final = frozenset({"unsealed", CONSUMED_WITHOUT_RESULT})
 
 class LoopStateInconsistent(RuntimeError):
     """The files of a loop state directory disagree with each other or with the configuration."""
+
+
+class LoopStateLocked(RuntimeError):
+    """Another live process (or object) holds this loop state directory (single writer)."""
+
+
+#: The single-writer lock of a state directory (``fcntl.flock``; the kernel drops it on exit).
+LOCK_FILE: Final = "state.lock"
+
+
+class StateLock:
+    """The held ``state.lock`` of one opened directory; ``release`` is idempotent."""
+
+    def __init__(self, root: Path) -> None:
+        fd = os.open(root / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o644)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            os.close(fd)
+            raise LoopStateLocked(f"{root} is held by another loop (single writer)") from exc
+        except BaseException:
+            os.close(fd)
+            raise
+        self._fd: int | None = fd
+
+    @property
+    def held(self) -> bool:
+        return self._fd is not None
+
+    def release(self) -> None:
+        if self._fd is not None:
+            fd, self._fd = self._fd, None
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
 
 
 # ------------------------------------------------------------------------------------ positions
@@ -597,6 +636,9 @@ class DurableState:
     audit: LoopAuditLog
     checkpoint: MemoryCheckpoint
     anchor: StateAnchor | None = None
+    #: The directory's single-writer lock (set by ``open_state``; released by ``DurableLoop.close``,
+    #: when the audit log is garbage-collected, or at process exit).
+    lock: StateLock | None = None
 
     def head(self) -> StateHead:
         """The directory's current head (after the last recorded round or between-rounds line)."""
@@ -696,6 +738,32 @@ def open_state(
         )
     anchored = None if anchor is None else anchor.load()
     root.mkdir(parents=True, exist_ok=True)
+    # Single writer (cross-process): taken before any file is read, whatever bus the caller uses;
+    # held for the life of the restored audit log (which the composed loop keeps), released on
+    # garbage collection or process exit (the kernel drops flocks; a crash leaves no stale lock).
+    lock = StateLock(root)
+    try:
+        state = _open_locked(
+            root, fingerprint, strategies, provider, provider_for, anchor, anchored
+        )
+    except BaseException:
+        lock.release()
+        raise
+    object.__setattr__(state, "lock", lock)
+    weakref.finalize(state.audit, lock.release)
+    return state
+
+
+def _open_locked(
+    root: Path,
+    fingerprint: Mapping[str, Any],
+    strategies: Sequence[StrategyCandidate],
+    provider: SyntheticMarketProvider | None,
+    provider_for: Callable[[StrategySpec], Any] | None,
+    anchor: StateAnchor | None,
+    anchored: StateHead | None,
+) -> DurableState:
+    """``open_state`` once the directory's single-writer lock is held (see ``open_state``)."""
     audit = LoopAuditLog(root / AUDIT_FILE)
     journal = AppendOnlyJournal(root / MEMORY_FILE)
     graph = LineageGraph((), path=root / LINEAGE_FILE)

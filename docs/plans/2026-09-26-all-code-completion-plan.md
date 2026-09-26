@@ -441,3 +441,13 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   `validate_router`（核对规格与运行、`run.verify()`、验证并返回绑定哈希）。限制：引用 `paper.py` 两个私有帮助函数；宽松夹具上 G3 FAIL，G4 计数经 `robustness_input` 核对；尚无组件开启 `record_marks`。
 - 子代理：109 passed；本分支集成后 `pytest -m "not postgres" tests/apps/test_execution*.py tests/research/router tests/test_architecture_boundaries.py tests/test_docs_consistency.py` → **116 passed**；
   `ruff check .` → 通过；mypy（38 files）→ no issues。
+
+**B32 — L2 通道（跨进程测试 + 金标准实验重放）集成，并修复其发现的真实缺陷：循环状态目录无单写者锁**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- L2（`f0741b7` 的 cherry-pick，仅测试）：研究循环 / worker 任务 / 文件总线的真实跨进程测试（子进程写入与重开、固定点 SIGKILL、第二进程被锁、篡改与伪造审批被另一进程拒绝、预算跨进程保持耗尽）；
+  Phase 14 第一个合成 TEST ONLY 金标准实验 `tests/golden/experiments/`（TSMOM → 回测 → G0–G4，容差 0 重跑一致、扰动报告差异、回滚证据、另一进程重新生成逐字节相同）。
+- 缺陷（L2 以 strict xfail 固定证据）：`state_dir` 没有自己的单写者锁，只靠自有总线的 flock；调用方注入总线（如 `InMemoryEventBus`）时，第二个进程可打开被占用的目录，两者都能追加日志，只在下次重开时才发现。
+- 修复（Claude）：`research/loop/durable.py` 新增 `StateLock`（`state_dir/state.lock` 上的排他非阻塞 `fcntl.flock`，读任何文件前获取；被占用 → `LoopStateLocked`；随审计日志对象回收、`DurableLoop.close()` 或进程退出释放，崩溃不留残锁），
+  `research/loop/compose.py` 的 `DurableLoop.state_lock` 在 `close()` 时释放。xfail 转为通过；原先在同一进程中未释放第一个写者就重开同一目录的 5 个测试改为先 `close()`（它们断言的重开语义不变）；跨进程测试中第二进程的拒绝现由 `LoopStateLocked`（先于总线锁）给出。
+- 实际运行：L2 子代理 `79 passed, 1 xfailed`；修复后 `pytest -m "not postgres" tests/research/loop/test_loop_durable.py tests/research/loop/test_loop_cross_process.py tests/research/loop/test_llm_content.py tests/apps/test_research_loop_durable.py`
+  → **112 passed**；`ruff check` → 通过；`mypy research/loop` → no issues in 11 files。

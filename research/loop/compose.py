@@ -107,6 +107,7 @@ from research.loop.durable import (
     FileAnchor,
     LoopStateInconsistent,
     StateAnchor,
+    StateLock,
     open_state,
 )
 from research.loop.llm_content import ContentVerifiedLLM
@@ -420,11 +421,16 @@ class DurableLoop:
     state_dir: Path
     bus: EventBusAdapter
     owned_bus: FileEventBus | None = None
+    #: The state directory's single-writer lock (``research.loop.durable.StateLock``).
+    state_lock: StateLock | None = None
 
     def close(self) -> None:
-        """Release the composition's own bus (idempotent; nothing for a caller's bus)."""
+        """Release the composition's own bus and the directory lock (idempotent; a caller's bus
+        stays open)."""
         if self.owned_bus is not None:
             self.owned_bus.close()
+        if self.state_lock is not None:
+            self.state_lock.release()
 
     def __enter__(self) -> DurableLoop:
         return self
@@ -563,7 +569,9 @@ def compose_durable(
         durable = not isinstance(bus, InMemoryEventBus)
         check_round_bus(bus, config.loop_id, state.audit.records, durable=durable)
         loop = compose_loop(config, ingest, bus, state.memory, llm, state)
-        return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root, bus=bus)
+        return DurableLoop(
+            loop=loop, memory=state.memory, state_dir=state.root, bus=bus, state_lock=state.lock
+        )
     owned = FileEventBus(state.root / BUS_DIR, anchor=bus_anchor)
     try:
         check_round_bus(owned, config.loop_id, state.audit.records)
@@ -573,7 +581,12 @@ def compose_durable(
         raise
     weakref.finalize(loop, owned.close)  # a dropped loop releases the bus lock
     return DurableLoop(
-        loop=loop, memory=state.memory, state_dir=state.root, bus=owned, owned_bus=owned
+        loop=loop,
+        memory=state.memory,
+        state_dir=state.root,
+        bus=owned,
+        owned_bus=owned,
+        state_lock=state.lock,
     )
 
 

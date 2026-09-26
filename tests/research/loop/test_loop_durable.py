@@ -731,6 +731,7 @@ def approved_after_last_round(
     # the anchor moved up at once: one memory line further, same round count
     assert (head.rounds, head.memory_seq) == (before.rounds, before.memory_seq + 1)
     assert head.heads["reviews"]["seq"] == before.heads["reviews"]["seq"] + 1
+    reopened.close()  # release the directory's single-writer lock before the tests reopen it
     return state_dir, anchor
 
 
@@ -740,6 +741,7 @@ def test_an_approval_after_the_last_round_survives_a_restart(
     state_dir, anchor = approved_after_last_round
     reopened = _open(state_dir, consumed=ROUNDS, anchor=anchor)
     assert [a.key for a in reopened.memory.reviews.approvals] == [DRAFT, "h_llm_1@1.0.0"]
+    reopened.close()  # single writer: release before opening the directory again
     assert [a.key for a in _open(state_dir, consumed=ROUNDS).memory.reviews.approvals] == [
         DRAFT,
         "h_llm_1@1.0.0",
@@ -851,6 +853,7 @@ def test_a_failed_between_rounds_checkpoint_stops_the_loop(
     with pytest.raises(RuntimeError, match="no between-rounds checkpoint names"):
         reopened.loop.run_unattended(1)
     assert len(reopened.loop.audit.records) == ROUNDS  # the round was not recorded
+    reopened.close()  # single writer: release before opening the directory again
     with pytest.raises(LoopStateInconsistent):  # interrupted round, uncheckpointed approval
         _open(state_dir, consumed=ROUNDS)
 
@@ -1123,10 +1126,10 @@ def test_an_injected_in_memory_bus_is_not_durable_and_gets_every_round_replayed(
     outcome = auto_bus[1]
     state_dir = _copy(auto_bus[0], tmp_path / "memory")
     bus = InMemoryEventBus()
-    _open_injected(state_dir, bus)
+    _open_injected(state_dir, bus).close()  # close: release the directory's single-writer lock
     replayed = [m.payload["record_hash"] for m in bus.poll("auditor", ROUND_TOPIC, 100)]
     assert replayed == outcome.record_hashes
-    _open_injected(state_dir, bus)  # consistent now: a second open adds nothing
+    _open_injected(state_dir, bus).close()  # consistent now: a second open adds nothing
     assert len(bus.poll("auditor", ROUND_TOPIC, 100)) == ROUNDS
 
     foreign = InMemoryEventBus()
@@ -1180,3 +1183,20 @@ def test_a_bus_anchor_is_refused_with_a_callers_bus(tmp_path: Path) -> None:
             bus_anchor=tmp_path / "bus-anchor.jsonl",
         )
     assert not (tmp_path / "state").exists()  # refused before the state directory is touched
+
+
+# --------------------------------------------- single writer (state.lock, cross-process gap fix)
+
+
+def test_a_state_dir_held_by_a_live_loop_cannot_be_opened_again(tmp_path: Path) -> None:
+    from research.loop.durable import LOCK_FILE, LoopStateLocked
+
+    state_dir = tmp_path / "state"
+    first = _open(state_dir)
+    assert (state_dir / LOCK_FILE).exists()
+    with pytest.raises(LoopStateLocked):
+        _open(state_dir)  # same process, other object: still a second writer
+    del first
+    gc.collect()
+    second = _open(state_dir)  # released with the first loop's audit log
+    assert second.loop.audit.records == ()

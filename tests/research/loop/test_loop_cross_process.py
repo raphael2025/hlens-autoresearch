@@ -310,13 +310,15 @@ def test_a_second_process_is_locked_out_while_the_first_holds_the_directory(
     approved: Path, tmp_path: Path
 ) -> None:
     """Process A holds the loop open (its own ``FileEventBus`` flock); process B opening the same
-    directory gets ``BusLocked`` and changes no byte. Once A exits, B's open succeeds."""
+    directory is refused and changes no byte (since 2026-09-26 by the directory's own
+    ``state.lock``, taken before the bus lock: ``LoopStateLocked``). Once A exits, B's open
+    succeeds."""
     state_dir = _copy(approved, tmp_path)
     holder = _Holder({"state_dir": str(state_dir), "consumed": 1})
     try:
         before = _snapshot(state_dir)
         refusal = _refused({"state_dir": str(state_dir), "consumed": 1})
-        assert refusal["error"] == "BusLocked"
+        assert refusal["error"] == "LoopStateLocked"
         assert _snapshot(state_dir) == before
         holder.release()
     finally:
@@ -337,22 +339,10 @@ def test_a_killed_holder_releases_the_directory(approved: Path, tmp_path: Path) 
     assert len(_ok({"state_dir": str(state_dir), "consumed": 1})["outcome"]["record_hashes"]) == 1
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason=(
-        "REAL GAP (cross-process, found by this lane; production code unchanged): a state_dir has "
-        "no single-writer lock of its own. Only the composition-owned FileEventBus(state_dir/bus) "
-        "flock serialises processes, so a second process that injects its own bus "
-        "(InMemoryEventBus) opens the directory while another process holds it. The journals "
-        "only refuse a file that SHRANK before an append (never one that grew under another "
-        "writer), so two such processes can both append to the audit / memory / ledgers; the "
-        "result is detected only on the next reopen (duplicate seq -> JournalCorrupted), never "
-        "prevented."
-    ),
-)
 def test_a_second_process_with_an_injected_bus_is_locked_out_too(
     approved: Path, tmp_path: Path
 ) -> None:
+    """Fixed 2026-09-26: ``open_state`` takes its own ``state.lock`` flock (was a strict xfail)."""
     state_dir = _copy(approved, tmp_path)
     holder = _Holder({"state_dir": str(state_dir), "consumed": 1})
     try:
