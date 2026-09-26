@@ -37,6 +37,9 @@ const StateDiagnostics = lazy(() =>
 const EventStatistics = lazy(() =>
   import("./pages/EventStatistics").then((m) => ({ default: m.EventStatistics })),
 );
+const PaperDeviations = lazy(() =>
+  import("./pages/PaperDeviations").then((m) => ({ default: m.PaperDeviations })),
+);
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", render: () => <Dashboard /> },
@@ -45,6 +48,7 @@ const TABS = [
   { key: "state-strategy", label: "State × Strategy Matrices", render: () => <StateStrategyMatrices /> },
   { key: "router-paper", label: "Router Paper Runs", render: () => <RouterPaperRuns /> },
   { key: "router-stop", label: "Router Stops", render: () => <RouterStops /> },
+  { key: "paper-deviation", label: "Paper Deviation", render: () => <PaperDeviations /> },
   { key: "gate-calibration", label: "Gate Calibration", render: () => <GateCalibration /> },
   { key: "state-diagnostics", label: "State Diagnostics", render: () => <StateDiagnostics /> },
   { key: "event-statistics", label: "Event Statistics", render: () => <EventStatistics /> },

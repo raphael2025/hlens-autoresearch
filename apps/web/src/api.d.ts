@@ -400,10 +400,10 @@ export interface components {
         /**
          * ReportKind
          * @description The report kinds the console serves ((a)-(d), Phase 9 gate calibration evidence, and the
-         *     Phase 10 router stop / Phase 2 state diagnostics / Phase 3 event statistics records).
+         *     Phase 10 router stop / paper deviation, Phase 2 state diagnostics, Phase 3 event statistics).
          * @enum {string}
          */
-        ReportKind: "validation_report" | "research_loop_round" | "state_strategy_matrix" | "router_paper_run" | "gate_calibration" | "router_stop" | "state_diagnostics" | "event_statistics";
+        ReportKind: "validation_report" | "research_loop_round" | "state_strategy_matrix" | "router_paper_run" | "gate_calibration" | "router_stop" | "state_diagnostics" | "event_statistics" | "paper_deviation";
         /**
          * ReportListing
          * @description ``GET /reports/{kind}``: the well-formed reports (newest first) and every file skipped as

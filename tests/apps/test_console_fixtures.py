@@ -130,3 +130,20 @@ def test_event_statistics_fixture_binds_its_runs() -> None:
         "lead_lag",
         "overlap_diagnostics",
     }
+
+
+def test_paper_deviation_fixture_compares_every_mark() -> None:
+    store = ReportStore(FIXTURES_ROOT)
+    (envelope,) = store.list(ReportKind.PAPER_DEVIATION)
+    payload = envelope.payload
+    assert payload["kind"] == "paper_deviation"
+    assert payload["deviation_hash"] == envelope.id
+    assert payload["run_hash"] and payload["reference_result_hash"]
+    assert isinstance(payload["marks"], list) and payload["marks"]
+    assert payload["summary"]["marks"] == len(payload["marks"])
+    # the router paper run it describes is the committed router_paper_run fixture
+    (run,) = store.list(ReportKind.ROUTER_PAPER_RUN)
+    assert payload["run_hash"] == run.id
+    assert [mark["time"] for mark in payload["marks"]] == [
+        point["time"] for point in run.payload["net_equity_curve"]
+    ]

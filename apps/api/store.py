@@ -2,8 +2,8 @@
 
 ``apps/api`` never imports ``research/`` (01-system.md §3): the research plane writes its
 artifacts — validation reports, research-loop round audit records, state x strategy matrices,
-router paper runs and stops, gate calibration evidence, state diagnostics, event statistics — as
-JSON files under a configured directory, and this module only reads them
+router paper runs, stops and paper deviations, gate calibration evidence, state diagnostics, event
+statistics — as JSON files under a configured directory, and this module only reads them
 back. The payload is served as ``payload`` inside a small envelope (``kind``, ``id``, ``created``,
 ``payload``, ``content_hash``); adding a new report kind never requires a contract change here.
 
@@ -26,6 +26,7 @@ recorded hash and fields disagree:
 | ``router_stop`` | ``stop_hash`` = hash of ``{"kind": "router_stop", <every other field>}`` |
 | ``state_diagnostics`` | id = hash of the whole payload (``diagnostics_hash``) |
 | ``event_statistics`` / ``gate_calibration`` | ``report_hash`` = hash of the payload without it |
+| ``paper_deviation`` | ``deviation_hash`` = hash of the payload without it |
 
 Honest boundary: display-only fields a hash does not bind (the router run's equity curves,
 endpoints and per-decision ``switching_cost``) are not verified; ``state_strategy_matrix`` is still
@@ -78,7 +79,7 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 
 class ReportKind(StrEnum):
     """The report kinds the console serves ((a)-(d), Phase 9 gate calibration evidence, and the
-    Phase 10 router stop / Phase 2 state diagnostics / Phase 3 event statistics records)."""
+    Phase 10 router stop / paper deviation, Phase 2 state diagnostics, Phase 3 event statistics)."""
 
     VALIDATION_REPORT = "validation_report"
     RESEARCH_LOOP_ROUND = "research_loop_round"
@@ -88,6 +89,7 @@ class ReportKind(StrEnum):
     ROUTER_STOP = "router_stop"
     STATE_DIAGNOSTICS = "state_diagnostics"
     EVENT_STATISTICS = "event_statistics"
+    PAPER_DEVIATION = "paper_deviation"
 
 
 class InvalidReportId(ValueError):
@@ -270,6 +272,7 @@ _CHECKS: Final[dict[ReportKind, Callable[[Path, dict[str, Any]], None]]] = {
     ReportKind.STATE_DIAGNOSTICS: _check_state_diagnostics,
     ReportKind.EVENT_STATISTICS: _self_hashed("report_hash"),
     ReportKind.GATE_CALIBRATION: _self_hashed("report_hash"),
+    ReportKind.PAPER_DEVIATION: _self_hashed("deviation_hash"),
 }
 
 

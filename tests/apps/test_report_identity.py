@@ -33,6 +33,7 @@ IDENTIFIED = (
     ReportKind.STATE_DIAGNOSTICS,
     ReportKind.EVENT_STATISTICS,
     ReportKind.GATE_CALIBRATION,
+    ReportKind.PAPER_DEVIATION,
 )
 
 
@@ -165,6 +166,11 @@ HASH_EDITS: dict[str, tuple[ReportKind, str, Callable[[Payload], Payload]]] = {
         ReportKind.GATE_CALIBRATION,
         "report_hash",
         lambda p: {**p, "disclaimer": "a Profile decision"},
+    ),
+    "paper-deviation": (
+        ReportKind.PAPER_DEVIATION,
+        "deviation_hash",
+        lambda p: {**p, "summary": {**p["summary"], "tracking_error": "0"}},
     ),
 }
 

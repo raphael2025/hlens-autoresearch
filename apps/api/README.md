@@ -20,7 +20,7 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 | GET | `/jobs/{job_id}` | 单个任务（`job_id` 非 64 位小写十六进制 → 400，不存在 → 404） |
 
 `{kind}` ∈ `validation_report` \| `research_loop_round` \| `state_strategy_matrix` \| `router_paper_run` \|
-`gate_calibration` \| `router_stop` \| `state_diagnostics` \| `event_statistics`（后三种 2026-09-26 加入，
+`gate_calibration` \| `router_stop` \| `state_diagnostics` \| `event_statistics` \| `paper_deviation`（后四种 2026-09-26 加入，
 CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳定性诊断、Phase 3 事件统计；写入方见
 `research/reports/README.md`）。除 `state_strategy_matrix` 外，每个 kind 都做契约 / 身份校验（见下）。
 
@@ -80,6 +80,7 @@ CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳�
 | `router_stop` | `stop_hash` = `{"kind": "router_stop", 其余全部字段}` 的哈希 |
 | `state_diagnostics` | id = 整个 payload 的哈希（`diagnostics_hash`） |
 | `event_statistics` / `gate_calibration` | `report_hash` = 去掉它之后 payload 的哈希 |
+| `paper_deviation` | `deviation_hash` = 去掉它之后 payload 的哈希（Phase 10 纸面偏差，只描述） |
 
 诚实边界：哈希不绑定的展示字段（路由运行的权益曲线、首末权益、每个决策的 `switching_cost`）不被核对；
 `state_strategy_matrix` 仍不透明提供（其 `matrix_hash` 无法只凭 payload 重算）。

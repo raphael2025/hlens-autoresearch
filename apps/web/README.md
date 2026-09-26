@@ -6,8 +6,8 @@
 
 > 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；实现说明 2026-09-25 补充，
 > 控制台页面 2026-09-25 再补充，Gate Calibration 页面与剩余报告种类的 fixtures 2026-09-26 再补充）：
-> 12 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
-> Router Paper Runs、Router Stops、Gate Calibration、State Diagnostics、Event Statistics（后三者与
+> 13 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
+> Router Paper Runs、Router Stops、Paper Deviation（2026-09-26）、Gate Calibration、State Diagnostics、Event Statistics（后三者与
 > Router Stops 2026-09-26，CODE_COMPLETE / DEBUG_PENDING）、Lifecycle、Jobs（2026-09-26）、Knowledge Search。依赖已本地安装
 > （`node_modules/`，已 gitignore），`npm run gen:api` 与 `npm run build` 均已跑通。
 
@@ -21,6 +21,7 @@
 | State × Strategy Matrices | 矩阵列表 + 详情（per-state 指标热力图、样本数） | `/reports/state_strategy_matrix[/​{id}]` |
 | Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比；证据模式下的资格证据与验证报告绑定） | `/reports/router_paper_run[/​{id}]` |
 | Router Stops | 停止记录列表 + 详情（停止原因、spec / 状态结果哈希、每个策略的 lifecycle / 结果哈希 / 验证报告绑定；证据模式下每个策略的资格核验结果与拒绝原因）；没有模拟任何运行 | `/reports/router_stop[/​{id}]` |
+| Paper Deviation | 偏差报告列表 + 详情（运行 / 参照哈希、汇总统计、paper vs reference 权益图与差值柱、逐 mark 权益 / 收益差）；只描述、无阈值 | `/reports/paper_deviation[/​{id}]` |
 | Gate Calibration | 报告列表 + 详情（每个候选 Profile、每个 gate 的 FPR / power 表，附 Clopper-Pearson 区间） | `/reports/gate_calibration[/​{id}]` |
 | State Diagnostics | 诊断报告列表 + 详情（每个状态的计数 / 占比 / run 持续时间、转移矩阵、flicker、runs 表）；只描述、无阈值 | `/reports/state_diagnostics[/​{id}]` |
 | Event Statistics | 报告列表 + 详情（来源事件运行哈希；频率分桶、共现、领先-滞后直方、重叠 / 独立性诊断）；只描述、非 Profile 输入 | `/reports/event_statistics[/​{id}]` |
@@ -79,9 +80,9 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 
 ### 用 `apps/web/fixtures/` 快速起一个有数据的后端
 
-`apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了全部八种报告种类的示例
+`apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了全部报告种类的示例
 （`validation_report/`、`research_loop_round/`、`state_strategy_matrix/`、`router_paper_run/`、
-`gate_calibration/`、`router_stop/`、`state_diagnostics/`、`event_statistics/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
+`gate_calibration/`、`router_stop/`、`state_diagnostics/`、`event_statistics/`、`paper_deviation/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
 `ReportStore` 实际读到的文件逐字节一致，不是手写的示例数据（生成方式见
 [fixtures/README.md](fixtures/README.md)）。可以直接把它当 `reports_root` 起后端：
 
@@ -152,4 +153,8 @@ jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge S
   `validation_reports` 绑定；信任模式载荷（无该键）不显示任何额外内容。视图模型在 `src/lib/routerEligibility.ts`
   （`node --test`，证据模式载荷在测试中按 `research/reports/router.py` 的形状内联构造；fixtures 未改），表格组件在
   `src/components/EligibilityEvidence.tsx`。无法解析的检查记录被计数并警告，从不当作「无证据」。
+- **Paper Deviation**（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`src/pages/PaperDeviations.tsx`，经由
+  `ReportBrowser` / `useApi` / `States.tsx`；视图模型 `src/lib/paperDeviation.ts`（`node --test`，输入是
+  `fixtures/paper_deviation/`）。表格显示 payload 的精确十进制文本（`decimalText` 去掉 `0E-18` 之类的指数与尾零，不做舍入），
+  不可计算值（`null`）显示为 “—”；ECharts 折线 / 柱图只用于图形。
 - DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（只跑了 `npm run build` 与 `npm test`）。

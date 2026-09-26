@@ -17,10 +17,11 @@ import——两边只通过这份文件格式约定耦合。
 | `router.py` | `write_router_paper_run`：Phase 10 `RouterPaperRun`（`research/router/paper.py` 的 `paper_run`）；`write_router_stop`：Phase 10 `RouterStop`（`paper_run_or_stop` 的停止记录，kind `router_stop`，id = `stop_hash`） |
 | `gate_calibration.py` | `write_gate_calibration_report`：Phase 9 `GateCalibrationReport`（`research/synthetic_lab/gate_calibration.py`；id = `report_hash`） |
 | `state_diagnostics.py` | `write_state_diagnostics`：Phase 2 `StateDiagnostics`（`research/states/diagnostics.py`；kind `state_diagnostics`，id = `diagnostics_hash`；写入前经 JSON 往返 `from_payload(..., expected_hash=)` 校验，不能往返的报告拒绝写入） |
+| `deviation.py` | `write_paper_deviation`：Phase 10 `PaperDeviation`（`research/router/deviation.py`；kind `paper_deviation`，id = `deviation_hash`；写入前从 payload 重算哈希，不符拒绝写入；2026-09-26，CODE_COMPLETE / DEBUG_PENDING） |
 | `event_statistics.py` | `write_event_statistics`：Phase 3 `EventStatsReport`（`research/events/stats.py`；kind `event_statistics`，id = `report_hash`；写入前从 payload 重算哈希，不符拒绝写入） |
 
-以上八种 kind 都是 `apps/api` `ReportKind` 的成员（2026-09-26：`router_stop` / `state_diagnostics` /
-`event_statistics` 加入只读 API 与控制台页面；payload 仍由 `apps/api` 不透明地提供）。
+以上 kind 都是 `apps/api` `ReportKind` 的成员（2026-09-26：`router_stop` / `state_diagnostics` / `event_statistics` / `paper_deviation`
+加入只读 API 与控制台页面；`apps/api` 现在对除 `state_strategy_matrix` 外的每个 kind 重算其身份哈希并拒绝不一致的文件，见 `apps/api/README.md`）。
 
 ## 信封 / 哈希规则
 

@@ -1,6 +1,6 @@
 # apps/web/fixtures
 
-Example report files for all eight console report kinds, laid out exactly like a real report root
+Example report files for every console report kind, laid out exactly like a real report root
 (`<kind>/<id>.json`) so this directory can be passed straight to
 `apps.api.create_app(reports_root=...)` for local `npm run dev` use — see
 [../README.md](../README.md) "用 `apps/web/fixtures/` 快速起一个有数据的后端".
@@ -41,6 +41,11 @@ a `uv run python` process from the repo root. Regenerate the same way after chan
 payload shape or a reused fixture builder (the writer's append-only rule refuses a conflicting
 rewrite under the same id, so a changed payload also changes the filename since the id is a content
 hash — delete the stale file under the affected `<kind>/` directory first).
+
+- `paper_deviation/` (2026-09-26): `write_paper_deviation` over `deviation()` of
+  `tests/research/router/test_paper_deviation.py` — the `test_paper.py` router run vs strategy A run
+  alone through the same backtester (the declared reference). Generated and pinned by the same
+  committed module (`tests/research/reports/test_console_fixture_writers.py`).
 
 `tests/apps/test_console_fixtures.py` loads every fixture here through `apps.api`'s `ReportStore`
 (and the `/reports/...` HTTP endpoints) and fails if any `ReportKind` has no fixture file, so this

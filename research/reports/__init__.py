@@ -9,6 +9,7 @@ rules shared by all of them.
 
 from __future__ import annotations
 
+from research.reports.deviation import write_paper_deviation
 from research.reports.envelope import ReportConflict, WrittenReport, write_report_file
 from research.reports.event_statistics import write_event_statistics
 from research.reports.gate_calibration import write_gate_calibration_report
@@ -23,6 +24,7 @@ __all__ = [
     "WrittenReport",
     "write_event_statistics",
     "write_gate_calibration_report",
+    "write_paper_deviation",
     "write_report_file",
     "write_research_loop_round",
     "write_research_loop_rounds",
