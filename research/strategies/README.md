@@ -31,3 +31,12 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 比先重跑再靠 `G0.reproducibility` 间接发现更早、更具体；`robustness_input` 同样先做这个核对再重跑参数网格。声明的模型带
 `impact_coefficient` 时，G4 容量检查读它而不是只读显式的 `RobustnessParams.impact_coefficient`——两者都给出且不同时判
 `INCONCLUSIVE`（`impact_coefficient_mismatch`），不静默择一。两个字段都不给时（每个既有调用方）不加任何门，报告逐字节不变。
+
+**多标的验证**（Phase 8 实施说明，2026-09-26；状态 **CODE_COMPLETE / DEBUG_PENDING**；未改 core / 契约 / Schema / Profile 数值 / 门的放行条件）：
+`ValidatorSetup.instruments`（默认 `None`）给出回测交易的确切标的集合（至少两个，须包含 `instrument`）。`None` 时仍是单标的路径，报告逐字节不变
+（改动前固定的报告哈希见 `tests/research/strategies/test_multi_instrument_validation.py`）。给出时：`G0.instrument_scope` 取代
+`G0.single_instrument_adapter`（重跑交易的标的与声明集合不一致 → `INCONCLUSIVE`，不计算标签）；数据集路径的 `G0.manifest_binding` 对每个标的
+单独核对（`instrument_bars[<名>]` / `bars_in_manifest[<名>]` / `price_cutoff[<名>]`），任一标的不绑定仍在 G0 判 FAIL；`OutcomeRequest` 仍是单标的，
+**每个标的一份请求**，标签的 `event_key`（`<标的>|<时间>`）自带标的；合并与判定见 `research/validation/README.md`「多标的验证」。每个试验仍只计一次：
+逐标的证据复用同一次重跑、不新增 `TrialRunner` 调用，G3 调整用不变的 `family_trial_count`。G4 跨资产检查对每个声明标的使用它自己的单独重跑，
+多标的基准回测永不被当作某一个标的的收益。

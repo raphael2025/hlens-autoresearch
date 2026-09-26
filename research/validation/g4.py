@@ -81,8 +81,10 @@ __all__ = [
     "RobustnessInput",
     "RobustnessParams",
     "RobustnessResult",
+    "RobustnessSource",
     "ValidationRun",
     "check_error",
+    "robustness_stage",
     "run_robustness",
     "run_validation",
 ]
@@ -344,11 +346,20 @@ def run_validation(in_sample: InSampleInput, robustness: RobustnessSource) -> Va
     gates = run_in_sample(in_sample)
     if any(gate.verdict is Verdict.FAIL for gate in gates):
         return ValidationRun(gates=gates, robustness=None)
+    return robustness_stage(gates, in_sample.context.profile, robustness)
+
+
+def robustness_stage(
+    gates: tuple[GateResult, ...], profile: ValidationProfile, robustness: RobustnessSource
+) -> ValidationRun:
+    """G4 appended to G0 – G3 ``gates`` that did not fail (the tail of ``run_validation``; also
+    used by ``research.validation.instruments``): no input → ``G4.robustness_input`` =
+    ``INCONCLUSIVE``; an input bound to another Profile is refused."""
     if robustness is None:
         missing = inconclusive_gate("G4.robustness_input", "robustness_input_missing", 0.0)
         return ValidationRun(gates=(*gates, missing), robustness=None)
     source = robustness() if callable(robustness) else robustness
-    if source.profile.content_hash() != in_sample.context.profile.content_hash():
+    if source.profile.content_hash() != profile.content_hash():
         raise ValueError("G4 must use the Profile bound to the validation context")
     result = run_robustness(source)
     return ValidationRun(gates=(*gates, *result.gates), robustness=result)

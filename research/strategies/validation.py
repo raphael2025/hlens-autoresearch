@@ -14,9 +14,11 @@ validator states it) and, optionally, the JSON-ready report view for later visua
    path of ``pipeline.CandidateTrialRunner``); the re-run's ``result_hash`` against the given
    backtest's is G0 reproducibility;
 2. adapter gates (G0): the backtest's cost model has the same rates as the bound ``CostModelSpec``
-   (``G0.backtest_cost_model``), and the adapter validates exactly one instrument
-   (``G0.single_instrument_adapter``; several instruments are ``INCONCLUSIVE`` — the Outcome
-   request is single-instrument, a known gap); when the setup declares the backtest's execution
+   (``G0.backtest_cost_model``), and the re-run trades exactly the validated instrument(s):
+   ``G0.single_instrument_adapter`` for the default one-instrument setup (several traded
+   instruments are ``INCONCLUSIVE`` there, unchanged), ``G0.instrument_scope`` for a setup that
+   declares ``ValidatorSetup.instruments`` (see **Multi-instrument validation** below); when the
+   setup declares the backtest's execution
    model (``ValidatorSetup.backtester`` / ``.execution``, implementation note, 2026-09-26), also
    ``G0.execution_model`` — the given ``backtest.provider_hash`` must be exactly the declared
    model's, refused (FAIL) otherwise; unset, no gate is added (byte-identical to before the note);
@@ -113,12 +115,49 @@ candidate was backtested with:
 Neither field is set by any pre-existing caller (``bar_volume`` remains a separate, unrelated
 field used for the causal state / capacity plumbing): the default path — plain ``BarBacktester()``,
 no declared execution model — adds no new gate and is byte-identical, including the report hash.
+
+Multi-instrument validation (Phase 8 implementation note, 2026-09-26; CODE_COMPLETE /
+DEBUG_PENDING). No core / contract / Schema change. ``ValidatorSetup.instruments`` (default
+``None``) names the exact set (at least two) of instruments a backtest trades; ``None`` keeps the
+single-instrument path byte-identical (report hashes pinned in
+``tests/research/strategies/test_multi_instrument_validation.py``). Given:
+
+- ``G0.instrument_scope`` replaces ``G0.single_instrument_adapter``: PASS when the re-run trades
+  exactly the validated instruments, else ``INCONCLUSIVE`` (``instruments_outside_scope``; an
+  instrument outside the scope would have no labels) and nothing is labelled;
+- ``G0.manifest_binding`` (dataset path) binds every instrument on its own:
+  ``instrument_bars[<name>]``, ``bars_in_manifest[<name>]`` and ``price_cutoff[<name>]`` join the
+  global checks, so one instrument's unbound bars fail G0 exactly as before (``REJECTED`` /
+  ``CONTRACT_VIOLATION``);
+- ``OutcomeRequest`` stays single-instrument: **one request per instrument**, each over that
+  instrument's (verified) bars and bound to the same ``manifest_content_hash``, materialized on
+  its own. Every label's ``event_key`` already names its instrument (``<instrument>|<time>``);
+- ``research.validation.instruments`` pools the tables (refusing any label keyed to another
+  instrument) and runs pooled G0 – G3 under the standard gate ids, then each instrument's own
+  G0 – G3 recorded as ``<gate_id>.instrument.<name>`` (an instrument without labels:
+  ``G0.data_available.instrument.<name>`` = ``INCONCLUSIVE``), then G4 only when nothing failed.
+  The verdict is ``derive_verdict`` of all gates — any ``FAIL`` fails, else any ``INCONCLUSIVE``
+  is ``INCONCLUSIVE``, and a PASS needs the pooled evidence and every instrument's to pass. The
+  view adds ``extra["instruments"]`` and ``extra["per_instrument"]`` (verdict, label count);
+- no trial is added: the per-instrument evidence re-uses the one re-run (no extra
+  ``TrialRunner`` call), and the G3 adjustment of every stage uses the unchanged
+  ``metadata.family_trial_count`` — an instrument is not a trial (C-T1);
+- G4: every declared instrument's cross-asset returns are its own ``TrialRunner.run(...,
+  instruments=(name,))`` run; the multi-instrument base run is never reused as one asset's
+  returns (even when the declared scope names a single asset). The C-R2 state trades mark a
+  decision time as exposed when any instrument's target is non-flat (the base returns are the
+  portfolio's).
+
+Known limit (DEBUG_PENDING): the pooled G1 negative controls permute / circularly shift the
+pooled label sequence, which interleaves instruments by time, so a control may pair one
+instrument's side with another's label. That is still a valid null (it can only break
+alignment), but its false-alarm rate on multi-instrument data is uncalibrated (Phase 9).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from itertools import product
@@ -140,7 +179,7 @@ from core.errors import ReasonCode
 from infrastructure.bars.dataset import DatasetPriceBars
 from infrastructure.bars.pair import ManifestPair, pair_hash_of
 from plugins.backtest import BarBacktester, ExecutionModel
-from research.outcomes.table import materialize
+from research.outcomes.table import OutcomeTable, materialize
 from research.validation.controls import FixedSides
 from research.validation.g4 import (
     RobustnessInput,
@@ -150,6 +189,12 @@ from research.validation.g4 import (
     run_validation,
 )
 from research.validation.gates import flag_gate, inconclusive_gate
+from research.validation.instruments import (
+    EVENT_KEY_SEPARATOR,
+    MultiInstrumentRun,
+    pool_outcomes,
+    run_multi_instrument_validation,
+)
 from research.validation.pipeline import (
     InSampleInput,
     ValidationContext,
@@ -277,10 +322,15 @@ class ValidatorSetup:
     - ``control_seeds`` (debugging pass, 2026-09-26): passed unchanged to
       ``InSampleInput.control_seeds`` — the optional multi-seed G1 negative controls
       (``research.validation.pipeline`` module docs). ``None`` keeps the single-seed controls.
+    - ``instruments`` (multi-instrument validation, 2026-09-26): ``None`` (default) validates
+      exactly ``instrument`` (the single-instrument path, byte-identical). Given, the exact set
+      of at least two distinct instruments the backtest trades; ``instrument`` must be one of
+      them (it stays the view's ``instrument``). See the module docs, **Multi-instrument
+      validation**.
 
-    Only the last six fields have defaults (``None`` / empty): they keep the synthetic callers
-    and the pre-existing (no execution model, single-seed controls) callers unchanged, and the
-    view always labels the path taken.
+    Only the last seven fields have defaults (``None`` / empty): they keep the synthetic callers
+    and the pre-existing (no execution model, single-seed controls, one instrument) callers
+    unchanged, and the view always labels the path taken.
     """
 
     context: ValidationContext
@@ -300,10 +350,30 @@ class ValidatorSetup:
     backtester: BacktestProvider | None = None
     execution: ExecutionModel | None = None
     control_seeds: tuple[int, ...] | None = None
+    instruments: tuple[str, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.backtester is not None and self.execution is not None:
             raise ValueError("ValidatorSetup takes either backtester or execution, not both")
+        names = self.instruments
+        if names is None:
+            return
+        if not isinstance(names, tuple) or len(names) < 2 or len(set(names)) != len(names):
+            raise ValueError(
+                "instruments must be None (one instrument) or a tuple of at least two distinct "
+                "instruments"
+            )
+        if any(not name or EVENT_KEY_SEPARATOR in name for name in names):
+            raise ValueError(
+                f"an instrument name must be non-empty without {EVENT_KEY_SEPARATOR!r}"
+            )
+        if self.instrument not in names:
+            raise ValueError(f"instrument {self.instrument!r} is not one of instruments {names}")
+
+    @property
+    def validated_instruments(self) -> tuple[str, ...]:
+        """The instruments this setup validates (sorted when several are given)."""
+        return (self.instrument,) if self.instruments is None else tuple(sorted(self.instruments))
 
 
 def _binding_declared(setup: ValidatorSetup) -> bool:
@@ -332,9 +402,20 @@ def binding_mismatches(setup: ValidatorSetup, bars: Sequence[PriceBar]) -> list[
         checks |= {
             "manifest_hash": setup.manifest_content_hash == proven.manifest_content_hash,
             "bars_in_manifest": all(bar.content_hash() in allowed for bar in bars),
-            "instrument_bars": any(bar.instrument == setup.instrument for bar in bars),
             "price_cutoff": all(bar.available_time <= proven.price_cutoff for bar in bars),
         }
+        if setup.instruments is None:
+            checks["instrument_bars"] = any(bar.instrument == setup.instrument for bar in bars)
+        else:  # multi-instrument: each validated instrument is bound on its own
+            for name in setup.validated_instruments:
+                mine = [bar for bar in bars if bar.instrument == name]
+                checks |= {
+                    f"instrument_bars[{name}]": bool(mine),
+                    f"bars_in_manifest[{name}]": all(bar.content_hash() in allowed for bar in mine),
+                    f"price_cutoff[{name}]": all(
+                        bar.available_time <= proven.price_cutoff for bar in mine
+                    ),
+                }
     if pair is None:
         checks["feature_hashes_without_pair"] = not setup.feature_manifest_hashes
     else:
@@ -473,6 +554,8 @@ class PipelineBacktestValidator:
         if not traded:
             gate = inconclusive_gate("G0.data_available", "non_flat_targets", 0.0)
             return self._answer(build_report(ctx, (*adapter, gate)), None, rerun)
+        if setup.instruments is not None:
+            return self._validate_many(spec, chosen, rerun, backtest, adapter, traded)
         bars = _outcome_bars(rerun.bars, setup.instrument)
         request = OutcomeRequest(
             label_spec=ctx.label_spec,
@@ -576,14 +659,9 @@ class PipelineBacktestValidator:
             spec.slippage_rate_per_side,
         )
         instruments = {target.instrument for target in rerun.targets}
-        single = instruments == {self._setup.instrument}
         gates = [
             flag_gate("G0.backtest_cost_model", "cost_rates_equal", same, float(same)),
-            flag_gate("G0.single_instrument_adapter", "instruments", True, 1.0)
-            if single
-            else inconclusive_gate(
-                "G0.single_instrument_adapter", "instruments", float(len(instruments))
-            ),
+            self._instrument_gate(instruments),
         ]
         execution_gate = self._execution_model_gate(backtest)
         if execution_gate is not None:
@@ -600,23 +678,109 @@ class PipelineBacktestValidator:
         gates.append(binding)
         return tuple(gates)
 
+    def _instrument_gate(self, traded: set[str]) -> GateResult:
+        """``G0.single_instrument_adapter`` (one instrument, unchanged) or, for a multi-instrument
+        setup, ``G0.instrument_scope``: the re-run trades exactly the validated instruments
+        (``INCONCLUSIVE`` otherwise — an instrument outside the scope has no labels)."""
+        setup = self._setup
+        if setup.instruments is None:
+            if traded == {setup.instrument}:
+                return flag_gate("G0.single_instrument_adapter", "instruments", True, 1.0)
+            return inconclusive_gate(
+                "G0.single_instrument_adapter", "instruments", float(len(traded))
+            )
+        scope = set(setup.validated_instruments)
+        if traded == scope:
+            return flag_gate("G0.instrument_scope", "instruments", True, float(len(scope)))
+        return inconclusive_gate(
+            "G0.instrument_scope", "instruments_outside_scope", float(len(traded ^ scope))
+        )
+
+    def _validate_many(
+        self,
+        spec: StrategySpec,
+        chosen: ParamPoint,
+        rerun: TrialRun,
+        backtest: BacktestResult,
+        adapter: tuple[GateResult, ...],
+        traded: Sequence[TargetPosition],
+    ) -> BacktestValidation:
+        """Multi-instrument path (module docs): one ``OutcomeRequest`` per instrument, pooled +
+        per-instrument G0 – G3 (``research.validation.instruments``), then G4."""
+        setup, ctx = self._setup, self._setup.context
+        tables: dict[str, OutcomeTable] = {}
+        sides: dict[str, dict[str, int]] = {}
+        for name in setup.validated_instruments:
+            mine = [t for t in traded if t.instrument == name]
+            bars = _outcome_bars(rerun.bars, name)
+            if not mine or not bars:  # no labels: INCONCLUSIVE evidence for this instrument
+                continue
+            tables[name] = materialize(setup.outcome_provider, self._request(bars, mine))
+            sides[name] = {_event_key(t): _side(t.target_weight) for t in mine}
+        if not tables:
+            gate = inconclusive_gate("G0.data_available", "computable_labels", 0.0)
+            return self._answer(build_report(ctx, (*adapter, gate)), None, rerun)
+        refs = tuple(spec.signals)
+        pooled = InSampleInput(
+            context=ctx,
+            outcomes=pool_outcomes(tables),
+            study=FixedSides(
+                refs=refs, by_event={key: side for m in sides.values() for key, side in m.items()}
+            ),
+            seed=setup.seed,
+            reproduce=lambda: rerun.backtest.result_hash,
+            recorded_result_hash=backtest.result_hash,
+            control_seeds=setup.control_seeds,
+        )
+        per_instrument = {
+            name: replace(pooled, outcomes=table, study=FixedSides(refs=refs, by_event=sides[name]))
+            for name, table in tables.items()
+        }
+        run = run_multi_instrument_validation(
+            pooled,
+            per_instrument,
+            setup.validated_instruments,
+            lambda: self._robustness_input(spec, chosen, rerun),
+        )
+        report = build_report(ctx, (*adapter, *run.gates))
+        return self._answer(report, run.robustness, rerun, run)
+
+    def _request(
+        self, bars: tuple[OutcomePriceBar, ...], traded: Sequence[TargetPosition]
+    ) -> OutcomeRequest:
+        """One instrument's ``OutcomeRequest`` (the single-instrument path builds the same)."""
+        setup = self._setup
+        return OutcomeRequest(
+            label_spec=setup.context.label_spec,
+            manifest_content_hash=setup.manifest_content_hash,
+            price_cutoff=max(bar.available_time for bar in bars),
+            events=tuple(
+                OutcomeEvent(event_key=_event_key(t), event_time=t.decision_time) for t in traded
+            ),
+            bars=bars,
+        )
+
     def _answer(
-        self, report: ValidationReport, robustness: RobustnessResult | None, rerun: TrialRun
+        self,
+        report: ValidationReport,
+        robustness: RobustnessResult | None,
+        rerun: TrialRun,
+        multi: MultiInstrumentRun | None = None,
     ) -> BacktestValidation:
         reason = None
         if report.verdict is Verdict.FAIL:
             failed = next(gate for gate in report.gates if gate.verdict is Verdict.FAIL)
             reason = reason_for_gate(failed.gate_id)[1]
-        view = report_view(
-            report,
-            robustness,
-            extra={
-                "adapter": "research.strategies.validation.PipelineBacktestValidator",
-                "instrument": self._setup.instrument,
-                "backtest_result_hash": rerun.backtest.result_hash,
-                "price_binding": self._price_binding(rerun),
-            },
-        )
+        extra: dict[str, object] = {
+            "adapter": "research.strategies.validation.PipelineBacktestValidator",
+            "instrument": self._setup.instrument,
+            "backtest_result_hash": rerun.backtest.result_hash,
+            "price_binding": self._price_binding(rerun),
+        }
+        if self._setup.instruments is not None:  # absent on the single-instrument path
+            extra["instruments"] = list(self._setup.validated_instruments)
+            extra["per_instrument"] = None if multi is None else multi.view()
+        view = report_view(report, robustness, extra=extra)
         return BacktestValidation(report=report, failure_reason=reason, view=view)
 
     def _price_binding(self, rerun: TrialRun) -> dict[str, object]:
@@ -669,7 +833,8 @@ class PipelineBacktestValidator:
             offset: from_backtest(runner.run(params, decision_offset=offset).backtest)
             for offset in profile.parameter_stability.time_alignment_offsets
         }
-        single = setup.declared_instruments == (setup.instrument,)
+        # A multi-instrument base run is never one asset's: every declared asset is re-run alone.
+        single = setup.instruments is None and setup.declared_instruments == (setup.instrument,)
         per_asset = {
             name: base
             if single
@@ -710,7 +875,11 @@ class PipelineBacktestValidator:
         if state_of is None:
             return None
         decisions = sorted({t.decision_time for t in rerun.targets})
-        sides = {t.decision_time: _side(t.target_weight) for t in rerun.targets}
+        if self._setup.instruments is None:
+            sides = {t.decision_time: _side(t.target_weight) for t in rerun.targets}
+        else:  # several instruments per decision: the portfolio is exposed if any one is
+            active = {t.decision_time for t in rerun.targets if _side(t.target_weight) != 0}
+            sides = {time: int(time in active) for time in decisions}
         end_of_data = base.times[-1] if base.times else None
         trades: list[StateTrade] = []
         for index, start in enumerate(decisions):

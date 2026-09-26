@@ -13,7 +13,8 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
 | 模块 | 内容 |
 |---|---|
 | `pipeline.py` | `run_in_sample`（G0 → G1 → G2 → G3，阶段 FAIL 即停；G2 / G3 只在 walk-forward 测试折上计算）、`run_sealed_oos`（G5，一次性；可接收已消耗的 `SealedEvaluation`）、`sealed_oos_without_result`（评估已消耗却无统计量 → `G5.oos_evaluation` = `consumed_without_result:<原因>`，INCONCLUSIVE）、`build_report`（判定 = `derive_verdict`；`ValidationContext.created_at` 给定时以它为报告时间戳——`created_at` 计入报告内容哈希，不给则为墙钟时间、重跑哈希不同）、`failure_record`、`reason_for_gate` |
-| `g4.py` | `run_robustness`（G4 全部检查）、`run_validation`（G0 – G3 后接 G4，G4 输入可惰性构造；缺输入 = `G4.robustness_input` INCONCLUSIVE）、`RobustnessParams`（无 Profile 字段规则的显式参数，全部必填） |
+| `g4.py` | `run_robustness`（G4 全部检查）、`run_validation`（G0 – G3 后接 G4，G4 输入可惰性构造；缺输入 = `G4.robustness_input` INCONCLUSIVE；其尾段即 `robustness_stage`）、`RobustnessParams`（无 Profile 字段规则的显式参数，全部必填） |
+| `instruments.py` | 多标的验证：`pool_outcomes`（按 `event_key` 中的标的核对后池化各标的的标签表）、`run_multi_instrument_validation`（池化 G0 – G3 + 逐标的 G0 – G3 记为 `<门 id>.instrument.<名>`，再接 G4；见下文「多标的验证」） |
 | `robustness.py` | C-R1 ~ C-R5 与 C-T1 过拟合概率的检查：过拟合、参数邻域、时间对齐、延迟压力、成本压力、walk-forward 窗口统计（无收益窗口计入并使比例 INCONCLUSIVE）、状态分解、容量、跨资产；每个返回 `RobustnessCheck`（门 + 阈值来源 + 缺失字段 + 表格） |
 | `overfitting.py` | PBO（CSCV，分块间按 `data_split.embargo` purge / embargo，purge 宽度至少为必填的标签 / 持有期 `horizon`，与 `splits.purge_and_embargo` 同一语义）、Deflated Sharpe、逐期 Sharpe（不含阈值） |
 | `returns.py` | `PeriodReturns`（毛收益 + 成本，净收益按成本倍数计算）、`from_backtest`（`BacktestResult` → 逐期收益）、`TrialReturns` |
@@ -80,3 +81,18 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   G2 空模型仍为单种子（`seed + 2`）。
 - **仍然存在（受阻）**：统计仍是 `float` 上的 HAC 正态近似（ADR-0037 §5）；替换为精确 / Decimal 实现须先按 ADR-0052 补全契约（`core/`，超出本批次文件边界），本批次未改动，仍受阻。
   负对照与 G3 仍共用 `significance.multiple_testing_threshold`（D-CTRL；独立阈值字段同属 ADR-0052 的契约补全，未实施）。
+
+### 多标的验证（Phase 8 实施说明，2026-09-26）
+
+> 状态：**CODE_COMPLETE / DEBUG_PENDING**（未改变任何契约、Schema、Profile 数值或门的放行条件）。
+
+- `instruments.py`：`OutcomeRequest` 保持单标的（契约不变），多标的回测按标的各算一张 `OutcomeTable`。`pool_outcomes` 把它们合成一张池化表，
+  拒绝任何 `event_key` 未指向本标的的标签、以及结果 / 标签规格 / Provider 不一致的表；池化表是手工构建的（`request_hash` / `provider_hash` 为 `None`，
+  不落盘），`result_hash` 是各标的结果哈希的内容哈希。
+- `run_multi_instrument_validation`：先跑**池化** G0 – G3（标准门 id，组合层面统计；时间重叠的跨标的标签在有效样本 / overlap lag 中按相关计入，偏保守；
+  G3 用不变的 `family_trial_count`）；池化无 FAIL 时再对**每个标的**跑自己的 G0 – G3，门按基础 id 判定（Profile 的 inconclusive band 照常适用）后记为
+  `<门 id>.instrument.<名>`（`reason_for_gate` 按基础前缀映射）；无标签的标的记 `G0.data_available.instrument.<名>` = `INCONCLUSIVE`；全部无 FAIL
+  才进入 G4（`g4.robustness_stage`，即 `run_validation` 的尾段，行为不变）。报告结论仍是全部门的 `derive_verdict`：任一 FAIL → FAIL，否则任一
+  INCONCLUSIVE → INCONCLUSIVE，PASS 需要池化证据与每个标的的证据都通过（交并检验，只会减少 PASS）。
+- 已知限制（DEBUG_PENDING）：池化后的 G1 负对照对按时间交错的多标的标签序列做置换 / 循环平移，可能把一个标的的方向与另一标的的标签配对——
+  仍是有效的零假设（只会破坏对齐），但其在多标的数据上的误报率尚未校准（Phase 9）。
