@@ -55,6 +55,20 @@ Pieces:
   each arm reports its ``detector_errors`` count. It is never a pass. Misconfiguration of the
   harness itself (``DetectorConfigurationError``, a report under another Profile, a market whose
   truth is not the planted effects) still raises: those are caller bugs, not evidence.
+  Configuration errors of the pipeline raise too (``calibration.PROPAGATED_ERRORS``, the
+  pipeline's own G4 classification, ``research.validation.g4`` **Check isolation**): a
+  ``ValueError`` — ``ProfileFieldMissing`` (a candidate lacking a field the validator needs),
+  ``UnsupportedMethod`` (a method the pipeline does not implement), ``ExplicitParamRefused``,
+  ``DetectorConfigurationError`` and every other deliberate input refusal — a ``TypeError`` or a
+  ``MemoryError`` (not reproducible) raised by ``detect`` / ``detect_instruments`` /
+  ``detect_sealed`` propagates unchanged (with a note naming the arm, seed and candidate), in
+  every mode. Recorded as runs they would make a misconfigured candidate look like a 0 / n
+  false-positive rate. Only other exceptions (arithmetic, lookup, attribute, runtime, assertion
+  errors, ...) are recorded as ``detector_error``. An arm with ``detector_errors > 0`` also
+  reports ``pass_rate_bounds``: ``[passed / n, (passed + detector_errors) / n]`` (Decimal
+  strings; lower bound rounded down, upper bound up, to ``intervals.PLACES``), the range of its
+  pipeline pass rate had every errored run gone either way. The key is absent without errors, so
+  every error-free report keeps its hash.
 - Multi-instrument mode (Phase 9 implementation note, 2026-09-26; CODE_COMPLETE /
   DEBUG_PENDING; opt-in: a separate ``MultiInstrumentCalibrationSetup`` run by
   ``run_multi_instrument_calibration``, so every ``GateCalibrationSetup`` report and hash is
@@ -128,7 +142,8 @@ from research.strategies.validation import (
     TrialRunner,
     ValidatorSetup,
 )
-from research.synthetic_lab.intervals import INTERVAL_METHOD, BinomialRate, binomial_rate
+from research.synthetic_lab.calibration import PROPAGATED_ERRORS
+from research.synthetic_lab.intervals import INTERVAL_METHOD, PLACES, BinomialRate, binomial_rate
 from research.validation import (
     SealedOosInput,
     build_report,
@@ -1102,6 +1117,13 @@ class InstrumentArmEvidence:
         }
 
 
+def _bound(count: int, n: int, *, ceiling: bool) -> Decimal:
+    """``count / n`` exactly, quantized to ``PLACES`` (down, or up with ``ceiling``)."""
+    scale = int(1 / PLACES)
+    whole = -(-count * scale // n) if ceiling else count * scale // n
+    return (Decimal(whole) * PLACES).quantize(PLACES)
+
+
 @dataclass(frozen=True, slots=True)
 class ArmEvidence:
     """Pipeline-level rates of one arm under one candidate (``passed``: verdict ``PASS``)."""
@@ -1120,6 +1142,16 @@ class ArmEvidence:
     failed_rate: BinomialRate | None = None
     instruments: tuple[InstrumentArmEvidence, ...] | None = None
 
+    @property
+    def pass_rate_bounds(self) -> tuple[Decimal, Decimal]:
+        """``[passed / n, (passed + detector_errors) / n]``, rounded outward to ``PLACES``: the
+        pipeline pass rate had every errored run failed / passed (module docs)."""
+        n = self.passed.n
+        return (
+            _bound(self.passed.count, n, ceiling=False),
+            _bound(self.passed.count + self.detector_errors, n, ceiling=True),
+        )
+
     def to_payload(self) -> dict[str, object]:
         key = _pass_key(self.arm) if self.kind is None else _KIND_PASS_KEYS[self.kind]
         payload: dict[str, object] = {
@@ -1131,6 +1163,7 @@ class ArmEvidence:
         }
         if self.detector_errors:
             payload["detector_errors"] = self.detector_errors
+            payload["pass_rate_bounds"] = [str(bound) for bound in self.pass_rate_bounds]
         if self.g5 is not None:
             payload["sealed_oos_g5"] = self.g5.to_payload()
         # Additive and only in multi-instrument mode: every other report keeps its hash.
@@ -1347,7 +1380,8 @@ def _run_g5(
     )
     try:
         report = detector.detect_sealed(view, profile, sealed)
-    except DetectorConfigurationError:
+    except PROPAGATED_ERRORS as error:  # configuration errors are not evidence (module docs)
+        error.add_note(f"gate calibration G5: {family} under {profile.ref}")
         raise
     except Exception as error:  # the method failed on the claimed window: evidence, not a pass
         return SealedRunRecord(
@@ -1481,7 +1515,8 @@ def run_gate_calibration(setup: GateCalibrationSetup) -> GateCalibrationReport:
                 )
                 try:
                     report = setup.detector.detect(view, profile)
-                except DetectorConfigurationError:
+                except PROPAGATED_ERRORS as error:  # not evidence (module docs)
+                    error.add_note(f"gate calibration: {arm}/{seed} under {profile.ref}")
                     raise
                 except Exception as error:  # the method failed on this market: evidence
                     runs[key].append(_errored(arm, seed, market, error))
@@ -1650,9 +1685,10 @@ def run_multi_instrument_calibration(
     per symbol and is validated under every candidate through ``detect_instruments``.
 
     Detector failures are evidence (an ``INCONCLUSIVE`` run without gates, ``detector_error``),
-    as in ``run_gate_calibration``; a report under another Profile, or one that did not take the
-    multi-instrument path (``G0.single_instrument_adapter``), is a harness misconfiguration and
-    raises. A pooled PASS spends its family's unsealing exactly as a single-instrument PASS does.
+    as in ``run_gate_calibration``, and configuration errors (``PROPAGATED_ERRORS``) raise; a
+    report under another Profile, or one that did not take the multi-instrument path
+    (``G0.single_instrument_adapter``), is a harness misconfiguration and raises. A pooled PASS
+    spends its family's unsealing exactly as a single-instrument PASS does.
     """
     runs: dict[str, list[RunRecord]] = {p.content_hash(): [] for p in setup.candidates}
     vaults = {
@@ -1671,7 +1707,8 @@ def run_multi_instrument_calibration(
                     outcome: ValidationReport | Exception = setup.detector.detect_instruments(
                         view, profile
                     )
-                except DetectorConfigurationError:
+                except PROPAGATED_ERRORS as error:  # not evidence (module docs)
+                    error.add_note(f"gate calibration: {arm.name}/{seed} under {profile.ref}")
                     raise
                 except Exception as error:  # the method failed on this book: evidence
                     outcome = error

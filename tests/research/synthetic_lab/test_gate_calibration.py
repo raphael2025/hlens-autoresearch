@@ -15,6 +15,7 @@ from __future__ import annotations
 import json
 import math
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from decimal import Decimal
 from pathlib import Path
 from typing import Any
@@ -38,6 +39,8 @@ from research.synthetic_lab.gate_calibration import (
     write_gate_calibration,
 )
 from research.synthetic_lab.intervals import binomial_rate, clopper_pearson
+from research.validation.gates import ExplicitParamRefused, ProfileFieldMissing, profile_value
+from research.validation.stats import UnsupportedMethod
 from tests import factories
 from tests.research.synthetic_lab import gate_fixtures as fx
 
@@ -451,6 +454,102 @@ def test_an_errored_run_record_must_be_inconclusive_without_gates() -> None:
             gates=(("G1.x", Verdict.INCONCLUSIVE),),
             **fields,  # type: ignore[arg-type]
         )
+
+
+def test_a_runtime_failure_reports_bounded_pass_rates() -> None:
+    report = run_gate_calibration(_raising_setup())
+    arm = planted_arm_id(TOY_EFFECT)
+    for profile in (TOY_LAX, TOY_STRICT):
+        planted = report.candidate(profile).arm(arm)
+        assert planted.pass_rate_bounds == (Decimal(0), Decimal(1))  # 0 passed, SEEDS errored
+    payload: Any = json.loads(json.dumps(report.to_payload()))
+    for candidate in payload["candidates"]:
+        assert candidate["pipeline"][arm]["pass_rate_bounds"] == ["0.000000", "1.000000"]
+        assert "pass_rate_bounds" not in candidate["pipeline"][NOISE_ARM]
+
+
+def test_pass_rate_bounds_round_outward() -> None:
+    from research.synthetic_lab.gate_calibration import ArmEvidence
+
+    alpha = fx.TEST_ONLY_ALPHA
+    arm = ArmEvidence(
+        arm=NOISE_ARM,
+        passed=binomial_rate(3, 7, alpha),
+        inconclusive=binomial_rate(2, 7, alpha),
+        failed=2,
+        sealed_oos_consumed=binomial_rate(3, 7, alpha),
+        detector_errors=2,
+    )
+    # 3/7 = 0.4285714... (down), 5/7 = 0.7142857... (up)
+    assert arm.pass_rate_bounds == (Decimal("0.428571"), Decimal("0.714286"))
+    assert arm.to_payload()["pass_rate_bounds"] == ["0.428571", "0.714286"]
+    assert "pass_rate_bounds" not in replace(arm, detector_errors=0).to_payload()
+
+
+def test_reports_without_detector_errors_have_no_bounds(
+    toy_report: GateCalibrationReport,
+) -> None:
+    assert "pass_rate_bounds" not in json.dumps(toy_report.to_payload())
+
+
+class _NeedsMissingField(_ToyDetector):
+    """TEST ONLY: needs ``significance.negative_control_threshold``, which the TEST ONLY
+    candidates do not carry — as a validator rule reading a missing Profile field would."""
+
+    name = "toy_needs_missing_field"
+
+    def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport:
+        profile_value(profile, "significance.negative_control_threshold")
+        return super().detect(market, profile)
+
+
+def test_a_profile_missing_a_field_the_validator_needs_raises() -> None:
+    setup = GateCalibrationSetup(**{**_toy_setup().__dict__, "detector": _NeedsMissingField()})
+    with pytest.raises(ProfileFieldMissing, match="negative_control_threshold") as caught:
+        run_gate_calibration(setup)
+    assert caught.value.__notes__ == [f"gate calibration: {NOISE_ARM}/0 under {TOY_LAX.ref}"]
+
+
+class _RaisingThis(_ToyDetector):
+    name = "toy_raising_this"
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+
+    def detect(self, market: SyntheticMarket, profile: ValidationProfile) -> ValidationReport:
+        raise self.error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        UnsupportedMethod("multiple_testing_method 'x' is not implemented"),
+        ExplicitParamRefused("the Profile supplies 'x'"),
+        ValueError("trials on different period grids"),
+        TypeError("not a ValidationProfile"),
+        MemoryError(),
+    ],
+    ids=lambda error: type(error).__name__,
+)
+def test_configuration_errors_propagate_unchanged(error: BaseException) -> None:
+    setup = GateCalibrationSetup(**{**_toy_setup().__dict__, "detector": _RaisingThis(error)})
+    with pytest.raises(type(error)) as caught:
+        run_gate_calibration(setup)
+    assert caught.value is error
+
+
+def test_the_pipeline_refusing_an_unimplemented_method_raises() -> None:
+    """The full pipeline, not a toy: a candidate naming an unimplemented null model is refused
+    (``UnsupportedMethod``) instead of turning into INCONCLUSIVE runs."""
+    lax = fx.LAX_TEST_ONLY_PROFILE
+    bogus = lax.model_copy(
+        update={
+            "name": "test_only_unimplemented_null_model",
+            "benchmark": lax.benchmark.model_copy(update={"null_model": "test-only-unknown"}),
+        }
+    )
+    with pytest.raises(UnsupportedMethod, match="test-only-unknown"):
+        run_gate_calibration(fx.setup(1, candidates=(bogus,), planted=(fx.STRONG,)))
 
 
 def test_harness_misconfiguration_still_raises() -> None:

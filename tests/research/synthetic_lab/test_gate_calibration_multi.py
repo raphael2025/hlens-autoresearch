@@ -40,6 +40,8 @@ from research.synthetic_lab.gate_calibration import (
     run_multi_instrument_calibration,
     write_gate_calibration,
 )
+from research.validation.gates import ProfileFieldMissing, profile_value
+from research.validation.stats import UnsupportedMethod
 from tests import factories
 from tests.research.synthetic_lab import gate_fixtures as fx
 from tests.research.synthetic_lab.test_gate_calibration import (
@@ -282,6 +284,46 @@ def test_a_raising_detector_is_inconclusive_evidence() -> None:
         errored = [run for run in candidate.runs if run.arm == "one_planted"]
         assert {run.detector_error for run in errored} == {"ZeroDivisionError: toy book broke"}
         assert candidate.arm("noise").detector_errors == 0
+
+
+def test_a_raising_book_reports_bounded_pass_rates() -> None:
+    report = run_multi_instrument_calibration(_toy_multi(_RaisingOnMixed()))
+    payload: Any = json.loads(json.dumps(report.to_payload()))
+    for candidate in report.candidates:
+        assert candidate.arm("one_planted").pass_rate_bounds == (Decimal(0), Decimal(1))
+    for candidate in payload["candidates"]:
+        assert candidate["pipeline"]["one_planted"]["pass_rate_bounds"] == ["0.000000", "1.000000"]
+        assert "pass_rate_bounds" not in candidate["pipeline"]["noise"]
+
+
+class _BookNeedsMissingField(_ToyBookDetector):
+    """TEST ONLY: needs a Profile field the TEST ONLY candidates do not carry."""
+
+    name = "toy_book_needs_missing_field"
+
+    def detect_instruments(
+        self, markets: Mapping[str, SyntheticMarket], profile: ValidationProfile
+    ) -> ValidationReport:
+        profile_value(profile, "significance.negative_control_threshold")
+        return super().detect_instruments(markets, profile)
+
+
+def test_a_profile_missing_a_field_the_validator_needs_raises() -> None:
+    with pytest.raises(ProfileFieldMissing, match="negative_control_threshold") as caught:
+        run_multi_instrument_calibration(_toy_multi(_BookNeedsMissingField()))
+    assert caught.value.__notes__ == [f"gate calibration: noise/0 under {TOY_LAX.ref}"]
+
+
+def test_the_multi_instrument_pipeline_refusing_an_unimplemented_method_raises() -> None:
+    lax = fx.LAX_TEST_ONLY_PROFILE
+    bogus = lax.model_copy(
+        update={
+            "name": "test_only_unimplemented_null_model",
+            "benchmark": lax.benchmark.model_copy(update={"null_model": "test-only-unknown"}),
+        }
+    )
+    with pytest.raises(UnsupportedMethod, match="test-only-unknown"):
+        run_multi_instrument_calibration(fx.multi_setup(1, candidates=(bogus,)))
 
 
 def test_harness_misconfiguration_still_raises() -> None:

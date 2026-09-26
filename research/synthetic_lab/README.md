@@ -52,6 +52,18 @@ python -m research.synthetic_lab.gate_calibration --setup package.module:factory
 `noise_errors` / `planted_errors`，不算检出，仍在 `trials` 分母内。测试：`tests/research/synthetic_lab/test_gate_calibration.py`、
 `test_calibration.py`。
 
+配置错误不再被吞（审计修复，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：此前任何检测器异常都记为 `detector_error`，
+连验证管线**有意**抛出的配置错误也被吞掉——候选 Profile 缺少验证器需要的字段时，所有运行变成 `INCONCLUSIVE`，噪声假阳性率
+显示为 0/n，是乐观且误导的证据。现按管线自身的分类（`research.validation.g4` 的 Check isolation，`_PROPAGATED`）处理：
+`calibration.PROPAGATED_ERRORS = (ValueError, TypeError, MemoryError)` 原样抛出（附带 arm / seed / 候选的 note），
+覆盖 `calibrate`、单标的、多标的与 G5 的 `detect_sealed`。`ValueError` 包括 `ProfileFieldMissing`、`UnsupportedMethod`、
+`ExplicitParamRefused`、`DetectorConfigurationError` 及其他有意的输入拒绝；`TypeError` 同为调用方契约错误；`MemoryError`
+不可复现，记录下来会使结果依赖机器。其余异常（算术、查找、属性、运行时、断言……）仍是方法在该市场上的失败，照旧记为
+`detector_error`。不确定性如实报告：某组 `detector_errors > 0` 时，组载荷加 `pass_rate_bounds`：
+`[passed/n, (passed+errors)/n]`（Decimal 字符串，下界向下、上界向上取整到 `intervals.PLACES`），即全部出错运行都失败 / 都通过时的
+通过率范围；无错误时不写该键，无错误报告的哈希不变（带错误的 `PRE_G5_RAISING_HASH` 因新增该键重新钉住）。`CalibrationReport`
+相应提供 `false_positive_rate_bounds` / `power_bounds` 属性。
+
 ~~未运行 G5~~ ✅ 可选 G5 模式（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`GateCalibrationSetup.sealed_oos_g5`
 显式开启（默认 `False`；关闭时所有报告与 `report_hash` 与之前逐字节一致，测试钉住了改动前的哈希）。检测器须实现
 `detect_sealed(market, profile, sealed: SealedRelease) -> ValidationReport`（`SealedGateDetector`）；没有它的检测器

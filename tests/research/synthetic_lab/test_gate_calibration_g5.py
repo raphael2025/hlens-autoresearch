@@ -34,6 +34,7 @@ from research.synthetic_lab.gate_calibration import (
     run_gate_calibration,
 )
 from research.validation import build_report, sealed_oos_without_result
+from research.validation.gates import ProfileFieldMissing, profile_value
 from research.validation.sealed_oos import InMemoryUnsealingLedger
 from research.validation.splits import LabeledSpan
 from tests import factories
@@ -64,8 +65,12 @@ SEEDS = 4
 #: The previous values still hold when the same test builds every object at 2.0.0
 #: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
 #: 2.0.0 values (evidence, git history): deaba504…, 358eb551…, dc7816c9…
+#: ``PRE_G5_RAISING_HASH`` re-pinned (audit fix, 2026-09-26): an arm with detector errors now
+#: also reports ``pass_rate_bounds``; the raising report is the only pinned one with errors.
+#: Removing that key from its payload reproduces the previous value e31fc17f… exactly (verified);
+#: the toy and pipeline hashes (no detector errors) are unchanged.
 PRE_G5_TOY_HASH = "c5147ea3fa460274b30f0c67a17df62788de1f213e4ba0efd108806823543c1e"
-PRE_G5_RAISING_HASH = "e31fc17fdcde6b30172f398bb762bbf951ccbc6fc26e90fadd74f680154fa31d"
+PRE_G5_RAISING_HASH = "03fcfad69f909b5c4629ae57155886ede74e0261901ae66956967d7f5d2d705e"
 PRE_G5_PIPELINE_ONE_SEED_HASH = "4cc8dc822c4e79a7a50114982fa40eb2389b4713f61a7328880a9981b68de6ff"
 
 
@@ -183,7 +188,9 @@ class _RaisingBeforeRelease(_ToySealedDetector):
     def detect_sealed(
         self, market: SyntheticMarket, profile: ValidationProfile, sealed: SealedRelease
     ) -> ValidationReport:
-        raise ValueError("toy G5 gave up")
+        # A runtime failure (not a ValueError: that is a configuration refusal and propagates,
+        # ``calibration.PROPAGATED_ERRORS``).
+        raise LookupError("toy G5 gave up")
 
 
 class _EarlyExit(_ToySealedDetector):
@@ -379,7 +386,7 @@ def test_the_g5_report_is_deterministic_and_holds_no_recommendation() -> None:
     ("detector", "released", "error"),
     [
         (_RaisingAfterRelease(), True, "RuntimeError: toy G5 broke on the sealed window"),
-        (_RaisingBeforeRelease(), False, "ValueError: toy G5 gave up"),
+        (_RaisingBeforeRelease(), False, "LookupError: toy G5 gave up"),
     ],
 )
 def test_a_raising_g5_is_inconclusive_consumed_without_result(
@@ -428,6 +435,25 @@ def test_misconfigured_g5_detectors_raise() -> None:
         run_gate_calibration(_toy_g5_setup(_PassWithoutEvaluation()))
     with pytest.raises(DetectorConfigurationError, match="G5 gates"):
         run_gate_calibration(_toy_g5_setup(_NoG5Gates()))
+
+
+class _MissingFieldInG5(_ToySealedDetector):
+    """TEST ONLY: a G5 that needs a Profile field the TEST ONLY Profiles do not carry."""
+
+    name = "toy_g5_missing_field"
+
+    def detect_sealed(
+        self, market: SyntheticMarket, profile: ValidationProfile, sealed: SealedRelease
+    ) -> ValidationReport:
+        profile_value(profile, "significance.negative_control_threshold")
+        raise AssertionError("unreachable")  # pragma: no cover
+
+
+def test_a_g5_configuration_error_raises_instead_of_being_recorded() -> None:
+    with pytest.raises(ProfileFieldMissing, match="negative_control_threshold") as caught:
+        run_gate_calibration(_toy_g5_setup(_MissingFieldInG5()))
+    assert any(note.startswith("gate calibration G5: gate_calibration:")
+               for note in caught.value.__notes__)  # fmt: skip
 
 
 def test_a_g5_record_can_never_be_a_consumed_pass() -> None:
