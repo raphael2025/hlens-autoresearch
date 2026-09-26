@@ -11,6 +11,10 @@
   share snapshots, policies (the ADR-0032 choice), universe, window, instruments and lineage, with
   the price view at the end of the feature interval; returns an immutable ``ManifestPair``.
   ``pair_hash_of`` recomputes a pair hash (the research validator's ``G0.manifest_binding``).
+- ``verified``: ``VerifiedManifestCache`` — an opt-in, process-local cache of successful verified
+  manifest loads, keyed by the manifest hash, the builder (verifier + rule), its catalog and the
+  heads of every table the verifier reads unpinned; every entry point above takes it as
+  ``manifest_cache`` (default ``None``: every load re-verifies, unchanged).
 """
 
 from infrastructure.bars.dataset import (
@@ -27,16 +31,28 @@ from infrastructure.bars.pair import (
     pair_hash_of,
     pair_manifests,
 )
+from infrastructure.bars.verified import (
+    HEAD_READ_TABLES,
+    ManifestCacheStats,
+    VerifiedManifestCache,
+    load_verified_manifest,
+    verification_head_tables,
+)
 
 __all__ = [
+    "HEAD_READ_TABLES",
     "PAIR_RULE",
     "PAIR_RULE_HASH",
     "DatasetBarsError",
     "DatasetPriceBars",
+    "ManifestCacheStats",
     "ManifestPair",
     "ManifestPairError",
+    "VerifiedManifestCache",
     "backtest_bars_from_dataset",
+    "load_verified_manifest",
     "outcome_request_from_dataset",
     "pair_hash_of",
     "pair_manifests",
+    "verification_head_tables",
 ]

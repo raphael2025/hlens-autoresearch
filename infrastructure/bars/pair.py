@@ -51,6 +51,10 @@ change of rule is a change of pair.
   makes the pair fail closed (refused), even where a finer rule might accept it;
 - a ``ManifestPair`` is a record, not a proof: a consumer that must know the pair holds calls
   ``pair_manifests`` again with the two hashes.
+
+``manifest_cache`` (default ``None``: both loads re-verify) is an explicit ``VerifiedManifestCache``
+for step 1 (``infrastructure.bars.verified``: a proof is reused only by the same builder while
+every snapshot it read is unchanged); steps 2 - 9 always run.
 """
 
 from __future__ import annotations
@@ -65,8 +69,8 @@ from core.contracts.revision import PointInTimeSpec
 from core.contracts.universe import ResearchDatasetManifest, UniverseExclusion, UniverseMember
 from core.domain.base import canonical_json, content_hash
 from infrastructure.bars.dataset import DatasetBarsError
+from infrastructure.bars.verified import VerifiedManifestCache, load_verified_manifest
 from infrastructure.dataset.builder import DatasetBuilder
-from infrastructure.feature.dataset import load_manifest
 from infrastructure.pit.assumption import assumption_bound
 
 __all__ = [
@@ -118,11 +122,15 @@ class ManifestPair:
 
 
 def pair_manifests(
-    builder: DatasetBuilder, feature_manifest_hash: str, price_manifest_hash: str
+    builder: DatasetBuilder,
+    feature_manifest_hash: str,
+    price_manifest_hash: str,
+    *,
+    manifest_cache: VerifiedManifestCache | None = None,
 ) -> ManifestPair:
     """Load and verify both manifests, prove they describe the same market data, or refuse."""
-    feature = load_manifest(builder, feature_manifest_hash)
-    price = load_manifest(builder, price_manifest_hash)
+    feature = load_verified_manifest(builder, feature_manifest_hash, manifest_cache)
+    price = load_verified_manifest(builder, price_manifest_hash, manifest_cache)
     _require_pair(feature, price)
     return ManifestPair(
         feature_manifest_hash=feature.content_hash(),

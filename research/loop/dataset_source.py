@@ -38,6 +38,12 @@ loop's accumulated window does, and re-evaluations see the grown data.
 signals, so ``G0.manifest_binding`` runs on every report; the reproducibility tuple names both
 manifests' ``DatasetRef``.
 
+``DatasetCatalog.manifest_cache`` (default ``None``: every load re-verifies) is an optional,
+explicit ``infrastructure.bars.VerifiedManifestCache`` for the loads of steps 1, 3, 4 and 6: a
+proof is reused only by the same builder while every snapshot it read is unchanged, so the rounds'
+data, summaries and record hashes are identical with or without it. The feature request's own load
+(``feature_request_from_dataset``, Phase 1) always re-verifies.
+
 **Not wired** (fail closed): G5 on dataset rounds would need signals over the released sealed bars,
 hence a sealed-window feature manifest; ``DatasetLoopConfig`` refuses an ``OosUnsealBudget`` and
 ``signals_with`` refuses, so the sealed window simply stays sealed.
@@ -65,12 +71,14 @@ from infrastructure.bars import (
     PAIR_RULE_HASH,
     DatasetPriceBars,
     ManifestPair,
+    VerifiedManifestCache,
     backtest_bars_from_dataset,
+    load_verified_manifest,
     pair_manifests,
 )
 from infrastructure.canonical import rules
 from infrastructure.dataset.builder import DatasetBuilder
-from infrastructure.feature.dataset import feature_request_from_dataset, load_manifest
+from infrastructure.feature.dataset import feature_request_from_dataset
 from infrastructure.feature.observations import bar_observations
 from infrastructure.feature.runner import run_feature
 from infrastructure.pit.selector import PitSelector
@@ -132,11 +140,16 @@ class DatasetRound:
 
 @dataclass(frozen=True)
 class DatasetCatalog:
-    """The live catalog handles the dataset ingest reads through (not configuration)."""
+    """The live catalog handles the dataset ingest reads through (not configuration).
+
+    ``manifest_cache``: an optional ``VerifiedManifestCache`` for this builder's verified loads
+    (module docs); ``None`` re-verifies every load.
+    """
 
     adapter: RevisionCatalog
     storage: StorageAdapter
     builder: DatasetBuilder
+    manifest_cache: VerifiedManifestCache | None = None
 
 
 def _iso(moment: datetime | None) -> str | None:
@@ -322,7 +335,8 @@ class DatasetIngestStage:
 
         # The price manifest first (verified): a round past its cutoff or outside the research
         # window is refused before anything else is read (module docs, steps 1 - 3).
-        price = load_manifest(catalog.builder, declared.price_manifest_hash)
+        cache = catalog.manifest_cache
+        price = load_verified_manifest(catalog.builder, declared.price_manifest_hash, cache)
         view = price.point_in_time.simulation_time
         if view is None:
             raise _refuse(ctx, "the price manifest is not a point simulation")
@@ -341,9 +355,12 @@ class DatasetIngestStage:
             )
         # 3. the verified pair, then the feature manifest (verified again) for its PIT spec
         pair = pair_manifests(
-            catalog.builder, declared.feature_manifest_hash, declared.price_manifest_hash
+            catalog.builder,
+            declared.feature_manifest_hash,
+            declared.price_manifest_hash,
+            manifest_cache=cache,
         )
-        feature = load_manifest(catalog.builder, pair.feature_manifest_hash)
+        feature = load_verified_manifest(catalog.builder, pair.feature_manifest_hash, cache)
         if (feature.dataset.time_range_start, feature.dataset.time_range_end) != (
             data.time_range_start,
             data.time_range_end,
@@ -356,6 +373,7 @@ class DatasetIngestStage:
             builder=catalog.builder,
             manifest_content_hash=pair.price_manifest_hash,
             symbols=(symbol,),
+            manifest_cache=cache,
         )
         late = [bar for bar in prices.bars if bar.available_time > ctx.as_of]
         outside = [bar for bar in prices.bars if bar.interval_end > boundary]
@@ -383,6 +401,7 @@ class DatasetIngestStage:
                 builder=catalog.builder,
                 manifest_content_hash=declared.sealed_manifest_hash,
                 symbols=(symbol,),
+                manifest_cache=cache,
             )
             if held.price_cutoff > ctx.as_of:
                 raise _refuse(ctx, "the sealed manifest's view is after the round's cutoff")

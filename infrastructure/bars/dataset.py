@@ -36,6 +36,11 @@ only a ``DatasetBuilder`` and a manifest content hash, and every bar is proven b
 ``OutcomeRequest`` carries the manifest's content hash and the cutoff; ``BacktestRequest`` has no
 slot for either (its schema is frozen), so ``backtest_bars_from_dataset`` returns them next to the
 bars in ``DatasetPriceBars`` for the caller's reproducibility record.
+
+``manifest_cache`` (default ``None``: every call re-verifies, as above) is an explicit
+``VerifiedManifestCache``: step 1 then reuses a proof of the same manifest by the same builder only
+while every snapshot the proof read is unchanged (``infrastructure.bars.verified``). Steps 2 - 6
+always run.
 """
 
 from __future__ import annotations
@@ -55,11 +60,12 @@ from core.contracts.revision import PointInTimeStatus
 from core.contracts.storage import StorageAdapter
 from core.contracts.strategy import PriceBar
 from core.contracts.universe import ResearchDatasetManifest, SelectedRevisionLineage
+from infrastructure.bars.verified import VerifiedManifestCache, load_verified_manifest
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.dataset.builder import DatasetBuilder, selection_id_of
 from infrastructure.dataset.selection import SELECTION_SCHEMA
-from infrastructure.feature.dataset import DatasetBindingError, load_manifest
+from infrastructure.feature.dataset import DatasetBindingError
 from infrastructure.feature.observations import bar_observations
 from infrastructure.pit.selector import PitSelector
 from infrastructure.revision.store import RevisionCatalog
@@ -117,11 +123,20 @@ def outcome_request_from_dataset(
     price_cutoff: datetime | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
+    manifest_cache: VerifiedManifestCache | None = None,
 ) -> OutcomeRequest:
     """An ``OutcomeRequest`` for ``symbol`` (Canonical symbol, e.g. ``BTC-USDT``) whose bars are
     the manifest's proven dataset bars in ``[start, end)`` (default: the dataset window)."""
     manifest, cutoff, proven = _proven_bars(
-        adapter, storage, builder, manifest_content_hash, (symbol,), price_cutoff, start, end
+        adapter,
+        storage,
+        builder,
+        manifest_content_hash,
+        (symbol,),
+        price_cutoff,
+        start,
+        end,
+        manifest_cache,
     )
     bars = tuple(
         OutcomePriceBar(
@@ -154,6 +169,7 @@ def backtest_bars_from_dataset(
     price_cutoff: datetime | None = None,
     start: datetime | None = None,
     end: datetime | None = None,
+    manifest_cache: VerifiedManifestCache | None = None,
 ) -> DatasetPriceBars:
     """``PriceBar``s (instrument = Canonical symbol) of ``symbols`` (default: every symbol with
     dataset rows) proven against the manifest, in ``[start, end)``."""
@@ -166,6 +182,7 @@ def backtest_bars_from_dataset(
         price_cutoff,
         start,
         end,
+        manifest_cache,
     )
     bars = tuple(
         PriceBar(
@@ -198,8 +215,9 @@ def _proven_bars(
     price_cutoff: datetime | None,
     start: datetime | None,
     end: datetime | None,
+    manifest_cache: VerifiedManifestCache | None,
 ) -> tuple[ResearchDatasetManifest, datetime, dict[str, tuple[_ProvenBar, ...]]]:
-    manifest = load_manifest(builder, manifest_content_hash)  # step 1
+    manifest = load_verified_manifest(builder, manifest_content_hash, manifest_cache)  # step 1
     spec = manifest.point_in_time
     if spec.simulation_time is None:  # step 2
         raise DatasetBarsError(

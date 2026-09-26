@@ -23,6 +23,7 @@ from infrastructure.bars import (
     PAIR_RULE_HASH,
     ManifestPair,
     ManifestPairError,
+    VerifiedManifestCache,
     pair_manifests,
 )
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
@@ -196,9 +197,17 @@ def test_a_manifest_that_does_not_load_is_refused(w: World, attack: str, side: s
 
 
 def test_there_is_no_unverified_entry(w: World) -> None:
-    """No parameter takes a manifest object; a non-builder verifier is refused."""
-    names = set(inspect.signature(pair_manifests).parameters)
-    assert names == {"builder", "feature_manifest_hash", "price_manifest_hash"}
+    """No parameter takes a manifest object; a non-builder verifier is refused (with or without
+    the opt-in verified-manifest cache, which holds only proofs the builder itself made)."""
+    parameters = inspect.signature(pair_manifests).parameters
+    assert set(parameters) == {
+        "builder",
+        "feature_manifest_hash",
+        "price_manifest_hash",
+        "manifest_cache",
+    }
+    cache = parameters["manifest_cache"]
+    assert cache.kind is inspect.Parameter.KEYWORD_ONLY and cache.default is None
     _ingest(w)
     feature, price = _feature(w), _price(w)
 
@@ -216,4 +225,11 @@ def test_there_is_no_unverified_entry(w: World) -> None:
             _Trusting(),  # type: ignore[arg-type]
             feature.manifest.content_hash(),
             price.manifest.content_hash(),
+        )
+    with pytest.raises(DatasetBindingError, match="DatasetBuilder"):
+        pair_manifests(
+            _Trusting(),  # type: ignore[arg-type]
+            feature.manifest.content_hash(),
+            price.manifest.content_hash(),
+            manifest_cache=VerifiedManifestCache(),
         )

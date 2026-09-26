@@ -99,7 +99,7 @@
 - **P13 模拟执行**：仅模拟；无实盘场所、无密钥、无下单端点（结构上拒绝）。
 - **数据集接线**：只支持点时刻模拟数据集（区间数据集被拒绝）；~~尚无 PostgreSQL 变体测试~~（✅ 已补：
   `tests/infrastructure/bars/test_dataset_bars_postgres.py` / `test_manifest_pair_postgres.py`，与 SQLite 侧同一套测试函数对象、
-  同一套断言在真实 PostgreSQL 测试库上逐一通过，见 ADR-0037 实施说明）；与特征路径的证明逻辑部分重复；无缓存。
+  同一套断言在真实 PostgreSQL 测试库上逐一通过，见 ADR-0037 实施说明）；与特征路径的证明逻辑部分重复；~~无缓存~~ ✅ 已补（2026-09-26，可选）：`infrastructure/bars/verified.py` 的 `VerifiedManifestCache`（调用方显式传入 `manifest_cache=` / `DatasetCatalog.manifest_cache`，默认 `None` 行为不变），只复用成功的证明，键为 manifest 哈希 + builder 对象（验证者与规则哈希）+ 其 catalog 对象 + 验证器按表头读取的每张表的表头 snapshot，任一变化即重新验证，失败从不缓存；记录型 catalog 测试守护表头读取清单；循环冒烟 238.9 s → 200.6 s（ADR-0037 实施说明 verified-manifest cache）。仍未做：`feature_request_from_dataset`（Phase 1）的加载不经缓存；builder 的 catalog 经私有属性取得、表头清单在 Phase 1 之外镜像——待 Codex 复核是否在 `DatasetBuilder` 上提供公开接口。
 - **研究控制台**：前端单包约 1.19 MB；矩阵与路由纸面运行只有 API 与计数，没有专门页面。
 
 ## D. 调试阶段的顺序建议

@@ -65,6 +65,7 @@ from core.domain.base import Kind, Ref
 from core.domain.research import EvidenceLevel, KnowledgeItem, Verdict
 from core.domain.selection import ProfileSelection, ProfileSelectionKey
 from core.domain.specs import OutcomeSpec
+from infrastructure.bars import VerifiedManifestCache
 from infrastructure.dataset.builder import DatasetBuilt
 from infrastructure.event_bus import InMemoryEventBus
 from infrastructure.pit.assumption import ASSUMPTION_BINDING
@@ -316,8 +317,10 @@ def _build(w: ds.World) -> Manifests:
     return Manifests(pairs, sealed)
 
 
-def _catalog(w: ds.World) -> DatasetCatalog:
-    return DatasetCatalog(adapter=w.h.adapter, storage=w.h.storage, builder=w.builder())
+def _catalog(w: ds.World, cache: VerifiedManifestCache | None = None) -> DatasetCatalog:
+    return DatasetCatalog(
+        adapter=w.h.adapter, storage=w.h.storage, builder=w.builder(), manifest_cache=cache
+    )
 
 
 def _knowledge(lookback: int) -> KnowledgeItem:
@@ -378,9 +381,14 @@ def _config(rounds: tuple[DatasetRound, ...]) -> DatasetLoopConfig:
     )
 
 
-def _open(w: ds.World, config: DatasetLoopConfig, state_dir: Path) -> DurableLoop:
+def _open(
+    w: ds.World,
+    config: DatasetLoopConfig,
+    state_dir: Path,
+    cache: VerifiedManifestCache | None = None,
+) -> DurableLoop:
     """Durable, on the composition's own ``state_dir / "bus"`` (cross-checked with the audit)."""
-    return open_dataset_loop(config, state_dir=state_dir, catalog=_catalog(w))
+    return open_dataset_loop(config, state_dir=state_dir, catalog=_catalog(w, cache))
 
 
 @pytest.fixture
@@ -517,10 +525,16 @@ def test_two_unattended_rounds_run_on_verified_pit_datasets(pg: ds.World, tmp_pa
         assert point.manifest.point_in_time.simulation_time is not None
     config = _config(manifests.rounds)
 
-    # ---- first run: two unattended rounds, durable ----
+    # ---- first run: two unattended rounds, durable, with the opt-in verified-manifest cache ----
     state_dir = tmp_path / "state-1"
-    durable = _open(pg, config, state_dir)
+    cache = VerifiedManifestCache()
+    durable = _open(pg, config, state_dir, cache)
     records = durable.loop.run_unattended(2)
+    # each round loads its price manifest, the pair (feature + price), the feature manifest, the
+    # price manifest's bars and (round 1) the sealed manifest: 5 distinct manifests are proven once
+    # (nothing is written to the catalog in between, so every miss is stored), 6 loads reuse them
+    stats = cache.stats
+    assert (stats.hits, stats.misses, stats.stored, stats.uncacheable) == (6, 5, 5, 0)
     _check_audit(records, state_dir)
     _check_ingest(records, manifests)
     _check_no_future_and_no_sealed(records, durable.memory)
@@ -537,7 +551,8 @@ def test_two_unattended_rounds_run_on_verified_pit_datasets(pg: ds.World, tmp_pa
 
     # ---- rerun in a fresh process on the same catalog, which reads the persisted manifests by
     # their declared hashes only (nothing is rebuilt), with the durable state reopened between
-    # the rounds: every record hash is identical ----
+    # the rounds, and without the cache (every load re-verifies): every record hash is identical
+    # ----
     pg.h.reopen()
     rerun_dir = tmp_path / "state-2"
     with _open(pg, config, rerun_dir) as opened:

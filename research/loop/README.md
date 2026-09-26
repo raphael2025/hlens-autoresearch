@@ -108,6 +108,8 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 - **每轮声明的 manifest**：`DatasetLoopConfig.rounds[i]` = `DatasetRound(feature_manifest_hash, price_manifest_hash, sealed_manifest_hash=None)`。
   哈希只是声明：全部经 `DatasetBuilder` 自己的验证型 `ManifestStore` 加载（`load_manifest` / `pair_manifests` /
   `backtest_bars_from_dataset` / `feature_request_from_dataset`），从不按信任接受。循环不构建数据集（数据平面预先构建）。
+  可选 `DatasetCatalog(..., manifest_cache=VerifiedManifestCache())`（`infrastructure/bars/verified.py`）：同一 builder、所读 snapshot 均未变时复用
+  成功的验证（价格 / 配对 / 特征 / bar / 封存各次加载；`feature_request_from_dataset` 仍每次验证）；默认 `None`，记录哈希有无缓存都相同。
 - **截止**：价格 manifest 的视图（= 特征区间终点）晚于本轮 `as_of` → 摄取拒绝；每根 bar、每条特征观测再次核对。
 - **研究窗口**：pair 的数据窗口必须在 Profile 研究窗口之内，研究 manifest 从不含封存窗口的行。可选封存 manifest 的 bar 按固定日历扣留在
   `SealedBars`，永不进入研究数据；数据集轮次上的 G5 未接线（`OosUnsealBudget` 被拒绝，封存窗口保持封存）。
@@ -116,7 +118,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 - **持久**：不保存摄取记忆（每轮重读声明的 manifest；检查点 `markets` / `research_data` 为空）；指纹绑定标的与每轮全部声明哈希；
   重新打开时每条已记录摄取须读了该轮声明的 manifest。
 - 冒烟测试：`tests/infrastructure/e2e/test_research_loop_real_data.py`（`postgres` 标记，测试 catalog；Binance 格式 kline 经真实入库路径，
-  两轮、跨封存边界、重跑哈希一致；约 4 分钟）。
+  两轮、跨封存边界、重跑哈希一致；首轮带验证缓存、重跑不带，记录哈希一致；约 3.5 分钟）。
 
 未完成（调试批次）：NATS、研究仪表盘；数据集组合的 G5（需要封存窗口的特征 manifest）、每轮约 6 – 7 次验证型 manifest 加载（无缓存）；滚动循环与固定日历 Profile 的配合（研究窗外的数据不被使用，
 换窗口需要新 Profile；累计研究数据在覆盖整个研究窗口之前，G4 walk-forward 仍为 INCONCLUSIVE——这是正确行为）；

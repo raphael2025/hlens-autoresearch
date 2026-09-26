@@ -151,3 +151,42 @@ pair.feature_manifest_hash`，报告视图记录 `pair_hash`。该接线属后�
 （含参数化的伪造 / 未持久化 manifest 变体）在真实 PostgreSQL 测试库上逐一通过，与 SQLite 侧结果一致；未发现生产代码缺陷，未
 改动 `infrastructure/bars/` 下任何文件。新增 `tests/infrastructure/bars/conftest.py` 注册 `postgres` 标记（与其余目录的写法一致）。
 没有新增契约或 ADR。
+
+## Implementation note (verified-manifest cache, 2026-09-26)
+
+调试阶段性能：每次验证型 manifest 加载（`load_manifest` → builder 自身 `ManifestStore` → `DatasetBuilder.verify_manifest`，全量重推导）
+约 5 s，数据集循环每轮对同一份 manifest 重复验证（价格、配对两侧、特征、bar、封存）。`infrastructure/bars/verified.py` 新增
+**可选**、进程内的 `VerifiedManifestCache`，由调用方显式传入：`backtest_bars_from_dataset` / `outcome_request_from_dataset` /
+`pair_manifests` 的 `manifest_cache=`，`research/loop` 的 `DatasetCatalog.manifest_cache`。默认 `None`：每次加载都重新验证，行为逐字节不变
+（`load_verified_manifest(builder, hash, None)` 就是 `load_manifest`）。不改 Phase 1 模块（`infrastructure/dataset/*`、
+`infrastructure/feature/dataset.py`），`PAIR_RULE` / `PAIR_RULE_HASH` 不变。
+
+**证明依赖什么、如何固定**：
+
+1. manifest 内容哈希——它绑定 dataset 自身 snapshot 与 `point_in_time.snapshot_bindings`（验证器经 `PinnedCatalogView` 在这些
+   snapshot 上读取；显式的历史 snapshot id 不可变）；
+2. 验证者——同一个 `DatasetBuilder` 对象（其 catalog、存储、源地址、数据集表在构造时固定）、同一个类、同一个 `DATASET_RULE_HASH`；
+3. catalog——builder 自身的 `RevisionCatalog` 对象（按身份；缓存持有引用，身份不会被复用）；另一个 catalog 或重开的 adapter 均未命中；
+4. 验证器**按表头**读取的表（`verification_head_tables`）：manifest 表（存储读行、replay 检查扫 manifest）、该 manifest 的数据集表
+   （replay 检查的批次历史）、ADR-0027 §13 证据表与 ADR-0031 证据缺口表（`_check_unbound` 的"有快照即须绑定"）。Iceberg snapshot id
+   对应唯一不可变的表状态，表头相同 = 读取相同；
+5. Raw 对象——`StorageAdapter` 契约无覆盖 / 删除，`open_read` 复核 SHA-256。
+
+**存入**：未命中时在完整验证前后各读一次上述表头，只有两次相同（验证器恰好看到它们）、manifest 哈希等于所请求哈希、其数据集表与读表头时
+相同，才存入。**命中**：同一 builder 与 catalog 对象、同一规则、记录的全部表头未变；否则完整验证（成功才替换旧条目）。失败（未知哈希、
+伪造行、验证不通过、非 builder 验证者）从不存入；在已缓存哈希下伪造的行会移动 manifest 表头 → 未命中 → 存储照旧拒绝。
+
+**测试**：`tests/infrastructure/bars/test_manifest_cache.py`（及导入同一批函数的 `test_manifest_cache_postgres.py`；以包装真实
+`verify_manifest` 计数）：命中返回同一对象且不再验证（bar / outcome / 配对入口同样）；四张按表头读取的表各自出现新 snapshot 即未命中、
+重新证明后再命中；另一份 manifest（不同的固定 snapshot）是独立条目；RT-5 replay 路径在证据表首次出现快照后重新证明；伪造 / 未持久化
+manifest 与失败的验证从不存入且照旧拒绝；两个 catalog 共用一个缓存互不命中（对方 catalog 无该行 → 拒绝），另一个 builder 或重开的
+adapter 未命中；`test_the_verifier_reads_no_other_table_at_its_head` / `test_the_replay_path_reads_no_other_table_at_its_head` 以记录型
+catalog 运行真实验证器，若验证器新增任何按表头的读取即失败（缓存键必须随之扩充）。变异检查：去掉表头比较或从清单删去证据表，上述测试失败。
+`tests/infrastructure/e2e/test_research_loop_real_data.py` 首轮带缓存（6 次命中、5 次未命中且全部存入），重跑不带缓存，两者记录哈希逐一相同；
+该测试 238.9 s → 200.6 s（同机先后各测一次；`feature_request_from_dataset` 属 Phase 1，其加载仍每次验证，重跑段也不带缓存）。
+
+**限制**：进程内、不设上限（每个 builder × manifest 一条；丢弃缓存即释放）；builder 的 catalog 经其私有属性 `_adapter` 取得（取不到则
+不缓存，计为 `uncacheable`）；按表头读取的表清单在 Phase 1 之外镜像 `verify_manifest`（由上述记录型测试守护）；验证过程**当中**某表头
+被移走又移回同一 snapshot（回滚，项目内没有写入方这样做）不会被发现。**后续（请 Codex 复核）**：在 `DatasetBuilder` 上提供公开的
+catalog 访问与"验证按表头读取的表"接口（或由 `ManifestStore` 自带同等缓存），让清单归验证器自己所有；`feature_request_from_dataset`
+接受同一缓存。没有新增契约或 ADR。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
