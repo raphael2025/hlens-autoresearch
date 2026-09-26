@@ -287,3 +287,22 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值无变化，本说明不�
 CONTRACT_VIOLATION 入册；同时给两个字段被拒绝；`robustness_input` 对不符声明的拒绝；显式参数与模型冲击系数冲突时
 `G4.capacity.impact_estimated` = INCONCLUSIVE 且两个值都记录；只给模型系数时容量检查按其估算）。状态仍为
 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值无变化，本说明不涉及任何验证规则或阈值。
+
+## Implementation note (review fixes 3, 2026-09-26)
+
+不新增 ADR，不改契约、`core/domain`、Profile 或阈值。调试复核发现（低 – 中）：「execution model in validation」第 3 点的冲击系数比较
+经 `float(Decimal)` 进行（`research/strategies/validation.py` 把模型的 `Decimal` 转成 `float`，`research/validation/g4.py` 的
+`_resolved_impact` 再用 `!=` 比较），可能误报或漏报不一致：显式参数若是 `Decimal("0.1")` 而模型值已转成 `float` 0.1，二者按精确值比较
+不相等 → 误报 `impact_coefficient_mismatch`；模型值与参数只在 `float` 精度之外不同（如 `Decimal("0.1000000000000000000001")`）时，
+转成 `float` 后相等 → 漏报。
+
+1. **精确比较**：验证器把执行模型自己的 `Decimal` 原样交给 `RobustnessInput.execution_impact_coefficient`（类型放宽为
+   `Decimal | float | None`，默认仍为 `None`，既有调用方不受影响）；`_resolved_impact` 把两边都转成精确的 `Decimal` 再比较——`Decimal`
+   与 `int` 按原值，显式 `float` 参数按其精确文本（`repr`，最短可往返文本，`0.1` → `Decimal("0.1")`），`bool` 或非数值拒绝
+   （`TypeError`）。因此 `0.1` 与 `Decimal("0.1")` / `Decimal("0.10")` 一致，真正的差异（包括只在 `float` 精度之外的差异）照旧判
+   `G4.capacity.impact_estimated` = `INCONCLUSIVE`（`impact_coefficient_mismatch`）。只有交给 `capacity_check` 的解析值（一个 `float`
+   估计）与冲突报告中的两个值才转成 `float`，报告字段不变。
+2. **测试**：`tests/research/validation/test_impact_exact_comparison.py`（相等的 `float` / `Decimal` / `int` 组合不判不一致且按模型值估算；
+   真实差异与 `float` 精度之外的差异判 INCONCLUSIVE；非数值拒绝）；`tests/research/strategies/test_backtest_validation.py`
+   `test_an_equal_float_param_and_decimal_model_coefficient_agree`（显式 `0.1` 与模型 `Decimal("0.1")` / `Decimal("0.10")` 经完整验证器
+   不产生冲突，输入中保留模型的 `Decimal`）。原有冲突测试（`0.5` 对 `0.1`）不变。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。

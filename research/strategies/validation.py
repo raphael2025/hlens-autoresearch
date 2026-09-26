@@ -106,7 +106,9 @@ candidate was backtested with:
   (``research.validation.g4._resolved_impact``): the model's value takes priority when given, and
   an explicit ``RobustnessParams.impact_coefficient`` that disagrees with it is never silently
   overridden — ``G4.capacity.impact_estimated`` becomes ``INCONCLUSIVE`` (metric
-  ``impact_coefficient_mismatch``) instead, reporting both values.
+  ``impact_coefficient_mismatch``) instead, reporting both values. The model's coefficient is
+  handed over as its own ``Decimal`` and compared exactly (review fixes 3, 2026-09-26): an
+  explicit ``0.1`` agrees with ``Decimal("0.1")``; no ``float`` round trip decides a mismatch.
 
 Neither field is set by any pre-existing caller (``bar_volume`` remains a separate, unrelated
 field used for the causal state / capacity plumbing): the default path — plain ``BarBacktester()``,
@@ -688,13 +690,15 @@ class PipelineBacktestValidator:
             execution_impact_coefficient=self._execution_impact_coefficient(),
         )
 
-    def _execution_impact_coefficient(self) -> float | None:
+    def _execution_impact_coefficient(self) -> Decimal | None:
         """The declared execution model's impact coefficient, if any (implementation note,
-        2026-09-26): ``None`` unless the setup declares ``backtester`` / ``execution`` with one."""
+        2026-09-26): ``None`` unless the setup declares ``backtester`` / ``execution`` with one.
+        Passed as the model's own ``Decimal`` so G4 compares it exactly with an explicit
+        ``RobustnessParams.impact_coefficient`` (review fixes 3; ``research.validation.g4``)."""
         execution = self._declared_execution()
         if execution is None or execution.impact_coefficient is None:
             return None
-        return float(execution.impact_coefficient)
+        return Decimal(execution.impact_coefficient)
 
     def _state_trades(self, rerun: TrialRun, base: PeriodReturns) -> tuple[StateTrade, ...] | None:
         state_of = self._setup.state_of

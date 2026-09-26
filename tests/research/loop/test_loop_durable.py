@@ -1021,3 +1021,82 @@ def test_check_round_bus_is_exact_on_an_empty_audit() -> None:
     bus.publish(BusMessage.build(ROUND_TOPIC, "synthetic_loop:0", {"record_hash": "a" * 64}))
     with pytest.raises(LoopStateInconsistent, match="ahead"):
         check_round_bus(bus, "synthetic_loop", ())
+
+
+# ------------------ injected buses (ADR-0049 implementation note, review fixes 3, 2026-09-26)
+
+
+def _open_injected(state_dir: Path, bus: Any, *, consumed: int = ROUNDS) -> DurableLoop:
+    """Durable mode with a caller's bus: cross-checked like the automatic one, left open."""
+    opened: DurableLoop = open_synthetic_loop(
+        _config(), state_dir=state_dir, provider=RandomWalkMarket(), bus=bus, llm=_llm(consumed)
+    )
+    assert opened.owned_bus is None and opened.bus is bus
+    return opened
+
+
+def _external_bus(auto_bus: tuple[Path, Outcome], tmp_path: Path) -> tuple[Path, Path]:
+    """A copy of the state directory and, outside it, a copy of its bus (the caller's bus)."""
+    state_dir = _copy(auto_bus[0], tmp_path)
+    external = tmp_path / "external_bus"
+    shutil.copytree(state_dir / BUS_DIR, external)
+    return state_dir, external
+
+
+def test_an_injected_file_bus_with_a_foreign_round_record_is_refused(
+    auto_bus: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    state_dir, external = _external_bus(auto_bus, tmp_path)
+    with FileEventBus(external) as bus:
+        real = bus.poll("auditor", ROUND_TOPIC, 100)
+    shutil.rmtree(external)
+    round_log = external / "topics" / f"{ROUND_TOPIC}.jsonl"
+    with FileEventBus(external) as bus:  # a valid bus whose round 1 is another record
+        bus.publish(real[0])
+        forged = real[1].model_dump(mode="json")["payload"]
+        bus.publish(BusMessage.build(ROUND_TOPIC, real[1].key, {**forged, "record_hash": "f" * 64}))
+        bus.publish(real[2])
+        before = round_log.read_bytes()
+        with pytest.raises(LoopStateInconsistent, match="foreign or reordered"):
+            _open_injected(state_dir, bus)
+        assert len(bus.poll("auditor", ROUND_TOPIC, 100)) == 3  # the caller's bus stays open
+    assert round_log.read_bytes() == before  # nothing published on a refusal
+
+
+def test_an_injected_file_bus_one_round_behind_is_caught_up_and_two_behind_refused(
+    auto_bus: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    outcome = auto_bus[1]
+    state_dir, external = _external_bus(auto_bus, tmp_path / "one")
+    _drop_trailing_lines(external / "topics" / f"{ROUND_TOPIC}.jsonl", 1)
+    with FileEventBus(external) as bus:
+        _open_injected(state_dir, bus)
+        hashes = [m.payload["record_hash"] for m in bus.poll("auditor", ROUND_TOPIC, 100)]
+    assert hashes == outcome.record_hashes  # caught up from the audit
+
+    state_dir, external = _external_bus(auto_bus, tmp_path / "two")
+    _drop_trailing_lines(external / "topics" / f"{ROUND_TOPIC}.jsonl", 2)
+    with FileEventBus(external) as bus, pytest.raises(LoopStateInconsistent, match="2 rounds"):
+        _open_injected(state_dir, bus)
+
+
+def test_an_injected_in_memory_bus_is_not_durable_and_gets_every_round_replayed(
+    auto_bus: tuple[Path, Outcome], tmp_path: Path
+) -> None:
+    """An ``InMemoryEventBus`` starts empty in every process: the audit's rounds are replayed into
+    it, in order, so it holds exactly the audit's rounds; a foreign message is still refused."""
+    outcome = auto_bus[1]
+    state_dir = _copy(auto_bus[0], tmp_path / "memory")
+    bus = InMemoryEventBus()
+    _open_injected(state_dir, bus)
+    replayed = [m.payload["record_hash"] for m in bus.poll("auditor", ROUND_TOPIC, 100)]
+    assert replayed == outcome.record_hashes
+    _open_injected(state_dir, bus)  # consistent now: a second open adds nothing
+    assert len(bus.poll("auditor", ROUND_TOPIC, 100)) == ROUNDS
+
+    foreign = InMemoryEventBus()
+    loop_id = _config().loop_id
+    foreign.publish(BusMessage.build(ROUND_TOPIC, f"{loop_id}:0", {"record_hash": "f" * 64}))
+    with pytest.raises(LoopStateInconsistent, match="foreign or reordered"):
+        _open_injected(state_dir, foreign)
+    assert len(foreign.poll("auditor", ROUND_TOPIC, 100)) == 1  # nothing replayed on a refusal

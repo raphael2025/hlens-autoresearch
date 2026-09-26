@@ -80,7 +80,10 @@ acknowledges, when it is constructed, every still-unacknowledged round job (``RO
 ``JOB_TOPIC``) of **this** loop whose round the audit already recorded (a durable bus
 re-delivers the job of a process that died between recording the round and acking its message);
 such a job is never run again. Jobs of other loops, of unrecorded rounds or with another content
-are left alone.
+are left alone. The whole pending set is scanned (review fixes 3, 2026-09-26): any number of
+foreign jobs ahead of a recorded round's job on ``JOB_TOPIC`` does not hide it (``poll`` has no
+cursor, so the scan polls with a doubling limit until a page comes back short, never acking a
+foreign job).
 Each recorded round is published on ``research_loop.round`` as ``round_message(loop_id, record)``
 right after the audit (and ``after_record``); if that publish fails, the round stays recorded and
 the loop stops (fail closed), so a bus is never more than the last round behind its audit. The
@@ -869,6 +872,26 @@ def round_message(loop_id: str, record: LoopRecord) -> BusMessage:
     )
 
 
+#: First page size of ``_all_pending``; it doubles until a page comes back short.
+_PENDING_PAGE: Final = 128
+
+
+def _all_pending(bus: EventBusAdapter, consumer: str, topic: str) -> tuple[BusMessage, ...]:
+    """Every message ``consumer`` has not acknowledged on ``topic``, without acknowledging any.
+
+    ``EventBusAdapter.poll`` has no cursor: it always returns the *first* ``limit`` unacknowledged
+    messages, so paging past messages that must stay unacknowledged (foreign jobs) is impossible
+    by re-polling. The whole pending set is read instead, by polling with a doubling ``limit``
+    until a page comes back shorter than asked for (ADR-0049 implementation note, review fixes 3,
+    2026-09-26). Memory is linear in the pending set, which the bus holds anyway."""
+    limit = _PENDING_PAGE
+    while True:
+        pending = bus.poll(consumer, topic, limit)
+        if len(pending) < limit:
+            return pending
+        limit *= 2
+
+
 def _round_seed(loop_seed: int, round_index: int) -> int:
     return int(content_hash({"loop_seed": loop_seed, "round": round_index})[:12], 16)
 
@@ -1067,14 +1090,12 @@ class ResearchLoop:
             .message_id
             for index in range(recorded)
         }
-        batch_size = 100
-        while True:
-            batch = self._bus.poll(consumer, JOB_TOPIC, batch_size)
-            settled = [message for message in batch if message.message_id in done]
-            for message in settled:
-                self._bus.ack(consumer, JOB_TOPIC, message.message_id)
-            if not settled or len(batch) < batch_size:
-                return
+        for message_id in dict.fromkeys(
+            message.message_id
+            for message in _all_pending(self._bus, consumer, JOB_TOPIC)
+            if message.message_id in done
+        ):
+            self._bus.ack(consumer, JOB_TOPIC, message_id)
 
     def _replay_transition(self, transition: LifecycleTransition) -> None:
         subject = transition.subject

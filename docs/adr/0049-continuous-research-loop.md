@@ -349,3 +349,32 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。补上调试待办 C 节 P11「持久组
    时刻均不晚于本轮截止、没有封存窗口 bar，第 1 轮扣留 59 根封存 bar，开封账本为空；复现元组引用研究数据集快照；新进程重跑（只按声明哈希
    读取已持久的 manifest，两轮之间重新打开状态目录）记录哈希完全相同；换一组声明的轮次重新打开被拒；声明视图晚于本轮截止的一轮在摄取时被拒；
    无 PAPER / ACTIVE；自动持久总线与审计一致（`check_round_bus`）。约 4 分钟、< 2 GB。
+
+## Implementation note (review fixes 3, 2026-09-26)
+
+决策者 Claude Code（Opus），依 Raphael 2026-09-25 授权；非红线。不新增 ADR；无契约 / Schema / 生命周期 / Constitution / Profile 变更；
+`LoopRecord` 载荷与哈希规则不变。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。修正调试复核的三项发现（第 3 项见 ADR-0041 同名实施说明）：
+
+1. **调用方自带的总线也核对**（`research/loop/compose.py` `compose_durable`）：此前持久模式下给了 `bus` 就不跑 `check_round_bus`（上文
+   「durable jobs and bus wiring」第 1 点的取舍），调用方的总线从不与审计核对。改为：任何总线（自带或自动）在组合循环之前都经
+   `check_round_bus`，规则与自动总线相同（超前 / 外来 / 乱序拒绝、只落后最后一轮从审计补发、落后两轮及以上拒绝；拒绝时不写入，自带总线
+   仍由调用方关闭）。**决定：`InMemoryEventBus` 不是持久总线**——新进程里它必然为空，"落后"不是截断的证据；对它 `check_round_bus(...,
+   durable=False)` 把审计缺少的**全部**轮次按序补发，使它同样恰好持有审计的各轮（外来 / 乱序 / 超前仍拒绝）。选择补发而非"接受为空"：
+   下游读 `research_loop.round` 的消费者在任何总线上看到的都是同一份与审计一致的历史。判定依据是类型（`isinstance(bus, InMemoryEventBus)`），
+   其他任何总线类型一律按持久核对（fail closed）。
+2. **已记录轮次任务的完整扫描**（`apps/worker/loop.py` `_settle_recorded_jobs`）：此前每次 `poll` 100 条，一页里没有本循环的任务就返回；
+   `EventBusAdapter.poll` 没有游标（总是返回**最前面**的 `limit` 条未确认消息），外来任务不能确认，所以 ≥ 100 条外来任务排在前面时，
+   已记录轮次的任务留在未确认状态，违反"构造时确认"的保证。改为 `_all_pending`：以倍增的上限（128 起）读取，直到返回数少于上限，即得到完整
+   待处理集（Protocol 下最大的安全做法；内存与待处理集成线性，总线本身也持有它们），只确认本循环已记录轮次的任务（同一 `message_id`
+   只确认一次），外来任务一条不确认。
+3. **`idempotent=` 可审计、难误用**（`apps/worker/jobs.py`；ADR-0044 durable jobs 的补充）：模块文档新增醒目的「`idempotent=` — read
+   before using」一节。中断后重跑一个声明幂等的任务时写 `job_rerun` 行（`job_id`、`name`、`params`、`interrupted_starts` = 此前无结果的
+   开始次数），**替代**原来隐含的第二条 `job_started`；`JobRunner.reruns` 按任务计数。重新打开时拒绝：未经 `job_rerun` 的重复
+   `job_started`（未审计的重跑，无论是否声明幂等——本批之前按旧格式写出的"重复开始"日志因此被拒，fail closed；尚无调用方使用
+   `idempotent=`）、现在未声明幂等的处理器的 `job_rerun`、计数与日志不符、从未开始或已有结果的任务的 `job_rerun`。`idempotent` 给成单个
+   字符串 → `TypeError`；不给 `results=` 时声明 `idempotent` → `ValueError`（内存模式没有中断记录，声明毫无作用却给人安全的错觉）。
+4. **测试**：`tests/research/loop/test_loop_durable.py`——自带 `FileEventBus` 含外来轮次记录 → 拒绝且文件不变、总线仍可用；自带总线落后一轮
+   → 补发，落后两轮 → 拒绝；自带 `InMemoryEventBus` → 审计各轮按序补发、再次打开不重复、含外来消息 → 拒绝。
+   `tests/apps/test_research_loop_durable.py`——150 条外来任务排在一条已记录轮次任务（及其重复）之前：构造时该任务被确认、外来任务全部
+   保留且顺序不变（内存与文件总线各一次；旧实现两者都失败）。`tests/apps/test_worker_jobs.py`——两次中断后重跑：日志为
+   `job_started, job_rerun(1), job_rerun(2), job_result`，`reruns` 重开后仍为 2，撤销幂等声明后重开被拒；伪造的重跑历史逐项被拒；误用声明被拒。

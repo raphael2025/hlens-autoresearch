@@ -13,7 +13,16 @@
 > 调用方以 `idempotent=` 声明为幂等的处理器在重投时重跑；其余一律使 `run_pending` 抛 `JobInterrupted`（不轮询），等人工审查
 > （`JobRunner.interrupted` 列出这些任务）。持久结果必须是 JSON（存储与返回的都是其 JSON 形式）；持久写入失败 → 运行器停止、消息不确认。
 > 不给 `results` 时行为不变（结果表在内存中，崩溃于记录与确认之间会重跑一次）。
-> `ResearchLoop` 的轮次任务以审计为持久结果：续接审计时，本循环已记录轮次的未确认轮次任务在构造时被确认、从不重跑；轮次记录后在
+>
+> **`idempotent=` —— 使用前必读**（ADR-0049 实施说明 review fixes 3，2026-09-26）：声明一个处理器幂等，是运行器**无法核实**的承诺——
+> "中途死掉后再跑一次，世界的状态与只跑一次完全相同"（不重复发布、不重复花费、不产生下游不去重的第二次追加）。声明错了会静默重复副作用，因此：
+> 默认没有任何处理器幂等；集合必须逐个写出处理器名（不是处理器的名字 → `ValueError`，给成单个字符串 → `TypeError`）；没有 `results=` 时
+> 声明 `idempotent` → `ValueError`（内存模式没有中断记录，声明毫无作用）。每次重跑都可审计：写一条 `job_rerun` 行（`job_id`、`name`、
+> `params`、`interrupted_starts` = 此前无结果的开始次数）**替代**第二条 `job_started`，`JobRunner.reruns` 按任务计数；重开时拒绝未经
+> `job_rerun` 的重复开始、现在未声明幂等的处理器的重跑记录、计数不符、从未开始或已有结果的任务的重跑记录（`JobResultsCorrupted`）。
+>
+> `ResearchLoop` 的轮次任务以审计为持久结果：续接审计时，本循环已记录轮次的未确认轮次任务在构造时被确认、从不重跑（扫描**完整**待处理集：
+> `poll` 没有游标，以倍增上限读取直到返回数不足，外来任务再多也不会遮住它们，且外来任务一条不确认；review fixes 3）；轮次记录后在
 > `research_loop.round` 发布 `round_message(loop_id, record)`（记录的纯函数），发布失败 → 该轮已记录、循环 `stopped`，所以总线最多落后审计最后一轮
 > （研究侧组合根重开时补齐并交叉核对，见 `research/loop/README.md`）。
 

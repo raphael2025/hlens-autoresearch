@@ -21,6 +21,14 @@ the capacity check's coefficient itself (``_resolved_impact``) — the model's v
 priority, and a disagreeing explicit ``RobustnessParams.impact_coefficient`` is never silently
 overridden: it becomes ``G4.capacity.impact_estimated`` = ``INCONCLUSIVE`` (metric
 ``impact_coefficient_mismatch``). ``None`` (every caller that predates this) is unaffected.
+
+Exact comparison (ADR-0041 implementation note, review fixes 3, 2026-09-26): the two coefficients
+are compared as ``Decimal`` values, never through ``float``. The model's coefficient is passed as
+its own ``Decimal``; an explicit ``float`` parameter is read as its exact text (``repr``, the
+shortest text that round-trips, e.g. ``0.1`` -> ``Decimal("0.1")``), an ``int`` or a ``Decimal``
+as itself. So ``0.1`` and ``Decimal("0.10")`` agree, while a model coefficient that differs from
+the parameter only beyond ``float`` precision is a mismatch (a ``float`` round trip used to hide
+it). Only the resolved value handed to ``capacity_check`` (a ``float`` estimate) is converted.
 """
 
 from __future__ import annotations
@@ -28,6 +36,7 @@ from __future__ import annotations
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import timedelta
+from decimal import Decimal
 
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, Verdict
@@ -128,7 +137,8 @@ class RobustnessInput:
     #: existing caller is unaffected). ``capacity_check`` must use it instead of, and never
     #: silently alongside, a differing explicit ``params.impact_coefficient`` (implementation
     #: note, 2026-09-26): see ``run_robustness``.
-    execution_impact_coefficient: float | None = None
+    #: A ``Decimal`` (the model's own value) is compared exactly (review fixes 3).
+    execution_impact_coefficient: Decimal | float | None = None
 
     def __post_init__(self) -> None:
         if self.family_trial_count < 1:
@@ -155,19 +165,37 @@ class RobustnessResult:
         }
 
 
+def _exact(value: Decimal | float | int, name: str) -> Decimal:
+    """``value`` as an exact ``Decimal`` (module docs, **Exact comparison**): a ``float`` is read
+    as its shortest round-trip text, never as its binary expansion."""
+    if isinstance(value, bool) or not isinstance(value, Decimal | float | int):
+        raise TypeError(f"{name} must be a Decimal, float or int, not {type(value).__name__}")
+    if isinstance(value, float):
+        return Decimal(repr(value))
+    return Decimal(value)
+
+
 def _resolved_impact(
-    params: RobustnessParams, model_coefficient: float | None
+    params: RobustnessParams, model_coefficient: Decimal | float | None
 ) -> tuple[float | None, str, tuple[float, float] | None]:
     """``(coefficient to use, its source, conflict)`` for ``capacity_check`` (implementation note,
     2026-09-26): the execution model's coefficient takes priority whenever the backtest carries
     one; an explicit ``params.impact_coefficient`` that disagrees with it is never overridden
-    silently — it is reported as a conflict instead, and neither value is used."""
+    silently — it is reported as a conflict instead, and neither value is used. The two are
+    compared exactly (module docs, **Exact comparison**, review fixes 3)."""
     explicit = params.impact_coefficient
-    if explicit is not None and model_coefficient is not None and explicit != model_coefficient:
-        return None, "", (explicit, model_coefficient)
+    if explicit is not None and model_coefficient is not None:
+        if _exact(explicit, "impact_coefficient") != _exact(
+            model_coefficient, "execution_impact_coefficient"
+        ):
+            return None, "", (float(explicit), float(model_coefficient))
     if model_coefficient is not None:
-        return model_coefficient, "execution_model", None
-    return explicit, "param:capacity.impact_coefficient", None
+        return float(model_coefficient), "execution_model", None
+    return (
+        None if explicit is None else float(explicit),
+        "param:capacity.impact_coefficient",
+        None,
+    )
 
 
 def run_robustness(inp: RobustnessInput) -> RobustnessResult:

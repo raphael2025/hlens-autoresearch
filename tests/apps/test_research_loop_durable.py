@@ -14,6 +14,7 @@ from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -44,7 +45,7 @@ from apps.worker.loop import (
 from apps.worker.metrics import Clock
 from core.contracts.event_bus import BusMessage
 from core.lifecycle.strategy import LifecycleState
-from infrastructure.event_bus import InMemoryEventBus
+from infrastructure.event_bus import FileEventBus, InMemoryEventBus
 from tests.apps.test_research_loop import (
     EPOCH,
     REPO,
@@ -574,6 +575,35 @@ def test_only_this_loops_recorded_round_jobs_are_settled(tmp_path: Path) -> None
     _on_bus(_durable_stages(), path, bus)
     left = bus.poll("research_loop_worker", JOB_TOPIC, 10)
     assert [m.key for m in left] == [job.job_id for job in foreign]
+
+
+@pytest.mark.parametrize("kind", ["memory", "file"])
+def test_a_recorded_rounds_job_behind_many_foreign_jobs_is_still_settled(
+    tmp_path: Path, kind: str
+) -> None:
+    """Review fixes 3 (2026-09-26): 150 foreign jobs (more than any single poll page) ahead of a
+    recorded round's job on ``JOB_TOPIC`` do not hide it: the constructor scans the whole pending
+    set, acknowledges the recorded round's job (and its duplicate) and leaves every foreign job
+    unacknowledged, in order."""
+    path = tmp_path / "audit.jsonl"
+    _loop(_durable_stages(), LoopAuditLog(path))[0].run_unattended(2)
+    foreign = [JobSpec(ROUND_JOB, {"loop_id": "other_loop", "round": i}) for i in range(150)]
+    recorded = JobSpec(ROUND_JOB, {"loop_id": "fake_loop", "round": 1})
+    bus: Any = InMemoryEventBus() if kind == "memory" else FileEventBus(tmp_path / "bus")
+    try:
+        for job in (*foreign, recorded, JobSpec(ROUND_JOB, {"loop_id": "o", "round": 0})):
+            bus.publish(job.message(JOB_TOPIC))
+        bus.publish(recorded.message(JOB_TOPIC))  # a duplicate delivery at the very end
+        pending_before = len(bus.poll("research_loop_worker", JOB_TOPIC, 1000))
+        assert pending_before == 153
+        _on_bus(_durable_stages(), path, bus)
+        left = bus.poll("research_loop_worker", JOB_TOPIC, 1000)
+        expected = [*foreign, JobSpec(ROUND_JOB, {"loop_id": "o", "round": 0})]
+        assert [m.key for m in left] == [job.job_id for job in expected]
+        assert recorded.job_id not in {m.key for m in left}
+    finally:
+        if kind == "file":
+            bus.close()
 
 
 def test_a_failed_round_publish_keeps_the_round_and_stops_the_loop(

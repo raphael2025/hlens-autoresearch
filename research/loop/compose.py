@@ -49,8 +49,16 @@ refused (``LoopStateInconsistent``). A bus **behind** by exactly the last record
 up from the audit -- the only state a crash can leave (the loop publishes a round only after the
 audit fsync'd it, stops when that publish fails, and the composition catches up before any new
 round runs), and the message is a pure function of the verified record. Behind by more than one
-round (a truncated or replaced bus, or one that never saw this directory) is refused. A bus the
-caller passes is the caller's: it is used as given and not cross-checked.
+round (a truncated or replaced bus, or one that never saw this directory) is refused.
+
+Injected buses (ADR-0049 implementation note, review fixes 3, 2026-09-26): a bus the caller passes
+with a ``state_dir`` is cross-checked exactly like the automatic one (same refusals, same one-round
+catch-up) — it is never trusted unchecked; closing it stays the caller's job. The one exception is
+an ``InMemoryEventBus``: it is **not a durable bus** (a new process always starts it empty), so
+being behind is expected, not evidence of truncation. The audit's missing rounds are **replayed**
+into it (every one, in order), so it too holds exactly the audit's rounds before the loop runs; a
+foreign, reordered or ahead message is still refused. Any other bus type is treated as durable
+(fail closed).
 """
 
 from __future__ import annotations
@@ -85,7 +93,7 @@ from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import KnowledgeItem
 from core.domain.selection import ProfileSelection
 from core.domain.specs import FeatureSpec, StateSpec
-from infrastructure.event_bus import FileEventBus
+from infrastructure.event_bus import FileEventBus, InMemoryEventBus
 from research.loop.durable import (
     DurableState,
     FileAnchor,
@@ -406,11 +414,19 @@ class DurableLoop:
         self.close()
 
 
-def check_round_bus(bus: EventBusAdapter, loop_id: str, records: Sequence[LoopRecord]) -> int:
+def check_round_bus(
+    bus: EventBusAdapter,
+    loop_id: str,
+    records: Sequence[LoopRecord],
+    *,
+    durable: bool = True,
+) -> int:
     """Cross-check ``research_loop.round`` on ``bus`` against the verified audit ``records``;
-    return how many rounds were caught up from the audit (0 or 1). See the module docs, **Durable
-    bus**: ahead, foreign or reordered messages, or a bus more than one round behind, are
-    ``LoopStateInconsistent``; nothing is published unless every present message matches."""
+    return how many rounds were caught up from the audit. See the module docs, **Durable bus**:
+    ahead, foreign or reordered messages, or a durable bus more than one round behind, are
+    ``LoopStateInconsistent``; nothing is published unless every present message matches.
+    ``durable=False`` (an ``InMemoryEventBus``, module docs, **Injected buses**): every missing
+    round is replayed from the audit instead of refusing a gap of more than one."""
     expected = [round_message(loop_id, record) for record in records]
     published = bus.poll(BUS_AUDIT_CONSUMER, ROUND_TOPIC, len(expected) + 1)
     if len(published) > len(expected):
@@ -427,7 +443,7 @@ def check_round_bus(bus: EventBusAdapter, loop_id: str, records: Sequence[LoopRe
                 "reordered record"
             )
     missing = expected[len(published) :]
-    if len(missing) > 1:
+    if durable and len(missing) > 1:
         raise LoopStateInconsistent(
             f"the bus is {len(missing)} rounds behind the audit (it holds {len(published)} of "
             f"{len(expected)}): only the last recorded round can be missing after a crash, so "
@@ -471,7 +487,9 @@ def open_synthetic_loop(
     ``bus``: omitted -> the composition's own ``FileEventBus(state_dir / "bus")``, cross-checked
     against the audit before the loop is composed (``check_round_bus``: the last round is caught
     up after a crash, anything else inconsistent is refused) and released by
-    ``DurableLoop.close()``. A caller's bus is used as given, unchecked.
+    ``DurableLoop.close()``. A caller's bus is cross-checked the same way (an ``InMemoryEventBus``
+    is not durable: the audit's rounds are replayed into it; module docs, **Injected buses**) and
+    stays open.
     """
     wiring = config.wiring
     state = open_state(
@@ -496,11 +514,15 @@ def compose_durable(
 ) -> DurableLoop:
     """``compose_loop`` over an opened state directory, with its bus (shared by every source).
 
-    ``bus`` given: used as is. Omitted: the composition's own ``FileEventBus(state_dir / "bus")``,
-    cross-checked against the verified audit first (``check_round_bus``) and released by
+    ``bus`` given: cross-checked against the verified audit (``check_round_bus``; an
+    ``InMemoryEventBus`` is not durable and gets the audit's rounds replayed, module docs,
+    **Injected buses**), then used; closing it is the caller's job. Omitted: the composition's own
+    ``FileEventBus(state_dir / "bus")``, cross-checked the same way and released by
     ``DurableLoop.close()`` or when the loop is dropped (module docs, **Durable bus**).
     """
     if bus is not None:
+        durable = not isinstance(bus, InMemoryEventBus)
+        check_round_bus(bus, config.loop_id, state.audit.records, durable=durable)
         loop = compose_loop(config, ingest, bus, state.memory, llm, state)
         return DurableLoop(loop=loop, memory=state.memory, state_dir=state.root, bus=bus)
     owned = FileEventBus(state.root / BUS_DIR)

@@ -876,6 +876,28 @@ def test_an_impact_coefficient_conflict_is_inconclusive() -> None:
     assert checks["capacity"].details["impact_cost_per_period_at_capacity"] is None
 
 
+@pytest.mark.parametrize("coefficient", ["0.1", "0.10"])
+def test_an_equal_float_param_and_decimal_model_coefficient_agree(coefficient: str) -> None:
+    """Review fixes 3 (2026-09-26): ``RobustnessParams.impact_coefficient = 0.1`` (a float) and
+    the execution model's ``Decimal("0.1")`` are the same number, compared exactly (no ``float``
+    round trip): no mismatch, the model's value is used."""
+    market = _market(seed=7, planted=True)
+    candidate = library_entries()[0].candidate()
+    variant = _variant(market, coefficient=coefficient)
+    trials = CandidateTrialRunner(candidate, _inputs(market), variant)
+    same = replace(E2E_TEST_ONLY_PARAMS, impact_coefficient=0.1)
+    setup = _setup(market, candidate, trials=trials, execution=variant.execution, robustness=same)
+    validator = PipelineBacktestValidator(setup)
+    inp = validator.robustness_input(candidate.spec, trials.run(CHOSEN).backtest)
+    assert inp.execution_impact_coefficient == Decimal(coefficient)
+    assert isinstance(inp.execution_impact_coefficient, Decimal)
+    result = run_robustness(inp)
+    assert "G4.capacity.impact_estimated" not in {g.gate_id for g in result.gates}
+    details = {c.check_id: c for c in result.checks}["capacity"].details
+    assert details["impact_coefficient_source"] == "execution_model"
+    assert "impact_coefficient_conflict" not in details
+
+
 def test_the_capacity_check_uses_the_execution_models_coefficient() -> None:
     """With no explicit ``impact_coefficient`` (``None``), the capacity check reads the
     execution model's coefficient instead of leaving the impact estimate unreported."""

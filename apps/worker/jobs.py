@@ -27,8 +27,25 @@ never skipped or repaired). Then:
   handler already did, so only a handler the caller declared idempotent (``idempotent=``) is run
   again when its message is re-delivered; any other interrupted job stops the runner:
   ``run_pending`` raises ``JobInterrupted`` without polling, until a human reviews it
-  (``JobRunner.interrupted`` names the jobs; resolving one is a new results file). A
-  non-idempotent job started twice in the journal is refused on opening.
+  (``JobRunner.interrupted`` names the jobs; resolving one is a new results file).
+
+**``idempotent=`` -- read before using** (ADR-0044 implementation note, review fixes 3,
+2026-09-26). Declaring a handler idempotent is a promise the runner cannot check: *running it
+again after it died half-way leaves the world exactly as running it once would* (no double
+publication, no double spend, no second append that is not de-duplicated downstream). A wrong
+declaration silently repeats side effects, so:
+
+- nothing is idempotent by default; the set names handlers explicitly (a name that is not a
+  handler is refused with ``ValueError``, a bare string instead of a collection of names with
+  ``TypeError``), and it is refused without ``results=`` (it only means something in durable
+  mode: in memory there is no record of an interrupted start to act on);
+- every re-run is **auditable** in the results journal: it is written as a ``job_rerun`` line
+  (``job_id``, ``name``, ``params``, ``interrupted_starts`` = how many earlier starts of this job
+  have no result) **instead of** a second ``job_started``; ``JobRunner.reruns`` counts them per
+  job. Reopening refuses a ``job_started`` for a job that already started without a result (an
+  unaudited re-run), a ``job_rerun`` of a handler not declared idempotent now, a ``job_rerun``
+  whose count does not match the journal, and a ``job_rerun`` of a job that was never started or
+  already has a result.
 
 Durable results must be JSON (``core.domain.base.canonical_json``); the stored and returned
 ``result`` is its JSON form, identical before and after a restart. If a durable write fails, the
@@ -49,6 +66,7 @@ from core.contracts.event_bus import BusMessage, EventBusAdapter
 from core.domain.base import canonical_json, content_hash
 
 __all__ = [
+    "JOB_RERUN",
     "JOB_RESULT",
     "JOB_STARTED",
     "JobInterrupted",
@@ -62,8 +80,12 @@ __all__ = [
 JOB_STARTED: Final = "job_started"
 #: Journal line written once a job's outcome is known, before its message is acknowledged.
 JOB_RESULT: Final = "job_result"
+#: Journal line written, instead of ``JOB_STARTED``, before an interrupted idempotent job runs
+#: again (review fixes 3): the re-run is recorded, never implicit.
+JOB_RERUN: Final = "job_rerun"
 
 _STARTED_FIELDS = frozenset({"job_id", "name", "params"})
+_RERUN_FIELDS = frozenset({"job_id", "name", "params", "interrupted_starts"})
 _RESULT_FIELDS = frozenset({"job_id", "name", "succeeded", "attempts", "result", "error"})
 
 
@@ -118,12 +140,21 @@ class JobRunner:
     ) -> None:
         """``results``: a journal path for durable outcomes (``None``: in memory, the original
         behaviour). ``idempotent``: handler names that may safely run again after an
-        interrupted start (no default idempotency: an undeclared handler halts for review)."""
+        interrupted start (no default idempotency: an undeclared handler halts for review). Read
+        the module docs, **``idempotent=`` -- read before using**: a wrong declaration repeats
+        side effects; every re-run is written to the results journal (``job_rerun``)."""
         if max_attempts < 1:
             raise ValueError("max_attempts must be positive")
+        if isinstance(idempotent, str | bytes):
+            raise TypeError("idempotent must be a collection of handler names, not one string")
         unknown = sorted(set(idempotent) - set(handlers))
         if unknown:
             raise ValueError(f"idempotent names no handler: {unknown}")
+        if idempotent and results is None:
+            raise ValueError(
+                "idempotent= only applies to durable results (results=<path>): in memory there "
+                "is no record of an interrupted start to re-run"
+            )
         self._bus = bus
         self._consumer = consumer
         self._topic = topic
@@ -133,6 +164,10 @@ class JobRunner:
         self._outcomes: dict[str, JobOutcome] = {}
         #: Jobs started without a recorded result (job_id -> name), from the durable journal.
         self._interrupted: dict[str, str] = {}
+        #: How many starts without a result each interrupted job has (job_id -> count).
+        self._starts: dict[str, int] = {}
+        #: Recorded re-runs of interrupted idempotent jobs (job_id -> count), from the journal.
+        self._reruns: dict[str, int] = {}
         #: Why the runner stopped in this process (a durable write failed).
         self._stopped: str | None = None
         self._journal = None if results is None else AppendOnlyJournal(results)
@@ -151,6 +186,12 @@ class JobRunner:
     def interrupted(self) -> Mapping[str, str]:
         """Jobs that started without a recorded result (``job_id -> name``)."""
         return dict(self._interrupted)
+
+    @property
+    def reruns(self) -> Mapping[str, int]:
+        """How often each job was re-run after an interrupted start (the ``job_rerun`` lines of
+        the results journal; module docs, **``idempotent=``**). Empty in memory."""
+        return dict(self._reruns)
 
     def submit(self, job: JobSpec) -> str:
         self._bus.publish(job.message(self._topic))
@@ -193,12 +234,20 @@ class JobRunner:
         name, params = str(payload["name"]), payload["params"]
         if job_id != _job_id(name, params):
             raise ValueError(f"message key {job_id[:12]} is not the content identity of its job")
+        prior = self._starts.get(job_id, 0)
+        start: dict[str, Any] = {"job_id": job_id, "name": name, "params": params}
         try:
-            self._journal.append(JOB_STARTED, {"job_id": job_id, "name": name, "params": params})
+            if prior:  # an interrupted job declared idempotent (``_check_can_run``): a re-run
+                self._journal.append(JOB_RERUN, {**start, "interrupted_starts": prior})
+            else:
+                self._journal.append(JOB_STARTED, start)
         except Exception as exc:
             self._stopped = f"job {job_id[:12]} could not be journaled as started ({exc})"
             raise
+        if prior:
+            self._reruns[job_id] = self._reruns.get(job_id, 0) + 1
         self._interrupted[job_id] = name
+        self._starts[job_id] = prior + 1
         outcome = self._run(job_id, message)
         try:
             result = json.loads(canonical_json(outcome.result))
@@ -217,6 +266,7 @@ class JobRunner:
             self._stopped = f"the result of job {job_id[:12]} could not be journaled ({exc})"
             raise
         del self._interrupted[job_id]
+        del self._starts[job_id]
         return JobOutcome(
             job_id, outcome.name, outcome.succeeded, outcome.attempts, result, outcome.error
         )
@@ -240,9 +290,10 @@ class JobRunner:
         for entry in entries:
             where = f"results line {entry.seq}"
             raw = dict(entry.payload)
-            if entry.type == JOB_STARTED:
-                if set(raw) != _STARTED_FIELDS:
-                    raise JobResultsCorrupted(f"{where} does not have exactly {_STARTED_FIELDS}")
+            if entry.type in (JOB_STARTED, JOB_RERUN):
+                fields = _STARTED_FIELDS if entry.type == JOB_STARTED else _RERUN_FIELDS
+                if set(raw) != fields:
+                    raise JobResultsCorrupted(f"{where} does not have exactly {fields}")
                 job_id, name = raw["job_id"], raw["name"]
                 if not isinstance(name, str) or job_id != _job_id(name, raw["params"]):
                     raise JobResultsCorrupted(f"{where}: job_id is not the job's content identity")
@@ -250,17 +301,44 @@ class JobRunner:
                     raise JobResultsCorrupted(
                         f"{where}: job {job_id[:12]} started after its result"
                     )
-                if job_id in started and name not in self._idempotent:
-                    raise JobResultsCorrupted(
-                        f"{where}: job {name!r} ({job_id[:12]}) is not declared idempotent, "
-                        "yet it was started again without a result"
-                    )
-                started[job_id] = name
+                if entry.type == JOB_STARTED:
+                    self._admit_start(job_id, name, started, where)
+                else:
+                    self._admit_rerun(job_id, name, raw["interrupted_starts"], started, where)
             elif entry.type == JOB_RESULT:
                 self._admit_result(raw, started, where)
+                self._starts.pop(raw["job_id"], None)
             else:
                 raise JobResultsCorrupted(f"{where} has unknown type {entry.type!r}")
         self._interrupted = started
+
+    def _admit_start(self, job_id: str, name: str, started: dict[str, str], where: str) -> None:
+        if job_id in started:
+            raise JobResultsCorrupted(
+                f"{where}: job {name!r} ({job_id[:12]}) was started again without a result and "
+                f"without a {JOB_RERUN!r} line (an unaudited re-run)"
+            )
+        started[job_id] = name
+        self._starts[job_id] = 1
+
+    def _admit_rerun(
+        self, job_id: str, name: str, count: Any, started: dict[str, str], where: str
+    ) -> None:
+        if started.get(job_id) != name:
+            raise JobResultsCorrupted(f"{where}: a re-run of a job that was not started")
+        if name not in self._idempotent:
+            raise JobResultsCorrupted(
+                f"{where}: job {name!r} ({job_id[:12]}) is not declared idempotent, yet it was "
+                "re-run without a result"
+            )
+        expected = self._starts.get(job_id)
+        if not isinstance(count, int) or isinstance(count, bool) or count != expected:
+            raise JobResultsCorrupted(
+                f"{where}: interrupted_starts {count!r} does not match the journal "
+                f"({expected} starts without a result)"
+            )
+        self._starts[job_id] = count + 1
+        self._reruns[job_id] = self._reruns.get(job_id, 0) + 1
 
     def _admit_result(self, raw: dict[str, Any], started: dict[str, str], where: str) -> None:
         if set(raw) != _RESULT_FIELDS:

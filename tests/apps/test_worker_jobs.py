@@ -20,7 +20,7 @@ from apps.worker import (
     JobSpec,
     JournalCorrupted,
 )
-from apps.worker.jobs import JOB_RESULT, JOB_STARTED
+from apps.worker.jobs import JOB_RERUN, JOB_RESULT, JOB_STARTED
 from core.contracts.event_bus import BusMessage
 from infrastructure.event_bus import FileEventBus, InMemoryEventBus
 from tests.contract_suites import event_bus as suite
@@ -189,7 +189,8 @@ def test_an_interrupted_job_halts_for_review_unless_declared_idempotent(
     again = _durable(bus, results, {"work": work}, idempotent=idempotent)
     assert again.outcomes[job_id] == outcome and again.interrupted == {}
     types = [e.type for e in AppendOnlyJournal(results).entries]
-    assert types == [JOB_STARTED, JOB_STARTED, JOB_RESULT]
+    assert types == [JOB_STARTED, JOB_RERUN, JOB_RESULT]  # the re-run is recorded (fixes 3)
+    assert again.reruns == {job_id: 1}
 
 
 def test_a_tampered_results_file_is_refused(tmp_path: Path) -> None:
@@ -255,6 +256,102 @@ def test_durable_mode_refuses_non_json_results_and_misnamed_messages(tmp_path: P
     assert not (tmp_path / "r2.jsonl").exists()
     with pytest.raises(ValueError, match="idempotent names no handler"):
         _durable(other, tmp_path / "r3.jsonl", {"obj": lambda p: 1}, idempotent=("nope",))
+
+
+# ------------------------ idempotent= (ADR-0044 implementation note, review fixes 3, 2026-09-26)
+
+
+def test_every_rerun_of_an_interrupted_idempotent_job_is_journaled(tmp_path: Path) -> None:
+    """Two interrupted starts, then a completed re-run: the journal holds one ``job_started`` and
+    one ``job_rerun`` per re-run (with the count of starts that had no result), never an implicit
+    second start; ``reruns`` reports them after reopening."""
+    calls: list[str] = []
+    crash = {"left": 2}
+
+    def work(params: Mapping[str, Any]) -> str:
+        calls.append(str(params["id"]))
+        if crash["left"]:
+            crash["left"] -= 1
+            raise Crash
+        return "done"
+
+    results = tmp_path / "results.jsonl"
+    bus = InMemoryEventBus()
+    first = _durable(bus, results, {"work": work}, idempotent=("work",))
+    job_id = first.submit(JobSpec("work", {"id": "a"}))
+    assert first.reruns == {}
+    with pytest.raises(Crash):
+        first.run_pending()
+    second = _durable(bus, results, {"work": work}, idempotent=("work",))
+    with pytest.raises(Crash):
+        second.run_pending()
+    assert second.reruns == {job_id: 1}
+    third = _durable(bus, results, {"work": work}, idempotent=("work",))
+    assert third.reruns == {job_id: 1} and third.interrupted == {job_id: "work"}
+    [outcome] = third.run_pending()
+    assert outcome.succeeded and calls == ["a", "a", "a"] and third.reruns == {job_id: 2}
+    entries = AppendOnlyJournal(results).entries
+    assert [e.type for e in entries] == [JOB_STARTED, JOB_RERUN, JOB_RERUN, JOB_RESULT]
+    assert [e.payload["interrupted_starts"] for e in entries[1:3]] == [1, 2]
+    assert entries[1].payload["params"] == {"id": "a"} and entries[1].payload["name"] == "work"
+    reopened = _durable(bus, results, {"work": work}, idempotent=("work",))
+    assert reopened.reruns == {job_id: 2} and reopened.interrupted == {}
+    # Dropping the declaration later does not launder the history: the re-runs are refused.
+    with pytest.raises(JobResultsCorrupted, match="not declared idempotent"):
+        _durable(bus, results, {"work": work})
+
+
+def test_unaudited_or_inconsistent_reruns_are_refused_on_reopening(tmp_path: Path) -> None:
+    job = JobSpec("double", {"x": 1})
+    started = {"job_id": job.job_id, "name": "double", "params": {"x": 1}}
+    rerun = {**started, "interrupted_starts": 1}
+    result = {
+        "job_id": job.job_id,
+        "name": "double",
+        "succeeded": True,
+        "attempts": 1,
+        "result": 2,
+        "error": None,
+    }
+    forgeries: list[list[tuple[str, dict[str, Any]]]] = [
+        [(JOB_STARTED, started), (JOB_STARTED, started)],  # a second start, no job_rerun line
+        [(JOB_RERUN, rerun)],  # a re-run of a job never started
+        [(JOB_STARTED, started), (JOB_RERUN, {**rerun, "interrupted_starts": 2})],  # wrong count
+        [(JOB_STARTED, started), (JOB_RERUN, {**rerun, "interrupted_starts": True})],
+        [(JOB_STARTED, started), (JOB_RERUN, started)],  # missing field
+        [(JOB_STARTED, started), (JOB_RESULT, result), (JOB_RERUN, rerun)],  # after the result
+        [(JOB_STARTED, started), (JOB_RERUN, {**rerun, "params": {"x": 2}})],  # not the content
+    ]
+    for number, lines in enumerate(forgeries):
+        journal = AppendOnlyJournal(tmp_path / f"forged-{number}.jsonl")
+        for type_, payload in lines:
+            journal.append(type_, payload)
+        with pytest.raises(JobResultsCorrupted):
+            _durable(
+                InMemoryEventBus(), journal.path, {"double": lambda p: 0}, idempotent=("double",)
+            )
+    valid = AppendOnlyJournal(tmp_path / "valid.jsonl")
+    history: list[tuple[str, dict[str, Any]]] = [
+        (JOB_STARTED, started),
+        (JOB_RERUN, rerun),
+        (JOB_RESULT, result),
+    ]
+    for type_, payload in history:
+        valid.append(type_, payload)
+    ok = _durable(InMemoryEventBus(), valid.path, {"double": lambda p: 0}, idempotent=("double",))
+    assert ok.reruns == {job.job_id: 1} and ok.outcomes[job.job_id].result == 2
+
+
+def test_the_idempotent_declaration_is_hard_to_misuse(tmp_path: Path) -> None:
+    bus = InMemoryEventBus()
+    handlers = {"work": lambda p: 1}
+    with pytest.raises(TypeError, match="not one string"):
+        _durable(bus, tmp_path / "a.jsonl", handlers, idempotent="work")  # type: ignore[arg-type]
+    with pytest.raises(ValueError, match="idempotent names no handler"):
+        _durable(bus, tmp_path / "b.jsonl", handlers, idempotent=("w", "o", "r", "k"))
+    with pytest.raises(ValueError, match="only applies to durable results"):
+        JobRunner(bus, consumer="w", topic="jobs", handlers=handlers, idempotent=("work",))
+    assert JobRunner(bus, consumer="w", topic="jobs", handlers=handlers).reruns == {}
 
 
 def test_the_jobs_module_uses_only_apps_core_and_the_stdlib() -> None:
