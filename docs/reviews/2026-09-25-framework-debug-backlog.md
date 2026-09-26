@@ -126,3 +126,28 @@
 | E6 | 低 | `research/validation/stats.py`（`overlap-clusters`） | 每分钟决策 + 15 分钟标签窗口使全部标签连成一个重叠簇，有效样本数 = 1（G2 INCONCLUSIVE）。这是保守方法的正确结果，但意味着"持续持仓"类策略需要稀疏的决策节奏才能得到有效样本 | 研究设计问题（决策节奏 vs 标签窗口），非代码缺陷；记录 |
 | E7 | 低 | `infrastructure/strategy/signals.py` | `signals_from_features` 给所有信号同一个 `knowledge_time`（调用方给出的单值），知识轴因此很粗；可见性只按 `available_time`，不影响因果 | 记录；需要逐值知识时间时再扩展 |
 | E8 | 中 | `research/loop/dataset_source.py`、`dataset_compose.py`（P11 × 数据集） | 循环只有合成市场数据源，没有经验证数据集的组合根；真实格式数据上的两轮循环因而无法跑 | ✅ 已补：数据集组合根（见 C 节 P11）；冒烟 `tests/infrastructure/e2e/test_research_loop_real_data.py`（`postgres`；BTCUSDT / ETHUSDT 各 420 根 1m kline 跨两个 UTC 日，第 1 轮越过 TEST ONLY Profile 的封存边界）：两轮完成、审计哈希链、每份报告 `G0.manifest_binding` PASS、无截止之后的数据、封存窗口只作声明、从不进入研究（~~59 根封存 bar 被扣留~~：扣留计数需要读取封存 bar，2026-09-26 review fixes 4 起只记录声明、零读取，见 R27）、新进程重跑记录哈希相同、无 PAPER / ACTIVE。~~剩余：数据集轮次的 G5 未接线（`OosUnsealBudget` 被拒绝）~~ ✅ 已补（2026-09-26，ADR-0049 实施说明 dataset G5）：`DatasetRound` 可声明封存 manifest **对**（区间特征 + 点时刻价格，数据窗口恰好是 Profile 封存窗口），至少一轮声明时接受 `OosUnsealBudget`；摄取不读封存对，验证阶段先 `claim_evaluation` 再加载并证明（与研究 pair 相同的上游 snapshot / 知识截止 / 政策绑定 / universe / 表，`pair_manifests`，视图在 [窗口终点, as_of]），不符 → `consumed_without_result:sealed_data_refused`；G5 报告带封存对的 `G0.manifest_binding`；冒烟 `tests/infrastructure/e2e/test_research_loop_real_data_g5.py`（获准族开封一次、开封前零封存 manifest 加载、未获准族不开封不读取、snapshot 不同被拒、重启不再开封）；限制：配置错误的封存对也花掉该族的开封（开封前不读任何封存数据的代价），跨两对的成员 / 质量报告 / lineage 不比较（被验证的标的须是两对成员，R27 起显式检查）；每轮约 6 次验证型 manifest 加载（每次重新推导整个构建含质量报告，约 5 s），冒烟约 4 分钟——需要 manifest 验证缓存时再做；manifest 由数据平面预先构建，每轮声明（循环不构建数据集） |
+
+## F. 全阶段代码完成批次（2026-09-26，分支 `claude/2026-09-26-code-completion-337e38` → `wip/all-code-completion`）
+
+逐批细节、实际运行的命令与原始结果见 [完成计划 §10](../plans/2026-09-26-all-code-completion-plan.md)。以下 C / E 节条目在该分支上已处理，状态一律 **CODE_COMPLETE / DEBUG_PENDING**（未经独立调试与全量对抗复测，不等于已验收）：
+
+| C 节条目 | 处理 | 批次 |
+|---|---|---|
+| P9：检测器异常直接传播 | 记为无门 INCONCLUSIVE + `detector_error`；harness 配置错误仍抛出 | B1 |
+| P9：G5 未实际运行 | 可选 `sealed_oos_g5`：只有 G0–G4 PASS 才开封 / 认领后释放封存 bar 并运行 `run_sealed_oos`，报告端到端 G0–G5 比率 | B13 |
+| P4：负对照单一固定种子 | 可选 `control_seeds`（无默认），逐种子门 + 标准规则聚合；不给时逐字节不变 | B10 |
+| P4：Outcome 表只在内存 | `research/outcomes/store.py` 写一次、内容寻址、读取复核 | B10 |
+| P8：检查异常传播（inventory 发现） | G4 逐检查隔离，意外异常 → `<prefix>.check_error` INCONCLUSIVE | B10 |
+| P3：尚无事件持久化 / 统计不可序列化 | `EventResultStore`（产物存储，非 Iceberg 表）、`statistic_payload` / `EventStatsReport` | B5 |
+| P6 / P10：路由身份只由 run_hash 绑定；无候选时静默走空 | `RouterStopped` / `RouterStop`、`verify()` 与逐项篡改测试、可选 `validation_reports`；`router_stop` 报告种类 | B6、B7、B12 |
+| P6：条件假设只登记调用方给的标签 | `register_matrix_conditionals`：所有声明单元 + 未知单元预先计入 trial；支持阈值必填无默认 | B6 |
+| P11：非 `research_loop.round` 主题的尾部删除不可发现 | `FileEventBus(anchor=)` 外部锚点；持久循环 `bus_anchor=` | B4、B8 |
+| P13：审计只在内存 | 持久 `AuditTrail(path)`、非空审计重开即触发 Kill Switch、`replay_audit` | B2 |
+| 研究控制台：矩阵 / 路由只有计数（已过时，页面已存在）；研究循环页读不存在的字段 | 修复研究循环页；全页加载 / 空 / 错误状态；Jobs 页；3 个新报告种类页；`node --test` | B9、B12 |
+| Phase 7：`LlmCall` 内容不可取回 | `infrastructure/content` + `ContentVerifiedLLM`（循环可选要求内容可取回且等于实际交换） | B11 |
+| Phase 12：无替换提案 | `propose_replacement` / `ProposalLedger`（恒 `PENDING_HUMAN_APPROVAL`） | B3 |
+| Phase 14：只有迁移骨架 | 金标准记录持久化、差异报告、回滚证据（只证据、无具体迁移目标） | B11 |
+
+仍未做 / 阻塞（详见计划 §10.2）：ADR-0052 实施（升契约版本会破坏 Canonical 重放，需人决定）；Iceberg `event.*` 表（需 ADR）；`EventRequest` 多标的（改契约）；`plugins/` 生产
+StrategyProvider（H5，须经 Promotion）；路由资格绑定验证证据（P10-ELIG）；知识库写入路径（P05-WRITE，Phase 0.5 由集成会话负责）；P8 回测适配器只验证单标的；
+条件假设接入持续循环（会改变 trial 计数与记录哈希，属研究设计选择）；Profile 数值（D-09 TBD）仍未冻结。
