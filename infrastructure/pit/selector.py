@@ -61,6 +61,7 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import CanonicalNormalizer
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_PRECEDENCE_EVIDENCE
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.pit.assumption import (
     AssumptionSpecError,
     assumption_bound,
@@ -121,6 +122,7 @@ PIT_SPEC: Final[dict[str, Any]] = {
 }
 PIT_HASH: Final = hashlib.sha256(canonical_json(PIT_SPEC).encode("utf-8")).hexdigest()
 PIT_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.POINT_IN_TIME,
     policy_id=PIT_RULE_ID,
     version=PIT_RULE_VERSION,
