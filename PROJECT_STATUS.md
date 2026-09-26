@@ -12,7 +12,7 @@
 | 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B21，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B24，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-26 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -47,15 +47,15 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 0.5 | Public Knowledge Base | 🧱 框架已实现（ADR-0034）；经审阅写入路径（ADR-0058）与 `verify` 修复（K1）CODE_COMPLETE / DEBUG_PENDING |
 | 1 | Market Representation | 🔄 实现完成、红队返修完成，待验收（D3E 起 REVIEW_PENDING） |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
-| 3 | Event & Interaction Engine | 🧱 框架已实现（ADR-0036）；事件运行存储、统计序列化、物理表 `event.events`（ADR-0056）CODE_COMPLETE / DEBUG_PENDING |
-| 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照 CODE_COMPLETE / DEBUG_PENDING；ADR-0052（2.1.0）实施中；Profile 数值 TBD |
-| 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；ADR-0054 部分成交结转集成中；横截面动量（研究层）开发中；无策略晋升 |
+| 3 | Event & Interaction Engine | 🧱 框架已实现（ADR-0036）；事件运行存储、统计序列化、物理表 `event.events`（ADR-0056；只读核实从未建表）CODE_COMPLETE / DEBUG_PENDING；`subject`（ADR-0057）代码在 2.0.0 下写成，**未接受**，待 2.1.0 |
+| 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照 CODE_COMPLETE / DEBUG_PENDING；ADR-0052（2.1.0）版本化重放在独立 Phase 1 分支实施中；Profile 数值 TBD |
+| 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已集成但新字段在 2.0.0 下，待 2.1.0 审查；无策略晋升 |
 | 6 | State × Strategy | 🧱 框架已实现（ADR-0039）；矩阵条件假设全单元预登记、可选接入循环 CODE_COMPLETE / DEBUG_PENDING |
 | 7 | Dynamic Discovery | 🧱 框架已实现（ADR-0040）；LLM 调用内容存储与循环内可取回核对 CODE_COMPLETE / DEBUG_PENDING |
 | 8 | Validation & Robustness | 🧱 框架已实现（ADR-0041）；G4 逐检查异常隔离、多标的验证 CODE_COMPLETE / DEBUG_PENDING |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5 CODE_COMPLETE / DEBUG_PENDING；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式 CODE_COMPLETE / DEBUG_PENDING |
-| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；总线外部锚点、任务只读 API CODE_COMPLETE / DEBUG_PENDING；ADR-0053 集成中 |
+| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；总线外部锚点、任务只读 API、ADR-0053（VALIDATION → FAILED）、可选条件假设 CODE_COMPLETE / DEBUG_PENDING |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045）；替换提案（恒待人工批准）CODE_COMPLETE / DEBUG_PENDING |
 | 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046，实盘结构上被拒绝）；持久审计、非空审计重开即急停、只读重放 CODE_COMPLETE / DEBUG_PENDING |
 | 14 | Technology Migration | 🧱 框架已实现（ADR-0047）；金标准记录持久化、差异报告、回滚证据 CODE_COMPLETE / DEBUG_PENDING（无具体迁移目标） |
@@ -103,9 +103,9 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
   独立只读复核（cursor-agent）发现的问题已修复 24 项（另有真实数据冒烟发现的 3 项）（验证门的 4 个高危泄漏 / 复用漏洞、G4 的"空配置即通过"、模拟场所绕过 Kill Switch、权重被当作数量等），
   其余缺口已登记；真实数据格式的端到端冒烟已通过（本机无真实行情，用真实格式小样本走真实入库路径；见 D-NET）
 - ⏸ Phase 1：实现与红队返修完成，等待 Codex / Raphael 验收（证据：`docs/reviews/2026-09-25-phase1-close-evidence.md`、`phase1-review-guide.md`）；Codex K4（PIT 边重复）为独立阻断项，不在全代码分支修改
-- 🔨 **全阶段代码完成批次（2026-09-26，Claude，`wip/all-code-completion`）**：B1～B21 已补齐 Phase 0.5、2～14 与前后端的剩余代码缺口（逐批见完成计划 §10）；
+- 🔨 **全阶段代码完成批次（2026-09-26，Claude，`wip/all-code-completion`）**：B1～B24 已补齐 Phase 0.5、2～14 与前后端的剩余代码缺口（逐批见完成计划 §10）；
   Raphael 2026-09-26 授权 Claude 自主决策（含红线），逐项裁决见 [自主决策记录](docs/reviews/2026-09-26-autonomous-decisions.md)；Codex 全代码复核（`docs/reviews/2026-09-26-codex-full-code-review.md`）K1 已修，
-  K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）进行中；全量非 PostgreSQL 门禁最近一次 5861 passed（`8d0d26d`，早于 B15～B21，最新 HEAD 的门禁待全部代码完成后重跑）
+  K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）进行中；全量非 PostgreSQL 门禁：`564c87c` 上 6142 passed / 136 deselected / 1 xfailed（ADR-0052 阻断证据），退出码 0（B24）；ADR-0052 版本化重放在独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` 进行（M0 `ed1a202` 已推送并获 Codex 条件认可）；ADR-0054 / 0057 的新字段在 2.0.0 下写成，按 K3 / K5 未接受、待 2.1.0 重新声明
 
 ## 5. 下一步
 
@@ -230,11 +230,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-26 | 全阶段代码完成批次（Claude，`wip/all-code-completion`）：B1～B21 补齐 Phase 0.5、2～14 与前后端剩余代码（CODE_COMPLETE / DEBUG_PENDING）；Raphael 授权 Claude 自主决策（含红线），ADR-0056 / 0058 由 Claude 接受；Codex 全代码复核 K1 已修、K2 同步、K3（ADR-0052 以 2.1.0）进行中；全量非 PostgreSQL 门禁 5861 passed（`8d0d26d`） | 最新 HEAD 门禁待全部代码完成后重跑；Phase 1 仍待 Codex（K4） |
+| 2026-09-26 | B22～B24：横截面动量（研究层）；ADR-0053 / 0054 / 0057 集成（后两者新字段在 2.0.0 下，按 Codex K3 / K5 未接受）；ADR-0052 阻断证据 → Codex 授权独立 Phase 1 分支版本化重放（M0 已推送）；`564c87c` 全量非 PostgreSQL 门禁 6142 passed / 136 deselected / 1 xfailed | `564c87c` 为保留恢复点；待 2.1.0 版本机制后重新声明 ADR-0054 / 0057 |
+| 2026-09-26 | 全阶段代码完成批次（Claude，`wip/all-code-completion`）：B1～B24 补齐 Phase 0.5、2～14 与前后端剩余代码（CODE_COMPLETE / DEBUG_PENDING）；Raphael 授权 Claude 自主决策（含红线），ADR-0056 / 0058 由 Claude 接受；Codex 全代码复核 K1 已修、K2 同步、K3（ADR-0052 以 2.1.0）进行中；全量非 PostgreSQL 门禁 5861 passed（`8d0d26d`） | 最新 HEAD 门禁待全部代码完成后重跑；Phase 1 仍待 Codex（K4） |
 | 2026-09-26 | D-NET 执行（Raphael 批准）：真实下载 BTC / ETH 两天 1 分钟 K 线官方归档，入库 → 规范化 → 质量报告 → PIT 选择全部跑通（每天 1440 分钟齐全、无缺口无冲突）；建研究数据集需上市历史，停下待 D-LIST。复核第六轮修复后严格全量门禁 5718 项通过（1d4fe0e） | 待 Raphael 决定 D-LIST |
 | 2026-09-26 | 调试第六轮：数据集路径 G5（封存数据在开封登记前不读）；可选的清单校验缓存；第四、五轮复核修复。严格全量门禁 5709 项通过（67ee304） | 仍无任何策略被验证或晋升；7 项待 Raphael 决定 |
 | 2026-09-26 | 调试第五轮：worker 任务结果落盘、持久模式自动使用文件事件总线并与审计核对；验证器按原回测的执行模型重跑（`G0.execution_model`）；持续循环新增经校验 PIT 数据集来源（合成市场哈希不变）。严格全量门禁 5646 项通过（c63baa0） | 数据集路径暂不做 G5（缺封存窗口特征清单） |
-| 2026-09-26 | 调试第三、四轮：持续循环的状态目录绑定预算与参数、可选目录外锚点、轮间审批即时检查点；文件型持久事件总线；回测器可选成交量上限 / 冲击 / 融资；循环审计记录成为版本化契约（ADR-0050）。严格全量门禁 5619 项通过（5432b2f） | 新增待决 D-PARTIAL；共 7 项待 Raphael 决定 |
 
 ## 10. 下一阶段进入条件
 

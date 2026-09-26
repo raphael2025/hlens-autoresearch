@@ -50,7 +50,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - D3E / R1 / R2 待复核；D4 提案：Phase 1 首切片不启用 WebSocket live tail（ADR-0022 三项前置未全验收、无实时消费者；`docs/reviews/2026-09-25-d4-live-tail-gate.md`，待复核）；E0 等 Codex 验收 D3E 与 D4 后开放；无 Codex 时 Claude 的提交只推 `wip/phase-<n>-unreviewed`，不推正式 `phase/<n>`
 - Current Blocker：无架构阻塞。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
 - Next Milestone：Codex 对抗复核 D3E + D3E-R1，决定是否接受并开放 D4 / E
-- 全阶段代码完成批次（2026-09-26，Claude）：分支 `claude/2026-09-26-code-completion-337e38` → `wip/all-code-completion`，B1～B21 为 CODE_COMPLETE / DEBUG_PENDING（非验收）；逐批证据见 `docs/plans/2026-09-26-all-code-completion-plan.md` §10
+- 全阶段代码完成批次（2026-09-26，Claude）：分支 `claude/2026-09-26-code-completion-337e38` → `wip/all-code-completion`，B1～B24 为 CODE_COMPLETE / DEBUG_PENDING（非验收）；逐批证据见 `docs/plans/2026-09-26-all-code-completion-plan.md` §10
 
 ## 5. Active Decisions
 
@@ -97,7 +97,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - D-QGAP：方案 A（ADR-0031，证据缺口独立只追加表）；D-PUSH：只推 WIP 备份分支；D-P05：Phase 1 关闭后再开
 - 框架批次 ADR（2026-09-25，依授权 Accepted，全部 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED，数值一律 TBD）：0034 知识库 · 0035 状态 · 0036 事件 · 0037 Outcome + 最小验证门 · 0038 策略 / 风控 / 回测 · 0039 状态×策略 · 0040 假设 + LLM · 0041 稳健性（G4、回溯审计不得翻转已拒绝对象） · 0042 合成市场 · 0043 路由 · 0044 事件总线 + worker · 0045 进化 · 0046 模拟执行（无实盘）· 0047 迁移 · 0048 API / Web · 0049 持续循环（worker 机制在 apps/worker，研究阶段在 research/loop，research 依赖 apps/worker 而非相反）· 0050 循环审计记录契约（只追加，描述既有字节）
 - Raphael 指示（2026-09-25，/goal）："使用 4 个子代理加速开发，直到项目全部开发完成；不用调试，先按框架实现所有代码，每一步更新文档，开发完成后再逐个调试"——Phase 0.5、2～14 按路线图先实现框架代码（状态 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），Phase 1 收尾并行；红线不变（宪法原则 / 阈值、Profile 数值留 TBD；Phase 13 只做模拟 / 纸面，无交易端点 / 密钥 / 下单；`main` 合并与 tag 仍需 Raphael）
-- Raphael 授权（2026-09-26，/goal）："所有的决策都由你来决定，包括红线的事情"——Claude 的逐项裁决见 `docs/reviews/2026-09-26-autonomous-decisions.md`（不做实盘 / 不冻结 Profile 数值 / 不合并 `main` / 无证据不晋升）；ADR-0056 事件表、ADR-0057 事件 subject、ADR-0058 知识库写入由 Claude 接受；Codex 全代码复核 K3 要求 ADR-0052 以 2.1.0 实施且旧 2.0.0 原样可重放
+- Raphael 授权（2026-09-26，/goal）："所有的决策都由你来决定，包括红线的事情"——Claude 的逐项裁决见 `docs/reviews/2026-09-26-autonomous-decisions.md`（不做实盘 / 不冻结 Profile 数值 / 不合并 `main` / 无证据不晋升）；ADR-0056 事件表、ADR-0057 事件 subject、ADR-0058 知识库写入由 Claude 接受；Codex 全代码复核 K3 要求 ADR-0052 以 2.1.0 实施且旧 2.0.0 原样可重放；ADR-0054 / 0057 的新字段须以 2.1.0 声明（在 2.0.0 下写成的不算契约完成）；`subject` = 调用方提供的稳定、大小写敏感 opaque ID
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
@@ -157,7 +157,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 全代码分支（2026-09-26）：全量非 PostgreSQL 门禁 5861 passed / 136 deselected（`8d0d26d`）；WIP `wip/all-code-completion`，未经 Codex 验收，不是正式恢复点
+- 全代码分支（2026-09-26）：全量非 PostgreSQL 门禁 6142 passed / 136 deselected / 1 xfailed（`564c87c`，Codex 认可的保留恢复点，未验收）；ADR-0052 版本化重放在 `phase1/adr-0052-versioned-replay`（独立于 Phase 1 候选与 `main`）
 - Date：2026-09-25
 - Stable recovery point：Phase 1 D3D-R1 修复提交 `c06b9fa`（Codex 已独立复核；随 D3D 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；

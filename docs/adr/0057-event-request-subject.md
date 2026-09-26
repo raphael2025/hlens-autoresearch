@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Accepted (2026-09-26)；已实施（CODE_COMPLETE / DEBUG_PENDING） |
+| 状态 | Accepted (2026-09-26)；代码已写（CODE_COMPLETE / DEBUG_PENDING），**但尚未按版本规则发布**：Codex 全代码复核 K3 / K5 要求新增契约字段以 2.1.0 声明，须待 ADR-0052 版本化重放完成后重新声明，当前不作为契约完成 |
 | 日期 | 2026-09-26 |
 | 决策者 | Claude Code（Opus），依 Raphael 2026-09-26 明确授权（"所有的决策都由你来决定，包括红线"）；协调者裁定为 additive 可选字段 |
 | 起草者 | Claude Code（Opus） |
@@ -51,3 +51,13 @@
 `tests/test_event_subject.py`（缺省时请求哈希 / `event_id` / `result_hash` / 结果内容哈希等于实施前的金值；绑定端到端；两个标的
 一张表无 id 冲突；runner 各检查点保留标的；交互按标的运行；空白标的、异标的上游事件 / 上游结果、事件改绑、结果改标的均拒绝）、
 contract suite 的 `check_subject_is_bound`（五个事件提供者全部通过）、`tests/infrastructure/event/test_event_runner.py`（表列）。
+
+## Implementation note — subject 身份语义与版本（2026-09-26，依 Codex 全代码复核 `648fe6c`）
+
+- `subject` 是**调用方提供的稳定 opaque identifier，大小写敏感**：契约只沿用既有字符串规则（去除首尾空白），core 不做大小写转换、别名映射或交易所推断。
+  任何对应真实 Instrument 的 provider / 调用方必须从稳定的 Instrument 身份生成该键（例如 `instrument_key` 的 `venue:type:symbol`），不得用可变显示名；
+  否则同一标的在不同运行中得到不同 `request_hash` / `event_id`。
+- 版本：当前实现在契约 2.0.0 下加入可选字段（缺省不进载荷与哈希）。按 K3，这不能证明旧版 2.0.0 读者能理解带 `subject` 的载荷，故不接受为契约完成；
+  在 ADR-0052 版本化重放（独立 Phase 1 分支 `phase1/adr-0052-versioned-replay`）落地后，以 2.1.0 重新声明带 `subject` 的新对象、旧对象按已持久化版本读取，
+  并补跨版本往返、旧读者行为与哈希测试。在此之前 `wip/all-code-completion` 的 `564c87c` 只是保留的恢复点。
+

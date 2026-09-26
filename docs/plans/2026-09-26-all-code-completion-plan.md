@@ -141,14 +141,14 @@
 |---|---|---|---|---|---|
 | ADR-0052-IMPL | ADR-0052（Accepted）要求契约加精确小数 / Profile 字段，需把 `CONTRACT_SCHEMA_VERSION` 2.0.0→2.1.0；该版本号写入每行 Canonical（`infrastructure/canonical/rules.py`），重新规范化按列精确比较（`normalizer._exact`），升版会使已提交的 D-NET 行不可重放、所有 request / result 哈希变化（集成会话核实，ADR-0052 §4 / ADR-0054 §5 要求升级为人类决定） | `core/`、Schema、Canonical 重放 | A：Canonical 行的规则版本与契约信封版本解耦后再升版（需 ADR）；B：接受重放断裂、重建 D-NET 数据；C：暂缓 ADR-0052 实施 | A（需 Raphael / Codex 决定） | ADR-0052 保持未实施；验证结果与 Profile 仍用浮点（同平台可复现），负对照与 G3 仍共用阈值（偏保守） |
 | P3-EVTABLE | Phase 3 验收要求"补 roadmap 需要的持久事件表 / adapter"；`infrastructure/event/table.py` 明写物理 `event.*` 表是"另行决定"，计划本身要求"若需新表先立 ADR" | 数据架构冻结表清单、ADR-0036 | A：起草 Proposed ADR（Iceberg `event.*` 表的分区、身份、只追加语义），批准后实现；B：维持内存物化 + 可哈希导出 | A | 事件只能每次重算；不影响因果正确性 |
-| P3-MULTISYM ✅ ADR-0057（2026-09-26，方案 A） | `EventRequest`（`core/contracts/event.py`）无标的字段，多标的只能逐序列请求；加字段 = 改冻结契约 | `core/contracts/event.py`、Schema | A：additive 可选字段 + ADR（须证明省略时哈希不变）；B：维持每序列一个请求，由调用方组合 | B（现状可用，另立 ADR 再议） | 多标的事件需多次请求 |
+| P3-MULTISYM ✅ ADR-0057（2026-09-26，方案 A） | `EventRequest`（`core/contracts/event.py`）无标的字段，多标的只能逐序列请求；加字段 = 改冻结契约 | `core/contracts/event.py`、Schema | A：additive 可选字段 + ADR（须证明省略时哈希不变）；B：维持每序列一个请求，由调用方组合 | **A**（2026-09-26 更正：ADR-0057，一请求一标的，`subject` 为调用方提供的稳定、大小写敏感 opaque ID；Codex `648fe6c` 认可语义）；**代码在 2.0.0 下写成，按 K3 / K5 未接受**，须在 ADR-0052 版本化重放后以 2.1.0 重新声明 | 多标的事件需多次请求；`564c87c` 仅为保留恢复点 |
 | P5-PLUGIN | 计划记"尚无 `plugins/` 生产 StrategyProvider"：TSMOM 在 `research/`，按 H5 研究代码只能经 Promotion 流程成为生产代码；把它搬进 `plugins/` 即是晋升 | H5、ADR-0005、ADR-0038 | A：等某策略经完整验证 + Promotion；B：另立 ADR 定义"研究库 Provider 进入 plugins 的最小晋升证据" | A | 策略只在研究层；不影响研究与验证链路 |
 | P05-WRITE | 知识库写入路径（审阅后入库的 Python API / CLI）超出只读检索的 ADR-0034；CLAUDE.md §5 要求新插件能力先立 ADR。集成会话已按 Raphael 的 Phase 0.5 指示接手 0.5 并起草 ADR（tag / 资产 / 状态检索） | ADR-0034、`plugins/knowledge` | A：Proposed ADR 定义人工审阅入库流程后再实现；B：维持只读，条目由人直接提交 JSON | A（由 Phase 0.5 所有者起草） | 知识条目只能由人手工提交 JSON；本分支**不集成** infra 通道的写入提交 |
 | P10-ELIG | 路由资格信任调用方给出的生命周期映射；把资格绑定到验证报告证据若需改契约则须 ADR（engines 通道在不改契约的前提下尽量加可选核对） | ADR-0043、`core/contracts` | 见 engines 通道报告 | — | 路由仍只接受调用方声明为已验证的对象 |
 
 **10.2 状态更新（K2，2026-09-26）**：P05-WRITE → ADR-0058 Accepted、已集成（B15，`f1e71ba`）；P10-ELIG → 研究层证据模式已集成（B16，`49ccefb`）；
-P3-EVTABLE → ADR-0056 Accepted、已集成（B17，`7193b65` / `af7a351`）；P3-MULTISYM → ADR-0057 在 core 通道实施中；ADR-0052-IMPL → 按 Codex K3 以 2.1.0 实施、
-先证明旧 2.0.0 数据原样可读可重放，否则交付阻断证据（core 通道进行中）；P5-PLUGIN、Profile 数值、实盘、合并 `main` → 决定不做（见自主决策记录）；D-LIST → 原则接受、推迟到 Phase 1 验收后。
+P3-EVTABLE → ADR-0056 Accepted、已集成（B17，`7193b65` / `af7a351`）；P3-MULTISYM → ADR-0057 代码已集成（B23，`dd2bc6a`），但在 2.0.0 下，按 Codex K3 / K5 **未接受**、待 2.1.0 重新声明；ADR-0052-IMPL → core 通道交付阻断证据（B23，`31943c5`），
+Codex 授权在独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` 实施版本化重放（M0 设计 `ed1a202` 已获 Codex 条件认可，M1～M3 进行中）；ADR-0054 同样须审查 2.1.0 规则；P5-PLUGIN、Profile 数值、实盘、合并 `main` → 决定不做（见自主决策记录）；D-LIST → 原则接受、推迟到 Phase 1 验收后。
 
 ### 10.3 批次记录
 
@@ -365,4 +365,15 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 子代理：`3501 passed, 1 xfailed`；ruff / format（641 files）/ mypy（497 files）通过。
 - 本分支集成后实际运行：`pytest -m "not postgres" tests/test_*.py tests/contract_suites tests/plugins tests/research/validation tests/research/strategies tests/research/loop tests/infrastructure/event tests/infrastructure/canonical/test_contract_version_replay.py tests/apps tests/golden`
   → **3889 passed, 1 xfailed, 1 warning in 596.24s**；`ruff check .` → All checks passed；`ruff format --check .` → 662 files already formatted；`mypy`（整个配置集）→ no issues in 513 source files；Schema 135 份。
+
+**B24 — 最终全量门禁（`564c87c`）与 Codex `942160c`～`0f590a2` 后的记录更正**
+
+- 全量非 PostgreSQL 门禁：`uv run pytest -q -m "not postgres" -p no:cacheprovider`（HEAD `564c87c`，5 GB 上限）→ **6142 passed, 136 deselected, 1 xfailed, 1 warning in 2112.48s (0:35:12)，退出码 0**。
+  xfail 是 ADR-0052 阻断证据（strict）。此前 B23 的 3889 项是目标集合，不是全量门禁。
+- 更正：B22 / B23 的状态——ADR-0057（`subject`）与 ADR-0054（部分成交）的新契约字段在 2.0.0 下写成，按 Codex K3 / K5 **不接受为契约完成**，须在版本化重放后以 2.1.0 重新声明；
+  `564c87c` 作为 Codex 认可的保留恢复点，不回退、不重置，也不合入 `phase/1` / `main`；另推送了隔离备份分支 `hold/adr-0054-0057-at-2.0.0`（= `564c87c`）。
+- `event.events` 部署状态只读核实（生产 catalog 15 张表无 `event*`、测试 catalog 0 张、warehouse 无事件目录），写入 ADR-0056；`table_definition.py` 说明更正为十列、ID 1～10 / 11～15 / 16～17；
+  ADR-0056 合规清单与 ADR-0057 状态、`subject` 语义（稳定、大小写敏感 opaque ID）同步；ADR 索引同步。
+- ADR-0052：独立 Phase 1 分支 `phase1/adr-0052-versioned-replay`（基于候选 `b4d63c4`）M0 `ed1a202` 已推送；Codex 条件认可 ContextVar 版本作用域（仅包住已持久化对象重建 / 校验、`try/finally`、
+  只取缺省版本、泄漏 / 未发布版本 / 组内不一致 fail closed、Canonical 列与 `RevisionRecord.schema_version` 同源），M1～M3 进行中。
 

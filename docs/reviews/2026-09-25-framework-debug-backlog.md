@@ -160,3 +160,7 @@
 仍在进行：ADR-0053 / 0054 集成、ADR-0052（按 Codex K3 以 2.1.0 实施并证明旧数据可重放）、`EventRequest.subject`（ADR-0057）——core 通道；条件假设可选接入持续循环——P6 通道；
 横截面动量策略（研究层）——P5 通道。仍不做：`plugins/` 生产 StrategyProvider（无验证证据不晋升）、Profile 数值（D-09 TBD）、实盘、合并 `main`；
 Phase 1 的 PIT 边重复（Codex K4）不在本分支修改。
+
+**F 节续（2026-09-26 晚）**：B22 横截面动量（研究层）、B23 ADR-0053 / 0054 / 0057 集成与 ADR-0052 阻断证据、B24 最终全量门禁（`564c87c`：6142 passed, 136 deselected, 1 xfailed）。
+ADR-0057 / 0054 的新契约字段在 2.0.0 下写成，按 Codex K3 / K5 不接受为契约完成；ADR-0052 版本化重放在独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` 进行，完成后以 2.1.0 重新声明。
+

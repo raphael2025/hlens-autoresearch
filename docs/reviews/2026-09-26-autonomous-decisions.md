@@ -9,8 +9,8 @@
 | D-FLOAT / D-PFIELDS / D-CTRL（ADR-0052） | 验证契约精确小数、Profile 新字段、负对照独立阈值 | ~~保持 2.0.0~~ **被 Codex 全代码复核 K3 取代**：按 Accepted ADR 以 2.1.0 实施，旧 2.0.0 数据须原样可读可重放；不能证明时保留旧行为并交付阻断证据 | 结果：**阻断**——`infrastructure/canonical/rules.py:670` 把在用的 `CONTRACT_SCHEMA_VERSION` 写入每行 Canonical，重放经 `row_integrity.py:347-360` 重算批次指纹、`normalizer.py:1212` 逐列比较；只把版本改为 2.1.0 即令已提交单元的重新处理失败（`CatalogIntegrityError`），修复须改 Phase 1 基础设施（Codex 复核中） | 证据测试 `tests/infrastructure/canonical/test_contract_version_replay.py`（`xfail(strict=True)`）、2.0.0 金标准向量 `tests/golden/v2_0_0/`、ADR-0052 "Implementation blocker (2026-09-26)"；部分实现停放在本地分支 `wip/adr-0052-exact-fields`（`8e4a71c`，不得合并） |
 | D-VFAIL（ADR-0053） | VALIDATION → FAILED | 集成集成会话已完成的实现（`0d5a975`） | 已由 Raphael 批准的 ADR，实现现成，避免重复 | core 通道 |
 | D-PARTIAL（ADR-0054） | 部分成交跨 bar 结转 | 集成现成实现（`d640eff`，不升契约版本） | 同上 | core 通道 |
-| P3-EVTABLE（ADR-0056） | 物理 Iceberg 事件表 | **Accepted** 并实现（新模块在 `infrastructure/event/`，不改 Phase 1 表 / 定义 / 供给脚本，不在真实 catalog 建表） | roadmap Phase 3 需要持久事件表；同 ADR-0031 / 0033 的只追加表先例 | P3 通道 |
-| P3-MULTISYM（ADR-0057） | `EventRequest` 多标的 | **Accepted**：可选 `subject` 字段，缺省不入哈希 | 可加性变更，既有哈希不变 | core 通道 |
+| P3-EVTABLE（ADR-0056） | 物理 Iceberg 事件表 | **Accepted** 并实现（新模块在 `infrastructure/event/`，不改 Phase 1 表 / 定义 / 供给脚本，不在真实 catalog 建表；只读核实任何持久 catalog 均未建过该表） | roadmap Phase 3 需要持久事件表；同 ADR-0031 / 0033 的只追加表先例 | P3 通道 |
+| P3-MULTISYM（ADR-0057） | `EventRequest` 多标的 | 方案 A：可选 `subject`（一请求一标的；调用方提供的稳定、大小写敏感 opaque ID） | 语义经 Codex `648fe6c` 认可；**但**新字段在 2.0.0 下写成，按 Codex K3 / K5 不接受为契约完成 | 代码在 `564c87c`（保留恢复点）；待 ADR-0052 版本化重放后以 2.1.0 重新声明 |
 | P05-WRITE（ADR-0058） | 知识库写入路径 | **Accepted**：只有 Python API / CLI、每次写入要求审阅人、只追加；无 HTTP 写端点、无新 Protocol | 满足 knowledge-base.md "人工审阅后入库"，且不越过 ADR-0048 只读边界 | `plugins/knowledge/store.py`、`cli.py` |
 | P10-ELIG | 路由资格绑定验证证据 | 研究层可选"证据模式"：核对报告哈希、主体、PASS 与 G5；信任模式哈希不变 | 不改契约即可关闭研究侧缺口；生产资格仍属 Control Plane | P10 通道 |
 | P8 单标的 | 回测验证只支持单标的 | 研究层按标的拆分 Outcome 请求并保守合并；单标的路径逐字节不变 | 不改契约 | P8 通道 |

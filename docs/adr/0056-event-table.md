@@ -8,7 +8,7 @@
 | 起草者 | Claude Code（Opus） |
 | 相关 Phase | Phase 3 — Event & Interaction Engine（roadmap：输出 "Event 表"；Phase 4 输入 "Canonical、Event"） |
 | 影响范围 | Data / Infrastructure：新增一张 additive Iceberg 表及其读写模块（`infrastructure/event/table_definition.py`、`infrastructure/event/iceberg.py`）；不改契约、不改 Phase 1 表、不改 `infrastructure/catalog/` |
-| 是否破坏兼容 | 否：15 张 Phase 1 表的定义与哈希、`PHASE1_REGISTRY`、`core/`、`schemas/` 均不变 |
+| 是否破坏兼容 | 否：15 张 Phase 1 表的定义与哈希、`PHASE1_REGISTRY` 不变；本 ADR 本身不改 `core/` / `schemas/`（`subject` 列随 ADR-0057 的契约字段而来，见实施说明） |
 | 实施状态 | CODE_COMPLETE / DEBUG_PENDING（只在临时 SQLite catalog 上测试；未在真实 catalog 建表） |
 | 前置 | [ADR-0036](0036-event-provider-contract.md)（EventProvider 契约与逻辑 Event 表）、[ADR-0023](0023-bitemporal-revision-data.md) §7（写入约束）、[ADR-0033](0033-research-dataset-selection-table.md)（additive 表先例）、[ADR-0031](0031-quality-evidence-gap-table.md)（additive 表先例） |
 
@@ -176,7 +176,7 @@ roadmap Phase 3 的输出包括 "Event 表"，Phase 4 以 "Canonical、Event" �
 
 ## 合规检查
 
-- [x] 不破坏已冻结契约：不改 `core/`、`schemas/`、Phase 1 表定义与哈希
+- [x] 不破坏已冻结契约：本 ADR 不改 Phase 1 表定义与哈希；`core/` / `schemas/` 的变化（`EventRequest` / `Event` / `EventResult.subject`）属于 ADR-0057，且按 Codex K3 须以契约 2.1.0 声明（待 ADR-0052 版本化重放完成）
 - [x] 不修改 Validation Constitution / Profile
 - [x] Domain 层仍无具体技术依赖（Iceberg 只出现在 `infrastructure/`）
 - [x] Research / Application Plane 边界不变
@@ -194,3 +194,11 @@ roadmap Phase 3 的输出包括 "Event 表"，Phase 4 以 "Canonical、Event" �
 ADR-0057 给逻辑事件表加了可选的 `subject` 列。`event.events` 在首次于任何 catalog 建表之前随之修订：字段 10 为可选 `subject`（未绑定的运行为 null），
 运行块改为字段 11～15，列表元素 id 为 16、17；`subject` 也进入运行块一致性核对（同一运行的每行标的相同）。定义版本仍为 `1.0.0`（该定义从未被创建），
 定义哈希重新固定为 `7c4372c0…`（`tests/infrastructure/event/test_event_iceberg.py`）；新增绑定标的运行的往返测试。
+
+### 部署状态只读核实（2026-09-26）
+
+字段 ID 的变更不以文字声明为据，而以只读核实为据：以 `SET TRANSACTION READ ONLY` 查询生产 catalog（`HLENS_CATALOG_URI`）的 `iceberg_tables`——15 张表，命名空间仅
+`canonical` / `quality` / `raw` / `research`，无任何 `event*` 表；测试 catalog（`HLENS_TEST_CATALOG_URI`）0 张表；本地 warehouse 目录只有 `raw` / `canonical` / `quality` /
+`research` / `staging`；D-NET 运行产物中的 "event" 只是质量报告键名。所有测试的 SQLite catalog 都建在 `tmp_path`。因此 `event.events` 从未在任何持久 catalog 中创建，
+定义 `1.0.0` 的字段 ID（逻辑列 1～10，运行块 11～15，列表元素 16～17）即首个被创建的布局，不存在需要保留的旧字段 ID；若日后已建表再改列，必须保留既有 ID 并做显式 schema evolution 与新定义版本。
+

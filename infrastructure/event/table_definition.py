@@ -1,10 +1,12 @@
 """The physical Phase 3 Event table ``event.events`` (ADR-0056; 03-data.md §8).
 
-One row per event of one event run (``EventResult``): the nine columns of the logical Event table
+One row per event of one event run (``EventResult``): the ten columns of the logical Event table
 (``infrastructure.event.table.EVENT_TABLE_COLUMNS``, same names, same order, field IDs 1-10; the
-optional ``subject`` is field 10, ADR-0057) plus
-the **run block** (``event_index``, ``event_count``, ``request_hash``, ``provider_hash``,
-``as_of``; IDs 10-14) that lets the table alone rebuild and re-verify the ``EventResult``. There
+tenth, optional ``subject``, is ADR-0057) plus the **run block** (``event_index``,
+``event_count``, ``request_hash``, ``provider_hash``, ``as_of``; field IDs 11-15; list element
+IDs 16-17) that lets the table alone rebuild and re-verify the ``EventResult``. The IDs were fixed
+before the table was ever created: a read-only check of every persistent catalog (2026-09-26,
+ADR-0056 implementation note) found no ``event.events`` anywhere. There
 is no ingest-time column (rows are a pure function of the run, so the batch fingerprint is
 deterministic and a rewrite is an idempotent replay; write time is the snapshot's
 ``committed_at``) and no revision block (a run is immutable; a new run has a new
