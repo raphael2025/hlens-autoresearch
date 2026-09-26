@@ -12,7 +12,7 @@
 | 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B41，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B43，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-26 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -103,9 +103,9 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
   独立只读复核（cursor-agent）发现的问题已修复 24 项（另有真实数据冒烟发现的 3 项）（验证门的 4 个高危泄漏 / 复用漏洞、G4 的"空配置即通过"、模拟场所绕过 Kill Switch、权重被当作数量等），
   其余缺口已登记；真实数据格式的端到端冒烟已通过（本机无真实行情，用真实格式小样本走真实入库路径；见 D-NET）
 - ⏸ Phase 1：实现与红队返修完成，等待 Codex / Raphael 验收（证据：`docs/reviews/2026-09-25-phase1-close-evidence.md`、`phase1-review-guide.md`）；Codex K4（PIT 边重复）为独立阻断项，不在全代码分支修改
-- 🔨 **全阶段代码完成批次（2026-09-26，Claude，`wip/all-code-completion`）**：B1～B41 已补齐 Phase 0.5、2～14 与前后端的剩余代码缺口（逐批见完成计划 §10）；
+- 🔨 **全阶段代码完成批次（2026-09-26，Claude，`wip/all-code-completion`）**：B1～B43 已补齐 Phase 0.5、2～14 与前后端的剩余代码缺口（逐批见完成计划 §10）；
   Raphael 2026-09-26 授权 Claude 自主决策（含红线），逐项裁决见 [自主决策记录](docs/reviews/2026-09-26-autonomous-decisions.md)；Codex 全代码复核（`docs/reviews/2026-09-26-codex-full-code-review.md`）K1 已修，
-  K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）进行中；全量非 PostgreSQL 门禁：`cc030ec`（= 本分支合并后代码）6749 passed / 136 deselected（B41）；契约 **2.1.0**（ADR-0052 按记录版本重放，独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`，已合入全代码分支）；ADR-0054 / 0057 已以 2.1.0 重新声明；均待 Codex 复核
+  K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）进行中；全量非 PostgreSQL 门禁：最终 HEAD `8983ead` 6749 passed / 136 deselected，退出码 0（完成计划 §10.6）；契约 **2.1.0**（ADR-0052 按记录版本重放，独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`，已合入全代码分支）；ADR-0054 / 0057 已以 2.1.0 重新声明；均待 Codex 复核
 
 ## 5. 下一步
 
@@ -230,11 +230,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-26 | 全代码批次收尾（B25～B43）：ADR-0059 / 0060 / 0061 实施、ADR-0005 Promotion 链、P6 逐单元验证、P7 批次与知识来源、P11 跨进程测试与状态目录单写者锁、P13 风险重放、P10 路由自身验证与纸面偏差、全栈契约核对与组件测试、契约 2.1.0 合入；D-LIST 恢复 Raphael 暂缓；最终门禁 `8983ead` 6749 passed | 全部 CODE_COMPLETE / DEBUG_PENDING，待 Cursor 调试与 Codex 复核；未合并 `phase/1` / `main` |
 | 2026-09-26 | ADR-0052 契约 2.1.0（按记录版本重放）合入全代码分支（`core/adr-0052-into-full-code`）；ADR-0054 / 0057 的新字段改为 2.1.0 声明；验证的研究侧取值完成（精确比较、Profile 字段优先且不可被显式参数覆盖、负对照独立阈值）；事件表记录契约版本；因信封变化而变的测试钉值逐一核实后改钉 | CODE_COMPLETE / DEBUG_PENDING；待协调者集成与 Codex 复核 |
 | 2026-09-26 | B22～B24：横截面动量（研究层）；ADR-0053 / 0054 / 0057 集成（后两者新字段在 2.0.0 下，按 Codex K3 / K5 未接受）；ADR-0052 阻断证据 → Codex 授权独立 Phase 1 分支版本化重放（M0 已推送）；`564c87c` 全量非 PostgreSQL 门禁 6142 passed / 136 deselected / 1 xfailed | `564c87c` 为保留恢复点；待 2.1.0 版本机制后重新声明 ADR-0054 / 0057 |
-| 2026-09-26 | 全阶段代码完成批次（Claude，`wip/all-code-completion`）：B1～B41 补齐 Phase 0.5、2～14 与前后端剩余代码（CODE_COMPLETE / DEBUG_PENDING）；Raphael 授权 Claude 自主决策（含红线），ADR-0056 / 0058 由 Claude 接受；Codex 全代码复核 K1 已修、K2 同步、K3（ADR-0052 以 2.1.0）进行中；全量非 PostgreSQL 门禁 5861 passed（`8d0d26d`） | 最新 HEAD 门禁待全部代码完成后重跑；Phase 1 仍待 Codex（K4） |
+| 2026-09-26 | 全阶段代码完成批次（Claude，`wip/all-code-completion`）：B1～B43 补齐 Phase 0.5、2～14 与前后端剩余代码（CODE_COMPLETE / DEBUG_PENDING）；Raphael 授权 Claude 自主决策（含红线），ADR-0056 / 0058 由 Claude 接受；Codex 全代码复核 K1 已修、K2 同步、K3（ADR-0052 以 2.1.0）进行中；全量非 PostgreSQL 门禁 5861 passed（`8d0d26d`） | 最新 HEAD 门禁待全部代码完成后重跑；Phase 1 仍待 Codex（K4） |
 | 2026-09-26 | 依 Codex 复核 K4 集成 PIT 跨日边去重修复（`9baad12` / `50cdc49`：同一 Raw 边只映射一次，内容不一致即拒绝）；严格全量门禁 5753 项通过（`50cdc49`） | K4 的代码复核待 Codex；Phase 1 仍未验收 |
-| 2026-09-26 | Phase 1 修复批次：D3E-R3 跨日错误修复（`69f0bf0`，13 项跨午夜回归，旧代码全失败、新代码全过，独立复核 ACCEPTABLE）；D-NET 工具不再消费失败 / 旧状态并记录代码版本与 snapshot 头（`d1e6e73`）；严格全量门禁 5738 项通过（`8b6fbaf`） | D3E 仍待 Codex 验收；Phase 1 未关闭 |
 
 ## 10. 下一阶段进入条件
 

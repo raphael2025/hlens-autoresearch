@@ -529,3 +529,33 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 决策包：**问题**——是否授权 ADR-0051 方案 A（一次公开 `exchangeInfo` 调用 + 显式绑定、写入清单的"上市历史假设"，仿 ADR-0032）？**为什么重要**——没有上市历史，真实历史数据建不成研究数据集（D-NET 停在 PIT 选择）；
   **选项**——A：授权（草稿实现可在批准后完成、跑严格门禁再并入）；B：只从今天起前向采集，不用历史上市假设；**推荐**：A（默认保守：不绑定即维持现行拒绝）；**不决定时**：保持现状，真实数据只到 PIT 选择。
 
+### 10.6 最终汇总（逐 Phase；`CODE_COMPLETE / DEBUG_PENDING` ≠ 验收）
+
+最终分支 `claude/2026-09-26-code-completion-337e38` → 远端 `wip/all-code-completion`；独立 Phase 1 分支 `phase1/adr-0052-versioned-replay`（`22392ea`，未并入 Phase 1 候选 / `main`）。
+没有合并 `phase/1` 或 `main`，没有打 tag。最终门禁见本节末尾。
+
+| Phase | 已实现且有定向验证（批次 / 主要提交） | 未完成或被阻塞（原因） |
+|---|---|---|
+| 0.5 | 经审阅写入路径 ADR-0058（B15 `5a494d2`）；`verify` 孤立审阅失败（B19 `e254a26`） | tag / 资产检索：ADR-0055（集成会话的 Proposed ADR，需改契约）；审阅人无认证 |
+| 1 | 不属本分支交付；ADR-0052 版本化重放与 2.1.0 在独立 Phase 1 分支（B38 / B40，真实 PostgreSQL 严格门禁 5852 passed @`22392ea`，B42） | D-LIST / ADR-0051：Raphael 明确暂缓（B43，`ARCHITECTURE_DECISION_REQUIRED`）；Phase 1 验收由 Codex / Raphael |
+| 2 | 诊断载荷 / 哈希（B6）、`state_diagnostics` 报告与页面（B12） | — |
+| 3 | 事件运行存储、统计序列化（B5）；物理表 `event.events` ADR-0056（B17，只读核实从未建表）；`subject` ADR-0057 以 2.1.0 声明（B41）；交互 DSL ADR-0061（B36） | 真实 catalog 未建表（只在 SQLite 测试 catalog 验证） |
+| 4 | Outcome 表持久化、多种子负对照（B10）；ADR-0052 契约 2.1.0 与研究侧精确比较 / C-A4 / 负对照独立阈值（B38 / B41）；C-T4 市场基准 ADR-0060（B35 / B39） | Profile 数值 D-09 未冻结（不猜测）；浮点表示保留为弃用双字段 |
+| 5 | 横截面动量 `xsmom_bars`（B22）；ADR-0054 部分成交以 2.1.0 声明（B41）；ADR-0005 Promotion 链（B28） | 无策略晋升（没有验证证据；Promotion 链今天拒绝所有库策略）；真实数据 bar 成交量属 Phase 1 |
+| 6 | 全单元预登记（B6）、可选接入循环（B21）、逐单元验证（B27） | 单元 PASS 不改变生命周期（缺独立 G4 / G5 路径，设计如此） |
+| 7 | LLM 内容存储与可取回核对（B11）；严格草稿、被拒调用记录、声明式批次、知识检索来源（B33） | 只有脚本化 LLM（真实 LLM 需网络与密钥，超出范围） |
+| 8 | G4 逐检查隔离（B10）、多标的验证（B20）、ADR-0059 横截面跨资产（B29） | 多标的池化负对照假阳性率只有冒烟证据 |
+| 9 | 检测器异常 INCONCLUSIVE（B1）、可选 G5（B13）、多标的校准模式（B26） | 只到冒烟规模；不产生阈值 |
+| 10 | 明确停止 / 哈希复核 / 报告绑定（B6 / B7）、资格证据模式（B16）与显示（B18）、纸面偏差（B34）、路由自身验证（B31） | 生产资格属 Control Plane |
+| 11 | 总线外部锚点（B4 / B8）、任务只读 API（B9）、跨进程测试（B32）与状态目录单写者锁（B32，真实缺陷修复）、劣化检查报告（B34）、ADR-0053（B23） | NATS / Control Plane 持久化（D-10）未做 |
+| 12 | 替换提案（B3） | 提案未接入循环 |
+| 13 | 持久审计 / 非空审计重开即急停 / 只读重放（B2）、风险 / 告警重放（B31）；仍只模拟 | 实盘、凭据、下单：决定不做（H10） |
+| 14 | 金标准持久化 / 差异报告 / 回滚证据（B11）、金标准实验重放（B32） | 无具体迁移目标（不引入新基础设施） |
+| 全栈 | 只读 API（任务、错误码、报告 invalid、契约 / 身份核对，B9 / B34）；12+ 页面三态、Jobs、新报告种类（B9 / B12 / B34）；`node --test` 55 + 组件 96（B37） | 浏览器对真实后端的手工验收未做；API → Worker 维持只读（ADR-0048，记录于自主决策记录） |
+
+仍待人工 / Codex：全部 CODE_COMPLETE 项的独立调试与对抗复测（Cursor）；ADR-0052 / 0054 / 0056 / 0057 / 0058 / 0059 / 0060 / 0061 与 Promotion 链的 Codex 复核；D-LIST（Raphael）；ADR-0055（集成会话 / Raphael）；D-09 Profile 数值；Phase 1 验收；合并 `main` / tag（Raphael）。
+
+**最终门禁（HEAD `8983ead`，本节文档提交之前的最终代码状态）**：`uv run pytest -q -m "not postgres" -p no:cacheprovider`（5 GB 上限）→ **6749 passed, 136 deselected, 1 warning in 2792.59s (0:46:32)，退出码 0**；
+`uv run ruff check .` → All checks passed；`uv run ruff format --check .` → 736 files already formatted；`uv run mypy` → Success: no issues found in 580 source files；Schema 135 份；`uv lock --check --offline` → OK；
+`npm test` → lib 55 / 55、组件 96 / 96；`npm run build` → ✓。136 个 deselected 是 PostgreSQL 标记测试：本分支不接触真实数据库；ADR-0052 的独立 Phase 1 分支已由集成会话以真实 PostgreSQL 测试 catalog 取证（`22392ea`：5852 passed）。
+
