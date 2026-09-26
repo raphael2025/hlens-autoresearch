@@ -19,7 +19,10 @@ Stages, gate ids and threshold sources:
   (structural), ``G2.effective_sample_size`` (C-T2;
   ``sample_size.min_effective_trades_in_sample``), ``G2.breakeven_cost_multiple`` and
   ``G2.cost_stress.<i>`` (C-R4 / A6; ``cost_stress.*``), ``G2.cost_report.<i>`` (reported only),
-  ``G2.null_model_percentile`` (C-T4; ``benchmark.null_model_percentile``);
+  ``G2.null_model_percentile`` (C-T4; ``benchmark.null_model_percentile``); with an
+  ``InSampleInput.benchmark`` source, the ADR-0060 C-T4 items ``G2.market_benchmark.<rule>`` /
+  ``G2.inverse_control`` (reported only; an unregistered ``benchmark.market_benchmark_rule`` is
+  ``G2.market_benchmark`` = ``INCONCLUSIVE``; see ``research.validation.benchmark``);
 - **G3 multiple-testing adjusted significance**: ``G3.adjusted_p_value`` (C-T1 / C-T3;
   ``significance.multiple_testing_threshold``);
 - **G5 sealed OOS**: ``G5.unsealing_recorded``, ``G5.oos_effective_sample_size``
@@ -74,6 +77,7 @@ from core.domain.research import (
 from core.domain.specs import STRATEGY_SIGNAL_KINDS
 from core.errors import ReasonCode
 from research.outcomes.table import OutcomeTable
+from research.validation.benchmark import BenchmarkSource, benchmark_gates
 from research.validation.controls import (
     ControlResult,
     FittableStudy,
@@ -147,7 +151,13 @@ class InSampleInput:
     """G0 – G3 input. ``control_seeds`` is the optional multi-seed negative-control option (module
     docs, **Multi-seed negative controls**): ``None`` (default) keeps the single-seed controls
     exactly as before; a non-empty tuple of distinct ``int`` seeds runs both controls once per
-    seed. It has no default seed list: the caller names every seed."""
+    seed. It has no default seed list: the caller names every seed.
+
+    ``benchmark`` (ADR-0060, 2026-09-26) is the optional C-T4 market-benchmark / inverse-control
+    evidence source (``research.validation.benchmark``): ``None`` (default) adds no gate (the
+    label-only pipeline has no price path; byte-identical to before); given, G2 ends with the
+    items the Profile's ``benchmark.market_benchmark_rule`` / ``.inverse_control_reported`` call
+    for, computed lazily (the source is called only when G2 is reached)."""
 
     context: ValidationContext
     outcomes: OutcomeTable
@@ -156,6 +166,7 @@ class InSampleInput:
     reproduce: Callable[[], str]
     recorded_result_hash: str
     control_seeds: tuple[int, ...] | None = None
+    benchmark: BenchmarkSource | None = None
 
     def __post_init__(self) -> None:
         seeds = self.control_seeds
@@ -574,7 +585,7 @@ def run_in_sample(inp: InSampleInput) -> tuple[GateResult, ...]:
     if failed(_g0(inp, labels)) or failed(_g1(inp, labels)):
         return tuple(gates)
     split = _evaluation(inp, labels)
-    if failed(_g2(inp, split)):
+    if failed([*_g2(inp, split), *benchmark_gates(inp.context.profile, inp.benchmark)]):
         return tuple(gates)
     gates.extend(_g3(inp, split.trades))
     return tuple(gates)

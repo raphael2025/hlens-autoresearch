@@ -35,3 +35,27 @@
 
 - [x] 不写入任何数值阈值；不修改 Constitution 或 Profile 结构
 - [x] 未知规则名从不 PASS；缺证据 INCONCLUSIVE
+
+## Implementation note (2026-09-26)
+
+状态 **CODE_COMPLETE / DEBUG_PENDING**。无 core / 契约 / Schema 变化，无新数值阈值，缺证据从不算 PASS。
+
+- **注册表与门**（`research/validation/benchmark.py`）：`MARKET_BENCHMARK_RULES` = `none` / `buy_and_hold_equal_weight` / `flat`，按名称**精确**匹配
+  （不做大小写 / 空白归一）。未登记名称 → `G2.market_benchmark` = `INCONCLUSIVE`（`configuration_missing:benchmark.market_benchmark_rule=<名>`）。
+  计算出的报告项：`G2.market_benchmark.<规则>`（策略复利净收益 − 基准复利净收益）、`.benchmark_net_return`、`.period_excess_mean`、
+  `.period_excess_positive_fraction`（逐期净超额序列的摘要），以及 `G2.inverse_control`（取反重跑的复利净收益）。报告项无阈值、判 `PASS` =
+  已计算（与 `G2.cost_report.<i>` 相同），因此不改变 `derive_verdict`。证据无法产生（执行模型无法复现、重跑出错、逐期网格不一致）→ 该项
+  `INCONCLUSIVE`（`benchmark_unavailable:<原因>`）。`none` 不产生门；`flat` 在本模块内构造零序列，不重跑。
+- **流水线**（`pipeline.py`）：`InSampleInput.benchmark`（证据源，默认 `None`）；给出时这些项位于 G2 末尾、G3 之前，证据源只在到达 G2 且确有需要
+  计算的项时被调用一次。`None` 不加任何门——纯标签流水线没有价格路径，无法计算市场基准。
+- **回测接线**（`research/strategies/validation.py`）：`ValidatorSetup.market_benchmark`（默认 `False`）。`True` 时先用声明的回测器（未声明则
+  `BarBacktester()`）重跑所选试验自身的目标并要求 `result_hash` 完全一致，然后以同一回测器、成本模型、bar、初始权益回测：等权买入持有
+  （在重跑的首个决策时刻按 `1 / N` 建仓、持有到数据末尾；目标的唯一"输入"是规则本身，`latest_input_available_time` = 决策时刻）与每个目标取反
+  （空仓保持空仓）的反向对照。它们是回测而非 `TrialRunner` 调用：试验数与 `TrialRunner` 调用序列不变（测试固定）。
+- **多标的**（`instruments.py`）：只在池化输入上计算，等权覆盖全部已验证标的；逐标的输入带证据源会被拒绝（`ValueError`），不产生逐标的副本。
+- **逐字节不变**：`market_benchmark=False`（研究循环、合成实验室、e2e 等全部既有调用方）时报告与视图不变；b3986da 上固定的单标的 / 多标的报告与
+  视图哈希由 `tests/research/strategies/test_market_benchmark.py` 复现。**没有任何既有固定哈希改变**，也没有修改任何 TEST ONLY 夹具。
+- **已知限制 / 后续（DEBUG_PENDING）**：采用调用方显式开启而不是按 Profile 自动启用，原因是现有 TEST ONLY Profile（研究循环、合成实验室、e2e 夹具）
+  都用未登记的占位名 `"test-only"`：自动启用会把这些报告全部变为 `INCONCLUSIVE`，而这些夹具与 `research/loop` 不在本批次的文件边界内。
+  研究循环接入（`research/loop` 设置 `market_benchmark=True`）并把这些夹具改为已登记的规则名、重新固定其记录哈希，需另行批准；在此之前，
+  未开启的调用方不会因未登记规则名而得到 `INCONCLUSIVE`。`docs/architecture/07-validation.md` §G2 的门清单尚未同步（不在本批次边界内）。

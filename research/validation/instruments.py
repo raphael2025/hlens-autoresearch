@@ -29,6 +29,12 @@ must be about the same outcome, label spec and provider. The pooled table is a h
    intersection–union test: it can only remove PASSes, never add one;
 3. G4 (``g4.robustness_stage``) only when nothing above failed.
 
+ADR-0060 (2026-09-26): the C-T4 market benchmark and inverse control
+(``research.validation.benchmark``) are computed **once, on the pooled input** — the
+equal-weight buy-and-hold spans every validated instrument (``1 / N`` each) — and recorded under
+the standard ids (``G2.market_benchmark.<rule>``, ``G2.inverse_control``). A per-instrument input
+must not carry a ``benchmark`` source (refused, ``ValueError``): no per-instrument copies.
+
 The report verdict stays ``derive_verdict`` of all gates, so the standard rule combines the
 instruments: any ``FAIL`` fails, else any ``INCONCLUSIVE`` is ``INCONCLUSIVE``, and a PASS needs
 the pooled evidence **and** every instrument's evidence to pass.
@@ -169,6 +175,11 @@ def run_multi_instrument_validation(
             pooled.control_seeds,
         ):
             raise ValueError(f"{name}: a per-instrument input must share the pooled binding")
+        if inp.benchmark is not None:
+            raise ValueError(
+                f"{name}: the market benchmark / inverse control are pooled only (ADR-0060); "
+                "a per-instrument input takes no benchmark source"
+            )
         mine = [label.event_key for label in inp.outcomes]
         if any(instrument_of(key) != name for key in mine):
             raise ValueError(f"{name}: labels keyed to another instrument")

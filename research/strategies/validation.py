@@ -161,6 +161,29 @@ per-asset runs; those are robustness re-runs of the chosen trial like the per-as
 calls as before and its report is byte-identical (hashes pinned in
 ``tests/research/strategies/test_cross_sectional_g4.py``).
 
+C-T4 market benchmark and inverse control (ADR-0060, Accepted 2026-09-26; CODE_COMPLETE /
+DEBUG_PENDING). No core / contract / Schema change. ``ValidatorSetup.market_benchmark`` (default
+``False``) opts the validator in: ``True`` hands G2 a ``research.validation.benchmark`` source built
+from the one re-run, so the report carries the items the Profile's
+``benchmark.market_benchmark_rule`` / ``.inverse_control_reported`` call for
+(``G2.market_benchmark.<rule>`` / ``G2.inverse_control``, reported only; an unregistered rule name —
+e.g. the TEST ONLY placeholder ``"test-only"`` — is ``G2.market_benchmark`` = ``INCONCLUSIVE``).
+The source first re-runs the chosen trial's own targets through the declared backtester (or a plain
+``BarBacktester()`` when none is declared) and requires the re-run's exact ``result_hash``: if the
+execution model cannot be reproduced, every requested item is ``INCONCLUSIVE``
+(``benchmark_unavailable:execution_model_not_reproduced``), never computed under another model.
+Then, through that same backtester, cost model, bars and initial equity:
+
+- ``buy_and_hold_equal_weight``: one ``1 / N`` target per validated instrument (the pooled scope on
+  the multi-instrument path; the one instrument otherwise) at the re-run's first decision time,
+  held to the end of the data;
+- the inverse control: every re-run target with its weight negated (flat stays flat).
+
+These are backtests of the same trial, not ``TrialRunner`` calls: ``family_trial_count`` and the
+runner's call sequence are unchanged. ``False`` (every pre-existing caller: the loop, the synthetic
+lab, the e2e tests) adds nothing, so their reports are byte-identical (hashes pinned in
+``tests/research/strategies/test_market_benchmark.py``).
+
 Known limit (DEBUG_PENDING): the pooled G1 negative controls permute / circularly shift the
 pooled label sequence, which interleaves instruments by time, so a control may pair one
 instrument's side with another's label. That is still a valid null (it can only break
@@ -181,6 +204,8 @@ from core.contracts.outcome import OutcomeEvent, OutcomePriceBar, OutcomeProvide
 from core.contracts.strategy import (
     BacktestCostModel,
     BacktestProvider,
+    BacktestProviderError,
+    BacktestRequest,
     BacktestResult,
     PriceBar,
     TargetPosition,
@@ -194,6 +219,12 @@ from infrastructure.bars.pair import ManifestPair, pair_hash_of
 from plugins.backtest import BarBacktester, ExecutionModel
 from research.outcomes.table import OutcomeTable, materialize
 from research.strategies.cross_section import is_cross_sectional
+from research.validation.benchmark import (
+    BenchmarkEvidence,
+    BenchmarkSource,
+    MarketBenchmarkRule,
+    Unavailable,
+)
 from research.validation.controls import FixedSides
 from research.validation.g4 import (
     RobustnessInput,
@@ -346,8 +377,11 @@ class ValidatorSetup:
       of at least two distinct instruments the backtest trades; ``instrument`` must be one of
       them (it stays the view's ``instrument``). See the module docs, **Multi-instrument
       validation**.
+    - ``market_benchmark`` (ADR-0060, 2026-09-26): ``False`` (default) adds no C-T4 market
+      benchmark / inverse-control item (byte-identical); ``True`` computes what the Profile's
+      ``benchmark`` block calls for (module docs, **C-T4 market benchmark and inverse control**).
 
-    Only the last seven fields have defaults (``None`` / empty): they keep the synthetic callers
+    Only the last eight fields have defaults (``None`` / empty): they keep the synthetic callers
     and the pre-existing (no execution model, single-seed controls, one instrument) callers
     unchanged, and the view always labels the path taken.
     """
@@ -370,6 +404,7 @@ class ValidatorSetup:
     execution: ExecutionModel | None = None
     control_seeds: tuple[int, ...] | None = None
     instruments: tuple[str, ...] | None = None
+    market_benchmark: bool = False
 
     def __post_init__(self) -> None:
         if self.backtester is not None and self.execution is not None:
@@ -530,6 +565,63 @@ def _longest_holding(targets: Sequence[TargetPosition], base: PeriodReturns) -> 
     return longest
 
 
+def _backtest(
+    backtester: BacktestProvider, rerun: TrialRun, targets: tuple[TargetPosition, ...]
+) -> BacktestResult:
+    """``targets`` backtested exactly like ``rerun`` (same bars, cost model, initial equity)."""
+    request = BacktestRequest(
+        cost_model=rerun.cost_model,
+        initial_equity=rerun.backtest.initial_equity,
+        bars=rerun.bars,
+        targets=targets,
+    )
+    result = backtester.run(request)
+    result.check_answers(request, backtester.descriptor)
+    return result
+
+
+def _returns_of(
+    backtester: BacktestProvider, rerun: TrialRun, targets: tuple[TargetPosition, ...]
+) -> PeriodReturns | Unavailable:
+    """The period returns of ``targets`` under ``rerun``'s model; a run that cannot be simulated
+    (or whose equity is not positive) is ``Unavailable``, never a number."""
+    try:
+        return from_backtest(_backtest(backtester, rerun, targets))
+    except (BacktestProviderError, ValueError) as exc:
+        return Unavailable(f"rerun_failed:{type(exc).__name__}")
+
+
+def _buy_and_hold(
+    rule: MarketBenchmarkRule, rerun: TrialRun, instruments: Sequence[str]
+) -> tuple[TargetPosition, ...]:
+    """ADR-0060 ``buy_and_hold_equal_weight``: the rule's weights, entered at the re-run's first
+    decision time and never changed. The rule itself is the target's one input (no market data;
+    ``latest_input_available_time`` is the decision time, so nothing is looked ahead)."""
+    start = min(target.decision_time for target in rerun.targets)
+    return tuple(
+        TargetPosition(
+            decision_time=start,
+            instrument=name,
+            target_weight=weight,
+            inputs_used=1,
+            latest_input_available_time=start,
+        )
+        for name, weight in sorted(rule.weights(instruments).items())
+    )
+
+
+def _negated(targets: Sequence[TargetPosition]) -> tuple[TargetPosition, ...]:
+    """Every target with its weight negated (the ADR-0060 inverse control); flat stays flat."""
+    return tuple(
+        target
+        if target.target_weight == 0
+        else TargetPosition.model_validate(
+            {**target.model_dump(), "target_weight": -target.target_weight}
+        )
+        for target in targets
+    )
+
+
 def _full(spec: StrategySpec, point: ParamPoint) -> dict[str, SpecScalar]:
     """The identity of a trial: spec defaults overridden by the point."""
     return {**dict(spec.params), **dict(point)}
@@ -605,6 +697,7 @@ class PipelineBacktestValidator:
             reproduce=lambda: rerun.backtest.result_hash,
             recorded_result_hash=backtest.result_hash,
             control_seeds=setup.control_seeds,
+            benchmark=self._benchmark_source(rerun),
         )
         run = run_validation(in_sample, lambda: self._robustness_input(spec, chosen, rerun))
         report = build_report(ctx, (*adapter, *run.gates))
@@ -757,9 +850,15 @@ class PipelineBacktestValidator:
             reproduce=lambda: rerun.backtest.result_hash,
             recorded_result_hash=backtest.result_hash,
             control_seeds=setup.control_seeds,
+            benchmark=self._benchmark_source(rerun),
         )
-        per_instrument = {
-            name: replace(pooled, outcomes=table, study=FixedSides(refs=refs, by_event=sides[name]))
+        per_instrument = {  # the ADR-0060 benchmark is pooled only
+            name: replace(
+                pooled,
+                outcomes=table,
+                study=FixedSides(refs=refs, by_event=sides[name]),
+                benchmark=None,
+            )
             for name, table in tables.items()
         }
         run = run_multi_instrument_validation(
@@ -901,6 +1000,41 @@ class PipelineBacktestValidator:
             per_asset_exposed={name: _exposed(run) for name, run in alone.items()},
             sub_universes=sub_universes,
         )
+
+    def _benchmark_source(self, rerun: TrialRun) -> BenchmarkSource | None:
+        """The ADR-0060 evidence source of ``rerun`` (module docs), or ``None`` when the setup
+        does not opt in (``market_benchmark=False``: no item, byte-identical)."""
+        if not self._setup.market_benchmark:
+            return None
+        backtester = self._declared_backtester() or BarBacktester()
+        instruments = self._setup.validated_instruments
+
+        def source(rule: MarketBenchmarkRule | None, inverse: bool) -> BenchmarkEvidence:
+            strategy = from_backtest(rerun.backtest)
+            if rule is None and not inverse:  # ``flat``: built from the strategy's own grid
+                return BenchmarkEvidence(strategy=strategy)
+            try:
+                same = _backtest(backtester, rerun, rerun.targets).result_hash
+            except (BacktestProviderError, ValueError):
+                same = None
+            if same != rerun.backtest.result_hash:  # never another execution model
+                missing = Unavailable("execution_model_not_reproduced")
+                return BenchmarkEvidence(
+                    strategy=strategy,
+                    benchmark=None if rule is None else missing,
+                    inverse=missing if inverse else None,
+                )
+            return BenchmarkEvidence(
+                strategy=strategy,
+                benchmark=None
+                if rule is None
+                else _returns_of(backtester, rerun, _buy_and_hold(rule, rerun, instruments)),
+                inverse=_returns_of(backtester, rerun, _negated(rerun.targets))
+                if inverse
+                else None,
+            )
+
+        return source
 
     def _execution_impact_coefficient(self) -> Decimal | None:
         """The declared execution model's impact coefficient, if any (implementation note,

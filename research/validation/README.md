@@ -17,6 +17,7 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
 | `instruments.py` | 多标的验证：`pool_outcomes`（按 `event_key` 中的标的核对后池化各标的的标签表）、`run_multi_instrument_validation`（池化 G0 – G3 + 逐标的 G0 – G3 记为 `<门 id>.instrument.<名>`，再接 G4；见下文「多标的验证」） |
 | `robustness.py` | C-R1 ~ C-R5 与 C-T1 过拟合概率的检查：过拟合、参数邻域、时间对齐、延迟压力、成本压力、walk-forward 窗口统计（无收益窗口计入并使比例 INCONCLUSIVE）、状态分解、容量、跨资产；每个返回 `RobustnessCheck`（门 + 阈值来源 + 缺失字段 + 表格） |
 | `overfitting.py` | PBO（CSCV，分块间按 `data_split.embargo` purge / embargo，purge 宽度至少为必填的标签 / 持有期 `horizon`，与 `splits.purge_and_embargo` 同一语义）、Deflated Sharpe、逐期 Sharpe（不含阈值） |
+| `benchmark.py` | C-T4 市场基准规则与反向对照（[ADR-0060](../../docs/adr/0060-market-benchmark-rule-semantics.md)）：规则注册表 `MARKET_BENCHMARK_RULES`（`none` / `buy_and_hold_equal_weight` / `flat`）、`benchmark_gates`（报告项；未登记的规则名 → `G2.market_benchmark` INCONCLUSIVE）；见下文「C-T4 市场基准与反向对照」 |
 | `returns.py` | `PeriodReturns`（毛收益 + 成本，净收益按成本倍数计算）、`from_backtest`（`BacktestResult` → 逐期收益）、`TrialReturns` |
 | `retro_audit.py` | 回溯审计：以现行规则重跑并报告逐门差异；已拒绝对象永不被翻转为通过（构造时强制） |
 | `report.py` | `report_view` / `to_json`：规范 JSON 报告视图（供日后 apps/web 可视化）；`promotion` 块：没有 G5 结果的 PASS 标为不可晋升（`sealed_oos_not_evaluated`） |
@@ -110,3 +111,20 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   `param:cross_asset.min_positive_fraction` 判定（metric `positive_subuniverse_fraction`）；不足两个子宇宙 → `INCONCLUSIVE`
   （`not_enough_instruments_for_subuniverses`）。逐标的行仍写入 `details`，但不对横截面策略判门。子宇宙重跑不是新试验，`family_trial_count` 不变。
 
+### C-T4 市场基准与反向对照（[ADR-0060](../../docs/adr/0060-market-benchmark-rule-semantics.md)，Accepted 2026-09-26）
+
+> 状态：**CODE_COMPLETE / DEBUG_PENDING**。无 core / 契约 / Schema 变化，无新数值阈值；不提供证据源时（默认）报告逐字节不变。
+
+- **规则**：`benchmark.market_benchmark_rule` 必须**精确**等于一个已登记名：`none`（不适用，不产生门）、`buy_and_hold_equal_weight`
+  （相同标的、相同研究窗口、相同执行与成本模型下的等权买入持有：在策略首个决策时刻按 `1 / N` 建仓、不再调仓）、`flat`（零敞口，逐期收益与成本为 0）。
+  其它名称（包括 TEST ONLY 占位 `"test-only"`）→ `G2.market_benchmark` = `INCONCLUSIVE`
+  （`configuration_missing:benchmark.market_benchmark_rule=<名>`），从不 PASS，没有兜底规则。
+- **报告项**（G2 末尾、G3 之前）：`G2.market_benchmark.<规则>`（策略复利净收益 − 基准复利净收益）、`.benchmark_net_return`、
+  `.period_excess_mean`（逐期净超额均值）、`.period_excess_positive_fraction`（逐期净超额为正的期数 / 全部期数）；
+  `inverse_control_reported = true` 时 `G2.inverse_control`（每个目标仓位取反、同一执行与成本模型重跑的复利净收益）。
+  这些门没有阈值，`PASS` 只表示"已计算"（与 `G2.cost_report.<i>` 同一方式），从不改变 `derive_verdict`；C-T4 的门槛仍是空模型。
+- **缺证据**：证据源无法以同一执行模型重跑、重跑出错、或逐期网格与策略不一致 → 对应项 `INCONCLUSIVE`（`benchmark_unavailable:<原因>`）。
+- **接线**：`InSampleInput.benchmark`（`BenchmarkSource`，默认 `None` = 不加任何门；只有纯标签的流水线没有价格路径）。证据源在进入 G2 时才被调用，
+  且只在确有需要计算的项时调用。多标的路径只在池化输入上计算（逐标的输入带证据源会被拒绝，`ValueError`）。
+  回测接线见 `research/strategies/validation.py`（`ValidatorSetup.market_benchmark`）。
+- **试验数不变**：基准与反向对照是同一试验的稳健性重跑（直接回测，不经 `TrialRunner`），`family_trial_count` 不变。

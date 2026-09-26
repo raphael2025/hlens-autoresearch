@@ -58,5 +58,13 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 `cross_asset.min_positive_fraction` 判定子宇宙正收益比例（A）；少于 4 个声明标的（不足两个子宇宙）判 `INCONCLUSIVE`。这些都是所选试验的稳健性重跑，
 试验数不变。其它策略的 `TrialRunner` 调用与报告逐字节不变（改动前固定的哈希见 `tests/research/strategies/test_cross_sectional_g4.py`）。
 
+**C-T4 市场基准与反向对照**（[ADR-0060](../../docs/adr/0060-market-benchmark-rule-semantics.md)，Accepted 2026-09-26；
+状态 **CODE_COMPLETE / DEBUG_PENDING**；未改 core / 契约 / Schema）：`ValidatorSetup.market_benchmark`（默认 `False`）为 `True` 时，
+`validation.py` 用同一次重跑为 G2 构建证据源：先用声明的回测器（未声明则 `BarBacktester()`）重跑所选试验自己的目标，要求 `result_hash`
+完全一致（否则各项 `INCONCLUSIVE`，`benchmark_unavailable:execution_model_not_reproduced`，从不换一个执行模型计算）；再以同一回测器、成本模型、
+bar 与初始权益回测等权买入持有（多标的路径为池化范围内每个标的 `1 / N`，单标的为 1）与全部目标取反的反向对照。它们是回测而不是 `TrialRunner`
+调用，试验数与调用序列不变。`False`（所有既有调用方：研究循环、合成实验室、e2e）不加任何门，报告与视图逐字节不变（改动前固定的哈希见
+`tests/research/strategies/test_market_benchmark.py`）。
+
 **未实现**：`state_cross_exchange_price_deviations`（Makarov & Schoar 2020，跨交易所价差）需要多交易所数据，超出已批准的数据范围
 （ADR-0022：仅 Binance），因此不在本库实现；数据范围扩大需先有 ADR。
