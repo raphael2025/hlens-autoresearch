@@ -2,10 +2,10 @@
 
 | 字段 | 值 |
 |---|---|
-| 性质 | 实施记录，**不是验收结论**；ADR-0055 仍为 Proposed，等待 Codex 复核实施证据 |
+| 性质 | 实施记录，**不是验收结论**；Codex 已复核独立实现并接受其进入整合（2026-09-26）；ADR-0055 在组合分支验证完成前仍为 Proposed |
 | 决定来源 | Codex 决策记录 `docs/reviews/2026-09-26-adr-0055-codex-decision.md`（分支 `codex/full-code-review-2026-09-26`，复核 HEAD `70e4034`），依 Raphael 授权 |
 | 实施者 | Claude Code（Opus），只实现，不改变决定 |
-| 分支 | `claude/adr-0055-tags-assets`（基于全代码 WIP `1cd3284`；未 cherry-pick 旧 `wip/phase-0.5-knowledge`）；**未 push** |
+| 分支 | 独立实现 `claude/adr-0055-tags-assets`（基于全代码 WIP `1cd3284`；未 cherry-pick 旧 `wip/phase-0.5-knowledge`），经 Codex 批准推送为检查点 `origin/claude/adr-0055-tags-assets` = `ed8e694`；组合分支 `claude/adr-0055-integration`（基于 `a5836b2`，§9），未 push |
 | 状态 | CODE_COMPLETE / DEBUG_PENDING |
 
 ## 1. 做了什么
@@ -71,10 +71,17 @@ uv run python -m core.contracts.registry   # 然后 git diff --stat schemas
 
 ### 4.1 web（控制台）
 
-- Claude 在本机运行（无 `node_modules`，node v26.8.1 原生剥离类型）：`cd apps/web && node --test src/lib/knowledgeQuery.test.ts` → `tests 7 / pass 7 / fail 0`。
-- **Codex 独立运行**（2026-09-26，临时用已有依赖的 `node_modules` 符号链接，运行后已删除，未进入任何提交）：
-  `npm test` → 103 项通过；`npm run build` → TypeScript 检查与 Vite 生产构建通过。以上为 Codex 报告的结果，Claude 未复现。
-- Claude 未安装任何依赖，也未运行 `npm run gen:api`（`src/api.d.ts` 为手工同步，已由上述 `npm run build` 的类型检查覆盖）。
+"未运行"只指**独立实现的隔离 worktree 中由 Claude 运行的部分**：该 worktree 没有 `apps/web/node_modules`，Claude 也未安装依赖，因此：
+
+- Claude 在隔离 worktree 中只能运行不依赖 `node_modules` 的 lib 测试（node v26.8.1 原生剥离类型）：
+  `node --test src/lib/knowledgeQuery.test.ts` → `tests 7 / pass 7 / fail 0`；
+- 隔离 worktree 的全量门禁（`ed8e694`：7029 passed, **1 skipped**）中被跳过的那一项是控制台 live-backend smoke
+  （`tests/apps/test_live_backend_smoke.py`：缺 `node_modules/esbuild` 时带原因跳过），不是失败；
+- **Codex 独立运行**了 web 全套（2026-09-26，临时用已有依赖的 `node_modules` 符号链接，运行后已删除，未进入任何提交）：
+  `npm test` → 103 项通过；`npm run build` → TypeScript 检查与 Vite 生产构建通过。这是 Codex 报告的结果。
+- 组合分支 worktree（§9）有 `node_modules`（从全代码 worktree 本地复制，`package-lock.json` 逐字节相同，无网络、无包管理器安装，
+  被 `.gitignore` 忽略）：Claude 在其中实际运行了 `npm run gen:api`（重新生成的 `src/api.d.ts` 与手工同步的提交**逐字节相同**）、
+  `npm test`、`npm run build` 与 live-backend smoke（不再跳过），结果见 §9。
 
 ## 5. 种子标签 / 资产：分类提案（未写入，待人工审阅）
 
@@ -92,7 +99,7 @@ XRP 是论文样本，与 Binance 标的池无关）。
 | `risk_volatility_managed_portfolios_out_of_sample` | `counter_evidence`, `volatility_management` | `equity` | claim 为反证（"do not systematically beat"）；conditions "many equity strategies" |
 | `state_cross_exchange_price_deviations` | `arbitrage`, `cross_exchange` | `crypto` | 标题 "Trading and arbitrage in cryptocurrency markets"；conditions "multiple exchanges and countries" |
 
-## 6. 需要集成会话同步的精确状态（本批次未编辑共享文件）
+## 6. 需要集成会话同步的精确状态（独立实现批次未编辑共享文件；已在组合分支 §9 同步）
 
 本批次按指示**未**编辑 `PROJECT_STATUS.md`、`PROJECT_MEMORY.md`、`docs/plans/2026-09-26-all-code-completion-plan.md`。集成时建议写入：
 
@@ -108,7 +115,7 @@ XRP 是论文样本，与 Binance 标的池无关）。
 
 1. **ADR-0055 状态**：Proposed，等待 Codex 复核（本说明 §2、§3 与提交中的测试输出为证据）。
 2. **种子元数据**：§5 提案待具名人工审阅者经写入路径提交（新版本）；在此之前，按标签 / 资产检索在真实种子上返回空。
-3. **web**：`api.d.ts` 为手工同步（未运行 `gen:api`）；Knowledge Search 已加标签 / 资产输入（Codex 复核要求的补充，§8）；node 全套与构建由 Codex 独立运行通过（§4.1），Claude 本机只能运行不依赖 `node_modules` 的 lib 测试。
+3. **web**：Knowledge Search 已加标签 / 资产输入（Codex 复核要求的补充，§8）；隔离 worktree 中 node 全套由 Codex 独立运行通过；组合分支中 Claude 实际运行了 `gen:api` / `npm test` / `npm run build` / live smoke（§4.1、§9）。浏览器手工验收未做。
 4. **token 语法与资产取向**（ADR 决策 3 / 4）是 Amendment 1 为落实"规范资产标识"而定的细节：小写 snake case、不用交易所符号。若 Codex 要求交易所符号形式，需再修订。
 5. **Provider 版本**：`hlens_knowledge_local` 升为 1.1.0，同一查询的 `result_hash` 与 1.0.0 记录不同（provider 键参与哈希）；已记录的 1.0.0 结果按其载荷仍可校验与重建（V2）。
 
@@ -123,3 +130,38 @@ XRP 是论文样本，与 Binance 标的池无关）。
 - 测试：`src/lib/knowledgeQuery.test.ts`（7 项）；`src/pages/KnowledgeSearch.test.tsx` 新增 4 个组件测试（提交的请求体、非法输入无请求
   且显示原因、筛选为空的未分类提示、后端 422）。
 - 未新增任何种子分类。
+
+## 9. 组合分支（Codex 复核后的整合，2026-09-26）
+
+Codex 复核结论：接受独立实现与 2.2.0 版本方案进入整合；2.1.0 固定向量、2.2.0 精确匹配与哈希覆盖证据充分；ADR 在组合分支验证完成前
+仍为 Proposed。
+
+| 步骤 | 结果 |
+|---|---|
+| 检查点推送 | `origin/claude/adr-0055-tags-assets` = `ed8e69484c8b2f600e57167eb437f620242e036d`（普通非强制推送，新分支） |
+| 组合分支 | `claude/adr-0055-integration`，从全代码候选 `a5836b2` 新建；历史不改写 |
+| `8e1d653` → `48fe180` | 无冲突 |
+| `e02898a` → `a8490bf` | 三处冲突，均保留两侧（下表） |
+| 新增 `62256b6` | Phase 9 证据测试按记录版本核对（下文） |
+| `ed8e694` → `2b2a6a5` | 无冲突（`apps/web/README.md` 自动合并） |
+
+冲突解决（全部保留 B46 的报告种类与 2.0.0 遗留 fixture、B46 的 `VARIANTS` 变体机制，以及 ADR-0055 的 2.1.0 遗留 fixture 与 2.2.0 当前 fixture）：
+
+| 文件 | 解决 |
+|---|---|
+| `tests/apps/report_fixtures.py` | `VARIANTS` / `variant_fixture` 与 `LEGACY_2_1_0` / `LEGACY` / `legacy_ids` 并存；`fixture()` 排除两代遗留与全部变体 |
+| `tests/apps/test_console_fixtures.py` | 两侧导入并存；逐种类检查同时减去两代遗留与变体，并要求二者不相交 |
+| `tests/research/reports/test_console_fixture_writers.py` | `VARIANT_WRITERS` 与 `LEGACY_WRITERS["2.0.0" / "2.1.0"]` 并存；`regenerate()` = 当前 + 变体 + 每代遗留；已提交文件集合 = 当前 + 变体 + 两代遗留 |
+
+B46 的变体 `degradation_check/50f53688…` 在 2.2.0 下不变（生成器不写新文件）；`a5836b2` 未改 `core/` 与 `schemas/`，Schema / OpenAPI 重新导出无差异。
+
+**Phase 9 证据（`dd6c8e1`，在原基线之后加入）**：`docs/research/calibration/` 的两份报告与 `INPUTS_HASHES` 钉值由 2.1.0 代码生成，
+setup 的 `inputs_payload` 内嵌 Profile / spec 的信封与内容哈希，组合后 6 项失败（定向运行原样：`6 failed, 1710 passed, 1 skipped`）。
+报告是证据，不重生成、不重钉：先在 `contract_schema_version_scope("2.1.0")` 内运行**未修改**的测试 → `11 passed`；再把测试改为在新进程中
+按 2.1.0 构造 setup 核对钉值与报告 `inputs`，并新增"当前 setup 去掉信封及其上的哈希后与记录的相同"检查 → `22 passed`（含文档一致性）。
+
+web（组合 worktree，`node_modules` 为本地复制，见 §4.1）：`npm run gen:api` → `src/api.d.ts` 无差异；`npm test` → lib `tests 87 / pass 87 / fail 0`、
+组件 `tests 109 / pass 109 / fail 0`，exit 0；`npm run build` → `✓ built`，exit 0；`pytest tests/apps/test_live_backend_smoke.py` → `3 passed`（未跳过）。
+
+组合分支的最终全量门禁在全部合并与文档提交之后、于冻结的 HEAD 上运行；结果连同起止 SHA 与 dirty 状态记录在交付报告中（本文件不自引用
+其所在提交的门禁结果），待 Codex 复核组合分支后再决定 ADR-0055 是否 Accepted。
