@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Proposed (2026-09-26)，起草: Claude Code（Opus），待 Raphael 决定（红线） |
+| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意推荐方案"），起草: Claude Code（Opus） |
 | 日期 | 2026-09-26 |
 | 决策者 | **Raphael**（H1 Domain Contract、H2 Validation Profile 结构，红线） |
 | 起草者 | Claude Code（Opus） |

@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Proposed (2026-09-26)，起草: Claude Code（Opus），待 Raphael 决定（红线） |
+| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意"），起草: Claude Code（Opus） |
 | 日期 | 2026-09-26 |
 | 决策者 | **Raphael**（改冻结的回测契约 `core/contracts/strategy.py`，H1；调试待办 B 节原注"Codex 可在授权内批准"，按本次指示交 Raphael） |
 | 起草者 | Claude Code（Opus） |

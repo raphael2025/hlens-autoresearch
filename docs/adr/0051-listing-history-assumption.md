@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Proposed (2026-09-26)，起草: Claude Code（Opus），待 Raphael 决定（红线） |
+| 状态 | Proposed (2026-09-26)，起草: Claude Code（Opus）；Raphael 2026-09-26 暂缓（"后面再授权"） |
 | 日期 | 2026-09-26 |
 | 决策者 | **Raphael**（研究宪法 C-L1 / C-L4 的前提，红线；Claude / Codex 不得代为接受） |
 | 起草者 | Claude Code（Opus） |
