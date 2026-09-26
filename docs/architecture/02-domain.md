@@ -357,6 +357,28 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 **Outcome 永不作为输入**：`label_only` 判别字段 + 输入 DTO 的 `extra="forbid"` + §2.1 白名单 + 运行时 `refuse_outcome_input`。
 
+### 2.10 持续研究循环的审计记录（ADR-0050，Phase 11）
+
+`core/contracts/loop_audit.py` 把 `apps/worker/loop.py` 已经写出的审计载荷登记为 8 个契约（只追加）。它们**描述既有字节**：
+逐字段镜像持久形状（转移保留 `from` / `to` 键），`audit_payload()` 重建**不含** `schema_version` 信封的原形状，
+`from_audit_payload()` 要求规范 JSON 逐字节往返；`LoopRoundRecord.record_hash` 仍是 `content_hash(payload)`，不是
+`Contract.content_hash()`。这些模型关闭 `str_strip_whitespace`（空白属于被哈希的字节，不规范化）；数字是有限、非负的
+`str(Decimal)` 规范文本。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `LoopBudgetUsage` | trial 数、LLM 成本单位、算力秒 | 非负整数；两个 `Decimal` 规范文本 |
+| `LoopBudgetLimits` | 循环预算上限（`LoopBudget.payload`） | 同上；`budget_hash` = 其载荷的内容哈希 |
+| `LoopStageRecord` | 一个阶段的状态、声明 / 实际 / 计费 / 超支用量、摘要、错误、被拒上限 | 字段与状态匹配；overrun = 实际 − 声明；`charged` = max(声明, 实际)（仅当不同）；被拒上限唯一且按检查顺序 |
+| `LoopTransitionRecord` | 循环护栏做的一次生命周期转移 | 规范 `kind:name@version`；是生命周期图的边且不是人工审批边；证据非空 |
+| `LoopOverrun` | 轮次的超支摘要 | 必须是第一个超支阶段及其超支量 |
+| `LoopRoundRecord` | 一轮的审计记录（哈希链） | 阶段顺序 = `STAGE_ORDER` + 可选阶段固定位置；轮次状态由阶段推出、其后全部 `SKIPPED`；`round_usage` = 各阶段计费之和；`total_usage` 覆盖它；`as_of` 为 UTC isoformat；只有第 0 轮无 `previous_hash` |
+| `LoopRoundStarted` / `LoopRoundRecorded` | 持久日志的两类行 | 第 0 轮与链起点一致；`record_hash` 重算核对 |
+
+读写点都 fail closed：worker 写入前与重放时校验（重放先核对存储的哈希），`research/reports` 写入前校验，
+`apps/api` 的 `ReportStore` 要求 `research_loop_round` 文件是合法记录且文件名等于其 `record_hash`。
+跨记录规则（链、累计、计划时刻、预算绑定、护栏重放）不在契约层，仍由 worker 的 `LoopAuditLog` / `ResearchLoop` 负责。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -457,7 +479,7 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（126 份） | `schemas/*.schema.json` |
+| 当前 Schema（134 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |

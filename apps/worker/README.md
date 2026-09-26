@@ -31,6 +31,12 @@
 > - 持久复核修复（ADR-0049 实施说明 durable review fixes，2026-09-26）：`ResearchLoop` 续接审计时，任何一条记录的 `budget_hash`
 >   与本循环的 `LoopBudget` 不同即拒绝（调高、调低都拒绝）——提高预算是人的决定，须新审计 / 新 `loop_id`。新增可选回调
 >   `after_record`：在审计记录一轮**之后**以该轮 `LoopRecord` 调用（研究侧组合根用它前移目录外的锚点）；回调失败 → 该轮已记录、循环 `stopped`。
+> - 审计记录契约（[ADR-0050](../../docs/adr/0050-loop-audit-record-contract.md)）：`LoopRecord` 与两类日志行的载荷是
+>   `core/contracts/loop_audit.py` 的版本化契约（`LoopRoundRecord` / `LoopRoundStarted` / `LoopRoundRecorded` 等），描述本目录
+>   写出的既有字节（键与 `record_hash` 都不变；阶段顺序常量与 `check_stage_order` 也在该模块，这里原样再导出）。
+>   `LoopAuditLog` 在 `begin_round` / `append`（持久或内存）写入前、以及重放每一行时（先核对存储的 `record_hash`）按契约校验，
+>   不合格或不能逐字节往返即拒绝：写入被拒 → 该轮不记录、循环 `stopped`；重放被拒 → `LoopAuditCorrupted`。
+>   阶段摘要因此必须是键为字符串的 JSON 对象。
 > - `degradation.py`：`DegradationMonitor` 用 `ValidationProfile.lifecycle.degradation_thresholds` 对比近期指标与验证基线，
 >   越限发布 `research_loop.degradation` 事件（不做生命周期转移）。
 > - 本目录只依赖 `core` 与标准库；具体研究阶段在 `research/loop/`，由研究侧组合根注入（apps 不 import research）。

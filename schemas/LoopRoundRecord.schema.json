@@ -1,0 +1,355 @@
+{
+  "$defs": {
+    "LifecycleState": {
+      "enum": [
+        "IDEA",
+        "CANDIDATE",
+        "VALIDATION",
+        "OOS",
+        "PAPER",
+        "PRODUCTION_CANDIDATE",
+        "ACTIVE",
+        "DEGRADED",
+        "REVALIDATION",
+        "RETIRED",
+        "REJECTED",
+        "FAILED"
+      ],
+      "title": "LifecycleState",
+      "type": "string"
+    },
+    "LoopBudgetUsage": {
+      "additionalProperties": false,
+      "description": "Declared, actual, charged or overrun usage of a stage or round (``StageUsage.payload``).",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "trials": {
+          "minimum": 0,
+          "title": "Trials",
+          "type": "integer"
+        },
+        "llm_cost_units": {
+          "title": "Llm Cost Units",
+          "type": "string"
+        },
+        "compute_seconds": {
+          "title": "Compute Seconds",
+          "type": "string"
+        }
+      },
+      "required": [
+        "trials",
+        "llm_cost_units",
+        "compute_seconds"
+      ],
+      "title": "LoopBudgetUsage",
+      "type": "object"
+    },
+    "LoopOverrun": {
+      "additionalProperties": false,
+      "description": "The round's ``overrun``: the first stage that overran its declaration, and by how much.",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "stage": {
+          "minLength": 1,
+          "title": "Stage",
+          "type": "string"
+        },
+        "amount": {
+          "$ref": "#/$defs/LoopBudgetUsage"
+        }
+      },
+      "required": [
+        "stage",
+        "amount"
+      ],
+      "title": "LoopOverrun",
+      "type": "object"
+    },
+    "LoopRoundStatus": {
+      "enum": [
+        "COMPLETED",
+        "FAILED",
+        "BUDGET_EXHAUSTED",
+        "BUDGET_OVERRUN",
+        "GUARD_VIOLATION"
+      ],
+      "title": "LoopRoundStatus",
+      "type": "string"
+    },
+    "LoopStageRecord": {
+      "additionalProperties": false,
+      "description": "One stage of a round (``StageRecord.payload``).",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "name": {
+          "minLength": 1,
+          "title": "Name",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/LoopStageStatus"
+        },
+        "estimate": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopBudgetUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "usage": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopBudgetUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "summary": {
+          "anyOf": [
+            {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Summary"
+        },
+        "error": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Error"
+        },
+        "refused": {
+          "items": {
+            "enum": [
+              "max_trials_per_round",
+              "max_trials_total",
+              "max_llm_cost_units",
+              "max_compute_seconds"
+            ],
+            "type": "string"
+          },
+          "title": "Refused",
+          "type": "array"
+        },
+        "overrun": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopBudgetUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "charged": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/LoopBudgetUsage"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        }
+      },
+      "required": [
+        "name",
+        "status",
+        "estimate",
+        "usage",
+        "summary",
+        "error",
+        "refused",
+        "overrun",
+        "charged"
+      ],
+      "title": "LoopStageRecord",
+      "type": "object"
+    },
+    "LoopStageStatus": {
+      "enum": [
+        "COMPLETED",
+        "FAILED",
+        "REFUSED_BUDGET",
+        "BUDGET_OVERRUN",
+        "GUARD_VIOLATION",
+        "SKIPPED"
+      ],
+      "title": "LoopStageStatus",
+      "type": "string"
+    },
+    "LoopTransitionRecord": {
+      "additionalProperties": false,
+      "description": "A lifecycle transition the loop's guard made (no approval; at the round's ``as_of``).",
+      "properties": {
+        "schema_version": {
+          "default": "2.0.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "subject": {
+          "title": "Subject",
+          "type": "string"
+        },
+        "from": {
+          "$ref": "#/$defs/LifecycleState"
+        },
+        "to": {
+          "$ref": "#/$defs/LifecycleState"
+        },
+        "reason": {
+          "title": "Reason",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence",
+          "type": "array"
+        },
+        "triggered_by": {
+          "title": "Triggered By",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject",
+        "from",
+        "to",
+        "reason",
+        "evidence",
+        "triggered_by"
+      ],
+      "title": "LoopTransitionRecord",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "The audit record of one round (``LoopRecord.payload``; hash-chained by ``previous_hash``).",
+  "properties": {
+    "schema_version": {
+      "default": "2.0.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "loop_id": {
+      "title": "Loop Id",
+      "type": "string"
+    },
+    "round_index": {
+      "minimum": 0,
+      "title": "Round Index",
+      "type": "integer"
+    },
+    "seed": {
+      "minimum": 0,
+      "title": "Seed",
+      "type": "integer"
+    },
+    "as_of": {
+      "title": "As Of",
+      "type": "string"
+    },
+    "budget_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Budget Hash",
+      "type": "string"
+    },
+    "status": {
+      "$ref": "#/$defs/LoopRoundStatus"
+    },
+    "stages": {
+      "items": {
+        "$ref": "#/$defs/LoopStageRecord"
+      },
+      "title": "Stages",
+      "type": "array"
+    },
+    "transitions": {
+      "items": {
+        "$ref": "#/$defs/LoopTransitionRecord"
+      },
+      "title": "Transitions",
+      "type": "array"
+    },
+    "round_usage": {
+      "$ref": "#/$defs/LoopBudgetUsage"
+    },
+    "total_usage": {
+      "$ref": "#/$defs/LoopBudgetUsage"
+    },
+    "overrun": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/LoopOverrun"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "previous_hash": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Previous Hash"
+    }
+  },
+  "required": [
+    "loop_id",
+    "round_index",
+    "seed",
+    "as_of",
+    "budget_hash",
+    "status",
+    "stages",
+    "transitions",
+    "round_usage",
+    "total_usage",
+    "overrun",
+    "previous_hash"
+  ],
+  "title": "LoopRoundRecord",
+  "type": "object"
+}

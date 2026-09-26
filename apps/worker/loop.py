@@ -41,6 +41,14 @@ budget totals, the halting state and the guard's subjects come from the verified
 restart never re-runs a recorded round and never resets the budget. A round that was started but
 never recorded (the process died mid-round, spending unknown) stops the loop for human review.
 
+**Audit contract** (ADR-0050). The record and journal payloads are the versioned contracts of
+``core.contracts.loop_audit`` (``LoopRoundRecord`` / ``LoopRoundStarted`` / ``LoopRoundRecorded``),
+which describe the bytes this module writes without changing them (same keys, same
+``record_hash``). ``LoopAuditLog`` validates every payload it writes (``begin_round``, ``append``;
+durable or in memory) and every line it replays; a payload that does not conform, or does not
+round-trip byte-identically, is refused (fail closed: a refused write stops the loop, a refused
+replay is ``LoopAuditCorrupted``).
+
 **Round checkpoint** (ADR-0049 implementation note, durable composition, 2026-09-26). An optional
 ``checkpoint`` callable is called with each finished round's ``LoopRecord`` after the round ran and
 **before** the audit records it: a composition root persists whatever state its stages keep across
@@ -87,6 +95,14 @@ from apps.worker.jobs import JobOutcome, JobRunner, JobSpec
 from apps.worker.journal import AppendOnlyJournal, JournalCorrupted, JournalEntry, JournalPath
 from apps.worker.metrics import Clock, RoundMetrics, StageMetrics, monotonic_clock, seconds
 from core.contracts.event_bus import BusMessage, EventBusAdapter
+from core.contracts.loop_audit import (
+    EXTENDED_STAGE_ORDER,
+    OPTIONAL_STAGES,
+    STAGE_ORDER,
+    LoopRoundRecorded,
+    LoopRoundStarted,
+    check_stage_order,
+)
 from core.domain.base import Ref, content_hash
 from core.errors import LifecycleViolation
 from core.lifecycle.strategy import (
@@ -129,42 +145,8 @@ __all__ = [
     "check_stage_order",
 ]
 
-#: The fixed order of a round (roadmap Phase 11: 新数据 → 状态更新 → 假设 → 实验 → 验证 → 记忆).
-STAGE_ORDER: Final[tuple[str, ...]] = (
-    "ingest",
-    "state",
-    "hypothesis",
-    "experiment",
-    "validation",
-    "memory",
-)
-#: Stages a composition may add; each has one fixed place in ``EXTENDED_STAGE_ORDER``.
-OPTIONAL_STAGES: Final[frozenset[str]] = frozenset({"evolution"})
-#: The required stages with every optional stage at its place (evolution: new variants of the best
-#: earlier candidates, registered before this round's experiments so they are re-validated).
-EXTENDED_STAGE_ORDER: Final[tuple[str, ...]] = (
-    "ingest",
-    "state",
-    "hypothesis",
-    "evolution",
-    "experiment",
-    "validation",
-    "memory",
-)
-
-
-def check_stage_order(names: Sequence[str]) -> tuple[str, ...]:
-    """``names`` must be ``STAGE_ORDER`` plus optional stages at their fixed places."""
-    given = tuple(names)
-    present = set(given) & OPTIONAL_STAGES
-    expected = tuple(n for n in EXTENDED_STAGE_ORDER if n in STAGE_ORDER or n in present)
-    if given != expected:
-        raise ValueError(
-            f"stages must be exactly {STAGE_ORDER} in order (optional {sorted(OPTIONAL_STAGES)} "
-            f"at their place in {EXTENDED_STAGE_ORDER}), got {given}"
-        )
-    return given
-
+# ``STAGE_ORDER`` / ``OPTIONAL_STAGES`` / ``EXTENDED_STAGE_ORDER`` / ``check_stage_order`` live in
+# the audit contract (``core.contracts.loop_audit``, ADR-0050) and are re-exported here unchanged.
 
 ROUND_JOB: Final = "research_loop.round"
 JOB_TOPIC: Final = "research_loop.jobs"
@@ -714,6 +696,18 @@ def _record_from(raw: Any) -> LoopRecord:
     )
 
 
+def _conform(
+    model: type[LoopRoundStarted] | type[LoopRoundRecorded], payload: Any, what: str
+) -> None:
+    """Refuse (``ValueError``) a payload that is not a byte-identical instance of ``model``."""
+    try:
+        model.from_audit_payload(payload)
+    except ValueError as exc:  # pydantic's ValidationError is a ValueError
+        raise ValueError(
+            f"{what} does not conform to the {model.__name__} contract (ADR-0050): {exc}"
+        ) from exc
+
+
 class LoopAuditCorrupted(JournalCorrupted):
     """A durable audit whose lines chain correctly but do not form a valid loop history."""
 
@@ -762,22 +756,22 @@ class LoopAuditLog:
     def begin_round(self, loop_id: str, round_index: int) -> None:
         """Mark ``round_index`` as started (durable: before the round spends anything)."""
         self._check_start(loop_id, round_index)
+        started = {"loop_id": loop_id, "round_index": round_index, "previous_hash": self.head}
+        _conform(LoopRoundStarted, started, "the round start")
         if self._journal is not None:
-            self._journal.append(
-                ROUND_STARTED,
-                {"loop_id": loop_id, "round_index": round_index, "previous_hash": self.head},
-            )
+            self._journal.append(ROUND_STARTED, started)
         self._loop_id = loop_id
         self._open_round = round_index
 
     def append(self, record: LoopRecord) -> None:
         self._check_record(record)
+        recorded = {"record": record.payload(), "record_hash": record.record_hash}
+        # every record written (durable or not) must be a valid LoopRoundRecord (ADR-0050)
+        _conform(LoopRoundRecorded, recorded, "the round record")
         if self._journal is not None:
             if self._open_round != record.round_index:
                 raise ValueError("a durable audit records only a round begun with begin_round")
-            self._journal.append(
-                ROUND_RECORDED, {"record": record.payload(), "record_hash": record.record_hash}
-            )
+            self._journal.append(ROUND_RECORDED, recorded)
         self._admit(record)
 
     def verify(self) -> bool:
@@ -822,6 +816,7 @@ class LoopAuditLog:
         try:
             if entry.type == ROUND_STARTED:
                 started = _fields(entry.payload, _STARTED_KEYS, "a round start")
+                _conform(LoopRoundStarted, started, "the round start")
                 round_index = _int(started["round_index"], "round_index")
                 self._check_start(_str(started["loop_id"], "loop_id"), round_index)
                 if started["previous_hash"] != self.head:
@@ -829,6 +824,10 @@ class LoopAuditLog:
                 self._loop_id, self._open_round = started["loop_id"], round_index
             elif entry.type == ROUND_RECORDED:
                 recorded = _fields(entry.payload, _RECORDED_KEYS, "a round record")
+                # integrity first (the stored hash), then the contract (ADR-0050), then rebuild
+                if content_hash(recorded["record"]) != recorded["record_hash"]:
+                    raise ValueError("the record does not reproduce its record_hash")
+                _conform(LoopRoundRecorded, recorded, "the round record")
                 record = _record_from(recorded["record"])
                 if record.payload() != recorded["record"]:
                     raise ValueError("the record does not rebuild to its own payload")

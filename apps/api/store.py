@@ -3,9 +3,14 @@
 ``apps/api`` never imports ``research/`` (01-system.md §3): the research plane writes its
 artifacts — validation reports, research-loop round audit records, state x strategy matrices,
 router paper runs — as JSON files under a configured directory, and this module only reads them
-back. Nothing here interprets the payload's internal shape; it is served opaquely as ``payload``
-inside a small envelope (``kind``, ``id``, ``created``, ``payload``, ``content_hash``), so adding a
-new report kind never requires a contract change here.
+back. The payload is served as ``payload`` inside a small envelope (``kind``, ``id``, ``created``,
+``payload``, ``content_hash``); adding a new report kind never requires a contract change here.
+
+Only the ``research_loop_round`` kind is checked against a contract (ADR-0050): its payload must be
+a valid ``core.contracts.loop_audit.LoopRoundRecord`` that round-trips byte-identically, and the
+file's ``id`` must be that record's ``record_hash`` (the writer names files by it). A file that
+fails either check is malformed — skipped by ``list``, refused by ``get`` — so an edited or
+ill-formed audit record is never served as one. Other kinds are still served opaquely.
 
 Layout: ``<root>/<kind>/<id>.json``, one JSON object per file. ``id`` is the file's stem; ``kind``
 is one of :class:`ReportKind`. ``created`` is the file's modification time (UTC) — the store does
@@ -26,9 +31,12 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict
 
+from core.contracts.loop_audit import LoopRoundRecord
+
 __all__ = [
     "InvalidReportId",
     "ReportEnvelope",
+    "ReportMalformed",
     "ReportKind",
     "ReportNotFound",
     "ReportStore",
@@ -78,6 +86,16 @@ def _canonical_json(payload: dict[str, Any]) -> str:
 
 def _content_hash(payload: dict[str, Any]) -> str:
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _check_loop_round(path: Path, payload: dict[str, Any]) -> None:
+    """A ``research_loop_round`` file must hold a valid ``LoopRoundRecord`` named by its hash."""
+    try:
+        record = LoopRoundRecord.from_audit_payload(payload)
+    except ValueError as exc:  # pydantic's ValidationError is a ValueError
+        raise ReportMalformed(f"{path}: not a valid LoopRoundRecord (ADR-0050): {exc}") from exc
+    if record.record_hash != path.stem:
+        raise ReportMalformed(f"{path}: the file name is not the record's record_hash")
 
 
 def _validate_id(report_id: str) -> str:
@@ -132,6 +150,8 @@ class ReportStore:
             raise ReportMalformed(f"{path}: not well-formed JSON") from exc
         if not isinstance(payload, dict):
             raise ReportMalformed(f"{path}: JSON root must be an object")
+        if kind is ReportKind.RESEARCH_LOOP_ROUND:
+            _check_loop_round(path, payload)
         created = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)
         return ReportEnvelope(
             kind=kind,

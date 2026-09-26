@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -17,9 +18,12 @@ from apps.api import create_app
 from apps.api.store import (
     InvalidReportId,
     ReportKind,
+    ReportMalformed,
     ReportNotFound,
     ReportStore,
 )
+from core.domain.base import content_hash
+from tests.apps.loop_records import completed_round
 
 
 def _write(root: Path, kind: ReportKind, report_id: str, payload: dict[str, object]) -> None:
@@ -53,11 +57,14 @@ def test_store_lists_and_gets_well_formed_reports(tmp_path: Path) -> None:
 
 
 def test_store_is_scoped_per_kind(tmp_path: Path) -> None:
-    _write(tmp_path, ReportKind.VALIDATION_REPORT, "shared-id", {"kind": "validation"})
-    _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, "shared-id", {"kind": "round"})
+    # a research_loop_round must be a valid LoopRoundRecord named by its record_hash (ADR-0050)
+    round_payload = completed_round().payload()
+    shared_id = content_hash(round_payload)
+    _write(tmp_path, ReportKind.VALIDATION_REPORT, shared_id, {"kind": "validation"})
+    _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, shared_id, round_payload)
     store = ReportStore(tmp_path)
-    assert store.get(ReportKind.VALIDATION_REPORT, "shared-id").payload == {"kind": "validation"}
-    assert store.get(ReportKind.RESEARCH_LOOP_ROUND, "shared-id").payload == {"kind": "round"}
+    assert store.get(ReportKind.VALIDATION_REPORT, shared_id).payload == {"kind": "validation"}
+    assert store.get(ReportKind.RESEARCH_LOOP_ROUND, shared_id).payload == round_payload
     assert store.list(ReportKind.STATE_STRATEGY_MATRIX) == []
 
 
@@ -118,22 +125,76 @@ def test_reports_endpoints_are_empty_with_no_configured_root() -> None:
 
 
 def test_reports_endpoints_serve_the_configured_directory(tmp_path: Path) -> None:
-    _write(
-        tmp_path,
-        ReportKind.RESEARCH_LOOP_ROUND,
-        "round-1",
-        {"round": 1, "budget_used": "10", "failures": []},
-    )
+    round_payload = completed_round().payload()
+    round_id = content_hash(round_payload)
+    _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, round_id, round_payload)
     client = TestClient(create_app(reports_root=tmp_path))
 
     listed = client.get("/reports/research_loop_round").json()
     assert len(listed) == 1
-    assert listed[0]["id"] == "round-1"
+    assert listed[0]["id"] == round_id
     assert listed[0]["kind"] == "research_loop_round"
     assert "content_hash" in listed[0]
 
-    detail = client.get("/reports/research_loop_round/round-1").json()
-    assert detail["payload"] == {"round": 1, "budget_used": "10", "failures": []}
+    detail = client.get(f"/reports/research_loop_round/{round_id}").json()
+    assert detail["payload"] == round_payload
+
+
+# --- research_loop_round: the LoopRoundRecord contract (ADR-0050) -------------------------
+
+
+def _tampered_rounds() -> dict[str, dict[str, Any]]:
+    """Payloads refused as research_loop_round files, keyed by what is wrong with them."""
+    good = completed_round().payload()
+    edited_usage = json.loads(json.dumps(good))
+    edited_usage["round_usage"]["trials"] = 0  # an edit that breaks the stage accounting
+    no_stages = {**good, "stages": []}
+    shuffled = {**good, "stages": list(reversed(good["stages"]))}
+    extra_key = {**good, "note": "added"}
+    bad_status = {**good, "status": "PROMOTED"}
+    envelope = {**good, "schema_version": "2.0.0"}  # the persisted bytes carry no envelope
+    return {
+        "edited-usage": edited_usage,
+        "no-stages": no_stages,
+        "shuffled-stages": shuffled,
+        "extra-key": extra_key,
+        "bad-status": bad_status,
+        "envelope": envelope,
+        "not-a-round": {"round": 1, "budget_used": "10", "failures": []},
+    }
+
+
+@pytest.mark.parametrize("case", sorted(_tampered_rounds()))
+def test_an_ill_formed_or_tampered_loop_round_is_refused(tmp_path: Path, case: str) -> None:
+    payload = _tampered_rounds()[case]
+    # named by its own content hash, so only the contract (not the file name) can refuse it
+    report_id = content_hash(payload)
+    _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, report_id, payload)
+    store = ReportStore(tmp_path)
+    with pytest.raises(ReportMalformed, match="LoopRoundRecord"):
+        store.get(ReportKind.RESEARCH_LOOP_ROUND, report_id)
+    assert store.list(ReportKind.RESEARCH_LOOP_ROUND) == []
+    client = TestClient(create_app(reports_root=tmp_path))
+    assert client.get(f"/reports/research_loop_round/{report_id}").status_code == 422
+    assert client.get("/reports/research_loop_round").json() == []
+
+
+def test_a_valid_loop_round_under_another_name_is_refused(tmp_path: Path) -> None:
+    """The writer names a round by its record_hash; a renamed or edited-then-rehashed file whose
+    name no longer is its hash is not served as that round."""
+    round_payload = completed_round().payload()
+    _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, "round-1", round_payload)
+    store = ReportStore(tmp_path)
+    with pytest.raises(ReportMalformed, match="record_hash"):
+        store.get(ReportKind.RESEARCH_LOOP_ROUND, "round-1")
+    assert store.list(ReportKind.RESEARCH_LOOP_ROUND) == []
+
+
+def test_other_report_kinds_are_still_served_opaquely(tmp_path: Path) -> None:
+    _write(tmp_path, ReportKind.ROUTER_PAPER_RUN, "any-name", {"round": 1})
+    assert ReportStore(tmp_path).get(ReportKind.ROUTER_PAPER_RUN, "any-name").payload == {
+        "round": 1
+    }
 
 
 def test_reports_endpoint_rejects_unknown_kind(tmp_path: Path) -> None:

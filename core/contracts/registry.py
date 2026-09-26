@@ -47,6 +47,16 @@ from core.contracts.knowledge import (
     KnowledgeResult,
 )
 from core.contracts.llm import LlmProviderDescriptor, LlmRequest, LlmResponse
+from core.contracts.loop_audit import (
+    LoopBudgetLimits,
+    LoopBudgetUsage,
+    LoopOverrun,
+    LoopRoundRecord,
+    LoopRoundRecorded,
+    LoopRoundStarted,
+    LoopStageRecord,
+    LoopTransitionRecord,
+)
 from core.contracts.outcome import (
     OutcomeEvent,
     OutcomeLabel,
@@ -315,6 +325,15 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     OutcomeProviderDescriptor,
     OutcomeResult,
     CostModelSpec,
+    # 持续研究循环的审计记录（ADR-0050，Phase 11；描述既有字节，只追加）
+    LoopBudgetUsage,
+    LoopBudgetLimits,
+    LoopStageRecord,
+    LoopTransitionRecord,
+    LoopOverrun,
+    LoopRoundRecord,
+    LoopRoundStarted,
+    LoopRoundRecorded,
 )
 
 

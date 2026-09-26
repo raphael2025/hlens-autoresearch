@@ -15,6 +15,9 @@ hand-written example data:
 - `validation_report/`, `research_loop_round/`: `write_validation_report` /
   `write_research_loop_round` over the `_validation_report()` / `_loop_record()` builders in
   `tests/research/reports/test_writers.py`.
+  A `research_loop_round/` fixture must be a valid `LoopRoundRecord` (ADR-0050) named by its
+  `record_hash`, or the store refuses it; `_loop_record()` builds a six-stage completed round via
+  `tests/apps/loop_records.py`.
 - `gate_calibration/`: `write_gate_calibration_report` over
   `run_gate_calibration(_toy_setup())` from `tests/research/synthetic_lab/test_gate_calibration.py`
   — the toy, Profile-reading detector (TEST ONLY), not the full G0→G4 pipeline, so the fixture

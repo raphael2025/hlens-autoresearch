@@ -15,6 +15,7 @@ from apps.api.store import (
     InvalidReportId,
     ReportEnvelope,
     ReportKind,
+    ReportMalformed,
     ReportNotFound,
     ReportStore,
 )
@@ -69,5 +70,7 @@ def create_app(
             raise HTTPException(status_code=400, detail=str(exc)) from exc
         except ReportNotFound as exc:
             raise HTTPException(status_code=404, detail=str(exc)) from exc
+        except ReportMalformed as exc:  # e.g. an edited research_loop_round (ADR-0050)
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return app

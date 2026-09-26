@@ -9,6 +9,7 @@ the file layout, not just that the writer produces *some* JSON.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
@@ -36,6 +37,7 @@ from research.reports import (
     write_validation_report,
 )
 from research.reports.validation import KIND as VALIDATION_KIND
+from tests.apps.loop_records import chained_rounds, completed_round
 from tests.research.experiments.test_state_strategy import ST as MATRIX_STATE
 from tests.research.experiments.test_state_strategy import S as MATRIX_STRATEGY
 from tests.research.experiments.test_state_strategy import _buy_and_hold
@@ -72,20 +74,9 @@ def _validation_report(report_id: str = "run-report-1") -> ValidationReport:
     )
 
 
-def _loop_record(round_index: int = 0, seed: int = 1) -> LoopRecord:
-    return LoopRecord(
-        loop_id="loop-x",
-        round_index=round_index,
-        seed=seed,
-        as_of=T0,
-        budget_hash=content_hash({"budget": "test"}),
-        status=RoundStatus.COMPLETED,
-        stages=(),
-        transitions=(),
-        round_usage=StageUsage(),
-        total_usage=StageUsage(),
-        previous_hash=None,
-    )
+def _loop_record() -> LoopRecord:
+    """Round 0 of a loop whose six stages all completed (a real round always has its stages)."""
+    return completed_round()
 
 
 # --------------------------------------------------------------------------- write_report_file
@@ -183,10 +174,25 @@ def test_research_loop_round_round_trips_through_the_store(tmp_path: Path) -> No
 
 
 def test_write_research_loop_rounds_writes_every_record_in_order(tmp_path: Path) -> None:
-    records = [_loop_record(round_index=i, seed=i + 1) for i in range(3)]
+    records = chained_rounds(3)
     written = write_research_loop_rounds(tmp_path, records)
     assert [w.id for w in written] == [r.record_hash for r in records]
     assert len(ReportStore(tmp_path).list(ReportKind.RESEARCH_LOOP_ROUND)) == 3
+
+
+def test_a_round_that_is_not_a_valid_loop_round_record_is_never_written(tmp_path: Path) -> None:
+    """ADR-0050: the writer validates against the LoopRoundRecord contract (no stages, a stage
+    out of order, a status its stages do not produce) and writes nothing it refuses."""
+    record = _loop_record()
+    for bad in (
+        replace(record, stages=()),
+        replace(record, stages=tuple(reversed(record.stages))),
+        replace(record, status=RoundStatus.FAILED),
+        replace(record, round_usage=StageUsage()),
+    ):
+        with pytest.raises(ValueError, match="LoopRoundRecord"):
+            write_research_loop_round(tmp_path, bad)
+    assert not (tmp_path / "research_loop_round").exists()
 
 
 def test_replaying_the_same_round_content_is_idempotent(tmp_path: Path) -> None:
