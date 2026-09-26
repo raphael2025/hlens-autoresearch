@@ -303,3 +303,9 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 实际运行：子代理 `pytest -m "not postgres" tests/infrastructure/event tests/infrastructure/catalog tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → 246 passed, 55 deselected；
   本分支集成后 `pytest -m "not postgres" tests/infrastructure/event tests/research/events tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → 95 passed；ruff / mypy（14 files）通过。
 - 限制：只在 SQLite catalog 上测过（PostgreSQL catalog 与真实建表需单独执行）；表无 subject 列（多标的见 ADR-0057 核心通道）；按运行读取扫描全部月份分区，规模性能未测。
+
+**B18 — 控制台：路由停止原因与资格证据显示**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- `apps/web/src/lib/routerEligibility.ts`、`components/EligibilityEvidence.tsx`、`routerStop.ts`、`RouterStops.tsx`、`RouterPaperRuns.tsx`：三种停止原因中文标签 + 原码；证据模式下逐策略证据表（生命周期、报告哈希、主体、判定、G5、结果 / 拒绝原因）；
+  无法解析的证据项以警告计数，不当作"无证据"；信任模式载荷不多显示任何内容。
+- 本分支集成后实际运行：`npm test` → tests 43 / pass 43 / fail 0；`npm run build` → ✓ built。未在浏览器对真实后端手工验证。
