@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { getReport, listReports, type ReportEnvelope } from "../api";
+import { useEffect, useMemo, useRef } from "react";
+import type { ReportEnvelope } from "../api";
 import { SimulatedBanner } from "../components/Banner";
+import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 
 // Payload shape written by research/reports/router.py (write_router_paper_run), read back opaquely
@@ -225,28 +226,12 @@ function RunDetail({ envelope }: { envelope: ReportEnvelope }) {
   );
 }
 
+function runLabel(run: ReportEnvelope): string {
+  const payload = asRouterPayload(run.payload);
+  return payload !== null ? `${payload.router} (pnl ${payload.pnl})` : run.id;
+}
+
 export function RouterPaperRuns() {
-  const [runs, setRuns] = useState<ReportEnvelope[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ReportEnvelope | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    listReports("router_paper_run")
-      .then(setRuns)
-      .catch((err) => setError(String(err)));
-  }, []);
-
-  useEffect(() => {
-    if (selectedId === null) {
-      setDetail(null);
-      return;
-    }
-    getReport("router_paper_run", selectedId)
-      .then(setDetail)
-      .catch((err) => setError(String(err)));
-  }, [selectedId]);
-
   return (
     <section>
       <SimulatedBanner />
@@ -254,26 +239,14 @@ export function RouterPaperRuns() {
       <p style={{ color: "#664d03", fontWeight: 600 }}>
         PAPER ONLY — 纯纸面模拟；没有任何下单、账户或转账能力（H10）。
       </p>
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
-      <div style={{ display: "flex", gap: 24 }}>
-        <ul style={{ minWidth: 260 }}>
-          {runs.length === 0 && <li>（无路由运行报告 — 未配置报告目录或目录为空）</li>}
-          {runs.map((run) => {
-            const payload = asRouterPayload(run.payload);
-            return (
-              <li key={run.id}>
-                <button onClick={() => setSelectedId(run.id)}>
-                  {payload !== null ? `${payload.router} (pnl ${payload.pnl})` : run.id}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-        <div style={{ flex: 1 }}>
-          {detail === null && <p>选择一次运行查看详情。</p>}
-          {detail !== null && <RunDetail envelope={detail} />}
-        </div>
-      </div>
+      <ReportBrowser
+        kind="router_paper_run"
+        empty="（无路由运行报告 — 未配置报告目录或目录为空）"
+        prompt="选择一次运行查看详情。"
+        label={runLabel}
+        renderDetail={(detail) => <RunDetail envelope={detail} />}
+        listWidth={260}
+      />
     </section>
   );
 }

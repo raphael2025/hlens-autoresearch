@@ -38,6 +38,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Jobs */
+        get: operations["list_jobs_jobs_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job */
+        get: operations["get_job_jobs__job_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/knowledge/search": {
         parameters: {
             query?: never;
@@ -111,6 +145,14 @@ export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
         /**
+         * ApiError
+         * @description The error body of every status this API raises itself (400/404/422/500/502/503).
+         */
+        ApiError: {
+            /** Detail */
+            detail: string;
+        };
+        /**
          * EvidenceLevel
          * @description 知识条目的证据等级（docs/research/knowledge-base.md）。
          * @enum {string}
@@ -120,6 +162,117 @@ export interface components {
         HTTPValidationError: {
             /** Detail */
             detail?: components["schemas"]["ValidationError"][];
+        };
+        /**
+         * InvalidReport
+         * @description A report file the store found but could not serve: its ``id`` (file stem) and why.
+         */
+        InvalidReport: {
+            /** Id */
+            id: string;
+            /** Reason */
+            reason: string;
+        };
+        /**
+         * JobList
+         * @description ``GET /jobs``: every job in the order of its first start, plus the verified chain tip.
+         */
+        JobList: {
+            /** Head Hash */
+            head_hash: string;
+            /** Jobs */
+            jobs: components["schemas"]["JobView"][];
+            /** Lines */
+            lines: number;
+        };
+        /** @enum {string} */
+        JobStatus: "succeeded" | "failed" | "interrupted";
+        /**
+         * JobView
+         * @description One job of the worker's results journal (``apps.worker.jobs.JobRecord``), read-only.
+         *
+         *     ``status`` is ``succeeded``, ``failed`` or ``interrupted`` (started without a recorded result:
+         *     running, or died and awaiting review / an idempotent re-run). ``attempts`` / ``result`` /
+         *     ``error`` come from the ``job_result`` line and are ``null`` while interrupted.
+         */
+        JobView: {
+            /** Attempts */
+            attempts: number | null;
+            /** Error */
+            error: string | null;
+            /** First Seq */
+            first_seq: number;
+            /** Job Id */
+            job_id: string;
+            /** Last Seq */
+            last_seq: number;
+            /** Name */
+            name: string;
+            /** Params */
+            params: unknown;
+            /** Reruns */
+            reruns: number;
+            /** Result */
+            result: unknown;
+            /** Starts */
+            starts: number;
+            status: components["schemas"]["JobStatus"];
+        };
+        /**
+         * Kind
+         * @description 可版本化对象的类型（02-domain.md §1）。
+         * @enum {string}
+         */
+        Kind: "dataset" | "representation" | "feature" | "state" | "event" | "outcome" | "strategy" | "risk" | "cost_model" | "experiment" | "hypothesis" | "knowledge" | "artifact" | "profile" | "profile_selection_rule";
+        /**
+         * KnowledgeItem
+         * @description 公开来源中的**待检验主张**，不是已验证结论。
+         */
+        KnowledgeItem: {
+            /** Claim */
+            claim: string;
+            /**
+             * Conditions
+             * @default []
+             */
+            conditions: string[];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            evidence_level: components["schemas"]["EvidenceLevel"];
+            /**
+             * Kind
+             * @default knowledge
+             * @constant
+             */
+            kind: "knowledge";
+            /** License */
+            license: string;
+            /**
+             * Lineage
+             * @default []
+             */
+            lineage: components["schemas"]["Ref"][];
+            /**
+             * Links
+             * @default []
+             */
+            links: components["schemas"]["Ref"][];
+            /** Name */
+            name: string;
+            /**
+             * Schema Version
+             * @default 2.0.0
+             */
+            schema_version: string;
+            /** Source */
+            source: string;
+            /** @default unverified */
+            status: components["schemas"]["KnowledgeStatus"];
+            /** Version */
+            version: string;
         };
         /**
          * KnowledgeQuery
@@ -160,10 +313,45 @@ export interface components {
             terms: string[];
         };
         /**
+         * KnowledgeResult
+         * @description 一次检索的结果：条目按 `name`、`version` 规范排序；每条都有出处与许可。
+         */
+        KnowledgeResult: {
+            /** Items */
+            items: components["schemas"]["KnowledgeItem"][];
+            /** Provider */
+            provider: string;
+            /** Query Hash */
+            query_hash: string;
+            /** Result Hash */
+            result_hash: string;
+            /**
+             * Schema Version
+             * @default 2.0.0
+             */
+            schema_version: string;
+        };
+        /**
          * KnowledgeStatus
          * @enum {string}
          */
         KnowledgeStatus: "unverified" | "supported" | "contradicted" | "inconclusive";
+        /**
+         * Ref
+         * @description 对象引用：`{kind}:{name}@{version}`。
+         */
+        Ref: {
+            kind: components["schemas"]["Kind"];
+            /** Name */
+            name: string;
+            /**
+             * Schema Version
+             * @default 2.0.0
+             */
+            schema_version: string;
+            /** Version */
+            version: string;
+        };
         /**
          * ReportEnvelope
          * @description The minimal envelope every report kind is served through.
@@ -190,6 +378,18 @@ export interface components {
          * @enum {string}
          */
         ReportKind: "validation_report" | "research_loop_round" | "state_strategy_matrix" | "router_paper_run" | "gate_calibration";
+        /**
+         * ReportListing
+         * @description ``GET /reports/{kind}``: the well-formed reports (newest first) and every file skipped as
+         *     malformed (by id), so a corrupt file is reported instead of silently dropped.
+         */
+        ReportListing: {
+            /** Invalid */
+            invalid: components["schemas"]["InvalidReport"][];
+            kind: components["schemas"]["ReportKind"];
+            /** Reports */
+            reports: components["schemas"]["ReportEnvelope"][];
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -254,6 +454,111 @@ export interface operations {
             };
         };
     };
+    list_jobs_jobs_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobList"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    get_job_jobs__job_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobView"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
     knowledge_search_knowledge_search_post: {
         parameters: {
             query?: never;
@@ -273,7 +578,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": unknown;
+                    "application/json": components["schemas"]["KnowledgeResult"];
                 };
             };
             /** @description Validation Error */
@@ -283,6 +588,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
                 };
             };
         };
@@ -326,7 +649,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ReportEnvelope"][];
+                    "application/json": components["schemas"]["ReportListing"];
                 };
             };
             /** @description Validation Error */
@@ -359,6 +682,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ReportEnvelope"];
+                };
+            };
+            /** @description Bad Request */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
                 };
             };
             /** @description Validation Error */

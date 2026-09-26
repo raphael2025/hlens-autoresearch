@@ -4,7 +4,7 @@ import { lazy, Suspense, useState } from "react";
 // UI of any kind lives here or ever will (H10) — see each page's SIMULATED / NOT_VALIDATED banner.
 //
 // Every page is code-split with React.lazy (apps/web README "Code splitting"): most pages pull in
-// ECharts (apps/web/src/lib/echarts.ts), and bundling all seven into the initial chunk pushed the
+// ECharts (apps/web/src/lib/echarts.ts), and bundling all nine into the initial chunk pushed the
 // vite build over the 500 kB warning threshold. Loading each tab's module on first visit keeps the
 // entry chunk small; visited pages stay cached by the browser for the rest of the session.
 const Dashboard = lazy(() => import("./pages/Dashboard").then((m) => ({ default: m.Dashboard })));
@@ -27,6 +27,7 @@ const KnowledgeSearch = lazy(() =>
 const GateCalibration = lazy(() =>
   import("./pages/GateCalibration").then((m) => ({ default: m.GateCalibration })),
 );
+const Jobs = lazy(() => import("./pages/Jobs").then((m) => ({ default: m.Jobs })));
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", render: () => <Dashboard /> },
@@ -36,6 +37,7 @@ const TABS = [
   { key: "router-paper", label: "Router Paper Runs", render: () => <RouterPaperRuns /> },
   { key: "gate-calibration", label: "Gate Calibration", render: () => <GateCalibration /> },
   { key: "lifecycle", label: "Lifecycle", render: () => <Lifecycle /> },
+  { key: "jobs", label: "Jobs", render: () => <Jobs /> },
   { key: "knowledge", label: "Knowledge Search", render: () => <KnowledgeSearch /> },
 ] as const;
 

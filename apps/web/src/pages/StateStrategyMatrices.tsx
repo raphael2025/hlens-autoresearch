@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { getReport, listReports, type ReportEnvelope } from "../api";
+import { useEffect, useMemo, useRef } from "react";
+import type { ReportEnvelope } from "../api";
 import { SimulatedBanner } from "../components/Banner";
+import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 
 // Payload shape written by research/reports/matrix.py (write_state_strategy_matrix), read back
@@ -177,54 +178,26 @@ function MatrixDetail({ envelope }: { envelope: ReportEnvelope }) {
   );
 }
 
+function matrixLabel(matrix: ReportEnvelope): string {
+  const payload = asMatrixPayload(matrix.payload);
+  if (payload === null) return matrix.id;
+  const samples = payload.cells.reduce((sum, cell) => sum + cell.count, 0);
+  return `${payload.strategy} × ${payload.state} (n=${samples})`;
+}
+
 export function StateStrategyMatrices() {
-  const [matrices, setMatrices] = useState<ReportEnvelope[]>([]);
-  const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<ReportEnvelope | null>(null);
-  const [error, setError] = useState<string | null>(null);
-
-  useEffect(() => {
-    listReports("state_strategy_matrix")
-      .then(setMatrices)
-      .catch((err) => setError(String(err)));
-  }, []);
-
-  useEffect(() => {
-    if (selectedId === null) {
-      setDetail(null);
-      return;
-    }
-    getReport("state_strategy_matrix", selectedId)
-      .then(setDetail)
-      .catch((err) => setError(String(err)));
-  }, [selectedId]);
-
   return (
     <section>
       <SimulatedBanner />
       <h2>状态 × 策略矩阵（State × Strategy Matrices）</h2>
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
-      <div style={{ display: "flex", gap: 24 }}>
-        <ul style={{ minWidth: 260 }}>
-          {matrices.length === 0 && <li>（无矩阵报告 — 未配置报告目录或目录为空）</li>}
-          {matrices.map((matrix) => {
-            const payload = asMatrixPayload(matrix.payload);
-            const samples = payload?.cells.reduce((sum, cell) => sum + cell.count, 0) ?? null;
-            return (
-              <li key={matrix.id}>
-                <button onClick={() => setSelectedId(matrix.id)}>
-                  {payload !== null ? `${payload.strategy} × ${payload.state}` : matrix.id}
-                  {samples !== null ? ` (n=${samples})` : ""}
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-        <div style={{ flex: 1 }}>
-          {detail === null && <p>选择一个矩阵查看详情。</p>}
-          {detail !== null && <MatrixDetail envelope={detail} />}
-        </div>
-      </div>
+      <ReportBrowser
+        kind="state_strategy_matrix"
+        empty="（无矩阵报告 — 未配置报告目录或目录为空）"
+        prompt="选择一个矩阵查看详情。"
+        label={matrixLabel}
+        renderDetail={(detail) => <MatrixDetail envelope={detail} />}
+        listWidth={260}
+      />
     </section>
   );
 }

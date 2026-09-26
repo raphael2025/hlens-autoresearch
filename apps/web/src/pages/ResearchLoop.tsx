@@ -1,90 +1,117 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef } from "react";
 import { listReports, type ReportEnvelope } from "../api";
 import { SimulatedBanner } from "../components/Banner";
+import { AsyncView, InvalidReports } from "../components/States";
 import { echarts } from "../lib/echarts";
+import { formatUsage, roundRows, usageSeries, type RoundRow } from "../lib/researchLoop";
+import { useApi } from "../lib/useApi";
 
-function asNumber(value: unknown): number | null {
-  if (typeof value === "number" && Number.isFinite(value)) return value;
-  if (typeof value === "string" && value.trim() !== "" && Number.isFinite(Number(value))) {
-    return Number(value);
-  }
-  return null;
-}
+// Reads the real LoopRoundRecord fields (ADR-0050; src/lib/researchLoop.ts): round status, the
+// stages that did not complete (with their error), charged round usage and cumulative total usage.
 
-function asArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
-}
-
-export function ResearchLoop() {
-  const [rounds, setRounds] = useState<ReportEnvelope[]>([]);
-  const [error, setError] = useState<string | null>(null);
+function UsageChart({ rows }: { rows: RoundRow[] }) {
   const chartRef = useRef<HTMLDivElement | null>(null);
-
-  useEffect(() => {
-    listReports("research_loop_round")
-      .then((items) => setRounds([...items].sort((a, b) => a.created.localeCompare(b.created))))
-      .catch((err) => setError(String(err)));
-  }, []);
-
-  const budgetSeries = useMemo(
-    () =>
-      rounds.map((round) => ({
-        id: round.id,
-        budget: asNumber(round.payload?.budget_used) ?? 0,
-      })),
-    [rounds],
-  );
+  const chart = useMemo(() => usageSeries(rows), [rows]);
 
   useEffect(() => {
     if (chartRef.current === null) return;
-    const chart = echarts.init(chartRef.current);
-    chart.setOption({
-      xAxis: { type: "category", data: budgetSeries.map((s) => s.id) },
-      yAxis: { type: "value", name: "budget used" },
-      series: [{ type: "bar", data: budgetSeries.map((s) => s.budget) }],
+    const instance = echarts.init(chartRef.current);
+    instance.setOption({
+      legend: { top: 0 },
       tooltip: { trigger: "axis" },
-      grid: { left: 48, right: 16, top: 16, bottom: 48 },
+      xAxis: { type: "category", data: chart.labels },
+      yAxis: { type: "value", name: "charged usage" },
+      series: chart.series.flatMap((s) => [
+        { name: `round ${s.key}`, type: "bar", data: s.round },
+        { name: `total ${s.key}`, type: "line", data: s.total },
+      ]),
+      grid: { left: 56, right: 16, top: 48, bottom: 48 },
     });
-    const onResize = () => chart.resize();
+    const onResize = () => instance.resize();
     window.addEventListener("resize", onResize);
     return () => {
       window.removeEventListener("resize", onResize);
-      chart.dispose();
+      instance.dispose();
     };
-  }, [budgetSeries]);
+  }, [chart]);
+
+  return <div ref={chartRef} style={{ width: "100%", height: 300, margin: "16px 0" }} />;
+}
+
+function RoundsTable({ rows }: { rows: RoundRow[] }) {
+  return (
+    <table>
+      <thead>
+        <tr>
+          <th>loop / round</th>
+          <th>as_of</th>
+          <th>status</th>
+          <th>stages run / skipped</th>
+          <th>problem stages</th>
+          <th>round usage</th>
+          <th>total usage</th>
+          <th>overrun</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows.map((row) => (
+          <tr key={row.id}>
+            <td title={row.id}>
+              {row.loopId} #{row.roundIndex ?? "?"}
+            </td>
+            <td>{row.asOf}</td>
+            <td style={row.status !== "COMPLETED" ? { color: "crimson", fontWeight: 600 } : undefined}>
+              {row.status}
+            </td>
+            <td>
+              {row.stagesRun} / {row.stagesSkipped}
+            </td>
+            <td>
+              {row.problems.length === 0
+                ? "—"
+                : row.problems.map((p) => (
+                    <div key={p.name}>
+                      {p.name}: {p.status}
+                      {p.error !== null && <code> {p.error}</code>}
+                    </div>
+                  ))}
+            </td>
+            <td>{formatUsage(row.roundUsage)}</td>
+            <td>{formatUsage(row.totalUsage)}</td>
+            <td>{row.overrunStage ?? "—"}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+function Rounds({ reports }: { reports: ReportEnvelope[] }) {
+  const rows = useMemo(() => roundRows(reports), [reports]);
+  return (
+    <>
+      <UsageChart rows={rows} />
+      <RoundsTable rows={rows} />
+    </>
+  );
+}
+
+export function ResearchLoop() {
+  const listing = useApi(() => listReports("research_loop_round"), []);
 
   return (
     <section>
       <SimulatedBanner />
       <h2>研究循环（Research Loop）</h2>
-      {error && <p style={{ color: "crimson" }}>{error}</p>}
-      {rounds.length === 0 && <p>（无 round 记录 — 未配置报告目录或目录为空）</p>}
-      {rounds.length > 0 && (
-        <div ref={chartRef} style={{ width: "100%", height: 280, margin: "16px 0" }} />
-      )}
-      <table>
-        <thead>
-          <tr>
-            <th>round id</th>
-            <th>created</th>
-            <th>budget used</th>
-            <th>failures</th>
-          </tr>
-        </thead>
-        <tbody>
-          {rounds.map((round) => {
-            const failures = asArray(round.payload?.failures);
-            return (
-              <tr key={round.id}>
-                <td>{round.id}</td>
-                <td>{round.created}</td>
-                <td>{String(round.payload?.budget_used ?? "—")}</td>
-                <td>{failures.length}</td>
-              </tr>
-            );
-          })}
-        </tbody>
-      </table>
+      {listing.status === "ok" && <InvalidReports invalid={listing.data.invalid} />}
+      <AsyncView
+        state={listing}
+        what="round 记录"
+        isEmpty={(data) => data.reports.length === 0}
+        empty="（无 round 记录 — 未配置报告目录或目录为空）"
+      >
+        {(data) => <Rounds reports={data.reports} />}
+      </AsyncView>
     </section>
   );
 }

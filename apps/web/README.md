@@ -6,8 +6,8 @@
 
 > 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；实现说明 2026-09-25 补充，
 > 控制台页面 2026-09-25 再补充，Gate Calibration 页面与剩余报告种类的 fixtures 2026-09-26 再补充）：
-> 8 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
-> Router Paper Runs、Gate Calibration、Lifecycle、Knowledge Search。依赖已本地安装
+> 9 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
+> Router Paper Runs、Gate Calibration、Lifecycle、Jobs（2026-09-26）、Knowledge Search。依赖已本地安装
 > （`node_modules/`，已 gitignore），`npm run gen:api` 与 `npm run build` 均已跑通。
 
 ## 页面
@@ -16,11 +16,12 @@
 |---|---|---|
 | Dashboard | 健康检查、契约数、各类报告计数 | `/health`、`/contracts`、`/reports/{kind}` |
 | Validation Reports | 报告列表 + 详情（gate 结果表） | `/reports/validation_report[/​{id}]` |
-| Research Loop | round 时间线、budget used 图表、失败数 | `/reports/research_loop_round` |
+| Research Loop | round 表（status、未完成阶段及其 error、round_usage / total_usage、overrun）+ 用量图表 | `/reports/research_loop_round` |
 | State × Strategy Matrices | 矩阵列表 + 详情（per-state 指标热力图、样本数） | `/reports/state_strategy_matrix[/​{id}]` |
 | Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比） | `/reports/router_paper_run[/​{id}]` |
 | Gate Calibration | 报告列表 + 详情（每个候选 Profile、每个 gate 的 FPR / power 表，附 Clopper-Pearson 区间） | `/reports/gate_calibration[/​{id}]` |
 | Lifecycle | 允许的状态转移表 | `/lifecycle/transitions` |
+| Jobs | worker 结果日志的任务列表（按状态筛选）+ 详情（params、result / error），只读 | `/jobs[/​{job_id}]` |
 | Knowledge Search | 知识条目检索（待检验主张，非结论） | `/knowledge/search` |
 
 State × Strategy Matrices 与 Router Paper Runs 同样带 `SIMULATED / NOT_VALIDATED` 横幅（`src/components/Banner.tsx`）；Router Paper Runs 额外标注 PAPER ONLY —— 两者都不含任何下单 / 转账 / 实盘账户 UI（H10）。
@@ -39,7 +40,8 @@ cd apps/web
 npm install                 # 项目本地安装，node_modules/ 已 gitignore；用 systemd-run 包裹见下
 npm run gen:api              # 从 ../api/openapi.json 生成 src/api.d.ts（提交该生成文件）
 npm run dev                  # 本地开发服务器；/api/* 反代到 http://127.0.0.1:8000（vite.config.ts）
-npm run build                # tsc --noEmit && vite build -> dist/
+npm run build                # tsc（应用 + 测试文件）&& vite build -> dist/
+npm test                     # node --test src/lib/（Node 原生运行 TypeScript，无新依赖）
 ```
 
 内存受限环境下（WSL，16GB 共享）用 `systemd-run` 包裹每条 npm 命令：
@@ -88,7 +90,8 @@ app = create_app(reports_root=Path("apps/web/fixtures"))
 uvicorn.run(app, host="127.0.0.1", port=8000)
 ```
 
-再在另一个终端 `npm run dev`，八个页面（Dashboard / Lifecycle / Knowledge Search 除外）都能看到数据。
+再在另一个终端 `npm run dev`，各报告页面都能看到数据（Jobs 需要另给 `create_app(jobs_results=<worker 结果日志>,
+jobs_idempotent=<与运行器相同的集合>)`，否则显示 503；Knowledge Search 需要注入 provider，否则显示 503）。
 `tests/apps/test_console_fixtures.py` 保证每个 `ReportKind` 在这个目录下至少有一份 fixture，并且每份
 都能通过 `ReportStore` 与 `/reports/...` 端点正常读回。
 
@@ -109,3 +112,28 @@ uvicorn.run(app, host="127.0.0.1", port=8000)
 `src/api.d.ts` 是 `npm run gen:api` 的产物并已提交；改动 `apps/api` 的端点后必须先
 `python -m apps.api.openapi`（重新导出 `apps/api/openapi.json`），再 `npm run gen:api` 重新生成,
 两者都提交。`src/api.ts` 是在生成类型之上的一层薄 fetch 封装（唯一允许直接写 HTTP 调用的地方）。
+
+## 页面状态、错误与测试（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+- **统一的加载 / 空 / 错误状态**：`src/lib/useApi.ts`（`useApi(load, deps)` → `LoadState`：`idle` / `loading` /
+  `error` / `ok`，迟到的响应被丢弃）+ `src/components/States.tsx`（`AsyncView`、`Loading`、`ErrorState`、`Empty`、
+  `InvalidReports`）。九个页面全部经由它们渲染请求；Dashboard 每个单元格独立显示自己的错误（`settle`），不再吞掉错误。
+- **错误信息**：`src/api.ts` 对非 2xx 抛 `ApiRequestError`（status + 服务端 `detail`，`src/lib/errors.ts`），页面显示
+  状态含义 + `detail`：Knowledge Search 的 503（未配置 provider）/ 502（provider 无法诚实回答）、Jobs 的 503 / 500
+  （日志校验失败）等都原样可见。
+- **报告列表新形状**：`GET /reports/{kind}` 返回 `{kind, reports, invalid}`；列表页（`src/components/ReportBrowser.tsx`，
+  Validation / Matrices / Router / Gate Calibration 共用，Research Loop 直接使用）把 `invalid` 作为黄色警告列出
+  （`id: reason`），Dashboard 计数注明无效文件数。
+- **Research Loop 修复**：旧页面读取 `payload.budget_used` / `payload.failures`，而 `LoopRoundRecord`（ADR-0050）
+  没有这两个字段（图表恒为 0）。现在读真实字段：`status`、`stages[].status/error`（未完成阶段及其错误、跳过数）、
+  `round_usage` / `total_usage`（字符串小数被解析）、`overrun.stage`、`transitions` 数（`src/lib/researchLoop.ts`）。
+- **Gate Calibration**：每个 arm 的 `detector_errors` 与每次运行的 `detector_error` 在存在时显示（为零时这两个键
+  不存在 —— 不显示该列 / 该表）；仍然只展示证据，没有任何推荐值。
+- **Jobs 页面**（只读）：`GET /jobs` 列表（按状态筛选、计数、`head_hash`、日志行数）+ `GET /jobs/{job_id}` 详情；
+  没有提交 / 重试 / 取消控件。
+- **测试（无新依赖）**：纯视图模型逻辑在 `src/lib/*.ts`（只 `import type` 引用 API 类型，Node 可直接剥离类型运行），
+  由 `src/lib/*.test.ts` 用 `node --test` 测试（`npm test`），输入是 `apps/web/fixtures/` 的真实报告文件
+  （`src/lib/fixtures.test-util.ts`；Jobs 的响应体在测试中内联构造，因为 fixtures 目录只放报告种类）。测试文件被
+  `tsconfig.json` 排除、不进 vite 包；`tsconfig.test.json` + `test-types/node-test.d.ts`（几行 Node 内置模块的
+  最小声明，代替 `@types/node`）让 `npm run build` 同时对测试文件做类型检查。`package-lock.json` 未变。
+- DEBUG_PENDING：尚未在浏览器中对真实后端逐页人工验证（只跑了 `npm run build` 与 `npm test`）。

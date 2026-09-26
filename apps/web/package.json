@@ -6,8 +6,9 @@
   "scripts": {
     "gen:api": "openapi-typescript ../api/openapi.json -o src/api.d.ts",
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && vite build",
+    "preview": "vite preview",
+    "test": "node --test src/lib/"
   },
   "dependencies": {
     "echarts": "^5.5.0",
