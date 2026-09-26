@@ -12,7 +12,7 @@
 | 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B55，B55 = ADR-0055 组合分支 `claude/adr-0055-integration`，未推送；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B55，B55 = ADR-0055，契约 2.2.0，经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-26 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -44,7 +44,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | Phase | 名称 | 状态 |
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
-| 0.5 | Public Knowledge Base | 🧱 框架已实现（ADR-0034）；经审阅写入路径（ADR-0058）与 `verify` 修复（K1）CODE_COMPLETE / DEBUG_PENDING；按标签 / 资产检索（ADR-0055，契约 2.2.0，含控制台）CODE_COMPLETE / DEBUG_PENDING，ADR 仍 Proposed；仓库种子**尚无经人工审阅的标签 / 资产**（分类提案未写入） |
+| 0.5 | Public Knowledge Base | 🧱 框架已实现（ADR-0034）；经审阅写入路径（ADR-0058）与 `verify` 修复（K1）CODE_COMPLETE / DEBUG_PENDING；按标签 / 资产检索（ADR-0055 **Accepted** 2026-09-26，契约 2.2.0，含控制台）CODE_COMPLETE / DEBUG_PENDING；仓库种子**尚无经具名人工审阅的标签 / 资产**（分类提案未写入）；**Phase 0.5 未验收** |
 | 1 | Market Representation | 🔄 实现完成、红队返修完成，待验收（D3E 起 REVIEW_PENDING） |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
 | 3 | Event & Interaction Engine | 🧱 框架已实现（ADR-0036）；事件运行存储、统计序列化、物理表 `event.events`（ADR-0056；只读核实从未建表）CODE_COMPLETE / DEBUG_PENDING；`subject`（ADR-0057）已以 2.1.0 声明（B41），交互 DSL（ADR-0061）CODE_COMPLETE / DEBUG_PENDING |
@@ -106,7 +106,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 🔨 **全阶段代码完成批次（2026-09-26，Claude，`wip/all-code-completion`）**：B1～B52 已补齐 Phase 0.5、2～14 与前后端的剩余代码缺口（逐批见完成计划 §10；B44～B52 为两次只读审计的后续修复，§10.7 / §10.8）；
   Raphael 2026-09-26 授权 Claude 自主决策（含红线），逐项裁决见 [自主决策记录](docs/reviews/2026-09-26-autonomous-decisions.md)；Codex 全代码复核（`docs/reviews/2026-09-26-codex-full-code-review.md`）K1 已修，
   K2 本次同步，K3（ADR-0052 以 2.1.0 实施、旧 2.0.0 原样可重放）已实施（B38 / B40 / B41），待 Codex 复核；全量非 PostgreSQL 门禁：`8983ead` 6749 passed → 审计后续最终 `3be497b` **7031 passed** / 136 deselected，退出码 0（完成计划 §10.8）；契约 2.1.0（ADR-0052 按记录版本重放，独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`，已合入全代码分支）；ADR-0054 / 0057 已以 2.1.0 重新声明；均待 Codex 复核。
-  ADR-0055（B55）：组合分支 `claude/adr-0055-integration`（基于 `a5836b2`）把契约升为 **2.2.0**（知识标签 / 资产，2.0.0 / 2.1.0 按记录版本重放），Codex 已接受独立实现进入整合（检查点 `origin/claude/adr-0055-tags-assets` = `ed8e694`）；组合分支 `1367dc8` 全量非 PostgreSQL 门禁 7176 passed / 136 deselected、退出码 0（无 skip）；Codex 复核提出的证据测试收窄（哈希逐一绑定对象、不再整类删除）已实现，待复核后提交；ADR 仍 Proposed
+  ADR-0055（B55）：组合分支 `claude/adr-0055-integration`（基于 `a5836b2`）把契约升为 **2.2.0**（知识标签 / 资产，2.0.0 / 2.1.0 按记录版本重放），Codex 已接受独立实现进入整合（检查点 `origin/claude/adr-0055-tags-assets` = `ed8e694`）；组合分支 `1367dc8` 全量门禁 7176 passed、退出码 0；Codex 复核提出的证据测试收窄（哈希逐一绑定对象）已提交为 `c08c589`；代码冻结提交 `c08c589` 的全量非 PostgreSQL 门禁（`systemd-run --user --scope -q -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest -q -m "not postgres" -p no:cacheprovider -rs`）→ `7179 passed, 136 deselected, 1 warning in 2906.24s (0:48:26)`，退出码 0；起止 SHA 均为 `c08c5895b4a60916715c2f88f65d061c40724b96`、dirty=0（2026-09-26T20:07:01Z → 20:55:29Z）；其后的 docs-only 提交**不在**该门禁覆盖范围内。ADR-0055 由 Codex 于 2026-09-26 接受（Accepted）；ADR / 代码接受**不等于** Phase 0.5 整体验收：仓库种子仍无具名人工审阅的标签 / 资产分类（只有实施说明 §5 的提案），Phase 0.5 验收仍待 Codex / Raphael
 
 ## 5. 下一步
 
@@ -140,7 +140,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | D-F1n | Claude 自行做的次要决定（F1）：① F1 先于 E3 实施（质量报告里的"竞争记录"要用 F1 的已验证图）；② 基础设施层读取接口增加"按快照读"（核心契约不变）；③ 数据集规格里没绑定的表按空表处理（只会让结果变成"不存在 / 冲突 / 拒绝"，不会选错）；④ 新规则标识 `hlens.pit.maximal-head@1.0.0`（连同质量规则与 resample 规则已并入 `03-data.md` §7.3）；⑦（E4）高周期 K 线只作为纯函数派生、不新建表，只接受能整除一天的分钟周期，缺分钟的 K 线标为不完整而不补齐；⑥（E3）质量规则集 `hlens.quality.canonical-partition@1.0.0` 只含事实性检查，不设任何数值阈值——"异常值"需要校准阈值，留待后续规则版本；⑤（F1-R1）ADR-0027 §13 要求"用 REST 数据须绑定证据表"，但从未写入过边的证据表没有快照、根本无法绑定——选择器因此把"未绑定"读作"没有边"（只会让结果变成冲突、不会选错，旧规格可逐位重现），并在结果里记录是否绑定；§13 的绑定要求改由数据集构建（F3）在"证据表有快照时必须绑定"处落实；⑧（G3-S2）时点选择的窗口不再限定为整天的 UTC 零点，可为任意 UTC 区间（证据边仍按整天核对），并且只证明被读到的那些规范层批次（单元级事实仍全部核对），以便成交数据按小时分段构建而不必整天驻留内存；⑨（G3-S3-R1 / R2）同一观察键中按"相邻不超过一天"连成链的全部 revision 一起参与选择（传递闭包，读取范围自动扩大到链的两端），并且只由链上最早那条所在的窗口选中（相邻时段不会重复选同一笔成交）；质量报告则按"触及"读取后去重；报告 ID 纳入 PIT 规则与相关政策的哈希，规则一变即是新报告 | 事后确认（⑤ 涉及对已接受 ADR 的解释，请重点确认） | ✅ 已确认（2026-09-25，Claude 依 Raphael 授权） |
 | D-QGAP | 质量报告把"证据缺口"逐条写进一行报告：1 分钟 K 线每天 1440 条没问题，但成交一天 100～300 万条都有缺口（历史公开时刻无证据，D-HIST），一行报告会达到数 GB，本机内存放不下 | **A（推荐）**：缺口改写进一张独立的只追加表（每条 revision 一行、按时段分批写入），报告行只存引用与计数——语义不变、内存有界，需新增表的 ADR；B：同一原始单元的缺口合并为一条（带条数与范围）——改变"逐条绑定"的含义；C：成交报告按小时出——改变报告粒度与规则版本 | ✅ 已决定（2026-09-25，Claude 依 Raphael 授权）：方案 A——证据缺口改写进独立只追加表（ADR-0031），报告行只存引用与计数 |
 | D-HIST | 官方资料不能证明任何历史行情 revision 的公开时刻，按 ADR-0023 一律取 `available_time = ingest_time`：早于本机采集的历史**无法用于任何历史回测** | **需要 Raphael 本人决定**：已发布核心契约 2.0.0 明文规定"早于 ingest 必须有证据、不得仅凭 event_time 回填"，这是研究宪法 C-L1（防泄漏）的前提，属红线。推荐：A. PIT 假设叠加层——存储数据不改，数据集规格可显式绑定"原始归档按事件时间 + 5 秒可用"的假设政策（进 manifest、缺口照列），不绑定则维持保守；B. 维持现状（只能做采集之后的前向研究） | ✅ 已决定（2026-09-25，**Raphael 批准推荐方案 A**）：ADR-0032 Accepted，PIT 假设叠加层已实施（数据集须显式绑定，默认仍保守） |
-| D-P05 | 何时开启 Phase 0.5（公共知识库） | 已决定（2026-09-25，Claude 依 Raphael 授权）：Phase 1 关闭后再开，不并行 | 已被后续授权取代：Phase 0.5 的写入路径已按 ADR-0058 实施（B15）；tag / 资产检索：ADR-0055 能力方向已由 Codex 依 Raphael 授权决定（2026-09-26），Amendment 1 与实现已完成（B55），ADR 仍 Proposed，待 Codex 复核组合分支 |
+| D-P05 | 何时开启 Phase 0.5（公共知识库） | 已决定（2026-09-25，Claude 依 Raphael 授权）：Phase 1 关闭后再开，不并行 | 已被后续授权取代：Phase 0.5 的写入路径已按 ADR-0058 实施（B15）；tag / 资产检索：ADR-0055 由 Codex 依 Raphael 授权决定方向并于 2026-09-26 接受（Accepted，基于组合代码 `c08c589` 与最终门禁），已实施（B55）；Phase 0.5 仍未验收 |
 | D-MAN | 数据集清单（冻结契约）逐条列出来源链与证据缺口：K 线数据集每天 1440 条没问题，成交整天数据集会有数百万条，一行清单放不下 | 已决定（2026-09-25，Claude 依授权）：Phase 1 成交数据集按小时构建；改契约（升 major）留到 Phase 2 按需另立 ADR | 已知限制，Phase 2 再议 |
 
 **全阶段框架批次提出的待决定（红线，需要 Raphael；详见 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) B 节）**
@@ -188,7 +188,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 ## 7. 当前风险
 
 - ⚠️ 宪法 1.0.0 只是**原则**：验证流水线、泄漏门、多重检验校正、trial 账本都未实现，Profile 数值要到 Phase 4；在那之前没有实验能被实际判定
-- ⚠️ 契约 2.0.0 已随合并视为发布；2.1.0（ADR-0052）与 2.2.0（ADR-0055，仅组合分支）均为 minor，按记录版本重放旧数据；当前版本新建对象的信封与哈希随 minor 变化（预期）：以后破坏性变化必须升 major，成本上升
+- ⚠️ 契约 2.0.0 已随合并视为发布；2.1.0（ADR-0052）与 2.2.0（ADR-0055，已进入 `wip/all-code-completion`）均为 minor，按记录版本重放旧数据；当前版本新建对象的信封与哈希随 minor 变化（预期）：以后破坏性变化必须升 major，成本上升
 - ⚠️ 契约层只校验结构与声明：传递依赖闭包、Registry 存在性、哈希与真实内容一致、物化数据泄漏检测、Profile 已 frozen 等仍是未实现的 Runner / Registry / Control Plane 义务，不得宣称泄漏已被防住
 - ⚠️ `LlmCall` 只保证登记结构：内容可取回、内容与哈希一致、调用登记完整均未实现
 - ⚠️ 生命周期证据只保证非空：证据真实性、批准人权限与职责分离属未来授权服务
@@ -217,7 +217,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 ## 8. 当前禁止事项
 
 - ❌ 只按 roadmap Phase 1 恢复序列逐批实施；**D3E / R1 / R2 / R3、D4、E1 已提交待 Codex 复核**；E2 起仍关闭；不写任何 WebSocket 代码
-- ❌ Phase 0.5 只做已接受 / 已决定的范围（ADR-0034 检索、ADR-0058 写入、ADR-0055 方向）；不得替人工审阅者给种子写入标签 / 资产，不得把分类提案当作已审阅数据
+- ❌ Phase 0.5 只做已接受的范围（ADR-0034 检索、ADR-0058 写入、ADR-0055 标签 / 资产检索）；不得替人工审阅者给种子写入标签 / 资产，不得把分类提案当作已审阅数据
 - ❌ 研究代码不晋升为生产代码（`strategies/` / `risk/` 仍无代码；Promotion 链今天拒绝所有策略）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
 - ❌ 不修改系统配置、`.wslconfig`、Git 全局配置
@@ -232,7 +232,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-26 | B55：ADR-0055 知识标签 / 资产检索（契约 2.2.0：`tags_all` AND、`assets_any` OR 精确；2.1.0 固定向量逐位复现；控制台筛选）经 Codex 复核进入整合；组合分支 `claude/adr-0055-integration` 从 `a5836b2` cherry-pick，三处 fixture 冲突保留 B46 变体与两代遗留；Phase 9 证据改为按记录版本 2.1.0 核对 | CODE_COMPLETE / DEBUG_PENDING；ADR 仍 Proposed；组合分支未推送，待 Codex 复核最终门禁；种子尚无经人工审阅的标签 / 资产 |
+| 2026-09-26 | B55：ADR-0055 知识标签 / 资产检索（契约 2.2.0：`tags_all` AND、`assets_any` OR 精确；2.1.0 固定向量逐位复现；控制台筛选）经 Codex 复核进入整合；组合分支 `claude/adr-0055-integration` 从 `a5836b2` cherry-pick，三处 fixture 冲突保留 B46 变体与两代遗留；Phase 9 证据改为按记录版本 2.1.0 核对 | CODE_COMPLETE / DEBUG_PENDING；ADR-0055 Accepted（Codex，2026-09-26，`c08c589` 门禁 7179 passed、退出码 0）；已 fast-forward 推送到 `wip/all-code-completion`；种子尚无具名人工审阅的标签 / 资产，Phase 0.5 未验收 |
 | 2026-09-26 | 审计后续（B44～B52）：真实 HTTP 冒烟（含 502 / 500）；报告存储解码缺陷修复；Promotion 要求冻结且带校准的 Profile 与市场基准项；替换提案作业（循环之外）；研究循环内容核对失败记录调用、核对模式写入指纹；持久审计须显式选择 `record_marks`；劣化证据不足绝不显示为健康；Phase 9 中等规模证据；`-m` 校准 CLI 修复 | 全部 CODE_COMPLETE / DEBUG_PENDING；新待决 D-DEG-IE；未合并 `phase/1` / `main` |
 | 2026-09-26 | 全代码批次收尾（B25～B43）：ADR-0059 / 0060 / 0061 实施、ADR-0005 Promotion 链、P6 逐单元验证、P7 批次与知识来源、P11 跨进程测试与状态目录单写者锁、P13 风险重放、P10 路由自身验证与纸面偏差、全栈契约核对与组件测试、契约 2.1.0 合入；D-LIST 恢复 Raphael 暂缓；最终门禁 `8983ead` 6749 passed | 全部 CODE_COMPLETE / DEBUG_PENDING，待 Cursor 调试与 Codex 复核；未合并 `phase/1` / `main` |
 | 2026-09-26 | ADR-0052 契约 2.1.0（按记录版本重放）合入全代码分支（`core/adr-0052-into-full-code`）；ADR-0054 / 0057 的新字段改为 2.1.0 声明；验证的研究侧取值完成（精确比较、Profile 字段优先且不可被显式参数覆盖、负对照独立阈值）；事件表记录契约版本；因信封变化而变的测试钉值逐一核实后改钉 | CODE_COMPLETE / DEBUG_PENDING；待协调者集成与 Codex 复核 |
@@ -269,5 +269,5 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 > Claude 下一步可以执行什么？
 
 1. 审计后续（2026-09-26 晚）：处理全代码审计发现（控制台研究循环图表按维度分轴、5 个报告种类夹具由代码生成、错误体路径清理与 500 处理、真实后端冒烟、P12 提案接入循环、P9 中等规模校准证据），逐项提交推送。
-2. 交 Cursor：全部 CODE_COMPLETE 项的独立调试与对抗复测；交 Codex：ADR-0052 / 0054 / 0056～0061 与 Promotion 链复核；交 Codex：ADR-0055 组合分支（`claude/adr-0055-integration`）的冲突解决与最终门禁复核，之后决定 ADR-0055 是否 Accepted 与推送；交 Raphael：D-LIST（ADR-0051）、Profile 数值、合并 `main` / tag；种子标签 / 资产需具名人工审阅者经 ADR-0058 写入路径提交。
+2. 交 Cursor：全部 CODE_COMPLETE 项的独立调试与对抗复测；交 Codex：ADR-0052 / 0054 / 0056～0061 与 Promotion 链复核；ADR-0055 已由 Codex 接受并推送（Phase 0.5 整体验收仍待 Codex / Raphael）；交 Raphael：D-LIST（ADR-0051）、Profile 数值、合并 `main` / tag；种子标签 / 资产需具名人工审阅者经 ADR-0058 写入路径提交。
 3. 不得：实盘、凭据、下单、猜测 Profile 数值、合并 Phase 1 或 `main`、打 tag、force push；不修改 Phase 1 基础设施（Codex 复核中）。

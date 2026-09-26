@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 性质 | 实施记录，**不是验收结论**；Codex 已复核独立实现并接受其进入整合（2026-09-26）；ADR-0055 在组合分支验证完成前仍为 Proposed |
+| 性质 | 实施记录；ADR-0055 **Accepted（2026-09-26，Codex 基于组合代码 `c08c589` 与其最终全量门禁复核接受）**。这是 ADR / 代码的接受，**不是** Phase 0.5 验收：种子仍无具名人工审阅的标签 / 资产分类 |
 | 决定来源 | Codex 决策记录 `docs/reviews/2026-09-26-adr-0055-codex-decision.md`（分支 `codex/full-code-review-2026-09-26`，复核 HEAD `70e4034`），依 Raphael 授权 |
 | 实施者 | Claude Code（Opus），只实现，不改变决定 |
 | 分支 | 独立实现 `claude/adr-0055-tags-assets`（基于全代码 WIP `1cd3284`；未 cherry-pick 旧 `wip/phase-0.5-knowledge`），经 Codex 批准推送为检查点 `origin/claude/adr-0055-tags-assets` = `ed8e694`；组合分支 `claude/adr-0055-integration`（基于 `a5836b2`，§9），未 push |
@@ -113,7 +113,7 @@ XRP 是论文样本，与 Binance 标的池无关）。
 
 ## 7. 未解决 / 待决定
 
-1. **ADR-0055 状态**：Proposed，等待 Codex 复核（本说明 §2、§3 与提交中的测试输出为证据）。
+1. **ADR-0055 状态**：Accepted（2026-09-26，Codex 基于组合代码 `c08c589` 与其最终全量门禁复核接受）（§10）。
 2. **种子元数据**：§5 提案待具名人工审阅者经写入路径提交（新版本）；在此之前，按标签 / 资产检索在真实种子上返回空。
 3. **web**：Knowledge Search 已加标签 / 资产输入（Codex 复核要求的补充，§8）；隔离 worktree 中 node 全套由 Codex 独立运行通过；组合分支中 Claude 实际运行了 `gen:api` / `npm test` / `npm run build` / live smoke（§4.1、§9）。浏览器手工验收未做。
 4. **token 语法与资产取向**（ADR 决策 3 / 4）是 Amendment 1 为落实"规范资产标识"而定的细节：小写 snake case、不用交易所符号。若 Codex 要求交易所符号形式，需再修订。
@@ -167,4 +167,13 @@ web（组合 worktree，`node_modules` 为本地复制，见 §4.1）：`npm run
 
 Codex 复核（门禁运行期间提出，门禁结束后才改文件）：`_without_envelopes()` 删除所有 `*_hash` 字段，会漏检。核实：`detector.strategy_hash` 是 `StrategySpec.content_hash()`（`gate_calibration.py` 的 `describe()`），含信封，2.1.0 → 2.2.0 确实变化（`0526ac90…` → `32443744…`），因此不能原样保留比较；但弱点是真的：策略 spec 与候选 Profile 在载荷中只以 ref + 哈希出现，整类删除会放过它们的任何内容变化（演示：旧过滤对篡改的 `strategy_hash` / `profile_hash` 都返回相等，新检查都拒绝，未篡改的通过）。修正：不再删除任何哈希——当前载荷回到 2.1.0 时，每个派生哈希替换为**它所哈希的那个对象**的 2.1.0 孪生哈希（`base_spec_hash` ← `setup.base`，`detector.strategy_hash` ← `gate_fixtures.candidate().spec`，`effect_hash` ← 对应 effect，`profile_hash` ← 对应 Profile），并要求与记录载荷**逐字段相等**；载荷中每个非空 `*_hash` 的路径必须恰为这些派生路径；当前值必须等于对象当前的内容哈希。新增断言：策略哈希等于 spec 的 2.1.0 孪生哈希且不等于当前哈希；同 ref 下改 `params` 即不匹配；篡改记录的策略哈希即不匹配；同 ref 下改 Profile 内容（`lineage`）即不匹配。报告与钉值均未改动。
 
-此修正之后的门禁结果记录在交付报告中（本文件不自引用其所在提交的门禁结果）；待 Codex 复核组合分支后再决定 ADR-0055 是否 Accepted。
+修正提交为 `c08c589`（代码冻结提交），其门禁见 §10。
+
+## 10. 接受与收尾（2026-09-26）
+
+- 最终门禁：代码冻结提交 `c08c589` 的全量非 PostgreSQL 门禁（`systemd-run --user --scope -q -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest -q -m "not postgres" -p no:cacheprovider -rs`）→ `7179 passed, 136 deselected, 1 warning in 2906.24s (0:48:26)`，退出码 0；起止 SHA 均为 `c08c5895b4a60916715c2f88f65d061c40724b96`、dirty=0（2026-09-26T20:07:01Z → 20:55:29Z）；其后的 docs-only 提交**不在**该门禁覆盖范围内。同一冻结 HEAD 之前的 `1367dc8` 另有静态检查、Schema、OpenAPI / `gen:api`、`npm test` / `npm run build` 全部通过（§9）；
+  `c08c589` 只改证据测试与文档，提交前 ruff / format / mypy 与相关定向测试通过（§9）。
+- 接受：Accepted（2026-09-26，Codex 基于组合代码 `c08c589` 与其最终全量门禁复核接受）。
+- 范围：ADR / 代码接受**不等于** Phase 0.5 整体验收：仓库种子仍无具名人工审阅的标签 / 资产分类（只有实施说明 §5 的提案），Phase 0.5 验收仍待 Codex / Raphael。
+- 推送：组合提交与本收尾 docs-only 提交以普通 fast-forward 推送到 `wip/all-code-completion`（推送前核对远端仍为 `a5836b2` 且为祖先）；
+  本地整合分支 `claude/adr-0055-integration` 不推送；未动 `main` / `phase/1` / tag。

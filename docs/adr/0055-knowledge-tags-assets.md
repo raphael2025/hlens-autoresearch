@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**——能力方向已由 Codex 依 Raphael 授权决定（2026-09-26，见"决定来源"）；本文为按该决定修订后的实施文本（Amendment 1），实施证据待 Codex 复核后再改变状态 |
+| 状态 | **Accepted（2026-09-26，Codex 基于组合代码 `c08c589` 与其最终全量门禁复核接受）**；能力方向由 Codex 依 Raphael 授权决定（见"决定来源"），本文为按该决定修订后的实施文本（Amendment 1）；ADR / 代码接受**不等于** Phase 0.5 整体验收：仓库种子仍无具名人工审阅的标签 / 资产分类（只有实施说明 §5 的提案），Phase 0.5 验收仍待 Codex / Raphael |
 | 日期 | 2026-09-26（初稿）；2026-09-26（Amendment 1：版本边界、依赖下限、验证矩阵） |
-| 决策者 | Codex（Raphael 2026-09-23 授权的技术协调者；能力方向已决定）；接受与否取决于 Codex 对实施证据的复核 |
+| 决策者 | Codex（Raphael 2026-09-23 授权的技术协调者）：能力方向决定与 2026-09-26 的接受（组合代码 `c08c589` 与最终全量门禁复核） |
 | 起草者 | Claude Code（Opus）：初稿（Phase 0.5 核验批次，`wip/phase-0.5-knowledge` `ff6f67a`）与 Amendment 1（本分支） |
 | 相关 Phase | Phase 0.5 |
 | 影响范围 | Contract（`core/domain/research.py::KnowledgeItem`、`core/contracts/knowledge.py::KnowledgeQuery` / `KnowledgeResult`，只追加）；契约版本 **2.2.0**（minor）；`plugins/knowledge/`；`pyproject.toml` 的 Pydantic 声明下限 |
@@ -137,10 +137,18 @@ roadmap Phase 0.5 验收标准要求"**可按标签 / 状态 / 资产检索**"�
 - [x] 不修改 Validation Constitution 或任何 Profile 数值
 - [x] Domain 层仍只依赖标准库与 Pydantic
 - [x] Research / Application Plane 边界不变；不新增写入端点；不发起任何网络请求（D-LIST / ADR-0051 仍暂缓）
-- [ ] Codex 复核实施证据（待定）
+- [x] Codex 复核实施证据并接受（2026-09-26；代码冻结提交 `c08c589` 的全量非 PostgreSQL 门禁（`systemd-run --user --scope -q -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest -q -m "not postgres" -p no:cacheprovider -rs`）→ `7179 passed, 136 deselected, 1 warning in 2906.24s (0:48:26)`，退出码 0；起止 SHA 均为 `c08c5895b4a60916715c2f88f65d061c40724b96`、dirty=0（2026-09-26T20:07:01Z → 20:55:29Z）；其后的 docs-only 提交**不在**该门禁覆盖范围内）
 
 ## 参考
 
 - ADR-0034（KnowledgeProvider）、ADR-0052（版本化重放与 `_FIELDS_SINCE`）、ADR-0054 / 0057（2.1.0 追加字段先例）、
   ADR-0058（经审阅写入路径）
 - `docs/architecture/02-domain.md` §3.3；`docs/research/knowledge-base.md`；roadmap Phase 0.5
+
+## 接受记录（2026-09-26）
+
+- 接受者：Codex（依 Raphael 2026-09-23 授权）；依据：独立实现复核（检查点 `origin/claude/adr-0055-tags-assets` = `ed8e694`）、
+  组合分支冲突解决与 Phase 9 证据测试修正的复核，以及 代码冻结提交 `c08c589` 的全量非 PostgreSQL 门禁（`systemd-run --user --scope -q -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest -q -m "not postgres" -p no:cacheprovider -rs`）→ `7179 passed, 136 deselected, 1 warning in 2906.24s (0:48:26)`，退出码 0；起止 SHA 均为 `c08c5895b4a60916715c2f88f65d061c40724b96`、dirty=0（2026-09-26T20:07:01Z → 20:55:29Z）；其后的 docs-only 提交**不在**该门禁覆盖范围内。
+- 组合提交（基于全代码候选 `a5836b2`）：`48fe180`、`a8490bf`、`62256b6`、`2b2a6a5`、`1367dc8`、`c08c589`；以普通 fast-forward 推送到
+  `wip/all-code-completion`。
+- 范围：接受的是本 ADR（Amendment 1）与其实现；ADR / 代码接受**不等于** Phase 0.5 整体验收：仓库种子仍无具名人工审阅的标签 / 资产分类（只有实施说明 §5 的提案），Phase 0.5 验收仍待 Codex / Raphael。

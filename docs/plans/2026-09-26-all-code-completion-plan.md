@@ -663,7 +663,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 实际运行：`test_gate_calibration_g5.py` → 21 passed；ruff / format / mypy（590 files）通过。
 - 证据复现：以修复后的 `python -m research.synthetic_lab.gate_calibration --setup tests.research.synthetic_lab.evidence_setups:single_instrument_evidence` 在当前代码上重跑（6 GB 上限）→ 输出与提交的 `docs/research/calibration/single_instrument_evidence.json` **逐字节相同**（`cmp`）。双标的报告未重跑。
 
-**B55 — ADR-0055：知识标签 / 资产检索（契约 2.2.0；组合分支 `claude/adr-0055-integration`，基于 `a5836b2`，本地提交、未推送）**（`CODE_COMPLETE / DEBUG_PENDING`；ADR 仍 Proposed）
+**B55 — ADR-0055：知识标签 / 资产检索（契约 2.2.0；本地整合分支 `claude/adr-0055-integration`，基于 `a5836b2`，fast-forward 推送到 `wip/all-code-completion`）**（`CODE_COMPLETE / DEBUG_PENDING`；ADR-0055 Accepted 2026-09-26，Codex）
 
 - 来源：Codex 决定能力方向（`docs/reviews/2026-09-26-adr-0055-codex-decision.md`，依 Raphael 授权）；独立实现在 `claude/adr-0055-tags-assets`（基于 `1cd3284`），
   隔离 worktree 全量门禁 `ed8e694` → 7029 passed, 1 skipped（控制台 live smoke 因缺 `node_modules` 跳过）, 136 deselected；Codex 复核后接受进入整合，
@@ -677,7 +677,9 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 实际运行（组合分支，文档提交前）：定向 `pytest -m "not postgres"` tests/apps、reports、synthetic_lab、evolution、router、ADR-0055 / 契约 / 文档 → `6 failed, 1710 passed, 1 skipped`（6 项为上述证据测试，修复后该文件 + 文档一致性 22 passed）；
   `npm run gen:api` 无差异；`npm test` → lib 87 / 87、组件 109 / 109；`npm run build` ✓；live-backend smoke 3 passed（组合 worktree 的 `node_modules` 为本地复制，锁文件相同，未安装）。
 - 组合全量门禁（`1367dc8`，冻结 HEAD）：`START_SHA 1367dc8899353c329a0f646780b14f57fed69cee dirty=0 2026-09-26T19:12:36Z` → `7176 passed, 136 deselected, 1 warning in 2921.41s (0:48:41)`，`EXIT 0`（无 skip：live smoke 实际运行）→ `END_SHA 1367dc8899353c329a0f646780b14f57fed69cee dirty=0 2026-09-26T20:01:20Z`；静态检查、Schema、web 全部通过。
-- Codex 复核修正（`test_evidence_setups.py`）：证据比较不再整类删除 `*_hash`，而是把每个派生哈希（含 `detector.strategy_hash`、`profile_hash`）绑定到其对象的 2.1.0 孪生哈希并逐字段比较；新增策略 / Profile 语义变化与篡改的反例；报告与钉值未改动（详见 [ADR-0055 实施说明](../reviews/2026-09-26-adr-0055-implementation.md) §9）。此修正之后的门禁见交付报告。
+- Codex 复核修正（`test_evidence_setups.py`）：证据比较不再整类删除 `*_hash`，而是把每个派生哈希（含 `detector.strategy_hash`、`profile_hash`）绑定到其对象的 2.1.0 孪生哈希并逐字段比较；新增策略 / Profile 语义变化与篡改的反例；报告与钉值未改动（详见 [ADR-0055 实施说明](../reviews/2026-09-26-adr-0055-implementation.md) §9），提交为 `c08c589`。
+- 代码冻结提交 `c08c589` 的全量非 PostgreSQL 门禁（`systemd-run --user --scope -q -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest -q -m "not postgres" -p no:cacheprovider -rs`）→ `7179 passed, 136 deselected, 1 warning in 2906.24s (0:48:26)`，退出码 0；起止 SHA 均为 `c08c5895b4a60916715c2f88f65d061c40724b96`、dirty=0（2026-09-26T20:07:01Z → 20:55:29Z）；其后的 docs-only 提交**不在**该门禁覆盖范围内。
+- Codex 于 2026-09-26 基于组合代码 `c08c589` 与上述门禁接受 ADR-0055（Accepted）；ADR / 代码接受**不等于** Phase 0.5 整体验收：仓库种子仍无具名人工审阅的标签 / 资产分类（只有实施说明 §5 的提案），Phase 0.5 验收仍待 Codex / Raphael。
 
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
@@ -686,7 +688,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 7 | 内容核对失败记录调用、核对模式写入状态目录指纹（B50） | 只有脚本化 LLM |
 | 6 | 数据集组合根上的条件计划端到端测试（B50） | 同 10.6 |
 | 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51） | 今天没有冻结的 Profile → 所有晋升被拒（设计如此）；Profile `status` 不在其哈希内，需 Profile 注册表才是真正权威 |
-| 0.5 | 按标签 / 资产检索（ADR-0055，契约 2.2.0，含控制台；B55） | ADR 仍 Proposed，待 Codex 复核组合分支；种子尚无经人工审阅的标签 / 资产 |
+| 0.5 | 按标签 / 资产检索（ADR-0055 Accepted，契约 2.2.0，含控制台；B55） | Phase 0.5 未验收：种子尚无具名人工审阅的标签 / 资产 |
 | 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告未重跑复现 |
 | 10 | 证据模式要求报告的 Profile 与市场基准项（B51） | 证据模式不要求 FROZEN；不要求 `G2.inverse_control` |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |

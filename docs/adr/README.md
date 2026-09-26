@@ -59,7 +59,7 @@
 | [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准）；已实施于 2.1.0（按记录版本重放、§1 ~ §3 字段与研究侧取值）；CODE_COMPLETE / DEBUG_PENDING |
 | [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准）；已实施 |
 | [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准）；re-declared at 2.1.0（2026-09-26）；CODE_COMPLETE / DEBUG_PENDING |
-| [0055](0055-knowledge-tags-assets.md) | 知识库按标签 / 资产检索（Phase 0.5；契约 2.2.0） | **Proposed**：能力方向已由 Codex 依 Raphael 授权决定（2026-09-26）；Amendment 1（2.2.0 版本边界、Pydantic ≥ 2.12、验证矩阵）已写入；实施证据待 Codex 复核 |
+| [0055](0055-knowledge-tags-assets.md) | 知识库按标签 / 资产检索（Phase 0.5；契约 2.2.0） | Accepted（2026-09-26；Codex 基于组合代码 `c08c589` 与最终全量门禁复核接受；Amendment 1）；CODE_COMPLETE / DEBUG_PENDING；Phase 0.5 未验收（种子无具名人工审阅分类） |
 | [0056](0056-event-table.md) | 物理 Event 表 `event.events`（Phase 3，只追加，按 `result_hash` 幂等） | Accepted（2026-09-26；Claude 依 Raphael 明确授权决定）；CODE_COMPLETE / DEBUG_PENDING |
 | [0057](0057-event-request-subject.md) | 事件请求的标的键 `EventRequest.subject`（P3-MULTISYM，additive） | Accepted（2026-09-26；Claude 依 Raphael 授权决定）；re-declared at 2.1.0（2026-09-26）；CODE_COMPLETE / DEBUG_PENDING |
 | [0058](0058-knowledge-reviewed-write-path.md) | 知识库经人工审阅的写入路径（Python API / CLI，无 HTTP 写端点） | Accepted（2026-09-26；Claude 依 Raphael 明确授权） |

@@ -19,10 +19,10 @@
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
 - 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`：随 Phase 0 收口 fast-forward 合并进 `main` 并打 tag，
   **视为已发布**（D-25）——此后任何破坏性契约变化都必须升 major 并走 ADR；尚无 v2 数据登记。
-  ADR-0052 §4 起为 **2.1.0**（minor）；ADR-0055 组合分支起为 **2.2.0**（minor，知识标签 / 资产）：持久化对象按记录版本重放，新增字段以 `_FIELDS_SINCE` 等声明引入版本（ADR-0052 / 0054 / 0057 / 0055）；当前版本新建对象的信封与哈希随 minor 变化，属预期
+  ADR-0052 §4 起为 **2.1.0**（minor）；ADR-0055 起为 **2.2.0**（minor，知识标签 / 资产；`wip/all-code-completion` 自 `c08c589`）：持久化对象按记录版本重放，新增字段以 `_FIELDS_SINCE` 等声明引入版本（ADR-0052 / 0054 / 0057 / 0055）；当前版本新建对象的信封与哈希随 minor 变化，属预期
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
-- current Schema 135 份（组合分支契约 2.2.0；全代码 `a5836b2` 为 2.1.0），与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
+- current Schema 135 份（契约 2.2.0；`a5836b2` 及以前为 2.1.0），与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
   Data Plane Adapter Protocol 3 个（Storage / Catalog / Collector，B3 已由 Codex 验收；Storage、PostgreSQL-backed PyIceberg Catalog、Binance 公共归档 Collector 与 fail-closed parser 的本地实现已验收；suite 在 `tests/contract_suites/`）；
   D2 起归档对象 key 内容寻址（`raw/binance/spot/archive/revisions/<sha256>/…`，collector `1.1.0`，source 绑定不变），`arrival_seq` 以归档表为 anchor 按 `2**32` block 分配、只存 Iceberg；
   Catalog 必须从实际 batch 独立重算指纹并核对（不信任自报）；C3 已冻结并实现 `hlens.pyarrow-batch-sha256@1.0.0`、八张生产表与分区演进
@@ -99,7 +99,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 框架批次 ADR（2026-09-25，依授权 Accepted，全部 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED，数值一律 TBD）：0034 知识库 · 0035 状态 · 0036 事件 · 0037 Outcome + 最小验证门 · 0038 策略 / 风控 / 回测 · 0039 状态×策略 · 0040 假设 + LLM · 0041 稳健性（G4、回溯审计不得翻转已拒绝对象） · 0042 合成市场 · 0043 路由 · 0044 事件总线 + worker · 0045 进化 · 0046 模拟执行（无实盘）· 0047 迁移 · 0048 API / Web · 0049 持续循环（worker 机制在 apps/worker，研究阶段在 research/loop，research 依赖 apps/worker 而非相反）· 0050 循环审计记录契约（只追加，描述既有字节）
 - Raphael 指示（2026-09-25，/goal）："使用 4 个子代理加速开发，直到项目全部开发完成；不用调试，先按框架实现所有代码，每一步更新文档，开发完成后再逐个调试"——Phase 0.5、2～14 按路线图先实现框架代码（状态 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），Phase 1 收尾并行；红线不变（宪法原则 / 阈值、Profile 数值留 TBD；Phase 13 只做模拟 / 纸面，无交易端点 / 密钥 / 下单；`main` 合并与 tag 仍需 Raphael）
 - Raphael 授权（2026-09-26，/goal）："所有的决策都由你来决定，包括红线的事情"——Claude 的逐项裁决见 `docs/reviews/2026-09-26-autonomous-decisions.md`（不做实盘 / 不冻结 Profile 数值 / 不合并 `main` / 无证据不晋升）；ADR-0056 事件表、ADR-0057 事件 subject、ADR-0058 知识库写入由 Claude 接受；Codex 全代码复核 K3 要求 ADR-0052 以 2.1.0 实施且旧 2.0.0 原样可重放；ADR-0054 / 0057 的新字段已于 B41 以 2.1.0 重新声明；`subject` = 调用方提供的稳定、大小写敏感 opaque ID
-- 2026-09-26 由 Claude 依授权接受并实施：ADR-0056 事件表、ADR-0057 事件 subject（2.1.0）、ADR-0058 知识库写入、ADR-0059 G4 跨资产 × 横截面、ADR-0060 C-T4 市场基准（报告项）、ADR-0061 交互 DSL；ADR-0055（知识标签 / 资产检索：`tags_all` AND、`assets_any` OR 逐字精确，契约 2.2.0；资产是研究范围标识，不是上市 / 行情证据）能力方向由 Codex 依 Raphael 授权决定，实现 CODE_COMPLETE / DEBUG_PENDING（组合分支 `claude/adr-0055-integration`），ADR 仍 Proposed 待 Codex 复核组合分支；种子尚无经人工审阅的标签 / 资产（只有分类提案，不得当作已审阅数据）；ADR-0051（D-LIST）Proposed、Raphael 暂缓
+- 2026-09-26 由 Claude 依授权接受并实施：ADR-0056 事件表、ADR-0057 事件 subject（2.1.0）、ADR-0058 知识库写入、ADR-0059 G4 跨资产 × 横截面、ADR-0060 C-T4 市场基准（报告项）、ADR-0061 交互 DSL；ADR-0055（知识标签 / 资产检索：`tags_all` AND、`assets_any` OR 逐字精确，契约 2.2.0；资产是研究范围标识，不是上市 / 行情证据）**Accepted**（Codex，2026-09-26，基于组合代码 `c08c589` 与其全量门禁），实现 CODE_COMPLETE / DEBUG_PENDING；ADR / 代码接受不等于 Phase 0.5 验收——种子尚无具名人工审阅的标签 / 资产（只有分类提案，不得当作已审阅数据）；ADR-0051（D-LIST）Proposed、Raphael 暂缓
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
