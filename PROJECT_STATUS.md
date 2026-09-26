@@ -54,7 +54,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 8 | Validation & Robustness | 🧱 框架已实现（ADR-0041：G4 稳健性套件、回溯审计、已接入策略验证；P4 复核的 5 个问题已修） |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042：合成市场 + 验证门的校准工具——假阳性率 / 检出力 / 精确置信区间，只给证据不选数值） |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面） |
-| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049：六阶段轮次、预算先查后跑、生命周期守卫永不到 ACTIVE、哈希链审计、劣化监控） |
+| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050：六阶段轮次、预算先查后跑、生命周期守卫永不到 ACTIVE、哈希链审计、劣化监控） |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045） |
 | 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046：模拟执行、急停、二线风控；实盘在结构上被拒绝）；接 P5 目标仓位的接线开发中 |
 | 14 | Technology Migration | 🧱 框架已实现（ADR-0047） |
