@@ -211,8 +211,9 @@ Knowledge Search 需要 `--knowledge docs/research/knowledge`（注入 `LocalKno
    `render.test-util.tsx` 的 settle 循环相同，但走真实 HTTP）：没有残留的 loading、没有错误状态、报告页确实请求了
    列表与所选详情且没有退回原始 JSON；未配置的后端上 Knowledge Search / Jobs 页面显示 503 错误状态。
 
-`tests/apps/test_live_backend_smoke.py` 启动两个真实后端子进程（`tests/apps/live_server.py`，仅测试用的最小
-stdlib 服务器，127.0.0.1 + 临时端口）并运行本脚本；没有 `node` 或未安装 `node_modules` 时该用例带原因 skip。
+`tests/apps/test_live_backend_smoke.py` 启动三个真实后端子进程（`tests/apps/live_server.py`，仅测试用的最小
+stdlib 服务器，127.0.0.1 + 临时端口），本脚本只对其中完整配置与未配置的两个运行（第三个 broken 服务器只由 pytest
+检查 502 / 500 错误路径，见 [apps/api/README.md](../api/README.md)「Live-backend smoke」）；没有 `node` 或未安装 `node_modules` 时该用例带原因 skip。
 
 **证明了什么**：真实 `apps/api` 进程经真实 socket 返回的 JSON，能被控制台自己的客户端、错误映射、视图模型和页面
 组件（服务端渲染）完整消费，与 fixtures 上的测试结论一致。**没有证明什么**：没有真实浏览器 —— 不验证像素 / 布局 /

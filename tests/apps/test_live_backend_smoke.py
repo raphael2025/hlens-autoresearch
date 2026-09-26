@@ -19,6 +19,12 @@ fixture files directly. This module is the full-stack evidence without a browser
   keywords the document uses — ``jsonschema`` is not installed — plus a pydantic round trip
   through the response model the app declares, which also catches undeclared extra fields);
 - a second server without knowledge provider / jobs journal answers the 503 paths;
+- a third ("broken") server answers the remaining error paths over real HTTP: 502 from a knowledge
+  provider raising ``KnowledgeProviderError`` (injected by the test server's test-only
+  ``--knowledge-error`` flag; no hook in ``apps/``), 500 from ``/jobs`` / ``/jobs/{id}`` on a copy
+  of the real journal whose hash chain is broken, and the catch-all 500 from a report file whose
+  JSON makes the store's read raise an exception it does not map (real data, no hook); each body
+  is the declared ``ApiError`` and carries no server path, traceback or exception type;
 - ``apps/web/scripts/live-smoke.mjs`` then runs the console's own client (``src/api.ts``),
   view-model helpers (``src/lib``) and a server-side render of every page against both live
   servers (skipped with a reason when ``node`` / the installed ``apps/web/node_modules`` is absent).
@@ -48,6 +54,7 @@ import pytest
 from pydantic import BaseModel, TypeAdapter
 
 from apps.api.app import (
+    INTERNAL_ERROR,
     JOBS_NOT_CONFIGURED,
     KNOWLEDGE_NOT_CONFIGURED,
     ApiError,
@@ -71,6 +78,26 @@ LIVE_SMOKE_JS = WEB / "scripts" / "live-smoke.mjs"
 #: its detail is the store's 422.
 MALFORMED_KIND = ReportKind.VALIDATION_REPORT
 MALFORMED_ID = "f" * 64
+
+#: The broken server's unmapped-exception trigger (real data, no production hook): a report file
+#: whose JSON holds an integer literal longer than CPython's int-conversion limit (4300 digits).
+#: ``json.loads`` raises a plain ``ValueError`` (not ``JSONDecodeError``), which ``ReportStore``
+#: does not map, so the listing and the detail of that kind reach the app's catch-all 500. Should
+#: the store ever map it to a malformed entry, this test must pick another unmapped trigger.
+ODD_KIND = ReportKind.STATE_STRATEGY_MATRIX
+ODD_ID = "e" * 64
+ODD_JSON = '{"n": ' + "1" * 5000 + "}"
+ODD_MESSAGE = "Exceeds the limit (4300 digits) for integer string conversion"
+
+#: The broken server's journal: a copy of the real one whose line 2 no longer links to line 1.
+TAMPERED_DETAIL = "job results journal failed verification: results.jsonl:2 breaks the hash chain"
+#: What the broken server's provider raises (a realistic OSError text naming a server path; the
+#: ``{root}`` is the temporary work directory) and the 502 detail it must become (path-free).
+KNOWLEDGE_FAILURE = "items.json: unreadable: [Errno 13] Permission denied: '{root}/items.json'"
+KNOWLEDGE_FAILURE_DETAIL = (
+    "knowledge provider could not answer: items.json: unreadable: [Errno 13] Permission denied: "
+    "'items.json'"
+)
 
 #: The response models ``apps.api`` declares, by their committed OpenAPI component name.
 #: (``HTTPValidationError`` is FastAPI's own schema, checked against the document only.)
@@ -125,6 +152,18 @@ def _write_jobs(path: Path) -> dict[str, str]:
     with pytest.raises(Crash):
         runner.run_pending()
     return ids
+
+
+def _break_chain(source: Path, target: Path) -> None:
+    """``target`` = ``source`` (a real results journal) with line 2's ``prev_hash`` replaced by a
+    different hash: the history splices in a line that does not follow line 1."""
+    lines = source.read_text(encoding="utf-8").splitlines()
+    assert len(lines) >= 2, "the real journal is too short to tamper with"
+    entry = json.loads(lines[1])
+    assert entry["prev_hash"] != "1" * 64
+    entry["prev_hash"] = "1" * 64
+    lines[1] = json.dumps(entry, sort_keys=True, separators=(",", ":"))
+    target.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 @dataclass
@@ -186,6 +225,8 @@ def _stop(server: Server) -> int | str:
 class Live:
     full: Server
     bare: Server
+    broken: Server
+    work: Path
     reports_root: Path
     jobs: dict[str, str]
 
@@ -203,8 +244,14 @@ def live(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Live]:
     results = work / "jobs" / "results.jsonl"
     results.parent.mkdir()
     jobs = _write_jobs(results)
-    full = _start(
-        [
+    broken_reports = work / "reports_broken"
+    (broken_reports / ODD_KIND.value).mkdir(parents=True)
+    (broken_reports / ODD_KIND.value / f"{ODD_ID}.json").write_text(ODD_JSON, encoding="utf-8")
+    tampered = work / "jobs_tampered" / "results.jsonl"
+    tampered.parent.mkdir()
+    _break_chain(results, tampered)
+    options = {
+        "full": [
             "--reports-root",
             str(reports_root),
             "--jobs-results",
@@ -212,22 +259,38 @@ def live(tmp_path_factory: pytest.TempPathFactory) -> Iterator[Live]:
             "--knowledge",
             str(knowledge),
         ],
-        work,
-        "full",
-    )
+        "bare": [],
+        "broken": [
+            "--reports-root",
+            str(broken_reports),
+            "--jobs-results",
+            str(tampered),
+            "--knowledge-error",
+            KNOWLEDGE_FAILURE.format(root=knowledge),
+        ],
+    }
+    servers: dict[str, Server] = {}
     try:
-        bare = _start([], work, "bare")
+        for name, argv in options.items():
+            servers[name] = _start(argv, work, name)
     except BaseException:
-        _stop(full)
+        for server in servers.values():
+            _stop(server)
         raise
     try:
-        yield Live(full, bare, reports_root, jobs)
+        yield Live(
+            servers["full"],
+            servers["bare"],
+            servers["broken"],
+            work=work,
+            reports_root=reports_root,
+            jobs=jobs,
+        )
     finally:
-        codes = {"full": _stop(full), "bare": _stop(bare)}
-    assert codes == {"full": 0, "bare": 0}, (
+        codes = {name: _stop(server) for name, server in servers.items()}
+    assert codes == dict.fromkeys(options, 0), (
         codes,
-        full.stderr.read_text(),
-        bare.stderr.read_text(),
+        {name: server.stderr.read_text() for name, server in servers.items()},
     )
 
 
@@ -449,6 +512,56 @@ def test_every_openapi_operation_answers_its_declared_schema_over_real_http(live
     }
     answered = {(method, template) for method, template, status in full.seen if status == 200}
     assert answered == operations
+
+
+def _assert_api_error_without_leaks(
+    data: Any, method: str, path: str, status: int, work: Path
+) -> None:
+    """``status`` is declared for the operation as exactly ``ApiError``; the body is one; it
+    names no server path (the temporary work root holding every served file, the repository
+    root) and no traceback / exception type."""
+    template, operation = _operation(method, path)
+    schema = operation["responses"][str(status)]["content"]["application/json"]["schema"]
+    assert schema == {"$ref": "#/components/schemas/ApiError"}, (method, template, status)
+    ApiError.model_validate(data)
+    text = json.dumps(data)
+    leaks = (str(work), str(REPO), "Traceback", 'File "', ".py", "Error:", "Exception")
+    for leak in (*leaks, "KnowledgeProviderError", "JournalCorrupted", "ValueError"):
+        assert leak not in text, (method, path, leak, text)
+
+
+def test_the_error_paths_answer_declared_api_errors_over_real_http(live: Live) -> None:
+    broken = Checked(live.broken.base_url)  # asserts: status declared, schema, model round trip
+
+    # 502: the configured provider raises KnowledgeProviderError (a message naming a server path)
+    search = ("POST", "/knowledge/search")
+    data = broken.call(*search, 502, {"terms": ["momentum"]})
+    assert data == {"detail": KNOWLEDGE_FAILURE_DETAIL}
+    _assert_api_error_without_leaks(data, *search, 502, live.work)
+
+    # 500: the job results journal is a tampered copy of the real runner's journal
+    for path in ("/jobs", f"/jobs/{live.jobs['succeeded']}"):
+        data = broken.call("GET", path, 500)
+        assert data == {"detail": TAMPERED_DETAIL}
+        _assert_api_error_without_leaks(data, "GET", path, 500, live.work)
+
+    # catch-all 500: reading the odd report file raises an exception no route maps
+    for path in (f"/reports/{ODD_KIND.value}", f"/reports/{ODD_KIND.value}/{ODD_ID}"):
+        data = broken.call("GET", path, 500)
+        assert data == {"detail": INTERNAL_ERROR}
+        _assert_api_error_without_leaks(data, "GET", path, 500, live.work)
+        assert "4300" not in json.dumps(data) and "limit" not in json.dumps(data)
+    # it really was the unmapped exception: the server's log (never the client) has its traceback
+    log = live.broken.stderr.read_text(errors="replace")
+    assert log.count(f"ValueError: {ODD_MESSAGE}") == 2 and "Traceback" in log, log
+
+    assert broken.seen == {
+        ("POST", "/knowledge/search", 502),
+        ("GET", "/jobs", 500),
+        ("GET", "/jobs/{job_id}", 500),
+        ("GET", "/reports/{kind}", 500),
+        ("GET", "/reports/{kind}/{report_id}", 500),
+    }
 
 
 def test_the_console_client_and_view_models_run_against_the_live_api(live: Live) -> None:

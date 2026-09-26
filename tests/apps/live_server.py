@@ -4,7 +4,7 @@
 real socket and a process boundary::
 
     python -m tests.apps.live_server --port 0 --reports-root DIR --jobs-results FILE \\
-        --knowledge DIR [--jobs-idempotent NAME ...]
+        (--knowledge DIR | --knowledge-error MESSAGE) [--jobs-idempotent NAME ...]
 
 It binds ``127.0.0.1`` only, prints ``{"port": <bound port>}`` on stdout once listening, and exits
 0 on SIGTERM / SIGINT. uvicorn is not a project dependency, so this is an ``asyncio`` TCP server
@@ -12,6 +12,13 @@ that parses simple HTTP/1.1 requests (method, path, query, headers, ``Content-Le
 drives ``create_app(...)`` through the ASGI ``http`` protocol (``http.request`` /
 ``http.response.start`` / ``http.response.body``), answering one request per connection with
 ``Connection: close``.
+
+``--knowledge-error MESSAGE`` is a **test-only fault injection** (it exists nowhere in ``apps/``):
+the app gets a knowledge provider whose ``search`` raises ``KnowledgeProviderError(MESSAGE)``, so
+the API's 502 path runs over real HTTP. An exception the app re-raises after answering (Starlette's
+``ServerErrorMiddleware`` re-raises once the catch-all handler has sent its 500, for the server to
+log) is printed to stderr with its traceback, and the answer the app already sent is delivered --
+as an ASGI server does; when the app sent no response start, the client gets a bare text 500.
 
 This is **not a production server**: no keep-alive, chunked request bodies, TLS, timeouts,
 lifespan events or back-pressure. A production deployment of ``apps/api`` would use an ASGI server
@@ -24,11 +31,20 @@ import argparse
 import asyncio
 import json
 import signal
+import sys
+import traceback
 from collections.abc import Sequence
 from http import HTTPStatus
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 from urllib.parse import unquote
+
+if TYPE_CHECKING:
+    from core.contracts.knowledge import (
+        KnowledgeProviderDescriptor,
+        KnowledgeQuery,
+        KnowledgeResult,
+    )
 
 __all__ = ["main", "serve"]
 
@@ -88,6 +104,7 @@ async def _exchange(app: Any, reader: asyncio.StreamReader, writer: asyncio.Stre
         "server": writer.get_extra_info("sockname")[:2],
     }
     done = asyncio.Event()
+    started = False
     request_sent = False
     status = 500
     response_headers: list[tuple[bytes, bytes]] = []
@@ -102,8 +119,9 @@ async def _exchange(app: Any, reader: asyncio.StreamReader, writer: asyncio.Stre
         return {"type": "http.disconnect"}
 
     async def send(message: dict[str, Any]) -> None:
-        nonlocal status, response_headers
+        nonlocal started, status, response_headers
         if message["type"] == "http.response.start":
+            started = True
             status = int(message["status"])
             response_headers = [(bytes(k).lower(), bytes(v)) for k, v in message.get("headers", [])]
         elif message["type"] == "http.response.body":
@@ -111,7 +129,17 @@ async def _exchange(app: Any, reader: asyncio.StreamReader, writer: asyncio.Stre
             if not message.get("more_body", False):
                 done.set()
 
-    await app(scope, receive, send)
+    try:
+        await app(scope, receive, send)
+    except Exception:
+        # the server log keeps the traceback; the client never sees it
+        traceback.print_exc(file=sys.stderr)
+        sys.stderr.flush()
+        if started and not done.is_set():
+            return  # a half-sent response: drop the connection (handle() closes it)
+        if not started:
+            status, chunks = 500, [b"Internal Server Error"]
+            response_headers = [(b"content-type", b"text/plain; charset=utf-8")]
     done.set()
     payload = b"".join(chunks)
     lines = [f"HTTP/1.1 {status} {HTTPStatus(status).phrase}".encode("latin-1")]
@@ -123,20 +151,53 @@ async def _exchange(app: Any, reader: asyncio.StreamReader, writer: asyncio.Stre
     await writer.drain()
 
 
+class _FailingKnowledgeProvider:
+    """TEST-ONLY ``KnowledgeProvider`` whose every search fails closed with ``message``."""
+
+    def __init__(self, message: str) -> None:
+        from core.contracts.knowledge import KnowledgeProviderDescriptor
+
+        self._message = message
+        self._descriptor = KnowledgeProviderDescriptor(
+            name="failing_test_provider", version="1.0.0", deterministic=True, sources=("none",)
+        )
+
+    @property
+    def descriptor(self) -> KnowledgeProviderDescriptor:
+        return self._descriptor
+
+    def search(self, query: KnowledgeQuery) -> KnowledgeResult:
+        from core.contracts.knowledge import KnowledgeProviderError
+
+        raise KnowledgeProviderError(self._message)
+
+
 def main(argv: Sequence[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--port", type=int, default=0)
     parser.add_argument("--reports-root", type=Path)
     parser.add_argument("--jobs-results", type=Path)
-    parser.add_argument("--knowledge", type=Path, help="LocalKnowledgeProvider items directory")
+    knowledge = parser.add_mutually_exclusive_group()
+    knowledge.add_argument("--knowledge", type=Path, help="LocalKnowledgeProvider items directory")
+    knowledge.add_argument(
+        "--knowledge-error",
+        metavar="MESSAGE",
+        help="TEST-ONLY: a provider whose search raises KnowledgeProviderError(MESSAGE)",
+    )
     parser.add_argument("--jobs-idempotent", nargs="*", default=[])
     args = parser.parse_args(argv)
 
     from apps.api import create_app
+    from core.contracts.knowledge import KnowledgeProvider
     from plugins.knowledge import LocalKnowledgeProvider
 
+    provider: KnowledgeProvider | None = None
+    if args.knowledge is not None:
+        provider = LocalKnowledgeProvider(args.knowledge)
+    elif args.knowledge_error is not None:
+        provider = _FailingKnowledgeProvider(args.knowledge_error)
     app = create_app(
-        knowledge=None if args.knowledge is None else LocalKnowledgeProvider(args.knowledge),
+        knowledge=provider,
         reports_root=args.reports_root,
         jobs_results=args.jobs_results,
         jobs_idempotent=tuple(args.jobs_idempotent),
