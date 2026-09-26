@@ -12,7 +12,9 @@ every strategy the spec can route to must also be backed by the actual ``Validat
 - ``reports``: either the report objects (strategy ref -> ``ValidationReport``) or a resolver
   ``report hash -> ValidationReport | None`` — ``report_store_resolver(root)`` reads
   ``<root>/validation_report/<hash>.json`` (the report store's file layout; ``apps`` is never
-  imported).
+  imported);
+- ``profiles``: the ``ValidationProfile`` objects the reports were produced under (ADR-0060 C-T4
+  below needs the Profile's benchmark rule; a report cannot state it by itself).
 
 ``check_report`` then requires, per routed strategy, in this order (the first failure is the
 refusal reason): a claimed hash (``report_hash_missing``), a report for it
@@ -21,7 +23,13 @@ equal to the claimed one (``report_hash_mismatch``), its ``subject`` equal to th
 ref (``subject_mismatch``), verdict PASS (``verdict_not_pass``) and at least one G5 (sealed OOS)
 gate (``sealed_oos_not_evaluated``; ``research.validation.report.promotion_blocked_reason``),
 every G5 gate PASS (``sealed_oos_not_passed``; implied by a PASS verdict for a validated report,
-checked anyway). A PASS report including G5 is the research-level prerequisite of the routable
+checked anyway), then the report's Profile among ``profiles`` (content hash = the report's
+``validation_profile_hash``, same ref; ``profile_not_found``) and, when that Profile's
+``benchmark.market_benchmark_rule`` is not ``none``, the ADR-0060 item it calls for in the report
+(``G2.market_benchmark.<rule>`` for a registered rule, the bare ``G2.market_benchmark`` for an
+unregistered one; ``market_benchmark_missing``) — the validator's ``ValidatorSetup
+.market_benchmark`` stays opt-in (default ``False``), evidence mode does not accept a report made
+without it. A PASS report including G5 is the research-level prerequisite of the routable
 lifecycle states (in-sample + sealed OOS passed); the human / Control-Plane review steps that
 make a strategy PRODUCTION_CANDIDATE or ACTIVE stay a caller claim — production eligibility
 belongs to the Control Plane, not to this module. Nothing here has a threshold.
@@ -31,13 +39,15 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
+from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import SHA256_PATTERN, Ref
 from core.domain.research import ValidationReport, Verdict
+from research.validation.benchmark import MARKET_BENCHMARK_GATE, resolve_market_benchmark
 from research.validation.report import (
     SEALED_OOS_NOT_EVALUATED,
     VERDICT_NOT_PASS,
@@ -65,6 +75,8 @@ type EligibilityRefusal = Literal[
     "verdict_not_pass",
     "sealed_oos_not_evaluated",
     "sealed_oos_not_passed",
+    "profile_not_found",
+    "market_benchmark_missing",
 ]
 #: report content hash -> the report, or ``None`` when the source has no such report.
 type ReportResolver = Callable[[str], ValidationReport | None]
@@ -87,6 +99,8 @@ class EligibilityEvidence:
 
     report_hashes: Mapping[Ref, str] | Mapping[str, str]
     reports: Mapping[Ref, ValidationReport] | Mapping[str, ValidationReport] | ReportResolver
+    #: The Validation Profiles the reports were produced under (no default: absence is refused).
+    profiles: Sequence[ValidationProfile]
 
 
 @dataclass(frozen=True, slots=True)
@@ -173,15 +187,27 @@ def _sealed_oos_gates(report: ValidationReport) -> tuple[str, ...]:
     return tuple(g.gate_id for g in report.gates if g.gate_id.startswith(SEALED_OOS_GATE_PREFIX))
 
 
+def _market_benchmark_item(profile: ValidationProfile) -> str | None:
+    """The ADR-0060 gate id ``profile``'s benchmark rule calls for (``None``: rule ``none``)."""
+    name = profile.benchmark.market_benchmark_rule
+    if name == "none":
+        return None
+    registered = resolve_market_benchmark(name) is not None
+    return f"{MARKET_BENCHMARK_GATE}.{name}" if registered else MARKET_BENCHMARK_GATE
+
+
 def check_report(
     strategy: str,
     lifecycle: str,
     report_hash: str | None,
     reports: Mapping[str, ValidationReport] | ReportResolver,
+    *,
+    profiles: Sequence[ValidationProfile],
 ) -> EligibilityCheck:
     """Check one routed strategy's claim (module docs; the first failing check is the refusal).
 
-    ``reports`` is either keyed by strategy ref string or a resolver by report hash.
+    ``reports`` is either keyed by strategy ref string or a resolver by report hash; ``profiles``
+    are the Profiles the reports were produced under.
     """
     if report_hash is None:
         return _refused(strategy, lifecycle, None, "report_hash_missing", "no report hash claimed")
@@ -247,6 +273,36 @@ def check_report(
             report_hash,
             "sealed_oos_not_passed",
             f"G5 gates not PASS: {failed}" if failed else f"promotion blocked: {blocked}",
+            report,
+        )
+    profile = next(
+        (
+            p
+            for p in profiles
+            if isinstance(p, ValidationProfile)
+            and p.content_hash() == report.validation_profile_hash
+            and p.ref.target_identity() == report.validation_profile.target_identity()
+        ),
+        None,
+    )
+    if profile is None:
+        return _refused(
+            strategy,
+            lifecycle,
+            report_hash,
+            "profile_not_found",
+            f"no given Profile is {report.validation_profile} / {report.validation_profile_hash}",
+            report,
+        )
+    item = _market_benchmark_item(profile)
+    if item is not None and not any(g.gate_id == item for g in report.gates):
+        return _refused(
+            strategy,
+            lifecycle,
+            report_hash,
+            "market_benchmark_missing",
+            f"benchmark.market_benchmark_rule={profile.benchmark.market_benchmark_rule} "
+            f"calls for {item}, which the report lacks (ADR-0060)",
             report,
         )
     return EligibilityCheck(

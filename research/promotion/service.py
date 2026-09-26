@@ -32,7 +32,12 @@ partial artifact exists):
    (``profile_not_calibrated``) — Constitution C-A8: promotion needs a frozen, calibrated Profile.
    ``status`` is excluded from the Profile content hash (ADR-0008), so a report cannot show it by
    itself; the Profile object is the evidence. No Profile is frozen today, so **every** promotion is
-   refused here (correct: Step 2 calibration has not happened);
+   refused here (correct: Step 2 calibration has not happened). ADR-0060 C-T4: a report that
+   evaluates stage G2 under a Profile whose ``benchmark.market_benchmark_rule`` is not ``none``
+   must carry the item that rule calls for — ``G2.market_benchmark.<rule>`` for a registered rule,
+   the bare ``G2.market_benchmark`` (INCONCLUSIVE) for an unregistered one
+   (``market_benchmark_missing``). The validator keeps ``ValidatorSetup.market_benchmark=False``
+   as its default; promotion simply does not accept a report produced without it;
 5. the dependency closure: the union of the experiments' ``dependency_hashes`` and the caller's
    ``signal_dependencies`` without conflicting hashes, covering every signal and the risk policy
    of the spec;
@@ -80,6 +85,7 @@ from infrastructure.registry import (
     payload_hash,
 )
 from infrastructure.registry.blobs import blob_uri
+from research.validation.benchmark import MARKET_BENCHMARK_GATE, resolve_market_benchmark
 from research.validation.report import (
     SEALED_OOS_NOT_EVALUATED,
     STAGES,
@@ -124,6 +130,7 @@ class PromotionRefusal(StrEnum):
     PROFILE_NOT_EVIDENCED = "profile_not_evidenced"
     PROFILE_NOT_FROZEN = "profile_not_frozen"
     PROFILE_NOT_CALIBRATED = "profile_not_calibrated"
+    MARKET_BENCHMARK_MISSING = "market_benchmark_missing"
     DEPENDENCY_CONFLICT = "dependency_conflict"
     DEPENDENCY_UNBOUND = "dependency_unbound"
     LIFECYCLE_SUBJECT_MISMATCH = "lifecycle_subject_mismatch"
@@ -278,6 +285,15 @@ def _check_experiments(
     return tuple(by_hash[h] for h in sorted(cited))
 
 
+def _market_benchmark_item(profile: ValidationProfile) -> str | None:
+    """The ADR-0060 gate id ``profile``'s benchmark rule calls for (``None``: rule ``none``)."""
+    name = profile.benchmark.market_benchmark_rule
+    if name == "none":
+        return None
+    registered = resolve_market_benchmark(name) is not None
+    return f"{MARKET_BENCHMARK_GATE}.{name}" if registered else MARKET_BENCHMARK_GATE
+
+
 def _check_profiles(
     reports: Sequence[ValidationReport], profiles: Sequence[ValidationProfile]
 ) -> None:
@@ -328,6 +344,19 @@ def _check_profiles(
             raise _refuse(
                 PromotionRefusal.PROFILE_HASH_MISMATCH,
                 f"{profile.ref} does not re-validate to hash {wanted}",
+            )
+        item = _market_benchmark_item(checked)
+        evaluates_g2 = any(gate.gate_id.split(".")[0] == "G2" for gate in report.gates)
+        if (
+            item is not None
+            and evaluates_g2
+            and not any(gate.gate_id == item for gate in report.gates)
+        ):
+            raise _refuse(
+                PromotionRefusal.MARKET_BENCHMARK_MISSING,
+                f"report {report.report_id} evaluates G2 under {profile.ref} "
+                f"(benchmark.market_benchmark_rule={checked.benchmark.market_benchmark_rule}) "
+                f"without the ADR-0060 item {item}",
             )
         cited.add(wanted)
     unused = sorted(set(by_hash) - cited)

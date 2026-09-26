@@ -55,13 +55,16 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
 
 - **两种模式**：默认**信任模式**照旧只看调用方的生命周期映射，所有既有哈希（`run_hash`、`stop_hash`、报告载荷）逐字节不变
   （`tests/research/router/test_router_eligibility.py` 用变更前代码算出的哈希钉住）。
-  **证据模式**：`StrategyRouter(spec, lifecycle, evidence=EligibilityEvidence(report_hashes=..., reports=...))`，
+  **证据模式**：`StrategyRouter(spec, lifecycle, evidence=EligibilityEvidence(report_hashes=..., reports=..., profiles=...))`，
   `reports` 为「策略 ref → `ValidationReport` 对象」或「报告哈希 → 报告」的解析器；`report_store_resolver(root)` 读取
   `<root>/validation_report/<hash>.json`（`research/reports/validation.py` 写入的布局；不 import `apps`）。
 - **逐策略检查**（规格可路由的每个策略，按 ref 排序；第一个失败即拒绝原因）：有声明哈希（`report_hash_missing`）→ 找到报告（`report_not_found`）→
   是合法 `ValidationReport`（`report_invalid`）→ 内容哈希等于声明哈希（`report_hash_mismatch`）→ `subject` 等于被路由 ref（`subject_mismatch`）→
   判定 PASS（`verdict_not_pass`）→ 至少一个 G5 密封 OOS 门（`sealed_oos_not_evaluated`，复用 `research.validation.report.promotion_blocked_reason`）→
-  所有 G5 门 PASS（`sealed_oos_not_passed`，防御性）。
+  所有 G5 门 PASS（`sealed_oos_not_passed`，防御性）→ 报告所用 Profile 在 `EligibilityEvidence.profiles` 中（内容哈希 = 报告的
+  `validation_profile_hash`、同 ref；`profile_not_found`；`profiles` 无默认值）→ 该 Profile 的 `benchmark.market_benchmark_rule` 不是 `none` 时，
+  报告含 ADR-0060 所要求的项（已注册规则为 `G2.market_benchmark.<rule>`，未注册为 `G2.market_benchmark`；`market_benchmark_missing`）。
+  验证器的 `ValidatorSetup.market_benchmark` 默认仍为 `False`；证据模式只是不接受缺该项的报告。
 - **拒绝**：任一失败抛 `RouterEligibilityRefused`（`RouterStopped` 子类，`reason = eligibility_not_evidenced`，`refusal` / `refusals` 给出具体原因，
   `eligibility` 含全部检查），绝不静默路由。`paper_run_or_stop(..., evidence=...)` 把它记录为 `RouterStop`（`eligibility` 计入 `stop_hash`）。
   输入格式错误（多余的哈希 / 报告、非 sha256、非 `EligibilityEvidence`）与路由到生命周期未验证策略仍是普通 `RouterError`。

@@ -353,6 +353,53 @@ def test_an_uncited_or_repeated_profile_is_refused() -> None:
     )
 
 
+def _stages(report: ValidationReport) -> list[str]:
+    return sorted({g.gate_id[:2] for g in report.gates})
+
+
+def test_a_g2_report_without_the_market_benchmark_item_is_refused() -> None:
+    evidence = toy_evidence()
+    spec, experiment = evidence.spec, evidence.experiments[0]
+    assert "G2.market_benchmark.flat" in {g.gate_id for g in evidence.reports[0].gates}
+    bare = toy_report(
+        spec, experiment, "TEST-ONLY-in-sample", _stages(evidence.reports[0]), market_benchmark=None
+    )
+    refused = _refusal(replace(evidence, reports=(bare, evidence.reports[1])))
+    assert refused.reason is R.MARKET_BENCHMARK_MISSING
+    assert refused.reason.value == "market_benchmark_missing"
+    assert "G2.market_benchmark.flat" in refused.detail
+
+
+def test_the_market_benchmark_item_must_be_the_profiles_rule() -> None:
+    profile = toy_profile(market_benchmark_rule="buy_and_hold_equal_weight")
+    refused = _refusal(_under(profile))  # the toy reports carry G2.market_benchmark.flat only
+    assert refused.reason is R.MARKET_BENCHMARK_MISSING
+    assert "G2.market_benchmark.buy_and_hold_equal_weight" in refused.detail
+
+
+def test_an_unregistered_rule_needs_its_inconclusive_item() -> None:
+    # an unregistered rule is reported as a bare INCONCLUSIVE G2.market_benchmark; a report that
+    # lacks even that is refused as missing (with it, the verdict is not PASS anyway)
+    profile = toy_profile(market_benchmark_rule="TEST-ONLY-unregistered")
+    refused = _refusal(_under(profile))
+    assert refused.reason is R.MARKET_BENCHMARK_MISSING
+    assert refused.detail.endswith("G2.market_benchmark")
+
+
+def test_a_profile_with_rule_none_needs_no_market_benchmark_item() -> None:
+    profile = toy_profile(market_benchmark_rule="none")
+    evidence = toy_evidence()
+    spec = evidence.spec
+    experiment = toy_experiment(spec, profile=profile)
+    reports = tuple(
+        toy_report(spec, experiment, r.report_id, _stages(r), market_benchmark=None)
+        for r in evidence.reports
+    )
+    build_artifact(
+        replace(evidence, reports=reports, experiments=(experiment,), profiles=(profile,))
+    )
+
+
 def test_something_other_than_a_profile_is_refused() -> None:
     evidence = toy_evidence(profiles=("not a profile",))
     assert _refusal(evidence).reason is R.EVIDENCE_INVALID

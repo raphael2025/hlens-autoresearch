@@ -18,7 +18,12 @@ from core.contracts.strategy import (
     TargetPosition,
     UnsupportedStrategy,
 )
-from core.contracts.validation_profile import ProfileStatus, Provenance, ValidationProfile
+from core.contracts.validation_profile import (
+    BenchmarkParams,
+    ProfileStatus,
+    Provenance,
+    ValidationProfile,
+)
 from core.domain.base import FrozenMapping, Ref
 from core.domain.research import ExperimentSpec, GateResult, ValidationReport, Verdict
 from core.domain.specs import StrategySpec
@@ -49,6 +54,9 @@ TEST_ONLY_SNAPSHOT = "TEST-ONLY-synthetic-golden-snapshot"
 #: A TEST ONLY calibration reference: no calibration report exists; it only lets the toy Profile be
 #: marked FROZEN so the happy path of the promotion chain is exercised (C-A8 is checked, not met).
 TEST_ONLY_CALIBRATION = "TEST-ONLY-no-real-calibration-report"
+#: The (registered, ADR-0060) market benchmark rule of the toy Profile; a toy report that evaluates
+#: G2 carries its reported-only item ``G2.market_benchmark.flat`` unless told not to.
+TOY_BENCHMARK_RULE = "flat"
 REPORT_TIME = datetime(2026, 2, 1, tzinfo=UTC)
 LIFECYCLE_START = datetime(2026, 2, 2, tzinfo=UTC)
 ARTIFACT_TIME = datetime(2026, 3, 1, tzinfo=UTC)
@@ -85,12 +93,22 @@ def history(
 def toy_profile(
     status: ProfileStatus = ProfileStatus.FROZEN,
     calibration_report: str | None = TEST_ONLY_CALIBRATION,
+    *,
+    market_benchmark_rule: str = TOY_BENCHMARK_RULE,
     **overrides: object,
 ) -> ValidationProfile:
     """The TEST ONLY Profile the toy reports ran under; FROZEN with a TEST ONLY calibration
     reference by default (``tests.factories.validation_profile`` values — not calibrated)."""
     provenance = Provenance(calibration_report=calibration_report, approval_adr="TEST-ONLY")
-    payload: dict[str, object] = {"status": status, "provenance": provenance}
+    base = validation_profile().benchmark
+    benchmark = BenchmarkParams.model_validate(
+        {**base.model_dump(), "market_benchmark_rule": market_benchmark_rule}
+    )
+    payload: dict[str, object] = {
+        "status": status,
+        "provenance": provenance,
+        "benchmark": benchmark,
+    }
     payload.update(overrides)
     return validation_profile(**payload)
 
@@ -124,11 +142,14 @@ def toy_report(
     *,
     failing: str | None = None,
     verdict: Verdict = Verdict.FAIL,
+    market_benchmark: str | None = f"G2.market_benchmark.{TOY_BENCHMARK_RULE}",
     **overrides: object,
 ) -> ValidationReport:
+    ids = [(stage, f"{stage}.test_only") for stage in stages]
+    if market_benchmark is not None and "G2" in stages:
+        ids.append(("G2", market_benchmark))  # ADR-0060 reported-only item
     gates = tuple(
-        gate(f"{stage}.test_only", verdict if stage == failing else Verdict.PASS)
-        for stage in stages
+        gate(gate_id, verdict if stage == failing else Verdict.PASS) for stage, gate_id in ids
     )
     derived = verdict if failing is not None else Verdict.PASS
     payload: dict[str, object] = {

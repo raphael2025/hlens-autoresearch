@@ -36,6 +36,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Final, Literal
 
+from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import SHA256_PATTERN, Ref, content_hash
 from core.domain.research import ValidationReport
 from core.lifecycle.strategy import LifecycleState
@@ -182,10 +183,19 @@ def normalize_report_hashes(reports: Mapping[Ref, str] | Mapping[str, str]) -> d
 
 def _evidence_reports(
     evidence: EligibilityEvidence, routed: frozenset[str]
-) -> tuple[dict[str, str], Mapping[str, ValidationReport] | ReportResolver]:
+) -> tuple[
+    dict[str, str], Mapping[str, ValidationReport] | ReportResolver, tuple[ValidationProfile, ...]
+]:
     """Normalize evidence-mode inputs; ill-formed input is a plain ``RouterError``."""
     if not isinstance(evidence, EligibilityEvidence):
         raise RouterError("evidence must be an EligibilityEvidence")
+    profiles = evidence.profiles
+    if (
+        isinstance(profiles, str | bytes)
+        or not isinstance(profiles, Sequence)
+        or not all(isinstance(p, ValidationProfile) for p in profiles)
+    ):
+        raise RouterError("evidence.profiles must be a sequence of ValidationProfile")
     hashes = normalize_report_hashes(evidence.report_hashes)
     extra = sorted(set(hashes) - routed)
     if extra:
@@ -193,7 +203,7 @@ def _evidence_reports(
     if not isinstance(evidence.reports, Mapping):
         if not callable(evidence.reports):
             raise RouterError("evidence.reports must be a mapping or a resolver")
-        return hashes, evidence.reports
+        return hashes, evidence.reports, tuple(profiles)
     reports: dict[str, ValidationReport] = {}
     for key, report in evidence.reports.items():
         name = str(key) if isinstance(key, Ref) else key
@@ -205,7 +215,7 @@ def _evidence_reports(
     stray = sorted(set(reports) - routed)
     if stray:
         raise RouterError(f"reports for strategies the router never routes: {stray}")
-    return hashes, reports
+    return hashes, reports, tuple(profiles)
 
 
 class StrategyRouter:
@@ -249,10 +259,10 @@ class StrategyRouter:
         self._report_hashes: dict[str, str] | None = None
         self._eligibility: tuple[EligibilityCheck, ...] | None = None
         if normalized is not None:
-            hashes, reports = normalized
+            hashes, reports, profiles = normalized
             claimed = {str(ref): LifecycleState(state).value for ref, state in lifecycle.items()}
             checks = tuple(
-                check_report(key, claimed[key], hashes.get(key), reports)
+                check_report(key, claimed[key], hashes.get(key), reports, profiles=profiles)
                 for key in sorted(spec.strategies())
             )
             if not all(check.verified for check in checks):

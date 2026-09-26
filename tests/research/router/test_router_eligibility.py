@@ -11,6 +11,7 @@ from pathlib import Path
 
 import pytest
 
+from core.contracts.validation_profile import BenchmarkParams, ValidationProfile
 from core.domain.base import Ref
 from core.domain.research import GateResult, ValidationReport, Verdict
 from core.lifecycle.strategy import LifecycleState
@@ -33,7 +34,7 @@ from research.router import (
     report_store_resolver,
 )
 from research.router.evidence import VALIDATION_REPORT_KIND
-from tests.factories import HASH_EXPERIMENT, HASH_PROFILE, profile_ref
+from tests.factories import HASH_EXPERIMENT, HASH_PROFILE, validation_profile
 from tests.research.router.test_paper import BARS, LIFECYCLE, STATES, STRATEGIES, ZERO, A, B, _run
 from tests.research.router.test_router_completion import (
     BASELINE_RUN_HASH,
@@ -56,6 +57,20 @@ TRUST_STOP_FLAT_WITH_REPORTS = "cbc771dc96c37792f354cca39b6af9dedb35179b13ffea43
 CREATED = datetime(2026, 9, 1, tzinfo=UTC)
 
 
+def _profile(rule: str) -> ValidationProfile:
+    """A TEST ONLY Profile (factory values, not calibrated) with ``market_benchmark_rule=rule``."""
+    base = validation_profile().benchmark
+    return validation_profile(
+        benchmark=BenchmarkParams.model_validate(
+            {**base.model_dump(), "market_benchmark_rule": rule}
+        )
+    )
+
+
+#: The fixture reports ran under this Profile: rule ``none`` needs no ADR-0060 item.
+PROFILE = _profile("none")
+
+
 def _gate(gate_id: str, verdict: Verdict = Verdict.PASS) -> GateResult:
     return GateResult(gate_id=gate_id, metric="fixture", value=1.0, verdict=verdict)
 
@@ -66,8 +81,10 @@ def _report(
     in_sample: Verdict = Verdict.PASS,
     sealed_oos: Verdict | None = Verdict.PASS,
     run_id: str = "run-1",
+    profile: ValidationProfile = PROFILE,
+    extra: tuple[str, ...] = (),
 ) -> ValidationReport:
-    gates = [_gate("G1.fixture", in_sample)]
+    gates = [_gate("G1.fixture", in_sample), *(_gate(gate_id) for gate_id in extra)]
     if sealed_oos is not None:
         gates.append(_gate("G5.fixture", sealed_oos))
     verdicts = {gate.verdict for gate in gates}
@@ -84,8 +101,8 @@ def _report(
         subject=subject,
         experiment_hash=HASH_EXPERIMENT,
         constitution_version="0.2.0-draft",
-        validation_profile=profile_ref(),
-        validation_profile_hash=HASH_PROFILE,
+        validation_profile=profile.ref,
+        validation_profile_hash=profile.content_hash(),
         gates=tuple(gates),
         verdict=verdict,
         created_at=CREATED,
@@ -99,10 +116,12 @@ HASHES = {ref: report.content_hash() for ref, report in GOOD.items()}
 def _evidence(
     reports: Mapping[Ref, object] | ReportResolver | None = None,
     hashes: Mapping[Ref, str] | None = None,
+    profiles: tuple[ValidationProfile, ...] = (PROFILE,),
 ) -> EligibilityEvidence:
     return EligibilityEvidence(
         report_hashes=HASHES if hashes is None else hashes,
         reports=GOOD if reports is None else reports,  # type: ignore[arg-type]
+        profiles=profiles,
     )
 
 
@@ -320,7 +339,9 @@ def test_ill_formed_evidence_is_a_plain_error_not_a_refusal() -> None:
     with pytest.raises(RouterError, match="EligibilityEvidence"):
         StrategyRouter(SPEC, LIFECYCLE, evidence=HASHES)  # type: ignore[arg-type]
     with pytest.raises(RouterError, match="mapping or a resolver"):
-        _router(EligibilityEvidence(report_hashes=HASHES, reports=42))  # type: ignore[arg-type]
+        _router(
+            EligibilityEvidence(report_hashes=HASHES, reports=42, profiles=(PROFILE,))  # type: ignore[arg-type]
+        )
     # evidence never widens the lifecycle claim: an unvalidated route is still refused
     with pytest.raises(RouterError, match="unvalidated"):
         StrategyRouter(
@@ -411,3 +432,67 @@ def test_the_run_report_carries_the_evidence_only_in_evidence_mode(tmp_path: Pat
     assert payload["run_hash"] == run.run_hash
     assert payload["eligibility"] == [c.to_dict() for c in run.eligibility]
     assert payload["validation_reports"] == dict(run.validation_reports or {})
+
+
+# --------------------------------------------------- the report's Profile and ADR-0060 (C-T4)
+
+
+def _with_b(report: ValidationReport, *profiles: ValidationProfile) -> EligibilityEvidence:
+    return _evidence(
+        reports={A: GOOD[A], B: report},
+        hashes={A: HASHES[A], B: report.content_hash()},
+        profiles=(PROFILE, *profiles),
+    )
+
+
+def test_the_fixture_reports_were_produced_under_a_real_profile_object() -> None:
+    assert HASH_PROFILE != PROFILE.content_hash()
+    assert {r.validation_profile_hash for r in GOOD.values()} == {PROFILE.content_hash()}
+
+
+def test_a_report_whose_profile_is_not_given_is_refused() -> None:
+    refused = _refusal(_with_b(_report(B, profile=_profile("flat"))))
+    assert refused.refusal == "profile_not_found" and refused.strategy == str(B)
+    # no profiles at all: every routed strategy is refused
+    none_given = _refusal(_evidence(profiles=()))
+    assert none_given.refusals == {str(B): "profile_not_found", str(A): "profile_not_found"}
+
+
+def test_a_profile_of_other_content_is_not_the_reports_profile() -> None:
+    other = _profile("flat")
+    assert other.ref == PROFILE.ref and other.content_hash() != PROFILE.content_hash()
+    refused = _refusal(_evidence(profiles=(other,)))
+    assert set(refused.refusals.values()) == {"profile_not_found"}
+
+
+@pytest.mark.parametrize("rule", ["flat", "buy_and_hold_equal_weight"])
+def test_a_report_without_its_profiles_market_benchmark_item_is_refused(rule: str) -> None:
+    profile = _profile(rule)
+    refused = _refusal(_with_b(_report(B, profile=profile), profile))
+    assert refused.refusal == "market_benchmark_missing" and refused.strategy == str(B)
+    assert f"G2.market_benchmark.{rule}" in refused.detail
+    # an item for another rule is not the one the Profile calls for
+    wrong = _report(B, profile=profile, extra=("G2.market_benchmark.none_of_these",))
+    assert _refusal(_with_b(wrong, profile)).refusal == "market_benchmark_missing"
+
+
+def test_an_unregistered_rule_needs_the_bare_market_benchmark_item() -> None:
+    profile = _profile("TEST-ONLY-unregistered")
+    refused = _refusal(_with_b(_report(B, profile=profile), profile))
+    assert refused.refusal == "market_benchmark_missing"
+    assert refused.detail.split("calls for ")[1].startswith("G2.market_benchmark,")
+
+
+def test_a_report_with_its_profiles_market_benchmark_item_routes() -> None:
+    profile = _profile("flat")
+    report = _report(B, profile=profile, extra=("G2.market_benchmark.flat",))
+    router = _router(_with_b(report, profile))
+    assert router.eligibility is not None
+    assert all(check.verified for check in router.eligibility)
+
+
+def test_profiles_that_are_not_profiles_are_a_plain_error() -> None:
+    for bad in (("not a profile",), "not a sequence", 42):
+        with pytest.raises(RouterError, match="evidence.profiles") as caught:
+            _router(_evidence(profiles=bad))  # type: ignore[arg-type]
+        assert not isinstance(caught.value, RouterStopped)
