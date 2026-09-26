@@ -71,7 +71,10 @@ Pieces:
   every error-free report keeps its hash. In G5 mode the arm's ``sealed_oos_g5`` block does the
   same for G5: with ``detector_errors > 0`` (``detect_sealed`` raised) it adds
   ``pass_rate_bounds`` ``[passed / reached, (passed + detector_errors) / reached]``, rounded
-  outward the same way, and omits it otherwise.
+  outward the same way, and omits it otherwise; and when any run of the arm errored (a G0 – G4
+  ``detect`` or its G5 ``detect_sealed``) it adds ``end_to_end_bounds`` ``[end_to_end / n,
+  (end_to_end + errored runs) / n]`` over every run, the range of the G0 – G5 false-positive rate
+  / power had every errored run gone either way.
 - Multi-instrument mode (Phase 9 implementation note, 2026-09-26; CODE_COMPLETE /
   DEBUG_PENDING; opt-in: a separate ``MultiInstrumentCalibrationSetup`` run by
   ``run_multi_instrument_calibration``, so every ``GateCalibrationSetup`` report and hash is
@@ -1076,10 +1079,17 @@ class SealedArmEvidence:
     consumed_without_result: int
     detector_errors: int
     end_to_end: BinomialRate
+    #: Runs of the arm whose G0 – G4 ``detect`` or G5 ``detect_sealed`` raised (disjoint: an
+    #: errored G0 – G4 run is INCONCLUSIVE and never reaches G5); their G0 – G5 outcome is unknown.
+    end_to_end_errors: int = 0
 
     def __post_init__(self) -> None:
         if not 0 <= self.detector_errors <= self.reached:
             raise ValueError("G5 detector errors are counted among the runs that reached G5")
+        if not self.detector_errors <= self.end_to_end_errors <= self.end_to_end.n:
+            raise ValueError("end-to-end errors include the G5 errors and are counted among runs")
+        if self.end_to_end.count + self.end_to_end_errors > self.end_to_end.n:
+            raise ValueError("an errored run is never an end-to-end pass")
 
     @property
     def pass_rate_bounds(self) -> tuple[Decimal, Decimal] | None:
@@ -1091,6 +1101,16 @@ class SealedArmEvidence:
         return (
             _bound(self.passed.count, self.reached, ceiling=False),
             _bound(self.passed.count + self.detector_errors, self.reached, ceiling=True),
+        )
+
+    @property
+    def end_to_end_bounds(self) -> tuple[Decimal, Decimal]:
+        """``[end_to_end / n, (end_to_end + end_to_end_errors) / n]`` over every run of the arm,
+        rounded outward to ``PLACES`` (module docs)."""
+        n, count = self.end_to_end.n, self.end_to_end.count
+        return (
+            _bound(count, n, ceiling=False),
+            _bound(count + self.end_to_end_errors, n, ceiling=True),
         )
 
     def to_payload(self) -> dict[str, object]:
@@ -1107,6 +1127,8 @@ class SealedArmEvidence:
         bounds = self.pass_rate_bounds
         if self.detector_errors and bounds is not None:
             payload["pass_rate_bounds"] = [str(bound) for bound in bounds]
+        if self.end_to_end_errors:  # likewise only with errors (G0 - G4 or G5)
+            payload["end_to_end_bounds"] = [str(bound) for bound in self.end_to_end_bounds]
         return payload
 
 
@@ -1455,6 +1477,11 @@ def _sealed_arm(arm: str, mine: Sequence[RunRecord], alpha: Decimal) -> SealedAr
         consumed_without_result=sum(g5.consumed_without_result for g5 in reached),
         detector_errors=sum(g5.detector_error is not None for g5 in reached),
         end_to_end=binomial_rate(sum(run.end_to_end_passed for run in mine), len(mine), alpha),
+        end_to_end_errors=sum(
+            run.detector_error is not None
+            or (run.g5 is not None and run.g5.detector_error is not None)
+            for run in mine
+        ),
     )
 
 

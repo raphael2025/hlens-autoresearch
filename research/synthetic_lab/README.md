@@ -87,7 +87,8 @@ B45 向外舍入修复（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：上述�
 与 `detector_errors` 计数；`end_to_end_g0_g5`：以该组全部运行为分母的 G0 – G5 通过率，噪声组即假阳性率、植入组即检出力），
 每个运行的 `sealed_oos_g5` 记录，逐门统计包含 G5 门。某组 G5 `detector_errors > 0` 时，其 `sealed_oos_g5` 块另加
 `pass_rate_bounds`：`[passed/reached, (passed+errors)/reached]`（同样向外取整到 `intervals.PLACES`）；无 G5 错误时不写该键，
-已有报告哈希不变（没有钉住的报告含 G5 检测器错误）。`detect_sealed` 的配置错误与 `calibrate()` 同一分类：`PROPAGATED_ERRORS`
+已有报告哈希不变（没有钉住的报告含 G5 检测器错误）。该组任一运行出错（G0 – G4 的 `detect` 或 G5 的 `detect_sealed`）时，另加
+`end_to_end_bounds`：`[end_to_end/n, (end_to_end+出错运行数)/n]`（以全部运行为分母，同样向外取整；无错误时不写该键）。`detect_sealed` 的配置错误与 `calibrate()` 同一分类：`PROPAGATED_ERRORS`
 原样抛出（附注运行族与候选），其余异常记为 `detector_error`。仍只是证据，不排名、不推荐。测试：`test_gate_calibration_g5.py`。
 
 ~~多标的负对照假阳性率未校准~~ ✅ 可选多标的模式（2026-09-26，CODE_COMPLETE / DEBUG_PENDING；无 core / 契约 / Schema 变更）：

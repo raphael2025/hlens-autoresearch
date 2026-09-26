@@ -529,9 +529,17 @@ def test_g5_detector_errors_report_bounded_g5_pass_rates() -> None:
                 assert g5.passed is not None and g5.passed.count == 0
                 assert g5.pass_rate_bounds == (Decimal(0), Decimal(1))  # 0 passed, all errored
                 assert block["pass_rate_bounds"] == ["0.000000", "1.000000"]
+                # end to end: no G0 - G4 errors here, so the errored runs are the G5 ones
+                assert g5.end_to_end_errors == g5.detector_errors
+                assert g5.end_to_end.count == 0
+                n = g5.end_to_end.n
+                low, high = g5.end_to_end_bounds
+                assert low == 0 and high >= Decimal(g5.detector_errors) / n
+                assert block["end_to_end_bounds"] == [str(low), str(high)]
                 seen_bounds += 1
             else:
                 assert "pass_rate_bounds" not in block
+                assert g5.end_to_end_errors == 0 and "end_to_end_bounds" not in block
     assert seen_bounds  # the planted arm reached G5 under at least one candidate
 
 
@@ -540,7 +548,9 @@ def test_g5_reports_without_g5_detector_errors_have_no_g5_bounds() -> None:
     for profile in (TOY_LAX, TOY_STRICT):
         for arm in (NOISE_ARM, planted_arm_id(TOY_EFFECT)):
             assert report.candidate(profile).g5(arm).detector_errors == 0
+            assert report.candidate(profile).g5(arm).end_to_end_errors == 0
     assert "pass_rate_bounds" not in json.dumps(report.to_payload())
+    assert "end_to_end_bounds" not in json.dumps(report.to_payload())
 
 
 def test_g5_pass_rate_bounds_round_outward() -> None:
@@ -554,6 +564,7 @@ def test_g5_pass_rate_bounds_round_outward() -> None:
         consumed_without_result=2,
         detector_errors=2,
         end_to_end=binomial_rate(3, 9, alpha),
+        end_to_end_errors=2,
     )
     # 3/7 = 0.4285714... (down), 5/7 = 0.7142857... (up); n is ``reached``, not every run
     assert g5.pass_rate_bounds == (Decimal("0.428571"), Decimal("0.714286"))
@@ -565,6 +576,17 @@ def test_g5_pass_rate_bounds_round_outward() -> None:
     assert "pass_rate_bounds" not in unreached.to_payload()
     with pytest.raises(ValueError, match="reached G5"):
         replace(g5, detector_errors=8)
+    # end to end over every run (n = 9): 3 passed, 2 G5 + 1 G0 - G4 errored runs -> [3/9, 6/9]
+    e2e = replace(g5, end_to_end_errors=3)
+    assert e2e.end_to_end_bounds == (Decimal("0.333333"), Decimal("0.666667"))
+    assert e2e.to_payload()["end_to_end_bounds"] == ["0.333333", "0.666667"]
+    assert (
+        "end_to_end_bounds" not in replace(g5, detector_errors=0, end_to_end_errors=0).to_payload()
+    )
+    with pytest.raises(ValueError, match="include the G5 errors"):
+        replace(g5, end_to_end_errors=1)  # fewer than the 2 G5 errors
+    with pytest.raises(ValueError, match="never an end-to-end pass"):
+        replace(g5, end_to_end_errors=7)  # 3 passes + 7 errors > 9 runs
 
 
 # --------------------------------------------------------------------------------------
