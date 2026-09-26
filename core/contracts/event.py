@@ -49,7 +49,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from datetime import datetime, timedelta
 from itertools import pairwise
-from typing import Annotated, Any, Literal, Protocol
+from typing import Annotated, Any, Final, Literal, Protocol
 
 from pydantic import Field, field_validator, model_validator
 
@@ -87,6 +87,11 @@ EVENT_REF_KEY_PATTERN = rf"^event:{PLUGIN_KEY_PATTERN.removeprefix('^')}"
 
 ValueName = Annotated[str, Field(pattern=NAME_PATTERN)]
 EventRefKey = Annotated[str, Field(pattern=EVENT_REF_KEY_PATTERN)]
+
+
+#: ADR-0057 的 `subject` 自契约 2.1.0 起（ADR-0052 §4、Codex K3 / K5）：2.0.0 信封携带它即拒绝；
+#: 不带它的 2.0.0 请求 / 事件 / 结果照旧读取，哈希由其自身载荷复核、逐位不变。
+ADR_0057_VERSION: Final = "2.1.0"
 
 
 def _omit_none(value: object) -> bool:
@@ -177,6 +182,8 @@ class Event(Contract):
     - `event_id`：以上内容的哈希，构造时复核（不接受自报的哈希）。
     """
 
+    _FIELDS_SINCE = {"subject": ADR_0057_VERSION}
+
     event: Ref
     spec_hash: ContentHash
     event_time: UtcDatetime
@@ -256,6 +263,8 @@ class _EventProbe(Contract):
     字段必须与 `Event` 逐一相同（`tests/test_event_contracts.py` 断言），否则 id 不自洽。
     """
 
+    _FIELDS_SINCE = {"subject": ADR_0057_VERSION}
+
     event: Ref
     spec_hash: ContentHash
     event_time: UtcDatetime
@@ -288,6 +297,8 @@ class EventRequest(Contract):
 
     同一请求内容 → 同一 `content_hash()`（输入顺序不影响）。
     """
+
+    _FIELDS_SINCE = {"subject": ADR_0057_VERSION}
 
     event: Ref
     spec_hash: ContentHash
@@ -427,6 +438,8 @@ class EventResult(Contract):
 
     同一请求 + 同一 Provider 版本 → 同一 `result_hash`（确定性由 contract suite 检查）。
     """
+
+    _FIELDS_SINCE = {"subject": ADR_0057_VERSION}
 
     request_hash: ContentHash
     provider: PluginKey

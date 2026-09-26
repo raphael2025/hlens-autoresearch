@@ -15,7 +15,7 @@
   "description": "来源不提供稳定产品 ID 时的退化键：`(venue, instrument_type, symbol, tradable_from)`。\n\n`basis` 显式标注这是退化身份，不能假装有稳定 ID。`tradable_from` 是该 episode 第一段可交易区间的\n起点，因此 symbol 复用（同名、不同起点）自然形成不同 episode；无稳定 ID 的改名同样形成新\nepisode，由 `ListingRevision.renamed_from` 记录与旧 episode 的关联。起点被来源更正时也只能形成新\nepisode 并写质量事件，不猜测合并（ADR-0024「失败与恢复语义」）。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.1.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

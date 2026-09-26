@@ -5,7 +5,8 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
 规则来源为 docs/research/constitution.md；**不得为提高结果而修改**（CLAUDE.md H2/H3）。研究代码，不是生产代码（H5）。
 
 > 状态：**FRAMEWORK_IMPLEMENTED / NOT_VALIDATED**。所有数值阈值取自传入的 ValidationProfile；Profile 契约没有字段的规则
-> （容量、冲击系数、状态 P&L 集中度、跨资产一致性、CSCV 分块数、Sealed OOS 开封预算）只接受显式参数（来源记为 `param:<name>`），不传则门为
+> （容量、冲击系数、状态 P&L 集中度、跨资产一致性、CSCV 分块数、Sealed OOS 开封预算）在 Profile 带有 ADR-0052 §2 字段时只取 Profile 的值
+> （同时给显式参数即 `ExplicitParamRefused`，C-A4）；旧 Profile 只接受显式参数（来源记为 `param:<name>`），不传则门为
 > `INCONCLUSIVE`（`profile_field_missing:<name>`）——本包**没有任何默认阈值**。C-R1 ~ C-R5 检查的配置为空或被关闭时
 > 同样判 `INCONCLUSIVE`（`configuration_missing:<what>`），从不静默跳过；计算出一个估计值本身永远不算通过（ADR-0041 复审修正）。Profile 数值仍为 TBD（两步冻结 Step 2 未进行）。
 > 测试只使用明确标注 TEST ONLY 的 Profile / 参数（`tests/research/validation/fixtures.py`、`robustness_fixtures.py`）。
@@ -80,8 +81,10 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   inconclusive band 适用于每个种子），阈值仍为 `significance.multiple_testing_threshold`；基础门按标准规则汇总（任一 FAIL → FAIL，否则任一
   INCONCLUSIVE → INCONCLUSIVE），报告最小 p 值（metric `..._timing_p_value_min_over_seeds[>=]`）。种子越多只会增加失败的途径，从不放宽；
   G2 空模型仍为单种子（`seed + 2`）。
-- **仍然存在（受阻）**：统计仍是 `float` 上的 HAC 正态近似（ADR-0037 §5）；替换为精确 / Decimal 实现须先按 ADR-0052 补全契约（`core/`，超出本批次文件边界），本批次未改动，仍受阻。
-  负对照与 G3 仍共用 `significance.multiple_testing_threshold`（D-CTRL；独立阈值字段同属 ADR-0052 的契约补全，未实施）。
+- **仍然存在**：统计仍是 `float` 上的 HAC 正态近似（ADR-0037 §5）。ADR-0052（2026-09-26 实施）只让**门的比较**精确：Profile 阈值为精确
+  字段时，计算值按 `hlens.validation.gate-value-quantization@1.0.0` 量化后以 `Decimal` 比较（`gates.compare_gate`）。
+  负对照在 Profile 带 `significance.negative_control_threshold` 时用它（D-CTRL），否则仍与 G3 共用 `significance.multiple_testing_threshold`；
+  `threshold_source` 写出所用字段。
 
 ### 多标的验证（Phase 8 实施说明，2026-09-26）
 

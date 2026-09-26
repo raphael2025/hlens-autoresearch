@@ -33,11 +33,13 @@ from __future__ import annotations
 import argparse
 import json
 import resource
+import subprocess
 import sys
 import time
 import traceback
 from collections import Counter
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from datetime import time as dtime
 from pathlib import Path
@@ -75,6 +77,14 @@ DATA_TYPE: Final = "klines_1m"
 SYMBOLS: Final = ("BTCUSDT", "ETHUSDT")
 _DAY: Final = timedelta(days=1)
 STEPS: Final = ("collect", "ingest", "normalize", "report", "pit", "f2")
+_REPO_ROOT: Final = Path(__file__).resolve().parents[2]
+
+
+@dataclass(frozen=True)
+class _StepOutcome:
+    result: Any
+    snapshot_heads_before: dict[str, str] | None
+    snapshot_heads_after: dict[str, str] | None
 
 
 def _day_start(day: date) -> datetime:
@@ -85,14 +95,80 @@ def _peak_rss_mb() -> float:
     return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
 
 
+def _days_iso(days: list[date]) -> list[str]:
+    return [d.isoformat() for d in sorted(set(days))]
+
+
+def _code_revision(repo_root: Path = _REPO_ROOT) -> dict[str, Any]:
+    """Git HEAD sha and dirty flag; nulls if git is unavailable (never raises)."""
+    try:
+        commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout.strip()
+        porcelain = subprocess.run(
+            ["git", "status", "--porcelain"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=10,
+        ).stdout
+        return {"commit": commit or None, "dirty": bool(porcelain.strip())}
+    except (OSError, subprocess.SubprocessError):
+        return {"commit": None, "dirty": None}
+
+
 def _load(state_dir: Path, name: str) -> Any:
     return json.loads((state_dir / f"{name}.json").read_text(encoding="utf-8"))
+
+
+def _load_prior(state_dir: Path, name: str, days: list[date]) -> Any:
+    """Load a prior step record; refuse stale, failed, or day-mismatched state (fail closed)."""
+    ok_path = state_dir / f"{name}.json"
+    failed_path = state_dir / f"{name}.failed.json"
+    if not ok_path.is_file():
+        raise SystemExit(f"missing prior step state: {ok_path.name} (refusing to proceed)")
+    if failed_path.is_file() and failed_path.stat().st_mtime_ns >= ok_path.stat().st_mtime_ns:
+        raise SystemExit(
+            f"prior step {name!r} has a failed record newer than or equal to {ok_path.name}; "
+            "refusing to consume stale or superseded state"
+        )
+    record = _load(state_dir, name)
+    if record.get("status") != "ok":
+        raise SystemExit(
+            f"prior step {name!r} record status is {record.get('status')!r}, expected 'ok'"
+        )
+    expected = _days_iso(days)
+    actual = record.get("days")
+    if actual != expected:
+        raise SystemExit(
+            f"prior step {name!r} days {actual!r} do not match current --day set {expected!r}"
+        )
+    return record
 
 
 def _save(state_dir: Path, name: str, payload: Any) -> None:
     (state_dir / f"{name}.json").write_text(
         json.dumps(payload, indent=2, sort_keys=True, default=str) + "\n", encoding="utf-8"
     )
+
+
+def _invalidate_ok_state(state_dir: Path, step: str) -> None:
+    """Remove a previous successful ``<step>.json`` so later steps cannot read it."""
+    path = state_dir / f"{step}.json"
+    if path.is_file():
+        path.unlink()
+
+
+def _clear_failed_state(state_dir: Path, step: str) -> None:
+    path = state_dir / f"{step}.failed.json"
+    if path.is_file():
+        path.unlink()
 
 
 def _heads(adapter: PyIcebergCatalogAdapter, *, exclude: tuple[str, ...] = ()) -> dict[str, str]:
@@ -366,7 +442,7 @@ def _f2(
 # ============================================================================================
 
 
-def _run(args: argparse.Namespace) -> Any:
+def _run(args: argparse.Namespace) -> _StepOutcome:
     settings = Settings()  # type: ignore[call-arg]
     days: list[date] = sorted(set(args.day))
     if [d - days[0] for d in days] != [timedelta(days=i) for i in range(len(days))]:
@@ -375,20 +451,27 @@ def _run(args: argparse.Namespace) -> Any:
     storage = LocalFileStorageAdapter.from_settings(settings)
     try:
         if args.step == "collect":
-            return _collect(settings, storage, days)
+            return _StepOutcome(_collect(settings, storage, days), None, None)
+        # Validate prior state before opening the catalog (fail closed, no DB on bad state).
+        prior_result: Any | None = None
+        if args.step == "ingest":
+            prior_result = _load_prior(state_dir, "collect", days)["result"]
+        elif args.step == "normalize":
+            prior_result = _load_prior(state_dir, "ingest", days)["result"]
         with open_postgres_catalog_adapter(settings, PHASE1_REGISTRY) as adapter:
+            before = _heads(adapter)
             steps: dict[str, Callable[[], Any]] = {
-                "ingest": lambda: _ingest(adapter, storage, _load(state_dir, "collect")["result"]),
-                "normalize": lambda: _normalize(
-                    adapter, storage, _load(state_dir, "ingest")["result"]
-                ),
+                "ingest": lambda: _ingest(adapter, storage, prior_result),
+                "normalize": lambda: _normalize(adapter, storage, prior_result),
                 "report": lambda: _report(adapter, storage, days),
                 "pit": lambda: _pit(adapter, storage, days),
                 "f2": lambda: _f2(
                     str(settings.binance_market_data_base_url), adapter, storage, days
                 ),
             }
-            return steps[args.step]()
+            result = steps[args.step]()
+            after = _heads(adapter)
+            return _StepOutcome(result, before, after)
     finally:
         storage.close()
 
@@ -404,8 +487,13 @@ def main(argv: list[str] | None = None) -> int:
     warehouse = local_file_uri_to_path(settings.warehouse_uri, field_name="warehouse_uri")
     started_at = datetime.now(UTC)
     started = time.perf_counter()
+    heads_before: dict[str, str] | None = None
+    heads_after: dict[str, str] | None = None
     try:
-        payload = _run(args)
+        outcome = _run(args)
+        payload = outcome.result
+        heads_before = outcome.snapshot_heads_before
+        heads_after = outcome.snapshot_heads_after
         status = "ok"
     except Exception as exc:  # noqa: BLE001 - reported, then a non-zero exit
         payload = {
@@ -421,10 +509,18 @@ def main(argv: list[str] | None = None) -> int:
         "wall_seconds": round(time.perf_counter() - started, 3),
         "peak_rss_mb": round(_peak_rss_mb(), 1),
         "warehouse": str(warehouse),
-        "days": [d.isoformat() for d in sorted(set(args.day))],
+        "days": _days_iso(list(args.day)),
+        "code_revision": _code_revision(),
+        "snapshot_heads_before": heads_before,
+        "snapshot_heads_after": heads_after,
         "result": payload,
     }
-    _save(args.state_dir, args.step if status == "ok" else f"{args.step}.failed", record)
+    if status == "ok":
+        _clear_failed_state(args.state_dir, args.step)
+        _save(args.state_dir, args.step, record)
+    else:
+        _invalidate_ok_state(args.state_dir, args.step)
+        _save(args.state_dir, f"{args.step}.failed", record)
     with (args.state_dir / "steps.jsonl").open("a", encoding="utf-8") as log:
         log.write(json.dumps(record, sort_keys=True, default=str) + "\n")
     print(json.dumps(record, indent=2, sort_keys=True, default=str))

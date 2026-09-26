@@ -207,9 +207,14 @@ def _instrument_gates(result: StrategyEvaluation, name: str) -> dict[str, Verdic
 #: enforcement (2026-09-26): the fixture Profile's ``benchmark`` block now names
 #: ``buy_and_hold_equal_weight`` + inverse control instead of the placeholder ``"test-only"``
 #: (the report binds the Profile); the validator path is unchanged (no opt-in here).
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values still hold when the same test builds every object at 2.0.0
+#: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
+#: 2.0.0 values (evidence, git history): 6dd0103a…, fcfb36eb…
 PINNED_SINGLE_REPORT_HASHES = {
-    "planted_synthetic": "6dd0103a1dc9eeaa748c2a12b6e45a44a305ae0960e77b4b807ec811aba235e3",
-    "manifest_mismatch": "fcfb36eb568e9bef1669ebdd951fb883673b25ab7c445daa75d7d9050bb62670",
+    "planted_synthetic": "d5ca922f79b7c69b4bb6dd7364803b1e4a9cb76f9580cf07a3ca96cca4c94e88",
+    "manifest_mismatch": "de88c4e2002a2aca982da45f6fbb9953ec2ab0036a2967ca45ebd120dc2b52c3",
 }
 
 

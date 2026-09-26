@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Accepted (2026-09-26)；代码已写（CODE_COMPLETE / DEBUG_PENDING），**但尚未按版本规则发布**：Codex 全代码复核 K3 / K5 要求新增契约字段以 2.1.0 声明，须待 ADR-0052 版本化重放完成后重新声明，当前不作为契约完成 |
+| 状态 | Accepted (2026-09-26)；**re-declared at 2.1.0 (2026-09-26)**（ADR-0052 版本化重放合入全代码分支后，见文末 Implementation note — 2.1.0）；CODE_COMPLETE / DEBUG_PENDING |
 | 日期 | 2026-09-26 |
 | 决策者 | Claude Code（Opus），依 Raphael 2026-09-26 明确授权（"所有的决策都由你来决定，包括红线"）；协调者裁定为 additive 可选字段 |
 | 起草者 | Claude Code（Opus） |
@@ -61,3 +61,18 @@ contract suite 的 `check_subject_is_bound`（五个事件提供者全部通过�
   在 ADR-0052 版本化重放（独立 Phase 1 分支 `phase1/adr-0052-versioned-replay`）落地后，以 2.1.0 重新声明带 `subject` 的新对象、旧对象按已持久化版本读取，
   并补跨版本往返、旧读者行为与哈希测试。在此之前 `wip/all-code-completion` 的 `564c87c` 只是保留的恢复点。
 
+
+## Implementation note — re-declared at 2.1.0 (2026-09-26)
+
+分支 `core/adr-0052-into-full-code`（合入 `phase1/adr-0052-versioned-replay` 的 ADR-0052 M1 ~ M3 之后）。取代上文"信封版本与哈希"一节中
+"在 2.0.0 下发布"的做法（该节保留为历史）：
+
+- `Event`、`_EventProbe`、`EventRequest`、`EventResult` 声明 `_FIELDS_SINCE = {"subject": "2.1.0"}`（`ADR_0057_VERSION`）：
+  2.0.0 信封携带 `subject` 即拒绝；带 `subject` 的新对象信封为 2.1.0（当前 `CONTRACT_SCHEMA_VERSION`）。
+- 不带 `subject` 的 2.0.0 请求 / 事件 / 结果按记录版本读取、`event_id` 由自身载荷复核，哈希逐位不变；`bound_to` 把 2.0.0 事件绑定到标的时
+  产生新的 2.1.0 事件，原事件不变；2.1.0 请求可原样携带 2.0.0 上游事件。
+- `subject` 身份：调用方提供的稳定 opaque identifier，大小写敏感，只去首尾空白（Codex `648fe6c`，见上节）。
+- 测试：`tests/test_adr_0054_0057_versions.py`（2.0.0 信封 + `subject` 拒绝、2.1.0 往返、跨版本读取与 `check_answers`、大小写敏感）；
+  `tests/test_event_subject.py` 的实施前金值改为在 2.0.0 构造作用域内复核（`tests/contract_version_support.built_at_pre_bump`），金值未改。
+- 物理表 `event.events` 的 `subject` 列（`infrastructure/event/table_definition.py`）：该表从未在任何 catalog 中创建（只读核实，见 ADR-0056
+  note），字段 ID 的改变不涉及已部署表。

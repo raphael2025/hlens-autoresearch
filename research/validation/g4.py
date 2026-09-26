@@ -14,6 +14,16 @@ report view labels it ``promotion.blocked_reason = "sealed_oos_not_evaluated"`` 
 for. Every field is required (``None`` = not given → ``profile_field_missing``); nothing here has a
 default value, and every value that is used is recorded with the source ``param:<name>``.
 
+Profile sources (ADR-0052 §2, C-A4; implementation note 2026-09-26): a Profile that carries
+``significance.cscv_partitions``, ``capacity.max_participation_rate`` / ``.min_capacity`` /
+``.impact_coefficient`` / ``.impact_model``, ``cross_asset.min_positive_fraction`` or
+``sample_size.max_undersampled_pnl_share`` supplies that value: ``run_robustness`` reads it from
+the Profile (source = the Profile path, exact thresholds compared exactly) and **refuses** a
+``RobustnessParams`` value given for the same rule (``gates.ExplicitParamRefused``, a
+``ValueError``: it propagates). The Profile-sourced values are listed under ``profile_params`` in
+``RobustnessResult.to_dict``. A Profile without these fields (every Profile before ADR-0052) is
+unchanged bit for bit: the explicit ``param:`` values or ``profile_field_missing``.
+
 ``RobustnessInput.execution_impact_coefficient`` (implementation note, 2026-09-26): when the
 candidate's backtest used a ``plugins.backtest.execution.ExecutionModel`` with its own impact
 coefficient, ``research.strategies.validation`` passes it here; ``run_robustness`` then resolves
@@ -62,7 +72,16 @@ from typing import Final
 
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, Verdict
-from research.validation.gates import Threshold, explicit_threshold, inconclusive_gate
+from research.validation.gates import (
+    PARAM_SOURCE_PREFIX,
+    Threshold,
+    explicit_threshold,
+    inconclusive_gate,
+    profile_has,
+    profile_value,
+    sourced_parameter,
+    sourced_threshold,
+)
 from research.validation.pipeline import InSampleInput, run_in_sample
 from research.validation.returns import ParamPoint, PeriodReturns, TrialReturns, param_key
 from research.validation.robustness import (
@@ -190,16 +209,22 @@ class RobustnessInput:
 class RobustnessResult:
     checks: tuple[RobustnessCheck, ...]
     params: RobustnessParams | None
+    #: ADR-0052 §2: Profile path -> canonical text of every rule value the Profile supplied
+    #: (empty for a Profile without these fields: ``to_dict`` is then unchanged).
+    profile_params: Mapping[str, str] | None = None
 
     @property
     def gates(self) -> tuple[GateResult, ...]:
         return tuple(gate for check in self.checks for gate in check.gates)
 
     def to_dict(self) -> dict[str, object]:
-        return {
+        out: dict[str, object] = {
             "checks": [check.to_dict() for check in self.checks],
             "explicit_params": None if self.params is None else self.params.to_dict(),
         }
+        if self.profile_params:
+            out["profile_params"] = dict(sorted(self.profile_params.items()))
+        return out
 
 
 def _exact(value: Decimal | float | int, name: str) -> Decimal:
@@ -213,14 +238,18 @@ def _exact(value: Decimal | float | int, name: str) -> Decimal:
 
 
 def _resolved_impact(
-    params: RobustnessParams, model_coefficient: Decimal | float | None
+    params: RobustnessParams,
+    model_coefficient: Decimal | float | None,
+    profile: ValidationProfile | None = None,
 ) -> tuple[float | None, str, tuple[float, float] | None]:
     """``(coefficient to use, its source, conflict)`` for ``capacity_check`` (implementation note,
     2026-09-26): the execution model's coefficient takes priority whenever the backtest carries
-    one; an explicit ``params.impact_coefficient`` that disagrees with it is never overridden
-    silently — it is reported as a conflict instead, and neither value is used. The two are
-    compared exactly (module docs, **Exact comparison**, review fixes 3)."""
-    explicit = params.impact_coefficient
+    one; a declared coefficient (``params.impact_coefficient``, or the Profile's
+    ``capacity.impact_coefficient`` — ADR-0052 §2, an explicit one given as well is refused) that
+    disagrees with it is never overridden silently — it is reported as a conflict instead, and
+    neither value is used. The two are compared exactly (module docs, **Exact comparison**, review
+    fixes 3)."""
+    explicit, source = _declared_impact(params, profile)
     if explicit is not None and model_coefficient is not None:
         if _exact(explicit, "impact_coefficient") != _exact(
             model_coefficient, "execution_impact_coefficient"
@@ -228,10 +257,85 @@ def _resolved_impact(
             return None, "", (float(explicit), float(model_coefficient))
     if model_coefficient is not None:
         return float(model_coefficient), "execution_model", None
-    return (
-        None if explicit is None else float(explicit),
-        "param:capacity.impact_coefficient",
-        None,
+    return (None if explicit is None else float(explicit), source, None)
+
+
+_IMPACT_PATH: Final = "capacity.impact_coefficient"
+
+
+def _declared_impact(
+    params: RobustnessParams, profile: ValidationProfile | None
+) -> tuple[Decimal | float | None, str]:
+    """The declared impact coefficient and its source: the Profile's (ADR-0052 §2) or the
+    explicit ``param:capacity.impact_coefficient``."""
+    if profile is not None and profile_has(profile, _IMPACT_PATH):
+        value, source = sourced_parameter(
+            profile, _IMPACT_PATH, params.impact_coefficient, _IMPACT_PATH
+        )
+        assert isinstance(value, Decimal)  # an ExactDecimal field
+        return value, source
+    return params.impact_coefficient, f"{PARAM_SOURCE_PREFIX}{_IMPACT_PATH}"
+
+
+#: ADR-0052 §2 Profile paths of the G4 thresholds, with the explicit parameter each one replaces.
+_PROFILE_THRESHOLDS: Final = (
+    ("capacity.max_participation_rate", "capacity.max_participation_rate"),
+    ("capacity.min_capacity", "capacity.min_capacity"),
+    ("sample_size.max_undersampled_pnl_share", "state.max_undersampled_pnl_share"),
+    ("cross_asset.min_positive_fraction", "cross_asset.min_positive_fraction"),
+)
+
+
+@dataclass(frozen=True)
+class _Sourced:
+    """Every G4 rule value after ADR-0052 §2 sourcing (module docs, **Profile sources**)."""
+
+    cscv_partitions: int | None
+    partitions_source: str
+    thresholds: Mapping[str, Threshold | None]
+    impact_model: str | None
+    profile_params: Mapping[str, str]
+
+
+def _canonical(value: object) -> str:
+    return format(value, "f") if isinstance(value, Decimal) else str(value)
+
+
+def _sourced(profile: ValidationProfile, params: RobustnessParams) -> _Sourced:
+    explicit = {
+        "capacity.max_participation_rate": params.max_participation,
+        "capacity.min_capacity": params.capacity_floor,
+        "sample_size.max_undersampled_pnl_share": params.undersampled_share,
+        "cross_asset.min_positive_fraction": params.cross_asset_fraction,
+    }
+    thresholds = {
+        path: sourced_threshold(profile, path, explicit[path], name)
+        for path, name in _PROFILE_THRESHOLDS
+    }
+    partitions, partitions_source = sourced_parameter(
+        profile, "significance.cscv_partitions", params.cscv_partitions, "cscv_partitions"
+    )
+    impact_model = (
+        str(profile_value(profile, "capacity.impact_model"))
+        if profile_has(profile, "capacity.impact_model")
+        else None
+    )
+    carried = [
+        path
+        for path in (
+            "significance.cscv_partitions",
+            *explicit,
+            _IMPACT_PATH,
+            "capacity.impact_model",
+        )
+        if profile_has(profile, path)
+    ]
+    return _Sourced(
+        cscv_partitions=partitions,
+        partitions_source=partitions_source,
+        thresholds=thresholds,
+        impact_model=impact_model,
+        profile_params={path: _canonical(profile_value(profile, path)) for path in carried},
     )
 
 
@@ -295,9 +399,12 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
     """Every G4 check in a fixed order (C-T1 / C-R1, C-R1, C-R4, C-S4 / C-R3, C-R2, C-R5, C-R3);
     each one isolated (module docs, **Check isolation**)."""
     profile, params = inp.profile, inp.params
+    sourced = _sourced(profile, params)  # ADR-0052 §2: refuses a Profile value + explicit param
     coefficient, impact_source, impact_conflict = _resolved_impact(
-        params, inp.execution_impact_coefficient
+        params, inp.execution_impact_coefficient, profile
     )
+    impact_declared_source = _declared_impact(params, profile)[1]
+    limits = sourced.thresholds
     key = param_key(inp.chosen)
     chosen = next((trial for trial in inp.trials if trial.key() == key), None)
     if chosen is None:
@@ -309,8 +416,9 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
             inp.trials,
             inp.chosen,
             inp.family_trial_count,
-            params.cscv_partitions,
+            sourced.cscv_partitions,
             horizon=inp.holding_horizon,
+            partitions_source=sourced.partitions_source,
         ),
         "parameter_neighborhood": lambda: parameter_neighborhood_check(
             profile, inp.trials, inp.chosen, inp.param_space
@@ -320,29 +428,33 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
         "cost_stress": lambda: cost_stress_check(profile, returns),
         "walk_forward": lambda: walk_forward_check(profile, returns),
         "state_decomposition": lambda: state_decomposition_check(
-            profile, inp.state_trades, max_undersampled_share=params.undersampled_share
+            profile,
+            inp.state_trades,
+            max_undersampled_share=limits["sample_size.max_undersampled_pnl_share"],
         ),
         "capacity": lambda: capacity_check(
             profile,
             inp.capacity_fills,
             len(returns),
-            max_participation=params.max_participation,
-            min_capacity=params.capacity_floor,
+            max_participation=limits["capacity.max_participation_rate"],
+            min_capacity=limits["capacity.min_capacity"],
             impact_coefficient=coefficient,
             impact_coefficient_source=impact_source,
             impact_conflict=impact_conflict,
+            impact_declared_source=impact_declared_source,
+            impact_model=sourced.impact_model,
         ),
         "cross_asset": lambda: cross_asset_check(
             profile,
             inp.per_asset,
             inp.declared_instruments,
-            params.cross_asset_fraction,
+            limits["cross_asset.min_positive_fraction"],
             exposed=inp.per_asset_exposed,
             sub_universes=inp.sub_universes,
         ),
     }
     checks = tuple(_isolated(check_id, runs[check_id]) for check_id, _, _ in CHECKS)
-    return RobustnessResult(checks=checks, params=params)
+    return RobustnessResult(checks=checks, params=params, profile_params=sourced.profile_params)
 
 
 @dataclass(frozen=True)

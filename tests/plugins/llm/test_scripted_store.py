@@ -11,6 +11,7 @@ from core.contracts.llm import LlmRequest
 from core.domain.base import ContentBlobRef
 from infrastructure.content import LocalContentStore, verify_llm_call
 from plugins.llm import BlobSink, ScriptedLLMProvider
+from tests.contract_version_support import at_pre_bump, built_at_pre_bump
 
 NOW = datetime(2026, 9, 26, tzinfo=UTC)
 REQUEST = LlmRequest.model_validate(
@@ -25,10 +26,17 @@ INPUT_SHA = "16afd62096c653183beeedae162bf18c09e597ce2f60ad20f221a9c623be8c90"
 OUTPUT_SHA = "0c664aa8afe4f64b1e67134d6533cef8b98cb09942a6477b788eec32777d2fc7"
 LEGACY_CALL_HASH = "2d8207cb39211d1950f2e4311fc971fffefafc61001c9279309aec33d0115931"
 LEGACY_RESPONSE_HASH = "42dd70737cbebdd319ac522ea682c8e1ba12e710f687a38c0992abe939c455f4"
+#: The same objects built now carry the 2.1.0 envelope (ADR-0052 M2: new objects are 2.1.0
+#: and the envelope is part of every content hash); pinned next to the 2.0.0 evidence above.
+CALL_HASH_2_1_0 = "61c33bdf7fc3bfe9d3b4e455f5ca3a95cd0ed30f83a48d06b4c317618237ba94"
+RESPONSE_HASH_2_1_0 = "eda3ee65e2279b5e2c619fbea9a9fadac012a4037fa912b9351c6de5c2a3ee21"
 
 
 def test_without_a_store_the_call_is_byte_identical_to_before() -> None:
-    response = ScriptedLLMProvider([OUTPUT], clock=lambda: NOW).complete(REQUEST)
+    # The reference hashes were captured at contract 2.0.0: rebuilt as the 2.0.0 code built them
+    # (every envelope 2.0.0, ADR-0052 §4) the no-store path is still byte-identical.
+    with built_at_pre_bump():
+        response = ScriptedLLMProvider([OUTPUT], clock=lambda: NOW).complete(at_pre_bump(REQUEST))
     call = response.call
     assert (call.prompt.sha256, call.input.sha256, call.output.sha256) == (
         PROMPT_SHA,
@@ -39,6 +47,8 @@ def test_without_a_store_the_call_is_byte_identical_to_before() -> None:
     assert call.prompt.byte_size is None
     assert call.content_hash() == LEGACY_CALL_HASH
     assert response.content_hash() == LEGACY_RESPONSE_HASH
+    now = ScriptedLLMProvider([OUTPUT], clock=lambda: NOW).complete(REQUEST)
+    assert (now.call.content_hash(), now.content_hash()) == (CALL_HASH_2_1_0, RESPONSE_HASH_2_1_0)
 
 
 def test_with_a_store_the_refs_resolve_and_carry_the_same_hashes(tmp_path: Path) -> None:

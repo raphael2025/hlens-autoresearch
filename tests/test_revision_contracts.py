@@ -901,7 +901,7 @@ def test_content_hash_is_stable_and_value_sensitive(model: type[Contract]) -> No
     first = valid_instances()[model]
     second = valid_instances()[model]
     assert first.content_hash() == second.content_hash()
-    bumped = first.model_copy(update={"schema_version": "2.1.0"})
+    bumped = first.model_copy(update={"schema_version": "2.99.0"})  # another envelope
     assert first.content_hash() != bumped.content_hash()
 
 
@@ -1010,7 +1010,8 @@ def test_reexport_is_byte_identical_for_every_current_schema(tmp_path: Path) -> 
 
 def test_contract_version_and_kind_are_unchanged() -> None:
     """ADR-0023「版本策略」：不改 `CONTRACT_SCHEMA_VERSION`；ADR-0024 §5：`Kind` 不新增取值。"""
-    assert CONTRACT_SCHEMA_VERSION == "2.0.0"
+    # ADR-0052 §4 raised the minor to 2.1.0; this batch itself changed no version.
+    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
     assert {kind.value for kind in Kind} == {
         "dataset",
         "representation",

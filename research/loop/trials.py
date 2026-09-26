@@ -368,6 +368,11 @@ class OosUnsealBudget:
     global count (``SealedOosVault``). An empty list, a blank family id or an automation
     identity is refused.
 
+    ``max_unsealings`` (ADR-0052 §2, C-A4) is always written out: an ``int`` is the explicit
+    ``param:max_unsealings`` for a Profile without ``data_split.sealed_oos_max_unsealings``;
+    ``None`` defers to the bound Profile's field (``SealedOosVault`` refuses ``None`` when the
+    Profile has no such field, and refuses an ``int`` when it has one).
+
     Durable ledger (ADR-0049 implementation note, review fixes 4, 2026-09-26): an unseal budget
     is spent against an unsealing ledger that must survive a restart — ``DurableUnsealingLedger``
     (a ``state_dir``, or ``ResearchMemory(oos_ledger=DurableUnsealingLedger(path))``). An
@@ -379,14 +384,16 @@ class OosUnsealBudget:
     refused with a durable ledger and with a ``state_dir``.
     """
 
-    max_unsealings: int
+    max_unsealings: int | None
     approved_families: Mapping[str, str]
     #: TEST ONLY: allow a non-durable unsealing ledger (see the class docs). Never for research.
     ephemeral_unseal_for_tests: bool = False
 
     def __post_init__(self) -> None:
-        if isinstance(self.max_unsealings, bool) or self.max_unsealings < 1:
-            raise ValueError("max_unsealings must be a positive int")
+        if self.max_unsealings is not None and (
+            isinstance(self.max_unsealings, bool) or self.max_unsealings < 1
+        ):
+            raise ValueError("max_unsealings must be a positive int (or None: the Profile's)")
         if not isinstance(self.ephemeral_unseal_for_tests, bool):
             raise ValueError("ephemeral_unseal_for_tests must be a bool")
         if not isinstance(self.approved_families, Mapping) or not self.approved_families:

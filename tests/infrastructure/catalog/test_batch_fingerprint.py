@@ -17,9 +17,16 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from core.contracts.catalog import BatchRejected
+from core.domain.base import contract_schema_version_scope
 from infrastructure.catalog import PYARROW_BATCH_FINGERPRINT, PYARROW_BATCH_FINGERPRINT_RULE_ID
 from infrastructure.catalog.phase1_tables import CANONICAL_BARS_1M, DATASET_MANIFESTS
-from tests.infrastructure.catalog.phase1_support import minimal_batch
+from tests.contract_version_support import at_pre_bump
+from tests.infrastructure.catalog.phase1_support import (
+    batch_for,
+    manifest,
+    manifest_row_of,
+    minimal_batch,
+)
 
 fingerprint = PYARROW_BATCH_FINGERPRINT.fingerprint
 
@@ -88,14 +95,20 @@ GOLDEN = {
 
 
 def golden_inputs() -> dict[str, pa.Table]:
-    return {
-        "empty": table([]),
-        "base": BASE,
-        "one_row": table(ROWS[:1]),
-        "bars_1m_empty": CANONICAL_BARS_1M.arrow_schema.empty_table(),
-        "bars_1m_row": minimal_batch(CANONICAL_BARS_1M, "golden"),
-        "manifest_row": minimal_batch(DATASET_MANIFESTS, "golden"),
-    }
+    # The golden rows were pinned with the fixture objects built at contract 2.0.0: they are
+    # rebuilt at 2.0.0, so these vectors keep testing the fingerprint rule only (ADR-0052 §4).
+    with contract_schema_version_scope("2.0.0"):
+        return {
+            "empty": table([]),
+            "base": BASE,
+            "one_row": table(ROWS[:1]),
+            "bars_1m_empty": CANONICAL_BARS_1M.arrow_schema.empty_table(),
+            "bars_1m_row": minimal_batch(CANONICAL_BARS_1M, "golden"),
+            # the fixture manifest nests import-time constants: its 2.0.0 twin
+            "manifest_row": batch_for(
+                DATASET_MANIFESTS, [manifest_row_of(at_pre_bump(manifest("golden")))]
+            ),
+        }
 
 
 @pytest.mark.parametrize("name", sorted(GOLDEN))

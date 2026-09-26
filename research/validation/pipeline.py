@@ -12,7 +12,9 @@ Stages, gate ids and threshold sources:
 - **G1 leakage**: ``G1.outcome_not_input`` (C-L2), ``G1.label_blind_sides`` (sides computed with
   the real labels equal the sides computed with blinded labels; see ``controls``),
   ``G1.embargo_covers_horizon`` (C-L5), ``G1.sealed_oos_excluded`` (C-S2), ``G1.shuffle_control``
-  / ``G1.shift_control`` (C-L6; ``significance.multiple_testing_threshold``);
+  / ``G1.shift_control`` (C-L6; ``significance.negative_control_threshold`` when the Profile
+  carries it — ADR-0052 §3, D-CTRL — else the shared ``significance.multiple_testing_threshold``;
+  ``threshold_source`` names the field that was used);
 - **G2 in-sample statistics with cost** run only on the **walk-forward test folds** of the Profile
   (``splits.walk_forward_folds``: research window only, purged and embargoed training sets; a
   ``FittableStudy`` is fitted per fold on its training labels): ``G2.walk_forward_folds``
@@ -44,7 +46,7 @@ C "P4: negative controls are a single fixed seed"): ``InSampleInput.control_seed
 seed that was used): per-seed gates ``G1.shuffle_control.seed.<s>`` / ``G1.shift_control.seed.<s>``
 are judged under the base gate id (so the Profile's ``inconclusive_bands`` entry of
 ``G1.shuffle_control`` / ``G1.shift_control`` applies to every seed) against the same
-``significance.multiple_testing_threshold``; the base gate ``G1.shuffle_control`` /
+negative-control threshold (see G1 above); the base gate ``G1.shuffle_control`` /
 ``G1.shift_control`` then aggregates them by the standard rule (any ``FAIL`` fails, else any
 ``INCONCLUSIVE`` is ``INCONCLUSIVE``, else ``PASS``) and reports the minimum p-value (metric
 ``..._timing_p_value_min_over_seeds[>=]``). More seeds can only add ways to fail: the option never
@@ -98,6 +100,7 @@ from research.validation.gates import (
     compare_gate,
     flag_gate,
     inconclusive_gate,
+    profile_has,
     threshold,
 )
 from research.validation.sealed_oos import SealedEvaluation, SealedOosVault, SealedWindow
@@ -305,7 +308,7 @@ def _g1(inp: InSampleInput, labels: Sequence[OutcomeLabel]) -> list[GateResult]:
         flag_gate("G1.sealed_oos_excluded", "labels_touching_sealed_oos", touching == 0, touching)
     )
     lag = overlap_lag(_intervals(labels))
-    alpha = threshold(profile, "significance.multiple_testing_threshold")
+    alpha = negative_control_threshold(profile)
     if inp.control_seeds is None:
         for gate_id, control in (
             ("G1.shuffle_control", shuffle_control(inp.study, keys, values, lag, inp.seed)),
@@ -335,6 +338,20 @@ def _g1(inp: InSampleInput, labels: Sequence[OutcomeLabel]) -> list[GateResult]:
 #: Gate-id infix of a per-seed negative-control gate: ``G1.shuffle_control.seed.<seed>``.
 CONTROL_SEED_INFIX = ".seed."
 
+#: The G1 negative controls' own significance field (ADR-0052 §3, D-CTRL).
+NEGATIVE_CONTROL_FIELD = "significance.negative_control_threshold"
+#: The shared field the controls use when the Profile has no own field (ADR-0052 §3, old Profiles).
+SHARED_SIGNIFICANCE_FIELD = "significance.multiple_testing_threshold"
+
+
+def negative_control_threshold(profile: ValidationProfile) -> Threshold:
+    """The controls' threshold: ``significance.negative_control_threshold`` when the Profile carries
+    it, else the shared ``significance.multiple_testing_threshold`` (every Profile before ADR-0052;
+    its gates are bit-identical). ``Threshold.source`` records which field was used."""
+    if profile_has(profile, NEGATIVE_CONTROL_FIELD):
+        return threshold(profile, NEGATIVE_CONTROL_FIELD)
+    return threshold(profile, SHARED_SIGNIFICANCE_FIELD)
+
 
 def _control_gate(
     profile: ValidationProfile,
@@ -363,13 +380,18 @@ def _aggregate_control_gate(
     """The multi-seed control under its base id: the standard rule over the per-seed gates
     (any ``FAIL`` fails, else any ``INCONCLUSIVE`` is ``INCONCLUSIVE``), reporting the minimum
     p-value."""
+    lowest = min(per_seed, key=lambda gate: gate.value)
+    exact: dict[str, object] = {}
+    if alpha.exact is not None and lowest.value_exact is not None:  # ADR-0052 §1
+        exact = {"value_exact": lowest.value_exact, "threshold_exact": alpha.exact}
     return GateResult(
         gate_id=gate_id,
         metric=f"{name}_timing_p_value_min_over_seeds[{Direction.AT_LEAST.value}]",
-        value=min(gate.value for gate in per_seed),
+        value=lowest.value,
         threshold=alpha.value,
         threshold_source=alpha.source,
         verdict=derive_verdict(per_seed),
+        **exact,  # type: ignore[arg-type]
     )
 
 

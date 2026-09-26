@@ -441,9 +441,16 @@ class UniverseSelectionSpec(Contract):
         return tuple(sorted(value, key=lambda item: item.filter_id))
 
     def binding(self) -> UniverseSpecBinding:
-        """manifest 中使用的绑定：`name + SemVer + content_hash()`。"""
+        """manifest 中使用的绑定：`name + SemVer + content_hash()`。
+
+        投影携带 spec 自身的信封版本（ADR-0052 versioned replay，V4）：同一个 spec 在任何当前
+        契约版本下都投影出同一个绑定。
+        """
         return UniverseSpecBinding(
-            name=self.name, version=self.version, spec_hash=self.content_hash()
+            schema_version=self.schema_version,
+            name=self.name,
+            version=self.version,
+            spec_hash=self.content_hash(),
         )
 
 

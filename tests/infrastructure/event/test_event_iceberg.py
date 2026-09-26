@@ -34,6 +34,7 @@ from infrastructure.event.iceberg import (
     EventTable,
     EventTableConflict,
     EventTableCorrupted,
+    EventTableError,
     event_batch_id,
     event_rows,
     event_rows_batch,
@@ -48,6 +49,7 @@ from infrastructure.event.table_definition import (
     ensure_event_tables,
 )
 from plugins.events import EventSequenceProvider, FeatureThresholdCrossProvider, StateSwitchProvider
+from tests.contract_version_support import at_pre_bump, built_at_pre_bump
 from tests.fake_events import LAG, MINUTE, REGIME, REGIME_INPUTS, X_INPUTS, X, request
 from tests.infrastructure.catalog.catalog_support import SqliteCatalogHarness
 
@@ -57,7 +59,10 @@ SWITCH = StateSwitchProvider.spec(REGIME, observable_lag=LAG)
 #: Golden hash of the event.events definition document: any change is a new definition version.
 #: Re-pinned 2026-09-26 when the optional ``subject`` column (ADR-0057) joined the logical table;
 #: the definition had never been created in any catalog, so its version stays 1.0.0.
-EVENT_EVENTS_HASH = "7c4372c0e9d2535cc8ff13ffcbbfba13d937db1e4c37952803ac8838fdc9464b"
+#: Re-pinned again 2026-09-26 (7c4372c0.. -> c7c494cd..) when the run block gained
+#: ``contract_schema_version`` (field 16; list elements 17, 18): the recorded envelope a run is
+#: rebuilt at (ADR-0052 versioned replay, V1). Still never created anywhere, still 1.0.0.
+EVENT_EVENTS_HASH = "c7c494cd9126a8e38a86133e1d2bddadd10a25c5859688cf980daf7825cea1ae"
 
 
 def _cross() -> EventResult:
@@ -362,3 +367,54 @@ def test_a_subject_bound_run_round_trips_with_its_subject(env: Env) -> None:
     assert {row.subject for row in stored.rows} == {"BTCUSDT"}
     plain = env.table.read(_cross().result_hash)
     assert plain is not None and {row.subject for row in plain.rows} == {None}
+
+
+# ------------------------------------------------------------------------------ contract versions
+
+
+def _cross_at_2_0_0() -> EventResult:
+    """The run exactly as the 2.0.0 code wrote it (ADR-0052 versioned replay)."""
+    with built_at_pre_bump():
+        spec = at_pre_bump(CROSS)
+        return run_events(
+            FeatureThresholdCrossProvider((spec,)),
+            spec,
+            at_pre_bump(request(spec, inputs=X_INPUTS)),
+        )
+
+
+def test_rows_record_the_run_envelope() -> None:
+    assert {row["contract_schema_version"] for row in event_rows(_cross())} == {"2.1.0"}
+    assert {row["contract_schema_version"] for row in event_rows(_cross_at_2_0_0())} == {"2.0.0"}
+
+
+def test_a_2_0_0_run_rebuilds_at_its_recorded_version_beside_a_2_1_0_run(env: Env) -> None:
+    old, new = _cross_at_2_0_0(), _cross()
+    assert old.schema_version == "2.0.0" and new.schema_version == "2.1.0"
+    assert old.result_hash != new.result_hash  # the envelope is part of every identity
+    env.table.write(old)
+    env.table.write(new)
+    for result in (old, new):
+        stored = env.table.read(result.result_hash)
+        assert stored is not None and stored.result == result
+        assert stored.result.result_hash == result.result_hash
+        assert {item.schema_version for item in stored.result.events} == {result.schema_version}
+        assert env.table.write(result).replayed
+
+
+def test_a_run_mixing_envelopes_is_refused_before_writing(env: Env) -> None:
+    # a 2.0.0 result envelope around 2.1.0 events (result_hash does not cover the envelope)
+    mixed = EventResult.model_validate({**_cross().model_dump(), "schema_version": "2.0.0"})
+    assert mixed.schema_version == "2.0.0" and mixed.events[0].schema_version == "2.1.0"
+    with pytest.raises(EventTableError, match="mixes contract envelopes"):
+        env.table.write(mixed)
+    assert env.head() is None
+
+
+@pytest.mark.parametrize("recorded", ["2.0.0", "1.0.0", "2.9.0"])
+def test_a_wrong_or_unpublished_recorded_version_fails_closed(env: Env, recorded: str) -> None:
+    result = _cross()  # 2.1.0 content under another recorded version
+    rows = [{**row, "contract_schema_version": recorded} for row in event_rows(result)]
+    env.commit_rows(rows, "tamper.version")
+    with pytest.raises(EventTableCorrupted):
+        env.table.read(result.result_hash)

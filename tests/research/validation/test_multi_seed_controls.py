@@ -24,6 +24,7 @@ from research.outcomes import OutcomeTable
 from research.validation import build_report, failure_record, run_in_sample
 from research.validation.calibration import MomentumSignStudy
 from research.validation.pipeline import CONTROL_SEED_INFIX
+from tests.contract_version_support import envelopes_at_pre_bump
 from tests.research.validation.fixtures import (
     TEST_ONLY_PROFILE,
     context,
@@ -44,6 +45,15 @@ PINNED = {
 }
 CONTROLS = ("G1.shuffle_control", "G1.shift_control")
 SEEDS = (11, 12, 101, 202, 303, 404, 505, 606)
+
+
+#: The same objects built now carry the 2.1.0 envelope (ADR-0052 M2: new objects are 2.1.0
+#: and the envelope is part of every content hash); pinned next to the 2.0.0 evidence above.
+PINNED_2_1_0 = {
+    "planted": "af480090c8e7c5bc67aee572227b034602c84d0ea92a6009c4cc83a01b055f51",
+    "noise": "b099dce524d093411ee44a67f708860ae24487537f489e2b71c8b8b2270670b6",
+    "leaky": "9a263b397e9a2578ffeb318bafa8bcab78038aee02faa436feb6df6c36300777",
+}
 
 
 def _case(name: str) -> tuple[SyntheticMarket, OutcomeTable, object]:
@@ -68,7 +78,10 @@ def _run(case: tuple[SyntheticMarket, OutcomeTable, object], **kwargs: object): 
 
 
 def _digest(gates: tuple[GateResult, ...]) -> str:
-    text = json.dumps([g.model_dump(mode="json") for g in gates], sort_keys=True)
+    # The pins predate contract 2.1.0 (ADR-0052 §4): envelopes compared as 2.0.0, all else exact.
+    text = json.dumps(
+        envelopes_at_pre_bump([g.model_dump(mode="json") for g in gates]), sort_keys=True
+    )
     return hashlib.sha256(text.encode()).hexdigest()
 
 
@@ -87,6 +100,8 @@ def test_unset_control_seeds_is_byte_identical(
 ) -> None:
     gates = _run(cases[name])
     assert _digest(gates) == PINNED[name]
+    raw = json.dumps([g.model_dump(mode="json") for g in gates], sort_keys=True)
+    assert hashlib.sha256(raw.encode()).hexdigest() == PINNED_2_1_0[name]
     assert not any(CONTROL_SEED_INFIX in gate.gate_id for gate in gates)
 
 

@@ -52,6 +52,7 @@ from core.contracts.collector import UnsupportedRequest
 from core.contracts.revision import RevisionRecord
 from core.contracts.storage import StorageAdapter
 from core.domain.base import canonical_json
+from infrastructure import contract_version
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_EXCHANGE_INFO
 from infrastructure.collector.binance_exchange_info import (
@@ -136,9 +137,16 @@ def snapshot_batch_id(revision_id: str, arrival_seq: int) -> str:
 
 
 def snapshot_columns(
-    snapshot: ExchangeInfoSnapshot, *, arrival_seq: int, knowledge_time: datetime
+    snapshot: ExchangeInfoSnapshot,
+    *,
+    arrival_seq: int,
+    knowledge_time: datetime,
+    contract_schema_version: str | None = None,
 ) -> dict[str, Any]:
     """Every column of the snapshot revision of ``snapshot`` (the single builder).
+
+    ``contract_schema_version``: the version a committed revision records when it is rebuilt,
+    ``None`` for a new revision (the current version; ADR-0052 versioned replay, V1 / V2).
 
     Raises ``ExchangeInfoIdentityViolation`` / ``ExchangeInfoAvailabilityViolation`` /
     ``ValueError`` when the inputs cannot form a lawful revision.
@@ -153,6 +161,13 @@ def snapshot_columns(
         knowledge_time=knowledge_time,
     )
     record = RevisionRecord(
+        schema_version=(
+            contract_version.new_group_version()
+            if contract_schema_version is None
+            else contract_version.replay_version(
+                contract_schema_version, what="a rebuilt snapshot revision"
+            )
+        ),
         observation_key=observation_key,
         revision_id=identity.revision_id(observation_key, source, payload),
         source_id=source,
@@ -288,8 +303,12 @@ class ExchangeInfoRowVerifier:
     # ------------------------------------------------------------------ one row
 
     def expected_row(self, row: Mapping[str, Any]) -> Mapping[str, Any]:
-        """The row rebuilt from its own first delivery's verified checkpoint."""
+        """The row rebuilt from its own first delivery's verified checkpoint, at the contract
+        version the row was committed with (ADR-0052 versioned replay, V1)."""
         revision = row.get("revision_id")
+        version = contract_version.replay_version(
+            row.get("contract_schema_version"), what=f"snapshot revision {revision}"
+        )
         request = ExchangeInfoRequest(request_id=row.get("collection_request_id"))  # type: ignore[arg-type]
         try:
             snapshot = self._reader.replay(request)
@@ -311,7 +330,10 @@ class ExchangeInfoRowVerifier:
             )
         try:
             return snapshot_columns(
-                snapshot, arrival_seq=row["arrival_seq"], knowledge_time=row["knowledge_time"]
+                snapshot,
+                arrival_seq=row["arrival_seq"],
+                knowledge_time=row["knowledge_time"],
+                contract_schema_version=version,
             )
         except (identity.ExchangeInfoIdentityViolation, ExchangeInfoAvailabilityViolation) as exc:
             raise CatalogIntegrityError(

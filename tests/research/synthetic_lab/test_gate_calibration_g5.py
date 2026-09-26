@@ -59,9 +59,14 @@ SEEDS = 4
 #: the reported-only ``G2.market_benchmark.*`` / ``G2.inverse_control`` items. The toy and
 #: raising hashes are unchanged (the toy Profiles keep their pre-enforcement benchmark block,
 #: ``test_gate_calibration._TOY_BENCHMARK``).
-PRE_G5_TOY_HASH = "deaba5047218eeff080ed1e1ae588ba8e13a4f6ea3b6557fcab6ea3ffbe5fc07"
-PRE_G5_RAISING_HASH = "358eb551b55b91e9bfb34b81b1dc6a55729a3dd8c83e528c9465560c44370d61"
-PRE_G5_PIPELINE_ONE_SEED_HASH = "dc7816c96a608001b39f1c32334aaf50200f1eb87e011db9e3f57d0ba72407dd"
+#: Re-pinned for contract 2.1.0 (ADR-0052 §4, 2026-09-26): the intended envelope change only —
+#: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
+#: The previous values still hold when the same test builds every object at 2.0.0
+#: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
+#: 2.0.0 values (evidence, git history): deaba504…, 358eb551…, dc7816c9…
+PRE_G5_TOY_HASH = "c5147ea3fa460274b30f0c67a17df62788de1f213e4ba0efd108806823543c1e"
+PRE_G5_RAISING_HASH = "e31fc17fdcde6b30172f398bb762bbf951ccbc6fc26e90fadd74f680154fa31d"
+PRE_G5_PIPELINE_ONE_SEED_HASH = "4cc8dc822c4e79a7a50114982fa40eb2389b4713f61a7328880a9981b68de6ff"
 
 
 class RecordingLedger(InMemoryUnsealingLedger):

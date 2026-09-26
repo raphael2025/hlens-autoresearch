@@ -144,7 +144,7 @@ def test_switching_family_cannot_exceed_the_unsealing_budget() -> None:
     with pytest.raises(ValueError):
         SealedOosVault(TEST_ONLY_PROFILE, InMemoryUnsealingLedger(), max_unsealings=0)
     with pytest.raises(TypeError):
-        SealedOosVault(TEST_ONLY_PROFILE, InMemoryUnsealingLedger())  # type: ignore[call-arg]
+        SealedOosVault(TEST_ONLY_PROFILE, InMemoryUnsealingLedger())  # old Profile: required
 
 
 def test_an_unsealing_buys_exactly_one_evaluation() -> None:

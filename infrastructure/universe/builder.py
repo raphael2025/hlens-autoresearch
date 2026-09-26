@@ -55,6 +55,7 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_EXCHANGE_INFO,
     CANONICAL_INSTRUMENT_LISTINGS,
 )
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
@@ -77,6 +78,7 @@ EXCHANGE_INFO_TABLE: Final = BINANCE_SPOT_EXCHANGE_INFO.table
 
 #: The first-slice universe (03-data.md §7.3): BTCUSDT and ETHUSDT spot listing episodes.
 FIRST_SLICE_UNIVERSE: Final = UniverseSelectionSpec(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     name="binance.spot.btc-eth",
     version="1.0.0",
     candidate_source=UniverseCandidateSource.POINT_IN_TIME_LISTINGS,

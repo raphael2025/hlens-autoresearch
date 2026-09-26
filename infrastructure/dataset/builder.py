@@ -52,7 +52,7 @@ from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
-from pyiceberg.expressions import EqualTo
+from pyiceberg.expressions import And, EqualTo
 from pyiceberg.schema import assign_fresh_schema_ids
 
 from core.contracts.catalog import (
@@ -72,8 +72,13 @@ from core.contracts.universe import (
     UniverseSelectionSpec,
     UniverseSpecBinding,
 )
-from core.domain.base import canonical_json
+from core.domain.base import (
+    CONTRACT_SCHEMA_VERSION,
+    canonical_json,
+    contract_schema_version_scope,
+)
 from core.domain.specs import DatasetRef, Zone
+from infrastructure import contract_version
 from infrastructure.canonical import listing_rules as lr
 from infrastructure.canonical import rules
 from infrastructure.catalog.definitions import RegisteredTableDefinition
@@ -299,16 +304,36 @@ class DatasetBuilder:
                 "universe's members: an empty Research Dataset has no snapshot of its own"
             )
         commit = self._materialize(selection)
-        manifest = _manifest_of(
-            selection,
-            DatasetRef(
+        recorded = self._recorded_manifest_version(commit)
+        if recorded is None:
+            # A new manifest: the current version, never inside a leaked replay scope.
+            contract_version.new_group_version()
+        elif recorded != CONTRACT_SCHEMA_VERSION:
+            # The dataset batch replayed and its manifest is persisted at an earlier version:
+            # this build is that manifest's replay, re-derived at its recorded version
+            # (ADR-0052 versioned replay, V7), never a second manifest differing in envelope.
+            with contract_schema_version_scope(recorded):
+                again = self.select(universe, pit, data_type, start, end)
+            if again.selection_id != selection.selection_id or again.rows != selection.rows:
+                raise CatalogIntegrityError(  # pragma: no cover - select is deterministic
+                    f"selection {selection.selection_id} re-derives differently"
+                )
+            selection = again
+
+        def dataset() -> DatasetRef:
+            return DatasetRef(
                 zone=Zone.RESEARCH_DATASET,
                 table=self._table.table,
                 snapshot_id=commit.snapshot_id,
                 time_range_start=start,
                 time_range_end=end,
-            ),
-        )
+            )
+
+        if recorded is None or recorded == CONTRACT_SCHEMA_VERSION:
+            manifest = _manifest_of(selection, dataset())
+        else:
+            with contract_schema_version_scope(recorded):
+                manifest = _manifest_of(selection, dataset())
         # ``select`` derived the selection in this very call and ``_materialize`` read its rows
         # back at the snapshot: the manifest is checked against it rather than re-selected.
         verifier = _JustSelected(self._adapter, self._table, selection)
@@ -350,8 +375,14 @@ class DatasetBuilder:
                 f"dataset snapshot {dataset.snapshot_id} of {dataset.table} does not commit the "
                 "selection of the manifest's own inputs"
             )
-        selection = self.select(universe, pit, data_types[0], start, end)
-        _check_manifest(self._adapter, self._table, manifest, selection)
+        # Re-derived at the version the manifest was persisted with (ADR-0052 versioned replay,
+        # V7): every object the derivation builds carries that envelope.
+        version = contract_version.replay_version(
+            manifest.schema_version, what=f"manifest {manifest.content_hash()}"
+        )
+        with contract_schema_version_scope(version):
+            selection = self.select(universe, pit, data_types[0], start, end)
+            _check_manifest(self._adapter, self._table, manifest, selection)
         batch = pa.Table.from_pylist(
             [dict(row) for row in selection.rows], schema=self._table.arrow_schema
         )
@@ -646,6 +677,29 @@ class DatasetBuilder:
             f"selection {selection.selection_id} lost {_ATTEMPTS} races"
         ) from last
 
+    def _recorded_manifest_version(self, commit: BatchCommit) -> str | None:
+        """The version of the manifest(s) persisted for a replayed dataset batch, else ``None``.
+
+        A dataset batch committed by this call has no manifest yet; a replayed one may have one
+        (a build that stopped before persisting it has none: its manifest is new).
+        """
+        if not commit.replayed:
+            return None
+        found = self._adapter.scan_columns(
+            DATASET_MANIFESTS.table,
+            columns=("contract_schema_version",),
+            row_filter=And(
+                EqualTo("dataset_table", commit.table),  # type: ignore[call-arg, arg-type]
+                EqualTo("dataset_snapshot_id", commit.snapshot_id),  # type: ignore[call-arg, arg-type]
+            ),
+        ).column("contract_schema_version")
+        versions = found.to_pylist()
+        if not versions:
+            return None
+        return contract_version.recorded_version(
+            versions, what=f"the manifests of dataset snapshot {commit.snapshot_id}"
+        )
+
     def _head(self, table: str) -> str | None:
         info = self._adapter.load_table(table)
         if info is None:
@@ -715,7 +769,12 @@ def _check_manifest(
             f"dataset snapshot {snapshot.snapshot_id} commits {snapshot.batch_id!r}, not the "
             f"selection {selection.selection_id} of the manifest's inputs"
         )
-    expected = _manifest_of(selection, manifest.dataset)
+    # The expectation is built at the manifest's own recorded version (V7).
+    version = contract_version.replay_version(
+        manifest.schema_version, what=f"manifest {manifest.content_hash()}"
+    )
+    with contract_schema_version_scope(version):
+        expected = _manifest_of(selection, manifest.dataset)
     if expected != manifest:
         drift = [
             name

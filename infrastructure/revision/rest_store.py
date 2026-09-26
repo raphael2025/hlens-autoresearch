@@ -86,6 +86,7 @@ from core.contracts.catalog import (
 )
 from core.contracts.collector import CollectionRequest, CollectionResult
 from core.contracts.storage import StorageAdapter, StorageError
+from infrastructure import contract_version
 from infrastructure.catalog.definitions import RegisteredTableDefinition
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -315,6 +316,9 @@ class _ResponseState:
     stored_element_count: int | None
     commit: BatchCommit
     competing: tuple[str, ...]
+    #: The response revision's recorded contract version: its elements are written at it
+    #: (one write group, ADR-0052 versioned replay, V1 / V2).
+    version: str
 
 
 @dataclass(frozen=True, slots=True)
@@ -578,6 +582,7 @@ class RestRevisionStore:
                     row_count=1,
                 ),
                 competing=competing,
+                version=stored["contract_schema_version"],
             )
         raise RestRevisionStoreConflict(
             f"could not allocate or pin a REST arrival block for {revision_id} after "
@@ -596,6 +601,10 @@ class RestRevisionStore:
         check_block_base(base)
         same_delivery = stored["collection_request_id"] == request.request_id
         provenance = None if same_delivery else {name: stored[name] for name in _PROVENANCE_COLUMNS}
+        version = contract_version.replay_version(
+            stored.get("contract_schema_version"),
+            what=f"committed response revision {stored['revision_id']}",
+        )
         try:
             expected = self._response_row(
                 request,
@@ -603,6 +612,7 @@ class RestRevisionStore:
                 base=base,
                 knowledge_time=stored["knowledge_time"],
                 provenance=provenance,
+                contract_schema_version=version,
             )
         except (RestAvailabilityViolation, rest_identity.RestIdentityViolation, ValueError) as exc:
             raise CatalogIntegrityError(
@@ -637,6 +647,7 @@ class RestRevisionStore:
                 row_count=1,
             ),
             competing=competing,
+            version=version,
         )
 
     def _response_row(
@@ -647,8 +658,10 @@ class RestRevisionStore:
         base: int,
         knowledge_time: datetime,
         provenance: Mapping[str, Any] | None = None,
+        contract_schema_version: str | None = None,
     ) -> dict[str, Any]:
-        """The response row of ``page``; ``provenance`` substitutes another first delivery."""
+        """The response row of ``page``; ``provenance`` substitutes another first delivery;
+        ``contract_schema_version`` is a committed revision's recorded version (``None``: new)."""
         query = page.query
         if provenance is None:
             try:
@@ -669,6 +682,7 @@ class RestRevisionStore:
             base=base,
             knowledge_time=knowledge_time,
             provenance=provenance,
+            contract_schema_version=contract_schema_version,
         )
 
     def _response_rows(
@@ -992,6 +1006,7 @@ def _plan_elements(
                 base=state.base,
                 ingest_time=state.ingest_time,
                 knowledge_time=state.knowledge_time,
+                contract_schema_version=state.version,
             )
         except (RestAvailabilityViolation, rest_identity.RestIdentityViolation) as exc:
             raise RestRevisionStoreConflict(

@@ -58,11 +58,13 @@ from core.contracts.universe import (
 )
 from core.domain.base import canonical_json
 from core.domain.specs import Instrument, InstrumentType
+from infrastructure import contract_version
 from infrastructure.canonical.rules import SYMBOLS
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_EXCHANGE_INFO,
     CANONICAL_INSTRUMENT_LISTINGS,
 )
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.revision.exchange_info_availability import (
     ExchangeInfoAvailabilitySubject,
     decide_exchange_info_availability,
@@ -211,6 +213,7 @@ LISTING_STATUS_SPEC: Final[dict[str, Any]] = {
 }
 LISTING_STATUS_HASH: Final = _digest(LISTING_STATUS_SPEC)
 LISTING_STATUS_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PARSER,
     policy_id=LISTING_STATUS_ID,
     version=LISTING_STATUS_VERSION,
@@ -233,6 +236,7 @@ LISTING_OBSERVATION_SPEC: Final[dict[str, Any]] = {
 }
 LISTING_OBSERVATION_HASH: Final = _digest(LISTING_OBSERVATION_SPEC)
 LISTING_OBSERVATION_BINDING: Final = PolicyBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
     role=PolicyRole.PRECEDENCE,
     policy_id=LISTING_OBSERVATION_ID,
     version=LISTING_OBSERVATION_VERSION,
@@ -633,9 +637,24 @@ def _evidence(planned: PlannedListing, knowledge_time: datetime) -> PrecedenceEv
 
 
 def listing_columns(
-    planned: PlannedListing, *, arrival_seq: int, knowledge_time: datetime
+    planned: PlannedListing,
+    *,
+    arrival_seq: int,
+    knowledge_time: datetime,
+    contract_schema_version: str | None = None,
 ) -> dict[str, Any]:
-    """Every column of one ``canonical.instrument_listings`` revision (the single builder)."""
+    """Every column of one ``canonical.instrument_listings`` revision (the single builder).
+
+    ``contract_schema_version``: the version a committed batch records when it is re-derived,
+    ``None`` for a new batch (the current version; ADR-0052 versioned replay, V1 / V2). It is
+    the envelope of both the ``RevisionRecord`` and the ``ListingRevision`` built here, and the
+    row's column is that envelope.
+    """
+    version = (
+        contract_version.new_group_version()
+        if contract_schema_version is None
+        else contract_version.replay_version(contract_schema_version, what="a listing batch")
+    )
     observation = planned.observation
     if planned.previous is not None and not (
         planned.previous.observation.retrieved_at < observation.retrieved_at
@@ -651,6 +670,7 @@ def listing_columns(
             knowledge_time=knowledge_time,
         )
         record = RevisionRecord(
+            schema_version=version,
             observation_key=planned.observation_key,
             revision_id=planned.revision_id,
             source_id=planned.source_id,
@@ -662,6 +682,7 @@ def listing_columns(
         evidence = () if planned.previous is None else (_evidence(planned, knowledge_time),)
         RevisionGraph(revisions=(record,), precedence_evidence=evidence)
         listing = ListingRevision(
+            schema_version=version,
             revision=record,
             episode=planned.episode,
             instrument=planned.instrument,

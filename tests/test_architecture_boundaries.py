@@ -48,6 +48,9 @@ STDLIB_OK = {
     "__future__",
     "abc",
     "collections",
+    # ADR-0052 versioned replay: the replay scope (a ContextVar restored by a context manager).
+    "contextlib",
+    "contextvars",
     "dataclasses",
     "datetime",
     "decimal",
