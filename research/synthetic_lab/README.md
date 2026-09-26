@@ -123,4 +123,25 @@ k = 2，每组 8 个种子，`gate_fixtures.multi_setup(8)`，报告哈希 `d7b5
 `buy_and_hold_equal_weight` + `inverse_control_reported=True`；玩具检测器不运行验证器，其 Profile 保留原基准块（报告哈希与
 控制台夹具不变）。测试：`test_gate_calibration.py`、`test_gate_calibration_multi.py`。
 
-仍未完成：生成器过于简单（高斯噪声 + 线性自相关），测试的种子数与市场长度只够冒烟。
+## 中等规模证据（2026-09-26；**evidence only — not a Profile decision**；TEST ONLY Profile）
+
+报告、设置、再生成命令与完整表格：[docs/research/calibration/](../../docs/research/calibration/README.md)；
+驱动（setup 工厂）：`tests/research/synthetic_lab/evidence_setups.py`（放在 `tests/` 下，研究平面不导入 TEST ONLY Profile）。
+候选只有 TEST ONLY `test_only_lax_uncalibrated` / `test_only_strict_uncalibrated`；95% Clopper-Pearson 区间。
+
+(a) 单标的、G5 开启、每组 250 个种子（每市场 4320 个 1 分钟 bar；墙钟 15:28）：
+
+| Profile | 噪声组假阳性率（G0 – G4） | 检出力 强度 0.2 | 检出力 强度 0.5 | INCONCLUSIVE（各组） | 端到端 G0 – G5：噪声 / 0.2 / 0.5 |
+|---|---|---|---|---|---|
+| lax | 1/250 = 0.004 [0.000, 0.022] | 13/250 = 0.052 [0.028, 0.087] | 125/250 = 0.500 [0.436, 0.564] | 0/250 [0, 0.015] | 0/250 · 10/250 · 119/250 |
+| strict | 0/250 [0, 0.015] | 0/250 [0, 0.015] | 0/250 [0, 0.015] | 0/250 [0, 0.015] | 0 · 0 · 0 |
+
+(b) 多标的 k = 2、每组 200 个种子（每标的 2880 bar；墙钟 19:19）：lax 流水线 PASS all_noise 0/200 [0, 0.018]、
+all_planted 51/200 = 0.255 [0.196, 0.321]、mixed 0/200 [0, 0.018]；strict 全部 0/200；INCONCLUSIVE 全部 0/200。
+池化 G1 负对照 FAIL（lax）：shuffle all_noise 12/200 = 0.060 [0.031, 0.102]、all_planted 18/200 = 0.090 [0.054, 0.139]、
+mixed 12/200 = 0.060 [0.031, 0.102]；shift 9/200 = 0.045 [0.021, 0.084]、20/200 = 0.100 [0.062, 0.150]、
+16/200 = 0.080 [0.046, 0.127]。strict 的池化对照全部 0/200（对照与 G3 共用 `multiple_testing_threshold`）。
+
+这些数字只描述两个 TEST ONLY 夹具在过于简单的生成器上的行为；不选择任何阈值或 Profile 数值（D-09 仍未冻结）。
+
+仍未完成：生成器过于简单（高斯噪声 + 线性自相关）；市场长度只有两天研究窗（+ 一天封存窗）。
