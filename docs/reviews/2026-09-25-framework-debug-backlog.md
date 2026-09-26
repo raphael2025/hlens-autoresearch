@@ -148,6 +148,15 @@
 | Phase 12：无替换提案 | `propose_replacement` / `ProposalLedger`（恒 `PENDING_HUMAN_APPROVAL`） | B3 |
 | Phase 14：只有迁移骨架 | 金标准记录持久化、差异报告、回滚证据（只证据、无具体迁移目标） | B11 |
 
-仍未做 / 阻塞（详见计划 §10.2）：ADR-0052 实施（升契约版本会破坏 Canonical 重放，需人决定）；Iceberg `event.*` 表（需 ADR）；`EventRequest` 多标的（改契约）；`plugins/` 生产
-StrategyProvider（H5，须经 Promotion）；路由资格绑定验证证据（P10-ELIG）；知识库写入路径（P05-WRITE，Phase 0.5 由集成会话负责）；P8 回测适配器只验证单标的；
-条件假设接入持续循环（会改变 trial 计数与记录哈希，属研究设计选择）；Profile 数值（D-09 TBD）仍未冻结。
+后续批次（授权变更后，见计划 §10.4 / §10.5 与[自主决策记录](2026-09-26-autonomous-decisions.md)）：
+
+| 条目 | 处理 | 批次 |
+|---|---|---|
+| 知识库写入路径（P05-WRITE） | ADR-0058 Accepted；Python API / CLI、每次写入要求审阅人、只追加；`verify` 对孤立审阅记录失败（Codex K1） | B15、B19 |
+| 路由资格绑定验证证据（P10-ELIG） | 研究层证据模式（报告哈希、主体、PASS、G5）；控制台显示 | B16、B18 |
+| 物理事件表 | ADR-0056 Accepted，`event.events`（只在 SQLite catalog 上测试，真实 catalog 未建表） | B17 |
+| P8 回测适配器只验证单标的 | `ValidatorSetup.instruments` 多标的路径，单标的逐字节不变 | B20 |
+
+仍在进行：ADR-0053 / 0054 集成、ADR-0052（按 Codex K3 以 2.1.0 实施并证明旧数据可重放）、`EventRequest.subject`（ADR-0057）——core 通道；条件假设可选接入持续循环——P6 通道；
+横截面动量策略（研究层）——P5 通道。仍不做：`plugins/` 生产 StrategyProvider（无验证证据不晋升）、Profile 数值（D-09 TBD）、实盘、合并 `main`；
+Phase 1 的 PIT 边重复（Codex K4）不在本分支修改。
