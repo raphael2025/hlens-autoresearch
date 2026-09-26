@@ -3,11 +3,14 @@ the degradation monitor. Never imports research/ (stages are injected by a compo
 
 from apps.worker.degradation import DegradationCheck, DegradationMonitor
 from apps.worker.jobs import (
+    JobHistory,
     JobInterrupted,
     JobOutcome,
+    JobRecord,
     JobResultsCorrupted,
     JobRunner,
     JobSpec,
+    read_job_results,
 )
 from apps.worker.journal import AppendOnlyJournal, JournalCorrupted
 from apps.worker.loop import (
@@ -43,8 +46,10 @@ __all__ = [
     "AutomationForbidden",
     "DegradationCheck",
     "DegradationMonitor",
+    "JobHistory",
     "JobInterrupted",
     "JobOutcome",
+    "JobRecord",
     "JobResultsCorrupted",
     "JobRunner",
     "JobSpec",
@@ -67,4 +72,5 @@ __all__ = [
     "StageStatus",
     "StageUsage",
     "monotonic_clock",
+    "read_job_results",
 ]

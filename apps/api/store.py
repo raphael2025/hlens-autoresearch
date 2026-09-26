@@ -9,8 +9,14 @@ back. The payload is served as ``payload`` inside a small envelope (``kind``, ``
 Only the ``research_loop_round`` kind is checked against a contract (ADR-0050): its payload must be
 a valid ``core.contracts.loop_audit.LoopRoundRecord`` that round-trips byte-identically, and the
 file's ``id`` must be that record's ``record_hash`` (the writer names files by it). A file that
-fails either check is malformed — skipped by ``list``, refused by ``get`` — so an edited or
-ill-formed audit record is never served as one. Other kinds are still served opaquely.
+fails either check is malformed — never served as a report — so an edited or ill-formed audit
+record is never served as one. Other kinds are still served opaquely.
+
+Malformed files are **visible, not silent** (2026-09-26; CODE_COMPLETE / DEBUG_PENDING):
+:meth:`ReportStore.listing` (behind ``GET /reports/{kind}``) returns the well-formed reports *and*
+an ``invalid`` list naming every file it could not serve with the reason (no filesystem path), so
+one bad file neither hides the others nor disappears unnoticed; ``get`` still refuses it (422).
+:meth:`ReportStore.list` keeps returning only the well-formed envelopes.
 
 Layout: ``<root>/<kind>/<id>.json``, one JSON object per file. ``id`` is the file's stem; ``kind``
 is one of :class:`ReportKind`. ``created`` is the file's modification time (UTC) — the store does
@@ -34,8 +40,10 @@ from pydantic import BaseModel, ConfigDict
 from core.contracts.loop_audit import LoopRoundRecord
 
 __all__ = [
+    "InvalidReport",
     "InvalidReportId",
     "ReportEnvelope",
+    "ReportListing",
     "ReportMalformed",
     "ReportKind",
     "ReportNotFound",
@@ -65,7 +73,12 @@ class ReportNotFound(LookupError):
 
 
 class ReportMalformed(ValueError):
-    """Raised when a report file is not a well-formed JSON object."""
+    """Raised when a report file is not a well-formed JSON object (or, for ``research_loop_round``,
+    not a valid record named by its hash). ``reason`` is the message without the file's path."""
+
+    def __init__(self, path: Path, reason: str) -> None:
+        super().__init__(f"{path}: {reason}")
+        self.reason = reason
 
 
 class ReportEnvelope(BaseModel):
@@ -78,6 +91,26 @@ class ReportEnvelope(BaseModel):
     created: datetime
     payload: dict[str, Any]
     content_hash: str
+
+
+class InvalidReport(BaseModel):
+    """A report file the store found but could not serve: its ``id`` (file stem) and why."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    reason: str
+
+
+class ReportListing(BaseModel):
+    """``GET /reports/{kind}``: the well-formed reports (newest first) and every file skipped as
+    malformed (by id), so a corrupt file is reported instead of silently dropped."""
+
+    model_config = ConfigDict(frozen=True)
+
+    kind: ReportKind
+    reports: list[ReportEnvelope]
+    invalid: list[InvalidReport]
 
 
 def _canonical_json(payload: dict[str, Any]) -> str:
@@ -93,9 +126,9 @@ def _check_loop_round(path: Path, payload: dict[str, Any]) -> None:
     try:
         record = LoopRoundRecord.from_audit_payload(payload)
     except ValueError as exc:  # pydantic's ValidationError is a ValueError
-        raise ReportMalformed(f"{path}: not a valid LoopRoundRecord (ADR-0050): {exc}") from exc
+        raise ReportMalformed(path, f"not a valid LoopRoundRecord (ADR-0050): {exc}") from exc
     if record.record_hash != path.stem:
-        raise ReportMalformed(f"{path}: the file name is not the record's record_hash")
+        raise ReportMalformed(path, "the file name is not the record's record_hash")
 
 
 def _validate_id(report_id: str) -> str:
@@ -121,17 +154,23 @@ class ReportStore:
         return self._root / kind.value
 
     def list(self, kind: ReportKind) -> list[ReportEnvelope]:
+        """The well-formed reports only (see :meth:`listing` for the malformed ones)."""
+        return self.listing(kind).reports
+
+    def listing(self, kind: ReportKind) -> ReportListing:
+        """Every well-formed report (newest first) plus every malformed file with its reason."""
         directory = self._kind_dir(kind)
         if directory is None or not directory.is_dir():
-            return []
+            return ReportListing(kind=kind, reports=[], invalid=[])
         envelopes: list[ReportEnvelope] = []
+        invalid: list[InvalidReport] = []
         for path in sorted(directory.glob("*.json")):
             try:
                 envelopes.append(self._read(kind, path))
-            except ReportMalformed:
-                continue  # a corrupt file does not break the whole listing
+            except ReportMalformed as exc:  # reported, and the rest of the listing still served
+                invalid.append(InvalidReport(id=path.stem, reason=exc.reason))
         envelopes.sort(key=lambda env: (env.created, env.id), reverse=True)
-        return envelopes
+        return ReportListing(kind=kind, reports=envelopes, invalid=invalid)
 
     def get(self, kind: ReportKind, report_id: str) -> ReportEnvelope:
         report_id = _validate_id(report_id)
@@ -146,10 +185,10 @@ class ReportStore:
     def _read(self, kind: ReportKind, path: Path) -> ReportEnvelope:
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as exc:
-            raise ReportMalformed(f"{path}: not well-formed JSON") from exc
+        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
+            raise ReportMalformed(path, "unreadable or not well-formed JSON") from exc
         if not isinstance(payload, dict):
-            raise ReportMalformed(f"{path}: JSON root must be an object")
+            raise ReportMalformed(path, "JSON root must be an object")
         if kind is ReportKind.RESEARCH_LOOP_ROUND:
             _check_loop_round(path, payload)
         created = datetime.fromtimestamp(path.stat().st_mtime, tz=UTC)

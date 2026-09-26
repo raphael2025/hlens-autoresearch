@@ -120,7 +120,8 @@ def test_store_cannot_escape_root_even_via_symlink_like_traversal(tmp_path: Path
 
 def test_reports_endpoints_are_empty_with_no_configured_root() -> None:
     client = TestClient(create_app())
-    assert client.get("/reports/validation_report").json() == []
+    listing = client.get("/reports/validation_report").json()
+    assert listing == {"kind": "validation_report", "reports": [], "invalid": []}
     assert client.get("/reports/validation_report/r1").status_code == 404
 
 
@@ -130,7 +131,9 @@ def test_reports_endpoints_serve_the_configured_directory(tmp_path: Path) -> Non
     _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, round_id, round_payload)
     client = TestClient(create_app(reports_root=tmp_path))
 
-    listed = client.get("/reports/research_loop_round").json()
+    listing = client.get("/reports/research_loop_round").json()
+    assert listing["invalid"] == []
+    listed = listing["reports"]
     assert len(listed) == 1
     assert listed[0]["id"] == round_id
     assert listed[0]["kind"] == "research_loop_round"
@@ -176,7 +179,11 @@ def test_an_ill_formed_or_tampered_loop_round_is_refused(tmp_path: Path, case: s
     assert store.list(ReportKind.RESEARCH_LOOP_ROUND) == []
     client = TestClient(create_app(reports_root=tmp_path))
     assert client.get(f"/reports/research_loop_round/{report_id}").status_code == 422
-    assert client.get("/reports/research_loop_round").json() == []
+    listing = client.get("/reports/research_loop_round").json()
+    assert listing["reports"] == []
+    # skipped, but reported (2026-09-26): the id and the reason, never silently dropped
+    [invalid] = listing["invalid"]
+    assert invalid["id"] == report_id and "LoopRoundRecord" in invalid["reason"]
 
 
 def test_a_valid_loop_round_under_another_name_is_refused(tmp_path: Path) -> None:
@@ -206,3 +213,43 @@ def test_reports_endpoint_rejects_path_traversal_id(tmp_path: Path) -> None:
     client = TestClient(create_app(reports_root=tmp_path))
     response = client.get("/reports/validation_report/..%2F..%2Fetc%2Fpasswd")
     assert response.status_code in (400, 404)
+
+
+# --- malformed files are reported, not silently skipped (2026-09-26) ----------------------
+
+
+def test_listing_reports_every_malformed_file_with_its_reason(tmp_path: Path) -> None:
+    _write(tmp_path, ReportKind.ROUTER_PAPER_RUN, "good", {"ok": True})
+    directory = tmp_path / ReportKind.ROUTER_PAPER_RUN.value
+    (directory / "bad.json").write_text("{not json", encoding="utf-8")
+    (directory / "not-an-object.json").write_text("[1, 2, 3]", encoding="utf-8")
+    (directory / "latin1.json").write_bytes(b'{"x": "\xff"}')  # not UTF-8
+    listing = ReportStore(tmp_path).listing(ReportKind.ROUTER_PAPER_RUN)
+    assert [env.id for env in listing.reports] == ["good"]
+    reasons = {item.id: item.reason for item in listing.invalid}
+    assert reasons == {
+        "bad": "unreadable or not well-formed JSON",
+        "latin1": "unreadable or not well-formed JSON",
+        "not-an-object": "JSON root must be an object",
+    }
+    assert all(str(tmp_path) not in reason for reason in reasons.values())  # no server paths
+
+
+def test_listing_of_a_clean_directory_has_no_invalid_entries(tmp_path: Path) -> None:
+    _write(tmp_path, ReportKind.VALIDATION_REPORT, "a", {"v": 1})
+    _write(tmp_path, ReportKind.VALIDATION_REPORT, "b", {"v": 2})
+    listing = ReportStore(tmp_path).listing(ReportKind.VALIDATION_REPORT)
+    assert {env.id for env in listing.reports} == {"a", "b"} and listing.invalid == []
+    assert ReportStore(None).listing(ReportKind.VALIDATION_REPORT).invalid == []
+
+
+def test_the_list_endpoint_reports_malformed_files_alongside_good_ones(tmp_path: Path) -> None:
+    _write(tmp_path, ReportKind.GATE_CALIBRATION, "good", {"ok": True})
+    (tmp_path / ReportKind.GATE_CALIBRATION.value / "broken.json").write_text("{", "utf-8")
+    client = TestClient(create_app(reports_root=tmp_path))
+    listing = client.get("/reports/gate_calibration").json()
+    assert listing["kind"] == "gate_calibration"
+    assert [env["id"] for env in listing["reports"]] == ["good"]
+    assert listing["invalid"] == [{"id": "broken", "reason": "unreadable or not well-formed JSON"}]
+    detail = client.get("/reports/gate_calibration/broken")
+    assert detail.status_code == 422 and isinstance(detail.json()["detail"], str)

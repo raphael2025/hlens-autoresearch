@@ -40,7 +40,9 @@ def test_every_fixture_round_trips_through_the_store_and_the_api(kind: ReportKin
     client = TestClient(create_app(reports_root=FIXTURES_ROOT))
 
     listed = store.list(kind)
-    api_listed = client.get(f"/reports/{kind.value}").json()
+    api_listing = client.get(f"/reports/{kind.value}").json()
+    assert api_listing["invalid"] == []  # every committed fixture is well-formed
+    api_listed = api_listing["reports"]
     assert {env.id for env in listed} == {item["id"] for item in api_listed}
 
     for envelope in listed:

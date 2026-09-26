@@ -14,6 +14,12 @@
 > （`JobRunner.interrupted` 列出这些任务）。持久结果必须是 JSON（存储与返回的都是其 JSON 形式）；持久写入失败 → 运行器停止、消息不确认。
 > 不给 `results` 时行为不变（结果表在内存中，崩溃于记录与确认之间会重跑一次）。
 >
+> 只读视图（2026-09-26，CODE_COMPLETE / DEBUG_PENDING；`apps/api` 的 `GET /jobs` 使用）：`read_job_results(path, idempotent=...)`
+> 不需要总线或处理器、从不写入，以与运行器重开时**同一个**重放实现（`_Replay`，运行器与只读视图共用，二者不可能不一致）校验日志，
+> 返回 `JobHistory`（`jobs`：按首次开始排序的 `JobRecord` —— `status` ∈ `succeeded` / `failed` / `interrupted`、`starts`、`reruns`、
+> `first_seq` / `last_seq`、`outcome`；`head_hash`；`lines`）。校验失败抛 `JournalCorrupted` / `JobResultsCorrupted`，绝不返回部分数据；
+> 缺失文件 = 空日志（不创建）。`idempotent` 必须与运行器声明的集合一致，否则含该处理器 `job_rerun` 行的日志被拒绝。
+>
 > **`idempotent=` —— 使用前必读**（ADR-0049 实施说明 review fixes 3，2026-09-26）：声明一个处理器幂等，是运行器**无法核实**的承诺——
 > "中途死掉后再跑一次，世界的状态与只跑一次完全相同"（不重复发布、不重复花费、不产生下游不去重的第二次追加）。声明错了会静默重复副作用，因此：
 > 默认没有任何处理器幂等；集合必须逐个写出处理器名（不是处理器的名字 → `ValueError`，给成单个字符串 → `TypeError`）；没有 `results=` 时

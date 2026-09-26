@@ -52,6 +52,12 @@ Durable results must be JSON (``core.domain.base.canonical_json``); the stored a
 runner stops (``JobInterrupted`` on the next ``run_pending``) and the message stays unacknowledged.
 A message whose key is not its content identity is refused in durable mode (``ValueError``, not
 acknowledged): its journal lines could not be verified on reopening.
+
+**Read-only view** (apps/api ``GET /jobs``, 2026-09-26; CODE_COMPLETE / DEBUG_PENDING).
+``read_job_results(path, idempotent=...)`` replays a results journal with the *same* verification
+the runner uses on reopening (one shared ``_Replay``) and returns every job's status, attempts,
+result or failure reason, without a bus or handlers and without writing. A tampered or invalid
+journal raises (``JournalCorrupted`` / ``JobResultsCorrupted``); it never yields partial data.
 """
 
 from __future__ import annotations
@@ -59,21 +65,28 @@ from __future__ import annotations
 import json
 from collections.abc import Callable, Collection, Mapping
 from dataclasses import dataclass
-from typing import Any, Final
+from typing import Any, Final, Literal
 
 from apps.worker.journal import AppendOnlyJournal, JournalCorrupted, JournalEntry, JournalPath
 from core.contracts.event_bus import BusMessage, EventBusAdapter
 from core.domain.base import canonical_json, content_hash
 
 __all__ = [
+    "JOB_FAILED",
+    "JOB_INTERRUPTED",
     "JOB_RERUN",
     "JOB_RESULT",
     "JOB_STARTED",
+    "JOB_SUCCEEDED",
+    "JobHistory",
     "JobInterrupted",
     "JobOutcome",
+    "JobRecord",
     "JobResultsCorrupted",
     "JobRunner",
     "JobSpec",
+    "JobStatus",
+    "read_job_results",
 ]
 
 #: Journal line written before a job's handler runs.
@@ -172,7 +185,12 @@ class JobRunner:
         self._stopped: str | None = None
         self._journal = None if results is None else AppendOnlyJournal(results)
         if self._journal is not None:
-            self._replay(self._journal.entries)
+            replay = _Replay(self._idempotent)
+            replay.run(self._journal.entries)
+            self._outcomes = replay.outcomes
+            self._interrupted = replay.interrupted
+            self._starts = replay.starts
+            self._reruns = replay.reruns
 
     @property
     def outcomes(self) -> Mapping[str, JobOutcome]:
@@ -285,7 +303,27 @@ class JobRunner:
                 error = f"{type(exc).__name__}: {exc}"
         return JobOutcome(job_id, name, False, self._max_attempts, None, error)
 
-    def _replay(self, entries: tuple[JournalEntry, ...]) -> None:
+
+# -- the verified replay (shared by ``JobRunner`` and the read-only ``read_job_results``) --------
+
+
+class _Replay:
+    """Replays and verifies a results journal's lines as a job history (module docs): the one
+    implementation both the runner and the read-only view use, so they can never disagree."""
+
+    def __init__(self, idempotent: frozenset[str]) -> None:
+        self.idempotent = idempotent
+        self.outcomes: dict[str, JobOutcome] = {}
+        self.interrupted: dict[str, str] = {}
+        self.starts: dict[str, int] = {}
+        self.reruns: dict[str, int] = {}
+        #: For the read-only view: each job's params, line numbers and start lines (all kinds).
+        self.params: dict[str, Any] = {}
+        self.first_seq: dict[str, int] = {}
+        self.last_seq: dict[str, int] = {}
+        self.all_starts: dict[str, int] = {}
+
+    def run(self, entries: tuple[JournalEntry, ...]) -> None:
         started: dict[str, str] = {}
         for entry in entries:
             where = f"results line {entry.seq}"
@@ -297,7 +335,7 @@ class JobRunner:
                 job_id, name = raw["job_id"], raw["name"]
                 if not isinstance(name, str) or job_id != _job_id(name, raw["params"]):
                     raise JobResultsCorrupted(f"{where}: job_id is not the job's content identity")
-                if job_id in self._outcomes:
+                if job_id in self.outcomes:
                     raise JobResultsCorrupted(
                         f"{where}: job {job_id[:12]} started after its result"
                     )
@@ -305,12 +343,16 @@ class JobRunner:
                     self._admit_start(job_id, name, started, where)
                 else:
                     self._admit_rerun(job_id, name, raw["interrupted_starts"], started, where)
+                self.params.setdefault(job_id, raw["params"])
+                self.first_seq.setdefault(job_id, entry.seq)
+                self.all_starts[job_id] = self.all_starts.get(job_id, 0) + 1
             elif entry.type == JOB_RESULT:
                 self._admit_result(raw, started, where)
-                self._starts.pop(raw["job_id"], None)
+                self.starts.pop(raw["job_id"], None)
             else:
                 raise JobResultsCorrupted(f"{where} has unknown type {entry.type!r}")
-        self._interrupted = started
+            self.last_seq[str(raw["job_id"])] = entry.seq
+        self.interrupted = started
 
     def _admit_start(self, job_id: str, name: str, started: dict[str, str], where: str) -> None:
         if job_id in started:
@@ -319,26 +361,26 @@ class JobRunner:
                 f"without a {JOB_RERUN!r} line (an unaudited re-run)"
             )
         started[job_id] = name
-        self._starts[job_id] = 1
+        self.starts[job_id] = 1
 
     def _admit_rerun(
         self, job_id: str, name: str, count: Any, started: dict[str, str], where: str
     ) -> None:
         if started.get(job_id) != name:
             raise JobResultsCorrupted(f"{where}: a re-run of a job that was not started")
-        if name not in self._idempotent:
+        if name not in self.idempotent:
             raise JobResultsCorrupted(
                 f"{where}: job {name!r} ({job_id[:12]}) is not declared idempotent, yet it was "
                 "re-run without a result"
             )
-        expected = self._starts.get(job_id)
+        expected = self.starts.get(job_id)
         if not isinstance(count, int) or isinstance(count, bool) or count != expected:
             raise JobResultsCorrupted(
                 f"{where}: interrupted_starts {count!r} does not match the journal "
                 f"({expected} starts without a result)"
             )
-        self._starts[job_id] = count + 1
-        self._reruns[job_id] = self._reruns.get(job_id, 0) + 1
+        self.starts[job_id] = count + 1
+        self.reruns[job_id] = self.reruns.get(job_id, 0) + 1
 
     def _admit_result(self, raw: dict[str, Any], started: dict[str, str], where: str) -> None:
         if set(raw) != _RESULT_FIELDS:
@@ -356,4 +398,82 @@ class JobRunner:
         ):
             raise JobResultsCorrupted(f"{where} is not a valid job outcome")
         del started[job_id]
-        self._outcomes[job_id] = JobOutcome(job_id, name, succeeded, attempts, raw["result"], error)
+        self.outcomes[job_id] = JobOutcome(job_id, name, succeeded, attempts, raw["result"], error)
+
+
+# -- read-only view (apps/api ``GET /jobs``; ADR-0048 read-only console) -------------------------
+
+#: ``JobRecord.status`` values.
+type JobStatus = Literal["succeeded", "failed", "interrupted"]
+JOB_SUCCEEDED: Final = "succeeded"
+JOB_FAILED: Final = "failed"
+JOB_INTERRUPTED: Final = "interrupted"
+
+
+@dataclass(frozen=True, slots=True)
+class JobRecord:
+    """One job as the verified results journal records it (read-only view).
+
+    ``status``: ``succeeded`` / ``failed`` (a ``job_result`` line) or ``interrupted`` (started,
+    no result yet -- a running job looks the same). ``starts`` counts its ``job_started`` and
+    ``job_rerun`` lines, ``reruns`` only the latter. ``outcome`` is ``None`` while interrupted.
+    ``first_seq`` / ``last_seq``: the journal lines of its first start and its latest line.
+    """
+
+    job_id: str
+    name: str
+    params: Any
+    status: JobStatus
+    starts: int
+    reruns: int
+    first_seq: int
+    last_seq: int
+    outcome: JobOutcome | None
+
+
+@dataclass(frozen=True, slots=True)
+class JobHistory:
+    """Every job of one results journal, in the order of their first start."""
+
+    jobs: tuple[JobRecord, ...]
+    #: The journal's hash-chain tip (``GENESIS_HASH`` when empty) and its number of lines.
+    head_hash: str
+    lines: int
+
+
+def read_job_results(results: JournalPath, *, idempotent: Collection[str] = ()) -> JobHistory:
+    """Read a durable results journal without a runner, bus or handlers; never writes.
+
+    It is verified exactly as ``JobRunner(results=...)`` verifies it on reopening (the same
+    replay): a broken chain raises ``JournalCorrupted``, an invalid job history
+    ``JobResultsCorrupted`` -- never partial data. ``idempotent`` must name the handlers the
+    runner declares idempotent, since a ``job_rerun`` of any other handler is refused. A missing
+    file is an empty journal (like ``AppendOnlyJournal``).
+    """
+    if isinstance(idempotent, str | bytes):
+        raise TypeError("idempotent must be a collection of handler names, not one string")
+    journal = AppendOnlyJournal(results)
+    replay = _Replay(frozenset(idempotent))
+    replay.run(journal.entries)
+    records: list[JobRecord] = []
+    for job_id in sorted(replay.first_seq, key=replay.first_seq.__getitem__):
+        outcome = replay.outcomes.get(job_id)
+        status: JobStatus
+        if outcome is None:
+            status, name = JOB_INTERRUPTED, replay.interrupted[job_id]
+        else:
+            status, name = (JOB_SUCCEEDED if outcome.succeeded else JOB_FAILED), outcome.name
+        records.append(
+            JobRecord(
+                job_id=job_id,
+                name=name,
+                params=replay.params[job_id],
+                status=status,
+                starts=replay.all_starts[job_id],
+                reruns=replay.reruns.get(job_id, 0),
+                first_seq=replay.first_seq[job_id],
+                last_seq=replay.last_seq[job_id],
+                outcome=outcome,
+            )
+        )
+    return JobHistory(tuple(records), journal.head_hash, len(journal.entries))

@@ -13,9 +13,11 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 | GET | `/health` | 健康检查 + API 版本 |
 | GET | `/contracts` | 已注册契约模型名列表 |
 | GET | `/lifecycle/transitions` | 生命周期允许的转移表 |
-| POST | `/knowledge/search` | 经 `KnowledgeProvider` 检索知识条目（未注入 provider 时返回 `{"error": ...}`） |
-| GET | `/reports/{kind}` | 按种类列出报告（见下） |
+| POST | `/knowledge/search` | 经 `KnowledgeProvider` 检索知识条目（只读查询；未注入 provider → 503，provider 抛 `KnowledgeProviderError` → 502） |
+| GET | `/reports/{kind}` | 按种类列出报告：`{kind, reports, invalid}`（见下） |
 | GET | `/reports/{kind}/{id}` | 取单个报告详情 |
+| GET | `/jobs` | worker 持久结果日志里的全部任务（见下；未配置 → 503，日志校验失败 → 500） |
+| GET | `/jobs/{job_id}` | 单个任务（`job_id` 非 64 位小写十六进制 → 400，不存在 → 404） |
 
 `{kind}` ∈ `validation_report` \| `research_loop_round` \| `state_strategy_matrix` \| `router_paper_run`。
 
@@ -36,3 +38,28 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 - 拒绝路径穿越：`id` 必须匹配安全文件名模式且解析后仍在对应 `kind` 目录内，否则 400；未知
   `kind` 由 FastAPI 的枚举校验直接 422；损坏的 JSON 文件在列表接口中被跳过，在详情接口中报错。
 - 目前没有任何写端点；实验登记 / 生命周期推进留待 P7 / P8 / P11 框架与授权服务就绪后再暴露。
+
+## 错误映射、报告列表与任务端点（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+仍然只读（ADR-0048）：唯一的 POST 是知识检索（查询体，不写任何东西），测试
+`test_the_api_has_no_mutation_endpoints_besides_the_read_only_search` 固定这一点。
+
+- **错误体**：本层自己抛出的错误一律 `{"detail": "<message>"}`（OpenAPI 中的 `ApiError`）；只有
+  FastAPI 自身的请求校验以 422 + 列表形式的 `detail` 回答。400 非法 id / 404 不存在 / 422 损坏的报告文件 /
+  500 任务日志校验失败 / 502 知识 provider 无法诚实回答 / 503 未配置 provider 或任务日志。503 的 `detail`
+  是稳定常量（`KNOWLEDGE_NOT_CONFIGURED`、`JOBS_NOT_CONFIGURED`）。
+- **知识检索**：`response_model=KnowledgeResult`（OpenAPI 现在给出响应类型），不再以 200 返回 `{"error": ...}`。
+- **报告列表**：`GET /reports/{kind}` 返回 `ReportListing` —— `reports`（合法报告，新到旧）+ `invalid`
+  （`[{id, reason}]`：每个无法提供的文件及原因，不含服务器路径）。损坏文件不再被静默跳过；详情端点仍 422。
+  `ReportStore.list` 仍只返回合法信封，`ReportStore.listing` 是列表端点背后的新方法。
+- **任务端点**：`create_app(jobs_results=<path>, jobs_idempotent=(...))`。`jobs_results` 是 worker
+  `JobRunner(results=...)` 的持久结果日志；每次请求经 `apps.worker.jobs.read_job_results` 重新读取并以**与运行器
+  重开时同一套重放校验**核对（不缓存、不写入、缺失文件 = 空日志且不创建）。每个任务：`status`
+  （`succeeded` / `failed` / `interrupted` —— 已开始无结果：运行中或中途死亡待审）、`attempts`、`result`、
+  `error`、`starts`、`reruns`、`first_seq` / `last_seq`；列表另带 `head_hash` 与 `lines`。篡改 / 链断 /
+  不合法的任务历史 → 500（`detail` 给出原因，路径只保留文件名），绝不返回部分数据。
+- **部署要点：`jobs_idempotent` 必须与运行器的 `idempotent=` 完全一致。** 日志里一旦出现某处理器的
+  `job_rerun` 行，而 API 没有声明该处理器幂等，重放会（与运行器一样）拒绝这段历史 → 每个 `/jobs` 请求都 500。
+  API 没有处理器表，无法核对这些名字；这是 fail closed 的有意选择，不是 bug。
+- 已知限制（DEBUG_PENDING）：读取与运行器的追加并发时可能读到半行 → 该次 500，重试即可；知识检索与任务端点
+  尚未在真实部署中验证。`GET /reports/{kind}/{id}` 的 422 `detail` 仍含文件路径（沿用旧行为）。
