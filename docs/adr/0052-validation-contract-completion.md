@@ -121,13 +121,13 @@ Profile 字段与 `param:` 同时给出即拒绝；旧 Profile 重放逐位不�
 - [x] 不写入任何数值阈值（H3、ADR-0007）；结构范围只有符号 / 单位区间 / 偶数
 - [x] 不修改 Validation Constitution；动机不是让某实验通过
 - [x] Domain 层仍只依赖标准库与 Pydantic
-- [ ] 由 Raphael 本人批准（H1 / H2 红线）——待定
+- [x] 由 Raphael 本人批准（H1 / H2 红线）——2026-09-26 "同意推荐方案"（见状态行）
 
 ## Implementation blocker (2026-09-26)
 
 决策者: Claude Code（Opus），依 Raphael 2026-09-26 明确授权（"所有的决策都由你来决定，包括红线"）；按协调者转达的 Codex review K3 规则
 （本 ADR 必须按 §4 升到 **2.1.0**，不得把新字段伪装成 2.0.0；§4 的盘点若要求修改 Phase 1 基础设施则停止并提交证据）。
-**结论：规则 (c) 适用——§4 的前置盘点失败，本 ADR 未实施**（状态仍为 Accepted、未实施）；契约、Schema 与研究代码保持 2.0.0 旧行为。
+**结论（当时）：规则 (c) 适用——§4 的前置盘点失败，本 ADR 未实施**（状态仍为 Accepted、未实施）。**已被取代**：随后按 Codex 授权在独立 Phase 1 分支实施版本化重放（M0～M3，见下文实施说明与完成计划 B38 / B41）；契约、Schema 与研究代码保持 2.0.0 旧行为。
 
 **证据**（`tests/infrastructure/canonical/test_contract_version_replay.py`，实际运行
 `pytest -m "not postgres" -rxX tests/infrastructure/canonical/test_contract_version_replay.py` → `2 passed, 1 xfailed`）：
@@ -296,7 +296,7 @@ V3 要求把 `infrastructure/pit/selector.py` 的 `PIT_BINDING` 常量写出 `sc
 - Schema：`GateResult`、`ValidationReport`、`ValidationProfile`、`ExperimentMetadata` 重导出（共 134 份）；
   2.0.0 黄金向量逐字节不变。
 - 旧 Profile 行为逐位不变：`research/validation/gates.py::profile_value` 把 Profile 未携带的 ADR-0052 可选字段
-  当作"没有该字段"（与字段存在之前相同的 `profile_field_missing`）。**未实施（交协调者）**：精确比较
+  当作"没有该字段"（与字段存在之前相同的 `profile_field_missing`）。**当时未实施（交协调者；已于 B41 由 core 合并通道实施）**：精确比较
   `compare_gate` 与量化规则 `hlens.validation.gate-value-quantization@1.0.0`（停放分支已有草稿）、Profile 字段优先与
   同时给 `param:` 即拒绝（C-A4）、G1 负对照改用 `negative_control_threshold`、G4 / 封存 OOS 取值。
 
