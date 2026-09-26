@@ -655,3 +655,27 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - `d389a39` → `4e6c220`（D-DEG-IE，Codex 决定）：所有指标缺失的劣化检查在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 相应修订（取代 B51 中"不发布、待决定"的临时处理）。定向：`tests/apps tests/research/reports` + 边界 + 文档一致性 → 452 passed；ruff / format（751）/ mypy（590）通过。
 - 每次 cherry-pick 后工作区干净、只含该提交的文件；新增 import 只来自标准库 / 本包（无跨平面依赖）。未改 `core/`、Schema、KnowledgeProvider 或 ADR-0055 状态。
 - 注意：同一工作树中另一会话（2026-09-26 全阶段代码完成计划）并行提交了 `b1a3e08`、`dd6c8e1`、`93477c6`、`21ae9d8`、`dd158c9`，并把 `21ae9d8` 推到 `wip/all-code-completion`；这些提交不在 B53 范围内。
+
+
+**B54 — Phase 9：G5 端到端区间（`dd158c9`；编号在集成会话的 B53 之后）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- `SealedArmEvidence.end_to_end_errors`（G0 – G4 出错运行 + G5 出错运行，两者不相交）与 `end_to_end_bounds = [e2e/n, (e2e+errors)/n]`（全部运行为分母，向外取整）；仅有错误时写 `end_to_end_bounds`，无错误报告哈希不变；不变量拒绝少于 G5 错误数、或错误 + 通过超过 n。
+- 实际运行：`test_gate_calibration_g5.py` → 21 passed；ruff / format / mypy（590 files）通过。
+- 证据复现：以修复后的 `python -m research.synthetic_lab.gate_calibration --setup tests.research.synthetic_lab.evidence_setups:single_instrument_evidence` 在当前代码上重跑（6 GB 上限）→ 输出与提交的 `docs/research/calibration/single_instrument_evidence.json` **逐字节相同**（`cmp`）。双标的报告未重跑。
+
+### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
+
+| Phase | 本轮新增（批次） | 仍未完成 / 待决 |
+|---|---|---|
+| 7 | 内容核对失败记录调用、核对模式写入状态目录指纹（B50） | 只有脚本化 LLM |
+| 6 | 数据集组合根上的条件计划端到端测试（B50） | 同 10.6 |
+| 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51） | 今天没有冻结的 Profile → 所有晋升被拒（设计如此）；Profile `status` 不在其哈希内，需 Profile 注册表才是真正权威 |
+| 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告未重跑复现 |
+| 10 | 证据模式要求报告的 Profile 与市场基准项（B51） | 证据模式不要求 FROZEN；不要求 `G2.inverse_control` |
+| 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
+| 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案；锚点不认证新增行 |
+| 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做；控制台对 502 / 500 的呈现未经真实后端；生产 ASGI 服务器未选定 |
+
+架构边界：本轮（`c36005b..` 最终 HEAD）没有改动 `core/` 或 `schemas/`（Schema 仍 135 份，契约 2.1.0）；新增 `plugins/` / `infrastructure/` 不得 import `research/` 的边界测试（B51）。
+
+工作树协调：2026-09-26 19:39 起集成会话（依 Codex 复核）在同一工作树中直接 cherry-pick / 提交（B53：`695add6`、`ed25d2b`、`7157461`、`4e6c220`、`90edc6b`、`ec2a8b0`），与本会话提交交错；本会话首次在 `dd158c9` 上启动的全量门禁在 5% 处被 SIGTERM 终止（退出码 143，HEAD 已移至 `ec2a8b0`），不计为结果。最终门禁见下。
