@@ -411,3 +411,15 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   → **202 passed**；`ruff check .` → All checks passed；mypy（14 files）→ no issues。
 - 限制：Registry 迁 PostgreSQL 待 D-01 / D-02；不核对 Git commit / tree 是否存在；重开时不复核 blob 内容（注册与读取时核对）；仅 POSIX flock。
 
+**B29 — ADR-0059 Accepted 并实施：G4 跨资产检查对横截面策略**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 ADR-0059 通道 `1a8f96a` 的 cherry-pick）
+
+- 决策（Claude 依 Raphael 2026-09-26 授权，通过 ADR 自主决定）：C + A 都实施。C：单标的重跑**全部零敞口**（按仓位 / 成交判定，不从收益推断；敞口未知不视为零）→ `G4.cross_asset.positive_fraction`
+  INCONCLUSIVE `not_applicable_zero_exposure_single_asset`（只会把结构性不适用的 FAIL 变为 INCONCLUSIVE，不多放行）。A：`research/strategies/cross_section.py` 显式声明横截面策略（目前只有
+  `xsmom_bars`，按 spec 名判定，从不按结果推断）；按排序后相邻成对切分子宇宙（奇数并入末组，规则名入报告），≥ 4 个标的才有 ≥ 2 个子宇宙，否则 INCONCLUSIVE
+  `not_enough_instruments_for_subuniverses`；逐子宇宙重跑，按同一 `cross_asset.min_positive_fraction` 来源判定；trial 计数不变。
+- 单标的与时间序列策略的报告 / 视图 / G4 哈希逐位不变（固定于 `4543036`）；TEST ONLY 宽松阈值下：4 个植入标的 → PASS，4 个噪声标的 → FAIL，2 个标的 → INCONCLUSIVE。
+- 子代理：`pytest -m "not postgres" tests/research/validation tests/research/strategies tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → 293 passed；ruff / format / mypy（50 files）通过。
+- 本分支集成后：`pytest -m "not postgres" tests/research/validation tests/research/strategies tests/research/synthetic_lab tests/research/loop/test_loop_units.py tests/test_docs_consistency.py tests/test_architecture_boundaries.py`
+  → **350 passed, 1 warning (374.81 s)**；`ruff check .` → 通过；mypy（50 files）→ no issues。
+- 限制：仅按名称分组（不考虑流动性 / 板块）；4 个标的时比例只能取 0 / 0.5 / 1；阈值未校准；声明是研究层名称集合（无契约字段）。
+

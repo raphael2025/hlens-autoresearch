@@ -29,3 +29,10 @@
 **开放项（交 Codex）**：ADR-0054（部分成交结转）与 ADR-0057（`EventRequest.subject`）都是在 2.0.0 下加的可选字段（缺省不进哈希）。若 Codex K3 的"不得把新增字段伪装成 2.0.0"
 也适用于它们，则须在 ADR-0052 的 Phase 1 重放路径落地后一并迁到 2.1.0；本记录不自行改变。
 
+**追加裁决（2026-09-26 晚，依 Raphael "通过 ADR 自主决定、含红线" 的授权）**
+
+| ID | 问题 | 裁决 | 理由 | 实施 |
+|---|---|---|---|---|
+| ADR-0059 | G4 跨资产检查对横截面策略结构性 FAIL | **Accepted**：C（零敞口单标的重跑 → INCONCLUSIVE）+ A（显式声明的横截面策略按子宇宙检验） | C 只把结构性不适用的 FAIL 变为 INCONCLUSIVE，仍阻止晋升，不多放行；A 是更强的 C-R3 检验 | B29 |
+| ADR-0005 实施 | Promotion 链无代码 | 按已 Accepted 的 ADR-0005 直接实施 Registry / Promotion 服务 / Equivalence Gate，失败关闭 | 无新决策；开放选择写入 ADR-0005 实施说明 | B28 |
+
