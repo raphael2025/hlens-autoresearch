@@ -143,6 +143,7 @@
 | P3-EVTABLE | Phase 3 验收要求"补 roadmap 需要的持久事件表 / adapter"；`infrastructure/event/table.py` 明写物理 `event.*` 表是"另行决定"，计划本身要求"若需新表先立 ADR" | 数据架构冻结表清单、ADR-0036 | A：起草 Proposed ADR（Iceberg `event.*` 表的分区、身份、只追加语义），批准后实现；B：维持内存物化 + 可哈希导出 | A | 事件只能每次重算；不影响因果正确性 |
 | P3-MULTISYM | `EventRequest`（`core/contracts/event.py`）无标的字段，多标的只能逐序列请求；加字段 = 改冻结契约 | `core/contracts/event.py`、Schema | A：additive 可选字段 + ADR（须证明省略时哈希不变）；B：维持每序列一个请求，由调用方组合 | B（现状可用，另立 ADR 再议） | 多标的事件需多次请求 |
 | P5-PLUGIN | 计划记"尚无 `plugins/` 生产 StrategyProvider"：TSMOM 在 `research/`，按 H5 研究代码只能经 Promotion 流程成为生产代码；把它搬进 `plugins/` 即是晋升 | H5、ADR-0005、ADR-0038 | A：等某策略经完整验证 + Promotion；B：另立 ADR 定义"研究库 Provider 进入 plugins 的最小晋升证据" | A | 策略只在研究层；不影响研究与验证链路 |
+| P05-WRITE | 知识库写入路径（审阅后入库的 Python API / CLI）超出只读检索的 ADR-0034；CLAUDE.md §5 要求新插件能力先立 ADR。集成会话已按 Raphael 的 Phase 0.5 指示接手 0.5 并起草 ADR（tag / 资产 / 状态检索） | ADR-0034、`plugins/knowledge` | A：Proposed ADR 定义人工审阅入库流程后再实现；B：维持只读，条目由人直接提交 JSON | A（由 Phase 0.5 所有者起草） | 知识条目只能由人手工提交 JSON；本分支**不集成** infra 通道的写入提交 |
 | P10-ELIG | 路由资格信任调用方给出的生命周期映射；把资格绑定到验证报告证据若需改契约则须 ADR（engines 通道在不改契约的前提下尽量加可选核对） | ADR-0043、`core/contracts` | 见 engines 通道报告 | — | 路由仍只接受调用方声明为已验证的对象 |
 
 ### 10.3 批次记录
