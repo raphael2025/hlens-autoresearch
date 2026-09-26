@@ -56,14 +56,18 @@ BH = "G2.market_benchmark.buy_and_hold_equal_weight"
 #: The previous values still hold when the same test builds every object at 2.0.0
 #: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
 #: 2.0.0 values (evidence, git history): 6dd0103a…, 150814f2…, 53bb8fe3…, 2e445144…
+#: Re-pinned for contract 2.2.0 (ADR-0055, 2026-09-26): envelope change only; the 2.1.0
+#: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
+#: test passes inside ``contract_schema_version_scope("2.1.0")``).
+#: 2.1.0 values (evidence, git history): d5ca922f…, ab660a9f…, c90fb699…, 679840de…
 PINNED = {
     "single": (
-        "d5ca922f79b7c69b4bb6dd7364803b1e4a9cb76f9580cf07a3ca96cca4c94e88",
-        "ab660a9f796234ed07048cac342d50f8f296361598ecdd1dbe0a772ff4e25b08",
+        "f46de6b1b9c047e5743ff9d5676f3e640aea7f2f47b05f00092d7e43acdbbd76",
+        "b05266ae6f1c584125a6b694b734d385e9f9e57e1f66b1176fc4df18598ca947",
     ),
     "multi": (
-        "c90fb6994c3023f5d7399b785ce3af5c3da52a8c85ce0e781ee23d07ee621735",
-        "679840ded32bbca99a871439caa834efc8a885f58386277cf6bedca07841ef93",
+        "8294c4f65b17af845d07e237c00587fae6312d8aa8bc87f520ef7a98d3aa1b00",
+        "85f8af38585a0b1cb161d35521e37cb318960709a443271b4fc1eac98ebfe793",
     ),
 }
 

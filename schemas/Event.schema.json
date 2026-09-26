@@ -27,7 +27,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -59,7 +59,7 @@
   "description": "一个离散事件（Event 表的一行）。\n\n- `event` / `spec_hash`：产出它的事件定义（版本化，内容哈希绑定参数）；\n- `event_time`：可观测时间（见模块文档）；\n- `attributes`：事件的描述性内容（方向、前后状态、阈值……）；\n- `input_ids`：所用输入点的 `point_id`，严格升序；`upstream_event_ids`：所用上游事件的\n  `event_id`，严格升序；两者至少一个非空；\n- `subject`：可选，事件所属的标的（ADR-0057）；给出时进入 `event_id`，缺失时省略（旧 id 不变）；\n- `event_id`：以上内容的哈希，构造时复核（不接受自报的哈希）。",
   "properties": {
     "schema_version": {
-      "default": "2.1.0",
+      "default": "2.2.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

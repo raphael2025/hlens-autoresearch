@@ -29,7 +29,7 @@ from research.validation.g4 import CHECK_ERROR, CHECKS, check_error
 from research.validation.gates import ProfileFieldMissing, flag_gate
 from research.validation.robustness import CheckStatus, RobustnessCheck
 from research.validation.stats import UnsupportedMethod
-from tests.contract_version_support import envelopes_at_pre_bump
+from tests.contract_version_support import envelopes_at, envelopes_at_pre_bump
 from tests.research.validation import robustness_fixtures as rf
 from tests.research.validation.fixtures import context
 from tests.research.validation.test_robustness import _p4_input
@@ -102,7 +102,8 @@ def _passing(check_id: str, principles: tuple[str, ...], prefix: str):  # type: 
 def test_without_an_exception_the_output_is_byte_identical(family: str) -> None:
     result = run_robustness(_input(family))
     assert _digest(result) == PINNED[family]
-    raw = hashlib.sha256(to_json(result.to_dict()).encode()).hexdigest()
+    # the 2.1.0 pins (ADR-0055): envelopes compared as 2.1.0, all else exact
+    raw = hashlib.sha256(to_json(envelopes_at(result.to_dict(), "2.1.0")).encode()).hexdigest()
     assert raw == PINNED_2_1_0[family]
     assert all(CHECK_ERROR not in gate.gate_id for gate in result.gates)
 

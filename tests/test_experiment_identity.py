@@ -514,8 +514,8 @@ def test_artifact_dependencies_distinguish_same_name_different_kind() -> None:
 
 
 def test_contract_schema_version_is_two_zero_zero() -> None:
-    # ADR-0052 §4 raised the minor to 2.1.0; this batch itself changed no version.
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
+    # ADR-0052 §4 raised the minor to 2.1.0 and ADR-0055 to 2.2.0; this batch changed no version.
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
     assert CONTRACT_SCHEMA_MAJOR == 2
     for model in CONTRACT_MODELS:
         assert model.model_fields["schema_version"].default == CONTRACT_SCHEMA_VERSION
@@ -652,7 +652,7 @@ def test_current_schemas_match_the_registry(tmp_path: Path) -> None:
         expected = json.loads(path.read_text(encoding="utf-8"))
         actual = json.loads((CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_text("utf-8"))
         assert actual == expected, f"{name} 的 Schema 已过期，请重新导出"
-        assert expected["properties"]["schema_version"]["default"] == "2.1.0"  # ADR-0052
+        assert expected["properties"]["schema_version"]["default"] == "2.2.0"  # ADR-0055
 
 
 def test_legacy_snapshot_is_complete_and_pinned_to_v1() -> None:

@@ -64,6 +64,7 @@ __all__ = [
     "contract_schema_version_scope",
     "exact_decimal",
     "exact_decimal_text",
+    "omit_empty",
     "omit_none",
     "parse_semver",
     "scoped_contract_schema_version",
@@ -74,14 +75,16 @@ __all__ = [
 #: 2.0.0 由 ADR-0008 与 ADR-0009 共同定义；与 1.x 的内容哈希**不可比较**。
 #: 2.1.0（minor，ADR-0052 §4）：只增加可选字段；2.0.0 载荷保留自己的信封、哈希逐位不变，
 #: 已持久化对象按记录版本重放（ADR-0052 Implementation note — versioned replay）。
-CONTRACT_SCHEMA_VERSION = "2.1.0"
+#: 2.2.0（minor，ADR-0055）：知识条目的 `tags` / `assets` 与查询的 `tags_all` / `assets_any`；
+#: 2.0.0 / 2.1.0 载荷同样保留自己的信封、哈希逐位不变，当前版本新建对象的信封（与哈希）为 2.2.0。
+CONTRACT_SCHEMA_VERSION = "2.2.0"
 
 #: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
 CONTRACT_SCHEMA_MAJOR = 2
 
 #: major 2 内**已发布**的版本（升序，最后一项即 `CONTRACT_SCHEMA_VERSION`）。持久化对象按其
 #: 记录版本重放时，记录版本必须在此之中（ADR-0052 Implementation note — versioned replay，V1）。
-PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = ("2.0.0", "2.1.0")
+PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = ("2.0.0", "2.1.0", "2.2.0")
 
 # ---------------------------------------------------------------------------------------
 # 规范版本语法（ADR-0010 §D-14）
@@ -370,6 +373,11 @@ ExactDecimal = Annotated[
 def omit_none(value: object) -> bool:
     """ADR-0052 / ADR-0054：可选字段为 `None` 时从载荷中省略，使既有载荷与哈希逐位不变。"""
     return value is None
+
+
+def omit_empty(value: object) -> bool:
+    """ADR-0055：可选元组为空时从载荷中省略，使同一信封版本下的既有载荷与哈希逐位不变。"""
+    return value == ()
 
 
 def canonical_json(payload: Any) -> str:

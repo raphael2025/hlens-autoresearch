@@ -1,8 +1,9 @@
 # 02 — Domain Model
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
-> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.1.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
-> ADR-0018 在其内收紧，不升 major）；2.1.0 是 ADR-0052 §4 的 minor（只加可选字段），已发布版本见 §3.3。
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.2.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
+> ADR-0018 在其内收紧，不升 major）；2.1.0 是 ADR-0052 §4 的 minor（只加可选字段）；2.2.0 是 ADR-0055 的 minor
+> （知识标签 / 资产检索，只加可选字段），已发布版本见 §3.3。
 
 ## 1. 统一标识与版本化
 
@@ -75,6 +76,8 @@ classDiagram
         +claim
         +evidence_level
         +license
+        +tags
+        +assets
     }
     class Hypothesis {
         +statement
@@ -144,7 +147,7 @@ classDiagram
 | **StateSpec** | 市场状态的定义（离散或连续状态空间） | 状态在 `t` 时只依赖 `≤ t` 的信息 |
 | **EventSpec** | 状态/特征上的离散事件（突破、状态切换、交互） | 事件时间 = 可被观测的时间 |
 | **OutcomeSpec** | 事件/信号之后的结果标签（前向收益、回撤、触达） | Outcome 只能作为标签，**永不**作为输入 |
-| **KnowledgeItem** | 从公开来源提取的主张 + 出处 | 必须有出处、许可、证据等级 |
+| **KnowledgeItem** | 从公开来源提取的主张 + 出处；可带主题标签与研究范围资产标识（ADR-0055，自 2.2.0） | 必须有出处、许可、证据等级；标签 / 资产为规范 token、严格升序、无重复；资产不是上市或行情证据 |
 | **Hypothesis** | 可证伪的陈述：在条件 C 下，X 导致 Y | 必须可映射为 ExperimentSpec |
 | **StrategySpec** | 信号 → 仓位的规则 | 参数空间必须声明（用于多重检验计数） |
 | **RiskPolicy** | 仓位、止损、敞口、杠杆限制 | 独立于策略版本化 |
@@ -486,8 +489,8 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
-当前 `CONTRACT_SCHEMA_VERSION = 2.1.0`；major 2 内已发布的版本为
-`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0")`。模型校验**只接受同 major**（`2.x`），
+当前 `CONTRACT_SCHEMA_VERSION = 2.2.0`；major 2 内已发布的版本为
+`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0", "2.2.0")`。模型校验**只接受同 major**（`2.x`），
 其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
 
 | 资产 | 位置 |
@@ -506,7 +509,9 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 **fail closed**。这**不是完整的 JSON Schema 递归校验**，不校验嵌套结构与取值。
 
 **按记录版本重放（ADR-0052 Implementation note — versioned replay）**：2.0.0 载荷保留自己的信封，读取不改写版本，
-内容哈希逐位不变（`tests/golden/v2_0_0/`）。已持久化的行 / 对象（Phase 1 各表的 `contract_schema_version` 列、
+内容哈希逐位不变（`tests/golden/v2_0_0/`）；2.1.0 知识载荷同理（`tests/golden/v2_1_0/`，ADR-0055）。
+**当前版本新建、未显式给出信封的对象取 2.2.0，其内容哈希与 2.1.0 孪生对象不同**——信封参与哈希，这是 minor 的预期后果，
+不得描述为"哈希不变"；只有保持信封版本时，省略空的新字段才使载荷形状与哈希逐位不变。已持久化的行 / 对象（Phase 1 各表的 `contract_schema_version` 列、
 manifest 的 `schema_version`）按其**提交时记录的版本**重建与比较；一个写入组（Canonical 单元、REST response 及其
 elements、archive revision 及其行、exchangeInfo snapshot、listing 批次、边、manifest）只有一个版本，未发布版本或
 组内混版一律 fail closed；只有无任何已提交成员的新组按当前版本写入。重建经过的深层对象用
@@ -521,8 +526,11 @@ elements、archive revision 及其行、exchangeInfo snapshot、listing 批次�
 2.1.0 引入：ADR-0052 §1 ~ §3 的 Profile / `GateResult` 字段与 `CapacityParams` / `CrossAssetParams`；ADR-0054 的
 `PriceBar.volume`、`BacktestResult.remainders`、`FillRemainder`、`execution_model="next_bar_open_participation"`；ADR-0057 的
 `Event` / `EventRequest` / `EventResult` 的 `subject`。
+2.2.0 引入（ADR-0055）：`KnowledgeItem.tags` / `assets` 与 `KnowledgeQuery.tags_all` / `assets_any`（空元组时省略出载荷，
+需 Pydantic ≥ 2.12 的 `exclude_if`）；2.0.0 / 2.1.0 的 `KnowledgeResult` 嵌套带 `tags` / `assets` 的条目同样拒绝。
+仓库已审阅的知识种子显式记录 `schema_version`，不随当前版本漂移。
 
-**"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.1.0` 这样的版本号
+**"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.3.0` 这样的版本号
 **可被识别**，但这不是前向兼容承诺——载荷里出现当前实现未知字段仍然 fail closed
 （`extra="forbid"`）。不得声称任意未来 minor 都能读。
 

@@ -24,7 +24,7 @@ from research.outcomes import OutcomeTable
 from research.validation import build_report, failure_record, run_in_sample
 from research.validation.calibration import MomentumSignStudy
 from research.validation.pipeline import CONTROL_SEED_INFIX
-from tests.contract_version_support import envelopes_at_pre_bump
+from tests.contract_version_support import envelopes_at, envelopes_at_pre_bump
 from tests.research.validation.fixtures import (
     TEST_ONLY_PROFILE,
     context,
@@ -100,7 +100,10 @@ def test_unset_control_seeds_is_byte_identical(
 ) -> None:
     gates = _run(cases[name])
     assert _digest(gates) == PINNED[name]
-    raw = json.dumps([g.model_dump(mode="json") for g in gates], sort_keys=True)
+    # the 2.1.0 pins (ADR-0055): envelopes compared as 2.1.0, all else exact
+    raw = json.dumps(
+        envelopes_at([g.model_dump(mode="json") for g in gates], "2.1.0"), sort_keys=True
+    )
     assert hashlib.sha256(raw.encode()).hexdigest() == PINNED_2_1_0[name]
     assert not any(CONTROL_SEED_INFIX in gate.gate_id for gate in gates)
 

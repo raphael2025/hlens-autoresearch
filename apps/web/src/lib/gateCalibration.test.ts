@@ -10,12 +10,13 @@ import {
   passRate,
 } from "./gateCalibration.ts";
 
-// The current (contract 2.1.0) report and the legacy readable 2.0.0 one (apps/web/fixtures/README.md).
+// The current (contract 2.2.0) report and the legacy readable 2.1.0 and 2.0.0 ones
+// (apps/web/fixtures/README.md).
 const fixtures = fixtureEnvelopes("gate_calibration");
 const [fixture] = fixtures;
 
-test("both committed fixtures (2.1.0 and legacy 2.0.0) parse with every candidate", () => {
-  assert.equal(fixtures.length, 2);
+test("every committed fixture (2.2.0 and legacy 2.1.0 / 2.0.0) parses with every candidate", () => {
+  assert.equal(fixtures.length, 3);
   for (const envelope of fixtures) {
     const payload = asCalibrationPayload(envelope.payload);
     assert.ok(payload !== null, envelope.id);

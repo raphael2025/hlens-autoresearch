@@ -17,6 +17,9 @@ const ITEM: KnowledgeItem = {
   license: "CC-BY-4.0",
   lineage: [],
   links: [],
+  // ADR-0055 (2.2.0): required in the generated type (a schema default); apps/api omits them when empty
+  tags: [],
+  assets: [],
 };
 const RESULT: KnowledgeResult = {
   items: [ITEM],

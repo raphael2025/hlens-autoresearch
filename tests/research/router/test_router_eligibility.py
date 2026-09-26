@@ -50,10 +50,14 @@ from tests.research.router.test_router_completion import (
 #: every newly built contract object is 2.1.0 and the envelope is part of each content hash.
 #: The previous values (d832b544…, 6f342bc7…, 577d66c4…, 918770b0…) still hold when the same test
 #: builds every object at 2.0.0 (verified inside ``contract_schema_version_scope("2.0.0")``).
-TRUST_REPORTS_RUN_HASH = "d3c8cc3b5b7e97e6883b0f285b2cfad16f898cd7201bac0a4bbab2b3f5105954"
-TRUST_STOP_FLAT = "64c340616747be0377f0b48e4d4baeecbf1f72d41547bc7961fe24b2478ed4d9"
-TRUST_STOP_NO_CANDIDATE = "6528f56bf3fd98372459e1965e7fb73e24ff243cc02c62fd629c64a7e46aafdb"
-TRUST_STOP_FLAT_WITH_REPORTS = "cbc771dc96c37792f354cca39b6af9dedb35179b13ffea4304b8318772ed9358"
+#: Re-pinned for contract 2.2.0 (ADR-0055, 2026-09-26): envelope change only; the 2.1.0 values
+#: still hold when the test builds every object at 2.1.0 (verified: the unmodified test passes
+#: inside ``contract_schema_version_scope("2.1.0")``). 2.1.0 values (evidence, git history):
+#: d3c8cc3b…, stops 64c34061…, 6528f56b…, cbc771dc…
+TRUST_REPORTS_RUN_HASH = "ed62d7c73313331ae9e429fceec3e9d18c5cb75b661be6e130990e4870aea149"
+TRUST_STOP_FLAT = "bff151b450dd125758410b9ed78e352030d36a27cc58a95f5d2ed8216b630382"
+TRUST_STOP_NO_CANDIDATE = "274b2162f939a8fed92dfa7a39536fbfc35f5e28f13191f9ab51c8799b0abca7"
+TRUST_STOP_FLAT_WITH_REPORTS = "2e8a462646ba73292be204afb568744907d4290979f70c1c3673ceccc409ebe1"
 CREATED = datetime(2026, 9, 1, tzinfo=UTC)
 
 

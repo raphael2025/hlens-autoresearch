@@ -25,6 +25,7 @@ from core.contracts.strategy import (
     PriceBar,
     TargetPosition,
 )
+from core.domain.base import CONTRACT_SCHEMA_VERSION
 from plugins.backtest import (
     CARRY_OVER_VERSION,
     MONEY_QUANTUM,
@@ -38,7 +39,7 @@ from tests.contract_suites.backtest import (
     BacktestSubject,
     CarryOverBacktestProviderContract,
 )
-from tests.contract_version_support import at_pre_bump, built_at_pre_bump
+from tests.contract_version_support import at_pre_bump, at_version, built_at, built_at_pre_bump
 from tests.plugins.backtest.test_execution_model import (
     _ACTIVE_MODELS,
     _SUITE_BARS,
@@ -165,9 +166,14 @@ def test_request_hashes_are_unchanged_when_no_bar_carries_volume(name: str) -> N
     assert request.bars[0].content_hash() == _GOLDEN_FIRST_BAR
     assert "volume" not in request.bars[0].model_dump(mode="json")
     assert result.schema_version == "2.0.0"
+    # The 2.1.0 pins (ADR-0055: checked on what the 2.1.0 code builds; now 2.2.0 is current).
+    with built_at("2.1.0"):
+        at_2_1_0 = at_version(_golden_requests()[name], "2.1.0")
+    assert at_2_1_0.content_hash() == _GOLDEN_REQUESTS_2_1_0[name]
+    assert at_2_1_0.bars[0].content_hash() == _GOLDEN_FIRST_BAR_2_1_0
     current = _golden_requests()[name]
-    assert current.content_hash() == _GOLDEN_REQUESTS_2_1_0[name]
-    assert current.bars[0].content_hash() == _GOLDEN_FIRST_BAR_2_1_0
+    assert current.schema_version == CONTRACT_SCHEMA_VERSION
+    assert "volume" not in current.bars[0].model_dump(mode="json")
     assert result.remainders == ()
     assert "remainders" not in result.model_dump(mode="json")
     assert "remainders" not in result._hashed_fields()
@@ -178,7 +184,8 @@ def test_the_default_descriptor_is_unchanged() -> None:
         descriptor = BarBacktester().descriptor
     assert descriptor.execution_model == "next_bar_open"
     assert descriptor.content_hash() == _GOLDEN_V1_DESCRIPTOR
-    assert BarBacktester().descriptor.content_hash() == _GOLDEN_V1_DESCRIPTOR_2_1_0
+    with built_at("2.1.0"):
+        assert BarBacktester().descriptor.content_hash() == _GOLDEN_V1_DESCRIPTOR_2_1_0
 
 
 @pytest.mark.parametrize("name", sorted(_GOLDEN_TRUNCATING))
@@ -193,9 +200,10 @@ def test_the_truncating_variants_are_unchanged(name: str) -> None:
     )
     assert backtester.descriptor.execution_model == "next_bar_open"
     assert result.remainders == ()
-    now = BarBacktester(execution=model)
-    fresh = tuple(_target(i, "1.5" if i % 3 else "-1") for i in range(12))  # 2.1.0 targets
-    current = now.run(_request(_SUITE_BARS, fresh, COSTS))
+    with built_at("2.1.0"):  # the 2.1.0 pins, on what the 2.1.0 code builds (ADR-0055)
+        now = BarBacktester(execution=model)
+        fresh = tuple(_target(i, "1.5" if i % 3 else "-1") for i in range(12))  # 2.1.0 targets
+        current = now.run(at_version(_request(_SUITE_BARS, fresh, COSTS), "2.1.0"))
     assert (now.descriptor.content_hash(), current.result_hash) == _GOLDEN_TRUNCATING_2_1_0[name]
 
 

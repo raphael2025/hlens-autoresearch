@@ -5,7 +5,9 @@ fields, the new model ``FillRemainder`` and the new execution-model literal are 
 2.1.0 content (``_FIELDS_SINCE`` / ``_MODEL_SINCE`` / ``_VALUES_SINCE``):
 
 * a 2.0.0 envelope carrying any of them is refused (an old reader would not know them);
-* new objects carrying them are 2.1.0 and round-trip byte-identically;
+* objects carrying them are valid from 2.1.0 on: built at 2.1.0 (a replay scope) they are 2.1.0,
+  built by the current code they carry the current envelope (2.2.0 since ADR-0055), and both
+  round-trip byte-identically;
 * 2.0.0 objects without them read as recorded (envelope kept, hash unchanged — the golden pins
   are the pre-ADR values), still answer their 2.0.0 requests, and can sit inside 2.1.0 objects.
 
@@ -29,11 +31,17 @@ from core.contracts.strategy import (
     FillRemainder,
     PriceBar,
 )
-from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract
+from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, contract_schema_version_scope
+from core.domain.specs import EventSpec
 from infrastructure.event.runner import run_events
 from plugins.backtest import BarBacktester, ExecutionModel
 from plugins.events import FeatureThresholdCrossProvider
-from tests.contract_version_support import PRE_BUMP_VERSION, at_pre_bump, built_at_pre_bump
+from tests.contract_version_support import (
+    PRE_BUMP_VERSION,
+    at_pre_bump,
+    at_version,
+    built_at_pre_bump,
+)
 from tests.fake_events import LAG, X_INPUTS, X, request
 from tests.plugins.backtest.test_carry_over import (
     _GOLDEN_REQUESTS,
@@ -49,10 +57,16 @@ CROSS = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), "both", observable
 REFUSED = r"自 2\.1\.0 引入，不能出现在 2\.0\.0 信封中"
 
 
-def _events(subject: str | None) -> tuple[EventRequest, EventResult]:
+def _cross(version: str) -> EventSpec:
+    """``CROSS`` as the ``version`` code built it (every envelope at ``version``)."""
+    return at_version(CROSS, version)
+
+
+def _events(subject: str | None, spec: EventSpec = CROSS) -> tuple[EventRequest, EventResult]:
     fields: dict[str, Any] = {} if subject is None else {"subject": subject}
-    req = request(CROSS, inputs=X_INPUTS, **fields)
-    return req, run_events(FeatureThresholdCrossProvider((CROSS,)), CROSS, req)
+    # the request (and its input refs) at the spec's version, as that version's code built it
+    req = at_version(request(spec, inputs=X_INPUTS, **fields), spec.schema_version)
+    return req, run_events(FeatureThresholdCrossProvider((spec,)), spec, req)
 
 
 def _carry() -> tuple[BarBacktester, BacktestRequest, BacktestResult]:
@@ -81,34 +95,55 @@ def _round_trips(obj: Contract) -> None:
 
 
 # ======================================================================================
-# new objects carrying the new content are 2.1.0
+# objects carrying the new content are valid from 2.1.0 on (2.1.0 and the current 2.2.0)
 # ======================================================================================
 
+#: 2.1.0 introduced the content; ADR-0055 raised the current minor to 2.2.0.
+SINCE_2_1_0 = ("2.1.0", CONTRACT_SCHEMA_VERSION)
 
-def test_the_current_version_is_2_1_0() -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
+
+def test_the_content_is_2_1_0_and_the_current_version_is_2_2_0() -> None:
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert dict(EventRequest._FIELDS_SINCE) == {"subject": "2.1.0"}
+    assert dict(BacktestResult._FIELDS_SINCE)["remainders"] == "2.1.0"
+    assert FillRemainder._MODEL_SINCE == "2.1.0"
 
 
-def test_objects_with_a_subject_are_2_1_0_and_round_trip() -> None:
-    req, result = _events("BTCUSDT")
-    assert req.schema_version == result.schema_version == "2.1.0"
+@pytest.mark.parametrize("version", SINCE_2_1_0)
+def test_objects_with_a_subject_carry_their_envelope_and_round_trip(version: str) -> None:
+    with contract_schema_version_scope(version):
+        spec = _cross(version)
+        req, result = _events("BTCUSDT", spec)
+        descriptor = FeatureThresholdCrossProvider((spec,)).descriptor
+    assert spec.schema_version == req.schema_version == result.schema_version == version
     assert result.subject == "BTCUSDT" and result.events
     for obj in (req, result, *result.events):
-        assert obj.schema_version == "2.1.0"
+        assert obj.schema_version == version
         _round_trips(obj)
     again = EventResult.model_validate_json(result.model_dump_json())
-    again.check_answers(req, FeatureThresholdCrossProvider((CROSS,)).descriptor, LAG)
+    again.check_answers(req, descriptor, LAG)
 
 
-def test_objects_with_carry_over_content_are_2_1_0_and_round_trip() -> None:
-    backtester, req, result = _carry()
+@pytest.mark.parametrize("version", SINCE_2_1_0)
+def test_objects_with_carry_over_content_carry_their_envelope_and_round_trip(
+    version: str,
+) -> None:
+    with contract_schema_version_scope(version):
+        backtester, req, result = _carry()
     assert result.remainders and req.bars[0].volume is not None
     descriptor = backtester.descriptor
     assert descriptor.execution_model == "next_bar_open_participation"
     for obj in (descriptor, req, req.bars[0], result, *result.remainders):
-        assert obj.schema_version == "2.1.0"
+        assert obj.schema_version == version
         _round_trips(obj)
     BacktestResult.model_validate_json(result.model_dump_json()).check_answers(req, descriptor)
+
+
+def test_the_current_code_builds_the_current_envelope() -> None:
+    req, result = _events("BTCUSDT")
+    backtester, bt_req, bt_result = _carry()
+    for obj in (req, result, backtester.descriptor, bt_req, bt_result):
+        assert obj.schema_version == CONTRACT_SCHEMA_VERSION == "2.2.0"
 
 
 # ======================================================================================
@@ -186,7 +221,7 @@ def _persisted_2_0_0() -> dict[str, tuple[type[Contract], str, str]]:
 def test_a_persisted_2_0_0_payload_reads_as_recorded(name: str) -> None:
     model, text, pinned = _persisted_2_0_0()[name]
     assert json.loads(text)["schema_version"] == "2.0.0"
-    obj = model.model_validate_json(text)  # outside any scope: the current (2.1.0) code
+    obj = model.model_validate_json(text)  # outside any scope: the current code
     assert obj.schema_version == "2.0.0"  # never rewritten
     assert obj.model_dump_json() == text
     if pinned:
@@ -211,7 +246,7 @@ def test_2_0_0_results_still_answer_their_2_0_0_requests() -> None:
     assert bt_result.result_hash == _GOLDEN_V1_RESULTS["two_instruments"]
 
 
-def test_2_0_0_events_nest_in_a_2_1_0_request_and_bind_as_new_objects() -> None:
+def test_2_0_0_events_nest_in_a_current_request_and_bind_as_new_objects() -> None:
     _, persisted = _persisted_2_0_0()["event"][:2]
     old = Event.model_validate_json(persisted)
     assert old.schema_version == "2.0.0" and old.subject is None
@@ -220,11 +255,11 @@ def test_2_0_0_events_nest_in_a_2_1_0_request_and_bind_as_new_objects() -> None:
         spec_hash=CROSS.content_hash(),
         as_of=old.event_time,
         upstream_events=(old,),
-    )  # a 2.1.0 object may carry recorded 2.0.0 objects unchanged
-    assert carrier.schema_version == "2.1.0"
+    )  # a current object may carry recorded 2.0.0 objects unchanged
+    assert carrier.schema_version == CONTRACT_SCHEMA_VERSION
     assert carrier.upstream_events[0].schema_version == "2.0.0"
-    bound = old.bound_to("BTCUSDT")  # new content -> a new 2.1.0 object; the old one is intact
-    assert bound.schema_version == "2.1.0" and bound.subject == "BTCUSDT"
+    bound = old.bound_to("BTCUSDT")  # new content -> a new current object; the old one is intact
+    assert bound.schema_version == CONTRACT_SCHEMA_VERSION and bound.subject == "BTCUSDT"
     assert bound.event_id != old.event_id
     assert Event.model_validate_json(persisted) == old
 

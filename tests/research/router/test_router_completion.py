@@ -43,7 +43,11 @@ from tests.research.router.test_paper import (
 #: The previous values still hold when the same test builds every object at 2.0.0
 #: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
 #: 2.0.0 values (evidence, git history): 0744ad26…
-BASELINE_RUN_HASH = "7f30d3d4c10238b5d5f9f4c9138b5518e633d5e7d3ba448a9aa6695a9179d8d2"
+#: Re-pinned for contract 2.2.0 (ADR-0055, 2026-09-26): envelope change only; the 2.1.0
+#: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
+#: test passes inside ``contract_schema_version_scope("2.1.0")``).
+#: 2.1.0 values (evidence, git history): 7f30d3d4…
+BASELINE_RUN_HASH = "6c1231639a4312f4a6c7cccba16d92b519f7ad4caa9d6b22e56c94ba74291c25"
 REPORT_A = content_hash({"validation_report": "trend_a"})
 REPORT_B = content_hash({"validation_report": "revert_b"})
 STATE_SPEC_HASH = content_hash({"fixture": "state"})  # as test_paper._states

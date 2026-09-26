@@ -5,11 +5,12 @@ README.md``; pinned by ``tests/research/reports/test_console_fixture_writers.py`
 well-formed report of its kind named by its own identity. Tests under ``tests/apps`` (which must
 not import ``research/``) read them to get valid payloads to serve or to tamper with.
 
-Each kind has one **current** fixture (contract 2.1.0). Three kinds also keep a **legacy
-readable** 2.0.0 fixture (``LEGACY_2_0_0``): the files committed before 2.1.0, kept so the API and
-the console keep proving they read a 2.0.0 report. A kind may also have named **variant**
-fixtures (``VARIANTS``): further current reports of a distinct state the console must show, e.g.
-an insufficient-evidence degradation check.
+Each kind has one **current** fixture (contract 2.2.0). Kinds whose report changed with a contract
+bump also keep **legacy readable** fixtures: the files committed before 2.1.0 (``LEGACY_2_0_0``,
+three kinds) and before 2.2.0 (``LEGACY_2_1_0``, ADR-0055, six kinds), kept so the API and the
+console keep proving they read reports written by the earlier code. A kind may also have named
+**variant** fixtures (``VARIANTS``): further current reports of a distinct state the console must
+show, e.g. an insufficient-evidence degradation check.
 """
 
 from __future__ import annotations
@@ -48,6 +49,35 @@ VARIANTS: Final[dict[ReportKind, dict[str, str]]] = {
 }
 
 
+#: The legacy readable 2.1.0 fixture id of each kind whose report the 2.2.0 bump changed (ADR-0055).
+LEGACY_2_1_0: Final[dict[ReportKind, str]] = {
+    ReportKind.VALIDATION_REPORT: (
+        "da3950c41dc7c6548ace7fdec79ce58b93e0646ed5dd92bf7a4e58879adf4032"
+    ),
+    ReportKind.STATE_STRATEGY_MATRIX: (
+        "89f28e4a5d44e45a02ac3bf6d81716dd179b939cc8985edb94950aea5107b11a"
+    ),
+    ReportKind.ROUTER_PAPER_RUN: (
+        "7f30d3d4c10238b5d5f9f4c9138b5518e633d5e7d3ba448a9aa6695a9179d8d2"
+    ),
+    ReportKind.GATE_CALIBRATION: (
+        "c5147ea3fa460274b30f0c67a17df62788de1f213e4ba0efd108806823543c1e"
+    ),
+    ReportKind.ROUTER_STOP: "64c340616747be0377f0b48e4d4baeecbf1f72d41547bc7961fe24b2478ed4d9",
+    ReportKind.PAPER_DEVIATION: (
+        "a168f4f764b698ec9c7f46035a2d62f4b857d8d543855b732dabb65ac9d456a1"
+    ),
+}
+
+#: Every legacy generation, by the contract version whose code wrote it.
+LEGACY: Final[dict[str, dict[ReportKind, str]]] = {"2.0.0": LEGACY_2_0_0, "2.1.0": LEGACY_2_1_0}
+
+
+def legacy_ids(kind: ReportKind) -> set[str]:
+    """The ids of every legacy readable fixture of ``kind`` (any generation)."""
+    return {ids[kind] for ids in LEGACY.values() if kind in ids}
+
+
 @dataclass(frozen=True, slots=True)
 class Fixture:
     id: str
@@ -64,16 +94,16 @@ def fixtures(kind: ReportKind) -> list[Fixture]:
 
 
 def fixture(kind: ReportKind) -> Fixture:
-    """The one current (2.1.0) committed fixture of ``kind`` (a fresh copy of its payload); not a
+    """The one current (2.2.0) committed fixture of ``kind`` (a fresh copy of its payload); not a
     legacy or variant one."""
-    pinned = {LEGACY_2_0_0.get(kind), *VARIANTS.get(kind, {}).values()}
+    pinned = {*legacy_ids(kind), *VARIANTS.get(kind, {}).values()}
     (current,) = [item for item in fixtures(kind) if item.id not in pinned]
     return current
 
 
-def legacy_fixture(kind: ReportKind) -> Fixture:
-    """The legacy readable 2.0.0 fixture of ``kind`` (``LEGACY_2_0_0``)."""
-    return _load(FIXTURES_ROOT / kind.value / f"{LEGACY_2_0_0[kind]}.json")
+def legacy_fixture(kind: ReportKind, version: str = "2.0.0") -> Fixture:
+    """The legacy readable fixture of ``kind`` written by the ``version`` code (``LEGACY``)."""
+    return _load(FIXTURES_ROOT / kind.value / f"{LEGACY[version][kind]}.json")
 
 
 def variant_fixture(kind: ReportKind, name: str) -> Fixture:

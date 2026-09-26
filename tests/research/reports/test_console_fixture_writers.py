@@ -5,24 +5,29 @@ The committed files are never hand-written: this module builds the objects from 
 research test fixtures, writes them with the real writers into a temporary report root, and
 requires each committed ``<kind>/`` directory to hold byte-identical files — and nothing else.
 
-Two generations (contract 2.1.0, ADR-0052 §4):
+Three generations (contract 2.1.0, ADR-0052 §4; contract 2.2.0, ADR-0055):
 
-- ``WRITERS`` — the current fixture of every kind, built at the current contract version (2.1.0).
+- ``WRITERS`` — the current fixture of every kind, built at the current contract version (2.2.0).
   The ``validation_report`` one carries an exact gate (``value_exact`` / ``threshold_exact``,
   TEST ONLY values) next to the float-only gate, so the console's exact display is exercised.
-- ``LEGACY_WRITERS`` — the **legacy readable** 2.0.0 fixtures of ``validation_report``,
+- ``LEGACY_WRITERS["2.0.0"]`` — the **legacy readable** 2.0.0 fixtures of ``validation_report``,
   ``state_strategy_matrix`` and ``gate_calibration``: the same builders, run by a fresh
   interpreter that imports them (so their modules' constants are built too) inside
   ``contract_schema_version_scope("2.0.0")`` (:func:`regenerate_legacy`), which reproduces the
-  files committed before 2.1.0 byte for byte. They stay so the API and the console keep proving
-  they read a 2.0.0 report;
-  their ids are pinned in ``tests/apps/report_fixtures.py`` (``LEGACY_2_0_0``).
-  ``research_loop_round`` and ``router_paper_run`` have no legacy file: their committed payloads
-  are identical under both versions' current writers (nothing versioned is serialized).
+  files committed before 2.1.0 byte for byte.
+- ``LEGACY_WRITERS["2.1.0"]`` — the **legacy readable** 2.1.0 fixtures of the six kinds whose
+  report the 2.2.0 bump changed (``validation_report``, ``state_strategy_matrix``,
+  ``router_paper_run``, ``gate_calibration``, ``router_stop``, ``paper_deviation``): the current
+  builders in a fresh interpreter inside ``contract_schema_version_scope("2.1.0")``, which
+  reproduces the files committed before 2.2.0 byte for byte.
 - ``VARIANT_WRITERS`` — named further current fixtures of a kind, for a state the console must
   show distinctly (the ``degradation_check`` with every metric missing:
   ``insufficient_evidence``); their ids are pinned in ``tests/apps/report_fixtures.py``
   (``VARIANTS``).
+
+The legacy files stay so the API and the console keep proving they read reports written by the
+earlier code; their ids are pinned in ``tests/apps/report_fixtures.py`` (``LEGACY``). Kinds without
+a legacy file of a generation serialize nothing versioned: the earlier code wrote the same bytes.
 
 Regenerate after a payload change (delete the stale ``<kind>/`` file first; writers are
 append-only)::
@@ -68,7 +73,7 @@ from research.router.deviation import PaperDeviation
 from research.router.paper import RouterStop
 from research.states.diagnostics import StateDiagnostics, diagnose
 from research.synthetic_lab.gate_calibration import run_gate_calibration
-from tests.apps.report_fixtures import LEGACY_2_0_0, VARIANTS
+from tests.apps.report_fixtures import LEGACY, VARIANTS
 from tests.research.events.test_event_stats import _all_statistics
 from tests.research.reports.test_degradation_writer import write_fixture as write_degradation
 from tests.research.reports.test_degradation_writer import (
@@ -90,7 +95,6 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 FIXTURES_ROOT = REPO_ROOT / "apps" / "web" / "fixtures"
 _MODULE = "tests.research.reports.test_console_fixture_writers"
 
-LEGACY_VERSION = "2.0.0"
 
 Writer = Callable[[Path], WrittenReport]
 
@@ -125,7 +129,7 @@ EXACT_THRESHOLD = "0.05"
 
 
 def exact_gate() -> GateResult:
-    """A 2.1.0 gate with an exact value and threshold (the floats are derived from them)."""
+    """A gate with an exact value and threshold (2.1.0 content; the floats derive from them)."""
     return GateResult(
         gate_id="G3.adjusted_p_value",
         metric="p[at_most]",
@@ -181,22 +185,39 @@ def _variant_writers() -> list[tuple[str, str, Writer]]:
     ]
 
 
-#: The legacy readable 2.0.0 fixtures: the float-only validation report (no exact gate: 2.0.0
-#: has no ``value_exact``), and the matrix / calibration builders unchanged.
-LEGACY_WRITERS: dict[str, Writer] = {
-    "validation_report": lambda root: write_validation_report(root, _validation_report()),
-    "state_strategy_matrix": WRITERS["state_strategy_matrix"],
-    "gate_calibration": WRITERS["gate_calibration"],
+#: The legacy readable fixtures, by the contract version whose code wrote them. 2.0.0: the
+#: float-only validation report (no exact gate: 2.0.0 has no ``value_exact``), and the matrix /
+#: calibration builders unchanged. 2.1.0: the current builders of every kind the 2.2.0 bump changed.
+LEGACY_WRITERS: dict[str, dict[str, Writer]] = {
+    "2.0.0": {
+        "validation_report": lambda root: write_validation_report(root, _validation_report()),
+        "state_strategy_matrix": WRITERS["state_strategy_matrix"],
+        "gate_calibration": WRITERS["gate_calibration"],
+    },
+    "2.1.0": {
+        kind: WRITERS[kind]
+        for kind in (
+            "validation_report",
+            "state_strategy_matrix",
+            "router_paper_run",
+            "gate_calibration",
+            "router_stop",
+            "paper_deviation",
+        )
+    },
 }
+LEGACY_VERSIONS = tuple(LEGACY_WRITERS)
 
 
 def write_legacy(root: Path) -> list[WrittenReport]:
-    """The ``LEGACY_WRITERS`` files. Only meaningful in the process :func:`regenerate_legacy`
-    starts: every test fixture module's constants (Refs, Profiles, markets) must have been
-    *built* at 2.0.0 too, so the imports themselves have to run inside the 2.0.0 scope."""
-    if scoped_contract_schema_version() != LEGACY_VERSION:
-        raise RuntimeError(f"write_legacy needs contract_schema_version_scope({LEGACY_VERSION!r})")
-    return [write(root) for write in LEGACY_WRITERS.values()]
+    """The ``LEGACY_WRITERS`` files of the scope's version. Only meaningful in the process
+    :func:`regenerate_legacy` starts: every test fixture module's constants (Refs, Profiles,
+    markets) must have been *built* at that version too, so the imports themselves have to run
+    inside the scope."""
+    version = scoped_contract_schema_version()
+    if version not in LEGACY_WRITERS:
+        raise RuntimeError(f"write_legacy needs contract_schema_version_scope of {LEGACY_VERSIONS}")
+    return [write(root) for write in LEGACY_WRITERS[version].values()]
 
 
 _LEGACY_PROGRAM = """\
@@ -210,11 +231,12 @@ print(json.dumps([[item.kind, item.id, str(item.path), item.written] for item in
 """
 
 
-def regenerate_legacy(root: Path = FIXTURES_ROOT) -> list[WrittenReport]:
-    """Write the legacy 2.0.0 fixtures under ``root`` from a fresh interpreter that imports this
-    module (and so every builder's module) inside ``contract_schema_version_scope("2.0.0")``."""
+def regenerate_legacy(version: str, root: Path = FIXTURES_ROOT) -> list[WrittenReport]:
+    """Write the legacy ``version`` fixtures under ``root`` from a fresh interpreter that imports
+    this module (and so every builder's module) inside
+    ``contract_schema_version_scope(version)``."""
     result = subprocess.run(
-        [sys.executable, "-c", _LEGACY_PROGRAM, LEGACY_VERSION, _MODULE, str(root)],
+        [sys.executable, "-c", _LEGACY_PROGRAM, version, _MODULE, str(root)],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
@@ -226,16 +248,18 @@ def regenerate_legacy(root: Path = FIXTURES_ROOT) -> list[WrittenReport]:
 
 def regenerate(root: Path = FIXTURES_ROOT) -> list[WrittenReport]:
     """Write every fixture of every kind under ``root`` (append-only, idempotent)."""
-    return (
-        [write(root) for write in WRITERS.values()]
-        + [write(root) for _, _, write in _variant_writers()]
-        + regenerate_legacy(root)
-    )
+    written = [write(root) for write in WRITERS.values()]
+    written += [write(root) for _, _, write in _variant_writers()]
+    for version in LEGACY_VERSIONS:
+        written += regenerate_legacy(version, root)
+    return written
 
 
 def test_every_report_kind_has_a_generated_fixture() -> None:
     assert set(WRITERS) == {kind.value for kind in ReportKind}
-    assert {kind.value for kind in LEGACY_2_0_0} == set(LEGACY_WRITERS)
+    assert set(LEGACY) == set(LEGACY_WRITERS) == {"2.0.0", "2.1.0"}
+    for version, ids in LEGACY.items():
+        assert {kind.value for kind in ids} == set(LEGACY_WRITERS[version])
     assert {kind.value: set(named) for kind, named in VARIANTS.items()} == {
         kind: set(named) for kind, named in VARIANT_WRITERS.items()
     }
@@ -249,12 +273,12 @@ def test_the_committed_fixture_is_what_the_real_writer_produces(tmp_path: Path, 
     assert all(variant.kind == kind and variant.written for variant in variants)
     committed_dir = FIXTURES_ROOT / kind
     committed = sorted(path.name for path in committed_dir.glob("*.json"))
-    legacy = LEGACY_2_0_0.get(ReportKind(kind), "")
+    legacy = [ids[ReportKind(kind)] for ids in LEGACY.values() if ReportKind(kind) in ids]
     expected = sorted(
         [
             written.path.name,
             *(variant.path.name for variant in variants),
-            *([f"{legacy}.json"] if legacy else []),
+            *(f"{item}.json" for item in legacy),
         ]
     )
     assert committed == expected, "stale or missing fixture; regenerate (module docs)"
@@ -283,49 +307,66 @@ def test_the_insufficient_evidence_degradation_fixture_is_flagged_and_never_heal
 
 
 @pytest.fixture(scope="module")
-def legacy(tmp_path_factory: pytest.TempPathFactory) -> dict[str, WrittenReport]:
-    """The legacy fixtures, written once by :func:`regenerate_legacy` (one subprocess)."""
-    return {item.kind: item for item in regenerate_legacy(tmp_path_factory.mktemp("legacy"))}
+def legacy(tmp_path_factory: pytest.TempPathFactory) -> dict[str, dict[str, WrittenReport]]:
+    """The legacy fixtures of every generation, written once by :func:`regenerate_legacy` (one
+    subprocess per version)."""
+    return {
+        version: {
+            item.kind: item
+            for item in regenerate_legacy(version, tmp_path_factory.mktemp(f"legacy-{version}"))
+        }
+        for version in LEGACY_VERSIONS
+    }
 
 
-def test_the_legacy_writers_refuse_to_run_outside_the_2_0_0_scope(tmp_path: Path) -> None:
+def test_the_legacy_writers_refuse_to_run_outside_a_legacy_scope(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="contract_schema_version_scope"):
         write_legacy(tmp_path)
 
 
-@pytest.mark.parametrize("kind", list(LEGACY_WRITERS))
-def test_the_legacy_fixture_is_what_the_real_writer_produced_at_2_0_0(
-    tmp_path: Path, legacy: dict[str, WrittenReport], kind: str
+@pytest.mark.parametrize(
+    ("version", "kind"),
+    [(version, kind) for version, writers in LEGACY_WRITERS.items() for kind in writers],
+)
+def test_the_legacy_fixture_is_what_the_real_writer_produced_at_its_version(
+    tmp_path: Path, legacy: dict[str, dict[str, WrittenReport]], version: str, kind: str
 ) -> None:
-    written = legacy[kind]
-    assert written.written and written.id == LEGACY_2_0_0[ReportKind(kind)]
+    written = legacy[version][kind]
+    assert written.written and written.id == LEGACY[version][ReportKind(kind)]
     assert written.id != WRITERS[kind](tmp_path).id  # a separate, older file
     committed = FIXTURES_ROOT / kind / written.path.name
     assert committed.read_bytes() == written.path.read_bytes()
 
 
 @pytest.mark.parametrize("kind", ["validation_report", "gate_calibration"])
-def test_the_current_fixtures_are_2_1_0_and_the_legacy_ones_2_0_0(
-    tmp_path: Path, legacy: dict[str, WrittenReport], kind: str
+def test_each_generation_carries_its_own_envelopes(
+    tmp_path: Path, legacy: dict[str, dict[str, WrittenReport]], kind: str
 ) -> None:
     current = WRITERS[kind](tmp_path).path.read_text(encoding="utf-8")
-    old = legacy[kind].path.read_text(encoding="utf-8")
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
-    assert '"schema_version":"2.1.0"' in current and '"schema_version":"2.0.0"' not in current
-    assert '"schema_version":"2.0.0"' in old and '"schema_version":"2.1.0"' not in old
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    texts = {
+        "2.2.0": current,
+        **{version: legacy[version][kind].path.read_text("utf-8") for version in LEGACY},
+    }
+    for version, text in texts.items():
+        others = [other for other in texts if other != version]
+        assert f'"schema_version":"{version}"' in text, (kind, version)
+        assert not any(f'"schema_version":"{other}"' in text for other in others), (kind, version)
 
 
 def test_the_current_validation_report_carries_an_exact_gate(
-    tmp_path: Path, legacy: dict[str, WrittenReport]
+    tmp_path: Path, legacy: dict[str, dict[str, WrittenReport]]
 ) -> None:
     written = WRITERS["validation_report"](tmp_path)
     payload = json.loads(written.path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "2.1.0" and payload["verdict"] == "PASS"
-    float_gate, exact = payload["gates"]
-    assert "value_exact" not in float_gate and "threshold_exact" not in float_gate
-    assert (exact["value_exact"], exact["threshold_exact"]) == (EXACT_VALUE, EXACT_THRESHOLD)
-    assert exact["value"] == 0.03  # the derived float loses the exact value's last digit
-    old = json.loads(legacy["validation_report"].path.read_text(encoding="utf-8"))
+    assert payload["schema_version"] == "2.2.0" and payload["verdict"] == "PASS"
+    old_exact = json.loads(legacy["2.1.0"]["validation_report"].path.read_text("utf-8"))
+    for report in (payload, old_exact):
+        float_gate, exact = report["gates"]
+        assert "value_exact" not in float_gate and "threshold_exact" not in float_gate
+        assert (exact["value_exact"], exact["threshold_exact"]) == (EXACT_VALUE, EXACT_THRESHOLD)
+        assert exact["value"] == 0.03  # the derived float loses the exact value's last digit
+    old = json.loads(legacy["2.0.0"]["validation_report"].path.read_text(encoding="utf-8"))
     assert all("value_exact" not in gate for gate in old["gates"])
 
 
@@ -334,7 +375,7 @@ def test_regenerate_writes_every_kind_once_and_is_idempotent(tmp_path: Path) -> 
     assert [item.kind for item in first] == [
         *WRITERS,
         *(kind for kind, _, _ in _variant_writers()),
-        *LEGACY_WRITERS,
+        *(kind for writers in LEGACY_WRITERS.values() for kind in writers),
     ]
     assert all(item.written for item in first)
     assert not any(item.written for item in regenerate(tmp_path))

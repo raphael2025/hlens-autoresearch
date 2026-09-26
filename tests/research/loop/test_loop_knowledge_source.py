@@ -76,7 +76,7 @@ def test_searched_hypotheses_record_the_query_and_result_hash_as_their_origin(
     declared = "hypothesis:h_k_tsmom_lookback_60@1.0.0"
     assert stage.summary["registered"] == [declared, searched]  # declared first, never twice
     assert stage.summary["knowledge_search"] == {
-        "provider": "hlens_knowledge_local@1.0.0",
+        "provider": "hlens_knowledge_local@1.1.0",
         "query_hash": QUERY.content_hash(),
         "result_hash": result.result_hash,
         "items": [

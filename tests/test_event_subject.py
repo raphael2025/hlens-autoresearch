@@ -16,7 +16,7 @@ from core.contracts.event import EventRequest, EventResult
 from infrastructure.event.runner import UpstreamVerificationError, run_events
 from infrastructure.event.table import event_table
 from plugins.events import EventSequenceProvider, FeatureThresholdCrossProvider, StateSwitchProvider
-from tests.contract_version_support import at_pre_bump, built_at_pre_bump
+from tests.contract_version_support import at_pre_bump, at_version, built_at, built_at_pre_bump
 from tests.fake_events import LAG, MINUTE, REGIME, REGIME_INPUTS, X_INPUTS, X, request
 
 CROSS = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), "both", observable_lag=LAG)
@@ -79,12 +79,19 @@ def test_without_a_subject_every_hash_is_unchanged() -> None:
     assert result.events[0].event_id == PRE_ADR_0057["cross_first_event"]
     assert all("subject" not in item.model_dump(mode="json") for item in result.events)
     assert switch.result_hash == PRE_ADR_0057["switch_result_hash"]
-    now = _cross()
-    now_switch = run_events(
-        StateSwitchProvider((SWITCH,)), SWITCH, request(SWITCH, inputs=REGIME_INPUTS)
-    )
+    # The 2.1.0 pins (ADR-0055: checked on what the 2.1.0 code builds; 2.2.0 is now current).
+    with built_at("2.1.0"):
+        cross, switch_spec = at_version(CROSS, "2.1.0"), at_version(SWITCH, "2.1.0")
+        cross_req = at_version(request(cross, inputs=X_INPUTS), "2.1.0")
+        now = run_events(FeatureThresholdCrossProvider((cross,)), cross, cross_req)
+        now_switch = run_events(
+            StateSwitchProvider((switch_spec,)),
+            switch_spec,
+            at_version(request(switch_spec, inputs=REGIME_INPUTS), "2.1.0"),
+        )
+    assert now.schema_version == "2.1.0"
     assert {
-        "cross_request": request(CROSS, inputs=X_INPUTS).content_hash(),
+        "cross_request": cross_req.content_hash(),
         "cross_result_hash": now.result_hash,
         "cross_result_content": now.content_hash(),
         "cross_first_event": now.events[0].event_id,

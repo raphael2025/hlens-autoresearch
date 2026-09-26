@@ -22,6 +22,7 @@ from core.contracts.validation_profile import (
     CrossAssetParams,
     ValidationProfile,
 )
+from core.domain.base import CONTRACT_SCHEMA_VERSION
 from core.domain.research import GateResult, Verdict
 from plugins.backtest import IMPACT_MODEL
 from research.loop.trials import OosUnsealBudget
@@ -120,7 +121,7 @@ def test_exact_comparison_is_immune_to_float_noise() -> None:
     assert exact_gate.verdict is Verdict.PASS
     assert (exact_gate.value_exact, exact_gate.threshold_exact) == (Decimal("0.3"), Decimal("0.3"))
     assert exact_gate.value == 0.3 and exact_gate.threshold == 0.3
-    assert exact_gate.schema_version == "2.1.0"
+    assert exact_gate.schema_version == CONTRACT_SCHEMA_VERSION  # 2.1.0 content, current envelope
     assert GateResult.model_validate_json(exact_gate.model_dump_json()) == exact_gate
 
 

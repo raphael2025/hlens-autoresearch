@@ -5,7 +5,7 @@
       "description": "一次 availability 判定：时间 + availability policy + 证据**或**证据缺口（ADR-0023 §2）。\n\n- `evidence` 与 `evidence_gap` **恰好给出一项**：每个判定要么有来源证据，要么显式记录缺口；\n- `available_time < ingest_time`（早于本机得知）**必须**有证据，不得仅凭 `event_time` 回填；\n- 记录证据缺口时，`available_time` 必须**等于** `ingest_time`（保守回退），不得取更早的时间。\n\n证据缺口不是数据集级失败：该 revision 以 `ingest_time` 为历史可用时间继续参与 PIT，\n缺口随 manifest 绑定（roadmap Phase 1 验收 #18）。\n\n**诚实边界**：证据项只是非空引用；证据是否存在、是否真的支持该时间、policy 是否真的据此算出\n`available_time`，属未来 Registry 与 policy 审阅（roadmap Phase 1 验收 #17）。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -51,7 +51,7 @@
       "description": "来源不提供稳定产品 ID 时的退化键：`(venue, instrument_type, symbol, tradable_from)`。\n\n`basis` 显式标注这是退化身份，不能假装有稳定 ID。`tradable_from` 是该 episode 第一段可交易区间的\n起点，因此 symbol 复用（同名、不同起点）自然形成不同 episode；无稳定 ID 的改名同样形成新\nepisode，由 `ListingRevision.renamed_from` 记录与旧 episode 的关联。起点被来源更正时也只能形成新\nepisode 并写质量事件，不猜测合并（ADR-0024「失败与恢复语义」）。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -95,7 +95,7 @@
       "description": "可交易标的。跨 venue 的符号必须规范化映射。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -145,7 +145,7 @@
       "description": "一个 listing episode 的不可变 revision（ADR-0024 §1、§2）。\n\n- `revision`：B1 的 `RevisionRecord`，承载 revision 身份、来源、payload hash、`supersedes`、来源\n  修订信息、两轴时间与 availability 判定；其 `observation_key` 必须等于\n  `episode.observation_key()`；\n- `episode`：稳定产品 ID 或显式退化键；`instrument`：静态描述（已发布 `Instrument`，字段不变），\n  venue / instrument_type 必须与键一致，且各字符串非空；\n- `tradable_intervals`：该 revision 所知的**全部**历史可交易区间，至少一段；输入顺序无关，按起点\n  规范排序；区间不重叠、不相邻（相邻区间必须合并，保证同一历史只有一种表示）；开放区间只能是最后\n  一段。暂停 / 恢复在同一 episode 保留多段区间；\n- `status` 与区间形状一致：`listed` ⇔ 最后一段开放；`source_status` / `status_reason` 是来源原\n  文，没有就为空，不得伪造；\n- `renamed_from`：只用于无稳定 ID 的改名，指向旧 episode 的退化键：不得是自身，venue /\n  instrument_type 相同，symbol 必须不同（同 symbol 是复用而不是改名，不得借此合并两个产品），起\n  点必须更早。\n\n**诚实边界**：区间与状态是否符合来源事实、改名关联是否属实，属未来 Collector / 质量检查；跨\nrevision 事实只在 `ListingHistory` 证明。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -248,7 +248,7 @@
       "description": "一个 revision 的两轴时间（ADR-0023 §1），全部 UTC，naive 时间拒绝。\n\n六个 ADR 字段：`event_time`、`source_time`、`available_time`、`ingest_time`、\n`knowledge_time`、`declared_latency`。区间型数据（例如 1m bar）按 ADR §1「同时记录区间起止」\n另给 `event_end_time`，即半开区间 `[event_time, event_end_time)` 的结束端；瞬时事件不填。\n\n局部不变量：\n\n- `declared_latency >= 0`（只作用于历史轴的保守计算，不代替任何知识轴时间）；\n- `knowledge_time >= ingest_time`；\n- `available_time` 不早于观察本身可被观察的时刻（瞬时事件取 `event_time`，\n  区间取 `event_end_time`），也不早于已给出的 `source_time`；\n- `source_time` 没有就为空，不得伪造。\n\n`available_time` **可以早于** `ingest_time`（历史 backfill），但那需要证据——\n见 `AvailabilityDecision`。\n`declared_latency` 如何进入 `available_time` 由 availability policy 计算，本模型不重算。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -320,7 +320,7 @@
       "description": "对一份版本化规则的绑定：`policy_id` + SemVer + 内容哈希（03-data.md §7.3）。\n\n`role` 区分 availability policy、precedence policy、PIT 选择规则与 parser 版本；使用处按字段\n要求确切的 `role`，因此 availability 与 precedence 绑定不能互相冒充。\n\n**诚实边界**：只约束形状。该版本是否已登记、`policy_hash` 是否等于该版本的真实内容、\npolicy 是否带有已审阅的来源证据，属未来 Registry（03-data.md §7.3「标识符冻结 ≠ 数据可信」）。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -369,7 +369,7 @@
       "description": "一条持久化的 supersedes 边：`revision_id` 取代 `superseded_revision_id`（ADR-0023 §4）。\n\n由 precedence policy 在 ingest 时产生，或事后追加以解决 competing heads；它只对\n`knowledge_cutoff >= knowledge_time` 的查询生效（ADR-0023 §5 第 4 步）。\n新旧 revision 不得相同；证据至少一项。\n\n**诚实边界**：证据是否真实、policy 是否真的证明了先后，属未来 Registry 与 policy 审阅。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -423,7 +423,7 @@
       "description": "一个不可变 revision（ADR-0023 §4）：只追加，永不覆盖。\n\n- `observation_key`：同一业务观察的稳定键；`revision_id`：稳定修订身份；`source_id`：来源身份；\n  `payload_hash`：该 payload 的 SHA-256。格式由实施批次按数据类型定义并版本化。\n- `arrival_seq`：本机追加顺序，**只**用于审计、幂等与恢复；**不是**语义优先级，\n  也不得用于打破冲突。\n- `supersedes`：本 revision 取代的 revision 集合（去重、禁止自指；按 ID 规范排序，不表示先后）。\n  允许指向尚未 ingest 的 predecessor（dangling）。\n- `source_revision_id` / `source_revision_time`：来源提供时记录，供 precedence policy 证明先后；\n  来源给出修订时间时，`available_time` 不得早于它（ADR-0023 §2）。\n\n跨记录约束（ID / 序号唯一、边不跨 key、无环、边有证据）只能在 `RevisionGraph` 证明；\n`revision_id` 是否按规则形成、`arrival_seq` 是否跨重启不复用，属未来存储层。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -509,7 +509,7 @@
       "description": "以 venue 原生稳定产品 ID 标识的 episode：`(venue, instrument_type, venue_product_id)`。\n\nsymbol 改名仍属同一 episode（symbol 不在键内，由各 revision 的 `instrument.symbol` 记录变化）。\n`instrument_type` 在键内：venue 的产品 ID 命名空间可能按市场类型区分。\n\n`basis` 是来源声明：产品 ID 的字符串值可以恰好等于某时刻的 symbol，契约不从字符串相等推断冒充。\n\n**诚实边界**：来源是否真的提供了稳定 ID、该 ID 是否真的跨改名不变，属未来 Collector / Registry /\n质量证据，契约层无法证明。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -547,7 +547,7 @@
       "description": "一段历史可交易区间：UTC 半开区间 `[tradable_from, tradable_until)`（ADR-0024 §1）。\n\n`tradable_until` **必须显式给出**：`null` 表示仍可交易（开放区间），不提供默认值，避免\"漏写结束\n时间\"被读成\"仍在交易\"。区间非空：`tradable_from < tradable_until`。按 `simulation_time` 判断是否\n可交易：`tradable_from <= simulation_time < tradable_until`。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -582,7 +582,7 @@
   "description": "一组 listing revision 与 precedence 证据的聚合校验（ADR-0024 §1 ~ §4）。\n\n- 以各 revision 的 `RevisionRecord` 与全部 `PrecedenceEvidence` 构造 B1 `RevisionGraph`，复用其\n  全部聚合不变量：`revision_id` / `arrival_seq` 唯一、重复 payload 不成为新 revision、revision\n  ID 只能属于一个 `observation_key`（即一个 episode，**跨 episode supersedes 由此拒绝**）、无\n  环、声明的边须有证据；\n- 同一 `(venue, instrument_type)` 下可以同时存在稳定 ID episode 与退化键 episode（来源可能只为部\n  分产品提供稳定 ID）。契约层无法证明某个稳定键与某个退化键其实是同一产品，因此不做全 scope 禁\n  混；这类身份存疑属质量事件，由未来 Collector / 质量检查处理，不猜测合并（ADR-0024「失败与恢复\n  语义」）；\n- 集合语义：revision 按 `revision_id`、证据按其规范 JSON 规范排序，完全相同的证据视为重复并拒\n  绝；校验结果与内容哈希不依赖输入顺序。\n\n本模型**不**执行 universe 查询：候选过滤、maximal-head 选择与可交易判断属于批次 F 的执行器。",
   "properties": {
     "schema_version": {
-      "default": "2.1.0",
+      "default": "2.2.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

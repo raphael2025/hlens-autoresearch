@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from core.domain.base import canonical_json, content_hash
+from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json, content_hash
 from core.domain.specs import EventSpec
 from plugins.events import (
     EventCoOccurrenceProvider,
@@ -31,7 +31,7 @@ from plugins.events.dsl import (
     to_data,
     verify_compilation,
 )
-from tests.contract_version_support import at_pre_bump, built_at_pre_bump
+from tests.contract_version_support import at_pre_bump, at_version, built_at, built_at_pre_bump
 from tests.fake_events import LAG, MINUTE, REGIME, X
 
 CROSS_UP = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), "up", observable_lag=LAG)
@@ -283,6 +283,7 @@ def test_a_bare_ref_compiles_to_no_spec() -> None:
 #: Recorded at contract 2.0.0 (ADR-0061 landed before the 2.1.0 bump); checked on the 2.0.0 twins.
 GOLDEN_COMPILATION_HASH_2_0_0 = "637ef43ef02a1f43b927bcf254d7617f66880b2d5ad280c2b2c5d02f3f104081"
 GOLDEN_ROOT_HASH_2_0_0 = "db08263d35a11058bab35aaa7362a70eee2fa49ce90bafc8a875ecfa6dcc12fb"
+#: Checked on the 2.1.0 build since ADR-0055 (contract 2.2.0).
 #: Re-pinned at contract 2.1.0 (ADR-0052 §4): the registry specs and the compiled root are new
 #: 2.1.0 objects, and the envelope is part of every content hash. This is the intended envelope
 #: change only: the same compilation built at 2.0.0 still gives the 2.0.0 pins above.
@@ -291,9 +292,15 @@ GOLDEN_ROOT_HASH = "7abb8b4e5ee2dcec5e2343e265cb542b38665553d9fbd7bc8e78dd76d084
 
 
 def test_the_compiled_hashes_are_pinned() -> None:
-    compiled = _compile()
+    # Pinned at 2.1.0; checked on the compilation the 2.1.0 code builds (ADR-0055: 2.2.0 is now
+    # current, and a current compilation differs only by its envelopes).
+    with built_at("2.1.0"):
+        registry = tuple(at_version(spec, "2.1.0") for spec in REGISTRY)
+        compiled = compile_expression(_expression(*registry), registry, LIMITS)
+    assert compiled.root.schema_version == "2.1.0"
     assert compiled.compilation_hash == GOLDEN_COMPILATION_HASH
     assert compiled.root.content_hash() == GOLDEN_ROOT_HASH
+    assert _compile().root.schema_version == CONTRACT_SCHEMA_VERSION
 
 
 def test_the_compiled_hashes_at_2_0_0_are_unchanged() -> None:
@@ -367,12 +374,14 @@ def test_existing_interaction_specs_and_hashes_are_unchanged() -> None:
         "934d1c77a283bdd2be96cb7ee8ef7cb11cd08dcd8fb3a455a00716050eb31558"
     )
     assert sequence.name == "x_cross_up_then_regime_switch"
-    # The same specs built now are 2.1.0 (ADR-0052 M2; the envelope is in every content hash).
-    now_sequence = EventSequenceProvider.spec(CROSS_UP, SWITCH, 3 * MINUTE, observable_lag=LAG)
-    now_co_occur = EventCoOccurrenceProvider.spec(CROSS_UP, SWITCH, MINUTE, observable_lag=LAG)
+    # The same specs built by the 2.1.0 code (ADR-0052 M2 pins; ADR-0055: 2.2.0 is now current).
+    with built_at("2.1.0"):
+        up21, switch21 = at_version(CROSS_UP, "2.1.0"), at_version(SWITCH, "2.1.0")
+        now_sequence = EventSequenceProvider.spec(up21, switch21, 3 * MINUTE, observable_lag=LAG)
+        now_co_occur = EventCoOccurrenceProvider.spec(up21, switch21, MINUTE, observable_lag=LAG)
     assert (
-        CROSS_UP.content_hash(),
-        SWITCH.content_hash(),
+        up21.content_hash(),
+        switch21.content_hash(),
         now_sequence.content_hash(),
         now_co_occur.content_hash(),
     ) == (

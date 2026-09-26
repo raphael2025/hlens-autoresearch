@@ -176,7 +176,11 @@ def _toy_multi(detector: object = None, **fields: object) -> MultiInstrumentCali
 #: The previous values still hold when the same test builds every object at 2.0.0
 #: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
 #: 2.0.0 values (evidence, git history): 7b81912a…
-TOY_MULTI_HASH = "f10b41aa3c13e340ecfcfe45f7185455c3e5b906ccfe23a3b8b6d7936a4e2492"
+#: Re-pinned for contract 2.2.0 (ADR-0055, 2026-09-26): envelope change only; the 2.1.0
+#: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
+#: test passes inside ``contract_schema_version_scope("2.1.0")``).
+#: 2.1.0 values (evidence, git history): f10b41aa…
+TOY_MULTI_HASH = "bca62e54c1c8e16b5fefdb537414f9f54e2f4f40e400a2d4465c7cd727aa9bc3"
 
 
 def test_mode_on_is_deterministic_and_pinned() -> None:

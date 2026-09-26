@@ -11,9 +11,9 @@ import {
   weightSeries,
 } from "./routerPaperRun.ts";
 
-// apps/web/fixtures/router_paper_run/: the run of tests/research/router/test_paper.py. It has no
-// legacy 2.0.0 file (README "Legacy readable fixtures"): the committed file already is the current
-// writer's output and carries no contract envelope version.
+// apps/web/fixtures/router_paper_run/: the run of tests/research/router/test_paper.py, current (2.2.0)
+// and the legacy readable 2.1.0 file (README "Legacy readable fixtures"; the run's bound hashes
+// changed with the 2.2.0 envelope). It has no legacy 2.0.0 file.
 const fixtures = fixtureEnvelopes("router_paper_run");
 const [fixture] = fixtures;
 
@@ -24,7 +24,7 @@ function payloadOf(payload: Record<string, unknown>) {
 }
 
 test("every committed fixture parses, named by its run_hash", () => {
-  assert.equal(fixtures.length, 1);
+  assert.equal(fixtures.length, 2);
   for (const envelope of fixtures) {
     const run = payloadOf(envelope.payload);
     assert.equal(run.run_hash, envelope.id);

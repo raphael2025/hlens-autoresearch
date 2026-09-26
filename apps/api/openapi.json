@@ -220,8 +220,18 @@
       },
       "KnowledgeItem": {
         "additionalProperties": false,
-        "description": "\u516c\u5f00\u6765\u6e90\u4e2d\u7684**\u5f85\u68c0\u9a8c\u4e3b\u5f20**\uff0c\u4e0d\u662f\u5df2\u9a8c\u8bc1\u7ed3\u8bba\u3002",
+        "description": "\u516c\u5f00\u6765\u6e90\u4e2d\u7684**\u5f85\u68c0\u9a8c\u4e3b\u5f20**\uff0c\u4e0d\u662f\u5df2\u9a8c\u8bc1\u7ed3\u8bba\u3002\n\n`tags` / `assets`\uff08ADR-0055\uff0c\u81ea 2.2.0\uff09\uff1a\u4e3b\u9898\u6807\u7b7e\u4e0e\u7814\u7a76\u8303\u56f4\u8d44\u4ea7\u6807\u8bc6\uff08\u8d44\u4ea7\u7c7b\u522b\u6216\u57fa\u7840\u8d44\u4ea7\uff0c\n**\u4e0d\u662f**\u4ea4\u6613\u6240\u7b26\u53f7\u3001\u4e0a\u5e02\u8bb0\u5f55\u6216\u884c\u60c5\u8bc1\u636e\uff09\uff1b\u89c4\u8303 token\u3001\u4e25\u683c\u5347\u5e8f\u3001\u65e0\u91cd\u590d\uff1b\u4e3a\u7a7a\u65f6\u4e0d\u8fdb\u5165\u8f7d\u8377\u3002",
         "properties": {
+          "assets": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+              "type": "string"
+            },
+            "title": "Assets",
+            "type": "array",
+            "uniqueItems": true
+          },
           "claim": {
             "minLength": 1,
             "title": "Claim",
@@ -275,7 +285,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.1.0",
+            "default": "2.2.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"
@@ -288,6 +298,16 @@
           "status": {
             "$ref": "#/components/schemas/KnowledgeStatus",
             "default": "unverified"
+          },
+          "tags": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array",
+            "uniqueItems": true
           },
           "version": {
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
@@ -308,8 +328,18 @@
       },
       "KnowledgeQuery": {
         "additionalProperties": false,
-        "description": "\u4e00\u6b21\u77e5\u8bc6\u68c0\u7d22\u3002\n\n- `terms`\uff1a\u5168\u90e8\u987b\u51fa\u73b0\u5728\u6761\u76ee `name` / `claim` / `conditions` \u4e2d\uff08\u4e0d\u533a\u5206\u5927\u5c0f\u5199\uff0cAND \u8bed\u4e49\uff09\uff1b\n- `name_prefix`\uff1a\u5e93\u524d\u7f00\uff0c\u5982 `strategy_`\u3001`factor_`\u3001`state_`\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `evidence_at_least`\uff1a\u53ea\u8fd4\u56de\u8bc1\u636e\u7b49\u7ea7\u4e0d\u4f4e\u4e8e\u8be5\u503c\u7684\u6761\u76ee\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `statuses`\uff1a\u53ea\u8fd4\u56de\u8fd9\u4e9b\u72b6\u6001\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `limit`\uff1a\u7ed3\u679c\u4e0a\u9650\u3002",
+        "description": "\u4e00\u6b21\u77e5\u8bc6\u68c0\u7d22\u3002\n\n- `terms`\uff1a\u5168\u90e8\u987b\u51fa\u73b0\u5728\u6761\u76ee `name` / `claim` / `conditions` \u4e2d\uff08\u4e0d\u533a\u5206\u5927\u5c0f\u5199\uff0cAND \u8bed\u4e49\uff09\uff1b\n- `name_prefix`\uff1a\u5e93\u524d\u7f00\uff0c\u5982 `strategy_`\u3001`factor_`\u3001`state_`\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `evidence_at_least`\uff1a\u53ea\u8fd4\u56de\u8bc1\u636e\u7b49\u7ea7\u4e0d\u4f4e\u4e8e\u8be5\u503c\u7684\u6761\u76ee\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `statuses`\uff1a\u53ea\u8fd4\u56de\u8fd9\u4e9b\u72b6\u6001\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `tags_all`\uff08ADR-0055\uff0c\u81ea 2.2.0\uff09\uff1a\u6761\u76ee\u987b\u5305\u542b**\u5168\u90e8**\u8fd9\u4e9b\u6807\u7b7e\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `assets_any`\uff08ADR-0055\uff0c\u81ea 2.2.0\uff09\uff1a\u6761\u76ee\u987b\u81f3\u5c11\u5305\u542b\u5176\u4e00\uff0c\u9010\u5b57\u7cbe\u786e\u76f8\u7b49\uff08\u7a7a = \u4e0d\u9650\uff09\uff1b\n- `limit`\uff1a\u7ed3\u679c\u4e0a\u9650\u3002\n\n\u5404\u8fc7\u6ee4\u5668\u4e4b\u95f4\u4e3a AND\uff1b`tags_all` / `assets_any` \u662f\u89c4\u8303 token\u3001\u4e25\u683c\u5347\u5e8f\u3001\u65e0\u91cd\u590d\uff0c\u4e3a\u7a7a\u65f6\u4e0d\u8fdb\u5165\u8f7d\u8377\n\uff08\u540c\u4e00\u4fe1\u5c01\u7248\u672c\u4e0b\u65e7\u67e5\u8be2\u7684 `query_hash` \u9010\u4f4d\u4e0d\u53d8\uff09\u3002",
         "properties": {
+          "assets_any": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+              "type": "string"
+            },
+            "title": "Assets Any",
+            "type": "array",
+            "uniqueItems": true
+          },
           "evidence_at_least": {
             "anyOf": [
               {
@@ -333,7 +363,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.1.0",
+            "default": "2.2.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"
@@ -345,6 +375,16 @@
             },
             "title": "Statuses",
             "type": "array"
+          },
+          "tags_all": {
+            "default": [],
+            "items": {
+              "pattern": "^[a-z0-9]+(?:_[a-z0-9]+)*$",
+              "type": "string"
+            },
+            "title": "Tags All",
+            "type": "array",
+            "uniqueItems": true
           },
           "terms": {
             "default": [],
@@ -385,7 +425,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.1.0",
+            "default": "2.2.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"
@@ -442,7 +482,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.1.0",
+            "default": "2.2.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"

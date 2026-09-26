@@ -3,15 +3,17 @@ import { test } from "node:test";
 import { clone, fixtureEnvelopes } from "./fixtures.test-util.ts";
 import { asValidationReportPayload, gateRows, shownNumber, validationLabel } from "./validationReport.ts";
 
-// apps/web/fixtures/validation_report/: the current 2.1.0 report (a float-only gate and an exact
-// gate) and the legacy readable 2.0.0 one (float-only; README "Legacy readable fixtures").
+// apps/web/fixtures/validation_report/: the current 2.2.0 report (a float-only gate and an exact
+// gate), the legacy readable 2.1.0 one (the same gates, written before ADR-0055) and the legacy
+// readable 2.0.0 one (float-only; README "Legacy readable fixtures").
 const fixtures = fixtureEnvelopes("validation_report");
 const byVersion = (version: string) => {
   const found = fixtures.find((envelope) => envelope.payload.schema_version === version);
   assert.ok(found !== undefined, `a ${version} validation_report fixture`);
   return found;
 };
-const current = byVersion("2.1.0");
+const current = byVersion("2.2.0");
+const legacy21 = byVersion("2.1.0");
 const legacy = byVersion("2.0.0");
 
 function payloadOf(payload: Record<string, unknown>) {
@@ -20,8 +22,8 @@ function payloadOf(payload: Record<string, unknown>) {
   return report;
 }
 
-test("both committed fixtures parse: a PASS verdict and their gates", () => {
-  assert.equal(fixtures.length, 2);
+test("every committed fixture parses: a PASS verdict and their gates", () => {
+  assert.equal(fixtures.length, 3);
   for (const envelope of fixtures) {
     const report = payloadOf(envelope.payload);
     assert.equal(report.verdict, "PASS");
@@ -30,26 +32,30 @@ test("both committed fixtures parse: a PASS verdict and their gates", () => {
   }
 });
 
-test("2.1.0: an exact gate shows value_exact / threshold_exact, never the derived float", () => {
-  const rows = gateRows(payloadOf(current.payload));
-  const exact = rows.find((row) => row.representation === "exact");
-  assert.ok(exact !== undefined);
-  assert.equal(exact.gateId, "G3.adjusted_p_value");
-  assert.deepEqual(exact.value, { text: "0.0300000000000000001", exact: true });
-  assert.deepEqual(exact.threshold, { text: "0.05", exact: true });
-  assert.equal(exact.thresholdSource, "significance.multiple_testing_threshold_exact");
-  // the float on the wire is only float(exact): showing it would drop the last digit
-  const wire = (current.payload.gates as Record<string, unknown>[]).find((gate) => "value_exact" in gate);
-  assert.equal(wire?.value, 0.03);
-  assert.notEqual(exact.value.text, String(wire?.value));
+test("2.1.0+: an exact gate shows value_exact / threshold_exact, never the derived float", () => {
+  for (const envelope of [current, legacy21]) {
+    const rows = gateRows(payloadOf(envelope.payload));
+    const exact = rows.find((row) => row.representation === "exact");
+    assert.ok(exact !== undefined);
+    assert.equal(exact.gateId, "G3.adjusted_p_value");
+    assert.deepEqual(exact.value, { text: "0.0300000000000000001", exact: true });
+    assert.deepEqual(exact.threshold, { text: "0.05", exact: true });
+    assert.equal(exact.thresholdSource, "significance.multiple_testing_threshold_exact");
+    // the float on the wire is only float(exact): showing it would drop the last digit
+    const wire = (envelope.payload.gates as Record<string, unknown>[]).find((gate) => "value_exact" in gate);
+    assert.equal(wire?.value, 0.03);
+    assert.notEqual(exact.value.text, String(wire?.value));
+  }
 });
 
-test("2.1.0: a float-only gate still shows its floats", () => {
-  const rows = gateRows(payloadOf(current.payload));
-  const float = rows.find((row) => row.representation === "float");
-  assert.ok(float !== undefined);
-  assert.deepEqual(float.value, { text: "10", exact: false });
-  assert.deepEqual(float.threshold, { text: "5", exact: false });
+test("2.1.0+: a float-only gate still shows its floats", () => {
+  for (const envelope of [current, legacy21]) {
+    const rows = gateRows(payloadOf(envelope.payload));
+    const float = rows.find((row) => row.representation === "float");
+    assert.ok(float !== undefined);
+    assert.deepEqual(float.value, { text: "10", exact: false });
+    assert.deepEqual(float.threshold, { text: "5", exact: false });
+  }
 });
 
 test("2.0.0 legacy: no exact keys, the floats are shown", () => {

@@ -1,0 +1,125 @@
+# ADR-0055 实施说明：知识标签 / 资产检索（契约 2.2.0）
+
+| 字段 | 值 |
+|---|---|
+| 性质 | 实施记录，**不是验收结论**；ADR-0055 仍为 Proposed，等待 Codex 复核实施证据 |
+| 决定来源 | Codex 决策记录 `docs/reviews/2026-09-26-adr-0055-codex-decision.md`（分支 `codex/full-code-review-2026-09-26`，复核 HEAD `70e4034`），依 Raphael 授权 |
+| 实施者 | Claude Code（Opus），只实现，不改变决定 |
+| 分支 | `claude/adr-0055-tags-assets`（基于全代码 WIP `1cd3284`；未 cherry-pick 旧 `wip/phase-0.5-knowledge`）；**未 push** |
+| 状态 | CODE_COMPLETE / DEBUG_PENDING |
+
+## 1. 做了什么
+
+| 批次 | 内容 |
+|---|---|
+| 1 ADR 修订 | ADR-0055 Amendment 1：字段自 **2.2.0**（`_FIELDS_SINCE` + 已发布版本注册），不声称 2.0.0 / 2.1.0 内兼容；规范 token 语法；资产语义边界；Pydantic ≥ 2.12；验证矩阵 V1～V9。同时在任何代码改动前于 `1cd3284` 生成 2.1.0 知识固定载荷（`tests/golden/v2_1_0/`），其测试在未改动的基线上通过 |
+| 2 契约 | `CONTRACT_SCHEMA_VERSION = 2.2.0`、`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0","2.1.0","2.2.0")`；`KnowledgeItem.tags` / `assets`、`KnowledgeQuery.tags_all` / `assets_any`（`omit_empty` 省略、`_FIELDS_SINCE = 2.2.0`、严格升序无重复）；`KnowledgeResult` 在 2.2.0 之前的信封中拒绝嵌套带标签 / 资产的条目 |
+| 2 Provider | `hlens_knowledge_local@1.1.0`：`tags_all` 集合包含、`assets_any` 交集非空，逐字相等，在 `limit` 之前；契约套件新增 `check_tag_and_asset_filters`（含子串 / 前缀反例，能杀死子串匹配实现） |
+| 2 种子 | `seed-2026-09-25.json` 六条条目显式写出 `schema_version: "2.1.0"`（此前省略、随当前版本漂移）：内容哈希与 2.1.0 代码所服务的逐位相同。**未**新增任何标签 / 资产（见 §5） |
+| 2 依赖 | `pyproject.toml`：`pydantic>=2.12`；`uv.lock` 只有 `requires-dist` 说明符一行变化（`uv lock --offline`），解析版本 2.13.5 不变 |
+| 2 Schema / API | 135 份 current Schema 重新导出：除知识三模型外只有信封默认值 `2.1.0 → 2.2.0`（325 行）；`apps/api/openapi.json` 重新导出；`apps/web/src/api.d.ts` 按 OpenAPI 手工同步（本机无 `node_modules`，未运行 `gen:api`） |
+| 2 版本钉值 | 见 §3 |
+| 2 控制台 fixture | 六种报告的当前 fixture 因信封变化成为 2.2.0 新文件；2.1.0 文件保留为第二代遗留 fixture（`LEGACY_2_1_0`），`regenerate_legacy("2.1.0")` 在新进程中逐字节重建 |
+| 3 文档 | `02-domain.md` §3.3 / 头部 / 实体表；`knowledge-base.md`（字段表、检索、审阅边界，去掉 `draft`）；roadmap Phase 0.5 验收矩阵；ADR 索引；`apps/web/README.md`、`apps/web/fixtures/README.md`；本说明 |
+
+## 2. 验证矩阵对照（ADR-0055）
+
+| # | 要求 | 证据 |
+|---|---|---|
+| V1 | 2.1.0 条目 / 查询 / 结果逐位复现 | `tests/test_v2_1_0_knowledge_golden.py`（5 份固定载荷 + result_hash） |
+| V2 | 种子哈希与全量检索 query / result 哈希复现 | 同上：种子 6 条哈希；以记录的 provider 键 `@1.0.0` 从今天的种子重建记录的 `result_hash` |
+| V3 | 2.2.0 哈希确定 | `tests/test_adr_0055_versions.py::test_a_tagged_item_and_a_filtered_query_hash_deterministically` 等 |
+| V4 | query / result 哈希绑定筛选与元数据 | `test_every_filter_changes_the_query_hash`、`test_the_result_hash_changes_with_the_query_filters`、`..._with_the_item_metadata`、`test_a_result_with_altered_metadata_does_not_keep_its_hash` |
+| V5 | 资产精确匹配不做子串 | `tests/plugins/knowledge/test_tags_assets.py`（`btc` / `btcdom` / `wbtc`；与 `terms` 子串对照）；契约套件反例 `test_the_suite_catches_a_substring_matcher` |
+| V6 | 非规范、重复、乱序被拒 | `test_an_item_with_a_non_canonical_token_is_refused`、`test_a_query_with_...`、`test_duplicate_or_unordered_tokens_are_refused_never_normalised`；加载层 `test_a_non_canonical_or_misversioned_item_file_fails_closed` |
+| V7 | 版本边界；空值保持旧形状 | `test_an_older_item_envelope_carrying_a_2_2_0_field_is_refused`、`..._query_...`、`test_new_content_cannot_be_built_inside_a_2_1_0_replay_scope`、`test_a_2_1_0_result_nesting_2_2_0_metadata_is_refused`、`test_empty_new_fields_keep_the_2_1_0_payload_shape_and_hash`、`test_a_2_2_0_twin_of_a_2_1_0_object_has_the_same_shape_and_a_new_hash` |
+| V8 | Schema 与版本注册 | `test_the_current_version_is_2_2_0_and_every_earlier_minor_stays_published`、`test_the_new_fields_are_declared_since_2_2_0_and_omitted_when_empty`、`test_the_committed_schema_declares_the_token_grammar`、`test_pydantic_is_declared_at_least_2_12_for_exclude_if`；`tests/test_contracts.py::test_committed_schemas_match_contracts` |
+| V9 | 信封变化导致的钉值逐一核实 | §3；全量非 PostgreSQL 门禁（§4） |
+
+## 3. 因 2.2.0 信封而改的既有测试（逐项核实，未削弱）
+
+- **"当前版本是 X"绊线**（只断言版本号本身）：`test_adapter_contracts`、`test_universe_contracts`、`test_experiment_identity`（含 Schema 默认值）、`test_information_flow`、`test_construction_and_versioning`、`test_revision_contracts`、`tests/infrastructure/catalog/phase1_support.py` 的模块级断言：`2.1.0 → 2.2.0`。
+- **2.1.0 内容的测试改为同时覆盖 2.1.0 与 2.2.0**（覆盖面扩大）：`test_adr_0054_0057_versions.py`（带 subject / 结转内容的对象在 2.1.0 作用域内是 2.1.0 且可往返，当前代码构造的是 2.2.0）；`test_adr_0052_exact_fields.py`（`CapacityParams` / `CrossAssetParams` 在 2.1.0 与 2.2.0 信封下都有效）。
+- **按记录版本重放**：`tests/infrastructure/canonical/test_contract_version_replay.py`、`e2e/test_versioned_replay_first_slice.py`、`tools/test_dnet_versioned_replay.py` 由"2.0.0 数据在 2.1.0 下重放"改为对 **2.0.0 与 2.1.0 各跑一遍**、由 2.2.0 代码重放（参数化）；`event/test_event_iceberg.py` 的篡改版本用例加入 `2.1.0`。
+- **当前对象的信封**：`test_adr_0052_sourcing`、`test_event_iceberg` 中"新对象 = 2.1.0"改为 `CONTRACT_SCHEMA_VERSION`。
+- **2.1.0 下取的哈希钉值**（沿用 2.1.0 升级时的做法，逐项核实为只有信封变化）：
+  - 能在测试内按版本重建的，改为在 `built_at("2.1.0")` 作用域内构造同一对象并核对**原 2.1.0 钉值**（未重钉）：
+    `plugins/backtest/test_execution_model.py`、`test_carry_over.py`、`plugins/events/test_dsl.py`、`plugins/llm/test_scripted_store.py`、
+    `test_event_subject.py`；按报告字节钉值的 `research/validation/test_multi_seed_controls.py`、`test_g4_check_isolation.py` 以
+    `envelopes_at(…, "2.1.0")` 核对（与既有 2.0.0 做法相同，这些载荷不含随信封变化的内嵌哈希）；`test_adapter_contracts.py` 的
+    ADR-0052 Schema 钉值以 `as_published_at(…, "2.1.0")` 核对，`KnowledgeItem` Schema 新增 ADR-0055 钉值。
+  - 对象深藏在模块常量里、测试内无法按版本重建的 11 个测试（`test_multi_instrument_validation`、`test_market_benchmark`、
+    `test_cross_sectional_g4`、`test_router_completion` ×3、`test_router_eligibility`、`test_gate_calibration_g5`、
+    `test_gate_calibration_multi` ×2、`test_loop_e2e`）：**先**在新进程中于 `contract_schema_version_scope("2.1.0")` 内运行未修改的
+    测试——`25 passed`（连同 `test_golden_experiments` 的 bit-exact 重跑；唯一失败是其"`python -m` 子进程重生成"用例，子进程不在作用域内，
+    属预期）——证明原钉值仍精确描述 2.1.0 代码的输出；**再**按 2.2.0 重钉，注释中保留 2.1.0 值作为证据。
+  - `tests/golden/experiments/`：记录 `fe69500f…` → `b81a3feb…`；唯一变化的输出是 `backtest.result_hash`（逐项比对），所有门值、阈值与
+    结论不变；旧记录在 2.1.0 作用域内 bit-exact 复现（上条）。
+- **Provider 键**：`test_loop_knowledge_source`、`test_knowledge_source`、`test_migration`：`hlens_knowledge_local@1.0.0 → @1.1.0`。
+- **控制台 fixture**：`test_console_fixture_writers.py` 泛化为两代遗留（2.0.0、2.1.0）；`tests/apps/report_fixtures.py` 增 `LEGACY_2_1_0` / `LEGACY`；`tests/apps/test_console_fixtures.py` 计数与配对随之更新（每代 paper deviation 描述同代 router paper run）。web：`validationReport` / `gateCalibration` / `stateStrategyMatrix` / `routerPaperRun` 的 node 测试计数与版本同步，`KnowledgeSearch.test.tsx` 的条目补 `tags` / `assets`——**未运行**（无 `node_modules`）。
+
+## 4. 检查命令与结果
+
+见批次提交信息与 HANDOFF（原样输出）。本说明只记录命令：
+
+```bash
+uv run pytest -q tests/test_v2_1_0_knowledge_golden.py tests/test_adr_0055_versions.py tests/plugins/knowledge ...
+systemd-run --user --scope -p MemoryMax=5G -p MemorySwapMax=0 uv run pytest -q -m "not postgres"
+uv run ruff check . && uv run ruff format --check . && uv run mypy
+uv run python -m core.contracts.registry   # 然后 git diff --stat schemas
+```
+
+### 4.1 web（控制台）
+
+- Claude 在本机运行（无 `node_modules`，node v26.8.1 原生剥离类型）：`cd apps/web && node --test src/lib/knowledgeQuery.test.ts` → `tests 7 / pass 7 / fail 0`。
+- **Codex 独立运行**（2026-09-26，临时用已有依赖的 `node_modules` 符号链接，运行后已删除，未进入任何提交）：
+  `npm test` → 103 项通过；`npm run build` → TypeScript 检查与 Vite 生产构建通过。以上为 Codex 报告的结果，Claude 未复现。
+- Claude 未安装任何依赖，也未运行 `npm run gen:api`（`src/api.d.ts` 为手工同步，已由上述 `npm run build` 的类型检查覆盖）。
+
+## 5. 种子标签 / 资产：分类提案（未写入，待人工审阅）
+
+本仓库没有具名人工审阅者对种子做过分类；给已发布的 `name@1.0.0` 加元数据会改变其内容，按 `VersionedSpec` 规则须发布新版本
+并经 ADR-0058 写入路径（`LocalKnowledgeStore.add(..., reviewed_by=<人>)`）提交。下表只依据每条条目**已审阅的文本**（出处标题、
+`claim`、`conditions`）整理，供审阅者取舍；资产只描述研究范围，**不是**上市历史或行情证据（例如 Liu & Tsyvinski 的 BTC / ETH /
+XRP 是论文样本，与 Binance 标的池无关）。
+
+| 条目 | 提案 `tags` | 提案 `assets` | 文本依据 |
+|---|---|---|---|
+| `strategy_time_series_momentum` | `momentum`, `time_series_momentum` | `bond`, `commodity`, `currency`, `equity_index` | 标题 "Time series momentum"；conditions "liquid futures (equity index, currency, commodity, bond)" |
+| `strategy_crypto_time_series_momentum` | `momentum`, `time_series_momentum` | `btc`, `crypto`, `eth`, `xrp` | claim "time-series momentum"；conditions "BTC, ETH, XRP market data" |
+| `factor_crypto_market_size_momentum` | `factor_model`, `momentum`, `size` | `crypto` | claim "three-factor model of crypto market, size and momentum"；conditions "cross-section of coins" |
+| `risk_volatility_managed_portfolios` | `volatility_management` | `equity` | 标题 "Volatility-managed portfolios"；conditions "equity factors" |
+| `risk_volatility_managed_portfolios_out_of_sample` | `counter_evidence`, `volatility_management` | `equity` | claim 为反证（"do not systematically beat"）；conditions "many equity strategies" |
+| `state_cross_exchange_price_deviations` | `arbitrage`, `cross_exchange` | `crypto` | 标题 "Trading and arbitrage in cryptocurrency markets"；conditions "multiple exchanges and countries" |
+
+## 6. 需要集成会话同步的精确状态（本批次未编辑共享文件）
+
+本批次按指示**未**编辑 `PROJECT_STATUS.md`、`PROJECT_MEMORY.md`、`docs/plans/2026-09-26-all-code-completion-plan.md`。集成时建议写入：
+
+- `PROJECT_STATUS.md` §2 Phase 0.5 行：`ADR-0055（标签 / 资产检索，契约 2.2.0）CODE_COMPLETE / DEBUG_PENDING，待 Codex 复核；种子尚无经人工审阅的标签 / 资产`。
+- `PROJECT_STATUS.md` §6 D-P05 行与 §8 第二条：把"ADR-0055（契约变更）待 Raphael"改为"能力方向已由 Codex 依 Raphael 授权决定（2026-09-26）；Amendment 1 与实施已完成，ADR 仍 Proposed，待 Codex 复核实施证据"。
+- `PROJECT_STATUS.md` §7：契约当前为 **2.2.0**（ADR-0055，minor）；§10 第 3 条 Schema 计数不变（135 份），版本改为 2.2.0。
+- `PROJECT_MEMORY.md` §2："当前为 2.1.0" → "ADR-0052 起 2.1.0，ADR-0055 起 **2.2.0**（minor；2.0.0 / 2.1.0 载荷按记录版本重放）"；current Schema 行"契约 2.1.0" → "契约 2.2.0"。
+- `PROJECT_MEMORY.md` §5：ADR-0055 一句话——"知识标签 / 资产检索（`tags_all` AND、`assets_any` OR 精确），契约 2.2.0，资产是研究范围标识而非上市 / 行情证据；Codex 决定方向，Proposed 待复核"。
+- 完成计划 §10：新增一批（ADR-0055）条目，引用本说明与各提交 SHA。
+- 与 `wip/phase-0.5-knowledge` 合并时：该分支的 `seed-2026-09-26.json`（feature / event 种子）同样省略 `schema_version`，合入后应显式写出其服务时的版本；该分支的核验记录 `2026-09-26-phase05-knowledge-audit.md` 中"可按标签 / 资产检索 ⚠️ / ❌"两行应指向本说明；其旧 ADR-0055 草稿由本分支的 Amendment 1 取代。
+
+## 7. 未解决 / 待决定
+
+1. **ADR-0055 状态**：Proposed，等待 Codex 复核（本说明 §2、§3 与提交中的测试输出为证据）。
+2. **种子元数据**：§5 提案待具名人工审阅者经写入路径提交（新版本）；在此之前，按标签 / 资产检索在真实种子上返回空。
+3. **web**：`api.d.ts` 为手工同步（未运行 `gen:api`）；Knowledge Search 已加标签 / 资产输入（Codex 复核要求的补充，§8）；node 全套与构建由 Codex 独立运行通过（§4.1），Claude 本机只能运行不依赖 `node_modules` 的 lib 测试。
+4. **token 语法与资产取向**（ADR 决策 3 / 4）是 Amendment 1 为落实"规范资产标识"而定的细节：小写 snake case、不用交易所符号。若 Codex 要求交易所符号形式，需再修订。
+5. **Provider 版本**：`hlens_knowledge_local` 升为 1.1.0，同一查询的 `result_hash` 与 1.0.0 记录不同（provider 键参与哈希）；已记录的 1.0.0 结果按其载荷仍可校验与重建（V2）。
+
+## 8. 补充：控制台 Knowledge Search 的标签 / 资产输入（Codex 复核要求）
+
+- `apps/web/src/lib/knowledgeQuery.ts`：表单 → `KnowledgeQuery`。标签 / 资产以空格分隔，按后端同一规则检查（`KNOWLEDGE_TOKEN`
+  = `^[a-z0-9]+(?:_[a-z0-9]+)*$`、严格升序、无重复）；**不**折叠大小写、不排序、不去重，不合法即返回原因、不发请求。
+  只有关键词时请求体与改动前逐字相同（`{"terms":[...],"limit":50}`）。
+- `apps/web/src/pages/KnowledgeSearch.tsx`：新增"标签（全部满足）""资产（任一满足，精确）"输入；不合法时 `role="alert"` 列出原因、
+  不发请求；后端 422 以"数据不合法（HTTP 422）：…"显示；按标签 / 资产筛选为空时注明"可能只说明条目尚未分类（种子目前没有经人工
+  审阅的标签 / 资产）"；结果条目显示其标签 / 资产（缺省时后端省略该键，页面按空处理）。
+- 测试：`src/lib/knowledgeQuery.test.ts`（7 项）；`src/pages/KnowledgeSearch.test.tsx` 新增 4 个组件测试（提交的请求体、非法输入无请求
+  且显示原因、筛选为空的未分类提示、后端 422）。
+- 未新增任何种子分类。

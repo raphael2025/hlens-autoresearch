@@ -22,7 +22,7 @@ from core.contracts.strategy import (
     PriceBar,
     TargetPosition,
 )
-from core.domain.base import contract_schema_version_scope
+from core.domain.base import CONTRACT_SCHEMA_VERSION, contract_schema_version_scope
 from plugins.backtest import (
     EXECUTION_VERSION,
     MONEY_QUANTUM,
@@ -33,7 +33,7 @@ from plugins.backtest import (
 from tests.contract_suites import backtest as backtest_suite
 from tests.contract_suites._support import ContractSuiteFailure
 from tests.contract_suites.backtest import BacktestProviderContract, BacktestSubject
-from tests.contract_version_support import PRE_BUMP_VERSION, at_pre_bump
+from tests.contract_version_support import PRE_BUMP_VERSION, at_version
 from tests.strategy_fixtures import COSTS, MINUTE, T0, make_bars, wave_closes
 
 ZERO = backtest_suite.ZERO_COST
@@ -153,18 +153,26 @@ def _content(value: object) -> object:
     return value
 
 
+def _run_at(
+    factory: Callable[[], BarBacktester], request: BacktestRequest, version: str
+) -> tuple[BacktestResult, ExecutionReport]:
+    """What the ``version`` code built: backtester and request constructed at that version
+    (ADR-0052 M2 for 2.0.0; ADR-0055 for 2.1.0)."""
+    with contract_schema_version_scope(version):
+        backtester = factory()
+        assert backtester.descriptor.schema_version == version
+        result, report = _run(backtester, at_version(request, version))
+    assert result.schema_version == version
+    assert {fill.schema_version for fill in result.fills} <= {version}
+    assert {point.schema_version for point in result.equity_curve} == {version}
+    return result, report
+
+
 def _run_at_2_0_0(
     factory: Callable[[], BarBacktester], request: BacktestRequest
 ) -> tuple[BacktestResult, ExecutionReport]:
-    """What the 2.0.0 code built: backtester and request constructed at 2.0.0 (ADR-0052 M2)."""
-    with contract_schema_version_scope(PRE_BUMP_VERSION):
-        backtester = factory()
-        assert backtester.descriptor.schema_version == PRE_BUMP_VERSION
-        result, report = _run(backtester, at_pre_bump(request))
-    assert result.schema_version == PRE_BUMP_VERSION
-    assert {fill.schema_version for fill in result.fills} <= {PRE_BUMP_VERSION}
-    assert {point.schema_version for point in result.equity_curve} == {PRE_BUMP_VERSION}
-    return result, report
+    """What the 2.0.0 code built (ADR-0052 M2)."""
+    return _run_at(factory, request, PRE_BUMP_VERSION)
 
 
 @pytest.mark.parametrize("name", sorted(_GOLDEN))
@@ -181,9 +189,13 @@ def test_the_default_backtester_is_byte_identical_to_v1(
     v1_result, v1_report = _run_at_2_0_0(factory, _golden_requests()[name])
     assert v1_result.result_hash == _GOLDEN[name]
     assert v1_report.execution_fingerprint is None
-    # 2.1.0 (ADR-0052 M2): the same content; only envelopes and the hashes over them differ.
-    assert _content(result.model_dump(mode="json")) == _content(v1_result.model_dump(mode="json"))
-    assert result.result_hash == _GOLDEN_2_1_0[name]
+    # 2.1.0 (ADR-0052 M2) and the current 2.2.0 (ADR-0055): the same content; only envelopes and
+    # the hashes over them differ. The 2.1.0 pins are checked on the run the 2.1.0 code builds.
+    r21, _ = _run_at(factory, _golden_requests()[name], "2.1.0")
+    assert r21.result_hash == _GOLDEN_2_1_0[name]
+    for run in (result, r21):
+        assert _content(run.model_dump(mode="json")) == _content(v1_result.model_dump(mode="json"))
+    assert result.schema_version == CONTRACT_SCHEMA_VERSION
     assert backtester.run(_golden_requests()[name]) == result
     assert report.execution_fingerprint is None
     assert (report.fills, report.remainders, report.funding) == ((), (), ())

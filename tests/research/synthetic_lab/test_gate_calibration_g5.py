@@ -69,13 +69,17 @@ SEEDS = 4
 #: The previous values still hold when the same test builds every object at 2.0.0
 #: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
 #: 2.0.0 values (evidence, git history): deaba504…, 358eb551…, dc7816c9…
+#: Re-pinned for contract 2.2.0 (ADR-0055, 2026-09-26): envelope change only; the 2.1.0
+#: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
+#: test passes inside ``contract_schema_version_scope("2.1.0")``).
+#: 2.1.0 values (evidence, git history): c5147ea3…, 03fcfad6… (raising), 4cc8dc82… (pipeline)
 #: ``PRE_G5_RAISING_HASH`` re-pinned (audit fix, 2026-09-26): an arm with detector errors now
 #: also reports ``pass_rate_bounds``; the raising report is the only pinned one with errors.
 #: Removing that key from its payload reproduces the previous value e31fc17f… exactly (verified);
 #: the toy and pipeline hashes (no detector errors) are unchanged.
-PRE_G5_TOY_HASH = "c5147ea3fa460274b30f0c67a17df62788de1f213e4ba0efd108806823543c1e"
-PRE_G5_RAISING_HASH = "03fcfad69f909b5c4629ae57155886ede74e0261901ae66956967d7f5d2d705e"
-PRE_G5_PIPELINE_ONE_SEED_HASH = "4cc8dc822c4e79a7a50114982fa40eb2389b4713f61a7328880a9981b68de6ff"
+PRE_G5_TOY_HASH = "8499223e39d1c260e76e2cb18b6af4c227914b140ffcf6089771accd3b16b535"
+PRE_G5_RAISING_HASH = "0ea408c308dcb739b585892941af14e5c06e8777a70a8ad762c18d8cea311a7e"
+PRE_G5_PIPELINE_ONE_SEED_HASH = "6fa8c6ec2c479b3d96039465cce050933f341385dcde272e061e09e8703c91dc"
 
 
 class RecordingLedger(InMemoryUnsealingLedger):

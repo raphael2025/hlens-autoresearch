@@ -352,12 +352,16 @@ def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) ->
 #: The previous values still hold when the same test builds every object at 2.0.0
 #: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
 #: 2.0.0 values (evidence, git history): 9b5e9e8c…, 96e58aff…, 1df0bc1c…; fingerprint f7a137b2…
+#: Re-pinned for contract 2.2.0 (ADR-0055, 2026-09-26): envelope change only; the 2.1.0
+#: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
+#: test passes inside ``contract_schema_version_scope("2.1.0")``).
+#: 2.1.0 values (evidence, git history): e241ceb2…, 86b2adda…, a0dc0b91…; fingerprint 175c1a47…
 PINNED_RECORD_HASHES = [
-    "e241ceb227176d212c33c9a67a0532c04a554882ef4c3566ed306cb5cffcc881",
-    "86b2adda7356a93a02b8ad25b8ce1e73168b02347f3b872befb48fab2704e8bb",
-    "a0dc0b91496869215294bb0af8dfb0a39f719c7aa63df6eff81b9d425b145401",
+    "cd8e1512a4fd9eb38bf81505a17b8a5f02ef265d5e79d9e671ebe008710572c6",
+    "c94401f473862a7ff09cd14b251c6e38b083f41e79ba1910f271b45642f338a6",
+    "9acaa76b70c4d15576bba1ea8ca1b3d19849fe52830c139378a3a2f0bb5f54c5",
 ]
-PINNED_FINGERPRINT_HASH = "175c1a475a804bab4ad90b456e4df52683ff4729446c2540c42a8fc241669181"
+PINNED_FINGERPRINT_HASH = "fbbd152b2e3c06cedfbbfb4eaffb095a3c657399e8dd35058e60df6904fc5b9d"
 
 
 def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:

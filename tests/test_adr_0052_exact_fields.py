@@ -240,4 +240,9 @@ def test_no_adr_0052_field_or_model_under_a_2_0_0_envelope() -> None:
         CapacityParams(schema_version="2.0.0", min_capacity=Decimal(1))
     with pytest.raises(ValidationError, match="2.1.0"):
         CrossAssetParams(schema_version="2.0.0", min_positive_fraction=Decimal("0.5"))
-    assert CrossAssetParams(min_positive_fraction=Decimal("0.5")).schema_version == "2.1.0"
+    assert CrossAssetParams(min_positive_fraction=Decimal("0.5")).schema_version == (
+        CONTRACT_SCHEMA_VERSION
+    )
+    for since in ("2.1.0", CONTRACT_SCHEMA_VERSION):  # 2.1.0 content stays valid after 2.2.0
+        assert CrossAssetParams(schema_version=since, min_positive_fraction=Decimal("0.5"))
+        assert CapacityParams(schema_version=since, min_capacity=Decimal(1))

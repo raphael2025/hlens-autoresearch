@@ -6,6 +6,11 @@ docs/research/knowledge-base.md). Loading fails closed on any item without a sou
 duplicate ``name@version`` and on unparsable payloads. ``search`` is a pure function of the loaded
 items and the query: case-insensitive AND over ``name`` / ``claim`` / ``conditions``, optional name
 prefix (the library), minimum evidence level and statuses, ordered by ``(name, version)``.
+
+Version 1.1.0 (ADR-0055, contract 2.2.0) adds ``tags_all`` (the item carries every requested tag)
+and ``assets_any`` (the item carries at least one requested asset). Both compare canonical tokens by
+exact equality — never substring, prefix or case folding — and combine with the other filters by
+AND before ``limit``. For any query expressible before 2.2.0 the matched items are unchanged.
 """
 
 from __future__ import annotations
@@ -30,7 +35,7 @@ __all__ = ["DEFAULT_ITEMS_DIR", "LocalKnowledgeProvider", "load_items"]
 
 DEFAULT_ITEMS_DIR: Final = Path(__file__).resolve().parents[2] / "docs" / "research" / "knowledge"
 _NAME: Final = "hlens_knowledge_local"
-_VERSION: Final = "1.0.0"
+_VERSION: Final = "1.1.0"
 
 
 class LocalKnowledgeProvider:
@@ -69,6 +74,10 @@ class LocalKnowledgeProvider:
             if floor is not None and EVIDENCE_ORDER.index(item.evidence_level) < floor:
                 continue
             if query.statuses and item.status not in query.statuses:
+                continue
+            if not set(query.tags_all) <= set(item.tags):
+                continue
+            if query.assets_any and set(query.assets_any).isdisjoint(item.assets):
                 continue
             text = " ".join((item.name, item.claim, *item.conditions)).lower()
             if all(term in text for term in terms):

@@ -2,12 +2,14 @@
 
 A compliant provider: declares itself; answers every query with a ``KnowledgeResult`` whose items
 all carry source and licence; honours every filter (terms AND, name prefix, minimum evidence,
-statuses, limit); and, when it declares itself deterministic, answers equal queries with equal
+statuses, limit; since contract 2.2.0 ``tags_all`` AND and ``assets_any`` OR by exact token
+equality, ADR-0055); and, when it declares itself deterministic, answers equal queries with equal
 ``result_hash``.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable
 
 from core.contracts.knowledge import (
@@ -17,7 +19,7 @@ from core.contracts.knowledge import (
     KnowledgeQuery,
     KnowledgeResult,
 )
-from core.domain.research import KnowledgeStatus
+from core.domain.research import KNOWLEDGE_TOKEN_PATTERN, KnowledgeStatus
 
 KnowledgeCheck = Callable[[KnowledgeProvider], None]
 
@@ -63,6 +65,47 @@ def check_filters(provider: KnowledgeProvider) -> None:
     _require(len(provider.search(KnowledgeQuery(limit=1)).items) <= 1, "limit not honoured")
 
 
+def _absent_tokens(carried: set[str]) -> list[str]:
+    """Valid tokens no item carries: every proper prefix / suffix / infix of a carried token that
+    is itself canonical, plus a fresh one — a substring or prefix matcher would hit them."""
+    token = re.compile(KNOWLEDGE_TOKEN_PATTERN)
+    candidates = {"zz_absent_token"}
+    for value in carried:
+        for start in range(len(value)):
+            for end in range(start + 1, len(value) + 1):
+                candidates.add(value[start:end])
+    return sorted(c for c in candidates if token.fullmatch(c) and c not in carried)
+
+
+def check_tag_and_asset_filters(provider: KnowledgeProvider) -> None:
+    everything = provider.search(KnowledgeQuery(limit=1000)).items
+    for item in everything:
+        if item.tags:
+            hits = provider.search(KnowledgeQuery(tags_all=item.tags, limit=1000)).items
+            _require(item in hits, f"tags_all dropped {item.name}, which carries every tag")
+            _require(
+                all(set(item.tags) <= set(hit.tags) for hit in hits),
+                "tags_all must require every requested tag",
+            )
+    tags = {tag for item in everything for tag in item.tags}
+    assets = {asset for item in everything for asset in item.assets}
+    for asset in sorted(assets):
+        hits = provider.search(KnowledgeQuery(assets_any=(asset,), limit=1000)).items
+        expected = tuple(item for item in everything if asset in item.assets)
+        _require(hits == expected, f"assets_any=({asset!r},) must match exactly its carriers")
+    if len(assets) >= 2:
+        pair = tuple(sorted(assets)[:2])
+        hits = provider.search(KnowledgeQuery(assets_any=pair, limit=1000)).items
+        expected = tuple(item for item in everything if set(pair) & set(item.assets))
+        _require(hits == expected, "assets_any must match any requested asset (OR)")
+    for absent in _absent_tokens(tags):
+        found = provider.search(KnowledgeQuery(tags_all=(absent,), limit=1000)).items
+        _require(not found, f"tags_all=({absent!r},) matched no-carrier items (not exact)")
+    for absent in _absent_tokens(assets):
+        found = provider.search(KnowledgeQuery(assets_any=(absent,), limit=1000)).items
+        _require(not found, f"assets_any=({absent!r},) matched no-carrier items (not exact)")
+
+
 def check_determinism(provider: KnowledgeProvider) -> None:
     if not provider.descriptor.deterministic:
         return
@@ -77,5 +120,6 @@ KNOWLEDGE_CHECKS: tuple[KnowledgeCheck, ...] = (
     check_descriptor,
     check_everything_has_provenance,
     check_filters,
+    check_tag_and_asset_filters,
     check_determinism,
 )

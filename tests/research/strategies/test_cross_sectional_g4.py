@@ -72,15 +72,20 @@ def _sha(text: str) -> str:
 #: (verified by running it inside ``contract_schema_version_scope("2.0.0")``).
 #: 2.0.0 values (evidence, git history): 6dd0103a…, 150814f2…, 53bb8fe3…, 2e445144…,
 #: 92190e46…, b84dede4…, 95a83d79…, 9a0142ee…
+#: Re-pinned for contract 2.2.0 (ADR-0055, 2026-09-26): envelope change only; the 2.1.0
+#: values still hold when the test builds every object at 2.1.0 (verified: the unmodified
+#: test passes inside ``contract_schema_version_scope("2.1.0")``).
+#: 2.1.0 values (evidence, git history): d5ca922f…, ab660a9f…, c90fb699…, 679840de…,
+#: e95b1e91…, 4d2a52e5…, c941d036…, 87af742d…
 PINNED = {
-    "single_planted_report": "d5ca922f79b7c69b4bb6dd7364803b1e4a9cb76f9580cf07a3ca96cca4c94e88",
-    "single_planted_view": "ab660a9f796234ed07048cac342d50f8f296361598ecdd1dbe0a772ff4e25b08",
-    "multi_p,p_report": "c90fb6994c3023f5d7399b785ce3af5c3da52a8c85ce0e781ee23d07ee621735",
-    "multi_p,p_view": "679840ded32bbca99a871439caa834efc8a885f58386277cf6bedca07841ef93",
-    "multi_p,p_g4": "e95b1e91393213608ca9e06527fc3a48adca51ce273f43755f81a1b289920629",
-    "multi_p,n,p_report": "4d2a52e5b8826843fbd3030573c3543cea7cc36ac57127f30ec6811367b75b8d",
-    "multi_p,n,p_view": "c941d036f46b081479503dba9b4171f168cf4833c3ba828d387233a807c7965f",
-    "multi_p,n,p_g4": "87af742d10d892831e0b45e96ea5f0cd385228db24a5a0ad8808aaa3aeda37a3",
+    "single_planted_report": "f46de6b1b9c047e5743ff9d5676f3e640aea7f2f47b05f00092d7e43acdbbd76",
+    "single_planted_view": "b05266ae6f1c584125a6b694b734d385e9f9e57e1f66b1176fc4df18598ca947",
+    "multi_p,p_report": "8294c4f65b17af845d07e237c00587fae6312d8aa8bc87f520ef7a98d3aa1b00",
+    "multi_p,p_view": "85f8af38585a0b1cb161d35521e37cb318960709a443271b4fc1eac98ebfe793",
+    "multi_p,p_g4": "b726ba317dd27ad129dab8a62ab9798a78f196820d1797e862f26e27cdb42706",
+    "multi_p,n,p_report": "7a89071d1d61c8765ece65b6502cef970561e5c3f1433f76be59a4e3ca3d6a13",
+    "multi_p,n,p_view": "f0ff42635dd6c868ee62e643e544c57457314b22dd88eab30c2caea8c1df1c21",
+    "multi_p,n,p_g4": "a2fcbc5eb3279fd72f1f1b540210aad74702aa99ffad82939e97332d83f99fb9",
 }
 
 

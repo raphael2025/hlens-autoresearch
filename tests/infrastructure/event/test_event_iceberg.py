@@ -24,6 +24,7 @@ from core.contracts.catalog import (
     UnknownTableDefinition,
 )
 from core.contracts.event import EventResult
+from core.domain.base import CONTRACT_SCHEMA_VERSION
 from infrastructure.catalog.iceberg_adapter import PyIcebergCatalogAdapter
 from infrastructure.catalog.phase1_tables import (
     PHASE1_REGISTRY,
@@ -384,13 +385,15 @@ def _cross_at_2_0_0() -> EventResult:
 
 
 def test_rows_record_the_run_envelope() -> None:
-    assert {row["contract_schema_version"] for row in event_rows(_cross())} == {"2.1.0"}
+    assert {row["contract_schema_version"] for row in event_rows(_cross())} == {
+        CONTRACT_SCHEMA_VERSION
+    }
     assert {row["contract_schema_version"] for row in event_rows(_cross_at_2_0_0())} == {"2.0.0"}
 
 
-def test_a_2_0_0_run_rebuilds_at_its_recorded_version_beside_a_2_1_0_run(env: Env) -> None:
+def test_a_2_0_0_run_rebuilds_at_its_recorded_version_beside_a_current_run(env: Env) -> None:
     old, new = _cross_at_2_0_0(), _cross()
-    assert old.schema_version == "2.0.0" and new.schema_version == "2.1.0"
+    assert old.schema_version == "2.0.0" and new.schema_version == CONTRACT_SCHEMA_VERSION
     assert old.result_hash != new.result_hash  # the envelope is part of every identity
     env.table.write(old)
     env.table.write(new)
@@ -403,17 +406,18 @@ def test_a_2_0_0_run_rebuilds_at_its_recorded_version_beside_a_2_1_0_run(env: En
 
 
 def test_a_run_mixing_envelopes_is_refused_before_writing(env: Env) -> None:
-    # a 2.0.0 result envelope around 2.1.0 events (result_hash does not cover the envelope)
+    # a 2.0.0 result envelope around current events (result_hash does not cover the envelope)
     mixed = EventResult.model_validate({**_cross().model_dump(), "schema_version": "2.0.0"})
-    assert mixed.schema_version == "2.0.0" and mixed.events[0].schema_version == "2.1.0"
+    assert mixed.schema_version == "2.0.0"
+    assert mixed.events[0].schema_version == CONTRACT_SCHEMA_VERSION
     with pytest.raises(EventTableError, match="mixes contract envelopes"):
         env.table.write(mixed)
     assert env.head() is None
 
 
-@pytest.mark.parametrize("recorded", ["2.0.0", "1.0.0", "2.9.0"])
+@pytest.mark.parametrize("recorded", ["2.0.0", "2.1.0", "1.0.0", "2.9.0"])
 def test_a_wrong_or_unpublished_recorded_version_fails_closed(env: Env, recorded: str) -> None:
-    result = _cross()  # 2.1.0 content under another recorded version
+    result = _cross()  # current content under another recorded version
     rows = [{**row, "contract_schema_version": recorded} for row in event_rows(result)]
     env.commit_rows(rows, "tamper.version")
     with pytest.raises(EventTableCorrupted):

@@ -12,10 +12,12 @@ import {
   totalSamples,
 } from "./stateStrategyMatrix.ts";
 
-// apps/web/fixtures/state_strategy_matrix/: the current report (built at contract 2.1.0) and the
-// legacy readable 2.0.0 one — the same matrix, whose bound backtest / state result hashes differ.
+// apps/web/fixtures/state_strategy_matrix/: the current report (built at contract 2.2.0) and the
+// legacy readable 2.1.0 and 2.0.0 ones — the same matrix, whose bound backtest / state result
+// hashes differ.
 const fixtures = fixtureEnvelopes("state_strategy_matrix");
 const LEGACY_ID = "5940a5de3bde080ff156d564ce582d73d1db85623fea163b53ba925030fec21c";
+const LEGACY_2_1_0_ID = "89f28e4a5d44e45a02ac3bf6d81716dd179b939cc8985edb94950aea5107b11a";
 
 function payloadOf(payload: Record<string, unknown>) {
   const matrix = asMatrixPayload(payload);
@@ -23,14 +25,14 @@ function payloadOf(payload: Record<string, unknown>) {
   return matrix;
 }
 
-test("both committed fixtures (current and legacy 2.0.0) parse to the same cells", () => {
-  assert.equal(fixtures.length, 2);
+test("every committed fixture (current and legacy 2.1.0 / 2.0.0) parses to the same cells", () => {
+  assert.equal(fixtures.length, 3);
   assert.ok(fixtures.some((envelope) => envelope.id === LEGACY_ID));
-  const [a, b] = fixtures.map((envelope) => payloadOf(envelope.payload));
-  for (const [envelope, matrix] of [
-    [fixtures[0], a],
-    [fixtures[1], b],
-  ] as const) {
+  assert.ok(fixtures.some((envelope) => envelope.id === LEGACY_2_1_0_ID));
+  const matrices = fixtures.map((envelope) => payloadOf(envelope.payload));
+  const [a] = matrices;
+  for (const [index, envelope] of fixtures.entries()) {
+    const matrix = matrices[index];
     assert.equal(matrix.matrix_hash, envelope.id);
     assert.equal(totalSamples(matrix), 4);
     assert.equal(matrixLabel(envelope.id, envelope.payload), `${matrix.strategy} × ${matrix.state} (n=4)`);
@@ -39,8 +41,8 @@ test("both committed fixtures (current and legacy 2.0.0) parse to the same cells
       ["high", "low", "(none)"],
     );
   }
-  assert.deepEqual(a.cells, b.cells);
-  assert.notEqual(a.backtest_result_hash, b.backtest_result_hash);
+  for (const matrix of matrices) assert.deepEqual(matrix.cells, a.cells);
+  assert.equal(new Set(matrices.map((matrix) => matrix.backtest_result_hash)).size, matrices.length);
 });
 
 test("the heatmap keeps raw values per metric and normalizes each row to 0..1", () => {

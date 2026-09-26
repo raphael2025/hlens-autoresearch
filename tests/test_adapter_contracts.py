@@ -65,7 +65,7 @@ from core.contracts.storage import (
 from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, FrozenMapping
 from tests.contract_suites.catalog import INVALID_TABLE_NAMES
 from tests.contract_suites.storage import INVALID_OBJECT_KEYS
-from tests.contract_version_support import as_published_at_2_0_0
+from tests.contract_version_support import as_published_at, as_published_at_2_0_0
 
 REPO = Path(__file__).resolve().parents[1]
 CURRENT_SCHEMA_DIR = REPO / "schemas"
@@ -155,6 +155,10 @@ PRE_B3_MODEL_NAMES = (
 
 #: 起点 b9e584d 的 59 份 current Schema 的 SHA-256：B3 只新增，不得改动任何一份。
 #: ADR-0052 (2.1.0) added optional exact / Profile fields to these four schemas: pinned anew.
+#: Current schemas changed by ADR-0055's fields (contract 2.2.0; the knowledge tag / asset fields).
+ADR_0055_SCHEMA_SHA256 = {
+    "KnowledgeItem": "e14ed123adaf2a6b8d536d037c2dd5d543b7a930187607466016fd4c27663d8c",
+}
 ADR_0052_SCHEMA_SHA256 = {
     "ExperimentMetadata": "0c80994796dbf6d13ea6b0fc4dd3e304923107e51ce9800cff1c2c81eb5ecc03",
     "GateResult": "9872878eeb55b9c075553dfcbce6fa8efd6c5b6621894e31b7d19d1eb2876b72",
@@ -1552,11 +1556,17 @@ def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
 def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) -> None:
     committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
     regenerated = export_json_schemas(tmp_path)[name].read_bytes()
-    if name in ADR_0052_SCHEMA_SHA256:  # changed by ADR-0052's fields: the 2.1.0 pin
-        assert hashlib.sha256(committed).hexdigest() == ADR_0052_SCHEMA_SHA256[name]
-        assert hashlib.sha256(regenerated).hexdigest() == ADR_0052_SCHEMA_SHA256[name]
+    if name in ADR_0055_SCHEMA_SHA256:  # changed by ADR-0055's fields: the 2.2.0 pin
+        assert hashlib.sha256(committed).hexdigest() == ADR_0055_SCHEMA_SHA256[name]
+        assert hashlib.sha256(regenerated).hexdigest() == ADR_0055_SCHEMA_SHA256[name]
         return
-    # ADR-0052 §4: the 2.1.0 bump may change only the envelope default of these schemas.
+    if name in ADR_0052_SCHEMA_SHA256:  # changed by ADR-0052's fields: the 2.1.0 pin
+        # ADR-0055: the 2.2.0 bump may change only the envelope default of these schemas.
+        for schema in (committed, regenerated):
+            digest = hashlib.sha256(as_published_at(schema, "2.1.0")).hexdigest()
+            assert digest == ADR_0052_SCHEMA_SHA256[name]
+        return
+    # ADR-0052 §4 / ADR-0055: the 2.1.0 and 2.2.0 bumps may change only the envelope default.
     assert (
         hashlib.sha256(as_published_at_2_0_0(committed)).hexdigest() == (PRE_B3_SCHEMA_SHA256[name])
     )
@@ -1579,8 +1589,8 @@ def test_v1_snapshots_and_vectors_are_byte_identical() -> None:
 
 
 def test_contract_version_and_reused_patterns_are_unchanged() -> None:
-    # ADR-0052 §4 raised the minor to 2.1.0; this batch itself changed no version.
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
+    # ADR-0052 §4 raised the minor to 2.1.0 and ADR-0055 to 2.2.0; this batch changed no version.
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
     assert revision.SNAPSHOT_TABLE_PATTERN == r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"
     assert revision.BINDING_ID_PATTERN == r"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$"
 

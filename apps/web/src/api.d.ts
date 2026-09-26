@@ -245,8 +245,16 @@ export interface components {
         /**
          * KnowledgeItem
          * @description 公开来源中的**待检验主张**，不是已验证结论。
+         *
+         *     `tags` / `assets`（ADR-0055，自 2.2.0）：主题标签与研究范围资产标识（资产类别或基础资产，
+         *     **不是**交易所符号、上市记录或行情证据）；规范 token、严格升序、无重复；为空时不进入载荷。
          */
         KnowledgeItem: {
+            /**
+             * Assets
+             * @default []
+             */
+            assets: string[];
             /** Claim */
             claim: string;
             /**
@@ -282,13 +290,18 @@ export interface components {
             name: string;
             /**
              * Schema Version
-             * @default 2.1.0
+             * @default 2.2.0
              */
             schema_version: string;
             /** Source */
             source: string;
             /** @default unverified */
             status: components["schemas"]["KnowledgeStatus"];
+            /**
+             * Tags
+             * @default []
+             */
+            tags: string[];
             /** Version */
             version: string;
         };
@@ -300,9 +313,19 @@ export interface components {
          *     - `name_prefix`：库前缀，如 `strategy_`、`factor_`、`state_`（空 = 不限）；
          *     - `evidence_at_least`：只返回证据等级不低于该值的条目（空 = 不限）；
          *     - `statuses`：只返回这些状态（空 = 不限）；
+         *     - `tags_all`（ADR-0055，自 2.2.0）：条目须包含**全部**这些标签（空 = 不限）；
+         *     - `assets_any`（ADR-0055，自 2.2.0）：条目须至少包含其一，逐字精确相等（空 = 不限）；
          *     - `limit`：结果上限。
+         *
+         *     各过滤器之间为 AND；`tags_all` / `assets_any` 是规范 token、严格升序、无重复，为空时不进入载荷
+         *     （同一信封版本下旧查询的 `query_hash` 逐位不变）。
          */
         KnowledgeQuery: {
+            /**
+             * Assets Any
+             * @default []
+             */
+            assets_any: string[];
             evidence_at_least?: components["schemas"]["EvidenceLevel"] | null;
             /**
              * Limit
@@ -316,7 +339,7 @@ export interface components {
             name_prefix: string;
             /**
              * Schema Version
-             * @default 2.1.0
+             * @default 2.2.0
              */
             schema_version: string;
             /**
@@ -324,6 +347,11 @@ export interface components {
              * @default []
              */
             statuses: components["schemas"]["KnowledgeStatus"][];
+            /**
+             * Tags All
+             * @default []
+             */
+            tags_all: string[];
             /**
              * Terms
              * @default []
@@ -345,7 +373,7 @@ export interface components {
             result_hash: string;
             /**
              * Schema Version
-             * @default 2.1.0
+             * @default 2.2.0
              */
             schema_version: string;
         };
@@ -374,7 +402,7 @@ export interface components {
             name: string;
             /**
              * Schema Version
-             * @default 2.1.0
+             * @default 2.2.0
              */
             schema_version: string;
             /** Version */

@@ -251,46 +251,56 @@ def test_committed_batches_without_version_evidence_fail_closed(h: RestHarness) 
 
 
 # =========================================================================================
-# the real bump (M2): 2.0.0 units committed by the pre-bump code, read and replayed at 2.1.0
+# the real bumps (M2, ADR-0055): units committed at every earlier published version (2.0.0, 2.1.0),
+# read and replayed at the current version (2.2.0)
 # =========================================================================================
 
-OLD = "2.0.0"
+#: Every published version older than the current one: each must replay unchanged.
+PRIOR = ("2.0.0", "2.1.0")
+prior_versions = pytest.mark.parametrize("old", PRIOR)
 
 
 def test_the_bump_is_real() -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
-    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (OLD, "2.1.0")
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (*PRIOR, CONTRACT_SCHEMA_VERSION)
 
 
-def test_a_committed_2_0_0_unit_replays_unchanged_after_the_bump(h: RestHarness) -> None:
-    with written_at(OLD):
-        archive = _committed_unit(h, OLD)
+@prior_versions
+def test_a_committed_earlier_unit_replays_unchanged_after_the_bump(
+    h: RestHarness, old: str
+) -> None:
+    with written_at(old):
+        archive = _committed_unit(h, old)
     before = _state(h)
     clock = StepClock(start=K_NORM)
     again = c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert again.replayed and clock.calls == 0
-    assert _state(h) == before and _versions(h) == {OLD}
+    assert _state(h) == before and _versions(h) == {old}
     verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
         c.ARCHIVE_AGGS.table, archive
     )
-    assert {row["contract_schema_version"] for row in verified} == {OLD}
+    assert {row["contract_schema_version"] for row in verified} == {old}
     records = c.records(h, verified[0]["observation_key"])
-    assert {record.schema_version for record in records} == {OLD}  # read as recorded
+    assert {record.schema_version for record in records} == {old}  # read as recorded
 
 
-def test_a_2_0_0_partial_unit_is_completed_at_2_0_0_after_the_bump(h: RestHarness) -> None:
-    with written_at(OLD):
+@prior_versions
+def test_an_earlier_partial_unit_is_completed_at_its_version_after_the_bump(
+    h: RestHarness, old: str
+) -> None:
+    with written_at(old):
         archive = _crash_partial(h, 5, 2)
-    assert _versions(h) == {OLD}
+    assert _versions(h) == {old}
     clock = StepClock(start=K_NORM + timedelta(hours=1))
     out = c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert [commit.replayed for commit in out.commits] == [True, False, False]
     assert clock.calls == 0 and len(h.rows(c.TRADES)) == 5
-    assert _versions(h) == {OLD}  # never a mixed unit
+    assert _versions(h) == {old}  # never a mixed unit
 
 
-def test_a_unit_mixing_2_0_0_and_2_1_0_fails_closed(h: RestHarness) -> None:
-    with written_at(OLD):
+@prior_versions
+def test_a_unit_mixing_an_earlier_and_the_current_fails_closed(h: RestHarness, old: str) -> None:
+    with written_at(old):
         archive = _crash_partial(h, 5, 2)
     channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
     [base] = {row["arrival_seq"] // rules.ARRIVAL_SEQ_STRIDE for row in h.rows(c.TRADES)}
@@ -312,9 +322,10 @@ def test_a_unit_mixing_2_0_0_and_2_1_0_fails_closed(h: RestHarness) -> None:
     assert clock.calls == 0 and _state(h) == before
 
 
-def test_2_0_0_and_2_1_0_units_share_one_table(h: RestHarness) -> None:
-    """V6: a 2.0.0 unit and a 2.1.0 unit side by side; both verify, replay and PIT-select."""
-    with written_at(OLD):
+@prior_versions
+def test_an_earlier_and_the_current_units_share_one_table(h: RestHarness, old: str) -> None:
+    """V6: an earlier-version unit and a current one side by side; both verify, replay, select."""
+    with written_at(old):
         btc = fs.ingest_archive_for(
             h,
             "agg_trades",
@@ -336,9 +347,9 @@ def test_2_0_0_and_2_1_0_units_share_one_table(h: RestHarness) -> None:
     by_symbol: dict[str, set[str]] = {}
     for row in h.rows(c.TRADES):
         by_symbol.setdefault(row["symbol"], set()).add(row["contract_schema_version"])
-    assert by_symbol == {"BTC-USDT": {OLD}, "ETH-USDT": {CONTRACT_SCHEMA_VERSION}}
+    assert by_symbol == {"BTC-USDT": {old}, "ETH-USDT": {CONTRACT_SCHEMA_VERSION}}
     raw_versions = {row["contract_schema_version"] for row in h.rows(c.ARCHIVES)}
-    assert raw_versions == {OLD, CONTRACT_SCHEMA_VERSION}
+    assert raw_versions == {old, CONTRACT_SCHEMA_VERSION}
 
     before = _state(h)
     for unit in (btc, eth):
@@ -347,7 +358,7 @@ def test_2_0_0_and_2_1_0_units_share_one_table(h: RestHarness) -> None:
         assert n.verify_unit(c.ARCHIVE_AGGS.table, unit)
     assert _state(h) == before
 
-    for unit, version in ((btc, OLD), (eth, CONTRACT_SCHEMA_VERSION)):
+    for unit, version in ((btc, old), (eth, CONTRACT_SCHEMA_VERSION)):
         verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
             c.ARCHIVE_AGGS.table, unit
         )

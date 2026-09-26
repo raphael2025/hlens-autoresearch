@@ -1,5 +1,6 @@
 [
   {
+    "schema_version": "2.1.0",
     "kind": "knowledge",
     "name": "strategy_time_series_momentum",
     "version": "1.0.0",
@@ -16,6 +17,7 @@
     "status": "unverified"
   },
   {
+    "schema_version": "2.1.0",
     "kind": "knowledge",
     "name": "strategy_crypto_time_series_momentum",
     "version": "1.0.0",
@@ -32,6 +34,7 @@
     "status": "unverified"
   },
   {
+    "schema_version": "2.1.0",
     "kind": "knowledge",
     "name": "factor_crypto_market_size_momentum",
     "version": "1.0.0",
@@ -47,6 +50,7 @@
     "status": "unverified"
   },
   {
+    "schema_version": "2.1.0",
     "kind": "knowledge",
     "name": "risk_volatility_managed_portfolios",
     "version": "1.0.0",
@@ -63,6 +67,7 @@
     "status": "unverified"
   },
   {
+    "schema_version": "2.1.0",
     "kind": "knowledge",
     "name": "risk_volatility_managed_portfolios_out_of_sample",
     "version": "1.0.0",
@@ -78,6 +83,7 @@
     "status": "unverified"
   },
   {
+    "schema_version": "2.1.0",
     "kind": "knowledge",
     "name": "state_cross_exchange_price_deviations",
     "version": "1.0.0",

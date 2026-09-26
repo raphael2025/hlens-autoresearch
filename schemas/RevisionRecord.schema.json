@@ -5,7 +5,7 @@
       "description": "一次 availability 判定：时间 + availability policy + 证据**或**证据缺口（ADR-0023 §2）。\n\n- `evidence` 与 `evidence_gap` **恰好给出一项**：每个判定要么有来源证据，要么显式记录缺口；\n- `available_time < ingest_time`（早于本机得知）**必须**有证据，不得仅凭 `event_time` 回填；\n- 记录证据缺口时，`available_time` 必须**等于** `ingest_time`（保守回退），不得取更早的时间。\n\n证据缺口不是数据集级失败：该 revision 以 `ingest_time` 为历史可用时间继续参与 PIT，\n缺口随 manifest 绑定（roadmap Phase 1 验收 #18）。\n\n**诚实边界**：证据项只是非空引用；证据是否存在、是否真的支持该时间、policy 是否真的据此算出\n`available_time`，属未来 Registry 与 policy 审阅（roadmap Phase 1 验收 #17）。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -51,7 +51,7 @@
       "description": "一个 revision 的两轴时间（ADR-0023 §1），全部 UTC，naive 时间拒绝。\n\n六个 ADR 字段：`event_time`、`source_time`、`available_time`、`ingest_time`、\n`knowledge_time`、`declared_latency`。区间型数据（例如 1m bar）按 ADR §1「同时记录区间起止」\n另给 `event_end_time`，即半开区间 `[event_time, event_end_time)` 的结束端；瞬时事件不填。\n\n局部不变量：\n\n- `declared_latency >= 0`（只作用于历史轴的保守计算，不代替任何知识轴时间）；\n- `knowledge_time >= ingest_time`；\n- `available_time` 不早于观察本身可被观察的时刻（瞬时事件取 `event_time`，\n  区间取 `event_end_time`），也不早于已给出的 `source_time`；\n- `source_time` 没有就为空，不得伪造。\n\n`available_time` **可以早于** `ingest_time`（历史 backfill），但那需要证据——\n见 `AvailabilityDecision`。\n`declared_latency` 如何进入 `available_time` 由 availability policy 计算，本模型不重算。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -123,7 +123,7 @@
       "description": "对一份版本化规则的绑定：`policy_id` + SemVer + 内容哈希（03-data.md §7.3）。\n\n`role` 区分 availability policy、precedence policy、PIT 选择规则与 parser 版本；使用处按字段\n要求确切的 `role`，因此 availability 与 precedence 绑定不能互相冒充。\n\n**诚实边界**：只约束形状。该版本是否已登记、`policy_hash` 是否等于该版本的真实内容、\npolicy 是否带有已审阅的来源证据，属未来 Registry（03-data.md §7.3「标识符冻结 ≠ 数据可信」）。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -172,7 +172,7 @@
   "description": "一个不可变 revision（ADR-0023 §4）：只追加，永不覆盖。\n\n- `observation_key`：同一业务观察的稳定键；`revision_id`：稳定修订身份；`source_id`：来源身份；\n  `payload_hash`：该 payload 的 SHA-256。格式由实施批次按数据类型定义并版本化。\n- `arrival_seq`：本机追加顺序，**只**用于审计、幂等与恢复；**不是**语义优先级，\n  也不得用于打破冲突。\n- `supersedes`：本 revision 取代的 revision 集合（去重、禁止自指；按 ID 规范排序，不表示先后）。\n  允许指向尚未 ingest 的 predecessor（dangling）。\n- `source_revision_id` / `source_revision_time`：来源提供时记录，供 precedence policy 证明先后；\n  来源给出修订时间时，`available_time` 不得早于它（ADR-0023 §2）。\n\n跨记录约束（ID / 序号唯一、边不跨 key、无环、边有证据）只能在 `RevisionGraph` 证明；\n`revision_id` 是否按规则形成、`arrival_seq` 是否跨重启不复用，属未来存储层。",
   "properties": {
     "schema_version": {
-      "default": "2.1.0",
+      "default": "2.2.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

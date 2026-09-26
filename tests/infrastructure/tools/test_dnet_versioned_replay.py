@@ -1,11 +1,13 @@
-"""D-NET committed data replayed after the 2.1.0 bump (ADR-0052 versioned replay, M2 gate).
+"""D-NET committed data replayed after the 2.1.0 and 2.2.0 bumps (ADR-0052 versioned replay, M2
+gate; ADR-0055): data committed at 2.0.0 and at 2.1.0 are each re-run by the current 2.2.0 code.
 
 The D-NET capability steps (collect, ingest, normalize, report, pit, f2) run offline — the mock
 archive site of ``test_dnet_capability_run`` and a temporary SQLite catalog; no download, no REST
-or exchangeInfo call, never the real catalog or warehouse — as the 2.0.0 code
-(``written_at("2.0.0")``). The steps are then run again by the current code on the same catalog:
+or exchangeInfo call, never the real catalog or warehouse — as an earlier code version
+(``written_at(old)``). The steps are then run again by the current code on the same catalog:
 every write step is a replay (nothing committed, every snapshot head and row unchanged, every row
-still 2.0.0) and the read steps (quality reports, PIT, f2) answer exactly as before.
+still at its recorded version) and the read steps (quality reports, PIT, f2) answer exactly as
+before.
 """
 
 from __future__ import annotations
@@ -34,7 +36,8 @@ from tests.infrastructure.tools.test_dnet_capability_run import (
     _Site,
 )
 
-OLD = "2.0.0"
+#: Every published version older than the current one (ADR-0052 2.1.0, ADR-0055 2.2.0 bumps).
+PRIOR = ("2.0.0", "2.1.0")
 
 
 @pytest.fixture
@@ -105,17 +108,19 @@ def _reads(adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter) -
     return _without_timings(answers)
 
 
-def test_dnet_data_committed_at_2_0_0_replays_unchanged_at_2_1_0(
+@pytest.mark.parametrize("old", PRIOR)
+def test_dnet_data_committed_earlier_replays_unchanged_now(
     world: tuple[PyIcebergCatalogAdapter, LocalFileStorageAdapter],
     monkeypatch: pytest.MonkeyPatch,
+    old: str,
 ) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
     adapter, storage = world
     monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
     monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)
     settings = Settings(_env_file=None)  # type: ignore[call-arg]
     site = _Site()
-    with written_at(OLD):
+    with written_at(old):
         collected = _round_trip(
             tool._collect(
                 settings, storage, [DAY], http_transport=httpx.MockTransport(site.handler)
@@ -127,7 +132,7 @@ def test_dnet_data_committed_at_2_0_0_replays_unchanged_at_2_1_0(
         written = tool._report(adapter, storage, [DAY])["reports"]
         assert not any(report["reused"] for report in written)
         first_reads = _reads(adapter, storage)  # the reports now exist: every read reuses
-    assert _versions(adapter) == {OLD}
+    assert _versions(adapter) == {old}
     committed = _state(adapter)
     requests = len(site.requests)
 
@@ -140,5 +145,5 @@ def test_dnet_data_committed_at_2_0_0_replays_unchanged_at_2_1_0(
     assert _reads(adapter, storage) == first_reads
     assert all(report["reused"] for report in tool._report(adapter, storage, [DAY])["reports"])
     assert _state(adapter) == committed  # no snapshot, no row, no version changed
-    assert _versions(adapter) == {OLD}
+    assert _versions(adapter) == {old}
     assert len(site.requests) == requests  # nothing downloaded again

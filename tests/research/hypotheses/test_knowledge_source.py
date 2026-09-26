@@ -73,7 +73,7 @@ def test_the_payload_binds_the_provider_identity_and_the_query(
 ) -> None:
     a = KnowledgeSource(provider, KnowledgeQuery(terms=("momentum",), limit=10)).payload()
     b = KnowledgeSource(provider, KnowledgeQuery(terms=("reversal",), limit=10)).payload()
-    assert a["provider"] == b["provider"] == "hlens_knowledge_local@1.0.0"
+    assert a["provider"] == b["provider"] == "hlens_knowledge_local@1.1.0"
     assert a["descriptor"] == provider.descriptor.content_hash()
     assert a["query"] != b["query"]
 

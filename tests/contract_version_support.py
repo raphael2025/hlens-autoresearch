@@ -18,9 +18,13 @@ from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, contract_schema_
 
 __all__ = [
     "PRE_BUMP_VERSION",
+    "as_published_at",
     "as_published_at_2_0_0",
     "at_pre_bump",
+    "at_version",
+    "built_at",
     "built_at_pre_bump",
+    "envelopes_at",
     "envelopes_at_pre_bump",
 ]
 
@@ -29,8 +33,14 @@ PRE_BUMP_VERSION = "2.0.0"
 
 def as_published_at_2_0_0(schema: bytes) -> bytes:
     """``schema`` with the current envelope default written back as 2.0.0 (and nothing else)."""
+    return as_published_at(schema, PRE_BUMP_VERSION)
+
+
+def as_published_at(schema: bytes, version: str) -> bytes:
+    """``schema`` with the current envelope default written back as ``version`` (nothing else):
+    byte pins taken while ``version`` was current (ADR-0055: 2.1.0 pins after the 2.2.0 bump)."""
     current = CONTRACT_SCHEMA_VERSION.encode()
-    old = PRE_BUMP_VERSION.encode()
+    old = version.encode()
     mapped = schema.replace(b'"default": "' + current + b'"', b'"default": "' + old + b'"')
     mapped = mapped.replace(
         b'"schema_version": "' + current + b'"', b'"schema_version": "' + old + b'"'
@@ -50,6 +60,12 @@ def _envelopes_at(value: Any, version: str) -> Any:
     return value
 
 
+def envelopes_at(data: Any, version: str) -> Any:
+    """JSON-like ``data`` with every ``schema_version`` at ``version`` (ADR-0055: byte pins of
+    reports taken while 2.1.0 was current)."""
+    return _envelopes_at(data, version)
+
+
 def envelopes_at_pre_bump(data: Any) -> Any:
     """JSON-like ``data`` (e.g. a ``to_dict()`` report) with every ``schema_version`` at 2.0.0.
 
@@ -57,6 +73,11 @@ def envelopes_at_pre_bump(data: Any) -> Any:
     to such a report is its embedded envelopes; everything else must still match the pin.
     """
     return _envelopes_at(data, PRE_BUMP_VERSION)
+
+
+def at_version[C: Contract](obj: C, version: str) -> C:
+    """The ``version`` twin of ``obj``: every envelope (nested included) at ``version``."""
+    return type(obj).model_validate(_envelopes_at(obj.model_dump(), version))
 
 
 def at_pre_bump[C: Contract](obj: C) -> C:
@@ -74,3 +95,12 @@ def built_at_pre_bump() -> Iterator[str]:
     """
     with contract_schema_version_scope(PRE_BUMP_VERSION):
         yield PRE_BUMP_VERSION
+
+
+@contextmanager
+def built_at(version: str) -> Iterator[str]:
+    """Construct contract objects as the ``version`` code did (test only; ADR-0055: pins taken
+    under the 2.1.0 envelope are checked on objects built inside a 2.1.0 scope). Module constants
+    built earlier keep their envelope: pass them through ``at_version`` first."""
+    with contract_schema_version_scope(version):
+        yield version

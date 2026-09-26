@@ -996,7 +996,9 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     DATASET_SELECTIONS.table: dataset_selection_row,
 }
 assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
-assert CONTRACT_SCHEMA_VERSION == "2.1.0"  # ADR-0052 §4 (rows carry their recorded version)
+assert (
+    CONTRACT_SCHEMA_VERSION == "2.2.0"
+)  # ADR-0052 §4 / ADR-0055 (rows carry their recorded version)
 
 
 def batch_for(definition: RegisteredTableDefinition, rows: list[dict[str, Any]]) -> pa.Table:

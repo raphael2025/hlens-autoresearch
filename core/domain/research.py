@@ -8,9 +8,15 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Final, Literal
+from typing import Annotated, Final, Literal
 
-from pydantic import Field, model_validator
+from pydantic import (
+    Field,
+    StringConstraints,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from core.domain.base import (
     SEMVER_PATTERN,
@@ -27,6 +33,7 @@ from core.domain.base import (
     RefKey,
     UtcDatetime,
     VersionedSpec,
+    omit_empty,
     omit_none,
     validate_ref_keyed_hashes,
 )
@@ -37,8 +44,16 @@ from core.errors import ReasonCode
 
 #: The minor that introduced this module's ADR-0052 fields (never under 2.0.0).
 ADR_0052_VERSION: Final = "2.1.0"
+#: The minor that introduced knowledge tags / assets (ADR-0055; never under 2.0.0 or 2.1.0).
+ADR_0055_VERSION: Final = "2.2.0"
+
+#: 知识标签 / 资产的规范取值（ADR-0055 决策 3）：ASCII 小写 snake case，无空串、首尾或连续下划线。
+KNOWLEDGE_TOKEN_PATTERN: Final = r"^[a-z0-9]+(?:_[a-z0-9]+)*$"
+KnowledgeToken = Annotated[str, StringConstraints(pattern=KNOWLEDGE_TOKEN_PATTERN)]
 
 __all__ = [
+    "ADR_0055_VERSION",
+    "KNOWLEDGE_TOKEN_PATTERN",
     "EvidenceLevel",
     "ExperimentRun",
     "ExperimentSpec",
@@ -48,12 +63,14 @@ __all__ = [
     "HypothesisOrigin",
     "KnowledgeItem",
     "KnowledgeStatus",
+    "KnowledgeToken",
     "LlmCall",
     "ReproducibilityTuple",
     "RetirementRecord",
     "RunState",
     "ValidationReport",
     "Verdict",
+    "canonical_token_set",
     "derive_verdict",
     "require_unique_gate_ids",
 ]
@@ -83,8 +100,26 @@ class HypothesisOrigin(StrEnum):
     LLM = "llm"
 
 
+def canonical_token_set(values: tuple[str, ...], label: str) -> tuple[str, ...]:
+    """标签 / 资产集合的唯一载荷形式（ADR-0055 决策 3）：严格升序、无重复，否则拒绝。
+
+    不静默排序或去重：同一集合只能有一种载荷与一个哈希，写错的集合 fail closed。
+    """
+    if len(set(values)) != len(values):
+        raise ValueError(f"{label} 不得有重复值：{list(values)}")
+    if list(values) != sorted(values):
+        raise ValueError(f"{label} 必须严格升序：{list(values)}")
+    return values
+
+
 class KnowledgeItem(VersionedSpec):
-    """公开来源中的**待检验主张**，不是已验证结论。"""
+    """公开来源中的**待检验主张**，不是已验证结论。
+
+    `tags` / `assets`（ADR-0055，自 2.2.0）：主题标签与研究范围资产标识（资产类别或基础资产，
+    **不是**交易所符号、上市记录或行情证据）；规范 token、严格升序、无重复；为空时不进入载荷。
+    """
+
+    _FIELDS_SINCE = {"tags": ADR_0055_VERSION, "assets": ADR_0055_VERSION}
 
     kind: Literal[Kind.KNOWLEDGE] = Kind.KNOWLEDGE
     source: str = Field(min_length=1)
@@ -94,6 +129,17 @@ class KnowledgeItem(VersionedSpec):
     evidence_level: EvidenceLevel
     status: KnowledgeStatus = KnowledgeStatus.UNVERIFIED
     links: tuple[Ref, ...] = ()
+    tags: tuple[KnowledgeToken, ...] = Field(
+        default=(), exclude_if=omit_empty, json_schema_extra={"uniqueItems": True}
+    )
+    assets: tuple[KnowledgeToken, ...] = Field(
+        default=(), exclude_if=omit_empty, json_schema_extra={"uniqueItems": True}
+    )
+
+    @field_validator("tags", "assets")
+    @classmethod
+    def _canonical_sets(cls, value: tuple[str, ...], info: ValidationInfo) -> tuple[str, ...]:
+        return canonical_token_set(value, str(info.field_name))
 
 
 class Hypothesis(VersionedSpec):

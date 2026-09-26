@@ -11,7 +11,7 @@ from core.contracts.llm import LlmRequest
 from core.domain.base import ContentBlobRef
 from infrastructure.content import LocalContentStore, verify_llm_call
 from plugins.llm import BlobSink, ScriptedLLMProvider
-from tests.contract_version_support import at_pre_bump, built_at_pre_bump
+from tests.contract_version_support import at_pre_bump, at_version, built_at, built_at_pre_bump
 
 NOW = datetime(2026, 9, 26, tzinfo=UTC)
 REQUEST = LlmRequest.model_validate(
@@ -47,7 +47,10 @@ def test_without_a_store_the_call_is_byte_identical_to_before() -> None:
     assert call.prompt.byte_size is None
     assert call.content_hash() == LEGACY_CALL_HASH
     assert response.content_hash() == LEGACY_RESPONSE_HASH
-    now = ScriptedLLMProvider([OUTPUT], clock=lambda: NOW).complete(REQUEST)
+    with built_at("2.1.0"):  # the 2.1.0 pins, on what the 2.1.0 code builds (ADR-0055)
+        now = ScriptedLLMProvider([OUTPUT], clock=lambda: NOW).complete(
+            at_version(REQUEST, "2.1.0")
+        )
     assert (now.call.content_hash(), now.content_hash()) == (CALL_HASH_2_1_0, RESPONSE_HASH_2_1_0)
 
 

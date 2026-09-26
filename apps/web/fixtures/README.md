@@ -17,7 +17,7 @@ the files the real writers produce for those objects, byte for byte, and nothing
 append-only and every id is a content hash, so after changing a writer's payload shape or a reused
 fixture builder, delete the stale file under the affected `<kind>/` first.
 
-## Current fixtures (contract 2.1.0)
+## Current fixtures (contract 2.2.0)
 
 One per kind, built at the current contract version:
 
@@ -69,11 +69,32 @@ which the store checks), so they are marked here and pinned by id in
 | `gate_calibration/` | `deaba5047218eeff080ed1e1ae588ba8e13a4f6ea3b6557fcab6ea3ffbe5fc07.json` |
 
 They were first produced by a throwaway script before contract 2.1.0; they are now reproduced by
-the same committed module (`regenerate_legacy`): the same builders (the validation report without
-the exact gate) in a fresh interpreter that imports them inside
+the same committed module (`regenerate_legacy("2.0.0")`): the same builders (the validation report
+without the exact gate) in a fresh interpreter that imports them inside
 `contract_schema_version_scope("2.0.0")`, and its pytest requires the result to be byte-identical
-to these files. `research_loop_round/` and `router_paper_run/` have no legacy file: their committed
-files already are the current (2.1.0) writers' output, so there is no older file to keep.
+to these files.
+
+## Legacy readable fixtures (contract 2.1.0)
+
+The contract 2.2.0 bump (ADR-0055) changed the envelope — and so the bytes and the id — of six
+kinds' reports. Their files committed before the bump stay, pinned by id in
+`tests/apps/report_fixtures.py` (`LEGACY_2_1_0`), so the API and the console keep proving they read
+a report written by the 2.1.0 code:
+
+| kind | legacy 2.1.0 file |
+|---|---|
+| `validation_report/` | `da3950c41dc7c6548ace7fdec79ce58b93e0646ed5dd92bf7a4e58879adf4032.json` (float + exact gate) |
+| `state_strategy_matrix/` | `89f28e4a5d44e45a02ac3bf6d81716dd179b939cc8985edb94950aea5107b11a.json` |
+| `router_paper_run/` | `7f30d3d4c10238b5d5f9f4c9138b5518e633d5e7d3ba448a9aa6695a9179d8d2.json` |
+| `gate_calibration/` | `c5147ea3fa460274b30f0c67a17df62788de1f213e4ba0efd108806823543c1e.json` |
+| `router_stop/` | `64c340616747be0377f0b48e4d4baeecbf1f72d41547bc7961fe24b2478ed4d9.json` |
+| `paper_deviation/` | `a168f4f764b698ec9c7f46035a2d62f4b857d8d543855b732dabb65ac9d456a1.json` (describes the legacy 2.1.0 `router_paper_run`) |
+
+They are reproduced by `regenerate_legacy("2.1.0")` — the current builders in a fresh interpreter
+inside `contract_schema_version_scope("2.1.0")` — byte for byte (verified before the 2.2.0 files
+were added). `research_loop_round/`, `state_diagnostics/`, `event_statistics/` and
+`degradation_check/` have no legacy file of either generation: nothing they serialize depends on
+the contract envelope, so every version's writers produce the same bytes.
 
 `tests/apps/test_console_fixtures.py` loads every fixture here through `apps.api`'s `ReportStore`
 (and the `/reports/...` HTTP endpoints) and fails if any `ReportKind` has no fixture file, so this

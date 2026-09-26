@@ -40,7 +40,7 @@
       "description": "一条版本化过滤规则的声明形状（流动性、数据质量等；ADR-0024 §5）。\n\n指标是一份 FeatureSpec，以 `feature_name + feature_version + feature_hash` 绑定（不用 `Ref`）；\nFeatureSpec 的输入白名单排除 Outcome（ADR-0012），因此\"最终成交量\"这类前视标签不能成为指标。\n`threshold` 的数值由 spec 的作者在新版本中给出，本契约**不选择、不暗含任何数值**；它只要求有限\n数（`Contract` 全局拒绝 NaN / ±Inf）。\n\n**诚实边界**：指标的实际解析与计算、FeatureSpec 是否已登记、哈希是否匹配，属批次 F 与 Registry。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -93,7 +93,7 @@
   "description": "独立、版本化的 universe 选择规格（ADR-0024 §5）；规则变化 = 新版本，旧版本保留以复现旧实验。\n\n- `name` + `version`：身份（例如首切片 `binance.spot.btc-eth@1.0.0`，03-data.md §7.3）；manifest\n  以 `binding()` 得到的 `name + SemVer + content_hash()` 绑定它；\n- `candidate_source`：只能是 PIT listing 历史；\n- `venue` + `instrument_type` + `symbols`：候选范围——在每个\n  `(simulation_time, knowledge_cutoff)` 下，由 PIT 选出的 listing revision 中 venue、类型一致且\n  **当时** symbol 属于 `symbols` 的 episode。这是预先声明、随版本冻结的范围，按历史 listing 求\n  值，不是\"今天的 symbol 列表\"；symbols 去重并规范排序、大小写敏感；\n- `filters`：必须显式给出（可为空）；全部规则取合取，`filter_id` 唯一，按 `filter_id` 规范排序。\n\n没有 `kind`、`Ref` 或 `lineage` 字段：它不是可被 `Ref` 引用的已登记对象（ADR-0024 §5）。",
   "properties": {
     "schema_version": {
-      "default": "2.1.0",
+      "default": "2.2.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

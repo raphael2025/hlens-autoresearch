@@ -1,15 +1,17 @@
-"""ADR-0052 versioned replay over the whole Phase 1 first slice (M2: after the 2.1.0 bump).
+"""ADR-0052 versioned replay over the whole Phase 1 first slice (M2: after the 2.1.0 bump; ADR-0055:
+after the 2.2.0 bump).
 
 The first slice (exchangeInfo -> listings; archive + REST aggTrades / klines for two symbols;
 reconciliation edges; Canonical normalization; quality reports; a Research Dataset + manifest) is
-committed by the 2.0.0 code (``written_at("2.0.0")``), then every write step is re-run and every
-read repeated by the current 2.1.0 code on the same catalog:
+committed by an earlier published code version (``written_at("2.0.0")`` and ``written_at("2.1.0")``,
+one run each), then every write step is re-run and every read repeated by the current 2.2.0 code on
+the same catalog:
 
-- nothing is committed: every table head is unchanged, every row reads back as recorded (2.0.0);
+- nothing is committed: every table head is unchanged, every row reads back as recorded;
 - the manifest loads and re-verifies with its recorded content hash; a rebuild from its own PIT
   spec replays the dataset snapshot and the manifest (no second manifest);
-- PIT selections of the 2.0.0 records are the same revisions and rows as when first read;
-- new data written afterwards lands at 2.1.0 in the same tables, beside the 2.0.0 rows, and a
+- PIT selections of the earlier records are the same revisions and rows as when first read;
+- new data written afterwards lands at 2.2.0 in the same tables, beside the earlier rows, and a
   PIT read / dataset build over both versions is defined (each record keeps its own version).
 
 These are real committed Iceberg snapshots (temporary SQLite catalog), not in-memory models.
@@ -19,6 +21,8 @@ from __future__ import annotations
 
 import json
 from typing import Any
+
+import pytest
 
 from core.contracts.revision import PointInTimeSpec
 from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
@@ -40,7 +44,9 @@ from tests.infrastructure.dataset import dataset_support as ds
 from tests.infrastructure.e2e import first_slice_support as fs
 from tests.infrastructure.revision import rest_store_support as ss
 
-OLD = "2.0.0"
+#: Every published version older than the current one (ADR-0052 2.1.0, ADR-0055 2.2.0 bumps).
+PRIOR = ("2.0.0", "2.1.0")
+prior_versions = pytest.mark.parametrize("old", PRIOR)
 _ASSUMED = (rules.AVAILABILITY_BINDING, EXCHANGE_INFO_AVAILABILITY_BINDING, ASSUMPTION_BINDING)
 
 
@@ -164,9 +170,10 @@ def _replay_every_step(w: ds.World) -> None:
     w.report("klines_1m", symbols=(fs.BTC, fs.ETH), listing=True)
 
 
-def test_a_2_0_0_first_slice_is_read_and_replayed_unchanged_at_2_1_0(w: ds.World) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
-    with written_at(OLD):
+@prior_versions
+def test_an_earlier_first_slice_is_read_and_replayed_unchanged_now(w: ds.World, old: str) -> None:
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    with written_at(old):
         _walk(w)
         spec = w.spec()
         built = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "klines_1m", fs.DAY_START, fs.DAY_END)
@@ -177,11 +184,11 @@ def test_a_2_0_0_first_slice_is_read_and_replayed_unchanged_at_2_1_0(w: ds.World
             for symbol in (fs.BTC, fs.ETH)
         }
     manifest = built.manifest
-    assert manifest.schema_version == OLD
-    assert set().union(*_versions(w).values()) == {OLD}
+    assert manifest.schema_version == old
+    assert set().union(*_versions(w).values()) == {old}
     heads, contents = _heads(w), _contents(w)
 
-    w.h.reopen()  # a fresh process of the 2.1.0 code
+    w.h.reopen()  # a fresh process of the current code
     _replay_every_step(w)
     assert _heads(w) == heads  # nothing committed anywhere
     assert _contents(w) == contents  # every row as recorded
@@ -202,15 +209,16 @@ def test_a_2_0_0_first_slice_is_read_and_replayed_unchanged_at_2_1_0(w: ds.World
     for (data_type, symbol), picture in first_reads.items():
         again = _select(w, assumed, data_type, symbol)
         assert _picture(again) == picture
-        assert {r.schema_version for rs in again.records.values() for r in rs} == {OLD}
+        assert {r.schema_version for rs in again.records.values() for r in rs} == {old}
     assert _heads(w) == heads
 
 
-def test_2_0_0_and_2_1_0_groups_are_read_side_by_side(w: ds.World) -> None:
-    """V6: the 2.1.0 code appends beside 2.0.0 data in the same tables; reads stay defined."""
-    with written_at(OLD):
+@prior_versions
+def test_earlier_and_current_groups_are_read_side_by_side(w: ds.World, old: str) -> None:
+    """V6: the current code appends beside earlier data in the same tables; reads stay defined."""
+    with written_at(old):
         w.listed(ds.TRADING, ds.L1)
-        w.trades()  # BTCUSDT aggTrades: archive + REST + edge + Canonical, all 2.0.0
+        w.trades()  # BTCUSDT aggTrades: archive + REST + edge + Canonical, all at old
         fs.ingest_bars_for(w, fs.BTC, tag="btc", base="100")
         w.report("klines_1m", symbols=(fs.BTC, fs.ETH), listing=True)
         old_manifest = (
@@ -218,10 +226,10 @@ def test_2_0_0_and_2_1_0_groups_are_read_side_by_side(w: ds.World) -> None:
             .build(FIRST_SLICE_UNIVERSE, w.spec(), "klines_1m", fs.DAY_START, fs.DAY_END)
             .manifest
         )
-    fs.ingest_trades_for(w, fs.ETH, tag="eth")  # ETHUSDT aggTrades at 2.1.0
+    fs.ingest_trades_for(w, fs.ETH, tag="eth")  # ETHUSDT aggTrades at the current version
     fs.ingest_bars_for(w, fs.ETH, tag="eth", base="200")
     w.report("klines_1m", symbols=(fs.BTC, fs.ETH), listing=True)
-    both = {OLD, CONTRACT_SCHEMA_VERSION}
+    both = {old, CONTRACT_SCHEMA_VERSION}
     versions = _versions(w)
     for name in (
         c.ARCHIVES.table,
@@ -233,18 +241,18 @@ def test_2_0_0_and_2_1_0_groups_are_read_side_by_side(w: ds.World) -> None:
         assert versions[name] == both, name
     for definition in (c.TRADES, c.BARS):
         for row in w.h.rows(definition):
-            expected = OLD if row["symbol"] == "BTC-USDT" else CONTRACT_SCHEMA_VERSION
+            expected = old if row["symbol"] == "BTC-USDT" else CONTRACT_SCHEMA_VERSION
             assert row["contract_schema_version"] == expected
 
     assumed = w.spec(availability_bindings=_ASSUMED, skip=(DATASET_SELECTIONS.table,))
-    for symbol, version in ((fs.BTC, OLD), (fs.ETH, CONTRACT_SCHEMA_VERSION)):
+    for symbol, version in ((fs.BTC, old), (fs.ETH, CONTRACT_SCHEMA_VERSION)):
         out = _select(w, assumed, "agg_trades", symbol)
         out.require_no_conflict()
         assert {item.status.value for item in out.selections} == {"selected"}
         assert {r.schema_version for rs in out.records.values() for r in rs} == {version}
         assert {row["contract_schema_version"] for row in out.selected_rows.values()} == {version}
 
-    # The 2.0.0 manifest still loads; a new dataset over both symbols is a 2.1.0 manifest.
+    # The earlier manifest still loads; a new dataset over both symbols is a current manifest.
     assert w.builder().manifests().load(old_manifest.content_hash()) == old_manifest
     spec = w.spec(skip=(DATASET_SELECTIONS.table,))  # the dataset table is never an input
     built = w.builder().build(FIRST_SLICE_UNIVERSE, spec, "klines_1m", fs.DAY_START, fs.DAY_END)

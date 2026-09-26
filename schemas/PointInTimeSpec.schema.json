@@ -5,7 +5,7 @@
       "description": "对一份版本化规则的绑定：`policy_id` + SemVer + 内容哈希（03-data.md §7.3）。\n\n`role` 区分 availability policy、precedence policy、PIT 选择规则与 parser 版本；使用处按字段\n要求确切的 `role`，因此 availability 与 precedence 绑定不能互相冒充。\n\n**诚实边界**：只约束形状。该版本是否已登记、`policy_hash` 是否等于该版本的真实内容、\npolicy 是否带有已审阅的来源证据，属未来 Registry（03-data.md §7.3「标识符冻结 ≠ 数据可信」）。",
       "properties": {
         "schema_version": {
-          "default": "2.1.0",
+          "default": "2.2.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -54,7 +54,7 @@
   "description": "一次 PIT 查询的全部输入（ADR-0023 §5，03-data.md §7.5）。\n\n- `name` + `version`：本 spec 自身的身份；manifest 以 `name + SemVer + content_hash()`\n  绑定它（批次 B2）；\n- simulation：单点 `simulation_time`，**或** UTC 半开区间\n  `[simulation_start, simulation_end)`，二选一，区间两端必须同时给出且\n  `simulation_start < simulation_end`；\n- `knowledge_cutoff`：本机知识截止，与 simulation 独立（历史 backfill 时通常晚于 simulation）；\n- `snapshot_bindings`：读取的每张 Iceberg 表 `namespace.table → snapshot_id`，至少一项；\n- PIT 选择规则、availability policy、precedence policy、parser 版本的绑定，各自 `role` 确切、\n  同一字段内 `policy_id` 不得重复（同一 policy 两个版本即不确定），按 `policy_id` 规范排序。\n\nuniverse 绑定（ADR-0024）与 manifest 属批次 B2，不在本模型内。**诚实边界**：绑定能否解析到\n已登记且带证据的版本、snapshot 是否存在、所需表是否齐全，属未来执行器与 Registry\n（03-data.md §7.5 fail closed）。",
   "properties": {
     "schema_version": {
-      "default": "2.1.0",
+      "default": "2.2.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

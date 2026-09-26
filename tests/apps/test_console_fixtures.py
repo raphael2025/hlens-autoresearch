@@ -21,11 +21,12 @@ from fastapi.testclient import TestClient
 from apps.api import create_app
 from apps.api.store import ReportKind, ReportStore
 from tests.apps.report_fixtures import (
-    LEGACY_2_0_0,
+    LEGACY,
     VARIANTS,
     fixture,
     fixtures,
     legacy_fixture,
+    legacy_ids,
     variant_fixture,
 )
 
@@ -71,7 +72,7 @@ def test_every_fixture_round_trips_through_the_store_and_the_api(kind: ReportKin
 def test_validation_report_fixtures_have_a_verdict() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.VALIDATION_REPORT)
-    assert len(envelopes) == 2  # the current 2.1.0 report and the legacy readable 2.0.0 one
+    assert len(envelopes) == 3  # the current 2.2.0 report and the legacy readable 2.0.0 / 2.1.0
     for envelope in envelopes:
         assert envelope.payload["verdict"] in {"PASS", "FAIL", "INCONCLUSIVE"}
         assert isinstance(envelope.payload["gates"], list) and envelope.payload["gates"]
@@ -87,24 +88,26 @@ def test_research_loop_round_fixture_has_a_status() -> None:
 def test_state_strategy_matrix_fixtures_have_cells() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.STATE_STRATEGY_MATRIX)
-    assert len(envelopes) == 2  # current and legacy readable 2.0.0
+    assert len(envelopes) == 3  # current and legacy readable 2.0.0 / 2.1.0
     for envelope in envelopes:
         assert envelope.payload["matrix_hash"] == envelope.id
         assert isinstance(envelope.payload["cells"], list) and envelope.payload["cells"]
 
 
-def test_router_paper_run_fixture_has_equity_curves() -> None:
+def test_router_paper_run_fixtures_have_equity_curves() -> None:
     store = ReportStore(FIXTURES_ROOT)
-    (envelope,) = store.list(ReportKind.ROUTER_PAPER_RUN)
-    assert envelope.payload["run_hash"]
-    assert envelope.payload["gross_equity_curve"]
-    assert envelope.payload["net_equity_curve"]
+    envelopes = store.list(ReportKind.ROUTER_PAPER_RUN)
+    assert len(envelopes) == 2  # current and legacy readable 2.1.0
+    for envelope in envelopes:
+        assert envelope.payload["run_hash"] == envelope.id
+        assert envelope.payload["gross_equity_curve"]
+        assert envelope.payload["net_equity_curve"]
 
 
 def test_gate_calibration_fixtures_carry_the_evidence_only_disclaimer() -> None:
     store = ReportStore(FIXTURES_ROOT)
     envelopes = store.list(ReportKind.GATE_CALIBRATION)
-    assert len(envelopes) == 2  # current and legacy readable 2.0.0
+    assert len(envelopes) == 3  # current and legacy readable 2.0.0 / 2.1.0
     for envelope in envelopes:
         assert envelope.payload["disclaimer"] == "evidence only — not a Profile decision"
         candidates = envelope.payload["candidates"]
@@ -115,21 +118,35 @@ def test_gate_calibration_fixtures_carry_the_evidence_only_disclaimer() -> None:
 
 
 @pytest.mark.parametrize("kind", list(ReportKind))
-def test_every_kind_has_one_current_fixture_and_its_pinned_legacy_one(kind: ReportKind) -> None:
+def test_every_kind_has_one_current_fixture_and_its_pinned_legacy_ones(kind: ReportKind) -> None:
     ids = {item.id for item in fixtures(kind)}
-    legacy = LEGACY_2_0_0.get(kind)
+    legacy = legacy_ids(kind)
     variants = set(VARIANTS.get(kind, {}).values())
-    assert ids - {legacy} - variants == {fixture(kind).id}
-    if legacy is not None:
-        assert legacy in ids and legacy != fixture(kind).id
+    assert ids - legacy - variants == {fixture(kind).id}
+    assert legacy <= ids and fixture(kind).id not in legacy
     assert variants <= ids and fixture(kind).id not in variants
+    assert not legacy & variants
 
 
-@pytest.mark.parametrize("kind", list(LEGACY_2_0_0))
-def test_the_legacy_2_0_0_fixture_is_still_served(kind: ReportKind) -> None:
-    old = legacy_fixture(kind)
+#: Legacy fixtures whose payload carries no contract envelope of the writing code.
+_NO_ENVELOPE = {
+    ReportKind.STATE_STRATEGY_MATRIX,
+    ReportKind.ROUTER_PAPER_RUN,
+    ReportKind.ROUTER_STOP,
+    ReportKind.GATE_CALIBRATION,
+    ReportKind.PAPER_DEVIATION,
+}
+
+
+@pytest.mark.parametrize(
+    ("version", "kind"), [(version, kind) for version, ids in LEGACY.items() for kind in ids]
+)
+def test_a_legacy_fixture_is_still_served(version: str, kind: ReportKind) -> None:
+    old = legacy_fixture(kind, version)
     text = json.dumps(old.payload, sort_keys=True, separators=(",", ":"))
-    assert '"schema_version":"2.0.0"' in text or kind is ReportKind.STATE_STRATEGY_MATRIX
+    envelope = f'"schema_version":"{version}"'
+    assert envelope in text or (kind in _NO_ENVELOPE and '"schema_version":"2.' not in text)
+    assert '"schema_version":"2.2.0"' not in text  # written before 2.2.0
     response = TestClient(create_app(reports_root=FIXTURES_ROOT)).get(
         f"/reports/{kind.value}/{old.id}"
     )
@@ -137,21 +154,25 @@ def test_the_legacy_2_0_0_fixture_is_still_served(kind: ReportKind) -> None:
 
 
 def test_the_current_validation_report_has_exact_gate_values() -> None:
-    gates = fixture(ReportKind.VALIDATION_REPORT).payload["gates"]
-    exact = [gate for gate in gates if "value_exact" in gate]
-    assert exact and all(isinstance(gate["value_exact"], str) for gate in exact)
+    current = fixture(ReportKind.VALIDATION_REPORT).payload
+    assert current["schema_version"] == "2.2.0"
+    for payload in (current, legacy_fixture(ReportKind.VALIDATION_REPORT, "2.1.0").payload):
+        exact = [gate for gate in payload["gates"] if "value_exact" in gate]
+        assert exact and all(isinstance(gate["value_exact"], str) for gate in exact)
     assert all(
         "value_exact" not in gate
         for gate in legacy_fixture(ReportKind.VALIDATION_REPORT).payload["gates"]
     )
 
 
-def test_router_stop_fixture_names_its_reason_and_hash() -> None:
+def test_router_stop_fixtures_name_their_reason_and_hash() -> None:
     store = ReportStore(FIXTURES_ROOT)
-    (envelope,) = store.list(ReportKind.ROUTER_STOP)
-    assert envelope.payload["reason"] in {"no_validated_candidate", "all_routes_flat"}
-    assert envelope.payload["stop_hash"] == envelope.id
-    assert isinstance(envelope.payload["lifecycle"], dict) and envelope.payload["lifecycle"]
+    envelopes = store.list(ReportKind.ROUTER_STOP)
+    assert len(envelopes) == 2  # current and legacy readable 2.1.0
+    for envelope in envelopes:
+        assert envelope.payload["reason"] in {"no_validated_candidate", "all_routes_flat"}
+        assert envelope.payload["stop_hash"] == envelope.id
+        assert isinstance(envelope.payload["lifecycle"], dict) and envelope.payload["lifecycle"]
 
 
 def test_state_diagnostics_fixture_has_runs_and_transitions() -> None:
@@ -179,21 +200,28 @@ def test_event_statistics_fixture_binds_its_runs() -> None:
     }
 
 
-def test_paper_deviation_fixture_compares_every_mark() -> None:
+def test_paper_deviation_fixtures_compare_every_mark() -> None:
     store = ReportStore(FIXTURES_ROOT)
-    (envelope,) = store.list(ReportKind.PAPER_DEVIATION)
-    payload = envelope.payload
-    assert payload["kind"] == "paper_deviation"
-    assert payload["deviation_hash"] == envelope.id
-    assert payload["run_hash"] and payload["reference_result_hash"]
-    assert isinstance(payload["marks"], list) and payload["marks"]
-    assert payload["summary"]["marks"] == len(payload["marks"])
-    # the router paper run it describes is the committed router_paper_run fixture
-    (run,) = store.list(ReportKind.ROUTER_PAPER_RUN)
-    assert payload["run_hash"] == run.id
-    assert [mark["time"] for mark in payload["marks"]] == [
-        point["time"] for point in run.payload["net_equity_curve"]
-    ]
+    envelopes = store.list(ReportKind.PAPER_DEVIATION)
+    assert len(envelopes) == 2  # current and legacy readable 2.1.0
+    runs = {run.id: run for run in store.list(ReportKind.ROUTER_PAPER_RUN)}
+    for envelope in envelopes:
+        payload = envelope.payload
+        assert payload["kind"] == "paper_deviation"
+        assert payload["deviation_hash"] == envelope.id
+        assert payload["run_hash"] and payload["reference_result_hash"]
+        assert isinstance(payload["marks"], list) and payload["marks"]
+        assert payload["summary"]["marks"] == len(payload["marks"])
+        # the router paper run it describes is a committed router_paper_run fixture
+        run = runs[payload["run_hash"]]
+        assert [mark["time"] for mark in payload["marks"]] == [
+            point["time"] for point in run.payload["net_equity_curve"]
+        ]
+    # generation by generation: the current deviation describes the current run
+    current = fixture(ReportKind.PAPER_DEVIATION).payload["run_hash"]
+    assert current == fixture(ReportKind.ROUTER_PAPER_RUN).id
+    legacy = legacy_fixture(ReportKind.PAPER_DEVIATION, "2.1.0").payload["run_hash"]
+    assert legacy == legacy_fixture(ReportKind.ROUTER_PAPER_RUN, "2.1.0").id
 
 
 def test_degradation_check_fixture_names_its_rules_and_sources() -> None:

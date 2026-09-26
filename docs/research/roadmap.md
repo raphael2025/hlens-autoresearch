@@ -70,6 +70,22 @@ flowchart TD
 - **禁止事项**：把知识条目当作已验证结论；复制受版权保护的全文；让 LLM 未经审阅直接写入知识库。
 - **可能的失败模式**：知识库变成未经筛选的收藏夹；出版偏差（只收录"有效"的方法）；主张不可检验。
 
+### Phase 0.5 验收矩阵
+
+每项必须有可观察证据；"现状"只描述证据是否存在，**不是**验收结论（验收由 Codex / Raphael 作出）。
+
+| # | 验收项 | 可观察证据 | 现状 |
+|---|---|---|---|
+| 1 | 每个条目有出处、许可 | `KnowledgeResult` 构造检查；`LocalKnowledgeProvider` 加载时拒绝空白出处 / 许可（`tests/plugins/knowledge/`） | 有证据 |
+| 2 | 每个条目有证据等级与可检验的主张 | `evidence_level` / `claim` 必填（`core/domain/research.py`） | 有证据 |
+| 3 | 可按状态检索 | `KnowledgeQuery.statuses`；Provider 契约套件 `check_filters` | 有证据 |
+| 4 | 可按标签检索 | `KnowledgeQuery.tags_all`（ADR-0055，2.2.0，AND）；`tests/plugins/knowledge/test_tags_assets.py`、契约套件 `check_tag_and_asset_filters` | 能力有证据；仓库种子尚无经人工审阅的标签（ADR-0055 决策 10） |
+| 5 | 可按资产检索（精确，不做子串） | `KnowledgeQuery.assets_any`（ADR-0055，2.2.0，OR、逐字相等）；同上测试 | 能力有证据；仓库种子尚无经人工审阅的资产 |
+| 6 | 标签 / 资产的契约版本边界 | ADR-0055 验证矩阵 V1 ~ V9：`tests/golden/v2_1_0/`、`tests/test_v2_1_0_knowledge_golden.py`、`tests/test_adr_0055_versions.py` | 有证据；ADR-0055 待 Codex 复核 |
+| 7 | 无出处条目为零 | 加载即拒绝；种子全部带出处 | 有证据 |
+| 8 | strategy / factor / feature / risk / event / state 各库首批条目 | `docs/research/knowledge/*.json` | 本分支种子覆盖 strategy / factor / risk / state；feature / event 种子在 `wip/phase-0.5-knowledge`，待集成 |
+| 9 | 知识不是结论；不复制全文；LLM 不经审阅不得写入 | `status` 默认 unverified；许可字段；ADR-0058 写入路径要求具名人工审阅者 | 有证据 |
+
 ## Phase 1 — Market Representation
 
 - **目标**：建立 Data Plane：采集 → Raw → Canonical → 基础 Representation。

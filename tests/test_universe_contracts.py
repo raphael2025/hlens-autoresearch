@@ -1685,8 +1685,8 @@ def test_frozen_contract_fields_are_unchanged() -> None:
 
 def test_contract_version_and_kind_are_unchanged() -> None:
     """ADR-0024 §5：不新增 `Kind`；版本策略：`CONTRACT_SCHEMA_VERSION` 保持 2.0.0。"""
-    # ADR-0052 §4 raised the minor to 2.1.0; this batch itself changed no version.
-    assert CONTRACT_SCHEMA_VERSION == "2.1.0"
+    # ADR-0052 §4 raised the minor to 2.1.0 and ADR-0055 to 2.2.0; this batch changed no version.
+    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
     assert {kind.value for kind in Kind} == {
         "dataset",
         "representation",

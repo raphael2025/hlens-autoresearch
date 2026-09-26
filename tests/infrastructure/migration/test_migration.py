@@ -44,7 +44,7 @@ def test_outputs_must_be_finite_decimals(bad: dict[str, object]) -> None:
 
 def test_a_conformance_run_reports_every_failure() -> None:
     report = run_conformance(
-        "hlens_knowledge_local@1.0.0", LocalKnowledgeProvider, knowledge_suite.KNOWLEDGE_CHECKS
+        "hlens_knowledge_local@1.1.0", LocalKnowledgeProvider, knowledge_suite.KNOWLEDGE_CHECKS
     )
     assert report.passed and len(report.checks) == len(knowledge_suite.KNOWLEDGE_CHECKS)
 
