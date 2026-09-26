@@ -214,3 +214,13 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 
 **未做（后续）**：单元假设的生命周期（G4 / G5 路径）；数据集组合的端到端测试（代码路径共用 `compose_loop`，指纹共用 `settings_fingerprint`）。
 测试：`tests/research/loop/test_loop_conditional.py`、`tests/research/loop/test_loop_cell_validation.py`、`tests/research/experiments/test_trial_conditionals.py`。
+
+### 跨进程持久性测试（Phase 11 验收，2026-09-26，仅测试；CODE_COMPLETE / DEBUG_PENDING）
+
+`tests/research/loop/test_loop_cross_process.py`（子进程 `cross_process_child.py`）：每次写入与重开都是**独立的 Python 进程**，
+崩溃是确定位置的 `SIGKILL`（子进程内包装，不改生产代码）。已证明：三个进程分段运行等于一个不中断进程；`loop_round_started` 之后、
+记忆检查点之后审计记录之前被杀 → 另一进程拒绝（interrupted）且不写任何字节；审计记录之后总线发布之前被杀 → 下一进程补发并与不中断运行一致；
+审批写入之后轮间检查点之前被杀、第三方进程伪造审批、重链审批、原地篡改审计、带更大预算重开 → 均被另一进程拒绝；持有目录的进程在时另一进程
+`BusLocked`，被杀后锁由内核释放。**发现的缺口**（`xfail(strict=True)`，未修复）：状态目录本身没有单写者锁，只有组合自带的
+`FileEventBus(state_dir/bus)` 的 flock 串行化进程；调用方注入自己的总线（如 `InMemoryEventBus`）时，第二个进程可以在另一进程持有时打开同一目录，
+而日志只在文件变短时拒绝追加，两个写者的冲突只会在下次重开时被发现（重复 `seq` → `JournalCorrupted`），不会被阻止。
