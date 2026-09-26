@@ -4,7 +4,13 @@ No live venue, no credentials, no network I/O. ``ExecutionMode.LIVE`` is refused
 research/ (tests/test_architecture_boundaries.py).
 """
 
-from apps.execution.audit import AuditRecord, AuditTrail
+from apps.execution.audit import (
+    AuditCorrupted,
+    AuditRecord,
+    AuditReplay,
+    AuditTrail,
+    replay_audit,
+)
 from apps.execution.book import PositionBook
 from apps.execution.drill import DrillReport, run_kill_switch_drill
 from apps.execution.errors import (
@@ -36,6 +42,7 @@ from apps.execution.records import (
 )
 from apps.execution.risk import RISK_POLICY_LIMIT_KEYS, RiskLimits, SecondLineRisk
 from apps.execution.service import (
+    RESTORE_TRIPPED_BY,
     RUNNABLE_LIFECYCLE_STATES,
     TOPICS,
     ExecutionReport,
@@ -53,6 +60,7 @@ from apps.execution.venue import CostModel, LinearCostModel, SimulatedVenue
 __all__ = [
     "LIVE_REFUSAL_MESSAGE",
     "LIVE_STAGES",
+    "RESTORE_TRIPPED_BY",
     "RISK_POLICY_LIMIT_KEYS",
     "RUNNABLE_LIFECYCLE_STATES",
     "STAGE_ORDER",
@@ -61,6 +69,8 @@ __all__ = [
     "AlertHook",
     "AlertKind",
     "AuditRecord",
+    "AuditCorrupted",
+    "AuditReplay",
     "AuditTrail",
     "CostModel",
     "DeploymentNotAdmitted",
@@ -96,5 +106,6 @@ __all__ = [
     "TargetPositionSource",
     "TargetPositions",
     "instrument_key",
+    "replay_audit",
     "run_kill_switch_drill",
 ]

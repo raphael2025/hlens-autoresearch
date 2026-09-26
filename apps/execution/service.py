@@ -7,7 +7,13 @@ Flow for one batch of target positions from an admitted deployment::
             -> SecondLineRisk -> RejectionRecord (stop)
             -> SimulatedVenue -> FillRecord -> risk book, monitor
 
-Every record goes to the append-only ``AuditTrail`` and is published on the event bus. The service
+Every record goes to the append-only ``AuditTrail`` and is published on the event bus. With a
+durable ``audit`` (``AuditTrail(path)``) the records survive the process. Reopening a service on a
+**non-empty** durable audit is fail closed: venue positions, the risk book, the monitor and the
+admitted deployments are *not* rebuilt from it, so the new instance trips its kill switch at once
+(a recorded ``KillSwitchTrip`` by ``RESTORE_TRIPPED_BY``) and never sends an order. Resuming order
+flow needs a fresh audit path chosen by a human; ``replay_audit`` rebuilds what the old trail
+proves for inspection. The service
 refuses ``ExecutionMode.LIVE`` and any venue that is not exactly ``SimulatedVenue``; it performs no
 network I/O and holds no credentials. It never imports ``research/`` (tests/test_architecture_
 boundaries.py): the research plane cannot reach it, only a ``TargetPositionSource`` can.
@@ -48,6 +54,7 @@ from core.domain.specs import Instrument
 from core.lifecycle.strategy import LifecycleHistory, LifecycleState
 
 __all__ = [
+    "RESTORE_TRIPPED_BY",
     "RUNNABLE_LIFECYCLE_STATES",
     "TOPICS",
     "ExecutionReport",
@@ -59,6 +66,9 @@ __all__ = [
 RUNNABLE_LIFECYCLE_STATES: frozenset[LifecycleState] = frozenset(
     {LifecycleState.PAPER, LifecycleState.ACTIVE}
 )
+
+#: ``tripped_by`` of the trip recorded when a service is reopened on a non-empty durable audit.
+RESTORE_TRIPPED_BY = "execution_service:restore"
 
 TOPICS: Mapping[type, str] = {
     OrderRecord: "execution.order",
@@ -108,6 +118,7 @@ class ExecutionService:
         monitor: Monitor,
         bus: EventBusAdapter,
         clock: Callable[[], datetime],
+        audit: AuditTrail | None = None,
     ) -> None:
         if mode is not ExecutionMode.SIMULATED:
             raise LiveExecutionRefused(
@@ -123,11 +134,23 @@ class ExecutionService:
         self._monitor = monitor
         self._bus = bus
         self._clock = clock
-        self._audit = AuditTrail()
+        self._audit = AuditTrail() if audit is None else audit
         self._deployments: dict[str, _Admitted] = {}
-        self._sequence = 0
+        prior = self._audit.entries
+        self._sequence = 1 + max((o.sequence for o in self._audit.orders), default=-1)
         kill_switch.subscribe(self._on_trip)
         monitor.add_alert_hook(self._record)
+        if prior:
+            # Fail closed (module docs): state is not rebuilt from the audit, so no order may flow.
+            kill_switch.trip(
+                reason=(
+                    f"reopened on a durable audit with {len(prior)} prior records "
+                    f"({len(self._audit.trips)} prior kill switch trips); execution state is not "
+                    "rebuilt — resuming needs a fresh audit"
+                ),
+                tripped_by=RESTORE_TRIPPED_BY,
+                at=clock(),
+            )
 
     @property
     def mode(self) -> ExecutionMode:

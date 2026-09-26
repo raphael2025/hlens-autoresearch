@@ -34,3 +34,18 @@
 `RiskProvider`）与一个信号源 callable，构造 `StrategyRequest` 时 `knowledge_cutoff = as_of`、只保留
 `available_time <= as_of` 且 `knowledge_time <= as_of` 的信号，答案未通过 `StrategyResult.check_answers`
 （或 `RiskResult.check_answers`）即 fail closed（`StrategySourceRefused`）。定量由必填的 `PositionSizer` 完成（v1 `EquityPriceSizer`：`quantity = weight * equity / price`，价格须在 `as_of` 已知，缺失或非正即拒绝；无"权重即数量"的默认），见 ADR-0038 / ADR-0046 的 Implementation note。
+
+## 持久审计与重启（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+- `AuditTrail(path)`：可选持久审计。每条记录先以 `{"record_id", "record"}`（类型名为行类型）追加进哈希链 JSON-lines 日志
+  （`apps.worker.journal.AppendOnlyJournal`，fsync），再放入内存；重新打开时整条链重放校验，记录重新校验且内容哈希必须等于存储的
+  `record_id`。断链、半行、未知类型、id 不符、重复一律 `AuditCorrupted`，不跳过、不修复。不给 `path` 时行为与此前逐字节相同。
+- `ExecutionService(..., audit=AuditTrail(path))`：在**非空**持久审计上重新打开服务是 fail closed——场所持仓、风险簿、监控与已准入部署
+  **不**从审计重建，因此新实例立即触发 Kill Switch（记录一条 `tripped_by = RESTORE_TRIPPED_BY` 的 `KillSwitchTrip`），任何订单都在场所前被拒绝；
+  订单序号接续而不是从 0 重来。恢复下单需要人选择新的审计路径（与"无 reset、恢复要人新建实例"一致）。
+- `replay_audit(path)`：只读证据——从持久审计重建各部署的持仓与费用、不完整订单、Kill Switch 是否触发与链头；每笔成交必须对应同部署、同标的、同方向、
+  同数量的已记录订单，否则 `AuditCorrupted`。从不重新执行任何东西。
+- 已知边界：整行删除文件尾部仍是合法的更短链，只有外部保存的 `head_hash` 能发现（与 worker 日志相同）。
+- 测试：`tests/apps/test_execution_durable_audit.py`（10 项：内存与持久等价、重放持持仓 / 费用、重开即停且不成交、空审计不触发、篡改 / 半行 / id 不符 /
+  未知类型 / 重复 / 无订单的成交均拒绝、默认内存行为不变）。
+

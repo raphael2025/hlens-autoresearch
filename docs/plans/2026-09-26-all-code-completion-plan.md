@@ -140,6 +140,10 @@
 | ID | 问题 | 涉及 | 可选方案 | 推荐 | 不决定的影响 |
 |---|---|---|---|---|---|
 | ADR-0052-IMPL | ADR-0052（Accepted）要求契约加精确小数 / Profile 字段，需把 `CONTRACT_SCHEMA_VERSION` 2.0.0→2.1.0；该版本号写入每行 Canonical（`infrastructure/canonical/rules.py`），重新规范化按列精确比较（`normalizer._exact`），升版会使已提交的 D-NET 行不可重放、所有 request / result 哈希变化（集成会话核实，ADR-0052 §4 / ADR-0054 §5 要求升级为人类决定） | `core/`、Schema、Canonical 重放 | A：Canonical 行的规则版本与契约信封版本解耦后再升版（需 ADR）；B：接受重放断裂、重建 D-NET 数据；C：暂缓 ADR-0052 实施 | A（需 Raphael / Codex 决定） | ADR-0052 保持未实施；验证结果与 Profile 仍用浮点（同平台可复现），负对照与 G3 仍共用阈值（偏保守） |
+| P3-EVTABLE | Phase 3 验收要求"补 roadmap 需要的持久事件表 / adapter"；`infrastructure/event/table.py` 明写物理 `event.*` 表是"另行决定"，计划本身要求"若需新表先立 ADR" | 数据架构冻结表清单、ADR-0036 | A：起草 Proposed ADR（Iceberg `event.*` 表的分区、身份、只追加语义），批准后实现；B：维持内存物化 + 可哈希导出 | A | 事件只能每次重算；不影响因果正确性 |
+| P3-MULTISYM | `EventRequest`（`core/contracts/event.py`）无标的字段，多标的只能逐序列请求；加字段 = 改冻结契约 | `core/contracts/event.py`、Schema | A：additive 可选字段 + ADR（须证明省略时哈希不变）；B：维持每序列一个请求，由调用方组合 | B（现状可用，另立 ADR 再议） | 多标的事件需多次请求 |
+| P5-PLUGIN | 计划记"尚无 `plugins/` 生产 StrategyProvider"：TSMOM 在 `research/`，按 H5 研究代码只能经 Promotion 流程成为生产代码；把它搬进 `plugins/` 即是晋升 | H5、ADR-0005、ADR-0038 | A：等某策略经完整验证 + Promotion；B：另立 ADR 定义"研究库 Provider 进入 plugins 的最小晋升证据" | A | 策略只在研究层；不影响研究与验证链路 |
+| P10-ELIG | 路由资格信任调用方给出的生命周期映射；把资格绑定到验证报告证据若需改契约则须 ADR（engines 通道在不改契约的前提下尽量加可选核对） | ADR-0043、`core/contracts` | 见 engines 通道报告 | — | 路由仍只接受调用方声明为已验证的对象 |
 
 ### 10.3 批次记录
 
@@ -152,3 +156,12 @@
 - 实际运行：`uv run pytest -q tests/research/synthetic_lab tests/research/reports` → 44 passed, 1 warning；`uv run ruff check`、`ruff format --check`、
   `uv run mypy research/synthetic_lab tests/research/synthetic_lab` → 全部通过（mypy: no issues in 8 files）。
 - 旧版本复现：新测试 `test_a_raising_detector_yields_inconclusive_runs_not_an_exception` 在 `50a43a4` 上会因 `ZeroDivisionError` 传播而失败（旧代码无捕获）。
+
+**B2 — Phase 13：持久执行审计、fail-closed 重启与只读重放**（`CODE_COMPLETE / DEBUG_PENDING`；仍只模拟）
+
+- 文件：`apps/execution/audit.py`、`service.py`、`__init__.py`、`README.md`；测试 `tests/apps/test_execution_durable_audit.py`（新，10 项）。未触及 `core/`、契约、Schema、ADR；
+  无交易端点、无凭据、无网络（执行服务边界测试仍通过）。
+- 行为：见 `apps/execution/README.md`「持久审计与重启」。旧版本复现：`50a43a4` 上 `ExecutionService` 无 `audit` 参数、`AuditTrail` 无 `path`，新测试全部因 TypeError 失败。
+- 实际运行：`uv run pytest -q tests/apps/test_execution_durable_audit.py tests/apps/test_execution.py tests/apps/test_execution_strategy_source.py tests/test_architecture_boundaries.py`
+  → 47 passed；`ruff check apps/execution tests/apps` → All checks passed；`ruff format --check` → 15 files already formatted；`mypy apps/execution tests/apps/test_execution_durable_audit.py` → no issues in 14 files。
+
