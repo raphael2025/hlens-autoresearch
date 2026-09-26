@@ -32,11 +32,27 @@ connection; the only execution is a ``BacktestProvider`` (simulation only by con
 Honest boundary: ``result``'s ``request_hash`` / ``provider_hash`` do not identify the router spec
 or the inner backtester. ``RouterPaperRun.run_hash`` binds everything: router spec hash, state
 result hash, every strategy result hash, decisions, the gross and the net result hashes and the
-charges. Nothing here is validated; there is no threshold.
+charges (``RouterPaperRun.verify`` recomputes it from the recorded fields, so a tampered record
+is refused). Nothing here is validated; there is no threshold.
+
+Code completion (2026-09-26, CODE_COMPLETE / DEBUG_PENDING):
+
+- **Validation report binding (optional).** ``paper_run(..., validation_reports=...)`` takes a
+  mapping strategy ref -> validation report content hash. When supplied, every strategy the spec
+  can route must have exactly one report (missing or extra entries are refused), and the mapping
+  is recorded in ``RouterPaperRun.validation_reports`` and bound into ``run_hash``. When omitted
+  (``None``, the default) nothing is recorded and ``run_hash`` is byte-identical to before. The
+  hashes are recorded evidence references; this module does not open or judge the reports.
+- **Explicit stop.** ``paper_run_or_stop(spec, lifecycle, ...)`` builds the router and, when it
+  is ``RouterStopped`` (no validated candidate, or every route flat; ``router.py``), returns a
+  ``RouterStop`` record — reason, spec hash, lifecycle snapshot, input hashes and its own
+  ``stop_hash`` — instead of a flat run that could be mistaken for a result. Nothing is simulated
+  for a stopped router. Otherwise it is exactly ``paper_run``.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
@@ -55,17 +71,27 @@ from core.contracts.strategy import (
     StrategyResult,
     TargetPosition,
 )
-from core.domain.base import Ref, content_hash
-from research.router.router import RouterError, RoutingDecision, StrategyRouter
+from core.domain.base import SHA256_PATTERN, Ref, content_hash
+from core.lifecycle.strategy import LifecycleState
+from research.router.router import (
+    RouterError,
+    RouterSpec,
+    RouterStopped,
+    RouterStopReason,
+    RoutingDecision,
+    StrategyRouter,
+)
 
 __all__ = [
     "MONEY_QUANTUM",
     "ROUTER_PAPER_BACKTEST",
     "WEIGHT_QUANTUM",
     "RouterPaperRun",
+    "RouterStop",
     "SwitchingCharge",
     "combine_targets",
     "paper_run",
+    "paper_run_or_stop",
 ]
 
 #: Combined target weights are quantized to this step.
@@ -81,6 +107,7 @@ ROUTER_PAPER_BACKTEST: Final = BacktestProviderDescriptor(
     execution_model="next_bar_open",
 )
 _CONTEXT: Final = Context(prec=50, rounding=ROUND_HALF_EVEN)
+_SHA256: Final = re.compile(SHA256_PATTERN)
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,10 +138,52 @@ class RouterPaperRun:
     #: The router's own result: ``gross`` net of the paid switching charges.
     result: BacktestResult
     run_hash: str
+    #: strategy ref string -> validation report content hash, when the caller supplied them
+    #: (``None``: not supplied, not recorded, not hashed).
+    validation_reports: Mapping[str, str] | None = None
 
     @property
     def total_switching_cost(self) -> Decimal:
         return sum((c.amount for c in self.charges if c.charged_at is not None), Decimal(0))
+
+    def expected_run_hash(self) -> str:
+        """``run_hash`` recomputed from the recorded fields."""
+        return _run_hash(
+            router=self.router,
+            router_spec_hash=self.router_spec_hash,
+            state_result_hash=self.state_result_hash,
+            strategy_hashes=self.strategy_result_hashes,
+            decisions=self.decisions,
+            request_hash=self.result.request_hash,
+            gross_result_hash=self.gross.result_hash,
+            charges=self.charges,
+            result_hash=self.result.result_hash,
+            validation_reports=self.validation_reports,
+        )
+
+    def verify(self) -> None:
+        """Refuse a record whose fields no longer match its ``run_hash`` or its request."""
+        request_hash = self.request.content_hash()
+        if self.result.request_hash != request_hash or self.gross.request_hash != request_hash:
+            raise RouterError("router paper run: results do not answer the recorded request")
+        if self.expected_run_hash() != self.run_hash:
+            raise RouterError("router paper run: run_hash does not match the recorded fields")
+
+
+@dataclass(frozen=True, slots=True)
+class RouterStop:
+    """A paper run that did not happen because the router stopped (``RouterStopped``)."""
+
+    router: str
+    router_spec_hash: str
+    reason: RouterStopReason
+    detail: str
+    #: strategy ref string -> lifecycle state value, as declared by the caller
+    lifecycle: Mapping[str, str]
+    state_result_hash: str
+    strategy_result_hashes: Mapping[str, str]
+    validation_reports: Mapping[str, str] | None
+    stop_hash: str
 
 
 def _positions_by_strategy(
@@ -222,45 +291,77 @@ def _net_curve(
 
 
 def _run_hash(
-    router: StrategyRouter,
-    states: StateResult,
+    *,
+    router: str,
+    router_spec_hash: str,
+    state_result_hash: str,
     strategy_hashes: Mapping[str, str],
     decisions: Sequence[RoutingDecision],
-    gross: BacktestResult,
+    request_hash: str,
+    gross_result_hash: str,
     charges: Sequence[SwitchingCharge],
-    result: BacktestResult,
+    result_hash: str,
+    validation_reports: Mapping[str, str] | None,
 ) -> str:
-    return content_hash(
-        {
-            "router": f"{router.spec.name}@{router.spec.version}",
-            "router_spec_hash": router.spec.spec_hash(),
-            "state_result_hash": states.result_hash,
-            "strategy_result_hashes": dict(strategy_hashes),
-            "decisions": [
-                {
-                    "at": d.at.isoformat(),
-                    "state": d.state,
-                    "weights": {key: str(value) for key, value in sorted(d.weights.items())},
-                    "turnover": str(d.turnover),
-                }
-                for d in decisions
-            ],
-            "request_hash": result.request_hash,
-            "gross_result_hash": gross.result_hash,
-            "charges": [
-                {
-                    "decision_time": c.decision_time.isoformat(),
-                    "turnover": str(c.turnover),
-                    "rate": str(c.rate),
-                    "equity_base": str(c.equity_base),
-                    "amount": str(c.amount),
-                    "charged_at": None if c.charged_at is None else c.charged_at.isoformat(),
-                }
-                for c in charges
-            ],
-            "result_hash": result.result_hash,
-        }
-    )
+    payload: dict[str, object] = {
+        "router": router,
+        "router_spec_hash": router_spec_hash,
+        "state_result_hash": state_result_hash,
+        "strategy_result_hashes": dict(strategy_hashes),
+        "decisions": [
+            {
+                "at": d.at.isoformat(),
+                "state": d.state,
+                "weights": {key: str(value) for key, value in sorted(d.weights.items())},
+                "turnover": str(d.turnover),
+            }
+            for d in decisions
+        ],
+        "request_hash": request_hash,
+        "gross_result_hash": gross_result_hash,
+        "charges": [
+            {
+                "decision_time": c.decision_time.isoformat(),
+                "turnover": str(c.turnover),
+                "rate": str(c.rate),
+                "equity_base": str(c.equity_base),
+                "amount": str(c.amount),
+                "charged_at": None if c.charged_at is None else c.charged_at.isoformat(),
+            }
+            for c in charges
+        ],
+        "result_hash": result_hash,
+    }
+    if validation_reports is not None:  # no key when not supplied: earlier hashes are unchanged
+        payload["validation_reports"] = dict(validation_reports)
+    return content_hash(payload)
+
+
+def _report_hashes(reports: Mapping[Ref, str] | Mapping[str, str]) -> dict[str, str]:
+    """Normalize ``strategy ref -> validation report hash``; refuse ill-formed entries."""
+    if not isinstance(reports, Mapping):
+        raise RouterError("validation_reports must map strategy refs to report hashes")
+    out: dict[str, str] = {}
+    for key, value in reports.items():
+        name = str(key) if isinstance(key, Ref) else key
+        if not isinstance(name, str) or not name:
+            raise RouterError(f"validation_reports: {key!r} is not a strategy ref")
+        if name in out:
+            raise RouterError(f"validation_reports: {name} is given twice")
+        if not isinstance(value, str) or _SHA256.fullmatch(value) is None:
+            raise RouterError(f"validation_reports: {name} needs a sha256 report hash")
+        out[name] = value
+    return dict(sorted(out.items()))
+
+
+def _check_reports(router: StrategyRouter, reports: Mapping[str, str]) -> None:
+    routed = router.spec.strategies()
+    missing = sorted(routed - set(reports))
+    extra = sorted(set(reports) - routed)
+    if missing:
+        raise RouterError(f"routed strategies without a validation report: {missing}")
+    if extra:
+        raise RouterError(f"validation reports for strategies the router never routes: {extra}")
 
 
 def paper_run(
@@ -272,11 +373,15 @@ def paper_run(
     cost_model: BacktestCostModel,
     initial_equity: Decimal,
     backtester: BacktestProvider,
+    validation_reports: Mapping[Ref, str] | Mapping[str, str] | None = None,
 ) -> RouterPaperRun:
     """Route, combine, simulate and charge switching costs (module docs). Paper only."""
     if not isinstance(router, StrategyRouter) or not isinstance(states, StateResult):
         raise RouterError("paper_run needs a StrategyRouter and a StateResult")
     positions = _positions_by_strategy(router, strategies)
+    reports = None if validation_reports is None else _report_hashes(validation_reports)
+    if reports is not None:
+        _check_reports(router, reports)
     decisions = router.route([(value.evaluation_time, value.state) for value in states.values])
     targets = combine_targets(decisions, positions)
     request = BacktestRequest(
@@ -297,9 +402,11 @@ def paper_run(
     )
     result.check_answers(request, ROUTER_PAPER_BACKTEST)
     strategy_hashes = {str(ref): answer.result_hash for ref, answer in strategies.items()}
+    name = f"{router.spec.name}@{router.spec.version}"
+    spec_hash = router.spec.spec_hash()
     return RouterPaperRun(
-        router=f"{router.spec.name}@{router.spec.version}",
-        router_spec_hash=router.spec.spec_hash(),
+        router=name,
+        router_spec_hash=spec_hash,
         state_result_hash=states.result_hash,
         strategy_result_hashes=dict(sorted(strategy_hashes.items())),
         decisions=decisions,
@@ -308,5 +415,89 @@ def paper_run(
         gross=gross,
         charges=charges,
         result=result,
-        run_hash=_run_hash(router, states, strategy_hashes, decisions, gross, charges, result),
+        run_hash=_run_hash(
+            router=name,
+            router_spec_hash=spec_hash,
+            state_result_hash=states.result_hash,
+            strategy_hashes=strategy_hashes,
+            decisions=decisions,
+            request_hash=result.request_hash,
+            gross_result_hash=gross.result_hash,
+            charges=charges,
+            result_hash=result.result_hash,
+            validation_reports=reports,
+        ),
+        validation_reports=reports,
+    )
+
+
+def paper_run_or_stop(
+    spec: RouterSpec,
+    lifecycle: Mapping[Ref, LifecycleState],
+    states: StateResult,
+    strategies: Mapping[Ref, StrategyResult],
+    *,
+    bars: Sequence[PriceBar],
+    cost_model: BacktestCostModel,
+    initial_equity: Decimal,
+    backtester: BacktestProvider,
+    validation_reports: Mapping[Ref, str] | Mapping[str, str] | None = None,
+) -> RouterPaperRun | RouterStop:
+    """``paper_run`` of ``StrategyRouter(spec, lifecycle)``, or the ``RouterStop`` it records.
+
+    Only ``RouterStopped`` becomes a record; any other ``RouterError`` (an unvalidated strategy,
+    an ill-formed table or input) is raised as before.
+    """
+    try:
+        router = StrategyRouter(spec, lifecycle)
+    except RouterStopped as stopped:
+        return _stop_record(stopped, lifecycle, states, strategies, validation_reports)
+    return paper_run(
+        router,
+        states,
+        strategies,
+        bars=bars,
+        cost_model=cost_model,
+        initial_equity=initial_equity,
+        backtester=backtester,
+        validation_reports=validation_reports,
+    )
+
+
+def _stop_record(
+    stopped: RouterStopped,
+    lifecycle: Mapping[Ref, LifecycleState],
+    states: StateResult,
+    strategies: Mapping[Ref, StrategyResult],
+    validation_reports: Mapping[Ref, str] | Mapping[str, str] | None,
+) -> RouterStop:
+    if not isinstance(states, StateResult):
+        raise RouterError("a router stop record needs a StateResult") from stopped
+    for key, answer in strategies.items():
+        if not isinstance(answer, StrategyResult):
+            raise RouterError(f"{key}: expected a StrategyResult") from stopped
+    reports = None if validation_reports is None else _report_hashes(validation_reports)
+    snapshot = {str(ref): LifecycleState(state).value for ref, state in lifecycle.items()}
+    strategy_hashes = {str(ref): answer.result_hash for ref, answer in strategies.items()}
+    record = {
+        "kind": "router_stop",
+        "router": stopped.router,
+        "router_spec_hash": stopped.spec_hash,
+        "reason": stopped.reason,
+        "detail": stopped.detail,
+        "lifecycle": snapshot,
+        "state_result_hash": states.result_hash,
+        "strategy_result_hashes": strategy_hashes,
+        "validation_reports": reports,
+    }
+    return RouterStop(
+        router=stopped.router,
+        router_spec_hash=stopped.spec_hash,
+        reason=stopped.reason,
+        detail=stopped.detail,
+        lifecycle=dict(sorted(snapshot.items())),
+        state_result_hash=states.result_hash,
+        strategy_result_hashes=dict(sorted(strategy_hashes.items())),
+        validation_reports=reports,
+        stop_hash=content_hash(record),
     )

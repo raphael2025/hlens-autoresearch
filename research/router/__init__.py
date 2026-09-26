@@ -8,20 +8,33 @@
 from research.router.paper import (
     ROUTER_PAPER_BACKTEST,
     RouterPaperRun,
+    RouterStop,
     SwitchingCharge,
     combine_targets,
     paper_run,
+    paper_run_or_stop,
 )
-from research.router.router import RouterError, RouterSpec, RoutingDecision, StrategyRouter
+from research.router.router import (
+    RouterError,
+    RouterSpec,
+    RouterStopped,
+    RouterStopReason,
+    RoutingDecision,
+    StrategyRouter,
+)
 
 __all__ = [
     "ROUTER_PAPER_BACKTEST",
     "RouterError",
     "RouterPaperRun",
     "RouterSpec",
+    "RouterStop",
+    "RouterStopReason",
+    "RouterStopped",
     "RoutingDecision",
     "StrategyRouter",
     "SwitchingCharge",
     "combine_targets",
     "paper_run",
+    "paper_run_or_stop",
 ]

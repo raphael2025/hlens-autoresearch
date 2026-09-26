@@ -8,6 +8,13 @@
   most 1 (the rest is cash).
 - Switching cost: every change of weights is turnover ``sum |w_new - w_old|``, charged at the
   declared cost rate, so a router cannot hide its churn (failure mode "路由切换成本吞噬收益").
+- Explicit stop (code completion, 2026-09-26): a router with no candidate is refused with
+  ``RouterStopped`` (a ``RouterError``) and a typed ``reason`` instead of silently routing flat:
+  ``no_validated_candidate`` when the lifecycle map declares no ACTIVE / PRODUCTION_CANDIDATE
+  strategy, ``all_routes_flat`` when every state entry and the fallback give zero weight to every
+  strategy. A table whose *some* states (or the fallback) are flat is legitimate per-state
+  routing and is kept, as long as at least one entry routes positive weight to a validated
+  strategy.
 
 ``paper.py`` (W1 wiring) turns the routing weights into combined P5 target positions and runs them
 through a ``BacktestProvider``, charging the switching cost on the simulated book.
@@ -19,17 +26,41 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
+from typing import Literal
 
 from core.domain.base import Ref, content_hash
 from core.lifecycle.strategy import LifecycleState
 
-__all__ = ["RouterError", "RouterSpec", "RoutingDecision", "StrategyRouter"]
+__all__ = [
+    "RouterError",
+    "RouterSpec",
+    "RouterStopReason",
+    "RouterStopped",
+    "RoutingDecision",
+    "StrategyRouter",
+]
 
 ROUTABLE = frozenset({LifecycleState.ACTIVE, LifecycleState.PRODUCTION_CANDIDATE})
 
 
 class RouterError(ValueError):
     """The router would route to an unvalidated strategy or an ill-formed table."""
+
+
+type RouterStopReason = Literal["no_validated_candidate", "all_routes_flat"]
+
+
+class RouterStopped(RouterError):
+    """The router has nothing to route: an explicit stop, never a silent flat router."""
+
+    def __init__(self, reason: RouterStopReason, router: str, spec_hash: str, detail: str) -> None:
+        super().__init__(f"router {router} stopped ({reason}): {detail}")
+        self.reason: RouterStopReason = reason
+        #: ``name@version`` of the stopped router spec.
+        self.router = router
+        #: ``RouterSpec.spec_hash()`` of the stopped spec.
+        self.spec_hash = spec_hash
+        self.detail = detail
 
 
 @dataclass(frozen=True, slots=True)
@@ -84,13 +115,30 @@ def _check_weights(weights: Mapping[str, Decimal], where: str) -> None:
 class StrategyRouter:
     def __init__(self, spec: RouterSpec, lifecycle: Mapping[Ref, LifecycleState]) -> None:
         routable = {str(ref) for ref, state in lifecycle.items() if state in ROUTABLE}
-        for label, weights in (*spec.table.items(), ("<fallback>", spec.fallback)):
+        entries = (*spec.table.items(), ("<fallback>", spec.fallback))
+        for label, weights in entries:
             _check_weights(weights, f"state {label}")
+        if not spec.switching_cost_rate.is_finite() or spec.switching_cost_rate < 0:
+            raise RouterError("switching_cost_rate must be a finite, non-negative Decimal")
+        name = f"{spec.name}@{spec.version}"
+        if not routable:
+            raise RouterStopped(
+                "no_validated_candidate",
+                name,
+                spec.spec_hash(),
+                "the lifecycle map declares no ACTIVE / PRODUCTION_CANDIDATE strategy",
+            )
+        for label, weights in entries:
             unvalidated = sorted(set(weights) - routable)
             if unvalidated:
                 raise RouterError(f"state {label} routes to unvalidated strategies {unvalidated}")
-        if not spec.switching_cost_rate.is_finite() or spec.switching_cost_rate < 0:
-            raise RouterError("switching_cost_rate must be a finite, non-negative Decimal")
+        if not any(weight > 0 for _, weights in entries for weight in weights.values()):
+            raise RouterStopped(
+                "all_routes_flat",
+                name,
+                spec.spec_hash(),
+                "every state entry and the fallback give zero weight to every strategy",
+            )
         self._spec = spec
 
     @property

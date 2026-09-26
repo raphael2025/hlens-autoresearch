@@ -21,3 +21,19 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
 
 **诚实边界**：`result` 的 `request_hash` / `provider_hash` 不标识路由规格与内部回测器；`RouterPaperRun.run_hash` 绑定路由规格哈希、
 状态结果哈希、每个策略结果哈希、全部决策、gross 与 net 结果哈希以及切换成本明细。本模块不做任何验证，不含阈值。
+
+## 代码补全（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+- **明确停止**：`StrategyRouter` 无候选时抛 `RouterStopped`（`RouterError` 子类，带类型化 `reason`）：
+  `no_validated_candidate`（生命周期映射中没有 ACTIVE / PRODUCTION_CANDIDATE 策略）、`all_routes_flat`（每个状态与回退对所有策略权重均为 0）。
+  只要至少一个条目给已验证策略正权重，个别状态 / 回退空仓仍是合法路由。路由到未验证策略仍是普通 `RouterError`。
+- **停止记录**：`paper_run_or_stop(spec, lifecycle, states, strategies, ...)` 在 `RouterStopped` 时返回 `RouterStop`
+  （原因、规格哈希、生命周期快照、状态 / 策略结果哈希、可选报告哈希、`stop_hash`），不做模拟，不产出可被误读为结果的空仓曲线；否则等同 `paper_run`。
+- **run hash 覆盖**：`RouterPaperRun.expected_run_hash()` / `verify()` 由记录字段重算；篡改路由名、规格哈希（路由表 / 回退 / 费率）、
+  状态结果哈希、策略结果哈希、决策、切换成本明细、报告映射或替换结果 / 请求均被拒绝（`tests/research/router/test_router_completion.py`）。
+  不提供 `validation_reports` 时 `run_hash` 与此前逐字节相同。
+- **验证报告绑定（可选）**：`paper_run(..., validation_reports={策略 ref: 报告内容哈希})`；给出时每个可被路由的策略必须恰有一份（缺 / 多即拒绝），
+  映射记录在 `RouterPaperRun.validation_reports` 并计入 `run_hash`；本模块只记录引用，不打开、不判定报告。
+
+仍未做：生命周期映射本身不进入 `run_hash`（改变既有哈希；资格绑定到验证证据的正式方案见执行计划 P10-ELIG）；
+`research/reports/router.py` 的报告载荷尚未包含 `validation_reports` / `RouterStop`（该文件不在本通道范围）。
