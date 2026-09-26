@@ -32,6 +32,7 @@ from plugins.backtest import (
 from tests.contract_suites import backtest as backtest_suite
 from tests.contract_suites._support import ContractSuiteFailure
 from tests.contract_suites.backtest import BacktestProviderContract, BacktestSubject
+from tests.contract_version_support import at_pre_bump, built_at_pre_bump
 from tests.strategy_fixtures import COSTS, MINUTE, T0, make_bars, wave_closes
 
 ZERO = backtest_suite.ZERO_COST
@@ -135,11 +136,15 @@ _GOLDEN = {
 def test_the_default_backtester_is_byte_identical_to_v1(
     name: str, factory: Callable[[], BarBacktester]
 ) -> None:
-    backtester = factory()
-    assert backtester.descriptor.version == "1.0.0"
-    result, report = _run(backtester, _golden_requests()[name])
-    assert result.result_hash == _GOLDEN[name]
-    assert backtester.run(_golden_requests()[name]) == result
+    # Recorded at contract 2.0.0: rebuilt exactly as the 2.0.0 code built it (every envelope
+    # 2.0.0, ADR-0052 §4), the v1 result is still byte-identical to the pin.
+    with built_at_pre_bump():
+        backtester = factory()
+        request = at_pre_bump(_golden_requests()[name])
+        assert backtester.descriptor.version == "1.0.0"
+        result, report = _run(backtester, request)
+        assert result.result_hash == _GOLDEN[name]
+        assert backtester.run(request) == result
     assert report.execution_fingerprint is None
     assert (report.fills, report.remainders, report.funding) == ((), (), ())
     assert report.total_impact == 0 and report.total_funding == 0

@@ -38,6 +38,7 @@ from tests.contract_suites.backtest import (
     BacktestSubject,
     CarryOverBacktestProviderContract,
 )
+from tests.contract_version_support import at_pre_bump, built_at_pre_bump
 from tests.plugins.backtest.test_execution_model import (
     _ACTIVE_MODELS,
     _SUITE_BARS,
@@ -135,18 +136,23 @@ _GOLDEN_TRUNCATING = {
 
 @pytest.mark.parametrize("name", sorted(_GOLDEN_REQUESTS))
 def test_request_hashes_are_unchanged_when_no_bar_carries_volume(name: str) -> None:
-    request = _golden_requests()[name]
+    # The pins were recorded at contract 2.0.0 and ADR-0054 is re-declared at 2.1.0 (ADR-0052
+    # §4): the no-volume objects rebuilt as the 2.0.0 code built them keep the pins bit for bit.
+    with built_at_pre_bump():
+        request = at_pre_bump(_golden_requests()[name])
+        result = BarBacktester().run(request)
     assert request.content_hash() == _GOLDEN_REQUESTS[name]
     assert request.bars[0].content_hash() == _GOLDEN_FIRST_BAR
     assert "volume" not in request.bars[0].model_dump(mode="json")
-    result = BarBacktester().run(request)
+    assert result.schema_version == "2.0.0"
     assert result.remainders == ()
     assert "remainders" not in result.model_dump(mode="json")
     assert "remainders" not in result._hashed_fields()
 
 
 def test_the_default_descriptor_is_unchanged() -> None:
-    descriptor = BarBacktester().descriptor
+    with built_at_pre_bump():  # pinned at 2.0.0 (see above)
+        descriptor = BarBacktester().descriptor
     assert descriptor.execution_model == "next_bar_open"
     assert descriptor.content_hash() == _GOLDEN_V1_DESCRIPTOR
 
@@ -154,9 +160,10 @@ def test_the_default_descriptor_is_unchanged() -> None:
 @pytest.mark.parametrize("name", sorted(_GOLDEN_TRUNCATING))
 def test_the_truncating_variants_are_unchanged(name: str) -> None:
     model = _ACTIVE_MODELS[name]
-    backtester = BarBacktester(execution=model)
-    targets = tuple(_target(i, "1.5" if i % 3 else "-1") for i in range(12))
-    result = backtester.run(_request(_SUITE_BARS, targets, COSTS))
+    with built_at_pre_bump():  # pinned at 2.0.0 (see above)
+        backtester = BarBacktester(execution=model)
+        targets = tuple(_target(i, "1.5" if i % 3 else "-1") for i in range(12))
+        result = backtester.run(at_pre_bump(_request(_SUITE_BARS, targets, COSTS)))
     assert (model.fingerprint, backtester.descriptor.content_hash(), result.result_hash) == (
         _GOLDEN_TRUNCATING[name]
     )

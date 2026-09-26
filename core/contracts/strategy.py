@@ -45,7 +45,7 @@ from collections.abc import Iterable, Sequence
 from datetime import datetime
 from decimal import Decimal, localcontext
 from itertools import pairwise
-from typing import Annotated, Literal, Protocol
+from typing import Annotated, Final, Literal, Protocol
 
 from pydantic import BeforeValidator, Field, field_validator, model_validator
 
@@ -121,6 +121,11 @@ _SUM_PRECISION = 120
 ExecutionModelName = Literal["next_bar_open", "next_bar_open_participation"]
 #: 一个目标的结转在何处结束（ADR-0054 §3）。
 FillRemainderEnd = Literal["filled", "superseded", "end_of_data"]
+
+
+#: ADR-0054 的字段、模型与执行模型字面量自契约 2.1.0 起（ADR-0052 §4、Codex K3：新增契约内容
+#: 不得以 2.0.0 发布）。2.0.0 信封携带它们即拒绝；不带它们的 2.0.0 载荷照旧读取、哈希逐位不变。
+ADR_0054_VERSION: Final = "2.1.0"
 
 
 def _omit_none(value: object) -> bool:
@@ -772,6 +777,8 @@ class PriceBar(Contract):
     从载荷中省略：既有 `PriceBar` 与 `BacktestRequest` 的内容哈希逐位不变。
     """
 
+    _FIELDS_SINCE = {"volume": ADR_0054_VERSION}
+
     instrument: NonEmptyStr
     interval_start: UtcDatetime
     interval_end: UtcDatetime
@@ -891,6 +898,8 @@ class FillRemainder(Contract):
       `superseded` = 取代它的目标的执行 bar；`end_of_data` = 该标的最后一根 bar）。
     """
 
+    _MODEL_SINCE = ADR_0054_VERSION  # the whole model is new in 2.1.0 (ADR-0054)
+
     instrument: NonEmptyStr
     decision_time: UtcDatetime
     requested_quantity: FiniteDecimal
@@ -934,6 +943,8 @@ class BacktestProviderDescriptor(Contract):
     """BacktestProvider 的身份：只能确定性、只能模拟；执行模型为 `next_bar_open`（v1）或
     `next_bar_open_participation`（ADR-0054：剩余量跨 bar 结转）。"""
 
+    _VALUES_SINCE = {"execution_model": {"next_bar_open_participation": ADR_0054_VERSION}}
+
     name: str = Field(pattern=NAME_PATTERN)
     version: str = Field(pattern=SEMVER_PATTERN)
     deterministic: Literal[True]
@@ -956,6 +967,8 @@ class BacktestResult(Contract):
       既有 `result_hash` 逐位不变；
     - `result_hash` 构造时复核。PnL = `final_equity − initial_equity`（已扣除费用与滑点）。
     """
+
+    _FIELDS_SINCE = {"remainders": ADR_0054_VERSION}
 
     request_hash: ContentHash
     provider: PluginKey

@@ -16,6 +16,7 @@ from core.contracts.event import EventRequest, EventResult
 from infrastructure.event.runner import UpstreamVerificationError, run_events
 from infrastructure.event.table import event_table
 from plugins.events import EventSequenceProvider, FeatureThresholdCrossProvider, StateSwitchProvider
+from tests.contract_version_support import at_pre_bump, built_at_pre_bump
 from tests.fake_events import LAG, MINUTE, REGIME, REGIME_INPUTS, X_INPUTS, X, request
 
 CROSS = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), "both", observable_lag=LAG)
@@ -48,18 +49,26 @@ def _cross(subject: str | None = None) -> EventResult:
 
 
 def test_without_a_subject_every_hash_is_unchanged() -> None:
-    req = request(CROSS, inputs=X_INPUTS)
-    assert req.subject is None and "subject" not in req.model_dump(mode="json")
-    assert req.content_hash() == PRE_ADR_0057["cross_request"]
-    result = _cross()
+    # The pins were taken at contract 2.0.0; ADR-0057 is re-declared at 2.1.0 (ADR-0052 §4), so
+    # the no-subject objects are rebuilt exactly as the 2.0.0 code built them (every envelope
+    # 2.0.0) and must still hash to the pins bit for bit.
+    with built_at_pre_bump():
+        cross, switch_spec = at_pre_bump(CROSS), at_pre_bump(SWITCH)
+        req = at_pre_bump(request(cross, inputs=X_INPUTS))
+        assert req.subject is None and "subject" not in req.model_dump(mode="json")
+        assert req.content_hash() == PRE_ADR_0057["cross_request"]
+        result = run_events(FeatureThresholdCrossProvider((cross,)), cross, req)
+        switch = run_events(
+            StateSwitchProvider((switch_spec,)),
+            switch_spec,
+            at_pre_bump(request(switch_spec, inputs=REGIME_INPUTS)),
+        )
+    assert result.schema_version == "2.0.0"
     assert result.subject is None and "subject" not in result.model_dump(mode="json")
     assert result.result_hash == PRE_ADR_0057["cross_result_hash"]
     assert result.content_hash() == PRE_ADR_0057["cross_result_content"]
     assert result.events[0].event_id == PRE_ADR_0057["cross_first_event"]
     assert all("subject" not in item.model_dump(mode="json") for item in result.events)
-    switch = run_events(
-        StateSwitchProvider((SWITCH,)), SWITCH, request(SWITCH, inputs=REGIME_INPUTS)
-    )
     assert switch.result_hash == PRE_ADR_0057["switch_result_hash"]
 
 

@@ -58,9 +58,9 @@
 | [0051](0051-listing-history-assumption.md) | 上市历史的"观察状态回填"假设（PIT 叠加层，D-LIST） | Proposed（2026-09-26；Raphael 暂缓） |
 | [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准）；契约部分已实施于 2.1.0（按记录版本重放 + §1 ~ §3 字段；未验收），研究侧取值待办 |
 | [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准）；已实施 |
-| [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准） |
+| [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准）；re-declared at 2.1.0（2026-09-26）；CODE_COMPLETE / DEBUG_PENDING |
 | [0056](0056-event-table.md) | 物理 Event 表 `event.events`（Phase 3，只追加，按 `result_hash` 幂等） | Accepted（2026-09-26；Claude 依 Raphael 明确授权决定）；CODE_COMPLETE / DEBUG_PENDING |
-| [0057](0057-event-request-subject.md) | 事件请求的标的键 `EventRequest.subject`（P3-MULTISYM，additive） | Accepted（2026-09-26；Claude 依 Raphael 授权决定）；代码已写，待按 2.1.0 重新声明（Codex K3 / K5），未作为契约完成 |
+| [0057](0057-event-request-subject.md) | 事件请求的标的键 `EventRequest.subject`（P3-MULTISYM，additive） | Accepted（2026-09-26；Claude 依 Raphael 授权决定）；re-declared at 2.1.0（2026-09-26）；CODE_COMPLETE / DEBUG_PENDING |
 | [0058](0058-knowledge-reviewed-write-path.md) | 知识库经人工审阅的写入路径（Python API / CLI，无 HTTP 写端点） | Accepted（2026-09-26；Claude 依 Raphael 明确授权） |
 | [0059](0059-cross-asset-check-for-cross-sectional-strategies.md) | G4 跨资产检查（C-R3）对横截面策略的适用方式 | Accepted（2026-09-26；Claude 依 Raphael 授权决定，含红线）；C + A 已实施，CODE_COMPLETE / DEBUG_PENDING |
 | [0060](0060-market-benchmark-rule-semantics.md) | C-T4 市场基准规则与反向对照的语义（报告项，不作否决） | Accepted（2026-09-26；Claude 依 Raphael 授权） |

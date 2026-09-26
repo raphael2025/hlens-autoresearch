@@ -559,17 +559,28 @@ class Contract(BaseModel):
         return type(self).model_validate(payload)
 
     #: 本模型在 minor 中新增的字段 → 引入它的版本（ADR-0052 §4：新字段不得伪装成旧版本）。
+    #: 字段"存在"= 出现在载荷中：值不为 `None`，且字段的 `exclude_if` 不把它省略
+    #: （例如 ADR-0054 的 `remainders` 为空元组时省略，即不存在）。
     _FIELDS_SINCE: ClassVar[Mapping[str, str]] = {}
+    #: 已有字段在 minor 中新增的取值 → 引入它的版本（例如 ADR-0054 的新执行模型字面量）。
+    _VALUES_SINCE: ClassVar[Mapping[str, Mapping[object, str]]] = {}
     #: 整个模型在 minor 中新增时，引入它的版本；`None` = 自 2.0.0 起。
     _MODEL_SINCE: ClassVar[str | None] = None
 
+    def _field_in_payload(self, name: str) -> bool:
+        value = getattr(self, name)
+        if value is None:
+            return False
+        exclude_if = type(self).model_fields[name].exclude_if
+        return not (exclude_if is not None and exclude_if(value))
+
     @model_validator(mode="after")
     def _fields_exist_at_the_envelope_version(self) -> Self:
-        """信封版本早于某字段（或模型）的引入版本时拒绝（ADR-0052 §4、Codex K3）。
+        """信封版本早于某字段 / 取值（或模型）的引入版本时拒绝（ADR-0052 §4、Codex K3）。
 
         例如 2.0.0 信封的 `GateResult` 不能带 `value_exact`：旧读者不认识它，新字段只随 2.1.0 发布。
         """
-        if self._MODEL_SINCE is None and not self._FIELDS_SINCE:
+        if self._MODEL_SINCE is None and not self._FIELDS_SINCE and not self._VALUES_SINCE:
             return self
         envelope = _semver_core(self.schema_version)
         if self._MODEL_SINCE is not None and envelope < _semver_core(self._MODEL_SINCE):
@@ -578,10 +589,17 @@ class Contract(BaseModel):
                 f"{self.schema_version} 信封中（ADR-0052 §4）"
             )
         for name, since in self._FIELDS_SINCE.items():
-            if getattr(self, name) is not None and envelope < _semver_core(since):
+            if envelope < _semver_core(since) and self._field_in_payload(name):
                 raise ValueError(
                     f"{name} 自 {since} 引入，不能出现在 {self.schema_version} 信封中"
                     "（ADR-0052 §4）"
+                )
+        for name, values in self._VALUES_SINCE.items():
+            since_value = values.get(getattr(self, name))
+            if since_value is not None and envelope < _semver_core(since_value):
+                raise ValueError(
+                    f"{name}={getattr(self, name)!r} 自 {since_value} 引入，不能出现在 "
+                    f"{self.schema_version} 信封中（ADR-0052 §4）"
                 )
         return self
 

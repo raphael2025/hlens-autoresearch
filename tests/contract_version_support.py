@@ -10,11 +10,13 @@ the 2.0.0 twin of the object (every envelope at 2.0.0, every other value identic
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 
-from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract
+from core.domain.base import CONTRACT_SCHEMA_VERSION, Contract, contract_schema_version_scope
 
-__all__ = ["PRE_BUMP_VERSION", "as_published_at_2_0_0", "at_pre_bump"]
+__all__ = ["PRE_BUMP_VERSION", "as_published_at_2_0_0", "at_pre_bump", "built_at_pre_bump"]
 
 PRE_BUMP_VERSION = "2.0.0"
 
@@ -45,3 +47,15 @@ def _envelopes_at(value: Any, version: str) -> Any:
 def at_pre_bump[C: Contract](obj: C) -> C:
     """The 2.0.0 twin of ``obj``: every envelope (nested included) at 2.0.0, all else equal."""
     return type(obj).model_validate(_envelopes_at(obj.model_dump(), PRE_BUMP_VERSION))
+
+
+@contextmanager
+def built_at_pre_bump() -> Iterator[str]:
+    """Construct contract objects as the 2.0.0 code did (test only).
+
+    Inside the block every contract object built without an explicit envelope is 2.0.0; objects
+    built earlier (module constants) keep theirs, so pass them through ``at_pre_bump`` first.
+    Used to show that a pin taken before the bump still describes what the 2.0.0 code builds.
+    """
+    with contract_schema_version_scope(PRE_BUMP_VERSION):
+        yield PRE_BUMP_VERSION

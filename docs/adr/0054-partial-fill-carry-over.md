@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意"），起草: Claude Code（Opus） |
+| 状态 | Accepted (2026-09-26)，决策者: Raphael（"同意"），起草: Claude Code（Opus）；**re-declared at 2.1.0 (2026-09-26)**（见文末 Implementation note — 2.1.0）；CODE_COMPLETE / DEBUG_PENDING |
 | 日期 | 2026-09-26 |
 | 决策者 | **Raphael**（改冻结的回测契约 `core/contracts/strategy.py`，H1；调试待办 B 节原注"Codex 可在授权内批准"，按本次指示交 Raphael） |
 | 起草者 | Claude Code（Opus） |
@@ -158,3 +158,17 @@ ADR-0038 execution realism 说明已实现可选 `ExecutionModel`（参与率上
 - **未做（留给调试批次）**：`infrastructure/bars/dataset.py` 尚未从 `canonical.bars_1m.volume` 填入 `PriceBar.volume`（真实数据上新模型因此
   会以缺 `volume` 拒绝）；`exclude_if` 需要 Pydantic ≥ 2.12，`pyproject.toml` 仍写 `pydantic>=2.9`（锁文件为 2.13.5，未改依赖声明）；
   G4 容量检查未改读结转结果；剩余量不按权益重新定量是 §1 明示的简化。
+
+## Implementation note — re-declared at 2.1.0 (2026-09-26)
+
+分支 `core/adr-0052-into-full-code`（合入 ADR-0052 版本化重放 M1 ~ M3 之后）。取代上文实施说明"版本（§5）"一条中"保持 2.0.0"的选择
+（该条保留为历史；其 `ARCHITECTURE_DECISION_REQUIRED` 已由 Codex K3 与 ADR-0052 版本化重放解决）：
+
+- `PriceBar._FIELDS_SINCE = {"volume": "2.1.0"}`、`BacktestResult._FIELDS_SINCE = {"remainders": "2.1.0"}`（空元组 = 省略 = 不存在）、
+  `FillRemainder._MODEL_SINCE = "2.1.0"`、`BacktestProviderDescriptor._VALUES_SINCE`（`execution_model="next_bar_open_participation"`
+  自 2.1.0）；常量 `ADR_0054_VERSION`。2.0.0 信封携带任一项即拒绝；新对象为 2.1.0。
+- 机制补充（`core/domain/base.py`）：字段"存在"= 出现在载荷中（非 `None` 且未被 `exclude_if` 省略）；新增 `_VALUES_SINCE`
+  （已有字段的新取值自某版本起）。对 ADR-0052 的字段行为不变。
+- 不带新内容的 2.0.0 请求 / 结果 / descriptor 按记录版本读取、哈希逐位不变，并仍通过 `check_answers`。
+- 测试：`tests/test_adr_0054_0057_versions.py`；`tests/plugins/backtest/test_carry_over.py` 与 `test_execution_model.py` 的 50a43a4 / 9c0b851
+  金值改为在 2.0.0 构造作用域内复核，金值未改。

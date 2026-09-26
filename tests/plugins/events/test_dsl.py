@@ -31,6 +31,7 @@ from plugins.events.dsl import (
     to_data,
     verify_compilation,
 )
+from tests.contract_version_support import at_pre_bump, built_at_pre_bump
 from tests.fake_events import LAG, MINUTE, REGIME, X
 
 CROSS_UP = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), "up", observable_lag=LAG)
@@ -53,13 +54,17 @@ def count(a: dict[str, Any], at_least: int = 2, within_us: int = 3 * MIN_US) -> 
     return {"op": "count", "a": a, "at_least": at_least, "within_us": within_us}
 
 
-#: Every operator, a shared sub-expression, depth 4.
-EXPRESSION = pair(
-    "and",
-    pair("seq", count(ref(SWITCH)), pair("not", ref(CROSS_UP), ref(SWITCH), 2 * MIN_US)),
-    pair("and", count(ref(SWITCH)), ref(CROSS_DOWN)),
-    5 * MIN_US,
-)
+def _expression(cross_up: EventSpec, cross_down: EventSpec, switch: EventSpec) -> dict[str, Any]:
+    """Every operator, a shared sub-expression, depth 4."""
+    return pair(
+        "and",
+        pair("seq", count(ref(switch)), pair("not", ref(cross_up), ref(switch), 2 * MIN_US)),
+        pair("and", count(ref(switch)), ref(cross_down)),
+        5 * MIN_US,
+    )
+
+
+EXPRESSION = _expression(CROSS_UP, CROSS_DOWN, SWITCH)
 
 
 def _compile(expression: Any = EXPRESSION, limits: CompileLimits = LIMITS) -> Compilation:
@@ -275,14 +280,29 @@ def test_a_bare_ref_compiles_to_no_spec() -> None:
 
 
 #: Golden: a change here changes every stored DSL spec (hash stability across runs / versions).
-GOLDEN_COMPILATION_HASH = "637ef43ef02a1f43b927bcf254d7617f66880b2d5ad280c2b2c5d02f3f104081"
-GOLDEN_ROOT_HASH = "db08263d35a11058bab35aaa7362a70eee2fa49ce90bafc8a875ecfa6dcc12fb"
+#: Recorded at contract 2.0.0 (ADR-0061 landed before the 2.1.0 bump); checked on the 2.0.0 twins.
+GOLDEN_COMPILATION_HASH_2_0_0 = "637ef43ef02a1f43b927bcf254d7617f66880b2d5ad280c2b2c5d02f3f104081"
+GOLDEN_ROOT_HASH_2_0_0 = "db08263d35a11058bab35aaa7362a70eee2fa49ce90bafc8a875ecfa6dcc12fb"
+#: Re-pinned at contract 2.1.0 (ADR-0052 §4): the registry specs and the compiled root are new
+#: 2.1.0 objects, and the envelope is part of every content hash. This is the intended envelope
+#: change only: the same compilation built at 2.0.0 still gives the 2.0.0 pins above.
+GOLDEN_COMPILATION_HASH = "d5457212439e1a71ac83fa0dd2ed9daff6f8207e46f02a61f77c608c7ba697d3"
+GOLDEN_ROOT_HASH = "7abb8b4e5ee2dcec5e2343e265cb542b38665553d9fbd7bc8e78dd76d084fd52"
 
 
 def test_the_compiled_hashes_are_pinned() -> None:
     compiled = _compile()
     assert compiled.compilation_hash == GOLDEN_COMPILATION_HASH
     assert compiled.root.content_hash() == GOLDEN_ROOT_HASH
+
+
+def test_the_compiled_hashes_at_2_0_0_are_unchanged() -> None:
+    with built_at_pre_bump():
+        registry = tuple(at_pre_bump(spec) for spec in REGISTRY)
+        compiled = compile_expression(_expression(*registry), registry, LIMITS)
+    assert compiled.root.schema_version == "2.0.0"
+    assert compiled.compilation_hash == GOLDEN_COMPILATION_HASH_2_0_0
+    assert compiled.root.content_hash() == GOLDEN_ROOT_HASH_2_0_0
 
 
 # ======================================================================================
@@ -329,12 +349,15 @@ def test_hops_name_the_provider_and_exactly_the_declared_upstream() -> None:
 
 
 def test_existing_interaction_specs_and_hashes_are_unchanged() -> None:
-    sequence = EventSequenceProvider.spec(CROSS_UP, SWITCH, 3 * MINUTE, observable_lag=LAG)
-    co_occur = EventCoOccurrenceProvider.spec(CROSS_UP, SWITCH, MINUTE, observable_lag=LAG)
-    assert CROSS_UP.content_hash() == (
+    # Pinned at contract 2.0.0: the specs rebuilt as the 2.0.0 code built them (ADR-0052 §4).
+    with built_at_pre_bump():
+        cross_up, switch = at_pre_bump(CROSS_UP), at_pre_bump(SWITCH)
+        sequence = EventSequenceProvider.spec(cross_up, switch, 3 * MINUTE, observable_lag=LAG)
+        co_occur = EventCoOccurrenceProvider.spec(cross_up, switch, MINUTE, observable_lag=LAG)
+    assert cross_up.content_hash() == (
         "80db63d34f5ad9f06cdcb995b946d3b729f0f2d9ca7af15c75ce069a5fbe1aec"
     )
-    assert SWITCH.content_hash() == (
+    assert switch.content_hash() == (
         "1e34d438767222513c28256fb92f2aab3914dcc9ab19620d9b4a27a6175b350b"
     )
     assert sequence.content_hash() == (
