@@ -102,6 +102,7 @@ from core.domain.research import KnowledgeItem
 from core.domain.selection import ProfileSelection
 from core.domain.specs import FeatureSpec, StateSpec
 from infrastructure.event_bus import FileEventBus, InMemoryEventBus
+from research.hypotheses import HypothesisBatch
 from research.loop.durable import (
     DurableState,
     FileAnchor,
@@ -189,6 +190,10 @@ class LoopWiring:
     #: ``validate_cells=True`` the validation stage also runs in-sample G0 – G3 on every supported
     #: cell (**Per-cell validation**; no lifecycle move).
     conditional: ConditionalPlan | None = None
+    #: ``None`` (the default): no batch, every record and fingerprint byte-identical. A declared
+    #: ``HypothesisBatch`` (``research.hypotheses.batch``): pre-registered as a whole by the
+    #: hypothesis stage the first round it runs (every cell a trial of the family); fingerprinted.
+    hypothesis_batch: HypothesisBatch | None = None
 
 
 class LoopSettings(Protocol):
@@ -370,6 +375,7 @@ def compose_loop(
             llm_prompt=config.llm_prompt if llm is not None else None,
             llm_cost_units_per_call=config.llm_cost_units_per_call,
             llm_content=llm.resolver if isinstance(llm, ContentVerifiedLLM) else None,
+            batch=wiring.hypothesis_batch,
         ),
         *evolution,
         ExperimentStage(
@@ -636,11 +642,14 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
     """The part of a state directory's fingerprint every round data source shares.
 
     The opt-in ``ConditionalPlan`` appears only when set (``conditional``: its payload), so every
-    fingerprint of a configuration without one stays exactly as it was."""
+    fingerprint of a configuration without one stays exactly as it was; so does the opt-in
+    ``HypothesisBatch`` (``hypothesis_batch``: its payload)."""
     wiring = config.wiring
-    conditional: dict[str, Any] = (
+    opt_in: dict[str, Any] = (
         {} if wiring.conditional is None else {"conditional": wiring.conditional.payload()}
     )
+    if wiring.hypothesis_batch is not None:
+        opt_in["hypothesis_batch"] = wiring.hypothesis_batch.payload()
     return {
         "loop_id": config.loop_id,
         "seed": config.seed,
@@ -673,7 +682,7 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
             name: None if value is None else repr(value)
             for name, value in sorted(asdict(wiring.robustness).items())
         },
-        **conditional,
+        **opt_in,
     }
 
 

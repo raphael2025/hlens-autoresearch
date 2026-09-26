@@ -22,3 +22,12 @@
 其 `call` 是该次交换的 `LlmCall`；循环的 `HypothesisStage` 把被拒调用的内容哈希与 prompt / input / output 引用连同拒绝原因
 写进该轮 hypothesis 阶段摘要（`llm.call_hash` / `llm.call`）——LLM 输出无论接受与否都有记录（roadmap P7）。
 只有出现被拒 LLM 输出的轮次记录会变；其他记录逐字节不变。
+
+## 声明式假设批次（`batch.py`，Phase 7 补全，2026-09-26）
+
+`BatchGrid`（名称、族、`created_at`、算子、输入 `StrategySpec`、参数点、最小有意义效应——全部必填、无默认值）× `ReviewedOperators`
+（声明的、带 SemVer 版本与审阅人的算子白名单）→ `expand_batch` → `HypothesisBatch`（假设由构造计算，不能传入）。每个单元的条件恰好是循环
+`trial_point` 能运行的两种形式；以下情况一律 `BatchRefused`，发生在任何登记与运行之前：算子不在白名单上（或同名同版本但内容不同）、
+算子种类是 `trial_point` 跑不了的 DSL 算子（conditioning / interaction / temporal / transformation / ensemble / negation）或未知种类、
+参数未声明搜索空间、值不在搜索空间内（类型也须一致）、浮点值、文本值读回后不是它自己、空或重复的因子。`preregister_batch(batch, ledger)`
+全有或全无地把整批预登记进 `TrialLedger`，族 trial 数因此覆盖整个网格。算子只是数据（主张、方向、固定列表中的种类），生成物永不作为代码执行。

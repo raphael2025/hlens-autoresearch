@@ -21,7 +21,9 @@ declarations — is a constructor parameter; validation thresholds are read from
   (IDEA → CANDIDATE), pre-registers re-evaluations of still-open (VALIDATION / INCONCLUSIVE)
   hypotheses as new trials when the research data has grown, and asks the LLM for one new draft,
   which only goes to the review queue (a schema-invalid output is recorded with its ``LlmCall``'s
-  content hash and refs next to the rejection reason, never registered);
+  content hash and refs next to the rejection reason, never registered); an optional declared
+  ``HypothesisBatch`` (``research.hypotheses.batch``) is pre-registered as a whole the first round
+  it runs;
 - ``EvolutionStage`` (optional, ``research/loop/evolution.py``): offspring of the best earlier
   candidates, registered as new hypotheses and validated afresh this round;
 - ``ExperimentStage`` / ``ValidationStage`` (``research/loop/trials.py``): the reproducible
@@ -77,7 +79,14 @@ from core.errors import LifecycleViolation, ReasonCategory, ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.content import ContentResolver
 from infrastructure.state import run_state, state_inputs, state_request
-from research.hypotheses import HypothesisDraft, LlmDraftRejected, from_knowledge, from_llm
+from research.hypotheses import (
+    HypothesisBatch,
+    HypothesisDraft,
+    LlmDraftRejected,
+    from_knowledge,
+    from_llm,
+    preregister_batch,
+)
 from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.llm_content import verify_call_content
 from research.loop.memory import ResearchMemory
@@ -87,6 +96,7 @@ from research.loop.segment import (
     SealedBars,
     Segment,
     decision_grid,
+    trial_point,
 )
 from research.loop.trials import (
     ExperimentStage,
@@ -95,6 +105,7 @@ from research.loop.trials import (
     TrialOutcome,
     ValidationOutcome,
     ValidationStage,
+    _request_point,
     failure_of,
 )
 from research.validation.splits import midnight_utc
@@ -392,6 +403,14 @@ class HypothesisStage:
     (``TrialLedger.register_reevaluation``, attempt ``loop_round:<loop>:<round>``): each
     (hypothesis, round) evaluation counts towards the family's trial count and the round's trial
     budget, so G3's multiple-testing correction sees every look at the accumulated data.
+
+    ``batch`` (optional; ``None`` changes nothing): a declared ``HypothesisBatch`` of this stage's
+    family. Every cell must be runnable here — ``trial_point`` reads it, its strategy is in the
+    loop's catalog with the grid's exact spec, and the point is a requestable one — or the stage
+    refuses to be constructed (never an ERRORED trial later). The first round the stage runs, the
+    **whole** batch is pre-registered in the ``TrialLedger`` (``preregister_batch``, before any
+    trial of the round runs; the round's trial budget is charged for every cell) and every cell is
+    this round's trial; the summary's ``batch`` key names the grid and the reviewed allowlist.
     """
 
     name = "hypothesis"
@@ -409,6 +428,7 @@ class HypothesisStage:
         llm_prompt: str | None = None,
         llm_cost_units_per_call: Decimal = Decimal(0),
         llm_content: ContentResolver | None = None,
+        batch: HypothesisBatch | None = None,
     ) -> None:
         if (llm is None) != (llm_prompt is None):
             raise ValueError("an LLM source needs both a provider and a prompt")
@@ -429,10 +449,41 @@ class HypothesisStage:
         self._prompt = llm_prompt
         self._llm_cost = llm_cost_units_per_call
         self._llm_content = llm_content
+        if batch is not None:
+            self._check_batch(batch)
+        self._batch = batch
+
+    def _check_batch(self, batch: HypothesisBatch) -> None:
+        """Every cell runs here as declared, or the stage is refused (see class docs)."""
+        if batch.grid.family_id != self._family:
+            raise ValueError(
+                f"the batch's family {batch.grid.family_id!r} is not this stage's {self._family!r}"
+            )
+        for spec in batch.grid.strategies:
+            candidate = self._memory.strategies.get(str(spec.ref))
+            if candidate is None or candidate.spec.content_hash() != spec.content_hash():
+                raise ValueError(f"the batch strategy {spec.ref} is not in the loop's catalog")
+        for hypothesis in batch.hypotheses:
+            point = trial_point(hypothesis)
+            candidate = self._memory.strategies.get(f"strategy:{point.strategy}")
+            if candidate is None:
+                raise ValueError(f"{hypothesis.ref}: no strategy {point.strategy} in the catalog")
+            _request_point(candidate, point.overrides)
+
+    def _batch_pending(self) -> tuple[Hypothesis, ...]:
+        if self._batch is None:
+            return ()
+        ledger = self._memory.ledger
+        return tuple(h for h in self._batch.hypotheses if not ledger.is_registered(h))
 
     def _plan(
         self, ctx: RoundContext
-    ) -> tuple[tuple[Hypothesis, ...], tuple[HypothesisDraft, ...], tuple[Hypothesis, ...]]:
+    ) -> tuple[
+        tuple[Hypothesis, ...],
+        tuple[HypothesisDraft, ...],
+        tuple[Hypothesis, ...],
+        tuple[Hypothesis, ...],
+    ]:
         known = {(h.name, h.version) for h in self._memory.ledger.hypotheses}
         fresh = tuple(
             h
@@ -443,13 +494,31 @@ class HypothesisStage:
         again = reevaluation_candidates(
             self._memory, ctx.state_of, segment.research_end, self._max_reevaluations
         )
-        return fresh, self._memory.reviews.reviewed_untaken(), again
+        return fresh, self._memory.reviews.reviewed_untaken(), again, self._batch_pending()
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
         return self._usage(*self._plan(ctx))
 
     def run(self, ctx: RoundContext) -> StageResult:
-        fresh, drafts, again = self._plan(ctx)
+        fresh, drafts, again, batch = self._plan(ctx)
+        batch_summary: dict[str, Any] = {}
+        batched: tuple[Hypothesis, ...] = ()
+        if self._batch is not None:  # the whole batch, before anything else of the round
+            batched = preregister_batch(self._batch, self._memory.ledger)
+            if batched != batch:
+                raise ValueError("the batch changed between the plan and its pre-registration")
+            payload = self._batch.payload()
+            batch_summary = {
+                "batch": {
+                    "grid": self._batch.grid.name,
+                    "grid_hash": payload["grid"],
+                    "allowlist": payload["allowlist"],
+                    "allowlist_hash": payload["allowlist_hash"],
+                    "reviewer": self._batch.allowlist.reviewer,
+                    "declared_trials": len(self._batch.hypotheses),
+                    "pre_registered": [str(h.ref) for h in batched],
+                }
+            }
         llm_summary: dict[str, Any] | None = None
         if self._llm is not None and self._prompt is not None:
             context = {
@@ -476,6 +545,19 @@ class HypothesisStage:
                 }
         registered: list[Hypothesis] = []
         llm_calls: dict[str, LlmCall] = {}
+        if self._batch is not None and batched:
+            evidence = (
+                f"batch:{self._batch.grid.name}#{self._batch.grid.content_hash()}",
+                f"reviewed_operators:{self._batch.allowlist.key}"
+                f"#{self._batch.allowlist.content_hash()}",
+            )
+            for hypothesis in batched:
+                registered.append(hypothesis)
+                self._admit(
+                    ctx,
+                    hypothesis,
+                    (f"hypothesis:{hypothesis.ref}#{hypothesis.content_hash()}", *evidence),
+                )
         for hypothesis in fresh:
             self._memory.ledger.register(hypothesis)
             registered.append(hypothesis)
@@ -510,10 +592,11 @@ class HypothesisStage:
             "family_trials": self._memory.ledger.trials(self._family),
             "llm": llm_summary,
             "pending_reviews": list(self._memory.reviews.pending),
+            **batch_summary,
         }
         return StageResult(
             summary,
-            self._usage(fresh, drafts, again),
+            self._usage(fresh, drafts, again, batch),
             {
                 "registered": tuple(registered),
                 "reevaluations": tuple((h, attempt) for h in again),
@@ -526,10 +609,11 @@ class HypothesisStage:
         fresh: tuple[Hypothesis, ...],
         drafts: tuple[HypothesisDraft, ...],
         again: tuple[Hypothesis, ...],
+        batch: tuple[Hypothesis, ...],
     ) -> StageUsage:
         calls = 0 if self._llm is None else 1
         return StageUsage(
-            trials=len(fresh) + len(drafts) + len(again),
+            trials=len(fresh) + len(drafts) + len(again) + len(batch),
             llm_cost_units=self._llm_cost * calls,
             compute_seconds=self._compute,
         )

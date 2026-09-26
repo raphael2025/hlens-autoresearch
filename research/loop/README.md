@@ -221,6 +221,23 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 崩溃是确定位置的 `SIGKILL`（子进程内包装，不改生产代码）。已证明：三个进程分段运行等于一个不中断进程；`loop_round_started` 之后、
 记忆检查点之后审计记录之前被杀 → 另一进程拒绝（interrupted）且不写任何字节；审计记录之后总线发布之前被杀 → 下一进程补发并与不中断运行一致；
 审批写入之后轮间检查点之前被杀、第三方进程伪造审批、重链审批、原地篡改审计、带更大预算重开 → 均被另一进程拒绝；持有目录的进程在时另一进程
-`BusLocked`，被杀后锁由内核释放。**发现的缺口**（`xfail(strict=True)`，未修复）：状态目录本身没有单写者锁，只有组合自带的
+`BusLocked`，被杀后锁由内核释放。**发现的缺口**（原以 `xfail(strict=True)` 固定；2026-09-26 已修复：`open_state` 获取 `state_dir/state.lock` 单写者锁，见 B32）：状态目录本身没有单写者锁，只有组合自带的
 `FileEventBus(state_dir/bus)` 的 flock 串行化进程；调用方注入自己的总线（如 `InMemoryEventBus`）时，第二个进程可以在另一进程持有时打开同一目录，
 而日志只在文件变短时拒绝追加，两个写者的冲突只会在下次重开时被发现（重复 `seq` → `JournalCorrupted`），不会被阻止。
+
+### 被拒 LLM 输出的记录与声明式假设批次（Phase 7 补全，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+
+无 core / 契约 / Schema 变更。
+
+- **被拒的 LLM 输出**：`from_llm` 的草稿结构是严格的（多余键拒绝、不做类型强制转换）；不合结构时 `LlmDraftRejected` 带着该次 `LlmCall`，
+  hypothesis 阶段摘要 `llm` 记 `rejected`（原因）、`call_hash`（调用内容哈希）与 `call`（provider、model、prompt / input / output 引用、`called_at`）。
+  只有出现被拒输出的轮次记录会变；其余记录逐字节不变（固定哈希测试）。`ContentVerifiedLLM` 的内容校验失败时 provider 不返回调用，仍只记原因。
+- **假设批次**（`LoopWiring.hypothesis_batch`，可选，`None` 时记录与指纹逐字节不变）：`research.hypotheses.batch` 把声明的网格
+  （算子 × 输入策略 × 参数点，全部显式、无默认值）展开为条件只有 `strategy = <name@version>` / `param <k> = <v>` 的假设；算子必须在声明的、带版本的
+  已审阅算子白名单（`ReviewedOperators`，含审阅人）上且内容与审阅时一致，`trial_point` 跑不了的 DSL 算子种类、策略不接受的参数点在构造批次时即拒绝。
+  组合循环时 hypothesis 阶段再用 `trial_point` + 策略目录 + 可请求参数点核对每个单元（族必须一致），不通过即拒绝组合——永不成为之后的 ERRORED trial。
+  第一次运行时**整批**先登记进 `TrialLedger`（全有或全无；本轮 trial 预算按全部单元计费，预算不够则阶段 `REFUSED_BUDGET`、一条也不登记），
+  族 trial 数因此覆盖整个网格；摘要 `batch` 记网格名与哈希、白名单与哈希、审阅人、声明的 trial 数与本轮登记的单元；生命周期证据带 `batch:` / `reviewed_operators:`。
+  指纹多出 `hypothesis_batch`（仅在设置时）。持久重开不会重复登记。
+
+测试：`tests/research/hypotheses/test_strict_llm_drafts.py`、`tests/research/hypotheses/test_batch.py`、`tests/research/loop/test_loop_llm_rejection.py`、`tests/research/loop/test_loop_batch.py`。
