@@ -17,7 +17,7 @@
 |---|---|---|
 | Dashboard | 健康检查、契约数、各类报告计数 | `/health`、`/contracts`、`/reports/{kind}` |
 | Validation Reports | 报告列表 + 详情（gate 结果表） | `/reports/validation_report[/​{id}]` |
-| Research Loop | round 表（status、未完成阶段及其 error、round_usage / total_usage、overrun）+ 用量图表 | `/reports/research_loop_round` |
+| Research Loop | round 表（status、未完成阶段及其 error、round_usage / total_usage、overrun）+ 每个用量维度一张图（trials / llm_cost_units / compute_seconds，带单位；每轮用量柱在左轴、累计线在右轴） | `/reports/research_loop_round` |
 | State × Strategy Matrices | 矩阵列表 + 详情（per-state 指标热力图、样本数） | `/reports/state_strategy_matrix[/​{id}]` |
 | Router Paper Runs | 运行列表 + 详情（权重 / 切换时间线、switching-cost 前后权益对比；证据模式下的资格证据与验证报告绑定） | `/reports/router_paper_run[/​{id}]` |
 | Router Stops | 停止记录列表 + 详情（停止原因、spec / 状态结果哈希、每个策略的 lifecycle / 结果哈希 / 验证报告绑定；证据模式下每个策略的资格核验结果与拒绝原因）；没有模拟任何运行 | `/reports/router_stop[/​{id}]` |
@@ -94,6 +94,13 @@ uv run python -m tests.apps.live_server --port 8000 --reports-root apps/web/fixt
 Knowledge Search 需要 `--knowledge docs/research/knowledge`（注入 `LocalKnowledgeProvider`），否则显示 503）。
 `tests/apps/test_console_fixtures.py` 保证每个 `ReportKind` 在这个目录下至少有一份 fixture，并且每份
 都能通过 `ReportStore` 与 `/reports/...` 端点正常读回。
+
+2026-09-26 审计补充：十种报告的 fixture 全部由提交的生成器产生，并由 `tests/apps/report_fixtures.py` 固定。
+`validation_report`、`state_strategy_matrix`、`gate_calibration` 各保留一份契约 2.0.0 的**遗留** fixture（文件名是内容哈希，
+不改名，列在 `LEGACY_2_0_0` 中；`regenerate_legacy()` 在新进程中以 2.0.0 版本作用域逐字节重建），并各新增一份 2.1.0 fixture
+（validation 的一份带测试用精确门值）。报告解析在 `src/lib/validationReport.ts` / `stateStrategyMatrix.ts` /
+`routerPaperRun.ts`（`node --test`）；Validation Reports 在有 `value_exact` / `threshold_exact` 时显示精确值，2.0.0 报告回退到浮点，
+并显示 exact / float、`threshold_source` 与契约版本。Python 测试、node 测试与报告页面的详情测试读取每个种类的全部 fixture。
 
 ## 代码分割（Code splitting）
 

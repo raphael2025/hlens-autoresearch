@@ -89,6 +89,13 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
 
 - **错误体不含服务器路径**：malformed 报告的 422 `detail` 为 `<kind>/<id> is malformed: <原因>`；本层所有
   `HTTPException` 经同一处理器把绝对路径缩成最后一段（`public_detail`），知识 provider 的 `OSError` 文本同样如此。
+  2026-09-26 审计补充：`file:/…`、`file:///…`、`file://host/…` URI，`~/`、`~user/` 路径，以及紧跟冒号的路径也只保留
+  文件名；`https://host/…` 与 `1/2` 之类的文本不变（`tests/apps/test_api.py`）。
+- **兜底 500**：任何未处理异常一律返回 500 `{"detail": "internal server error"}`，不带异常消息、路径或 traceback；
+  报告读取的 `path.stat()` 移入同一错误保护内。因为兜底处理器作用于全部路由，每个 operation 都在 OpenAPI 中声明 500
+  为 `ApiError`（`openapi.json` 与 `apps/web/src/api.d.ts` 已重新生成）。
+- **只读边界测试**：遍历 `app.routes`（不只看 OpenAPI），只允许普通 HTTP GET / 知识检索 POST 路由；一个
+  `include_in_schema=False` 的隐藏 DELETE 会被测试发现。
 - **OpenAPI**：`GET /reports/{kind}/{id}` 的 422 声明为 `ApiError | HTTPValidationError`（存储拒绝，或未知
   `kind` 的请求校验）。`/health` → `Health`、`/contracts` → `ContractNames`、`/lifecycle/transitions` →
   `LifecycleTransition[]`，JSON 与之前逐字段相同。
