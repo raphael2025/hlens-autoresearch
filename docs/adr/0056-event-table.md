@@ -202,3 +202,10 @@ ADR-0057 给逻辑事件表加了可选的 `subject` 列。`event.events` 在首
 `research` / `staging`；D-NET 运行产物中的 "event" 只是质量报告键名。所有测试的 SQLite catalog 都建在 `tmp_path`。因此 `event.events` 从未在任何持久 catalog 中创建，
 定义 `1.0.0` 的字段 ID（逻辑列 1～10，运行块 11～15，列表元素 16～17）即首个被创建的布局，不存在需要保留的旧字段 ID；若日后已建表再改列，必须保留既有 ID 并做显式 schema evolution 与新定义版本。
 
+
+### 契约版本列（2026-09-26，ADR-0052 版本化重放合入后）
+
+运行块增加必填列 `contract_schema_version`（字段 16；列表元素 ID 改为 17、18）：记录该运行（`EventResult`、其事件与事件引用）的
+契约信封。ADR-0052 升到 2.1.0 后，原实现按实时版本重建运行，2.0.0 的运行会因 `event_id` 不符而无法读取；现按记录版本重建
+（V1），写入时拒绝信封不一致的运行，读取时未发布 / 不符的记录版本即 `EventTableCorrupted`。该表仍从未在任何 catalog 中创建
+（上节只读核实），定义版本仍为 `1.0.0`，定义哈希重新固定为 `c7c494cd…`。

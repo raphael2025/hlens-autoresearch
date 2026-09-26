@@ -322,7 +322,8 @@ provider-agnostic contract suite 在 `tests/contract_suites/state.py`。
 
 **剩余量跨 bar 结转（[ADR-0054](../adr/0054-partial-fill-carry-over.md)，additive）**：新模型 `FillRemainder`（登记表末尾追加）；
 `PriceBar.volume` 与 `BacktestResult.remainders` 缺省时从载荷中省略，既有 `PriceBar` / `BacktestRequest` / `BacktestResult` /
-descriptor 哈希逐位不变，`CONTRACT_SCHEMA_VERSION` 仍为 `2.0.0`（是否随 2.1.0 发布待决，见 ADR-0054 实施说明）。
+descriptor 哈希逐位不变；这些字段、`FillRemainder` 与字面量 `next_bar_open_participation` 自契约 **2.1.0** 起
+（2026-09-26 重新声明，§3.3；2.0.0 信封携带它们即拒绝）。
 `next_bar_open_participation` 下，目标在执行 bar 定量为目标变化量，按成交量上限未成交的剩余量在同一标的之后的 bar 开盘继续成交，
 以 `filled` / `superseded`（同标的下一目标的执行 bar，新目标按实际持仓重新定量）/ `end_of_data` 结束；`check_answers` 核对每笔成交在
 `[执行 bar, 下一目标的执行 bar)` 内某根 bar 开盘、一根 bar 至多一笔、与目标变化量同向、各笔之和等于记录的 `filled_quantity`（不超过目标
@@ -347,6 +348,7 @@ PnL 是否按成本模型计算，由 contract suite 对具体实现检查，契
 | `EventProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_events` 非空，`event:name@semver → spec hash` |
 
 可选的 `subject`（ADR-0057）：请求所属的标的；给出时 `Event` / `EventResult` 必须绑定同一标的并进入 `event_id` / `result_hash`，缺省时省略（旧哈希不变）。
+`subject` 是调用方提供的稳定 opaque 标识（大小写敏感，只去首尾空白），自契约 **2.1.0** 起（2.0.0 信封携带即拒绝，§3.3）。
 执行器 `infrastructure/event/runner.py` 对每个检查点只交出可见集合，并要求相邻检查点的事件表一致（不得回填 / 撤回：不得未来确认）。
 provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实边界**：`source_lineage_hash` 是否对应已登记的上游值、
 交互规格声明的 Feature / State 并集是否与上游规格一致，属 Registry。
@@ -511,7 +513,14 @@ elements、archive revision 及其行、exchangeInfo snapshot、listing 批次�
 `contract_schema_version_scope(<记录版本>)` 构造（只影响缺省信封，只接受已发布版本，新组不得在其中写入）。
 代码中登记、被持久化数据按内容引用的身份（Phase 1 的 `PolicyBinding` / `SourceBinding` 常量、登记的 universe spec）
 保持其发布时的信封（2.0.0）；由 spec 投影出的 `UniverseSpecBinding` 携带 spec 的信封。同表 2.0.0 与 2.1.0 的行
-并存，选择与 precedence 不读信封，从行重建的记录保留行上的版本。
+并存，选择与 precedence 不读信封，从行重建的记录保留行上的版本。Phase 3 物理事件表 `event.events` 同样逐行记录运行的
+`contract_schema_version`，按记录版本重建（一个运行 = 一个写入组）。
+
+**新内容的引入版本**（ADR-0052 §4、Codex K3）：`Contract._FIELDS_SINCE`（字段 → 版本；字段"存在"= 出现在载荷中：非 `None`
+且未被其 `exclude_if` 省略）、`_VALUES_SINCE`（已有字段的新取值 → 版本）与 `_MODEL_SINCE`（整个模型 → 版本）；信封早于引入版本即拒绝。
+2.1.0 引入：ADR-0052 §1 ~ §3 的 Profile / `GateResult` 字段与 `CapacityParams` / `CrossAssetParams`；ADR-0054 的
+`PriceBar.volume`、`BacktestResult.remainders`、`FillRemainder`、`execution_model="next_bar_open_participation"`；ADR-0057 的
+`Event` / `EventRequest` / `EventResult` 的 `subject`。
 
 **"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.1.0` 这样的版本号
 **可被识别**，但这不是前向兼容承诺——载荷里出现当前实现未知字段仍然 fail closed

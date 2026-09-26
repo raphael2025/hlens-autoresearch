@@ -276,8 +276,23 @@ Profile 引用格式：`Ref` 的规范串 `profile:{name}@{semver}`，例如 `pr
 | `sample_size.max_undersampled_pnl_share` | `[0, 1]` | C-R2 |
 
 这些字段与模型只随 2.1.0 发布：2.0.0 信封的载荷带有它们即拒绝。Profile 没有某字段时，研究侧维持 ADR-0041 §1
-的现行行为（`param:` 或 `INCONCLUSIVE`）；Profile 有字段时的来源规则（同时给 `param:` 即拒绝，C-A4）与
-精确比较由研究侧实施（ADR-0052 实施记录）。
+的现行行为（`param:` 或 `INCONCLUSIVE`），逐位不变。
+
+**研究侧取值（ADR-0052 实施记录，2026-09-26；CODE_COMPLETE / DEBUG_PENDING）**：
+
+- **来源规则（C-A4）**：`research/validation/gates.py` 的 `sourced_threshold` / `sourced_parameter`——Profile 带有该字段时，
+  值只来自 Profile（`threshold_source` / `partitions_source` / `budget_source` 为 Profile 路径），同时传入显式 `param:` 即
+  `ExplicitParamRefused`；Profile 没有该字段时照旧取 `param:<name>` 或缺失。适用于 G4 的 `significance.cscv_partitions`、
+  `capacity.*`（`impact_model` 必须是已实现的 `square_root`，否则 `UnsupportedMethod`；Profile 系数与回测执行模型系数不一致
+  照旧是 `impact_coefficient_mismatch`）、`cross_asset.min_positive_fraction`、`sample_size.max_undersampled_pnl_share`，以及
+  封存 OOS 的 `data_split.sealed_oos_max_unsealings`（`SealedOosVault`；研究循环的 `OosUnsealBudget.max_unsealings = None`
+  表示取 Profile 的值）。Profile 提供的值列在 `RobustnessResult.to_dict()["profile_params"]`（旧 Profile 无此键）。
+- **负对照（D-CTRL）**：G1 `shuffle_control` / `shift_control` 用 `significance.negative_control_threshold`（存在时），否则共用
+  `significance.multiple_testing_threshold`；`threshold_source` 如实写出。G3 始终只用 `multiple_testing_threshold`。
+- **精确比较（D-FLOAT）**：阈值来自精确字段（`*_exact` 兄弟或 §2 / §3 的 `ExactDecimal` 字段）时，`compare_gate` 先按版本化
+  量化规则 `hlens.validation.gate-value-quantization@1.0.0`（浮点的精确二进制值按半偶舍入到 12 位小数；表示规则，不是阈值）
+  取得 `value_exact`，再以 `Decimal` 与精确阈值、精确 inconclusive band 比较，`GateResult` 记录 `value_exact` / `threshold_exact`；
+  没有精确字段的 Profile 走原浮点路径，结果逐位不变。
 
 > 本文件与 Profile 契约都**不含具体数值**；数值在 Phase 4 校准后写入具体 Profile 版本。
 > `[0, 1]` 这类范围是**结构上的合法取值区间**，不是校准值，也不构成对任何阈值的选择。

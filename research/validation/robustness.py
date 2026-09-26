@@ -58,6 +58,14 @@ Checks (principle → gate ids → threshold sources):
   threshold, ``INCONCLUSIVE`` (``not_enough_instruments_for_subuniverses``) when fewer than two
   sub-universes exist.
 
+Profile sources (ADR-0052 §2, implementation note 2026-09-26): a Profile that carries
+``significance.cscv_partitions``, ``capacity.*``, ``cross_asset.min_positive_fraction`` or
+``sample_size.max_undersampled_pnl_share`` supplies that value itself (``research.validation.g4``
+resolves it with ``gates.sourced_threshold`` / ``sourced_parameter``; an explicit ``param:`` given
+as well is refused, C-A4) and the recorded source is the Profile path; a Profile without them keeps
+the ``param:`` / ``profile_field_missing`` behaviour above, bit for bit. ``capacity.impact_model``,
+when given, must name an implemented impact law (``IMPACT_MODELS``) or is ``UnsupportedMethod``.
+
 Performance is the per-period Sharpe ratio of **net** returns at cost multiplier 1
 (``overfitting.sharpe_ratio``); window P&L is the sum of per-period net returns.
 Status: FRAMEWORK_IMPLEMENTED / NOT_VALIDATED.
@@ -98,6 +106,7 @@ from research.validation.stats import UnsupportedMethod, effective_sample_size
 
 __all__ = [
     "DSR_METHODS",
+    "IMPACT_MODELS",
     "MIN_CROSS_SECTION",
     "NEIGHBORHOOD_METHODS",
     "NOT_ENOUGH_FOR_SUBUNIVERSES",
@@ -127,6 +136,9 @@ PBO_METHODS: Final = frozenset({"pbo_cscv", "pbo", "cscv_pbo"})
 DSR_METHODS: Final = frozenset({"deflated_sharpe", "deflated_sharpe_ratio", "dsr"})
 #: ``parameter_stability.neighborhood_definition`` names implemented here.
 NEIGHBORHOOD_METHODS: Final = frozenset({"adjacent_grid", "adjacent_grid_points", "one_step_grid"})
+#: ``capacity.impact_model`` names implemented here (ADR-0052 §2): the square-root law of
+#: ``capacity_check`` — the same name as ``plugins.backtest.execution.IMPACT_MODEL``.
+IMPACT_MODELS: Final = frozenset({"square_root"})
 #: Explicit parameter (no Profile field) bounding the P&L share of undersampled states (C-R2).
 UNDERSAMPLED_SHARE_PARAM: Final = "state.max_undersampled_pnl_share"
 #: What a parameter neighbourhood is built from (the candidate's declared search space).
@@ -235,12 +247,15 @@ def overfitting_check(
     cscv_partitions: int | None,
     *,
     horizon: timedelta,
+    partitions_source: str = "param:cscv_partitions",
 ) -> RobustnessCheck:
     """Gate the Profile's overfitting metric; the other metric is reported only.
 
     ``horizon`` is the longest span one period shares a label or a position with later periods
     (the larger of the Outcome label horizon and the longest holding period); the CSCV purge is
     at least that wide (``overfitting.probability_of_backtest_overfitting``).
+    ``partitions_source`` records where ``cscv_partitions`` came from (``param:cscv_partitions``,
+    or ``significance.cscv_partitions`` when the Profile carries it, ADR-0052 §2).
     """
     method = _method(
         profile.significance.overfitting_metric,
@@ -286,7 +301,7 @@ def overfitting_check(
                 "pbo": pbo.pbo,
                 "splits": pbo.splits,
                 "partitions": pbo.partitions,
-                "partitions_source": "param:cscv_partitions",
+                "partitions_source": partitions_source,
                 "mean_logit": pbo.mean_logit,
                 "oos_loss_share": pbo.oos_loss_share,
                 "embargo_seconds": embargo.total_seconds(),
@@ -885,6 +900,8 @@ def capacity_check(
     impact_coefficient: float | None,
     impact_coefficient_source: str = "param:capacity.impact_coefficient",
     impact_conflict: tuple[float, float] | None = None,
+    impact_declared_source: str = "param:capacity.impact_coefficient",
+    impact_model: str | None = None,
 ) -> RobustnessCheck:
     """Capacity = ``max_participation * min(bar volume / traded fraction)`` over the fills.
 
@@ -908,12 +925,27 @@ def capacity_check(
     ``None``): the impact estimate is not computed and ``G4.capacity.impact_estimated`` is
     ``INCONCLUSIVE`` with the named reason ``impact_coefficient_mismatch`` — never a silent choice
     of one value over the other.
+
+    ADR-0052 §2: the participation limit, the required capacity and the impact coefficient may
+    come from the Profile's ``capacity`` block (the caller resolves them; the ``Threshold.source``
+    and ``impact_coefficient_source`` then name the Profile path). ``impact_declared_source`` names
+    the declared coefficient in a conflict (``param:capacity.impact_coefficient`` or
+    ``capacity.impact_coefficient``); ``impact_model`` is the Profile's ``capacity.impact_model``,
+    which must be in ``IMPACT_MODELS`` (``None``: not given, the square-root law as before).
     """
+    model_name = (
+        None
+        if impact_model is None
+        else _method(impact_model, IMPACT_MODELS, "capacity.impact_model")
+    )
     if impact_conflict is not None and impact_coefficient is not None:
         raise ValueError("capacity_check: pass either impact_coefficient or impact_conflict")
     missing: list[str] = []
     uses: list[ThresholdUse] = []
     details: dict[str, object] = {"periods": periods}
+    if model_name is not None:
+        details["impact_model"] = model_name
+        details["impact_model_source"] = "capacity.impact_model"
     gates: list[GateResult] = []
     traded = [fill for fill in fills or () if fill.traded_fraction > 0]
     if fills is not None:
@@ -940,8 +972,13 @@ def capacity_check(
             explicit_value, model_value = impact_conflict
             details["impact_cost_per_period_at_capacity"] = None
             details["impact_not_estimated"] = "impact_coefficient_mismatch"
+            declared_key = (
+                "param_capacity_impact_coefficient"
+                if impact_declared_source.startswith("param:")
+                else "profile_capacity_impact_coefficient"
+            )
             details["impact_coefficient_conflict"] = {
-                "param_capacity_impact_coefficient": explicit_value,
+                declared_key: explicit_value,
                 "execution_model_impact_coefficient": model_value,
             }
             gates.append(

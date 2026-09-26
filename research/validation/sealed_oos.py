@@ -10,9 +10,12 @@ removed.
 Budget and one-shot evaluation (Phase 8 fix, ADR-0041):
 
 - the ledger's global unsealing count (C-S2: counted in a global budget) is bounded by the vault's
-  ``max_unsealings``. The Profile has no field for this budget, so it is a **required explicit
-  parameter** (no default; ``budget_source`` records ``param:max_unsealings``). Switching the
-  ``family_id`` therefore cannot re-open the same window without limit (``OosBudgetExhausted``);
+  ``max_unsealings``. A Profile that carries ``data_split.sealed_oos_max_unsealings`` (ADR-0052 §2)
+  supplies the budget itself (``budget_source`` = that path) and an explicit ``max_unsealings``
+  given as well is refused (``ExplicitParamRefused``, C-A4); a Profile without the field (every
+  Profile before ADR-0052) needs the **required explicit parameter** as before (no default;
+  ``budget_source`` records ``param:max_unsealings``). Switching the ``family_id`` therefore cannot
+  re-open the same window without limit (``OosBudgetExhausted``);
 - an unsealing buys **one** evaluation: ``sealed_view`` hands the window's samples out once per
   family and records that in the ledger; a second read raises ``SealedOosAlreadyEvaluated``;
 - one-shot accounting at release (ADR-0041 review fixes 2, 2026-09-25): a caller that needs the
@@ -43,6 +46,7 @@ from typing import Protocol
 from core.contracts.profile_selection import OosUnsealing
 from core.contracts.validation_profile import ValidationProfile
 from research.persistence import AppendOnlyJournal, JournalCorrupted
+from research.validation.gates import sourced_parameter
 from research.validation.splits import LabeledSpan, midnight_utc
 
 __all__ = [
@@ -242,15 +246,19 @@ class SealedEvaluation:
         return tuple(span for span in spans if self.window.contains(span))
 
 
+#: The Profile field of the sealed OOS unsealing budget (ADR-0052 §2, C-S2).
+MAX_UNSEALINGS_FIELD = "data_split.sealed_oos_max_unsealings"
+
+
 class SealedOosVault:
-    """The window of one Profile with a global unsealing budget (explicit, see module docs)."""
+    """The window of one Profile with a global unsealing budget (see module docs)."""
 
     def __init__(
         self,
         profile: ValidationProfile,
         ledger: UnsealingLedger | None = None,
         *,
-        max_unsealings: int,
+        max_unsealings: int | None = None,
         path: Path | None = None,
     ) -> None:
         """``ledger`` is the framework default; pass ``path`` instead for a durable ledger file.
@@ -258,14 +266,21 @@ class SealedOosVault:
         ``path`` is additive (debugging pass, 2026-09-25): omit it and behavior is unchanged
         (in-memory, never persisted). Passing both ``ledger`` and ``path`` is ambiguous and
         refused.
+
+        ``max_unsealings`` (ADR-0052 §2): required when the Profile has no
+        ``data_split.sealed_oos_max_unsealings``; refused when it has one (the Profile's budget
+        applies and cannot be overridden, C-A4).
         """
         if ledger is not None and path is not None:
             raise ValueError("pass either ledger or path, not both")
-        if isinstance(max_unsealings, bool) or max_unsealings < 1:
+        budget, source = sourced_parameter(
+            profile, MAX_UNSEALINGS_FIELD, max_unsealings, "max_unsealings"
+        )
+        if budget is None or isinstance(budget, bool) or budget < 1:
             raise ValueError("max_unsealings must be a positive int")
         self.window = SealedWindow.from_profile(profile)
-        self.max_unsealings = max_unsealings
-        self.budget_source = "param:max_unsealings"
+        self.max_unsealings: int = budget
+        self.budget_source = source
         if ledger is not None:
             self._ledger = ledger
         elif path is not None:
