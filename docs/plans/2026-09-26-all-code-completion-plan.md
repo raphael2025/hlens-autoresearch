@@ -165,3 +165,12 @@
 - 实际运行：`uv run pytest -q tests/apps/test_execution_durable_audit.py tests/apps/test_execution.py tests/apps/test_execution_strategy_source.py tests/test_architecture_boundaries.py`
   → 47 passed；`ruff check apps/execution tests/apps` → All checks passed；`ruff format --check` → 15 files already formatted；`mypy apps/execution tests/apps/test_execution_durable_audit.py` → no issues in 14 files。
 
+
+**B3 — Phase 12：替换提案（只提案、恒待人工批准）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 文件：`research/evolution/proposals.py`（新）、`research/evolution/__init__.py`、`research/evolution/README.md`（新）；测试 `tests/research/evolution/test_replacement_proposals.py`（新，19 项）。
+  未触及 `core/`、契约、Schema、ADR。
+- 行为：`propose_replacement` 核对现任 ACTIVE / DEGRADED、候选为源自现任的新版本且谱系可完整追溯、候选在自身历史上处于 PAPER / PRODUCTION_CANDIDATE、证据 / 理由 / 提出者非空；
+  产出 `status` 恒为 `PENDING_HUMAN_APPROVAL` 的 `ReplacementProposal`；`ProposalLedger` 哈希链只追加、无批准方法。限制：`require_new_version` 拒绝同版本号候选（保守，未改）；未接入循环。
+- 实际运行：`uv run pytest -q tests/research/evolution` → 34 passed；此前同批 `tests/research/evolution tests/research/loop/test_loop_e2e.py` → 56 passed + 1 failed（修复前的测试夹具错误，已修，evolution 目录复跑 34 passed）；
+  `ruff check` → All checks passed；`ruff format --check` → 9 files already formatted；`mypy research/evolution tests/research/evolution` → no issues in 8 files。

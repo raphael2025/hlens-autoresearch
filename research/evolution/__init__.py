@@ -9,14 +9,24 @@ from research.evolution.operators import (
     require_new_version,
     retire,
 )
+from research.evolution.proposals import (
+    PENDING_HUMAN_APPROVAL,
+    ProposalLedger,
+    ReplacementProposal,
+    propose_replacement,
+)
 
 __all__ = [
+    "PENDING_HUMAN_APPROVAL",
     "EvolutionError",
     "LineageError",
     "LineageGraph",
     "Offspring",
+    "ProposalLedger",
+    "ReplacementProposal",
     "combine",
     "mutate",
+    "propose_replacement",
     "require_new_version",
     "retire",
 ]
