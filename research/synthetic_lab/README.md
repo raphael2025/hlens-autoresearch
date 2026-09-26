@@ -64,6 +64,13 @@ python -m research.synthetic_lab.gate_calibration --setup package.module:factory
 通过率范围；无错误时不写该键，无错误报告的哈希不变（带错误的 `PRE_G5_RAISING_HASH` 因新增该键重新钉住）。`CalibrationReport`
 相应提供 `false_positive_rate_bounds` / `power_bounds` 属性。
 
+B45 向外舍入修复（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：上述两个属性的端点此前用 `Decimal(n) / trials`，
+依赖环境 context 的 `ROUND_HALF_EVEN`，重复小数会使下界高于、上界低于精确比率（如 2/3 的下界、1/3 的上界）。现在在局部
+`decimal.Context(prec=28)` 中计算：下界 `ROUND_FLOOR`、上界 `ROUND_CEILING`，不受调用方环境 context 影响，区间总包含精确比率。
+公开 API 不变（`tuple[Decimal, Decimal]`）；28 位有效数字可精确表示的比率（0、1、1/4、1/128 等整除）保持精确，无检测器错误时
+两端点为同一点值；重复小数且无错误时为最紧的 28 位包络。不使用 `intervals.PLACES` 的 6 位量化。`false_positive_rate` / `power`
+点估计字段不变。测试（`test_calibration.py`）以 `Fraction` 精确比率核对 FPR 与 power 两组端点。
+
 ~~未运行 G5~~ ✅ 可选 G5 模式（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`GateCalibrationSetup.sealed_oos_g5`
 显式开启（默认 `False`；关闭时所有报告与 `report_hash` 与之前逐字节一致，测试钉住了改动前的哈希）。检测器须实现
 `detect_sealed(market, profile, sealed: SealedRelease) -> ValidationReport`（`SealedGateDetector`）；没有它的检测器
