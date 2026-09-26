@@ -142,14 +142,14 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 | ID | 问题 | 推荐 | 不决定时 |
 |---|---|---|---|
-| D-FLOAT | 验证结果与 Profile 阈值等核心模型在哈希里用浮点数，跨平台可能不一致；改成精确小数属于修改冻结契约 | 另起 ADR 改为精确小数 | 保持现状：同一台机器可复现 |
-| D-PFIELDS | 验证 Profile 缺容量、跨资产一致性、开封预算等字段；改 Profile 结构属于红线 | 另起 ADR 只加字段，数值仍待校准后冻结 | 这些检查未显式传参时一律"不确定"，绝不判通过 |
-| D-CTRL | 校准发现：同一个显著性阈值被两处反向使用（策略检验要求足够显著，负对照要求不显著），调一个就动另一个 | 与 D-PFIELDS 一起起 ADR，给负对照单独字段 | 保持共用（偏保守，不会多放行） |
+| D-FLOAT | 验证结果与 Profile 阈值等核心模型在哈希里用浮点数，跨平台可能不一致；改成精确小数属于修改冻结契约 | 已起草 [ADR-0052](docs/adr/0052-validation-contract-completion.md)（Proposed）：推荐在 major 2 内加精确小数字段、弃用浮点字段（旧哈希不变） | 保持现状：同一台机器可复现 |
+| D-PFIELDS | 验证 Profile 缺容量、跨资产一致性、开封预算等字段；改 Profile 结构属于红线 | 已起草 [ADR-0052](docs/adr/0052-validation-contract-completion.md)（Proposed）：只加字段，数值仍待校准后冻结 | 这些检查未显式传参时一律"不确定"，绝不判通过 |
+| D-CTRL | 校准发现：同一个显著性阈值被两处反向使用（策略检验要求足够显著，负对照要求不显著），调一个就动另一个 | 已起草 [ADR-0052](docs/adr/0052-validation-contract-completion.md)（Proposed）：给负对照单独字段 | 保持共用（偏保守，不会多放行） |
 | D-MINEFF | 状态 × 策略的条件假设要求填"最小效应"：它算研究者预先声明的假设内容，还是验证门槛？ | 算假设内容，不作门槛 | 只在测试里出现，生产路径无默认值 |
-| D-VFAIL | 生命周期状态机只允许 CANDIDATE → FAILED，没有 VALIDATION → FAILED：验证阶段若出现技术故障（不可复现、运行出错），失败记录会进 Failure Registry，但对象的生命周期状态无法标为 FAILED | 另起 ADR 增加 VALIDATION → FAILED（需证据） | 保持：失败记录照写，状态停在 VALIDATION |
+| D-VFAIL | 生命周期状态机只允许 CANDIDATE → FAILED，没有 VALIDATION → FAILED：验证阶段若出现技术故障（不可复现、运行出错），失败记录会进 Failure Registry，但对象的生命周期状态无法标为 FAILED | 已起草 [ADR-0053](docs/adr/0053-validation-failed-transition.md)（Proposed）：增加 VALIDATION → FAILED，只用于不可复现 / 对象自身运行出错，需证据 | 保持：失败记录照写，状态停在 VALIDATION |
 | D-NET | 本机仓库里没有真实行情数据（只有表结构），真实数据端到端测试只能用"真实格式的小样本"。要跑真正的真实数据，需要运行采集器从币安公共归档下载（公开数据、无密钥） | 授权下载 BTCUSDT / ETHUSDT 各 1～3 天的公共归档（约数万行），只写入本机、不提交仓库 | ✅ 已决定（2026-09-26，Raphael "同意"推荐方案）：下载 BTCUSDT / ETHUSDT 各 1～3 天官方公共归档（无密钥），只写本机、不入仓库；**已执行**（2026-09-26，[能力检查报告](docs/reviews/2026-09-26-dnet-real-data-capability.md)）：K 线 2 天 × 2 标的走通采集→入库→规范化→质量报告→时点选择；建数据集停在标的池（需 `exchangeInfo`，且历史日期按 ADR-0029 仍不可构建），待 Raphael 决定 |
-| D-PARTIAL | 回测器的"部分成交"：冻结的回测契约要求每个目标仓位在它自己的那根 bar 上一次成交完，所以按成交量上限没成交完的部分只能取消并报告，不能顺延到后面的 bar | 另起 ADR 扩展契约（新执行模型、剩余量字段、可选成交量）；在那之前策略每根 bar 重发目标即可逐步到位 | 保持：未成交部分取消并报告，默认回测结果逐字节不变 |
-| D-LIST | 真实历史数据建不成研究数据集：标的池需要上市历史，只能由一次公开 REST 调用（exchangeInfo，无密钥）取得；且按 ADR-0029 上市历史从本机首次观察（今天）算起，ADR-0032 不覆盖上市记录，所以历史日期仍不可用 | A：授权一次 exchangeInfo 调用 + 另起 ADR 的"上市历史假设"（仿 ADR-0032，须显式绑定、写入清单）；B：只调一次 exchangeInfo、只用今天以后的归档 | 不调用任何 REST；真实数据停在 PIT 选择 |
+| D-PARTIAL | 回测器的"部分成交"：冻结的回测契约要求每个目标仓位在它自己的那根 bar 上一次成交完，所以按成交量上限没成交完的部分只能取消并报告，不能顺延到后面的 bar | 已起草 [ADR-0054](docs/adr/0054-partial-fill-carry-over.md)（Proposed）：扩展契约（新执行模型、剩余量字段、可选成交量）；在那之前策略每根 bar 重发目标即可逐步到位 | 保持：未成交部分取消并报告，默认回测结果逐字节不变 |
+| D-LIST | 真实历史数据建不成研究数据集：标的池需要上市历史，只能由一次公开 REST 调用（exchangeInfo，无密钥）取得；且按 ADR-0029 上市历史从本机首次观察（今天）算起，ADR-0032 不覆盖上市记录，所以历史日期仍不可用 | A：授权一次 exchangeInfo 调用 + "上市历史假设"（仿 ADR-0032，须显式绑定、写入清单），已起草 [ADR-0051](docs/adr/0051-listing-history-assumption.md)（Proposed，推荐 A）；B：只调一次 exchangeInfo、只用今天以后的归档 | 不调用任何 REST；真实数据停在 PIT 选择 |
 | D-DEP | 持续循环的通用机制放在 `apps/worker`，研究阶段放在 `research/loop`，因此 research 依赖 apps/worker（apps 不依赖 research，边界测试不变）——Claude 依授权已接受（ADR-0049），请确认 | 维持 | 维持 ADR-0049 |
 
 **此外无待决架构决定。**
