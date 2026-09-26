@@ -69,6 +69,7 @@ _RUN_KEYS: Final = (
     "request_hash",
     "provider_hash",
     "as_of",
+    "subject",  # one request per subject (ADR-0057): every row of a run has the run's subject
 )
 _ATTEMPTS: Final = 8
 
@@ -128,6 +129,7 @@ def event_rows_batch(result: EventResult) -> pa.Table:
             "upstream_event_ids": list(row.upstream_event_ids),
             "provider": row.provider,
             "result_hash": row.result_hash,
+            "subject": row.subject,
             "event_index": index,
             "event_count": len(rows),
             "request_hash": result.request_hash,
@@ -150,6 +152,7 @@ def _logical_row(row: dict[str, Any]) -> EventTableRow:
         upstream_event_ids=tuple(row["upstream_event_ids"]),
         provider=row["provider"],
         result_hash=row["result_hash"],
+        subject=row["subject"],
     )
 
 
@@ -181,10 +184,12 @@ def _rebuild(result_hash: str, rows: list[dict[str, Any]]) -> EventResult:
                     "input_ids": list(row["input_ids"]),
                     "upstream_event_ids": list(row["upstream_event_ids"]),
                     "event_id": row["event_id"],
+                    **({} if row["subject"] is None else {"subject": row["subject"]}),
                 }
                 for row in rows
             ],
             "result_hash": head["result_hash"],
+            **({} if head["subject"] is None else {"subject": head["subject"]}),
         }
         result = EventResult.model_validate_json(json.dumps(document))
     except (ValidationError, ValueError, TypeError) as exc:

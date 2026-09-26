@@ -345,3 +345,24 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
 - 子代理：`pytest tests/research/loop tests/research/experiments` → 130 passed (355 s)；相关套件 → 47 passed；ruff / format / mypy（25 files）通过。
 - 本分支集成后：`pytest -m "not postgres" tests/research/loop tests/research/experiments tests/research/test_cross_phase_e2e.py tests/test_architecture_boundaries.py tests/test_docs_consistency.py`
   → 152 passed, 1 warning (369 s，含固定哈希——说明此前集成的 P8 / P10 未改变循环记录)；ruff / mypy（25 files）通过。
+
+**B22 — Phase 5：横截面动量策略（研究层）**（`CODE_COMPLETE / DEBUG_PENDING`；集成为 `51b0145`）
+
+- `research/strategies/cross_sectional_momentum.py`（`xsmom_bars@1.0.0`，唯一来源 `factor_crypto_market_size_momentum@1.0.0`）：按可见 `bar_log_return` 的 `lookback` 累计收益排序，
+  多前 k / 空后 k（或只做多），权重向下取整到 18 位，参数空间 12 个点；`LibraryEntry.provider`（默认 TSMOM，既有条目不变）；不进 `strategies/` / `plugins/`（无证据不晋升）。
+  `state_cross_exchange_price_deviations` 需要多交易所数据，超出 ADR-0022 范围，不实现（README 已写明）。
+- 限制：TEST ONLY 宽松夹具上所有组合都被拒绝、到不了 G4；G4 跨资产检查逐标的重跑，对横截面策略单标的恒为空仓——该检查对此类策略无信息，需要 Codex / Raphael 决定处理方式（未改任何门）。
+- 实际运行：子代理 `pytest -m "not postgres" tests/research/strategies tests/test_architecture_boundaries.py tests/test_strategy_contracts.py` → 116 passed；
+  本分支集成后同组 + `tests/research/loop/test_loop_units.py` → 120 passed (133 s)；ruff / mypy（15 files）通过。
+
+**B23 — core 通道：ADR-0053、ADR-0054、ADR-0052（阻断证据）、ADR-0057**（集成为 `57b95a2`、`69d8f4a`、`31943c5`、`dd2bc6a` + 本提交的冲突修正）
+
+- ADR-0053（`57b95a2`，cherry-pick 集成会话的 `0d5a975`）：VALIDATION → FAILED 仅用于技术故障；`research/loop/trials.py` 冲突按 P6 的 `matrix` 形状合并（`SubjectRunError` 分支同时清空 `matrix`）。
+- ADR-0054（`69d8f4a`，cherry-pick `d640eff`）：部分成交跨 bar 结转；Schema 135 份；不升契约版本。
+- ADR-0052（`31943c5`）：按 Codex K3 以 2.1.0 实施的尝试证明**阻断**（见自主决策记录该行）：证据测试 `xfail(strict=True)`、2.0.0 金标准向量；未改契约版本与源代码；部分实现停放在本地 `wip/adr-0052-exact-fields`。
+- ADR-0057（`dd2bc6a`）：可选 `EventRequest` / `Event` / `EventResult.subject`，缺省不进载荷与哈希（4 个既有哈希固定）；给出时绑定并拒绝跨标的上游；5 个事件 Provider 通过 `check_subject_is_bound`。
+  合入后 `event.events`（ADR-0056）在首次建表前修订：字段 10 为可选 `subject`、运行块 11～15，定义哈希重新固定，新增绑定标的往返测试（ADR-0056 实施说明）。
+- 子代理：`3501 passed, 1 xfailed`；ruff / format（641 files）/ mypy（497 files）通过。
+- 本分支集成后实际运行：`pytest -m "not postgres" tests/test_*.py tests/contract_suites tests/plugins tests/research/validation tests/research/strategies tests/research/loop tests/infrastructure/event tests/infrastructure/canonical/test_contract_version_replay.py tests/apps tests/golden`
+  → **3889 passed, 1 xfailed, 1 warning in 596.24s**；`ruff check .` → All checks passed；`ruff format --check .` → 662 files already formatted；`mypy`（整个配置集）→ no issues in 513 source files；Schema 135 份。
+

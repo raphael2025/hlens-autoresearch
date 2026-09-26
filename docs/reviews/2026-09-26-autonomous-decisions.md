@@ -6,7 +6,7 @@
 
 | ID | 问题 | 裁决 | 理由 | 实施 |
 |---|---|---|---|---|
-| D-FLOAT / D-PFIELDS / D-CTRL（ADR-0052） | 验证契约精确小数、Profile 新字段、负对照独立阈值 | 实施方案 B（可选字段、缺省时不入哈希）；**修订 §4：`CONTRACT_SCHEMA_VERSION` 保持 2.0.0，不升 minor** | 版本号写入每行 Canonical，重新规范化逐列比较；升版会使已提交 D-NET 行不可重放。字段可选且缺省不进哈希时，旧载荷哈希与重放逐位不变，升版无收益 | core 通道（ADR-0052 实施说明） |
+| D-FLOAT / D-PFIELDS / D-CTRL（ADR-0052） | 验证契约精确小数、Profile 新字段、负对照独立阈值 | ~~保持 2.0.0~~ **被 Codex 全代码复核 K3 取代**：按 Accepted ADR 以 2.1.0 实施，旧 2.0.0 数据须原样可读可重放；不能证明时保留旧行为并交付阻断证据 | 结果：**阻断**——`infrastructure/canonical/rules.py:670` 把在用的 `CONTRACT_SCHEMA_VERSION` 写入每行 Canonical，重放经 `row_integrity.py:347-360` 重算批次指纹、`normalizer.py:1212` 逐列比较；只把版本改为 2.1.0 即令已提交单元的重新处理失败（`CatalogIntegrityError`），修复须改 Phase 1 基础设施（Codex 复核中） | 证据测试 `tests/infrastructure/canonical/test_contract_version_replay.py`（`xfail(strict=True)`）、2.0.0 金标准向量 `tests/golden/v2_0_0/`、ADR-0052 "Implementation blocker (2026-09-26)"；部分实现停放在本地分支 `wip/adr-0052-exact-fields`（`8e4a71c`，不得合并） |
 | D-VFAIL（ADR-0053） | VALIDATION → FAILED | 集成集成会话已完成的实现（`0d5a975`） | 已由 Raphael 批准的 ADR，实现现成，避免重复 | core 通道 |
 | D-PARTIAL（ADR-0054） | 部分成交跨 bar 结转 | 集成现成实现（`d640eff`，不升契约版本） | 同上 | core 通道 |
 | P3-EVTABLE（ADR-0056） | 物理 Iceberg 事件表 | **Accepted** 并实现（新模块在 `infrastructure/event/`，不改 Phase 1 表 / 定义 / 供给脚本，不在真实 catalog 建表） | roadmap Phase 3 需要持久事件表；同 ADR-0031 / 0033 的只追加表先例 | P3 通道 |
@@ -25,3 +25,7 @@
 | 宪法原则 | 是否修改 | **不改** | 无需要修改的发现 | 无 |
 
 复核建议：以上"不做 / 推迟"项都可以由 Raphael 随时推翻；推翻时只需在本表对应行记录新裁决并按 ADR 流程实施。
+
+**开放项（交 Codex）**：ADR-0054（部分成交结转）与 ADR-0057（`EventRequest.subject`）都是在 2.0.0 下加的可选字段（缺省不进哈希）。若 Codex K3 的"不得把新增字段伪装成 2.0.0"
+也适用于它们，则须在 ADR-0052 的 Phase 1 重放路径落地后一并迁到 2.1.0；本记录不自行改变。
+

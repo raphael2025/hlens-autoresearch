@@ -55,7 +55,9 @@ CROSS = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), "both", observable
 CROSS_UP = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), "up", observable_lag=LAG)
 SWITCH = StateSwitchProvider.spec(REGIME, observable_lag=LAG)
 #: Golden hash of the event.events definition document: any change is a new definition version.
-EVENT_EVENTS_HASH = "66f8dd3764aa8789a244079bece0e5fcecda6063de60ad463471c467a5a23e03"
+#: Re-pinned 2026-09-26 when the optional ``subject`` column (ADR-0057) joined the logical table;
+#: the definition had never been created in any catalog, so its version stays 1.0.0.
+EVENT_EVENTS_HASH = "7c4372c0e9d2535cc8ff13ffcbbfba13d937db1e4c37952803ac8838fdc9464b"
 
 
 def _cross() -> EventResult:
@@ -126,8 +128,8 @@ def test_definition_is_the_logical_table_plus_the_run_block() -> None:
     assert EVENT_EVENTS.version == "1.0.0"
     names = tuple(item.name for item in EVENT_EVENTS.arrow_schema)
     assert names == EVENT_TABLE_COLUMNS + EVENT_RUN_COLUMNS
-    assert names[:9] == EVENT_TABLE_COLUMNS
-    assert all(item.required for item in EVENT_EVENTS.schema.fields)
+    assert names[:10] == EVENT_TABLE_COLUMNS and names[9] == "subject"
+    assert [item.name for item in EVENT_EVENTS.schema.fields if not item.required] == ["subject"]
     assert describe_partition_spec(EVENT_EVENTS) == "month(event_time)"
     assert EVENT_EVENTS.definition_hash == EVENT_EVENTS_HASH
     assert EVENT_EVENTS.fingerprint_rule.rule_id == "hlens.pyarrow-batch-sha256@1.0.0"
@@ -346,3 +348,17 @@ def test_a_lost_race_is_retried_on_the_new_head(env: Env) -> None:
     assert racing.commits == ["rival", batch_id, batch_id]
     assert env.table.load(result.result_hash) == result
     assert env.table.load(rival.result_hash) == rival
+
+
+def test_a_subject_bound_run_round_trips_with_its_subject(env: Env) -> None:
+    """ADR-0057: a run bound to a subject keeps it in every row and rebuilds with the same hash."""
+    req = request(CROSS, inputs=X_INPUTS, subject="BTCUSDT")
+    bound = run_events(FeatureThresholdCrossProvider((CROSS,)), CROSS, req)
+    assert bound.events and bound.result_hash != _cross().result_hash
+    env.table.write(bound)
+    env.table.write(_cross())  # an unbound run of the same spec lives beside it
+    stored = env.table.read(bound.result_hash)
+    assert stored is not None and stored.result == bound
+    assert {row.subject for row in stored.rows} == {"BTCUSDT"}
+    plain = env.table.read(_cross().result_hash)
+    assert plain is not None and {row.subject for row in plain.rows} == {None}

@@ -1,7 +1,8 @@
 """The physical Phase 3 Event table ``event.events`` (ADR-0056; 03-data.md §8).
 
 One row per event of one event run (``EventResult``): the nine columns of the logical Event table
-(``infrastructure.event.table.EVENT_TABLE_COLUMNS``, same names, same order, field IDs 1-9) plus
+(``infrastructure.event.table.EVENT_TABLE_COLUMNS``, same names, same order, field IDs 1-10; the
+optional ``subject`` is field 10, ADR-0057) plus
 the **run block** (``event_index``, ``event_count``, ``request_hash``, ``provider_hash``,
 ``as_of``; IDs 10-14) that lets the table alone rebuild and re-verify the ``EventResult``. There
 is no ingest-time column (rows are a pure function of the run, so the batch fingerprint is
@@ -76,15 +77,18 @@ _SCHEMA: Final = Schema(
     _req(3, "spec_hash", _S, "Event.spec_hash: content hash of the event definition"),
     _req(4, "event_time", _T, "Event.event_time: observable time (UTC)"),
     _req(5, "attributes_json", _S, "contract canonical JSON of Event.attributes"),
-    _req(6, "input_ids", _hashes(15), "Event.input_ids (strictly ascending)"),
-    _req(7, "upstream_event_ids", _hashes(16), "Event.upstream_event_ids (strictly ascending)"),
+    _req(6, "input_ids", _hashes(16), "Event.input_ids (strictly ascending)"),
+    _req(7, "upstream_event_ids", _hashes(17), "Event.upstream_event_ids (strictly ascending)"),
     _req(8, "provider", _S, "EventResult.provider (plugin key)"),
     _req(9, "result_hash", _S, "EventResult.result_hash: the run; one batch per value"),
-    _req(10, "event_index", _L, "0-based position in the run's (event_time, event_id) order"),
-    _req(11, "event_count", _L, "number of events in the run"),
-    _req(12, "request_hash", _S, "EventResult.request_hash"),
-    _req(13, "provider_hash", _S, "EventResult.provider_hash"),
-    _req(14, "as_of", _T, "EventResult.as_of (UTC)"),
+    NestedField(
+        10, "subject", _S, required=False, doc="Event.subject (ADR-0057); null when unbound"
+    ),
+    _req(11, "event_index", _L, "0-based position in the run's (event_time, event_id) order"),
+    _req(12, "event_count", _L, "number of events in the run"),
+    _req(13, "request_hash", _S, "EventResult.request_hash"),
+    _req(14, "provider_hash", _S, "EventResult.provider_hash"),
+    _req(15, "as_of", _T, "EventResult.as_of (UTC)"),
 )
 
 _SPEC: Final = PartitionSpec(

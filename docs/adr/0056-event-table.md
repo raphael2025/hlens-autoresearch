@@ -188,3 +188,9 @@ roadmap Phase 3 的输出包括 "Event 表"，Phase 4 以 "Canonical、Event" �
 - `infrastructure/event/table.py`（逻辑 Event 表）、`infrastructure/event/store.py`（`EventResultStore`）
 - `infrastructure/dataset/manifests.py`（按内容哈希幂等写入的先例）
 - [03-data.md](../architecture/03-data.md) §7.1、§7.2；[roadmap](../research/roadmap.md) Phase 3 / Phase 4
+
+## Implementation note（2026-09-26，ADR-0057 合入后）
+
+ADR-0057 给逻辑事件表加了可选的 `subject` 列。`event.events` 在首次于任何 catalog 建表之前随之修订：字段 10 为可选 `subject`（未绑定的运行为 null），
+运行块改为字段 11～15，列表元素 id 为 16、17；`subject` 也进入运行块一致性核对（同一运行的每行标的相同）。定义版本仍为 `1.0.0`（该定义从未被创建），
+定义哈希重新固定为 `7c4372c0…`（`tests/infrastructure/event/test_event_iceberg.py`）；新增绑定标的运行的往返测试。
