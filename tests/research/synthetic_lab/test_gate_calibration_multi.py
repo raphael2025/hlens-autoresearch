@@ -321,6 +321,33 @@ def test_the_pipeline_detector_refuses_a_single_instrument_setup() -> None:
         run_multi_instrument_calibration(setup)
 
 
+def test_the_pipeline_detector_refuses_a_setup_without_the_market_benchmark() -> None:
+    """ADR-0060 is enforced in the lab: a setup that does not opt in is a configuration error."""
+    detector = fx.multi_detector()
+    inner = detector._setup_for
+
+    def unenforced(markets, profile, runner) -> ValidatorSetup:  # type: ignore[no-untyped-def]
+        setup = inner(markets, profile, runner)
+        return ValidatorSetup(**{**setup.__dict__, "market_benchmark": False})
+
+    detector._setup_for = unenforced
+    setup = fx.multi_setup(1)
+    setup = MultiInstrumentCalibrationSetup(**{**setup.__dict__, "detector": detector})
+    with pytest.raises(DetectorConfigurationError, match="ADR-0060"):
+        run_multi_instrument_calibration(setup)
+
+
+def test_the_pooled_reports_carry_the_market_benchmark(
+    pipeline_report: GateCalibrationReport,
+) -> None:
+    """ADR-0060 enforced: the TEST ONLY Profile's registered rule and inverse control are
+    computed on the pooled scope (reported only), never the unregistered-rule gap."""
+    for candidate in pipeline_report.candidates:
+        ids = set(candidate.gate_ids())
+        assert {"G2.market_benchmark.buy_and_hold_equal_weight", "G2.inverse_control"} <= ids
+        assert "G2.market_benchmark" not in ids
+
+
 # --------------------------------------------------------------------------------------
 # Refusal of ambiguous setups
 # --------------------------------------------------------------------------------------

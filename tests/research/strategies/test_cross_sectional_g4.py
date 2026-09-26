@@ -61,15 +61,19 @@ def _sha(text: str) -> str:
 # byte-identity of single-instrument and time-series strategies
 # =========================================================================================
 
-#: Computed on 4543036 (before ADR-0059 was implemented) with ``created_at = T0``.
+#: Computed on 4543036 (before ADR-0059 was implemented) with ``created_at = T0``. Re-pinned for
+#: ADR-0060 enforcement (2026-09-26): the TEST ONLY Profiles' ``benchmark`` block changed from the
+#: placeholder ``"test-only"`` to ``buy_and_hold_equal_weight`` + inverse control, so every
+#: report / view hash (they bind the Profile) changed; nothing here opts in, and the G4
+#: diagnostic hashes are unchanged.
 PINNED = {
-    "single_planted_report": "8832afa37e7b37e2e819016644127f807e4bb6fe8f30af3f7f9d611ef5dc3ea8",
-    "single_planted_view": "fe862e828d20f03b75670af6dfa593ddd15277c3a429b5baf71d3b8d2f3aed31",
-    "multi_p,p_report": "4a46062695329160699a237fe7effd2bec81d40cc60d09113261cc22adda727d",
-    "multi_p,p_view": "69a59f2877d7aa4a41421df4fda71ba6d0320f4a1c418e26eac46128c514f950",
+    "single_planted_report": "6dd0103a1dc9eeaa748c2a12b6e45a44a305ae0960e77b4b807ec811aba235e3",
+    "single_planted_view": "150814f2f5605665b070187b718b1fde22923a2fb3a0c90c27aa09ecffacb596",
+    "multi_p,p_report": "53bb8fe3f626f8be6461e666a71cee001f76525cece4c7721e874d0841d31f25",
+    "multi_p,p_view": "2e445144d38d917993c50627aafedb5d16c09a2ad77164fcc0e11bbb557f0744",
     "multi_p,p_g4": "92190e46587629c968ac05a2728782e3263232cfc5d7671b274405f7d26504ea",
-    "multi_p,n,p_report": "664d6a6f27c21646ecee74c494410f5363cfd415cd5557f45b66b08bd6591840",
-    "multi_p,n,p_view": "e696438f0387f6bb3ae67936f916df8e8fd8b65e07191e16a84b287c9c44e2f3",
+    "multi_p,n,p_report": "b84dede4f1e0c5eb8b7971ef9bd99a8f2bdd98e86a4393432e10339da52f704a",
+    "multi_p,n,p_view": "95a83d79a77a1b94cdf90ecb1b6b963efa337c643cdc64005ff30520b87de47b",
     "multi_p,n,p_g4": "9a0142eea9d9f48cd06b76dde307db30b077bb193e2fb62e4ed65daf8aa01ddb",
 }
 

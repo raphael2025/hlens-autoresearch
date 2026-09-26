@@ -470,3 +470,16 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 接受原则但推迟到 Phase 1
   4 个失败都是 P6 新测试在同一进程中未释放前一测试的循环就重开模块级状态目录（B32 的单写者锁正确拒绝）；加 `tests/research/loop/conftest.py`（每个测试后 `gc.collect()` 释放已丢弃的写者，不改断言）后
   这两个文件 → **26 passed**。全量门禁将在全部通道集成后于最终 HEAD 运行。
 
+
+**B38 — ADR-0052 版本化重放与契约 2.1.0（独立 Phase 1 分支 `phase1/adr-0052-versioned-replay`，已推送至 `8a7655e`）**（`CODE_COMPLETE / DEBUG_PENDING`；未合入 Phase 1 候选 / `main`）
+
+- 基于 K4 候选 `45c13d7`（`7786e09` 合并）。M0 `ed1a202`：设计 V1～V7 + 2.0.0 金标准向量 + strict-xfail 证据；实测只改常量时首切片重放 24 步中 23 步失败（范围大于原先列出的 7 处）。
+- M1 `e247d3a` / `dc8f073`：各行构造器显式接收写入组版本，行版本列与所建记录同源；normalizer 从已提交行读回单元版本（新单元用当前版本，部分提交单元按已记录版本补完，单元内混版 / 未发布版本 fail closed）；
+  `core/domain/base.py` 的重建作用域只用于重建已持久化对象、只作用于缺省版本、作用域内开写入组即拒绝；Phase 1 已发布的政策 / 来源绑定与 `FIRST_SLICE_UNIVERSE` 固定在 2.0.0（哈希固定测试）；
+  `selector.py` 只改两行把 `PIT_BINDING` 固定在 2.0.0（K4 去重逻辑未动）。结果：常量为 2.1.0 时重放 2.0.0 首切片 0 / 24 步失败、表头不动。
+- M2 `e9f5c88`：`CONTRACT_SCHEMA_VERSION = 2.1.0`；原 strict-xfail 转为通过；同表 2.0.0 / 2.1.0 单元共存、2.0.0 部分单元按 2.0.0 补完、单元内混版 fail closed；整个首切片以 2.0.0 写入、2.1.0 重跑后表头与行不变、
+  manifest 原哈希加载与重建重放、PIT 读取结果相同；离线 D-NET 步骤重放不变（仅计时字段不同）；Schema 134 份，`schemas/v1`、v1 向量与 2.0.0 金标准向量逐字节不变。
+- M3 `8a7655e`：ADR-0052 核心字段（精确小数、`GateResult` 精确值 / 阈值、Profile `*_exact` 与 §2 / §3 新字段，只有结构范围无数值）；浮点与精确值不一致拒绝、精确值替代浮点入哈希；2.0.0 信封携带 2.1.0 字段即拒绝（`_FIELDS_SINCE`）。
+- 子代理实际运行（最终）：`tests/infrastructure`（非 PostgreSQL，含 D-NET / tools）→ **2041 passed, 136 deselected (1557.69 s)**；`tests/test_*.py tests/contract_suites tests/research/validation tests/research/strategies/test_backtest_validation.py` → **3061 passed**；
+  ruff / format（613 files）/ mypy（474 files）通过。集成会话正在该提交上跑真实 PostgreSQL 严格全量门禁（仅作证据，按 K3 未经 Codex 复核不并入候选）。
+- 后续（core 合并通道进行中）：把该分支合并进全代码分支；以 2.1.0 重新声明 ADR-0054 / 0057 字段；固定全代码分支上已发布于 2.0.0 的研究 / 插件身份（如 `BarRealizedVolatilityProvider.spec()`）；研究侧 ADR-0052 取值（精确比较、C-A4、负对照独立阈值、G4 / 封存 OOS 字段）；最终全量门禁。

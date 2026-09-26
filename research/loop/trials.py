@@ -39,6 +39,17 @@ segment without a decision time — and any ``MemoryError`` / ``OSError`` even i
 infrastructure, never attributed to the subject. The proxies keep the providers' descriptors, so
 every recorded hash is unchanged; the validator re-runs the unwrapped candidate.
 
+C-T4 market benchmark (ADR-0060 enforced in the loop, 2026-09-26; CODE_COMPLETE / DEBUG_PENDING):
+``ValidationStage`` builds its ``ValidatorSetup`` with ``market_benchmark=True``, so every trial
+report carries what the bound Profile's ``benchmark.market_benchmark_rule`` /
+``.inverse_control_reported`` call for (``G2.market_benchmark.<rule>`` / ``G2.inverse_control``,
+reported only, never a threshold). An unregistered rule name is ``G2.market_benchmark`` =
+``INCONCLUSIVE`` (``configuration_missing``) and, like every INCONCLUSIVE gate, makes the report
+INCONCLUSIVE (``derive_verdict``); evidence that cannot be produced (the benchmark re-run uses the
+validator's declared backtester or a plain ``BarBacktester()``, and must reproduce the trial's
+``result_hash`` exactly) is INCONCLUSIVE too. The re-runs are backtests of the same trial: no trial
+is added. The per-cell (label-only) validation has no price path and computes no benchmark.
+
 Conditional hypotheses (P6 in the loop; opt-in, 2026-09-26, CODE_COMPLETE / DEBUG_PENDING —
 decided by Claude under Raphael's 2026-09-26 autonomous-decision instruction). Only with an
 explicit ``ConditionalPlan`` (``LoopWiring.conditional``; ``None`` by default: nothing below
@@ -1099,6 +1110,10 @@ class ValidationStage:
             state_of=lambda t: labels.get(t) or "unknown",
             bar_volume=segment.bar_volume(),
             declared_instruments=(segment.symbol,),
+            # ADR-0060 enforced (C-T4): the Profile's ``benchmark.market_benchmark_rule`` /
+            # ``.inverse_control_reported`` are computed (reported-only items); an unregistered
+            # rule name is ``G2.market_benchmark`` INCONCLUSIVE, which the verdict carries
+            market_benchmark=True,
             # the dataset path's proven bars, manifest pair and feature manifests
             # (G0.manifest_binding); nothing on the synthetic path
             **segment.validator_binding(feature_manifests),

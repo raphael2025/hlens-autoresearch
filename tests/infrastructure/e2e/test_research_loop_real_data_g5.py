@@ -134,8 +134,9 @@ G5_TEST_ONLY_PROFILE: Final = factories.validation_profile(
         null_model="random-entry",
         null_model_simulations=50,
         null_model_percentile=0.0,
-        market_benchmark_rule="test-only",
-        inverse_control_reported=False,
+        # ADR-0060 enforcement: a registered rule (the "test-only" placeholder is INCONCLUSIVE)
+        market_benchmark_rule="buy_and_hold_equal_weight",
+        inverse_control_reported=True,
     ),
     parameter_stability=ParameterStabilityParams(
         neighborhood_definition="adjacent_grid",

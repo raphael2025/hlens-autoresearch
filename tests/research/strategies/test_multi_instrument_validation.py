@@ -203,10 +203,13 @@ def _instrument_gates(result: StrategyEvaluation, name: str) -> dict[str, Verdic
 # =========================================================================================
 
 #: ``test_backtest_validation`` fixtures with ``created_at=T0``, computed on 1fb7918 before this
-#: change: the single-instrument path must reproduce them exactly.
+#: change: the single-instrument path must reproduce them exactly. Re-pinned for ADR-0060
+#: enforcement (2026-09-26): the fixture Profile's ``benchmark`` block now names
+#: ``buy_and_hold_equal_weight`` + inverse control instead of the placeholder ``"test-only"``
+#: (the report binds the Profile); the validator path is unchanged (no opt-in here).
 PINNED_SINGLE_REPORT_HASHES = {
-    "planted_synthetic": "8832afa37e7b37e2e819016644127f807e4bb6fe8f30af3f7f9d611ef5dc3ea8",
-    "manifest_mismatch": "6d3368dee2dbe28df970fba431911570c88838a6262a858ca23469db50b037fa",
+    "planted_synthetic": "6dd0103a1dc9eeaa748c2a12b6e45a44a305ae0960e77b4b807ec811aba235e3",
+    "manifest_mismatch": "fcfb36eb568e9bef1669ebdd951fb883673b25ab7c445daa75d7d9050bb62670",
 }
 
 

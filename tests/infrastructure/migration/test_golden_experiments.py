@@ -25,7 +25,11 @@ from tests.golden.experiments import tsmom_g0_g4 as experiment
 REPO = Path(__file__).resolve().parents[3]
 #: The committed record (``<hash>.json`` in ``tests/golden/experiments/``). Changing it is a
 #: deliberate regeneration, never a way to make this test pass (CLAUDE.md H3 / H4).
-GOLDEN_HASH = "be2430e633d1d3eb2b1273209681f32f673b5d749eb320e6c1a172ad4602ec23"
+#: Regenerated for ADR-0060 enforcement (2026-09-26; was ``be2430e6…4602ec23``): the run now sets
+#: ``market_benchmark=True`` under a Profile naming ``buy_and_hold_equal_weight`` with the inverse
+#: control, which adds exactly the five reported-only ``G2.market_benchmark.*`` /
+#: ``G2.inverse_control`` gates (32 -> 37); every other output, and the verdict, is unchanged.
+GOLDEN_HASH = "c8d129e6d8a2d6bb4becf15b6e25355228ea28d83dd7d43fd525b0be4bd4495a"
 ZERO = Decimal(0)
 
 

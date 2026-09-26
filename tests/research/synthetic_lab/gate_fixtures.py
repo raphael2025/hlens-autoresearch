@@ -12,6 +12,11 @@ The detector is the full G0 → G4 pipeline through ``PipelineBacktestValidator`
 multi-instrument detector (``multi_detector``) runs the same candidate over one such market per
 symbol through the Phase 8 multi-instrument path (``ValidatorSetup.instruments``), with the TEST
 ONLY ``MULTI_TEST_ONLY_PARAMS``; ``multi_arms`` are TEST ONLY arms, not a calibration design.
+
+ADR-0060 enforcement (2026-09-26): both Profiles name the registered C-T4 rule
+``buy_and_hold_equal_weight`` with ``inverse_control_reported=True`` (the former placeholder
+``"test-only"`` is unregistered, hence ``G2.market_benchmark`` INCONCLUSIVE), and both detector
+setups set ``ValidatorSetup.market_benchmark=True`` (the detectors refuse False).
 """
 
 from __future__ import annotations
@@ -138,8 +143,9 @@ LAX_TEST_ONLY_PROFILE = factories.validation_profile(
         null_model="random-entry",
         null_model_simulations=20,
         null_model_percentile=0.0,
-        market_benchmark_rule="test-only",
-        inverse_control_reported=False,
+        # ADR-0060 enforcement: a registered rule (the "test-only" placeholder is INCONCLUSIVE)
+        market_benchmark_rule="buy_and_hold_equal_weight",
+        inverse_control_reported=True,
     ),
     parameter_stability=ParameterStabilityParams(
         neighborhood_definition="adjacent_grid",
@@ -178,8 +184,9 @@ STRICT_TEST_ONLY_PROFILE = factories.validation_profile(
         null_model="random-entry",
         null_model_simulations=20,
         null_model_percentile=99.0,
-        market_benchmark_rule="test-only",
-        inverse_control_reported=False,
+        # ADR-0060 enforcement: a registered rule (the "test-only" placeholder is INCONCLUSIVE)
+        market_benchmark_rule="buy_and_hold_equal_weight",
+        inverse_control_reported=True,
     ),
     parameter_stability=ParameterStabilityParams(
         neighborhood_definition="adjacent_grid",
@@ -339,6 +346,7 @@ def detector(*, sealed_inputs_for: SealedInputsFactory | None = None) -> Strateg
             state_of=lambda t: "am" if t.hour < 12 else "pm",
             bar_volume={(SYMBOL, bar.interval_start): bar.volume for bar in market.bars},
             declared_instruments=(SYMBOL,),
+            market_benchmark=True,  # ADR-0060 enforced (the detector refuses False)
         )
 
     return StrategyValidatorDetector(
@@ -452,6 +460,7 @@ def multi_detector() -> MultiInstrumentValidatorDetector:
             },
             declared_instruments=names,
             instruments=names,
+            market_benchmark=True,  # ADR-0060 enforced (the detector refuses False)
         )
 
     return MultiInstrumentValidatorDetector(

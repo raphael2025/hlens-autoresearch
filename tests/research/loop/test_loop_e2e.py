@@ -342,12 +342,17 @@ def test_same_seed_gives_identical_audit_hashes(planted: Run, tmp_path: Path) ->
 #: record hashes and its configuration fingerprint. A loop without the plan must reproduce them
 #: byte for byte. A deliberate change elsewhere that alters these records (another stage's
 #: summary, a component's result) re-pins them in the same commit, stating why.
+#: Re-pinned for ADR-0060 enforcement (2026-09-26): ``ValidationStage`` now validates with
+#: ``market_benchmark=True`` and the TEST ONLY Profile names ``buy_and_hold_equal_weight`` with the
+#: inverse control reported (was the unregistered placeholder ``"test-only"``), so every report
+#: carries the reported-only ``G2.market_benchmark.*`` / ``G2.inverse_control`` items and the
+#: configuration fingerprint (which binds the Profile) changed.
 PINNED_RECORD_HASHES = [
-    "d5efeba61c9e63e3e9c6800c243fb51fa9b9db4acc51edfa42f51ae57ee4fe27",
-    "b288ac32ea943d8d1cd46700590855b4d53a7e9adcbaec3d1a432badc4b2c766",
-    "0e58619b2545188b03d53ca4ffe142d38f4c3de175fb3bb06a5f9a526c6a2cb3",
+    "9b5e9e8c8fcb1dd4e2140726a930cddc529816bba041019282781c9132876d0d",
+    "96e58affe8c2726a97f5c838db2ddb55957e6c48f1a45264dd12a4a6650b51c4",
+    "1df0bc1c0282aa00c3006f977f213841f8db09038506cb644445fd7775edcffa",
 ]
-PINNED_FINGERPRINT_HASH = "355f27483684ea467eafcf75d41a01aa6d7025de5418c209524594baa04a0766"
+PINNED_FINGERPRINT_HASH = "f7a137b21eb020b70bdca4a5e1608a5793308a1263b251a7058d4f6f4afdc342"
 
 
 def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:
@@ -359,6 +364,25 @@ def test_records_without_a_conditional_plan_are_pinned(planted: Run) -> None:
         assert all("conditional" not in row for row in experiment.summary["experiments"])
         assert experiment.estimate.trials == 0 == experiment.usage.trials
     assert not any("_given_" in h.name for h in planted.memory.ledger.hypotheses)
+
+
+def test_every_trial_report_carries_the_market_benchmark(planted: Run) -> None:
+    """ADR-0060 enforced in the loop: the TEST ONLY Profile's registered rule and inverse control
+    are computed for every validated trial that reached G2 (reported only, ``PASS`` = computed);
+    the unregistered-rule gap ``G2.market_benchmark`` never appears."""
+    items = {"G2.market_benchmark.buy_and_hold_equal_weight", "G2.inverse_control"}
+    reached = 0
+    for result in planted.memory.validations:
+        assert result.report is not None
+        by_id = {g.gate_id: g for g in result.report.gates}
+        assert "G2.market_benchmark" not in by_id
+        if not any(gate_id.startswith("G3.") for gate_id in by_id):
+            continue  # stopped before G2 completed: nothing is computed
+        reached += 1
+        assert items <= set(by_id)
+        assert all(by_id[gate_id].verdict is Verdict.PASS for gate_id in items)
+        assert by_id["G2.market_benchmark.buy_and_hold_equal_weight"].threshold is None
+    assert reached > 0
 
 
 def test_hashed_records_hold_no_floats(planted: Run, noise: Run) -> None:

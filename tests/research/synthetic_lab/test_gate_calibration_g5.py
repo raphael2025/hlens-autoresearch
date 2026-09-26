@@ -53,10 +53,15 @@ SEEDS = 4
 
 #: Report hashes of the harness **before** G5 mode existed (computed at b3a46e3). G5 mode off must
 #: keep every report byte-identical; the toy hash is also a committed console fixture
-#: (``apps/web/fixtures``).
+#: (``apps/web/fixtures``). ``PRE_G5_PIPELINE_ONE_SEED_HASH`` was re-pinned for ADR-0060
+#: enforcement (2026-09-26): the pipeline detector now validates with ``market_benchmark=True``
+#: under Profiles naming ``buy_and_hold_equal_weight`` + inverse control, so its reports carry
+#: the reported-only ``G2.market_benchmark.*`` / ``G2.inverse_control`` items. The toy and
+#: raising hashes are unchanged (the toy Profiles keep their pre-enforcement benchmark block,
+#: ``test_gate_calibration._TOY_BENCHMARK``).
 PRE_G5_TOY_HASH = "deaba5047218eeff080ed1e1ae588ba8e13a4f6ea3b6557fcab6ea3ffbe5fc07"
 PRE_G5_RAISING_HASH = "358eb551b55b91e9bfb34b81b1dc6a55729a3dd8c83e528c9465560c44370d61"
-PRE_G5_PIPELINE_ONE_SEED_HASH = "748502b37ca30434382f53a520d69e2ec2bb42f224d242b13c3943c212564c82"
+PRE_G5_PIPELINE_ONE_SEED_HASH = "dc7816c96a608001b39f1c32334aaf50200f1eb87e011db9e3f57d0ba72407dd"
 
 
 class RecordingLedger(InMemoryUnsealingLedger):

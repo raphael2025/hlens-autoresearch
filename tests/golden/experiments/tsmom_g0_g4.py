@@ -7,6 +7,10 @@ a two-day ``RandomWalkMarket`` research window (seed ``SEED``, the planted 60-mi
 ``PipelineBacktestValidator`` under the deliberately lax, **uncalibrated**
 ``LAX_TEST_ONLY_PROFILE`` with ``TEST_ONLY_PARAMS``. It freezes what the current engines compute;
 it is not a research result, a calibration or a Profile proposal (Profile numbers remain TBD).
+Since ADR-0060 enforcement (2026-09-26) the run sets ``market_benchmark=True`` like the lab
+detector, and the Profile names ``buy_and_hold_equal_weight`` with the inverse control reported, so
+the record includes the reported-only ``G2.market_benchmark.*`` / ``G2.inverse_control`` items
+(regenerated).
 
 Outputs (all finite ``Decimal``; floats as ``Decimal(repr(value))``, exact round-trip):
 
@@ -90,6 +94,7 @@ def evaluate(seed: int = SEED, effects: tuple[PlantedEffect, ...] = EFFECTS) -> 
         state_of=lambda t: "am" if t.hour < 12 else "pm",
         bar_volume={(gf.SYMBOL, bar.interval_start): bar.volume for bar in market.bars},
         declared_instruments=(gf.SYMBOL,),
+        market_benchmark=True,  # ADR-0060 enforced, as in the lab detector this run mirrors
     )
     with tempfile.TemporaryDirectory() as scratch:  # the failure registry is not an output
         return evaluate_strategy(

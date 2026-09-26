@@ -121,11 +121,23 @@ class _ToyDetector:
         )
 
 
+#: The toy detector reads only the significance level and never runs the validator, so ADR-0060
+#: (C-T4 market benchmark) does not apply to it. Its Profiles keep the benchmark block they had
+#: before ADR-0060 was enforced in the lab fixtures, so the toy report — pinned as
+#: ``PRE_G5_TOY_HASH`` and committed as the console fixture
+#: ``apps/web/fixtures/gate_calibration/<hash>.json`` — stays byte-identical.
+_TOY_BENCHMARK = fx.LAX_TEST_ONLY_PROFILE.benchmark.model_copy(
+    update={"market_benchmark_rule": "test-only", "inverse_control_reported": False}
+)
+
+
 def _with_level(name: str, level: float) -> ValidationProfile:
     significance = fx.LAX_TEST_ONLY_PROFILE.significance.model_copy(
         update={"multiple_testing_threshold": level}
     )
-    return fx.LAX_TEST_ONLY_PROFILE.model_copy(update={"name": name, "significance": significance})
+    return fx.LAX_TEST_ONLY_PROFILE.model_copy(
+        update={"name": name, "significance": significance, "benchmark": _TOY_BENCHMARK}
+    )
 
 
 #: TEST ONLY — a lax and a strict candidate for the toy detector.
@@ -210,6 +222,37 @@ def test_the_strict_candidate_loses_power(pipeline_report: GateCalibrationReport
     assert lax.power(fx.STRONG).count > 0
     assert strict.power(fx.STRONG).rate < lax.power(fx.STRONG).rate
     assert strict.power(fx.WEAK).rate <= lax.power(fx.WEAK).rate
+
+
+def test_the_pipeline_reports_carry_the_market_benchmark(
+    pipeline_report: GateCalibrationReport,
+) -> None:
+    """ADR-0060 enforced: both TEST ONLY Profiles name the registered rule with the inverse
+    control; every run that reached G2 reports them (``PASS`` = computed), and the
+    unregistered-rule gap ``G2.market_benchmark`` never appears."""
+    items = ("G2.market_benchmark.buy_and_hold_equal_weight", "G2.inverse_control")
+    for candidate in pipeline_report.candidates:
+        assert set(items) <= set(candidate.gate_ids())
+        assert "G2.market_benchmark" not in candidate.gate_ids()
+        for gate_id in items:
+            for arm in candidate.arms:
+                summary = candidate.gate(gate_id, arm.arm)
+                assert summary.failed == 0 and summary.inconclusive.count == 0
+
+
+def test_the_pipeline_detector_refuses_a_setup_without_the_market_benchmark() -> None:
+    from dataclasses import replace
+
+    from research.synthetic_lab.gate_calibration import DetectorConfigurationError
+
+    detector = fx.detector()
+    inner = detector._setup_for
+    detector._setup_for = lambda market, profile, runner: replace(
+        inner(market, profile, runner), market_benchmark=False
+    )
+    market = RandomWalkMarket().generate(fx.BASE_SPEC)
+    with pytest.raises(DetectorConfigurationError, match="ADR-0060"):
+        detector.detect(market, fx.LAX_TEST_ONLY_PROFILE)
 
 
 def test_only_passes_consume_the_sealed_oos(pipeline_report: GateCalibrationReport) -> None:
