@@ -1,0 +1,15 @@
+{
+  "content_hash": "43f29c8f603816c04fd42543f5053b5535eb69ae25c7c592eb63360f2295777a",
+  "contract_schema_version": "2.0.0",
+  "generated_at_commit": "86bdcb6",
+  "model": "GateResult",
+  "payload": {
+    "gate_id": "G0",
+    "metric": "reproducible",
+    "schema_version": "2.0.0",
+    "threshold": null,
+    "threshold_source": null,
+    "value": 1.0,
+    "verdict": "PASS"
+  }
+}

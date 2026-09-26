@@ -1,0 +1,41 @@
+{
+  "content_hash": "7e264e4d6ddcec47cf64bb2ab5e14642edf5b96e0fad145c4b2afa6f4a68ccd1",
+  "contract_schema_version": "2.0.0",
+  "generated_at_commit": "86bdcb6",
+  "model": "RevisionRecord",
+  "payload": {
+    "arrival_seq": 7,
+    "availability": {
+      "evidence": [
+        "binance spot aggTrades are published in real time at trade time"
+      ],
+      "evidence_gap": null,
+      "policy": {
+        "policy_hash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "policy_id": "binance.spot.publication",
+        "role": "availability",
+        "schema_version": "2.0.0",
+        "version": "1.0.0"
+      },
+      "schema_version": "2.0.0",
+      "times": {
+        "available_time": "2024-01-01T12:00:00Z",
+        "declared_latency": "PT0S",
+        "event_end_time": null,
+        "event_time": "2024-01-01T12:00:00Z",
+        "ingest_time": "2026-09-01T00:00:00Z",
+        "knowledge_time": "2026-09-01T00:05:00Z",
+        "schema_version": "2.0.0",
+        "source_time": null
+      }
+    },
+    "observation_key": "binance:spot:BTCUSDT:agg_trade:1",
+    "payload_hash": "a268ccd4c9ea8ab655a2576897210759344af4bde29aca8fa630e1605addfd46",
+    "revision_id": "rev-aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "schema_version": "2.0.0",
+    "source_id": "binance.public.spot.archive@1.0.0",
+    "source_revision_id": "raw-1",
+    "source_revision_time": "2024-01-01T12:00:00Z",
+    "supersedes": []
+  }
+}
