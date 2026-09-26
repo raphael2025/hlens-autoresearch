@@ -14,7 +14,12 @@
   run whose evidence for any applicable check is missing;
 - ``table``: ``event_table`` flattens a result into Event-table rows;
 - ``store``: ``EventResultStore`` — local content-addressed artifact store of whole event runs
-  (``<root>/<result_hash>.json``, never overwritten, verified on read); not an Iceberg table.
+  (``<root>/<result_hash>.json``, never overwritten, verified on read); not an Iceberg table;
+- ``table_definition`` / ``iceberg`` (ADR-0056; CODE_COMPLETE / DEBUG_PENDING): the physical
+  append-only Iceberg table ``event.events`` (logical columns + run block, ``month(event_time)``)
+  and ``EventTable`` — one batch per ``result_hash``, identical rewrite = no-op, other content
+  under a run refused, snapshot-pinned reads that rebuild and re-verify the ``EventResult``.
+  ``ensure_event_tables`` is the only creation path (explicit; not wired into provisioning).
 
 Providers are injected through the ``core.contracts.event.EventProvider`` Protocol; nothing here
 imports a plugin.

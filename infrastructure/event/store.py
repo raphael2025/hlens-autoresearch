@@ -2,8 +2,9 @@
 
 ``EventResultStore(root)`` keeps whole ``EventResult`` objects as ``<root>/<result_hash>.json``
 (canonical JSON), so an event table can be re-read later instead of recomputed. It is an
-**artifact store**, not a data-plane table: registering a physical Iceberg ``event.*`` table with
-partitions and revision semantics is an architecture decision still open (see ``table.py``).
+**artifact store**, not a data-plane table; the physical Iceberg table ``event.events`` is
+``infrastructure.event.iceberg`` (ADR-0056). The two are complementary: an empty run is kept only
+here.
 
 - ``put(result)``: publishes atomically (temporary file, ``fsync``, ``os.link`` to the final name,
   directory ``fsync``); an existing file with identical bytes is a no-op, anything else under the

@@ -5,8 +5,8 @@ per event, with its definition (``event`` + ``spec_hash``), observable ``event_t
 (canonical JSON), lineage (``input_ids`` / ``upstream_event_ids``) and the producing run
 (``provider`` / ``result_hash``). Rows are plain, immutable values in the result's canonical order.
 
-This is the in-memory materialization only: registering a physical ``event.*`` Iceberg table (like
-the Phase 1 production tables) is a separate, later decision.
+This is the in-memory materialization. The physical Iceberg table ``event.events`` (ADR-0056;
+``table_definition`` + ``iceberg``) stores exactly these columns plus a run block.
 """
 
 from __future__ import annotations
