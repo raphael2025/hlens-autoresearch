@@ -7,7 +7,8 @@ never visible before its window has closed and its last bar is available.
 
 The table deliberately has no way to produce a ``FeatureObservation`` or any other input DTO:
 Outcomes are labels, never inputs (Constitution C-L2). ``rows()`` is a JSON-ready export for a
-later Iceberg ``outcome`` table (Decimal values as strings); persistence is not part of this batch.
+later Iceberg ``outcome`` table (Decimal values as strings). File persistence of a whole table
+(content-addressed, write-once) is ``research.outcomes.store`` (debugging pass, 2026-09-26).
 """
 
 from __future__ import annotations
@@ -36,6 +37,12 @@ class OutcomeTable:
     provider: str
     result_hash: str
     labels: tuple[OutcomeLabel, ...]
+    #: The ``OutcomeResult``'s request / provider hashes (debugging pass, 2026-09-26): filled by
+    #: ``materialize``; they let ``research.outcomes.store`` rebuild the ``OutcomeResult`` on load
+    #: so its ``result_hash`` check re-runs. ``None`` only for a hand-built table (not storable).
+    #: Not part of ``rows()`` (unchanged).
+    request_hash: str | None = None
+    provider_hash: str | None = None
 
     def __post_init__(self) -> None:
         keys = [label.event_key for label in self.labels]
@@ -88,4 +95,6 @@ def materialize(provider: OutcomeProvider, request: OutcomeRequest) -> OutcomeTa
         provider=result.provider,
         result_hash=result.result_hash,
         labels=result.labels,
+        request_hash=result.request_hash,
+        provider_hash=result.provider_hash,
     )
