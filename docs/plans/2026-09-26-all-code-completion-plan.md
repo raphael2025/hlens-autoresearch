@@ -958,6 +958,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - E1 复核确认四个 Codex 候选均未证明 500k `resume/replay` 峰值增量低于 32 MiB。协调分支代码比集成候选旧；当前候选的全量快照历史仍 O(H)，并且 `scan_columns()` 也会经 `load_table()` 装载元数据。文档将 PyIceberg snapshots 标为候选原因而非已隔离的唯一根因。Claude 已在独立 `codex/e1-single-load-history-2026-09-27` worktree 开始单次 history-load 优化；范围不含流式 metadata、不会关闭容量门、不加测试/探针、不推送。提交后由 Codex 复核，随后仍需重新设计/测量满足 E1 的有界方案。
 - P7 只读复核确认六类 DSL 尚无端到端 typed plan → Provider lowering → 批次预登记 / 持久化恢复路径。最小 negation 控制组候选需先补 ADR 语义与 lineage / resolver 协议，不直接编码；现有 fail closed 保持。
 
+### 10.19 E1 history 优化审阅与本地整合（2026-09-27）
+
+- Claude 在隔离分支实现 `PyIcebergCatalogAdapter.history()`，让 `row_integrity.history_from()` 及 `PinnedCatalogView` 优先用同一份 table metadata 沿 parent snapshot 遍历；其他 `RevisionCatalog` 保留逐快照 fallback。首版 O(H) ID 索引被 Codex 审阅退回；第二版改为线性 first-match 查找和 Floyd 常数空间环检测，修订两个本地提交后 cherry-pick 进入协调分支：`c7bbcfe`、`8261f32`。源 branch tip `5870c62` 保存到 `refs/archive/2026-09-27/branches/codex/e1-single-load-history-2026-09-27`，干净 worktree / local branch 已移除。
+- 最终代码的独立静态检查原样结果：`ruff check` → `All checks passed!`；`ruff format --check` → `3 files already formatted`；`mypy` → `Success: no issues found in 3 source files`；未添加或运行 pytest / PostgreSQL 测试 / 容量探针。
+- 该更改减少 H 次 metadata load 为一次 history metadata load，并避免新建 O(H) 索引；代价是每一步在线性 snapshot 列表中查找，history 遍历时间仍 O(L·H)。PyIceberg 仍一次加载整张 `metadata.snapshots`；主线的 normalizer 批次字典、其他 scan 的 table metadata 装载也未解决。因此这只是待验收的性能批次，**不关闭、不解决** 500k `resume/replay` 59.9 / 63.9 MiB 对 32 MiB 的 E1-CAP-1 阻断。
+- 当前本地盘点：15 个本地分支、8 个远端分支、21 个 worktree、266 个 archive refs。协调分支 `codex/module-completion-coordination-2026-09-27` 相对 `main@669704c` 超前 9 个提交；不 push。P0.5 `origin/wip/phase-0.5-knowledge` 仍保留远端唯一旧审计内容；活动 / owner 未确认 worktree 继续保留。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。

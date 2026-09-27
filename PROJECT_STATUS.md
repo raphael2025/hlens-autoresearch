@@ -11,7 +11,7 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
 | 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main@669704c` 已含 P6 / P8 / P11 Decimal 阈值接线和研究库规格。协调分支比本地 `main` 多出 P7/P11/P12 基础逻辑及同步文档提交；未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本地 `main@669704c` 比 `origin/main` 超前 18 个提交，尚未推送；PR #1～#9 已合入。协调分支已累积 P7/P11/P12 实现和状态文档更新，工作区干净。P7/P11/P12 新代码的 Ruff、format、mypy 与 diff whitespace 静态检查通过，未跑测试；P7 已实现失败后 fail-stop，自动 outcome 恢复与人工修复工具未实现；E1-CAP-1 容量验收仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 本地 `main@669704c` 比 `origin/main` 超前 18 个提交，尚未推送；PR #1～#9 已合入。协调分支已累积 P7/P11/P12 实现、E1 单次 metadata history 遍历与状态文档更新，工作区干净。新增代码 Ruff、format、mypy 与 diff whitespace 静态检查通过，未跑测试；E1 遍历优化不解决全量 snapshots 常驻和 32 MiB 容量门；P7 已实现失败后 fail-stop，自动 outcome 恢复与人工修复工具未实现；E1-CAP-1 仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
