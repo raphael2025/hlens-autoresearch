@@ -939,12 +939,17 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 
 ### 10.16 当前本地收敛快照（2026-09-27；更新 §10.15 后状态）
 
-- Raphael 已授权 Codex 完成经核实的分支整合与本地 `main` 收敛；Phase 验收和全量测试暂缓。本地 `main` 与 `codex/module-completion-coordination-2026-09-27` 均为 `669704c`，比 `origin/main@44fe9a2` 超前 18 个提交，尚未推送；GitHub PR #1～#9 均已合并。协调 worktree 中的 P7、P11、P12 实现、ADR 与状态 / 模块文档仍未提交，也尚未进入本地 `main`。
-- 当前 Git 盘点：16 个本地分支、7 个远端分支、22 个 worktree、264 个归档引用。此前已把 11 个确认与主线补丁等价的本地分支和干净 worktree 先归档再移除。根 `phase/1` worktree 有重要未跟踪材料；Claude / Cursor 工作区有活跃或归属未明会话；这些都保留。
-- 尚待逐文件整合：P0.5 `p05-cite` 与 ADR-0055 分支、研究规格分支中的验收用例 / 两份文档，以及 E1 容量候选。`codex-research-loop-ui` 的实现已被 main 更完整的解析、异常态与双轴累计图表取代，不合并；因 Cursor owner 仍不明，分支 / worktree 暂留。ADR-0055 Claude worktree 有活跃进程。E1 四个 Codex 候选都没有修复 500k `resume/replay` 超限；两项重复记录上界保护相互独立，但需决定是否单独移植，根因仍未测量证实。
-- 模块判断更新：项目不是空骨架。P6 / P8 / P11 Decimal 阈值逻辑已在 `main@669704c`；P13 模拟执行与 P14 通用迁移框架已存在。协调 worktree 中有 P7 参数网格冻结 / outcome 驱动调度改动；ADR-0070 已令最后一条 experiment stage FAILED 的 audit 在当前进程和重开后均停在 `recovery_required`，不重复 trial，但 outcome 自动恢复和人工修复工具仍缺。P11 显式 degradation operation、FreezeRegistry 锚点快照和 schema 1.1.0 evidence writer；P12 `combine()` 冲突拒绝逻辑。ADR-0067 / 0069 / 0070 已 Accepted。以上代码尚未并入 `main`，未跑测试；既有静态检查只覆盖更早代码状态，最新 P11 修改仍需稍后静态复核。六类 P7 DSL 算子仍 fail closed，逐项业务语义 / Provider lowering 尚未定义；E1 仍未达到 32 MiB 上限。Profile 数值、人工审核数据、真实历史市场结论与实盘能力不由代码猜测。
-- 本地当前清理快照：16 个分支、7 个远端分支、22 个 worktree、264 个 archive refs。所有新代码仍在协调 worktree；更新后的分支处置会在后续小节按实际 archive / merge 结果追加。本轮未运行测试或 Phase 验收；不改写任何旧门禁记录。
-- 本轮复核证实 Claude 的 ADR-0055 活跃实现 worktree 仍由 PID 1111692 占用；P0.5 / E1 / Cursor / 远端 review 独有内容未作整支合并或删除。优先等待 Claude 完成并逐文件复核；owner 不明 worktree 继续保留。
+- Raphael 已授权 Codex 完成经核实的分支整合与本地代码收敛；Phase 验收和全量测试暂缓。本地 `main@669704c` 比 `origin/main@44fe9a2` 超前 18 个提交、尚未推送；协调分支 `codex/module-completion-coordination-2026-09-27@31717d0` 比本地 `main` 多 4 个提交（P7/P11/P12 实现与文档同步），工作区干净。GitHub PR #1～#9 均已合并。
+- 当前 Git 盘点：16 个本地分支、8 个远端分支、22 个 worktree、264 个归档引用。此前已把 11 个确认与主线补丁等价的本地分支和干净 worktree 先归档再移除。根 `phase/1` worktree 有重要未跟踪材料；Claude / Cursor 工作区仍有活动进程或归属未明；这些都保留。
+- ADR-0055 Claude worktree `ed8e694` 与远端同 SHA、工作区干净、PID `1111692` 仍存活。直接与本地 `main` 比较后，可执行知识 tags/assets 能力与测试已经在 `main`；该分支仅有两项净差异：将 ADR 状态恢复为 Proposed，以及删除知识库目录缺失时的 fail-closed 检查。两者均不移植；待 Claude 结束后再考虑归档其分支。P0.5 `p05-cite`、研究规格分支的验收用例 / 文档、E1 容量候选仍需逐文件处理。`codex-research-loop-ui` 的图表实现已被 main 更新取代，但 Cursor owner 未确认，暂留。
+- 模块判断更新：项目不是空骨架。P6 / P8 / P11 Decimal 阈值逻辑已在 `main@669704c`；P13 模拟执行与 P14 通用迁移框架已存在。协调分支含 P7 参数网格冻结 / outcome 驱动调度改动；ADR-0070 令最后一条 experiment stage FAILED 的 audit 在当前进程和重开后均停止于 `recovery_required`，不重复 trial，但自动 outcome 恢复和人工修复工具仍缺。P11 显式 degradation operation、FreezeRegistry 锚点快照和 schema 1.1.0 evidence writer；P12 `combine()` 冲突拒绝逻辑。ADR-0067 / 0069 / 0070 已 Accepted。新代码的 Ruff、format、mypy、diff whitespace 静态检查已通过，未跑测试；六类 P7 DSL 算子仍 fail closed，逐项业务语义 / Provider lowering 尚未定义；E1 仍未达到 32 MiB 上限。Profile 数值、人工审核数据、真实历史市场结论与实盘能力不由代码猜测。
+- 本轮未运行测试或 Phase 验收；不改写任何旧门禁记录。不要清理活跃或 owner 未明的分支 / worktree；对 E1 继续以 500k `resume/replay` 峰值增量为问题目标，不把两个独立读取上界保护误报为容量问题已解决。
+
+### 10.17 ADR-0055 分支净差异复核（2026-09-27）
+
+- Claude 分支 `claude/adr-0055-tags-assets@ed8e694` 基于 `1cd3284`，含 3 个后续提交；其 worktree clean，`origin/claude/adr-0055-tags-assets` 与本地 HEAD 相同，Claude session PID `1111692` 仍在运行。实现说明标为 CODE_COMPLETE / DEBUG_PENDING；该提交点针对性 Python 检查曾报告 3028 passed、1 skipped、32 deselected，Web helper 7/7，但同一说明要求在最终 HEAD 再跑全门禁。
+- 用当前本地 `main` 与 `ed8e694` 做直接树比较，可见唯一文件差异是 `docs/adr/0055-knowledge-tags-assets.md` 与 `plugins/knowledge/local.py`：前者把已接受状态改回 Proposed，后者移除了缺失条目目录时报错的检查。Contract、Provider 标签 / 资产过滤、Schema、测试及 Web 页面实现均已在本地 `main`；因此不 cherry-pick 该旧基线分支提交，也不接受它引入的两处回退。
+- 不改动仍有活跃进程的 Claude worktree。Claude 明确结束任务后，可归档该 branch，再按 Git 工作流确认是否删除分支 / worktree；当前阶段不将重复实现视为待合并代码。
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 

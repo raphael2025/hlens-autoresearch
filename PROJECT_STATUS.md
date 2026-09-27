@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main@669704c` 已含 P6 / P8 / P11 Decimal 阈值接线和研究库规格。协调 worktree 另有 P7（恢复语义待定）、P11、P12 基础逻辑与报告接线未提交；未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
+| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main@669704c` 已含 P6 / P8 / P11 Decimal 阈值接线和研究库规格。协调分支 `codex/module-completion-coordination-2026-09-27@31717d0` 比本地 `main` 多 4 个提交，包含 P7/P11/P12 基础逻辑和同步文档；未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本地 `main@669704c` 比 `origin/main` 超前 18 个提交，尚未推送；PR #1～#9 已合入。协调 worktree 与本地 `main` 同一 HEAD，另有 P7/P11/P12 实现及项目文档的未提交改动。P6 / P8 / P11 阈值修正的静态检查已有记录；本轮新代码未跑测试；P7 已实现失败后 fail-stop，自动 outcome 恢复与人工修复工具未实现；E1-CAP-1 容量验收仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 本地 `main@669704c` 比 `origin/main` 超前 18 个提交，尚未推送；PR #1～#9 已合入。协调分支 `codex/module-completion-coordination-2026-09-27@31717d0` 比本地 `main` 多 4 个提交，工作区干净。P7/P11/P12 新代码的 Ruff、format、mypy 与 diff whitespace 静态检查通过，未跑测试；P7 已实现失败后 fail-stop，自动 outcome 恢复与人工修复工具未实现；E1-CAP-1 容量验收仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -44,7 +44,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | Phase | 名称 | 状态 |
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
-| 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；研究库规格文档已合入本地 `main`；种子标签 / 资产仍需具名人工审阅；Claude 的 ADR-0055 扩展实现仍在独立活动分支；**Phase 0.5 未验收** |
+| 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；研究库规格文档已合入本地 `main`；种子标签 / 资产仍需具名人工审阅。Claude 的 ADR-0055 分支已逐文件比对：可执行能力和测试在本地 `main` 已存在；分支只有 ADR 状态退回 Proposed 和移除缺失目录 fail-closed 检查两处差异，不移植；Claude worktree / 进程仍保留待其结束。**Phase 0.5 未验收** |
 | 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；E1-CAP-1 的 500k `resume` / `replay` RSS 增长分别为 59.9 / 63.9 MiB，超过 32 MiB 门槛，仍为 `REVIEW_PENDING`；修复分支未并入，Phase 1 未验收 |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
