@@ -22,6 +22,16 @@
 如底层写入中断导致损坏或截断，重开仍 fail closed，不修复或删除历史。未审阅的 LLM 假设不能通过 `register_batch` 登记；应使用带人工审阅状态的
 `register_draft` 单项入口。
 
+## Typed-plan admission journal 基础（ADR-0073）
+
+`typed_plan_audit.py` 提供独立的 `PlanAdmissionJournal`，只保存严格版本化的 `plan_admission_prepare` / `plan_admission_commit` 追加事件。PREPARE 绑定 round-start identity、non-runnable `TypedPlan`、compiler / operator / provider / 输入 / 输出 / `ExperimentSpec` 的 evidence、完整 Hypothesis 数据与哈希、TrialLedger baseline，以及 `register_batch` payload hash。除 typed AST 外，每个 evidence 使用固定 `{"identity": ..., "value": {...}}` 形状，按 canonical project JSON 重算内容 hash；Hypothesis 必须按核心模型严格解析并 round-trip。未知字段 / 事件、版本不支持、非规范数据或哈希不符均拒绝重放。Reducer 只允许一个 pending PREPARE，COMMIT 必须逐项引用该 PREPARE，且 ledger event 必须是 baseline 后唯一、内容与哈希完全相符的 `register_batch` event。Evidence 的 `identity` / `value` 仍由未来已审阅的 compiler / operator / provider adapter 提供；本模块不验证各算子的业务语义或来源真实性。
+
+`PlanAdmissionJournal` 不打开 loop state、不能判断 worker round 是否真的已开始，也不接入 checkpoint / anchor、不调用 compiler / Provider / Runner、不授权执行。调用方必须在 loop state 单写锁下协调 journal、TrialLedger 与后续 checkpoint / anchor；当前实现切片尚无 loop opener recovery。
+
+`TrialLedger.recover_register_batch(hypotheses, baseline_seq=..., baseline_hash=...)` 是纯 ledger 侧精确恢复入口。它要求 durable journal 和全新 Hypothesis identities：journal 仍处于 PREPARE baseline 时只追加一个普通 `register_batch` event；若恰好已有紧邻 baseline 的一个完全匹配 event，则返回该 event，不重复计数。身份重用、额外 / 乱序 / 内容不同的尾记录、非持久 ledger、stale journal 或 journal 损坏均拒绝。此方法不自行写 plan COMMIT / memory checkpoint、不修复不完整 JSONL，也不对 loop failed / interrupted round 续跑。普通 `register_batch` 的 exact duplicate 依旧幂等且不增加 trial，不能当作新 attempt。
+
+此基础实现不使任一 P7 operator runnable。ADR-0073 的 loop lock / round-start 校验、recovery 编排、memory `STATE_VERSION=4` checkpoint 与 external anchor 接线，以及 v3 / v4 opener 兼容，均在本提交范围之外，需后续独立实现和验收。
+
 `ledger.py` 的 `register_reevaluation(hypothesis, attempt)`：已登记假设的再次评估（例如循环在增长的累计研究数据上重新评估 INCONCLUSIVE 假设）作为**单独的 trial** 预登记并计入族 trial 数（`trials` / `trial_index` / `trial_log`；ADR-0049 accumulated validation window 实施说明）。
 
 ## 严格的 LLM 草稿与可审计的拒绝（Phase 7 补全，2026-09-26）
