@@ -339,8 +339,14 @@ class PlanAdmissionJournal:
                 ) from exc
 
     @property
-    def journal(self) -> AppendOnlyJournal:
-        return self._journal
+    def entries(self) -> tuple[JournalEntry, ...]:
+        """Verified reducer journal entries, exposed without its append interface."""
+        return self._journal.entries
+
+    @property
+    def head_hash(self) -> str:
+        """Verified journal tip for composition-root checkpoint and anchor cross-checks."""
+        return self._journal.head_hash
 
     @property
     def prepared(self) -> tuple[PreparedAdmission, ...]:
@@ -635,6 +641,11 @@ def _parse_evidence_list(value: object, what: str) -> tuple[PlanAdmissionEvidenc
 def _ledger_event_payload(
     prepared: PreparedAdmission, event: JournalEntry
 ) -> dict[str, Any]:
+    _positive_int(event.seq, "TrialLedger event seq")
+    if not isinstance(event.type, str) or not event.type:
+        raise PlanAdmissionError("TrialLedger event type must be non-empty text")
+    _hash(event.prev_hash, "TrialLedger event prev_hash")
+    _hash(event.hash, "TrialLedger event hash")
     if not isinstance(event.payload, Mapping):
         raise PlanAdmissionError("TrialLedger batch event payload must be an object")
     expected_payload = prepared.batch_payload()
