@@ -1060,6 +1060,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 当前唯一进入实现队列的范围是 E1 Phase 1。其他 Phase 的真实缺口排进 backlog，待对应 Phase 开启并按 ADR 排序；验收覆盖缺项集中到统一验收批次。未新增或运行任何测试 / build / probe。
 - 文档核正提交 `6f9500a` 已 `--ff-only` 快进进入本地 `main@6f9500a`；本地 main 比 `origin/main@44fe9a2` 超前 48 个提交，未推送。根 `phase/1` worktree 的用户文件与未跟踪资料未触碰；远端分支、其他会话工作树均未改动。
 
+### 10.34 main 适配版 E1 RSS probe（2026-09-27；隔离分支，未运行）
+
+- 为后续统一验收准备的主线适配版探针已提交于 `codex/e1-main-probe-2026-09-27@e0ce768`，基于本地 `main@304c400`；只新增 `infrastructure/tools/normalizer_memory_probe.py`，覆盖 archive verification、write/crash、resume、replay、单批读取与 metadata history 六个隔离子进程阶段。它调用当前 main API，不含生产代码变更；对阶段事实、RSS 样本数、重复 / 缺失 repeat 编号和 main 代码路径设置 fail-closed 判定。
+- 探针没有运行；未运行 pytest、build 或静态检查。只做了空白差异检查（无诊断）；因此 API 行为、fixture 可用性、cgroup 与实际采样表现仍未验证。Claude 的只读审查命令未返回可用报告，不计作独立复核。该提交不构成容量结果或 E1-CAP-1 关闭证据。
+- 探针基于状态同步前的 `main@304c400`（当时比 `origin/main@44fe9a2` 超前 49 个提交）；本次驾驶舱文档同步计入本地 main 后，共超前 50 个提交，未推送。探针提交尚未合并；E1-CAP-1 仍阻断，待 Raphael 统一验收阶段运行固定 RSS 矩阵与相应结构 / 定向验证。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。

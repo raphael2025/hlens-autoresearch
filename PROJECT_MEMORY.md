@@ -46,7 +46,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：D3E 已验收（`docs/reviews/2026-09-27-d3e-acceptance.md`），D4 已关闭；E1-CAP-1 容量上界是当前阻断；main 含部分 history / normalizer 优化，但仍有 O(N) 状态，main 容量未测。候选 probe 的数据和限制见完成计划 §10.33
+- Current Subphase：D3E 已验收（`docs/reviews/2026-09-27-d3e-acceptance.md`），D4 已关闭；E1-CAP-1 容量上界是当前阻断；main 含部分 history / normalizer 优化，但仍有 O(N) 状态，main 容量未测。main 适配版 RSS probe 提交 `e0ce768` 位于隔离分支，未运行、未验收、未合并；细节见完成计划 §10.34
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - D3E（含 R1 / R2 / R3）已于 2026-09-27 由 Codex 验收（`docs/reviews/2026-09-27-d3e-acceptance.md`）；D4 已关闭，Phase 1 当前阻断为 E1-CAP-1 的内存有界性修复与独立复核；E2 起仍按状态文档的开放顺序推进
@@ -168,8 +168,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 稳定远程恢复点（2026-09-27）：PR #9 合并后 `origin/main` 为 `44fe9a2`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已包含在该恢复点，PR #7～#9 同步状态 / hygiene。B67 `6d887b7` 的全量非 PostgreSQL门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。本地 `main@6f9500a` 已快进吸收 `498250a`、状态同步、P7 复核摘要和 E1 / 模块审计更正，比该远程恢复点超前 48 个提交，尚未推送，见 `PROJECT_STATUS.md`。
-- Phase 1：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 是当前容量阻断。`fix/e1-cap1@a75278e` 的 500k resume / replay 跨规模增长分别为 59.9 / 63.9 MiB，超过 32 MiB；这是候选实现的测量，不是 main 测量。该分支 probe 使用父进程每 10 ms 采样 VmRSS、固定 M=256 和 N=10k/100k/500k，每种规模只运行一次；当前 main 无 resume/replay probe。主线仅含局部 history / committed-plan 优化，仍保留 O(N) positions、时间列、返回 IDs、收尾列和 archive cache。整合基线选 main，不整支并入候选，详见计划 §10.33。
+- 稳定远程恢复点（2026-09-27）：PR #9 合并后 `origin/main` 为 `44fe9a2`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已包含在该恢复点，PR #7～#9 同步状态 / hygiene。B67 `6d887b7` 的全量非 PostgreSQL门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。本轮状态同步前本地 `main@304c400` 比该远程恢复点超前 49 个提交；本次文档同步后超前 50 个提交，尚未推送。main 适配版 RSS probe 提交 `e0ce768` 在隔离分支，未运行或合并，见 `PROJECT_STATUS.md` 与完成计划 §10.34。
+- Phase 1：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 是当前容量阻断。`fix/e1-cap1@a75278e` 的 500k resume / replay 跨规模增长分别为 59.9 / 63.9 MiB，超过 32 MiB；这是候选实现的测量，不是 main 测量。该分支 probe 使用父进程每 10 ms 采样 VmRSS、固定 M=256 和 N=10k/100k/500k，每种规模只运行一次。main 适配版 probe 已提交在隔离分支 `codex/e1-main-probe-2026-09-27@e0ce768`，未运行或验收；main 自身容量仍未知。主线仅含局部 history / committed-plan 优化，仍保留 O(N) positions、时间列、返回 IDs、收尾列和 archive cache。整合基线选 main，不整支并入候选，详见计划 §10.33–10.34。
 - 恢复资料见 `PROJECT_STATUS.md` 与 `docs/plans/2026-09-26-all-code-completion-plan.md`；Phase 0 基线仍为 tag `phase-0-complete`，Phase 1 D3D-R1 恢复点为 `c06b9fa`。
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
@@ -178,4 +178,4 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 已实现但未完成 Phase 验收：Canonical、PIT / dataset / representation、Feature、State / Event、Outcome / Validation、Strategy / Backtest、Runner、Control Plane 与 Phase 2～14 模块（B1～B67）；本地 StorageAdapter、PyIceberg Catalog、生产表定义、D0～D3E 数据路径也已实现。Phase 1 E1-CAP-1 仍阻断，真实运行、人工知识审阅和各 Phase 验收仍独立待办。
 - Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3E 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 `c326434` → D3E-R3 `7e9e084` 已由 Codex 于 2026-09-27 验收；E1-CAP-1 是当前容量阻断
-- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；PR #9 合并后的远程恢复点是 `origin/main@44fe9a2`；当前本地 `main@6f9500a` 已纳入协调提交 `498250a`、状态同步、P7 复核摘要和 E1 证据归属更正，比 origin 超前 48 个提交、未推送。历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。
+- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；PR #9 合并后的远程恢复点是 `origin/main@44fe9a2`；本轮文档同步前本地 `main@304c400` 比 origin 超前 49 个提交，本次同步后超前 50 个提交、未推送。E1 适配版 probe `e0ce768` 保留在独立分支，未运行或合并。历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。
