@@ -636,15 +636,27 @@ class ChannelReconciler:
                 self._day_keys(data_type, symbol, other, pinned.rest_snapshot),
             )
         committed: dict[str, Mapping[str, Any]] = {}
-        snapshot_id = head
-        seen: set[str] = set()
-        while snapshot_id is not None:
-            if snapshot_id in seen:
-                raise CatalogIntegrityError(
-                    f"{EVIDENCE_TABLE} has a cycle in snapshot ancestry at {snapshot_id}"
-                )
-            seen.add(snapshot_id)
-            snapshot = self._adapter.get_snapshot(EVIDENCE_TABLE, snapshot_id)
+        history = getattr(self._adapter, "history", None)
+
+        def snapshots() -> Iterable[SnapshotInfo]:
+            if head is None:
+                return
+            if callable(history):
+                yield from history(EVIDENCE_TABLE, head)
+                return
+            snapshot_id = head
+            seen: set[str] = set()
+            while snapshot_id is not None:
+                if snapshot_id in seen:
+                    raise CatalogIntegrityError(
+                        f"{EVIDENCE_TABLE} has a cycle in snapshot ancestry at {snapshot_id}"
+                    )
+                seen.add(snapshot_id)
+                snapshot = self._adapter.get_snapshot(EVIDENCE_TABLE, snapshot_id)
+                yield snapshot
+                snapshot_id = snapshot.parent_snapshot_id
+
+        for snapshot in snapshots():
             parent = snapshot.parent_snapshot_id
             owner = None
             if snapshot.batch_id is not None:
@@ -665,7 +677,6 @@ class ChannelReconciler:
                     if edge_id in committed:
                         raise CatalogIntegrityError(f"evidence edge {edge_id} is committed twice")
                     committed[edge_id] = row
-            snapshot_id = parent
         current = {row["edge_id"]: row for row in pinned.evidence_rows}
         for edge_id, row in current.items():
             if committed.get(edge_id) != row:

@@ -759,17 +759,30 @@ class RawRevisionStore:
         if info is None:  # pragma: no cover - the archive row was just read from this table
             raise TableNotFound(f"table {table} does not exist")
         snapshot = info.current_snapshot
-        seen: set[str] = set()
-        while snapshot is not None:
-            if snapshot.snapshot_id in seen:
-                raise CatalogIntegrityError(
-                    f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
-                )
-            seen.add(snapshot.snapshot_id)
-            if snapshot.batch_id == batch_id:
-                return snapshot.snapshot_id
-            parent = snapshot.parent_snapshot_id
-            snapshot = None if parent is None else self._adapter.get_snapshot(table, parent)
+        if snapshot is not None:
+            history = getattr(self._adapter, "history", None)
+            if callable(history):
+                snapshots = history(table, snapshot.snapshot_id)
+            else:
+                snapshots = None
+            if snapshots is not None:
+                for snapshot in snapshots:
+                    if snapshot.batch_id == batch_id:
+                        return snapshot.snapshot_id
+            else:
+                seen: set[str] = set()
+                while snapshot is not None:
+                    if snapshot.snapshot_id in seen:
+                        raise CatalogIntegrityError(
+                            f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
+                        )
+                    seen.add(snapshot.snapshot_id)
+                    if snapshot.batch_id == batch_id:
+                        return snapshot.snapshot_id
+                    parent = snapshot.parent_snapshot_id
+                    snapshot = (
+                        None if parent is None else self._adapter.get_snapshot(table, parent)
+                    )
         raise CatalogIntegrityError(
             f"{table} has a row of batch {batch_id} but no snapshot that committed it"
         )
