@@ -1086,6 +1086,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 范围明确为**直接引用校验**：不验证传递依赖闭包，不登记算子，不 lower / compile / execute，不写报告、journal 或 TrialLedger，不改变 `TypedPlan.runnable` 或 `compile_plan` 拒绝逻辑，不接入 Research Loop。六类算子仍全部 `NOT_RUNNABLE`；该基础能力不构成 Phase 7 验收。
 - 同步更新 `PROJECT_STATUS.md`、`PROJECT_MEMORY.md` 与 ADR-0068 实施记录。测试、静态检查、build 均未运行；当前代码为 CODE_COMPLETE / DEBUG_PENDING。状态文档提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 58 个提交。提交未推送，远端分支未改动。
 
+### 10.38 E1 可选分阶段内存诊断（2026-09-27）
+
+- Claude 的六路只读审查中有三路受文件系统 / git 访问限制；Codex 已补齐候选比较。确认 `fix/e1-cap1` 的候选 59.9 / 63.9 MiB 结果不能代表 main；`codex/e1-bounded-scan-integration` 没有 main 所缺的实现；E1 容量归因仍须测量，不能仅凭代码阅读选根因。PyIceberg / Snapshot / manifest 边界及 API 返回形状的约束见 `PROJECT_STATUS.md` §6 与 ADR-0021 / 0028。
+- 按 E1-CAP-ARCH 的后续项，在 `infrastructure/tools/normalizer_memory_probe.py` 增加显式 `--staged-diagnostics` 模式：统计 public CatalogAdapter 的 `load_table` / `scan_columns` / `commit_batch` 调用，统计 PyIceberg planner 处理的 manifests 和生成的 file tasks，并报告按源码路径分组的 retained `tracemalloc` delta 与 held result 可达 Python 大小估算。默认 RSS 模式不启用 instrumentation；开启诊断时协议资格强制为 false，输出明确说明 tracemalloc 不等于 RSS、PyArrow native buffer 不在对象估算内。
+- 提交 `0672004` 已进入本地 `main`，仅改诊断工具，不动生产逻辑 / 契约 / ADR；探针、诊断模式、测试、静态检查和 build 均未运行。该能力用于后续定位，不能关闭 E1-CAP-1。状态文档提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 60 个提交，未推送。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
