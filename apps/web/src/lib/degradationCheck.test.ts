@@ -94,6 +94,64 @@ test("an insufficient_evidence key that is not true, or that comes with degraded
   assert.equal(asDegradationCheckPayload(contradictory), null);
 });
 
+test("empty metrics is not a check: fail closed, never vacuously insufficient evidence", () => {
+  const noFlag = clone(insufficient.payload);
+  delete noFlag.insufficient_evidence;
+  noFlag.metrics = [];
+  noFlag.missing = [];
+  assert.equal(asDegradationCheckPayload(noFlag), null);
+  const flagged = clone(insufficient.payload);
+  flagged.metrics = [];
+  flagged.missing = [];
+  assert.equal(asDegradationCheckPayload(flagged), null);
+  const notArray = clone(insufficient.payload);
+  notArray.metrics = null;
+  assert.equal(asDegradationCheckPayload(notArray), null);
+});
+
+test("insufficient_evidence true with a metric that is not missing is not read", () => {
+  const mixed = clone(insufficient.payload);
+  const metrics = mixed.metrics as Record<string, unknown>[];
+  metrics[0] = { ...metrics[0], missing: false };
+  assert.equal(asDegradationCheckPayload(mixed), null);
+  // the degraded fixture (one breached, one within, one missing) with the flag forced on
+  const partial = clone(fixture.payload);
+  partial.degraded = false;
+  partial.breaches = [];
+  partial.insufficient_evidence = true;
+  assert.equal(asDegradationCheckPayload(partial), null);
+});
+
+test("insufficient_evidence true with a missing list that contradicts the metrics is not read", () => {
+  const fewer = clone(insufficient.payload);
+  fewer.missing = (fewer.missing as string[]).slice(1);
+  assert.equal(asDegradationCheckPayload(fewer), null);
+  const renamed = clone(insufficient.payload);
+  renamed.missing = ["hit_rate", "max_drawdown", "not_a_metric"];
+  assert.equal(asDegradationCheckPayload(renamed), null);
+  const extra = clone(insufficient.payload);
+  extra.missing = [...(extra.missing as string[]), "extra"];
+  assert.equal(asDegradationCheckPayload(extra), null);
+  const notStrings = clone(insufficient.payload);
+  notStrings.missing = [1, 2, 3];
+  assert.equal(asDegradationCheckPayload(notStrings), null);
+  // the order of the names does not matter
+  const reordered = clone(insufficient.payload);
+  reordered.missing = [...(reordered.missing as string[])].reverse();
+  assert.notEqual(asDegradationCheckPayload(reordered), null);
+});
+
+test("an older all-missing payload without the flag is still derived as insufficient evidence", () => {
+  const older = clone(insufficient.payload);
+  delete older.insufficient_evidence;
+  const check = payloadOf(older);
+  assert.equal("insufficient_evidence" in check, false);
+  assert.equal(check.metrics.length, 3);
+  assert.ok(check.metrics.every((metric) => metric.missing));
+  assert.equal(checkStatus(check), "insufficient_evidence");
+  assert.match(degradationLabel(check), / — INSUFFICIENT EVIDENCE \(/);
+});
+
 test("rows: breached, then missing, then within — each with its status", () => {
   const check = payloadOf(fixture.payload);
   const rows = metricRows(check);

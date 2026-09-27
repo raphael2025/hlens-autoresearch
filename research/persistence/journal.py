@@ -19,6 +19,19 @@ line and verifies the chain: a bad hash, a broken ``prev_hash`` link, a line tha
 JSON or is missing a field, a wrong ``seq``, or a truncated trailing line is corruption — refused,
 never silently skipped or repaired.
 
+Concurrent holders (2026-09-27). Two instances on one file — two processes, or two objects in one
+process — each replay the file when opened; neither sees what the other appends later. ``append``
+therefore takes an exclusive ``fcntl.flock`` on the file and writes only if the file is still
+**exactly** the size this instance last read or wrote: a file that grew (another writer appended)
+is refused with ``JournalCorrupted`` and nothing is written — the stale instance must be reopened
+to replay the other writer's lines — and a file that shrank is refused as rewritten history, as
+before. Without this a stale instance appended with a stale ``seq`` / ``prev_hash``: both writers
+saw success, acted on their own stale state (for the sealed-OOS ledger: a second unsealing /
+evaluation of one family; for ``TrialLedger``: an undercounted trial family), and the file was left
+with a broken chain every later open refuses. Replay reads under a shared lock (never a
+half-written line of a concurrent append) and remembers exactly the bytes it parsed. POSIX only,
+like the other file-backed stores; the lock is advisory, so every writer must use this class.
+
 This module only knows about the chain, not what the lines mean; each ledger (sealed OOS, trial,
 lineage) interprets ``type`` / ``payload`` itself and must fail closed on a ``type`` it does not
 recognize (CLAUDE.md H4/H6: never weaken a check, never drop history).
@@ -26,6 +39,7 @@ recognize (CLAUDE.md H4/H6: never weaken a check, never drop history).
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -104,7 +118,16 @@ class AppendOnlyJournal:
         self._seen = self._size()
         if not self._path.exists():
             return
-        text = self._path.read_text(encoding="utf-8")
+        with self._path.open("rb") as handle:
+            # shared lock: a concurrent ``append`` (exclusive) is wholly visible or not at all
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            try:
+                data = handle.read()
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if len(data) < self._seen:
+            raise JournalCorrupted(f"{self._path} shrank: journal history was rewritten")
+        text = data.decode("utf-8")
         if text and not text.endswith("\n"):
             raise JournalCorrupted(f"{self._path} ends in a partial trailing line")
         prev_hash = GENESIS_HASH
@@ -141,7 +164,9 @@ class AppendOnlyJournal:
             entries.append(entry)
             prev_hash = entry.hash
         self._entries = entries
-        self._seen = self._size()
+        # exactly the bytes parsed — never a re-stat, which could count a concurrent append that
+        # this replay did not see and so let a stale instance append after it
+        self._seen = len(data)
 
     def append(self, type_: str, payload: Mapping[str, Any]) -> JournalEntry:
         """Append one record; refuses if the file shrank since it was last read or written."""
@@ -163,10 +188,21 @@ class AppendOnlyJournal:
         line = canonical_json(record)
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("a", encoding="utf-8") as handle:
+            # exclusive lock, held until the line is fsync'd (released when the file closes)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            size = os.fstat(handle.fileno()).st_size
+            if size < self._seen:
+                raise JournalCorrupted(f"{self._path} shrank: journal history was rewritten")
+            if size != self._seen:
+                raise JournalCorrupted(
+                    f"{self._path} changed since this instance last read it (another writer "
+                    f"appended: {size} bytes on disk, {self._seen} seen); nothing was written — "
+                    "reopen the journal to replay it"
+                )
             handle.write(line + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+            self._seen = os.fstat(handle.fileno()).st_size
         entry = JournalEntry(seq, type_, payload_json, prev_hash, entry_hash)
         self._entries.append(entry)
-        self._seen = self._size()
         return entry

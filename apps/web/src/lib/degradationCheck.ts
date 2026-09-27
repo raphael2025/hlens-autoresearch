@@ -39,9 +39,12 @@ export type DegradationCheckPayload = {
 };
 
 /**
- * The payload as a degradation check, or `null` (the page then shows the raw JSON). The additive
- * `insufficient_evidence` key is only ever written as `true` and never with `degraded: true`
- * (DegradationCheck refuses that); anything else is not a check this console can read.
+ * The payload as a degradation check, or `null` (the page then shows the raw JSON). A check
+ * always ruled at least one metric, so `metrics` must be a non-empty array (an empty one would
+ * make "every metric missing" vacuously true). The additive `insufficient_evidence` key is only
+ * ever written as `true`, never with `degraded: true` (DegradationCheck refuses that), and only
+ * when every metric is missing and `missing` names exactly those metrics; anything else is not a
+ * check this console can read.
  */
 export function asDegradationCheckPayload(
   payload: Record<string, unknown> | undefined,
@@ -52,14 +55,32 @@ export function asDegradationCheckPayload(
     typeof payload.check_hash !== "string" ||
     typeof payload.degraded !== "boolean" ||
     !Array.isArray(payload.metrics) ||
+    payload.metrics.length === 0 ||
     !Array.isArray(payload.missing)
   ) {
     return null;
   }
-  if ("insufficient_evidence" in payload && (payload.insufficient_evidence !== true || payload.degraded)) {
+  if ("insufficient_evidence" in payload && !insufficientEvidenceIsConsistent(payload)) {
     return null;
   }
   return payload as unknown as DegradationCheckPayload;
+}
+
+function insufficientEvidenceIsConsistent(payload: Record<string, unknown>): boolean {
+  if (payload.insufficient_evidence !== true || payload.degraded) return false;
+  const metrics = payload.metrics as unknown[];
+  const missing = payload.missing as unknown[];
+  const names: string[] = [];
+  for (const metric of metrics) {
+    if (typeof metric !== "object" || metric === null) return false;
+    const { metric: name, missing: isMissing } = metric as Record<string, unknown>;
+    if (typeof name !== "string" || isMissing !== true) return false;
+    names.push(name);
+  }
+  if (!missing.every((name) => typeof name === "string")) return false;
+  const listed = [...(missing as string[])].sort();
+  names.sort();
+  return listed.length === names.length && listed.every((name, index) => name === names[index]);
 }
 
 export type CheckStatus = "degraded" | "insufficient_evidence" | "not_degraded";
@@ -72,7 +93,10 @@ export type CheckStatus = "degraded" | "insufficient_evidence" | "not_degraded";
  */
 export function checkStatus(check: DegradationCheckPayload): CheckStatus {
   if (check.degraded) return "degraded";
-  if (check.insufficient_evidence === true || check.metrics.every((metric) => metric.missing)) {
+  if (
+    check.insufficient_evidence === true ||
+    (check.metrics.length > 0 && check.metrics.every((metric) => metric.missing))
+  ) {
     return "insufficient_evidence";
   }
   return "not_degraded";

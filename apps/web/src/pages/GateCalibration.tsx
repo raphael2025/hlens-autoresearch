@@ -3,21 +3,100 @@ import { EvidenceOnlyBanner, SimulatedBanner } from "../components/Banner";
 import { ReportBrowser } from "../components/ReportBrowser";
 import {
   asCalibrationPayload,
+  boundsCell,
   ciCell,
   detectorErrorRuns,
   detectorErrorsOf,
   hasDetectorErrors,
+  hasPassRateBounds,
   passRate,
+  readBounds,
+  sealedG5Arms,
+  sealedG5Of,
+  type Bounds,
   type CandidateEvidence,
+  type Rate,
 } from "../lib/gateCalibration";
 
 // Payload types and the pure helpers live in src/lib/gateCalibration.ts (tested with node --test).
 // The page shows evidence only: no recommended / default / optimal value anywhere.
 
+const ERROR_STYLE = { color: "crimson", fontWeight: 600 } as const;
+
+// A bounds cell: "—" when absent, the pair when present, and a red marker when malformed.
+function BoundsTd({ bounds }: { bounds: Bounds }) {
+  const text = boundsCell(bounds);
+  return (
+    <td style={bounds.kind === "absent" ? undefined : ERROR_STYLE} data-bounds={bounds.kind}>
+      {text ?? "—"}
+    </td>
+  );
+}
+
+function rateText(rate: Rate | null): string {
+  return rate === null ? "—" : `${rate.rate} (${rate.count}/${rate.n})`;
+}
+
+function SealedG5Section({ candidate }: { candidate: CandidateEvidence }) {
+  const arms = sealedG5Arms(candidate);
+  if (arms.length === 0) return null;
+  return (
+    <>
+      <h4>G5（密封样本外）与端到端 G0 – G5</h4>
+      <table data-section="sealed-oos-g5">
+        <thead>
+          <tr>
+            <th>arm</th>
+            <th>reached</th>
+            <th>G5 pass_rate</th>
+            <th>G5 95% CI</th>
+            <th>G5 inconclusive_rate</th>
+            <th>G5 fail_rate</th>
+            <th>consumed_without_result</th>
+            <th>detector_errors</th>
+            <th>G5 pass_rate_bounds</th>
+            <th>end-to-end G0 – G5</th>
+            <th>end-to-end 95% CI</th>
+            <th>end_to_end_bounds</th>
+          </tr>
+        </thead>
+        <tbody>
+          {arms.map((arm) => {
+            const g5 = sealedG5Of(candidate.pipeline[arm]);
+            if (g5 === null) return null;
+            const endToEnd = passRate(g5.end_to_end_g0_g5);
+            return (
+              <tr key={arm}>
+                <td>{arm}</td>
+                <td>{g5.reached}</td>
+                <td>{rateText(g5.pass_rate)}</td>
+                <td>{g5.pass_rate !== null ? ciCell(g5.pass_rate) : "—"}</td>
+                <td>{rateText(g5.inconclusive_rate)}</td>
+                <td>{rateText(g5.fail_rate)}</td>
+                <td>{g5.consumed_without_result}</td>
+                <td style={g5.detector_errors > 0 ? ERROR_STYLE : undefined}>{g5.detector_errors}</td>
+                <BoundsTd bounds={readBounds(g5.pass_rate_bounds)} />
+                <td>{endToEnd !== null ? `${endToEnd.label}: ${rateText(endToEnd.rate)}` : "—"}</td>
+                <td>{endToEnd !== null ? ciCell(endToEnd.rate) : "—"}</td>
+                <BoundsTd bounds={readBounds(g5.end_to_end_bounds)} />
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      <p style={{ color: "#555", fontSize: 13 }}>
+        G5 各率以到达 G5 的运行为分母（无运行到达时为 —）；端到端 G0 – G5 以该 arm 全部运行为分母。
+        有检测器错误时，点估计不是真实比率：bounds 为全部出错运行分别算作失败 / 通过时的范围（向外取整）。
+      </p>
+    </>
+  );
+}
+
 function CandidateSection({ candidate }: { candidate: CandidateEvidence }) {
   const arms = Object.keys(candidate.pipeline);
   const gateIds = Object.keys(candidate.gates).sort();
   const showDetectorErrors = hasDetectorErrors(candidate);
+  const showBounds = hasPassRateBounds(candidate);
   const erroredRuns = detectorErrorRuns(candidate);
 
   return (
@@ -41,6 +120,7 @@ function CandidateSection({ candidate }: { candidate: CandidateEvidence }) {
             <th>failed</th>
             <th>sealed_oos_consumption_rate</th>
             {showDetectorErrors && <th>detector_errors</th>}
+            {showBounds && <th>pass_rate_bounds</th>}
           </tr>
         </thead>
         <tbody>
@@ -59,10 +139,11 @@ function CandidateSection({ candidate }: { candidate: CandidateEvidence }) {
                 <td>{evidence.failed}</td>
                 <td>{evidence.sealed_oos_consumption_rate.rate}</td>
                 {showDetectorErrors && (
-                  <td style={detectorErrors !== null ? { color: "crimson", fontWeight: 600 } : undefined}>
+                  <td style={detectorErrors !== null ? ERROR_STYLE : undefined}>
                     {detectorErrors ?? 0}
                   </td>
                 )}
+                {showBounds && <BoundsTd bounds={readBounds(evidence.pass_rate_bounds)} />}
               </tr>
             );
           })}
@@ -71,6 +152,8 @@ function CandidateSection({ candidate }: { candidate: CandidateEvidence }) {
       {showDetectorErrors && (
         <p style={{ color: "#555", fontSize: 13 }}>
           detector_errors：检测器在该 arm 上抛出异常的运行数（已计入 inconclusive，从不算通过）。
+          {showBounds &&
+            " 这些 arm 的 rate 只是点估计：pass_rate_bounds 为出错运行全部算失败 / 全部算通过时的通过率范围（向外取整）。"}
         </p>
       )}
 
@@ -101,6 +184,8 @@ function CandidateSection({ candidate }: { candidate: CandidateEvidence }) {
           </table>
         </>
       )}
+
+      <SealedG5Section candidate={candidate} />
 
       <h4>Per-gate</h4>
       <table>
