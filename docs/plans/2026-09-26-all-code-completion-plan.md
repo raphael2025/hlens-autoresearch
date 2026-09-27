@@ -1092,6 +1092,11 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 按 E1-CAP-ARCH 的后续项，在 `infrastructure/tools/normalizer_memory_probe.py` 增加显式 `--staged-diagnostics` 模式：统计 public CatalogAdapter 的 `load_table` / `scan_columns` / `commit_batch` 调用，统计 PyIceberg planner 处理的 manifests 和生成的 file tasks，并报告按源码路径分组的 retained `tracemalloc` delta 与 held result 可达 Python 大小估算。默认 RSS 模式不启用 instrumentation；开启诊断时协议资格强制为 false，输出明确说明 tracemalloc 不等于 RSS、PyArrow native buffer 不在对象估算内。
 - 提交 `0672004` 已进入本地 `main`，仅改诊断工具，不动生产逻辑 / 契约 / ADR；探针、诊断模式、测试、静态检查和 build 均未运行。该能力用于后续定位，不能关闭 E1-CAP-1。状态文档提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 60 个提交，未推送。
 
+### 10.39 清理已取代的 E1 历史设计 worktree（2026-09-27）
+
+- `worktree-e1-bounded-history-options@a368e22` 为已被 main 后续 `docs/reviews/e1-bounded-history-options.md` 完全取代的旧设计稿，没有生产实现或其他独有文件。该 worktree 原 Git 锁所记 PID 已不存在，worktree 干净；先将 tip 存入 `refs/archive/2026-09-27/branches/worktree-e1-bounded-history-options`，再解锁并移除 worktree / 本地分支。没有删除远端 ref。
+- 当前整理后为 6 个本地分支、10 个 worktree、7 个远端分支引用；本地 `main` 状态文档提交后比 `origin/main@44fe9a2` 超前 61 个提交。未运行测试 / build / probe。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
