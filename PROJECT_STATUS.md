@@ -55,7 +55,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已合入本地 `main`，gate diff 包含实际与精确阈值（报告 schema 1.1.0）；Python 静态检查和 Web build 通过，未跑测试；fixture / smoke / component 注册留待验收；Phase 8 未验收 |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58），**不要求 Profile 冻结登记**（B62；冻结权威门只在 Promotion，ADR-0062）CODE_COMPLETE / DEBUG_PENDING |
-| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；劣化阈值读取兼容 ADR-0052 精确 Decimal；ADR-0067 显式 operator、ProfileFreezeRegistry 锚点与完整 manifest 输入证据已补，writer 保留旧 1.0.0 hash 并由 operation result 写入带 evidence 的 1.1.0；实现在协调 worktree、未进入本地 `main`，本轮未跑测试，Phase 11 未验收。没有 source resolver，调用方声明的源与聚合真实性不认证 |
+| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；劣化阈值读取兼容 ADR-0052 精确 Decimal；ADR-0067 显式 operator、ProfileFreezeRegistry 锚点与完整 manifest 输入证据已补，writer 保留旧 1.0.0 hash 并由 operation result 写入带 evidence 的 1.1.0；协调分支另增只读 provenance 页面，未知字段原样安全披露。改动尚未进入本地 `main`，本轮未跑测试，Phase 11 未验收。没有 source resolver，调用方声明的源与聚合真实性不认证 |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045）；ADR-0069 已要求 `combine` 对风险策略、适用标的、冲突参数空间 fail closed，代码已修改、待验收；替换提案仍恒待人工批准并在循环外运行（B49），Phase 12 未验收 |
 | 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046，实盘结构上被拒绝）；持久审计、非空审计重开即急停、只读重放、风险 / 告警重放（B31）CODE_COMPLETE / DEBUG_PENDING |
 | 14 | Technology Migration | 🧱 框架已实现（ADR-0047）；金标准记录持久化、差异报告、回滚证据、金标准实验重放（B32）CODE_COMPLETE / DEBUG_PENDING（无具体迁移目标） |

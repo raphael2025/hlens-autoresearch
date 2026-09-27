@@ -1000,6 +1000,7 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 在 Accepted ADR-0068 边界内新增 `research/hypotheses/typed_plan.py`（协调提交 `23b4256`）。严格解析显式限额的 JSON AST、拒绝重复 / 未知键、类型错误、越界结构与引用错误；计算结构内容哈希；`compile_plan()` 对六类算子一律拒绝。没有 Provider、Registry、TrialLedger、持久化、loop 或 runnable allowlist 接入。实现说明：[`p7-typed-plan-foundation-implementation.md`](../reviews/p7-typed-plan-foundation-implementation.md)。Ruff / format / mypy / diff 检查通过，未跑测试或 build。
 - P9 backlog 曾称 detector 异常会终止校准。本基线已在单标的、可选 G5、多标的入口按既有可传播错误边界把检测错误记录为 `INCONCLUSIVE` 并继续其余运行；该旧 backlog 项为过期描述。复核记录：[`2026-09-27-p9-detector-exception-handling.md`](../reviews/2026-09-27-p9-detector-exception-handling.md)。子代理的 Ruff / format / mypy / diff 检查通过，未跑测试。
 - Knowledge API 的无 Provider 响应已在基线实现为稳定 503 常量错误，README 与 OpenAPI 一致；无代码改动。P2 report DTO 审查认为现有 report kind 缺乏统一版本化 schema，任意新增严格模型会拒收既有 payload；逐 kind DTO 延后到 schemas 经批准后实施。当前 API envelope 仍按动态 report kind 返回 opaque JSON object。
+- 已吸收的 P7 / P11 / P9 Codex worktree 先将 branch tip 归档到 `refs/archive/2026-09-27/branches/codex/` 再移除；P2 无改动审计 worktree 与已成为协调分支祖先的旧 Knowledge API worktree 同样按此方式清理。归档保留全部提交，未碰 Claude / Cursor 的活动 worktree；本地快照回到 14 个分支、20 个 worktree，主线与远端未更新。
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
