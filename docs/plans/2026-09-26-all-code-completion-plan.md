@@ -106,6 +106,14 @@
 - 按 Raphael 全权授权，先将 tip 保存到 `refs/archive/2026-09-28/branches/remote/fix/e1-cap1`，关闭 PR #10，并删除远端及本地 `fix/e1-cap1` branch。原干净 worktree 改为 detached HEAD 保留源代码、失败探针与 `.venv`，不销毁恢复材料。
 - 远端现仅有 `main`；本地 3 个 branch / 9 个 worktree。`phase/1` 虽无 main 未含提交，但仍是含未跟踪用户资料且由 Cursor 使用的根工作区；`docs/research-spec-completion` 有活动 Claude 会话及一组尚未择取的测试，二者未清理。未推送 main；未运行测试或容量探针。
 
+### 10.50 全阶段基础代码差额复核与状态对齐（2026-09-28）
+
+- 四个只读 Codex 子代理按 Phase 0.5–14 复核主线实现；没有修改代码或运行测试。共同结论：项目不是空骨架；P0.5–P6、P8–P14 和 API / Worker / Web 均已有实质模块与调用链，主要欠阶段验收、真实数据 / 人工输入或明确边界。
+- 已确认的关键基础逻辑缺口：P7 六种 typed operator 均保持 non-runnable；缺逐算子语义与 Provider lowering，也缺 operator audit 与 TrialLedger 跨记录崩溃原子方案。Worker 有 loop/job 持久组件但没有已决定的组合启动配置 / operator entry；继续设计时明确禁止 API 写入或 trigger endpoint。E1-CAP-1 及 D-LIST 保持各自的容量 / 研究假设决策边界，不因代码清理或一般框架工作而宣称解决。
+- P6 通用矩阵精确匹配 `evaluation_time`，无状态时拒绝；当前 P6 loop 在共享 `decision_times` 网格运行，已按时刻可用状态归属。非共享网格的 as-of 最近状态延续会改变 ADR-0039 缺失状态语义，需 ADR 后再做。P13 roadmap 与 deployment stage 文案已改为仅模拟 / 纸面；roadmap 对 E2 的过时“ADR-0029 待决”文字已更正为已实现当前状态快照、历史上市仍受 D-LIST 阻断。
+- 研究规格 Claude worktree 核验为 clean；唯一未在 main 的内容是两条 G1 embargo 测试。tip `82bfe73` 已另存到 `refs/archive/2026-09-28/branches/claude/docs-research-spec-completion`；因 Claude 会话仍 idle 并占用该 worktree，未移除分支或目录。根 `phase/1` 仍由 Cursor 使用且含未跟踪用户资料，保持原样。
+- 本轮只做文档一致性变更及本地 archive ref，不推送、不移除仍检出的分支 / worktree；未运行测试、build、probe 或验收。状态提交后 `main` 比 `origin/main@44fe9a2` 超前 79 个提交。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：

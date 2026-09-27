@@ -17,9 +17,10 @@ ExperimentSpec 定义与 Runner 编排（06-experiment.md）。
 跨 Phase 冒烟：`tests/research/test_cross_phase_e2e.py`（P9 合成市场 → F4 → P2 → P5 → P6 + P7 登记 → P10 纸面运行；
 确定性、无未来函数、逐步输入绑定）。它只检验接线，不是验证；合成结果不支持任何真实市场结论。
 
-**网格对齐（真实数据冒烟 E2，设计如此）**：矩阵按权益点时间（= bar `interval_end`）归属收益，状态必须恰好在该网格上评估；
-ADR-0032 下 bar 收盘后 5 s 才可见，因此在该网格上特征 / 状态 / 策略输入都滞后一根 bar。这是因果、无未来函数的结果，
-不是缺陷；"按 t 时刻已知的最近状态归属"尚未实现。
+**归因网格**：矩阵按精确 `evaluation_time` 归属收益；收益时刻没有对应状态评估时即拒绝，不会沿用最近的先前状态。
+当前 P6 循环把收益合并到决策时刻，并在同一 `decision_times` 网格评估状态，因此使用精确归属。对不共享评估网格的收益序列，
+as-of 最近状态归属尚未实现；改变缺失时刻处理规则需先修订 ADR-0039。真实数据冒烟 E2 中，权益点时间等于 bar `interval_end`；
+ADR-0032 下 bar 收盘后 5 s 才可见，因此该网格上的特征 / 状态 / 策略输入滞后一根 bar。这是可用时间约束的结果，不是矩阵匹配规则。
 
 状态：`register_matrix_conditionals` / `conditional_hypotheses` 为 CODE_COMPLETE / DEBUG_PENDING（`tests/research/experiments/test_matrix_conditionals.py`）；
 `register_trial_conditionals` / `trial_conditional_hypotheses` 为 CODE_COMPLETE / DEBUG_PENDING（`tests/research/experiments/test_trial_conditionals.py`；
