@@ -1060,11 +1060,18 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 当前唯一进入实现队列的范围是 E1 Phase 1。其他 Phase 的真实缺口排进 backlog，待对应 Phase 开启并按 ADR 排序；验收覆盖缺项集中到统一验收批次。未新增或运行任何测试 / build / probe。
 - 文档核正提交 `6f9500a` 已 `--ff-only` 快进进入本地 `main@6f9500a`；本地 main 比 `origin/main@44fe9a2` 超前 48 个提交，未推送。根 `phase/1` worktree 的用户文件与未跟踪资料未触碰；远端分支、其他会话工作树均未改动。
 
-### 10.34 main 适配版 E1 RSS probe（2026-09-27；隔离分支，未运行）
+### 10.34 main 适配版 E1 RSS probe（2026-09-27；已并入本地 main，未运行）
 
-- 为后续统一验收准备的主线适配版探针已提交于 `codex/e1-main-probe-2026-09-27@e0ce768`，基于本地 `main@304c400`；只新增 `infrastructure/tools/normalizer_memory_probe.py`，覆盖 archive verification、write/crash、resume、replay、单批读取与 metadata history 六个隔离子进程阶段。它调用当前 main API，不含生产代码变更；对阶段事实、RSS 样本数、重复 / 缺失 repeat 编号和 main 代码路径设置 fail-closed 判定。
+- 为后续统一验收准备的主线适配版探针原提交为 `codex/e1-main-probe-2026-09-27@e0ce768`，现已 cherry-pick 为本地 main commit `0640460`；只新增 `infrastructure/tools/normalizer_memory_probe.py`，覆盖 archive verification、write/crash、resume、replay、单批读取与 metadata history 六个隔离子进程阶段。它调用主线 API，不含生产代码变更；对阶段事实、RSS 样本数、重复 / 缺失 repeat 编号和 main 代码路径设置 fail-closed 判定。
 - 探针没有运行；未运行 pytest、build 或静态检查。只做了空白差异检查（无诊断）；因此 API 行为、fixture 可用性、cgroup 与实际采样表现仍未验证。Claude 的只读审查命令未返回可用报告，不计作独立复核。该提交不构成容量结果或 E1-CAP-1 关闭证据。
-- 探针基于状态同步前的 `main@304c400`（当时比 `origin/main@44fe9a2` 超前 49 个提交）；本次驾驶舱文档同步计入本地 main 后，共超前 50 个提交，未推送。探针提交尚未合并；E1-CAP-1 仍阻断，待 Raphael 统一验收阶段运行固定 RSS 矩阵与相应结构 / 定向验证。
+- 探针原始基线是 `main@304c400`，现已并入 `main@0640460`。截至本计划最近一次状态更新，本地 `main@14375ec` 比 `origin/main@44fe9a2` 超前 54 个提交；状态文档提交后为 55 个，未推送。探针尚未运行；E1-CAP-1 仍阻断，按 Raphael 指示留待统一验收阶段运行固定 RSS 矩阵与相应结构 / 定向验证。
+
+### 10.35 本地 main 合并与基础逻辑推进（2026-09-27）
+
+- Raphael 明确授权 Codex 统筹 Claude / Cursor 与子代理、决定技术实现；目标顺序是先完成主线收敛和安全冗余分支清理，再补齐各模块基础逻辑，之后统一验收。此前 §10.33 中“唯一进入实现队列是 E1”的范围约束由本指示更新；冻结契约仍只能通过 ADR 修改，Phase 验收状态不因代码完成而改变。
+- 主线 `0640460` 之后新增：`72def82` 将候选 `fix/e1-cap1@a75278e` 的容量数值作为**候选实现历史证据**加入 E1 review，明确不代表 main；`be9f966` 按 ADR-0055 为 2026-09-26 的四条种子固定 `schema_version: 2.1.0`，同步知识库与实施记录；`14375ec` 为 Phase 11 worker journal 增加 POSIX `flock` 与 stale-writer 拒写，更新导入白名单及 ADR-0049 / README 说明。没有测试、build、probe、静态检查或阶段验收结果；本次均未运行。
+- 后续按审计优先级对每个功能缺口限定单模块、隔离分支开发；跨模块或冻结契约变更先由 Codex记录 ADR / 决策。失败实验和历史证据原样保留。分支删除前先归档 refs，活动、脏、锁定及含唯一内容的 worktree 继续保留；不推送远端。
+- 当前技术队列：①核对 remaining branch content 并安全收敛；②E1 有界路径设计与实现（不降低 32 MiB 门槛，probe 暂不运行）；③P7 首个算子语义与 lowering 需 ADR；④逐模块补齐经审计确认的独立逻辑缺口。人工数据门（种子标签 / assets 审阅、真实数据、Profile 冻结）不以代码替代。
 
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
