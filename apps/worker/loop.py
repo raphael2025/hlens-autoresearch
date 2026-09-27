@@ -820,6 +820,35 @@ class LoopAuditLog:
         """A round started but not recorded; after a replay, a round that was interrupted."""
         return self._open_round
 
+    def started_entry_identity(self, loop_id: str, round_index: int) -> tuple[int, str] | None:
+        """Return the unique verified start entry's ``(seq, hash)`` without exposing its journal.
+
+        A missing start returns ``None``. Duplicate matches indicate an invalid audit history even
+        though normal replay already prevents them; callers can bind recovery records to this
+        identity without receiving a mutable journal handle.
+        """
+        if not isinstance(loop_id, str) or not loop_id:
+            raise ValueError("loop_id must be non-empty text")
+        if isinstance(round_index, bool) or not isinstance(round_index, int) or round_index < 0:
+            raise ValueError("round_index must be a non-negative integer")
+        if self._journal is None:
+            return None
+        matches = [
+            entry
+            for entry in self._journal.entries
+            if entry.type == ROUND_STARTED
+            and entry.payload.get("loop_id") == loop_id
+            and entry.payload.get("round_index") == round_index
+        ]
+        if len(matches) > 1:
+            raise LoopAuditCorrupted(
+                f"the audit repeats the started entry for {loop_id!r} round {round_index}"
+            )
+        if not matches:
+            return None
+        entry = matches[0]
+        return entry.seq, entry.hash
+
     def begin_round(self, loop_id: str, round_index: int) -> None:
         """Mark ``round_index`` as started (durable: before the round spends anything)."""
         self._check_start(loop_id, round_index)

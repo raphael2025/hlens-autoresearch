@@ -67,8 +67,9 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | 文件 | 内容 |
 |---|---|
 | `audit.jsonl` | `LoopAuditLog`：每轮 started / recorded |
-| `memory.jsonl` | 头行 `loop_state_opened`（配置指纹）+ 每个已记录轮次一条 `round_memory` 检查点 + 每次轮间人工审批一条 `between_rounds` 检查点 |
+| `memory.jsonl` | 头行 `loop_state_opened`（配置指纹）+ 每个已记录轮次一条 `round_memory` 检查点 + 每次轮间人工审批一条 `between_rounds` 检查点；v4 还可记录 `plan_admission` 检查点 |
 | `trial_ledger.jsonl` / `sealed_oos.jsonl` / `lineage.jsonl` / `reviews.jsonl` | TrialLedger、开封账本、谱系、审阅队列（均为哈希链日志） |
+| `plan_admission.jsonl` | v4 必需；首行固定 header，后续只允许 PREPARE / COMMIT，并与 trial ledger、memory checkpoint、anchor 交叉核对 |
 | `failures.jsonl` | FailureRegistry（只追加、fsync，无链） |
 
 - **检查点**：`ResearchLoop(checkpoint=...)` 在审计记录一轮之前写入该轮检查点：`record_hash`、其余每个文件的位置（日志：行数 + 链头；
@@ -84,7 +85,8 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 - **尾部截断**：单个文件删去整行尾部仍是合法的短链，但其余文件记录了它的位置（或审计与检查点不再一一对应），因此被跨文件校验发现。
 - **预算绑定目录**（ADR-0049 实施说明 durable review fixes，2026-09-26）：配置指纹包含 `LoopBudget` 与完整的 `OosUnsealBudget`
   （`max_unsealings`、获准族及批准人；TEST ONLY 的 `ephemeral_unseal_for_tests` 仅在为真时出现）以及精确节奏（`cadence_microseconds`）；用任何不同的预算（更大、更小、多一个获准族、换批准人）重新打开都拒绝，
-  消息写明哪个预算不同。**提高预算是人的决定：用新的 `state_dir` 或新的 `loop_id`。** 头行版本 `STATE_VERSION = 3`（版本 1 / 2 目录被拒绝）。
+  消息写明哪个预算不同。**提高预算是人的决定：用新的 `state_dir` 或新的 `loop_id`。** state v3 保留原 checkpoint 形状和旧 loop 行为；新目录采用 v4。v4 的 plan journal header 精确绑定 schema `1.0.0`、loop id 与 `state_version: 4`。v3 不自动迁移，且不允许 typed-plan admission。
+- **ADR-0073 admission 恢复**：v4 在同一 state lock 下协调 PREPARE → TrialLedger 单一 batch event → COMMIT → memory admission checkpoint → external anchor。重开时仅按持久化内容/hash 精确补齐唯一事务缺口；pending PREPARE 只能绑定 audit 中唯一的当前 started round，任何孤儿、额外尾部、身份不符或分叉都 fail closed。恢复不运行 compiler、provider、runner 或 experiment；open/failed round 仍拒绝自动续跑，六类 operator 仍不可运行。Hypothesis batch 以 `(family_id, name, version, content_hash)` 排序。该批仅实现 durable recovery，不接 producer；ExperimentSpec 一对一引用 / lowering 对应关系须由后续 composition 在 PREPARE 前验证。
 - **可选外部锚点**：`open_synthetic_loop(..., anchor=Path | StateAnchor)`。每个已记录轮次之后锚点收到目录的头（轮数、审计头、记忆日志链头、各文件位置）；
   重新打开时目录必须不早于锚点且到该轮为止历史相同，落后（一致截断、目录被删重建）、分叉、或锚点为空而目录已有轮次 → 拒绝；通过后锚点前移。
   `FileAnchor` 必须在目录之外。**不给锚点时限制照旧**：把**所有**文件一致地截回更早的轮次边界是合法的较短历史，可以打开。

@@ -35,6 +35,7 @@ __all__ = [
 PLAN_ADMISSION_FORMAT_VERSION: Final = "1.0.0"
 _PREPARE_EVENT: Final = "plan_admission_prepare"
 _COMMIT_EVENT: Final = "plan_admission_commit"
+_HEADER_EVENT: Final = "plan_admission_header"
 _BATCH_EVENT: Final = "register_batch"
 _HASH = re.compile(SHA256_PATTERN)
 _PREPARE_KEYS: Final = frozenset(
@@ -66,6 +67,7 @@ _EVIDENCE_KEYS: Final = frozenset({"data", "content_hash"})
 _LEDGER_EVENT_KEYS: Final = frozenset(
     {"type", "seq", "prev_hash", "hash", "payload_hash"}
 )
+_HEADER_KEYS: Final = frozenset({"schema_version", "loop_id", "state_version"})
 
 
 class PlanAdmissionError(ValueError):
@@ -110,6 +112,15 @@ def _hash(value: object, what: str) -> str:
     if not isinstance(value, str) or _HASH.fullmatch(value) is None:
         raise ValueError(f"{what} must be a lowercase SHA-256 hash")
     return value
+
+
+def _hypothesis_sort_key(hypothesis: Hypothesis) -> tuple[str, str, str, str]:
+    return (
+        hypothesis.family_id,
+        hypothesis.name,
+        hypothesis.version,
+        hypothesis.content_hash(),
+    )
 
 
 def _positive_int(value: object, what: str, *, zero_ok: bool = False) -> int:
@@ -324,13 +335,38 @@ class PlanAdmissionJournal:
     the durable loop checkpoint / anchor transaction under the state lock.
     """
 
-    def __init__(self, path: Path) -> None:
+    def __init__(self, path: Path, *, loop_id: str, create: bool = False) -> None:
+        if not isinstance(loop_id, str) or not loop_id or loop_id != loop_id.strip():
+            raise PlanAdmissionError("loop_id must be non-empty text without surrounding whitespace")
+        self._loop_id = loop_id
         self._journal = AppendOnlyJournal(Path(path))
         self._prepared: list[PreparedAdmission] = []
         self._committed: list[CommittedAdmission] = []
         self._pending: PreparedAdmission | None = None
         self._transaction_ids: set[str] = set()
-        for entry in self._journal.entries:
+        entries = self._journal.entries
+        if not entries:
+            if not create:
+                raise PlanAdmissionCorrupted("the v4 plan admission journal is missing its header")
+            self._journal.append(
+                _HEADER_EVENT,
+                {"schema_version": PLAN_ADMISSION_FORMAT_VERSION, "loop_id": loop_id, "state_version": 4},
+            )
+        else:
+            header = entries[0]
+            if (
+                header.seq != 1
+                or header.type != _HEADER_EVENT
+                or set(header.payload) != _HEADER_KEYS
+                or header.payload
+                != {
+                    "schema_version": PLAN_ADMISSION_FORMAT_VERSION,
+                    "loop_id": loop_id,
+                    "state_version": 4,
+                }
+            ):
+                raise PlanAdmissionCorrupted("the plan admission journal header differs from v4 state")
+        for entry in self._journal.entries[1:]:
             try:
                 self._replay(entry)
             except (KeyError, TypeError, ValueError) as exc:
@@ -380,6 +416,8 @@ class PlanAdmissionJournal:
             raise PlanAdmissionError("a PREPARE is already pending; commit it before another")
         if not isinstance(round, RoundStartedIdentity):
             raise PlanAdmissionError("round must be a validated RoundStartedIdentity")
+        if round.loop_id != self._loop_id:
+            raise PlanAdmissionError("round loop_id differs from the plan admission journal header")
         if not isinstance(plan, TypedPlan) or plan.runnable:
             raise PlanAdmissionError("plan must be a non-runnable TypedPlan value")
         if not isinstance(compiler, PlanAdmissionEvidence):
@@ -419,6 +457,7 @@ class PlanAdmissionJournal:
         identities = [(item.name, item.version) for item in hypothesis_values]
         if len(set(identities)) != len(identities):
             raise PlanAdmissionError("the prepared batch repeats a Hypothesis identity")
+        hypothesis_values = tuple(sorted(hypothesis_values, key=_hypothesis_sort_key))
 
         plan_evidence = PlanAdmissionEvidence.from_data(plan.payload())
         hypothesis_payloads = [item.model_dump(mode="json") for item in hypothesis_values]
@@ -513,6 +552,8 @@ class PlanAdmissionJournal:
             if self._pending is not None:
                 raise PlanAdmissionCorrupted("a second PREPARE appeared before COMMIT")
             prepared = _parse_prepare(entry.payload, seq=entry.seq, entry_hash=entry.hash)
+            if prepared.round.loop_id != self._loop_id:
+                raise PlanAdmissionCorrupted("PREPARE loop_id differs from the journal header")
             if prepared.transaction_id in self._transaction_ids:
                 raise PlanAdmissionCorrupted("transaction_id is repeated")
             self._prepared.append(prepared)
@@ -578,6 +619,8 @@ def _parse_prepare(payload: object, *, seq: int, entry_hash: str) -> PreparedAdm
     identities = [(item.name, item.version) for item in hypotheses]
     if len(set(identities)) != len(identities):
         raise PlanAdmissionCorrupted("PREPARE repeats a Hypothesis identity")
+    if hypotheses != sorted(hypotheses, key=_hypothesis_sort_key):
+        raise PlanAdmissionCorrupted("PREPARE hypotheses do not use the canonical batch order")
     baseline = _object(raw["ledger_baseline"], _POSITION_KEYS, "ledger_baseline")
     baseline_seq = _positive_int(baseline["seq"], "ledger_baseline.seq", zero_ok=True)
     baseline_hash = _hash(baseline["hash"], "ledger_baseline.hash")
