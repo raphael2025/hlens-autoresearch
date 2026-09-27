@@ -49,7 +49,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - D3E 与 D4 门均已由 Codex 接受；E0～G3-P 实现仍须逐批复核，不能自动推导为已接受；无 Codex 时 Claude 只推 `wip/*`，不推正式 `phase/*`
 - Current Blocker：D3E 的跨日 edge provenance 缺陷已修复并随 D3E 验收；其余 Phase 1 后续实现待复核。D-LIST 仍按 Raphael 明确决定保持暂缓。C2 专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：关闭 E1-CAP-1（normalizer 原始位置状态、D1 完整归档解析缓存及 batch-plan / done / commit 元数据未证明有界；初版修复提交 `2f98cd2` / `97772ba` 未覆盖全路径且未集成），由 Claude 补齐 bounded path 与可信容量证据后继续依赖顺序复核 F1；见 `docs/reviews/2026-09-27-e1-review.md`
+- Next Milestone：继续关闭 E1-CAP-1。`fix/e1-cap1` 本地 HEAD `2597411` 含第二轮返修及 Codex 的两个重复行扫描上限修复；结构 / 定向测试通过。500k 容量探针在 resume / replay 分别测得 59.9 / 63.9 MiB 跨规模增长，超过 32 MiB 限值，E1 仍为 REVIEW_PENDING；先定位并消除随历史增长的内存，再复跑探针，之后按依赖顺序复核 F1。见 `docs/reviews/2026-09-27-e1-review.md`
 
 ## 5. Active Decisions
 

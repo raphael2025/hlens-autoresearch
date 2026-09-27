@@ -274,3 +274,33 @@ Iceberg 已提交行与不可变 Raw，不用 journal 或可变 sidecar。
   (3) E3 报告（并经其 `existing_only` 复算覆盖 F3）要求分区内（venue symbol × UTC 日）每条绑定快照中的 Raw 元素
   revision 都已有 Canonical 映像，否则 `RawNotDerived`（与 listing 的 `LISTING_NOT_DERIVED` 对应），只读窄列。
   Canonical 行、批次号与规则哈希不变；待 Codex 确认此记录。
+- **E1-CAP-1（Codex 2026-09-27 复核阻断项；容量仍未通过）**：G3-S 之后严格证明 / 写入路径仍持有随单元行数
+  `N` 或批次数 `⌈N/M⌉` 增长的状态。现改为（语义不变，只换证明的内存形状）：
+  (1) **位置**：归档单元的位置按固定窄窗（`narrow_rows`，默认 65 536 行、不小于 microbatch）逐段证明恰为其对象的
+  `1 … N` 行（窄列、每次读取以窗口 + 1 行封顶，另有空值 / 越界的单行探针），之后只以 `range(1, N + 1)` 表示；
+  REST 单元即一页，位置读取以 `PAGE_LIMIT + 1` 封顶。
+  (2) **计划**：已提交计划只剩三个整数（单元行数、批大小、已提交批数），由对固定快照历史的一次有序遍历证明：该单元
+  的批次恰为 `0 … count − 1`，各只提交一次且按序号顺序提交（任何合法写入方都只在批次 `i − 1` 已提交——本次提交或
+  重放确认——之后才提交 `i`，故新旧两种形状接受的合法状态相同；乱序提交此前也不会由合法写入方产生，现一并拒绝）。
+  证明某批时从同一固定历史流式取出其快照；写入从 `count` 续跑，不再保存 done 映射或逐批 commit 列表。
+  (3) **返回值**：`CanonicalUnitNormalized` 以 `row_count`、`batch_count`、`committed_batches` 与收尾快照
+  `snapshot_id` 取代逐批 `commits` 元组（`replayed` = 本次未提交任何批次）。
+  (4) **单元级数字与收尾**：块基址与就绪时间取自一条已提交行；"已提交行恰为已提交批次的行"与收尾块核对按整批平铺
+  的窄窗（每窗至多 `max(narrow_rows, M)` 行，读取以窗 + 1 行封顶）加窗外单行探针。
+  (5) **读取封顶**：每个 Raw 窗口读取以其位置数 + 1 行封顶且行数必须恰等于位置数；revision id 唯一性按 id 分块
+  （4 096 个）以 `In` 查询、每块以块 + 1 行封顶（恰有该数目的不同 id 即各恰一行）。
+  (6) **D1 严格证明（D3E-R3）**：`PersistedRowVerifier` 对归档对象的严格重解析改为 `spool_archive`——同一
+  `_parse_zip`、同一规则、同一拒绝与解析器绑定，只是被接受的行按固定块（`min(8 192, M)` 行，块摘要绑定块号）写入
+  私有磁盘目录，每次证明只读回本窗口的行；缓存至多 2 个 spool，逐出 / `close()` / 回收即删除。D2 行批的计划同样以
+  一次有序遍历证明（三个整数，按表头记忆），只查找被触及批次的快照，已证明批次有界记忆。
+  (7) **历史遍历**：`PyIcebergCatalogAdapter.history` 一次加载元数据后沿父快照遍历，耗时 O(H)；没有 `history()`
+  的目录仍逐步调用 `get_snapshot()`，其成本取决于 Adapter 实现。
+  (8) **全量便利 API 隔离**：整单元读取改名为 `collect_unit_rows()`（明确 O(N)，供测试 / 调试 / 小单元导出），生产
+  路径不调用；`verify_unit()` 必须给 `arrival_seqs`。
+  仍随提交数增长的是 Iceberg 表元数据本身（每个已提交批次一个 snapshot 与一个 manifest），PyIceberg 每次读取都加载；
+  被触及的 D2 行批整批重读是固定常数项（随 D2 自己的批大小，默认 25 000 行）；spool 占用 O(N) 字节的**磁盘**。
+  spool 目录由 `spool_dir` 指定、默认平台临时目录（`TMPDIR`）；本机 `/tmp` 是 tmpfs，生产调用须指向磁盘目录。
+  §6 语义（固定 snapshot、一次时钟读数、证明先于读时钟与提交、逐批指纹与精确回读、崩溃续跑、Raw 变化即拒绝）、
+  Canonical 行、批次号与规则哈希均不变；同时违反多条规则的损坏输入可能先报另一条。Codex 已完成实现复核与定向回归；
+  2026-09-27 容量探针在 N=500k 的 resume / replay 增长分别为 59.9 / 63.9 MiB，超过 32 MiB 阈值，故 E1-CAP-1
+  仍阻断，REVIEW_PENDING。全部结构测试、容量数据和复核结果见 `docs/reviews/2026-09-27-e1-review.md`。

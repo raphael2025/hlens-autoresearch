@@ -56,8 +56,8 @@
 - **依赖**：G-E0（ADR-0028 语义）。
 - **commit**：`9b8674a`（E1）、`65aedd6`（E1-R1）、`f6c29c9`（E1-R2）、`8c9109b`（E1-R3，批次号即规范化计划）、`42530a4`（E1-R4，拒绝复用早于所述内容提交的报告）、`d816bab`（决定记录）；容量重写 `bd1d941`（G3-S：按批次窗口规范化，不整读单元）、`f92afdf`（G3-S-R1：按 rank 切片、归档单元仍整体）。
 - **要核对什么**：一个 Raw source revision 是一个单元，`PersistedRowVerifier` 证明全部 Raw 行后才一一映射为 Canonical 行；独立 `arrival_seq` 块、一次时钟读数；G3-S 之后内存随批大小而非单元大小增长（30 万行新增内存约 0.8 GB，未在生产规模复测，见 `2026-09-25-phase1-close-evidence.md` §5）；批次号是否真的锁定了"单元行数 + 批大小"从而让续跑只按已提交切分推进。
-- **证明它的测试**：`tests/infrastructure/canonical/test_normalizer.py`、`test_normalizer_postgres.py::test_dual_lineage_normalization_recovery_and_mapping_on_postgres`、`test_a_forged_raw_row_is_refused_on_postgres`。
-- **状态**：REVIEW_PENDING。Codex 于 2026-09-27 复核发现 E1-CAP-1：除 `_positions`、`_committed_times` 与最终块核对的 O(N) 状态外，严格 D1 归档证明缓存完整 `ParsedArchive.rows`，计划 / done / commit 元数据也随 batch 数增长；初版返修（`2f98cd2`, `97772ba`，未集成）和其结构测试仍未覆盖全路径与深层缓存。容量探针的 RSS 归因也须校正。G3-S“内存只随 microbatch 增长”的承诺尚未成立。详细发现和关闭标准见 [`2026-09-27-e1-review.md`](2026-09-27-e1-review.md)。
+- **证明它的测试**：`tests/infrastructure/canonical/test_normalizer.py`、`test_normalizer_postgres.py::test_dual_lineage_normalization_recovery_and_mapping_on_postgres`、`test_a_forged_raw_row_is_refused_on_postgres`；E1-CAP-1 返修另加 `tests/infrastructure/canonical/test_normalizer_capacity.py`（深层容器与读取的结构审计）、`tests/infrastructure/revision/test_bounded_row_proof.py`、`tests/infrastructure/parser/test_archive_spool.py`（及 parser 测试对每次解析的 spool 差分核对）、`tests/infrastructure/tools/test_normalizer_memory_probe.py`，容量探针 `infrastructure/tools/normalizer_memory_probe.py`。
+- **状态**：REVIEW_PENDING。第二轮返修已集成到本地 `fix/e1-cap1`；新增 source revision 和 archive metadata 重复行扫描上限（`53114ea`、`2597411`）。Codex 组合定向回归与静态检查通过，但 2026-09-27 容量探针在 50 万行的 resume / replay 峰值增长分别为 59.9 / 63.9 MiB，超过 32 MiB 上限，G3-S“内存只随 microbatch 增长”的承诺仍未成立。不得接受 E1-CAP-1 或合入 `phase/1`；详细结果见 [`2026-09-27-e1-review.md`](2026-09-27-e1-review.md)。
 
 ## 5. G-F1 — PIT 选择器 + 容量重写（G3-S2）+ 规模性能（G3-P 的 PIT 部分）
 
