@@ -930,7 +930,7 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
-Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 后，包含新增 E1 / P7 / P11 隔离 worktree 的当前快照为 **29 个本地分支、35 个 worktree**；其中主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
+Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
 
 | 分支组 | 核对结果 | 处理 |
 |---|---|---|
@@ -946,4 +946,4 @@ Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，�
 
 新增提交 `e6b06e3` 修复 P6 回调错误归因；`b554454` 将研究规格文档补全并保留 Event 未登记草稿。静态检查：协调分支的 3 个触及 Python 文件 Ruff 与格式检查通过，`git diff --check` 通过；本轮未运行测试。以上不表示模块或 Phase 验收完成。
 
-分支审计确认当前只有一个可安全立即归档的本地冗余引用：`worktree-fix-e1-cap1`，其 `c5dbebe` 已包含在 `fix/e1-cap1`，无 worktree；已备份到 `refs/archive/2026-09-27/branches/worktree-fix-e1-cap1` 后删除。审计同时发现 `origin/codex/full-code-review-2026-09-26` 的全代码审查文件比 main 同名文件多 239 行追加历史记录，已按文件择取到本协调分支；它保留 ADR-0052 授权 / 复核来源及 K5 决策演变。当前 ADR-0052 / ADR-0057 已在主线记录其有效决定，ADR-0055 与 D-DEG-IE 决策文件也已存在于主线。远端分支不整支合并；其余 patch-equivalent 分支仍有活跃 Claude / Cursor 会话，不因未锁定或内容重复而删除。
+分支审计确认当前只有一个可安全立即归档的历史本地冗余引用：`worktree-fix-e1-cap1`，其 `c5dbebe` 已包含在 `fix/e1-cap1`，无 worktree；已备份后删除。P7 / P11 设计提交中的唯一 ADR / plan 内容已逐文件并入协调分支，且 blob 完全一致，两个干净的 Codex 设计 worktree 与分支 tip 随后也归档移除。审计同时发现 `origin/codex/full-code-review-2026-09-26` 的全代码审查文件比 main 同名文件多 239 行追加历史记录，已按文件择取到本协调分支；它保留 ADR-0052 授权 / 复核来源及 K5 决策演变。当前 ADR-0052 / ADR-0057 已在主线记录其有效决定，ADR-0055 与 D-DEG-IE 决策文件也已存在于主线。远端分支不整支合并；其余 patch-equivalent 分支仍有活跃 Claude / Cursor 会话，不因未锁定或内容重复而删除。
