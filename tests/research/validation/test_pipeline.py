@@ -16,6 +16,7 @@ from decimal import Decimal
 import pytest
 
 from core.contracts.synthetic import SyntheticMarket
+from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import Kind, Ref
 from core.domain.research import Verdict, derive_verdict
 from core.errors import ReasonCode
@@ -34,6 +35,8 @@ from research.validation.stats import UnsupportedMethod
 from tests import factories
 from tests.research.validation.fixtures import (
     BOUNDARY,
+    LABEL_SPEC,
+    MINUTE,
     TEST_ONLY_PROFILE,
     context,
     generate,
@@ -180,6 +183,47 @@ def test_labels_reaching_the_sealed_window_fail_g1() -> None:
     gates = _gates(market, table)
     gate = gates["G1.sealed_oos_excluded"]
     assert gate.verdict is Verdict.FAIL and gate.value == 5.0  # type: ignore[attr-defined]
+
+
+def _with_embargo(embargo: timedelta) -> ValidationProfile:
+    return TEST_ONLY_PROFILE.model_copy(
+        update={"data_split": TEST_ONLY_PROFILE.data_split.model_copy(update={"embargo": embargo})}
+    )
+
+
+def test_an_embargo_shorter_than_the_label_horizon_fails_g1_and_stops(
+    planted: tuple[SyntheticMarket, OutcomeTable],
+) -> None:
+    # C-L5: the embargo must cover the label horizon. This covers the check against the bound
+    # label spec only; the cross-object check point (D-30) is still an open decision.
+    market, table = planted
+    ctx = context(profile=_with_embargo(LABEL_SPEC.horizon - MINUTE))
+    gates = _gates(market, table, ctx=ctx)
+    gate = gates["G1.embargo_covers_horizon"]
+    assert gate.verdict is Verdict.FAIL  # type: ignore[attr-defined]
+    failing = [key for key, item in gates.items() if item.verdict is Verdict.FAIL]  # type: ignore[attr-defined]
+    assert failing == ["G1.embargo_covers_horizon"]  # the embargo alone causes the FAIL
+    assert gate.value == -MINUTE.total_seconds()  # type: ignore[attr-defined]
+    # A Constitution rule, not a Profile number: no threshold is read.
+    assert gate.threshold is None  # type: ignore[attr-defined]
+    assert not [key for key in gates if key.startswith(("G2", "G3"))]
+    report = build_report(ctx, tuple(gates.values()))  # type: ignore[arg-type]
+    record = failure_record(report, "family-1")
+    assert record is not None
+    assert (record.gate_id, record.terminal_state, record.reason_code) == (
+        "G1.embargo_covers_horizon",
+        "REJECTED",
+        ReasonCode.LEAKAGE_DETECTED,
+    )
+
+
+def test_an_embargo_equal_to_the_label_horizon_passes_the_check(
+    planted: tuple[SyntheticMarket, OutcomeTable],
+) -> None:
+    market, table = planted
+    gates = _gates(market, table, ctx=context(profile=_with_embargo(LABEL_SPEC.horizon)))
+    gate = gates["G1.embargo_covers_horizon"]
+    assert gate.verdict is Verdict.PASS and gate.value == 0.0  # type: ignore[attr-defined]
 
 
 def test_every_threshold_is_read_from_the_profile(
