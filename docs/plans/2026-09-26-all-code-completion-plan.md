@@ -769,6 +769,12 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   tests/apps/test_live_backend_smoke.py -s` → `3 passed in 2.55s`（11 个 `live-smoke: ok` 步骤，三个服务器）；负对照：把期望的 502 detail 临时改错 →
   `1 failed`（`ERR_ASSERTION`），恢复后通过。
 - 仍未证明：真实浏览器（像素、effect、交互）；人工浏览器验收仍 open；生产 ASGI 服务器未选定。
+- 冻结 HEAD `dfa432b87ccd0dd7a855fb8da395008b4258e4b1`（含 B57～B60，工作树干净、本地 = 远端）的全量非 PostgreSQL 门禁（完整日志 `~/hlens-gate-logs/dfa432b/`）：
+  `START_SHA dfa432b… dirty=0 2026-09-26T23:58:13Z`；`systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest -q -rs -m "not postgres"
+  -p no:cacheprovider` → `7253 passed, 136 deselected, 1 warning in 2946.34s (0:49:06)`，退出码 0，无 skip；`ruff check .` → `All checks passed!`；
+  `ruff format --check .` → `761 files already formatted`；`mypy`（6 GB）→ `Success: no issues found in 595 source files`；`uv lock --check --offline` →
+  `Resolved 52 packages`；Schema 导出 135 份、0 处变化；`openapi.json` 0 处变化；`gen:api` 后 `api.d.ts` 0 处变化；`npm test` → lib 88 / 88、组件 110 / 110；
+  `npm run build` ✓；全部退出码 0；`END_SHA dfa432b… dirty=0 2026-09-27T00:47:29Z`。其后的提交不在该门禁覆盖范围内。
 - 另跑：`pytest -q -rs -m "not postgres" tests/apps tests/test_docs_consistency.py tests/test_architecture_boundaries.py`（6 GB 上限）→
   `386 passed, 1 warning in 8.62s`，退出码 0，无 skip；`ruff check .` → `All checks passed!`；`ruff format --check .` → `761 files already formatted`；
   `npm test` → lib 88 / 88、组件 110 / 110（`src/` 未改）。

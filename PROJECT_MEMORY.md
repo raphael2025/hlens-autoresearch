@@ -160,7 +160,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 全代码分支（2026-09-27）：`wip/all-code-completion` 冻结 HEAD `1551b30` 全量非 PostgreSQL 门禁 7244 passed / 136 deselected（B1～B56，契约 2.2.0，未验收；完成计划 B57）；更早 `3be497b` 7031 passed；此前保留恢复点 `564c87c`；ADR-0052 独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`（未并入 Phase 1 候选 / `main`）
+- 全代码分支（2026-09-27）：`wip/all-code-completion` 冻结 HEAD `dfa432b` 全量非 PostgreSQL 门禁 7253 passed / 136 deselected（B1～B60，契约 2.2.0，未验收；完成计划 B60）；此前 `1551b30` 7244 passed（B57）；更早 `3be497b` 7031 passed；此前保留恢复点 `564c87c`；ADR-0052 独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`（未并入 Phase 1 候选 / `main`）
 - Date：2026-09-25（Phase 1 正式恢复点；全代码分支见上一条）
 - Stable recovery point：Phase 1 D3D-R1 修复提交 `c06b9fa`（Codex 已独立复核；随 D3D 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
