@@ -27,12 +27,12 @@ durable loop 以 `audit.jsonl` 记录 round，以 `memory.jsonl` checkpoint 记�
 
 一次 admission 的持久顺序固定为：
 
-1. 在 `plan_admission.jsonl` 追加并 fsync `PREPARE`。该记录包括 transaction id、round 身份、完整规范化 typed-plan 与 plan hash、compiler / operator / provider 精确身份与内容 hash、解析输入和 hash、lowered outputs / ExperimentSpec 与 hash、确定性排序的全量 Hypothesis payload / hash、TrialLedger 当前基线位置，以及预期的 `register_batch` payload / hash。
+1. 在已有 v4 journal header 的 `plan_admission.jsonl` 追加并 fsync `PREPARE`。该记录包括 transaction id、round 身份、完整规范化 typed-plan 与 plan hash、compiler / operator / provider 精确身份与内容 hash、解析输入和 hash、lowered outputs / ExperimentSpec 与 hash、按本 ADR §3 固定排序的全量 Hypothesis payload / hash、TrialLedger 当前基线位置，以及预期的 `register_batch` payload / hash。
 2. 在 TrialLedger journal 以一个 `register_batch` event 登记该事务的全部新 Hypothesis。单 event 是批次登记的 replay 单位；禁止逐 Hypothesis append。保留 TrialLedger 现有“先校验、event append 成功后才更新内存”的行为。
 3. 在 `plan_admission.jsonl` 追加并 fsync `COMMIT`，引用 PREPARE 的 seq / hash 及精确的 TrialLedger batch event seq / hash。
 4. 在 `memory.jsonl` 追加并 fsync 一个 `plan_admission` checkpoint，绑定 round started entry、transaction / COMMIT 身份，以及此时 `plan_admission.jsonl` 和 TrialLedger 的位置；随后推进 external anchor。
 
-Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 plan 交给执行路径。执行结果仍由 LoopAudit / round checkpoint 记录；不能仅凭 PREPARE、Hypothesis 文本、TrialLedger 登记或 plan hash 开始执行。
+Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 plan 交给执行路径。执行结果仍由 LoopAudit / round checkpoint 记录；不能仅凭 PREPARE、Hypothesis 文本、TrialLedger 登记或 plan hash 开始执行。Composition 还须验证一对一绑定：每个 `ExperimentSpec.repro.hypothesis_ref` 精确指向批次中的一个 `name@version`，其 `dependency_hashes` 中该引用的值等于该 Hypothesis 的 `content_hash`；每个 Hypothesis 恰被一个 ExperimentSpec 引用。Lowered output 必须是对应 ExperimentSpec `repro` 中已列出的直接依赖，identity 与 content hash 均精确匹配；未绑定、重复、额外或不匹配输出一律拒绝。`PlanAdmissionJournal` 只固定已验证调用方提交的证据及哈希，不自行证明这些业务关系或 Provider 真实性。
 
 单写者 loop state lock 必须覆盖 PREPARE、TrialLedger event、COMMIT、memory checkpoint 和 anchor 更新。每个跨文件步骤仍可被进程中断；协议依靠已 fsync 的前置日志和精确重放处理这些中断，不声称多个文件的底层写入同时原子。
 
@@ -50,7 +50,7 @@ Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 pl
 
 ### 3. Identity reuse 与 trial 计数
 
-1. PREPARE 中的 batch 固定包含排序稳定且身份唯一的 Hypothesis 集合。执行用 admission 要求集合中的每个 Hypothesis 在 PREPARE 的 TrialLedger 基线时均为新身份；`name@version` 内容冲突一律在写 PREPARE 前拒绝。
+1. PREPARE 中的 batch 固定包含排序稳定且身份唯一的 Hypothesis 集合。规范顺序为 `(family_id, name, version, content_hash)` 字典序；writer 必须按此排序，replay 必须验证顺序本身，不能把调用方顺序当成规范顺序。执行用 admission 要求集合中的每个 Hypothesis 在 PREPARE 的 TrialLedger 基线时均为新身份；`name@version` 内容冲突一律在写 PREPARE 前拒绝。
 2. 若身份已登记且内容完全相同，现有 `register_batch` 将其视为幂等重复，不追加 entry，也不增加 trial count。该结果不能当作一个新 trial，更不能再次执行同一 admission。Typed-plan 的正常恢复必须通过原 transaction 的 PREPARE / batch event / COMMIT 对账，而不是把它当新批次重新登记。
 3. 对已登记 Hypothesis 的新评估必须有显式且唯一的 attempt identity，并作为一项新 trial 预登记。当前 `register_batch` event 不承载 re-evaluation attempt；在另一个明确决议与单 event replay 格式支持它之前，含 identity reuse / reevaluation 的 typed-plan admission 必须拒绝，不得以幂等重复冒充新 trial。
 4. 每个首次执行的派生 experiment 恰有一个此前未登记的 trial。执行重试不得复用原 trial；必须走未来批准的显式新 attempt 机制。失败 trial 不删除、不回滚、不从多重比较计数中排除。
@@ -81,7 +81,7 @@ Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 pl
 
 ### 6. Durable state version 与旧目录兼容
 
-新增 journal head 会改变 `memory.jsonl` checkpoint 形状，因此新增持久格式采用 `STATE_VERSION = 4`。不得原地改写、回填、删除或自动迁移现有 v3 state directory，也不得把 v3 checkpoint 伪装成 v4。
+新增 journal head 会改变 `memory.jsonl` checkpoint 形状，因此新增持久格式采用 `STATE_VERSION = 4`。每个 v4 `plan_admission.jsonl` 的第一条记录必须且只能是 `plan_admission_header`，payload 精确为 `{"schema_version": "1.0.0", "loop_id": <header 中的 loop_id>, "state_version": 4}`；后续只允许 PREPARE / COMMIT。header 必须与 v4 memory header 的 loop id / state version 相符，缺失、重复或不符均 fail closed。不得原地改写、回填、删除或自动迁移现有 v3 state directory，也不得把 v3 checkpoint 伪装成 v4。
 
 实现必须保留明确的版本分支：已有 v3 目录可继续按其原 v3 形状执行不含 typed-plan admission 的既有 loop 行为，不能写 v4 专属 checkpoint 字段；v3 state directory 上一律禁止 typed-plan admission。启用 admission 的 loop 必须使用以 v4 header 创建的新 state directory / loop identity。未知版本、v3 目录中出现 v4 专属日志或 checkpoint、或 v4 目录缺少必需 plan journal header 时 fail closed。迁移工具若未来需要，另立决议；本 ADR 不批准迁移或删除。
 
@@ -122,6 +122,8 @@ Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 pl
 4. `MemoryCheckpoint` 对 `plan_admission` line 的顺序验证、跨 journal positions、anchor 同步和 v3 / v4 双格式 opener 的兼容细节。
 5. plan lowering / batch 是否将每个 Hypothesis 映射为恰好一个新 trial，及拒绝复用 identity 的审计编码。不得在计数含糊时启用执行。
 6. 计划拒绝、PREPARE 写入前错误和执行失败分别由哪个持久记录承载；须与 ADR-0068 §3 的拒绝审计要求一致，但不得把异常 / 不存在的 outcome 伪装成可恢复结果。
+
+上述前置条件按能力边界分批关闭：durable v4 可实现 header、日志位置、round identity 与精确恢复协调，但它本身不能把 Evidence `identity/value` 当作 compiler / provider 真实性证明。只有后续 composition 在写 PREPARE 前验证 registry / Provider / lowering 身份、应用本 ADR §1 的 output → ExperimentSpec → 新 Hypothesis 一对一绑定，并为拒绝结果定义持久审计落点后，才允许接入任何 plan producer 或执行准入。当前 typed-plan 与六类 operator 仍 non-runnable；仅完成 v4 recovery 不改变此状态。
 
 若实现需要修改 `core/`、冻结契约、Schema、Constitution、Profile 或 D-LIST 决策，必须另行提交相应 ADR / 明确授权，不能由本 ADR 推出。
 
