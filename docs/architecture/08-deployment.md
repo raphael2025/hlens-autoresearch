@@ -30,7 +30,7 @@ flowchart LR
 | Stage 1 | Phase 0 – 1 | Python 版本决定（D-06）、Git 初始化（D-07） |
 | Stage 2 | Phase 1 – 2 | Docker 可用（当前**未安装**，需用户授权安装） |
 | Stage 3 | Phase 4+ | Stage 2 |
-| Stage 4 | Phase 13+ | 生产需求明确 |
+| Stage 4 | Phase 13 之外的未来生产部署阶段 | 生产需求明确；当前 Phase 13 仅做模拟 / 纸面执行，不代表具备实盘或生产部署能力 |
 
 ## 3. Kubernetes-ready 约束（从第一天起遵守）
 
