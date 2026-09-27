@@ -751,18 +751,36 @@ class PyIcebergCatalogAdapter:
     def _replay(
         self, name: str, iceberg: IcebergTable, request: CommitRequest
     ) -> CommitResult | None:
-        """Return the first commit of ``request.batch_id`` on the main branch, if any."""
-        matches = [
-            snapshot
-            for snapshot in ancestors_of(iceberg.current_snapshot(), iceberg.metadata)
-            if snapshot.summary is not None
-            and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID) == request.batch_id
-        ]
-        if not matches:
+        """Return the first commit of ``request.batch_id`` on the main branch, if any.
+
+        Iceberg ancestry must be a finite chain. Bound the iterator by the number of snapshots
+        in this metadata version (plus a possible external starting snapshot) so corrupt parent
+        cycles fail closed instead of hanging the idempotent replay path. The guard uses
+        constant extra memory and accepts every valid ancestry.
+        """
+        snapshots = iceberg.metadata.snapshots
+        max_ancestors = len(snapshots) + 1
+        first_match: Snapshot | None = None
+        match_count = 0
+        for index, snapshot in enumerate(
+            ancestors_of(iceberg.current_snapshot(), iceberg.metadata)
+        ):
+            if index >= max_ancestors:
+                raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
+            if (
+                snapshot.summary is not None
+                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID)
+                == request.batch_id
+            ):
+                if first_match is None:
+                    first_match = snapshot
+                match_count += 1
+        if match_count == 0:
             return None
-        if len(matches) > 1:
+        if match_count > 1:
             raise CatalogIntegrityError(f"batch {request.batch_id} was committed twice to {name}")
-        info = self._snapshot_info(name, matches[0])
+        assert first_match is not None
+        info = self._snapshot_info(name, first_match)
         if (
             info.batch_fingerprint != request.batch_fingerprint
             or info.added_rows != request.row_count
