@@ -23,7 +23,7 @@ durable loop 以 `audit.jsonl` 记录 round，以 `memory.jsonl` checkpoint 记�
 
 ### 1. Admission 顺序与执行门
 
-每个 typed-plan admission 必须在对应 round 的 `LoopAuditLog.begin_round` 已持久追加并 fsync 后进行。Admission 记录绑定 `loop_id`、round index 及该 round 的持久 started audit entry 身份。Round 未开始、已有 open round 或 loop 已处于 `recovery_required` 时，不得开始 admission。
+每个 typed-plan admission 必须在且仅在其对应 round 的 `LoopAuditLog.begin_round` 已持久追加并 fsync 后进行。Admission 记录绑定 `loop_id`、round index 及该 round 的持久 started audit entry 身份。只有 audit 中存在**唯一、匹配当前 admission round 且已持久 begin** 的 open round 时才可 admission；round 未开始、open round 缺失 / 多个 / 身份不匹配，或 loop 已处于 `recovery_required` 时一律拒绝。
 
 一次 admission 的持久顺序固定为：
 
@@ -61,7 +61,7 @@ Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 pl
 
 | 重开时证据 | 允许动作 |
 |---|---|
-| 无 PREPARE，也无对应 ledger event / checkpoint | 无 admission 需要恢复；继续常规验证 |
+| 无 PREPARE，且没有任何未解释的 `register_batch` 尾记录或 plan-admission checkpoint | 无 admission 需要恢复；继续常规验证。任何孤儿 batch event、孤儿 plan checkpoint，或无法由其他已提交 PREPARE 精确解释的尾记录均 fail closed |
 | 有完整 PREPARE，无 COMMIT；TrialLedger 仍精确位于 PREPARE 的基线 seq / hash | 重新校验 PREPARE 中冻结的 payload，追加原 batch 的唯一 `register_batch` event，再追加 COMMIT 与 admission checkpoint |
 | 有完整 PREPARE，无 COMMIT；TrialLedger 紧接基线已有一个 event，且 type、完整 payload、seq、prev_hash、event hash 与 PREPARE 精确匹配 | 不再登记；追加 COMMIT 与 admission checkpoint |
 | 有 PREPARE 与 COMMIT，ledger event 精确匹配，但 admission checkpoint 缺失且所有可解释文件尾部都仅对应该事务 | 补写 admission checkpoint，并按已验证 head 更新 anchor |
