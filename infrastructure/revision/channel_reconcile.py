@@ -637,7 +637,13 @@ class ChannelReconciler:
             )
         committed: dict[str, Mapping[str, Any]] = {}
         snapshot_id = head
+        seen: set[str] = set()
         while snapshot_id is not None:
+            if snapshot_id in seen:
+                raise CatalogIntegrityError(
+                    f"{EVIDENCE_TABLE} has a cycle in snapshot ancestry at {snapshot_id}"
+                )
+            seen.add(snapshot_id)
             snapshot = self._adapter.get_snapshot(EVIDENCE_TABLE, snapshot_id)
             parent = snapshot.parent_snapshot_id
             owner = None

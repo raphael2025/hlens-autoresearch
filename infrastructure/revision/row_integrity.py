@@ -362,7 +362,13 @@ def history_from(
         yield from adapter.history(table, snapshot_id)
         return
     snapshot: SnapshotInfo | None = adapter.get_snapshot(table, snapshot_id)
+    seen: set[str] = set()
     while snapshot is not None:
+        if snapshot.snapshot_id in seen:
+            raise CatalogIntegrityError(
+                f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
+            )
+        seen.add(snapshot.snapshot_id)
         yield snapshot
         parent = snapshot.parent_snapshot_id
         snapshot = None if parent is None else adapter.get_snapshot(table, parent)

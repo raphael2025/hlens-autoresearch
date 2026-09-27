@@ -759,7 +759,13 @@ class RawRevisionStore:
         if info is None:  # pragma: no cover - the archive row was just read from this table
             raise TableNotFound(f"table {table} does not exist")
         snapshot = info.current_snapshot
+        seen: set[str] = set()
         while snapshot is not None:
+            if snapshot.snapshot_id in seen:
+                raise CatalogIntegrityError(
+                    f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
+                )
+            seen.add(snapshot.snapshot_id)
             if snapshot.batch_id == batch_id:
                 return snapshot.snapshot_id
             parent = snapshot.parent_snapshot_id
