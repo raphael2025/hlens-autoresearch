@@ -207,6 +207,20 @@ def _revalidated[M: (TableDefinition, CommitRequest)](model: type[M], value: obj
     return model.model_validate_json(value.model_dump_json())
 
 
+def _listed_position(snapshots: Sequence[Snapshot], snapshot_id: object) -> int | None:
+    """Position of the first listed snapshot with this id, resolved as ``get_snapshot`` does.
+
+    A plain scan (``TableMetadata.snapshot_by_id`` semantics) with no index, so a walk over
+    the loaded metadata needs no memory that grows with the history.
+    """
+    if not (isinstance(snapshot_id, str) and _SNAPSHOT_ID_RE.fullmatch(snapshot_id)):
+        return None
+    wanted = int(snapshot_id)
+    return next(
+        (index for index, listed in enumerate(snapshots) if listed.snapshot_id == wanted), None
+    )
+
+
 class PyIcebergCatalogAdapter:
     """``CatalogAdapter[pyarrow.Table]`` over a PyIceberg ``Catalog``."""
 
@@ -311,37 +325,57 @@ class PyIcebergCatalogAdapter:
         first listed wins, as in ``TableMetadata.snapshot_by_id``), then converted by
         ``_snapshot_info`` (a snapshot naming itself as parent stays ``CatalogIntegrityError``),
         then yielded. A dangling parent is ``SnapshotNotFound`` for that parent id. Unlike that
-        walk, a multi-snapshot parent cycle cannot loop forever: an ancestry visits each listed
-        id at most once, so one more step is ``CatalogIntegrityError``.
+        walk, a multi-snapshot parent cycle cannot loop forever: a second pointer runs ahead at
+        double speed (Floyd), and once it meets the walk the cycle is measured, so every
+        snapshot on the ancestry is yielded once and the step that would repeat one is
+        ``CatalogIntegrityError`` instead.
 
-        Memory: the loaded metadata (PyIceberg keeps **every** snapshot of the table in
-        ``metadata.snapshots``) and an id → position index of plain ints stay referenced until
-        the iterator is exhausted or closed; both grow with the table's history.
+        Memory: no index or visited set; each id is found by a linear scan of the loaded
+        metadata (``O(H)`` time per lookup, three lookups per step). The loaded metadata itself
+        (PyIceberg keeps **every** snapshot of the table in ``metadata.snapshots``) stays
+        referenced until the iterator is exhausted or closed.
         """
         name = validate_table_name(table)
         with _backend("history"):
             iceberg = self._require(name)
             self._verified(name, iceberg)
         snapshots = iceberg.metadata.snapshots
-        first: dict[int, int] = {}
-        for index, listed in enumerate(snapshots):
-            first.setdefault(listed.snapshot_id, index)
+
+        def parent_of(position: int | None) -> int | None:
+            # The walk's next position, read from the raw snapshot so it never raises.
+            if position is None:
+                return None
+            parent = snapshots[position].parent_snapshot_id
+            return None if parent is None else _listed_position(snapshots, str(parent))
+
+        start = _listed_position(snapshots, snapshot_id)
+        ahead = start  # at position 2 * walked while no cycle is known
+        limit: int | None = None  # distinct snapshots on a cyclic ancestry, once measured
         wanted: str | None = snapshot_id
         walked = 0
         while wanted is not None:
-            position = (
-                first.get(int(wanted))
-                if isinstance(wanted, str) and _SNAPSHOT_ID_RE.fullmatch(wanted)
-                else None
-            )
+            position = _listed_position(snapshots, wanted)
             if position is None:
                 raise SnapshotNotFound(f"table {name} has no snapshot {wanted!r}")
-            if walked == len(first):
+            if limit is None and walked and position == ahead:
+                # Met at a multiple of the cycle length: find where it starts, then its length.
+                behind: int | None = start
+                lead: int | None = position
+                entry = 0
+                while behind != lead:
+                    behind, lead, entry = parent_of(behind), parent_of(lead), entry + 1
+                lead, length = parent_of(behind), 1
+                while lead != behind:
+                    lead, length = parent_of(lead), length + 1
+                limit = entry + length
+            if walked == limit:
                 raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
             info = self._snapshot_info(name, snapshots[position])
             yield info
             walked += 1
             wanted = info.parent_snapshot_id
+            if limit is None:
+                ahead = parent_of(parent_of(ahead))
 
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         name = validate_table_name(request.table)
