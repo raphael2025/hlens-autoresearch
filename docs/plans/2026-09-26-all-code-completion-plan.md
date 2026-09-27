@@ -1127,6 +1127,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 保留远端 `main`、开放 PR #10 的 `fix/e1-cap1`、以及带独有审计文档 / API 零结果用例的 `wip/phase-0.5-knowledge`。删除后的实时远端 heads 为这三条；本地归档 refs 保存已删除分支对象，未改写任何 commit。
 - 本次只做 Git 引用删除，不运行测试 / build / probe；本地 `main` 未推送，状态同步提交后 ahead 66；本地 4 个分支、9 个 worktree、远端 3 个分支。E1 PR 和 Phase 1 均未验收。
 
+### 10.45 Revision snapshot 父链环保护（2026-09-28；已并入本地 main）
+
+- 只读审查发现三个 Revision 路径在损坏的 snapshot parent 链存在环且没有提前命中返回条件时可能无限遍历：通用 catalog fallback `history_from()`、归档重放 bookkeeping `_snapshot_of_batch()`、Channel Reconciler 的 evidence provenance 校验。
+- 三处均记录已访问的 snapshot ID；重复时抛出 `CatalogIntegrityError` 并停止。PyIceberg adapter 和 pinned view 仍使用既有的一次元数据加载历史实现；fallback 只为不实现 `SnapshotHistory` 的 catalog 保留 visited 集合。正常无环遍历结果不变。代码复核完成；遵守统一验收安排，本项未运行测试、build、probe 或静态检查。
+- 该变更不触及 `core/`、契约、Schema、ADR 或冻结语义。代码与状态同步进入本地 `main` 后，预计比 `origin/main@44fe9a2` 超前 68 个提交；不推送。E1-CAP-1 及 Phase 1 验收状态不变。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。

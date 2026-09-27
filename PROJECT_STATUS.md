@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已授权 Codex 统筹本地分支、代码及 Claude / Cursor，并决定实现细节；主线已整合 E1 RSS probe 与可选分阶段诊断、知识种子版本固定、Phase 11 worker journal 并发保护、P7 只读直接引用校验器和 Catalog 重放历史环保护。全模块盘点确认项目不是骨架；P7 六类组合算子仍不可执行，E1-CAP-1 仍阻断。测试、build、probe 与验收均按当前安排暂缓；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
+| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已授权 Codex 统筹本地分支、代码及 Claude / Cursor，并决定实现细节；主线已整合 E1 RSS probe 与可选分阶段诊断、知识种子版本固定、Phase 11 worker journal 并发保护、P7 只读直接引用校验器和 Catalog / Revision snapshot 历史环保护。全模块盘点确认项目不是骨架；P7 六类组合算子仍不可执行，E1-CAP-1 仍阻断。测试、build、probe 与验收均按当前安排暂缓；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本次状态同步提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 66 个提交，未推送；PR #1～#9 已合入，PR #10（E1 候选）仍开放。分支已从本轮开始时 12 个本地分支 / 18 个 worktree 收敛为 4 个本地分支 / 9 个 worktree；4 条已归档且无开放 PR 的冗余远端分支已删除，保留 `main`、开放 PR 的 `fix/e1-cap1` 和含独有 P0.5 审计材料的远端分支。主线含 E1 RSS probe、可选分阶段诊断和 Catalog / E2 snapshot 重放环保护；probe 与诊断均尚未运行。候选 `fix/e1-cap1@a75278e` 的 500k `resume` / `replay` 跨规模 RSS 增长为 59.9 / 63.9 MiB，超过 32 MiB，该结果不代表 main。E1-CAP-1 继续阻断；Phase 11 journal 修复、P0.5 seed schema 修正和 P7 直接引用校验器尚未验收；Profile 数值未冻结；当前执行服务仍仅支持模拟交易 |
+| 总体状态 | 🔄 本次状态同步提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 68 个提交，未推送；PR #1～#9 已合入，PR #10（E1 候选）仍开放。分支已从本轮开始时 12 个本地分支 / 18 个 worktree 收敛为 4 个本地分支 / 9 个 worktree；4 条已归档且无开放 PR 的冗余远端分支已删除，保留 `main`、开放 PR 的 `fix/e1-cap1` 和含独有 P0.5 审计材料的远端分支。主线含 E1 RSS probe、可选分阶段诊断和 Catalog / Revision snapshot 历史环保护；probe 与诊断均尚未运行。候选 `fix/e1-cap1@a75278e` 的 500k `resume` / `replay` 跨规模 RSS 增长为 59.9 / 63.9 MiB，超过 32 MiB，该结果不代表 main。E1-CAP-1 继续阻断；Phase 11 journal 修复、P0.5 seed schema 修正和 P7 直接引用校验器尚未验收；Profile 数值未冻结；当前执行服务仍仅支持模拟交易 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验基础，算子语义、Provider lowering、持久审计和 TrialLedger 原子登记仍需解决后才可启用算子；E1 容量阻断仍待处理。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-28 |
 
@@ -318,7 +318,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. 状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 66 个提交、尚未推送。当前有 4 个本地分支、9 个 worktree、3 个远端分支引用；开放 E1 PR、研究规格 Claude 会话、根目录文件及 E1 失败证据均已保留。
+1. 状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 68 个提交、尚未推送。当前有 4 个本地分支、9 个 worktree、3 个远端分支引用；开放 E1 PR、研究规格 Claude 会话、根目录文件及 E1 失败证据均已保留。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. 接续各模块基础逻辑补齐：先收敛已核对分支，再按模块边界推进并同步 ADR / 状态文档。统一测试与 Phase 验收仍按 Raphael 指示暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
 
