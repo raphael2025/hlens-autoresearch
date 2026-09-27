@@ -71,10 +71,11 @@
 | [0064](0064-g4-capacity-volume-source-consistency.md) | G4 容量检查的成交量来源一致性：数据集路径上 `bar_volume` 与已执行 `PriceBar.volume` 冲突即 INCONCLUSIVE（`bar_volume_source_mismatch`） | Accepted（2026-09-27；Codex 选 B66 选项 A 并接受措辞）；已实施（B66），CODE_COMPLETE / DEBUG_PENDING |
 | [0065](0065-g4-capacity-carry-over-unfilled.md) | G4 容量检查遇到结转未成交余量时失败关闭（数据集路径，`carry_over_unfilled`） | Accepted（2026-09-27；Codex 决定 B67 方案 A）；已实施（B67），CODE_COMPLETE / DEBUG_PENDING；不是 Phase 4 / 5 验收 |
 | [0066](0066-explicit-event-table-operator.md) | Event 表独立、显式的操作命令；不接入 Phase 1 或自动 provisioning | Accepted（2026-09-27；Codex 依 Raphael 对模块完成与技术决策的明确授权决定）；命令已随 PR #6 合并，定向检查通过；真实 catalog 建表仍须单独授权 |
-| [0067](0067-p11-degradation-evidence-operator.md) | Phase 11 显式劣化检查的 evidence / Profile freeze 绑定 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；协调 worktree 已实现、未测试、未并入本地 `main`，Phase 11 未验收 |
+| [0067](0067-p11-degradation-evidence-operator.md) | Phase 11 显式劣化检查的 evidence / Profile freeze 绑定 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；实现已进入本地 `main@498250a`、未统一验收，Phase 11 未验收 |
 | [0068](0068-phase7-typed-operator-plans.md) | Phase 7 类型化组合算子计划与执行边界 | Proposed（2026-09-27；六类 DSL 继续 fail closed，逐项执行语义与 Provider lowering 尚未批准） |
 | [0069](0069-p12-combine-fail-closed.md) | Phase 12 `combine` 对风险与适用范围冲突失败关闭 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；已实现但未测试，Phase 12 未验收 |
-| [0070](0070-p7-partial-experiment-fail-stop.md) | P7 experiment 批次失败后停止续跑并要求人工审查 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；LoopRecord 字节不变，已在协调 worktree 实现、未测试，Phase 7 / 11 未验收 |
+| [0070](0070-p7-partial-experiment-fail-stop.md) | P7 experiment 批次失败后停止续跑并要求人工审查 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；LoopRecord 字节不变，已进入本地 `main@498250a`、未统一验收，Phase 7 / 11 未验收 |
+| [0071](0071-p7-failed-round-review-packet.md) | P7 failed experiment round 的只读人工复核摘要 | Accepted（2026-09-27；Codex 依 Raphael 全权授权，经 Claude / Cursor / Codex 只读复核）；仅研究侧内存投影，不改持久格式、API 或 Schema；Ruff / format / mypy 通过，未跑测试 / build |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

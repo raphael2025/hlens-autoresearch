@@ -8,7 +8,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 `ingest` 是可插拔的**轮次数据源**：合成市场（`IngestStage`）或经验证的 Research Dataset manifest（`DatasetIngestStage`）；
 其后各阶段只经 `segment.RoundData` 协议读本轮数据，两种来源共用同一组合（`compose.compose_loop`）。
 
-**批次中途失败**（[ADR-0070](../../docs/adr/0070-p7-partial-experiment-fail-stop.md)）：如果最后持久化 round 的 `experiment` stage 为 `FAILED`，worker 暴露 `recovery_required` 并阻止同一 audit 自动续跑，避免重复已记账的 trial。该边界不补齐缺失 outcome；须人工核查 audit、TrialLedger 和生命周期转移。完整 per-trial 自动恢复与人工修复工具尚未实现。
+**批次中途失败**（[ADR-0070](../../docs/adr/0070-p7-partial-experiment-fail-stop.md)）：如果最后持久化 round 的 `experiment` stage 为 `FAILED`，worker 暴露 `recovery_required` 并阻止同一 audit 自动续跑，避免重复已记账的 trial。`recovery_review.py` 按 [ADR-0071](../../docs/adr/0071-p7-failed-round-review-packet.md) 从当前已打开、持锁的 `DurableState` 投影最后失败轮的 record、checkpoint 与 TrialLedger 原始 journal 区间，供人工核查；它不打开状态目录、不写盘、不恢复或重试。逐 trial outcome、精确失败序号、完整 traceback、audit journal envelope hash 和外部 Provider 状态未持久化，packet 会明确标出这些缺口。完整 per-trial 自动恢复与人工修复工具尚未实现。
 
 **控制台展示**：`research/reports/loop.py` 可将循环轮次写为 `research_loop_round` 报告；只读 API 提供这些报告，Web 的 Research Loop 页面读取并展示轮次状态、阶段问题、预算用量与累计用量图表。页面是报告浏览器，不会触发或控制循环运行（见 [apps/web/README.md](../../apps/web/README.md) 与 [apps/api/README.md](../../apps/api/README.md)）。
 
@@ -23,6 +23,7 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | `dataset_source.py` | `DatasetIngestStage` / `DatasetRound` / `DatasetSegment` / `DatasetCatalog`：每轮从声明的 manifest 读数据；`SealedDatasetPair`（封存 manifest 对，只在开封认领后读取）/ `WithheldSealedWindow`（只扣留声明：只记录哈希与 Profile 封存窗口，从不读取；见下「数据集组合」） |
 | `dataset_compose.py` | `DatasetLoopConfig` + `build_dataset_loop` / `open_dataset_loop` / `dataset_loop_fingerprint`：数据集组合根 |
 | `durable.py` | 一个状态目录承载整个循环（见下）：`open_state`、`MemoryCheckpoint`（每轮一条记忆检查点）、交叉校验、`LoopStateInconsistent`；可选外部锚点 `StateAnchor` / `FileAnchor` / `StateHead` |
+| `recovery_review.py` | `failed_round_review_packet(DurableState)`：只对最后记录的 failed experiment stage 生成纯内存、hash-bound 证据投影；不打开目录、不触发写路径，不等于恢复操作 |
 
 要点：
 

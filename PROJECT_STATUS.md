@@ -11,7 +11,7 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
 | 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main` 已快进吸收协调分支的 P7 typed-plan 非运行解析器、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝逻辑与 E1 history / normalizer / proof-scan 候选。ADR-0068 已接受，六类算子仍不可执行。静态检查已做，未跑测试；Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本地 `main` 已快进纳入协调提交 `498250a`，比 `origin/main` 超前 45 个提交，尚未推送；PR #1～#9 已合入。本轮整合的 P7 / P11 / P12 与 E1 候选已有对应静态检查记录，未跑测试 / build。E1 候选均未证明达到 32 MiB 容量门，PyIceberg metadata 与 API 返回对象仍计入；E1-CAP-1 阻断，其他 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 本地 `main` 已快进纳入协调提交 `498250a`，并含 P7 ADR-0071 只读失败轮复核摘要；比 `origin/main` 超前 46 个提交，尚未推送；PR #1～#9 已合入。本轮 P7 / P11 / P12 与 E1 候选有静态检查记录，未跑测试 / build。E1 候选均未证明达到 32 MiB 容量门，PyIceberg metadata 与 API 返回对象仍计入；E1-CAP-1 阻断，其他 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -51,7 +51,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；Phase 4 未验收 |
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
 | 6 | State × Strategy | 🧱 矩阵计算、全单元预登记与逐单元验证已实现；循环报告接线及回调错误归因已合入本地 `main`，静态检查通过，未跑测试，不代表 Phase 6 验收 |
-| 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源与 ADR-0068 non-runnable typed-plan parser 已实现；六类组合算子继续 fail closed。各算子语义、Provider lowering、执行审计持久化与 TrialLedger 原子登记尚未定义；ADR-0070 已令 experiment stage 失败轮停止并要求人工审查；outcome 自动恢复和人工修复工具仍缺。LLM 内容核验可选，未核验调用不满足完整可复现审计 |
+| 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源与 ADR-0068 non-runnable typed-plan parser 已实现；六类组合算子继续 fail closed。各算子语义、Provider lowering、执行审计持久化与 TrialLedger 原子登记尚未定义；ADR-0070 已令 experiment stage 失败轮停止；ADR-0071 只读复核摘要已进入本地 `main`，Ruff / format / mypy 通过，未跑测试；outcome 自动恢复和人工修复工具仍缺。LLM 内容核验可选，未核验调用不满足完整可复现审计 |
 | 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已合入本地 `main`，gate diff 包含实际与精确阈值（报告 schema 1.1.0）；Python 静态检查和 Web build 通过，未跑测试；fixture / smoke / component 注册留待验收；Phase 8 未验收 |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58），**不要求 Profile 冻结登记**（B62；冻结权威门只在 Promotion，ADR-0062）CODE_COMPLETE / DEBUG_PENDING |
@@ -287,13 +287,10 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | 接受并实现 ADR-0071：P7 failed round 只读复核摘要 | Claude / Cursor / Codex 子代理独立只读审查；纯内存投影 audit、checkpoint 与 ledger journal；Ruff / format / mypy 通过，未跑测试 / build，不代表 Phase 验收 |
 | 2026-09-27 | 主线状态文档同步与冗余协调分支归档 | 更新状态 / 记忆 / 计划；branch/worktree 清理至 11 / 17；只改本地引用，不推送远端 |
 | 2026-09-27 | 同 tip 协调分支已归档清理 | 先存入 `refs/archive/2026-09-27/branches/codex/module-completion-coordination-2026-09-27`，再移除冗余 worktree / branch；本地快照降至 11 个分支、17 个 worktree |
 | 2026-09-27 | 协调分支 `--ff-only` 快进到本地 `main`（`498250a`） | 40 个文件、26 个提交进入本地主线；不推送、不代表 Phase 验收；本地 `main` 比远端超前 44 个提交 |
-| 2026-09-27 | P11-LOCAL-OPERATOR 最小 CLI 入口（ADR-0067 内实施范围） | 仅单次显式本机输入，hash-bound 追加报告；不接 loop / scheduler / 自动 resolver；Ruff / format / mypy 通过，未跑测试 |
-| 2026-09-27 | P12 ADR-0069 实现级只读复核 | `combine` 的冲突拒绝、参数空间、risk policy、标的范围与 lineage 均符合 ADR；未发现需修改代码的具体问题，未跑测试 |
-| 2026-09-27 | Codex / Claude / Cursor 核对 E1-CAP-1 完整进程边界 | 源码分析确认 PyIceberg metadata 随历史增长；本轮未测容量，E1 继续阻断 |
-| 2026-09-27 | E1 source-proof 与 D1 archive lookup 限量（`031f4e8`） | source id 查询最多 2 行；archive metadata 每块最多 257 行；Ruff / format / mypy 通过，未跑测试 / 容量探针，不代表 32 MiB 通过 |
 
 ## 10. 下一阶段进入条件
 
@@ -317,7 +314,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 本地 `main` 已快进吸收协调分支 `498250a`，并提交状态文档同步，比 `origin/main` 超前 45 个提交、尚未推送；整合工作区完成提交。截至本次清理后有 11 个本地分支、17 个 worktree；冗余候选已归档，E1 分支与活动 Claude worktree 保留。
+1. 本地 `main` 已快进吸收协调分支 `498250a`、P7 只读复核摘要和状态文档同步，比 `origin/main` 超前 46 个提交、尚未推送；整合工作区完成提交。截至本次清理后有 11 个本地分支、17 个 worktree；冗余候选已归档，E1 分支与活动 Claude worktree 保留。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. E1-CAP-1 500k resume / replay 仍为 59.9 / 63.9 MiB，超过 32 MiB；本轮没有重跑容量探针。Phase 1 未整体验收、未打 tag。
 

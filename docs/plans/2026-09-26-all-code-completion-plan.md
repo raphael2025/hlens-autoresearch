@@ -1035,6 +1035,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 整合范围为 40 个文件、+3173 / -215 行，包括 P7 non-runnable typed-plan parser、P11 degradation operator / CLI / provenance 页面、P12 `combine` 冲突拒绝、E1 history / normalizer / proof-scan 候选及相关 ADR / 规格 / 复核记录。
 - 各模块仍待调试 / 验收；本次合并不构成 Phase 验收。没有运行测试或 build；沿用已记录的定向静态检查结果。E1-CAP-1 仍未通过 32 MiB 门，Phase 1 仍未验收。随后确认该协调分支与 `main` 完全同 tip，先归档再移除分支和工作区；当前为 11 个本地分支、17 个 worktree，其它活动或含唯一内容的工作区保留。
 
+### 10.31 P7 failed round 的只读复核摘要（2026-09-27；本地 main）
+
+- Codex 依 Raphael 全权授权接受 ADR-0071；Claude、Cursor 与 Codex 子代理只读核查确认范围与 ADR-0070 一致。摘要限定为当前持锁、由 `open_state()` 返回且 fail-stop 的 `DurableState` 纯内存投影；按最后记录的 `round_index` 唯一配对 `round_memory`，使用前后 round checkpoint 的 TrialLedger seq 边界，不把 audit record content hash 冒称 journal envelope hash。
+- 证据只包括记录 payload、匹配 checkpoint journal entry、原始 ledger journal 区间和固定缺口。未持久化的逐 trial outcomes、精确失败序号、完整 traceback、audit envelope hash 与外部 provider 状态明确标为缺失；不推断、不修复、不重试。
+- 实现新增 `research/loop/recovery_review.py` 与该模块 README 说明；不改 worker / durable / schema / API，不新增或运行测试 / build，不代表 Phase 7 / 11 验收。静态检查原样结果：`uv run --offline ruff check research/loop/recovery_review.py` → `All checks passed!`；`uv run --offline ruff format --check research/loop/recovery_review.py` → `1 file already formatted`；`uv run --offline mypy research/loop/recovery_review.py` → `Success: no issues found in 1 source file`；`git diff --check` → exit 0。Cursor 与 Codex 子代理只读审查未发现阻断性实现缺陷；Cursor 提出的 DTO 根对象类型校验已补齐。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
