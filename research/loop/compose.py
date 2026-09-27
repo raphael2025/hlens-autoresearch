@@ -136,7 +136,7 @@ from research.loop.stages import (
     ValidationStage,
 )
 from research.loop.trials import ConditionalPlan
-from research.reports import write_research_loop_rounds
+from research.reports import write_research_loop_rounds, write_state_strategy_matrix
 from research.strategies.pipeline import StrategyCandidate
 from research.validation import RobustnessParams
 
@@ -751,15 +751,30 @@ def _evolution_payload(plan: EvolutionPlan | None) -> dict[str, Any] | None:
 def run_unattended_and_report(
     loop: ResearchLoop, rounds: int, *, reports_root: Path | None = None
 ) -> tuple[LoopRecord, ...]:
-    """``loop.run_unattended(rounds)``, also writing every record when ``reports_root`` is given.
+    """Run rounds and write their loop records and generated P6 matrices when requested.
 
     ``reports_root is None`` (the default) behaves exactly like calling ``run_unattended``
     directly: no filesystem write happens. When set, every ``LoopRecord`` the loop produces is
-    also written to ``<reports_root>/research_loop_round/<record_hash>.json`` (append-only;
-    re-running the same rounds under the same seed is a no-op, see
-    ``research.reports.write_research_loop_round``).
+    written to ``<reports_root>/research_loop_round/<record_hash>.json`` and every complete
+    ``StateStrategyMatrix`` produced by its experiment stages is written to
+    ``<reports_root>/state_strategy_matrix/<matrix_hash>.json``. Both writers are append-only and
+    idempotent for identical content. Matrix reports use their existing ``matrix_hash`` identity;
+    they are an additional sink and do not change any ``LoopRecord`` payload or hash.
     """
+    matrix_starts = (
+        {
+            id(stage): len(stage.matrices)
+            for stage in loop.stages
+            if isinstance(stage, ExperimentStage)
+        }
+        if reports_root is not None
+        else {}
+    )
     records = loop.run_unattended(rounds)
     if reports_root is not None:
+        for stage in loop.stages:
+            if isinstance(stage, ExperimentStage):
+                for matrix in stage.matrices[matrix_starts[id(stage)] :]:
+                    write_state_strategy_matrix(reports_root, matrix)
         write_research_loop_rounds(reports_root, records)
     return records

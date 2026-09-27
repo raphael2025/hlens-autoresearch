@@ -896,3 +896,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | Phase 8～14 / apps | 只读差距审计未发现明确、已批准而缺失的普通模块代码 | 同步 Event 字段、Research Loop / Router / API README 的实际行为，修正文档过时描述 |
 
 PR #6 本批独立分支集成检查：`uv run pytest -q tests/infrastructure/event/test_create_event_tables.py tests/test_docs_consistency.py` → **11 passed in 1.27s**；`git diff --check` → 通过。PR #7 仅同步合并后状态（docs-only），没有改功能代码。没有运行 Phase 验收或真实 catalog 操作；最近一次全量代码门禁仍是 B67 `6d887b7` 的已记录结果，不代表当前主线 `f58e8ec` 上运行过全量门禁。
+
+### 10.11 P6 矩阵报告接入（2026-09-27；独立分支实现，待复核）
+
+只读审计发现 loop 的 `ExperimentStage` 已计算 `StateStrategyMatrix`，但实验摘要只保留 `matrix_hash`；已有 `write_state_strategy_matrix` 与只读 API / 页面没有真实循环的调用接线。补充 `run_unattended_and_report(..., reports_root=...)`：对该次运行产生的完整矩阵调用既有 writer，文件沿用 `state_strategy_matrix/<matrix_hash>.json`；相同内容保持幂等 no-op，内容冲突继续由 append-only writer 拒绝。矩阵只作为独立报告写入，不改变 LoopRecord 的摘要、载荷或 hash。为让研究侧 wrapper 读取刚完成的 ExperimentStage 产物，`ResearchLoop.stages` 提供只读阶段视图；ExperimentStage 在内存侧通道保留本进程已产生的矩阵对象。`reports_root=None` 路径不读取报告阶段、不写文件。实现位置：`apps/worker/loop.py`、`research/loop/trials.py`、`research/loop/compose.py`、本 README。未修改 core/contracts、Phase 1 或 status；未运行 / 新增测试，待后续独立验证。

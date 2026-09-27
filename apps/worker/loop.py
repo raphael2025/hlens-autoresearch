@@ -1003,6 +1003,11 @@ class ResearchLoop:
         return self._audit
 
     @property
+    def stages(self) -> tuple[LoopStage, ...]:
+        """The configured stages, in execution order (read-only)."""
+        return self._stages
+
+    @property
     def guard(self) -> LifecycleGuard:
         return self._guard
 

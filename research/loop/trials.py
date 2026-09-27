@@ -664,6 +664,16 @@ class ExperimentStage:
         self._conditional = conditional
         self._state_spec = state_spec
         self._conditional_trials = 0
+        self._matrices: list[StateStrategyMatrix] = []
+
+    @property
+    def matrices(self) -> tuple[StateStrategyMatrix, ...]:
+        """Every complete State × Strategy matrix produced by this stage in this process.
+
+        This side channel is for the optional report writer. Matrix summaries in loop audit rows
+        remain hash-only, so adding a report sink does not change the LoopRecord identity.
+        """
+        return tuple(self._matrices)
 
     def _cells(self) -> int:
         """Conditional trials one trial can register (0 without a plan)."""
@@ -867,6 +877,7 @@ class ExperimentStage:
                         states,
                     )
                     matrix = replace(matrix, backtest_result_hash=trial.backtest.result_hash)
+                    self._matrices.append(matrix)
                 except SubjectRunError as exc:  # the subject's own code (ADR-0053 §2)
                     cause = exc.__cause__ if exc.__cause__ is not None else exc
                     error, reason, trial, matrix = (

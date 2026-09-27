@@ -61,7 +61,9 @@ written.written  # False = 内容相同的 no-op
 
 Phase 11 循环的接线在 `research/loop/compose.py` 的 `run_unattended_and_report`：
 `reports_root=None`（默认）等价于直接调用 `ResearchLoop.run_unattended`，不落盘；给定路径时，
-每一轮的 `LoopRecord` 都会额外写入该目录。
+每一轮的 `LoopRecord` 和本次运行实际生成的每个完整 P6 `StateStrategyMatrix` 都会写入该目录。
+矩阵仍由 `matrix_hash` 命名并使用本目录现有的 append-only writer；重复写入相同矩阵是 no-op。
+矩阵报告是独立展示产物，不加入 `LoopRecord` 摘要，因此不会改变循环记录内容或哈希。失败试验和未产生矩阵的试验不会生成矩阵报告。
 
 ## 未完成（调试批次）
 
