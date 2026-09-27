@@ -100,6 +100,12 @@
 - Phase 2 状态诊断 payload 升为 1.1.0：`StateResult` 输入记录来源 `result_hash`，裸序列写 `null`；旧 1.0.0 载荷可按原形状 round-trip 并复原旧 id。来源哈希绑定报告声明，不证明 Registry 存在。对应 Web fixture 由正式 writer 重生成。
 - 按授权将上述两项和 ADR-0048 计划澄清合入本地 `main`（`b8bbc83`、`9ac0b9d`、`3743b65`），原三个 task branch 在建立 `refs/archive/2026-09-28/branches/codex/` 后删除。未推送；未跑测试、lint、typecheck、build 或阶段验收，仍待统一验收。
 
+### 10.49 E1 失败 PR 归档与远端分支收敛（2026-09-28）
+
+- 复核确认 PR #10 `fix/e1-cap1@c3868dc` 仍与 main 冲突，500k `resume` / `replay` RSS 增长为 59.9 / 63.9 MiB，超过 32 MiB 门槛；主线已含其若干安全的等价扫描 / 环保护，未发现可安全摘取的剩余容量实现。
+- 按 Raphael 全权授权，先将 tip 保存到 `refs/archive/2026-09-28/branches/remote/fix/e1-cap1`，关闭 PR #10，并删除远端及本地 `fix/e1-cap1` branch。原干净 worktree 改为 detached HEAD 保留源代码、失败探针与 `.venv`，不销毁恢复材料。
+- 远端现仅有 `main`；本地 3 个 branch / 9 个 worktree。`phase/1` 虽无 main 未含提交，但仍是含未跟踪用户资料且由 Cursor 使用的根工作区；`docs/research-spec-completion` 有活动 Claude 会话及一组尚未择取的测试，二者未清理。未推送 main；未运行测试或容量探针。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：
