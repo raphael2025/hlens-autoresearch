@@ -47,7 +47,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；因子、特征库有带来源的 UNVERIFIED 文档草稿，未登记为 KnowledgeItem；种子尚无经具名人工审阅的标签 / 资产；**Phase 0.5 未验收** |
 | 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；E1-CAP-1 容量边界为阻断项，结构修复在 `fix/e1-cap1`（`a75278e`），但 10k/100k/500k 实测、内存记录和返修后定向测试仍缺，尚未验收；后续 Phase 1 验收项也未全部完成 |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
-| 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已在集成分支实现、待合并；生产 catalog 尚未建表；Phase 3 未验收 |
+| 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；Phase 4 未验收 |
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
 | 6 | State × Strategy | 🧱 框架已实现（ADR-0039）；矩阵条件假设全单元预登记、可选接入循环、逐单元验证（B27）CODE_COMPLETE / DEBUG_PENDING |
@@ -101,7 +101,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 - ✅ 框架整合：B1～B67 与 ADR-0052 / 0055 等代码已通过 PR #2 并入 `main`；PR #3～#5 同步了状态和文档。代码仍是 `CODE_COMPLETE / DEBUG_PENDING`，没有把全量门禁或主线合并当作 Phase 验收。
 - 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 bounded-memory 修复由活跃 Claude 会话在 `fix/e1-cap1` 上处理。分支尚未进入 main，worktree 有未提交的 review 文档；Codex 不并行修改 Canonical / revision 代码，待该会话交付后独立复核。
-- 🔨 并行代码 / 内容收口：Phase 0.5 因子与特征库草稿、事件表字段说明、Loop / Router / API README 纠偏和 Phase 3 Event 表独立操作命令已汇入 Codex 集成分支，待复核与 PR；不构成阶段验收。
+- ✅ 模块收口批次：Phase 0.5 因子 / 特征 / Event 草稿、Event 字段说明、Loop / Router / API README 与 Phase 3 Event 表操作命令均已通过 PR #6 合并到 `main`（`4875e92`）；不构成阶段验收。
 - 🔎 Phase 8～14 / apps 的只读差距审计未发现明确的普通代码缺口；当前追项是模块文档一致性和真实运行证据，不为填充进度而新造模块。
 
 ## 5. 下一步
@@ -264,7 +264,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 | 日期 | 变化 | 影响 |
 |---|---|---|
 | 2026-09-27 | ADR-0066：批准独立、显式的 Event 表操作命令，以补齐 Phase 3 的可重复运维入口 | 命令默认无 catalog 副作用；`--apply` 只创建 / 校验 `event.events`；不接入 Phase 1 或启动流程；真实 catalog 建表未授权、未执行 |
-| 2026-09-27 | Phase 0.5 / 3 / 10 / 11 收口批次进入审查分支 | 增补未验证因子 / 特征 / Event 草稿，更新 Event schema 与 Loop / Router / API README，并实现 Event 表显式操作命令；待 PR，非阶段验收 |
+| 2026-09-27 | Phase 0.5 / 3 / 10 / 11 收口批次通过 PR #6 合并到 `main`（`4875e92`） | 增补未验证因子 / 特征 / Event 草稿，更新 Event schema 与 Loop / Router / API README，并实现 Event 表显式操作命令；11 项定向检查通过，非阶段验收 |
 | 2026-09-27 | 四项模块细节修复已通过 PR #2 并入 `main` | 独立复核与全量互补分片门禁见历史记录；不代表 Phase 验收 |
 | 2026-09-27 | Phase 1 验收记录并入：D3E 已接受、D4 已关闭；E1-CAP-1 容量实测仍缺 | E1-CAP-1 仍阻断；记录见 `docs/reviews/2026-09-27-d3e-acceptance.md` 与 `phase1-review-guide.md` |
 | 2026-09-27 | B67（ADR-0065）：数据集路径上 G4 容量检查遇正结转余量时返回不确定 `carry_over_unfilled` | B1～B67 全量非 PostgreSQL 门禁 7294 passed、2 个预期 Uvicorn skip、136 deselected；代码完整不代表 Phase 验收 |
@@ -291,7 +291,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 当前无需 Raphael 进行阶段验收；先完成 Codex 审查分支的复核与合并，再按 roadmap 安排剩余开发与最终验收。
+1. 主线 `main == origin/main == 4875e92`，工作区干净；PR #6 收口项已合并。当前无需 Raphael 做阶段验收或其他操作；待分支审计结果后，仅汇报仍可安全清理的内容。
 2. 全代码批次已有测试记录，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. `main` / `origin/main` 已同步；四项模块打磨修复已通过 PR #2 合并；全框架、决策记录、Phase 0.5 种子与 Phase 1 D3E / D4 记录已整合；E1-CAP-1 仍阻断，未打 tag。
 
@@ -299,7 +299,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > Claude 下一步可以执行什么？
 
-1. Phase 0.5 / 3 / 10 / 11 的代码与文档收口正在 Codex 集成分支复核；后续按不重叠模块分配，任何跨模块契约或架构变化先停在决策边界。
+1. PR #6 已将 Phase 0.5 / 3 / 10 / 11 的代码与文档收口并入主线；后续按不重叠模块分配，任何跨模块契约或架构变化先停在决策边界。
 2. Claude 当前首要开发项仍是 `fix/e1-cap1`：补跑固定 M=256（或更低）、N=10k/100k/500k 容量探针和返修后定向测试，提交后交 Codex 独立复核。
 3. P12 循环内替换提案有意暂缓（P12-LOOP，见 §6）；后代不得复用密封窗口。其余 B44～B52 审计修复已完成，详见完成计划 §10.7 / §10.8。
 4. 不得：实盘、凭据、下单、猜测 Profile 数值、将代码整合描述为 Phase 验收或 force push；开发分支经复核后走 PR 合并，推送与 tag 分别记录。
