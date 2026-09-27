@@ -14,7 +14,7 @@
 
 - 本计划启动时的主线基线：`10b89e8`（2026-09-27）。PR #6 已并入 Phase 0.5 / 3 / 10 / 11 收口项（合并基线 `4875e92`）；PR #7 同步合并后状态；PR #8 记录分支清理和测试 fixture 修正。当前 `main == origin/main`。全栈 B1～B67 和本批功能均不代表各 Phase 验收。
 - 主线目前不是空骨架。Phase 0.5、Phase 2～14、API / Worker / Web 均有核心模型、Provider / 执行器、持久化或页面实现；Phase 8～14 审计未发现可明确追加的普通代码缺口。后续优先按证据补齐具体缺口，不再新增占位模块。
-- Phase 1 当前状态：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 仍是阻断。bounded-memory 实现位于活跃分支 `fix/e1-cap1`，由 Claude 进程持有且工作区有文档改动；10k/100k/500k 探针与 500k replay 正在运行，结果、内存记录和返修后定向测试待产出 / 核对。不得并行修改 `infrastructure/canonical/` 或 `infrastructure/revision/`，待该会话交付后由 Codex 独立复核与集成。
+- Phase 1 当前状态：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 仍阻断，已有 500k `resume` / `replay` RSS 增长 59.9 / 63.9 MiB 的失败结果（门槛 32 MiB）。只读代码调查发现待核实的主要增长来源是 PyIceberg table metadata 中随提交数增长的 snapshot 列表；normalizer 侧已是固定计数 / 流式遍历。调查记录见 `docs/reviews/2026-09-27-e1-resume-replay-memory-investigation.md`，未重新运行探针，也未找到可安全局部修复。不得并行修改 `infrastructure/canonical/` 或 `infrastructure/revision/`；需先设计并实现有界历史核验，再执行容量验收。
 - 计划启动时（2026-09-27）的分支盘点快照：41 个本地分支、139 个 worktree；当时仅已合并且无 worktree 的冗余 `hold/adr-0054-0057-at-2.0.0` 已存入 `refs/archive/2026-09-27/` 后删除。其余分支仍由 worktree 检出或含未合并 E1 / P0.5 / Phase 7 / 文档材料；7 个 worktree-agent 由活跃 Claude 进程锁定，3 个检出目录有未提交改动。该数字是历史启动快照，不代表当前数量。
 - 本轮分支清理结果：先归档再移除了 10 个补丁等价本地分支及其 worktree、68 个已在主线等价的 detached agent worktree、20 个已被主线后续实现取代的旧模块 worktree；16 个冗余远端引用也已归档清理。共清理 98 个 worktree；归档 tip 均可从 `refs/archive/2026-09-27/` 恢复。活跃 / 脏 / 锁定工作树、E1 与 Phase 0.5 独有内容、正式决定记录及 5 个独有远端分支均保留；分支审计未发现需要把旧实现整支合入当前主线的候选。
 - 最近一次全量代码门禁见 §10.8 / §10.9 的各恢复点；PR #7 合并后的文档一致性检查为 7 passed。PR #8 合并前的全量检查为 7309 passed、138 skipped、1 failed；失败是 Event CLI 测试 DSN 使用 `secret` 而触发凭据卫生扫描。改为明确的测试占位符后，仓库卫生与 Event CLI 定向检查 9 passed，文档一致性检查 7 passed，Ruff、format、mypy 均通过。阶段验收、真实数据运行、Profile 数值冻结与外部 Uvicorn 安装仍分开处理。
@@ -890,7 +890,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 范围 | 当前结论 | 本批动作 / 边界 |
 |---|---|---|
 | Phase 0.5 | Knowledge Base 主体已在 `main`；因子 / 特征人类可读库此前缺条目 | 增补带引用的横截面动量与 Amihud illiquidity 文档草稿；均为 `UNVERIFIED / NOT_VALIDATED`，不是 KnowledgeItem，不含人工标签 / 资产审阅或本项目复现结论 |
-| Phase 1 | D3E 已接受、D4 已关闭；E1-CAP-1 仍阻断 | 固定规模探针与 500k replay 正在运行，结果、内存记录和返修后定向测试待产出 / 核对；不与活跃 Claude worktree 并行修改 canonical / revision，交付后由 Codex 复核 |
+| Phase 1 | D3E 已接受、D4 已关闭；E1-CAP-1 仍阻断 | 已有 500k resume / replay RSS 增长 59.9 / 63.9 MiB，超过 32 MiB 门槛；只读调查指向 PyIceberg 全量 snapshot metadata，尚待设计有界精确历史索引；未重跑探针 |
 | Phase 2～7 | 核心模块逻辑已在 B1～B67 主线；本轮只发现内容索引缺口 | 增补一个 `bar_log_return` 向上穿越零的 Event 定义草稿，标注未注册 / 未验证、无市场效果主张；不改策略、风险、状态默认值或阈值 |
 | Phase 3 | Event Provider、DSL、运行存储、`event.events` 逻辑表及独立操作入口已实现 | ADR-0066 明确单独 CLI：默认不读配置、不连接 catalog；`--apply` 只调用 Event 表 ensure 函数，不接入 Phase 1 / 自动启动。生产 catalog 操作仍未授权、未执行 |
 | Phase 8～14 / apps | 只读差距审计未发现明确、已批准而缺失的普通模块代码 | 同步 Event 字段、Research Loop / Router / API README 的实际行为，修正文档过时描述 |
@@ -916,15 +916,15 @@ PR #6 本批独立分支集成检查：`uv run pytest -q tests/infrastructure/ev
 | P9 / P10 / P12～P14 | 合成验证、纸面 Router、进化提案、仅模拟执行与迁移框架存在 | 合成证据不是市场结论；P12 循环内替换提案有意暂缓；无具体迁移目标；实盘仍禁止 |
 | P11 / Worker | 劣化检查本身有独立 API、报告 writer 和页面；新 Profile 的 Decimal 阈值读取已修正。仍缺活跃对象、近期窗口和验证基线的数据来源；Worker 没有独立启动器去组合预算、报告目录与 loop 持久目录 | 不将监控强塞进审计链，不添加 API 写 / 启动 endpoint；先决定本机 operator 的数据输入、预算、Profile、状态目录及触发方式，再提设计 / ADR |
 | Apps | 当前是只读研究报告与知识 / job 视图，遵循 ADR-0048 | 只读约束是有意选择，不算应用写功能缺失；公网认证、TLS、HA 不在当前范围 |
-| Phase 1 | D3E 已接受、D4 已关闭，E1-CAP-1 仍由既有 Claude 会话处理 | Codex 不并行改 canonical / revision；待 E1 独立交付、复核 |
+| Phase 1 | D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断 | Codex 子代理的只读调查报告已记录；无安全局部修复，不并行改 canonical / revision，后续需有界历史核验设计和容量证据 |
 
 P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修正源提交：`ccf45a1`。集成到本地协调分支 `codex/module-completion-coordination-2026-09-27`（P6 / P8 提交 `347b538`、`15bec90`、`3dc3e67`；P11 提交 `b70c530`），**未推送 / 未合并 `main`**。Codex 的静态复核发现 P6 缺少 `StateStrategyMatrix` 导入及一处格式问题，已修复；触及的 5 个 Python 文件 `ruff check` / `ruff format --check` 通过，`git diff --check` 通过。P11 子代理另报告目标文件 Ruff、format 与 mypy 通过。本轮没有运行测试；P8 子代理原始静态结果也为 Ruff 通过、format check 3 files already formatted。OpenAPI 类型生成因环境中缺少 `openapi-typescript` 未运行，`api.d.ts` 手动同步，待验收复核。
 
-**下一批顺序**：先完成 P6 / P8 / P11 独立代码复核；后续验收时同步 P8 fixture 生成器、组件测试与 live-smoke 清单。再定义 P7 LLM 可复现审计运行模式与算子范围、P11 本机 worker / 劣化监控的数据流。P2 Iceberg 持久化扩展暂缓，待出现明确消费需求再单独立项。不得将未验收阶段、人工标签、Profile 数值、真实数据结果或生产建表描述为代码已完成。
+**下一批顺序**：先完成 P6 / P8 / P11 独立代码复核；后续验收时同步 P8 fixture 生成器、组件测试与 live-smoke 清单。并行推进 P7 类型化算子规格 / 基础实现与 P11 显式观测输入设计前，先划清文件边界。E1 需单独设计精确保留历史校验语义的有界 metadata 索引；P2 Iceberg 持久化扩展暂缓。不得将未验收阶段、人工标签、Profile 数值、真实数据结果或生产建表描述为代码已完成。
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
-Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。分支盘点快照当前为 **27 个本地分支、32 个 worktree**；其中主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
+Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。包含新增 E1 / P7 / P11 隔离 worktree 的当前快照为 **30 个本地分支、35 个 worktree**；其中主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
 
 | 分支组 | 核对结果 | 处理 |
 |---|---|---|
@@ -932,7 +932,7 @@ Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，�
 | 研究库规格文档 | `docs/research-spec-completion` 含有效的 Feature / Factor / State / Event / Outcome / Strategy / Risk 内容与 capability map；主线已有的 seed 文件不可丢 | 按文件吸收 10 份研究库 / README 内容到协调分支；修正 capability 基线和 P7 执行状态；跳过该源分支的 `knowledge-base.md`、`roadmap.md`、测试改动和删除 seed 的操作；`signals.py` 精度修复已在主线，不重复搬运 |
 | Research Loop UI | 源分支直接取代现有解析器、坏报告告警和累计用量信息，且没有保留更完整的主线页面行为 | 判断为被主线实现取代，不合并代码；来源 worktree 会话归属未确认，暂不删除 |
 | P7 参数点批次 | 该能力与代码已在主线；旧 agent 分支比主线少近期 loop / persistence 逻辑 | 不整支合并；保留或归档前继续按等价补丁和会话状态清理 |
-| E1-CAP-1 | Codex 候选的 source revision 与 archive metadata 两项修复在 `fix/e1-cap1` 中均有等价 patch；该分支还带失败诊断。500k `resume` / `replay` 增长 59.9 / 63.9 MiB，均超过 32 MiB 上限；根因调查指向快照 manifest 重复规划，但仍是假设 | `REVIEW_PENDING`；不把多个历史分叉整支并入 main。需继续定位并修复，再按主线版本逐文件集成，保留失败证据 |
+| E1-CAP-1 | Codex 候选的 source revision 与 archive metadata 两项修复在 `fix/e1-cap1` 中均有等价 patch；该分支还带失败诊断。500k `resume` / `replay` 增长 59.9 / 63.9 MiB，均超过 32 MiB 上限；只读代码调查将主要增长来源定位到精确历史核验加载的 Iceberg 全量 snapshot metadata（未重跑探针） | `REVIEW_PENDING`；不把多个历史分叉整支并入 main。需要设计精确且有界的历史索引 / 读取方案，再用固定规模探针验证，保留原失败证据 |
 | P0.5 / ADR-0055 | 主线已有 `seed-2026-09-26.json`；`p05-cite` 后续树与其源提交会删文件或覆盖其他更新。`claude/adr-0055-tags-assets` 会把主线 Accepted 状态改回 Proposed | 不整支合并；已有研究库内容按审核后的文件迁移；具名标签 / 资产审核仍待人工 |
 | P2 Proposed ADR-0067 | Arrow `state_table` 满足 ADR-0035 当前范围，Iceberg 持久化是可选扩展 | 草案分支已存入 `refs/archive/2026-09-27/branches/codex/adr-0067-state-persistence`，不进入本次整合 |
 

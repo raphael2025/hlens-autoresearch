@@ -2,10 +2,12 @@
 
 Items live as reviewed JSON in ``docs/research/knowledge/*.json`` (one list of ``KnowledgeItem``
 payloads per file; the repository keeps summaries and citations only, never copyrighted full text,
-docs/research/knowledge-base.md). Loading fails closed on any item without a source or licence, on
-duplicate ``name@version`` and on unparsable payloads. ``search`` is a pure function of the loaded
-items and the query: case-insensitive AND over ``name`` / ``claim`` / ``conditions``, optional name
-prefix (the library), minimum evidence level and statuses, ordered by ``(name, version)``.
+docs/research/knowledge-base.md). A missing item directory and malformed item files fail closed;
+an existing directory with no JSON files, or an empty list in a JSON file, is a valid empty base.
+Loading also fails closed on any item without a source or licence, on duplicate ``name@version``
+and on unparsable payloads. ``search`` is a pure function of the loaded items and the query:
+case-insensitive AND over ``name`` / ``claim`` / ``conditions``, optional name prefix (the library),
+minimum evidence level and statuses, ordered by ``(name, version)``.
 
 Version 1.1.0 (ADR-0055, contract 2.2.0) adds ``tags_all`` (the item carries every requested tag)
 and ``assets_any`` (the item carries at least one requested asset). Both compare canonical tokens by
@@ -42,7 +44,7 @@ class LocalKnowledgeProvider:
     """Offline retrieval over reviewed item files; deterministic."""
 
     def __init__(self, items_dir: Path = DEFAULT_ITEMS_DIR) -> None:
-        self._items = load_items(sorted(Path(items_dir).glob("*.json")))
+        self._items = load_items(_item_files(Path(items_dir)))
         self._descriptor = KnowledgeProviderDescriptor(
             name=_NAME,
             version=_VERSION,
@@ -109,3 +111,10 @@ def load_items(paths: Iterable[Path]) -> tuple[KnowledgeItem, ...]:
                 raise KnowledgeProviderError(f"{path.name}: duplicate knowledge item {key}")
             items[key] = item
     return tuple(items[key] for key in sorted(items))
+
+
+def _item_files(items_dir: Path) -> list[Path]:
+    """The item files of a reviewed base; a missing directory is a misconfiguration."""
+    if not items_dir.is_dir():
+        raise KnowledgeProviderError(f"knowledge item directory {items_dir.name!r} does not exist")
+    return sorted(items_dir.glob("*.json"))
