@@ -41,6 +41,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - 新颖性主要来自确定性的组合 / 条件化 / 时序算子，并且每次组合都计入尝试次数
 - 路线图：`docs/research/roadmap.md`
+- Raphael 于 2026-09-27 确认开发顺序：先收敛分支并整合已有实现，形成完整的骨架、框架与模块代码，再按模块逐步调试和打磨；已明确授权把已实现框架快进整合到本地 `main`。代码整合不等于 Phase 已验收，验证状态必须单独记录。
 
 ## 4. Current Phase
 

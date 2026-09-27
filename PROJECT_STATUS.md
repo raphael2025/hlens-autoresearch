@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
+| 当前子阶段 | **框架整合与逐模块打磨**。已有代码已快进整合到本地 `main`（`20bdd82`）；Phase 0.5、Phase 1、Phase 2～14 仍须分别验证与验收，不能把代码整合视作 Phase 完成 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 框架代码已进入本地 `main`，远端 `origin/main` 尚未更新；各 Phase 仍按自身验收标准推进，Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B61；B62 是 P10 证据模式与 Profile 冻结登记边界的 Codex 决定，不是代码批次）；均经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -118,8 +118,9 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ### Claude Code 需要做
 
-- 继续逐个调试（待办 C 节），每项带回归测试；不改冻结契约、不设阈值、不接实盘
-- 每个恢复点通过严格门禁后快进推送 WIP 备份分支 `wip/phase-1-unreviewed`；不合并 `main`、不打 tag
+- 按 Raphael 2026-09-27 的优先级，在框架代码已整合到本地 `main` 后，按模块完成缺口修复、定向验证和文档更新；不改冻结契约、不设阈值、不接实盘
+- 分支清理只归档并删除已确认冗余且无活动 worktree 的本地分支；保留独有实现、决策记录、Phase 0.5 种子和未验收工作
+- 本地 `main` 快进已获 Raphael 明确授权；推送和打 tag 状态分别记录，不能把整合描述为 Phase 验收
 
 ## 6. 当前待决策
 
@@ -264,6 +265,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | Raphael 确认先收敛分支、整合框架与模块代码，再逐模块打磨；本地 `main` 从 `1e208b5` 快进至 `20bdd82` | 403 个提交已整合；框架代码为 CODE_COMPLETE / DEBUG_PENDING，未表示各 Phase 验收；`origin/main` 仍在 `1e208b5`，尚未推送；唯一分支材料与活动 worktree 保留 |
 | 2026-09-27 | B67（ADR-0065）：数据集路径上，回测结束仍有未成交的结转余量时，G4 容量检查为不确定（`carry_over_unfilled`），不再用不完整的成交估计容量 | CODE_COMPLETE / DEBUG_PENDING；无余量、合成路径与默认执行模型结果和哈希不变；无阈值 / Profile / 契约变化；不是 Phase 4 / 5 验收；B67 代码 `6d887b7` 全量非 PostgreSQL 门禁 7294 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0；其后 docs-only 提交只做了文档检查（20 passed） |
 | 2026-09-27 | B66（ADR-0064）：数据集路径上 G4 容量所用的成交量须与实际执行的价格 bar 的成交量完全一致，否则容量检查为不确定（`bar_volume_source_mismatch`），不再静默使用另一份数据 | CODE_COMPLETE / DEBUG_PENDING；合成路径与一致时的结果不变；无阈值 / Profile / 契约变化；冻结 HEAD `255ce1a`（B63～B66）全量非 PostgreSQL 门禁 7287 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0 |
 | 2026-09-27 | ADR-0063（Codex 决定）：本机只读研究 API 用 Uvicorn 运行，只绑定 127.0.0.1、单 worker；公网 / 认证 / TLS 不在范围内 | B65 入口与测试已实施（未安装 Uvicorn）；真实 Uvicorn 运行待 Raphael 授权安装 |
@@ -292,14 +294,14 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 看全代码批次：[完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md)（逐批文件、测试原始结果）、[自主决策记录](docs/reviews/2026-09-26-autonomous-decisions.md)（你授权 Claude 自主决定的各项裁决，可随时推翻）、[Codex 全代码复核](docs/reviews/2026-09-26-codex-full-code-review.md)。
-2. 全部新增代码都是 CODE_COMPLETE / DEBUG_PENDING：有定向测试，但未经 Cursor 独立调试与全量对抗复测；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. Phase 1 仍待 Codex 验收（K4 PIT 边重复为独立阻断项）；没有合并 `main`、没有打 tag。
+1. 按完成计划和 roadmap 逐模块打磨与验收；先解决 Phase 1 当前阻塞，再安排其余模块的独立验证。
+2. 全代码批次已有测试记录，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
+3. 本地 `main` 已含框架代码；`origin/main` 仍为 `1e208b5`，尚未推送或打 tag。决策记录、Phase 0.5 种子和未验收分支需在清理前保全并逐项整合。
 
 ## 12. 给 Claude Code 的下一步
 
 > Claude 下一步可以执行什么？
 
 1. 审计后续（2026-09-26 晚）：控制台研究循环图表按维度分轴、报告种类夹具由代码生成、错误体路径清理与 500 处理、真实后端冒烟、P9 中等规模校准证据**均已完成**（B44～B52，CODE_COMPLETE / DEBUG_PENDING；完成计划 §10.7 / §10.8）。**P12 提案接入循环：Codex 决定有意暂缓（P12-LOOP，见 §6），不是未实现的代码任务**：进化后代沿用父代 family，每个 family 只评估一次密封样本外，循环自身报告不含后代 G5；**绝不复用密封窗口**，需要新的预注册 family 或独立的未来密封窗口与 Profile 证据规则（完成计划 B57，未决定）。
-2. 交 Cursor：全部 CODE_COMPLETE 项的独立调试与对抗复测；交 Codex：ADR-0052 / 0054 / 0056～0061 与 Promotion 链复核；ADR-0062 已由 Codex 接受（B56；登记为空、Profile 数值未冻结，Phase 4 / 5 未验收）；ADR-0055 已由 Codex 接受并推送（Phase 0.5 整体验收仍待 Codex / Raphael）；交 Raphael：D-LIST（ADR-0051）、Profile 数值、合并 `main` / tag；种子标签 / 资产需具名人工审阅者经 ADR-0058 写入路径提交。
-3. 不得：实盘、凭据、下单、猜测 Profile 数值、合并 Phase 1 或 `main`、打 tag、force push；不修改 Phase 1 基础设施（Codex 复核中）。
+2. 先由 Codex / Claude 确认集成与分支清理结果，再按不重叠模块任务逐步打磨；任何跨模块契约或架构变化先停在决策边界。
+3. 不得：实盘、凭据、下单、猜测 Profile 数值、将代码整合描述为 Phase 验收、force push；按已批准方向在本地 `main` 继续集成，推送与 tag 另行记录。
