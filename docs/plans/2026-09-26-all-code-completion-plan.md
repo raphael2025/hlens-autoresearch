@@ -951,6 +951,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 用当前本地 `main` 与 `ed8e694` 做直接树比较，可见唯一文件差异是 `docs/adr/0055-knowledge-tags-assets.md` 与 `plugins/knowledge/local.py`：前者把已接受状态改回 Proposed，后者移除了缺失条目目录时报错的检查。Contract、Provider 标签 / 资产过滤、Schema、测试及 Web 页面实现均已在本地 `main`；因此不 cherry-pick 该旧基线分支提交，也不接受它引入的两处回退。
 - 不改动仍有活跃进程的 Claude worktree。Claude 明确结束任务后，可归档该 branch，再按 Git 工作流确认是否删除分支 / worktree；当前阶段不将重复实现视为待合并代码。
 
+### 10.18 P0.5 本地分支归档与 E1 续作（2026-09-27）
+
+- 逐文件复核确认本地 `p05-cite@f375e95` 的种子已与主线一致；旧审计报告有历史价值但状态过时；其 provider / ADR / 状态文件会回退当前语义。未采纳测试候选（统一留待验收）；将完整 branch tip 保存到 `refs/archive/2026-09-27/branches/p05-cite` 后，移除干净的本地 `p05-cite` worktree / branch。远端 `origin/wip/phase-0.5-knowledge` 暂保留，避免删掉唯一远端审计证据。研究规格分支的唯一 C-L5 验收用例也保留在本地分支，测试后置。
+- 本地快照现为 16 个分支、8 个远端分支、22 个 worktree、265 个 archive refs；根 `phase/1` 的 `.codex/` / `docs/plans/` 未跟踪内容保持不动。坐标分支 `codex/module-completion-coordination-2026-09-27` 相对 `main@669704c` 含本轮集成提交；代码仍未合并进 `main` 或推送。
+- E1 复核确认四个 Codex 候选均未证明 500k `resume/replay` 峰值增量低于 32 MiB。协调分支代码比集成候选旧；当前候选的全量快照历史仍 O(H)，并且 `scan_columns()` 也会经 `load_table()` 装载元数据。文档将 PyIceberg snapshots 标为候选原因而非已隔离的唯一根因。Claude 已在独立 `codex/e1-single-load-history-2026-09-27` worktree 开始单次 history-load 优化；范围不含流式 metadata、不会关闭容量门、不加测试/探针、不推送。提交后由 Codex 复核，随后仍需重新设计/测量满足 E1 的有界方案。
+- P7 只读复核确认六类 DSL 尚无端到端 typed plan → Provider lowering → 批次预登记 / 持久化恢复路径。最小 negation 控制组候选需先补 ADR 语义与 lineage / resolver 协议，不直接编码；现有 fail closed 保持。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
