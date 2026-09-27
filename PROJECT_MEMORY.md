@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3D 已验收；D3E（`21e31f5`）→ D3E-R1（`52f7477`）→ D3E-R2（`c326434`）→ D3E-R3（`7e9e084`）与 D4 门记录均 REVIEW_PENDING
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启；B1～C3、D0～D2、D3A～D3E 已验收；E/F/G 后续批次仍逐组 REVIEW_PENDING。
 
 ## 2. Current Architecture
 
@@ -44,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3E-R3 REVIEW_PENDING**；REST store / reconciler（`21e31f5`）→ R1 store 已存行核对（`52f7477`）→ R2 reconciler 比较前用共享核对器（`infrastructure/revision/row_integrity.py`）证明两侧每一行 → R3（`7e9e084`）把 REST 元素/响应行绑定到首次交付页的严格重新解码、归档行绑定到 D1 严格重新解析，reconciler 按快照时间旅行核对证据边批次；均待 Codex 复核（D3D / D3D-R1 `61dd9bf` + `c06b9fa` 已验收；已知阻塞见 Current Blocker）
+- Current Subphase：D3E 已验收（2026-09-27）；D4 门记录及 E/F/G 后续实现仍待逐组 Codex 复核，Phase 1 未关闭。REST 首次交付页、archive source object、cross-day evidence batch 的复核证据见 `docs/reviews/2026-09-27-d3e-acceptance.md`。
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- D3E / R1 / R2 待复核；D4 提案：Phase 1 首切片不启用 WebSocket live tail（ADR-0022 三项前置未全验收、无实时消费者；`docs/reviews/2026-09-25-d4-live-tail-gate.md`，待复核）；E0 等 Codex 验收 D3E 与 D4 后开放；无 Codex 时 Claude 的提交只推 `wip/phase-<n>-unreviewed`，不推正式 `phase/<n>`
-- Current Blocker：无架构阻塞；D3E-R3 跨日错误（aggTrade 观察键的 REST revision 跨 UTC 日时另一天的边被误判）已由 `69f0bf0` 修复，待 Codex 复核；D3E 仍未验收。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：Codex 对抗复核 D3E（含 R1/R2/R3），决定是否接受并开放 D4 / E
+- D3E 已接受；D4 提案与 E0～G3-P 实现仍须逐批复核，不能由 D3E 验收自动推导为已接受；无 Codex 时 Claude 只推 `wip/*`，不推正式 `phase/*`
+- Current Blocker：D3E 的跨日 edge provenance 缺陷已修复并随 D3E 验收；其余 Phase 1 后续实现待复核。D-LIST 仍按 Raphael 明确决定保持暂缓。C2 专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
+- Next Milestone：按 review guide 依赖顺序复核 D4 文档门与 E0/E1 及后续实现；每组单独记录结论和验证证据
 
 ## 5. Active Decisions
 
@@ -87,7 +87,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0028（E0，**Accepted** 2026-09-25，Raphael 批准方案 B）：Canonical revision 与 Raw 元素 revision 一一对应、lineage 进身份；跨通道边由 PIT 从绑定的 Raw 证据 snapshot 映射，不物化；Canonical `arrival_seq` 独立分配；E1 已实现（`infrastructure/canonical/`，REVIEW_PENDING；规范 symbol = `<base>-<quote>`，E2 须一致）；F1 选择引擎 `infrastructure/pit/`（`hlens.pit.maximal-head@1.0.0`，只在绑定 snapshot 上读取与证明，REVIEW_PENDING）；E3 质量报告 `infrastructure/quality/`（`hlens.quality.canonical-partition@1.0.0`，无数值阈值，REVIEW_PENDING）
 - ADR-0029（E2 listing 来源，**Accepted** 2026-09-25，方案 A）：`exchangeInfo` 快照 → 新 Raw 表 → 观察下界语义的 listing revision；历史 simulation 的 universe 仍依赖 D-HIST
 - ADR-0030（F4 FeatureProvider 契约，**Accepted** 2026-09-25，方案 A）：执行器截断输入（available ≤ t 且 knowledge ≤ cutoff，lag 由执行器施加）+ 契约扰动测试；`core/contracts/feature.py` additive
-- ADR-0027（D-33，Accepted 2026-09-25，部分实施）：D3B 已实现四张 additive Raw 表、REST 身份规则与纯 policy，D3C 已实现严格纯 decoder，D3D 已验收 `binance.spot.public-rest@1.0.0` collector（`61dd9bf` + `c06b9fa`；只经自建、无 hook / auth / 环境代理 / cookie 的 client 发送，不接受外部 `httpx.Client`）；归档路径与 `IDENTITY_HASH` 零改动；D3E store / reconciler 已提交（含 R3 `7e9e084`：REST 首次交付页重新解码、归档对象重新解析）、待 Codex 复核；D-33 方案 A 生效（规范内容投影逐字段相等才在独立证据表写 evidence-only 边 归档 → REST，项目政策、非来源先后）
+- ADR-0027（D-33，Accepted 2026-09-25）：D3B 四张 additive Raw 表、REST 身份与 policy，D3C decoder，D3D collector、D3E store / reconciler 均已由 Codex 验收（D3E 记录 `docs/reviews/2026-09-27-d3e-acceptance.md`）；D-33 方案 A 生效，逐字段相等才追加 archive → REST evidence-only 边。
 - Raphael 授权（2026-09-25）："一切都你自己决定，允许多子代理，尽快开发"——Claude 可自行决定并接受 ADR（记为"依 Raphael 授权"），
   红线仍需 Raphael 本人：Constitution 原则 / 阈值、Profile 数值、实盘 / 资金 / 风险预算、删除历史数据、系统软件、生产部署、合并 `main`
 - ADR-0032（D-HIST，**Raphael 批准** 2026-09-25）：`hlens.availability.archive-event-time-assumption@1.0.0`——数据集 PIT 规格显式绑定时，归档成交 / K 线以 `min(存储值, 可观察时刻 + 5 秒)` 为有效可用时间；存储、证据缺口、知识轴不变；未绑定即保守
@@ -155,8 +155,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- Date：2026-09-25
-- Stable recovery point：Phase 1 D3D-R1 修复提交 `c06b9fa`（Codex 已独立复核；随 D3D 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
+- Date：2026-09-27
+- Stable recovery point：Phase 1 D3E 独立验收记录（候选代码 head `50cdc49`，复核说明在 `docs/reviews/2026-09-27-d3e-acceptance.md`）；Phase 0 基线仍为轻量 tag `phase-0-complete`
 - closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
   其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
@@ -164,7 +164,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   D3D 验收时真实 PostgreSQL 全量 3587 项、HTTP client 注入反例 / 离线重放 / 公共只读 smoke、ruff check、ruff format --check、mypy strict 全绿；
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
-- 未实现（按 roadmap 延期）：Canonical、PIT / dataset / representation、Research Provider Protocol、Feature / Strategy / Backtest、Runner、Registry、Control Plane；本地 StorageAdapter、PyIceberg Catalog、12 张生产表定义、D0 / D3D collector、D1 / D3C parser、D2 archive revision store 与 D3E REST store / reconciler（待复核）已实现
-- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3D 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 `c326434` → D3E-R3 `7e9e084` 均 REVIEW_PENDING
+- 尚未验收：Phase 1 的 Canonical、PIT、质量、Dataset、Feature 与端到端实现虽已在候选 WIP 中完成，仍须逐组 Codex 复核；Phase 0.5、2～14 已有框架代码但为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。D3E REST store / reconciler 已验收。
+- Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2、D3A～D3E 已由 Codex 复核通过；D3E 验收记录为 `docs/reviews/2026-09-27-d3e-acceptance.md`；E/F/G 后续实现仍 REVIEW_PENDING
 - Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
   `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`

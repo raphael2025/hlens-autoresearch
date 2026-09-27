@@ -9,10 +9,10 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
+| 当前子阶段 | **D3E（含 R1～R3 与跨日修复）：✅ Codex 已验收**；Phase 1 后续 E/F/G 实现仍逐组复核中。Phase 0.5、2～14 为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值未冻结 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
-| 最后更新时间 | 2026-09-25 |
+| 总体状态 | 🔄 Phase 1 逐组验收中（D3E 已接受，后续组 REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
+| 最后更新时间 | 2026-09-27 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
 领域契约、状态机、三层验证契约、错误分类、Schema 导出与工程基线均已实现并通过两轮关闭复审
@@ -25,7 +25,7 @@ Codex 依 Raphael 2026-09-24"授权所有"的持续授权，于 2026-09-24 **明
 ADR-0021（本地数据基础设施：PostgreSQL 独立库做 Iceberg Catalog、本地 `file://` warehouse、Phase 1 ~ 6 不用 NATS）、
 ADR-0022（Binance 公共现货 BTCUSDT / ETHUSDT，无任何交易能力）、ADR-0023（历史可用时间与本机知识时间分开；修订只追加，无法判定先后即失败）、
 ADR-0024（按当时可交易集合构建标的池）。A2 已把它们同步进数据架构文档，并冻结首批表名、分区、数据源版本、依赖清单与设置字段。
-Iceberg Catalog、本地 StorageAdapter、八张生产表定义、D0 Collector、D1 fail-closed parser 与 D2 append-only revision store 已验收。D2 首轮复核发现来源 checksum 真实性与 arrival anchor 全表物化两个缺陷；D2-R1 修复后由 Codex 复现旧提交四项失败、运行真实 PostgreSQL 全量与静态检查并接受。D3A 是 REST Raw / lineage 的 docs-only 架构门：Codex 复核草案后退回八项缺陷，D3A-R1 修正后由 Codex 独立复核接受 ADR-0027。D3B 首轮复核发现极端十进制异常泄漏与伪造 / 过期比较可生成边；D3B-R1 修复后由 Codex 接受。D3C 首轮复核发现 RFC JSON 框架空白被误拒；D3C-R1 修复后由 Codex 以 `python -O` 对抗探针、真实 PostgreSQL 3434 项全量与静态检查接受。D3D 首轮复核发现完整 HTTP client 注入可在 allowlist 后加入凭据并改写到外域账户路径；D3D-R1 删除该入口并关闭环境代理与 Cookie 回放，Codex 独立复现修复、运行真实 PostgreSQL 3587 项全量后接受，D3E 开放。D3E 已把已提交的 REST 采集写成 Raw 响应 / 元素 revision，并实现跨通道比对与证据边；Codex 首轮复核发现 store 会原样采用来源伪造的元素行、把时间 / 政策漂移的竞争响应当成普通竞争，D3E-R1 返修后，R2 让 reconciler 比对前用共享核对器证明两侧每一行、R3 进一步把持久行绑定到不可变来源（REST 元素/响应行重新读取并严格重新解码其首次交付页，归档行改用 D1 严格重新解析已发布的归档对象），均等待 Codex 复核。
+Iceberg Catalog、本地 StorageAdapter、八张生产表定义、D0 Collector、D1 fail-closed parser 与 D2 append-only revision store 已验收。D2 首轮复核发现来源 checksum 真实性与 arrival anchor 全表物化两个缺陷；D2-R1 修复后由 Codex 复现旧提交四项失败、运行真实 PostgreSQL 全量与静态检查并接受。D3A 是 REST Raw / lineage 的 docs-only 架构门：Codex 复核草案后退回八项缺陷，D3A-R1 修正后由 Codex 独立复核接受 ADR-0027。D3B 首轮复核发现极端十进制异常泄漏与伪造 / 过期比较可生成边；D3B-R1 修复后由 Codex 接受。D3C 首轮复核发现 RFC JSON 框架空白被误拒；D3C-R1 修复后由 Codex 以 `python -O` 对抗探针、真实 PostgreSQL 3434 项全量与静态检查接受。D3D 首轮复核发现完整 HTTP client 注入可在 allowlist 后加入凭据并改写到外域账户路径；D3D-R1 删除该入口并关闭环境代理与 Cookie 回放，Codex 独立复现修复、运行真实 PostgreSQL 3587 项全量后接受，D3E 开放。D3E 已把已提交的 REST 采集写成 Raw 响应 / 元素 revision，并实现跨通道比对与证据边；Codex 首轮复核发现 store 会原样采用来源伪造的元素行、把时间 / 政策漂移的竞争响应当成普通竞争，D3E-R1/R2/R3 及跨日返修现已由 Codex 于 2026-09-27 验收；REST 元素/响应行绑定到首次交付页，归档行绑定到 D1 严格解析的已发布对象。验收范围与剩余 REVIEW_PENDING 批次见 `docs/reviews/2026-09-27-d3e-acceptance.md`。
 
 代码仓库已有私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）：执行者只提交，Codex 复核通过后推送每个进度；PR 与 CI 尚未配置。
 本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C3、D-32、D0～D2、D3A～D3D 及各返修 / 验收门；D3D 修复后的实现恢复点为 `c06b9fa`。
@@ -44,7 +44,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 框架已实现（ADR-0034，NOT_VALIDATED） |
-| 1 | Market Representation | 🔄 实现完成、红队返修完成，待验收（D3E 起 REVIEW_PENDING） |
+| 1 | Market Representation | 🔄 逐组验收中（D3E 已接受；E/F/G 后续组仍 REVIEW_PENDING） |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035，NOT_VALIDATED） |
 | 3 | Event & Interaction Engine | 🧱 框架已实现（ADR-0036，NOT_VALIDATED；接 P2 状态输入的接线开发中） |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037：标签引擎、成本模型 v1、G0–G3 + 封存样本外门；Profile 数值 TBD） |
@@ -101,7 +101,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 🔨 **逐个调试（2026-09-25 夜）**：全部框架代码已合并并通过全量门禁；正在按 [调试待办](docs/reviews/2026-09-25-framework-debug-backlog.md) 逐项处理——
   独立只读复核（cursor-agent）发现的问题已修复 24 项（另有真实数据冒烟发现的 3 项）（验证门的 4 个高危泄漏 / 复用漏洞、G4 的"空配置即通过"、模拟场所绕过 Kill Switch、权重被当作数量等），
   其余缺口已登记；真实数据格式的端到端冒烟已通过（本机无真实行情，用真实格式小样本走真实入库路径；见 D-NET）
-- ⏸ Phase 1：实现与红队返修完成，等待 Codex / Raphael 验收（证据：`docs/reviews/2026-09-25-phase1-close-evidence.md`、`phase1-review-guide.md`）
+- 🔄 Phase 1：D3E 已由 Codex 验收；后续 E/F/G 实现仍按复核指南逐组审查，Phase 1 整体未关闭（见 `docs/reviews/2026-09-27-d3e-acceptance.md`）
 
 ## 5. 下一步
 
@@ -122,7 +122,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 | ID | 问题 | 方案 | 状态 |
 |---|---|---|---|
-| D-33 | 同一笔成交 / 同一根 K 线既可能来自官方归档、也可能来自 REST 补尾；按 ADR-0023 它们是同一观察的两条 revision，没有证据即互相冲突，数据集 fail closed。不裁决就等于禁止 REST 补尾 | **Codex 选 A**（ADR-0027 §4）：本机比较两者的规范市场内容，逐字段完全相同才记一条"归档优先"的项目政策证据（存入独立证据表）；不同或无法比较就不记、继续 fail closed。这是项目规则，不是交易所声明的先后 | 已决定：ADR-0027 Accepted（2026-09-25），方案 A 生效；D3B 纯 policy、D3C decoder 与 D3D collector 已验收，D3E 已开放 |
+| D-33 | 同一笔成交 / 同一根 K 线既可能来自官方归档、也可能来自 REST 补尾；按 ADR-0023 它们是同一观察的两条 revision，没有证据即互相冲突，数据集 fail closed。不裁决就等于禁止 REST 补尾 | **Codex 选 A**（ADR-0027 §4）：本机比较两者的规范市场内容，逐字段完全相同才记一条"归档优先"的项目政策证据（存入独立证据表）；不同或无法比较就不记、继续 fail closed。这是项目规则，不是交易所声明的先后 | 已决定：ADR-0027 Accepted（2026-09-25），方案 A 生效；D3B～D3E 已验收 |
 
 **E1 之后提出的待决定（ARCHITECTURE_DECISION_REQUIRED）**
 
@@ -194,8 +194,8 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 - ⚠️ PyIceberg 与 Binance 的关键能力事实已由 Codex 于 2026-09-24 按官方资料复核，PostgreSQL 服务已只读确认在线；实施前仍须按锁定依赖版本做行为 smoke / integration 验证
 - ⚠️ 来源若不提供修订关系或修订时间，同一观察的不同版本会成为 competing heads 并使数据集构建 fail closed；需要各来源的 precedence policy 与证据
 - ⚠️ **D2 的证据结论**：Binance 官方资料没有给出任何具体 revision 的公开时刻，因此 `binance.spot.publication@1.0.0` 三类主体全部保守取 `available_time = ingest_time` 并写证据缺口；在出现可引用的官方上界并发布新 policy 版本之前，早于本机 ingest 的历史可用区间为空。归档替换同样无法证明先后，一律 competing heads（数据全部保留，但任何“最新”结论 fail closed）
-- ⚠️ REST 补尾的四张新表、身份与跨通道纯 policy、严格 decoder 和可重放 collector 已由 D3B～D3D 实现并验收；D3E store / reconciler 及 R1 / R2 / R3 返修已实现、尚待 Codex 复核，验收前 REST 数据不能进入任何数据集
-- ⚠️ D3E-R3（`7e9e084`）已关闭 D3E-R1 / R2 留下的边界：REST 元素行现在会重新读取并严格重新解码其首次交付页（已提交的 D3D collection checkpoint，`infrastructure/revision/row_integrity.py::PersistedRowVerifier.verify_rest_elements` / `lawful_response_row`），不再只信"原样批次内容"；归档行同理改用 D1 严格重新解析已发布的归档对象（`verify_archive_elements`）。reconciler 的 `_pinned_read` / `_verify_edge_provenance` 额外按显式 `snapshot_id` 时间旅行重读已提交的证据边批次，核对 R3 覆盖的五张表头。**这仍是未验收的实现**：D3E（含 R1 / R2 / R3）没有 Codex 接受门 commit。**D3E-R3 跨日错误（2026-09-26 发现）**：`_verify_edge_provenance` 按分区（data_type / symbol / day）只遍历自己那一天的证据边批次前缀；若同一个 aggTrade 观察键的 REST revision 跨 UTC 日边界，会把另一天已合法提交的边判定为伪造 / 缺失，破坏该日期的 reconcile / `verified_edges` / PIT。已由 `69f0bf0` 修复（候选分支 `claude/hlens-autorecearch-dev-c05c2b`；只改 `channel_reconcile.py`：同一观察键跨日时，另一天写入的证据边批次按写入它的那一天的完整键集重读并逐项复核，完整性校验不放宽；新增 13 项跨午夜回归，旧代码 13 项全部失败、新代码全部通过；独立只读复核判定 ACCEPTABLE），仍待 Codex 复核，D3E 仍未验收
+- ⚠️ REST 补尾的四张新表、身份与跨通道 policy、decoder、collector、revision store 与 reconciler（D3B～D3E）均已由 Codex 验收；后续 Canonical / PIT / Dataset 管线仍待复核，Phase 1 整体尚未验收
+- ⚠️ D3E 已验收；R3 将 REST 持久行绑定到首次交付 checkpoint、归档行绑定到已发布归档对象，并对 evidence edge 批次做快照核验。跨日 provenance 与 PIT 多日映射修复也纳入验收；详细证据见 `docs/reviews/2026-09-27-d3e-acceptance.md`。后续 Canonical / PIT / Dataset 批次仍待复核。
 - ⚠️ **容量**：2026-09-25 探针显示规范化按"整个单元一次性读入"约每行 19 KB（BTC 一整天 100～300 万行会超出 WSL 约 15 GB 内存）。G3-S 已改为固定快照 + 分批窗口：30 万行规范化新增常驻约 0.8 GB、每行边际约 0.7 KB（外推一整天约 2～3 GB）。G3-S2 让时点选择只证明读到的批次、并允许任意 UTC 时段：6 万行实测，选 1 小时峰值约 0.27 GB；但选择结果本身每行约 11 KB，**成交数据必须按小时（或更短）分段选择**，整天选择（约 30 GB）不可行。质量报告已按小时分段证明（G3-S3），但报告行内逐条列出的证据缺口在成交整天规模下仍放不下（D-QGAP）；在决定之前不得对成交数据做整天规模的报告，数据集构建须按小时分段
 - ⚠️ **G2 红队发现（2026-09-25，92 个跨阶段攻击中 6 个成功，已以严格 xfail 固定并逐个返修中）**：RT-1 规范化崩溃后读取方把已提交前缀当完整单元（高）；RT-3 REST 页中途崩溃时规范化接受缺元素的页（高）；RT-2 替换归档尚未规范化时数据集仍选旧版（中）；RT-4 伪造清单（删排除项）可被保存 / 读取（中）；RT-5 首条证据边出现后旧清单无法重建（中）；RT-6 特征运行信任未验证的清单哈希（中）。修复前不得用这些路径产出正式数据集
 - ⚠️ **键闭包的已知边界**：同一笔成交的副本之间若有超过一天的空档（链断开），两段各自被当作独立记录（冲突看不到）；相邻两天的质量报告会各自列出跨天冲突（按设计）；这种数据只能是严重损坏，需以后的质量规则专门检测；另外按小时选择时现在要读前后各一天的分区，生产规模下的耗时尚未测量
@@ -210,7 +210,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；**D3E / R1 / R2 / R3、D4、E1 已提交待 Codex 复核**；E2 起仍关闭；不写任何 WebSocket 代码
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；D3E 已验收；D4 门记录与 E/F/G 后续实现仍待 Codex 分组复核；不写任何 WebSocket 代码
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -226,9 +226,10 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-26 | 依 Codex 复核 K4 集成 PIT 跨日边去重修复（`9baad12` / `50cdc49`：同一 Raw 边只映射一次，内容不一致即拒绝）；严格全量门禁 5753 项通过（`50cdc49`） | K4 的代码复核待 Codex；Phase 1 仍未验收 |
-| 2026-09-26 | Phase 1 修复批次：D3E-R3 跨日错误修复（`69f0bf0`，13 项跨午夜回归，旧代码全失败、新代码全过，独立复核 ACCEPTABLE）；D-NET 工具不再消费失败 / 旧状态并记录代码版本与 snapshot 头（`d1e6e73`）；严格全量门禁 5738 项通过（`8b6fbaf`） | D3E 仍待 Codex 验收；Phase 1 未关闭 |
-| 2026-09-26 | 文档事实核对（D3E）：REST 首次交付页重新解码、归档对象重新解析已由 D3E-R3（`7e9e084`）实现，PROJECT_STATUS / close-evidence 中"未重新解码 / 解析"的旧描述已更正；仍为 REVIEW_PENDING（无验收门）。新发现待修阻塞：D3E-R3 跨日错误（`_verify_edge_provenance` 按天分区遍历证据边批次，aggTrade 跨 UTC 日边界的观察键会被误判） | 不影响验收状态；D3E 仍等 Codex 复核，跨日错误修复中 |
+| 2026-09-27 | Codex 接受 Phase 1 D3E（含 R1～R3、跨 UTC 日 provenance 与 PIT edge 去重）；fresh 定向测试 246 + 15 项通过，候选严格全量门禁 5753 项通过 | 后续 E/F/G 批次仍待逐组复核；Phase 1 未关闭，未合入 `phase/1` / `main` |
+| 2026-09-26 | 集成 PIT 跨日边去重修复（`9baad12` / `50cdc49`：同一 Raw 边只映射一次，内容不一致即拒绝）；严格全量门禁 5753 项通过（`50cdc49`） | 当时待 Codex 复核；已由 2026-09-27 D3E 验收记录关闭 |
+| 2026-09-26 | Phase 1 修复批次：D3E-R3 跨日错误修复（`69f0bf0`，13 项跨午夜回归，旧代码全失败、新代码全过，独立复核 ACCEPTABLE）；D-NET 工具不再消费失败 / 旧状态并记录代码版本与 snapshot 头（`d1e6e73`）；严格全量门禁 5738 项通过（`8b6fbaf`） | D3E 于 2026-09-27 验收；Phase 1 未关闭 |
+| 2026-09-26 | 文档事实核对（D3E）：REST 首次交付页重新解码、归档对象重新解析已由 D3E-R3（`7e9e084`）实现，PROJECT_STATUS / close-evidence 中"未重新解码 / 解析"的旧描述已更正；仍为 REVIEW_PENDING（无验收门）。新发现待修阻塞：D3E-R3 跨日错误（`_verify_edge_provenance` 按天分区遍历证据边批次，aggTrade 跨 UTC 日边界的观察键会被误判） | 不影响验收状态；历史状态：跨日错误随后修复并于 2026-09-27 随 D3E 一并验收 |
 | 2026-09-26 | D-NET 执行（Raphael 批准）：真实下载 BTC / ETH 两天 1 分钟 K 线官方归档，入库 → 规范化 → 质量报告 → PIT 选择全部跑通（每天 1440 分钟齐全、无缺口无冲突）；建研究数据集需上市历史，停下待 D-LIST。复核第六轮修复后严格全量门禁 5718 项通过（1d4fe0e） | 待 Raphael 决定 D-LIST |
 | 2026-09-26 | 调试第六轮：数据集路径 G5（封存数据在开封登记前不读）；可选的清单校验缓存；第四、五轮复核修复。严格全量门禁 5709 项通过（67ee304） | 仍无任何策略被验证或晋升；7 项待 Raphael 决定 |
 
@@ -248,7 +249,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 3. ✅ ADR-0021 ~ 0024 已 Accepted，决定 D-01、D-02、D-08、D-10、D-28、D-31；首切片已冻结（A2）
 4. ✅ 首次消费的 Provider 先交付 Protocol + DTO + contract tests（ADR-0017；B1～B3 已满足），再开始实现（C 起）
 
-**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足（当前 #1 ~ #12 与 #17 满足；其余按批次门推进）。
+**Phase 1 关闭条件**：roadmap Phase 1 验收矩阵 #1 ~ #21 全部满足；D3E 已接受，其后的各项仍须逐组复核并通过验收门。
 
 ## 11. 给 Raphael 的下一步
 
@@ -265,4 +266,4 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 继续逐个调试：调试待办 C / E 节中不需要 Raphael 决定的条目，每项带回归测试并通过严格门禁（ruff / format / mypy / lock / 全量 pytest）。
 2. 不得：修改冻结契约或 Profile 结构（D-FLOAT / D-PFIELDS / D-CTRL / D-VFAIL 待决）、设任何验证阈值、接入实盘或密钥、合并 `main`、打 tag、force push。
-3. Phase 1 等待 Codex / Raphael 验收；验收意见到来时优先处理。
+3. Phase 1 正在逐组复核：D3E 已接受；Codex 按复核指南继续检查 D4 门记录与后续实现。当前不需要 Raphael 处理新的架构决定，D-LIST 仍按既有明确指示暂缓。
