@@ -1058,6 +1058,7 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - **跨 Phase 核实结果（排队，不在 Phase 1 直接改）：** 已确认 `apps/worker/journal.py` 缺少 research journal 同等的 flock / stale-writer 检查，可能让两个 writer 产生重复 seq；这是 Phase 11 的真实竞态风险。P0.5 seed 标签 / assets 仍缺具名人工审阅，但写路径已有 reviewer 强制。P6 的失败轮自动修复是 ADR-0070 明确 fail-stop，不是待补 bug；批次预登记冲突预检不会半写，但多次 journal append 遭遇 I/O 故障时可能留下 partial batch，checkpoint 会拒绝继续，不提供自动恢复。
 - **审计误报 / 未证实项：** P3 多标的验证采用全局时间排序和保守 overlap，未发现 pooled timeline 错误；P4 的真实 Dataset→Outcome Decimal 路径已接通，未确认 float 铸造阻断；P12 缺 SemVer 单调递增目前是 ADR-0045 未规定的语义问题，不列为已确认 bug。Claude 报告的 P6 matrix 写入顺序、P9 联合 stationarity、P11/13 live-risk 和 P13 kill-switch 等尚须各自核实，不能直接按报告开工。Phase 7 六算子维持 fail closed；任何启用先完成 D-P7 依赖 ADR 链。
 - 当前唯一进入实现队列的范围是 E1 Phase 1。其他 Phase 的真实缺口排进 backlog，待对应 Phase 开启并按 ADR 排序；验收覆盖缺项集中到统一验收批次。未新增或运行任何测试 / build / probe。
+- 文档核正提交 `6f9500a` 已 `--ff-only` 快进进入本地 `main@6f9500a`；本地 main 比 `origin/main@44fe9a2` 超前 48 个提交，未推送。根 `phase/1` worktree 的用户文件与未跟踪资料未触碰；远端分支、其他会话工作树均未改动。
 
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 

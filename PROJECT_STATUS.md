@@ -11,7 +11,7 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
 | 当前子阶段 | **补齐已批准范围内的基础逻辑，之后统一验收**。Raphael 已授权 Codex 统筹分支、代码与 Claude / Cursor；本地 `main` 已吸收 P7 typed-plan、P11 CLI、P12 冲突拒绝与 E1 局部优化，但未吸收 `fix/e1-cap1` 的 bounded implementation / probe。全模块盘点确认项目不是骨架；P7 六类组合算子仍不可执行，E1-CAP-1 仍阻断；本轮暂不跑测试 / build，Phase 1 的 D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本地 `main` 已快进纳入协调提交 `498250a`，并含 P7 ADR-0071 只读失败轮复核摘要；比 `origin/main` 超前 46 个提交，尚未推送；PR #1～#9 已合入。**E1 数字来源已更正：**`fix/e1-cap1@a75278e` 的候选探针在 500k `resume` / `replay` 分别测得跨规模 RSS 增长 59.9 / 63.9 MiB（超过 32 MiB）；该实现和探针未合入 `main`，`main` 自身的 resume / replay 容量尚未测量。E1-CAP-1 继续阻断；其他 Phase 未验收；Profile 数值未冻结；当前执行服务仍仅支持模拟交易 |
+| 总体状态 | 🔄 本地 `main@6f9500a` 已快进纳入协调提交 `498250a`、P7 ADR-0071 只读失败轮复核摘要及模块状态更正；比 `origin/main@44fe9a2` 超前 48 个提交，尚未推送；PR #1～#9 已合入。**E1 数字来源已更正：**`fix/e1-cap1@a75278e` 的候选探针在 500k `resume` / `replay` 分别测得跨规模 RSS 增长 59.9 / 63.9 MiB（超过 32 MiB）；该实现和探针未合入 `main`，`main` 自身的 resume / replay 容量尚未测量。E1-CAP-1 继续阻断；其他 Phase 未验收；Profile 数值未冻结；当前执行服务仍仅支持模拟交易 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。当前还要补 P7 可执行组合算子并继续处理 E1 容量阻断；逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -117,15 +117,15 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ### Claude Code 需要做
 
-- E1-CAP-1 正式失败结果仍有效（500k resume / replay 增长 59.9 / 63.9 MiB，门槛 32 MiB）。Codex / Claude / Cursor 已完成 PyIceberg 0.12.0 本机源码只读核验，仍没有通过完整容量门的方案。任何候选都不能降低容量门槛；测试与容量验收暂缓到后续统一验收。
+- E1-CAP-1 候选失败记录有效（`fix/e1-cap1@a75278e` 的 500k resume / replay 跨规模增长 59.9 / 63.9 MiB，门槛 32 MiB）；对应 probe 在候选分支可重跑，但不代表 main，且每种规模只运行一次。Codex / Claude / Cursor 已完成 PyIceberg 0.12.0 本机源码只读核验，尚无通过完整容量门的方案。任何候选都不能降低容量门槛；正式容量验收暂缓到后续统一验收。
 - Claude / Cursor 仅领取已划定且不与协调分支冲突的单模块范围；提交需记录 Phase、契约边界、测试状态与 ADR。
-- 本轮 Raphael 已授权 Codex 将核实后的代码与内容本地整合进 `main` 并清理冗余分支。协调分支已于 2026-09-27 快进合并到本地 `main`（`498250a`）；尚未推送远端。活动、脏、唯一补丁及待审阅内容须先保全，再逐项归档或清理。
+- Raphael 已授权 Codex 将核实后的代码与内容本地整合进 `main` 并清理冗余分支。协调提交 `498250a` 及本轮文档核正 `6f9500a` 均已快进进入本地 `main`，尚未推送远端。活动、脏、唯一补丁及待审阅内容须先保全，再逐项归档或清理。
 
 ### Codex 当前工作
 
-- 已核实的模块实现先在协调分支收敛，并已于 2026-09-27 快进进入 `main@498250a`；后续模块开发在隔离任务分支进行，验收 / 测试留后；不整支合并互相重叠的 E1 候选。
-- 截至本次清理后有 11 个本地分支、17 个 worktree；`main` 已纳入 `498250a`，尚未推送（`origin/main@44fe9a2`）。协调分支 tip 已归档后移除；其它活动、脏、唯一内容目录见完成计划的当前清理记录。Claude 锁定的 E1 设计工作区和其他未完成候选保留。
-- 已在 `main@498250a` 整合 P7 non-runnable typed-plan parser、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝逻辑和两项有限查询保护；静态检查有记录，未跑测试。Claude / Cursor 的 PyIceberg 源码调查已完成；metadata 随表历史增长的实际容量尚未测量，E1-CAP-1 继续阻断，暂无已批准的架构替换方案。
+- 已核实的模块实现先在协调分支收敛，并已于 2026-09-27 快进进入 `main@6f9500a`；后续模块开发在隔离任务分支进行，验收 / 测试留后；不整支合并互相重叠的 E1 候选。
+- 最近的完整分支快照为 11 个本地分支、17 个 worktree；本轮将协调分支快进到 main 并准备归档已合入引用。其余活动、脏、唯一内容目录见完成计划的当前清理记录。Claude 锁定的 E1 设计工作区和其他未完成候选保留。
+- `main@6f9500a` 含 P7 non-runnable typed-plan parser、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝逻辑、有限查询保护和本轮 E1 / 跨模块状态更正；静态文档检查有记录，未跑测试。`fix/e1-cap1` 的历史 probe 已测得候选失败值，但 main 的相同容量仍未测，E1-CAP-1 继续阻断。
 - Cursor 已按 ADR-0069 独立只读复核 P12 `combine`，未发现具体实现遗漏；测试留待统一验收。P11 最小本机 CLI 按 ADR-0067 与 operator 规格实施；无新架构 ADR、测试暂缓统一验收。
 
 ## 6. 当前待决策
@@ -318,7 +318,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. 本地 `main` 已快进吸收协调分支 `498250a`、P7 只读复核摘要和状态文档同步，比 `origin/main` 超前 46 个提交、尚未推送；整合工作区完成提交。截至本次清理后有 11 个本地分支、17 个 worktree；冗余候选已归档，E1 分支与活动 Claude worktree 保留。
+1. 本地 `main@6f9500a` 已吸收协调分支及文档核正，比 `origin/main@44fe9a2` 超前 48 个提交、尚未推送；本轮 `git diff --check` 通过。最近一次完整快照为 11 个本地分支、17 个 worktree；仅清理已核实、已归档的引用，E1 分支与活动 Claude worktree 保留。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. `fix/e1-cap1@a75278e` 候选分支的 500k resume / replay 跨规模 RSS 增长分别为 59.9 / 63.9 MiB，超过 32 MiB；该 probe 不在 main，main 自身尚未测。先以 main 为基线补齐可复现分阶段 probe 和有界路径设计；Phase 1 未整体验收、未打 tag。
 
