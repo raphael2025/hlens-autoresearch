@@ -57,7 +57,7 @@
 - **commit**：`9b8674a`（E1）、`65aedd6`（E1-R1）、`f6c29c9`（E1-R2）、`8c9109b`（E1-R3，批次号即规范化计划）、`42530a4`（E1-R4，拒绝复用早于所述内容提交的报告）、`d816bab`（决定记录）；容量重写 `bd1d941`（G3-S：按批次窗口规范化，不整读单元）、`f92afdf`（G3-S-R1：按 rank 切片、归档单元仍整体）。
 - **要核对什么**：一个 Raw source revision 是一个单元，`PersistedRowVerifier` 证明全部 Raw 行后才一一映射为 Canonical 行；独立 `arrival_seq` 块、一次时钟读数；G3-S 之后内存随批大小而非单元大小增长（30 万行新增内存约 0.8 GB，未在生产规模复测，见 `2026-09-25-phase1-close-evidence.md` §5）；批次号是否真的锁定了"单元行数 + 批大小"从而让续跑只按已提交切分推进。
 - **证明它的测试**：`tests/infrastructure/canonical/test_normalizer.py`、`test_normalizer_postgres.py::test_dual_lineage_normalization_recovery_and_mapping_on_postgres`、`test_a_forged_raw_row_is_refused_on_postgres`。
-- **状态**：REVIEW_PENDING。
+- **状态**：REVIEW_PENDING。Codex 于 2026-09-27 复核发现 E1-CAP-1：`_positions`、`_committed_times` 与最终块核对保留 O(N) 单元状态，故 G3-S“内存只随 microbatch 增长”的承诺尚未成立；定向测试 `test_normalizer.py` 75 passed，但现有窗口测试只限制宽行扫描，不覆盖这些窄列与 Python 集合。修复与有界内存证据见 [`2026-09-27-e1-review.md`](2026-09-27-e1-review.md)。
 
 ## 5. G-F1 — PIT 选择器 + 容量重写（G3-S2）+ 规模性能（G3-P 的 PIT 部分）
 
