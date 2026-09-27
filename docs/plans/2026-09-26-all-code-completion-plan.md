@@ -1008,7 +1008,7 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - Cursor `codex-research-loop-ui@e398386` 有独有 commit，但增加的 parser / 测试夹具 / 页面行为已由更完整的主线实现覆盖，整体摘取会重复逻辑并可能丢掉当前 `InvalidReports`、AsyncView 与报告行为。已归档 branch tip 到 `refs/archive/2026-09-27/branches/codex-research-loop-ui` 后移除本地 worktree / 分支；`origin/codex-research-loop-ui` 保留。
 - E1 分支审计确认 `codex/e1-bounded-scan-integration` 是两组尚未进入协调线的 bounded-scan / source-proof 代码累计候选，但没有 PyIceberg 有界 metadata 解析，也无 32 MiB 证据；`fix/e1-cap1` 有另一套实现且仍报告 59.9 / 63.9 MiB 超门槛。候选彼此重叠，当前不整支合并；所有相关 worktree 均干净，活动 Claude history-options worktree 保留。
 - 只择取经独立只读审查通过的两个生产代码保护并在协调版本适配，提交 `031f4e8`：source revision proof 限制最多返回 2 行；D1 archive metadata 按 256 个 ID 分块、每块查询上限 257 行，遇重复 / 未请求 ID 即失败。目标文件 Ruff / format / mypy / `git diff --check` 均通过；未运行测试 / 容量探针。该改动只约束查询结果容器，不约束 PyIceberg 的 O(H) metadata、manifest planning、整元数据解析器缓存或返回对象；E1 仍阻断。
-- 当前仓库为 **12 个本地分支、18 个 worktree**；`main` 与远端未变。其余 E1 候选保留等待独立代码审查与方案收敛。
+- 该快照时仓库为 **12 个本地分支、18 个 worktree**；当时 `main` 与远端未变。后续已在 §10.30 记录本地快进及更新后的状态。
 
 ### 10.27 P12 ADR-0069 实现级复核与后续任务筛选（2026-09-27）
 
@@ -1029,7 +1029,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 独立只读实现复核未发现可确认、可复现的逻辑缺陷或信任边界回归；未改文件，未跑测试 / build。
 - 已知限制：现有 freeze registry 为空，实际操作应按 ADR-0067 fail closed；没有 CLI 端到端测试。报告 writer 不提供跨进程目录锁，同一 `reports_root` 需单实例运行。CLI 本身不会验证输入历史是否最新，也不认证近期 source / aggregation 的真实性。
 
-### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
+### 10.30 协调分支快进到本地 main（2026-09-27）
+
+- Raphael 明确授权先整合合适分支、清理冗余分支并持续补齐模块；协调分支相对本地 `main@669704c` 为严格快进后代（0 个 main 独有提交、26 个协调分支提交）。主线工作区干净后，以 `--ff-only` 快进到本地 `main@498250a`，未解决冲突、未改写历史、未推送远端。
+- 整合范围为 40 个文件、+3173 / -215 行，包括 P7 non-runnable typed-plan parser、P11 degradation operator / CLI / provenance 页面、P12 `combine` 冲突拒绝、E1 history / normalizer / proof-scan 候选及相关 ADR / 规格 / 复核记录。
+- 各模块仍待调试 / 验收；本次合并不构成 Phase 验收。没有运行测试或 build；沿用已记录的定向静态检查结果。E1-CAP-1 仍未通过 32 MiB 门，Phase 1 仍未验收。随后确认该协调分支与 `main` 完全同 tip，先归档再移除分支和工作区；当前为 11 个本地分支、17 个 worktree，其它活动或含唯一内容的工作区保留。
+
+### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
 

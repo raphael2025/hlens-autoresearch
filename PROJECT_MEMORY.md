@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启；D3E 已于 2026-09-27 独立验收、D4 已关闭；E1-CAP-1 容量边界是当前阻断。协调分支已有 history 与 normalizer 两项减少随 batch 增长内存的候选实现，经静态复核；未测试、未跑探针，32 MiB 上限仍未证明
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启；D3E 已于 2026-09-27 独立验收、D4 已关闭；E1-CAP-1 容量边界是当前阻断。本地 `main@498250a` 已含 history 与 normalizer 内存候选，经静态复核；未测试、未跑探针，32 MiB 上限仍未证明
 
 ## 2. Current Architecture
 
@@ -46,11 +46,11 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：D3E 已验收（`docs/reviews/2026-09-27-d3e-acceptance.md`），D4 已关闭；E1-CAP-1 容量上界是当前阻断（`docs/reviews/2026-09-27-e1-review.md`）；协调分支上的 history / normalizer 内存候选已做静态审查，待后续定向测试和容量探针
+- Current Subphase：D3E 已验收（`docs/reviews/2026-09-27-d3e-acceptance.md`），D4 已关闭；E1-CAP-1 容量上界是当前阻断（`docs/reviews/2026-09-27-e1-review.md`）；本地 `main@498250a` 上的 history / normalizer 内存候选已做静态审查，待后续定向测试和容量探针
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - D3E（含 R1 / R2 / R3）已于 2026-09-27 由 Codex 验收（`docs/reviews/2026-09-27-d3e-acceptance.md`）；D4 已关闭，Phase 1 当前阻断为 E1-CAP-1 的内存有界性修复与独立复核；E2 起仍按状态文档的开放顺序推进
-- Current Blocker：E1-CAP-1 容量上界仍未证明，历史加载、normalizer 映射、positions 和返回 ids 等候选增长源均需以定向测试 / 固定规模探针复核；协调分支实现只完成静态复核。D3E-R3 跨日错误已由 `69f0bf0` 修复并随 D3E 验收。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
+- Current Blocker：E1-CAP-1 容量上界仍未证明，历史加载、normalizer 映射、positions 和返回 ids 等候选增长源均需以定向测试 / 固定规模探针复核；本地 `main@498250a` 上的实现只完成静态复核。D3E-R3 跨日错误已由 `69f0bf0` 修复并随 D3E 验收。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
 - Next Milestone：完成 E1-CAP-1 容量修复的独立复核；Phase 1 其余批次仍依 roadmap 与当前状态文件执行
 - 全阶段代码完成批次（2026-09-26，Claude）：分支 `claude/2026-09-26-code-completion-337e38` → `wip/all-code-completion`，B1～B54 为 CODE_COMPLETE / DEBUG_PENDING（非验收；B44～B54 为审计后续，B53 为集成会话按 Codex 复核的修复）；逐批证据见 `docs/plans/2026-09-26-all-code-completion-plan.md` §10
 
@@ -101,7 +101,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - Raphael 指示（2026-09-25，/goal）："使用 4 个子代理加速开发，直到项目全部开发完成；不用调试，先按框架实现所有代码，每一步更新文档，开发完成后再逐个调试"——Phase 0.5、2～14 按路线图先实现框架代码（状态 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），Phase 1 收尾并行；红线不变（宪法原则 / 阈值、Profile 数值留 TBD；Phase 13 只做模拟 / 纸面，无交易端点 / 密钥 / 下单；`main` 合并与 tag 仍需 Raphael）
 - Raphael 授权（2026-09-26，/goal）：“所有的决策都由你来决定，包括红线的事情”——Claude 的逐项裁决见 `docs/reviews/2026-09-26-autonomous-decisions.md`（不做实盘 / 不冻结 Profile 数值 / 不合并 `main` / 无证据不晋升）；ADR-0056 事件表、ADR-0057 事件 subject、ADR-0058 知识库写入由 Claude 接受；Codex 全代码复核 K3 要求 ADR-0052 以 2.1.0 实施且旧 2.0.0 原样可重放；ADR-0054 / 0057 的新字段已于 B41 以 2.1.0 重新声明；`subject` = 调用方提供的稳定、大小写敏感 opaque ID
 - ADR-0066（2026-09-27，Codex）：允许独立 `infrastructure.event.create_event_tables` 显式操作入口；默认无 catalog 副作用，`--apply` 只调用 `ensure_event_tables`，不接入 Phase 1 / 自动 provisioning；实际生产建表仍须单独授权。
-- ADR-0067（2026-09-27，Codex 依 Raphael 本轮授权）：P11 显式劣化检查绑定调用方提供的 ACTIVE 终态生命周期历史、PASS baseline、精确 Profile 与 ADR-0062 有锚点冻结登记、近期 observation manifest / method / UTC 窗口；report 1.1.0 evidence 内嵌完整 manifest、参与哈希，legacy 1.0.0 hash 保持。调用方历史不被声称为最新权威来源；source id / hash 与聚合内容只做 caller-declared 内容绑定，不认证外部真实性。实现现位于协调 worktree，未并入本地 `main`、未验收；当前 registry 为空则 fail closed。
+- ADR-0067（2026-09-27，Codex 依 Raphael 本轮授权）：P11 显式劣化检查绑定调用方提供的 ACTIVE 终态生命周期历史、PASS baseline、精确 Profile 与 ADR-0062 有锚点冻结登记、近期 observation manifest / method / UTC 窗口；report 1.1.0 evidence 内嵌完整 manifest、参与哈希，legacy 1.0.0 hash 保持。调用方历史不被声称为最新权威来源；source id / hash 与聚合内容只做 caller-declared 内容绑定，不认证外部真实性。operation、writer、freeze anchor snapshot、manifest evidence 与显式本机 CLI 已进入本地 `main@498250a`；未测试、Phase 11 未验收；当前 registry 为空则 fail closed。
 - ADR-0069（2026-09-27，Codex 依 Raphael 本轮授权）：P12 `combine` 仅合并 search-space 重叠定义、`risk_policy` 与 `applicable_instruments` 完全相同的父代；不一致或缺失/非缺失冲突均拒绝，不默选某一方；不改 StrategySpec Schema / hash。
 - ADR-0070（2026-09-27，Codex 依 Raphael 本轮授权）：若最后一条已记录 round 的 `experiment` stage 为 FAILED，loop 设置可由 audit 重建的 `recovery_required`，同一 audit 不再自动续跑；LoopRecord / hash / checkpoint 字节不变。先防止重复 attempt，outcome 自动恢复与人工修复工具另待后续实现。
 - ADR-0068（2026-09-27，Codex 依 Raphael 本轮授权）：接受闭世界 typed operator plan 机制与拒绝边界；仅准许生成 `non-runnable` typed AST / validation result。conditioning / interaction / temporal / transformation / ensemble / negation 仍全部禁跑；plan 审计持久化及与 TrialLedger 的原子关系须在首个 operator 启用前另行决定和实现，当前 typed plan 不注册 trial、不调用 Runner。
@@ -166,7 +166,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 稳定远程恢复点（2026-09-27）：PR #9 合并后 `origin/main` 为 `44fe9a2`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已包含在该恢复点，PR #7～#9 同步状态 / hygiene。B67 `6d887b7` 的全量非 PostgreSQL门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。当前本地 `main@669704c` 比此远程恢复点超前 18 个提交，尚未推送，见 `PROJECT_STATUS.md`。
+- 稳定远程恢复点（2026-09-27）：PR #9 合并后 `origin/main` 为 `44fe9a2`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已包含在该恢复点，PR #7～#9 同步状态 / hygiene。B67 `6d887b7` 的全量非 PostgreSQL门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。本地 `main` 已快进吸收 `498250a` 并增加状态同步提交，比该远程恢复点超前 45 个提交，尚未推送，见 `PROJECT_STATUS.md`。
 - Phase 1：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 是当前容量阻断。500k `resume` / `replay` 已测得 59.9 / 63.9 MiB 增长，超过 32 MiB 门槛。协调分支现含一次 metadata history walk 和 normalizer committed-plan count 两项候选（§10.19–10.20）；独立静态检查通过，但测试与容量探针仍待后续阶段，本轮没有重跑。
 - 恢复资料见 `PROJECT_STATUS.md` 与 `docs/plans/2026-09-26-all-code-completion-plan.md`；Phase 0 基线仍为 tag `phase-0-complete`，Phase 1 D3D-R1 恢复点为 `c06b9fa`。
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
@@ -176,4 +176,4 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 已实现但未完成 Phase 验收：Canonical、PIT / dataset / representation、Feature、State / Event、Outcome / Validation、Strategy / Backtest、Runner、Control Plane 与 Phase 2～14 模块（B1～B67）；本地 StorageAdapter、PyIceberg Catalog、生产表定义、D0～D3E 数据路径也已实现。Phase 1 E1-CAP-1 仍阻断，真实运行、人工知识审阅和各 Phase 验收仍独立待办。
 - Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3E 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 `c326434` → D3E-R3 `7e9e084` 已由 Codex 于 2026-09-27 验收；E1-CAP-1 是当前容量阻断
-- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；PR #9 合并后的远程恢复点是 `origin/main@44fe9a2`；当前本地 `main@669704c` ahead 18、未推送。历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。
+- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；PR #9 合并后的远程恢复点是 `origin/main@44fe9a2`；当前本地 `main` 已纳入协调提交 `498250a` 和后续状态同步提交，比 origin 超前 45 个提交、未推送。历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。

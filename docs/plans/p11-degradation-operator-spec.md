@@ -1,7 +1,7 @@
 # Phase 11 degradation operator — implementation specification
 
 **Status:** Implementation specification; ADR-0067 is Accepted. This document is subordinate to ADR-0067 where wording differs. Phase 11 remains unaccepted.
-**Baseline reviewed:** coordination branch `669704c`; ADR-0067 implementation state updated 2026-09-27.
+**Initial design baseline:** coordination branch `669704c` (historical; implementation is now included in local `main@498250a`).
 **Scope:** an explicit, local, read-only-input operator which invokes the existing degradation monitor and append-only report writer. It does not schedule itself, mutate lifecycle state, or change monitor thresholds.
 
 ## 1. Decision in this specification
@@ -17,7 +17,7 @@ No report is produced unless the caller supplies a verifiable lifecycle history 
 ### Governing documents
 
 - `CLAUDE.md` §0–§8: accepted ADRs outrank status and memory; Validation Profile / Constitution are frozen; new capabilities prefer plugins; changes to contracts, lifecycle, profiles, or validation rules need a Proposed ADR first.
-- `PROJECT_STATUS.md` §1, §5, §6, §9: ADR-0067 is Accepted, while Phase 11 remains unaccepted; implementation is in the Codex coordination worktree and awaits later consolidation / acceptance.
+- `PROJECT_STATUS.md` §1, §5, §6, §9: ADR-0067 is Accepted, while Phase 11 remains unaccepted; implementation is included in local `main@498250a`, with integrated tests and Phase acceptance deferred.
 - `PROJECT_MEMORY.md` §5–§7: ADR-0044 / 0049 / 0050 provide worker, loop, and audit boundaries; ADR-0052 provides exact decimal threshold fields; research work does not automatically promote lifecycle state.
 - `docs/research/roadmap.md` §Phase 11: scheduled continuous loop, dashboard and degradation monitoring; bounded compute / LLM / trial budgets; no automatic promotion to ACTIVE.
 
@@ -172,4 +172,4 @@ Do not modify `core/contracts/`, `core/domain/`, Schema exports, accepted ADRs, 
 
 ## 9. Implementation state (2026-09-27)
 
-ADR-0067 is Accepted. The explicit operation, report writer, Profile freeze anchor snapshot, and explicit-input local CLI are implemented in the Codex coordination worktree; the full recent manifest is retained in hash-bound evidence, and the legacy writer remains 1.0.0. The implementation has not been merged into local `main` and has not been tested. P11 tests and Phase acceptance are deferred as requested.
+ADR-0067 is Accepted. The explicit operation, report writer, Profile freeze anchor snapshot, hash-bound manifest evidence, and explicit-input local CLI are included in local `main@498250a`. The CLI static checks are recorded in completion plan §10.28; integrated tests / build and Phase 11 acceptance remain deferred. The fast-forward is code consolidation, not Phase acceptance; `origin/main` remains `44fe9a2`.
