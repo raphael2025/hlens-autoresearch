@@ -1,0 +1,314 @@
+"""Explicit one-shot local CLI for the Phase 11 degradation operation (ADR-0067).
+
+Every artifact and output directory is supplied by the caller. This module does not discover
+current lifecycle state, select recent reports, aggregate observations, use a clock, or schedule
+work. The lifecycle and observation inputs remain caller-declared evidence with the limits
+described by ADR-0067.
+
+Run with ``python -m research.operations.degradation_cli --help``. Only one invocation may use a
+given reports root at a time; the report writer does not provide a cross-process directory lock.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import sys
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Any
+
+from pydantic import ValidationError
+
+from core.contracts.validation_profile import ValidationProfile
+from core.domain.base import Ref, exact_decimal, exact_decimal_text
+from core.domain.research import ValidationReport
+from core.lifecycle.strategy import LifecycleHistory
+from infrastructure.registry.profile_freeze import ProfileFreezeRegistry
+from infrastructure.registry.registry import RegistryError
+from research.operations.degradation import (
+    MANIFEST_FORMAT,
+    BaselineMetricSet,
+    DegradationOperationRefused,
+    ObservationSource,
+    ObservationWindow,
+    RecentMetricManifest,
+    RecentMetricSet,
+    run_degradation_check,
+)
+from research.reports.degradation import write_degradation_operation
+
+
+class _InputError(ValueError):
+    """A local input file or field is malformed."""
+
+
+def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in result:
+            raise _InputError("JSON object has a duplicate key")
+        result[key] = value
+    return result
+
+
+def _reject_constant(_: str) -> None:
+    raise _InputError("JSON contains a non-finite number")
+
+
+def _read_json(path: Path) -> Any:
+    text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(
+            text,
+            object_pairs_hook=_unique_object,
+            parse_constant=_reject_constant,
+        )
+    except (json.JSONDecodeError, UnicodeError, RecursionError) as exc:
+        raise _InputError("input is not valid JSON") from exc
+
+
+def _object(value: Any, label: str, *, keys: set[str] | None = None) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise _InputError(f"{label} must be a JSON object")
+    if keys is not None and set(value) != keys:
+        raise _InputError(f"{label} has missing or unknown fields")
+    return value
+
+
+def _utc_datetime(value: Any, label: str) -> datetime:
+    if not isinstance(value, str):
+        raise _InputError(f"{label} must be a UTC ISO-8601 string")
+    try:
+        result = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise _InputError(f"{label} must be a UTC ISO-8601 string") from exc
+    if result.tzinfo is None or result.utcoffset() != UTC.utcoffset(None):
+        raise _InputError(f"{label} must include the UTC offset")
+    return result.astimezone(UTC)
+
+
+def _metric_values(value: Any, label: str) -> dict[str, str]:
+    values = _object(value, label)
+    result: dict[str, str] = {}
+    for key, raw in values.items():
+        if not isinstance(key, str) or not isinstance(raw, str):
+            raise _InputError(f"{label} keys and values must be strings")
+        try:
+            decimal = exact_decimal(raw)
+        except ValueError as exc:
+            raise _InputError(f"{label} contains an invalid exact decimal") from exc
+        if exact_decimal_text(decimal) != raw:
+            raise _InputError(f"{label} values must use canonical decimal text")
+        result[key] = raw
+    return result
+
+
+def _load_model(path: Path, model: type[Any], label: str) -> Any:
+    try:
+        return model.model_validate(_read_json(path))
+    except (ValidationError, ValueError, TypeError) as exc:
+        raise _InputError(f"{label} does not match its contract") from exc
+
+
+def _load_baseline(path: Path, report: ValidationReport) -> BaselineMetricSet:
+    payload = _object(
+        _read_json(path),
+        "baseline set",
+        keys={"validation_report_hash", "metrics", "gate_ids"},
+    )
+    metrics = _metric_values(payload["metrics"], "baseline metrics")
+    gates = _object(payload["gate_ids"], "baseline gate_ids")
+    if not all(isinstance(key, str) and isinstance(value, str) for key, value in gates.items()):
+        raise _InputError("baseline gate_ids keys and values must be strings")
+    try:
+        return BaselineMetricSet(
+            validation_report_hash=payload["validation_report_hash"],
+            metrics={key: exact_decimal(value) for key, value in metrics.items()},
+            gate_ids=gates,
+        )
+    except (DegradationOperationRefused, TypeError, ValueError) as exc:
+        raise _InputError("baseline set is invalid") from exc
+
+
+def _load_recent(path: Path) -> RecentMetricSet:
+    envelope = _object(
+        _read_json(path), "recent manifest envelope", keys={"manifest", "manifest_hash"}
+    )
+    payload = _object(
+        envelope["manifest"],
+        "recent manifest",
+        keys={
+            "format",
+            "subject",
+            "profile_ref",
+            "profile_hash",
+            "window",
+            "observation_set_id",
+            "method_id",
+            "sources",
+            "metrics",
+        },
+    )
+    if payload["format"] != MANIFEST_FORMAT:
+        raise _InputError("recent manifest format is unsupported")
+    window = _object(payload["window"], "recent manifest window", keys={"start", "end", "label"})
+    try:
+        observed_window = ObservationWindow(
+            start=_utc_datetime(window["start"], "manifest window start"),
+            end=_utc_datetime(window["end"], "manifest window end"),
+            label=window["label"],
+        )
+        raw_sources = payload["sources"]
+        if not isinstance(raw_sources, list):
+            raise _InputError("recent manifest sources must be an array")
+        sources: list[ObservationSource] = []
+        for raw_source in raw_sources:
+            source = _object(
+                raw_source,
+                "observation source",
+                keys={"source_id", "source_hash", "event_time", "observed_time"},
+            )
+            sources.append(
+                ObservationSource(
+                    source_id=source["source_id"],
+                    source_hash=source["source_hash"],
+                    event_time=_utc_datetime(source["event_time"], "source event_time"),
+                    observed_time=_utc_datetime(source["observed_time"], "source observed_time"),
+                )
+            )
+        metrics = _metric_values(payload["metrics"], "recent metrics")
+        manifest = RecentMetricManifest(
+            subject=Ref.parse(payload["subject"]),
+            profile_ref=Ref.parse(payload["profile_ref"]),
+            profile_hash=payload["profile_hash"],
+            window=observed_window,
+            observation_set_id=payload["observation_set_id"],
+            method_id=payload["method_id"],
+            sources=sources,
+            metrics={key: exact_decimal(value) for key, value in metrics.items()},
+        )
+        return RecentMetricSet(manifest=manifest, manifest_hash=envelope["manifest_hash"])
+    except (DegradationOperationRefused, TypeError, ValueError) as exc:
+        raise _InputError("recent manifest is invalid") from exc
+
+
+def _existing_registry_paths(root: Path, anchor: Path) -> None:
+    """Refuse missing registry material before the registry constructor can create files."""
+    if not root.is_dir():
+        raise _InputError("freeze registry root must already exist")
+    if not (root / ".lock").is_file():
+        raise _InputError("freeze registry lock file must already exist")
+    if not (root / "freezes.jsonl").is_file():
+        raise _InputError("freeze registry journal must already exist")
+    if not (root / "blobs").is_dir():
+        raise _InputError("freeze registry blob directory must already exist")
+    if not anchor.is_file():
+        raise _InputError("freeze registry anchor file must already exist")
+    if anchor.resolve().is_relative_to(root.resolve()):
+        raise _InputError("freeze registry anchor must be outside its root")
+
+
+def _separate_report_root(registry_root: Path, reports_root: Path) -> None:
+    registry = registry_root.resolve()
+    reports = reports_root.resolve()
+    if registry.is_relative_to(reports) or reports.is_relative_to(registry):
+        raise _InputError("reports root and freeze registry must be separate directories")
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run one explicit local P11 degradation check and write its bound report."
+    )
+    parser.add_argument("--subject", required=True, help="canonical subject Ref, kind:name@version")
+    parser.add_argument("--lifecycle", required=True, type=Path, help="LifecycleHistory JSON")
+    parser.add_argument("--profile", required=True, type=Path, help="ValidationProfile JSON")
+    parser.add_argument(
+        "--baseline-report", required=True, type=Path, help="PASS ValidationReport JSON"
+    )
+    parser.add_argument(
+        "--baseline-set",
+        required=True,
+        type=Path,
+        help="exact baseline metrics and gate-id JSON",
+    )
+    parser.add_argument(
+        "--recent-manifest", required=True, type=Path, help="manifest and declared hash JSON"
+    )
+    parser.add_argument("--window-start", required=True, help="UTC ISO-8601 start, inclusive")
+    parser.add_argument("--window-end", required=True, help="UTC ISO-8601 end, exclusive")
+    parser.add_argument("--window-label", required=True, help="stable report label for this window")
+    parser.add_argument(
+        "--freeze-registry", required=True, type=Path, help="existing registry root"
+    )
+    parser.add_argument(
+        "--freeze-anchor", required=True, type=Path, help="existing external anchor file"
+    )
+    parser.add_argument(
+        "--reports-root", required=True, type=Path, help="existing report directory"
+    )
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Run one explicit P11 check; report only non-sensitive result identity fields."""
+    args = _parser().parse_args(argv)
+    stage = "input"
+    try:
+        subject = Ref.parse(args.subject)
+        lifecycle = _load_model(args.lifecycle, LifecycleHistory, "lifecycle history")
+        profile = _load_model(args.profile, ValidationProfile, "profile")
+        baseline_report = _load_model(args.baseline_report, ValidationReport, "baseline report")
+        baseline = _load_baseline(args.baseline_set, baseline_report)
+        recent = _load_recent(args.recent_manifest)
+        window = ObservationWindow(
+            start=_utc_datetime(args.window_start, "window start"),
+            end=_utc_datetime(args.window_end, "window end"),
+            label=args.window_label,
+        )
+        if not args.reports_root.is_dir():
+            raise _InputError("reports root must already exist")
+        _existing_registry_paths(args.freeze_registry, args.freeze_anchor)
+        _separate_report_root(args.freeze_registry, args.reports_root)
+
+        stage = "operation"
+        with ProfileFreezeRegistry(args.freeze_registry, anchor=args.freeze_anchor) as freezes:
+            result = run_degradation_check(
+                subject=subject,
+                lifecycle=lifecycle,
+                profile=profile,
+                baseline_report=baseline_report,
+                freezes=freezes,
+                baseline=baseline,
+                recent=recent,
+                window=window,
+            )
+            stage = "report"
+            written = write_degradation_operation(args.reports_root, result)
+
+        print(f"status={result.check.status}")
+        print(f"check_hash={written.id}")
+        print(f"report={written.path}")
+        return 0
+    except (OSError, RegistryError) as exc:
+        print(
+            f"P11 degradation CLI failed at {stage} ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 3
+    except (
+        DegradationOperationRefused,
+        _InputError,
+        ValidationError,
+        TypeError,
+        ValueError,
+    ) as exc:
+        print(
+            f"P11 degradation CLI refused at {stage} ({type(exc).__name__})",
+            file=sys.stderr,
+        )
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

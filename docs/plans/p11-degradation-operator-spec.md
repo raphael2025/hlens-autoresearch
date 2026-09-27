@@ -144,9 +144,12 @@ ADR-0067 has accepted the additive report contract, ProfileFreezeRegistry anchor
 
 - No LLM, trial, compute-heavy runner, provider, event bus, or subprocess is involved. The operation is bounded by the supplied metric count plus local hash/report I/O.
 - Do not reuse `LoopBudget`: it budgets research rounds, not this one-shot local evidence check.
-- CLI is a later implementation detail. The first interface should be a Python function invoked by an explicit local composition script; every required input should come from caller-provided artifact paths/objects. No daemon or scheduled invocation.
-- If a CLI is added in the same implementation, require explicit flags for subject, lifecycle history, Profile, baseline report, baseline mapping, recent observation manifest, half-open window start/end, and reports root. No `--latest`, date-relative shortcut, profile selector fallback, or implicit working-directory data discovery.
-- Output only the report identity/path and status. Never print source payloads or secrets. Do not connect to exchange APIs, trading services, or external services.
+- The local CLI is an explicit call adapter for this operation, not a loop launcher. Invoke it with `python -m research.operations.degradation_cli`; it must not load a loop config, reuse `LoopBudget`, or accept a loop state directory.
+- Require explicit flags for subject, lifecycle history, Profile, baseline report, baseline exact metrics + gate mapping, recent observation manifest + hash, UTC window start/end + stable label, freeze registry root + external anchor, and reports root. Input JSON must reject repeated keys, non-finite JSON constants, unknown fields in CLI-owned objects, and non-canonical / floating-point metric values. The baseline file shape is `{"validation_report_hash":"<sha256>","metrics":{"<metric>":"<canonical decimal>"},"gate_ids":{"<metric>":"<gate id>"}}`. The recent file's `manifest` object has the exact `RecentMetricManifest.payload()` fields defined in §4; its envelope is `{"manifest":<manifest object>,"manifest_hash":"<sha256>"}`.
+- The subject ref is canonical `kind:name@version`. The lifecycle, Profile, and validation report files contain their direct JSON model payloads. `--window-start` and `--window-end` require explicit UTC offsets; no relative dates or current-clock defaults.
+- Refuse a missing freeze registry, lock file, journal, blob directory, or anchor before opening it so this CLI does not initialize registry storage. The anchor must be outside the registry root. Opening an existing registry takes its exclusive lock; its constructor may complete its documented recovery for a journal record committed immediately before a crash but not yet anchored.
+- Require an existing reports root separate from the freeze-registry root; after successful operation validation, write exactly one report through `write_degradation_operation`. Print only status, check hash, and report path. Input refusal, registry errors, and I/O failures return non-zero without printing source payloads. Use one CLI process per reports root at a time; the report writer has no cross-process directory lock.
+- No `--latest`, date-relative shortcut, Profile selector fallback, implicit working-directory data discovery, or network access. Do not connect to exchange APIs, trading services, or external services.
 
 ## 7. File boundary and implementation order
 
@@ -154,7 +157,8 @@ ADR-0067 has accepted the additive report contract, ProfileFreezeRegistry anchor
 2. **Operation composition:** new `research/operations/degradation.py`; local frozen DTOs, binding checks, explicit invocation. It may depend on `apps.worker.degradation`, `core`, and `research.reports`; it must not add reverse imports from `apps/worker` to `research/`.
 3. **Report writer:** `research/reports/degradation.py`; the 1.1.0 path accepts only the operation result and includes its provenance in the hash-bound payload. Keep all threshold evaluation in `DegradationMonitor`.
 4. **Focused tests and acceptance are deferred** per Raphael's instruction; the later acceptance batch should cover source mismatch / wrong state / unfrozen profile / duplicate baseline gate / empty Profile thresholds / exact Decimal / missing evidence / idempotent report / conflict refusal. No API write route or lifecycle mutation is in scope.
-5. **Docs after implementation:** worker / research reports / API README and PROJECT_STATUS. State remains `CODE_COMPLETE / DEBUG_PENDING` until Phase 11 acceptance.
+5. **Local CLI adapter:** `research/operations/degradation_cli.py` reads only explicit caller paths, invokes the accepted operation, then the existing writer. It does not resolve authoritative ACTIVE state, verify external source truth, aggregate observations, schedule work, mutate lifecycle, publish events, or interact with a loop.
+6. **Docs after implementation:** operations README, this spec, and PROJECT_STATUS. State remains `CODE_COMPLETE / DEBUG_PENDING` until Phase 11 acceptance.
 
 Do not modify `core/contracts/`, `core/domain/`, Schema exports, accepted ADRs, validation rules, or lifecycle transitions for this slice. If implementing provenance requires a new durable observation contract or trusted lifecycle registry, stop and propose that as a separate decision instead of expanding this interface silently.
 
@@ -168,4 +172,4 @@ Do not modify `core/contracts/`, `core/domain/`, Schema exports, accepted ADRs, 
 
 ## 9. Implementation state (2026-09-27)
 
-ADR-0067 is Accepted. The explicit operation, report writer, and Profile freeze anchor snapshot are implemented in the Codex coordination worktree; the full recent manifest is retained in hash-bound evidence, and the legacy writer remains 1.0.0. The implementation has not been merged into local `main` and has not been tested. P11 tests and Phase acceptance are deferred as requested.
+ADR-0067 is Accepted. The explicit operation, report writer, Profile freeze anchor snapshot, and explicit-input local CLI are implemented in the Codex coordination worktree; the full recent manifest is retained in hash-bound evidence, and the legacy writer remains 1.0.0. The implementation has not been merged into local `main` and has not been tested. P11 tests and Phase acceptance are deferred as requested.

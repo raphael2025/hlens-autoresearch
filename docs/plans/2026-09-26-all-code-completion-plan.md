@@ -1013,7 +1013,21 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 ### 10.27 P12 ADR-0069 实现级复核与后续任务筛选（2026-09-27）
 
 - Cursor 对 `research/evolution/operators.py` 的 `combine` 按 Accepted ADR-0069 逐项只读核对：父代 ref、同名参数与搜索空间、risk policy、applicable instruments、确定性 signal / params / lineage 合并，以及创建 child 前失败关闭均符合；未发现可复现实现遗漏。复核没有修改文件，没有运行测试 / build / 静态检查；ADR-0069 冲突用例留待统一验收批次。
-- 复核当前状态 / 完成计划后，没有找到其他已批准且无需新架构或契约决定的普通功能缺口。E1 仍需容量方案与证据；P7 算子语义、P11 自动运行编排、0.5 人工审阅与真实 catalog 操作各有未决边界。下一批先从这些边界中取得批准 / 容量证据，再派单模块实现，不为制造进度新增占位功能。
+- 复核当前状态 / 完成计划后，没有找到另一个可直接扩写的普通功能缺口。P11 的显式 CLI 调用适配已由 Codex 按 ADR-0067 与本规格 §6 选为下一项实现；它不构成自动运行编排。E1 仍需容量方案与证据；P7 算子语义、P11 权威数据来源、0.5 人工审阅与真实 catalog 操作仍各有独立边界。
+
+### 10.28 P11-LOCAL-OPERATOR：显式本机 CLI（2026-09-27）
+
+- 决定：在 Accepted ADR-0067 与本规格 §6-7 的明确输入边界内，实现 `python -m research.operations.degradation_cli`，只调用已有 `run_degradation_check` 与 `write_degradation_operation`。这是单次调用适配，不启动 research loop，不复用 loop budget / state dir，不增加 scheduler、daemon、API 写入口、事件发布、生命周期变化、数据 resolver 或聚合器；不新增 ADR / 契约 / Schema。
+- CLI 必须要求明确的 subject、LifecycleHistory、ValidationProfile、PASS ValidationReport、baseline exact metrics + gate-id 映射、RecentMetricManifest + 声明哈希、UTC 窗口起止 + 稳定 label、已有 freeze registry + 外部 anchor、已有 reports root；reports root 与 registry root 分开。无 latest、默认值、隐式目录扫描、相对日期或网络访问。严格拒绝重复 JSON key、NaN / Infinity 及非规范 / float metric 值；失败时不回显输入内容。
+- 使用限制：当前 freeze registry 为空，合法调用会按现有 operation 拒绝；不得为打通 CLI 而冻结 Profile 或伪造 ACTIVE / baseline / observation。LifecycleHistory 终态 ACTIVE 仅是调用方提交历史的结果，recent source / aggregation 仍不作真实性认证。相同 reports root 一次只运行一个 CLI 进程，writer 没有跨进程目录锁。
+- 实现文件：`research/operations/degradation_cli.py`、`research/operations/README.md`、本 P11 operator spec 与 `PROJECT_STATUS.md`。Phase 11 状态为 `CODE_COMPLETE / DEBUG_PENDING`；不运行测试 / build，统一验收阶段补测试。
+- 静态检查原样结果：
+  - `uv run --offline ruff check research/operations/degradation_cli.py` → `All checks passed!`
+  - `uv run --offline ruff format --check research/operations/degradation_cli.py` → `1 file already formatted`
+  - `uv run --offline mypy research/operations/degradation_cli.py` → `Success: no issues found in 1 source file`
+  - `git diff --check` → exit 0
+- 独立只读实现复核未发现可确认、可复现的逻辑缺陷或信任边界回归；未改文件，未跑测试 / build。
+- 已知限制：现有 freeze registry 为空，实际操作应按 ADR-0067 fail closed；没有 CLI 端到端测试。报告 writer 不提供跨进程目录锁，同一 `reports_root` 需单实例运行。CLI 本身不会验证输入历史是否最新，也不认证近期 source / aggregation 的真实性。
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
