@@ -135,6 +135,12 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|---|
 | D-VOLSRC | 数据集路径上 G4 容量所用的成交量（特征 manifest 的 `bar_volume`）可能与实际执行的价格 bar 的成交量不同，今天静默使用前者 | Codex 选 A：两者须精确相等，不一致即 INCONCLUSIVE（`bar_volume_source_mismatch`），缺值仍为 `bar_volume_missing`，合成路径不变 | 已决定并实施：ADR-0064 Accepted（2026-09-27，Codex）；B66 CODE_COMPLETE / DEBUG_PENDING |
 
+**D-STATE-INC（已决定：暂缓）**
+
+| ID | 问题 | 决定 | 边界 |
+|---|---|---|---|
+| D-STATE-INC | 状态执行器是否增加"可选增量评估路径"以降低逐时刻计算成本（ADR-0035 已知缺口） | **Codex 不批准**（2026-09-27）：保留逐时刻路径，因为因果保证来自每个时刻只看到当时可见的数据，等价测试不足以证明新路径不削弱这一点 | 需要真实性能基线与不暴露未来数据的逐步协议后才重新评估；这是暂缓优化，不代表没有性能问题（ADR-0035） |
+
 **P10-FREEZE（已决定）**
 
 | ID | 问题 | 决定 | 边界 |
@@ -252,7 +258,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | B66（ADR-0064）：数据集路径上 G4 容量所用的成交量须与实际执行的价格 bar 的成交量完全一致，否则容量检查为不确定（`bar_volume_source_mismatch`），不再静默使用另一份数据 | CODE_COMPLETE / DEBUG_PENDING；合成路径与一致时的结果不变；无阈值 / Profile / 契约变化 |
+| 2026-09-27 | B66（ADR-0064）：数据集路径上 G4 容量所用的成交量须与实际执行的价格 bar 的成交量完全一致，否则容量检查为不确定（`bar_volume_source_mismatch`），不再静默使用另一份数据 | CODE_COMPLETE / DEBUG_PENDING；合成路径与一致时的结果不变；无阈值 / Profile / 契约变化；冻结 HEAD `255ce1a`（B63～B66）全量非 PostgreSQL 门禁 7287 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0 |
 | 2026-09-27 | ADR-0063（Codex 决定）：本机只读研究 API 用 Uvicorn 运行，只绑定 127.0.0.1、单 worker；公网 / 认证 / TLS 不在范围内 | B65 入口与测试已实施（未安装 Uvicorn）；真实 Uvicorn 运行待 Raphael 授权安装 |
 | 2026-09-27 | B63：控制台的证据模式说明写明 B62 边界：只证明研究层纸面路由前提，通过不代表 Profile 已冻结、策略已晋升或具备生产资格；列出反向对照项 | 只改控制台文字与测试；无代码 / 契约 / API 改动 |
 | 2026-09-27 | B62（Codex 决定）：P10 证据模式不要求 Profile 冻结登记；这属于研究层路由证据，与 Promotion 的冻结权威门分开 | 无代码 / 契约 / Schema 改动；生产资格仍须 ADR-0005 / ADR-0062 Promotion 与 Control Plane；已记录于 ADR-0043；冻结 HEAD `0ced9ca`（B61 + B62）全量非 PostgreSQL 门禁 7260 passed，全部检查退出码 0 |
