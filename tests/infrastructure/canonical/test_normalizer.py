@@ -7,7 +7,8 @@ reconciler. Expected values are written down from ADR-0028 by hand, not from the
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+import sys
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -25,13 +26,16 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
     CanonicalNormalizeConflict,
     CanonicalNormalizeError,
+    CanonicalNormalizer,
     CanonicalUnitIncomplete,
     unit_batch_id,
 )
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveIngested, RawRevisionStore
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision.channel_reconcile import evidence_from_row, revision_record_from_row
+from infrastructure.revision.rest_identity import PAGE_LIMIT
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.collector import rest_support as cs
 from tests.infrastructure.revision import rest_store_support as ss
@@ -1094,7 +1098,7 @@ def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarne
 
 
 def _unbounded_check_rest_unit(
-    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: list[int]
+    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: Sequence[int]
 ) -> None:
     """The pre-G2-R3a ``_check_rest_unit`` verbatim: full rows of every history row per key."""
     table = channel.element.table
@@ -1243,3 +1247,180 @@ def test_the_bounded_page_check_keeps_the_unbounded_verdicts(
     h.forge_rows(c.REST_AGGS, [dict(foreign[0], response_revision_id="elsewhere")], "copy")
     outcome, proved = _same_verdicts(_page_verdicts(h, [b_id]))[b_id]
     assert outcome[0] == "CanonicalUnitIncomplete" and proved == []
+
+
+# =========================================================================================
+# E1-CAP-1: nothing proportional to the unit — narrow reads and Python collections included
+# =========================================================================================
+
+
+@dataclass
+class _ReadLog(ProxyCatalog):
+    """Every scan, however narrow: ``(table, columns, limit, rows returned)``."""
+
+    reads: list[tuple[str, tuple[str, ...], int | None, int]] = field(default_factory=list)
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_columns(table, **kwargs)
+        self.reads.append((table, tuple(kwargs["columns"]), kwargs.get("limit"), result.num_rows))
+        return result
+
+
+def _pinned_reader(h: RestHarness, adapter: Any, chunk: int) -> CanonicalNormalizer:
+    """A reader on the current heads, as PIT pins them (reads go through ``adapter``)."""
+    heads = {d.table: h.head(d.table) for d in (c.ARCHIVE_AGGS, c.ARCHIVES, c.TRADES)}
+    view = PinnedCatalogView(adapter, {table: head for table, head in heads.items() if head})
+    return CanonicalNormalizer(view, h.storage, microbatch_rows=chunk)
+
+
+def _unit_seqs(h: RestHarness, source: str) -> list[int]:
+    return sorted(
+        row["arrival_seq"]
+        for row in h.rows(c.TRADES)
+        if row["lineage_source_revision_id"] == source
+    )
+
+
+@pytest.mark.parametrize("count", [7, 19])
+def test_no_read_of_an_archive_unit_grows_with_the_unit(h: RestHarness, count: int) -> None:
+    """E1-CAP-1: positions, ``arrival_seq`` / ``knowledge_time`` and the closing block are read
+    a microbatch (+ 1 row) at a time like the wide rows, so the widest read of the unit's tables
+    is the same for 7 and 19 rows — in the write, the replay, the full and the batch proof."""
+    chunk = 2
+    lines = ss.archive_agg_lines(ss.agg_items(count))
+    archive = c.ingest_archive(
+        h, "agg_trades", lines, knowledge=K_ARCHIVE, store_microbatch_rows=chunk
+    )
+    log = _ReadLog(h.adapter)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=chunk)
+    out = n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    assert out.row_count == count and not out.replayed
+    assert n.normalize_unit(c.ARCHIVE_AGGS.table, archive).replayed
+    assert len(n.verify_unit(c.ARCHIVE_AGGS.table, archive)) == count
+    middle = _unit_seqs(h, archive)[count // 2]
+    part = _pinned_reader(h, log, chunk).verify_unit(
+        c.ARCHIVE_AGGS.table, archive, arrival_seqs={middle}
+    )
+    assert middle in {row["arrival_seq"] for row in part} and len(part) == chunk
+    unit_tables = {c.ARCHIVE_AGGS.table, c.TRADES.table}
+    reads = [(cols, rows) for table, cols, _, rows in log.reads if table in unit_tables]
+    assert max(rows for _, rows in reads) <= chunk + 1
+    # The narrow reads (positions, numbers, probes) are exercised and bounded too.
+    narrow = [rows for cols, rows in reads if len(cols) <= 3]
+    assert len(narrow) >= count // chunk and max(narrow) <= chunk + 1
+
+
+def test_a_rest_unit_is_read_at_most_one_page(h: RestHarness) -> None:
+    """A REST unit is one page: its positions are read capped at ``PAGE_LIMIT + 1`` rows, and a
+    unit holding more rows than a page can fails closed before any clock reading."""
+    [response] = c.ingest_rest(h, "agg_trades", ss.agg_items(3), knowledge=K_REST)
+    log = _ReadLog(h.adapter)
+    out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log).normalize_unit(
+        c.REST_AGGS.table, response
+    )
+    assert out.row_count == 3
+    limits = [limit for _, cols, limit, _ in log.reads if cols == ("element_index",)]
+    assert limits and set(limits) == {PAGE_LIMIT + 1}
+    [later] = c.ingest_rest(
+        h, "agg_trades", ss.agg_items(3, first_id=500), knowledge=K_REST, request_id="req-rest-2"
+    )
+    real = next(r for r in h.rows(c.REST_AGGS) if r["response_revision_id"] == later)
+    extra = [
+        dict(real, element_index=index, revision_id=f"{real['revision_id']}-{index}")
+        for index in range(3, PAGE_LIMIT + 1)
+    ]
+    h.forge_rows(c.REST_AGGS, extra, "forged-oversized-page")
+    log = _ReadLog(h.adapter)
+    clock = StepClock(start=K_NORM)
+    before = _state(h)
+    with pytest.raises(CatalogIntegrityError, match="more rows than one page"):
+        c.normalizer(h, clock=clock, adapter=log).normalize_unit(c.REST_AGGS.table, later)
+    assert clock.calls == 0 and _state(h) == before
+    widest = max(rows for table, _, _, rows in log.reads if table == c.REST_AGGS.table)
+    assert widest <= PAGE_LIMIT + 1
+
+
+class _LargestLocal:
+    """The largest collection any ``normalizer.py`` frame holds in a local (or in a field of a
+    dataclass local, e.g. a survey or the unit facts), by element count, over a traced call.
+
+    Lists, tuples, sets, dicts / mappings and Arrow arrays / tables count; a ``range`` does not
+    (O(1) memory whatever its length), nor does text."""
+
+    def __init__(self) -> None:
+        self.largest = 0
+        self.where: tuple[str, str] = ("", "")
+
+    def __enter__(self) -> _LargestLocal:
+        self._previous = sys.gettrace()
+        sys.settrace(self._frame)
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        sys.settrace(self._previous)
+
+    def _frame(self, frame: Any, event: str, arg: Any) -> Any:
+        return self._line if frame.f_code.co_filename == nz.__file__ else None
+
+    def _line(self, frame: Any, event: str, arg: Any) -> Any:
+        for name, value in list(frame.f_locals.items()):
+            fields = getattr(value, "__dataclass_fields__", None)
+            members = [getattr(value, field) for field in fields] if fields else []
+            for item in (value, *members):
+                size = _elements(item)
+                if size > self.largest:
+                    self.largest, self.where = size, (frame.f_code.co_name, name)
+        return self._line
+
+
+def _elements(value: Any) -> int:
+    if isinstance(value, pa.Table):
+        return int(value.num_rows)
+    if isinstance(value, pa.Array | pa.ChunkedArray):
+        return len(value)
+    if isinstance(value, list | tuple | set | frozenset | Mapping):
+        return len(value)
+    return 0
+
+
+def _largest_local(h: RestHarness, archive: str, chunk: int) -> tuple[int, tuple[str, str]]:
+    """Over a write, a replay and a pinned batch proof of ``archive`` (the full-unit
+    ``verify_unit`` returns every row by contract, so it is not traced)."""
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=chunk)
+    with _LargestLocal() as probe:
+        n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+        n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    seqs = _unit_seqs(h, archive)
+    reader = _pinned_reader(h, h.adapter, chunk)
+    with probe:
+        reader.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={seqs[len(seqs) // 2]})
+    return probe.largest, probe.where
+
+
+def test_no_collection_the_normalizer_holds_grows_with_the_unit(h: RestHarness) -> None:
+    """E1-CAP-1: with a fixed microbatch the largest list / set / dict / Arrow column any
+    normalizer frame holds is the same for a 7-row and a 70-row unit (a window, a row's
+    columns). Before the fix the unit's positions, its revision ids, its committed
+    ``arrival_seq`` / ``knowledge_time`` columns and the expected numbers of the closing check
+    each held one entry per row."""
+    chunk = 10
+    small = c.ingest_archive(
+        h,
+        "agg_trades",
+        ss.archive_agg_lines(ss.agg_items(7)),
+        knowledge=K_ARCHIVE,
+        request_id="small",
+        store_microbatch_rows=chunk,
+    )
+    large = c.ingest_archive(
+        h,
+        "agg_trades",
+        ss.archive_agg_lines(ss.agg_items(70, first_id=1_000, first_ms=ss.T0 + 60_000)),
+        knowledge=K_ARCHIVE,
+        request_id="large",
+        store_microbatch_rows=chunk,
+    )
+    held_small = _largest_local(h, small, chunk)
+    held_large = _largest_local(h, large, chunk)
+    assert held_small[0] > chunk  # the probe sees the normalizer's collections at all
+    assert held_large[0] == held_small[0], (held_small, held_large)
