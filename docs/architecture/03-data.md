@@ -338,8 +338,9 @@ F2 / F3 实现要点（`infrastructure/universe/`、`infrastructure/dataset/`）
 
 | 表 | 内容 | 初始分区 |
 |---|---|---|
-| `event.events` | 一次事件运行（`EventResult`）的全部事件，一行一个事件：逻辑 Event 表 9 列（`infrastructure/event/table.py` 的 `EVENT_TABLE_COLUMNS`）+ 运行块（`event_index`、`event_count`、`request_hash`、`provider_hash`、`as_of`），可由表内容单独重建并复核 `EventResult`；一次运行一个批次（`batch_id = event.{result_hash}`），同运行重写为 no-op，同 `result_hash` 不同内容 fail closed，读取固定在一个 snapshot 上 | `month(event_time)` |
+| `event.events` | 一次事件运行（`EventResult`）的全部事件，一行一个事件：逻辑 Event 表 10 列（`infrastructure/event/table.py` 的 `EVENT_TABLE_COLUMNS`，含 ADR-0057 可选 `subject`）+ 运行块 6 列（`event_index`、`event_count`、`request_hash`、`provider_hash`、`as_of`、`contract_schema_version`）；运行块记录契约信封版本，读取时按记录版本重建并复核 `EventResult`。一次运行一个批次（`batch_id = event.{result_hash}`），同运行重写为 no-op，同 `result_hash` 不同内容 fail closed，读取固定在一个 snapshot 上 | `month(event_time)` |
 
 - 定义在 `infrastructure/event/table_definition.py`（`PHASE3_TABLES` / `PHASE3_REGISTRY`），**不**属于 §7.1 的 Phase 1
   清单，Phase 1 的 15 张表与其哈希不变；只通过显式的 `ensure_event_tables(adapter)` 建表，不接入 Phase 1 的建表脚本。
+- 当前表定义依据 ADR-0056（含实施说明）、ADR-0057 与 ADR-0052 版本化重放实现；`event.events` 尚未在生产 catalog 创建，本文描述的是已登记并实现的表结构，不表示生产建表已执行。
 - 空运行（0 个事件）不写入表（`CommitRequest.row_count >= 1`），整次运行由 `EventResultStore` 制品存储保存。

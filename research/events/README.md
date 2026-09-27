@@ -41,7 +41,8 @@ State 序列目前以本地最小形状输入（`infrastructure/event/inputs.py`
   `EventResultStore`（`<root>/<result_hash>.json` 规范 JSON，原子发布、从不覆盖，读取时重建 `EventResult` 复核哈希并要求字节即规范形式）。
   这是**产物存储**，不是数据平面表。
 - ✅（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）物理 Event 表已登记并实现（[ADR-0056](../../docs/adr/0056-event-table.md)，P3-EVTABLE）：
-  只追加的 Iceberg 表 `event.events`（逻辑 9 列 + 运行块，`month(event_time)` 分区；`infrastructure/event/table_definition.py`），
+  只追加的 Iceberg 表 `event.events`（逻辑 10 列，含 ADR-0057 可选 `subject`，加运行块 6 列：`event_index`、`event_count`、`request_hash`、
+  `provider_hash`、`as_of`、`contract_schema_version`；后者用于按记录的契约信封版本重建运行，`month(event_time)` 分区；`infrastructure/event/table_definition.py`），
   `infrastructure/event/iceberg.py` 的 `EventTable`：一次运行一个批次、同运行重写 no-op、同 `result_hash` 不同内容拒绝、
-  读取固定 snapshot 并由行重建复核 `EventResult`。仅在临时 SQLite catalog 上测试；生产 catalog 尚未建表（显式 `ensure_event_tables`，未接入建表脚本）。
+  读取固定 snapshot 并由行重建复核 `EventResult`。仅在临时 SQLite catalog 上测试；生产 catalog 尚未建表（建表需显式调用 `ensure_event_tables`，未接入建表脚本）。Phase 1 冻结的 15 张表定义与注册表不变。
 - 统计未在真实数据上校准；事件频率过低 / 组合爆炸（roadmap 失败模式）尚无自动诊断之外的处理。
