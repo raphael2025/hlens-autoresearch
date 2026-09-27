@@ -120,6 +120,8 @@ DEFAULT_D2_BATCH: Final = 4_096
 #: Refused without ``--i-know-memory`` (WSL has crashed from memory exhaustion before).
 MAX_ROWS_WITHOUT_OVERRIDE: Final = 100_000
 _SETTLE_SECONDS: Final = 0.5
+#: Minimum duration of the metadata stage (repeated loads), so it is sampled like the others.
+_METADATA_SECONDS: Final = 0.3
 _MIN_SETTLE_SAMPLES: Final = 3
 _MIN_STAGE_SAMPLES: Final = 3
 _CATALOG_NAME: Final = "e1_cap1_probe"
@@ -393,10 +395,16 @@ def _stage(
     if stage == "metadata":
 
         def walk() -> dict[str, Any]:
-            snapshots = {}
-            for table, head in _heads(adapter).items():
-                snapshots[table] = sum(1 for _ in history_from(adapter, table, head))
-            return {"snapshots": snapshots}
+            # One load + walk takes milliseconds: repeat it for a minimum duration so the sampler
+            # sees the stage (same memory shape: each round loads the metadata afresh).
+            snapshots: dict[str, int] = {}
+            rounds = 0
+            started = time.monotonic()
+            while rounds == 0 or time.monotonic() - started < _METADATA_SECONDS:
+                for table, head in _heads(adapter).items():
+                    snapshots[table] = sum(1 for _ in history_from(adapter, table, head))
+                rounds += 1
+            return {"snapshots": snapshots, "rounds": rounds}
 
         return walk
     raise ValueError(f"unknown stage {stage!r}")
