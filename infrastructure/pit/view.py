@@ -15,7 +15,7 @@ Writes are refused.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, BooleanExpression
@@ -56,6 +56,18 @@ class PinnedCatalogView:
 
     def get_snapshot(self, table: str, snapshot_id: str) -> SnapshotInfo:
         return self._adapter.get_snapshot(table, snapshot_id)
+
+    def history(self, table: str, snapshot_id: str) -> Iterator[SnapshotInfo]:
+        """Immutable ancestry of an explicit snapshot: the underlying catalog's walk."""
+        walk = getattr(self._adapter, "history", None)
+        if walk is not None:
+            yield from walk(table, snapshot_id)
+            return
+        snapshot: SnapshotInfo | None = self._adapter.get_snapshot(table, snapshot_id)
+        while snapshot is not None:
+            yield snapshot
+            parent = snapshot.parent_snapshot_id
+            snapshot = None if parent is None else self._adapter.get_snapshot(table, parent)
 
     def scan_columns(
         self,

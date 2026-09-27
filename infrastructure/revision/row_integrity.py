@@ -48,9 +48,10 @@ judged (see ``RestRevisionStore`` / ``ChannelReconciler``).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 import httpx
@@ -92,12 +93,16 @@ from infrastructure.catalog.phase1_tables import (
 )
 from infrastructure.collector import binance_archive as d0
 from infrastructure.collector import binance_rest as d3d
-from infrastructure.parser import ArchiveParseRequest, parse_archive
+from infrastructure.parser import ArchiveParseRequest
+from infrastructure.parser.archive_spool import (
+    DEFAULT_SPOOL_CHUNK_ROWS,
+    SpooledArchive,
+    spool_archive,
+)
 from infrastructure.parser.binance_archive import (
     AGG_TRADES_ROW_SCHEMA,
     KLINES_1M_ROW_SCHEMA,
     ArchiveRejection,
-    ParsedArchive,
     TimeUnit,
     time_unit_for,
 )
@@ -218,8 +223,11 @@ _BATCH_INDEX_DIGITS: Final = 8
 _COLLECTION_CACHE: Final = 16
 #: History walks memoised per (table, head, prefixes): a head's history never changes.
 _BATCH_INDEX_CACHE: Final = 8
-#: Verified archives kept by a caching verifier (each holds its parsed object).
+#: Verified archives kept by a caching verifier (each holds its spooled object, E1-CAP-1).
 _ARCHIVE_CACHE: Final = 2
+#: Archive row-batch plans (three ints each) and proven row batches memoised per head.
+_ROW_PLAN_CACHE: Final = 8
+_PROVEN_BATCH_CACHE: Final = 16
 #: Widest ``arrival_seq`` range one holder scan covers (G3-S).
 _HOLDER_SPAN: Final = 1 << 17
 
@@ -300,10 +308,12 @@ def _history(adapter: RevisionCatalog, table: str) -> Iterable[SnapshotInfo]:
     if info is None:
         raise TableNotFound(f"table {table} does not exist")
     snapshot = info.current_snapshot
-    while snapshot is not None:
-        yield snapshot
-        parent = snapshot.parent_snapshot_id
-        snapshot = None if parent is None else adapter.get_snapshot(table, parent)
+    if snapshot is None:
+        return
+    yield snapshot
+    parent = snapshot.parent_snapshot_id
+    if parent is not None:
+        yield from history_from(adapter, table, parent)
 
 
 def _indexed_batches(
@@ -336,8 +346,19 @@ def _indexed_batches(
 def history_from(
     adapter: RevisionCatalog, table: str, snapshot_id: str | None
 ) -> Iterable[SnapshotInfo]:
-    """``snapshot_id`` and its ancestors, newest first (a pinned head's history; none if None)."""
-    snapshot = None if snapshot_id is None else adapter.get_snapshot(table, snapshot_id)
+    """``snapshot_id`` and its ancestors, newest first (a pinned head's history; none if None).
+
+    A catalog with a one-load ``history`` walk (``PyIcebergCatalogAdapter``, and a
+    ``PinnedCatalogView`` over it) is walked with it — the same snapshots, ``O(H)`` instead of a
+    metadata load per step; any other catalog snapshot by snapshot.
+    """
+    if snapshot_id is None:
+        return
+    walk = getattr(adapter, "history", None)
+    if walk is not None:
+        yield from walk(table, snapshot_id)
+        return
+    snapshot: SnapshotInfo | None = adapter.get_snapshot(table, snapshot_id)
     while snapshot is not None:
         yield snapshot
         parent = snapshot.parent_snapshot_id
@@ -358,6 +379,47 @@ def check_batch_snapshot(
         raise CatalogIntegrityError(
             f"batch {batch_id} of {definition.table} was committed with other content"
         )
+
+
+def ordered_batches(
+    history: Iterable[SnapshotInfo],
+    table: str,
+    index_of: Callable[[str], int | None],
+    name_of: Callable[[int], str],
+    label: str,
+) -> Iterator[tuple[int, SnapshotInfo]]:
+    """One plan's batches, newest first, proven a contiguous prefix in O(1) memory (E1-CAP-1).
+
+    ``index_of`` gives a snapshot's batch index (``None``: not one of these batches; it raises
+    for a malformed id or another plan). A lawful writer commits batch ``i`` only once batch
+    ``i - 1`` is committed (its own commit, or a replay confirming it), so newest first the
+    indices run ``m, m - 1, …, 0``: an index met again is a batch committed twice, any other step
+    a hole or an out-of-order commit — both refused, as the holes / duplicates of a collected
+    index were, without collecting one. ``label`` names the batches in the refusal.
+    """
+    newest: int | None = None
+    previous: int | None = None
+    gap = f"{table}: the {label} are not a contiguous prefix committed in order"
+    for snapshot in history:
+        if snapshot.batch_id is None:
+            continue
+        index = index_of(snapshot.batch_id)
+        if index is None:
+            continue
+        if previous is not None and newest is not None:
+            if previous <= index <= newest:
+                raise CatalogIntegrityError(
+                    f"{table} has rows of batch {name_of(index)} but more than one snapshot "
+                    "committing it"
+                )
+            if index != previous - 1:
+                raise CatalogIntegrityError(gap)
+        if newest is None:
+            newest = index
+        yield index, snapshot
+        previous = index
+    if previous not in (None, 0):
+        raise CatalogIntegrityError(gap)
 
 
 def _one_snapshot(table: str, batch_id: str, found: Sequence[SnapshotInfo]) -> SnapshotInfo:
@@ -929,7 +991,8 @@ class VerifiedArchive:
     time_unit: TimeUnit
     row: Mapping[str, Any]
     #: The strict D1 re-parse of the published archive object (D3E-R3): what the rows must be.
-    parsed: ParsedArchive
+    #: Spooled to disk (E1-CAP-1): only the proven window's lines are read back.
+    parsed: SpooledArchive
 
 
 class PersistedRowVerifier:
@@ -947,6 +1010,8 @@ class PersistedRowVerifier:
         *,
         storage_error: Callable[[StorageError], Exception] | None = None,
         cache_archives: bool = False,
+        spool_dir: Path | None = None,
+        spool_rows: int = DEFAULT_SPOOL_CHUNK_ROWS,
     ) -> None:
         self._adapter = adapter
         self._storage = storage
@@ -961,6 +1026,26 @@ class PersistedRowVerifier:
         #: proven and parsed once for all the windows of its unit.
         self._cache_archives = cache_archives
         self._archives: dict[tuple[str, str, str], VerifiedArchive] = {}
+        #: Where archive objects are re-parsed to (E1-CAP-1): a disk directory — a spool on
+        #: tmpfs is memory. ``None``: the platform temporary directory (``TMPDIR``).
+        self._spool_dir = spool_dir
+        self._spool_rows = spool_rows
+        #: Per (row table, head, archive revision): its row-batch plan (count, size, last size).
+        self._row_plans: dict[tuple[str, str | None, str], tuple[int, int, int]] = {}
+        #: Row batches proven to hold exactly their content at a head (a head never changes).
+        self._proven: dict[tuple[str, str | None, str], None] = {}
+
+    def close(self) -> None:
+        """Delete the spooled archive objects this verifier keeps (idempotent)."""
+        for item in self._archives.values():
+            item.parsed.close()
+        self._archives.clear()
+
+    def __enter__(self) -> PersistedRowVerifier:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
 
     # ------------------------------------------------------------------ first deliveries
 
@@ -1449,21 +1534,32 @@ class PersistedRowVerifier:
         lineage = self._verified_archives(
             data_type, symbol, sorted({row["archive_revision_id"] for row in rows})
         )
-        by_archive: dict[str, list[Mapping[str, Any]]] = {}
-        for row in rows:
-            by_archive.setdefault(row["archive_revision_id"], []).append(row)
-        for archive_id, members in sorted(by_archive.items()):
-            self._verify_archive_rows(definition, data_type, lineage[archive_id], members)
-        self._check_sole_holders(
-            table, {row["arrival_seq"]: row["revision_id"] for row in rows}, "row"
-        )
-        self._verify_archive_row_batches(definition, by_archive)
+        try:
+            by_archive: dict[str, list[Mapping[str, Any]]] = {}
+            for row in rows:
+                by_archive.setdefault(row["archive_revision_id"], []).append(row)
+            for archive_id, members in sorted(by_archive.items()):
+                self._verify_archive_rows(definition, data_type, lineage[archive_id], members)
+            self._check_sole_holders(
+                table, {row["arrival_seq"]: row["revision_id"] for row in rows}, "row"
+            )
+            self._verify_archive_row_batches(definition, by_archive)
+        finally:
+            self._release(lineage)
         return lineage
 
     def archive_row_count(self, data_type: str, symbol: str, archive_id: str) -> int:
         """Lines of the verified, strictly re-parsed object of one archive revision."""
         verified = self._verified_archives(data_type, symbol, [archive_id])
+        self._release(verified)
         return verified[archive_id].parsed.row_count
+
+    def _release(self, verified: Mapping[str, VerifiedArchive]) -> None:
+        """Delete the spools of archives this verifier does not keep (the caller is done)."""
+        kept = {id(item) for item in self._archives.values()}
+        for item in verified.values():
+            if id(item) not in kept:
+                item.parsed.close()
 
     def _verified_archives(
         self, data_type: str, symbol: str, archive_ids: Sequence[str]
@@ -1516,22 +1612,31 @@ class PersistedRowVerifier:
             snapshot = _one_snapshot(table, batch_id, snapshots[batch_id])
             check_batch_snapshot(BINANCE_SPOT_ARCHIVES, batch_id, snapshot, [row])
         if self._cache_archives:
+            in_use = {id(item) for item in verified.values()}
             for archive_id, item in verified.items():
                 while len(self._archives) >= _ARCHIVE_CACHE:
-                    self._archives.pop(next(iter(self._archives)))
+                    evicted = self._archives.pop(next(iter(self._archives)))
+                    if id(evicted) not in in_use:  # this call's own are released by the caller
+                        evicted.parsed.close()
                 self._archives[(data_type, symbol, archive_id)] = item
         return verified
 
     def _reparse(
         self, collected: CollectedObject, data_type: str, archive_id: str
-    ) -> ParsedArchive:
-        """The strict D1 parse of the published object (D3E-R3): what D2 must have written."""
+    ) -> SpooledArchive:
+        """The strict D1 parse of the published object (D3E-R3): what D2 must have written.
+
+        Spooled to disk (E1-CAP-1): the same parse and verdict as ``parse_archive``, but only
+        the lines a proof reads are ever in memory.
+        """
         try:
-            outcome = parse_archive(
+            outcome = spool_archive(
                 ArchiveParseRequest.for_collected_object(
                     collected, data_type=data_type, archive_revision_id=archive_id
                 ),
                 self._storage,
+                directory=self._spool_dir,
+                chunk_rows=self._spool_rows,
             )
         except IntegrityViolation as exc:
             raise CatalogIntegrityError(
@@ -1542,7 +1647,7 @@ class PersistedRowVerifier:
             if mapped is exc:
                 raise
             raise mapped from exc
-        if isinstance(outcome, ArchiveRejection) or not isinstance(outcome, ParsedArchive):
+        if isinstance(outcome, ArchiveRejection) or not isinstance(outcome, SpooledArchive):
             raise CatalogIntegrityError(
                 f"archive revision {archive_id} is committed but its object does not parse: "
                 "D2 never writes a revision for a rejected archive"
@@ -1652,11 +1757,7 @@ class PersistedRowVerifier:
                 outside = row
                 break
             lines.append(line)
-        truths = (
-            archive.parsed.rows.take(pa.array([line - 1 for line in lines], pa.int64())).to_pylist()
-            if lines
-            else []
-        )
+        truths = archive.parsed.take([line - 1 for line in lines]).to_pylist() if lines else []
         for row, line, truth in zip(ordered, lines, truths, strict=False):
             # D3E-R3: the parser columns must be exactly what the object holds at that line.
             wrong = sorted(name for name in schema.names if row[name] != truth[name])
@@ -1715,54 +1816,124 @@ class PersistedRowVerifier:
 
         D2 commits an archive's parsed rows in order, as batches ``<archive>.rows.<i>`` of one
         plan size ``s`` (lines ``i*s+1 … i*s+s``; only the last may be shorter), so the batches
-        of an archive are a contiguous prefix of indices. A touched row's line names its batch;
-        that batch's current rows are read (bounded by ``s``) and must carry its fingerprint.
+        of an archive are a contiguous prefix of indices, committed in index order. A touched
+        row's line names its batch; that batch's current rows are read (bounded by ``s``) and
+        must carry its fingerprint.
+
+        Nothing here grows with the archive (E1-CAP-1): the plan is proven in one ordered walk of
+        the table history that keeps three ints (``ordered_batches``), and only the touched
+        batches' snapshots are looked up. Both are memoised per head — a head's history never
+        changes — so the windows of one unit share one plan walk and each batch's proof.
         """
         table = definition.table
-        prefixes = {f"{archive_id}.rows.": archive_id for archive_id in rows}
-        found = self._indexed(table, prefixes)
-        for prefix, archive_id in sorted(prefixes.items()):
-            batches = sorted(found[prefix].items())
-            snapshots = [_one_snapshot(table, _row_batch_id(archive_id, i), s) for i, s in batches]
-            if [index for index, _ in batches] != list(range(len(batches))):
-                raise CatalogIntegrityError(
-                    f"{table}: the row batches of archive revision {archive_id} are not a "
-                    "contiguous prefix"
-                )
-            if not snapshots:
-                raise CatalogIntegrityError(
-                    f"{table}: archive revision {archive_id} has rows but no committed row batch"
-                )
-            sizes = [snapshot.added_rows for snapshot in snapshots]
-            size = sizes[0]
-            if size < 1 or any(value != size for value in sizes[:-1]) or sizes[-1] > size:
-                raise CatalogIntegrityError(
-                    f"{table}: the row batches of archive revision {archive_id} follow no single "
-                    "microbatch plan"
-                )
+        head = _head_of(self._adapter, table)
+        for archive_id, members in sorted(rows.items()):
+            count, size, last = self._row_plan(table, head, archive_id)
             needed: set[int] = set()
-            for row in rows[archive_id]:
+            for row in members:
                 position = row["archive_line_number"] - 1
                 index = position // size if position >= 0 else -1
-                if not 0 <= index < len(sizes) or position >= index * size + sizes[index]:
+                length = size if index < count - 1 else last
+                if not 0 <= index < count or position >= index * size + length:
                     raise CatalogIntegrityError(
                         f"{table}: row {row['revision_id']} (line {row['archive_line_number']}) "
                         f"is not committed by any batch of archive revision {archive_id}"
                     )
                 needed.add(index)
-            for index in sorted(needed):
+            names = {index: _row_batch_id(archive_id, index) for index in needed}
+            wanted = {i for i, name in names.items() if (table, head, name) not in self._proven}
+            snapshots: dict[int, SnapshotInfo] = {}
+            if wanted:
+                # The plan walk proved every index once and in order: stop at the last wanted.
+                for index, snapshot in self._row_batches(table, head, archive_id):
+                    if index in wanted:
+                        snapshots[index] = snapshot
+                        if len(snapshots) == len(wanted):
+                            break
+            for index in sorted(wanted):
                 first = index * size + 1
-                current = self._scan(
-                    definition,
-                    And(
+                length = size if index < count - 1 else last
+                current = self._adapter.scan_columns(
+                    table,
+                    columns=tuple(field.name for field in definition.arrow_schema),
+                    row_filter=And(
                         _equals("archive_revision_id", archive_id),
                         And(
                             _at_least("archive_line_number", first),
-                            _below("archive_line_number", first + sizes[index]),
+                            _below("archive_line_number", first + length),
                         ),
                     ),
-                )
+                    limit=length + 1,
+                ).to_pylist()
                 current.sort(key=lambda row: (row["archive_line_number"], row["revision_id"]))
-                check_batch_snapshot(
-                    definition, _row_batch_id(archive_id, index), snapshots[index], current
-                )
+                check_batch_snapshot(definition, names[index], snapshots[index], current)
+                while len(self._proven) >= _PROVEN_BATCH_CACHE:
+                    self._proven.pop(next(iter(self._proven)))
+                self._proven[(table, head, names[index])] = None
+
+    def _row_batches(
+        self, table: str, head: str | None, archive_id: str
+    ) -> Iterator[tuple[int, SnapshotInfo]]:
+        """The archive's row batches at ``head``, newest first, as ``ordered_batches`` proves."""
+        prefix = f"{archive_id}.rows."
+
+        def index_of(batch_id: str) -> int | None:
+            if not batch_id.startswith(prefix):
+                return None
+            tail = batch_id[len(prefix) :]
+            if len(tail) != _BATCH_INDEX_DIGITS or not tail.isdigit() or not tail.isascii():
+                if "." in tail:
+                    return None  # a longer prefix's batch (another id shape), not this archive's
+                raise CatalogIntegrityError(f"{table} has a malformed batch id {batch_id!r}")
+            return int(tail)
+
+        return ordered_batches(
+            history_from(self._adapter, table, head),
+            table,
+            index_of,
+            lambda index: _row_batch_id(archive_id, index),
+            f"row batches of archive revision {archive_id}",
+        )
+
+    def _row_plan(self, table: str, head: str | None, archive_id: str) -> tuple[int, int, int]:
+        """``(batches, plan size, last batch's size)`` of the archive's row batches at ``head``.
+
+        One ordered walk keeping three ints; the size rule is judged after the walk, so a hole
+        or a twice-committed batch keeps its own verdict (as when the batches were collected).
+        """
+        key = (table, head, archive_id)
+        known = self._row_plans.get(key)
+        if known is not None:
+            return known
+        count = size = last = 0
+        uniform = True
+        for _, snapshot in self._row_batches(table, head, archive_id):
+            if count == 0:
+                last = snapshot.added_rows  # newest first: the plan's last batch
+            elif count == 1:
+                size = snapshot.added_rows
+            elif snapshot.added_rows != size:
+                uniform = False
+            count += 1
+        if count == 0:
+            raise CatalogIntegrityError(
+                f"{table}: archive revision {archive_id} has rows but no committed row batch"
+            )
+        if count == 1:
+            size = last
+        if size < 1 or not uniform or last > size:
+            raise CatalogIntegrityError(
+                f"{table}: the row batches of archive revision {archive_id} follow no single "
+                "microbatch plan"
+            )
+        while len(self._row_plans) >= _ROW_PLAN_CACHE:
+            self._row_plans.pop(next(iter(self._row_plans)))
+        self._row_plans[key] = (count, size, last)
+        return count, size, last
+
+
+def _head_of(adapter: RevisionCatalog, table: str) -> str | None:
+    """The table's current snapshot id (on a pinned view: its bound snapshot)."""
+    info = adapter.load_table(table)
+    snapshot = None if info is None else info.current_snapshot
+    return None if snapshot is None else snapshot.snapshot_id

@@ -298,6 +298,46 @@ class PyIcebergCatalogAdapter:
                 raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
             return self._snapshot_info(name, snapshot)
 
+    def history(self, table: str, snapshot_id: str) -> Iterator[SnapshotInfo]:
+        """``snapshot_id`` and its ancestors, newest first, from **one** load of the metadata.
+
+        Walking with ``get_snapshot`` reloads the table metadata at every step (``H`` loads for
+        ``H`` snapshots, each ``O(H)``); this loads it once and follows parent ids inside it —
+        the parent of a snapshot is normally listed just before it, so a walk costs ``O(H)``.
+        Same snapshots, same ``SnapshotInfo`` and the same failures as that walk: an id the
+        table does not have (the start or a parent) is ``SnapshotNotFound``. Infrastructure
+        only (not part of the core Protocol); the loaded metadata stays referenced while the
+        walk runs.
+        """
+        name = validate_table_name(table)
+        with _backend("history"):
+            iceberg = self._require(name)
+            self._verified(name, iceberg)
+        snapshots = iceberg.metadata.snapshots
+        target = (
+            int(snapshot_id)
+            if isinstance(snapshot_id, str) and _SNAPSHOT_ID_RE.fullmatch(snapshot_id)
+            else None
+        )
+        if target is None:
+            raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
+        below = len(snapshots)
+        while target is not None:
+            position = next(
+                (i for i in range(below - 1, -1, -1) if snapshots[i].snapshot_id == target),
+                None,
+            )
+            if position is None:  # not listed before its child: search the whole list
+                position = next(
+                    (i for i, item in enumerate(snapshots) if item.snapshot_id == target), None
+                )
+            if position is None:
+                raise SnapshotNotFound(f"table {name} has no snapshot {str(target)!r}")
+            snapshot = snapshots[position]
+            yield self._snapshot_info(name, snapshot)
+            target = snapshot.parent_snapshot_id
+            below = position
+
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         name = validate_table_name(request.table)
         request = _revalidated(CommitRequest, request)
