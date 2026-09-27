@@ -989,6 +989,18 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 本批只实现纯 research 层 typed AST / 严格解析与 validation，结果显式为 `non-runnable`；allowlist 保持空，不产生执行审计、持久化或 trial。执行计划审计存储和与 TrialLedger 的崩溃原子性，必须在首个 operator 语义决议前另行决定并实现。此项把安全基础代码从尚未定义的研究行为中隔离出来。
 - P7 六类 operator 的逐项时间、缺失值 / 对齐、算法与 Provider lowering 语义仍需单独决定；当前代码不把自然语言 Hypothesis 转为执行计划。
 
+### 10.24 P11 provenance 页面与 E1 容量范围（2026-09-27）
+
+- P11 degradation provenance 页面已由独立 worktree 完成并 cherry-pick 到协调分支，提交 `99fe9fe`。页面读取 ADR-0067 schema 1.1.0 的 profile freeze、baseline、生命周期哈希、观测窗口 / 方法与完整 manifest；明确标注 caller-declared/content-bound、不认证来源真实性；未知 evidence 字段以转义文本完整披露；legacy 1.0.0 展示保持兼容。实现记录：[`p11-degradation-provenance-ui.md`](../reviews/p11-degradation-provenance-ui.md)。子代理 `git diff --check` 通过；本轮未运行测试或 build，未做 Phase 验收。
+- Codex 依 Raphael 项目委托正式决定 **D-E1-HIST = FULL_PROCESS_WORKSET**：原 E1-CAP-1 的 32 MiB 峰值增量包含 PyIceberg metadata、Parser / scan 临时状态、normalizer 状态和 API 返回对象。拒绝 `e1-bounded-history-options.md` 提出的选项 A，不将依赖内部状态排除出容量目标，也不修改既有关闭标准；选项 B / C 未获批准。E1 持续阻断，直到完整工作集满足门槛或形成另行批准的架构决定。
+- P9 detector 单次异常归类仍由隔离子任务处理。Knowledge Search 缺少 Provider 的稳定错误响应经复核已在当前基线实现（503 + 常量错误 detail，OpenAPI / README 同步），无需新代码；全项目缺口审计中的该项属基线版本过时。P2 报告 API DTO / OpenAPI 类型不一致另由隔离子任务审查，避免将 opaque dict 当作已修复。本批未运行测试 / build。
+
+### 10.25 P7 typed plan 解析器与缺口核对（2026-09-27）
+
+- 在 Accepted ADR-0068 边界内新增 `research/hypotheses/typed_plan.py`（协调提交 `23b4256`）。严格解析显式限额的 JSON AST、拒绝重复 / 未知键、类型错误、越界结构与引用错误；计算结构内容哈希；`compile_plan()` 对六类算子一律拒绝。没有 Provider、Registry、TrialLedger、持久化、loop 或 runnable allowlist 接入。实现说明：[`p7-typed-plan-foundation-implementation.md`](../reviews/p7-typed-plan-foundation-implementation.md)。Ruff / format / mypy / diff 检查通过，未跑测试或 build。
+- P9 backlog 曾称 detector 异常会终止校准。本基线已在单标的、可选 G5、多标的入口按既有可传播错误边界把检测错误记录为 `INCONCLUSIVE` 并继续其余运行；该旧 backlog 项为过期描述。复核记录：[`2026-09-27-p9-detector-exception-handling.md`](../reviews/2026-09-27-p9-detector-exception-handling.md)。子代理的 Ruff / format / mypy / diff 检查通过，未跑测试。
+- Knowledge API 的无 Provider 响应已在基线实现为稳定 503 常量错误，README 与 OpenAPI 一致；无代码改动。P2 report DTO 审查认为现有 report kind 缺乏统一版本化 schema，任意新增严格模型会拒收既有 payload；逐 kind DTO 延后到 schemas 经批准后实施。当前 API envelope 仍按动态 report kind 返回 opaque JSON object。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。

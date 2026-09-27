@@ -11,9 +11,9 @@
 
 ## 0. 证据边界（先读）
 
-1. **依赖源码未读到。** 本会话读取本机 PyIceberg 0.12.0 安装源码的请求被权限分类器拒绝，因此本文**无法**
-   引用 PyIceberg 内部文件或行号。凡是依赖 PyIceberg 内部行为的结论都标为 **【依赖未核实】**，并写明应核对的
-   模块 / API。其余结论只来自本仓库源码（带文件与行号），以及本仓库对 PyIceberg 公开 API 的实际用法。
+1. **依赖源码已核对。** Claude Code 按只读任务检查本机、与 `uv.lock` 锁定版本一致的 PyIceberg 0.12.0 源码（位于
+   `.claude/worktrees/e1-bounded-history-options/.venv/lib/python3.13/site-packages/pyiceberg/`）；新增 §6 列出路径与行号。
+   **[源码事实]** 来自直接读取的实现；**[推断]** 表示尚未测量或无法从源码单独证明。未修改文件、运行测试 / 探针或安装依赖。
 2. **59.9 / 63.9 MiB 不是本文测得的。** 数值来自协调者（`2026-09-27-e1-resume-replay-memory-investigation.md`
    转述）。基线 `05db662` 的 `infrastructure/tools/capacity_probe.py` 没有 resume / replay 阶段，它的 `_measure`
    （`capacity_probe.py:209-226`）用的是 `ru_maxrss` 差值和 `tracemalloc` 峰值；`_normalize`（`:413-422`）使用
@@ -171,19 +171,19 @@ O(B_unit / K) 次完整加载。不需要 ADR，也不改变语义，但**不满
 - 另外，按估算，O(L) 的修订 ID 输出与位置列表本身就可能超过 32 MiB（§2），这与 H 无关。
 
 ```
-ARCHITECTURE_DECISION_REQUIRED
+ARCHITECTURE_DECISION_REQUIRED (draft state; resolved by §6)
 - 冲突/问题：E1-CAP-1 要求“不随 N 或批次数增长”，但在当前 Catalog 契约 + ADR-0028 + ADR-0021(PyIceberg 0.12)
   下，每次 catalog 调用都会临时物化 O(H_table) 的 metadata，且 H 是整表累计历史；只改历史遍历无法让进程峰值
   与 H 无关。
 - 涉及文档/契约：core/contracts/catalog.py（commit_batch 幂等与重放语义）、ADR-0021、ADR-0028（恢复不用 sidecar）、
   docs/architecture/03-data.md（表定义与依赖冻结）、docs/reviews/2026-09-27-e1-review.md（E1-CAP-1 验收口径）。
 - 可选方案（附利弊）：见下方 Decision Packet。
-- 推荐：先把 E1-CAP-1 的内存上界口径与 PyIceberg metadata 的 O(H) 驻留分开裁定（选项 A），同时做一次 L/H
+- 起草时推荐：先把 E1-CAP-1 的内存上界口径与 PyIceberg metadata 的 O(H) 驻留分开裁定（选项 A），同时做一次 L/H
   分离测量再决定是否需要 B / C。
 - 若不决定的影响：E1-CAP-1 无法被任何局部实现关闭；Phase 1 继续阻断。
 ```
 
-## DECISION PACKET
+## DECISION PACKET（起草时未决；已由 §6 取代）
 
 ID: D-E1-HIST
 QUESTION: E1-CAP-1 的“有界内存”是否把 PyIceberg 表 metadata 随整表 snapshot 历史 H 的 O(H) 临时驻留算在 normalizer 的工作集内？
@@ -192,10 +192,10 @@ OPTIONS:
 A. 不算入：E1-CAP-1 只约束本仓库建立的状态（O(L) 输出、O(B) 列表、缓存）；PyIceberg metadata 另设 H 上限与监控（例如按表记录 snapshot 数、限定 microbatch 下限），不改契约。方案 A（磁盘历史索引）可作为降低 O(H²) 时间和一份常驻副本的后续批次。
 B. 算入，并接受契约变更：批次账本移出 snapshot 历史 + snapshot 过期 + manifest merge（方案 B）；需要新 ADR、改 Catalog 契约和 ADR-0028，并重新定义旧数据集 pinned head 的可复现性。
 C. 算入，但不改契约：自写 Iceberg 流式读取器（方案 C）；需要 ADR 替换核心技术，而且 resume 的提交路径仍是 O(H)。
-RECOMMENDATION: A。理由：B / C 的影响面都远大于 E1，而且 O(L) 项可能本身就超过门槛，应先确认。
-IMPACT: A 需要修订 E1-CAP-1 验收口径（review 文档与 roadmap 验收矩阵），不改代码契约；B / C 各自需要 ADR，并需要 Raphael 批准。
+RECOMMENDATION AT DRAFT TIME: A（现已由 §6 取代）。当时判断 B / C 影响范围过大且 O(L) 项可能独自超过门槛。
+IMPACT AT DRAFT TIME: A 会修订 E1-CAP-1 验收口径；§6 已决定不改口径。B / C 各自需要 ADR。
 BLOCKS: E1-CAP-1 的任何修复批次，以及 Phase 1 验收。
-DEFAULT_IF_UNDECIDED: E1-CAP-1 保持阻断；32 MiB 门槛、Catalog 契约、ADR-0028、表定义与依赖都不变；不实施方案 A / B / C。
+DEFAULT_IF_UNDECIDED AT DRAFT TIME: E1-CAP-1 保持阻断。§6 已正式重申完整工作集与 32 MiB 门槛；A / B / C 均未采纳。
 
 ## 5. FOLLOW-UP（未执行，需要批准）
 
@@ -203,8 +203,36 @@ DEFAULT_IF_UNDECIDED: E1-CAP-1 保持阻断；32 MiB 门槛、Catalog 契约、A
    分离 H；再用相同 M、不同 L 测一次。测量时用 `tracemalloc` 快照按 traceback 文件聚合
    （`pyiceberg/*` 与 `infrastructure/canonical/*`、`infrastructure/revision/*` 分开统计），并记录结果对象
    （`revision_ids`）是否计入。
-2. 本文所有【依赖未核实】项需要在授权读取本机 PyIceberg 0.12.0 源码后逐项补上文件与行号：
-   `serializers.py`、`table/metadata.py`、`table/snapshots.py`、`table/__init__.py`、`table/update/snapshot.py`、
-   `catalog/sql.py`、`avro/file.py`。
-3. 如果选择 D-E1-HIST 的 A，另起一个决定，明确 `CanonicalUnitNormalized.revision_ids`（O(L) 输出）与 O(L)
-   位置列表是否属于有界工作集。本文不把它和 D-E1-HIST 合并。
+2. 尚未核实的依赖点限于 PyIceberg / Avro 的 malformed JSON 等价拒绝集合、Avro manifest reader 的流式细节、
+   stdlib `Executor.map` 队列峰值，以及 refs / snapshot expiry 对历史 pinned heads 的精确行为；这些都须源码核对或实验验证，
+   不得把推断当作容量测量。
+3. O(L) `CanonicalUnitNormalized.revision_ids` 和位置 / 时间列仍是独立增长源；它们也在 FULL_PROCESS_WORKSET 门槛内，
+   不能因不属于 PyIceberg metadata 而排除。若要改变返回接口或严格证明语义，须先核对冻结契约并另立 Proposed ADR。
+
+## 6. Codex 决定（2026-09-27，取代上方未决推荐）
+
+Raphael 已把项目决策权委托给 Codex。Codex 决定 **D-E1-HIST = FULL_PROCESS_WORKSET**：E1-CAP-1 的 32 MiB 峰值增量统计包含完整进程工作集，涵盖 PyIceberg metadata、Parser / scan 临时对象、Normalizer 内部状态，以及 API 返回结果对象。上方选项 A 不采纳；不改变已批准的 E1 验收条件，不把依赖内部对象从容量范围排除，也不把它改成独立的未来监控项。
+
+该决定重申 `2026-09-27-e1-review.md` 的既有关闭标准：保持 32 MiB 上限、完整严格读取与逐项校验语义；若现有实现无法满足，就继续阻断 E1 并找出可行实现或明确的架构决策，不以修改口径关闭。选项 B / C 涉及冻结契约或核心技术替换，当前均未批准。
+
+PyIceberg 源码事实仅用于完善实现调查，不会自动改变上述容量范围或 E1 关闭门槛。原 Decision Packet 的推荐 A 已被本节正式决定取代。
+
+## 7. PyIceberg 0.12.0 本机源码复核（只读；未测容量）
+
+路径前缀 `PI` = `.claude/worktrees/e1-bounded-history-options/.venv/lib/python3.13/site-packages/pyiceberg/`；版本由 `uv.lock:533-535` 锁定。Claude 只做源码读取，没有改文件或运行探针。
+
+| 源码位置 | 已核实事实 | 对 E1 的含义 |
+|---|---|---|
+| `PI/serializers.py:90-95,113-116`；`PI/table/metadata.py:181,187,195,211` | metadata JSON 整体读取后交给 Pydantic `model_validate_json`；snapshots、snapshot_log、metadata_log 是普通 list，summary 含 dict。 | 每次 metadata load 的 snapshots history 确定是 O(H) 对象；实际字节数与 RSS 尚未测。 |
+| `PI/catalog/sql.py:224-240,356-359` | SQL Catalog 行保存 metadata_location；load_table 解析完整元数据文件。 | repo 的每次 `_require` / adapter load 都会引入完整 history 对象。 |
+| `PI/catalog/sql.py:503-554`；`PI/table/update/__init__.py:461-472,502-507,683-720`；`PI/serializers.py:134` | commit 重新 load 完整 metadata，构造新 snapshot 与日志列表、深拷贝 / validate，并序列化完整新文档后 CAS 更新 metadata_location。 | 提交峰值同时保留多少副本仍未知，但不是固定于当前 microbatch 的简单写入成本。 |
+| `PI/table/__init__.py:259-261`；`PI/table/update/snapshot.py:281,309,319,332,343,376,696` | transaction metadata getter 重算更新并复制完整 metadata，append producer 多次访问。 | 多份 metadata 副本导致峰值升高属合理推断，须实测，不虚报副本数量。 |
+| `PI/table/__init__.py:428-434,1723-1724,207-208`；`PI/table/update/snapshot.py:229-275,317-339,687-705` | 默认关闭 manifest merge；普通 append 使用 fast append，保留旧有效 manifest 并添加新 manifest / manifest list。 | 长期逐批 append 会令 manifest list 增长；scan 的匹配文件规划也有临时成本。 |
+| `PI/table/__init__.py:2754-2791,2806-2838`；`PI/manifest.py:862-884,895-984` | 本地 planner 构造完整 `FileScanTask` list；manifest 内容加载为 list；进程内还有默认容量 128 的 ManifestFile LRU。 | 除 metadata 外，扫描对象与缓存也可能随文件量增长；具体 RSS 尚未测。 |
+| `PI/table/__init__.py:2470-2509`；`PI/io/pyarrow.py:1792-1869` | `to_arrow()` 收集并合并完整结果；batch-reader 每个任务仍将文件结果批次列表化，delete files 预先读取。 | repo `scan_columns()` 调用 `to_arrow()`，不是有界 reader；batch-reader 也未被证实有全局严格上界。 |
+| `PI/table/metadata.py:239-241,322-326`；`PI/table/snapshots.py:420-434` | snapshot_by_id 线性查找，ancestry 遍历每一步再按 ID 搜索。 | `ancestors_of` 的 O(H²) 是时间复杂度推断；当前单次 history 优化只绕过 repo 特定重复加载，不改变 PyIceberg 本身的完整列表解析。 |
+| `PI/table/update/snapshot.py:1236`；`PI/table/update/__init__.py:514-551,737-750` | 存在 ExpireSnapshots；过期时会清除被删除 snapshots，metadata-log 默认仅保留最近 100 项。 | 工具存在并不批准过期旧 pinned snapshots；历史绑定兼容与祖先语义仍须调查。 |
+
+**容量结论：** PyIceberg 0.12 的 SQL load / commit / scan 路径都不能避免完整 snapshot metadata 的物化；所以在 FULL_PROCESS_WORKSET 下，现有单次 history walk 与 normalizer plan 计数优化只能降低仓库层重复状态或遍历时间，无法单独证明 E1-CAP-1 通过。fast-append 的 manifest 增长、PyIceberg metadata history 和本仓库 O(L) 输出 / positions 都是候选增长源。源码审查不是容量测量；不得据此给出 32 MiB PASS。
+
+**未核实 / 未测：** 每个 Snapshot / summary 的真实占用；具体 append 的 metadata deep-copy 次数与峰值 RSS；`Executor.map` 的任务排队峰值（Python 标准库实现未独立核对）；Avro manifest reader 的分块边界；malformed JSON 的自定义流解析与 Pydantic 拒绝集合是否完全一致；过期快照后的 pinned ref / parent 具体语义；10k / 100k / 500k 隔离进程容量结果。
