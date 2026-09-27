@@ -83,7 +83,7 @@ def test_apply_reports_only_event_status_for_existing_table(monkeypatch: Any, ca
 
 
 def test_apply_redacts_catalog_error(monkeypatch: Any, capsys: Any) -> None:
-    secret_dsn = "postgresql://operator:secret@catalog.internal/hlens"
+    secret_dsn = "postgresql://operator:test-only-placeholder@catalog.internal/hlens"
 
     @contextmanager
     def open_adapter(_settings: object, _registry: Any) -> Any:
