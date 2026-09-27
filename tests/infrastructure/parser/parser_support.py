@@ -8,9 +8,19 @@ import struct
 import zipfile
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
+from pathlib import Path
+from typing import BinaryIO
 
 from core.contracts.storage import ObjectRef
-from infrastructure.parser import ArchiveParseRequest, ArchiveRejection, ParseOutcome
+from infrastructure.parser import (
+    ArchiveParseRequest,
+    ArchiveRejection,
+    ParsedArchive,
+    ParseOutcome,
+    SpooledArchive,
+    parse_archive,
+    spool_archive,
+)
 from infrastructure.parser.binance_archive import archive_filename, member_filename
 
 MS_DAY = date(2024, 12, 31)
@@ -226,3 +236,57 @@ def expect_rejection(outcome: ParseOutcome) -> ArchiveRejection:
     assert isinstance(outcome, ArchiveRejection), f"expected rejection, got {outcome!r}"
     assert not hasattr(outcome, "rows")
     return outcome
+
+
+class BytesStorage:
+    """``open_read`` serves fixed bytes whatever the ref says (what a parse must re-hash)."""
+
+    def __init__(self, data: bytes) -> None:
+        self.data = data
+        self.opened = 0
+
+    def open_read(self, ref: ObjectRef) -> BinaryIO:
+        self.opened += 1
+        return io.BytesIO(self.data)
+
+
+def assert_spool_agrees(request: ArchiveParseRequest, data: bytes, directory: Path) -> None:
+    """``spool_archive`` of ``data`` gives ``parse_archive``'s verdict and exactly its rows.
+
+    A 3-row block forces multi-block spools; a refused input leaves nothing behind, an accepted
+    one leaves only its own spool until closed.
+    """
+    before = set(directory.iterdir())
+    expected = parse_archive(request, BytesStorage(data))  # type: ignore[arg-type]
+    spooled = spool_archive(
+        request,
+        BytesStorage(data),  # type: ignore[arg-type]
+        directory=directory,
+        chunk_rows=3,
+    )
+    if isinstance(expected, ArchiveRejection):
+        assert spooled == expected
+        assert set(directory.iterdir()) == before
+        return
+    assert isinstance(expected, ParsedArchive) and isinstance(spooled, SpooledArchive)
+    with spooled:
+        for name in (
+            "parser",
+            "archive_revision_id",
+            "data_type",
+            "symbol",
+            "coverage_start",
+            "coverage_end",
+            "object_ref",
+            "member_name",
+            "time_unit",
+            "row_count",
+        ):
+            assert getattr(spooled, name) == getattr(expected, name), name
+        rows = spooled.take(range(spooled.row_count))
+        assert rows.schema.equals(expected.rows.schema, check_metadata=True)
+        assert rows.equals(expected.rows)
+        backwards = list(reversed(range(spooled.row_count)))
+        assert spooled.take(backwards).equals(expected.rows.take(backwards))
+        assert len(set(directory.iterdir()) - before) == 1
+    assert set(directory.iterdir()) == before

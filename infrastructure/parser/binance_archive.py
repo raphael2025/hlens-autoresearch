@@ -28,12 +28,12 @@ import stat
 import struct
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import IO, Any, Final, Self
+from typing import IO, Any, Final, Protocol, Self
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
@@ -227,6 +227,10 @@ AGG_TRADES_ROW_SCHEMA: Final = _row_schema(_AGG_TRADES_COLUMNS, (("event_time", 
 KLINES_1M_ROW_SCHEMA: Final = _row_schema(
     _KLINES_COLUMNS, (("interval_start", _TS), ("interval_end", _TS))
 )
+_ROW_SCHEMAS: Final[dict[str, pa.Schema]] = {
+    "agg_trades": AGG_TRADES_ROW_SCHEMA,
+    "klines_1m": KLINES_1M_ROW_SCHEMA,
+}
 
 
 def archive_filename(data_type: str, symbol: str, day: date) -> str:
@@ -588,7 +592,7 @@ def parse_archive_bytes(request: ArchiveParseRequest, data: bytes) -> ParseOutco
             )
         if hashlib.sha256(data).hexdigest() != request.object_ref.sha256:
             raise _Reject(RejectionCode.OBJECT_INTEGRITY_MISMATCH, "SHA-256 != ObjectRef.sha256")
-        rows, member_name = _parse_zip(io.BytesIO(data), request)
+        rows, member_name = _parse_zip(io.BytesIO(data), request, _ColumnBuffer)
     except _Reject as reject:
         return _rejection(request, reject)
     return _success(request, member_name, rows)
@@ -652,7 +656,12 @@ def _read_bounded(handle: IO[bytes], limit: int) -> bytes:
 # --------------------------------------------------------------------------- ZIP container
 
 
-def _parse_zip(handle: IO[bytes], request: ArchiveParseRequest) -> tuple[pa.Table, str]:
+def _parse_zip[T](
+    handle: IO[bytes],
+    request: ArchiveParseRequest,
+    sink: Callable[[pa.Schema], _RowSink[T]],
+) -> tuple[T, str]:
+    """Strictly parse the ZIP in ``handle``; the accepted rows go to ``sink(schema)``."""
     expected_member = member_filename(request.data_type, request.symbol, request.coverage_day)
     handle.seek(0, io.SEEK_END)
     total = handle.tell()
@@ -676,14 +685,13 @@ def _parse_zip(handle: IO[bytes], request: ArchiveParseRequest) -> tuple[pa.Tabl
                 RejectionCode.ZIP_MEMBER_CORRUPT, f"cannot open member: {type(exc).__name__}"
             ) from exc
         with member:
-            parser = (
-                _AggTradesParser(request)
-                if request.data_type == "agg_trades"
-                else _KlinesParser(request)
-            )
+            kind = _AggTradesParser if request.data_type == "agg_trades" else _KlinesParser
+            buffer = sink(kind.schema)
+            parser = kind(request, buffer)
             for line_number, text in _csv_lines(member, size=info.file_size, crc=info.CRC):
                 parser.feed(line_number, text)
-            return parser.finish(), expected_member
+            parser.check_rows()
+            return buffer.finish(), expected_member
 
 
 def _check_container_layout(handle: IO[bytes], total: int) -> int:
@@ -951,32 +959,48 @@ def _parse_bool(text: str, line: int, column: str) -> bool:
 # --------------------------------------------------------------------------- row parsers
 
 
-class _ColumnBuffer:
-    """按列缓冲，每 ``_CHUNK_ROWS`` 行转换为 Arrow 数组以限制 Python 对象峰值。"""
+class _RowSink[T](Protocol):
+    """Where the parser's accepted rows go: ``append`` per row, ``finish`` once at the end."""
 
-    def __init__(self, schema: pa.Schema) -> None:
+    def append(self, values: tuple[Any, ...]) -> None: ...
+
+    def finish(self) -> T: ...
+
+
+class _ColumnBuffer:
+    """按列缓冲，每 ``chunk_rows`` 行转换为 Arrow 数组以限制 Python 对象峰值。"""
+
+    def __init__(
+        self,
+        schema: pa.Schema,
+        chunk_rows: int = _CHUNK_ROWS,
+        emit: Callable[[pa.RecordBatch], None] | None = None,
+    ) -> None:
         self._schema = schema
+        self._chunk_rows = chunk_rows
         self._pending: list[list[Any]] = [[] for _ in schema]
         self._batches: list[pa.RecordBatch] = []
+        #: Where each full chunk goes (default: kept for ``finish``'s one table).
+        self._emit = emit or self._batches.append
 
     def append(self, values: tuple[Any, ...]) -> None:
         for column, value in zip(self._pending, values, strict=True):
             column.append(value)
-        if len(self._pending[0]) >= _CHUNK_ROWS:
-            self._flush()
+        if len(self._pending[0]) >= self._chunk_rows:
+            self.flush()
 
-    def _flush(self) -> None:
+    def flush(self) -> None:
         if not self._pending[0]:
             return
         arrays = [
             pa.array(values, type=schema_field.type)
             for values, schema_field in zip(self._pending, self._schema, strict=True)
         ]
-        self._batches.append(pa.RecordBatch.from_arrays(arrays, schema=self._schema))
         self._pending = [[] for _ in self._schema]
+        self._emit(pa.RecordBatch.from_arrays(arrays, schema=self._schema))
 
-    def table(self) -> pa.Table:
-        self._flush()
+    def finish(self) -> pa.Table:
+        self.flush()
         return pa.Table.from_batches(self._batches, schema=self._schema).combine_chunks()
 
 
@@ -984,13 +1008,13 @@ class _RowParser:
     columns: tuple[tuple[str, str], ...]
     schema: pa.Schema
 
-    def __init__(self, request: ArchiveParseRequest) -> None:
+    def __init__(self, request: ArchiveParseRequest, buffer: _RowSink[Any]) -> None:
         unit = request.time_unit
         self.unit = unit
         self.start_ticks = _epoch_ticks(request.coverage_start, unit)
         self.end_ticks = _epoch_ticks(request.coverage_end, unit)
         self.minute_ticks = 60 * unit.ticks_per_second
-        self.buffer = _ColumnBuffer(self.schema)
+        self.buffer = buffer
         self.rows = 0
 
     def fields(self, line: int, text: str) -> list[str]:
@@ -1015,18 +1039,17 @@ class _RowParser:
     def feed(self, line: int, text: str) -> None:
         raise NotImplementedError
 
-    def finish(self) -> pa.Table:
+    def check_rows(self) -> None:
         if self.rows == 0:
             raise _Reject(RejectionCode.NO_ROWS, "archive contains no data rows")
-        return self.buffer.table()
 
 
 class _AggTradesParser(_RowParser):
     columns = _AGG_TRADES_COLUMNS
     schema = AGG_TRADES_ROW_SCHEMA
 
-    def __init__(self, request: ArchiveParseRequest) -> None:
-        super().__init__(request)
+    def __init__(self, request: ArchiveParseRequest, buffer: _RowSink[Any]) -> None:
+        super().__init__(request, buffer)
         self.previous: tuple[int, int, int] | None = None  # (agg id, timestamp, last trade id)
 
     def feed(self, line: int, text: str) -> None:
@@ -1110,8 +1133,8 @@ class _KlinesParser(_RowParser):
     columns = _KLINES_COLUMNS
     schema = KLINES_1M_ROW_SCHEMA
 
-    def __init__(self, request: ArchiveParseRequest) -> None:
-        super().__init__(request)
+    def __init__(self, request: ArchiveParseRequest, buffer: _RowSink[Any]) -> None:
+        super().__init__(request, buffer)
         self.previous_open: int | None = None
 
     def feed(self, line: int, text: str) -> None:

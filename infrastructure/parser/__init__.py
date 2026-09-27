@@ -1,5 +1,6 @@
 """Phase 1 D1 Binance 公共现货归档 fail-closed parser 与 D3C 严格 REST page decoder。"""
 
+from infrastructure.parser.archive_spool import SpooledArchive, spool_archive
 from infrastructure.parser.binance_archive import (
     AGG_TRADES_ROW_SCHEMA,
     KLINES_1M_ROW_SCHEMA,
@@ -86,10 +87,12 @@ __all__ = [
     "RestQuantityUnit",
     "RestRejectionCode",
     "RestStopReason",
+    "SpooledArchive",
     "TimeUnit",
     "UnsupportedArchiveRequest",
     "decode_rest_page",
     "parse_archive",
     "parse_archive_bytes",
+    "spool_archive",
     "time_unit_for",
 ]
