@@ -163,7 +163,7 @@ D3E 的 REST gap reconciliation 与重放幂等已验收；但真实规模历史
 
 [ADR-0028](../adr/0028-dual-raw-canonical-lineage.md)（**Accepted** 2026-09-25，Raphael 批准方案 B）：Canonical revision 与 Raw 元素 revision
 一一对应、lineage 进 Canonical 身份；跨通道边不物化到 Canonical，由 PIT 从绑定的 Raw 证据 snapshot 一对一映射；
-Canonical `arrival_seq` 独立分配；无表与契约变化。**E1 已实现、REVIEW_PENDING**（`infrastructure/canonical/`；以未经 Codex 验收的 D3E 为输入）。E2 待 ADR-0029 决定；**F1 PIT 选择引擎**因不依赖 E2 先行实现（`infrastructure/pit/`，REVIEW_PENDING）；**E3 分区质量报告**随后实现（`infrastructure/quality/`，REVIEW_PENDING，无数值阈值）；**E4 高周期派生**为纯函数（`infrastructure/canonical/resample.py`，只吃 F1 选中的 1m bar，不补缺，不新建表，REVIEW_PENDING）。
+Canonical `arrival_seq` 独立分配；无表与契约变化。**E1 已实现、REVIEW_PENDING**（`infrastructure/canonical/`；以未经 Codex 验收的 D3E 为输入）。**E2 的当前状态快照采集与持久化已按 ADR-0029 实现**；但它不包含历史上市 / 下架日期，历史标的池仍受 D-LIST / Proposed ADR-0051 阻断。**F1 PIT 选择引擎**因不依赖 E2 先行实现（`infrastructure/pit/`，REVIEW_PENDING）；**E3 分区质量报告**随后实现（`infrastructure/quality/`，REVIEW_PENDING，无数值阈值）；**E4 高周期派生**为纯函数（`infrastructure/canonical/resample.py`，只吃 F1 选中的 1m bar，不补缺，不新建表，REVIEW_PENDING）。
 
 ## Phase 2 — Market State Engine
 
