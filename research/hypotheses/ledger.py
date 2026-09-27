@@ -12,14 +12,16 @@ and it counts towards the family exactly like a registration. The trial log (``t
 every trial in order, so ``trial_index`` / ``trials`` include every re-evaluation.
 
 Durability (debugging pass, 2026-09-25, ADR-0040 implementation note): an optional ``path``
-backs the ledger with a hash-chained append-only file (``research.persistence.AppendOnlyJournal``):
-every registration (``register``) and every pre-registered re-evaluation (``reevaluate``) is one
-line, so a family's trial count — re-evaluations included — continues across a process restart
-instead of resetting to zero. Omit ``path`` and the ledger is purely in memory, as before.
+backs the ledger with a hash-chained append-only file (``research.persistence.AppendOnlyJournal``).
+A single registration (``register``), an all-at-once batch registration (``register_batch``), and
+a pre-registered re-evaluation (``reevaluate``) each use one journal line, so a family's trial
+count — re-evaluations included — continues across a process restart instead of resetting to zero.
+Omit ``path`` and the ledger is purely in memory, as before.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -71,6 +73,8 @@ class TrialLedger:
             if kind == "register":
                 if not self._register(Hypothesis.model_validate(payload)):
                     raise JournalCorrupted(f"{path}: duplicate registration line")
+            elif kind == "register_batch":
+                self._replay_batch(path, payload)
             elif kind == "reevaluate" and isinstance(payload, dict):
                 hypothesis = Hypothesis.model_validate(payload["hypothesis"])
                 if not self.register_reevaluation(hypothesis, str(payload["attempt"])):
@@ -98,6 +102,86 @@ class TrialLedger:
         if not draft.reviewed:
             raise LedgerError(f"{draft.hypothesis.ref} has not been reviewed by a human")
         return self._register(draft.hypothesis)
+
+    def register_batch(self, hypotheses: Iterable[Hypothesis]) -> tuple[Hypothesis, ...]:
+        """Atomically pre-register a batch in one journal event.
+
+        Every conflict and duplicate within the input is checked before the journal is touched.
+        Identical hypotheses already in the ledger are idempotent and are omitted from the new
+        event. If the journal is durable, one ``register_batch`` line is fsync'd before any
+        in-memory state changes; an append failure therefore leaves this instance unchanged.
+
+        LLM-originated hypotheses are refused here: this API accepts hypotheses, not the reviewed
+        ``HypothesisDraft`` evidence required by ``register_draft``.
+        """
+        try:
+            batch = tuple(hypotheses)
+        except TypeError as exc:
+            raise LedgerError("a batch must be an iterable of Hypothesis values") from exc
+        if not batch:
+            return ()
+
+        keys: set[tuple[str, str]] = set()
+        pending: list[Hypothesis] = []
+        for hypothesis in batch:
+            if not isinstance(hypothesis, Hypothesis):
+                raise LedgerError("a batch contains only Hypothesis values")
+            if hypothesis.origin is HypothesisOrigin.LLM:
+                raise LedgerError(
+                    f"an LLM hypothesis is registered only as a reviewed draft: {hypothesis.ref}"
+                )
+            key = (hypothesis.name, hypothesis.version)
+            if key in keys:
+                raise LedgerError(f"a registration batch lists {hypothesis.ref} more than once")
+            keys.add(key)
+            existing = self._registered.get(key)
+            if existing is None:
+                pending.append(hypothesis)
+            elif existing.content_hash() != hypothesis.content_hash():
+                raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+
+        if not pending:
+            return ()
+
+        payload = {
+            "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in pending]
+        }
+        if self._journal is not None:
+            # The journal append is the durable commit point. Do not expose partial in-memory
+            # registration if the append fails (including a stale-writer refusal).
+            self._journal.append("register_batch", payload)
+        for hypothesis in pending:
+            self._apply_registration(hypothesis)
+        return tuple(pending)
+
+    def _replay_batch(self, path: Path, payload: object) -> None:
+        """Replay one strictly shaped batch record; any duplicate or invalid member is corruption."""
+        if not isinstance(payload, dict) or set(payload) != {"hypotheses"}:
+            raise JournalCorrupted(f"{path}: malformed batch registration payload")
+        raw_hypotheses = payload["hypotheses"]
+        if not isinstance(raw_hypotheses, list) or not raw_hypotheses:
+            raise JournalCorrupted(f"{path}: a batch registration must contain hypotheses")
+
+        hypotheses: list[Hypothesis] = []
+        for raw in raw_hypotheses:
+            if not isinstance(raw, dict):
+                raise JournalCorrupted(f"{path}: a batch hypothesis payload must be an object")
+            hypothesis = Hypothesis.model_validate(raw)
+            # Prevent permissive model parsing from silently dropping fields or coercing a
+            # different serialized value while replaying a supposedly canonical journal event.
+            if hypothesis.model_dump(mode="json") != raw:
+                raise JournalCorrupted(f"{path}: non-canonical batch hypothesis payload")
+            if hypothesis.origin is HypothesisOrigin.LLM:
+                raise JournalCorrupted(f"{path}: batch registration contains an LLM hypothesis")
+            hypotheses.append(hypothesis)
+
+        keys = [(hypothesis.name, hypothesis.version) for hypothesis in hypotheses]
+        if len(keys) != len(set(keys)):
+            raise JournalCorrupted(f"{path}: batch registration repeats a hypothesis identity")
+        for hypothesis in hypotheses:
+            if (hypothesis.name, hypothesis.version) in self._registered:
+                raise JournalCorrupted(f"{path}: batch registration duplicates an earlier entry")
+        self._apply_batch(hypotheses)
 
     def register_reevaluation(self, hypothesis: Hypothesis, attempt: str) -> bool:
         """Pre-register one more evaluation of a registered hypothesis as its own trial.
@@ -133,10 +217,18 @@ class TrialLedger:
             return False
         if self._journal is not None:
             self._journal.append("register", hypothesis.model_dump(mode="json"))
+        self._apply_registration(hypothesis)
+        return True
+
+    def _apply_batch(self, hypotheses: Iterable[Hypothesis]) -> None:
+        for hypothesis in hypotheses:
+            self._apply_registration(hypothesis)
+
+    def _apply_registration(self, hypothesis: Hypothesis) -> None:
+        key = (hypothesis.name, hypothesis.version)
         self._registered[key] = hypothesis
         self._order.append(key)
         self._append(hypothesis, None)
-        return True
 
     def _append(self, hypothesis: Hypothesis, attempt: str | None) -> None:
         self._attempts.add((hypothesis.name, hypothesis.version, attempt))

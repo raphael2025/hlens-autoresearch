@@ -42,7 +42,7 @@ from typing import Any, Final
 from core.domain.base import NAME_PATTERN, SEMVER_PATTERN, FrozenMapping, content_hash
 from core.domain.research import Hypothesis, HypothesisOrigin
 from core.domain.specs import StrategySpec
-from research.hypotheses.ledger import LedgerError, TrialLedger
+from research.hypotheses.ledger import TrialLedger
 
 __all__ = [
     "BATCH_SCHEMA_VERSION",
@@ -352,20 +352,9 @@ def expand_batch(grid: BatchGrid, allowlist: ReviewedOperators) -> HypothesisBat
 
 
 def preregister_batch(batch: HypothesisBatch, ledger: TrialLedger) -> tuple[Hypothesis, ...]:
-    """Register every not yet registered cell of ``batch``; return the newly registered ones.
+    """Register every new cell in one TrialLedger event; return those newly registered.
 
-    All or nothing: a cell whose ``name@version`` is registered with other content raises
-    ``LedgerError`` before any cell is written, so the ledger never holds half a batch because
-    of a conflict.
+    ``TrialLedger.register_batch`` preflights every member and, when durable, appends one journal
+    event before changing memory. Identical prior registrations remain idempotent.
     """
-    known = {(h.name, h.version): h for h in ledger.hypotheses}
-    pending: list[Hypothesis] = []
-    for hypothesis in batch.hypotheses:
-        existing = known.get((hypothesis.name, hypothesis.version))
-        if existing is None:
-            pending.append(hypothesis)
-        elif existing.content_hash() != hypothesis.content_hash():
-            raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
-    for hypothesis in pending:
-        ledger.register(hypothesis)
-    return tuple(pending)
+    return ledger.register_batch(batch.hypotheses)

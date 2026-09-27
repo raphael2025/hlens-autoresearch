@@ -6,12 +6,21 @@
 
 ## 落盘的 TrialLedger（调试批次，2026-09-25，ADR-0040 实施说明）
 
-`TrialLedger()` 省略 `path` 时行为不变（纯内存，进程结束即丢）。传入 `TrialLedger(path=<文件>)` 后，每次新登记
-（`register` / `register_draft` 返回 `True` 时）追加一行哈希链 JSON（`research.persistence.AppendOnlyJournal`，
+`TrialLedger()` 省略 `path` 时行为不变（纯内存，进程结束即丢）。传入 `TrialLedger(path=<文件>)` 后，每次新单项登记
+（`register` / `register_draft`）和重新评估登记各追加一行哈希链 JSON（`research.persistence.AppendOnlyJournal`，
 与 `research.strategies.failure_registry.FailureRegistry` 同一持久化写法：只追加、`flush` + `fsync`、文件变短即拒绝）；
 重新打开同一文件会重放并校验整条哈希链，恢复已登记的假设与各族 trial 计数——某族的 trial 数因此跨进程重启延续，
 不会在重启后回落到 0。同一 `name@version` 重复登记仍是幂等的（不重复计数）；换内容登记仍拒绝（`LedgerError`）。
 文件被篡改、截断或出现未知记录类型一律 `research.persistence.JournalCorrupted`，不静默修复。
+
+`register_batch(hypotheses)` 会先检查整个输入的类型、重复身份、LLM 来源和已有内容冲突，再用一个
+`register_batch` journal event 记录所有尚未登记的假设；事件追加并 `fsync` 成功后才更新内存。整批与已存在且内容相同的条目保持幂等，
+冲突不会写入任何批次行。`preregister_batch(batch, ledger)` 通过此接口，因此一个持久批次不会因进程在逐条登记之间退出而只留下该批次的合法前缀。
+新 event 重放时会严格检查 payload 结构、规范化 Hypothesis 内容、批内唯一性及与历史登记的冲突；无效 event 按 journal corruption 拒绝。
+
+此保证限于**同一个 TrialLedger journal event**：不构成与 typed-plan audit、loop audit、lifecycle 或其他 journal 的跨文件事务；也不自动恢复计划执行。
+如底层写入中断导致损坏或截断，重开仍 fail closed，不修复或删除历史。未审阅的 LLM 假设不能通过 `register_batch` 登记；应使用带人工审阅状态的
+`register_draft` 单项入口。
 
 `ledger.py` 的 `register_reevaluation(hypothesis, attempt)`：已登记假设的再次评估（例如循环在增长的累计研究数据上重新评估 INCONCLUSIVE 假设）作为**单独的 trial** 预登记并计入族 trial 数（`trials` / `trial_index` / `trial_log`；ADR-0049 accumulated validation window 实施说明）。
 
@@ -30,7 +39,7 @@
 `trial_point` 能运行的两种形式；以下情况一律 `BatchRefused`，发生在任何登记与运行之前：算子不在白名单上（或同名同版本但内容不同）、
 算子种类是 `trial_point` 跑不了的 DSL 算子（conditioning / interaction / temporal / transformation / ensemble / negation）或未知种类、
 参数未声明搜索空间、值不在搜索空间内（类型也须一致）、浮点值、文本值读回后不是它自己、空或重复的因子。`preregister_batch(batch, ledger)`
-全有或全无地把整批预登记进 `TrialLedger`，族 trial 数因此覆盖整个网格。算子只是数据（主张、方向、固定列表中的种类），生成物永不作为代码执行。
+通过 `TrialLedger.register_batch` 用单个登记事件全有或全无地预登记整批，族 trial 数因此覆盖整个网格。算子只是数据（主张、方向、固定列表中的种类），生成物永不作为代码执行。
 
 网格中的参数点在构造时会复制并递归冻结。循环以已记录的 `TrialOutcome` 判断单元是否完成，而不是把 TrialLedger 的预登记状态误当作执行完成；Hypothesis 阶段失败后，已预登记但尚无结果的单元仍会在后续轮次按原身份调度，已产生结果的单元不会重复运行。
 
