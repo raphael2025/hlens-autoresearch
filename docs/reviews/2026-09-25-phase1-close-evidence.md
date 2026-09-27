@@ -13,7 +13,7 @@
 | 依据 | `docs/research/roadmap.md`《Phase 1 验收矩阵》、`PROJECT_STATUS.md` §3/§4/§6/§7（**注**：`PROJECT_STATUS.md` 最后一次改动是 `9b2124f`，即 G2 红队发现记录本身；本文档之后的 G2 返修与 G3-P 不在 `PROJECT_STATUS.md` 里，只在本文档与 commit history 中核实） |
 | 方法 | 对每项：读取 roadmap 原文要求 → 定位实现模块 → 用 `grep` 核实测试文件与测试函数确实存在 → 用 `git log` 核实 commit 存在于本分支历史 → 按 `PROJECT_STATUS.md` 记录与 commit 时间线标注状态 |
 | 范围限制 | 本文档**没有**重新运行全量测试套件（会话内存上限 2 GB，禁止跑全量），本次 G3-D 只实际运行了 `tests/test_docs_consistency.py` + `tests/test_architecture_boundaries.py`（17 passed）；其余测试文件 / 函数名的存在性用 `grep` 核实，通过性以对应 commit message 与既有验收记录为准，本文档不重新验证 |
-| 关键发现（提前说明） | 按 `git log` 中 `phase1: accept <X> and open <Y>` 这一串验收门 commit，**实现批次**的 Codex 验收门止步于 **D3D**（`300bf33`）。**D3E 及其后的一切实现**（D3E-R1/R2/R3、D4、E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、**G2 红队及其四次返修**、**G3-P 性能**）**都没有对应的 `accept` 门 commit**。唯一的例外是 `3ee0519`（`phase1: accept ADR-0028 (Raphael) and open E1`）——这是 **Raphael 本人**对 ADR-0028（E0 双 Raw→Canonical 设计）的**设计层面**批准，不是 Codex 对任何实现批次的验收，不改变上述结论 |
+| 关键发现（提前说明） | 本表在 2026-09-25 起草时，实现验收门止步于 D3D（`300bf33`）。Codex 于 2026-09-27 后续接受 D3E（含 R1～R3 与跨日修复），记录见 [`2026-09-27-d3e-acceptance.md`](2026-09-27-d3e-acceptance.md)。除此之外，E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、G2 与 G3-P 等后续实现组仍待复核；D4 不启用门已接受。`3ee0519` 仍仅代表 Raphael 对 ADR-0028 的设计批准，不是其后实现的验收 |
 
 ---
 
@@ -46,9 +46,9 @@ a7bd172 phase1: accept C1 and open C2
 3ee0519 phase1: accept ADR-0028 (Raphael) and open E1
 ```
 
-`3ee0519` 的提交信息标注了 `(Raphael)`：这是 Raphael 本人对 **ADR-0028 设计门**（`docs/adr/0028-dual-raw-canonical-lineage.md`，E0 双 Raw→Canonical 语义）的批准，写在 E0-R1（`e2951e4`）修正之后、E1 实现（`9b8674a`）开始之前——它开的是"E1 可以开始写代码"这道**设计**门，不是 Codex 对某个**实现**批次的独立复核验收。除此之外，**没有** `phase1: accept D3E and open ...` 这一行，D3E 之后再没有出现过任何 Codex 实现验收门 commit。这与 `PROJECT_STATUS.md` §3/§4 把 D3E 起标为 `REVIEW_PENDING` 完全一致；本次 G3-D 新增的 G2 红队与 G3-P 同样落在这个未验收窗口内，不改变边界。
+`3ee0519` 的提交信息标注了 `(Raphael)`：这是 Raphael 对 ADR-0028 设计的批准，不是实现验收。Codex 于 2026-09-27 已单独接受 D3E；D4“不启用”门现已接受；E0～G3-P 等后续实现仍为 `REVIEW_PENDING`，未因 D3E 验收而自动接受。
 
-D3E-R3（`7e9e084`）与 E1-R3/R4、G3-S 系列穿插出现在同一段提交历史里，随后 F2/F3/DS-1/G1/**G2**/**G3-P** 又依次叠加在 D3E 之上——也就是说，在 D3E 正式过验收门之前，后续批次一直在其上继续开发。这与 roadmap 恢复序列声明的"门未通过不得进入下一批"字面上不一致；这是否可接受，需要 Codex 明确裁决，本文档不代为下结论。
+D3E-R3（`7e9e084`）与 E1-R3/R4、G3-S 系列穿插出现，后续 F2/F3/DS-1/G1/G2/G3-P 又叠加在 D3E 之上，未遵循 roadmap 的逐批验收顺序。Codex 于 2026-09-27 决定保留现有提交、逐组独立复核：D3E 已接受，但不追溯批准其后的批次，也不降低后续验收标准；发现实质依赖缺陷时再按证据修复受影响批次。
 
 ---
 
@@ -145,15 +145,15 @@ D3E-R3（`7e9e084`）与 E1-R3/R4、G3-S 系列穿插出现在同一段提交历
 ### #13 — REST 补尾只用 market-data-only base；缺口显式标记，不推断填补
 
 - **要求**：端点静态检查与缺口测试。
-- **实现**：设计门 `docs/adr/0027-rest-raw-source-and-element-revisions.md`；`infrastructure/revision/rest_identity.py`、`rest_availability.py`、`rest_precedence.py`、`channel_precedence.py`（D3B，纯函数）；`infrastructure/parser/binance_rest.py`（D3C，严格 decoder）；`infrastructure/collector/binance_rest.py`（D3D，可重放 collector）；`infrastructure/revision/rest_store.py` + `channel_reconcile.py`（D3E，store + reconciler，**REVIEW_PENDING**）。
+- **实现**：设计门 `docs/adr/0027-rest-raw-source-and-element-revisions.md`；D3B 纯函数、D3C decoder、D3D collector、D3E response / element store 与 cross-channel reconciler。D3E 含 R1～R3、跨日 provenance 与 PIT edge 去重均已由 Codex 验收。
 - **G3-D 新增**：G2 红队发现并修复了三处直接影响"REST 数据能否安全进数据集"的正确性缺陷（均已修复，见 §2）：
   - **RT-3**（G2-R1a，`aef4ce7`）：REST 页在采集中途崩溃时，规范化曾接受一个缺元素的页——修复后 `infrastructure/canonical/normalizer.py` 的 `_check_rest_unit` 会重新严格解码首次交付页（`infrastructure/revision/row_integrity.py::page_elements`），缺失元素必须能在另一页的已提交批次中逐个找到，否则 `CanonicalUnitIncomplete`，不写任何行；
-  - D3E-R2/R3（`c326434`、`7e9e084`，早于本次 G3-D 但仍在 D3E 的 REVIEW_PENDING 范围内）已让 reconciler 与 store 用同一套核对读取；
+  - D3E-R2/R3（`c326434`、`7e9e084`）让 reconciler 与 store 使用同一套行核对；Codex 已于 2026-09-27 对 D3E 整体验收，见 `2026-09-27-d3e-acceptance.md`；
   - G3-P（`dcfe8b7`）把 `row_integrity.py` 的归档行读取从"逐行 slice"改成一次 `take`，`batch()` 的列漂移检查改为先比较键集合——首个失败行与报错文本不变（新回归测试 `tests/infrastructure/revision/test_channel_reconcile.py`），只是加速，不改语义。
   - **已知残留**（见 §3 D-33-CAP）：`_check_rest_unit` 里为缺失元素查找持有者仍是逐 256 个 key 一批的 `In(observation_key, …)` 扫描（`infrastructure/canonical/normalizer.py` `_KEY_CHUNK = 256`），与 G3-P 在 `pit/selector.py` 里替换掉的模式属同一类（PyIceberg 超过约 200 字面量即不裁剪）；G3-P **没有**触碰这一处，`ac2daef` 的提交信息明确把它列为"(LOW-MED, documented) follow-up"，容量未测。
 - **测试**：D3B `tests/infrastructure/revision/test_rest_identity.py`、`test_rest_policies.py`、`test_channel_precedence.py`；D3C `tests/infrastructure/parser/test_binance_rest_decoder.py`、`test_binance_rest_pagination.py`；D3D `tests/infrastructure/collector/test_binance_rest.py`、`test_binance_rest_checkpoints.py`、`test_binance_rest_client_boundary.py`、`test_binance_rest_static.py`、`test_binance_rest_contract.py`；D3E `tests/infrastructure/revision/test_rest_store_unit.py`、`test_rest_store_postgres.py`、`test_channel_reconcile.py`；G2 `tests/infrastructure/redteam/test_rt_crash_points.py`（REST 页中途崩溃）、`test_rt_time_units.py`（亚毫秒精度不可比较）。
 - **commit**：D3A 设计门 `7111e54` + R1 `ed526f7`（接受门 `2e40b36`，[验收记录](2026-09-25-d3a-adr-0027-acceptance.md)）；D3B `3b267a0` + R1 `02c0418`（接受门 `0c3af31`，[验收记录](2026-09-25-d3b-rest-foundations-acceptance.md)）；D3C `643cf45` + R1 `6b9e670`（接受门 `960b552`，[验收记录](2026-09-25-d3c-rest-decoder-acceptance.md)）；D3D `61dd9bf` + R1 `c06b9fa`（接受门 `300bf33`，[验收记录](2026-09-25-d3d-rest-collector-acceptance.md)）；D3E `21e31f5` + R1 `52f7477` + R2 `c326434` + R3 `7e9e084`；G2-R1a `aef4ce7`；G3-P `dcfe8b7`。
-- **状态**：⚠️ **部分验收**——D3A～D3D（设计、纯函数、decoder、collector）均已由 Codex 验收；**D3E（store + reconciler）与其后所有返修（含本次 G2/G3-P）没有验收门 commit，是 REVIEW_PENDING**。G2 红队的修复让"REST 数据可以进数据集"这件事在跨阶段攻击下更站得住脚，但仍然是未经 Codex 独立复核的实现。
+- **状态**：⚠️ **部分验收**——D3A～D3E（设计、纯函数、decoder、collector、store 与 reconciler）均已由 Codex 验收；G2 红队和后续 E/F/G 实现仍为 `REVIEW_PENDING`，不得由 D3E 验收推导为已接受。
 
 ### #14 — WebSocket live tail 只在历史 backfill、REST gap reconciliation 与重放幂等验收后启用（可不启用）
 
@@ -271,7 +271,7 @@ D3E-R3（`7e9e084`）与 E1-R3/R4、G3-S 系列穿插出现在同一段提交历
 - **（中）** `feature_request_from_dataset` / `load_manifest` 此前接受调用方另传的验证器，改为只接受调用方传入的 `DatasetBuilder` 本身；
 - 同批还修了一个由红队套件本身暴露的全量门失败：RT-2 的 `RawNotDerived` 曾同时覆盖"真实滞后未规范化"与"规范化 batch 已提交、但行被从 Canonical 删除"两种情况，后者现在正确判为 `CatalogIntegrityError`（篡改）。
 
-修复后，`tests/infrastructure/redteam/` 中**没有**残留的 `xfail` 标记（`grep -rn xfail tests/infrastructure/redteam/*.py` 只在 README 里出现，测试文件本身为零命中）——README 表格逐条标注了每个发现"fixed RT-n, G2-R1x"。这四次返修**没有**经过 Codex 独立复核，仍在 D3E 起的 REVIEW_PENDING 窗口内。
+修复后，`tests/infrastructure/redteam/` 中**没有**残留的 `xfail` 标记（README 表格标注各发现对应返修）。这些 G2 返修仍待 Codex 按组复核；D3E 验收不包含 G2 批次。
 
 ---
 
@@ -354,7 +354,7 @@ uv run pytest tests/test_docs_consistency.py tests/test_architecture_boundaries.
 | **键闭包可达范围** | 同一笔成交的副本之间若有超过一天的空档（链断开），两段各自被当作独立记录，冲突看不到；相邻两天的质量报告会各自列出跨天冲突（按设计）；这种数据只能是严重损坏，需要以后专门的质量规则检测。另外按小时选择时现在要读前后各一天的分区，生产规模下的耗时尚未测量。G3-S3-R1（`0fe7471`）已把"同一观察键、相邻不超过一天"的全部 revision 一起纳入选择（传递闭包），但闭包本身的**跨度上限仍是一天**，超过这个跨度的断链仍是已知边界。 | `PROJECT_STATUS.md` §7 |
 | **D-QGAP / 证据缺口独立表大小** | 成交一天 100～300 万条都有缺口（D-HIST），报告行如果逐条内嵌证据缺口会到数 GB；已决定方案 A——缺口改写进独立只追加表（ADR-0031，QG-1/QG-2），报告行只存引用与计数。 | `PROJECT_STATUS.md` §6 |
 | **容量基线（G3-S 系列 + G3-P）** | 规范化"整个单元一次性读入"约每行 19 KB（BTC 一整天 100～300 万行会超出 WSL 约 15 GB 内存）；改为固定快照 + 分批窗口后，30 万行规范化新增常驻约 0.8 GB；时点选择按小时约 0.27 GB 峰值，但**选择结果本身每行约 11 KB，成交数据必须按小时（或更短）分段选择，整天选择（约 30 GB）不可行**。G3-P（`dcfe8b7`）在 ≤ 1 万行规模上把 PIT key closure 与行证明加速了 2～4 倍，但**没有**在生产规模（百万行级）下重新测过；多批次场景的 PyIceberg manifest 重读成本（40 批约 15 s）明确未处理。 | `PROJECT_STATUS.md` §7；本文档 §3 |
-| **D3E-R3 已绑定持久行到不可变来源（原"D3E provenance 边界"已关闭）** | D3E-R1/R2 遗留的边界——元素行只证明"仍是那一页已提交批次的原样内容"、不重新解码正文；归档行同理不重新解析归档对象——已由 D3E-R3（`7e9e084`）关闭：REST 元素 / 响应行现在重新读取并严格重新解码其首次交付页（已提交的 D3D collection checkpoint，`infrastructure/revision/row_integrity.py::PersistedRowVerifier.verify_rest_elements` / `lawful_response_row`）；归档行改用 D1 严格重新解析已发布的归档对象（`verify_archive_elements`）；reconciler 的 `_pinned_read` / `_verify_edge_provenance` 额外按显式 `snapshot_id` 时间旅行重读已提交的证据边批次，核对 R3 覆盖的五张表头。**这仍是未验收的实现**：D3E（含 R1/R2/R3）没有 Codex 接受门 commit。**D3E-R3 跨日错误（2026-09-26 发现）**：`_verify_edge_provenance` 按分区（data_type/symbol/day）只遍历自己那一天的证据边批次前缀；若同一个 aggTrade 观察键的 REST revision 跨 UTC 日边界，会把另一天已合法提交的边判定为伪造/缺失，破坏该日期的 reconcile / `verified_edges` / PIT。已由 `69f0bf0` 修复（候选分支 `claude/hlens-autorecearch-dev-c05c2b`；只改 `channel_reconcile.py`：同一观察键跨日时，另一天写入的证据边批次按写入它的那一天的完整键集重读并逐项复核，完整性校验不放宽；新增 13 项跨午夜回归，旧代码 13 项全部失败、新代码全部通过；独立只读复核判定 ACCEPTABLE），仍待 Codex 复核，D3E 仍未验收。 | `infrastructure/revision/row_integrity.py`；`infrastructure/revision/channel_reconcile.py::_verify_edge_provenance`；`PROJECT_STATUS.md` §7 |
+| **D3E-R3 来源绑定与跨日问题** | REST response / element rows 绑定首次交付 checkpoint 并严格重解码，archive rows 绑定 D1 严格解析的已发布对象；evidence edge 批次按固定 snapshot 核对。`69f0bf0` 修复跨日 provenance，`50cdc49` 修复 PIT 多日 edge 重复映射。Codex 于 2026-09-27 接受 D3E，细节与测试见 [`2026-09-27-d3e-acceptance.md`](2026-09-27-d3e-acceptance.md)。 | `row_integrity.py`；`channel_reconcile.py`；`pit/selector.py`；`PROJECT_STATUS.md` §7 |
 | **D-33 精确比较的代价** | REST 以毫秒交付、2025 年起归档为微秒，同一笔成交若带亚毫秒位就无法证明相等，只能 fail closed——正确但降低 REST 补尾的价值；是否改请求微秒需要以后单独验证并批准。 | `PROJECT_STATUS.md` §7 |
 | **D-HIST 假设叠加层** | 早于本机采集的历史行情默认仍取 `available_time = ingest_time`（保守）；ADR-0032 的"事件时间 + 5 秒可用"假设必须由数据集规格显式绑定才生效，不绑定就维持保守——这是设计如此，不是 bug，但意味着**任何不显式绑定该假设的数据集都用不了 D-HIST 之前的历史数据**。 | `PROJECT_STATUS.md` §6 |
 | **D3D/D0 大体量吞吐未测** | D1 已真实验证两个单位边界日的 kline 与 aggTrades；大体量 BTC 日归档尚未做内存/吞吐基线，批量 backfill 前必须先完成容量检查与可恢复 checkpoint；G3-P 的规模测量同样只到 1 万行。 | `PROJECT_STATUS.md` §7 |
@@ -366,18 +366,18 @@ uv run pytest tests/test_docs_consistency.py tests/test_architecture_boundaries.
 
 ## 6. 小结（供 Codex / Raphael 参考，不是结论）
 
-1. **已验收（Codex 独立复核 + 验收门 commit）**：#1～#12，以及 #17 中归档侧与 D3B（REST）侧的 policy 部分。对应 roadmap 批次 A2/A2r、A3a、A3b、B1、B2、B3、C1、C2、C3、D0、D1、D2、D3A、D3B、D3C、D3D。
-2. **REVIEW_PENDING（实现已提交，验收门缺失）**：#9 后半（exchangeInfo/证据缺口/DS-1 三张表）、#13 后半（D3E 及其全部返修，含本次 G2/G3-P）、#14（D4 门记录）、#15、#16、#17 后半（exchangeInfo policy、D-HIST）、#18、#19（含新增的数据集绑定特征路径）。对应批次 D3E 及其后的一切：D3E-R1/R2/R3、D4、E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、**G2 及其四次返修**、**G3-P**。
+1. **已验收（Codex 独立复核）**：#1～#12；#13 中 D3A～D3E REST 补尾批次；#17 中归档侧及 D3B（REST）侧 policy。D3E 记录见 [`2026-09-27-d3e-acceptance.md`](2026-09-27-d3e-acceptance.md)。
+2. **REVIEW_PENDING（实现已提交，待独立复核）**：#9 后半（exchangeInfo/证据缺口/DS-1 三张表）、#13 后续 Canonical / PIT / Dataset 路径与 G2/G3-P 批次、#15、#16、#17 后半（exchangeInfo policy、D-HIST）、#18、#19（含新增的数据集绑定特征路径）。对应 D4、E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、G2 与 G3-P。
 3. **#20**：G1 已补齐端到端验收测试与记录，G2 红队从攻击角度补充了跨阶段证据、发现并修复了 6 个问题（均在 F3/F4 这一跳），G3-P 补充了性能数据；现仍为 REVIEW_PENDING。
 4. **本次（G3-D）范围内自查通过，不改变以上结论**：只更新三份文档（本文件、新增的复核指南、`infrastructure/README.md`），未改动任何生产 / 测试代码；`tests/test_docs_consistency.py` + `tests/test_architecture_boundaries.py` 17 passed。
 5. **已知限制清单（§5）新增四条**：D-33-CAP（RT-3 修复路径的容量残留，未修、已记录）、ad-hoc 特征路径与数据集绑定路径长期并存、单 writer 假设从未在并发场景下被测试过；连同既有的 D-MAN、键闭包可达范围一起，构成 Codex 复核时应重点核对的边界清单。
-6. **给 Codex 的建议顺序**（仅为建议，不代替决策）：D3E（含 R1/R2/R3）与其上的 G2 六项修复是后续一切的地基，逻辑上应先补上验收门，再评估 E0～G3-P 这一整段是否可以一次性批量复核，还是要拆回逐批复核；详细的复核分组建议见 [`2026-09-25-phase1-review-guide.md`](2026-09-25-phase1-review-guide.md)。
+6. **后续复核顺序**：D3E 与 D4 门记录已接受。按依赖顺序继续复核 E0/E1 与后续批次；G2 / G3-P 证据不能替代对应实现代码复核，分组见 [`2026-09-25-phase1-review-guide.md`](2026-09-25-phase1-review-guide.md)。
 
 ---
 
-## 7. 2026-09-26 Phase 1 修复批次（候选分支，未验收）
+## 7. 2026-09-26 Phase 1 修复与 D3E 验收记录（候选分支）
 
-依 Raphael 2026-09-26 的修复指令执行；范围只限 Phase 1，不改 `core/`、冻结契约、Constitution 或 ADR 决策。**本节是实现与自查记录，不是验收结论**；D3E 及其后批次仍为 REVIEW_PENDING。
+依 Raphael 2026-09-26 的修复指令执行；Codex 于 2026-09-27 已接受 D3E，本节其余实现批次仍待逐项复核。范围只限 Phase 1，不改 `core/`、冻结契约、Constitution 或 ADR 决策。以下记录的严格门禁结果对应候选实现提交。
 
 | 提交 | 内容 | 对应验收项 |
 |---|---|---|
@@ -397,11 +397,11 @@ uv run pytest tests/test_docs_consistency.py tests/test_architecture_boundaries.
 **K4 集成（2026-09-26，依 Codex 复核 `942160c` K4）**：PIT 跨日边去重修复 `60246a5`（测试）+ `d6a92fe`（`infrastructure/pit/selector.py`：各日已验证边按 `edge_id` 收集一次，同一 `edge_id` 各份拷贝须完全相同否则 fail closed）按远端 `fix/d3e-pit-edge-dedup` 的已推送 head 集成进候选分支，为 `9baad12` / `50cdc49`（内容不变的 cherry-pick）。修复拥有者尚未回复确认该 head 为最终检查点；若其后有新版本，需重新集成与重跑。
 - 定向：`pytest tests/infrastructure/pit tests/infrastructure/revision/test_channel_reconcile.py` → `196 passed, 1 skipped in 213.53s`；
 - 完整严格门禁：`GATE OK @50cdc49 | ruff: All checks passed! | 601 files already formatted | Success: no issues found in 463 source files | lock ok | pytest: 5753 passed, 1 warning in 3188.63s (0:53:08)`。
-- K4 所要求的"代码复核"仍待 Codex；Phase 1 仍未验收。
+- D3E 与 K4 代码复核已由 Codex 于 2026-09-27 接受，记录见 `2026-09-27-d3e-acceptance.md`；Phase 1 整体仍未验收。
 
 **已知取舍**：以另一天的有效批次重复提交同一条边，现在会被判为"committed twice"（旧代码对原始那天会放过）；固定视图若 REST snapshot 早于外日批次所依据的 REST 状态，会 fail closed（与本日批次一致）。只有跨日的键才产生额外读取：每多一天一次 REST 当天键扫描，加上该天每个批次两次证据表扫描。
 
-**Phase 1 仍未满足的验收项（独立复核 2026-09-26 核实，与 §6 一致）**：#9 后半、#13 后半（D3E 含 R1/R2/R3 及本次修复）、#14、#15、#16、#17 后半、#18、#19、#20、#21 均无 `phase1: accept …` 验收门 commit；最后一个实现验收门仍是 `300bf33`（接受 D3D、开放 D3E）。另有：roadmap"门未通过不得进入下一批"与实际开发顺序不一致，需 Codex 裁决；D-33-CAP 容量残留与单 writer 并发假设未测。
+**Phase 1 仍未满足的验收项（按当前复核状态）**：#9 后半、#13 后续 Canonical / PIT / Dataset 路径、#14、#15、#16、#17 后半、#18、#19、#20、#21 仍待复核；D3E 已有独立验收记录。其余容量与并发边界继续列为待验证限制。
 
 ---
 

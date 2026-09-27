@@ -17,9 +17,8 @@
 - **要核对什么**：这组声称做到了什么、复核时应重点验证的断言；
 - **证明它的测试**：具体测试文件 / 函数名（`grep` 已核实存在，通过性以各自 commit message 与本文档
   为准，本指南未重新跑全量）；
-- **状态**：本组是否已有 Codex 验收门 commit（目前全部没有——`300bf33` 之后再没有出现过
-  `phase1: accept ... and open ...` 这一行，唯一例外 `3ee0519` 是 Raphael 本人对 ADR-0028 设计的批准，
-  不是实现验收，见组 3）。
+- **状态**：本指南起草时，`300bf33` 之后没有实现验收门；Codex 于 2026-09-27 另行接受 D3E（含 R1～R3 与跨日修复），记录见
+  [`2026-09-27-d3e-acceptance.md`](2026-09-27-d3e-acceptance.md)。除此之外，后续实现组仍无 Codex 验收门。
 
 组的顺序就是建议的复核顺序：前面的组是后面的组的地基，先通过前面的组，后面的组的复核才有意义。
 
@@ -28,19 +27,19 @@
 ## 1. G-D3E — REST 响应 / 元素 revision store + 跨通道 reconciler
 
 - **依赖**：D3A～D3D（已验收：ADR-0027、REST 纯规则、decoder、collector）。
-- **commit**：`21e31f5`（D3E：`RestRevisionStore` + `ChannelReconciler` 初版）、`52f7477`（D3E-R1：核对已存行的 provenance）、`c326434`（D3E-R2：reconciler 与 store 用同一套核对）、`7e9e084`（D3E-R3，晚于 E1～E4 才提交：把持久化行绑定到其不可变来源）。
+- **commit**：`21e31f5`（D3E：`RestRevisionStore` + `ChannelReconciler` 初版）、`52f7477`（D3E-R1：核对已存行的 provenance）、`c326434`（D3E-R2：reconciler 与 store 用同一套核对）、`7e9e084`（D3E-R3：持久化行绑定到不可变来源）、`69f0bf0`（跨日 edge provenance 修复）、`9baad12` / `50cdc49`（PIT 按 edge ID 去重）。
 - **要核对什么**：REST 响应 / 元素两级 Raw revision 的身份与幂等重放；REST `arrival_seq` 的区间守卫（`[2**62, 2**63)`）不与归档序号碰撞；D-33 跨通道等价比较只在逐字段完全相同时记一条"归档优先"证据边，否则不记边（继续 fail closed）；崩溃恢复路径；R1/R2/R3 三轮返修关闭的具体缺陷（原样采用来源伪造的元素行、时间/政策漂移的竞争响应被当成普通竞争、持久化行未绑定不可变来源）是否真的关上了。
 - **证明它的测试**：`tests/infrastructure/revision/test_rest_store_unit.py`、`test_rest_store_postgres.py`、`test_channel_reconcile.py`。
-- **状态**：REVIEW_PENDING，无验收门。**这是整段复核的地基**：G-E0 起的一切都以未验收的 D3E 为输入。
+- **状态**：✅ D3E 已由 Codex 于 2026-09-27 接受（见验收记录）。**这是整段复核的地基**：G-E0 起的一切仍按各自批次待复核；验收 D3E 不会自动验收其上实现。
 
 ## 2. G-D4 — WebSocket live tail 延期门（docs-only）
 
 - **依赖**：G-D3E（gap reconciliation 是启用 WebSocket 的前提之一，见 roadmap #14）。
 - **commit**：`a536ef3`。
 - **要核对什么**：`docs/reviews/2026-09-25-d4-live-tail-gate.md` 给出的"不启用"结论是否确实由 ADR-0022 与
-  roadmap #14 的强制前提（D3E 未验收）推出；仓库里确实没有任何 WebSocket 代码。
+  roadmap #14 与 ADR-0022 的前置要求；D3E 现已验收，因此需要重新核对无实时消费者等剩余理由。仓库当前确实没有 WebSocket 代码。
 - **证明它的测试**：无专门测试（门的内容是"不做"）；`tests/test_architecture_boundaries.py` 间接保证没有引入长连接依赖。
-- **状态**：REVIEW_PENDING（记录自称"提案，不是验收"）。
+- **状态**：✅ Codex 于 2026-09-27 接受 D4 关闭、不启用 WebSocket；真实规模 backfill 与实时消费者仍是未来重新考虑的前提。
 
 ## 3. G-E0 — 双 Raw → Canonical lineage 设计（ADR-0028）
 
@@ -58,7 +57,7 @@
 - **commit**：`9b8674a`（E1）、`65aedd6`（E1-R1）、`f6c29c9`（E1-R2）、`8c9109b`（E1-R3，批次号即规范化计划）、`42530a4`（E1-R4，拒绝复用早于所述内容提交的报告）、`d816bab`（决定记录）；容量重写 `bd1d941`（G3-S：按批次窗口规范化，不整读单元）、`f92afdf`（G3-S-R1：按 rank 切片、归档单元仍整体）。
 - **要核对什么**：一个 Raw source revision 是一个单元，`PersistedRowVerifier` 证明全部 Raw 行后才一一映射为 Canonical 行；独立 `arrival_seq` 块、一次时钟读数；G3-S 之后内存随批大小而非单元大小增长（30 万行新增内存约 0.8 GB，未在生产规模复测，见 `2026-09-25-phase1-close-evidence.md` §5）；批次号是否真的锁定了"单元行数 + 批大小"从而让续跑只按已提交切分推进。
 - **证明它的测试**：`tests/infrastructure/canonical/test_normalizer.py`、`test_normalizer_postgres.py::test_dual_lineage_normalization_recovery_and_mapping_on_postgres`、`test_a_forged_raw_row_is_refused_on_postgres`。
-- **状态**：REVIEW_PENDING。
+- **状态**：REVIEW_PENDING。Codex 于 2026-09-27 复核发现 E1-CAP-1：除 `_positions`、`_committed_times` 与最终块核对的 O(N) 状态外，严格 D1 归档证明缓存完整 `ParsedArchive.rows`，计划 / done / commit 元数据也随 batch 数增长；初版返修（`2f98cd2`, `97772ba`，未集成）和其结构测试仍未覆盖全路径与深层缓存。容量探针的 RSS 归因也须校正。G3-S“内存只随 microbatch 增长”的承诺尚未成立。详细发现和关闭标准见 [`2026-09-27-e1-review.md`](2026-09-27-e1-review.md)。
 
 ## 5. G-F1 — PIT 选择器 + 容量重写（G3-S2）+ 规模性能（G3-P 的 PIT 部分）
 

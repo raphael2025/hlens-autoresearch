@@ -70,22 +70,6 @@ flowchart TD
 - **禁止事项**：把知识条目当作已验证结论；复制受版权保护的全文；让 LLM 未经审阅直接写入知识库。
 - **可能的失败模式**：知识库变成未经筛选的收藏夹；出版偏差（只收录"有效"的方法）；主张不可检验。
 
-### Phase 0.5 验收矩阵
-
-每项必须有可观察证据；"现状"只描述证据是否存在，**不是**验收结论（验收由 Codex / Raphael 作出）。
-
-| # | 验收项 | 可观察证据 | 现状 |
-|---|---|---|---|
-| 1 | 每个条目有出处、许可 | `KnowledgeResult` 构造检查；`LocalKnowledgeProvider` 加载时拒绝空白出处 / 许可（`tests/plugins/knowledge/`） | 有证据 |
-| 2 | 每个条目有证据等级与可检验的主张 | `evidence_level` / `claim` 必填（`core/domain/research.py`） | 有证据 |
-| 3 | 可按状态检索 | `KnowledgeQuery.statuses`；Provider 契约套件 `check_filters` | 有证据 |
-| 4 | 可按标签检索 | `KnowledgeQuery.tags_all`（ADR-0055，2.2.0，AND）；`tests/plugins/knowledge/test_tags_assets.py`、契约套件 `check_tag_and_asset_filters` | 能力有证据；仓库种子尚无经人工审阅的标签（ADR-0055 决策 10） |
-| 5 | 可按资产检索（精确，不做子串） | `KnowledgeQuery.assets_any`（ADR-0055，2.2.0，OR、逐字相等）；同上测试 | 能力有证据；仓库种子尚无经人工审阅的资产 |
-| 6 | 标签 / 资产的契约版本边界 | ADR-0055 验证矩阵 V1 ~ V9：`tests/golden/v2_1_0/`、`tests/test_v2_1_0_knowledge_golden.py`、`tests/test_adr_0055_versions.py` | 有证据；ADR-0055 待 Codex 复核 |
-| 7 | 无出处条目为零 | 加载即拒绝；种子全部带出处 | 有证据 |
-| 8 | strategy / factor / feature / risk / event / state 各库首批条目 | `docs/research/knowledge/*.json` | 本分支种子覆盖 strategy / factor / risk / state；feature / event 种子在 `wip/phase-0.5-knowledge`，待集成 |
-| 9 | 知识不是结论；不复制全文；LLM 不经审阅不得写入 | `status` 默认 unverified；许可字段；ADR-0058 写入路径要求具名人工审阅者 | 有证据 |
-
 ## Phase 1 — Market Representation
 
 - **目标**：建立 Data Plane：采集 → Raw → Canonical → 基础 Representation。
@@ -171,8 +155,8 @@ D3B～D3E 均触及身份、双时间、重放或 precedence 语义，由 Claude
 
 #### D4（条件式 WebSocket）
 
-D4 门记录（`REVIEW_PENDING`，待 Codex 复核）：[2026-09-25 D4 live-tail 门](../reviews/2026-09-25-d4-live-tail-gate.md)。
-ADR-0022 的三项启用前置（历史 backfill、REST gap reconciliation、重放幂等）未全部验收，且没有已批准的实时消费者，
+D4 门记录已由 Codex 于 2026-09-27 复核并关闭：[2026-09-25 D4 live-tail 门](../reviews/2026-09-25-d4-live-tail-gate.md)。
+D3E 的 REST gap reconciliation 与重放幂等已验收；但真实规模历史 backfill 容量与可恢复批量流程未完成，且没有已批准的实时消费者，
 因此 Phase 1 首切片**不启用** WebSocket live tail（#14 明确允许）；不写任何 WS 代码。
 
 #### E0（双 Raw → Canonical 设计门）

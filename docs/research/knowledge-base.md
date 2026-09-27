@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | 首批 6 条种子条目（Phase 0.5 框架实现，ADR-0034；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）；标签 / 资产检索（ADR-0055，契约 2.2.0）CODE_COMPLETE / DEBUG_PENDING，种子尚无经审阅的标签 / 资产 |
+| 状态 | 10 条种子条目（Phase 0.5 框架实现，ADR-0034；均为未验证主张）；标签 / 资产检索（ADR-0055，契约 2.2.0）CODE_COMPLETE / DEBUG_PENDING；种子尚无经审阅的标签 / 资产，Phase 0.5 未验收 |
 | 首次填充 | Phase 0.5 |
 
 公开研究知识的结构化存储。知识条目是**待检验的主张**，不是已验证结论。
@@ -67,8 +67,14 @@
 | risk_volatility_managed_portfolios | 按近期已实现方差反向缩放暴露提高夏普 | Moreira, Muir (2017), JF | E3 | unverified |
 | risk_volatility_managed_portfolios_out_of_sample | 可实施的样本外波动率管理策略并不系统性跑赢（反证） | Cederburg et al. (2020), JFE | E3 | unverified |
 | state_cross_exchange_price_deviations | 同一加密货币跨交易所存在持续的价格偏离，跨国大于境内 | Makarov, Schoar (2020), JFE | E2 | unverified |
+| feature_amihud_illiquidity | 绝对日收益率 / 日成交额之比（价格冲击型流动性缺乏度量）与预期收益正相关，横截面与时间序列均成立 | Amihud (2002), Journal of Financial Markets | E2 | unverified |
+| feature_vpin_flow_toxicity | 成交量同步的知情交易概率（VPIN）在流动性压力事件前趋于上升 | Easley, López de Prado, O'Hara (2012), RFS | E2 | unverified |
+| feature_vpin_flash_crash_contradiction | 反证：独立复现下 VPIN 在闪崩前未异常升高，其表观预测力可能主要来自成交量分桶与成交方向判定 | Andersen, Bondarenko (2014), Journal of Financial Markets | E3 | unverified |
+| event_flash_crash_hft | 2010-05-06 闪崩期间高频交易者未触发崩盘，但其急于成交可能加剧价格波动 | Kirilenko et al. (2017), Journal of Finance | E1 | unverified |
 
 条目以 JSON 存于 `docs/research/knowledge/`，由 `plugins/knowledge/LocalKnowledgeProvider` 检索（ADR-0034）。
+
+新增四条条目及引用书目信息见 [`seed-2026-09-26.json`](knowledge/seed-2026-09-26.json)。书目字段于 2026-09-26 核对；主张为自写摘要，未逐字对照原文。四条均非加密市场研究，仍须在加密数据上重新检验；全部保持 `unverified`。
 
 种子条目的 `tags` / `assets` 目前为空：本仓库没有具名人工审阅者对它们做过分类。按条目自身已审阅文本（出处标题、`claim`、
 `conditions`）整理的分类**提案**见 [ADR-0055 实施说明](../reviews/2026-09-26-adr-0055-implementation.md) §5，待人工审阅者经写入路径

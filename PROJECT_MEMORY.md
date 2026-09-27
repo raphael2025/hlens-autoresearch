@@ -12,7 +12,7 @@
 - 核心目标：持续吸收公开知识、已有策略和失败经验，通过组合与实验验证产生、检验新假设
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
-- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；**Phase 1 已开启**（2026-09-24，分支 `phase/1`），B1～C3、D0～D2、D3A～D3D 已验收；D3E（`21e31f5`）→ D3E-R1（`52f7477`）→ D3E-R2（`c326434`）→ D3E-R3（`7e9e084`）与 D4 门记录均 REVIEW_PENDING
+- 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启；D3E 已于 2026-09-27 独立验收、D4 已关闭；E1-CAP-1 容量边界是当前阻断，修复仍待复核
 
 ## 2. Current Architecture
 
@@ -46,7 +46,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：**D3E-R3 REVIEW_PENDING**；REST store / reconciler（`21e31f5`）→ R1 store 已存行核对（`52f7477`）→ R2 reconciler 比较前用共享核对器（`infrastructure/revision/row_integrity.py`）证明两侧每一行 → R3（`7e9e084`）把 REST 元素/响应行绑定到首次交付页的严格重新解码、归档行绑定到 D1 严格重新解析，reconciler 按快照时间旅行核对证据边批次；均待 Codex 复核（D3D / D3D-R1 `61dd9bf` + `c06b9fa` 已验收；已知阻塞见 Current Blocker）
+- Current Subphase：D3E 已验收（`docs/reviews/2026-09-27-d3e-acceptance.md`），D4 已关闭；E1-CAP-1 容量上界是当前阻断（`docs/reviews/2026-09-27-e1-review.md`），修复仍待 Codex 独立复核与验收
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
 - D3E / R1 / R2 待复核；D4 提案：Phase 1 首切片不启用 WebSocket live tail（ADR-0022 三项前置未全验收、无实时消费者；`docs/reviews/2026-09-25-d4-live-tail-gate.md`，待复核）；E0 等 Codex 验收 D3E 与 D4 后开放；无 Codex 时 Claude 的提交只推 `wip/phase-<n>-unreviewed`，不推正式 `phase/<n>`

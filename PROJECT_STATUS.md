@@ -9,10 +9,10 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **框架整合与逐模块打磨**。已有代码已快进整合到本地 `main`（`20bdd82`）；Phase 0.5、Phase 1、Phase 2～14 仍须分别验证与验收，不能把代码整合视作 Phase 完成 |
+| 当前子阶段 | **框架整合与逐模块打磨**。已有代码已快进整合到本地 `main`；Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 是当前阻断；Phase 0.5、Phase 2～14 仍须分别验证与验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 框架代码已进入本地 `main`，远端 `origin/main` 尚未更新；各 Phase 仍按自身验收标准推进，Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B61；B62 是 P10 证据模式与 Profile 冻结登记边界的 Codex 决定，不是代码批次）；均经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 总体状态 | 🔄 框架代码已进入本地 `main`，远端 `origin/main` 尚未更新；Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已快进整合到本地 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -45,7 +45,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 框架已实现（ADR-0034）；经审阅写入路径（ADR-0058）与 `verify` 修复（K1）CODE_COMPLETE / DEBUG_PENDING；按标签 / 资产检索（ADR-0055 **Accepted** 2026-09-26，契约 2.2.0，含控制台）CODE_COMPLETE / DEBUG_PENDING；仓库种子**尚无经具名人工审阅的标签 / 资产**（分类提案未写入）；**Phase 0.5 未验收** |
-| 1 | Market Representation | 🔄 实现完成、红队返修完成，待验收（D3E 起 REVIEW_PENDING） |
+| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；E1-CAP-1 容量边界为阻断项，修复仍在独立 worktree，待复核；后续 Phase 1 验收项仍未全部完成 |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
 | 3 | Event & Interaction Engine | 🧱 框架已实现（ADR-0036）；事件运行存储、统计序列化、物理表 `event.events`（ADR-0056；只读核实从未建表）CODE_COMPLETE / DEBUG_PENDING；`subject`（ADR-0057）已以 2.1.0 声明（B41），交互 DSL（ADR-0061）CODE_COMPLETE / DEBUG_PENDING |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照 CODE_COMPLETE / DEBUG_PENDING；ADR-0052 契约 2.1.0 与研究侧取值（精确比较、C-A4）已实施、待 Codex 复核；ADR-0060 市场基准；Profile 数值 TBD |
@@ -265,6 +265,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | Phase 1 验收记录并入：D3E 已接受、D4 已关闭；E1-CAP-1 标记为当前阻断（Codex review branch） | 记录见 `docs/reviews/2026-09-27-d3e-acceptance.md` 与 `docs/reviews/2026-09-27-e1-review.md`；容量修复仍在独立 worktree，尚未复核或并入 `main` |
 | 2026-09-27 | Raphael 确认先收敛分支、整合框架与模块代码，再逐模块打磨；本地 `main` 从 `1e208b5` 快进至 `20bdd82` | 403 个提交已整合；框架代码为 CODE_COMPLETE / DEBUG_PENDING，未表示各 Phase 验收；`origin/main` 仍在 `1e208b5`，尚未推送；唯一分支材料与活动 worktree 保留 |
 | 2026-09-27 | B67（ADR-0065）：数据集路径上，回测结束仍有未成交的结转余量时，G4 容量检查为不确定（`carry_over_unfilled`），不再用不完整的成交估计容量 | CODE_COMPLETE / DEBUG_PENDING；无余量、合成路径与默认执行模型结果和哈希不变；无阈值 / Profile / 契约变化；不是 Phase 4 / 5 验收；B67 代码 `6d887b7` 全量非 PostgreSQL 门禁 7294 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0；其后 docs-only 提交只做了文档检查（20 passed） |
 | 2026-09-27 | B66（ADR-0064）：数据集路径上 G4 容量所用的成交量须与实际执行的价格 bar 的成交量完全一致，否则容量检查为不确定（`bar_volume_source_mismatch`），不再静默使用另一份数据 | CODE_COMPLETE / DEBUG_PENDING；合成路径与一致时的结果不变；无阈值 / Profile / 契约变化；冻结 HEAD `255ce1a`（B63～B66）全量非 PostgreSQL 门禁 7287 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0 |
@@ -296,7 +297,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 按完成计划和 roadmap 逐模块打磨与验收；先解决 Phase 1 当前阻塞，再安排其余模块的独立验证。
 2. 全代码批次已有测试记录，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. 本地 `main` 已含框架代码；`origin/main` 仍为 `1e208b5`，尚未推送或打 tag。决策记录、Phase 0.5 种子和未验收分支需在清理前保全并逐项整合。
+3. 本地 `main` 已含框架代码；D3E / D4 记录已整合，E1-CAP-1 仍阻断；`origin/main` 仍为 `1e208b5`，尚未推送或打 tag。决策记录、Phase 0.5 种子和未验收分支需在清理前保全并逐项整合。
 
 ## 12. 给 Claude Code 的下一步
 
