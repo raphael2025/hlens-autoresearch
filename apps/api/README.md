@@ -22,7 +22,7 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 `{kind}` ∈ `validation_report` \| `research_loop_round` \| `state_strategy_matrix` \| `router_paper_run` \|
 `gate_calibration` \| `router_stop` \| `state_diagnostics` \| `event_statistics` \| `paper_deviation` \| `degradation_check`（后五种 2026-09-26 加入，
 CODE_COMPLETE / DEBUG_PENDING：Phase 10 路由停止记录、Phase 2 状态稳定性诊断、Phase 3 事件统计、Phase 10 纸面偏差、
-Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `state_strategy_matrix` 外，每个 kind 都做契约 / 身份校验（见下）。
+Phase 11 退化检查、Phase 8 回溯审计；写入方见 `research/reports/README.md`）。除 `state_strategy_matrix` 外，每个 kind 都做契约 / 身份校验（见下）。
 
 ## Report 端点（研究控制台，2026-09-25 新增）
 
@@ -83,9 +83,10 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
 | `event_statistics` / `gate_calibration` | `report_hash` = 去掉它之后 payload 的哈希 |
 | `paper_deviation` | `deviation_hash` = 去掉它之后 payload 的哈希（Phase 10 纸面偏差，只描述） |
 | `degradation_check` | `check_hash` = 去掉它之后 payload 的哈希（Phase 11 退化检查，只作证据） |
+| `retro_audit` | `report_hash` = 去掉它之后 payload 的哈希（Phase 8 回溯审计；只读差异，不改变生命周期） |
 
 诚实边界：哈希不绑定的展示字段（路由运行的权益曲线、首末权益、每个决策的 `switching_cost`）不被核对；
-`state_strategy_matrix` 仍不透明提供（其 `matrix_hash` 无法只凭 payload 重算）。
+`state_strategy_matrix` 仍不透明提供（其 `matrix_hash` 无法只凭 payload 重算）。`retro_audit` 由研究侧 writer 对规范 payload 生成 `report_hash`，API 只按文件内容重算该哈希，不 import `research/`。
 
 - **错误体不含服务器路径**：malformed 报告的 422 `detail` 为 `<kind>/<id> is malformed: <原因>`；本层所有
   `HTTPException` 经同一处理器把绝对路径缩成最后一段（`public_detail`），知识 provider 的 `OSError` 文本同样如此。

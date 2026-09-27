@@ -6,10 +6,9 @@
 
 > 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；实现说明 2026-09-25 补充，
 > 控制台页面 2026-09-25 再补充，Gate Calibration 页面与剩余报告种类的 fixtures 2026-09-26 再补充）：
-> 14 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
+> 15 个只读页面 —— Dashboard、Validation Reports、Research Loop、State × Strategy Matrices、
 > Router Paper Runs、Router Stops、Paper Deviation（2026-09-26）、Gate Calibration、State Diagnostics、Event Statistics（后三者与
-> Router Stops 2026-09-26，CODE_COMPLETE / DEBUG_PENDING）、Degradation Checks（2026-09-26）、Lifecycle、Jobs（2026-09-26）、Knowledge Search。依赖已本地安装
-> （`node_modules/`，已 gitignore），`npm run gen:api` 与 `npm run build` 均已跑通。
+> Router Stops 2026-09-26，CODE_COMPLETE / DEBUG_PENDING）、Degradation Checks（2026-09-26）、Retro Audits（2026-09-27）、Lifecycle、Jobs（2026-09-26）、Knowledge Search。已有页面的生成与构建记录不覆盖本次新增 P8 页面；新 OpenAPI 类型声明已手动同步，`openapi-typescript` 当前不可用，需在验收阶段重跑类型生成和构建。
 
 ## 页面
 
@@ -25,6 +24,7 @@
 | Gate Calibration | 报告列表 + 详情（每个候选 Profile、每个 gate 的 FPR / power 表，附 Clopper-Pearson 区间；有检测器错误时并列 `pass_rate_bounds`，G5 模式另有 G5 / 端到端 G0 – G5 表及其 `pass_rate_bounds` / `end_to_end_bounds`，格式不对的区间显示为 malformed、从不丢弃） | `/reports/gate_calibration[/​{id}]` |
 | State Diagnostics | 诊断报告列表 + 详情（每个状态的计数 / 占比 / run 持续时间、转移矩阵、flicker、runs 表）；只描述、无阈值 | `/reports/state_diagnostics[/​{id}]` |
 | Event Statistics | 报告列表 + 详情（来源事件运行哈希；频率分桶、共现、领先-滞后直方、重叠 / 独立性诊断）；只描述、非 Profile 输入 | `/reports/event_statistics[/​{id}]` |
+| Retro Audits | 显式提交的回溯差异报告列表 + 逐对象 / gate 详情；只展示，不重跑验证或改变生命周期 | `/reports/retro_audit[/​{id}]` |
 | Degradation Checks | 退化检查列表 + 详情（subject、window、每个指标的状态 / 方向 / baseline / recent / decline / 允许下降 / 阈值来源）；missing = 证据不足而非健康；只作证据、不改生命周期 | `/reports/degradation_check[/​{id}]` |
 | Lifecycle | 允许的状态转移表 | `/lifecycle/transitions` |
 | Jobs | worker 结果日志的任务列表（按状态筛选）+ 详情（params、result / error），只读 | `/jobs[/​{job_id}]` |
@@ -80,7 +80,7 @@ uv run python -m tests.apps.live_server --port 8000 --reports-root var/reports
 
 `apps/web/fixtures/` 下按 `<kind>/<id>.json` 的真实报告目录布局提交了全部报告种类的示例
 （`validation_report/`、`research_loop_round/`、`state_strategy_matrix/`、`router_paper_run/`、
-`gate_calibration/`、`router_stop/`、`state_diagnostics/`、`event_statistics/`、`paper_deviation/`、`degradation_check/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
+`gate_calibration/`、`router_stop/`、`state_diagnostics/`、`event_statistics/`、`paper_deviation/`、`degradation_check/`、`retro_audit/`），内容均由 `research/reports` 的真实 writer 对测试用固定对象生成 —— 与
 `ReportStore` 实际读到的文件逐字节一致，不是手写的示例数据（生成方式见
 [fixtures/README.md](fixtures/README.md)）。可以直接把它当 `reports_root` 起后端：
 
@@ -112,7 +112,7 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
 ## 代码分割（Code splitting）
 
 每个页面在 `src/App.tsx` 里用 `React.lazy` 单独懒加载：大多数页面都会拉入 ECharts
-（`src/lib/echarts.ts`，只 `echarts/core` + 用到的 chart / component 子集，而不是整个包），把全部 14 个
+（`src/lib/echarts.ts`，只 `echarts/core` + 用到的 chart / component 子集，而不是整个包），把全部 15 个
 页面都塞进入口 chunk 会让构建产物超过 500 kB 的警告阈值。Gate Calibration 页面本身不用 ECharts（纯
 表格），所以它的 chunk 很小（约 4 kB），不需要额外拆分。`vite.config.ts` 的
 `build.rollupOptions.output.manualChunks` 额外把 `zrender`（ECharts 的渲染层依赖）拆成独立 chunk ——
@@ -188,7 +188,7 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
 
 ## 组件测试（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 
-`npm run test:components`（`npm test` 也会跑）对共享组件与全部 14 个页面做渲染测试，**无新依赖**，
+`npm run test:components`（`npm test` 也会跑）目前覆盖共享组件与原有 14 个页面；新增的 Retro Audits 页面尚未纳入组件测试和 live-smoke 页面注册，待验收阶段同步 fixture 生成器及测试清单。既有范围无新依赖，
 `package-lock.json` 未变：
 
 - **运行器** `scripts/test-components.mjs`：Node 不能剥离 JSX，所以用已安装的 esbuild（vite 自带依赖）的 JS API
@@ -223,13 +223,13 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
 异常的后端及其应答的 detail 与不得外泄的字符串）对**正在运行的真实 `apps/api`** 做一遍控制台侧检查，**无新依赖**：
 
 1. 用已安装的 esbuild（同 `scripts/test-components.mjs`）把控制台自己的 `src/api.ts`、全部 `src/lib` 视图模型与
-   全部 14 个页面打包到 `node_modules/.live-smoke/`（已 gitignore）；
+  原有 14 个已登记页面打包到 `node_modules/.live-smoke/`（已 gitignore）；
 2. 把 `fetch` 按开发代理的规则改写（`/api/<path>` → `BASE_URL/<path>`，同 `vite.config.ts`），调用控制台真实的
    客户端函数：每种报告的列表 + 每个详情、`/jobs` 列表 + 详情、知识检索、422 / 400 / 404，`BARE_BASE_URL`
    上的两个 503，以及 `BROKEN_BASE_URL` 上的知识检索 502、`/jobs` 列表 / 详情 500（日志篡改）与报告列表 / 详情兜底 500
    （`ApiRequestError` + `describeError`；detail 逐字等于声明值、不含服务器路径 / traceback / 异常类型）；
 3. 在这些线上响应上运行每个页面的 `src/lib` 视图模型函数（payload 解析器不得拒绝、行 / 标签 / 图表序列可构建）；
-4. 用 `react-dom/server` 渲染全部 14 个页面，经 `ApiSeedContext` 接缝以线上响应逐轮填充（与
+4. 用 `react-dom/server` 渲染全部 14 个已登记页面，经 `ApiSeedContext` 接缝以线上响应逐轮填充（与
    `render.test-util.tsx` 的 settle 循环相同，但走真实 HTTP）：没有残留的 loading、没有错误状态、报告页确实请求了
    列表与所选详情且没有退回原始 JSON；未配置的后端上 Knowledge Search / Jobs 页面显示 503 错误状态；broken 后端上
    Knowledge Search（502）、Jobs（500）与 State × Strategy Matrices（兜底 500）页面显示错误状态、HTTP 状态与声明的

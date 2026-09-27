@@ -20,9 +20,10 @@ import——两边只通过这份文件格式约定耦合。
 | `deviation.py` | `write_paper_deviation`：Phase 10 `PaperDeviation`（`research/router/deviation.py`；kind `paper_deviation`，id = `deviation_hash`；写入前从 payload 重算哈希，不符拒绝写入；2026-09-26，CODE_COMPLETE / DEBUG_PENDING） |
 | `degradation.py` | `write_degradation_check`：Phase 11 `DegradationCheck`（`apps/worker/degradation.py` 的 `DegradationMonitor.check`；kind `degradation_check`，id = `check_hash`；payload 记录每条规则的 metric / 方向 / baseline / recent / decline / 允许下降 / 阈值来源、breaches、missing 与 `window`；所有指标都缺近期值时附加 `"insufficient_evidence": true`（仅此情形才有该键，其余载荷与哈希不变）；写入前用同一 monitor 重算 check，不一致拒绝写入；只作证据、不改生命周期；未接入 research loop；2026-09-26，CODE_COMPLETE / DEBUG_PENDING） |
 | `event_statistics.py` | `write_event_statistics`：Phase 3 `EventStatsReport`（`research/events/stats.py`；kind `event_statistics`，id = `report_hash`；写入前从 payload 重算哈希，不符拒绝写入） |
+| `retro_audit.py` | `write_retro_audit_report`：Phase 8 `RetroAuditReport`（由调用方显式提供；kind `retro_audit`，id = `report_hash`；只报告差异，不扫描对象、不改生命周期） |
 
 以上 kind 都是 `apps/api` `ReportKind` 的成员（2026-09-26：`router_stop` / `state_diagnostics` / `event_statistics` / `paper_deviation` /
-`degradation_check` 加入只读 API 与控制台页面；`apps/api` 现在对除 `state_strategy_matrix` 外的每个 kind 重算其身份哈希并拒绝不一致的文件，见 `apps/api/README.md`）。
+`degradation_check` 加入只读 API 与控制台页面；2026-09-27 加入 `retro_audit`）。`apps/api` 对除 `state_strategy_matrix` 外的每个 kind 重算其身份哈希并拒绝不一致的文件，见 `apps/api/README.md`。
 
 ## 信封 / 哈希规则
 
@@ -61,7 +62,7 @@ written.written  # False = 内容相同的 no-op
 
 Phase 11 循环的接线在 `research/loop/compose.py` 的 `run_unattended_and_report`：
 `reports_root=None`（默认）等价于直接调用 `ResearchLoop.run_unattended`，不落盘；给定路径时，
-每一轮的 `LoopRecord` 和本次运行实际生成的每个完整 P6 `StateStrategyMatrix` 都会写入该目录。
+每一轮的 `LoopRecord` 和本次运行实际生成的每个完整 P6 `StateStrategyMatrix` 都会写入该目录。矩阵只在报告运行期间临时收集；默认 loop 不留存这些对象，避免长运行占用不断增长。
 矩阵仍由 `matrix_hash` 命名并使用本目录现有的 append-only writer；重复写入相同矩阵是 no-op。
 矩阵报告是独立展示产物，不加入 `LoopRecord` 摘要，因此不会改变循环记录内容或哈希。失败试验和未产生矩阵的试验不会生成矩阵报告。
 矩阵通过仅在本次报告运行期间安装的 callback 临时收集；callback 在循环成功或抛错退出时都会恢复。未调用报告 wrapper 或 `reports_root=None` 时，loop 不保留矩阵对象。

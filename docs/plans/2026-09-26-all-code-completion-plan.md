@@ -900,3 +900,24 @@ PR #6 本批独立分支集成检查：`uv run pytest -q tests/infrastructure/ev
 ### 10.11 P6 矩阵报告接入（2026-09-27；独立分支实现，待复核）
 
 只读审计发现 loop 的 `ExperimentStage` 已计算 `StateStrategyMatrix`，但实验摘要只保留 `matrix_hash`；已有 `write_state_strategy_matrix` 与只读 API / 页面没有真实循环的调用接线。补充 `run_unattended_and_report(..., reports_root=...)`：对该次运行产生的完整矩阵调用既有 writer，文件沿用 `state_strategy_matrix/<matrix_hash>.json`；相同内容保持幂等 no-op，内容冲突继续由 append-only writer 拒绝。矩阵只作为独立报告写入，不改变 LoopRecord 的摘要、载荷或 hash。为让研究侧 wrapper 读取刚完成的 ExperimentStage 产物，`ResearchLoop.stages` 提供只读阶段视图；只有 wrapper 在 `reports_root` 存在时才临时安装矩阵 callback，将本次矩阵存入局部列表供 writer 消费。无报告 sink 时不保存矩阵对象；循环正常返回或抛错都会恢复原 callback。实现位置：`apps/worker/loop.py`、`research/loop/trials.py`、`research/loop/compose.py`、本 README。未修改 core/contracts、Phase 1 或 status；未运行 / 新增测试，待后续独立验证。
+
+### 10.12 全模块差额审计与 P8 报告链（2026-09-27；本地协调分支，待验证）
+
+本轮以干净主线 `44fe9a2` 对照 `PROJECT_STATUS.md`、roadmap、相关 ADR、执行路径和控制台实际读写链。**项目不是空骨架**：P0.5、P2～P14 与 apps 已有大量真实计算、持久账本、验证、报告和只读页面；当前集中问题是少数跨模块接线、少数尚未定义的运行语义，以及未验收 / 未跑真实数据。代码完成不能替代 Phase 验收。
+
+| 范围 | 深审结论 | 当前动作 / 边界 |
+|---|---|---|
+| P0.5 | 检索、审阅写入与标签 / 资产路径已实现；余项为种子的具名人工标签审核、资料草稿核验 | 不自动给种子分类；等待具名审阅者 |
+| P2 | 状态计算、诊断、Arrow 表物化已实现；roadmap 有 State 表输出，但 ADR-0035 原批次明确排除 catalog 持久化 | 这是新增物理存储契约，先写 ADR 明确 schema、partition、写入/读取和版本策略，再实施；目前未开工 |
+| P3 / P4 / P5 | 事件引擎 / 显式 Event 表操作、Outcome 持久化 / 验证门、策略到回测验证链均有实质逻辑 | 生产 catalog 建表需单独授权；Profile、真实历史数据和阶段验收不是普通代码缺口 |
+| P6 | 矩阵计算、条件试验预登记与逐单元验证已实现；循环原先只写 `matrix_hash`，没有把完整矩阵交给报告 writer | 本地协调分支补上可选报告接线；复用现有 `matrix_hash` writer / API / 页面，不改变 `LoopRecord` 身份；未测试 |
+| P7 | 严格草稿、人工审阅、参数点 batch 和知识来源核验已实现；conditioning / interaction / temporal / transformation / ensemble / negation 目前作为数据规格生成，但不进入试验执行，batch 明确 fail closed | 不把自然语言转成代码。任何让这些算子进入 loop 的能力，都要先有封闭、类型化、确定性语义；跨 Phase 编排 / Strategy / Feature 执行改变需 Proposed ADR。`ContentVerifiedLLM` 已有但可选，未包装引用不满足完整可复现审计，状态文档不得称全闭环 |
+| P8 | 回溯审计纯逻辑已实现且保护“旧拒绝不翻案”；缺少报告 writer、API kind 与 Web 页面 | 本地协调分支补齐显式 `RetroAuditReport` 输入 → append-only writer → 只读 API / 页面。无自动扫描、无生命周期转换；未测试 |
+| P9 / P10 / P12～P14 | 合成验证、纸面 Router、进化提案、仅模拟执行与迁移框架存在 | 合成证据不是市场结论；P12 循环内替换提案有意暂缓；无具体迁移目标；实盘仍禁止 |
+| P11 / Worker | 劣化检查本身有独立 API、报告 writer 和页面，但缺少活跃对象、近期窗口和验证基线的数据来源；Worker 没有独立启动器去组合预算、报告目录与 loop 持久目录 | 不将监控强塞进审计链，不添加 API 写 / 启动 endpoint；先决定本机 operator 的数据输入、预算、Profile、状态目录及触发方式，再提设计 / ADR |
+| Apps | 当前是只读研究报告与知识 / job 视图，遵循 ADR-0048 | 只读约束是有意选择，不算应用写功能缺失；公网认证、TLS、HA 不在当前范围 |
+| Phase 1 | D3E 已接受、D4 已关闭，E1-CAP-1 仍由既有 Claude 会话处理 | Codex 不并行改 canonical / revision；待 E1 独立交付、复核 |
+
+P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；集成到本地协调分支 `codex/module-completion-coordination-2026-09-27`（提交 `347b538`、`15bec90`、`3dc3e67`），**未推送 / 未合并 `main`**。本轮没有运行测试；P8 子代理报告的静态检查为 `git diff --check` 退出码 0、Ruff 通过、format check 3 files already formatted。OpenAPI 类型生成因环境中缺少 `openapi-typescript` 未运行，`api.d.ts` 手动同步，待复核。
+
+**下一批顺序**：先对 P6 / P8 做独立代码复核并安排测试；再形成 P2 State 持久化 ADR；定义 P7 LLM 可复现审计运行模式与算子范围；最后决定 P11 本机 worker / 劣化监控的数据流。不得将未验收阶段、人工标签、Profile 数值、真实数据结果或生产建表描述为代码已完成。
