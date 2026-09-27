@@ -74,7 +74,9 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
 - **记录**：仅证据模式下，`RouterPaperRun.eligibility`（每策略：声明的生命周期、报告哈希、subject、判定、G5 门）与验证过的
   `validation_reports` 计入 `run_hash`；另给出的 `validation_reports` 必须与证据一致。报告载荷（`research/reports/router.py`）仅在证据模式下附加 `eligibility` 键。
 - **边界**：PASS 且含 G5 通过的报告只证明可路由状态的研究层前提（样本内 + 密封 OOS 通过）；PRODUCTION_CANDIDATE / ACTIVE 所需的人工 / Control Plane 审查仍是调用方声明。
-  **P10-ELIG 在研究层关闭；生产资格仍归 Control Plane。**
+  **P10-ELIG 在研究层关闭；生产资格仍归 Control Plane。** 证据模式不要求 Profile `status = FROZEN`，也不读取
+  `ProfileFreezeRegistry`（ADR-0043 B62，Codex 2026-09-27）：冻结是 Promotion 的权威门（ADR-0005 / ADR-0062），
+  核验通过不代表 Profile 已冻结、策略已获 Promotion 或具备生产资格。
 
 仍未做：信任模式下生命周期映射本身不进入 `run_hash`（改变既有哈希）；web 控制台对 `eligibility_not_evidenced` 原因与 `eligibility` 键只按原样显示（`apps/web` 不在本通道范围）。
 

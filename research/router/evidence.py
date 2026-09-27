@@ -36,7 +36,10 @@ value; an item that is INCONCLUSIVE makes the report's verdict INCONCLUSIVE, whi
 ``verdict_not_pass``. A PASS report including G5 is the research-level prerequisite of the routable
 lifecycle states (in-sample + sealed OOS passed); the human / Control-Plane review steps that
 make a strategy PRODUCTION_CANDIDATE or ACTIVE stay a caller claim — production eligibility
-belongs to the Control Plane, not to this module. Nothing here has a threshold.
+belongs to the Control Plane, not to this module. Evidence mode neither requires the Profile's
+``status = FROZEN`` nor reads the ``ProfileFreezeRegistry`` (ADR-0043 B62, Codex 2026-09-27): the
+freeze is Promotion's authoritative gate (ADR-0005 / ADR-0062), so a verified check is never a
+Profile freeze, a Promotion or production eligibility. Nothing here has a threshold.
 """
 
 from __future__ import annotations
