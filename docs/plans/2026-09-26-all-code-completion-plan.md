@@ -144,6 +144,11 @@
 - 独立 Codex 源码复核没有发现阻断缺陷；未运行测试 / build / lint / probe。`git diff --check` 退出码 0。该实现不接入 producer/operator/runner，ExperimentSpec ↔ Hypothesis ↔ output 映射仍是未来 producer 接入前的硬门；Phase 7 未验收，六类 operator 继续 fail closed。
 - 提交 `1975bdb` 已 fast-forward 合入本地 `main`，分支 tip 先写入 `refs/archive/2026-09-28/branches/codex/p7-durable-v4` 后移除工作树 / 分支。没有推送。
 
+### 10.55 v4 / operator v5 与可运行配置边界（2026-09-28）
+
+- ADR-0073 clarification 固定 v4 plan journal header，不允许未来格式覆盖 v4 字节。ADR-0074 进一步规定 operator 专属 `STATE_VERSION = 5`，v5 journal header 绑定 5；语义配置 hash 覆盖 TOML schema、Provider identity、ProfileSelection 及有效 loop/wiring 内容，不包括目录 / anchor / bus / reports 路径或每次 `--rounds`。
+- 当前没有冻结的 production Validation Profile。实现阶段不捏造合法运行配置；README 用字段完整、值含显式占位符的模板，并写明 parser 会拒绝。将来必须等真实 Profile 冻结后，才可补可运行样例。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：

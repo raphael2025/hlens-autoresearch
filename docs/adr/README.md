@@ -78,7 +78,7 @@
 | [0071](0071-p7-failed-round-review-packet.md) | P7 failed experiment round 的只读人工复核摘要 | Accepted（2026-09-27；Codex 依 Raphael 全权授权，经 Claude / Cursor / Codex 只读复核）；仅研究侧内存投影，不改持久格式、API 或 Schema；Ruff / format / mypy 通过，未跑测试 / build |
 | [0072](0072-validation-phase-sequencing.md) | 最小验证门与稳健性阶段的交付顺序（D-04） | Accepted（2026-09-27；Codex 依 Raphael 全权授权）；Phase 4 先交付最小门，Phase 8 提供稳健性扩展；不改契约或数值 |
 | [0073](0073-phase7-plan-admission-recovery.md) | P7 typed-plan 预登记与崩溃恢复 | Accepted（2026-09-28；Codex 依 Raphael 全权委托）；admission primitives 与 durable loop v4 恢复协调已实现并合入本地 main，未跑测试 / build / lint / Phase 验收；不启用 operator |
-| [0074](0074-synthetic-loop-operator.md) | 本机有限批次 synthetic Research Loop operator | Accepted（2026-09-28；Codex 依 Raphael 项目全权委托）；先完成 ADR-0073 v4，再实现 operator 专属 v5；当前无冻结 Profile，不能生成合规运行配置；未实施、未验收 |
+| [0074](0074-synthetic-loop-operator.md) | 本机有限批次 synthetic Research Loop operator | Accepted（2026-09-28；Codex 依 Raphael 项目全权委托）；先完成 ADR-0073 v4，再实现只绑定语义配置的 operator 专属 v5；当前无冻结 Profile，不能生成合规运行配置；未实施、未验收 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

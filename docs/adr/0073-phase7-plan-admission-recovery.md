@@ -81,7 +81,7 @@ Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 pl
 
 ### 6. Durable state version 与旧目录兼容
 
-新增 journal head 会改变 `memory.jsonl` checkpoint 形状，因此新增持久格式采用 `STATE_VERSION = 4`。每个 v4 `plan_admission.jsonl` 的第一条记录必须且只能是 `plan_admission_header`，payload 精确为 `{"schema_version": "1.0.0", "loop_id": <header 中的 loop_id>, "state_version": 4}`；后续只允许 PREPARE / COMMIT。header 必须与 v4 memory header 的 loop id / state version 相符，缺失、重复或不符均 fail closed。不得原地改写、回填、删除或自动迁移现有 v3 state directory，也不得把 v3 checkpoint 伪装成 v4。
+新增 journal head 会改变 `memory.jsonl` checkpoint 形状，因此 ADR-0073 的新持久格式采用 `STATE_VERSION = 4`。每个 v4 `plan_admission.jsonl` 的第一条记录必须且只能是 `plan_admission_header`，payload 精确为 `{"schema_version": "1.0.0", "loop_id": <header 中的 loop_id>, "state_version": 4}`；后续只允许 PREPARE / COMMIT。header 必须与 v4 memory header 的 loop id / state version 相符，缺失、重复或不符均 fail closed。任何更高状态版本必须由后续 ADR 定义其精确格式与兼容分支，不得改变既有 v4 字节格式。不得原地改写、回填、删除或自动迁移现有 v3 state directory，也不得把 v3 checkpoint 伪装成 v4。
 
 实现必须保留明确的版本分支：已有 v3 目录可继续按其原 v3 形状执行不含 typed-plan admission 的既有 loop 行为，不能写 v4 专属 checkpoint 字段；v3 state directory 上一律禁止 typed-plan admission。启用 admission 的 loop 必须使用以 v4 header 创建的新 state directory / loop identity。未知版本、v3 目录中出现 v4 专属日志或 checkpoint、或 v4 目录缺少必需 plan journal header 时 fail closed。迁移工具若未来需要，另立决议；本 ADR 不批准迁移或删除。
 
@@ -144,3 +144,5 @@ Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 pl
 ## 接受记录（2026-09-28）
 
 Codex 依 Raphael 对项目决策与开发的全权委托接受本 ADR 的 PREPARE → 单一 TrialLedger `register_batch` event → COMMIT 协议、精确恢复规则、checkpoint / anchor 接线与 v3 / v4 兼容边界。此接受只批准设计，**不代表实现已开始或完成**，也不启用任何 typed-plan operator。实现前必须逐项解决上文所列 payload / reducer、ledger recovery API、open-round identity、checkpoint / anchor 和拒绝审计细节；任何 contract、Schema、`core/`、Constitution、Profile 或 D-LIST 变化须另行决议。验收仍按 Raphael 后续指定流程进行。
+
+实现细节补充（2026-09-28）：v4 plan journal header 精确绑定 state version 4，Hypothesis batch 按 `(family_id, name, version, content_hash)` 排序；后续 producer 只有在验证 `ExperimentSpec` ↔ Hypothesis ↔ lowered outputs 的一对一依赖关联并定义拒绝审计后才能接入。ADR-0074 可在不改变任何 v4 字节的前提下，以独立 `STATE_VERSION = 5` 扩展 operator identity，并要求 v5 plan journal header 精确绑定 state version 5。

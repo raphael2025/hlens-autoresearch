@@ -35,7 +35,7 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
 
 ### 2. 严格、版本化 TOML 与现有配置对象
 
-1. 配置是 UTF-8 TOML，顶层必含 `schema_version = "1.0.0"`。首期用 Python 标准库 `tomllib` 解析。每张表拒绝未知键、重复键、缺失必填键和错误类型；不做环境变量插值、配置合并、隐式搜索路径或“尽力猜测”。升级配置结构时提升配置 schema version；不支持的版本立即拒绝。
+1. 配置是 UTF-8 TOML，顶层必含 `schema_version = "1.0.0"`。首期用 Python 标准库 `tomllib` 解析。每张表拒绝未知键、重复键、缺失必填键和错误类型；不做环境变量插值、配置合并、隐式搜索路径或“尽力猜测”。升级配置结构时提升配置 schema version；不支持的版本立即拒绝。当前没有冻结的 production Validation Profile，因此实现阶段 README 只能提供字段齐全但带显式占位符的**不可运行模板**，并说明 parser 会拒绝占位符；只有未来存在真实冻结 Profile 后才能增加可运行样例。不得用 TEST ONLY Profile、临时数值或默认值伪造合法配置。
 
 2. 固定 TOML 结构为：顶层 `schema_version`；`[paths]`；`[operator]`；`[providers.<role>]`（角色只允许 `synthetic_market_provider`、`feature_provider`、`state_provider`、`strategy_provider`、`backtester`、`outcome_provider`）；`[loop]` 对应 `SyntheticLoopConfig`；`[loop.wiring]` 对应 `LoopWiring`。`[providers.<role>]` 只保存该 role 的 allowlist `id`、`version`、`descriptor_hash`，由编译器注入相应现有 provider 对象字段；它不是新的 domain/dataclass 字段。`[operator]` 只允许 `llm_enabled = false`。所有多层未知表和未知键都拒绝。复杂对象字段如 `profile`、`profile_selection` 和 spec 字段用 `{ path, content_hash }` 作为严格 artifact reference；剩余配置值直接使用现有 dataclass 字段名。路径根于配置文件所在目录。
 
@@ -123,7 +123,7 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
 
 ### 5. 配置身份、预算与 scheduler 重入
 
-1. 重开必须精确绑定有效运行配置。现有 `settings_fingerprint` 继续作为基础，但首期实施前须扩展 operator 使用的 durable identity，使其还覆盖：TOML schema version；provider role/id/version/descriptor hash；`ProfileSelection` 内容哈希；所有有效的 `SyntheticLoopConfig` / `LoopWiring` 字段及明确禁用项的规范化内容哈希。路径、命令行本批 `rounds`、报告目录不改变实验语义，不进入此研究配置身份；路径由 operator 启动校验。每个 scheduler invocation 仍必须提交完全相同配置。
+1. 重开必须精确绑定有效运行配置。现有 `settings_fingerprint` 继续作为基础，但首期实施前须扩展 operator 使用的 durable identity，使其还覆盖：TOML schema version；provider role/id/version/descriptor hash；`ProfileSelection` 内容哈希；所有有效的 `SyntheticLoopConfig` / `LoopWiring` 字段及明确禁用项的规范化内容哈希。`state_dir`、anchor / bus anchor、reports path、命令行本批 `rounds` 不改变实验语义，不进入此研究配置身份；路径由 operator 启动校验。每个 scheduler invocation 仍必须提交完全相同的语义配置。
 
 2. ADR-0073 已决定 P7 plan-admission state format 从 v3 升到 v4，并要求 v3 / v4 明确分支兼容。operator identity 进一步改变 header 身份，因此 operator 专用 state format 必须在 ADR-0073 的 v4 基础上升到 **v5**；不得把它笼统写成“下一个版本”。v5 保留 v3 既有 loop 格式和 v4 plan-admission 格式的旧格式分支，但 operator 只创建 / 打开 v5 state。现存 v3、v4 目录都不得由 operator 接管、原地迁移或伪装成 v5；它们仍由原格式实现读取，或在另立、审阅过的迁移方案后处理。v5 identity 在 state header 中 fsync 后不可改变。该内部版本变更不更改 `core/contracts`、导出 Schema 或 `LoopRecord` hash。
 
@@ -135,7 +135,7 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
 
 当前 `settings_fingerprint` 已绑定 `LoopBudget`、profile、knowledge、策略/spec 内容、代码 commit、environment lock、节奏、G4 参数和 market identity，但不完整覆盖 provider descriptor、`ProfileSelection`、所有阶段 compute 声明或 TOML schema。只靠 `code_commit` / `environment_lock` 也不足以表达用户在同一二进制 allowlist 中选取的 provider 身份。
 
-为满足 §5 的重开边界，operator 编码前先完成 ADR-0073 已批准的 v4 plan-admission durable format；随后新增一个研究侧组合参数（建议名 `operator_identity`，内容是规范化配置的 SHA-256）并由 `open_synthetic_loop` 与 durable state 一同校验，组成 operator-only v5 format。它不是 `SyntheticLoopConfig` 或 `LoopWiring` 的新字段，也不是 Domain Contract。实现顺序固定为：先实现并保留 v3 / v4 opener 分支及 v4 admission 语义，再在其上实现 v5 operator identity；不得把尚未实现的 v4 设计跳过、重命名或合并进 v5，也不得在尚无 v4 基线时实现 operator state header。
+为满足 §5 的重开边界，operator 编码前先完成 ADR-0073 已批准的 v4 plan-admission durable format；随后新增研究侧组合参数 `operator_identity`，其内容是 §5 所列语义配置规范表示的 SHA-256，由 `open_synthetic_loop` 与 durable state 一同校验，组成 operator-only `STATE_VERSION = 5`。它不是 `SyntheticLoopConfig` 或 `LoopWiring` 的新字段，也不是 Domain Contract。v5 plan journal header 使用同一 journal schema `1.0.0`，并精确绑定 `state_version: 5`；v4 header 始终精确绑定 `state_version: 4`。实现顺序固定为：先实现并保留 v3 / v4 opener 分支及 v4 admission 语义，再在其上实现 v5 operator identity；不得把 v4 格式跳过、重命名或并入 v5，也不得在尚无 v4 基线时实现 operator state header。
 
 ### 7. 报告交付、恢复和中断
 
@@ -164,6 +164,8 @@ operator 必须在运行阶段前拒绝：
 此 operator 只运行 ADR-0042 synthetic provider 路径，不接 `DatasetLoopConfig` / Research Dataset，不接 Binance、交易密钥、账户、订单、纸面或 live execution，不产生真实市场结论，不做生命周期人工审批，不启动 Web/API。该决定不触及 D-LIST / ADR-0051，不修改 Constitution、Validation Profile 数值、任何 `core/contracts` 或发布 Schema，不增加 live trading 能力。
 
 Raphael 于 2026-09-28 将项目整体决策与执行权委托给 Codex。Codex 审阅后接受本 ADR，作为后续 operator 实现的范围基线。当前没有已冻结的可运行 Validation Profile，因此接受本 ADR 不会生成可运行配置，也不允许用测试 Profile 或临时数值代替；实现依赖 ADR-0073 的 v4 durable admission 先行完成。
+
+实现细节补充（2026-09-28）：`operator_identity` 只覆盖 §5 明确列出的语义配置，不含 state / anchor / bus / reports 路径或本次 `--rounds`；operator 专属 durable state 固定为 v5，v5 plan journal header 绑定 `state_version: 5`。由于当前无冻结的 production Profile，README 只提供会被 parser 拒绝的完整占位符模板；不要求也不允许制造当前可运行配置。
 
 ## 备选方案（Alternatives）
 
