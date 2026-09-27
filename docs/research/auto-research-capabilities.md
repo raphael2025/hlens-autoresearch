@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 性质 | 研究规格索引（人类可读）：记录自动研究能力**今天实现到哪里**、依据哪条已接受的 roadmap / ADR、以及哪些能力尚无批准规格 |
-| 基线 | `main` @ `44fe9a2`（2026-09-27 模块审计基线）；逐项证据来自代码、roadmap 与 ADR 的只读核对；本文为待验收状态索引 |
+| 基线 | `main` @ `669704c`（2026-09-27 本地模块收敛快照；协调 worktree 另有未提交 P7 修复）；逐项证据来自代码、roadmap 与 ADR 的只读核对；本文为待验收状态索引 |
 | 权威性 | 本文件**不批准**任何设计。标为"验收标准（提案）"的内容只是建议，须经 ADR / Codex / Raphael 决定后才生效；与已接受 ADR、Constitution、roadmap 冲突时以后者为准 |
 | 相关 | [feature-library.md](feature-library.md) · [state-library.md](state-library.md) · [event-library.md](event-library.md) · [outcome-library.md](outcome-library.md) · [factor-library.md](factor-library.md) · [strategy-library.md](strategy-library.md) · [risk-library.md](risk-library.md) · [roadmap.md](roadmap.md) · [constitution.md](constitution.md) |
 
@@ -33,9 +33,9 @@
 |---|---|---|---|---|
 | 预登记与试验账本（每次登记 / 重评 = 一次试验，失败也计数） | Constitution A1、C-T1；roadmap Phase 7 验收；ADR-0040 §3 | `research/hypotheses/ledger.py`；循环把 family 试验数传给 G3 | `tests/research/hypotheses/test_hypotheses.py`、`test_durable_ledger.py`、`tests/research/loop/test_loop_e2e.py` | `IMPLEMENTED · DEBUG_PENDING` |
 | 组合算子 DSL（产出假设，不产出代码） | 04-research-loop §4；ADR-0040 §2 | `research/hypotheses/dsl.py`（6 个构造器只生成带文字与引用的 Hypothesis；没有可执行 typed plan） | `test_hypotheses.py` | `IMPLEMENTED · DEBUG_PENDING`（规格生成，不代表执行） |
-| P6 条件化评估（状态 × 策略单元） | roadmap Phase 6；ADR-0039 | `research/experiments/state_strategy.py`、`research/loop/trials.py`；矩阵报告接线在本地协调分支 | `tests/research/experiments/`、`tests/research/loop/test_loop_conditional.py` | 计算逻辑 `IMPLEMENTED · DEBUG_PENDING`；完整报告链待验 |
-| P7 六类 DSL 算子进入批次运行 | ADR-0040 §2；现行批次明确 fail closed | `HypothesisBatch` 仅允许 `parameter_point`；六类 DSL 均在 `NOT_RUNNABLE_KINDS`。Conditioning 的 P6 单元评估是另一条执行通道 | — | `REQUIRES_DECISION`：typed AST、ref 类型检查、语义版本、身份绑定、因果边界与 trial 计数需先定义 |
-| 批量网格（算子 × 策略 × 声明点；算子须人工审阅） | ADR-0040 §5 | `research/hypotheses/batch.py` | `tests/research/hypotheses/test_batch.py`、`tests/research/loop/test_loop_batch.py` | `IMPLEMENTED · DEBUG_PENDING` |
+| P6 条件化评估（状态 × 策略单元） | roadmap Phase 6；ADR-0039 | `research/experiments/state_strategy.py`、`research/loop/trials.py`、`research/loop/compose.py`；报告接线已在本地 `main@669704c` | `tests/research/experiments/`、`tests/research/loop/test_loop_conditional.py` | 计算与报告链 `IMPLEMENTED · DEBUG_PENDING`；Phase 6 未验收 |
+| P7 六类 DSL 算子进入批次运行 | ADR-0040 §2、Proposed ADR-0068 执行边界 | `HypothesisBatch` 仅允许 `parameter_point`；六类 DSL 均在 `NOT_RUNNABLE_KINDS`。Conditioning 的 P6 单元评估是另一条执行通道 | — | `REQUIRES_DECISION`：六类算子的具体语义与 Provider lowering 尚未定义；暂不解除 fail closed |
+| 批量网格（算子 × 策略 × 声明点；算子须人工审阅） | ADR-0040 §5 | `research/hypotheses/batch.py`；协调 worktree 有递归冻结参数点与按 outcome 恢复未完成单元的未提交修复 | `tests/research/hypotheses/test_batch.py`、`tests/research/loop/test_loop_batch.py` | 主线 `IMPLEMENTED · DEBUG_PENDING`；修复候选尚未提交、未运行测试 |
 | 知识 / LLM 假设草稿（严格结构，人工审阅后登记，LLM 不判定） | ADR-0040 §1、§4 | `research/hypotheses/generator.py`；只有脚本化 LLM | `test_strict_llm_drafts.py`、`test_knowledge_source.py`、`test_loop_llm_rejection.py` | `IMPLEMENTED · DEBUG_PENDING` |
 | 真实（联网）LLM Provider | ADR-0040 §1 只声明属后续批次，未设计 | — | — | `UNSPECIFIED`（需网络与凭据授权） |
 | 自动产生 Feature / State / Event 定义（如窗口枚举、特征组合） | 无 | — | — | `UNSPECIFIED` |
@@ -53,6 +53,7 @@
 | 超参数搜索器（超出声明点的穷举） | 无 | 只有声明点的穷举（G4 网格、批量、变异） | — | `UNSPECIFIED` |
 | 研究可拟合接口（逐折在清除后的训练标签上拟合） | ADR-0041 §6 第 4 项 | `controls.py::FittableStudy`，没有生产实现 | 管线测试 | `IMPLEMENTED · DEBUG_PENDING`（无使用方） |
 | 持续研究循环（摄取 → 状态 → 假设 → [进化] → 实验 → 验证 → 记忆） | roadmap Phase 11；ADR-0044 / 0049 / 0050 | `apps/worker/loop.py`、`research/loop/` | `tests/research/loop/` | `IMPLEMENTED · DEBUG_PENDING` |
+| 显式劣化检查（生命周期 / PASS baseline / frozen Profile / 近期观测 provenance） | ADR-0049、ADR-0062、ADR-0067 | `research/operations/degradation.py`、`research/reports/degradation.py`、`infrastructure/registry/profile_freeze.py::anchor_snapshot` | 当前未新增或运行测试，留待统一验收 | `CODE_COMPLETE · DEBUG_PENDING`；不证明生命周期快照最新或近期数据真实 |
 
 ## B. 策略与风控候选、验证晋升与人工审查边界
 

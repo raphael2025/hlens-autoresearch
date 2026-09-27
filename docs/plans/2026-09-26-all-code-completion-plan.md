@@ -926,8 +926,8 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 
 ### 10.14 P7 typed operators 与 P11 degradation operator 设计（2026-09-27）
 
-- **P7：** Proposed [ADR-0068](../adr/0068-phase7-typed-operator-plans.md) 定义闭世界、类型化 AST、实现身份 / hash、全量预登记和拒绝边界；由于六类组合 DSL（conditioning / interaction / temporal / transformation / ensemble / negation）的业务语义和 Provider lowering 不完整，全部仍 fail closed。既有 `parameter_point` 路径不变；本提案不是其余六类已实现或已验收的声明。
-- **P11：** [显式 degradation operator 规格](p11-degradation-operator-spec.md) 限定为一次性、本机、显式输入的只读操作；需传入 ACTIVE 生命周期历史、冻结 Profile、PASS baseline、内容哈希观测集与时间窗口，复用现有 monitor 和 append-only writer，不发布事件、不转生命周期、不设默认阈值。当前没有权威生命周期 / 近期观测 resolver，现有报告也不绑定这些来源；实现前需单独 Proposed ADR 解决证据引用与报告版本兼容。
+- **P7：** Proposed [ADR-0068](../adr/0068-phase7-typed-operator-plans.md) 定义闭世界、类型化 AST、实现身份 / hash、全量预登记和拒绝边界；由于六类组合 DSL（conditioning / interaction / temporal / transformation / ensemble / negation）的业务语义和 Provider lowering 不完整，全部仍 fail closed。既有 `parameter_point` 路径不变；本提案不是其余六类已实现或已验收的声明。[ADR-0070](../adr/0070-p7-partial-experiment-fail-stop.md) 为最后一条 experiment stage 失败的 audit 增加持久可推导的 `recovery_required` fail-stop，避免下一轮重复已登记 attempt；不做自动 outcome 恢复。
+- **P11：** [显式 degradation operator 规格](p11-degradation-operator-spec.md) 已由 Accepted ADR-0067 落地为协调 worktree 实现：显式提供 ACTIVE 历史、冻结 Profile、PASS baseline、近期观测 manifest 与窗口；报告 evidence 内嵌完整 manifest 并参与 schema 1.1.0 hash。legacy 1.0.0 hash 保持不变。历史是否最新、外部来源真实性、指标聚合真实性仍不验证；未并入本地 `main`，未测试、未验收。
 
 ### 10.15 本地 main 模块收敛与分支保全（2026-09-27）
 
@@ -936,6 +936,15 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - P0.5 合同复核确认主线已有测试要求“已存在的空目录”返回空知识库；ADR-0034 没有要求知识库必须非空。独立分支 `de146f9` 拒绝空目录的行为不符合主线既有测试，未合入。当前实现对缺失目录报错、对空目录和空列表返回空知识库；空列表行为尚无专门的接受用例。
 - 分支审计快照为 27 个本地分支、253 个归档引用和 33 个 worktree。活跃或脏工作区（含根 `phase/1`、Claude 与 Cursor 工作区）、E1 / P0.5 独有实现及远端 refs 均予保留；后续清理须在确认 owner 已结束并逐支确认内容后再做。本地与远端分支统计会随并行会话变化，以实际 Git 状态为准。
 - 两项均为设计材料，未修改实现 / frozen contract，未运行测试；不会改变 Phase 7 或 Phase 11 的未验收状态。
+
+### 10.16 当前本地收敛快照（2026-09-27；更新 §10.15 后状态）
+
+- Raphael 已授权 Codex 完成经核实的分支整合与本地 `main` 收敛；Phase 验收和全量测试暂缓。本地 `main` 与 `codex/module-completion-coordination-2026-09-27` 均为 `669704c`，比 `origin/main@44fe9a2` 超前 18 个提交，尚未推送；GitHub PR #1～#9 均已合并。协调 worktree 中的 P7、P11、P12 实现、ADR 与状态 / 模块文档仍未提交，也尚未进入本地 `main`。
+- 当前 Git 盘点：16 个本地分支、7 个远端分支、22 个 worktree、264 个归档引用。此前已把 11 个确认与主线补丁等价的本地分支和干净 worktree 先归档再移除。根 `phase/1` worktree 有重要未跟踪材料；Claude / Cursor 工作区有活跃或归属未明会话；这些都保留。
+- 尚待逐文件整合：P0.5 `p05-cite` 与 ADR-0055 分支、研究规格分支中的验收用例 / 两份文档，以及 E1 容量候选。`codex-research-loop-ui` 的实现已被 main 更完整的解析、异常态与双轴累计图表取代，不合并；因 Cursor owner 仍不明，分支 / worktree 暂留。ADR-0055 Claude worktree 有活跃进程。E1 四个 Codex 候选都没有修复 500k `resume/replay` 超限；两项重复记录上界保护相互独立，但需决定是否单独移植，根因仍未测量证实。
+- 模块判断更新：项目不是空骨架。P6 / P8 / P11 Decimal 阈值逻辑已在 `main@669704c`；P13 模拟执行与 P14 通用迁移框架已存在。协调 worktree 中有 P7 参数网格冻结 / outcome 驱动调度改动；ADR-0070 已令最后一条 experiment stage FAILED 的 audit 在当前进程和重开后均停在 `recovery_required`，不重复 trial，但 outcome 自动恢复和人工修复工具仍缺。P11 显式 degradation operation、FreezeRegistry 锚点快照和 schema 1.1.0 evidence writer；P12 `combine()` 冲突拒绝逻辑。ADR-0067 / 0069 / 0070 已 Accepted。以上代码尚未并入 `main`，未跑测试；既有静态检查只覆盖更早代码状态，最新 P11 修改仍需稍后静态复核。六类 P7 DSL 算子仍 fail closed，逐项业务语义 / Provider lowering 尚未定义；E1 仍未达到 32 MiB 上限。Profile 数值、人工审核数据、真实历史市场结论与实盘能力不由代码猜测。
+- 本地当前清理快照：16 个分支、7 个远端分支、22 个 worktree、264 个 archive refs。所有新代码仍在协调 worktree；更新后的分支处置会在后续小节按实际 archive / merge 结果追加。本轮未运行测试或 Phase 验收；不改写任何旧门禁记录。
+- 本轮复核证实 Claude 的 ADR-0055 活跃实现 worktree 仍由 PID 1111692 占用；P0.5 / E1 / Cursor / 远端 review 独有内容未作整支合并或删除。优先等待 Claude 完成并逐文件复核；owner 不明 worktree 继续保留。
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
@@ -949,7 +958,7 @@ Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，�
 | P7 参数点批次 | 该能力与代码已在主线；旧 agent 分支比主线少近期 loop / persistence 逻辑 | 不整支合并；保留或归档前继续按等价补丁和会话状态清理 |
 | E1-CAP-1 | Codex 候选的 source revision 与 archive metadata 两项修复在 `fix/e1-cap1` 中均有等价 patch；该分支还带失败诊断。500k `resume` / `replay` 增长 59.9 / 63.9 MiB，均超过 32 MiB 上限；只读代码调查将主要增长来源定位到精确历史核验加载的 Iceberg 全量 snapshot metadata（未重跑探针） | `REVIEW_PENDING`；不把多个历史分叉整支并入 main。需要设计精确且有界的历史索引 / 读取方案，再用固定规模探针验证，保留原失败证据 |
 | P0.5 / ADR-0055 | 主线已有 `seed-2026-09-26.json`；`p05-cite` 后续树与其源提交会删文件或覆盖其他更新。`claude/adr-0055-tags-assets` 会把主线 Accepted 状态改回 Proposed | 不整支合并；已有研究库内容按审核后的文件迁移；具名标签 / 资产审核仍待人工 |
-| P2 Proposed ADR-0067 | Arrow `state_table` 满足 ADR-0035 当前范围，Iceberg 持久化是可选扩展 | 草案分支已存入 `refs/archive/2026-09-27/branches/codex/adr-0067-state-persistence`，不进入本次整合 |
+| P2 旧 Proposed ADR-0067 草案（编号冲突） | Arrow `state_table` 满足 ADR-0035 当前范围，Iceberg 持久化是可选扩展 | 这是 2026-09-27 归档的旧 P2 草案，和当前已 Accepted 的 P11 ADR-0067 无关；草案存于 `refs/archive/2026-09-27/branches/codex/adr-0067-state-persistence`，不进入本次整合 |
 
 此前 Codex 本轮创建的 P6 / P8 / P11 源分支（`codex/p6-matrix-report-wiring-2026-09-27`、`codex/retro-audit-report-chain-2026-09-27`、`codex/degradation-exact-thresholds`）及 ADR-0067 草案分支，已先归档再移除分支和干净源 worktree；恢复点在 `refs/archive/2026-09-27/branches/`。没有删除任何脏目录或已锁定的 Claude / Cursor worktree。剩余冗余分支只在完成会话确认后继续清理。
 
