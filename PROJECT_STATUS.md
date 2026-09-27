@@ -11,7 +11,7 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
 | 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已授权 Codex 统筹代码及 Claude / Cursor，并决定实现细节。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。P7 六类组合算子不可执行，E1-CAP-1 阻断，Worker 组合启动器尚无已决定规格。测试、build、probe 与验收均暂缓；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 79 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 9 个 worktree；根 `phase/1` 仍有 Cursor 工作区和未跟踪资料，研究规格 Claude 分支仍有一组独有测试，tip 已另存 archive ref；两个工作区暂留。其他已确认冗余分支均归档后删除。全模块复核确认项目非空骨架；主线已补 P2/P4 适配和路线图一致性。E1 主线 probe 未运行、E1-CAP-1 仍阻断；P7 组合算子仍 fail closed；Profile 数值未冻结；P13 仅模拟 |
+| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 82 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 9 个 worktree；根 `phase/1` 仍有 Cursor 工作区和未跟踪资料，研究规格 Claude 分支仍有一组独有测试，tip 已另存 archive ref；两个工作区暂留。其他已确认冗余分支均归档后删除。全模块复核确认项目非空骨架；P2/P4 接线和路线图已同步，TrialLedger 批次预登记现以单 journal event 持久化并串行化同实例线程访问，但 typed-plan audit 与跨 journal 恢复仍缺。E1 主线 probe 未运行、E1-CAP-1 仍阻断；P7 组合算子仍 fail closed；Profile 数值未冻结；P13 仅模拟 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验基础，算子语义、Provider lowering、持久审计和 TrialLedger 原子登记仍需解决后才可启用算子；E1 容量阻断仍待处理。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-28 |
 
@@ -295,7 +295,8 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-27 | 主线状态文档同步与冗余协调分支归档 | 更新状态 / 记忆 / 计划；branch/worktree 清理至 11 / 17；只改本地引用，不推送远端 |
 | 2026-09-28 | 合入 P2 / P4 基础接线并收敛 PR #10 | main 领先远端 75 个提交；E1 失败 PR 关闭并归档，远端仅留 main；P2 / P4 未运行测试 |
 | 2026-09-28 | 全阶段差额复核并修订路线图状态 | 项目不是空骨架；对齐 E2 / P13 范围；P7 算子与 Worker 组合启动器仍是主要基础逻辑缺口，未运行测试 |
-| 2026-09-28 | P6 网格归属与 Git 恢复状态同步 | 明确共享网格的精确归属；研究规格分支 tip / 独有测试存入 archive ref；本状态提交后 main ahead 79，未推送 |
+| 2026-09-28 | P6 网格归属与 Git 恢复状态同步 | 明确共享网格的精确归属；研究规格分支 tip / 独有测试存入 archive ref；当时 main ahead 79，未推送 |
+| 2026-09-28 | P7 TrialLedger 批次预登记单事件持久化与线程同步 | 合入 `d205bc4` / `0632367`；单 journal 事件全批预登记、同实例线程访问加锁；仅 `git diff --check` 通过，测试 / build / lint / 验收未运行；不解决跨 journal typed-plan admission 恢复 |
 
 ## 10. 下一阶段进入条件
 
@@ -319,16 +320,16 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 79 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、9 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。
+1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 82 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、9 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. 按全模块差额审查结果先定义 Worker 组合启动器的显式输入 / 预算 / 持久目录，再进入实现；P7 operator 语义与执行审计原子性各需独立 ADR。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
+3. 下一开发门是记录 P7 admission PREPARE / COMMIT 与崩溃恢复的新 ADR，再实现不启用算子的 typed-plan audit 持久基础；其后交付 synthetic-only、有限轮数、由外部调度的 Worker 组合入口，不新增 API 写入口。其他 P7 operator 的逐项语义另需 ADR。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
 
 ## 12. 给 Claude Code 的下一步
 
 > Claude 下一步可以执行什么？
 
 1. E1 history-options worktree 仅作只读设计证据；不清理或覆盖。主线 RSS probe 尚未运行，失败候选不代表 main 容量。
-2. P11 显式 degradation CLI 已完成；下一项先由 Codex 定义 Worker 组合根 / operator 运行配置，不加 API 写入或触发端点。Claude 获得实现批次后按单模块隔离分支执行。
+2. P11 显式 degradation CLI 已完成；待 Claude 会话额度恢复后，安排对 PREPARE / COMMIT recovery ADR 的独立只读审查，再按单模块隔离分支接收实现任务。Worker 组合入口保持 synthetic-only / finite-rounds / 外部调度 / 无 API 写触发。
 3. P7 算子继续 fail closed；逐项语义、Provider lowering、审计持久化与 TrialLedger 原子关系未获独立 ADR 前不得启用。P12 循环内替换继续按 P12-LOOP 暂缓。
 4. 不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
 

@@ -113,6 +113,15 @@
 - P6 通用矩阵精确匹配 `evaluation_time`，无状态时拒绝；当前 P6 loop 在共享 `decision_times` 网格运行，已按时刻可用状态归属。非共享网格的 as-of 最近状态延续会改变 ADR-0039 缺失状态语义，需 ADR 后再做。P13 roadmap 与 deployment stage 文案已改为仅模拟 / 纸面；roadmap 对 E2 的过时“ADR-0029 待决”文字已更正为已实现当前状态快照、历史上市仍受 D-LIST 阻断。
 - 研究规格 Claude worktree 核验为 clean；唯一未在 main 的内容是两条 G1 embargo 测试。tip `82bfe73` 已另存到 `refs/archive/2026-09-28/branches/claude/docs-research-spec-completion`；因 Claude 会话仍 idle 并占用该 worktree，未移除分支或目录。根 `phase/1` 仍由 Cursor 使用且含未跟踪用户资料，保持原样。
 - 本轮只做文档一致性变更及本地 archive ref，不推送、不移除仍检出的分支 / worktree；未运行测试、build、probe 或验收。状态提交后 `main` 比 `origin/main@44fe9a2` 超前 79 个提交。
+- 后续 Codex 实施：`TrialLedger.register_batch` 将一批尚未登记的假设写成单个 journal event，append + fsync 成功后再更新内存；已存在的相同条目幂等，冲突 / 重复身份 / 未审阅 LLM 来源预先拒绝。回放严格校验新事件，同时保留旧 `register` / `reevaluate` 记录兼容。`preregister_batch` 已改用此入口。
+- 同批独立复核发现同一 ledger 实例的线程竞争可使两次预检同时通过；已增加 `RLock`，覆盖登记的预检→追加→应用及公开状态读取，修复提交 `0632367`。保证限于经同一 `TrialLedger` API 的线程，不涵盖外部直接操作其 journal 句柄。
+- 这不是跨 journal 事务，也不实现 typed-plan admission。独立设计审查建议先以新 ADR 明确 PREPARE / COMMIT、精确恢复条件、memory checkpoint / external anchor 接线，并尊重 ADR-0070 的中断 round 人工复核 fail-stop；六个 P7 operator 仍保持 non-runnable。测试 / build / lint / Phase 验收均未运行。
+
+### 10.51 TrialLedger 批量预登记持久化（2026-09-28；本地 main）
+
+- `TrialLedger.register_batch` 为已验证的假设批次写入一个 hash-chained journal event；全量 preflight 完成后 append + fsync，再整体更新 ledger 内存状态。空批与全已存在的幂等批不写日志；同名同版本异内容、批内重复、非 Hypothesis、未审阅 LLM 假设在写入前拒绝。重放对批次载荷执行严格结构和 canonical 检查，并保持既有单项 register / reevaluate journal 格式可读。
+- 加入 ledger 级可重入锁，防止同一实例的并发调用穿插检查、落盘与更新；公开读取方法也在锁内取快照。`git diff --check` 通过；没有运行测试、build、lint 或性能探针，状态为实现待验收。
+- 限制：只保证单个 TrialLedger event 的批次边界，不覆盖其他 journal；部分 / 截断 JSONL 仍按现有约定 fail closed；该改动不持久化 typed plan audit，也不授权任何组合 operator 执行。
 
 ## 6. Agent 分工约束
 

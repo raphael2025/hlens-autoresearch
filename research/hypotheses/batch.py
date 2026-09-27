@@ -23,9 +23,11 @@ Refusals (``BatchRefused``, all at construction, before anything is registered o
   one), or a value whose condition text would not read back as the same value;
 - an empty or duplicated factor.
 
-``preregister_batch`` registers the **whole** batch in a ``TrialLedger`` before any of it runs
-(all-or-nothing: a conflicting registration is found before the first line is written), so the
-family's trial count — what the multiple-testing correction uses — covers every cell of the grid.
+``preregister_batch`` validates and registers the **whole** batch in a ``TrialLedger`` before any
+of it runs. Conflicts are checked before writing; a durable ledger records new members in one
+journal event, and updates in-memory state only after that append succeeds. This guarantee is
+limited to the TrialLedger journal and is not a transaction with loop or plan-audit journals, so the
+family's trial count — what the multiple-testing correction uses — covers every registered cell.
 
 Operators are data (a claim, an expected direction and a kind from a fixed list), never code: the
 expansion is this module's fixed function, and nothing generated is ever executed.
