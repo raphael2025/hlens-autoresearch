@@ -787,6 +787,42 @@ def test_an_empty_rest_page_is_a_unit_without_rows(h: RestHarness) -> None:
     assert out.snapshot_id is None and out.replayed and h.rows(c.TRADES) == []
 
 
+@dataclass
+class _SourceRevisionReadLog(ProxyCatalog):
+    """Records source-revision lookups and how many rows the catalog returns."""
+
+    table: str = c.RESPONSES.table
+    reads: list[tuple[int | None, int]] = field(default_factory=list)
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_columns(table, **kwargs)
+        if table == self.table and tuple(kwargs["columns"]) == ("revision_id",):
+            self.reads.append((kwargs.get("limit"), result.num_rows))
+        return result
+
+
+def test_duplicate_empty_page_source_revisions_fail_closed_with_two_row_limit(
+    h: RestHarness,
+) -> None:
+    """A corrupt duplicate source id is rejected without materializing every duplicate."""
+    cs.queue_agg_chain(h.venue, SYMBOL, ss.T0, [[]])
+    collected = h.collect(ss.agg_request("req-empty-duplicate-source"))
+    assert not isinstance(collected, Exception), collected
+    stored = h.store(clock=StepClock(start=K_REST)).ingest_collection(
+        ss.agg_request("req-empty-duplicate-source")
+    )
+    response_id = stored.pages[0].response_revision_id
+    [source_row] = [row for row in h.rows(c.RESPONSES) if row["revision_id"] == response_id]
+    h.forge_rows(c.RESPONSES, [source_row] * 9, "duplicate-source-revisions")
+
+    log = _SourceRevisionReadLog(h.adapter)
+    with pytest.raises(CanonicalNormalizeError, match="not one committed revision"):
+        c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log).normalize_unit(
+            c.REST_AGGS.table, response_id
+        )
+    assert log.reads == [(2, 2)]
+
+
 # =========================================================================================
 # #8: one fixed view
 # =========================================================================================
