@@ -16,6 +16,7 @@
 - 主线目前不是空骨架。Phase 0.5、Phase 2～14、API / Worker / Web 均有核心模型、Provider / 执行器、持久化或页面实现；Phase 8～14 审计未发现可明确追加的普通代码缺口。后续优先按证据补齐具体缺口，不再新增占位模块。
 - Phase 1 当前状态：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 仍是阻断。bounded-memory 实现位于活跃分支 `fix/e1-cap1`，由 Claude 进程持有且工作区有文档改动；10k/100k/500k 探针与 500k replay 正在运行，结果、内存记录和返修后定向测试待产出 / 核对。不得并行修改 `infrastructure/canonical/` 或 `infrastructure/revision/`，待该会话交付后由 Codex 独立复核与集成。
 - 计划启动时（2026-09-27）的分支盘点快照：41 个本地分支、139 个 worktree；当时仅已合并且无 worktree 的冗余 `hold/adr-0054-0057-at-2.0.0` 已存入 `refs/archive/2026-09-27/` 后删除。其余分支仍由 worktree 检出或含未合并 E1 / P0.5 / Phase 7 / 文档材料；7 个 worktree-agent 由活跃 Claude 进程锁定，3 个检出目录有未提交改动。该数字是历史启动快照，不代表当前数量。
+- 本轮分支清理结果：先归档再移除了 10 个补丁等价本地分支及其 worktree、68 个已在主线等价的 detached agent worktree、20 个已被主线后续实现取代的旧模块 worktree；16 个冗余远端引用也已归档清理。共清理 98 个 worktree；归档 tip 均可从 `refs/archive/2026-09-27/` 恢复。活跃 / 脏 / 锁定工作树、E1 与 Phase 0.5 独有内容、正式决定记录及 5 个独有远端分支均保留；分支审计未发现需要把旧实现整支合入当前主线的候选。
 - 最近一次全量代码门禁见 §10.8 / §10.9 的各恢复点；PR #7 合并前的 docs-only 修订曾运行 `tests/test_docs_consistency.py` 与 `tests/test_architecture_boundaries.py`（20 passed），PR #7 合并后的文档一致性检查为 7 passed。该记录不表示在当前 `f58e8ec` 上运行过全量门禁。阶段验收、真实数据运行、Profile 数值冻结与外部 Uvicorn 安装仍分开处理。
 - D3E 跨日证据边错误已在 `69f0bf0` 修复，并由 Codex 验收；不得再把该问题列为当前阻断。D-LIST / Profile 数值等属于明确决策或数据门，不通过猜测代码绕过。
 - **当前收口批次已完成**：Phase 0.5 因子 / 特征草稿与 Event 草稿、Event schema 和运维 README、Loop / Router / API README、ADR-0066 与 Event 表操作入口已通过 PR #6 合并到 `main`。库草稿不是 KnowledgeItem，不含人工审阅标签 / 资产或实证结论。
