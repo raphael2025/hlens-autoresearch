@@ -838,6 +838,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 原始运行记录（含失败）：见 ADR-0065 Implementation note 第 1～8 条；要点：第一次定向运行 `1 failed, 14 passed`（退出码 1，测试夹具违反有符号数量不变量）；
   第一次基线计算在错误源码上运行、作废；最终代码完整回归 `1 failed, 719 passed`（退出码 1，ADR 索引缺 ADR-0065 行），补行后文档测试 `20 passed`（退出码 0）。
 - 未运行：PostgreSQL 标记测试。本批次在冻结门禁 `255ce1a` 之后，最终 HEAD 另做全量门禁。
+- **最终门禁状态：RUNNING / 尚未验证**——对 B67 代码提交 `6d887b70f9a1b925a602476204773a321d8ce4b2` 的全量非 PostgreSQL 门禁于 2026-09-27T04:10:38Z 在独立 detached checkout 启动（日志 `~/hlens-gate-logs/6d887b7/`）；按 Raphael 的逐检查点推送要求先推送 WIP，门禁结果出来后另行记录；失败则修复并以后续提交推送。
 
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
