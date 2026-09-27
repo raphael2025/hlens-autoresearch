@@ -22,7 +22,27 @@ export type DegradationMetricPayload = {
 
 export type DegradationBreachPayload = Record<string, string>;
 
-export type DegradationEvidencePayload = Record<string, unknown>;
+/** Known ADR-0067 fields. The index signature keeps additive evidence fields forward-compatible. */
+export type DegradationEvidencePayload = {
+  lifecycle_history_hash?: unknown;
+  lifecycle_scope?: unknown;
+  profile_ref?: unknown;
+  profile_hash?: unknown;
+  profile_freeze_id?: unknown;
+  profile_freeze_calibration_report_hash?: unknown;
+  profile_freeze_anchor_length?: unknown;
+  profile_freeze_anchor_head_hash?: unknown;
+  validation_report_hash?: unknown;
+  baseline_gate_ids?: unknown;
+  recent_observation_set_id?: unknown;
+  recent_observation_set_hash?: unknown;
+  recent_observation_manifest?: unknown;
+  metric_method_id?: unknown;
+  recent_metrics_scope?: unknown;
+  window_start?: unknown;
+  window_end?: unknown;
+  [key: string]: unknown;
+};
 
 export type DegradationCheckPayload = {
   kind: string;
