@@ -74,7 +74,7 @@
 
 条目以 JSON 存于 `docs/research/knowledge/`，由 `plugins/knowledge/LocalKnowledgeProvider` 检索（ADR-0034）。
 
-新增四条条目及引用书目信息见 [`seed-2026-09-26.json`](knowledge/seed-2026-09-26.json)。书目字段于 2026-09-26 核对；主张为自写摘要，未逐字对照原文。四条均非加密市场研究，仍须在加密数据上重新检验；全部保持 `unverified`。
+新增四条条目及引用书目信息见 [`seed-2026-09-26.json`](knowledge/seed-2026-09-26.json)。四条固定 `schema_version: "2.1.0"`；书目字段于 2026-09-26 核对；主张为自写摘要，未逐字对照原文。四条均非加密市场研究，仍须在加密数据上重新检验；全部保持 `unverified`。
 
 种子条目的 `tags` / `assets` 目前为空：本仓库没有具名人工审阅者对它们做过分类。按条目自身已审阅文本（出处标题、`claim`、
 `conditions`）整理的分类**提案**见 [ADR-0055 实施说明](../reviews/2026-09-26-adr-0055-implementation.md) §5，待人工审阅者经写入路径
