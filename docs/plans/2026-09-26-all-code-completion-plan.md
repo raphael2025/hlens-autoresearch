@@ -838,7 +838,8 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 原始运行记录（含失败）：见 ADR-0065 Implementation note 第 1～8 条；要点：第一次定向运行 `1 failed, 14 passed`（退出码 1，测试夹具违反有符号数量不变量）；
   第一次基线计算在错误源码上运行、作废；最终代码完整回归 `1 failed, 719 passed`（退出码 1，ADR 索引缺 ADR-0065 行），补行后文档测试 `20 passed`（退出码 0）。
 - 未运行：PostgreSQL 标记测试。本批次在冻结门禁 `255ce1a` 之后，最终 HEAD 另做全量门禁。
-- **最终门禁状态：RUNNING / 尚未验证**——对 B67 代码提交 `6d887b70f9a1b925a602476204773a321d8ce4b2` 的全量非 PostgreSQL 门禁于 2026-09-27T04:10:38Z 在独立 detached checkout 启动（日志 `~/hlens-gate-logs/6d887b7/`）；按 Raphael 的逐检查点推送要求先推送 WIP，门禁结果出来后另行记录；失败则修复并以后续提交推送。
+- **最终门禁（完整代码，只覆盖 `6d887b70f9a1b925a602476204773a321d8ce4b2` = B67 代码提交）：通过**。独立 detached checkout `.claude/worktrees/gate-6d887b7`，日志 `~/hlens-gate-logs/6d887b7/`。`START_SHA 6d887b7… dirty=0 2026-09-27T04:10:38Z`；`systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest -q -rs -m "not postgres" -p no:cacheprovider` → `7294 passed, 2 skipped, 136 deselected, 1 warning in 3128.68s (0:52:08)`，退出码 0；**2 skipped** 为预期的真实 Uvicorn 子进程测试（可选 extra 未安装，待 Raphael H12 批准），不是通过；`ruff check .` → `All checks passed!`；`ruff format --check .` → `766 files already formatted`；`mypy` → `Success: no issues found in 597 source files`；`uv lock --check --offline` → `Resolved 53 packages`；Schema 135 份 0 处变化；`openapi.json` 0 处变化；`api.d.ts` 0 处变化；`npm test` → lib 89 / 89、组件 110 / 110；`npm run build` ✓；全部退出码 0；`END_SHA 6d887b7… dirty=0 2026-09-27T05:03:09Z`。PostgreSQL 标记测试未运行。
+- 其后的 docs-only 提交 `2158945`（门禁运行中标记）与 `04cf1c0`（§12.1 同步）**不在**该全量门禁覆盖范围内；只对它们运行了文档检查：Codex 在干净的 WIP HEAD `04cf1c0` 上 `uv run --offline pytest -q -rs -p no:cacheprovider tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → `20 passed in 0.46s`，退出码 0。
 
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
