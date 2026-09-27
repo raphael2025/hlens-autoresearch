@@ -7,7 +7,7 @@
 | 决策者 | Claude Code（Opus），依 Raphael 2026-09-26 明确授权（'所有的决策都由你来决定，包括红线'）；采纳方案 A |
 | 起草者 | Claude Code（Opus） |
 | 相关 Phase | Phase 3 — Event & Interaction Engine（roadmap：输出 "Event 表"；Phase 4 输入 "Canonical、Event"） |
-| 影响范围 | Data / Infrastructure：新增一张 additive Iceberg 表及其读写模块（`infrastructure/event/table_definition.py`、`infrastructure/event/iceberg.py`）；不改契约、不改 Phase 1 表、不改 `infrastructure/catalog/` |
+| 影响范围 | Data / Infrastructure：新增一张 additive Iceberg 表及其读写模块（`infrastructure/event/table_definition.py`、`infrastructure/event/iceberg.py`）；不改契约、不改 Phase 1 表、不改 `infrastructure/catalog/`；独立操作入口见 ADR-0066 |
 | 是否破坏兼容 | 否：15 张 Phase 1 表的定义与哈希、`PHASE1_REGISTRY` 不变；本 ADR 本身不改 `core/` / `schemas/`（`subject` 列随 ADR-0057 的契约字段而来，见实施说明） |
 | 实施状态 | CODE_COMPLETE / DEBUG_PENDING（只在临时 SQLite catalog 上测试；未在真实 catalog 建表） |
 | 前置 | [ADR-0036](0036-event-provider-contract.md)（EventProvider 契约与逻辑 Event 表）、[ADR-0023](0023-bitemporal-revision-data.md) §7（写入约束）、[ADR-0033](0033-research-dataset-selection-table.md)（additive 表先例）、[ADR-0031](0031-quality-evidence-gap-table.md)（additive 表先例） |
@@ -153,7 +153,8 @@ roadmap Phase 3 的输出包括 "Event 表"，Phase 4 以 "Canonical、Event" �
 1. `infrastructure/event/table_definition.py`（新）：`EVENT_EVENTS` 定义（字段 ID 显式，并像 Phase 1 的
    `_definition` 一样在导入时核对 ID 与分区 ID 等于 Iceberg 建表时分配值）、`PHASE3_TABLES`、`PHASE3_REGISTRY`；
    显式建表函数 `ensure_event_tables(adapter)` 委托参数化、幂等的 `ensure_phase1_tables(adapter, PHASE3_TABLES)`。
-   不接入 `create_phase1_tables.py` 或任何 provisioning 脚本；生产 catalog 建表是单独的运维步骤。
+   不接入 `create_phase1_tables.py`、Phase 1 表清单或自动启动流程。独立、需显式 `--apply` 的操作命令由 ADR-0066 单独定义；
+   生产 catalog 建表仍须由 Raphael 另行授权。
 2. `infrastructure/event/iceberg.py`（新）：`event_rows_batch(result) -> pa.Table`、`EventTable`（`write` / `read` / `load`），
    错误类型 `EventTableConflict` / `EventTableCorrupted`；只通过窄 Protocol
    `EventCatalog`（`load_table` / `commit_batch` / `scan_columns`）访问 catalog，不 import plugin。

@@ -41,7 +41,7 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
 - 拒绝路径穿越：`id` 必须匹配安全文件名模式且解析后仍在对应 `kind` 目录内，否则 400；未知
   `kind` 由 FastAPI 的枚举校验直接 422；损坏的 JSON 文件在列表接口中列入 `invalid`（`{id, reason}`，不再静默跳过），
   在详情接口中返回 422。
-- 目前没有任何写端点；实验登记 / 生命周期推进留待 P7 / P8 / P11 框架与授权服务就绪后再暴露。
+- API 不提供写入或触发研究作业的端点，也没有增加这类端点的计划（ADR-0048 实施决定及 [2026-09-26 决策记录](../../docs/reviews/2026-09-26-autonomous-decisions.md)）。Worker 作业在 API 之外运行；其持久结果日志与研究报告文件由 `/jobs`、`/reports` 只读提供给 Web。唯一的 POST `/knowledge/search` 是只读查询，不写入数据。
 
 ## 错误映射、报告列表与任务端点（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 

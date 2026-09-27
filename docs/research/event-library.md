@@ -33,7 +33,7 @@
 ## 条目索引
 
 以下是**事件算子模板**（operator）：具体条目 = 模板 + 具体 Feature / State 引用 + 参数，各自有 `name@version` 与 spec hash。
-目前只在合成夹具与冒烟测试上实例化，尚无登记的具体条目。
+算子模板只在合成夹具与冒烟测试上实例化。下方的具体定义是未注册草稿，不是 Registry 条目。
 
 | 算子（operator） | 摘要 | 输入 | 可观测时间 | provider | 出处 | 状态 |
 |---|---|---|---|---|---|---|
@@ -45,6 +45,30 @@
 | `event_window_end` | 每个上游事件 A 的窗口结束：事件时间 = A + `window`（`observable_lag` 恰为 `window`） | 1 个上游事件定义 | A 的事件时间 + `window` | `event_window_end@1.0.0` | ADR-0061 | UNVERIFIED |
 | `event_absence` | 锚事件，且 `[锚 - window, 锚]`（闭区间）内无 `absent` 事件 | 2 个上游事件定义 | 锚的事件时间 + lag | `event_absence@1.0.0` | ADR-0061 | UNVERIFIED |
 | `event_count` | 在事件 e 处，`[e - window, e]`（闭区间）内至少 `at_least` 个上游事件 | 1 个上游事件定义 | e 的事件时间 + lag | `event_count@1.0.0` | ADR-0061 | UNVERIFIED |
+
+## 具体定义草稿（未注册）
+
+以下内容只把仓库已有 Feature / Event Provider 的语义组合为一个可审阅的定义；它不是 Knowledge Base / Control Plane Registry 中的登记项。
+
+| 字段 | 值 |
+|---|---|
+| `name@version` | `bar_log_return_zero_up_cross@1.0.0` |
+| 状态 | **UNVERIFIED / NOT_VALIDATED**；未注册、未在真实数据上运行或校准 |
+| 摘要 | `bar_log_return` 序列从非正值跨到正值时产生一个向上穿越事件 |
+| 输入 | `feature:bar_log_return@1.0.0` |
+| Provider | `feature_threshold_cross@1.0.0`（`FeatureThresholdCrossProvider`） |
+| 触发定义 | `{"operator":"feature_threshold_cross","feature":"feature:bar_log_return@1.0.0","level":"0","direction":"up"}` |
+| 参数解释 | `level = 0` 是事件定义水平（零对数收益），不是验证阈值；`direction = up` 固定只识别向上穿越 |
+| 来源 | 仓库实现依据：[ADR-0030](../adr/0030-feature-provider-contract.md)、[ADR-0036](../adr/0036-event-provider-contract.md)、[`BarLogReturnProvider`](../../plugins/features/bars.py)、[`FeatureThresholdCrossProvider`](../../plugins/events/features.py)；未声称有外部实证来源 |
+| 证据 | 无关联 `ExperimentRun`；没有真实数据频率、预测能力或经济意义结论 |
+
+语义按现有实现解释：`BarLogReturnProvider` 以相邻且连续的 bar 计算 `ln(close[k] / close[k-1])`；该 Provider 默认 `FeatureSpec` 的输出精度为 18 位小数、half-even，缺少连续输入时返回 `None`。本事件在相邻的可计算 Feature 点满足
+`previous <= 0 < value` 时触发；不可计算的 `None` 点不填补，也不会跨过它配对。事件属性记录 `direction="up"`、零水平、前一点值与当前值。
+`observable_lag` 固定为零；`event_time` 仍是当前输入点的 `available_time` 加该 lag，因此不早于触发所用数据可见的时刻。定义不读取后续点。
+
+此草稿只声明 Feature 引用，没有声明某个具体 `FeatureSpec` 内容哈希或其可配置参数；默认精度说明不构成对其他同名版本化 FeatureSpec 配置的绑定。
+
+上述实现来源只支持“代码按此规则计算”的描述，不支持其市场有效性、事件质量、频率或策略价值。此草稿没有验收标准或 Validation Profile 数值；需要进入 Registry 或形成研究结论时，须另按项目登记与验证流程处理。
 
 ### 交互 DSL（ADR-0061）
 

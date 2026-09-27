@@ -12,13 +12,14 @@
 
 ## 2. 当前基线和第一优先级
 
-- 正式工作目录 `/home/raphael/projects/hlens-autoresearch` 当前为 `phase/1`，HEAD `52f7477`；它尚未包含全部框架代码。
-- 全框架候选在 `/home/raphael/projects/hlens-autoresearch/.claude/worktrees/hlens-autorecearch-dev-c05c2b`，分支 `claude/hlens-autorecearch-dev-c05c2b`，审阅基线 HEAD `50a43a4`。新会话必须先检查分支和 worktree；不得直接在 `main` 或正式 `phase/1` 上实现。
-- Phase 0.5、Phase 2–14、apps 已有大量框架代码，但状态仍是 `FRAMEWORK_IMPLEMENTED / NOT_VALIDATED`。Phase 1 的 D3E 起和后续批次仍待 Codex 验收。
-- 最新记录的全量门禁是 `1d4fe0e`：5,718 passed、1 warning、45:58。它不覆盖之后提交的 D-NET 能力工具和后续文档，也不覆盖本计划发现的跨日错误。
-- **阻断修复**：D3E-R3 在 `infrastructure/revision/channel_reconcile.py::_verify_edge_provenance` 中将当前日期的 batch prefix 与跨日同键证据混为一谈。aggTrade observation key 不含日期；同一键可在 UTC 午夜两侧有 REST revision。按两种到达顺序都能复现合法跨日 evidence 被误报为篡改，之后两个日期的 reconcile、`verified_edges` 和 PIT 路径会失败。边表 append-only，不能靠删除记录恢复。保持完整性校验强度，先补跨日回归再修实现。
-- D3E 的容量探针此前只有 1,000 条、一个 evidence batch。现有 provenance 扫描按 evidence-table snapshot 历史逐个回读，必须测多批和无关历史增长；这是待量化风险，不能把小样本结果外推为生产容量证明。
-- D-NET 实测只跑到 F2 标的池停止，未调用 `exchangeInfo`，未形成市场结论。离线工具测试只有 2 项；工具需补旧状态防误读、运行参数 / 日期绑定、快照与代码版本记录，以及对非采集步骤的非空网络拒绝断言。
+- 当前主线基线：`main` / `origin/main` 为 `10b89e886aca1d66c92ca65681c2321f347ab584`（2026-09-27）；工作区干净。全栈 B1～B67 已进入主线，主体模块逻辑与前后端闭环已实现，但仍标记 `CODE_COMPLETE / DEBUG_PENDING`，不代表各 Phase 验收。
+- 主线目前不是空骨架。Phase 0.5、Phase 2～14、API / Worker / Web 均有核心模型、Provider / 执行器、持久化或页面实现；Phase 8～14 审计未发现可明确追加的普通代码缺口。后续优先按证据补齐具体缺口，不再新增占位模块。
+- Phase 1 当前状态：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 仍是阻断。bounded-memory 实现位于活跃分支 `fix/e1-cap1`，由 Claude 进程持有且工作区有文档改动；不得并行修改 `infrastructure/canonical/` 或 `infrastructure/revision/`，待该会话交付后由 Codex 独立复核与集成。
+- 2026-09-27 分支盘点：41 个本地分支、139 个 worktree；仅已合并且无 worktree 的冗余 `hold/adr-0054-0057-at-2.0.0` 已存入 `refs/archive/2026-09-27/` 后删除。其余分支仍由 worktree 检出或含未合并 E1 / P0.5 / Phase 7 / 文档材料；7 个 worktree-agent 由活跃 Claude 进程锁定，3 个检出目录有未提交改动。不能按 patch-equivalent 批量删分支或 worktree。
+- 最新全量代码门禁见 §10.8 / §10.9 的各恢复点；当前 `main` 在合并后的 docs-only 修订上运行了 `tests/test_docs_consistency.py` 与 `tests/test_architecture_boundaries.py`（20 passed）。阶段验收、真实数据运行、Profile 数值冻结与外部 Uvicorn 安装仍分开处理。
+- D3E 跨日证据边错误已在 `69f0bf0` 修复，并由 Codex 验收；不得再把该问题列为当前阻断。D-LIST / Profile 数值等属于明确决策或数据门，不通过猜测代码绕过。
+- **当前收口批次**：Phase 0.5 因子 / 特征草稿与 Event 草稿、Event schema 和运维 README、Loop / Router / API README、ADR-0066 与 Event 表操作入口已在本审查分支汇集；下一步是代码 / 文档复核、定向检查和 PR。库草稿不是 KnowledgeItem，不含人工审阅标签 / 资产或实证结论。
+- **下一优先级**：活跃 E1 会话结束后复核 bounded-memory 实现与固定规模探针；其余 Phase 8～14 审计未发现已批准而缺失的普通模块代码，不新增占位功能。阶段验收仍延后。
 
 ## 3. 项目红线与执行规则
 
@@ -33,7 +34,7 @@
 
 ## 4. 分阶段代码完成清单
 
-以下是 Claude 的实施清单。每一项开始时先用当前代码和测试核实状态；已实现的功能不得重复造轮子，应补缺、接口集成或测试，然后更新本表的状态与证据。
+以下是 Claude 的原始实施清单与验收标准，其中若干“当前边界 / 阻塞”列是在全代码合并前写的历史缺口描述，不再作为当前状态。当前进度以 §2、§10.10 和 `PROJECT_STATUS.md` 为准；不得把已实现的模块重复列为未开始。
 
 | Phase | 代码交付范围 | 必须达到的代码验收 | 当前边界 / 阻塞 |
 |---|---|---|---|
@@ -54,6 +55,12 @@
 | 13 | Adaptive execution：隔离服务、模拟 venue、Kill Switch、独立风控、审计、监控 | 只完成模拟 / 纸面实现；kill switch 在场所端强制；风险与事件可重放；禁用实盘模式有测试 | 不实现交易端点、账户凭据、真实订单或杠杆；生产运营要 Raphael 独立批准 |
 | 14 | Migration framework：Adapter / schema compatibility / golden replay | 现有迁移骨架有契约测试；每个具体迁移需 ADR、金标准实验差异报告和 rollback 证据 | roadmap 将实际完整迁移放在 P13 后；没有明确目标时只补通用接口，不引进 K8s / 新数据库等 |
 | 全栈 | apps/api、apps/worker、apps/web | API 输入输出与领域 contracts / OpenAPI 一致；Worker job 生命周期、幂等、重试 / 失败可审计；前端各页面连接真实只读 API，提供 loading / empty / error 状态；类型检查、组件 / API 合同测试、生产构建通过 | 当前状态称 apps 框架已实现、5 页；backlog 仍称矩阵 / Router 页面只有 API 与计数。必须盘点实际 UI，禁止以截图 / 假数据代替服务链路 |
+
+## 4.1 当前状态解释
+
+- B1～B67 和对应模块已在 `main`，整体为 `CODE_COMPLETE / DEBUG_PENDING`；这表示实现批次完成，不等于 Phase 验收。
+- 原表的“当前边界 / 阻塞”列不应作为新的任务队列直接执行。每项工作先对照当前主线、已接受 ADR 与 §10.10；确认缺口仍存在且属于批准范围后再分配。
+- 本轮集成分支新增的内容与状态见 §10.10。真实数据、外部运行依赖、人工知识审阅和 Phase 验收仍是独立门槛。
 
 ## 5. 任务顺序与并行分组
 
@@ -876,3 +883,15 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 边界：不改 Constitution、Profile 数值、契约、Schema、Promotion 或 Control Plane；不授权生产部署或实盘。生产资格仍由 Promotion / Control Plane 决定。详细决策记录见 ADR-0043。
 - 冻结门禁（只覆盖 `0ced9ca983e420206992b2b96ac48bb6f4804bef` = B61 + 本决定；**不含** B63～B66）：在独立 detached checkout `.claude/worktrees/gate-0ced9ca` 中运行，完整日志 `~/hlens-gate-logs/0ced9ca/`。`START_SHA 0ced9ca… dirty=0 2026-09-27T01:20:23Z`；`systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest -q -rs -m "not postgres" -p no:cacheprovider` → `7260 passed, 136 deselected, 1 warning in 3094.07s (0:51:34)`，退出码 0，无 skip；`ruff check .` → `All checks passed!`；`ruff format --check .` → `761 files already formatted`；`mypy` → `Success: no issues found in 595 source files`；`uv lock --check --offline` → `Resolved 52 packages`；Schema 135 份 0 处变化；`openapi.json` 0 处变化；`api.d.ts` 0 处变化；`npm test` → lib 88 / 88、组件 110 / 110；`npm run build` ✓；全部退出码 0；`END_SHA 0ced9ca… dirty=0 2026-09-27T02:12:21Z`。B61 的 PostgreSQL 测试仍未运行。
 136 个 deselected 为 PostgreSQL 标记测试（本分支不接触真实数据库）。
+
+### 10.10 2026-09-27 当前代码 / 内容收口（审查中；阶段验收延后）
+
+| 范围 | 当前结论 | 本批动作 / 边界 |
+|---|---|---|
+| Phase 0.5 | Knowledge Base 主体已在 `main`；因子 / 特征人类可读库此前缺条目 | 增补带引用的横截面动量与 Amihud illiquidity 文档草稿；均为 `UNVERIFIED / NOT_VALIDATED`，不是 KnowledgeItem，不含人工标签 / 资产审阅或本项目复现结论 |
+| Phase 1 | D3E 已接受、D4 已关闭；E1-CAP-1 仍阻断 | 不与活跃 Claude worktree 并行修改 canonical / revision；待固定规模探针和交付后 Codex 复核 |
+| Phase 2～7 | 核心模块逻辑已在 B1～B67 主线；本轮只发现内容索引缺口 | 增补一个 `bar_log_return` 向上穿越零的 Event 定义草稿，标注未注册 / 未验证、无市场效果主张；不改策略、风险、状态默认值或阈值 |
+| Phase 3 | Event Provider、DSL、运行存储与 `event.events` 逻辑表已实现；缺独立、可重复的操作入口 | ADR-0066 明确单独 CLI：默认不读配置、不连接 catalog；`--apply` 只调用 Event 表 ensure 函数，不接入 Phase 1 / 自动启动。生产 catalog 操作仍未授权、未执行 |
+| Phase 8～14 / apps | 只读差距审计未发现明确、已批准而缺失的普通模块代码 | 同步 Event 字段、Research Loop / Router / API README 的实际行为，修正文档过时描述 |
+
+本批独立分支集成检查：`uv run pytest -q tests/infrastructure/event/test_create_event_tables.py tests/test_docs_consistency.py` → **11 passed in 1.27s**；`git diff --check` → 通过。没有运行 Phase 验收或真实 catalog 操作；全量门禁仍以 B67 `6d887b7` 已记录结果为最后代码基线。
