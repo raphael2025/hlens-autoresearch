@@ -265,12 +265,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | 模块打磨批次（分支 `codex/tonight-module-polish-2026-09-27`）拣选 4 个代码细节修复：研究策略的已实现波动率与 Provider 口径一致（`e333f6d` ← `1023afb`）；研究日志拒绝过期写入者在他人追加后继续写入（`86d8e3b` ← `9181c58`）；控制台 Gate Calibration 显示报告自带的检测误差区间与 G5 区块（`d595cc8` ← `8de6522`）；控制台 degradation 解析对空指标与矛盾的 insufficient_evidence 失败关闭（`2947ca0` ← `66980f4`） | 只是代码细节修复，待 Codex 独立验收，**不代表任何 Phase 验收**；无契约 / ADR / Constitution / Profile 数值变化；只跑了针对性测试与静态检查，未跑全量门禁；未推送、未并入 `main` |
 | 2026-09-27 | 全框架并入 `main` 并推送到远端（`52b5bae`）；16 个无独有补丁且未被 worktree 使用的本地分支已先归档再删除 | 远端与本地 `main` 同步；16 个恢复引用位于 `refs/archive/2026-09-27/`；其余独有或活动分支保留；无 tag |
 | 2026-09-27 | Phase 1 验收记录并入：D3E 已接受、D4 已关闭；E1-CAP-1 标记为当前阻断（Codex review branch） | 记录见 `docs/reviews/2026-09-27-d3e-acceptance.md` 与 `docs/reviews/2026-09-27-e1-review.md`；容量修复仍在独立 worktree，尚未复核或并入 `main` |
 | 2026-09-27 | B67（ADR-0065）：数据集路径上，回测结束仍有未成交的结转余量时，G4 容量检查为不确定（`carry_over_unfilled`），不再用不完整的成交估计容量 | CODE_COMPLETE / DEBUG_PENDING；无余量、合成路径与默认执行模型结果和哈希不变；无阈值 / Profile / 契约变化；不是 Phase 4 / 5 验收；B67 代码 `6d887b7` 全量非 PostgreSQL 门禁 7294 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0；其后 docs-only 提交只做了文档检查（20 passed） |
 | 2026-09-27 | B66（ADR-0064）：数据集路径上 G4 容量所用的成交量须与实际执行的价格 bar 的成交量完全一致，否则容量检查为不确定（`bar_volume_source_mismatch`），不再静默使用另一份数据 | CODE_COMPLETE / DEBUG_PENDING；合成路径与一致时的结果不变；无阈值 / Profile / 契约变化；冻结 HEAD `255ce1a`（B63～B66）全量非 PostgreSQL 门禁 7287 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0 |
-| 2026-09-27 | ADR-0063（Codex 决定）：本机只读研究 API 用 Uvicorn 运行，只绑定 127.0.0.1、单 worker；公网 / 认证 / TLS 不在范围内 | B65 入口与测试已实施（未安装 Uvicorn）；真实 Uvicorn 运行待 Raphael 授权安装 |
-| 2026-09-27 | B63：控制台的证据模式说明写明 B62 边界：只证明研究层纸面路由前提，通过不代表 Profile 已冻结、策略已晋升或具备生产资格；列出反向对照项 | 只改控制台文字与测试；无代码 / 契约 / API 改动 |
 
 ## 10. 下一阶段进入条件
 
