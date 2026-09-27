@@ -168,7 +168,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 稳定远程恢复点（2026-09-27）：PR #9 合并后 `origin/main` 为 `44fe9a2`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已包含在该恢复点，PR #7～#9 同步状态 / hygiene。B67 `6d887b7` 的全量非 PostgreSQL门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。本轮开发开始时本地 `main@0640460` 比远程恢复点超前 51 个提交；当前并入 E1 probe、P0.5 seed schema 固定、Phase 11 worker journal stale-writer guard 后为 `main@14375ec`，超前 54 个提交（状态文档提交后 55 个），尚未推送。测试、probe 与验收未运行。
+- 稳定远程恢复点（2026-09-27）：PR #9 合并后 `origin/main` 为 `44fe9a2`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已包含在该恢复点，PR #7～#9 同步状态 / hygiene。B67 `6d887b7` 的全量非 PostgreSQL门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。本轮开发开始时本地 `main@0640460` 比远程恢复点超前 51 个提交；并入 E1 probe、P0.5 seed schema 固定、Phase 11 worker journal stale-writer guard 与文档同步后，本次状态提交前 `main@0ca6655` 超前 55 个提交；本提交后将超前 56 个，尚未推送。当前整理后有 7 个本地分支、11 个 worktree、7 个远端分支引用。测试、probe 与验收未运行。
 - Phase 1：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 是当前容量阻断。`fix/e1-cap1@a75278e` 的 500k resume / replay 跨规模增长分别为 59.9 / 63.9 MiB，超过 32 MiB；这是候选实现的测量，不是 main 测量。主线适配版 probe 已合入但未运行；main 自身容量仍未知。主线仍有需设计与消除的 O(N) positions、时间列、返回 IDs、收尾列和 archive cache。整合基线选 main，不整支并入候选，详见计划 §10.33–10.35。
 - 恢复资料见 `PROJECT_STATUS.md` 与 `docs/plans/2026-09-26-all-code-completion-plan.md`；Phase 0 基线仍为 tag `phase-0-complete`，Phase 1 D3D-R1 恢复点为 `c06b9fa`。
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
@@ -178,4 +178,4 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 已实现但未完成 Phase 验收：Canonical、PIT / dataset / representation、Feature、State / Event、Outcome / Validation、Strategy / Backtest、Runner、Control Plane 与 Phase 2～14 模块（B1～B67）；本地 StorageAdapter、PyIceberg Catalog、生产表定义、D0～D3E 数据路径也已实现。Phase 1 E1-CAP-1 仍阻断，真实运行、人工知识审阅和各 Phase 验收仍独立待办。
 - Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3E 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 `c326434` → D3E-R3 `7e9e084` 已由 Codex 于 2026-09-27 验收；E1-CAP-1 是当前容量阻断
-- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；PR #9 合并后的远程恢复点是 `origin/main@44fe9a2`；当前本地 `main@14375ec` 超前 54 个提交（状态文档提交后 55 个）、未推送。E1 适配版 probe 已在 main，未运行；历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。
+- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；PR #9 合并后的远程恢复点是 `origin/main@44fe9a2`；本次状态提交后本地 `main` 超前 56 个提交、未推送。E1 适配版 probe 已在 main，未运行；历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。

@@ -81,7 +81,7 @@
 
 ## 已知失败模式（roadmap Phase 4）
 
-- 重叠 horizon 造成虚假显著 → 由验证层的 purging / embargo 处理（D-30：C-L5 embargo 与 horizon 的校验点仍开放）。
+- 重叠 horizon 造成虚假显著 → 由验证层的 purging / embargo 处理；D-30 已确认 G0 绑定本次实验的单一 Outcome ref / hash，G1 比较 Profile embargo 与该 Outcome 的精确 horizon。Phase 4 仍待验收；未来若一次实验支持多个 Outcome，须先决定 horizon 选择规则并更新 D-30。
 - 标签定义隐含未来信息 → 契约强制 `available_time` 对齐与窗口核对（`OutcomeResult.check_answers`）。
 - 把标签数值抄进某个 Feature 的输入：契约层无法阻止，属信息流审计与 G1 泄漏门。
 

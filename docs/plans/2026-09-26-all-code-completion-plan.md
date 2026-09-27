@@ -1073,6 +1073,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 后续按审计优先级对每个功能缺口限定单模块、隔离分支开发；跨模块或冻结契约变更先由 Codex记录 ADR / 决策。失败实验和历史证据原样保留。分支删除前先归档 refs，活动、脏、锁定及含唯一内容的 worktree 继续保留；不推送远端。
 - 当前技术队列：①核对 remaining branch content 并安全收敛；②E1 有界路径设计与实现（不降低 32 MiB 门槛，probe 暂不运行）；③P7 首个算子语义与 lowering 需 ADR；④逐模块补齐经审计确认的独立逻辑缺口。人工数据门（种子标签 / assets 审阅、真实数据、Profile 冻结）不以代码替代。
 
+### 10.36 分支与 worktree 收敛快照（2026-09-27）
+
+- 当前本地 `main` 为 `0ca6655`，`origin/main` 为 `44fe9a2`，本状态更新提交后本地 ahead 56；没有推送或删除远端分支。
+- 本轮开始时有 12 个本地分支、18 个 worktree。完成三项实现合并后，已归档并删除三条临时任务分支；另移除两个与保留 worktree 重复的干净只读目录，以及一个已被主线取代的旧 Phase 7 agent worktree。当前为 7 个本地分支、11 个 worktree、7 个远端分支引用。根 checkout、带未跟踪资料的 Claude checkout、活跃 / 锁定会话、E1 唯一候选和尚未逐项裁定的研究规格 worktree 均保留。
+- 对 `docs/research-spec-completion` 的重审更正了先前的错误归类：六个库文件与 main 相同，capabilities 文档是较旧快照，event-library 候选删除了 main 上仍有价值的具体草稿；没有可安全择取的新增内容。候选仍保留到会话归属与引用清理完成。
+- 本快照未清理远端 refs，未推送，未运行测试 / build / probe；不代表验收完成。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。

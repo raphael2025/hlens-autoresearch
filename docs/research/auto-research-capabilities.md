@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 性质 | 研究规格索引（人类可读）：记录自动研究能力**今天实现到哪里**、依据哪条已接受的 roadmap / ADR、以及哪些能力尚无批准规格 |
-| 基线 | `main` @ `669704c`（2026-09-27 本地模块收敛快照；协调 worktree 另有未提交 P7 修复）；逐项证据来自代码、roadmap 与 ADR 的只读核对；本文为待验收状态索引 |
+| 基线 | `main` @ `0ca6655`（2026-09-27 项目状态同步）；逐项依据代码、roadmap 与 ADR 核对；本文为待验收状态索引 |
 | 权威性 | 本文件**不批准**任何设计。标为"验收标准（提案）"的内容只是建议，须经 ADR / Codex / Raphael 决定后才生效；与已接受 ADR、Constitution、roadmap 冲突时以后者为准 |
 | 相关 | [feature-library.md](feature-library.md) · [state-library.md](state-library.md) · [event-library.md](event-library.md) · [outcome-library.md](outcome-library.md) · [factor-library.md](factor-library.md) · [strategy-library.md](strategy-library.md) · [risk-library.md](risk-library.md) · [roadmap.md](roadmap.md) · [constitution.md](constitution.md) |
 
@@ -33,8 +33,8 @@
 |---|---|---|---|---|
 | 预登记与试验账本（每次登记 / 重评 = 一次试验，失败也计数） | Constitution A1、C-T1；roadmap Phase 7 验收；ADR-0040 §3 | `research/hypotheses/ledger.py`；循环把 family 试验数传给 G3 | `tests/research/hypotheses/test_hypotheses.py`、`test_durable_ledger.py`、`tests/research/loop/test_loop_e2e.py` | `IMPLEMENTED · DEBUG_PENDING` |
 | 组合算子 DSL（产出假设，不产出代码） | 04-research-loop §4；ADR-0040 §2 | `research/hypotheses/dsl.py`（6 个构造器只生成带文字与引用的 Hypothesis；没有可执行 typed plan） | `test_hypotheses.py` | `IMPLEMENTED · DEBUG_PENDING`（规格生成，不代表执行） |
-| P6 条件化评估（状态 × 策略单元） | roadmap Phase 6；ADR-0039 | `research/experiments/state_strategy.py`、`research/loop/trials.py`、`research/loop/compose.py`；报告接线已在本地 `main@669704c` | `tests/research/experiments/`、`tests/research/loop/test_loop_conditional.py` | 计算与报告链 `IMPLEMENTED · DEBUG_PENDING`；Phase 6 未验收 |
-| P7 六类 DSL 算子进入批次运行 | ADR-0040 §2、Proposed ADR-0068 执行边界 | `HypothesisBatch` 仅允许 `parameter_point`；六类 DSL 均在 `NOT_RUNNABLE_KINDS`。Conditioning 的 P6 单元评估是另一条执行通道 | — | `REQUIRES_DECISION`：六类算子的具体语义与 Provider lowering 尚未定义；暂不解除 fail closed |
+| P6 条件化评估（状态 × 策略单元） | roadmap Phase 6；ADR-0039 | `research/experiments/state_strategy.py`、`research/loop/trials.py`、`research/loop/compose.py`；报告接线已进入本地 main | `tests/research/experiments/`、`tests/research/loop/test_loop_conditional.py` | 计算与报告链 `IMPLEMENTED · DEBUG_PENDING`；Phase 6 未验收 |
+| P7 六类 DSL 算子进入批次运行 | ADR-0040 §2、Accepted ADR-0068 执行边界 | `HypothesisBatch` 仅允许 `parameter_point`；六类 DSL 均在 `NOT_RUNNABLE_KINDS`。Conditioning 的 P6 单元评估不是策略门控 | — | 解析机制已实现；各算子的具体语义与 Provider lowering 尚未批准，继续 fail closed |
 | 批量网格（算子 × 策略 × 声明点；算子须人工审阅） | ADR-0040 §5 | `research/hypotheses/batch.py`；协调 worktree 有递归冻结参数点与按 outcome 恢复未完成单元的未提交修复 | `tests/research/hypotheses/test_batch.py`、`tests/research/loop/test_loop_batch.py` | 主线 `IMPLEMENTED · DEBUG_PENDING`；修复候选尚未提交、未运行测试 |
 | 知识 / LLM 假设草稿（严格结构，人工审阅后登记，LLM 不判定） | ADR-0040 §1、§4 | `research/hypotheses/generator.py`；只有脚本化 LLM | `test_strict_llm_drafts.py`、`test_knowledge_source.py`、`test_loop_llm_rejection.py` | `IMPLEMENTED · DEBUG_PENDING` |
 | 真实（联网）LLM Provider | ADR-0040 §1 只声明属后续批次，未设计 | — | — | `UNSPECIFIED`（需网络与凭据授权） |
@@ -45,7 +45,7 @@
 | G0–G3、G5、负对照（打乱 / 平移 / 盲标签，可选多种子） | roadmap Phase 4；ADR-0037 §3 | `research/validation/pipeline.py`、`controls.py`、`stats.py`（Bonferroni / Šidák） | `tests/research/validation/test_pipeline.py` 等 | `IMPLEMENTED · DEBUG_PENDING` |
 | G4 稳健性、PBO（CSCV）、DSR、回溯审计 | roadmap Phase 8；ADR-0041 | `robustness.py`、`overfitting.py`、`g4.py`、`retro_audit.py` | `test_robustness.py`、`test_g4_*`、`test_retro_audit.py` | `IMPLEMENTED · DEBUG_PENDING` |
 | 数据切分：purge / embargo、walk-forward、purged k-fold、封存样本外（每 family 一次） | Constitution C-L5、C-S1..4；ADR-0037 §3 | `splits.py`、`sealed_oos.py` | `test_splits_and_sealed_oos.py`、`test_durable_sealed_oos.py` | `IMPLEMENTED · DEBUG_PENDING` |
-| C-L5 embargo 覆盖 horizon 的检查点 | Constitution C-L5；D-30 开放 | `G1.embargo_covers_horizon` 只比较绑定的单个标签规格 | FAIL 分支测试：本次新增（见下） | `IMPLEMENTED`（单规格）· 跨对象检查点 `REQUIRES_DECISION`（D-30） |
+| C-L5 embargo 覆盖 horizon 的检查点 | Constitution C-L5；已关闭的 D-30 | G0 绑定本次实验的单一 Outcome spec / hash；G1 检查 Profile embargo 不小于该 spec 的精确 horizon | 统一验收阶段复核覆盖 | 已实现；单 Outcome 契约下 D-30 已关闭。Phase 4 仍未验收；多 Outcome 才需重议 |
 | 阈值来源 | Constitution C-A1、C-A7/A8；ADR-0007 | 所有判定阈值经 `threshold(profile, path)` 读取，未硬编码 | `test_every_threshold_is_read_from_the_profile` | `IMPLEMENTED · DEBUG_PENDING`；Profile 数值 `REQUIRES_DECISION`（D-09） |
 | 空模型 / 门校准证据 | ADR-0037 §6；ADR-0042 | `research/validation/calibration.py`、`research/synthetic_lab/` | `tests/research/synthetic_lab/` | `IMPLEMENTED · DEBUG_PENDING`（只给证据，不选数值） |
 | 训练型状态模型的固定窗口与种子 | roadmap Phase 2；ADR-0035 | 执行器强制窗口截断与必填 seed；两个分位模型为确定性，seed 不影响输出 | `tests/infrastructure/state/test_state_runner.py` | `IMPLEMENTED · DEBUG_PENDING` |
@@ -90,12 +90,12 @@ Constitution 原则与已实现能力的同类要求，不设任何数值阈值�
 | AR-5 | 风控候选搜索与风控参数计数 | ADR-0038 只要求声明 | 见 risk-library 缺口 R-1 | `REQUIRES_DECISION` |
 | AR-6 | 循环中的风控信号 | ADR-0049 未定义来源 | 风控信号经 Feature 执行器从同一 PIT 数据计算并绑定其结果哈希；缺失时仍 fail closed（空仓）并在报告中可见 | `REQUIRES_DECISION` |
 | AR-7 | 声明网格全部计入账本 | C-T1 的"假设族累计值"是否包括未显式登记的声明点 | 由决定给出；两种解释都须在 G3 / G4 中使用同一试验数 | `REQUIRES_DECISION` |
-| AR-8 | C-L5 跨对象检查点（D-30） | 已登记为开放决定（Phase 4 前） | 由决定给出 | `REQUIRES_DECISION` |
+| AR-8 | 单次实验绑定多个 Outcome 时的 horizon 选择 | 当前实验绑定单个 Outcome；ADR-0041 的 D-30 已关闭 | 如将来支持多 Outcome，先决定 horizon 选择规则，再经 ADR 更新 G0 / G1 | `UNSPECIFIED`（仅未来多 Outcome 范围） |
 
 ## 本次随规格一并完成的实现事项
 
 | 事项 | 依据 | 状态 |
 |---|---|---|
-| 研究侧信号复算与 Feature Provider 逐值相等（`research/strategies/signals.py`） | ADR-0030 / ADR-0038（研究辅助函数，不属 Phase 1 验收项） | CODE_COMPLETE · REVIEW_PENDING（`1023afb`） |
-| `G1.embargo_covers_horizon` 的 FAIL 分支测试（不改代码） | Constitution C-L5；roadmap Phase 4"purging / embargo 实现并测试" | 只加测试 · REVIEW_PENDING（`7b9df59`）；不代表 D-30 已决定 |
-| 两处过时的限制说明（`plugins/llm/README.md` 的 LLM 内容核对、`research/states/README.md` 的诊断写入器） | ADR-0040、ADR-0035 | 只改文档 · REVIEW_PENDING（`448c352`） |
+| 研究侧信号复算与 Feature Provider 逐值相等（`research/strategies/signals.py`） | ADR-0030 / ADR-0038（研究辅助函数，不属 Phase 1 验收项） | 主线已有等价实现（`e333f6d`）；候选 parity 测试未择取，留待统一验收复核 |
+| `G1.embargo_covers_horizon` 的 FAIL 分支测试（不改代码） | Constitution C-L5；roadmap Phase 4"purging / embargo 实现并测试" | 候选提交 `7b9df59` 未择取；相关测试覆盖留待统一验收复核 |
+| 两处限制说明更新（`plugins/llm/README.md` 的 LLM 内容核对、`research/states/README.md` 的诊断写入器） | ADR-0040、ADR-0035 | 更正内容已在 main；对应候选 patch 等价，无新增合并项 |

@@ -75,8 +75,7 @@
 | `count(a, at_least, within_us)` | 在 A 处，`[A - within, A]` 内至少 `at_least` 个 A | `event_count` | 该 A 的事件时间 |
 
 同一表达式（同一 registry）永远编译成同一组规格与哈希；`Compilation.record()` 记录表达式哈希与全部规格哈希，
-`verify_compilation` 可重算核对。04-research-loop.md §4 要求每个组合都计入 trial count；当前实现中，试验账本（`research/hypotheses/ledger.py`）
-只登记假设，DSL 编译本身不计数——一个事件组合只在被已登记的假设使用时才计入。
+`verify_compilation` 可重算核对。试验账本（`research/hypotheses/ledger.py`）记录 Hypothesis 登记（含失败）与已登记 Hypothesis 的预登记重评；DSL 编译本身不产生账本条目。参数点批次会将每格转换成独立 Hypothesis 并在运行前预登记。当前尚未定义 P7 各组合算子到 Hypothesis / TrialLedger 的完整计数归属，因此不宣称底层每个事件表达式组合都各自形成一笔账本试验。
 
 ## 规格状态与缺口
 
@@ -96,5 +95,4 @@ PIT 一致）；`tests/infrastructure/event/`（执行器、未来确认拒绝�
 | `MST-SQUEEZE-001` → `MST-EXPANSION-001` | 压缩后扩张 | `state_switch`（`from_state` / `to_state`）作用于 `volatility_regime`；未登记具体条目 | `UNSPECIFIED`（未登记） |
 | `RM-EVENT-STUDY-001` | 事件研究：异常收益与 CAR（MacKinlay 1997） | `research/events/stats.py` 只做频率、共现、领先滞后、重叠描述，不计算异常收益；标签见 [outcome-library.md](outcome-library.md) | `UNSPECIFIED` |
 
-已知失败模式（roadmap）：事件重叠导致样本非独立（`overlap_diagnostics` 描述）、组合爆炸（按 04-research-loop.md §4 每个交互组合都应计入 trial count；今天只在被已登记假设使用时计入，
-04-research-loop.md §4）、事件频率过低（`event_frequency` 描述）。
+已知失败模式（roadmap）：事件重叠导致样本非独立（`overlap_diagnostics` 描述）、组合爆炸（按 04-research-loop.md §4，获准进入研究的组合需在执行前纳入计数；当前 P7 执行尚未批准，DSL 编译不计数）。底层组合与假设登记之间的计数映射仍是 P7 设计项；不得把事件 DSL 编译描述成已登记试验。事件频率过低由 `event_frequency` 描述。
