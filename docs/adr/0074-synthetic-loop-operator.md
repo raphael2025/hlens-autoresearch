@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed** |
+| 状态 | **Accepted** |
 | 日期 | 2026-09-28 |
-| 决策者 | 待 Raphael 批准；Codex 起草 |
+| 决策者 | Codex（依 Raphael 于 2026-09-28 的项目全权委托） |
 | 相关 Phase | Phase 11（synthetic-only operator） |
 | 影响范围 | Research / Application boundary、Worker operation、durable state、reports |
 | 是否破坏兼容 | 否（不改公开 Domain Contract / Schema）；研究状态目录内部配置指纹需要升版，见决策 §6 |
@@ -135,7 +135,7 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
 
 当前 `settings_fingerprint` 已绑定 `LoopBudget`、profile、knowledge、策略/spec 内容、代码 commit、environment lock、节奏、G4 参数和 market identity，但不完整覆盖 provider descriptor、`ProfileSelection`、所有阶段 compute 声明或 TOML schema。只靠 `code_commit` / `environment_lock` 也不足以表达用户在同一二进制 allowlist 中选取的 provider 身份。
 
-为满足 §5 的重开边界，operator 编码前先完成 ADR-0073 已批准的 v4 plan-admission durable format；随后新增一个研究侧组合参数（建议名 `operator_identity`，内容是规范化配置的 SHA-256）并由 `open_synthetic_loop` 与 durable state 一同校验，组成 operator-only v5 format。它不是 `SyntheticLoopConfig` 或 `LoopWiring` 的新字段，也不是 Domain Contract。实现顺序固定为：先实现并保留 v3 / v4 opener 分支及 v4 admission 语义，再在其上实现 v5 operator identity；不得把尚未实现的 v4 设计跳过、重命名或合并进 v5，也不得在尚无 v4 基线时实现 operator state header。若 Raphael 不批准这项 state identity 扩展，operator 不得实现为可重入 durable scheduler 命令。
+为满足 §5 的重开边界，operator 编码前先完成 ADR-0073 已批准的 v4 plan-admission durable format；随后新增一个研究侧组合参数（建议名 `operator_identity`，内容是规范化配置的 SHA-256）并由 `open_synthetic_loop` 与 durable state 一同校验，组成 operator-only v5 format。它不是 `SyntheticLoopConfig` 或 `LoopWiring` 的新字段，也不是 Domain Contract。实现顺序固定为：先实现并保留 v3 / v4 opener 分支及 v4 admission 语义，再在其上实现 v5 operator identity；不得把尚未实现的 v4 设计跳过、重命名或合并进 v5，也不得在尚无 v4 基线时实现 operator state header。
 
 ### 7. 报告交付、恢复和中断
 
@@ -163,6 +163,8 @@ operator 必须在运行阶段前拒绝：
 
 此 operator 只运行 ADR-0042 synthetic provider 路径，不接 `DatasetLoopConfig` / Research Dataset，不接 Binance、交易密钥、账户、订单、纸面或 live execution，不产生真实市场结论，不做生命周期人工审批，不启动 Web/API。该决定不触及 D-LIST / ADR-0051，不修改 Constitution、Validation Profile 数值、任何 `core/contracts` 或发布 Schema，不增加 live trading 能力。
 
+Raphael 于 2026-09-28 将项目整体决策与执行权委托给 Codex。Codex 审阅后接受本 ADR，作为后续 operator 实现的范围基线。当前没有已冻结的可运行 Validation Profile，因此接受本 ADR 不会生成可运行配置，也不允许用测试 Profile 或临时数值代替；实现依赖 ADR-0073 的 v4 durable admission 先行完成。
+
 ## 备选方案（Alternatives）
 
 | 方案 | 优点 | 缺点 | 为何未选 |
@@ -185,9 +187,9 @@ operator 必须在运行阶段前拒绝：
 - [x] Domain 层不增加技术依赖
 - [x] Research / Application Plane 边界不变；研究 operator 只读出 API 查询所需的 reports
 - [x] 不加入实盘、账户、密钥、订单或交易触发能力
-- [ ] Raphael 批准 Proposed ADR 后方可开始实现
+- [x] Codex 依 Raphael 2026-09-28 项目全权委托接受；实现仍须等待 ADR-0073 v4 durable admission 完成
 
-## 实施边界（批准后可拆分的单模块任务）
+## 实施边界（后续实现任务）
 
 1. `research/loop/operator_config.py`：TOML v1 严格解析、path resolution、强类型校验、hash-bound artifact loading；只接受 ADR §2 定义对象。
 2. `research/loop/operator_providers.py`：实现 ADR §3 的静态 role allowlist 和 descriptor/spec identity 校验；不动态导入。
