@@ -11,7 +11,8 @@ available when the bar that completes them is available (``bar.available_time``)
   returns.
 
 A gap (``end != next start``) breaks the run: no value is interpolated. Logs and roots run at
-50 significant digits and are quantized to 18 places, half-even (as ``plugins/features/bars``).
+50 significant digits and are quantized to 18 places, half-even (as ``plugins/features/bars``);
+the realized volatility squares the unquantized log returns, so both values equal the provider's.
 """
 
 from __future__ import annotations
@@ -76,20 +77,24 @@ def bar_signals(
     out: list[SignalObservation] = []
     with localcontext(_CONTEXT):
         for series in _by_instrument(bars).values():
+            # Unquantized 50-digit log returns: the realized volatility squares these (as the
+            # provider does), and only the published log-return value is quantized.
             returns: list[Decimal | None] = [None]
             for previous, bar in zip(series, series[1:], strict=False):
                 if previous.interval_end != bar.interval_start:
                     returns.append(None)
                 else:
-                    returns.append((bar.close / previous.close).ln().quantize(_SCALE))
+                    returns.append((bar.close / previous.close).ln())
             for index, bar in enumerate(series):
                 if index > 0:
-                    out.append(_observation(LOG_RETURN_SIGNAL, bar, returns[index], knowledge_time))
+                    log_return = returns[index]
+                    quantized = log_return.quantize(_SCALE) if log_return is not None else None
+                    out.append(_observation(LOG_RETURN_SIGNAL, bar, quantized, knowledge_time))
                 for window in vol_windows:
                     tail = returns[max(0, index - window + 1) : index + 1]
                     value: Decimal | None = None
                     if len(tail) == window and all(item is not None for item in tail):
-                        total = sum((item * item for item in tail if item is not None), Decimal(0))
+                        total = sum((item**2 for item in tail if item is not None), Decimal(0))
                         value = total.sqrt().quantize(_SCALE)
                     out.append(
                         _observation(realized_vol_signal(window), bar, value, knowledge_time)
