@@ -972,6 +972,11 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 独立静态复核原样结果：目标文件 `ruff check` → `All checks passed!`；`ruff format --check` → `1 file already formatted`；`mypy` → `Success: no issues found in 1 source file`；`git show --check` → 通过。没有添加或运行测试、PostgreSQL 测试或容量探针。
 - **E1-CAP-1 仍阻断，32 MiB 门槛未证明。** 本次只移除 normalizer 对每 batch 快照映射和 `done` 字典的保存；positions、返回 revision ids、PyIceberg table metadata 全量 snapshots 等仍随数据规模增长。pinned history 现在会被重复流式遍历，单次遍历仍可能 O(L·H)，暂未计时。不得将本次 static pass 写成 E1 修复验收或容量通过。
 
+### 10.21 ADR-0055 已完成本地 worktree 清理（2026-09-27）
+
+- Claude 的 `claude/adr-0055-tags-assets@ed8e694` 会话已结束、worktree clean；能力与测试已在 `main`，该分支的两项净差异会回退 Accepted 状态和缺目录 fail-closed 行为，故不移植。先保存 tip 到 `refs/archive/2026-09-27/branches/claude/adr-0055-tags-assets`，再移除本地 worktree 和分支。远端同名分支保留。
+- 本地盘点变为 15 个分支、8 个远端 refs、21 个 worktree；协调分支 `codex/module-completion-coordination-2026-09-27` 相对本地 `main@669704c` 多 12 个提交，未推送。根 `phase/1` 的未跟踪材料与 owner 未确认的 Claude / Cursor worktree 保持原样。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
