@@ -1130,8 +1130,8 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 ### 10.45 Revision snapshot 父链环保护（2026-09-28；已并入本地 main）
 
 - 只读审查发现三个 Revision 路径在损坏的 snapshot parent 链存在环且没有提前命中返回条件时可能无限遍历：通用 catalog fallback `history_from()`、归档重放 bookkeeping `_snapshot_of_batch()`、Channel Reconciler 的 evidence provenance 校验。
-- 三处均记录已访问的 snapshot ID；重复时抛出 `CatalogIntegrityError` 并停止。PyIceberg adapter 和 pinned view 仍使用既有的一次元数据加载历史实现；fallback 只为不实现 `SnapshotHistory` 的 catalog 保留 visited 集合。正常无环遍历结果不变。代码复核完成；遵守统一验收安排，本项未运行测试、build、probe 或静态检查。
-- 该变更不触及 `core/`、契约、Schema、ADR 或冻结语义。代码与状态同步进入本地 `main` 后，预计比 `origin/main@44fe9a2` 超前 68 个提交；不推送。E1-CAP-1 及 Phase 1 验收状态不变。
+- 三处均对重复 snapshot ID 以 `CatalogIntegrityError` fail closed。PyIceberg adapter 的 `history()` 使用既有 Floyd 环检测和常量额外空间；`history_from()`、归档重放与 Channel Reconciler 优先走该能力。未提供优化 history 的自定义 catalog / 测试代理采用 visited 集合回退（额外 O(H) ID 存储）。正常无环遍历结果不变。独立代码复核完成；遵守统一验收安排，本项未运行测试、build、probe 或静态检查。
+- 该变更不触及 `core/`、契约、Schema、ADR 或冻结语义。代码与状态同步进入本地 `main` 后，比 `origin/main@44fe9a2` 超前 70 个提交；不推送。E1-CAP-1 及 Phase 1 验收状态不变。
 
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
