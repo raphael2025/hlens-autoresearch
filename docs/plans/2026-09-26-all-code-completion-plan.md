@@ -965,6 +965,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 该更改减少 H 次 metadata load 为一次 history metadata load，并避免新建 O(H) 索引；代价是每一步在线性 snapshot 列表中查找，history 遍历时间仍 O(L·H)。PyIceberg 仍一次加载整张 `metadata.snapshots`；主线的 normalizer 批次字典、其他 scan 的 table metadata 装载也未解决。因此这只是待验收的性能批次，**不关闭、不解决** 500k `resume/replay` 59.9 / 63.9 MiB 对 32 MiB 的 E1-CAP-1 阻断。
 - 当前本地盘点：15 个本地分支、8 个远端分支、21 个 worktree、266 个 archive refs。协调分支 `codex/module-completion-coordination-2026-09-27` 相对 `main@669704c` 超前 9 个提交；不 push。P0.5 `origin/wip/phase-0.5-knowledge` 仍保留远端唯一旧审计内容；活动 / owner 未确认 worktree 继续保留。
 
+### 10.20 E1 normalizer 已提交计划常数级化（2026-09-27；本地协调分支，未验收）
+
+- Claude 在隔离 worktree `codex/e1-normalizer-bounded-2026-09-27` 实现，Codex 复核后 cherry-pick 到协调分支，提交 `6ab7f5b`。`_CommittedPlan` 不再留存每个 batch 的 `SnapshotInfo` 映射；只保留 unit 大小、chunk 大小与 committed count。证明和 `ALREADY_COMMITTED` 报告路径从 pinned history 流式重读目标快照，并比较证明阶段摘要；写入器按已提交 batch 数补齐。完整实现与语义说明见 [`e1-normalizer-bounded-implementation.md`](../reviews/e1-normalizer-bounded-implementation.md)。
+- 顺序校验要求 committed batch 为从 0 开始、按写入顺序的连续前缀。唯一 normalizer writer 以递增 index 在 expected parent 上提交；乱序历史 fail closed。尚未通过测试覆盖该约束，需在后续验收确认与历史数据兼容。
+- 独立静态复核原样结果：目标文件 `ruff check` → `All checks passed!`；`ruff format --check` → `1 file already formatted`；`mypy` → `Success: no issues found in 1 source file`；`git show --check` → 通过。没有添加或运行测试、PostgreSQL 测试或容量探针。
+- **E1-CAP-1 仍阻断，32 MiB 门槛未证明。** 本次只移除 normalizer 对每 batch 快照映射和 `done` 字典的保存；positions、返回 revision ids、PyIceberg table metadata 全量 snapshots 等仍随数据规模增长。pinned history 现在会被重复流式遍历，单次遍历仍可能 O(L·H)，暂未计时。不得将本次 static pass 写成 E1 修复验收或容量通过。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
