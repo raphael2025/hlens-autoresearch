@@ -295,7 +295,7 @@ def _normalize(
                 "day": unit["day"],
                 "source_revision_id": result.source_revision_id,
                 "canonical_table": result.canonical_table,
-                "canonical_revisions": len(result.revision_ids),
+                "canonical_revisions": result.row_count,
                 "batches": len(result.commits),
                 "replayed": result.replayed,
                 "knowledge_time": result.knowledge_time,

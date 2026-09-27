@@ -29,10 +29,12 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_BARS_1M,
     CANONICAL_TRADES,
 )
+from infrastructure.revision import RawRevisionStore
 from infrastructure.revision.channel_reconcile import evidence_from_row, revision_record_from_row
 from infrastructure.revision.precedence import maximal_heads
 from tests.infrastructure.collector import rest_support as cs
 from tests.infrastructure.revision import rest_store_support as ss
+from tests.infrastructure.revision import revision_support as rs
 from tests.infrastructure.revision.rest_store_support import (
     DAY,
     SYMBOL,
@@ -63,16 +65,38 @@ def ingest_archive(
     *,
     knowledge: datetime,
     request_id: str = "archive-1",
+    store_microbatch_rows: int | None = None,
 ) -> str:
-    """Commit one archive through the real D2 store; returns its archive revision id."""
-    outcome = h.ingest_archive(
-        data_type,
-        lines,
-        day=DAY,
-        clock=StepClock(start=knowledge),
-        retrieved_at=ARCHIVE_RETRIEVED,
-        request_id=request_id,
-    )
+    """Commit one archive through the real D2 store; returns its archive revision id.
+
+    ``store_microbatch_rows`` sets D2's own row batch size (its default otherwise).
+    """
+    if store_microbatch_rows is None:
+        outcome = h.ingest_archive(
+            data_type,
+            lines,
+            day=DAY,
+            clock=StepClock(start=knowledge),
+            retrieved_at=ARCHIVE_RETRIEVED,
+            request_id=request_id,
+        )
+    else:
+        archive = rs.archive(
+            h.storage,
+            data_type=data_type,
+            symbol=SYMBOL,
+            day=DAY,
+            rows=lines,
+            retrieved_at=ARCHIVE_RETRIEVED,
+            request_id=request_id,
+        )
+        store = RawRevisionStore(
+            h.adapter,
+            h.storage,
+            clock=StepClock(start=knowledge),
+            microbatch_rows=store_microbatch_rows,
+        )
+        outcome = store.ingest(archive.collected, archive.context)
     assert type(outcome).__name__ == "ArchiveIngested", outcome
     revision: str = outcome.archive_revision_id
     return revision
@@ -113,6 +137,15 @@ def normalizer(
     return CanonicalNormalizer(
         h.adapter if adapter is None else adapter, h.storage, clock=clock, **kwargs
     )
+
+
+def unit_ids(h: RestHarness, source_revision_id: str, table: Any = TRADES) -> list[str]:
+    """The committed Canonical revision ids of one unit in Raw position (= ``arrival_seq``) order.
+
+    What ``normalize_unit`` reported before E1-CAP-1 made its result a count.
+    """
+    rows = [row for row in h.rows(table) if row["lineage_source_revision_id"] == source_revision_id]
+    return [row["revision_id"] for row in sorted(rows, key=lambda row: row["arrival_seq"])]
 
 
 def records(h: RestHarness, key: str, table: Any = TRADES) -> list[RevisionRecord]:
