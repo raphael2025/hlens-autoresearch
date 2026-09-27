@@ -123,6 +123,13 @@
 - 加入 ledger 级可重入锁，防止同一实例的并发调用穿插检查、落盘与更新；公开读取方法也在锁内取快照。`git diff --check` 通过；没有运行测试、build、lint 或性能探针，状态为实现待验收。
 - 限制：只保证单个 TrialLedger event 的批次边界，不覆盖其他 journal；部分 / 截断 JSONL 仍按现有约定 fail closed；该改动不持久化 typed plan audit，也不授权任何组合 operator 执行。
 
+### 10.52 接受 ADR-0073：typed-plan admission 与精确恢复设计（2026-09-28）
+
+- Codex 按 Raphael 的全权委托接受 ADR-0073。批准的持久顺序是 `PREPARE → 一个 TrialLedger register_batch event → COMMIT → memory admission checkpoint → external anchor`；loop state 单写锁覆盖整段。日志之间仍不是底层原子写，恢复根据持久 PREPARE 只允许匹配并补齐缺失 event / COMMIT / checkpoint / anchor；存在孤儿、乱序、多余、分叉或坏记录均 fail closed。
+- Typed plan admission 只能属于唯一、匹配且已持久开始的当前 round。重开可对纯登记日志做精确一致性收敛，但不会运行 Provider / compiler / experiment；未记录的 started round 仍拒绝继续，已记录的 FAILED experiment round 继续按 ADR-0070 进入人工审查停机态。
+- 新 `plan_admission.jsonl` 必须进入 durable loop 的所有 checkpoint 与 `StateHead`。新 admission 使用 v4 state；既有 v3 state 保留旧形状和行为、禁止 typed-plan admission，不原地迁移。六种 P7 operator 仍 non-runnable；ADR 接受只批准设计，不是代码完成或验收。
+- 实现前置包括固定 payload / strict reducer、持锁的精确 ledger recovery API、hash-bound open-round identity、v3/v4 opener 与 anchor 交叉校验、trial identity/reuse 语义和拒绝审计落点。下一步分模块实现并做只读代码复核；按 Raphael 当前安排不运行测试 / build / lint / Phase 验收。随后推进 synthetic-only、finite-round、外部调度的 Worker 组合入口，不加 API 写触发。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：
