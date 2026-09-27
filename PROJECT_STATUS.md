@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **模块差额收敛，待逐项验证**。Raphael 已授权先补基础逻辑再统一验收；P6 矩阵报告接线、P8 回溯审计报告链和 P11 精确阈值读取修正已在本地协调分支；相关 Python Ruff / format 检查通过，未跑测试、未合并。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍是独立阻断；其余 Phase 未验收 |
+| 当前子阶段 | **模块代码收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；P6 矩阵报告接线及错误归因、P8 回溯审计报告链、P11 精确阈值修正和研究库规格文档已在本地协调分支；Python Ruff / format 检查通过，未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 主线保持干净基线；PR #6～#9 已合入。P6 / P8 / P11 修正目前仅在本地协调分支，Ruff / format 已通过、测试待验；Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 `main` 与 `origin/main` 当前同为干净基线 `44fe9a2`，PR #1～#9 已合入；新增收敛工作在本地协调分支，尚未推送 / 合并。P6 / P8 / P11 静态检查通过、未跑测试；E1-CAP-1 容量验收仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -44,18 +44,18 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | Phase | 名称 | 状态 |
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
-| 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；因子、特征库有带来源的 UNVERIFIED 文档草稿，未登记为 KnowledgeItem；种子尚无经具名人工审阅的标签 / 资产；**Phase 0.5 未验收** |
-| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；E1-CAP-1 容量边界为阻断项，结构修复在 `fix/e1-cap1`（`a75278e`），10k/100k/500k 容量探针与 500k replay 正在运行；结果、内存记录和返修后定向测试待产出 / 核对，尚未验收；后续 Phase 1 验收项也未全部完成 |
+| 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；研究库规格文档已在协调分支扩充；主线已有 `seed-2026-09-26.json`，但种子标签 / 资产仍需具名人工审阅；**Phase 0.5 未验收** |
+| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；E1-CAP-1 的 500k `resume` / `replay` RSS 增长分别为 59.9 / 63.9 MiB，超过 32 MiB 门槛，仍为 `REVIEW_PENDING`；修复分支未并入，Phase 1 未验收 |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；Phase 4 未验收 |
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
-| 6 | State × Strategy | 🧱 矩阵计算、全单元预登记与逐单元验证已实现；循环报告接线已在本地协调分支补齐，待复核 / 测试，不代表 Phase 6 验收 |
+| 6 | State × Strategy | 🧱 矩阵计算、全单元预登记与逐单元验证已实现；循环报告接线及回调错误归因已在本地协调分支补齐，静态检查通过，未跑测试，不代表 Phase 6 验收 |
 | 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源已实现；其余组合算子仍 fail closed；LLM 内容核验能力可选，未核验调用不能声称满足完整可复现审计；执行语义待收敛 |
-| 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已在本地协调分支补齐，待复核 / 测试；Phase 8 未验收 |
+| 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已在本地协调分支补齐；P8 页面对应的 fixture / smoke / component 注册仍待后续验收批次同步；Phase 8 未验收 |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58），**不要求 Profile 冻结登记**（B62；冻结权威门只在 Promotion，ADR-0062）CODE_COMPLETE / DEBUG_PENDING |
-| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；总线外部锚点、任务只读 API、ADR-0053（VALIDATION → FAILED）、可选条件假设、跨进程测试与状态目录单写者锁、劣化检查报告（B32 / B34）CODE_COMPLETE / DEBUG_PENDING |
+| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；劣化阈值读取已兼容 ADR-0052 的精确 Decimal 字段；监控缺可信近期观测来源 / 窗口及独立 operator 入口，不能从 loop 摘要推造，待补齐数据输入边界 |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045）；替换提案（恒待人工批准）与循环之外的替换提案作业（证据逐份核验、账本单写者锁 + 外部锚点，B49）CODE_COMPLETE / DEBUG_PENDING |
 | 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046，实盘结构上被拒绝）；持久审计、非空审计重开即急停、只读重放、风险 / 告警重放（B31）CODE_COMPLETE / DEBUG_PENDING |
 | 14 | Technology Migration | 🧱 框架已实现（ADR-0047）；金标准记录持久化、差异报告、回滚证据、金标准实验重放（B32）CODE_COMPLETE / DEBUG_PENDING（无具体迁移目标） |
@@ -100,10 +100,10 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ## 4. 当前正在做
 
 - ✅ 框架整合：B1～B67 与 ADR-0052 / 0055 等代码已分批整合；PR #6 合并模块代码 / 内容收口批次（基线 `4875e92`），PR #7 将合并后项目状态同步至 `f58e8ec`（docs-only）。代码仍是 `CODE_COMPLETE / DEBUG_PENDING`，没有把全量门禁或主线合并当作 Phase 验收。
-- 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 bounded-memory 修复与固定规模探针由活跃 Claude 会话在 `fix/e1-cap1` 上处理，容量探针及 500k replay 正在运行。结果与返修后定向测试待产出；分支尚未进入 main，worktree 有未提交的 review 文档；Codex 不并行修改 Canonical / revision 代码，待交付后独立复核。
+- 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 的 500k resume / replay 容量结果未达门槛（59.9 / 63.9 MiB，限值 32 MiB）。`fix/e1-cap1`、Codex E1 候选与 `main` 存在大幅历史分叉，不能整支合并；需在主线现有版本上复核并移植必要逻辑，同时定位 RSS 增长。Phase 1 尚未验收。
 - ✅ 模块收口批次：Phase 0.5 因子 / 特征 / Event 草稿、Event 字段说明、Loop / Router / API README 与 Phase 3 Event 表操作命令均已通过 PR #6 合并到 `main`（`4875e92`）；不构成阶段验收。
-- 🔨 模块差额实现：P6 将 loop 真实生成的矩阵接入既有报告目录；P8 增加显式输入的回溯审计 writer 与只读 API / Web 页面；P11 修正新 Profile 的 Decimal 劣化阈值读取。实现已提交到本地协调分支；Python Ruff / format 检查通过，测试和完整独立复核尚未完成，不能算验收。
-- 🔎 深审还确认：P7 其余 DSL 算子没有执行适配器，LLM 内容核验仍是可选。P2 的 Arrow 表物化已满足 ADR-0035 当前范围；额外 Iceberg 持久化属于可选扩展，本轮决定暂缓，不作为当前代码缺口。P11 自动监控数据源与 worker 启动接线仍需先定边界。P0.5 标签、P3 生产建表、Profile 数值和真实数据仍是人工 / 数据 / 授权门。
+- 🔨 模块差额实现：P6 将 loop 真实生成的矩阵接入报告并修正回调失败归因；P8 增加显式输入的回溯审计 writer 与只读 API / Web 页面；P11 修正新 Profile 的 Decimal 阈值读取。研究库规格内容也已扩充。工作已提交到本地协调分支；静态检查通过、未跑测试、未合并 `main`。
+- 🔎 深审还确认：P7 参数点批次可运行，但六类组合 DSL 仅生成假设文字 / 引用，尚无 typed plan 执行器；LLM 内容核验仍是可选。P2 Arrow 表满足 ADR-0035 当前范围，额外 Iceberg 持久化暂缓。P11 自动监控缺可信观测源；P0.5 标签、P3 生产建表、Profile 数值和真实数据仍是人工 / 数据 / 授权门。
 
 ## 5. 下一步
 
@@ -121,8 +121,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ### Codex 当前工作
 
-- 完成 P6 / P8 / P11 本地提交的独立复核与静态收口；先不推送或合并 `main`。
-- P2 Iceberg 持久化扩展暂缓；对 P7 组合算子、LLM 完整内容审计及 P11 运行编排先形成清晰边界 / ADR，再派独立模块任务。
+- 按 Raphael 本轮授权继续将安全、非重复的代码与内容整合到主线；不能整支并入的 E1 / P0.5 分支按文件级复核处理。
+- 补齐 P8 页面支持材料、P11 显式观测入口方案、P7 类型化算子规格与基础实现；P2 Iceberg 持久化扩展暂缓。所有新增功能保持待验收状态。
 
 ## 6. 当前待决策
 
@@ -270,7 +270,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | P6 / P8 补齐报告通路，P11 修正 Decimal 阈值读取 | 本地协调分支 `codex/module-completion-coordination-2026-09-27`；Ruff / format 通过，未跑测试、未推送 / 合并，独立复核进行中 |
+| 2026-09-27 | P6 / P8 / P11 收敛与研究规格文档扩充 | 本地协调分支提交 P6/P8/P11 代码和研究库文档；静态检查通过，未跑测试，待后续验收 |
 | 2026-09-27 | 深审校正 P7 状态并排出跨模块差额 | 组合 DSL 六类目前是拒绝执行的 fail-closed 边界；P2 Arrow 输出符合当前 ADR-0035，额外 Iceberg 持久化暂缓；P11 自动运行编排仍需设计 |
 | 2026-09-27 | ADR-0066：批准独立、显式的 Event 表操作命令，以补齐 Phase 3 的可重复运维入口 | 命令默认无 catalog 副作用；`--apply` 只创建 / 校验 `event.events`；不接入 Phase 1 或启动流程；真实 catalog 建表未授权、未执行 |
 | 2026-09-27 | Phase 0.5 / 3 / 10 / 11 收口批次通过 PR #6 合并到 `main`（`4875e92`） | 增补未验证因子 / 特征 / Event 草稿，更新 Event schema 与 Loop / Router / API README，并实现 Event 表显式操作命令；11 项定向检查通过，非阶段验收 |
@@ -298,15 +298,15 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 当前稳定基线为 `main == origin/main`，工作区干净。PR #6 已合并模块代码 / 内容收口批次；PR #7 同步合并后状态；PR #8 记录清理结果并修复测试占位 DSN。本轮先归档再清理了 10 个补丁等价本地分支及其 worktree、68 个主线等价临时 worktree、20 个被主线后续实现取代的旧模块 worktree；16 个冗余远端引用也已归档清理。E1、Phase 0.5、活跃会话和独有远端内容均保留；没有把未审阅的整支分支并入主线。
+1. 当前 `main == origin/main == 44fe9a2`，本轮新增实现和文档仍在本地协调分支，等待 Codex 完成代码收敛后再统一整合。当前分支清理快照为 27 个本地分支、32 个 worktree；已归档移除 4 个本轮结束的 Codex 源分支，活跃、脏、锁定和会话归属不明的 worktree 均保留。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. Phase 1 的 D3E 已接受、D4 已关闭；E1-CAP-1 是当前阻断，容量探针正在运行，结果与复核仍待完成。Phase 1 未整体验收，未打 tag。
+3. E1-CAP-1 已有正式容量失败结果（500k resume / replay 超出既定上限），不是仍在运行的探针；Phase 1 未整体验收，未打 tag。
 
 ## 12. 给 Claude Code 的下一步
 
 > Claude 下一步可以执行什么？
 
-1. PR #6 已将 Phase 0.5 / 3 / 10 / 11 的代码与文档收口并入主线；PR #7 为 docs-only 状态同步。后续按不重叠模块分配，任何跨模块契约或架构变化先停在决策边界。
-2. Claude 当前首要开发项仍是 `fix/e1-cap1`：固定规模容量探针正在运行；补齐结果 / 内存记录与返修后定向测试，提交后交 Codex 独立复核。
+1. Claude 可继续处理 E1-CAP-1 的 manifest / resume / replay 增长根因；只提交实现和证据到一个集成 tip，避免把多个重叠 E1 分支叠加。
+2. 若另开模块任务，限单模块并避开 Codex 协调分支中的文件；所有新增功能标为 CODE_COMPLETE / DEBUG_PENDING，阶段验收由 Raphael 后续统一安排。
 3. P12 循环内替换提案有意暂缓（P12-LOOP，见 §6）；后代不得复用密封窗口。其余 B44～B52 审计修复已完成，详见完成计划 §10.7 / §10.8。
 4. 不得：实盘、凭据、下单、猜测 Profile 数值、将代码整合描述为 Phase 验收或 force push；开发分支经复核后走 PR 合并，推送与 tag 分别记录。

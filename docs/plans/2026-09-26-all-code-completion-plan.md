@@ -921,3 +921,21 @@ PR #6 本批独立分支集成检查：`uv run pytest -q tests/infrastructure/ev
 P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修正源提交：`ccf45a1`。集成到本地协调分支 `codex/module-completion-coordination-2026-09-27`（P6 / P8 提交 `347b538`、`15bec90`、`3dc3e67`；P11 提交 `b70c530`），**未推送 / 未合并 `main`**。Codex 的静态复核发现 P6 缺少 `StateStrategyMatrix` 导入及一处格式问题，已修复；触及的 5 个 Python 文件 `ruff check` / `ruff format --check` 通过，`git diff --check` 通过。P11 子代理另报告目标文件 Ruff、format 与 mypy 通过。本轮没有运行测试；P8 子代理原始静态结果也为 Ruff 通过、format check 3 files already formatted。OpenAPI 类型生成因环境中缺少 `openapi-typescript` 未运行，`api.d.ts` 手动同步，待验收复核。
 
 **下一批顺序**：先完成 P6 / P8 / P11 独立代码复核；后续验收时同步 P8 fixture 生成器、组件测试与 live-smoke 清单。再定义 P7 LLM 可复现审计运行模式与算子范围、P11 本机 worker / 劣化监控的数据流。P2 Iceberg 持久化扩展暂缓，待出现明确消费需求再单独立项。不得将未验收阶段、人工标签、Profile 数值、真实数据结果或生产建表描述为代码已完成。
+
+### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
+
+Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。分支盘点快照当前为 **27 个本地分支、32 个 worktree**；其中主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
+
+| 分支组 | 核对结果 | 处理 |
+|---|---|---|
+| P6 / P8 / P11 | P6 报告接线、P8 显式回溯审计报告链、P11 Decimal 阈值修正均已进入本地协调分支；独立复核发现 P6 回调失败会被误归因为候选错误，已改为向上抛出并做静态检查 | 只保留协调分支作为后续主候选，避免重复并入三个源分支；P8 页面验收注册仍待后续补齐 |
+| 研究库规格文档 | `docs/research-spec-completion` 含有效的 Feature / Factor / State / Event / Outcome / Strategy / Risk 内容与 capability map；主线已有的 seed 文件不可丢 | 按文件吸收 10 份研究库 / README 内容到协调分支；修正 capability 基线和 P7 执行状态；跳过该源分支的 `knowledge-base.md`、`roadmap.md`、测试改动和删除 seed 的操作；`signals.py` 精度修复已在主线，不重复搬运 |
+| Research Loop UI | 源分支直接取代现有解析器、坏报告告警和累计用量信息，且没有保留更完整的主线页面行为 | 判断为被主线实现取代，不合并代码；来源 worktree 会话归属未确认，暂不删除 |
+| P7 参数点批次 | 该能力与代码已在主线；旧 agent 分支比主线少近期 loop / persistence 逻辑 | 不整支合并；保留或归档前继续按等价补丁和会话状态清理 |
+| E1-CAP-1 | Codex 候选的 source revision 与 archive metadata 两项修复在 `fix/e1-cap1` 中均有等价 patch；该分支还带失败诊断。500k `resume` / `replay` 增长 59.9 / 63.9 MiB，均超过 32 MiB 上限；根因调查指向快照 manifest 重复规划，但仍是假设 | `REVIEW_PENDING`；不把多个历史分叉整支并入 main。需继续定位并修复，再按主线版本逐文件集成，保留失败证据 |
+| P0.5 / ADR-0055 | 主线已有 `seed-2026-09-26.json`；`p05-cite` 后续树与其源提交会删文件或覆盖其他更新。`claude/adr-0055-tags-assets` 会把主线 Accepted 状态改回 Proposed | 不整支合并；已有研究库内容按审核后的文件迁移；具名标签 / 资产审核仍待人工 |
+| P2 Proposed ADR-0067 | Arrow `state_table` 满足 ADR-0035 当前范围，Iceberg 持久化是可选扩展 | 草案分支已存入 `refs/archive/2026-09-27/branches/codex/adr-0067-state-persistence`，不进入本次整合 |
+
+此前 Codex 本轮创建的 P6 / P8 / P11 源分支（`codex/p6-matrix-report-wiring-2026-09-27`、`codex/retro-audit-report-chain-2026-09-27`、`codex/degradation-exact-thresholds`）及 ADR-0067 草案分支，已先归档再移除分支和干净源 worktree；恢复点在 `refs/archive/2026-09-27/branches/`。没有删除任何脏目录或已锁定的 Claude / Cursor worktree。剩余冗余分支只在完成会话确认后继续清理。
+
+新增提交 `e6b06e3` 修复 P6 回调错误归因；`b554454` 将研究规格文档补全并保留 Event 未登记草稿。静态检查：协调分支的 3 个触及 Python 文件 Ruff 与格式检查通过，`git diff --check` 通过；本轮未运行测试。以上不表示模块或 Phase 验收完成。
