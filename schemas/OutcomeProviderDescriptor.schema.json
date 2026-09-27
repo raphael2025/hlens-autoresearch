@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "OutcomeProvider 的身份与能力；`supported_outcomes`：`outcome:name@semver` → 标签规格哈希。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Version",
+      "type": "string"
+    },
+    "deterministic": {
+      "const": true,
+      "title": "Deterministic",
+      "type": "boolean"
+    },
+    "supported_outcomes": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^outcome:[a-z][a-z0-9_]*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "title": "Supported Outcomes",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "deterministic",
+    "supported_outcomes"
+  ],
+  "title": "OutcomeProviderDescriptor",
+  "type": "object"
+}

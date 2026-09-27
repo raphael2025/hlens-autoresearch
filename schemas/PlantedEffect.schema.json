@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "description": "一个植入的已知效应：`lag_minutes` 分钟前的收益以 `strength` 的比例进入当期收益。\n\n`strength` 为 0 等价于不植入；取值范围 (-1, 1) 保证过程平稳。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "kind": {
+      "const": "return_autocorrelation",
+      "default": "return_autocorrelation",
+      "title": "Kind",
+      "type": "string"
+    },
+    "lag_minutes": {
+      "maximum": 10000,
+      "minimum": 1,
+      "title": "Lag Minutes",
+      "type": "integer"
+    },
+    "strength": {
+      "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+      "title": "Strength",
+      "type": "string"
+    }
+  },
+  "required": [
+    "lag_minutes",
+    "strength"
+  ],
+  "title": "PlantedEffect",
+  "type": "object"
+}

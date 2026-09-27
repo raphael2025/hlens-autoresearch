@@ -1,0 +1,247 @@
+{
+  "$defs": {
+    "FeatureObservation": {
+      "additionalProperties": false,
+      "description": "交给 Provider 的一条输入观察：一个 PIT 选中的 Canonical revision（或其确定性派生）。\n\n- `observation_key`：业务观察的稳定键；`event_time` / `event_end_time`：事件时刻或半开区间\n  `[event_time, event_end_time)`（区间型数据，例如 bar）；\n- `available_time`（历史轴）不早于观察本身可被观察的时刻（区间取结束端）；`knowledge_time`\n  （知识轴）由请求的 `knowledge_cutoff` 约束；\n- `values`：市场内容，键为小写标识符，值为 `Decimal | int | bool | str`（数值规则见模块文档）；\n- `lineage`：Canonical revision → Raw row → Raw source 的来源链。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "observation_key": {
+          "minLength": 1,
+          "title": "Observation Key",
+          "type": "string"
+        },
+        "event_time": {
+          "format": "date-time",
+          "title": "Event Time",
+          "type": "string"
+        },
+        "event_end_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Event End Time"
+        },
+        "available_time": {
+          "format": "date-time",
+          "title": "Available Time",
+          "type": "string"
+        },
+        "knowledge_time": {
+          "format": "date-time",
+          "title": "Knowledge Time",
+          "type": "string"
+        },
+        "values": {
+          "additionalProperties": false,
+          "patternProperties": {
+            "^[a-z][a-z0-9_]*$": {
+              "anyOf": [
+                {
+                  "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "string"
+                }
+              ]
+            }
+          },
+          "title": "Values",
+          "type": "object"
+        },
+        "lineage": {
+          "$ref": "#/$defs/SelectedRevisionLineage"
+        }
+      },
+      "required": [
+        "observation_key",
+        "event_time",
+        "available_time",
+        "knowledge_time",
+        "values",
+        "lineage"
+      ],
+      "title": "FeatureObservation",
+      "type": "object"
+    },
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    },
+    "SelectedRevisionLineage": {
+      "additionalProperties": false,
+      "description": "一个选中 Canonical revision 的来源链：Canonical revision → Raw row revision → Raw source\npayload revision。\n\n第三跳是通用的来源 hop：首切片归档路径中 source 即归档文件 revision\n（`raw.binance_spot_archives`）；D3 REST 补尾的 Raw 响应载荷同样用这一跳表达（ADR-0022）。\n契约只表达 hop 的形状，具体 source 类型与其内容由未来 Collector / 表实现证明。\n\n表名为 Iceberg `namespace.table`：`canonical_table` 必须在 `canonical` namespace，`raw_table` 与\n`source_table` 必须在 `raw` namespace（03-data.md §7.1）。稳定身份为\n`(canonical_table, canonical_revision_id)`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "canonical_table": {
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "title": "Canonical Table",
+          "type": "string"
+        },
+        "canonical_revision_id": {
+          "minLength": 1,
+          "title": "Canonical Revision Id",
+          "type": "string"
+        },
+        "raw_table": {
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "title": "Raw Table",
+          "type": "string"
+        },
+        "raw_revision_id": {
+          "minLength": 1,
+          "title": "Raw Revision Id",
+          "type": "string"
+        },
+        "source_table": {
+          "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+          "title": "Source Table",
+          "type": "string"
+        },
+        "source_revision_id": {
+          "minLength": 1,
+          "title": "Source Revision Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "canonical_table",
+        "canonical_revision_id",
+        "raw_table",
+        "raw_revision_id",
+        "source_table",
+        "source_revision_id"
+      ],
+      "title": "SelectedRevisionLineage",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次特征计算请求。\n\n- `feature` 必须是 `kind=feature` 的引用，`spec_hash` 为该 `FeatureSpec` 的内容哈希；\n- `manifest_content_hash`：输入所属 Research Dataset manifest 的内容哈希；\n- `evaluation_times`：非空、严格升序（因而唯一）；\n- `observations`：按 `(available_time, observation_key)` 规范排序；该二元组重复即拒绝（否则规范\n  顺序与可见集合都不唯一）；每条观察 `knowledge_time <= knowledge_cutoff`，否则构造即拒绝。\n\n同一请求内容 → 同一 `content_hash()`（输入顺序不影响）。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "feature": {
+      "$ref": "#/$defs/Ref"
+    },
+    "spec_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Spec Hash",
+      "type": "string"
+    },
+    "manifest_content_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Manifest Content Hash",
+      "type": "string"
+    },
+    "knowledge_cutoff": {
+      "format": "date-time",
+      "title": "Knowledge Cutoff",
+      "type": "string"
+    },
+    "evaluation_times": {
+      "items": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Evaluation Times",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "observations": {
+      "items": {
+        "$ref": "#/$defs/FeatureObservation"
+      },
+      "title": "Observations",
+      "type": "array"
+    }
+  },
+  "required": [
+    "feature",
+    "spec_hash",
+    "manifest_content_hash",
+    "knowledge_cutoff",
+    "evaluation_times",
+    "observations"
+  ],
+  "title": "FeatureRequest",
+  "type": "object"
+}

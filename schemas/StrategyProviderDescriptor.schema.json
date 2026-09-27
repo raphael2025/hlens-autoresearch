@@ -1,0 +1,46 @@
+{
+  "additionalProperties": false,
+  "description": "StrategyProvider 的身份与能力声明。\n\n`supported_strategies`：非空，`strategy:name@semver` → 该 `StrategySpec` 的内容哈希（规格的\n信号、默认参数与参数空间由哈希绑定）。实例生命周期内不变。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "name": {
+      "pattern": "^[a-z][a-z0-9_]*$",
+      "title": "Name",
+      "type": "string"
+    },
+    "version": {
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Version",
+      "type": "string"
+    },
+    "deterministic": {
+      "const": true,
+      "title": "Deterministic",
+      "type": "boolean"
+    },
+    "supported_strategies": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^strategy:[a-z][a-z0-9_]*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$": {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        }
+      },
+      "title": "Supported Strategies",
+      "type": "object"
+    }
+  },
+  "required": [
+    "name",
+    "version",
+    "deterministic",
+    "supported_strategies"
+  ],
+  "title": "StrategyProviderDescriptor",
+  "type": "object"
+}

@@ -12,7 +12,10 @@ from pathlib import Path
 import pytest
 
 REPO = Path(__file__).resolve().parents[1]
-DOCS = sorted(p for p in REPO.rglob("*.md") if ".venv" not in p.parts and ".git" not in p.parts)
+#: ``node_modules`` is gitignored (apps/web) but may exist on disk after a local ``npm install``;
+#: its vendored markdown (e.g. changelogs with external links) is not project documentation.
+_EXCLUDED_DIRS = {".venv", ".git", "node_modules"}
+DOCS = sorted(p for p in REPO.rglob("*.md") if not _EXCLUDED_DIRS & set(p.parts))
 CONSTITUTION = REPO / "docs" / "research" / "constitution.md"
 ADR_INDEX = REPO / "docs" / "adr" / "README.md"
 

@@ -62,3 +62,20 @@ flowchart LR
 - 去重：相同 `content_hash` 的实验不重复运行（除非显式复现检查）。
 - 负面知识：Failure Registry 中的失败模式用于过滤新假设。
 - 试验计数：同一假设族的所有尝试累计，用于多重检验校正。
+
+## 7. 实现说明（Phase 11 框架，ADR-0049）
+
+> 状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+- 一轮 = `ingest → state → hypothesis → experiment → validation → memory`，对应 §2 的 Observe → State → Generate
+  Hypothesis → Experiment → Validate → Promote / Reject → Research Memory。调度、预算、审计与生命周期护栏在
+  `apps/worker/loop.py`（不 import research），具体阶段在 `research/loop/`。
+- 预算（trial / LLM 成本 / 算力）在每个阶段运行**之前**检查，耗尽即停轮停机，从不扩大；每次登记计为一次 trial。
+- Promote / Reject 在循环中只能自动走到 CANDIDATE / VALIDATION / OOS / REJECTED / FAILED；PAPER 及之后的晋升
+  需要人工批准，循环在结构上无法产生（§3 表中"Lifecycle + 人工审批"）。
+- 每轮（含失败与预算拒绝）一条哈希链审计记录并发布到事件总线；同种子同输入 → 同记录哈希。
+- LLM 生成的假设草稿只进人工审阅队列，经人批准后才在下一轮登记。
+- W2 接线（2026-09-25，见 ADR-0049 实施说明）：状态阶段用 Phase 2 `StateProvider` 经 `run_state`；实验阶段产出
+  06-experiment.md §2 复现元组（`ExperimentSpec` / `ExperimentRun`）并跑 Phase 5 策略 → 回测与 Phase 6 状态×策略矩阵；
+  验证阶段用 Phase 4 / 8 `PipelineBacktestValidator`（G0 – G4，G5 仅在显式开封预算下运行），通过最多到 OOS；
+  可选的 `evolution` 阶段（hypothesis 与 experiment 之间）用 Phase 12 算子产生新版本后代，先登记再在本轮重新验证。

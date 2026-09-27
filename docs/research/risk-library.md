@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 类型 | `risk` |
-| 状态 | 空（Architecture Bootstrap） |
+| 状态 | 框架已实现（Phase 5，ADR-0038）；条目均为 NOT_VALIDATED |
 | 首次填充 | Phase 5 |
 
 仓位、止损、敞口、杠杆与组合层面的风控方法（RiskPolicy）。
@@ -33,4 +33,7 @@
 
 | name@version | 摘要 | 出处 | 状态 |
 |---|---|---|---|
-| — | 暂无条目 | — | — |
+| `vol_target_bars@1.0.0` | sizing / exposure：按顺序执行 `missing_volatility_flat`（无可见正波动率估计 → 空仓）、`volatility_scaling`（权重 × `target_volatility / volatility`）、`leverage_cap`（缩放倍数 ≤ `max_leverage`）、`position_cap`（\|权重\| ≤ `max_abs_weight`）、`gross_exposure_cap`（总敞口超限时按比例向零缩小）。波动率信号默认 `feature:bar_realized_vol_60@1.0.0`（`available_time <= t` 的最新一条）；声明的参数空间 `target_volatility ∈ {0.0025, 0.005, 0.01}`（信号同单位）、`max_leverage ∈ {1, 2}` | `knowledge:risk_volatility_managed_portfolios@1.0.0`、`knowledge:risk_volatility_managed_portfolios_out_of_sample@1.0.0` | NOT_VALIDATED |
+
+实现：`research/strategies/volatility_target.py`（研究代码，未晋升；`risk/` 为空）。每个被调整的仓位都在 `binding_rules` 中写明
+生效的规则名；参数是风控参数，不是验证阈值。`RiskPolicy` 契约没有参数空间字段，空间在模块 `VOL_TARGET_PARAM_SPACE` 中声明。

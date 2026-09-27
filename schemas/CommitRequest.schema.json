@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "description": "一次 append 提交请求。batch 数据作为 `commit_batch` 的独立参数传入，不进入 DTO。\n\n- `batch_id`：稳定的幂等身份（例如由 Raw revision 与表名形成），重试时可从 Raw / staging\n  重建同一批；\n- `batch_fingerprint`：调用方按该表的版本化指纹规则算出的 batch 内容指纹；adapter 必须从\n  实际 batch 独立重算并核对，不信任这个声明；\n- `row_count >= 1`：空 batch 不提交（避免\"reader 被消费后写入零行\"被当成成功，ADR-0023 §7）；\n- `expected_parent_snapshot_id` 必须显式给出：`null` 表示期望该表尚无 snapshot。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "table": {
+      "pattern": "^[a-z][a-z0-9_]*\\.[a-z][a-z0-9_]*$",
+      "title": "Table",
+      "type": "string"
+    },
+    "batch_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=@+-]{0,255}$",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "batch_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Batch Fingerprint",
+      "type": "string"
+    },
+    "row_count": {
+      "minimum": 1,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "expected_parent_snapshot_id": {
+      "anyOf": [
+        {
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=@+-]{0,255}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Expected Parent Snapshot Id"
+    }
+  },
+  "required": [
+    "table",
+    "batch_id",
+    "batch_fingerprint",
+    "row_count",
+    "expected_parent_snapshot_id"
+  ],
+  "title": "CommitRequest",
+  "type": "object"
+}

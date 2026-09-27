@@ -27,7 +27,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.0.0",
+          "default": "2.1.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -59,7 +59,7 @@
   "description": "实盘前的独立 Risk Gate 检查（与 RiskProvider 分离）。\n\n`subject` 绑定被检查的对象（ADR-0011 D-17.3）：属于另一个对象的检查不得被挂到\n一次 `ExecutionModeChange` 上。检查**内容**与风险预算单位不在契约层定义。",
   "properties": {
     "schema_version": {
-      "default": "2.0.0",
+      "default": "2.1.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

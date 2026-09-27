@@ -1,8 +1,8 @@
 # 02 — Domain Model
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
-> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.0.0`（ADR-0008 + ADR-0009 共同定义；
-> ADR-0011 ~ 0016 与 ADR-0018 在同一个**尚未发布**的版本内继续收紧，不升 major，理由见各 ADR 的版本小节）。
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.1.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
+> ADR-0018 在其内收紧，不升 major）；2.1.0 是 ADR-0052 §4 的 minor（只加可选字段），已发布版本见 §3.3。
 
 ## 1. 统一标识与版本化
 
@@ -192,6 +192,205 @@ Event / Strategy 的直接输入。**
 的行（Runner 与验证服务的泄漏门 G1）、`zone = research_dataset` 输入内部的 point-in-time 对齐
 （Phase 1+ 数据层）。
 
+### 2.2 双时间与 revision DAG 契约（ADR-0023，Phase 1 B1）
+
+`core/contracts/revision.py` 把 [ADR-0023](../adr/0023-bitemporal-revision-data.md) 中契约层可表达的部分落成 8 个模型
+（语义见 03-data.md §4、§7.5）。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`，已发布模型与 Schema 不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `PolicyBinding` | 规则绑定：`role` + `policy_id` + SemVer + `policy_hash` | `role` ∈ availability / precedence / point_in_time / parser；使用处要求确切 `role` |
+| `ObservationTimes` | 两轴时间（ADR 六字段；区间型另给 `event_end_time`） | UTC；`declared_latency >= 0`；`knowledge_time >= ingest_time`；`available_time` 不早于事件（区间取结束端）与已给出的 `source_time` |
+| `AvailabilityDecision` | 时间 + availability policy + 证据**或**证据缺口 | 两者恰好其一；`available_time < ingest_time` 必须有证据；缺口时 `available_time == ingest_time` |
+| `RevisionRecord` | 不可变 revision | 身份非空；`payload_hash` 为 SHA-256；`arrival_seq` 为非负整数且**只**用于审计；`supersedes` 去重、禁止自指、按 ID 规范排序；不早于 `source_revision_time` |
+| `PrecedenceEvidence` | 一条持久化 supersedes 边 | precedence policy；证据至少一项；新旧 revision 不同；带 `knowledge_time` |
+| `RevisionGraph` | 聚合校验 | `revision_id`、`arrival_seq` 唯一；同键 `source_id + payload_hash` 不重复；record、`supersedes` 与 evidence 两端对 revision ID 的 key 归属必须一致（含 dangling ID）；拒绝跨 key 边与任何环；允许归属一致的 dangling predecessor；记录声明的每条边须有同键同端点、`knowledge_time` 不晚于该记录的证据 |
+| `PointInTimeSpec` | PIT 查询输入（自身 `name` + SemVer） | simulation 单点或 UTC 半开区间二选一且 `start < end`；`knowledge_cutoff` 必填；snapshot / PIT / availability / precedence / parser 绑定非空、`role` 确切、字段内 `policy_id` 不重复 |
+| `PointInTimeSelection` | 单个 `observation_key` 的结果形状 | `selected` 恰好一个且即唯一 head；`absent` 无 head；`conflict` 至少两个 head 且无 selected |
+
+优先级只来自 `supersedes` 边与 precedence 证据；模块内**没有**以 `arrival_seq`、墙钟或 payload hash 排序或
+打破冲突的代码（静态测试检查）。集合语义的序列按 ID 规范排序只为内容哈希唯一，不表示先后。
+
+**诚实边界**：跨记录事实只在 `RevisionGraph` 证明；policy / parser 是否已登记且带证据、哈希是否等于真实内容、
+证据是否真实、`revision_id` 是否按规则形成、`arrival_seq` 是否跨重启不复用、heads 是否真的互不排序，
+属未来 Registry、存储层与 PIT 执行器（批次 C ~ F）。`PointInTimeSelection` 是输出契约，不是选择算法。
+跨字段约束（点 / 区间形状、证据 / 缺口、结果形状、role）只在运行时校验，JSON Schema 弱于运行时（§3.7）。
+universe 与 `ResearchDatasetManifest` 见 §2.3（批次 B2）。
+
+### 2.3 历史可交易 universe 与 `ResearchDatasetManifest`（ADR-0024 / ADR-0023 §6，Phase 1 B2）
+
+`core/contracts/universe.py` 把 [ADR-0024](../adr/0024-historical-tradable-universe.md) 与
+[ADR-0023](../adr/0023-bitemporal-revision-data.md) §6 中契约层可表达的部分落成 13 个模型（语义见 03-data.md §3、§7.5）。
+不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`Instrument`、`DatasetRef`、`ReproducibilityTuple` 等已发布模型与 Schema 不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `TradableInterval` | 一段可交易区间 `[tradable_from, tradable_until)` | UTC；非空；`tradable_until` 必须显式给出，`null` = 开放 |
+| `StableEpisodeKey` | episode 身份：`(venue, instrument_type, venue_product_id)` | `basis` 显式为 `stable_product_id`；改名不改变身份；ID 字符串可以等于 symbol |
+| `DegradedEpisodeKey` | 退化身份：`(venue, instrument_type, symbol, tradable_from)` | `basis` 显式为 `degraded_symbol_start`；与稳定路径字段不可混用、缺一不可 |
+| `ListingRevision` | 一个 episode 的不可变 listing revision：B1 `RevisionRecord` + 静态 `Instrument` + 区间 + 状态 | `observation_key` = episode 键；venue / type 与键一致；退化键的 symbol 与起点与 revision 一致；区间至少一段、规范排序、不重叠不相邻、开放区间只在末尾；`listed` ⇔ 末段开放；来源状态原文可空不可伪造；`renamed_from` 只用于退化键改名（同 venue / type、不同 symbol、更早开始） |
+| `ListingHistory` | listing revision 聚合 | 以内部 revision 与证据构造 B1 `RevisionGraph`，复用全部图约束（含跨 episode supersedes 拒绝）；同一 venue / type 下稳定键与退化键可共存；集合语义规范排序 |
+| `UniverseFilter` | 过滤规则声明形状 | 指标 = FeatureSpec `name + SemVer + hash`（不用 `Ref`）；`metric_basis` 只能是 `point_in_time`；阈值只要求有限数，契约不选数值 |
+| `UniverseSelectionSpec` | 独立版本化选择规格（首切片 `binance.spot.btc-eth@1.0.0`） | 名称为绑定标识符、严格 SemVer；`candidate_source` 只能是 PIT listing 历史；symbols 非空去重排序；`filters` 必须显式给出、`filter_id` 唯一；无 `kind` / `Ref` / `lineage` |
+| `UniverseSpecBinding` | manifest 中的 spec 绑定 `name + SemVer + spec_hash` | 不是 `Ref`、无 `Kind`；`binds(spec)` 本地核对 |
+| `UniverseMember` / `UniverseExclusion` | 成员 / 排除清单条目：episode + 决定性 listing revision（+ 原因） | 排除原因只有 `not_tradable` / `filtered`（后者必带 `filter_id`）；competing heads 不是排除原因，而是 fail closed；生效区间成对给出且非空 |
+| `SelectedRevisionLineage` | 选中 revision 的 Canonical revision → Raw row → Raw source payload 链（`source_table` / `source_revision_id`；首切片归档路径中 source 即归档 revision，D3 REST 响应载荷同用此跳） | 表名为 `namespace.table`；canonical 跳在 canonical namespace，raw 与 source 跳在 raw namespace；具体 source 类型由未来 Collector / 表实现证明 |
+| `AvailabilityEvidenceGap` | availability 证据缺口记录 | 指向表 + revision + 记录该缺口的质量报告 |
+| `ResearchDatasetManifest` | Research Dataset 审计清单 | 全部字段必填、清单无默认值（可显式为空）；自身 `DatasetRef` 为 `research_dataset` 且表不在上游中；内嵌完整 B1 `PointInTimeSpec`，是上游 snapshot、simulation、`knowledge_cutoff` 与 PIT / availability / precedence / parser 绑定的唯一来源；上游必须含 `canonical.instrument_listings` 与 `quality.data_quality_reports`；成员 / 排除按 episode 去重互斥（区间 simulation 时按生效区间不重叠且落在窗口内）；lineage 与证据缺口按稳定身份去重，所涉表须有上游 snapshot，缺口引用的质量报告须在清单中；质量报告至少一项；每个 member / exclusion 的 `listing_revision_id` 只能属于一个 episode（同一 episode 的不重叠区间可重复使用），且必须在 lineage 中有 `canonical.instrument_listings` 来源链（其它 Canonical 表不能冒充）；无候选时成员、排除与 lineage 可同时为空 |
+
+上游 snapshot 只用 `PointInTimeSpec.snapshot_bindings` 表达，不另设 `DatasetRef` 列表：`quality` 表没有对应 `Zone`，
+平行列表也会带来漂移。模块不读取 `arrival_seq`，不以墙钟或 payload hash 排序或打破冲突（静态测试检查）。
+
+**诚实边界**：契约层**不**证明被绑定的 snapshot / spec / policy 版本在 Registry 中存在或哈希等于真实内容、来源的稳定 ID
+真实稳定、稳定键与退化键是否其实是同一产品、成员清单确实由 spec + snapshot + 两个截止按 maximal-head 重建、
+逐行 PIT 正确、lineage 是完整闭包、`filter_id` 存在于被绑定的 spec 中。这些属 Collector / 质量检查、Registry、
+批次 F 的 PIT / universe 执行器。未来 Runner 必须接收 manifest，并要求复现元组 `dataset_snapshots` 包含该 Research Dataset
+自身的 `DatasetRef`——这是尚未实现的接口义务，契约未改动 `ReproducibilityTuple`。
+ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 #12 属批次 F 与 Phase 4 / 5，不由本批单元测试宣称完成。
+
+### 2.4 Data Plane Adapter 的 Protocol 与 DTO（ADR-0017 / 0021 / 0022 / 0023 §7，Phase 1 B3）
+
+`core/contracts/storage.py`、`catalog.py`、`collector.py` 交付三个基础设施 Adapter 的可执行 `typing.Protocol` 与 15 个 DTO
+（语义见 03-data.md §1、§7.1、§7.2）。它们只依赖标准库、Pydantic 与已有核心契约；**没有任何实现**。不升 `CONTRACT_SCHEMA_VERSION`，
+不新增 `Kind`，已发布模型与 Schema 不变。内容流、只读 handle 与实现专用 batch 是 Python 调用参数，不进入 DTO。
+
+| Protocol | 方法 | DTO 与契约层不变量 | 首个实现 |
+|---|---|---|---|
+| `StorageAdapter` | `stage(StageRequest, Iterable[bytes]) → StagedObject`；`publish(StagedObject) → PublishResult`；`lookup(str) → ObjectRef \| None`；`open_read(ObjectRef) → BinaryIO` | 逻辑相对 key（ASCII 段、无 `.` / `..` / 空段 / 反斜杠 / scheme / `%` / NUL / 空白，≤ 1024；原始值先校验，不去空白）；`expected_sha256` 必填、`expected_size` 可选；`ObjectRef` = key + 真正绝对的 URI（`file` 必须是无远程 authority 的 `file:///绝对路径`；其它 scheme 必须有非空主机名 + 合法端口、无凭据；路径为非空对象路径，无空段与 `.` / `..`（含 `%2e`）段，每个 `%` 须是合法两位十六进制 escape 且不解码为 `/`、`\`、控制字符或 DEL；无查询 / 片段）+ SHA-256 + 字节数；`PublishResult.outcome` ∈ `created` / `already_present` | C1 |
+| `CatalogAdapter[BatchT]` | `load_table(str) → TableInfo \| None`；`create_table(TableDefinition) → TableInfo`；`get_snapshot(str, str) → SnapshotInfo`；`commit_batch(CommitRequest, BatchT) → CommitResult` | 表身份 `namespace.table`（与 snapshot 绑定键同格式）；表定义只是实现侧定义文档的 `id + SemVer + hash` 绑定；`SnapshotInfo` 绑定所属表，父 snapshot 显式可空且不等于自身，batch ID 与指纹成对，`added_rows ≤ total_rows`；`CommitRequest.row_count ≥ 1`、期望父 snapshot 显式可空，`batch_fingerprint` 只是待 adapter 独立重算核对的主张；`CommitResult` 的 snapshot 必须属于请求的表并携带其 batch ID、指纹与行数，`committed` 时父 snapshot 等于期望；无 `arrival_seq` | C2 / C3 |
+| `CollectorAdapter` | `descriptor → CollectorDescriptor`（只读属性）；`collect(CollectionRequest) → CollectionResult` | 版本化 `SourceBinding`；请求 = 稳定 `request_id` + source + 数据类型 + 非空 symbol 集合（规范排序、区分大小写）+ UTC 半开覆盖区间；结果回显完整请求与 collector 身份，对象只携带 `ObjectRef`，按 symbol 以对象与显式缺口**恰好覆盖**请求区间；来源校验和给出时须等于对象 SHA-256；来源 URI 只能是 `https://合法主机[:端口]`（路径为空、`/`，或无空段 / 尾随空段、无 `.` / `..` 段的绝对路径）或无远程 authority、无查询的 `file:///绝对路径`，两者路径的 percent escape 规则同 `ObjectRef`，不得含凭据或片段；来源 URI 查询参数 / 元数据中凭据形状的名称被拒绝；只有 descriptor 可声明 HTTPS origin（运行时校验为精确的 `https://host[:port]`，与来源 URI 同一主机 / 端口规则） | D0 |
+
+**调用语义**（staging 不可见、校验失败与流中断不留可见半成品、同内容幂等、异内容 fail closed、不信任自报 `StagedObject`、
+只读 handle；每次提交与重放都先由 adapter 用其已登记、版本化的规则从实际 batch **独立重算**指纹并核对行数，不符即 `BatchRejected`，调用方自报的指纹不被信任；此后 batch 才按 `(table, batch_id)` 幂等、指纹冲突与过期父 snapshot 显式失败、重启后重放得到同一 snapshot、
+历史 snapshot 元数据不变；collector 结果对象已发布且与引用一致、重放身份稳定、网络来源在声明内、未声明 source 被拒绝）
+写在各模块文档中，由 `tests/contract_suites/` 的 provider-agnostic suite 对具体实现检查；未来实现继承 `*AdapterContract`
+并提供 subject fixture 即可复用。B3 用两个刻意不同的内存 / 临时文件替身证明 suite 接受合规实现，并用只带一处故障的变体
+证明它能杀死路径逃逸、校验和错误、非原子可见、覆盖不同内容、重复 batch 新提交、信任自报 batch 指纹（首次提交或重放时内容被换掉）、错误 snapshot、未发布 / 不匹配对象等行为。两个 catalog 替身使用不同的 `BatchT` 与各自的指纹规则，suite 通过 subject 提供的实现专用指纹函数生成请求（这不是 Protocol 方法）。
+替身不是 Adapter 实现，不计入验收 #7 / #8 / #10。
+
+**诚实边界与延期**：DTO 不证明对象 / 表 / snapshot 的存在、字节与哈希一致、发布原子性、网络声明的真实性（声明不是安全
+控制）。`file://` 布局与私有 staging 区隔离（C1）；PyIceberg SQL Catalog、PostgreSQL 集成、并发与重启的真实证据（C2）；
+八张表的列级 Schema、partition spec 与演进，以及真实 PyArrow microbatch 的具体 canonicalization / 指纹规则（C3；"adapter 必须独立重算并核对"这一行为已在 B3 冻结，不是延期义务）；按 snapshot 读取数据的 scan（F 按实际消费者定义**独立的**读取 Protocol / capability，或经相应 major + ADR 变更；不向已发布的 `CatalogAdapter` 追加必需方法，B3 不预先猜测其签名）；归档下载、端点限制与校验（D0）；解析与 revision 语义（D1 / D2）都不在 B3。
+
+### 2.5 FeatureProvider 的 Protocol 与 DTO（ADR-0030，Phase 1 F4）
+
+`core/contracts/feature.py` 交付 `FeatureProvider` Protocol（`descriptor` → `ProviderDescriptor`；`compute(FeatureRequest) → FeatureResult`）
+与 5 个 DTO（语义见 03-data.md §4.5）。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`FeatureSpec` 与既有 Schema 逐字节不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `FeatureObservation` | 交给 Provider 的一条输入观察（PIT 选中的 Canonical revision 或其确定性派生） | UTC；区间非空；`available_time` 不早于观察可被观察的时刻（区间取结束端）；值只接受 `Decimal` / `int` / `bool` / 非数值文本，拒绝浮点与 NaN / ±Infinity；带 `SelectedRevisionLineage` |
+| `FeatureRequest` | 一次计算请求：`feature`（`kind=feature`）+ `spec_hash`、`manifest_content_hash`、`knowledge_cutoff`、评估时刻、观察 | 评估时刻非空严格升序；观察按 `(available_time, observation_key)` 规范排序且该二元组不重复；每条观察 `knowledge_time <= knowledge_cutoff`，否则构造即拒绝；`visible_at(t, available_lag)` 定义可见集合（`available_time + available_lag <= t`，同键取最晚可用的一条） |
+| `FeatureValue` | 一个评估时刻的值 | `value` 必填，`None` = 显式不可计算（不填补）；`inputs_used` 为 0 当且仅当 `latest_input_available_time` 为空；`latest_input_available_time <= evaluation_time` |
+| `FeatureResult` | 结果：`request_hash`、`provider`（`name@version`）+ `provider_hash`、值、`result_hash` | 值按评估时刻严格升序；`result_hash` 构造时复核；`check_answers(request, descriptor, available_lag)` 核对请求哈希、Provider 身份、一一对应与带 lag 的输入时间 |
+| `ProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_features` 非空，`feature:name@semver → spec hash`（规格参数由哈希绑定） |
+
+泄漏由执行器结构性保证（ADR-0030 方案 A）：`infrastructure/feature/runner.py` 对每个评估时刻只把可见集合交给 Provider。
+provider-agnostic contract suite 在 `tests/contract_suites/feature.py`（确定性、因果扰动、lag、截止、显式 `None`、一一对应、
+非有限数、哈希敏感、未声明规格）；两个刻意不同的替身通过全部检查，单点故障变体被逐一杀死。
+
+**诚实边界**：`manifest_content_hash` 是否对应已登记的 `ResearchDatasetManifest`、观察是否真的来自其绑定的 snapshot，属 F3 / Registry；
+值是否只依赖可见集合、确定性，由 contract suite 对具体实现检查，契约层不能证明。
+
+### 2.6 StateProvider 的 Protocol 与 DTO（ADR-0035，Phase 2）
+
+`core/contracts/state.py` 交付 `StateProvider` Protocol（`descriptor` → `StateProviderDescriptor`；`compute(StateRequest) → StateResult`）
+与 5 个 DTO。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`StateSpec` 与既有 Schema 逐字节不变。实现状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `StateInput` | 一个 Feature 值：`feature`（只能 `kind=feature`）在 `evaluation_time` 的值（`None` = 不可计算），`source_result_hash` 绑定给出它的 `FeatureResult` | Outcome / State / Event 引用构造即拒绝；值规则同 `FeatureValue`（拒绝浮点与非有限数） |
+| `StateRequest` | 一次识别请求：`state`（`kind=state`）+ `spec_hash`、评估时刻、输入 | 评估时刻非空严格升序；输入按 `(evaluation_time, feature)` 规范排序且不重复；`visible_at(t, training_window)` = `evaluation_time <= t`（训练型再限于 `> t - training_window`） |
+| `StateValue` | 一个评估时刻的状态 | `state` 必填，`None` = 显式不可计算；`inputs_used` 为 0 当且仅当 `latest_input_time` 为空，此时 `state` 必须为 `None`；`latest_input_time <= evaluation_time` |
+| `StateResult` | 状态序列：`request_hash`、`provider` + `provider_hash`、值、`result_hash` | 值严格升序；`result_hash` 构造时复核；`check_answers(request, descriptor, spec)` 核对规格、一一对应、标签属于 `state_space`、输入时间属于可见（含窗口）集合 |
+| `StateProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_states` 非空，`state:name@semver → spec hash` |
+
+`StateSpec` 没有 `params` 字段：模型参数以规范形式 `<method>:<canonical JSON>` 编码进 `StateSpec.method`（`state_method` / `parse_state_method`），
+因而受 spec hash 绑定。执行器 `infrastructure/state/runner.py` 对每个评估时刻只把可见（含训练窗口）输入交给 Provider，训练型规格必须固定 `seed`；
+provider-agnostic contract suite 在 `tests/contract_suites/state.py`。
+
+### 2.7 Strategy / Risk / Backtest Provider 的 Protocol 与 DTO（ADR-0038，Phase 5）
+
+`core/contracts/strategy.py` 交付三个 Protocol 与 17 个 DTO（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）。不升 `CONTRACT_SCHEMA_VERSION`，
+不新增 `Kind`；`StrategySpec` / `RiskPolicy` 与既有 Schema 逐字节不变。全部确定性、全部 `Decimal`（浮点与 NaN / ±Infinity 拒绝）。
+
+| Protocol | 成员 | DTO 与契约层不变量 |
+|---|---|---|
+| `StrategyProvider` | `target_positions(StrategyRequest) → StrategyResult` | `SignalObservation` 只能是 feature / state / event（Outcome 永不作为输入）；`StrategyRequest.visible_at(t)` = `available_time <= t`、同键取最晚可用；`knowledge_time <= knowledge_cutoff` 构造即检查；`TargetPosition` 零输入必须为 0、输入时间不晚于决策时刻；`StrategyResult.check_answers` 核对 `decision_times × instruments` 一一对应与输入时间属于可见集合 |
+| `RiskProvider` | `constrain(RiskRequest) → RiskResult` | 请求只含一个决策时刻，`available_time > decision_time` 的信号与晚于它的 `PortfolioState` 构造即拒绝；`ConstrainedPosition.binding_rules` 为空当且仅当仓位未被调整；`check_answers` 核对一一对应并原样回显请求权重 |
+| `BacktestProvider` | `run(BacktestRequest) → BacktestResult` | `BacktestCostModel`（费率 + 不利滑点率，`cost_model:name@version`）；`PriceBar.available_time >= interval_end`，可选 `volume`（ADR-0054）；`Fill.fill_time >= decision_time`；descriptor 只能 `deterministic` + `simulation_only`，执行模型 `next_bar_open` 或 `next_bar_open_participation`（ADR-0054）；`BacktestResult` 的费用 / 滑点合计、结转记录顺序与 `result_hash` 构造时复核，`check_answers` 按执行模型核对：`next_bar_open` 每笔成交恰在执行 bar 开盘；`next_bar_open_participation` 见下 |
+
+**剩余量跨 bar 结转（[ADR-0054](../adr/0054-partial-fill-carry-over.md)，additive）**：新模型 `FillRemainder`（登记表末尾追加）；
+`PriceBar.volume` 与 `BacktestResult.remainders` 缺省时从载荷中省略，既有 `PriceBar` / `BacktestRequest` / `BacktestResult` /
+descriptor 哈希逐位不变；这些字段、`FillRemainder` 与字面量 `next_bar_open_participation` 自契约 **2.1.0** 起
+（2026-09-26 重新声明，§3.3；2.0.0 信封携带它们即拒绝）。
+`next_bar_open_participation` 下，目标在执行 bar 定量为目标变化量，按成交量上限未成交的剩余量在同一标的之后的 bar 开盘继续成交，
+以 `filled` / `superseded`（同标的下一目标的执行 bar，新目标按实际持仓重新定量）/ `end_of_data` 结束；`check_answers` 核对每笔成交在
+`[执行 bar, 下一目标的执行 bar)` 内某根 bar 开盘、一根 bar 至多一笔、与目标变化量同向、各笔之和等于记录的 `filled_quantity`（不超过目标
+变化量）、结束 bar 与原因一致、`有成交的目标数 + 未执行目标数 <= 目标数`。成交量只是模拟器的承载上限，从不进入策略或风控输入（C-L1）。
+
+contract suite 在 `tests/contract_suites/{strategy,risk,backtest}.py`（因果扰动、确定性、未声明规格；回测的买入持有 = 价格比、
+零仓位零 PnL、平价往返只亏成本、改变未来 bar 不改变过去权益；回测检查项按声明的执行模型选择，结转模型另有分 bar 成交之和等于目标、
+被取代与数据结束的记录、改变未来价格与成交量不改变过去）。**诚实边界**：策略是否只依赖可见集合、风控是否真的执行其声明的规则、
+PnL 是否按成本模型计算，由 contract suite 对具体实现检查，契约层不能证明。
+
+### 2.8 EventProvider 的 Protocol 与 DTO（ADR-0036，Phase 3）
+
+`core/contracts/event.py` 交付 `EventProvider` Protocol（`descriptor` → `EventProviderDescriptor`；`detect(EventRequest) → EventResult`）
+与 5 个 DTO。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`EventSpec` 与既有 Schema 逐字节不变（参数写入 `trigger` 的规范 JSON）。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `EventInputPoint` | 上游 Feature / State 序列的一个点 | `source` 只能是 feature / state；`available_time >= evaluation_time`；值规则同 `FeatureObservation`；`source_lineage_hash` 只能依赖当时已知的信息 |
+| `Event` | Event 表的一行：`event` + `spec_hash`、`event_time`、`attributes`、`input_ids`、`upstream_event_ids`、`event_id` | `kind=event`；至少引用一个输入或上游事件；两个 id 列表严格升序；`event_id` 构造时复核 |
+| `EventRequest` | 截至 `as_of` 的识别请求：输入点 + 上游事件 | 输入按 `(available_time, source, evaluation_time)` 规范排序、`(source, evaluation_time)` 唯一、每条序列只追加；上游事件 `event_id` 唯一且不得是自身定义；`visible_at` / `truncated` 定义可见集合 |
+| `EventResult` | 截至 `as_of` 的事件表 | 事件按 `(event_time, event_id)` 严格升序且不晚于 `as_of`；`result_hash` 复核；`check_answers` 核对事件时间 = 可观测时间、引用的输入在当时可见且在请求中、属于请求的事件定义 |
+| `EventProviderDescriptor` | Provider 身份与能力 | `deterministic` 只能为 `true`；`supported_events` 非空，`event:name@semver → spec hash` |
+
+可选的 `subject`（ADR-0057）：请求所属的标的；给出时 `Event` / `EventResult` 必须绑定同一标的并进入 `event_id` / `result_hash`，缺省时省略（旧哈希不变）。
+`subject` 是调用方提供的稳定 opaque 标识（大小写敏感，只去首尾空白），自契约 **2.1.0** 起（2.0.0 信封携带即拒绝，§3.3）。
+执行器 `infrastructure/event/runner.py` 对每个检查点只交出可见集合，并要求相邻检查点的事件表一致（不得回填 / 撤回：不得未来确认）。
+provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实边界**：`source_lineage_hash` 是否对应已登记的上游值、
+交互规格声明的 Feature / State 并集是否与上游规格一致，属 Registry。
+
+### 2.9 OutcomeProvider 的 Protocol 与 DTO、成本模型 v1（ADR-0037，Phase 4）
+
+`core/contracts/outcome.py` 交付 `OutcomeProvider` Protocol（`descriptor` → `OutcomeProviderDescriptor`；`compute(OutcomeRequest) → OutcomeResult`）
+与 7 个 DTO；`core/contracts/cost_model.py` 交付 `CostModelSpec`。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`；`OutcomeSpec` 与既有 Schema 逐字节不变。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `OutcomeLabelSpec` | 一份 `OutcomeSpec` 的可执行标签参数（`forward_return` / `triple_barrier`、horizon、屏障） | 绑定 `outcome` 引用 + `outcome_spec_hash`；horizon > 0；屏障与方法匹配 |
+| `OutcomePriceBar` / `OutcomeEvent` | Canonical 价格 bar；需要标签的决策时刻 | `Decimal` 价格、OHLC 自洽、`available_time >= interval_end` |
+| `OutcomeRequest` | 标签规格 + manifest 哈希 + `price_cutoff` + 事件 + bar | 事件规范排序、键唯一；bar 升序不重叠且都在 cutoff 前可用 |
+| `OutcomeLabel` | 一个事件的标签 | `label_only = true`；`None` = 显式不可计算；入场不早于事件、`available_time >= exit_time` |
+| `OutcomeResult` / `OutcomeProviderDescriptor` | 结果与 Provider 身份 | `result_hash` 构造时复核；`check_answers` 核对入场、horizon、出场与可用时间 |
+| `CostModelSpec` | 成本模型 v1（每侧手续费 + 滑点） | `kind=cost_model`；费率在 `[0, 1)`，总费率 > 0（不得跳过成本模型） |
+
+**Outcome 永不作为输入**：`label_only` 判别字段 + 输入 DTO 的 `extra="forbid"` + §2.1 白名单 + 运行时 `refuse_outcome_input`。
+
+### 2.10 持续研究循环的审计记录（ADR-0050，Phase 11）
+
+`core/contracts/loop_audit.py` 把 `apps/worker/loop.py` 已经写出的审计载荷登记为 8 个契约（只追加）。它们**描述既有字节**：
+逐字段镜像持久形状（转移保留 `from` / `to` 键），`audit_payload()` 重建**不含** `schema_version` 信封的原形状，
+`from_audit_payload()` 要求规范 JSON 逐字节往返；`LoopRoundRecord.record_hash` 仍是 `content_hash(payload)`，不是
+`Contract.content_hash()`。这些模型关闭 `str_strip_whitespace`（空白属于被哈希的字节，不规范化）；数字是有限、非负的
+`str(Decimal)` 规范文本。不升 `CONTRACT_SCHEMA_VERSION`，不新增 `Kind`。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `LoopBudgetUsage` | trial 数、LLM 成本单位、算力秒 | 非负整数；两个 `Decimal` 规范文本 |
+| `LoopBudgetLimits` | 循环预算上限（`LoopBudget.payload`） | 同上；`budget_hash` = 其载荷的内容哈希 |
+| `LoopStageRecord` | 一个阶段的状态、声明 / 实际 / 计费 / 超支用量、摘要、错误、被拒上限 | 字段与状态匹配；overrun = 实际 − 声明；`charged` = max(声明, 实际)（仅当不同）；被拒上限唯一且按检查顺序 |
+| `LoopTransitionRecord` | 循环护栏做的一次生命周期转移 | 规范 `kind:name@version`；是生命周期图的边且不是人工审批边；证据非空 |
+| `LoopOverrun` | 轮次的超支摘要 | 必须是第一个超支阶段及其超支量 |
+| `LoopRoundRecord` | 一轮的审计记录（哈希链） | 阶段顺序 = `STAGE_ORDER` + 可选阶段固定位置；轮次状态由阶段推出、其后全部 `SKIPPED`；`round_usage` = 各阶段计费之和；`total_usage` 覆盖它；`as_of` 为 UTC isoformat；只有第 0 轮无 `previous_hash` |
+| `LoopRoundStarted` / `LoopRoundRecorded` | 持久日志的两类行 | 第 0 轮与链起点一致；`record_hash` 重算核对 |
+
+读写点都 fail closed：worker 写入前与重放时校验（重放先核对存储的哈希），`research/reports` 写入前校验，
+`apps/api` 的 `ReportStore` 要求 `research_loop_round` 文件是合法记录且文件名等于其 `record_hash`。
+跨记录规则（链、累计、计划时刻、预算绑定、护栏重放）不在契约层，仍由 worker 的 `LoopAuditLog` / `ResearchLoop` 负责。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -287,12 +486,13 @@ Event / Strategy 的直接输入。**
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
-当前 `CONTRACT_SCHEMA_VERSION = 2.0.0`。模型校验**只接受同 major**（`2.x`），
+当前 `CONTRACT_SCHEMA_VERSION = 2.1.0`；major 2 内已发布的版本为
+`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0")`。模型校验**只接受同 major**（`2.x`），
 其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（38 份） | `schemas/*.schema.json` |
+| 当前 Schema（135 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -304,6 +504,23 @@ Event / Strategy 的直接输入。**
 v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-15）：用已提交的
 `schemas/v1/<Model>.schema.json` 检查 `required` 齐全、未知顶层字段被拒，快照缺失时
 **fail closed**。这**不是完整的 JSON Schema 递归校验**，不校验嵌套结构与取值。
+
+**按记录版本重放（ADR-0052 Implementation note — versioned replay）**：2.0.0 载荷保留自己的信封，读取不改写版本，
+内容哈希逐位不变（`tests/golden/v2_0_0/`）。已持久化的行 / 对象（Phase 1 各表的 `contract_schema_version` 列、
+manifest 的 `schema_version`）按其**提交时记录的版本**重建与比较；一个写入组（Canonical 单元、REST response 及其
+elements、archive revision 及其行、exchangeInfo snapshot、listing 批次、边、manifest）只有一个版本，未发布版本或
+组内混版一律 fail closed；只有无任何已提交成员的新组按当前版本写入。重建经过的深层对象用
+`contract_schema_version_scope(<记录版本>)` 构造（只影响缺省信封，只接受已发布版本，新组不得在其中写入）。
+代码中登记、被持久化数据按内容引用的身份（Phase 1 的 `PolicyBinding` / `SourceBinding` 常量、登记的 universe spec）
+保持其发布时的信封（2.0.0）；由 spec 投影出的 `UniverseSpecBinding` 携带 spec 的信封。同表 2.0.0 与 2.1.0 的行
+并存，选择与 precedence 不读信封，从行重建的记录保留行上的版本。Phase 3 物理事件表 `event.events` 同样逐行记录运行的
+`contract_schema_version`，按记录版本重建（一个运行 = 一个写入组）。
+
+**新内容的引入版本**（ADR-0052 §4、Codex K3）：`Contract._FIELDS_SINCE`（字段 → 版本；字段"存在"= 出现在载荷中：非 `None`
+且未被其 `exclude_if` 省略）、`_VALUES_SINCE`（已有字段的新取值 → 版本）与 `_MODEL_SINCE`（整个模型 → 版本）；信封早于引入版本即拒绝。
+2.1.0 引入：ADR-0052 §1 ~ §3 的 Profile / `GateResult` 字段与 `CapacityParams` / `CrossAssetParams`；ADR-0054 的
+`PriceBar.volume`、`BacktestResult.remainders`、`FillRemainder`、`execution_model="next_bar_open_participation"`；ADR-0057 的
+`Event` / `EventRequest` / `EventResult` 的 `subject`。
 
 **"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.1.0` 这样的版本号
 **可被识别**，但这不是前向兼容承诺——载荷里出现当前实现未知字段仍然 fail closed
@@ -353,13 +570,21 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 （构造函数、`model_validate` / `model_validate_json`，见 §3.4），JSON Schema 只是面向外部消费者的描述。
 同类的"Schema 可见性弱于运行时"边界还有：时长符号与 `cost_model.kind`（07-validation.md §5.4）、
 以及只由跨字段相等关系约束的 `ExperimentMetadata.declared_research_class`（ADR-0018 §D-26.3）。
+B3 的对象 key、`ObjectRef.uri` 与 `CollectedObject.source_uri` 例外地在去空白**之前**校验原始值（带空白即拒绝，
+不被规范化）；两个 URI 字段的 JSON Schema pattern 只是近似（`file:///…` 或 `scheme://host[:port]/…`；来源 URI 为
+`https://host[:port]…` 或 `file:///…`），不表达的运行时规则有：按 RFC 3986 组件逐项检查、`file` 不得带 authority、
+端口范围与无前导零、每个路径段非空且不是 `.` / `..`（含 `%2e` 编码）、percent escape 必须合法且不得解码为
+`/`、`\`、控制字符或 DEL、对象 URI 无查询 / 片段、`file` 来源无查询，以及来源查询参数名的凭据形状。
+`CollectorDescriptor.network_origins` 的 Schema pattern 允许 1 ~ 5 位端口数字，表达不了端口数值范围（1 ~ 65535）与
+"无前导零"，权威校验在运行时。URI 的组件拆分与主机 / 路径检查是私有实现（`core/contracts/_uri.py`），不属于公共契约。
 
 ## 4. 目录映射
 
 | 路径 | 内容 |
 |---|---|
 | `core/domain/` | 实体、值对象、不变量 |
-| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义，当前尚无 Provider Protocol） |
+| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol、F4 的 `FeatureProvider`（ADR-0030）与 Phase 5 的 `StrategyProvider` / `RiskProvider` / `BacktestProvider`（ADR-0038）；其余研究 Provider Protocol 待首次消费时交付） |
+| `core/contracts/` | 跨 Plane DTO、JSON Schema 导出；Provider 接口按 [ADR-0017](../adr/0017-provider-delivery-schedule.md) 的节奏交付（Phase 0 只冻结语义；当前有 B3 的 `StorageAdapter` / `CatalogAdapter` / `CollectorAdapter` 三个 Data Plane Adapter Protocol 与 F4 的 `FeatureProvider`（ADR-0030）、Phase 3 的 `EventProvider`（ADR-0036）；其余研究 Provider Protocol 待首次消费时交付） |
 | `core/lifecycle/` | 状态机定义与转移规则（07-validation.md） |
 | `core/errors/` | 错误分类 |
 | `core/compat/` | 历史契约 major 的**只读**读取入口（不是迁移服务） |

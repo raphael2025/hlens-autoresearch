@@ -1,0 +1,208 @@
+{
+  "$defs": {
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    },
+    "SignalObservation": {
+      "additionalProperties": false,
+      "description": "交给 Strategy / Risk Provider 的一条信号观察：某个 Feature / State / Event 在某标的上的值。\n\n- `signal`：只能是 `feature` / `state` / `event` 引用（Outcome 永不作为输入，C-L2）；\n- `event_time`：信号所描述的时刻；`available_time >= event_time` 是它可被使用的最早时刻；\n- `value`：`None` 表示上游显式\"不可计算\"，不得被填补。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "signal": {
+          "$ref": "#/$defs/Ref"
+        },
+        "instrument": {
+          "minLength": 1,
+          "title": "Instrument",
+          "type": "string"
+        },
+        "event_time": {
+          "format": "date-time",
+          "title": "Event Time",
+          "type": "string"
+        },
+        "available_time": {
+          "format": "date-time",
+          "title": "Available Time",
+          "type": "string"
+        },
+        "knowledge_time": {
+          "format": "date-time",
+          "title": "Knowledge Time",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        }
+      },
+      "required": [
+        "signal",
+        "instrument",
+        "event_time",
+        "available_time",
+        "knowledge_time",
+        "value"
+      ],
+      "title": "SignalObservation",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次目标仓位计算请求。\n\n- `strategy`（`kind=strategy`）+ `spec_hash`：Provider 声明支持的 `StrategySpec`；\n- `params`：本次试验的参数点；Provider 必须拒绝不在该规格 `param_search_space` 内的参数\n  （参数空间是 trial count 的来源，C-T1）；\n- `instruments`：非空、唯一、升序；`decision_times`：非空、严格升序；\n- `signals`：按 `(available_time, signal, instrument, event_time)` 规范排序且不重复；每条的\n  `instrument` 属于 `instruments`，`knowledge_time <= knowledge_cutoff`。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "strategy": {
+      "$ref": "#/$defs/Ref"
+    },
+    "spec_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Spec Hash",
+      "type": "string"
+    },
+    "params": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z][a-z0-9_]*$": {
+          "anyOf": [
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "integer"
+            },
+            {
+              "type": "boolean"
+            },
+            {
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "title": "Params",
+      "type": "object"
+    },
+    "instruments": {
+      "items": {
+        "minLength": 1,
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Instruments",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "knowledge_cutoff": {
+      "format": "date-time",
+      "title": "Knowledge Cutoff",
+      "type": "string"
+    },
+    "decision_times": {
+      "items": {
+        "format": "date-time",
+        "type": "string"
+      },
+      "minItems": 1,
+      "title": "Decision Times",
+      "type": "array",
+      "uniqueItems": true
+    },
+    "signals": {
+      "items": {
+        "$ref": "#/$defs/SignalObservation"
+      },
+      "title": "Signals",
+      "type": "array"
+    }
+  },
+  "required": [
+    "strategy",
+    "spec_hash",
+    "instruments",
+    "knowledge_cutoff",
+    "decision_times",
+    "signals"
+  ],
+  "title": "StrategyRequest",
+  "type": "object"
+}

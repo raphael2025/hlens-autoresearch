@@ -1,0 +1,188 @@
+{
+  "$defs": {
+    "OutcomeLabel": {
+      "additionalProperties": false,
+      "description": "一个事件的标签。`value is None` = 显式不可计算（缺数据 / 窗口未完成），不填补。\n\n`barrier`：triple barrier 的触达结果（`1` 上、`-1` 下、`0` 垂直）；forward return 恒为 `None`。\n`available_time`：标签可被知道的时刻，不早于 `exit_time`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "label_only": {
+          "const": true,
+          "default": true,
+          "title": "Label Only",
+          "type": "boolean"
+        },
+        "event_key": {
+          "minLength": 1,
+          "title": "Event Key",
+          "type": "string"
+        },
+        "event_time": {
+          "format": "date-time",
+          "title": "Event Time",
+          "type": "string"
+        },
+        "value": {
+          "anyOf": [
+            {
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Value"
+        },
+        "barrier": {
+          "anyOf": [
+            {
+              "enum": [
+                -1,
+                0,
+                1
+              ],
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Barrier"
+        },
+        "entry_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Time"
+        },
+        "exit_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Time"
+        },
+        "entry_price": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Entry Price"
+        },
+        "exit_price": {
+          "anyOf": [
+            {
+              "gt": 0,
+              "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Price"
+        },
+        "available_time": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Available Time"
+        }
+      },
+      "required": [
+        "event_key",
+        "event_time",
+        "value"
+      ],
+      "title": "OutcomeLabel",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次 `compute` 的结果：标签与请求事件一一对应（同序），`result_hash` 构造时复核。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "label_only": {
+      "const": true,
+      "default": true,
+      "title": "Label Only",
+      "type": "boolean"
+    },
+    "request_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Request Hash",
+      "type": "string"
+    },
+    "provider": {
+      "pattern": "^[a-z][a-z0-9_]*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "provider_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Provider Hash",
+      "type": "string"
+    },
+    "labels": {
+      "items": {
+        "$ref": "#/$defs/OutcomeLabel"
+      },
+      "minItems": 1,
+      "title": "Labels",
+      "type": "array"
+    },
+    "result_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Result Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "request_hash",
+    "provider",
+    "provider_hash",
+    "labels",
+    "result_hash"
+  ],
+  "title": "OutcomeResult",
+  "type": "object"
+}

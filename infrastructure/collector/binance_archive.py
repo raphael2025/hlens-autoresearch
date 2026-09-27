@@ -1,0 +1,622 @@
+"""Binance 公共现货日归档下载壳（Phase 1 D0 / D0-R1；ADR-0021 / 0022 / 0023）。
+
+只做：配置 archive base 下的官方 ZIP + `.CHECKSUM` 获取、SHA-256 先验校验、经
+``StorageAdapter`` 流式 staging → 原子 publish。不做归档解析、不构造 revision、
+不写表存储 / Raw、不访问 market-data 或账户 / 交易端点。
+
+D0-R1：每个 checksum / ZIP GET 的整次尝试（send → 状态 → 完整读/stage）共用
+``1 + http_max_retries`` 预算；archive base URL 拒绝凭据 / query / fragment 等，不静默改写。
+"""
+
+from __future__ import annotations
+
+import re
+from collections.abc import Callable, Iterator
+from datetime import UTC, date, datetime, timedelta
+from typing import Final, Self
+
+import httpx
+
+from core.contracts import _uri
+from core.contracts.collector import (
+    CollectedObject,
+    CollectionFailed,
+    CollectionRequest,
+    CollectionResult,
+    CollectorDescriptor,
+    CoverageGap,
+    GapReason,
+    SourceBinding,
+    UnsupportedRequest,
+)
+from core.contracts.storage import (
+    IntegrityViolation,
+    ObjectConflict,
+    PublishResult,
+    StageRequest,
+    StorageAdapter,
+    StorageError,
+)
+from core.domain.base import FrozenMapping
+from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
+from infrastructure.settings import Settings
+
+__all__ = [
+    "ARCHIVE_SOURCE",
+    "BinanceSpotArchiveCollector",
+    "COLLECTOR_ID",
+    "COLLECTOR_VERSION",
+    "SUPPORTED_DATA_TYPES",
+    "SUPPORTED_SYMBOLS",
+]
+
+COLLECTOR_ID: Final[str] = "binance.spot.public-archive"
+COLLECTOR_VERSION: Final[str] = "1.1.0"
+ARCHIVE_SOURCE: Final[SourceBinding] = SourceBinding(
+    schema_version=PHASE1_PUBLICATION_VERSION,
+    source_id="binance.public.spot.archive",
+    version="1.0.0",
+)
+SUPPORTED_SYMBOLS: Final[frozenset[str]] = frozenset({"BTCUSDT", "ETHUSDT"})
+SUPPORTED_DATA_TYPES: Final[frozenset[str]] = frozenset({"agg_trades", "klines_1m"})
+
+_CHECKSUM_MAX_BYTES: Final[int] = 4096
+_STREAM_CHUNK_SIZE: Final[int] = 64 * 1024
+_SHA256_HEX: Final[re.Pattern[str]] = re.compile(r"^[0-9a-fA-F]{64}$")
+_SAFE_METADATA_HEADERS: Final[frozenset[str]] = frozenset(
+    {"etag", "last-modified", "content-length", "content-type"}
+)
+_RETRYABLE_STATUS: Final[frozenset[int]] = frozenset({429}) | frozenset(range(500, 600))
+
+
+def _utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _validate_archive_base(base_url: str) -> tuple[str, str]:
+    """严格校验 archive base；返回 ``(normalized_base, origin)``，不静默丢弃任何成分。"""
+    if not isinstance(base_url, str) or not base_url:
+        msg = "archive base URL must not be blank"
+        raise ValueError(msg)
+    if base_url != base_url.strip():
+        msg = f"archive base URL must not have leading or trailing whitespace: {base_url!r}"
+        raise ValueError(msg)
+    text = base_url
+    if not _uri.is_visible_ascii(text):
+        msg = f"archive base URL 必须是无空白、无反斜杠的 ASCII 可见字符：{base_url!r}"
+        raise ValueError(msg)
+    parts = _uri.split(text)
+    if parts.scheme != "https" or parts.authority is None:
+        msg = f"archive base URL 必须是 https://host[:port][/path]：{base_url!r}"
+        raise ValueError(msg)
+    if not _uri.is_host_port(parts.authority):
+        msg = (
+            f"archive base URL 的 authority 必须是合法小写主机名（可带端口 1～65535），"
+            f"不得含凭据：{base_url!r}"
+        )
+        raise ValueError(msg)
+    if parts.query is not None:
+        msg = f"archive base URL 不得含 query：{base_url!r}"
+        raise ValueError(msg)
+    if parts.fragment is not None:
+        msg = f"archive base URL 不得含 fragment：{base_url!r}"
+        raise ValueError(msg)
+    path = parts.path
+    if path not in {"", "/"} and not _uri.is_object_path(path):
+        msg = (
+            f"archive base URL 路径只能为空、`/`，或无空段、. / .. 与危险 percent escape "
+            f"的绝对路径：{base_url!r}"
+        )
+        raise ValueError(msg)
+    origin = f"https://{parts.authority}"
+    if path in {"", "/"}:
+        return origin, origin
+    return f"{origin}{path}", origin
+
+
+def _is_utc_midnight(value: datetime) -> bool:
+    return (
+        value.tzinfo is not None
+        and value.utcoffset() == timedelta(0)
+        and value.hour == 0
+        and value.minute == 0
+        and value.second == 0
+        and value.microsecond == 0
+    )
+
+
+def _day_iter(start: datetime, end: datetime) -> Iterator[tuple[datetime, datetime, date]]:
+    cursor = start
+    while cursor < end:
+        nxt = cursor + timedelta(days=1)
+        yield cursor, nxt, cursor.date()
+        cursor = nxt
+
+
+def _parse_checksum_body(body: bytes, *, expected_filename: str) -> str:
+    if len(body) > _CHECKSUM_MAX_BYTES:
+        raise CollectionFailed("checksum body exceeds 4096 bytes")
+    try:
+        text = body.decode("ascii")
+    except UnicodeDecodeError as exc:
+        raise CollectionFailed("checksum body must be ASCII") from exc
+    if text.endswith("\r\n"):
+        text = text[:-2]
+    elif text.endswith("\n"):
+        text = text[:-1]
+    if not text or "\n" in text or "\r" in text:
+        raise CollectionFailed("checksum body must contain exactly one sha256sum record")
+    if len(text) < 66:
+        raise CollectionFailed("checksum record too short")
+    digest = text[:64]
+    sep = text[64:66]
+    filename = text[66:]
+    if _SHA256_HEX.fullmatch(digest) is None:
+        raise CollectionFailed("checksum digest must be 64 hex characters")
+    if sep not in {"  ", " *"}:
+        raise CollectionFailed("checksum separator must be two spaces or space+asterisk")
+    if filename != expected_filename:
+        raise CollectionFailed(
+            f"checksum filename {filename!r} does not match expected {expected_filename!r}"
+        )
+    if "/" in filename or "\\" in filename or " " in filename or "\t" in filename:
+        raise CollectionFailed("checksum filename must be a bare basename")
+    return digest.lower()
+
+
+def _trusted_content_length(headers: httpx.Headers) -> int | None:
+    raw = headers.get("content-length")
+    if raw is None:
+        return None
+    if not raw.isdigit():
+        return None
+    return int(raw)
+
+
+def _read_bounded_body(response: httpx.Response, *, limit: int) -> bytes:
+    buf = bytearray()
+    for chunk in response.iter_bytes(chunk_size=1024):
+        if not chunk:
+            continue
+        if len(buf) + len(chunk) > limit:
+            raise CollectionFailed(f"response body exceeds {limit} bytes")
+        buf.extend(chunk)
+    return bytes(buf)
+
+
+def _safe_metadata(headers: httpx.Headers) -> FrozenMapping[str, str]:
+    out: dict[str, str] = {}
+    for name in _SAFE_METADATA_HEADERS:
+        value = headers.get(name)
+        if value is not None:
+            out[name] = value
+    return FrozenMapping(out)
+
+
+def _is_retryable_transport(exc: BaseException) -> bool:
+    return isinstance(
+        exc,
+        (
+            httpx.ConnectError,
+            httpx.ConnectTimeout,
+            httpx.ReadError,
+            httpx.ReadTimeout,
+            httpx.WriteError,
+            httpx.WriteTimeout,
+            httpx.PoolTimeout,
+            httpx.RemoteProtocolError,
+        ),
+    )
+
+
+def _transport_failure_message(exc: BaseException) -> str:
+    """错误信息不得回显可能含凭据的 URL / header。"""
+    return f"HTTP transport failure: {type(exc).__name__}"
+
+
+class BinanceSpotArchiveCollector:
+    """同步 ``CollectorAdapter``：Binance 公共 spot 日归档下载与官方 checksum 校验。"""
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        *,
+        archive_base_url: str,
+        http_connect_timeout_seconds: float,
+        http_read_timeout_seconds: float,
+        http_max_retries: int,
+        http_user_agent: str,
+        http_client: httpx.Client | None = None,
+        http_transport: httpx.BaseTransport | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
+        if http_connect_timeout_seconds <= 0 or http_read_timeout_seconds <= 0:
+            msg = "HTTP timeouts must be positive"
+            raise ValueError(msg)
+        if http_max_retries < 0:
+            msg = "http_max_retries must be >= 0"
+            raise ValueError(msg)
+        if not http_user_agent.strip():
+            msg = "http_user_agent must not be blank"
+            raise ValueError(msg)
+        if http_client is not None and http_transport is not None:
+            msg = "provide at most one of http_client or http_transport"
+            raise ValueError(msg)
+
+        self._storage = storage
+        self._archive_base, self._origin = _validate_archive_base(archive_base_url)
+        self._max_retries = http_max_retries
+        self._timeout = httpx.Timeout(
+            connect=http_connect_timeout_seconds,
+            read=http_read_timeout_seconds,
+            write=http_read_timeout_seconds,
+            pool=http_connect_timeout_seconds,
+        )
+        self._user_agent = http_user_agent.strip()
+        self._clock = clock or _utc_now
+        self._owns_client = http_client is None
+        if http_client is not None:
+            self._client = http_client
+        else:
+            self._client = httpx.Client(
+                transport=http_transport,
+                timeout=self._timeout,
+                follow_redirects=False,
+                headers={"User-Agent": self._user_agent},
+            )
+        self._descriptor = CollectorDescriptor(
+            collector_id=COLLECTOR_ID,
+            version=COLLECTOR_VERSION,
+            sources=(ARCHIVE_SOURCE,),
+            network_origins=(self._origin,),
+        )
+
+    @classmethod
+    def from_settings(
+        cls,
+        settings: Settings,
+        storage: StorageAdapter,
+        *,
+        http_client: httpx.Client | None = None,
+        http_transport: httpx.BaseTransport | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> Self:
+        """从已有 ``Settings`` 机械构造；不新增设置字段，也不读取 market-data base。"""
+        return cls(
+            storage,
+            archive_base_url=str(settings.binance_archive_base_url),
+            http_connect_timeout_seconds=settings.http_connect_timeout_seconds,
+            http_read_timeout_seconds=settings.http_read_timeout_seconds,
+            http_max_retries=settings.http_max_retries,
+            http_user_agent=settings.http_user_agent,
+            http_client=http_client,
+            http_transport=http_transport,
+            clock=clock,
+        )
+
+    @property
+    def descriptor(self) -> CollectorDescriptor:
+        return self._descriptor
+
+    def close(self) -> None:
+        """关闭本实例创建的 HTTP 客户端；注入的客户端不关闭。"""
+        if self._owns_client:
+            self._client.close()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        self.close()
+
+    def collect(self, request: CollectionRequest) -> CollectionResult:
+        self._validate_request(request)
+        objects: list[CollectedObject] = []
+        gaps: list[CoverageGap] = []
+        try:
+            for symbol in request.symbols:
+                for day_start, day_end, day in _day_iter(
+                    request.coverage_start, request.coverage_end
+                ):
+                    item = self._collect_day(request.data_type, symbol, day_start, day_end, day)
+                    if isinstance(item, CoverageGap):
+                        gaps.append(item)
+                    else:
+                        objects.append(item)
+        except (CollectionFailed, UnsupportedRequest):
+            raise
+        except StorageError as exc:
+            raise CollectionFailed(str(exc)) from exc
+        except httpx.HTTPError as exc:
+            raise CollectionFailed(_transport_failure_message(exc)) from exc
+
+        return CollectionResult(
+            request=request,
+            collector_id=self._descriptor.collector_id,
+            collector_version=self._descriptor.version,
+            objects=tuple(objects),
+            gaps=tuple(gaps),
+        )
+
+    def _validate_request(self, request: CollectionRequest) -> None:
+        if request.source != ARCHIVE_SOURCE:
+            raise UnsupportedRequest(
+                f"unsupported source {request.source.source_id}@{request.source.version}"
+            )
+        if request.data_type not in SUPPORTED_DATA_TYPES:
+            raise UnsupportedRequest(f"unsupported data_type {request.data_type!r}")
+        unsupported = [symbol for symbol in request.symbols if symbol not in SUPPORTED_SYMBOLS]
+        if unsupported:
+            raise UnsupportedRequest(f"unsupported symbols: {unsupported!r}")
+        if not _is_utc_midnight(request.coverage_start) or not _is_utc_midnight(
+            request.coverage_end
+        ):
+            raise UnsupportedRequest("coverage must be aligned to UTC midnight day boundaries")
+
+    def _relative_paths(self, data_type: str, symbol: str, day: date) -> tuple[str, str]:
+        """官方相对路径与文件名；对象 key 由 `_object_key` 在校验和已知后content-address。"""
+        day_text = day.isoformat()
+        if data_type == "agg_trades":
+            filename = f"{symbol}-aggTrades-{day_text}.zip"
+            return f"data/spot/daily/aggTrades/{symbol}/{filename}", filename
+        if data_type == "klines_1m":
+            filename = f"{symbol}-1m-{day_text}.zip"
+            return f"data/spot/daily/klines/{symbol}/1m/{filename}", filename
+        raise UnsupportedRequest(f"unsupported data_type {data_type!r}")
+
+    def _object_key(self, relative_path: str, filename: str, source_sha256: str) -> str:
+        """内容寻址 key：`raw/binance/spot/archive/revisions/<sha256>/<官方 daily 尾部>`。
+
+        同一官方路径的**同一** checksum 总得到同一 key（发布幂等）；**不同** checksum 得到
+        另一个不可变对象，因此归档替换只追加、不覆盖，也不再需要用 `ObjectConflict` 挡住
+        （D2 的 revision 语义依赖这一点）。basename 仍是官方文件名，D1 的 key 校验不变。
+        """
+        if _SHA256_HEX.fullmatch(source_sha256) is None or source_sha256 != source_sha256.lower():
+            raise CollectionFailed("refusing to build an object key from a non-canonical sha256")
+        prefix = "data/spot/"
+        if not relative_path.startswith(prefix) or not relative_path.endswith(f"/{filename}"):
+            raise CollectionFailed(f"refusing unexpected archive layout: {relative_path!r}")
+        tail = relative_path[len(prefix) :]
+        if any(part in {".", "..", ""} for part in tail.split("/")) or "\\" in tail:
+            raise CollectionFailed(f"refusing unsafe archive relative path: {relative_path!r}")
+        return f"raw/binance/spot/archive/revisions/{source_sha256}/{tail}"
+
+    def _url_for(self, relative_path: str) -> str:
+        if (
+            not relative_path
+            or relative_path.startswith("/")
+            or "\\" in relative_path
+            or any(part in {".", "..", ""} for part in relative_path.split("/"))
+        ):
+            raise CollectionFailed(f"refusing unsafe archive relative path: {relative_path!r}")
+        url = f"{self._archive_base}/{relative_path}"
+        parts = _uri.split(url)
+        if parts.scheme != "https" or parts.authority is None:
+            raise CollectionFailed(f"constructed URL escaped archive origin: {url!r}")
+        origin = f"https://{parts.authority}"
+        if origin != self._origin:
+            raise CollectionFailed(f"constructed URL escaped archive origin: {url!r}")
+        if not url.startswith(f"{self._archive_base}/"):
+            raise CollectionFailed(f"constructed URL escaped archive base: {url!r}")
+        return url
+
+    def _collect_day(
+        self,
+        data_type: str,
+        symbol: str,
+        day_start: datetime,
+        day_end: datetime,
+        day: date,
+    ) -> CollectedObject | CoverageGap:
+        relative, filename = self._relative_paths(data_type, symbol, day)
+        zip_url = self._url_for(relative)
+        checksum_url = self._url_for(f"{relative}.CHECKSUM")
+
+        checksum_outcome = self._get_checksum(checksum_url, expected_filename=filename)
+        if checksum_outcome is None:
+            return CoverageGap(
+                symbol=symbol,
+                coverage_start=day_start,
+                coverage_end=day_end,
+                reason=GapReason.SOURCE_ABSENT,
+                detail=f"checksum absent for {symbol} {day.isoformat()} ({data_type})",
+            )
+        source_sha256, _checksum_headers = checksum_outcome
+
+        published, zip_headers = self._fetch_and_publish_zip(
+            zip_url,
+            object_key=self._object_key(relative, filename, source_sha256),
+            source_sha256=source_sha256,
+        )
+        return CollectedObject(
+            ref=published.ref,
+            symbol=symbol,
+            coverage_start=day_start,
+            coverage_end=day_end,
+            source_uri=zip_url,
+            retrieved_at=self._clock(),
+            source_sha256=source_sha256,
+            source_metadata=_safe_metadata(zip_headers),
+        )
+
+    def _send_once(self, url: str) -> httpx.Response:
+        """单次 send + 状态前返回；不含重试。调用方负责关闭 response。"""
+        self._assert_url_allowed(url)
+        request = self._client.build_request(
+            "GET",
+            url,
+            headers={"User-Agent": self._user_agent},
+            timeout=self._timeout,
+        )
+        return self._client.send(request, stream=True, follow_redirects=False)
+
+    def _get_checksum(
+        self, url: str, *, expected_filename: str
+    ) -> tuple[str, httpx.Headers] | None:
+        attempts = 1 + self._max_retries
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            response: httpx.Response | None = None
+            try:
+                try:
+                    response = self._send_once(url)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
+
+                status = response.status_code
+                if status in {404, 410}:
+                    return None
+                if 300 <= status < 400:
+                    raise CollectionFailed(f"checksum redirect forbidden: HTTP {status}")
+                if status in _RETRYABLE_STATUS:
+                    last_error = CollectionFailed(f"retryable HTTP {status}")
+                    if attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(f"exhausted retries for HTTP {status}")
+                if status != 200:
+                    raise CollectionFailed(f"checksum HTTP {status}")
+
+                try:
+                    body = _read_bounded_body(response, limit=_CHECKSUM_MAX_BYTES)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
+
+                digest = _parse_checksum_body(body, expected_filename=expected_filename)
+                return digest, response.headers
+            finally:
+                if response is not None:
+                    response.close()
+
+        assert last_error is not None
+        raise CollectionFailed(
+            f"exhausted retries: {_transport_failure_message(last_error)}"
+            if isinstance(last_error, httpx.HTTPError)
+            else f"exhausted retries: {last_error}"
+        ) from last_error
+
+    def _fetch_and_publish_zip(
+        self,
+        url: str,
+        *,
+        object_key: str,
+        source_sha256: str,
+    ) -> tuple[PublishResult, httpx.Headers]:
+        attempts = 1 + self._max_retries
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            response: httpx.Response | None = None
+            stream: _ZipByteStream | None = None
+            headers: httpx.Headers | None = None
+            try:
+                try:
+                    response = self._send_once(url)
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
+
+                status = response.status_code
+                if status in {404, 410}:
+                    raise CollectionFailed(
+                        f"ZIP absent while checksum present (source inconsistency): HTTP {status}"
+                    )
+                if 300 <= status < 400:
+                    raise CollectionFailed(f"ZIP redirect forbidden: HTTP {status}")
+                if status in _RETRYABLE_STATUS:
+                    last_error = CollectionFailed(f"retryable HTTP {status}")
+                    if attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(f"exhausted retries for HTTP {status}")
+                if status != 200:
+                    raise CollectionFailed(f"ZIP HTTP {status}")
+
+                headers = response.headers
+                expected_size = _trusted_content_length(headers)
+                stream = _ZipByteStream(response)
+                response = None  # ownership moved to stream
+                try:
+                    staged = self._storage.stage(
+                        StageRequest(
+                            key=object_key,
+                            expected_sha256=source_sha256,
+                            expected_size=expected_size,
+                        ),
+                        stream,
+                    )
+                except httpx.HTTPError as exc:
+                    last_error = exc
+                    if _is_retryable_transport(exc) and attempt + 1 < attempts:
+                        continue
+                    raise CollectionFailed(_transport_failure_message(exc)) from exc
+                except IntegrityViolation as exc:
+                    raise CollectionFailed(f"ZIP integrity check failed: {exc}") from exc
+
+                try:
+                    published = self._storage.publish(staged)
+                except ObjectConflict as exc:
+                    raise CollectionFailed(f"immutable object conflict: {exc}") from exc
+                return published, headers
+            finally:
+                if stream is not None:
+                    stream.close()
+                elif response is not None:
+                    response.close()
+
+        assert last_error is not None
+        raise CollectionFailed(
+            f"exhausted retries: {_transport_failure_message(last_error)}"
+            if isinstance(last_error, httpx.HTTPError)
+            else f"exhausted retries: {last_error}"
+        ) from last_error
+
+    def _assert_url_allowed(self, url: str) -> None:
+        if not _uri.is_visible_ascii(url):
+            raise CollectionFailed("refusing non-visible-ASCII URL")
+        parts = _uri.split(url)
+        if parts.scheme != "https" or parts.authority is None:
+            raise CollectionFailed("refusing non-HTTPS URL")
+        if not _uri.is_host_port(parts.authority):
+            raise CollectionFailed("refusing URL with invalid authority")
+        if parts.query is not None or parts.fragment is not None:
+            raise CollectionFailed("refusing URL with query or fragment")
+        origin = f"https://{parts.authority}"
+        if origin != self._origin:
+            raise CollectionFailed("refusing URL outside archive origin")
+        if not url.startswith(f"{self._archive_base}/") and url != self._archive_base:
+            raise CollectionFailed("refusing URL outside archive base")
+
+
+class _ZipByteStream:
+    """单遍、分块消费 ``httpx`` 流式响应；暴露 ``close`` 供 ``finally`` 释放连接。"""
+
+    def __init__(self, response: httpx.Response) -> None:
+        self._response = response
+        self._closed = False
+        self._iter = response.iter_bytes(chunk_size=_STREAM_CHUNK_SIZE)
+
+    def __iter__(self) -> Iterator[bytes]:
+        return self
+
+    def __next__(self) -> bytes:
+        if self._closed:
+            raise StopIteration
+        try:
+            while True:
+                chunk = next(self._iter)
+                if chunk:
+                    return chunk
+        except StopIteration:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._response.close()

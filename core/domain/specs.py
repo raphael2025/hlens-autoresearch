@@ -157,6 +157,12 @@ class FeatureSpec(VersionedSpec):
     params: FrozenMapping[str, str | int | float | bool] = Field(
         default_factory=dict, validate_default=True
     )
+    #: ADR-0023 §3 / §8：`available_lag` 是本规格的 `declared_latency`，只作用于历史轴：
+    #: `derived.available_time = max(本规格自身的可用约束,
+    #: max(input.available_time) + available_lag)`，`t` 即 `simulation_time`；
+    #: 知识轴另受 `knowledge_time <= knowledge_cutoff` 约束（03-data.md §4.3 / §4.5）。
+    #: 类文档字符串中的旧公式是已发布 Schema 的 `description`，为保持 Schema 逐字节不变
+    #: 暂不改写，以本注释为准。
     available_lag: timedelta
     deterministic: bool = True
 

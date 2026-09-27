@@ -48,6 +48,9 @@ STDLIB_OK = {
     "__future__",
     "abc",
     "collections",
+    # ADR-0052 versioned replay: the replay scope (a ContextVar restored by a context manager).
+    "contextlib",
+    "contextvars",
     "dataclasses",
     "datetime",
     "decimal",
@@ -139,11 +142,51 @@ def test_apps_do_not_import_research_plane() -> None:
         assert not leaked, f"{path.relative_to(REPO)} 违反 Research/Application 平面边界"
 
 
+#: 网络、交易所与凭据相关的库：执行服务在本构建中只有进程内模拟场所（ADR-0046 红线）。
+FORBIDDEN_IN_EXECUTION = {
+    "research",
+    "socket",
+    "ssl",
+    "http",
+    "urllib",
+    "urllib3",
+    "requests",
+    "httpx",
+    "aiohttp",
+    "websocket",
+    "websockets",
+    "ccxt",
+    "binance",
+    "grpc",
+    "infrastructure",
+}
+
+
+def test_execution_service_has_no_network_research_or_infrastructure_imports() -> None:
+    """apps/execution 是独立的执行服务：不连研究平面、不联网、不直连基础设施（ADR-0046）。"""
+    files = _python_files("apps/execution")
+    assert files, "apps/execution 不存在"
+    for path in files:
+        leaked = _imported_roots(path) & FORBIDDEN_IN_EXECUTION
+        assert not leaked, f"{path.relative_to(REPO)} 违反执行服务红线：{sorted(leaked)}"
+
+
 def test_production_packages_do_not_import_research() -> None:
     """已晋升的生产代码不得 import 研究代码（H5 / ADR-0005）。"""
     for path in _python_files("strategies", "risk"):
         leaked = _imported_roots(path) & {"research"}
         assert not leaked, f"{path.relative_to(REPO)} 直接引用了研究代码"
+
+
+@pytest.mark.parametrize("package", ["plugins", "infrastructure"])
+def test_plugins_and_infrastructure_do_not_import_research(package: str) -> None:
+    """依赖方向 `apps → application → domain ← plugins / infrastructure`（CLAUDE.md §4、
+    01-system.md §3）：plugins/ 与 infrastructure/ 同样不得 import research/。"""
+    files = _python_files(package)
+    assert files, f"{package}/ 不存在"
+    for path in files:
+        leaked = _imported_roots(path) & {"research"}
+        assert not leaked, f"{path.relative_to(REPO)} 引用了研究代码"
 
 
 @pytest.mark.parametrize(

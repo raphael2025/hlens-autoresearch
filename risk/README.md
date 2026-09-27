@@ -2,4 +2,5 @@
 
 已晋升的 RiskPolicy 实现。执行期二道风控不在此处（09-security.md §5）。
 
-> Architecture Bootstrap：目录仅作规划，**尚无代码**。实现需等待对应 Phase 开启（见 docs/research/roadmap.md）。
+> **仍为空（2026-09-25）**：Phase 5 框架（ADR-0038）的研究风控 `vol_target_bars` 在 `research/strategies/volatility_target.py`，
+> NOT_VALIDATED、未晋升。进入本目录只能经 Promotion 流程（ADR-0005）；本目录代码不得 import `research/`。

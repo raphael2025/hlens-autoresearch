@@ -1,0 +1,187 @@
+{
+  "$defs": {
+    "DegradedEpisodeKey": {
+      "additionalProperties": false,
+      "description": "来源不提供稳定产品 ID 时的退化键：`(venue, instrument_type, symbol, tradable_from)`。\n\n`basis` 显式标注这是退化身份，不能假装有稳定 ID。`tradable_from` 是该 episode 第一段可交易区间的\n起点，因此 symbol 复用（同名、不同起点）自然形成不同 episode；无稳定 ID 的改名同样形成新\nepisode，由 `ListingRevision.renamed_from` 记录与旧 episode 的关联。起点被来源更正时也只能形成新\nepisode 并写质量事件，不猜测合并（ADR-0024「失败与恢复语义」）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "basis": {
+          "const": "degraded_symbol_start",
+          "title": "Basis",
+          "type": "string"
+        },
+        "venue": {
+          "minLength": 1,
+          "title": "Venue",
+          "type": "string"
+        },
+        "instrument_type": {
+          "$ref": "#/$defs/InstrumentType"
+        },
+        "symbol": {
+          "minLength": 1,
+          "title": "Symbol",
+          "type": "string"
+        },
+        "tradable_from": {
+          "format": "date-time",
+          "title": "Tradable From",
+          "type": "string"
+        }
+      },
+      "required": [
+        "basis",
+        "venue",
+        "instrument_type",
+        "symbol",
+        "tradable_from"
+      ],
+      "title": "DegradedEpisodeKey",
+      "type": "object"
+    },
+    "ExclusionReason": {
+      "description": "候选 episode 被排除的原因（ADR-0024 §4、§5）。\n\n- `not_tradable`：`simulation_time` 不落在所选 listing revision 的任何可交易区间内（未上市、暂\n  停、已下架）；\n- `filtered`：被 spec 中的某条过滤规则排除（须给出 `filter_id`）。\n\ncompeting listing heads **不是**排除原因：它使整次构建 fail closed，不产生 manifest。",
+      "enum": [
+        "not_tradable",
+        "filtered"
+      ],
+      "title": "ExclusionReason",
+      "type": "string"
+    },
+    "InstrumentType": {
+      "enum": [
+        "spot",
+        "perpetual",
+        "future",
+        "option"
+      ],
+      "title": "InstrumentType",
+      "type": "string"
+    },
+    "StableEpisodeKey": {
+      "additionalProperties": false,
+      "description": "以 venue 原生稳定产品 ID 标识的 episode：`(venue, instrument_type, venue_product_id)`。\n\nsymbol 改名仍属同一 episode（symbol 不在键内，由各 revision 的 `instrument.symbol` 记录变化）。\n`instrument_type` 在键内：venue 的产品 ID 命名空间可能按市场类型区分。\n\n`basis` 是来源声明：产品 ID 的字符串值可以恰好等于某时刻的 symbol，契约不从字符串相等推断冒充。\n\n**诚实边界**：来源是否真的提供了稳定 ID、该 ID 是否真的跨改名不变，属未来 Collector / Registry /\n质量证据，契约层无法证明。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "basis": {
+          "const": "stable_product_id",
+          "title": "Basis",
+          "type": "string"
+        },
+        "venue": {
+          "minLength": 1,
+          "title": "Venue",
+          "type": "string"
+        },
+        "instrument_type": {
+          "$ref": "#/$defs/InstrumentType"
+        },
+        "venue_product_id": {
+          "minLength": 1,
+          "title": "Venue Product Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "basis",
+        "venue",
+        "instrument_type",
+        "venue_product_id"
+      ],
+      "title": "StableEpisodeKey",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "排除原因清单中的一项：episode + 所依据的 listing revision + 明确原因。\n\n`reason = filtered` 时必须给出 `filter_id`，其它原因不得给出。生效区间规则同 `UniverseMember`。\n**诚实边界**：`filter_id` 是否存在于被绑定的 spec 中，需要 spec 本身，属未来执行器 / Registry。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "episode": {
+      "discriminator": {
+        "mapping": {
+          "degraded_symbol_start": "#/$defs/DegradedEpisodeKey",
+          "stable_product_id": "#/$defs/StableEpisodeKey"
+        },
+        "propertyName": "basis"
+      },
+      "oneOf": [
+        {
+          "$ref": "#/$defs/StableEpisodeKey"
+        },
+        {
+          "$ref": "#/$defs/DegradedEpisodeKey"
+        }
+      ],
+      "title": "Episode"
+    },
+    "listing_revision_id": {
+      "minLength": 1,
+      "title": "Listing Revision Id",
+      "type": "string"
+    },
+    "reason": {
+      "$ref": "#/$defs/ExclusionReason"
+    },
+    "filter_id": {
+      "anyOf": [
+        {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Filter Id"
+    },
+    "effective_from": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effective From"
+    },
+    "effective_until": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Effective Until"
+    }
+  },
+  "required": [
+    "episode",
+    "listing_revision_id",
+    "reason"
+  ],
+  "title": "UniverseExclusion",
+  "type": "object"
+}

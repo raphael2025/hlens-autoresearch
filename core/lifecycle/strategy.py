@@ -9,6 +9,8 @@
 * LIVE 不是状态，而是 ACTIVE 的 `execution_mode`；Phase 13 之前只允许 SIMULATED —— 该红线由
   未来 Control Plane 的可信配置与人类授权执行，**不**由本模块的 DTO 自证（ADR-0011 D-17.4）。
 * 每次转移只追加、可审计。
+* `VALIDATION → FAILED`（ADR-0053）只用于验证中的 C-P3 技术失败；允许的情形与证据由自动触发者
+  （研究循环、`apps.worker.loop.LifecycleGuard`）执行，契约层仍只要求非空证据（ADR-0019）。
 
 `ExecutionMode` 的权威定义在 `core/domain/execution.py`（Domain 不得依赖本模块），
 这里只重导出，公共导入路径 `core.lifecycle.strategy.ExecutionMode` 保持不变。
@@ -61,7 +63,8 @@ class LifecycleState(StrEnum):
 
 S = LifecycleState
 
-#: 唯一允许的转移集合。**不得**在此之外新增转移（ADR-0006 §3 第 1 条）。
+#: 唯一允许的转移集合。**不得**在此之外新增转移（ADR-0006 §3 第 1 条）；
+#: `VALIDATION → FAILED` 由 ADR-0053（Raphael 2026-09-26 批准）补充。
 ALLOWED_TRANSITIONS: frozenset[tuple[LifecycleState, LifecycleState]] = frozenset(
     {
         (S.IDEA, S.CANDIDATE),
@@ -78,6 +81,11 @@ ALLOWED_TRANSITIONS: frozenset[tuple[LifecycleState, LifecycleState]] = frozense
         (S.PAPER, S.RETIRED),
         (S.IDEA, S.REJECTED),
         (S.CANDIDATE, S.FAILED),
+        # ADR-0053: technical failure during validation (C-P3) — not reproducible
+        # (G0.reproducibility / G0.signal_determinism FAIL) or the subject's own run errored.
+        # No human approval (as CANDIDATE → FAILED); never for a statistical / robustness / sealed
+        # OOS FAIL (→ REJECTED) or an infrastructure error (lifecycle unchanged).
+        (S.VALIDATION, S.FAILED),
         (S.VALIDATION, S.REJECTED),
         (S.OOS, S.REJECTED),
         (S.PAPER, S.REJECTED),

@@ -10,6 +10,62 @@ import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from core.contracts.catalog import (
+    CommitRequest,
+    CommitResult,
+    SnapshotInfo,
+    TableDefinition,
+    TableInfo,
+)
+from core.contracts.collector import (
+    CollectedObject,
+    CollectionRequest,
+    CollectionResult,
+    CollectorDescriptor,
+    CoverageGap,
+    SourceBinding,
+)
+from core.contracts.cost_model import CostModelSpec
+from core.contracts.event import (
+    Event,
+    EventInputPoint,
+    EventProviderDescriptor,
+    EventRequest,
+    EventResult,
+)
+from core.contracts.event_bus import BusMessage
+from core.contracts.feature import (
+    FeatureObservation,
+    FeatureRequest,
+    FeatureResult,
+    FeatureValue,
+    ProviderDescriptor,
+)
+from core.contracts.knowledge import (
+    KnowledgeProviderDescriptor,
+    KnowledgeQuery,
+    KnowledgeResult,
+)
+from core.contracts.llm import LlmProviderDescriptor, LlmRequest, LlmResponse
+from core.contracts.loop_audit import (
+    LoopBudgetLimits,
+    LoopBudgetUsage,
+    LoopOverrun,
+    LoopRoundRecord,
+    LoopRoundRecorded,
+    LoopRoundStarted,
+    LoopStageRecord,
+    LoopTransitionRecord,
+)
+from core.contracts.outcome import (
+    OutcomeEvent,
+    OutcomeLabel,
+    OutcomeLabelSpec,
+    OutcomePriceBar,
+    OutcomeProviderDescriptor,
+    OutcomeRequest,
+    OutcomeResult,
+)
 from core.contracts.profile_selection import (
     ExperimentMetadata,
     OosUnsealing,
@@ -17,6 +73,66 @@ from core.contracts.profile_selection import (
     ProfileSelectionKey,
     ProfileSelectionRule,
     SelectionEntry,
+)
+from core.contracts.revision import (
+    AvailabilityDecision,
+    ObservationTimes,
+    PointInTimeSelection,
+    PointInTimeSpec,
+    PolicyBinding,
+    PrecedenceEvidence,
+    RevisionGraph,
+    RevisionRecord,
+)
+from core.contracts.state import (
+    StateInput,
+    StateProviderDescriptor,
+    StateRequest,
+    StateResult,
+    StateValue,
+)
+from core.contracts.storage import ObjectRef, PublishResult, StagedObject, StageRequest
+from core.contracts.strategy import (
+    BacktestCostModel,
+    BacktestProviderDescriptor,
+    BacktestRequest,
+    BacktestResult,
+    ConstrainedPosition,
+    EquityPoint,
+    Fill,
+    FillRemainder,
+    PortfolioState,
+    PriceBar,
+    RiskProviderDescriptor,
+    RiskRequest,
+    RiskResult,
+    SignalObservation,
+    StrategyProviderDescriptor,
+    StrategyRequest,
+    StrategyResult,
+    TargetPosition,
+)
+from core.contracts.synthetic import (
+    PlantedEffect,
+    SyntheticBar,
+    SyntheticMarket,
+    SyntheticMarketSpec,
+    SyntheticProviderDescriptor,
+)
+from core.contracts.universe import (
+    AvailabilityEvidenceGap,
+    DegradedEpisodeKey,
+    ListingHistory,
+    ListingRevision,
+    ResearchDatasetManifest,
+    SelectedRevisionLineage,
+    StableEpisodeKey,
+    TradableInterval,
+    UniverseExclusion,
+    UniverseFilter,
+    UniverseMember,
+    UniverseSelectionSpec,
+    UniverseSpecBinding,
 )
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.artifact import (
@@ -110,6 +226,117 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     StrategyArtifact,
     EquivalenceCheck,
     DeploymentRecord,
+    # 双时间与 revision DAG（ADR-0023，Phase 1 B1）
+    PolicyBinding,
+    ObservationTimes,
+    AvailabilityDecision,
+    RevisionRecord,
+    PrecedenceEvidence,
+    RevisionGraph,
+    PointInTimeSpec,
+    PointInTimeSelection,
+    # 历史可交易 universe 与 Research Dataset manifest（ADR-0024 / ADR-0023 §6，Phase 1 B2）
+    TradableInterval,
+    StableEpisodeKey,
+    DegradedEpisodeKey,
+    ListingRevision,
+    ListingHistory,
+    UniverseFilter,
+    UniverseSelectionSpec,
+    UniverseSpecBinding,
+    UniverseMember,
+    UniverseExclusion,
+    SelectedRevisionLineage,
+    AvailabilityEvidenceGap,
+    ResearchDatasetManifest,
+    # Data Plane Adapter 的 DTO（ADR-0017 / ADR-0021 / ADR-0022，Phase 1 B3）
+    StageRequest,
+    StagedObject,
+    ObjectRef,
+    PublishResult,
+    TableDefinition,
+    SnapshotInfo,
+    TableInfo,
+    CommitRequest,
+    CommitResult,
+    SourceBinding,
+    CollectorDescriptor,
+    CollectionRequest,
+    CollectedObject,
+    CoverageGap,
+    CollectionResult,
+    # FeatureProvider 的 DTO（ADR-0030，Phase 1 F4）
+    FeatureObservation,
+    FeatureRequest,
+    FeatureValue,
+    FeatureResult,
+    ProviderDescriptor,
+    # KnowledgeProvider 的 DTO（ADR-0034，Phase 0.5）
+    KnowledgeQuery,
+    KnowledgeProviderDescriptor,
+    KnowledgeResult,
+    # SyntheticMarketProvider 的 DTO（ADR-0042，Phase 9）
+    PlantedEffect,
+    SyntheticMarketSpec,
+    SyntheticBar,
+    SyntheticMarket,
+    SyntheticProviderDescriptor,
+    # EventBusAdapter 的消息（ADR-0044，Phase 11 地基）
+    BusMessage,
+    # LLMProvider 的 DTO（ADR-0040，Phase 7）
+    LlmRequest,
+    LlmResponse,
+    LlmProviderDescriptor,
+    # StateProvider 的 DTO（ADR-0035，Phase 2）
+    StateInput,
+    StateRequest,
+    StateValue,
+    StateResult,
+    StateProviderDescriptor,
+    # Strategy / Risk / Backtest Provider 的 DTO（ADR-0038，Phase 5）
+    SignalObservation,
+    StrategyRequest,
+    TargetPosition,
+    StrategyResult,
+    StrategyProviderDescriptor,
+    PortfolioState,
+    RiskRequest,
+    ConstrainedPosition,
+    RiskResult,
+    RiskProviderDescriptor,
+    BacktestCostModel,
+    PriceBar,
+    BacktestRequest,
+    Fill,
+    EquityPoint,
+    BacktestResult,
+    BacktestProviderDescriptor,
+    # EventProvider 的 DTO（ADR-0036，Phase 3）
+    EventInputPoint,
+    Event,
+    EventRequest,
+    EventResult,
+    EventProviderDescriptor,
+    # OutcomeProvider 的 DTO 与成本模型 v1（ADR-0037，Phase 4）
+    OutcomeLabelSpec,
+    OutcomePriceBar,
+    OutcomeEvent,
+    OutcomeRequest,
+    OutcomeLabel,
+    OutcomeProviderDescriptor,
+    OutcomeResult,
+    CostModelSpec,
+    # 持续研究循环的审计记录（ADR-0050，Phase 11；描述既有字节，只追加）
+    LoopBudgetUsage,
+    LoopBudgetLimits,
+    LoopStageRecord,
+    LoopTransitionRecord,
+    LoopOverrun,
+    LoopRoundRecord,
+    LoopRoundStarted,
+    LoopRoundRecorded,
+    # 回测剩余量跨 bar 结转（ADR-0054；additive，只追加）
+    FillRemainder,
 )
 
 

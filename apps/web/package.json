@@ -1,0 +1,29 @@
+{
+  "name": "hlens-research-console",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "gen:api": "openapi-typescript ../api/openapi.json -o src/api.d.ts",
+    "dev": "vite",
+    "build": "tsc --noEmit && tsc --noEmit -p tsconfig.test.json && vite build",
+    "preview": "vite preview",
+    "test": "npm run test:lib && npm run test:components",
+    "test:lib": "node --test src/lib/",
+    "test:components": "node scripts/test-components.mjs",
+    "smoke:live": "node scripts/live-smoke.mjs"
+  },
+  "dependencies": {
+    "echarts": "^5.5.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "openapi-typescript": "^7.4.0",
+    "typescript": "^5.5.4",
+    "vite": "^5.4.2"
+  }
+}

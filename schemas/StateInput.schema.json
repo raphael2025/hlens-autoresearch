@@ -1,0 +1,107 @@
+{
+  "$defs": {
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "交给 Provider 的一个 Feature 值：`feature` 在 `evaluation_time` 的值（`None` = 不可计算）。\n\n`source_result_hash` 是给出该值的 `FeatureResult.result_hash`（来源绑定）。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "feature": {
+      "$ref": "#/$defs/Ref"
+    },
+    "evaluation_time": {
+      "format": "date-time",
+      "title": "Evaluation Time",
+      "type": "string"
+    },
+    "value": {
+      "anyOf": [
+        {
+          "pattern": "^(?!^[-+.]*$)[+-]?0*\\d*\\.?\\d*$",
+          "type": "string"
+        },
+        {
+          "type": "integer"
+        },
+        {
+          "type": "boolean"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Value"
+    },
+    "source_result_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Source Result Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "feature",
+    "evaluation_time",
+    "value",
+    "source_result_hash"
+  ],
+  "title": "StateInput",
+  "type": "object"
+}

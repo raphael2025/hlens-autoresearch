@@ -1,0 +1,208 @@
+{
+  "$defs": {
+    "EvidenceLevel": {
+      "description": "知识条目的证据等级（docs/research/knowledge-base.md）。",
+      "enum": [
+        "E0",
+        "E1",
+        "E2",
+        "E3",
+        "E4"
+      ],
+      "title": "EvidenceLevel",
+      "type": "string"
+    },
+    "Kind": {
+      "description": "可版本化对象的类型（02-domain.md §1）。",
+      "enum": [
+        "dataset",
+        "representation",
+        "feature",
+        "state",
+        "event",
+        "outcome",
+        "strategy",
+        "risk",
+        "cost_model",
+        "experiment",
+        "hypothesis",
+        "knowledge",
+        "artifact",
+        "profile",
+        "profile_selection_rule"
+      ],
+      "title": "Kind",
+      "type": "string"
+    },
+    "KnowledgeItem": {
+      "additionalProperties": false,
+      "description": "公开来源中的**待检验主张**，不是已验证结论。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "const": "knowledge",
+          "default": "knowledge",
+          "title": "Kind",
+          "type": "string"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Version",
+          "type": "string"
+        },
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "lineage": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Ref"
+          },
+          "title": "Lineage",
+          "type": "array"
+        },
+        "source": {
+          "minLength": 1,
+          "title": "Source",
+          "type": "string"
+        },
+        "license": {
+          "title": "License",
+          "type": "string"
+        },
+        "claim": {
+          "minLength": 1,
+          "title": "Claim",
+          "type": "string"
+        },
+        "conditions": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Conditions",
+          "type": "array"
+        },
+        "evidence_level": {
+          "$ref": "#/$defs/EvidenceLevel"
+        },
+        "status": {
+          "$ref": "#/$defs/KnowledgeStatus",
+          "default": "unverified"
+        },
+        "links": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Ref"
+          },
+          "title": "Links",
+          "type": "array"
+        }
+      },
+      "required": [
+        "name",
+        "version",
+        "source",
+        "license",
+        "claim",
+        "evidence_level"
+      ],
+      "title": "KnowledgeItem",
+      "type": "object"
+    },
+    "KnowledgeStatus": {
+      "enum": [
+        "unverified",
+        "supported",
+        "contradicted",
+        "inconclusive"
+      ],
+      "title": "KnowledgeStatus",
+      "type": "string"
+    },
+    "Ref": {
+      "additionalProperties": false,
+      "description": "对象引用：`{kind}:{name}@{version}`。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/Kind"
+        },
+        "name": {
+          "pattern": "^[a-z][a-z0-9_]*$",
+          "title": "Name",
+          "type": "string"
+        },
+        "version": {
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind",
+        "name",
+        "version"
+      ],
+      "title": "Ref",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一次检索的结果：条目按 `name`、`version` 规范排序；每条都有出处与许可。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "query_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Query Hash",
+      "type": "string"
+    },
+    "provider": {
+      "pattern": "^[a-z][a-z0-9_]*@(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Provider",
+      "type": "string"
+    },
+    "items": {
+      "items": {
+        "$ref": "#/$defs/KnowledgeItem"
+      },
+      "title": "Items",
+      "type": "array"
+    },
+    "result_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Result Hash",
+      "type": "string"
+    }
+  },
+  "required": [
+    "query_hash",
+    "provider",
+    "items",
+    "result_hash"
+  ],
+  "title": "KnowledgeResult",
+  "type": "object"
+}

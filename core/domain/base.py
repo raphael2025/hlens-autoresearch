@@ -9,23 +9,34 @@ import hashlib
 import json
 import re
 from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
+from contextvars import ContextVar
 from datetime import UTC, datetime
+from decimal import Decimal, InvalidOperation
 from enum import StrEnum
-from typing import Annotated, Any, Self, get_args
+from typing import Annotated, Any, ClassVar, Final, Self, get_args
 
 from pydantic import (
     AfterValidator,
     BaseModel,
+    BeforeValidator,
     ConfigDict,
     Field,
     GetCoreSchemaHandler,
     PlainSerializer,
+    SerializationInfo,
+    SerializerFunctionWrapHandler,
+    WithJsonSchema,
     field_validator,
+    model_serializer,
+    model_validator,
 )
 
 __all__ = [
     "CONTRACT_SCHEMA_MAJOR",
     "CONTRACT_SCHEMA_VERSION",
+    "EXACT_DECIMAL_PATTERN",
+    "PUBLISHED_CONTRACT_SCHEMA_VERSIONS",
     "GIT_OID_PATTERN",
     "PLUGIN_KEY_PATTERN",
     "REF_KEY_PATTERN",
@@ -35,6 +46,8 @@ __all__ = [
     "ContentBlobRef",
     "ContentHash",
     "Contract",
+    "ExactBacked",
+    "ExactDecimal",
     "FrozenMapping",
     "GitCodeIdentity",
     "GitCodeRevision",
@@ -48,16 +61,27 @@ __all__ = [
     "VersionedSpec",
     "canonical_json",
     "content_hash",
+    "contract_schema_version_scope",
+    "exact_decimal",
+    "exact_decimal_text",
+    "omit_none",
     "parse_semver",
+    "scoped_contract_schema_version",
     "validate_ref_keyed_hashes",
 ]
 
 #: 本次发布的契约 Schema 版本（SemVer）。破坏性变更 = major + ADR。
 #: 2.0.0 由 ADR-0008 与 ADR-0009 共同定义；与 1.x 的内容哈希**不可比较**。
-CONTRACT_SCHEMA_VERSION = "2.0.0"
+#: 2.1.0（minor，ADR-0052 §4）：只增加可选字段；2.0.0 载荷保留自己的信封、哈希逐位不变，
+#: 已持久化对象按记录版本重放（ADR-0052 Implementation note — versioned replay）。
+CONTRACT_SCHEMA_VERSION = "2.1.0"
 
 #: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
 CONTRACT_SCHEMA_MAJOR = 2
+
+#: major 2 内**已发布**的版本（升序，最后一项即 `CONTRACT_SCHEMA_VERSION`）。持久化对象按其
+#: 记录版本重放时，记录版本必须在此之中（ADR-0052 Implementation note — versioned replay，V1）。
+PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = ("2.0.0", "2.1.0")
 
 # ---------------------------------------------------------------------------------------
 # 规范版本语法（ADR-0010 §D-14）
@@ -124,6 +148,12 @@ def parse_semver(value: str) -> re.Match[str]:
     if match is None:
         raise ValueError(f"非法版本号：{value!r}；必须是 ASCII 的完整 SemVer 2.0.0")
     return match
+
+
+def _semver_core(value: str) -> tuple[int, int, int]:
+    """`(major, minor, patch)` of a SemVer, for ordering envelope versions within one major."""
+    match = parse_semver(value)
+    return int(match.group("major")), int(match.group("minor")), int(match.group("patch"))
 
 
 def _require_utc(value: datetime) -> datetime:
@@ -276,6 +306,72 @@ class FrozenMapping[K, V](Mapping[K, V]):
         )
 
 
+# ---------------------------------------------------------------------------------------
+# 精确小数（ADR-0052 §1，D-FLOAT）
+#
+# 进入内容哈希的验证数值的**精确**表示：JSON 中是字符串，规范形式唯一——无指数、无多余的
+# 前导 / 尾随零、`-0` 归一为 `0`。构造时拒绝浮点输入（二进制展开不是被表达的十进制数）、
+# 布尔、NaN 与 ±Infinity。Python 侧是 `Decimal`；`Decimal` / `int` 输入按值归一，字符串输入
+# 必须**已经**是规范形式（线格式只有一种写法，非规范文本 fail closed）。
+# ---------------------------------------------------------------------------------------
+
+#: 规范十进制文本：`0`，或无前导零的整数部分 + 可选的、不以 0 结尾的小数部分；负号不与 0 同现。
+EXACT_DECIMAL_PATTERN = r"^(?:0|-?[1-9][0-9]*(?:\.[0-9]*[1-9])?|-?0\.[0-9]*[1-9])$"
+_EXACT_DECIMAL_RE = re.compile(EXACT_DECIMAL_PATTERN)
+
+
+def exact_decimal_text(value: Decimal) -> str:
+    """有限 `Decimal` 的规范文本（`EXACT_DECIMAL_PATTERN`）；同值必同文本。"""
+    if not value.is_finite():
+        raise ValueError("精确小数必须有限（ADR-0013）")
+    if value.is_zero():
+        return "0"
+    text = format(value, "f")  # 不用 normalize()：它按上下文精度（28 位）舍入
+    if "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def exact_decimal(value: object) -> Decimal:
+    """`ExactDecimal` 的输入规则：`Decimal` / `int` 按值、规范文本按字面；其余一律拒绝。"""
+    if isinstance(value, bool):
+        raise ValueError("布尔值不是精确小数")
+    if isinstance(value, float):
+        raise ValueError(
+            "精确小数不接受浮点输入（ADR-0052 §1）：请传 Decimal、int 或规范十进制文本"
+        )
+    if isinstance(value, int):
+        return Decimal(value)
+    if isinstance(value, Decimal):
+        if not value.is_finite():
+            raise ValueError("精确小数必须有限（ADR-0013）")
+        return Decimal(exact_decimal_text(value))
+    if isinstance(value, str):
+        if _EXACT_DECIMAL_RE.fullmatch(value) is None:
+            raise ValueError(f"精确小数的文本必须是规范形式（无指数、无多余零、无 -0）：{value!r}")
+        try:
+            return Decimal(value)
+        except InvalidOperation as exc:  # pragma: no cover - 正则已保证可解析
+            raise ValueError(f"不是十进制数：{value!r}") from exc
+    raise ValueError(f"精确小数只接受 Decimal、int 或规范十进制文本，收到 {type(value).__name__}")
+
+
+#: 精确小数（ADR-0052 §1）：Python 为 `Decimal`，JSON 为规范十进制字符串。
+#: 数值范围（例如 `[0, 1]`）是字段自己的运行时约束；导出的 Schema 只表达字符串形状与规范文本
+#: pattern（数值关键字无法作用于字符串，同 `PositiveDuration` 的诚实边界）。
+ExactDecimal = Annotated[
+    Decimal,
+    BeforeValidator(exact_decimal),
+    PlainSerializer(exact_decimal_text, return_type=str),
+    WithJsonSchema({"type": "string", "pattern": EXACT_DECIMAL_PATTERN}),
+]
+
+
+def omit_none(value: object) -> bool:
+    """ADR-0052 / ADR-0054：可选字段为 `None` 时从载荷中省略，使既有载荷与哈希逐位不变。"""
+    return value is None
+
+
 def canonical_json(payload: Any) -> str:
     """规范化 JSON：排序键、无多余空白、非 ASCII 原样保留（02-domain.md §3）。
 
@@ -290,7 +386,93 @@ def canonical_json(payload: Any) -> str:
 
 def content_hash(payload: Any) -> str:
     """规范化 JSON 的 SHA-256（02-domain.md §1）。"""
-    return hashlib.sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+    return _sha256_text(canonical_json(payload))
+
+
+def _sha256_text(text: str) -> str:
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def _canonical_object_with_fragments(
+    payload: Mapping[str, Any], fragments: Mapping[str, str]
+) -> str:
+    """`canonical_json({**payload, **fragments 所代表的值})`，其中 `fragments` 已是规范 JSON 文本。
+
+    与 `canonical_json` **逐字节相同**：紧凑分隔符下 JSON 值的编码与其所在位置无关，
+    `sort_keys` 对 `str` 键就是按键排序（键唯一），键本身用同一编码器编码。
+    只供 `Contract` 在已校验的嵌套实例上复用其规范 JSON（G3-P2，纯性能）。
+    """
+    encoded = {key: canonical_json(value) for key, value in payload.items()}
+    if encoded.keys() & fragments.keys():
+        raise ValueError("fragment 键与载荷键重复")
+    encoded.update(fragments)
+    body = ",".join(f"{canonical_json(key)}:{encoded[key]}" for key in sorted(encoded))
+    return "{" + body + "}"
+
+
+def _memo_get(slot: Any, model: BaseModel) -> str | None:
+    """读取一个契约实例上的记忆值；实例的顶层字段在记忆之后被换过则视为无效。
+
+    记忆值与 `(__dict__ 对象, 各字段值对象)` 的**身份**绑定：`__init__` 重入、`__setstate__`
+    （二者都换掉 `__dict__`）、`object.__setattr__` / `__dict__[...]` 改写顶层字段都会使其失效。
+    """
+    try:
+        fields_dict, fields, value = slot.__get__(model)
+    except AttributeError:
+        return None
+    current = model.__dict__
+    if fields_dict is not current or len(fields) != len(current):
+        return None
+    for remembered, now in zip(fields, current.values(), strict=True):
+        if remembered is not now:
+            return None
+    return value  # type: ignore[no-any-return]
+
+
+def _memo_set(slot: Any, model: BaseModel, value: str) -> str:
+    current = model.__dict__
+    slot.__set__(model, (current, tuple(current.values()), value))
+    return value
+
+
+#: 重建作用域的契约版本（ADR-0052 versioned replay，机制）；`None` = 不在任何重建作用域内。
+_SCOPED_SCHEMA_VERSION: ContextVar[str | None] = ContextVar(
+    "hlens_contract_schema_version", default=None
+)
+
+
+@contextmanager
+def contract_schema_version_scope(version: str) -> Iterator[str]:
+    """重建 / 校验**已持久化**对象时，按其记录版本构造契约对象（ADR-0052 versioned replay）。
+
+    只用于重建已提交的对象（Codex M0 复核条件 1）：作用域内构造、且**缺省** `schema_version`
+    的契约对象（含嵌套的字典形式子对象）取 `version`；显式给出的版本与已构造的嵌套对象一律不改写
+    （条件 2）。离开作用域即由 context manager 恢复（`ContextVar` 的 token，`finally` 中复位；
+    线程 / 协程各自独立，可嵌套）。无作用域时构造行为与没有本机制时逐位相同，字段默认值与
+    JSON Schema 不变。
+
+    `version` 必须是已发布版本（`PUBLISHED_CONTRACT_SCHEMA_VERSIONS`），否则拒绝（条件 3）：
+    本代码从未发布的版本无法被它忠实重建。新写入组的写入者不得在作用域内运行（见
+    `scoped_contract_schema_version`，作用域泄漏由写入者 fail closed）。
+    """
+    if not isinstance(version, str) or version not in PUBLISHED_CONTRACT_SCHEMA_VERSIONS:
+        raise ValueError(
+            f"契约版本 {version!r} 不是已发布版本 {list(PUBLISHED_CONTRACT_SCHEMA_VERSIONS)}："
+            "无法按它重建"
+        )
+    token = _SCOPED_SCHEMA_VERSION.set(version)
+    try:
+        yield version
+    finally:
+        _SCOPED_SCHEMA_VERSION.reset(token)
+
+
+def scoped_contract_schema_version() -> str | None:
+    """当前生效的重建作用域版本；不在任何重建作用域内时为 `None`。
+
+    新写入组的写入者据此检测作用域泄漏：新对象永不继承历史版本（Codex M0 复核条件 1 / 3）。
+    """
+    return _SCOPED_SCHEMA_VERSION.get()
 
 
 class Contract(BaseModel):
@@ -311,12 +493,53 @@ class Contract(BaseModel):
         frozen=True, extra="forbid", str_strip_whitespace=True, allow_inf_nan=False
     )
 
+    #: 内容哈希与规范 JSON 的逐实例记忆（G3-P2，纯性能，不改变任何哈希 / 相等 / 校验语义）。
+    #: 用普通 slot 而**不是** Pydantic 私有属性：私有属性参与 `__eq__`、`__copy__` 与 pickle，
+    #: 会让"算过哈希"的实例与内容相同的实例不相等；slot 不参与三者，复制 / 反序列化得到的
+    #: 实例一律从空记忆开始。`__weakref__` 保留基类原有的弱引用能力。
+    __slots__ = ("__weakref__", "_content_hash_memo", "_canonical_dump_memo")
+
     schema_version: str = Field(default=CONTRACT_SCHEMA_VERSION, pattern=SEMVER_PATTERN)
 
     def content_hash(self) -> str:
-        """按语义内容计算哈希；排除逐模型声明的非语义字段。"""
-        payload = self.model_dump(mode="json", exclude=self._non_semantic_fields())
-        return content_hash(payload)
+        """按语义内容计算哈希；排除逐模型声明的非语义字段。
+
+        每个实例只计算一次（契约 frozen，ADR-0008；`model_copy(update=...)` 重新构造，ADR-0010）。
+        记忆值与实例顶层字段的对象身份绑定（见 `_memo_get`），顶层字段被绕过 frozen 改写后
+        会重新计算。**诚实边界**同 ADR-0008 决策 2：直接改写嵌套对象内部（例如
+        `FrozenMapping._data`，或对嵌套契约 `object.__setattr__`）不在只读承诺之内，
+        也不被记忆检测。
+        """
+        memo = _memo_get(_CONTENT_HASH_MEMO, self)
+        if memo is not None:
+            return memo
+        return _memo_set(_CONTENT_HASH_MEMO, self, _sha256_text(self._semantic_canonical_json()))
+
+    def _semantic_canonical_json(self) -> str:
+        """内容哈希的输入：排除非语义字段后的 `model_dump(mode="json")` 的规范 JSON。
+
+        子类只可为**性能**覆写，结果必须与本实现逐字节相同（见 `FeatureRequest`）。
+
+        `context=CONTENT_HASH_CONTEXT`（ADR-0052 §1）：只有 `ExactBacked` 模型读取它——
+        精确兄弟字段存在时把派生的浮点字段移出**哈希载荷**（嵌套同样生效）；其他模型的
+        dump 与不传 context 时逐字节相同，因此既有哈希不变。
+        """
+        return canonical_json(
+            self.model_dump(
+                mode="json", exclude=self._non_semantic_fields(), context=CONTENT_HASH_CONTEXT
+            )
+        )
+
+    def _canonical_dump_json(self) -> str:
+        """完整 `model_dump(mode="json")`（不排除任何字段）的规范 JSON，逐实例记忆。
+
+        这正是该实例作为**同一声明类型**的嵌套字段出现在父契约 dump 中的片段，
+        供父契约在构造内容哈希输入时复用（`_canonical_object_with_fragments`）。
+        """
+        memo = _memo_get(_CANONICAL_DUMP_MEMO, self)
+        if memo is not None:
+            return memo
+        return _memo_set(_CANONICAL_DUMP_MEMO, self, canonical_json(self.model_dump(mode="json")))
 
     def model_copy(self, *, update: Mapping[str, Any] | None = None, deep: bool = False) -> Self:
         """复制契约；**带 `update` 时重新走完整校验**（ADR-0010 §D-13）。
@@ -334,6 +557,60 @@ class Contract(BaseModel):
             return super().model_copy(deep=deep)
         payload: dict[str, Any] = {**self.__dict__, **dict(update)}
         return type(self).model_validate(payload)
+
+    #: 本模型在 minor 中新增的字段 → 引入它的版本（ADR-0052 §4：新字段不得伪装成旧版本）。
+    #: 字段"存在"= 出现在载荷中：值不为 `None`，且字段的 `exclude_if` 不把它省略
+    #: （例如 ADR-0054 的 `remainders` 为空元组时省略，即不存在）。
+    _FIELDS_SINCE: ClassVar[Mapping[str, str]] = {}
+    #: 已有字段在 minor 中新增的取值 → 引入它的版本（例如 ADR-0054 的新执行模型字面量）。
+    _VALUES_SINCE: ClassVar[Mapping[str, Mapping[object, str]]] = {}
+    #: 整个模型在 minor 中新增时，引入它的版本；`None` = 自 2.0.0 起。
+    _MODEL_SINCE: ClassVar[str | None] = None
+
+    def _field_in_payload(self, name: str) -> bool:
+        value = getattr(self, name)
+        if value is None:
+            return False
+        exclude_if = type(self).model_fields[name].exclude_if
+        return not (exclude_if is not None and exclude_if(value))
+
+    @model_validator(mode="after")
+    def _fields_exist_at_the_envelope_version(self) -> Self:
+        """信封版本早于某字段 / 取值（或模型）的引入版本时拒绝（ADR-0052 §4、Codex K3）。
+
+        例如 2.0.0 信封的 `GateResult` 不能带 `value_exact`：旧读者不认识它，新字段只随 2.1.0 发布。
+        """
+        if self._MODEL_SINCE is None and not self._FIELDS_SINCE and not self._VALUES_SINCE:
+            return self
+        envelope = _semver_core(self.schema_version)
+        if self._MODEL_SINCE is not None and envelope < _semver_core(self._MODEL_SINCE):
+            raise ValueError(
+                f"{type(self).__name__} 自 {self._MODEL_SINCE} 引入，不能出现在 "
+                f"{self.schema_version} 信封中（ADR-0052 §4）"
+            )
+        for name, since in self._FIELDS_SINCE.items():
+            if envelope < _semver_core(since) and self._field_in_payload(name):
+                raise ValueError(
+                    f"{name} 自 {since} 引入，不能出现在 {self.schema_version} 信封中"
+                    "（ADR-0052 §4）"
+                )
+        for name, values in self._VALUES_SINCE.items():
+            since_value = values.get(getattr(self, name))
+            if since_value is not None and envelope < _semver_core(since_value):
+                raise ValueError(
+                    f"{name}={getattr(self, name)!r} 自 {since_value} 引入，不能出现在 "
+                    f"{self.schema_version} 信封中（ADR-0052 §4）"
+                )
+        return self
+
+    @model_validator(mode="before")
+    @classmethod
+    def _scoped_schema_version(cls, data: Any) -> Any:
+        """在 `contract_schema_version_scope` 内，缺省的信封取作用域版本（否则不改动输入）。"""
+        scoped = _SCOPED_SCHEMA_VERSION.get()
+        if scoped is not None and isinstance(data, dict) and "schema_version" not in data:
+            return {**data, "schema_version": scoped}
+        return data
 
     @field_validator("schema_version")
     @classmethod
@@ -361,6 +638,80 @@ class Contract(BaseModel):
         `occurred_at` 规则：`run_id`、`subject`、授权与审计时间都可能是语义。
         """
         return {"created_at"}
+
+
+#: `Contract.__slots__` 的描述符：直接经描述符读写，绕开 Pydantic 的 `__getattr__` / `__setattr__`。
+_CONTENT_HASH_MEMO = Contract.__dict__["_content_hash_memo"]
+_CANONICAL_DUMP_MEMO = Contract.__dict__["_canonical_dump_memo"]
+
+
+#: 内容哈希的序列化 context（ADR-0052 §1）：`ExactBacked` 据此把派生浮点移出哈希载荷。
+CONTENT_HASH_CONTEXT: Final[Mapping[str, bool]] = FrozenMapping({"hlens.content_hash": True})
+
+
+def _as_exact(value: object) -> Decimal:
+    return value if isinstance(value, Decimal) else exact_decimal(value)
+
+
+def _float_matches_exact(float_value: object, exact_value: object) -> bool:
+    """浮点字段是否恰为精确兄弟字段的派生值（标量 / 序列逐项 / 映射逐键）。"""
+    if isinstance(exact_value, Mapping):
+        if not isinstance(float_value, Mapping) or set(float_value) != set(exact_value):
+            return False
+        return all(
+            _float_matches_exact(float_value[key], item) for key, item in exact_value.items()
+        )
+    if isinstance(exact_value, tuple):
+        if not isinstance(float_value, tuple) or len(float_value) != len(exact_value):
+            return False
+        return all(
+            _float_matches_exact(left, right)
+            for left, right in zip(float_value, exact_value, strict=True)
+        )
+    if float_value is None or isinstance(float_value, bool):
+        return False
+    if not isinstance(float_value, int | float):
+        return False
+    return float(float_value) == float(_as_exact(exact_value))
+
+
+class ExactBacked(Contract):
+    """带精确兄弟字段的契约（ADR-0052 §1，D-FLOAT）。
+
+    `_EXACT_SIBLINGS` 声明 `(浮点字段, 精确字段)` 对。精确字段可选、缺失时省略出载荷（旧载荷与
+    哈希逐位不变）；存在时：
+
+    - 浮点字段必须**恰为**其派生值（`float(exact)`；序列逐项、映射逐键且键集相同），否则拒绝；
+    - 内容哈希载荷排除该浮点字段（嵌套在父契约中同样排除）：身份只由精确值决定。
+      线格式（`model_dump`）仍保留浮点字段（弃用期兼容读者；ADR-0052 §1）。
+    """
+
+    _EXACT_SIBLINGS: ClassVar[tuple[tuple[str, str], ...]] = ()
+
+    @model_validator(mode="after")
+    def _exact_siblings_agree(self) -> Self:
+        for float_field, exact_field in self._EXACT_SIBLINGS:
+            exact_value = getattr(self, exact_field)
+            if exact_value is None:
+                continue
+            if not _float_matches_exact(getattr(self, float_field), exact_value):
+                raise ValueError(
+                    f"{float_field} 必须等于 {exact_field} 的派生浮点值（ADR-0052 §1）"
+                )
+        return self
+
+    @model_serializer(mode="wrap")
+    def _hash_payload_without_derived_floats(  # type: ignore[no-untyped-def]
+        self, handler: SerializerFunctionWrapHandler, info: SerializationInfo
+    ):
+        # 刻意不标注返回类型：标注会让 Pydantic 用它替换本模型导出的 JSON Schema。
+        data = handler(self)
+        context = info.context
+        if isinstance(context, Mapping) and context.get("hlens.content_hash") and data:
+            for float_field, exact_field in self._EXACT_SIBLINGS:
+                if getattr(self, exact_field) is not None:
+                    data.pop(float_field, None)
+        return data
 
 
 class Ref(Contract):

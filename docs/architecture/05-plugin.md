@@ -72,7 +72,25 @@ Phase 0 冻结的是本节的**概念层内容**：每类 Provider 的职责、�
 | **LLMProvider** | 文本生成/结构化提取 | prompt + schema → structured output | 不确定（需记录） |
 | **SyntheticMarketProvider** | 生成合成市场 | generator spec + seed → synthetic Canonical data | 必须（给定种子） |
 
+`FeatureProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 1 F4 交付（[ADR-0030](../adr/0030-feature-provider-contract.md)，
+02-domain.md §2.5）：执行器 `infrastructure/feature/runner.py` 对每个评估时刻只把 `available_time + available_lag <= t`、
+`knowledge_time <= knowledge_cutoff` 的输入交给 Provider；首批实现（bar 对数收益、滚动已实现波动率、滚动成交量和）在
+`plugins/features/`，窗口等参数属于各自 `FeatureSpec`，由 descriptor 中的 spec hash 绑定。
+
+`StrategyProvider`、`RiskProvider`、`BacktestProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 5 框架批次交付
+（[ADR-0038](../adr/0038-strategy-risk-backtest-providers.md)，02-domain.md §2.7）：回测器 v1 `plugins/backtest/BarBacktester`
+（下一根 bar 开盘成交，费率 + 滑点，只是模拟；可选执行模型含成交量上限剩余量跨 bar 结转
+`next_bar_open_participation`，[ADR-0054](../adr/0054-partial-fill-carry-over.md)）；研究期策略与风控在 `research/strategies/`，未晋升。
+`EventProvider` 的可执行 Protocol、DTO 与 contract suite 已于 Phase 3 交付（[ADR-0036](../adr/0036-event-provider-contract.md)，
+02-domain.md §2.8）：执行器 `infrastructure/event/runner.py` 对每个检查点只交出 `available_time + observable_lag <= t` 的输入，
+并要求相邻检查点的事件表一致（不得回填 / 撤回：不得未来确认）；首批实现（阈值穿越、波动率突破、状态切换，以及"A 后 B"、
+共现两个交互算子）在 `plugins/events/`，参数写入 `EventSpec.trigger` 的规范 JSON，由 spec hash 绑定。
+
 另有基础设施 Adapter（不属于研究插件）：`CollectorAdapter`、`StorageAdapter`、`CatalogAdapter`、`ComputeEngineAdapter`、`EventBusAdapter`。
+其中 `CollectorAdapter`、`StorageAdapter`、`CatalogAdapter` 的可执行 Protocol、DTO 与 provider-agnostic contract suite
+已于 Phase 1 B3 交付（02-domain.md §2.4、`tests/contract_suites/`），尚无实现；`ComputeEngineAdapter`、`EventBusAdapter`
+在首次消费时按同一节奏交付。三者中只有 Collector 可以联网，并在其 descriptor 中声明 HTTPS origin（§6）；该声明只用于
+审计与一致性核对，不是安全控制。
 
 ## 4. 插件清单（Manifest）
 

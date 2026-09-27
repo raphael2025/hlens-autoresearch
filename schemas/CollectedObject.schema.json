@@ -1,0 +1,116 @@
+{
+  "$defs": {
+    "ObjectRef": {
+      "additionalProperties": false,
+      "description": "已发布不可变对象的引用：逻辑 key + 持久 URI + SHA-256 + 字节数。\n\nURI 由实现生成（ADR-0021：业务代码不拼接绝对路径）。`ContentBlobRef` 仍是通用内容引用；\n本类型额外要求 key 与长度，供 Raw 记录与 `open_read` 核对。",
+      "properties": {
+        "schema_version": {
+          "default": "2.1.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "key": {
+          "maxLength": 1024,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._=-]{0,254}(?:/[A-Za-z0-9][A-Za-z0-9._=-]{0,254})*$",
+          "title": "Key",
+          "type": "string"
+        },
+        "uri": {
+          "pattern": "^(?:file:///|[a-z][a-z0-9+.-]*://[a-z0-9.-]+(?::[0-9]{1,5})?/)[!-~]+$",
+          "title": "Uri",
+          "type": "string"
+        },
+        "sha256": {
+          "pattern": "^[0-9a-f]{64}$",
+          "title": "Sha256",
+          "type": "string"
+        },
+        "size": {
+          "minimum": 0,
+          "title": "Size",
+          "type": "integer"
+        }
+      },
+      "required": [
+        "key",
+        "uri",
+        "sha256",
+        "size"
+      ],
+      "title": "ObjectRef",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "一个已发布对象及其最小来源证据。\n\n- `ref`：经 `StorageAdapter` 发布的不可变对象引用；\n- `symbol` 与 UTC 半开区间 `[coverage_start, coverage_end)`：该对象覆盖的范围；\n- `source_uri`、`retrieved_at`：从哪里、何时取得（`retrieved_at` 属知识轴证据，\n  不是 `available_time`）；\n- `source_sha256`：来源声明的校验和；给出时必须等于 `ref.sha256`；\n- `source_metadata`：原样保留的来源元数据（例如 HTTP `etag`），键为小写 token，\n  凭据形状的键被拒绝。",
+  "properties": {
+    "schema_version": {
+      "default": "2.1.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "ref": {
+      "$ref": "#/$defs/ObjectRef"
+    },
+    "symbol": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$",
+      "title": "Symbol",
+      "type": "string"
+    },
+    "coverage_start": {
+      "format": "date-time",
+      "title": "Coverage Start",
+      "type": "string"
+    },
+    "coverage_end": {
+      "format": "date-time",
+      "title": "Coverage End",
+      "type": "string"
+    },
+    "source_uri": {
+      "pattern": "^(?:https://[a-z0-9.-]+(?::[0-9]{1,5})?(?:[/?][!-~]*)?|file:///[!-~]+)$",
+      "title": "Source Uri",
+      "type": "string"
+    },
+    "retrieved_at": {
+      "format": "date-time",
+      "title": "Retrieved At",
+      "type": "string"
+    },
+    "source_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Source Sha256"
+    },
+    "source_metadata": {
+      "additionalProperties": false,
+      "patternProperties": {
+        "^[a-z0-9][a-z0-9-]{0,127}$": {
+          "type": "string"
+        }
+      },
+      "title": "Source Metadata",
+      "type": "object"
+    }
+  },
+  "required": [
+    "ref",
+    "symbol",
+    "coverage_start",
+    "coverage_end",
+    "source_uri",
+    "retrieved_at"
+  ],
+  "title": "CollectedObject",
+  "type": "object"
+}

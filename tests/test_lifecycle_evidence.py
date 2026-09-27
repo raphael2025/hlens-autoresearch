@@ -274,3 +274,24 @@ def test_history_schema_embeds_the_same_evidence_minimum() -> None:
         (REPO / "schemas" / "LifecycleHistory.schema.json").read_text(encoding="utf-8")
     )
     _assert_evidence_schema(committed["$defs"]["LifecycleTransition"])
+
+
+def test_validation_to_failed_needs_evidence_and_the_contract_does_not_read_it() -> None:
+    """ADR-0053 §3：新边与所有边一样要求至少一项非空证据（ADR-0019）；证据的**内容**
+    （报告 / Run、FailureRecord 哈希、轮次）由自动触发者执行，契约层不校验（D-27.3）。"""
+    edge = (LifecycleState.VALIDATION, LifecycleState.FAILED)
+    assert edge in ALLOWED_TRANSITIONS and edge not in HUMAN_APPROVAL_TRANSITIONS
+    for evidence in ((), ("",), ("  ",)):
+        with pytest.raises(ValidationError):
+            LifecycleTransition(**_payload(*edge, evidence=evidence))  # type: ignore[arg-type]
+    accepted = LifecycleTransition(
+        **_payload(  # type: ignore[arg-type]
+            *edge,
+            evidence=(
+                "validation_report:r-1",
+                "failure_record:" + "0" * 64,
+                "loop_round:test:0",
+            ),
+        )
+    )
+    assert accepted.approved_by is None

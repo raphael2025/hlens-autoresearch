@@ -1,0 +1,8 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "allowImportingTsExtensions": true
+  },
+  "include": ["src/lib", "src/**/*.test.tsx", "src/**/*.test-util.tsx", "test-types"],
+  "exclude": []
+}

@@ -138,3 +138,31 @@ Revalidation 使用**登记时的** Profile 版本；是否同时报告新版本
 - 正面：生产中的每个策略都能追溯到数据快照、代码和验证报告。
 - 负面：需要额外实现 Artifact 打包、Registry 与 Equivalence Gate（归入 Phase 0 契约 + Phase 5 实现）。
 - 对 ADR-0002：细化，不推翻。
+
+## Implementation note (2026-09-26)
+
+决策者 Claude Code（Opus），实现已 Accepted 的本 ADR；**不新增 ADR**；`core/`（契约、生命周期）、Schema、Constitution、Profile
+均不变；无网络、无 PostgreSQL、无真实数据；不触及执行 / 实盘。状态 **CODE_COMPLETE / DEBUG_PENDING**。
+
+1. **Strategy Registry**（`infrastructure/registry/`）：§7 的 Control Plane（PostgreSQL）+ 对象存储尚未可用，本批是**文件型替身**：
+   复用 `infrastructure.event_bus.journal.AppendOnlyJournal`（同一哈希链 JSON-lines 磁盘契约）记录 `artifact.registered` /
+   `equivalence.recorded` / `deployment.recorded` 三类记录；`blobs/` 为按 SHA-256 命名、只写一次的 golden 数据；`.lock`
+   单写者。追加与重放执行同一套规则：重复、悬空引用、未知类型、多余 / 缺失键、契约不成立、记录身份与内容哈希不符 →
+   拒绝（重放时整个 Registry 无法打开）；无任何编辑 / 删除操作。尾部整行截断须用目录外锚点（`anchor=`）发现。
+   放在 `infrastructure/`：只依赖 Domain，研究侧与生产侧都可使用而互不 import。迁往 PostgreSQL 仍待 D-01 / D-02。
+2. **Promotion service**（`research/promotion/`，Research Plane 一侧）：只从 StrategySpec、ValidationReport（每份 PASS；G0–G4 各有
+   报告评估；至少一份 `promotion_blocked_reason is None`，即含 G5 sealed OOS 的 PASS）、被报告引用的 ExperimentSpec（绑定该
+   spec 及其内容哈希、同一 Constitution / Profile、同一研究 commit）、依赖闭包（无冲突，覆盖 spec 的信号与风控）、生命周期
+   （合法历史、经人工批准的 OOS → PAPER，当前为 PAPER / PRODUCTION_CANDIDATE / ACTIVE）以及研究 Provider 在声明的 golden 输入上
+   **确定性**（跑两次逐字节相同）算出的 golden 输出构建 Artifact；任一缺失 / 非 PASS / 不符 → `PromotionRefused(reason)`，
+   不写任何东西、不产生部分 Artifact。今天 `research/strategies/library.py` 的策略**全部**以 `no_validation_report` 被拒（有测试）；2026-09-26 起 Promotion 还要求每份报告的 Profile 为 FROZEN 且带 `provenance.calibration_report`（C-A8），并要求报告含 ADR-0060 市场基准项——今天没有冻结的 Profile，所以即使给出完整的测试证据也以 `profile_not_frozen` 被拒（有测试）。
+3. **Golden 编码**（`infrastructure/registry/golden.py`，实现选择，非冻结）：在 StrategyProvider 层，"signals" = golden 请求
+   （`StrategyRequest`，含其信号观察序列与固定参数），"positions" = 每个请求的 `request_hash` + `TargetPosition` 序列，不含
+   Provider 身份。
+4. **Equivalence Gate**（`apps/promotion/`，Application Plane，不 import `research/`）：从 Registry 读取并核验 golden 数据，
+   在候选生产 Provider 上逐请求运行；`signals_match` = 每个回答通过 `check_answers`；`positions_match` = positions 载荷哈希
+   **逐字节**等于 `positions_hash`。契约的 `tolerance` 无声明语义，故为 `None`，比较为精确比较（`0.25` ≠ `0.2500`）。研究代码
+   类（模块根为 `research`）作为候选直接拒绝。`DeploymentRecord` 只在检查通过**且**已记录、同一生产代码无失败检查、策略处于
+   PRODUCTION_CANDIDATE / ACTIVE 时写入；`deployment_id` = §3 的 `{artifact_id, 生产 commit + tree, config_hash}` 规范 JSON 的
+   SHA-256（契约未冻结算法，这是本实现的选择）。部署记录只是审计记录，不运行任何东西。
+5. 未决问题 Q-1 / Q-2 / Q-3 / Q-7 不因本实现而决定；`strategies/`、`risk/`、`plugins/` 未放入任何策略。
