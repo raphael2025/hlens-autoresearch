@@ -1133,6 +1133,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 三处均对重复 snapshot ID 以 `CatalogIntegrityError` fail closed。PyIceberg adapter 的 `history()` 使用既有 Floyd 环检测和常量额外空间；`history_from()`、归档重放与 Channel Reconciler 优先走该能力。未提供优化 history 的自定义 catalog / 测试代理采用 visited 集合回退（额外 O(H) ID 存储）。正常无环遍历结果不变。独立代码复核完成；遵守统一验收安排，本项未运行测试、build、probe 或静态检查。
 - 该变更不触及 `core/`、契约、Schema、ADR 或冻结语义。代码与状态同步进入本地 `main` 后，比 `origin/main@44fe9a2` 超前 70 个提交；不推送。E1-CAP-1 及 Phase 1 验收状态不变。
 
+### 10.46 过时的 Phase 0.5 远端分支归档（2026-09-28）
+
+- 审计 `origin/wip/phase-0.5-knowledge@f375e95` 发现其整体基于旧提交线，不能整支合并：旧 ADR-0055 会把已 Accepted 决定退回 Proposed；旧 seed 会删除主线已固定的 `schema_version: 2.1.0`；其 LocalKnowledgeProvider 空库拒绝与主线允许空库用于恢复的既有行为冲突。分支也删除了主线上的其他 Phase / ADR 文件。
+- `c1d78a2` 的唯一 API 零结果测试可以留待统一验收批次；`2026-09-26-phase05-knowledge-audit.md` 是历史核验记录、含旧状态与旧测试报告，没有整篇迁入。`f375e95` 中的出版信息补充保留在归档对象中，待逐项核验来源后再择取。没有运行测试、build 或外部查询。
+- 开放 PR 实时盘点确认该分支没有关联 PR。先建立本地恢复引用 `refs/archive/2026-09-28/branches/remote/wip/phase-0.5-knowledge`，再删除远端 branch。远端 refs 现仅 `main` 与 PR #10 的 `fix/e1-cap1`；本地仍为 4 个分支、9 个 worktree。状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 71 个提交，未推送。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
