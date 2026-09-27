@@ -9,12 +9,15 @@ after G0 – G3, and the report view is canonical JSON.
 
 from __future__ import annotations
 
+import hashlib
 import json
-from datetime import timedelta
+from dataclasses import replace
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 
 import pytest
 
+from core.contracts.strategy import FillRemainder
 from core.domain.research import Verdict, derive_verdict
 from core.errors import ReasonCode
 from research.validation import (
@@ -30,12 +33,18 @@ from research.validation.gates import (
     PARAM_SOURCE_PREFIX,
     PROFILE_FIELD_MISSING,
     ProfileFieldMissing,
+    explicit_threshold,
     profile_value,
 )
 from research.validation.returns import PeriodReturns, TrialReturns
 from research.validation.robustness import (
+    CARRY_OVER_UNFILLED,
+    CapacityFill,
     CheckStatus,
+    RobustnessCheck,
     StateTrade,
+    VolumeSourceMismatch,
+    capacity_check,
     cross_asset_check,
     delay_stress_check,
     state_decomposition_check,
@@ -413,3 +422,119 @@ def test_report_view_is_canonical_json_for_visualization() -> None:
     assert checks["walk_forward"]["details"]["windows"]
     assert "param:capacity.max_participation_rate" in loaded["threshold_sources"]["explicit_params"]
     assert "significance.overfitting_threshold" in loaded["threshold_sources"]["profile"]
+
+
+# ---- ADR-0065 (B67): carry-over remainders left unfilled -------------------------------------
+
+_T = datetime(2026, 1, 1, tzinfo=UTC)
+_PARTICIPATION = explicit_threshold("capacity.max_participation_rate", 0.01)
+
+
+def _remainder(minute: int, remaining: str, *, requested: str = "10") -> FillRemainder:
+    requested_q, remaining_q = Decimal(requested), Decimal(remaining)
+    return FillRemainder(
+        instrument="TEST-USDT",
+        decision_time=_T + timedelta(minutes=minute),
+        requested_quantity=requested_q,
+        filled_quantity=requested_q - remaining_q.copy_sign(requested_q),
+        remaining_quantity=remaining_q,
+        ended_by="filled" if remaining_q == 0 else "end_of_data",
+        ended_at=_T + timedelta(minutes=minute + 1),
+    )
+
+
+def _checked(fills: tuple[CapacityFill, ...], **kwargs: object) -> RobustnessCheck:
+    return capacity_check(
+        rf.G4_TEST_ONLY_PROFILE,
+        fills,
+        len(fills),
+        max_participation=kwargs.pop("max_participation", _PARTICIPATION),  # type: ignore[arg-type]
+        min_capacity=None,
+        impact_coefficient=0.1,
+        **kwargs,  # type: ignore[arg-type]
+    )
+
+
+def _fills() -> tuple[CapacityFill, ...]:
+    _, trials = rf.momentum_family(3, "0.3")
+    return rf.capacity_fills(rf.best(trials).returns, Decimal(1_000_000))
+
+
+def _estimated(check: RobustnessCheck) -> list[tuple[str, str]]:
+    return [(g.gate_id, g.metric) for g in check.gates if g.gate_id == "G4.capacity.estimated"]
+
+
+#: sha256 of this capacity check's gates + details (``_payload_hash``) on the code before B67
+#: (``255ce1a``, which had no ``remainders`` parameter), computed twice on that source.
+PRE_B67_CAPACITY_PAYLOAD_HASH = "847eefcf40a70729c97c2dcf2bc21bf5d91e29b6cefcdddc089035360f14bf87"
+
+
+def _payload_hash(check: RobustnessCheck) -> str:
+    payload = {
+        "gates": [g.model_dump(mode="json") for g in check.gates],
+        "details": check.details,
+    }
+    return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
+
+
+def test_no_or_zero_remainders_leave_the_capacity_check_unchanged() -> None:
+    fills = _fills()
+    reference = _checked(fills)
+    assert "capacity" in reference.details
+    assert _payload_hash(reference) == PRE_B67_CAPACITY_PAYLOAD_HASH  # the pre-B67 payload
+    zero = (_remainder(0, "0"), _remainder(5, "0"))
+    for remainders in (None, (), zero):
+        check = _checked(fills, remainders=remainders)
+        assert check == reference
+        assert _payload_hash(check) == PRE_B67_CAPACITY_PAYLOAD_HASH
+
+
+def test_a_positive_remainder_is_inconclusive_and_computes_nothing() -> None:
+    fills = _fills()
+    remainders = (_remainder(0, "0"), _remainder(3, "2.5"), _remainder(7, "0.5", requested="4"))
+    check = _checked(fills, remainders=remainders)
+    assert [(g.gate_id, g.metric, g.verdict) for g in check.gates] == [
+        ("G4.capacity.estimated", CARRY_OVER_UNFILLED, Verdict.INCONCLUSIVE)
+    ]
+    assert check.gates[0].value == 2.0
+    assert "capacity" not in check.details
+    assert "impact_cost_per_period_at_capacity" not in check.details
+    assert check.details["carry_over_unfilled"] == {
+        "remainders": 2,
+        "first": {
+            "instrument": "TEST-USDT",
+            "decision_time": (_T + timedelta(minutes=3)).isoformat(),
+            "requested_quantity": "10",
+            "filled_quantity": "7.5",
+            "remaining_quantity": "2.5",
+            "ended_by": "end_of_data",
+            "ended_at": (_T + timedelta(minutes=4)).isoformat(),
+        },
+    }
+
+
+def test_carry_over_unfilled_keeps_its_place_among_the_estimated_reasons() -> None:
+    fills = _fills()
+    unfilled = (_remainder(3, "1"),)
+    # the participation limit is still reported first
+    missing_limit = _checked(fills, remainders=unfilled, max_participation=None)
+    assert _estimated(missing_limit) == [
+        ("G4.capacity.estimated", "profile_field_missing:capacity.max_participation_rate")
+    ]
+    # a volume-source conflict (ADR-0064) comes before it
+    first = fills[0]
+    conflict = VolumeSourceMismatch("TEST-USDT", first.time, Decimal(1), Decimal(2))
+    conflicted = (replace(first, source_mismatch=conflict), *fills[1:])
+    assert _estimated(_checked(conflicted, remainders=unfilled)) == [
+        ("G4.capacity.estimated", "bar_volume_source_mismatch")
+    ]
+    # it comes before a missing volume and before no trades
+    no_volume = (replace(first, bar_volume_notional=None), *fills[1:])
+    assert _estimated(_checked(no_volume, remainders=unfilled)) == [
+        ("G4.capacity.estimated", CARRY_OVER_UNFILLED)
+    ]
+    untraded = tuple(replace(fill, traded_fraction=Decimal(0)) for fill in fills)
+    assert _estimated(_checked(untraded)) == [("G4.capacity.estimated", "no_trades")]
+    assert _estimated(_checked(untraded, remainders=unfilled)) == [
+        ("G4.capacity.estimated", CARRY_OVER_UNFILLED)
+    ]

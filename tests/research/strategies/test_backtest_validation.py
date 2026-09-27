@@ -1162,6 +1162,92 @@ def test_a_mismatch_reaches_the_report_as_an_inconclusive_g4_gate(tmp_path: Path
 
 
 # =========================================================================================
+# ADR-0065 (B67): carry-over remainders left unfilled on the dataset path
+# =========================================================================================
+
+
+def _carry_over(market: SyntheticMarket, rate: str = "0.01") -> dict[str, object]:
+    """``_setup`` fields for a carry-over run (ADR-0054) on the proven, volume-carrying bars."""
+    model = ExecutionModel(max_participation_rate=Decimal(rate), carry_over=True)
+    candidate = library_entries()[0].candidate()
+    trials = CandidateTrialRunner(
+        candidate, _inputs(market, with_volume=True), BarBacktester(execution=model)
+    )
+    return {"trials": trials, "execution": model}
+
+
+def test_an_unfilled_carry_over_remainder_makes_capacity_inconclusive() -> None:
+    market = _market(seed=7, planted=True)
+    capacity, gates, backtest = _capacity(market, _proven(market), **_carry_over(market))
+    unfilled = [item for item in backtest.remainders if item.remaining_quantity > 0]
+    assert unfilled, "the TEST ONLY cap must leave a remainder"
+    assert _gates(gates) == [("G4.capacity.estimated", "carry_over_unfilled")]
+    assert gates[0].value == float(len(unfilled))
+    assert "capacity" not in capacity.details
+    record = capacity.details["carry_over_unfilled"]
+    assert isinstance(record, dict)
+    first = unfilled[0]
+    assert record["remainders"] == len(unfilled)
+    # no cross-instrument total: quantities of different instruments do not add
+    assert set(record) == {"remainders", "first"}
+    assert record["first"] == {
+        "instrument": first.instrument,
+        "decision_time": first.decision_time.isoformat(),
+        "requested_quantity": str(first.requested_quantity),
+        "filled_quantity": str(first.filled_quantity),
+        "remaining_quantity": str(first.remaining_quantity),
+        "ended_by": first.ended_by,
+        "ended_at": first.ended_at.isoformat(),
+    }
+
+
+def test_remainders_are_read_on_the_dataset_path_only() -> None:
+    market = _market(seed=7, planted=True)
+    fields = _carry_over(market)
+    # the same carry-over run on the synthetic path: not read, the check is as before
+    synthetic, gates, backtest = _capacity(market, None, **fields)
+    assert any(item.remaining_quantity > 0 for item in backtest.remainders)
+    assert "carry_over_unfilled" not in synthetic.details
+    assert ("G4.capacity.estimated", "carry_over_unfilled") not in _gates(gates)
+
+
+#: ``ValidationReport.content_hash()`` of the full evaluation on the code before B67 (``255ce1a``),
+#: computed twice on that source: the dataset path (default ``next_bar_open``, no remainders) and
+#: the synthetic path. B67 must reproduce them bit for bit.
+PRE_B67_DATASET_REPORT_HASH = "8ed6bf10ce3a1a2b1cab21d383468f92aece3603c74fcfb23006739d566b3a6a"
+PRE_B67_SYNTHETIC_REPORT_HASH = "f46de6b1b9c047e5743ff9d5676f3e640aea7f2f47b05f00092d7e43acdbbd76"
+
+
+def test_the_default_model_reports_are_the_pre_b67_ones(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    dataset, _ = _evaluate(market, tmp_path / "dataset", dataset_bars=_proven(market))
+    synthetic, _ = _evaluate(market, tmp_path / "synthetic")
+    assert dataset.validation is not None and synthetic.validation is not None
+    assert dataset.validation.report.content_hash() == PRE_B67_DATASET_REPORT_HASH
+    assert synthetic.validation.report.content_hash() == PRE_B67_SYNTHETIC_REPORT_HASH
+
+
+def test_the_default_model_has_no_remainders_and_is_unchanged() -> None:
+    market = _market(seed=7, planted=True)
+    synthetic = _capacity(market, None)
+    dataset = _capacity(market, _proven(market))
+    assert dataset[2].remainders == ()  # next_bar_open: no carry-over records
+    assert dataset[:2] == synthetic[:2]
+    assert "carry_over_unfilled" not in dataset[0].details
+    candidate = library_entries()[0].candidate()
+    setup = _setup(market, candidate, dataset_bars=_proven(market))
+    inp = PipelineBacktestValidator(setup).robustness_input(
+        candidate.spec, setup.trials.run(CHOSEN).backtest
+    )
+    assert inp.capacity_remainders == ()
+    synthetic_setup = _setup(market, candidate)
+    synthetic_inp = PipelineBacktestValidator(synthetic_setup).robustness_input(
+        candidate.spec, synthetic_setup.trials.run(CHOSEN).backtest
+    )
+    assert synthetic_inp.capacity_remainders is None
+
+
+# =========================================================================================
 # debugging pass (2026-09-26): optional multi-seed G1 negative controls through ValidatorSetup
 # =========================================================================================
 

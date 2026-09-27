@@ -828,6 +828,17 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 未运行：PostgreSQL 标记测试；B65 的两项真实 Uvicorn 测试仍因未安装而跳过（待 Raphael H12 批准）。
 - 冻结门禁（只覆盖 `255ce1a2fe76bc655901ad6e7960e8359bc54b34` = B63～B66；**不含** B67）：独立 detached checkout `.claude/worktrees/gate-255ce1a`，完整日志 `~/hlens-gate-logs/255ce1a/`。`START_SHA 255ce1a… dirty=0 2026-09-27T03:14:47Z`；`systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest -q -rs -m "not postgres" -p no:cacheprovider` → `7287 passed, 2 skipped, 136 deselected, 1 warning in 3212.68s (0:53:32)`，退出码 0；**2 skipped** 为预期的真实 Uvicorn 子进程测试（`tests/apps/test_api_server.py:218`：可选 api-server extra 未安装，安装待 Raphael 按 H12 批准），**不是通过**；`ruff check .` → `All checks passed!`；`ruff format --check .` → `765 files already formatted`；`mypy` → `Success: no issues found in 597 source files`；`uv lock --check --offline` → `Resolved 53 packages`；Schema 135 份 0 处变化；`openapi.json` 0 处变化；`api.d.ts` 0 处变化；`npm test` → lib 89 / 89、组件 110 / 110；`npm run build` ✓；全部退出码 0；`END_SHA 255ce1a… dirty=0 2026-09-27T04:08:42Z`。PostgreSQL 标记测试未运行。
 
+**B67 — ADR-0065（Accepted 2026-09-27，Codex）：G4 容量遇到结转未成交余量时失败关闭（数据集路径）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 缺口：ADR-0054 实施说明未做项"G4 容量检查未改读结转结果"——结转模型下目标可留有未成交余量，容量只看已执行成交，可能高估。
+- Codex 选方案 A：数据集路径上任一正余量 → `G4.capacity.estimated` INCONCLUSIVE `carry_over_unfilled`，不计算容量 / 冲击；无 / 零余量、合成路径、默认
+  `next_bar_open` 结果与哈希不变；复核决定不记录跨标的余量合计。先后：`profile_field_missing` → `bar_volume_source_mismatch` → `carry_over_unfilled` →
+  `bar_volume_missing` → `no_trades`。
+- 实施与测试：见 ADR-0065 Implementation note（B67）；权威基线：数据集路径报告 `8ed6bf10…`、合成路径报告 `f46de6b1…`、容量载荷 `847eefcf…`（B67 之前源码上两次计算一致）。
+- 原始运行记录（含失败）：见 ADR-0065 Implementation note 第 1～8 条；要点：第一次定向运行 `1 failed, 14 passed`（退出码 1，测试夹具违反有符号数量不变量）；
+  第一次基线计算在错误源码上运行、作废；最终代码完整回归 `1 failed, 719 passed`（退出码 1，ADR 索引缺 ADR-0065 行），补行后文档测试 `20 passed`（退出码 0）。
+- 未运行：PostgreSQL 标记测试。本批次在冻结门禁 `255ce1a` 之后，最终 HEAD 另做全量门禁。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |

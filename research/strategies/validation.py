@@ -995,6 +995,10 @@ class PipelineBacktestValidator:
             time_shifted=shifted,
             state_trades=self._state_trades(rerun, base),
             capacity_fills=self._capacity_fills(rerun),
+            # ADR-0065: the carry-over remainders are read on the dataset path only
+            capacity_remainders=(
+                None if self._setup.dataset_bars is None else rerun.backtest.remainders
+            ),
             per_asset=per_asset,
             declared_instruments=setup.declared_instruments,
             params=setup.robustness,

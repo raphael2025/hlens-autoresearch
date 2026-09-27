@@ -80,6 +80,7 @@ from decimal import Decimal
 from enum import StrEnum
 from typing import Final
 
+from core.contracts.strategy import FillRemainder
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, Verdict
 from research.validation.costs import multiplier
@@ -114,6 +115,7 @@ __all__ = [
     "SUBUNIVERSE_RULE",
     "ZERO_EXPOSURE_SINGLE_ASSET",
     "BAR_VOLUME_SOURCE_MISMATCH",
+    "CARRY_OVER_UNFILLED",
     "CapacityFill",
     "VolumeSourceMismatch",
     "CheckStatus",
@@ -885,6 +887,8 @@ def state_decomposition_check(
 
 #: ADR-0064: the supplied bar volume and the executed bar's proven volume disagree.
 BAR_VOLUME_SOURCE_MISMATCH: Final = "bar_volume_source_mismatch"
+#: ADR-0065: the executed run left carry-over remainders unfilled (dataset path).
+CARRY_OVER_UNFILLED: Final = "carry_over_unfilled"
 
 
 @dataclass(frozen=True)
@@ -922,6 +926,7 @@ def capacity_check(
     impact_conflict: tuple[float, float] | None = None,
     impact_declared_source: str = "param:capacity.impact_coefficient",
     impact_model: str | None = None,
+    remainders: Sequence[FillRemainder] | None = None,
 ) -> RobustnessCheck:
     """Capacity = ``max_participation * min(bar volume / traded fraction)`` over the fills.
 
@@ -958,6 +963,14 @@ def capacity_check(
     ``bar_volume_source_mismatch`` -- before, and instead of, ``bar_volume_missing`` -- and nothing
     is computed from either source (no capacity, impact or ``G4.capacity.required``); ``details``
     record the mismatch count, the missing count and the first mismatch.
+
+    ADR-0065 (dataset path): ``remainders`` are the executed run's ADR-0054 carry-over records
+    (``None``: not read -- the synthetic path). Any with ``remaining_quantity > 0`` makes
+    ``G4.capacity.estimated`` INCONCLUSIVE with ``carry_over_unfilled`` -- after a volume
+    source mismatch, before ``bar_volume_missing`` / ``no_trades`` -- and nothing is computed
+    from the partial fills; ``details`` record the count and the first unfilled remainder (no
+    cross-instrument total: quantities of different instruments do not add). No remainder, or only
+    filled (zero) ones, changes nothing.
     """
     model_name = (
         None
@@ -979,6 +992,7 @@ def capacity_check(
         details["turnover_per_period"] = turnover / periods if periods else None
         details["fills"] = len(traded)
     mismatched = [fill.source_mismatch for fill in traded if fill.source_mismatch is not None]
+    unfilled = [item for item in remainders or () if item.remaining_quantity > 0]
     if max_participation is None:
         missing.append("capacity.max_participation_rate")
         gates.append(missing_field_gate("G4.capacity.estimated", "capacity.max_participation_rate"))
@@ -998,6 +1012,23 @@ def capacity_check(
             inconclusive_gate(
                 "G4.capacity.estimated", BAR_VOLUME_SOURCE_MISMATCH, float(len(mismatched))
             )
+        )
+    elif unfilled:
+        first_unfilled = unfilled[0]
+        details["carry_over_unfilled"] = {
+            "remainders": len(unfilled),
+            "first": {
+                "instrument": first_unfilled.instrument,
+                "decision_time": first_unfilled.decision_time.isoformat(),
+                "requested_quantity": str(first_unfilled.requested_quantity),
+                "filled_quantity": str(first_unfilled.filled_quantity),
+                "remaining_quantity": str(first_unfilled.remaining_quantity),
+                "ended_by": first_unfilled.ended_by,
+                "ended_at": first_unfilled.ended_at.isoformat(),
+            },
+        }
+        gates.append(
+            inconclusive_gate("G4.capacity.estimated", CARRY_OVER_UNFILLED, float(len(unfilled)))
         )
     elif fills is None or any(fill.bar_volume_notional is None for fill in traded):
         gates.append(inconclusive_gate("G4.capacity.estimated", "bar_volume_missing", 0.0))

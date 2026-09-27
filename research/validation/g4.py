@@ -70,6 +70,7 @@ from datetime import timedelta
 from decimal import Decimal
 from typing import Final
 
+from core.contracts.strategy import FillRemainder
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, Verdict
 from research.validation.gates import (
@@ -195,6 +196,9 @@ class RobustnessInput:
     #: ``robustness.subuniverse_partition(declared_instruments)`` (``()`` when fewer than two
     #: sub-universes exist). ``None`` (default) = not declared cross-sectional.
     sub_universes: tuple[SubUniverse, ...] | None = None
+    #: ADR-0065: the executed run's ADR-0054 carry-over remainders on the dataset path; ``None``
+    #: (default: every synthetic caller) = not read, the capacity check is unchanged.
+    capacity_remainders: tuple[FillRemainder, ...] | None = None
 
     def __post_init__(self) -> None:
         if self.family_trial_count < 1:
@@ -443,6 +447,7 @@ def run_robustness(inp: RobustnessInput) -> RobustnessResult:
             impact_conflict=impact_conflict,
             impact_declared_source=impact_declared_source,
             impact_model=sourced.impact_model,
+            remainders=inp.capacity_remainders,
         ),
         "cross_asset": lambda: cross_asset_check(
             profile,
