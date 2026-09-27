@@ -129,6 +129,12 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|---|
 | D-UVICORN | ADR-0063（Codex 已决定用 Uvicorn 作本机只读 API 运行时）需要把 `uvicorn` 作为可选 `api-server` 依赖写入 `pyproject.toml` / `uv.lock` 并装入项目 `.venv`，这属于安装软件（CLAUDE.md §0 / H12） | Codex 选 A：只用本机缓存的 uvicorn 0.53.0、可选 extra、不触网；仓库改动（依赖声明、锁条目、入口、测试、文档）已完成 | 只剩安装与真实运行待 Raphael 明确授权（H12）；两项真实 Uvicorn 测试目前跳过、未运行 |
 
+**B66 G4 容量成交量来源（ADR-0064 Proposed，待 Codex 审阅措辞）**
+
+| ID | 问题 | 方案 | 状态 |
+|---|---|---|---|
+| D-VOLSRC | 数据集路径上 G4 容量所用的成交量（特征 manifest 的 `bar_volume`）可能与实际执行的价格 bar 的成交量不同，今天静默使用前者 | Codex 选 A：两者须精确相等，不一致即 INCONCLUSIVE（`bar_volume_source_mismatch`），缺值仍为 `bar_volume_missing`，合成路径不变 | ADR-0064 草案已提交，待 Codex 接受后实施 |
+
 **P10-FREEZE（已决定）**
 
 | ID | 问题 | 决定 | 边界 |

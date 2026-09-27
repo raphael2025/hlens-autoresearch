@@ -68,6 +68,7 @@
 | [0061](0061-interaction-dsl.md) | 事件交互 DSL（数据表达式树，编译到已审阅算子） | Accepted（2026-09-26；Claude 依 Raphael 授权）；已实施（B36），CODE_COMPLETE / DEBUG_PENDING |
 | [0062](0062-profile-freeze-registry.md) | Validation Profile 冻结登记（file-backed 追加式）作为 Promotion 的权威冻结来源 | Accepted（2026-09-27；Codex 依 Raphael 授权决定并接受，Q1 = A、Q2 = A）；已实施（B56），CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不等于 Phase 4 / 5 验收 |
 | [0063](0063-local-asgi-runtime-uvicorn.md) | 本机只读研究 API 的 ASGI 运行时：Uvicorn（仅 127.0.0.1，单 worker，可选 `api-server` 依赖） | Accepted（2026-09-27；Codex 决定）；实施（B65）待 Raphael 授权安装可选依赖 |
+| [0064](0064-g4-capacity-volume-source-consistency.md) | G4 容量检查的成交量来源一致性：数据集路径上 `bar_volume` 与已执行 `PriceBar.volume` 冲突即 INCONCLUSIVE（`bar_volume_source_mismatch`） | Proposed（2026-09-27；Codex 选 B66 选项 A，措辞待 Codex 审阅；未实施） |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

@@ -816,6 +816,14 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - **未运行 / 待 Raphael 批准**：`uv sync --offline --extra api-server && uv run --offline --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py`（真实 Uvicorn 子进程两项）。不得记为通过。
 - 注意：默认全量门禁此后会多出 2 个带原因的 skip（真实 Uvicorn 子进程测试），默认依赖与安装内容不变。
 
+**B66 — ADR-0064（Proposed）：G4 容量的成交量来源一致性（Codex 选项 A）**（ADR 草案已提交；**待 Codex 审阅措辞后才实施**）
+
+- 发现：数据集路径上 G4 容量只读调用方的 `bar_volume`（研究循环取自特征 manifest 观察），而已执行的 `DatasetPriceBars` 自 B61 起带证明过的
+  `PriceBar.volume`；两者冲突时今天静默使用前者。
+- Codex 选 A：两来源在确切 `(instrument, fill_time)` 上 `Decimal` 精确相等 → 结果不变；不一致 → `G4.capacity.estimated` INCONCLUSIVE
+  `bar_volume_source_mismatch`，不计算容量与冲击；缺值 → 保持 `bar_volume_missing`；合成路径逐字节不变；不改阈值 / Profile / 宪法 / 契约 / Schema。
+- 本提交只含 ADR 草案与索引 / 计划 / 状态同步；无代码。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
