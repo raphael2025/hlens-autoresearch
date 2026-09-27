@@ -6,6 +6,9 @@ never modified. Mutation may only move a parameter inside its declared search sp
 count of Constitution C-T1 covers it). ``require_new_version`` is the guard against in-place
 changes of an ACTIVE strategy: any content change without a new version and a lineage link is
 refused. Retirement produces the append-only ``RetirementRecord``.
+
+``combine`` is fail closed when parent search spaces, risk policies or applicable instrument
+sets conflict (ADR-0069); it never silently chooses one parent's safety boundary.
 """
 
 from __future__ import annotations
@@ -68,19 +71,57 @@ def combine(first: StrategySpec, second: StrategySpec, name: str) -> Offspring:
     if first.ref == second.ref:
         raise EvolutionError("a combination needs two different strategies")
     shared = set(first.params) & set(second.params)
-    clash = sorted(key for key in shared if first.params[key] != second.params[key])
+    clash = sorted(
+        key
+        for key in shared
+        if type(first.params[key]) is not type(second.params[key])
+        or first.params[key] != second.params[key]
+    )
     if clash:
         raise EvolutionError(f"parameters {clash} disagree between the parents")
+    shared_spaces = set(first.param_search_space) & set(second.param_search_space)
+    space_clash = sorted(
+        key
+        for key in shared_spaces
+        if len(first.param_search_space[key]) != len(second.param_search_space[key])
+        or any(
+            type(left) is not type(right) or left != right
+            for left, right in zip(
+                first.param_search_space[key], second.param_search_space[key], strict=True
+            )
+        )
+    )
+    if space_clash:
+        raise EvolutionError(f"parameter search spaces {space_clash} disagree between the parents")
+    if first.risk_policy != second.risk_policy:
+        raise EvolutionError("risk_policy must match exactly between the parents")
+    if first.applicable_instruments != second.applicable_instruments:
+        raise EvolutionError("applicable_instruments must match exactly between the parents")
+
+    params = {**first.params, **second.params}
+    param_search_space = {**first.param_search_space, **second.param_search_space}
+    outside_space = sorted(
+        key
+        for key, value in params.items()
+        if key in param_search_space
+        and not any(
+            type(value) is type(candidate) and value == candidate
+            for candidate in param_search_space[key]
+        )
+    )
+    if outside_space:
+        raise EvolutionError(f"parameters {outside_space} are outside the combined search spaces")
+
     signals = tuple(sorted({*first.signals, *second.signals}, key=str))
     child = StrategySpec.model_validate(
         {
             "name": name,
             "version": "1.0.0",
             "signals": signals,
-            "params": {**first.params, **second.params},
-            "param_search_space": {**first.param_search_space, **second.param_search_space},
-            "risk_policy": first.risk_policy or second.risk_policy,
-            "applicable_instruments": first.applicable_instruments or second.applicable_instruments,
+            "params": params,
+            "param_search_space": param_search_space,
+            "risk_policy": first.risk_policy,
+            "applicable_instruments": first.applicable_instruments,
             "lineage": (first.ref, second.ref),
         }
     )

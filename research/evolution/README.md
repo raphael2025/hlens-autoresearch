@@ -5,7 +5,7 @@ Phase 12 Strategy Evolution（[ADR-0045](../../docs/adr/0045-strategy-evolution.
 
 | 模块 | 内容 |
 |---|---|
-| `operators.py` | `mutate`（只在声明的搜索空间内移动参数）、`combine`（参数冲突即拒绝）、`require_new_version`（拒绝就地修改 ACTIVE）、`retire`（追加式 `RetirementRecord`） |
+| `operators.py` | `mutate`（只在声明的搜索空间内移动参数）、`combine`（参数 / 重叠搜索空间 / risk policy / 适用标的冲突即按 ADR-0069 拒绝）、`require_new_version`（拒绝就地修改 ACTIVE）、`retire`（追加式 `RetirementRecord`） |
 | `lineage.py` | `LineageGraph`：祖先 / 后代 / 缺失祖先；可选持久（哈希链只追加日志） |
 | `proposals.py` | 替换提案：`propose_replacement`、`ReplacementProposal`、`ProposalLedger`（单写者锁、可选外部锚点 `ProposalAnchor`） |
 | `replacement_job.py` | 替换提案作业 `propose_replacements`（循环之外；见下） |
