@@ -12,7 +12,7 @@
 | 当前子阶段 | **全阶段框架实现（Raphael 2026-09-25 指示）：✅ 框架代码全部完成，🔨 逐个调试中**。Phase 0.5、2～14 均为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Phase 1 实现与红队返修完成，待 Codex / Raphael 验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 Phase 1 待验收（REVIEW_PENDING）；其余 Phase 框架已实现、未验证；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B58，B55 = ADR-0055，契约 2.2.0；B56 = ADR-0062 Profile 冻结登记；B57 = 冻结 WIP 门禁与证据复现；B58 = 路由证据模式反向对照项；B59 = Promotion 反向对照项；B60 = 控制台对真实后端 502 / 500 的冒烟；B61 = 数据集回测 bar 带成交量（ADR-0054）；均经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B61；B62 是 P10 证据模式与 Profile 冻结登记边界的 Codex 决定，不是代码批次）；均经本地整合分支 fast-forward 推送到 `wip/all-code-completion`；状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**）；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -54,7 +54,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 7 | Dynamic Discovery | 🧱 框架已实现（ADR-0040）；LLM 调用内容存储与循环内可取回核对；严格草稿、被拒调用记录、声明式批次、知识检索来源（B33）CODE_COMPLETE / DEBUG_PENDING |
 | 8 | Validation & Robustness | 🧱 框架已实现（ADR-0041）；G4 逐检查异常隔离、多标的验证、横截面跨资产（ADR-0059，B29）CODE_COMPLETE / DEBUG_PENDING |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
-| 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58）CODE_COMPLETE / DEBUG_PENDING |
+| 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58），**不要求 Profile 冻结登记**（B62；冻结权威门只在 Promotion，ADR-0062）CODE_COMPLETE / DEBUG_PENDING |
 | 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；总线外部锚点、任务只读 API、ADR-0053（VALIDATION → FAILED）、可选条件假设、跨进程测试与状态目录单写者锁、劣化检查报告（B32 / B34）CODE_COMPLETE / DEBUG_PENDING |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045）；替换提案（恒待人工批准）与循环之外的替换提案作业（证据逐份核验、账本单写者锁 + 外部锚点，B49）CODE_COMPLETE / DEBUG_PENDING |
 | 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046，实盘结构上被拒绝）；持久审计、非空审计重开即急停、只读重放、风险 / 告警重放（B31）CODE_COMPLETE / DEBUG_PENDING |
@@ -122,6 +122,12 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 每个恢复点通过严格门禁后快进推送 WIP 备份分支 `wip/phase-1-unreviewed`；不合并 `main`、不打 tag
 
 ## 6. 当前待决策
+
+**P10-FREEZE（已决定）**
+
+| ID | 问题 | 决定 | 边界 |
+|---|---|---|---|
+| P10-FREEZE | 路由证据模式是否要求 `ProfileStatus.FROZEN` 与 `ProfileFreezeRegistry`？ | **Codex 选否**（2026-09-27，依 Raphael 授权）：路由证据模式只证明研究层报告条件；不读取冻结登记 | Profile 冻结登记仍是 Promotion 的权威门（ADR-0005 / ADR-0062）；路由通过不证明 Profile 已冻结、策略已晋升或具备生产资格，见 ADR-0043 B62 |
 
 **D3A 提出的决定（已决定，部分实施）**
 
@@ -234,6 +240,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | B62（Codex 决定）：P10 证据模式不要求 Profile 冻结登记；这属于研究层路由证据，与 Promotion 的冻结权威门分开 | 无代码 / 契约 / Schema 改动；生产资格仍须 ADR-0005 / ADR-0062 Promotion 与 Control Plane；已记录于 ADR-0043 |
 | 2026-09-27 | B61：数据集回测 bar 带上经证明的 Canonical 成交量（ADR-0054 已批准的遗留项）；部分成交结转模型在真实数据集 bar 上不再因缺成交量被拒 | CODE_COMPLETE / DEBUG_PENDING；数据集回测请求哈希因此改变（预期，旧空值载荷不变）；PostgreSQL 测试未运行；不是 Phase 4 / 5 验收 |
 | 2026-09-27 | B60：控制台冒烟也访问故障后端：知识检索 502、任务日志 500、报告兜底 500 经控制台客户端与页面渲染显示为错误状态，不泄露服务器路径 | 只改测试；仍不是浏览器验收（人工浏览器验收仍未做）；冻结 HEAD `dfa432b`（B57～B60）全量非 PostgreSQL 门禁 7253 passed，全部检查退出码 0 |
 | 2026-09-27 | B59：Promotion 在 Profile 要求反向对照时，拒绝评估了 G2 却缺少 `G2.inverse_control` 的报告（`inverse_control_missing`，只要求存在） | CODE_COMPLETE / DEBUG_PENDING；无契约 / Schema / 阈值 / Profile 数值变化；登记为空，所有晋升仍被拒 |

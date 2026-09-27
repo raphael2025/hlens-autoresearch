@@ -804,7 +804,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 5 | Promotion 要求 FROZEN 且带校准报告的 Profile 与 ADR-0060 市场基准项（B51）；冻结以 ADR-0062 的追加式、带锚点的 Profile 冻结登记为权威（B56，ADR-0062 Accepted）；Profile 要求时还须有 `G2.inverse_control`（B59） | 今天登记为空 → 所有晋升被拒（设计如此）；批准人只是声明，登记不是生产 Control Plane |
 | 0.5 | 按标签 / 资产检索（ADR-0055 Accepted，契约 2.2.0，含控制台；B55） | Phase 0.5 未验收：种子尚无具名人工审阅的标签 / 资产 |
 | 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告已在原基线 `dd6c8e1` 上逐字节复现（B57，只作证据） |
-| 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | 证据模式不要求 FROZEN |
+| 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | **已决定（B62，Codex）**：不要求 Profile `FROZEN` / 冻结登记；冻结登记仅由 Promotion 作权威核验，路由通过不构成生产资格证明（ADR-0043） |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
 | 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案（有意：每个 family 只评估一次密封 OOS；未决设计边界见 B57）；锚点不认证新增行 |
 | 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做（控制台对 502 / 500 的呈现已经真实后端 + 服务端渲染验证，B60，非浏览器）；生产 ASGI 服务器未选定 |
@@ -816,4 +816,10 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 **最终门禁（审计后续，HEAD `3be497b`）**：在该提交的独立 detached checkout 中（本工作树的门禁被外部按命令行模式发出的 SIGTERM 连续终止四次——三次约 2.5 分钟、一次 25 分钟，均退出码 143、无 OOM、峰值内存 < 700 MB，不计为结果；已通知相关会话），
 经 `pytest.main(["-q", "-m", "not postgres", "-p", "no:cacheprovider", "tests"])` 包装脚本、6 GB 上限运行 → **7031 passed, 136 deselected, 1 warning in 3048.69s (0:50:48)，退出码 0**（无 skip：控制台 live smoke 也实际运行）。
 同一 HEAD：`ruff check .` 通过；`ruff format --check .` → 751 files already formatted；`mypy` → no issues in 590 source files；`uv lock --check --offline` 通过；Schema 135 份（`core/` / `schemas/` 自 `c36005b` 未变）；`npm test` → lib 80 / 80、组件 105 / 105；`npm run build` ✓。
+
+### 10.9 Codex 决策（2026-09-27）：P10 证据模式不要求 Profile 冻结登记（B62）
+
+- 决定：`research/router` 的证据模式是研究层纸面资格检查；它核验报告哈希、subject、PASS、G5、报告所用 Profile 身份 / 内容哈希，以及该 Profile 声明所要求的 ADR-0060 G2 报告项，但**不**要求 Profile `status = FROZEN`，也不读取 `ProfileFreezeRegistry`。
+- 原因：Profile 冻结登记是 ADR-0062 为 Promotion 定义的权威生产晋升门；将其加入研究层路由会把研究证据检查与生产晋升耦合。Router 的 lifecycle 映射仍由调用方提供，故该模式通过只表明研究报告满足路由前提，不证明 Profile 已冻结、策略已晋升或具备生产资格。
+- 边界：不改 Constitution、Profile 数值、契约、Schema、Promotion 或 Control Plane；不授权生产部署或实盘。生产资格仍由 Promotion / Control Plane 决定。详细决策记录见 ADR-0043。
 136 个 deselected 为 PostgreSQL 标记测试（本分支不接触真实数据库）。

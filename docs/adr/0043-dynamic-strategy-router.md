@@ -28,3 +28,7 @@
   `inverse_control_missing`（`EligibilityRefusal` 新值；`RouterEligibilityRefused` / `RouterStop` 照常记录，拒绝码进入 `stop_hash`）。
   只要求存在（只报告项，无新阈值、不改判定）；为 false 时行为不变。信任模式哈希不变；无契约 / Schema / Profile 数值变化。
   控制台 `routerEligibility.ts` 增加该码的中文说明（G5 显示为「通过」）。Promotion（`research/promotion/service.py`）的同类检查已于 B59 补上（ADR-0005 补记）。
+- **Profile 冻结登记边界（B62，2026-09-27，Codex 依 Raphael 授权）**：P10 证据模式**不**要求 Profile 的 `status = FROZEN`，也不读取
+  `ProfileFreezeRegistry`。它核验研究层报告、Profile 身份 / 内容哈希、PASS、G5 与 Profile 声明所要求的 G2 报告项；冻结登记是 Promotion
+  （ADR-0005 / ADR-0062）的权威门，不重复塞入纸面路由资格检查。证据模式的 `ACTIVE` / `PRODUCTION_CANDIDATE` 生命周期映射仍是调用方声明，
+  其通过仅代表报告满足研究层路由前提，**不**构成 Profile 已冻结、策略已获 Promotion 或生产资格的证明。实盘 / 部署仍须走独立 Control Plane；本决定不放宽任何生产门。
