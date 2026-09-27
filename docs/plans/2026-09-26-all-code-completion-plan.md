@@ -12,13 +12,13 @@
 
 ## 2. 当前基线和第一优先级
 
-- 当前主线基线：`main` / `origin/main` 为 `10b89e886aca1d66c92ca65681c2321f347ab584`（2026-09-27）；工作区干净。全栈 B1～B67 已进入主线，主体模块逻辑与前后端闭环已实现，但仍标记 `CODE_COMPLETE / DEBUG_PENDING`，不代表各 Phase 验收。
+- 本计划启动时的主线基线：`10b89e8`（2026-09-27）。目前 `main == origin/main == 4875e92`，PR #6 已并入 Phase 0.5 / 3 / 10 / 11 收口项。全栈 B1～B67 和本批功能均不代表各 Phase 验收。
 - 主线目前不是空骨架。Phase 0.5、Phase 2～14、API / Worker / Web 均有核心模型、Provider / 执行器、持久化或页面实现；Phase 8～14 审计未发现可明确追加的普通代码缺口。后续优先按证据补齐具体缺口，不再新增占位模块。
 - Phase 1 当前状态：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 仍是阻断。bounded-memory 实现位于活跃分支 `fix/e1-cap1`，由 Claude 进程持有且工作区有文档改动；不得并行修改 `infrastructure/canonical/` 或 `infrastructure/revision/`，待该会话交付后由 Codex 独立复核与集成。
 - 2026-09-27 分支盘点：41 个本地分支、139 个 worktree；仅已合并且无 worktree 的冗余 `hold/adr-0054-0057-at-2.0.0` 已存入 `refs/archive/2026-09-27/` 后删除。其余分支仍由 worktree 检出或含未合并 E1 / P0.5 / Phase 7 / 文档材料；7 个 worktree-agent 由活跃 Claude 进程锁定，3 个检出目录有未提交改动。不能按 patch-equivalent 批量删分支或 worktree。
 - 最新全量代码门禁见 §10.8 / §10.9 的各恢复点；当前 `main` 在合并后的 docs-only 修订上运行了 `tests/test_docs_consistency.py` 与 `tests/test_architecture_boundaries.py`（20 passed）。阶段验收、真实数据运行、Profile 数值冻结与外部 Uvicorn 安装仍分开处理。
 - D3E 跨日证据边错误已在 `69f0bf0` 修复，并由 Codex 验收；不得再把该问题列为当前阻断。D-LIST / Profile 数值等属于明确决策或数据门，不通过猜测代码绕过。
-- **当前收口批次**：Phase 0.5 因子 / 特征草稿与 Event 草稿、Event schema 和运维 README、Loop / Router / API README、ADR-0066 与 Event 表操作入口已在本审查分支汇集；下一步是代码 / 文档复核、定向检查和 PR。库草稿不是 KnowledgeItem，不含人工审阅标签 / 资产或实证结论。
+- **当前收口批次已完成**：Phase 0.5 因子 / 特征草稿与 Event 草稿、Event schema 和运维 README、Loop / Router / API README、ADR-0066 与 Event 表操作入口已通过 PR #6 合并到 `main`。库草稿不是 KnowledgeItem，不含人工审阅标签 / 资产或实证结论。
 - **下一优先级**：活跃 E1 会话结束后复核 bounded-memory 实现与固定规模探针；其余 Phase 8～14 审计未发现已批准而缺失的普通模块代码，不新增占位功能。阶段验收仍延后。
 
 ## 3. 项目红线与执行规则
@@ -60,7 +60,7 @@
 
 - B1～B67 和对应模块已在 `main`，整体为 `CODE_COMPLETE / DEBUG_PENDING`；这表示实现批次完成，不等于 Phase 验收。
 - 原表的“当前边界 / 阻塞”列不应作为新的任务队列直接执行。每项工作先对照当前主线、已接受 ADR 与 §10.10；确认缺口仍存在且属于批准范围后再分配。
-- 本轮集成分支新增的内容与状态见 §10.10。真实数据、外部运行依赖、人工知识审阅和 Phase 验收仍是独立门槛。
+- 本轮并入主线的新增内容与状态见 §10.10。真实数据、外部运行依赖、人工知识审阅和 Phase 验收仍是独立门槛。
 
 ## 5. 任务顺序与并行分组
 
@@ -884,7 +884,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 冻结门禁（只覆盖 `0ced9ca983e420206992b2b96ac48bb6f4804bef` = B61 + 本决定；**不含** B63～B66）：在独立 detached checkout `.claude/worktrees/gate-0ced9ca` 中运行，完整日志 `~/hlens-gate-logs/0ced9ca/`。`START_SHA 0ced9ca… dirty=0 2026-09-27T01:20:23Z`；`systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest -q -rs -m "not postgres" -p no:cacheprovider` → `7260 passed, 136 deselected, 1 warning in 3094.07s (0:51:34)`，退出码 0，无 skip；`ruff check .` → `All checks passed!`；`ruff format --check .` → `761 files already formatted`；`mypy` → `Success: no issues found in 595 source files`；`uv lock --check --offline` → `Resolved 52 packages`；Schema 135 份 0 处变化；`openapi.json` 0 处变化；`api.d.ts` 0 处变化；`npm test` → lib 88 / 88、组件 110 / 110；`npm run build` ✓；全部退出码 0；`END_SHA 0ced9ca… dirty=0 2026-09-27T02:12:21Z`。B61 的 PostgreSQL 测试仍未运行。
 136 个 deselected 为 PostgreSQL 标记测试（本分支不接触真实数据库）。
 
-### 10.10 2026-09-27 当前代码 / 内容收口（审查中；阶段验收延后）
+### 10.10 2026-09-27 当前代码 / 内容收口（PR #6 已合并；阶段验收延后）
 
 | 范围 | 当前结论 | 本批动作 / 边界 |
 |---|---|---|

@@ -162,7 +162,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 稳定主线（2026-09-27）：`main == origin/main == 10b89e8`；B1～B67 和契约 2.2.0 已合并，基线工作区干净。B67 `6d887b7` 的全量非 PostgreSQL 门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；随后 PR #3～#5 为文档 / 状态变更，最近 docs-only 检查 20 passed。均不代表 Phase 验收。
+- 稳定主线（2026-09-27）：`main == origin/main == 4875e92`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已合并，基线工作区干净。B67 `6d887b7` 的全量非 PostgreSQL 门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。
 - Phase 1：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 是当前容量阻断，活跃分支 `fix/e1-cap1` 的修复与固定规模探针仍待 Codex 独立复核。
 - 恢复资料见 `PROJECT_STATUS.md` 与 `docs/plans/2026-09-26-all-code-completion-plan.md`；Phase 0 基线仍为 tag `phase-0-complete`，Phase 1 D3D-R1 恢复点为 `c06b9fa`。
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
@@ -172,4 +172,4 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 已实现但未完成 Phase 验收：Canonical、PIT / dataset / representation、Feature、State / Event、Outcome / Validation、Strategy / Backtest、Runner、Control Plane 与 Phase 2～14 模块（B1～B67）；本地 StorageAdapter、PyIceberg Catalog、生产表定义、D0～D3E 数据路径也已实现。Phase 1 E1-CAP-1 仍阻断，真实运行、人工知识审阅和各 Phase 验收仍独立待办。
 - Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3E 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 `c326434` → D3E-R3 `7e9e084` 已由 Codex 于 2026-09-27 验收；E1-CAP-1 是当前容量阻断
-- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；当前稳定 `main == origin/main == 10b89e8`。历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。
+- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；当前稳定 `main == origin/main == 4875e92`。历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。
