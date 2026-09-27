@@ -19,7 +19,7 @@
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
 - 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`：随 Phase 0 收口 fast-forward 合并进 `main` 并打 tag，
   **视为已发布**（D-25）——此后任何破坏性契约变化都必须升 major 并走 ADR；尚无 v2 数据登记。
-  ADR-0052 §4 起为 **2.1.0**（minor）；ADR-0055 起为 **2.2.0**（minor，知识标签 / 资产；`wip/all-code-completion` 自 `c08c589`）：持久化对象按记录版本重放，新增字段以 `_FIELDS_SINCE` 等声明引入版本（ADR-0052 / 0054 / 0057 / 0055）；当前版本新建对象的信封与哈希随 minor 变化，属预期
+  ADR-0052 §4 起为 **2.1.0**（minor）；ADR-0055 起为 **2.2.0**（minor，知识标签 / 资产；已合入 `main`）：持久化对象按记录版本重放，新增字段以 `_FIELDS_SINCE` 等声明引入版本（ADR-0052 / 0054 / 0057 / 0055）；当前版本新建对象的信封与哈希随 minor 变化，属预期
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
 - current Schema 135 份（契约 2.2.0；`a5836b2` 及以前为 2.1.0），与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
@@ -99,7 +99,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - D-QGAP：方案 A（ADR-0031，证据缺口独立只追加表）；D-PUSH：只推 WIP 备份分支；D-P05（已被取代：Phase 0.5 按 ADR-0058 实施写入路径；ADR-0055 见下）
 - 框架批次 ADR（2026-09-25，依授权 Accepted，全部 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED，数值一律 TBD）：0034 知识库 · 0035 状态 · 0036 事件 · 0037 Outcome + 最小验证门 · 0038 策略 / 风控 / 回测 · 0039 状态×策略 · 0040 假设 + LLM · 0041 稳健性（G4、回溯审计不得翻转已拒绝对象） · 0042 合成市场 · 0043 路由 · 0044 事件总线 + worker · 0045 进化 · 0046 模拟执行（无实盘）· 0047 迁移 · 0048 API / Web · 0049 持续循环（worker 机制在 apps/worker，研究阶段在 research/loop，research 依赖 apps/worker 而非相反）· 0050 循环审计记录契约（只追加，描述既有字节）
 - Raphael 指示（2026-09-25，/goal）："使用 4 个子代理加速开发，直到项目全部开发完成；不用调试，先按框架实现所有代码，每一步更新文档，开发完成后再逐个调试"——Phase 0.5、2～14 按路线图先实现框架代码（状态 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED），Phase 1 收尾并行；红线不变（宪法原则 / 阈值、Profile 数值留 TBD；Phase 13 只做模拟 / 纸面，无交易端点 / 密钥 / 下单；`main` 合并与 tag 仍需 Raphael）
-- Raphael 授权（2026-09-26，/goal）："所有的决策都由你来决定，包括红线的事情"——Claude 的逐项裁决见 `docs/reviews/2026-09-26-autonomous-decisions.md`（不做实盘 / 不冻结 Profile 数值 / 不合并 `main` / 无证据不晋升）；ADR-0056 事件表、ADR-0057 事件 subject、ADR-0058 知识库写入由 Claude 接受；Codex 全代码复核 K3 要求 ADR-0052 以 2.1.0 实施且旧 2.0.0 原样可重放；ADR-0054 / 0057 的新字段已于 B41 以 2.1.0 重新声明；`subject` = 调用方提供的稳定、大小写敏感 opaque ID
+- Raphael 授权（2026-09-26，/goal）：“所有的决策都由你来决定，包括红线的事情”——Claude 的逐项裁决见 `docs/reviews/2026-09-26-autonomous-decisions.md`（不做实盘 / 不冻结 Profile 数值 / 不合并 `main` / 无证据不晋升）；ADR-0056 事件表、ADR-0057 事件 subject、ADR-0058 知识库写入由 Claude 接受；Codex 全代码复核 K3 要求 ADR-0052 以 2.1.0 实施且旧 2.0.0 原样可重放；ADR-0054 / 0057 的新字段已于 B41 以 2.1.0 重新声明；`subject` = 调用方提供的稳定、大小写敏感 opaque ID
+- ADR-0066（2026-09-27，Codex）：允许独立 `infrastructure.event.create_event_tables` 显式操作入口；默认无 catalog 副作用，`--apply` 只调用 `ensure_event_tables`，不接入 Phase 1 / 自动 provisioning；实际生产建表仍须单独授权。
 - 2026-09-26 由 Claude 依授权接受并实施：ADR-0056 事件表、ADR-0057 事件 subject（2.1.0）、ADR-0058 知识库写入、ADR-0059 G4 跨资产 × 横截面、ADR-0060 C-T4 市场基准（报告项）、ADR-0061 交互 DSL；ADR-0055（知识标签 / 资产检索：`tags_all` AND、`assets_any` OR 逐字精确，契约 2.2.0；资产是研究范围标识，不是上市 / 行情证据）**Accepted**（Codex，2026-09-26，基于组合代码 `c08c589` 与其全量门禁），实现 CODE_COMPLETE / DEBUG_PENDING；ADR / 代码接受不等于 Phase 0.5 验收——种子尚无具名人工审阅的标签 / 资产（只有分类提案，不得当作已审阅数据）；ADR-0051（D-LIST）Proposed、Raphael 暂缓；ADR-0063（本机只读 API 的 ASGI 运行时 = Uvicorn，仅 127.0.0.1、单 worker，可选依赖；公网 / 认证未决）Codex 2026-09-27 Accepted，B65 已实施（`apps/api/serve.py`）；Uvicorn 尚未安装到任何环境，真实运行待 Raphael 授权（H12）；ADR-0064（数据集路径 G4 容量的 `bar_volume` 须与已执行 `PriceBar.volume` 精确相等，否则 INCONCLUSIVE `bar_volume_source_mismatch`；合成路径不变）Codex 2026-09-27 Accepted，B66 已实施；ADR-0065（数据集路径 G4 容量遇正结转余量即 INCONCLUSIVE `carry_over_unfilled`，不记跨标的合计）Codex 2026-09-27 Accepted，B67 已实施；D-STATE-INC（ADR-0035 状态执行器增量评估）Codex 2026-09-27 **暂缓**：保留逐时刻可见前缀路径（结构性因果保证），需真实性能基线 + 不暴露未来数据的逐步协议才重评，不代表无性能问题；ADR-0062（Profile 冻结登记：追加式、必需目录外锚点，绑定 Profile ref + 哈希与校准报告，具名批准人只是声明、不认证身份、不是生产控制面；Promotion 无有效登记即 `profile_not_frozen`）Codex 决定并于 2026-09-27 **Accepted**，B56 已实施（CODE_COMPLETE / DEBUG_PENDING）；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收
 - 开放问题：D-30 C-L5 embargo ↔ horizon 校验点（Phase 4 前）；D-29 worker ↔ research 边界（最迟 Phase 5 前）；D-04（Phase 4）
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
@@ -161,17 +162,14 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
-- 全代码分支（2026-09-27）：`wip/all-code-completion` B67 代码提交 `6d887b7` 全量非 PostgreSQL 门禁 7294 passed / 2 skipped（真实 Uvicorn，未安装）/ 136 deselected（B1～B67，契约 2.2.0，未验收；完成计划 B67）；此前 `255ce1a` 7287 passed（B66）、`0ced9ca` 7260 passed（B62）；更早 `3be497b` 7031 passed；此前保留恢复点 `564c87c`；ADR-0052 独立 Phase 1 分支 `phase1/adr-0052-versioned-replay` `22392ea`（未并入 Phase 1 候选 / `main`）
-- Date：2026-09-25（Phase 1 正式恢复点；全代码分支见上一条）
-- Stable recovery point：Phase 1 D3D-R1 修复提交 `c06b9fa`（Codex 已独立复核；随 D3D 验收门推送）；Phase 0 基线仍为轻量 tag `phase-0-complete`
-- closure commit 的父提交：`3257e6e`（ADR-0020 / Constitution 1.0.0，Codex 已复核）；
-  其前：`4a2951a`（ADR-0019，C3 复验）、`9581773`（ADR-0018）、`1ad9f59`（ADR-0016，Codex 独立复验）
+- 稳定主线（2026-09-27）：`main == origin/main == 10b89e8`；B1～B67 和契约 2.2.0 已合并，基线工作区干净。B67 `6d887b7` 的全量非 PostgreSQL 门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；随后 PR #3～#5 为文档 / 状态变更，最近 docs-only 检查 20 passed。均不代表 Phase 验收。
+- Phase 1：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 是当前容量阻断，活跃分支 `fix/e1-cap1` 的修复与固定规模探针仍待 Codex 独立复核。
+- 恢复资料见 `PROJECT_STATUS.md` 与 `docs/plans/2026-09-26-all-code-completion-plan.md`；Phase 0 基线仍为 tag `phase-0-complete`，Phase 1 D3D-R1 恢复点为 `c06b9fa`。
 - State：契约、状态机、只读载荷、实验身份、版本语法、生命周期主体 / 授权 / 证据、信息流白名单、确定性判定、
   Profile 结构不变量、审计身份、`LlmCall` 登记、语义身份、v1 只读兼容均已实现；
   D3D 验收时真实 PostgreSQL 全量 3587 项、HTTP client 注入反例 / 离线重放 / 公共只读 smoke、ruff check、ruff format --check、mypy strict 全绿；
   Schema current 74 份（2.0.0，含 B1 的 8 份、B2 的 13 份与 B3 的 15 份）逐字节一致 + legacy 35 份（`schemas/v1/`，1.0.0，逐字节不变）；
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
-- 未实现（按 roadmap 延期）：Canonical、PIT / dataset / representation、Research Provider Protocol、Feature / Strategy / Backtest、Runner、Control Plane（Strategy Registry 已于全代码批次实现，B28）；本地 StorageAdapter、PyIceberg Catalog、12 张生产表定义、D0 / D3D collector、D1 / D3C parser、D2 archive revision store 与 D3E REST store / reconciler 已实现
+- 已实现但未完成 Phase 验收：Canonical、PIT / dataset / representation、Feature、State / Event、Outcome / Validation、Strategy / Backtest、Runner、Control Plane 与 Phase 2～14 模块（B1～B67）；本地 StorageAdapter、PyIceberg Catalog、生产表定义、D0～D3E 数据路径也已实现。Phase 1 E1-CAP-1 仍阻断，真实运行、人工知识审阅和各 Phase 验收仍独立待办。
 - Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3E 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 `c326434` → D3E-R3 `7e9e084` 已由 Codex 于 2026-09-27 验收；E1-CAP-1 是当前容量阻断
-- Git：`phase/0` 保留；`main` 由 `2e2a0ad` fast-forward 到 closure commit `1e208b5`（= `phase-0-complete`）；
-  `phase/1` 从该 commit 创建（Phase 1 工作分支）；`main`、`phase/0`、`phase/1` 与 tag 已推送到私有 GitHub 远程 `origin`
+- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；当前稳定 `main == origin/main == 10b89e8`。历史 Phase 1 候选与活动 worktree 状态以 `PROJECT_STATUS.md` 为准。
