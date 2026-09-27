@@ -322,6 +322,7 @@ class PyIcebergCatalogAdapter:
         if target is None:
             raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
         below = len(snapshots)
+        walked = 0
         while target is not None:
             position = next(
                 (i for i in range(below - 1, -1, -1) if snapshots[i].snapshot_id == target),
@@ -333,8 +334,19 @@ class PyIcebergCatalogAdapter:
                 )
             if position is None:
                 raise SnapshotNotFound(f"table {name} has no snapshot {str(target)!r}")
+            # A valid ancestry can visit each metadata snapshot at most once. Bound the walk
+            # without a visited-id set so corrupt self / multi-snapshot parent cycles cannot
+            # loop forever and the guard itself stays O(1) in history length. Resolve first to
+            # preserve SnapshotNotFound for a dangling parent after the last listed snapshot.
+            if walked >= len(snapshots):
+                raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
             snapshot = snapshots[position]
+            if snapshot.parent_snapshot_id == snapshot.snapshot_id:
+                # SnapshotInfo also rejects this shape, but report corrupt catalog metadata in
+                # the adapter's integrity error vocabulary rather than leaking validation.
+                raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
             yield self._snapshot_info(name, snapshot)
+            walked += 1
             target = snapshot.parent_snapshot_id
             below = position
 

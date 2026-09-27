@@ -9,6 +9,7 @@ from __future__ import annotations
 import ast
 import socket
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -260,6 +261,38 @@ def test_unreachable_postgres_fails_closed_without_local_state(tmp_path: Path) -
     assert raised.value.__cause__ is None and raised.value.__suppress_context__
     assert list(tmp_path.iterdir()) == [], "no local substitute state may be created"
     assert not list(REPO.glob("*.sqlite")) and not list(REPO.glob("*.db"))
+
+
+@pytest.mark.parametrize(
+    ("snapshots", "head"),
+    [
+        pytest.param([(1, 1)], "1", id="self-loop"),
+        pytest.param([(1, 2), (2, 1)], "2", id="two-snapshot-cycle"),
+    ],
+)
+def test_snapshot_history_rejects_parent_cycles_without_looping(
+    sqlite_harness: SqliteCatalogHarness,
+    monkeypatch: pytest.MonkeyPatch,
+    snapshots: list[tuple[int, int]],
+    head: str,
+) -> None:
+    """Malformed metadata must not make ``history`` loop forever; the guard is O(1)."""
+    entries = [
+        SimpleNamespace(
+            snapshot_id=snapshot_id,
+            parent_snapshot_id=parent_id,
+            timestamp_ms=0,
+            summary=SimpleNamespace(additional_properties={"total-records": "1"}),
+        )
+        for snapshot_id, parent_id in snapshots
+    ]
+    iceberg = SimpleNamespace(metadata=SimpleNamespace(snapshots=entries))
+    adapter = sqlite_harness.open_adapter()
+    monkeypatch.setattr(PyIcebergCatalogAdapter, "_require", lambda self, name: iceberg)
+    monkeypatch.setattr(PyIcebergCatalogAdapter, "_verified", lambda self, name, table: None)
+
+    with pytest.raises(CatalogIntegrityError, match="cycle in snapshot history"):
+        list(adapter.history(ALPHA.table, head))
 
 
 def test_adapter_repr_hides_connection_details(sqlite_harness: SqliteCatalogHarness) -> None:
