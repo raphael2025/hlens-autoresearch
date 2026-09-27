@@ -920,6 +920,8 @@ PR #6 本批独立分支集成检查：`uv run pytest -q tests/infrastructure/ev
 
 P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修正源提交：`ccf45a1`。集成到本地协调分支 `codex/module-completion-coordination-2026-09-27`（P6 / P8 提交 `347b538`、`15bec90`、`3dc3e67`；P11 提交 `b70c530`），**未推送 / 未合并 `main`**。Codex 的静态复核发现 P6 缺少 `StateStrategyMatrix` 导入及一处格式问题，已修复；触及的 5 个 Python 文件 `ruff check` / `ruff format --check` 通过，`git diff --check` 通过。P11 子代理另报告目标文件 Ruff、format 与 mypy 通过。本轮没有运行测试；P8 子代理原始静态结果也为 Ruff 通过、format check 3 files already formatted。OpenAPI 类型生成因环境中缺少 `openapi-typescript` 未运行，`api.d.ts` 手动同步，待验收复核。
 
+独立复核发现 P8 初版 gate diff 未展示具体阈值，且比较未包含 ADR-0052 exact values；已在 `e319314` 让报告增加 recorded/current metric、value、threshold（含 exact 文本）及来源，报告 schema 升至 1.1.0，旧 1.0.0 页面解析保持兼容。Python Ruff / format / mypy 通过；`npm ci --offline` 成功，`npm run build` 通过。未运行测试；接受前仍需补组件 / writer 验收用例并检查真实报告页面。
+
 **下一批顺序**：先完成 P6 / P8 / P11 独立代码复核；后续验收时同步 P8 fixture 生成器、组件测试与 live-smoke 清单。并行推进 P7 类型化算子规格 / 基础实现与 P11 显式观测输入设计前，先划清文件边界。E1 需单独设计精确保留历史校验语义的有界 metadata 索引；P2 Iceberg 持久化扩展暂缓。不得将未验收阶段、人工标签、Profile 数值、真实数据结果或生产建表描述为代码已完成。
 
 ### 10.14 P7 typed operators 与 P11 degradation operator 设计（2026-09-27）

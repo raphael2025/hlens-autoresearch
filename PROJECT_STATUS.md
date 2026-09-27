@@ -52,7 +52,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
 | 6 | State × Strategy | 🧱 矩阵计算、全单元预登记与逐单元验证已实现；循环报告接线及回调错误归因已在本地协调分支补齐，静态检查通过，未跑测试，不代表 Phase 6 验收 |
 | 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源已实现；六类组合算子继续 fail closed。Proposed ADR-0068 规定类型化闭世界执行边界，但各算子语义与 Provider lowering 尚未定义；LLM 内容核验可选，未核验调用不满足完整可复现审计 |
-| 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已在本地协调分支补齐；P8 页面对应的 fixture / smoke / component 注册仍待后续验收批次同步；Phase 8 未验收 |
+| 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已在本地协调分支补齐，gate diff 现包含实际与精确阈值（报告 schema 1.1.0）；Python 静态检查和 Web build 通过，未跑测试；fixture / smoke / component 注册仍待后续验收；Phase 8 未验收 |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58），**不要求 Profile 冻结登记**（B62；冻结权威门只在 Promotion，ADR-0062）CODE_COMPLETE / DEBUG_PENDING |
 | 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；劣化阈值读取已兼容 ADR-0052 的精确 Decimal 字段；只读 operator 规格已写入 `docs/plans/p11-degradation-operator-spec.md`，要求调用方显式提供来源和时间窗口。权威生命周期 / 观测来源及报告溯源契约仍未决定，不能从 loop 摘要推造 |
@@ -270,7 +270,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | P6 / P8 / P11 收敛与研究规格文档扩充 | 本地协调分支提交 P6/P8/P11 代码和研究库文档；静态检查通过，未跑测试，待后续验收 |
+| 2026-09-27 | P6 / P8 / P11 收敛与研究规格文档扩充 | P8 独立复核补上 metric / exact value / threshold diff；Python Ruff / format / mypy 与 Web build 通过，未跑测试，仍待验收 |
 | 2026-09-27 | 深审校正 P7 状态并排出跨模块差额 | 组合 DSL 六类目前是拒绝执行的 fail-closed 边界；P2 Arrow 输出符合当前 ADR-0035，额外 Iceberg 持久化暂缓；P11 自动运行编排仍需设计 |
 | 2026-09-27 | ADR-0066：批准独立、显式的 Event 表操作命令，以补齐 Phase 3 的可重复运维入口 | 命令默认无 catalog 副作用；`--apply` 只创建 / 校验 `event.events`；不接入 Phase 1 或启动流程；真实 catalog 建表未授权、未执行 |
 | 2026-09-27 | Phase 0.5 / 3 / 10 / 11 收口批次通过 PR #6 合并到 `main`（`4875e92`） | 增补未验证因子 / 特征 / Event 草稿，更新 Event schema 与 Loop / Router / API README，并实现 Event 表显式操作命令；11 项定向检查通过，非阶段验收 |
