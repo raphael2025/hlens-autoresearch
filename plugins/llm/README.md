@@ -18,6 +18,5 @@
 
 ## 限制
 
-- 研究循环 / 假设生成尚未传入 store，也未在登记时调用 `infrastructure.content.verify_llm_call`（跨 Phase 后续工作，
-  由协调者安排）。
+- 研究循环可通过显式的 `ContentVerifiedLLM(inner, resolver)` 包装器执行内容取回与核验；默认调用方不自动配置持久 store，未使用包装器时仍可产生不可取回的 `memory://` 引用。实现与定向测试见 `research/loop/README.md` 和 `tests/research/loop/test_llm_content.py`。
 - 真实联网 Provider 需凭据与网络声明（`network=True`），不在本构建范围。
