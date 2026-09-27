@@ -298,6 +298,51 @@ class PyIcebergCatalogAdapter:
                 raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
             return self._snapshot_info(name, snapshot)
 
+    def history(self, table: str, snapshot_id: str) -> Iterator[SnapshotInfo]:
+        """``snapshot_id`` and its ancestors, newest first, from **one** load of the metadata.
+
+        Walking with ``get_snapshot`` reloads (and re-verifies) the table metadata at every
+        step: ``H`` loads for a history of ``H`` snapshots. This loads and verifies it once and
+        follows the parent ids inside that one metadata version. Infrastructure only (not part
+        of the core Protocol).
+
+        Same result and failures as that walk, step by step: an id is resolved like
+        ``get_snapshot`` (malformed or unknown → ``SnapshotNotFound``; with repeated ids the
+        first listed wins, as in ``TableMetadata.snapshot_by_id``), then converted by
+        ``_snapshot_info`` (a snapshot naming itself as parent stays ``CatalogIntegrityError``),
+        then yielded. A dangling parent is ``SnapshotNotFound`` for that parent id. Unlike that
+        walk, a multi-snapshot parent cycle cannot loop forever: an ancestry visits each listed
+        id at most once, so one more step is ``CatalogIntegrityError``.
+
+        Memory: the loaded metadata (PyIceberg keeps **every** snapshot of the table in
+        ``metadata.snapshots``) and an id → position index of plain ints stay referenced until
+        the iterator is exhausted or closed; both grow with the table's history.
+        """
+        name = validate_table_name(table)
+        with _backend("history"):
+            iceberg = self._require(name)
+            self._verified(name, iceberg)
+        snapshots = iceberg.metadata.snapshots
+        first: dict[int, int] = {}
+        for index, listed in enumerate(snapshots):
+            first.setdefault(listed.snapshot_id, index)
+        wanted: str | None = snapshot_id
+        walked = 0
+        while wanted is not None:
+            position = (
+                first.get(int(wanted))
+                if isinstance(wanted, str) and _SNAPSHOT_ID_RE.fullmatch(wanted)
+                else None
+            )
+            if position is None:
+                raise SnapshotNotFound(f"table {name} has no snapshot {wanted!r}")
+            if walked == len(first):
+                raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
+            info = self._snapshot_info(name, snapshots[position])
+            yield info
+            walked += 1
+            wanted = info.parent_snapshot_id
+
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         name = validate_table_name(request.table)
         request = _revalidated(CommitRequest, request)

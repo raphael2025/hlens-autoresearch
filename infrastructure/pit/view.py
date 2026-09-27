@@ -15,7 +15,7 @@ Writes are refused.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, BooleanExpression
@@ -26,6 +26,7 @@ from core.contracts.catalog import (
     SnapshotInfo,
     TableInfo,
 )
+from infrastructure.revision.row_integrity import history_from
 from infrastructure.revision.store import RevisionCatalog
 
 __all__ = ["PinnedCatalogView", "PinnedViewError"]
@@ -56,6 +57,14 @@ class PinnedCatalogView:
 
     def get_snapshot(self, table: str, snapshot_id: str) -> SnapshotInfo:
         return self._adapter.get_snapshot(table, snapshot_id)
+
+    def history(self, table: str, snapshot_id: str) -> Iterator[SnapshotInfo]:
+        """An explicit snapshot's ancestry, whatever the bindings say (like ``get_snapshot``).
+
+        Delegates to the underlying catalog's walk, so a view over ``PyIcebergCatalogAdapter``
+        keeps its one-metadata-load history instead of one ``get_snapshot`` load per step.
+        """
+        yield from history_from(self._adapter, table, snapshot_id)
 
     def scan_columns(
         self,

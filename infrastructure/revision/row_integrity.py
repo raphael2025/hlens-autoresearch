@@ -48,10 +48,10 @@ judged (see ``RestRevisionStore`` / ``ChannelReconciler``).
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import Any, Final, Protocol, runtime_checkable
 
 import httpx
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -142,6 +142,7 @@ __all__ = [
     "REJECTED",
     "PageElement",
     "PersistedRowVerifier",
+    "SnapshotHistory",
     "batch",
     "batch_rows",
     "check_batch_snapshot",
@@ -301,10 +302,10 @@ def _history(adapter: RevisionCatalog, table: str) -> Iterable[SnapshotInfo]:
     if info is None:
         raise TableNotFound(f"table {table} does not exist")
     snapshot = info.current_snapshot
-    while snapshot is not None:
-        yield snapshot
-        parent = snapshot.parent_snapshot_id
-        snapshot = None if parent is None else adapter.get_snapshot(table, parent)
+    if snapshot is None:
+        return
+    yield snapshot
+    yield from history_from(adapter, table, snapshot.parent_snapshot_id)
 
 
 def _indexed_batches(
@@ -334,11 +335,33 @@ def _indexed_batches(
     return found
 
 
+@runtime_checkable
+class SnapshotHistory(Protocol):
+    """Optional catalog capability: one snapshot's ancestry from one metadata load.
+
+    ``PyIcebergCatalogAdapter`` (and a ``PinnedCatalogView`` over any catalog) provide it. It
+    must yield exactly what the ``get_snapshot`` parent walk of ``history_from`` yields, newest
+    first, with the same failures (a parent cycle, which that walk never leaves, may fail
+    closed instead); it only avoids reloading the table metadata at every step.
+    """
+
+    def history(self, table: str, snapshot_id: str) -> Iterator[SnapshotInfo]: ...
+
+
 def history_from(
     adapter: RevisionCatalog, table: str, snapshot_id: str | None
 ) -> Iterable[SnapshotInfo]:
-    """``snapshot_id`` and its ancestors, newest first (a pinned head's history; none if None)."""
-    snapshot = None if snapshot_id is None else adapter.get_snapshot(table, snapshot_id)
+    """``snapshot_id`` and its ancestors, newest first (a pinned head's history; none if None).
+
+    A catalog with a ``SnapshotHistory.history`` walk is walked with it (one metadata load);
+    any other ``RevisionCatalog`` keeps the ``get_snapshot`` parent walk, one snapshot per call.
+    """
+    if snapshot_id is None:
+        return
+    if isinstance(adapter, SnapshotHistory):
+        yield from adapter.history(table, snapshot_id)
+        return
+    snapshot: SnapshotInfo | None = adapter.get_snapshot(table, snapshot_id)
     while snapshot is not None:
         yield snapshot
         parent = snapshot.parent_snapshot_id
