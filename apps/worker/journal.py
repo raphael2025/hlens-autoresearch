@@ -18,11 +18,21 @@ The contract. Each record is one line::
 ``{"seq", "type", "payload", "prev_hash"}``.
 
 Durability: the only write is ``append`` (open in append mode, write one line, flush, ``fsync``);
-there is no update, delete or rewrite; the journal remembers how many bytes it has seen and
-refuses to append after the file shrank. Opening an existing file replays every line and verifies
+there is no update, delete or rewrite. Opening an existing file replays every line and verifies
 the chain: a bad hash, a broken link, a line that is not a JSON object with exactly the five
 fields, a wrong ``seq`` or a partial trailing line is ``JournalCorrupted`` — refused, never
 skipped or repaired (fail closed; CLAUDE.md H4 / H6).
+
+Concurrent holders (2026-09-27, same rule as the research journal). Two instances on one file —
+two processes, or two objects in one process — each replay the file when opened; neither sees what
+the other appends later. Replay therefore reads under a shared ``fcntl.flock`` (never a
+half-written line of a concurrent append) and remembers exactly the bytes it parsed; ``append``
+holds an exclusive ``fcntl.flock`` across write and ``fsync`` and writes only if the file is still
+**exactly** the size this instance last read or wrote. A file that grew (another writer appended)
+is ``JournalCorrupted`` and nothing is written — the stale instance must be reopened to replay the
+other writer's lines — and a file that shrank is refused as rewritten history. Without this a stale
+instance appended with a duplicate ``seq`` / stale ``prev_hash``, and every later open refused the
+broken chain. POSIX only; the lock is advisory, so every writer must use this contract.
 
 Honest boundary: dropping whole lines from the **end** of the file leaves a valid, shorter chain;
 only an externally anchored head hash (e.g. the ``record_hash`` published on the bus) detects it.
@@ -30,6 +40,7 @@ only an externally anchored head hash (e.g. the ``record_hash`` published on the
 
 from __future__ import annotations
 
+import fcntl
 import hashlib
 import json
 import os
@@ -104,7 +115,16 @@ class AppendOnlyJournal:
         self._seen = self._size()
         if not self._path.exists():
             return
-        text = self._path.read_text(encoding="utf-8")
+        with self._path.open("rb") as handle:
+            # shared lock: a concurrent ``append`` (exclusive) is wholly visible or not at all
+            fcntl.flock(handle.fileno(), fcntl.LOCK_SH)
+            try:
+                data = handle.read()
+            finally:
+                fcntl.flock(handle.fileno(), fcntl.LOCK_UN)
+        if len(data) < self._seen:
+            raise JournalCorrupted(f"{self._path} shrank: journal history was rewritten")
+        text = data.decode("utf-8")
         if text and not text.endswith("\n"):
             raise JournalCorrupted(f"{self._path} ends in a partial trailing line")
         prev_hash = GENESIS_HASH
@@ -135,10 +155,12 @@ class AppendOnlyJournal:
             entries.append(JournalEntry(seq, type_, payload, recorded_prev, recorded_hash))
             prev_hash = recorded_hash
         self._entries = entries
-        self._seen = self._size()
+        # exactly the bytes parsed — never a re-stat, which could count a concurrent append that
+        # this replay did not see and so let a stale instance append after it
+        self._seen = len(data)
 
     def append(self, type_: str, payload: Mapping[str, Any]) -> JournalEntry:
-        """Append one record (fsync'd); refuses if the file shrank since it was last seen."""
+        """Append one record (fsync'd); refuses if the file changed since last read/written."""
         if not type_:
             raise ValueError("a journal record needs a non-empty type")
         self._size()
@@ -158,10 +180,21 @@ class AppendOnlyJournal:
         )
         self._path.parent.mkdir(parents=True, exist_ok=True)
         with self._path.open("a", encoding="utf-8") as handle:
+            # exclusive lock, held until the line is fsync'd (released when the file closes)
+            fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+            size = os.fstat(handle.fileno()).st_size
+            if size < self._seen:
+                raise JournalCorrupted(f"{self._path} shrank: journal history was rewritten")
+            if size != self._seen:
+                raise JournalCorrupted(
+                    f"{self._path} changed since this instance last read it (another writer "
+                    f"appended: {size} bytes on disk, {self._seen} seen); nothing was written — "
+                    "reopen the journal to replay it"
+                )
             handle.write(line + "\n")
             handle.flush()
             os.fsync(handle.fileno())
+            self._seen = os.fstat(handle.fileno()).st_size
         entry = JournalEntry(seq, type_, payload_json, prev_hash, entry_hash)
         self._entries.append(entry)
-        self._seen = self._size()
         return entry

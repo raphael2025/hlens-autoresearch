@@ -363,7 +363,15 @@ def test_a_negative_tolerance_is_refused() -> None:
 
 def test_the_worker_journal_and_metrics_modules_use_only_core_and_the_stdlib() -> None:
     allowed = {
-        "journal.py": {"__future__", "core", "collections", "dataclasses", "hashlib", "json"}
+        "journal.py": {
+            "__future__",
+            "core",
+            "collections",
+            "dataclasses",
+            "fcntl",
+            "hashlib",
+            "json",
+        }
         | {"os", "pathlib", "typing"},
         "metrics.py": {"__future__", "collections", "dataclasses", "decimal", "time", "typing"},
     }

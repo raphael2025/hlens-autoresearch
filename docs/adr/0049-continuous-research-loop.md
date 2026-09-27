@@ -482,3 +482,10 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。修正封存 OOS 处理的只读复核�
    `check()` 结果相同且不发布；payload 排序与键的给出顺序无关；无 bus 时全部缺失与实际越限均被拒、健康结果无需 bus；
    越限只发布既有主题且 payload 不变；部分缺失无越限不发布；模块 import 与 payload 不含生命周期入口。
    实施说明：[D-DEG-IE implementation](../reviews/2026-09-26-d-deg-ie-implementation.md)。
+
+## Implementation note (worker journal single-writer protection, 2026-09-27)
+
+实施者 Claude Code，技术协调 Codex；依 Raphael 对项目开发的明确授权。不改变本 ADR 的持久行格式、哈希输入、API、Schema 或 `research.persistence`；
+保持 `apps/worker` 仅依赖 `core` 与标准库。POSIX `fcntl.flock` 在重放时提供共享读锁，在追加、flush 与 `fsync` 完成前提供独占锁。
+每个实例按自己解析 / 写入的精确字节数判断文件状态：检测到缩短或其他 writer 已追加时抛 `JournalCorrupted`，不写入；调用方需重开实例以重放新内容。
+追加成功后的行字节和 hash-chain 均保持不变。锁为 advisory，所有 writer 必须经过此实现；功能验证与验收尚未运行。
