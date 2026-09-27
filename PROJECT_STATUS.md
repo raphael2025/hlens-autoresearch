@@ -11,8 +11,8 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
 | 当前子阶段 | **框架整合与逐模块打磨**。已有代码已快进整合到本地 `main`；Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 是当前阻断；Phase 0.5、Phase 2～14 仍须分别验证与验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 框架代码已进入本地 `main`，远端 `origin/main` 尚未更新；Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已快进整合到本地 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 总体状态 | 🔄 框架代码已整合并推送至 `main`（`52b5bae`）；Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -265,13 +265,12 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | 全框架并入 `main` 并推送到远端（`52b5bae`）；16 个无独有补丁且未被 worktree 使用的本地分支已先归档再删除 | 远端与本地 `main` 同步；16 个恢复引用位于 `refs/archive/2026-09-27/`；其余独有或活动分支保留；无 tag |
 | 2026-09-27 | Phase 1 验收记录并入：D3E 已接受、D4 已关闭；E1-CAP-1 标记为当前阻断（Codex review branch） | 记录见 `docs/reviews/2026-09-27-d3e-acceptance.md` 与 `docs/reviews/2026-09-27-e1-review.md`；容量修复仍在独立 worktree，尚未复核或并入 `main` |
-| 2026-09-27 | Raphael 确认先收敛分支、整合框架与模块代码，再逐模块打磨；本地 `main` 从 `1e208b5` 快进至 `20bdd82` | 403 个提交已整合；框架代码为 CODE_COMPLETE / DEBUG_PENDING，未表示各 Phase 验收；`origin/main` 仍在 `1e208b5`，尚未推送；唯一分支材料与活动 worktree 保留 |
 | 2026-09-27 | B67（ADR-0065）：数据集路径上，回测结束仍有未成交的结转余量时，G4 容量检查为不确定（`carry_over_unfilled`），不再用不完整的成交估计容量 | CODE_COMPLETE / DEBUG_PENDING；无余量、合成路径与默认执行模型结果和哈希不变；无阈值 / Profile / 契约变化；不是 Phase 4 / 5 验收；B67 代码 `6d887b7` 全量非 PostgreSQL 门禁 7294 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0；其后 docs-only 提交只做了文档检查（20 passed） |
 | 2026-09-27 | B66（ADR-0064）：数据集路径上 G4 容量所用的成交量须与实际执行的价格 bar 的成交量完全一致，否则容量检查为不确定（`bar_volume_source_mismatch`），不再静默使用另一份数据 | CODE_COMPLETE / DEBUG_PENDING；合成路径与一致时的结果不变；无阈值 / Profile / 契约变化；冻结 HEAD `255ce1a`（B63～B66）全量非 PostgreSQL 门禁 7287 passed、2 个预期的 Uvicorn 未安装 skip，全部检查退出码 0 |
 | 2026-09-27 | ADR-0063（Codex 决定）：本机只读研究 API 用 Uvicorn 运行，只绑定 127.0.0.1、单 worker；公网 / 认证 / TLS 不在范围内 | B65 入口与测试已实施（未安装 Uvicorn）；真实 Uvicorn 运行待 Raphael 授权安装 |
 | 2026-09-27 | B63：控制台的证据模式说明写明 B62 边界：只证明研究层纸面路由前提，通过不代表 Profile 已冻结、策略已晋升或具备生产资格；列出反向对照项 | 只改控制台文字与测试；无代码 / 契约 / API 改动 |
-| 2026-09-27 | B62（Codex 决定）：P10 证据模式不要求 Profile 冻结登记；这属于研究层路由证据，与 Promotion 的冻结权威门分开 | 无代码 / 契约 / Schema 改动；生产资格仍须 ADR-0005 / ADR-0062 Promotion 与 Control Plane；已记录于 ADR-0043；冻结 HEAD `0ced9ca`（B61 + B62）全量非 PostgreSQL 门禁 7260 passed，全部检查退出码 0 |
 
 ## 10. 下一阶段进入条件
 
@@ -297,7 +296,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 按完成计划和 roadmap 逐模块打磨与验收；先解决 Phase 1 当前阻塞，再安排其余模块的独立验证。
 2. 全代码批次已有测试记录，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. 本地 `main` 已含框架代码；D3E / D4 记录已整合，E1-CAP-1 仍阻断；`origin/main` 仍为 `1e208b5`，尚未推送或打 tag。决策记录、Phase 0.5 种子和未验收分支需在清理前保全并逐项整合。
+3. `main` / `origin/main` 已同步至 `52b5bae`；全框架、决策记录、Phase 0.5 种子与 Phase 1 D3E / D4 记录已整合；E1-CAP-1 仍阻断，未打 tag。
 
 ## 12. 给 Claude Code 的下一步
 
