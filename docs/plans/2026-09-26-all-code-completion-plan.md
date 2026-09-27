@@ -130,6 +130,13 @@
 - 新 `plan_admission.jsonl` 必须进入 durable loop 的所有 checkpoint 与 `StateHead`。新 admission 使用 v4 state；既有 v3 state 保留旧形状和行为、禁止 typed-plan admission，不原地迁移。六种 P7 operator 仍 non-runnable；ADR 接受只批准设计，不是代码完成或验收。
 - 实现前置包括固定 payload / strict reducer、持锁的精确 ledger recovery API、hash-bound open-round identity、v3/v4 opener 与 anchor 交叉校验、trial identity/reuse 语义和拒绝审计落点。下一步分模块实现并做只读代码复核；按 Raphael 当前安排不运行测试 / build / lint / Phase 验收。随后推进 synthetic-only、finite-round、外部调度的 Worker 组合入口，不加 API 写触发。
 
+### 10.53 P7 admission primitive 与 synthetic operator 决定（2026-09-28）
+
+- ADR-0073 的第一段持久化基础已进入本地 main：`PlanAdmissionJournal` 严格回放 PREPARE / COMMIT，重新校验 non-runnable TypedPlan 与 canonical evidence；`TrialLedger.recover_register_batch` 只接受相对指定 baseline 的唯一精确 batch event，能识别已完成写入而不重复计数。独立复核确认主要精确恢复条件；计划日志对外只暴露只读 entries/head，真实 ledger 文件、worker round-start、memory checkpoint 与 anchor 的一致性仍必须由 loop composition root 验证。
+- 未运行测试 / build / lint；只做 `git diff --check`。当前独立工作正按 ADR-0073 实现 v3 兼容、v4 admission checkpoint / anchor coordinator；实现不会执行 provider、experiment 或 operator，也不恢复 FAILED / 未记录的 started round。
+- ADR-0074 已依 Raphael 2026-09-28 全权委托接受，范围是 synthetic-only、本机、严格 TOML、静态 allowlist、有限轮数、外部调度、round report catch-up 和只读 API。必须先完成 ADR-0073 v4，再做 operator 专属 v5。当前无已冻结的可运行 Validation Profile，因此接受设计不代表可立即运行；不得用 TEST ONLY Profile 或临时数值替代。
+- 本地提交未推送；项目 Phase / 统一验收及 tests/build/lint/probe 继续暂缓。P7 六类 DSL 算子仍 fail closed。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：
