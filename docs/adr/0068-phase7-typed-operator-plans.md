@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed** |
+| 状态 | **Accepted** |
 | 日期 | 2026-09-27 |
-| 决策者 | 待 Raphael / Codex 批准 |
+| 决策者 | **Codex 依 Raphael 2026-09-27 项目全权委托接受** |
 | 起草者 | Codex 子代理 |
 | 相关 Phase | Phase 7（依赖 P5 / P6、P0.5） |
 | 影响范围 | Research / Plugin / Experiment Runner；不修改冻结契约、Schema、Constitution 或 `core/` |
@@ -83,7 +83,7 @@ Phase 7 路线图列出 conditioning、interaction、temporal、transformation�
 ## 后果（Consequences）
 
 - 正面：保留六类组合方向和现有兼容行为，同时把“声明”与“执行”分开；为逐算子语义审查和实现提供一致的安全门。
-- 负面 / 代价：此 ADR 获批后仍不会使六类 DSL 可执行；六类各自需补充完整算法、Provider lowering 与验收工作。执行计划审计记录的持久化位置需要在实现设计中明确并纳入状态 / 指纹兼容审查。
+- 负面 / 代价：此 ADR 获批后仍不会使六类 DSL 可执行；六类各自需补充完整算法、Provider lowering 与验收工作。首批基础实现只解析并验证闭世界 AST，输出始终为 `non-runnable`；不预登记 Experiment、不增加 trial、不写执行审计。**任何 OperatorImplementation allowlist 在空集状态下不得编译 runnable plan。** 首个算子语义决议前，必须另行确定执行计划审计记录的持久化位置、与 TrialLedger 全量预登记的崩溃原子性及状态 / 指纹兼容；这些未解决前不得启用算子。
 - 需要迁移的内容：无。既有 Hypothesis、TrialLedger、ParameterPointBatch、ExperimentSpec 和 Schema 不迁移、不重哈希。
 - 对复现性的影响：现有 `parameter_point` 哈希与运行不变。未来可执行算子须绑定其生成规格的内容哈希和 Provider / Plugin 内容哈希；任何语义变化都需新版本 / 新哈希、新假设登记和新 trial，不能重放时切换至最新版。
 - 安全边界：不执行 LLM 生成代码；不让 LLM 裁决；不通过组合算子修改验证门或 Profile。
@@ -96,6 +96,10 @@ Phase 7 路线图列出 conditioning、interaction、temporal、transformation�
 - [x] 每次可执行组合均须预登记并计入 trial；失败路径不缩减 trial 数。
 - [x] Research / Application Plane 边界不变；插件实现按现有 Provider 与 Phase 规则交付。
 - [x] 清晰标明六类的执行语义未完整确定；初始运行子集不扩张。
+
+## 接受记录（2026-09-27）
+
+Codex 依 Raphael 对项目决策与开发的全权委托接受本 ADR 中的**闭世界类型化计划机制与拒绝边界**。此决定不接受任一算子的业务执行语义；六类仍全部 `NOT_RUNNABLE`，`parameter_point` 路径不变。实现只允许产生带显式资源限制的 `non-runnable` typed AST / validation result。OperatorImplementation allowlist 保持为空；不得把 typed result 交给 Research Loop、Provider 或 Runner。执行计划持久化及其与 TrialLedger 的原子预登记必须在首个算子启用前另行裁决并实现。在此之前，基础解析不得创建持久审计副作用或 runnable trial。
 
 ## 参考
 

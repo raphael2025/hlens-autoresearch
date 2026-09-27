@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main@669704c` 已含 P6 / P8 / P11 Decimal 阈值接线和研究库规格。协调分支还含 P7/P11/P12 基础逻辑、E1 snapshot history 遍历与 normalizer 计划计数实现；静态检查通过，未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
+| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main@669704c` 已含 P6 / P8 / P11 Decimal 阈值接线和研究库规格。协调分支还含 P7/P11/P12 基础逻辑、E1 snapshot history 遍历与 normalizer 计划计数实现；ADR-0068 已接受闭世界 typed-plan 基础机制，六类算子仍不可执行；静态检查通过，未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 本地 `main@669704c` 比 `origin/main` 超前 18 个提交，尚未推送；PR #1～#9 已合入。协调分支已累积 P7/P11/P12 实现、E1 单次 metadata history 遍历、normalizer 计划常数级计数与状态文档更新，工作区干净。新增代码 Ruff、format、mypy 与 diff whitespace 静态检查通过，未跑测试；E1 两项改动均未证明达到 32 MiB 容量门，PyIceberg 全量 snapshots metadata 仍是已知风险；E1-CAP-1 仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
@@ -51,7 +51,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；Phase 4 未验收 |
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
 | 6 | State × Strategy | 🧱 矩阵计算、全单元预登记与逐单元验证已实现；循环报告接线及回调错误归因已合入本地 `main`，静态检查通过，未跑测试，不代表 Phase 6 验收 |
-| 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源已实现；六类组合算子继续 fail closed。Proposed ADR-0068 规定类型化闭世界执行边界，但各算子语义与 Provider lowering 尚未定义；ADR-0070 已令 experiment stage 失败轮停止并要求人工审查，防止自动重跑；outcome 自动恢复与人工修复工具仍缺。LLM 内容核验可选，未核验调用不满足完整可复现审计 |
+| 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源已实现；六类组合算子继续 fail closed。Accepted ADR-0068 只规定类型化闭世界计划机制与拒绝边界；基础解析结果为 non-runnable，各算子语义与 Provider lowering 尚未定义；ADR-0070 已令 experiment stage 失败轮停止并要求人工审查，防止自动重跑；outcome 自动恢复与人工修复工具仍缺。LLM 内容核验可选，未核验调用不满足完整可复现审计 |
 | 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已合入本地 `main`，gate diff 包含实际与精确阈值（报告 schema 1.1.0）；Python 静态检查和 Web build 通过，未跑测试；fixture / smoke / component 注册留待验收；Phase 8 未验收 |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58），**不要求 Profile 冻结登记**（B62；冻结权威门只在 Promotion，ADR-0062）CODE_COMPLETE / DEBUG_PENDING |
@@ -191,7 +191,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | D-DEG-IE | 劣化检查全部指标缺失（证据不足）时，是否在新事件主题上发布？新主题会扩展已接受的 ADR-0049 的事件面 | 维持不发布：结果与报告已标明「证据不足」，绝不显示为健康 | ✅ 已决定（2026-09-26，Codex）：在独立主题 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 相应修订；已实施（B53，`4e6c220`），CODE_COMPLETE / DEBUG_PENDING |
 | D-DEP | 持续循环的通用机制放在 `apps/worker`，研究阶段放在 `research/loop`，因此 research 依赖 apps/worker（apps 不依赖 research，边界测试不变）——Claude 依授权已接受（ADR-0049），请确认 | 维持 | ✅ 已决定（2026-09-26，Claude 依 Raphael 授权）：维持 ADR-0049 |
 
-本轮已按 Raphael 对模块开发与技术决策的授权接受 ADR-0067（P11 显式劣化检查 evidence）、ADR-0069（P12 combine fail closed）与 ADR-0070（P7 部分执行失败后 fail stop）；相关实现尚未进入本地 `main`。ADR-0070 防止同一 audit 自动继续或重复执行，但不提供 outcome 自动恢复或人工修复工具。P7 六类 DSL 的具体语义与 Provider lowering 仍按 Proposed ADR-0068 保持 fail closed。
+本轮已按 Raphael 对模块开发与技术决策的授权接受 ADR-0067（P11 显式劣化检查 evidence）、ADR-0068（P7 typed-plan 闭世界机制，不启用算子）、ADR-0069（P12 combine fail closed）与 ADR-0070（P7 部分执行失败后 fail stop）；相关实现尚未进入本地 `main`。ADR-0070 防止同一 audit 自动继续或重复执行，但不提供 outcome 自动恢复或人工修复工具。P7 六类 DSL 的具体语义与 Provider lowering 仍保持 fail closed；typed-plan audit 存储及其与 TrialLedger 的崩溃原子性必须在首个算子启用前解决。
 
 Phase 3 Event 表操作入口的边界已由 [ADR-0066](docs/adr/0066-explicit-event-table-operator.md) 决定：单独显式命令、默认无副作用、不接入 Phase 1 或自动 provisioning；真实 catalog 建表仍需单独授权。
 

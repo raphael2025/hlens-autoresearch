@@ -983,6 +983,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - `claude/p10-inverse-control@20bdd82` 的 worktree clean；Claude session 已结束。`git merge-base` 核实该 tip 是本地 `main@669704c` 的祖先（无仅存在于该分支的提交），故先归档到 `refs/archive/2026-09-27/branches/claude/p10-inverse-control`，再移除本地 worktree 与分支。
 - 本地清理后盘点为 14 个分支、8 个远端 refs、20 个 worktree；归档引用增加 1。远端 `main` 未变，Claude / Cursor 活动或 owner 未确认的工作区仍保留。
 
+### 10.23 P7 typed operator 基础边界决定（2026-09-27）
+
+- Codex 依 Raphael 的项目全权委托接受 [ADR-0068](../adr/0068-phase7-typed-operator-plans.md) 的闭世界类型化计划机制与拒绝规则。六类 DSL 算子仍全部 `NOT_RUNNABLE`；不改 `core/`、Schema、Provider contracts、`ExperimentSpec`、`parameter_point` 或 trial 计数。
+- 本批只实现纯 research 层 typed AST / 严格解析与 validation，结果显式为 `non-runnable`；allowlist 保持空，不产生执行审计、持久化或 trial。执行计划审计存储和与 TrialLedger 的崩溃原子性，必须在首个 operator 语义决议前另行决定并实现。此项把安全基础代码从尚未定义的研究行为中隔离出来。
+- P7 六类 operator 的逐项时间、缺失值 / 对齐、算法与 Provider lowering 语义仍需单独决定；当前代码不把自然语言 Hypothesis 转为执行计划。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
