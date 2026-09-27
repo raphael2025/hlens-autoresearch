@@ -26,12 +26,21 @@ only a ``DatasetBuilder`` and a manifest content hash, and every bar is proven b
 5. **mapping** — each proven bar keeps its own interval and its own ``available_time`` as the
    selection carries it (the ADR-0032 effective time only when the manifest's spec binds that
    assumption, the stored one otherwise); OHLC stay ``Decimal`` (``decimal(38, 18)`` columns),
-   never floats. Gaps are not filled: a missing minute stays missing (the outcome engine labels
-   it ``None``, the backtester keeps the last mark);
+   never floats. A backtest ``PriceBar`` also carries the same selected revision's base-asset
+   ``volume`` (ADR-0054 §4), the ``Decimal`` exactly as the proven row holds it (never inferred,
+   zero-filled or converted); a value that is not a ``Decimal`` is ``CatalogIntegrityError``, as
+   for OHLC. ``OutcomePriceBar`` has no volume and gets none. Gaps are not filled: a missing
+   minute stays missing (the outcome engine labels it ``None``, the backtester keeps the last
+   mark);
 6. **cutoff** — ``price_cutoff`` defaults to the manifest's ``simulation_time`` and may not be
    later (the dataset knows no price beyond its PIT view). A bar of the requested window whose
    ``available_time`` is after ``price_cutoff`` is **refused**, never silently dropped: the caller
    narrows the window instead.
+
+Because every dataset ``PriceBar`` carries a non-null ``volume``, a ``BacktestRequest`` built
+from dataset bars hashes differently from one built by this module before ADR-0054's volume
+mapping (B61; expected: the volume is part of the bar). A ``PriceBar`` without ``volume`` still
+omits it, so every other request hash is unchanged.
 
 ``OutcomeRequest`` carries the manifest's content hash and the cutoff; ``BacktestRequest`` has no
 slot for either (its schema is frozen), so ``backtest_bars_from_dataset`` returns them next to the
@@ -84,6 +93,7 @@ _VENUE_SYMBOL: Final[Mapping[str, str]] = {
     item.symbol: venue for venue, item in rules.SYMBOLS.items()
 }
 _OHLC: Final = ("open", "high", "low", "close")
+_VOLUME: Final = "volume"
 
 
 class DatasetBarsError(DatasetBindingError):
@@ -100,6 +110,8 @@ class _ProvenBar:
     high: Decimal
     low: Decimal
     close: Decimal
+    #: base-asset volume of the same selected revision (``PriceBar.volume``, ADR-0054 §4)
+    volume: Decimal
 
 
 @dataclass(frozen=True, slots=True)
@@ -194,6 +206,7 @@ def backtest_bars_from_dataset(
             high=bar.high,
             low=bar.low,
             close=bar.close,
+            volume=bar.volume,
         )
         for symbol in sorted(proven)
         for bar in proven[symbol]
@@ -353,6 +366,9 @@ def _bar(
         if not isinstance(value, Decimal):
             raise CatalogIntegrityError(f"revision {revision}: {name} is not a Decimal")
         prices[name] = value
+    volume = item.values.get(_VOLUME)
+    if not isinstance(volume, Decimal):
+        raise CatalogIntegrityError(f"revision {revision}: {_VOLUME} is not a Decimal")
     return _ProvenBar(
         symbol=symbol,
         interval_start=item.event_time,
@@ -362,4 +378,5 @@ def _bar(
         high=prices["high"],
         low=prices["low"],
         close=prices["close"],
+        volume=volume,
     )

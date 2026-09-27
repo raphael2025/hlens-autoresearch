@@ -779,6 +779,22 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   `386 passed, 1 warning in 8.62s`，退出码 0，无 skip；`ruff check .` → `All checks passed!`；`ruff format --check .` → `761 files already formatted`；
   `npm test` → lib 88 / 88、组件 110 / 110（`src/` 未改）。
 
+**B61 — ADR-0054 §4：数据集回测 bar 带 Canonical 成交量（`infrastructure/bars/dataset.py`；隔离分支，基于 `9d78839`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 来源：Accepted ADR-0054 实施说明"未做（留给调试批次）"第一项；Codex 划定本批次（无新架构决定）。
+- 实现：`_ProvenBar.volume` 取自经 lineage / 键 / 事件时间核对的已选 revision 的 `item.values["volume"]`（Canonical `decimal(38, 18)` 的 `Decimal`
+  原值，无新 catalog 查询）；`backtest_bars_from_dataset` 写入 `PriceBar.volume`；非 `Decimal` / 缺失 → `CatalogIntegrityError`（同 OHLC）；
+  `OutcomePriceBar` 不变。未改 core / 契约 / Schema / 版本 / 哈希规则。
+- 哈希：数据集回测 `request_hash` 因真实非空 volume 改变（预期）；去掉 volume 逐位复现 B61 之前在两个独立世界中算得的 `e07c52d9…`（钉在测试中）；
+  没有被钉住的数据集回测哈希，未重写任何快照。
+- 测试：见 ADR-0054 实施说明"dataset volume mapping"；在 B61 之前的代码上 6 / 7 项新测试失败。
+- 实际运行（隔离 worktree，6 GB 上限）：`pytest -m "not postgres" tests/infrastructure/bars` → `54 passed, 47 deselected in 281.03s`；
+  `pytest -m "not postgres" tests/infrastructure/e2e tests/research/strategies tests/plugins/backtest tests/test_strategy_contracts.py`
+  + 文档一致性 + 架构边界 → `280 passed, 9 deselected in 515.99s`，退出码 0；mypy 修正（测试内两处类型）后 `test_dataset_bars.py` → `20 passed in 93.91s`；
+  `ruff check .` → `All checks passed!`；`ruff format --check .` → `761 files already formatted`；`mypy` → `Success: no issues found in 595 source files`。
+  PostgreSQL 标记测试（`test_dataset_bars_postgres.py`、真实数据端到端）**未运行**：本批次没有授权使用专用 Phase 1 测试库，未创建任何数据库。
+- 边界：不声称 Phase 4 / 5 验收；G4 容量检查未改读结转结果（ADR-0054 其余未做项不变）。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |

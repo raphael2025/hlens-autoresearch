@@ -19,10 +19,17 @@ from typing import Any
 
 import pytest
 
-from core.contracts.outcome import OutcomeEvent, OutcomeLabelSpec, OutcomeMethod, OutcomeRequest
+from core.contracts.feature import FeatureObservation
+from core.contracts.outcome import (
+    OutcomeEvent,
+    OutcomeLabelSpec,
+    OutcomeMethod,
+    OutcomePriceBar,
+    OutcomeRequest,
+)
 from core.contracts.revision import PointInTimeSpec
-from core.contracts.strategy import BacktestRequest, BacktestResult, TargetPosition
-from core.domain.base import content_hash
+from core.contracts.strategy import BacktestRequest, BacktestResult, PriceBar, TargetPosition
+from core.domain.base import FrozenMapping, content_hash
 from core.domain.specs import OutcomeSpec
 from infrastructure.bars import (
     DatasetBarsError,
@@ -30,11 +37,13 @@ from infrastructure.bars import (
     backtest_bars_from_dataset,
     outcome_request_from_dataset,
 )
+from infrastructure.bars import dataset as bars_dataset
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS
 from infrastructure.dataset.builder import DatasetBuilt
 from infrastructure.dataset.manifests import ManifestStore
 from infrastructure.feature.dataset import DatasetBindingError
+from infrastructure.feature.observations import bar_observations
 from infrastructure.pit.assumption import ASSUMPTION_BINDING, ASSUMPTION_LATENCY
 from infrastructure.pit.selector import PitSelector
 from plugins.backtest import BarBacktester
@@ -207,15 +216,20 @@ def _targets(bars: DatasetPriceBars) -> tuple[TargetPosition, ...]:
     )
 
 
-def _run(bars: DatasetPriceBars) -> BacktestResult:
-    return BarBacktester().run(
-        BacktestRequest(
-            cost_model=COSTS,
-            initial_equity=Decimal("10000"),
-            bars=bars.bars,
-            targets=_targets(bars),
-        )
+def _request(
+    bars: DatasetPriceBars, price_bars: tuple[PriceBar, ...] | None = None
+) -> BacktestRequest:
+    """The dataset run's request (``price_bars`` replaces the bars, same targets)."""
+    return BacktestRequest(
+        cost_model=COSTS,
+        initial_equity=Decimal("10000"),
+        bars=bars.bars if price_bars is None else price_bars,
+        targets=_targets(bars),
     )
+
+
+def _run(bars: DatasetPriceBars) -> BacktestResult:
+    return BarBacktester().run(_request(bars))
 
 
 def test_a_dataset_feeds_the_bar_backtester(w: World) -> None:
@@ -242,6 +256,109 @@ def test_dataset_runs_are_bit_identical_across_reruns(w: World) -> None:
     first_bars, second_bars = _backtest_bars(w, built), _backtest_bars(w, built)
     assert first_bars == second_bars
     assert _run(first_bars).result_hash == _run(second_bars).result_hash
+
+
+# ---------------------------------------------------------------------------------------------
+# ADR-0054 §4: a dataset PriceBar carries its selected revision's volume (B61)
+
+#: ``_request(bars).content_hash()`` on the code before B61 (dfa432b), when dataset bars carried no
+#: volume — identical in two independently built worlds. Stripping the volume must reproduce it.
+PRE_VOLUME_REQUEST_HASH = "e07c52d91f9990bff8eb0931e1f450e23a05a2e425cdd9a5d33d3b0fda16dcbf"
+#: ``kline_item``'s base-asset volume (every fixture bar).
+VOLUME = Decimal("6.45789000")
+
+
+def _without_volume(bars: DatasetPriceBars) -> tuple[PriceBar, ...]:
+    return tuple(PriceBar.model_validate({**bar.model_dump(), "volume": None}) for bar in bars.bars)
+
+
+def test_backtest_bars_carry_the_selected_revisions_decimal_volume(w: World) -> None:
+    built = _dataset(w)
+    spec = built.manifest.point_in_time
+    selection = PitSelector(w.h.adapter, w.h.storage).select(spec, "klines_1m", SYMBOL, *DAY_WINDOW)
+    stored = {row["interval_start"]: row["volume"] for row in selection.selected_rows.values()}
+    bars = _backtest_bars(w, built)
+    assert len(bars.bars) == BARS
+    for bar in bars.bars:
+        row = stored[bar.interval_start]
+        assert type(row) is Decimal and type(bar.volume) is Decimal
+        assert bar.volume == VOLUME
+        # the row's own Decimal: same digits and exponent, not re-parsed, rounded or via float
+        assert bar.volume.as_tuple() == row.as_tuple()
+        assert "volume" in bar.model_dump()
+
+
+def test_the_volume_is_bound_into_the_request_hash_and_the_empty_payload_is_unchanged(
+    w: World,
+) -> None:
+    built = _dataset(w)
+    bars = _backtest_bars(w, built)
+    with_volume = _request(bars)
+    stripped = _request(bars, _without_volume(bars))
+    # the expected change: the dataset request now hashes its bars' volume
+    assert with_volume.content_hash() != PRE_VOLUME_REQUEST_HASH
+    # without volume the payload omits it and the pre-B61 hash is reproduced bit for bit
+    assert stripped.content_hash() == PRE_VOLUME_REQUEST_HASH
+    assert all("volume" not in bar.model_dump() for bar in stripped.bars)
+    # a different volume on one bar is a different request
+    first, *rest = bars.bars
+    assert first.volume is not None
+    changed = PriceBar.model_validate({**first.model_dump(), "volume": first.volume + Decimal("1")})
+    other = _request(bars, (changed, *rest))
+    assert len({other.content_hash(), with_volume.content_hash(), PRE_VOLUME_REQUEST_HASH}) == 3
+    # the default execution model does not read volume: the same fills and equity path
+    a, b = BarBacktester().run(with_volume), BarBacktester().run(stripped)
+    assert (a.fills, a.equity_curve) == (b.fills, b.equity_curve)
+    assert a.request_hash != b.request_hash
+
+
+def test_independent_dataset_builds_give_identical_volumes(tmp_path: Path) -> None:
+    requests = []
+    for name in ("one", "two"):
+        (tmp_path / name).mkdir()
+        with ds.sqlite_world(tmp_path / name) as world:
+            bars = _backtest_bars(world, _dataset(world))
+            assert [bar.volume for bar in bars.bars] == [VOLUME] * BARS
+            requests.append(_request(bars))
+    assert requests[0] == requests[1]
+    assert requests[0].content_hash() == requests[1].content_hash()
+
+
+def test_the_outcome_path_carries_no_volume(w: World) -> None:
+    assert "volume" not in OutcomePriceBar.model_fields
+    request = _outcome_request(w, _dataset(w))
+    assert request.bars and all("volume" not in bar.model_dump() for bar in request.bars)
+    assert "volume" not in request.model_dump_json()
+
+
+@pytest.mark.parametrize("bad", ["absent", "int", "text"])
+def test_a_selected_bar_without_a_decimal_volume_is_refused(
+    w: World, monkeypatch: pytest.MonkeyPatch, bad: str
+) -> None:
+    """Canonical ``volume`` is a required ``decimal(38, 18)`` column, so this cannot come from the
+    catalog; the proven observations are altered on their way in (the code under test is not)."""
+    real = bar_observations
+
+    def altered(*args: Any, **kwargs: Any) -> tuple[FeatureObservation, ...]:
+        out = []
+        for item in real(*args, **kwargs):
+            values = dict(item.values)
+            if bad == "absent":
+                del values["volume"]
+            else:
+                volume = values["volume"]
+                # a non-numeric text (numeric text is already refused by FeatureObservation)
+                values["volume"] = int(volume) if bad == "int" else "unknown"
+            out.append(item.model_copy(update={"values": FrozenMapping(values)}))
+        return tuple(out)
+
+    built = _dataset(w)
+    monkeypatch.setattr(bars_dataset, "bar_observations", altered)  # the name dataset.py calls
+    with pytest.raises(CatalogIntegrityError, match="volume is not a Decimal"):
+        _backtest_bars(w, built)
+    # the same proven-bar path serves the outcome request: an unsound row is refused there too
+    with pytest.raises(CatalogIntegrityError, match="volume is not a Decimal"):
+        _outcome_request(w, built)
 
 
 # ---------------------------------------------------------------------------------------------

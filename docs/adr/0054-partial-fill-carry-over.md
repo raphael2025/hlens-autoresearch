@@ -172,3 +172,23 @@ ADR-0038 execution realism 说明已实现可选 `ExecutionModel`（参与率上
 - 不带新内容的 2.0.0 请求 / 结果 / descriptor 按记录版本读取、哈希逐位不变，并仍通过 `check_answers`。
 - 测试：`tests/test_adr_0054_0057_versions.py`；`tests/plugins/backtest/test_carry_over.py` 与 `test_execution_model.py` 的 50a43a4 / 9c0b851
   金值改为在 2.0.0 构造作用域内复核，金值未改。
+
+## Implementation note — dataset volume mapping (B61, 2026-09-27)
+
+状态 **CODE_COMPLETE / DEBUG_PENDING**（上文"未做（留给调试批次）"的第一项）。无 core / 契约 / Schema / 版本 / 哈希规则变化。
+
+- `infrastructure/bars/dataset.py::backtest_bars_from_dataset` 生成的每个 `PriceBar` 现在带 `volume`：取自同一经 manifest / PIT 证明、
+  经 lineage 与键 / 事件时间核对的已选 revision 的 `FeatureObservation.values["volume"]`（`BAR_VALUE_COLUMNS` 已包含它；不增加 catalog 查询），
+  即 Canonical `bars_1m.volume`（`decimal(38, 18)`）的 `Decimal` 原值——不推断、不补零、不经 float。值不是 `Decimal`（或缺失）→
+  `CatalogIntegrityError`，与 OHLC 相同（fail closed；两条路径共用同一个已证明 bar，因此 outcome 请求同样拒绝这种行）。
+  `OutcomePriceBar` 没有 volume 字段，不添加。
+- 哈希：`PriceBar.volume = None` 仍省略，既有空值载荷与哈希逐位不变——测试把数据集回测请求去掉 volume 后逐位复现 B61 之前（`dfa432b`）
+  在两个独立构造的世界中算得的 `request_hash` `e07c52d9…`；带真实非空 volume 的数据集回测 `request_hash` 因此改变（预期，volume 是 bar 的一部分），
+  改变某根 bar 的 volume 即改变请求哈希。默认 `next_bar_open` 执行模型不读 volume：成交与权益路径不变，只有 `request_hash` / `result_hash` 变。
+  没有被钉住的数据集回测哈希，也没有重写任何已提交快照。
+- 影响：结转模型（`next_bar_open_participation`）在真实数据集 bar 上不再因缺 `volume` 被拒；同时给出 `ExecutionModel.bar_volume` 旁路且与数据集
+  volume 不一致时，按本 ADR 既有规则拒绝。
+- 测试（SQLite / 真实存储 fixture，`tests/infrastructure/bars/test_dataset_bars.py`）：精确 `Decimal` 映射（与所选行同位数 / 指数）；两个独立世界
+  构造结果相同；volume 进入请求哈希、去掉后复现旧哈希；outcome 路径无 volume；缺失 / int / 非数值文本 → `CatalogIntegrityError`。
+  在 B61 之前的 `dataset.py` 上 7 项新测试中 6 项失败（outcome 不变量两边都通过）。PostgreSQL 标记的数据集 / 端到端测试未运行（本机未为本批次授权运行）。
+- 上文其余未做项不变：G4 容量检查未改读结转结果；剩余量不按权益重新定量（§1 简化）。`pyproject.toml` 的 Pydantic 下限已由 B55 提到 ≥ 2.12。
