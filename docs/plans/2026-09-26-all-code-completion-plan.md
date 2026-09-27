@@ -1002,6 +1002,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - Knowledge API 的无 Provider 响应已在基线实现为稳定 503 常量错误，README 与 OpenAPI 一致；无代码改动。P2 report DTO 审查认为现有 report kind 缺乏统一版本化 schema，任意新增严格模型会拒收既有 payload；逐 kind DTO 延后到 schemas 经批准后实施。当前 API envelope 仍按动态 report kind 返回 opaque JSON object。
 - 已吸收的 P7 / P11 / P9 Codex worktree 先将 branch tip 归档到 `refs/archive/2026-09-27/branches/codex/` 再移除；P2 无改动审计 worktree 与已成为协调分支祖先的旧 Knowledge API worktree 同样按此方式清理。归档保留全部提交，未碰 Claude / Cursor 的活动 worktree；本地快照回到 14 个分支、20 个 worktree，主线与远端未更新。
 
+### 10.26 Cursor 分支审计与 E1 候选复核（2026-09-27）
+
+- Cursor `codex-d3e-pit-tests@60246a5` 的两个提交 patch-id 分别等同于已在协调分支和本地 main 中的 `69f0bf0` / `9baad12`，无独有代码；干净 worktree 的完整 branch tip 先归档到 `refs/archive/2026-09-27/branches/codex-d3e-pit-tests`，再移除本地分支 / worktree。
+- Cursor `codex-research-loop-ui@e398386` 有独有 commit，但增加的 parser / 测试夹具 / 页面行为已由更完整的主线实现覆盖，整体摘取会重复逻辑并可能丢掉当前 `InvalidReports`、AsyncView 与报告行为。已归档 branch tip 到 `refs/archive/2026-09-27/branches/codex-research-loop-ui` 后移除本地 worktree / 分支；`origin/codex-research-loop-ui` 保留。
+- E1 分支审计确认 `codex/e1-bounded-scan-integration` 是两组尚未进入协调线的 bounded-scan / source-proof 代码累计候选，但没有 PyIceberg 有界 metadata 解析，也无 32 MiB 证据；`fix/e1-cap1` 有另一套实现且仍报告 59.9 / 63.9 MiB 超门槛。候选彼此重叠，当前不整支合并；所有相关 worktree 均干净，活动 Claude history-options worktree 保留。
+- 当前仓库为 **12 个本地分支、18 个 worktree**；`main` 与远端未变。其余 E1 候选保留等待独立代码审查与方案收敛。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
