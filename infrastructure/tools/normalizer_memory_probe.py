@@ -77,6 +77,16 @@ can miss a spike shorter than the interval; the interval and sample counts are r
 preparation (heads, history walks to locate the batch) runs before ``ready`` and may warm
 process-wide caches (e.g. PyIceberg's manifest LRU); ``VmRSS`` at ``ready`` is reported.
 
+Optional staged allocation diagnostics
+=======================================
+
+``--staged-diagnostics`` instruments the probe child to count public CatalogAdapter calls,
+manifests considered by PyIceberg's local planner, and planned file tasks. It also reports retained
+``tracemalloc`` deltas by source path and a reachable-Python-size estimate for the held result.
+This mode changes child memory and timing, so its RSS is diagnostic only and can never satisfy
+``e1_cap1_evidence``. ``tracemalloc`` does not include native Arrow buffers and is not an RSS
+measurement. The default probe path does not enable this instrumentation.
+
 Criterion (fixed, not configurable: ``GROWTH_LIMIT_MIB = 32``)
 ==============================================================
 
@@ -133,9 +143,10 @@ import tempfile
 import threading
 import time
 import traceback
-from collections.abc import Callable, Iterator, Sequence
-from contextlib import contextmanager
-from dataclasses import dataclass, field
+from collections import Counter
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import contextmanager, nullcontext
+from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import metadata
 from pathlib import Path
@@ -266,6 +277,129 @@ class _Clock:
         self._now = value + timedelta(microseconds=1)
         self.readings += 1
         return value
+
+
+@dataclass
+class _StageDiagnostics:
+    """Probe-only call and allocation counters; never changes production decisions."""
+
+    adapter_calls: Counter[str] = field(default_factory=Counter)
+    manifest_plan_calls: int = 0
+    manifests_considered: int = 0
+    file_scan_tasks_planned: int = 0
+
+
+class _CountingAdapter:
+    """Count public CatalogAdapter operations made during the measured stage."""
+
+    def __init__(self, inner: PyIcebergCatalogAdapter, diagnostics: _StageDiagnostics) -> None:
+        self._inner = inner
+        self._diagnostics = diagnostics
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def load_table(self, table: str) -> Any:
+        self._diagnostics.adapter_calls["load_table"] += 1
+        return self._inner.load_table(table)
+
+    def scan_columns(self, *args: Any, **kwargs: Any) -> Any:
+        self._diagnostics.adapter_calls["scan_columns"] += 1
+        return self._inner.scan_columns(*args, **kwargs)
+
+    def commit_batch(self, *args: Any, **kwargs: Any) -> Any:
+        self._diagnostics.adapter_calls["commit_batch"] += 1
+        return self._inner.commit_batch(*args, **kwargs)
+
+
+@contextmanager
+def _count_manifest_planning(diagnostics: _StageDiagnostics) -> Iterator[None]:
+    """Count manifests and file tasks passed through PyIceberg's local planner."""
+    from pyiceberg.table import ManifestGroupPlanner
+
+    original = ManifestGroupPlanner.plan_files
+
+    def counted(
+        planner: Any,
+        manifests: Any,
+        manifest_entry_filter: Callable[[Any], bool] = lambda _: True,
+    ) -> Any:
+        diagnostics.manifest_plan_calls += 1
+        considered = 0
+
+        def count_inputs() -> Iterator[Any]:
+            nonlocal considered
+            for manifest in manifests:
+                considered += 1
+                yield manifest
+
+        tasks = original(planner, count_inputs(), manifest_entry_filter)
+        diagnostics.manifests_considered += considered
+        if isinstance(tasks, Sequence):
+            diagnostics.file_scan_tasks_planned += len(tasks)
+        return tasks
+
+    ManifestGroupPlanner.plan_files = counted  # type: ignore[method-assign]
+    try:
+        yield
+    finally:
+        ManifestGroupPlanner.plan_files = original  # type: ignore[method-assign]
+
+
+def _allocation_category(filename: str) -> str:
+    normalized = filename.replace("\\", "/")
+    if "/pyiceberg/" in normalized:
+        return "pyiceberg"
+    if "/infrastructure/canonical/" in normalized:
+        return "infrastructure/canonical"
+    if "/infrastructure/revision/" in normalized:
+        return "infrastructure/revision"
+    return "other"
+
+
+def _allocation_deltas(before: Any, after: Any) -> dict[str, dict[str, int]]:
+    """Return retained tracemalloc deltas by source path, not process RSS."""
+    totals = {
+        name: {"size_bytes": 0, "allocation_count": 0}
+        for name in (
+            "pyiceberg",
+            "infrastructure/canonical",
+            "infrastructure/revision",
+            "other",
+        )
+    }
+    for statistic in after.compare_to(before, "filename"):
+        category = _allocation_category(statistic.traceback[0].filename)
+        totals[category]["size_bytes"] += statistic.size_diff
+        totals[category]["allocation_count"] += statistic.count_diff
+    return totals
+
+
+def _reachable_python_size(root: object) -> int:
+    """Estimate Python bytes reachable from the held result; excludes native buffers."""
+    seen: set[int] = set()
+    pending = [root]
+    total = 0
+    while pending:
+        value = pending.pop()
+        identity = id(value)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        try:
+            total += sys.getsizeof(value)
+        except (TypeError, ValueError):
+            continue
+        if isinstance(value, Mapping):
+            pending.extend(value.keys())
+            pending.extend(value.values())
+        elif isinstance(value, (tuple, list, set, frozenset)):
+            pending.extend(value)
+        elif is_dataclass(value) and not isinstance(value, type):
+            pending.extend(getattr(value, item.name) for item in fields(value))
+        elif hasattr(value, "__dict__"):
+            pending.extend(vars(value).values())
+    return total
 
 
 @contextmanager
@@ -552,15 +686,36 @@ def _stage(
     raise ProbeError(f"unknown stage {stage!r}")
 
 
-def _child_stage(stage: str, workdir: Path, unit: str, rows: int, microbatch: int) -> None:
-    with _opened(workdir) as (adapter, storage):
+def _child_stage(
+    stage: str,
+    workdir: Path,
+    unit: str,
+    rows: int,
+    microbatch: int,
+    *,
+    staged_diagnostics: bool,
+) -> None:
+    with _opened(workdir) as (inner_adapter, storage):
+        diagnostics = _StageDiagnostics()
+        adapter = (
+            _CountingAdapter(inner_adapter, diagnostics) if staged_diagnostics else inner_adapter
+        )
         body = _stage(stage, adapter, storage, unit, rows, microbatch)
         gc.collect()
         _emit("ready", vmhwm_kb=_status_kb("VmHWM"), vmrss_kb=_status_kb("VmRSS"))
         time.sleep(_SETTLE_SECONDS)
+        if staged_diagnostics:
+            import tracemalloc
+
+            tracemalloc.start(1)
+            before = tracemalloc.take_snapshot()
         _emit("start")
         started = time.perf_counter()
-        facts, held = body()
+        counter_scope = (
+            _count_manifest_planning(diagnostics) if staged_diagnostics else nullcontext()
+        )
+        with counter_scope:
+            facts, held = body()
         wall = time.perf_counter() - started
         time.sleep(_HOLD_SECONDS)  # ``held`` is still referenced: its residency is sampled
         _emit(
@@ -570,6 +725,23 @@ def _child_stage(stage: str, workdir: Path, unit: str, rows: int, microbatch: in
             vmhwm_kb=_status_kb("VmHWM"),
             facts=facts,
         )
+        if staged_diagnostics:
+            after = tracemalloc.take_snapshot()
+            _emit(
+                "diagnostics",
+                adapter_calls=dict(diagnostics.adapter_calls),
+                manifest_plan_calls=diagnostics.manifest_plan_calls,
+                manifests_considered=diagnostics.manifests_considered,
+                file_scan_tasks_planned=diagnostics.file_scan_tasks_planned,
+                tracemalloc_retained_deltas=_allocation_deltas(before, after),
+                held_result={
+                    "type": f"{type(held).__module__}.{type(held).__qualname__}",
+                    "reachable_python_bytes_estimate": _reachable_python_size(held),
+                    "native_buffer_bytes_included": False,
+                },
+                tracemalloc_is_rss=False,
+            )
+            tracemalloc.stop()
         del held
 
 
@@ -585,7 +757,14 @@ def _child_main(args: argparse.Namespace) -> int:
         if args.stage == "setup":
             _emit("setup", **_setup(args.workdir, args.unit_rows, args.d2_batch))
         else:
-            _child_stage(args.stage, args.workdir, args.unit, args.unit_rows, args.microbatch)
+            _child_stage(
+                args.stage,
+                args.workdir,
+                args.unit,
+                args.unit_rows,
+                args.microbatch,
+                staged_diagnostics=args.staged_diagnostics,
+            )
     except BaseException as exc:  # noqa: BLE001 - reported to the parent, then re-signalled
         traceback.print_exc(file=sys.stderr)
         _emit("error", type=type(exc).__name__, message=str(exc)[:2_000])
@@ -710,6 +889,7 @@ def _attribute(run: _ChildRun, interval: float) -> dict[str, Any]:
     baseline_kb = statistics.median(settle)
     peak_t, peak_kb = max(during, key=lambda item: item[1])
     delta_kb = peak_kb - baseline_kb
+    diagnostics = run.by_event.get("diagnostics")
     return {
         "baseline_kb": baseline_kb,
         "peak_kb": peak_kb,
@@ -731,6 +911,11 @@ def _attribute(run: _ChildRun, interval: float) -> dict[str, Any]:
         "hold_seconds": end["hold_seconds"],
         "child_wall_seconds": run.wall_seconds,
         "facts": end["facts"],
+        "diagnostics": (
+            None
+            if diagnostics is None
+            else {key: value for key, value in diagnostics.items() if key != "event"}
+        ),
     }
 
 
@@ -937,7 +1122,13 @@ def _environment(base: Path, runtime: str) -> dict[str, Any]:
 
 
 def _child_args(
-    stage: str, workdir: Path, rows: int, config: dict[str, int], unit: str | None
+    stage: str,
+    workdir: Path,
+    rows: int,
+    config: dict[str, int],
+    unit: str | None,
+    *,
+    staged_diagnostics: bool,
 ) -> list[str]:
     args = [
         "--stage",
@@ -950,6 +1141,8 @@ def _child_args(
     ]
     if unit is not None:
         args.append(f"--unit={unit}")
+    if staged_diagnostics and stage != "setup":
+        args.append("--stage-diagnostics")
     return args
 
 
@@ -988,6 +1181,7 @@ def run_probe(
     child_rss_limit_mib: int = DEFAULT_CHILD_RSS_LIMIT_MIB,
     samples_out: Path | None = None,
     keep_workdirs: bool = False,
+    staged_diagnostics: bool = False,
 ) -> dict[str, Any]:
     """Measure every stage at every N, ``repeats`` times; never raises for a failed child."""
     _validate_sizes(sizes)
@@ -1003,6 +1197,7 @@ def run_probe(
         "sizes_include_10k_100k_500k": set(PROTOCOL_SIZES) <= set(sizes),
         "repeats_at_least_3": repeats >= PROTOCOL_MIN_REPEATS,
         "code_line_matches_main": code_line["matches_main"] is True,
+        "staged_diagnostics_disabled": not staged_diagnostics,
     }
     document: dict[str, Any] = {
         "probe": PROBE,
@@ -1023,6 +1218,7 @@ def run_probe(
             "child_timeout_seconds": child_timeout,
             "child_rss_limit_mib": child_rss_limit_mib,
             "fixture": "infrastructure.tools.capacity_probe synthetic aggTrades archive",
+            "staged_diagnostics": staged_diagnostics,
             "measured_at": datetime.now(UTC).isoformat(timespec="seconds"),
         },
         "code_line": code_line,
@@ -1042,7 +1238,14 @@ def run_probe(
                     if _filesystem(workdir) in _REFUSED_FILESYSTEMS:
                         raise ProbeError(f"work directory {workdir} is on a memory filesystem")
                     setup = _run_child(
-                        _child_args("setup", workdir, rows, config, None),
+                        _child_args(
+                            "setup",
+                            workdir,
+                            rows,
+                            config,
+                            None,
+                            staged_diagnostics=False,
+                        ),
                         runtime=runtime,
                         interval=interval,
                         timeout=child_timeout,
@@ -1064,7 +1267,14 @@ def run_probe(
                     )
                     for stage in STAGES:
                         run = _run_child(
-                            _child_args(stage, workdir, rows, config, unit),
+                            _child_args(
+                                stage,
+                                workdir,
+                                rows,
+                                config,
+                                unit,
+                                staged_diagnostics=staged_diagnostics,
+                            ),
                             runtime=runtime,
                             interval=interval,
                             timeout=child_timeout,
@@ -1166,6 +1376,11 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--json-out", type=Path, help="also write the JSON document here")
     parser.add_argument("--samples-out", type=Path, help="raw VmRSS series, JSON lines")
+    parser.add_argument(
+        "--staged-diagnostics",
+        action="store_true",
+        help="collect instrumented call/allocation attribution; diagnostic only, never E1 evidence",
+    )
     parser.add_argument("--keep-workdirs", action="store_true")
     parser.add_argument("--i-know-memory", action="store_true")
     parser.add_argument(
@@ -1177,6 +1392,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--workdir", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--unit", help=argparse.SUPPRESS)
     parser.add_argument("--unit-rows", type=int, help=argparse.SUPPRESS)
+    parser.add_argument("--stage-diagnostics", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.stage is not None:
         return _child_main(args)
@@ -1219,6 +1435,7 @@ def main(argv: list[str] | None = None) -> int:
         child_rss_limit_mib=args.child_rss_limit_mib,
         samples_out=args.samples_out,
         keep_workdirs=args.keep_workdirs,
+        staged_diagnostics=args.staged_diagnostics,
     )
     text = json.dumps(document, indent=2, default=str)
     if args.json_out is not None:
