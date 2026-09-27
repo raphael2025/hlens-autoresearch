@@ -85,20 +85,36 @@ class AuditSubject:
 @dataclass(frozen=True)
 class GateDiff:
     gate_id: str
+    recorded_metric: str | None
+    current_metric: str | None
     recorded: Verdict | None
     current: Verdict | None
     recorded_value: float | None
     current_value: float | None
+    recorded_value_exact: str | None
+    current_value_exact: str | None
+    recorded_threshold: float | None
+    current_threshold: float | None
+    recorded_threshold_exact: str | None
+    current_threshold_exact: str | None
     recorded_threshold_source: str | None
     current_threshold_source: str | None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "gate_id": self.gate_id,
+            "recorded_metric": self.recorded_metric,
+            "current_metric": self.current_metric,
             "recorded": None if self.recorded is None else self.recorded.value,
             "current": None if self.current is None else self.current.value,
             "recorded_value": self.recorded_value,
             "current_value": self.current_value,
+            "recorded_value_exact": self.recorded_value_exact,
+            "current_value_exact": self.current_value_exact,
+            "recorded_threshold": self.recorded_threshold,
+            "current_threshold": self.current_threshold,
+            "recorded_threshold_exact": self.recorded_threshold_exact,
+            "current_threshold_exact": self.current_threshold_exact,
             "recorded_threshold_source": self.recorded_threshold_source,
             "current_threshold_source": self.current_threshold_source,
         }
@@ -165,18 +181,50 @@ def _diffs(recorded: ValidationReport, current: ValidationReport) -> tuple[GateD
         same = (
             old is not None
             and new is not None
-            and (old.verdict, old.value, old.threshold, old.threshold_source)
-            == (new.verdict, new.value, new.threshold, new.threshold_source)
+            and (
+                old.metric,
+                old.verdict,
+                old.value,
+                old.value_exact,
+                old.threshold,
+                old.threshold_exact,
+                old.threshold_source,
+            )
+            == (
+                new.metric,
+                new.verdict,
+                new.value,
+                new.value_exact,
+                new.threshold,
+                new.threshold_exact,
+                new.threshold_source,
+            )
         )
         if same:
             continue
         diffs.append(
             GateDiff(
                 gate_id=gate_id,
+                recorded_metric=None if old is None else old.metric,
+                current_metric=None if new is None else new.metric,
                 recorded=None if old is None else old.verdict,
                 current=None if new is None else new.verdict,
                 recorded_value=None if old is None else old.value,
                 current_value=None if new is None else new.value,
+                recorded_value_exact=None
+                if old is None or old.value_exact is None
+                else str(old.value_exact),
+                current_value_exact=None
+                if new is None or new.value_exact is None
+                else str(new.value_exact),
+                recorded_threshold=None if old is None else old.threshold,
+                current_threshold=None if new is None else new.threshold,
+                recorded_threshold_exact=(
+                    None if old is None or old.threshold_exact is None else str(old.threshold_exact)
+                ),
+                current_threshold_exact=(
+                    None if new is None or new.threshold_exact is None else str(new.threshold_exact)
+                ),
                 recorded_threshold_source=None if old is None else old.threshold_source,
                 current_threshold_source=None if new is None else new.threshold_source,
             )

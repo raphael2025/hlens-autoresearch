@@ -32,23 +32,35 @@ function FindingDetail({ finding }: { finding: RetroAuditFinding }) {
           <thead>
             <tr>
               <th>gate</th>
+              <th>metric</th>
               <th>recorded</th>
               <th>current</th>
-              <th>recorded value / threshold source</th>
-              <th>current value / threshold source</th>
+              <th>recorded value (exact)</th>
+              <th>current value (exact)</th>
+              <th>recorded threshold (exact) / source</th>
+              <th>current threshold (exact) / source</th>
             </tr>
           </thead>
           <tbody>
             {finding.gate_diffs.map((diff, index) => (
               <tr key={`${displayValue(diff.gate_id)}:${index}`}>
                 <td>{displayValue(diff.gate_id)}</td>
+                <td>
+                  {displayValue(diff.recorded_metric)} → {displayValue(diff.current_metric)}
+                </td>
                 <td>{displayValue(diff.recorded)}</td>
                 <td>{displayValue(diff.current)}</td>
                 <td>
-                  {displayValue(diff.recorded_value)} / {displayValue(diff.recorded_threshold_source)}
+                  {displayValue(diff.recorded_value_exact ?? diff.recorded_value)}
                 </td>
                 <td>
-                  {displayValue(diff.current_value)} / {displayValue(diff.current_threshold_source)}
+                  {displayValue(diff.current_value_exact ?? diff.current_value)}
+                </td>
+                <td>
+                  {displayValue(diff.recorded_threshold_exact ?? diff.recorded_threshold)} / {displayValue(diff.recorded_threshold_source)}
+                </td>
+                <td>
+                  {displayValue(diff.current_threshold_exact ?? diff.current_threshold)} / {displayValue(diff.current_threshold_source)}
                 </td>
               </tr>
             ))}

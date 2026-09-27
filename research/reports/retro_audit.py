@@ -18,7 +18,7 @@ from research.validation.retro_audit import RetroAuditReport
 __all__ = ["KIND", "retro_audit_payload", "write_retro_audit_report"]
 
 KIND: Final = "retro_audit"
-SCHEMA_VERSION: Final = "1.0.0"
+SCHEMA_VERSION: Final = "1.1.0"
 STATUS: Final = "FRAMEWORK_IMPLEMENTED / NOT_VALIDATED"
 
 

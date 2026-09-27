@@ -912,7 +912,7 @@ PR #6 本批独立分支集成检查：`uv run pytest -q tests/infrastructure/ev
 | P3 / P4 / P5 | 事件引擎 / 显式 Event 表操作、Outcome 持久化 / 验证门、策略到回测验证链均有实质逻辑 | 生产 catalog 建表需单独授权；Profile、真实历史数据和阶段验收不是普通代码缺口 |
 | P6 | 矩阵计算、条件试验预登记与逐单元验证已实现；循环原先只写 `matrix_hash`，没有把完整矩阵交给报告 writer | 本地协调分支补上可选报告接线；复用现有 `matrix_hash` writer / API / 页面，不改变 `LoopRecord` 身份；未测试 |
 | P7 | 严格草稿、人工审阅、参数点 batch 和知识来源核验已实现；conditioning / interaction / temporal / transformation / ensemble / negation 目前作为数据规格生成，但不进入试验执行，batch 明确 fail closed | 不把自然语言转成代码。任何让这些算子进入 loop 的能力，都要先有封闭、类型化、确定性语义；跨 Phase 编排 / Strategy / Feature 执行改变需 Proposed ADR。`ContentVerifiedLLM` 已有但可选，未包装引用不满足完整可复现审计，状态文档不得称全闭环 |
-| P8 | 回溯审计纯逻辑已实现且保护“旧拒绝不翻案”；缺少报告 writer、API kind 与 Web 页面 | 本地协调分支补齐显式 `RetroAuditReport` 输入 → append-only writer → 只读 API / 页面。无自动扫描、无生命周期转换；未测试。原十种报告 fixture 生成器、页面组件测试和 live-smoke 清单未更新，需在验收阶段补齐 |
+| P8 | 回溯审计纯逻辑已实现且保护“旧拒绝不翻案”；缺少报告 writer、API kind 与 Web 页面 | 本地协调分支补齐显式 `RetroAuditReport` 输入 → append-only writer → 只读 API / 页面；gate diff 展示 metric、实际 / exact value 与阈值及来源。无自动扫描、无生命周期转换；未测试。原十种报告 fixture 生成器、页面组件测试和 live-smoke 清单未更新，需在验收阶段补齐 |
 | P9 / P10 / P12～P14 | 合成验证、纸面 Router、进化提案、仅模拟执行与迁移框架存在 | 合成证据不是市场结论；P12 循环内替换提案有意暂缓；无具体迁移目标；实盘仍禁止 |
 | P11 / Worker | 劣化检查本身有独立 API、报告 writer 和页面；新 Profile 的 Decimal 阈值读取已修正。仍缺活跃对象、近期窗口和验证基线的数据来源；Worker 没有独立启动器去组合预算、报告目录与 loop 持久目录 | 不将监控强塞进审计链，不添加 API 写 / 启动 endpoint；先决定本机 operator 的数据输入、预算、Profile、状态目录及触发方式，再提设计 / ADR |
 | Apps | 当前是只读研究报告与知识 / job 视图，遵循 ADR-0048 | 只读约束是有意选择，不算应用写功能缺失；公网认证、TLS、HA 不在当前范围 |
