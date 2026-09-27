@@ -94,6 +94,12 @@
 - 只读盘点发现原 Wave 3 的“从 API 进入 Worker”与 ADR-0048 的 API 只读边界冲突。保留已接受 ADR：Worker 负责启动任务并写结果，API 只读查询，Web 读取展示；不新增架构决定或写入端点。
 - 已将 Wave 3 的验收描述改为“Worker 正式入口 → API 查询 → Web 展示”。Worker 多配置组合启动器仍需后续定义，未宣称 API / Worker / Web 全栈闭环已完成。
 
+### 10.48 Phase 2 / 4 基础接线合入本地 main（2026-09-28）
+
+- Phase 4 新增 `outcome_events_from_event_result`：以 `Event.event_id` / `Event.event_time` 一对一转换为 `OutcomeEvent`，沿用 `EventResult` 的规范顺序；空结果交给 `OutcomeRequest` 按契约拒绝。导出与 README 同步。
+- Phase 2 状态诊断 payload 升为 1.1.0：`StateResult` 输入记录来源 `result_hash`，裸序列写 `null`；旧 1.0.0 载荷可按原形状 round-trip 并复原旧 id。来源哈希绑定报告声明，不证明 Registry 存在。对应 Web fixture 由正式 writer 重生成。
+- 按授权将上述两项和 ADR-0048 计划澄清合入本地 `main`（`b8bbc83`、`9ac0b9d`、`3743b65`），原三个 task branch 在建立 `refs/archive/2026-09-28/branches/codex/` 后删除。未推送；未跑测试、lint、typecheck、build 或阶段验收，仍待统一验收。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：
