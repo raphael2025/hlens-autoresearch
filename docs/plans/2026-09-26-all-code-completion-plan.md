@@ -1109,6 +1109,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 同一复核发现 `infrastructure/revision/exchange_info_store.py::_history()` 未防多快照父链环；增加在已有输出列表中检测重复 snapshot ID，并以 `CatalogIntegrityError` 失败。没有额外增长的 visited set，不改 `RevisionCatalog` Protocol 或 snapshot 语义。
 - Phase 1 / infrastructure revision；不触及 core contract、Schema 或 ADR。未增加或运行测试、build、probe 或 Phase 验收；E2 的真实公共端点 smoke 及历史可用性缺口仍待处理。
 
+### 10.42 本地 E1 集成分支去重（2026-09-28）
+
+- Claude 的只读分支审计确认 `codex/e1-bounded-scan-integration@66fb6d1` 的 13 个提交与 `fix/e1-cap1` 提交相同，另外 2 个提交是 patch-equivalent；worktree 干净、无活动进程，且已有归档引用 `refs/archive/2026-09-27/branch-cleanup/pre-cleanup/local/codex/e1-bounded-scan-integration`。
+- 将该 worktree 从候选分支切换为 detached `main@f7005aa` 后，删除本地分支引用。保留 worktree 与其忽略的 `.venv` / 缓存，不删本机依赖环境；E1 候选实现和失败证据仍保留于 `fix/e1-cap1` 及归档引用。未触及远端引用。
+- 本次没有运行测试 / build / probe；清理不改变 E1-CAP-1 阻断结论。状态同步提交后本地 `main` 比 `origin/main@44fe9a2` 超前 64 个提交；当前 5 个本地分支、9 个 worktree、7 个远端引用。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
