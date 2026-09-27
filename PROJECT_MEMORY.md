@@ -145,7 +145,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - `venue` / `symbol` / `timeframe` 区分大小写、不做规范化（ADR-0018 边界）：未来 Adapter 必须产出规范值
 - v1 只读 gate 只做顶层形状检查；旧哈希只对完整的 v1 持久化规范载荷复现历史身份（C1 F2）
 - 外部是否存在 v1 历史数据证据不足：不得宣称迁移路径已在真实数据上验证
-- 后代 G5 是未决设计边界：后代沿用父代 `family_id`，每个 family 只评估一次密封 OOS（C-S1..3），重复使用会泄漏 holdout；需新的预注册 family / 独立未来密封窗口与 Profile 证据规则（未决定；完成计划 B57）
+- 后代 G5 / P12-LOOP（Codex 2026-09-27 决定，有意暂缓）：替换提案留在循环外的显式作业；循环只到 OOS、OOS → PAPER 须人工批准；后代沿用父代 `family_id`，每个 family 只评估一次密封 OOS（C-S1..3），绝不复用密封窗口、不为规避而新建 family 或猜测规则；将来自动触发须新 ADR（独立预注册密封评估 + 证据 / Profile 规则）（完成计划 B57 / P12-LOOP）
 - D1 已用两个时间单位边界日的官方 kline 与 aggTrades 验证原生字段、单位和 ZIP 结构；大体量 BTC 日归档仍须在批量 backfill 前做容量基线
 
 ## 8. Important Historical Context

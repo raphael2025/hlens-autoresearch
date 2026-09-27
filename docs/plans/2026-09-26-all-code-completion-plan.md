@@ -841,6 +841,12 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - **最终门禁（完整代码，只覆盖 `6d887b70f9a1b925a602476204773a321d8ce4b2` = B67 代码提交）：通过**。独立 detached checkout `.claude/worktrees/gate-6d887b7`，日志 `~/hlens-gate-logs/6d887b7/`。`START_SHA 6d887b7… dirty=0 2026-09-27T04:10:38Z`；`systemd-run --user --scope -q -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest -q -rs -m "not postgres" -p no:cacheprovider` → `7294 passed, 2 skipped, 136 deselected, 1 warning in 3128.68s (0:52:08)`，退出码 0；**2 skipped** 为预期的真实 Uvicorn 子进程测试（可选 extra 未安装，待 Raphael H12 批准），不是通过；`ruff check .` → `All checks passed!`；`ruff format --check .` → `766 files already formatted`；`mypy` → `Success: no issues found in 597 source files`；`uv lock --check --offline` → `Resolved 53 packages`；Schema 135 份 0 处变化；`openapi.json` 0 处变化；`api.d.ts` 0 处变化；`npm test` → lib 89 / 89、组件 110 / 110；`npm run build` ✓；全部退出码 0；`END_SHA 6d887b7… dirty=0 2026-09-27T05:03:09Z`。PostgreSQL 标记测试未运行。
 - 其后的 docs-only 提交 `2158945`（门禁运行中标记）与 `04cf1c0`（§12.1 同步）**不在**该全量门禁覆盖范围内；只对它们运行了文档检查：Codex 在干净的 WIP HEAD `04cf1c0` 上 `uv run --offline pytest -q -rs -p no:cacheprovider tests/test_docs_consistency.py tests/test_architecture_boundaries.py` → `20 passed in 0.46s`，退出码 0。
 
+**P12-LOOP — Codex 决定（2026-09-27，docs-only，无代码）：替换提案不接入持续循环**
+
+- 决定：替换提案保留在持续循环之外的显式作业中（`research/evolution/replacement_job.py`）。ADR-0045：循环的 `LifecycleGuard` 只到 `OOS`，`OOS → PAPER` 须人工批准（ADR-0006），循环内在此之前生成 `ReplacementProposal` 会虚假宣称资格；后代与父代同属一个 family，不得复用密封窗口；不得为规避这一点新建 family 或猜测阈值 / Profile 规则。
+- 性质：循环内自动触发是**有意暂缓**，不是当前范围内未实现的代码任务（取代 B57 中"未决设计边界"的表述：边界本身不变，处理方式已决定）。
+- 将来：自动触发须另立 ADR，定义独立、预先登记的密封评估以及证据 / Profile 规则。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
@@ -852,7 +858,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 9 | 配置错误不再被吞（B45，区间取整由 Codex 复核修复 B53）；G5 逐臂与端到端区间（B48 / B54）；中等规模证据报告（单标的 250 / 双标的 200 种子，B52）；`-m` CLI 修复（B52） | 不产生阈值（D-09）；双标的报告已在原基线 `dd6c8e1` 上逐字节复现（B57，只作证据） |
 | 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | **已决定（B62，Codex）**：不要求 Profile `FROZEN` / 冻结登记；冻结登记仅由 Promotion 作权威核验，路由通过不构成生产资格证明（ADR-0043） |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
-| 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案（有意：每个 family 只评估一次密封 OOS；未决设计边界见 B57）；锚点不认证新增行 |
+| 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环内触发提案：**Codex 决定有意暂缓**（P12-LOOP，2026-09-27；提案留在循环外的显式作业，循环只到 OOS、OOS → PAPER 须人工批准；后代不复用密封窗口；将来须新 ADR 定义独立预注册密封评估与证据 / Profile 规则）；锚点不认证新增行 |
 | 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做（控制台对 502 / 500 的呈现已经真实后端 + 服务端渲染验证，B60，非浏览器）；本机 ASGI 运行时已由 ADR-0063 选定 Uvicorn（仅 127.0.0.1；入口与测试已实施，真实运行待安装授权，B65）；公网部署 / TLS / 认证未决 |
 
 架构边界：本轮（`c36005b..` 最终 HEAD `3be497b`）没有改动 `core/` 或 `schemas/`（Schema 仍 135 份，契约 2.1.0）；B55 在组合分支上改动 `core/`（契约 2.2.0，ADR-0055）与全部 135 份 Schema 的信封默认值及三份知识 Schema；新增 `plugins/` / `infrastructure/` 不得 import `research/` 的边界测试（B51）。
