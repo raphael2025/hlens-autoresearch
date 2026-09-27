@@ -64,8 +64,7 @@ systemd-run --user --scope --quiet -p MemoryMax=2G -p MemorySwapMax=0 npm run bu
 写有 JSON 报告文件的目录）。这个目录由研究侧的 `research/reports`（[README](../../research/reports/README.md)）
 写入 —— `apps/api` 从不 import `research/`，两边只通过 `<reports_root>/<kind>/<id>.json` 这份文件格式约定耦合。
 
-项目**没有**选定或依赖任何 ASGI 生产服务器（uvicorn 不是项目依赖，留待后续决定）。本地开发可用仅供测试的最小
-stdlib 服务器 `tests/apps/live_server.py`（只绑定 127.0.0.1，每连接一个请求，不是生产服务器）：
+本机只读 API 的可选 ASGI 运行时由 [ADR-0063](../../docs/adr/0063-local-asgi-runtime-uvicorn.md) 选定为 Uvicorn，入口为 `apps/api/serve.py`，绑定 `127.0.0.1`、单 worker。它通过 `api-server` 可选依赖提供，不在默认依赖中；未安装该 extra 时，本地开发可用仅供测试的最小 stdlib 服务器 `tests/apps/live_server.py`（只绑定 127.0.0.1，每连接一个请求，不是生产服务器）：
 
 ```bash
 # 先用研究侧的 writer 把报告写进某个目录（例如 research.reports.write_validation_report(Path("var/reports"), report)），

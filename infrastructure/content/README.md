@@ -20,7 +20,5 @@
 
 - `cas://sha256/<hash>` 只是本存储的本地 URI 方案；契约只要求 `uri` 非空（D-01 / D-02 未决，未冻结方案）。
 - 证明"登记的调用可取回且未被改动"，**不**证明一次实验登记了它发生过的**全部**调用（Registry / Runner 义务）。
-- 研究循环（`research/loop/compose.py`）与假设生成（`research/hypotheses`）**尚未**把 LLM 内容写入本存储，也不调用
-  `verify_llm_call`：它们接收外部注入的 `LLMProvider`，现有调用方与测试构造的都是无 store 的 `ScriptedLLMProvider`
-  （`memory://` 引用，不可取回）。接线（配置 store 根目录、登记时核验）是跨 Phase 的后续工作，由协调者安排。
+- 研究循环支持显式选择 `ContentVerifiedLLM(inner, resolver)`，对 prompt / input / output 做可取回性与内容核验；该模式有定向测试，但默认调用方不自动配置持久 store。未使用包装器时，`ScriptedLLMProvider` 的 `memory://` 引用不可取回。
 - 单机 POSIX；没有垃圾回收、没有远程后端、没有配额。
