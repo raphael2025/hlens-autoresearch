@@ -9,7 +9,7 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main@669704c` 已含 P6 / P8 / P11 Decimal 阈值接线和研究库规格。协调分支还含 P7 typed-plan 非运行解析器、P11 provenance 页面、P12 冲突拒绝逻辑与 E1 history / normalizer 内存候选。ADR-0068 已接受，六类算子仍不可执行。静态检查已做，未跑测试；Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
+| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main@669704c` 已含 P6 / P8 / P11 Decimal 阈值接线和研究库规格。协调分支还含 P7 typed-plan 非运行解析器、P11 provenance 页面、P12 冲突拒绝逻辑与 E1 history / normalizer / proof scan 内存候选。ADR-0068 已接受，六类算子仍不可执行。静态检查已做，未跑测试；Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 本地 `main@669704c` 比 `origin/main` 超前 18 个提交，尚未推送；PR #1～#9 已合入。协调分支现含 P7 non-runnable typed-plan parser、P11 provenance 页面、P12 冲突拒绝逻辑与 E1 两项内存候选；P7 新代码 Ruff、format、mypy 通过，P11 页面 `git diff --check` 通过，均未跑测试 / build。E1 候选均未证明达到 32 MiB 容量门，PyIceberg metadata 与 API 返回对象仍计入；E1-CAP-1 阻断，其他 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
@@ -100,7 +100,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ## 4. 当前正在做
 
 - ✅ 框架整合：B1～B67 与 ADR-0052 / 0055 等代码已分批整合；PR #6 合并模块代码 / 内容收口批次（基线 `4875e92`），PR #7 将合并后项目状态同步至 `f58e8ec`（docs-only）。代码仍是 `CODE_COMPLETE / DEBUG_PENDING`，没有把全量门禁或主线合并当作 Phase 验收。
-- 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 的 500k resume / replay 增长为 59.9 / 63.9 MiB，超过 32 MiB。Codex 决定容量范围包含完整进程工作集（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象），不接受排除依赖内存的口径调整；history 与 normalizer 候选尚未达到或证明门槛，Phase 1 仍未验收。
+- 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 的 500k resume / replay 增长为 59.9 / 63.9 MiB，超过 32 MiB。已重申既有容量口径：完整进程工作集均计入（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）；history 与 normalizer 候选尚未达到或证明门槛，Phase 1 仍未验收。
 - ✅ 模块收口批次：Phase 0.5 因子 / 特征 / Event 草稿、Event 字段说明、Loop / Router / API README 与 Phase 3 Event 表操作命令均已通过 PR #6 合并到 `main`（`4875e92`）；不构成阶段验收。
 - ✅ 模块差额整合：P6 矩阵报告接线与错误归因、P8 显式输入的回溯审计 writer / 只读 API / Web 页面、P11 精确 Decimal 阈值读取及研究库规格已快进到本地 `main`（`669704c`）；静态检查 / Web build 有通过记录，未跑测试、未做 Phase 验收。
 - 🔎 深审还确认：P7 参数点批次可运行；六类组合 DSL 现有 typed plan parser 只验证声明数据并始终返回不可运行，Provider lowering 与审计持久化仍未实现；LLM 内容核验仍可选。P2 Arrow 表满足 ADR-0035 当前范围，额外 Iceberg 持久化暂缓。P11 自动监控缺可信观测源；P0.5 标签、P3 生产建表、Profile 数值和真实数据仍是人工 / 数据 / 授权门。
@@ -123,10 +123,21 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ### Codex 当前工作
 
-- 按 Raphael 授权先把所有模块代码收敛到本地 `main`，验收留后；唯一补丁逐项复核，重叠 E1 / P0.5 旧快照不整支合入。
-- 最新审计确认 11 个补丁等价分支 / worktree 已先归档再移除；当前保留 P1/E1、P0.5、P7、Cursor UI、研究规格等独有候选，以及活跃 / 脏 / owner 不明 worktree。ADR-0055 完成前不碰其 Claude worktree。P2 Iceberg 持久化扩展仍暂缓。
+- 开发内容先收敛到本地协调分支 `codex/module-completion-coordination-2026-09-27`，验收 / 测试留后；不整支合并互相重叠的 E1 候选。
+- 当前本地状态为 12 个分支、18 个 worktree。已先归档再移除 5 个已整合 / 等价 / 无改动的 Codex worktree，以及 2 个已复核的干净 Cursor worktree；未推送、未合并 `main`。Claude 锁定的 E1 设计工作区和其他未完成候选保留。
+- 新增 P7 non-runnable typed-plan parser、P11 provenance 页面和两项有限查询保护；静态检查有记录，均未跑测试。Claude / Cursor 的 PyIceberg 源码调查已完成；其 metadata 随表历史增长的实际容量尚未测量，E1-CAP-1 继续阻断，暂无已批准的架构替换方案。
+- Cursor 已按 ADR-0069 独立只读复核 P12 `combine`，未发现具体实现遗漏；测试留待统一验收。当前差额审计未找到其他已批准且不依赖新架构决定的普通功能任务。
 
 ## 6. 当前待决策
+
+**E1-CAP-1 容量边界核对**
+
+| ID | 问题 | 决定 | 状态 |
+|---|---|---|---|
+| E1-HIST | PyIceberg metadata、Parser / scan 临时状态和 API 返回对象是否计入 E1-CAP-1？ | **计入完整进程工作集**，既有 32 MiB 门槛与验收条件不变；不因对象来自第三方依赖而排除 | 重申既有容量口径，非架构变更；见 `docs/reviews/e1-bounded-history-options.md`；E1 仍阻断 |
+| E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | Claude 与 Cursor 的只读源码分析未找到可满足方案；这不是对所有实现的证明。保留现有门槛，继续设计并验证候选方案；未批准替换核心技术或改变冻结契约 | 开放；无 Proposed ADR / 实施获批，Phase 1 E1 保持阻断 |
+
+既有 E1-CAP-1 标准不变：完整进程工作集都计入容量测量，且增长须满足已记录的 N / batch-count 上界。源码调查确认所触达的 PyIceberg metadata 会随表历史 H 增长；目前没有其容量测量或已证明有界的方案，因此不能宣称通过。source proof 与 D1 archive lookup 的查询容器虽已限量，也不代表端到端容量通过。
 
 **B65 Uvicorn 安装（待 Raphael 授权；代码已完成）**
 
@@ -256,7 +267,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 仍待独立复核与验收，E2 起仍关闭；不写任何 WebSocket 代码
+- ✅ Raphael 已授权先完成计划内的 Phase 0.5、Phase 2～14 框架 / 模块代码与 Phase 1 已批准范围，再统一验收；这不代表开启其他 Phase 的运行或验收。Phase 1 数据采集仍按 roadmap 顺序；D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断，E2 后续数据链路不冒进；不写 WebSocket 代码
 - ❌ Phase 0.5 只做已接受的范围（ADR-0034 检索、ADR-0058 写入、ADR-0055 标签 / 资产检索）；不得替人工审阅者给种子写入标签 / 资产，不得把分类提案当作已审阅数据
 - ❌ 研究代码不晋升为生产代码（`strategies/` / `risk/` 仍无代码；Promotion 链今天拒绝所有策略）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -272,11 +283,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | P6 / P8 / P11 收敛与研究规格文档扩充 | P8 独立复核补上 metric / exact value / threshold diff；Python Ruff / format / mypy 与 Web build 通过，未跑测试，仍待验收 |
-| 2026-09-27 | 深审校正 P7 状态并排出跨模块差额 | 组合 DSL 六类目前是拒绝执行的 fail-closed 边界；P2 Arrow 输出符合当前 ADR-0035，额外 Iceberg 持久化暂缓；P11 自动运行编排仍需设计 |
-| 2026-09-27 | ADR-0066：批准独立、显式的 Event 表操作命令，以补齐 Phase 3 的可重复运维入口 | 命令默认无 catalog 副作用；`--apply` 只创建 / 校验 `event.events`；不接入 Phase 1 或启动流程；真实 catalog 建表未授权、未执行 |
-| 2026-09-27 | Phase 0.5 / 3 / 10 / 11 收口批次通过 PR #6 合并到 `main`（`4875e92`） | 增补未验证因子 / 特征 / Event 草稿，更新 Event schema 与 Loop / Router / API README，并实现 Event 表显式操作命令；11 项定向检查通过，非阶段验收 |
-| 2026-09-27 | Phase 1 验收记录并入：D3E 已接受、D4 已关闭；E1-CAP-1 容量探针进行中 | E1-CAP-1 仍阻断，容量结果与复核待完成；记录见 `docs/reviews/2026-09-27-d3e-acceptance.md` 与 `phase1-review-guide.md` |
+| 2026-09-27 | P12 ADR-0069 实现级只读复核 | `combine` 的冲突拒绝、参数空间、risk policy、标的范围与 lineage 均符合 ADR；未发现需修改代码的具体问题，未跑测试 |
+| 2026-09-27 | Codex / Claude / Cursor 核对 E1-CAP-1 完整进程边界 | 源码分析确认 PyIceberg metadata 随历史增长；本轮未测容量，E1 继续阻断 |
+| 2026-09-27 | E1 source-proof 与 D1 archive lookup 限量（`031f4e8`） | source id 查询最多 2 行；archive metadata 每块最多 257 行；Ruff / format / mypy 通过，未跑测试 / 容量探针，不代表 32 MiB 通过 |
+| 2026-09-27 | P7 接受 ADR-0068 并加入闭世界 typed-plan parser（`23b4256`） | Parser 仅产出 non-runnable AST；六类算子仍拒绝执行；静态检查通过，未跑测试 |
+| 2026-09-27 | P11 provenance UI 与校准 / API 缺口复核（`99fe9fe`、`f155e9c`） | UI 展示完整 schema 1.1.0 输入证据；P9 与 Knowledge 503 已在旧基线实现，无需重造；未跑测试 / build |
 
 ## 10. 下一阶段进入条件
 
@@ -300,15 +311,15 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 本地 `main` 为 `669704c`，比 `origin/main` 超前 18 个提交、尚未推送；`main` worktree 干净。最近一次本地清理后有 16 个本地分支、22 个 worktree、18 个归档分支引用；11 个确认与主线补丁等价的旧分支 / worktree 已先归档再移除。E1、P0.5、P7、Web 独有内容及活跃 / 脏 / 归属不明工作区仍保留。
+1. 本地 `main` 仍为 `669704c`，比 `origin/main` 超前 18 个提交、尚未推送；工作区干净。新增代码和文档位于协调分支 `codex/module-completion-coordination-2026-09-27`，未推送、未合并 `main`。仓库当前 12 个本地分支、18 个 worktree；冗余候选已归档，E1 分支与活动 Claude worktree 保留。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. E1-CAP-1 已有正式容量失败结果（500k resume / replay 超出既定上限），不是仍在运行的探针；Phase 1 未整体验收，未打 tag。
+3. E1-CAP-1 500k resume / replay 仍为 59.9 / 63.9 MiB，超过 32 MiB；本轮没有重跑容量探针。Phase 1 未整体验收、未打 tag。
 
 ## 12. 给 Claude Code 的下一步
 
 > Claude 下一步可以执行什么？
 
-1. Claude 当前活动任务为 ADR-0055 tags / assets；完成前不要改动或清理其分支 / worktree。后续 E1 修复只基于 Codex 指派的单一候选分支工作，避免叠加重叠 E1 分支。
-2. 若另开模块任务，限单模块并避开 Codex 协调分支中的文件；所有新增功能标为 CODE_COMPLETE / DEBUG_PENDING，阶段验收由 Raphael 后续统一安排。
+1. Claude 的 E1 history-options worktree 仍被 session 锁定，只作为只读设计证据；不清理或覆盖。Claude 已完成 PyIceberg 源码与 E1 路径只读调查，未证明容量门通过。
+2. 当前没有已批准的 Claude / Cursor 实现任务。Codex 确认单模块范围与文件边界后再派工；新增实现与文档逐项记录 Phase、契约、检查结果，统一验收和测试按 Raphael 的顺序安排。
 3. P12 循环内替换提案有意暂缓（P12-LOOP，见 §6）；后代不得复用密封窗口。其余 B44～B52 审计修复已完成，详见完成计划 §10.7 / §10.8。
 4. 不得：实盘、凭据、下单、猜测 Profile 数值、将代码整合描述为 Phase 验收或 force push；开发分支经复核后走 PR 合并，推送与 tag 分别记录。

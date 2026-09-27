@@ -161,7 +161,7 @@ O(B_unit / K) 次完整加载。不需要 ADR，也不改变语义，但**不满
 
 ## 4. 结论
 
-**在当前冻结契约下，不存在既能让 resume / replay 峰值与 H 无关、又能精确保留语义的实现方案：**
+**当前源码调查没有找到既能让 resume / replay 峰值与 H 无关、又能精确保留语义的已验证实现方案。** 这是对已调查路径的结论，不是对所有可能实现的证明：
 
 - Catalog 契约规定幂等重放按 `batch_id` 从已提交 snapshot 恢复，ADR-0028 规定恢复只依赖 Iceberg 已提交
   状态且不用 sidecar；ADR-0021 规定经由 PyIceberg adapter 读写；在这些前提下，每一次 load / scan / 提交都
@@ -171,19 +171,17 @@ O(B_unit / K) 次完整加载。不需要 ADR，也不改变语义，但**不满
 - 另外，按估算，O(L) 的修订 ID 输出与位置列表本身就可能超过 32 MiB（§2），这与 H 无关。
 
 ```
-ARCHITECTURE_DECISION_REQUIRED (draft state; resolved by §6)
+SOURCE INVESTIGATION FINDING (no architecture decision made)
 - 冲突/问题：E1-CAP-1 要求“不随 N 或批次数增长”，但在当前 Catalog 契约 + ADR-0028 + ADR-0021(PyIceberg 0.12)
   下，每次 catalog 调用都会临时物化 O(H_table) 的 metadata，且 H 是整表累计历史；只改历史遍历无法让进程峰值
   与 H 无关。
 - 涉及文档/契约：core/contracts/catalog.py（commit_batch 幂等与重放语义）、ADR-0021、ADR-0028（恢复不用 sidecar）、
   docs/architecture/03-data.md（表定义与依赖冻结）、docs/reviews/2026-09-27-e1-review.md（E1-CAP-1 验收口径）。
-- 可选方案（附利弊）：见下方 Decision Packet。
-- 起草时推荐：先把 E1-CAP-1 的内存上界口径与 PyIceberg metadata 的 O(H) 驻留分开裁定（选项 A），同时做一次 L/H
-  分离测量再决定是否需要 B / C。
-- 若不决定的影响：E1-CAP-1 无法被任何局部实现关闭；Phase 1 继续阻断。
+- 候选方向：见下方历史 Decision Packet；A / B / C 均未获批准。先对被调查路径做 L / H 分离容量测量，再决定是否存在不改变冻结契约的可行实现。
+- 当前影响：静态源码调查不是容量测量，不能判定所有候选实现均不可行；E1-CAP-1 继续阻断，直到完整容量证据满足既有关闭标准。
 ```
 
-## DECISION PACKET（起草时未决；已由 §6 取代）
+## 历史 Decision Packet（选项未批准）
 
 ID: D-E1-HIST
 QUESTION: E1-CAP-1 的“有界内存”是否把 PyIceberg 表 metadata 随整表 snapshot 历史 H 的 O(H) 临时驻留算在 normalizer 的工作集内？
@@ -209,13 +207,13 @@ DEFAULT_IF_UNDECIDED AT DRAFT TIME: E1-CAP-1 保持阻断。§6 已正式重申�
 3. O(L) `CanonicalUnitNormalized.revision_ids` 和位置 / 时间列仍是独立增长源；它们也在 FULL_PROCESS_WORKSET 门槛内，
    不能因不属于 PyIceberg metadata 而排除。若要改变返回接口或严格证明语义，须先核对冻结契约并另立 Proposed ADR。
 
-## 6. Codex 决定（2026-09-27，取代上方未决推荐）
+## 6. E1-CAP-1 既有容量口径确认（2026-09-27）
 
-Raphael 已把项目决策权委托给 Codex。Codex 决定 **D-E1-HIST = FULL_PROCESS_WORKSET**：E1-CAP-1 的 32 MiB 峰值增量统计包含完整进程工作集，涵盖 PyIceberg metadata、Parser / scan 临时对象、Normalizer 内部状态，以及 API 返回结果对象。上方选项 A 不采纳；不改变已批准的 E1 验收条件，不把依赖内部对象从容量范围排除，也不把它改成独立的未来监控项。
+Codex 重申既有 E1-CAP-1 关闭标准：32 MiB 峰值增量统计包含完整进程工作集，涵盖 PyIceberg metadata、Parser / scan 临时对象、Normalizer 内部状态，以及 API 返回结果对象。上方选项 A 不采纳；不改变已批准的 E1 验收条件，不把依赖内部对象从容量范围排除，也不把它改成独立的未来监控项。这是既有验收口径确认，不是架构决定或 ADR。
 
-该决定重申 `2026-09-27-e1-review.md` 的既有关闭标准：保持 32 MiB 上限、完整严格读取与逐项校验语义；若现有实现无法满足，就继续阻断 E1 并找出可行实现或明确的架构决策，不以修改口径关闭。选项 B / C 涉及冻结契约或核心技术替换，当前均未批准。
+保持 32 MiB 上限、完整严格读取与逐项校验语义；若已调查的实现路径无法满足，就继续阻断 E1 并调查候选实现，必要时再提出明确的架构决策，不以修改口径关闭。选项 B / C 涉及冻结契约或核心技术替换，当前均未批准。
 
-PyIceberg 源码事实仅用于完善实现调查，不会自动改变上述容量范围或 E1 关闭门槛。原 Decision Packet 的推荐 A 已被本节正式决定取代。
+PyIceberg 源码事实仅用于完善实现调查，不会自动改变上述容量范围或 E1 关闭门槛。原 Decision Packet 是起草时的未决选项；A / B / C 均未获批准。
 
 ## 7. PyIceberg 0.12.0 本机源码复核（只读；未测容量）
 

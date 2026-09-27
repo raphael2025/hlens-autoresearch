@@ -992,7 +992,7 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 ### 10.24 P11 provenance 页面与 E1 容量范围（2026-09-27）
 
 - P11 degradation provenance 页面已由独立 worktree 完成并 cherry-pick 到协调分支，提交 `99fe9fe`。页面读取 ADR-0067 schema 1.1.0 的 profile freeze、baseline、生命周期哈希、观测窗口 / 方法与完整 manifest；明确标注 caller-declared/content-bound、不认证来源真实性；未知 evidence 字段以转义文本完整披露；legacy 1.0.0 展示保持兼容。实现记录：[`p11-degradation-provenance-ui.md`](../reviews/p11-degradation-provenance-ui.md)。子代理 `git diff --check` 通过；本轮未运行测试或 build，未做 Phase 验收。
-- Codex 依 Raphael 项目委托正式决定 **D-E1-HIST = FULL_PROCESS_WORKSET**：原 E1-CAP-1 的 32 MiB 峰值增量包含 PyIceberg metadata、Parser / scan 临时状态、normalizer 状态和 API 返回对象。拒绝 `e1-bounded-history-options.md` 提出的选项 A，不将依赖内部状态排除出容量目标，也不修改既有关闭标准；选项 B / C 未获批准。E1 持续阻断，直到完整工作集满足门槛或形成另行批准的架构决定。
+- Codex 重申 E1-CAP-1 既有容量口径：32 MiB 峰值增量包含 PyIceberg metadata、Parser / scan 临时状态、normalizer 状态和 API 返回对象。此为验收口径确认，不是新架构决定；不把依赖内部状态排除出容量目标，也不修改既有关闭标准。选项 A / B / C 均未获批准。E1 持续阻断，直到完整工作集有证据满足既有门槛；若需要改冻结契约或核心技术，再另走架构决策。
 - P9 detector 单次异常归类仍由隔离子任务处理。Knowledge Search 缺少 Provider 的稳定错误响应经复核已在当前基线实现（503 + 常量错误 detail，OpenAPI / README 同步），无需新代码；全项目缺口审计中的该项属基线版本过时。P2 报告 API DTO / OpenAPI 类型不一致另由隔离子任务审查，避免将 opaque dict 当作已修复。本批未运行测试 / build。
 
 ### 10.25 P7 typed plan 解析器与缺口核对（2026-09-27）
@@ -1007,7 +1007,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - Cursor `codex-d3e-pit-tests@60246a5` 的两个提交 patch-id 分别等同于已在协调分支和本地 main 中的 `69f0bf0` / `9baad12`，无独有代码；干净 worktree 的完整 branch tip 先归档到 `refs/archive/2026-09-27/branches/codex-d3e-pit-tests`，再移除本地分支 / worktree。
 - Cursor `codex-research-loop-ui@e398386` 有独有 commit，但增加的 parser / 测试夹具 / 页面行为已由更完整的主线实现覆盖，整体摘取会重复逻辑并可能丢掉当前 `InvalidReports`、AsyncView 与报告行为。已归档 branch tip 到 `refs/archive/2026-09-27/branches/codex-research-loop-ui` 后移除本地 worktree / 分支；`origin/codex-research-loop-ui` 保留。
 - E1 分支审计确认 `codex/e1-bounded-scan-integration` 是两组尚未进入协调线的 bounded-scan / source-proof 代码累计候选，但没有 PyIceberg 有界 metadata 解析，也无 32 MiB 证据；`fix/e1-cap1` 有另一套实现且仍报告 59.9 / 63.9 MiB 超门槛。候选彼此重叠，当前不整支合并；所有相关 worktree 均干净，活动 Claude history-options worktree 保留。
+- 只择取经独立只读审查通过的两个生产代码保护并在协调版本适配，提交 `031f4e8`：source revision proof 限制最多返回 2 行；D1 archive metadata 按 256 个 ID 分块、每块查询上限 257 行，遇重复 / 未请求 ID 即失败。目标文件 Ruff / format / mypy / `git diff --check` 均通过；未运行测试 / 容量探针。该改动只约束查询结果容器，不约束 PyIceberg 的 O(H) metadata、manifest planning、整元数据解析器缓存或返回对象；E1 仍阻断。
 - 当前仓库为 **12 个本地分支、18 个 worktree**；`main` 与远端未变。其余 E1 候选保留等待独立代码审查与方案收敛。
+
+### 10.27 P12 ADR-0069 实现级复核与后续任务筛选（2026-09-27）
+
+- Cursor 对 `research/evolution/operators.py` 的 `combine` 按 Accepted ADR-0069 逐项只读核对：父代 ref、同名参数与搜索空间、risk policy、applicable instruments、确定性 signal / params / lineage 合并，以及创建 child 前失败关闭均符合；未发现可复现实现遗漏。复核没有修改文件，没有运行测试 / build / 静态检查；ADR-0069 冲突用例留待统一验收批次。
+- 复核当前状态 / 完成计划后，没有找到其他已批准且无需新架构或契约决定的普通功能缺口。E1 仍需容量方案与证据；P7 算子语义、P11 自动运行编排、0.5 人工审阅与真实 catalog 操作各有未决边界。下一批先从这些边界中取得批准 / 容量证据，再派单模块实现，不为制造进度新增占位功能。
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
