@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed**（2026-09-27）；方向由 Codex 选定（B66 选项 A），本文措辞待 Codex 审阅接受后才实施 |
+| 状态 | **Accepted**（2026-09-27，Codex 依 Raphael 授权接受本文措辞，含精确 `Decimal` 比较、不一致优先于缺失与原因名 `bar_volume_source_mismatch`）；实施见 B66 |
 | 日期 | 2026-09-27 |
 | 决策者 | Codex（技术协调者，CLAUDE.md §0） |
 | 起草者 | Claude Code（Opus），只起草，不改变决定 |
