@@ -970,6 +970,7 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - Claude 在隔离 worktree `codex/e1-normalizer-bounded-2026-09-27` 实现，Codex 复核后 cherry-pick 到协调分支，提交 `6ab7f5b`。`_CommittedPlan` 不再留存每个 batch 的 `SnapshotInfo` 映射；只保留 unit 大小、chunk 大小与 committed count。证明和 `ALREADY_COMMITTED` 报告路径从 pinned history 流式重读目标快照，并比较证明阶段摘要；写入器按已提交 batch 数补齐。完整实现与语义说明见 [`e1-normalizer-bounded-implementation.md`](../reviews/e1-normalizer-bounded-implementation.md)。
 - 顺序校验要求 committed batch 为从 0 开始、按写入顺序的连续前缀。唯一 normalizer writer 以递增 index 在 expected parent 上提交；乱序历史 fail closed。尚未通过测试覆盖该约束，需在后续验收确认与历史数据兼容。
 - 独立静态复核原样结果：目标文件 `ruff check` → `All checks passed!`；`ruff format --check` → `1 file already formatted`；`mypy` → `Success: no issues found in 1 source file`；`git show --check` → 通过。没有添加或运行测试、PostgreSQL 测试或容量探针。
+- Codex 又做了一轮独立只读算法审查，未发现可具体触发的正确性回归；核对了连续前缀 / 重复检测、部分 batch 恢复、冻结视图缓存、快照二次遍历、digest 及按序补写。后续定向覆盖仍需包含 maintenance snapshot 混入、不同 chunk 与尾批、补写顺序、frozen cache 淘汰、两次 history 遍历差异时 fail closed、digest 字段变化。该审查不能替代测试或容量验证。
 - **E1-CAP-1 仍阻断，32 MiB 门槛未证明。** 本次只移除 normalizer 对每 batch 快照映射和 `done` 字典的保存；positions、返回 revision ids、PyIceberg table metadata 全量 snapshots 等仍随数据规模增长。pinned history 现在会被重复流式遍历，单次遍历仍可能 O(L·H)，暂未计时。不得将本次 static pass 写成 E1 修复验收或容量通过。
 
 ### 10.21 ADR-0055 已完成本地 worktree 清理（2026-09-27）
