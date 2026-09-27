@@ -71,6 +71,7 @@
 | [0064](0064-g4-capacity-volume-source-consistency.md) | G4 容量检查的成交量来源一致性：数据集路径上 `bar_volume` 与已执行 `PriceBar.volume` 冲突即 INCONCLUSIVE（`bar_volume_source_mismatch`） | Accepted（2026-09-27；Codex 选 B66 选项 A 并接受措辞）；已实施（B66），CODE_COMPLETE / DEBUG_PENDING |
 | [0065](0065-g4-capacity-carry-over-unfilled.md) | G4 容量检查遇到结转未成交余量时失败关闭（数据集路径，`carry_over_unfilled`） | Accepted（2026-09-27；Codex 决定 B67 方案 A）；已实施（B67），CODE_COMPLETE / DEBUG_PENDING；不是 Phase 4 / 5 验收 |
 | [0066](0066-explicit-event-table-operator.md) | Event 表独立、显式的操作命令；不接入 Phase 1 或自动 provisioning | Accepted（2026-09-27；Codex 依 Raphael 对模块完成与技术决策的明确授权决定）；命令已随 PR #6 合并，定向检查通过；真实 catalog 建表仍须单独授权 |
+| [0068](0068-phase7-typed-operator-plans.md) | Phase 7 类型化组合算子计划与执行边界 | Proposed（2026-09-27；六类 DSL 继续 fail closed，逐项执行语义与 Provider lowering 尚未批准） |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

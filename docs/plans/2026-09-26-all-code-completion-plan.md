@@ -922,9 +922,15 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 
 **下一批顺序**：先完成 P6 / P8 / P11 独立代码复核；后续验收时同步 P8 fixture 生成器、组件测试与 live-smoke 清单。并行推进 P7 类型化算子规格 / 基础实现与 P11 显式观测输入设计前，先划清文件边界。E1 需单独设计精确保留历史校验语义的有界 metadata 索引；P2 Iceberg 持久化扩展暂缓。不得将未验收阶段、人工标签、Profile 数值、真实数据结果或生产建表描述为代码已完成。
 
+### 10.14 P7 typed operators 与 P11 degradation operator 设计（2026-09-27）
+
+- **P7：** Proposed [ADR-0068](../adr/0068-phase7-typed-operator-plans.md) 定义闭世界、类型化 AST、实现身份 / hash、全量预登记和拒绝边界；由于六类组合 DSL（conditioning / interaction / temporal / transformation / ensemble / negation）的业务语义和 Provider lowering 不完整，全部仍 fail closed。既有 `parameter_point` 路径不变；本提案不是其余六类已实现或已验收的声明。
+- **P11：** [显式 degradation operator 规格](p11-degradation-operator-spec.md) 限定为一次性、本机、显式输入的只读操作；需传入 ACTIVE 生命周期历史、冻结 Profile、PASS baseline、内容哈希观测集与时间窗口，复用现有 monitor 和 append-only writer，不发布事件、不转生命周期、不设默认阈值。当前没有权威生命周期 / 近期观测 resolver，现有报告也不绑定这些来源；实现前需单独 Proposed ADR 解决证据引用与报告版本兼容。
+- 两项均为设计材料，未修改实现 / frozen contract，未运行测试；不会改变 Phase 7 或 Phase 11 的未验收状态。
+
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
 
-Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。包含新增 E1 / P7 / P11 隔离 worktree 的当前快照为 **30 个本地分支、35 个 worktree**；其中主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
+Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 后，包含新增 E1 / P7 / P11 隔离 worktree 的当前快照为 **29 个本地分支、35 个 worktree**；其中主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
 
 | 分支组 | 核对结果 | 处理 |
 |---|---|---|
@@ -939,3 +945,5 @@ Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，�
 此前 Codex 本轮创建的 P6 / P8 / P11 源分支（`codex/p6-matrix-report-wiring-2026-09-27`、`codex/retro-audit-report-chain-2026-09-27`、`codex/degradation-exact-thresholds`）及 ADR-0067 草案分支，已先归档再移除分支和干净源 worktree；恢复点在 `refs/archive/2026-09-27/branches/`。没有删除任何脏目录或已锁定的 Claude / Cursor worktree。剩余冗余分支只在完成会话确认后继续清理。
 
 新增提交 `e6b06e3` 修复 P6 回调错误归因；`b554454` 将研究规格文档补全并保留 Event 未登记草稿。静态检查：协调分支的 3 个触及 Python 文件 Ruff 与格式检查通过，`git diff --check` 通过；本轮未运行测试。以上不表示模块或 Phase 验收完成。
+
+分支审计确认当前只有一个可安全立即归档的本地冗余引用：`worktree-fix-e1-cap1`，其 `c5dbebe` 已包含在 `fix/e1-cap1`，无 worktree；已备份到 `refs/archive/2026-09-27/branches/worktree-fix-e1-cap1` 后删除。审计同时发现 `origin/codex/full-code-review-2026-09-26` 的全代码审查文件比 main 同名文件多 239 行，包含 ADR-0052 重放授权与 K5 不加 EventRequest.subject 等正式决定；先保护和复核该文本，再讨论该远端分支清理。多项 patch-equivalent 分支仍有活跃 Claude / Cursor 会话，不因未锁定或内容重复而删除。

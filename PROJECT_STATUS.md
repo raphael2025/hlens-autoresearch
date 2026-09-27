@@ -51,11 +51,11 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；Phase 4 未验收 |
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
 | 6 | State × Strategy | 🧱 矩阵计算、全单元预登记与逐单元验证已实现；循环报告接线及回调错误归因已在本地协调分支补齐，静态检查通过，未跑测试，不代表 Phase 6 验收 |
-| 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源已实现；其余组合算子仍 fail closed；LLM 内容核验能力可选，未核验调用不能声称满足完整可复现审计；执行语义待收敛 |
+| 7 | Dynamic Discovery | 🧱 严格草稿、人工审阅、声明式参数点批次、知识检索来源已实现；六类组合算子继续 fail closed。Proposed ADR-0068 规定类型化闭世界执行边界，但各算子语义与 Provider lowering 尚未定义；LLM 内容核验可选，未核验调用不满足完整可复现审计 |
 | 8 | Validation & Robustness | 🧱 G4、多标的验证等逻辑已实现；回溯审计 writer / API / Web 页面已在本地协调分支补齐；P8 页面对应的 fixture / smoke / component 注册仍待后续验收批次同步；Phase 8 未验收 |
 | 9 | Synthetic Market Lab | 🧱 框架已实现（ADR-0042）；检测器异常计 INCONCLUSIVE、可选实际运行 G5、多标的校准模式（B26）、配置错误不再被吞、错误时给出通过率区间（B45 / B48）CODE_COMPLETE / DEBUG_PENDING；中等规模证据报告（单标的 250、双标的 200 种子，B52）已提交，两份均已在原代码基线上逐字节复现（B54 / B57）；只给证据不选数值 |
 | 10 | Dynamic Strategy Router（纸面） | 🧱 框架已实现（ADR-0043，仅纸面）；无候选明确停止、运行哈希复核、资格证据模式、纸面偏差报告、路由自身验证（B31 / B34）；证据模式要求 Profile 所要求的市场基准与反向对照报告项（B51 / B58），**不要求 Profile 冻结登记**（B62；冻结权威门只在 Promotion，ADR-0062）CODE_COMPLETE / DEBUG_PENDING |
-| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；劣化阈值读取已兼容 ADR-0052 的精确 Decimal 字段；监控缺可信近期观测来源 / 窗口及独立 operator 入口，不能从 loop 摘要推造，待补齐数据输入边界 |
+| 11 | Continuous Research Loop | 🧱 框架已实现（ADR-0044 / 0049 / 0050）；劣化阈值读取已兼容 ADR-0052 的精确 Decimal 字段；只读 operator 规格已写入 `docs/plans/p11-degradation-operator-spec.md`，要求调用方显式提供来源和时间窗口。权威生命周期 / 观测来源及报告溯源契约仍未决定，不能从 loop 摘要推造 |
 | 12 | Strategy Evolution | 🧱 框架已实现（ADR-0045）；替换提案（恒待人工批准）与循环之外的替换提案作业（证据逐份核验、账本单写者锁 + 外部锚点，B49）CODE_COMPLETE / DEBUG_PENDING |
 | 13 | Production Adaptive System（仅模拟，无实盘） | 🧱 框架已实现（ADR-0046，实盘结构上被拒绝）；持久审计、非空审计重开即急停、只读重放、风险 / 告警重放（B31）CODE_COMPLETE / DEBUG_PENDING |
 | 14 | Technology Migration | 🧱 框架已实现（ADR-0047）；金标准记录持久化、差异报告、回滚证据、金标准实验重放（B32）CODE_COMPLETE / DEBUG_PENDING（无具体迁移目标） |
@@ -122,7 +122,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ### Codex 当前工作
 
 - 按 Raphael 本轮授权继续将安全、非重复的代码与内容整合到主线；不能整支并入的 E1 / P0.5 分支按文件级复核处理。
-- P7 类型化算子、P8 验收支持材料、P11 显式观测数据入口仍是待补差额；先划定互不重叠的文件边界，再并行推进。P2 Iceberg 持久化扩展暂缓。所有新增功能保持待验收状态。
+- P7 已起草 Proposed ADR-0068，六类算子执行仍关闭，须先逐项定义语义与 Provider lowering；P8 fixture / 组件 / live-smoke 注册留到验收批次；P11 已有显式输入规格，实施前还需决定证据来源和报告兼容 ADR。分支审计仅确认 `worktree-fix-e1-cap1` 可归档删除；远端全代码审查分支仍含 main 缺失的正式决定，先保护其记录。P2 Iceberg 持久化扩展暂缓。新增内容均待审阅 / 验收。
 
 ## 6. 当前待决策
 
@@ -298,7 +298,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 当前 `main == origin/main == 44fe9a2`，本轮新增实现和文档仍在本地协调分支，等待 Codex 完成代码收敛后再统一整合。当前快照为 30 个本地分支、35 个 worktree（含新增的 E1 / P7 / P11 隔离任务）；已归档移除 4 个本轮结束的 Codex 源分支，活跃、脏、锁定和会话归属不明的 worktree 均保留。
+1. 当前 `main == origin/main == 44fe9a2`，本轮新增实现和文档仍在本地协调分支，等待 Codex 完成代码收敛后再统一整合。当前快照为 29 个本地分支、35 个 worktree；已归档移除 5 个无活跃会话且内容可恢复的冗余 Codex 引用，活跃、脏、锁定和会话归属不明的 worktree 均保留。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. E1-CAP-1 已有正式容量失败结果（500k resume / replay 超出既定上限），不是仍在运行的探针；Phase 1 未整体验收，未打 tag。
 
