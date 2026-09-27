@@ -85,9 +85,14 @@
 按下列顺序完成纵向切片：
 
 1. API：路由与 service/use-case 对应，错误状态稳定，响应 DTO / OpenAPI 从同一来源校验。
-2. Worker：任务只调用正式 service；持久结果、重投、状态推进与 audit 绑定；API 可查询任务结果与失败原因。
+2. Worker：通过其正式启动入口调用 service；持久结果、重投、状态推进与 audit 绑定。API 依 ADR-0048 保持只读，只查询任务结果与失败原因，不提交或触发 Worker 作业。
 3. Web：Dashboard / Knowledge / Strategy / Matrix / Router / Loop（按仓库现有页面实际盘点）逐一接真实 API；补加载、空结果、错误、权限 / 只读状态；移除与生产路径混淆的 fixture 数据。
-4. 验证 Python 与前端 lockfile、lint、typecheck、unit tests、production build；至少一条端到端流程从 API 进入 Worker 再由 Web 读回结果。
+4. 验证 Python 与前端 lockfile、lint、typecheck、unit tests、production build；至少一条端到端流程从 Worker 正式入口启动任务，经 API 查询结果，再由 Web 读回。Worker 启动方式的具体组合入口仍需单独规划；不得为满足端到端项而越过 ADR-0048 增加 API 写入 / 触发端点。
+
+### 10.47 全栈 Wave 3 与 ADR-0048 边界对齐（2026-09-28）
+
+- 只读盘点发现原 Wave 3 的“从 API 进入 Worker”与 ADR-0048 的 API 只读边界冲突。保留已接受 ADR：Worker 负责启动任务并写结果，API 只读查询，Web 读取展示；不新增架构决定或写入端点。
+- 已将 Wave 3 的验收描述改为“Worker 正式入口 → API 查询 → Web 展示”。Worker 多配置组合启动器仍需后续定义，未宣称 API / Worker / Web 全栈闭环已完成。
 
 ## 6. Agent 分工约束
 
