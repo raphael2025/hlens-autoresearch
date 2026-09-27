@@ -25,19 +25,27 @@ hash. ``StateDiagnostics.from_payload`` rebuilds the report and refuses a payloa
 exactly the canonical form of what it rebuilds (or whose hash differs from ``expected_hash``).
 The report describes exactly the series it was given; it holds no window of its own, so a later
 change to evaluations after the series' last time cannot alter an already computed report.
+
+Source binding (payload 1.1.0): ``source_result_hash`` is the ``StateResult.result_hash`` the
+report was computed from, or ``None`` when ``diagnose`` was given a bare series. It only records
+what the report declares as its source; it does not prove that such a result exists in any
+Registry. New reports are always 1.1.0. A 1.0.0 payload (no ``source_result_hash`` key) is still
+read: the rebuilt report remembers that version and ``to_payload()`` emits exactly the 1.0.0 shape
+again, so ``diagnostics_hash`` reproduces the stored id.
 """
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Decimal
 from itertools import pairwise
 from typing import Final
 
 from core.contracts.state import StateResult
-from core.domain.base import content_hash
+from core.domain.base import SHA256_PATTERN, content_hash
 
 __all__ = [
     "PAYLOAD_KIND",
@@ -57,7 +65,10 @@ PROBABILITY_PLACES: Final = 6
 _QUANTUM: Final = Decimal(1).scaleb(-PROBABILITY_PLACES)
 #: ``kind`` and SemVer of the ``StateDiagnostics.to_payload`` layout (breaking change = major).
 PAYLOAD_KIND: Final = "state_diagnostics"
-PAYLOAD_SCHEMA_VERSION: Final = "1.0.0"
+PAYLOAD_SCHEMA_VERSION: Final = "1.1.0"
+#: Readable older layout: 1.0.0 had no ``source_result_hash`` key.
+_LEGACY_PAYLOAD_SCHEMA_VERSION: Final = "1.0.0"
+_READABLE_VERSIONS: Final = frozenset({_LEGACY_PAYLOAD_SCHEMA_VERSION, PAYLOAD_SCHEMA_VERSION})
 
 type Labelled = tuple[datetime, str | None]
 
@@ -93,6 +104,21 @@ class StateDiagnostics:
     min_run: int
     short_run_share: Decimal | None
     switch_rate: Decimal | None
+    #: ``StateResult.result_hash`` of the input, ``None`` for a bare series (module docs).
+    source_result_hash: str | None = None
+    #: Payload layout this report round-trips as; only ``from_payload`` sets the legacy 1.0.0.
+    _payload_schema_version: str = field(default=PAYLOAD_SCHEMA_VERSION, repr=False)
+
+    def __post_init__(self) -> None:
+        if self._payload_schema_version not in _READABLE_VERSIONS:
+            raise ValueError(
+                f"unknown {PAYLOAD_KIND} payload version {self._payload_schema_version!r}"
+            )
+        if self.source_result_hash is not None:
+            if self._payload_schema_version == _LEGACY_PAYLOAD_SCHEMA_VERSION:
+                raise ValueError("a 1.0.0 report has no source_result_hash")
+            if re.fullmatch(SHA256_PATTERN, self.source_result_hash) is None:
+                raise ValueError("source_result_hash must be a sha256 hex digest")
 
     def to_payload(self) -> dict[str, object]:
         """Deterministic JSON-ready form (module docs); times must be timezone-aware."""
@@ -100,9 +126,9 @@ class StateDiagnostics:
         def per_state[V](values: Mapping[str, V], encode: _Encoder[V]) -> dict[str, object]:
             return {key: encode(values[key]) for key in sorted(values)}
 
-        return {
+        payload: dict[str, object] = {
             "kind": PAYLOAD_KIND,
-            "schema_version": PAYLOAD_SCHEMA_VERSION,
+            "schema_version": self._payload_schema_version,
             "probability_places": PROBABILITY_PLACES,
             "state_space": list(self.state_space),
             "evaluations": self.evaluations,
@@ -131,6 +157,9 @@ class StateDiagnostics:
             "short_run_share": _decimal_text(self.short_run_share),
             "switch_rate": _decimal_text(self.switch_rate),
         }
+        if self._payload_schema_version != _LEGACY_PAYLOAD_SCHEMA_VERSION:
+            payload["source_result_hash"] = self.source_result_hash
+        return payload
 
     @property
     def diagnostics_hash(self) -> str:
@@ -144,20 +173,27 @@ class StateDiagnostics:
         """Rebuild a report from ``to_payload()`` output; ``ValueError`` on anything else.
 
         The payload must be exactly the canonical form of the rebuilt report (same keys, same
-        encodings), and its hash must equal ``expected_hash`` when one is given.
+        encodings), and its hash must equal ``expected_hash`` when one is given. Both 1.0.0 and
+        1.1.0 are read; the rebuilt report keeps the version it was read as.
         """
         if not isinstance(payload, Mapping):
             raise ValueError("a state diagnostics payload must be a mapping")
-        if set(payload) != _PAYLOAD_KEYS:
+        kind, version = payload.get("kind"), payload.get("schema_version")
+        if kind != PAYLOAD_KIND or not isinstance(version, str):
+            raise ValueError(f"not a {PAYLOAD_KIND} payload: {kind!r}@{version!r}")
+        if version not in _READABLE_VERSIONS:
             raise ValueError(
-                f"payload keys differ: missing {sorted(_PAYLOAD_KEYS - set(payload))}, "
-                f"unexpected {sorted(set(payload) - _PAYLOAD_KEYS)}"
+                f"{PAYLOAD_KIND} payload version {version!r} is not one of "
+                f"{sorted(_READABLE_VERSIONS)}"
             )
-        if payload["kind"] != PAYLOAD_KIND or payload["schema_version"] != PAYLOAD_SCHEMA_VERSION:
+        legacy = version == _LEGACY_PAYLOAD_SCHEMA_VERSION
+        keys = _LEGACY_PAYLOAD_KEYS if legacy else _PAYLOAD_KEYS
+        if set(payload) != keys:
             raise ValueError(
-                f"not a {PAYLOAD_KIND}@{PAYLOAD_SCHEMA_VERSION} payload: "
-                f"{payload['kind']!r}@{payload['schema_version']!r}"
+                f"payload keys differ: missing {sorted(keys - set(payload))}, "
+                f"unexpected {sorted(set(payload) - keys)}"
             )
+        source = None if legacy else _optional_text(payload["source_result_hash"])
         if payload["probability_places"] != PROBABILITY_PLACES:
             raise ValueError(f"probability_places must be {PROBABILITY_PLACES}")
         space = payload["state_space"]
@@ -190,6 +226,8 @@ class StateDiagnostics:
             min_run=_int(payload["min_run"], "min_run"),
             short_run_share=_optional_decimal(payload["short_run_share"], "short_run_share"),
             switch_rate=_optional_decimal(payload["switch_rate"], "switch_rate"),
+            source_result_hash=source,
+            _payload_schema_version=version,
         )
         if report.to_payload() != dict(payload):
             raise ValueError("the payload is not the canonical form of the report it encodes")
@@ -203,7 +241,7 @@ class StateDiagnostics:
 type _Encoder[V] = Callable[[V], object]
 type _Decoder[V] = Callable[[object, str], V]
 
-_PAYLOAD_KEYS: Final = frozenset(
+_LEGACY_PAYLOAD_KEYS: Final = frozenset(
     {
         "kind",
         "schema_version",
@@ -223,6 +261,7 @@ _PAYLOAD_KEYS: Final = frozenset(
         "switch_rate",
     }
 )
+_PAYLOAD_KEYS: Final = _LEGACY_PAYLOAD_KEYS | {"source_result_hash"}
 _RUN_KEYS: Final = frozenset({"state", "start", "end", "steps"})
 
 
@@ -244,6 +283,12 @@ def _int(value: object, where: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{where} must be an int")
     return value
+
+
+def _optional_text(value: object) -> str | None:
+    if value is None or isinstance(value, str):
+        return value
+    raise ValueError("source_result_hash must be a sha256 hex string or null")
 
 
 def _optional_decimal(value: object, where: str) -> Decimal | None:
@@ -347,7 +392,11 @@ def transition_counts(
 def diagnose(
     series: Iterable[Labelled] | StateResult, state_space: Sequence[str], *, min_run: int
 ) -> StateDiagnostics:
-    """The stability report of ``series``; ``min_run`` (steps) is the caller's flicker parameter."""
+    """The stability report of ``series``; ``min_run`` (steps) is the caller's flicker parameter.
+
+    A ``StateResult`` input is bound by its ``result_hash`` (``source_result_hash``); a bare
+    series records ``None``.
+    """
     if isinstance(min_run, bool) or not isinstance(min_run, int) or min_run < 1:
         raise ValueError("min_run must be a positive int")
     space = tuple(state_space)
@@ -380,6 +429,7 @@ def diagnose(
         min_run=min_run,
         short_run_share=_share(sum(1 for run in runs if run.steps < min_run), len(runs)),
         switch_rate=_share(sum(1 for a, b in pairs if a != b), len(pairs)),
+        source_result_hash=series.result_hash if isinstance(series, StateResult) else None,
     )
 
 

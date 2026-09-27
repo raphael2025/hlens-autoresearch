@@ -46,7 +46,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；四条 2026-09-26 种子已显式固定 `schema_version: 2.1.0`。种子标签 / 资产仍需具名人工审阅；新增种子的黄金哈希覆盖尚未补齐。**Phase 0.5 未验收** |
 | 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；main 上的 RSS probe 与 opt-in 分阶段诊断已准备但均未运行。诊断模式只报告 Catalog 调用次数、manifest / file task 规划数量、Python 分配归因与返回对象可达大小估计，并明确不能作为 RSS 或 E1 证据。候选分支 `fix/e1-cap1@a75278e` 的 500k `resume` / `replay` 增长分别为 59.9 / 63.9 MiB，不能代表 main。E1-CAP-1 阻断，Phase 1 未验收 |
-| 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
+| 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断载荷 1.1.0 记录来源 `StateResult.result_hash`（裸序列为 null），旧 1.0.0 报告可原样读回并复原 id；来源哈希只是报告声明、不认证 Registry 存在性；Web fixture 已按新载荷重生成；测试、类型检查与阶段验收未运行 |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；Phase 4 未验收 |
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
