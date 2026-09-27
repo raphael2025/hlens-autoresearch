@@ -720,6 +720,7 @@ class CanonicalNormalizer:
             channel.source.table,
             columns=("revision_id",),
             row_filter=_equals("revision_id", source_revision_id),
+            limit=2,
         ).to_pylist()
         if len(found) != 1:
             raise CanonicalNormalizeError(
