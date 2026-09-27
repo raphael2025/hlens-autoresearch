@@ -470,6 +470,26 @@ class ProfileFreezeRegistry:
         self._require_open()
         return tuple(self._by_ref[ref] for ref in self._order)
 
+    @property
+    def anchor_snapshot(self) -> tuple[int, str]:
+        """The verified external anchor journal identity: record count and head hash.
+
+        This read-only snapshot lets evidence reports bind to the verified rollback-detection
+        state without exposing the anchor path or any profile calibration payload. It reopens the
+        journal to detect changes made outside this registry instance; such changes fail closed
+        and require the caller to reopen the registry.
+        """
+        self._require_open()
+        try:
+            current = AppendOnlyJournal(self._anchor.path)
+        except JournalCorrupted as exc:
+            raise RegistryCorrupted(f"freeze registry anchor: {exc}") from exc
+        if len(current) != len(self._anchor) or current.head_hash != self._anchor.head_hash:
+            raise RegistryCorrupted(
+                "the freeze registry anchor changed outside this instance; reopen the registry"
+            )
+        return len(current), current.head_hash
+
     def freeze_of(self, ref: Ref | str) -> ProfileFreeze | None:
         """The record freezing ``ref`` (any content hash), or ``None``."""
         self._require_open()

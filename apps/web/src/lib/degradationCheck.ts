@@ -22,6 +22,8 @@ export type DegradationMetricPayload = {
 
 export type DegradationBreachPayload = Record<string, string>;
 
+export type DegradationEvidencePayload = Record<string, unknown>;
+
 export type DegradationCheckPayload = {
   kind: string;
   schema_version: string;
@@ -35,6 +37,8 @@ export type DegradationCheckPayload = {
   missing: string[];
   /** present (and `true`) only when every ruled metric is missing (research/reports/degradation.py) */
   insufficient_evidence?: true;
+  /** Present on schema 1.1.0 operation reports; its contents are hash-bound provenance. */
+  evidence?: DegradationEvidencePayload;
   check_hash: string;
 };
 

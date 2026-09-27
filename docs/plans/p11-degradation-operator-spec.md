@@ -1,7 +1,7 @@
 # Phase 11 degradation operator — implementation specification
 
-**Status:** Proposed implementation specification; Phase 11 remains `CODE_COMPLETE / DEBUG_PENDING`, not accepted.
-**Baseline reviewed:** coordination branch `bf68bdf` (2026-09-27).
+**Status:** Implementation specification; ADR-0067 is Accepted. This document is subordinate to ADR-0067 where wording differs. Phase 11 remains unaccepted.
+**Baseline reviewed:** coordination branch `669704c`; ADR-0067 implementation state updated 2026-09-27.
 **Scope:** an explicit, local, read-only-input operator which invokes the existing degradation monitor and append-only report writer. It does not schedule itself, mutate lifecycle state, or change monitor thresholds.
 
 ## 1. Decision in this specification
@@ -17,7 +17,7 @@ No report is produced unless the caller supplies a verifiable lifecycle history 
 ### Governing documents
 
 - `CLAUDE.md` §0–§8: accepted ADRs outrank status and memory; Validation Profile / Constitution are frozen; new capabilities prefer plugins; changes to contracts, lifecycle, profiles, or validation rules need a Proposed ADR first.
-- `PROJECT_STATUS.md` §1, §5, §6, §9: P11 remains unaccepted; module work is being consolidated before later acceptance; P11 still needs an explicit observation entry. No active architectural decision is recorded for this operator.
+- `PROJECT_STATUS.md` §1, §5, §6, §9: ADR-0067 is Accepted, while Phase 11 remains unaccepted; implementation is in the Codex coordination worktree and awaits later consolidation / acceptance.
 - `PROJECT_MEMORY.md` §5–§7: ADR-0044 / 0049 / 0050 provide worker, loop, and audit boundaries; ADR-0052 provides exact decimal threshold fields; research work does not automatically promote lifecycle state.
 - `docs/research/roadmap.md` §Phase 11: scheduled continuous loop, dashboard and degradation monitoring; bounded compute / LLM / trial budgets; no automatic promotion to ACTIVE.
 
@@ -33,14 +33,14 @@ No report is produced unless the caller supplies a verifiable lifecycle history 
 | Surface | Existing behavior | Limitation relevant to the operator |
 |---|---|---|
 | `apps/worker/degradation.py` | `DegradationMonitor.from_profile`, `check`, and optional bus-publishing `observe`; exact Profile thresholds take precedence; checks finite Decimal values; missing recent metric is recorded; baseline missing metric raises. | Caller must already have resolved subject, Profile, baseline, recent values, and window. `observe` publishes events and is not used by this read-only report operation. No source identities are part of the input type. |
-| `research/reports/degradation.py` | Recomputes the check from provided maps, writes canonical hash-addressed `degradation_check` JSON append-only, includes metric values and threshold sources. | Current payload names a free-form `window` and values but does not identify the baseline validation report, lifecycle history, source observations, or metric aggregation method. |
+| `research/reports/degradation.py` | Legacy writer recomputes the check and preserves schema 1.0.0; the ADR-0067 operation writer emits schema 1.1.0 with hash-bound evidence and the complete recent manifest. | The payload binds caller-declared evidence; it does not authenticate lifecycle authority, external sources, or metric aggregation. |
 | `apps/api/store.py` and `apps/api/app.py` | Read-only `GET /reports/degradation_check`; checks `check_hash`. | No write API exists or is needed. API hash validation does not prove evidence-source authority. |
 | `core/contracts/validation_profile.py` | Profile includes lifecycle `paper_period`, threshold maps; exact map is additive under ADR-0052. | Profile object does not itself resolve a registry entry or authenticate that it is frozen/current. |
 | `core/domain/research.py::ValidationReport` | Binds `subject`, Profile ref/hash, run and experiment identities, gates, and verdict. `GateResult` contains metric label/value and optional exact value. | A report's gate set is not by itself a complete strategy-performance baseline. Mapping a gate to a degradation metric must be explicit and unambiguous. |
 | `core/lifecycle/strategy.py::LifecycleHistory` | Replays transitions and exposes `current_state`; ACTIVE is an explicit lifecycle state. | A supplied in-memory history is only as trustworthy as its source. There is no operator-integrated authoritative lifecycle resolver in this path. |
 | `core/contracts/loop_audit.py::LoopRoundRecord` and `apps/worker/metrics.py` | Hash-bound round status, stage summaries, budget use; separate process-time measurements. | Neither contains the strategy's outcome metrics required by the degradation Profile. Stage or round summaries must never be transformed into baseline/recent values. |
 
-## 3. Proposed invocation and input DTOs
+## 3. Invocation and input DTOs
 
 Place the composition surface in `research/operations/degradation.py` (new); keep comparison in `apps/worker/degradation.py` and report serialization in `research/reports/degradation.py`. Suggested public API:
 
@@ -86,30 +86,35 @@ RecentMetricSet:
 
 The recent observation manifest must bind source IDs/hashes, per-source event time and knowledge/observation time, the metric names and values, and the aggregation method/version used to turn source rows into one window value. Raw records remain outside the report and repository. The operator receives the resulting metric set; it does not aggregate arbitrary raw rows.
 
-`metric_sources` is explicit because `ValidationReport.gates` can contain repeated conceptual metrics under different gates. The caller must select the baseline gate for each configured degradation metric; operator validation requires one exact gate match, its `metric` label to equal the degradation metric key, and a usable exact value (`value_exact`; otherwise an ADR-0052-compatible finite conversion of the legacy value). No fuzzy alias, gate ranking, averaging, or inferred key mapping.
+`metric_sources` is explicit because `ValidationReport.gates` can contain repeated conceptual metrics under different gates. The caller must select the baseline gate for each configured degradation metric; operator validation requires one exact gate match, its `metric` label to equal the degradation metric key, and an exact `value_exact`. Float-only gates are refused. Baseline keys must equal the Profile's ruled metric set exactly. No fuzzy alias, gate ranking, averaging, fallback, or inferred key mapping.
 
 ## 4. Validation and fail-closed rules
 
 Before the monitor runs, require all of the following:
 
-1. `lifecycle.subject == subject`, lifecycle history is valid, and `lifecycle.current_state is ACTIVE`. Any absent, conflicting, non-current, or non-ACTIVE history refuses the run. The operator does not write DEGRADED even when the result breaches.
-2. `profile.ref == baseline_report.validation_profile`; `profile.content_hash() == baseline_report.validation_profile_hash`; `profile.status is FROZEN`; report subject has the same `target_identity()` as `subject`; and `baseline_report.verdict is PASS`. A mismatch, non-frozen profile, or non-PASS baseline report refuses the run.
-3. Baseline set report hash equals `baseline_report.content_hash()`. Each Profile degradation metric has exactly one named baseline gate; gate labels and metric names match exactly; no baseline is silently omitted. Extra baseline entries may be retained in the evidence manifest but are not compared unless Profile rules name them.
+1. `lifecycle.subject == subject`, lifecycle history is valid, and `lifecycle.current_state is ACTIVE`. Any absent, conflicting, or non-ACTIVE supplied history refuses the run. The operator does not claim that this supplied history is the latest authoritative history and does not write DEGRADED even when the result breaches.
+2. `profile.ref == baseline_report.validation_profile`; `profile.content_hash() == baseline_report.validation_profile_hash`; `profile.status is FROZEN`; and an open, replay-verified `ProfileFreezeRegistry` must return an ADR-0062 freeze record for exactly this ref/hash. The report subject has the same `target_identity()` as `subject`, and `baseline_report.verdict is PASS`. A mismatch, absent/invalid anchor, non-frozen profile, or non-PASS baseline report refuses the run. `status` alone is not freeze evidence.
+3. Baseline set report hash equals `baseline_report.content_hash()`. Baseline metric keys equal the Profile degradation metric set exactly. Each metric has exactly one named baseline gate; gate labels and metric names match exactly and the supplied value equals the gate's exact `value_exact`. Extra or missing metrics are refused.
 4. The exact threshold map is selected exactly as `DegradationMonitor.from_profile` does today. Empty threshold configuration fails; the operator must not borrow thresholds from another Profile, generate a default, infer comparator direction, or clamp values.
-5. Recent set binds the same subject, Profile ref/hash and exact window supplied to the invocation. Every present metric value is a finite exact Decimal; keys are unique and normalized only according to the current monitor's accepted key grammar. No current/clock time is read to fill or shift the window.
+5. Recent set binds the same subject, Profile ref/hash and exact window supplied to the invocation. Every present metric value is a finite exact Decimal; keys are unique and normalized only according to the current monitor's accepted key grammar. Source event time must be in `[start, end)`; source observation time must not be later than `end` (the end is excluded for event time and inclusive for the observation-time cutoff). No current/clock time is read to fill or shift the window.
 6. Missing recent metrics remain missing. The existing monitor's three-valued result is preserved: an individual missing metric is not healthy; all missing produces `insufficient_evidence`; partial missing plus breach preserves both facts. No result is converted to PASS / healthy.
 7. Report publication uses the existing append-only writer. Any validation, hash, JSON, identity, or write conflict stops the operation without replacing an existing file. Repeating an identical complete input is an idempotent no-op at the report file.
 
-The operator's result is an evidence artifact, not a claim that the external source itself is truthful. The caller is responsible for using authoritative local inputs; the output must retain enough references/hashes for an independent reviewer to reopen those inputs.
+The operator's result is an evidence artifact, not a claim that the external source itself is truthful. The complete caller-declared observation manifest is embedded in the report and its hash can be recomputed independently. Source IDs are caller-declared references; there is no source resolver, so reacquiring original source objects depends on the caller's storage convention.
 
 ## 5. Report provenance extension
 
-The current report is reproducible from its displayed values but not traceable to source artifacts. Before implementing this operator, add an additive `evidence` object to the `degradation_check` payload and include it in `check_hash`:
+The ADR-0067 writer adds an `evidence` object to the `degradation_check` payload and includes it in `check_hash`:
 
 ```json
 {
   "evidence": {
     "lifecycle_history_hash": "…",
+    "lifecycle_scope": "caller-supplied history; latest authority not verified",
+    "profile_freeze_id": "…",
+    "profile_freeze_calibration_report_hash": "…",
+    "profile_freeze_anchor_length": 1,
+    "profile_freeze_anchor_head_hash": "…",
     "validation_report_hash": "…",
     "profile_ref": "profile:…@…",
     "profile_hash": "…",
@@ -118,14 +123,22 @@ The current report is reproducible from its displayed values but not traceable t
     "metric_method_id": "…",
     "window_start": "…Z",
     "window_end": "…Z",
-    "baseline_gate_ids": {"metric": "gate-id"}
+    "baseline_gate_ids": {"metric": "gate-id"},
+    "recent_observation_manifest": {
+      "format": "hlens.p11.recent-metric-manifest@1.0.0",
+      "subject": "…", "profile_ref": "…", "profile_hash": "…",
+      "window": {"start": "…Z", "end": "…Z", "label": "…"},
+      "observation_set_id": "…", "method_id": "…",
+      "sources": [{"source_id": "…", "source_hash": "…", "event_time": "…Z", "observed_time": "…Z"}],
+      "metrics": {"metric": "1.25"}
+    }
   }
 }
 ```
 
-Keep current top-level `window` for existing readers, set it to the supplied stable label, and retain current metric rows / threshold source. Bump this report payload's own `schema_version` additively (proposed `1.1.0`); `apps/api` remains read-only and continues to verify `check_hash`. Before implementation, inspect `apps/web/src/lib/degradationCheck.ts` and the report page to ensure unknown additive fields remain accepted; update the type only if strict decoding requires it. Do not add `created_at` from wall clock to the hashed payload.
+Keep current top-level `window` for existing readers, set it to the supplied stable label, and retain current metric rows / threshold source. The report schema is `1.1.0`; `apps/api` remains read-only and continues to verify `check_hash`. The Web reader accepts additive evidence. Do not add `created_at` from wall clock to the hashed payload. The legacy 1.0.0 builder accepts no evidence mapping; 1.1.0 reports are produced from an operation result. This is an accidental-misuse boundary, not signature-based authenticity.
 
-Because the payload shape and operator provenance semantics are a new report contract, draft a **Proposed** ADR before implementation. Do not mark it Accepted in this docs-only task. The ADR should settle evidence references, source authority claims, schema-version compatibility and lifecycle-state snapshot semantics. Existing accepted ADRs remain unchanged.
+ADR-0067 has accepted the additive report contract, ProfileFreezeRegistry anchor snapshot identity, source authority claims and compatibility. `ProfileFreezeRegistry.anchor_snapshot` exposes the verified anchor journal length and head hash without exposing its path. Existing accepted ADRs remain unchanged.
 
 ## 6. Resource budget and invocation
 
@@ -137,23 +150,22 @@ Because the payload shape and operator provenance semantics are a new report con
 
 ## 7. File boundary and implementation order
 
-1. **Proposed ADR only:** `docs/adr/00xx-p11-degradation-operator.md` (number assigned by coordinator); document evidence binding, payload 1.1.0, lifecycle snapshot requirement, and compatibility.
+1. **Accepted ADR:** `docs/adr/0067-p11-degradation-evidence-operator.md`; implementation and documentation follow this decision.
 2. **Operation composition:** new `research/operations/degradation.py`; local frozen DTOs, binding checks, explicit invocation. It may depend on `apps.worker.degradation`, `core`, and `research.reports`; it must not add reverse imports from `apps/worker` to `research/`.
-3. **Report writer:** `research/reports/degradation.py`; accept the explicit provenance DTO or a plain validated evidence mapping and include it in the hash-bound payload. Keep all threshold evaluation in `DegradationMonitor`.
-4. **Tests, only after the implementation task is authorized:** operation source mismatch / wrong state / unfrozen profile / duplicate baseline gate / empty profile thresholds / exact Decimal / missing evidence / idempotent report / conflict refusal; no API write route and no lifecycle mutation.
+3. **Report writer:** `research/reports/degradation.py`; the 1.1.0 path accepts only the operation result and includes its provenance in the hash-bound payload. Keep all threshold evaluation in `DegradationMonitor`.
+4. **Focused tests and acceptance are deferred** per Raphael's instruction; the later acceptance batch should cover source mismatch / wrong state / unfrozen profile / duplicate baseline gate / empty Profile thresholds / exact Decimal / missing evidence / idempotent report / conflict refusal. No API write route or lifecycle mutation is in scope.
 5. **Docs after implementation:** worker / research reports / API README and PROJECT_STATUS. State remains `CODE_COMPLETE / DEBUG_PENDING` until Phase 11 acceptance.
 
 Do not modify `core/contracts/`, `core/domain/`, Schema exports, accepted ADRs, validation rules, or lifecycle transitions for this slice. If implementing provenance requires a new durable observation contract or trusted lifecycle registry, stop and propose that as a separate decision instead of expanding this interface silently.
 
 ## 8. Remaining gaps and explicit decision points
 
-- There is no authoritative resolver in the current local operation path for “which validation report admitted this currently ACTIVE subject”; caller must supply it and its identity is checked, but its authority source remains an implementation-time decision.
-- There is no standard immutable recent-observation manifest, metric aggregation registry, or persisted baseline metric projection. This specification requires the caller to supply an explicit, content-hashed observation manifest and method ID; it does not define the financial/statistical meaning of those metrics.
-- Current `degradation_check` payload omits evidence references. Provenance payload extension requires Proposed ADR review before code.
+- There is no authoritative resolver in the current local operation path for “which validation report admitted this currently ACTIVE subject”; the caller supplies a valid lifecycle snapshot, and output explicitly does not claim it is latest.
+- There is no metric aggregation registry, source URI resolver, or persisted baseline metric projection. The caller supplies the content-hashed manifest and method ID; the report embeds the complete manifest but does not define metric meaning or authenticate sources.
 - `LifecycleHistory` is a value object, not a signed registry. A local operator can check that the supplied replay ends in ACTIVE but cannot guarantee it is the latest history unless an authoritative local source is selected.
 - Profile's `paper_period` does not automatically define this operator's window. The caller must explicitly provide the interval; selecting its duration from Profile or from the most recent loop round would need a separately documented rule.
 - No numerical degradation threshold is recommended here. The only accepted source is the actual bound Profile's current threshold mapping.
 
-## 9. No tests run
+## 9. Implementation state (2026-09-27)
 
-This is a read-only analysis/specification task. No implementation or tests were run. Validation of this specification is deferred to the later acceptance phase as requested.
+ADR-0067 is Accepted. The explicit operation, report writer, and Profile freeze anchor snapshot are implemented in the Codex coordination worktree; the full recent manifest is retained in hash-bound evidence, and the legacy writer remains 1.0.0. The implementation has not been merged into local `main` and has not been tested. P11 tests and Phase acceptance are deferred as requested.
