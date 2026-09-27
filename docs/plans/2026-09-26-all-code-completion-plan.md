@@ -946,4 +946,4 @@ Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，�
 
 新增提交 `e6b06e3` 修复 P6 回调错误归因；`b554454` 将研究规格文档补全并保留 Event 未登记草稿。静态检查：协调分支的 3 个触及 Python 文件 Ruff 与格式检查通过，`git diff --check` 通过；本轮未运行测试。以上不表示模块或 Phase 验收完成。
 
-分支审计确认当前只有一个可安全立即归档的本地冗余引用：`worktree-fix-e1-cap1`，其 `c5dbebe` 已包含在 `fix/e1-cap1`，无 worktree；已备份到 `refs/archive/2026-09-27/branches/worktree-fix-e1-cap1` 后删除。审计同时发现 `origin/codex/full-code-review-2026-09-26` 的全代码审查文件比 main 同名文件多 239 行，包含 ADR-0052 重放授权与 K5 不加 EventRequest.subject 等正式决定；先保护和复核该文本，再讨论该远端分支清理。多项 patch-equivalent 分支仍有活跃 Claude / Cursor 会话，不因未锁定或内容重复而删除。
+分支审计确认当前只有一个可安全立即归档的本地冗余引用：`worktree-fix-e1-cap1`，其 `c5dbebe` 已包含在 `fix/e1-cap1`，无 worktree；已备份到 `refs/archive/2026-09-27/branches/worktree-fix-e1-cap1` 后删除。审计同时发现 `origin/codex/full-code-review-2026-09-26` 的全代码审查文件比 main 同名文件多 239 行追加历史记录，已按文件择取到本协调分支；它保留 ADR-0052 授权 / 复核来源及 K5 决策演变。当前 ADR-0052 / ADR-0057 已在主线记录其有效决定，ADR-0055 与 D-DEG-IE 决策文件也已存在于主线。远端分支不整支合并；其余 patch-equivalent 分支仍有活跃 Claude / Cursor 会话，不因未锁定或内容重复而删除。
