@@ -24,7 +24,8 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -97,6 +98,18 @@ class TrialLedger:
         """The backing journal (``None``: in memory); read-only use, for cross-file checks."""
         with self._lock:
             return self._journal
+
+    @contextmanager
+    def exclusive(self) -> Iterator[None]:
+        """Hold this ledger's mutation lock across a caller's check-then-append sequence.
+
+        ADR-0073 admission reads the ledger baseline, writes PREPARE and later appends the one
+        batch event; holding this lock keeps other threads using this instance from appending in
+        between those steps. It serializes threads only; it is not a cross-process lock (the loop
+        state directory's ``state.lock`` is).
+        """
+        with self._lock:
+            yield
 
     def register(self, hypothesis: Hypothesis) -> bool:
         """Register (pre-register) ``hypothesis``; ``False`` if exactly it was already registered.

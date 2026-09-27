@@ -358,6 +358,8 @@ class PlanAdmissionJournal:
                 header.seq != 1
                 or header.type != _HEADER_EVENT
                 or set(header.payload) != _HEADER_KEYS
+                # exact JSON integer: ``4.0`` compares equal to ``4`` but is another format
+                or type(header.payload["state_version"]) is not int
                 or header.payload
                 != {
                     "schema_version": PLAN_ADMISSION_FORMAT_VERSION,

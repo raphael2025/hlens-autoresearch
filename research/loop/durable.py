@@ -146,12 +146,13 @@ import json
 import os
 import weakref
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from typing import Any, Final, Protocol
 
-from apps.worker.loop import LifecycleGuard, LoopAuditLog, LoopRecord
+from apps.worker.loop import LifecycleGuard, LoopAuditLog, LoopRecord, StageStatus
 from core.contracts.synthetic import SyntheticMarketProvider, SyntheticMarketSpec
 from core.domain.base import FrozenMapping, canonical_json, content_hash
 from core.domain.research import (
@@ -164,9 +165,11 @@ from core.domain.research import (
 from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
 from research.evolution import LineageGraph
-from research.hypotheses import TrialLedger
+from research.hypotheses import LedgerError, TrialLedger
 from research.hypotheses.typed_plan_audit import (
     CommittedAdmission,
+    PlanAdmissionCorrupted,
+    PlanAdmissionError,
     PlanAdmissionEvidence,
     PlanAdmissionJournal,
     PreparedAdmission,
@@ -349,6 +352,41 @@ def heads(
     return out
 
 
+def _checkpointed_heads(
+    entries: Sequence[JournalEntry], admission: PlanAdmissionJournal
+) -> dict[str, Any]:
+    """Where the memory journal's last line leaves every other file of a v4 directory.
+
+    The header names no positions; for it this is the v4 genesis: every journal empty but the
+    plan admission journal's header line, no failure records.
+    """
+    last = entries[-1]
+    if last.type != LOOP_STATE_OPENED:
+        return _json(dict(last.payload["heads"]))
+    out: dict[str, Any] = {name: {"seq": 0, "hash": GENESIS_HASH} for name, _ in _JOURNALS}
+    out["plan_admission"] = {"seq": 1, "hash": admission.entries[0].hash}
+    out["failures"] = {"count": 0, "digest": content_hash([])}
+    return _json(out)
+
+
+def _failed_experiment_round(audit: LoopAuditLog) -> int | None:
+    """ADR-0070: the last recorded round when its experiment stage FAILED (recovery required)."""
+    records = audit.records
+    if records and any(
+        stage.name == "experiment" and stage.status is StageStatus.FAILED
+        for stage in records[-1].stages
+    ):
+        return records[-1].round_index
+    return None
+
+
+def _exact_state_version(value: object, what: str) -> int:
+    """A state version is an exact JSON integer: ``3.0`` / ``4.0`` compare equal but are refused."""
+    if type(value) is not int or value not in (LEGACY_STATE_VERSION, STATE_VERSION):
+        raise _refuse(f"unsupported {what} {value!r}")
+    return value
+
+
 # ----------------------------------------------------------------------------------- the delta
 
 
@@ -509,14 +547,45 @@ class MemoryCheckpoint:
         self._state_lock = state_lock
         self._marks = _Marks.of(memory)
         self._covered = _approval_lines(memory)  # opening verified every one is checkpointed
+        #: Transactions a ``plan_admission`` line of this memory journal already names.
+        self._checkpointed = {
+            entry.payload.get("transaction_id")
+            for entry in journal.entries
+            if entry.type == PLAN_ADMISSION
+        }
 
     def reset_marks(self) -> None:
         """Set the round delta baseline after durable history has been restored in memory."""
         self._marks = _Marks.of(self._memory)
         self._covered = _approval_lines(self._memory)
 
+    def require_settled(self, what: str) -> None:
+        """Refuse ``what`` while a PREPARE is pending or a COMMIT has no admission checkpoint.
+
+        The opener only finishes such a transaction as the journal tail; a round or between-rounds
+        checkpoint covering it would leave an unfinished admission inside checkpointed history.
+        """
+        admission = self._admission
+        if admission is None:
+            return
+        if admission.pending is not None:
+            raise LoopStateInconsistent(
+                f"{what}: typed-plan PREPARE {admission.pending.transaction_id} is still pending"
+            )
+        open_commits = sorted(
+            item.prepare.transaction_id
+            for item in admission.committed
+            if item.prepare.transaction_id not in self._checkpointed
+        )
+        if open_commits:
+            raise LoopStateInconsistent(
+                f"{what}: committed typed-plan admission(s) {open_commits} have no admission "
+                "checkpoint"
+            )
+
     def __call__(self, record: LoopRecord) -> None:
         memory = self._memory
+        self.require_settled(f"round {record.round_index} checkpoint")
         if _approval_lines(memory) != self._covered:
             raise LoopStateInconsistent(
                 f"round {record.round_index}: the review journal holds a human approval no "
@@ -536,6 +605,7 @@ class MemoryCheckpoint:
 
     def between_rounds(self, rounds: int, audit_head: str | None, approval: ReviewApproval) -> None:
         """Checkpoint the human approval just journaled (the review journal's last line)."""
+        self.require_settled("between-rounds checkpoint")
         line = _journals(self._memory)["reviews"].entries[-1]
         if line.type != REVIEW_APPROVED or line.payload.get("key") != approval.key:
             raise LoopStateInconsistent("the review journal's last line is not this approval")
@@ -563,23 +633,47 @@ class MemoryCheckpoint:
         if self._state_lock is None or not self._state_lock.held:
             raise LoopStateLocked("plan admission checkpoint requires the held loop state lock")
         round_identity = committed.prepare.round
+        transaction_id = committed.prepare.transaction_id
         if self._memory.ledger.journal is None:
             raise LoopStateInconsistent("typed-plan admission requires a durable TrialLedger")
-        self._journal.append(
+        if committed not in self._admission.committed or transaction_id in self._checkpointed:
+            raise LoopStateInconsistent(
+                f"typed-plan admission {transaction_id} is not one uncheckpointed COMMIT of this "
+                "plan admission journal"
+            )
+        # The opener accepts an admission checkpoint only when it moves the TrialLedger to the
+        # batch event and the plan journal to the COMMIT, and nothing else: check the same here.
+        expected = _checkpointed_heads(self._journal.entries, self._admission)
+        expected["trial_ledger"] = {
+            "seq": committed.ledger_event_seq,
+            "hash": committed.ledger_event_hash,
+        }
+        expected["plan_admission"] = {"seq": committed.seq, "hash": committed.entry_hash}
+        current = _json(heads(self._memory, self._admission))
+        if current != expected:
+            moved = sorted(
+                k for k in set(current) | set(expected) if current.get(k) != expected.get(k)
+            )
+            raise LoopStateInconsistent(
+                f"typed-plan admission {transaction_id}: {moved} are not where the previous "
+                "checkpoint plus this one ledger event and COMMIT leave them"
+            )
+        entry = self._journal.append(
             PLAN_ADMISSION,
             {
                 "round": round_identity.payload(),
-                "transaction_id": committed.prepare.transaction_id,
+                "transaction_id": transaction_id,
                 "prepare_seq": committed.prepare.seq,
                 "prepare_hash": committed.prepare.entry_hash,
                 "commit_seq": committed.seq,
                 "commit_hash": committed.entry_hash,
                 "ledger_event_seq": committed.ledger_event_seq,
                 "ledger_event_hash": committed.ledger_event_hash,
-                "heads": heads(self._memory, self._admission),
+                "heads": current,
             },
         )
-        return self._journal.entries[-1]
+        self._checkpointed.add(transaction_id)
+        return entry
 
     @property
     def journal(self) -> AppendOnlyJournal:
@@ -703,6 +797,8 @@ class DurableState:
     #: The directory's single-writer lock (set by ``open_state``; released by ``DurableLoop.close``,
     #: when the audit log is garbage-collected, or at process exit).
     lock: StateLock | None = None
+    #: Serializes this process's admission steps (``state.lock`` only excludes other processes).
+    _admission_lock: Any = field(default_factory=RLock, repr=False, compare=False)
 
     def prepare_plan_admission(
         self,
@@ -721,60 +817,117 @@ class DurableState:
 
         This records evidence only. It does not prove producer relationships, invoke Providers, or
         make the non-runnable typed plan executable.
+
+        Refused before anything is written (ADR-0073 §1 / §3 / §4, ADR-0070): a v3 state or a
+        released lock; a round that is not the unique persisted open round; a loop whose last
+        recorded experiment stage FAILED (recovery required); a second admission for the same
+        round; an unfinished earlier admission; any journal or the failure registry moved since
+        the memory journal's last line (the opener could not attribute that tail); and a batch
+        Hypothesis identity the TrialLedger already holds (reuse / re-evaluation is not admitted).
+        Raises ``LoopStateInconsistent`` / ``LoopStateLocked`` for the state and
+        ``PlanAdmissionError`` for the request.
         """
-        admission = self._plan_admission
-        if self.state_version != STATE_VERSION or admission is None:
-            raise LoopStateInconsistent("typed-plan admission is disabled in state version 3")
-        if self.lock is None or not self.lock.held:
-            raise LoopStateLocked("typed-plan PREPARE requires the held loop state lock")
-        if not isinstance(round, RoundStartedIdentity):
-            raise LoopStateInconsistent("PREPARE needs a validated started-round identity")
-        actual_round = _round_started_identity(self.audit, round.loop_id, round.round_index)
-        if actual_round != round:
-            raise LoopStateInconsistent("PREPARE does not match the unique persisted open round")
-        journal = self.memory.ledger.journal
-        if journal is None:
-            raise LoopStateInconsistent("typed-plan admission requires a durable TrialLedger")
-        return admission.prepare(
-            round=actual_round,
-            plan=plan,
-            compiler=compiler,
-            operators=operators,
-            providers=providers,
-            inputs=inputs,
-            outputs=outputs,
-            experiment_specs=experiment_specs,
-            hypotheses=hypotheses,
-            ledger_baseline_seq=len(journal.entries),
-            ledger_baseline_hash=journal.head_hash,
-        )
+        with self._admission_lock:
+            admission = self._plan_admission
+            if self.state_version != STATE_VERSION or admission is None:
+                raise LoopStateInconsistent("typed-plan admission is disabled in state version 3")
+            if self.lock is None or not self.lock.held:
+                raise LoopStateLocked("typed-plan PREPARE requires the held loop state lock")
+            if not isinstance(round, RoundStartedIdentity):
+                raise LoopStateInconsistent("PREPARE needs a validated started-round identity")
+            failed = _failed_experiment_round(self.audit)
+            if failed is not None:
+                raise LoopStateInconsistent(
+                    f"round {failed} has a failed experiment stage (ADR-0070 recovery required): "
+                    "no typed-plan admission until a human reviews it"
+                )
+            actual_round = _round_started_identity(self.audit, round.loop_id, round.round_index)
+            if actual_round != round:
+                raise LoopStateInconsistent("PREPARE does not match the unique persisted open round")
+            if any(
+                (item.round.loop_id, item.round.round_index) == (round.loop_id, round.round_index)
+                for item in admission.prepared
+            ):
+                raise PlanAdmissionError(
+                    f"round {round.round_index} already has a typed-plan admission (one per round)"
+                )
+            self.checkpoint.require_settled("typed-plan PREPARE")
+            ledger = self.memory.ledger
+            journal = ledger.journal
+            if journal is None:
+                raise LoopStateInconsistent("typed-plan admission requires a durable TrialLedger")
+            with ledger.exclusive():
+                if isinstance(hypotheses, Sequence):
+                    known = {(item.name, item.version) for item in ledger.hypotheses}
+                    reused = sorted(
+                        str(item.ref)
+                        for item in hypotheses
+                        if isinstance(item, Hypothesis) and (item.name, item.version) in known
+                    )
+                    if reused:
+                        raise PlanAdmissionError(
+                            "a typed-plan admission registers only new Hypothesis identities; the "
+                            f"TrialLedger already holds {reused}"
+                        )
+                current = _json(heads(self.memory, admission))
+                if current != _checkpointed_heads(self.checkpoint.journal.entries, admission):
+                    raise LoopStateInconsistent(
+                        "typed-plan PREPARE must start where the memory journal's last line left "
+                        "every file; this round already wrote to one of them"
+                    )
+                return admission.prepare(
+                    round=actual_round,
+                    plan=plan,
+                    compiler=compiler,
+                    operators=operators,
+                    providers=providers,
+                    inputs=inputs,
+                    outputs=outputs,
+                    experiment_specs=experiment_specs,
+                    hypotheses=hypotheses,
+                    ledger_baseline_seq=len(journal.entries),
+                    ledger_baseline_hash=journal.head_hash,
+                )
 
     def complete_plan_admission(self, transaction_id: str) -> CommittedAdmission:
         """Complete the durable PREPARE → ledger event → COMMIT → checkpoint → anchor sequence.
 
-        The caller must have appended PREPARE through ``plan_admission`` while this state's lock
-        is held. This method never compiles, invokes providers, or runs experiments.
+        The caller must have appended PREPARE through ``prepare_plan_admission`` while this
+        state's lock is held, and must not write the TrialLedger in between (the batch event has
+        to follow the PREPARE baseline directly). This method never compiles, invokes providers,
+        or runs experiments. Raises ``LoopStateInconsistent`` / ``LoopStateLocked`` for the state,
+        ``LedgerError`` / ``PlanAdmissionError`` when the ledger no longer matches the PREPARE.
         """
-        if self.state_version != STATE_VERSION or self._plan_admission is None:
-            raise LoopStateInconsistent("typed-plan admission is disabled in state version 3")
-        if self.lock is None or not self.lock.held:
-            raise LoopStateLocked("typed-plan admission requires the held loop state lock")
-        prepared = self._plan_admission.pending
-        ledger = self.memory.ledger
-        if prepared is None or prepared.transaction_id != transaction_id:
-            raise LoopStateInconsistent("no matching pending plan PREPARE exists")
-        current = _round_started_identity(self.audit, prepared.round.loop_id, prepared.round.round_index)
-        if current != prepared.round:
-            raise LoopStateInconsistent("plan PREPARE does not match the unique open round start")
-        event = ledger.recover_register_batch(
-            prepared.hypotheses,
-            baseline_seq=prepared.ledger_baseline_seq,
-            baseline_hash=prepared.ledger_baseline_hash,
-        )
-        committed = self._plan_admission.commit(transaction_id, event)
-        self.checkpoint.plan_admission(committed)
-        self.publish_anchor()
-        return committed
+        with self._admission_lock:
+            committed = self._finish_plan_admission(transaction_id)
+            self.publish_anchor()
+            return committed
+
+    def _finish_plan_admission(self, transaction_id: str) -> CommittedAdmission:
+        """Ledger event → COMMIT → admission checkpoint, without moving the anchor."""
+        with self._admission_lock:
+            if self.state_version != STATE_VERSION or self._plan_admission is None:
+                raise LoopStateInconsistent("typed-plan admission is disabled in state version 3")
+            if self.lock is None or not self.lock.held:
+                raise LoopStateLocked("typed-plan admission requires the held loop state lock")
+            prepared = self._plan_admission.pending
+            ledger = self.memory.ledger
+            if prepared is None or prepared.transaction_id != transaction_id:
+                raise LoopStateInconsistent("no matching pending plan PREPARE exists")
+            current = _round_started_identity(
+                self.audit, prepared.round.loop_id, prepared.round.round_index
+            )
+            if current != prepared.round:
+                raise LoopStateInconsistent("plan PREPARE does not match the unique open round start")
+            with ledger.exclusive():
+                event = ledger.recover_register_batch(
+                    prepared.hypotheses,
+                    baseline_seq=prepared.ledger_baseline_seq,
+                    baseline_hash=prepared.ledger_baseline_hash,
+                )
+                committed = self._plan_admission.commit(transaction_id, event)
+                self.checkpoint.plan_admission(committed)
+            return committed
 
     def head(self) -> StateHead:
         """The directory's current head (after the last recorded round or between-rounds line)."""
@@ -803,6 +956,8 @@ class DurableState:
                 f"round {self.audit.open_round} is running (or was interrupted): {key} can only "
                 "be approved between rounds"
             )
+        # before the approval is journaled: its between-rounds line would refuse afterwards
+        self.checkpoint.require_settled(f"approval of {key}")
 
     def after_approval(self, approval: ReviewApproval) -> None:
         """Checkpoint the journaled approval and move the anchor up to it, immediately."""
@@ -873,7 +1028,10 @@ def open_state(
     format for a new directory (defaults to v4). Existing v3 directories are always reopened in
     their v3 format and never migrated. Raises
     ``LoopStateInconsistent`` when the files disagree with each other, the configuration or the
-    anchor (see module docs), ``JournalCorrupted`` when one file is itself corrupt. The anchor is
+    anchor (see module docs) — v4 plan admission reducer and recovery refusals included —,
+    ``JournalCorrupted`` when one file is itself corrupt. A v4 admission tail is recovered only
+    after every read-only cross-check passed, and the anchor moves only after the recovered
+    positions are re-checked; an open round is refused afterwards. The anchor is
     only verified here; ``DurableState.publish_anchor`` moves it up once the caller's own checks
     (the lifecycle guard) passed too. The returned state observes the restored review queue:
     every later approval is checkpointed and anchored at once (module docs, **Approvals between
@@ -932,18 +1090,22 @@ def _open_locked(
     for candidate in strategies:
         memory.add_strategy(candidate)
     entries = journal.entries
-    if requested_state_version not in {LEGACY_STATE_VERSION, STATE_VERSION}:
-        raise _refuse(f"unsupported requested loop state version {requested_state_version!r}")
+    _exact_state_version(requested_state_version, "requested loop state version")
     expected = _json(fingerprint)
     if entries:
         header = entries[0]
         if header.type != LOOP_STATE_OPENED:
             raise _refuse(f"{journal.path} does not start with a loop state header")
-        state_version = header.payload.get("state_version")
+        state_version = _exact_state_version(
+            header.payload.get("state_version"), "loop state version"
+        )
+        if state_version == STATE_VERSION and set(header.payload) != {
+            "state_version",
+            "fingerprint",
+        }:
+            raise _refuse(f"{journal.path} has a v4 header with other fields")
     else:
         state_version = requested_state_version
-    if state_version not in {LEGACY_STATE_VERSION, STATE_VERSION}:
-        raise _refuse(f"unsupported loop state version {state_version!r}")
     admission_path = root / PLAN_ADMISSION_FILE
     admission: PlanAdmissionJournal | None
     if state_version == LEGACY_STATE_VERSION:
@@ -957,12 +1119,17 @@ def _open_locked(
         if entries:
             if not admission_path.exists():
                 raise _refuse("a v4 state directory is missing its required plan admission journal")
-            admission = PlanAdmissionJournal(admission_path, loop_id=loop_id)
+            admission = _plan_journal(admission_path, loop_id, create=False)
         else:
-            if admission_path.exists():
-                existing_plan = AppendOnlyJournal(admission_path)
-                detail = "empty" if not existing_plan.entries else "contains orphaned records"
-                raise _refuse(f"a new state directory has an existing {detail} plan admission journal")
+            # A v4 directory is created plan journal header first, memory header second. A crash
+            # in between leaves an empty or header-only plan journal and no memory header: that
+            # holds no admission and is finished below (the header is checked exactly there).
+            # Anything past the header is an orphaned record.
+            if admission_path.exists() and len(AppendOnlyJournal(admission_path).entries) > 1:
+                raise _refuse(
+                    "a new state directory has an existing plan admission journal that contains "
+                    "orphaned records"
+                )
             admission = None
     if not entries:
         _require_empty(audit, memory)
@@ -971,8 +1138,7 @@ def _open_locked(
         ):
             raise _behind(root, 0, 0, anchored)
         if state_version == STATE_VERSION:
-            loop_id = expected["loop_id"]
-            admission = PlanAdmissionJournal(admission_path, loop_id=loop_id, create=True)
+            admission = _plan_journal(admission_path, expected["loop_id"], create=True)
         journal.append(LOOP_STATE_OPENED, {"state_version": state_version, "fingerprint": expected})
         state = DurableState(
             root, memory, audit, MemoryCheckpoint(journal, memory, admission, state_lock), anchor,
@@ -1018,22 +1184,61 @@ def _open_locked(
     )
     if admission is not None:
         _check_anchor(state, anchored)
-        _recover_plan_admission(state, marks, anchored)
+    # Every read-only cross-check (round contents included) runs before admission recovery
+    # appends anything, and recovery moves the anchor only after the re-checks below.
+    for record, checkpoint in zip(audit.records, checkpoints, strict=True):
+        _restore_round(memory, record, checkpoint["delta"], provider, provider_for)
+    state.checkpoint.reset_marks()
+    if admission is not None:
+        _check_registered_subjects(memory, audit.records)
+        try:
+            publish = _recover_plan_admission(state, marks)
+            _check_positions(memory, marks, admission)
+            _check_admission_checkpoints(audit, admission, marks)
+        except (LedgerError, PlanAdmissionError) as exc:
+            raise _refuse(f"typed-plan admission recovery refused: {exc}") from exc
+        except (KeyError, LookupError, TypeError) as exc:
+            raise _refuse(f"a checkpoint of {journal.path} names unreadable positions: {exc}") from exc
+        _check_anchor(state, anchored)
+        if publish:
+            state.publish_anchor()
         # Recovery covers pure registration writes only; a started but unrecorded round still
-        # follows ADR-0070 and remains stopped for human review.
+        # follows the durable loop rule (and ADR-0070) and remains stopped for human review.
         if audit.open_round is not None:
             raise _refuse(
                 f"round {audit.open_round} was started but never recorded after admission recovery; "
                 "the loop does not resume or rerun it"
             )
-        _check_positions(memory, marks, admission)
-        _check_admission_checkpoints(audit, admission, marks)
-    for record, checkpoint in zip(audit.records, checkpoints, strict=True):
-        _restore_round(memory, record, checkpoint["delta"], provider, provider_for)
-    state.checkpoint.reset_marks()
     _check_anchor(state, anchored)
     memory.reviews.observe(state)
     return state
+
+
+def _plan_journal(path: Path, loop_id: str, *, create: bool) -> PlanAdmissionJournal:
+    """Open the v4 plan admission journal; a reducer refusal is a state refusal."""
+    try:
+        return PlanAdmissionJournal(path, loop_id=loop_id, create=create)
+    except (PlanAdmissionCorrupted, PlanAdmissionError) as exc:
+        raise _refuse(f"{path} does not replay as this loop's v4 plan admission journal: {exc}") from exc
+
+
+def _check_registered_subjects(memory: ResearchMemory, records: Sequence[LoopRecord]) -> None:
+    """Cross-check 7 on the audit alone, before admission recovery writes or anchors anything
+    (the composition's ``verify_guard`` runs only after ``open_state`` returned)."""
+    registered = {str(h.ref) for h in memory.ledger.hypotheses}
+    stray = sorted(
+        {
+            str(transition.subject)
+            for record in records
+            for transition in record.transitions
+            if str(transition.subject) not in registered
+        }
+    )
+    if stray:
+        raise _refuse(
+            f"the audit moved {stray} through the lifecycle, but the trial ledger never "
+            "registered them"
+        )
 
 
 def _check_fingerprint(root: Path, recorded: Any, expected: Any) -> None:
@@ -1281,6 +1486,39 @@ def _check_admission_checkpoints(
         named.add(transaction_id)
     if len(named) > len(committed_by_id):
         raise _refuse("a plan admission checkpoint names an unknown COMMIT")
+    # Writer symmetry (``MemoryCheckpoint.require_settled`` / ``plan_admission``): an admission
+    # checkpoint starts exactly where the previous memory line left the TrialLedger (the PREPARE
+    # baseline) and the plan journal (just before the PREPARE); no round or between-rounds line
+    # covers a pending PREPARE or a COMMIT without its admission checkpoint.
+    previous_ledger: Any = {"seq": 0, "hash": GENESIS_HASH}
+    previous_plan: Any = {"seq": 1, "hash": admission.entries[0].hash}
+    for _, mark in marks:
+        position = mark.payload["heads"]
+        if mark.type == PLAN_ADMISSION:
+            prepare = committed_by_id[mark.payload["transaction_id"]].prepare
+            if previous_ledger != {
+                "seq": prepare.ledger_baseline_seq,
+                "hash": prepare.ledger_baseline_hash,
+            } or previous_plan != {
+                "seq": prepare.seq - 1,
+                "hash": admission.entries[prepare.seq - 1].prev_hash,
+            }:
+                raise _refuse(
+                    "a plan admission checkpoint does not start where the previous memory line "
+                    "left the TrialLedger and the plan admission journal"
+                )
+        previous_ledger = _json(position["trial_ledger"])
+        previous_plan = _json(position["plan_admission"])
+    unfinished = [
+        item.prepare.seq for item in admission.committed if item.prepare.transaction_id not in named
+    ]
+    if admission.pending is not None:
+        unfinished.append(admission.pending.seq)
+    if any(seq <= previous_plan["seq"] for seq in unfinished):
+        raise _refuse(
+            "a round or between-rounds checkpoint covers an unfinished typed-plan admission "
+            "(a pending PREPARE or a COMMIT without its admission checkpoint)"
+        )
 
 
 def _verify_committed_ledger(state: DurableState, committed: CommittedAdmission) -> JournalEntry:
@@ -1319,12 +1557,16 @@ def _verify_committed_ledger(state: DurableState, committed: CommittedAdmission)
 def _recover_plan_admission(
     state: DurableState,
     marks: list[tuple[str, JournalEntry]],
-    anchored: StateHead | None,
-) -> None:
-    """Finish only one exact tail transaction; never resumes the interrupted experiment round."""
+) -> bool:
+    """Finish only one exact tail transaction; never resumes the interrupted experiment round.
+
+    Appends at most the missing batch event / COMMIT / admission checkpoint and never moves the
+    anchor: it returns whether the caller should move it (the tail is an admission of the open
+    round) once every re-check of the recovered files passed.
+    """
     admission = state._plan_admission
     if admission is None:
-        return
+        return False
     for committed in admission.committed:
         _verify_committed_ledger(state, committed)
     checkpointed = {
@@ -1335,16 +1577,27 @@ def _recover_plan_admission(
     ]
     if admission.pending is not None and uncheckpointed:
         raise _refuse("a pending PREPARE coexists with an uncheckpointed COMMIT")
+    if admission.pending is not None or uncheckpointed:
+        failed = _failed_experiment_round(state.audit)
+        if failed is not None:
+            # ADR-0070 / ADR-0073 §1: no admission while recovery is required; such a tail was
+            # never admissible, so nothing is registered or committed for it.
+            raise _refuse(
+                f"round {failed} has a failed experiment stage (recovery required), yet a later "
+                "typed-plan admission is unfinished: a human reviews the directory"
+            )
     if admission.pending is not None:
         prepared = admission.pending
-        current = _round_started_identity(state.audit, prepared.round.loop_id, prepared.round.round_index)
+        current = _round_started_identity(
+            state.audit, prepared.round.loop_id, prepared.round.round_index
+        )
         if current != prepared.round:
             raise _refuse("pending PREPARE is not for the unique currently open round")
-        committed = state.complete_plan_admission(prepared.transaction_id)
+        state._finish_plan_admission(prepared.transaction_id)
         line = state.checkpoint.journal.entries[-1]
         marks.append((f"recovered plan admission checkpoint (memory line {line.seq})", line))
-        checkpointed.add(committed.prepare.transaction_id)
-    elif uncheckpointed:
+        return True
+    if uncheckpointed:
         if len(uncheckpointed) != 1:
             raise _refuse("multiple committed admissions lack memory checkpoints")
         committed = uncheckpointed[0]
@@ -1356,20 +1609,15 @@ def _recover_plan_admission(
         _verify_committed_ledger(state, committed)
         line = state.checkpoint.plan_admission(committed)
         marks.append((f"recovered plan admission checkpoint (memory line {line.seq})", line))
-    elif admission.pending is None:
-        # If the admission checkpoint itself was durable but its external anchor write was
-        # interrupted, verify the complete transaction first, then advance only that exact head.
-        if state.audit.open_round is not None and any(
-            mark.type == PLAN_ADMISSION
-            and mark.payload["round"]["round_index"] == state.audit.open_round
-            for _, mark in marks
-        ):
-            state.publish_anchor()
-            _check_anchor(state, anchored)
-        # An open round without a pure-admission tail is never resumed.
-        return
-    state.publish_anchor()
-    _check_anchor(state, anchored)
+        return True
+    # The admission checkpoint itself was durable but its anchor write may have been interrupted:
+    # the caller advances the anchor to that exact head after the re-checks. An open round
+    # without a pure-admission tail is never resumed (and never anchors here).
+    return state.audit.open_round is not None and any(
+        mark.type == PLAN_ADMISSION
+        and mark.payload["round"]["round_index"] == state.audit.open_round
+        for _, mark in marks
+    )
 
 
 def _check_positions(
@@ -1471,6 +1719,8 @@ def _check_positions(
             raise _refuse(f"failures does not match {label}")
         if mark.type == BETWEEN_ROUNDS and count != previous:
             raise _refuse(f"{label} moves failures: only human approvals are made between rounds")
+        if mark.type == PLAN_ADMISSION and count != previous:
+            raise _refuse(f"{label} moves failures: an admission moves only its ledger and plan")
         previous = count
     if len(hashes) != previous:
         raise _refuse(
