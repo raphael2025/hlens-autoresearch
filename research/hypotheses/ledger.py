@@ -21,14 +21,18 @@ Omit ``path`` and the ledger is purely in memory, as before.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import re
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
 from typing import TYPE_CHECKING
 
+from core.domain.base import SHA256_PATTERN, canonical_json
 from core.domain.research import Hypothesis, HypothesisOrigin
-from research.persistence import AppendOnlyJournal, JournalCorrupted
+from research.persistence import AppendOnlyJournal, JournalCorrupted, JournalEntry
 
 if TYPE_CHECKING:
     from research.hypotheses.generator import HypothesisDraft
@@ -161,6 +165,120 @@ class TrialLedger:
             for hypothesis in pending:
                 self._apply_registration(hypothesis)
             return tuple(pending)
+
+    def recover_register_batch(
+        self,
+        hypotheses: Iterable[Hypothesis],
+        *,
+        baseline_seq: int,
+        baseline_hash: str,
+    ) -> JournalEntry:
+        """Append or recognize exactly one prepared batch at its recorded journal baseline.
+
+        This is the ledger half of ADR-0073's PREPARE / batch / COMMIT protocol. If the journal
+        remains at ``(baseline_seq, baseline_hash)``, every requested identity must still be new
+        and the method appends one normal ``register_batch`` event. If the journal is exactly one
+        event past that baseline, the event must match this full batch byte-for-byte in content,
+        sequence, previous hash, type, and recomputed entry hash; it is then returned without
+        counting the trials again. Any other tail or an in-memory identity reuse is refused.
+
+        The method requires a durable ledger and holds the ledger RLock across inspection and
+        append. It does not repair a corrupt / partial journal or reload a stale journal object;
+        callers must reopen the ledger after process restart so its verified replay is current.
+        """
+        with self._lock:
+            if type(baseline_seq) is not int or baseline_seq < 0:
+                raise LedgerError("baseline_seq must be a non-negative integer")
+            if (
+                not isinstance(baseline_hash, str)
+                or re.fullmatch(SHA256_PATTERN, baseline_hash) is None
+            ):
+                raise LedgerError("baseline_hash must be a lowercase SHA-256 hash")
+            journal = self._journal
+            if journal is None:
+                raise LedgerError("prepared batch recovery requires a durable TrialLedger")
+
+            try:
+                batch = tuple(hypotheses)
+            except TypeError as exc:
+                raise LedgerError(
+                    "a recovery batch must be an iterable of Hypothesis values"
+                ) from exc
+            if not batch:
+                raise LedgerError("a prepared batch must contain at least one hypothesis")
+
+            keys: set[tuple[str, str]] = set()
+            for hypothesis in batch:
+                if not isinstance(hypothesis, Hypothesis):
+                    raise LedgerError("a recovery batch contains only Hypothesis values")
+                if hypothesis.origin is HypothesisOrigin.LLM:
+                    raise LedgerError(
+                        "an LLM hypothesis is registered only as a reviewed draft: "
+                        f"{hypothesis.ref}"
+                    )
+                key = (hypothesis.name, hypothesis.version)
+                if key in keys:
+                    raise LedgerError(f"a recovery batch repeats {hypothesis.ref}")
+                keys.add(key)
+
+            payload = {
+                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in batch]
+            }
+            payload_json = json.loads(canonical_json(payload))
+            entries = journal.entries
+
+            if len(entries) == baseline_seq:
+                head = entries[-1].hash if entries else "0" * 64
+                if head != baseline_hash:
+                    raise LedgerError("the TrialLedger does not match the prepared baseline hash")
+                reused = [
+                    hypothesis.ref
+                    for hypothesis in batch
+                    if (hypothesis.name, hypothesis.version) in self._registered
+                ]
+                if reused:
+                    raise LedgerError(
+                        "a prepared recovery batch cannot reuse registered identities: "
+                        + ", ".join(reused)
+                    )
+                registered = self.register_batch(batch)
+                if len(registered) != len(batch):
+                    raise LedgerError("the prepared recovery batch was not wholly registered")
+                return journal.entries[-1]
+
+            if len(entries) != baseline_seq + 1:
+                raise LedgerError(
+                    "the TrialLedger has entries beyond the one event allowed by this prepare"
+                )
+
+            entry = entries[baseline_seq]
+            if (
+                entry.seq != baseline_seq + 1
+                or entry.type != "register_batch"
+                or entry.prev_hash != baseline_hash
+                or dict(entry.payload) != payload_json
+            ):
+                raise LedgerError(
+                    "the TrialLedger tail does not exactly match the prepared batch event"
+                )
+            expected_hash = hashlib.sha256(
+                canonical_json(
+                    {
+                        "seq": entry.seq,
+                        "type": entry.type,
+                        "payload": payload_json,
+                        "prev_hash": baseline_hash,
+                    }
+                ).encode("utf-8")
+            ).hexdigest()
+            if entry.hash != expected_hash:
+                raise LedgerError("the prepared batch event hash does not match its envelope")
+            if any(
+                self._registered.get((hypothesis.name, hypothesis.version)) != hypothesis
+                for hypothesis in batch
+            ):
+                raise LedgerError("the replayed TrialLedger state differs from its matching event")
+            return entry
 
     def _replay_batch(self, path: Path, payload: object) -> None:
         """Replay one strictly shaped batch record; any duplicate or invalid member is corruption."""
