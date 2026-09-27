@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **框架整合与逐模块打磨**。截至 `f58e8ec`，已有代码已快进整合到本地 `main`；PR #6 已合并代码 / 内容收口批次，PR #7 为合并后 docs-only 状态同步。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 是当前阻断；Phase 0.5、Phase 2～14 仍须分别验证与验收 |
+| 当前子阶段 | **框架整合与逐模块打磨**。PR #6 已合并代码 / 内容收口批次，PR #7 同步了该次合并状态，PR #8 更新本轮分支清理状态与测试卫生。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 是当前阻断；Phase 0.5、Phase 2～14 仍须分别验证与验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 框架代码已整合并推送至 `main`（`main == origin/main == f58e8ec`）；PR #7 仅同步合并后状态，不含功能代码。Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 框架代码已整合并推送至 `main`；PR #8 为项目状态与测试 fixture 修订，不代表功能或 Phase 验收。Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -291,7 +291,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 > 我现在应该干什么？
 
-1. 当前稳定基线为 `main == origin/main == f58e8ec`，工作区干净。PR #6 已合并模块代码 / 内容收口批次；PR #7 仅同步合并后状态。本轮先归档再清理了 10 个补丁等价本地分支及其 worktree、68 个主线等价临时 worktree、20 个被主线后续实现取代的旧模块 worktree；16 个冗余远端引用也已归档清理。E1、Phase 0.5、活跃会话和独有远端内容均保留；没有把未审阅的整支分支并入主线。
+1. 当前稳定基线为 `main == origin/main`，工作区干净。PR #6 已合并模块代码 / 内容收口批次；PR #7 同步合并后状态；PR #8 记录清理结果并修复测试占位 DSN。本轮先归档再清理了 10 个补丁等价本地分支及其 worktree、68 个主线等价临时 worktree、20 个被主线后续实现取代的旧模块 worktree；16 个冗余远端引用也已归档清理。E1、Phase 0.5、活跃会话和独有远端内容均保留；没有把未审阅的整支分支并入主线。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. Phase 1 的 D3E 已接受、D4 已关闭；E1-CAP-1 是当前阻断，容量探针正在运行，结果与复核仍待完成。Phase 1 未整体验收，未打 tag。
 
