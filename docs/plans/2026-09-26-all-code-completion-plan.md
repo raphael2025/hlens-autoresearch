@@ -14,7 +14,7 @@
 
 - 本计划启动时的主线基线：`10b89e8`（2026-09-27）。PR #6 已并入 Phase 0.5 / 3 / 10 / 11 收口项（合并基线 `4875e92`）；PR #7 同步合并后状态；PR #8 记录分支清理和测试 fixture 修正。当前 `main == origin/main`。全栈 B1～B67 和本批功能均不代表各 Phase 验收。
 - 主线目前不是空骨架。Phase 0.5、Phase 2～14、API / Worker / Web 均有核心模型、Provider / 执行器、持久化或页面实现；Phase 8～14 审计未发现可明确追加的普通代码缺口。后续优先按证据补齐具体缺口，不再新增占位模块。
-- Phase 1 当前状态：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 仍阻断，已有 500k `resume` / `replay` RSS 增长 59.9 / 63.9 MiB 的失败结果（门槛 32 MiB）。只读代码调查发现待核实的主要增长来源是 PyIceberg table metadata 中随提交数增长的 snapshot 列表；normalizer 侧已是固定计数 / 流式遍历。调查记录见 `docs/reviews/2026-09-27-e1-resume-replay-memory-investigation.md`，未重新运行探针，也未找到可安全局部修复。不得并行修改 `infrastructure/canonical/` 或 `infrastructure/revision/`；需先设计并实现有界历史核验，再执行容量验收。
+- Phase 1 当前状态：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 仍阻断。**更正测量归属：** 500k `resume` / `replay` 的 59.9 / 63.9 MiB 跨规模增长来自未合入的 `fix/e1-cap1@a75278e` 候选探针，不是 `main` 结果；探针 M=256、每个 N 单次运行、父进程每 10 ms 采样 `/proc` VmRSS。`main` 没有该 resume/replay probe，且保留 O(N) 位置、时间、返回 ID、收尾列与 archive cache，实际容量尚未测量。不要把候选数值外推到 main；以 main 为整合基线，候选仅逐路径参考。容量根因调查见 `docs/reviews/2026-09-27-e1-resume-replay-memory-investigation.md` 和 `docs/reviews/e1-bounded-history-options.md`。
 - 计划启动时（2026-09-27）的分支盘点快照：41 个本地分支、139 个 worktree；当时仅已合并且无 worktree 的冗余 `hold/adr-0054-0057-at-2.0.0` 已存入 `refs/archive/2026-09-27/` 后删除。其余分支仍由 worktree 检出或含未合并 E1 / P0.5 / Phase 7 / 文档材料；7 个 worktree-agent 由活跃 Claude 进程锁定，3 个检出目录有未提交改动。该数字是历史启动快照，不代表当前数量。
 - 本轮分支清理结果：先归档再移除了 10 个补丁等价本地分支及其 worktree、68 个已在主线等价的 detached agent worktree、20 个已被主线后续实现取代的旧模块 worktree；16 个冗余远端引用也已归档清理。共清理 98 个 worktree；归档 tip 均可从 `refs/archive/2026-09-27/` 恢复。活跃 / 脏 / 锁定工作树、E1 与 Phase 0.5 独有内容、正式决定记录及 5 个独有远端分支均保留；分支审计未发现需要把旧实现整支合入当前主线的候选。
 - 最近一次全量代码门禁见 §10.8 / §10.9 的各恢复点；PR #7 合并后的文档一致性检查为 7 passed。PR #8 合并前的全量检查为 7309 passed、138 skipped、1 failed；失败是 Event CLI 测试 DSN 使用 `secret` 而触发凭据卫生扫描。改为明确的测试占位符后，仓库卫生与 Event CLI 定向检查 9 passed，文档一致性检查 7 passed，Ruff、format、mypy 均通过。阶段验收、真实数据运行、Profile 数值冻结与外部 Uvicorn 安装仍分开处理。
@@ -1044,10 +1044,20 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 ### 10.32 全模块代码缺口复核与补齐顺序（2026-09-27）
 
 - 当前基线为本地 `main@060eadb`（较 `origin/main` 超前 46 个提交）；专用主线 worktree 干净。项目不是空骨架：Phase 0.5、2～6、8～14 与 API / Web 多有完整计算、存储或报告链；B1～B67 的 `CODE_COMPLETE` 仅说明该批已完成，不表示产品功能无缺口或 Phase 已验收。
-- 本次 Codex 子代理只读盘点确认两项高优先级能力缺口：**E1-CAP-1** 的 500k resume / replay RSS 增长仍为 59.9 / 63.9 MiB，超过 32 MiB；主线已有 history / normalizer 候选优化，但 PyIceberg metadata 全量快照物化与 API 返回对象仍计入完整进程工作集，尚无有界内存证明。**P7** 的六类组合 DSL 只有严格 non-runnable typed plan；缺少已批准的逐算子语义、Provider lowering、执行审计持久化，以及计划 / TrialLedger 预登记崩溃原子性。失败轮自动恢复 / 修复还须另定恢复协议，不得猜实现。
+- 本次 Codex 子代理只读盘点确认两项高优先级能力缺口：**E1-CAP-1** 的 59.9 / 63.9 MiB 失败测量来自 `fix/e1-cap1@a75278e`，不是 main；main 的 resume / replay 容量未测，且仍保留 O(N) 对象，完整门槛尚无证明。**P7** 的六类组合 DSL 只有严格 non-runnable typed plan；缺少已批准的逐算子语义、Provider lowering、执行审计持久化，以及计划 / TrialLedger 预登记崩溃原子性。失败轮自动恢复 / 修复由 ADR-0070 保持 fail-stop，未来若要改变须另定恢复协议。
 - 按优先级推进：①保留 E1 32 MiB 全进程门槛，先设计端到端有界读取 / 核验路径，再补对应实现；容量测量留到后续统一验收。②P7 先定义最小一类算子的确定性语义和版本化 lowering，并设计持久计划身份与 TrialLedger 原子登记；其他算子持续 fail closed，任何进入 loop 的改动不得绕过审核、预算或预登记。③D-04 已由 ADR-0072 决定：Phase 4 先交付最小验证门，Phase 8 做稳健性扩展；D-29 已由 ADR-0049 明确 worker 依赖方向；D-30 已由 ADR-0041 的 G0 / G1 解决；相关 Phase 仍待统一验收。④P0.5 具名标签 / 资产审核、Profile 数值冻结、D-LIST / ADR-0051 与真实数据结论属于明确人工 / 数据门，不以代码替代。
 - P8 Retro Audit 页面和报告 writer 已存在；fixture generator、组件页和 live-smoke 注册属于验收覆盖待补，本开发阶段不将其冒充新的计算能力。P11 CLI 也是已有显式入口；其端到端测试留待统一验收。报告类型 DTO 的收窄涉及 API 兼容，应先有 ADR，不作为本轮直接改动。
 - 本阶段目标是先补齐基础逻辑与内容，完成后再由 Raphael 统一验收；本次未新增或运行测试 / build。当前分支审计与 E1 / P7 专项设计并行进行，结果回填本计划后再按单模块分批实现。
+
+### 10.33 六路模块审计、E1 测量归属更正与后续分层（2026-09-27）
+
+- Claude 六路只读审计覆盖 Phase 0.5–14、Apps/API/UI 与 E1；同时 Codex 子代理复核 E1 catalog/history、完整 RSS 路径、架构决策和 Claude 报告中的 LIVE / Wave B 风险。整个审计只读，未运行测试、build、容量 probe，未改代码。
+- E1 数字的准确归属：`fix/e1-cap1@a75278e` 的 `normalizer_memory_probe.py` 在 `M=256`、`N=10k/100k/500k`、每个 N 单次运行、父进程 10 ms 采样 VmRSS 条件下，测得跨规模 `resume=59.9 MiB`、`replay=63.9 MiB`，超过 32 MiB；探针及表格在候选分支，不在 main。main 当前的 resume/replay 尚未测量。候选 probe 可在其代码线上重跑，但因无重复样本、无方差且有约 40 MiB 未归因，不作为 main 的测量或最终根因归属。
+- **D-E1-BASE 已决定：** 以后续本地 main 为代码整合基线，`fix/e1-cap1` 仅作垂直路径参考；禁止整支合并。候选的 `history()` 重复 snapshot ID 查找与 main 的 first-listed 语义不同，移植必须保留 main 的 pinned snapshot、历史拒绝、CAS 和复现语义。先将隔离子进程 VmRSS probe 引入主线、覆盖 main 的归档校验 / replay / resume+commit，再据真实数据拆解 N、M、H；probe 可先实现，但遵守用户“统一验收时再运行”安排。
+- **Wave A（唯一开放 Phase 1）：** ①确认 main 上 probe 协议和输出对象边界；②设计 O(N) normalizer / archive cache / 返回值与 O(H) PyIceberg 元数据路径；③对修改 Iceberg 权威 metadata 加载/提交、snapshot 历史保留或恢复语义的方案先写 Proposed ADR，保持 ADR-0021 / ADR-0028 冻结要求；④再做单模块实现；⑤统一验收时运行结构检查、定向测试和隔离 RSS 矩阵。D-33-CAP 保留为独立容量 follow-up，不混称 E1 已关闭。
+- **跨 Phase 核实结果（排队，不在 Phase 1 直接改）：** 已确认 `apps/worker/journal.py` 缺少 research journal 同等的 flock / stale-writer 检查，可能让两个 writer 产生重复 seq；这是 Phase 11 的真实竞态风险。P0.5 seed 标签 / assets 仍缺具名人工审阅，但写路径已有 reviewer 强制。P6 的失败轮自动修复是 ADR-0070 明确 fail-stop，不是待补 bug；批次预登记冲突预检不会半写，但多次 journal append 遭遇 I/O 故障时可能留下 partial batch，checkpoint 会拒绝继续，不提供自动恢复。
+- **审计误报 / 未证实项：** P3 多标的验证采用全局时间排序和保守 overlap，未发现 pooled timeline 错误；P4 的真实 Dataset→Outcome Decimal 路径已接通，未确认 float 铸造阻断；P12 缺 SemVer 单调递增目前是 ADR-0045 未规定的语义问题，不列为已确认 bug。Claude 报告的 P6 matrix 写入顺序、P9 联合 stationarity、P11/13 live-risk 和 P13 kill-switch 等尚须各自核实，不能直接按报告开工。Phase 7 六算子维持 fail closed；任何启用先完成 D-P7 依赖 ADR 链。
+- 当前唯一进入实现队列的范围是 E1 Phase 1。其他 Phase 的真实缺口排进 backlog，待对应 Phase 开启并按 ADR 排序；验收覆盖缺项集中到统一验收批次。未新增或运行任何测试 / build / probe。
 
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 

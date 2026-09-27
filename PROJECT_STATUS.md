@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **补齐剩余模块基础逻辑，完成后再统一验收**。Raphael 已授权 Codex 统筹分支、代码与 Claude / Cursor；本地 `main` 已吸收 P7 typed-plan、P11 CLI、P12 冲突拒绝与 E1 优化候选。全模块盘点确认项目不是骨架，但 P7 六类组合算子仍不可执行，E1-CAP-1 仍阻断；本轮暂不跑测试 / build，Phase 1 的 D3E 已接受、D4 已关闭，其余 Phase 未验收 |
+| 当前子阶段 | **补齐已批准范围内的基础逻辑，之后统一验收**。Raphael 已授权 Codex 统筹分支、代码与 Claude / Cursor；本地 `main` 已吸收 P7 typed-plan、P11 CLI、P12 冲突拒绝与 E1 局部优化，但未吸收 `fix/e1-cap1` 的 bounded implementation / probe。全模块盘点确认项目不是骨架；P7 六类组合算子仍不可执行，E1-CAP-1 仍阻断；本轮暂不跑测试 / build，Phase 1 的 D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本地 `main` 已快进纳入协调提交 `498250a`，并含 P7 ADR-0071 只读失败轮复核摘要；比 `origin/main` 超前 46 个提交，尚未推送；PR #1～#9 已合入。本轮 P7 / P11 / P12 与 E1 候选有静态检查记录，未跑测试 / build。E1 候选均未证明达到 32 MiB 容量门，PyIceberg metadata 与 API 返回对象仍计入；E1-CAP-1 阻断，其他 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 本地 `main` 已快进纳入协调提交 `498250a`，并含 P7 ADR-0071 只读失败轮复核摘要；比 `origin/main` 超前 46 个提交，尚未推送；PR #1～#9 已合入。**E1 数字来源已更正：**`fix/e1-cap1@a75278e` 的候选探针在 500k `resume` / `replay` 分别测得跨规模 RSS 增长 59.9 / 63.9 MiB（超过 32 MiB）；该实现和探针未合入 `main`，`main` 自身的 resume / replay 容量尚未测量。E1-CAP-1 继续阻断；其他 Phase 未验收；Profile 数值未冻结；当前执行服务仍仅支持模拟交易 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。当前还要补 P7 可执行组合算子并继续处理 E1 容量阻断；逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -45,7 +45,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；研究库规格文档已合入本地 `main`；种子标签 / 资产仍需具名人工审阅。Claude 的 ADR-0055 分支已逐文件比对：可执行能力和测试在本地 `main` 已存在；分支只有 ADR 状态退回 Proposed 和移除缺失目录 fail-closed 检查两处差异，不移植；Claude worktree / 进程仍保留待其结束。**Phase 0.5 未验收** |
-| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；E1-CAP-1 的 500k `resume` / `replay` RSS 增长分别为 59.9 / 63.9 MiB，超过 32 MiB 门槛，仍为 `REVIEW_PENDING`；修复分支未并入，Phase 1 未验收 |
+| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；候选分支 `fix/e1-cap1@a75278e` 的 500k `resume` / `replay` 探针增长分别为 59.9 / 63.9 MiB，超过 32 MiB；该代码线未并入 `main`，`main` 仍未测。E1-CAP-1 阻断，Phase 1 未验收 |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断可序列化 / 带哈希 / 报告页 CODE_COMPLETE / DEBUG_PENDING |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；Phase 4 未验收 |
@@ -134,10 +134,11 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 | ID | 问题 | 决定 | 状态 |
 |---|---|---|---|
+| D-E1-BASE | E1 后续实现以哪条代码线为基线？ | **以当前本地 `main` 为整合基线；`fix/e1-cap1` 仅作按路径择取的代码与容量探针参考，不整支合并。** 候选 `history()` 对重复 snapshot ID 的查找顺序与 `main` 的 first-listed 语义不一致；任何移植都要保留 `main` 的历史、固定 snapshot 与拒绝规则 | 已决定（2026-09-27，Codex 依 Raphael 全权授权）；候选失败记录保留，`main` 容量尚未测 |
 | E1-HIST | PyIceberg metadata、Parser / scan 临时状态和 API 返回对象是否计入 E1-CAP-1？ | **计入完整进程工作集**，既有 32 MiB 门槛与验收条件不变；不因对象来自第三方依赖而排除 | 重申既有容量口径，非架构变更；见 `docs/reviews/e1-bounded-history-options.md`；E1 仍阻断 |
-| E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | Claude 与 Cursor 的只读源码分析未找到可满足方案；这不是对所有实现的证明。保留现有门槛，继续设计并验证候选方案；未批准替换核心技术或改变冻结契约 | 开放；无 Proposed ADR / 实施获批，Phase 1 E1 保持阻断 |
+| E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | 只读源码分析尚未找到可满足完整工作集门槛的安全方案；这不是对所有实现的证明。保留门槛，先对 `main` 建立可复现的分阶段容量诊断，再提出保留 ADR-0021 / ADR-0028 语义的设计；触及权威 metadata 读写或历史保留时先走 ADR | 开放；无 Proposed ADR / 实施获批，Phase 1 E1 保持阻断 |
 
-既有 E1-CAP-1 标准不变：完整进程工作集都计入容量测量，且增长须满足已记录的 N / batch-count 上界。源码调查确认所触达的 PyIceberg metadata 会随表历史 H 增长；目前没有其容量测量或已证明有界的方案，因此不能宣称通过。source proof 与 D1 archive lookup 的查询容器虽已限量，也不代表端到端容量通过。
+既有 E1-CAP-1 标准不变：完整进程工作集都计入容量测量，且增长须满足已记录的 N / batch-count 上界。已记录的 59.9 / 63.9 MiB 是 `fix/e1-cap1` 候选分支数据，不是当前 `main` 的容量结果；候选探针以 10 ms 间隔采样 `/proc` VmRSS、每个 N 仅运行一次，元数据阶段约解释 20 MiB，其余约 40 MiB 未归因。`main` 自身没有 resume / replay 探针，且仍保留 O(N) 的位置、时间列、revision ID、收尾列和 archive cache；因此不得外推候选数值或宣称 `main` 通过。source proof 与 D1 archive lookup 的查询容器虽已限量，也不代表端到端容量通过。
 
 **P11-LOCAL-OPERATOR（Codex 已选择最小本机入口）**
 
@@ -247,7 +248,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 - ⚠️ P7 的 `ContentVerifiedLLM` 可选启用：启用时会核验内容和哈希；未包装 provider 的调用可能仅含不可取回引用，不能视为完整审计
 - ⚠️ P8 新增 `retro_audit` 报告种类尚未进入原有十种报告的 fixture 生成器、页面组件测试和 live-smoke 注册；这些验收辅助清单需在下一轮验证时同步，不能声称已经验证该页面
 - ⚠️ 生命周期证据只保证非空：证据真实性、批准人权限与职责分离属未来授权服务
-- ⚠️ 契约层不再拒绝实盘模式：Phase 13 红线在 Control Plane 落地前只靠人与流程
+- ⚠️ Lifecycle 可记录结构有效的 `ExecutionModeChange(to_mode=LIVE)`，但这不会切换运行时；当前 `ExecutionService` 构造时拒绝 LIVE 且只接收精确类型 `SimulatedVenue`，LIVE ladder 请求 fail closed，未发现应用 wiring、交易所下单接口或凭据。Control Plane 的真实授权人权限校验仍未实现，不能把 LIVE 证据 DTO 当作实盘授权能力或生产实盘支持
 - ⚠️ JSON Schema 在几处弱于运行时（首尾空白、时长符号、跨字段约束）：权威校验必须经过运行时模型
 - ⚠️ 外部是否存在 v1 历史数据证据不足，不宣称迁移已在真实数据上验证
 - ⚠️ PR 工作流已使用但 GitHub Actions CI 尚未配置；本地 warehouse 数据无异地副本（Git 远程只托管代码与文档）
@@ -319,7 +320,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 1. 本地 `main` 已快进吸收协调分支 `498250a`、P7 只读复核摘要和状态文档同步，比 `origin/main` 超前 46 个提交、尚未推送；整合工作区完成提交。截至本次清理后有 11 个本地分支、17 个 worktree；冗余候选已归档，E1 分支与活动 Claude worktree 保留。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. E1-CAP-1 500k resume / replay 仍为 59.9 / 63.9 MiB，超过 32 MiB；本轮没有重跑容量探针。Phase 1 未整体验收、未打 tag。
+3. `fix/e1-cap1@a75278e` 候选分支的 500k resume / replay 跨规模 RSS 增长分别为 59.9 / 63.9 MiB，超过 32 MiB；该 probe 不在 main，main 自身尚未测。先以 main 为基线补齐可复现分阶段 probe 和有界路径设计；Phase 1 未整体验收、未打 tag。
 
 ## 12. 给 Claude Code 的下一步
 
