@@ -8,6 +8,8 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 `ingest` 是可插拔的**轮次数据源**：合成市场（`IngestStage`）或经验证的 Research Dataset manifest（`DatasetIngestStage`）；
 其后各阶段只经 `segment.RoundData` 协议读本轮数据，两种来源共用同一组合（`compose.compose_loop`）。
 
+**批次中途失败**（[ADR-0070](../../docs/adr/0070-p7-partial-experiment-fail-stop.md)）：如果最后持久化 round 的 `experiment` stage 为 `FAILED`，worker 暴露 `recovery_required` 并阻止同一 audit 自动续跑，避免重复已记账的 trial。该边界不补齐缺失 outcome；须人工核查 audit、TrialLedger 和生命周期转移。完整 per-trial 自动恢复与人工修复工具尚未实现。
+
 **控制台展示**：`research/reports/loop.py` 可将循环轮次写为 `research_loop_round` 报告；只读 API 提供这些报告，Web 的 Research Loop 页面读取并展示轮次状态、阶段问题、预算用量与累计用量图表。页面是报告浏览器，不会触发或控制循环运行（见 [apps/web/README.md](../../apps/web/README.md) 与 [apps/api/README.md](../../apps/api/README.md)）。
 
 | 文件 | 内容 |

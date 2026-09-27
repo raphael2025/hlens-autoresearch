@@ -39,7 +39,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any, Final
 
-from core.domain.base import NAME_PATTERN, SEMVER_PATTERN, content_hash
+from core.domain.base import NAME_PATTERN, SEMVER_PATTERN, FrozenMapping, content_hash
 from core.domain.research import Hypothesis, HypothesisOrigin
 from core.domain.specs import StrategySpec
 from research.hypotheses.ledger import LedgerError, TrialLedger
@@ -233,7 +233,7 @@ class BatchGrid:
         for point in self.points:
             if not isinstance(point, Mapping):
                 raise BatchRefused("every parameter point is a mapping of name to value")
-            points.append(dict(sorted(point.items())))
+            points.append(FrozenMapping(dict(sorted(point.items()))))
         if not points:
             raise BatchRefused("a batch declares at least one parameter point")
         for what, keys in (

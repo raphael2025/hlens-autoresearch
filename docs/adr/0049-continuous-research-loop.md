@@ -30,7 +30,7 @@ ADR-0044 已交付事件总线与幂等任务。边界约束：`apps/` 不得 im
 3. **预算先于阶段**。每个阶段先声明用量（trial 数、LLM 成本单位、算力秒），调度器在运行前对照
    `LoopBudget`（每轮 trial 上限 + 全生命周期 trial / LLM / 算力上限）检查：放不下 → 阶段 `REFUSED_BUDGET`、
    本轮 `BUDGET_EXHAUSTED`、循环停机；实际用量超过声明 → 照实计费、`BUDGET_OVERRUN`、停机（fail closed）；
-   阶段抛错 → 按声明计费、本轮 `FAILED`（失败是研究数据），下一轮可继续。`LoopBudget` 不可变且无默认值，
+   阶段抛错 → 按声明计费、本轮 `FAILED`（失败是研究数据），一般阶段下一轮可继续；若 `experiment` stage 失败，由 [ADR-0070](0070-p7-partial-experiment-fail-stop.md) 要求人工审查并阻止续跑。`LoopBudget` 不可变且无默认值，
    调度器没有扩大预算的途径；换预算 = 新 `LoopBudget`，其哈希写入每条记录。数字全部来自配置（测试用 TEST ONLY 数值）。
 4. **生命周期护栏（结构性）**。阶段拿不到任何生命周期对象，只能经 `RoundContext.open_subject / advance`
    走 `LifecycleGuard`：只移动自己从 IDEA 打开的对象；从不设置 `approved_by`；目标只能是

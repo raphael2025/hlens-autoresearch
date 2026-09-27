@@ -55,6 +55,7 @@
 > - 持久复核修复（ADR-0049 实施说明 durable review fixes，2026-09-26）：`ResearchLoop` 续接审计时，任何一条记录的 `budget_hash`
 >   与本循环的 `LoopBudget` 不同即拒绝（调高、调低都拒绝）——提高预算是人的决定，须新审计 / 新 `loop_id`。新增可选回调
 >   `after_record`：在审计记录一轮**之后**以该轮 `LoopRecord` 调用（研究侧组合根用它前移目录外的锚点）；回调失败 → 该轮已记录、循环 `stopped`。
+> - 部分试验失败隔离（[ADR-0070](../../docs/adr/0070-p7-partial-experiment-fail-stop.md)）：若最后记录的 `experiment` stage 为 `FAILED`，loop 从该 hash-bound record 派生 `recovery_required`，当前进程不再提交新 round，重开同一 audit 也不续跑。该轮 ledger / lifecycle side effects 需人工检查；不会自动重跑，也不提供 outcome 自动恢复或人工修复 CLI。`LoopRecord` 字节和哈希不变。
 > - 审计记录契约（[ADR-0050](../../docs/adr/0050-loop-audit-record-contract.md)）：`LoopRecord` 与两类日志行的载荷是
 >   `core/contracts/loop_audit.py` 的版本化契约（`LoopRoundRecord` / `LoopRoundStarted` / `LoopRoundRecorded` 等），描述本目录
 >   写出的既有字节（键与 `record_hash` 都不变；阶段顺序常量与 `check_stage_order` 也在该模块，这里原样再导出）。

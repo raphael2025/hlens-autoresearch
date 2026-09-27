@@ -19,9 +19,12 @@ its declared usage (``estimate``) and consults the ``LoopBudget``:
   ``BUDGET_OVERRUN``, the stage and round records state the overrun amount (actual minus declared,
   per dimension) and the loop halts (fail closed on an under-declaring stage);
 - the stage raises -> the stage is ``FAILED``, the round is recorded as ``FAILED`` (a failure is
-  research data) and the next round may run. A stage that raises ``StageFailed`` reports the usage
-  it actually spent before failing, which is charged instead of the estimate (an overrun there halts
-  the loop like any other); any other exception is charged at the estimate;
+  research data). Most failed stages allow the next round; a failed ``experiment`` stage requires
+  human review because earlier trials may already have changed lifecycle and ledger state before
+  the batch failed. The same audit never retries or advances beyond that round;
+  ``StageFailed`` reports the usage it actually spent before failing, which is charged instead of
+  the estimate (an overrun there halts the loop like any other); any other exception is charged at
+  the estimate;
 - the stage asks for a lifecycle transition the automation may not make -> ``GUARD_VIOLATION`` and
   the loop halts.
 
@@ -579,6 +582,19 @@ def _transition_payload(transition: LifecycleTransition) -> dict[str, Any]:
     }
 
 
+def _experiment_recovery_reason(record: LoopRecord) -> str | None:
+    """A failed experiment batch may have durable side effects without durable outcomes."""
+    if any(
+        stage.name == "experiment" and stage.status is StageStatus.FAILED for stage in record.stages
+    ):
+        return (
+            f"round {record.round_index} has a failed experiment stage; its ledger/lifecycle may "
+            "already contain partial trial side effects, so a human must review it before any "
+            "new loop is started"
+        )
+    return None
+
+
 @dataclass(frozen=True, slots=True)
 class LoopRecord:
     """The audit record of one round (hash-chained through ``previous_hash``)."""
@@ -986,6 +1002,9 @@ class ResearchLoop:
         self._metrics: list[RoundMetrics] = []
         #: Why the loop stopped outside a halting round (interrupted round, audit write failure).
         self._stopped: str | None = None
+        #: A recorded experiment failure may leave registrations / lifecycle transitions without
+        #: settled outcomes; no later round or automatic replay is safe until a human reviews it.
+        self._recovery_required: str | None = None
         self._total = StageUsage()
         self._halted: RoundStatus | None = None
         self._restore()
@@ -1030,6 +1049,11 @@ class ResearchLoop:
         return self._stopped
 
     @property
+    def recovery_required(self) -> str | None:
+        """Human-review reason when an experiment batch failed after possible partial effects."""
+        return self._recovery_required
+
+    @property
     def metrics(self) -> tuple[RoundMetrics, ...]:
         """Measured stage time of the rounds this process ran (unhashed side channel)."""
         return tuple(self._metrics)
@@ -1052,7 +1076,7 @@ class ResearchLoop:
             raise ValueError("rounds must be positive")
         start = len(self._audit.records)
         for index in range(start, start + rounds):
-            if self._halted is not None:
+            if self._halted is not None or self._recovery_required is not None:
                 break
             self.submit_round(index)
             for outcome in self.run_pending():
@@ -1065,6 +1089,8 @@ class ResearchLoop:
     def _check_can_run(self) -> None:
         if self._stopped is not None:
             raise LoopHalted(f"the loop stopped: {self._stopped}")
+        if self._recovery_required is not None:
+            raise LoopHalted(f"the loop requires human review: {self._recovery_required}")
         if self._halted is not None:
             raise LoopHalted(f"the loop halted ({self._halted}); reconfigure it to continue")
 
@@ -1117,6 +1143,7 @@ class ResearchLoop:
         self._total = total
         last = records[-1].status
         self._halted = last if last in HALTING else None
+        self._recovery_required = _experiment_recovery_reason(records[-1])
 
     def _settle_recorded_jobs(self, consumer: str) -> None:
         """Acknowledge this loop's pending round jobs whose round the audit already recorded (see
@@ -1166,6 +1193,7 @@ class ResearchLoop:
             if self._checkpoint is not None:
                 self._checkpoint(record)  # the composition's state, before the audit names it
             self._audit.append(record)
+            self._recovery_required = _experiment_recovery_reason(record)
         except Exception as exc:
             # the round may have spent budget and moved subjects without a durable record
             self._stopped = f"round {round_index} could not be recorded ({_error(exc)})"

@@ -32,6 +32,8 @@
 参数未声明搜索空间、值不在搜索空间内（类型也须一致）、浮点值、文本值读回后不是它自己、空或重复的因子。`preregister_batch(batch, ledger)`
 全有或全无地把整批预登记进 `TrialLedger`，族 trial 数因此覆盖整个网格。算子只是数据（主张、方向、固定列表中的种类），生成物永不作为代码执行。
 
+网格中的参数点在构造时会复制并递归冻结。循环以已记录的 `TrialOutcome` 判断单元是否完成，而不是把 TrialLedger 的预登记状态误当作执行完成；Hypothesis 阶段失败后，已预登记但尚无结果的单元仍会在后续轮次按原身份调度，已产生结果的单元不会重复运行。
+
 ## 知识检索来源（`generator.py`，Phase 7 补全，2026-09-26）
 
 `KnowledgeSource(provider, query).search(family_id)` 调用 `KnowledgeProvider.search(KnowledgeQuery)`，重新校验结果并拒绝其他查询 / 其他 provider 的结果，

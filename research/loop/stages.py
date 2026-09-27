@@ -412,10 +412,12 @@ class HypothesisStage:
     ``batch`` (optional; ``None`` changes nothing): a declared ``HypothesisBatch`` of this stage's
     family. Every cell must be runnable here — ``trial_point`` reads it, its strategy is in the
     loop's catalog with the grid's exact spec, and the point is a requestable one — or the stage
-    refuses to be constructed (never an ERRORED trial later). The first round the stage runs, the
-    **whole** batch is pre-registered in the ``TrialLedger`` (``preregister_batch``, before any
-    trial of the round runs; the round's trial budget is charged for every cell) and every cell is
-    this round's trial; the summary's ``batch`` key names the grid and the reviewed allowlist.
+    refuses to be constructed (never an ERRORED trial later). The **whole** batch is
+    pre-registered in the ``TrialLedger`` before any cell runs; the round's trial budget is
+    charged for every pending cell. A pending cell is one without a recorded ``TrialOutcome``. If
+    a stage fails after registration but before the experiment stage records outcomes, a later
+    round can retry those same registered cells idempotently. Completed cells are not run again.
+    The summary's ``batch`` key names the grid and the reviewed allowlist.
 
     ``knowledge_source`` (optional; ``None`` changes nothing): a declared ``KnowledgeProvider`` +
     ``KnowledgeQuery`` searched once per round (``KnowledgeSource.search``). Its items become
@@ -502,8 +504,8 @@ class HypothesisStage:
     def _batch_pending(self) -> tuple[Hypothesis, ...]:
         if self._batch is None:
             return ()
-        ledger = self._memory.ledger
-        return tuple(h for h in self._batch.hypotheses if not ledger.is_registered(h))
+        completed = {str(outcome.hypothesis.ref) for outcome in self._memory.trials}
+        return tuple(h for h in self._batch.hypotheses if str(h.ref) not in completed)
 
     def _plan(
         self, ctx: RoundContext
@@ -532,11 +534,12 @@ class HypothesisStage:
     def run(self, ctx: RoundContext) -> StageResult:
         fresh, drafts, again, batch = self._plan(ctx)
         batch_summary: dict[str, Any] = {}
-        batched: tuple[Hypothesis, ...] = ()
+        batched = batch
+        pre_registered: tuple[Hypothesis, ...] = ()
         if self._batch is not None:  # the whole batch, before anything else of the round
-            batched = preregister_batch(self._batch, self._memory.ledger)
-            if batched != batch:
-                raise ValueError("the batch changed between the plan and its pre-registration")
+            pre_registered = preregister_batch(self._batch, self._memory.ledger)
+            if any(not self._memory.ledger.is_registered(hypothesis) for hypothesis in batched):
+                raise ValueError("a pending batch cell was not pre-registered")
             payload = self._batch.payload()
             batch_summary = {
                 "batch": {
@@ -546,7 +549,7 @@ class HypothesisStage:
                     "allowlist_hash": payload["allowlist_hash"],
                     "reviewer": self._batch.allowlist.reviewer,
                     "declared_trials": len(self._batch.hypotheses),
-                    "pre_registered": [str(h.ref) for h in batched],
+                    "pre_registered": [str(h.ref) for h in pre_registered],
                 }
             }
         llm_summary: dict[str, Any] | None = None
