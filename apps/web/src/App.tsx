@@ -43,6 +43,9 @@ const PaperDeviations = lazy(() =>
 const DegradationChecks = lazy(() =>
   import("./pages/DegradationChecks").then((m) => ({ default: m.DegradationChecks })),
 );
+const RetroAudits = lazy(() =>
+  import("./pages/RetroAudits").then((m) => ({ default: m.RetroAudits })),
+);
 
 const TABS = [
   { key: "dashboard", label: "Dashboard", render: () => <Dashboard /> },
@@ -56,6 +59,7 @@ const TABS = [
   { key: "state-diagnostics", label: "State Diagnostics", render: () => <StateDiagnostics /> },
   { key: "event-statistics", label: "Event Statistics", render: () => <EventStatistics /> },
   { key: "degradation-check", label: "Degradation Checks", render: () => <DegradationChecks /> },
+  { key: "retro-audit", label: "Retro Audits", render: () => <RetroAudits /> },
   { key: "lifecycle", label: "Lifecycle", render: () => <Lifecycle /> },
   { key: "jobs", label: "Jobs", render: () => <Jobs /> },
   { key: "knowledge", label: "Knowledge Search", render: () => <KnowledgeSearch /> },

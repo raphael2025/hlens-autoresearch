@@ -82,7 +82,7 @@ _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
 class ReportKind(StrEnum):
     """The report kinds the console serves ((a)-(d), Phase 9 gate calibration evidence, and the
     Phase 10 router stop / paper deviation, Phase 2 state diagnostics, Phase 3 event statistics,
-    Phase 11 degradation checks)."""
+    Phase 11 degradation checks, and Phase 8 retro audits)."""
 
     VALIDATION_REPORT = "validation_report"
     RESEARCH_LOOP_ROUND = "research_loop_round"
@@ -94,6 +94,7 @@ class ReportKind(StrEnum):
     EVENT_STATISTICS = "event_statistics"
     DEGRADATION_CHECK = "degradation_check"
     PAPER_DEVIATION = "paper_deviation"
+    RETRO_AUDIT = "retro_audit"
 
 
 class InvalidReportId(ValueError):
@@ -278,6 +279,7 @@ _CHECKS: Final[dict[ReportKind, Callable[[Path, dict[str, Any]], None]]] = {
     ReportKind.GATE_CALIBRATION: _self_hashed("report_hash"),
     ReportKind.DEGRADATION_CHECK: _self_hashed("check_hash"),
     ReportKind.PAPER_DEVIATION: _self_hashed("deviation_hash"),
+    ReportKind.RETRO_AUDIT: _self_hashed("report_hash"),
 }
 
 
