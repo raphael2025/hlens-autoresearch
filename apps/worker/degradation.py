@@ -5,9 +5,10 @@ the validation that admitted it and publishes a degradation **event** on the bus
 by more than its allowed decline. It never changes lifecycle state: ``ACTIVE -> DEGRADED`` is a
 Control Plane transition that cites the event as evidence (ADR-0006).
 
-Thresholds come only from ``ValidationProfile.lifecycle.degradation_thresholds`` (or an explicit
-mapping of the same shape); nothing here has a default number. Key convention (like the gate
-comparators in ``research/validation/gates.py``):
+Thresholds come only from ``ValidationProfile.lifecycle.degradation_thresholds_exact`` when that
+exact sibling is present, otherwise from the legacy ``degradation_thresholds`` field (or an
+explicit mapping of the same shape); nothing here has a default number. Key convention (like the
+gate comparators in ``research/validation/gates.py``):
 
 - ``"<metric>"`` or ``"<metric>[>=]"``: higher is better; degraded when ``baseline - recent``
   exceeds the threshold;
@@ -125,6 +126,13 @@ class DegradationMonitor:
     def from_profile(
         cls, profile: ValidationProfile, *, bus: EventBusAdapter | None = None
     ) -> DegradationMonitor:
+        exact = profile.lifecycle.degradation_thresholds_exact
+        if exact is not None:
+            return cls(
+                exact,
+                source=f"{profile.ref}#lifecycle.degradation_thresholds_exact",
+                bus=bus,
+            )
         return cls(
             dict(profile.lifecycle.degradation_thresholds),
             source=f"{profile.ref}#lifecycle.degradation_thresholds",

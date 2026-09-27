@@ -61,7 +61,9 @@
 >   `LoopAuditLog` 在 `begin_round` / `append`（持久或内存）写入前、以及重放每一行时（先核对存储的 `record_hash`）按契约校验，
 >   不合格或不能逐字节往返即拒绝：写入被拒 → 该轮不记录、循环 `stopped`；重放被拒 → `LoopAuditCorrupted`。
 >   阶段摘要因此必须是键为字符串的 JSON 对象。
-> - `degradation.py`：`DegradationMonitor` 用 `ValidationProfile.lifecycle.degradation_thresholds` 对比近期指标与验证基线，
+> - `degradation.py`：`DegradationMonitor` 优先使用
+>   `ValidationProfile.lifecycle.degradation_thresholds_exact`（精确 Decimal 阈值）；旧 Profile 未提供该字段时回退到
+>   `degradation_thresholds`，对比近期指标与验证基线。阈值来源会记录实际使用的字段，
 >   越限发布 `research_loop.degradation` 事件（不做生命周期转移）。所有指标都没有近期值时，检查为 `insufficient_evidence`
 >   （`DegradationCheck.status`，并写入 `degradation_check` 报告），绝不报告为"未退化"；`observe` 此时在独立主题
 >   `research_loop.degradation.insufficient_evidence` 发布恰好一条"监控无法判定"告警（D-DEG-IE：payload `subject` / `window` /
