@@ -9,10 +9,10 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；本地 `main` 已快进吸收协调分支的 P7 typed-plan 非运行解析器、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝逻辑与 E1 history / normalizer / proof-scan 候选。ADR-0068 已接受，六类算子仍不可执行。静态检查已做，未跑测试；Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
+| 当前子阶段 | **补齐剩余模块基础逻辑，完成后再统一验收**。Raphael 已授权 Codex 统筹分支、代码与 Claude / Cursor；本地 `main` 已吸收 P7 typed-plan、P11 CLI、P12 冲突拒绝与 E1 优化候选。全模块盘点确认项目不是骨架，但 P7 六类组合算子仍不可执行，E1-CAP-1 仍阻断；本轮暂不跑测试 / build，Phase 1 的 D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
 | 总体状态 | 🔄 本地 `main` 已快进纳入协调提交 `498250a`，并含 P7 ADR-0071 只读失败轮复核摘要；比 `origin/main` 超前 46 个提交，尚未推送；PR #1～#9 已合入。本轮 P7 / P11 / P12 与 E1 候选有静态检查记录，未跑测试 / build。E1 候选均未证明达到 32 MiB 容量门，PyIceberg metadata 与 API 返回对象仍计入；E1-CAP-1 阻断，其他 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。当前还要补 P7 可执行组合算子并继续处理 E1 容量阻断；逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -210,6 +210,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 本轮已按 Raphael 对模块开发与技术决策的授权接受 ADR-0067（P11 显式劣化检查 evidence）、ADR-0068（P7 typed-plan 闭世界机制，不启用算子）、ADR-0069（P12 combine fail closed）与 ADR-0070（P7 部分执行失败后 fail stop）；相关已审阅实现已于 2026-09-27 快进进入本地 `main`，尚未统一验收。ADR-0070 防止同一 audit 自动继续或重复执行，但不提供 outcome 自动恢复或人工修复工具。P7 六类 DSL 的具体语义与 Provider lowering 仍保持 fail closed；typed-plan audit 存储及其与 TrialLedger 的崩溃原子性必须在首个算子启用前解决。
 
+状态登记对账：D-04 已由 [ADR-0072](docs/adr/0072-validation-phase-sequencing.md) 决定；D-29 已由 [ADR-0049](docs/adr/0049-continuous-research-loop.md) 决定 worker / research 依赖方向；D-30 已由 [ADR-0041](docs/adr/0041-validation-robustness.md) 的 G0 / G1 绑定与 horizon 门解决，Phase 4 仍待统一验收。
+
 Phase 3 Event 表操作入口的边界已由 [ADR-0066](docs/adr/0066-explicit-event-table-operator.md) 决定：单独显式命令、默认无副作用、不接入 Phase 1 或自动 provisioning；真实 catalog 建表仍需单独授权。
 
 **C3 发现的决定（已决定，已实施）**
@@ -234,8 +236,8 @@ Phase 3 Event 表操作入口的边界已由 [ADR-0066](docs/adr/0066-explicit-e
 | D-26 | 三类语义身份（Profile 选择键、`Ref` 目标、`GitCodeRevision` 代码修订）排除信封版本；全局相等与内容哈希不变 | [0018](docs/adr/0018-contract-value-semantic-identities.md)，Accepted，已实施（C2c），C3 复验通过 |
 | D-27 | 每条生命周期转移至少一项非空证据；不做自报职责分离 | [0019](docs/adr/0019-lifecycle-evidence-minimum.md)，Accepted，已实施（C2d），C3 复验通过 |
 
-**不阻塞当前阶段（NOT BLOCKING）：** D-30（Phase 4 前）· D-29（首次实现 worker / 实验运行前，最迟 Phase 5 前）·
-D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
+**不阻塞当前阶段（NOT BLOCKING）：** D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）·
+H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 ## 7. 当前风险
 
@@ -287,6 +289,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | 全模块差额复核并排定代码补齐顺序 | 项目不是骨架；P7 可执行算子与 E1 有界内存仍是主要逻辑 / 阻断缺口，其他多为已有代码待后续验收或人工数据审核 |
 | 2026-09-27 | 接受并实现 ADR-0071：P7 failed round 只读复核摘要 | Claude / Cursor / Codex 子代理独立只读审查；纯内存投影 audit、checkpoint 与 ledger journal；Ruff / format / mypy 通过，未跑测试 / build，不代表 Phase 验收 |
 | 2026-09-27 | 主线状态文档同步与冗余协调分支归档 | 更新状态 / 记忆 / 计划；branch/worktree 清理至 11 / 17；只改本地引用，不推送远端 |
 | 2026-09-27 | 同 tip 协调分支已归档清理 | 先存入 `refs/archive/2026-09-27/branches/codex/module-completion-coordination-2026-09-27`，再移除冗余 worktree / branch；本地快照降至 11 个分支、17 个 worktree |

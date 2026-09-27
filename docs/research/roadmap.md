@@ -32,7 +32,7 @@ flowchart TD
     P13 --> P14[P14 Future Technology Migration]
 ```
 
-> ⚠️ Phase 8（Validation & Robustness）排在 Phase 6/7 之后，但 Phase 6/7 已在做实验。本 Roadmap 的处理方式：**最小验证门（Gate G0–G3 + Sealed OOS）在 Phase 4 结束前必须可用**，Phase 8 是对稳健性的扩展与加固。此解释需用户确认（待决事项 **D-04**）。
+> Phase 8（Validation & Robustness）排在 Phase 6/7 之后，但 Phase 6/7 已在做实验。按 [ADR-0072](../adr/0072-validation-phase-sequencing.md)（D-04 已决定），**最小验证门（Gate G0–G3 + Sealed OOS）在 Phase 4 结束前必须可用**；Phase 8 交付稳健性扩展与加固。该顺序不豁免 Phase 5～7 的最小验证门或人工生命周期审批。
 
 ---
 

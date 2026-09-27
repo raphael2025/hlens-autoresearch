@@ -1041,6 +1041,14 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 证据只包括记录 payload、匹配 checkpoint journal entry、原始 ledger journal 区间和固定缺口。未持久化的逐 trial outcomes、精确失败序号、完整 traceback、audit envelope hash 与外部 provider 状态明确标为缺失；不推断、不修复、不重试。
 - 实现新增 `research/loop/recovery_review.py` 与该模块 README 说明；不改 worker / durable / schema / API，不新增或运行测试 / build，不代表 Phase 7 / 11 验收。静态检查原样结果：`uv run --offline ruff check research/loop/recovery_review.py` → `All checks passed!`；`uv run --offline ruff format --check research/loop/recovery_review.py` → `1 file already formatted`；`uv run --offline mypy research/loop/recovery_review.py` → `Success: no issues found in 1 source file`；`git diff --check` → exit 0。Cursor 与 Codex 子代理只读审查未发现阻断性实现缺陷；Cursor 提出的 DTO 根对象类型校验已补齐。
 
+### 10.32 全模块代码缺口复核与补齐顺序（2026-09-27）
+
+- 当前基线为本地 `main@060eadb`（较 `origin/main` 超前 46 个提交）；专用主线 worktree 干净。项目不是空骨架：Phase 0.5、2～6、8～14 与 API / Web 多有完整计算、存储或报告链；B1～B67 的 `CODE_COMPLETE` 仅说明该批已完成，不表示产品功能无缺口或 Phase 已验收。
+- 本次 Codex 子代理只读盘点确认两项高优先级能力缺口：**E1-CAP-1** 的 500k resume / replay RSS 增长仍为 59.9 / 63.9 MiB，超过 32 MiB；主线已有 history / normalizer 候选优化，但 PyIceberg metadata 全量快照物化与 API 返回对象仍计入完整进程工作集，尚无有界内存证明。**P7** 的六类组合 DSL 只有严格 non-runnable typed plan；缺少已批准的逐算子语义、Provider lowering、执行审计持久化，以及计划 / TrialLedger 预登记崩溃原子性。失败轮自动恢复 / 修复还须另定恢复协议，不得猜实现。
+- 按优先级推进：①保留 E1 32 MiB 全进程门槛，先设计端到端有界读取 / 核验路径，再补对应实现；容量测量留到后续统一验收。②P7 先定义最小一类算子的确定性语义和版本化 lowering，并设计持久计划身份与 TrialLedger 原子登记；其他算子持续 fail closed，任何进入 loop 的改动不得绕过审核、预算或预登记。③D-04 已由 ADR-0072 决定：Phase 4 先交付最小验证门，Phase 8 做稳健性扩展；D-29 已由 ADR-0049 明确 worker 依赖方向；D-30 已由 ADR-0041 的 G0 / G1 解决；相关 Phase 仍待统一验收。④P0.5 具名标签 / 资产审核、Profile 数值冻结、D-LIST / ADR-0051 与真实数据结论属于明确人工 / 数据门，不以代码替代。
+- P8 Retro Audit 页面和报告 writer 已存在；fixture generator、组件页和 live-smoke 注册属于验收覆盖待补，本开发阶段不将其冒充新的计算能力。P11 CLI 也是已有显式入口；其端到端测试留待统一验收。报告类型 DTO 的收窄涉及 API 兼容，应先有 ADR，不作为本轮直接改动。
+- 本阶段目标是先补齐基础逻辑与内容，完成后再由 Raphael 统一验收；本次未新增或运行测试 / build。当前分支审计与 E1 / P7 专项设计并行进行，结果回填本计划后再按单模块分批实现。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。

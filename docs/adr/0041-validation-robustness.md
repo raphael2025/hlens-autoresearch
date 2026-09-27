@@ -305,4 +305,10 @@ FRAMEWORK_IMPLEMENTED / NOT_VALIDATED；Profile 数值无变化，本说明不�
 2. **测试**：`tests/research/validation/test_impact_exact_comparison.py`（相等的 `float` / `Decimal` / `int` 组合不判不一致且按模型值估算；
    真实差异与 `float` 精度之外的差异判 INCONCLUSIVE；非数值拒绝）；`tests/research/strategies/test_backtest_validation.py`
    `test_an_equal_float_param_and_decimal_model_coefficient_agree`（显式 `0.1` 与模型 `Decimal("0.1")` / `Decimal("0.10")` 经完整验证器
-   不产生冲突，输入中保留模型的 `Decimal`）。原有冲突测试（`0.5` 对 `0.1`）不变。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+不产生冲突，输入中保留模型的 `Decimal`）。原有冲突测试（`0.5` 对 `0.1`）不变。状态仍为 FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
+
+## D-30 决议：embargo 与 Outcome horizon 的校验边界（2026-09-27）
+
+Codex 依 Raphael 对项目技术决策的授权确认现有验证流水线已落实 D-30，无需新增跨模块 resolver：每次验证绑定单一 `OutcomeLabelSpec`；G0 将其 Outcome ref、spec hash 与 `OutcomeTable` / ExperimentRun 绑定核对；其后必经 G1 比较 `ValidationProfile.data_split.embargo` 与该 label spec 的精确 `horizon`，不足时产生失败门并停止后续统计。适用对象就是该实验实际使用的 Outcome，而非一个无界全局 Outcome 清单。
+
+未来若单次实验允许绑定多个 Outcome，则必须先定义如何确定“最长 horizon”并更新本决议；当前单 Outcome 复现契约不变。D-30 因此关闭。该状态对账不表示 Phase 4 已验收或 Profile 数值已校准。
