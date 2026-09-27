@@ -30,7 +30,7 @@
 
 `TrialLedger.recover_register_batch(hypotheses, baseline_seq=..., baseline_hash=...)` 是纯 ledger 侧精确恢复入口。它要求 durable journal 和全新 Hypothesis identities：journal 仍处于 PREPARE baseline 时只追加一个普通 `register_batch` event；若恰好已有紧邻 baseline 的一个完全匹配 event，则返回该 event，不重复计数。身份重用、额外 / 乱序 / 内容不同的尾记录、非持久 ledger、stale journal 或 journal 损坏均拒绝。此方法不自行写 plan COMMIT / memory checkpoint、不修复不完整 JSONL，也不对 loop failed / interrupted round 续跑。普通 `register_batch` 的 exact duplicate 依旧幂等且不增加 trial，不能当作新 attempt。
 
-此基础实现不使任一 P7 operator runnable。ADR-0073 的 loop lock / round-start 校验、recovery 编排、memory `STATE_VERSION=4` checkpoint 与 external anchor 接线，以及 v3 / v4 opener 兼容，均在本提交范围之外，需后续独立实现和验收。
+此基础实现不使任一 P7 operator runnable。ADR-0073 的 loop lock / round-start 校验、recovery 编排、memory v4 checkpoint 与 external anchor 接线已实现；本提交补充 ADR-0074 operator-only v5 身份绑定并保留 v3 / v4 opener 分支。当前没有 operator 调用路径；v5 只建立 durable identity 基础，不接配置 parser、Provider registry 或 CLI，仍需后续实现和验收。
 
 `ledger.py` 的 `register_reevaluation(hypothesis, attempt)`：已登记假设的再次评估（例如循环在增长的累计研究数据上重新评估 INCONCLUSIVE 假设）作为**单独的 trial** 预登记并计入族 trial 数（`trials` / `trial_index` / `trial_log`；ADR-0049 accumulated validation window 实施说明）。
 

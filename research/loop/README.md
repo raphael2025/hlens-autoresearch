@@ -67,9 +67,9 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 | 文件 | 内容 |
 |---|---|
 | `audit.jsonl` | `LoopAuditLog`：每轮 started / recorded |
-| `memory.jsonl` | 头行 `loop_state_opened`（配置指纹）+ 每个已记录轮次一条 `round_memory` 检查点 + 每次轮间人工审批一条 `between_rounds` 检查点；v4 还可记录 `plan_admission` 检查点 |
+| `memory.jsonl` | 头行 `loop_state_opened`（配置指纹）+ 每个已记录轮次一条 `round_memory` 检查点 + 每次轮间人工审批一条 `between_rounds` 检查点；v4 / v5 还可记录 `plan_admission` 检查点 |
 | `trial_ledger.jsonl` / `sealed_oos.jsonl` / `lineage.jsonl` / `reviews.jsonl` | TrialLedger、开封账本、谱系、审阅队列（均为哈希链日志） |
-| `plan_admission.jsonl` | v4 必需；首行固定 header，后续只允许 PREPARE / COMMIT，并与 trial ledger、memory checkpoint、anchor 交叉核对 |
+| `plan_admission.jsonl` | v4 / v5 必需；首行固定绑定对应 state version 的 header，后续只允许 PREPARE / COMMIT，并与 trial ledger、memory checkpoint、anchor 交叉核对 |
 | `failures.jsonl` | FailureRegistry（只追加、fsync，无链） |
 
 - **检查点**：`ResearchLoop(checkpoint=...)` 在审计记录一轮之前写入该轮检查点：`record_hash`、其余每个文件的位置（日志：行数 + 链头；
@@ -85,7 +85,8 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 - **尾部截断**：单个文件删去整行尾部仍是合法的短链，但其余文件记录了它的位置（或审计与检查点不再一一对应），因此被跨文件校验发现。
 - **预算绑定目录**（ADR-0049 实施说明 durable review fixes，2026-09-26）：配置指纹包含 `LoopBudget` 与完整的 `OosUnsealBudget`
   （`max_unsealings`、获准族及批准人；TEST ONLY 的 `ephemeral_unseal_for_tests` 仅在为真时出现）以及精确节奏（`cadence_microseconds`）；用任何不同的预算（更大、更小、多一个获准族、换批准人）重新打开都拒绝，
-  消息写明哪个预算不同。**提高预算是人的决定：用新的 `state_dir` 或新的 `loop_id`。** state v3 保留原 checkpoint 形状和旧 loop 行为；新目录采用 v4。v4 的 plan journal header 精确绑定 schema `1.0.0`、loop id 与 `state_version: 4`。v3 不自动迁移，且不允许 typed-plan admission。
+  消息写明哪个预算不同。**提高预算是人的决定：用新的 `state_dir` 或新的 `loop_id`。** state v3 保留原 checkpoint 形状和旧 loop 行为；普通新目录默认采用 v4。v4 的 plan journal header 精确绑定 schema `1.0.0`、loop id 与 `state_version: 4`。v3 不自动迁移，且不允许 typed-plan admission。
+- **Operator 身份基础（ADR-0074，v5）**：`open_synthetic_loop(..., operator_identity=<lowercase SHA-256>)` 是当前选择 operator state v5 的入口；身份同时写入 v5 memory fingerprint，v5 plan journal header 固定写 `state_version: 5`。缺失、不规范或重开不匹配均 fail closed；普通 loop 不带此参数，仍使用 v4，原 v3 / v4 fingerprint 字节不变。v5 不接管或迁移旧目录。此 API 只建立持久身份边界；尚无 operator 调用路径、配置解析器、provider registry 或 CLI，六类 DSL 仍不可运行。
 - **ADR-0073 admission 恢复**：v4 在同一 state lock 下协调 PREPARE → TrialLedger 单一 batch event → COMMIT → memory admission checkpoint → external anchor。重开时仅按持久化内容/hash 精确补齐唯一事务缺口；pending PREPARE 只能绑定 audit 中唯一的当前 started round，任何孤儿、额外尾部、身份不符或分叉都 fail closed。恢复不运行 compiler、provider、runner 或 experiment；open/failed round 仍拒绝自动续跑，六类 operator 仍不可运行。Hypothesis batch 以 `(family_id, name, version, content_hash)` 排序。该批仅实现 durable recovery，不接 producer；ExperimentSpec 一对一引用 / lowering 对应关系须由后续 composition 在 PREPARE 前验证。
   写入侧与重开校验对称（2026-09-28 加固）：PREPARE 前拒绝 v3、未持锁、非唯一当前 open round、最后已记录轮 experiment FAILED（ADR-0070 recovery required）、同一 round 第二次 admission、仍有未完成事务、TrialLedger 已含同 `name@version`，以及任何日志 / failure registry 已离开 memory 最后一行记录的位置（因此 admission 须在本轮其他写入之前）；PREPARE 未完成或 COMMIT 缺 admission checkpoint 时拒绝写 round / between-rounds checkpoint 和人工审批；admission checkpoint 只允许移动 TrialLedger 到该 batch event、plan journal 到该 COMMIT。进程内 admission 步骤由 state 内的线程锁与 ledger 锁串行化（`state.lock` 只排除其他进程）；调用方在 PREPARE 与 `complete_plan_admission` 之间不得写 TrialLedger。重开时所有只读交叉校验（含各轮内容与生命周期主体登记）先于恢复写入，恢复后的位置复核通过后才前移 anchor，随后仍拒绝未记录的 open round；若最后已记录轮 experiment FAILED，未完成事务不做恢复写入并拒绝。新 v4 目录先写 plan header 再写 memory header，二者之间崩溃留下的空或仅含精确 header 的 plan journal 会在重开时补齐；state version 须为精确整数 3 / 4。重开中的 reducer / ledger 拒绝统一为 `LoopStateInconsistent`，单文件链损坏仍为 `JournalCorrupted`。不给 anchor 时限制照旧：连同 round start 在内一致截断整段 admission 尾部时，按较短历史打开。
   二次加固（2026-09-28）：有 open round、pending PREPARE 或缺 checkpoint 的 COMMIT 的 v4 重开（最终必然拒绝）不调用 `provider.generate` / `provider_for`，只按记录的 hash 与 audit 摘要核对各轮（市场能否重新生成、research piece bars 在该路径不证明）；恢复写入前先用 loop actor 的新 `LifecycleGuard` 纯重放全部 audit transition（非法边、状态链、actor、payload）并核对主体登记。给 anchor 时 PREPARE 要求 anchor 已持有当前目录头，因此 admission checkpoint 后、anchor 前崩溃时 anchor 停在 admission 前的头并在恢复后前移；anchor 为空而目录已有 checkpoint 行仍视为丢失 / 替换而拒绝。

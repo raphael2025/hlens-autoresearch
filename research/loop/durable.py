@@ -145,6 +145,7 @@ from __future__ import annotations
 import fcntl
 import json
 import os
+import re
 import weakref
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields
@@ -204,6 +205,7 @@ __all__ = [
     "MEMORY_FILE",
     "PLAN_ADMISSION",
     "PLAN_ADMISSION_FILE",
+    "OPERATOR_STATE_VERSION",
     "REVIEWS_FILE",
     "ROUND_MEMORY",
     "SEALED_OOS_FILE",
@@ -234,9 +236,11 @@ PLAN_ADMISSION: Final = "plan_admission"
 #: Anchor journal line type (``FileAnchor``).
 ANCHOR_HEAD: Final = "loop_state_head"
 #: Current memory/checkpoint layout. v3 remains a read/write compatibility path with its original
-#: checkpoint shape; v4 adds the required typed-plan journal head and admission checkpoint.
+#: checkpoint shape; v4 adds typed-plan admission and operator-only v5 binds operator identity.
 LEGACY_STATE_VERSION: Final = 3
 STATE_VERSION: Final = 4
+OPERATOR_STATE_VERSION: Final = 5
+_OPERATOR_IDENTITY_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
 
 #: Fingerprint fields that are budgets (a change is a human decision: a new directory).
 _BUDGET_FIELDS: Final = {
@@ -389,8 +393,12 @@ def _failed_experiment_round(audit: LoopAuditLog) -> int | None:
 
 
 def _exact_state_version(value: object, what: str) -> int:
-    """A state version is an exact JSON integer: ``3.0`` / ``4.0`` compare equal but are refused."""
-    if type(value) is not int or value not in (LEGACY_STATE_VERSION, STATE_VERSION):
+    """A state version is an exact JSON integer; floats such as ``4.0`` are refused."""
+    if type(value) is not int or value not in (
+        LEGACY_STATE_VERSION,
+        STATE_VERSION,
+        OPERATOR_STATE_VERSION,
+    ):
         raise _refuse(f"unsupported {what} {value!r}")
     return value
 
@@ -635,9 +643,9 @@ class MemoryCheckpoint:
         self._covered += 1
 
     def plan_admission(self, committed: CommittedAdmission) -> JournalEntry:
-        """Checkpoint one committed admission while its round remains open; v4 only."""
+        """Checkpoint one committed admission while its round remains open; v4 / v5 only."""
         if self._admission is None:
-            raise LoopStateInconsistent("typed-plan admission is disabled in state version 3")
+            raise LoopStateInconsistent("typed-plan admission requires a v4 or v5 state")
         if self._state_lock is None or not self._state_lock.held:
             raise LoopStateLocked("plan admission checkpoint requires the held loop state lock")
         round_identity = committed.prepare.round
@@ -840,8 +848,10 @@ class DurableState:
         """
         with self._admission_lock:
             admission = self._plan_admission
-            if self.state_version != STATE_VERSION or admission is None:
-                raise LoopStateInconsistent("typed-plan admission is disabled in state version 3")
+            if self.state_version not in {STATE_VERSION, OPERATOR_STATE_VERSION} or admission is None:
+                raise LoopStateInconsistent(
+                    f"typed-plan admission is disabled in state version {self.state_version}"
+                )
             if self.lock is None or not self.lock.held:
                 raise LoopStateLocked("typed-plan PREPARE requires the held loop state lock")
             if not isinstance(round, RoundStartedIdentity):
@@ -924,8 +934,13 @@ class DurableState:
     def _finish_plan_admission(self, transaction_id: str) -> CommittedAdmission:
         """Ledger event → COMMIT → admission checkpoint, without moving the anchor."""
         with self._admission_lock:
-            if self.state_version != STATE_VERSION or self._plan_admission is None:
-                raise LoopStateInconsistent("typed-plan admission is disabled in state version 3")
+            if (
+                self.state_version not in {STATE_VERSION, OPERATOR_STATE_VERSION}
+                or self._plan_admission is None
+            ):
+                raise LoopStateInconsistent(
+                    f"typed-plan admission is disabled in state version {self.state_version}"
+                )
             if self.lock is None or not self.lock.held:
                 raise LoopStateLocked("typed-plan admission requires the held loop state lock")
             prepared = self._plan_admission.pending
@@ -1024,6 +1039,13 @@ def _round_started_identity(
     return RoundStartedIdentity(loop_id, round_index, identity[0], identity[1])
 
 
+def _validate_operator_identity(value: Any) -> str:
+    """Require the canonical lowercase SHA-256 identity used by operator state v5."""
+    if not isinstance(value, str) or _OPERATOR_IDENTITY_PATTERN.fullmatch(value) is None:
+        raise _refuse("operator state v5 requires a canonical lowercase SHA-256 operator_identity")
+    return value
+
+
 def open_state(
     state_dir: Path,
     *,
@@ -1114,6 +1136,11 @@ def _open_locked(
     entries = journal.entries
     _exact_state_version(requested_state_version, "requested loop state version")
     expected = _json(fingerprint)
+    expected_operator_identity = expected.get("operator_identity")
+    if requested_state_version == OPERATOR_STATE_VERSION:
+        _validate_operator_identity(expected_operator_identity)
+    elif expected_operator_identity is not None:
+        raise _refuse("operator_identity requires operator state version 5")
     if entries:
         header = entries[0]
         if header.type != LOOP_STATE_OPENED:
@@ -1126,8 +1153,31 @@ def _open_locked(
             "fingerprint",
         }:
             raise _refuse(f"{journal.path} has a v4 header with other fields")
+        if state_version == OPERATOR_STATE_VERSION and set(header.payload) != {
+            "state_version",
+            "fingerprint",
+        }:
+            raise _refuse(f"{journal.path} has a v5 header with other fields")
     else:
         state_version = requested_state_version
+    if state_version not in {
+        LEGACY_STATE_VERSION,
+        STATE_VERSION,
+        OPERATOR_STATE_VERSION,
+    }:
+        raise _refuse(f"unsupported loop state version {state_version!r}")
+    if (
+        state_version != requested_state_version
+        and OPERATOR_STATE_VERSION in {state_version, requested_state_version}
+    ):
+        raise _refuse(
+            f"state directory is v{state_version}; opener explicitly requested v"
+            f"{requested_state_version}, and durable state versions are never migrated"
+        )
+    if state_version == OPERATOR_STATE_VERSION:
+        _validate_operator_identity(expected_operator_identity)
+    elif expected_operator_identity is not None:
+        raise _refuse("operator_identity cannot open a v3 or v4 state directory")
     admission_path = root / PLAN_ADMISSION_FILE
     admission: PlanAdmissionJournal | None
     if state_version == LEGACY_STATE_VERSION:
@@ -1137,11 +1187,15 @@ def _open_locked(
     else:
         loop_id = expected.get("loop_id") if isinstance(expected, Mapping) else None
         if not isinstance(loop_id, str):
-            raise _refuse("a v4 loop fingerprint must bind a loop_id")
+            raise _refuse(f"a v{state_version} loop fingerprint must bind a loop_id")
         if entries:
             if not admission_path.exists():
-                raise _refuse("a v4 state directory is missing its required plan admission journal")
-            admission = _plan_journal(admission_path, loop_id, create=False)
+                raise _refuse(
+                    f"a v{state_version} state directory is missing its required plan admission journal"
+                )
+            admission = PlanAdmissionJournal(
+                admission_path, loop_id=loop_id, state_version=state_version
+            )
         else:
             # A v4 directory is created plan journal header first, memory header second. A crash
             # in between leaves an empty or header-only plan journal and no memory header: that
@@ -1156,11 +1210,18 @@ def _open_locked(
     if not entries:
         _require_empty(audit, memory)
         if anchored is not None and (
-            state_version == STATE_VERSION or anchored.memory_seq > 1
+            state_version in {STATE_VERSION, OPERATOR_STATE_VERSION}
+            or anchored.memory_seq > 1
         ):
             raise _behind(root, 0, 0, anchored)
-        if state_version == STATE_VERSION:
-            admission = _plan_journal(admission_path, expected["loop_id"], create=True)
+        if state_version in {STATE_VERSION, OPERATOR_STATE_VERSION}:
+            loop_id = expected["loop_id"]
+            admission = PlanAdmissionJournal(
+                admission_path,
+                loop_id=loop_id,
+                create=True,
+                state_version=state_version,
+            )
         journal.append(LOOP_STATE_OPENED, {"state_version": state_version, "fingerprint": expected})
         state = DurableState(
             root, memory, audit, MemoryCheckpoint(journal, memory, admission, state_lock), anchor,

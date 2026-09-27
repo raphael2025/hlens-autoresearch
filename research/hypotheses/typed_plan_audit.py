@@ -335,9 +335,13 @@ class PlanAdmissionJournal:
     the durable loop checkpoint / anchor transaction under the state lock.
     """
 
-    def __init__(self, path: Path, *, loop_id: str, create: bool = False) -> None:
+    def __init__(
+        self, path: Path, *, loop_id: str, create: bool = False, state_version: int = 4
+    ) -> None:
         if not isinstance(loop_id, str) or not loop_id or loop_id != loop_id.strip():
             raise PlanAdmissionError("loop_id must be non-empty text without surrounding whitespace")
+        if type(state_version) is not int or state_version not in {4, 5}:
+            raise PlanAdmissionError("plan admission state_version must be 4 or 5")
         self._loop_id = loop_id
         self._journal = AppendOnlyJournal(Path(path))
         self._prepared: list[PreparedAdmission] = []
@@ -347,10 +351,16 @@ class PlanAdmissionJournal:
         entries = self._journal.entries
         if not entries:
             if not create:
-                raise PlanAdmissionCorrupted("the v4 plan admission journal is missing its header")
+                raise PlanAdmissionCorrupted(
+                    f"the v{state_version} plan admission journal is missing its header"
+                )
             self._journal.append(
                 _HEADER_EVENT,
-                {"schema_version": PLAN_ADMISSION_FORMAT_VERSION, "loop_id": loop_id, "state_version": 4},
+                {
+                    "schema_version": PLAN_ADMISSION_FORMAT_VERSION,
+                    "loop_id": loop_id,
+                    "state_version": state_version,
+                },
             )
         else:
             header = entries[0]
@@ -364,10 +374,12 @@ class PlanAdmissionJournal:
                 != {
                     "schema_version": PLAN_ADMISSION_FORMAT_VERSION,
                     "loop_id": loop_id,
-                    "state_version": 4,
+                    "state_version": state_version,
                 }
             ):
-                raise PlanAdmissionCorrupted("the plan admission journal header differs from v4 state")
+                raise PlanAdmissionCorrupted(
+                    f"the plan admission journal header differs from v{state_version} state"
+                )
         for entry in self._journal.entries[1:]:
             try:
                 self._replay(entry)

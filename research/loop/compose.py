@@ -80,6 +80,7 @@ recorded header against its ``llm`` as well (a caller composing an ``open_state`
 
 from __future__ import annotations
 
+import re
 import weakref
 from collections.abc import Mapping, Sequence
 from contextlib import ExitStack
@@ -116,6 +117,8 @@ from research.experiments.state_strategy import StateStrategyMatrix
 from research.hypotheses import HypothesisBatch, KnowledgeSource
 from research.loop.durable import (
     LOOP_STATE_OPENED,
+    OPERATOR_STATE_VERSION,
+    STATE_VERSION,
     DurableState,
     FileAnchor,
     LoopStateInconsistent,
@@ -520,6 +523,7 @@ def open_synthetic_loop(
     llm: LLMProvider | None = None,
     anchor: StateAnchor | Path | None = None,
     bus_anchor: Path | None = None,
+    operator_identity: str | None = None,
 ) -> DurableLoop:
     """Compose the loop over ``state_dir`` (created when missing), restoring every stateful part.
 
@@ -551,7 +555,17 @@ def open_synthetic_loop(
     ``state_dir`` given to ``FileEventBus(..., anchor=)``, so lines dropped from the end of *any*
     bus topic (not only ``research_loop.round``, which the audit already covers) are refused on
     reopening (``BusCorrupted``).
+
+    ``operator_identity`` is an internal ADR-0074 foundation: when supplied, it must be a canonical
+    lowercase SHA-256 and selects operator-only state v5. The value is bound into the durable
+    fingerprint and must be supplied unchanged on every reopen. Omitting it preserves the ordinary
+    v4 path. This parameter does not configure or invoke an operator.
     """
+    if operator_identity is not None and (
+        not isinstance(operator_identity, str)
+        or re.fullmatch(r"[0-9a-f]{64}", operator_identity) is None
+    ):
+        raise ValueError("operator_identity must be a canonical lowercase SHA-256 hash")
     if bus is not None and bus_anchor is not None:  # before anything under state_dir is touched
         raise ValueError(
             "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
@@ -560,14 +574,25 @@ def open_synthetic_loop(
     wiring = config.wiring
     state = open_state(
         state_dir,
-        fingerprint={**loop_fingerprint(config), **llm_content_fingerprint(llm)},
+        fingerprint={
+            **loop_fingerprint(config),
+            **llm_content_fingerprint(llm),
+            **({} if operator_identity is None else {"operator_identity": operator_identity}),
+        },
         strategies=wiring.strategies,
         provider=provider,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
+        state_version=(STATE_VERSION if operator_identity is None else OPERATOR_STATE_VERSION),
     )
     return compose_durable(
-        config, state, _synthetic_ingest(config, provider, state.memory), bus, llm, bus_anchor
+        config,
+        state,
+        _synthetic_ingest(config, provider, state.memory),
+        bus,
+        llm,
+        bus_anchor,
+        operator_identity=operator_identity,
     )
 
 
@@ -578,6 +603,8 @@ def compose_durable(
     bus: EventBusAdapter | None,
     llm: LLMProvider | None,
     bus_anchor: Path | None = None,
+    *,
+    operator_identity: str | None = None,
 ) -> DurableLoop:
     """``compose_loop`` over an opened state directory, with its bus (shared by every source).
 
@@ -594,6 +621,20 @@ def compose_durable(
         raise ValueError(
             "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
         )
+    if state.state_version == OPERATOR_STATE_VERSION:
+        header = state.checkpoint.journal.entries[0]
+        fingerprint = header.payload.get("fingerprint")
+        if (
+            not isinstance(operator_identity, str)
+            or re.fullmatch(r"[0-9a-f]{64}", operator_identity) is None
+            or not isinstance(fingerprint, Mapping)
+            or fingerprint.get("operator_identity") != operator_identity
+        ):
+            raise LoopStateInconsistent(
+                "v5 operator state requires the same canonical operator_identity at composition"
+            )
+    elif operator_identity is not None:
+        raise LoopStateInconsistent("operator_identity cannot compose a v3 or v4 state directory")
     _check_llm_content_mode(state, llm)
     if bus is not None:
         durable = not isinstance(bus, InMemoryEventBus)
