@@ -64,6 +64,7 @@ Phase 11 循环的接线在 `research/loop/compose.py` 的 `run_unattended_and_r
 每一轮的 `LoopRecord` 和本次运行实际生成的每个完整 P6 `StateStrategyMatrix` 都会写入该目录。
 矩阵仍由 `matrix_hash` 命名并使用本目录现有的 append-only writer；重复写入相同矩阵是 no-op。
 矩阵报告是独立展示产物，不加入 `LoopRecord` 摘要，因此不会改变循环记录内容或哈希。失败试验和未产生矩阵的试验不会生成矩阵报告。
+矩阵通过仅在本次报告运行期间安装的 callback 临时收集；callback 在循环成功或抛错退出时都会恢复。未调用报告 wrapper 或 `reports_root=None` 时，loop 不保留矩阵对象。
 
 ## 未完成（调试批次）
 

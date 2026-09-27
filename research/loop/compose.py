@@ -82,6 +82,7 @@ from __future__ import annotations
 
 import weakref
 from collections.abc import Mapping, Sequence
+from contextlib import ExitStack
 from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -761,20 +762,15 @@ def run_unattended_and_report(
     idempotent for identical content. Matrix reports use their existing ``matrix_hash`` identity;
     they are an additional sink and do not change any ``LoopRecord`` payload or hash.
     """
-    matrix_starts = (
-        {
-            id(stage): len(stage.matrices)
-            for stage in loop.stages
-            if isinstance(stage, ExperimentStage)
-        }
-        if reports_root is not None
-        else {}
-    )
-    records = loop.run_unattended(rounds)
+    matrices: list[StateStrategyMatrix] = []
+    with ExitStack() as callbacks:
+        if reports_root is not None:
+            for stage in loop.stages:
+                if isinstance(stage, ExperimentStage):
+                    callbacks.enter_context(stage.temporary_matrix_callback(matrices.append))
+        records = loop.run_unattended(rounds)
     if reports_root is not None:
-        for stage in loop.stages:
-            if isinstance(stage, ExperimentStage):
-                for matrix in stage.matrices[matrix_starts[id(stage)] :]:
-                    write_state_strategy_matrix(reports_root, matrix)
+        for matrix in matrices:
+            write_state_strategy_matrix(reports_root, matrix)
         write_research_loop_rounds(reports_root, records)
     return records
