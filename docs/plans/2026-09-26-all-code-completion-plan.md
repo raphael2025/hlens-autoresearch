@@ -137,6 +137,13 @@
 - ADR-0074 已依 Raphael 2026-09-28 全权委托接受，范围是 synthetic-only、本机、严格 TOML、静态 allowlist、有限轮数、外部调度、round report catch-up 和只读 API。必须先完成 ADR-0073 v4，再做 operator 专属 v5。当前无已冻结的可运行 Validation Profile，因此接受设计不代表可立即运行；不得用 TEST ONLY Profile 或临时数值替代。
 - 本地提交未推送；项目 Phase / 统一验收及 tests/build/lint/probe 继续暂缓。P7 六类 DSL 算子仍 fail closed。
 
+### 10.54 ADR-0073 durable loop v4 coordinator（2026-09-28；本地 main）
+
+- 在前置 plan-admission journal / TrialLedger primitives 上，`research/loop/durable.py` 增加 v3 / v4 显式 opener 分流、v4 plan journal 首行 header、统一 checkpoint / external `StateHead` 包含 plan journal 位置、严格 admission checkpoint schema 和 round-start seq/hash 绑定。`LoopAuditLog` 增加只读已验证 start-entry identity API；不暴露可变底层 journal。
+- state lock 持有期间，恢复只对账并补齐一笔可由 pending PREPARE 精确解释的 TrialLedger batch / COMMIT / admission checkpoint / anchor；COMMIT 已存在而 checkpoint 缺失时也必须匹配唯一 ledger 尾事件。出现 open round 时，纯登记恢复后仍拒绝打开；不会进入 `_restore_round`，不运行 provider/compiler/experiment，不恢复 FAILED round。其他 journal 尾行、孤儿、分叉、版本或 header 不符均拒绝。
+- 独立 Codex 源码复核没有发现阻断缺陷；未运行测试 / build / lint / probe。`git diff --check` 退出码 0。该实现不接入 producer/operator/runner，ExperimentSpec ↔ Hypothesis ↔ output 映射仍是未来 producer 接入前的硬门；Phase 7 未验收，六类 operator 继续 fail closed。
+- 提交 `1975bdb` 已 fast-forward 合入本地 `main`，分支 tip 先写入 `refs/archive/2026-09-28/branches/codex/p7-durable-v4` 后移除工作树 / 分支。没有推送。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：
