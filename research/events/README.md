@@ -1,15 +1,15 @@
-# research/events
+# Phase 3 Event 模块
 
 Phase 3 — Event & Interaction Engine 的研究侧代码（ADR-0036）。事件条目登记于 [event-library.md](../../docs/research/event-library.md)。
 
-> 状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。只在合成夹具与冒烟测试上运行过，未在真实数据上校准。
+> 状态：`CODE_COMPLETE / DEBUG_PENDING`。模块实现和隔离测试已存在；Phase 3 尚未验收，统计也未在真实数据上校准。生产 catalog 尚未创建 `event.events`。
 
 ## 分工
 
 | 位置 | 内容 |
 |---|---|
 | `core/contracts/event.py` | `EventProvider` Protocol 与 5 个 DTO（事件时间 = 可观测时间、溯源、截至 `as_of` 的事件表） |
-| `infrastructure/event/` | 执行器 `run_events`（结构性截断 + 相邻检查点一致：不得未来确认；交互的上游规格 / 并集与输入点逐点 lineage 核对，见 `upstream.py`）、输入适配、Event 表逻辑物化 |
+| `infrastructure/event/` | 执行器 `run_events`（结构性截断 + 相邻检查点一致：不得未来确认；交互的上游规格 / 并集与输入点逐点 lineage 核对，见 `upstream.py`）、输入适配、Event 表逻辑物化、运行制品存储和物理 Iceberg 表 |
 | `plugins/events/` | 首批 EventProvider 与交互算子（阈值穿越、波动率突破、状态切换、A 后 B、共现） |
 | `research/events/stats.py`（本目录） | 事件表的描述统计：频率、共现、lead-lag、重叠 / 独立性诊断 |
 
@@ -44,5 +44,42 @@ State 序列目前以本地最小形状输入（`infrastructure/event/inputs.py`
   只追加的 Iceberg 表 `event.events`（逻辑 10 列，含 ADR-0057 可选 `subject`，加运行块 6 列：`event_index`、`event_count`、`request_hash`、
   `provider_hash`、`as_of`、`contract_schema_version`；后者用于按记录的契约信封版本重建运行，`month(event_time)` 分区；`infrastructure/event/table_definition.py`），
   `infrastructure/event/iceberg.py` 的 `EventTable`：一次运行一个批次、同运行重写 no-op、同 `result_hash` 不同内容拒绝、
-  读取固定 snapshot 并由行重建复核 `EventResult`。仅在临时 SQLite catalog 上测试；生产 catalog 尚未建表（建表需显式调用 `ensure_event_tables`，未接入建表脚本）。Phase 1 冻结的 15 张表定义与注册表不变。
+  读取固定 snapshot 并由行重建复核 `EventResult`。仅在临时 SQLite catalog 上测试；生产 catalog 尚未建表（需显式调用 `ensure_event_tables`，独立入口见下文）。Phase 1 冻结的 15 张表定义与注册表不变。
 - 统计未在真实数据上校准；事件频率过低 / 组合爆炸（roadmap 失败模式）尚无自动诊断之外的处理。
+
+## 显式建表操作
+
+建表入口为 `infrastructure.event.create_event_tables`。它只确保物理表存在且定义匹配；不运行事件计算，也不写事件行。
+ADR-0056 规定生产 catalog 建表属于单独的运维步骤，不接入 Phase 1 的自动建表流程。
+
+命令默认只显示帮助，不加载 `Settings`、读取 catalog 配置或连接 catalog：
+
+```bash
+uv run python -m infrastructure.event.create_event_tables
+```
+
+只有显式传入 `--apply` 才会加载当前进程配置并连接配置的 PostgreSQL catalog，然后创建或核对 `event.events`：
+
+```bash
+uv run python -m infrastructure.event.create_event_tables --apply
+```
+
+若本地使用被 Git 忽略的 `.env.catalog`，可先将配置导入当前 shell：
+
+```bash
+set -a
+. ./.env.catalog
+set +a
+uv run python -m infrastructure.event.create_event_tables --apply
+```
+
+仅在获准操作的环境中使用 `--apply`。连接真实生产 catalog 并创建表仍是单独的运维操作，必须先取得该次操作的明确授权；代码实现、测试通过或存在 `--apply` 参数均不构成授权。常规开发和测试不要对真实 catalog 执行此命令。
+
+操作边界：
+
+- 注册表会包含 Phase 1 表定义，供 catalog adapter 解析；命令只调用 `ensure_event_tables`，不会调用 Phase 1 建表入口，也不会创建或修改 Phase 1 的 15 张表。
+- 已存在的 `event.events` 只做定义核对；定义不匹配时操作失败，不自动迁移或覆盖表。
+- 成功时只报告 `event.events` 是新建还是已存在并通过核对；失败时只报告异常类型，不打印异常消息、DSN 或连接凭据。
+- 入口测试使用隔离的临时 SQLite catalog；它们不能证明真实 PostgreSQL catalog 已建表或已验收。
+
+操作入口的 no-op、显式执行、仅确保事件表和错误脱敏行为由 `tests/infrastructure/event/test_create_event_tables.py` 覆盖；事件表的数据行为见 `tests/infrastructure/event/`。
