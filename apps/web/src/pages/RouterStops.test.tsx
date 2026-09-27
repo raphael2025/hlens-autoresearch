@@ -3,6 +3,7 @@ import { describe, test } from "node:test";
 import type { ReportEnvelope } from "../api";
 import { api, escaped, renderSettled } from "../components/render.test-util.tsx";
 import { fixtureEnvelopes } from "../lib/fixtures.test-util.ts";
+import { EVIDENCE_SCOPE_TEXT } from "../lib/routerEligibility.ts";
 import { RouterStops } from "./RouterStops.tsx";
 
 // The evidence-mode refusal wording on the Router Stops page (a refused check always ends in a
@@ -66,6 +67,9 @@ async function detailOf(Page: () => JSX.Element, report: ReportEnvelope): Promis
 
 function assertRefusalRows(html: string): void {
   assert.ok(html.includes(escaped("资格证据（证据模式）")));
+  // the B62 boundary is shown with the checks, and the G2 items include the inverse control
+  assert.ok(html.includes(escaped(EVIDENCE_SCOPE_TEXT)), "evidence scope boundary");
+  assert.ok(html.includes("G2.inverse_control"), "inverse control item listed");
   assert.ok(html.includes(escaped("2 个策略中 0 个已核验，2 个被拒绝")));
   assert.ok(html.includes(escaped(PROFILE_TEXT)), "profile_not_found in words");
   assert.ok(html.includes(escaped(BENCHMARK_TEXT)), "market_benchmark_missing in words");

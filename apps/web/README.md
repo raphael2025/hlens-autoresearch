@@ -160,7 +160,9 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
   （`no_validated_candidate` / `all_routes_flat` / `eligibility_not_evidenced`）以中文说明 + 原始值显示；当报告载荷带
   附加的 `eligibility` 键时，Router Stops 与 Router Paper Runs 详情多一张「资格证据」表（每个策略：声明的 lifecycle、
   报告哈希、subject、判定、G5 状态、核验结果 / 拒绝原因的中文说明 + 原始代码、detail），Router Paper Runs 另显示
-  `validation_reports` 绑定；信任模式载荷（无该键）不显示任何额外内容。视图模型在 `src/lib/routerEligibility.ts`
+  `validation_reports` 绑定；信任模式载荷（无该键）不显示任何额外内容。表上方的说明列出核对项（含 ADR-0060 的
+  `G2.market_benchmark` 与 `G2.inverse_control`），并按 ADR-0043 B62 写明边界（`EVIDENCE_SCOPE_TEXT`，B63）：只证明研究层纸面路由
+  前提，不检查 Profile 冻结登记，通过不代表 Profile 已冻结、策略已获 Promotion 或具备生产资格。视图模型在 `src/lib/routerEligibility.ts`
   （`node --test`，证据模式载荷在测试中按 `research/reports/router.py` 的形状内联构造；fixtures 未改），表格组件在
   `src/components/EligibilityEvidence.tsx`。无法解析的检查记录被计数并警告，从不当作「无证据」。
 - **Paper Deviation**（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`src/pages/PaperDeviations.tsx`，经由

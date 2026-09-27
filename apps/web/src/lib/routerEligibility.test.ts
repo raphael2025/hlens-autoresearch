@@ -5,6 +5,7 @@ import {
   type EligibilityCheck,
   REFUSAL_ORDER,
   checkResultText,
+  EVIDENCE_SCOPE_TEXT,
   eligibilityOf,
   eligibilitySummary,
   refusalText,
@@ -139,6 +140,19 @@ test("validation_reports: absent or null is null; entries sorted, non-strings dr
     { strategy: A, report_hash: H("a") },
     { strategy: B, report_hash: H("b") },
   ]);
+});
+
+test("the evidence-mode scope never reads as a freeze, a promotion or production eligibility (B62)", () => {
+  for (const phrase of [
+    "研究层纸面路由前提",
+    "不检查 Profile 冻结登记",
+    "不代表 Profile 已冻结、策略已获 Promotion 或具备生产资格",
+    "生产资格归 Control Plane",
+  ]) {
+    assert.ok(EVIDENCE_SCOPE_TEXT.includes(phrase), phrase);
+  }
+  // a verified check says what was verified, nothing more
+  assert.equal(checkResultText(check({ refusal: null })), "已核验（PASS 且含 G5）");
 });
 
 test("every refusal code has words and a G5 status; an unknown code is shown verbatim", () => {

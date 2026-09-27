@@ -240,12 +240,11 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
+| 2026-09-27 | B63：控制台的证据模式说明写明 B62 边界：只证明研究层纸面路由前提，通过不代表 Profile 已冻结、策略已晋升或具备生产资格；列出反向对照项 | 只改控制台文字与测试；无代码 / 契约 / API 改动 |
 | 2026-09-27 | B62（Codex 决定）：P10 证据模式不要求 Profile 冻结登记；这属于研究层路由证据，与 Promotion 的冻结权威门分开 | 无代码 / 契约 / Schema 改动；生产资格仍须 ADR-0005 / ADR-0062 Promotion 与 Control Plane；已记录于 ADR-0043 |
 | 2026-09-27 | B61：数据集回测 bar 带上经证明的 Canonical 成交量（ADR-0054 已批准的遗留项）；部分成交结转模型在真实数据集 bar 上不再因缺成交量被拒 | CODE_COMPLETE / DEBUG_PENDING；数据集回测请求哈希因此改变（预期，旧空值载荷不变）；PostgreSQL 测试未运行；不是 Phase 4 / 5 验收 |
 | 2026-09-27 | B60：控制台冒烟也访问故障后端：知识检索 502、任务日志 500、报告兜底 500 经控制台客户端与页面渲染显示为错误状态，不泄露服务器路径 | 只改测试；仍不是浏览器验收（人工浏览器验收仍未做）；冻结 HEAD `dfa432b`（B57～B60）全量非 PostgreSQL 门禁 7253 passed，全部检查退出码 0 |
 | 2026-09-27 | B59：Promotion 在 Profile 要求反向对照时，拒绝评估了 G2 却缺少 `G2.inverse_control` 的报告（`inverse_control_missing`，只要求存在） | CODE_COMPLETE / DEBUG_PENDING；无契约 / Schema / 阈值 / Profile 数值变化；登记为空，所有晋升仍被拒 |
-| 2026-09-27 | B58：路由证据模式在 Profile 要求反向对照时，拒绝缺少 `G2.inverse_control` 的报告（`inverse_control_missing`，只要求存在）；控制台显示该拒绝 | CODE_COMPLETE / DEBUG_PENDING；无契约 / Schema / 阈值 / Profile 数值变化；Promotion 尚未要求该项 |
-| 2026-09-27 | B57：冻结 WIP `1551b30` 全量非 PostgreSQL 门禁 7244 passed / 136 deselected，静态检查、Schema、控制台测试与构建全部退出码 0；B52 双标的证据在原基线 `dd6c8e1` 上逐字节复现；后代 G5 记录为未决设计边界 | 只作证据与恢复点；未选阈值、未冻结 Profile；docs-only |
 
 ## 10. 下一阶段进入条件
 

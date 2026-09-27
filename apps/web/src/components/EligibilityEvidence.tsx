@@ -1,6 +1,7 @@
 import {
   checkResultText,
   eligibilityOf,
+  EVIDENCE_SCOPE_TEXT,
   eligibilitySummary,
   sealedOosText,
   validationReportsOf,
@@ -22,8 +23,8 @@ export function EligibilityEvidence({ payload }: { payload: Record<string, unkno
       <h4>资格证据（证据模式）</h4>
       <p style={{ color: "#555", fontSize: 13 }}>
         每个可路由策略的生命周期声明都与其真实验证报告核对（哈希、subject、判定 PASS、G5 密封样本外、报告所用的
-        Validation Profile，以及该 Profile 的市场基准规则要求的 G2.market_benchmark 项）：
-        {eligibilitySummary(view)}。这只证明研究层前提；生产资格仍归 Control Plane。
+        Validation Profile，以及该 Profile 要求的 ADR-0060 G2 报告项：市场基准规则的 G2.market_benchmark 项、
+        inverse_control_reported 时的 G2.inverse_control）：{eligibilitySummary(view)}。{EVIDENCE_SCOPE_TEXT}
       </p>
       {view.malformed > 0 && (
         <p style={{ color: "#664d03", fontSize: 13 }}>

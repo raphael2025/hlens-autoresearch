@@ -101,6 +101,16 @@ export const REFUSAL_ORDER = [
 
 export type RefusalCode = (typeof REFUSAL_ORDER)[number];
 
+/**
+ * What evidence mode is, in words (ADR-0043 B62, Codex 2026-09-27): research-level paper-routing
+ * preconditions only. It reads no Profile freeze registry; the freeze / Promotion / production gates
+ * are ADR-0005 / ADR-0062 and the Control Plane, so a pass must never read as any of them.
+ */
+export const EVIDENCE_SCOPE_TEXT =
+  "这只证明研究层纸面路由前提：" +
+  "不检查 Profile 冻结登记：通过不代表 Profile 已冻结、策略已获 Promotion 或具备生产资格" +
+  "（冻结与晋升由 Promotion 核验，ADR-0005 / ADR-0062）；生产资格归 Control Plane。";
+
 const REFUSALS: Record<RefusalCode, string> = {
   report_hash_missing: "未声明验证报告哈希",
   report_not_found: "找不到声明哈希对应的验证报告",

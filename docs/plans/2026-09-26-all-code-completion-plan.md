@@ -795,6 +795,16 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
   PostgreSQL 标记测试（`test_dataset_bars_postgres.py`、真实数据端到端）**未运行**：本批次没有授权使用专用 Phase 1 测试库，未创建任何数据库。
 - 边界：不声称 Phase 4 / 5 验收；G4 容量检查未改读结转结果（ADR-0054 其余未做项不变）。
 
+**B63 — 控制台证据模式说明写明 B62 边界（Codex P10-FREEZE 决定的文字落实；隔离分支，基于 `0ced9ca`）**（`CODE_COMPLETE / DEBUG_PENDING`）
+
+- 缺口：资格证据表上方的说明只列市场基准项（未列 B58 的 `G2.inverse_control`），也未写明 B62：证据模式不检查 Profile 冻结登记、通过不代表
+  Profile 已冻结 / 已获 Promotion / 具备生产资格。
+- 改动（只改控制台文字与测试）：`routerEligibility.ts` 新增 `EVIDENCE_SCOPE_TEXT`（研究层纸面路由前提；不检查冻结登记；冻结与晋升由 Promotion
+  核验，ADR-0005 / ADR-0062；生产资格归 Control Plane）；`EligibilityEvidence.tsx` 列出两项 ADR-0060 G2 报告项并显示该边界；
+  lib 测试逐句固定边界文字、已核验结果文字不变；Router Stops 组件测试断言边界与 `G2.inverse_control` 出现在渲染结果中。未改 `research/router`、契约或 API。
+- 实际运行：`npm test` → lib 89 / 89、组件 110 / 110，退出码 0；`npm run build` ✓，退出码 0。
+- 本批次在冻结门禁 SHA `0ced9ca` 之后，不在该门禁覆盖范围内。
+
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
 | Phase | 本轮新增（批次） | 仍未完成 / 待决 |
