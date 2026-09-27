@@ -13,7 +13,7 @@
 | 依据 | `docs/research/roadmap.md`《Phase 1 验收矩阵》、`PROJECT_STATUS.md` §3/§4/§6/§7（**注**：`PROJECT_STATUS.md` 最后一次改动是 `9b2124f`，即 G2 红队发现记录本身；本文档之后的 G2 返修与 G3-P 不在 `PROJECT_STATUS.md` 里，只在本文档与 commit history 中核实） |
 | 方法 | 对每项：读取 roadmap 原文要求 → 定位实现模块 → 用 `grep` 核实测试文件与测试函数确实存在 → 用 `git log` 核实 commit 存在于本分支历史 → 按 `PROJECT_STATUS.md` 记录与 commit 时间线标注状态 |
 | 范围限制 | 本文档**没有**重新运行全量测试套件（会话内存上限 2 GB，禁止跑全量），本次 G3-D 只实际运行了 `tests/test_docs_consistency.py` + `tests/test_architecture_boundaries.py`（17 passed）；其余测试文件 / 函数名的存在性用 `grep` 核实，通过性以对应 commit message 与既有验收记录为准，本文档不重新验证 |
-| 关键发现（提前说明） | 本表在 2026-09-25 起草时，实现验收门止步于 D3D（`300bf33`）。Codex 于 2026-09-27 后续接受 D3E（含 R1～R3 与跨日修复），记录见 [`2026-09-27-d3e-acceptance.md`](2026-09-27-d3e-acceptance.md)。除此之外，D4、E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、G2 与 G3-P 等后续实现组仍待复核。`3ee0519` 仍仅代表 Raphael 对 ADR-0028 的设计批准，不是其后实现的验收 |
+| 关键发现（提前说明） | 本表在 2026-09-25 起草时，实现验收门止步于 D3D（`300bf33`）。Codex 于 2026-09-27 后续接受 D3E（含 R1～R3 与跨日修复），记录见 [`2026-09-27-d3e-acceptance.md`](2026-09-27-d3e-acceptance.md)。除此之外，E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、G2 与 G3-P 等后续实现组仍待复核；D4 不启用门已接受。`3ee0519` 仍仅代表 Raphael 对 ADR-0028 的设计批准，不是其后实现的验收 |
 
 ---
 
@@ -46,7 +46,7 @@ a7bd172 phase1: accept C1 and open C2
 3ee0519 phase1: accept ADR-0028 (Raphael) and open E1
 ```
 
-`3ee0519` 的提交信息标注了 `(Raphael)`：这是 Raphael 对 ADR-0028 设计的批准，不是实现验收。Codex 于 2026-09-27 已单独接受 D3E；D4、E0～G3-P 等后续实现仍为 `REVIEW_PENDING`，未因 D3E 验收而自动接受。
+`3ee0519` 的提交信息标注了 `(Raphael)`：这是 Raphael 对 ADR-0028 设计的批准，不是实现验收。Codex 于 2026-09-27 已单独接受 D3E；D4“不启用”门现已接受；E0～G3-P 等后续实现仍为 `REVIEW_PENDING`，未因 D3E 验收而自动接受。
 
 D3E-R3（`7e9e084`）与 E1-R3/R4、G3-S 系列穿插出现，后续 F2/F3/DS-1/G1/G2/G3-P 又叠加在 D3E 之上，未遵循 roadmap 的逐批验收顺序。Codex 于 2026-09-27 决定保留现有提交、逐组独立复核：D3E 已接受，但不追溯批准其后的批次，也不降低后续验收标准；发现实质依赖缺陷时再按证据修复受影响批次。
 
@@ -367,11 +367,11 @@ uv run pytest tests/test_docs_consistency.py tests/test_architecture_boundaries.
 ## 6. 小结（供 Codex / Raphael 参考，不是结论）
 
 1. **已验收（Codex 独立复核）**：#1～#12；#13 中 D3A～D3E REST 补尾批次；#17 中归档侧及 D3B（REST）侧 policy。D3E 记录见 [`2026-09-27-d3e-acceptance.md`](2026-09-27-d3e-acceptance.md)。
-2. **REVIEW_PENDING（实现已提交，待独立复核）**：#9 后半（exchangeInfo/证据缺口/DS-1 三张表）、#13 后续 Canonical / PIT / Dataset 路径与 G2/G3-P 批次、#14（D4 门记录）、#15、#16、#17 后半（exchangeInfo policy、D-HIST）、#18、#19（含新增的数据集绑定特征路径）。对应 D4、E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、G2 与 G3-P。
+2. **REVIEW_PENDING（实现已提交，待独立复核）**：#9 后半（exchangeInfo/证据缺口/DS-1 三张表）、#13 后续 Canonical / PIT / Dataset 路径与 G2/G3-P 批次、#15、#16、#17 后半（exchangeInfo policy、D-HIST）、#18、#19（含新增的数据集绑定特征路径）。对应 D4、E0～E4、F1～F4、QG-1/QG-2、DS-1、G1、G2 与 G3-P。
 3. **#20**：G1 已补齐端到端验收测试与记录，G2 红队从攻击角度补充了跨阶段证据、发现并修复了 6 个问题（均在 F3/F4 这一跳），G3-P 补充了性能数据；现仍为 REVIEW_PENDING。
 4. **本次（G3-D）范围内自查通过，不改变以上结论**：只更新三份文档（本文件、新增的复核指南、`infrastructure/README.md`），未改动任何生产 / 测试代码；`tests/test_docs_consistency.py` + `tests/test_architecture_boundaries.py` 17 passed。
 5. **已知限制清单（§5）新增四条**：D-33-CAP（RT-3 修复路径的容量残留，未修、已记录）、ad-hoc 特征路径与数据集绑定路径长期并存、单 writer 假设从未在并发场景下被测试过；连同既有的 D-MAN、键闭包可达范围一起，构成 Codex 复核时应重点核对的边界清单。
-6. **后续复核顺序**：D3E 已接受。 按依赖顺序继续复核 D4、E0/E1 与后续批次；G2 / G3-P 证据不能替代对应实现代码复核，分组见 [`2026-09-25-phase1-review-guide.md`](2026-09-25-phase1-review-guide.md)。
+6. **后续复核顺序**：D3E 与 D4 门记录已接受。按依赖顺序继续复核 E0/E1 与后续批次；G2 / G3-P 证据不能替代对应实现代码复核，分组见 [`2026-09-25-phase1-review-guide.md`](2026-09-25-phase1-review-guide.md)。
 
 ---
 

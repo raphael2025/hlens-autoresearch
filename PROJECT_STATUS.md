@@ -210,7 +210,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 ## 8. 当前禁止事项
 
-- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；D3E 已验收；D4 门记录与 E/F/G 后续实现仍待 Codex 分组复核；不写任何 WebSocket 代码
+- ❌ 只按 roadmap Phase 1 恢复序列逐批实施；D3E 已验收，D4 已关闭且不启用 WebSocket；E/F/G 后续实现仍待 Codex 分组复核
 - ❌ 不开始 Phase 0.5
 - ❌ 不实现 Feature / Strategy / Backtest（属于 Phase 1+）
 - ❌ 不安装系统软件（包括 Docker）；D2 只可使用已授权的专用 Phase 1 catalog / test database 与本地 warehouse，不得访问账户 / 交易接口，不得创建或修改数据库 / role
@@ -226,7 +226,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | Codex 接受 Phase 1 D3E（含 R1～R3、跨 UTC 日 provenance 与 PIT edge 去重）；fresh 定向测试 246 + 15 项通过，候选严格全量门禁 5753 项通过 | 后续 E/F/G 批次仍待逐组复核；Phase 1 未关闭，未合入 `phase/1` / `main` |
+| 2026-09-27 | Codex 接受 D3E（fresh 246 + 15 项定向测试，候选全量门禁 5753 项）；复核并关闭 D4，Phase 1 不启用 WebSocket | E/F/G 实现仍待逐组复核；Phase 1 未关闭，未合入 `phase/1` / `main` |
 | 2026-09-26 | 集成 PIT 跨日边去重修复（`9baad12` / `50cdc49`：同一 Raw 边只映射一次，内容不一致即拒绝）；严格全量门禁 5753 项通过（`50cdc49`） | 当时待 Codex 复核；已由 2026-09-27 D3E 验收记录关闭 |
 | 2026-09-26 | Phase 1 修复批次：D3E-R3 跨日错误修复（`69f0bf0`，13 项跨午夜回归，旧代码全失败、新代码全过，独立复核 ACCEPTABLE）；D-NET 工具不再消费失败 / 旧状态并记录代码版本与 snapshot 头（`d1e6e73`）；严格全量门禁 5738 项通过（`8b6fbaf`） | D3E 于 2026-09-27 验收；Phase 1 未关闭 |
 | 2026-09-26 | 文档事实核对（D3E）：REST 首次交付页重新解码、归档对象重新解析已由 D3E-R3（`7e9e084`）实现，PROJECT_STATUS / close-evidence 中"未重新解码 / 解析"的旧描述已更正；仍为 REVIEW_PENDING（无验收门）。新发现待修阻塞：D3E-R3 跨日错误（`_verify_edge_provenance` 按天分区遍历证据边批次，aggTrade 跨 UTC 日边界的观察键会被误判） | 不影响验收状态；历史状态：跨日错误随后修复并于 2026-09-27 随 D3E 一并验收 |
@@ -266,4 +266,4 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 继续逐个调试：调试待办 C / E 节中不需要 Raphael 决定的条目，每项带回归测试并通过严格门禁（ruff / format / mypy / lock / 全量 pytest）。
 2. 不得：修改冻结契约或 Profile 结构（D-FLOAT / D-PFIELDS / D-CTRL / D-VFAIL 待决）、设任何验证阈值、接入实盘或密钥、合并 `main`、打 tag、force push。
-3. Phase 1 正在逐组复核：D3E 已接受；Codex 按复核指南继续检查 D4 门记录与后续实现。当前不需要 Raphael 处理新的架构决定，D-LIST 仍按既有明确指示暂缓。
+3. Phase 1 正在逐组复核：D3E 已接受，D4 已关闭且不启用 WebSocket；Codex 按复核指南继续检查 E0/E1 与后续实现。当前不需要 Raphael 处理新的架构决定，D-LIST 仍按既有明确指示暂缓。

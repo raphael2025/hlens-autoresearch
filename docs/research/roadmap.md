@@ -155,8 +155,8 @@ D3B～D3E 均触及身份、双时间、重放或 precedence 语义，由 Claude
 
 #### D4（条件式 WebSocket）
 
-D4 门记录（`REVIEW_PENDING`，待 Codex 复核）：[2026-09-25 D4 live-tail 门](../reviews/2026-09-25-d4-live-tail-gate.md)。
-ADR-0022 的三项启用前置（历史 backfill、REST gap reconciliation、重放幂等）未全部验收，且没有已批准的实时消费者，
+D4 门记录已由 Codex 于 2026-09-27 复核并关闭：[2026-09-25 D4 live-tail 门](../reviews/2026-09-25-d4-live-tail-gate.md)。
+D3E 的 REST gap reconciliation 与重放幂等已验收；但真实规模历史 backfill 容量与可恢复批量流程未完成，且没有已批准的实时消费者，
 因此 Phase 1 首切片**不启用** WebSocket live tail（#14 明确允许）；不写任何 WS 代码。
 
 #### E0（双 Raw → Canonical 设计门）

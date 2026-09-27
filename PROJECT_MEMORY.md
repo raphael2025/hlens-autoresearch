@@ -44,12 +44,12 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 ## 4. Current Phase
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
-- Current Subphase：D3E 已验收（2026-09-27）；D4 门记录及 E/F/G 后续实现仍待逐组 Codex 复核，Phase 1 未关闭。REST 首次交付页、archive source object、cross-day evidence batch 的复核证据见 `docs/reviews/2026-09-27-d3e-acceptance.md`。
+- Current Subphase：D3E 已验收；D4 已关闭，Phase 1 不启用 WebSocket live tail。E/F/G 后续实现仍待逐组 Codex 复核，Phase 1 未关闭。
 - Current Objective：按 roadmap Phase 1 恢复序列 A3 → B1 → B2 → B3 → C1 → C2 → C3 → D / E / F → G 逐批实施；
   验收矩阵见 roadmap Phase 1；Provider 接口 / DTO / Schema / contract tests（B1 ~ B3）先于实现
-- D3E 已接受；D4 提案与 E0～G3-P 实现仍须逐批复核，不能由 D3E 验收自动推导为已接受；无 Codex 时 Claude 只推 `wip/*`，不推正式 `phase/*`
+- D3E 与 D4 门均已由 Codex 接受；E0～G3-P 实现仍须逐批复核，不能自动推导为已接受；无 Codex 时 Claude 只推 `wip/*`，不推正式 `phase/*`
 - Current Blocker：D3E 的跨日 edge provenance 缺陷已修复并随 D3E 验收；其余 Phase 1 后续实现待复核。D-LIST 仍按 Raphael 明确决定保持暂缓。C2 专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：按 review guide 依赖顺序复核 D4 文档门与 E0/E1 及后续实现；每组单独记录结论和验证证据
+- Next Milestone：按 review guide 依赖顺序复核 E0/E1 与后续实现；每组单独记录结论和验证证据
 
 ## 5. Active Decisions
 

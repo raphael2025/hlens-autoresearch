@@ -39,7 +39,7 @@
 - **要核对什么**：`docs/reviews/2026-09-25-d4-live-tail-gate.md` 给出的"不启用"结论是否确实由 ADR-0022 与
   roadmap #14 与 ADR-0022 的前置要求；D3E 现已验收，因此需要重新核对无实时消费者等剩余理由。仓库当前确实没有 WebSocket 代码。
 - **证明它的测试**：无专门测试（门的内容是"不做"）；`tests/test_architecture_boundaries.py` 间接保证没有引入长连接依赖。
-- **状态**：REVIEW_PENDING（记录自称"提案，不是验收"）。
+- **状态**：✅ Codex 于 2026-09-27 接受 D4 关闭、不启用 WebSocket；真实规模 backfill 与实时消费者仍是未来重新考虑的前提。
 
 ## 3. G-E0 — 双 Raw → Canonical lineage 设计（ADR-0028）
 
