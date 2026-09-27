@@ -78,7 +78,9 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
   `ProfileFreezeRegistry`（ADR-0043 B62，Codex 2026-09-27）：冻结是 Promotion 的权威门（ADR-0005 / ADR-0062），
   核验通过不代表 Profile 已冻结、策略已获 Promotion 或具备生产资格。
 
-仍未做：信任模式下生命周期映射本身不进入 `run_hash`（改变既有哈希）；web 控制台对 `eligibility_not_evidenced` 原因与 `eligibility` 键只按原样显示（`apps/web` 不在本通道范围）。
+控制台现已在 Router Stops 与 Router Paper Runs 详情中解析并展示证据模式的资格核验：逐策略显示验证报告绑定、判定、G5 状态、核验结果 / 拒绝原因及明细；`eligibility_not_evidenced` 也有对应说明。信任模式载荷没有 `eligibility` 时不显示该证据表。展示逻辑见 [apps/web/README.md](../../apps/web/README.md)。
+
+仍未做：信任模式下生命周期映射本身不进入 `run_hash`（改变既有哈希）。
 
 ## 路由器自验证（P10，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 
