@@ -394,11 +394,15 @@ class PitSelector:
             unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
             units.setdefault(unit, set()).add(row["arrival_seq"])
         proven: dict[str, Mapping[str, Any]] = {}
-        for (raw_table, source), seqs in sorted(units.items()):
-            # Only the committed batches holding what was read are proven and kept (G3-S2);
-            # the unit-wide facts are still checked by verify_unit.
-            for row in normalizer.verify_unit(raw_table, source, arrival_seqs=seqs):
-                proven[row["revision_id"]] = row
+        try:
+            for (raw_table, source), seqs in sorted(units.items()):
+                # Only the committed batches holding what was read are proven and kept (G3-S2);
+                # the unit-wide facts are still checked by verify_unit.
+                for row in normalizer.verify_unit(raw_table, source, arrival_seqs=seqs):
+                    proven[row["revision_id"]] = row
+        finally:
+            if normalizer is not self._normalizer:
+                normalizer.close()  # its spooled archive objects (E1-CAP-1)
         for row in rows:
             expected = proven.get(row["revision_id"])
             if expected is None or any(row[name] != value for name, value in expected.items()):

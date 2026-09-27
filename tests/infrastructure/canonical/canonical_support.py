@@ -130,10 +130,14 @@ def normalizer(
     clock: Callable[[], datetime],
     adapter: Any = None,
     microbatch_rows: int | None = None,
+    narrow_rows: int | None = None,
 ) -> CanonicalNormalizer:
+    """The real normalizer; ``narrow_rows`` shrinks its narrow-read window (default: fixed)."""
     kwargs: dict[str, Any] = {}
     if microbatch_rows is not None:
         kwargs["microbatch_rows"] = microbatch_rows
+    if narrow_rows is not None:
+        kwargs["narrow_rows"] = narrow_rows
     return CanonicalNormalizer(
         h.adapter if adapter is None else adapter, h.storage, clock=clock, **kwargs
     )

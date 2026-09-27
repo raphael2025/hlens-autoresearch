@@ -296,7 +296,7 @@ def _normalize(
                 "source_revision_id": result.source_revision_id,
                 "canonical_table": result.canonical_table,
                 "canonical_revisions": result.row_count,
-                "batches": len(result.commits),
+                "batches": result.batch_count,
                 "replayed": result.replayed,
                 "knowledge_time": result.knowledge_time,
                 "wall_seconds": round(time.perf_counter() - started, 3),

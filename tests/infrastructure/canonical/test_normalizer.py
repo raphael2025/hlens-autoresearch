@@ -24,6 +24,8 @@ from core.domain.base import canonical_json
 from infrastructure.canonical import normalizer as nz
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
+    DEFAULT_NARROW_ROWS,
+    MAX_NARROW_ROWS,
     CanonicalNormalizeConflict,
     CanonicalNormalizeError,
     CanonicalNormalizer,
@@ -414,9 +416,7 @@ def test_a_crash_between_batches_resumes_with_the_first_base_and_time(
     assert later.calls == 0 and out.knowledge_time == K_NORM and out.arrival_seq_base == 0
     rows = h.rows(c.TRADES)
     assert len(rows) == 3 and {row["knowledge_time"] for row in rows} == {K_NORM}
-    assert [commit.replayed for commit in out.commits] == [True] * crash_after + [False] * (
-        3 - crash_after
-    )
+    assert out.batch_count == 3 and out.committed_batches == 3 - crash_after
     # Same result as one uninterrupted run in an independent catalog.
     with ss.sqlite_harness(h.tmp_path / "reference") as ref:
         ref_archive, _, _ = _pair(ref)
@@ -571,7 +571,7 @@ def test_a_rest_unit_the_store_has_not_finished_is_refused_until_it_has(
     with pytest.raises(CanonicalUnitIncomplete, match=r"element\(s\) \[1, 2\] are committed"):
         n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
     with pytest.raises(CanonicalUnitIncomplete):
-        n.verify_unit(c.REST_AGGS.table, response["revision_id"])
+        n.collect_unit_rows(c.REST_AGGS.table, response["revision_id"])
     assert clock.calls == 0 and _state(h) == before == (None, [])
     h.store(clock=StepClock(start=K_REST), element_microbatch_rows=1).ingest_collection(
         ss.agg_request("req-a")
@@ -580,7 +580,8 @@ def test_a_rest_unit_the_store_has_not_finished_is_refused_until_it_has(
     assert out.row_count == 3 and clock.calls == 1
     assert sorted(row["venue_trade_id"] for row in h.rows(c.TRADES)) == ["100", "101", "102"]
     assert [
-        row["revision_id"] for row in n.verify_unit(c.REST_AGGS.table, response["revision_id"])
+        row["revision_id"]
+        for row in n.collect_unit_rows(c.REST_AGGS.table, response["revision_id"])
     ] == c.unit_ids(h, response["revision_id"])
 
 
@@ -637,7 +638,7 @@ def test_recovery_follows_the_committed_plan_whatever_the_configuration(
     ]
     assert unit_batch_id(archive, 5, 2, 1).endswith(".0000000005.000002.00000001")
     assert len(h.rows(c.TRADES)) == 5
-    verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
+    verified = c.normalizer(h, clock=StepClock(start=K_NORM)).collect_unit_rows(
         c.ARCHIVE_AGGS.table, archive
     )
     assert [row["revision_id"] for row in verified] == c.unit_ids(h, archive)
@@ -661,7 +662,7 @@ def test_batches_whose_rows_were_deleted_fail_closed_without_a_clock_reading(
     match = "rows are gone" if delete == "all" else "rows deleted or added"
     before = _state(h)
     with pytest.raises(CatalogIntegrityError, match=match):
-        n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+        n.collect_unit_rows(c.ARCHIVE_AGGS.table, archive)
     clock = StepClock(start=K_NORM + timedelta(days=3))
     with pytest.raises(CatalogIntegrityError, match=match):
         c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
@@ -688,7 +689,9 @@ def test_a_batch_off_the_committed_plan_fails_closed(
     h.forge_rows(c.TRADES, [_forged_row(h, 3)], unit_batch_id(archive, 7, chunk, 1))
     before = _state(h)
     with pytest.raises(CatalogIntegrityError, match=match):
-        c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(c.ARCHIVE_AGGS.table, archive)
+        c.normalizer(h, clock=StepClock(start=K_NORM)).collect_unit_rows(
+            c.ARCHIVE_AGGS.table, archive
+        )
     for microbatch_rows in (1, 3, None):
         clock = StepClock(start=K_NORM)
         with pytest.raises(CatalogIntegrityError, match=match):
@@ -780,7 +783,8 @@ def test_an_empty_rest_page_is_a_unit_without_rows(h: RestHarness) -> None:
     out = c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(
         c.REST_AGGS.table, stored.pages[0].response_revision_id
     )
-    assert out.row_count == 0 and out.commits == () and h.rows(c.TRADES) == []
+    assert out.row_count == 0 and out.batch_count == out.committed_batches == 0
+    assert out.snapshot_id is None and out.replayed and h.rows(c.TRADES) == []
 
 
 # =========================================================================================
@@ -852,7 +856,9 @@ def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None
     log = _ScanLog(h.adapter)
     out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=2)\
         .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
-    assert [commit.row_count for commit in out.commits] == [2, 2, 2, 1]
+    assert out.batch_count == out.committed_batches == 4
+    committed = [s.added_rows for s in h.history(c.TRADES.table) if s.batch_id is not None]
+    assert committed == [2, 2, 2, 1]
     wide = [(table, rows) for table, width, rows in log.scans if width > 3]
     # Canonical rows are only ever read one window (or its block slice) at a time.
     assert max(rows for table, rows in wide if table == c.TRADES.table) <= 2
@@ -880,7 +886,7 @@ def test_windows_and_one_window_normalize_identically(h: RestHarness) -> None:
     for row in rows.values():
         by_key.setdefault(row["observation_key"], set()).add(row["payload_hash"])
     assert all(len(hashes) == 1 for hashes in by_key.values()) and len(by_key) == 5
-    assert small.verify_unit(c.ARCHIVE_AGGS.table, archive) == large.verify_unit(
+    assert small.collect_unit_rows(c.ARCHIVE_AGGS.table, archive) == large.collect_unit_rows(
         c.ARCHIVE_AGGS.table, archive
     )
 
@@ -909,10 +915,11 @@ def test_another_writer_mid_proof_restarts_the_unit_without_double_writes(h: Res
 
 
 def test_proof_windows_never_split_a_position_and_cover_all() -> None:
-    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [(1, 2), (3, 4), (5, 5)]
-    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1)]
+    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [(1, 2, 3), (3, 4, 2), (5, 5, 1)]
+    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1, 3)]
     assert list(nz._proof_windows([], 2)) == []
-    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40)]
+    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40, 3)]
+    assert list(nz._proof_windows(range(1, 6), 2)) == [(1, 2, 2), (3, 4, 2), (5, 5, 1)]
 
 
 @pytest.mark.parametrize(
@@ -975,9 +982,9 @@ def test_a_rest_unit_lacking_positions_another_page_delivered_is_normalized(
     assert out.arrival_seq_base is not None
     assert row["arrival_seq"] == out.arrival_seq_base + 3 and row["venue_trade_id"] == "103"
     assert n.normalize_unit(c.REST_AGGS.table, b.response_revision_id).replayed
-    assert [r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)] == [
-        own
-    ]
+    assert [
+        r["revision_id"] for r in n.collect_unit_rows(c.REST_AGGS.table, b.response_revision_id)
+    ] == [own]
 
 
 def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> None:
@@ -1034,7 +1041,7 @@ def _seven(h: RestHarness) -> tuple[str, list[dict[str, Any]]]:
 def test_a_restricted_verification_returns_the_windows_it_proves(h: RestHarness) -> None:
     archive, rows = _seven(h)
     n = c.normalizer(h, clock=StepClock(start=K_NORM))
-    full = n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    full = n.collect_unit_rows(c.ARCHIVE_AGGS.table, archive)
     assert [row["revision_id"] for row in full] == [row["revision_id"] for row in rows]
     # arrival_seq 3 lies in the second batch (positions 3-4); 7 in the last one.
     part = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={3, 7})
@@ -1063,7 +1070,7 @@ def test_a_restricted_verification_proves_the_raw_rows_it_reads(h: RestHarness) 
     with pytest.raises(CatalogIntegrityError):
         n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={4})
     with pytest.raises(CatalogIntegrityError):
-        n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+        n.collect_unit_rows(c.ARCHIVE_AGGS.table, archive)
 
 
 # =========================================================================================
@@ -1079,13 +1086,13 @@ def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarne
     assert len(committed) == 2
     n = c.normalizer(h, clock=StepClock(start=K_NORM))
     with pytest.raises(CanonicalUnitIncomplete, match="1 of the 3 batches"):
-        n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+        n.collect_unit_rows(c.ARCHIVE_AGGS.table, archive)
     with pytest.raises(CanonicalUnitIncomplete, match="1 of the 3 batches"):
         n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={committed[0]["arrival_seq"]})
     out = c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(
         c.ARCHIVE_AGGS.table, archive
     )
-    full = n.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    full = n.collect_unit_rows(c.ARCHIVE_AGGS.table, archive)
     assert [row["revision_id"] for row in full] == c.unit_ids(h, archive)
     assert out.row_count == 5
     part = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={committed[0]["arrival_seq"]})
@@ -1254,6 +1261,27 @@ def test_the_bounded_page_check_keeps_the_unbounded_verdicts(
 # =========================================================================================
 
 
+def test_narrow_rows_has_a_fixed_hard_upper_bound(h: RestHarness) -> None:
+    """A caller cannot raise the memory budget for unit-wide narrow reads."""
+    accepted = c.normalizer(
+        h,
+        clock=StepClock(start=K_NORM),
+        microbatch_rows=1,
+        narrow_rows=MAX_NARROW_ROWS,
+    )
+    assert accepted._narrow == MAX_NARROW_ROWS
+    assert DEFAULT_NARROW_ROWS <= MAX_NARROW_ROWS
+
+    for invalid in (0, -1, MAX_NARROW_ROWS + 1):
+        with pytest.raises(CanonicalNormalizeError, match="narrow_rows must be between"):
+            c.normalizer(
+                h,
+                clock=StepClock(start=K_NORM),
+                microbatch_rows=1,
+                narrow_rows=invalid,
+            )
+
+
 @dataclass
 class _ReadLog(ProxyCatalog):
     """Every scan, however narrow: ``(table, columns, limit, rows returned)``."""
@@ -1270,7 +1298,7 @@ def _pinned_reader(h: RestHarness, adapter: Any, chunk: int) -> CanonicalNormali
     """A reader on the current heads, as PIT pins them (reads go through ``adapter``)."""
     heads = {d.table: h.head(d.table) for d in (c.ARCHIVE_AGGS, c.ARCHIVES, c.TRADES)}
     view = PinnedCatalogView(adapter, {table: head for table, head in heads.items() if head})
-    return CanonicalNormalizer(view, h.storage, microbatch_rows=chunk)
+    return CanonicalNormalizer(view, h.storage, microbatch_rows=chunk, narrow_rows=chunk)
 
 
 def _unit_seqs(h: RestHarness, source: str) -> list[int]:
@@ -1292,11 +1320,13 @@ def test_no_read_of_an_archive_unit_grows_with_the_unit(h: RestHarness, count: i
         h, "agg_trades", lines, knowledge=K_ARCHIVE, store_microbatch_rows=chunk
     )
     log = _ReadLog(h.adapter)
-    n = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=chunk)
+    n = c.normalizer(
+        h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=chunk, narrow_rows=chunk
+    )
     out = n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
     assert out.row_count == count and not out.replayed
     assert n.normalize_unit(c.ARCHIVE_AGGS.table, archive).replayed
-    assert len(n.verify_unit(c.ARCHIVE_AGGS.table, archive)) == count
+    assert len(n.collect_unit_rows(c.ARCHIVE_AGGS.table, archive)) == count
     middle = _unit_seqs(h, archive)[count // 2]
     part = _pinned_reader(h, log, chunk).verify_unit(
         c.ARCHIVE_AGGS.table, archive, arrival_seqs={middle}
@@ -1386,7 +1416,7 @@ def _elements(value: Any) -> int:
 def _largest_local(h: RestHarness, archive: str, chunk: int) -> tuple[int, tuple[str, str]]:
     """Over a write, a replay and a pinned batch proof of ``archive`` (the full-unit
     ``verify_unit`` returns every row by contract, so it is not traced)."""
-    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=chunk)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=chunk, narrow_rows=chunk)
     with _LargestLocal() as probe:
         n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
         n.normalize_unit(c.ARCHIVE_AGGS.table, archive)

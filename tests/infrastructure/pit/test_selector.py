@@ -389,13 +389,17 @@ def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> Non
     spec = _spec(h, cutoff=FAR)
     log = _RawScans(h.adapter)
     shared = PitSelector(log, h.storage)
+    narrow: list[int] = []
     for start, end in slices:
         out = shared.select(spec, "agg_trades", SYMBOL, start, end)
         fresh = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, start, end)
         assert out.selections == fresh.selections
         assert dict(out.selected_rows) == dict(fresh.selected_rows)
-    # The unit's positions (a narrow read) were read once for both slices.
-    assert log.columns.count(("archive_line_number", "symbol")) == 1
+        narrow.append(log.columns.count(("archive_line_number",)))
+    # The unit's positions were proven once for both slices (E1-CAP-1: one sample of the unit,
+    # then narrow position windows and probes — none of them again for the second slice).
+    assert log.columns.count(("symbol",)) == 1
+    assert narrow[0] >= 1 and narrow[1] == narrow[0]
     # A new spec (other bindings) starts over.
     later = _spec(h, cutoff=K_A)
     shared.select(later, "agg_trades", SYMBOL, *slices[0])

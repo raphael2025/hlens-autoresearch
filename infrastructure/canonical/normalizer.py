@@ -28,16 +28,22 @@ the unit (G3-S): a unit is read, proven and written in windows of Raw positions.
 4. **close** — at the final snapshot the unit's rows are exactly ``base + position`` of its Raw
    rows and nothing else sits in its block.
 
-No step holds the unit (E1-CAP-1). An archive unit's positions are proven to be exactly its
-object's lines ``1 … N`` one window at a time and are then the O(1) ``range(1, N + 1)``; a REST
-unit is one page, at most ``PAGE_LIMIT`` positions. Block base and ready time are recovered from
-one committed row, and every unit-wide equality — committed rows against their plan, the closing
-block — is checked batch by batch over position ranges that tile the unit, plus a one-row probe
-outside them. Every Raw element or Canonical read is thereby capped at one microbatch (+ 1 row),
-or at one page for a REST unit; what grows with the unit is only its committed batch list (one
-entry per Iceberg snapshot, which the table metadata holds anyway) and the strict D1 re-parse of an
-archive object that ``PersistedRowVerifier`` proves rows against (D3E-R3). The full-unit form of
-``verify_unit`` returns — and so holds — every row; bounded readers pass ``arrival_seqs``.
+No step holds the unit, or anything per batch of it (E1-CAP-1). An archive unit's positions are
+proven to be exactly its object's lines ``1 … N`` in fixed narrow windows and are then the O(1)
+``range(1, N + 1)``; a REST unit is one page, at most ``PAGE_LIMIT`` positions. The committed plan
+is three ints — unit size, microbatch, committed batches — proven by one ordered walk of the
+pinned history (the batches are ``0 … count - 1``, each committed once and in order); batch
+snapshots are streamed from that history when a batch is proven, and the write resumes at
+``count``. Block base and ready time come from one committed row; every unit-wide equality —
+committed rows against their plan, the closing block — is checked over tiles of whole batches
+(at most ``narrow_rows`` rows) plus one-row probes outside them. Every read of the Raw element
+or Canonical table is capped at one microbatch or one narrow window (+ 1 row), or one page for a
+REST unit, and the result reports counts, not a list per batch. The strict D1 re-parse that
+``PersistedRowVerifier`` proves archive rows against is spooled to disk and read back one window
+of lines at a time (``spool_archive``). ``collect_unit_rows`` is the one explicitly unbounded form
+(it returns every row); no production path calls it — readers use ``verify_unit(...,
+arrival_seqs=...)``. What still grows with the table's commits is the Iceberg metadata itself
+(one snapshot and one manifest per committed batch), which PyIceberg loads for every read.
 
 A unit whose Raw rows changed after it was first normalized no longer matches its committed plan
 and fails closed: normalize a Raw unit only after its ingest returned. Readers (``verify_unit``)
@@ -53,7 +59,8 @@ from bisect import bisect_left
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from pathlib import Path
+from typing import Any, Final, Self
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
@@ -81,6 +88,7 @@ from core.contracts.catalog import (
 from core.contracts.storage import StorageAdapter
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.parser.archive_spool import DEFAULT_SPOOL_CHUNK_ROWS
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.rest_identity import PAGE_LIMIT
 from infrastructure.revision.row_integrity import (
@@ -90,11 +98,14 @@ from infrastructure.revision.row_integrity import (
     batch_rows,
     check_batch_snapshot,
     history_from,
+    ordered_batches,
 )
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import RevisionCatalog
 
 __all__ = [
     "DEFAULT_MICROBATCH_ROWS",
+    "DEFAULT_NARROW_ROWS",
+    "MAX_NARROW_ROWS",
     "MAX_MICROBATCH_ROWS",
     "CanonicalNormalizeConflict",
     "CanonicalNormalizeError",
@@ -107,6 +118,15 @@ __all__ = [
 
 DEFAULT_MICROBATCH_ROWS: Final = 25_000
 MAX_MICROBATCH_ROWS: Final = 250_000
+#: Rows per narrow (one to three column) read of the unit-wide checks: Raw positions, committed
+#: ``arrival_seq`` / ``knowledge_time`` and the closing block (E1-CAP-1). A fixed window, never
+#: the unit: at least the microbatch, so a check reads whole batches.
+DEFAULT_NARROW_ROWS: Final = 65_536
+#: Hard ceiling for caller-selected narrow reads. Raising this requires changing the E1 capacity
+#: budget deliberately; a runtime configuration cannot make unit-wide checks wider than it.
+MAX_NARROW_ROWS: Final = 65_536
+#: Revision ids per uniqueness lookup (``_check_unique``).
+_UNIQUE_CHUNK: Final = 4_096
 _ATTEMPTS: Final = 8
 #: Observation keys per ``IN`` lookup of the elements another page delivered first.
 _KEY_CHUNK: Final = 256
@@ -184,11 +204,21 @@ def _unit_prefix(source_revision_id: str) -> str:
 
 @dataclass(frozen=True, slots=True)
 class _CommittedPlan:
-    """What the unit's committed batch ids say about the plan that wrote them."""
+    """What the unit's committed batch ids say about the plan that wrote them.
+
+    Three ints (E1-CAP-1): the committed batches are proven to be exactly ``0 … count - 1``,
+    each committed once and in order (``ordered_batches``); their snapshots are streamed from
+    the pinned history when needed (``_plan_snapshots``), never collected.
+    """
 
     unit_rows: int
     chunk: int
-    batches: Mapping[int, SnapshotInfo]
+    count: int
+
+    @property
+    def planned(self) -> int:
+        """Batches of the whole plan."""
+        return -(-self.unit_rows // self.chunk)
 
 
 @dataclass(frozen=True, slots=True)
@@ -204,11 +234,17 @@ class CanonicalUnitNormalized:
     #: Canonical revisions of the unit (one per Raw element revision; E1-CAP-1: a count, not
     #: the ids — read them from the table, batch by batch, when needed).
     row_count: int
-    commits: tuple[BatchCommit, ...]
+    #: Batches of the unit's plan (``0`` for an empty unit) and how many of them this call
+    #: committed; the others were already committed (E1-CAP-1: counts, not a list per batch).
+    batch_count: int
+    committed_batches: int
+    #: The Canonical snapshot the unit was closed at (``None`` for an empty unit).
+    snapshot_id: str | None
 
     @property
     def replayed(self) -> bool:
-        return all(commit.replayed for commit in self.commits)
+        """Nothing was committed by this call (every batch was already committed)."""
+        return self.committed_batches == 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -242,7 +278,7 @@ class _Survey:
     #: Recovered from the committed rows when ``plan`` is set.
     base: int | None
     ready: datetime | None
-    #: The committed rows, window by window (only collected when asked for).
+    #: The committed rows, window by window (only ``collect_unit_rows`` collects them).
     committed_rows: tuple[Mapping[str, Any], ...]
     #: The unit's Raw positions, ascending and distinct (batches are rank slices of them);
     #: ``range`` for an archive unit, at most ``PAGE_LIMIT`` ints for a REST one.
@@ -264,17 +300,26 @@ class CanonicalNormalizer:
         *,
         clock: Callable[[], datetime] | None = None,
         microbatch_rows: int = DEFAULT_MICROBATCH_ROWS,
+        narrow_rows: int = DEFAULT_NARROW_ROWS,
+        spool_dir: Path | None = None,
     ) -> None:
-        if not isinstance(microbatch_rows, int) or isinstance(microbatch_rows, bool):
-            raise CanonicalNormalizeError("microbatch_rows must be an int")
+        for name, value in (("microbatch_rows", microbatch_rows), ("narrow_rows", narrow_rows)):
+            if not isinstance(value, int) or isinstance(value, bool):
+                raise CanonicalNormalizeError(f"{name} must be an int")
         if not 1 <= microbatch_rows <= MAX_MICROBATCH_ROWS:
             raise CanonicalNormalizeError(
                 f"microbatch_rows must be between 1 and {MAX_MICROBATCH_ROWS}"
             )
+        if not 1 <= narrow_rows <= MAX_NARROW_ROWS:
+            raise CanonicalNormalizeError(f"narrow_rows must be between 1 and {MAX_NARROW_ROWS}")
         self._adapter = adapter
         self._storage = storage
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = microbatch_rows
+        #: Narrow checks read whole batches of the plan they check, at least one per read.
+        self._narrow = narrow_rows
+        #: Where the verifier spools re-parsed archive objects (a disk directory; E1-CAP-1).
+        self._spool_dir = spool_dir
         #: On a ``PinnedCatalogView`` nothing can change under the normalizer (it cannot write
         #: there either), so its pins — with their archive caches — and each unit's unit-wide
         #: facts are proven once and reused by every later call (G3-S3: a reader of many time
@@ -284,6 +329,25 @@ class CanonicalNormalizer:
         self._facts: dict[tuple[str, str], _UnitFacts] = {}
         self._batches: dict[tuple[str, str, int], tuple[Mapping[str, Any], ...]] = {}
 
+    def close(self) -> None:
+        """Delete the spooled archive objects of the pins this normalizer keeps (idempotent)."""
+        for pin in self._pins.values():
+            pin.verifier.close()
+        self._pins.clear()
+        self._facts.clear()
+        self._batches.clear()
+
+    def __enter__(self) -> Self:
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.close()
+
+    def _done_with(self, pin: _Pin) -> None:
+        """A pin nobody keeps: its spools go now, not at garbage collection."""
+        if not self._frozen:
+            pin.verifier.close()
+
     # ------------------------------------------------------------------ entry points
 
     def normalize_unit(self, raw_table: str, source_revision_id: str) -> CanonicalUnitNormalized:
@@ -291,41 +355,50 @@ class CanonicalNormalizer:
         last_error: Exception | None = None
         for _ in range(_ATTEMPTS):
             pin = self._pin(channel, source_revision_id)
-            survey = self._survey(pin, channel, source_revision_id, keep_rows=False)
-            if survey.unit_rows == 0:
-                return CanonicalUnitNormalized(
-                    raw_table=raw_table,
-                    source_revision_id=source_revision_id,
-                    canonical_table=channel.canonical.table,
-                    arrival_seq_base=None,
-                    knowledge_time=None,
-                    row_count=0,
-                    commits=(),
-                )
-            if survey.plan is None:
-                assert survey.raw_floor is not None
-                base, ready = self._allocate(channel, survey.raw_floor)
-                chunk = self._microbatch
-            else:
-                assert survey.base is not None and survey.ready is not None
-                base, ready, chunk = survey.base, survey.ready, survey.plan.chunk
             try:
-                commits = self._write(pin, channel, source_revision_id, survey, base, ready, chunk)
-            except CommitConflict as exc:
-                last_error = exc  # another writer moved the table: start over, adopt its work
-                continue
-            except BatchConflict as exc:
+                survey = self._survey(pin, channel, source_revision_id, keep_rows=False)
+                if survey.unit_rows == 0:
+                    return CanonicalUnitNormalized(
+                        raw_table=raw_table,
+                        source_revision_id=source_revision_id,
+                        canonical_table=channel.canonical.table,
+                        arrival_seq_base=None,
+                        knowledge_time=None,
+                        row_count=0,
+                        batch_count=0,
+                        committed_batches=0,
+                        snapshot_id=None,
+                    )
                 if survey.plan is None:
-                    # A rival allocated first (its own block and clock reading) and committed
-                    # this batch id: start over and adopt its plan — the clock is never read again.
-                    last_error = exc
+                    assert survey.raw_floor is not None
+                    base, ready = self._allocate(channel, survey.raw_floor)
+                    chunk = self._microbatch
+                else:
+                    assert survey.base is not None and survey.ready is not None
+                    base, ready, chunk = survey.base, survey.ready, survey.plan.chunk
+                try:
+                    committed, snapshot = self._write(
+                        pin, channel, source_revision_id, survey, base, ready, chunk
+                    )
+                except CommitConflict as exc:
+                    last_error = exc  # another writer moved the table: start over, adopt its work
                     continue
-                # Our plan was recovered from committed batches, which every writer recovers
-                # identically: another content under the same id is corruption, not contention.
-                raise CatalogIntegrityError(
-                    f"a Canonical batch of unit {source_revision_id} is committed with other "
-                    f"content: {exc}"
-                ) from None
+                except BatchConflict as exc:
+                    if survey.plan is None:
+                        # A rival allocated first (its own block and clock reading) and committed
+                        # this batch id: start over and adopt its plan — the clock is never read
+                        # again.
+                        last_error = exc
+                        continue
+                    # Our plan was recovered from committed batches, which every writer recovers
+                    # identically: another content under the same id is corruption, not
+                    # contention.
+                    raise CatalogIntegrityError(
+                        f"a Canonical batch of unit {source_revision_id} is committed with other "
+                        f"content: {exc}"
+                    ) from None
+            finally:
+                self._done_with(pin)
             return CanonicalUnitNormalized(
                 raw_table=raw_table,
                 source_revision_id=source_revision_id,
@@ -333,7 +406,9 @@ class CanonicalNormalizer:
                 arrival_seq_base=base,
                 knowledge_time=ready,
                 row_count=survey.unit_rows,
-                commits=tuple(commits),
+                batch_count=-(-survey.unit_rows // chunk),
+                committed_batches=committed,
+                snapshot_id=snapshot,
             )
         raise CanonicalNormalizeConflict(
             f"unit {source_revision_id} of {raw_table} lost {_ATTEMPTS} commit races"
@@ -344,33 +419,48 @@ class CanonicalNormalizer:
         raw_table: str,
         source_revision_id: str,
         *,
-        arrival_seqs: Iterable[int] | None = None,
+        arrival_seqs: Iterable[int],
     ) -> tuple[Mapping[str, Any], ...]:
-        """The unit's committed Canonical rows, proven; nothing is written and no clock is read.
+        """The committed batches holding ``arrival_seqs``, proven; no write, no clock (G3-S2).
 
-        The committed batch ids give the plan (unit size, microbatch size). Every Raw row of
-        the unit is proven, the committed rows must be exactly what their Raw rows normalize to
-        under the recovered block base and ready time, the committed batches must be the whole
-        plan (a prefix is ``CanonicalUnitIncomplete``, G2-R1a) with their exact fingerprints, and
-        the committed rows must be exactly those batches' rows; a REST unit's missing elements
-        must be held by other committed pages. A unit with no committed batch returns no rows.
-        Run on a catalog view pinned to a manifest's snapshots, it proves what those snapshots
-        held (Phase 1 F1).
+        The committed batch ids give the plan (unit size, microbatch size). Every unit-wide fact
+        is checked — the plan is committed whole (a prefix is ``CanonicalUnitIncomplete``,
+        G2-R1a), the Raw positions are distinct and an archive's whole object, block base and
+        ready time agree, the unit's committed rows are exactly its committed batches' — from
+        narrow reads of a fixed window; the batches holding those numbers are then proven like
+        a full proof proves each batch (their Raw rows, fingerprints and exact content) and
+        returned. A unit with no committed batch returns no rows. Run on a catalog view pinned
+        to a manifest's snapshots, it proves what those snapshots held (Phase 1 F1).
 
-        With ``arrival_seqs`` (G3-S2) only the committed batches holding those numbers are proven
-        and returned — their Raw rows, fingerprints and exact content — while every unit-wide
-        fact (plan, distinct Raw positions and an archive's whole object, block base and ready
-        time, the unit's committed rows being exactly its committed batches') is still checked
-        from narrow columns. A reader of one time window of a large unit thus proves what it
-        reads without holding the unit.
+        Memory is one microbatch per asked batch plus fixed windows, never the unit (E1-CAP-1);
+        ``collect_unit_rows`` is the separate, explicitly unbounded whole-unit form.
         """
         channel = self._channel(raw_table, source_revision_id)
         pin = self._pin(channel, source_revision_id)
-        if arrival_seqs is None:
+        try:
+            return self._verify_batches(pin, channel, source_revision_id, frozenset(arrival_seqs))
+        finally:
+            self._done_with(pin)
+
+    def collect_unit_rows(
+        self, raw_table: str, source_revision_id: str
+    ) -> tuple[Mapping[str, Any], ...]:
+        """**Every** committed Canonical row of the unit, proven — memory O(unit rows).
+
+        A convenience for tests, debugging and exports of small units: it runs the full proof
+        (the replay's survey, batch by batch) and additionally keeps and returns every row. No
+        production path calls it — ``normalize_unit`` proves without keeping rows and readers
+        use ``verify_unit(..., arrival_seqs=...)`` (E1-CAP-1). A committed prefix of the plan is
+        ``CanonicalUnitIncomplete`` (RT-1); a unit with no committed batch returns no rows.
+        """
+        channel = self._channel(raw_table, source_revision_id)
+        pin = self._pin(channel, source_revision_id)
+        try:
             survey = self._survey(pin, channel, source_revision_id, keep_rows=True)
-            _require_complete(channel, source_revision_id, survey.plan, survey.unit_rows)
-            return survey.committed_rows
-        return self._verify_batches(pin, channel, source_revision_id, frozenset(arrival_seqs))
+        finally:
+            self._done_with(pin)
+        _require_complete(channel, source_revision_id, survey.plan)
+        return survey.committed_rows
 
     def _verify_batches(
         self,
@@ -384,23 +474,36 @@ class CanonicalNormalizer:
         if facts.plan is None or facts.base is None or facts.ready is None:
             return ()
         plan, base, ready = facts.plan, facts.base, facts.ready
-        _require_complete(channel, source_revision_id, plan, len(facts.positions))
-        wanted = _batches_holding(facts.positions, plan.chunk, base, seqs) & set(plan.batches)
+        _require_complete(channel, source_revision_id, plan)
+        wanted = {
+            index
+            for index in _batches_holding(facts.positions, plan.chunk, base, seqs)
+            if index < plan.count
+        }
         kept: list[Mapping[str, Any]] = []
+        unproven: set[int] = set()
+        for index in sorted(wanted):
+            key = (channel.element.table, source_revision_id, index)
+            proven = self._batches.get(key) if self._frozen else None
+            if proven is None:
+                unproven.add(index)
+        snapshots = dict(self._plan_snapshots(pin, channel, source_revision_id, plan, unproven))
         for index in sorted(wanted):
             key = (channel.element.table, source_revision_id, index)
             proven = self._batches.get(key) if self._frozen else None
             if proven is not None:
                 kept.extend(proven)
                 continue
-            low, high, _ = _batch_window(facts.positions, plan.chunk, index)
-            raw = self._raw_window(pin, channel, source_revision_id, low, high)
+            low, high, end = _batch_window(facts.positions, plan.chunk, index)
+            raw = self._raw_window(
+                pin, channel, source_revision_id, low, high, end - index * plan.chunk
+            )
             self._prove(pin, channel, raw)
             planned = self._planned(channel, raw, base, ready)
             check_batch_snapshot(
                 channel.canonical,
                 unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
-                plan.batches[index],
+                snapshots[index],
                 planned,
             )
             self._check_committed_window(pin, channel, base, low, high, planned)
@@ -415,7 +518,7 @@ class CanonicalNormalizer:
     def _unit_facts(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
     ) -> _UnitFacts:
-        """Every unit-wide fact, from narrow columns; kept per unit on an immutable view."""
+        """Every unit-wide fact, from narrow reads; kept per unit on an immutable view."""
         key = (channel.element.table, source_revision_id)
         cached = self._facts.get(key) if self._frozen else None
         if cached is not None:
@@ -427,14 +530,7 @@ class CanonicalNormalizer:
         if plan is not None:
             assert base is not None and ready is not None
             self._check_unit_numbers(
-                pin,
-                channel,
-                source_revision_id,
-                positions,
-                plan.chunk,
-                len(plan.batches),
-                base,
-                ready,
+                pin, channel, source_revision_id, positions, plan.chunk, plan.count, base, ready
             )
         facts = _UnitFacts(positions, plan, base, ready)
         self._check_rest_unit(pin, channel, source_revision_id, positions)
@@ -471,7 +567,13 @@ class CanonicalNormalizer:
             pin = _Pin(
                 catalog=catalog,
                 canonical_head=heads[2],
-                verifier=PersistedRowVerifier(catalog, self._storage, cache_archives=True),
+                verifier=PersistedRowVerifier(
+                    catalog,
+                    self._storage,
+                    cache_archives=True,
+                    spool_dir=self._spool_dir,
+                    spool_rows=min(DEFAULT_SPOOL_CHUNK_ROWS, self._microbatch),
+                ),
             )
             if self._frozen:
                 self._pins[tables] = pin
@@ -508,8 +610,8 @@ class CanonicalNormalizer:
     ) -> _Survey:
         positions = self._positions(pin, channel, source_revision_id)
         floor: datetime | None = None
-        for low, high in _proof_windows(positions, self._microbatch):
-            raw = self._raw_window(pin, channel, source_revision_id, low, high)
+        for low, high, count in _proof_windows(positions, self._microbatch):
+            raw = self._raw_window(pin, channel, source_revision_id, low, high, count)
             self._prove(pin, channel, raw)
             latest = max(row["knowledge_time"] for row in raw)
             floor = latest if floor is None else max(floor, latest)
@@ -522,15 +624,18 @@ class CanonicalNormalizer:
         if plan is None:
             return _Survey(unit_rows, floor, None, None, None, (), positions)
         assert base is not None and ready is not None
-        kept: list[Mapping[str, Any]] = []
-        for index in sorted(plan.batches):
-            low, high, _ = _batch_window(positions, plan.chunk, index)
-            raw = self._raw_window(pin, channel, source_revision_id, low, high)
+        kept: list[list[Mapping[str, Any]]] = []
+        # Newest first, i.e. highest index first: the snapshots stream from the pinned history.
+        for index, snapshot in self._plan_snapshots(pin, channel, source_revision_id, plan, None):
+            low, high, end = _batch_window(positions, plan.chunk, index)
+            raw = self._raw_window(
+                pin, channel, source_revision_id, low, high, end - index * plan.chunk
+            )
             planned = self._planned(channel, raw, base, ready)
             check_batch_snapshot(
                 channel.canonical,
                 unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
-                plan.batches[index],
+                snapshot,
                 planned,
             )
             self._check_committed_window(pin, channel, base, low, high, planned)
@@ -538,11 +643,12 @@ class CanonicalNormalizer:
                 # A replay re-checks what its first run read back (E2 of review E).
                 self._check_unique(pin.catalog, channel, planned, None)
             if keep_rows:
-                kept.extend(planned)
+                kept.append(planned)  # collect_unit_rows only
         self._check_unit_numbers(
-            pin, channel, source_revision_id, positions, plan.chunk, len(plan.batches), base, ready
+            pin, channel, source_revision_id, positions, plan.chunk, plan.count, base, ready
         )
-        return _Survey(unit_rows, floor, plan, base, ready, tuple(kept), positions)
+        rows = tuple(row for batch_rows in reversed(kept) for row in batch_rows)
+        return _Survey(unit_rows, floor, plan, base, ready, rows, positions)
 
     def _committed_state(
         self,
@@ -580,14 +686,10 @@ class CanonicalNormalizer:
                 f"{table}: unit {source_revision_id} was normalized as {plan.unit_rows} rows but "
                 f"its Raw unit now has {unit_rows}: the Raw unit changed"
             )
-        indices = sorted(plan.batches)
-        if indices != list(range(len(indices))):
+        # ``_committed_plan`` proved the batches are exactly ``0 … count - 1`` (in order, once).
+        if (plan.count - 1) * plan.chunk >= unit_rows:
             raise CatalogIntegrityError(
-                f"{table}: the batches of unit {source_revision_id} are not a contiguous prefix"
-            )
-        if indices and indices[-1] * plan.chunk >= unit_rows:
-            raise CatalogIntegrityError(
-                f"{table}: batch {indices[-1]} of unit {source_revision_id} lies beyond its plan"
+                f"{table}: batch {plan.count - 1} of unit {source_revision_id} lies beyond its plan"
             )
         return plan, base, ready
 
@@ -597,7 +699,7 @@ class CanonicalNormalizer:
         """The unit's Raw positions, ascending and distinct, proven without holding them.
 
         An archive unit must be exactly its object's lines ``1 … N`` (review E-3: a unit missing
-        its last lines is truncated, not smaller). That is proven one window of ``microbatch``
+        its last lines is truncated, not smaller). That is proven one window of ``narrow_rows``
         positions at a time — one narrow column, each read capped at one row beyond its window —
         plus two one-row probes (a null position, a position outside ``1 … N``); the positions
         are then ``range(1, N + 1)``, O(1) whatever ``N`` (E1-CAP-1).
@@ -645,8 +747,8 @@ class CanonicalNormalizer:
         )
         if self._any_row(pin, table, column, And(unit, outside)):
             raise CatalogIntegrityError(whole)
-        for low in range(1, expected + 1, self._microbatch):
-            high = min(low + self._microbatch - 1, expected)
+        for low in range(1, expected + 1, self._narrow):
+            high = min(low + self._narrow - 1, expected)
             size = high - low + 1
             found = pin.catalog.scan_columns(
                 table,
@@ -687,8 +789,13 @@ class CanonicalNormalizer:
         source_revision_id: str,
         low: int,
         high: int,
+        count: int,
     ) -> list[Mapping[str, Any]]:
-        """The unit's Raw rows at positions ``low … high``, in position order."""
+        """The unit's ``count`` Raw rows at positions ``low … high``, in position order.
+
+        ``_positions`` proved the unit's positions distinct, ``count`` of them in the range; the
+        read is capped at ``count + 1`` rows, and any other number of rows there fails closed.
+        """
         offset = 0 if channel.name == "archive" else 1
         columns = tuple(field.name for field in channel.element.arrow_schema)
         rows: list[Mapping[str, Any]] = pin.catalog.scan_columns(
@@ -698,7 +805,13 @@ class CanonicalNormalizer:
                 _equals(channel.lineage_column, source_revision_id),
                 _between(_position_column(channel), low - offset, high - offset),
             ),
+            limit=count + 1,
         ).to_pylist()
+        if len(rows) != count:
+            raise CatalogIntegrityError(
+                f"{channel.element.table}: unit {source_revision_id} holds {len(rows)} Raw rows "
+                f"at positions {low} … {high}, not the {count} its positions name"
+            )
         return sorted(rows, key=lambda row: (rules.position_of(channel, row), row["revision_id"]))
 
     def _prove(
@@ -727,48 +840,87 @@ class CanonicalNormalizer:
     def _committed_plan(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
     ) -> _CommittedPlan | None:
-        """The plan the unit's batch ids record up to the pinned head; ``None`` if none."""
+        """The plan the unit's batch ids record up to the pinned head; ``None`` if none.
+
+        One ordered walk of the pinned history keeping three ints (E1-CAP-1): every batch id
+        of the unit is well formed and of one lawful plan, and the batches are ``0 … count - 1``,
+        each committed once and in order (``ordered_batches``).
+        """
+        table = channel.canonical.table
+        plans: list[tuple[int, int]] = []
+        count = 0
+        for _ in self._plan_walk(pin, channel, source_revision_id, plans):
+            count += 1
+        if not plans:
+            return None
+        [(unit_rows, chunk)] = plans
+        if unit_rows < 1 or not 1 <= chunk <= MAX_MICROBATCH_ROWS:
+            raise CatalogIntegrityError(
+                f"{table}: unit {source_revision_id} records no lawful plan"
+            )
+        return _CommittedPlan(unit_rows=unit_rows, chunk=chunk, count=count)
+
+    def _plan_walk(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        plans: list[tuple[int, int]],
+    ) -> Iterator[tuple[int, SnapshotInfo]]:
+        """The unit's batches at the pinned head, newest first; ``plans`` gets their one plan."""
         table = channel.canonical.table
         prefix = _unit_prefix(source_revision_id)
-        plans: set[tuple[int, int]] = set()
-        batches: dict[int, list[SnapshotInfo]] = {}
-        for snapshot in history_from(self._adapter, table, pin.canonical_head):
-            batch_id = snapshot.batch_id
-            if batch_id is None or not batch_id.startswith(prefix):
-                continue
+        widths = (_ROWS_DIGITS, _CHUNK_DIGITS, _INDEX_DIGITS)
+
+        def index_of(batch_id: str) -> int | None:
+            if not batch_id.startswith(prefix):
+                return None
             parts = batch_id[len(prefix) :].split(".")
-            widths = (_ROWS_DIGITS, _CHUNK_DIGITS, _INDEX_DIGITS)
             if len(parts) != 3 or any(
                 len(part) != width or not part.isascii() or not part.isdigit()
                 for part, width in zip(parts, widths, strict=True)
             ):
                 raise CatalogIntegrityError(f"{table} has a malformed batch id {batch_id!r}")
             unit_rows, chunk, index = (int(part) for part in parts)
-            plans.add((unit_rows, chunk))
-            batches.setdefault(index, []).append(snapshot)
-        if not plans:
-            return None
-        if len(plans) != 1:
-            raise CatalogIntegrityError(
-                f"{table}: unit {source_revision_id} has batches of more than one plan"
-            )
-        [(unit_rows, chunk)] = plans
-        if unit_rows < 1 or not 1 <= chunk <= MAX_MICROBATCH_ROWS:
-            raise CatalogIntegrityError(
-                f"{table}: unit {source_revision_id} records no lawful plan"
-            )
-        for index, snapshots in batches.items():
-            if len(snapshots) != 1:
+            if not plans:
+                plans.append((unit_rows, chunk))
+            elif plans[0] != (unit_rows, chunk):
                 raise CatalogIntegrityError(
-                    f"{table} has rows of batch "
-                    f"{unit_batch_id(source_revision_id, unit_rows, chunk, index)} but "
-                    f"{len(snapshots)} snapshots committing it"
+                    f"{table}: unit {source_revision_id} has batches of more than one plan"
                 )
-        return _CommittedPlan(
-            unit_rows=unit_rows,
-            chunk=chunk,
-            batches={index: snapshots[0] for index, snapshots in sorted(batches.items())},
+            return index
+
+        def name_of(index: int) -> str:
+            unit_rows, chunk = plans[0]
+            return unit_batch_id(source_revision_id, unit_rows, chunk, index)
+
+        return ordered_batches(
+            history_from(self._adapter, table, pin.canonical_head),
+            table,
+            index_of,
+            name_of,
+            f"batches of unit {source_revision_id}",
         )
+
+    def _plan_snapshots(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        plan: _CommittedPlan,
+        wanted: Collection[int] | None,
+    ) -> Iterator[tuple[int, SnapshotInfo]]:
+        """``(index, snapshot)`` of the plan's committed batches (``wanted`` only, if given),
+        newest first, streamed from the pinned history — never collected (E1-CAP-1)."""
+        if wanted is not None and not wanted:
+            return
+        found = 0
+        for index, snapshot in self._plan_walk(pin, channel, source_revision_id, []):
+            if wanted is None or index in wanted:
+                yield index, snapshot
+                found += 1
+                if wanted is not None and found == len(wanted):
+                    return  # ``_committed_plan`` proved each index committed once
 
     def _any_row(self, pin: _Pin, table: str, column: str, row_filter: BooleanExpression) -> bool:
         """Whether ``row_filter`` matches a row at the pinned view (reads at most one)."""
@@ -828,15 +980,16 @@ class CanonicalNormalizer:
         ready: datetime,
     ) -> None:
         """The unit's committed rows are exactly ``base + position`` of its first ``batches``
-        batches, all at ``ready``: one tile of ``arrival_seq`` per batch (each read capped at
-        its batch + 1 row), then a one-row probe for any row of the unit outside the tiles."""
+        batches, all at ``ready``: tiles of whole batches, at most ``narrow_rows`` (or one batch)
+        each, of ``arrival_seq`` / ``knowledge_time`` (each read capped at its tile + 1 row),
+        then a one-row probe for any row of the unit outside the tiles."""
         table = channel.canonical.table
         unit = self._unit_filter(channel, source_revision_id)
         extra = (
             f"{table}: the committed rows of unit {source_revision_id} are not exactly the rows "
             "of its committed batches (rows deleted or added)"
         )
-        for start, end, low, high in _tiles(positions, chunk, batches):
+        for start, end, low, high in _tiles(positions, chunk, batches, self._narrow):
             found = pin.catalog.scan_columns(
                 table,
                 columns=("arrival_seq", "knowledge_time"),
@@ -924,31 +1077,25 @@ class CanonicalNormalizer:
         base: int,
         ready: datetime,
         chunk: int,
-    ) -> list[BatchCommit]:
-        """Commit the plan's missing batches in order, each read back at its own snapshot."""
+    ) -> tuple[int, str | None]:
+        """Commit the plan's missing batches in order, each read back at its own snapshot.
+
+        The committed batches are the plan's prefix ``0 … count - 1`` (proven by the survey),
+        so the missing ones are simply the rest: nothing per batch is kept (E1-CAP-1). Returns
+        how many batches this call committed and the snapshot the unit was closed at.
+        """
         definition = channel.canonical
         unit_rows = survey.unit_rows
-        done = {} if survey.plan is None else dict(survey.plan.batches)
+        committed = 0
         parent = pin.canonical_head
-        commits: list[BatchCommit] = []
         positions = survey.positions
-        for index in range(-(-unit_rows // chunk)):
+        first = 0 if survey.plan is None else survey.plan.count
+        for index in range(first, -(-unit_rows // chunk)):
             low, high, end = _batch_window(positions, chunk, index)
             batch_id = unit_batch_id(source_revision_id, unit_rows, chunk, index)
-            if index in done:
-                commits.append(
-                    BatchCommit(
-                        table=definition.table,
-                        batch_id=batch_id,
-                        snapshot_id=done[index].snapshot_id,
-                        outcome=CommitOutcome.ALREADY_COMMITTED,
-                        row_count=end - index * chunk,
-                    )
-                )
-                continue
             planned = self._planned(
                 channel,
-                self._raw_window(pin, channel, source_revision_id, low, high),
+                self._raw_window(pin, channel, source_revision_id, low, high, end - index * chunk),
                 base,
                 ready,
             )
@@ -963,17 +1110,10 @@ class CanonicalNormalizer:
             result = self._adapter.commit_batch(request, table)
             parent = result.snapshot.snapshot_id
             self._read_back(channel, base, low, high, planned, parent)
-            commits.append(
-                BatchCommit(
-                    table=definition.table,
-                    batch_id=batch_id,
-                    snapshot_id=parent,
-                    outcome=result.outcome,
-                    row_count=len(planned),
-                )
-            )
+            if result.outcome is CommitOutcome.COMMITTED:
+                committed += 1
         self._close(channel, source_revision_id, base, positions, chunk, parent)
-        return commits
+        return committed, parent
 
     def _read_back(
         self,
@@ -1006,27 +1146,32 @@ class CanonicalNormalizer:
 
         A revision id names its observation, so an honest duplicate shares the symbol and time
         of its original (one partition range); a row lying about them is not scanned here but is
-        refused by every PIT proof of the unit it claims (G3-S; review E-2).
+        refused by every PIT proof of the unit it claims (G3-S; review E-2). The ids are looked
+        up ``_UNIQUE_CHUNK`` at a time, each read capped at the chunk + 1 row (E1-CAP-1): exactly
+        ``len(chunk)`` distinct ids among the rows found means each is held exactly once.
         """
         definition = channel.canonical
         column = _time_column(channel)
         times = [row[column] for row in planned]
-        found = catalog.scan_columns(
-            definition.table,
-            columns=("revision_id",),
-            row_filter=And(
-                _equals("symbol", planned[0]["symbol"]),
-                _between(column, min(times), max(times)),
-            ),
-            snapshot_id=snapshot_id,
-        ).column("revision_id")
-        counts = pc.value_counts(found)
-        held = {item["values"].as_py(): item["counts"].as_py() for item in counts}
-        for row in planned:
-            if held.get(row["revision_id"]) != 1:
+        where = And(
+            _equals("symbol", planned[0]["symbol"]), _between(column, min(times), max(times))
+        )
+        ids = [row["revision_id"] for row in planned]
+        for start in range(0, len(ids), _UNIQUE_CHUNK):
+            chunk = ids[start : start + _UNIQUE_CHUNK]
+            found = catalog.scan_columns(
+                definition.table,
+                columns=("revision_id",),
+                row_filter=And(where, In("revision_id", chunk)),  # type: ignore[call-arg, arg-type]
+                limit=len(chunk) + 1,
+                snapshot_id=snapshot_id,
+            ).column("revision_id")
+            if len(found) != len(chunk) or pc.count_distinct(found).as_py() != len(chunk):
+                counts = pc.value_counts(found)
+                held = {item["values"].as_py(): item["counts"].as_py() for item in counts}
+                revision = next(item for item in chunk if held.get(item) != 1)
                 raise CatalogIntegrityError(
-                    f"{definition.table}: revision_id {row['revision_id']} is not held by "
-                    "exactly one row"
+                    f"{definition.table}: revision_id {revision} is not held by exactly one row"
                 )
 
     def _close(
@@ -1041,10 +1186,11 @@ class CanonicalNormalizer:
         """The unit's rows are exactly ``base + position`` of its Raw rows; nothing else is in
         the block.
 
-        One tile of the block per batch (each read capped at its batch + 1 row): exactly the
-        batch's numbers, every row the unit's; then one-row probes for any row of the block, or
-        of the unit, outside the tiles. Together: the unit's rows and the block's rows are both
-        exactly ``base + position`` (E1-CAP-1: never the whole unit at once).
+        Tiles of whole batches, at most ``narrow_rows`` (or one batch) each, three narrow columns
+        read capped at the tile + 1 row: exactly the tile's numbers, every row the unit's; then
+        one-row probes for any row of the block, or of the unit, outside the tiles. Together: the
+        unit's rows and the block's rows are both exactly ``base + position`` (E1-CAP-1: never
+        the whole unit at once).
         """
         table = channel.canonical.table
         failure = (
@@ -1052,7 +1198,7 @@ class CanonicalNormalizer:
             f"{len(positions)} numbers of block {base}"
         )
         batches = -(-len(positions) // chunk)
-        for start, end, low, high in _tiles(positions, chunk, batches):
+        for start, end, low, high in _tiles(positions, chunk, batches, self._narrow):
             found = self._adapter.scan_columns(
                 table,
                 columns=("arrival_seq", "lineage_source_revision_id", "lineage_raw_table"),
@@ -1244,10 +1390,7 @@ def _holders(
 
 
 def _require_complete(
-    channel: rules.RawChannel,
-    source_revision_id: str,
-    plan: _CommittedPlan | None,
-    unit_rows: int,
+    channel: rules.RawChannel, source_revision_id: str, plan: _CommittedPlan | None
 ) -> None:
     """A reader takes a normalized unit only whole: every batch of its plan committed (RT-1).
 
@@ -1256,11 +1399,10 @@ def _require_complete(
     """
     if plan is None:
         return
-    planned = -(-unit_rows // plan.chunk)
-    if len(plan.batches) != planned:
+    if plan.count != plan.planned:
         raise CanonicalUnitIncomplete(
-            f"{channel.canonical.table}: unit {source_revision_id} has {len(plan.batches)} of the "
-            f"{planned} batches of its plan committed: its normalization stopped half-way "
+            f"{channel.canonical.table}: unit {source_revision_id} has {plan.count} of the "
+            f"{plan.planned} batches of its plan committed: its normalization stopped half-way "
             "(rerun the normalizer)"
         )
 
@@ -1274,8 +1416,9 @@ def _time_column(channel: rules.RawChannel) -> str:
     return "event_time" if channel.data_type == "agg_trades" else "interval_start"
 
 
-def _proof_windows(positions: Sequence[int], size: int) -> Iterator[tuple[int, int]]:
-    """Disjoint position ranges covering every position, each spanning <= ``size`` rows."""
+def _proof_windows(positions: Sequence[int], size: int) -> Iterator[tuple[int, int, int]]:
+    """``(low, high, count)``: disjoint position ranges covering every position, each holding
+    ``count`` of them — ``<= size`` unless one position repeats (then never split)."""
     start = 0
     while start < len(positions):
         low = positions[start]
@@ -1283,23 +1426,25 @@ def _proof_windows(positions: Sequence[int], size: int) -> Iterator[tuple[int, i
         high = positions[end - 1]
         while end < len(positions) and positions[end] == high:
             end += 1  # never split rows sharing a position across windows
-        yield low, high
+        yield low, high, end - start
         start = end
 
 
 def _tiles(
-    positions: Sequence[int], chunk: int, batches: int
+    positions: Sequence[int], chunk: int, batches: int, span: int
 ) -> Iterator[tuple[int, int, int, int]]:
-    """Per batch ``i < batches``: its ranks ``[start, end)`` and the position range it answers for.
+    """Tiles of whole batches ``< batches``: ranks ``[start, end)`` and the position range each
+    answers for; a tile holds ``max(1, span // chunk)`` batches (at most ``max(span, chunk)``
+    rows, whatever the unit's size).
 
-    The range runs from the batch's first position up to just below the next batch's first, the
+    The range runs from the tile's first position up to just below the next tile's first, the
     last one to its own last position, so the ranges tile ``positions[0] … positions[covered-1]``
     with no hole: a row at a position no Raw row has (a REST gap) still falls in some tile.
     """
     covered = min(batches * chunk, len(positions))
-    for index in range(batches):
-        start = index * chunk
-        end = min(start + chunk, covered)
+    step = max(1, span // chunk) * chunk
+    for start in range(0, covered, step):
+        end = min(start + step, covered)
         high = positions[end] - 1 if end < covered else positions[covered - 1]
         yield start, end, positions[start], high
 
