@@ -39,3 +39,17 @@
 `KnowledgeSource(provider, query).search(family_id)` 调用 `KnowledgeProvider.search(KnowledgeQuery)`，重新校验结果并拒绝其他查询 / 其他 provider 的结果，
 返回 `KnowledgeSearch`（provider、`query_hash`、`result_hash`、条目、`from_knowledge` 生成的假设）；查询哈希与 `result_hash` 是这些假设的来源，
 由调用方（循环的 hypothesis 阶段）记入摘要与生命周期证据。
+
+## Typed plan 直接引用校验（`typed_plan_resolver.py`，Phase 7，2026-09-27，ADR-0068 实施说明）
+
+`resolve_direct_references(plan, resolver=...)` 对 `typed_plan.py` 的 `TypedPlan` 中每个外部 `SpecInput`，经调用方显式注入的
+`SpecResolver.resolve(ref) -> VersionedSpec | None` 取回规格，任一项不满足即抛 `PlanReferenceRefused`（`PlanRefused` 子类，带 `code`），
+不返回部分结果：resolver 抛错（`resolver_error`）、返回 `None`（`missing`）、类型不是该 kind 的**精确**核心规格类
+（`FeatureSpec` / `StateSpec` / `EventSpec` / `StrategySpec`，子类同样拒绝，`wrong_type`）、返回规格的 `kind:name@version` 与引用不同
+（`ref_mismatch`）、在分离的深拷贝上重算的 `content_hash()` 与计划声明的哈希不同（`content_hash_mismatch`）；同一目标在计划中声明了
+不同哈希时，在调用 resolver 之前拒绝（`conflicting_claimed_hash`）。按节点顺序、输入顺序遍历，同一目标只调用 resolver 一次；
+结果 `DirectReferenceResolution` 保留每次出现（`inputs`，计划顺序）与去重后的已校验规格（`specs`，首次出现顺序），并绑定 `plan_hash`。
+
+**只校验直接引用，不是执行授权。** 结果的 `transitive_closure_verified`、`execution_authorized`、`runnable` 恒为 `False`：不校验传递依赖闭包，
+不登记或查询算子实现，不 lower / 编译 / 执行计划，不改变 `TypedPlan.runnable`，不写报告或 journal，不触碰 `TrialLedger`；
+`compile_plan` 仍拒绝所有计划。本模块不从包 `research.hypotheses` 导出，也不接入循环。未运行测试，CODE_COMPLETE / DEBUG_PENDING。

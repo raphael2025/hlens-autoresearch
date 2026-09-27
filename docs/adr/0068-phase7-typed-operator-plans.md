@@ -101,6 +101,12 @@ Phase 7 路线图列出 conditioning、interaction、temporal、transformation�
 
 Codex 依 Raphael 对项目决策与开发的全权委托接受本 ADR 中的**闭世界类型化计划机制与拒绝边界**。此决定不接受任一算子的业务执行语义；六类仍全部 `NOT_RUNNABLE`，`parameter_point` 路径不变。实现只允许产生带显式资源限制的 `non-runnable` typed AST / validation result。OperatorImplementation allowlist 保持为空；不得把 typed result 交给 Research Loop、Provider 或 Runner。执行计划持久化及其与 TrialLedger 的原子预登记必须在首个算子启用前另行裁决并实现。在此之前，基础解析不得创建持久审计副作用或 runnable trial。
 
+## Implementation note（直接引用校验，2026-09-27）
+
+不新增 ADR，不改契约、Schema 或 `core/`。`research/hypotheses/typed_plan_resolver.py` 的 `resolve_direct_references` 只读地把 typed plan 中每个外部 `SpecInput` 经调用方显式注入的 resolver 解析为核心 `VersionedSpec`（`core.domain.base`），并在缺失、resolver 出错、类型不是该 kind 的精确核心规格类、返回引用不同、重算内容哈希与声明哈希不同或同一引用声明了不同哈希时 fail closed。它落实 §2 “类型检查使用解析出的规格实体”中的**直接引用**部分，仅此而已。
+
+这**不是执行授权**：不校验传递依赖闭包（仍属 Registry / Runner 义务），不登记算子实现（allowlist 仍为空），不 lower、不编译、不执行，`TypedPlan.runnable` 与 `compile_plan` 的拒绝行为不变，不写报告 / journal / 执行审计，不触碰 TrialLedger，也不接入 Research Loop。六类算子仍全部 `NOT_RUNNABLE`。未运行测试，状态为 CODE_COMPLETE / DEBUG_PENDING。
+
 ## 参考
 
 - `docs/research/roadmap.md` §Phase 7（目标、输出、验收标准与禁止事项）
