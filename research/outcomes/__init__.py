@@ -1,6 +1,6 @@
 """Outcome materialization (Phase 4, ADR-0037). Research code: never production (H5)."""
 
-from research.outcomes.sources import bars_from_synthetic
+from research.outcomes.sources import bars_from_synthetic, outcome_events_from_event_result
 from research.outcomes.store import (
     OutcomeTableConflict,
     OutcomeTableCorrupted,
@@ -16,5 +16,6 @@ __all__ = [
     "OutcomeTableStore",
     "bars_from_synthetic",
     "materialize",
+    "outcome_events_from_event_result",
     "table_hash",
 ]
