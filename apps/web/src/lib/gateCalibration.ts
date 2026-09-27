@@ -8,6 +8,15 @@
 // `detector_error` ("<ExceptionType>: <message>"); each arm's pipeline evidence carries
 // `detector_errors` (their count). Both keys are **absent when zero** — additive, so older reports
 // keep their hashes — hence optional here and shown only when present.
+//
+// Uncertainty from detector errors (B45 / B48 / B54): an arm with `detector_errors` also carries
+// `pass_rate_bounds` — `[passed / n, (passed + errors) / n]`, decimal strings rounded outward — the
+// range of its pipeline pass rate had every errored run gone either way. In G5 mode the arm's
+// `sealed_oos_g5` block (G5 rates conditional on reaching G5, and `end_to_end_g0_g5` over every
+// run) likewise adds `pass_rate_bounds` (denominator `reached`) and `end_to_end_bounds`
+// (denominator every run) only when errors occurred. With errors the point rate is **not** the
+// rate: the page shows the bounds next to it. A bounds key that is present but not a well-formed
+// `[lower, upper]` pair is reported as malformed, never dropped (fail closed).
 
 export type Interval = {
   method: string;
@@ -33,7 +42,31 @@ export type ArmPipelineEvidence = {
   failed: number;
   sealed_oos_consumption_rate: Rate;
   detector_errors?: number;
+  pass_rate_bounds?: unknown;
+  sealed_oos_g5?: SealedG5Evidence;
 };
+
+// One arm's G5 (sealed OOS) evidence under one candidate, G5 mode only. The conditional rates are
+// `null` when no run of the arm reached G5.
+export type SealedG5Evidence = {
+  reached: number;
+  pass_rate: Rate | null;
+  inconclusive_rate: Rate | null;
+  fail_rate: Rate | null;
+  consumed_without_result: number;
+  detector_errors: number;
+  end_to_end_g0_g5: { false_positive_rate?: Rate; power?: Rate };
+  pass_rate_bounds?: unknown;
+  end_to_end_bounds?: unknown;
+};
+
+/** A bounds key as found in the payload: absent, a well-formed pair, or malformed. */
+export type Bounds =
+  | { kind: "absent" }
+  | { kind: "bounds"; lower: string; upper: string }
+  | { kind: "malformed" };
+
+const DECIMAL = /^(0|[1-9][0-9]*)(\.[0-9]+)?$/;
 
 // One gate's evidence within one arm, same `false_positive_rate` / `power` split.
 export type GateArmEvidence = {
@@ -122,4 +155,43 @@ export function detectorErrorRuns(candidate: CandidateEvidence): CalibrationRun[
   return (Array.isArray(candidate.runs) ? candidate.runs : []).filter(
     (run) => typeof run.detector_error === "string",
   );
+}
+
+/**
+ * Read a `pass_rate_bounds` / `end_to_end_bounds` value: absent (`undefined`), a pair of
+ * non-negative decimal strings with lower <= upper <= 1, or malformed (anything else).
+ */
+export function readBounds(value: unknown): Bounds {
+  if (value === undefined) return { kind: "absent" };
+  if (!Array.isArray(value) || value.length !== 2) return { kind: "malformed" };
+  const [lower, upper] = value;
+  if (typeof lower !== "string" || typeof upper !== "string") return { kind: "malformed" };
+  if (!DECIMAL.test(lower) || !DECIMAL.test(upper)) return { kind: "malformed" };
+  if (Number(lower) > Number(upper) || Number(upper) > 1) return { kind: "malformed" };
+  return { kind: "bounds", lower, upper };
+}
+
+/** `[lower, upper]` for well-formed bounds, a visible marker for malformed ones, else `null`. */
+export function boundsCell(bounds: Bounds): string | null {
+  if (bounds.kind === "bounds") return `[${bounds.lower}, ${bounds.upper}]`;
+  if (bounds.kind === "malformed") return "malformed bounds";
+  return null;
+}
+
+/** Whether any arm of the candidate carries pipeline `pass_rate_bounds` (present or malformed). */
+export function hasPassRateBounds(candidate: CandidateEvidence): boolean {
+  return Object.values(candidate.pipeline).some(
+    (evidence) => readBounds(evidence.pass_rate_bounds).kind !== "absent",
+  );
+}
+
+/** An arm's G5 block, or `null` outside G5 mode. */
+export function sealedG5Of(evidence: ArmPipelineEvidence): SealedG5Evidence | null {
+  const block = evidence.sealed_oos_g5;
+  return block !== undefined && block !== null && typeof block === "object" ? block : null;
+}
+
+/** The arms of the candidate that have a G5 block, in pipeline order. */
+export function sealedG5Arms(candidate: CandidateEvidence): string[] {
+  return Object.keys(candidate.pipeline).filter((arm) => sealedG5Of(candidate.pipeline[arm]) !== null);
 }
