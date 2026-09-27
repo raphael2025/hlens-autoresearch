@@ -1115,6 +1115,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 将该 worktree 从候选分支切换为 detached `main@f7005aa` 后，删除本地分支引用。保留 worktree 与其忽略的 `.venv` / 缓存，不删本机依赖环境；E1 候选实现和失败证据仍保留于 `fix/e1-cap1` 及归档引用。未触及远端引用。
 - 本次没有运行测试 / build / probe；清理不改变 E1-CAP-1 阻断结论。状态同步提交后本地 `main` 比 `origin/main@44fe9a2` 超前 64 个提交；当前 5 个本地分支、9 个 worktree、7 个远端引用。
 
+### 10.43 本地 Claude 开发分支归档（2026-09-28）
+
+- Claude 只读审计确认 `claude/hlens-autorecearch-dev-c05c2b@45c13d7` 是 main 的祖先，无活动进程；先前已存在归档引用 `refs/archive/2026-09-27/branch-cleanup/pre-cleanup/local/claude/hlens-autorecearch-dev-c05c2b`。该 worktree 唯一未跟踪的计划副本与项目根 `docs/plans/2026-09-26-all-code-completion-plan.md` SHA-1 完全相同（`b1fb98a004ca694350fd41fa3084506938bdbd7f`）；副本移到 `/tmp/hlens-branch-archive-2026-09-28/claude-dev-plan-b1fb98a.md`，根文件未修改。
+- 将该 worktree 从旧 Claude 分支切换为 detached `main` 后删除本地分支。保留 worktree 与忽略的本机 `.venv` / 缓存；未删除远端引用。当前本地为 4 个分支、9 个 worktree、7 个远端引用。
+- 没有运行测试 / build / probe；状态同步提交后本地 `main` 比 `origin/main@44fe9a2` 超前 65 个提交。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
