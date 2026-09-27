@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **模块代码收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；P6 矩阵报告接线及错误归因、P8 回溯审计报告链、P11 精确阈值修正和研究库规格文档已在本地协调分支；Python Ruff / format 检查通过，未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
+| 当前子阶段 | **模块代码本地收敛，待后续验收**。Raphael 已授权先整合分支、补齐逻辑与内容，再统一验收；P6 矩阵报告接线及错误归因、P8 回溯审计报告链、P11 精确阈值修正和研究库规格文档已快进到本地 `main`。Python Ruff / format 检查通过，未跑测试。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 `main` 与 `origin/main` 当前同为干净基线 `44fe9a2`，PR #1～#9 已合入；新增收敛工作在本地协调分支，尚未推送 / 合并。P6 / P8 / P11 静态检查通过、未跑测试；E1-CAP-1 容量验收仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 本地 `main` 已从干净基线 `44fe9a2` 快进到模块收敛提交 `codex/module-completion-coordination-2026-09-27`；比 `origin/main` 超前 18 个提交，尚未推送。PR #1～#9 已合入。P6 / P8 / P11 静态检查通过、未跑测试；E1-CAP-1 容量验收仍失败；其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 

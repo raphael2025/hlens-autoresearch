@@ -928,6 +928,13 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 
 - **P7：** Proposed [ADR-0068](../adr/0068-phase7-typed-operator-plans.md) 定义闭世界、类型化 AST、实现身份 / hash、全量预登记和拒绝边界；由于六类组合 DSL（conditioning / interaction / temporal / transformation / ensemble / negation）的业务语义和 Provider lowering 不完整，全部仍 fail closed。既有 `parameter_point` 路径不变；本提案不是其余六类已实现或已验收的声明。
 - **P11：** [显式 degradation operator 规格](p11-degradation-operator-spec.md) 限定为一次性、本机、显式输入的只读操作；需传入 ACTIVE 生命周期历史、冻结 Profile、PASS baseline、内容哈希观测集与时间窗口，复用现有 monitor 和 append-only writer，不发布事件、不转生命周期、不设默认阈值。当前没有权威生命周期 / 近期观测 resolver，现有报告也不绑定这些来源；实现前需单独 Proposed ADR 解决证据引用与报告版本兼容。
+
+### 10.15 本地 main 模块收敛与分支保全（2026-09-27）
+
+- Codex 与 Claude 子代理并行只读复核后，本地 `main` worktree 从 `44fe9a2` 快进到协调分支，包含 P6 / P8 / P11 接线、研究库文档、ADR-0068 Proposed 与项目状态记录。协调分支保留作为恢复点；`origin/main` 未更新，也未创建 PR。
+- 这是代码整合，不是 Phase 验收。此次没有运行测试；已有 Python 静态检查和 Web build 结果见 §10.12。E1-CAP-1 仍阻断 Phase 1；其他 Phase 按本文件所列状态继续待验收。
+- P0.5 合同复核确认主线已有测试要求“已存在的空目录”返回空知识库；ADR-0034 没有要求知识库必须非空。独立分支 `de146f9` 拒绝空目录的行为不符合主线既有测试，未合入。当前实现对缺失目录报错、对空目录和空列表返回空知识库；空列表行为尚无专门的接受用例。
+- 分支审计快照为 27 个本地分支、253 个归档引用和 33 个 worktree。活跃或脏工作区（含根 `phase/1`、Claude 与 Cursor 工作区）、E1 / P0.5 独有实现及远端 refs 均予保留；后续清理须在确认 owner 已结束并逐支确认内容后再做。本地与远端分支统计会随并行会话变化，以实际 Git 状态为准。
 - 两项均为设计材料，未修改实现 / frozen contract，未运行测试；不会改变 Phase 7 或 Phase 11 的未验收状态。
 
 ### 10.13 分支收敛与研究库规格补全（2026-09-27；本地协调分支）
