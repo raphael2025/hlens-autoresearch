@@ -466,10 +466,12 @@ class ExchangeInfoRowVerifier:
 
 
 def _history(catalog: RevisionCatalog, table: str, head: str | None) -> list[SnapshotInfo]:
-    """``head`` and its ancestors, newest first."""
+    """``head`` and its ancestors, newest first; reject a cyclic parent chain."""
     found: list[SnapshotInfo] = []
     snapshot = None if head is None else catalog.get_snapshot(table, head)
     while snapshot is not None:
+        if any(item.snapshot_id == snapshot.snapshot_id for item in found):
+            raise CatalogIntegrityError(f"table {table} has a cycle in snapshot history")
         found.append(snapshot)
         parent = snapshot.parent_snapshot_id
         snapshot = None if parent is None else catalog.get_snapshot(table, parent)

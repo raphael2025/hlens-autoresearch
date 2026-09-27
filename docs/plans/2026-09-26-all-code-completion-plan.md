@@ -1103,6 +1103,12 @@ P6 / P8 子任务提交：`cc94b226`、`396b9730`、`8ed72247`；P11 阈值修�
 - 该保护使用常量额外状态，另将匹配结果从随历史长度增长的列表改为首个匹配项加计数；保留重复 batch ID 检查、first-match 返回语义及完整遍历行为。不改变 core contract、schema、snapshot 写入或 ADR-0021 / ADR-0028 语义，无需新 ADR。
 - 本次未增加或运行测试、build、RSS probe 或阶段验收；仅做源码审阅与空白差异检查。此修复不解决 O(H) PyIceberg metadata 保留问题，也不关闭 E1-CAP-1。
 
+### 10.41 E2 候选归档与快照历史环保护（2026-09-27）
+
+- 只读复核确认 detached `fba8234` 基于旧基线 `801432f`，其 E2 实现已由 main 的 `3b6038b` 整合，并有 `1e3d325`、`87a3d3e` 与 `e247d3a` 后续 PIT / F2 / ADR-0052 兼容修正；不得再次 cherry-pick 原始候选。候选提交先归档至 `refs/archive/2026-09-27/worktrees/claude-agent-a0e7d66a46f19c7f6`，确认 worktree 干净且无活动会话后移除，未删除远端引用。
+- 同一复核发现 `infrastructure/revision/exchange_info_store.py::_history()` 未防多快照父链环；增加在已有输出列表中检测重复 snapshot ID，并以 `CatalogIntegrityError` 失败。没有额外增长的 visited set，不改 `RevisionCatalog` Protocol 或 snapshot 语义。
+- Phase 1 / infrastructure revision；不触及 core contract、Schema 或 ADR。未增加或运行测试、build、probe 或 Phase 验收；E2 的真实公共端点 smoke 及历史可用性缺口仍待处理。
+
 ### 10.13 分支收敛前的审计快照（2026-09-27；历史记录）
 
 Raphael 授权 Codex 整合有价值的代码和内容、清理冗余分支，并在后续统一验收。本轮仍保持 `main` / `origin/main` 基线 `44fe9a2` 不变；所有代码先进入 `codex/module-completion-coordination-2026-09-27`，状态为未推送、未验收。归档删除 `worktree-fix-e1-cap1` 并在择取内容后归档移除 Codex P7 / P11 设计 worktree 后，当前快照为 **27 个本地分支、33 个 worktree**；主项目、Claude 脏目录、已锁定 / 会话归属不明的工作树均保留。
