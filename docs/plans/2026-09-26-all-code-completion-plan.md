@@ -805,13 +805,16 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - 实际运行：`npm test` → lib 89 / 89、组件 110 / 110，退出码 0；`npm run build` ✓，退出码 0。
 - 本批次在冻结门禁 SHA `0ced9ca` 之后，不在该门禁覆盖范围内。
 
-**B65 — ADR-0063：本机只读 API 的 ASGI 运行时 Uvicorn（Codex 决定）**（ADR 已记录；**实施待 Raphael 授权安装依赖**）
+**B65 — ADR-0063：本机只读 API 的 ASGI 运行时 Uvicorn（Codex 决定）**（`CODE_COMPLETE / DEBUG_PENDING`；**真实 Uvicorn 运行待 Raphael 授权安装**）
 
 - 决定（Codex）：Uvicorn 作为本机只读研究 API 的 ASGI 运行时；严格绑定 `127.0.0.1`、单 worker、默认不 reload；`apps/api` 保持框架无关；
   Uvicorn 为可选 `api-server` 依赖 + 有文档的可运行入口；公网 / TLS / 认证 / 反向代理 / HA 不在范围内。
 - 离线解析探针（草稿副本，未改项目文件、未安装）：`uv lock --offline` → `Resolved 53 packages … Added uvicorn v0.53.0`，唯一新增包 `uvicorn`。
-- 停在决策边界：把 Uvicorn 写入依赖并装入项目 `.venv` 属 CLAUDE.md §0 / H12 的安装软件，本会话另有"不安装依赖"的约束；得到 Raphael 明确授权后
-  实施入口与真实 Uvicorn 子进程测试。
+- D-UVICORN：Codex 选 A（只用本机缓存的 uvicorn 0.53.0、可选 extra、不触网、不新增其他依赖）并授权仓库改动；安装仍待 Raphael（H12）。
+- 实施（仓库改动，未安装）：`pyproject.toml` extra `api-server = ["uvicorn==0.53.0"]` 与 mypy 对 `uvicorn` 的缺失导入忽略；`uv lock --offline` → `Resolved 53 packages … Added uvicorn v0.53.0`（锁文件只新增该条目）；wheel 摘要 `e8dca71e…` 与本机缓存一致；入口 `apps/api/serve.py`；测试 `tests/apps/test_api_server.py`；ADR-0063 实施说明、`apps/api/README.md`、`tests/apps/live_server.py` 文档串同步。
+- 实际运行（未安装 Uvicorn）：`pytest -q -rs tests/apps/test_api_server.py` → `21 passed, 2 skipped`（跳过原因：extra 未安装）；`pytest -q -rs -m "not postgres" tests/apps` + 文档一致性 + 架构边界 → `407 passed, 2 skipped, 1 warning in 9.95s`；`ruff check .` → `All checks passed!`；`ruff format --check .` → `764 files already formatted`；`mypy` → `Success: no issues found in 597 source files`；`uv lock --check --offline` → `Resolved 53 packages`。每次运行后 `uv pip show uvicorn` → 未找到（没有被安装）。
+- **未运行 / 待 Raphael 批准**：`uv sync --offline --extra api-server && uv run --offline --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py`（真实 Uvicorn 子进程两项）。不得记为通过。
+- 注意：默认全量门禁此后会多出 2 个带原因的 skip（真实 Uvicorn 子进程测试），默认依赖与安装内容不变。
 
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 
@@ -825,7 +828,7 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 | 10 | 证据模式要求报告的 Profile 与市场基准项（B51）；Profile 要求时还须有 `G2.inverse_control`（B58） | **已决定（B62，Codex）**：不要求 Profile `FROZEN` / 冻结登记；冻结登记仅由 Promotion 作权威核验，路由通过不构成生产资格证明（ADR-0043） |
 | 11 | 劣化检查证据不足绝不显示为健康（B51 / B52）；D-DEG-IE 由 Codex 决定：在 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 修订（B53，集成会话）；持久审计须显式 `record_marks`（B51，Phase 13 侧） | NATS / Control Plane（D-10） |
 | 12 | 循环之外的替换提案作业：逐份核验证据、账本单写者锁 + 外部锚点（锚点自带 flock、重读、拒绝分叉 / 外来账本，B53）、库策略后代谱系缺陷修复（B49） | 循环自身报告不含后代 G5，无法支撑提案（有意：每个 family 只评估一次密封 OOS；未决设计边界见 B57）；锚点不认证新增行 |
-| 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做（控制台对 502 / 500 的呈现已经真实后端 + 服务端渲染验证，B60，非浏览器）；本机 ASGI 运行时已由 ADR-0063 选定 Uvicorn（仅 127.0.0.1；实施待依赖安装授权，B65）；公网部署 / TLS / 认证未决 |
+| 全栈 | 真实进程 + 真实 HTTP 冒烟含 502 / 篡改日志 500 / 兜底 500（B44 / B47）；报告存储解码缺陷修复（B47）；`file:` 协议名大小写不敏感（B53）；兜底 500、路径清除、按路由只读检查、逐维度用量图、精确门值、十种 fixture 与 2.0.0 遗留 fixture（B46）；新拒绝码与证据不足显示（B52）；`node --test` 80 + 组件 105 | 浏览器手工验收未做（控制台对 502 / 500 的呈现已经真实后端 + 服务端渲染验证，B60，非浏览器）；本机 ASGI 运行时已由 ADR-0063 选定 Uvicorn（仅 127.0.0.1；入口与测试已实施，真实运行待安装授权，B65）；公网部署 / TLS / 认证未决 |
 
 架构边界：本轮（`c36005b..` 最终 HEAD `3be497b`）没有改动 `core/` 或 `schemas/`（Schema 仍 135 份，契约 2.1.0）；B55 在组合分支上改动 `core/`（契约 2.2.0，ADR-0055）与全部 135 份 Schema 的信封默认值及三份知识 Schema；新增 `plugins/` / `infrastructure/` 不得 import `research/` 的边界测试（B51）。
 

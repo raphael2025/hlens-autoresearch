@@ -16,6 +16,10 @@ dependencies = [
     "pyiceberg[pyarrow,pyiceberg-core,sql-postgres]>=0.12.0",
 ]
 
+[project.optional-dependencies]
+# ADR-0063: the local read-only API runtime (127.0.0.1 only), not a default dependency.
+api-server = ["uvicorn==0.53.0"]
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",
@@ -41,3 +45,8 @@ select = ["E", "F", "I", "UP", "B"]
 python_version = "3.13"
 strict = true
 files = ["apps", "core", "infrastructure", "plugins", "research", "tests"]
+
+[[tool.mypy.overrides]]
+# ADR-0063: uvicorn is the optional api-server extra, absent from a default environment.
+module = ["uvicorn", "uvicorn.*"]
+ignore_missing_imports = true

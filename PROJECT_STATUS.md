@@ -123,11 +123,11 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ## 6. 当前待决策
 
-**B65 依赖安装（待 Raphael 授权）**
+**B65 Uvicorn 安装（待 Raphael 授权；代码已完成）**
 
 | ID | 问题 | 方案 | 状态 |
 |---|---|---|---|
-| D-UVICORN | ADR-0063（Codex 已决定用 Uvicorn 作本机只读 API 运行时）需要把 `uvicorn` 作为可选 `api-server` 依赖写入 `pyproject.toml` / `uv.lock` 并装入项目 `.venv`，这属于安装软件（CLAUDE.md §0 / H12） | 离线解析已验证：只新增 `uvicorn 0.53.0`（本机 uv 缓存），不触网 | 待 Raphael 明确授权；授权前 B65 只有 ADR，无代码 |
+| D-UVICORN | ADR-0063（Codex 已决定用 Uvicorn 作本机只读 API 运行时）需要把 `uvicorn` 作为可选 `api-server` 依赖写入 `pyproject.toml` / `uv.lock` 并装入项目 `.venv`，这属于安装软件（CLAUDE.md §0 / H12） | Codex 选 A：只用本机缓存的 uvicorn 0.53.0、可选 extra、不触网；仓库改动（依赖声明、锁条目、入口、测试、文档）已完成 | 只剩安装与真实运行待 Raphael 明确授权（H12）；两项真实 Uvicorn 测试目前跳过、未运行 |
 
 **P10-FREEZE（已决定）**
 
@@ -246,7 +246,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | ADR-0063（Codex 决定）：本机只读研究 API 用 Uvicorn 运行，只绑定 127.0.0.1、单 worker；公网 / 认证 / TLS 不在范围内 | ADR 已记录；实施（B65）待 Raphael 授权安装可选依赖 `uvicorn` |
+| 2026-09-27 | ADR-0063（Codex 决定）：本机只读研究 API 用 Uvicorn 运行，只绑定 127.0.0.1、单 worker；公网 / 认证 / TLS 不在范围内 | B65 入口与测试已实施（未安装 Uvicorn）；真实 Uvicorn 运行待 Raphael 授权安装 |
 | 2026-09-27 | B63：控制台的证据模式说明写明 B62 边界：只证明研究层纸面路由前提，通过不代表 Profile 已冻结、策略已晋升或具备生产资格；列出反向对照项 | 只改控制台文字与测试；无代码 / 契约 / API 改动 |
 | 2026-09-27 | B62（Codex 决定）：P10 证据模式不要求 Profile 冻结登记；这属于研究层路由证据，与 Promotion 的冻结权威门分开 | 无代码 / 契约 / Schema 改动；生产资格仍须 ADR-0005 / ADR-0062 Promotion 与 Control Plane；已记录于 ADR-0043 |
 | 2026-09-27 | B61：数据集回测 bar 带上经证明的 Canonical 成交量（ADR-0054 已批准的遗留项）；部分成交结转模型在真实数据集 bar 上不再因缺成交量被拒 | CODE_COMPLETE / DEBUG_PENDING；数据集回测请求哈希因此改变（预期，旧空值载荷不变）；PostgreSQL 测试未运行；不是 Phase 4 / 5 验收 |

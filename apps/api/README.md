@@ -111,7 +111,7 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
 - **服务器**：`create_app(...)` 在**子进程**中运行（`python -m tests.apps.live_server --port 0 ...`），只绑定
   `127.0.0.1`、临时端口，等 `/health` 后测试，最后 SIGTERM 并要求退出码 0。`tests/apps/live_server.py` 是**仅供测试的
   最小 stdlib 服务器**（asyncio 解析简单 HTTP/1.1 请求，经 ASGI `http` 协议驱动真实应用，每连接一个请求、
-  `Connection: close`）——不是生产服务器；uvicorn 不是项目依赖，生产部署用哪个 ASGI 服务器留待后续决定。
+  `Connection: close`）——不是生产服务器。本机运行时见下文「本机运行（Uvicorn，ADR-0063）」。
 - **覆盖**：`httpx` 走真实 socket 调用 committed `openapi.json` 的**每个 operation**（全部至少一次 200）：每种报告的
   列表 + 每个详情、`invalid` 列表与损坏文件的 422、非法 id 400、不存在 404、未知 kind 422；`/jobs` 列表 / 详情 /
   400 / 404；知识检索 200 与请求校验 422；第二个未配置 provider / 日志的服务器给出知识检索与 `/jobs` 的 503。线上
@@ -144,3 +144,17 @@ Phase 11 退化检查；写入方见 `research/reports/README.md`）。除 `stat
 缺陷修复）；日志 500 只覆盖哈希链断裂这一种篡改；`live-smoke.mjs`（控制台侧）自 2026-09-27（B60）起也访问 broken
 服务器（客户端 + 服务端渲染的 Knowledge Search / Jobs / State × Strategy Matrices 页面），但仍不是浏览器验证。没有并发 / 长连接 / 性能测试；也不代表任何生产服务器
 配置已被验证。
+
+## 本机运行（Uvicorn，ADR-0063，B65；CODE_COMPLETE / DEBUG_PENDING）
+
+```bash
+uv run --extra api-server python -m apps.api.serve --port 8000 \
+    --reports-root <报告根目录> --jobs-results <任务结果日志> --jobs-idempotent <名称 ...> --knowledge <知识目录>
+```
+
+- **只在本机**：API 没有认证，主机固定 `127.0.0.1`（没有 `--host`；任何其他地址——`0.0.0.0`、`localhost`、`::1`、局域网地址——被拒绝）；
+  单 worker、不 reload、不信任代理头。公网部署、TLS / 认证、反向代理、高可用不在范围内，需要另行决定。
+- 各选项直接接到 `create_app`；未给出的设置按 `create_app` 的既有语义回答（空报告列表、任务 / 知识 503）。`--port 0` 绑定临时端口（Uvicorn 日志给出实际端口）。
+- Uvicorn 是可选 `api-server` extra（`uvicorn==0.53.0`），不在默认依赖中；`apps.api` 不 import 它。未安装时入口以退出码 2 与说明退出。
+- **当前状态**：本仓库的任何环境都**未安装** Uvicorn（安装须 Raphael 按 H12 明确批准）；`tests/apps/test_api_server.py` 中真实 Uvicorn 子进程的
+  两项测试因此跳过（未运行）。批准后运行：`uv sync --offline --extra api-server && uv run --offline --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py`。

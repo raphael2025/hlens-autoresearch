@@ -8,7 +8,8 @@ real socket and a process boundary::
         [--fault-report-read MESSAGE]
 
 It binds ``127.0.0.1`` only, prints ``{"port": <bound port>}`` on stdout once listening, and exits
-0 on SIGTERM / SIGINT. uvicorn is not a project dependency, so this is an ``asyncio`` TCP server
+0 on SIGTERM / SIGINT. Uvicorn is only the optional ``api-server`` extra (ADR-0063), so this
+harness stays an ``asyncio`` TCP server
 that parses simple HTTP/1.1 requests (method, path, query, headers, ``Content-Length`` body) and
 drives ``create_app(...)`` through the ASGI ``http`` protocol (``http.request`` /
 ``http.response.start`` / ``http.response.body``), answering one request per connection with
@@ -26,8 +27,8 @@ traceback, and the answer the app already sent is delivered -- as an ASGI server
 sent no response start, the client gets a bare text 500.
 
 This is **not a production server**: no keep-alive, chunked request bodies, TLS, timeouts,
-lifespan events or back-pressure. A production deployment of ``apps/api`` would use an ASGI server
-chosen by a later decision (none is chosen or depended on today).
+lifespan events or back-pressure. The local runtime of ``apps/api`` is Uvicorn on 127.0.0.1
+(``apps/api/serve.py``, ADR-0063); a public deployment is a separate, undecided matter.
 """
 
 from __future__ import annotations
