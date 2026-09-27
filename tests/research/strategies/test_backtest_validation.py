@@ -23,7 +23,7 @@ import pytest
 
 from core.contracts.cost_model import CostModelSpec
 from core.contracts.outcome import OutcomeLabelSpec, OutcomeMethod
-from core.contracts.strategy import BacktestCostModel, BacktestProvider, PriceBar
+from core.contracts.strategy import BacktestCostModel, BacktestProvider, BacktestResult, PriceBar
 from core.contracts.synthetic import PlantedEffect, SyntheticMarket, SyntheticMarketSpec
 from core.contracts.validation_profile import (
     BenchmarkParams,
@@ -35,7 +35,7 @@ from core.contracts.validation_profile import (
     WalkForwardParams,
 )
 from core.domain.base import Kind, Ref
-from core.domain.research import RunState, Verdict, derive_verdict
+from core.domain.research import GateResult, RunState, Verdict, derive_verdict
 from core.domain.specs import OutcomeSpec
 from core.errors import ReasonCode
 from infrastructure.bars import DatasetPriceBars, ManifestPair, pair_hash_of
@@ -64,6 +64,7 @@ from research.strategies.validation import (
 )
 from research.validation import RobustnessParams, ValidationContext, to_json
 from research.validation.g4 import run_robustness
+from research.validation.robustness import RobustnessCheck
 from tests import factories
 
 T0 = datetime(2024, 1, 1, tzinfo=UTC)
@@ -170,8 +171,12 @@ def _market(seed: int, planted: bool) -> SyntheticMarket:
     )
 
 
-def _bars(market: SyntheticMarket) -> tuple[PriceBar, ...]:
-    """Research-window bars only: nothing at or after the sealed boundary is simulated."""
+def _bars(market: SyntheticMarket, *, with_volume: bool = False) -> tuple[PriceBar, ...]:
+    """Research-window bars only: nothing at or after the sealed boundary is simulated.
+
+    ``with_volume``: the bars as ``backtest_bars_from_dataset`` produces them since B61 (each
+    carries its volume); the synthetic path keeps the volume-less bars (its hashes unchanged).
+    """
     return tuple(
         PriceBar(
             instrument=SYMBOL,
@@ -182,14 +187,15 @@ def _bars(market: SyntheticMarket) -> tuple[PriceBar, ...]:
             high=bar.high,
             low=bar.low,
             close=bar.close,
+            volume=bar.volume if with_volume else None,
         )
         for bar in market.bars
         if bar.interval_end <= BOUNDARY
     )
 
 
-def _inputs(market: SyntheticMarket) -> EvaluationInputs:
-    bars = _bars(market)
+def _inputs(market: SyntheticMarket, *, with_volume: bool = False) -> EvaluationInputs:
+    bars = _bars(market, with_volume=with_volume)
     decisions: list[datetime] = []
     t = T0 + 61 * MINUTE
     while t + HOUR < BOUNDARY:  # every label ends before the sealed window
@@ -257,6 +263,7 @@ def _setup(
     robustness: RobustnessParams = E2E_TEST_ONLY_PARAMS,
     backtester: BacktestProvider | None = None,
     execution: ExecutionModel | None = None,
+    bar_volume: dict[tuple[str, datetime], Decimal] | None = None,
 ) -> ValidatorSetup:
     return ValidatorSetup(
         context=context or _context(candidate),
@@ -266,12 +273,16 @@ def _setup(
         manifest_pair=manifest_pair,
         feature_manifest_hashes=feature_manifest_hashes,
         instrument=SYMBOL,
-        trials=trials or CandidateTrialRunner(candidate, _inputs(market), BarBacktester()),
+        # the dataset path trades on the proven bars themselves (which carry volume since B61)
+        trials=trials
+        or CandidateTrialRunner(
+            candidate, _inputs(market, with_volume=dataset_bars is not None), BarBacktester()
+        ),
         chosen_params=CHOSEN,
         seed=11,
         robustness=robustness,
         state_of=lambda t: "am" if t.hour < 12 else "pm",
-        bar_volume={(SYMBOL, bar.interval_start): bar.volume for bar in market.bars},
+        bar_volume=_volumes_of(market) if bar_volume is None else bar_volume,
         declared_instruments=(SYMBOL,),
         backtester=backtester,
         execution=execution,
@@ -289,7 +300,7 @@ def _evaluate(
     registry = FailureRegistry(tmp_path / "failures.jsonl")
     result = evaluate_strategy(
         candidate,
-        _inputs(market),
+        _inputs(market, with_volume=setup.get("dataset_bars") is not None),
         backtester=run_backtester or BarBacktester(),
         registry=registry,
         validator=PipelineBacktestValidator(_setup(market, candidate, **setup)),  # type: ignore[arg-type]
@@ -441,8 +452,9 @@ MANIFEST = "7" * 64
 
 
 def _proven(market: SyntheticMarket, manifest: str = MANIFEST) -> DatasetPriceBars:
-    """Stands in for ``backtest_bars_from_dataset`` (its only producer) over these bars."""
-    bars = _bars(market)
+    """Stands in for ``backtest_bars_from_dataset`` (its only producer) over these bars: since
+    B61 every such bar carries its proven volume."""
+    bars = _bars(market, with_volume=True)
     return DatasetPriceBars(manifest, max(bar.available_time for bar in bars), bars)
 
 
@@ -991,6 +1003,162 @@ def test_the_capacity_check_uses_the_execution_models_coefficient() -> None:
     assert details["impact_cost_per_period_at_capacity"] is not None
     # A successfully resolved coefficient is never gated (an estimate is reported, not a pass).
     assert "G4.capacity.impact_estimated" not in {g.gate_id for g in result.gates}
+
+
+# =========================================================================================
+# ADR-0064 (B66): on the dataset path, bar_volume must equal the executed bars' proven volume
+# =========================================================================================
+
+
+def _volumes_of(market: SyntheticMarket) -> dict[tuple[str, datetime], Decimal]:
+    """The separately bound ``bar_volume`` the validator is given (the market's own volumes)."""
+    return {(SYMBOL, bar.interval_start): bar.volume for bar in market.bars}
+
+
+def _capacity(
+    market: SyntheticMarket, proven: DatasetPriceBars | None, **fields: object
+) -> tuple[RobustnessCheck, tuple[GateResult, ...], BacktestResult]:
+    """The C-R5 check of the chosen run under ``proven`` (``None``: the synthetic path);
+    ``fields`` go to ``_setup`` (e.g. ``bar_volume``)."""
+    candidate = library_entries()[0].candidate()
+    setup = _setup(market, candidate, dataset_bars=proven, **fields)  # type: ignore[arg-type]
+    backtest = setup.trials.run(CHOSEN).backtest
+    validator = PipelineBacktestValidator(setup)
+    result = run_robustness(validator.robustness_input(candidate.spec, backtest))
+    capacity = {c.check_id: c for c in result.checks}["capacity"]
+    gates = tuple(g for g in result.gates if g.gate_id.startswith("G4.capacity."))
+    return capacity, gates, backtest
+
+
+def _traded(backtest: BacktestResult) -> list[datetime]:
+    return sorted({fill.fill_time for fill in backtest.fills if fill.quantity != 0})
+
+
+def _changed(
+    volumes: dict[tuple[str, datetime], Decimal], changes: dict[datetime, Decimal | None]
+) -> dict[tuple[str, datetime], Decimal]:
+    """``volumes`` with the values at ``changes``' times replaced (``None``: removed)."""
+    out = {key: value for key, value in volumes.items() if key[1] not in changes}
+    out |= {(SYMBOL, t): v for t, v in changes.items() if v is not None}
+    return out
+
+
+def _gates(gates: tuple[GateResult, ...]) -> list[tuple[str, str]]:
+    return [(g.gate_id, g.metric) for g in gates]
+
+
+ESTIMATED_MISMATCH = [("G4.capacity.estimated", "bar_volume_source_mismatch")]
+ESTIMATED_MISSING = [("G4.capacity.estimated", "bar_volume_missing")]
+
+
+def test_equal_volume_sources_keep_the_capacity_result() -> None:
+    market = _market(seed=7, planted=True)
+    synthetic = _capacity(market, None)
+    dataset = _capacity(market, _proven(market))
+    assert dataset[:2] == synthetic[:2]  # details and gates
+    assert "capacity" in dataset[0].details
+    assert "bar_volume_source_mismatch" not in dataset[0].details
+    # numeric Decimal equality: another representation of the same value is not a conflict
+    rewritten = {key: value * Decimal("1.00") for key, value in _volumes_of(market).items()}
+    first = _traded(dataset[2])[0]
+    assert str(rewritten[(SYMBOL, first)]) != str(_volumes_of(market)[(SYMBOL, first)])
+    assert _capacity(market, _proven(market), bar_volume=rewritten)[:2] == synthetic[:2]
+
+
+def test_a_volume_source_mismatch_is_inconclusive_and_computes_nothing() -> None:
+    market = _market(seed=7, planted=True)
+    proven = _proven(market)
+    first, *_ = _traded(_capacity(market, proven)[2])
+    executed = _volumes_of(market)[(SYMBOL, first)]
+    supplied = _changed(_volumes_of(market), {first: executed + 1})
+    capacity, gates, _ = _capacity(market, proven, bar_volume=supplied)
+    assert _gates(gates) == ESTIMATED_MISMATCH  # no .required / .impact_estimated
+    [estimated] = gates
+    assert (estimated.verdict, estimated.value) == (Verdict.INCONCLUSIVE, 1.0)
+    assert "capacity" not in capacity.details
+    assert "impact_cost_per_period_at_capacity" not in capacity.details
+    assert capacity.details["bar_volume_source_mismatch"] == {
+        "fills": 1,
+        "missing": 0,
+        "first": {
+            "instrument": SYMBOL,
+            "time": first.isoformat(),
+            "bar_volume": str(executed + 1),
+            "dataset_bars_volume": str(executed),
+        },
+    }
+    # the same supplied volumes on the synthetic path: nothing to compare against, unchanged
+    synthetic = _capacity(market, None, bar_volume=supplied)
+    assert (
+        "capacity" in synthetic[0].details
+        and "bar_volume_source_mismatch" not in synthetic[0].details
+    )
+
+
+def test_only_the_executed_bar_at_the_fill_time_is_compared() -> None:
+    market = _market(seed=7, planted=True)
+    proven = _proven(market)
+    reference = _capacity(market, proven)
+    traded = set(_traded(reference[2]))
+    untraded = [bar.interval_start for bar in proven.bars if bar.interval_start not in traded]
+    assert untraded
+    elsewhere = _changed(_volumes_of(market), {untraded[0]: Decimal("123456789")})
+    assert _capacity(market, proven, bar_volume=elsewhere)[:2] == reference[:2]
+    # a value keyed at another instrument is not the fill's: missing, never compared
+    other = {("OTHER-USDT", t): v for (_, t), v in _volumes_of(market).items()}
+    assert _gates(_capacity(market, proven, bar_volume=other)[1]) == ESTIMATED_MISSING
+
+
+def test_a_volume_missing_from_either_source_stays_bar_volume_missing() -> None:
+    market = _market(seed=7, planted=True)
+    proven = _proven(market)
+    first, *_ = _traded(_capacity(market, proven)[2])
+    # missing from bar_volume
+    supplied = _changed(_volumes_of(market), {first: None})
+    _, gates, _ = _capacity(market, proven, bar_volume=supplied)
+    assert _gates(gates) == ESTIMATED_MISSING
+    # missing from the executed bars (a bar without volume)
+    bars = tuple(
+        bar.model_copy(update={"volume": None}) if bar.interval_start == first else bar
+        for bar in proven.bars
+    )
+    no_volume = DatasetPriceBars(proven.manifest_content_hash, proven.price_cutoff, bars)
+    capacity, gates, _ = _capacity(market, no_volume)
+    assert _gates(gates) == ESTIMATED_MISSING
+    assert "bar_volume_source_mismatch" not in capacity.details
+
+
+def test_a_mismatch_takes_precedence_over_a_missing_volume() -> None:
+    market = _market(seed=7, planted=True)
+    proven = _proven(market)
+    first, second, *_ = _traded(_capacity(market, proven)[2])
+    executed = _volumes_of(market)[(SYMBOL, second)]
+    supplied = _changed(_volumes_of(market), {first: None, second: executed + 1})
+    capacity, gates, _ = _capacity(market, proven, bar_volume=supplied)
+    assert _gates(gates) == ESTIMATED_MISMATCH
+    record = capacity.details["bar_volume_source_mismatch"]
+    assert isinstance(record, dict) and (record["fills"], record["missing"]) == (1, 1)
+
+
+def test_a_mismatch_reaches_the_report_as_an_inconclusive_g4_gate(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    proven = _proven(market)
+    shifted = {key: value + 1 for key, value in _volumes_of(market).items()}  # every bar differs
+    result, _ = _evaluate(market, tmp_path / "mismatch", dataset_bars=proven, bar_volume=shifted)
+    assert result.validation is not None
+    report = result.validation.report
+    binding = next(g for g in report.gates if g.gate_id == "G0.manifest_binding")
+    assert binding.verdict is Verdict.PASS  # the executed bars are the proven ones
+    estimated = next(g for g in report.gates if g.gate_id == "G4.capacity.estimated")
+    assert (estimated.verdict, estimated.metric) == (
+        Verdict.INCONCLUSIVE,
+        "bar_volume_source_mismatch",
+    )
+    assert report.verdict is Verdict.INCONCLUSIVE
+    # equal sources: the report is the one without the conflict
+    equal, _ = _evaluate(market, tmp_path / "equal", dataset_bars=proven)
+    assert equal.validation is not None
+    assert "G4.capacity.estimated" not in {g.gate_id for g in equal.validation.report.gates}
 
 
 # =========================================================================================

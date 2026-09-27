@@ -113,7 +113,9 @@ __all__ = [
     "PBO_METHODS",
     "SUBUNIVERSE_RULE",
     "ZERO_EXPOSURE_SINGLE_ASSET",
+    "BAR_VOLUME_SOURCE_MISMATCH",
     "CapacityFill",
+    "VolumeSourceMismatch",
     "CheckStatus",
     "RobustnessCheck",
     "StateTrade",
@@ -881,6 +883,22 @@ def state_decomposition_check(
 # ======================================================================================
 
 
+#: ADR-0064: the supplied bar volume and the executed bar's proven volume disagree.
+BAR_VOLUME_SOURCE_MISMATCH: Final = "bar_volume_source_mismatch"
+
+
+@dataclass(frozen=True)
+class VolumeSourceMismatch:
+    """ADR-0064: at one fill, ``bar_volume`` and the executed ``PriceBar.volume`` differ."""
+
+    instrument: str
+    time: datetime
+    #: the separately bound ``ValidatorSetup.bar_volume`` value
+    bar_volume: Decimal
+    #: the proven ``PriceBar.volume`` of the executed bar (``ValidatorSetup.dataset_bars``)
+    dataset_bars_volume: Decimal
+
+
 @dataclass(frozen=True)
 class CapacityFill:
     """One execution: traded notional as a fraction of equity, and its bar's traded notional."""
@@ -888,6 +906,8 @@ class CapacityFill:
     time: datetime
     traded_fraction: Decimal
     bar_volume_notional: Decimal | None
+    #: ADR-0064 (dataset path only): the two volume sources disagree at this fill
+    source_mismatch: VolumeSourceMismatch | None = None
 
 
 def capacity_check(
@@ -932,6 +952,12 @@ def capacity_check(
     the declared coefficient in a conflict (``param:capacity.impact_coefficient`` or
     ``capacity.impact_coefficient``); ``impact_model`` is the Profile's ``capacity.impact_model``,
     which must be in ``IMPACT_MODELS`` (``None``: not given, the square-root law as before).
+
+    ADR-0064 (dataset path): a traded fill carrying a ``source_mismatch`` (the supplied bar volume
+    and the executed bar's proven volume differ) makes ``G4.capacity.estimated`` INCONCLUSIVE with
+    ``bar_volume_source_mismatch`` -- before, and instead of, ``bar_volume_missing`` -- and nothing
+    is computed from either source (no capacity, impact or ``G4.capacity.required``); ``details``
+    record the mismatch count, the missing count and the first mismatch.
     """
     model_name = (
         None
@@ -952,9 +978,27 @@ def capacity_check(
         turnover = float(sum((fill.traded_fraction for fill in traded), Decimal(0)))
         details["turnover_per_period"] = turnover / periods if periods else None
         details["fills"] = len(traded)
+    mismatched = [fill.source_mismatch for fill in traded if fill.source_mismatch is not None]
     if max_participation is None:
         missing.append("capacity.max_participation_rate")
         gates.append(missing_field_gate("G4.capacity.estimated", "capacity.max_participation_rate"))
+    elif mismatched:
+        first = mismatched[0]
+        details["bar_volume_source_mismatch"] = {
+            "fills": len(mismatched),
+            "missing": sum(1 for fill in traded if fill.bar_volume_notional is None),
+            "first": {
+                "instrument": first.instrument,
+                "time": first.time.isoformat(),
+                "bar_volume": str(first.bar_volume),
+                "dataset_bars_volume": str(first.dataset_bars_volume),
+            },
+        }
+        gates.append(
+            inconclusive_gate(
+                "G4.capacity.estimated", BAR_VOLUME_SOURCE_MISMATCH, float(len(mismatched))
+            )
+        )
     elif fills is None or any(fill.bar_volume_notional is None for fill in traded):
         gates.append(inconclusive_gate("G4.capacity.estimated", "bar_volume_missing", 0.0))
     elif not traded:

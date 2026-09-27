@@ -354,7 +354,8 @@ def _setup(book: multi.Book, candidate: StrategyCandidate) -> ValidatorSetup:
         outcome_provider=ForwardReturnOutcome((lax.LABEL_SPEC,)),
         manifest_content_hash=multi.MANIFEST,
         instrument=book.names[0],
-        trials=CandidateTrialRunner(candidate, book.inputs(), BarBacktester()),
+        # dataset path: the trials trade on the proven bars (which carry volume since B61)
+        trials=CandidateTrialRunner(candidate, book.inputs(with_volume=True), BarBacktester()),
         chosen_params=CHOSEN,
         seed=11,
         robustness=multi.PARAMS,
@@ -378,7 +379,7 @@ def test_validated_end_to_end_on_the_multi_instrument_path(kinds: str, tmp_path:
     registry = FailureRegistry(tmp_path / "failures.jsonl")
     result = evaluate_strategy(
         candidate,
-        book.inputs(),
+        book.inputs(with_volume=True),
         backtester=BarBacktester(),
         registry=registry,
         validator=PipelineBacktestValidator(_setup(book, candidate)),
@@ -423,7 +424,7 @@ def test_a_single_instrument_run_has_no_cross_section() -> None:
     """
     book = multi.Book.of("p,n")
     candidate = _entry().candidate()
-    runner = CandidateTrialRunner(candidate, book.inputs(), BarBacktester())
+    runner = CandidateTrialRunner(candidate, book.inputs(with_volume=True), BarBacktester())
     for name in book.names:
         alone = runner.run(CHOSEN, instruments=(name,))
         assert {t.target_weight for t in alone.targets} == {Decimal(0)}

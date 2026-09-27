@@ -816,13 +816,16 @@ P05-WRITE 由 ADR-0058 接受并集成，D-LIST 保持 Raphael 的明确暂缓�
 - **未运行 / 待 Raphael 批准**：`uv sync --offline --extra api-server && uv run --offline --extra api-server pytest -q -rs -p no:cacheprovider tests/apps/test_api_server.py`（真实 Uvicorn 子进程两项）。不得记为通过。
 - 注意：默认全量门禁此后会多出 2 个带原因的 skip（真实 Uvicorn 子进程测试），默认依赖与安装内容不变。
 
-**B66 — ADR-0064（Accepted 2026-09-27，Codex）：G4 容量的成交量来源一致性（选项 A）**（实施中）
+**B66 — ADR-0064（Accepted 2026-09-27，Codex）：G4 容量的成交量来源一致性（选项 A）**（`CODE_COMPLETE / DEBUG_PENDING`）
 
 - 发现：数据集路径上 G4 容量只读调用方的 `bar_volume`（研究循环取自特征 manifest 观察），而已执行的 `DatasetPriceBars` 自 B61 起带证明过的
   `PriceBar.volume`；两者冲突时今天静默使用前者。
 - Codex 选 A：两来源在确切 `(instrument, fill_time)` 上 `Decimal` 精确相等 → 结果不变；不一致 → `G4.capacity.estimated` INCONCLUSIVE
   `bar_volume_source_mismatch`，不计算容量与冲击；缺值 → 保持 `bar_volume_missing`；合成路径逐字节不变；不改阈值 / Profile / 宪法 / 契约 / Schema。
-- `91c5630` 提交 ADR 草案（Proposed）；Codex 接受原文措辞（精确 `Decimal` 比较、不一致优先于缺失、原因名）后记为 Accepted，随后实施。
+- `91c5630` 提交 ADR 草案（Proposed）；Codex 接受原文措辞（精确 `Decimal` 比较、不一致优先于缺失、原因名）后记为 Accepted（`eaf239b`），随后实施。
+- 实施：见 ADR-0064 Implementation note（`robustness.py` 新 INCONCLUSIVE 分支、`_capacity_fills` 在数据集路径逐笔比较、测试与夹具）。
+- 实际运行：（6 GB 上限，未过滤管道、`set -o pipefail`，pytest 自身退出码）`pytest -q -rs -m "not postgres" tests/research/strategies tests/research/validation tests/research/synthetic_lab tests/research/loop tests/infrastructure/e2e/test_research_loop_dataset_conditional.py tests/infrastructure/e2e/test_research_loop_dataset_g5_units.py` + 文档一致性 + 架构边界：第一次（修正 `test_cross_sectional_momentum.py` 的数据集路径夹具之前）→ `2 failed, 711 passed, 1 warning in 1363.20s`，**退出码 1**（两项为 `test_validated_end_to_end_on_the_multi_instrument_path[p,n]` / `[p,p,n]`：交易输入不带 volume，G0.manifest_binding 正确地判 FAIL）；修正后该文件 `29 passed`（退出码 0）；第二次完整运行 → `713 passed, 1 warning in 1360.32s`，**退出码 0**，无 skip。在 B66 之前的源码上 6 项新测试中 4 项失败（相等与只比较成交 bar 两项为不变量）。`ruff check .` → `All checks passed!`（退出码 0）；`ruff format --check .` → `765 files already formatted`（退出码 0）；`mypy` → `Success: no issues found in 597 source files`（退出码 0）。真实数据端到端 `test_research_pipeline_real_data.py`（PostgreSQL 标记）**未运行**：其交易输入即 `backtest_bars_from_dataset` 的 bar、`bar_volume` 取自同一选择的观察，按构造两来源一致。
+- 未运行：PostgreSQL 标记测试；B65 的两项真实 Uvicorn 测试仍因未安装而跳过（待 Raphael H12 批准）。
 
 ### 10.8 审计后续汇总（取代 10.6 中下列各行；其余行不变）
 

@@ -95,7 +95,9 @@ class Book:
     def names(self) -> tuple[str, ...]:
         return tuple(sorted(self.markets))
 
-    def bars(self) -> tuple[PriceBar, ...]:
+    def bars(self, *, with_volume: bool = False) -> tuple[PriceBar, ...]:
+        """``with_volume``: as ``backtest_bars_from_dataset`` produces them since B61 (dataset path
+        only; the synthetic path keeps its volume-less bars and hashes)."""
         return tuple(
             PriceBar(
                 instrument=name,
@@ -106,14 +108,15 @@ class Book:
                 high=bar.high,
                 low=bar.low,
                 close=bar.close,
+                volume=bar.volume if with_volume else None,
             )
             for name in self.names
             for bar in self.markets[name].bars
             if bar.interval_end <= BOUNDARY
         )
 
-    def inputs(self) -> EvaluationInputs:
-        bars = self.bars()
+    def inputs(self, *, with_volume: bool = False) -> EvaluationInputs:
+        bars = self.bars(with_volume=with_volume)
         decisions: list[datetime] = []
         t = T0 + 61 * MINUTE
         while t + HOUR < BOUNDARY:
@@ -131,8 +134,9 @@ class Book:
         )
 
     def proven(self, manifest: str = MANIFEST) -> DatasetPriceBars:
-        """Stands in for ``backtest_bars_from_dataset`` over every instrument's bars."""
-        bars = self.bars()
+        """Stands in for ``backtest_bars_from_dataset`` over every instrument's bars (each with
+        its volume, as that producer gives them since B61)."""
+        bars = self.bars(with_volume=True)
         return DatasetPriceBars(manifest, max(bar.available_time for bar in bars), bars)
 
 
@@ -147,7 +151,13 @@ def _setup(book: Book, runner: TrialRunner | None = None, **fields: object) -> V
         "outcome_provider": ForwardReturnOutcome((lax.LABEL_SPEC,)),
         "manifest_content_hash": MANIFEST,
         "instrument": book.names[0],
-        "trials": runner or CandidateTrialRunner(candidate, book.inputs(), BarBacktester()),
+        # the dataset path trades on the proven bars themselves (which carry volume since B61)
+        "trials": runner
+        or CandidateTrialRunner(
+            candidate,
+            book.inputs(with_volume=fields.get("dataset_bars") is not None),
+            BarBacktester(),
+        ),
         "chosen_params": CHOSEN,
         "seed": 11,
         "robustness": PARAMS,
@@ -171,7 +181,7 @@ def _evaluate(
     registry = FailureRegistry(tmp_path / "failures.jsonl")
     result = evaluate_strategy(
         candidate,
-        book.inputs(),
+        book.inputs(with_volume=fields.get("dataset_bars") is not None),
         backtester=BarBacktester(),
         registry=registry,
         validator=PipelineBacktestValidator(_setup(book, runner, **fields)),
@@ -411,7 +421,7 @@ def test_a_binding_mismatch_on_one_instrument_fails_g0(tmp_path: Path) -> None:
         "G0.manifest_binding",
         ReasonCode.CONTRACT_VIOLATION,
     )
-    assert binding_mismatches(_setup(book, dataset_bars=tampered), book.bars()) == [
+    assert binding_mismatches(_setup(book, dataset_bars=tampered), book.bars(with_volume=True)) == [
         "bars_in_manifest",
         "bars_in_manifest[S1-USDT]",
     ]

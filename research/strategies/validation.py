@@ -262,6 +262,7 @@ from research.validation.robustness import (
     CapacityFill,
     StateTrade,
     SubUniverse,
+    VolumeSourceMismatch,
     subuniverse_partition,
 )
 
@@ -1073,20 +1074,39 @@ class PipelineBacktestValidator:
         return tuple(trades)
 
     def _capacity_fills(self, rerun: TrialRun) -> tuple[CapacityFill, ...] | None:
+        """C-R5 inputs; on the dataset path each fill's ``bar_volume`` is checked against the
+        proven ``PriceBar.volume`` of its executed bar at the same ``(instrument, fill_time)``
+        (ADR-0064): unequal is a ``source_mismatch``, a value missing from either source is a
+        missing volume. The synthetic path (no ``dataset_bars``) is unchanged."""
         volumes = self._setup.bar_volume
         if volumes is None:
             return None
+        dataset = self._setup.dataset_bars
+        executed = (
+            None
+            if dataset is None
+            else {(bar.instrument, bar.interval_start): bar.volume for bar in dataset.bars}
+        )
         curve = rerun.backtest.equity_curve
         out: list[CapacityFill] = []
         for fill in rerun.backtest.fills:
             before = [p.equity for p in curve if p.time <= fill.fill_time]
             equity = before[-1] if before else rerun.backtest.initial_equity
-            volume = volumes.get((fill.instrument, fill.fill_time))
+            key = (fill.instrument, fill.fill_time)
+            volume = volumes.get(key)
+            mismatch = None
+            if executed is not None:
+                proven = executed.get(key)
+                if proven is None:  # no executed bar there, or it carries no volume
+                    volume = None
+                elif volume is not None and volume != proven:
+                    mismatch = VolumeSourceMismatch(fill.instrument, fill.fill_time, volume, proven)
             out.append(
                 CapacityFill(
                     time=fill.fill_time,
                     traded_fraction=abs(fill.quantity * fill.fill_price) / equity,
                     bar_volume_notional=None if volume is None else volume * fill.reference_price,
+                    source_mismatch=mismatch,
                 )
             )
         return tuple(out)

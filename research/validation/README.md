@@ -54,6 +54,9 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
   `impact_coefficient`，优先于显式的 `RobustnessParams.impact_coefficient`——二者都给出且不同时不静默择一，`G4.capacity.impact_estimated`
   = `INCONCLUSIVE`（具名原因 `impact_coefficient_mismatch`，两个值都记录）。两个字段都不给（每个既有调用方）时不加任何门，报告
   （含内容哈希）逐字节不变。
+- **容量的成交量来源一致性**（ADR-0064，B66）：数据集路径（`ValidatorSetup.dataset_bars` 给出）上，每笔容量成交处 `bar_volume` 的值须与已执行 bar
+  的 `PriceBar.volume` 精确（`Decimal` 数值）相等；不等 → `G4.capacity.estimated` = `INCONCLUSIVE`（`bar_volume_source_mismatch`），不计算容量 / 冲击；
+  任一来源缺值 → `bar_volume_missing`；二者并存时报告 mismatch。合成路径不比较、逐字节不变。
 
 ### 落盘的开封账本（调试批次，2026-09-25，ADR-0041 实施说明）
 
