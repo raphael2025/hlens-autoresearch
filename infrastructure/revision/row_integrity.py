@@ -1111,11 +1111,15 @@ class PersistedRowVerifier:
     # ------------------------------------------------------------------ catalog helpers
 
     def _scan(
-        self, definition: RegisteredTableDefinition, row_filter: BooleanExpression
+        self,
+        definition: RegisteredTableDefinition,
+        row_filter: BooleanExpression,
+        *,
+        limit: int | None = None,
     ) -> list[Mapping[str, Any]]:
         columns = tuple(field.name for field in definition.arrow_schema)
         rows: list[Mapping[str, Any]] = self._adapter.scan_columns(
-            definition.table, columns=columns, row_filter=row_filter
+            definition.table, columns=columns, row_filter=row_filter, limit=limit
         ).to_pylist()
         return rows
 
@@ -1565,20 +1569,44 @@ class PersistedRowVerifier:
         self, data_type: str, symbol: str, archive_ids: Sequence[str]
     ) -> dict[str, VerifiedArchive]:
         """Each named archive revision: committed once, for this data type and symbol, lawful."""
+        requested = tuple(dict.fromkeys(archive_ids))
         cached = {
             archive_id: self._archives[(data_type, symbol, archive_id)]
-            for archive_id in archive_ids
+            for archive_id in requested
             if (data_type, symbol, archive_id) in self._archives
         }
-        if len(cached) == len(archive_ids):
+        if len(cached) == len(requested):
             return cached
         table = BINANCE_SPOT_ARCHIVES.table
         found: dict[str, list[Mapping[str, Any]]] = {}
-        for chunk in _chunks(list(archive_ids)):
-            for row in self._scan(BINANCE_SPOT_ARCHIVES, _member("revision_id", chunk)):
-                found.setdefault(row["revision_id"], []).append(row)
+        for chunk in _chunks(requested):
+            # Every id is expected exactly once. The extra row is enough to prove a duplicate
+            # exists, without materializing every corrupt copy of one revision in this query.
+            rows = self._scan(
+                BINANCE_SPOT_ARCHIVES,
+                _member("revision_id", chunk),
+                limit=len(chunk) + 1,
+            )
+            if len(rows) > len(chunk) + 1:
+                raise CatalogIntegrityError(
+                    f"{table}: archive revision lookup exceeded its bounded scan limit"
+                )
+            requested_chunk = set(chunk)
+            for row in rows:
+                archive_id = row["revision_id"]
+                if archive_id not in requested_chunk:
+                    raise CatalogIntegrityError(
+                        f"{table}: archive revision lookup returned an unrequested revision"
+                    )
+                held = found.setdefault(archive_id, [])
+                held.append(row)
+                if len(held) > 1:
+                    raise CatalogIntegrityError(
+                        f"{table}: archive revision {archive_id} is committed "
+                        f"{len(held)} time(s) or more"
+                    )
         verified: dict[str, VerifiedArchive] = {}
-        for archive_id in archive_ids:
+        for archive_id in requested:
             rows = found.get(archive_id, [])
             if len(rows) > 1:
                 raise CatalogIntegrityError(

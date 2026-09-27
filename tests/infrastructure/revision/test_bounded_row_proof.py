@@ -205,6 +205,41 @@ class _Reads(ProxyCatalog):
         return result
 
 
+class _ArchiveMetadataReads(ProxyCatalog):
+    """Limits and result sizes of scans that resolve archive revision metadata rows."""
+
+    def __init__(self, inner: Any) -> None:
+        super().__init__(inner)
+        self.reads: list[tuple[int | None, int]] = []
+
+    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+        result = super().scan_columns(table, **kwargs)
+        if table == BINANCE_SPOT_ARCHIVES.table and tuple(kwargs["columns"]) == tuple(
+            field.name for field in BINANCE_SPOT_ARCHIVES.arrow_schema
+        ):
+            self.reads.append((kwargs.get("limit"), result.num_rows))
+        return result
+
+
+def test_duplicate_archive_revision_lookup_reads_at_most_expected_plus_one(
+    h: RestHarness, spools: Path
+) -> None:
+    """A million duplicate archive rows cannot become a million Python dicts in one proof."""
+    archive = _ingest(h, 1, batch=1)
+    [stored] = h.rows(BINANCE_SPOT_ARCHIVES)
+    h.forge_rows(BINANCE_SPOT_ARCHIVES, [stored], "twin-archive")
+
+    reads = _ArchiveMetadataReads(h.adapter)
+    verifier = PersistedRowVerifier(reads, h.storage, spool_dir=spools)
+    with pytest.raises(CatalogIntegrityError, match="archive revision .* committed 2 time"):
+        verifier.verify_archive_elements(BINANCE_SPOT_AGG_TRADES, "agg_trades", SYMBOL, _rows(h))
+
+    # One requested id is expected once; the scan reads only enough to prove a duplicate.
+    assert reads.reads == [(2, 2)]
+    assert archive == stored["revision_id"]
+    assert not any(spools.iterdir())
+
+
 def test_proving_a_window_reads_the_window_not_the_archive(
     h: RestHarness, spools: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
