@@ -24,6 +24,7 @@ from __future__ import annotations
 from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
+from threading import RLock
 from typing import TYPE_CHECKING
 
 from core.domain.research import Hypothesis, HypothesisOrigin
@@ -56,6 +57,9 @@ class TrialEntry:
 
 class TrialLedger:
     def __init__(self, path: Path | None = None) -> None:
+        # A ledger-level lock covers the check/append/apply sequence. RLock allows public
+        # mutation methods to delegate to shared helpers without opening an interleaving gap.
+        self._lock = RLock()
         self._registered: dict[tuple[str, str], Hypothesis] = {}
         self._order: list[tuple[str, str]] = []
         self._log: list[TrialEntry] = []
@@ -87,21 +91,24 @@ class TrialLedger:
     @property
     def journal(self) -> AppendOnlyJournal | None:
         """The backing journal (``None``: in memory); read-only use, for cross-file checks."""
-        return self._journal
+        with self._lock:
+            return self._journal
 
     def register(self, hypothesis: Hypothesis) -> bool:
         """Register (pre-register) ``hypothesis``; ``False`` if exactly it was already registered.
 
         LLM-originated hypotheses go through ``register_draft`` (a human review is required).
         """
-        if hypothesis.origin is HypothesisOrigin.LLM:
-            raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
-        return self._register(hypothesis)
+        with self._lock:
+            if hypothesis.origin is HypothesisOrigin.LLM:
+                raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
+            return self._register(hypothesis)
 
     def register_draft(self, draft: HypothesisDraft) -> bool:
-        if not draft.reviewed:
-            raise LedgerError(f"{draft.hypothesis.ref} has not been reviewed by a human")
-        return self._register(draft.hypothesis)
+        with self._lock:
+            if not draft.reviewed:
+                raise LedgerError(f"{draft.hypothesis.ref} has not been reviewed by a human")
+            return self._register(draft.hypothesis)
 
     def register_batch(self, hypotheses: Iterable[Hypothesis]) -> tuple[Hypothesis, ...]:
         """Atomically pre-register a batch in one journal event.
@@ -114,45 +121,46 @@ class TrialLedger:
         LLM-originated hypotheses are refused here: this API accepts hypotheses, not the reviewed
         ``HypothesisDraft`` evidence required by ``register_draft``.
         """
-        try:
-            batch = tuple(hypotheses)
-        except TypeError as exc:
-            raise LedgerError("a batch must be an iterable of Hypothesis values") from exc
-        if not batch:
-            return ()
+        with self._lock:
+            try:
+                batch = tuple(hypotheses)
+            except TypeError as exc:
+                raise LedgerError("a batch must be an iterable of Hypothesis values") from exc
+            if not batch:
+                return ()
 
-        keys: set[tuple[str, str]] = set()
-        pending: list[Hypothesis] = []
-        for hypothesis in batch:
-            if not isinstance(hypothesis, Hypothesis):
-                raise LedgerError("a batch contains only Hypothesis values")
-            if hypothesis.origin is HypothesisOrigin.LLM:
-                raise LedgerError(
-                    f"an LLM hypothesis is registered only as a reviewed draft: {hypothesis.ref}"
-                )
-            key = (hypothesis.name, hypothesis.version)
-            if key in keys:
-                raise LedgerError(f"a registration batch lists {hypothesis.ref} more than once")
-            keys.add(key)
-            existing = self._registered.get(key)
-            if existing is None:
-                pending.append(hypothesis)
-            elif existing.content_hash() != hypothesis.content_hash():
-                raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+            keys: set[tuple[str, str]] = set()
+            pending: list[Hypothesis] = []
+            for hypothesis in batch:
+                if not isinstance(hypothesis, Hypothesis):
+                    raise LedgerError("a batch contains only Hypothesis values")
+                if hypothesis.origin is HypothesisOrigin.LLM:
+                    raise LedgerError(
+                        f"an LLM hypothesis is registered only as a reviewed draft: {hypothesis.ref}"
+                    )
+                key = (hypothesis.name, hypothesis.version)
+                if key in keys:
+                    raise LedgerError(f"a registration batch lists {hypothesis.ref} more than once")
+                keys.add(key)
+                existing = self._registered.get(key)
+                if existing is None:
+                    pending.append(hypothesis)
+                elif existing.content_hash() != hypothesis.content_hash():
+                    raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
 
-        if not pending:
-            return ()
+            if not pending:
+                return ()
 
-        payload = {
-            "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in pending]
-        }
-        if self._journal is not None:
-            # The journal append is the durable commit point. Do not expose partial in-memory
-            # registration if the append fails (including a stale-writer refusal).
-            self._journal.append("register_batch", payload)
-        for hypothesis in pending:
-            self._apply_registration(hypothesis)
-        return tuple(pending)
+            payload = {
+                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in pending]
+            }
+            if self._journal is not None:
+                # The journal append is the durable commit point. Do not expose partial in-memory
+                # registration if the append fails (including a stale-writer refusal).
+                self._journal.append("register_batch", payload)
+            for hypothesis in pending:
+                self._apply_registration(hypothesis)
+            return tuple(pending)
 
     def _replay_batch(self, path: Path, payload: object) -> None:
         """Replay one strictly shaped batch record; any duplicate or invalid member is corruption."""
@@ -190,35 +198,37 @@ class TrialLedger:
         new version, never a re-evaluation); ``attempt`` is a non-empty key naming this
         evaluation. ``False`` if exactly this attempt was already registered (not a new trial).
         """
-        key = (hypothesis.name, hypothesis.version)
-        existing = self._registered.get(key)
-        if existing is None:
-            raise LedgerError(f"{hypothesis.ref} is not registered: register it first")
-        if existing.content_hash() != hypothesis.content_hash():
-            raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
-        label = attempt.strip() if isinstance(attempt, str) else ""
-        if not label:
-            raise LedgerError("a re-evaluation needs a non-empty attempt key")
-        if (*key, label) in self._attempts:
-            return False
-        if self._journal is not None:
-            self._journal.append(
-                "reevaluate", {"hypothesis": hypothesis.model_dump(mode="json"), "attempt": label}
-            )
-        self._append(hypothesis, label)
-        return True
-
-    def _register(self, hypothesis: Hypothesis) -> bool:
-        key = (hypothesis.name, hypothesis.version)
-        existing = self._registered.get(key)
-        if existing is not None:
+        with self._lock:
+            key = (hypothesis.name, hypothesis.version)
+            existing = self._registered.get(key)
+            if existing is None:
+                raise LedgerError(f"{hypothesis.ref} is not registered: register it first")
             if existing.content_hash() != hypothesis.content_hash():
                 raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
-            return False
-        if self._journal is not None:
-            self._journal.append("register", hypothesis.model_dump(mode="json"))
-        self._apply_registration(hypothesis)
-        return True
+            label = attempt.strip() if isinstance(attempt, str) else ""
+            if not label:
+                raise LedgerError("a re-evaluation needs a non-empty attempt key")
+            if (*key, label) in self._attempts:
+                return False
+            if self._journal is not None:
+                self._journal.append(
+                    "reevaluate", {"hypothesis": hypothesis.model_dump(mode="json"), "attempt": label}
+                )
+            self._append(hypothesis, label)
+            return True
+
+    def _register(self, hypothesis: Hypothesis) -> bool:
+        with self._lock:
+            key = (hypothesis.name, hypothesis.version)
+            existing = self._registered.get(key)
+            if existing is not None:
+                if existing.content_hash() != hypothesis.content_hash():
+                    raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+                return False
+            if self._journal is not None:
+                self._journal.append("register", hypothesis.model_dump(mode="json"))
+            self._apply_registration(hypothesis)
+            return True
 
     def _apply_batch(self, hypotheses: Iterable[Hypothesis]) -> None:
         for hypothesis in hypotheses:
@@ -245,34 +255,39 @@ class TrialLedger:
     def is_registered(self, hypothesis: Hypothesis, attempt: str | None = None) -> bool:
         """``hypothesis`` (exactly this content) has the trial ``attempt`` (``None``: its
         registration) in the ledger."""
-        existing = self._registered.get((hypothesis.name, hypothesis.version))
-        return (
-            existing is not None
-            and existing.content_hash() == hypothesis.content_hash()
-            and (hypothesis.name, hypothesis.version, attempt) in self._attempts
-        )
+        with self._lock:
+            existing = self._registered.get((hypothesis.name, hypothesis.version))
+            return (
+                existing is not None
+                and existing.content_hash() == hypothesis.content_hash()
+                and (hypothesis.name, hypothesis.version, attempt) in self._attempts
+            )
 
     def trials(self, family_id: str) -> int:
         """Every trial of the family: registrations and re-evaluations, failures included."""
-        return sum(1 for entry in self._log if entry.family_id == family_id)
+        with self._lock:
+            return sum(1 for entry in self._log if entry.family_id == family_id)
 
     def trial_index(self, hypothesis: Hypothesis, attempt: str | None = None) -> int:
         """1-based position of the trial ``(hypothesis, attempt)`` among its family's trials."""
-        family = [e for e in self._log if e.family_id == hypothesis.family_id]
-        for index, entry in enumerate(family, start=1):
-            if (entry.name, entry.version, entry.attempt) == (
-                hypothesis.name,
-                hypothesis.version,
-                attempt,
-            ):
-                return index
-        raise LedgerError(f"{hypothesis.ref} has no registered trial {attempt!r}")
+        with self._lock:
+            family = [e for e in self._log if e.family_id == hypothesis.family_id]
+            for index, entry in enumerate(family, start=1):
+                if (entry.name, entry.version, entry.attempt) == (
+                    hypothesis.name,
+                    hypothesis.version,
+                    attempt,
+                ):
+                    return index
+            raise LedgerError(f"{hypothesis.ref} has no registered trial {attempt!r}")
 
     @property
     def trial_log(self) -> tuple[TrialEntry, ...]:
         """Every trial in registration order (nothing is ever removed)."""
-        return tuple(self._log)
+        with self._lock:
+            return tuple(self._log)
 
     @property
     def hypotheses(self) -> tuple[Hypothesis, ...]:
-        return tuple(self._registered[key] for key in self._order)
+        with self._lock:
+            return tuple(self._registered[key] for key in self._order)
