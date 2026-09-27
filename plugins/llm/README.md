@@ -18,5 +18,8 @@
 
 ## 限制
 
-- 研究循环可通过显式的 `ContentVerifiedLLM(inner, resolver)` 包装器执行内容取回与核验；默认调用方不自动配置持久 store，未使用包装器时仍可产生不可取回的 `memory://` 引用。实现与定向测试见 `research/loop/README.md` 和 `tests/research/loop/test_llm_content.py`。
+- 内容可取回与一致性核对只在研究循环**选用**时生效：`research/loop/llm_content.py` 的 `ContentVerifiedLLM(inner, resolver)`
+  在应答后经 resolver（例如 `infrastructure.content.LocalContentStore`，`verify_llm_call` 重算每个 blob 的哈希与大小）
+  取回三个引用并与实际的提示、输入、输出比对，不符即 `LlmContentUnverified`；假设阶段取用已审阅草稿时再核对一次。
+  不包装时行为与记录哈希不变。
 - 真实联网 Provider 需凭据与网络声明（`network=True`），不在本构建范围。

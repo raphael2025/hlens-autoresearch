@@ -33,7 +33,7 @@
 ## 条目索引
 
 以下是**事件算子模板**（operator）：具体条目 = 模板 + 具体 Feature / State 引用 + 参数，各自有 `name@version` 与 spec hash。
-算子模板只在合成夹具与冒烟测试上实例化。下方的具体定义是未注册草稿，不是 Registry 条目。
+目前只在合成夹具与冒烟测试上实例化，尚无登记的具体条目。
 
 | 算子（operator） | 摘要 | 输入 | 可观测时间 | provider | 出处 | 状态 |
 |---|---|---|---|---|---|---|
@@ -48,27 +48,18 @@
 
 ## 具体定义草稿（未注册）
 
-以下内容只把仓库已有 Feature / Event Provider 的语义组合为一个可审阅的定义；它不是 Knowledge Base / Control Plane Registry 中的登记项。
+以下草稿仅组合仓库已有 Feature / Event Provider 的语义，不是 Knowledge Base 或 Control Plane Registry 条目；没有关联实验或真实数据证据。
 
 | 字段 | 值 |
 |---|---|
 | `name@version` | `bar_log_return_zero_up_cross@1.0.0` |
-| 状态 | **UNVERIFIED / NOT_VALIDATED**；未注册、未在真实数据上运行或校准 |
-| 摘要 | `bar_log_return` 序列从非正值跨到正值时产生一个向上穿越事件 |
-| 输入 | `feature:bar_log_return@1.0.0` |
-| Provider | `feature_threshold_cross@1.0.0`（`FeatureThresholdCrossProvider`） |
+| 状态 | `UNVERIFIED / NOT_VALIDATED`；未注册、未在真实数据上运行或校准 |
+| 摘要 | `bar_log_return` 从非正值跨到正值时产生向上穿越事件 |
+| 输入 / Provider | `feature:bar_log_return@1.0.0` / `feature_threshold_cross@1.0.0` |
 | 触发定义 | `{"operator":"feature_threshold_cross","feature":"feature:bar_log_return@1.0.0","level":"0","direction":"up"}` |
-| 参数解释 | `level = 0` 是事件定义水平（零对数收益），不是验证阈值；`direction = up` 固定只识别向上穿越 |
-| 来源 | 仓库实现依据：[ADR-0030](../adr/0030-feature-provider-contract.md)、[ADR-0036](../adr/0036-event-provider-contract.md)、[`BarLogReturnProvider`](../../plugins/features/bars.py)、[`FeatureThresholdCrossProvider`](../../plugins/events/features.py)；未声称有外部实证来源 |
-| 证据 | 无关联 `ExperimentRun`；没有真实数据频率、预测能力或经济意义结论 |
+| 来源 | 仓库实现：[ADR-0030](../adr/0030-feature-provider-contract.md)、[ADR-0036](../adr/0036-event-provider-contract.md)、`BarLogReturnProvider` 与 `FeatureThresholdCrossProvider`；未声称外部实证来源 |
 
-语义按现有实现解释：`BarLogReturnProvider` 以相邻且连续的 bar 计算 `ln(close[k] / close[k-1])`；该 Provider 默认 `FeatureSpec` 的输出精度为 18 位小数、half-even，缺少连续输入时返回 `None`。本事件在相邻的可计算 Feature 点满足
-`previous <= 0 < value` 时触发；不可计算的 `None` 点不填补，也不会跨过它配对。事件属性记录 `direction="up"`、零水平、前一点值与当前值。
-`observable_lag` 固定为零；`event_time` 仍是当前输入点的 `available_time` 加该 lag，因此不早于触发所用数据可见的时刻。定义不读取后续点。
-
-此草稿只声明 Feature 引用，没有声明某个具体 `FeatureSpec` 内容哈希或其可配置参数；默认精度说明不构成对其他同名版本化 FeatureSpec 配置的绑定。
-
-上述实现来源只支持“代码按此规则计算”的描述，不支持其市场有效性、事件质量、频率或策略价值。此草稿没有验收标准或 Validation Profile 数值；需要进入 Registry 或形成研究结论时，须另按项目登记与验证流程处理。
+实现按相邻且连续的 bar 计算对数收益；只有相邻可计算 Feature 点满足 `previous <= 0 < value` 时触发，缺值不填补且不跨过配对。事件可观测时间不早于输入 `available_time`。此草稿没有绑定具体 `FeatureSpec` 内容哈希，也不代表市场有效性或经济意义。
 
 ### 交互 DSL（ADR-0061）
 
@@ -84,7 +75,26 @@
 | `count(a, at_least, within_us)` | 在 A 处，`[A - within, A]` 内至少 `at_least` 个 A | `event_count` | 该 A 的事件时间 |
 
 同一表达式（同一 registry）永远编译成同一组规格与哈希；`Compilation.record()` 记录表达式哈希与全部规格哈希，
-`verify_compilation` 可重算核对。每个组合计入 trial count（04-research-loop.md §4）。
+`verify_compilation` 可重算核对。04-research-loop.md §4 要求每个组合都计入 trial count；当前实现中，试验账本（`research/hypotheses/ledger.py`）
+只登记假设，DSL 编译本身不计数——一个事件组合只在被已登记的假设使用时才计入。
 
-已知失败模式（roadmap）：事件重叠导致样本非独立（`overlap_diagnostics` 描述）、组合爆炸（每个交互组合计入 trial count，
+## 规格状态与缺口
+
+规格状态（本库专用；不是 Lifecycle 状态，也不是知识库证据等级）：`IMPLEMENTED` = 有代码与定向测试（FRAMEWORK_IMPLEMENTED /
+CODE_COMPLETE，DEBUG_PENDING；不是验收）；`NOT_VALIDATED` = 没有在正式 Research Dataset 上运行并经验证的结果；`UNSPECIFIED` = 未被已接受
+ADR / 契约定义。上表 8 个算子与 4 个 DSL 算子均为 `IMPLEMENTED · NOT_VALIDATED`；**没有任何具体事件条目**（模板 + 引用 + 参数）已登记。
+
+测试证据：`tests/plugins/events/test_event_providers.py`、`test_window_providers.py`、`test_dsl.py`；`tests/contract_suites/event.py`（因果扰动、
+PIT 一致）；`tests/infrastructure/event/`（执行器、未来确认拒绝、上游核对、DSL 编译）；`tests/research/events/test_event_stats.py`；
+`tests/smoke/test_phase3_events_smoke.py`（合成数据）。
+
+外部知识库（`hlens-knowledge`，只读参考，不是 `KnowledgeItem`、未接入本项目）中与事件相关的条目及映射：
+
+| 知识库条目 | 内容 | 映射 | 规格状态 |
+|---|---|---|---|
+| `MST-SHOCK-001` | 冲击：`\|r_t\| > k·σ` 或跳跃检验，须预注册 | 可由 `feature_threshold_cross` / `volatility_breakout` 在已实现特征上近似，但"`k·σ` 的动态水平"不是现有算子（`feature_threshold_cross` 的水平是常数） | `UNSPECIFIED` |
+| `MST-SQUEEZE-001` → `MST-EXPANSION-001` | 压缩后扩张 | `state_switch`（`from_state` / `to_state`）作用于 `volatility_regime`；未登记具体条目 | `UNSPECIFIED`（未登记） |
+| `RM-EVENT-STUDY-001` | 事件研究：异常收益与 CAR（MacKinlay 1997） | `research/events/stats.py` 只做频率、共现、领先滞后、重叠描述，不计算异常收益；标签见 [outcome-library.md](outcome-library.md) | `UNSPECIFIED` |
+
+已知失败模式（roadmap）：事件重叠导致样本非独立（`overlap_diagnostics` 描述）、组合爆炸（按 04-research-loop.md §4 每个交互组合都应计入 trial count；今天只在被已登记假设使用时计入，
 04-research-loop.md §4）、事件频率过低（`event_frequency` 描述）。

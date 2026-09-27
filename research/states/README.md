@@ -33,5 +33,7 @@
   版本逐项校验，载荷必须恰好是重建结果的规范形式（非规范时间文本、浮点数、篡改后的哈希不符都拒绝）。
 - 诊断没有自己的窗口：它只描述调用方给出的序列，因此某时刻之后的数据变化不会改变截至该时刻的报告（有测试）。
 
-剩余限制（留待调试阶段）：载荷只供研究侧存档，尚无 `research/reports` 写入器（该目录不在本批次范围）；报告不记录
-来源 `StateResult.result_hash`（调用方需自行关联）；未在真实 Research Dataset 上运行。
+写入：`research/reports/state_diagnostics.py` 以 `diagnostics_hash` 为报告 id 写出载荷（写前经 JSON 往返与
+`from_payload(..., expected_hash=...)` 核对），由 `apps/api` 的 `ReportStore` 以 `state_diagnostics` 种类提供。
+
+剩余限制（留待调试阶段）：报告不记录来源 `StateResult.result_hash`（调用方需自行关联）；未在真实 Research Dataset 上运行。
