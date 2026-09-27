@@ -77,6 +77,7 @@
 | [0070](0070-p7-partial-experiment-fail-stop.md) | P7 experiment 批次失败后停止续跑并要求人工审查 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；LoopRecord 字节不变，已进入本地 `main@498250a`、未统一验收，Phase 7 / 11 未验收 |
 | [0071](0071-p7-failed-round-review-packet.md) | P7 failed experiment round 的只读人工复核摘要 | Accepted（2026-09-27；Codex 依 Raphael 全权授权，经 Claude / Cursor / Codex 只读复核）；仅研究侧内存投影，不改持久格式、API 或 Schema；Ruff / format / mypy 通过，未跑测试 / build |
 | [0072](0072-validation-phase-sequencing.md) | 最小验证门与稳健性阶段的交付顺序（D-04） | Accepted（2026-09-27；Codex 依 Raphael 全权授权）；Phase 4 先交付最小门，Phase 8 提供稳健性扩展；不改契约或数值 |
+| [0073](0073-phase7-plan-admission-recovery.md) | P7 typed-plan 预登记与崩溃恢复 | Accepted（2026-09-28；Codex 依 Raphael 全权委托）；仅批准 PREPARE / TrialLedger 单事件 / COMMIT 与精确恢复设计，不启用 operator；实现和验收未完成 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

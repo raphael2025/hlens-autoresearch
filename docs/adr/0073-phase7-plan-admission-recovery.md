@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Proposed** |
+| 状态 | **Accepted** |
 | 日期 | 2026-09-28 |
-| 决策者 | 待 Raphael / 获授权决策者接受 |
+| 决策者 | **Codex 依 Raphael 2026-09-28 项目全权委托接受设计** |
 | 起草者 | Codex |
 | 相关 Phase | Phase 7、Phase 11 loop host |
 | 影响范围 | Research plan admission、TrialLedger、durable loop checkpoint / anchor；不修改 `core/`、契约、Schema、Constitution 或 Profile |
@@ -138,3 +138,7 @@ Research Loop 只能把存在有效 `COMMIT` 且 ledger event 完全匹配的 pl
 - `research/hypotheses/ledger.py`：`TrialLedger.register_batch` 的单 event 登记与精确重放。
 - `research/loop/durable.py`：durable state journals、memory checkpoint、STATE_VERSION、external anchor 与 opener cross-check。
 - `apps/worker/loop.py`：LoopAudit、started / recorded round 与 recovery-required fail-stop。
+
+## 接受记录（2026-09-28）
+
+Codex 依 Raphael 对项目决策与开发的全权委托接受本 ADR 的 PREPARE → 单一 TrialLedger `register_batch` event → COMMIT 协议、精确恢复规则、checkpoint / anchor 接线与 v3 / v4 兼容边界。此接受只批准设计，**不代表实现已开始或完成**，也不启用任何 typed-plan operator。实现前必须逐项解决上文所列 payload / reducer、ledger recovery API、open-round identity、checkpoint / anchor 和拒绝审计细节；任何 contract、Schema、`core/`、Constitution、Profile 或 D-LIST 变化须另行决议。验收仍按 Raphael 后续指定流程进行。
