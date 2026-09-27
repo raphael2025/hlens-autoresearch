@@ -297,7 +297,7 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 1. 按完成计划和 roadmap 逐模块打磨与验收；先解决 Phase 1 当前阻塞，再安排其余模块的独立验证。
 2. 全代码批次已有测试记录，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. `main` / `origin/main` 已同步至 `dca815c`；四项模块打磨修复已通过 PR #2 合并；全框架、决策记录、Phase 0.5 种子与 Phase 1 D3E / D4 记录已整合；E1-CAP-1 仍阻断，未打 tag。
+3. `main` / `origin/main` 已同步；四项模块打磨修复已通过 PR #2 合并；全框架、决策记录、Phase 0.5 种子与 Phase 1 D3E / D4 记录已整合；E1-CAP-1 仍阻断，未打 tag。
 
 ## 12. 给 Claude Code 的下一步
 
