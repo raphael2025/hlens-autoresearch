@@ -675,6 +675,7 @@ class ExperimentStage:
         if previous is None:
             self._matrix_callback = callback
         else:
+
             def chained(matrix: StateStrategyMatrix) -> None:
                 previous(matrix)
                 callback(matrix)
@@ -887,8 +888,6 @@ class ExperimentStage:
                         states,
                     )
                     matrix = replace(matrix, backtest_result_hash=trial.backtest.result_hash)
-                    if self._matrix_callback is not None:
-                        self._matrix_callback(matrix)
                 except SubjectRunError as exc:  # the subject's own code (ADR-0053 §2)
                     cause = exc.__cause__ if exc.__cause__ is not None else exc
                     error, reason, trial, matrix = (
@@ -905,6 +904,10 @@ class ExperimentStage:
                         None,
                         None,
                     )
+            # P6 reporting is infrastructure owned by the stage caller. A reporting failure must
+            # fail the stage, never be attributed to the candidate as RUN_ERRORED.
+            if trial is not None and matrix is not None and self._matrix_callback is not None:
+                self._matrix_callback(matrix)
         # opt-in P6 (module docs), outside the errored-trial handler: a registration that fails
         # (a ledger conflict) fails the stage; it never becomes a quietly errored trial
         conditional = (

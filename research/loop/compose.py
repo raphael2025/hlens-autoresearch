@@ -112,6 +112,7 @@ from core.domain.research import KnowledgeItem
 from core.domain.selection import ProfileSelection
 from core.domain.specs import FeatureSpec, StateSpec
 from infrastructure.event_bus import FileEventBus, InMemoryEventBus
+from research.experiments.state_strategy import StateStrategyMatrix
 from research.hypotheses import HypothesisBatch, KnowledgeSource
 from research.loop.durable import (
     LOOP_STATE_OPENED,

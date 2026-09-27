@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **模块差额收敛，待逐项验证**。Raphael 已授权先补基础逻辑再统一验收；P6 矩阵报告接线与 P8 回溯审计报告链已在本地协调分支实现，未跑测试、未合并。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍是独立阻断；其余 Phase 未验收 |
+| 当前子阶段 | **模块差额收敛，待逐项验证**。Raphael 已授权先补基础逻辑再统一验收；P6 矩阵报告接线、P8 回溯审计报告链和 P11 精确阈值读取修正已在本地协调分支；相关 Python Ruff / format 检查通过，未跑测试、未合并。Phase 1 的 D3E 已接受、D4 已关闭，E1-CAP-1 仍是独立阻断；其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 主线保持干净基线；PR #6～#9 已合入。P6 / P8 新实现目前仅在本地协调分支，待代码复核与测试；Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
+| 总体状态 | 🔄 主线保持干净基线；PR #6～#9 已合入。P6 / P8 / P11 修正目前仅在本地协调分支，Ruff / format 已通过、测试待验；Phase 1 被 E1-CAP-1 阻断，其余 Phase 未验收；Profile 数值未冻结；无任何实盘能力 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion`：Phase 0.5、2～14 与前后端的剩余代码缺口已补（B1～B67；B62 是 P10 证据模式决定）；已整合并推送到 `main`，状态 **CODE_COMPLETE / DEBUG_PENDING**，未独立调试、**不等于 Phase 已验收**；逐批证据见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-27 |
 
@@ -102,8 +102,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - ✅ 框架整合：B1～B67 与 ADR-0052 / 0055 等代码已分批整合；PR #6 合并模块代码 / 内容收口批次（基线 `4875e92`），PR #7 将合并后项目状态同步至 `f58e8ec`（docs-only）。代码仍是 `CODE_COMPLETE / DEBUG_PENDING`，没有把全量门禁或主线合并当作 Phase 验收。
 - 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 bounded-memory 修复与固定规模探针由活跃 Claude 会话在 `fix/e1-cap1` 上处理，容量探针及 500k replay 正在运行。结果与返修后定向测试待产出；分支尚未进入 main，worktree 有未提交的 review 文档；Codex 不并行修改 Canonical / revision 代码，待交付后独立复核。
 - ✅ 模块收口批次：Phase 0.5 因子 / 特征 / Event 草稿、Event 字段说明、Loop / Router / API README 与 Phase 3 Event 表操作命令均已通过 PR #6 合并到 `main`（`4875e92`）；不构成阶段验收。
-- 🔨 模块差额实现：P6 将 loop 真实生成的矩阵接入既有报告目录；P8 增加显式输入的回溯审计 writer 与只读 API / Web 页面。两项已提交到本地协调分支；代码复核 / 测试尚未完成，不能算验收。
-- 🔎 深审还确认：P7 其余 DSL 算子没有执行适配器，LLM 内容核验仍是可选；P2 State Iceberg 持久化与 P11 劣化监控 / worker 启动接线需要先定边界。P0.5 标签、P3 生产建表、Profile 数值和真实数据仍是人工 / 数据 / 授权门。
+- 🔨 模块差额实现：P6 将 loop 真实生成的矩阵接入既有报告目录；P8 增加显式输入的回溯审计 writer 与只读 API / Web 页面；P11 修正新 Profile 的 Decimal 劣化阈值读取。实现已提交到本地协调分支；Python Ruff / format 检查通过，测试和完整独立复核尚未完成，不能算验收。
+- 🔎 深审还确认：P7 其余 DSL 算子没有执行适配器，LLM 内容核验仍是可选。P2 的 Arrow 表物化已满足 ADR-0035 当前范围；额外 Iceberg 持久化属于可选扩展，本轮决定暂缓，不作为当前代码缺口。P11 自动监控数据源与 worker 启动接线仍需先定边界。P0.5 标签、P3 生产建表、Profile 数值和真实数据仍是人工 / 数据 / 授权门。
 
 ## 5. 下一步
 
@@ -121,8 +121,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ### Codex 当前工作
 
-- 在协调分支复核 P6 / P8 本地提交并同步文档；先不推送或合并 `main`。
-- 对 P7 组合算子、LLM 完整内容审计、P2 State 持久层及 P11 运行编排先形成清晰边界 / ADR，再派独立模块任务。
+- 完成 P6 / P8 / P11 本地提交的独立复核与静态收口；先不推送或合并 `main`。
+- P2 Iceberg 持久化扩展暂缓；对 P7 组合算子、LLM 完整内容审计及 P11 运行编排先形成清晰边界 / ADR，再派独立模块任务。
 
 ## 6. 当前待决策
 
@@ -270,8 +270,8 @@ D-04 与 D-09 数值 TBD-1 ~ TBD-5（Phase 4 校准后冻结）· H-3 ~ H-7 · A
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | P6 矩阵报告接线与 P8 回溯审计报告链完成本地实现 | 本地协调分支 `codex/module-completion-coordination-2026-09-27` 含三个任务提交；未跑测试、未推送 / 合并，仍待代码复核与验证 |
-| 2026-09-27 | 深审校正 P7 状态并排出跨模块差额 | 组合 DSL 六类目前是拒绝执行的 fail-closed 边界；P2 State 持久化与 P11 运行编排需先定设计；不把数据 / 人工 / 验收门当代码缺陷 |
+| 2026-09-27 | P6 / P8 补齐报告通路，P11 修正 Decimal 阈值读取 | 本地协调分支 `codex/module-completion-coordination-2026-09-27`；Ruff / format 通过，未跑测试、未推送 / 合并，独立复核进行中 |
+| 2026-09-27 | 深审校正 P7 状态并排出跨模块差额 | 组合 DSL 六类目前是拒绝执行的 fail-closed 边界；P2 Arrow 输出符合当前 ADR-0035，额外 Iceberg 持久化暂缓；P11 自动运行编排仍需设计 |
 | 2026-09-27 | ADR-0066：批准独立、显式的 Event 表操作命令，以补齐 Phase 3 的可重复运维入口 | 命令默认无 catalog 副作用；`--apply` 只创建 / 校验 `event.events`；不接入 Phase 1 或启动流程；真实 catalog 建表未授权、未执行 |
 | 2026-09-27 | Phase 0.5 / 3 / 10 / 11 收口批次通过 PR #6 合并到 `main`（`4875e92`） | 增补未验证因子 / 特征 / Event 草稿，更新 Event schema 与 Loop / Router / API README，并实现 Event 表显式操作命令；11 项定向检查通过，非阶段验收 |
 | 2026-09-27 | Phase 1 验收记录并入：D3E 已接受、D4 已关闭；E1-CAP-1 容量探针进行中 | E1-CAP-1 仍阻断，容量结果与复核待完成；记录见 `docs/reviews/2026-09-27-d3e-acceptance.md` 与 `phase1-review-guide.md` |
