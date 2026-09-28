@@ -58,7 +58,11 @@ from infrastructure.plugins.builtin.features import (
 )
 from infrastructure.plugins.builtin.knowledge import HLENS_KNOWLEDGE_LOCAL
 from infrastructure.plugins.builtin.llm import HLENS_LLM_SCRIPTED
-from infrastructure.plugins.builtin.outcomes import HLENS_FORWARD_RETURN, HLENS_TRIPLE_BARRIER
+from infrastructure.plugins.builtin.outcomes import (
+    HLENS_FORWARD_RETURN,
+    HLENS_TRIPLE_BARRIER,
+    HLENS_VOL_SCALED_TRIPLE_BARRIER,
+)
 from infrastructure.plugins.builtin.states import (
     LIQUIDITY_REGIME,
     RETURN_SHOCK,
@@ -104,7 +108,11 @@ from plugins.features import (
 )
 from plugins.knowledge import LocalKnowledgeProvider
 from plugins.llm import ScriptedLLMProvider
-from plugins.outcomes import ForwardReturnOutcome, TripleBarrierOutcome
+from plugins.outcomes import (
+    ForwardReturnOutcome,
+    TripleBarrierOutcome,
+    VolScaledTripleBarrierOutcome,
+)
 from plugins.states import (
     LiquidityRegimeProvider,
     ReturnShockProvider,
@@ -216,6 +224,20 @@ def _build_cases() -> list[tuple[object, PluginManifest, str]]:
                 )
             ),
             HLENS_TRIPLE_BARRIER,
+            "outcome",
+        ),
+        (
+            VolScaledTripleBarrierOutcome(
+                (
+                    _outcome_label_spec(
+                        OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER,
+                        volatility_feature=X,
+                        barrier_multiplier=Decimal("2"),
+                    ),
+                ),
+                volatility={},
+            ),
+            HLENS_VOL_SCALED_TRIPLE_BARRIER,
             "outcome",
         ),
         (BarBacktester(), HLENS_BAR_BACKTEST, "backtest"),

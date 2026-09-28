@@ -71,6 +71,7 @@ event_count = "infrastructure.plugins.builtin.events:EVENT_COUNT"
 [project.entry-points."hlens.plugins.outcome"]
 hlens_forward_return = "infrastructure.plugins.builtin.outcomes:HLENS_FORWARD_RETURN"
 hlens_triple_barrier = "infrastructure.plugins.builtin.outcomes:HLENS_TRIPLE_BARRIER"
+hlens_vol_scaled_triple_barrier = "infrastructure.plugins.builtin.outcomes:HLENS_VOL_SCALED_TRIPLE_BARRIER"
 
 [project.entry-points."hlens.plugins.backtest"]
 hlens_bar_backtest = "infrastructure.plugins.builtin.backtest:HLENS_BAR_BACKTEST"
