@@ -166,7 +166,9 @@ __all__ = [
     "StageUsage",
     "automation_reachable_states",
     "check_stage_order",
+    "loop_actor",
     "missing_validation_failed_evidence",
+    "replay_transition",
     "round_message",
 ]
 
@@ -461,6 +463,35 @@ class LifecycleGuard:
         )
         self._histories[key] = history.append(transition)
         return transition
+
+
+def loop_actor(loop_id: str) -> str:
+    """The automation identity of ``ResearchLoop``'s own guard (its ``triggered_by``)."""
+    return f"research_loop:{loop_id}"
+
+
+def replay_transition(guard: LifecycleGuard, transition: LifecycleTransition) -> None:
+    """Re-apply one audited transition through ``guard``, exactly as a continuing loop does.
+
+    Opens an IDEA subject the guard does not track yet, then ``advance``s it (automatable target,
+    no human-approval edge, ADR-0053 evidence, legal edge from the current state, ``triggered_by``
+    = the guard's actor). Raises ``LifecycleViolation`` (``AutomationForbidden`` included) or
+    ``ValueError`` when the transition does not replay to the same payload. Pure: no stage runs.
+    """
+    subject = transition.subject
+    if transition.from_state is S.IDEA and guard.state_of(subject) is None:
+        guard.open(subject)
+    replayed = guard.advance(
+        subject,
+        transition.to_state,
+        reason=transition.reason,
+        evidence=transition.evidence,
+        occurred_at=transition.occurred_at,
+    )
+    if _transition_payload(replayed) != _transition_payload(transition):
+        raise ValueError(
+            f"audit transition of {subject} does not replay under guard {guard.actor!r}"
+        )
 
 
 # --------------------------------------------------------------------------- stages and records
@@ -1018,7 +1049,7 @@ class ResearchLoop:
         self._seed = seed
         self._epoch = epoch
         self._cadence = cadence
-        self._guard = guard or LifecycleGuard(actor=f"research_loop:{loop_id}")
+        self._guard = guard or LifecycleGuard(actor=loop_actor(loop_id))
         self._audit = audit if audit is not None else LoopAuditLog()
         self._clock: Clock = clock or monotonic_clock
         self._checkpoint = checkpoint
@@ -1194,20 +1225,7 @@ class ResearchLoop:
             self._bus.ack(consumer, JOB_TOPIC, message_id)
 
     def _replay_transition(self, transition: LifecycleTransition) -> None:
-        subject = transition.subject
-        if transition.from_state is S.IDEA and self._guard.state_of(subject) is None:
-            self._guard.open(subject)
-        replayed = self._guard.advance(
-            subject,
-            transition.to_state,
-            reason=transition.reason,
-            evidence=transition.evidence,
-            occurred_at=transition.occurred_at,
-        )
-        if _transition_payload(replayed) != _transition_payload(transition):
-            raise ValueError(
-                f"audit transition of {subject} does not replay under guard {self._guard.actor!r}"
-            )
+        replay_transition(self._guard, transition)
 
     def _handle_round(self, params: Mapping[str, Any]) -> str:
         if params["loop_id"] != self._loop_id:

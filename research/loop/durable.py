@@ -67,7 +67,8 @@ round's record **before** the audit records it. The checkpoint line holds
    family's unsealing by the same approver, marked evaluated; every failure record hash the audit
    lists is in the failure registry;
 7. after the loop replayed the audit into its guard: every lifecycle subject is a registered
-   hypothesis;
+   hypothesis (v4: also checked by ``open_state`` itself, on a pure replay of every audited
+   transition through a fresh guard of the loop actor, before any admission recovery write);
 8. with an anchor: every file (the review journal included) is at or after its anchored position
    with the same line there, and the directory is at or after the anchored head with the same
    history up to it (see **External anchor**).
@@ -152,7 +153,14 @@ from pathlib import Path
 from threading import RLock
 from typing import Any, Final, Protocol
 
-from apps.worker.loop import LifecycleGuard, LoopAuditLog, LoopRecord, StageStatus
+from apps.worker.loop import (
+    LifecycleGuard,
+    LoopAuditLog,
+    LoopRecord,
+    StageStatus,
+    loop_actor,
+    replay_transition,
+)
 from core.contracts.synthetic import SyntheticMarketProvider, SyntheticMarketSpec
 from core.domain.base import FrozenMapping, canonical_json, content_hash
 from core.domain.research import (
@@ -163,7 +171,7 @@ from core.domain.research import (
     ValidationReport,
 )
 from core.domain.specs import StrategySpec
-from core.errors import ReasonCode
+from core.errors import LifecycleViolation, ReasonCode
 from research.evolution import LineageGraph
 from research.hypotheses import LedgerError, TrialLedger
 from research.hypotheses.typed_plan_audit import (
@@ -822,8 +830,11 @@ class DurableState:
         released lock; a round that is not the unique persisted open round; a loop whose last
         recorded experiment stage FAILED (recovery required); a second admission for the same
         round; an unfinished earlier admission; any journal or the failure registry moved since
-        the memory journal's last line (the opener could not attribute that tail); and a batch
-        Hypothesis identity the TrialLedger already holds (reuse / re-evaluation is not admitted).
+        the memory journal's last line (the opener could not attribute that tail); an external
+        anchor that does not hold this directory's current head (a crash after the admission
+        checkpoint must leave an anchored history the opener can catch up, never an empty anchor
+        it cannot tell from a lost one); and a batch Hypothesis identity the TrialLedger already
+        holds (reuse / re-evaluation is not admitted).
         Raises ``LoopStateInconsistent`` / ``LoopStateLocked`` for the state and
         ``PlanAdmissionError`` for the request.
         """
@@ -852,6 +863,13 @@ class DurableState:
                     f"round {round.round_index} already has a typed-plan admission (one per round)"
                 )
             self.checkpoint.require_settled("typed-plan PREPARE")
+            if self.anchor is not None and self.anchor.load() != self.head():
+                raise LoopStateInconsistent(
+                    "typed-plan PREPARE requires the external anchor to hold this directory's "
+                    "current head (publish it first): an admission checkpoint written before the "
+                    "anchor ever held a head could not be told apart from a lost anchor on "
+                    "reopening"
+                )
             ledger = self.memory.ledger
             journal = ledger.journal
             if journal is None:
@@ -1030,8 +1048,12 @@ def open_state(
     ``LoopStateInconsistent`` when the files disagree with each other, the configuration or the
     anchor (see module docs) — v4 plan admission reducer and recovery refusals included —,
     ``JournalCorrupted`` when one file is itself corrupt. A v4 admission tail is recovered only
-    after every read-only cross-check passed, and the anchor moves only after the recovered
-    positions are re-checked; an open round is refused afterwards. The anchor is
+    after every read-only cross-check passed (the audit's lifecycle transitions replayed through
+    a fresh loop guard included), and the anchor moves only after the recovered positions are
+    re-checked; an open round is refused afterwards. A v4 reopening with an open round or an
+    unfinished admission never calls ``provider`` / ``provider_for`` (ADR-0073 §4): its rounds
+    are verified from their recorded hashes and summaries only, and it always ends refused. The
+    anchor is
     only verified here; ``DurableState.publish_anchor`` moves it up once the caller's own checks
     (the lifecycle guard) passed too. The returned state observes the restored review queue:
     every later approval is checkpointed and anchored at once (module docs, **Approvals between
@@ -1184,13 +1206,27 @@ def _open_locked(
     )
     if admission is not None:
         _check_anchor(state, anchored)
-    # Every read-only cross-check (round contents included) runs before admission recovery
-    # appends anything, and recovery moves the anchor only after the re-checks below.
-    for record, checkpoint in zip(audit.records, checkpoints, strict=True):
-        _restore_round(memory, record, checkpoint["delta"], provider, provider_for)
+    # Every read-only cross-check (round contents and the lifecycle replay included) runs before
+    # admission recovery appends anything, and recovery moves the anchor only after the re-checks
+    # below. ADR-0073 §4: a reopening that may recover (and always ends refused: an open round is
+    # never resumed) verifies the rounds without any Provider; see ``_verify_round_offline``.
+    recovering = _admission_recovery_path(audit, admission, marks)
+    if recovering:
+        view = _AuditView.of(memory)
+        for record, checkpoint in zip(audit.records, checkpoints, strict=True):
+            _verify_round_offline(
+                view,
+                record,
+                checkpoint["delta"],
+                ingests=provider is not None,
+                evolves=provider_for is not None,
+            )
+    else:
+        for record, checkpoint in zip(audit.records, checkpoints, strict=True):
+            _restore_round(memory, record, checkpoint["delta"], provider, provider_for)
     state.checkpoint.reset_marks()
     if admission is not None:
-        _check_registered_subjects(memory, audit.records)
+        _replay_guard(memory, audit, expected["loop_id"])
         try:
             publish = _recover_plan_admission(state, marks)
             _check_positions(memory, marks, admission)
@@ -1209,6 +1245,10 @@ def _open_locked(
                 f"round {audit.open_round} was started but never recorded after admission recovery; "
                 "the loop does not resume or rerun it"
             )
+        if recovering:
+            # Unreachable (an unfinished admission outside the open round is refused above), and
+            # the research memory of this path was never restored: never hand it out.
+            raise _refuse("a reopening that recovered a typed-plan admission cannot continue")
     _check_anchor(state, anchored)
     memory.reviews.observe(state)
     return state
@@ -1222,23 +1262,59 @@ def _plan_journal(path: Path, loop_id: str, *, create: bool) -> PlanAdmissionJou
         raise _refuse(f"{path} does not replay as this loop's v4 plan admission journal: {exc}") from exc
 
 
-def _check_registered_subjects(memory: ResearchMemory, records: Sequence[LoopRecord]) -> None:
+def _replay_guard(memory: ResearchMemory, audit: LoopAuditLog, loop_id: str) -> None:
     """Cross-check 7 on the audit alone, before admission recovery writes or anchors anything
-    (the composition's ``verify_guard`` runs only after ``open_state`` returned)."""
+    (the composition's ``verify_guard`` runs only after ``open_state`` returned).
+
+    Replays every audited transition into a fresh guard of the loop's own actor with the same
+    step ``ResearchLoop`` uses when it continues an audit (``replay_transition``: automatable
+    target, no human-approval edge, ADR-0053 evidence, legal edge from the subject's current
+    state, ``triggered_by`` = the loop actor, same payload), then requires every replayed subject
+    to be a registered hypothesis. Pure: no stage, Provider or experiment runs.
+    """
+    if audit.loop_id is not None and audit.loop_id != loop_id:
+        raise _refuse(f"the audit belongs to loop {audit.loop_id!r}, not {loop_id!r}")
+    guard = LifecycleGuard(actor=loop_actor(loop_id))
+    for record in audit.records:
+        for transition in record.transitions:
+            try:
+                replay_transition(guard, transition)
+            except (LifecycleViolation, TypeError, ValueError) as exc:
+                raise _refuse(
+                    f"audit round {record.round_index}: a lifecycle transition of "
+                    f"{transition.subject} does not replay under the loop guard: {exc}"
+                ) from exc
     registered = {str(h.ref) for h in memory.ledger.hypotheses}
-    stray = sorted(
-        {
-            str(transition.subject)
-            for record in records
-            for transition in record.transitions
-            if str(transition.subject) not in registered
-        }
-    )
+    stray = sorted(str(h.subject) for h in guard.histories if str(h.subject) not in registered)
     if stray:
         raise _refuse(
             f"the audit moved {stray} through the lifecycle, but the trial ledger never "
             "registered them"
         )
+
+
+def _admission_recovery_path(
+    audit: LoopAuditLog,
+    admission: PlanAdmissionJournal | None,
+    marks: Sequence[tuple[str, JournalEntry]],
+) -> bool:
+    """Whether this v4 reopening may append admission recovery records (ADR-0073 §4).
+
+    That is: an open round, a pending PREPARE, or a COMMIT without its admission checkpoint.
+    Every such reopening ends refused — ``_recover_plan_admission`` refuses an unfinished
+    admission outside the unique open round, and an open round is never resumed afterwards —
+    so its rounds are verified without regenerating markets or rebuilding strategies.
+    """
+    if admission is None:
+        return False
+    checkpointed = {
+        mark.payload["transaction_id"] for _, mark in marks if mark.type == PLAN_ADMISSION
+    }
+    return (
+        audit.open_round is not None
+        or admission.pending is not None
+        or any(item.prepare.transaction_id not in checkpointed for item in admission.committed)
+    )
 
 
 def _check_fingerprint(root: Path, recorded: Any, expected: Any) -> None:
@@ -1310,7 +1386,14 @@ def _check_anchored_files(
 
 
 def _check_anchor(state: DurableState, anchored: StateHead | None) -> None:
-    """Cross-check 8: the directory is at or after the anchored head, on the same history."""
+    """Cross-check 8: the directory is at or after the anchored head, on the same history.
+
+    An empty anchor is accepted only for a directory holding its header alone. A v4 admission
+    checkpoint is never a first publication: PREPARE requires the anchor to hold the current head
+    (``DurableState.prepare_plan_admission``), so a crash between the admission checkpoint and the
+    anchor leaves the anchor at the pre-admission head (caught up after recovery), while an empty
+    anchor beside any checkpoint line is a lost or replaced anchor and is refused.
+    """
     if state.anchor is None:
         return
     records = state.audit.records
@@ -1775,24 +1858,153 @@ def _restore_round(
         _restore_markets(memory, record, delta, provider)
         _restore_strategies(memory, delta["strategies"], provider_for)
         _restore_trials(memory, record, delta)
-        experiments = _summary(record, "experiment")
-        if experiments is not None and delta["experiments"] != [
-            {"round": index, **row} for row in experiments["experiments"]
-        ]:
-            raise ValueError("the experiment summaries differ from the audit")
-        state = _summary(record, "state")
-        if state is not None and delta["states"] != [{"round": index, **state}]:
-            raise ValueError("the state summary differs from the audit")
-        evolution = _summary(record, "evolution")
-        if evolution is not None and delta["offspring"] != [
-            {"round": index, **row} for row in evolution["offspring"]
-        ]:
-            raise ValueError("the offspring rows differ from the audit")
+        _check_stage_rows(record, delta)
     except (ArithmeticError, KeyError, LookupError, TypeError, ValueError) as exc:
         raise _refuse(f"the memory checkpoint of round {index} is inconsistent: {exc}") from exc
     memory.experiments.extend(delta["experiments"])
     memory.states.extend(delta["states"])
     memory.offspring.extend(delta["offspring"])
+
+
+def _check_stage_rows(record: LoopRecord, delta: Any) -> None:
+    """The delta's experiment / state / offspring rows are the audit record's stage summaries."""
+    index = record.round_index
+    experiments = _summary(record, "experiment")
+    if experiments is not None and delta["experiments"] != [
+        {"round": index, **row} for row in experiments["experiments"]
+    ]:
+        raise ValueError("the experiment summaries differ from the audit")
+    state = _summary(record, "state")
+    if state is not None and delta["states"] != [{"round": index, **state}]:
+        raise ValueError("the state summary differs from the audit")
+    evolution = _summary(record, "evolution")
+    if evolution is not None and delta["offspring"] != [
+        {"round": index, **row} for row in evolution["offspring"]
+    ]:
+        raise ValueError("the offspring rows differ from the audit")
+
+
+def _strategy_facts(candidate: StrategyCandidate) -> tuple[str, str, str | None]:
+    """A catalog entry as provider-free verification sees it: spec hash, family, risk hash."""
+    risk = candidate.risk_policy
+    return (
+        candidate.spec.content_hash(),
+        candidate.hypothesis_family_id,
+        None if risk is None else risk.content_hash(),
+    )
+
+
+@dataclass(slots=True)
+class _AuditView:
+    """What ``_verify_round_offline`` carries from round to round (no market / strategy objects)."""
+
+    strategies: dict[str, tuple[str, str, str | None]]
+    market_hashes: list[str] = field(default_factory=list)
+    research_pieces: int = 0
+    trials: int = 0
+
+    @classmethod
+    def of(cls, memory: ResearchMemory) -> _AuditView:
+        return cls({key: _strategy_facts(c) for key, c in memory.strategies.items()})
+
+
+def _verify_round_offline(
+    view: _AuditView, record: LoopRecord, delta: Any, *, ingests: bool, evolves: bool
+) -> None:
+    """Cross-check 5 without any Provider, for a reopening that may recover an admission.
+
+    ADR-0073 §4: admission recovery runs no Provider, compiler or experiment, so neither
+    ``provider.generate`` nor ``provider_for`` is called and no ``ResearchMemory`` content is
+    restored (the reopening ends refused; nothing restored would ever be used). Checked as in
+    ``_restore_round``: the delta's shape; its market rows (spec schema, the ingest summary's
+    market hash, a single market per ingest); research pieces naming a restored market and the
+    accumulated piece count; offspring specs (hash, parent in the catalog or an earlier round,
+    inherited family / risk policy, no catalog ref with other content, an evolution plan
+    configured); trial rows (catalog strategy and hash, hypothesis / experiment / run content
+    hashes, reason and cutoff) equal to the audit's experiment rows; validation rows (an earlier
+    trial, report hashes, reason) equal to the audit's reports; the experiment / state / offspring
+    rows. Only regeneration proves the rest — that a market spec regenerates its ``market_hash``
+    and ``spec_hash`` and that a piece's bars rebuild — and stays unproven on this path.
+    """
+    index = record.round_index
+    try:
+        if set(delta) != _DELTA_KEYS:
+            raise ValueError("the delta has other fields")
+        ingest = _summary(record, "ingest")
+        if not ingests:
+            if delta["markets"] or delta["research_data"]:
+                raise ValueError("this loop's ingest keeps no markets or research pieces")
+        else:
+            for row in delta["markets"]:
+                SyntheticMarketSpec.model_validate(row["spec"])
+                if not isinstance(row["market_hash"], str):
+                    raise ValueError("a market row names no market hash")
+                view.market_hashes.append(row["market_hash"])
+            if ingest is not None:
+                [row] = delta["markets"]
+                if ingest["market_hash"] != row["market_hash"]:
+                    raise ValueError("the ingested market differs from the audit")
+            for row in delta["research_data"]:
+                market, first, identity = row["market"], row["first"], row["identity"]
+                if (
+                    type(market) is not int
+                    or not 0 <= market < len(view.market_hashes)
+                    or identity["market_hash"] != view.market_hashes[market]
+                    or type(first) is not int
+                    or first < 0
+                    or type(identity["bars"]) is not int
+                    or identity["bars"] < 1
+                ):
+                    raise ValueError("a research piece does not name a restored market")
+                view.research_pieces += 1
+            if ingest is not None and ingest["research_pieces"] != view.research_pieces:
+                raise ValueError("the accumulated research pieces differ from the audit")
+        for row in delta["strategies"]:
+            spec = StrategySpec.model_validate(row["spec"])
+            if spec.content_hash() != row["spec_hash"]:
+                raise ValueError(f"{spec.ref} does not reproduce its spec hash")
+            parent = view.strategies.get(str(row["parent"]))
+            if not evolves or parent is None:
+                raise ValueError(f"{spec.ref} cannot be rebuilt: no evolution plan or no parent")
+            if parent[1:] != (row["hypothesis_family_id"], row["risk_policy_hash"]):
+                raise ValueError(f"{spec.ref} does not inherit its parent's family and risk policy")
+            known = view.strategies.get(str(spec.ref))
+            if known is not None and known[0] != row["spec_hash"]:
+                raise ValueError(f"{spec.ref} is already in the catalog with other content")
+            view.strategies[str(spec.ref)] = (row["spec_hash"], parent[1], parent[2])
+        summaries: list[Any] = []
+        for row in delta["trials"]:
+            strategy = row["strategy"]
+            if strategy is not None and view.strategies[strategy][0] != row["strategy_hash"]:
+                raise ValueError(f"trial strategy {strategy} is another spec in the catalog")
+            _checked(Hypothesis, row["hypothesis"], row["hypothesis_hash"], "a hypothesis")
+            _checked(ExperimentSpec, row["experiment"], row["experiment_hash"], "an experiment")
+            _checked(ExperimentRun, row["run"], row["run_hash"], "a run")
+            if row["reason"] is not None:
+                ReasonCode(row["reason"])
+            if row["knowledge_cutoff"] is not None:
+                datetime.fromisoformat(row["knowledge_cutoff"])
+            summaries.append(dict(row["summary"]))
+        experiment = _summary(record, "experiment")
+        if experiment is not None and summaries != experiment["experiments"]:
+            raise ValueError("the restored trials differ from the audit's experiment rows")
+        view.trials += len(delta["trials"])
+        reports: list[Any] = []
+        for row in delta["validations"]:
+            trial = row["trial"]
+            if type(trial) is not int or not 0 <= trial < view.trials:
+                raise ValueError("a validation row names no restored trial")
+            _report(row["report"])
+            _report(row["sealed_report"])
+            if row["failure_reason"] is not None:
+                ReasonCode(row["failure_reason"])
+            reports.append(dict(row["summary"]))
+        validation = _summary(record, "validation")
+        if validation is not None and reports != validation["reports"]:
+            raise ValueError(f"the restored validations of round {index} differ from the audit")
+        _check_stage_rows(record, delta)
+    except (ArithmeticError, KeyError, LookupError, TypeError, ValueError) as exc:
+        raise _refuse(f"the memory checkpoint of round {index} is inconsistent: {exc}") from exc
 
 
 def _restore_markets(
