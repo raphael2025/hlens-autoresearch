@@ -786,6 +786,10 @@ def _without_adr_0088(name: str, schema: dict[str, Any]) -> dict[str, Any]:
         defs.pop("JumpEffect")
         defs.pop("VolatilityClusteringEffect")
         schema["properties"]["effects"]["items"] = {"$ref": "#/$defs/PlantedEffect"}
+    elif name == "SyntheticMarket":
+        defs.pop("JumpEffect")
+        defs.pop("VolatilityClusteringEffect")
+        schema["properties"]["truth"]["items"] = {"$ref": "#/$defs/PlantedEffect"}
     elif name == "UniverseMember":
         schema["properties"].pop("assumption")
         defs.pop("PolicyBinding")  # only the new field needs these here
