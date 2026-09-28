@@ -335,3 +335,12 @@ writer / reader、chunk commit、streaming verifier、`ManifestStore` 双表分�
 - `research.dataset_selection_chunks`：v2 `research.dataset_selections` 的 8 列（字段 ID 1–8）完全保留，另加 `chunk_index` 与 `row_ordinal`；分区为 `identity(symbol) + day(event_time)`，与 v2 相同。
 
 两张表的 definition hash 与 golden 字面值在调试阶段首次运行时钉定。已有 15 张表的定义与哈希不变。
+
+### PM 决定：B-BUILD 遗留项（2026-09-28，Claude PM 依 Raphael 授权）
+
+1. **listing lineage 顺序**：保持 ADR §2 的规定，按 `canonical_revision_id` 排序。B-UNIV 的 `listing_lineage()` 按生成顺序产出，因此经 `infrastructure/pit/runs.py` 的内容寻址有序 run 重排后再交给 builder。builder 的顺序校验保留，顺序不符即 fail closed。
+2. **按 symbol 持有 member spans**：允许。持有量的上界是该 symbol 在窗口内的成员变更次数，与 B-UNIV instants 的上界相同，不随行数增长。§6.1 所禁止的是跨 symbol 或随行数增长的全量映射。
+3. **按报告缓存 quality gaps**（§6.1.5）：允许，上界为单份报告的缺口数。
+4. **窗口外、到达晚于后续日报告的 event day**：fail closed。
+5. **DQ-9 规则参数登记**：仍为 OPEN，待调试阶段的容量证据。
+6. **header 与引用行的 512 字节上限**：属于 evidence 文件格式常量，不是 DQ-9 调优参数。
