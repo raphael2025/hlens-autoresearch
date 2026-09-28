@@ -40,7 +40,13 @@ __all__ = [
     "parse_plan_json",
 ]
 
-PLAN_FORMAT_VERSION: Final = "1.0.0"
+#: Bumped 1.0.0 -> 1.1.0 (ADR-0082, transformation acceptance): a ``transformation`` node now
+#: additionally requires an explicit ``window`` parameter (positive integer bar count). A "1.0.0"
+#: transformation payload with only ``transform`` no longer parses under "1.1.0"; no other
+#: operator's grammar changed. No migration is required: no ``TypedPlan.runnable`` was ever True
+#: and no persisted "1.0.0" transformation payload exists (transformation was unconditionally
+#: ``operator_open`` before this ADR amendment).
+PLAN_FORMAT_VERSION: Final = "1.1.0"
 _NAME = re.compile(NAME_PATTERN)
 _HASH = re.compile(SHA256_PATTERN)
 
@@ -208,7 +214,17 @@ _PARAMETER_KEYS: Final[dict[PlanOperator, frozenset[str]]] = {
     PlanOperator.CONDITIONING: frozenset({"state_value"}),
     PlanOperator.INTERACTION: frozenset(),
     PlanOperator.TEMPORAL: frozenset({"window", "time_unit"}),
-    PlanOperator.TRANSFORMATION: frozenset({"transform"}),
+    #: ADR-0082 (transformation acceptance): ``window`` is a required positive integer bar count
+    #: for every transformation node, regardless of ``transform`` name. For the three accepted
+    #: time-series transforms (standardize / difference / smooth) it is the sole, mandatory,
+    #: backward-looking-only computation window; for ``standardize`` it doubles as the Constitution
+    #: C-L3 training window (a rolling fit confined to this trailing window never sees data outside
+    #: it, so a bound window is by construction a bound training window). A missing ``window`` is
+    #: rejected here at parse time — there is no separate "training window binding" to omit.
+    #: ``rank`` / ``quantile`` remain ``operator_open`` at lowering time and are still required to
+    #: supply a syntactically valid ``window`` even though it is unused; the closed-world grammar
+    #: does not vary by parameter value.
+    PlanOperator.TRANSFORMATION: frozenset({"transform", "window"}),
     PlanOperator.ENSEMBLE: frozenset(),
     PlanOperator.NEGATION: frozenset(),
 }
@@ -323,6 +339,9 @@ def _check_parameters(
         transform = _text(params["transform"], f"node {node_id}.parameters.transform")
         if transform not in _TRANSFORMS:
             raise PlanRejected(f"node {node_id} has unknown transformation {transform!r}")
+        window = params["window"]
+        if type(window) is not int or window < 1:
+            raise PlanRejected(f"node {node_id}.parameters.window must be a positive integer")
     return FrozenMapping(params)
 
 

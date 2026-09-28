@@ -7,6 +7,7 @@ import { asEventStatisticsPayload, statisticsLabel } from "../lib/eventStatistic
 import { fixtureEnvelopes } from "../lib/fixtures.test-util.ts";
 import { asCalibrationPayload } from "../lib/gateCalibration.ts";
 import { asPaperDeviationPayload, deviationLabel, summaryRows } from "../lib/paperDeviation.ts";
+import { asRetroAuditPayload, retroAuditLabel } from "../lib/retroAudit.ts";
 import { asRouterStopPayload, reasonText, routerStopLabel, strategyRows } from "../lib/routerStop.ts";
 import { asStateDiagnosticsPayload, diagnosticsLabel } from "../lib/stateDiagnostics.ts";
 import { asValidationReportPayload, gateRows } from "../lib/validationReport.ts";
@@ -14,6 +15,7 @@ import { DegradationChecks } from "./DegradationChecks.tsx";
 import { EventStatistics } from "./EventStatistics.tsx";
 import { GateCalibration } from "./GateCalibration.tsx";
 import { PaperDeviations } from "./PaperDeviations.tsx";
+import { RetroAudits } from "./RetroAudits.tsx";
 import { RouterPaperRuns } from "./RouterPaperRuns.tsx";
 import { RouterStops } from "./RouterStops.tsx";
 import { StateDiagnostics } from "./StateDiagnostics.tsx";
@@ -210,6 +212,25 @@ const CASES: Case[] = [
         check.subject,
         hash12(check.check_hash),
         ...check.metrics.flatMap((m) => [m.metric, m.threshold_source]),
+      ];
+    },
+  },
+  {
+    Page: RetroAudits,
+    kind: "retro_audit",
+    heading: "Retro Audits（回溯审计）",
+    empty: "（无回溯审计报告 — 未配置报告目录或目录为空）",
+    prompt: "选择一份回溯审计报告查看结果。",
+    label: (r) => retroAuditLabel(must(asRetroAuditPayload(r.payload), "retro_audit")),
+    detail: (r) => {
+      const report = must(asRetroAuditPayload(r.payload), "retro_audit");
+      return [
+        report.report_hash,
+        `Rules: ${report.rules}`,
+        `${report.status} — ${report.note}`,
+        "Findings",
+        "仅为回溯差异报告，不执行生命周期转换",
+        report.findings.length === 0 ? "本次没有审计对象。" : report.findings[0].subject,
       ];
     },
   },

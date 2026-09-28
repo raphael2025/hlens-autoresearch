@@ -19,11 +19,12 @@ from typing import Final
 
 from core.domain.specs import StrategySpec
 from research.strategies.cross_sectional_momentum import XSMOM_NAME
+from research.strategies.dual_momentum import DUAL_MOMENTUM_NAME
 
 __all__ = ["CROSS_SECTIONAL_STRATEGIES", "is_cross_sectional"]
 
 #: ``StrategySpec.name`` of every strategy declared cross-sectional.
-CROSS_SECTIONAL_STRATEGIES: Final[frozenset[str]] = frozenset({XSMOM_NAME})
+CROSS_SECTIONAL_STRATEGIES: Final[frozenset[str]] = frozenset({XSMOM_NAME, DUAL_MOMENTUM_NAME})
 
 
 def is_cross_sectional(spec: StrategySpec) -> bool:

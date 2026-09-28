@@ -11,6 +11,9 @@ from infrastructure.catalog.phase1_tables import PHASE1_TABLES
 from infrastructure.event import create_event_tables
 from infrastructure.event.table_definition import EVENT_EVENTS, PHASE3_TABLES
 
+_EXPECTED_BINDING = f"{EVENT_EVENTS.definition_id}@{EVENT_EVENTS.version}"
+_EXPECTED_HASH_SUFFIX = f"definition_hash={EVENT_EVENTS.definition_hash}"
+
 
 def test_default_invocation_shows_help_without_loading_settings_or_catalog(
     monkeypatch: Any, capsys: Any
@@ -45,7 +48,11 @@ def test_apply_composes_registry_and_calls_only_event_table_ensurer(
 
     def ensure(received_adapter: object) -> tuple[Any, ...]:
         observed["adapter"] = received_adapter
-        return (SimpleNamespace(table=EVENT_EVENTS.table, created=True),)
+        return (
+            SimpleNamespace(
+                table=EVENT_EVENTS.table, definition=EVENT_EVENTS.binding, created=True
+            ),
+        )
 
     monkeypatch.setattr(create_event_tables, "open_postgres_catalog_adapter", open_adapter)
     monkeypatch.setattr(create_event_tables, "ensure_event_tables", ensure)
@@ -60,7 +67,9 @@ def test_apply_composes_registry_and_calls_only_event_table_ensurer(
     assert tuple(definition.table for definition in registry) == tuple(
         definition.table for definition in PHASE1_TABLES
     ) + ("event.events",)
-    assert capsys.readouterr().out == "event.events\tcreated\n"
+    assert capsys.readouterr().out == (
+        f"event.events\t{_EXPECTED_BINDING}\t{_EXPECTED_HASH_SUFFIX}\tcreated\n"
+    )
 
 
 def test_apply_reports_only_event_status_for_existing_table(monkeypatch: Any, capsys: Any) -> None:
@@ -75,11 +84,64 @@ def test_apply_reports_only_event_status_for_existing_table(monkeypatch: Any, ca
     monkeypatch.setattr(
         create_event_tables,
         "ensure_event_tables",
-        lambda received: (SimpleNamespace(table="event.events", created=False),),
+        lambda received: (
+            SimpleNamespace(
+                table=EVENT_EVENTS.table, definition=EVENT_EVENTS.binding, created=False
+            ),
+        ),
     )
 
     assert create_event_tables.main(["--apply"]) == 0
-    assert capsys.readouterr().out == "event.events\talready present (verified)\n"
+    assert capsys.readouterr().out == (
+        f"event.events\t{_EXPECTED_BINDING}\t{_EXPECTED_HASH_SUFFIX}\talready present (verified)\n"
+    )
+
+
+def test_apply_rejects_unexpected_table_scope(monkeypatch: Any, capsys: Any) -> None:
+    adapter = object()
+
+    @contextmanager
+    def open_adapter(_settings: object, _registry: Any) -> Any:
+        yield adapter
+
+    monkeypatch.setattr(create_event_tables, "Settings", lambda: object())
+    monkeypatch.setattr(create_event_tables, "open_postgres_catalog_adapter", open_adapter)
+    monkeypatch.setattr(
+        create_event_tables,
+        "ensure_event_tables",
+        lambda received: (
+            SimpleNamespace(table="canonical.bars", definition=EVENT_EVENTS.binding, created=True),
+        ),
+    )
+
+    assert create_event_tables.main(["--apply"]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "unexpected table scope" in output.err
+
+
+def test_apply_rejects_definition_binding_mismatch(monkeypatch: Any, capsys: Any) -> None:
+    adapter = object()
+    drifted = EVENT_EVENTS.binding.model_copy(update={"definition_hash": "0" * 64})
+
+    @contextmanager
+    def open_adapter(_settings: object, _registry: Any) -> Any:
+        yield adapter
+
+    monkeypatch.setattr(create_event_tables, "Settings", lambda: object())
+    monkeypatch.setattr(create_event_tables, "open_postgres_catalog_adapter", open_adapter)
+    monkeypatch.setattr(
+        create_event_tables,
+        "ensure_event_tables",
+        lambda received: (
+            SimpleNamespace(table=EVENT_EVENTS.table, definition=drifted, created=False),
+        ),
+    )
+
+    assert create_event_tables.main(["--apply"]) == 1
+    output = capsys.readouterr()
+    assert output.out == ""
+    assert "definition binding mismatch" in output.err
 
 
 def test_apply_redacts_catalog_error(monkeypatch: Any, capsys: Any) -> None:

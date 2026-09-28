@@ -1,0 +1,53 @@
+{
+  "additionalProperties": false,
+  "description": "`chunk_proofs` 流的一条记录：一个定长 chunk 的提交证明（ADR-0077 §4.3）。\n\n`batch_id` 必须是 `<selection_id>.chunk-<十位零填充 chunk_index>`；`batch_fingerprint` 是该\nchunk 的 Arrow Table（行按 `row_ordinal` 升序）按表的版本化指纹规则算出的内容指纹。\n\n**诚实边界**：snapshot 是否存在、该 batch 是否在其中提交、指纹与行数是否与读回内容相等、\n`first_row_ordinal` 是否等于 `chunk_index * chunk_rows`，属 verifier。",
+  "properties": {
+    "schema_version": {
+      "default": "2.3.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "chunk_index": {
+      "maximum": 9999999999,
+      "minimum": 0,
+      "title": "Chunk Index",
+      "type": "integer"
+    },
+    "batch_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=@+-]{0,255}$",
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "snapshot_id": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:=@+-]{0,255}$",
+      "title": "Snapshot Id",
+      "type": "string"
+    },
+    "first_row_ordinal": {
+      "minimum": 0,
+      "title": "First Row Ordinal",
+      "type": "integer"
+    },
+    "row_count": {
+      "minimum": 1,
+      "title": "Row Count",
+      "type": "integer"
+    },
+    "batch_fingerprint": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Batch Fingerprint",
+      "type": "string"
+    }
+  },
+  "required": [
+    "chunk_index",
+    "batch_id",
+    "snapshot_id",
+    "first_row_ordinal",
+    "row_count",
+    "batch_fingerprint"
+  ],
+  "title": "DatasetChunkProof",
+  "type": "object"
+}

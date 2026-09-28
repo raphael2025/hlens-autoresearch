@@ -20,3 +20,9 @@ def pytest_configure(config: pytest.Config) -> None:
 def w(tmp_path: Path) -> Iterator[ds.World]:
     with ds.sqlite_world(tmp_path) as opened:
         yield opened
+
+
+@pytest.fixture
+def evidence_store(tmp_path: Path) -> ds.LocalFileStorageAdapter:
+    """A real object store for v3 evidence trees (ADR-0077), outside any catalog."""
+    return ds.evidence_storage(tmp_path)

@@ -14,12 +14,21 @@ from decimal import Decimal
 import pytest
 
 from core.contracts.strategy import BacktestRequest, BacktestResult
-from core.domain.base import content_hash
+from core.contracts.validation_profile import ProfileScope, ValidationProfile
+from core.domain.base import Kind, Ref, content_hash
+from core.domain.research import GateResult, ValidationReport, Verdict
 from plugins.backtest import BarBacktester
-from research.router import DeviationError, PaperDeviation, RouterError, paper_deviation
+from research.router import (
+    DeviationError,
+    PaperDeviation,
+    RouterError,
+    paper_deviation,
+    validate_scope_bound_payload,
+)
 from research.router.deviation import RETURN_QUANTUM
-from tests.research.router.test_paper import BARS, STRATEGIES, ZERO, A, _run
+from tests.research.router.test_paper import A, BARS, STRATEGIES, ZERO, _run
 from tests.strategy_fixtures import T0, make_bars
+from tests.factories import validation_profile
 
 
 def reference_request(initial: str = "1000") -> BacktestRequest:
@@ -36,8 +45,43 @@ def reference(initial: str = "1000") -> BacktestResult:
     return BarBacktester().run(reference_request(initial))
 
 
+def scope_evidence() -> tuple[ValidationProfile, ValidationReport]:
+    profile = validation_profile(
+        name="p10_deviation_scope",
+        scope=ProfileScope(
+            venue="testvenue", symbol="BTC", timeframe="1m", research_class="swing"
+        ),
+    )
+    report = ValidationReport(
+        report_id="rep-vol-router",
+        run_id="run-vol-router",
+        subject=Ref(kind=Kind.STRATEGY, name="vol_router", version="1.0.0"),
+        experiment_hash="a" * 64,
+        constitution_version="1.0.0",
+        validation_profile=profile.ref,
+        validation_profile_hash=profile.content_hash(),
+        gates=(
+            GateResult(
+                gate_id="G5.sealed_oos",
+                metric="sealed_oos",
+                value=1.0,
+                verdict=Verdict.PASS,
+            ),
+        ),
+        verdict=Verdict.PASS,
+    )
+    return profile, report
+
+
+def scope_kwargs() -> dict[str, object]:
+    profile, report = scope_evidence()
+    return {"validation_profile": profile, "validation_report": report}
+
+
 def deviation() -> PaperDeviation:
-    return paper_deviation(_run(), reference(), reference_request=reference_request())
+    return paper_deviation(
+        _run(), reference(), reference_request=reference_request(), **scope_kwargs()
+    )
 
 
 def test_every_mark_compares_the_net_paper_equity_with_the_reference() -> None:
@@ -116,21 +160,26 @@ def test_the_report_is_deterministic_and_content_hashed() -> None:
     assert payload["run_hash"] == _run().run_hash
     assert payload["reference_result_hash"] == reference().result_hash
     assert payload["instruments"] == ["BTC"]
+    assert payload["schema_version"] == "2.0.0"
+    assert payload["declared_scope"]["symbol"] == "BTC"
+    scope_body = {k: v for k, v in payload["declared_scope"].items() if k != "scope_hash"}
+    assert payload["declared_scope"]["scope_hash"] == content_hash(scope_body)
+    validate_scope_bound_payload(payload, **scope_kwargs())
     # a different run (another switching rate) is another report
-    other = paper_deviation(_run("0.02"), reference())
+    other = paper_deviation(_run("0.02"), reference(), **scope_kwargs())
     assert other.deviation_hash != report.deviation_hash
 
 
 def test_a_run_compared_with_its_own_gross_result_has_only_the_switching_cost() -> None:
     run = _run()
-    report = paper_deviation(run, run.gross)
+    report = paper_deviation(run, run.gross, **scope_kwargs())
     assert report.summary.final_equity_difference == -run.total_switching_cost
     assert all(mark.equity_difference <= 0 for mark in report.marks)
 
 
 def test_a_zero_switching_rate_against_its_gross_result_deviates_nowhere() -> None:
     run = _run("0")
-    summary = paper_deviation(run, run.gross).summary
+    summary = paper_deviation(run, run.gross, **scope_kwargs()).summary
     assert summary.max_abs_equity_difference == 0
     assert summary.tracking_error == 0 and summary.mean_return_difference == 0
 
@@ -150,7 +199,7 @@ def test_misaligned_marks_are_refused() -> None:
     )
     assert len(moved.equity_curve) == len(_run().result.equity_curve)  # same count, other times
     with pytest.raises(DeviationError, match="equity marks"):
-        paper_deviation(_run(), moved)
+        paper_deviation(_run(), moved, **scope_kwargs())
     shorter = BarBacktester().run(
         BacktestRequest(
             cost_model=ZERO,
@@ -160,12 +209,12 @@ def test_misaligned_marks_are_refused() -> None:
         )
     )
     with pytest.raises(DeviationError, match="equity marks"):
-        paper_deviation(_run(), shorter)
+        paper_deviation(_run(), shorter, **scope_kwargs())
 
 
 def test_another_initial_equity_is_refused() -> None:
     with pytest.raises(DeviationError, match="starts at"):
-        paper_deviation(_run(), reference("2000"))
+        paper_deviation(_run(), reference("2000"), **scope_kwargs())
 
 
 def test_a_reference_on_other_instruments_is_refused() -> None:
@@ -176,7 +225,7 @@ def test_a_reference_on_other_instruments_is_refused() -> None:
     )
     other = BarBacktester().run(request)
     with pytest.raises(DeviationError, match="does not price"):
-        paper_deviation(_run(), other)
+        paper_deviation(_run(), other, **scope_kwargs())
     # a reference that answers its request, trades only BTC, but prices BTC and ETH
     both = BacktestRequest(
         cost_model=ZERO,
@@ -186,18 +235,98 @@ def test_a_reference_on_other_instruments_is_refused() -> None:
     )
     wider = BarBacktester().run(both)
     with pytest.raises(DeviationError, match="the reference prices"):
-        paper_deviation(_run(), wider, reference_request=both)
+        paper_deviation(_run(), wider, reference_request=both, **scope_kwargs())
     with pytest.raises(DeviationError, match="does not answer"):
-        paper_deviation(_run(), reference(), reference_request=reference_request("2000"))
+        paper_deviation(
+            _run(), reference(), reference_request=reference_request("2000"), **scope_kwargs()
+        )
 
 
 def test_a_tampered_run_is_refused() -> None:
     run = _run()
     tampered = dataclasses.replace(run, router="other@1.0.0")
     with pytest.raises(RouterError, match="run_hash"):
-        paper_deviation(tampered, reference())
+        paper_deviation(tampered, reference(), **scope_kwargs())
 
 
 def test_only_a_run_and_a_backtest_result_are_compared() -> None:
     with pytest.raises(DeviationError):
-        paper_deviation(_run(), _run())  # type: ignore[arg-type]
+        paper_deviation(_run(), _run(), **scope_kwargs())  # type: ignore[arg-type]
+
+
+def test_scope_binding_is_required_and_fail_closed() -> None:
+    with pytest.raises(DeviationError, match="requires a P8"):
+        paper_deviation(_run(), reference())
+    profile, report = scope_evidence()
+    wrong_report = report.model_copy(update={"subject": A})
+    with pytest.raises(DeviationError, match="not about this router"):
+        paper_deviation(
+            _run(), reference(), validation_profile=profile, validation_report=wrong_report
+        )
+    other_profile = validation_profile(
+        name="other_scope",
+        scope=ProfileScope(
+            venue="testvenue", symbol="ETH", timeframe="1m", research_class="swing"
+        ),
+    )
+    with pytest.raises(DeviationError, match="does not bind"):
+        paper_deviation(
+            _run(), reference(), validation_profile=other_profile, validation_report=report
+        )
+    changed_scope = ProfileScope(
+        venue="testvenue", symbol="ETH", timeframe="1m", research_class="swing"
+    )
+    changed_profile = profile.model_copy(update={"scope": changed_scope})
+    changed_report = report.model_copy(
+        update={"validation_profile_hash": changed_profile.content_hash()}
+    )
+    with pytest.raises(DeviationError, match="exactly match"):
+        paper_deviation(
+            _run(), reference(), validation_profile=changed_profile, validation_report=changed_report
+        )
+    no_g5 = report.model_copy(
+        update={
+            "gates": (
+                GateResult(gate_id="G0.repro", metric="repro", value=1.0, verdict=Verdict.PASS),
+            )
+        }
+    )
+    with pytest.raises(DeviationError, match="G5"):
+        paper_deviation(_run(), reference(), validation_profile=profile, validation_report=no_g5)
+
+
+def test_subject_and_profile_ref_comparisons_ignore_the_envelope_schema_version() -> None:
+    """P8 ``subject`` / ``validation_profile`` binding is checked via ``Ref.target_identity()``
+    (ADR-0018 §D-26.5): a Ref whose Contract envelope ``schema_version`` differs from the
+    current default, but whose ``(kind, name, version)`` agree, is still the same target. A
+    different ``name`` (or ``version``) is still refused."""
+    profile, report = scope_evidence()
+    same_target_other_envelope = Ref(
+        kind=Kind.STRATEGY, name="vol_router", version="1.0.0", schema_version="2.0.0"
+    )
+    assert same_target_other_envelope.schema_version != report.subject.schema_version
+    assert same_target_other_envelope != report.subject  # structural equality still differs
+    accepted = report.model_copy(update={"subject": same_target_other_envelope})
+    result = paper_deviation(
+        _run(), reference(), validation_profile=profile, validation_report=accepted
+    )
+    assert isinstance(result, PaperDeviation)
+
+    different_name = same_target_other_envelope.model_copy(update={"name": "other_router"})
+    rejected = report.model_copy(update={"subject": different_name})
+    with pytest.raises(DeviationError, match="not about this router"):
+        paper_deviation(_run(), reference(), validation_profile=profile, validation_report=rejected)
+
+
+def test_scope_payload_validation_rejects_legacy_and_tampering() -> None:
+    payload = deviation().to_payload()
+    scope = scope_kwargs()
+    legacy = {**payload, "schema_version": "1.0.0"}
+    with pytest.raises(DeviationError, match="schema 2.0.0"):
+        validate_scope_bound_payload(legacy, **scope)
+    changed_scope = {**payload, "declared_scope": {**payload["declared_scope"], "symbol": "ETH"}}
+    with pytest.raises(DeviationError, match="scope hash"):
+        validate_scope_bound_payload(changed_scope, **scope)
+    changed_symbol = {**payload, "instruments": ["ETH"]}
+    with pytest.raises(DeviationError, match="do not match"):
+        validate_scope_bound_payload(changed_symbol, **scope)

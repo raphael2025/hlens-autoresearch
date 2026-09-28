@@ -13,9 +13,10 @@ in ``noise_errors`` / ``planted_errors`` (never as a detection) and stays in the
 denominator, so the reported rates are exact counts over every generated market and the error
 counts show how much of the evidence is missing. ``false_positive_rate_bounds`` /
 ``power_bounds`` give the range the rate could take had every errored market gone either way.
-The endpoints are rounded outward (lower toward ``-inf``, upper toward ``+inf``) to 28 significant
-digits in a local ``decimal`` context, independent of the caller's ambient context, so the
-interval always contains the exact ratio. A ratio a 28-digit Decimal represents exactly (0, 1,
+Point estimates use 28 significant digits with ``ROUND_HALF_EVEN``; bounds are rounded outward
+(lower toward ``-inf``, upper toward ``+inf``) to 28 significant digits. Each division uses a
+local ``decimal`` context, independent of the caller's ambient context, so the interval always
+contains the exact ratio. A ratio a 28-digit Decimal represents exactly (0, 1,
 integer ratios such as 1 / 4 or 1 / 128) stays exact, so with no detector errors both endpoints
 are the same point; a repeating ratio (1 / 3) with no errors is the tightest 28-digit enclosure.
 
@@ -52,8 +53,13 @@ __all__ = ["PROPAGATED_ERRORS", "CalibrationReport", "calibrate"]
 #: and ``DetectorConfigurationError`` are ``ValueError`` subclasses.
 PROPAGATED_ERRORS: Final = (ValueError, TypeError, MemoryError)
 
-#: Significant digits of the bound endpoints (module docs); fixed, never the ambient context's.
+#: Significant digits for the point estimates and bound endpoints (module docs).
 _BOUND_PRECISION: Final = 28
+
+
+def _rate(count: int, trials: int) -> Decimal:
+    """Return the point estimate with fixed precision, independent of ambient Decimal context."""
+    return Context(prec=_BOUND_PRECISION).divide(Decimal(count), Decimal(trials))
 
 
 def _rate_bounds(low: int, high: int, trials: int) -> tuple[Decimal, Decimal]:
@@ -131,8 +137,8 @@ def calibrate(
         trials=trials,
         false_positives=false_positives,
         detections=detections,
-        false_positive_rate=Decimal(false_positives) / trials,
-        power=Decimal(detections) / trials,
+        false_positive_rate=_rate(false_positives, trials),
+        power=_rate(detections, trials),
         planted=planted,
         noise_errors=noise_errors,
         planted_errors=planted_errors,

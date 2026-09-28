@@ -33,6 +33,16 @@ def _write(root: Path, kind: ReportKind, report_id: str, payload: dict[str, obje
     (directory / f"{report_id}.json").write_text(json.dumps(payload), encoding="utf-8")
 
 
+def _matrix_payload(**changes: object) -> dict[str, object]:
+    return {
+        "strategy": "strategy@1.0.0",
+        "state": "state@1.0.0",
+        "cells": [],
+        "matrix_hash": "fixture-hash",
+        **changes,
+    }
+
+
 # --- ReportStore -------------------------------------------------------------------------
 
 
@@ -44,9 +54,9 @@ def test_store_with_no_root_is_always_empty() -> None:
 
 
 def test_store_lists_and_gets_well_formed_reports(tmp_path: Path) -> None:
-    # state_strategy_matrix is the one kind still served opaquely (the others are identity checked)
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "r1", {"verdict": "PASS"})
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "r2", {"verdict": "FAIL"})
+    # The matrix id is not recomputable, but its registered DTO shape is still checked.
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "r1", _matrix_payload(verdict="PASS"))
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "r2", _matrix_payload(verdict="FAIL"))
     store = ReportStore(tmp_path)
 
     listed = store.list(ReportKind.STATE_STRATEGY_MATRIX)
@@ -62,16 +72,16 @@ def test_store_is_scoped_per_kind(tmp_path: Path) -> None:
     # a research_loop_round must be a valid LoopRoundRecord named by its record_hash (ADR-0050)
     round_payload = completed_round().payload()
     shared_id = content_hash(round_payload)
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, shared_id, {"kind": "matrix"})
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, shared_id, _matrix_payload())
     _write(tmp_path, ReportKind.RESEARCH_LOOP_ROUND, shared_id, round_payload)
     store = ReportStore(tmp_path)
-    assert store.get(ReportKind.STATE_STRATEGY_MATRIX, shared_id).payload == {"kind": "matrix"}
+    assert store.get(ReportKind.STATE_STRATEGY_MATRIX, shared_id).payload == _matrix_payload()
     assert store.get(ReportKind.RESEARCH_LOOP_ROUND, shared_id).payload == round_payload
     assert store.list(ReportKind.ROUTER_PAPER_RUN) == []
 
 
 def test_store_skips_malformed_files_in_list_but_still_returns_the_rest(tmp_path: Path) -> None:
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "good", {"ok": True})
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "good", _matrix_payload())
     directory = tmp_path / ReportKind.STATE_STRATEGY_MATRIX.value
     (directory / "bad.json").write_text("{not json", encoding="utf-8")
     (directory / "not-an-object.json").write_text("[1, 2, 3]", encoding="utf-8")
@@ -199,10 +209,17 @@ def test_a_valid_loop_round_under_another_name_is_refused(tmp_path: Path) -> Non
     assert store.list(ReportKind.RESEARCH_LOOP_ROUND) == []
 
 
-def test_the_state_strategy_matrix_kind_is_still_served_opaquely(tmp_path: Path) -> None:
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "any-name", {"round": 1})
+def test_unknown_matrix_version_is_served_opaquely(tmp_path: Path) -> None:
+    payload = _matrix_payload(schema_version="9.0.0", round=1)
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "any-name", payload)
     got = ReportStore(tmp_path).get(ReportKind.STATE_STRATEGY_MATRIX, "any-name")
-    assert got.payload == {"round": 1}
+    assert got.payload == payload
+
+
+def test_known_matrix_dto_rejects_a_missing_field(tmp_path: Path) -> None:
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "bad", {"matrix_hash": "h"})
+    with pytest.raises(ReportMalformed, match="lacks required field"):
+        ReportStore(tmp_path).get(ReportKind.STATE_STRATEGY_MATRIX, "bad")
 
 
 def test_reports_endpoint_rejects_unknown_kind(tmp_path: Path) -> None:
@@ -220,7 +237,7 @@ def test_reports_endpoint_rejects_path_traversal_id(tmp_path: Path) -> None:
 
 
 def test_listing_reports_every_malformed_file_with_its_reason(tmp_path: Path) -> None:
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "good", {"ok": True})
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "good", _matrix_payload())
     directory = tmp_path / ReportKind.STATE_STRATEGY_MATRIX.value
     (directory / "bad.json").write_text("{not json", encoding="utf-8")
     (directory / "not-an-object.json").write_text("[1, 2, 3]", encoding="utf-8")
@@ -242,7 +259,7 @@ def test_json_the_decoder_refuses_without_a_decode_error_is_listed_as_malformed(
     """An integer literal over CPython's int-conversion limit raises a plain ``ValueError`` and
     JSON nested past the recursion limit a ``RecursionError`` -- neither a ``JSONDecodeError``.
     Both are malformed entries of the listing (and a 422 detail), never a 500 for the whole kind."""
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "good", {"ok": True})
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "good", _matrix_payload())
     directory = tmp_path / ReportKind.STATE_STRATEGY_MATRIX.value
     (directory / "huge-int.json").write_text('{"n": ' + "1" * 5000 + "}", encoding="utf-8")
     (directory / "deep.json").write_text("[" * 200_000 + "]" * 200_000, encoding="utf-8")
@@ -264,8 +281,8 @@ def test_json_the_decoder_refuses_without_a_decode_error_is_listed_as_malformed(
 
 
 def test_listing_of_a_clean_directory_has_no_invalid_entries(tmp_path: Path) -> None:
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "a", {"v": 1})
-    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "b", {"v": 2})
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "a", _matrix_payload(v=1))
+    _write(tmp_path, ReportKind.STATE_STRATEGY_MATRIX, "b", _matrix_payload(v=2))
     listing = ReportStore(tmp_path).listing(ReportKind.STATE_STRATEGY_MATRIX)
     assert {env.id for env in listing.reports} == {"a", "b"} and listing.invalid == []
     assert ReportStore(None).listing(ReportKind.VALIDATION_REPORT).invalid == []

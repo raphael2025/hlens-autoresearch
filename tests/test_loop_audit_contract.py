@@ -168,7 +168,7 @@ def _scenarios() -> dict[str, tuple[LoopRecord, ...]]:
 
 def test_the_loop_audit_models_are_appended_and_exported_byte_identically(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 135
+    assert len(names) == 141
     assert names[126:134] == tuple(model.__name__ for model in LOOP_MODELS)  # appended block
     written = export_json_schemas(tmp_path)
     for model in LOOP_MODELS:

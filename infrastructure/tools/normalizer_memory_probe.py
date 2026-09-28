@@ -53,15 +53,15 @@ is excluded from the per-stage growth verdict. Then, in order, each in a new chi
 
 Each stage's result is checked (rows proven, crash point, commits already committed / replayed,
 the proven batch holds the row) and a wrong fixture state fails the run closed. Every stage's API
-result object (e.g. ``CanonicalUnitNormalized`` with its ``revision_ids``) stays referenced for a
+result object (e.g. ``CanonicalUnitNormalized``) stays referenced for a
 ``0.2 s`` hold inside the measured window, so it is sampled (the full-process working set counts
 it: E1-HIST).
 
 No stage is omitted relative to the candidate probe: each maps onto a public main API. Main-API
 differences handled here: ``CanonicalNormalizer`` takes only ``clock`` and ``microbatch_rows``
 (no ``narrow_rows`` / ``spool_dir``); ``PersistedRowVerifier`` takes no spool and is not a
-context manager; ``CanonicalUnitNormalized`` has no ``row_count`` / ``batch_count``, so they are
-derived from ``revision_ids`` / ``commits``.
+context manager; ``CanonicalUnitNormalized`` exposes fixed-size row / batch counts and replay
+summaries directly.
 
 Measurement
 ===========
@@ -81,8 +81,12 @@ Optional staged allocation diagnostics
 =======================================
 
 ``--staged-diagnostics`` instruments the probe child to count public CatalogAdapter calls,
-manifests considered by PyIceberg's local planner, and planned file tasks. It also reports retained
+manifest-list entries, live manifest entries and data-file reads visited by the bounded snapshot
+scanner, plus any remaining high-level planner calls and planned tasks. Manifest and entry counts
+include both scanner passes; early termination can make the second pass partial. It also reports retained
 ``tracemalloc`` deltas by source path and a reachable-Python-size estimate for the held result.
+Scanner counters count yielded entries / started reads, not bytes; manifest-list bytes are not
+counted separately.
 This mode changes child memory and timing, so its RSS is diagnostic only and can never satisfy
 ``e1_cap1_evidence``. ``tracemalloc`` does not include native Arrow buffers and is not an RSS
 measurement. The default probe path does not enable this instrumentation.
@@ -114,8 +118,9 @@ Safety
   ``--allow-uncapped`` is given;
 - a child whose sampled ``VmRSS`` exceeds ``--child-rss-limit-mib`` (default 4096) or that runs
   longer than ``--child-timeout`` is killed and the run fails closed (never counted as a pass);
-- the work directory must be on disk: a ``tmpfs`` / ``ramfs`` ``--base`` (where the warehouse would
-  be memory) is refused.
+- the work directory must be on disk: a ``tmpfs`` / ``ramfs`` ``--base`` (where the warehouse and
+  child temporary files would be memory) is refused. Every child uses its per-run work directory
+  as ``TMPDIR`` so parser spools and disk-backed indexes are covered by that refusal.
 
 ``--runtime controlled`` (default) sets ``ARROW_DEFAULT_MEMORY_POOL=system``, ``OMP_NUM_THREADS=1``
 and ``PYICEBERG_MAX_WORKERS=1`` in the children; compatibility of these settings with the exact
@@ -155,7 +160,7 @@ from typing import Any, Final
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThanOrEqual
 
-from core.contracts.catalog import CommitOutcome, CommitRequest, CommitResult
+from core.contracts.catalog import CommitRequest, CommitResult
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import CanonicalNormalizer, unit_batch_id
 from infrastructure.catalog import PHASE1_REGISTRY, PyIcebergCatalogAdapter, ensure_phase1_tables
@@ -284,9 +289,12 @@ class _StageDiagnostics:
     """Probe-only call and allocation counters; never changes production decisions."""
 
     adapter_calls: Counter[str] = field(default_factory=Counter)
-    manifest_plan_calls: int = 0
-    manifests_considered: int = 0
-    file_scan_tasks_planned: int = 0
+    manifest_list_entries_read: int = 0
+    live_manifest_entries_read: int = 0
+    data_file_reads_started: int = 0
+    high_level_plan_calls: int = 0
+    high_level_manifests_considered: int = 0
+    high_level_file_scan_tasks_planned: int = 0
 
 
 class _CountingAdapter:
@@ -307,24 +315,50 @@ class _CountingAdapter:
         self._diagnostics.adapter_calls["scan_columns"] += 1
         return self._inner.scan_columns(*args, **kwargs)
 
+    def scan_column_batches(self, *args: Any, **kwargs: Any) -> Any:
+        self._diagnostics.adapter_calls["scan_column_batches"] += 1
+        return self._inner.scan_column_batches(*args, **kwargs)
+
     def commit_batch(self, *args: Any, **kwargs: Any) -> Any:
         self._diagnostics.adapter_calls["commit_batch"] += 1
         return self._inner.commit_batch(*args, **kwargs)
 
+    def max_int64(self, *args: Any, **kwargs: Any) -> Any:
+        self._diagnostics.adapter_calls["max_int64"] += 1
+        return self._inner.max_int64(*args, **kwargs)
+
 
 @contextmanager
-def _count_manifest_planning(diagnostics: _StageDiagnostics) -> Iterator[None]:
-    """Count manifests and file tasks passed through PyIceberg's local planner."""
+def _count_scan_work(diagnostics: _StageDiagnostics) -> Iterator[None]:
+    """Count actual bounded-scanner work and any remaining high-level planner work."""
+    from infrastructure.catalog import iceberg_adapter
     from pyiceberg.table import ManifestGroupPlanner
 
-    original = ManifestGroupPlanner.plan_files
+    original_manifests = iceberg_adapter._manifest_files
+    original_entries = iceberg_adapter._live_entries
+    original_data_files = iceberg_adapter._data_file_batches
+    original_plan_files = ManifestGroupPlanner.plan_files
 
-    def counted(
+    def counted_manifests(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        for manifest in original_manifests(*args, **kwargs):
+            diagnostics.manifest_list_entries_read += 1
+            yield manifest
+
+    def counted_entries(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        for entry in original_entries(*args, **kwargs):
+            diagnostics.live_manifest_entries_read += 1
+            yield entry
+
+    def counted_data_files(*args: Any, **kwargs: Any) -> Iterator[Any]:
+        diagnostics.data_file_reads_started += 1
+        yield from original_data_files(*args, **kwargs)
+
+    def counted_plan_files(
         planner: Any,
         manifests: Any,
         manifest_entry_filter: Callable[[Any], bool] = lambda _: True,
     ) -> Any:
-        diagnostics.manifest_plan_calls += 1
+        diagnostics.high_level_plan_calls += 1
         considered = 0
 
         def count_inputs() -> Iterator[Any]:
@@ -333,17 +367,23 @@ def _count_manifest_planning(diagnostics: _StageDiagnostics) -> Iterator[None]:
                 considered += 1
                 yield manifest
 
-        tasks = original(planner, count_inputs(), manifest_entry_filter)
-        diagnostics.manifests_considered += considered
+        tasks = original_plan_files(planner, count_inputs(), manifest_entry_filter)
+        diagnostics.high_level_manifests_considered += considered
         if isinstance(tasks, Sequence):
-            diagnostics.file_scan_tasks_planned += len(tasks)
+            diagnostics.high_level_file_scan_tasks_planned += len(tasks)
         return tasks
 
-    ManifestGroupPlanner.plan_files = counted  # type: ignore[method-assign]
+    setattr(iceberg_adapter, "_manifest_files", counted_manifests)
+    setattr(iceberg_adapter, "_live_entries", counted_entries)
+    setattr(iceberg_adapter, "_data_file_batches", counted_data_files)
+    ManifestGroupPlanner.plan_files = counted_plan_files  # type: ignore[method-assign]
     try:
         yield
     finally:
-        ManifestGroupPlanner.plan_files = original  # type: ignore[method-assign]
+        setattr(iceberg_adapter, "_manifest_files", original_manifests)
+        setattr(iceberg_adapter, "_live_entries", original_entries)
+        setattr(iceberg_adapter, "_data_file_batches", original_data_files)
+        ManifestGroupPlanner.plan_files = original_plan_files  # type: ignore[method-assign]
 
 
 def _allocation_category(filename: str) -> str:
@@ -519,6 +559,22 @@ def _crash_after(rows: int, microbatch: int) -> int:
     return max(1, -(-rows // microbatch) // 2)
 
 
+def _first_scanned_value(
+    adapter: Any, table: str, column: str, row_filter: Any
+) -> Any | None:
+    """Read one projected value through the bounded interface and close on the first batch."""
+    reader = adapter.scan_column_batches(table, columns=(column,), row_filter=row_filter)
+    try:
+        for record_batch in reader:
+            if record_batch.num_rows:
+                return record_batch.column(0)[0].as_py()
+    finally:
+        close = getattr(reader, "close", None)
+        if callable(close):
+            close()
+    return None
+
+
 def _stage(
     stage: str,
     adapter: PyIcebergCatalogAdapter,
@@ -541,7 +597,7 @@ def _stage(
             proven = 0
             for low in range(1, lines + 1, microbatch):
                 high = min(low + microbatch - 1, lines)
-                window = view.scan_columns(
+                reader = view.scan_column_batches(
                     _RAW,
                     columns=columns,
                     row_filter=And(
@@ -551,7 +607,15 @@ def _stage(
                             LessThanOrEqual("archive_line_number", high),  # type: ignore[call-arg, arg-type]
                         ),
                     ),
-                ).to_pylist()
+                )
+                window: list[dict[str, Any]] = []
+                try:
+                    for record_batch in reader:
+                        window.extend(record_batch.to_pylist())
+                finally:
+                    close = getattr(reader, "close", None)
+                    if callable(close):
+                        close()
                 verifier.verify_archive_elements(BINANCE_SPOT_AGG_TRADES, DATA_TYPE, SYMBOL, window)
                 proven += len(window)
             if lines != rows or proven != rows:
@@ -592,20 +656,18 @@ def _stage(
 
         def normalize() -> tuple[dict[str, Any], object]:
             out = writer.normalize_unit(_RAW, unit)
-            already = sum(
-                1 for commit in out.commits if commit.outcome == CommitOutcome.ALREADY_COMMITTED
-            )
+            already = out.replayed_batch_count
             facts = {
-                "revision_ids": len(out.revision_ids),
-                "commits": len(out.commits),
+                "revision_ids": out.revision_count,
+                "commits": out.batch_count,
                 "already_committed": already,
                 "replayed": out.replayed,
                 "clock_readings": clock.readings,
             }
             expected_already = crash_after if stage == "resume" else batches
             if (
-                len(out.revision_ids) != rows
-                or len(out.commits) != batches
+                out.revision_count != rows
+                or out.batch_count != batches
                 or already != expected_already
                 or out.replayed is not (stage == "replay")
                 or clock.readings != 0
@@ -623,21 +685,20 @@ def _stage(
                 f"read_batch found plan ({unit_rows} rows, {committed_count} batches), "
                 f"expected ({rows}, {batches})"
             )
-        sample = (
-            adapter.scan_columns(
-                CANONICAL_TRADES.table,
-                columns=("arrival_seq",),
-                row_filter=EqualTo("lineage_source_revision_id", unit),  # type: ignore[call-arg, arg-type]
-                limit=1,
-            )
-            .column("arrival_seq")[0]
-            .as_py()
+        sample = _first_scanned_value(
+            adapter,
+            CANONICAL_TRADES.table,
+            "arrival_seq",
+            EqualTo("lineage_source_revision_id", unit),  # type: ignore[call-arg, arg-type]
         )
+        if sample is None:
+            raise ProbeError(f"no Canonical row found for unit {unit}")
         base = (sample // rules.ARRIVAL_SEQ_STRIDE) * rules.ARRIVAL_SEQ_STRIDE
         # An archive's position p is arrival_seq base + p; batch i holds ranks [i*chunk, +chunk).
-        found_row = adapter.scan_columns(
+        found_row = _first_scanned_value(
+            adapter,
             CANONICAL_TRADES.table,
-            columns=("arrival_seq",),
+            "arrival_seq",
             row_filter=And(
                 EqualTo("lineage_source_revision_id", unit),  # type: ignore[call-arg, arg-type]
                 And(
@@ -645,11 +706,10 @@ def _stage(
                     LessThanOrEqual("arrival_seq", base + index * chunk + added),  # type: ignore[call-arg, arg-type]
                 ),
             ),
-            limit=1,
-        ).column("arrival_seq")
-        if len(found_row) != 1:
+        )
+        if found_row is None:
             raise ProbeError(f"no committed row inside batch {batch_id}")
-        row = found_row[0].as_py()
+        row = found_row
         reader = CanonicalNormalizer(
             PinnedCatalogView(adapter, _heads(adapter)), storage, microbatch_rows=microbatch
         )
@@ -712,7 +772,7 @@ def _child_stage(
         _emit("start")
         started = time.perf_counter()
         counter_scope = (
-            _count_manifest_planning(diagnostics) if staged_diagnostics else nullcontext()
+            _count_scan_work(diagnostics) if staged_diagnostics else nullcontext()
         )
         with counter_scope:
             facts, held = body()
@@ -730,9 +790,14 @@ def _child_stage(
             _emit(
                 "diagnostics",
                 adapter_calls=dict(diagnostics.adapter_calls),
-                manifest_plan_calls=diagnostics.manifest_plan_calls,
-                manifests_considered=diagnostics.manifests_considered,
-                file_scan_tasks_planned=diagnostics.file_scan_tasks_planned,
+                manifest_list_entries_read=diagnostics.manifest_list_entries_read,
+                live_manifest_entries_read=diagnostics.live_manifest_entries_read,
+                data_file_reads_started=diagnostics.data_file_reads_started,
+                high_level_plan_calls=diagnostics.high_level_plan_calls,
+                high_level_manifests_considered=diagnostics.high_level_manifests_considered,
+                high_level_file_scan_tasks_planned=(
+                    diagnostics.high_level_file_scan_tasks_planned
+                ),
                 tracemalloc_retained_deltas=_allocation_deltas(before, after),
                 held_result={
                     "type": f"{type(held).__module__}.{type(held).__qualname__}",
@@ -793,6 +858,7 @@ class _ChildRun:
 def _run_child(
     args: list[str],
     *,
+    temp_dir: Path,
     runtime: str,
     interval: float,
     timeout: float,
@@ -801,6 +867,7 @@ def _run_child(
     """Run one child from the repository root; sample its ``VmRSS`` until it exits."""
     env = {name: value for name, value in os.environ.items() if name not in RUNTIMES["controlled"]}
     env.update(RUNTIMES[runtime])
+    env["TMPDIR"] = str(temp_dir.resolve())
     started = time.monotonic()
     process = subprocess.Popen(
         [sys.executable, "-m", PROBE, *args],
@@ -1111,6 +1178,7 @@ def _environment(base: Path, runtime: str) -> dict[str, Any]:
         "cgroup_memory": _cgroup_memory_limit(),
         "workdir_base": str(base.resolve()),
         "workdir_filesystem": _filesystem(base),
+        "child_temporary_directory": "per-run work directory via TMPDIR",
         "runtime": runtime,
         "runtime_env": RUNTIMES[runtime],
         "dependencies": _versions(),
@@ -1246,6 +1314,7 @@ def run_probe(
                             None,
                             staged_diagnostics=False,
                         ),
+                        temp_dir=workdir,
                         runtime=runtime,
                         interval=interval,
                         timeout=child_timeout,
@@ -1275,6 +1344,7 @@ def run_probe(
                                 unit,
                                 staged_diagnostics=staged_diagnostics,
                             ),
+                            temp_dir=workdir,
                             runtime=runtime,
                             interval=interval,
                             timeout=child_timeout,

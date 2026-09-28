@@ -564,12 +564,14 @@ def require_durable_unsealing(budget: OosUnsealBudget | None, ledger: UnsealingL
 
 
 def _registered_this_round(ctx: RoundContext) -> tuple[tuple[Hypothesis, str, str | None], ...]:
-    """This round's trials in order: new hypotheses, re-evaluations, then evolution offspring."""
+    """This round's trials in order: new hypotheses, re-evaluations, ADR-0083 retry trials (a
+    retry round holds only those), then evolution offspring."""
     stage = ctx.artifacts.get("hypothesis", {})
     found: list[tuple[Hypothesis, str, str | None]] = [
         (h, "hypothesis", None) for h in stage.get("registered", ())
     ]
     found += [(h, "reevaluation", attempt) for h, attempt in stage.get("reevaluations", ())]
+    found += [(h, "retry", attempt) for h, attempt in stage.get("retry_reevaluations", ())]
     found += [
         (h, "evolution", None) for h in ctx.artifacts.get("evolution", {}).get("registered", ())
     ]
@@ -860,6 +862,8 @@ class ExperimentStage:
             repro=repro,
         )
         run_id = f"{ctx.loop_id}:{ctx.round_index}:{hypothesis.name}@{hypothesis.version}"
+        if origin == "retry":  # ADR-0083: a manifest may list one hypothesis more than once
+            run_id = f"{run_id}#{attempt}"
         inputs: EvaluationInputs | None = None
         trial: TrialRun | None = None
         matrix: StateStrategyMatrix | None = None

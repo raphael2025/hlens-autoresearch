@@ -2,9 +2,9 @@
 
 ``apps/api`` never imports ``research/`` (01-system.md §3): the research plane writes its
 artifacts as JSON files under a report root, and ``apps.api.store.ReportStore`` only reads them
-back, opaquely. This package is the writing half — one function per report kind — that produces
-files the store accepts. See ``research/reports/README.md`` for the envelope / id / conflict
-rules shared by all of them.
+back and validates each registered payload DTO. This package is the writing half — one function per
+report kind — that produces files the store accepts. See ``research/reports/README.md`` for the
+envelope / id / conflict rules shared by all of them.
 """
 
 from __future__ import annotations

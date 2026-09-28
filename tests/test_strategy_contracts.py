@@ -76,7 +76,7 @@ def _target(minute: int, weight: str = "1", inputs: int = 1) -> TargetPosition:
 
 def test_p5_appends_seventeen_models_with_exported_schemas(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 135
+    assert len(names) == 141
     # Phases append in merge order: the 17 P5 models form one contiguous block after F4.
     start = min(names.index(model.__name__) for model in P5_MODELS)
     assert start >= 79
@@ -261,7 +261,7 @@ def _remainder(**kw: object) -> contracts.FillRemainder:
 
 def test_carry_over_appends_one_model_with_an_exported_schema(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert names[-1] == "FillRemainder"
+    assert names[134] == "FillRemainder"  # ADR-0054's block; ADR-0077 appended after it
     written = export_json_schemas(tmp_path)
     committed = (CURRENT_SCHEMA_DIR / "FillRemainder.schema.json").read_bytes()
     assert committed == written["FillRemainder"].read_bytes()

@@ -389,6 +389,20 @@ class _Recording:
             table, columns=columns, row_filter=row_filter, limit=limit, snapshot_id=snapshot_id
         )
 
+    def scan_column_batches(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
+        snapshot_id: str | None = None,
+    ) -> Iterator[pa.RecordBatch]:
+        if snapshot_id is None and not isinstance(row_filter, AlwaysFalse):
+            self.head_reads.add(table)
+        return self._inner.scan_column_batches(
+            table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+        )
+
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         raise AssertionError("a verified load never writes")
 

@@ -68,8 +68,10 @@ B45 向外舍入修复（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：上述�
 依赖环境 context 的 `ROUND_HALF_EVEN`，重复小数会使下界高于、上界低于精确比率（如 2/3 的下界、1/3 的上界）。现在在局部
 `decimal.Context(prec=28)` 中计算：下界 `ROUND_FLOOR`、上界 `ROUND_CEILING`，不受调用方环境 context 影响，区间总包含精确比率。
 公开 API 不变（`tuple[Decimal, Decimal]`）；28 位有效数字可精确表示的比率（0、1、1/4、1/128 等整除）保持精确，无检测器错误时
-两端点为同一点值；重复小数且无错误时为最紧的 28 位包络。不使用 `intervals.PLACES` 的 6 位量化。`false_positive_rate` / `power`
-点估计字段不变。测试（`test_calibration.py`）以 `Fraction` 精确比率核对 FPR 与 power 两组端点。
+两端点为同一点值；重复小数且无错误时为最紧的 28 位包络。不使用 `intervals.PLACES` 的 6 位量化。后续静态复核发现点估计
+`false_positive_rate` / `power` 仍直接使用调用方 Decimal context；现以固定 28 位、`ROUND_HALF_EVEN` 局部 context 计算，使点估计
+也不随调用方 context 改变。默认 Decimal context 下结果保持不变。测试（`test_calibration.py`）以 `Fraction` 精确比率核对 FPR 与
+power 两组端点；环境 context 独立性留到测试 / 验收阶段运行。
 
 ~~未运行 G5~~ ✅ 可选 G5 模式（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：`GateCalibrationSetup.sealed_oos_g5`
 显式开启（默认 `False`；关闭时所有报告与 `report_hash` 与之前逐字节一致，测试钉住了改动前的哈希）。检测器须实现

@@ -26,6 +26,7 @@ import io
 import re
 import stat
 import struct
+import tempfile
 import zipfile
 import zlib
 from collections.abc import Iterator
@@ -33,13 +34,13 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from enum import StrEnum
-from typing import IO, Any, Final, Self
+from typing import IO, Any, Final, Self, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 
 from core.contracts.collector import CollectedObject
 from core.contracts.revision import PolicyBinding, PolicyRole
-from core.contracts.storage import IntegrityViolation, ObjectRef, StorageAdapter
+from core.contracts.storage import IntegrityViolation, ObjectRef, StorageAdapter, StorageError
 from core.domain.base import canonical_json
 from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 
@@ -559,11 +560,15 @@ class _Reject(Exception):
 def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> ParseOutcome:
     """经 ``StorageAdapter.open_read`` 读取已发布对象并解析。
 
-    对象缺失等存储故障原样抛出（``StorageError``，可重试，不是质量事件）；对象与 ``ObjectRef``
-    不一致（``IntegrityViolation``）作为 ``object_integrity_mismatch`` 拒绝。
+    对象缺失等存储故障，以及本地输入 / 临时 spool I/O 故障，均作为可重试的 ``StorageError``
+    抛出，不是质量事件；对象与 ``ObjectRef`` 不一致（``IntegrityViolation``）作为
+    ``object_integrity_mismatch`` 拒绝。
     """
     try:
         _check_request_identity(request)
+        # ZIP needs random access. Avoid keeping a second full Python ``bytes`` object alongside
+        # the complete ParsedArchive table: copy the verified stream into a seekable temporary
+        # file in fixed-size reads. The configured temporary filesystem may still be memory-backed.
         try:
             handle = storage.open_read(request.object_ref)
         except IntegrityViolation as exc:
@@ -572,11 +577,33 @@ def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> Pars
                 f"storage refused the object: {type(exc).__name__}",
             ) from exc
         with handle:
-            data = _read_bounded(handle, request.object_ref.size + 1)
+            with tempfile.TemporaryFile(mode="w+b") as spool:
+                byte_count, digest = _spool_bounded(
+                    handle, spool, request.object_ref.size + 1
+                )
+                if byte_count != request.object_ref.size:
+                    raise _Reject(
+                        RejectionCode.OBJECT_INTEGRITY_MISMATCH,
+                        f"byte length {byte_count} != ObjectRef.size {request.object_ref.size}",
+                    )
+                if digest != request.object_ref.sha256:
+                    raise _Reject(
+                        RejectionCode.OBJECT_INTEGRITY_MISMATCH,
+                        "SHA-256 != ObjectRef.sha256",
+                    )
+                # Do not expose parsed rows until object identity and the complete member have
+                # passed validation, including ZIP CRC and all row invariants.
+                spool.seek(0)
+                rows, member_name = _parse_zip(
+                    cast(IO[bytes], _RetryableSpoolReader(spool)), request
+                )
     except _Reject as reject:
         return _rejection(request, reject)
-    # 解析的正是被重新哈希的这份字节：不信任 open_read 的承诺，也没有 verify → reread 窗口。
-    return parse_archive_bytes(request, data)
+    except OSError as exc:
+        raise StorageError(
+            f"archive parser input or temporary spool I/O failed ({type(exc).__name__})"
+        ) from exc
+    return _success(request, member_name, rows)
 
 
 def parse_archive_bytes(request: ArchiveParseRequest, data: bytes) -> ParseOutcome:
@@ -590,6 +617,8 @@ def parse_archive_bytes(request: ArchiveParseRequest, data: bytes) -> ParseOutco
             )
         if hashlib.sha256(data).hexdigest() != request.object_ref.sha256:
             raise _Reject(RejectionCode.OBJECT_INTEGRITY_MISMATCH, "SHA-256 != ObjectRef.sha256")
+        # This convenience entry point receives a complete bytes object from its caller;
+        # the storage entry point uses a temporary seekable spool to avoid another full copy.
         rows, member_name = _parse_zip(io.BytesIO(data), request)
     except _Reject as reject:
         return _rejection(request, reject)
@@ -643,12 +672,49 @@ def _check_request_identity(request: ArchiveParseRequest) -> None:
         )
 
 
-def _read_bounded(handle: IO[bytes], limit: int) -> bytes:
-    """最多读 ``limit`` 字节（调用方传 ``size + 1`` 以发现超长对象）。"""
-    buffer = bytearray()
-    while len(buffer) < limit and (chunk := handle.read(min(1 << 20, limit - len(buffer)))):
-        buffer.extend(chunk)
-    return bytes(buffer)
+class _RetryableSpoolReader:
+    """Preserve local spool I/O failures through zipfile's OSError-to-BadZip mapping."""
+
+    def __init__(self, handle: IO[bytes]) -> None:
+        self._handle = handle
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._handle, name)
+
+    def read(self, size: int = -1) -> bytes:
+        try:
+            return self._handle.read(size)
+        except OSError as exc:
+            raise StorageError(
+                f"archive parser temporary spool read failed ({type(exc).__name__})"
+            ) from exc
+
+    def seek(self, offset: int, whence: int = io.SEEK_SET) -> int:
+        try:
+            return self._handle.seek(offset, whence)
+        except OSError as exc:
+            raise StorageError(
+                f"archive parser temporary spool seek failed ({type(exc).__name__})"
+            ) from exc
+
+    def tell(self) -> int:
+        try:
+            return self._handle.tell()
+        except OSError as exc:
+            raise StorageError(
+                f"archive parser temporary spool tell failed ({type(exc).__name__})"
+            ) from exc
+
+
+def _spool_bounded(source: IO[bytes], destination: IO[bytes], limit: int) -> tuple[int, str]:
+    """按固定块复制至 seekable spool 并同步哈希，最多读取 ``limit`` 字节。"""
+    hasher = hashlib.sha256()
+    total = 0
+    while total < limit and (chunk := source.read(min(_READ_CHUNK_BYTES, limit - total))):
+        destination.write(chunk)
+        hasher.update(chunk)
+        total += len(chunk)
+    return total, hasher.hexdigest()
 
 
 # --------------------------------------------------------------------------- ZIP container
@@ -979,7 +1045,10 @@ class _ColumnBuffer:
 
     def table(self) -> pa.Table:
         self._flush()
-        return pa.Table.from_batches(self._batches, schema=self._schema).combine_chunks()
+        # Keep the bounded RecordBatch chunks: combine_chunks would allocate a second full
+        # column set while the batches are still live, even though ParsedArchive must return a
+        # complete Table. Consumers that truly need contiguous arrays can combine explicitly.
+        return pa.Table.from_batches(self._batches, schema=self._schema)
 
 
 class _RowParser:

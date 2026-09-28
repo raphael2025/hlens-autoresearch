@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 类型 | `strategy` |
-| 状态 | 框架已实现（Phase 5，ADR-0038）；3 个研究策略，均为 NOT_VALIDATED；无策略晋升（Promotion 今天拒绝所有策略） |
+| 状态 | 框架已实现（Phase 5，ADR-0038）；6 个研究策略（含 ADR-0085 新增的 Donchian、z-score、双动量），均为 NOT_VALIDATED；无策略晋升（Promotion 今天拒绝所有策略） |
 | 首次填充 | Phase 5 |
 
 从知识库与研究中登记的交易策略（StrategySpec）。
@@ -58,12 +58,12 @@
 | 策略 / 方法 | 文献 / 知识库 | 主项目实现 | 输入 | 测试证据 | 规格状态 |
 |---|---|---|---|---|---|
 | 时间序列动量 | `knowledge:strategy_time_series_momentum@1.0.0`、`knowledge:strategy_crypto_time_series_momentum@1.0.0`；`hlens-knowledge:FAC-MOM-TS-001`、`ALP-TSMOM-001` | `tsmom_bars@1.0.0` | `bar_log_return`（可算） | 策略契约套件、未来信号拒绝、空间外参数拒绝、G0–G4 接线、golden 实验（合成夹具） | `IMPLEMENTED · NOT_VALIDATED` |
-| 时间序列动量 + 波动率目标 | 同上 + `knowledge:risk_volatility_managed_portfolios@1.0.0` 等；`STR-VOLTARGET-001` | `tsmom_bars_vol_scaled@1.0.0` | `bar_log_return` + `bar_realized_vol_60`（风控信号，研究循环未提供，见下） | 管线确定性与无前视、风控契约套件、各上限生效；**没有** G0–G4 接线或 golden 实验覆盖该变体 | `IMPLEMENTED · NOT_VALIDATED` |
+| 时间序列动量 + 波动率目标 | 同上 + `knowledge:risk_volatility_managed_portfolios@1.0.0` 等；`STR-VOLTARGET-001` | `tsmom_bars_vol_scaled@1.0.0` | `bar_log_return` + `bar_realized_vol_60`（风控信号，研究循环未提供，见下） | 管线确定性与无前视、风控契约套件、各上限生效；G0–G4 端到端测试 `tests/research/strategies/test_vol_scaled_validation.py`（未运行；缺波动率信号时全部空仓、结论 INCONCLUSIVE）；无 golden 实验 | `IMPLEMENTED · NOT_VALIDATED` |
 | 横截面动量（动量腿） | `knowledge:factor_crypto_market_size_momentum@1.0.0`；`FAC-CRYPTO-MOM-001` | `xsmom_bars@1.0.0` | `bar_log_return`（可算）；两个标的 | `test_cross_sectional_momentum.py`、`test_cross_sectional_g4.py` | `IMPLEMENTED · NOT_VALIDATED` |
-| Donchian / 通道突破 | `STR-TF-DONCHIAN-001`、`STR-BREAKOUT-001`（知识库证据等级 DOCUMENTED） | 无 | bar OHLC（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 单标的 z-score 均值回归 | `STR-MR-ZSCORE-001`（知识库证据等级 DOCUMENTED） | 无 | bar close（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| Donchian / 通道突破 | `STR-TF-DONCHIAN-001`、`STR-BREAKOUT-001`（知识库证据等级 DOCUMENTED）；lineage 引用 `knowledge:strategy_time_series_momentum@1.0.0`、`knowledge:strategy_crypto_time_series_momentum@1.0.0`（本项目无通道规则种子） | `donchian_breakout@1.0.0`（ADR-0085；现货 long / flat；参数空间 `entry_window ∈ {20, 55}`、`exit_window ∈ {10, 20}`，无默认点，库条目经 `library.donchian_entry` 显式给点） | `bar_close` / `bar_high` / `bar_low`（`research/strategies/price_signals.py` 探索用；无生产 FeatureProvider；研究循环未提供） | `test_donchian_breakout.py`、`test_adr0085_library_entries.py`（未运行） | `IMPLEMENTED · NOT_VALIDATED` |
+| 单标的 z-score 均值回归 | `STR-MR-ZSCORE-001`（知识库证据等级 DOCUMENTED）；本项目无知识库种子，lineage 为空，因此未登记为库条目 | `zscore_reversion@1.0.0`（ADR-0085；现货 long / flat；参数空间 `window ∈ {20, 60, 240}`、`entry_z ∈ {1, 2}`、`exit_z ∈ {0}`，无默认点） | `bar_close`（同上） | `test_zscore_reversion.py`（未运行） | `IMPLEMENTED · NOT_VALIDATED` |
 | 短周期 taker 流量条件化 | `ALP-TAKER-FLOW-001`（知识库证据等级 COMMUNITY_REPORTED）；反证 `FAIL-TAKER-COST-001` | 无 | K 线 taker 字段（可得，无对应 Feature） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 双动量（绝对 + 相对） | `STR-DUAL-MOM-001`（知识库证据等级 COMMUNITY_REPORTED） | 无 | 可得（两个标的 + 空仓） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| 双动量（绝对 + 相对） | `STR-DUAL-MOM-001`（知识库证据等级 COMMUNITY_REPORTED）；lineage 引用 `knowledge:factor_crypto_market_size_momentum@1.0.0` 与两条时间序列动量种子 | `dual_momentum@1.0.0`（ADR-0085；现货 long / flat；参数空间 `lookback ∈ {60, 240, 1440}`，无默认点，库条目经 `library.dual_momentum_entry` 显式给点；ADR-0059 横截面声明尚未加入 `cross_section.py`） | `bar_log_return`（可算）；两个标的 | `test_dual_momentum.py`、`test_adr0085_library_entries.py`（未运行） | `IMPLEMENTED · NOT_VALIDATED` |
 | 配对交易（BTC–ETH） | `STR-PAIRS-001`（Gatev, Goetzmann & Rouwenhorst 2006，*RFS*，股票；知识库证据等级 ACADEMIC） | 无 | 可得（仅一对） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 横截面反转 / 统计套利 | `STR-CSMR-001`、`STR-STATARB-001` | 无 | 宽标的池未采集 | 无 | `DOCUMENTED · INPUT_UNAVAILABLE` |
 | 做市 | `STR-MM-001` | 无 | 订单簿未采集 | 无 | `DOCUMENTED · INPUT_UNAVAILABLE` |

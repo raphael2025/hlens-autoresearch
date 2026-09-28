@@ -7,7 +7,7 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
 |---|---|
 | `router.py` | `StrategyRouter`：只路由 ACTIVE / PRODUCTION_CANDIDATE 策略；t 时刻权重来自 **t 时刻已知**的状态查表（未知走回退）；每次权重变化计换手 `Σ\|Δw\|` 与切换成本；`RouterSpec.spec_hash()` |
 | `evidence.py` | P10-ELIG 证据模式：逐个被路由策略核对其真实 `ValidationReport`（哈希、subject、PASS、密封 OOS G5）；`report_store_resolver(root)` 读取报告库文件 |
-| `deviation.py` | P10 纸面偏差（只报告）：`paper_deviation(run, reference)` —— 路由器净纸面结果与调用方声明的参照 `BacktestResult` 逐 mark 的权益 / 收益差与汇总统计（见下） |
+| `deviation.py` | P10 纸面偏差（只报告）：`paper_deviation(run, reference, validation_report=..., validation_profile=...)` —— 路由器净纸面结果与参照回测的差异，绑定 P8 声明范围 |
 | `paper.py` | W1 接线：`paper_run` —— 路由权重 × 各策略的 P5 目标仓位 → 组合目标仓位 → 注入的 `BacktestProvider` → 扣除切换成本后的路由器**自身** `BacktestResult` |
 
 ## `paper_run` 语义
@@ -37,9 +37,9 @@ Phase 10 动态策略路由（[ADR-0043](../../docs/adr/0043-dynamic-strategy-ro
 - **验证报告绑定（可选）**：`paper_run(..., validation_reports={策略 ref: 报告内容哈希})`；给出时每个可被路由的策略必须恰有一份（缺 / 多即拒绝），
   映射记录在 `RouterPaperRun.validation_reports` 并计入 `run_hash`；本模块只记录引用，不打开、不判定报告。
 
-## 纸面偏差（P10，2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
+## 纸面偏差（P10，ADR-0079，2026-09-28，CODE_COMPLETE / DEBUG_PENDING）
 
-`paper_deviation(run, reference, *, reference_request=None) -> PaperDeviation`：只描述、无阈值、无结论。
+`paper_deviation(run, reference, *, validation_report, validation_profile, reference_request=None) -> PaperDeviation`：只描述、无阈值、无结论。范围身份来自 Router 的 P8 `ValidationReport` 与精确 `ValidationProfile`：报告主体、Profile ref / hash、PASS、G5 与 Profile 内容哈希须匹配；run 的定价标的必须恰为 `ProfileScope.symbol`。缺失或不匹配均拒绝。绑定的 scope 包含 venue、symbol、timeframe、research_class、Profile ref / hash、P8 report hash，并有自身内容哈希。`validate_scope_bound_payload` 仅接受当前 `2.0.0` scope-bound payload，要求调用方提供原 P8 报告与 Profile 并核对内外哈希和身份；历史 `1.0.0` 可由通用报告存储读取 / 展示，但不是范围合规证据。
 
 - **拒绝**（`DeviationError`，`RouterError` 子类）：`run.verify()` 不通过的运行记录；初始权益不同；权益 mark 时刻不完全相同；
   参照成交了运行请求未定价的标的；给出 `reference_request` 时参照必须回答它（`request_hash`）且定价的标的集合与运行完全相同。

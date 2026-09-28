@@ -49,12 +49,12 @@ import struct
 import tempfile
 from bisect import bisect_left
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
-import pyarrow.compute as pc  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
     And,
     BooleanExpression,
@@ -86,7 +86,7 @@ from infrastructure.revision.row_integrity import (
     check_batch_snapshot,
     history_from,
 )
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import RevisionCatalog
 
 __all__ = [
     "DEFAULT_MICROBATCH_ROWS",
@@ -116,6 +116,42 @@ _BATCH_CACHE: Final = 2
 _POSITION_DB_CACHE_KIB: Final = 1024
 _POSITION_INSERT_ROWS: Final = 2048
 _POSITION_INT: Final = struct.Struct(">q")
+
+
+@contextmanager
+def _scan_rows(
+    catalog: Any,
+    table: str,
+    *,
+    columns: Sequence[str],
+    row_filter: BooleanExpression,
+    snapshot_id: str | None = None,
+) -> Iterator[Iterator[Mapping[str, Any]]]:
+    """Yield row mappings from bounded catalog batches and always close the reader."""
+    reader = catalog.scan_column_batches(
+        table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+    )
+
+    def rows() -> Iterator[Mapping[str, Any]]:
+        for record_batch in reader:
+            yield from record_batch.to_pylist()
+
+    try:
+        yield rows()
+    except BaseException:
+        # Keep the scan/validation failure that caused cleanup; reader.close() is allowed to
+        # fail while unwinding too, but must not replace the original integrity/storage error.
+        close = getattr(reader, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                pass
+        raise
+    else:
+        close = getattr(reader, "close", None)
+        if callable(close):
+            close()
 
 
 class CanonicalNormalizeError(Exception):
@@ -386,7 +422,10 @@ class _CommittedTimes:
 
 @dataclass(frozen=True, slots=True)
 class CanonicalUnitNormalized:
-    """Result of normalizing one unit."""
+    """Bounded summary of normalizing one unit.
+
+    Use ``CanonicalNormalizer.iter_revision_ids`` when the full ordered ID stream is needed.
+    """
 
     raw_table: str
     source_revision_id: str
@@ -394,13 +433,13 @@ class CanonicalUnitNormalized:
     #: ``None`` for a unit without element revisions (e.g. an empty REST page).
     arrival_seq_base: int | None
     knowledge_time: datetime | None
-    #: Canonical revision ids in Raw position order.
-    revision_ids: tuple[str, ...]
-    commits: tuple[BatchCommit, ...]
+    revision_count: int
+    batch_count: int
+    replayed_batch_count: int
 
     @property
     def replayed(self) -> bool:
-        return all(commit.replayed for commit in self.commits)
+        return self.replayed_batch_count == self.batch_count
 
 
 @dataclass(frozen=True, slots=True)
@@ -512,8 +551,9 @@ class CanonicalNormalizer:
                         canonical_table=channel.canonical.table,
                         arrival_seq_base=None,
                         knowledge_time=None,
-                        revision_ids=(),
-                        commits=(),
+                        revision_count=0,
+                        batch_count=0,
+                        replayed_batch_count=0,
                     )
                 if survey.plan is None:
                     assert survey.raw_floor is not None
@@ -527,7 +567,7 @@ class CanonicalNormalizer:
                     base, ready, chunk = survey.base, survey.ready, survey.plan.chunk
                     version = survey.version  # completed at its recorded version, never mixed
                 try:
-                    commits, revision_ids = self._write(
+                    batch_count, revision_count, replayed_batch_count = self._write(
                         pin, channel, source_revision_id, survey, (base, ready, version), chunk
                     )
                 except CommitConflict as exc:
@@ -551,8 +591,9 @@ class CanonicalNormalizer:
                     canonical_table=channel.canonical.table,
                     arrival_seq_base=base,
                     knowledge_time=ready,
-                    revision_ids=revision_ids,
-                    commits=tuple(commits),
+                    revision_count=revision_count,
+                    batch_count=batch_count,
+                    replayed_batch_count=replayed_batch_count,
                 )
             finally:
                 if survey.positions is not None:
@@ -560,6 +601,90 @@ class CanonicalNormalizer:
         raise CanonicalNormalizeConflict(
             f"unit {source_revision_id} of {raw_table} lost {_ATTEMPTS} commit races"
         ) from last_error
+
+    def iter_revision_ids(self, result: CanonicalUnitNormalized) -> Iterator[str]:
+        """Re-prove and stream one unit's Canonical revision IDs in Raw position order.
+
+        The default result deliberately contains no O(N) ID collection. This explicit iterator
+        pins a consistent current view, revalidates the normalized unit, and yields one bounded
+        microbatch at a time. Close it early to release the survey's disk-backed position index.
+        """
+        if type(result) is not CanonicalUnitNormalized:
+            raise CanonicalNormalizeError("result must be a CanonicalUnitNormalized")
+        if any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 0
+            for value in (result.revision_count, result.batch_count, result.replayed_batch_count)
+        ) or result.replayed_batch_count > result.batch_count:
+            raise CanonicalNormalizeError("result summary counts are invalid")
+        channel = self._channel(result.raw_table, result.source_revision_id)
+        if result.canonical_table != channel.canonical.table:
+            raise CanonicalNormalizeError("result canonical_table does not match its raw_table")
+        if result.revision_count == 0:
+            if (
+                result.batch_count != 0
+                or result.replayed_batch_count != 0
+                or result.arrival_seq_base is not None
+                or result.knowledge_time is not None
+            ):
+                raise CanonicalNormalizeError("empty result has inconsistent summary fields")
+
+        pin = self._pin(channel, result.source_revision_id)
+        survey = self._survey(pin, channel, result.source_revision_id, keep_rows=False)
+        try:
+            if result.revision_count > 0 and survey.plan is not None:
+                _require_complete(
+                    channel, result.source_revision_id, survey.plan, survey.unit_rows
+                )
+            summary_mismatch = survey.unit_rows != result.revision_count
+            if result.revision_count == 0:
+                summary_mismatch = summary_mismatch or any(
+                    (
+                        result.batch_count != 0,
+                        survey.plan is not None,
+                        survey.base is not None,
+                        survey.ready is not None,
+                    )
+                )
+            else:
+                summary_mismatch = summary_mismatch or any(
+                    (
+                        survey.plan is None,
+                        survey.plan is not None and survey.plan.count != result.batch_count,
+                        survey.base != result.arrival_seq_base,
+                        survey.ready != result.knowledge_time,
+                        survey.version is None,
+                    )
+                )
+            if summary_mismatch or survey.positions is None:
+                raise CatalogIntegrityError(
+                    f"normalized result for {result.source_revision_id} no longer matches its "
+                    "committed Canonical unit"
+                )
+            if result.revision_count == 0:
+                return
+            assert survey.plan is not None
+            assert survey.base is not None
+            assert survey.ready is not None
+            assert survey.version is not None
+            assert survey.positions is not None
+            positions = survey.positions
+            for index in range(result.batch_count):
+                low, high, end = _batch_window(positions, survey.plan.chunk, index)
+                raw = self._raw_window(
+                    pin,
+                    channel,
+                    result.source_revision_id,
+                    low,
+                    high,
+                    expected_rows=end - index * survey.plan.chunk,
+                )
+                planned = self._planned(
+                    channel, raw, survey.base, survey.ready, survey.version
+                )
+                yield from (row["revision_id"] for row in planned)
+        finally:
+            if survey.positions is not None:
+                survey.positions.close()
 
     def verify_unit(
         self,
@@ -633,8 +758,15 @@ class CanonicalNormalizer:
                 if proven is not None:
                     kept.extend(proven)
                     continue
-                low, high, _ = _batch_window(facts.positions, plan.chunk, index)
-                raw = self._raw_window(pin, channel, source_revision_id, low, high)
+                low, high, end = _batch_window(facts.positions, plan.chunk, index)
+                raw = self._raw_window(
+                    pin,
+                    channel,
+                    source_revision_id,
+                    low,
+                    high,
+                    expected_rows=end - index * plan.chunk,
+                )
                 self._prove(pin, channel, raw)
                 planned = self._planned(channel, raw, base, ready, facts.version)
                 check_batch_snapshot(
@@ -815,8 +947,15 @@ class CanonicalNormalizer:
         symbol: str | None,
     ) -> _Survey:
         floor: datetime | None = None
-        for low, high in _proof_windows(positions, self._microbatch):
-            raw = self._raw_window(pin, channel, source_revision_id, low, high)
+        for low, high, expected_rows in _proof_windows(positions, self._microbatch):
+            raw = self._raw_window(
+                pin,
+                channel,
+                source_revision_id,
+                low,
+                high,
+                expected_rows=expected_rows,
+            )
             self._prove(pin, channel, raw)
             latest = max(row["knowledge_time"] for row in raw)
             floor = latest if floor is None else max(floor, latest)
@@ -880,8 +1019,15 @@ class CanonicalNormalizer:
         digest = hashlib.sha256()
         covered = min(plan.count * plan.chunk, unit_rows)
         for index, snapshot in self._plan_snapshots(pin, channel, source_revision_id, plan, None):
-            low, high, _ = _batch_window(positions, plan.chunk, index)
-            raw = self._raw_window(pin, channel, source_revision_id, low, high)
+            low, high, end = _batch_window(positions, plan.chunk, index)
+            raw = self._raw_window(
+                pin,
+                channel,
+                source_revision_id,
+                low,
+                high,
+                expected_rows=end - index * plan.chunk,
+            )
             planned = self._planned(channel, raw, base, ready, version)
             check_batch_snapshot(
                 channel.canonical,
@@ -921,7 +1067,7 @@ class CanonicalNormalizer:
     def _positions(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
     ) -> tuple[_PositionIndex, str | None]:
-        """Disk-sorted Raw positions of the unit and its first symbol."""
+        """Disk-sorted Raw positions of a single-symbol unit."""
         column = _position_column(channel)
         reader = pin.catalog.scan_column_batches(
             channel.element.table,
@@ -931,7 +1077,6 @@ class CanonicalNormalizer:
         offset = 0 if channel.name == "archive" else 1
         index = _PositionIndex()
         symbol: str | None = None
-        saw_symbol = False
         try:
             try:
                 for record_batch in reader:
@@ -940,11 +1085,20 @@ class CanonicalNormalizer:
                         raise CatalogIntegrityError(
                             f"{channel.element.table}: a Raw position is null"
                         )
-                    if record_batch.num_rows and not saw_symbol:
-                        symbol = record_batch.column(
-                            record_batch.schema.get_field_index("symbol")
-                        )[0].as_py()
-                        saw_symbol = True
+                    symbols = record_batch.column(record_batch.schema.get_field_index("symbol"))
+                    for value in symbols:
+                        row_symbol = value.as_py()
+                        if not isinstance(row_symbol, str) or not row_symbol:
+                            raise CatalogIntegrityError(
+                                f"{channel.element.table}: a Raw symbol is null or invalid"
+                            )
+                        if symbol is None:
+                            symbol = row_symbol
+                        elif row_symbol != symbol:
+                            raise CatalogIntegrityError(
+                                f"{channel.element.table}: unit {source_revision_id} contains "
+                                "rows for multiple symbols"
+                            )
                     raw_values = values.to_pylist()
                     for start in range(0, len(raw_values), _POSITION_INSERT_ROWS):
                         index.add_batch(
@@ -1025,18 +1179,33 @@ class CanonicalNormalizer:
         source_revision_id: str,
         low: int,
         high: int,
+        *,
+        expected_rows: int,
     ) -> list[Mapping[str, Any]]:
         """The unit's Raw rows at positions ``low … high``, in position order."""
         offset = 0 if channel.name == "archive" else 1
         columns = tuple(field.name for field in channel.element.arrow_schema)
-        rows: list[Mapping[str, Any]] = pin.catalog.scan_columns(
+        rows: list[Mapping[str, Any]] = []
+        with _scan_rows(
+            pin.catalog,
             channel.element.table,
             columns=columns,
             row_filter=And(
                 _equals(channel.lineage_column, source_revision_id),
                 _between(_position_column(channel), low - offset, high - offset),
             ),
-        ).to_pylist()
+        ) as scanned:
+            for row in scanned:
+                rows.append(row)
+                if len(rows) > expected_rows:
+                    raise CatalogIntegrityError(
+                        f"{channel.element.table}: Raw window {low}..{high} contains extra rows"
+                    )
+        if len(rows) != expected_rows:
+            raise CatalogIntegrityError(
+                f"{channel.element.table}: Raw window {low}..{high} has {len(rows)} rows; "
+                f"expected {expected_rows}"
+            )
         return sorted(rows, key=lambda row: (rules.position_of(channel, row), row["revision_id"]))
 
     def _prove(
@@ -1052,13 +1221,18 @@ class CanonicalNormalizer:
 
     def _prove_source(self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str) -> None:
         """A unit without element revisions must still name one committed source revision."""
-        found = pin.catalog.scan_columns(
+        count = 0
+        with _scan_rows(
+            pin.catalog,
             channel.source.table,
             columns=("revision_id",),
             row_filter=_equals("revision_id", source_revision_id),
-            limit=2,
-        ).to_pylist()
-        if len(found) != 1:
+        ) as found:
+            for _ in found:
+                count += 1
+                if count > 1:
+                    break
+        if count != 1:
             raise CanonicalNormalizeError(
                 f"{source_revision_id} is not one committed revision of {channel.source.table}"
             )
@@ -1322,7 +1496,9 @@ class CanonicalNormalizer:
         """The window's slice of the block holds exactly the planned rows, each once."""
         _exact(
             channel,
-            self._scan_block(pin.catalog, channel, base + low, base + high, None),
+            self._scan_block(
+                pin.catalog, channel, base + low, base + high, None, len(planned)
+            ),
             planned,
             committed=True,
         )
@@ -1355,8 +1531,8 @@ class CanonicalNormalizer:
         survey: _Survey,
         block: tuple[int, datetime, str],
         chunk: int,
-    ) -> tuple[list[BatchCommit], tuple[str, ...]]:
-        """Commit the plan's missing batches in order, each read back at its own snapshot.
+    ) -> tuple[int, int, int]:
+        """Commit missing batches and return only fixed-size unit summary values.
 
         ``block`` is the unit's block base, ready time and contract version.
         """
@@ -1364,32 +1540,24 @@ class CanonicalNormalizer:
         definition = channel.canonical
         unit_rows = survey.unit_rows
         parent = pin.canonical_head
-        commits = self._replayed_commits(pin, channel, source_revision_id, survey)
+        committed_count = self._replayed_commits(pin, channel, source_revision_id, survey)
+        replayed_count = committed_count
         positions = survey.positions
         assert positions is not None
-        ids: list[str] = []
-        # The proving pass already established each committed batch against this pinned Raw
-        # view and recovered block/version. Rebuild committed IDs here for normalize_unit's
-        # public result, in Raw position order, instead of retaining an N-sized ID copy in
-        # _Survey. This repeats _planned for each committed window, using the same pinned Raw,
-        # base, ready time and version; verify_unit does not enter this write/result path.
-        committed_count = survey.plan.count if survey.plan is not None else 0
-        for index in range(committed_count):
-            low, high, _ = _batch_window(positions, chunk, index)
-            planned = self._planned(
-                channel,
-                self._raw_window(pin, channel, source_revision_id, low, high),
-                base,
-                ready,
-                version,
-            )
-            ids.extend(row["revision_id"] for row in planned)
-        for index in range(len(commits), -(-unit_rows // chunk)):
-            low, high, _ = _batch_window(positions, chunk, index)
+        batch_count = -(-unit_rows // chunk)
+        for index in range(committed_count, batch_count):
+            low, high, end = _batch_window(positions, chunk, index)
             batch_id = unit_batch_id(source_revision_id, unit_rows, chunk, index)
             planned = self._planned(
                 channel,
-                self._raw_window(pin, channel, source_revision_id, low, high),
+                self._raw_window(
+                    pin,
+                    channel,
+                    source_revision_id,
+                    low,
+                    high,
+                    expected_rows=end - index * chunk,
+                ),
                 base,
                 ready,
                 version,
@@ -1403,20 +1571,12 @@ class CanonicalNormalizer:
                 expected_parent_snapshot_id=parent,
             )
             result = self._adapter.commit_batch(request, table)
+            if result.outcome == CommitOutcome.ALREADY_COMMITTED:
+                replayed_count += 1
             parent = result.snapshot.snapshot_id
             self._read_back(channel, base, low, high, planned, parent)
-            ids.extend(row["revision_id"] for row in planned)
-            commits.append(
-                BatchCommit(
-                    table=definition.table,
-                    batch_id=batch_id,
-                    snapshot_id=parent,
-                    outcome=result.outcome,
-                    row_count=len(planned),
-                )
-            )
         self._close(channel, source_revision_id, base, positions, parent)
-        return commits, tuple(ids)
+        return batch_count, unit_rows, replayed_count
 
     def _replayed_commits(
         self,
@@ -1424,44 +1584,32 @@ class CanonicalNormalizer:
         channel: rules.RawChannel,
         source_revision_id: str,
         survey: _Survey,
-    ) -> list[BatchCommit]:
-        """The already committed batches ``0 … count - 1`` as ``ALREADY_COMMITTED`` commits.
+    ) -> int:
+        """Re-prove the existing committed prefix and return only its batch count.
 
         Their snapshots are streamed from the pinned history again (nothing per batch was kept,
         E1-CAP-1) and must be exactly the ones the proving pass checked against their re-read
-        Raw rows (``committed_digest``); each still records its window's row count.
+        Raw rows (``committed_digest``).
         """
         plan = survey.plan
         if plan is None:
-            return []
+            return 0
         table = channel.canonical.table
-        found: list[BatchCommit] = []
         digest = hashlib.sha256()
         assert survey.positions is not None
         for index, snapshot in self._plan_snapshots(pin, channel, source_revision_id, plan, None):
             _, _, end = _batch_window(survey.positions, plan.chunk, index)
-            rows = end - index * plan.chunk
-            if snapshot.added_rows != rows:
+            if snapshot.added_rows != end - index * plan.chunk:
                 raise CatalogIntegrityError(
                     f"batch {snapshot.batch_id} of {table} was committed with other content"
                 )
             digest.update(_fold(index, snapshot))
-            found.append(
-                BatchCommit(
-                    table=table,
-                    batch_id=unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
-                    snapshot_id=snapshot.snapshot_id,
-                    outcome=CommitOutcome.ALREADY_COMMITTED,
-                    row_count=rows,
-                )
-            )
         if survey.committed_digest is None or digest.digest() != survey.committed_digest:
             raise CatalogIntegrityError(
                 f"{table}: the committed batches of unit {source_revision_id} are not the ones "
                 "the proving pass checked"
             )
-        found.reverse()
-        return found
+        return plan.count
 
     def _read_back(
         self,
@@ -1475,7 +1623,14 @@ class CanonicalNormalizer:
         """At the batch's own snapshot: exactly its rows in its block slice; ids held once."""
         _exact(
             channel,
-            self._scan_block(self._adapter, channel, base + low, base + high, snapshot_id),
+            self._scan_block(
+                self._adapter,
+                channel,
+                base + low,
+                base + high,
+                snapshot_id,
+                len(planned),
+            ),
             planned,
             committed=False,
         )
@@ -1497,7 +1652,9 @@ class CanonicalNormalizer:
         definition = channel.canonical
         column = _time_column(channel)
         times = [row[column] for row in planned]
-        found = catalog.scan_columns(
+        held = {row["revision_id"]: 0 for row in planned}
+        with _scan_rows(
+            catalog,
             definition.table,
             columns=("revision_id",),
             row_filter=And(
@@ -1505,11 +1662,13 @@ class CanonicalNormalizer:
                 _between(column, min(times), max(times)),
             ),
             snapshot_id=snapshot_id,
-        ).column("revision_id")
-        counts = pc.value_counts(found)
-        held = {item["values"].as_py(): item["counts"].as_py() for item in counts}
+        ) as found:
+            for item in found:
+                revision_id = item["revision_id"]
+                if revision_id in held:
+                    held[revision_id] += 1
         for row in planned:
-            if held.get(row["revision_id"]) != 1:
+            if held[row["revision_id"]] != 1:
                 raise CatalogIntegrityError(
                     f"{definition.table}: revision_id {row['revision_id']} is not held by "
                     "exactly one row"
@@ -1568,15 +1727,24 @@ class CanonicalNormalizer:
         first: int,
         last: int,
         snapshot_id: str | None,
+        expected_rows: int,
     ) -> list[Mapping[str, Any]]:
         definition = channel.canonical
         columns = tuple(field.name for field in definition.arrow_schema)
-        rows: list[Mapping[str, Any]] = catalog.scan_columns(
+        rows: list[Mapping[str, Any]] = []
+        with _scan_rows(
+            catalog,
             definition.table,
             columns=columns,
             row_filter=_between("arrival_seq", first, last),
             snapshot_id=snapshot_id,
-        ).to_pylist()
+        ) as scanned:
+            for row in scanned:
+                rows.append(row)
+                if len(rows) > expected_rows:
+                    raise CatalogIntegrityError(
+                        f"{definition.table}: arrival_seq window {first}..{last} has extra rows"
+                    )
         return rows
 
     def _head(self, table: str) -> str | None:
@@ -1644,7 +1812,8 @@ def check_rest_page(
     for start in range(0, len(wanted), _KEY_CHUNK):
         ids = wanted[start : start + _KEY_CHUNK]
         keys = sorted({holders[revision][2] for revision in ids})
-        for row in catalog.scan_columns(
+        with _scan_rows(
+            catalog,
             table,
             columns=columns,
             row_filter=And(
@@ -1654,12 +1823,13 @@ def check_rest_page(
                     In("revision_id", ids),  # type: ignore[call-arg, arg-type]
                 ),
             ),
-        ).to_pylist():
-            if row["revision_id"] in rows:
-                raise CatalogIntegrityError(
-                    f"{table}: element revision {row['revision_id']} is held twice"
-                )
-            rows[row["revision_id"]] = row
+        ) as scanned:
+            for row in scanned:
+                if row["revision_id"] in rows:
+                    raise CatalogIntegrityError(
+                        f"{table}: element revision {row['revision_id']} is held twice"
+                    )
+                rows[row["revision_id"]] = row
     if len(rows) != len(wanted):
         raise CatalogIntegrityError(
             f"{table}: the holders of response revision {response_revision_id}'s missing "
@@ -1681,27 +1851,27 @@ def _holders(
     Rows are those of the symbol whose ``observation_key`` is a missing element's key; the
     response / key are only meaningful when the count is 1 (then they are the one holder's).
     """
-    wanted = pa.array(sorted({element.revision_id for element in missing}), type=pa.string())
+    wanted_ids = {element.revision_id for element in missing}
     keys = sorted({element.observation_key for element in missing})
     found: dict[str, tuple[int, str, str]] = {}
     for start in range(0, len(keys), _KEY_CHUNK):
-        chunk = catalog.scan_columns(
+        with _scan_rows(
+            catalog,
             table,
             columns=("revision_id", "response_revision_id", "observation_key"),
             row_filter=And(
                 symbol,
                 In("observation_key", keys[start : start + _KEY_CHUNK]),  # type: ignore[call-arg, arg-type]
             ),
-        )
-        chunk = chunk.filter(pc.is_in(chunk.column("revision_id"), value_set=wanted))
-        for revision, lineage, key in zip(
-            chunk.column("revision_id").to_pylist(),
-            chunk.column("response_revision_id").to_pylist(),
-            chunk.column("observation_key").to_pylist(),
-            strict=True,
-        ):
-            count = found.get(revision, (0, lineage, key))[0]
-            found[revision] = (count + 1, lineage, key)
+        ) as scanned:
+            for row in scanned:
+                revision = row["revision_id"]
+                if revision not in wanted_ids:
+                    continue
+                lineage = row["response_revision_id"]
+                key = row["observation_key"]
+                count = found.get(revision, (0, lineage, key))[0]
+                found[revision] = (count + 1, lineage, key)
     return found
 
 
@@ -1774,8 +1944,8 @@ def _time_column(channel: rules.RawChannel) -> str:
     return "event_time" if channel.data_type == "agg_trades" else "interval_start"
 
 
-def _proof_windows(positions: Sequence[int], size: int) -> Iterator[tuple[int, int]]:
-    """Disjoint position ranges covering every position, each spanning <= ``size`` rows."""
+def _proof_windows(positions: Sequence[int], size: int) -> Iterator[tuple[int, int, int]]:
+    """Disjoint rank windows; a repeated position group may extend a window past ``size``."""
     start = 0
     while start < len(positions):
         low = positions[start]
@@ -1783,7 +1953,7 @@ def _proof_windows(positions: Sequence[int], size: int) -> Iterator[tuple[int, i
         high = positions[end - 1]
         while end < len(positions) and positions[end] == high:
             end += 1  # never split rows sharing a position across windows
-        yield low, high
+        yield low, high, end - start
         start = end
 
 

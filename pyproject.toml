@@ -20,6 +20,50 @@ dependencies = [
 # ADR-0063: the local read-only API runtime (127.0.0.1 only), not a default dependency.
 api-server = ["uvicorn==0.53.0"]
 
+# ADR-0087: built-in Provider manifests, discoverable via `importlib.metadata.entry_points`
+# (`infrastructure.plugins.discovery`, group `hlens.plugins.<kind>`). Each key -> a module-level
+# `infrastructure.plugins.manifest.PluginManifest` constant (metadata only, no Provider import —
+# `infrastructure/` may not depend on `plugins/`, docs/architecture/01-system.md §4). Declaring
+# these here does not by itself change any running process: they only take effect for
+# `importlib.metadata.entry_points()` after a `uv sync` reinstalls the project (deferred to the
+# debugging pass per ADR-0087's decision; `infrastructure.plugins.discovery.discover`'s tests use
+# an injected entry point source and do not depend on this being installed).
+[project.entry-points."hlens.plugins.feature"]
+bar_log_return = "infrastructure.plugins.builtin.features:BAR_LOG_RETURN"
+bar_realized_volatility = "infrastructure.plugins.builtin.features:BAR_REALIZED_VOLATILITY"
+bar_volume_sum = "infrastructure.plugins.builtin.features:BAR_VOLUME_SUM"
+
+[project.entry-points."hlens.plugins.state"]
+volatility_regime = "infrastructure.plugins.builtin.states:VOLATILITY_REGIME"
+liquidity_regime = "infrastructure.plugins.builtin.states:LIQUIDITY_REGIME"
+trend_range = "infrastructure.plugins.builtin.states:TREND_RANGE"
+
+[project.entry-points."hlens.plugins.event"]
+feature_threshold_cross = "infrastructure.plugins.builtin.events:FEATURE_THRESHOLD_CROSS"
+volatility_breakout = "infrastructure.plugins.builtin.events:VOLATILITY_BREAKOUT"
+state_switch = "infrastructure.plugins.builtin.events:STATE_SWITCH"
+event_sequence = "infrastructure.plugins.builtin.events:EVENT_SEQUENCE"
+event_co_occurrence = "infrastructure.plugins.builtin.events:EVENT_CO_OCCURRENCE"
+event_window_end = "infrastructure.plugins.builtin.events:EVENT_WINDOW_END"
+event_absence = "infrastructure.plugins.builtin.events:EVENT_ABSENCE"
+event_count = "infrastructure.plugins.builtin.events:EVENT_COUNT"
+
+[project.entry-points."hlens.plugins.outcome"]
+hlens_forward_return = "infrastructure.plugins.builtin.outcomes:HLENS_FORWARD_RETURN"
+hlens_triple_barrier = "infrastructure.plugins.builtin.outcomes:HLENS_TRIPLE_BARRIER"
+
+[project.entry-points."hlens.plugins.backtest"]
+hlens_bar_backtest = "infrastructure.plugins.builtin.backtest:HLENS_BAR_BACKTEST"
+
+[project.entry-points."hlens.plugins.synthetic"]
+hlens_synthetic_random_walk = "infrastructure.plugins.builtin.synthetic:HLENS_SYNTHETIC_RANDOM_WALK"
+
+[project.entry-points."hlens.plugins.llm"]
+hlens_llm_scripted = "infrastructure.plugins.builtin.llm:HLENS_LLM_SCRIPTED"
+
+[project.entry-points."hlens.plugins.knowledge"]
+hlens_knowledge_local = "infrastructure.plugins.builtin.knowledge:HLENS_KNOWLEDGE_LOCAL"
+
 [dependency-groups]
 dev = [
     "pytest>=8.3",

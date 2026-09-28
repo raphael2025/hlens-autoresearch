@@ -1542,7 +1542,7 @@ def test_b3_only_appends_to_the_registry() -> None:
     b3_end = len(PRE_B3_MODEL_NAMES) + len(B3_MODELS)
     assert names[len(PRE_B3_MODEL_NAMES) : b3_end] == tuple(model.__name__ for model in B3_MODELS)
     assert b3_end == 74
-    assert len(CONTRACT_MODELS) == 135
+    assert len(CONTRACT_MODELS) == 141
 
 
 def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
@@ -1557,16 +1557,19 @@ def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) ->
     committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
     regenerated = export_json_schemas(tmp_path)[name].read_bytes()
     if name in ADR_0055_SCHEMA_SHA256:  # changed by ADR-0055's fields: the 2.2.0 pin
-        assert hashlib.sha256(committed).hexdigest() == ADR_0055_SCHEMA_SHA256[name]
-        assert hashlib.sha256(regenerated).hexdigest() == ADR_0055_SCHEMA_SHA256[name]
+        # ADR-0077: the 2.3.0 bump may change only the envelope default of these schemas.
+        for schema in (committed, regenerated):
+            digest = hashlib.sha256(as_published_at(schema, "2.2.0")).hexdigest()
+            assert digest == ADR_0055_SCHEMA_SHA256[name]
         return
     if name in ADR_0052_SCHEMA_SHA256:  # changed by ADR-0052's fields: the 2.1.0 pin
-        # ADR-0055: the 2.2.0 bump may change only the envelope default of these schemas.
+        # ADR-0055 / ADR-0077: the 2.2.0 and 2.3.0 bumps may change only the envelope default.
         for schema in (committed, regenerated):
             digest = hashlib.sha256(as_published_at(schema, "2.1.0")).hexdigest()
             assert digest == ADR_0052_SCHEMA_SHA256[name]
         return
-    # ADR-0052 §4 / ADR-0055: the 2.1.0 and 2.2.0 bumps may change only the envelope default.
+    # ADR-0052 §4 / ADR-0055 / ADR-0077: the 2.1.0, 2.2.0 and 2.3.0 bumps may change only the
+    # envelope default.
     assert (
         hashlib.sha256(as_published_at_2_0_0(committed)).hexdigest() == (PRE_B3_SCHEMA_SHA256[name])
     )
@@ -1589,8 +1592,8 @@ def test_v1_snapshots_and_vectors_are_byte_identical() -> None:
 
 
 def test_contract_version_and_reused_patterns_are_unchanged() -> None:
-    # ADR-0052 §4 raised the minor to 2.1.0 and ADR-0055 to 2.2.0; this batch changed no version.
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0 and ADR-0077 to 2.3.0.
+    assert CONTRACT_SCHEMA_VERSION == "2.3.0"
     assert revision.SNAPSHOT_TABLE_PATTERN == r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"
     assert revision.BINDING_ID_PATTERN == r"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$"
 

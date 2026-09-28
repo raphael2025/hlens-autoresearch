@@ -1,7 +1,10 @@
 """Independent execution service, SIMULATION ONLY (roadmap Phase 13; ADR-0046).
 
 No live venue, no credentials, no network I/O. ``ExecutionMode.LIVE`` is refused. Never imports
-research/ (tests/test_architecture_boundaries.py).
+research/ (tests/test_architecture_boundaries.py). ADR-0084 reserves a live venue *interface*
+(``apps.execution.live_venue``: ``LiveVenuePort``, ``CredentialProvider``,
+``UnconfiguredLiveVenue``) — declared shape only, wired to nothing, always refused; it does not
+add a live venue, does not add credentials and does not add network I/O.
 """
 
 from apps.execution.audit import (
@@ -22,6 +25,13 @@ from apps.execution.errors import (
 )
 from apps.execution.kill_switch import KillSwitch
 from apps.execution.ladder import LIVE_REFUSAL_MESSAGE, ExecutionLadder
+from apps.execution.live_venue import (
+    LIVE_TRADING_ENABLED,
+    CredentialProvider,
+    LiveVenuePort,
+    LiveVenueRegistry,
+    UnconfiguredLiveVenue,
+)
 from apps.execution.monitor import AlertHook, Monitor, MonitorSnapshot
 from apps.execution.records import (
     LIVE_STAGES,
@@ -32,6 +42,7 @@ from apps.execution.records import (
     FillRecord,
     KillSwitchTrip,
     LadderGateRecord,
+    LiveAccessAttempt,
     MarkPrice,
     MarkRecord,
     OrderRecord,
@@ -64,6 +75,7 @@ from apps.execution.venue import CostModel, LinearCostModel, SimulatedVenue
 __all__ = [
     "LIVE_REFUSAL_MESSAGE",
     "LIVE_STAGES",
+    "LIVE_TRADING_ENABLED",
     "RESTORE_TRIPPED_BY",
     "RISK_POLICY_LIMIT_KEYS",
     "RUNNABLE_LIFECYCLE_STATES",
@@ -77,6 +89,7 @@ __all__ = [
     "AuditReplay",
     "AuditTrail",
     "CostModel",
+    "CredentialProvider",
     "DeploymentNotAdmitted",
     "DrillReport",
     "ExecutionLadder",
@@ -90,6 +103,9 @@ __all__ = [
     "LadderGateRecord",
     "LadderGateRefused",
     "LinearCostModel",
+    "LiveAccessAttempt",
+    "LiveVenuePort",
+    "LiveVenueRegistry",
     "MarkPrice",
     "MarkRecord",
     "MarksChoiceRequired",
@@ -114,6 +130,7 @@ __all__ = [
     "TargetPosition",
     "TargetPositionSource",
     "TargetPositions",
+    "UnconfiguredLiveVenue",
     "instrument_key",
     "replay_audit",
     "replay_risk",

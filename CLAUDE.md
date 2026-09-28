@@ -32,6 +32,15 @@ Raphael 于 2026-09-23 授权 Codex 作为本项目的技术协调者，决定�
 - Constitution 的原则变化、实盘授权、资金/风险预算、删除历史数据、系统环境安装，以及合并进入 `main`，仍需 Raphael 亲自明确批准。
 - Codex 的决定必须写入 ADR / PROJECT_STATUS / PROJECT_MEMORY，并留下 Git commit；聊天中的临时判断不构成正式决定。
 
+Raphael 于 2026-09-28 正式授权 **Claude Code 以 PM 身份**担任本项目的决策者与协调者（取代上面 Codex 的协调者角色；Codex、Cursor 与子代理作为 PM 调度的执行者）：
+
+- PM 可以直接决定工程、架构、模块语义、ADR 批准（含冻结契约的 additive / 经 ADR 的变更）、实现批次与验收 Claude/Codex/子代理的产出，无需逐项请示 Raphael。
+- 每个决定必须写入 ADR / PROJECT_STATUS / PROJECT_MEMORY 并留下 Git commit；聊天中的临时判断不构成正式决定。
+- 仍由 Raphael 亲自批准：**实盘交易操作**（真实下单、连接实盘账户、使用交易凭据）。Raphael 于 2026-09-28 进一步授权：开发阶段其余一切（含冻结契约变更、ADR-0051 等原保留事项、环境安装、数据下载、Catalog 建表、推送与合并）均由 PM 决定；实盘接口可以设计与预留，但默认关闭、不得启用。PM 对不可逆操作仍应谨慎并留记录。
+- H3（不得为提高回测表现修改验证、成本、切分、指标或 Profile 选择）与 H4、H6 属于研究诚信规则，任何授权都不改变。
+- 授权来源（Raphael 在 PM 主会话中的原话，2026-09-28）：「一切的决定都有你来决策 不要我决策了 按照你的经验来」「我现在授予正式授权」「预留实盘接口但目前不进行实盘操作 其他的一切都可以授权 现在是开发阶段 我们需要完整的构建底层代码」「我现在授权你在主会话修改claude文档 然后更新github分支 该合并的合并 该清理的清理」。
+- 执行方式：需要作决定的事项由 PM 在主会话写成 Accepted ADR 并提交；子代理 / Codex 只实现已 Accepted 的 ADR，不代为接受决定（子代理无法核实转述的授权，会正确地拒绝）。
+
 - Claude **可以**：分析、比较方案、推荐、实施已批准的决定、识别风险与矛盾、起草 ADR。
 - Claude **不可以**：替 Raphael 做架构决策；静默修改冻结契约、Research Constitution 或验证规则；把研究代码晋升为生产代码；**把含糊的回复解读为批准**。
 - 需要决定时，停在决策边界，用 Decision Packet（§9.2）提出。
@@ -77,7 +86,7 @@ CONTEXT_RECOVERY_REQUIRED
 
 | # | 规则 |
 |---|---|
-| H1 | 不得擅自修改 Domain Contract（`core/domain/`、`core/contracts/`、`docs/architecture/02-domain.md`）。需 Raphael 批准 + ADR。 |
+| H1 | 不得擅自修改 Domain Contract（`core/domain/`、`core/contracts/`、`docs/architecture/02-domain.md`）。需 §0 授权方（Claude PM；Constitution 原则变化仍为 Raphael）批准 + ADR。 |
 | H2 | 不得擅自修改 Validation Constitution 或 Validation Profile。 |
 | H3 | 不得为了提高 backtest performance 修改验证规则、成本模型、数据切分、样本外区间、指标定义或 Profile 选择。 |
 | H4 | 不得为了让测试通过而削弱测试（删断言、放宽容差、跳过用例、mock 被测逻辑）。 |
@@ -87,7 +96,7 @@ CONTEXT_RECOVERY_REQUIRED
 | H8 | 不得在 PostgreSQL 中存储大型历史行情数据。 |
 | H9 | 不得提交密钥、API Key、账户信息或行情原始数据到仓库。 |
 | H10 | 未经授权不得下单、转账或连接实盘账户。 |
-| H11 | **Claude Code 不得替 Raphael 或 Codex 做架构决策。** Codex 仅可在 Raphael 于 §0 明确委托的边界内作正式决定，并必须记录到 ADR 与项目状态。 |
+| H11 | 架构决策只能由 §0 列明的授权方作出：自 2026-09-28 起为 Claude Code（PM），在 Raphael 保留事项之外；子代理、Codex、Cursor 等执行者不得自行作架构决策。所有正式决定必须记录到 ADR 与项目状态。 |
 | H12 | 环境变更（安装软件、修改系统配置、`.wslconfig`、Git 全局配置、Docker、数据库）需 Raphael 明确授权。 |
 | H13 | 不得修改、移动、删除旧项目或外部数据（位置见 `PROJECT_MEMORY.md` §8）。 |
 | H14 | Python 使用项目固定版本（uv 管理），不得使用或修改系统 Python 作为项目解释器。 |
@@ -107,7 +116,7 @@ CONTEXT_RECOVERY_REQUIRED
 
 ## 5. 重大变化 → ADR
 
-以下变化必须先写 `Proposed` 状态 ADR（模板 `docs/adr/0000-template.md`），Raphael 批准后才实施：
+以下变化必须先写 `Proposed` 状态 ADR（模板 `docs/adr/0000-template.md`），经 §0 授权方批准后才实施：
 契约 / 插件接口 / 生命周期状态机；Constitution 或 Validation Profile；核心技术引入或替换；Plane 边界或依赖方向；数据版本化或实验复现机制。
 
 ---
@@ -305,5 +314,5 @@ uv run mypy
 ### 10.8 状态报告
 
 每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。远程 `origin` 为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025）：
-Claude / Cursor 只提交、**不 push**；Codex 独立复核并运行所需检查后，把每个被接受的恢复点推送到对应 phase 分支。
+自 2026-09-28 起由 Claude PM 在审阅后推送 phase 分支与已整合的 `main`；子代理 / Codex / Cursor 只提交、不 push。phase → `main` 的合并仍按 §10.2 以 Phase 验收为准。
 GIT_STATE 如实报告相对远程的 ahead 数；未创建 PR、未配置 CI 时分别填 `none` / `not configured`。

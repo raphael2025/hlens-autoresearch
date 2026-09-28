@@ -13,7 +13,7 @@ import pytest
 from core.contracts.validation_profile import ProfileStatus, ValidationProfile
 from core.domain.artifact import StrategyArtifact
 from core.domain.base import FrozenMapping, Kind, Ref
-from core.domain.research import ValidationReport, Verdict
+from core.domain.research import GateResult, ValidationReport, Verdict
 from core.lifecycle.strategy import LifecycleHistory, LifecycleState, LifecycleTransition
 from infrastructure.registry import (
     ProfileFreezeRegistry,
@@ -32,6 +32,7 @@ from research.promotion import (
     promote,
 )
 from research.strategies.library import library_entries
+from research.validation.gates import threshold
 from tests.factories import HASH_A, HASH_PROFILE, OTHER_GIT_COMMIT_OID, git_code_revision
 from tests.fake_strategy import SIGNAL_REF, FakeSignStrategy, RequestShiftingStrategy
 from tests.promotion.fixtures import (
@@ -733,3 +734,122 @@ def test_an_artifact_may_not_predate_the_profile_freeze_approval(tmp_path: Path)
         build_artifact(evidence, freezes=freezes)
     assert caught.value.reason is R.EVIDENCE_INVALID
     assert "freeze approval" in caught.value.detail
+
+
+# ---- report ↔ Profile threshold verification (ADR-0013; MOD-VALID 2026-09-28) ------------
+
+
+def _with_sealed_gate(evidence: PromotionEvidence, extra: GateResult) -> PromotionEvidence:
+    """``evidence`` whose sealed-OOS report also carries the thresholded gate ``extra``."""
+    in_sample, sealed = evidence.reports
+    payload = sealed.model_dump()
+    payload["gates"] = [*payload["gates"], extra.model_dump()]
+    return replace(evidence, reports=(in_sample, ValidationReport.model_validate(payload)))
+
+
+def _oos_breakeven_gate(limit: float, source: str) -> GateResult:
+    """TEST ONLY: a PASS ``G5.oos_breakeven_cost_multiple`` well above ``limit``."""
+    return GateResult(
+        gate_id="G5.oos_breakeven_cost_multiple",
+        metric="breakeven_cost_multiple[>=]",
+        value=limit + 10.0,
+        threshold=limit,
+        threshold_source=source,
+        verdict=Verdict.PASS,
+    )
+
+
+def test_a_thresholded_gate_that_agrees_with_the_profile_is_promotable() -> None:
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    limit = threshold(profile, "cost_stress.min_breakeven_cost_multiple")
+    assert limit.exact is None  # the toy Profile has no exact sibling for this field
+    _build(_with_sealed_gate(evidence, _oos_breakeven_gate(limit.value, limit.source)))
+
+
+def test_a_threshold_that_is_not_the_profiles_is_refused() -> None:
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    limit = threshold(profile, "cost_stress.min_breakeven_cost_multiple")
+    tampered = _with_sealed_gate(evidence, _oos_breakeven_gate(limit.value + 0.5, limit.source))
+    refused = _refusal(tampered)
+    assert refused.reason is R.REPORT_THRESHOLD_MISMATCH
+    assert refused.reason.value == "report_threshold_mismatch"
+    assert "TEST-ONLY-sealed-oos" in refused.detail
+    assert "G5.oos_breakeven_cost_multiple threshold_mismatch" in refused.detail
+
+
+def test_a_threshold_source_outside_the_profile_is_refused() -> None:
+    tampered = _with_sealed_gate(
+        toy_evidence(), _oos_breakeven_gate(2.0, "cost_stress.no_such_floor")
+    )
+    refused = _refusal(tampered)
+    assert refused.reason is R.REPORT_THRESHOLD_MISMATCH
+    assert "source_not_in_profile" in refused.detail
+
+
+def test_the_threshold_check_comes_after_the_freeze() -> None:
+    tampered = _with_sealed_gate(toy_evidence(), _oos_breakeven_gate(99.0, "cost_stress.nowhere"))
+    other = toy_profile(market_benchmark_rule="none")  # frozen instead of the reports' Profile
+    assert _refusal(tampered, other).reason is R.PROFILE_NOT_FROZEN
+
+
+# ---- ADR-0086 decision 1: per-report gate-set completeness --------------------------------
+
+
+def test_evidence_split_across_individually_incomplete_reports_is_refused() -> None:
+    """Three reports that **together** cover every stage (so the older, aggregate
+    ``STAGE_NOT_EVALUATED`` / ``SEALED_OOS_NOT_EVALUATED`` checks of ``_check_reports`` see nothing
+    wrong) are still refused: ADR-0086 decision 1 checks gate-set completeness **per report**, and
+    none of these three is complete on its own."""
+    base = toy_evidence()
+    spec = base.spec
+    experiment = toy_experiment(spec)
+    reports = (
+        toy_report(spec, experiment, "TEST-ONLY-a", ("G0", "G1", "G2")),
+        toy_report(spec, experiment, "TEST-ONLY-b", ("G3", "G4")),
+        toy_report(spec, experiment, "TEST-ONLY-c", ("G5",)),
+    )
+    evidence = replace(base, reports=reports, experiments=(experiment,))
+    refused = _refusal(evidence)
+    assert refused.reason is R.REPORT_GATE_SET_INCOMPLETE
+    assert refused.reason.value == "report_gate_set_incomplete"
+    assert "TEST-ONLY-a" in refused.detail
+
+
+def test_a_standalone_sealed_oos_report_is_still_gate_set_complete() -> None:
+    """The G5-only sealed-OOS report of ``toy_evidence`` (the shape ``research/loop`` actually
+    produces) is not held to "in-sample stages + G5": it is already complete on its own
+    (``research.validation.gate_set`` module docs). This is the happy path's own sealed-OOS
+    report, asserted directly so a regression here is caught independently of the happy-path test."""
+    _build(toy_evidence())  # does not raise
+
+
+def test_the_gate_set_check_comes_after_the_threshold_check() -> None:
+    """A report that is both threshold-mismatched and (on its own) gate-set incomplete is refused
+    for the threshold reason first (module docs of ``research.validation.verification`` /
+    ``research.promotion.service``): a second, ``G4``-only report keeps the old aggregate stage
+    check (``_check_reports``) satisfied, so the run reaches the per-report check this test is
+    about."""
+    evidence = toy_evidence()
+    (profile,) = evidence.profiles
+    limit = threshold(profile, "cost_stress.min_breakeven_cost_multiple")
+    mismatched = GateResult(
+        gate_id="G2.breakeven_cost_multiple",
+        metric="breakeven_cost_multiple[>=]",
+        value=limit.value + 10.0,
+        threshold=limit.value + 0.5,
+        threshold_source=limit.source,
+        verdict=Verdict.PASS,
+    )
+    partial = toy_report(  # missing G4: gate-set incomplete on its own
+        evidence.spec, evidence.experiments[0], "TEST-ONLY-partial", ("G0", "G1", "G2", "G3")
+    )
+    payload = partial.model_dump()
+    payload["gates"] = [*payload["gates"], mismatched.model_dump()]
+    tampered = ValidationReport.model_validate(payload)
+    g4_only = toy_report(  # keeps the old aggregate stage check satisfied
+        evidence.spec, evidence.experiments[0], "TEST-ONLY-g4", ("G4",)
+    )
+    refused = _refusal(replace(evidence, reports=(tampered, g4_only, evidence.reports[1])))
+    assert refused.reason is R.REPORT_THRESHOLD_MISMATCH

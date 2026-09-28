@@ -9,6 +9,7 @@ Status: **CODE_COMPLETE / DEBUG_PENDING** (2026-09-26). No contract, Schema or l
 | `blobs.py` | `BlobStore`: write-once, SHA-256-named canonical-JSON blobs (`registry-blob:sha256:<hex>`) |
 | `golden.py` | The golden payload encoding shared by the packer (`research.promotion`) and the Equivalence Gate (`apps.promotion`) |
 | `profile_freeze.py` | `ProfileFreezeRegistry(root, anchor=...)` (ADR-0062, Proposed; B56): the append-only record that a **named** approver approved freezing one exact Validation Profile (ref + content hash) on one calibration report (original bytes stored write-once, kind / self-hash / `provenance.calibration_report` verified); the external anchor is **mandatory**; Promotion's authoritative freeze source |
+| `retirement.py` | `RetirementRegistry(root, anchor=None)` (ADR-0086 决策 2): the append-only store for `core.domain.research.RetirementRecord` (RETIRED, distinct from Failure Registry's REJECTED / FAILED); same subject (`Ref.target_identity()`) retired twice → `DuplicateRecord`; anchor **optional**; no global singleton — the caller (e.g. `research.evolution.operators.retire`'s caller) opens the registry and calls `register_retirement` explicitly |
 
 ## Rules (fail closed)
 
@@ -44,3 +45,21 @@ Keep `root` outside Git (tests use `tmp_path`).
   anchor back together with the registry is still undetectable.
 
 Tests: `tests/promotion/test_strategy_registry.py`, `tests/promotion/test_profile_freeze_registry.py`.
+
+## Retirement registry (ADR-0086 决策 2)
+
+- Separate directory (`retirements.jsonl`, `.lock`); anchor **optional** (outside `root`), unlike the Profile
+  freeze registry — without it, dropped trailing records are undetectable, but the hash chain still catches
+  tampering and a crash mid-write on every open.
+- One record type `retirement.recorded` with exact keys (`format_version` 1.0.0, `record` = the
+  `RetirementRecord`'s own JSON, `record_id` = its content hash); same rules on append and replay; "same object"
+  (i.e. same `subject_ref.target_identity()`) retired twice → `DuplicateRecord`, nothing written; on open any
+  broken rule → `RegistryCorrupted`. No edit, delete or un-retire operation.
+- `RetirementRecord` is `core.domain.research.RetirementRecord`; `research.evolution.operators.retire` only
+  constructs it — this registry is what a caller explicitly opens and writes it to (no global singleton).
+- Reuses `infrastructure.event_bus.journal.AppendOnlyJournal`, not `research.persistence.journal` (ADR-0086
+  决策 2 names the latter, but `infrastructure/` must not import `research/` —
+  `tests/test_architecture_boundaries.py::test_plugins_and_infrastructure_do_not_import_research`; see
+  `retirement.py`'s module docstring for the full placement note).
+
+Tests: `tests/infrastructure/registry/test_retirement.py`.

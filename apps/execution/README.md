@@ -1,12 +1,14 @@
 # apps/execution
 
-独立执行服务（roadmap Phase 13），**仅模拟**。见 [ADR-0046](../../docs/adr/0046-simulated-execution-service.md)。
+独立执行服务（roadmap Phase 13），**仅模拟**。见 [ADR-0046](../../docs/adr/0046-simulated-execution-service.md)
+与 [ADR-0084](../../docs/adr/0084-live-interface-reservation.md)（实盘接口预留，默认关闭）。
 
 > FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
 
 ## 红线
 
-- 没有真实场所、没有凭据、没有网络 I/O；唯一场所是进程内 `SimulatedVenue`。
+- 没有真实场所、没有凭据、没有网络 I/O；唯一场所是进程内 `SimulatedVenue`。ADR-0084 预留的
+  `LiveVenuePort` 只是声明的接口，唯一实现 `UnconfiguredLiveVenue` 一律拒绝。
 - `ExecutionMode.LIVE` 被拒绝；阶梯中 PAPER 之后的各级需要 `AuthorizationRecord`，且在本构建中总是被拒绝并记录。
 - 风险数值（资金、敞口、杠杆、亏损、回撤阈值、费率）全部由操作者注入，没有默认值。
 - 不 import `research/`、`infrastructure/` 或任何网络库（`tests/test_architecture_boundaries.py`）。
@@ -15,8 +17,9 @@
 
 | 模块 | 内容 |
 |---|---|
-| `records.py` | 不可变、内容寻址的记录：`TargetPositions`、`OrderRecord`、`FillRecord`、`RejectionRecord`、`KillSwitchTrip`、`Alert`、`LadderGateRecord` |
+| `records.py` | 不可变、内容寻址的记录：`TargetPositions`、`OrderRecord`、`FillRecord`、`RejectionRecord`、`KillSwitchTrip`、`Alert`、`LadderGateRecord`、`LiveAccessAttempt` |
 | `venue.py` | `SimulatedVenue`（确定性全额成交）、`CostModel` / `LinearCostModel` |
+| `live_venue.py` | `LiveVenuePort` / `CredentialProvider`（Protocol，仅声明）、`UnconfiguredLiveVenue`、`LiveVenueRegistry`、`LIVE_TRADING_ENABLED`（见下文"实盘接口预留"） |
 | `service.py` | `ExecutionService`（准入 `DeploymentRecord`、目标仓位 → 订单、发布事件）、`TargetPositionSource`（Phase 5 接入点） |
 | `strategy_source.py` | `StrategyProviderTargetSource`：把 `core.contracts.strategy.StrategyProvider`（可选 `RiskProvider`）+ 信号源包成 `TargetPositionSource`（Phase 5 → Phase 13 接线适配器，见下） |
 | `kill_switch.py` / `drill.py` | `KillSwitch`（无 reset）与 `run_kill_switch_drill` |
@@ -24,6 +27,8 @@
 | `monitor.py` | `Monitor`：PnL、持仓、回撤、风险越限告警与 alert hook |
 | `ladder.py` | `ExecutionLadder`：SIMULATED → PAPER（记录的门）；live 级一律拒绝 |
 | `audit.py` / `book.py` | 只追加审计轨迹；按成交的平均成本仓位簿 |
+
+`SecondLineRisk.mark(prices)` 会先验证整批价格，再更新风险仓位簿；任一价格无效时整批拒绝且不留下部分标记。
 
 ## 接入 Phase 5
 
@@ -72,3 +77,20 @@
 
 测试：`tests/apps/test_execution_risk_replay.py`、`tests/apps/test_execution_marks_required.py`。仍只模拟；目前没有组件默认开启 `record_marks`。
 
+## 实盘接口预留（默认关闭，2026-09-28，ADR-0084）
+
+`live_venue.py` 只**声明**未来实盘所需的端口，不实现、不联网、不读凭据：
+
+| 名称 | 内容 |
+|---|---|
+| `LiveVenuePort`（Protocol） | 下单 / 撤单 / 查询持仓 / 查询成交 / 心跳；签名与 `venue.SimulatedVenue` 对齐 |
+| `CredentialProvider`（Protocol） | 只定义接口（`identity` / `is_available`）；本构建从不实现、从不调用、不读任何环境变量 / 文件 / 密钥（H9） |
+| `UnconfiguredLiveVenue` | 唯一实现；每个方法先记一条 `LiveAccessAttempt` 审计，再抛 `LiveExecutionRefused` |
+| `LiveVenueRegistry` | 只能登记实现了 `LiveVenuePort` 的类（`issubclass` 结构检查，否则 `TypeError`）；`"unconfigured"` 默认指向 `UnconfiguredLiveVenue`；`build()` 要求 `AuthorizationRecord` 有效、`RiskGateRecord` 通过、`KillSwitch` 未触发，**且**模块常量 `LIVE_TRADING_ENABLED`（本构建固定 `False`，不接受参数、不读配置 / 环境变量覆盖）为真；四者任一不满足即 `LiveExecutionRefused` |
+
+`ExecutionLadder.request_live` 的拒绝行为不变（PAPER 之后一律拒绝并记录，见上文"组成"表），拒绝信息现在同时引用 ADR-0046 与 ADR-0084。
+
+红线不变：没有真实交易所适配器、没有网络依赖、不读写密钥、不下单、不连实盘（H9、H10）。放开
+`LIVE_TRADING_ENABLED` 需要 Raphael 的明确授权与新的构建 + 新 ADR。
+
+测试：`tests/apps/test_execution_live_venue.py`。

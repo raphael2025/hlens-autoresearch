@@ -27,6 +27,7 @@
 | `event_bus/` | ADR-0044（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`EventBusAdapter` 的两个实现，通过同一 provider-agnostic suite。`InMemoryEventBus`（进程内）；`FileEventBus(root)`（ADR-0044 Implementation note, file-backed bus, 2026-09-26）——每主题一个哈希链只追加日志（`journal.py`：与 `research.persistence` / `apps/worker/journal.py` 同一磁盘契约的独立实现，因为 infrastructure 不得 import research 或 apps），每个（消费者，主题）一份原子替换的状态（已确认 ID 集、低水位 offset、写入时的日志长度与头哈希、`state_hash`）；语义与内存总线完全一致（差分测试；发布端不去重，消费者按 `message_id` 去重），`publish` / `ack` 返回即已 fsync，重开后重放、未确认的消息重投；篡改、断链、半行、尾部被删到消费者见过的长度以下、被编辑的状态、未知文件一律 `BusCorrupted`（fail closed）；`root/.lock` 上的 `fcntl.flock` 保证单写者（`BusLocked`，进程退出即释放；仅 POSIX）。不是 NATS（D-10 不变），不安装任何软件。可选外部锚点 `FileEventBus(root, anchor=<目录外路径>)`（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：每次 `publish` 后把该主题的长度与头哈希追加进目录外的哈希链锚点文件；重开时每个被锚定的主题都须至少有该长度且该位置的哈希一致、日志不得消失，否则 `BusCorrupted`——任何主题（包括无人确认的主题）的尾部整行删除都可发现；日志比锚点多一条是唯一合法的崩溃窗口，重开时补锚；锚点本身与日志一起被尾删仍不可发现（须放在目录写入者不能回滚的存储上）；测试 `tests/infrastructure/event_bus/test_file_event_bus_anchor.py` |
 | `registry/` | ADR-0005 Promotion 链（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）：只追加、哈希链、文件型 Strategy Registry（artifact / equivalence check / deployment 三类记录，写入与重开同一套核对；金标准数据为按哈希命名的只写一次 blob；可选目录外 `anchor=`）；只依赖 `core`，研究与生产两侧都可用而互不 import。见 [registry/README.md](registry/README.md) |
 | `tools/` | Phase 1 G3-T/G3-C：`capacity_probe.py`——只 import 生产模块的运维容量探针，在临时 SQLite catalog + 本地 warehouse 上合成数据跑归档/REST/E1/F1/E3 四段基线，`--rest`/`--dataset`/`--feature` 三个可选阶段串起 D3D～D3E、E2、F2/F3、F4；量的是执行耗时与内存峰值，不是正确性证据；不 import `tests/`。D-NET：`dnet_capability_run.py`——在**真实** catalog（`.env.catalog`）上逐步（每步一个进程）跑 D0 真实归档采集 → D2 → E1 → E3 → F1（保守 / 绑定 ADR-0032 各一次）→ F2/F3 只读尝试，只处理 `klines_1m`、只访问归档 base、不调用任何 REST；结果写入调用方给定的 `--state-dir`（放在被忽略的 `data/` 下）；记录见 `docs/reviews/2026-09-26-dnet-real-data-capability.md` |
+| `plugins/` | ADR-0087（2026-09-28，CODE_COMPLETE / DEBUG_PENDING）：插件 Manifest（`manifest.py`，严格解析、契约 major 兼容）与 entry-point 发现（`discovery.py`，`hlens.plugins.<kind>`，任一插件失败整组 fail closed，只返回结果不自动登记）；`builtin/` 为 20 个既有内置 Provider 的静态 Manifest（字面值，不 import `plugins/`；一致性由测试比对）。entry points 在 `pyproject.toml` 声明，重新安装后生效 |
 | `plugins/features/`（不在本目录下，见 `plugins/README.md`） | Phase 1 F4（ADR-0030）唯一现有插件：`feature/` 契约的三个首批 `FeatureProvider` 实现（`BarLogReturnProvider` 等），只依赖 `core`，在此列出便于按 Phase 1 批次索引 |
 
 ## LocalFileStorageAdapter（C1 / C1-R1 / C1-R2 / C1-R3）
@@ -118,7 +119,7 @@ PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要�
 
 ## Binance 归档 parser（D1）
 
-- 入口：`infrastructure.parser.parse_archive(request, storage)`（经 `StorageAdapter.open_read` 读取后按字节重算 SHA-256 / 长度，解析的正是被哈希的字节）与 `parse_archive_bytes(request, data)`；`ArchiveParseRequest.for_collected_object(collected, data_type=…, archive_revision_id=…)` 由 D0 `CollectedObject` 机械构造。
+- 入口：`infrastructure.parser.parse_archive(request, storage)`（从 `StorageAdapter.open_read` 以固定块复制到可寻址临时文件，同步重算 SHA-256 / 长度，校验通过后解析的正是该 spool）与 `parse_archive_bytes(request, data)`；后者保留调用方已物化的 bytes 接口。临时文件使用系统默认临时目录，可能位于 tmpfs；spool I/O 错误转为可重试的 `StorageError`。这减少 Python 全量输入副本，不构成完整进程工作集的硬内存上界。`ArchiveParseRequest.for_collected_object(collected, data_type=…, archive_revision_id=…)` 由 D0 `CollectedObject` 机械构造。
 - 版本登记：`PARSER_BINDING` = `PolicyBinding(role=parser, binance.spot.archive.parser, 1.0.0, policy_hash)`；`policy_hash` 是 `PARSER_SPEC`（单位规则、覆盖零容差、列布局、字段文法、CSV / ZIP 规则、资源上限）规范 JSON 的 SHA-256，golden 值在 `tests/infrastructure/parser/test_binance_archive_parser.py`。任何规则或上限变化 = 新 parser 版本。
 - 支持范围：`BTCUSDT` / `ETHUSDT` × `agg_trades` / `klines_1m` × 一个 UTC 整日；超出范围的请求抛 `UnsupportedArchiveRequest`（调用方错误，不是质量事件）。
 - 时间单位只由数据类型 + 覆盖日决定：早于 `2025-01-01T00:00:00Z` 毫秒，自该日起微秒；aggTrades 时间与 kline 开盘时间必须在 `[coverage_start, coverage_end)` 内（零容差）；kline 开盘对齐整分钟，收盘 = 开盘 + 1 分钟 − 1 tick。
@@ -221,13 +222,13 @@ batch id：archive 为 `<revision_id>.archive.<base>`（重试换 base 即换 id
 
 - 本批只写 Raw；**不**做 Canonical、不做通用 PIT 查询、不建质量 taxonomy、不持久化质量报告与 manifest。
 - 每表单 writer（ADR-0023 §7）；并发只由父 snapshot 乐观冲突 + 有界重试兜底。
-- `PyIcebergCatalogAdapter.scan_columns` / `max_int64` 都是 infrastructure-only 的有界读取，**不在** `core` 的
+- `PyIcebergCatalogAdapter.scan_columns` / `max_int64` 都是 infrastructure-only 的读取，**不在** `core` 的
   `CatalogAdapter` Protocol 里（通用读取接口由批次 F 的首个消费者定义）。
-- 序号 anchor 的读取是**流式归约**，不是整表物化：`max_int64` 用 PyIceberg 的 `to_arrow_batch_reader`
-  逐个有界 record batch 折叠出最大值，跨 batch 只保留一个 Python int，因此归档历史再长也不会被拼成一个
-  `pa.Table`（旧实现走 `scan_columns(...).to_arrow()`，会整列物化；回归测试见下）。
+- 序号 anchor 的读取是**流式归约**，不是整表物化：`max_int64` 复用 ADR-0075 固定快照的
+  `scan_column_batches`，逐个 record batch 折叠出最大值，跨 batch 只保留一个 Python int；bounded scanner
+  不使用高层 manifest / task planner，也不会将归档历史拼成一个 `pa.Table`。
   **仍然存在的成本**：每次分配都要打开全部匹配的数据文件并读取该投影列，所以 I/O 随归档文件数线性增长；
-  真正收窄（清单级 min/max 剪枝或独立 anchor）仍是 E/F 的工作。
+  仍须计量 Avro manifest bytes、Iceberg metadata 与 Arrow row group / ORC stripe；完整 E1-CAP-1 尚未通过。
 - 行级契约构造是每行一次 Pydantic 校验：正确但不便宜；大体量 BTC 日归档的吞吐 / 内存基线仍是批量 backfill 前的前置工作。
 
 ## REST 纯规则（D3B）

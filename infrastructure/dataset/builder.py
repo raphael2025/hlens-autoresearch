@@ -46,10 +46,11 @@ exclusion, lineage entry, report id, evidence gap and the rows the snapshot comm
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Final
+from typing import Any, Final, Protocol
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import And, EqualTo
@@ -66,14 +67,26 @@ from core.contracts.catalog import (
 from core.contracts.revision import PointInTimeSelection, PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
 from core.contracts.universe import (
+    DATASET_EVIDENCE_FORMAT,
     AvailabilityEvidenceGap,
+    DatasetChunkProof,
+    DatasetQualityReportRef,
+    DatasetQualitySubject,
+    DatasetRuleBinding,
+    EvidenceStream,
+    EvidenceStreamRef,
+    ResearchDatasetEvidenceManifest,
     ResearchDatasetManifest,
     SelectedRevisionLineage,
+    UniverseExclusion,
+    UniverseMember,
     UniverseSelectionSpec,
     UniverseSpecBinding,
+    dataset_chunk_batch_id,
 )
 from core.domain.base import (
     CONTRACT_SCHEMA_VERSION,
+    Contract,
     canonical_json,
     contract_schema_version_scope,
 )
@@ -91,13 +104,20 @@ from infrastructure.catalog.phase1_tables import (
     DATASET_MANIFESTS,
     QUALITY_EVIDENCE_GAPS,
 )
+from infrastructure.dataset import evidence as _evidence
+from infrastructure.dataset.evidence import (
+    EVIDENCE_PROJECTION,
+    EvidenceLimitError,
+    EvidenceTreeLimits,
+    EvidenceTreeWriter,
+)
 from infrastructure.dataset.manifests import ManifestPersisted, ManifestStore
 from infrastructure.dataset.selection import SELECTION_NAMESPACE, SELECTION_SCHEMA
 from infrastructure.parser.binance_archive import PARSER_BINDING as ARCHIVE_PARSER_BINDING
 from infrastructure.parser.binance_exchange_info import EXCHANGE_INFO_DECODER_BINDING
 from infrastructure.parser.binance_rest import DECODER_BINDING as REST_DECODER_BINDING
 from infrastructure.pit.assumption import ASSUMPTION_BINDING
-from infrastructure.pit.selector import PIT_BINDING, PitSelection, PitSelector
+from infrastructure.pit.selector import PIT_BINDING, PitConflictError, PitSelection, PitSelector
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.quality.listing_report import ListingQualityReporter
 from infrastructure.quality.reporter import QualityReporter, evidence_gaps_of
@@ -109,21 +129,47 @@ from infrastructure.revision.rest_availability import REST_AVAILABILITY_BINDING
 from infrastructure.revision.rest_precedence import REST_PRECEDENCE_BINDING
 from infrastructure.revision.row_integrity import snapshots_of_batches
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
-from infrastructure.universe.builder import REGISTERED_UNIVERSES, UniverseBuilder, UniverseBuilt
+from infrastructure.universe.builder import (
+    REGISTERED_UNIVERSES,
+    UniverseBuilder,
+    UniverseBuilt,
+    check_listing_bindings,
+)
 
 __all__ = [
+    "DATASET_EVIDENCE_RULE_VERSION",
     "DATASET_RULE_HASH",
     "DATASET_RULE_ID",
     "DATASET_RULE_SPEC",
     "DATASET_RULE_VERSION",
     "KNOWN_BINDINGS",
+    "ChunkCommitted",
     "DatasetBuildError",
+    "DatasetBuildSummary",
     "DatasetBuilder",
     "DatasetBuilt",
+    "DatasetChunkWriter",
+    "DatasetDerivation",
+    "DatasetDerivationSink",
     "DatasetEmpty",
+    "DatasetEvidenceBuilder",
+    "DatasetEvidenceRequest",
+    "DatasetEvidenceRule",
+    "DatasetEvidenceSources",
     "DatasetQualityError",
     "DatasetSelection",
     "DatasetSpecError",
+    "EvidenceManifestStore",
+    "MemberSpan",
+    "PinnedQualityEvidence",
+    "PitKeyEvaluation",
+    "PitKeyGroup",
+    "PitKeySource",
+    "PitSelectedRevision",
+    "QualityEvidenceSource",
+    "UniverseEvidenceSource",
+    "dataset_evidence_rule",
+    "evidence_selection_id",
     "selection_id_for",
     "selection_id_of",
 ]
@@ -898,3 +944,1226 @@ def _row_order(row: Mapping[str, Any]) -> tuple[str, str, datetime, str]:
         row["effective_from"] or _NO_SPAN,
         row["revision_id"],
     )
+
+
+# =========================================================================================
+# v3: bounded evidence datasets (ADR-0077; ``hlens.dataset.pit-selection@2.0.0``)
+# =========================================================================================
+#
+# Everything above is the v2 (legacy, materializing) path and is left exactly as it was. The v3
+# path below never holds a collection that grows with the selected rows or the window:
+#
+# - its inputs are read-only, explicitly closed, ordered iterators behind three Protocols
+#   (``UniverseEvidenceSource`` for B-UNIV, ``PitKeySource`` for B-PIT and
+#   ``QualityEvidenceSource``, implemented here by ``PinnedQualityEvidence``);
+# - one generator (``_EvidenceDerivation``) derives the dataset rows and five of the six evidence
+#   streams in their canonical orders and pushes each item to a ``DatasetDerivationSink``;
+#   ordering, uniqueness, ownership, lineage and report bindings are checked on adjacent items;
+# - ``DatasetEvidenceBuilder.select`` runs it against any sink (the streaming verifier, B4,
+#   compares against ``iter_evidence`` / ``iter_rows``); ``build`` runs it against a sink that
+#   writes evidence trees and hands fixed-size chunks to a ``DatasetChunkWriter`` (B3), then
+#   persists the fixed-size ``ResearchDatasetEvidenceManifest`` through an
+#   ``EvidenceManifestStore`` (B4) and returns a fixed-size ``DatasetBuildSummary``.
+#
+# Held state: one key group's revision ids (DQ-5 / §2 "dedupe inside the key group"), one
+# symbol's member spans (bounded by its membership changes in the window, as B-UNIV's instants),
+# one chunk of rows (``chunk_rows``), one leaf and a ``depth x fanout`` index stack per stream,
+# one cached report id and the adjacent-item comparison state.
+
+DATASET_EVIDENCE_RULE_VERSION: Final = "2.0.0"
+#: The evidence streams the generator derives; ``chunk_proofs`` come from the chunk commits.
+_DERIVED_STREAMS: Final = tuple(
+    stream for stream in EvidenceStream if stream is not EvidenceStream.CHUNK_PROOFS
+)
+
+#: A member span of one venue symbol: ``(None, None)`` for a point simulation.
+MemberSpan = tuple[datetime | None, datetime | None]
+
+
+def _evidence_rule_spec(chunk_rows: int, limits: EvidenceTreeLimits) -> dict[str, Any]:
+    return {
+        "rule": DATASET_RULE_ID,
+        "version": DATASET_EVIDENCE_RULE_VERSION,
+        "adr": [
+            "ADR-0023 §5 / §6",
+            "ADR-0024 §4 / §6",
+            "ADR-0027 §13",
+            "ADR-0028 §7",
+            "ADR-0077",
+        ],
+        "inputs": "UniverseSelectionSpec, PointInTimeSpec, data_type, "
+        "UTC event window [start, end)",
+        "bindings": "every policy / parser binding registered with its exact hash; Canonical, "
+        "listing and quality tables bound; the Raw evidence and evidence-gap tables bound whenever "
+        "they have a snapshot (a persisted manifest of this selection exempts its replay)",
+        "universe": "ordered member / exclusion entries and listing lineage at the bound "
+        "snapshots; unconstructible = no dataset",
+        "slices": {"agg_trades": "UTC hour", "klines_1m": "UTC day"},
+        "selection": "hlens.pit.maximal-head@1.0.0 per member symbol and slice; a key is owned by "
+        "the slice holding its chain's earliest event (DQ-5); keys strictly increasing per slice; "
+        "any conflict fails the dataset closed",
+        "membership": "a selected revision enters for the simulation span where it is selected and "
+        "its symbol is a member",
+        "quality": "the listing history and each covered partition (member symbol x UTC day of the "
+        "window or of a retained revision's event, days non-decreasing per symbol) have a "
+        "committed report at exactly the bound snapshots (re-derived); every bound evidence gap "
+        "is recorded, with the same text, in the report of its partition",
+        "rows": "one per (key, selected revision, span): selection_id, canonical_table, symbol, "
+        "observation_key, revision_id, event_time, effective_from, effective_until, chunk_index, "
+        "row_ordinal",
+        "row_order": "(member symbol, slice, observation_key, effective_from, revision_id); "
+        "row_ordinal from 0, contiguous; chunk_index = row_ordinal // chunk_rows",
+        "chunks": {
+            "chunk_rows": chunk_rows,
+            "batch_id": "<selection_id>.chunk-<chunk_index, 10 digits zero-padded>",
+            "last": "may hold fewer than chunk_rows rows",
+        },
+        "evidence": {
+            "format": DATASET_EVIDENCE_FORMAT,
+            "projection": EVIDENCE_PROJECTION,
+            "leaf_max_records": limits.leaf_max_records,
+            "leaf_max_bytes": limits.leaf_max_bytes,
+            "leaf_bytes": "sum of a leaf's record line bytes, header excluded",
+            "fanout": limits.fanout,
+            "streams": {
+                "members": "(episode.observation_key(), effective_from)",
+                "exclusions": "(episode.observation_key(), effective_from)",
+                "lineage": "listing lineage by canonical_revision_id, then data lineage by the "
+                "row_ordinal of the revision's first row",
+                "evidence_gaps": "listing gaps by revision_id, then data gaps by the row_ordinal "
+                "of the revision's first row",
+                "quality_reports": "listing, then (venue symbol, UTC day) strictly increasing",
+                "chunk_proofs": "chunk_index from 0, contiguous",
+            },
+        },
+        "empty": "refused",
+        "selection_id": "<rule>@<version>.<sha256 of rule hash, PIT spec hash, universe binding, "
+        "data_type, window>",
+    }
+
+
+def _rule_hash(chunk_rows: int, limits: EvidenceTreeLimits) -> str:
+    spec = _evidence_rule_spec(chunk_rows, limits)
+    return hashlib.sha256(canonical_json(spec).encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetEvidenceRule:
+    """``hlens.dataset.pit-selection@2.0.0`` with its four resource parameters (ADR-0077 §3.6).
+
+    The parameters are part of the rule spec and so of ``rule_hash``: another value is another
+    rule. No value is chosen here (DQ-9 OPEN): build one with ``dataset_evidence_rule``.
+    """
+
+    chunk_rows: int
+    limits: EvidenceTreeLimits
+    rule_hash: str
+
+    def __post_init__(self) -> None:
+        if (
+            isinstance(self.chunk_rows, bool)
+            or not isinstance(self.chunk_rows, int)
+            or self.chunk_rows < 1
+        ):
+            raise DatasetSpecError(f"chunk_rows must be an integer >= 1, got {self.chunk_rows!r}")
+        if not isinstance(self.limits, EvidenceTreeLimits):
+            raise DatasetSpecError("limits must be EvidenceTreeLimits")
+        if self.rule_hash != _rule_hash(self.chunk_rows, self.limits):
+            raise DatasetSpecError("rule_hash is not the hash of this rule's spec")
+
+    @property
+    def spec(self) -> dict[str, Any]:
+        return _evidence_rule_spec(self.chunk_rows, self.limits)
+
+    def binding(self) -> DatasetRuleBinding:
+        return DatasetRuleBinding(
+            rule_id=DATASET_RULE_ID, version=DATASET_EVIDENCE_RULE_VERSION, rule_hash=self.rule_hash
+        )
+
+    def binds(self, binding: DatasetRuleBinding) -> bool:
+        """Whether ``binding`` names exactly this rule (id, version and hash)."""
+        return (binding.rule_id, binding.version, binding.rule_hash) == (
+            DATASET_RULE_ID,
+            DATASET_EVIDENCE_RULE_VERSION,
+            self.rule_hash,
+        )
+
+
+def dataset_evidence_rule(
+    *, chunk_rows: int, leaf_max_records: int, leaf_max_bytes: int, fanout: int
+) -> DatasetEvidenceRule:
+    """The v3 dataset rule for these parameters; every one is required (DQ-9: no defaults)."""
+    try:
+        limits = EvidenceTreeLimits(
+            leaf_max_records=leaf_max_records, leaf_max_bytes=leaf_max_bytes, fanout=fanout
+        )
+    except EvidenceLimitError as exc:
+        raise DatasetSpecError(str(exc)) from exc
+    if isinstance(chunk_rows, bool) or not isinstance(chunk_rows, int) or chunk_rows < 1:
+        raise DatasetSpecError(f"chunk_rows must be an integer >= 1, got {chunk_rows!r}")
+    return DatasetEvidenceRule(chunk_rows, limits, _rule_hash(chunk_rows, limits))
+
+
+def evidence_selection_id(
+    rule: DatasetEvidenceRule,
+    universe: UniverseSpecBinding,
+    pit: PointInTimeSpec,
+    data_type: str,
+    start: datetime,
+    end: datetime,
+) -> str:
+    """The v3 ``selection_id``: what a v3 manifest alone recomputes (rule, PIT, universe, window).
+
+    Another rule (version or parameters) is another id, so v2 and v3 selections never mix.
+    """
+    document = {
+        "rule": rule.rule_hash,
+        "point_in_time": pit.content_hash(),
+        "universe": universe.model_dump(mode="json"),
+        "data_type": data_type,
+        "start": start.isoformat(),
+        "end": end.isoformat(),
+    }
+    digest = hashlib.sha256(canonical_json(document).encode("utf-8")).hexdigest()
+    return f"{DATASET_RULE_ID}@{DATASET_EVIDENCE_RULE_VERSION}.{digest}"
+
+
+# ------------------------------------------------------------------ inputs (read-only, ordered)
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetEvidenceRequest:
+    """What a v3 dataset is derived from (the same inputs as v2, bundled)."""
+
+    universe: UniverseSelectionSpec
+    pit: PointInTimeSpec
+    data_type: str
+    start: datetime
+    end: datetime
+
+
+class UniverseEvidenceSource(Protocol):
+    """The universe of one ``(spec, pit)`` as ordered cursors (B-UNIV, ADR-0077 §6.1.1).
+
+    Structurally ``infrastructure.universe.builder.UniverseSpanCursor`` (from
+    ``UniverseBuilder.cursor(request.universe, request.pit)``; the caller builds it for the same
+    request). Every method opens an independent, explicitly closed pass; the builder opens
+    ``members`` + ``exclusions`` together, then ``listing_lineage`` + ``evidence_gaps`` together,
+    then ``member_spans`` once. Required orders (checked here, fail closed otherwise):
+
+    - ``members`` / ``exclusions``: each by ``(episode.observation_key(), effective_from)``
+      (ADR-0077 §2; the cursor's generation order must coincide with it);
+    - ``listing_lineage``: each cited ``canonical.instrument_listings`` revision once, by
+      ``canonical_revision_id`` (ADR-0077 §2);
+    - ``evidence_gaps``: ``(listing revision id, gap)`` of the gap-bearing ones, in the same order
+      as ``listing_lineage``;
+    - ``member_spans``: ``(venue symbol, effective_from, effective_until)`` of every member span,
+      by venue symbol then start (point: ``(symbol, None, None)``).
+    """
+
+    def members(self) -> AbstractContextManager[Iterator[UniverseMember]]: ...
+
+    def exclusions(self) -> AbstractContextManager[Iterator[UniverseExclusion]]: ...
+
+    def listing_lineage(self) -> AbstractContextManager[Iterator[SelectedRevisionLineage]]: ...
+
+    def member_spans(
+        self,
+    ) -> AbstractContextManager[Iterator[tuple[str, datetime | None, datetime | None]]]: ...
+
+    def evidence_gaps(self) -> AbstractContextManager[Iterator[tuple[str, str]]]: ...
+
+
+@dataclass(frozen=True, slots=True)
+class PitSelectedRevision:
+    """The selected revision of one evaluation, with what a dataset row and its lineage need."""
+
+    revision_id: str
+    #: The proven Canonical row's time column (``event_time`` / ``interval_start``), UTC.
+    event_time: datetime
+    lineage: SelectedRevisionLineage
+    #: The row's ``availability_evidence_gap`` (None = evidence given).
+    evidence_gap: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class PitKeyEvaluation:
+    """One ``PointInTimeSelection`` of a key, reduced to what the dataset consumes."""
+
+    simulation_time: datetime
+    status: PointInTimeStatus
+    selected: PitSelectedRevision | None
+
+
+@dataclass(frozen=True, slots=True)
+class PitKeyGroup:
+    """One observation key owned by the slice, with its evaluations.
+
+    ``owner_event_time`` is the earliest event of the key's revision chain — the witness of the
+    slice ownership rule (``PIT_SPEC["window"]``, DQ-5): it must lie in the slice. ``evaluations``
+    is consumed once, in strictly increasing ``simulation_time`` (point: exactly one, at the
+    simulation time; interval: the first at the interval start).
+    """
+
+    observation_key: str
+    owner_event_time: datetime
+    evaluations: Iterable[PitKeyEvaluation]
+
+
+class PitKeySource(Protocol):
+    """PIT selection of one (symbol, slice) as an ordered cursor (B-PIT, ADR-0077 §6.1.2).
+
+    Yields only the keys the slice owns, in strictly increasing ``observation_key``, each once,
+    releasing a key's state before the next; bindings are checked as by ``PitSelector.select``.
+    """
+
+    def keys(
+        self,
+        pit: PointInTimeSpec,
+        data_type: str,
+        venue_symbol: str,
+        start: datetime,
+        end: datetime,
+    ) -> AbstractContextManager[Iterator[PitKeyGroup]]: ...
+
+
+class QualityEvidenceSource(Protocol):
+    """Committed quality reports re-derived at the bound snapshots (``existing_only``)."""
+
+    def listing_report(self) -> str:
+        """The listing-history report id (``QualityReportMissing`` if not committed)."""
+        ...
+
+    def partition_report(self, venue_symbol: str, day: date) -> str:
+        """The (symbol, UTC day) report id of the dataset's data type."""
+        ...
+
+    def recorded_gap(self, report_id: str, table: str, revision_id: str) -> str | None:
+        """The gap text ``report_id`` records for ``(table, revision_id)``, else ``None``."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetEvidenceSources:
+    universe: UniverseEvidenceSource
+    pit: PitKeySource
+    quality: QualityEvidenceSource
+
+
+class PinnedQualityEvidence:
+    """``QualityEvidenceSource`` over a ``PinnedCatalogView`` of the PIT spec (as v2 reads it).
+
+    OPEN (ADR-0077 §6.1.5): ``evidence_gaps_of`` returns one report's gaps as a list; this class
+    holds the gaps of **one** report at a time. Whether that is bounded by a contract-level fixed
+    size, or must become a row-wise stream, is not proven here.
+    """
+
+    def __init__(
+        self,
+        adapter: RevisionCatalog,
+        storage: StorageAdapter,
+        pit: PointInTimeSpec,
+        data_type: str,
+        *,
+        market_data_base_url: str,
+    ) -> None:
+        self._view = PinnedCatalogView(adapter, pit.snapshot_bindings)
+        self._storage = storage
+        self._data_type = data_type
+        self._origin = market_data_base_url
+        self._reporter = QualityReporter(self._view, storage)
+        self._gaps_of: str | None = None
+        self._gaps: dict[tuple[str, str], str] = {}
+
+    def listing_report(self) -> str:
+        return (
+            ListingQualityReporter(self._view, self._storage, market_data_base_url=self._origin)
+            .report(existing_only=True)
+            .report_id
+        )
+
+    def partition_report(self, venue_symbol: str, day: date) -> str:
+        return self._reporter.report(
+            self._data_type, venue_symbol, day, existing_only=True
+        ).report_id
+
+    def recorded_gap(self, report_id: str, table: str, revision_id: str) -> str | None:
+        if self._gaps_of != report_id:
+            self._gaps = {
+                (item["table"], item["revision_id"]): item["gap"]
+                for item in evidence_gaps_of(self._view, report_id)
+            }
+            self._gaps_of = report_id
+        return self._gaps.get((table, revision_id))
+
+
+# ------------------------------------------------------------------ outputs
+
+
+class DatasetDerivationSink(Protocol):
+    """Receives the derivation in order: evidence records per stream and rows by ordinal."""
+
+    def evidence(self, stream: EvidenceStream, record: Contract) -> None: ...
+
+    def row(self, row: Mapping[str, Any]) -> None: ...
+
+
+@dataclass(frozen=True, slots=True)
+class ChunkCommitted:
+    proof: DatasetChunkProof
+    replayed: bool
+
+
+class DatasetChunkWriter(Protocol):
+    """Commits one fixed-size chunk of rows (B3, ADR-0077 §4; ``infrastructure/dataset/chunks``).
+
+    ``commit_chunk`` commits (or, if already committed, proves identical) the batch
+    ``dataset_chunk_batch_id(selection_id, chunk_index)`` and reads it back; a chunk committed with
+    other rows, a hole (a later chunk committed before an earlier one is missing) or a duplicate
+    batch is ``CatalogIntegrityError``. ``seal`` proves no chunk ``>= chunk_count`` of the
+    selection exists. ``table`` is the chunk table (the manifest's ``dataset.table``).
+    """
+
+    @property
+    def table(self) -> str: ...
+
+    def commit_chunk(
+        self, selection_id: str, chunk_index: int, rows: Sequence[Mapping[str, Any]]
+    ) -> ChunkCommitted: ...
+
+    def seal(self, selection_id: str, chunk_count: int) -> None: ...
+
+
+class EvidenceManifestStore(Protocol):
+    """The v3 manifest table (B4, ADR-0077 §7 / §8.2; ``infrastructure/dataset/manifests``)."""
+
+    def recorded_version(self, selection_id: str) -> str | None:
+        """The contract version of a persisted manifest of ``selection_id``, else ``None``."""
+        ...
+
+    def persist(self, manifest: ResearchDatasetEvidenceManifest) -> bool:
+        """Verify and persist (content-hash idempotent); ``True`` when it was already there."""
+        ...
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetDerivation:
+    """Fixed-size result of ``select``: the id and how much was derived."""
+
+    selection_id: str
+    row_count: int
+    #: ``(stream, record count)`` of the five derived streams, by stream name.
+    record_counts: tuple[tuple[EvidenceStream, int], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class DatasetBuildSummary:
+    """Fixed-size result of ``build`` (ADR-0077 §5): no rows, lineage or gap tuples."""
+
+    selection_id: str
+    manifest: ResearchDatasetEvidenceManifest
+    manifest_hash: str
+    dataset: DatasetRef
+    row_count: int
+    chunk_count: int
+    replayed_chunk_count: int
+    evidence: tuple[EvidenceStreamRef, ...]
+    manifest_replayed: bool
+
+    @property
+    def replayed(self) -> bool:
+        return self.manifest_replayed and self.replayed_chunk_count == self.chunk_count
+
+
+# ------------------------------------------------------------------ the builder
+
+
+class DatasetEvidenceBuilder:
+    """Builds v3 Research Datasets with a fixed working set; deterministic for fixed inputs."""
+
+    def __init__(
+        self, adapter: RevisionCatalog, storage: StorageAdapter, *, rule: DatasetEvidenceRule
+    ) -> None:
+        if not isinstance(rule, DatasetEvidenceRule):
+            raise DatasetSpecError("rule must be a DatasetEvidenceRule")
+        self._adapter = adapter
+        self._storage = storage
+        self._rule = rule
+
+    @property
+    def rule(self) -> DatasetEvidenceRule:
+        return self._rule
+
+    def selection_id(self, request: DatasetEvidenceRequest) -> str:
+        _check_evidence_request(request, dataset_table=None)
+        return evidence_selection_id(
+            self._rule,
+            request.universe.binding(),
+            request.pit,
+            request.data_type,
+            request.start,
+            request.end,
+        )
+
+    def select(
+        self,
+        request: DatasetEvidenceRequest,
+        *,
+        sources: DatasetEvidenceSources,
+        sink: DatasetDerivationSink,
+        manifested: bool,
+    ) -> DatasetDerivation:
+        """Derive everything but the chunk proofs into ``sink``; nothing is written.
+
+        ``manifested``: whether a persisted manifest binds this selection (a replay, exempt from
+        the unbound-table refusal as in v2). A caller re-deriving a persisted manifest runs this
+        inside ``contract_schema_version_scope(<its recorded version>)``.
+        """
+        canonical = _check_evidence_request(request, dataset_table=None)
+        selection_id = self.selection_id(request)
+        _check_unbound_evidence(self._adapter, request.pit, manifested=manifested)
+        return _EvidenceDerivation(
+            request, canonical, selection_id, self._rule, sources, sink
+        ).run()
+
+    def build(
+        self,
+        request: DatasetEvidenceRequest,
+        *,
+        sources: DatasetEvidenceSources,
+        chunks: DatasetChunkWriter,
+        manifests: EvidenceManifestStore,
+    ) -> DatasetBuildSummary:
+        """Derive, commit the chunks, write the evidence trees, persist the manifest.
+
+        A rerun re-derives from scratch (no cursor is persisted): committed chunks are proven and
+        skipped by ``chunks``, evidence objects are ``already_present``, the manifest is
+        idempotent. A manifest persisted at an earlier contract version is re-derived at that
+        version (ADR-0052 V7); evidence and rows carry no envelope, so their bytes do not move.
+        """
+        canonical = _check_evidence_request(request, dataset_table=chunks.table)
+        selection_id = self.selection_id(request)
+        recorded = manifests.recorded_version(selection_id)
+        _check_unbound_evidence(self._adapter, request.pit, manifested=recorded is not None)
+        scope: AbstractContextManager[object]
+        if recorded is None:
+            version = contract_version.new_group_version()
+            scope = nullcontext()
+        else:
+            version = contract_version.replay_version(
+                recorded, what=f"the evidence manifest of {selection_id}"
+            )
+            scope = contract_schema_version_scope(version)
+        with scope:
+            sink = _EvidenceBuildSink(self._storage, self._rule, selection_id, chunks, version)
+            derived = _EvidenceDerivation(
+                request, canonical, selection_id, self._rule, sources, sink
+            ).run()
+            if derived.row_count == 0:
+                raise DatasetEmpty(
+                    f"{request.data_type} [{request.start.isoformat()}, {request.end.isoformat()})"
+                    " selects nothing for the universe's members: an empty Research Dataset has "
+                    "no snapshot of its own"
+                )
+            streams, chunk_count, replayed_chunks, snapshot_id = sink.finish()
+            chunks.seal(selection_id, chunk_count)
+            manifest = ResearchDatasetEvidenceManifest(
+                dataset=DatasetRef(
+                    zone=Zone.RESEARCH_DATASET,
+                    table=chunks.table,
+                    snapshot_id=snapshot_id,
+                    time_range_start=request.start,
+                    time_range_end=request.end,
+                ),
+                point_in_time=request.pit,
+                universe_spec=request.universe.binding(),
+                rule=self._rule.binding(),
+                data_type=request.data_type,
+                selection_id=selection_id,
+                row_count=derived.row_count,
+                chunk_rows=self._rule.chunk_rows,
+                chunk_count=chunk_count,
+                evidence=streams,
+            )
+        if manifest.schema_version != version:  # pragma: no cover - built in its version scope
+            raise CatalogIntegrityError(f"manifest of {selection_id} built outside its version")
+        manifest_replayed = manifests.persist(manifest)
+        return DatasetBuildSummary(
+            selection_id=selection_id,
+            manifest=manifest,
+            manifest_hash=manifest.content_hash(),
+            dataset=manifest.dataset,
+            row_count=manifest.row_count,
+            chunk_count=manifest.chunk_count,
+            replayed_chunk_count=replayed_chunks,
+            evidence=manifest.evidence,
+            manifest_replayed=manifest_replayed,
+        )
+
+    def iter_evidence(
+        self, manifest: ResearchDatasetEvidenceManifest, stream: EvidenceStream
+    ) -> AbstractContextManager[Iterator[Contract]]:
+        """``evidence.iter_evidence`` with this builder's rule, which ``manifest`` must bind."""
+        if not isinstance(manifest, ResearchDatasetEvidenceManifest):
+            raise DatasetSpecError("manifest must be a ResearchDatasetEvidenceManifest")
+        if not self._rule.binds(manifest.rule) or manifest.chunk_rows != self._rule.chunk_rows:
+            raise CatalogIntegrityError(
+                f"manifest rule {manifest.rule.rule_id}@{manifest.rule.version} is not this "
+                "builder's rule (its parameters would not read its evidence)"
+            )
+        return _evidence.iter_evidence(self._storage, manifest, stream, limits=self._rule.limits)
+
+
+# ------------------------------------------------------------------ request checks
+
+
+def _check_utc(value: object, what: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() != _ZERO:
+        raise DatasetSpecError(f"{what} must be a timezone-aware UTC datetime")
+    return value
+
+
+def _check_evidence_request(request: DatasetEvidenceRequest, *, dataset_table: str | None) -> str:
+    """The v2 request checks for a v3 request; returns the data type's Canonical table."""
+    if not isinstance(request, DatasetEvidenceRequest):
+        raise DatasetSpecError("request must be a DatasetEvidenceRequest")
+    universe, pit = request.universe, request.pit
+    if not isinstance(universe, UniverseSelectionSpec):
+        raise DatasetSpecError("universe must be a UniverseSelectionSpec")
+    registered = REGISTERED_UNIVERSES.get((universe.name, universe.version))
+    if registered is None or registered.content_hash() != universe.content_hash():
+        raise DatasetSpecError(
+            f"universe spec {universe.name}@{universe.version} with this hash is not registered"
+        )
+    if not isinstance(pit, PointInTimeSpec):
+        raise DatasetSpecError("pit must be a PointInTimeSpec")
+    canonical = rules.CANONICAL_TABLES.get(request.data_type)
+    if canonical is None:
+        raise DatasetSpecError(f"unsupported data_type {request.data_type!r}")
+    start = _check_utc(request.start, "start")
+    end = _check_utc(request.end, "end")
+    if not start < end:
+        raise DatasetSpecError("the window must not be empty")
+    if pit.point_in_time_binding != PIT_BINDING:
+        raise DatasetSpecError("the PIT rule must be hlens.pit.maximal-head@1.0.0")
+    for field in ("availability_bindings", "precedence_bindings", "parser_bindings"):
+        for binding in getattr(pit, field):
+            if binding not in KNOWN_BINDINGS:
+                raise DatasetSpecError(
+                    f"{field}: {binding.policy_id}@{binding.version} with this hash is not "
+                    "registered"
+                )
+    bound = pit.snapshot_bindings
+    for table in (canonical.table, _QUALITY):
+        if table not in bound:
+            raise DatasetSpecError(f"the PIT spec does not bind {table}")
+    check_listing_bindings(pit)
+    if dataset_table is not None:
+        if dataset_table.split(".", 1)[0] != SELECTION_NAMESPACE:
+            raise DatasetSpecError(
+                f"the dataset table must be in the {SELECTION_NAMESPACE} namespace"
+            )
+        if dataset_table in bound:
+            raise DatasetSpecError("the dataset's own table must not be an upstream binding")
+    return canonical.table
+
+
+def _head_of(adapter: RevisionCatalog, table: str) -> str | None:
+    info = adapter.load_table(table)
+    if info is None:
+        raise TableNotFound(f"table {table} does not exist")
+    return None if info.current_snapshot is None else info.current_snapshot.snapshot_id
+
+
+def _check_unbound_evidence(
+    adapter: RevisionCatalog, pit: PointInTimeSpec, *, manifested: bool
+) -> None:
+    """v2's ``_check_unbound`` for v3: only a persisted manifest exempts a replay (G2 RT-5)."""
+    if manifested:
+        return
+    for table, adr in _BOUND_IF_PRESENT:
+        if table not in pit.snapshot_bindings and _head_of(adapter, table) is not None:
+            raise DatasetSpecError(
+                f"{table} has a snapshot but the PIT spec does not bind it ({adr})"
+            )
+
+
+# ------------------------------------------------------------------ the generator
+
+
+def _iter_slices(
+    data_type: str, start: datetime, end: datetime
+) -> Iterator[tuple[datetime, datetime]]:
+    """``_slices`` as a generator (the window is never listed)."""
+    step = _SLICES[data_type]
+    midnight = datetime.combine(start.astimezone(UTC).date(), time(), tzinfo=UTC)
+    low = start
+    while low < end:
+        high = min(midnight + ((low - midnight) // step + 1) * step, end)
+        yield low, high
+        low = high
+
+
+def _last_window_day(start: datetime, end: datetime) -> date:
+    """The last UTC day ``d`` with ``midnight(d) < end`` (the last day ``_days`` lists)."""
+    last = end.astimezone(UTC).date()
+    if datetime.combine(last, time(), tzinfo=UTC) >= end:
+        last -= _DAY
+    return last
+
+
+def _required(value: datetime | None) -> datetime:
+    if value is None:  # pragma: no cover - the contract: an interval has both ends
+        raise DatasetSpecError("the PIT spec has neither a simulation time nor an interval")
+    return value
+
+
+def _selected_spans_of(
+    evaluations: Iterable[PitKeyEvaluation], pit: PointInTimeSpec, key: str
+) -> Iterator[tuple[datetime | None, datetime | None, PitSelectedRevision]]:
+    """``_selected_spans`` over a once-consumed, time-ordered evaluation stream."""
+    point = pit.simulation_time is not None
+    previous: PitKeyEvaluation | None = None
+    for evaluation in evaluations:
+        if not isinstance(evaluation, PitKeyEvaluation):
+            raise CatalogIntegrityError(f"key {key}: an evaluation is not a PitKeyEvaluation")
+        at = _check_utc(evaluation.simulation_time, f"key {key} simulation_time")
+        if evaluation.status is PointInTimeStatus.CONFLICT:
+            raise PitConflictError(
+                f"observation key {key} has competing heads at {at.isoformat()}: the dataset "
+                "build fails closed"
+            )
+        if evaluation.status not in (PointInTimeStatus.SELECTED, PointInTimeStatus.ABSENT) or (
+            evaluation.status is PointInTimeStatus.SELECTED
+        ) != (evaluation.selected is not None):
+            raise CatalogIntegrityError(f"key {key}: a {evaluation.status} result is malformed")
+        if point:
+            if previous is not None or at != pit.simulation_time:
+                raise CatalogIntegrityError(f"key {key}: a point simulation has one evaluation")
+        elif previous is None:
+            if at != pit.simulation_start:
+                raise CatalogIntegrityError(f"key {key}: the first evaluation is not the start")
+        elif not previous.simulation_time < at < _required(pit.simulation_end):
+            raise CatalogIntegrityError(f"key {key}: evaluations are not increasing in the span")
+        if previous is not None and previous.selected is not None:
+            yield previous.simulation_time, at, previous.selected
+        previous = evaluation
+    if previous is None:
+        raise CatalogIntegrityError(f"key {key} has no evaluation")
+    if previous.selected is not None:
+        if point:
+            yield None, None, previous.selected
+        else:
+            yield previous.simulation_time, pit.simulation_end, previous.selected
+
+
+def _checked_member_spans(
+    spans: Iterator[MemberSpan], pit: PointInTimeSpec, venue_symbol: str
+) -> Iterator[MemberSpan]:
+    """The member spans, proven ordered, disjoint and inside the simulation (or the one point)."""
+    point = pit.simulation_time is not None
+    previous: MemberSpan | None = None
+    for span in spans:
+        low, high = span
+        if point:
+            if previous is not None or (low, high) != (None, None):
+                raise CatalogIntegrityError(
+                    f"{venue_symbol}: a point simulation has one open member span"
+                )
+        else:
+            if low is None or high is None:
+                raise CatalogIntegrityError(f"{venue_symbol}: an interval member span is open")
+            _check_utc(low, "member span start")
+            _check_utc(high, "member span end")
+            if not _required(pit.simulation_start) <= low < high <= _required(pit.simulation_end):
+                raise CatalogIntegrityError(f"{venue_symbol}: a member span leaves the simulation")
+            if previous is not None and _required(previous[1]) > low:
+                raise CatalogIntegrityError(f"{venue_symbol}: member spans overlap or are unsorted")
+        previous = span
+        yield span
+
+
+class _MemberSpans:
+    """The cursor's member spans, taken one venue symbol at a time (symbols ascending).
+
+    Holds the spans of **one** symbol: bounded by that symbol's membership changes inside the
+    simulation window (the bound B-UNIV declares for its change instants), never by rows or keys.
+    The whole-universe ``member_spans`` mapping of v2 is never built; reopening the cursor per
+    observation key instead would re-walk the universe once per key.
+    """
+
+    def __init__(
+        self,
+        spans: Iterator[tuple[str, datetime | None, datetime | None]],
+        pit: PointInTimeSpec,
+    ) -> None:
+        self._spans = spans
+        self._pit = pit
+        self._pending = self._next()
+
+    def _next(self) -> tuple[str, datetime | None, datetime | None] | None:
+        item = next(self._spans, None)
+        if item is not None and (
+            not isinstance(item, tuple) or len(item) != 3 or not isinstance(item[0], str)
+        ):
+            raise CatalogIntegrityError(f"a member span is malformed: {item!r}")
+        return item
+
+    def take(self, venue_symbol: str) -> tuple[MemberSpan, ...]:
+        mine: list[MemberSpan] = []
+        while self._pending is not None and self._pending[0] == venue_symbol:
+            mine.append((self._pending[1], self._pending[2]))
+            self._pending = self._next()
+        if self._pending is not None and self._pending[0] < venue_symbol:
+            raise CatalogIntegrityError(
+                f"member spans of {self._pending[0]} are out of symbol order or not in the spec"
+            )
+        return tuple(_checked_member_spans(iter(mine), self._pit, venue_symbol))
+
+    def close(self) -> None:
+        if self._pending is not None:
+            raise CatalogIntegrityError(
+                f"member spans of {self._pending[0]} are out of symbol order or not in the spec"
+            )
+
+
+def _gated_rows(
+    selected: Iterator[tuple[datetime | None, datetime | None, PitSelectedRevision]],
+    members: Iterator[MemberSpan],
+) -> Iterator[tuple[tuple[datetime | None, datetime | None], PitSelectedRevision]]:
+    """Every (selected span x member span) intersection, by start: a merge of two sorted,
+    disjoint families. Yields exactly what v2's nested loop (each selected span, each member
+    span) yields, in the same order, holding one item of each side.
+
+    ``selected`` is always drained: every evaluation of the key is checked (a conflict after the
+    last member span still fails the dataset closed, as v2's ``require_no_conflict`` does)."""
+    a = next(selected, None)
+    b = next(members, None)
+    while a is not None and b is not None:
+        a_from, a_until, revision = a
+        b_from, b_until = b
+        effective = _intersect(a_from, a_until, b_from, b_until)
+        if effective is not None:
+            yield effective, revision
+        if a_until is None or b_until is None:
+            break  # a point simulation: one selected span, one member span
+        if a_until <= b_until:
+            a = next(selected, None)
+        else:
+            b = next(members, None)
+    for _ in selected:
+        pass
+
+
+def _entry_items(
+    entries: Iterator[UniverseMember] | Iterator[UniverseExclusion],
+    stream: EvidenceStream,
+    pit: PointInTimeSpec,
+) -> Iterator[tuple[str, datetime, datetime, EvidenceStream, Contract]]:
+    """``(observation_key, start, end, stream, entry)`` of one entry stream, shapes checked."""
+    kind = UniverseMember if stream is EvidenceStream.MEMBERS else UniverseExclusion
+    point = pit.simulation_time is not None
+    for entry in entries:
+        if type(entry) is not kind:
+            raise CatalogIntegrityError(f"a {stream.value} entry is not a {kind.__name__}")
+        low, high = entry.effective_from, entry.effective_until
+        if point:
+            if low is not None:
+                raise CatalogIntegrityError(f"{stream.value}: a point entry has a span")
+            yield entry.episode.observation_key(), _NO_SPAN, _NO_SPAN, stream, entry
+            continue
+        if low is None or high is None:
+            raise CatalogIntegrityError(f"{stream.value}: an interval entry is open")
+        if low < _required(pit.simulation_start) or high > _required(pit.simulation_end):
+            raise CatalogIntegrityError(f"{stream.value}: an entry leaves the simulation")
+        yield entry.episode.observation_key(), low, high, stream, entry
+
+
+def _merged_entries(
+    members: Iterator[tuple[str, datetime, datetime, EvidenceStream, Contract]],
+    exclusions: Iterator[tuple[str, datetime, datetime, EvidenceStream, Contract]],
+) -> Iterator[tuple[str, datetime, datetime, EvidenceStream, Contract]]:
+    """Two-pointer merge by ``(observation_key, start)``; ties keep both (the caller rejects)."""
+    a, b = next(members, None), next(exclusions, None)
+    while a is not None or b is not None:
+        if b is None or (a is not None and (a[0], a[1]) <= (b[0], b[1])):
+            assert a is not None
+            yield a
+            a = next(members, None)
+        else:
+            yield b
+            b = next(exclusions, None)
+
+
+def _listing_gap(item: object) -> tuple[str, str] | None:
+    if item is None:
+        return None
+    if (
+        not isinstance(item, tuple)
+        or len(item) != 2
+        or not all(isinstance(part, str) and part for part in item)
+    ):
+        raise CatalogIntegrityError(f"a listing evidence gap is malformed: {item!r}")
+    return item[0], item[1]
+
+
+class _PartitionReports:
+    """The (symbol, day) reports of one member symbol, emitted in strictly increasing day.
+
+    Window days are emitted in order; a retained revision's event day is merged in when its row
+    arrives. A day outside the window arriving after a later day was emitted cannot be placed in
+    order without a set of emitted days, so it fails closed (ADR-0077 §2, "prove monotone or fail
+    closed").
+    """
+
+    def __init__(self, derivation: _EvidenceDerivation, venue_symbol: str) -> None:
+        request = derivation.request
+        self._derivation = derivation
+        self._symbol = venue_symbol
+        self._first = request.start.astimezone(UTC).date()
+        self._last = _last_window_day(request.start, request.end)
+        self._next = self._first
+        self._emitted: date | None = None
+        self._cached: tuple[date, str] | None = None
+
+    def cover(self, day: date) -> str:
+        """Emit what must precede ``day`` and ``day`` itself; the id of ``day``'s report."""
+        while self._next <= self._last and self._next < day:
+            self._emit(self._next)
+            self._next += _DAY
+        if self._emitted is None or day > self._emitted:
+            if day == self._next:
+                self._next += _DAY
+            return self._emit(day)
+        if day < self._emitted and not self._first <= day <= self._last:
+            raise CatalogIntegrityError(
+                f"{self._symbol}: event day {day.isoformat()} outside the window arrives after "
+                f"{self._emitted.isoformat()}: the report order cannot be proven"
+            )
+        return self._report(day)
+
+    def close(self) -> None:
+        while self._next <= self._last:
+            self._emit(self._next)
+            self._next += _DAY
+
+    def _emit(self, day: date) -> str:
+        report_id = self._report(day)
+        self._derivation.report(
+            DatasetQualityReportRef(
+                report_id=report_id,
+                subject=DatasetQualitySubject.SYMBOL_DAY,
+                symbol=self._symbol,
+                day=day,
+            )
+        )
+        self._emitted = day
+        return report_id
+
+    def _report(self, day: date) -> str:
+        if self._cached is None or self._cached[0] != day:
+            self._cached = (day, self._derivation.quality.partition_report(self._symbol, day))
+        return self._cached[1]
+
+
+class _EvidenceDerivation:
+    """One pass of the v3 generator: rows and five evidence streams, in canonical order."""
+
+    def __init__(
+        self,
+        request: DatasetEvidenceRequest,
+        canonical: str,
+        selection_id: str,
+        rule: DatasetEvidenceRule,
+        sources: DatasetEvidenceSources,
+        sink: DatasetDerivationSink,
+    ) -> None:
+        if not isinstance(sources, DatasetEvidenceSources):
+            raise DatasetSpecError("sources must be DatasetEvidenceSources")
+        self.request = request
+        self.quality = sources.quality
+        self._canonical = canonical
+        self._selection_id = selection_id
+        self._chunk_rows = rule.chunk_rows
+        self._universe = sources.universe
+        self._pit = sources.pit
+        self._sink = sink
+        self._bound = request.pit.snapshot_bindings
+        self._point = request.pit.simulation_time is not None
+        self._counts = dict.fromkeys(_DERIVED_STREAMS, 0)
+        self._rows = 0
+        self._last_report: tuple[int, str, str] | None = None
+
+    def run(self) -> DatasetDerivation:
+        listing = self.quality.listing_report()
+        self.report(
+            DatasetQualityReportRef(report_id=listing, subject=DatasetQualitySubject.LISTING)
+        )
+        self._entries()
+        self._listing_lineage(listing)
+        with self._universe.member_spans() as spans:
+            members = _MemberSpans(spans, self.request.pit)
+            for venue_symbol in self.request.universe.symbols:
+                self._symbol(venue_symbol, members.take(venue_symbol))
+            members.close()
+        return DatasetDerivation(
+            selection_id=self._selection_id,
+            row_count=self._rows,
+            record_counts=tuple(
+                (stream, self._counts[stream])
+                for stream in sorted(_DERIVED_STREAMS, key=lambda item: item.value)
+            ),
+        )
+
+    # ------------------------------------------------------------------ emission
+
+    def _emit(self, stream: EvidenceStream, record: Contract) -> None:
+        self._sink.evidence(stream, record)
+        self._counts[stream] += 1
+
+    def report(self, record: DatasetQualityReportRef) -> None:
+        key = record.sort_key()
+        if self._last_report is not None and key <= self._last_report:
+            raise CatalogIntegrityError(f"quality report {record.report_id} is out of order")
+        self._last_report = key
+        self._emit(EvidenceStream.QUALITY_REPORTS, record)
+
+    def _check_lineage_tables(self, lineage: SelectedRevisionLineage) -> None:
+        for table in (lineage.canonical_table, lineage.raw_table, lineage.source_table):
+            if table not in self._bound:
+                raise CatalogIntegrityError(
+                    f"lineage cites {table}, which the PIT spec does not bind"
+                )
+
+    # ------------------------------------------------------------------ universe
+
+    def _entries(self) -> None:
+        """Members and exclusions merged by ``(observation_key, effective_from)``: each stream
+        in canonical order, no episode both member and excluded (or overlapping) at one time."""
+        with self._universe.members() as members, self._universe.exclusions() as exclusions:
+            ordered = _merged_entries(
+                _entry_items(members, EvidenceStream.MEMBERS, self.request.pit),
+                _entry_items(exclusions, EvidenceStream.EXCLUSIONS, self.request.pit),
+            )
+            previous: tuple[str, datetime, datetime, EvidenceStream] | None = None
+            for key, start, end, stream, entry in ordered:
+                if previous is not None:
+                    prev_key, prev_start, prev_end, prev_stream = previous
+                    if key == prev_key and (self._point or prev_end > start):
+                        if prev_stream is not stream:
+                            raise CatalogIntegrityError(
+                                f"episode {key} is both a member and excluded at one time"
+                            )
+                        raise CatalogIntegrityError(f"episode {key}: {stream.value} overlap")
+                    if (key, start) <= (prev_key, prev_start):
+                        raise CatalogIntegrityError(
+                            f"{stream.value} of {key} are out of canonical order (ADR-0077 §2)"
+                        )
+                previous = (key, start, end, stream)
+                self._emit(stream, entry)
+
+    def _listing_lineage(self, listing_report: str) -> None:
+        """Listing lineage by ``canonical_revision_id``; each listing gap bound to the listing
+        report, merged in from the gap cursor (same order; a gap without lineage fails)."""
+        with (
+            self._universe.listing_lineage() as lineages,
+            self._universe.evidence_gaps() as gaps,
+        ):
+            pending = _listing_gap(next(gaps, None))
+            previous: str | None = None
+            for lineage in lineages:
+                if not isinstance(lineage, SelectedRevisionLineage):
+                    raise CatalogIntegrityError("a listing lineage item is malformed")
+                revision = lineage.canonical_revision_id
+                if lineage.canonical_table != _LISTINGS:
+                    raise CatalogIntegrityError(f"listing lineage {revision} is not of {_LISTINGS}")
+                if previous is not None and revision <= previous:
+                    raise CatalogIntegrityError(
+                        f"listing lineage {revision} is duplicated or out of canonical order "
+                        "(ADR-0077 §2: by canonical_revision_id)"
+                    )
+                previous = revision
+                self._check_lineage_tables(lineage)
+                self._emit(EvidenceStream.LINEAGE, lineage)
+                if pending is not None and pending[0] == revision:
+                    self._gap(listing_report, _LISTINGS, revision, pending[1])
+                    pending = _listing_gap(next(gaps, None))
+            if pending is not None:
+                raise CatalogIntegrityError(
+                    f"listing evidence gap of {pending[0]} has no listing lineage in its order"
+                )
+
+    def _gap(self, report_id: str, table: str, revision: str, gap: str) -> None:
+        if self.quality.recorded_gap(report_id, table, revision) != gap:
+            raise DatasetQualityError(
+                f"report {report_id} does not record the evidence gap of {table} revision "
+                f"{revision}"
+            )
+        self._emit(
+            EvidenceStream.EVIDENCE_GAPS,
+            AvailabilityEvidenceGap(
+                table=table, revision_id=revision, quality_report_id=report_id, gap=gap
+            ),
+        )
+
+    # ------------------------------------------------------------------ data
+
+    def _symbol(self, venue_symbol: str, member_spans: tuple[MemberSpan, ...]) -> None:
+        if not member_spans:
+            return  # not a member at any time: no rows and no partition reports (as v2)
+        request = self.request
+        reports = _PartitionReports(self, venue_symbol)
+        for low, high in _iter_slices(request.data_type, request.start, request.end):
+            with self._pit.keys(request.pit, request.data_type, venue_symbol, low, high) as groups:
+                previous: str | None = None
+                for group in groups:
+                    self._key(group, venue_symbol, member_spans, low, high, previous, reports)
+                    previous = group.observation_key
+        reports.close()
+
+    def _key(
+        self,
+        group: PitKeyGroup,
+        venue_symbol: str,
+        member_spans: tuple[MemberSpan, ...],
+        low: datetime,
+        high: datetime,
+        previous: str | None,
+        reports: _PartitionReports,
+    ) -> None:
+        if not isinstance(group, PitKeyGroup):
+            raise CatalogIntegrityError("a PIT key group is not a PitKeyGroup")
+        key = group.observation_key
+        if not isinstance(key, str) or not key:
+            raise CatalogIntegrityError("a PIT key group has no observation key")
+        if previous is not None and key <= previous:
+            raise CatalogIntegrityError(
+                f"observation key {key} is duplicated or out of order in its slice"
+            )
+        owner = _check_utc(group.owner_event_time, f"key {key} owner_event_time")
+        if not low <= owner < high:
+            raise CatalogIntegrityError(
+                f"observation key {key} is not owned by the slice [{low.isoformat()}, "
+                f"{high.isoformat()}) (its chain starts at {owner.isoformat()})"
+            )
+        #: Revisions of this key already given lineage: a revision belongs to one key and one
+        #: key's rows are adjacent, so this set never spans two keys (ADR-0077 §2).
+        emitted: set[str] = set()
+        rows = _gated_rows(
+            _selected_spans_of(group.evaluations, self.request.pit, key), iter(member_spans)
+        )
+        for (effective_from, effective_until), selected in rows:
+            event_time = self._row(venue_symbol, key, selected, effective_from, effective_until)
+            report_id = reports.cover(event_time.astimezone(UTC).date())
+            if selected.revision_id not in emitted:
+                emitted.add(selected.revision_id)
+                self._data_lineage(selected, report_id)
+
+    def _row(
+        self,
+        venue_symbol: str,
+        key: str,
+        selected: PitSelectedRevision,
+        effective_from: datetime | None,
+        effective_until: datetime | None,
+    ) -> datetime:
+        if not isinstance(selected, PitSelectedRevision) or not selected.revision_id:
+            raise CatalogIntegrityError(f"key {key}: a selected revision is malformed")
+        event_time = _check_utc(selected.event_time, f"revision {selected.revision_id} event")
+        ordinal = self._rows
+        self._sink.row(
+            {
+                "selection_id": self._selection_id,
+                "canonical_table": self._canonical,
+                "symbol": rules.SYMBOLS[venue_symbol].symbol,
+                "observation_key": key,
+                "revision_id": selected.revision_id,
+                "event_time": event_time,
+                "effective_from": effective_from,
+                "effective_until": effective_until,
+                "chunk_index": ordinal // self._chunk_rows,
+                "row_ordinal": ordinal,
+            }
+        )
+        self._rows += 1
+        return event_time
+
+    def _data_lineage(self, selected: PitSelectedRevision, report_id: str) -> None:
+        lineage = selected.lineage
+        if (
+            not isinstance(lineage, SelectedRevisionLineage)
+            or lineage.canonical_table != self._canonical
+            or lineage.canonical_revision_id != selected.revision_id
+        ):
+            raise CatalogIntegrityError(f"selected revision {selected.revision_id} has no lineage")
+        self._check_lineage_tables(lineage)
+        self._emit(EvidenceStream.LINEAGE, lineage)
+        if selected.evidence_gap is not None:
+            self._gap(report_id, self._canonical, selected.revision_id, selected.evidence_gap)
+
+
+class _EvidenceBuildSink:
+    """``build``'s sink: evidence trees + fixed-size chunks handed to the chunk writer."""
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        rule: DatasetEvidenceRule,
+        selection_id: str,
+        chunks: DatasetChunkWriter,
+        version: str,
+    ) -> None:
+        self._writers = {
+            stream: EvidenceTreeWriter(storage, stream, limits=rule.limits, schema_version=version)
+            for stream in EvidenceStream
+        }
+        self._chunk_rows = rule.chunk_rows
+        self._selection_id = selection_id
+        self._chunks = chunks
+        self._rows: list[Mapping[str, Any]] = []
+        self._chunk_count = 0
+        self._replayed = 0
+        self._snapshot_id: str | None = None
+
+    def evidence(self, stream: EvidenceStream, record: Contract) -> None:
+        if stream is EvidenceStream.CHUNK_PROOFS:
+            raise CatalogIntegrityError("chunk proofs come from chunk commits only")
+        self._writers[stream].append(record)
+
+    def row(self, row: Mapping[str, Any]) -> None:
+        self._rows.append(row)
+        if len(self._rows) == self._chunk_rows:
+            self._commit()
+
+    def finish(self) -> tuple[tuple[EvidenceStreamRef, ...], int, int, str]:
+        if self._rows:
+            self._commit()
+        if self._snapshot_id is None:  # pragma: no cover - build refuses an empty selection first
+            raise DatasetEmpty("no chunk was committed")
+        streams = tuple(
+            self._writers[stream].finish()
+            for stream in sorted(EvidenceStream, key=lambda item: item.value)
+        )
+        return streams, self._chunk_count, self._replayed, self._snapshot_id
+
+    def _commit(self) -> None:
+        index = self._chunk_count
+        first = index * self._chunk_rows
+        rows = tuple(self._rows)
+        self._rows = []
+        for offset, row in enumerate(rows):
+            if (row["chunk_index"], row["row_ordinal"]) != (index, first + offset):
+                raise CatalogIntegrityError(f"chunk {index} rows are not contiguous")
+        committed = self._chunks.commit_chunk(self._selection_id, index, rows)
+        proof = committed.proof
+        if not isinstance(proof, DatasetChunkProof) or (
+            proof.chunk_index,
+            proof.batch_id,
+            proof.first_row_ordinal,
+            proof.row_count,
+        ) != (index, dataset_chunk_batch_id(self._selection_id, index), first, len(rows)):
+            raise CatalogIntegrityError(f"chunk {index} of {self._selection_id} proves other rows")
+        self._writers[EvidenceStream.CHUNK_PROOFS].append(proof)
+        self._chunk_count += 1
+        self._replayed += int(committed.replayed)
+        self._snapshot_id = proof.snapshot_id

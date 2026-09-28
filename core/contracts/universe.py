@@ -22,17 +22,26 @@
 snapshot 是否存在、成员清单是否真的由 spec + snapshot + 两个截止按 maximal-head 算法得出、逐行 PIT
 是否正确、lineage 是否是完整闭包、Runner 是否强制消费 manifest，都属于未来的 Registry、存储、PIT /
 universe 执行器与 Runner（批次 B3 ~ F 及以后）。
+
+**有界 evidence manifest（ADR-0077，自契约 2.3.0，additive）**：
+`ResearchDatasetEvidenceManifest`（"v3" 形态代号，不是契约 major）与 `ResearchDatasetManifest`
+（v2 形态）并存；v2 模型的字段、校验、Schema 与内容哈希逐位不变。v3 只含固定大小字段：
+成员、排除、lineage、证据缺口、质量报告与逐 chunk 证明不再内联，而是由六条内容寻址的有序
+evidence stream 的根对象引用（`EvidenceStreamRef` / `EvidenceObjectRef`）经 manifest 内容哈希
+承诺。流内记录复用 v2 记录模型，另加 `DatasetQualityReportRef` 与 `DatasetChunkProof`。
+对象是否存在、字节是否匹配、流内容是否就是输入的派生，属 infrastructure 的 streaming verifier。
 """
 
 from __future__ import annotations
 
 import re
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Final, Literal
 
 from pydantic import Field, ValidationError, field_validator, model_validator
 
+from core.contracts.catalog import BATCH_ID_PATTERN, SNAPSHOT_ID_PATTERN
 from core.contracts.revision import (
     BINDING_ID_PATTERN,
     SNAPSHOT_TABLE_PATTERN,
@@ -52,11 +61,24 @@ from core.domain.base import (
 from core.domain.specs import DatasetRef, Instrument, InstrumentType, Zone
 
 __all__ = [
+    "ADR_0077_VERSION",
+    "DATASET_CHUNK_INDEX_MAX",
+    "DATASET_EVIDENCE_FORMAT",
+    "DATASET_EVIDENCE_KEY_PATTERN",
+    "DATASET_EVIDENCE_KEY_PREFIX",
+    "DATASET_SELECTION_ID_PATTERN",
     "LISTINGS_TABLE",
     "QUALITY_REPORTS_TABLE",
     "AvailabilityEvidenceGap",
+    "DatasetChunkProof",
+    "DatasetQualityReportRef",
+    "DatasetQualitySubject",
+    "DatasetRuleBinding",
     "DegradedEpisodeKey",
     "EpisodeIdentityBasis",
+    "EvidenceObjectRef",
+    "EvidenceStream",
+    "EvidenceStreamRef",
     "ExclusionReason",
     "FilterComparator",
     "ListingEpisodeKey",
@@ -64,6 +86,7 @@ __all__ = [
     "ListingRevision",
     "ListingStatus",
     "MetricBasis",
+    "ResearchDatasetEvidenceManifest",
     "ResearchDatasetManifest",
     "SelectedRevisionLineage",
     "StableEpisodeKey",
@@ -74,6 +97,8 @@ __all__ = [
     "UniverseMember",
     "UniverseSelectionSpec",
     "UniverseSpecBinding",
+    "dataset_chunk_batch_id",
+    "dataset_evidence_key",
 ]
 
 #: listing 历史表（03-data.md §7.1）；manifest 必须绑定它的 snapshot（ADR-0024 §6）。
@@ -734,3 +759,282 @@ class ResearchDatasetManifest(Contract):
                     if prev_label != next_label:
                         raise ValueError(f"episode {key} 在同一时刻既是成员又被排除")
                     raise ValueError(f"episode {key} 在 {prev_label} 中重复或生效区间重叠")
+
+
+# ======================================================================================
+# 有界 Research Dataset evidence manifest（ADR-0077，自契约 2.3.0，additive）
+# ======================================================================================
+
+#: 本节全部模型的引入版本（ADR-0077 DQ-1 = A）；2.0.0 ~ 2.2.0 信封中出现即拒绝（ADR-0052 §4）。
+ADR_0077_VERSION: Final = "2.3.0"
+#: evidence stream 的对象格式（ADR-0077 §2 / §3）。
+DATASET_EVIDENCE_FORMAT: Final = "hlens.dataset.evidence-jsonl@1.0.0"
+#: evidence 对象键只由内容 SHA-256 决定（ADR-0077 §3.4，DQ-6 = a）。
+DATASET_EVIDENCE_KEY_PREFIX: Final = "research/dataset-evidence/v1/"
+DATASET_EVIDENCE_KEY_PATTERN = r"^research/dataset-evidence/v1/[0-9a-f]{64}\.jsonl$"
+#: `selection_id` 必须能作为 chunk batch id 的前缀（ADR-0077 §4.2）：字符集同
+#: `BATCH_ID_PATTERN`，长度留出 `.chunk-` + 十位序号（17 个字符），使 batch id 不超过 256 个字符。
+DATASET_SELECTION_ID_PATTERN = r"^[A-Za-z0-9][A-Za-z0-9._:=@+-]{0,238}$"
+#: chunk 序号十位零填充（ADR-0077 §4.2）：可表示的最大序号。
+DATASET_CHUNK_INDEX_MAX: Final = 9_999_999_999
+
+_SELECTION_ID_RE = re.compile(DATASET_SELECTION_ID_PATTERN)
+_SHA256_HEX_RE = re.compile(r"^[0-9a-f]{64}$")
+_CHUNK_BATCH_ID_RE = re.compile(r"^(?P<selection_id>.+)\.chunk-(?P<chunk_index>[0-9]{10})$")
+
+
+def dataset_evidence_key(sha256: str) -> str:
+    """evidence 对象的规范键 `research/dataset-evidence/v1/<sha256>.jsonl`（DQ-6 = a）。"""
+    if not isinstance(sha256, str) or _SHA256_HEX_RE.fullmatch(sha256) is None:
+        raise ValueError(f"evidence 对象的 sha256 必须是 64 位小写十六进制：{sha256!r}")
+    return f"{DATASET_EVIDENCE_KEY_PREFIX}{sha256}.jsonl"
+
+
+def dataset_chunk_batch_id(selection_id: str, chunk_index: int) -> str:
+    """第 `chunk_index` 个 chunk 的 batch id（ADR-0077 §4.2）。
+
+    形如 `<selection_id>.chunk-<十位零填充序号>`。
+    """
+    if not isinstance(selection_id, str) or _SELECTION_ID_RE.fullmatch(selection_id) is None:
+        raise ValueError(f"selection_id 不能作为 chunk batch id 的前缀：{selection_id!r}")
+    if (
+        isinstance(chunk_index, bool)
+        or not isinstance(chunk_index, int)
+        or not 0 <= chunk_index <= DATASET_CHUNK_INDEX_MAX
+    ):
+        raise ValueError(f"chunk_index 必须是 0 ~ {DATASET_CHUNK_INDEX_MAX} 的整数")
+    return f"{selection_id}.chunk-{chunk_index:010d}"
+
+
+class DatasetRuleBinding(Contract):
+    """v3 manifest 对 dataset 规则的绑定：`rule_id + SemVer + rule_hash`（ADR-0077 §1）。
+
+    规则 spec 写明排序、chunk、leaf 与 fan-out 参数，它们随 `rule_hash` 进入 manifest 身份；
+    改值即新规则版本。
+
+    **诚实边界**：规则是否已登记、`rule_hash` 是否等于真实 spec，属 verifier 与未来 Registry。
+    """
+
+    _MODEL_SINCE = ADR_0077_VERSION
+
+    rule_id: str = Field(pattern=BINDING_ID_PATTERN)
+    version: str = Field(pattern=SEMVER_PATTERN)
+    rule_hash: ContentHash
+
+
+class EvidenceStream(StrEnum):
+    """v3 manifest 承诺的六种有序 evidence stream（ADR-0077 §2）。"""
+
+    MEMBERS = "members"
+    EXCLUSIONS = "exclusions"
+    LINEAGE = "lineage"
+    EVIDENCE_GAPS = "evidence_gaps"
+    QUALITY_REPORTS = "quality_reports"
+    CHUNK_PROOFS = "chunk_proofs"
+
+
+class EvidenceObjectRef(Contract):
+    """一个 evidence 叶 / 索引对象的内容身份：`key + sha256 + size`（ADR-0077 §1.4，DQ-8 = a）。
+
+    不含实现生成的 `uri`：同一内容在不同 warehouse 根下身份相同。`key` 只由 `sha256` 决定
+    （`research/dataset-evidence/v1/<sha256>.jsonl`）；对象至少含一行 header，因此 `size >= 1`。
+
+    **诚实边界**：对象是否存在、字节是否哈希成 `sha256`、长度是否为 `size`，属
+    `StorageAdapter.lookup` 与 reader 的逐项核对。
+    """
+
+    _MODEL_SINCE = ADR_0077_VERSION
+
+    key: str = Field(pattern=DATASET_EVIDENCE_KEY_PATTERN)
+    sha256: ContentHash
+    size: int = Field(ge=1)
+
+    @model_validator(mode="after")
+    def _key_is_the_content_key(self) -> EvidenceObjectRef:
+        if self.key != dataset_evidence_key(self.sha256):
+            raise ValueError("evidence 对象的 key 必须由其 sha256 派生（DQ-6）")
+        return self
+
+
+class EvidenceStreamRef(Contract):
+    """一条 evidence stream 的根承诺（ADR-0077 §1.3、§3）。
+
+    - `record_count`：流内记录数；`leaf_count`：叶对象数；`depth`：根索引所在层（至少 1，
+      单叶或空流也由一个根索引包裹）；
+    - 空流（`record_count = 0`）没有叶；非空流至少一个叶，且叶数不超过记录数；
+      叶数不超过 1 时 `depth = 1`；
+    - `root`：根索引对象的内容身份，经 manifest 内容哈希承诺整条流的顺序、计数与内容。
+
+    **诚实边界**：fan-out 是规则参数，不在本对象内，因此 `depth` 与 `leaf_count` 的精确关系、
+    各层 header 与子引用的连续性，由 reader / verifier 自根向下核对。
+    """
+
+    _MODEL_SINCE = ADR_0077_VERSION
+
+    stream: EvidenceStream
+    format: Literal["hlens.dataset.evidence-jsonl@1.0.0"]
+    record_count: int = Field(ge=0)
+    leaf_count: int = Field(ge=0)
+    depth: int = Field(ge=1)
+    root: EvidenceObjectRef
+
+    @model_validator(mode="after")
+    def _counts(self) -> EvidenceStreamRef:
+        if (self.record_count == 0) != (self.leaf_count == 0):
+            raise ValueError("空流没有叶对象；非空流至少有一个叶对象")
+        if self.leaf_count > self.record_count:
+            raise ValueError("叶对象数不得超过记录数（每个叶至少一条记录）")
+        if self.leaf_count <= 1 and self.depth != 1:
+            raise ValueError("叶对象数不超过 1 时根索引的 depth 必须为 1")
+        return self
+
+
+class DatasetQualitySubject(StrEnum):
+    """质量报告描述的对象：listing 历史，或一个 (member symbol, UTC 日) 分区。"""
+
+    LISTING = "listing"
+    SYMBOL_DAY = "symbol_day"
+
+
+class DatasetQualityReportRef(Contract):
+    """`quality_reports` 流的一条记录：一份被数据集引用的质量报告及其对象（ADR-0077 §1.6）。
+
+    `subject = listing` 时不得给出 `symbol` / `day`；`subject = symbol_day` 时二者都必须给出。
+    流内顺序：listing 在前，再按 `(symbol, day)` 严格递增（`sort_key()`）。
+    """
+
+    _MODEL_SINCE = ADR_0077_VERSION
+
+    report_id: NonEmptyStr
+    subject: DatasetQualitySubject
+    symbol: NonEmptyStr | None = None
+    day: date | None = None
+
+    @model_validator(mode="after")
+    def _subject_shape(self) -> DatasetQualityReportRef:
+        partition = (self.symbol is not None, self.day is not None)
+        if self.subject is DatasetQualitySubject.LISTING and partition != (False, False):
+            raise ValueError("subject=listing 的报告不得给出 symbol / day")
+        if self.subject is DatasetQualitySubject.SYMBOL_DAY and partition != (True, True):
+            raise ValueError("subject=symbol_day 的报告必须同时给出 symbol 与 day")
+        return self
+
+    def sort_key(self) -> tuple[int, str, str]:
+        """流内规范顺序的键：listing 在前，再按 `(symbol, day)`。"""
+        if self.symbol is None or self.day is None:
+            return (0, "", "")
+        return (1, self.symbol, self.day.isoformat())
+
+
+class DatasetChunkProof(Contract):
+    """`chunk_proofs` 流的一条记录：一个定长 chunk 的提交证明（ADR-0077 §4.3）。
+
+    `batch_id` 必须是 `<selection_id>.chunk-<十位零填充 chunk_index>`；`batch_fingerprint` 是该
+    chunk 的 Arrow Table（行按 `row_ordinal` 升序）按表的版本化指纹规则算出的内容指纹。
+
+    **诚实边界**：snapshot 是否存在、该 batch 是否在其中提交、指纹与行数是否与读回内容相等、
+    `first_row_ordinal` 是否等于 `chunk_index * chunk_rows`，属 verifier。
+    """
+
+    _MODEL_SINCE = ADR_0077_VERSION
+
+    chunk_index: int = Field(ge=0, le=DATASET_CHUNK_INDEX_MAX)
+    batch_id: str = Field(pattern=BATCH_ID_PATTERN)
+    snapshot_id: str = Field(pattern=SNAPSHOT_ID_PATTERN)
+    first_row_ordinal: int = Field(ge=0)
+    row_count: int = Field(ge=1)
+    batch_fingerprint: ContentHash
+
+    @model_validator(mode="after")
+    def _batch_id_names_the_chunk(self) -> DatasetChunkProof:
+        match = _CHUNK_BATCH_ID_RE.fullmatch(self.batch_id)
+        if match is None or _SELECTION_ID_RE.fullmatch(match.group("selection_id")) is None:
+            raise ValueError("batch_id 必须是 <selection_id>.chunk-<十位零填充序号>")
+        if int(match.group("chunk_index")) != self.chunk_index:
+            raise ValueError("batch_id 的 chunk 序号必须等于 chunk_index")
+        return self
+
+    @property
+    def selection_id(self) -> str:
+        """`batch_id` 中的 `selection_id` 前缀。"""
+        return self.batch_id.rsplit(".chunk-", 1)[0]
+
+
+class ResearchDatasetEvidenceManifest(Contract):
+    """有界 Research Dataset 的审计清单（v3 形态；ADR-0077 §1，自契约 2.3.0）。
+
+    与 `ResearchDatasetManifest`（v2 形态）并存，不替代、不升级它。全部字段必填且大小固定，
+    与选中行数、窗口天数无关：
+
+    - `dataset` / `point_in_time` / `universe_spec`：规则同 v2——`dataset` 为 `research_dataset`
+      的 `namespace.table` 且不在上游绑定中，上游必须含 `canonical.instrument_listings` 与
+      `quality.data_quality_reports`；`dataset.snapshot_id` 是最后一个 chunk 的 snapshot；
+    - `rule`：dataset 规则绑定；`data_type`：显式记录的数据类型；`selection_id`：可作 chunk
+      batch id 的前缀；
+    - `row_count` / `chunk_rows` / `chunk_count`：空选择被拒绝，
+      `chunk_count = ceil(row_count / chunk_rows)`；
+    - `evidence`：六种 stream 恰好各一项，按 stream 名规范排序；`chunk_proofs` 的记录数等于
+      `chunk_count`，`lineage` 与 `quality_reports` 非空。
+
+    **诚实边界**：契约只证明结构。`selection_id` 与规则 / PIT / universe / `data_type` / 窗口的
+    派生关系、规则与 universe 是否已登记、对象是否存在且字节匹配、流内容与 chunk 行是否就是输入的
+    派生，属 infrastructure 的 streaming verifier；v2 在模型内完成的跨字段集合检查，在 v3 中由
+    verifier 以有序归并完成。
+    """
+
+    _MODEL_SINCE = ADR_0077_VERSION
+
+    dataset: DatasetRef
+    point_in_time: PointInTimeSpec
+    universe_spec: UniverseSpecBinding
+    rule: DatasetRuleBinding
+    data_type: str = Field(pattern=NAME_PATTERN)
+    selection_id: str = Field(pattern=DATASET_SELECTION_ID_PATTERN)
+    row_count: int = Field(ge=1)
+    chunk_rows: int = Field(ge=1)
+    chunk_count: int = Field(ge=1)
+    evidence: tuple[EvidenceStreamRef, ...] = Field(min_length=6, max_length=6)
+
+    @field_validator("evidence")
+    @classmethod
+    def _canonical_evidence(
+        cls, value: tuple[EvidenceStreamRef, ...]
+    ) -> tuple[EvidenceStreamRef, ...]:
+        streams = tuple(item.stream.value for item in value)
+        _canonical_unique(streams, "evidence 的 stream")
+        missing = sorted({stream.value for stream in EvidenceStream} - set(streams))
+        if missing:
+            raise ValueError(f"evidence 缺少 stream：{missing}")
+        return tuple(sorted(value, key=lambda item: item.stream.value))
+
+    @model_validator(mode="after")
+    def _manifest_invariants(self) -> ResearchDatasetEvidenceManifest:
+        upstream = self.point_in_time.snapshot_bindings
+        if self.dataset.zone is not Zone.RESEARCH_DATASET:
+            raise ValueError("dataset 必须是 zone=research_dataset 的 DatasetRef")
+        if _SNAPSHOT_TABLE_RE.fullmatch(self.dataset.table) is None:
+            raise ValueError("dataset.table 必须是 Iceberg namespace.table")
+        if self.dataset.table in upstream:
+            raise ValueError("dataset 自身的表不得同时作为上游 snapshot 绑定")
+        for required in (LISTINGS_TABLE, QUALITY_REPORTS_TABLE):
+            if required not in upstream:
+                raise ValueError(f"上游 snapshot 绑定必须包含 {required}")
+        if self.chunk_count != -(-self.row_count // self.chunk_rows):
+            raise ValueError("chunk_count 必须等于 ceil(row_count / chunk_rows)")
+        if self.evidence_for(EvidenceStream.CHUNK_PROOFS).record_count != self.chunk_count:
+            raise ValueError("chunk_proofs 流的记录数必须等于 chunk_count")
+        for stream in (EvidenceStream.LINEAGE, EvidenceStream.QUALITY_REPORTS):
+            if self.evidence_for(stream).record_count == 0:
+                raise ValueError(f"{stream.value} 流不得为空")
+        return self
+
+    def evidence_for(self, stream: EvidenceStream) -> EvidenceStreamRef:
+        """该 stream 的根承诺（每种 stream 恰好一项）。"""
+        [ref] = [item for item in self.evidence if item.stream is stream]
+        return ref
+
+    def chunk_batch_id(self, chunk_index: int) -> str:
+        """本数据集第 `chunk_index` 个 chunk 的 batch id（`0 <= chunk_index < chunk_count`）。"""
+        if isinstance(chunk_index, bool) or not 0 <= chunk_index < self.chunk_count:
+            raise ValueError(f"chunk_index 超出 0 ~ {self.chunk_count - 1}：{chunk_index!r}")
+        return dataset_chunk_batch_id(self.selection_id, chunk_index)

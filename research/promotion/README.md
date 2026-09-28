@@ -14,7 +14,8 @@ Status: **CODE_COMPLETE / DEBUG_PENDING** (2026-09-26). No contract, Schema or l
   report that evaluates G2 carries the ADR-0060 items its Profile calls for — the market benchmark item of
   `benchmark.market_benchmark_rule` (`market_benchmark_missing`), then, when
   `benchmark.inverse_control_reported` is true, the exact `G2.inverse_control` (`inverse_control_missing`;
-  presence only, no threshold; B59); the
+  presence only, no threshold; B59); every thresholded gate agrees with its Profile instance
+  (`research.validation.verification.verify_report`, ADR-0013: `report_threshold_mismatch`); the
   research `GitCodeRevision`; dependency hashes; the `LifecycleHistory` (human-approved OOS → PAPER, now
   PAPER / PRODUCTION_CANDIDATE / ACTIVE); the research `StrategyProvider` and the declared golden inputs.
 - Anything missing / non-PASS / mismatched → `PromotionRefused(reason: PromotionRefusal, detail)`;

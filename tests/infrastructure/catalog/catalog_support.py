@@ -220,9 +220,9 @@ class PostgresCatalogHarness(_Harness):
 class ScanSpy:
     """Records how PyIceberg scans are consumed: whole tables vs. streamed record batches.
 
-    Installed with ``monkeypatch``, it wraps ``DataScan.to_arrow`` and
-    ``DataScan.to_arrow_batch_reader`` so a test can prove that a read path never materialises a
-    whole history as one Arrow table (D2-R1 bounded allocation anchor).
+    Installed with ``monkeypatch``, it wraps the adapter's streaming scan entrypoint and the
+    legacy ``DataScan`` materializers so tests can prove that reads use bounded batches and do
+    not materialise a whole history as one Arrow table.
     """
 
     def __init__(self, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -232,6 +232,7 @@ class ScanSpy:
         spy = self
         real_to_arrow = DataScan.to_arrow
         real_reader = DataScan.to_arrow_batch_reader
+        real_scan_batches = PyIcebergCatalogAdapter.scan_column_batches
 
         def to_arrow(scan: DataScan, *args: Any, **kwargs: Any) -> pa.Table:
             table = real_to_arrow(scan, *args, **kwargs)
@@ -249,8 +250,27 @@ class ScanSpy:
                 batches.append(batch)
             return pa.RecordBatchReader.from_batches(reader.schema, batches)
 
+        def scan_column_batches(
+            adapter: PyIcebergCatalogAdapter, *args: Any, **kwargs: Any
+        ) -> Any:
+            spy.readers += 1
+            batches = real_scan_batches(adapter, *args, **kwargs)
+
+            def tracked() -> Any:
+                try:
+                    for batch in batches:
+                        spy.batch_rows.append(batch.num_rows)
+                        yield batch
+                finally:
+                    close = getattr(batches, "close", None)
+                    if callable(close):
+                        close()
+
+            return tracked()
+
         monkeypatch.setattr(DataScan, "to_arrow", to_arrow)
         monkeypatch.setattr(DataScan, "to_arrow_batch_reader", to_arrow_batch_reader)
+        monkeypatch.setattr(PyIcebergCatalogAdapter, "scan_column_batches", scan_column_batches)
 
     @property
     def largest_table(self) -> int:

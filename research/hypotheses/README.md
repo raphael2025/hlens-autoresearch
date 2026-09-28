@@ -75,11 +75,18 @@
 
 ## Experiment / Hypothesis binding evidence（`plan_bindings.py`，Phase 7，ADR-0073 §1）
 
-`validate_experiment_bindings(...)` 是纯拒绝校验器：要求输入的 ExperimentSpec 与 Hypothesis 非空且数量相同；每个
+`validate_experiment_bindings(...)` 是兼容用的纯拒绝校验器：要求输入的 ExperimentSpec 与 Hypothesis 非空且数量相同；每个
 `ExperimentSpec.repro.hypothesis_ref` 必须精确指向批次中唯一的 Hypothesis，且 `dependency_hashes` 中对应值等于重算的内容哈希；
 每个 Hypothesis 恰被一个 ExperimentSpec 引用。每个已提供的 `LoweredOutputBinding` 必须是精确的
 Feature / State / Event / Strategy 核心规格类，并与所关联 ExperimentSpec 的直接依赖 ref 和重算 hash 完全相符；同一不可变规格可以被多个实验共同引用。
 
-本校验只核实调用方提交的 outputs；现有 typed-plan / ExperimentSpec 没有权威的“预期 lowering 输出全集”来源，因此它不能证明多 output 场景没有遗漏部分输出。
-调用方不得把该结果当成 compiler 完整性、传递依赖闭包、operator 语义、持久化 admission 或执行授权证据。实现未接入 PREPARE、TrialLedger、Runner 或任何
-operator；`TypedPlan.runnable` 仍为 `False`。未运行测试 / build / lint / typecheck，待统一验收。
+依 ADR-0078，`TypedPlan.nodes` 是 lowered outputs 全集的权威来源，每个 AST 节点要求且只要求一个输出规格。`produce_lowered_output_bindings(...)` 通过 node ID 映射拒绝缺失 / 多余节点，并检查名义输出类型；
+`validate_complete_experiment_bindings(...)` 再要求每个 ExperimentSpec 恰有一个 plan、每个计划节点恰有一个输出，以及 direct dependency ref/hash 一致。条件策略计划没有现有核心规格表示，producer 拒绝该输出类型。
+
+旧 `validate_experiment_bindings(...)` 保留兼容，仍只校验调用方所交 outputs，不能用于声明全集完整。新 API 只提供集合完整性与直接绑定证据，不校验传递依赖闭包或算子语义，不持久化 admission、不注册 trial、不授权执行。六类 operator 仍关闭，`TypedPlan.runnable` 仍恒为 `False`。测试已新增 / 更新但未运行，待统一验收。
+
+## P7 non-runnable lowering（`typed_plan_lowering.py`，ADR-0082）
+
+`lower_typed_plan(plan, resolution=..., created_at=...)` 只接受与 plan hash 对应的直接引用解析结果，并要求调用方明确给出带时区的 `created_at`。当前只 lower `interaction`：两个 FeatureSpec 按同一 evaluation time 做严格 product，缺失传播为 `None`，不允许 bool / float / 静默舍入；结果是 `FeatureSpec`，目标 Provider key 为 `p7_interaction_product@1.0.0`。该 Provider 本身尚未实现或登记。输出为 node ID 映射，随后交给 `produce_lowered_output_bindings(...)` 做 ADR-0078 全集与类型校验。
+
+`conditioning`、`temporal`、`transformation`、`ensemble`、`negation` 在 ADR-0082 中为 OPEN；混有这些节点的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner、不改变 `compile_plan` 的拒绝行为；`TypedPlan.runnable` 永远为 `False`。

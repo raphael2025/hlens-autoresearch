@@ -28,6 +28,7 @@ Validation Pipeline：最小流水线 G0 – G3 + G5（Phase 4，[ADR-0037](../.
 | `sealed_oos.py` | `SealedOosVault`（固定日期窗口，开封前锁定，每族只开封一次，全局预算 `max_unsealings` 为必填显式参数，每次开封只可评估一次；`claim_evaluation` 在任何封存样本离开前即记为已评估，返回一次性 `SealedEvaluation`）、`UnsealingLedger` Protocol + 内存实现 `InMemoryUnsealingLedger` + 落盘实现 `DurableUnsealingLedger`（见下） |
 | `costs.py` | 成本模型 v1 的应用：净收益、盈亏平衡成本倍数、Profile 绑定检查 |
 | `stats.py` | 有效独立样本（重叠区间连通分量数）、HAC t 检验、多重检验校正（`bonferroni` / `sidak`；其它方法拒绝） |
+| `verification.py` | ADR-0013 报告 ↔ Profile 核验：`verify_report(report, profile)` 逐门核对阈值来源是所绑定 Profile 的字段且值（含精确值）相等、`param:` 来源未覆盖 Profile 已有字段（C-A4）、判定与 metric 的比较方向一致；只列出差异、不改报告（CODE_COMPLETE / DEBUG_PENDING）。Promotion 以 `report_threshold_mismatch` 拒绝任何差异。门集合完整性（Profile 要求哪些门）无已接受规则，未检查 |
 | `calibration.py` | 空模型校准报告框架：`RandomWalkMarket` 上的假阳性率 / 检出率（`FRAMEWORK_ONLY_NOT_CALIBRATED`，不提出任何数值） |
 
 门清单、阈值来源与已知缺口见 ADR-0037、ADR-0041 与 docs/architecture/07-validation.md §2.2 / §2.3。

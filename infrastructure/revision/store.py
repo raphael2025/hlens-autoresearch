@@ -35,7 +35,7 @@ compare or select revisions.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol, Self
@@ -264,10 +264,12 @@ type IngestOutcome = ArchiveIngested | ArchiveRejected
 
 
 class RevisionCatalog(Protocol):
-    """The catalog capability D2 needs: the core Protocol plus C3's bounded projection read.
+    """The catalog capability D2 needs: the core Protocol plus C3's bounded projection reads.
 
     ``PyIcebergCatalogAdapter`` satisfies it. Declaring it here keeps the store testable with a
     proxy (crash / race injection) without widening the frozen ``CatalogAdapter`` Protocol.
+    ``scan_column_batches`` streams the same projection as ``scan_columns`` as Arrow record
+    batches; callers close the returned iterator (when it offers ``close``) if they stop early.
     """
 
     def load_table(self, table: str) -> TableInfo | None: ...
@@ -285,6 +287,15 @@ class RevisionCatalog(Protocol):
         limit: int | None = ...,
         snapshot_id: str | None = ...,
     ) -> pa.Table: ...
+
+    def scan_column_batches(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = ...,
+        snapshot_id: str | None = ...,
+    ) -> Iterator[pa.RecordBatch]: ...
 
     def max_int64(
         self,

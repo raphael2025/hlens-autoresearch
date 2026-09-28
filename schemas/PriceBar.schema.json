@@ -3,7 +3,7 @@
   "description": "一根价格 bar：`[interval_start, interval_end)`，`available_time >= interval_end`。\n\n`volume`（ADR-0054 §4，可选）：该 bar 的成交数量（`>= 0`）。它是 bar 收盘后才知道的量，\n只被模拟器用来界定\"这根 bar 市场能承载多少\"，**从不**进入策略或风控的决策输入\n（`StrategyRequest` / `RiskRequest` 不含 `PriceBar`），因此不构成 C-L1 泄漏。为 `None` 时\n从载荷中省略：既有 `PriceBar` 与 `BacktestRequest` 的内容哈希逐位不变。",
   "properties": {
     "schema_version": {
-      "default": "2.2.0",
+      "default": "2.3.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

@@ -8,10 +8,11 @@ packet is being built. See ADR-0071 for the evidence limits and trust boundary.
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
 
+from apps.worker.loop import LoopRecord
 from core.domain.base import canonical_json, content_hash
 from research.loop.durable import BETWEEN_ROUNDS, ROUND_MEMORY, DurableState
 from research.persistence.journal import GENESIS_HASH, JournalEntry
@@ -20,6 +21,7 @@ __all__ = [
     "FailedRoundReviewPacket",
     "FailedRoundReviewRefused",
     "failed_round_review_packet",
+    "review_packet_payload",
 ]
 
 
@@ -81,7 +83,30 @@ def failed_round_review_packet(
     if not state.audit.verify():
         raise FailedRoundReviewRefused("the in-memory audit records do not verify")
 
-    records = state.audit.records
+    # Read-only detached snapshot of the verified TrialLedger journal (never its writable journal).
+    ledger_snapshot = state.memory.ledger.journal_snapshot()
+    payload = review_packet_payload(
+        state.audit.records,
+        state.checkpoint.journal_snapshot().entries,
+        None if ledger_snapshot is None else ledger_snapshot.entries,
+    )
+    if payload is None:
+        return None
+    wire = canonical_json(payload)
+    return FailedRoundReviewPacket(_canonical_payload=wire, packet_hash=content_hash(payload))
+
+
+def review_packet_payload(
+    records: Sequence[LoopRecord],
+    memory_entries: Sequence[JournalEntry],
+    ledger_entries: Sequence[JournalEntry] | None,
+) -> dict[str, Any] | None:
+    """The packet payload of ``failed_round_review_packet``, from explicit verified views.
+
+    Pure: the durable opener (ADR-0083) calls it with the audit records, memory journal lines and
+    TrialLedger entries **as they stood when a retry was prepared**, and requires the retry
+    PREPARE's saved packet to equal it byte for byte. ``ledger_entries=None``: no durable ledger.
+    """
     if not records:
         return None
     record = records[-1]
@@ -94,7 +119,6 @@ def failed_round_review_packet(
     if record.round_index != len(records) - 1:
         raise FailedRoundReviewRefused("the final record index is inconsistent")
 
-    memory_entries = state.checkpoint.journal_snapshot().entries
     round_entries = tuple(entry for entry in memory_entries if entry.type == ROUND_MEMORY)
     if len(round_entries) != len(records):
         raise FailedRoundReviewRefused("round checkpoints do not match the audit record count")
@@ -110,11 +134,8 @@ def failed_round_review_packet(
 
     checkpoint = round_entries[record.round_index]
     checkpoint_payload = checkpoint.payload
-    # Read-only detached snapshot of the verified TrialLedger journal (never its writable journal).
-    ledger_snapshot = state.memory.ledger.journal_snapshot()
-    if ledger_snapshot is None:
+    if ledger_entries is None:
         raise FailedRoundReviewRefused("the TrialLedger has no verified append-only journal")
-    ledger_entries = ledger_snapshot.entries
 
     current_seq, current_hash = _ledger_position(checkpoint_payload, "failed-round checkpoint")
     previous_seq = 0
@@ -182,8 +203,7 @@ def failed_round_review_packet(
             "complete per-trial outcomes do not."
         ),
     }
-    wire = canonical_json(payload)
-    return FailedRoundReviewPacket(_canonical_payload=wire, packet_hash=content_hash(payload))
+    return payload
 
 
 def _ledger_position(payload: Mapping[str, Any], label: str) -> tuple[int, str]:
@@ -200,7 +220,7 @@ def _ledger_position(payload: Mapping[str, Any], label: str) -> tuple[int, str]:
     return seq, hash_
 
 
-def _verify_boundary(entries: tuple[JournalEntry, ...], seq: int, hash_: str, label: str) -> None:
+def _verify_boundary(entries: Sequence[JournalEntry], seq: int, hash_: str, label: str) -> None:
     if seq > len(entries):
         raise FailedRoundReviewRefused(f"{label} is beyond the available TrialLedger journal")
     observed = entries[seq - 1].hash if seq else GENESIS_HASH

@@ -30,6 +30,7 @@ __all__ = [
     "FillRecord",
     "KillSwitchTrip",
     "LadderGateRecord",
+    "LiveAccessAttempt",
     "MarkPrice",
     "MarkRecord",
     "OrderRecord",
@@ -253,3 +254,19 @@ class LadderGateRecord(_Record):
         if self.granted and self.to_stage in LIVE_STAGES:
             raise ValueError("a live ladder rung cannot be granted in this build (ADR-0046)")
         return self
+
+
+class LiveAccessAttempt(_Record):
+    """One call made against the reserved live venue port, always refused (ADR-0084).
+
+    Written by ``apps.execution.live_venue.UnconfiguredLiveVenue`` before it raises
+    ``LiveExecutionRefused``: the call is recorded first, the refusal happens second, so nothing
+    a caller does against the reserved live interface goes unaudited even though it never reaches
+    a real venue (this build has none).
+    """
+
+    sequence: int = Field(ge=0)
+    method: str = Field(min_length=1)
+    deployment_id: str | None = None
+    reason: str = Field(min_length=1)
+    attempted_at: UtcDatetime

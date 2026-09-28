@@ -31,6 +31,18 @@ export type DeviationSummaryPayload = {
   tracking_error: string | null;
 };
 
+export type DeclaredScopePayload = {
+  scope_schema_version: "1.0.0";
+  validation_profile: string;
+  validation_profile_hash: string;
+  validation_report_hash: string;
+  venue: string;
+  symbol: string;
+  timeframe: string;
+  research_class: string;
+  scope_hash: string;
+};
+
 export type PaperDeviationPayload = {
   kind: string;
   schema_version: string;
@@ -42,6 +54,7 @@ export type PaperDeviationPayload = {
   reference_result_hash: string;
   reference_request_hash: string;
   reference_provider: string;
+  declared_scope?: DeclaredScopePayload;
   instruments: string[];
   marks: DeviationMarkPayload[];
   summary: DeviationSummaryPayload;
@@ -58,11 +71,28 @@ export function asPaperDeviationPayload(
   if (
     payload === undefined ||
     payload.kind !== "paper_deviation" ||
+    !["1.0.0", "2.0.0"].includes(String(payload.schema_version)) ||
     typeof payload.deviation_hash !== "string" ||
     !Array.isArray(payload.marks) ||
     !isRecord(payload.summary)
   ) {
     return null;
+  }
+  if (payload.schema_version === "2.0.0") {
+    const scope = payload.declared_scope;
+    if (
+      !isRecord(scope) || scope.scope_schema_version !== "1.0.0" ||
+      typeof scope.scope_hash !== "string" || !/^[0-9a-f]{64}$/.test(scope.scope_hash) ||
+      typeof scope.validation_profile !== "string" ||
+      typeof scope.validation_profile_hash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(scope.validation_profile_hash) ||
+      typeof scope.validation_report_hash !== "string" ||
+      !/^[0-9a-f]{64}$/.test(scope.validation_report_hash) ||
+      typeof scope.venue !== "string" ||
+      typeof scope.symbol !== "string" ||
+      typeof scope.timeframe !== "string" ||
+      typeof scope.research_class !== "string"
+    ) return null;
   }
   return payload as unknown as PaperDeviationPayload;
 }

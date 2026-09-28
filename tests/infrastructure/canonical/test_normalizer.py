@@ -410,9 +410,7 @@ def test_a_crash_between_batches_resumes_with_the_first_base_and_time(
     assert later.calls == 0 and out.knowledge_time == K_NORM and out.arrival_seq_base == 0
     rows = h.rows(c.TRADES)
     assert len(rows) == 3 and {row["knowledge_time"] for row in rows} == {K_NORM}
-    assert [commit.replayed for commit in out.commits] == [True] * crash_after + [False] * (
-        3 - crash_after
-    )
+    assert out.batch_count == 3 and out.replayed_batch_count == crash_after
     # Same result as one uninterrupted run in an independent catalog.
     with ss.sqlite_harness(h.tmp_path / "reference") as ref:
         ref_archive, _, _ = _pair(ref)
@@ -573,11 +571,12 @@ def test_a_rest_unit_the_store_has_not_finished_is_refused_until_it_has(
         ss.agg_request("req-a")
     )
     out = n.normalize_unit(c.REST_AGGS.table, response["revision_id"])
-    assert len(out.revision_ids) == 3 and clock.calls == 1
+    revision_ids = tuple(n.iter_revision_ids(out))
+    assert len(revision_ids) == 3 and clock.calls == 1
     assert sorted(row["venue_trade_id"] for row in h.rows(c.TRADES)) == ["100", "101", "102"]
     assert [
         row["revision_id"] for row in n.verify_unit(c.REST_AGGS.table, response["revision_id"])
-    ] == list(out.revision_ids)
+    ] == list(revision_ids)
 
 
 def test_a_plan_recording_another_unit_size_fails_closed(h: RestHarness) -> None:
@@ -636,7 +635,7 @@ def test_recovery_follows_the_committed_plan_whatever_the_configuration(
     verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
         c.ARCHIVE_AGGS.table, archive
     )
-    assert [row["revision_id"] for row in verified] == list(out.revision_ids)
+    assert [row["revision_id"] for row in verified] == list(n.iter_revision_ids(out))
 
 
 @pytest.mark.parametrize("delete", ["all", "one"])
@@ -781,7 +780,8 @@ def test_an_empty_rest_page_is_a_unit_without_rows(h: RestHarness) -> None:
     out = c.normalizer(h, clock=StepClock(start=K_NORM)).normalize_unit(
         c.REST_AGGS.table, stored.pages[0].response_revision_id
     )
-    assert out.revision_ids == () and out.commits == () and h.rows(c.TRADES) == []
+    assert out.revision_count == out.batch_count == out.replayed_batch_count == 0
+    assert tuple(c.normalizer(h).iter_revision_ids(out)) == () and h.rows(c.TRADES) == []
 
 
 # =========================================================================================
@@ -797,8 +797,8 @@ class _ReadHook(ProxyCatalog):
     reads: int = 0
     table: str = field(default=c.ARCHIVE_AGGS.table)
 
-    def scan_columns(self, table: str, **kwargs: Any) -> Any:
-        result = self.inner.scan_columns(table, **kwargs)
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_column_batches(table, **kwargs)
         if (
             table == self.table
             and "archive_revision_id" in repr(kwargs.get("row_filter"))
@@ -824,7 +824,7 @@ def test_a_head_moved_mid_read_does_not_move_the_call(h: RestHarness) -> None:
     out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy).normalize_unit(
         c.ARCHIVE_AGGS.table, archive
     )
-    assert proxy.reads >= 2 and len(out.revision_ids) == 1
+    assert proxy.reads >= 2 and len(tuple(c.normalizer(h).iter_revision_ids(out))) == 1
 
 
 # =========================================================================================
@@ -839,12 +839,24 @@ class _ScanLog(ProxyCatalog):
     scans: list[tuple[str, int, int]] = field(default_factory=list)
     hook: Any = None
 
-    def scan_columns(self, table: str, **kwargs: Any) -> Any:
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Any:
         if self.hook is not None:
             self.hook(table, kwargs)
-        result = self.inner.scan_columns(table, **kwargs)
-        self.scans.append((table, len(kwargs["columns"]), result.num_rows))
-        return result
+        batches = self.inner.scan_column_batches(table, **kwargs)
+
+        def tracked() -> Any:
+            count = 0
+            try:
+                for batch in batches:
+                    count += batch.num_rows
+                    yield batch
+            finally:
+                close = getattr(batches, "close", None)
+                if callable(close):
+                    close()
+                self.scans.append((table, len(kwargs["columns"]), count))
+
+        return tracked()
 
 
 def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None:
@@ -853,7 +865,8 @@ def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None
     log = _ScanLog(h.adapter)
     out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=log, microbatch_rows=2)\
         .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
-    assert [commit.row_count for commit in out.commits] == [2, 2, 2, 1]
+    assert out.batch_count == 4
+    assert [count for _, count in _unit_batches(h, archive)] == [2, 2, 2, 1]
     wide = [(table, rows) for table, width, rows in log.scans if width > 3]
     # Canonical rows are only ever read one window (or its block slice) at a time.
     assert max(rows for table, rows in wide if table == c.TRADES.table) <= 2
@@ -861,7 +874,7 @@ def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None
     # the D2 batch are bounded by D2's microbatch, not by this unit).
     assert sum(1 for table, rows in wide if table == c.ARCHIVE_AGGS.table and rows <= 2) >= 8
     rows = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
-    assert [row["revision_id"] for row in rows] == list(out.revision_ids)
+    assert [row["revision_id"] for row in rows] == list(c.normalizer(h).iter_revision_ids(out))
     assert [row["arrival_seq"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
 
 
@@ -875,7 +888,7 @@ def test_windows_and_one_window_normalize_identically(h: RestHarness) -> None:
     r = large.normalize_unit(c.REST_AGGS.table, response)
     rows = {row["revision_id"]: row for row in h.rows(c.TRADES)}
     for out in (a, r):
-        assert len(out.revision_ids) == 5
+        assert out.revision_count == len(tuple(c.normalizer(h).iter_revision_ids(out))) == 5
     # Same market content per key, lineage and block differ only (ADR-0028 §1).
     by_key: dict[str, set[str]] = {}
     for row in rows.values():
@@ -901,7 +914,7 @@ def test_another_writer_mid_proof_restarts_the_unit_without_double_writes(h: Res
     clock = StepClock(start=K_NORM)
     out = c.normalizer(h, clock=clock, adapter=_ScanLog(h.adapter, hook=interleave))\
         .normalize_unit(c.ARCHIVE_AGGS.table, archive)  # fmt: skip
-    assert fired and len(out.revision_ids) == 3 and out.arrival_seq_base == c.STRIDE
+    assert fired and out.revision_count == 3 and out.arrival_seq_base == c.STRIDE
     assert len(h.rows(c.TRADES)) == 6
     # The first commit lost its expected parent before anything of the unit was committed, so
     # the whole unit restarted with a new block and a new reading (ADR-0028 §6: the old reading
@@ -929,8 +942,16 @@ def test_proof_windows_never_split_a_position_and_cover_all() -> None:
         ([None, 2, 3], [1, 2, 3], False),
     ],
 )
-def test_same_numbers(values: list[int | None], expected: list[int], ok: bool) -> None:
-    assert nz._same_numbers(pa.array(values, type=pa.int64()), expected) is ok
+def test_same_index_numbers(values: list[int | None], expected: list[int], ok: bool) -> None:
+    index = nz._PositionIndex()
+    try:
+        index.add_batch(value for value in values if value is not None)
+        index.finalize()
+        assert nz._same_index_numbers(
+            index, len(values), any(value is None for value in values), expected
+        ) is ok
+    finally:
+        index.close()
 
 
 def test_batch_windows_are_rank_slices_of_the_positions() -> None:
@@ -968,15 +989,16 @@ def test_a_rest_unit_lacking_positions_another_page_delivered_is_normalized(
     ]
     assert owned == [2]
     n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=1)
-    assert len(n.normalize_unit(c.REST_AGGS.table, a).revision_ids) == 3
+    assert n.normalize_unit(c.REST_AGGS.table, a).revision_count == 3
     out = n.normalize_unit(c.REST_AGGS.table, b.response_revision_id)
-    [row] = [r for r in h.rows(c.TRADES) if r["revision_id"] == out.revision_ids[0]]
+    [revision_id] = n.iter_revision_ids(out)
+    [row] = [r for r in h.rows(c.TRADES) if r["revision_id"] == revision_id]
     assert out.arrival_seq_base is not None
     assert row["arrival_seq"] == out.arrival_seq_base + 3 and row["venue_trade_id"] == "103"
     assert n.normalize_unit(c.REST_AGGS.table, b.response_revision_id).replayed
     assert [
         r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)
-    ] == list(out.revision_ids)
+    ] == [revision_id]
 
 
 def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> None:
@@ -1085,7 +1107,7 @@ def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarne
         c.ARCHIVE_AGGS.table, archive
     )
     full = n.verify_unit(c.ARCHIVE_AGGS.table, archive)
-    assert [row["revision_id"] for row in full] == list(out.revision_ids)
+    assert [row["revision_id"] for row in full] == list(n.iter_revision_ids(out))
     part = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={committed[0]["arrival_seq"]})
     assert part == full[:2]
 

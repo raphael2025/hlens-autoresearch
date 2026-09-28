@@ -42,7 +42,9 @@ export function asStateDiagnosticsPayload(
     !Array.isArray(payload.runs) ||
     ("source_result_hash" in payload &&
       payload.source_result_hash !== null &&
-      typeof payload.source_result_hash !== "string")
+      (typeof payload.source_result_hash !== "string" ||
+        payload.source_result_hash.length !== 64 ||
+        /[^0-9a-f]/.test(payload.source_result_hash)))
   ) {
     return null;
   }

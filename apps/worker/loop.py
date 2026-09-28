@@ -82,6 +82,11 @@ continues an audit refuses any record made under another ``LoopBudget`` (``budge
 budget of a running loop is never changed on a restart — not raised, not lowered. Raising a budget
 is a human decision and takes a new audit / ``loop_id``.
 
+**Failed-round retry** (ADR-0083). The ADR-0070 fail-stop of a failed experiment round is lifted
+only by ``authorize_failed_round_retry`` with a composition root's durable retry admission receipt
+naming the audit head (``FailedRoundRetryReceipt``). It never runs, schedules or retries anything
+itself; the next round is started explicitly and runs what the composition admitted.
+
 **Measured time.** Every ``stage.run`` is timed with a monotonic wall clock and the process CPU
 clock (``apps.worker.metrics``). The measurement is kept **outside** the hashed record, in
 ``ResearchLoop.metrics`` and on ``research_loop.metrics``; the budget still charges
@@ -120,6 +125,7 @@ is decided by the research loop that files the FailureRecord.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass, field, replace
@@ -165,6 +171,7 @@ __all__ = [
     "VALIDATION_FAILED_EVIDENCE",
     "AuditWriteScope",
     "AutomationForbidden",
+    "FailedRoundRetryReceipt",
     "LifecycleGuard",
     "LoopAuditCorrupted",
     "LoopAuditLog",
@@ -597,6 +604,33 @@ class LoopStage(Protocol):
     def estimate(self, ctx: RoundContext) -> StageUsage: ...
 
     def run(self, ctx: RoundContext) -> StageResult: ...
+
+
+class FailedRoundRetryReceipt(Protocol):
+    """A composition root's durable proof that a human admitted a retry of the failed round
+    (ADR-0083; e.g. ``research.loop.durable.RetryAdmissionReceipt``). The worker never imports
+    the research plane: it checks the shape and that the receipt names its audit head."""
+
+    @property
+    def retry_id(self) -> str: ...
+
+    @property
+    def failed_record_hash(self) -> str: ...
+
+    @property
+    def commit_seq(self) -> int: ...
+
+    @property
+    def commit_hash(self) -> str: ...
+
+    @property
+    def checkpoint_seq(self) -> int: ...
+
+    @property
+    def checkpoint_hash(self) -> str: ...
+
+
+_SHA256: Final = re.compile(r"^[0-9a-f]{64}$")
 
 
 @dataclass(frozen=True, slots=True)
@@ -1160,6 +1194,53 @@ class ResearchLoop:
     def recovery_required(self) -> str | None:
         """Human-review reason when an experiment batch failed after possible partial effects."""
         return self._recovery_required
+
+    def authorize_failed_round_retry(self, receipt: FailedRoundRetryReceipt) -> None:
+        """Lift the ADR-0070 fail-stop for one durable ADR-0083 retry admission (explicit only).
+
+        Accepted only while the loop is stopped for exactly that reason — the audit head is the
+        failed experiment round, no round is open, the loop neither halted nor stopped — and the
+        receipt names that audit head. Changes nothing but the in-memory run gate: no job is
+        submitted, nothing runs, no scheduler is involved; the caller runs the next round
+        explicitly. A second call finds no failed round awaiting review and is refused.
+        """
+        if self._recovery_required is None:
+            raise LoopHalted("no failed experiment round awaits a retry admission")
+        if self._stopped is not None or self._halted is not None:
+            raise LoopHalted("a stopped or halted loop cannot resume through a retry admission")
+        records = self._audit.records
+        if (
+            self._audit.open_round is not None
+            or not records
+            or _experiment_recovery_reason(records[-1]) is None
+        ):
+            raise LoopHalted("the audit head is not the failed experiment round")
+        try:
+            fields = (
+                receipt.retry_id,
+                receipt.failed_record_hash,
+                receipt.commit_seq,
+                receipt.commit_hash,
+                receipt.checkpoint_seq,
+                receipt.checkpoint_hash,
+            )
+        except AttributeError as exc:
+            raise LoopHalted("a retry needs a durable retry admission receipt") from exc
+        retry_id, failed, commit_seq, commit_hash, checkpoint_seq, checkpoint_hash = fields
+        if (
+            not all(
+                isinstance(value, str) and _SHA256.fullmatch(value) is not None
+                for value in (retry_id, failed, commit_hash, checkpoint_hash)
+            )
+            or type(commit_seq) is not int
+            or commit_seq < 2
+            or type(checkpoint_seq) is not int
+            or checkpoint_seq < 2
+        ):
+            raise LoopHalted("the retry admission receipt is malformed")
+        if failed != records[-1].record_hash:
+            raise LoopHalted("the retry admission receipt names another failed round")
+        self._recovery_required = None
 
     @property
     def metrics(self) -> tuple[RoundMetrics, ...]:

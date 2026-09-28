@@ -623,7 +623,7 @@ def test_current_schema_export_is_complete_and_committed(tmp_path: Path) -> None
     `GitCodeRevision` 本身的登记由 `test_git_code_revision_is_registered_and_exported` 断言。
     """
     written = export_json_schemas(tmp_path)
-    assert len(CONTRACT_MODELS) == 135
+    assert len(CONTRACT_MODELS) == 141
     assert len(written) == len(CONTRACT_MODELS)
     committed = {path.name for path in CURRENT_SCHEMA_DIR.glob("*.schema.json")}
     assert committed == {path.name for path in written.values()}

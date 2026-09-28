@@ -7,7 +7,12 @@
   ``BacktestProvider`` run net of switching costs: the router's own ``BacktestResult`` (W1).
 """
 
-from research.router.deviation import DeviationError, PaperDeviation, paper_deviation
+from research.router.deviation import (
+    DeviationError,
+    PaperDeviation,
+    paper_deviation,
+    validate_scope_bound_payload,
+)
 from research.router.evidence import (
     EligibilityCheck,
     EligibilityEvidence,
@@ -58,6 +63,7 @@ __all__ = [
     "check_report",
     "combine_targets",
     "paper_deviation",
+    "validate_scope_bound_payload",
     "paper_run",
     "paper_run_or_stop",
     "report_store_resolver",

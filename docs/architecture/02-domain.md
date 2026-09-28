@@ -1,9 +1,10 @@
 # 02 — Domain Model
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
-> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.2.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.3.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
 > ADR-0018 在其内收紧，不升 major）；2.1.0 是 ADR-0052 §4 的 minor（只加可选字段）；2.2.0 是 ADR-0055 的 minor
-> （知识标签 / 资产检索，只加可选字段），已发布版本见 §3.3。
+> （知识标签 / 资产检索，只加可选字段）；2.3.0 是 ADR-0077 的 minor（只新增有界 Dataset evidence manifest 模型，
+> 已发布模型不变），已发布版本见 §3.3。
 
 ## 1. 统一标识与版本化
 
@@ -251,6 +252,25 @@ universe 与 `ResearchDatasetManifest` 见 §2.3（批次 B2）。
 自身的 `DatasetRef`——这是尚未实现的接口义务，契约未改动 `ReproducibilityTuple`。
 ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 #12 属批次 F 与 Phase 4 / 5，不由本批单元测试宣称完成。
 
+**有界 v3 evidence manifest（[ADR-0077](../adr/0077-bounded-research-dataset-evidence.md) DQ-1 = A，自 2.3.0，additive）**：
+同一模块追加 6 个模型（全部 `_MODEL_SINCE = 2.3.0`，2.0.0 ~ 2.2.0 信封中出现即拒绝）；上表 13 个模型——含
+`ResearchDatasetManifest`（"v2 形态"）——的字段、校验、Schema 与内容哈希不变，两种 manifest 并存、互不升级。
+"v3" 是 manifest 形态代号，不是契约 major。
+
+| 模型 | 作用 | 契约层不变量 |
+|---|---|---|
+| `ResearchDatasetEvidenceManifest` | 有界 Research Dataset 审计清单：只含固定大小字段，成员 / 排除 / lineage / 证据缺口 / 质量报告 / chunk 证明经内容寻址的有序 evidence stream 承诺 | `dataset` / `point_in_time` / `universe_spec` 规则同 v2（`research_dataset`、表不在上游、上游含 listing 与质量表）；`rule`、`data_type`（小写标识符）、`selection_id`（可作 chunk batch id 前缀，≤ 239 字符）全部必填；`row_count ≥ 1`（空选择拒绝），`chunk_count = ceil(row_count / chunk_rows)`；`evidence` 六种 stream 恰好各一项、按名规范排序；`chunk_proofs` 记录数 = `chunk_count`，`lineage` 与 `quality_reports` 非空 |
+| `DatasetRuleBinding` | dataset 规则绑定 `rule_id + SemVer + rule_hash` | 规则 spec 的排序 / chunk / leaf / fan-out 参数随 `rule_hash` 进入 manifest 身份 |
+| `EvidenceStreamRef` | 一条 stream 的根承诺：`stream`、`format`（`hlens.dataset.evidence-jsonl@1.0.0`）、`record_count`、`leaf_count`、`depth`、`root` | 空流无叶、非空流至少一叶、叶数 ≤ 记录数；`depth ≥ 1`，叶数 ≤ 1 时 `depth = 1` |
+| `EvidenceObjectRef` | 叶 / 索引对象的内容身份 `key + sha256 + size` | 不含 `uri`；`key` 必须等于 `research/dataset-evidence/v1/<sha256>.jsonl`；`size ≥ 1` |
+| `DatasetQualityReportRef` | `quality_reports` 流的记录：`report_id` + `listing` 或 `(symbol, day)` | `listing` 不带 symbol / day，`symbol_day` 二者必带；流内序 listing 在前、再按 `(symbol, day)` |
+| `DatasetChunkProof` | `chunk_proofs` 流的记录：`chunk_index`、`batch_id`、`snapshot_id`、`first_row_ordinal`、`row_count`、`batch_fingerprint` | `batch_id = <selection_id>.chunk-<十位零填充 chunk_index>`；`row_count ≥ 1` |
+
+流内其余记录复用 v2 的 `UniverseMember`、`UniverseExclusion`、`SelectedRevisionLineage`、`AvailabilityEvidenceGap`。
+**诚实边界**：契约只证明结构。`selection_id` 的派生关系、规则 / universe 是否已登记、对象是否存在且字节匹配、
+流与 chunk 行内容是否就是输入的派生、v2 在模型内完成的跨字段集合检查（成员 / 排除互斥、listing 引用归属、
+缺口引用的报告在报告流中），在 v3 中都属 infrastructure 的 streaming verifier（ADR-0077 §5 / §6），尚未实现。
+
 ### 2.4 Data Plane Adapter 的 Protocol 与 DTO（ADR-0017 / 0021 / 0022 / 0023 §7，Phase 1 B3）
 
 `core/contracts/storage.py`、`catalog.py`、`collector.py` 交付三个基础设施 Adapter 的可执行 `typing.Protocol` 与 15 个 DTO
@@ -489,13 +509,13 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
-当前 `CONTRACT_SCHEMA_VERSION = 2.2.0`；major 2 内已发布的版本为
-`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0", "2.2.0")`。模型校验**只接受同 major**（`2.x`），
+当前 `CONTRACT_SCHEMA_VERSION = 2.3.0`；major 2 内已发布的版本为
+`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0", "2.2.0", "2.3.0")`。模型校验**只接受同 major**（`2.x`），
 其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（135 份） | `schemas/*.schema.json` |
+| 当前 Schema（141 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -510,16 +530,17 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 
 **按记录版本重放（ADR-0052 Implementation note — versioned replay）**：2.0.0 载荷保留自己的信封，读取不改写版本，
 内容哈希逐位不变（`tests/golden/v2_0_0/`）；2.1.0 知识载荷同理（`tests/golden/v2_1_0/`，ADR-0055）。
-**当前版本新建、未显式给出信封的对象取 2.2.0，其内容哈希与 2.1.0 孪生对象不同**——信封参与哈希，这是 minor 的预期后果，
+**当前版本新建、未显式给出信封的对象取 2.3.0，其内容哈希与 2.2.0（及更早）孪生对象不同**——信封参与哈希，这是 minor 的预期后果，
 不得描述为"哈希不变"；只有保持信封版本时，省略空的新字段才使载荷形状与哈希逐位不变。已持久化的行 / 对象（Phase 1 各表的 `contract_schema_version` 列、
 manifest 的 `schema_version`）按其**提交时记录的版本**重建与比较；一个写入组（Canonical 单元、REST response 及其
 elements、archive revision 及其行、exchangeInfo snapshot、listing 批次、边、manifest）只有一个版本，未发布版本或
 组内混版一律 fail closed；只有无任何已提交成员的新组按当前版本写入。重建经过的深层对象用
 `contract_schema_version_scope(<记录版本>)` 构造（只影响缺省信封，只接受已发布版本，新组不得在其中写入）。
 代码中登记、被持久化数据按内容引用的身份（Phase 1 的 `PolicyBinding` / `SourceBinding` 常量、登记的 universe spec）
-保持其发布时的信封（2.0.0）；由 spec 投影出的 `UniverseSpecBinding` 携带 spec 的信封。同表 2.0.0 与 2.1.0 的行
+保持其发布时的信封（2.0.0）；由 spec 投影出的 `UniverseSpecBinding` 携带 spec 的信封。同表不同版本（2.0.0 ~ 2.3.0）的行
 并存，选择与 precedence 不读信封，从行重建的记录保留行上的版本。Phase 3 物理事件表 `event.events` 同样逐行记录运行的
-`contract_schema_version`，按记录版本重建（一个运行 = 一个写入组）。
+`contract_schema_version`，按记录版本重建（一个运行 = 一个写入组）。2.3.0 升版前的盘点（ADR-0077 §6.2.2）：上述
+Phase 1 登记身份与知识种子均已显式钉住信封，重放路径均按记录版本，没有随默认信封漂移的已登记身份。
 
 **新内容的引入版本**（ADR-0052 §4、Codex K3）：`Contract._FIELDS_SINCE`（字段 → 版本；字段"存在"= 出现在载荷中：非 `None`
 且未被其 `exclude_if` 省略）、`_VALUES_SINCE`（已有字段的新取值 → 版本）与 `_MODEL_SINCE`（整个模型 → 版本）；信封早于引入版本即拒绝。
@@ -529,8 +550,10 @@ elements、archive revision 及其行、exchangeInfo snapshot、listing 批次�
 2.2.0 引入（ADR-0055）：`KnowledgeItem.tags` / `assets` 与 `KnowledgeQuery.tags_all` / `assets_any`（空元组时省略出载荷，
 需 Pydantic ≥ 2.12 的 `exclude_if`）；2.0.0 / 2.1.0 的 `KnowledgeResult` 嵌套带 `tags` / `assets` 的条目同样拒绝。
 仓库已审阅的知识种子显式记录 `schema_version`，不随当前版本漂移。
+2.3.0 引入（ADR-0077）：整模型 `ResearchDatasetEvidenceManifest`、`DatasetRuleBinding`、`EvidenceStreamRef`、
+`EvidenceObjectRef`、`DatasetQualityReportRef`、`DatasetChunkProof`（`_MODEL_SINCE`，见 §2.3）；已有模型无新字段或新取值。
 
-**"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.3.0` 这样的版本号
+**"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.4.0` 这样的版本号
 **可被识别**，但这不是前向兼容承诺——载荷里出现当前实现未知字段仍然 fail closed
 （`extra="forbid"`）。不得声称任意未来 minor 都能读。
 

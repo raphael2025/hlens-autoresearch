@@ -116,6 +116,18 @@ class ProxyCatalog:
             table, columns=columns, row_filter=row_filter, limit=limit, snapshot_id=snapshot_id
         )
 
+    def scan_column_batches(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
+        snapshot_id: str | None = None,
+    ) -> Iterator[pa.RecordBatch]:
+        return self.inner.scan_column_batches(
+            table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+        )
+
     def max_int64(
         self,
         table: str,
