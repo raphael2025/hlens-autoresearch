@@ -295,6 +295,29 @@ def test_scope_binding_is_required_and_fail_closed() -> None:
         paper_deviation(_run(), reference(), validation_profile=profile, validation_report=no_g5)
 
 
+def test_subject_and_profile_ref_comparisons_ignore_the_envelope_schema_version() -> None:
+    """P8 ``subject`` / ``validation_profile`` binding is checked via ``Ref.target_identity()``
+    (ADR-0018 §D-26.5): a Ref whose Contract envelope ``schema_version`` differs from the
+    current default, but whose ``(kind, name, version)`` agree, is still the same target. A
+    different ``name`` (or ``version``) is still refused."""
+    profile, report = scope_evidence()
+    same_target_other_envelope = Ref(
+        kind=Kind.STRATEGY, name="vol_router", version="1.0.0", schema_version="2.0.0"
+    )
+    assert same_target_other_envelope.schema_version != report.subject.schema_version
+    assert same_target_other_envelope != report.subject  # structural equality still differs
+    accepted = report.model_copy(update={"subject": same_target_other_envelope})
+    result = paper_deviation(
+        _run(), reference(), validation_profile=profile, validation_report=accepted
+    )
+    assert isinstance(result, PaperDeviation)
+
+    different_name = same_target_other_envelope.model_copy(update={"name": "other_router"})
+    rejected = report.model_copy(update={"subject": different_name})
+    with pytest.raises(DeviationError, match="not about this router"):
+        paper_deviation(_run(), reference(), validation_profile=profile, validation_report=rejected)
+
+
 def test_scope_payload_validation_rejects_legacy_and_tampering() -> None:
     payload = deviation().to_payload()
     scope = scope_kwargs()

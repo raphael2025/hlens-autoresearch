@@ -45,7 +45,7 @@ from typing import Final
 
 from core.contracts.strategy import BacktestRequest, BacktestResult
 from core.contracts.validation_profile import ValidationProfile
-from core.domain.base import Kind, Ref, content_hash
+from core.domain.base import Kind, content_hash
 from core.domain.research import ValidationReport, Verdict
 from research.router.paper import MONEY_QUANTUM, RouterPaperRun
 from research.router.router import RouterError
@@ -241,12 +241,15 @@ def _check_aligned(
         router_name, router_version = run.router.rsplit("@", 1)
     except ValueError as exc:
         raise DeviationError("the router identity is malformed") from exc
-    if validation_report.subject != Ref(
-        kind=Kind.STRATEGY, name=router_name, version=router_version
+    if validation_report.subject.target_identity() != (
+        Kind.STRATEGY,
+        router_name,
+        router_version,
     ):
         raise DeviationError("the P8 ValidationReport is not about this router")
     if (
-        validation_report.validation_profile != validation_profile.ref
+        validation_report.validation_profile.target_identity()
+        != validation_profile.ref.target_identity()
         or validation_report.validation_profile_hash != validation_profile.content_hash()
     ):
         raise DeviationError("the P8 ValidationReport does not bind the supplied ValidationProfile")
@@ -374,12 +377,15 @@ def validate_scope_bound_payload(
     if not isinstance(router, str) or "@" not in router:
         raise DeviationError("paper deviation has no valid router identity")
     router_name, router_version = router.rsplit("@", 1)
-    if validation_report.subject != Ref(
-        kind=Kind.STRATEGY, name=router_name, version=router_version
+    if validation_report.subject.target_identity() != (
+        Kind.STRATEGY,
+        router_name,
+        router_version,
     ):
         raise DeviationError("the P8 ValidationReport is not about this router")
     if (
-        validation_report.validation_profile != validation_profile.ref
+        validation_report.validation_profile.target_identity()
+        != validation_profile.ref.target_identity()
         or validation_report.validation_profile_hash != validation_profile.content_hash()
     ):
         raise DeviationError("the P8 ValidationReport does not bind the supplied ValidationProfile")
