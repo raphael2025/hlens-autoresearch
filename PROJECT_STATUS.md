@@ -132,6 +132,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ## 6. 当前待决策
 
+**D-DEBUG（PM 2026-09-28 提出，待 Raphael）**：契约内、无需运行即可合法推进的实现缺口已清空；是否开启逐模块调试阶段（允许按模块运行测试 / lint / typecheck，从 AUD-1 调试入口清单与 P0.5 → P1 D0–D4 开始）。不决定时：保持现状，不派实现任务。
+
 **E1-CAP-1 容量边界核对**
 
 | ID | 问题 | 决定 | 状态 |
@@ -323,6 +325,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 1. 本地 `main` 比 `origin/main@44fe9a2` 超前 132 个提交、尚未推送；上一轮未提交的 E1 余项已于 2026-09-28 经你批准整体归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定，E1-CAP-1 仍阻断、本轮后置。远端仅保留 `main`；E1 PR #10 已关闭并归档。清理阶段的冗余分支均已归档；当前仅有 1 个开发分支 / 1 个 root worktree。模块基础逻辑计划见 [此处](docs/plans/2026-09-28-module-foundation-completion.md)。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
+4. PM 盘点结论（2026-09-28）：残局已清，任务板见模块计划 “PM 任务板”；无需你批准即可合法推进的实现缺口已清空。请决定 D-DEBUG：是否开启逐模块调试。
 
 ## 12. 给 Claude Code 的下一步
 

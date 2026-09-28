@@ -132,9 +132,22 @@ Raphael 于 2026-09-28 指定 Claude Code 以 PM 身份协调本轮：只有 PM 
 | CL-1 | Git | 上一轮 21 个未提交 E1 路径整体归档，phase 分支恢复干净 | PM（仅 git 操作） | 根 checkout git 状态 | 改内容、stash、push | `wip/e1-cap-archive@ece150e` + archive ref；`git status` clean | ✅ |
 | CL-2 | Docs | 挑回非 E1 事实同步（C5/C6、P9/P13），E1 叙述改为“余项已归档、后置”，记录协调方式 | sonnet | STATUS、MEMORY、本计划 | 代码、ADR、把 ADR-0076 写成 Accepted | 仅文档单提交 | ✅ `8a0adc4` |
 | CL-3 | PM | 任务板落档（本节） | PM | 本计划 | — | 已提交 | ✅ |
-| AUD-1 | 跨模块 | 静态列出测试与已提交实现的漂移（调试入口清单），只读不修 | sonnet | 无写入 | 运行任何检查、改测试、评估 E1 归档 | 每条带文件:行号证据 | 🔄 |
+| AUD-1 | 跨模块 | 静态列出测试与已提交实现的漂移（调试入口清单），只读不修 | sonnet | 无写入 | 运行任何检查、改测试、评估 E1 归档 | 每条带文件:行号证据 | ✅ 见下方清单 |
 | DBG-* | 各模块 | 逐模块调试（顺序见“后续模块调试顺序建议”） | Codex / sonnet | 按模块单独签发 | 同上 | — | ⏸ 等 Raphael 开启 |
 | E1-* | P1 E1 / Dataset | E1-CAP-1、ADR-0075 Amendment 1、ADR-0076/0077 | — | — | 本轮不派；归档分支不得整支合并 | — | ⏸ 后置 |
+
+### 调试入口清单（AUD-1，2026-09-28，静态只读，PM 抽查 M1–M3 属实）
+
+覆盖 `44fe9a2..9e9bb9e` 各实现提交触及的模块。以下不是本轮实现缺口：修正需要运行测试或 writer 才能验证（M2 须重新生成 fixture），统一放到逐模块调试阶段。
+
+| ID | 模块 | 位置 | 不一致 | 判断 |
+|---|---|---|---|---|
+| M1 | P3 Event（A2） | `tests/infrastructure/event/test_create_event_tables.py:48,78` ↔ `infrastructure/event/create_event_tables.py:66-75` | 测试桩无 `.definition`，仍断言旧输出；命令已输出 `name@version` 与 `definition_hash` | 确定漂移 |
+| M2 | P8 retro_audit fixture（A4） | `tests/research/reports/test_console_fixture_writers.py:284-301` ↔ `apps/web/fixtures/retro_audit/05545674….json` | writer 已是 1.1.0，已提交 fixture 仍为 1.0.0 | 确定漂移；需运行 writer 重新生成 |
+| M3 | P1 Normalizer | `tests/infrastructure/canonical/test_normalizer.py:932-933` ↔ `infrastructure/canonical/normalizer.py:1858` | 测试引用已删除的 `_same_numbers`，现为签名不同的 `_same_index_numbers` | 确定漂移 |
+| M11 | P1 row_integrity | `infrastructure/revision/row_integrity.py:293-406` | SQLite spool / newest-match / close 路径无任何测试覆盖（经三次自我修正） | 覆盖盲区，调试时补测试 |
+
+其余 8 项（P2 Web hash 校验、P9 Decimal context、P13 mark / admission、P12 精确类型、P14 golden、RevisionCatalog Protocol 代理、mixed-symbol 校验）静态核实与测试一致，部分新分支尚无覆盖。
 
 ## 阶段目标
 
