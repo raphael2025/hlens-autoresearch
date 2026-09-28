@@ -3,11 +3,11 @@
 | 字段 | 值 |
 |---|---|
 | 类型 | `feature` |
-| 状态 | 首批 3 个 bar 特征已实现（Phase 1 F4，[ADR-0030](../adr/0030-feature-provider-contract.md)；REVIEW_PENDING，未验收）；其余条目只是文献 / 外部知识库候选 |
+| 状态 | 首批 3 个 bar 特征（Phase 1 F4，[ADR-0030](../adr/0030-feature-provider-contract.md)）+ ADR-0085 批次的经典指标 / ADX / 三个 bar 价格特征（IMPL-FEAT-IND，2026-09-28）已实现；REVIEW_PENDING，未验收；其余条目只是文献 / 外部知识库候选 |
 | 首次填充 | Phase 1 |
 
 从 Representation 计算的时间序列特征（FeatureSpec）。契约 `core/contracts/feature.py`，执行器 `infrastructure/feature/`，
-实现 `plugins/features/bars.py`。
+实现 `plugins/features/bars.py`、`plugins/features/indicators.py`。
 
 ## 条目字段（以 `core/contracts` 为准）
 
@@ -76,8 +76,8 @@
 | 成交量合计 | `hlens-knowledge:FEA-ADV-001`（相关，不同：ADV 为均值） | `bar_volume_sum_<n>@1.0.0` | bar `volume` | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 | 区间波动率（Parkinson / Garman–Klass / Yang–Zhang） | `FEA-PARKINSON-001`、`FEA-GK-001`、`FEA-YZ-001` | 无 | bar OHLC（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 跳跃二次变差（RV − 双幂变差） | `FEA-JUMP-QV-001` | 无 | bar `close`（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 经典指标（ATR / RSI / MACD / 布林带 / VWAP） | `IND-ATR-001`、`IND-RSI-001`、`IND-MACD-001`、`IND-BBANDS-001`、`IND-VWAP-001` | 无 | bar OHLCV（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 趋势强度（ADX 类） | `FEA-TREND-STRENGTH-001` | 无（状态 `trend_range` 用效率比，是另一种操作化） | bar HLC（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| 经典指标（ATR / RSI / MACD / 布林带 / VWAP） | `IND-ATR-001`、`IND-RSI-001`、`IND-MACD-001`、`IND-BBANDS-001`、`IND-VWAP-001` | `atr_<period>@1.0.0`、`rsi_<period>@1.0.0`、`macd_<fast>_<slow>_<signal>@1.0.0` + `macd_signal_<fast>_<slow>_<signal>@1.0.0`、`bbands_percent_b_<window>_<k>@1.0.0` + `bbands_bandwidth_<window>_<k>@1.0.0`、`vwap_<window>@1.0.0`（`plugins/features/indicators.py`，IMPL-FEAT-IND） | bar OHLCV（可得） | 契约套件、手算值、历史不足、除零、因果扰动（`tests/plugins/features/test_indicators.py`） | `IMPLEMENTED · NOT_VALIDATED` |
+| 趋势强度（ADX 类） | `FEA-TREND-STRENGTH-001` | `adx_<period>@1.0.0`（`plugins/features/indicators.py`，IMPL-FEAT-IND）；状态 `trend_range` 用效率比，是另一种操作化 | bar HLC（可得） | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 | Taker 流量 / 主动买卖差 | `FEA-TAKER-FLOW-001`、`ORF-IMBALANCE-001`、`ORF-CVD-001` | 无 | K 线 `taker_buy_base_volume`（可得）；aggTrades `buyer_is_maker`（无 Feature 路径） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | Amihud 非流动性 | `MSTX-AMIHUD-001` | 无 | bar `close` + `quote_volume`（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 高低价价差估计（Corwin–Schultz / Abdi–Ranaldo） | `FEA-CS-SPREAD-001`、`FEA-AR-SPREAD-001` | 无 | 日 bar HLC（可由派生得到） | 无 | `DOCUMENTED · UNSPECIFIED` |
@@ -102,6 +102,13 @@ spec 必须恰为其参数的规范重建（内容哈希核对）。
 | `bar_log_return@1.0.0` | `bar_log_return@1.0.0` | 最新两根连续 bar：`r = ln(close_k / close_{k-1})`，50 位精度计算，half-even 量化到 `scale` 位 | `scale`=18、`available_lag`=0、`bar_input`=`representation:canonical_bar_1m@1.0.0` | `IMPLEMENTED · NOT_VALIDATED` |
 | `bar_realized_vol_<n>@1.0.0` | `bar_realized_volatility@1.0.0` | 最新 `n+1` 根连续 bar 的 `n` 个单 bar 对数收益：`RV = sqrt(Σ r_i²)`；未去均值、未年化，单位是所选 bar 周期上的收益 | `window`=`n`（**必填**）；`scale` / `available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 | `bar_volume_sum_<n>@1.0.0` | `bar_volume_sum@1.0.0` | 最新 `n` 根连续 bar 的成交量精确求和（80 位上下文，不精确即拒绝） | `window`=`n`（**必填**）；`available_lag` / `bar_input` 同上；无 `scale` | `IMPLEMENTED · NOT_VALIDATED` |
+| `atr_<period>@1.0.0` | `atr@1.0.0` | Wilder ATR（`IND-ATR-001`）：最新连续 run 的前 `period` 个 TR 均值做种子，此后逐 bar Wilder 平滑；run 不足 `period`+1 根 → `None` | `period`、`scale`（**均必填，无默认**）；`available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
+| `rsi_<period>@1.0.0` | `rsi@1.0.0` | Wilder RSI（`IND-RSI-001`）：涨跌幅 Wilder 平滑；`avg_loss`=0 时 RSI=100（ADR-0085 明确规则，非除零错误） | `period`、`scale`（**均必填**）；`available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
+| `macd_<fast>_<slow>_<signal>@1.0.0` / `macd_signal_<fast>_<slow>_<signal>@1.0.0` | `macd_line@1.0.0` / `macd_signal@1.0.0` | `IND-MACD-001`：EMA(fast) − EMA(slow)，两条 EMA 都以最新连续 run 前 `slow` 根收盘价的 SMA 做同一份种子（故首个 MACD 值恒为 0）；信号线是 MACD 序列的 EMA(signal)，同法用其前 `signal` 个点的 SMA 做种子 | `fast`、`slow`、`signal`、`scale`（**均必填**，且 `fast` < `slow`）；`available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
+| `bbands_percent_b_<window>_<k>@1.0.0` / `bbands_bandwidth_<window>_<k>@1.0.0` | `bbands_percent_b@1.0.0` / `bbands_bandwidth@1.0.0` | `IND-BBANDS-001`：上下轨 = `window` 根最新连续 bar 收盘价的 SMA ± `k` × 总体标准差；%b、带宽两个特征；带宽为 0 时 %b 除零 → `None`（带宽本身仍可算） | `window`、`k`（Decimal 字符串）、`scale`（**均必填**，`k`>0）；`available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
+| `vwap_<window>@1.0.0` | `vwap@1.0.0` | `IND-VWAP-001`：`window` 根最新连续 bar 的 `Σ(典型价×volume)/Σvolume`，典型价=(H+L+C)/3；成交量和为 0 → `None` | `window`、`scale`（**均必填**）；`available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
+| `adx_<period>@1.0.0` | `adx@1.0.0` | `FEA-TREND-STRENGTH-001`：Wilder 平滑的 +DM/−DM/TR 给出 DX，ADX 是 DX 的 Wilder 平滑（种子均为最新连续 run 前 `period` 个值的均值/和）；run 不足 `2×period` 根，或途中出现 TR / DI 和为 0 → `None` | `period`、`scale`（**均必填**）；`available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
+| `bar_close@1.0.0` / `bar_high@1.0.0` / `bar_low@1.0.0` | 同名 `@1.0.0` | 最新可见 bar 的收盘 / 最高 / 最低价，精确 pass-through，无平滑无窗口；无可见 bar → `None`。**不在 ADR-0085 表内**：PM 直接指示新增，供 `donchian_breakout@1.0.0` / `zscore_reversion@1.0.0`（ADR-0085 §"策略"）取得价格信号 | 无参数；`available_lag` / `bar_input` 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 
 - **测试证据**：`tests/plugins/features/test_bar_features.py`（契约套件 × 3、手算值、缺口 → `None`、历史不足、lag、
   参数进哈希、伪造 spec 被拒）；`tests/contract_suites/feature.py`（含因果扰动）；`tests/infrastructure/feature/`
@@ -120,6 +127,21 @@ spec 必须恰为其参数的规范重建（内容哈希核对）。
 - **研究侧复算**：`research/strategies/signals.py::bar_signals` 在不经过数据面的路径上复算两个信号；自 `1023afb` 起它对未量化的
   50 位对数收益求平方和，与 Provider 逐值相等（运算序列相同；`tests/research/strategies/test_signals_parity.py`）。此前先量化再平方，末位可能不同。
 
+### ADR-0085 批次：经典指标 / ADX / bar 价格特征（IMPL-FEAT-IND）
+
+`atr` / `rsi` / `macd_line` / `macd_signal` / `bbands_percent_b` / `bbands_bandwidth` / `vwap` / `adx`
+（`plugins/features/indicators.py`）与 `bar_close` / `bar_high` / `bar_low` 同文件。执行器、可见集合、`available_lag`
+截断、fail-closed 输入校验与上表三个 bar 特征相同；窗口型（Bollinger / VWAP）取最新固定长度的连续 bar，Wilder 型
+（ATR / RSI / MACD / ADX）取**最长连续 run**（历史越长种子点越早，属实现约定，见 provider docstring）；所有参数
+（`period` / `window` / `fast` / `slow` / `signal` / `k` / `scale`）在 spec 中必填，无默认值（ADR-0085 §"通用规则" #2）。
+除零（零区间、零成交量、零方差、平盘）一律为 `None`，不抛异常不外推。
+
+- **测试证据**：`tests/plugins/features/test_indicators.py`（8 + 3 个契约套件、每个对象的手算精确值、历史不足、
+  除零 / 缺失、参数校验、畸形 bar fail-closed）。同上，未在正式 Research Dataset 上运行过。
+- **身份未经 PM 复核**：`bar_close` / `bar_high` / `bar_low` 三个名字由 PM 直接给出（供
+  `donchian_breakout@1.0.0` / `zscore_reversion@1.0.0` 使用）；`research/strategies/price_signals.py`
+  （PM 所述定义 `BAR_CLOSE_SIGNAL` 等常量的模块）在本 worktree 不存在，未能与之交叉核对。
+
 ## 候选方法（未实现，只作规格输入）
 
 以下方法的输入在当前数据范围内可得，但主项目没有实现，参数、窗口、时钟与边界处理均未规格化。原文参数只作出处记录。
@@ -130,10 +152,7 @@ spec 必须恰为其参数的规范重建（内容哈希核对）。
 | Garman–Klass | `FEA-GK-001`；Garman & Klass 1980，doi:10.1086/296072；`ACADEMIC` | `(ln(H/L))²` 与 `(ln(C/O))²` 项的组合（系数见原文） | 变体选择 | 跳空 / 跳跃偏差 |
 | Yang–Zhang | `FEA-YZ-001`；Yang & Zhang 2000，doi:10.1086/209650；`ACADEMIC` | 隔夜方差 + 开收方差 + Rogers–Satchell 项的加权（原文 Eq. 7） | 窗口 N、权重 k | 24/7 市场没有"隔夜"，须先定义会话边界 |
 | 跳跃二次变差 | `FEA-JUMP-QV-001`；Barndorff-Nielsen & Shephard 2004，*J. Fin. Econometrics*，doi:10.1093/jjfinec/nbh001；`ACADEMIC` | `max(RV − μ₁⁻²·BPV, 0)` | 采样频率、截断 | 有限样本为负、噪声 |
-| ATR | `IND-ATR-001`；Wilder 1978；`DOCUMENTED` | `TR = max(H−L, |H−C₋₁|, |L−C₋₁|)`，Wilder 平滑 | N=14（常见） | 24/7 会话定义 |
-| RSI / MACD / 布林带 | `IND-RSI-001`（Wilder 1978）、`IND-MACD-001`（Appel）、`IND-BBANDS-001`（Bollinger）；`DOCUMENTED` | 见各条目 | 14；12/26/9；20 / 2（常见） | 指标不是 Alpha（`FAIL-INDICATOR-AS-ALPHA-001`）；阈值挖掘 |
-| VWAP | `IND-VWAP-001`；出处 UNKNOWN；`DOCUMENTED` | `Σ P_i V_i / Σ V_i` | 会话 / 窗口 | 会话边界选择、刷量 |
-| 趋势强度 | `FEA-TREND-STRENGTH-001`；Wilder 1978 + 实务；`DOCUMENTED` | ADX/DMI 或 `|SMA 斜率| / ATR` | N=14（ADX 常见） | 滞后、阈值挖掘 |
+| ATR / RSI / MACD / 布林带 / VWAP / 趋势强度（已实现，移出候选） | `IND-ATR-001`、`IND-RSI-001`、`IND-MACD-001`、`IND-BBANDS-001`、`IND-VWAP-001`、`FEA-TREND-STRENGTH-001`；出处见下 | 见上方「ADR-0085 批次」与「条目索引（已实现）」；原文出处：ATR/RSI — Wilder 1978；MACD — Appel；布林带 — Bollinger；VWAP — 出处 UNKNOWN；趋势强度（ADX/DMI）— Wilder 1978 + 实务 | 已实现，不再是候选 | 已知失效模式不变：指标不是 Alpha（`FAIL-INDICATOR-AS-ALPHA-001`）、阈值挖掘、会话边界选择、24/7 无"隔夜/会话"概念、滞后 |
 | Taker 失衡 | `FEA-TAKER-FLOW-001`（`DOCUMENTED`）、`ORF-IMBALANCE-001`（`ACADEMIC`）、`ORF-CVD-001`（`COMMUNITY_REPORTED`） | `delta = taker_buy − taker_sell`，`imbalance = delta / (buy + sell)`；CVD 为累计 | 窗口、归一化、CVD 重置 | 刷量、交易所标记差异；CVD 的会话重置在 24/7 下无定义；K 线 taker 字段的语义须以官方证据核对 |
 | Amihud ILLIQ | `MSTX-AMIHUD-001`；Amihud 2002，*J. Financial Markets*，doi:10.1016/S1386-4181(01)00024-6；`ACADEMIC` | `(1/D) Σ |R_d| / VOLD_d` | D（原文日度） | 零成交量、刷量、短周期噪声 |
 | Corwin–Schultz / Abdi–Ranaldo | `FEA-CS-SPREAD-001`（doi:10.1111/j.1540-6261.2012.01729.x）、`FEA-AR-SPREAD-001`（doi:10.1093/rfs/hhx084）；`ACADEMIC` | 由 1 日 / 2 日高低价比（或收盘 + 高低价）估计有效价差 | 负估计处理、隔夜调整 | 原文针对股票日度数据；隔夜调整在 24/7 下无对应 |
