@@ -5,7 +5,8 @@ answers one descriptive question: mark by mark, how far is the router's own pape
 (``RouterPaperRun.result``, net of switching costs) from a ``BacktestResult`` the caller declares
 as the reference (e.g. one routed strategy run alone, or a buy-and-hold book over the same bars)?
 
-``paper_deviation(run, reference, *, reference_request=None)``:
+``paper_deviation(run, reference, *, validation_report, validation_profile,
+reference_request=None)``:
 
 - **Refusals** (``DeviationError``, a ``RouterError``): a run whose recorded fields no longer
   match its ``run_hash`` (``RouterPaperRun.verify``); a reference with a different initial
@@ -16,6 +17,10 @@ as the reference (e.g. one routed strategy run alone, or a buy-and-hold book ove
 - **Per mark** (``DeviationMark``): both equities and ``paper - reference``; both period returns
   (``equity_t / equity_{t-1} - 1``, the initial equity before the first mark; ``None`` when the
   previous equity is not positive) and their difference.
+- **Declared scope**: the caller supplies the router's P8 ``ValidationReport`` and its exact
+  ``ValidationProfile``. Their subject, profile ref / content hash, PASS verdict and G5 evidence
+  are checked; the profile's declared scope is bound into this report. The run and reference
+  must price exactly the declared scope's symbol.
 - **Summary** (``DeviationSummary``): final / mean / largest absolute equity difference (and when),
   both total returns and their difference, and over the marks where both returns exist the mean
   and mean absolute return difference and the tracking error (sample standard deviation of the
@@ -32,14 +37,16 @@ Code completion (2026-09-26, CODE_COMPLETE / DEBUG_PENDING).
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from typing import Final
 
 from core.contracts.strategy import BacktestRequest, BacktestResult
-from core.domain.base import content_hash
+from core.contracts.validation_profile import ValidationProfile
+from core.domain.base import Kind, Ref, content_hash
+from core.domain.research import ValidationReport, Verdict
 from research.router.paper import MONEY_QUANTUM, RouterPaperRun
 from research.router.router import RouterError
 
@@ -51,11 +58,13 @@ __all__ = [
     "DeviationSummary",
     "PaperDeviation",
     "paper_deviation",
+    "validate_scope_bound_payload",
 ]
 
 #: The payload's ``kind`` (and the report kind ``research/reports/deviation.py`` writes).
 PAYLOAD_KIND: Final = "paper_deviation"
-SCHEMA_VERSION: Final = "1.0.0"
+SCHEMA_VERSION: Final = "2.0.0"
+SCOPE_SCHEMA_VERSION: Final = "1.0.0"
 STATUS: Final = "FRAMEWORK_IMPLEMENTED / NOT_VALIDATED"
 NOTE: Final = "descriptive only; no threshold; the reference backtest is declared by the caller"
 #: Returns, return differences and their statistics are quantized to this step.
@@ -102,6 +111,39 @@ class DeviationSummary:
     tracking_error: Decimal | None
 
 
+@dataclass(frozen=True, slots=True)
+class DeclaredScopeIdentity:
+    """P8 profile scope plus the validation identities that declared it."""
+
+    schema_version: str
+    validation_profile: str
+    validation_profile_hash: str
+    validation_report_hash: str
+    venue: str
+    symbol: str
+    timeframe: str
+    research_class: str
+    scope_hash: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "scope_hash", content_hash(self._body()))
+
+    def _body(self) -> dict[str, str]:
+        return {
+            "scope_schema_version": self.schema_version,
+            "validation_profile": self.validation_profile,
+            "validation_profile_hash": self.validation_profile_hash,
+            "validation_report_hash": self.validation_report_hash,
+            "venue": self.venue,
+            "symbol": self.symbol,
+            "timeframe": self.timeframe,
+            "research_class": self.research_class,
+        }
+
+    def to_payload(self) -> dict[str, str]:
+        return {**self._body(), "scope_hash": self.scope_hash}
+
+
 def _text(value: Decimal | None) -> str | None:
     return None if value is None else str(value)
 
@@ -117,6 +159,7 @@ class PaperDeviation:
     reference_result_hash: str
     reference_request_hash: str
     reference_provider: str
+    declared_scope: DeclaredScopeIdentity
     #: The instruments the run's request prices (sorted).
     instruments: tuple[str, ...]
     marks: tuple[DeviationMark, ...]
@@ -139,6 +182,7 @@ class PaperDeviation:
             "reference_result_hash": self.reference_result_hash,
             "reference_request_hash": self.reference_request_hash,
             "reference_provider": self.reference_provider,
+            "declared_scope": self.declared_scope.to_payload(),
             "instruments": list(self.instruments),
             "marks": [
                 {
@@ -180,11 +224,36 @@ def _period_return(now: Decimal, previous: Decimal) -> Decimal | None:
 
 
 def _check_aligned(
-    run: RouterPaperRun, reference: BacktestResult, reference_request: BacktestRequest | None
-) -> tuple[str, ...]:
+    run: RouterPaperRun,
+    reference: BacktestResult,
+    validation_report: ValidationReport,
+    validation_profile: ValidationProfile,
+    reference_request: BacktestRequest | None,
+) -> tuple[tuple[str, ...], DeclaredScopeIdentity]:
     if not isinstance(run, RouterPaperRun) or not isinstance(reference, BacktestResult):
         raise DeviationError("paper_deviation needs a RouterPaperRun and a BacktestResult")
     run.verify()  # a tampered run record is refused (RouterError)
+    if not isinstance(validation_report, ValidationReport):
+        raise DeviationError("a P8 ValidationReport is required to declare paper deviation scope")
+    if not isinstance(validation_profile, ValidationProfile):
+        raise DeviationError("the exact ValidationProfile is required to resolve P8 scope")
+    try:
+        router_name, router_version = run.router.rsplit("@", 1)
+    except ValueError as exc:
+        raise DeviationError("the router identity is malformed") from exc
+    if validation_report.subject != Ref(
+        kind=Kind.STRATEGY, name=router_name, version=router_version
+    ):
+        raise DeviationError("the P8 ValidationReport is not about this router")
+    if (
+        validation_report.validation_profile != validation_profile.ref
+        or validation_report.validation_profile_hash != validation_profile.content_hash()
+    ):
+        raise DeviationError("the P8 ValidationReport does not bind the supplied ValidationProfile")
+    if validation_report.verdict is not Verdict.PASS:
+        raise DeviationError("the P8 ValidationReport must PASS to declare deviation scope")
+    if not any(gate.gate_id.startswith("G5.") for gate in validation_report.gates):
+        raise DeviationError("the P8 ValidationReport must include sealed OOS G5 evidence")
     paper = run.result
     if reference.initial_equity != paper.initial_equity:
         raise DeviationError(
@@ -196,6 +265,10 @@ def _check_aligned(
     if paper_times != reference_times:
         raise DeviationError("the reference's equity marks are not the paper run's marks")
     instruments = tuple(sorted({bar.instrument for bar in run.request.bars}))
+    if instruments != (validation_profile.scope.symbol,):
+        raise DeviationError(
+            "the run's priced instruments must exactly match the P8 declared scope symbol"
+        )
     unpriced = sorted({fill.instrument for fill in reference.fills} - set(instruments))
     if unpriced:
         raise DeviationError(f"the reference trades instruments the run does not price: {unpriced}")
@@ -209,7 +282,17 @@ def _check_aligned(
             raise DeviationError(
                 f"the reference prices {list(priced)}, the paper run {list(instruments)}"
             )
-    return instruments
+    declared_scope = DeclaredScopeIdentity(
+        schema_version=SCOPE_SCHEMA_VERSION,
+        validation_profile=str(validation_profile.ref),
+        validation_profile_hash=validation_profile.content_hash(),
+        validation_report_hash=validation_report.content_hash(),
+        venue=validation_profile.scope.venue,
+        symbol=validation_profile.scope.symbol,
+        timeframe=validation_profile.scope.timeframe,
+        research_class=validation_profile.scope.research_class,
+    )
+    return instruments, declared_scope
 
 
 def _mean(values: Sequence[Decimal], quantum: Decimal) -> Decimal:
@@ -220,10 +303,18 @@ def paper_deviation(
     run: RouterPaperRun,
     reference: BacktestResult,
     *,
+    validation_report: ValidationReport | None = None,
+    validation_profile: ValidationProfile | None = None,
     reference_request: BacktestRequest | None = None,
 ) -> PaperDeviation:
     """Per-mark and summary deviation of ``run.result`` from ``reference`` (module docs)."""
-    instruments = _check_aligned(run, reference, reference_request)
+    if validation_report is None or validation_profile is None:
+        raise DeviationError(
+            "scope-bound paper deviation requires a P8 ValidationReport and ValidationProfile"
+        )
+    instruments, declared_scope = _check_aligned(
+        run, reference, validation_report, validation_profile, reference_request
+    )
     paper = run.result
     initial = paper.initial_equity
     marks: list[DeviationMark] = []
@@ -254,10 +345,77 @@ def paper_deviation(
         reference_result_hash=reference.result_hash,
         reference_request_hash=reference.request_hash,
         reference_provider=reference.provider,
+        declared_scope=declared_scope,
         instruments=instruments,
         marks=tuple(marks),
         summary=summary,
     )
+
+
+def validate_scope_bound_payload(
+    payload: Mapping[str, object],
+    *,
+    validation_report: ValidationReport,
+    validation_profile: ValidationProfile,
+) -> None:
+    """Fail closed unless a payload is a valid current scope-bound deviation report.
+
+    Historical 1.0.0 reports remain available from the generic report store, but deliberately do
+    not pass this evidence validator because they contain no declared-scope identity. The caller
+    must resolve and supply the exact P8 report and profile; self-hashes alone are not authority.
+    """
+    if payload.get("kind") != PAYLOAD_KIND or payload.get("schema_version") != SCHEMA_VERSION:
+        raise DeviationError("scope evidence requires paper_deviation schema 2.0.0")
+    if not isinstance(validation_report, ValidationReport):
+        raise DeviationError("scope evidence needs the P8 ValidationReport")
+    if not isinstance(validation_profile, ValidationProfile):
+        raise DeviationError("scope evidence needs the exact ValidationProfile")
+    router = payload.get("router")
+    if not isinstance(router, str) or "@" not in router:
+        raise DeviationError("paper deviation has no valid router identity")
+    router_name, router_version = router.rsplit("@", 1)
+    if validation_report.subject != Ref(
+        kind=Kind.STRATEGY, name=router_name, version=router_version
+    ):
+        raise DeviationError("the P8 ValidationReport is not about this router")
+    if (
+        validation_report.validation_profile != validation_profile.ref
+        or validation_report.validation_profile_hash != validation_profile.content_hash()
+    ):
+        raise DeviationError("the P8 ValidationReport does not bind the supplied ValidationProfile")
+    if validation_report.verdict is not Verdict.PASS or not any(
+        gate.gate_id.startswith("G5.") for gate in validation_report.gates
+    ):
+        raise DeviationError("the P8 ValidationReport must PASS and include sealed OOS G5 evidence")
+    scope = payload.get("declared_scope")
+    if (
+        not isinstance(scope, Mapping)
+        or scope.get("scope_schema_version") != SCOPE_SCHEMA_VERSION
+    ):
+        raise DeviationError("paper deviation has no supported declared scope")
+    scope_hash = scope.get("scope_hash")
+    scope_body = {key: value for key, value in scope.items() if key != "scope_hash"}
+    if not isinstance(scope_hash, str) or content_hash(scope_body) != scope_hash:
+        raise DeviationError("paper deviation declared scope hash does not match")
+    expected_scope = DeclaredScopeIdentity(
+        schema_version=SCOPE_SCHEMA_VERSION,
+        validation_profile=str(validation_profile.ref),
+        validation_profile_hash=validation_profile.content_hash(),
+        validation_report_hash=validation_report.content_hash(),
+        venue=validation_profile.scope.venue,
+        symbol=validation_profile.scope.symbol,
+        timeframe=validation_profile.scope.timeframe,
+        research_class=validation_profile.scope.research_class,
+    ).to_payload()
+    if dict(scope) != expected_scope:
+        raise DeviationError("paper deviation declared scope does not match the P8 evidence")
+    instruments = payload.get("instruments")
+    if instruments != [scope.get("symbol")]:
+        raise DeviationError("paper deviation instruments do not match its declared scope")
+    deviation_hash = payload.get("deviation_hash")
+    body = {key: value for key, value in payload.items() if key != "deviation_hash"}
+    if not isinstance(deviation_hash, str) or content_hash(body) != deviation_hash:
+        raise DeviationError("paper deviation hash does not match its payload")
 
 
 def _summary(
