@@ -437,8 +437,6 @@ class _Survey:
     ready: datetime | None
     #: The committed rows, window by window (only collected when asked for).
     committed_rows: tuple[Mapping[str, Any], ...]
-    #: Revision ids of the committed windows, in position order.
-    committed_ids: tuple[str, ...]
     #: The unit's Raw positions, ascending and distinct (batches are rank slices of them).
     positions: _PositionIndex | None = None
     #: Recovered from the committed rows when ``plan`` is set: the unit is rebuilt, and
@@ -867,19 +865,18 @@ class CanonicalNormalizer:
                     f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
                     "has no Raw element revision"
                 )
-            return _Survey(0, None, None, None, None, (), (), positions)
+            return _Survey(0, None, None, None, None, (), positions)
         if plan is None:
             if committed.seq_count:
                 raise CatalogIntegrityError(
                     f"{table}: unit {source_revision_id} has committed rows but no committed batch"
                 )
-            return _Survey(unit_rows, floor, None, None, None, (), (), positions)
+            return _Survey(unit_rows, floor, None, None, None, (), positions)
         base, ready, version = self._recover(channel, source_revision_id, committed)
         _check_plan(channel, source_revision_id, plan, ordered, unit_rows)
         # Newest first, i.e. highest index first: each batch's snapshot is streamed from the
-        # pinned history as it is proven; per batch only its (output) ids / rows are kept.
+        # pinned history as it is proven; per batch only requested output rows are kept.
         kept: list[list[Mapping[str, Any]]] = []
-        ids: list[list[str]] = []
         digest = hashlib.sha256()
         covered = min(plan.count * plan.chunk, unit_rows)
         for index, snapshot in self._plan_snapshots(pin, channel, source_revision_id, plan, None):
@@ -897,7 +894,6 @@ class CanonicalNormalizer:
                 # A replay re-checks what its first run read back (E2 of review E).
                 self._check_unique(pin.catalog, channel, planned, None)
             digest.update(_fold(index, snapshot))
-            ids.append([row["revision_id"] for row in planned])
             if keep_rows:
                 kept.append(planned)
         if not _same_index_numbers(
@@ -917,7 +913,6 @@ class CanonicalNormalizer:
             base,
             ready,
             tuple(row for rows in reversed(kept) for row in rows),
-            tuple(revision for batch_ids in reversed(ids) for revision in batch_ids),
             positions,
             version,
             digest.digest(),
@@ -1370,9 +1365,25 @@ class CanonicalNormalizer:
         unit_rows = survey.unit_rows
         parent = pin.canonical_head
         commits = self._replayed_commits(pin, channel, source_revision_id, survey)
-        ids: list[str] = list(survey.committed_ids)
         positions = survey.positions
         assert positions is not None
+        ids: list[str] = []
+        # The proving pass already established each committed batch against this pinned Raw
+        # view and recovered block/version. Rebuild committed IDs here for normalize_unit's
+        # public result, in Raw position order, instead of retaining an N-sized ID copy in
+        # _Survey. This repeats _planned for each committed window, using the same pinned Raw,
+        # base, ready time and version; verify_unit does not enter this write/result path.
+        committed_count = survey.plan.count if survey.plan is not None else 0
+        for index in range(committed_count):
+            low, high, _ = _batch_window(positions, chunk, index)
+            planned = self._planned(
+                channel,
+                self._raw_window(pin, channel, source_revision_id, low, high),
+                base,
+                ready,
+                version,
+            )
+            ids.extend(row["revision_id"] for row in planned)
         for index in range(len(commits), -(-unit_rows // chunk)):
             low, high, _ = _batch_window(positions, chunk, index)
             batch_id = unit_batch_id(source_revision_id, unit_rows, chunk, index)
