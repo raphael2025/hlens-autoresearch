@@ -52,7 +52,7 @@
 | 单仓位上限 / 总敞口上限 | `RSK-GROSS-EXP-001` | `vol_target_bars@1.0.0` 的 `position_cap`、`gross_exposure_cap` | 目标权重 | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 | 杠杆上限 | `RSK-LEVERAGE-001`（名义 / 权益） | `vol_target_bars@1.0.0` 的 `leverage_cap`——**只限制波动率缩放倍数**，不是账户名义杠杆 | 同上 | 同上 | `IMPLEMENTED · NOT_VALIDATED`（语义不同） |
 | 止损 / 追踪止损 | `RSK-STOP-001`（Kaminski & Lo 2014）；反证 `FAIL-STOP-RW-001` | 无 | 需要持仓与入场价路径（风控请求只含目标与可见信号） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 回撤控制 | `RSK-DD-CONTROL-001`（Grossman & Zhou 1993） | 无 | 需要权益曲线；`PortfolioState.equity` 可为空，依赖路径的规则须 fail closed（ADR-0038） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| 回撤控制 | `RSK-DD-CONTROL-001`（Grossman & Zhou 1993） | 无；ADR-0085 已定义 `drawdown_control@1.0.0`，实施受阻：`RiskRequest` / `PortfolioState` 只有当前权益、没有峰值权益，单个风控请求算不出"从峰值回撤"（待决定） | 需要权益曲线（峰值）；`PortfolioState.equity` 可为空，依赖路径的规则须 fail closed（ADR-0038） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | Kelly / 分数 Kelly、AFML 下注规模 | `RSK-KELLY-001`、`RSK-BETSIZE-001`；反证 `FAIL-FULL-KELLY-001` | 无 | 需要边际估计（不存在） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 预期短缺 / CAViaR | `RSK-ES-001`（Acerbi & Tasche 2002）、`RSK-CAVIAR-001`（Engle & Manganelli 2004） | 无（属度量，非仓位规则） | 收益可得 | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 相关 / 集中度 | `RSK-CORR-001`；反证 `FAIL-CORR-SPIKE-001` | 无 | 只有两个标的 | 无 | `DOCUMENTED · UNSPECIFIED` |
