@@ -12,8 +12,8 @@
 
 ## 当前代码线与分支处置
 
-- 整合基线：本地 `main@ad16813`；`origin/main@44fe9a2`；未推送。G1 两条边界测试已包含在当前 main tip；提交尚未验证。
-- `phase/1@52f7477` 的 496 个提交全部是 main 祖先，没有独有 patch；但根目录是 Cursor 当前打开的工作区，含未跟踪计划资料和嵌套 worktree。保留，不切换、不移除。
+- 整合基线：本地 `main@7145cb4`；`origin/main@44fe9a2`；ahead 124，未推送。G1 两条边界测试已包含在当前 main tip；提交尚未验证。
+- `phase/1@52f7477` 的所有提交都是 main 祖先，没有独有 patch；根目录是 Cursor 打开的工作区，含未跟踪计划资料和嵌套 main worktree。Cursor 当前会话回报无独有实现；待保全未跟踪资料并结束相关 IDE/进程后，才能切换根 checkout 和删除冗余分支。
 - `docs/research-spec-completion@82bfe73` 从旧 `20bdd82` 分叉，整树与当前 main 有 124 个路径差异，其中有主线后续实现的删除 / 回退。其 `7b9df59` 两条 G1 边界测试已择取到 main；策略收益率修复已 patch-equivalent 在 main。其余 README / library 文档以 main 版本为准，旧 tip 已有 archive ref。该 worktree 仍有活动 Claude 进程，因此保留到会话结束后再清理 branch/worktree。
 - 远端只保留 `main`；不得从 archive ref 恢复或整支合并失败的 E1 候选。E1 候选 `c3868dc` 超过 32 MiB 门槛的失败证据继续保留。
 - 经确认没有活动进程后，E1 候选、D3E 审查、C05、gatewt、E1 integration 与 B52 等 6 个 detached worktree 已清理；E1 候选 tip 与 D3E detached tip 均留有 archive ref。当前仅保留 main、Cursor 检出的 `phase/1` 与 Claude 检出的 `docs/research-spec-completion` 三个 worktree；后两者等待各自会话结束后再清理。
@@ -24,13 +24,13 @@
 |---|---|---|---|
 | Phase 0.5 知识库 | 检索、审阅写入、标签 / 资产过滤、种子加载 | 部分种子没有黄金哈希或具名审阅；不得由代理代填人工标签 | 代码不新增模拟审阅；黄金哈希留给统一验收运行，标签 / 资产由具名审阅者决定 |
 | Phase 1 数据 | Storage、Catalog、Collector、Parser、Revision、PIT、Normalizer、RSS probe | E1-CAP-1 未证明；当前 500k 候选超 32 MiB；成交量 bar / 历史 universe 另有规格门 | 先整理 E1 设计包和 Proposed ADR；不移植失败候选、不改契约、不宣称通过 |
-| Phase 2 State | Provider、执行器、诊断载荷 1.1.0 | Web view model 未暴露 `source_result_hash`；1.0.0 / 1.1.0 显示与兼容逻辑待统一验收 | 可直接补 Web 类型的 optional source 字段；不改诊断契约 |
-| Phase 3 Event | Provider、DSL、统计、Event 表定义和显式创建命令 | 创建命令输出未携带定义的稳定版本 / 哈希，和 ADR-0066 运维可审计要求不完整 | 可直接改命令输出；不连 Catalog、不创建真实表 |
+| Phase 2 State | Provider、执行器、诊断载荷 1.1.0；Wave A3 已补 Web optional `source_result_hash` 消费字段 | 1.0.0 / 1.1.0 渲染与兼容仍待统一验收 | 不重复实现；留给统一验收 |
+| Phase 3 Event | Provider、DSL、统计、Event 表定义和显式创建命令；Wave A2 已补 `name@version` 与完整定义哈希输出 | 既有命令输出断言留待统一验收；不连 Catalog、不创建真实表 | 不重复实现；留给统一验收 |
 | Phase 4 Outcome | Provider、Outcome store/source、EventResult 转换辅助函数、验证流程 | 转换辅助函数当前无调用方；Outcome/Profile 端到端行为留待统一验收 | 保持纯转换边界，先由协调者检查其调用接点，不创造新的写入路径 |
 | Phase 5 Strategy | TSMOM / cross-sectional、backtest、validation、Promotion、FailureRegistry | 当前主要缺验收覆盖；没有可独立批准的批量 ValidationReport 作业 | 不改 Profile / 风控门；测试留待验收批次 |
 | Phase 6 Matrix | 状态×策略矩阵、逐单元验证、报告接线 | 运行 / 报告幂等性以测试和统一验收证明 | 本轮不改已具备实现；验收批次补覆盖 |
-| Phase 7 Discovery | non-runnable parser / resolver、TrialLedger、durable v4/v5、lease / write gate、ADR-0074 operator | ADR-0073 要求的 ExperimentSpec↔Hypothesis↔output 一对一组合校验尚未接入；六算子 producer / lowering 仍未批准 | 可实现独立纯拒绝校验器；不接 PREPARE、runner 或开启算子 |
-| Phase 8 Retro audit | writer、API、Web 页面 | fixture registry 未登记 retro_audit 1.1.0；需要对生成路径静态复核 | 可修复 fixture 声明/登记；不重新生成已提交 fixture，生成器留待验收 |
+| Phase 7 Discovery | non-runnable parser / resolver、TrialLedger、durable v4/v5、lease / write gate、ADR-0074 operator；Wave A1 已增加纯绑定校验器 | 当前校验不能证明预期 outputs 全集完整；六算子 producer / lowering 仍未批准 | 不重复实现绑定器；保持 non-runnable，等待输出全集权威与后续 ADR |
+| Phase 8 Retro audit | writer、API、Web 页面；Wave A4 已注册 fixture writer | 已提交 `retro_audit` fixture 仍为 1.0.0，fixture ID / 黄金哈希需在统一验收窗口同步 | 不造新 fixture；验收窗口再生成并更新登记 |
 | Phase 9 Calibration | 单标的与多标的校准、G5 证据 | 多标的 G5 与新生成器需明确证据范围 | 不选数值、不添加未经 ADR 批准的生成器 |
 | Phase 10 Router | Paper / deviation / evidence / validation | deviation 缺少声明范围；validation 复用 paper 私有 helper | 不改验证门槛或报告哈希；需先确认声明范围语义 |
 | Phase 11 Loop | durable loop、worker journal stale-writer guard、degradation evidence 与 ADR-0074 synthetic-only 有限批次 CLI | operator 只接受合成路径、由外部 scheduler 启动；没有权威 ACTIVE resolver、可重取 source resolver / metric registry、dataset operator、仓内 scheduler 或 NATS。这些能力需要先定义 authority 与 provenance 语义 | 保持声明性证据边界；不新增常驻服务、source resolver、dataset 输入或写触发 |
@@ -58,7 +58,7 @@
 |---|---|---|---|
 | B1 | 校正 ADR-0068 / 0073、ADR index、roadmap、状态页中 Proposed / 已实现 / operator 入口等过时措辞 | 仅事实状态与交叉链接；不得改 ADR 裁决 | Codex 统筹，Wave A 后进行 |
 | B2 | 统一 Git 数字、P8 fixture 版本、P13 验收措辞、Phase 1 表数和 Phase 1 关闭条件的状态叙述 | `PROJECT_STATUS.md`、`PROJECT_MEMORY.md`、被核实的对应文档 | 逐条读源核实后更新 |
-| B3 | 整理 E1-CAP-ARCH 设计包：分离可在现有契约内处理的持有量与需新 ADR 的 metadata / retention 变化；记录失败候选数据的真实范围 | `docs/reviews/`、Proposed ADR 草案 | 首轮对账见 [`2026-09-28-e1-cap1-design-reconciliation.md`](../reviews/2026-09-28-e1-cap1-design-reconciliation.md)。确认了仓库内 O(N)/O(B) 持有项和结果 tuple 接口下界；PyIceberg RSS 贡献未测。32 MiB 完整工作集门槛不变；E1-R 可按单模块拆分研究，E1-API 若需改变必须先起 Proposed ADR，E1-H 需 L/H 分离证据。未改 E1 代码，未运行任何验收工具 |
+| B3 | 整理 E1-CAP-ARCH 设计包：分离可在现有契约内处理的持有量与需新 ADR 的 metadata / retention 变化；记录失败候选数据的真实范围 | `docs/reviews/`、Proposed ADR 草案 | 首轮对账见 [`2026-09-28-e1-cap1-design-reconciliation.md`](../reviews/2026-09-28-e1-cap1-design-reconciliation.md)。确认了仓库内 O(N)/O(B) 持有项和结果 tuple 接口下界；PyIceberg RSS 贡献未测。E1-R 已在 `main` 有 batch-history、pinned streaming scan、磁盘 positions、committed-row / close streaming 基础提交，均未验证。32 MiB 完整工作集门槛不变；E1-API 若改变公开结果类型先起 Proposed ADR，E1-H 需 L/H 分离证据。 |
 
 ### Wave C：额外模块静态审计发现的契约内缺口
 
