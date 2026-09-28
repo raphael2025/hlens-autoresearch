@@ -219,7 +219,7 @@ from core.domain.research import GateResult, ValidationReport, Verdict
 from core.domain.specs import StrategySpec
 from core.errors import ReasonCode
 from infrastructure.bars.dataset import DatasetPriceBars
-from infrastructure.bars.pair import ManifestPair, pair_hash_of
+from infrastructure.bars.pair import PAIR_RULE_V3_HASH, ManifestPair, pair_hash_of
 from plugins.backtest import BarBacktester, ExecutionModel
 from research.outcomes.table import OutcomeTable, materialize
 from research.strategies.cross_section import is_cross_sectional
@@ -480,8 +480,16 @@ def binding_mismatches(setup: ValidatorSetup, bars: Sequence[PriceBar]) -> list[
     else:
         features = setup.feature_manifest_hashes
         checks |= {
+            # either pairing rule (v2 ``load_manifest`` or v3 evidence, ADR-0077), as ManifestPair
             "pair_hash": pair.pair_hash
-            == pair_hash_of(pair.feature_manifest_hash, pair.price_manifest_hash),
+            in {
+                pair_hash_of(pair.feature_manifest_hash, pair.price_manifest_hash),
+                pair_hash_of(
+                    pair.feature_manifest_hash,
+                    pair.price_manifest_hash,
+                    rule_hash=PAIR_RULE_V3_HASH,
+                ),
+            },
             "pair_feature_manifest": bool(features)
             and all(item == pair.feature_manifest_hash for item in features),
         }
