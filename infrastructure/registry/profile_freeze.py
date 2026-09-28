@@ -100,6 +100,7 @@ __all__ = [
     "FreezeConflict",
     "ProfileFreeze",
     "ProfileFreezeRegistry",
+    "verify_integrity_snapshot",
 ]
 
 PROFILE_FROZEN: Final = "profile.frozen"
@@ -505,3 +506,123 @@ class ProfileFreezeRegistry:
         if record.report_hash != profile.provenance.calibration_report:
             return None
         return record
+
+
+def verify_integrity_snapshot(root: Path, *, anchor: Path) -> dict[str, object]:
+    """Verify a stable Profile Freeze snapshot without creating locks or repairing anchors."""
+    root = Path(root)
+    journal_path = root / "freezes.jsonl"
+    anchor = Path(anchor)
+    if not root.is_dir() or not journal_path.is_file():
+        raise RegistryCorrupted(f"the Profile Freeze Registry does not exist at {root}")
+    resolved_root = root.resolve()
+    if anchor.resolve().is_relative_to(resolved_root):
+        raise RegistryCorrupted("the freeze registry anchor must live outside its directory")
+    if not anchor.is_file():
+        raise RegistryCorrupted(f"the Profile Freeze Registry anchor does not exist: {anchor}")
+
+    def signature(path: Path) -> tuple[bytes, tuple[int, int, int, int]]:
+        before = path.stat()
+        data = path.read_bytes()
+        after = path.stat()
+        stamp = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        if stamp != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+            raise RegistryCorrupted(f"{path} changed while the audit snapshot was read")
+        return data, stamp
+
+    def blob_snapshot() -> tuple[tuple[str, int, int, int, str], ...]:
+        blob_root = resolved_root / "blobs"
+        if not blob_root.exists():
+            return ()
+        rows: list[tuple[str, int, int, int, str]] = []
+        for path in sorted(blob_root.iterdir()):
+            before = path.lstat()
+            if not path.is_file() or path.is_symlink():
+                raise RegistryCorrupted(f"{path} is not a regular calibration blob")
+            data = path.read_bytes()
+            after = path.stat()
+            if (before.st_ino, before.st_size, before.st_mtime_ns) != (
+                after.st_ino,
+                after.st_size,
+                after.st_mtime_ns,
+            ):
+                raise RegistryCorrupted(f"{path} changed while the audit snapshot was read")
+            rows.append(
+                (
+                    path.name,
+                    after.st_ino,
+                    after.st_size,
+                    after.st_mtime_ns,
+                    hashlib.sha256(data).hexdigest(),
+                )
+            )
+        return tuple(rows)
+
+    journal_bytes, journal_stamp = signature(journal_path)
+    anchor_bytes, anchor_stamp = signature(anchor)
+    blobs_before = blob_snapshot()
+    try:
+        journal = AppendOnlyJournal(journal_path)
+    except JournalCorrupted as exc:
+        raise RegistryCorrupted(f"freeze journal: {exc}") from exc
+    try:
+        anchor_journal = AppendOnlyJournal(anchor)
+    except JournalCorrupted as exc:
+        raise RegistryCorrupted(f"freeze registry anchor: {exc}") from exc
+
+    # Replay in an isolated instance. _apply only validates and returns an in-memory commit;
+    # no normal constructor, lock file, journal append, or recovery path is involved.
+    replay = object.__new__(ProfileFreezeRegistry)
+    replay._by_ref = {}
+    replay._order = []
+    replay._blobs = BlobStore(resolved_root / "blobs")
+    for entry in journal.entries:
+        try:
+            replay._apply(entry.type, entry.payload)()
+        except (RegistryRefused, ValidationError, ValueError) as exc:
+            raise RegistryCorrupted(f"freeze record {entry.seq}: {exc}") from exc
+
+    length, head = 0, ""
+    for entry in anchor_journal.entries:
+        payload = entry.payload
+        if entry.type != _ANCHOR_TYPE or set(payload) != {"length", "head"}:
+            raise RegistryCorrupted(f"anchor record {entry.seq} is not a head record")
+        new_length, new_head = payload["length"], payload["head"]
+        if (
+            not isinstance(new_length, int)
+            or isinstance(new_length, bool)
+            or new_length <= length
+            or not isinstance(new_head, str)
+        ):
+            raise RegistryCorrupted(f"anchor record {entry.seq} is invalid")
+        if (
+            new_length > len(journal)
+            or journal.entry(new_length - 1).hash != new_head
+        ):
+            raise RegistryCorrupted(
+                f"anchor record {entry.seq} does not match its journal prefix"
+            )
+        length, head = new_length, new_head
+    if length != len(journal) or (length and journal.entry(length - 1).hash != head):
+        raise RegistryCorrupted("the freeze registry anchor does not match the journal tip")
+    if not length and head:
+        raise RegistryCorrupted("the empty freeze registry anchor has a non-empty head")
+
+    if signature(journal_path) != (journal_bytes, journal_stamp):
+        raise RegistryCorrupted(f"{journal_path} changed during the audit")
+    if signature(anchor) != (anchor_bytes, anchor_stamp):
+        raise RegistryCorrupted(f"{anchor} changed during the audit")
+    if blob_snapshot() != blobs_before:
+        raise RegistryCorrupted("the calibration blob store changed during the audit")
+    return {
+        "status": "OK",
+        "evidence": "HASH_CHAIN",
+        "path": str(resolved_root),
+        "journal_records": len(journal),
+        "journal_head_hash": journal.head_hash,
+        "anchor_status": "VERIFIED",
+        "anchor_path": str(anchor.resolve()),
+        "limitations": [
+            "rollback of the journal and its external anchor together is not detectable"
+        ],
+    }

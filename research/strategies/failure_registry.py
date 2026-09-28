@@ -27,6 +27,7 @@ inside the gate and is refused before writing while the state does not accept wr
 
 from __future__ import annotations
 
+import hashlib
 import os
 from collections import Counter
 from pathlib import Path
@@ -39,7 +40,7 @@ from core.domain.research import FailureRecord
 from core.errors import ReasonCode
 from research.persistence import WriteGate, gate_scope
 
-__all__ = ["FailureRegistry", "FailureRegistryCorrupted"]
+__all__ = ["FailureRegistry", "FailureRegistryCorrupted", "verify_integrity_snapshot"]
 
 
 class FailureRegistryCorrupted(RuntimeError):
@@ -132,3 +133,47 @@ class FailureRegistry:
         docs/research/failure-registry.md); a code without records is absent."""
         counts = Counter(record.reason_code.value for record in self.records())
         return dict(sorted(counts.items()))
+
+
+def verify_integrity_snapshot(path: Path) -> dict[str, object]:
+    """Validate a stable Failure Registry JSONL snapshot (STRUCTURAL_ONLY evidence).
+
+    The format has no hash chain or external anchor. The returned byte hash identifies only this
+    snapshot and cannot prove that valid historical rows were not rewritten or removed.
+    """
+    path = Path(path)
+    if not path.is_file():
+        raise FailureRegistryCorrupted(f"the Failure Registry does not exist: {path}")
+    before = path.stat()
+    data = path.read_bytes()
+    after = path.stat()
+    stamp = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+    if stamp != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+        raise FailureRegistryCorrupted(f"{path} changed while the audit snapshot was read")
+    if data and not data.endswith(b"\n"):
+        raise FailureRegistryCorrupted(f"{path} ends in a partial trailing line")
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise FailureRegistryCorrupted(f"{path} is not UTF-8") from exc
+    records: list[FailureRecord] = []
+    for number, line in enumerate(text.splitlines(), 1):
+        if not line:
+            raise FailureRegistryCorrupted(f"{path}:{number} is a blank line")
+        try:
+            records.append(FailureRecord.model_validate_json(line))
+        except ValidationError as exc:
+            raise FailureRegistryCorrupted(f"{path}:{number} is not a FailureRecord") from exc
+    if path.read_bytes() != data or path.stat().st_mtime_ns != stamp[3]:
+        raise FailureRegistryCorrupted(f"{path} changed during the audit")
+    return {
+        "status": "OK",
+        "evidence": "STRUCTURAL_ONLY",
+        "path": str(path.resolve()),
+        "records": len(records),
+        "snapshot_sha256": hashlib.sha256(data).hexdigest(),
+        "limitation": (
+            "no hash chain or anchor; valid historical rewrites and full-line removal are "
+            "undetectable"
+        ),
+    }

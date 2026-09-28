@@ -86,6 +86,7 @@ __all__ = [
     "RegistryRefused",
     "StrategyRegistry",
     "UnknownArtifact",
+    "verify_integrity_snapshot",
 ]
 
 ARTIFACT_REGISTERED: Final = "artifact.registered"
@@ -430,3 +431,110 @@ class StrategyRegistry:
             for record in self._deployments.values()
             if artifact_id is None or record.artifact_id == artifact_id
         )
+
+
+def verify_integrity_snapshot(root: Path, *, anchor: Path | None = None) -> dict[str, object]:
+    """Verify a stable on-disk snapshot without opening or mutating a registry instance.
+
+    Unlike ``StrategyRegistry(...)``, this does not create a directory or lock and never repairs
+    an anchor. A supplied anchor must match the journal tip exactly; without one, whole trailing
+    journal records cannot be detected and the result is marked ``UNANCHORED``.
+    """
+    root = Path(root)
+    journal_path = root / "registry.jsonl"
+    if not root.is_dir() or not journal_path.is_file():
+        raise RegistryCorrupted(f"the Strategy Registry does not exist at {root}")
+    root = root.resolve()
+    if anchor is not None:
+        anchor = Path(anchor)
+        if anchor.resolve().is_relative_to(root):
+            raise RegistryCorrupted("the Strategy Registry anchor must be outside its directory")
+
+    def signature(path: Path) -> tuple[bytes, tuple[int, int, int, int]]:
+        before = path.stat()
+        data = path.read_bytes()
+        after = path.stat()
+        stamp = (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+        if stamp != (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns):
+            raise RegistryCorrupted(f"{path} changed while the audit snapshot was read")
+        return data, stamp
+
+    journal_bytes, journal_stamp = signature(journal_path)
+    try:
+        journal = AppendOnlyJournal(journal_path)
+    except JournalCorrupted as exc:
+        raise RegistryCorrupted(f"registry journal: {exc}") from exc
+
+    # Replay the same business rules in an isolated, in-memory instance. No constructor, lock,
+    # registry write method, or anchor recovery path is entered.
+    replay = object.__new__(StrategyRegistry)
+    replay._artifacts = {}
+    replay._checks = {}
+    replay._check_order = []
+    replay._deployments = {}
+    replay._blobs = BlobStore(root / "blobs")
+    for entry in journal.entries:
+        try:
+            replay._apply(entry.type, entry.payload, replay=True)()
+        except (RegistryRefused, ValidationError, ValueError) as exc:
+            raise RegistryCorrupted(f"registry record {entry.seq}: {exc}") from exc
+
+    anchor_status = "UNANCHORED"
+    anchor_path: Path | None = None
+    anchor_stamp: tuple[int, int, int, int] | None = None
+    anchor_bytes: bytes | None = None
+    if anchor is not None:
+        anchor_path = Path(anchor)
+        if not anchor_path.is_file():
+            raise RegistryCorrupted(f"the Strategy Registry anchor does not exist: {anchor_path}")
+        anchor_bytes, anchor_stamp = signature(anchor_path)
+        try:
+            anchor_journal = AppendOnlyJournal(anchor_path)
+        except JournalCorrupted as exc:
+            raise RegistryCorrupted(f"registry anchor: {exc}") from exc
+        length, head = 0, ""
+        for entry in anchor_journal.entries:
+            payload = entry.payload
+            if entry.type != _ANCHOR_TYPE or set(payload) != {"length", "head"}:
+                raise RegistryCorrupted(f"registry anchor record {entry.seq} is not a head record")
+            new_length, new_head = payload["length"], payload["head"]
+            if (
+                not isinstance(new_length, int)
+                or isinstance(new_length, bool)
+                or new_length <= length
+                or not isinstance(new_head, str)
+            ):
+                raise RegistryCorrupted(f"registry anchor record {entry.seq} is invalid")
+            if (
+                new_length > len(journal)
+                or journal.entry(new_length - 1).hash != new_head
+            ):
+                raise RegistryCorrupted(
+                    f"registry anchor record {entry.seq} does not match its journal prefix"
+                )
+            length, head = new_length, new_head
+        if length != len(journal) or (length and journal.entry(length - 1).hash != head):
+            raise RegistryCorrupted("the Strategy Registry anchor does not match the journal tip")
+        if not length and head:
+            raise RegistryCorrupted("the empty Strategy Registry anchor has a non-empty head")
+        anchor_status = "VERIFIED"
+
+    # Refuse a mixed-time report if either journal or anchor changed during replay.
+    if signature(journal_path) != (journal_bytes, journal_stamp):
+        raise RegistryCorrupted(f"{journal_path} changed during the audit")
+    if anchor_path is not None and signature(anchor_path) != (anchor_bytes, anchor_stamp):
+        raise RegistryCorrupted(f"{anchor_path} changed during the audit")
+    return {
+        "status": "OK",
+        "evidence": "HASH_CHAIN",
+        "path": str(root),
+        "journal_records": len(journal),
+        "journal_head_hash": journal.head_hash,
+        "anchor_status": anchor_status,
+        "anchor_path": None if anchor_path is None else str(anchor_path.resolve()),
+        "limitations": [
+            "rollback of the journal and its external anchor together is not detectable"
+        ]
+        if anchor_status == "VERIFIED"
+        else ["without an external anchor, whole trailing journal records cannot be detected"],
+    }
