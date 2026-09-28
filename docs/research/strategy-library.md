@@ -58,7 +58,7 @@
 | 策略 / 方法 | 文献 / 知识库 | 主项目实现 | 输入 | 测试证据 | 规格状态 |
 |---|---|---|---|---|---|
 | 时间序列动量 | `knowledge:strategy_time_series_momentum@1.0.0`、`knowledge:strategy_crypto_time_series_momentum@1.0.0`；`hlens-knowledge:FAC-MOM-TS-001`、`ALP-TSMOM-001` | `tsmom_bars@1.0.0` | `bar_log_return`（可算） | 策略契约套件、未来信号拒绝、空间外参数拒绝、G0–G4 接线、golden 实验（合成夹具） | `IMPLEMENTED · NOT_VALIDATED` |
-| 时间序列动量 + 波动率目标 | 同上 + `knowledge:risk_volatility_managed_portfolios@1.0.0` 等；`STR-VOLTARGET-001` | `tsmom_bars_vol_scaled@1.0.0` | `bar_log_return` + `bar_realized_vol_60`（风控信号，研究循环未提供，见下） | 管线确定性与无前视、风控契约套件、各上限生效；**没有** G0–G4 接线或 golden 实验覆盖该变体 | `IMPLEMENTED · NOT_VALIDATED` |
+| 时间序列动量 + 波动率目标 | 同上 + `knowledge:risk_volatility_managed_portfolios@1.0.0` 等；`STR-VOLTARGET-001` | `tsmom_bars_vol_scaled@1.0.0` | `bar_log_return` + `bar_realized_vol_60`（风控信号，研究循环未提供，见下） | 管线确定性与无前视、风控契约套件、各上限生效；G0–G4 端到端测试 `tests/research/strategies/test_vol_scaled_validation.py`（未运行；缺波动率信号时全部空仓、结论 INCONCLUSIVE）；无 golden 实验 | `IMPLEMENTED · NOT_VALIDATED` |
 | 横截面动量（动量腿） | `knowledge:factor_crypto_market_size_momentum@1.0.0`；`FAC-CRYPTO-MOM-001` | `xsmom_bars@1.0.0` | `bar_log_return`（可算）；两个标的 | `test_cross_sectional_momentum.py`、`test_cross_sectional_g4.py` | `IMPLEMENTED · NOT_VALIDATED` |
 | Donchian / 通道突破 | `STR-TF-DONCHIAN-001`、`STR-BREAKOUT-001`（知识库证据等级 DOCUMENTED） | 无 | bar OHLC（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 单标的 z-score 均值回归 | `STR-MR-ZSCORE-001`（知识库证据等级 DOCUMENTED） | 无 | bar close（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |

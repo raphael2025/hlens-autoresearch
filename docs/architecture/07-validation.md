@@ -57,7 +57,7 @@ flowchart LR
 
 **契约层只做格式与结构检查**：`threshold_source` 是否真的指向所绑定 Profile 版本中的字段、
 其值是否等于 `threshold`、报告是否包含 Profile 要求的全部门、`value` 是否真由声明的 `metric` 算出，
-都由持有 Profile 实例的验证服务核验（尚未实现）。
+都由持有 Profile 实例的验证服务核验（`research/validation/verification.py` 的 `verify_report`；Promotion 在冻结检查之后以 `report_threshold_mismatch` 拒绝不一致的报告）。
 
 ### 2.2 实现说明：Phase 4 最小流水线（ADR-0037，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）
 
