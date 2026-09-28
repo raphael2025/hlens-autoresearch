@@ -58,7 +58,7 @@ ADR-0035 §4 已定义 `infrastructure/state/table.py` 的 `state_table(spec, re
 - `StateTable.write(spec, request, result, descriptor)` 首先运行 `state_table` 的请求 / 规格 / descriptor 复核，再生成逻辑列与 run envelope。
 - 已有 `result_hash` 下逐行完全相同则幂等重放、无新 snapshot；存在不同内容则 `StateTableConflict`，绝不追加或覆盖。
 - 新 batch 基于固定 head snapshot 提交；`CommitConflict` 触发有界重新读取并重试；`BatchConflict` 失败关闭。提交后固定到新 snapshot 读回并逐行复核。
-- `read(result_hash, snapshot_id=None)` 只在解析一次的 head 或调用方指定 snapshot 上读取；不会从缺失 snapshot 回退。`load` 返回重建并验证的 StateResult。
+- `read(result_hash, expected_spec=None, snapshot_id=None)` 只在解析一次的 head 或调用方指定 snapshot 上读取；不会从缺失 snapshot 回退。提供 `expected_spec` 时，每行的 `state_ref` 与 `spec_hash` 必须分别等于其 `ref` 与内容哈希，否则以 `StateTableCorrupted` 失败关闭。此参数可选，以保持既有调用兼容；省略时仅验证 `StateResult` 哈希覆盖的载荷，无法认证 `state_ref` / `spec_hash` 两个目录列。`load` 同样接受并转发 `expected_spec`。
 - 不提供更新、覆盖或删除。所有持久化 State 行只能通过显式 writer append。
 
 ### 5. 本地 artifact store
@@ -78,4 +78,4 @@ ADR-0035 §4 已定义 `infrastructure/state/table.py` 的 `state_table(spec, re
 
 ## 测试范围
 
-仅使用 `tmp_path` warehouse 和临时 SQLite PyIceberg Catalog：定义及字段 / partition ID、`day(evaluation_time)` 分区、Phase 1 registry 不变、ensure 幂等、写读往返与完整 run hash、幂等重写、冲突 / 篡改 / 缺行 / 重复 index / count 错误拒绝、固定 snapshot 读取、空 StateResult 契约拒绝、artifact store 原子写与 canonical read、默认命令零副作用、`--apply` 的显式 registry 和错误脱敏。测试不得使用真实 PostgreSQL 或 warehouse。
+仅使用 `tmp_path` warehouse 和临时 SQLite PyIceberg Catalog：定义及字段 / partition ID、`day(evaluation_time)` 分区、Phase 1 registry 不变、ensure 幂等、写读往返与完整 run hash、幂等重写、冲突 / 篡改 / 缺行 / 重复 index / count 错误拒绝、固定 snapshot 读取、提供 `expected_spec` 时篡改或不匹配的 `state_ref` / `spec_hash` 必须拒绝、空 StateResult 契约拒绝、artifact store 原子写与 canonical read、默认命令零副作用、`--apply` 的显式 registry 和错误脱敏。测试不得使用真实 PostgreSQL 或 warehouse。

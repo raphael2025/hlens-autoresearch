@@ -312,17 +312,50 @@ class StateTable:
             return StateRunWrite(result_hash, len(expected), snapshot, committed.outcome)
         raise StateTableConflict(f"state run {result_hash} lost {_ATTEMPTS} races") from last
 
-    def read(self, result_hash: str, *, snapshot_id: str | None = None) -> StoredStateRun | None:
+    def read(
+        self,
+        result_hash: str,
+        *,
+        expected_spec: StateSpec | None = None,
+        snapshot_id: str | None = None,
+    ) -> StoredStateRun | None:
+        """Read a verified run, optionally binding its stored State identity to ``expected_spec``.
+
+        ``state_ref`` and ``spec_hash`` are not included in ``StateResult.result_hash``. Callers
+        that need those stored columns authenticated must supply the expected spec; omitting it
+        preserves the original read API and verifies the StateResult payload only.
+        """
+        if expected_spec is not None and not isinstance(expected_spec, StateSpec):
+            raise TypeError("expected_spec must be a StateSpec")
         pinned = self._head() if snapshot_id is None else snapshot_id
         rows = self._rows(result_hash, pinned)
         if not rows:
             return None
         assert pinned is not None
+        if expected_spec is not None:
+            expected_ref = str(expected_spec.ref)
+            expected_hash = expected_spec.content_hash()
+            if any(
+                row["state_ref"] != expected_ref or row["spec_hash"] != expected_hash
+                for row in rows
+            ):
+                raise StateTableCorrupted(
+                    f"state run {result_hash}: stored identity differs from expected StateSpec"
+                )
         result = _rebuild(result_hash, rows)
         return StoredStateRun(pinned, result, tuple(_logical_row(row) for row in rows))
 
-    def load(self, result_hash: str, *, snapshot_id: str | None = None) -> StateResult | None:
-        stored = self.read(result_hash, snapshot_id=snapshot_id)
+    def load(
+        self,
+        result_hash: str,
+        *,
+        expected_spec: StateSpec | None = None,
+        snapshot_id: str | None = None,
+    ) -> StateResult | None:
+        """Load the StateResult, optionally checking its row identity against ``expected_spec``."""
+        stored = self.read(
+            result_hash, expected_spec=expected_spec, snapshot_id=snapshot_id
+        )
         return None if stored is None else stored.result
 
     def _rows(self, result_hash: str, snapshot_id: str | None) -> list[dict[str, Any]]:

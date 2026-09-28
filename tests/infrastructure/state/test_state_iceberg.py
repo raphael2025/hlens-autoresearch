@@ -14,6 +14,7 @@ from pyiceberg.transforms import DayTransform
 
 from core.contracts.catalog import CommitRequest, TableNotFound, UnknownTableDefinition
 from core.contracts.state import StateResult
+from core.domain.base import Ref
 from infrastructure.catalog.iceberg_adapter import PyIcebergCatalogAdapter
 from infrastructure.state.iceberg import (
     StateTable,
@@ -124,7 +125,9 @@ def test_ensure_and_run_round_trip_are_idempotent_and_snapshot_pinned(env: Env) 
 
     written = env.table.write(spec, request, result, descriptor)
     replay = env.table.write(spec, request, result, descriptor)
-    loaded = env.table.read(result.result_hash, snapshot_id=written.snapshot_id)
+    loaded = env.table.read(
+        result.result_hash, expected_spec=spec, snapshot_id=written.snapshot_id
+    )
     assert written.snapshot_id == replay.snapshot_id == env.head()
     assert not written.replayed and replay.replayed
     assert loaded is not None and loaded.result == result
@@ -166,6 +169,39 @@ def test_rebuild_rejects_missing_or_duplicate_run_indices(env: Env) -> None:
     env.commit_rows(rows, "state.duplicate-index")
     with pytest.raises(StateTableCorrupted, match="evaluation_index"):
         env.table.read(result.result_hash)
+
+
+@pytest.mark.parametrize(
+    ("column", "tampered"),
+    (("state_ref", "state:other@1.0.0"), ("spec_hash", "0" * 64)),
+)
+def test_read_rejects_tampered_expected_identity_columns(
+    env: Env, column: str, tampered: str
+) -> None:
+    spec, request, result, descriptor = _answer()
+    rows = state_rows(result, spec, request, descriptor)
+    for row in rows:
+        row[column] = tampered
+    env.commit_rows(rows, f"state.tampered-{column}")
+
+    with pytest.raises(StateTableCorrupted, match="expected StateSpec"):
+        env.table.read(result.result_hash, expected_spec=spec)
+
+
+@pytest.mark.parametrize("identity_change", ("ref", "spec_hash"))
+def test_read_rejects_a_mismatched_expected_spec(env: Env, identity_change: str) -> None:
+    spec, request, result, descriptor = _answer()
+    env.table.write(spec, request, result, descriptor)
+    wrong_spec = (
+        spec.model_copy(update={"ref": Ref.parse("state:other@1.0.0")})
+        if identity_change == "ref"
+        else spec.model_copy(update={"method": f"{spec.method}-changed"})
+    )
+
+    with pytest.raises(StateTableCorrupted, match="expected StateSpec"):
+        env.table.read(result.result_hash, expected_spec=wrong_spec)
+    with pytest.raises(StateTableCorrupted, match="expected StateSpec"):
+        env.table.load(result.result_hash, expected_spec=wrong_spec)
 
 
 def test_empty_state_result_is_refused_by_the_published_contract() -> None:
