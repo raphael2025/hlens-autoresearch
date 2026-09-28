@@ -326,3 +326,12 @@ writer / reader、chunk commit、streaming verifier、`ManifestStore` 双表分�
 - `core/contracts/universe.py`（`ResearchDatasetManifest` 及记录模型）、`core/contracts/storage.py`（`StorageAdapter`）、`core/contracts/catalog.py`（`BATCH_ID_PATTERN`）、`core/domain/base.py`（版本常量、`_MODEL_SINCE`、`contract_schema_version_scope`）
 - `infrastructure/dataset/builder.py`、`manifests.py`、`selection.py`；`infrastructure/catalog/phase1_tables.py`（`DATASET_MANIFESTS`、`DATASET_SELECTIONS`）
 - `docs/architecture/02-domain.md` §3.3、`docs/architecture/03-data.md` §3 / §7.1 / §7.5
+
+### PM 冻结记录：新表（2026-09-28，Claude PM 依 Raphael 授权）
+
+按 §6.2.5，冻结 B-TABLES 实现的两张新表（`infrastructure/catalog/phase1_tables.py` 第 16、17 项）：
+
+- `research.dataset_evidence_manifests`：不分区，列与 `ResearchDatasetEvidenceManifest` / `EvidenceStreamRef` / `EvidenceObjectRef` / `DatasetRuleBinding` 一一对应。
+- `research.dataset_selection_chunks`：v2 `research.dataset_selections` 的 8 列（字段 ID 1–8）完全保留，另加 `chunk_index` 与 `row_ordinal`；分区为 `identity(symbol) + day(event_time)`，与 v2 相同。
+
+两张表的 definition hash 与 golden 字面值在调试阶段首次运行时钉定。已有 15 张表的定义与哈希不变。
