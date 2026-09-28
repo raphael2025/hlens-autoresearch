@@ -147,9 +147,9 @@ without ``complete()`` — after any admission byte was written marks the state 
 refusing every later write (``LoopStateInconsistent`` / ``LedgerError``) and releases the in-process
 locks: the journals stay exactly where they stopped, and closing the loop and reopening the
 directory recovers the transaction as ADR-0073 §4 prescribes. A scope that wrote nothing releases
-cleanly. The lease does not cover the sealed-OOS, lineage or failure stores: nothing but
-``prepare`` / ``complete`` may run inside the scope, and a write to them during it leaves an
-admission the reopening refuses rather than recovers.
+cleanly. Nothing but ``prepare`` / ``complete`` may run inside the scope: every other write of a
+durable store — the sealed-OOS, lineage and failure stores included — is refused before it writes
+while the lease is active (**One admission gate**).
 
 **One admission gate** (ADR-0073 admission lease review, 2026-09-28). Every in-process write this
 state coordinates runs with the same re-entrant gate held, and each checks the lease / poison
@@ -161,8 +161,24 @@ in-memory admission and its between-rounds checkpoint / anchor move; a review en
 start between an approval's line and its checkpoint, nor between a round's checkpoint and its audit
 record (it would see the checkpointed round still open). A lease is bound to the thread that
 entered its scope and claimed exclusively per call; ``complete`` is claimed once before its first
-write (``PlanAdmissionLease``). Lock order is always gate → TrialLedger lock; the ledger never calls
-back into the gate. The TrialLedger's journal is read only through its snapshot / head API.
+write (``PlanAdmissionLease``).
+
+Every durable store the checkpoints position enters the same gate before it writes (review fix,
+2026-09-28): ``open_state`` binds the TrialLedger, the sealed-OOS unsealing ledger, the lineage graph
+and the failure registry to it (``bind_write_gate``; ``research.persistence.gate``), and the review
+queue already writes inside ``review_scope``. So no store write — through
+``state.memory.ledger.register`` / ``register_batch`` / ``register_reevaluation`` from any thread,
+``oos_ledger.record`` / ``mark_evaluated``, ``lineage_graph.add`` or ``failures.append`` — can run
+between a checkpoint's (round, between-rounds or admission) reading of the store positions and its
+memory line, nor between a round checkpoint and its audit record, nor between a PREPARE's position
+check and its admission checkpoint. Outside those spans an ordinary store write (a round's stages)
+takes the gate briefly and runs as before. While a lease is active or after an interrupted admission
+every ordinary store write is refused before it writes (``LoopStateLocked`` /
+``LoopStateInconsistent``); the only store write admitted then is the lease's own
+``recover_register_batch(..., lease=...)``, whose TrialLedger lease the gate matches to the active
+lease and its thread. Lock order is always gate → store lock → journal lock; no store enters the
+gate while holding its own lock. No store hands out its writable journal: positions and entries are
+read through ``journal_head()`` / ``journal_snapshot()`` (detached, read-only).
 
 The LLM provider is external: its own state (e.g. a scripted provider's position) is not loop
 state and is the caller's to resume.
@@ -181,7 +197,7 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from threading import Lock, RLock, get_ident
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, TypeVar
 
 from apps.worker.loop import (
     LifecycleGuard,
@@ -203,7 +219,7 @@ from core.domain.research import (
 from core.domain.specs import StrategySpec
 from core.errors import LifecycleViolation, ReasonCode
 from research.evolution import LineageGraph
-from research.hypotheses import LedgerError, LedgerJournalSnapshot, LedgerLease, TrialLedger
+from research.hypotheses import LedgerError, LedgerLease, TrialLedger
 from research.hypotheses.typed_plan_audit import (
     CommittedAdmission,
     PlanAdmissionCorrupted,
@@ -217,7 +233,7 @@ from research.hypotheses.typed_plan import TypedPlan
 from research.loop.memory import REVIEW_APPROVED, ResearchMemory, ReviewApproval, ReviewQueue
 from research.loop.segment import ResearchPiece
 from research.loop.trials import TrialOutcome, ValidationOutcome
-from research.persistence import GENESIS_HASH, AppendOnlyJournal, JournalEntry
+from research.persistence import GENESIS_HASH, AppendOnlyJournal, JournalEntry, JournalSnapshot
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import StrategyCandidate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
@@ -271,6 +287,7 @@ LEGACY_STATE_VERSION: Final = 3
 STATE_VERSION: Final = 4
 OPERATOR_STATE_VERSION: Final = 5
 _OPERATOR_IDENTITY_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
+_T = TypeVar("_T")
 
 #: Fingerprint fields that are budgets (a change is a human decision: a new directory).
 _BUDGET_FIELDS: Final = {
@@ -355,12 +372,40 @@ class _AdmissionGate:
     admission lease**): ``owner`` is the active ``PlanAdmissionLease``; ``poisoned`` says why the
     state refuses every later write after an interrupted admission."""
 
-    __slots__ = ("lock", "owner", "poisoned")
+    __slots__ = ("lock", "owner", "owner_thread", "owner_token", "poisoned")
 
     def __init__(self) -> None:
         self.lock = RLock()
         self.owner: object | None = None
+        #: The active lease's thread and its TrialLedger ``LedgerLease`` (``write_scope``).
+        self.owner_thread: int | None = None
+        self.owner_token: object | None = None
         self.poisoned: str | None = None
+
+    @contextmanager
+    def write_scope(self, what: str, token: object | None = None) -> Iterator[None]:
+        """``research.persistence.WriteGate``: one durable store write with the gate held, refused
+        before the store writes anything (module docs, **One admission gate**).
+
+        An ordinary write (``token=None``) is refused while a lease is active or after an
+        interrupted admission. A ``token`` is admitted only as the active lease's own TrialLedger
+        lease, presented from the thread that entered that lease's scope.
+        """
+        with self.lock:
+            if token is None:
+                self.require_open(what)
+            else:
+                self.require_open(what, self.owner)
+                if (
+                    self.owner is None
+                    or token is not self.owner_token
+                    or get_ident() != self.owner_thread
+                ):
+                    raise LoopStateLocked(
+                        f"{what} requires this state's active typed-plan admission lease (its "
+                        "own TrialLedger lease, from the thread that holds it)"
+                    )
+            yield
 
     def require_open(self, what: str, lease: object | None = None) -> None:
         """Refuse ``what`` after an interrupted admission, or while a lease other than ``lease``
@@ -394,47 +439,48 @@ def _admission_file_sizes(root: Path) -> tuple[int, ...]:
 # ------------------------------------------------------------------------------------ positions
 
 
-def _other_journals(
-    memory: ResearchMemory, admission: PlanAdmissionJournal | None
-) -> dict[str, AppendOnlyJournal | PlanAdmissionJournal]:
-    """Every positioned journal but the TrialLedger's (which is only read through its snapshot /
-    head API: the ledger never hands out its writable journal)."""
-    reviews = memory.reviews.journal
+def _stores(memory: ResearchMemory) -> tuple[LineageGraph, DurableUnsealingLedger]:
+    """The lineage graph and unsealing ledger of a journal-backed memory (refused otherwise).
+
+    No store hands out its writable journal (module docs, **One admission gate**): positions and
+    entries are read only through each store's ``journal_head()`` / ``journal_snapshot()``.
+    """
     graph, oos = memory.lineage_graph, memory.oos_ledger
     if (
         not memory.ledger.durable
-        or reviews is None
+        or not memory.reviews.durable
         or graph is None
-        or graph.journal is None
+        or not graph.durable
         or not isinstance(oos, DurableUnsealingLedger)
     ):
         raise ValueError("a durable loop state needs journal-backed memory throughout")
-    journals: dict[str, AppendOnlyJournal | PlanAdmissionJournal] = {
-        "sealed_oos": oos.journal,
-        "lineage": graph.journal,
-        "reviews": reviews,
-    }
-    if admission is not None:
-        journals["plan_admission"] = admission
-    return journals
+    return graph, oos
 
 
-def _ledger_snapshot(memory: ResearchMemory) -> LedgerJournalSnapshot:
-    snapshot = memory.ledger.journal_snapshot()
-    if snapshot is None:
+def _durable(value: _T | None) -> _T:
+    """A store's journal view or position; ``None`` (an in-memory store) is refused."""
+    if value is None:
         raise ValueError("a durable loop state needs journal-backed memory throughout")
-    return snapshot
+    return value
+
+
+def _review_snapshot(memory: ResearchMemory) -> JournalSnapshot:
+    return _durable(memory.reviews.journal_snapshot())
 
 
 def _journals(
     memory: ResearchMemory, admission: PlanAdmissionJournal | None = None
-) -> dict[str, AppendOnlyJournal | PlanAdmissionJournal | LedgerJournalSnapshot]:
-    """Every positioned journal, read-only use: the TrialLedger as a detached snapshot."""
-    others = _other_journals(memory, admission)
-    journals: dict[str, AppendOnlyJournal | PlanAdmissionJournal | LedgerJournalSnapshot] = {
-        "trial_ledger": _ledger_snapshot(memory)
+) -> dict[str, JournalSnapshot | PlanAdmissionJournal]:
+    """Every positioned journal, read-only: each store's as a detached snapshot."""
+    graph, oos = _stores(memory)
+    journals: dict[str, JournalSnapshot | PlanAdmissionJournal] = {
+        "trial_ledger": _durable(memory.ledger.journal_snapshot()),
+        "sealed_oos": oos.journal_snapshot(),
+        "lineage": _durable(graph.journal_snapshot()),
+        "reviews": _review_snapshot(memory),
     }
-    journals.update(others)
+    if admission is not None:
+        journals["plan_admission"] = admission
     return journals
 
 
@@ -445,18 +491,24 @@ def _failure_hashes(records: Sequence[FailureRecord]) -> list[str]:
 def heads(
     memory: ResearchMemory, admission: PlanAdmissionJournal | None = None
 ) -> dict[str, Any]:
-    """The position of every file of the state directory but the audit and the memory journal."""
-    others = _other_journals(memory, admission)
-    ledger = memory.ledger.journal_head()
-    if ledger is None:
-        raise ValueError("a durable loop state needs journal-backed memory throughout")
-    out: dict[str, Any] = {"trial_ledger": {"seq": ledger[0], "hash": ledger[1]}}
-    out.update(
-        {
-            name: {"seq": len(journal.entries), "hash": journal.head_hash}
-            for name, journal in others.items()
-        }
-    )
+    """The position of every file of the state directory but the audit and the memory journal.
+
+    Callers that append a line naming these positions hold the admission gate, which every store
+    write enters first (module docs, **One admission gate**): no store moves between this read and
+    that append.
+    """
+    graph, oos = _stores(memory)
+    positions: dict[str, tuple[int, str]] = {
+        "trial_ledger": _durable(memory.ledger.journal_head()),
+        "sealed_oos": oos.journal_head(),
+        "lineage": _durable(graph.journal_head()),
+        "reviews": _durable(memory.reviews.journal_head()),
+    }
+    if admission is not None:
+        positions["plan_admission"] = (len(admission.entries), admission.head_hash)
+    out: dict[str, Any] = {
+        name: {"seq": seq, "hash": head} for name, (seq, head) in positions.items()
+    }
     hashes = _failure_hashes(memory.failures.records())
     out["failures"] = {"count": len(hashes), "digest": content_hash(hashes)}
     return out
@@ -643,7 +695,7 @@ def _delta(memory: ResearchMemory, marks: _Marks) -> Any:
 def _approval_lines(memory: ResearchMemory) -> int:
     return sum(
         1
-        for entry in _other_journals(memory, None)["reviews"].entries
+        for entry in _review_snapshot(memory).entries
         if entry.type == REVIEW_APPROVED
     )
 
@@ -730,7 +782,7 @@ class MemoryCheckpoint:
         """Checkpoint the human approval just journaled (the review journal's last line)."""
         with self.admission_gate.lock:
             self.require_settled("between-rounds checkpoint")
-            line = _other_journals(self._memory, None)["reviews"].entries[-1]
+            line = _review_snapshot(self._memory).entries[-1]
             if line.type != REVIEW_APPROVED or line.payload.get("key") != approval.key:
                 raise LoopStateInconsistent("the review journal's last line is not this approval")
             self._journal.append(
@@ -968,7 +1020,7 @@ class DurableState:
             except BaseException:
                 ledger.release_write_lease(ledger_lease)
                 raise
-            gate.owner = lease
+            gate.owner, gate.owner_token, gate.owner_thread = lease, ledger_lease, lease._thread
         try:
             yield lease
         except BaseException:
@@ -991,7 +1043,7 @@ class DurableState:
                         "checkpoint → anchor sequence"
                     )
                     gate.poisoned = reason
-            gate.owner = None
+            gate.owner, gate.owner_token, gate.owner_thread = None, None, None
             self.memory.ledger.release_write_lease(lease._ledger_lease, seal=reason)
         if reason is not None and not failed:
             raise LoopStateInconsistent(
@@ -1181,7 +1233,9 @@ class DurableState:
         Refused on entry (nothing written) while a typed-plan admission lease is active
         (``LoopStateLocked``), after an interrupted one, or while an admission is unfinished
         (``LoopStateInconsistent``). Holding the gate means no lease can start between a round's
-        checkpoint and its audit record (it would see the checkpointed round still open).
+        checkpoint and its audit record (it would see the checkpointed round still open), and no
+        durable store write (every one enters the gate first) lands between the checkpoint's
+        position read and its line or before the audit record.
         """
         with self.checkpoint.admission_gate.lock:
             self.checkpoint.require_settled("a loop round start or record")
@@ -1564,6 +1618,7 @@ def _open_locked(
             root, memory, audit, MemoryCheckpoint(journal, memory, admission, state_lock), anchor,
             admission, state_version, state_lock,
         )
+        _bind_store_gates(state)
         _check_anchor(state, anchored)
         memory.reviews.observe(state)
         return state
@@ -1602,6 +1657,7 @@ def _open_locked(
         root, memory, audit, MemoryCheckpoint(journal, memory, admission, state_lock), anchor,
         admission, state_version, state_lock,
     )
+    _bind_store_gates(state)
     if admission is not None:
         _check_anchor(state, anchored)
     # Every read-only cross-check (round contents and the lifecycle replay included) runs before
@@ -1650,6 +1706,18 @@ def _open_locked(
     _check_anchor(state, anchored)
     memory.reviews.observe(state)
     return state
+
+
+def _bind_store_gates(state: DurableState) -> None:
+    """Bind every durable store the checkpoints position to the state's admission gate (module
+    docs, **One admission gate**); the review queue is bound as the state's observer instead."""
+    gate = state.checkpoint.admission_gate
+    memory = state.memory
+    graph, oos = _stores(memory)
+    memory.ledger.bind_write_gate(gate)
+    oos.bind_write_gate(gate)
+    graph.bind_write_gate(gate)
+    memory.failures.bind_write_gate(gate)
 
 
 def _plan_journal(

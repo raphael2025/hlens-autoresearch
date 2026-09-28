@@ -39,7 +39,9 @@ enqueue or take across ``before_review_write`` → journal line → in-memory up
 holds its admission gate there, so no typed-plan admission lease, round checkpoint or anchor move
 can start between an approval's journal line and its between-rounds checkpoint, and an enqueue /
 take is refused (before anything is written) while an admission lease is active or after an
-interrupted one.
+interrupted one. The backing journal is never handed out (its ``append`` would bypass the observer's
+scope and the replayed queue): cross-file checks read ``durable``, ``journal_head()`` or
+``journal_snapshot()`` (``research.persistence.JournalSnapshot``: detached, read-only).
 """
 
 from __future__ import annotations
@@ -55,7 +57,13 @@ from core.domain.specs import StrategySpec
 from research.evolution import LineageGraph
 from research.hypotheses import HypothesisDraft, TrialLedger
 from research.loop.segment import ResearchPiece
-from research.persistence import AppendOnlyJournal, JournalCorrupted
+from research.persistence import (
+    GENESIS_HASH,
+    AppendOnlyJournal,
+    JournalCorrupted,
+    JournalSnapshot,
+    journal_snapshot,
+)
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import StrategyCandidate
 from research.validation.sealed_oos import InMemoryUnsealingLedger, UnsealingLedger
@@ -138,9 +146,25 @@ class ReviewQueue:
             self._journal = journal  # set after replay: replaying never re-appends
 
     @property
-    def journal(self) -> AppendOnlyJournal | None:
-        """The backing journal (``None``: in memory); read-only use, for cross-file checks."""
-        return self._journal
+    def durable(self) -> bool:
+        """Whether a journal backs this queue."""
+        return self._journal is not None
+
+    def journal_head(self) -> tuple[int, str] | None:
+        """``(entry count, chain head)`` of the backing journal; ``None``: in memory."""
+        journal = self._journal
+        if journal is None:
+            return None
+        entries = journal.entries  # one consistent tuple: count and head from the same instant
+        return len(entries), (entries[-1].hash if entries else GENESIS_HASH)
+
+    def journal_snapshot(self) -> JournalSnapshot | None:
+        """Detached read-only copy of the backing journal's verified entries; ``None``: in memory.
+
+        Never the writable journal (module docs): a review write goes through ``enqueue`` /
+        ``approve`` / ``mark_taken`` and so through the observer's ``review_scope``.
+        """
+        return None if self._journal is None else journal_snapshot(self._journal)
 
     @staticmethod
     def _key(draft: HypothesisDraft) -> str:

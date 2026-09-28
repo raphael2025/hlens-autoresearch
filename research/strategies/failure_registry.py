@@ -13,16 +13,22 @@ file:
 
 This is the research-plane write path. The authoritative registry is the Control Plane (not built
 yet); ``docs/research/failure-registry.md`` stays the human-readable index.
+
+Write gate (ADR-0073 admission lease review, 2026-09-28): a loop state directory binds its registry
+to its admission gate (``bind_write_gate``; ``research.persistence.gate``), so every ``append`` runs
+inside the gate and is refused before writing while the state does not accept writes.
 """
 
 from __future__ import annotations
 
 import os
 from pathlib import Path
+from threading import RLock
 
 from pydantic import ValidationError
 
 from core.domain.research import FailureRecord
+from research.persistence import WriteGate, gate_scope
 
 __all__ = ["FailureRegistry", "FailureRegistryCorrupted"]
 
@@ -36,8 +42,18 @@ class FailureRegistry:
 
     def __init__(self, path: Path) -> None:
         self._path = Path(path)
+        #: Orders appends against reads of the file (taken after the gate).
+        self._lock = RLock()
+        self._gate: WriteGate | None = None
         self._seen = 0
         self._seen = self._size()
+
+    def bind_write_gate(self, gate: WriteGate) -> None:
+        """Run every later ``append`` inside ``gate`` (module docs); once only."""
+        with self._lock:
+            if self._gate is not None:
+                raise ValueError("this failure registry is already bound to a write gate")
+            self._gate = gate
 
     @property
     def path(self) -> Path:
@@ -54,21 +70,24 @@ class FailureRegistry:
         if type(record) is not FailureRecord:
             raise TypeError("append needs a FailureRecord")
         line = FailureRecord.model_validate_json(record.model_dump_json()).model_dump_json()
-        self._size()
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as handle:
-            handle.write(line + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        self._seen = self._size()
+        with gate_scope(self._gate, "appending a failure record"), self._lock:
+            self._size()
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            with self._path.open("a", encoding="utf-8") as handle:
+                handle.write(line + "\n")
+                handle.flush()
+                os.fsync(handle.fileno())
+            self._seen = self._size()
 
     def records(self) -> tuple[FailureRecord, ...]:
         """Every record in append order; any unparsable line is corruption."""
-        self._size()
-        if not self._path.exists():
-            return ()
+        with self._lock:
+            self._size()
+            if not self._path.exists():
+                return ()
+            text = self._path.read_text(encoding="utf-8")
         out: list[FailureRecord] = []
-        for number, line in enumerate(self._path.read_text(encoding="utf-8").splitlines(), 1):
+        for number, line in enumerate(text.splitlines(), 1):
             try:
                 out.append(FailureRecord.model_validate_json(line))
             except ValidationError as exc:

@@ -32,11 +32,20 @@ Read-only journal view (ADR-0073 admission lease review, 2026-09-28). The backin
 the replayed in-memory state. Cross-file checks read ``durable``, ``journal_head()`` (sequence and
 chain head) or ``journal_snapshot()`` (a ``LedgerJournalSnapshot``: detached copies of the verified
 entries, taken under the ledger lock) instead.
+
+Write gate (ADR-0073 admission lease review, 2026-09-28). A loop state directory binds the ledger
+to its admission gate (``bind_write_gate``; ``research.persistence.gate``). Every mutation entry —
+``register``, ``register_draft``, ``register_batch``, ``register_reevaluation``,
+``acquire_write_lease`` and ``recover_register_batch`` — then enters the gate **before** the ledger
+lock (lock order gate → ledger lock; the ledger never enters the gate while holding its lock), so
+no registration interleaves with the state's checkpoints and none runs while an admission lease is
+active or after an interrupted one; ``recover_register_batch`` presents its ``LedgerLease`` to the
+gate, which admits it only for the active admission lease's thread. Replay, reads and
+``release_write_lease`` do not enter the gate.
 """
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import re
@@ -48,7 +57,16 @@ from typing import TYPE_CHECKING
 
 from core.domain.base import SHA256_PATTERN, canonical_json
 from core.domain.research import Hypothesis, HypothesisOrigin
-from research.persistence import GENESIS_HASH, AppendOnlyJournal, JournalCorrupted, JournalEntry
+from research.persistence import (
+    AppendOnlyJournal,
+    JournalCorrupted,
+    JournalEntry,
+    JournalSnapshot,
+    WriteGate,
+    detached_entry,
+    gate_scope,
+    journal_snapshot,
+)
 
 if TYPE_CHECKING:
     from research.hypotheses.generator import HypothesisDraft
@@ -72,28 +90,9 @@ class LedgerLease:
         return f"<LedgerLease {id(self):#x}>"
 
 
-@dataclass(frozen=True, slots=True)
-class LedgerJournalSnapshot:
-    """A durable ``TrialLedger``'s verified journal at one instant (``journal_snapshot``).
-
-    Read-only and detached: ``entries`` are copies (payloads included), so nothing done to them
-    reaches the ledger, and there is no way to append through it.
-    """
-
-    path: Path
-    entries: tuple[JournalEntry, ...]
-
-    @property
-    def head_hash(self) -> str:
-        """The chain's tip at the snapshot: ``GENESIS_HASH`` for an empty journal."""
-        return self.entries[-1].hash if self.entries else GENESIS_HASH
-
-
-def _detached(entry: JournalEntry) -> JournalEntry:
-    """A copy of ``entry`` sharing no mutable payload with the journal's own record."""
-    return JournalEntry(
-        entry.seq, entry.type, copy.deepcopy(entry.payload), entry.prev_hash, entry.hash
-    )
+#: A durable ``TrialLedger``'s verified journal at one instant (``journal_snapshot``): read-only
+#: and detached (``research.persistence.JournalSnapshot``).
+LedgerJournalSnapshot = JournalSnapshot
 
 
 @dataclass(frozen=True, slots=True)
@@ -125,6 +124,8 @@ class TrialLedger:
         #: this instance refuses every later mutation.
         self._lease: LedgerLease | None = None
         self._sealed: str | None = None
+        #: The loop state's write gate (module docs, **Write gate**); ``None``: unbound.
+        self._gate: WriteGate | None = None
         if path is not None:
             journal = AppendOnlyJournal(path)
             for entry in journal.entries:
@@ -141,7 +142,7 @@ class TrialLedger:
                 self._replay_batch(path, payload)
             elif kind == "reevaluate" and isinstance(payload, dict):
                 hypothesis = Hypothesis.model_validate(payload["hypothesis"])
-                if not self.register_reevaluation(hypothesis, str(payload["attempt"])):
+                if not self._register_reevaluation(hypothesis, str(payload["attempt"])):
                     raise JournalCorrupted(f"{path}: duplicate re-evaluation line")
             else:
                 raise JournalCorrupted(f"{path}: unknown record type {kind!r}")
@@ -171,9 +172,14 @@ class TrialLedger:
             journal = self._journal
             if journal is None:
                 return None
-            return LedgerJournalSnapshot(
-                journal.path, tuple(_detached(entry) for entry in journal.entries)
-            )
+            return journal_snapshot(journal)
+
+    def bind_write_gate(self, gate: WriteGate) -> None:
+        """Run every later mutation inside ``gate`` (module docs, **Write gate**); once only."""
+        with self._lock:
+            if self._gate is not None:
+                raise LedgerError("this TrialLedger is already bound to a write gate")
+            self._gate = gate
 
     def acquire_write_lease(self) -> LedgerLease:
         """Reserve every later write of this instance for the returned token (module docs).
@@ -181,7 +187,7 @@ class TrialLedger:
         Refused (``LedgerError``) while another lease is held or after a sealed release. The holder
         must call ``release_write_lease`` exactly once, also when its transaction fails.
         """
-        with self._lock:
+        with gate_scope(self._gate, "a TrialLedger write lease"), self._lock:
             self._check_writer(None, "a write lease")
             lease = LedgerLease()
             self._lease = lease
@@ -221,14 +227,14 @@ class TrialLedger:
 
         LLM-originated hypotheses go through ``register_draft`` (a human review is required).
         """
-        with self._lock:
+        with gate_scope(self._gate, f"registering {hypothesis.ref}"), self._lock:
             self._check_writer(None, f"registering {hypothesis.ref}")
             if hypothesis.origin is HypothesisOrigin.LLM:
                 raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
             return self._register(hypothesis)
 
     def register_draft(self, draft: HypothesisDraft) -> bool:
-        with self._lock:
+        with gate_scope(self._gate, "registering a reviewed draft"), self._lock:
             self._check_writer(None, "registering a reviewed draft")
             if not draft.reviewed:
                 raise LedgerError(f"{draft.hypothesis.ref} has not been reviewed by a human")
@@ -246,7 +252,7 @@ class TrialLedger:
         ``HypothesisDraft`` evidence required by ``register_draft``. Refused while a write lease is
         held (module docs).
         """
-        with self._lock:
+        with gate_scope(self._gate, "a batch registration"), self._lock:
             self._check_writer(None, "a batch registration")
             return self._register_batch(hypotheses)
 
@@ -313,9 +319,10 @@ class TrialLedger:
         The method requires a durable ledger and the held write ``lease`` (module docs), and holds
         the ledger RLock across inspection and append. It does not repair a corrupt / partial
         journal or reload a stale journal object; callers must reopen the ledger after process
-        restart so its verified replay is current.
+        restart so its verified replay is current. With a bound write gate, ``lease`` is also
+        presented to the gate before the ledger lock is taken (module docs, **Write gate**).
         """
-        with self._lock:
+        with gate_scope(self._gate, "a prepared batch recovery", lease), self._lock:
             self._check_writer(lease, "a prepared batch recovery")
             if type(baseline_seq) is not int or baseline_seq < 0:
                 raise LedgerError("baseline_seq must be a non-negative integer")
@@ -374,7 +381,7 @@ class TrialLedger:
                 registered = self._register_batch(batch)
                 if len(registered) != len(batch):
                     raise LedgerError("the prepared recovery batch was not wholly registered")
-                return _detached(journal.entries[-1])
+                return detached_entry(journal.entries[-1])
 
             if len(entries) != baseline_seq + 1:
                 raise LedgerError(
@@ -408,7 +415,7 @@ class TrialLedger:
                 for hypothesis in batch
             ):
                 raise LedgerError("the replayed TrialLedger state differs from its matching event")
-            return _detached(entry)
+            return detached_entry(entry)
 
     def _replay_batch(self, path: Path, payload: object) -> None:
         """Replay one strictly shaped batch record; any duplicate or invalid member is corruption."""
@@ -446,8 +453,13 @@ class TrialLedger:
         new version, never a re-evaluation); ``attempt`` is a non-empty key naming this
         evaluation. ``False`` if exactly this attempt was already registered (not a new trial).
         """
-        with self._lock:
+        with gate_scope(self._gate, f"a re-evaluation of {hypothesis.ref}"), self._lock:
             self._check_writer(None, f"a re-evaluation of {hypothesis.ref}")
+            return self._register_reevaluation(hypothesis, attempt)
+
+    def _register_reevaluation(self, hypothesis: Hypothesis, attempt: str) -> bool:
+        """``register_reevaluation`` once the caller checked the writer (or replays)."""
+        with self._lock:
             key = (hypothesis.name, hypothesis.version)
             existing = self._registered.get(key)
             if existing is None:

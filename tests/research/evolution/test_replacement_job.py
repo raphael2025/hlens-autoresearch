@@ -282,7 +282,7 @@ def test_read_lineage_verifies_and_never_writes(tmp_path: Path) -> None:
     before = path.read_bytes()
     graph = read_lineage(path)
     assert [s.ref for s in graph.specs] == [INCUMBENT.ref, CHILD.ref]
-    assert graph.journal is None and path.read_bytes() == before
+    assert not graph.durable and path.read_bytes() == before
     path.write_text(before.decode().replace("lookback", "lookbaxk", 1), encoding="utf-8")
     with pytest.raises(JournalCorrupted):
         read_lineage(path)

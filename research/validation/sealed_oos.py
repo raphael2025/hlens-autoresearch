@@ -33,6 +33,13 @@ append-only file (``research.persistence.AppendOnlyJournal``), so "one unsealing
 "one evaluation per unsealing" and the global unsealing count survive a process restart. A
 Control Plane ledger may implement the same ``UnsealingLedger`` Protocol later; that is not this
 batch.
+
+Write gate (ADR-0073 admission lease review, 2026-09-28): a loop state directory binds its
+``DurableUnsealingLedger`` to its admission gate (``bind_write_gate``;
+``research.persistence.gate``), so every ``record`` / ``mark_evaluated`` runs inside the gate and is
+refused before writing while the state does not accept writes. The backing journal is never handed
+out (its ``append`` would bypass the gate and the replayed state): cross-file checks read
+``journal_head()`` or ``journal_snapshot()``.
 """
 
 from __future__ import annotations
@@ -41,11 +48,19 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+from threading import RLock
 from typing import Protocol
 
 from core.contracts.profile_selection import OosUnsealing
 from core.contracts.validation_profile import ValidationProfile
-from research.persistence import AppendOnlyJournal, JournalCorrupted
+from research.persistence import (
+    AppendOnlyJournal,
+    JournalCorrupted,
+    JournalSnapshot,
+    WriteGate,
+    gate_scope,
+    journal_snapshot,
+)
 from research.validation.gates import sourced_parameter
 from research.validation.splits import LabeledSpan, midnight_utc
 
@@ -152,6 +167,9 @@ class DurableUnsealingLedger:
 
     def __init__(self, path: Path) -> None:
         self._journal = AppendOnlyJournal(path)
+        #: Orders a write's check / append / apply against snapshots (taken after the gate).
+        self._lock = RLock()
+        self._gate: WriteGate | None = None
         self._records: dict[str, OosUnsealing] = {}
         self._evaluated: set[str] = set()
         for entry in self._journal.entries:
@@ -181,33 +199,49 @@ class DurableUnsealingLedger:
     def path(self) -> Path:
         return self._journal.path
 
-    @property
-    def journal(self) -> AppendOnlyJournal:
-        """The backing journal (read-only use: its entries and head, for cross-file checks)."""
-        return self._journal
+    def bind_write_gate(self, gate: WriteGate) -> None:
+        """Run every later ``record`` / ``mark_evaluated`` inside ``gate`` (module docs); once."""
+        with self._lock:
+            if self._gate is not None:
+                raise ValueError("this unsealing ledger is already bound to a write gate")
+            self._gate = gate
+
+    def journal_head(self) -> tuple[int, str]:
+        """``(entry count, chain head)`` of the backing journal."""
+        with self._lock:
+            return len(self._journal.entries), self._journal.head_hash
+
+    def journal_snapshot(self) -> JournalSnapshot:
+        """Detached read-only copy of the backing journal's verified entries."""
+        with self._lock:
+            return journal_snapshot(self._journal)
 
     def get(self, family_id: str) -> OosUnsealing | None:
         return self._records.get(family_id)
 
     def record(self, family_id: str, unsealing: OosUnsealing) -> None:
-        if family_id in self._records:
-            raise OosAlreadyUnsealed(f"family {family_id!r} has already been unsealed")
-        self._journal.append(
-            "unseal",
-            {"family_id": family_id, "unsealing": unsealing.model_dump(mode="json")},
-        )
-        self._records[family_id] = unsealing
+        with gate_scope(self._gate, f"unsealing the sealed OOS for {family_id!r}"), self._lock:
+            if family_id in self._records:
+                raise OosAlreadyUnsealed(f"family {family_id!r} has already been unsealed")
+            self._journal.append(
+                "unseal",
+                {"family_id": family_id, "unsealing": unsealing.model_dump(mode="json")},
+            )
+            self._records[family_id] = unsealing
 
     def count(self) -> int:
         return len(self._records)
 
     def mark_evaluated(self, family_id: str) -> None:
-        if family_id not in self._records:
-            raise SealedOosLocked(f"family {family_id!r} has not unsealed the OOS window")
-        if family_id in self._evaluated:
-            raise SealedOosAlreadyEvaluated(f"family {family_id!r} already evaluated sealed OOS")
-        self._journal.append("mark_evaluated", {"family_id": family_id})
-        self._evaluated.add(family_id)
+        with gate_scope(self._gate, f"marking {family_id!r} sealed-OOS evaluated"), self._lock:
+            if family_id not in self._records:
+                raise SealedOosLocked(f"family {family_id!r} has not unsealed the OOS window")
+            if family_id in self._evaluated:
+                raise SealedOosAlreadyEvaluated(
+                    f"family {family_id!r} already evaluated sealed OOS"
+                )
+            self._journal.append("mark_evaluated", {"family_id": family_id})
+            self._evaluated.add(family_id)
 
     def is_evaluated(self, family_id: str) -> bool:
         return family_id in self._evaluated

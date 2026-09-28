@@ -4,16 +4,30 @@ Durability (debugging pass, 2026-09-25, ADR-0045 implementation note): an option
 backs the graph with a hash-chained append-only file (``research.persistence.AppendOnlyJournal``),
 so a parent/child relation recorded by one process is still there after a restart. Omit ``path``
 and the graph is exactly the in-memory dict it always was, built once from ``specs``.
+
+Write gate (ADR-0073 admission lease review, 2026-09-28): a loop state directory binds a durable
+graph to its admission gate (``bind_write_gate``; ``research.persistence.gate``), so every ``add``
+runs inside the gate and is refused before writing while the state does not accept writes. The
+backing journal is never handed out (its ``append`` would bypass the gate and the in-memory graph):
+cross-file checks read ``durable``, ``journal_head()`` or ``journal_snapshot()``.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from pathlib import Path
+from threading import RLock
 
 from core.domain.base import Ref
 from core.domain.specs import StrategySpec
-from research.persistence import AppendOnlyJournal, JournalCorrupted
+from research.persistence import (
+    AppendOnlyJournal,
+    JournalCorrupted,
+    JournalSnapshot,
+    WriteGate,
+    gate_scope,
+    journal_snapshot,
+)
 
 __all__ = ["LineageError", "LineageGraph"]
 
@@ -25,6 +39,9 @@ class LineageError(ValueError):
 class LineageGraph:
     def __init__(self, specs: Iterable[StrategySpec], *, path: Path | None = None) -> None:
         self._specs: dict[Ref, StrategySpec] = {}
+        #: Orders an ``add``'s check / append / insert against snapshots (taken after the gate).
+        self._lock = RLock()
+        self._gate: WriteGate | None = None
         self._journal = AppendOnlyJournal(path) if path is not None else None
         if self._journal is not None:
             for entry in self._journal.entries:
@@ -53,21 +70,41 @@ class LineageGraph:
         Appends one journal line when a path-backed graph sees a ref for the first time; an
         identical re-add (same ref, same content) is silently absorbed, matching ``__init__``'s
         merge of its ``specs`` argument. A different spec under the same ref is refused
-        (``LineageError``): a lineage relation, once recorded, is never rewritten.
+        (``LineageError``): a lineage relation, once recorded, is never rewritten. With a bound
+        write gate the whole call runs inside it (module docs).
         """
-        existing = self._specs.get(spec.ref)
-        if existing is not None:
-            if existing.content_hash() != spec.content_hash():
-                raise LineageError(f"{spec.ref} is already recorded with other content")
-            return
-        if self._journal is not None:
-            self._journal.append("add_spec", spec.model_dump(mode="json"))
-        self._specs[spec.ref] = spec
+        with gate_scope(self._gate, f"recording lineage spec {spec.ref}"), self._lock:
+            existing = self._specs.get(spec.ref)
+            if existing is not None:
+                if existing.content_hash() != spec.content_hash():
+                    raise LineageError(f"{spec.ref} is already recorded with other content")
+                return
+            if self._journal is not None:
+                self._journal.append("add_spec", spec.model_dump(mode="json"))
+            self._specs[spec.ref] = spec
+
+    def bind_write_gate(self, gate: WriteGate) -> None:
+        """Run every later ``add`` inside ``gate`` (module docs); once only."""
+        with self._lock:
+            if self._gate is not None:
+                raise LineageError("this lineage graph is already bound to a write gate")
+            self._gate = gate
 
     @property
-    def journal(self) -> AppendOnlyJournal | None:
-        """The backing journal (``None``: in memory); read-only use, for cross-file checks."""
-        return self._journal
+    def durable(self) -> bool:
+        """Whether a journal backs this graph."""
+        return self._journal is not None
+
+    def journal_head(self) -> tuple[int, str] | None:
+        """``(entry count, chain head)`` of the backing journal; ``None``: in memory."""
+        with self._lock:
+            journal = self._journal
+            return None if journal is None else (len(journal.entries), journal.head_hash)
+
+    def journal_snapshot(self) -> JournalSnapshot | None:
+        """Detached read-only copy of the backing journal's entries; ``None``: in memory."""
+        with self._lock:
+            return None if self._journal is None else journal_snapshot(self._journal)
 
     @property
     def specs(self) -> tuple[StrategySpec, ...]:
