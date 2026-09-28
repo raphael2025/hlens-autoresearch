@@ -22,8 +22,9 @@ from core.contracts.synthetic import SyntheticMarket
 from core.contracts.validation_profile import CrossAssetParams, ValidationProfile
 from core.domain.research import GateResult, ValidationReport, Verdict
 from research.outcomes import OutcomeTable
-from research.validation import build_report, run_in_sample
+from research.validation import build_report, run_validation
 from research.validation.calibration import MomentumSignStudy
+from research.validation.gate_set import stage_of
 from research.validation.verification import ReportDiscrepancy, verify_report
 from tests.research.validation.fixtures import (
     TEST_ONLY_PROFILE,
@@ -33,6 +34,20 @@ from tests.research.validation.fixtures import (
     outcome_table,
     research_events,
 )
+
+#: ADR-0086 decision 1: every stage a "complete" in-sample report needs, other than the ones the
+#: gate(s) under test already carry. Filler gates carry no threshold, so they add no discrepancy
+#: of their own (``verify_report`` only compares thresholded gates) and exist only to make the
+#: report's stage set complete for tests that are not themselves about gate-set completeness.
+_FILLER_STAGES = ("G0", "G1", "G2", "G3", "G4")
+
+
+def _filler_gates(present: frozenset[str] = frozenset()) -> list[GateResult]:
+    return [
+        GateResult(gate_id=f"{stage}.filler", metric="filler", value=1.0, verdict=Verdict.PASS)
+        for stage in _FILLER_STAGES
+        if stage not in present
+    ]
 
 
 def _with(profile: ValidationProfile, group: str, **update: Any) -> ValidationProfile:
@@ -49,11 +64,17 @@ def planted() -> tuple[SyntheticMarket, OutcomeTable]:
 def _pipeline_report(
     planted: tuple[SyntheticMarket, OutcomeTable], profile: ValidationProfile = TEST_ONLY_PROFILE
 ) -> ValidationReport:
+    """A real pipeline report, G0 - G4 (ADR-0086 decision 1: a gate-set-complete in-sample
+    report). No robustness input is given: G4 collapses to the single
+    ``G4.robustness_input`` INCONCLUSIVE gate (``research.validation.g4``), which is enough to
+    satisfy the G4 stage requirement without building a ``RobustnessInput`` fixture; the report's
+    overall verdict is then INCONCLUSIVE, not PASS — no test in this file depends on PASS."""
     market, table = planted
     events = [OutcomeEvent(event_key=x.event_key, event_time=x.event_time) for x in table]
     ctx = context(profile)
-    gates = run_in_sample(in_sample_input(table, MomentumSignStudy(market, events), ctx=ctx))
-    return build_report(ctx, gates)
+    in_sample = in_sample_input(table, MomentumSignStudy(market, events), ctx=ctx)
+    run = run_validation(in_sample, robustness=None)
+    return build_report(ctx, run.gates)
 
 
 def _problems(report: ValidationReport, profile: ValidationProfile) -> set[ReportDiscrepancy]:
@@ -71,7 +92,11 @@ def _replace_gate(report: ValidationReport, gate_id: str, **update: Any) -> Vali
 
 
 def _hand_report(gates: Sequence[GateResult], profile: ValidationProfile) -> ValidationReport:
-    return build_report(context(profile), gates)
+    """A report of exactly ``gates``, topped up with threshold-less filler gates (module docs,
+    ``_filler_gates``) for every in-sample stage ``gates`` does not already touch, so that tests
+    about one gate's threshold discrepancies are not also about ADR-0086 gate-set completeness."""
+    present = frozenset(stage_of(gate.gate_id) for gate in gates)
+    return build_report(context(profile), (*gates, *_filler_gates(present)))
 
 
 def test_a_pipeline_report_verifies_against_its_profile(
@@ -223,3 +248,91 @@ def test_verify_report_refuses_non_contract_inputs(
         verify_report(report, object())  # type: ignore[arg-type]
     with pytest.raises(TypeError):
         verify_report(object(), TEST_ONLY_PROFILE)  # type: ignore[arg-type]
+
+
+# ---- ADR-0086 decision 1: gate-set completeness (research.validation.gate_set) ---------------
+
+
+def _gate(gate_id: str, verdict: Verdict = Verdict.PASS) -> GateResult:
+    return GateResult(gate_id=gate_id, metric="filler", value=1.0, verdict=verdict)
+
+
+def _raw_report(gates: Sequence[GateResult], **overrides: Any) -> ValidationReport:
+    """A report of exactly ``gates`` (no filler): unlike ``_hand_report``, for tests that are
+    themselves about gate-set completeness."""
+    payload = build_report(context(), gates).model_dump()
+    payload.update(overrides)
+    return ValidationReport.model_validate(payload)
+
+
+def test_a_pipeline_report_is_gate_set_complete(
+    planted: tuple[SyntheticMarket, OutcomeTable],
+) -> None:
+    report = _pipeline_report(planted)
+    verification = verify_report(report, TEST_ONLY_PROFILE)
+    assert not verification.gate_set_discrepancies, verification.to_dict()
+
+
+def test_a_report_missing_an_in_sample_stage_is_flagged() -> None:
+    report = _raw_report([_gate("G0.filler"), _gate("G1.filler"), _gate("G2.filler")])
+    problems = verify_report(report, TEST_ONLY_PROFILE).gate_set_discrepancies
+    assert {p.problem for p in problems} == {ReportDiscrepancy.GATE_STAGE_MISSING}
+    assert {p.gate_id for p in problems} == {"G3", "G4"}
+
+
+def test_a_report_under_an_unknown_stage_is_flagged() -> None:
+    report = _raw_report(
+        [_gate("G0.filler"), _gate("G1.filler"), _gate("G2.filler"), _gate("Gx.bogus")]
+    )
+    problems = verify_report(report, TEST_ONLY_PROFILE).gate_set_discrepancies
+    unknown = [p for p in problems if p.problem is ReportDiscrepancy.GATE_STAGE_UNKNOWN]
+    assert {p.gate_id for p in unknown} == {"Gx"}
+
+
+def test_a_standalone_sealed_oos_report_is_gate_set_complete() -> None:
+    """A G5-only report (``research/loop``'s standalone sealed-OOS report, and
+    ``tests/promotion/fixtures.py::toy_evidence``'s sealed-OOS evidence report) is not "in-sample
+    mode + G5" — see ``research.validation.gate_set`` module docs for why it is checked on its
+    own, not held to the combined in-sample + G5 set."""
+    report = _raw_report([_gate("G5.unsealing_recorded")])
+    verification = verify_report(report, TEST_ONLY_PROFILE)
+    assert not verification.gate_set_discrepancies, verification.to_dict()
+
+
+def test_a_combined_report_needs_the_in_sample_stages_and_g5() -> None:
+    present = [s for s in _FILLER_STAGES if s != "G3"]  # G3 left out on purpose
+    gates = [_gate(f"{s}.filler") for s in present] + [_gate("G5.filler")]
+    problems = verify_report(_raw_report(gates), TEST_ONLY_PROFILE).gate_set_discrepancies
+    missing = {p.gate_id for p in problems if p.problem is ReportDiscrepancy.GATE_STAGE_MISSING}
+    assert missing == {"G3"}
+
+
+def test_an_unregistered_pipeline_version_is_flagged() -> None:
+    gates = [_gate(f"{s}.filler") for s in _FILLER_STAGES]
+    report = _raw_report(gates, constitution_version="9.9.9")
+    problems = verify_report(report, TEST_ONLY_PROFILE).gate_set_discrepancies
+    assert {p.problem for p in problems} == {ReportDiscrepancy.PIPELINE_VERSION_UNREGISTERED}
+    assert problems[0].gate_id is None
+
+
+def test_threshold_and_gate_set_discrepancies_are_reported_separately() -> None:
+    """A report both threshold-mismatched and gate-set-incomplete carries both, split apart by
+    ``threshold_discrepancies`` / ``gate_set_discrepancies`` (``research.promotion`` checks them
+    in that order, module docs)."""
+    mismatched = GateResult(
+        gate_id="G2.breakeven_cost_multiple",
+        metric="breakeven_cost_multiple[>=]",
+        value=20.0,  # >= the recorded (wrong) threshold: self-consistent, PASS, no VERDICT_INCONSISTENT
+        threshold=1.5 * 10,  # the Profile's actual value is 1.5 (fixtures.TEST_ONLY_PROFILE)
+        threshold_source="cost_stress.min_breakeven_cost_multiple",
+        verdict=Verdict.PASS,
+    )
+    report = _raw_report([mismatched, _gate("G0.filler"), _gate("G1.filler")])
+    verification = verify_report(report, TEST_ONLY_PROFILE)
+    assert verification.threshold_discrepancies and {
+        p.problem for p in verification.threshold_discrepancies
+    } == {ReportDiscrepancy.THRESHOLD_MISMATCH}
+    assert verification.gate_set_discrepancies and {
+        p.problem for p in verification.gate_set_discrepancies
+    } == {ReportDiscrepancy.GATE_STAGE_MISSING}
+    assert not verification.ok

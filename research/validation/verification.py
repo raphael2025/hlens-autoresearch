@@ -38,13 +38,24 @@ verdict — it lists discrepancies; the consumer (``research.promotion``) refuse
 Gates without a threshold (structural flags, reported-only items, missing-field /
 configuration-missing gates) have nothing to compare and are not checked here.
 
-**Not checked (no accepted rule defines it):** whether the report contains every gate the
-Profile requires (ADR-0013 "gate-set completeness") — no Accepted ADR defines the required gate
-list of a Profile; and whether ``value`` was really computed by ``metric`` (that is a re-run:
-``G0.reproducibility`` / ``retro_audit``).
+**Gate-set completeness (ADR-0086 decision 1, 2026-09-28).** ``verify_report`` also checks the
+report's gate id set against ``research.validation.gate_set.gate_set_completeness`` (see that
+module for what "required" means: stage granularity, not literal gate ids — those still depend on
+the bound Profile and are not re-checked here): a stage its own pipeline version
+(``ValidationReport.constitution_version``) requires and the report has no gate for
+(``gate_stage_missing``), a stage no known pipeline version emits
+(``gate_stage_unknown``), or a ``constitution_version`` this module has no required-set row for
+(``pipeline_version_unregistered``, report-level, ``gate_id=None``). ``ReportVerification.ok`` is
+unaffected — it is still "no discrepancy of any kind" — but
+``.threshold_discrepancies`` / ``.gate_set_discrepancies`` split the two families apart, because
+``research.promotion`` rejects them under two different reasons, in order
+(``report_threshold_mismatch`` then ``report_gate_set_incomplete``).
 
-Status: CODE_COMPLETE / DEBUG_PENDING (MOD-VALID, 2026-09-28). No contract, Schema, Profile
-number or gate rule changes.
+**Still not checked (no accepted rule defines it):** whether ``value`` was really computed by
+``metric`` (that is a re-run: ``G0.reproducibility`` / ``retro_audit``).
+
+Status: CODE_COMPLETE / DEBUG_PENDING (MOD-VALID, 2026-09-28; ADR-0086 decision 1, 2026-09-28). No
+contract, Schema, Profile number or gate rule changes.
 """
 
 from __future__ import annotations
@@ -57,6 +68,7 @@ from typing import Final
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import GateResult, ValidationReport, Verdict
 from research.validation.g4 import PROFILE_SOURCED_THRESHOLDS
+from research.validation.gate_set import gate_set_completeness
 from research.validation.gates import (
     PARAM_SOURCE_PREFIX,
     Direction,
@@ -65,6 +77,7 @@ from research.validation.gates import (
 )
 
 __all__ = [
+    "GATE_SET_PROBLEMS",
     "GateDiscrepancy",
     "ReportDiscrepancy",
     "ReportVerification",
@@ -86,6 +99,25 @@ class ReportDiscrepancy(StrEnum):
     PARAM_OVERRIDES_PROFILE = "param_overrides_profile"
     DIRECTION_MISSING = "direction_missing"
     VERDICT_INCONSISTENT = "verdict_inconsistent"
+    #: ADR-0086 decision 1 (research.validation.gate_set): the report's own constitution_version
+    #: has no registered required gate set.
+    PIPELINE_VERSION_UNREGISTERED = "pipeline_version_unregistered"
+    #: ADR-0086 decision 1: a stage the report's pipeline version and mode require has no gate.
+    GATE_STAGE_MISSING = "gate_stage_missing"
+    #: ADR-0086 decision 1: the report carries a gate under a stage its pipeline version never emits.
+    GATE_STAGE_UNKNOWN = "gate_stage_unknown"
+
+
+#: The ADR-0086 decision 1 discrepancies (``research.validation.gate_set``), as opposed to the
+#: ADR-0013 threshold-binding discrepancies above: ``research.promotion`` rejects the two under
+#: different reasons, in order (module docs).
+GATE_SET_PROBLEMS: Final = frozenset(
+    {
+        ReportDiscrepancy.PIPELINE_VERSION_UNREGISTERED,
+        ReportDiscrepancy.GATE_STAGE_MISSING,
+        ReportDiscrepancy.GATE_STAGE_UNKNOWN,
+    }
+)
 
 
 @dataclass(frozen=True)
@@ -113,6 +145,19 @@ class ReportVerification:
     @property
     def ok(self) -> bool:
         return not self.discrepancies
+
+    @property
+    def threshold_discrepancies(self) -> tuple[GateDiscrepancy, ...]:
+        """The ADR-0013 discrepancies (a Profile binding / threshold / verdict problem): what
+        ``research.promotion`` rejects as ``report_threshold_mismatch``."""
+        return tuple(d for d in self.discrepancies if d.problem not in GATE_SET_PROBLEMS)
+
+    @property
+    def gate_set_discrepancies(self) -> tuple[GateDiscrepancy, ...]:
+        """The ADR-0086 decision 1 discrepancies (a missing / unknown stage, or an unregistered
+        pipeline version): what ``research.promotion`` rejects as ``report_gate_set_incomplete``,
+        checked only after ``threshold_discrepancies`` is empty (module docs)."""
+        return tuple(d for d in self.discrepancies if d.problem in GATE_SET_PROBLEMS)
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -222,6 +267,42 @@ def _verdict_problems(gate: GateResult) -> list[GateDiscrepancy]:
     return []
 
 
+def _gate_set_problems(report: ValidationReport) -> list[GateDiscrepancy]:
+    """ADR-0086 decision 1: ``report``'s stage set against its own ``constitution_version``
+    (module docs; ``research.validation.gate_set``)."""
+    result = gate_set_completeness(
+        report.constitution_version, (gate.gate_id for gate in report.gates)
+    )
+    if not result.registered:
+        return [
+            GateDiscrepancy(
+                None,
+                ReportDiscrepancy.PIPELINE_VERSION_UNREGISTERED,
+                f"no required gate set is registered for pipeline version "
+                f"{report.constitution_version!r} (research.validation.gate_set)",
+            )
+        ]
+    problems = [
+        GateDiscrepancy(
+            stage,
+            ReportDiscrepancy.GATE_STAGE_MISSING,
+            f"{result.mode} mode of pipeline version {report.constitution_version!r} requires "
+            f"stage {stage}, which this report has no gate for",
+        )
+        for stage in sorted(result.missing)
+    ]
+    problems.extend(
+        GateDiscrepancy(
+            stage,
+            ReportDiscrepancy.GATE_STAGE_UNKNOWN,
+            f"this report carries a gate under stage {stage}, unknown to pipeline version "
+            f"{report.constitution_version!r}",
+        )
+        for stage in sorted(result.unknown)
+    )
+    return problems
+
+
 def verify_report(report: ValidationReport, profile: ValidationProfile) -> ReportVerification:
     """Every discrepancy between ``report`` and ``profile`` (module docs); pure, never raises
     for a discrepancy."""
@@ -250,6 +331,7 @@ def verify_report(report: ValidationReport, profile: ValidationProfile) -> Repor
         checked += 1
         problems.extend(_source_problems(gate, profile))
         problems.extend(_verdict_problems(gate))
+    problems.extend(_gate_set_problems(report))
     return ReportVerification(
         report_id=report.report_id,
         profile=str(profile.ref),

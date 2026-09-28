@@ -51,7 +51,12 @@ partial artifact exists):
    Profile instance (``research.validation.verification.verify_report``, ADR-0013: the source is
    a field of the bound Profile carrying exactly the recorded threshold, a ``param:`` source does
    not override a field the Profile carries, and the verdict agrees with the metric's comparison)
-   — any discrepancy is ``report_threshold_mismatch`` (MOD-VALID, 2026-09-28);
+   — any discrepancy is ``report_threshold_mismatch`` (MOD-VALID, 2026-09-28); only once that
+   holds, the report's own gate id set must be complete for its own recorded pipeline version
+   (``ValidationReport.constitution_version``) and the mode its gates show (ADR-0086 decision 1,
+   2026-09-28: a required stage with no gate, a gate under a stage no known pipeline version
+   emits, or an unregistered pipeline version) — any such discrepancy is
+   ``report_gate_set_incomplete``;
 5. the dependency closure: the union of the experiments' ``dependency_hashes`` and the caller's
    ``signal_dependencies`` without conflicting hashes, covering every signal and the risk policy
    of the spec;
@@ -157,6 +162,7 @@ class PromotionRefusal(StrEnum):
     MARKET_BENCHMARK_MISSING = "market_benchmark_missing"
     INVERSE_CONTROL_MISSING = "inverse_control_missing"
     REPORT_THRESHOLD_MISMATCH = "report_threshold_mismatch"
+    REPORT_GATE_SET_INCOMPLETE = "report_gate_set_incomplete"
     DEPENDENCY_CONFLICT = "dependency_conflict"
     DEPENDENCY_UNBOUND = "dependency_unbound"
     LIFECYCLE_SUBJECT_MISMATCH = "lifecycle_subject_mismatch"
@@ -425,12 +431,24 @@ def _check_profiles(
                 f"{INVERSE_CONTROL_GATE}",
             )
         verification = verify_report(report, checked)
-        if not verification.ok:
-            first = verification.discrepancies[0]
+        threshold_problems = verification.threshold_discrepancies
+        if threshold_problems:
+            first = threshold_problems[0]
             raise _refuse(
                 PromotionRefusal.REPORT_THRESHOLD_MISMATCH,
                 f"report {report.report_id} disagrees with {profile.ref} "
-                f"({len(verification.discrepancies)} discrepancies; first: "
+                f"({len(threshold_problems)} discrepancies; first: "
+                f"{first.gate_id} {first.problem.value}: {first.detail})",
+            )
+        # ADR-0086 decision 1: gate-set completeness is checked only after the threshold check
+        # above finds nothing wrong (module docs of research.validation.verification).
+        gate_set_problems = verification.gate_set_discrepancies
+        if gate_set_problems:
+            first = gate_set_problems[0]
+            raise _refuse(
+                PromotionRefusal.REPORT_GATE_SET_INCOMPLETE,
+                f"report {report.report_id} is gate-set incomplete under its own pipeline "
+                f"version ({len(gate_set_problems)} discrepancies; first: "
                 f"{first.gate_id} {first.problem.value}: {first.detail})",
             )
         cited.add(wanted)

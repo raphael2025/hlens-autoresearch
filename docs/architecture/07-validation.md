@@ -57,7 +57,7 @@ flowchart LR
 
 **契约层只做格式与结构检查**：`threshold_source` 是否真的指向所绑定 Profile 版本中的字段、
 其值是否等于 `threshold`、报告是否包含 Profile 要求的全部门、`value` 是否真由声明的 `metric` 算出，
-都由持有 Profile 实例的验证服务核验。已实现：`threshold_source` 指向与阈值一致性（`research/validation/verification.py` 的 `verify_report`；Promotion 在冻结检查之后以 `report_threshold_mismatch` 拒绝）。尚未实现：门集完整性（Profile 要求哪些门尚无已接受规则）与 `value` 由 `metric` 重算的核验。
+都由持有 Profile 实例的验证服务核验。已实现：`threshold_source` 指向与阈值一致性（`research/validation/verification.py` 的 `verify_report`；Promotion 在冻结检查之后以 `report_threshold_mismatch` 拒绝）；门集完整性（按验证流水线版本定义的必需门集，`research/validation/gate_set.py`；`verify_report` 核对报告自身记录的流水线版本，缺门或多出未知门都拒绝；Promotion 在阈值核验之后以 `report_gate_set_incomplete` 拒绝——ADR-0086 决策 1，已实现）。尚未实现：`value` 由 `metric` 重算的核验。
 
 ### 2.2 实现说明：Phase 4 最小流水线（ADR-0037，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）
 
