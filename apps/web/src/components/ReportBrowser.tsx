@@ -4,6 +4,7 @@
 import { useContext, useState, type ReactNode } from "react";
 import { getReport, listReports, type ReportEnvelope, type ReportKind } from "../api";
 import { InitialSelectionContext } from "../lib/initialSelection";
+import { inspectReportDTO } from "../lib/reportDto";
 import { useApi } from "../lib/useApi";
 import { AsyncView, InvalidReports } from "./States";
 
@@ -62,7 +63,16 @@ export function ReportBrowser({
         </div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <AsyncView state={detail} what="报告详情" idle={<p>{prompt}</p>}>
-            {renderDetail}
+            {(report) => {
+              const dto = inspectReportDTO(report);
+              if (dto.status !== "supported") {
+                const message = dto.status === "unknown-version"
+                  ? `未知 DTO 版本 ${dto.version}；仅以只读原始 JSON 展示。`
+                  : `报告 DTO 无效（${dto.version}）：${dto.reason}；仅以只读原始 JSON 展示。`;
+                return <><p role="status">{message}</p><pre>{JSON.stringify(report.payload, null, 2)}</pre></>;
+              }
+              return renderDetail(report);
+            }}
           </AsyncView>
         </div>
       </div>

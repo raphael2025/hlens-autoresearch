@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 
 from apps.api import create_app
 from apps.api.store import ReportKind, ReportStore
+from core.domain.base import content_hash
 from research.reports import ReportConflict, write_paper_deviation
 from research.reports.deviation import KIND
 from tests.research.router.test_paper_deviation import deviation
@@ -23,6 +24,8 @@ def test_a_paper_deviation_is_written_under_its_hash_and_served(tmp_path: Path) 
     assert written.path == tmp_path / KIND / f"{report.deviation_hash}.json"
     payload = json.loads(written.path.read_text(encoding="utf-8"))
     assert payload == report.to_payload()
+    assert payload["schema_version"] == "2.0.0"
+    assert payload["declared_scope"]["scope_schema_version"] == "1.0.0"
     envelope = ReportStore(tmp_path).get(ReportKind.PAPER_DEVIATION, written.id)
     assert envelope.payload == payload
     listing = TestClient(create_app(reports_root=tmp_path)).get("/reports/paper_deviation").json()
@@ -53,3 +56,19 @@ def test_a_report_whose_fields_no_longer_match_its_hash_is_not_written(tmp_path:
 def test_only_a_paper_deviation_is_written(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="PaperDeviation"):
         write_paper_deviation(tmp_path, object())  # type: ignore[arg-type]
+
+
+def test_api_rejects_a_scope_hash_mismatch_even_when_outer_hash_is_recomputed(
+    tmp_path: Path,
+) -> None:
+    payload = deviation().to_payload()
+    payload["declared_scope"]["symbol"] = "ETH"
+    payload["deviation_hash"] = content_hash(
+        {key: value for key, value in payload.items() if key != "deviation_hash"}
+    )
+    directory = tmp_path / KIND
+    directory.mkdir()
+    path = directory / f"{payload['deviation_hash']}.json"
+    path.write_text(json.dumps(payload), encoding="utf-8")
+    [invalid] = ReportStore(tmp_path).listing(ReportKind.PAPER_DEVIATION).invalid
+    assert "scope_hash does not match" in invalid.reason

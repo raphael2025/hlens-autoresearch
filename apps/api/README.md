@@ -86,7 +86,7 @@ Phase 11 退化检查、Phase 8 回溯审计；写入方见 `research/reports/RE
 | `retro_audit` | `report_hash` = 去掉它之后 payload 的哈希（Phase 8 回溯审计；只读差异，不改变生命周期） |
 
 诚实边界：哈希不绑定的展示字段（路由运行的权益曲线、首末权益、每个决策的 `switching_cost`）不被核对；
-`state_strategy_matrix` 仍不透明提供（其 `matrix_hash` 无法只凭 payload 重算）。`retro_audit` 由研究侧 writer 对规范 payload 生成 `report_hash`，API 只按文件内容重算该哈希，不 import `research/`。
+`state_strategy_matrix` 的 payload 形状按 ADR-0081 校验，但 `matrix_hash` 无法只凭 payload 重算。`retro_audit` 由研究侧 writer 对规范 payload 生成 `report_hash`，API 只按文件内容重算该哈希，不 import `research/`。
 
 - **错误体不含服务器路径**：malformed 报告的 422 `detail` 为 `<kind>/<id> is malformed: <原因>`；本层所有
   `HTTPException` 经同一处理器把绝对路径缩成最后一段（`public_detail`），知识 provider 的 `OSError` 文本同样如此。
@@ -145,6 +145,12 @@ Phase 11 退化检查、Phase 8 回溯审计；写入方见 `research/reports/RE
 缺陷修复）；日志 500 只覆盖哈希链断裂这一种篡改；`live-smoke.mjs`（控制台侧）自 2026-09-27（B60）起也访问 broken
 服务器（客户端 + 服务端渲染的 Knowledge Search / Jobs / State × Strategy Matrices 页面），但仍不是浏览器验证。没有并发 / 长连接 / 性能测试；也不代表任何生产服务器
 配置已被验证。
+
+## 报告 payload DTO（ADR-0081，2026-09-28）
+
+`apps/api/report_dto.py` 为全部 11 种 `ReportKind` 注册基线版本、可读取版本和必需字段；API 对已知 DTO 执行结构与现有身份校验。已有 `schema_version` 原样使用；历史 payload 没有该字段的 kind 使用注册表里的虚拟基线版本，不向文件注入字段、不改变其哈希。已知版本缺字段会按 malformed 处理（列表 `invalid`、详情 422）。未知版本以 JSON 原样只读透传并计算 envelope `content_hash`，不假设当前版本的 kind 身份规则；Web 仅显示原始 JSON 和版本提示，不把它解释成已知 DTO。版本与兼容矩阵见 [ADR-0081](../../docs/adr/0081-versioned-report-payload-dtos.md)。
+
+`paper_deviation` 的 2.0.0 DTO 必须包含 ADR-0079 声明范围；API 校验嵌套 `scope_schema_version=1.0.0` 和 `scope_hash`，以及外层 `deviation_hash`。1.0.0 历史报告仍可读，但不构成声明范围证据。
 
 ## 本机运行（Uvicorn，ADR-0063，B65；CODE_COMPLETE / DEBUG_PENDING）
 

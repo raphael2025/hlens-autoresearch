@@ -17,13 +17,15 @@ import——两边只通过这份文件格式约定耦合。
 | `router.py` | `write_router_paper_run`：Phase 10 `RouterPaperRun`（`research/router/paper.py` 的 `paper_run`）；`write_router_stop`：Phase 10 `RouterStop`（`paper_run_or_stop` 的停止记录，kind `router_stop`，id = `stop_hash`） |
 | `gate_calibration.py` | `write_gate_calibration_report`：Phase 9 `GateCalibrationReport`（`research/synthetic_lab/gate_calibration.py`；id = `report_hash`） |
 | `state_diagnostics.py` | `write_state_diagnostics`：Phase 2 `StateDiagnostics`（`research/states/diagnostics.py`；kind `state_diagnostics`，id = `diagnostics_hash`；写入前经 JSON 往返 `from_payload(..., expected_hash=)` 校验，不能往返的报告拒绝写入） |
-| `deviation.py` | `write_paper_deviation`：Phase 10 `PaperDeviation`（`research/router/deviation.py`；kind `paper_deviation`，id = `deviation_hash`；写入前从 payload 重算哈希，不符拒绝写入；2026-09-26，CODE_COMPLETE / DEBUG_PENDING） |
+| `deviation.py` | `write_paper_deviation`：Phase 10 `PaperDeviation`（`research/router/deviation.py`；kind `paper_deviation`，ADR-0079 schema 2.0.0，含声明范围；id = `deviation_hash`；写入前校验 DTO 版本并重算哈希，不符拒绝写入） |
 | `degradation.py` | `write_degradation_check` 保留旧 schema 1.0.0 / hash；`write_degradation_operation` 写入 ADR-0067 显式 operation result 的 schema 1.1.0 与 hash-bound `evidence`（freeze id / anchor snapshot、PASS baseline、lifecycle / observation identities）。两者均重算 check，只作证据、不改生命周期、不接入 research loop；2026-09-27，CODE_COMPLETE / DEBUG_PENDING |
 | `event_statistics.py` | `write_event_statistics`：Phase 3 `EventStatsReport`（`research/events/stats.py`；kind `event_statistics`，id = `report_hash`；写入前从 payload 重算哈希，不符拒绝写入） |
 | `retro_audit.py` | `write_retro_audit_report`：Phase 8 `RetroAuditReport`（由调用方显式提供；schema 1.1.0；kind `retro_audit`，id = `report_hash`；gate diff 包含 metric、legacy / exact value 与 threshold、来源；只报告差异，不扫描对象、不改生命周期） |
 
 以上 kind 都是 `apps/api` `ReportKind` 的成员（2026-09-26：`router_stop` / `state_diagnostics` / `event_statistics` / `paper_deviation` /
 `degradation_check` 加入只读 API 与控制台页面；2026-09-27 加入 `retro_audit`）。`apps/api` 对除 `state_strategy_matrix` 外的每个 kind 重算其身份哈希并拒绝不一致的文件，见 `apps/api/README.md`。
+
+各 kind 的 DTO 版本、字段基线和未知版本策略见 [ADR-0081](../../docs/adr/0081-versioned-report-payload-dtos.md)。API 与 Web 各维护一个不 import 对方运行时的 DTO 注册表，保持 Apps 与研究 Plane 边界；无 `schema_version` 的历史载荷使用虚拟基线版本，不改变已落盘内容或身份哈希。
 
 ## 信封 / 哈希规则
 

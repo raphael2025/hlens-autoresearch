@@ -1,5 +1,5 @@
 // View model of the State × Strategy Matrices page. Payload shape written by
-// research/reports/matrix.py (write_state_strategy_matrix), read back opaquely by apps/api/store.py
+// research/reports/matrix.py (write_state_strategy_matrix), DTO-shape checked by apps/api/store.py
 // — hand-typed since /reports/{kind} has no per-kind OpenAPI schema (ReportEnvelope.payload is
 // `dict[str, Any]`). Pure: tested by stateStrategyMatrix.test.ts with `node --test` over
 // apps/web/fixtures (the current report and the legacy readable 2.0.0 one).

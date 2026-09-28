@@ -5,8 +5,9 @@ artifacts — validation reports, research-loop round audit records, state x str
 router paper runs, stops and paper deviations, gate calibration evidence, state diagnostics, event
 statistics, Phase 11 degradation checks — as JSON files under a configured directory, and this
 module only reads them back. The payload is served as ``payload`` inside a small envelope
-(``kind``, ``id``, ``created``, ``payload``, ``content_hash``); adding a new report kind never
-requires a contract change here.
+(``kind``, ``id``, ``created``, ``payload``, ``content_hash``). Each kind also has an explicit
+Apps-owned DTO registration (ADR-0081); adding a kind requires that registration but never a Domain
+Contract change.
 
 The ``research_loop_round`` kind is checked against a contract (ADR-0050): its payload must be
 a valid ``core.contracts.loop_audit.LoopRoundRecord`` that round-trips byte-identically, and the
@@ -32,7 +33,7 @@ recorded hash and fields disagree:
 
 Honest boundary: display-only fields a hash does not bind (the router run's equity curves,
 endpoints and per-decision ``switching_cost``) are not verified; ``state_strategy_matrix`` is still
-served opaquely (its ``matrix_hash`` is not recomputable from the payload alone).
+shape-checked by its DTO but its ``matrix_hash`` is not recomputable from the payload alone.
 
 Malformed files are **visible, not silent** (2026-09-26; CODE_COMPLETE / DEBUG_PENDING):
 :meth:`ReportStore.listing` (behind ``GET /reports/{kind}``) returns the well-formed reports *and*
@@ -340,9 +341,16 @@ class ReportStore:
             raise ReportMalformed(path, "unreadable or not well-formed JSON") from exc
         if not isinstance(payload, dict):
             raise ReportMalformed(path, "JSON root must be an object")
-        check = _CHECKS.get(kind)
-        if check is not None:
-            check(path, payload)
+        # Resolve the version before version-specific identity rules. Unknown versions are opaque
+        # read-only data: the envelope hash is still computed, but no current DTO/hash semantics are
+        # assumed for a future layout.
+        from apps.api.report_dto import decode_report_payload
+
+        dto = decode_report_payload(kind, payload, path=path)
+        if dto.supported:
+            check = _CHECKS.get(kind)
+            if check is not None:
+                check(path, payload)
         created = datetime.fromtimestamp(modified, tz=UTC)
         return ReportEnvelope(
             kind=kind,

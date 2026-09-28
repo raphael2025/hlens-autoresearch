@@ -46,7 +46,10 @@ its own report schema version (1.1.0):
   `tests/research/events/test_event_stats.py` bound to two run hashes.
 - `paper_deviation/`: `write_paper_deviation` over `deviation()` of
   `tests/research/router/test_paper_deviation.py` — the `test_paper.py` router run vs strategy A run
-  alone through the same backtester (the declared reference).
+  alone through the same backtester (the declared reference). The committed files are legacy
+  payload schema 1.0.0 and remain readable; after ADR-0079 the current writer emits scope-bound
+  schema 2.0.0, so fixture sync must add the new writer output and pin its id without deleting the
+  legacy files.
 - `degradation_check/`: `write_degradation_check` over the check of
   `tests/research/reports/test_degradation_writer.py` (`write_fixture`) — TEST ONLY thresholds and
   metrics (one breached, one within, one missing), not Profile values. A second, **variant**

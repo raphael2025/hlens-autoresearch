@@ -30,6 +30,10 @@ def write_paper_deviation(root: Path, deviation: PaperDeviation) -> WrittenRepor
     if not isinstance(deviation, PaperDeviation):
         raise ValueError("write_paper_deviation needs a PaperDeviation")
     payload = deviation.to_payload()
+    if payload.get("schema_version") != "2.0.0" or not isinstance(
+        payload.get("declared_scope"), dict
+    ):
+        raise ValueError("paper_deviation writer requires the ADR-0079 schema 2.0.0 DTO")
     body = {key: value for key, value in payload.items() if key != "deviation_hash"}
     if payload.get("deviation_hash") != deviation.deviation_hash or (
         content_hash(body) != deviation.deviation_hash
