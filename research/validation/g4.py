@@ -104,6 +104,7 @@ from research.validation.robustness import (
 __all__ = [
     "CHECKS",
     "CHECK_ERROR",
+    "PROFILE_SOURCED_THRESHOLDS",
     "RobustnessInput",
     "RobustnessParams",
     "RobustnessResult",
@@ -288,6 +289,9 @@ _PROFILE_THRESHOLDS: Final = (
     ("sample_size.max_undersampled_pnl_share", "state.max_undersampled_pnl_share"),
     ("cross_asset.min_positive_fraction", "cross_asset.min_positive_fraction"),
 )
+#: Public name of the same table (``research.validation.verification`` reads it to tell a
+#: legitimate ``param:<name>`` source from one that overrides a Profile field, C-A4).
+PROFILE_SOURCED_THRESHOLDS: Final = _PROFILE_THRESHOLDS
 
 
 @dataclass(frozen=True)

@@ -47,7 +47,11 @@ partial artifact exists):
    (``inverse_control_missing``; checked after the market benchmark item; presence only — a
    reported-only item, no threshold on its value). The validator keeps
    ``ValidatorSetup.market_benchmark=False`` as its default; promotion simply does not accept a
-   report produced without them;
+   report produced without them. Finally every thresholded gate of the report must agree with that
+   Profile instance (``research.validation.verification.verify_report``, ADR-0013: the source is
+   a field of the bound Profile carrying exactly the recorded threshold, a ``param:`` source does
+   not override a field the Profile carries, and the verdict agrees with the metric's comparison)
+   — any discrepancy is ``report_threshold_mismatch`` (MOD-VALID, 2026-09-28);
 5. the dependency closure: the union of the experiments' ``dependency_hashes`` and the caller's
    ``signal_dependencies`` without conflicting hashes, covering every signal and the risk policy
    of the spec;
@@ -111,6 +115,7 @@ from research.validation.report import (
     VERDICT_NOT_PASS,
     promotion_blocked_reason,
 )
+from research.validation.verification import verify_report
 
 __all__ = [
     "PROMOTABLE_STATES",
@@ -151,6 +156,7 @@ class PromotionRefusal(StrEnum):
     PROFILE_NOT_CALIBRATED = "profile_not_calibrated"
     MARKET_BENCHMARK_MISSING = "market_benchmark_missing"
     INVERSE_CONTROL_MISSING = "inverse_control_missing"
+    REPORT_THRESHOLD_MISMATCH = "report_threshold_mismatch"
     DEPENDENCY_CONFLICT = "dependency_conflict"
     DEPENDENCY_UNBOUND = "dependency_unbound"
     LIFECYCLE_SUBJECT_MISMATCH = "lifecycle_subject_mismatch"
@@ -417,6 +423,15 @@ def _check_profiles(
                 f"report {report.report_id} evaluates G2 under {profile.ref} "
                 "(benchmark.inverse_control_reported=true) without the ADR-0060 item "
                 f"{INVERSE_CONTROL_GATE}",
+            )
+        verification = verify_report(report, checked)
+        if not verification.ok:
+            first = verification.discrepancies[0]
+            raise _refuse(
+                PromotionRefusal.REPORT_THRESHOLD_MISMATCH,
+                f"report {report.report_id} disagrees with {profile.ref} "
+                f"({len(verification.discrepancies)} discrepancies; first: "
+                f"{first.gate_id} {first.problem.value}: {first.detail})",
             )
         cited.add(wanted)
     unused = sorted(set(by_hash) - cited)
