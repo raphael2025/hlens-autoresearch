@@ -49,7 +49,7 @@
         "type": "object"
       },
       "Health": {
-        "description": "``GET /health``.",
+        "description": "Liveness (``/health`` and ``/healthz``) or readiness (``/readyz``) response.",
         "properties": {
           "api_version": {
             "title": "Api Version",
@@ -285,7 +285,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.2.0",
+            "default": "2.4.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"
@@ -363,7 +363,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.2.0",
+            "default": "2.4.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"
@@ -425,7 +425,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.2.0",
+            "default": "2.4.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"
@@ -482,7 +482,7 @@
             "type": "string"
           },
           "schema_version": {
-            "default": "2.2.0",
+            "default": "2.4.0",
             "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
             "title": "Schema Version",
             "type": "string"
@@ -685,6 +685,34 @@
           }
         },
         "summary": "Health"
+      }
+    },
+    "/healthz": {
+      "get": {
+        "operationId": "healthz_healthz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          }
+        },
+        "summary": "Healthz"
       }
     },
     "/jobs": {
@@ -902,6 +930,45 @@
           }
         },
         "summary": "Transitions"
+      }
+    },
+    "/readyz": {
+      "get": {
+        "description": "Configured read sources must answer before the API is reported ready.",
+        "operationId": "readyz_readyz_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "500": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Internal Server Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            },
+            "description": "Service Unavailable"
+          }
+        },
+        "summary": "Readyz"
       }
     },
     "/reports/{kind}": {

@@ -38,6 +38,57 @@ def test_health_contracts_and_transitions() -> None:
     assert {"from": "IDEA", "to": "CANDIDATE"} in client.get("/lifecycle/transitions").json()
 
 
+def test_liveness_and_readiness_endpoints_are_read_only(tmp_path: Path) -> None:
+    jobs = tmp_path / "jobs.jsonl"
+    client = TestClient(
+        create_app(
+            knowledge=LocalKnowledgeProvider(),
+            reports_root=tmp_path,
+            jobs_results=jobs,
+        )
+    )
+
+    assert client.get("/health").json() == {"status": "ok", "api_version": API_VERSION}
+    assert client.get("/healthz").json() == {"status": "ok", "api_version": API_VERSION}
+    assert client.get("/readyz").json() == {"status": "ready", "api_version": API_VERSION}
+    assert not jobs.exists()  # a missing journal is an empty read source; readiness must not create it
+
+
+def test_readyz_returns_a_path_free_503_when_a_configured_source_fails(tmp_path: Path) -> None:
+    missing_reports = tmp_path / "not-created"
+    client = TestClient(
+        create_app(knowledge=_FailingProvider(), reports_root=missing_reports),
+        raise_server_exceptions=False,
+    )
+
+    # Liveness is independent of dependency readiness.
+    assert client.get("/healthz").status_code == 200
+    response = client.get("/readyz")
+    assert response.status_code == 503
+    assert response.json() == {"detail": "configured knowledge source is unavailable"}
+    assert str(tmp_path) not in response.text
+
+
+def test_readyz_returns_503_when_the_configured_reports_source_is_unavailable(
+    tmp_path: Path,
+) -> None:
+    response = TestClient(create_app(reports_root=tmp_path / "not-created")).get("/readyz")
+
+    assert response.status_code == 503
+    assert response.json() == {"detail": "configured reports source is unavailable"}
+
+
+def test_readyz_declares_its_health_response_and_unavailable_status() -> None:
+    spec = create_app().openapi()
+    ready = spec["paths"]["/readyz"]["get"]["responses"]
+    assert ready["200"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/Health"
+    }
+    assert ready["503"]["content"]["application/json"]["schema"] == {
+        "$ref": "#/components/schemas/ApiError"
+    }
+
+
 def test_knowledge_search_goes_through_the_provider() -> None:
     client = TestClient(create_app(knowledge=LocalKnowledgeProvider()))
     body = client.post("/knowledge/search", json={"terms": ["momentum"], "limit": 10}).json()

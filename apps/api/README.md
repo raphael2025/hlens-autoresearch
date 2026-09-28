@@ -2,7 +2,7 @@
 
 FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，暴露 OpenAPI。只做编排与校验，不含业务规则。
 
-> 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`app.py` 的 `create_app`（`/health`、`/contracts`、`/lifecycle/transitions`、`/knowledge/search`、`/reports/{kind}`、`/reports/{kind}/{id}`、`/jobs`、`/jobs/{job_id}`；见下方「端点一览」），OpenAPI 由 `python -m apps.api.openapi` 导出到 `openapi.json`（测试校验其为最新）。
+> 框架已实现（ADR-0048，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`app.py` 的 `create_app`（`/health`、`/healthz`、`/readyz`、`/contracts`、`/lifecycle/transitions`、`/knowledge/search`、`/reports/{kind}`、`/reports/{kind}/{id}`、`/jobs`、`/jobs/{job_id}`；见下方「端点一览」），OpenAPI 由 `python -m apps.api.openapi` 导出到 `openapi.json`（测试校验其为最新）。
 
 ## 端点一览
 
@@ -11,6 +11,8 @@ FastAPI 服务。职责：Registry / Experiment / Lifecycle 的 HTTP 入口，�
 | 方法 | 路径 | 说明 |
 |---|---|---|
 | GET | `/health` | 健康检查 + API 版本 |
+| GET | `/healthz` | 存活检查；只确认 API 进程可响应 |
+| GET | `/readyz` | 就绪检查；只读核查已配置的知识、报告目录与任务日志读取源，失败返回 503 |
 | GET | `/contracts` | 已注册契约模型名列表 |
 | GET | `/lifecycle/transitions` | 生命周期允许的转移表 |
 | POST | `/knowledge/search` | 经 `KnowledgeProvider` 检索知识条目（只读查询；未注入 provider → 503，provider 抛 `KnowledgeProviderError` → 502） |
