@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **BLOCKED**（2026-09-28；须 Raphael 决定是否允许触及冻结 core contract） |
+| 状态 | **Accepted**（2026-09-28：DQ-1 = A 由 Raphael 亲自批准；DQ-2～DQ-8、DQ-10～DQ-12 由 Codex 决定；DQ-9 **OPEN**，待容量证据）。契约层已实现（见「实施记录：契约层」），infrastructure 层待实施；§6.1 / §6.2 仍是 infrastructure 实施前的强制门 |
 | 日期 | 2026-09-28 |
-| 决策者 | Codex（依 Raphael 2026-09-28 授权决定 DQ-2～DQ-8、DQ-10～DQ-12；DQ-1 需 Raphael 决定） |
+| 决策者 | Raphael（DQ-1）；Codex（依 Raphael 2026-09-28 授权决定 DQ-2～DQ-8、DQ-10～DQ-12） |
 | 起草者 | Claude Code（Opus），docs-only；未运行任何测试、构建、lint、typecheck、Python 或 probe |
 | 相关 Phase | Phase 1 — Market Representation（F3 / E1-CAP-1 的 Dataset 部分） |
 | 影响范围 | Contract（需新增 `core/contracts/universe.py` 模型并提升契约版本）/ Data（新增生产表、evidence 对象）/ Infrastructure（`infrastructure/dataset/`） |
@@ -46,9 +46,10 @@ v2 manifest 的内容哈希是**整份规范 JSON 的 SHA-256**：要得到它�
 - `StorageAdapter.stage` 要求调用前给出 `expected_sha256`（`core/contracts/storage.py`）；没有覆盖 / 删除 API。
 - E1-CAP-1：完整进程工作集计入 32 MiB 门槛，门槛不变；ADR-0075 / 0076 已声明的未闭合项（Avro manifest bytes、row group / stripe、Iceberg metadata、tmpfs）继续有效。
 
-## 决策（Decision）——提议
+## 决策（Decision）
 
-以下为提议内容；标注 **[DQ-n]** 的位置有未决子方案，正文按「推荐」撰写，但在 Codex 决定前不构成已接受决定。
+标注 **[DQ-n]** 的位置对应「决策问题」中的子方案；正文按「推荐」撰写，除 DQ-9（数值，OPEN）外均已按推荐决定
+（见「决定记录」）。
 
 ### 1. 新 manifest 形态（v3）与契约模型
 
@@ -222,7 +223,7 @@ Raphael 已批准有界 Dataset API 的路线及 v2 manifest 只读兼容要求�
 
 | ID | 决定 / 状态 | 依据与边界 |
 |---|---|---|
-| DQ-1 | 选择 A：新增 `2.3.0` additive core model；**BLOCKED** | v2 模型原样保留最符合兼容要求；但这要求改 `core/contracts/`、版本登记与冻结契约。本任务明确禁止该改动，须 Raphael 出具 Decision Packet 后再开工。 |
+| DQ-1 | 选择 A：新增 `2.3.0` additive core model（**Raphael 2026-09-28 亲自批准**） | v2 模型原样保留最符合兼容要求；授权范围仅限在 `core/contracts` 新增模型、版本登记与同步冻结契约文档，不改任何已有模型。 |
 | DQ-2 | 选择 a：新建定长 v3 manifest 表 | 不改 v2 manifest 行与 `quality_report_ids` 语义。 |
 | DQ-3 | 选择 a：新建 chunk 表并包含 `chunk_index` / `row_ordinal` | 保持既有 selection 表 schema、分区和重放指纹不变。 |
 | DQ-4 | 选择 a：按生成顺序写入并记录 ordinal | 允许定长 chunk 写入和逐块核验。 |
@@ -235,14 +236,51 @@ Raphael 已批准有界 Dataset API 的路线及 v2 manifest 只读兼容要求�
 | DQ-11 | 选择 a：在固定对象缓冲内组装、哈希后 staging | 不改 `StorageAdapter` 契约；超限对象 fail closed。 |
 | DQ-12 | 选择 a：空选择继续拒绝 | 无可绑定的 selection snapshot。 |
 
-本 ADR 状态为 **BLOCKED**，不代表 DQ-2～DQ-12 已进入生产实现。DQ-1 的下一步必须由 Raphael 决定是否授权修改 `core/contracts/`、契约版本登记及所有受影响的冻结契约文档，并提供实施范围；在该决定前，本 ADR 不实施、不迁移现有表，也不改变 Dataset 运行行为。实现前仍须完成 §6.1 / §6.2 所列上游生成器、partial replay、序列化投影和消费者可见性协议的静态设计；DQ-9 保持 OPEN。
+~~本 ADR 状态为 **BLOCKED**~~（已解除，2026-09-28）：Raphael 亲自批准 DQ-1 = A，本 ADR 转为 **Accepted**。
+这不代表 DQ-2～DQ-12 已进入生产实现：本轮只实现契约层（见「实施记录：契约层」）；infrastructure 层（新表、evidence
+writer / reader、chunk commit、streaming verifier、`ManifestStore` 双表分派、上游生成器）仍未实施，现有 Dataset 运行
+行为不变。infrastructure 实施前仍须完成 §6.1 / §6.2 所列上游生成器、partial replay、序列化投影和消费者可见性协议的
+静态设计（§6.2.2 的 2.3.0 登记身份盘点已在契约层完成，见实施记录）；DQ-9 保持 OPEN。
 
-### Raphael Decision Packet（DQ-1）
+### Raphael Decision Packet（DQ-1）——已决定：A（Raphael，2026-09-28）
 
 - **问题：** 是否批准新增契约 2.3.0 的有界 Dataset manifest 模型，并修改其必要的 `core/contracts/`、版本登记及冻结契约文档？
 - **A（推荐）：** 批准上述 additive minor 变更；旧 v2 manifest 保持原样只读。影响是冻结契约和契约版本登记发生受控变更，须另立已授权实施批次。
 - **B：** 不修改 core；保留现行 Dataset DTO / manifest 的物化行为，并将该路径标记为不满足有界工作集要求。
 - **阻塞：** DQ-1 决定前不实施 ADR-0077 的新 Dataset API、表或持久化路径。
+
+## 实施记录：契约层（2026-09-28，W3 任务 A1-E1DS-CONTRACT；未运行任何测试 / lint / typecheck）
+
+实施者 Claude Code（Opus），只在 DQ-1 授权范围内新增，不改任何已有模型；未运行 pytest / ruff / mypy / Schema 导出
+（本阶段 WSL 内存受限，按协调要求不跑检查），以下全部为静态自检，须由复核方真实运行后才可接受。
+
+1. **契约版本**：`CONTRACT_SCHEMA_VERSION = "2.3.0"`，`PUBLISHED_CONTRACT_SCHEMA_VERSIONS` 追加 `"2.3.0"`（`core/domain/base.py`）。
+   当前代码新建、未显式给出信封的对象取 2.3.0，内容哈希与 2.2.0 孪生对象不同（minor 的预期后果，02-domain §3.3）。
+2. **新模型**（`core/contracts/universe.py`，全部 `_MODEL_SINCE = ADR_0077_VERSION = "2.3.0"`，登记在 `CONTRACT_MODELS` 末尾，
+   135 → 141）：`DatasetRuleBinding`、`EvidenceObjectRef`、`EvidenceStreamRef`、`DatasetQualityReportRef`、`DatasetChunkProof`、
+   `ResearchDatasetEvidenceManifest`，以及枚举 `EvidenceStream` / `DatasetQualitySubject`、常量 `DATASET_EVIDENCE_FORMAT`、
+   `DATASET_EVIDENCE_KEY_PREFIX` / `_PATTERN`、`DATASET_SELECTION_ID_PATTERN`、`DATASET_CHUNK_INDEX_MAX` 与纯函数
+   `dataset_evidence_key(sha256)`、`dataset_chunk_batch_id(selection_id, chunk_index)`。契约层不变量按 §1.5 落地（见 02-domain §2.3）；
+   `selection_id` 的派生公式、`first_row_ordinal = chunk_index × chunk_rows`、fan-out 与 depth 的精确关系留给 verifier。
+3. **Schema**：`schemas/` 135 份既有 Schema 只把信封默认值 `2.2.0` 改为 `2.3.0`（逐文件核对：映射回 2.2.0 后与改动前字节相同）；
+   新增 6 份 Schema 为**手工编写**，须由复核方运行 `python -m core.contracts.registry` 重新导出并 diff，任何差异以导出为准。
+4. **v2 不变**：`ResearchDatasetManifest` 及其记录模型的字段、校验、Schema 与内容哈希不变；`research.dataset_manifests` /
+   `research.dataset_selections`、`DATASET_RULE_SPEC` / `DATASET_RULE_HASH`、`selection_id_for` 未触及（infrastructure 本轮未改）。
+5. **§6.2.2 的 2.3.0 升版盘点（ADR-0052 §4 同等要求）**，结论：**没有**随默认信封漂移且被持久化数据按内容引用、又无重放机制覆盖的已登记身份。
+   - Phase 1 代码登记身份（V3）：`infrastructure/` 中全部 16 个模块级 `PolicyBinding` 常量、3 个 `SourceBinding` 常量
+     （archive / REST / exchangeInfo）与 `FIRST_SLICE_UNIVERSE` 均显式 `schema_version=PHASE1_PUBLICATION_VERSION`（2.0.0）；
+     `UniverseSpecBinding` 由 `binding()` 继承 spec 信封（V4）。
+   - 从行 / 对象重建的绑定（`listing_rules`、`revision/store`、`channel_reconcile`、`row_integrity`）按记录版本或在
+     `contract_schema_version_scope` 内构造（V1）；`event.events` 逐行记录运行版本；dataset manifest 按记录版本复核（V7）。
+     这些路径只要求记录版本属于 `PUBLISHED_CONTRACT_SCHEMA_VERSIONS`，2.0.0 ~ 2.2.0 仍在其中。
+   - 规则哈希（`DATASET_RULE_HASH`、`NORMALIZER_HASH` 等）是规则 spec 字典的规范 JSON 哈希，不含契约信封（V5）。
+   - 知识种子 `docs/research/knowledge/*.json` 显式记录 `schema_version: "2.1.0"`（ADR-0055）。
+   - 研究侧：P7 durable loop 恢复时用当前代码构造的种子策略 spec / risk policy 的内容哈希与审计行比对（`research/loop/durable.py`），
+     没有按记录版本重建；与 2.1.0 / 2.2.0 两次升版的既有判断相同，仓库外没有需要跨升版恢复的真实 durable 状态，因此不构成阻断，
+     但**跨 minor 升版恢复一个既有 durable loop 会 fail closed**（记为风险，不在本 ADR 范围内修改）。
+6. **仍 OPEN / 不在契约层**：§6.2.3 evidence JSONL 的唯一序列化投影（DQ-7 = a：记录行不含信封，按 manifest 记录版本作用域重建）
+   须由 infrastructure 批次在 writer / reader 中以单一函数固定；§6.1 上游生成器、§6.2.1 / .2 / .4 / .5 / .6 协议、两张新表的冻结、
+   DQ-9 数值均未实施。
 
 ## 备选方案（Alternatives）
 
@@ -274,12 +312,12 @@ Raphael 已批准有界 Dataset API 的路线及 v2 manifest 只读兼容要求�
 
 ## 合规检查
 
-- [ ] 不破坏已冻结契约，或已说明 major 版本与迁移路径——推荐方案为 additive minor；B 方案的 major 影响已列出；**待 Codex 决定 DQ-1**
+- [x] 不破坏已冻结契约，或已说明 major 版本与迁移路径——DQ-1 = A（Raphael 2026-09-28 批准）：additive minor 2.3.0，已发布模型不变
 - [x] 不修改 Validation Constitution / Profile / 验证规则 / E1-CAP-1 门槛；动机不是让某实验通过
 - [x] Domain 层仍无具体技术依赖（新模型只用标准库与 Pydantic；对象存取经 `StorageAdapter`）
 - [x] Research / Application Plane 边界不变
 - [x] 不删除历史：v2 表、行、manifest 保留；orphan 只由显式 maintenance 处理
-- [x] 本 ADR 起草时未修改任何代码、契约或其它文档（`docs/adr/README.md` 索引行除外）
+- [x] 本 ADR 起草时未修改任何代码、契约或其它文档（`docs/adr/README.md` 索引行除外）；契约层实施的改动范围见「实施记录：契约层」
 
 ## 参考
 

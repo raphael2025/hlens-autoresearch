@@ -65,7 +65,7 @@ def _request(**overrides: Any) -> FeatureRequest:
 
 def test_f4_only_appends_five_models_to_the_registry(tmp_path: Path) -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 135
+    assert len(names) == 141
     assert names[74:79] == tuple(model.__name__ for model in F4_MODELS)  # later phases append
     written = export_json_schemas(tmp_path)
     for model in F4_MODELS:

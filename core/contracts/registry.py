@@ -121,9 +121,15 @@ from core.contracts.synthetic import (
 )
 from core.contracts.universe import (
     AvailabilityEvidenceGap,
+    DatasetChunkProof,
+    DatasetQualityReportRef,
+    DatasetRuleBinding,
     DegradedEpisodeKey,
+    EvidenceObjectRef,
+    EvidenceStreamRef,
     ListingHistory,
     ListingRevision,
+    ResearchDatasetEvidenceManifest,
     ResearchDatasetManifest,
     SelectedRevisionLineage,
     StableEpisodeKey,
@@ -337,6 +343,13 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     LoopRoundRecorded,
     # 回测剩余量跨 bar 结转（ADR-0054；additive，只追加）
     FillRemainder,
+    # 有界 Research Dataset evidence manifest（ADR-0077，契约 2.3.0；additive，只追加）
+    DatasetRuleBinding,
+    EvidenceObjectRef,
+    EvidenceStreamRef,
+    DatasetQualityReportRef,
+    DatasetChunkProof,
+    ResearchDatasetEvidenceManifest,
 )
 
 

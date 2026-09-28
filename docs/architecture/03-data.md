@@ -67,7 +67,7 @@ flowchart LR
 | **State** | StateSpec 的物化结果 | 同上 |
 | **Event** | EventSpec 的物化结果 | 同上 |
 | **Outcome** | OutcomeSpec 的物化结果 | 同上；标记 horizon |
-| **Research Dataset** | 为某实验组装的 point-in-time 数据集 | 必须绑定 `ResearchDatasetManifest`（见下）；无 manifest 不得进入实验 |
+| **Research Dataset** | 为某实验组装的 point-in-time 数据集 | 必须绑定 manifest（v2 `ResearchDatasetManifest`，或 ADR-0077 的有界 v3 `ResearchDatasetEvidenceManifest`，见下）；无 manifest 不得进入实验 |
 
 每次写入产生 Iceberg snapshot；实验通过 `snapshot_id` 引用数据，实现时间旅行与复现。
 
@@ -85,6 +85,15 @@ policy / parser 绑定；universe 以 `UniverseSpecBinding` 绑定，listing 历
 成员 / 排除引用的每个 listing revision 只能属于一个 episode，且必须在 manifest 的 lineage 中有 `canonical.instrument_listings`
 来源链；lineage 第三跳是通用的 Raw source payload（首切片为归档 revision，REST 补尾为 Raw 响应载荷）。
 契约只校验结构；snapshot 与版本是否存在、哈希是否对应真实内容、成员清单能否按位重建，属 Registry 与批次 F。
+
+有界 v3 manifest（[ADR-0077](../adr/0077-bounded-research-dataset-evidence.md) DQ-1 = A，契约 2.3.0，additive；02-domain.md §2.3）：
+`ResearchDatasetEvidenceManifest` 与 v2 `ResearchDatasetManifest` 并存，v2 模型、Schema、哈希与已持久化 v2 manifest 逐位不变、
+只读兼容。ADR-0023 §6 "manifest 绑定成员 / 排除清单、lineage、质量报告与证据缺口"的义务在 v3 中由**内容哈希承诺**满足：
+manifest 只含固定大小字段（自身 `DatasetRef`、完整 `PointInTimeSpec`、universe 绑定、dataset 规则绑定、`data_type`、
+`selection_id`、行数与定长 chunk 参数），六条内容寻址、有序的 evidence stream（members / exclusions / lineage /
+evidence_gaps / quality_reports / chunk_proofs）以根对象 `key + sha256 + size` 引用，经 manifest 内容哈希承诺整条流的
+顺序、计数与内容；对象键只由内容 SHA-256 决定（`research/dataset-evidence/v1/<sha256>.jsonl`），不含实现生成的 URI。
+契约同样只证明结构；对象读取、逐项核对与 streaming verifier 属 `infrastructure/dataset/`（ADR-0077 §5 / §6，待实施）。
 
 ## 4. 时间语义（冻结；2026-09-24 按 ADR-0023 修订）
 
@@ -230,6 +239,9 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
   `infrastructure/dataset/selection.py` 提出的形状（每行引用一个选中的 Canonical revision 及其生效 simulation
   区间，不复制 payload）；`selection.py` 现在反向导入该表的 schema 作为唯一来源。
 - **分区演进**需要该表新的 partition-spec 版本与新旧 spec 查询结果的等价测试，**不是**契约变化。
+- ADR-0077（DQ-2 = a、DQ-3 = a）将以 additive 方式新增两张表：定长 v3 manifest 表与带 `chunk_index` / `row_ordinal` 的
+  selection chunk 表；上表 15 张表的定义、分区与哈希不变。两张新表的名称、schema、分区与 definition hash 由
+  infrastructure 批次在实施前冻结，**尚未**登记进 `PHASE1_TABLES`（本节在登记时补入表格）。
 
 ### 7.2 PyIceberg 写入约束
 
@@ -294,6 +306,11 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 - 一份**无冲突**的 Research Dataset（每个 key 至多一个选中 revision），以及 `research.dataset_manifests` 中的一条 manifest；
 - manifest 记录全部输入绑定、选中 revision 的 lineage（Canonical `revision_id` → Raw revision → Raw source revision；首切片即归档 revision）、
   universe 成员清单与排除原因清单、引用的质量报告，以及该 Research Dataset 自身的 `DatasetRef`（含其 `snapshot_id`）。
+- ADR-0077 的有界 v3 形态（契约 2.3.0，additive）：上述清单不内联，而是写成六条有序 evidence stream，由
+  `ResearchDatasetEvidenceManifest` 以根对象引用承诺；数据集行按定长 chunk 提交，每个 chunk 的 batch id 为
+  `<selection_id>.chunk-<十位零填充序号>`，其提交证明（snapshot、首行 ordinal、行数、batch 指纹）进入 `chunk_proofs` 流，
+  `DatasetRef.snapshot_id` 为最后一个 chunk 的 snapshot。空选择仍被拒绝。v3 的写入 / 读取 / 校验路径与消费者可见性规则
+  由 infrastructure 批次按 ADR-0077 §4 ~ §6.2 实施；在此之前现有构建仍产生 v2 manifest。
 
 **fail closed**（不产生可进入实验的数据集）：任一 competing head（观察或 listing）；请求绑定的 policy / parser / universe spec 无法解析到
 已登记且带证据的版本，或 `supersedes` 边引用的 precedence 证据缺失；所需时间范围内缺少 universe listing 历史；manifest 任一绑定项缺失。

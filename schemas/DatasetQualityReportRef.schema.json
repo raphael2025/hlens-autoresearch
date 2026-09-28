@@ -1,0 +1,63 @@
+{
+  "$defs": {
+    "DatasetQualitySubject": {
+      "description": "质量报告描述的对象：listing 历史，或一个 (member symbol, UTC 日) 分区。",
+      "enum": [
+        "listing",
+        "symbol_day"
+      ],
+      "title": "DatasetQualitySubject",
+      "type": "string"
+    }
+  },
+  "additionalProperties": false,
+  "description": "`quality_reports` 流的一条记录：一份被数据集引用的质量报告及其对象（ADR-0077 §1.6）。\n\n`subject = listing` 时不得给出 `symbol` / `day`；`subject = symbol_day` 时二者都必须给出。\n流内顺序：listing 在前，再按 `(symbol, day)` 严格递增（`sort_key()`）。",
+  "properties": {
+    "schema_version": {
+      "default": "2.3.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "report_id": {
+      "minLength": 1,
+      "title": "Report Id",
+      "type": "string"
+    },
+    "subject": {
+      "$ref": "#/$defs/DatasetQualitySubject"
+    },
+    "symbol": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Symbol"
+    },
+    "day": {
+      "anyOf": [
+        {
+          "format": "date",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Day"
+    }
+  },
+  "required": [
+    "report_id",
+    "subject"
+  ],
+  "title": "DatasetQualityReportRef",
+  "type": "object"
+}

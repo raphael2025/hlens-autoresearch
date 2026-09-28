@@ -14,7 +14,7 @@
   "description": "单个验证门的结构化结果（07-validation.md §2）。\n\n`threshold_source` 指向 Validation Profile 中的字段路径：阈值不得写死在流水线里。\n\n精确表示（ADR-0052 §1，D-FLOAT）：可选的 `value_exact` / `threshold_exact`。存在时浮点字段\n必须恰为 `float(精确值)`（否则拒绝），哈希载荷排除对应浮点字段，判定由产生方用精确值比较；\n不存在时省略出载荷，旧载荷哈希逐位不变。一个带阈值的门要么两者都精确、要么都不精确\n（混合表示的比较不可复核，拒绝）。浮点字段弃用，保留到下一次因其他原因发生的 major。",
   "properties": {
     "schema_version": {
-      "default": "2.2.0",
+      "default": "2.3.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

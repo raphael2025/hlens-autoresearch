@@ -5,7 +5,7 @@
       "description": "实盘授权记录（ADR-0006 §2）。\n\n`subject` 绑定被授权对象，授权窗口必须为正（ADR-0011 D-17.3）。\n`authorized_by` **是否真的有权批准**由未来的授权服务核验，契约层只校验证据结构。",
       "properties": {
         "schema_version": {
-          "default": "2.2.0",
+          "default": "2.3.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -97,7 +97,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.2.0",
+          "default": "2.3.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -129,7 +129,7 @@
       "description": "实盘前的独立 Risk Gate 检查（与 RiskProvider 分离）。\n\n`subject` 绑定被检查的对象（ADR-0011 D-17.3）：属于另一个对象的检查不得被挂到\n一次 `ExecutionModeChange` 上。检查**内容**与风险预算单位不在契约层定义。",
       "properties": {
         "schema_version": {
-          "default": "2.2.0",
+          "default": "2.3.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -172,7 +172,7 @@
   "description": "`execution_mode` 变更的独立审计事件。\n\n切到 LIVE 需要：对象处于 ACTIVE、通过独立 Risk Gate、有授权记录，且两份证据都属于\n本次变更的 `subject`、授权覆盖变更时刻、Risk Gate 不晚于变更（ADR-0011 D-17.3）。\n\n**诚实边界**（ADR-0011 D-17.4）：契约层只校验可核验的**证据结构**，\n**不再**拒绝 `to_mode = LIVE`。\"Phase 13 之前禁止真实生产交易\"\n（ADR-0006 §3 第 5 条、CLAUDE.md H10）依然有效，但它的执行点在未来 Control Plane 的\n可信配置与授权服务以及人类授权，不在这个 DTO —— 一个载荷无法自证自己的运行环境。\n被删除的 `live_execution_enabled` 是自报字段，从未提供过真实防护。",
   "properties": {
     "schema_version": {
-      "default": "2.2.0",
+      "default": "2.3.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

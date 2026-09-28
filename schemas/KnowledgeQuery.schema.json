@@ -27,7 +27,7 @@
   "description": "一次知识检索。\n\n- `terms`：全部须出现在条目 `name` / `claim` / `conditions` 中（不区分大小写，AND 语义）；\n- `name_prefix`：库前缀，如 `strategy_`、`factor_`、`state_`（空 = 不限）；\n- `evidence_at_least`：只返回证据等级不低于该值的条目（空 = 不限）；\n- `statuses`：只返回这些状态（空 = 不限）；\n- `tags_all`（ADR-0055，自 2.2.0）：条目须包含**全部**这些标签（空 = 不限）；\n- `assets_any`（ADR-0055，自 2.2.0）：条目须至少包含其一，逐字精确相等（空 = 不限）；\n- `limit`：结果上限。\n\n各过滤器之间为 AND；`tags_all` / `assets_any` 是规范 token、严格升序、无重复，为空时不进入载荷\n（同一信封版本下旧查询的 `query_hash` 逐位不变）。",
   "properties": {
     "schema_version": {
-      "default": "2.2.0",
+      "default": "2.3.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

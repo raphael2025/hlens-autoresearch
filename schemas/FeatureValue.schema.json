@@ -3,7 +3,7 @@
   "description": "一个评估时刻的特征值。\n\n- `value`：必填；`None` 表示显式\"不可计算\"（历史不足等），不填补；\n- `inputs_used`：计算该值实际使用的观察条数；为 0 当且仅当 `latest_input_available_time` 为空，\n  且此时 `value` 必须为 `None`（零输入的值只能是填补）；\n- `latest_input_available_time`：所用观察中最大的 `available_time`，不晚于 `evaluation_time`\n  （带 `available_lag` 的完整约束由 `FeatureResult.check_answers` 检查）。",
   "properties": {
     "schema_version": {
-      "default": "2.2.0",
+      "default": "2.3.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"
