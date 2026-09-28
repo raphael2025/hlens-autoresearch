@@ -5,7 +5,8 @@ part; ``build`` materializes it and persists the manifest. Under ``hlens.dataset
 @1.0.0``:
 
 1. **bindings** (fail closed) — every availability / precedence / parser binding of the PIT spec
-   must be a registered one with its exact hash (``KNOWN_BINDINGS``); the Canonical table of the
+   must be a registered one with its exact hash (``KNOWN_BINDINGS``, or the ADR-0051 listing
+   backfill assumption: ``ACCEPTED_BINDINGS``); the Canonical table of the
    data type, the listing tables and ``quality.data_quality_reports`` must be bound; the Raw
    evidence table (ADR-0027 §13 as D-F1n ⑤ assigns it to F3) and the evidence-gap table
    (ADR-0031) must be bound **whenever they had a snapshot when the build ran** (see
@@ -135,8 +136,12 @@ from infrastructure.universe.builder import (
     UniverseBuilt,
     check_listing_bindings,
 )
+from infrastructure.universe.listing_assumption import (
+    ASSUMPTION_BINDING as LISTING_ASSUMPTION_BINDING,
+)
 
 __all__ = [
+    "ACCEPTED_BINDINGS",
     "DATASET_EVIDENCE_RULE_VERSION",
     "DATASET_RULE_HASH",
     "DATASET_RULE_ID",
@@ -223,6 +228,11 @@ KNOWN_BINDINGS: Final = frozenset(
         lr.LISTING_STATUS_BINDING,
     }
 )
+#: ``KNOWN_BINDINGS`` plus the ADR-0051 listing backfill assumption (D-LIST, accepted
+#: 2026-09-28): a spec may bind it (exact id, version and hash), it is never required. Kept out of
+#: ``KNOWN_BINDINGS`` itself, whose published envelopes and hashes are pinned as the Phase 1
+#: registry; the manifest binds it through its PIT spec like any other availability policy.
+ACCEPTED_BINDINGS: Final = KNOWN_BINDINGS | {LISTING_ASSUMPTION_BINDING}
 
 _SLICES: Final[Mapping[str, timedelta]] = {
     "agg_trades": timedelta(hours=1),
@@ -532,7 +542,7 @@ class DatasetBuilder:
             raise DatasetSpecError("the PIT rule must be hlens.pit.maximal-head@1.0.0")
         for field in ("availability_bindings", "precedence_bindings", "parser_bindings"):
             for binding in getattr(pit, field):
-                if binding not in KNOWN_BINDINGS:
+                if binding not in ACCEPTED_BINDINGS:
                     raise DatasetSpecError(
                         f"{field}: {binding.policy_id}@{binding.version} with this hash is not "
                         "registered"
@@ -1548,7 +1558,7 @@ def _check_evidence_request(request: DatasetEvidenceRequest, *, dataset_table: s
         raise DatasetSpecError("the PIT rule must be hlens.pit.maximal-head@1.0.0")
     for field in ("availability_bindings", "precedence_bindings", "parser_bindings"):
         for binding in getattr(pit, field):
-            if binding not in KNOWN_BINDINGS:
+            if binding not in ACCEPTED_BINDINGS:
                 raise DatasetSpecError(
                     f"{field}: {binding.policy_id}@{binding.version} with this hash is not "
                     "registered"

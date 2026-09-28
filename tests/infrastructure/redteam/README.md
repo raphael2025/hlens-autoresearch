@@ -43,6 +43,8 @@ is removed.
 | `test_rt_listings` | symbol absent from every snapshot; interval opening before the first observation; knowledge cutoff before the listing is known | F2 `NO_VISIBLE_LISTING` |
 | | late snapshot moving a change point after a build | F2 `COMPETING_HEADS`; the old manifest replays |
 | `test_rt_assumption` | ADR-0032 assumption bound over REST-only data | F1: REST revisions never move (rows identical to the unbound spec) |
+| `test_rt_listing_assumption_universe` | ADR-0051 assumption bound (both symbols in the table): symbol never observed / only halted; suspension after the first observation; symbol vanished from exchangeInfo | F2 `NO_VISIBLE_LISTING` / exclusion kept / `UNRESOLVED_OBSERVATION` (v2 `build` and v3 `cursor`) |
+| | assumed members relabelled as observed, observed as assumed, or dropped in a manifest | `ManifestStore.persist` re-derives it (`CatalogIntegrityError`) |
 | `test_rt_features` | feature run bound to a forged / missing manifest, or to another spec's manifest | `feature_request_from_dataset`: `ManifestStore.load` / PIT spec check (RT-6, fixed in G2-R1c) |
 
 Runtime is dominated by the 19 crash points and the 16 arrival orders (about five minutes in total).

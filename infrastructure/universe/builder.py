@@ -26,13 +26,23 @@ Spec symbols are venue-native (``BTCUSDT``); an episode is a candidate when it w
 that venue symbol's observations and its instrument is the frozen Canonical form of it
 (``BTC-USDT``, ``infrastructure.canonical.rules.SYMBOLS``). ``arrival_seq``, wall clocks and
 payload hashes are never read for a decision.
+
+**ADR-0051 listing backfill assumption (D-LIST, second phase).** Every read passes the PIT spec
+to ``listing_at``; only a spec that binds ``hlens.listing.observed-state-backfill-assumption``
+(exact version and hash, checked eagerly by ``check_listing_bindings``) can get an assumed
+answer, and only for ``[backfill_floor, first observed tradable_from)`` of an episode's first
+revision. Such a span is its own member span (never merged with the observed span after it), its
+``UniverseMember.assumption`` is the bound policy, and it is listed in ``UniverseBuilt.assumed`` /
+``UniverseSpanCursor.assumed()``. The cited revision's lineage and its ADR-0029 "observed-from"
+evidence gap are listed exactly as for an observed span. A spec that does not bind the assumption
+gets exactly the answers it got before this assumption existed.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Final
 
@@ -60,11 +70,13 @@ from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
+from infrastructure.universe import listing_assumption as backfill
 
 __all__ = [
     "FIRST_SLICE_UNIVERSE",
     "LISTING_REQUIRED_BINDINGS",
     "REGISTERED_UNIVERSES",
+    "AssumedMembership",
     "UniverseBuildError",
     "UniverseBuilder",
     "UniverseBuilt",
@@ -137,6 +149,27 @@ class _Span:
 
 
 @dataclass(frozen=True, slots=True)
+class AssumedMembership:
+    """One member span that exists only under the ADR-0051 listing backfill assumption (§3).
+
+    Not a contract: the manifest carries the same fact as ``UniverseMember.assumption`` (ADR-0088
+    decision 6). ``effective_from`` / ``effective_until`` are the member span (``None`` for a point
+    simulation); ``backfill_floor`` / ``first_observed_from`` are the assumed interval
+    ``[backfill_floor, first observed tradable_from)`` and ``effective_available_time`` the first
+    revision's effective availability (never later than stored); ``binding`` is the bound policy.
+    """
+
+    venue_symbol: str
+    listing_revision_id: str
+    effective_from: datetime | None
+    effective_until: datetime | None
+    backfill_floor: datetime
+    first_observed_from: datetime
+    effective_available_time: datetime
+    binding: PolicyBinding
+
+
+@dataclass(frozen=True, slots=True)
 class UniverseBuilt:
     """The universe of one spec under one PIT spec, with what the manifest must bind."""
 
@@ -149,6 +182,9 @@ class UniverseBuilt:
     evidence_gaps: tuple[tuple[str, str], ...]
     #: Member spans per venue symbol: ``(None, None)`` for a point simulation.
     member_spans: Mapping[str, tuple[tuple[datetime | None, datetime | None], ...]]
+    #: Venue symbol -> its one member span that exists only under the ADR-0051 listing backfill
+    #: assumption (§3); empty when the PIT spec does not bind it (or it applies to no one).
+    assumed: Mapping[str, AssumedMembership] = field(default_factory=dict)
 
     def is_member(self, venue_symbol: str) -> bool:
         return bool(self.member_spans.get(venue_symbol))
@@ -185,13 +221,19 @@ def check_listing_bindings(pit: PointInTimeSpec) -> None:
                 f"the PIT spec does not bind {table}: the listing history is missing and the "
                 "universe cannot be built (never replaced by today's symbol list)"
             )
-    for field, required in LISTING_REQUIRED_BINDINGS.items():
-        bound = {binding.policy_id: binding for binding in getattr(pit, field)}
+    for name, required in LISTING_REQUIRED_BINDINGS.items():
+        bound = {binding.policy_id: binding for binding in getattr(pit, name)}
         for binding in required:
             if bound.get(binding.policy_id) != binding:
                 raise UniverseSpecError(
-                    f"{field} must bind {binding.policy_id}@{binding.version} with its exact hash"
+                    f"{name} must bind {binding.policy_id}@{binding.version} with its exact hash"
                 )
+    # ADR-0051 §2: the listing backfill assumption is allowed, never required; naming it with
+    # another version or hash is refused here, before any read.
+    try:
+        backfill.assumption_bound(pit)
+    except backfill.AssumptionSpecError as exc:
+        raise UniverseSpecError(str(exc)) from exc
 
 
 class UniverseBuilder:
@@ -260,7 +302,7 @@ def _timeline(
     answers = []
     expected = SYMBOLS[venue_symbol]
     for instant in instants:
-        point = deriver.listing_at(venue_symbol, instant, pit.knowledge_cutoff)
+        point = deriver.listing_at(venue_symbol, instant, pit.knowledge_cutoff, pit=pit)
         if not point.constructible or point.listing is None or point.tradable is None:
             raise UniverseUnconstructible(point)
         instrument = point.listing.instrument
@@ -294,10 +336,42 @@ def _spans(points: list[ListingPointInTime], pit: PointInTimeSpec) -> list[_Span
 
 
 def _same(a: ListingPointInTime, b: ListingPointInTime) -> bool:
+    """Same answer: same revision, same tradability, and both assumed or both observed (an
+    ADR-0051 assumed span never merges with the observed span of the same first revision)."""
     assert a.listing is not None and b.listing is not None
-    return (a.listing.revision.revision_id, a.tradable) == (
+    return (a.listing.revision.revision_id, a.tradable, a.assumed) == (
         b.listing.revision.revision_id,
         b.tradable,
+        b.assumed,
+    )
+
+
+def _assumed_of(venue_symbol: str, span: _Span, pit: PointInTimeSpec) -> AssumedMembership | None:
+    """The ADR-0051 membership of a span whose answer came from the assumption, else ``None``."""
+    point = span.point
+    if not point.assumed:
+        return None
+    interval = point.assumption
+    listing = point.listing
+    if (
+        interval is None
+        or listing is None
+        or point.tradable is not True
+        or not backfill.assumption_bound(pit)
+    ):
+        raise CatalogIntegrityError(
+            f"{venue_symbol}: an assumed listing answer without the bound "
+            f"{backfill.ASSUMPTION_ID} policy, its interval or a tradable listing"
+        )
+    return AssumedMembership(
+        venue_symbol=venue_symbol,
+        listing_revision_id=listing.revision.revision_id,
+        effective_from=span.start,
+        effective_until=span.end,
+        backfill_floor=interval.backfill_floor,
+        first_observed_from=interval.first_observed_from,
+        effective_available_time=interval.effective_available_time,
+        binding=backfill.ASSUMPTION_BINDING,
     )
 
 
@@ -311,6 +385,7 @@ def _assemble(
     lineage: dict[str, SelectedRevisionLineage] = {}
     gaps: dict[str, str] = {}
     member_spans: dict[str, tuple[tuple[datetime | None, datetime | None], ...]] = {}
+    assumed: dict[str, AssumedMembership] = {}
     for venue_symbol, points in sorted(timelines.items()):
         mine: list[tuple[datetime | None, datetime | None]] = []
         for span in _spans(points, pit):
@@ -318,6 +393,11 @@ def _assemble(
             assert listing is not None and span.point.lineage is not None
             revision = listing.revision.revision_id
             episode: ListingEpisodeKey = listing.episode
+            membership = _assumed_of(venue_symbol, span, pit)
+            if membership is not None:
+                if venue_symbol in assumed:  # pragma: no cover - the assumed window is one span
+                    raise CatalogIntegrityError(f"{venue_symbol} has two assumed member spans")
+                assumed[venue_symbol] = membership
             if span.point.tradable:
                 members.append(
                     UniverseMember(
@@ -325,6 +405,7 @@ def _assemble(
                         listing_revision_id=revision,
                         effective_from=span.start,
                         effective_until=span.end,
+                        assumption=None if membership is None else membership.binding,
                     )
                 )
                 mine.append((span.start, span.end))
@@ -349,6 +430,7 @@ def _assemble(
         lineage=tuple(lineage[revision] for revision in sorted(lineage)),
         evidence_gaps=tuple(sorted(gaps.items())),
         member_spans=member_spans,
+        assumed=assumed,
     )
 
 
@@ -441,7 +523,7 @@ def _timeline_stream(
     """
     expected = SYMBOLS[venue_symbol]
     for instant in instants:
-        point = deriver.listing_at(venue_symbol, instant, pit.knowledge_cutoff)
+        point = deriver.listing_at(venue_symbol, instant, pit.knowledge_cutoff, pit=pit)
         if not point.constructible or point.listing is None or point.tradable is None:
             raise UniverseUnconstructible(point)
         instrument = point.listing.instrument
@@ -487,7 +569,8 @@ class _SpanEvent:
     Exactly one of ``member`` / ``exclusion`` is set (mirrors the v2 ``if span.point.tradable``
     branch). ``lineage`` / ``gap`` are set only the first time this walk sees
     ``listing_revision_id`` for this symbol (the same revision can recur non-adjacently, e.g. a
-    halt/resume returning to it); later spans citing it carry ``None`` for both.
+    halt/resume returning to it); later spans citing it carry ``None`` for both. ``assumed`` is
+    set only for a member span that exists under the ADR-0051 assumption.
     """
 
     venue_symbol: str
@@ -496,6 +579,7 @@ class _SpanEvent:
     listing_revision_id: str
     lineage: SelectedRevisionLineage | None
     gap: str | None
+    assumed: AssumedMembership | None = None
 
 
 def _events_v3(
@@ -524,12 +608,18 @@ def _events_v3(
         instants = _instants_v3(view, pit)
         for venue_symbol in spec.symbols:
             seen: set[str] = set()
+            assumed_seen = False
             points = _timeline_stream(deriver, venue_symbol, instants, pit)
             for span in _spans_stream(points, pit):
                 listing = span.point.listing
                 assert listing is not None and span.point.lineage is not None
                 revision = listing.revision.revision_id
                 episode = listing.episode
+                membership = _assumed_of(venue_symbol, span, pit)
+                if membership is not None:
+                    if assumed_seen:  # pragma: no cover - the assumed window is one span
+                        raise CatalogIntegrityError(f"{venue_symbol} has two assumed member spans")
+                    assumed_seen = True
                 member: UniverseMember | None = None
                 exclusion: UniverseExclusion | None = None
                 if span.point.tradable:
@@ -538,6 +628,7 @@ def _events_v3(
                         listing_revision_id=revision,
                         effective_from=span.start,
                         effective_until=span.end,
+                        assumption=None if membership is None else membership.binding,
                     )
                 else:
                     exclusion = UniverseExclusion(
@@ -560,6 +651,7 @@ def _events_v3(
                     listing_revision_id=revision,
                     lineage=lineage,
                     gap=gap,
+                    assumed=membership,
                 )
     finally:
         deriver.close()
@@ -587,6 +679,10 @@ def _gap_of(event: _SpanEvent) -> tuple[str, str] | None:
     if event.gap is None:
         return None
     return (event.listing_revision_id, event.gap)
+
+
+def _assumed_membership_of(event: _SpanEvent) -> AssumedMembership | None:
+    return event.assumed
 
 
 @contextmanager
@@ -627,8 +723,9 @@ class UniverseSpanCursor:
     each under its own ``with``.
 
     **Read-only iterator Protocol B1 (``DatasetBuilder``'s v3 entry) consumes**: each of the five
-    methods below has the signature ``() -> AbstractContextManager[Iterator[T]]`` for its stated
-    ``T``; a caller does ``with cursor.members() as members:\\n    for member in members: ...``.
+    stream methods below (and ``assumed``, ADR-0051 §3, which B1 does not consume) has the
+    signature ``() -> AbstractContextManager[Iterator[T]]`` for its stated ``T``; a caller does
+    ``with cursor.members() as members:\\n    for member in members: ...``.
     No method takes the ``spec`` / ``pit`` again -- both are fixed at cursor construction
     (:meth:`UniverseBuilder.cursor`).
 
@@ -702,3 +799,9 @@ class UniverseSpanCursor:
         ``evidence_gaps`` evidence stream, so it is provided alongside the other three.
         """
         return _project(self._events(), _gap_of)
+
+    def assumed(self) -> AbstractContextManager[Iterator[AssumedMembership]]:
+        """The v3 form of ``UniverseBuilt.assumed`` (ADR-0051 §3): each member span that exists
+        only under the listing backfill assumption, in generation order (at most one per venue
+        symbol); empty when the PIT spec does not bind it."""
+        return _project(self._events(), _assumed_membership_of)

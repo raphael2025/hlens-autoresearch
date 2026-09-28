@@ -22,6 +22,18 @@ projection lossless (parse back in scope, same Python dump) and the reader prove
 unique projection of the record it parses to (re-project, byte-equal), so the root hash is a
 function of the record sequence alone.
 
+**Nested envelopes of another version (ADR-0088 PM decision, ADR-0051 second phase).** "Every
+``schema_version`` removed" is exact for every record whose nested contracts all carry the
+record's own envelope -- the only records this projection could ever prove lossless before, so
+their bytes are unchanged. A nested contract that keeps **another** published envelope (a
+registered identity pinned at its publication version, e.g. the 2.0.0 ``PolicyBinding`` of
+``UniverseMember.assumption``) keeps its ``schema_version`` key in the bytes; the top-level
+envelope and every nested one equal to it are still removed. So the line of such a record is still
+the unique projection of one record (a nested key equal to the record's own version, an
+unpublished version, or a top-level key all fail the reader's re-projection check), and it
+rebuilds bit-identically at the manifest's recorded version. Before this, such a record was
+refused by the writer's lossless proof, so no stored line and no rule hash changes.
+
 **Objects (§3).** A *leaf* holds a contiguous run of records under a header line
 ``{"first_ordinal", "format", "node": "leaf", "record_count", "stream"}``; an *index* holds at most
 ``fanout`` child references ``{"first_ordinal", "key", "record_count", "sha256", "size"}`` under
@@ -109,6 +121,8 @@ __all__ = [
 ]
 
 #: The unique serialization projection of a record line (ADR-0077 §6.2.3); part of the rule spec.
+#: Deliberately unchanged by the nested-envelope extension (see the module docstring): the text
+#: enters every v3 rule hash, and the extension only admits records the writer used to refuse.
 EVIDENCE_PROJECTION: Final = (
     "canonical_json(model_dump(mode='json') without any 'schema_version' key at any depth) + LF; "
     "UTF-8, no BOM; full field set, None included; rebuilt inside "
@@ -208,22 +222,39 @@ def canonical_depth(leaf_count: int, fanout: int) -> int:
 # =========================================================================================
 
 
-def _strip_envelope(value: Any) -> Any:
+def _strip_envelope(value: Any, version: str) -> Any:
+    """``value`` without every nested ``schema_version`` equal to ``version`` (the record's own).
+
+    A nested envelope of another version is kept, and must be a published contract version.
+    """
     if isinstance(value, dict):
-        return {
-            key: _strip_envelope(item) for key, item in value.items() if key != "schema_version"
-        }
+        stripped: dict[str, Any] = {}
+        for key, item in value.items():
+            if key != "schema_version":
+                stripped[key] = _strip_envelope(item, version)
+            elif item != version:
+                if not isinstance(item, str) or item not in PUBLISHED_CONTRACT_SCHEMA_VERSIONS:
+                    raise EvidenceIntegrityError(
+                        f"a nested schema_version {item!r} is not a published contract version"
+                    )
+                stripped[key] = item
+        return stripped
     if isinstance(value, list):
-        return [_strip_envelope(item) for item in value]
+        return [_strip_envelope(item, version) for item in value]
     return value
 
 
 def evidence_record_bytes(record: Contract) -> bytes:
-    """The one line ``record`` is stored as (``EVIDENCE_PROJECTION``)."""
+    """The one line ``record`` is stored as (``EVIDENCE_PROJECTION``).
+
+    The record's own envelope is never in the bytes, nor is any nested envelope equal to it; a
+    nested envelope of another published version is kept (module docstring).
+    """
     if not isinstance(record, Contract):
         raise EvidenceIntegrityError(f"an evidence record must be a contract, got {record!r}")
-    payload = _strip_envelope(record.model_dump(mode="json"))
-    return (canonical_json(payload) + "\n").encode("utf-8")
+    payload = record.model_dump(mode="json")
+    version = payload.pop("schema_version")
+    return (canonical_json(_strip_envelope(payload, version)) + "\n").encode("utf-8")
 
 
 def evidence_record_from_bytes(
@@ -232,7 +263,9 @@ def evidence_record_from_bytes(
     """The record ``line`` (with its LF) projects from, rebuilt at ``schema_version``, or raise.
 
     The line must be the unique projection of the record it parses to: any other encoding of the
-    same values (key order, whitespace, escapes, a stored envelope, duplicate keys) is rejected.
+    same values (key order, whitespace, escapes, a stored top-level envelope, a nested envelope
+    equal to ``schema_version``, duplicate keys) is rejected. A nested envelope of another
+    published version, as the writer keeps it, is rebuilt as stored.
     """
     stream = EvidenceStream(stream)
     record_type = EVIDENCE_RECORD_TYPES[stream]

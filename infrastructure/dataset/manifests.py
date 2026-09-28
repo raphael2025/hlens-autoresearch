@@ -24,6 +24,11 @@ both manifest tables is ``CatalogIntegrityError``. ``ManifestStore.load`` keeps 
 path unchanged and refuses a v3-only hash with ``ManifestFormError``; ``ManifestStore.load_any``
 dispatches to whichever table holds the hash. The v2 path is materializing (its verification
 grows with N) and is not part of the ADR-0077 bounded claim (§8.3).
+
+**Assumptions (ADR-0051 §3).** A manifest binds the listing backfill assumption, like ADR-0032's
+archive event-time assumption, only through its PIT spec's ``availability_bindings`` (id, version
+and hash, so the content hash covers it); ``manifest_assumptions`` is the read-only view a report
+groups results by.
 """
 
 from __future__ import annotations
@@ -38,22 +43,27 @@ from pydantic import ValidationError
 from pyiceberg.expressions import EqualTo
 
 from core.contracts.catalog import BatchConflict, CommitConflict, CommitRequest, TableNotFound
+from core.contracts.revision import PolicyBinding
 from core.contracts.universe import ResearchDatasetEvidenceManifest, ResearchDatasetManifest
 from core.domain.base import canonical_json
 from infrastructure import contract_version
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATASET_EVIDENCE_MANIFESTS, DATASET_MANIFESTS
+from infrastructure.pit import assumption as archive_assumption
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.universe import listing_assumption
 
 __all__ = [
     "DatasetEvidenceManifestStore",
     "EvidenceManifestVerifier",
+    "ManifestAssumptions",
     "ManifestFormError",
     "ManifestPersisted",
     "ManifestStore",
     "ManifestVerifier",
     "evidence_manifest_batch_id",
     "evidence_manifest_row",
+    "manifest_assumptions",
     "manifest_batch_id",
     "manifest_row",
 ]
@@ -103,6 +113,51 @@ def manifest_row(manifest: ResearchDatasetManifest) -> dict[str, Any]:
         [row], schema=DATASET_MANIFESTS.arrow_schema
     ).to_pylist()
     return normalised[0]
+
+
+@dataclass(frozen=True, slots=True)
+class ManifestAssumptions:
+    """The stated assumption policies a manifest binds through its PIT spec (report grouping).
+
+    ADR-0051 §3: results must be groupable by whether the listing backfill assumption is bound,
+    together with ADR-0032's archive event-time assumption. Each field is the bound policy
+    (exact id, version and hash) or ``None``; ``key`` is the grouping key.
+    """
+
+    archive_event_time: PolicyBinding | None
+    listing_backfill: PolicyBinding | None
+
+    @property
+    def key(self) -> tuple[bool, bool]:
+        """``(archive event-time assumed, listing backfill assumed)``."""
+        return (self.archive_event_time is not None, self.listing_backfill is not None)
+
+
+def manifest_assumptions(
+    manifest: ResearchDatasetManifest | ResearchDatasetEvidenceManifest,
+) -> ManifestAssumptions:
+    """Which assumption policies ``manifest`` binds (ADR-0032, ADR-0051); nothing is read.
+
+    A PIT spec naming either policy with another version or hash is refused (fail closed), as a
+    build of it would be.
+    """
+    if not isinstance(manifest, ResearchDatasetManifest | ResearchDatasetEvidenceManifest):
+        raise TypeError("manifest must be a ResearchDatasetManifest or its v3 evidence form")
+    pit = manifest.point_in_time
+    try:
+        archive = archive_assumption.assumption_bound(pit)
+        listing = listing_assumption.assumption_bound(pit)
+    except (
+        archive_assumption.AssumptionSpecError,
+        listing_assumption.AssumptionSpecError,
+    ) as exc:
+        raise CatalogIntegrityError(
+            f"manifest {manifest.content_hash()} binds an assumption policy wrongly: {exc}"
+        ) from exc
+    return ManifestAssumptions(
+        archive_event_time=archive_assumption.ASSUMPTION_BINDING if archive else None,
+        listing_backfill=listing_assumption.ASSUMPTION_BINDING if listing else None,
+    )
 
 
 @dataclass(frozen=True, slots=True)
