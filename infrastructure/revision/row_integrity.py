@@ -48,9 +48,14 @@ judged (see ``RestRevisionStore`` / ``ChannelReconciler``).
 
 from __future__ import annotations
 
+import json
+import os
+import sqlite3
+import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from itertools import chain
 from typing import Any, Final, Protocol, runtime_checkable
 
 import httpx
@@ -288,13 +293,166 @@ def batch_rows(table: pa.Table) -> list[Mapping[str, Any]]:
 
 def snapshots_of_batches(
     adapter: RevisionCatalog, table: str, batch_ids: Iterable[str]
-) -> dict[str, list[SnapshotInfo]]:
-    """Main-branch snapshots committing each of ``batch_ids``, in one walk of the history."""
-    wanted: dict[str, list[SnapshotInfo]] = {batch_id: [] for batch_id in batch_ids}
-    for snapshot in _history(adapter, table):
-        if snapshot.batch_id in wanted:
-            wanted[snapshot.batch_id].append(snapshot)
-    return wanted
+) -> _BatchSnapshotLookup:
+    """Count main-branch commits for requested IDs without retaining a history-sized index."""
+    return _BatchSnapshotLookup(adapter, table, batch_ids)
+
+
+class _BatchSnapshotLookup:
+    """Disk-backed requested-ID index; retains only each ID's count and first snapshot."""
+
+    __slots__ = ("_connection", "_path", "_closed", "_adapter", "_table", "_head")
+
+    def __init__(
+        self, adapter: RevisionCatalog, table: str, batch_ids: Iterable[str]
+    ) -> None:
+        fd, self._path = tempfile.mkstemp(prefix="hlens-batch-snapshots-", suffix=".sqlite3")
+        os.close(fd)
+        self._closed = False
+        self._adapter = adapter
+        self._table = table
+        try:
+            self._connection = sqlite3.connect(self._path)
+        except BaseException:
+            self._closed = True
+            try:
+                os.unlink(self._path)
+            except FileNotFoundError:
+                pass
+            raise
+        try:
+            self._connection.execute("PRAGMA cache_size = -256")
+            self._connection.execute("PRAGMA temp_store = FILE")
+            self._connection.execute("PRAGMA mmap_size = 0")
+            self._connection.execute("PRAGMA journal_mode = OFF")
+            self._connection.execute("PRAGMA synchronous = OFF")
+            self._connection.execute(
+                "CREATE TABLE requested_batches ("
+                "batch_id TEXT PRIMARY KEY, match_count INTEGER NOT NULL DEFAULT 0, "
+                "first_snapshot TEXT) WITHOUT ROWID"
+            )
+            self._connection.executemany(
+                "INSERT OR IGNORE INTO requested_batches (batch_id) VALUES (?)",
+                ((batch_id,) for batch_id in batch_ids),
+            )
+            self._connection.commit()
+            info = adapter.load_table(table)
+            if info is None:
+                raise TableNotFound(f"table {table} does not exist")
+            current = info.current_snapshot
+            self._head = None if current is None else current.snapshot_id
+            history = (
+                ()
+                if current is None
+                else chain((current,), history_from(adapter, table, current.parent_snapshot_id))
+            )
+            for snapshot in history:
+                if snapshot.batch_id is None:
+                    continue
+                payload = json.dumps(snapshot.model_dump(mode="json"), separators=(",", ":"))
+                self._connection.execute(
+                    "UPDATE requested_batches SET match_count = match_count + 1, "
+                    "first_snapshot = COALESCE(first_snapshot, ?) WHERE batch_id = ?",
+                    (payload, snapshot.batch_id),
+                )
+            self._connection.commit()
+        except BaseException:
+            self.close()
+            raise
+
+    def __enter__(self) -> _BatchSnapshotLookup:
+        if self._closed:
+            raise RuntimeError("snapshot lookup is closed")
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, traceback: object) -> None:
+        self.close()
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        try:
+            self._connection.close()
+        finally:
+            try:
+                os.unlink(self._path)
+            except FileNotFoundError:
+                pass
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def one(self, batch_id: str) -> tuple[int, SnapshotInfo | None]:
+        if self._closed:
+            raise RuntimeError("snapshot lookup is closed")
+        row = self._connection.execute(
+            "SELECT match_count, first_snapshot FROM requested_batches WHERE batch_id = ?",
+            (batch_id,),
+        ).fetchone()
+        if row is None:
+            return 0, None
+        count, payload = row
+        first = None if payload is None else SnapshotInfo.model_validate(json.loads(payload))
+        return count, first
+
+    def __getitem__(self, batch_id: str) -> _BatchSnapshotMatches:
+        count, first = self.one(batch_id)
+        return _BatchSnapshotMatches(self._adapter, self._table, self._head, batch_id, count, first)
+
+
+class _BatchSnapshotMatches(Sequence[SnapshotInfo]):
+    """List-compatible lazy view used by the two existing external helper consumers."""
+
+    __slots__ = ("_adapter", "_table", "_head", "_batch_id", "_count", "_first")
+
+    def __init__(
+        self,
+        adapter: RevisionCatalog,
+        table: str,
+        head: str | None,
+        batch_id: str,
+        count: int,
+        first: SnapshotInfo | None,
+    ) -> None:
+        self._adapter = adapter
+        self._table = table
+        self._head = head
+        self._batch_id = batch_id
+        self._count = count
+        self._first = first
+
+    def __len__(self) -> int:
+        return self._count
+
+    def __iter__(self) -> Iterator[SnapshotInfo]:
+        if self._head is None:
+            return
+        yield from (
+            snapshot
+            for snapshot in history_from(self._adapter, self._table, self._head)
+            if snapshot.batch_id == self._batch_id
+        )
+
+    def __getitem__(self, index: int | slice) -> SnapshotInfo | list[SnapshotInfo]:
+        if isinstance(index, slice):
+            start, stop, step = index.indices(self._count)
+            return [self[position] for position in range(start, stop, step)]
+        if index < 0:
+            index += self._count
+        if not 0 <= index < self._count:
+            raise IndexError("snapshot match index out of range")
+        if index == 0 and self._first is not None:
+            return self._first
+        for position, snapshot in enumerate(self):
+            if position == index:
+                return snapshot
+        raise CatalogIntegrityError(
+            f"{self._table} snapshot history changed while reading batch {self._batch_id}"
+        )
 
 
 def _history(adapter: RevisionCatalog, table: str) -> Iterable[SnapshotInfo]:
@@ -466,12 +624,15 @@ def check_batch_snapshot(
         )
 
 
-def _one_snapshot(table: str, batch_id: str, found: Sequence[SnapshotInfo]) -> SnapshotInfo:
-    if len(found) != 1:
+def _one_snapshot(
+    table: str, batch_id: str, found: tuple[int, SnapshotInfo | None]
+) -> SnapshotInfo:
+    count, snapshot = found
+    if count != 1 or snapshot is None:
         raise CatalogIntegrityError(
-            f"{table} has rows of batch {batch_id} but {len(found)} snapshots committing it"
+            f"{table} has rows of batch {batch_id} but {count} snapshots committing it"
         )
-    return found[0]
+    return snapshot
 
 
 # =========================================================================================
@@ -1353,10 +1514,10 @@ class PersistedRowVerifier:
                 )
         table = BINANCE_SPOT_REST_RESPONSES.table
         batches = {response_batch_id(row["revision_id"], row["arrival_seq"]): row for row in rows}
-        snapshots = snapshots_of_batches(self._adapter, table, batches)
-        for batch_id, row in batches.items():
-            snapshot = _one_snapshot(table, batch_id, snapshots[batch_id])
-            check_batch_snapshot(BINANCE_SPOT_REST_RESPONSES, batch_id, snapshot, [row])
+        with snapshots_of_batches(self._adapter, table, batches) as snapshots:
+            for batch_id, row in batches.items():
+                snapshot = _one_snapshot(table, batch_id, snapshots.one(batch_id))
+                check_batch_snapshot(BINANCE_SPOT_REST_RESPONSES, batch_id, snapshot, [row])
 
     # ------------------------------------------------------------------ REST elements
 
@@ -1707,10 +1868,10 @@ class PersistedRowVerifier:
             _archive_batch_id(item.revision_id, item.row["arrival_seq"]): item.row
             for item in verified.values()
         }
-        snapshots = snapshots_of_batches(self._adapter, table, batches)
-        for batch_id, row in batches.items():
-            snapshot = _one_snapshot(table, batch_id, snapshots[batch_id])
-            check_batch_snapshot(BINANCE_SPOT_ARCHIVES, batch_id, snapshot, [row])
+        with snapshots_of_batches(self._adapter, table, batches) as snapshots:
+            for batch_id, row in batches.items():
+                snapshot = _one_snapshot(table, batch_id, snapshots.one(batch_id))
+                check_batch_snapshot(BINANCE_SPOT_ARCHIVES, batch_id, snapshot, [row])
         if self._cache_archives:
             for archive_id, item in verified.items():
                 while len(self._archives) >= _ARCHIVE_CACHE:

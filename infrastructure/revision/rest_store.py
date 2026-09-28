@@ -945,12 +945,13 @@ class RestRevisionStore:
 
 def _snapshot_of_batch(adapter: RevisionCatalog, table: str, batch_id: str) -> SnapshotInfo:
     """The main-branch snapshot that committed ``batch_id`` (exactly one), else fail closed."""
-    found = snapshots_of_batches(adapter, table, [batch_id])[batch_id]
-    if len(found) != 1:
-        raise CatalogIntegrityError(
-            f"{table} has rows of batch {batch_id} but {len(found)} snapshots committing it"
-        )
-    return found[0]
+    with snapshots_of_batches(adapter, table, [batch_id]) as snapshots:
+        found = snapshots[batch_id]
+        if len(found) != 1:
+            raise CatalogIntegrityError(
+                f"{table} has rows of batch {batch_id} but {len(found)} snapshots committing it"
+            )
+        return found[0]
 
 
 def _normalised_natives(

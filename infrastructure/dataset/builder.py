@@ -529,8 +529,8 @@ class DatasetBuilder:
         ]
         if not missing:
             return
-        snapshots = snapshots_of_batches(self._adapter, self._table.table, (selection_id,))
-        materialized = {item.snapshot_id for item in snapshots[selection_id]}
+        with snapshots_of_batches(self._adapter, self._table.table, (selection_id,)) as snapshots:
+            materialized = {item.snapshot_id for item in snapshots[selection_id]}
         if materialized and self._manifested(materialized):
             # A replay of a completed build: a persisted manifest already binds this batch's
             # snapshot, so the requirement held when it was first built (G2 RT-5). A batch alone
