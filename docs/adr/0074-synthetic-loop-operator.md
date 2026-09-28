@@ -202,7 +202,7 @@ Raphael 于 2026-09-28 将项目整体决策与执行权委托给 Codex。Codex 
 
 ## 实施状态（2026-09-28）
 
-ADR-0073 的 v4 plan-admission format 与本 ADR 所需的 v5 operator identity 已先后进入本地 `main`，保留 v3 / v4 兼容路径。ADR-0074 的 Strict TOML 编译器、显式 freeze registry 路径、六个 provider role 的静态 allowlist、有限批次 CLI、状态与锚点只读预检、逐轮报告及 README 已在 `codex/p7-v5-operator-foundation` 实现，并经 Codex 第二轮独立源码复核，未发现阻断项。该实现当前未运行测试、build、lint、typecheck、probe 或阶段验收；也尚未合并。本 ADR 不因代码存在而视为实现验收。
+ADR-0073 的 v4 plan-admission format 与本 ADR 所需的 v5 operator identity 已先后进入本地 `main`，保留 v3 / v4 兼容路径。ADR-0074 的 strict TOML 编译器、显式 freeze registry 路径、六个 provider role 的静态 allowlist、有限批次 CLI、状态与锚点只读预检、逐轮报告及 README 已于 2026-09-28 合入本地 `main@0d4862a`，并经 Codex 第二轮独立源码复核，未发现阻断项。该实现未运行测试、build、lint、typecheck、probe 或阶段验收。本 ADR 不因代码存在而视为实现验收。
 
 1. `research/loop/operator_config.py`：严格 TOML v1、六条显式路径、强类型与 hash-bound artifacts、ProfileFreezeRegistry 校验；只接受 ADR §2 定义对象。
 2. `research/loop/operator_providers.py`：静态 role allowlist 与 descriptor/spec identity 校验；不动态导入。

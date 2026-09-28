@@ -9,10 +9,10 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。P7 durable v4 admission 已完成写入 / 恢复加固，并已补齐跨 PREPARE→COMMIT 的 lease、durable store 写 gate、round/approval 串行化、close 后拒写与只读 journal view；operator 专属 v5 持久身份基础已实现。ADR-0074 TOML parser、静态 Provider allowlist、有限轮次 CLI、路径与锚点预检已在 `codex/p7-v5-operator-foundation` 实现，尚未验收或合并。六类组合算子不可执行；没有冻结 Profile，不能生成合规运行配置。E1-CAP-1 阻断；测试、build、probe 与验收均暂缓；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
+| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。P7 durable v4 admission 已完成写入 / 恢复加固，并已补齐跨 PREPARE→COMMIT 的 lease、durable store 写 gate、round/approval 串行化、close 后拒写与只读 journal view；operator 专属 v5 持久身份基础已实现。ADR-0074 TOML parser、静态 Provider allowlist、有限轮次 CLI、路径与锚点预检及逐轮报告已合入本地 `main@0d4862a`；只做两轮源码静态复核与 `git diff --cached --check`，未测试、未验收。六类组合算子不可执行；没有冻结 Profile，不能生成合规运行配置。E1-CAP-1 阻断；测试、build、probe 与验收均暂缓；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 107 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 9 个 worktree；仍保留根 `phase/1` Cursor 工作区和未跟踪资料、研究规格 Claude 分支的独有测试，以及 E1 / Phase 1 证据 worktrees；其他已确认冗余分支归档后删除。全模块复核确认项目非空骨架；TrialLedger 批量持久化、durable v4 admission 与完整进程内写 gate、operator 专属 v5 身份基础均已进入本地主线，未跑测试 / build / lint / Phase 验收。ADR-0073、0074 已接受；六类 P7 算子仍 fail closed。E1 主线 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟 |
-| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口（后者当前在功能分支，未验收 / 合并）；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
+| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 109 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 9 个 worktree；仍保留根 `phase/1` Cursor 工作区和未跟踪资料、研究规格 Claude 分支的独有测试，以及 E1 / Phase 1 证据 worktrees；其他已确认冗余分支归档后删除。全模块复核确认项目非空骨架；TrialLedger 批量持久化、durable v4 admission 与完整进程内写 gate、operator 专属 v5 身份基础及 ADR-0074 operator 已进入本地主线，均未完成 Phase 验收。ADR-0073、0074 已接受；六类 P7 算子仍 fail closed。E1 主线 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟 |
+| 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-28 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
@@ -107,7 +107,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 - 🔎 深审还确认：P7 参数点批次可运行；六类组合 DSL 现有 typed plan parser 只验证声明数据并始终返回不可运行，Provider lowering 与审计持久化仍未实现；LLM 内容核验仍可选。P2 Arrow 表满足 ADR-0035 当前范围，额外 Iceberg 持久化暂缓。P11 本机 CLI 只包装显式输入，不解决权威 ACTIVE / 真实观测来源；P0.5 标签、P3 生产建表、Profile 数值和真实数据仍是人工 / 数据 / 授权门。
 - ✅ 缺口复核：P9 calibration detector 异常已由基线归为 `INCONCLUSIVE` 并保留其他结果；backlog 旧记录已标记为过期。Knowledge Search 缺 Provider 时基线已返回稳定 503，OpenAPI / README 同步，无需改代码。
 - ⏸ P2 报告 API payload 按 `ReportEnvelope.payload` 以 JSON 字典如实对外；逐 kind DTO 目前缺少统一、版本化 payload schema，且旧报告字段不同。为避免新增未批准的 report contract 或拒收既有报告，暂缓把前端断言改成严格 schema；需要先定义各 report kind 的版本化模型。
-- 🔨 P7 / ADR-0074 基础开发：durable v4 admission、跨 prepare→complete lease 与 operator v5 identity 已进入本地 main，均未验收。`codex/p7-v5-operator-foundation` 已实现严格 TOML parser、静态 Provider allowlist、有限轮次 CLI、运行前代码 / 环境 / 路径 / state 与外部锚点校验，以及逐轮报告；本批源码只做静态复核，未测试、未验收、未合并。配置显式提供 ADR-0062 freeze registry 与外部 anchor 路径；由于当前没有冻结 Profile，不存在可运行的合规配置。继续不接 API 写触发、不启用六类算子。
+- ✅ P7 / ADR-0074 operator 基础已合入本地 main（`0d4862a`）：严格 TOML parser、静态 Provider allowlist、有限轮次 CLI、运行前 code / environment / path / state / anchor 预检与逐轮报告；显式提供 ADR-0062 freeze registry 与外部 anchor 路径。两轮源码静态复核无阻断项，`git diff --cached --check` 无输出；未运行测试、build、lint、typecheck、probe 或验收。当前没有冻结 Profile，故没有合规可运行配置；不接 API 写触发、不启用六类算子。
 
 ## 5. 下一步
 
@@ -302,6 +302,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-28 | 接受 ADR-0074：本机有限批次 synthetic operator | 仅合成数据、静态 Provider allowlist、严格 TOML、有限轮数、外部 scheduler、只读报告；先完成 v4，再做 operator-only v5。Profile 尚未冻结，当前不能生成合规运行配置；未实施、未验收 |
 | 2026-09-28 | 加固 ADR-0073 durable v4 并并入 operator v5 identity 基础 | `e3ac380` / `f91760b` 加固 PREPARE、checkpoint、anchor、线程锁、恢复与 lifecycle guard；`30a5dec` / `0288ff2` 加入 v5 identity 并保留 v4 错误契约。lease 与完整写 gate 随后在下列记录实现；v5 parser / allowlist / CLI 未实现 |
 | 2026-09-28 | ADR-0073 admission lease 与 durable 写入边界加固 | `d0ffdae`、`037dc03`、`4e7e7ae`、`60ae712` 合入本地 main；覆盖 prepare→complete lease、所有 checkpointed store 写 gate、round/approval 原子区、round 间写拒绝、state lock close 和只读 journal view。Codex 子代理独立复审未发现阻断项；`git diff --check` 通过。测试 / build / lint / 类型检查 / probe / Phase 验收均未运行；跨文件崩溃在 checkpoint 与 audit record 间仍按既有规则 fail closed |
+| 2026-09-28 | 实现并合入 ADR-0074 有限批次 synthetic operator | `0d4862a`：严格 TOML 编译、静态 Provider allowlist、有限轮次 CLI、state / anchor 预检与逐轮报告；两轮源码复核无阻断项，仅运行 `git diff --cached --check`，未测试 / 验收。功能分支以 archive ref 保留后清理；本地 `main` 未推送 |
 
 ## 10. 下一阶段进入条件
 
@@ -325,16 +326,16 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 107 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、9 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。
+1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 109 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、9 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 已实现；strict TOML parser / 静态 Provider allowlist / 有限轮数 CLI 已在 `codex/p7-v5-operator-foundation` 完成源码并静态复核，当前未验收、未合并。整合后仍需保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
+3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
 
 ## 12. 给 Claude Code 的下一步
 
 > Claude 下一步可以执行什么？
 
 1. E1 history-options worktree 仅作只读设计证据；不清理或覆盖。主线 RSS probe 尚未运行，失败候选不代表 main 容量。
-2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery 与 v5 operator identity 已写入本地 main，尚待统一验收；ADR-0074 operator 边界已接受。strict TOML / 静态 allowlist / finite-round CLI 基础已在 Codex 功能分支完成、待合并，继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
+2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery、v5 operator identity 与 ADR-0074 有限批次 operator 已进入本地 main，均尚待统一验收。继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
 3. P7 算子继续 fail closed；逐项语义、Provider lowering、审计持久化与 TrialLedger 原子关系未获独立 ADR 前不得启用。P12 循环内替换继续按 P12-LOOP 暂缓。
 4. 不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
 
