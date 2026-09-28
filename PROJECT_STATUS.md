@@ -307,11 +307,11 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-28 | P7 TrialLedger 批次预登记单事件持久化与线程同步 | `d205bc4` / `0632367`；仅 `git diff --check`，测试 / 验收未运行 |
-| 2026-09-28 | ADR-0073 durable v4 与 ADR-0074 operator 基础完成 | 持久 admission、写入 gate、v5 identity 与有限批次 operator 已实现（含 `0d4862a` 有限批次 synthetic operator）；未测试 / 验收，Profile 未冻结、算子 fail closed |
-| 2026-09-28 | 分支收敛并校正模块基础逻辑计划 | `phase/1` 已归档删除；项目仍非空骨架；统一验收暂缓 |
-| 2026-09-28 | 收敛 E1-R ID 与 snapshot history 持有量 | `64b021a`、`1d8f231`、`62bfc9d`；公开 dict/list API 保持兼容；未运行测试或容量探针，E1-CAP-1 仍阻断 |
-| 2026-09-28 | 上一轮未提交的 E1 余项整体归档 | ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码已经 Raphael 批准归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`）；未审阅、未测试、不构成正式决定；E1-CAP-1 仍阻断，本轮后置 |
+| 2026-09-28 | 底层代码补全轮次完成（PM 编排子代理 / Codex） | phase 分支 `0cfddbf`；ADR-0076～0088 落地；全部未运行测试，待统一调试 |
+| 2026-09-28 | 契约 2.3.0 → 2.4.0（ADR-0077 / 0088，均 additive） | v3 有界 Dataset 证据；组合策略、事件 bar 规格、峰值权益、合成效应、波动率屏障、成员假设绑定；已钉哈希与版本断言需调试阶段重钉 |
+| 2026-09-28 | ADR-0077 有界 Dataset 全链路实现 | universe / PIT 生成器、evidence 树、chunk 提交、v2/v3 双表、流式 verify、下游消费者；E1-CAP-1 容量仍未测 |
+| 2026-09-28 | 研究库与模块补全 | ADR-0085 特征 20 个 / 状态 2 个 / 策略 3 个 + 组合策略 / 回撤风控；ADR-0086 门集与退役存储；ADR-0087 插件发现；ADR-0084 实盘接口预留（关闭） |
+| 2026-09-28 | Raphael 授权 PM 全权决策（实盘除外）；PR #11 并入 main | CLAUDE.md §0 已记录；`main@67fd2ca` 含 phase 至 `14cccb7` |
 
 ## 10. 下一阶段进入条件
 
@@ -338,7 +338,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 1. `main@7ad128a` 与 `phase/1-foundation-completion` 已于 2026-09-28 由 PM 推送到 GitHub（`origin/main` 快进 132 个提交；phase 分支为新建远端分支）；上一轮未提交的 E1 余项已于 2026-09-28 经你批准整体归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定，E1-CAP-1 仍阻断、本轮后置。远端仅保留 `main`；E1 PR #10 已关闭并归档。清理阶段的冗余分支均已归档；当前仅有 1 个开发分支 / 1 个 root worktree。模块基础逻辑计划见 [此处](docs/plans/2026-09-28-module-foundation-completion.md)。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
-4. 你已决定先完成全部模块代码、调试后置（D-DEBUG）。PM 正按任务板派 Codex 补 E1/Dataset、P7、P10、P11 等仍缺的底层代码；P14 需要你提供迁移目标与 golden data，P0.5 需要具名人工审阅，这两项无法靠写代码完成。
+4. 底层代码补全已完成（phase `0cfddbf`，全部未测试）。下一步建议开启统一调试：按模块运行 pytest / ruff / mypy，重钉 2.3.0 / 2.4.0 版本断言与 schema / 回归哈希，补跑 fixture 生成；再做 E1-CAP-1 容量测量与 ADR-0051 下界核实（联网）。见模块计划 “PM 任务板” 的调试清单。
 
 ## 12. 给 Claude Code 的下一步
 
@@ -346,7 +346,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 1. A1–A4 已提交为 `0651e6a`，C1–C3 已提交为 `1ad56a0`；E1-R 基础切片未完成容量验收。上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`，未审阅、未测试、不构成正式决定；E1-CAP-1 仍阻断，本轮后置，未经批准前不得继续该扫描实现。E1 失败证据仍在 archive ref；禁止把任何子问题改进表述为 E1-CAP-1 通过。
 2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery、v5 operator identity 与 ADR-0074 有限批次 operator 已进入本地 main，均尚待统一验收。继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
-3. P7 算子继续 fail closed；逐项语义、Provider lowering、审计持久化与 TrialLedger 原子关系未获独立 ADR 前不得启用。P12 循环内替换继续按 P12-LOOP 暂缓。
+3. P7 六类算子的纯 lowering 已实现（ADR-0078 / 0082 / 0088；rank / quantile 仍 OPEN），`TypedPlan.runnable` 仍为 False——启用运行须在调试通过后另行决定。
 4. 不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
 
 ### 10.29 协调分支快进到本地 main（2026-09-27）
