@@ -84,6 +84,8 @@
 | [0077](0077-bounded-research-dataset-evidence.md) | 有界 Research Dataset 证据：v3 evidence manifest、有序 evidence streams 与定长 chunk commit | DQ-1 = A 由 Raphael 2026-09-28 批准（`core/contracts` 2.3.0 additive，v2 不变）；DQ-2～8、10～12 Codex 决定；DQ-9 待容量证据；待实施（W3-E1DS） |
 | [0078](0078-p7-lowered-output-completeness.md) | P7 lowered outputs 集合权威与完整性 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；`TypedPlan.nodes` 为权威全集；已实现 `79ea546`，未测试；算子仍 fail closed |
 | [0079](0079-paper-deviation-declared-scope.md) | Paper deviation 与 P8 声明范围绑定 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；deviation payload 2.0.0 绑定 P8 ValidationReport 与 Profile 范围，1.0.0 仅作 legacy 读取；已实现 `1974610`，未测试 |
+| [0080](0080-p11-authority-resolution.md) | Phase 11 ACTIVE、真实 source 与 metric 权威解析 | BLOCKED（2026-09-28）：缺权威 lifecycle head、source 身份与 metric 算法定义；不实现伪权威 resolver，loop 保持 synthetic-only |
+| [0082](0082-p7-operator-semantics-and-lowering.md) | P7 六类组合算子的语义与 Provider lowering | Accepted（部分，2026-09-28；Codex 依 Raphael 授权决定）：`interaction` product 语义与 FeatureSpec lowering 已实现 `29763f3`；conditioning / temporal / transformation / ensemble / negation OPEN、fail closed；`runnable` 仍 False |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

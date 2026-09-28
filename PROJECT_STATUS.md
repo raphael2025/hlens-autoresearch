@@ -136,6 +136,15 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **DQ-1 / ADR-0077（已决定，2026-09-28 Raphael 选 A）**：批准在 `core/contracts` 新增 2.3.0 additive 的有界 Dataset evidence manifest 模型，v2 `ResearchDatasetManifest` 字段 / 哈希不变、只读兼容；实施为单独串行的 core 任务（W3-E1DS）。DQ-9 chunk / fanout 参数待容量证据。
 
+**代码补全轮次暴露的待 Raphael 决定（2026-09-28，PM 汇总；不决定时相应代码保持 fail closed）**
+
+| ID | 问题 | 来源 |
+|---|---|---|
+| D-P11-AUTH | Phase 11 非 synthetic loop 的 ACTIVE 权威 head、真实 source 身份与各 metric 精确算法 | ADR-0080 BLOCKED |
+| D-P7-OPS | P7 其余五类算子（conditioning / temporal / transformation / ensemble / negation）的研究语义 | ADR-0082 OPEN |
+| D-P11-WINDOW | 滚动持续循环与固定日历 Validation Profile 如何配合（换窗口需新 Profile） | ADR-0049 遗留，AUD-2b |
+| D-CATALOG-TABLES | 是否授权在真实 Catalog 创建 `event.*` / `state.*` 表 | ADR-0035 / 0036 / 0066，H12 |
+
 **E1-CAP-1 容量边界核对**
 
 | ID | 问题 | 决定 | 状态 |

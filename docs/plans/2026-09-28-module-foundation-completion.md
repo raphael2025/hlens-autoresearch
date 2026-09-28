@@ -136,14 +136,16 @@ Raphael 于 2026-09-28 指定 Claude Code 以 PM 身份协调本轮：只有 PM 
 | W1-E1 | P1 E1 / Dataset | 审阅择取 `wip/e1-cap-archive`，定稿 ADR-0075 Amendment 1 / 0076 / 0077 并实现有界代码；单轮时间盒 | Codex | infrastructure E1 路径与测试、ADR-0075~0077 | 容量探针、宣称 E1-CAP-1 通过、弱化完整性验证、core/ | ADR 状态明确、代码与测试引用一致（未运行） | ✅ `5332034`：ADR-0075 A1 / 0076 Accepted 并实现，修 M3、补 M11 测试；ADR-0077 因需改 core 阻塞 → Raphael 2026-09-28 批准 DQ-1 = A |
 | W1-P7 | P7 Discovery | ADR-0078：lowered outputs 权威；producer / 完整性校验 | Codex | research/hypotheses | 改 `runnable=False`、运行时启用算子、core/ | ADR + 实现 + 测试更新 | ✅ `79ea546` |
 | W1-P10 | P10 Router | ADR-0079：deviation 绑定 P8 声明范围 | Codex | research/router | 改阈值、推翻 P10-FREEZE、core/ | ADR + 实现 + 测试更新 | ✅ `1974610`；console fixture 需运行 writer 重生成，列入调试 |
-| W2-P11 | P11 Loop | ADR-0080：ACTIVE / source / metric 权威与 resolver | Codex | `feature/p11-authority`；research/loop（不含 dataset_*）、research/operations | 仓内 scheduler、伪造 Profile、dataset operator | ADR + 实现 + 测试更新 | 🔄 |
+| W2-P11 | P11 Loop | ADR-0080：ACTIVE / source / metric 权威与 resolver | Codex | research/loop、research/operations | 仓内 scheduler、伪造 Profile | ADR + 实现 | ⛔ BLOCKED `b7ee4b1`：缺上游权威定义（D-P11-AUTH）；首次运行因 stdin 挂起浪费 4h 后重跑 |
 | W2-DTO | Apps | ADR-0081：各 report kind 版本化 DTO；同步 deviation 2.0.0 | Codex | research/reports、apps/api、apps/web/src | DTO 进 core/、生成 fixture、收窄旧版读取、写 API | ADR + 实现 + 待重生成 fixture 清单 | 🔄 |
-| W2-P4 | P4 Outcome | 按 roadmap 判定并补 converter 调用接线 | Codex | research/outcomes、research/experiments | 改 outcome 语义 / 成本 / split / 阈值 | 接线或书面依据 | 🔄 |
-| W3-P7OPS | P7 Discovery | ADR-0082：六类算子逐项语义与 Provider lowering；仍不可运行 | Codex | research/hypotheses | 设 runnable、接 Runner、改验证 | 逐算子 ADR + lowering | 🔄 |
+| W2-P4 | P4 Outcome | 按 roadmap 判定 converter 调用接线 | Codex | research/outcomes、research/experiments | 改 outcome 语义 / 阈值 | 接线或书面依据 | ✅ `317e6c8`：无需生产调用点，依据写入 README |
+| W3-P7OPS | P7 Discovery | ADR-0082：六类算子语义与 lowering | Codex | research/hypotheses | 设 runnable、接 Runner | 逐算子 ADR + lowering | 🟡 `29763f3`：interaction 完成；其余五项 OPEN（D-P7-OPS） |
 | W3-E1DS | P1 Dataset | 实施 ADR-0077（2.3.0 additive 契约模型 + 有界 Dataset API；v2 只读兼容） | Codex | core/contracts（仅新增）、infrastructure/dataset、catalog 新表 | 改动既有 v2 模型字段 / 哈希；与其他任务并行 | 实现 + 测试更新 | ⏳ 待当前任务全部结束后单独串行（涉及 core/） |
-| W4-P7RETRY | P7 Discovery | 失败修复 / 重试入口 | Codex | research/hypotheses | — | — | ⏳ 待 W3-P7OPS |
-| W3-P11D | P11 Loop | dataset operator（依赖 ADR-0077 新 Dataset API） | Codex | 待 W3-E1DS 完成后签发 | — | — | ⏳ 排队 |
+| W4-P7RETRY | P7 Discovery | ADR-0083：失败轮次审阅后的显式重试入口 | Codex | research/loop（不含 dataset_*）、apps/worker/loop.py | 删除 / 隐藏失败记录、重置 trial 计数、自动重试 | ADR + 入口 + 测试更新 | 🔄 |
+| W3-P11D | P11 Loop | dataset operator + 在 ADR-0077 新 API 上再试一次权威解析（仅一次） | Codex | 待 W3-E1DS 完成后签发 | — | — | ⏳ 排队 |
 | HUMAN | P14 / P0.5 | 迁移目标与 golden data；seed tags/assets 具名审阅 | Raphael / 具名审阅者 | — | 不代写、不猜 | — | ⏸ 需人工输入 |
+| AUD-2 | 跨模块 | ADR 0001–0074 实施一致性审计 | sonnet ×3（含 4 个子审计） | 只读 | — | 逐 ADR 覆盖 | ✅ GAP: NONE；需决定项汇入 STATUS §6 |
+| CR-1 | 复核 | Cursor 独立复核 Codex 提交 | Cursor（auto） | 只读 | — | — | ✅ 发现 CR1-2 已修 `ecf8b3b`；CR1-1 fixture 列入调试 |
 | DBG-* | 各模块 | 逐模块调试 | — | — | — | — | ⏸ Raphael 决定：全部代码完成后再开始 |
 
 ### 调试入口清单（AUD-1，2026-09-28，静态只读，PM 抽查 M1–M3 属实）
