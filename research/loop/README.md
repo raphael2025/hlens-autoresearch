@@ -277,3 +277,118 @@ Phase 11 持续研究循环的**研究侧**（[ADR-0049](../../docs/adr/0049-con
 `origin_refs` 仍是条目引用）。指纹多出 `knowledge_source`（provider 身份、descriptor 哈希、查询哈希；仅在设置时）。
 
 测试：`tests/research/hypotheses/test_knowledge_source.py`、`tests/research/loop/test_loop_knowledge_source.py`。
+
+## ADR-0074 本机有限批次 Operator
+
+Operator 入口是 `python -m research.loop.operator run --config PATH --rounds N`。`--rounds` 必填且为正整数；每次进程至多执行 N 个新 round，外部 scheduler 可用相同配置重复启动。Operator 只接受 synthetic random-walk 输入，LLM 与六类 P7 组合算子保持关闭，不启动 API，也不生成真实市场证据。
+
+provider allowlist 固定为：`hlens_synthetic_random_walk@1.0.0`、`bar_log_return@1.0.0`、`trend_range@1.0.0`、`research_tsmom@0.1.0`、`hlens_bar_backtest@1.0.0`、`hlens_forward_return@1.0.0`。配置需给出每个完整 descriptor 的确切哈希；不接受插件搜索、Python import 路径或用户工厂。策略限两个 canonical TSMOM spec，回测固定 simulated-only，标签只允许经绑定的 forward return。
+
+TOML 以自身目录解析 artifact 路径；每个对象都要提供 `{ path, content_hash }`，并与完整 canonical JSON 内容逐项相符。`[paths]` 必须显式指定 state、两个外部 anchor、reports、ADR-0062 freeze registry 目录和该 registry 的 anchor。缺省值、未知键、重复键、占位符、TEST ONLY 内容、浮点配置、未冻结 Profile、身份不匹配或已有非 v5 state 均被拒绝。首次运行前，`code_commit` 必须等于当前干净 tracked worktree 的完整 HEAD；`environment_lock` 必须与当前 `uv.lock`、Python 和平台相符。
+
+目前没有已冻结的 production Validation Profile，freeze registry 也没有可供生产运行的 Profile，因此**没有可运行的 operator 配置**。下面的模板仅展示完整键结构；每个 `<...>` 都是明确占位符，Parser 必定拒绝。不要替换成测试夹具或临时数值来绕过冻结门。
+
+```toml
+schema_version = "1.0.0"
+
+[operator]
+llm_enabled = false
+
+[paths]
+state_dir = "<state directory>"
+state_anchor = "<external state anchor>"
+bus_anchor = "<external bus anchor>"
+reports_root = "<reports directory>"
+freeze_registry_dir = "<existing ADR-0062 registry directory>"
+freeze_registry_anchor = "<existing external freeze anchor>"
+
+[loop]
+loop_id = "<loop id>"
+seed = "<non-negative integer>"
+epoch = "<UTC timestamp>"
+cadence = "<seconds> seconds"
+llm_prompt = ""
+llm_cost_units_per_call = "0"
+market = { path = "<synthetic market artifact JSON>", content_hash = "<exact sha256>" }
+minutes_per_round = "<positive integer>"
+compute_seconds_per_bar = "<seconds>"
+family_id = "<family id>"
+knowledge = [{ path = "<knowledge artifact JSON>", content_hash = "<exact sha256>" }]
+max_new_hypotheses_per_round = "<non-negative integer>"
+max_reevaluations_per_round = "<non-negative integer>"
+hypothesis_compute_seconds = "<seconds>"
+compute_seconds_per_trial = "<seconds>"
+validation_compute_seconds = "<seconds>"
+state_compute_seconds = "<seconds>"
+profile = { path = "<frozen profile artifact JSON>", content_hash = "<exact sha256>" }
+constitution_version = "<version>"
+
+[loop.budget]
+max_trials_per_round = "<non-negative integer>"
+max_trials_total = "<non-negative integer>"
+max_llm_cost_units = "0"
+max_compute_seconds = "<seconds>"
+
+[loop.wiring]
+feature_spec = { path = "<feature spec JSON>", content_hash = "<exact sha256>" }
+feature_chunk_bars = "<positive integer>"
+state_spec = { path = "<state spec JSON>", content_hash = "<exact sha256>" }
+decision_step = "<seconds> seconds"
+decision_warmup = "<seconds> seconds"
+strategies = [{ spec = { path = "<TSMOM strategy JSON>", content_hash = "<exact sha256>" }, hypothesis_family_id = "<family id>" }]
+cost_model = { path = "<cost model JSON>", content_hash = "<exact sha256>" }
+initial_equity = "<positive decimal>"
+label_spec = { path = "<outcome label spec JSON>", content_hash = "<exact sha256>" }
+profile_selection = { path = "<profile selection JSON>", content_hash = "<exact sha256>" }
+profile_selection_rule = { path = "<selection rule JSON>", content_hash = "<exact sha256>" }
+outcome_spec = { path = "<forward return outcome spec JSON>", content_hash = "<exact sha256>" }
+declared_research_class = "<research class>"
+code_commit = "<40 lowercase hex commit>"
+environment_lock = "<canonical environment lock>"
+evolution = false
+oos_unseal = false
+sealed_decision_step = false
+conditional = false
+hypothesis_batch = false
+knowledge_source = false
+
+[loop.wiring.robustness]
+cscv_partitions = false
+max_participation_rate = false
+min_capacity = false
+impact_coefficient = false
+cross_asset_min_positive_fraction = false
+max_undersampled_pnl_share = false
+
+[providers.synthetic_market_provider]
+id = "hlens_synthetic_random_walk"
+version = "1.0.0"
+descriptor_hash = "<exact sha256>"
+
+[providers.feature_provider]
+id = "bar_log_return"
+version = "1.0.0"
+descriptor_hash = "<exact sha256>"
+
+[providers.state_provider]
+id = "trend_range"
+version = "1.0.0"
+descriptor_hash = "<exact sha256>"
+
+[providers.strategy_provider]
+id = "research_tsmom"
+version = "0.1.0"
+descriptor_hash = "<exact sha256>"
+
+[providers.backtester]
+id = "hlens_bar_backtest"
+version = "1.0.0"
+descriptor_hash = "<exact sha256>"
+
+[providers.outcome_provider]
+id = "hlens_forward_return"
+version = "1.0.0"
+descriptor_hash = "<exact sha256>"
+```
+
+成功运行前仍必须通过所有 path / artifact / provider / Profile freeze 检查。state 只新建或以相同 identity 重开 v5；不接管 v3 / v4，不自动修复中断轮。每次打开先从已验证 audit 幂等补齐 `research_loop_round` 报告，再执行一轮、立即写一份报告；不写 Phase 6 matrix。SIGINT / SIGTERM 在当前轮完成并报告后退出。退出码为 0（完成 / 边界停止）、2（命令或配置拒绝）、3（预算或 loop halt）、4（中断 / 人工恢复审查）、5（损坏、锁、锚点或报告 I/O 故障）。

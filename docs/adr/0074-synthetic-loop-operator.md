@@ -37,7 +37,7 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
 
 1. 配置是 UTF-8 TOML，顶层必含 `schema_version = "1.0.0"`。首期用 Python 标准库 `tomllib` 解析。每张表拒绝未知键、重复键、缺失必填键和错误类型；不做环境变量插值、配置合并、隐式搜索路径或“尽力猜测”。升级配置结构时提升配置 schema version；不支持的版本立即拒绝。当前没有冻结的 production Validation Profile，因此实现阶段 README 只能提供字段齐全但带显式占位符的**不可运行模板**，并说明 parser 会拒绝占位符；只有未来存在真实冻结 Profile 后才能增加可运行样例。不得用 TEST ONLY Profile、临时数值或默认值伪造合法配置。
 
-2. 固定 TOML 结构为：顶层 `schema_version`；`[paths]`；`[operator]`；`[providers.<role>]`（角色只允许 `synthetic_market_provider`、`feature_provider`、`state_provider`、`strategy_provider`、`backtester`、`outcome_provider`）；`[loop]` 对应 `SyntheticLoopConfig`；`[loop.wiring]` 对应 `LoopWiring`。`[providers.<role>]` 只保存该 role 的 allowlist `id`、`version`、`descriptor_hash`，由编译器注入相应现有 provider 对象字段；它不是新的 domain/dataclass 字段。`[operator]` 只允许 `llm_enabled = false`。所有多层未知表和未知键都拒绝。复杂对象字段如 `profile`、`profile_selection` 和 spec 字段用 `{ path, content_hash }` 作为严格 artifact reference；剩余配置值直接使用现有 dataclass 字段名。路径根于配置文件所在目录。
+2. 固定 TOML 结构为：顶层 `schema_version`；`[paths]`；`[operator]`；`[providers.<role>]`（角色只允许 `synthetic_market_provider`、`feature_provider`、`state_provider`、`strategy_provider`、`backtester`、`outcome_provider`）；`[loop]` 对应 `SyntheticLoopConfig`；`[loop.wiring]` 对应 `LoopWiring`，另含配置编译专用的必填 artifact references `profile_selection_rule`、`outcome_spec`。两者只用于加载 `ProfileSelection.selection_rule`、`OutcomeLabelSpec.outcome` 分别指向的版本化对象并校验引用 / 哈希 / 字段一致性，随后从最终 `LoopWiring` 字段映射中移除；不是 `LoopWiring` 的新字段。`[providers.<role>]` 只保存该 role 的 allowlist `id`、`version`、`descriptor_hash`，由编译器注入相应现有 provider 对象字段；它不是新的 domain/dataclass 字段。`[operator]` 只允许 `llm_enabled = false`。所有多层未知表和未知键都拒绝。复杂对象字段用 `{ path, content_hash }` 作为严格 artifact reference；剩余配置值直接使用现有 dataclass 字段名。路径根于配置文件所在目录。
 
    ```toml
    schema_version = "1.0.0"
@@ -50,6 +50,8 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
    state_anchor = "anchors/loop-a-state.jsonl"
    bus_anchor = "anchors/loop-a-bus.jsonl"
    reports_root = "reports"
+   freeze_registry_dir = "freeze-registry"
+   freeze_registry_anchor = "anchors/freeze-registry.jsonl"
 
    [loop]
    loop_id = "loop-a"
@@ -62,6 +64,8 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
 
    [loop.wiring]
    # Existing required LoopWiring fields are required here.
+   profile_selection_rule = { path = "artifacts/profile-selection-rule.json", content_hash = "<required exact content hash>" }
+   outcome_spec = { path = "artifacts/outcome-spec.json", content_hash = "<required exact content hash>" }
    evolution = false # compiler maps this explicit disable to evolution = None
    oos_unseal = false
    sealed_decision_step = false
@@ -80,7 +84,7 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
    descriptor_hash = "<required exact content hash>"
    ```
 
-   TOML 没有 `null` 值。示例仅说明层级，不是完整可运行配置；实现须在 README 提供所有 required values 的合法样例。布尔 `false` 是 operator 的显式禁用语法：对 `evolution` 映射为其 required nullable field 的 `None`；对五个 optional wiring field 映射为 `None`；在 `llm_enabled=false` 时把空 `llm_prompt` 映射为 Python `None`。该语法不向 domain/dataclass 增加布尔开关。
+   TOML 没有 `null` 值。README 当前只提供 required keys 齐全但含占位符、会被 parser 拒绝的模板；不得伪造合法 Profile 或临时数值。布尔 `false` 是 operator 的显式禁用语法：对 `evolution` 映射为其 required nullable field 的 `None`；对五个 optional wiring field 映射为 `None`；在 `llm_enabled=false` 时把空 `llm_prompt` 映射为 Python `None`。该语法不向 domain/dataclass 增加布尔开关。
 
 3. 配置编译器必须构造一个且仅一个 `SyntheticLoopConfig`，并填充其每个字段：
    `loop_id`、`seed`、`epoch`、`cadence`、`budget`、`market`、`minutes_per_round`、`compute_seconds_per_bar`、`wiring`、`family_id`、`knowledge`、`max_new_hypotheses_per_round`、`max_reevaluations_per_round`、`hypothesis_compute_seconds`、`compute_seconds_per_trial`、`validation_compute_seconds`、`state_compute_seconds`、`profile`、`constitution_version`、`llm_prompt`、`llm_cost_units_per_call`。
@@ -89,37 +93,40 @@ Phase 11 已有通用调度器、预算、审计、事件总线和持久研究�
 
 5. `llm_prompt` 和 `llm_cost_units_per_call` 在现有 `SyntheticLoopConfig` 中虽有 Python 默认值，配置文件仍须显式表达：首期配置 `llm_prompt = ""`、`llm_cost_units_per_call = "0"`，且显式 `[operator] llm_enabled = false`；编译器在验证此状态后把空 prompt 映射为 Python `None`。首期拒绝启用 LLM；不得从 provider 环境变量或本地凭据自动启用。
 
-6. 复杂契约对象以配置内的明确文件引用提供：引用必须指定相对配置文件目录解析的路径及对象的预期 `content_hash`；解析后用该对象的现有 Pydantic / Contract 类型校验，并逐字核对内容身份。具体用于 `profile`、`profile_selection`、`feature_spec`、`state_spec`、`strategies`、`cost_model`、`label_spec`、`knowledge` 等现有类型；不能仅凭 TOML 中的 `name` 或版本字符串替代内容哈希。`SyntheticMarketSpec` 本身的字段按其契约提供，或作为同样带哈希的对象引用读取。
+6. 复杂契约对象以配置内的明确文件引用提供：引用必须指定相对配置文件目录解析的路径及对象的预期 `content_hash`；解析后用该对象的现有 Pydantic / Contract 类型校验，并逐字核对内容身份。单对象字段（`profile`、`profile_selection`、`profile_selection_rule`、`outcome_spec`、`feature_spec`、`state_spec`、`cost_model`、`label_spec`）使用单个 `{ path, content_hash }`；`strategies`、`knowledge` 使用非空数组，每项各自是 `{ path, content_hash }`，文件内容是对应现有 Contract 的单个规范 JSON 对象，TOML 数组顺序就是配置顺序。不能仅凭 TOML 中的 `name` 或版本字符串替代内容哈希。`profile_selection_rule` 必须与 `profile_selection.selection_rule` / `selection_rule_hash` 精确一致，且其 `select(profile_selection.key)` 结果必须指向配置的同一 Profile ref；选择 key 的 venue / symbol / timeframe / research_class 还必须与所选 Profile scope 完全一致。`outcome_spec` 必须与 `label_spec.outcome` / `outcome_spec_hash` / `horizon` 精确一致。每个 StrategySpec 编译为一个 `StrategyCandidate`，其 `hypothesis_family_id` 固定为 `loop.family_id`；首期任何非空 `risk_policy` 均拒绝，因为没有 RiskProvider allowlist。`SyntheticMarketSpec` 首期必须通过 `{ path, content_hash }` artifact 引用读取，不接受内嵌 literal 表，避免两种输入编码产生不同身份路径。
 
-7. 所有时间必须显式带时区并规范化为 UTC；`epoch` 与合成市场 `start` 不是本机时区时间。每个 `timedelta` 在 TOML 中使用唯一格式 `"<finite decimal> seconds"`，最多六位小数，编译为精确微秒；不得由 bare integer 猜单位。所有 `Decimal` 配置值必须以字符串写入 TOML，禁止 TOML float；拒绝 NaN、Infinity、布尔冒充整数及不符合目标契约范围的数值。`LoopBudget` 四项均必填：`max_trials_per_round`、`max_trials_total`、`max_llm_cost_units`、`max_compute_seconds`，不提供 operator 默认预算。所有 `SyntheticLoopConfig` 和 `LoopWiring` 的计数、节奏、compute 声明、G4 `robustness` 参数均按其现有字段显式提供，不因配置缺省而填测试值。
+7. 所有时间必须显式带时区并规范化为 UTC；`epoch` 与合成市场 `start` 不是本机时区时间。每个 `timedelta` 在 TOML 中使用唯一格式 `"<finite decimal> seconds"`，最多六位小数，编译为精确微秒；不得由 bare integer 猜单位。所有 `Decimal` 配置值必须以字符串写入 TOML，禁止 TOML float；拒绝 NaN、Infinity、布尔冒充整数及不符合目标契约范围的数值。`LoopBudget` 四项均必填：`max_trials_per_round`、`max_trials_total`、`max_llm_cost_units`、`max_compute_seconds`，不提供 operator 默认预算。所有 `SyntheticLoopConfig` 和 `LoopWiring` 的计数、节奏、compute 声明、G4 `robustness` 参数均按其现有字段显式提供，不因配置缺省而填测试值。`RobustnessParams` 中可空的阈值 / CSCV 值用 TOML `false` 明确表示 Python `None`（不提供该参数值，不代表 PASS 或跳过验证门）；数值用符合其目标类型的规范整数 / Decimal 字符串。布尔值 `true` 一律拒绝。
 
 8. `profile` 必须是内容哈希匹配、状态为 `FROZEN` 且在 ADR-0062 `ProfileFreezeRegistry` 中有匹配冻结记录的非 TEST ONLY Profile；`profile_selection` 及其对应规则也必须完整校验。不得以 `status = FROZEN` 字段单独代替冻结登记。当前冻结登记为空且 Profile 数值尚未冻结（ADR-0062、`PROJECT_STATUS.md`），因此本 ADR 获批后仍不能立即提供可运行的合规配置；operator 在首个有效冻结 Profile 登记前必须拒绝所有运行配置，不得用测试夹具或占位 Profile 填补。
 
 ### 3. 静态 provider allowlist
 
-1. operator 内维护按 provider role 分类的静态 allowlist；配置必须逐项指定已注册 provider 的稳定 ID、版本和 descriptor 的精确 `content_hash()`。启动时创建 provider，重算 descriptor 并逐字段核对 ID / version / hash。未知 ID、同 role 重复注册、descriptor 不匹配、provider 声称支持的 spec 与实际 spec 不一致时，在打开 state 目录或运行任何阶段前拒绝。
+1. operator 内维护按 provider role 分类的静态 allowlist；配置必须逐项指定已注册 provider 的稳定 ID、版本和完整 descriptor 的预期 `content_hash()`。每个 role 只允许一个条目。Registry 固定可执行类、静态 id/version 和显式构造方式；Feature / State / Strategy descriptor 的 supported-spec map 由本配置选定的 hash-bound specs 形成，因此 descriptor hash 在 provider 构造后计算，再与配置值逐字比较；Synthetic descriptor 是固定常量。未知 ID、同 role 重复注册、descriptor 不匹配、provider 声称支持的 spec 与实际 spec 不一致时，在打开 state 目录或运行任何阶段前拒绝。不得把 descriptor hash 错当源码常量，也不得以检查静态 id/version 代替 hash 比对。
 
 2. 首期仅允许下列现有确定性本机实现，并且每个 role 只注册这一个 v1 实现：
    - `SyntheticMarketProvider`: `plugins.synthetic.random_walk.RandomWalkMarket`，descriptor `hlens_synthetic_random_walk@1.0.0`；
    - `FeatureProvider`: `plugins.features.bars.BarLogReturnProvider`；
    - `StateProvider`: `plugins.states.regimes.TrendRangeProvider`；
-   - `StrategyProvider`: 首期仅 allowlist `research.strategies.time_series_momentum.TimeSeriesMomentumProvider`；策略 `StrategySpec` 仍须单独作为 `LoopWiring.strategies` 的版本化 hash-bound 输入；首期不注册 cross-sectional strategy 或 risk provider，且不得打开 Evolution；
+   - `StrategyProvider`: 首期仅 allowlist `research.strategies.time_series_momentum.TimeSeriesMomentumProvider`；其 `StrategySpec` 必须精确等于源码导出的 `tsmom_spec()` 或 `tsmom_vol_scaled_spec()` 内容，配置引用仍须逐项绑定 hash；Candidate 的 family 固定等于 loop family；首期不注册 cross-sectional strategy 或 risk provider，且不得打开 Evolution；
    - `BacktestProvider`: `plugins.backtest.bar.BarBacktester`，只用其模拟执行模式；
-   - `OutcomeProvider`: `plugins.outcomes.forward_return.ForwardReturnOutcome`。
+   - `OutcomeProvider`: `plugins.outcomes.forward_return.ForwardReturnOutcome`，只服务由上述 `outcome_spec` 与 `label_spec` 精确绑定的 `forward_return` 标签。
 
-   Allowlist 的每个条目必须固定 descriptor 的精确版本/hash，并接受唯一、显式的 spec/constructor 参数。不得扫描插件目录、读取 Python entry points、接受 `module:factory`、调用用户配置的导入路径或任意 Python 工厂；provider 创建不允许任意代码执行。
+   Static id/version 由实现固定；实际 descriptor hash 按上述规则由确定的规格集计算并绑定。`BarBacktester` 固定用 `execution=None`（descriptor 为基础 next-bar-open simulated-only 模式），不得接受执行模型、手续费以外的任意构造器选项。不得扫描插件目录、读取 Python entry points、接受 `module:factory`、调用用户配置的导入路径或任意 Python 工厂；provider 创建不允许任意代码执行。
 
-3. `code_commit` 必须等于当前受信工作树实际 Git commit；`environment_lock` 必须绑定当前锁文件内容。两个值都写入配置和研究复现绑定；不能接受 `test-only` 标记、虚构 SHA 或缺失值。Strategy、Profile、ProfileSelection、Knowledge、Feature/State/Outcome/Cost specs 均需精确版本和内容身份。
+   装配时还须进行交叉引用检查：`StateSpec.features` 必须精确引用已加载的唯一 `FeatureSpec`；所有 `StrategySpec.signals` 必须恰为所允许 TSMOM 规格引用的 bar-log-return signal，且策略 risk policy 必须为空；每项配置的 `hypothesis_family_id` 必须等于 loop 的 `family_id`；所选 Profile 的 `cost_stress.cost_model` 必须等于已加载成本模型 ref。Outcome label spec 必须是 `ForwardReturnOutcome` 实现所支持的精确方法与 scope；ProfileSelectionRule、ProfileSelection、Profile ref/hash/scope、`declared_research_class` 必须互相一致。每个 descriptor 的 supported-spec map 必须恰好包含配置使用的引用和 hash，不得只检查“包含”。
+
+3. `code_commit` 必须是当前仓库 HEAD 的完整 40 位小写 Git commit SHA；operator 启动时自行读取 Git HEAD 并要求精确相等，且拒绝 tracked working tree 有未提交修改的状态。`environment_lock` 使用固定规范字符串 `uv.lock sha256=<64 位小写 SHA-256>;python=<当前 Python 完整版本>;platform=<sys.platform>/<platform.machine()>`，运行前根据仓库 `uv.lock` 字节、当前 Python 和平台重算并要求完全相等。两个值都写入配置和研究复现绑定；不能接受 `test-only` 标记、虚构 SHA 或缺失值。Strategy、Profile、ProfileSelection、ProfileSelectionRule、Knowledge、Feature/State/Outcome/Cost specs 均需精确版本和内容身份。
 
 ### 4. 路径、持久状态和外部锚点
 
-1. 配置中 `[paths]` 必须显式提供 `state_dir`、`state_anchor`、`bus_anchor`、`reports_root` 四个不同路径。相对路径只相对 TOML 文件所在目录解析，之后统一规范化为绝对路径。路径解析后如果路径相同、彼此包含而违反以下要求、或锚点落入 state directory，均拒绝。
+1. 配置中 `[paths]` 必须显式提供 `state_dir`、`state_anchor`、`bus_anchor`、`reports_root`、`freeze_registry_dir`、`freeze_registry_anchor` 六个不同路径。相对路径只相对 TOML 文件所在目录解析，之后统一规范化为绝对路径。解析时按实际存在的祖先路径解析 symlink；如果任意目录互相包含、文件与目录相同/重叠、锚点落入 state directory、`state_dir/bus` 或 freeze registry directory，均拒绝。state / reports / freeze registry 必须是目录，anchors 必须是普通文件或可创建的新文件；不得借 hardlink / symlink alias 绕过隔离。
 
 2. `state_dir` 是唯一 loop durable state 目录；首次运行可不存在或为空，重开时必须由 `open_synthetic_loop` 按现有结构和配置完整校验。非空但不是该 operator 创建的合法 state、与其他 loop 身份/配置不符、被其他 writer 持锁或存在未记录的中断轮次时均 fail closed。不得自动清空、迁移、修复或换目录续跑。
 
 3. `state_anchor` 为 `state_dir` 之外的 `FileAnchor` 文件；`bus_anchor` 为 `state_dir` 和 `state_dir/bus` 之外的 bus `FileEventBus` anchor 文件。首期要求二者都启用，路径不得与 `state_dir`、彼此或 `reports_root` 重合，也不得相互包含。该要求检测保留锚点时的本机状态回滚/尾部删除；本机文件锚点不是签名、不是外部可信存储，也无法抵抗同时回滚或篡改数据目录和两个锚点的行为。ADR-0049 的锚点诚实边界仍适用。
 
 4. `reports_root` 必须与 state directory 和两个锚点互相独立；API 的 `create_app(reports_root=...)` 必须指向同一个目录。报告写入仅在 research 侧执行；operator 不启动 API、不改变 API 权限，也不新增 API 写入或触发端点。
+5. `freeze_registry_dir` 与 `freeze_registry_anchor` 必须显式给出，且均须在首次运行前已存在；`freeze_registry_anchor` 必须在 registry directory 外。Operator 打开并重放现有 ADR-0062 `ProfileFreezeRegistry`，不得隐式扫描目录、创建空登记来代替已配置登记，或调用 `register_freeze` 写入冻结记录。Registry 的既有实现可能在目录内创建锁文件；若发现 ADR-0062 明确覆盖的“登记行已 fsync、其 anchor 尾记录尚未写入”的唯一崩溃窗口，允许由 registry 的既有打开恢复逻辑补写该 anchor；除此之外 operator 不更改冻结登记内容。空登记或不匹配的 Profile 必须在打开 loop state 前拒绝。两条路径均不得与 state、bus、reports 或另一条 anchor 重合或包含。
 
 ### 5. 配置身份、预算与 scheduler 重入
 
@@ -157,7 +164,7 @@ operator 必须在运行阶段前拒绝：
 - TEST ONLY profile、参数、provider、environment lock；D-LIST 或真实市场数据的声明被包装成合成证据；
 - `state_dir` 身份/fingerprint 不一致、锚点缺失/重合/在 state 目录内、reports path 与上述路径重叠、state/bus 已锁定、损坏/未知的 state 或发现未记录的 started round。
 
-退出码固定为：`0` 本批 N 轮已执行并完成报告（或收到停止信号后在 round 边界正常结束）；`2` 命令/配置/provider/identity 拒绝且没有运行阶段；`3` loop 已按预算或现有 halt 状态停止，完整记录已保留；`4` 中断轮或 ADR-0070 recovery-required，必须人工审阅；`5` state/bus/anchor/report I/O、损坏或校验失败。stdout 输出 loop id、本次新增轮数、各 round hash/status、停止或恢复状态及报告路径；不得输出密钥或环境凭据。
+退出码固定为：`0` 本批 N 轮已执行并完成报告（或收到停止信号后在 round 边界正常结束）；`2` 命令/配置/provider/identity 拒绝且没有运行阶段；空登记、缺失 freeze 或 freeze/Profile 不匹配属于配置拒绝 2；`3` loop 已按预算或现有 halt 状态停止，完整记录已保留；`4` 中断轮或 ADR-0070 recovery-required，必须人工审阅；`5` state/bus/anchor/report I/O、损坏或校验失败，包含 freeze registry journal / anchor corruption 或 writer lock。stdout 输出 loop id、本次新增轮数、各 round hash/status、停止或恢复状态及报告路径；不得输出密钥或环境凭据。
 
 ### 9. 明确排除
 
@@ -166,6 +173,8 @@ operator 必须在运行阶段前拒绝：
 Raphael 于 2026-09-28 将项目整体决策与执行权委托给 Codex。Codex 审阅后接受本 ADR，作为后续 operator 实现的范围基线。当前没有已冻结的可运行 Validation Profile，因此接受本 ADR 不会生成可运行配置，也不允许用测试 Profile 或临时数值代替；实现依赖 ADR-0073 的 v4 durable admission 先行完成。
 
 实现细节补充（2026-09-28）：`operator_identity` 只覆盖 §5 明确列出的语义配置，不含 state / anchor / bus / reports 路径或本次 `--rounds`；operator 专属 durable state 固定为 v5，v5 plan journal header 绑定 `state_version: 5`。由于当前无冻结的 production Profile，README 只提供会被 parser 拒绝的完整占位符模板；不要求也不允许制造当前可运行配置。
+
+实现边界补充（2026-09-28）：配置必须显式给出 `freeze_registry_dir` 和 `freeze_registry_anchor`，以便 operator 读取 ADR-0062 权威登记；路径必须已存在，Operator 只读，不搜索默认位置，也不创建空登记。该输入是使既有“须经 ProfileFreezeRegistry 验证”的决策可执行所必需的路径来源，不改变 Profile 冻结规则或登记格式。
 
 ## 备选方案（Alternatives）
 
@@ -191,13 +200,16 @@ Raphael 于 2026-09-28 将项目整体决策与执行权委托给 Codex。Codex 
 - [x] 不加入实盘、账户、密钥、订单或交易触发能力
 - [x] Codex 依 Raphael 2026-09-28 项目全权委托接受；实现仍须等待 ADR-0073 v4 durable admission 完成
 
-## 实施边界（后续实现任务）
+## 实施状态（2026-09-28）
 
-1. `research/loop/operator_config.py`：TOML v1 严格解析、path resolution、强类型校验、hash-bound artifact loading；只接受 ADR §2 定义对象。
-2. `research/loop/operator_providers.py`：实现 ADR §3 的静态 role allowlist 和 descriptor/spec identity 校验；不动态导入。
-3. `research/loop/operator.py`：argparse `run` 命令；配置到现有 `SyntheticLoopConfig` / `LoopWiring` 的单向组装；校验 anchors/locks；durable open；audit round-report catch-up；每轮执行与 graceful stop；固定退出码。
-4. `research/loop/compose.py` / `research/loop/durable.py`：先按 ADR-0073 完成 v4 plan-admission state format，再按本 ADR §6 加入 operator identity 并实现 v5 opener；保留 v3 / v4 分支且禁止 operator 接管旧目录。不扩展公共 Domain Contract。两个批次必须分开提交，第二批不可先于 v4。
-5. `research/loop/README.md`：写配置字段、allowlist、运行/外部 scheduler 样例、拒绝语义、报告限制与恢复手册；不要把本地 test fixture 值当作 production profile。
+ADR-0073 的 v4 plan-admission format 与本 ADR 所需的 v5 operator identity 已先后进入本地 `main`，保留 v3 / v4 兼容路径。ADR-0074 的 Strict TOML 编译器、显式 freeze registry 路径、六个 provider role 的静态 allowlist、有限批次 CLI、状态与锚点只读预检、逐轮报告及 README 已在 `codex/p7-v5-operator-foundation` 实现，并经 Codex 第二轮独立源码复核，未发现阻断项。该实现当前未运行测试、build、lint、typecheck、probe 或阶段验收；也尚未合并。本 ADR 不因代码存在而视为实现验收。
+
+1. `research/loop/operator_config.py`：严格 TOML v1、六条显式路径、强类型与 hash-bound artifacts、ProfileFreezeRegistry 校验；只接受 ADR §2 定义对象。
+2. `research/loop/operator_providers.py`：静态 role allowlist 与 descriptor/spec identity 校验；不动态导入。
+3. `research/loop/operator.py`：`run` CLI；编译至现有 `SyntheticLoopConfig` / `LoopWiring`；校验 code/environment identity、anchors/state；durable open；audit 报告补齐；逐轮运行、优雅停机与固定退出码。
+4. `research/loop/README.md`：配置字段、allowlist、scheduler 用法、拒绝语义、报告边界与恢复说明；不提供假的 production Profile。
+
+尚未完成的事项是后续统一测试和阶段验收、Profile 数值与生产冻结、真实数据链验收、P7 六类算子的语义与 lowering 决定。没有冻结 Profile 时，Operator 不存在合规可运行配置。
 
 依赖只用 Python 3.13 标准库 `tomllib` 与 `argparse`，不新增 pip dependency。仓库当前以 `python -m` 作为可用形式；若未来需要安装式 console script，应另行确认 packaging（当前 `pyproject.toml` 关闭 package build）。
 
