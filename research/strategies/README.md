@@ -17,6 +17,10 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 | `validation.py` | `BacktestValidator` 窄接口与其实现 `PipelineBacktestValidator`：由 `research/validation` 跑 G0 – G3（ADR-0037）与 G4（ADR-0041），附 JSON 报告视图；不可复现记为 FAILED |
 | `failure_registry.py` | `FailureRecord` 的追加式 JSON Lines 写路径（无删除 / 改写） |
 | `library.py` | 策略条目、出处（KnowledgeItem 引用）解析、候选装配 |
+| `donchian_breakout.py` | `donchian_breakout@1.0.0`（ADR-0085）：通道突破，现货 long / flat |
+| `zscore_reversion.py` | `zscore_reversion@1.0.0`（ADR-0085）：单标的 z-score 均值回归，现货 long / flat |
+| `dual_momentum.py` | `dual_momentum@1.0.0`（ADR-0085）：双动量（绝对 + 相对），横截面声明见 `cross_section.py` |
+| `price_signals.py`、`_declared.py` | `bar_close` / `bar_high` / `bar_low` 探索用信号；显式参数点的规格构造与校验 |
 
 条目索引见 [strategy-library.md](../../docs/research/strategy-library.md) 与 [risk-library.md](../../docs/research/risk-library.md)。
 

@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 类型 | `strategy` |
-| 状态 | 框架已实现（Phase 5，ADR-0038）；3 个研究策略，均为 NOT_VALIDATED；无策略晋升（Promotion 今天拒绝所有策略） |
+| 状态 | 框架已实现（Phase 5，ADR-0038）；6 个研究策略（含 ADR-0085 新增的 Donchian、z-score、双动量），均为 NOT_VALIDATED；无策略晋升（Promotion 今天拒绝所有策略） |
 | 首次填充 | Phase 5 |
 
 从知识库与研究中登记的交易策略（StrategySpec）。
