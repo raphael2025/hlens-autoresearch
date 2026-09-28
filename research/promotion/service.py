@@ -56,7 +56,11 @@ partial artifact exists):
    (``ValidationReport.constitution_version``) and the mode its gates show (ADR-0086 decision 1,
    2026-09-28: a required stage with no gate, a gate under a stage no known pipeline version
    emits, or an unregistered pipeline version) — any such discrepancy is
-   ``report_gate_set_incomplete``;
+   ``report_gate_set_incomplete``; then a host-selected trusted ``ValidationReplayProvider`` must
+   return complete recomputed values bound to the report / run / experiment / Profile, or Promotion
+   refuses as ``report_value_not_recomputed`` (ADR-0092). No built-in Provider exists; it may not
+   reopen G5 and can only verify G5 from trusted evidence captured by its first evaluation. Without
+   that evidence, Promotion refuses;
 5. the dependency closure: the union of the experiments' ``dependency_hashes`` and the caller's
    ``signal_dependencies`` without conflicting hashes, covering every signal and the risk policy
    of the spec;
@@ -120,7 +124,12 @@ from research.validation.report import (
     VERDICT_NOT_PASS,
     promotion_blocked_reason,
 )
-from research.validation.verification import verify_report
+from research.validation.verification import (
+    ValidationReplayProvider,
+    ValidationReplayResult,
+    verify_replayed_values,
+    verify_report,
+)
 
 __all__ = [
     "PROMOTABLE_STATES",
@@ -128,6 +137,8 @@ __all__ = [
     "PromotionPackage",
     "PromotionRefusal",
     "PromotionRefused",
+    "ValidationReplayProvider",
+    "ValidationReplayResult",
     "build_artifact",
     "promote",
 ]
@@ -163,6 +174,7 @@ class PromotionRefusal(StrEnum):
     INVERSE_CONTROL_MISSING = "inverse_control_missing"
     REPORT_THRESHOLD_MISMATCH = "report_threshold_mismatch"
     REPORT_GATE_SET_INCOMPLETE = "report_gate_set_incomplete"
+    REPORT_VALUE_NOT_RECOMPUTED = "report_value_not_recomputed"
     DEPENDENCY_CONFLICT = "dependency_conflict"
     DEPENDENCY_UNBOUND = "dependency_unbound"
     LIFECYCLE_SUBJECT_MISMATCH = "lifecycle_subject_mismatch"
@@ -200,6 +212,9 @@ class PromotionEvidence:
     #: The fixed data snapshot the golden inputs were taken from (ADR-0005 §2).
     dataset_snapshot_id: str
     created_at: datetime
+    #: Trusted host-selected service that recomputes complete report gate values (ADR-0092).
+    #: None fails closed; Python object structure alone cannot authenticate an implementation.
+    validation_replay_provider: ValidationReplayProvider | None = None
     #: Content hashes of the spec's signals / risk policy when no experiment binds them.
     signal_dependencies: Mapping[str, str] = field(default_factory=dict)
 
@@ -349,6 +364,8 @@ def _check_profiles(
     reports: Sequence[ValidationReport],
     profiles: Sequence[ValidationProfile],
     freezes: ProfileFreezeRegistry,
+    experiments: Sequence[ExperimentSpec],
+    replay_provider: ValidationReplayProvider | None,
 ) -> tuple[ProfileFreeze, ...]:
     """Every report's Profile is given, is the one it hashes to, is FROZEN + calibrated, and its
     freeze is registered (ADR-0062). Returns the freeze records (for the time check)."""
@@ -359,6 +376,8 @@ def _check_profiles(
         )
     records: dict[str, ProfileFreeze] = {}
     by_hash: dict[str, ValidationProfile] = {}
+    experiments_by_hash = {experiment.experiment_hash: experiment for experiment in experiments}
+    checked_reports: list[tuple[ValidationReport, ValidationProfile]] = []
     for index, given in enumerate(profiles):
         if not isinstance(given, ValidationProfile):
             raise _refuse(PromotionRefusal.EVIDENCE_INVALID, f"profile {index} is not a Profile")
@@ -430,7 +449,13 @@ def _check_profiles(
                 "(benchmark.inverse_control_reported=true) without the ADR-0060 item "
                 f"{INVERSE_CONTROL_GATE}",
             )
-        verification = verify_report(report, checked)
+        checked_reports.append((report, checked))
+        cited.add(wanted)
+
+    # Preserve global refusal priority: every threshold check precedes every gate-set check, and
+    # every gate-set check precedes any trusted replay Provider call.
+    verifications = [verify_report(report, profile) for report, profile in checked_reports]
+    for (report, profile), verification in zip(checked_reports, verifications, strict=True):
         threshold_problems = verification.threshold_discrepancies
         if threshold_problems:
             first = threshold_problems[0]
@@ -440,8 +465,7 @@ def _check_profiles(
                 f"({len(threshold_problems)} discrepancies; first: "
                 f"{first.gate_id} {first.problem.value}: {first.detail})",
             )
-        # ADR-0086 decision 1: gate-set completeness is checked only after the threshold check
-        # above finds nothing wrong (module docs of research.validation.verification).
+    for (report, _profile), verification in zip(checked_reports, verifications, strict=True):
         gate_set_problems = verification.gate_set_discrepancies
         if gate_set_problems:
             first = gate_set_problems[0]
@@ -451,13 +475,52 @@ def _check_profiles(
                 f"version ({len(gate_set_problems)} discrepancies; first: "
                 f"{first.gate_id} {first.problem.value}: {first.detail})",
             )
-        cited.add(wanted)
+
     unused = sorted(set(by_hash) - cited)
     if unused or len(by_hash) != len(profiles):
         raise _refuse(
             PromotionRefusal.PROFILE_NOT_EVIDENCED,
             f"profile(s) {unused} are cited by no report, or a Profile is given twice",
         )
+
+    # ADR-0092: only a host-selected trusted Provider may supply deterministic replay output. This
+    # phase deliberately follows all threshold and gate-set checks above.
+    if replay_provider is None or not isinstance(replay_provider, ValidationReplayProvider):
+        first_report = checked_reports[0][0]
+        raise _refuse(
+            PromotionRefusal.REPORT_VALUE_NOT_RECOMPUTED,
+            f"report {first_report.report_id} has no trusted validation replay provider (ADR-0092)",
+        )
+    for report, checked in checked_reports:
+        experiment = experiments_by_hash.get(report.experiment_hash)
+        if experiment is None:
+            # _check_experiments normally guarantees this; retain a fail-closed local guard.
+            raise _refuse(
+                PromotionRefusal.REPORT_VALUE_NOT_RECOMPUTED,
+                f"report {report.report_id} has no bound ExperimentSpec for replay",
+            )
+        try:
+            replay = replay_provider.replay(report, checked, experiment)
+        except Exception as exc:
+            raise _refuse(
+                PromotionRefusal.REPORT_VALUE_NOT_RECOMPUTED,
+                f"trusted replay provider refused report {report.report_id} "
+                f"({type(exc).__name__})",
+            ) from exc
+        if not isinstance(replay, ValidationReplayResult):
+            raise _refuse(
+                PromotionRefusal.REPORT_VALUE_NOT_RECOMPUTED,
+                f"trusted replay provider returned no ValidationReplayResult for {report.report_id}",
+            )
+        replay_problems = verify_replayed_values(report, checked, experiment, replay)
+        if replay_problems:
+            first = replay_problems[0]
+            raise _refuse(
+                PromotionRefusal.REPORT_VALUE_NOT_RECOMPUTED,
+                f"report {report.report_id} disagrees with trusted replay "
+                f"({len(replay_problems)} discrepancies; first: "
+                f"{first.gate_id} {first.problem.value}: {first.detail})",
+            )
     return tuple(records[key] for key in sorted(records))
 
 
@@ -605,7 +668,13 @@ def build_artifact(
     )
     research_code = _revalidated(evidence.research_code, "research code revision")
     cited = _check_experiments(spec, reports, experiments, research_code)
-    freeze_records = _check_profiles(reports, evidence.profiles, freezes)
+    freeze_records = _check_profiles(
+        reports,
+        evidence.profiles,
+        freezes,
+        cited,
+        evidence.validation_replay_provider,
+    )
     dependencies = _dependencies(spec, cited, evidence.signal_dependencies)
     lifecycle = _revalidated(evidence.lifecycle, "lifecycle history")
     _check_lifecycle(spec, lifecycle)

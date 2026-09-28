@@ -9,6 +9,8 @@ from research.promotion.service import (
     PromotionPackage,
     PromotionRefusal,
     PromotionRefused,
+    ValidationReplayProvider,
+    ValidationReplayResult,
     build_artifact,
     promote,
 )
@@ -19,6 +21,8 @@ __all__ = [
     "PromotionPackage",
     "PromotionRefusal",
     "PromotionRefused",
+    "ValidationReplayProvider",
+    "ValidationReplayResult",
     "build_artifact",
     "promote",
 ]

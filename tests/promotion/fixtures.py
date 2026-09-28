@@ -39,6 +39,7 @@ from core.lifecycle.strategy import (
 from infrastructure.registry import ProfileFreezeRegistry
 from research.promotion import PromotionEvidence
 from research.validation.benchmark import INVERSE_CONTROL_GATE
+from research.validation.verification import ValidationReplayResult
 from tests.factories import (
     HASH_E,
     cost_model_ref,
@@ -242,6 +243,28 @@ def golden_request(spec: StrategySpec, *, shift: int = 0, **overrides: object) -
     return StrategyRequest(**payload)  # type: ignore[arg-type]
 
 
+class ToyOnlyEchoValidationReplayProvider:
+    """TEST ONLY seam fixture; it echoes the toy report and is not a trusted production replay."""
+
+    def replay(
+        self,
+        report: ValidationReport,
+        profile: ValidationProfile,
+        experiment: ExperimentSpec,
+    ) -> ValidationReplayResult:
+        return ValidationReplayResult(
+            report_id=report.report_id,
+            report_hash=report.content_hash(),
+            run_id=report.run_id,
+            subject=report.subject,
+            experiment_ref=experiment.ref,
+            experiment_hash=experiment.experiment_hash,
+            profile_ref=profile.ref,
+            profile_hash=profile.content_hash(),
+            gates=report.gates,
+        )
+
+
 def toy_evidence(**overrides: object) -> PromotionEvidence:
     """A complete TEST ONLY evidence bundle for ``toy_spec`` that passes every check."""
     spec = toy_spec()
@@ -260,6 +283,7 @@ def toy_evidence(**overrides: object) -> PromotionEvidence:
         golden_inputs=(golden_request(spec, shift=0), golden_request(spec, shift=3)),
         dataset_snapshot_id=TEST_ONLY_SNAPSHOT,
         created_at=ARTIFACT_TIME,
+        validation_replay_provider=ToyOnlyEchoValidationReplayProvider(),
         signal_dependencies={str(SIGNAL_REF): HASH_E},
     )
     return replace(evidence, **overrides)  # type: ignore[arg-type]
