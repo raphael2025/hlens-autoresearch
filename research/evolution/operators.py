@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 
-from core.domain.base import Ref
+from core.domain.base import Kind, Ref
 from core.domain.execution import ExecutionMode
 from core.domain.research import RetirementRecord
 from core.domain.specs import StrategySpec
@@ -43,13 +43,19 @@ def _bump(version: str) -> str:
     return f"{major}.{minor + 1}.0"
 
 
+def _same_search_value(value: object, candidate: object) -> bool:
+    """Compare declared parameter values without Python's bool/int equality aliasing."""
+    return type(value) is type(candidate) and value == candidate
+
+
 def mutate(parent: StrategySpec, param: str, value: str | int | float | bool) -> Offspring:
     space = parent.param_search_space.get(param)
     if space is None:
         raise EvolutionError(f"{param!r} has no declared search space in {parent.ref}")
-    if value not in space:
+    if not any(_same_search_value(value, candidate) for candidate in space):
         raise EvolutionError(f"{value!r} is outside the declared search space of {param!r}")
-    if parent.params.get(param) == value:
+    current = parent.params.get(param)
+    if _same_search_value(current, value):
         raise EvolutionError("a mutation must change the parameter")
     params = dict(parent.params)
     params[param] = value
@@ -111,6 +117,12 @@ def combine(first: StrategySpec, second: StrategySpec, name: str) -> Offspring:
     )
     if outside_space:
         raise EvolutionError(f"parameters {outside_space} are outside the combined search spaces")
+
+    child_identity = (Kind.STRATEGY, name, "1.0.0")
+    if any(parent.ref.target_identity() == child_identity for parent in (first, second)):
+        raise EvolutionError(
+            f"combined strategy ref strategy:{name}@1.0.0 collides with one of its parent refs"
+        )
 
     signals = tuple(sorted({*first.signals, *second.signals}, key=str))
     child = StrategySpec.model_validate(

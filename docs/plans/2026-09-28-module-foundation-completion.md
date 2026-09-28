@@ -60,6 +60,15 @@
 | B2 | 统一 Git 数字、P8 fixture 版本、P13 验收措辞、Phase 1 表数和 Phase 1 关闭条件的状态叙述 | `PROJECT_STATUS.md`、`PROJECT_MEMORY.md`、被核实的对应文档 | 逐条读源核实后更新 |
 | B3 | 整理 E1-CAP-ARCH 设计包：分离可在现有契约内处理的持有量与需新 ADR 的 metadata / retention 变化；记录失败候选数据的真实范围 | `docs/reviews/`、Proposed ADR 草案 | Codex 主责；不据此直接改 E1 代码 |
 
+### Wave C：额外模块静态审计发现的契约内缺口
+
+| ID | 模块 | 任务 | 文件边界 | 状态 |
+|---|---|---|---|---|
+| C1 | P12 evolution | mutate 搜索空间成员校验改为精确类型和值；combine 对会沿用父代同一 `name@version` 的子代在创建前 fail closed，不猜版本演进规则 | `research/evolution/operators.py` 单模块 | 静态复核通过；未运行测试 |
+| C2 | P13 execution | 未准入 deployment 必须在调用任何注入 target-position source 之前拒绝 | `apps/execution/service.py` 单模块 | 静态复核通过；未运行测试 |
+| C3 | P14 migration | `GoldenRecord` 持有深度不可变输出快照；比较前验证 baseline 内容哈希，拒绝被改写的基线 | `infrastructure/migration/golden.py` 单模块 | 静态复核通过；未运行测试 |
+| C4 | P9 docs | 把 ADR-0042 implementation note 对照现行代码更新为准确事实，保留当前报告证据规模仍仅适于 smoke 的限制 | `docs/adr/0042-synthetic-market-provider.md` | 事实同步已完成，待文档统一提交 |
+
 ### 暂不实施，留到语义决定或验收窗口
 
 - P0.5：不可替人工写 tags/assets/review；09-26 种子黄金哈希要留到允许运行 Python 的验收窗口。
@@ -72,7 +81,12 @@
 ## 并行与交付规约
 
 - A1、A2、A3 可并行，因为分别属于 `research/hypotheses`、`infrastructure/event`、`apps/web`，不接触 `core/`。
-- A1–A4 已完成源码复核，未运行测试 / build / lint / typecheck；随后先对齐事实文档，再进入下一批。
+- A1–A4 已完成源码复核，未运行测试 / build / lint / typecheck；C1–C3 由不相交模块并行处理，随后统一整合状态文档。
+
+### 2026-09-28 跨阶段复核结论
+
+- Phase 0.5–6：没有额外发现能在不触发数据人工审阅、运行验收或新架构决定的前提下直接编码的逻辑缺口。P4 converter 虽无生产调用点，但当前没有批准的运行时接点；保留纯函数，不新建写路径。
+- Phase 8–14：除 C1–C3 外，P10 deviation scope、P11 ACTIVE/source resolver/launcher、P13 ADR/roadmap 验收措辞及 P14 migration target 仍需要语义或目标决定；不扩大本批实现。
 - 每个开发代理一次只领一个 ID；Codex 复核后才进本地 `main`。Claude 可用最多 6 个子代理并行，但不能跨写同一模块。Cursor 活动的 `phase/1` 与 `docs/research-spec-completion` worktree 仅保留，不调度任务。
 - 交付须含：改动文件、任务 ID/Phase、对应 ADR/ROADMAP 约束、静态复核结果、未解决事项。测试、类型检查、lint、build 和验收状态统一标为“未运行”。
 

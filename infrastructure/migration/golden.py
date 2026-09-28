@@ -24,6 +24,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
 from core.domain.base import canonical_json, content_hash
@@ -54,6 +55,11 @@ class GoldenRecord:
     name: str
     outputs: Mapping[str, Decimal]
     outputs_hash: str
+
+    def __post_init__(self) -> None:
+        # The output schema is flat (string -> immutable Decimal); copy before wrapping so neither
+        # the caller's mapping nor a dict retained by a writer can mutate this record later.
+        object.__setattr__(self, "outputs", MappingProxyType(_check(self.outputs)))
 
     def _payload(self) -> dict[str, Any]:
         return {
@@ -108,6 +114,8 @@ class GoldenDiff:
 
 
 def _check(outputs: Mapping[str, Decimal]) -> dict[str, Decimal]:
+    if not isinstance(outputs, Mapping):
+        raise GoldenError("golden outputs must be a mapping")
     checked: dict[str, Decimal] = {}
     for key, value in outputs.items():
         if not isinstance(key, str) or not key:
@@ -132,10 +140,16 @@ def compare_golden(
 ) -> GoldenDiff:
     if not isinstance(tolerance, Decimal) or not tolerance.is_finite() or tolerance < _ZERO:
         raise GoldenError("tolerance must be a finite, non-negative Decimal")
+    if not isinstance(golden, GoldenRecord):
+        raise GoldenError("compare_golden needs a GoldenRecord")
+    golden_outputs = _check(golden.outputs)
+    actual_golden_hash = _hash(golden_outputs)
+    if actual_golden_hash != golden.outputs_hash:
+        raise GoldenError(f"{golden.name}: outputs_hash does not match the outputs")
     outputs = _check(rerun())
     differences: dict[str, tuple[Decimal | None, Decimal | None]] = {}
-    for key in sorted(set(golden.outputs) | set(outputs)):
-        old, new = golden.outputs.get(key), outputs.get(key)
+    for key in sorted(set(golden_outputs) | set(outputs)):
+        old, new = golden_outputs.get(key), outputs.get(key)
         if old is None or new is None or abs(old - new) > tolerance:
             differences[key] = (old, new)
     return GoldenDiff(

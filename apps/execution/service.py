@@ -237,6 +237,8 @@ class ExecutionService:
         deployment_id: str,
         prices: Mapping[str, Decimal],
     ) -> ExecutionReport:
+        # Refuse before invoking an injected source: it may compute or have caller-side effects.
+        self._admitted(deployment_id)
         targets = source.target_positions(deployment_id, self._clock())
         if targets.deployment_id != deployment_id:
             raise DeploymentNotAdmitted("the source returned targets for another deployment")

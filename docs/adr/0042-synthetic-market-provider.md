@@ -43,5 +43,4 @@
   （07-validation.md §2.4）。
 - 冒烟观察（非结论）：`significance.multiple_testing_threshold` 同时是 G3 的上限与 G1 负对照的下限，放宽它不会单调提高
   流水线假阳性率；测试中的"宽松候选高假阳性"因此在门层面（`G2.null_model_percentile`）与一个只读该阈值的测试用检测器上演示。
-- 已知缺口（调试批次）：检测器异常直接抛出（不计为 INCONCLUSIVE）；未运行 G5；`apps/api` 的 `ReportStore` 尚无
-  `gate_calibration` 类型；种子数与市场长度只够冒烟，不构成校准。
+- 实施事实（调试批次，截至 2026-09-28；不表示 Phase 9 已验收）：检测器异常现记录为无 gates 的 `INCONCLUSIVE` / `detector_error`，保留该 arm 的其他结果；可选 `sealed_oos_g5` 模式默认关闭，只对 G0–G4 PASS 运行，G5 detector 异常按 consumed-without-result 处理。`ReportStore` 已支持 `gate_calibration` kind；单标的与多标的 harness 均已实现。G5 代码存在不等于运行过 G5；现有单标的 250 seeds、双标的 200 seeds 报告仅能作为实现复现 / smoke 证据，不足以校准 Profile。D-09 TBD-1..5 仍待 Raphael 冻结。
