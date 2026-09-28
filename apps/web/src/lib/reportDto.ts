@@ -10,7 +10,7 @@ type Rule = { baseline: string; versions: readonly string[]; required: readonly 
 // Keep in sync with apps/api/report_dto.py and ADR-0081. Missing schema_version means the
 // registered baseline for legacy payloads; never write that inferred value back to the payload.
 const RULES: Record<ReportKind, Rule> = {
-  validation_report: { baseline: "2.3.0", versions: ["2.0.0", "2.1.0", "2.2.0", "2.3.0"], required: ["schema_version", "gates", "verdict"] },
+  validation_report: { baseline: "2.4.0", versions: ["2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"], required: ["schema_version", "gates", "verdict"] },
   research_loop_round: { baseline: "1.0.0", versions: ["1.0.0"], required: ["round_index", "loop_id", "stages"] },
   state_strategy_matrix: { baseline: "1.0.0", versions: ["1.0.0"], required: ["matrix_hash", "cells", "strategy", "state"] },
   router_paper_run: { baseline: "1.0.0", versions: ["1.0.0"], required: ["run_hash", "router", "decisions", "charges"] },
