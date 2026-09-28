@@ -8,6 +8,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from datetime import timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import pytest
 
@@ -18,10 +19,13 @@ from core.contracts.strategy import (
     RiskRequest,
     RiskResult,
     SignalObservation,
+    StrategyProviderDescriptor,
+    StrategyRequest,
+    StrategyResult,
     TargetPosition,
 )
 from core.domain.base import FrozenMapping, Kind, Ref
-from core.domain.specs import RiskPolicy
+from core.domain.specs import RiskPolicy, StrategySpec
 from plugins.backtest import BarBacktester, RiskLoopRun, realized_portfolio_state
 from research.strategies.drawdown_control import (
     DRAWDOWN_POLICY_REF,
@@ -30,6 +34,14 @@ from research.strategies.drawdown_control import (
     drawdown,
     drawdown_control_policy,
 )
+from research.strategies.failure_registry import FailureRegistry
+from research.strategies.pipeline import (
+    EvaluationInputs,
+    EvaluationStatus,
+    StrategyCandidate,
+    evaluate_strategy,
+)
+from research.strategies.signals import LOG_RETURN_SIGNAL
 from tests.contract_suites.risk import RiskProviderContract, RiskSubject
 from tests.strategy_fixtures import COSTS, MINUTE, T0, make_bars
 
@@ -278,3 +290,140 @@ def test_future_prices_do_not_change_earlier_risk_decisions() -> None:
     assert base.portfolio_states[:5] == moved.portfolio_states[:5]
     assert base.risk_results[:5] == moved.risk_results[:5]
     assert base.portfolio_states != moved.portfolio_states
+
+
+# ---------------------------------------------------------------------------------------------
+# PM F-A / ADR-0088 decision 3: research.strategies.pipeline now wires its risk step through
+# BarBacktester.run_with_risk (above) instead of running risk ahead of the simulation with
+# PortfolioState.equity=None, which previously forced this path-dependent policy to fail closed
+# inside evaluate_strategy / CandidateTrialRunner every time. These tests exercise that pipeline
+# entry point directly (not BarBacktester.run_with_risk, already covered above).
+# ---------------------------------------------------------------------------------------------
+
+_PIPELINE_SPEC = StrategySpec(
+    name="test_pipeline_constant_long",
+    version="1.0.0",
+    created_at=T0,
+    signals=(LOG_RETURN_SIGNAL,),
+    risk_policy=DRAWDOWN_POLICY_REF,
+)
+
+
+class _ConstantLongStrategy:
+    """TEST ONLY: always targets a full long position, one ``TargetPosition`` per decision time ×
+    instrument matching ``_long_targets`` exactly, so the pipeline's upstream targets line up with
+    what ``_loop`` above feeds ``run_with_risk`` directly."""
+
+    def __init__(self, spec: StrategySpec) -> None:
+        self._descriptor = StrategyProviderDescriptor(
+            name="test_constant_long",
+            version="1.0.0",
+            deterministic=True,
+            supported_strategies=FrozenMapping({str(spec.ref): spec.content_hash()}),
+        )
+
+    @property
+    def descriptor(self) -> StrategyProviderDescriptor:
+        return self._descriptor
+
+    def target_positions(self, request: StrategyRequest) -> StrategyResult:
+        positions = [
+            TargetPosition(
+                decision_time=t,
+                instrument=name,
+                target_weight=Decimal(1),
+                inputs_used=1,
+                latest_input_available_time=t,
+            )
+            for t in request.decision_times
+            for name in request.instruments
+        ]
+        return StrategyResult.build(request, self._descriptor, positions)
+
+
+def _pipeline_candidate() -> StrategyCandidate:
+    return StrategyCandidate(
+        spec=_PIPELINE_SPEC,
+        strategy=_ConstantLongStrategy(_PIPELINE_SPEC),
+        hypothesis_family_id="test_drawdown_control_pipeline",
+        risk_policy=POLICY,
+        risk=DrawdownControlRiskProvider((POLICY,)),
+    )
+
+
+def _pipeline_inputs(closes: Sequence[Decimal]) -> EvaluationInputs:
+    decisions = tuple(T0 + minute * MINUTE for minute in range(len(closes)))
+    signals = tuple(
+        SignalObservation(
+            signal=LOG_RETURN_SIGNAL,
+            instrument="BTCUSDT",
+            event_time=t,
+            available_time=t,
+            knowledge_time=t,
+            value=Decimal("0"),
+        )
+        for t in decisions
+    )
+    return EvaluationInputs(
+        instruments=("BTCUSDT",),
+        bars=make_bars("BTCUSDT", closes),
+        decision_times=decisions,
+        knowledge_cutoff=CUTOFF,
+        cost_model=COSTS,
+        initial_equity=Decimal(10000),
+        signals=signals,
+    )
+
+
+def test_pipeline_wires_drawdown_control_through_run_with_risk(tmp_path: Path) -> None:
+    """``evaluate_strategy`` no longer runs risk ahead of the simulation: it reaches exactly the
+    ``_loop(UP_DOWN)`` result above (same targets, same policy, same signals), so it never fails
+    closed and the same drawdown-triggered scaling shows up through the pipeline entry point."""
+    registry = FailureRegistry(tmp_path / "failures.jsonl")
+    result = evaluate_strategy(
+        _pipeline_candidate(),
+        _pipeline_inputs(UP_DOWN),
+        backtester=BarBacktester(),
+        registry=registry,
+    )
+
+    assert result.failure is None
+    assert result.status is EvaluationStatus.NOT_VALIDATED  # no validator given: never FAILED
+    assert registry.records() == ()
+    assert result.strategy_result is not None
+    assert result.strategy_result.positions == _long_targets(len(UP_DOWN))
+
+    _, run = _loop(UP_DOWN)  # the plugin-level run this module already verified
+    assert result.risk_results == run.risk_results
+    assert result.backtest == run.result
+
+    scaled = [
+        position
+        for risk_result in result.risk_results
+        for position in risk_result.positions
+        if position.binding_rules == ("drawdown_scaling",)
+    ]
+    assert scaled
+    assert all(position.constrained_weight == Decimal("0.5") for position in scaled)
+
+
+def test_pipeline_risk_decisions_use_only_realized_history(tmp_path: Path) -> None:
+    """Through the pipeline too (mirrors ``test_future_prices_do_not_change_earlier_risk_decisions``
+    above at the ``BarBacktester.run_with_risk`` layer): a price change after t4 never moves the
+    risk decisions the pipeline already made at or before t4."""
+    registry = FailureRegistry(tmp_path / "failures.jsonl")
+    base = evaluate_strategy(
+        _pipeline_candidate(),
+        _pipeline_inputs(UP_DOWN),
+        backtester=BarBacktester(),
+        registry=registry,
+    )
+    moved_closes = (*UP_DOWN[:4], Decimal(200), Decimal(60), Decimal(300))
+    moved = evaluate_strategy(
+        _pipeline_candidate(),
+        _pipeline_inputs(moved_closes),
+        backtester=BarBacktester(),
+        registry=registry,
+    )
+    assert base.risk_results[:5] == moved.risk_results[:5]
+    assert base.risk_results != moved.risk_results
