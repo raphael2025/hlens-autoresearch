@@ -85,7 +85,7 @@
 
 ### 2026-09-28 跨阶段复核结论
 
-- Phase 0.5–7：独立审计没有发现额外可在不触发人工审阅、运行验收或新架构决定的前提下直接编码的逻辑缺口。P4 converter 虽无生产调用点，但当前没有批准的运行时接点；保留纯函数，不新建写路径。P1 当前只修 infrastructure Protocol / 测试代理接线；真正有界的 PyIceberg scan 仍需要 Proposed ADR 与明确实现路径。
+- Phase 0.5–7：独立审计没有发现额外可在不触发人工审阅、运行验收或新架构决定的前提下直接编码的逻辑缺口。P4 converter 虽无生产调用点，但当前没有批准的运行时接点；保留纯函数，不新建写路径。P1 infrastructure Protocol / 测试代理接线已在 `34b95c3` 完成。ADR-0075 已接受，限定由 adapter 实现固定快照流式扫描；扫描实现尚未完成，E1-CAP-1 仍阻断。
 - Phase 8–14：P10 deviation scope、P11 权威 ACTIVE/source resolver/dataset operator、P14 migration target 仍需语义或目标决定；P13 roadmap 已按 ADR-0046 修正为现有模拟功能范围，不需扩 ADR-0046。
 - P10 只读审计确认 paper deviation 未绑定 ADR-0043/roadmap 所说的 P8 声明范围；需要先定范围身份与兼容策略，不增门槛。P11 只读审计确认 ADR-0074 synthetic-only 有限批次 CLI 已实现，缺口是未来的数据源真实性与 ACTIVE 权威语义，外部 scheduler 是既定边界。P13 roadmap 已对齐 ADR-0046。P14 无迁移目标前不写 target adapter；通用 GoldenRecord / GoldenDiff 不可变性已补到 C3，Claude 只读复核无阻断项。
 - Phase 1 E1-CAP-1：对账文档列明 positions、committed columns、archive parse、batch index 和 result IDs 的代码持有量，以及 metadata / manifest 的未测边界。已加入 committed ID 重建与 Verifier 磁盘快照计数；`snapshots_of_batches` 公开 dict/list 接口保持不变。当前开发分支已将 `scan_column_batches` 加入 infrastructure `RevisionCatalog` Protocol，并给 revision `ProxyCatalog` 与 manifest-cache `_Recording` 代理补了转发 / head-read 记录；静态复核中、未运行检查。normalizer 的旧测试仍引用已删除的 `_same_numbers`。批次读取 API 的 PyIceberg planner、并发 task 和 delete 状态未证明有界；本机默认 tempfile 路径是 tmpfs。完整结果 tuple 仍计入 32 MiB 门槛；archive parse、generic history fallback 与 builder caller-held set 仍有未解决增长项。main 尚无容量证据，候选失败数据不外推。

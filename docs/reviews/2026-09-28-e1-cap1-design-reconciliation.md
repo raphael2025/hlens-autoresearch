@@ -72,4 +72,4 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 - 锁定版本为 PyIceberg 0.12.0。源码路径通过 `Snapshot.manifests()`、完整 manifest entry 列表、delete index、完整 task list，最后由 ArrowScan 汇总 delete 内容并将 task 结果批次列表化；降低 Arrow batch 或 worker 数不能构成全路径固定内存上限。
 - 暂无只改配置即可满足硬上界的方案。真正有界实现需逐 manifest / entry 遍历、限制在途 tasks，并对 positional-delete state 做可 spill 的逐批查询；还需保持 partition/schema/sequence/filter/delete 语义。现有 PyIceberg 私有 API 不足以直接组合出该保证，维护 fork 或替换 planner/delete 路径前需 Proposed ADR。
 - 本机默认 tempfile 落在 tmpfs。统一容量测量必须把临时文件所在 filesystem 纳入说明，并记录完整 cgroup memory 与进程 RSS；不得将 tmpfs 文件称为 RAM 外 spill。
-- `scan_column_batches` infrastructure Protocol / 测试代理接线已在 `phase/1-foundation-completion` 开始修复；normalizer 旧测试对已删除 `_same_numbers` 的引用仍待统一验收批次处理。当前分支改动未运行测试或类型检查。
+- `scan_column_batches` infrastructure Protocol / 测试代理接线已在 `34b95c3` 完成；ADR-0075 已接受，批准仅在 adapter 实现固定快照流式扫描，不引入替代 catalog/scan engine，不改变 core 契约。normalizer 旧测试对已删除 `_same_numbers` 的引用仍待统一验收批次处理。扫描实现尚未完成；未运行测试或类型检查。
