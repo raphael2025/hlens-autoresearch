@@ -293,8 +293,19 @@ def batch_rows(table: pa.Table) -> list[Mapping[str, Any]]:
 
 def snapshots_of_batches(
     adapter: RevisionCatalog, table: str, batch_ids: Iterable[str]
+) -> dict[str, list[SnapshotInfo]]:
+    """Main-branch snapshots committing each requested batch, newest first."""
+    wanted: dict[str, list[SnapshotInfo]] = {batch_id: [] for batch_id in batch_ids}
+    for snapshot in _history(adapter, table):
+        if snapshot.batch_id in wanted:
+            wanted[snapshot.batch_id].append(snapshot)
+    return wanted
+
+
+def _spooled_snapshots_of_batches(
+    adapter: RevisionCatalog, table: str, batch_ids: Iterable[str]
 ) -> _BatchSnapshotLookup:
-    """Count main-branch commits for requested IDs without retaining a history-sized index."""
+    """Bounded internal lookup for callers that need counts or streamed matches."""
     return _BatchSnapshotLookup(adapter, table, batch_ids)
 
 
@@ -399,59 +410,14 @@ class _BatchSnapshotLookup:
         first = None if payload is None else SnapshotInfo.model_validate(json.loads(payload))
         return count, first
 
-    def __getitem__(self, batch_id: str) -> _BatchSnapshotMatches:
-        count, first = self.one(batch_id)
-        return _BatchSnapshotMatches(self._adapter, self._table, self._head, batch_id, count, first)
-
-
-class _BatchSnapshotMatches(Sequence[SnapshotInfo]):
-    """List-compatible lazy view used by the two existing external helper consumers."""
-
-    __slots__ = ("_adapter", "_table", "_head", "_batch_id", "_count", "_first")
-
-    def __init__(
-        self,
-        adapter: RevisionCatalog,
-        table: str,
-        head: str | None,
-        batch_id: str,
-        count: int,
-        first: SnapshotInfo | None,
-    ) -> None:
-        self._adapter = adapter
-        self._table = table
-        self._head = head
-        self._batch_id = batch_id
-        self._count = count
-        self._first = first
-
-    def __len__(self) -> int:
-        return self._count
-
-    def __iter__(self) -> Iterator[SnapshotInfo]:
+    def matches(self, batch_id: str) -> Iterator[SnapshotInfo]:
+        """Rewalk the captured head and stream this ID's matches newest first."""
         if self._head is None:
             return
         yield from (
             snapshot
             for snapshot in history_from(self._adapter, self._table, self._head)
-            if snapshot.batch_id == self._batch_id
-        )
-
-    def __getitem__(self, index: int | slice) -> SnapshotInfo | list[SnapshotInfo]:
-        if isinstance(index, slice):
-            start, stop, step = index.indices(self._count)
-            return [self[position] for position in range(start, stop, step)]
-        if index < 0:
-            index += self._count
-        if not 0 <= index < self._count:
-            raise IndexError("snapshot match index out of range")
-        if index == 0 and self._first is not None:
-            return self._first
-        for position, snapshot in enumerate(self):
-            if position == index:
-                return snapshot
-        raise CatalogIntegrityError(
-            f"{self._table} snapshot history changed while reading batch {self._batch_id}"
+            if snapshot.batch_id == batch_id
         )
 
 
@@ -1514,7 +1480,7 @@ class PersistedRowVerifier:
                 )
         table = BINANCE_SPOT_REST_RESPONSES.table
         batches = {response_batch_id(row["revision_id"], row["arrival_seq"]): row for row in rows}
-        with snapshots_of_batches(self._adapter, table, batches) as snapshots:
+        with _spooled_snapshots_of_batches(self._adapter, table, batches) as snapshots:
             for batch_id, row in batches.items():
                 snapshot = _one_snapshot(table, batch_id, snapshots.one(batch_id))
                 check_batch_snapshot(BINANCE_SPOT_REST_RESPONSES, batch_id, snapshot, [row])
@@ -1868,7 +1834,7 @@ class PersistedRowVerifier:
             _archive_batch_id(item.revision_id, item.row["arrival_seq"]): item.row
             for item in verified.values()
         }
-        with snapshots_of_batches(self._adapter, table, batches) as snapshots:
+        with _spooled_snapshots_of_batches(self._adapter, table, batches) as snapshots:
             for batch_id, row in batches.items():
                 snapshot = _one_snapshot(table, batch_id, snapshots.one(batch_id))
                 check_batch_snapshot(BINANCE_SPOT_ARCHIVES, batch_id, snapshot, [row])

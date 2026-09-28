@@ -123,7 +123,7 @@ from infrastructure.revision.row_integrity import (
     page_provenance,
     response_batch_id,
     response_columns,
-    snapshots_of_batches,
+    _spooled_snapshots_of_batches,
 )
 from infrastructure.revision.row_integrity import batch as _batch
 from infrastructure.revision.row_integrity import batch_rows as _batch_rows
@@ -945,13 +945,13 @@ class RestRevisionStore:
 
 def _snapshot_of_batch(adapter: RevisionCatalog, table: str, batch_id: str) -> SnapshotInfo:
     """The main-branch snapshot that committed ``batch_id`` (exactly one), else fail closed."""
-    with snapshots_of_batches(adapter, table, [batch_id]) as snapshots:
-        found = snapshots[batch_id]
-        if len(found) != 1:
+    with _spooled_snapshots_of_batches(adapter, table, [batch_id]) as snapshots:
+        count, snapshot = snapshots.one(batch_id)
+        if count != 1 or snapshot is None:
             raise CatalogIntegrityError(
-                f"{table} has rows of batch {batch_id} but {len(found)} snapshots committing it"
+                f"{table} has rows of batch {batch_id} but {count} snapshots committing it"
             )
-        return found[0]
+        return snapshot
 
 
 def _normalised_natives(
