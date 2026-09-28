@@ -1,10 +1,11 @@
 """Deterministic base-volume bars from a pinned Canonical trades snapshot.
 
 Rule ``hlens.canonical.volume-bar@1.0.0``. The caller supplies an explicit positive base-asset
-volume threshold and a fixed ``canonical.trades`` snapshot. Trades must be in strictly increasing
-``(event_time, numeric venue_trade_id)`` order; this is checked while streaming because the
-bounded Iceberg scan does not promise a global sort. A violated ordering or duplicate trade key
-fails closed. The first trade that brings a bar's accumulated quantity to or above the threshold
+volume threshold and a fixed ``canonical.trades`` snapshot. Trades must have non-decreasing
+``event_time`` and strictly increasing numeric ``venue_trade_id``; both are checked while
+streaming because the bounded Iceberg scan does not promise a global sort. The monotonic ID check
+rejects repeated venue IDs without retaining an unbounded set. A violated ordering or duplicate
+trade key fails closed. The first trade that brings a bar's accumulated quantity to or above the threshold
 closes it whole (trades are never split). A trailing partial bar is not emitted. Day boundaries do
 not reset accumulation. Bar ``event_time`` and ``available_time`` are both copied from its last
 trade.
@@ -51,7 +52,7 @@ VOLUME_BAR_SPEC: Final[dict[str, Any]] = {
     "rule": VOLUME_BAR_ID,
     "version": VOLUME_BAR_VERSION,
     "source": "canonical.trades at an explicitly bound Iceberg snapshot",
-    "order": "strictly increasing (event_time, numeric venue_trade_id); otherwise reject",
+    "order": "event_time non-decreasing and numeric venue_trade_id strictly increasing; otherwise reject",
     "selection": "snapshot must contain at most one row per venue trade; duplicates reject",
     "threshold": "explicit positive Decimal base-asset quantity; close on first cumulative >= threshold",
     "overshoot": "include the entire threshold-crossing trade; never split a trade",
@@ -144,6 +145,7 @@ def _aggregate_batches(
     bars: list[VolumeBar] = []
     current: dict[str, Any] | None = None
     previous_order: tuple[datetime, int] | None = None
+    previous_trade_id: int | None = None
 
     for batch in batches:
         for row in batch.to_pylist():
@@ -152,7 +154,15 @@ def _aggregate_batches(
             if previous_order is not None and order <= previous_order:
                 reason = "duplicate venue trade" if order == previous_order else "out-of-order trade"
                 raise VolumeBarError(f"{reason}: stream must be strictly ordered by event_time and venue_trade_id")
+            if previous_trade_id is not None and trade["venue_trade_id"] <= previous_trade_id:
+                reason = (
+                    "duplicate venue trade ID"
+                    if trade["venue_trade_id"] == previous_trade_id
+                    else "out-of-order venue trade ID"
+                )
+                raise VolumeBarError(f"{reason}: venue_trade_id must be strictly increasing")
             previous_order = order
+            previous_trade_id = trade["venue_trade_id"]
 
             encoded = canonical_json(
                 {

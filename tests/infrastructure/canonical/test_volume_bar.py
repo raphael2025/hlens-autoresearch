@@ -173,6 +173,26 @@ def test_duplicate_trade_key_fails_closed() -> None:
         )
 
 
+def test_duplicate_trade_id_at_a_different_time_and_batch_fails_closed() -> None:
+    first = datetime(2024, 3, 2, tzinfo=UTC)
+    second = first + timedelta(seconds=1)
+    catalog = _Catalog(
+        [
+            _Batch([_trade(9, "1", "1", first)]),
+            _Batch([_trade(9, "1", "2", second, revision="crev1-other")]),
+        ]
+    )
+
+    with pytest.raises(VolumeBarError, match="duplicate venue trade ID"):
+        volume_bars(
+            catalog,
+            snapshot_id=SNAPSHOT,
+            symbol=SYMBOL,
+            base_volume_threshold=Decimal("1"),
+        )
+    assert catalog.reader.closed
+
+
 def test_invalid_trade_fields_fail_closed() -> None:
     at = datetime(2024, 3, 3, tzinfo=UTC)
     bad = _trade(1, "0", "1", at)
