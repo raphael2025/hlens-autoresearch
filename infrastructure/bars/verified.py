@@ -68,6 +68,7 @@ from pyiceberg.expressions import EqualTo
 from core.contracts.universe import ResearchDatasetManifest
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+    DATASET_EVIDENCE_MANIFESTS,
     DATASET_MANIFESTS,
     QUALITY_EVIDENCE_GAPS,
 )
@@ -87,6 +88,7 @@ __all__ = [
 #: for every manifest (plus the manifest's own dataset table, see ``verification_head_tables``).
 HEAD_READ_TABLES: Final = (
     DATASET_MANIFESTS.table,
+    DATASET_EVIDENCE_MANIFESTS.table,
     BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
     QUALITY_EVIDENCE_GAPS.table,
 )
