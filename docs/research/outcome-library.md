@@ -104,6 +104,6 @@ Schema 只增不改）；`tests/research/outcomes/test_store.py`。
 
 | ID | 缺口 | 说明 |
 |---|---|---|
-| O-1 | `refuse_outcome_input` 没有运行时调用方 | `core/contracts/outcome.py` 的说明称验证流水线在运行时使用它，但当前只在测试中调用；输入 DTO 的 `extra="forbid"` 仍会拒绝 Outcome 载荷 |
+| O-1 | ~~`refuse_outcome_input` 没有运行时调用方~~（已接线） | `research/validation/pipeline.py` 在 `run_in_sample`、`run_sealed_oos` 以及每折拟合后的 study 上检查 `SignalStudy.signal_refs`；发现 `OutcomeLabel` / `OutcomeResult` 或带 `label_only: true` 的映射时抛出 `OutcomeUsedAsInput`，在计算 gate 前拒绝，G5 在读取 sealed window 前拒绝。该 guard 只检查显式声明的 `signal_refs`，不检测未声明的隐式泄漏；G1 仍按原规则检查引用种类。输入 DTO 的 `extra="forbid"` 也继续拒绝额外 Outcome 字段 |
 | O-2 | meta-labeling、事件研究 CAR | 均为 `DOCUMENTED · UNSPECIFIED`；须作为新标签方法提出规格与批准。波动率缩放屏障已由 ADR-0088 决策 5 规格化并实现（见上），不再属于本条 |
 | O-3 | ~~`vol_scaled_triple_barrier` 缺少波动率数值通道的接线~~（已接线） | `hlens_vol_scaled_triple_barrier` Provider 把入场时可见的波动率值作为构造参数接收（`plugins/outcomes/vol_scaled_triple_barrier.py` 模块文档）；从某个 `volatility_feature` 引用对应的 `FeatureResult` 按 `entry_time` 做 PIT 选择、组装成这份映射并传给 Provider，现由 `research/outcomes/volatility.py` 的 `select_volatility_for_entry_times` 实现（`FeatureRequest` / `FeatureResult` 均须调用方已回答好；`volatility_feature` 引用不一致或结果未回答给定请求 fail closed；非 `Decimal` 的特征值 fail closed）；测试 `tests/research/outcomes/test_volatility.py`。规格状态仍是 `IMPLEMENTED · NOT_VALIDATED`：本条只解决"有没有接线"，未在正式 Research Dataset 上验证 |
