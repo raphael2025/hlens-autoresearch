@@ -3,7 +3,9 @@
 * SIMULATED -> PAPER is allowed, one rung at a time, and recorded as a granted gate with evidence.
 * Any step to a live rung needs an ``AuthorizationRecord`` (ADR-0006 §2, ADR-0011 D-17.3) and, in
   this build, is **always refused**, with or without one: live trading is not authorized by Raphael
-  (H10, ADR-0022 §7). The refusal is recorded before the exception is raised.
+  (H10, ADR-0022 §7). The refusal is recorded before the exception is raised. ADR-0084 reserves a
+  live venue *interface* (``apps.execution.live_venue``) without changing this: the ladder still
+  refuses every live rung on its own, independent of whether a live adapter is ever registered.
 * Nothing is ever auto-granted: a grant needs a named human ``decided_by`` and evidence.
 """
 
@@ -25,8 +27,9 @@ from core.lifecycle.strategy import AuthorizationRecord, RiskGateRecord
 __all__ = ["ExecutionLadder", "LIVE_REFUSAL_MESSAGE"]
 
 LIVE_REFUSAL_MESSAGE = (
-    "live execution is not available in this build (ADR-0046): no live venue, no credentials; "
-    "a live rung needs Raphael's explicit authorization and a new ADR"
+    "live execution is not available in this build (ADR-0046, ADR-0084): the live venue port is "
+    "reserved but unconfigured, and no credentials are read; a live rung needs Raphael's explicit "
+    "authorization and a new ADR"
 )
 
 
