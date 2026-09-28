@@ -11,6 +11,12 @@ file:
   (someone truncated or rewrote history) — ``FailureRegistryCorrupted``, fail closed;
 - ``records`` re-validates every line; an unparsable line is corruption, not something to skip.
 
+Retrieval (docs/research/failure-registry.md: the registry is searchable before a new hypothesis
+is registered, and keeps a per-``reason_code`` tally; MOD-VALID 2026-09-28): ``query`` filters the
+validated records by subject, hypothesis family, reason code, terminal state and / or gate (every
+filter optional, exact match, append order kept); ``reason_counts`` tallies the records per
+``reason_code``. Both read through ``records``, so corruption still fails closed; neither writes.
+
 This is the research-plane write path. The authoritative registry is the Control Plane (not built
 yet); ``docs/research/failure-registry.md`` stays the human-readable index.
 
@@ -22,12 +28,15 @@ inside the gate and is refused before writing while the state does not accept wr
 from __future__ import annotations
 
 import os
+from collections import Counter
 from pathlib import Path
 from threading import RLock
 
 from pydantic import ValidationError
 
+from core.domain.base import Ref
 from core.domain.research import FailureRecord
+from core.errors import ReasonCode
 from research.persistence import WriteGate, gate_scope
 
 __all__ = ["FailureRegistry", "FailureRegistryCorrupted"]
@@ -93,3 +102,33 @@ class FailureRegistry:
             except ValidationError as exc:
                 raise FailureRegistryCorrupted(f"{self._path}:{number} is not a record") from exc
         return tuple(out)
+
+    def query(
+        self,
+        *,
+        subject: Ref | None = None,
+        family: str | None = None,
+        reason: ReasonCode | None = None,
+        terminal_state: str | None = None,
+        gate_id: str | None = None,
+    ) -> tuple[FailureRecord, ...]:
+        """The records matching every given filter (exact match; ``None`` = any), in append
+        order. ``subject`` matches the record's ``subject_ref`` target (kind, name, version)."""
+        if terminal_state is not None and terminal_state not in {"REJECTED", "FAILED"}:
+            raise ValueError("the Failure Registry only holds REJECTED / FAILED records")
+        wanted = None if subject is None else subject.target_identity()
+        return tuple(
+            record
+            for record in self.records()
+            if (wanted is None or record.subject_ref.target_identity() == wanted)
+            and (family is None or record.hypothesis_family_id == family)
+            and (reason is None or record.reason_code is reason)
+            and (terminal_state is None or record.terminal_state == terminal_state)
+            and (gate_id is None or record.gate_id == gate_id)
+        )
+
+    def reason_counts(self) -> dict[str, int]:
+        """Records per ``reason_code`` value, sorted by code (the failure-mode tally of
+        docs/research/failure-registry.md); a code without records is absent."""
+        counts = Counter(record.reason_code.value for record in self.records())
+        return dict(sorted(counts.items()))
