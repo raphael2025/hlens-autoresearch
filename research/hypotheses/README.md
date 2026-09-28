@@ -84,3 +84,9 @@ Feature / State / Event / Strategy 核心规格类，并与所关联 ExperimentS
 `validate_complete_experiment_bindings(...)` 再要求每个 ExperimentSpec 恰有一个 plan、每个计划节点恰有一个输出，以及 direct dependency ref/hash 一致。条件策略计划没有现有核心规格表示，producer 拒绝该输出类型。
 
 旧 `validate_experiment_bindings(...)` 保留兼容，仍只校验调用方所交 outputs，不能用于声明全集完整。新 API 只提供集合完整性与直接绑定证据，不校验传递依赖闭包或算子语义，不持久化 admission、不注册 trial、不授权执行。六类 operator 仍关闭，`TypedPlan.runnable` 仍恒为 `False`。测试已新增 / 更新但未运行，待统一验收。
+
+## P7 non-runnable lowering（`typed_plan_lowering.py`，ADR-0082）
+
+`lower_typed_plan(plan, resolution=..., created_at=...)` 只接受与 plan hash 对应的直接引用解析结果，并要求调用方明确给出带时区的 `created_at`。当前只 lower `interaction`：两个 FeatureSpec 按同一 evaluation time 做严格 product，缺失传播为 `None`，不允许 bool / float / 静默舍入；结果是 `FeatureSpec`，目标 Provider key 为 `p7_interaction_product@1.0.0`。该 Provider 本身尚未实现或登记。输出为 node ID 映射，随后交给 `produce_lowered_output_bindings(...)` 做 ADR-0078 全集与类型校验。
+
+`conditioning`、`temporal`、`transformation`、`ensemble`、`negation` 在 ADR-0082 中为 OPEN；混有这些节点的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner、不改变 `compile_plan` 的拒绝行为；`TypedPlan.runnable` 永远为 `False`。
