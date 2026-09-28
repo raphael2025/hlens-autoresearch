@@ -119,3 +119,16 @@ Claude PM 依 Raphael 2026-09-28 的明确授权接受本 ADR，裁决内容按�
 - 第二期：接入 universe builder / dataset / manifest，在 ADR-0077 infrastructure 批次完成后进行。
 
 默认行为保持保守：不绑定本假设时，结果逐位不变。本记录只授权代码实现。唯一的公共 REST 调用（`exchangeInfo`，无密钥）属于运行操作，在调试阶段执行，也在授权范围内。
+
+## 实施记录（2026-09-28）
+
+- **第一期**（`492e4da`）：
+  - `infrastructure/universe/listing_assumption.py`：政策与绑定；
+  - `listing_at(..., pit=)`：接受可选的假设。
+  - `POLICY_TABLE` 暂时留空，等调试阶段联网核实首切片 BTCUSDT / ETHUSDT 的最早 1m 归档日后，再作为新的政策版本填入。
+- **第二期**（W-DL2）：
+  - universe builder（v2 `build` / v3 `cursor`）接入 `pit`，假设成员带 `UniverseMember.assumption`（ADR-0088 决策 6）；
+  - `UniverseBuilt.assumed`，以及 v3 的 `assumed()` 视图；
+  - dataset 接受该绑定，manifest 通过其 PIT 规格记录这一政策；`manifest_assumptions()` 供 Phase 4 报告按是否绑定分组；
+  - v3 evidence 保留与外层不同的嵌套版本，使 2.0.0 的嵌套绑定能逐位重建。
+- 未绑定本假设时，所有路径逐位不变。测试均未运行。
