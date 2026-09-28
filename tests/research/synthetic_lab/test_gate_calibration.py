@@ -24,7 +24,12 @@ from typing import Any
 
 import pytest
 
-from core.contracts.synthetic import PlantedEffect, SyntheticMarket
+from core.contracts.synthetic import (
+    JumpEffect,
+    PlantedEffect,
+    SyntheticMarket,
+    VolatilityClusteringEffect,
+)
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import content_hash
 from core.domain.research import GateResult, ValidationReport, Verdict
@@ -35,9 +40,11 @@ from research.synthetic_lab.gate_calibration import (
     NOISE_ARM,
     GateCalibrationReport,
     GateCalibrationSetup,
+    MultiInstrumentArm,
     main,
     planted_arm_id,
     run_gate_calibration,
+    synthetic_effect_arm_id,
     write_gate_calibration,
 )
 from research.synthetic_lab.intervals import binomial_rate, clopper_pearson
@@ -149,6 +156,54 @@ def _with_level(name: str, level: float) -> ValidationProfile:
 TOY_LAX = _with_level("test_only_toy_lax", 0.9)
 TOY_STRICT = _with_level("test_only_toy_strict", 1e-9)
 TOY_EFFECT = PlantedEffect(lag_minutes=60, strength=Decimal("0.08"))
+
+
+def test_synthetic_effect_arm_ids_preserve_planted_ids_and_name_new_effects() -> None:
+    garch = VolatilityClusteringEffect(
+        omega=Decimal("0.000001"), alpha=Decimal("0.1"), beta=Decimal("0.8")
+    )
+    jump = JumpEffect(intensity_per_minute=Decimal("0.01"), jump_scale=Decimal("0.02"))
+
+    assert synthetic_effect_arm_id(TOY_EFFECT) == "planted_lag60_strength0.08"
+    garch_id = synthetic_effect_arm_id(garch)
+    jump_id = synthetic_effect_arm_id(jump)
+    assert garch_id.startswith("volatility_clustering_")
+    assert jump_id.startswith("jump_")
+    assert garch_id == synthetic_effect_arm_id(garch)
+    assert jump_id == synthetic_effect_arm_id(jump)
+    assert garch_id != synthetic_effect_arm_id(
+        VolatilityClusteringEffect(
+            omega=Decimal("0.000002"), alpha=Decimal("0.1"), beta=Decimal("0.8")
+        )
+    )
+    multi_arm = MultiInstrumentArm(
+        name="synthetic_effects",
+        kind="all_planted",
+        effects=(garch, jump),
+        seeds=(1,),
+    )
+    assert multi_arm.roles == (garch_id, jump_id)
+
+
+def test_garch_and_jump_effects_run_as_calibration_arms() -> None:
+    effects = (
+        VolatilityClusteringEffect(
+            omega=Decimal("0.000001"), alpha=Decimal("0.1"), beta=Decimal("0.8")
+        ),
+        JumpEffect(intensity_per_minute=Decimal("0.01"), jump_scale=Decimal("0.02")),
+    )
+    setup = replace(_toy_setup(), planted=effects, planted_seeds=(100, 101))
+
+    report = run_gate_calibration(setup)
+    evidence = report.candidate(TOY_LAX)
+    expected_arms = (NOISE_ARM, *(synthetic_effect_arm_id(effect) for effect in effects))
+
+    assert tuple(arm.arm for arm in evidence.arms) == expected_arms
+    assert all(evidence.power(effect).n == 2 for effect in effects)
+    effect_inputs = report.inputs["planted_effects"]
+    assert isinstance(effect_inputs, list)
+    assert all(isinstance(item, dict) for item in effect_inputs)
+    assert [item["arm"] for item in effect_inputs] == list(expected_arms[1:])
 
 
 def _toy_setup() -> GateCalibrationSetup:
