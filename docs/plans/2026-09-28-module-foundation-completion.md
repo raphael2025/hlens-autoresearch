@@ -66,7 +66,7 @@
 |---|---|---|---|---|
 | C1 | P12 evolution | mutate 搜索空间成员校验改为精确类型和值；combine 对会沿用父代同一 `name@version` 的子代在创建前 fail closed，不猜版本演进规则 | `research/evolution/operators.py` 单模块 | 静态复核通过；未运行测试 |
 | C2 | P13 execution | 未准入 deployment 必须在调用任何注入 target-position source 之前拒绝 | `apps/execution/service.py` 单模块 | 静态复核通过；未运行测试 |
-| C3 | P14 migration | `GoldenRecord` 持有深度不可变输出快照；比较前验证 baseline 内容哈希；`GoldenDiff.differences` 复制、检查并冻结，防止报告结果被外部映射改写 | `infrastructure/migration/golden.py` 单模块 | 静态复核通过；未运行测试 |
+| C3 | P14 migration | `GoldenRecord` 持有深度不可变输出快照；比较前验证 baseline 内容哈希；`GoldenDiff.differences` 复制、检查并冻结，防止报告结果被外部映射改写 | `infrastructure/migration/golden.py` 单模块 | Codex / Claude 静态复核未发现阻断项；未运行测试。公开类实例化的其他字段仍由 compare/rollback 的消费路径校验 |
 | C4 | P9 docs | 把 ADR-0042 implementation note 对照现行代码更新为准确事实，保留当前报告证据规模仍仅适于 smoke 的限制 | `docs/adr/0042-synthetic-market-provider.md` | 事实同步已完成，待文档统一提交 |
 
 ### 暂不实施，留到语义决定或验收窗口
@@ -87,7 +87,7 @@
 
 - Phase 0.5–6：没有额外发现能在不触发数据人工审阅、运行验收或新架构决定的前提下直接编码的逻辑缺口。P4 converter 虽无生产调用点，但当前没有批准的运行时接点；保留纯函数，不新建写路径。
 - Phase 8–14：P10 deviation scope、P11 权威 ACTIVE/source resolver/dataset operator、P14 migration target 仍需语义或目标决定；P13 roadmap 已按 ADR-0046 修正为现有模拟功能范围，不需扩 ADR-0046。
-- P10 只读审计确认 paper deviation 未绑定 ADR-0043/roadmap 所说的 P8 声明范围；需要先定范围身份与兼容策略，不增门槛。P11 只读审计确认 ADR-0074 synthetic-only 有限批次 CLI 已实现，缺口是未来的数据源真实性与 ACTIVE 权威语义，外部 scheduler 是既定边界。P14 无迁移目标前不写 target adapter，通用 GoldenDiff 不可变性已补到 C3。
+- P10 只读审计确认 paper deviation 未绑定 ADR-0043/roadmap 所说的 P8 声明范围；需要先定范围身份与兼容策略，不增门槛。P11 只读审计确认 ADR-0074 synthetic-only 有限批次 CLI 已实现，缺口是未来的数据源真实性与 ACTIVE 权威语义，外部 scheduler 是既定边界。P13 roadmap 已对齐 ADR-0046。P14 无迁移目标前不写 target adapter；通用 GoldenRecord / GoldenDiff 不可变性已补到 C3，Claude 只读复核无阻断项。
 - Phase 1 E1-CAP-1：新增对账文档列明 positions、committed columns、archive parse、batch index 和 result IDs 的仓库代码持有量，以及 metadata / manifest 的未测边界。完整结果 tuple 仍计入 32 MiB 门槛，禁止从 probe 排除；仓库内 bounded 逻辑与 API 改动分开设计。main 尚无容量证据，候选失败数据不外推。
 - 每个开发代理一次只领一个 ID；Codex 复核后才进本地 `main`。Claude 可用最多 6 个子代理并行，但不能跨写同一模块。Cursor 活动的 `phase/1` 与 `docs/research-spec-completion` worktree 仅保留，不调度任务。
 - 交付须含：改动文件、任务 ID/Phase、对应 ADR/ROADMAP 约束、静态复核结果、未解决事项。测试、类型检查、lint、build 和验收状态统一标为“未运行”。
