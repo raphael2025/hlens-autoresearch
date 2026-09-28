@@ -91,6 +91,7 @@
 | [0086](0086-validation-lifecycle-closure.md) | 验证与生命周期收口：门集完整性、退役记录存储、Outcome 输入错误映射 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；实施中 |
 | [0087](0087-plugin-manifest-discovery.md) | 插件 Manifest 与 entry-point 发现加载 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；实施中 |
 | [0088](0088-contract-2-4-0-composition-extensions.md) | 契约 2.4.0（additive）：组合策略、事件 bar 规格、峰值权益、合成效应、波动率缩放屏障 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；契约层待实施 |
+| [0091](0091-read-only-registry-integrity-audit.md) | 四类登记处的只读完整性审计与证据边界 | Accepted（2026-09-28；本轮 PM）；只读 API 与 CLI 待实施 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

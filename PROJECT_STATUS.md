@@ -136,6 +136,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **D-PM-AUTH（Raphael 2026-09-28 明确授权）**：本轮起，项目的工程、架构与模块语义决定由 Claude Code（PM）按经验直接决定，不再逐项请示 Raphael，也不再等 Codex 审批；决定须写入 ADR / 本文件并留 commit。PM 仍不自行执行不可逆或对外操作（实盘 / 密钥、删除历史数据、push 或合并 `main`、系统软件安装），如确有必要先告知 Raphael。 **2026-09-28 扩大授权**：除实盘交易操作外，开发阶段一切事项（含冻结契约变更、ADR-0051、环境安装、数据下载、建表、推送 / 合并）均由 PM 决定；实盘接口预留但默认关闭。
 
+**D-OPS1 / ADR-0091（Accepted，2026-09-28）**：登记处审计必须严格只读，不得创建目录 / 锁文件或自动修复 anchor；按现有存储格式报告证据强度。Failure Registry 当前无可信 hash chain / anchor，只能结构核验，不宣称可识别合法历史改写。
+
 **DQ-1 / ADR-0077（已决定，2026-09-28 Raphael 选 A）**：批准在 `core/contracts` 新增 2.3.0 additive 的有界 Dataset evidence manifest 模型，v2 `ResearchDatasetManifest` 字段 / 哈希不变、只读兼容；实施为单独串行的 core 任务（W3-E1DS）。DQ-9 chunk / fanout 参数待容量证据。
 
 **代码补全轮次暴露的待 Raphael 决定（2026-09-28，PM 汇总；不决定时相应代码保持 fail closed）**
@@ -307,11 +309,11 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-28 | 底层代码补全轮次完成（PM 编排子代理 / Codex） | phase 分支 `0cfddbf`；ADR-0076～0088 落地；全部未运行测试，待统一调试 |
 | 2026-09-28 | 契约 2.3.0 → 2.4.0（ADR-0077 / 0088，均 additive） | v3 有界 Dataset 证据；组合策略、事件 bar 规格、峰值权益、合成效应、波动率屏障、成员假设绑定；已钉哈希与版本断言需调试阶段重钉 |
 | 2026-09-28 | ADR-0077 有界 Dataset 全链路实现 | universe / PIT 生成器、evidence 树、chunk 提交、v2/v3 双表、流式 verify、下游消费者；E1-CAP-1 容量仍未测 |
 | 2026-09-28 | 研究库与模块补全 | ADR-0085 特征 20 个 / 状态 2 个 / 策略 3 个 + 组合策略 / 回撤风控；ADR-0086 门集与退役存储；ADR-0087 插件发现；ADR-0084 实盘接口预留（关闭） |
 | 2026-09-28 | Raphael 授权 PM 全权决策（实盘除外）；PR #11 并入 main | CLAUDE.md §0 已记录；`main@67fd2ca` 含 phase 至 `14cccb7` |
+| 2026-09-28 | 接受 ADR-0091，明确登记处审计只读语义与 Failure Registry 证据边界 | OPS-1 扩展为只读校验 API + 结构化 CLI；不改持久化格式 |
 
 ## 10. 下一阶段进入条件
 
