@@ -1,13 +1,15 @@
 """Every file under ``apps/web/fixtures/`` is exactly what the real ``research/reports`` writers
-produce for small, existing test objects — for all ten console report kinds.
+produce for small, existing test objects — for every console report kind.
 
 The committed files are never hand-written: this module builds the objects from the existing
 research test fixtures, writes them with the real writers into a temporary report root, and
 requires each committed ``<kind>/`` directory to hold byte-identical files — and nothing else.
 
-Three generations (contract 2.1.0, ADR-0052 §4; contract 2.2.0, ADR-0055):
+Contract-bound reports retain three generations (contract 2.1.0, ADR-0052 §4; contract 2.2.0,
+ADR-0055):
 
-- ``WRITERS`` — the current fixture of every kind, built at the current contract version (2.2.0).
+- ``WRITERS`` — the current fixture of every kind; contract-bound reports use 2.2.0, while
+  ``retro_audit`` uses its report schema version.
   The ``validation_report`` one carries an exact gate (``value_exact`` / ``threshold_exact``,
   TEST ONLY values) next to the float-only gate, so the console's exact display is exercised.
 - ``LEGACY_WRITERS["2.0.0"]`` — the **legacy readable** 2.0.0 fixtures of ``validation_report``,
@@ -44,6 +46,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Callable
+from datetime import datetime, timezone
 from decimal import Decimal
 from pathlib import Path
 
@@ -65,6 +68,7 @@ from research.reports import (
     write_research_loop_round,
     write_router_paper_run,
     write_router_stop,
+    write_retro_audit_report,
     write_state_diagnostics,
     write_state_strategy_matrix,
     write_validation_report,
@@ -73,6 +77,7 @@ from research.router.deviation import PaperDeviation
 from research.router.paper import RouterStop
 from research.states.diagnostics import StateDiagnostics, diagnose
 from research.synthetic_lab.gate_calibration import run_gate_calibration
+from research.validation.retro_audit import RetroAuditReport, retro_audit
 from tests.apps.report_fixtures import LEGACY, VARIANTS
 from tests.research.events.test_event_stats import _all_statistics
 from tests.research.reports.test_degradation_writer import write_fixture as write_degradation
@@ -122,6 +127,15 @@ def paper_deviation() -> PaperDeviation:
     return deviation()
 
 
+def retro_audit_report() -> RetroAuditReport:
+    """An empty, fixed-time audit; it has no subjects and performs no lifecycle transitions."""
+    return retro_audit(
+        (),
+        audited_at=datetime(2026, 9, 27, tzinfo=timezone.utc),
+        rules="fixture-only; no lifecycle transition",
+    )
+
+
 #: TEST ONLY exact gate values (ADR-0052 §1): the exact value has more digits than its float
 #: (``0.03``), so a console that shows the float instead of ``value_exact`` is visibly wrong.
 EXACT_VALUE = "0.0300000000000000001"
@@ -167,6 +181,7 @@ WRITERS: dict[str, Writer] = {
     "paper_deviation": lambda root: write_paper_deviation(root, paper_deviation()),
     # TEST ONLY thresholds / metrics (tests/research/reports/test_degradation_writer.py)
     "degradation_check": write_degradation,
+    "retro_audit": lambda root: write_retro_audit_report(root, retro_audit_report()),
 }
 
 

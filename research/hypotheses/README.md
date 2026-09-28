@@ -72,3 +72,14 @@
 **只校验直接引用，不是执行授权。** 结果的 `transitive_closure_verified`、`execution_authorized`、`runnable` 恒为 `False`：不校验传递依赖闭包，
 不登记或查询算子实现，不 lower / 编译 / 执行计划，不改变 `TypedPlan.runnable`，不写报告或 journal，不触碰 `TrialLedger`；
 `compile_plan` 仍拒绝所有计划。本模块不从包 `research.hypotheses` 导出，也不接入循环。未运行测试，CODE_COMPLETE / DEBUG_PENDING。
+
+## Experiment / Hypothesis binding evidence（`plan_bindings.py`，Phase 7，ADR-0073 §1）
+
+`validate_experiment_bindings(...)` 是纯拒绝校验器：要求输入的 ExperimentSpec 与 Hypothesis 非空且数量相同；每个
+`ExperimentSpec.repro.hypothesis_ref` 必须精确指向批次中唯一的 Hypothesis，且 `dependency_hashes` 中对应值等于重算的内容哈希；
+每个 Hypothesis 恰被一个 ExperimentSpec 引用。每个已提供的 `LoweredOutputBinding` 必须是精确的
+Feature / State / Event / Strategy 核心规格类，并与所关联 ExperimentSpec 的直接依赖 ref 和重算 hash 完全相符；同一不可变规格可以被多个实验共同引用。
+
+本校验只核实调用方提交的 outputs；现有 typed-plan / ExperimentSpec 没有权威的“预期 lowering 输出全集”来源，因此它不能证明多 output 场景没有遗漏部分输出。
+调用方不得把该结果当成 compiler 完整性、传递依赖闭包、operator 语义、持久化 admission 或执行授权证据。实现未接入 PREPARE、TrialLedger、Runner 或任何
+operator；`TypedPlan.runnable` 仍为 `False`。未运行测试 / build / lint / typecheck，待统一验收。

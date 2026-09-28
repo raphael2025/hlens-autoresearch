@@ -28,6 +28,8 @@ export type StateDiagnosticsPayload = {
   min_run: number;
   short_run_share: string | null;
   switch_rate: string | null;
+  /** 1.1.0 source binding; omitted by readable legacy 1.0.0 payloads. */
+  source_result_hash?: string | null;
 };
 
 export function asStateDiagnosticsPayload(
@@ -37,7 +39,10 @@ export function asStateDiagnosticsPayload(
     payload === undefined ||
     payload.kind !== "state_diagnostics" ||
     !Array.isArray(payload.state_space) ||
-    !Array.isArray(payload.runs)
+    !Array.isArray(payload.runs) ||
+    ("source_result_hash" in payload &&
+      payload.source_result_hash !== null &&
+      typeof payload.source_result_hash !== "string")
   ) {
     return null;
   }

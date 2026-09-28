@@ -47,10 +47,10 @@
 
 | ID | 模块 | 任务 | 文件边界 | 状态 |
 |---|---|---|---|---|
-| A1 | P7 hypothesis composition | 按 ADR-0073 §1 实现 pure binding validator：每个 ExperimentSpec 精确绑定一个批次 Hypothesis；Hypothesis 恰被一个 ExperimentSpec 引用；每个 lowered output 精确匹配该 ExperimentSpec 的直接依赖 ref/hash；重复、缺失、额外与错 hash fail closed。不得接入 PREPARE、TrialLedger、Runner 或改变 `runnable=False` | `research/hypotheses/` 单模块及对应 README；不改 `core/` | 已批准，待派发 |
-| A2 | P3 event operations | 在默认无副作用、`--apply` 只操作 `event.events` 的现有命令输出中加入 TableDefinition 的 `name@version` 与定义内容哈希；不打印 catalog 凭据、不连接真实 catalog | `infrastructure/event/create_event_tables.py` 及同模块说明 | 已批准，待派发 |
-| A3 | P2 Web diagnostics | Web `StateDiagnosticsPayload` 增加可空/可省略的 `source_result_hash` 消费字段，与 Python 1.1.0 输出对应，同时保留 1.0.0 旧 payload 可读 | `apps/web/src/lib/stateDiagnostics.ts` | 已批准，待派发 |
-| A4 | P8 report fixtures | 将现有 `retro_audit` writer/报告种类加入 console fixture writer registry；不生成 fixture 文件、不改 report schema | `tests/research/reports/test_console_fixture_writers.py` 及该 registry 当前实现文件（先核准确路径） | 已批准，待静态定位 |
+| A1 | P7 hypothesis composition | 按 ADR-0073 §1 实现 pure binding validator：每个 ExperimentSpec 精确绑定一个批次 Hypothesis；Hypothesis 恰被一个 ExperimentSpec 引用；已提交的每个 lowered output 精确匹配其 ExperimentSpec 的直接依赖 ref/hash；重复、缺失关联、额外关联与错 hash fail closed。不得接入 PREPARE、TrialLedger、Runner 或改变 `runnable=False` | `research/hypotheses/plan_bindings.py`、同目录 README；不改 `core/` | 源码复核无直接绕过路径；缺权威预期输出清单，暂不能证明 outputs 集合完整 |
+| A2 | P3 event operations | 在默认无副作用、`--apply` 只操作 `event.events` 的现有命令输出中加入 TableDefinition 的 `name@version` 与完整定义内容哈希；绑定或表范围不符时 fail closed | `infrastructure/event/create_event_tables.py` | 源码复核完成；既有命令测试仍期待旧输出，留待验收窗口同步；未运行 |
+| A3 | P2 Web diagnostics | Web `StateDiagnosticsPayload` 增加可空/可省略的 `source_result_hash` 消费字段，与 Python 1.1.0 输出对应，同时保留 1.0.0 旧 payload 可读 | `apps/web/src/lib/stateDiagnostics.ts` | 源码复核完成；未做类型检查 |
+| A4 | P8 report fixtures | 将现有 `retro_audit` writer/报告种类加入 console fixture writer registry；不生成 fixture 文件、不改 report schema | `tests/research/reports/test_console_fixture_writers.py`、`apps/web/fixtures/README.md` | 源码复核完成；旧 1.0.0 JSON / fixture ID 登记留待验收同步 |
 
 ### Wave B：代码 / 文档状态对账
 
@@ -72,7 +72,7 @@
 ## 并行与交付规约
 
 - A1、A2、A3 可并行，因为分别属于 `research/hypotheses`、`infrastructure/event`、`apps/web`，不接触 `core/`。
-- A4 与 B1/B2 待 A1–A3 完成后接续，避免多个执行者并改 README / project status。
+- A1–A4 已完成源码复核，未运行测试 / build / lint / typecheck；随后先对齐事实文档，再进入下一批。
 - 每个开发代理一次只领一个 ID；Codex 复核后才进本地 `main`。Claude 可用最多 6 个子代理并行，但不能跨写同一模块。Cursor 活动的 `phase/1` 与 `docs/research-spec-completion` worktree 仅保留，不调度任务。
 - 交付须含：改动文件、任务 ID/Phase、对应 ADR/ROADMAP 约束、静态复核结果、未解决事项。测试、类型检查、lint、build 和验收状态统一标为“未运行”。
 

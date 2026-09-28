@@ -8,6 +8,9 @@ Usage::
 
     set -a; . ./.env.catalog; set +a
     uv run python -m infrastructure.event.create_event_tables --apply
+
+Successful output includes the registered ``definition_id@version`` binding, its full content
+hash, and whether the table was created or already present and verified.
 """
 
 from __future__ import annotations
@@ -19,7 +22,7 @@ from collections.abc import Sequence
 from infrastructure.catalog.definitions import TableDefinitionRegistry
 from infrastructure.catalog.iceberg_adapter import open_postgres_catalog_adapter
 from infrastructure.catalog.phase1_tables import PHASE1_TABLES
-from infrastructure.event.table_definition import PHASE3_TABLES, ensure_event_tables
+from infrastructure.event.table_definition import EVENT_EVENTS, PHASE3_TABLES, ensure_event_tables
 from infrastructure.settings import Settings
 
 __all__ = ["main"]
@@ -55,9 +58,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"event.events operation failed: {type(exc).__name__}", file=sys.stderr)
         return 1
 
+    if tuple(state.table for state in states) != (EVENT_EVENTS.table,):
+        print("event.events operation failed: unexpected table scope", file=sys.stderr)
+        return 1
+
     for state in states:
+        if state.definition != EVENT_EVENTS.binding:
+            print(
+                "event.events operation failed: table definition binding mismatch",
+                file=sys.stderr,
+            )
+            return 1
         status = "created" if state.created else "already present (verified)"
-        print(f"{state.table}\t{status}")
+        binding = f"{state.definition.definition_id}@{state.definition.version}"
+        print(
+            f"{state.table}\t{binding}\tdefinition_hash={state.definition.definition_hash}"
+            f"\t{status}"
+        )
     return 0
 
 
