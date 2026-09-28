@@ -134,7 +134,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **D-DEBUG（已决定，2026-09-28 Raphael）**：暂不调试；先完成所有模块的底层 / 逻辑 / 基础代码，全部完成后再统一调试。所有模块都在范围内（含 P1 E1/Dataset），但不得在单个模块上死循环。本轮所需的新 ADR 由 Codex 依 CLAUDE.md §0 既有授权决定；需改冻结契约、Constitution、Profile 数值或验证阈值的仍上报 Raphael。进度见模块计划 “PM 任务板”。
 
-**D-PM-AUTH（Raphael 2026-09-28 明确授权）**：本轮起，项目的工程、架构与模块语义决定由 Claude Code（PM）按经验直接决定，不再逐项请示 Raphael，也不再等 Codex 审批；决定须写入 ADR / 本文件并留 commit。PM 仍不自行执行不可逆或对外操作（实盘 / 密钥、删除历史数据、push 或合并 `main`、系统软件安装），如确有必要先告知 Raphael。
+**D-PM-AUTH（Raphael 2026-09-28 明确授权）**：本轮起，项目的工程、架构与模块语义决定由 Claude Code（PM）按经验直接决定，不再逐项请示 Raphael，也不再等 Codex 审批；决定须写入 ADR / 本文件并留 commit。PM 仍不自行执行不可逆或对外操作（实盘 / 密钥、删除历史数据、push 或合并 `main`、系统软件安装），如确有必要先告知 Raphael。 **2026-09-28 扩大授权**：除实盘交易操作外，开发阶段一切事项（含冻结契约变更、ADR-0051、环境安装、数据下载、建表、推送 / 合并）均由 PM 决定；实盘接口预留但默认关闭。
 
 **DQ-1 / ADR-0077（已决定，2026-09-28 Raphael 选 A）**：批准在 `core/contracts` 新增 2.3.0 additive 的有界 Dataset evidence manifest 模型，v2 `ResearchDatasetManifest` 字段 / 哈希不变、只读兼容；实施为单独串行的 core 任务（W3-E1DS）。DQ-9 chunk / fanout 参数待容量证据。
 
