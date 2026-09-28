@@ -60,6 +60,7 @@ return_shock = "infrastructure.plugins.builtin.states:RETURN_SHOCK"
 
 [project.entry-points."hlens.plugins.event"]
 feature_threshold_cross = "infrastructure.plugins.builtin.events:FEATURE_THRESHOLD_CROSS"
+feature_relative_threshold_cross = "infrastructure.plugins.builtin.events:FEATURE_RELATIVE_THRESHOLD_CROSS"
 volatility_breakout = "infrastructure.plugins.builtin.events:VOLATILITY_BREAKOUT"
 state_switch = "infrastructure.plugins.builtin.events:STATE_SWITCH"
 event_sequence = "infrastructure.plugins.builtin.events:EVENT_SEQUENCE"

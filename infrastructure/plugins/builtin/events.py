@@ -20,6 +20,7 @@ __all__ = [
     "EVENT_COUNT",
     "EVENT_SEQUENCE",
     "EVENT_WINDOW_END",
+    "FEATURE_RELATIVE_THRESHOLD_CROSS",
     "FEATURE_THRESHOLD_CROSS",
     "STATE_SWITCH",
     "VOLATILITY_BREAKOUT",
@@ -41,6 +42,27 @@ FEATURE_THRESHOLD_CROSS = PluginManifest(
             "direction": {"type": "string", "enum": ["up", "down"]},
         },
         "required": ["feature", "level", "direction"],
+        "additionalProperties": False,
+    },
+    inputs=(),
+    outputs=_EVENT_OUTPUTS,
+)
+
+FEATURE_RELATIVE_THRESHOLD_CROSS = PluginManifest(
+    name="feature_relative_threshold_cross",
+    kind=PluginKind.EVENT,
+    version="1.0.0",
+    contract_version="2.0.0",
+    deterministic=True,
+    params_schema={
+        "type": "object",
+        "properties": {
+            "feature": {"type": "string", "description": "feature:name@version Ref"},
+            "level_feature": {"type": "string", "description": "feature:name@version Ref"},
+            "multiplier": {"type": "string", "description": "positive decimal multiple"},
+            "direction": {"type": "string", "enum": ["up", "down", "both"]},
+        },
+        "required": ["feature", "level_feature", "multiplier", "direction"],
         "additionalProperties": False,
     },
     inputs=(),

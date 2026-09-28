@@ -29,6 +29,7 @@ from infrastructure.plugins.builtin.events import (
     EVENT_COUNT,
     EVENT_SEQUENCE,
     EVENT_WINDOW_END,
+    FEATURE_RELATIVE_THRESHOLD_CROSS,
     FEATURE_THRESHOLD_CROSS,
     STATE_SWITCH,
     VOLATILITY_BREAKOUT,
@@ -79,6 +80,7 @@ from plugins.events import (
     EventCountProvider,
     EventSequenceProvider,
     EventWindowEndProvider,
+    FeatureRelativeThresholdCrossProvider,
     FeatureThresholdCrossProvider,
     StateSwitchProvider,
     VolatilityBreakoutProvider,
@@ -169,6 +171,20 @@ def _build_cases() -> list[tuple[object, PluginManifest, str]]:
         ),
         (TrendRangeProvider((trend,)), TREND_RANGE, "state"),
         (FeatureThresholdCrossProvider((cross_up,)), FEATURE_THRESHOLD_CROSS, "event"),
+        (
+            FeatureRelativeThresholdCrossProvider(
+                (
+                    FeatureRelativeThresholdCrossProvider.spec(
+                        log_return.ref,
+                        BarRealizedVolatilityProvider.spec(3).ref,
+                        Decimal("2"),
+                        "both",
+                    ),
+                )
+            ),
+            FEATURE_RELATIVE_THRESHOLD_CROSS,
+            "event",
+        ),
         (
             VolatilityBreakoutProvider(
                 (VolatilityBreakoutProvider.spec(log_return.ref, 3, Decimal("2")),)
