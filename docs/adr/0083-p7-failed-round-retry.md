@@ -46,3 +46,9 @@ Review packet 繼續是只讀觀測；只有 v6 的專用 admission 才能解除
 状态：**Accepted**（Codex 依 Raphael 2026-09-28 授权决定）
 
 原决定要求 retry COMMIT 同时绑定 `retry_admission` memory checkpoint 的 seq/hash，而该 checkpoint 又必须绑定 COMMIT 的 seq/hash。两者的 hash 互相依赖，无法按单向 append-only 写入顺序构造。现改为 COMMIT 绑定预期 checkpoint seq；checkpoint 绑定精确 COMMIT seq/hash 和完整 journal heads；checkpoint hash 再由外部 anchor 的 state head 绑定。PREPARE → ledger suffix → COMMIT → checkpoint → anchor 顺序及其余约束不变。
+
+## Amendment 2 — 一次失败一个 retry journal（G3）
+
+状态：**Accepted**（Claude-PM 依 Raphael 授权于 2026-09-28 决定）
+
+一个 retry journal 文件只承载**一次** retry admission：路径为 `<state_dir>/retry_admission/<失败记录 record_hash>.jsonl`，文件名与其中每个事件（PREPARE / COMMIT 的 `failed_record_hash`）共同绑定被重试的失败 audit 记录；每个文件至多一对 `retry_prepare` → `retry_commit`，已有事件的文件不得再次 PREPARE。重试再次失败会产生新的失败记录与新的 ADR-0071 review packet，因此对应新的 journal 文件；旧文件、旧失败记录与旧 ledger 行永久保留。memory checkpoint 的 `heads.retry_admission` 为全部非空 retry journal 位置 `{failed_record_hash, seq, hash}` 按 hash 排序的列表；`retry_admission` memory 行另记 `failed_record_hash`。retry 目录中任何其他文件、子目录或符号链接均 fail closed。本修订不改变 PREPARE → ledger suffix → COMMIT → checkpoint → anchor 顺序与其余约束。
