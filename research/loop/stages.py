@@ -95,6 +95,7 @@ from research.hypotheses import (
 from research.loop.evolution import EvolutionPlan, EvolutionStage
 from research.loop.llm_content import LlmContentUnverified, verify_call_content
 from research.loop.memory import ResearchMemory
+from research.loop.retry_admission import retry_summary_rows
 from research.loop.segment import (
     ResearchPiece,
     RoundData,
@@ -409,6 +410,10 @@ class HypothesisStage:
     (hypothesis, round) evaluation counts towards the family's trial count and the round's trial
     budget, so G3's multiple-testing correction sees every look at the accumulated data.
 
+    Retry round (ADR-0083, v6 state only): while ``memory.retry_reevaluations`` holds a human
+    admitted retry, this round runs only those already registered trials (see ``_run_retry``);
+    otherwise the stage behaves exactly as before.
+
     ``batch`` (optional; ``None`` changes nothing): a declared ``HypothesisBatch`` of this stage's
     family. Every cell must be runnable here — ``trial_point`` reads it, its strategy is in the
     loop's catalog with the grid's exact spec, and the point is a requestable one — or the stage
@@ -529,25 +534,16 @@ class HypothesisStage:
         return fresh, self._memory.reviews.reviewed_untaken(), again, self._batch_pending()
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
-        fresh, drafts, again, batch = self._plan(ctx)
-        retry_reevaluations = self._retry_reevaluations()
-        retry_keys = {(hypothesis.name, hypothesis.version) for hypothesis, _ in retry_reevaluations}
-        again = tuple(
-            hypothesis for hypothesis in again
-            if (hypothesis.name, hypothesis.version) not in retry_keys
-        )
-        return self._usage(fresh, drafts, again, batch) + StageUsage(
-            trials=len(retry_reevaluations)
-        )
+        retry = self._retry_reevaluations()
+        if retry:
+            return self._retry_usage(retry)
+        return self._usage(*self._plan(ctx))
 
     def run(self, ctx: RoundContext) -> StageResult:
+        retry = self._retry_reevaluations()
+        if retry:
+            return self._run_retry(retry)
         fresh, drafts, again, batch = self._plan(ctx)
-        retry_reevaluations = self._retry_reevaluations()
-        retry_keys = {(hypothesis.name, hypothesis.version) for hypothesis, _ in retry_reevaluations}
-        again = tuple(
-            hypothesis for hypothesis in again
-            if (hypothesis.name, hypothesis.version) not in retry_keys
-        )
         batch_summary: dict[str, Any] = {}
         batched = batch
         pre_registered: tuple[Hypothesis, ...] = ()
@@ -654,14 +650,6 @@ class HypothesisStage:
             "hypothesis_hashes": [h.content_hash() for h in registered],
             "reevaluations": [str(h.ref) for h in again],
             "reevaluation_attempt": attempt if again else None,
-            "retry_reevaluations": [
-                {
-                    "hypothesis": str(hypothesis.ref),
-                    "hypothesis_hash": hypothesis.content_hash(),
-                    "attempt": retry_attempt,
-                }
-                for hypothesis, retry_attempt in retry_reevaluations
-            ],
             "family_trials": self._memory.ledger.trials(self._family),
             "llm": llm_summary,
             "pending_reviews": list(self._memory.reviews.pending),
@@ -671,31 +659,56 @@ class HypothesisStage:
             summary["knowledge_search"] = {**search.summary(), "registered": from_search}
         return StageResult(
             summary,
-            self._usage(fresh, drafts, again, batch)
-            + StageUsage(trials=len(retry_reevaluations)),
+            self._usage(fresh, drafts, again, batch),
             {
                 "registered": tuple(registered),
                 "reevaluations": tuple((h, attempt) for h in again),
-                "retry_reevaluations": retry_reevaluations,
                 "llm_calls": llm_calls,
             },
         )
 
     def _retry_reevaluations(self) -> tuple[tuple[Hypothesis, str], ...]:
-        selected: list[tuple[Hypothesis, str]] = []
-        for key, attempt in self._memory.retry_attempts.items():
-            hypothesis = next(
-                (
-                    item
-                    for item in self._memory.ledger.hypotheses
-                    if (item.name, item.version) == key
-                ),
-                None,
-            )
-            if hypothesis is None or not self._memory.ledger.is_registered(hypothesis, attempt):
-                raise ValueError("a retry attempt is missing its durable TrialLedger registration")
-            selected.append((hypothesis, attempt))
-        return tuple(selected)
+        """ADR-0083: the admitted retry's trials waiting for this round (empty but in v6 state).
+
+        Each was pre-registered in the TrialLedger by the durable retry admission; a missing
+        registration fails the stage (it is never registered here)."""
+        pending = tuple(self._memory.retry_reevaluations)
+        for hypothesis, attempt in pending:
+            if not self._memory.ledger.is_registered(hypothesis, attempt):
+                raise ValueError(
+                    f"retry trial {hypothesis.ref} ({attempt}) has no durable TrialLedger "
+                    "registration"
+                )
+        return pending
+
+    def _retry_usage(self, retry: tuple[tuple[Hypothesis, str], ...]) -> StageUsage:
+        return StageUsage(trials=len(retry), compute_seconds=self._compute)
+
+    def _run_retry(self, retry: tuple[tuple[Hypothesis, str], ...]) -> StageResult:
+        """A retry round (ADR-0083) runs exactly the admitted trials: nothing new is registered,
+        re-evaluated or drafted, so the round declares precisely what the admission's budget check
+        (G2) accepted. The summary's ``retry_reevaluations`` rows mark the retry as consumed."""
+        summary: dict[str, Any] = {
+            "registered": [],
+            "hypothesis_hashes": [],
+            "reevaluations": [],
+            "reevaluation_attempt": None,
+            "retry_reevaluations": retry_summary_rows(retry),
+            "family_trials": self._memory.ledger.trials(self._family),
+            "llm": None,
+            "pending_reviews": list(self._memory.reviews.pending),
+        }
+        self._memory.retry_reevaluations.clear()
+        return StageResult(
+            summary,
+            self._retry_usage(retry),
+            {
+                "registered": (),
+                "reevaluations": (),
+                "retry_reevaluations": retry,
+                "llm_calls": {},
+            },
+        )
 
     def _usage(
         self,

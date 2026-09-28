@@ -372,8 +372,10 @@ class ResearchMemory:
     markets: list[SyntheticMarket] = field(default_factory=list)
     market_specs: list[SyntheticMarketSpec] = field(default_factory=list)
     research_data: list[ResearchPiece] = field(default_factory=list)
-    #: v6 retry attempts pre-registered between rounds and consumed by the next hypothesis stage.
-    retry_attempts: dict[tuple[str, str], str] = field(default_factory=dict)
+    #: ADR-0083 (v6 state only): the admitted retry's ``(hypothesis, attempt)`` trials, already
+    #: pre-registered in ``ledger`` between rounds, that the next hypothesis stage runs (and then
+    #: clears). Restored by ``research.loop.durable.open_state``; always empty otherwise.
+    retry_reevaluations: list[tuple[Hypothesis, str]] = field(default_factory=list)
     #: The durable lineage journal (``None``: in memory only); ``add_lineage`` feeds both.
     lineage_graph: LineageGraph | None = None
 

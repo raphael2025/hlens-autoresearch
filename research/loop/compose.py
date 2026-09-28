@@ -124,13 +124,13 @@ from research.loop.durable import (
     FileAnchor,
     LoopStateInconsistent,
     RetryAdmissionReceipt,
-    RetryManifestItem,
     StateAnchor,
     StateLock,
     open_state,
 )
 from research.loop.llm_content import ContentVerifiedLLM
 from research.loop.memory import ResearchMemory
+from research.loop.retry_admission import RetryManifestItem
 from research.loop.stages import (
     EvolutionPlan,
     EvolutionStage,
@@ -455,33 +455,52 @@ class DurableLoop:
     state_dir: Path
     bus: EventBusAdapter
     owned_bus: FileEventBus | None = None
-    durable_state: DurableState | None = None
     #: The state directory's single-writer lock (``research.loop.durable.StateLock``).
     state_lock: StateLock | None = None
+    #: The opened state directory (ADR-0083 retry admission needs it; v6 only uses it).
+    durable_state: DurableState | None = None
 
-    def retry_failed_round(
+    def admit_failed_round_retry(
         self,
         *,
         packet: object,
         reviewer: str,
         manifest: Sequence[RetryManifestItem],
     ) -> RetryAdmissionReceipt:
-        """Persist an explicit retry admission and unlock the next round without running it."""
-        state = self.durable_state
-        if state is None:
-            raise LoopStateInconsistent("retry admission requires a durable v6 loop")
-        receipt = state.retry_failed_round(packet=packet, reviewer=reviewer, manifest=manifest)
-        self.loop._authorize_durable_retry(receipt)
+        """ADR-0083: durably admit a human-reviewed retry of the failed experiment round
+        (``DurableState.admit_failed_round_retry``), then lift this loop's fail-stop for it.
+
+        Explicit only: nothing is scheduled or run here; the caller runs the next round, which
+        runs exactly the admitted trials. Requires a v6 directory (``open_synthetic_loop(...,
+        enable_failed_round_retry=True)``) and a loop stopped by that failed round.
+        """
+        state = self._retry_state()
+        loop = self.loop
+        if loop.recovery_required is None or loop.halted is not None or loop.stopped is not None:
+            raise LoopStateInconsistent(
+                "a retry is admitted only while this loop is stopped by its failed experiment "
+                "round"
+            )
+        receipt = state.admit_failed_round_retry(
+            packet=packet, reviewer=reviewer, manifest=manifest
+        )
+        loop.authorize_failed_round_retry(receipt)
         return receipt
 
     def resume_failed_round_retry(self) -> RetryAdmissionReceipt:
-        """Explicitly activate a completed retry admission after reopening its v6 state."""
-        state = self.durable_state
-        if state is None:
-            raise LoopStateInconsistent("retry resume requires a durable v6 loop")
-        receipt = state.retry_receipt()
-        self.loop._authorize_durable_retry(receipt)
+        """ADR-0083: after reopening, explicitly lift the fail-stop for the completed retry
+        admission of the final failed round (refused when there is none, or it already ran)."""
+        receipt = self._retry_state().failed_round_retry_receipt()
+        self.loop.authorize_failed_round_retry(receipt)
         return receipt
+
+    def _retry_state(self) -> DurableState:
+        state = self.durable_state
+        if state is None or state.state_version != RETRY_STATE_VERSION:
+            raise LoopStateInconsistent(
+                "failed-round retry admission requires a v6 state directory (ADR-0083)"
+            )
+        return state
 
     def close(self) -> None:
         """Release the composition's own bus and the directory lock (idempotent; a caller's bus
@@ -592,12 +611,19 @@ def open_synthetic_loop(
     lowercase SHA-256 and selects operator-only state v5. The value is bound into the durable
     fingerprint and must be supplied unchanged on every reopen. Omitting it preserves the ordinary
     v4 path. This parameter does not configure or invoke an operator.
+
+    ``enable_failed_round_retry`` (ADR-0083) selects state v6 — v4 plus the explicit, human-reviewed
+    failed-round retry admission (``DurableLoop.admit_failed_round_retry`` /
+    ``resume_failed_round_retry``) — for a new directory, and must be given on every reopening of
+    one (versions are never migrated). It schedules or retries nothing by itself.
     """
     if operator_identity is not None and (
         not isinstance(operator_identity, str)
         or re.fullmatch(r"[0-9a-f]{64}", operator_identity) is None
     ):
         raise ValueError("operator_identity must be a canonical lowercase SHA-256 hash")
+    if enable_failed_round_retry and operator_identity is not None:
+        raise ValueError("failed-round retry state v6 does not bind an operator_identity (v5)")
     if bus is not None and bus_anchor is not None:  # before anything under state_dir is touched
         raise ValueError(
             "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
@@ -618,7 +644,9 @@ def open_synthetic_loop(
         state_version=(
             RETRY_STATE_VERSION
             if enable_failed_round_retry
-            else (STATE_VERSION if operator_identity is None else OPERATOR_STATE_VERSION)
+            else STATE_VERSION
+            if operator_identity is None
+            else OPERATOR_STATE_VERSION
         ),
     )
     return compose_durable(
@@ -669,7 +697,7 @@ def compose_durable(
             raise LoopStateInconsistent(
                 "v5 operator state requires the same canonical operator_identity at composition"
             )
-    elif operator_identity is not None and state.state_version != RETRY_STATE_VERSION:
+    elif operator_identity is not None:
         raise LoopStateInconsistent("operator_identity cannot compose a v3 or v4 state directory")
     _check_llm_content_mode(state, llm)
     if bus is not None:
@@ -681,8 +709,8 @@ def compose_durable(
             memory=state.memory,
             state_dir=state.root,
             bus=bus,
-            durable_state=state,
             state_lock=state.lock,
+            durable_state=state,
         )
     owned = FileEventBus(state.root / BUS_DIR, anchor=bus_anchor)
     try:
@@ -698,8 +726,8 @@ def compose_durable(
         state_dir=state.root,
         bus=owned,
         owned_bus=owned,
-        durable_state=state,
         state_lock=state.lock,
+        durable_state=state,
     )
 
 
