@@ -67,6 +67,12 @@
    - 上下屏障 = entry × (1 ± multiplier × 入场时可见的波动率特征值)，垂直屏障 = horizon。
    - 同一 bar 同时触碰两个屏障时，沿用 triple barrier 的保守判定。
 
+6. **`UniverseMember.assumption: PolicyBinding | None = None`**（ADR-0051 §3，2026-09-28 补入本批次）
+   - 该成员区间来自 `hlens.listing.observed-state-backfill-assumption` 假设时，填写所绑定的政策（名称、版本、哈希）。
+   - 默认 `None` 表示观测得到，与现状相同。
+   - 非空时，政策 ID 必须是 ADR-0051 的政策标识。
+   - `UniverseBuilt.assumed` 属于 infrastructure DTO，不在契约层，由 ADR-0051 第二期实现。
+
 本批次**不**包括：
 
 - Profile 的 `confidence_level` 字段：会改变所有已钉定的报告哈希，而且数值属于 D-09；
