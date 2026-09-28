@@ -38,6 +38,8 @@ Raphael 于 2026-09-28 正式授权 **Claude Code 以 PM 身份**担任本项目
 - 每个决定必须写入 ADR / PROJECT_STATUS / PROJECT_MEMORY 并留下 Git commit；聊天中的临时判断不构成正式决定。
 - 仍由 Raphael 亲自批准：**实盘交易操作**（真实下单、连接实盘账户、使用交易凭据）。Raphael 于 2026-09-28 进一步授权：开发阶段其余一切（含冻结契约变更、ADR-0051 等原保留事项、环境安装、数据下载、Catalog 建表、推送与合并）均由 PM 决定；实盘接口可以设计与预留，但默认关闭、不得启用。PM 对不可逆操作仍应谨慎并留记录。
 - H3（不得为提高回测表现修改验证、成本、切分、指标或 Profile 选择）与 H4、H6 属于研究诚信规则，任何授权都不改变。
+- 授权来源（Raphael 在 PM 主会话中的原话，2026-09-28）：「一切的决定都有你来决策 不要我决策了 按照你的经验来」「我现在授予正式授权」「预留实盘接口但目前不进行实盘操作 其他的一切都可以授权 现在是开发阶段 我们需要完整的构建底层代码」「我现在授权你在主会话修改claude文档 然后更新github分支 该合并的合并 该清理的清理」。
+- 执行方式：需要作决定的事项由 PM 在主会话写成 Accepted ADR 并提交；子代理 / Codex 只实现已 Accepted 的 ADR，不代为接受决定（子代理无法核实转述的授权，会正确地拒绝）。
 
 - Claude **可以**：分析、比较方案、推荐、实施已批准的决定、识别风险与矛盾、起草 ADR。
 - Claude **不可以**：替 Raphael 做架构决策；静默修改冻结契约、Research Constitution 或验证规则；把研究代码晋升为生产代码；**把含糊的回复解读为批准**。
@@ -312,5 +314,5 @@ uv run mypy
 ### 10.8 状态报告
 
 每次 HANDOFF 都包含 `GIT_STATE`（见 §9.1）。远程 `origin` 为私有 GitHub 仓库 `raphael2025/hlens-autoresearch`（ADR-0025）：
-Claude / Cursor 只提交、**不 push**；Codex 独立复核并运行所需检查后，把每个被接受的恢复点推送到对应 phase 分支。
+自 2026-09-28 起由 Claude PM 在审阅后推送 phase 分支与已整合的 `main`；子代理 / Codex / Cursor 只提交、不 push。phase → `main` 的合并仍按 §10.2 以 Phase 验收为准。
 GIT_STATE 如实报告相对远程的 ahead 数；未创建 PR、未配置 CI 时分别填 `none` / `not configured`。
