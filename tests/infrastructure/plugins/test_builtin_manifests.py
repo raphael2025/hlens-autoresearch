@@ -34,14 +34,38 @@ from infrastructure.plugins.builtin.events import (
     VOLATILITY_BREAKOUT,
 )
 from infrastructure.plugins.builtin.features import (
+    ADX,
+    AMIHUD_ILLIQUIDITY,
+    ATR,
+    BAR_CLOSE,
+    BAR_HIGH,
     BAR_LOG_RETURN,
+    BAR_LOW,
     BAR_REALIZED_VOLATILITY,
     BAR_VOLUME_SUM,
+    BBANDS_BANDWIDTH,
+    BBANDS_PERCENT_B,
+    CORWIN_SCHULTZ_SPREAD,
+    GARMAN_KLASS_VOLATILITY,
+    JUMP_VARIANCE,
+    MACD_LINE,
+    MACD_SIGNAL,
+    PARKINSON_VOLATILITY,
+    RSI,
+    TAKER_FLOW_IMBALANCE,
+    VWAP,
+    YANG_ZHANG_VOLATILITY,
 )
 from infrastructure.plugins.builtin.knowledge import HLENS_KNOWLEDGE_LOCAL
 from infrastructure.plugins.builtin.llm import HLENS_LLM_SCRIPTED
 from infrastructure.plugins.builtin.outcomes import HLENS_FORWARD_RETURN, HLENS_TRIPLE_BARRIER
-from infrastructure.plugins.builtin.states import LIQUIDITY_REGIME, TREND_RANGE, VOLATILITY_REGIME
+from infrastructure.plugins.builtin.states import (
+    LIQUIDITY_REGIME,
+    RETURN_SHOCK,
+    TREND_RANGE,
+    VOLATILITY_REGIME,
+    VOLATILITY_SQUEEZE,
+)
 from infrastructure.plugins.builtin.synthetic import HLENS_SYNTHETIC_RANDOM_WALK
 from infrastructure.plugins.manifest import PluginKind, PluginManifest
 from plugins.backtest import BarBacktester
@@ -56,14 +80,38 @@ from plugins.events import (
     VolatilityBreakoutProvider,
 )
 from plugins.features import (
+    AdxProvider,
+    AmihudIlliquidityProvider,
+    AtrProvider,
+    BarCloseProvider,
+    BarHighProvider,
     BarLogReturnProvider,
+    BarLowProvider,
     BarRealizedVolatilityProvider,
     BarVolumeSumProvider,
+    BbandsBandwidthProvider,
+    BbandsPercentBProvider,
+    CorwinSchultzSpreadProvider,
+    GarmanKlassVolatilityProvider,
+    JumpVarianceProvider,
+    MacdLineProvider,
+    MacdSignalProvider,
+    ParkinsonVolatilityProvider,
+    RsiProvider,
+    TakerFlowImbalanceProvider,
+    VwapProvider,
+    YangZhangVolatilityProvider,
 )
 from plugins.knowledge import LocalKnowledgeProvider
 from plugins.llm import ScriptedLLMProvider
 from plugins.outcomes import ForwardReturnOutcome, TripleBarrierOutcome
-from plugins.states import LiquidityRegimeProvider, TrendRangeProvider, VolatilityRegimeProvider
+from plugins.states import (
+    LiquidityRegimeProvider,
+    ReturnShockProvider,
+    TrendRangeProvider,
+    VolatilityRegimeProvider,
+    VolatilitySqueezeProvider,
+)
 from plugins.synthetic import RandomWalkMarket
 
 MINUTE = timedelta(minutes=1)
@@ -174,6 +222,86 @@ def _build_cases() -> list[tuple[object, PluginManifest, str]]:
         (RandomWalkMarket(), HLENS_SYNTHETIC_RANDOM_WALK, "synthetic"),
         (ScriptedLLMProvider(outputs=[{}]), HLENS_LLM_SCRIPTED, "llm"),
         (LocalKnowledgeProvider(), HLENS_KNOWLEDGE_LOCAL, "knowledge"),
+        # ADR-0085 batch (indicators.py / range_volatility.py / microstructure.py /
+        # volatility_events.py) — ADR-0087's built-in Manifest follow-up (FOLLOWUP-1).
+        (AtrProvider((AtrProvider.spec(3, scale=8),)), ATR, "feature"),
+        (RsiProvider((RsiProvider.spec(3, scale=8),)), RSI, "feature"),
+        (
+            MacdLineProvider((MacdLineProvider.spec(2, 4, 2, scale=8),)),
+            MACD_LINE,
+            "feature",
+        ),
+        (
+            MacdSignalProvider((MacdSignalProvider.spec(2, 4, 2, scale=8),)),
+            MACD_SIGNAL,
+            "feature",
+        ),
+        (
+            BbandsPercentBProvider((BbandsPercentBProvider.spec(3, Decimal("2"), scale=8),)),
+            BBANDS_PERCENT_B,
+            "feature",
+        ),
+        (
+            BbandsBandwidthProvider((BbandsBandwidthProvider.spec(3, Decimal("2"), scale=8),)),
+            BBANDS_BANDWIDTH,
+            "feature",
+        ),
+        (VwapProvider((VwapProvider.spec(3, scale=8),)), VWAP, "feature"),
+        (AdxProvider((AdxProvider.spec(3, scale=8),)), ADX, "feature"),
+        (BarCloseProvider((BarCloseProvider.spec(),)), BAR_CLOSE, "feature"),
+        (BarHighProvider((BarHighProvider.spec(),)), BAR_HIGH, "feature"),
+        (BarLowProvider((BarLowProvider.spec(),)), BAR_LOW, "feature"),
+        (
+            ParkinsonVolatilityProvider((ParkinsonVolatilityProvider.spec(3, scale=8),)),
+            PARKINSON_VOLATILITY,
+            "feature",
+        ),
+        (
+            GarmanKlassVolatilityProvider((GarmanKlassVolatilityProvider.spec(3, scale=8),)),
+            GARMAN_KLASS_VOLATILITY,
+            "feature",
+        ),
+        (
+            YangZhangVolatilityProvider((YangZhangVolatilityProvider.spec(3, scale=8),)),
+            YANG_ZHANG_VOLATILITY,
+            "feature",
+        ),
+        (
+            JumpVarianceProvider((JumpVarianceProvider.spec(3, scale=8),)),
+            JUMP_VARIANCE,
+            "feature",
+        ),
+        (
+            TakerFlowImbalanceProvider((TakerFlowImbalanceProvider.spec(3, scale=8),)),
+            TAKER_FLOW_IMBALANCE,
+            "feature",
+        ),
+        (
+            AmihudIlliquidityProvider((AmihudIlliquidityProvider.spec(3, scale=8),)),
+            AMIHUD_ILLIQUIDITY,
+            "feature",
+        ),
+        (
+            CorwinSchultzSpreadProvider((CorwinSchultzSpreadProvider.spec(3, scale=8),)),
+            CORWIN_SCHULTZ_SPREAD,
+            "feature",
+        ),
+        (
+            VolatilitySqueezeProvider(
+                (
+                    VolatilitySqueezeProvider.spec(
+                        X, VOLUME_X, squeeze_below="0.5", expansion_above="1.5"
+                    ),
+                )
+            ),
+            VOLATILITY_SQUEEZE,
+            "state",
+        ),
+        (
+            ReturnShockProvider((ReturnShockProvider.spec(X, VOLUME_X, k="2"),)),
+            RETURN_SHOCK,
+            "state",
+        ),
     ]
 
 

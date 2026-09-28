@@ -74,13 +74,15 @@
 | 单 bar 对数收益 | 定义性计算（无单独出处） | `bar_log_return@1.0.0` | 1m / 派生 bar `close` | 契约套件、手算值、管线、红队 | `IMPLEMENTED · NOT_VALIDATED` |
 | 已实现波动率 | `hlens-knowledge:FEA-RV-001` | `bar_realized_vol_<n>@1.0.0` | bar `close` | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 | 成交量合计 | `hlens-knowledge:FEA-ADV-001`（相关，不同：ADV 为均值） | `bar_volume_sum_<n>@1.0.0` | bar `volume` | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
-| 区间波动率（Parkinson / Garman–Klass / Yang–Zhang） | `FEA-PARKINSON-001`、`FEA-GK-001`、`FEA-YZ-001` | 无 | bar OHLC（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 跳跃二次变差（RV − 双幂变差） | `FEA-JUMP-QV-001` | 无 | bar `close`（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| 区间波动率（Parkinson / Garman–Klass / Yang–Zhang） | `FEA-PARKINSON-001`、`FEA-GK-001`、`FEA-YZ-001` | `parkinson_vol_<window>@1.0.0`（`ParkinsonVolatilityProvider`）、`garman_klass_vol_<window>@1.0.0`（`GarmanKlassVolatilityProvider`）、`yang_zhang_vol_<window>@1.0.0`（`YangZhangVolatilityProvider`）（`plugins/features/range_volatility.py`，IMPL-FEAT-VOL） | bar OHLC（可得） | 契约套件、手算值、历史不足、除零、因果扰动（`tests/plugins/features/test_range_volatility.py`） | `IMPLEMENTED · NOT_VALIDATED` |
+| 跳跃二次变差（RV − 双幂变差） | `FEA-JUMP-QV-001` | `jump_qv_<window>@1.0.0`（`JumpVarianceProvider`，`plugins/features/range_volatility.py`，IMPL-FEAT-VOL） | bar `close`（可得） | 契约套件、手算值、历史不足（`tests/plugins/features/test_range_volatility.py`） | `IMPLEMENTED · NOT_VALIDATED` |
 | 经典指标（ATR / RSI / MACD / 布林带 / VWAP） | `IND-ATR-001`、`IND-RSI-001`、`IND-MACD-001`、`IND-BBANDS-001`、`IND-VWAP-001` | `atr_<period>@1.0.0`、`rsi_<period>@1.0.0`、`macd_<fast>_<slow>_<signal>@1.0.0` + `macd_signal_<fast>_<slow>_<signal>@1.0.0`、`bbands_percent_b_<window>_<k>@1.0.0` + `bbands_bandwidth_<window>_<k>@1.0.0`、`vwap_<window>@1.0.0`（`plugins/features/indicators.py`，IMPL-FEAT-IND） | bar OHLCV（可得） | 契约套件、手算值、历史不足、除零、因果扰动（`tests/plugins/features/test_indicators.py`） | `IMPLEMENTED · NOT_VALIDATED` |
 | 趋势强度（ADX 类） | `FEA-TREND-STRENGTH-001` | `adx_<period>@1.0.0`（`plugins/features/indicators.py`，IMPL-FEAT-IND）；状态 `trend_range` 用效率比，是另一种操作化 | bar HLC（可得） | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
-| Taker 流量 / 主动买卖差 | `FEA-TAKER-FLOW-001`、`ORF-IMBALANCE-001`、`ORF-CVD-001` | 无 | K 线 `taker_buy_base_volume`（可得）；aggTrades `buyer_is_maker`（无 Feature 路径） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| Amihud 非流动性 | `MSTX-AMIHUD-001` | 无 | bar `close` + `quote_volume`（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 高低价价差估计（Corwin–Schultz / Abdi–Ranaldo） | `FEA-CS-SPREAD-001`、`FEA-AR-SPREAD-001` | 无 | 日 bar HLC（可由派生得到） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| Taker 流量 / 主动买卖差 | `FEA-TAKER-FLOW-001` | `taker_flow_<window>@1.0.0`（`TakerFlowImbalanceProvider`，`plugins/features/microstructure.py`，IMPL-FEAT-VOL） | K 线 `taker_buy_base_volume`（可得） | 契约套件、手算值、除零、因果扰动（`tests/plugins/features/test_microstructure.py`） | `IMPLEMENTED · NOT_VALIDATED` |
+| 主动买卖差（aggTrades 口径） | `ORF-IMBALANCE-001`、`ORF-CVD-001` | 无 | aggTrades `buyer_is_maker`（无 Feature 路径） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| Amihud 非流动性 | `MSTX-AMIHUD-001` | `amihud_illiq_<window>@1.0.0`（`AmihudIlliquidityProvider`，`plugins/features/microstructure.py`，IMPL-FEAT-VOL） | bar `close` + `quote_volume`（可得） | 契约套件、手算值、除零、因果扰动（`tests/plugins/features/test_microstructure.py`） | `IMPLEMENTED · NOT_VALIDATED` |
+| 高低价价差估计（Corwin–Schultz） | `FEA-CS-SPREAD-001` | `cs_spread_<window>@1.0.0`（`CorwinSchultzSpreadProvider`，`plugins/features/microstructure.py`，IMPL-FEAT-VOL） | bar HLC（可得） | 契约套件、手算值、负值截断、因果扰动（`tests/plugins/features/test_microstructure.py`） | `IMPLEMENTED · NOT_VALIDATED` |
+| 高低价价差估计（Abdi–Ranaldo） | `FEA-AR-SPREAD-001` | 无 | 日 bar HLC（可由派生得到） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 成交间隔 | `FEA-DURATION-001` | 无 | aggTrades `event_time`（无 Feature 路径） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | VPIN / BVC | `ORF-VPIN-001`、`ORF-BVC-001` | 无 | aggTrades（无 Feature 路径）；成交量时钟 bar 未实现 | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 分数阶差分 | `FEA-FRACDIFF-001` | 无 | bar `close`（可得） | 无 | `DOCUMENTED · UNSPECIFIED` |
@@ -138,9 +140,26 @@ spec 必须恰为其参数的规范重建（内容哈希核对）。
 
 - **测试证据**：`tests/plugins/features/test_indicators.py`（8 + 3 个契约套件、每个对象的手算精确值、历史不足、
   除零 / 缺失、参数校验、畸形 bar fail-closed）。同上，未在正式 Research Dataset 上运行过。
-- **身份未经 PM 复核**：`bar_close` / `bar_high` / `bar_low` 三个名字由 PM 直接给出（供
+- **身份已交叉核对**：`bar_close` / `bar_high` / `bar_low` 三个名字由 PM 直接给出（供
   `donchian_breakout@1.0.0` / `zscore_reversion@1.0.0` 使用）；`research/strategies/price_signals.py`
-  （PM 所述定义 `BAR_CLOSE_SIGNAL` 等常量的模块）在本 worktree 不存在，未能与之交叉核对。
+  的 `BAR_CLOSE_SIGNAL` / `BAR_HIGH_SIGNAL` / `BAR_LOW_SIGNAL` 现已核对为同一身份
+  （`tests/research/strategies/test_price_signals_identity.py`，FOLLOWUP-1）。
+
+### ADR-0085 批次：区间波动率 / 跳跃方差 / 微观结构特征（IMPL-FEAT-VOL）
+
+`parkinson_vol_<window>` / `garman_klass_vol_<window>` / `yang_zhang_vol_<window>` / `jump_qv_<window>`
+（`plugins/features/range_volatility.py`）与 `taker_flow_<window>` / `amihud_illiq_<window>` /
+`cs_spread_<window>`（`plugins/features/microstructure.py`）。执行器、可见集合、`available_lag` 截断、
+fail-closed 输入校验与上表三个 bar 特征相同；窗口只取**最新的连续 bar**，历史不足或窗口内有缺口 → `None`；
+`window`（以及 `scale` 等输出参数）在 spec 中必填，无默认值（ADR-0085 §"通用规则" #2）。除零 / 零区间 →
+`None`，不抛异常不外推；`jump_qv_<window>` 是本批次唯一按 ADR-0085 显式截断为 `>= 0` 的量（其余量在
+`low <= open, close <= high` 前提下公式本身非负，见各 provider docstring）。
+
+- **测试证据**：`tests/plugins/features/test_range_volatility.py`、
+  `tests/plugins/features/test_microstructure.py`（每个对象的契约套件、手算精确值、历史不足、除零 / 缺失、
+  因果扰动、畸形 bar fail-closed）。同上，未在正式 Research Dataset 上运行过。
+- **未纳入本批次**：aggTrades 类特征（`ORF-*`，无从成交到 Feature 的输入路径）、`FEA-AR-SPREAD-001`（留待下批），
+  两者状态仍为 `DOCUMENTED · UNSPECIFIED`。
 
 ## 候选方法（未实现，只作规格输入）
 

@@ -36,6 +36,7 @@ from enum import StrEnum
 from pydantic import ValidationError
 
 from core.contracts.feature import ObservationScalar
+from core.contracts.outcome import OutcomeUsedAsInput
 from core.contracts.strategy import (
     BacktestCostModel,
     BacktestProvider,
@@ -319,6 +320,16 @@ def evaluate_strategy(
         backtest = _backtest_step(inputs, backtester, sim.targets)
     except (StrategyProviderError, RiskProviderError, BacktestProviderError) as exc:
         return _failed(candidate, registry, ReasonCode.RUN_ERRORED, exc, sim.strategy_result)
+    except OutcomeUsedAsInput as exc:
+        return _failed(
+            candidate,
+            registry,
+            ReasonCode.OUTCOME_USED_AS_INPUT,
+            exc,
+            sim.strategy_result,
+            terminal_state="REJECTED",
+            status=EvaluationStatus.REJECTED,
+        )
     except (ValidationError, ValueError) as exc:
         return _failed(candidate, registry, ReasonCode.CONTRACT_VIOLATION, exc, sim.strategy_result)
     strategy_result, risk_results = sim.strategy_result, sim.risk_results
@@ -332,6 +343,16 @@ def evaluate_strategy(
         validation.check_subject(subject)
     except (StrategyProviderError, RiskProviderError, BacktestProviderError) as exc:
         return _failed(candidate, registry, ReasonCode.RUN_ERRORED, exc, strategy_result)
+    except OutcomeUsedAsInput as exc:
+        return _failed(
+            candidate,
+            registry,
+            ReasonCode.OUTCOME_USED_AS_INPUT,
+            exc,
+            strategy_result,
+            terminal_state="REJECTED",
+            status=EvaluationStatus.REJECTED,
+        )
     except (ValidationError, ValueError) as exc:
         return _failed(candidate, registry, ReasonCode.CONTRACT_VIOLATION, exc, strategy_result)
     report = validation.report
@@ -373,10 +394,13 @@ def _failed(
     reason: ReasonCode,
     error: Exception,
     strategy_result: StrategyResult | None,
+    *,
+    terminal_state: str = "FAILED",
+    status: EvaluationStatus = EvaluationStatus.FAILED,
 ) -> StrategyEvaluation:
     record = _failure(
         candidate,
-        "FAILED",
+        terminal_state,
         reason,
         (f"error:{type(error).__name__}",),
         lessons=str(error)[:2000],
@@ -384,7 +408,7 @@ def _failed(
     registry.append(record)
     return StrategyEvaluation(
         candidate.spec.ref,
-        EvaluationStatus.FAILED,
+        status,
         strategy_result,
         failure=record,
     )
