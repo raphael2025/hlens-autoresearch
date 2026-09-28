@@ -308,31 +308,107 @@ def _history(adapter: RevisionCatalog, table: str) -> Iterable[SnapshotInfo]:
     yield from history_from(adapter, table, snapshot.parent_snapshot_id)
 
 
+@dataclass(slots=True)
+class _BatchPrefixSummary:
+    """Constant-size summary of one prefix in newest-first history order."""
+
+    count: int = 0
+    newest_index: int | None = None
+    oldest_index: int | None = None
+    previous_index: int | None = None
+    added_rows: int = 0
+    index_zero_rows: int | None = None
+    newest_rows: int | None = None
+    regular_rows: int | None = None
+
+
+@dataclass(slots=True)
+class _IndexedBatchHistory:
+    """A pinned history head and per-prefix summaries; never retains SnapshotInfo objects."""
+
+    head: str | None
+    prefixes: tuple[str, ...]
+    summaries: dict[str, _BatchPrefixSummary]
+
+
+def _batch_prefix(
+    batch_id: str, table: str, prefixes: Mapping[str, object]
+) -> tuple[str, int] | None:
+    """Parse a batch id only when its parent lineage is one of the requested prefixes."""
+    head, separator, tail = batch_id.rpartition(".")
+    prefix = f"{head}{separator}"
+    if prefix not in prefixes:
+        return None
+    if len(tail) != _BATCH_INDEX_DIGITS or not tail.isdigit() or not tail.isascii():
+        raise CatalogIntegrityError(f"{table} has a malformed batch id {batch_id!r}")
+    return prefix, int(tail)
+
+
 def _indexed_batches(
     adapter: RevisionCatalog,
     table: str,
     prefixes: Iterable[str],
     snapshots: Iterable[SnapshotInfo] | None = None,
-) -> dict[str, dict[int, list[SnapshotInfo]]]:
-    """Per prefix: ``<prefix><8-digit index>`` batch snapshots by index, in one history walk.
+) -> dict[str, _BatchPrefixSummary]:
+    """Summarise requested batch prefixes with constant space per prefix.
 
     ``snapshots`` is the history to walk (default: the table's current one).
+
+    Histories are newest first. The writers append a lineage's microbatches in increasing index
+    order, so its history indices are strictly decreasing. Checking that order detects duplicate
+    submissions without keeping a set of every index. D2's stricter contiguous-prefix rule is
+    checked by its consumer from the summary's count and endpoints; D3E may legitimately have
+    gaps where another response first delivered an element.
     """
-    found: dict[str, dict[int, list[SnapshotInfo]]] = {prefix: {} for prefix in prefixes}
+    found = {prefix: _BatchPrefixSummary() for prefix in prefixes}
     if not found:
         return found
     for snapshot in _history(adapter, table) if snapshots is None else snapshots:
         batch_id = snapshot.batch_id
         if batch_id is None:
             continue
-        head, separator, tail = batch_id.rpartition(".")
-        prefix = f"{head}{separator}"
-        if prefix not in found:
+        parsed = _batch_prefix(batch_id, table, found)
+        if parsed is None:
             continue
-        if len(tail) != _BATCH_INDEX_DIGITS or not tail.isdigit() or not tail.isascii():
-            raise CatalogIntegrityError(f"{table} has a malformed batch id {batch_id!r}")
-        found[prefix].setdefault(int(tail), []).append(snapshot)
+        prefix, index = parsed
+        summary = found[prefix]
+        if summary.previous_index is not None and index >= summary.previous_index:
+            raise CatalogIntegrityError(
+                f"{table} has duplicate or out-of-order batch index {index} for {prefix!r}"
+            )
+        if summary.newest_index is None:
+            summary.newest_index = index
+            summary.newest_rows = snapshot.added_rows
+        summary.oldest_index = index
+        summary.previous_index = index
+        summary.count += 1
+        summary.added_rows += snapshot.added_rows
+        if index == 0:
+            summary.index_zero_rows = snapshot.added_rows
+        # For D2, every batch before the final index has the index-zero row count. While
+        # walking backwards, index n-2 supplies that count; retain only one value.
+        if summary.newest_index != index and index != 0:
+            if summary.regular_rows is None:
+                summary.regular_rows = snapshot.added_rows
+            elif summary.regular_rows != snapshot.added_rows:
+                summary.regular_rows = -1
     return found
+
+
+def _iter_indexed_batches(
+    adapter: RevisionCatalog, table: str, history: _IndexedBatchHistory
+) -> Iterator[tuple[str, int, SnapshotInfo]]:
+    """Second pinned pass; yields matching SnapshotInfo one at a time, newest first."""
+    if history.head is None:
+        return
+    prefixes = set(history.prefixes)
+    for snapshot in history_from(adapter, table, history.head):
+        batch_id = snapshot.batch_id
+        if batch_id is None:
+            continue
+        parsed = _batch_prefix(batch_id, table, prefixes)
+        if parsed is not None:
+            yield parsed[0], parsed[1], snapshot
 
 
 @runtime_checkable
@@ -1007,7 +1083,7 @@ class PersistedRowVerifier:
         #: Verified first-delivery collections, most recent last (immutable checkpoints).
         self._collections: dict[tuple[str, str], CommittedCollection] = {}
         self._batch_index: dict[
-            tuple[str, str | None, tuple[str, ...]], dict[str, dict[int, list[SnapshotInfo]]]
+            tuple[str, str | None, tuple[str, ...]], _IndexedBatchHistory
         ] = {}
         #: Only for a verifier over a pinned, read-only view (one normalizer call, G3-S): the
         #: archive rows, their objects and parses cannot change under it, so each archive is
@@ -1117,8 +1193,8 @@ class PersistedRowVerifier:
 
     def _indexed(
         self, table: str, prefixes: Mapping[str, str]
-    ) -> dict[str, dict[int, list[SnapshotInfo]]]:
-        """``_indexed_batches``, memoised per head: one history walk for many windows (G3-S)."""
+    ) -> _IndexedBatchHistory:
+        """Constant-space batch summaries, memoised per immutable head (G3-S)."""
         info = self._adapter.load_table(table)
         snapshot = None if info is None else info.current_snapshot
         head = None if snapshot is None else snapshot.snapshot_id
@@ -1128,11 +1204,21 @@ class PersistedRowVerifier:
             # Walk exactly the history of the head the memo is keyed by (a commit landing in
             # between must never be filed under the older head: review G3 cursor-3).
             walk = None if info is None else history_from(self._adapter, table, head)
-            found = _indexed_batches(self._adapter, table, prefixes, walk)
+            found = _IndexedBatchHistory(
+                head=head,
+                prefixes=tuple(sorted(prefixes)),
+                summaries=_indexed_batches(self._adapter, table, prefixes, walk),
+            )
             if len(self._batch_index) >= _BATCH_INDEX_CACHE:
                 self._batch_index.pop(next(iter(self._batch_index)))
             self._batch_index[key] = found
-        return {prefix: {i: list(v) for i, v in value.items()} for prefix, value in found.items()}
+        return found
+
+    def _batch_snapshots(
+        self, table: str, history: _IndexedBatchHistory
+    ) -> Iterator[tuple[str, int, SnapshotInfo]]:
+        """The second, streaming pass over exactly the summarized head."""
+        return _iter_indexed_batches(self._adapter, table, history)
 
     def _check_sole_holders(self, table: str, by_seq: Mapping[int, str], label: str) -> None:
         holders = self._holders(table, list(by_seq))
@@ -1411,31 +1497,52 @@ class PersistedRowVerifier:
                 by_lineage[row["response_revision_id"]].append(row)
         prefixes = {f"{lineage}.elements.": lineage for lineage in lineage_ids}
         found = self._indexed(table, prefixes)
+        members_by_prefix = {
+            prefix: sorted(by_lineage[lineage], key=lambda row: row["element_index"])
+            for prefix, lineage in prefixes.items()
+        }
+        later_rows = {prefix: 0 for prefix in prefixes}
+        seen = {prefix: 0 for prefix in prefixes}
+        bounds = {prefix: [1, MAX_ELEMENT_MICROBATCH_ROWS] for prefix in prefixes}
         for prefix, lineage in prefixes.items():
-            members = sorted(by_lineage[lineage], key=lambda row: row["element_index"])
-            batches = [
-                (index, _one_snapshot(table, element_batch_id(lineage, index), snapshots))
-                for index, snapshots in sorted(found[prefix].items())
-            ]
-            committed = sum(snapshot.added_rows for _, snapshot in batches)
-            if committed != len(members):
+            members = members_by_prefix[prefix]
+            summary = found.summaries[prefix]
+            if summary.added_rows != len(members):
                 raise CatalogIntegrityError(
                     f"{table}: response revision {lineage} has {len(members)} element row(s) but "
-                    f"its element batches committed {committed}"
+                    f"its element batches committed {summary.added_rows}"
                 )
-            offset = 0
-            low, high = 1, MAX_ELEMENT_MICROBATCH_ROWS
-            for index, snapshot in batches:
-                batch_id = element_batch_id(lineage, index)
-                part = members[offset : offset + snapshot.added_rows]
-                offset += snapshot.added_rows
-                check_batch_snapshot(definition, batch_id, snapshot, part)
-                for row in part:
-                    element = row["element_index"]
-                    low = max(low, element // (index + 1) + 1)
-                    if index:
-                        high = min(high, element // index)
-            if low > high:
+        for prefix, index, snapshot in self._batch_snapshots(table, found):
+            lineage = prefixes[prefix]
+            members = members_by_prefix[prefix]
+            batch_id = element_batch_id(lineage, index)
+            start = len(members) - later_rows[prefix] - snapshot.added_rows
+            if start < 0:
+                raise CatalogIntegrityError(
+                    f"{table}: response revision {lineage} has inconsistent batch row counts"
+                )
+            part = members[start : start + snapshot.added_rows]
+            if len(part) != snapshot.added_rows:
+                raise CatalogIntegrityError(
+                    f"{table}: response revision {lineage} has inconsistent batch row counts"
+                )
+            later_rows[prefix] += snapshot.added_rows
+            seen[prefix] += 1
+            check_batch_snapshot(definition, batch_id, snapshot, part)
+            low, high = bounds[prefix]
+            for row in part:
+                element = row["element_index"]
+                low = max(low, element // (index + 1) + 1)
+                if index:
+                    high = min(high, element // index)
+            bounds[prefix] = [low, high]
+        for prefix, lineage in prefixes.items():
+            summary = found.summaries[prefix]
+            if seen[prefix] != summary.count or later_rows[prefix] != len(members_by_prefix[prefix]):
+                raise CatalogIntegrityError(
+                    f"{table}: response revision {lineage} batch history changed during verification"
+                )
+            if bounds[prefix][0] > bounds[prefix][1]:
                 raise CatalogIntegrityError(
                     f"{table}: the element batches of response revision {lineage} follow no "
                     "single microbatch plan"
@@ -1818,21 +1925,27 @@ class PersistedRowVerifier:
         table = definition.table
         prefixes = {f"{archive_id}.rows.": archive_id for archive_id in rows}
         found = self._indexed(table, prefixes)
+        plans: dict[str, tuple[int, int, int, set[int]]] = {}
         for prefix, archive_id in sorted(prefixes.items()):
-            batches = sorted(found[prefix].items())
-            snapshots = [_one_snapshot(table, _row_batch_id(archive_id, i), s) for i, s in batches]
-            if [index for index, _ in batches] != list(range(len(batches))):
+            summary = found.summaries[prefix]
+            if summary.count == 0:
+                raise CatalogIntegrityError(
+                    f"{table}: archive revision {archive_id} has rows but no committed row batch"
+                )
+            if summary.newest_index != summary.count - 1 or summary.oldest_index != 0:
                 raise CatalogIntegrityError(
                     f"{table}: the row batches of archive revision {archive_id} are not a "
                     "contiguous prefix"
                 )
-            if not snapshots:
-                raise CatalogIntegrityError(
-                    f"{table}: archive revision {archive_id} has rows but no committed row batch"
-                )
-            sizes = [snapshot.added_rows for snapshot in snapshots]
-            size = sizes[0]
-            if size < 1 or any(value != size for value in sizes[:-1]) or sizes[-1] > size:
+            size = summary.index_zero_rows
+            last_size = summary.newest_rows
+            if (
+                size is None
+                or last_size is None
+                or size < 1
+                or (summary.count > 2 and summary.regular_rows != size)
+                or last_size > size
+            ):
                 raise CatalogIntegrityError(
                     f"{table}: the row batches of archive revision {archive_id} follow no single "
                     "microbatch plan"
@@ -1841,25 +1954,50 @@ class PersistedRowVerifier:
             for row in rows[archive_id]:
                 position = row["archive_line_number"] - 1
                 index = position // size if position >= 0 else -1
-                if not 0 <= index < len(sizes) or position >= index * size + sizes[index]:
+                batch_size = last_size if index == summary.count - 1 else size
+                if (
+                    not 0 <= index < summary.count
+                    or batch_size is None
+                    or position >= index * size + batch_size
+                ):
                     raise CatalogIntegrityError(
                         f"{table}: row {row['revision_id']} (line {row['archive_line_number']}) "
                         f"is not committed by any batch of archive revision {archive_id}"
-                    )
-                needed.add(index)
-            for index in sorted(needed):
-                first = index * size + 1
-                current = self._scan(
-                    definition,
-                    And(
-                        _equals("archive_revision_id", archive_id),
-                        And(
-                            _at_least("archive_line_number", first),
-                            _below("archive_line_number", first + sizes[index]),
-                        ),
-                    ),
                 )
-                current.sort(key=lambda row: (row["archive_line_number"], row["revision_id"]))
-                check_batch_snapshot(
-                    definition, _row_batch_id(archive_id, index), snapshots[index], current
+                needed.add(index)
+            plans[prefix] = (size, last_size, summary.count, needed)
+        checked: dict[str, set[int]] = {prefix: set() for prefix in prefixes}
+        observed = {prefix: 0 for prefix in prefixes}
+        for batch_prefix, index, snapshot in self._batch_snapshots(table, found):
+            observed[batch_prefix] += 1
+            plan = plans[batch_prefix]
+            size, last_size, count, needed = plan
+            if index not in needed:
+                continue
+            archive_id = prefixes[batch_prefix]
+            batch_size = last_size if index == count - 1 else size
+            first = index * size + 1
+            current = self._scan(
+                definition,
+                And(
+                    _equals("archive_revision_id", archive_id),
+                    And(
+                        _at_least("archive_line_number", first),
+                        _below("archive_line_number", first + batch_size),
+                    ),
+                ),
+            )
+            current.sort(key=lambda row: (row["archive_line_number"], row["revision_id"]))
+            check_batch_snapshot(
+                definition, _row_batch_id(archive_id, index), snapshot, current
+            )
+            checked[batch_prefix].add(index)
+        for prefix, archive_id in prefixes.items():
+            if (
+                checked[prefix] != plans[prefix][3]
+                or observed[prefix] != found.summaries[prefix].count
+            ):
+                raise CatalogIntegrityError(
+                    f"{table}: the row batches of archive revision {archive_id} changed during "
+                    "verification"
                 )

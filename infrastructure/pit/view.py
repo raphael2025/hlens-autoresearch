@@ -16,6 +16,7 @@ Writes are refused.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import Any
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, BooleanExpression
@@ -88,6 +89,37 @@ class PinnedCatalogView:
         return self._adapter.scan_columns(
             table, columns=columns, row_filter=row_filter, limit=limit, snapshot_id=bound
         )
+
+    def scan_column_batches(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
+        snapshot_id: str | None = None,
+    ) -> Any:
+        """Stream selected columns at an explicit or bound snapshot.
+
+        This optional capability is delegated only when the underlying adapter implements it.
+        The reader/iterator is returned unchanged so its ownership, close behavior, and lifetime
+        remain governed by the adapter. An unbound table uses the same always-false projection as
+        :meth:`scan_columns`; no full-table read is used as a fallback.
+        """
+        scan_batches = getattr(self._adapter, "scan_column_batches", None)
+        if not callable(scan_batches):
+            raise PinnedViewError("the underlying catalog does not support streaming column scans")
+
+        if snapshot_id is not None:
+            # Explicit historical snapshots take precedence over the view's binding.
+            return scan_batches(
+                table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+            )
+
+        bound = self._bindings.get(table)
+        if bound is None:
+            # Preserve scan_columns' unbound-table semantics without materializing a table.
+            return scan_batches(table, columns=columns, row_filter=AlwaysFalse())
+        return scan_batches(table, columns=columns, row_filter=row_filter, snapshot_id=bound)
 
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         raise PinnedViewError("a pinned catalog view is read-only")

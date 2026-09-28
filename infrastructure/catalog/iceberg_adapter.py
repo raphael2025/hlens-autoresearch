@@ -200,6 +200,39 @@ def _reduce_max_int64(
     return largest
 
 
+class _ClosingRecordBatchIterator(Iterator[pa.RecordBatch]):
+    """Close a PyArrow batch reader on exhaustion, read failure, or explicit close."""
+
+    def __init__(self, reader: pa.RecordBatchReader) -> None:
+        self._reader = reader
+        self._closed = False
+
+    def __iter__(self) -> Self:
+        return self
+
+    def __next__(self) -> pa.RecordBatch:
+        if self._closed:
+            raise StopIteration
+        try:
+            return next(self._reader)
+        except StopIteration:
+            self.close()
+            raise
+        except BaseException:
+            try:
+                self.close()
+            except BaseException:
+                # Preserve the read failure while still attempting to release the reader.
+                pass
+            raise
+
+    def close(self) -> None:
+        """Release the underlying reader, including when iteration stops early."""
+        if not self._closed:
+            self._closed = True
+            self._reader.close()
+
+
 def _revalidated[M: (TableDefinition, CommitRequest)](model: type[M], value: object) -> M:
     if type(value) is not model:
         raise TypeError(f"expected {model.__name__}, got {type(value).__name__}")
@@ -470,6 +503,44 @@ class PyIcebergCatalogAdapter:
                 snapshot_id=pinned.snapshot_id,
             )
             return scan.to_arrow()
+
+    def scan_column_batches(
+        self,
+        table: str,
+        *,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = _ALWAYS_TRUE,
+        snapshot_id: str | None = None,
+    ) -> Iterator[pa.RecordBatch]:
+        """Stream selected columns as bounded Arrow record batches.
+
+        This infrastructure-only read verifies the persisted table definition before scanning.
+        When ``snapshot_id`` is supplied, the scan is pinned to that exact snapshot and fails
+        with ``SnapshotNotFound`` if the table has no matching snapshot. Call ``close`` on the
+        returned iterator when stopping before exhaustion so its reader is released promptly.
+        """
+        name = validate_table_name(table)
+        if isinstance(columns, str) or not columns:
+            raise BatchRejected("scan_column_batches needs a non-empty sequence of column names")
+        with _backend("scan_column_batches"):
+            iceberg = self._require(name)
+            self._verified(name, iceberg)
+            if snapshot_id is None:
+                scan = iceberg.scan(row_filter=row_filter, selected_fields=tuple(columns))
+            else:
+                pinned = (
+                    iceberg.metadata.snapshot_by_id(int(snapshot_id))
+                    if isinstance(snapshot_id, str) and _SNAPSHOT_ID_RE.fullmatch(snapshot_id)
+                    else None
+                )
+                if pinned is None:
+                    raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
+                scan = iceberg.scan(
+                    row_filter=row_filter,
+                    selected_fields=tuple(columns),
+                    snapshot_id=pinned.snapshot_id,
+                )
+            return _ClosingRecordBatchIterator(scan.to_arrow_batch_reader())
 
     def max_int64(
         self,

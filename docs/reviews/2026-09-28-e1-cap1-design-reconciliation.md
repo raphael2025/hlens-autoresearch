@@ -3,8 +3,8 @@
 | 字段 | 值 |
 |---|---|
 | 日期 | 2026-09-28 |
-| 基线 | 当前本地 `main`，工作提交 `ae52f2e` |
-| 类型 | 只读源码审计 + 设计路径；未改 E1 代码，未运行 probe / 测试 |
+| 基线 | 当前本地 `main`，起始提交 `2fc89f1` |
+| 类型 | 源码审计、设计路径与分步实现记录；未运行 probe / 测试 |
 | 状态 | **BLOCKED：容量条件与当前全量返回 API / Iceberg 历史模型存在未解决冲突** |
 | 权威验收口径 | `docs/reviews/2026-09-27-e1-review.md`：完整进程工作集、32 MiB 增量上限；阈值与严格证明语义均不改 |
 
@@ -40,6 +40,16 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 4. 代码任务按 parser、row-integrity、catalog/normalizer 等单模块顺序拆分；涉及 `core/` 的任务不并行。跨模块协调由 Codex 负责。
 5. 在用户要求的统一验收窗口前不运行测试、probe、build、lint、typecheck 或数据生成；代码可先按设计落地，但状态一律写作未验证。容量修复不能在静态复核后声称通过。
 
+## 2026-09-28 实施进度：批次历史与流式读取
+
+在现有 E1-R 路径内先落地一个基础切片，尚未提交或验收：
+
+- `PyIcebergCatalogAdapter.scan_column_batches` 使用 PyIceberg 的 Arrow batch reader，并在迭代耗尽、读取异常或显式 `close()` 时关闭 reader；`PinnedCatalogView` 将请求固定到显式或绑定 snapshot，底层不支持时拒绝，不退回整表物化。
+- `PersistedRowVerifier` 的 batch-history 缓存改为每个 lineage 的固定摘要；验证时第二遍从缓存的同一 history head 流式读取快照。D2 继续核连续前缀、批大小计划和 touched batch 的 fingerprint；D3E 继续核允许缺口的 index、分批行数和 fingerprint。
+- 为常数空间检测重复 index，这一切片把“同一 lineage 的历史 index 按快照时间严格递减”作为完整性约束。D2 与 REST writer 当前均按 index 递增顺序提交；旧 verifier 没有拒绝所有乱序但 index 唯一的历史。该切片将拒绝此类外部导入或手工构造的乱序历史，属于有意收窄，需在代码说明中保留此约束。
+
+本次独立源码审阅未发现其他明确的 D2 / D3E 切片或 offset 回归。尚未运行测试、probe、build、lint、typecheck；代码未验证。E1-CAP-1 仍阻断：位置、已提交列、archive 解析、结果 ID 与 PyIceberg / Iceberg metadata 的完整工作集仍未有界或测量，32 MiB 门槛没有通过证据。
+
 ## E1-R 实施和后续验收边界
 
 仓库内可直接研究的实现边界：
@@ -51,4 +61,3 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 - `CanonicalUnitNormalized` 的 API 输出不能从容量统计中静默剔除。若改接口，应同时列出仓库内调用点、兼容期与显式 ID 消费方式，并形成 ADR 再实现。
 
 正式容量验收继续遵循 E1 review：当前代码线、M=256、N=10k/100k/500k、隔离子进程和重复运行；每个阶段增长不超过 32 MiB；记录 baseline、采样间隔、L/H、Catalog 调用与返回对象；同时用递归结构测试证明长期容器基数边界。该设计文档本身不是实现、测量或验收记录。
-
