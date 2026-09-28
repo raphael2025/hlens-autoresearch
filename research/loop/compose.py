@@ -457,7 +457,9 @@ class DurableLoop:
 
     def close(self) -> None:
         """Release the composition's own bus and the directory lock (idempotent; a caller's bus
-        stays open)."""
+        stays open). Releasing the lock first closes the state's admission gate for good and waits
+        for write scopes in flight (``research.loop.durable``, **Closing**): no reference to the
+        restored memory, audit or checkpoint kept past ``close()`` can write."""
         if self.owned_bus is not None:
             self.owned_bus.close()
         if self.state_lock is not None:
@@ -623,7 +625,7 @@ def compose_durable(
             "bus_anchor anchors the composition's own bus; anchor a caller's bus there"
         )
     if state.state_version == OPERATOR_STATE_VERSION:
-        header = state.checkpoint.journal.entries[0]
+        header = state.checkpoint.header()
         fingerprint = header.payload.get("fingerprint")
         if (
             not isinstance(operator_identity, str)
@@ -672,7 +674,7 @@ def llm_content_fingerprint(llm: LLMProvider | None) -> dict[str, Any]:
 
 def _check_llm_content_mode(state: DurableState, llm: LLMProvider | None) -> None:
     """The header's recorded verification mode is ``llm``'s (module docs)."""
-    header = state.checkpoint.journal.entries[0]
+    header = state.checkpoint.header()
     recorded = header.payload.get("fingerprint") if header.type == LOOP_STATE_OPENED else None
     if not isinstance(recorded, Mapping):
         raise LoopStateInconsistent(f"{state.root} has no readable configuration fingerprint")

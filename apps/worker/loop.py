@@ -67,6 +67,16 @@ around ``begin_round`` and, as one span, around ``checkpoint`` → audit record 
 a round's checkpoint and its audit record); entering it may refuse, which stops the loop like a
 failed checkpoint.
 
+**Audit write scope** (ADR-0073 admission lease review, 2026-09-28).
+``LoopAuditLog.bind_write_scope`` binds one ``AuditWriteScope``: every later ``begin_round`` /
+``append`` runs its checks and its durable line inside ``scope(line_type, round_index,
+record_hash)`` (``ROUND_STARTED`` with ``record_hash=None``, ``ROUND_RECORDED`` with the record's
+hash), entered before anything is checked or written; raising refuses the write (nothing is
+written). The research composition binds its state directory's admission gate there, so a direct
+call on its audit is serialized and refused exactly like the loop's own round writes (released
+lock, active or interrupted admission, a record without its round checkpoint). An unbound audit
+behaves as before.
+
 **Budget binding** (ADR-0049 implementation note, durable review fixes, 2026-09-26). A loop that
 continues an audit refuses any record made under another ``LoopBudget`` (``budget_hash``): the
 budget of a running loop is never changed on a restart — not raised, not lowered. Raising a budget
@@ -153,6 +163,7 @@ __all__ = [
     "STAGE_ORDER",
     "STAGE_TOPIC",
     "VALIDATION_FAILED_EVIDENCE",
+    "AuditWriteScope",
     "AutomationForbidden",
     "LifecycleGuard",
     "LoopAuditCorrupted",
@@ -189,6 +200,16 @@ METRICS_TOPIC: Final = "research_loop.metrics"
 #: Durable audit line types: a round is marked started before it runs, recorded after it.
 ROUND_STARTED: Final = "loop_round_started"
 ROUND_RECORDED: Final = "loop_round_recorded"
+
+
+class AuditWriteScope(Protocol):
+    """``LoopAuditLog.bind_write_scope``: held across one audit write (module docs, **Audit write
+    scope**); raises before anything is written to refuse it."""
+
+    def __call__(
+        self, line_type: str, round_index: int, record_hash: str | None
+    ) -> AbstractContextManager[object]: ...
+
 
 S = LifecycleState
 
@@ -829,10 +850,11 @@ class LoopAuditLog:
         self._records: list[LoopRecord] = []
         self._loop_id: str | None = None
         self._open_round: int | None = None
+        self._write_scope: AuditWriteScope | None = None
         self._journal = None if path is None else AppendOnlyJournal(path)
         if self._journal is not None:
             for entry in self._journal.entries:
-                self._replay(entry)
+                self._replay(entry)  # replay never enters the write scope
 
     @property
     def durable(self) -> bool:
@@ -885,26 +907,41 @@ class LoopAuditLog:
         entry = matches[0]
         return entry.seq, entry.hash
 
+    def bind_write_scope(self, scope: AuditWriteScope) -> None:
+        """Run every later ``begin_round`` / ``append`` inside ``scope`` (module docs, **Audit
+        write scope**); once only."""
+        if self._write_scope is not None:
+            raise ValueError("the audit already has a write scope")
+        self._write_scope = scope
+
+    def _scope(
+        self, line_type: str, round_index: int, record_hash: str | None
+    ) -> AbstractContextManager[object]:
+        scope = self._write_scope
+        return nullcontext() if scope is None else scope(line_type, round_index, record_hash)
+
     def begin_round(self, loop_id: str, round_index: int) -> None:
         """Mark ``round_index`` as started (durable: before the round spends anything)."""
-        self._check_start(loop_id, round_index)
-        started = {"loop_id": loop_id, "round_index": round_index, "previous_hash": self.head}
-        _conform(LoopRoundStarted, started, "the round start")
-        if self._journal is not None:
-            self._journal.append(ROUND_STARTED, started)
-        self._loop_id = loop_id
-        self._open_round = round_index
+        with self._scope(ROUND_STARTED, round_index, None):
+            self._check_start(loop_id, round_index)
+            started = {"loop_id": loop_id, "round_index": round_index, "previous_hash": self.head}
+            _conform(LoopRoundStarted, started, "the round start")
+            if self._journal is not None:
+                self._journal.append(ROUND_STARTED, started)
+            self._loop_id = loop_id
+            self._open_round = round_index
 
     def append(self, record: LoopRecord) -> None:
-        self._check_record(record)
-        recorded = {"record": record.payload(), "record_hash": record.record_hash}
-        # every record written (durable or not) must be a valid LoopRoundRecord (ADR-0050)
-        _conform(LoopRoundRecorded, recorded, "the round record")
-        if self._journal is not None:
-            if self._open_round != record.round_index:
-                raise ValueError("a durable audit records only a round begun with begin_round")
-            self._journal.append(ROUND_RECORDED, recorded)
-        self._admit(record)
+        with self._scope(ROUND_RECORDED, record.round_index, record.record_hash):
+            self._check_record(record)
+            recorded = {"record": record.payload(), "record_hash": record.record_hash}
+            # every record written (durable or not) must be a valid LoopRoundRecord (ADR-0050)
+            _conform(LoopRoundRecorded, recorded, "the round record")
+            if self._journal is not None:
+                if self._open_round != record.round_index:
+                    raise ValueError("a durable audit records only a round begun with begin_round")
+                self._journal.append(ROUND_RECORDED, recorded)
+            self._admit(record)
 
     def verify(self) -> bool:
         previous: str | None = None

@@ -38,10 +38,12 @@ across ``before_approval`` → journal line → in-memory admission → ``after_
 enqueue or take across ``before_review_write`` → journal line → in-memory update. A durable state
 holds its admission gate there, so no typed-plan admission lease, round checkpoint or anchor move
 can start between an approval's journal line and its between-rounds checkpoint, and an enqueue /
-take is refused (before anything is written) while an admission lease is active or after an
-interrupted one. The backing journal is never handed out (its ``append`` would bypass the observer's
-scope and the replayed queue): cross-file checks read ``durable``, ``journal_head()`` or
-``journal_snapshot()`` (``research.persistence.JournalSnapshot``: detached, read-only).
+take is refused (before anything is written) while an admission lease is active, after an
+interrupted one, outside the loop's open round (between rounds only an approval may move the review
+journal) or once the state is closed. The backing journal is never handed out (its ``append``
+would bypass the observer's scope and the replayed queue): cross-file checks read ``durable``,
+``journal_head()`` or ``journal_snapshot()`` (``research.persistence.JournalSnapshot``: detached,
+read-only).
 """
 
 from __future__ import annotations

@@ -177,8 +177,32 @@ every ordinary store write is refused before it writes (``LoopStateLocked`` /
 ``LoopStateInconsistent``); the only store write admitted then is the lease's own
 ``recover_register_batch(..., lease=...)``, whose TrialLedger lease the gate matches to the active
 lease and its thread. Lock order is always gate → store lock → journal lock; no store enters the
-gate while holding its own lock. No store hands out its writable journal: positions and entries are
-read through ``journal_head()`` / ``journal_snapshot()`` (detached, read-only).
+gate while holding its own lock. No store hands out its writable journal, and neither does the
+``MemoryCheckpoint``: positions and entries are read through ``journal_head()`` /
+``journal_snapshot()`` (detached, read-only; the checkpoint also has ``header()``).
+
+Store writes are round writes (review fix 2, 2026-09-28): the trial ledger, sealed-OOS, lineage and
+failure stores, and the review queue's enqueue / take, are refused before they write unless the
+audit has its open round (``LoopStateInconsistent``) — between rounds the opener accepts no line of
+theirs past the last checkpoint, and a between-rounds checkpoint would record it. A human approval
+stays the one write between rounds; before it is journaled ``before_approval`` also requires every
+file (reviews and failures included) to be exactly where the memory journal's last line left it.
+The audit is bound too (``LoopAuditLog.bind_write_scope``): every ``begin_round`` / ``append`` — the
+loop's or a direct call on ``state.audit`` — runs with the gate held and is refused before it
+writes while a lease is active, after an interrupted one, while an admission is unfinished or once
+the state is closed, and a record is refused unless the memory journal's last line is that
+round's checkpoint. Writes the opener makes before it binds the gate (headers, replay) never enter
+it; its admission recovery runs after binding, inside the open round, through the lease.
+
+**Closing** (review fix 2, 2026-09-28). Every write scope of the gate also requires ``state.lock``
+to be held. Releasing it — ``DurableLoop.close()``, ``StateLock.release()`` by anyone, the opener's
+failure path, or the collection of the restored audit log (``StateLock.release_collected``) — first
+closes the gate for good (every later scope is refused, ``LoopStateLocked``), then drops the lock
+only once no scope is in flight: ``release`` waits for another thread's scope to finish; a scope of
+the releasing thread, or the collector's release (which never blocks), leaves the drop to the
+outermost scope's exit. So a store, review, audit or checkpoint reference kept past ``close()``
+(``state.memory``, ``loop.memory``, ``state.audit``) can no longer write, and no write runs after
+the lock is released.
 
 The LLM provider is external: its own state (e.g. a scripted provider's position) is not loop
 state and is the caller's to resume.
@@ -196,10 +220,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
-from threading import Lock, RLock, get_ident
+from threading import Condition, Lock, RLock, get_ident
 from typing import Any, Final, Protocol, TypeVar
 
 from apps.worker.loop import (
+    ROUND_RECORDED,
+    ROUND_STARTED,
     LifecycleGuard,
     LoopAuditLog,
     LoopRecord,
@@ -233,7 +259,14 @@ from research.hypotheses.typed_plan import TypedPlan
 from research.loop.memory import REVIEW_APPROVED, ResearchMemory, ReviewApproval, ReviewQueue
 from research.loop.segment import ResearchPiece
 from research.loop.trials import TrialOutcome, ValidationOutcome
-from research.persistence import GENESIS_HASH, AppendOnlyJournal, JournalEntry, JournalSnapshot
+from research.persistence import (
+    GENESIS_HASH,
+    AppendOnlyJournal,
+    JournalEntry,
+    JournalSnapshot,
+    detached_entry,
+    journal_snapshot,
+)
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import StrategyCandidate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
@@ -340,7 +373,13 @@ LOCK_FILE: Final = "state.lock"
 
 
 class StateLock:
-    """The held ``state.lock`` of one opened directory; ``release`` is idempotent."""
+    """The held ``state.lock`` of one opened directory; ``release`` is idempotent.
+
+    Bound to its state's admission gate (``open_state``), every release path — ``release``
+    (``DurableLoop.close``, the opener's failure path, a caller) and the release when the restored
+    audit log is garbage-collected — first closes the gate for good and lets every write scope in
+    flight finish, and only then drops the ``flock`` (module docs, **Closing**).
+    """
 
     def __init__(self, root: Path) -> None:
         fd = os.open(root / LOCK_FILE, os.O_RDWR | os.O_CREAT, 0o644)
@@ -353,14 +392,40 @@ class StateLock:
             os.close(fd)
             raise
         self._fd: int | None = fd
+        self._fd_lock = Lock()
+        self._gate: _AdmissionGate | None = None
 
     @property
     def held(self) -> bool:
         return self._fd is not None
 
+    def bind_gate(self, gate: _AdmissionGate) -> None:
+        """Serialize every later release with ``gate`` (once; ``open_state``)."""
+        if self._gate is not None and self._gate is not gate:
+            raise ValueError("the state lock is already bound to an admission gate")
+        self._gate = gate
+
     def release(self) -> None:
-        if self._fd is not None:
+        """Close the bound gate, wait for the write scopes of other threads to finish, then drop
+        the lock (a scope of the calling thread defers the drop to its outermost exit)."""
+        self._close(wait=True)
+
+    def release_collected(self) -> None:
+        """``release`` for a garbage-collection finalizer: never blocks (any thread may run it);
+        a write scope in flight drops the lock at its outermost exit instead."""
+        self._close(wait=False)
+
+    def _close(self, *, wait: bool) -> None:
+        gate = self._gate
+        if gate is None:
+            self._unlock()
+        else:
+            gate.close(self._unlock, wait=wait)
+
+    def _unlock(self) -> None:
+        with self._fd_lock:
             fd, self._fd = self._fd, None
+        if fd is not None:
             try:
                 fcntl.flock(fd, fcntl.LOCK_UN)
             finally:
@@ -369,29 +434,127 @@ class StateLock:
 
 class _AdmissionGate:
     """In-process admission exclusion of one opened directory (module docs, **Typed-plan
-    admission lease**): ``owner`` is the active ``PlanAdmissionLease``; ``poisoned`` says why the
-    state refuses every later write after an interrupted admission."""
+    admission lease**, **One admission gate**, **Closing**): ``owner`` is the active
+    ``PlanAdmissionLease``; ``poisoned`` says why the state refuses every later write after an
+    interrupted admission; ``closed`` says why it refuses every later write once its
+    ``state.lock`` is released (or being released).
 
-    __slots__ = ("lock", "owner", "owner_thread", "owner_token", "poisoned")
+    Every holder enters through ``hold`` (never ``lock`` directly), which refuses a new scope once
+    the gate is closed or the state lock is no longer held, and counts the scopes in flight so a
+    release can wait for them (``close``).
+    """
 
-    def __init__(self) -> None:
+    __slots__ = (
+        "_depth",
+        "_holder",
+        "_idle",
+        "_mutex",
+        "_pending_release",
+        "audit",
+        "closed",
+        "lock",
+        "owner",
+        "owner_thread",
+        "owner_token",
+        "poisoned",
+        "state_lock",
+    )
+
+    def __init__(self, state_lock: StateLock | None) -> None:
         self.lock = RLock()
         self.owner: object | None = None
         #: The active lease's thread and its TrialLedger ``LedgerLease`` (``write_scope``).
         self.owner_thread: int | None = None
         self.owner_token: object | None = None
         self.poisoned: str | None = None
+        self.closed: str | None = None
+        #: The directory's single-writer lock; ``None``: no scope is ever admitted.
+        self.state_lock = state_lock
+        #: The restored audit (weakly: the gate never keeps it alive, so its collection still
+        #: releases the lock): its open round admits ordinary store writes (``write_scope``).
+        self.audit: weakref.ref[LoopAuditLog] | None = None
+        #: ``_depth`` scopes in flight, all of thread ``_holder`` (they hold ``lock``). Re-entrant:
+        #: a collector finalizer (``StateLock.release_collected``) may run on a thread inside it.
+        self._mutex = RLock()
+        self._idle = Condition(self._mutex)
+        self._depth = 0
+        self._holder: int | None = None
+        self._pending_release: Callable[[], None] | None = None
+
+    @contextmanager
+    def hold(self, what: str, *, closing: bool = False) -> Iterator[None]:
+        """The gate, held across one scope. Refused (``LoopStateLocked``) once the gate is closed
+        or the state lock is not held — except a scope nested in one already in flight on this
+        thread (it finishes the write the release waits for). ``closing=True`` only for the
+        end of an admission lease, which must release the in-process locks even then."""
+        with self.lock:
+            with self._mutex:
+                if not closing:
+                    self._require_live(what)
+                if self._depth == 0:
+                    self._holder = get_ident()
+                self._depth += 1
+            try:
+                yield
+            finally:
+                with self._mutex:
+                    self._depth -= 1
+                    release: Callable[[], None] | None = None
+                    if self._depth == 0:
+                        self._holder = None
+                        release, self._pending_release = self._pending_release, None
+                        self._idle.notify_all()
+                if release is not None:
+                    release()
+
+    def _require_live(self, what: str) -> None:
+        """(``_mutex`` held) Refuse ``what`` once closed / without the held state lock."""
+        nested = self._depth > 0 and self._holder == get_ident()
+        if self.closed is not None and not nested:
+            raise LoopStateLocked(f"{what} is refused: {self.closed}")
+        if self.state_lock is None or not self.state_lock.held:
+            raise LoopStateLocked(f"{what} requires the held loop state lock")
+
+    def close(self, release: Callable[[], None], *, wait: bool) -> None:
+        """Refuse every later scope for good, then run ``release`` (drop the ``flock``) once no
+        scope is in flight: after waiting for another thread's scopes (``wait``), or — a scope of
+        this thread, or ``wait=False`` — at the outermost scope's exit."""
+        with self._mutex:
+            if self.closed is None:
+                self.closed = (
+                    "the loop state lock was released (the loop was closed or dropped); reopen "
+                    "the state directory to continue"
+                )
+            if wait and self._holder != get_ident():
+                while self._depth > 0:
+                    self._idle.wait()
+            if self._depth > 0:
+                self._pending_release = release
+                return
+        release()
+
+    def open_round(self) -> int | None:
+        """The restored audit's round started and not recorded (``None``: none, or no audit)."""
+        audit = None if self.audit is None else self.audit()
+        return None if audit is None else audit.open_round
+
+    def round_open(self) -> bool:
+        """Whether the restored audit has a round started and not recorded."""
+        return self.open_round() is not None
 
     @contextmanager
     def write_scope(self, what: str, token: object | None = None) -> Iterator[None]:
         """``research.persistence.WriteGate``: one durable store write with the gate held, refused
         before the store writes anything (module docs, **One admission gate**).
 
-        An ordinary write (``token=None``) is refused while a lease is active or after an
-        interrupted admission. A ``token`` is admitted only as the active lease's own TrialLedger
-        lease, presented from the thread that entered that lease's scope.
+        Every write is refused once the gate is closed or the state lock is not held, and outside
+        the unique open round of the audit: between rounds no store but the review queue (whose
+        approvals write between-rounds checkpoints; ``review_scope``) may move, since the opener
+        refuses any such tail. An ordinary write (``token=None``) is refused while a lease is
+        active or after an interrupted admission. A ``token`` is admitted only as the active
+        lease's own TrialLedger lease, presented from the thread that entered that lease's scope.
         """
-        with self.lock:
+        with self.hold(what):
             if token is None:
                 self.require_open(what)
             else:
@@ -405,7 +568,18 @@ class _AdmissionGate:
                         f"{what} requires this state's active typed-plan admission lease (its "
                         "own TrialLedger lease, from the thread that holds it)"
                     )
+            self.require_round_open(what)
             yield
+
+    def require_round_open(self, what: str) -> None:
+        """Refuse ``what`` unless the audit has its unique open round (store writes are round
+        writes; module docs, **Approvals between rounds**)."""
+        if not self.round_open():
+            raise LoopStateInconsistent(
+                f"{what} is refused: no loop round is open, and between rounds only a human "
+                "approval (with its between-rounds checkpoint) may be written; reopening would "
+                "refuse any other line past the last checkpoint"
+            )
 
     def require_open(self, what: str, lease: object | None = None) -> None:
         """Refuse ``what`` after an interrupted admission, or while a lease other than ``lease``
@@ -515,18 +689,20 @@ def heads(
 
 
 def _checkpointed_heads(
-    entries: Sequence[JournalEntry], admission: PlanAdmissionJournal
+    entries: Sequence[JournalEntry], admission: PlanAdmissionJournal | None
 ) -> dict[str, Any]:
-    """Where the memory journal's last line leaves every other file of a v4 directory.
+    """Where the memory journal's last line leaves every other file of the directory.
 
-    The header names no positions; for it this is the v4 genesis: every journal empty but the
-    plan admission journal's header line, no failure records.
+    The header names no positions; for it this is the genesis: every journal empty (v4 / v5: but
+    the plan admission journal's header line), no failure records. ``admission=None``: a v3
+    directory (no plan admission journal).
     """
     last = entries[-1]
     if last.type != LOOP_STATE_OPENED:
         return _json(dict(last.payload["heads"]))
     out: dict[str, Any] = {name: {"seq": 0, "hash": GENESIS_HASH} for name, _ in _JOURNALS}
-    out["plan_admission"] = {"seq": 1, "hash": admission.entries[0].hash}
+    if admission is not None:
+        out["plan_admission"] = {"seq": 1, "hash": admission.entries[0].hash}
     out["failures"] = {"count": 0, "digest": content_hash([])}
     return _json(out)
 
@@ -702,7 +878,11 @@ def _approval_lines(memory: ResearchMemory) -> int:
 
 class MemoryCheckpoint:
     """``ResearchLoop(checkpoint=...)``: one ``round_memory`` line per finished round; plus one
-    ``between_rounds`` line per human approval between rounds (``between_rounds``)."""
+    ``between_rounds`` line per human approval between rounds (``between_rounds``).
+
+    The memory journal is only ever appended here, with the admission gate held; it is never
+    handed out: ``journal_head()`` / ``journal_snapshot()`` are detached read-only views.
+    """
 
     def __init__(
         self,
@@ -716,7 +896,7 @@ class MemoryCheckpoint:
         self._admission = admission
         self._state_lock = state_lock
         #: In-process admission exclusion, shared with the ``DurableState`` (module docs).
-        self.admission_gate = _AdmissionGate()
+        self.admission_gate = _AdmissionGate(state_lock)
         self._marks = _Marks.of(memory)
         self._covered = _approval_lines(memory)  # opening verified every one is checkpointed
         #: Transactions a ``plan_admission`` line of this memory journal already names.
@@ -757,10 +937,81 @@ class MemoryCheckpoint:
                 "checkpoint"
             )
 
+    def require_checkpointed(self, what: str) -> None:
+        """Refuse ``what`` unless every file is exactly where the memory journal's last line left
+        it (the review journal and the failure registry included; with the gate held).
+
+        Between rounds nothing but an approval and its own between-rounds line may move a file,
+        and its checkpoint would record any other tail, which reopening refuses for good: this
+        is checked before the approval is journaled (fail closed).
+        """
+        current = _json(heads(self._memory, self._admission))
+        last = _checkpointed_heads(self._journal.entries, self._admission)
+        moved = sorted(name for name in current if last.get(name) != current[name])
+        if moved:
+            raise LoopStateInconsistent(
+                f"{what} is refused: {moved} moved since the memory journal's last line (a "
+                "write outside a round, or past its store); a between-rounds checkpoint would "
+                "record that tail and reopening would refuse it — a human reviews the directory"
+            )
+
+    @contextmanager
+    def audit_write_scope(
+        self, line_type: str, round_index: int, record_hash: str | None
+    ) -> Iterator[None]:
+        """``apps.worker.AuditWriteScope`` of the restored audit (module docs, **One admission
+        gate**): every ``begin_round`` / ``append`` — the loop's own or a direct call — runs with
+        the gate held and is refused before it writes once the gate is closed or the state lock
+        released, while a lease is active, after an interrupted one or while an admission is
+        unfinished; a record is refused unless the memory journal's last line is that round's
+        checkpoint (``round_index`` and ``record_hash``)."""
+        what = f"audit line {line_type} of round {round_index}"
+        with self.admission_gate.hold(what):
+            self.require_settled(what)
+            if line_type == ROUND_RECORDED:
+                last = self._journal.entries[-1]
+                if (
+                    last.type != ROUND_MEMORY
+                    or last.payload.get("round_index") != round_index
+                    or last.payload.get("record_hash") != record_hash
+                ):
+                    raise LoopStateInconsistent(
+                        f"{what} is refused: the memory journal's last line is not this round's "
+                        "checkpoint (a round is recorded only right after its checkpoint)"
+                    )
+            elif line_type != ROUND_STARTED:
+                raise LoopStateInconsistent(f"{what} is not a loop audit line")
+            yield
+
+    def journal_head(self) -> tuple[int, str]:
+        """``(line count, chain head)`` of the memory journal."""
+        entries = self._journal.entries  # one consistent tuple: count and head from one instant
+        return len(entries), (entries[-1].hash if entries else GENESIS_HASH)
+
+    def journal_snapshot(self) -> JournalSnapshot:
+        """Detached read-only copy of the memory journal's verified lines (never the journal)."""
+        return journal_snapshot(self._journal)
+
+    def header(self) -> JournalEntry:
+        """Detached copy of the memory journal's first line (the ``loop_state_opened`` header)."""
+        return detached_entry(self._journal.entries[0])
+
+    def _entries(self) -> tuple[JournalEntry, ...]:
+        """The memory journal's lines, for this module's read-only checks (never mutated)."""
+        return self._journal.entries
+
     def __call__(self, record: LoopRecord) -> None:
         memory = self._memory
-        with self.admission_gate.lock:
+        with self.admission_gate.hold(f"round {record.round_index} checkpoint"):
             self.require_settled(f"round {record.round_index} checkpoint")
+            # a direct call too: only the open round, once (reopening refuses anything else)
+            if self.admission_gate.open_round() != record.round_index or sum(
+                1 for entry in self._journal.entries if entry.type == ROUND_MEMORY
+            ) != record.round_index:
+                raise LoopStateInconsistent(
+                    f"round {record.round_index} checkpoint is refused: it is not the audit's "
+                    "open round, or that round is already checkpointed"
+                )
             if _approval_lines(memory) != self._covered:
                 raise LoopStateInconsistent(
                     f"round {record.round_index}: the review journal holds a human approval no "
@@ -780,11 +1031,28 @@ class MemoryCheckpoint:
 
     def between_rounds(self, rounds: int, audit_head: str | None, approval: ReviewApproval) -> None:
         """Checkpoint the human approval just journaled (the review journal's last line)."""
-        with self.admission_gate.lock:
+        with self.admission_gate.hold("between-rounds checkpoint"):
             self.require_settled("between-rounds checkpoint")
+            if self.admission_gate.round_open():
+                raise LoopStateInconsistent(
+                    "a between-rounds checkpoint is refused while a loop round is open"
+                )
             line = _review_snapshot(self._memory).entries[-1]
             if line.type != REVIEW_APPROVED or line.payload.get("key") != approval.key:
                 raise LoopStateInconsistent("the review journal's last line is not this approval")
+            # exactly this one uncovered approval line moved since the last memory line
+            last = _checkpointed_heads(self._journal.entries, self._admission)
+            current = _json(heads(self._memory, self._admission))
+            moved = sorted(name for name in current if last.get(name) != current[name])
+            if (
+                _approval_lines(self._memory) != self._covered + 1
+                or moved != ["reviews"]
+                or last["reviews"]["seq"] + 1 != line.seq
+            ):
+                raise LoopStateInconsistent(
+                    "a between-rounds checkpoint names exactly one new approval, the only line "
+                    f"written since the memory journal's last line (moved: {moved})"
+                )
             self._journal.append(
                 BETWEEN_ROUNDS,
                 {
@@ -805,7 +1073,7 @@ class MemoryCheckpoint:
     def plan_admission(self, committed: CommittedAdmission, *, lease: object) -> JournalEntry:
         """Checkpoint one committed admission while its round remains open; v4 / v5 only, and only
         under the state's active admission ``lease`` (with the admission gate held)."""
-        with self.admission_gate.lock:
+        with self.admission_gate.hold("plan admission checkpoint"):
             return self._plan_admission(committed, lease)
 
     def _plan_admission(self, committed: CommittedAdmission, lease: object) -> JournalEntry:
@@ -856,10 +1124,6 @@ class MemoryCheckpoint:
         )
         self._checkpointed.add(transaction_id)
         return entry
-
-    @property
-    def journal(self) -> AppendOnlyJournal:
-        return self._journal
 
 
 # -------------------------------------------------------------------------------------- anchor
@@ -977,7 +1241,8 @@ class DurableState:
     _plan_admission: PlanAdmissionJournal | None = None
     state_version: int = LEGACY_STATE_VERSION
     #: The directory's single-writer lock (set by ``open_state``; released by ``DurableLoop.close``,
-    #: when the audit log is garbage-collected, or at process exit).
+    #: when the audit log is garbage-collected, or at process exit; each release closes the
+    #: admission gate first: module docs, **Closing**).
     lock: StateLock | None = None
 
     @contextmanager
@@ -1009,8 +1274,9 @@ class DurableState:
             raise LoopStateLocked("typed-plan admission requires the held loop state lock")
         gate = self.checkpoint.admission_gate
         ledger = self.memory.ledger
-        with gate.lock:
+        with gate.hold("a typed-plan admission lease"):
             gate.require_open("a typed-plan admission lease")
+            gate.require_round_open("a typed-plan admission lease")
             try:
                 ledger_lease = ledger.acquire_write_lease()
             except LedgerError as exc:
@@ -1031,7 +1297,8 @@ class DurableState:
     def _end_admission_lease(self, lease: PlanAdmissionLease, *, failed: bool) -> None:
         """Release the lease; poison the state and seal the ledger if it stopped half-written."""
         gate = self.checkpoint.admission_gate
-        with gate.lock:
+        # ``closing``: the in-process locks are released even once the state lock was released.
+        with gate.hold("ending a typed-plan admission lease", closing=True):
             lease._active = False
             reason: str | None = None
             if lease._committed is None:
@@ -1144,7 +1411,7 @@ class DurableState:
                     f"TrialLedger already holds {reused}"
                 )
         current = _json(heads(self.memory, admission))
-        if current != _checkpointed_heads(self.checkpoint.journal.entries, admission):
+        if current != _checkpointed_heads(self.checkpoint._entries(), admission):
             raise LoopStateInconsistent(
                 "typed-plan PREPARE must start where the memory journal's last line left "
                 "every file; this round already wrote to one of them"
@@ -1172,7 +1439,7 @@ class DurableState:
         Raises ``LoopStateInconsistent`` / ``LoopStateLocked`` for the state, ``LedgerError`` /
         ``PlanAdmissionError`` when the ledger no longer matches the PREPARE.
         """
-        with self.checkpoint.admission_gate.lock:
+        with self.checkpoint.admission_gate.hold("typed-plan COMMIT"):
             admission = self._plan_admission
             if (
                 self.state_version not in {STATE_VERSION, OPERATOR_STATE_VERSION}
@@ -1207,7 +1474,7 @@ class DurableState:
 
     def head(self) -> StateHead:
         """The directory's current head (after the last recorded round or between-rounds line)."""
-        entries = self.checkpoint.journal.entries
+        entries = self.checkpoint._entries()
         rounds = len(self.audit.records)
         checkpoints = sum(1 for entry in entries if entry.type == ROUND_MEMORY)
         if checkpoints != rounds:
@@ -1237,20 +1504,24 @@ class DurableState:
         durable store write (every one enters the gate first) lands between the checkpoint's
         position read and its line or before the audit record.
         """
-        with self.checkpoint.admission_gate.lock:
+        with self.checkpoint.admission_gate.hold("a loop round start or record"):
             self.checkpoint.require_settled("a loop round start or record")
             yield
 
     @contextmanager
     def review_scope(self) -> Iterator[None]:
-        """``ReviewObserver.review_scope``: the admission gate, held across one review write."""
-        with self.checkpoint.admission_gate.lock:
+        """``ReviewObserver.review_scope``: the admission gate, held across one review write
+        (refused once the gate is closed or the state lock released)."""
+        with self.checkpoint.admission_gate.hold("a review write"):
             yield
 
     def before_review_write(self, what: str) -> None:
-        """Refuse an enqueue / take while an admission lease is active or after an interrupted
-        one (called inside ``review_scope``, before anything is written)."""
-        self.checkpoint.admission_gate.require_open(what)
+        """Refuse an enqueue / take while an admission lease is active, after an interrupted one
+        or outside the audit's open round (called inside ``review_scope``, before anything is
+        written): between rounds only an approval may move the review journal."""
+        gate = self.checkpoint.admission_gate
+        gate.require_open(what)
+        gate.require_round_open(what)
 
     # -- ReviewObserver: human approvals between rounds (module docs) --------------------------
 
@@ -1263,6 +1534,8 @@ class DurableState:
             )
         # before the approval is journaled: its between-rounds line would refuse afterwards
         self.checkpoint.require_settled(f"approval of {key}")
+        # and its between-rounds line must record no other tail (fail closed, module docs)
+        self.checkpoint.require_checkpointed(f"approval of {key}")
 
     def after_approval(self, approval: ReviewApproval) -> None:
         """Checkpoint the journaled approval and move the anchor up to it, immediately."""
@@ -1282,7 +1555,7 @@ class DurableState:
         if self.anchor is None:
             return
         gate = self.checkpoint.admission_gate
-        with gate.lock:
+        with gate.hold("moving the external anchor"):
             gate.require_open("moving the external anchor", lease)
             if record is not None and record.record_hash != self.audit.head:
                 raise _refuse(
@@ -1349,7 +1622,7 @@ class PlanAdmissionLease:
         if not self._claim.acquire(blocking=False):
             raise LoopStateLocked(f"{what}: this typed-plan admission lease is already in use")
         try:
-            with self._state.checkpoint.admission_gate.lock:
+            with self._state.checkpoint.admission_gate.hold(what):
                 self._require_usable(what)
                 yield
         finally:
@@ -1495,7 +1768,8 @@ def open_state(
         lock.release()
         raise
     object.__setattr__(state, "lock", lock)
-    weakref.finalize(state.audit, lock.release)
+    # Never blocks: the collector may run in any thread (module docs, **Closing**).
+    weakref.finalize(state.audit, lock.release_collected)
     return state
 
 
@@ -1709,9 +1983,15 @@ def _open_locked(
 
 
 def _bind_store_gates(state: DurableState) -> None:
-    """Bind every durable store the checkpoints position to the state's admission gate (module
-    docs, **One admission gate**); the review queue is bound as the state's observer instead."""
+    """Bind every durable store the checkpoints position — and the audit — to the state's
+    admission gate, and the gate to the state lock's release (module docs, **One admission
+    gate**, **Closing**); the review queue is bound as the state's observer instead."""
     gate = state.checkpoint.admission_gate
+    if gate.state_lock is None:
+        raise LoopStateLocked("a durable loop state needs its held state lock")
+    gate.state_lock.bind_gate(gate)
+    gate.audit = weakref.ref(state.audit)
+    state.audit.bind_write_scope(state.checkpoint.audit_write_scope)
     memory = state.memory
     graph, oos = _stores(memory)
     memory.ledger.bind_write_gate(gate)
@@ -1869,7 +2149,7 @@ def _check_anchor(state: DurableState, anchored: StateHead | None) -> None:
     if state.anchor is None:
         return
     records = state.audit.records
-    entries = state.checkpoint.journal.entries
+    entries = state.checkpoint._entries()
     if anchored is None:
         if records or len(entries) > 1:
             raise _refuse(
@@ -2150,7 +2430,7 @@ def _recover_plan_admission(
             raise _refuse("pending PREPARE is not for the unique currently open round")
         with state._admission_lease() as lease:
             lease._committed = state._finish_admission(lease, prepared.transaction_id)
-        line = state.checkpoint.journal.entries[-1]
+        line = state.checkpoint._entries()[-1]
         marks.append((f"recovered plan admission checkpoint (memory line {line.seq})", line))
         return True
     if uncheckpointed:

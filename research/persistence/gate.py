@@ -12,7 +12,8 @@ hold if no store write can run in between, so a store bound to a state's gate
   order is always gate → store lock → journal lock, and nothing holding a store lock ever enters
   the gate;
 - the gate refuses (raises) before anything is written when the state does not accept the write
-  (an active admission lease that ``token`` does not identify, or an interrupted admission).
+  (an active admission lease that ``token`` does not identify, an interrupted admission, no open
+  loop round, or a closed state whose single-writer lock is released or being released).
 
 A store not bound to a gate behaves exactly as before. ``gate_scope`` is the null-safe entry.
 

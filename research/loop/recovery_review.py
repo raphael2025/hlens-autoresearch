@@ -94,7 +94,7 @@ def failed_round_review_packet(
     if record.round_index != len(records) - 1:
         raise FailedRoundReviewRefused("the final record index is inconsistent")
 
-    memory_entries = state.checkpoint.journal.entries
+    memory_entries = state.checkpoint.journal_snapshot().entries
     round_entries = tuple(entry for entry in memory_entries if entry.type == ROUND_MEMORY)
     if len(round_entries) != len(records):
         raise FailedRoundReviewRefused("round checkpoints do not match the audit record count")
