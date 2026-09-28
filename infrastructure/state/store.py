@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Final
 
@@ -59,9 +60,16 @@ class StateResultStore:
             if path.read_bytes() != data:
                 raise StateStoreCorrupted(f"{path} exists with other content; never overwritten")
             return path
-        temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+        temporary_file = tempfile.NamedTemporaryFile(
+            mode="wb",
+            prefix=f".{path.name}.",
+            suffix=".tmp",
+            dir=self._root,
+            delete=False,
+        )
+        temporary = Path(temporary_file.name)
         try:
-            with temporary.open("wb") as handle:
+            with temporary_file as handle:
                 handle.write(data)
                 handle.flush()
                 os.fsync(handle.fileno())
