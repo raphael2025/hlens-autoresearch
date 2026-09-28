@@ -52,3 +52,13 @@ Review packet 繼續是只讀觀測；只有 v6 的專用 admission 才能解除
 状态：**Accepted**（Claude-PM 依 Raphael 授权于 2026-09-28 决定）
 
 一个 retry journal 文件只承载**一次** retry admission：路径为 `<state_dir>/retry_admission/<失败记录 record_hash>.jsonl`，文件名与其中每个事件（PREPARE / COMMIT 的 `failed_record_hash`）共同绑定被重试的失败 audit 记录；每个文件至多一对 `retry_prepare` → `retry_commit`，已有事件的文件不得再次 PREPARE。重试再次失败会产生新的失败记录与新的 ADR-0071 review packet，因此对应新的 journal 文件；旧文件、旧失败记录与旧 ledger 行永久保留。memory checkpoint 的 `heads.retry_admission` 为全部非空 retry journal 位置 `{failed_record_hash, seq, hash}` 按 hash 排序的列表；`retry_admission` memory 行另记 `failed_record_hash`。retry 目录中任何其他文件、子目录或符号链接均 fail closed。本修订不改变 PREPARE → ledger suffix → COMMIT → checkpoint → anchor 顺序与其余约束。
+
+## PM 决定（2026-09-28，Claude PM 依 Raphael 授权）：实施后遗留的 7 项
+
+1. **重试专用轮次跳过演化阶段**：这类轮次只运行被准入的试验，不注册演化后代，避免超出预算而停机。由后续提交实现。
+2. **已准入但未运行的试验**：因预算停机而没有运行的试验，仍计入 TrialLedger。多计不漏计，对多重检验更保守；这一行为明确接受。
+3. **attempt key 保留前缀**：`loop_round:` 保留给循环自身的再评估，重试的 attempt key 不得使用。接受。
+4. **同一轮内同一 hypothesis 出现两次**：同一次准入中不得重复出现同一 hypothesis，验证阶段按 `#attempt` 区分结果。防护与测试由后续提交补齐。
+5. **恢复后先拒绝、由调用方显式重开**：接受，这样恢复与继续运行是两个可审计的步骤。
+6. **审阅人身份**：作为可审计的声明加自动化身份黑名单处理，本 ADR 不引入认证。
+7. **ADR-0074 operator 遇到 v6 目录**：按未知状态 fail closed。接受，operator 不处理重试。
