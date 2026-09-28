@@ -81,7 +81,15 @@ class SecondLineRisk:
         return tuple(self._rejections)
 
     def mark(self, prices: Mapping[str, Decimal]) -> None:
-        self._book.mark(prices)
+        # Validate the whole batch before mutating the position book. PositionBook.mark applies
+        # entries one at a time, so delegating validation alone could leave a partial mark when a
+        # later value is invalid. ExecutionService calls this before recording MarkRecord; a
+        # rejected batch must therefore leave the risk state unchanged.
+        validated = dict(prices.items())
+        for key, price in validated.items():
+            if not isinstance(price, Decimal) or not price.is_finite() or price <= 0:
+                raise ValueError(f"mark price for {key} must be a finite, positive Decimal")
+        self._book.mark(validated)
 
     def on_fill(self, fill: FillRecord) -> None:
         self._book.apply(fill)

@@ -25,6 +25,8 @@
 | `ladder.py` | `ExecutionLadder`：SIMULATED → PAPER（记录的门）；live 级一律拒绝 |
 | `audit.py` / `book.py` | 只追加审计轨迹；按成交的平均成本仓位簿 |
 
+`SecondLineRisk.mark(prices)` 会先验证整批价格，再更新风险仓位簿；任一价格无效时整批拒绝且不留下部分标记。
+
 ## 接入 Phase 5
 
 生产策略运行时为一个已晋升 Artifact 的部署实现 `TargetPositionSource.target_positions(deployment_id, as_of)`，
@@ -71,4 +73,3 @@
 | `risk_replay.py` | `replay_risk(path \| AuditTrail, limits, *, max_drawdown, monitor_capital=None)`：按审计顺序以新的二线风控与监控重放，逐字段复现每条拒绝、每笔成交与每条告警；分歧 → `RiskReplayDiverged`（指出首个分歧记录）；有订单无标记的审计被拒 |
 
 测试：`tests/apps/test_execution_risk_replay.py`、`tests/apps/test_execution_marks_required.py`。仍只模拟；目前没有组件默认开启 `record_marks`。
-
