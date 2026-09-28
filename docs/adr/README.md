@@ -86,6 +86,7 @@
 | [0079](0079-paper-deviation-declared-scope.md) | Paper deviation 与 P8 声明范围绑定 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；deviation payload 2.0.0 绑定 P8 ValidationReport 与 Profile 范围，1.0.0 仅作 legacy 读取；已实现 `1974610`，未测试 |
 | [0080](0080-p11-authority-resolution.md) | Phase 11 ACTIVE、真实 source 与 metric 权威解析 | BLOCKED（2026-09-28）：缺权威 lifecycle head、source 身份与 metric 算法定义；不实现伪权威 resolver，loop 保持 synthetic-only |
 | [0082](0082-p7-operator-semantics-and-lowering.md) | P7 六类组合算子的语义与 Provider lowering | Accepted（部分，2026-09-28；Codex 依 Raphael 授权决定）：`interaction` product 语义与 FeatureSpec lowering 已实现 `29763f3`；conditioning / temporal / transformation / ensemble / negation OPEN、fail closed；`runnable` 仍 False |
+| [0084](0084-live-interface-reservation.md) | 实盘接口预留（默认关闭） | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）：`LiveVenuePort` / `CredentialProvider` 端口与一律拒绝的 `UnconfiguredLiveVenue`；`LIVE_TRADING_ENABLED` 为常量 False；ladder 实盘档位仍拒绝；未测试 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
