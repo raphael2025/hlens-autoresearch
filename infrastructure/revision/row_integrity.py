@@ -55,7 +55,6 @@ import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from itertools import chain
 from typing import Any, Final, Protocol, runtime_checkable
 
 import httpx
@@ -312,16 +311,12 @@ def _spooled_snapshots_of_batches(
 class _BatchSnapshotLookup:
     """Disk-backed requested-ID index; retains only each ID's count and first snapshot."""
 
-    __slots__ = ("_connection", "_path", "_closed", "_adapter", "_table", "_head")
+    __slots__ = ("_connection", "_path", "_closed")
 
-    def __init__(
-        self, adapter: RevisionCatalog, table: str, batch_ids: Iterable[str]
-    ) -> None:
+    def __init__(self, adapter: RevisionCatalog, table: str, batch_ids: Iterable[str]) -> None:
         fd, self._path = tempfile.mkstemp(prefix="hlens-batch-snapshots-", suffix=".sqlite3")
         os.close(fd)
         self._closed = False
-        self._adapter = adapter
-        self._table = table
         try:
             self._connection = sqlite3.connect(self._path)
         except BaseException:
@@ -347,25 +342,27 @@ class _BatchSnapshotLookup:
                 ((batch_id,) for batch_id in batch_ids),
             )
             self._connection.commit()
-            info = adapter.load_table(table)
-            if info is None:
-                raise TableNotFound(f"table {table} does not exist")
-            current = info.current_snapshot
-            self._head = None if current is None else current.snapshot_id
-            history = (
-                ()
-                if current is None
-                else chain((current,), history_from(adapter, table, current.parent_snapshot_id))
-            )
-            for snapshot in history:
+            for snapshot in _history(adapter, table):
                 if snapshot.batch_id is None:
                     continue
-                payload = json.dumps(snapshot.model_dump(mode="json"), separators=(",", ":"))
-                self._connection.execute(
-                    "UPDATE requested_batches SET match_count = match_count + 1, "
-                    "first_snapshot = COALESCE(first_snapshot, ?) WHERE batch_id = ?",
-                    (payload, snapshot.batch_id),
+                cursor = self._connection.execute(
+                    "UPDATE requested_batches SET match_count = match_count + 1 "
+                    "WHERE batch_id = ?",
+                    (snapshot.batch_id,),
                 )
+                if cursor.rowcount:
+                    existing = self._connection.execute(
+                        "SELECT first_snapshot FROM requested_batches WHERE batch_id = ?",
+                        (snapshot.batch_id,),
+                    ).fetchone()
+                    if existing is not None and existing[0] is None:
+                        payload = json.dumps(
+                            snapshot.model_dump(mode="json"), separators=(",", ":")
+                        )
+                        self._connection.execute(
+                            "UPDATE requested_batches SET first_snapshot = ? WHERE batch_id = ?",
+                            (payload, snapshot.batch_id),
+                        )
             self._connection.commit()
         except BaseException:
             self.close()
@@ -409,17 +406,6 @@ class _BatchSnapshotLookup:
         count, payload = row
         first = None if payload is None else SnapshotInfo.model_validate(json.loads(payload))
         return count, first
-
-    def matches(self, batch_id: str) -> Iterator[SnapshotInfo]:
-        """Rewalk the captured head and stream this ID's matches newest first."""
-        if self._head is None:
-            return
-        yield from (
-            snapshot
-            for snapshot in history_from(self._adapter, self._table, self._head)
-            if snapshot.batch_id == batch_id
-        )
-
 
 def _history(adapter: RevisionCatalog, table: str) -> Iterable[SnapshotInfo]:
     info = adapter.load_table(table)

@@ -123,10 +123,11 @@ from infrastructure.revision.row_integrity import (
     page_provenance,
     response_batch_id,
     response_columns,
-    _spooled_snapshots_of_batches,
 )
-from infrastructure.revision.row_integrity import batch as _batch
-from infrastructure.revision.row_integrity import batch_rows as _batch_rows
+from infrastructure.revision.row_integrity import (
+    batch as _batch,
+    batch_rows as _batch_rows,
+)
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
 
 __all__ = [
@@ -945,7 +946,7 @@ class RestRevisionStore:
 
 def _snapshot_of_batch(adapter: RevisionCatalog, table: str, batch_id: str) -> SnapshotInfo:
     """The main-branch snapshot that committed ``batch_id`` (exactly one), else fail closed."""
-    with _spooled_snapshots_of_batches(adapter, table, [batch_id]) as snapshots:
+    with row_integrity._spooled_snapshots_of_batches(adapter, table, [batch_id]) as snapshots:
         count, snapshot = snapshots.one(batch_id)
         if count != 1 or snapshot is None:
             raise CatalogIntegrityError(

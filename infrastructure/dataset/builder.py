@@ -107,7 +107,7 @@ from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVA
 from infrastructure.revision.precedence import PRECEDENCE_BINDING as ARCHIVE_PRECEDENCE
 from infrastructure.revision.rest_availability import REST_AVAILABILITY_BINDING
 from infrastructure.revision.rest_precedence import REST_PRECEDENCE_BINDING
-from infrastructure.revision.row_integrity import _spooled_snapshots_of_batches
+from infrastructure.revision.row_integrity import snapshots_of_batches
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
 from infrastructure.universe.builder import REGISTERED_UNIVERSES, UniverseBuilder, UniverseBuilt
 
@@ -529,10 +529,8 @@ class DatasetBuilder:
         ]
         if not missing:
             return
-        with _spooled_snapshots_of_batches(
-            self._adapter, self._table.table, (selection_id,)
-        ) as snapshots:
-            materialized = {item.snapshot_id for item in snapshots.matches(selection_id)}
+        snapshots = snapshots_of_batches(self._adapter, self._table.table, (selection_id,))
+        materialized = {item.snapshot_id for item in snapshots[selection_id]}
         if materialized and self._manifested(materialized):
             # A replay of a completed build: a persisted manifest already binds this batch's
             # snapshot, so the requirement held when it was first built (G2 RT-5). A batch alone
