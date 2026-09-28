@@ -172,3 +172,13 @@ mypy / Schema 导出，以下全部为静态自检，须由复核方真实运行
    - `plugins/synthetic/random_walk.py` 按 `effect.strength` 访问效应，放宽联合后 mypy 会报错，新效应须 fail closed 或实现；
    - research / plugins / infrastructure 测试中按当前信封钉的回归哈希（注释 "Re-pinned for contract 2.2.0" 的 11 个文件）
      需在调试阶段重钉。
+
+### PM 决定：契约层遗留项（2026-09-28，Claude PM 依 Raphael 授权）
+
+- **`SyntheticMarket.truth` 放宽为 `SyntheticEffect` 联合**：与 `SyntheticMarketSpec.effects` 保持一致。这是 additive 变更，由合成市场生成器批次一并完成。
+- **接受三处解读**：
+  - `peak_equity` 需要同时有 `equity`；
+  - `VOL_SCALED_TRIPLE_BARRIER` 下，固定屏障字段必须为空；
+  - `UniverseMember.assumption` 沿用 PolicyBinding 的角色规则，必须为 `role=availability`。
+- **调试阶段处理**：schema 钉值（`PRE_B3_SCHEMA_SHA256`、`V2_SCHEMA_SHA256_AT_2_2_0`）与历史回归哈希，须在真实导出、运行后重钉。
+- **ADR-0051 第二期修复**：v3 evidence 重建会剥除嵌套的 `schema_version`，第二期实现时须修复这一点，使嵌套的 2.0.0 政策绑定能够逐位重建。
