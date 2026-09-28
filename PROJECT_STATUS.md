@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。P7 durable v4 admission 已完成写入 / 恢复加固，并已补齐跨 PREPARE→COMMIT 的 lease、durable store 写 gate、round/approval 串行化、close 后拒写与只读 journal view；operator 专属 v5 持久身份基础已实现。ADR-0074 TOML parser、静态 Provider allowlist、有限轮次 CLI、路径与锚点预检及逐轮报告已合入本地 `main@0d4862a`；只做两轮源码静态复核与 `git diff --cached --check`，未测试、未验收。六类组合算子不可执行；没有冻结 Profile，不能生成合规运行配置。E1-CAP-1 阻断；测试、build、probe 与验收均暂缓；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
+| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。Wave A1–A4 已以 `0651e6a` 本地提交：P7 新增纯 Experiment/Hypothesis/output 绑定校验（不能证明预期 output 全集完整）；P3 命令输出 table binding/hash；P2 Web 消费 diagnostics 1.1.0 optional source hash；P8 fixture writer 注册 retro_audit。做了源码静态复核及 `git diff --check`；没有运行测试、build、lint、typecheck、probe 或验收。P3 现有测试断言和 P8 旧 1.0.0 fixture / ID 登记需在验收同步窗口更新。P7 durable v4 admission 已完成写入 / 恢复加固，并已补齐跨 PREPARE→COMMIT 的 lease、durable store 写 gate、round/approval 串行化、close 后拒写与只读 journal view；operator 专属 v5 持久身份基础已实现。ADR-0074 TOML parser、静态 Provider allowlist、有限轮次 CLI、路径与锚点预检及逐轮报告已合入本地 main；只做两轮源码静态复核，未测试、未验收。六类组合算子不可执行；没有冻结 Profile，不能生成合规运行配置。E1-CAP-1 阻断；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 111 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 9 个 worktree；仍保留根 `phase/1` Cursor 工作区和未跟踪资料、研究规格 Claude 分支的独有测试，以及 E1 / Phase 1 证据 worktrees；其他已确认冗余分支归档后删除。研究规格分支唯一 G1 边界测试已择取至 `main@ad16813`，尚未运行。全模块复核确认项目非空骨架；TrialLedger 批量持久化、durable v4 admission 与完整进程内写 gate、operator 专属 v5 身份基础及 ADR-0074 operator 已进入本地主线，均未完成 Phase 验收。ADR-0073、0074 已接受；六类 P7 算子仍 fail closed。E1 主线 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟。模块收敛计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) |
+| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 113 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 9 个 worktree；仍保留根 `phase/1` Cursor 工作区和未跟踪资料、研究规格 Claude 分支的独有测试，以及 E1 / Phase 1 证据 worktrees；其他已确认冗余分支归档后删除。研究规格分支唯一 G1 边界测试已择取至 `main@ad16813`，尚未运行。Wave A1–A4 已进入本地主线，代码提交与 Phase 验收分开记录，限制和待补验收产物见模块计划。全模块复核确认项目非空骨架；TrialLedger 批量持久化、durable v4 admission 与完整进程内写 gate、operator 专属 v5 身份基础及 ADR-0074 operator 已进入本地主线，均未完成 Phase 验收。ADR-0073、0074 已接受；六类 P7 算子仍 fail closed。E1 主线 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟。模块收敛计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-28 |
 
@@ -326,7 +326,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 111 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、9 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。清理与后续基础逻辑批次见 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md)。
+1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 113 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、9 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。清理与后续基础逻辑批次见 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md)。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
 
