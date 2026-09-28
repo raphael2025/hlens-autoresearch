@@ -15,6 +15,17 @@ test("all current and retained legacy report fixtures resolve to a supported DTO
   }
 });
 
+test("validation_report 2.3.0 (ADR-0077's bumped default Contract envelope) is supported with the 2.2.0 shape", () => {
+  // validation_report is the one ReportKind whose payload is a direct Contract.model_dump(); every
+  // other kind's schema_version is an independent, domain-specific number unrelated to
+  // core.domain.base.CONTRACT_SCHEMA_VERSION (see apps/api/report_dto.py). ADR-0077 only added an
+  // unrelated bounded evidence-manifest model, so 2.3.0 has the same required fields as 2.2.0 --
+  // built inline (schema_version bumped on the committed fixture), not a new fixture file.
+  const [report] = fixtureEnvelopes("validation_report");
+  const bumped = { ...report, payload: { ...report.payload, schema_version: "2.3.0" } };
+  assert.deepEqual(inspectReportDTO(bumped), { status: "supported", version: "2.3.0" });
+});
+
 test("unknown schema versions are preserved as raw read-only data", () => {
   const [report] = fixtureEnvelopes("paper_deviation");
   const future = { ...report, payload: { ...report.payload, schema_version: "99.0.0" } };

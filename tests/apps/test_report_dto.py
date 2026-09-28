@@ -21,6 +21,7 @@ from apps.api import create_app
 from apps.api.report_dto import REPORT_DTOS, decode_report_payload
 from apps.api.store import ReportKind, ReportMalformed, ReportStore
 from core.domain.base import content_hash
+from tests.factories import validation_report
 
 Payload = dict[str, Any]
 
@@ -181,6 +182,46 @@ def test_paper_deviation_1_0_0_legacy_is_supported_without_scope_fields() -> Non
     dto = decode_report_payload(ReportKind.PAPER_DEVIATION, payload)
     assert dto.supported is True
     assert dto.schema_version == "1.0.0"
+
+
+# --- ADR-0077: the default Contract envelope bumped to 2.3.0 (validation_report only) ---------
+#
+# validation_report is the one ReportKind whose payload is a direct ``Contract.model_dump()``
+# (research/reports/validation.py); every other kind's schema_version is an independent,
+# domain-specific number defined by its own writer module (research/reports/*.py,
+# research/router/deviation.py, research/synthetic_lab/gate_calibration.py), unrelated to
+# core.domain.base.CONTRACT_SCHEMA_VERSION. ADR-0077 (DQ-1 = A) only added the unrelated, bounded
+# ResearchDatasetEvidenceManifest model -- ValidationReport's own fields are unchanged, so 2.3.0
+# is registered with the same required-field shape as 2.2.0.
+
+
+def test_validation_report_baseline_tracks_the_current_contract_envelope() -> None:
+    assert REPORT_DTOS[ReportKind.VALIDATION_REPORT].baseline == "2.3.0"
+    assert {"2.0.0", "2.1.0", "2.2.0", "2.3.0"} <= REPORT_DTOS[ReportKind.VALIDATION_REPORT].supported_versions
+
+
+def test_validation_report_2_3_0_is_a_known_version_with_the_2_2_0_shape(tmp_path: Path) -> None:
+    """A freshly built ValidationReport now carries the bumped default envelope (ADR-0077); it
+    must be served as a supported DTO, not fall back to raw-JSON "unknown version" display."""
+    report = validation_report()
+    assert report.schema_version == "2.3.0"  # core/domain/base.py's new Contract default
+    payload = report.model_dump(mode="json")
+
+    dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
+    assert dto.supported is True
+    assert dto.schema_version == "2.3.0"
+
+    report_id = report.content_hash()
+    _write(tmp_path, ReportKind.VALIDATION_REPORT, report_id, payload)
+    envelope = ReportStore(tmp_path).get(ReportKind.VALIDATION_REPORT, report_id)
+    assert envelope.payload["schema_version"] == "2.3.0"
+
+    client = TestClient(create_app(reports_root=tmp_path))
+    detail = client.get(f"/reports/validation_report/{report_id}")
+    assert detail.status_code == 200
+    listing = client.get("/reports/validation_report").json()
+    assert listing["invalid"] == []
+    assert [item["id"] for item in listing["reports"]] == [report_id]
 
 
 # --- integration: ReportStore / the API apply the DTO check before identity ---------------------
