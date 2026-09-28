@@ -40,3 +40,12 @@
 
 - 正面：插件机制与架构文档一致，第三方 Provider 有了标准接入路径。
 - 代价：多了一处 Manifest 与实现可能不一致的风险。缓解办法是写测试，逐一比对内置 Manifest 与 Provider 的 name / version / kind。
+
+## 实施记录（2026-09-28，PM 审阅）
+
+实现提交见 `infrastructure/plugins/`。PM 接受以下三处建模选择：
+1. 现有 feature / state / event Provider 的 `available_lag` 是每个 spec 自带的参数，不是插件级常量，因此内置 Manifest 不填此字段；字段本身保留给有固定值的插件。
+2. `inputs` / `outputs` 用 `Ref` 字符串或 `name:type` 这类轻量 token 表达，因为 Provider 边界上没有 Arrow schema。
+3. `contract_version` 的 major 兼容检查复用 `core.domain.base.CONTRACT_SCHEMA_MAJOR`，不另设插件协议版本轴。
+
+strategy / risk 的 Provider 位于 `research/`，infrastructure 不得 import，所以暂无内置 Manifest。ADR-0085 新增的 Provider 需要补 Manifest（后续提交）。
