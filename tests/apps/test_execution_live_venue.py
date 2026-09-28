@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import ast
 import inspect
-import os
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
