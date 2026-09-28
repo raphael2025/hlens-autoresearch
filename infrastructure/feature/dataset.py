@@ -63,9 +63,8 @@ re-selecting** and without any whole-dataset tuple:
 
 The v3 path holds one chunk plus what the request itself carries (its observations and, for an
 interval spec, their rows' spans). Derived bars (``feature_request_from_derived_bars``) stay v2-only
-(a v3 hash is refused by the store). The verifier's catalog and evidence reader are read through its
-private attributes (``infrastructure.dataset`` has no public accessor: a follow-up for Codex
-review); it must prove manifests of the builder's own catalog.
+(a v3 hash is refused by the store). The verifier's catalog and evidence reader are read through
+its public ``adapter`` and ``builder`` properties; it must prove manifests of its own catalog.
 """
 
 from __future__ import annotations
