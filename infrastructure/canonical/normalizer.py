@@ -43,6 +43,10 @@ proven or reported as already committed, and never kept per batch.
 from __future__ import annotations
 
 import hashlib
+import os
+import sqlite3
+import struct
+import tempfile
 from bisect import bisect_left
 from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
@@ -109,6 +113,9 @@ _INDEX_DIGITS: Final = 8
 _FACT_CACHE: Final = 2
 #: Proven committed batches an immutable-view normalizer keeps (each <= one microbatch).
 _BATCH_CACHE: Final = 2
+_POSITION_DB_CACHE_KIB: Final = 1024
+_POSITION_INSERT_ROWS: Final = 2048
+_POSITION_INT: Final = struct.Struct(">q")
 
 
 class CanonicalNormalizeError(Exception):
@@ -133,6 +140,178 @@ class CanonicalUnitIncomplete(CanonicalNormalizeError, CatalogIntegrityError):
     It is a ``CatalogIntegrityError`` so every fail-closed caller refuses it; the distinct type
     tells a caller that rerunning the unfinished writer, not repair, is the way out.
     """
+
+
+class _PositionIndex(Sequence[int]):
+    """A sorted, disk-backed position sequence with bounded in-memory SQLite state."""
+
+    def __init__(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(prefix="hlens-positions-")
+        self._database_path = os.path.join(self._temporary.name, "positions.sqlite3")
+        self._rank_path = os.path.join(self._temporary.name, "ranks.bin")
+        self._connection = sqlite3.connect(self._database_path)
+        self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
+        self._connection.execute("PRAGMA temp_store = FILE")
+        self._connection.execute("PRAGMA journal_mode = OFF")
+        self._connection.execute("PRAGMA synchronous = OFF")
+        self._connection.execute("CREATE TABLE positions (position INTEGER NOT NULL)")
+        self._size = 0
+        self._fd: int | None = None
+        self._closed = False
+
+    def add_batch(self, positions: Iterable[int]) -> None:
+        if self._closed or self._fd is not None:
+            raise RuntimeError("position index is finalized")
+        self._connection.executemany(
+            "INSERT INTO positions(position) VALUES (?)", ((value,) for value in positions)
+        )
+
+    def finalize(self) -> None:
+        if self._closed or self._fd is not None:
+            raise RuntimeError("position index is finalized")
+        self._connection.commit()
+        try:
+            with open(self._rank_path, "wb") as ranks:
+                cursor = self._connection.execute(
+                    "SELECT position FROM positions ORDER BY position"
+                )
+                for (position,) in cursor:
+                    ranks.write(_POSITION_INT.pack(position))
+                    self._size += 1
+            self._connection.close()
+            self._fd = os.open(self._rank_path, os.O_RDONLY)
+        except Exception:
+            self.close()
+            raise
+
+    def __len__(self) -> int:
+        return self._size
+
+    def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
+        if isinstance(rank, slice):
+            start, stop, step = rank.indices(self._size)
+            return _PositionSlice(self, range(start, stop, step))
+        if rank < 0:
+            rank += self._size
+        if not 0 <= rank < self._size:
+            raise IndexError("position rank out of range")
+        if self._fd is None:
+            raise RuntimeError("position index is closed or not finalized")
+        value = os.pread(self._fd, _POSITION_INT.size, rank * _POSITION_INT.size)
+        if len(value) != _POSITION_INT.size:
+            raise OSError("position rank file ended unexpectedly")
+        return _POSITION_INT.unpack(value)[0]
+
+    def __iter__(self) -> Iterator[int]:
+        yield from self._iter_ranks(range(self._size))
+
+    def _iter_ranks(self, selection: range) -> Iterator[int]:
+        if self._fd is None:
+            raise RuntimeError("position index is closed or not finalized")
+        if not selection:
+            return
+        if selection.step != 1:
+            for rank in selection:
+                yield self[rank]
+            return
+        with open(self._rank_path, "rb") as rank_file:
+            rank_file.seek(selection.start * _POSITION_INT.size)
+            remaining = len(selection)
+            chunk_size = 64 * 1024 - (64 * 1024 % _POSITION_INT.size)
+            while remaining:
+                count = min(remaining, chunk_size // _POSITION_INT.size)
+                data = rank_file.read(count * _POSITION_INT.size)
+                if len(data) != count * _POSITION_INT.size:
+                    raise OSError("position rank file ended unexpectedly")
+                yield from (value for (value,) in _POSITION_INT.iter_unpack(data))
+                remaining -= count
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        fd, self._fd = self._fd, None
+        try:
+            if fd is not None:
+                os.close(fd)
+        finally:
+            try:
+                self._connection.close()
+            except sqlite3.ProgrammingError:
+                pass
+            finally:
+                self._temporary.cleanup()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class _PositionSlice(Sequence[int]):
+    """A lazy sequence slice that never copies a position range into memory."""
+
+    def __init__(self, positions: _PositionIndex, ranks: range) -> None:
+        self._positions = positions
+        self._ranks = ranks
+
+    def __len__(self) -> int:
+        return len(self._ranks)
+
+    def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
+        if isinstance(rank, slice):
+            start, stop, step = rank.indices(len(self))
+            return _PositionSlice(self._positions, self._ranks[start:stop:step])
+        if rank < 0:
+            rank += len(self)
+        if not 0 <= rank < len(self):
+            raise IndexError("position slice rank out of range")
+        return self._positions[self._ranks[rank]]
+
+    def __iter__(self) -> Iterator[int]:
+        yield from self._positions._iter_ranks(self._ranks)
+
+
+class _OffsetSequence(Sequence[int]):
+    """A lazy integer offset view used for exact committed-row comparisons."""
+
+    def __init__(self, values: Sequence[int], offset: int) -> None:
+        self._values = values
+        self._offset = offset
+
+    def __len__(self) -> int:
+        return len(self._values)
+
+    def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
+        if isinstance(rank, slice):
+            return _OffsetSequence(self._values[rank], self._offset)
+        return self._values[rank] + self._offset
+
+    def __iter__(self) -> Iterator[int]:
+        for value in self._values:
+            yield value + self._offset
+
+
+class _OffsetMembership(Collection[int]):
+    """Membership view for REST element indices backed by one-based Raw positions."""
+
+    def __init__(self, positions: Sequence[int], offset: int) -> None:
+        self._positions = positions
+        self._offset = offset
+
+    def __contains__(self, value: object) -> bool:
+        if not isinstance(value, int) or isinstance(value, bool):
+            return False
+        rank = bisect_left(self._positions, value + self._offset)
+        return rank < len(self._positions) and self._positions[rank] == value + self._offset
+
+    def __iter__(self) -> Iterator[int]:
+        for position in self._positions:
+            yield position - self._offset
+
+    def __len__(self) -> int:
+        return len(self._positions)
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -220,7 +399,7 @@ class _Pin:
 class _UnitFacts:
     """A unit's proven unit-wide facts (no Raw or Canonical rows)."""
 
-    positions: tuple[int, ...]
+    positions: _PositionIndex
     plan: _CommittedPlan | None
     base: int | None
     ready: datetime | None
@@ -244,7 +423,7 @@ class _Survey:
     #: Revision ids of the committed windows, in position order.
     committed_ids: tuple[str, ...]
     #: The unit's Raw positions, ascending and distinct (batches are rank slices of them).
-    positions: tuple[int, ...] = ()
+    positions: _PositionIndex | None = None
     #: Recovered from the committed rows when ``plan`` is set: the unit is rebuilt, and
     #: completed, at this contract version (ADR-0052 versioned replay, V1 / V2).
     version: str | None = None
@@ -288,6 +467,20 @@ class CanonicalNormalizer:
         self._facts: dict[tuple[str, str], _UnitFacts] = {}
         self._batches: dict[tuple[str, str, int], tuple[Mapping[str, Any], ...]] = {}
 
+    def close(self) -> None:
+        """Release temporary rank files retained by immutable-view unit facts."""
+        for facts in self._facts.values():
+            facts.positions.close()
+        self._facts.clear()
+        self._batches.clear()
+        self._pins.clear()
+
+    def __enter__(self) -> CanonicalNormalizer:
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
     # ------------------------------------------------------------------ entry points
 
     def normalize_unit(self, raw_table: str, source_revision_id: str) -> CanonicalUnitNormalized:
@@ -296,55 +489,59 @@ class CanonicalNormalizer:
         for _ in range(_ATTEMPTS):
             pin = self._pin(channel, source_revision_id)
             survey = self._survey(pin, channel, source_revision_id, keep_rows=False)
-            if survey.unit_rows == 0:
+            try:
+                if survey.unit_rows == 0:
+                    return CanonicalUnitNormalized(
+                        raw_table=raw_table,
+                        source_revision_id=source_revision_id,
+                        canonical_table=channel.canonical.table,
+                        arrival_seq_base=None,
+                        knowledge_time=None,
+                        revision_ids=(),
+                        commits=(),
+                    )
+                if survey.plan is None:
+                    assert survey.raw_floor is not None
+                    base, ready = self._allocate(channel, survey.raw_floor)
+                    chunk = self._microbatch
+                    # A unit with nothing committed is a new write group: the current version (V2).
+                    version = contract_version.new_group_version()
+                else:
+                    assert survey.base is not None and survey.ready is not None
+                    assert survey.version is not None
+                    base, ready, chunk = survey.base, survey.ready, survey.plan.chunk
+                    version = survey.version  # completed at its recorded version, never mixed
+                try:
+                    commits, revision_ids = self._write(
+                        pin, channel, source_revision_id, survey, (base, ready, version), chunk
+                    )
+                except CommitConflict as exc:
+                    last_error = exc  # another writer moved the table: start over, adopt its work
+                    continue
+                except BatchConflict as exc:
+                    if survey.plan is None:
+                        # A rival allocated first (its own block and clock reading) and committed
+                        # this batch id: start over and adopt its plan — the clock is never read again.
+                        last_error = exc
+                        continue
+                    # Our plan was recovered from committed batches, which every writer recovers
+                    # identically: another content under the same id is corruption, not contention.
+                    raise CatalogIntegrityError(
+                        f"a Canonical batch of unit {source_revision_id} is committed with other "
+                        f"content: {exc}"
+                    ) from None
                 return CanonicalUnitNormalized(
                     raw_table=raw_table,
                     source_revision_id=source_revision_id,
                     canonical_table=channel.canonical.table,
-                    arrival_seq_base=None,
-                    knowledge_time=None,
-                    revision_ids=(),
-                    commits=(),
+                    arrival_seq_base=base,
+                    knowledge_time=ready,
+                    revision_ids=revision_ids,
+                    commits=tuple(commits),
                 )
-            if survey.plan is None:
-                assert survey.raw_floor is not None
-                base, ready = self._allocate(channel, survey.raw_floor)
-                chunk = self._microbatch
-                # A unit with nothing committed is a new write group: the current version (V2).
-                version = contract_version.new_group_version()
-            else:
-                assert survey.base is not None and survey.ready is not None
-                assert survey.version is not None
-                base, ready, chunk = survey.base, survey.ready, survey.plan.chunk
-                version = survey.version  # completed at its recorded version, never mixed
-            try:
-                commits, revision_ids = self._write(
-                    pin, channel, source_revision_id, survey, (base, ready, version), chunk
-                )
-            except CommitConflict as exc:
-                last_error = exc  # another writer moved the table: start over, adopt its work
-                continue
-            except BatchConflict as exc:
-                if survey.plan is None:
-                    # A rival allocated first (its own block and clock reading) and committed
-                    # this batch id: start over and adopt its plan — the clock is never read again.
-                    last_error = exc
-                    continue
-                # Our plan was recovered from committed batches, which every writer recovers
-                # identically: another content under the same id is corruption, not contention.
-                raise CatalogIntegrityError(
-                    f"a Canonical batch of unit {source_revision_id} is committed with other "
-                    f"content: {exc}"
-                ) from None
-            return CanonicalUnitNormalized(
-                raw_table=raw_table,
-                source_revision_id=source_revision_id,
-                canonical_table=channel.canonical.table,
-                arrival_seq_base=base,
-                knowledge_time=ready,
-                revision_ids=revision_ids,
-                commits=tuple(commits),
-            )
+            finally:
+                if survey.positions is not None:
+                    survey.positions.close()
         raise CanonicalNormalizeConflict(
             f"unit {source_revision_id} of {raw_table} lost {_ATTEMPTS} commit races"
         ) from last_error
@@ -378,8 +575,12 @@ class CanonicalNormalizer:
         pin = self._pin(channel, source_revision_id)
         if arrival_seqs is None:
             survey = self._survey(pin, channel, source_revision_id, keep_rows=True)
-            _require_complete(channel, source_revision_id, survey.plan, survey.unit_rows)
-            return survey.committed_rows
+            try:
+                _require_complete(channel, source_revision_id, survey.plan, survey.unit_rows)
+                return survey.committed_rows
+            finally:
+                if survey.positions is not None:
+                    survey.positions.close()
         return self._verify_batches(pin, channel, source_revision_id, frozenset(arrival_seqs))
 
     def _verify_batches(
@@ -391,51 +592,52 @@ class CanonicalNormalizer:
     ) -> tuple[Mapping[str, Any], ...]:
         """The committed batches holding ``seqs``, proven, over the unit-wide facts (G3-S2)."""
         facts = self._unit_facts(pin, channel, source_revision_id)
-        if facts.plan is None or facts.base is None or facts.ready is None:
-            return ()
-        assert facts.version is not None
-        plan, base, ready = facts.plan, facts.base, facts.ready
-        _require_complete(channel, source_revision_id, plan, len(facts.positions))
-        wanted = {
-            index
-            for index in _batches_holding(facts.positions, plan.chunk, base, seqs)
-            if index < plan.count
-        }
-        # Taken before the loop, whose inserts may evict them; only the snapshots of the other
-        # wanted batches — the ones this call proves — are located (E1-CAP-1).
-        cached: dict[int, tuple[Mapping[str, Any], ...]] = {}
-        for index in wanted if self._frozen else ():
-            rows = self._batches.get((channel.element.table, source_revision_id, index))
-            if rows is not None:
-                cached[index] = rows
-        snapshots = dict(
-            self._plan_snapshots(pin, channel, source_revision_id, plan, wanted - cached.keys())
-        )
-        kept: list[Mapping[str, Any]] = []
-        for index in sorted(wanted):
-            key = (channel.element.table, source_revision_id, index)
-            proven = cached.get(index)
-            if proven is not None:
-                kept.extend(proven)
-                continue
-            low, high, _ = _batch_window(facts.positions, plan.chunk, index)
-            raw = self._raw_window(pin, channel, source_revision_id, low, high)
-            self._prove(pin, channel, raw)
-            planned = self._planned(channel, raw, base, ready, facts.version)
-            check_batch_snapshot(
-                channel.canonical,
-                unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
-                snapshots[index],
-                planned,
+        try:
+            if facts.plan is None or facts.base is None or facts.ready is None:
+                return ()
+            assert facts.version is not None
+            plan, base, ready = facts.plan, facts.base, facts.ready
+            _require_complete(channel, source_revision_id, plan, len(facts.positions))
+            wanted = {
+                index
+                for index in _batches_holding(facts.positions, plan.chunk, base, seqs)
+                if index < plan.count
+            }
+            cached: dict[int, tuple[Mapping[str, Any], ...]] = {}
+            for index in wanted if self._frozen else ():
+                rows = self._batches.get((channel.element.table, source_revision_id, index))
+                if rows is not None:
+                    cached[index] = rows
+            snapshots = dict(
+                self._plan_snapshots(pin, channel, source_revision_id, plan, wanted - cached.keys())
             )
-            self._check_committed_window(pin, channel, base, low, high, planned)
-            kept.extend(planned)
-            if self._frozen:
-                # Consecutive time slices share at most their boundary batch: keep the last few.
-                while len(self._batches) >= _BATCH_CACHE:
-                    self._batches.pop(next(iter(self._batches)))
-                self._batches[key] = tuple(planned)
-        return tuple(kept)
+            kept: list[Mapping[str, Any]] = []
+            for index in sorted(wanted):
+                key = (channel.element.table, source_revision_id, index)
+                proven = cached.get(index)
+                if proven is not None:
+                    kept.extend(proven)
+                    continue
+                low, high, _ = _batch_window(facts.positions, plan.chunk, index)
+                raw = self._raw_window(pin, channel, source_revision_id, low, high)
+                self._prove(pin, channel, raw)
+                planned = self._planned(channel, raw, base, ready, facts.version)
+                check_batch_snapshot(
+                    channel.canonical,
+                    unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
+                    snapshots[index],
+                    planned,
+                )
+                self._check_committed_window(pin, channel, base, low, high, planned)
+                kept.extend(planned)
+                if self._frozen:
+                    while len(self._batches) >= _BATCH_CACHE:
+                        self._batches.pop(next(iter(self._batches)))
+                    self._batches[key] = tuple(planned)
+            return tuple(kept)
+        finally:
+            if not self._frozen:
+                facts.positions.close()
 
     def _unit_facts(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
@@ -445,14 +647,39 @@ class CanonicalNormalizer:
         cached = self._facts.get(key) if self._frozen else None
         if cached is not None:
             return cached
-        table = channel.canonical.table
         positions, symbol = self._positions(pin, channel, source_revision_id)
+        try:
+            facts = self._unit_facts_for_positions(
+                pin, channel, source_revision_id, positions, symbol
+            )
+        except BaseException:
+            positions.close()
+            raise
+        if self._frozen:
+            while len(self._facts) >= _FACT_CACHE:
+                _, evicted = self._facts.popitem()
+                evicted.positions.close()
+            previous = self._facts.pop(key, None)
+            if previous is not None:
+                previous.positions.close()
+            self._facts[key] = facts
+        return facts
+
+    def _unit_facts_for_positions(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        positions: _PositionIndex,
+        symbol: str | None,
+    ) -> _UnitFacts:
+        table = channel.canonical.table
         if not positions:
             self._prove_source(pin, channel, source_revision_id)
         self._check_positions(pin, channel, source_revision_id, positions, symbol)
         plan, ordered = self._committed_plan(pin, channel, source_revision_id)
         seqs, readies, versions = self._committed_times(pin, channel, source_revision_id)
-        facts = _UnitFacts(tuple(positions), None, None, None)
+        facts = _UnitFacts(positions, None, None, None)
         if not positions:
             if len(seqs) or plan is not None:
                 raise CatalogIntegrityError(
@@ -470,17 +697,13 @@ class CanonicalNormalizer:
             )
             _check_plan(channel, source_revision_id, plan, ordered, len(positions))
             covered = min(plan.count * plan.chunk, len(positions))
-            if not _same_numbers(seqs, [base + position for position in positions[:covered]]):
+            if not _same_numbers(seqs, _OffsetSequence(positions[:covered], base)):
                 raise CatalogIntegrityError(
                     f"{table}: the committed rows of unit {source_revision_id} are not exactly "
                     "the rows of its committed batches (rows deleted or added)"
                 )
-            facts = _UnitFacts(tuple(positions), plan, base, ready, version)
+            facts = _UnitFacts(positions, plan, base, ready, version)
         self._check_rest_unit(pin, channel, source_revision_id, positions)
-        if self._frozen:
-            while len(self._facts) >= _FACT_CACHE:
-                self._facts.pop(next(iter(self._facts)))
-            self._facts[key] = facts
         return facts
 
     # ------------------------------------------------------------------ pin
@@ -534,8 +757,13 @@ class CanonicalNormalizer:
         Completeness is judged last, so every committed-state defect keeps its own verdict.
         """
         survey = self._survey_unit(pin, channel, source_revision_id, keep_rows=keep_rows)
-        self._check_rest_unit(pin, channel, source_revision_id, survey.positions)
-        return survey
+        assert survey.positions is not None
+        try:
+            self._check_rest_unit(pin, channel, source_revision_id, survey.positions)
+            return survey
+        except BaseException:
+            survey.positions.close()
+            raise
 
     def _survey_unit(
         self,
@@ -545,8 +773,27 @@ class CanonicalNormalizer:
         *,
         keep_rows: bool,
     ) -> _Survey:
-        table = channel.canonical.table
         positions, symbol = self._positions(pin, channel, source_revision_id)
+        try:
+            return self._survey_with_positions(
+                pin, channel, source_revision_id, keep_rows=keep_rows,
+                positions=positions, symbol=symbol,
+            )
+        except BaseException:
+            positions.close()
+            raise
+
+    def _survey_with_positions(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        *,
+        keep_rows: bool,
+        positions: _PositionIndex,
+        symbol: str | None,
+    ) -> _Survey:
+        table = channel.canonical.table
         floor: datetime | None = None
         for low, high in _proof_windows(positions, self._microbatch):
             raw = self._raw_window(pin, channel, source_revision_id, low, high)
@@ -565,13 +812,13 @@ class CanonicalNormalizer:
                     f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
                     "has no Raw element revision"
                 )
-            return _Survey(0, None, None, None, None, (), (), ())
+            return _Survey(0, None, None, None, None, (), (), positions)
         if plan is None:
             if len(seqs):
                 raise CatalogIntegrityError(
                     f"{table}: unit {source_revision_id} has committed rows but no committed batch"
                 )
-            return _Survey(unit_rows, floor, None, None, None, (), (), tuple(positions))
+            return _Survey(unit_rows, floor, None, None, None, (), (), positions)
         base, ready, version = self._recover(channel, source_revision_id, seqs, readies, versions)
         _check_plan(channel, source_revision_id, plan, ordered, unit_rows)
         # Newest first, i.e. highest index first: each batch's snapshot is streamed from the
@@ -598,7 +845,7 @@ class CanonicalNormalizer:
             ids.append([row["revision_id"] for row in planned])
             if keep_rows:
                 kept.append(planned)
-        if not _same_numbers(seqs, [base + position for position in positions[:covered]]):
+        if not _same_numbers(seqs, _OffsetSequence(positions[:covered], base)):
             raise CatalogIntegrityError(
                 f"{table}: the committed rows of unit {source_revision_id} are not exactly the "
                 "rows of its committed batches (rows deleted or added)"
@@ -611,27 +858,61 @@ class CanonicalNormalizer:
             ready,
             tuple(row for rows in reversed(kept) for row in rows),
             tuple(revision for batch_ids in reversed(ids) for revision in batch_ids),
-            tuple(positions),
+            positions,
             version,
             digest.digest(),
         )
 
     def _positions(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
-    ) -> tuple[list[int], str | None]:
-        """Sorted Raw positions of the unit (one int per row; duplicates kept) and its symbol."""
+    ) -> tuple[_PositionIndex, str | None]:
+        """Disk-sorted Raw positions of the unit and its first symbol."""
         column = _position_column(channel)
-        found = pin.catalog.scan_columns(
+        reader = pin.catalog.scan_column_batches(
             channel.element.table,
             columns=(column, "symbol"),
             row_filter=_equals(channel.lineage_column, source_revision_id),
         )
-        values = found.column(column)
-        if values.null_count:
-            raise CatalogIntegrityError(f"{channel.element.table}: a Raw position is null")
         offset = 0 if channel.name == "archive" else 1
-        symbol = found.column("symbol")[0].as_py() if found.num_rows else None
-        return sorted(value + offset for value in values.to_pylist()), symbol
+        index = _PositionIndex()
+        symbol: str | None = None
+        saw_symbol = False
+        try:
+            try:
+                for record_batch in reader:
+                    values = record_batch.column(record_batch.schema.get_field_index(column))
+                    if values.null_count:
+                        raise CatalogIntegrityError(
+                            f"{channel.element.table}: a Raw position is null"
+                        )
+                    if record_batch.num_rows and not saw_symbol:
+                        symbol = record_batch.column(
+                            record_batch.schema.get_field_index("symbol")
+                        )[0].as_py()
+                        saw_symbol = True
+                    raw_values = values.to_pylist()
+                    for start in range(0, len(raw_values), _POSITION_INSERT_ROWS):
+                        index.add_batch(
+                            value + offset
+                            for value in raw_values[start : start + _POSITION_INSERT_ROWS]
+                        )
+            except BaseException:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+                raise
+            else:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    close()
+            index.finalize()
+            return index, symbol
+        except BaseException:
+            index.close()
+            raise
 
     def _check_positions(
         self,
@@ -679,7 +960,7 @@ class CanonicalNormalizer:
             pin.verifier,
             channel,
             source_revision_id,
-            {position - 1 for position in positions},
+            _OffsetMembership(positions, 1),
         )
 
     def _raw_window(
@@ -969,6 +1250,7 @@ class CanonicalNormalizer:
         commits = self._replayed_commits(pin, channel, source_revision_id, survey)
         ids: list[str] = list(survey.committed_ids)
         positions = survey.positions
+        assert positions is not None
         for index in range(len(commits), -(-unit_rows // chunk)):
             low, high, _ = _batch_window(positions, chunk, index)
             batch_id = unit_batch_id(source_revision_id, unit_rows, chunk, index)
@@ -1022,6 +1304,7 @@ class CanonicalNormalizer:
         table = channel.canonical.table
         found: list[BatchCommit] = []
         digest = hashlib.sha256()
+        assert survey.positions is not None
         for index, snapshot in self._plan_snapshots(pin, channel, source_revision_id, plan, None):
             _, _, end = _batch_window(survey.positions, plan.chunk, index)
             rows = end - index * plan.chunk
@@ -1122,7 +1405,7 @@ class CanonicalNormalizer:
             row_filter=_from("arrival_seq", base, base + rules.ARRIVAL_SEQ_STRIDE),
             snapshot_id=snapshot_id,
         ).column("arrival_seq")
-        expected = [base + position for position in positions]
+        expected = _OffsetSequence(positions, base)
         if not _same_numbers(seqs, expected) or not _same_numbers(block, expected):
             raise CatalogIntegrityError(
                 f"{table}: unit {source_revision_id} does not read back as exactly its "
@@ -1192,8 +1475,8 @@ def check_rest_page(
         raise CanonicalNormalizeError(f"{channel.element.table} is not a REST element table")
     table = channel.element.table
     response, elements = verifier.page_elements(channel.data_type, response_revision_id)
-    own = set(own)
-    if not own <= {element.element_index for element in elements}:
+    body_indices = {element.element_index for element in elements}
+    if any(position not in body_indices for position in own):
         raise CatalogIntegrityError(
             f"{table}: unit {response_revision_id} holds positions its body does not"
         )
