@@ -1,0 +1,42 @@
+# ADR-0083：P7 failed round 的 durable 人工重试 admission
+
+| 字段 | 值 |
+|---|---|
+| 状态 | **Accepted** |
+| 日期 | 2026-09-28 |
+| 决策者 | Codex 依 Raphael 2026-09-28 授权决定 |
+| 相关 Phase | Phase 7 — Discovery；Phase 11 loop host |
+| 影响范围 | `research/loop`、`apps/worker/loop.py`；不改 `core/`、Constitution、Validation Profile 或阈值 |
+| 兼容性 | 新建 v6 retry state；v3/v4/v5 持久字节与读取行为不变；`TypedPlan.runnable` 仍为 `False` |
+
+## 背景与决定
+
+[ADR-0070](0070-p7-partial-experiment-fail-stop.md) 在 experiment stage 失败后 fail-stop；[ADR-0071](0071-p7-failed-round-review-packet.md) 只提供只读 packet，不授予恢复权；[ADR-0073](0073-phase7-plan-admission-recovery.md) 的 v4 PREPARE / TrialLedger / COMMIT / checkpoint / anchor 事务只用于 typed-plan；[ADR-0074](0074-p7-bounded-operator.md) 的 v5 绑定 operator identity。重试必须成为新 attempt，旧失败证据及其 ledger 记录永久保留。
+
+批准一个**显式、人工发起、不开启调度**的 retry admission。协议只接受一份当前打开 durable state 上重建的 ADR-0071 packet、非空人工 reviewer 声明和人工给出的有序 retry manifest。manifest 每项是已登记 hypothesis 的精确 `name@version`、其当前内容 hash、以及全新的 attempt key。packet 不推断失败 trial 与 hypothesis 的映射；调用者必须逐项明确选择。相同 hypothesis 可多次列出，但 attempt key 全局不得在本 ledger 中复用，manifest 内不得重复。
+
+重试使用新的 **durable state version 6**。v6 header / memory journal 的新增 retry event 使用严格固定字段；v3/v4/v5 的 header、checkpoint、anchor 与 reducer 分支保持原样。v6 必须有 ADR-0073 plan-admission journal（仍沿用 v4 语义）以及 retry journal；两者均由 `loop_id` 和状态版本绑定。retry journal 是独立 hash-chain，事件只有 `retry_prepare` 与 `retry_commit`。PREPARE 保存完整 canonical packet payload/hash、失败 `record_hash`、reviewer、manifest、ledger baseline `(seq, hash)` 和 retry id。COMMIT 绑定 PREPARE seq/hash、每个新 `reevaluate` ledger entry 的 seq/hash、最终 ledger head 与 memory checkpoint seq/hash。memory checkpoint 的 `retry_admission` 行记录 retry id、COMMIT 位置和完整 file heads；外部 anchor 仅在 checkpoint fsync 后推进，head 中包含 retry journal 位置。审阅者身份是调用者声明，不是认证凭据。
+
+## 写入顺序与崩溃恢复
+
+所有写入在 `open_state()` 成功、单写者 state lock 与 admission gate 均持有、无 open round / pending plan admission、anchor 精确等于当前 head 后进行：
+
+1. 校验最终记录为 experiment `FAILED`，在同一锁定视图重建 ADR-0071 packet 并要求传入 packet canonical bytes/hash 完全一致；核对 review journal、audit、memory checkpoints、TrialLedger 与 anchor。
+2. 校验 reviewer 为非空且非自动化 loop / system identity；manifest 非空、引用的 hypothesis 已登记且内容 hash 相同；attempt key 非空、规范化后唯一，且 ledger 未使用。预算绑定当前 loop fingerprint / `LoopBudget`，不增加、不清零。拒绝重试预算会超出剩余硬上限的请求。
+3. fsync `retry_prepare`。此后 admission gate 封闭普通 ledger writes；按 manifest 顺序逐项追加标准 TrialLedger `reevaluate` 事件。每项都是新 trial，因此 family trial count 与多重检验计数单调增加。
+4. fsync `retry_commit`，再写 memory `retry_admission` checkpoint，最后推进 anchor。只有此顺序全部完成后，显式入口才解除当前 `ResearchLoop` 的 ADR-0070 fail-stop 并允许新 round；它不会运行实验。下一 round 使用新的 round index 和已登记 attempt，不重放失败 round。
+
+v6 opener 先验证全部链、packet/hash、失败记录、manifest、ledger baseline / 尾部、checkpoint 与 anchor prefix，再做恢复。PREPARE 后崩溃時，只接受 ledger 在 baseline 到 manifest 的精确連續 `reevaluate` 前綴；驗證每一行都與 PREPARE 綁定 hypothesis / attempt 完全一致，補寫唯一缺少的 suffix，然後補 COMMIT、checkpoint、anchor。若 ledger 多出、缺中間行、attempt 或內容不符，或 PREPARE/COMMIT/checkpoint/anchor 出現分叉、重複/非尾部 pending、packet 已非最後失敗輪，拒絕開啟並保留所有資料；不得執行 Provider / stage。COMMIT 已存在時只可補 checkpoint 與 anchor；checkpoint 已存在時只可補 anchor。任何已完成 retry admission 不得再次消費。
+
+## 拒絕條件與兼容
+
+無 reviewer / packet、packet 過期或不匹配、manifest 空/重複/引用不匹配、attempt 重用、v3/v4/v5 state、lock/gate 缺失、非 experiment failure、open round、任何 ledger / journal / checkpoint / anchor 不一致、預算不足、或無法唯一確定恢復步驟，均 fail closed，且不得開始 experiment。失敗 audit record、TrialLedger 與 lifecycle history 不刪、不覆蓋、不隱藏；舊失敗 trial 永遠計數。retry 只新增 re-evaluation trial，不改 Constitution trial-count 規則。沒有 ADR-0071 review 即沒有 admission；不自動 retry、不接 scheduler、不啟用 P7 operator。v3/v4/v5 opener 仍只接受原版本與原事件集合，不遷移、不轉寫。
+
+## 後果
+
+Review packet 繼續是只讀觀測；只有 v6 的專用 admission 才能解除 loop instance 的 fail-stop。人工身份是可稽核聲明，非身份認證。v6 與舊版本不可互開；需要切換 loop identity / budget 時建立新 loop。實現不改 Domain Contract、Validation、Constitution 或 `TypedPlan.runnable`。
+
+## 參考
+
+- [ADR-0049](0049-continuous-research-loop.md)、[ADR-0070](0070-p7-partial-experiment-fail-stop.md)、[ADR-0071](0071-p7-failed-round-review-packet.md)、[ADR-0073](0073-phase7-plan-admission-recovery.md)、[ADR-0074](0074-p7-bounded-operator.md)
+- `research/loop/durable.py`、`research/loop/recovery_review.py`、`apps/worker/loop.py`、`research/hypotheses/ledger.py`
