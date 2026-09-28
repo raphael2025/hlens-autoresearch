@@ -149,6 +149,15 @@
 - ADR-0073 clarification 固定 v4 plan journal header，不允许未来格式覆盖 v4 字节。ADR-0074 进一步规定 operator 专属 `STATE_VERSION = 5`，v5 journal header 绑定 5；语义配置 hash 覆盖 TOML schema、Provider identity、ProfileSelection 及有效 loop/wiring 内容，不包括目录 / anchor / bus / reports 路径或每次 `--rounds`。
 - 当前没有冻结的 production Validation Profile。实现阶段不捏造合法运行配置；README 用字段完整、值含显式占位符的模板，并写明 parser 会拒绝。将来必须等真实 Profile 冻结后，才可补可运行样例。
 
+### 10.56 ADR-0073 durable v4 hardening 与 ADR-0074 v5 identity 基础（2026-09-28；本地 main）
+
+- Claude 对 `1975bdb` 做了六路只读复核，发现 PREPARE 前 ledger identity 冲突、未完成 admission 与 round checkpoint 的写读不对称、同 round 第二笔 admission、底层 `recovery_required` 防线、恢复中提前移动 anchor 等问题。两名 Codex 子代理独立核对后，Claude 在隔离分支完成 `e3ac380` / `f91760b`：补齐写入 / 重开对称校验、实例内单次 admission 与 ledger 锁、失败轮 fail-stop、v4 header 初始化崩溃尾恢复、精确版本 / 异常契约、guard replay-before-recovery，以及 provider-free 的恢复分支；仅静态代码复核与 `git diff --check`，未运行测试、build、lint、typecheck、probe 或 Phase 验收。
+- 源码复核要求恢复时 anchor 不得先于 guard 重放；恢复分支现在用与 `ResearchLoop` 相同的 `replay_transition` 在任何恢复写入前核验。外部 anchor 存在时，PREPARE 要求 anchor 已等于当前 state head，避免创建无法区分首次未发布与 anchor 丢失的交易；空 anchor 配已有 checkpoint 继续 fail closed。既有 v4 目录曾在旧代码下、且从未发布初始 anchor 就已写 admission checkpoint 的遗留目录无法仅凭日志判断来历，当前保持拒绝，不自动重锚。
+- 限制：prepare 与 complete 分属两个公开调用，当前 `_admission_lock` / ledger 锁没有跨方法持有；调用方必须保证间隙内不写 TrialLedger。并发写入的实例级 admission lease / 共用 mutation lock 是任何 producer 接入前置项。provider-free 历史核验不证明 market 能从 spec 重建，也不重建 research-piece bars；恢复路径最终拒绝 open round，未把这些对象交给后续执行。此边界仍需在统一验收和 producer 设计时确认。
+- `30a5dec` 将 v5 state identity 实现为 ADR-0074 的 operator-only 基础：规范 lowercase SHA-256 同时绑定 memory fingerprint 与 plan journal header；v3/v4 字节形状不变，v3/v4/v5 不自动迁移，跨版本打开拒绝。`0288ff2` 保持 v4/v5 plan journal reducer 错误映射与精确版本文档。v5 尚无 TOML parser、静态 Provider registry、operator CLI、report catch-up 或 runnable entry；无冻结 production Profile，因此无合规运行配置。六类 operator 仍不可运行。
+- 四个代码提交快进进入本地 `main`，分支 tip 存入 `refs/archive/2026-09-28/branches/codex/p7-durable-v4-hardening` 与 `.../p7-operator-v5-identity` 后移除两个干净工作树 / 分支。当前 3 个本地分支、9 个 worktree；`main` 比 `origin/main@44fe9a2` 超前 101 个提交，状态文档提交后为 102；未推送。Phase 1 E1-CAP-1 仍阻断，项目仍非骨架但大多数 Phase 未验收。
+- 下一步：先补 admission lease，再按 ADR-0074 实现严格 TOML parser、静态 allowlist 与有限轮数 CLI 框架；Profile 未冻结时必须拒绝配置，且不加 API 写触发、不启用任一 operator。统一测试与验收继续按 Raphael 安排暂缓。
+
 ## 6. Agent 分工约束
 
 同一时段最多四个执行代理（包括 Cursor Auto），另由一名 Claude Opus 协调：
