@@ -123,6 +123,19 @@
 - 每个开发代理一次只领一个 ID；Codex 复核后才进本地 `main`。Claude 可用最多 6 个子代理并行，但不能跨写同一模块。Cursor 此前确认 `phase/1` 没有独有实现；相关分支和 worktree 已归档清理。
 - 交付须含：改动文件、任务 ID/Phase、对应 ADR/ROADMAP 约束、静态复核结果、未解决事项。测试、类型检查、lint、build 和验收状态统一标为“未运行”。
 
+## PM 任务板（2026-09-28 起）
+
+Raphael 于 2026-09-28 指定 Claude Code 以 PM 身份协调本轮：只有 PM 对 Raphael 汇报；Codex（`gpt-6-luna`）担任 Tech Lead，只执行 PM 签发的 Task Packet，不自设平行 GOAL；sonnet 子代理做只读审计与小切片修补，一人一任务、一个文件边界；涉及 `core/` 的任务串行。全员不跑测试 / probe / 验收（除非 Raphael 开启调试）、不实施 ADR-0077、不宣称 E1-CAP-1 通过、不 push。子代理不能直接写根 checkout；PM 在自己的 worktree 分支整合后，由根 checkout 以 `--ff-only` 快进。
+
+| ID | 模块 | 目标 | 执行者 | 文件边界 | 禁止项 | Done 定义 | 状态 |
+|---|---|---|---|---|---|---|---|
+| CL-1 | Git | 上一轮 21 个未提交 E1 路径整体归档，phase 分支恢复干净 | PM（仅 git 操作） | 根 checkout git 状态 | 改内容、stash、push | `wip/e1-cap-archive@ece150e` + archive ref；`git status` clean | ✅ |
+| CL-2 | Docs | 挑回非 E1 事实同步（C5/C6、P9/P13），E1 叙述改为“余项已归档、后置”，记录协调方式 | sonnet | STATUS、MEMORY、本计划 | 代码、ADR、把 ADR-0076 写成 Accepted | 仅文档单提交 | ✅ `8a0adc4` |
+| CL-3 | PM | 任务板落档（本节） | PM | 本计划 | — | 已提交 | ✅ |
+| AUD-1 | 跨模块 | 静态列出测试与已提交实现的漂移（调试入口清单），只读不修 | sonnet | 无写入 | 运行任何检查、改测试、评估 E1 归档 | 每条带文件:行号证据 | 🔄 |
+| DBG-* | 各模块 | 逐模块调试（顺序见“后续模块调试顺序建议”） | Codex / sonnet | 按模块单独签发 | 同上 | — | ⏸ 等 Raphael 开启 |
+| E1-* | P1 E1 / Dataset | E1-CAP-1、ADR-0075 Amendment 1、ADR-0076/0077 | — | — | 本轮不派；归档分支不得整支合并 | — | ⏸ 后置 |
+
 ## 阶段目标
 
 1. 清理确认无活动会话的冗余分支/worktree，保留历史 archive ref 与失败证据。
