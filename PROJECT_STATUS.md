@@ -11,7 +11,7 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
 | 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。Wave A1–A4 已以 `0651e6a` 本地提交：P7 新增纯 Experiment/Hypothesis/output 绑定校验（不能证明预期 output 全集完整）；P3 命令输出 table binding/hash；P2 Web 消费 diagnostics 1.1.0 optional source hash；P8 fixture writer 注册 retro_audit。做了源码静态复核及 `git diff --check`；没有运行测试、build、lint、typecheck、probe 或验收。P3 现有测试断言和 P8 旧 1.0.0 fixture / ID 登记需在验收同步窗口更新。P7 durable v4 admission 已完成写入 / 恢复加固，并已补齐跨 PREPARE→COMMIT 的 lease、durable store 写 gate、round/approval 串行化、close 后拒写与只读 journal view；operator 专属 v5 持久身份基础已实现。ADR-0074 TOML parser、静态 Provider allowlist、有限轮次 CLI、路径与锚点预检及逐轮报告已合入本地 main；只做两轮源码静态复核，未测试、未验收。六类组合算子不可执行；没有冻结 Profile，不能生成合规运行配置。E1-CAP-1 阻断；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 113 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 9 个 worktree；仍保留根 `phase/1` Cursor 工作区和未跟踪资料、研究规格 Claude 分支的独有测试，以及 E1 / Phase 1 证据 worktrees；其他已确认冗余分支归档后删除。研究规格分支唯一 G1 边界测试已择取至 `main@ad16813`，尚未运行。Wave A1–A4 已进入本地主线，代码提交与 Phase 验收分开记录，限制和待补验收产物见模块计划。全模块复核确认项目非空骨架；TrialLedger 批量持久化、durable v4 admission 与完整进程内写 gate、operator 专属 v5 身份基础及 ADR-0074 operator 已进入本地主线，均未完成 Phase 验收。ADR-0073、0074 已接受；六类 P7 算子仍 fail closed。E1 主线 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟。模块收敛计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) |
+| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 114 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 3 个 worktree；根 `phase/1` Cursor 工作区和研究规格 Claude worktree 因活动会话保留，独有 G1 测试已迁入主线并未运行。E1 / D3E 证据提交已有 archive ref，对应 detached worktree 已清理；其他无活动且无独有内容的 detached worktree 已移除。Wave A1–A4 已进入本地主线，代码提交与 Phase 验收分开记录，限制和待补验收产物见模块计划。全模块复核确认项目非空骨架；TrialLedger 批量持久化、durable v4 admission 与完整进程内写 gate、operator 专属 v5 身份基础及 ADR-0074 operator 已进入本地主线，均未完成 Phase 验收。ADR-0073、0074 已接受；六类 P7 算子仍 fail closed。E1 主线 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟。模块收敛计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-28 |
 
@@ -45,7 +45,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；四条 2026-09-26 种子已显式固定 `schema_version: 2.1.0`。种子标签 / 资产仍需具名人工审阅；新增种子的黄金哈希覆盖尚未补齐。**Phase 0.5 未验收** |
-| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；main 上的 RSS probe 与 opt-in 分阶段诊断已准备但均未运行。诊断模式只报告 Catalog 调用次数、manifest / file task 规划数量、Python 分配归因与返回对象可达大小估计，并明确不能作为 RSS 或 E1 证据。已归档候选 `a75278e` 的 500k `resume` / `replay` 增长分别为 59.9 / 63.9 MiB，不能代表 main；PR #10 已关闭，失败实现保存在 archive ref / detached worktree。E1-CAP-1 阻断，Phase 1 未验收 |
+| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；main 上的 RSS probe 与 opt-in 分阶段诊断已准备但均未运行。诊断模式只报告 Catalog 调用次数、manifest / file task 规划数量、Python 分配归因与返回对象可达大小估计，并明确不能作为 RSS 或 E1 证据。已归档候选 `a75278e` 的 500k `resume` / `replay` 增长分别为 59.9 / 63.9 MiB，不能代表 main；PR #10 已关闭，失败实现与 worktree tip 保存在 archive ref（`c3868dc`），候选 worktree 已清理。E1-CAP-1 阻断，Phase 1 未验收 |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断载荷 1.1.0 记录来源 `StateResult.result_hash`（裸序列为 null），旧 1.0.0 报告可原样读回并复原 id；来源哈希只是报告声明、不认证 Registry 存在性；Web fixture 已按新载荷重生成；测试、类型检查与阶段验收未运行 |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；`EventResult → OutcomeEvent` 纯转换已在 main，以 event id / 可观测时间构造 Outcome 标签输入；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；未跑测试，Phase 4 未验收 |
@@ -326,7 +326,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 113 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、9 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。清理与后续基础逻辑批次见 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md)。
+1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 114 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、3 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。清理与后续基础逻辑批次见 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md)。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
 
@@ -334,7 +334,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > Claude 下一步可以执行什么？
 
-1. A1–A3 模块任务按 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) 分别限定在 P7 hypotheses、P3 event operations、P2 Web diagnostics；只补基础逻辑，不接运行路径、不执行测试或验收。E1 history-options worktree 仅作只读设计证据；不清理或覆盖。主线 RSS probe 尚未运行，失败候选不代表 main 容量。
+1. A1–A4 已提交为 `0651e6a`；继续按 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) 做后续有批准范围的模块任务。清理后只剩根 `phase/1` Cursor 工作区与研究规格 Claude 工作区；均确认有活动会话，暂保留。E1 失败证据在 archive ref，候选 worktree 已移除；主线 RSS probe 尚未运行，失败候选不代表 main 容量。
 2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery、v5 operator identity 与 ADR-0074 有限批次 operator 已进入本地 main，均尚待统一验收。继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
 3. P7 算子继续 fail closed；逐项语义、Provider lowering、审计持久化与 TrialLedger 原子关系未获独立 ADR 前不得启用。P12 循环内替换继续按 P12-LOOP 暂缓。
 4. 不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。

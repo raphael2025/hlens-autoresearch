@@ -16,7 +16,7 @@
 - `phase/1@52f7477` 的 496 个提交全部是 main 祖先，没有独有 patch；但根目录是 Cursor 当前打开的工作区，含未跟踪计划资料和嵌套 worktree。保留，不切换、不移除。
 - `docs/research-spec-completion@82bfe73` 从旧 `20bdd82` 分叉，整树与当前 main 有 124 个路径差异，其中有主线后续实现的删除 / 回退。其 `7b9df59` 两条 G1 边界测试已择取到 main；策略收益率修复已 patch-equivalent 在 main。其余 README / library 文档以 main 版本为准，旧 tip 已有 archive ref。该 worktree 仍有活动 Claude 进程，因此保留到会话结束后再清理 branch/worktree。
 - 远端只保留 `main`；不得从 archive ref 恢复或整支合并失败的 E1 候选。E1 候选 `c3868dc` 超过 32 MiB 门槛的失败证据继续保留。
-- 其余 detached worktree 经审计均无独有实现；清理只在确认不再有活动会话并保全 archive ref 后进行。
+- 经确认没有活动进程后，E1 候选、D3E 审查、C05、gatewt、E1 integration 与 B52 等 6 个 detached worktree 已清理；E1 候选 tip 与 D3E detached tip 均留有 archive ref。当前仅保留 main、Cursor 检出的 `phase/1` 与 Claude 检出的 `docs/research-spec-completion` 三个 worktree；后两者等待各自会话结束后再清理。
 
 ## 模块状态总览
 
