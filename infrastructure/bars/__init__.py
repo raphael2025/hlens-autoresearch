@@ -35,6 +35,7 @@ from infrastructure.bars.verified import (
     HEAD_READ_TABLES,
     ManifestCacheStats,
     VerifiedManifestCache,
+    load_verified_any,
     load_verified_manifest,
     verification_head_tables,
 )
@@ -50,6 +51,7 @@ __all__ = [
     "ManifestPairError",
     "VerifiedManifestCache",
     "backtest_bars_from_dataset",
+    "load_verified_any",
     "load_verified_manifest",
     "outcome_request_from_dataset",
     "pair_hash_of",

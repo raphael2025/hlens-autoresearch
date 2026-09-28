@@ -106,11 +106,34 @@ requires the symbol to be a member of both pairs' price views explicitly. A memb
 its ``DegradedEpisodeKey`` (venue, instrument type and Canonical symbol; the first slice has no
 stable product ids, ADR-0029); an episode with a stable product id names no symbol, so it never
 proves membership here (fail closed).
+
+**v3 evidence manifests (ADR-0077; C1-CONSUMERS — data access only).** ``DatasetCatalog
+.evidence_verifier`` (default ``None``: every load and read above, unchanged; a declared v3 hash is
+then refused by the store with ``ManifestFormError``) is the ``StreamingEvidenceVerifier`` of the
+builder's own catalog. With it, a round may declare ``ResearchDatasetEvidenceManifest`` hashes: the
+source identity of a round stays exactly its declared manifest content hashes (``DatasetRound``,
+the fingerprint and the ingest summary are unchanged in shape), and every load goes through
+``ManifestStore.load_any`` (a v2 hash takes the v2 path unchanged). For a v3 manifest:
+
+- the price manifest's view, window and cutoff checks read the same manifest fields;
+- the pair is ``pair_manifests`` with the evidence verifier (the same rule, proven by ordered
+  merges over the evidence streams; a v2 / v3 mix is refused);
+- the research bars are ``backtest_bars_from_dataset`` with the evidence verifier (a chunk walk,
+  no re-selection); the feature observations are ``feature_observations_from_dataset`` (the
+  interval manifest's own proven rows) instead of a ``PitSelector`` re-selection, and the feature
+  requests are ``feature_request_from_dataset`` with the evidence verifier;
+- the sealed pair's membership and lineage-table checks stream the ``members`` / ``lineage``
+  evidence (only the member episode and the table names are kept).
+
+Nothing else changes: this is round data access only. It resolves no ACTIVE set, source authority
+or metric (ADR-0080 is BLOCKED), wires no scheduler (P11 stays externally scheduled) and does not
+touch the ADR-0074 operator, which stays synthetic-only.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, MutableMapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, MutableMapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -121,7 +144,13 @@ from apps.worker.loop import RoundContext, StageResult, StageUsage
 from core.contracts.feature import FeatureObservation, FeatureProvider
 from core.contracts.storage import StorageAdapter
 from core.contracts.strategy import PriceBar, SignalObservation
-from core.contracts.universe import DegradedEpisodeKey, ResearchDatasetManifest
+from core.contracts.universe import (
+    DegradedEpisodeKey,
+    EvidenceStream,
+    ResearchDatasetEvidenceManifest,
+    ResearchDatasetManifest,
+    UniverseMember,
+)
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import content_hash
 from core.domain.specs import DatasetRef, FeatureSpec
@@ -135,11 +164,18 @@ from infrastructure.bars import (
     load_verified_manifest,
     pair_manifests,
 )
+from infrastructure.bars.dataset import feature_observations_from_dataset
+from infrastructure.bars.verified import load_verified_any
 from infrastructure.canonical import rules
 from infrastructure.dataset.builder import DatasetBuilder
+from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.feature.dataset import (
+    AnyDatasetManifest,
     DatasetBindingError,
+    evidence_lineage_tables,
     feature_request_from_dataset,
+    iter_manifest_evidence,
+    load_any_manifest,
     load_manifest,
 )
 from infrastructure.feature.observations import bar_observations
@@ -243,17 +279,90 @@ class DatasetCatalog:
     """The live catalog handles the dataset ingest reads through (not configuration).
 
     ``manifest_cache``: an optional ``VerifiedManifestCache`` for this builder's verified loads
-    (module docs); ``None`` re-verifies every load.
+    (module docs); ``None`` re-verifies every load. ``evidence_verifier``: the
+    ``StreamingEvidenceVerifier`` of the builder's catalog, needed to read v3 evidence manifests
+    (module docs, v3); ``None`` keeps every read exactly as it was (v2 only).
     """
 
     adapter: RevisionCatalog
     storage: StorageAdapter
     builder: DatasetBuilder
     manifest_cache: VerifiedManifestCache | None = None
+    evidence_verifier: StreamingEvidenceVerifier | None = None
 
 
 def _iso(moment: datetime | None) -> str | None:
     return None if moment is None else moment.isoformat()
+
+
+def _load_cached(catalog: DatasetCatalog, manifest_hash: str) -> AnyDatasetManifest:
+    """A verified load through the catalog's cache (``evidence_verifier`` None: exactly the
+    module's ``load_verified_manifest`` call, v2)."""
+    if catalog.evidence_verifier is None:
+        return load_verified_manifest(catalog.builder, manifest_hash, catalog.manifest_cache)
+    return load_verified_any(
+        catalog.builder, manifest_hash, catalog.manifest_cache, catalog.evidence_verifier
+    )
+
+
+def _load_uncached(catalog: DatasetCatalog, manifest_hash: str) -> AnyDatasetManifest:
+    """A verified load without the cache (``evidence_verifier`` None: exactly the module's
+    ``load_manifest`` call, v2)."""
+    if catalog.evidence_verifier is None:
+        return load_manifest(catalog.builder, manifest_hash)
+    return load_any_manifest(catalog.builder, manifest_hash, catalog.evidence_verifier)
+
+
+def _dataset_observations(
+    catalog: DatasetCatalog,
+    feature: AnyDatasetManifest,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+) -> tuple[FeatureObservation, ...]:
+    """The feature (interval) manifest's own observations of ``symbol``: a v2 manifest's are
+    ``bar_observations`` of its PIT selection over ``[start, end)`` (unchanged), a v3 manifest's
+    its proven dataset rows (``feature_observations_from_dataset``, module docs, v3)."""
+    if isinstance(feature, ResearchDatasetEvidenceManifest):
+        verifier = catalog.evidence_verifier
+        if verifier is None:  # pragma: no cover - a v3 manifest only loads with a verifier
+            raise DatasetBindingError("a v3 evidence manifest needs the evidence verifier")
+        return feature_observations_from_dataset(
+            catalog.adapter,
+            builder=catalog.builder,
+            manifest_content_hash=feature.content_hash(),
+            symbol=symbol,
+            evidence_verifier=verifier,
+            manifest_cache=catalog.manifest_cache,
+        )
+    selection = PitSelector(catalog.adapter, catalog.storage).select(
+        feature.point_in_time, _DATA_TYPE, _VENUE[symbol], start, end
+    )
+    selection.require_no_conflict()
+    return bar_observations(selection, feature.point_in_time)
+
+
+@contextmanager
+def _members(catalog: DatasetCatalog, manifest: AnyDatasetManifest) -> Iterator[Iterable[Any]]:
+    """The manifest's members: the v2 tuple, or the v3 ``members`` stream (one at a time)."""
+    if isinstance(manifest, ResearchDatasetManifest):
+        yield manifest.members
+        return
+    verifier = catalog.evidence_verifier
+    if verifier is None:  # pragma: no cover - a v3 manifest only loads with a verifier
+        raise DatasetBindingError("a v3 evidence manifest needs the evidence verifier")
+    with iter_manifest_evidence(verifier, manifest, EvidenceStream.MEMBERS) as records:
+        yield records
+
+
+def _lineage_tables(catalog: DatasetCatalog, manifest: AnyDatasetManifest) -> frozenset[str]:
+    """The Canonical tables of the manifest's lineage (v2 tuple, or one pass over the v3 stream)."""
+    if isinstance(manifest, ResearchDatasetManifest):
+        return frozenset(item.canonical_table for item in manifest.lineage)
+    verifier = catalog.evidence_verifier
+    if verifier is None:  # pragma: no cover - a v3 manifest only loads with a verifier
+        raise DatasetBindingError("a v3 evidence manifest needs the evidence verifier")
+    return evidence_lineage_tables(verifier, manifest)
 
 
 class WithheldSealedWindow:
@@ -280,19 +389,24 @@ class WithheldSealedWindow:
         raise SealedOosLocked("a withheld-only sealed window is never released")
 
 
-def _require_member(manifest: ResearchDatasetManifest, symbol: str, which: str) -> None:
+def _require_member(
+    catalog: DatasetCatalog, manifest: AnyDatasetManifest, symbol: str, which: str
+) -> None:
     """``symbol`` (Canonical) must be a member of ``manifest``'s universe (its price view), matched
     by a ``DegradedEpisodeKey`` of the same venue, instrument type and symbol (module docs)."""
     instrument = _INSTRUMENT[symbol]
-    for member in manifest.members:
-        episode = member.episode
-        if (
-            isinstance(episode, DegradedEpisodeKey)
-            and episode.symbol == symbol
-            and episode.venue == instrument.venue
-            and episode.instrument_type.value == instrument.instrument_type
-        ):
-            return
+    with _members(catalog, manifest) as members:
+        for member in members:
+            if not isinstance(member, UniverseMember):  # pragma: no cover - the stream's model
+                raise SealedDataRefused(f"a member record of the {which} is malformed")
+            episode = member.episode
+            if (
+                isinstance(episode, DegradedEpisodeKey)
+                and episode.symbol == symbol
+                and episode.venue == instrument.venue
+                and episode.instrument_type.value == instrument.instrument_type
+            ):
+                return
     raise SealedDataRefused(
         f"the validated instrument {symbol} is not a member of the {which} (its price view's "
         "members name no such episode): G5 would not validate the same instrument"
@@ -304,7 +418,7 @@ class _ReleasedSealed:
     """What one claimed evaluation read of a sealed pair (after the claim)."""
 
     pair: ManifestPair
-    feature_manifest: ResearchDatasetManifest
+    feature_manifest: AnyDatasetManifest
     prices: DatasetPriceBars
     observations: tuple[FeatureObservation, ...]
     feature_hashes: list[str]
@@ -328,7 +442,7 @@ class SealedDatasetPair:
         price_manifest_hash: str,
         window: tuple[datetime, datetime],
         as_of: datetime,
-        research_price: ResearchDatasetManifest,
+        research_price: AnyDatasetManifest,
     ) -> None:
         self._catalog = catalog
         self._symbol = symbol
@@ -385,6 +499,7 @@ class SealedDatasetPair:
             observations=state.observations,
             feature=spec,
             evaluation_times=times,
+            evidence_verifier=catalog.evidence_verifier,
         )
         state.feature_hashes.append(request.manifest_content_hash)
         result = run_feature(provider, spec, request)
@@ -409,9 +524,10 @@ class SealedDatasetPair:
     def _load(self) -> _ReleasedSealed:
         catalog, symbol, as_of = self._catalog, self._symbol, self._as_of
         start, end = self._window
-        try:  # 1. verified loads
-            price = load_manifest(catalog.builder, self.price_manifest_hash)
-            feature = load_manifest(catalog.builder, self.feature_manifest_hash)
+        verifier = catalog.evidence_verifier
+        try:  # 1. verified loads (``verifier`` None: exactly ``load_manifest``)
+            price = _load_uncached(catalog, self.price_manifest_hash)
+            feature = _load_uncached(catalog, self.feature_manifest_hash)
         except DatasetBindingError as exc:
             raise SealedDataRefused(f"a sealed manifest does not load: {exc}") from exc
         for name, manifest in (("feature", feature), ("price", price)):
@@ -433,16 +549,22 @@ class SealedDatasetPair:
             )
         # 4. the same single instrument: a member of both pairs (pair_manifests proves each
         # pair's feature members equal its price members, so the price views stand for both)
-        _require_member(self._research, symbol, "research pair")
-        _require_member(price, symbol, "sealed pair")
+        _require_member(catalog, self._research, symbol, "research pair")
+        _require_member(catalog, price, symbol, "sealed pair")
         try:  # 5. one chain (the research pair's rule); 6. the proven sealed bars
-            pair = pair_manifests(catalog.builder, feature.content_hash(), price.content_hash())
+            pair = pair_manifests(
+                catalog.builder,
+                feature.content_hash(),
+                price.content_hash(),
+                evidence_verifier=verifier,
+            )
             prices = backtest_bars_from_dataset(
                 catalog.adapter,
                 catalog.storage,
                 builder=catalog.builder,
                 manifest_content_hash=pair.price_manifest_hash,
                 symbols=(symbol,),
+                evidence_verifier=verifier,
             )
         except DatasetBindingError as exc:
             raise SealedDataRefused(f"the sealed pair does not prove: {exc}") from exc
@@ -451,16 +573,15 @@ class SealedDatasetPair:
             for bar in prices.bars
         ):
             raise SealedDataRefused("a sealed bar is after the cutoff or outside the window")
-        selection = PitSelector(catalog.adapter, catalog.storage).select(
-            feature.point_in_time, _DATA_TYPE, _VENUE[symbol], start, end
-        )
-        selection.require_no_conflict()
-        rows = bar_observations(selection, feature.point_in_time)
+        try:
+            rows = _dataset_observations(catalog, feature, symbol, start, end)
+        except DatasetBindingError as exc:  # v3 only: a v2 re-selection raises as before
+            raise SealedDataRefused(f"the sealed feature rows do not prove: {exc}") from exc
         if any(row.available_time > as_of for row in rows):
             raise SealedDataRefused("a sealed feature observation is available after the cutoff")
         return _ReleasedSealed(pair, feature, prices, rows, [])
 
-    def _require_shared_upstream(self, name: str, sealed: ResearchDatasetManifest) -> None:
+    def _require_shared_upstream(self, name: str, sealed: AnyDatasetManifest) -> None:
         """The research pair's upstream state (the research pair's two manifests are equal in
         all of these by ``pair_manifests``, so its price manifest stands for both)."""
         research = self._research
@@ -498,8 +619,8 @@ class SealedDatasetPair:
             raise SealedDataRefused(f"the sealed {name} manifest binds another universe spec")
         if sealed.dataset.table != research.dataset.table:
             raise SealedDataRefused(f"the sealed {name} manifest is of another dataset table")
-        tables_of = {item.canonical_table for item in sealed.lineage}
-        if tables_of != {item.canonical_table for item in research.lineage}:
+        catalog = self._catalog
+        if _lineage_tables(catalog, sealed) != _lineage_tables(catalog, research):
             raise SealedDataRefused(
                 f"the sealed {name} manifest's lineage spans other Canonical tables"
             )
@@ -514,8 +635,8 @@ class DatasetSegment:
     catalog: DatasetCatalog
     symbol: str
     pair: ManifestPair
-    feature_manifest: ResearchDatasetManifest
-    price_manifest: ResearchDatasetManifest
+    feature_manifest: AnyDatasetManifest
+    price_manifest: AnyDatasetManifest
     prices: DatasetPriceBars
     observations: tuple[FeatureObservation, ...]
     sealed: SealedSource
@@ -627,6 +748,7 @@ class DatasetSegment:
                 observations=self.observations,
                 feature=spec,
                 evaluation_times=times,
+                evidence_verifier=self.catalog.evidence_verifier,
             )
             result = run_feature(provider, spec, request)
             signals = signals_from_features(
@@ -706,8 +828,8 @@ class DatasetIngestStage:
 
         # The price manifest first (verified): a round past its cutoff or outside the research
         # window is refused before anything else is read (module docs, steps 1 - 3).
-        cache = catalog.manifest_cache
-        price = load_verified_manifest(catalog.builder, declared.price_manifest_hash, cache)
+        cache, verifier = catalog.manifest_cache, catalog.evidence_verifier
+        price = _load_cached(catalog, declared.price_manifest_hash)
         view = price.point_in_time.simulation_time
         if view is None:
             raise _refuse(ctx, "the price manifest is not a point simulation")
@@ -730,8 +852,9 @@ class DatasetIngestStage:
             declared.feature_manifest_hash,
             declared.price_manifest_hash,
             manifest_cache=cache,
+            evidence_verifier=verifier,
         )
-        feature = load_verified_manifest(catalog.builder, pair.feature_manifest_hash, cache)
+        feature = _load_cached(catalog, pair.feature_manifest_hash)
         if (feature.dataset.time_range_start, feature.dataset.time_range_end) != (
             data.time_range_start,
             data.time_range_end,
@@ -745,21 +868,17 @@ class DatasetIngestStage:
             manifest_content_hash=pair.price_manifest_hash,
             symbols=(symbol,),
             manifest_cache=cache,
+            evidence_verifier=verifier,
         )
         late = [bar for bar in prices.bars if bar.available_time > ctx.as_of]
         outside = [bar for bar in prices.bars if bar.interval_end > boundary]
         if prices.price_cutoff > ctx.as_of or late or outside:
             raise _refuse(ctx, "a research bar is after the cutoff or the sealed OOS boundary")
-        # 5. the interval manifest's own observations of the symbol
-        selection = PitSelector(catalog.adapter, catalog.storage).select(
-            feature.point_in_time,
-            _DATA_TYPE,
-            _VENUE[symbol],
-            data.time_range_start,
-            data.time_range_end,
+        # 5. the interval manifest's own observations of the symbol (v2: its PIT selection; v3:
+        # its proven dataset rows)
+        rows = _dataset_observations(
+            catalog, feature, symbol, data.time_range_start, data.time_range_end
         )
-        selection.require_no_conflict()
-        rows = bar_observations(selection, feature.point_in_time)
         if any(row.available_time > ctx.as_of for row in rows):
             raise _refuse(ctx, "a feature observation becomes available after the cutoff")
         # 6. the sealed window is never read here: a withheld-only declaration is recorded as a

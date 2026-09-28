@@ -46,6 +46,8 @@ from core.contracts.revision import (
     BINDING_ID_PATTERN,
     SNAPSHOT_TABLE_PATTERN,
     PointInTimeSpec,
+    PolicyBinding,
+    PolicyRole,
     PrecedenceEvidence,
     RevisionGraph,
     RevisionRecord,
@@ -57,8 +59,9 @@ from core.domain.base import (
     Contract,
     UtcDatetime,
     canonical_json,
+    omit_none,
 )
-from core.domain.specs import DatasetRef, Instrument, InstrumentType, Zone
+from core.domain.specs import ADR_0088_VERSION, DatasetRef, Instrument, InstrumentType, Zone
 
 __all__ = [
     "ADR_0077_VERSION",
@@ -68,6 +71,7 @@ __all__ = [
     "DATASET_EVIDENCE_KEY_PREFIX",
     "DATASET_SELECTION_ID_PATTERN",
     "LISTINGS_TABLE",
+    "LISTING_BACKFILL_ASSUMPTION_ID",
     "QUALITY_REPORTS_TABLE",
     "AvailabilityEvidenceGap",
     "DatasetChunkProof",
@@ -105,6 +109,9 @@ __all__ = [
 LISTINGS_TABLE = "canonical.instrument_listings"
 #: 质量报告表（03-data.md §5、§7.1）；manifest 必须绑定它的 snapshot 并引用所用报告。
 QUALITY_REPORTS_TABLE = "quality.data_quality_reports"
+#: ADR-0051（D-LIST）listing 回填假设的 availability 政策标识；`UniverseMember.assumption` 非空时
+#: 必须绑定它（ADR-0088 决策 6，自契约 2.4.0）。
+LISTING_BACKFILL_ASSUMPTION_ID: Final = "hlens.listing.observed-state-backfill-assumption"
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 SnapshotTable = Annotated[str, Field(pattern=SNAPSHOT_TABLE_PATTERN)]
@@ -512,14 +519,39 @@ class UniverseMember(Contract):
     `[effective_from, effective_until)`，且落在 simulation 区间内（由 manifest 校验）。
     """
 
+    # 类文档字符串是已发布 Schema 的 `description`，为保持 Schema 除新字段外逐字节不变，不改写。
+    # ADR-0088 决策 6（ADR-0051 §3）：成员区间来自 listing 回填假设时，`assumption` 为所绑定的
+    # availability 政策（名称、版本、哈希），`policy_id` 必须是 `LISTING_BACKFILL_ASSUMPTION_ID`；
+    # `None` = 观测得到（与 2.4.0 之前相同），从载荷中省略，既有哈希逐位不变。该版本 / 哈希是否等于
+    # 已登记政策、区间是否真由该假设推出，属 infrastructure（ADR-0051 第二期）。
+    _FIELDS_SINCE = {"assumption": ADR_0088_VERSION}
+
     episode: ListingEpisodeKey
     listing_revision_id: NonEmptyStr
     effective_from: UtcDatetime | None = None
     effective_until: UtcDatetime | None = None
+    assumption: PolicyBinding | None = Field(default=None, exclude_if=omit_none)
 
     @model_validator(mode="after")
     def _span(self) -> UniverseMember:
         _check_span(self.effective_from, self.effective_until)
+        return self
+
+    @model_validator(mode="after")
+    def _assumption_policy(self) -> UniverseMember:
+        if self.assumption is None:
+            return self
+        if self.assumption.policy_id != LISTING_BACKFILL_ASSUMPTION_ID:
+            raise ValueError(
+                f"assumption 必须绑定 {LISTING_BACKFILL_ASSUMPTION_ID}，收到 "
+                f"{self.assumption.policy_id}（ADR-0088 决策 6）"
+            )
+        # 使用处要求确切的 role（见 `PolicyBinding`）：ADR-0051 的假设是 availability 政策。
+        if self.assumption.role is not PolicyRole.AVAILABILITY:
+            raise ValueError(
+                f"assumption 必须是 role={PolicyRole.AVAILABILITY.value} 的绑定，实际为 "
+                f"{self.assumption.role.value}（ADR-0088 决策 6）"
+            )
         return self
 
 

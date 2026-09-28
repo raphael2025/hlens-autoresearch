@@ -10,7 +10,7 @@ from typing import Any
 
 import pytest
 
-from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json, content_hash
+from core.domain.base import CONTRACT_SCHEMA_VERSION, Kind, Ref, canonical_json, content_hash
 from core.domain.specs import EventSpec
 from plugins.events import (
     EventCoOccurrenceProvider,
@@ -258,6 +258,28 @@ def test_every_parameter_changes_the_compiled_hashes() -> None:
         )
     }
     assert len(roots) == 8
+
+
+def test_compiled_interactions_inherit_bar_spec_and_reject_mixed_leaves() -> None:
+    bar = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_1m", version="1.0.0")
+    other_bar = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_5m", version="1.0.0")
+    cross = FeatureThresholdCrossProvider.spec(
+        X, Decimal("4.5"), "up", name=CROSS_UP.name, observable_lag=LAG, bar_spec=bar
+    )
+    switch = StateSwitchProvider.spec(REGIME, name=SWITCH.name, observable_lag=LAG, bar_spec=bar)
+    cross_down = FeatureThresholdCrossProvider.spec(
+        X, Decimal("4.5"), "down", name=CROSS_DOWN.name, observable_lag=LAG, bar_spec=bar
+    )
+    expression = _expression(cross, cross_down, switch)
+    compiled = compile_expression(expression, (cross, cross_down, switch), LIMITS)
+    assert compiled.root.bar_spec == bar
+    assert all(spec.bar_spec == bar for spec in compiled.specs)
+
+    mismatch = StateSwitchProvider.spec(
+        REGIME, name=SWITCH.name, observable_lag=LAG, bar_spec=other_bar
+    )
+    with pytest.raises(DslError, match="bar_spec values must agree"):
+        compile_expression(expression, (cross, cross_down, mismatch), LIMITS)
 
 
 def test_a_changed_leaf_spec_changes_every_hash_above_it() -> None:

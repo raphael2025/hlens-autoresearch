@@ -3,13 +3,16 @@
 - ``FeatureThresholdCrossProvider`` (``feature_threshold_cross``): the feature crosses a level
   between two consecutive series points — ``up``: ``previous <= level < value``; ``down``:
   ``previous >= level > value``; ``both``: either;
+- ``FeatureRelativeThresholdCrossProvider`` (``feature_relative_threshold_cross``): the absolute
+  value of one feature crosses ``multiplier * level_feature`` on shared evaluation times;
 - ``VolatilityBreakoutProvider`` (``volatility_breakout``): a (volatility) feature enters the region
   ``value > multiplier * mean(previous window values)``: above at point ``i`` and not above at
   ``i - 1``. Uses the ``window + 2`` latest points, all computable.
 
 A level, a window and a multiplier are event-definition parameters bound by the spec hash; they
 are not validation thresholds. Consecutive means adjacent in the visible series (``evaluation_time``
-order); a ``None`` (not computable) point breaks a pair / window, nothing is filled.
+order); the relative-threshold provider pairs features only at shared evaluation times. A ``None``
+(not computable) point breaks a pair / window, nothing is filled.
 
 Each event's ``event_time`` is the ``available_time`` of its latest point plus the spec's
 ``observable_lag`` — the moment the crossing becomes observable. No event uses later points.
@@ -43,7 +46,11 @@ from plugins.events._base import (
     trigger_of,
 )
 
-__all__ = ["FeatureThresholdCrossProvider", "VolatilityBreakoutProvider"]
+__all__ = [
+    "FeatureRelativeThresholdCrossProvider",
+    "FeatureThresholdCrossProvider",
+    "VolatilityBreakoutProvider",
+]
 
 Direction = Literal["up", "down", "both"]
 _DIRECTIONS: Final = ("up", "down", "both")
@@ -75,6 +82,7 @@ class FeatureThresholdCrossProvider(EventProviderBase):
         name: str | None = None,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         if feature.kind is not Kind.FEATURE:
             raise ValueError(f"{feature} is not a feature reference")
@@ -91,6 +99,7 @@ class FeatureThresholdCrossProvider(EventProviderBase):
             ),
             features=(feature,),
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def canonical(self, spec: EventSpec) -> EventSpec:
@@ -105,6 +114,7 @@ class FeatureThresholdCrossProvider(EventProviderBase):
             name=spec.name,
             version=spec.version,
             observable_lag=spec.observable_lag,
+            bar_spec=spec.bar_spec,
         )
 
     def events(
@@ -149,6 +159,133 @@ class FeatureThresholdCrossProvider(EventProviderBase):
         return out
 
 
+class FeatureRelativeThresholdCrossProvider(EventProviderBase):
+    """Cross ``abs(feature)`` against ``multiplier * level_feature`` exactly."""
+
+    NAME = "feature_relative_threshold_cross"
+    OPERATOR: ClassVar[str] = "feature_relative_threshold_cross"
+
+    @staticmethod
+    def spec(
+        feature: Ref,
+        level_feature: Ref,
+        multiplier: Decimal,
+        direction: Direction,
+        *,
+        name: str | None = None,
+        version: str = "1.0.0",
+        observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
+    ) -> EventSpec:
+        if feature.kind is not Kind.FEATURE or level_feature.kind is not Kind.FEATURE:
+            raise ValueError("feature and level_feature must be feature references")
+        if feature == level_feature:
+            raise ValueError("feature and level_feature must be distinct")
+        if not isinstance(multiplier, Decimal) or not multiplier.is_finite() or multiplier <= 0:
+            raise ValueError("multiplier must be a positive finite Decimal")
+        if direction not in _DIRECTIONS:
+            raise ValueError(f"direction must be one of {_DIRECTIONS}")
+        return EventSpec(
+            name=name or f"{feature.name}_relative_{level_feature.name}_{direction}",
+            version=version,
+            trigger=trigger_of(
+                FeatureRelativeThresholdCrossProvider.OPERATOR,
+                {
+                    "feature": str(feature),
+                    "level_feature": str(level_feature),
+                    "multiplier": str(multiplier),
+                    "direction": direction,
+                },
+            ),
+            features=(feature, level_feature),
+            observable_lag=observable_lag,
+            bar_spec=bar_spec,
+        )
+
+    def canonical(self, spec: EventSpec) -> EventSpec:
+        params = self.params(spec)
+        direction = params["direction"]
+        if direction not in _DIRECTIONS:
+            raise ValueError(f"direction must be one of {_DIRECTIONS}")
+        return self.spec(
+            parse_ref(params["feature"], Kind.FEATURE),
+            parse_ref(params["level_feature"], Kind.FEATURE),
+            parse_decimal(params["multiplier"], "multiplier"),
+            direction,
+            name=spec.name,
+            version=spec.version,
+            observable_lag=spec.observable_lag,
+            bar_spec=spec.bar_spec,
+        )
+
+    def events(
+        self,
+        spec: EventSpec,
+        params: dict[str, Any],
+        points: Sequence[EventInputPoint],
+        upstream: Sequence[Event],
+    ) -> list[Event]:
+        if upstream:
+            raise EventInputError(f"{spec.ref} takes no upstream events")
+        feature = parse_ref(params["feature"], Kind.FEATURE)
+        level_feature = parse_ref(params["level_feature"], Kind.FEATURE)
+        multiplier = parse_decimal(params["multiplier"], "multiplier")
+        direction: str = params["direction"]
+        line = series(points, feature)
+        levels = {item.evaluation_time: item for item in series(points, level_feature)}
+        stray = {str(item.source) for item in points} - {str(feature), str(level_feature)}
+        if stray:
+            raise EventInputError(f"inputs outside the spec's features: {sorted(stray)}")
+
+        shared_times = sorted({item.evaluation_time for item in line} & levels.keys())
+        by_time = {item.evaluation_time: item for item in line}
+        paired = [(by_time[at], levels[at]) for at in shared_times]
+        out: list[Event] = []
+        for (previous, previous_level), (current, current_level) in zip(
+            paired, paired[1:], strict=False
+        ):
+            before_value, value = numeric(previous), numeric(current)
+            before_level, level = numeric(previous_level), numeric(current_level)
+            if any(item is None for item in (before_value, value, before_level, level)):
+                continue
+            assert before_value is not None and value is not None
+            assert before_level is not None and level is not None
+            try:
+                with localcontext(_EXACT):
+                    before_threshold = multiplier * before_level
+                    threshold = multiplier * level
+                    crossed_up = abs(before_value) <= before_threshold and abs(value) > threshold
+                    crossed_down = abs(before_value) >= before_threshold and abs(value) < threshold
+            except DecimalException:
+                raise EventInputError("the relative-threshold comparison is not exact") from None
+            crossed = (
+                "up"
+                if direction in ("up", "both") and crossed_up
+                else "down"
+                if direction in ("down", "both") and crossed_down
+                else None
+            )
+            if crossed is None:
+                continue
+            latest = max(current.available_time, current_level.available_time)
+            out.append(
+                Event.build(
+                    event=spec.ref,
+                    spec_hash=spec.content_hash(),
+                    event_time=latest + spec.observable_lag,
+                    attributes={
+                        "direction": crossed,
+                        "feature_value": value,
+                        "level_value": level,
+                        "multiplier": multiplier,
+                        "threshold": threshold,
+                    },
+                    inputs=(previous, previous_level, current, current_level),
+                )
+            )
+        return out
+
+
 class VolatilityBreakoutProvider(EventProviderBase):
     """A (volatility) feature enters ``value > multiplier * mean(previous window values)``."""
 
@@ -164,6 +301,7 @@ class VolatilityBreakoutProvider(EventProviderBase):
         name: str | None = None,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         if feature.kind is not Kind.FEATURE:
             raise ValueError(f"{feature} is not a feature reference")
@@ -179,6 +317,7 @@ class VolatilityBreakoutProvider(EventProviderBase):
             ),
             features=(feature,),
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def canonical(self, spec: EventSpec) -> EventSpec:
@@ -190,6 +329,7 @@ class VolatilityBreakoutProvider(EventProviderBase):
             name=spec.name,
             version=spec.version,
             observable_lag=spec.observable_lag,
+            bar_spec=spec.bar_spec,
         )
 
     def events(

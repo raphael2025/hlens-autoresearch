@@ -63,7 +63,7 @@ from core.domain.base import (
     UtcDatetime,
     content_hash,
 )
-from core.domain.specs import STRATEGY_SIGNAL_KINDS
+from core.domain.specs import ADR_0088_VERSION, STRATEGY_SIGNAL_KINDS
 
 __all__ = [
     "RISK_REF_KEY_PATTERN",
@@ -528,11 +528,28 @@ class PortfolioState(Contract):
       （回撤、权益止损）必须在 `equity` 为 `None` 时以 `RiskInputError` fail closed。
     """
 
+    # 类文档字符串是已发布 Schema 的 `description`，为保持 Schema 除新字段外逐字节不变，不改写。
+    # ADR-0088 决策 3：`peak_equity` 是截至 `as_of` 已实现权益路径的峰值，由回测 / 执行层提供，
+    # 风控不得自己记忆峰值；非空时 `equity` 必须也非空且 `peak_equity >= equity`。`None` 时从载荷中
+    # 省略，既有哈希逐位不变；`drawdown_control` 在 `equity` 或 `peak_equity` 缺失时 fail closed。
+    _FIELDS_SINCE = {"peak_equity": ADR_0088_VERSION}
+
     as_of: UtcDatetime
     current_weights: FrozenMapping[NonEmptyStr, FiniteDecimal] = Field(
         default_factory=dict, validate_default=True
     )
     equity: PositiveDecimal | None = None
+    peak_equity: PositiveDecimal | None = Field(default=None, exclude_if=_omit_none)
+
+    @model_validator(mode="after")
+    def _peak_not_below_equity(self) -> PortfolioState:
+        if self.peak_equity is None:
+            return self
+        if self.equity is None:
+            raise ValueError("peak_equity 非空时 equity 也必须非空（ADR-0088 决策 3）")
+        if self.peak_equity < self.equity:
+            raise ValueError("peak_equity 不得小于 equity（ADR-0088 决策 3）")
+        return self
 
 
 class RiskRequest(Contract):

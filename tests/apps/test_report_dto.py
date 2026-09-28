@@ -184,37 +184,40 @@ def test_paper_deviation_1_0_0_legacy_is_supported_without_scope_fields() -> Non
     assert dto.schema_version == "1.0.0"
 
 
-# --- ADR-0077: the default Contract envelope bumped to 2.3.0 (validation_report only) ---------
+# --- ADR-0088: the default Contract envelope bumped to 2.4.0 (validation_report only) ---------
 #
 # validation_report is the one ReportKind whose payload is a direct ``Contract.model_dump()``
 # (research/reports/validation.py); every other kind's schema_version is an independent,
 # domain-specific number defined by its own writer module (research/reports/*.py,
 # research/router/deviation.py, research/synthetic_lab/gate_calibration.py), unrelated to
-# core.domain.base.CONTRACT_SCHEMA_VERSION. ADR-0077 (DQ-1 = A) only added the unrelated, bounded
-# ResearchDatasetEvidenceManifest model -- ValidationReport's own fields are unchanged, so 2.3.0
-# is registered with the same required-field shape as 2.2.0.
+# core.domain.base.CONTRACT_SCHEMA_VERSION. ADR-0088 is an additive minor (composed strategies,
+# event bar spec, peak equity, synthetic effects, volatility-scaling barrier) that does not touch
+# ValidationReport's own fields, so 2.4.0 is registered with the same required-field shape as
+# 2.3.0 (itself unchanged from 2.2.0, ADR-0077).
 
 
 def test_validation_report_baseline_tracks_the_current_contract_envelope() -> None:
-    assert REPORT_DTOS[ReportKind.VALIDATION_REPORT].baseline == "2.3.0"
-    assert {"2.0.0", "2.1.0", "2.2.0", "2.3.0"} <= REPORT_DTOS[ReportKind.VALIDATION_REPORT].supported_versions
+    assert REPORT_DTOS[ReportKind.VALIDATION_REPORT].baseline == "2.4.0"
+    assert {"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"} <= REPORT_DTOS[
+        ReportKind.VALIDATION_REPORT
+    ].supported_versions
 
 
-def test_validation_report_2_3_0_is_a_known_version_with_the_2_2_0_shape(tmp_path: Path) -> None:
-    """A freshly built ValidationReport now carries the bumped default envelope (ADR-0077); it
+def test_validation_report_2_4_0_is_a_known_version_with_the_2_3_0_shape(tmp_path: Path) -> None:
+    """A freshly built ValidationReport now carries the bumped default envelope (ADR-0088); it
     must be served as a supported DTO, not fall back to raw-JSON "unknown version" display."""
     report = validation_report()
-    assert report.schema_version == "2.3.0"  # core/domain/base.py's new Contract default
+    assert report.schema_version == "2.4.0"  # core/domain/base.py's new Contract default
     payload = report.model_dump(mode="json")
 
     dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
     assert dto.supported is True
-    assert dto.schema_version == "2.3.0"
+    assert dto.schema_version == "2.4.0"
 
     report_id = report.content_hash()
     _write(tmp_path, ReportKind.VALIDATION_REPORT, report_id, payload)
     envelope = ReportStore(tmp_path).get(ReportKind.VALIDATION_REPORT, report_id)
-    assert envelope.payload["schema_version"] == "2.3.0"
+    assert envelope.payload["schema_version"] == "2.4.0"
 
     client = TestClient(create_app(reports_root=tmp_path))
     detail = client.get(f"/reports/validation_report/{report_id}")
@@ -222,6 +225,18 @@ def test_validation_report_2_3_0_is_a_known_version_with_the_2_2_0_shape(tmp_pat
     listing = client.get("/reports/validation_report").json()
     assert listing["invalid"] == []
     assert [item["id"] for item in listing["reports"]] == [report_id]
+
+
+def test_validation_report_2_3_0_legacy_payload_remains_supported(tmp_path: Path) -> None:
+    """A pre-ADR-0088 payload persisted with the prior default envelope (2.3.0) must keep
+    resolving as a supported DTO -- registering 2.4.0 must not drop 2.3.0 read access."""
+    report = validation_report()
+    payload = report.model_dump(mode="json")
+    payload["schema_version"] = "2.3.0"
+
+    dto = decode_report_payload(ReportKind.VALIDATION_REPORT, payload)
+    assert dto.supported is True
+    assert dto.schema_version == "2.3.0"
 
 
 # --- integration: ReportStore / the API apply the DTO check before identity ---------------------

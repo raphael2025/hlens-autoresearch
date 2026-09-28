@@ -33,7 +33,7 @@
 ## 条目索引
 
 以下是**事件算子模板**（operator）：具体条目 = 模板 + 具体 Feature / State 引用 + 参数，各自有 `name@version` 与 spec hash。
-目前只在合成夹具与冒烟测试上实例化，尚无登记的具体条目。
+下方记录一个可复现的具体定义；它仍未进入 Control Plane Registry，也没有真实数据验证。
 
 | 算子（operator） | 摘要 | 输入 | 可观测时间 | provider | 出处 | 状态 |
 |---|---|---|---|---|---|---|
@@ -46,9 +46,9 @@
 | `event_absence` | 锚事件，且 `[锚 - window, 锚]`（闭区间）内无 `absent` 事件 | 2 个上游事件定义 | 锚的事件时间 + lag | `event_absence@1.0.0` | ADR-0061 | UNVERIFIED |
 | `event_count` | 在事件 e 处，`[e - window, e]`（闭区间）内至少 `at_least` 个上游事件 | 1 个上游事件定义 | e 的事件时间 + lag | `event_count@1.0.0` | ADR-0061 | UNVERIFIED |
 
-## 具体定义草稿（未注册）
+## 具体定义（尚未进入 Control Plane Registry）
 
-以下草稿仅组合仓库已有 Feature / Event Provider 的语义，不是 Knowledge Base 或 Control Plane Registry 条目；没有关联实验或真实数据证据。
+以下定义仅组合仓库已有 Feature / State / Event Provider 的语义，不是 Knowledge Base 或 Control Plane Registry 条目；没有关联实验或真实数据证据。
 
 | 字段 | 值 |
 |---|---|
@@ -60,6 +60,21 @@
 | 来源 | 仓库实现：[ADR-0030](../adr/0030-feature-provider-contract.md)、[ADR-0036](../adr/0036-event-provider-contract.md)、`BarLogReturnProvider` 与 `FeatureThresholdCrossProvider`；未声称外部实证来源 |
 
 实现按相邻且连续的 bar 计算对数收益；只有相邻可计算 Feature 点满足 `previous <= 0 < value` 时触发，缺值不填补且不跨过配对。事件可观测时间不早于输入 `available_time`。此草稿没有绑定具体 `FeatureSpec` 内容哈希，也不代表市场有效性或经济意义。
+
+### `bar_realized_vol_5_20_squeeze_to_expansion@1.0.0`
+
+| 字段 | 值 |
+|---|---|
+| `name@version` | `bar_realized_vol_5_20_squeeze_to_expansion@1.0.0` |
+| 状态 | `UNVERIFIED / NOT_VALIDATED`；尚未进入 Control Plane Registry，未在真实数据上运行或校准 |
+| 摘要 | 短窗相对长窗的实现波动率状态从 `squeeze` 切换到 `expansion` 时产生事件 |
+| 输入 / Provider | `feature:bar_realized_vol_5@1.0.0`、`feature:bar_realized_vol_20@1.0.0` → `volatility_squeeze_bar5_bar20_test_fixture@1.0.0` → `state_switch@1.0.0` |
+| 触发定义 | `{"operator":"state_switch","state":"state:volatility_squeeze_bar5_bar20_test_fixture@1.0.0","from_state":"squeeze","to_state":"expansion"}` |
+| 来源 | 仓库实现：`BarRealizedVolatilityProvider`、`VolatilitySqueezeProvider`、`StateSwitchProvider`；阈值取自 `tests/plugins/states/test_state_volatility_events.py` 的测试夹具，仅用于定义可复现输入，不是推荐参数或实证来源 |
+
+可复现的 Provider spec 构造为：`BarRealizedVolatilityProvider.spec(window=5, scale=18, available_lag=timedelta(0), bar_input=representation:canonical_bar_1m@1.0.0, version="1.0.0")` 与对应的 `window=20` spec；将两者的 `ref` 传给 `VolatilitySqueezeProvider.spec(short_vol_feature=..., long_vol_feature=..., squeeze_below="0.5", expansion_above="1.5", labels=("squeeze", "normal", "expansion"), name="volatility_squeeze_bar5_bar20_test_fixture", version="1.0.0")`；最后构造 `StateSwitchProvider.spec(state=..., from_state="squeeze", to_state="expansion", name="bar_realized_vol_5_20_squeeze_to_expansion", version="1.0.0", observable_lag=timedelta(0))`。这些显式参数用于稳定复现 spec 与 hash；`0.5` / `1.5` 来自测试夹具，未校准且不表达有效性主张。
+
+状态切换只在相邻且连续的可计算状态点之间判断；缺值会打断配对，不跨越缺口。事件在新状态点可见时产生（此定义 `observable_lag=0`），不使用未来确认。该定义尚未绑定具体输入 spec 的内容哈希，也没有实验结果。
 
 ### 交互 DSL（ADR-0061）
 
@@ -81,7 +96,7 @@
 
 规格状态（本库专用；不是 Lifecycle 状态，也不是知识库证据等级）：`IMPLEMENTED` = 有代码与定向测试（FRAMEWORK_IMPLEMENTED /
 CODE_COMPLETE，DEBUG_PENDING；不是验收）；`NOT_VALIDATED` = 没有在正式 Research Dataset 上运行并经验证的结果；`UNSPECIFIED` = 未被已接受
-ADR / 契约定义。上表 8 个算子与 4 个 DSL 算子均为 `IMPLEMENTED · NOT_VALIDATED`；**没有任何具体事件条目**（模板 + 引用 + 参数）已登记。
+ADR / 契约定义。上表 8 个算子与 4 个 DSL 算子均为 `IMPLEMENTED · NOT_VALIDATED`；本文件记录一个具体事件定义，但它未进入 Control Plane Registry，亦未验证。
 
 测试证据：`tests/plugins/events/test_event_providers.py`、`test_window_providers.py`、`test_dsl.py`；`tests/contract_suites/event.py`（因果扰动、
 PIT 一致）；`tests/infrastructure/event/`（执行器、未来确认拒绝、上游核对、DSL 编译）；`tests/research/events/test_event_stats.py`；
@@ -92,7 +107,7 @@ PIT 一致）；`tests/infrastructure/event/`（执行器、未来确认拒绝�
 | 知识库条目 | 内容 | 映射 | 规格状态 |
 |---|---|---|---|
 | `MST-SHOCK-001` | 冲击：`\|r_t\| > k·σ` 或跳跃检验，须预注册 | 可由 `feature_threshold_cross` / `volatility_breakout` 在已实现特征上近似，但"`k·σ` 的动态水平"不是现有算子（`feature_threshold_cross` 的水平是常数） | `UNSPECIFIED` |
-| `MST-SQUEEZE-001` → `MST-EXPANSION-001` | 压缩后扩张 | `state_switch`（`from_state` / `to_state`）作用于 `volatility_regime`；未登记具体条目 | `UNSPECIFIED`（未登记） |
+| `MST-SQUEEZE-001` → `MST-EXPANSION-001` | 压缩后扩张 | `state_switch`（`from_state=squeeze` / `to_state=expansion`）作用于 `volatility_squeeze_bar5_bar20_test_fixture`；见上方 `bar_realized_vol_5_20_squeeze_to_expansion@1.0.0` | `UNVERIFIED · NOT_VALIDATED`（尚未进入 Registry） |
 | `RM-EVENT-STUDY-001` | 事件研究：异常收益与 CAR（MacKinlay 1997） | `research/events/stats.py` 只做频率、共现、领先滞后、重叠描述，不计算异常收益；标签见 [outcome-library.md](outcome-library.md) | `UNSPECIFIED` |
 
 已知失败模式（roadmap）：事件重叠导致样本非独立（`overlap_diagnostics` 描述）、组合爆炸（按 04-research-loop.md §4，获准进入研究的组合需在执行前纳入计数；当前 P7 执行尚未批准，DSL 编译不计数）。底层组合与假设登记之间的计数映射仍是 P7 设计项；不得把事件 DSL 编译描述成已登记试验。事件频率过低由 `event_frequency` 描述。

@@ -3,7 +3,7 @@
   "description": "一个事件的标签。`value is None` = 显式不可计算（缺数据 / 窗口未完成），不填补。\n\n`barrier`：triple barrier 的触达结果（`1` 上、`-1` 下、`0` 垂直）；forward return 恒为 `None`。\n`available_time`：标签可被知道的时刻，不早于 `exit_time`。",
   "properties": {
     "schema_version": {
-      "default": "2.3.0",
+      "default": "2.4.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

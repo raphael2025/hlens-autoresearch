@@ -4,19 +4,27 @@ Scenario (every number TEST ONLY, from ``loop_fixtures``; see its docstring): on
 knowledge hypothesis, no evolution, the scripted LLM. Round 0's experiment stage is made to fail
 (ADR-0070: the loop stops for human review); a human then admits a retry of that hypothesis
 under fresh attempt keys. Crashes are simulated by making one step of the admission raise.
+
+Several tests need two distinct, already-registered hypotheses to retry together (ADR-0083
+"PM 决定" §4: one admission may never repeat a hypothesis, so a multi-item manifest test can no
+longer list one hypothesis twice) — they use ``_fail_round_1_with_two_hypotheses`` /
+``_fail_round_1_with_two_hypotheses_one_trial_each`` and a two-lookback config
+(``_config_two_hypotheses`` / ``_open_two_hypotheses``) instead of the single-hypothesis scenario.
 """
 
 from __future__ import annotations
 
 import gc
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
 import pytest
 
 from apps.worker import LoopBudget
-from apps.worker.loop import LoopHalted, StageStatus
+from apps.worker.loop import LoopHalted, RoundStatus, StageStatus
 from core.domain.research import Hypothesis
+from core.lifecycle.strategy import LifecycleState
 from infrastructure.event_bus import InMemoryEventBus
 from plugins.llm import ScriptedLLMProvider
 from plugins.synthetic import RandomWalkMarket
@@ -47,13 +55,6 @@ from tests.research.loop import loop_fixtures as fx
 
 REVIEWER = "test-human"
 LLM_LOOKBACKS = (None, 240, 1440)
-#: TEST ONLY: a wide round cap and a small total, so G2's remaining-total check can bind.
-NARROW_TOTAL = LoopBudget(
-    max_trials_per_round=50,
-    max_trials_total=10,
-    max_llm_cost_units=fx.TEST_ONLY_BUDGET.max_llm_cost_units,
-    max_compute_seconds=fx.TEST_ONLY_BUDGET.max_compute_seconds,
-)
 
 
 def _config(budget: LoopBudget = fx.TEST_ONLY_BUDGET) -> SyntheticLoopConfig:
@@ -107,6 +108,100 @@ def _fail_round_0(
     assert experiment.status is StageStatus.FAILED
     assert durable.loop.recovery_required is not None
     return durable
+
+
+def _config_two_hypotheses(budget: LoopBudget = fx.TEST_ONLY_BUDGET) -> SyntheticLoopConfig:
+    return fx.config(budget=budget, lookbacks=(60, 240), loop_wiring=fx.wiring(evolution=False))
+
+
+def _open_two_hypotheses(
+    state_dir: Path,
+    *,
+    consumed: int = 0,
+    budget: LoopBudget = fx.TEST_ONLY_BUDGET,
+    anchor: Path | None = None,
+) -> DurableLoop:
+    """Like ``_open`` but for ``_config_two_hypotheses`` (its ``knowledge`` differs, and the
+    fingerprint binds it — ``settings_fingerprint``, ``research.loop.compose``)."""
+    return open_synthetic_loop(
+        _config_two_hypotheses(budget),
+        state_dir=state_dir,
+        provider=RandomWalkMarket(),
+        bus=InMemoryEventBus(),
+        llm=_llm(consumed),
+        anchor=anchor,
+        enable_failed_round_retry=True,
+    )
+
+
+def _fail_round_1_with_two_hypotheses(
+    state_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    budget: LoopBudget = fx.TEST_ONLY_BUDGET,
+) -> tuple[DurableLoop, Hypothesis, Hypothesis]:
+    """Round 0 registers the first knowledge hypothesis; round 1 registers the second (the
+    accumulated research window still has room under ``max_new_hypotheses_per_round``) and
+    re-evaluates the first (the window grew), then its experiment stage fails — two distinct,
+    already-registered hypotheses to retry (ADR-0083 "PM 决定" §4: one admission may never repeat
+    a hypothesis, so a multi-item manifest test now needs two of them, not one listed twice)."""
+    durable = _open_two_hypotheses(state_dir, budget=budget)
+    [first_record] = durable.loop.run_unattended(1)
+    assert first_record.status is RoundStatus.COMPLETED
+    [first] = durable.memory.ledger.hypotheses
+
+    def died(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("TEST ONLY: the experiment infrastructure died")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ExperimentStage, "_trial", died)
+        [record] = durable.loop.run_unattended(1)
+    experiment = {stage.name: stage for stage in record.stages}["experiment"]
+    assert experiment.status is StageStatus.FAILED
+    assert durable.loop.recovery_required is not None
+    [second] = [h for h in durable.memory.ledger.hypotheses if h.ref != first.ref]
+    return durable, first, second
+
+
+def _fail_round_1_with_two_hypotheses_one_trial_each(
+    state_dir: Path, monkeypatch: pytest.MonkeyPatch, *, budget: LoopBudget
+) -> tuple[DurableLoop, Hypothesis, Hypothesis]:
+    """Round 0 covers the whole research window in one round (``days_per_round=6``), so its
+    hypothesis reaches a definitive verdict at once (PASS, given the planted 60-minute effect) and
+    moves to ``OOS`` — never re-evaluated; round 1 then registers only the second knowledge
+    hypothesis, exactly one declared trial each round, before its experiment stage fails. Two
+    distinct, already-registered hypotheses (ADR-0083 "PM 决定" §4), sized so a caller can pick a
+    ``max_trials_per_round`` that a 1-trial round always fits but a 2-item retry manifest does
+    not."""
+    cfg = fx.config(
+        budget=budget, lookbacks=(60, 240), loop_wiring=fx.wiring(evolution=False), days_per_round=6
+    )
+    durable = open_synthetic_loop(
+        cfg,
+        state_dir=state_dir,
+        provider=RandomWalkMarket(),
+        bus=InMemoryEventBus(),
+        llm=_llm(0),
+        enable_failed_round_retry=True,
+    )
+    [first_record] = durable.loop.run_unattended(1)
+    assert first_record.status is RoundStatus.COMPLETED
+    [first] = durable.memory.ledger.hypotheses
+    # a definitive verdict (PASS -> OOS, given the planted 60-minute effect, or FAIL -> REJECTED)
+    # on the whole window at once: either way it leaves VALIDATION and is never re-evaluated again
+    assert durable.loop.guard.state_of(first.ref) in (LifecycleState.OOS, LifecycleState.REJECTED)
+
+    def died(*_: Any, **__: Any) -> Any:
+        raise RuntimeError("TEST ONLY: the experiment infrastructure died")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(ExperimentStage, "_trial", died)
+        [record] = durable.loop.run_unattended(1)
+    experiment = {stage.name: stage for stage in record.stages}["experiment"]
+    assert experiment.status is StageStatus.FAILED
+    assert durable.loop.recovery_required is not None
+    [second] = [h for h in durable.memory.ledger.hypotheses if h.ref != first.ref]
+    return durable, first, second
 
 
 def _state(durable: DurableLoop) -> DurableState:
@@ -245,39 +340,53 @@ def test_g1_a_manifest_hash_that_differs_from_the_registration_is_refused(
 def test_g2_a_retry_beyond_the_round_cap_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """ADR-0083 "PM 决定" §4: two distinct hypotheses (a manifest may never repeat one), each
+    declaring exactly one trial a round — the retry manifest of both exceeds a cap of one."""
     state_dir = tmp_path / "state"
-    durable = _fail_round_0(state_dir, monkeypatch)
-    hypothesis = _hypothesis(durable)
-    cap = fx.TEST_ONLY_BUDGET.max_trials_per_round
+    cap_budget = replace(fx.TEST_ONLY_BUDGET, max_trials_per_round=1)
+    durable, first, second = _fail_round_1_with_two_hypotheses_one_trial_each(
+        state_dir, monkeypatch, budget=cap_budget
+    )
     with pytest.raises(RetryAdmissionError, match="max_trials_per_round"):
         durable.admit_failed_round_retry(
             packet=_packet(durable),
             reviewer=REVIEWER,
-            manifest=[_item(hypothesis, f"retry-{i}") for i in range(cap + 1)],
+            manifest=[_item(first, "retry-a"), _item(second, "retry-b")],
         )
     assert _retry_files(state_dir) == []
+
+
+#: TEST ONLY: sized so ``_fail_round_1_with_two_hypotheses`` (3 trials spent: round 0's
+#: registration, round 1's fresh registration and re-evaluation) leaves exactly 1 remaining.
+NARROW_TOTAL_TWO = LoopBudget(
+    max_trials_per_round=50,
+    max_trials_total=4,
+    max_llm_cost_units=fx.TEST_ONLY_BUDGET.max_llm_cost_units,
+    max_compute_seconds=fx.TEST_ONLY_BUDGET.max_compute_seconds,
+)
 
 
 def test_g2_a_retry_beyond_the_remaining_hard_total_is_refused(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """ADR-0083 "PM 决定" §4: two distinct hypotheses (a manifest may never repeat one), sized so
+    the remaining total is exactly 1 after the failed round."""
     state_dir = tmp_path / "state"
-    durable = _fail_round_0(state_dir, monkeypatch, budget=NARROW_TOTAL)
-    hypothesis = _hypothesis(durable)
+    durable, first, second = _fail_round_1_with_two_hypotheses(
+        state_dir, monkeypatch, budget=NARROW_TOTAL_TWO
+    )
     spent = durable.loop.total_usage.trials  # max(declared, actual), failed round included
-    remaining = NARROW_TOTAL.max_trials_total - spent
-    assert remaining >= 1
+    remaining = NARROW_TOTAL_TWO.max_trials_total - spent
+    assert remaining == 1
     with pytest.raises(RetryAdmissionError, match="remain under max_trials_total"):
         durable.admit_failed_round_retry(
             packet=_packet(durable),
             reviewer=REVIEWER,
-            manifest=[_item(hypothesis, f"retry-{i}") for i in range(remaining + 1)],
+            manifest=[_item(first, "retry-a"), _item(second, "retry-b")],
         )
     assert _retry_files(state_dir) == []
     receipt = durable.admit_failed_round_retry(  # exactly the remaining total still fits
-        packet=_packet(durable),
-        reviewer=REVIEWER,
-        manifest=[_item(hypothesis, f"retry-{i}") for i in range(remaining)],
+        packet=_packet(durable), reviewer=REVIEWER, manifest=[_item(first, "retry-a")]
     )
     assert receipt.failed_record_hash == durable.loop.audit.records[-1].record_hash
 
@@ -359,10 +468,13 @@ def test_a_reopened_admission_waits_for_an_explicit_resume(
 def test_a_crash_after_prepare_is_recovered_exactly(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """Also proves ADR-0083 "PM 决定" §4: the retry round's validation stage tells the two
+    hypotheses' results apart by their own attempt key (``#attempt`` in the run/report identity),
+    never conflating them, even though both complete in the very same round."""
     state_dir = tmp_path / "state"
-    durable = _fail_round_0(state_dir, monkeypatch)
-    hypothesis, packet = _hypothesis(durable), _packet(durable)
-    manifest = [_item(hypothesis, "retry-1"), _item(hypothesis, "retry-2")]
+    durable, first, second = _fail_round_1_with_two_hypotheses(state_dir, monkeypatch)
+    packet = _packet(durable)
+    manifest = [_item(first, "retry-1"), _item(second, "retry-2")]
     family_before = durable.memory.ledger.trials(fx.FAMILY)
     ledger_lines = _lines(state_dir / LEDGER_FILE)
     memory_lines = _lines(state_dir / MEMORY_FILE)
@@ -390,7 +502,7 @@ def test_a_crash_after_prepare_is_recovered_exactly(
     _close(durable)
 
     with pytest.raises(LoopStateInconsistent, match="recovered exactly"):
-        _open(state_dir, consumed=1)
+        _open_two_hypotheses(state_dir, consumed=2)
     assert [e.type for e in AppendOnlyJournal(journal).entries] == [
         "retry_prepare",
         "retry_commit",
@@ -399,12 +511,32 @@ def test_a_crash_after_prepare_is_recovered_exactly(
     tail = AppendOnlyJournal(state_dir / MEMORY_FILE).entries
     assert len(tail) == memory_lines + 1 and tail[-1].type == RETRY_ADMISSION
 
-    reopened = _open(state_dir, consumed=1)
+    reopened = _open_two_hypotheses(state_dir, consumed=2)
     assert reopened.memory.ledger.trials(fx.FAMILY) == family_before + 2
-    assert [a for _, a in reopened.memory.retry_reevaluations] == ["retry-1", "retry-2"]
+    assert [(h.ref, a) for h, a in reopened.memory.retry_reevaluations] == [
+        (first.ref, "retry-1"),
+        (second.ref, "retry-2"),
+    ]
     reopened.resume_failed_round_retry()
     [record] = reopened.loop.run_unattended(1)
-    assert {s.name: s for s in record.stages}["experiment"].status is StageStatus.COMPLETED
+    stages = {s.name: s for s in record.stages}
+    assert stages["experiment"].status is StageStatus.COMPLETED
+    rows = (stages["experiment"].summary or {})["experiments"]
+    by_attempt = {row["attempt"]: row for row in rows}
+    assert set(by_attempt) == {"retry-1", "retry-2"}
+    assert {row["hypothesis"] for row in by_attempt.values()} == {
+        str(first.ref),
+        str(second.ref),
+    }
+    assert all(row["origin"] == "retry" for row in by_attempt.values())
+    # the run/report identity is disambiguated by the attempt key, not only the round + hypothesis
+    assert all(row["run_id"].endswith(f"#{attempt}") for attempt, row in by_attempt.items())
+    assert stages["validation"].status is StageStatus.COMPLETED
+    reports = stages["validation"].summary["reports"]
+    assert {(r["hypothesis"], r["attempt"]) for r in reports} == {
+        (str(first.ref), "retry-1"),
+        (str(second.ref), "retry-2"),
+    }
 
 
 def test_a_crash_after_commit_before_the_checkpoint_is_recovered(

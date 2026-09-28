@@ -144,7 +144,15 @@ def validate_reviewer(reviewer: object) -> str:
 
 
 def manifest_items(value: object) -> tuple[RetryManifestItem, ...]:
-    """Parse and check a manifest (payload list or ``RetryManifestItem`` values)."""
+    """Parse and check a manifest (payload list or ``RetryManifestItem`` values).
+
+    ADR-0083 "PM 决定" §4 (2026-09-28): a hypothesis (its ``name@version``) may appear at most
+    once in one retry admission's manifest — distinct attempt keys no longer excuse a repeat. This
+    is checked here, at the manifest's one parsing point, so it fails closed identically whether
+    the manifest is about to be PREPAREd or is being re-verified while reopening a v6 state
+    directory (``reduce_retry_ledger_tail`` parses the PREPARE's saved manifest through this same
+    function).
+    """
     if isinstance(value, str | bytes | Mapping) or not isinstance(value, Iterable):
         raise RetryAdmissionError("retry manifest must be a non-empty ordered sequence")
     raw_items = [item.payload() if isinstance(item, RetryManifestItem) else item for item in value]
@@ -152,6 +160,7 @@ def manifest_items(value: object) -> tuple[RetryManifestItem, ...]:
         raise RetryAdmissionError("retry manifest must be a non-empty ordered sequence")
     items: list[RetryManifestItem] = []
     attempts: set[str] = set()
+    hypotheses: set[tuple[str, str]] = set()
     for raw in raw_items:
         if not isinstance(raw, Mapping) or set(raw) != _ITEM_KEYS:
             raise RetryAdmissionError("retry manifest item has unknown or missing fields")
@@ -167,6 +176,13 @@ def manifest_items(value: object) -> tuple[RetryManifestItem, ...]:
             raise RetryAdmissionError("retry manifest items need an exact name@version")
         if _HASH.fullmatch(item.hypothesis_hash) is None:
             raise RetryAdmissionError("retry manifest hypothesis_hash must be lowercase SHA-256")
+        hypothesis_key = (item.name, item.version)
+        if hypothesis_key in hypotheses:
+            raise RetryAdmissionError(
+                f"retry manifest repeats {item.name}@{item.version}: one admission may retry a "
+                "hypothesis at most once (ADR-0083 PM decision 4)"
+            )
+        hypotheses.add(hypothesis_key)
         attempt = item.attempt
         if not attempt.strip() or attempt != attempt.strip():
             raise RetryAdmissionError("retry attempt keys must be non-empty and normalized")

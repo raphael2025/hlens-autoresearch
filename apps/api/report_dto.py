@@ -40,8 +40,8 @@ class ReportDTO:
 # it is assigned by kind here and is not injected into payload bytes or identity hashes.
 REPORT_DTOS: Final[dict[ReportKind, ReportDTO]] = {
     ReportKind.VALIDATION_REPORT: ReportDTO(
-        "2.3.0",
-        frozenset({"2.0.0", "2.1.0", "2.2.0", "2.3.0"}),
+        "2.4.0",
+        frozenset({"2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"}),
         ("schema_version", "gates", "verdict"),
     ),
     ReportKind.RESEARCH_LOOP_ROUND: ReportDTO(

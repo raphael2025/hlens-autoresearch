@@ -25,12 +25,14 @@ their last component. An exception no route maps (a bug, an I/O failure) answers
 ``{"detail": INTERNAL_ERROR}``: never its message, a path or a traceback. Every route declares that
 500 as ``ApiError``. The 422 of ``GET /reports/{kind}/{report_id}`` is declared as
 ``ApiError | HTTPValidationError`` (the store's refusal, or FastAPI's request validation of an
-unknown ``kind``). ``/health``, ``/contracts`` and ``/lifecycle/transitions`` have named response
-models (``Health``, ``ContractNames``, ``LifecycleTransition``); their JSON is unchanged.
+unknown ``kind``). ``/health``, ``/healthz``, ``/readyz``, ``/contracts`` and
+``/lifecycle/transitions`` have named response models (``Health``, ``ContractNames``,
+``LifecycleTransition``).
 """
 
 from __future__ import annotations
 
+import os
 import re
 from collections.abc import Collection
 from pathlib import Path
@@ -126,7 +128,7 @@ class ApiError(BaseModel):
 
 
 class Health(BaseModel):
-    """``GET /health``."""
+    """Liveness (``/health`` and ``/healthz``) or readiness (``/readyz``) response."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -261,6 +263,40 @@ def create_app(
     @app.get("/health", response_model=Health, responses=_errors())
     def health() -> Health:
         return Health(status="ok", api_version=API_VERSION)
+
+    @app.get("/healthz", response_model=Health, responses=_errors())
+    def healthz() -> Health:
+        return Health(status="ok", api_version=API_VERSION)
+
+    @app.get("/readyz", response_model=Health, responses=_errors(503))
+    def readyz() -> Health:
+        """Configured read sources must answer before the API is reported ready."""
+        if knowledge is not None:
+            try:
+                knowledge.search(KnowledgeQuery(terms=("__readiness_check__",), limit=1))
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503, detail="configured knowledge source is unavailable"
+                ) from exc
+
+        if reports_root is not None:
+            try:
+                with os.scandir(reports_root) as entries:
+                    next(entries, None)
+            except OSError as exc:
+                raise HTTPException(
+                    status_code=503, detail="configured reports source is unavailable"
+                ) from exc
+
+        if jobs_results is not None:
+            try:
+                _job_history()
+            except Exception as exc:
+                raise HTTPException(
+                    status_code=503, detail="configured jobs source is unavailable"
+                ) from exc
+
+        return Health(status="ready", api_version=API_VERSION)
 
     @app.get("/contracts", response_model=ContractNames, responses=_errors())
     def contracts() -> ContractNames:

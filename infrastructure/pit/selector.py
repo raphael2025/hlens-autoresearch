@@ -34,7 +34,9 @@ dataset builder must refuse ``conflicts`` (``require_no_conflict``).
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Mapping, Sequence
+import itertools
+from collections.abc import Callable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
@@ -67,6 +69,13 @@ from infrastructure.pit.assumption import (
     assumption_bound,
     effective_available_times,
 )
+from infrastructure.pit.runs import (
+    KeyHistoryBuffer,
+    RunLimits,
+    RunRef,
+    merge_sorted_runs,
+    spill_sorted_runs,
+)
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
 from infrastructure.revision.channel_reconcile import ChannelReconciler, revision_record_from_row
@@ -78,7 +87,9 @@ __all__ = [
     "PIT_SPEC",
     "REQUIRED_BINDINGS",
     "EvidenceGap",
+    "PitBoundedRecord",
     "PitConflictError",
+    "PitRunParams",
     "PitSelection",
     "PitSelector",
     "PitSpecError",
@@ -184,6 +195,73 @@ class PitSelection:
 
 class PitConflictError(Exception):
     """A dataset cannot be built: competing maximal heads (ADR-0023 §5.4)."""
+
+
+@dataclass(frozen=True, slots=True)
+class PitRunParams:
+    """Explicit, caller-chosen bounds for :meth:`PitSelector.iter_bounded` (ADR-0077 §6.1.2 /
+    §6.1.3, DQ-9: no defaults — values must be chosen after capacity measurement, not guessed
+    here).
+
+    - ``row_batch_rows`` / ``edge_batch_rows``: how many verified Canonical rows, respectively
+      mapped edges, ``iter_bounded`` buffers in memory before spilling them into one
+      content-addressed sorted run (:func:`infrastructure.pit.runs.spill_sorted_runs`);
+    - ``merge_fanout``: how many sorted runs :func:`infrastructure.pit.runs.merge_sorted_runs`
+      reads from at once when reconstructing key order;
+    - ``key_history_buffer``: how many of one observation key's own rows
+      :class:`infrastructure.pit.runs.KeyHistoryBuffer` holds before spilling the rest of that
+      key's (unusually long) chain into its own run;
+    - ``limits``: the leaf / index shape (:class:`infrastructure.pit.runs.RunLimits`) used for
+      every run this call writes, including the intermediate runs a large merge produces.
+    """
+
+    row_batch_rows: int
+    edge_batch_rows: int
+    merge_fanout: int
+    key_history_buffer: int
+    limits: RunLimits
+
+    def __post_init__(self) -> None:
+        if self.row_batch_rows <= 0:
+            raise ValueError("row_batch_rows must be positive")
+        if self.edge_batch_rows <= 0:
+            raise ValueError("edge_batch_rows must be positive")
+        if self.merge_fanout < 2:
+            raise ValueError("merge_fanout must be at least 2")
+        if self.key_history_buffer <= 0:
+            raise ValueError("key_history_buffer must be positive")
+
+
+@dataclass(frozen=True, slots=True)
+class PitBoundedRecord:
+    """One item of :meth:`PitSelector.iter_bounded`'s output stream.
+
+    Exactly one record per evaluated ``PointInTimeSelection`` instant of a key, in key-then-
+    instant order (the same order :func:`_evaluate` already produces per key). ``lineage`` /
+    ``evidence_gap`` are attached the first time — within this key's release scope — their
+    revision is selected, and are ``None`` on every other record (every ABSENT / CONFLICT
+    instant, and every repeat SELECTED instant of an already-emitted revision); folding over the
+    stream and keeping the non-``None`` ones reconstructs the same ``revision -> lineage / gap``
+    mapping :attr:`PitSelection.lineage` / :attr:`PitSelection.evidence_gaps` hold for a key,
+    without this generator ever retaining it for more than one key at a time.
+
+    ``owner_event_time`` is the earliest event of the key's whole revision chain (as read by the
+    key closure, :func:`_key_closure`'s ``earliest``): identical on every record of one key, it is
+    the slice-ownership witness a caller folding this stream into one group per key
+    (``PitKeyGroup.owner_event_time``) needs without a second read of the Canonical rows.
+    ``event_time`` is the selected revision's own proven row time column (``event_time`` /
+    ``interval_start``, exactly v2's row time): set whenever ``selection.status`` is
+    ``SELECTED`` (on every such record, not just the first for a revision — unlike ``lineage`` /
+    ``evidence_gap`` it is not "carried"; it is cheap to re-attach from the key's already-held
+    rows), and ``None`` on every ABSENT / CONFLICT record.
+    """
+
+    observation_key: str
+    selection: PointInTimeSelection
+    lineage: SelectedRevisionLineage | None
+    evidence_gap: EvidenceGap | None
+    owner_event_time: datetime
+    event_time: datetime | None
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -486,6 +564,61 @@ class PitSelector:
             )
         return mapped
 
+    # ------------------------------------------------------------ v3 fixed-working-set generator
+
+    def iter_bounded(
+        self,
+        spec: PointInTimeSpec,
+        data_type: str,
+        symbol: str,
+        start: datetime,
+        end: datetime,
+        *,
+        params: PitRunParams,
+        touching: bool = False,
+    ) -> AbstractContextManager[Iterator[PitBoundedRecord]]:
+        """v3 fixed-working-set entry point (ADR-0077 §6.1.2 / §6.1.3).
+
+        Same bindings, pinned/proven reads, edge mapping, dual-cutoff candidate rule and
+        competing-heads rule as :meth:`select` (this method calls the same private helpers, does
+        not duplicate or alter them, and legacy ``select`` is byte-for-byte unaffected by this
+        method's existence). What differs is the shape of the answer and how it is produced:
+
+        - ``select`` groups the window's verified rows into a ``dict[str, list[...]]`` keyed by
+          ``observation_key`` and every mapped edge into a second such dict, then accumulates
+          ``lineage`` / ``evidence_gaps`` / ``selected_rows`` / ``conflicts`` across *every* key
+          before returning one :class:`PitSelection` holding it all;
+        - ``iter_bounded`` instead spills the verified rows, respectively the mapped edges, into
+          content-addressed sorted runs (:func:`infrastructure.pit.runs.spill_sorted_runs`,
+          ``(observation_key, revision_id)`` order) as soon as they are known, frees the two
+          dicts, and only then reconstructs key order via a bounded multi-way merge
+          (:func:`infrastructure.pit.runs.merge_sorted_runs`). One key's rows are gathered (via
+          :class:`infrastructure.pit.runs.KeyHistoryBuffer`, which itself spills to a run if that
+          one key's own history exceeds ``params.key_history_buffer``), evaluated exactly as
+          ``select`` would (:func:`_evaluate` / :func:`_heads`, unchanged), yielded as ordered
+          :class:`PitBoundedRecord`, and released — the next key's key/records/lookup state does
+          not coexist with this one's, and nothing about the *whole window's* result set is ever
+          held in memory at once, addressing ADR-0077 §6.1.4's ban on ``by_key`` /
+          ``records_by_key`` / ``selected_rows`` persisting for a whole ``select`` call.
+
+        **Honest boundary**: the read + proof + edge-mapping step (``_canonical_rows`` /
+        ``_verify_canonical`` / ``_mapped_edges``, all reused unchanged) is itself bounded by the
+        pre-existing ADR-0075 / ADR-0076 scan bounds, i.e. by the size of *this one window*, not
+        by the number of windows a caller iterates. Freeing the resulting ``by_key`` / ``edges``
+        dicts (``del``, below) before entering the merge-and-evaluate loop keeps that window-sized
+        peak from persisting into — or accumulating across — the streaming phase; it does not
+        make the read step itself independent of window size (that remains §6.1.1's scope, the
+        ``UniverseBuilder`` / caller-side windowing, not this method's).
+
+        A conflict is reported inline (``selection.status is PointInTimeStatus.CONFLICT``) on the
+        record itself, in place of ``select``'s separately collected ``conflicts`` tuple; a caller
+        that must fail closed on any conflict (mirroring ``PitSelection.require_no_conflict``)
+        checks each yielded record as it arrives.
+        """
+        return _pit_bounded_stream(
+            self, spec, data_type, symbol, start, end, params=params, touching=touching
+        )
+
 
 def _wanted_rows(
     scan: Callable[[Sequence[str], datetime, datetime], pa.Table],
@@ -700,3 +833,227 @@ def _evaluate(
             )
         )
     return results
+
+
+# ============================================================================================
+# v3 fixed-working-set generator (ADR-0077 §6.1.2 / §6.1.3): sort-then-merge implementation of
+# PitSelector.iter_bounded. Reuses the same private read / proof / edge-mapping helpers as
+# select() (_canonical_rows, _verify_canonical, _mapped_edges) unchanged; only the grouping and
+# evaluation phase is rebuilt on infrastructure.pit.runs' content-addressed sorted runs.
+# ============================================================================================
+
+
+def _pit_row_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    """Run order for verified rows: ``(observation_key, revision_id)`` (ADR-0077 §6.1.2)."""
+    return (row["observation_key"], row["revision_id"])
+
+
+def _pit_row_group_key(row: Mapping[str, Any]) -> str:
+    return row["observation_key"]
+
+
+def _flatten_edges(
+    edges: Mapping[str, Sequence[PrecedenceEvidence]],
+) -> Iterator[dict[str, Any]]:
+    """One run-row per mapped edge: ``{"observation_key", "evidence"}`` (``evidence`` is the
+    edge's JSON-safe ``model_dump``; :class:`PrecedenceEvidence` is not itself a plain
+    ``Mapping``, so it cannot be spilled directly through :mod:`infrastructure.pit.runs`'s row
+    codec)."""
+    for key, items in edges.items():
+        for item in items:
+            yield {"observation_key": key, "evidence": item.model_dump(mode="json")}
+
+
+def _pit_edge_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    # A stable tiebreaker among one key's edges: the edge's own canonical JSON (edges carry no
+    # single natural-order field of their own at this layer).
+    return (row["observation_key"], canonical_json(row["evidence"]))
+
+
+def _pit_edge_group_key(row: Mapping[str, Any]) -> str:
+    return row["observation_key"]
+
+
+@contextmanager
+def _pit_bounded_stream(
+    selector: PitSelector,
+    spec: PointInTimeSpec,
+    data_type: str,
+    symbol: str,
+    start: datetime,
+    end: datetime,
+    *,
+    params: PitRunParams,
+    touching: bool,
+) -> Iterator[Iterator[PitBoundedRecord]]:
+    if not isinstance(spec, PointInTimeSpec):
+        raise PitSpecError("spec must be a PointInTimeSpec")
+    _check_bindings(spec)
+    canonical = rules.CANONICAL_TABLES.get(data_type)
+    if canonical is None:
+        raise PitSpecError(f"unsupported data_type {data_type!r}")
+    instrument = rules.SYMBOLS.get(symbol)
+    if instrument is None:
+        raise PitSpecError(f"{symbol!r} is not a first-slice venue symbol")
+    days = _days(start, end)
+    if canonical.table not in spec.snapshot_bindings:
+        raise PitSpecError(f"the spec does not bind {canonical.table}")
+    view = selector._pinned(spec)
+
+    rows = selector._canonical_rows(
+        view, canonical.table, data_type, instrument.symbol, start, end, touching
+    )
+    verified = selector._verify_canonical(view, rows)
+    try:
+        bound_assumption = assumption_bound(spec)
+    except AssumptionSpecError as exc:
+        raise PitSpecError(str(exc)) from None
+
+    # Transient, window-sized grouping (same bound as select()'s by_key): unavoidable because
+    # _mapped_edges (reused unchanged) needs every key's rows to resolve each Raw edge's
+    # Canonical endpoints. Freed (``del``, below) before the bounded merge-and-evaluate phase.
+    by_key: dict[str, list[Mapping[str, Any]]] = {}
+    for row in verified:
+        by_key.setdefault(row["observation_key"], []).append(row)
+    column = _time_column(data_type)
+    edge_days = sorted(set(days) | {row[column].astimezone(UTC).date() for row in verified})
+    edges = selector._mapped_edges(view, spec, data_type, symbol, edge_days, by_key)
+
+    storage = selector._storage
+    limits = params.limits
+    row_refs: list[RunRef] = list(
+        spill_sorted_runs(
+            verified,
+            key=_pit_row_sort_key,
+            capacity=params.row_batch_rows,
+            storage=storage,
+            limits=limits,
+        )
+    )
+    edge_refs: list[RunRef] = list(
+        spill_sorted_runs(
+            _flatten_edges(edges),
+            key=_pit_edge_sort_key,
+            capacity=params.edge_batch_rows,
+            storage=storage,
+            limits=limits,
+        )
+    )
+    del by_key, edges, verified, rows
+
+    def _generate() -> Iterator[PitBoundedRecord]:
+        with (
+            merge_sorted_runs(
+                storage,
+                row_refs,
+                key=_pit_row_sort_key,
+                merge_fanout=params.merge_fanout,
+                limits=limits,
+            ) as merged_rows,
+            merge_sorted_runs(
+                storage,
+                edge_refs,
+                key=_pit_edge_sort_key,
+                merge_fanout=params.merge_fanout,
+                limits=limits,
+            ) as merged_edges,
+        ):
+            edge_iter = iter(itertools.groupby(merged_edges, key=_pit_edge_group_key))
+            pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
+            pending_edge_items = (
+                list(pending_edge_group) if pending_edge_group is not None else []
+            )
+
+            for row_key, row_group in itertools.groupby(merged_rows, key=_pit_row_group_key):
+                buffer = KeyHistoryBuffer(
+                    storage=storage, buffer_limit=params.key_history_buffer, limits=limits
+                )
+                for row in row_group:
+                    buffer.add(row)
+                with buffer.rows() as key_row_iter:
+                    key_rows = {row["revision_id"]: row for row in key_row_iter}
+                records = tuple(
+                    revision_record_from_row(key_rows[revision]) for revision in sorted(key_rows)
+                )
+                # The key's whole read closure (key_rows) — not just the window's own instants —
+                # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
+                owner_at = min(row[column] for row in key_rows.values())
+
+                while pending_edge_key is not None and pending_edge_key < row_key:
+                    pending_edge_key, next_group = next(edge_iter, (None, None))
+                    pending_edge_items = list(next_group) if next_group is not None else []
+                if pending_edge_key == row_key:
+                    key_edges = tuple(
+                        PrecedenceEvidence.model_validate(item["evidence"])
+                        for item in pending_edge_items
+                    )
+                else:
+                    key_edges = ()
+
+                moved = effective_available_times(list(key_rows.values()), bound=bound_assumption)
+                available = {
+                    revision: moved[revision][1] if revision in moved else row["available_time"]
+                    for revision, row in key_rows.items()
+                }
+
+                seen_revisions: set[str] = set()
+                for selection in _evaluate(row_key, records, key_edges, spec, available):
+                    lineage_out: SelectedRevisionLineage | None = None
+                    gap_out: EvidenceGap | None = None
+                    event_at: datetime | None = None
+                    if selection.status is PointInTimeStatus.SELECTED:
+                        revision = selection.selected_revision_id
+                        if revision is None:  # pragma: no cover - the contract forbids it
+                            raise CatalogIntegrityError("a selected result without a revision")
+                        event_at = key_rows[revision][column]
+                        if revision not in seen_revisions:
+                            seen_revisions.add(revision)
+                            source_row = key_rows[revision]
+                            if revision in moved:
+                                source_row = dict(source_row, available_time=moved[revision][1])
+                            lineage_out = SelectedRevisionLineage(
+                                canonical_table=canonical.table,
+                                canonical_revision_id=revision,
+                                raw_table=source_row["lineage_raw_table"],
+                                raw_revision_id=source_row["lineage_raw_revision_id"],
+                                source_table=source_row["lineage_source_table"],
+                                source_revision_id=source_row["lineage_source_revision_id"],
+                            )
+                            if source_row["availability_evidence_gap"] is not None:
+                                gap_out = EvidenceGap(
+                                    canonical.table,
+                                    revision,
+                                    source_row["availability_evidence_gap"],
+                                )
+                    yield PitBoundedRecord(
+                        observation_key=row_key,
+                        selection=selection,
+                        lineage=lineage_out,
+                        evidence_gap=gap_out,
+                        owner_event_time=owner_at,
+                        event_time=event_at,
+                    )
+                # key_rows / records / key_edges / buffer go out of scope here, before the next
+                # observation_key's group is even read off merged_rows.
+
+            # Every mapped edge's observation_key must be one _mapped_edges found rows for (it
+            # only ever adds an edge once both Raw endpoints resolved among that key's rows); an
+            # edges group that never matched a row_key would mean the two runs disagree with
+            # what by_key / edges actually held, which the spill/merge path must never do.
+            if pending_edge_key is not None or next(edge_iter, None) is not None:
+                raise CatalogIntegrityError(
+                    "a mapped edge references an observation_key with no corresponding "
+                    "Canonical rows in this window"
+                )
+
+    # ``_generate`` holds the two ``merge_sorted_runs`` contexts (each up to ``merge_fanout``
+    # open run readers) and, mid-key, one ``KeyHistoryBuffer.rows()`` context: closed explicitly
+    # here on every exit of the caller's ``with`` block -- full iteration, an early ``break``, or
+    # an exception -- rather than left to whenever the generator object is garbage collected.
+    # ``.close()`` throws ``GeneratorExit`` in at the generator's current (or not yet started)
+    # suspension point, which the ``with`` statements above unwind exactly as any other exit.
+    generated = _generate()
+    try:
+        yield generated
+    finally:
+        generated.close()

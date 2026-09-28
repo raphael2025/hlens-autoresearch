@@ -16,9 +16,19 @@ from typing import Final
 
 from core.domain.base import Ref, VersionedSpec
 from core.domain.research import ExperimentSpec, Hypothesis
-from core.domain.specs import EventSpec, FeatureSpec, StateSpec, StrategySpec
+from core.domain.specs import (
+    ConditionedStrategy,
+    EnsembleStrategy,
+    EventSpec,
+    FeatureSpec,
+    NegatedStrategy,
+    StateSpec,
+    StrategySpec,
+)
 from research.hypotheses.typed_plan import (
     PLAN_FORMAT_VERSION,
+    PlanNode,
+    PlanOperator,
     PlanOutputType,
     PlanRefused,
     TypedPlan,
@@ -144,11 +154,36 @@ def _canonical_plan(plan: TypedPlan, where: str) -> TypedPlan:
     return rebuilt
 
 
+#: ADR-0088 decision 2 gives the conditional strategy plan a versioned core representation: a
+#: StrategySpec whose ``composition`` is ``ConditionedStrategy``. Before contract 2.4.0 it had none
+#: and ADR-0078 required this output type to fail closed.
 _PLAN_OUTPUT_SPEC_TYPES: Final[dict[PlanOutputType, type[VersionedSpec]]] = {
+    PlanOutputType.CONDITIONAL_STRATEGY: StrategySpec,
     PlanOutputType.EVENT: EventSpec,
     PlanOutputType.FEATURE: FeatureSpec,
     PlanOutputType.STRATEGY: StrategySpec,
 }
+
+#: The StrategySpec produced by a composing operator must carry exactly that operator's
+#: composition (ADR-0088 decision 2); a plain or differently composed StrategySpec is refused.
+_OPERATOR_COMPOSITIONS: Final[dict[PlanOperator, type[object]]] = {
+    PlanOperator.CONDITIONING: ConditionedStrategy,
+    PlanOperator.ENSEMBLE: EnsembleStrategy,
+    PlanOperator.NEGATION: NegatedStrategy,
+}
+
+
+def _require_operator_composition(node: PlanNode, spec: VersionedSpec, where: str) -> None:
+    composition_type = _OPERATOR_COMPOSITIONS.get(node.operator)
+    if composition_type is None:
+        return
+    if not isinstance(spec, StrategySpec) or type(spec.composition) is not composition_type:
+        raise PlanBindingRefused(
+            "plan_output_composition_mismatch",
+            where,
+            f"{node.operator.value} requires a StrategySpec composed as "
+            f"{composition_type.__name__}",
+        )
 
 
 def produce_lowered_output_bindings(
@@ -205,6 +240,7 @@ def produce_lowered_output_bindings(
                 where,
                 f"{node.output_type.value} requires exactly {expected_type.__name__}",
             )
+        _require_operator_composition(node, spec, where)
         result.append(
             LoweredOutputBinding(
                 experiment_hash=experiment_hash,
@@ -470,6 +506,7 @@ def validate_complete_experiment_bindings(
                 where,
                 f"node {output.node_id} requires exactly {expected_type.__name__}",
             )
+        _require_operator_composition(node, output.spec, where)
         supplied_nodes[output.experiment_hash].add(output.node_id)
 
     for experiment_hash, expected in expected_nodes_by_experiment.items():

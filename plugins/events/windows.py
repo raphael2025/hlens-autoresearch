@@ -38,7 +38,15 @@ from core.contracts.event import Event, EventInputError, EventInputPoint
 from core.domain.base import Kind, Ref
 from core.domain.specs import EventSpec
 from plugins.events._base import EventProviderBase, parse_ref, trigger_of
-from plugins.events.interactions import _MICROSECOND, _gap_seconds, _hash, _split, _union, _window
+from plugins.events.interactions import (
+    _MICROSECOND,
+    _gap_seconds,
+    _hash,
+    _shared_bar_spec,
+    _split,
+    _union,
+    _window,
+)
 
 __all__ = ["EventAbsenceProvider", "EventCountProvider", "EventWindowEndProvider"]
 
@@ -69,11 +77,13 @@ class _LinkedProvider(EventProviderBase):
         name: str,
         version: str,
         observable_lag: timedelta,
+        bar_spec: Ref | None,
     ) -> EventSpec:
         refs = [str(item.ref) for item in upstream]
         if len(set(refs)) != len(refs):
             raise ValueError("the upstream event definitions must differ")
         features, states = _union(*upstream)
+        inherited_bar_spec = _shared_bar_spec(*upstream, bar_spec=bar_spec)
         params: dict[str, Any] = dict(extra)
         for side, item in zip(cls.SIDES, upstream, strict=True):
             params[side] = str(item.ref)
@@ -86,6 +96,7 @@ class _LinkedProvider(EventProviderBase):
             states=states,
             observable_lag=observable_lag,
             lineage=tuple(item.ref for item in upstream),
+            bar_spec=inherited_bar_spec,
         )
 
     def _sides(self, params: dict[str, Any]) -> dict[str, tuple[Ref, str]]:
@@ -137,7 +148,13 @@ class EventWindowEndProvider(_LinkedProvider):
 
     @classmethod
     def spec(
-        cls, of: EventSpec, window: timedelta, *, name: str, version: str = "1.0.0"
+        cls,
+        of: EventSpec,
+        window: timedelta,
+        *,
+        name: str,
+        version: str = "1.0.0",
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         return cls._make(
             (of,),
@@ -145,6 +162,7 @@ class EventWindowEndProvider(_LinkedProvider):
             name=name,
             version=version,
             observable_lag=window,
+            bar_spec=bar_spec,
         )
 
     def _check(self, spec: EventSpec, params: dict[str, Any]) -> None:
@@ -191,6 +209,7 @@ class EventAbsenceProvider(_LinkedProvider):
         name: str,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         return cls._make(
             (anchor, absent),
@@ -198,6 +217,7 @@ class EventAbsenceProvider(_LinkedProvider):
             name=name,
             version=version,
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def events(
@@ -246,6 +266,7 @@ class EventCountProvider(_LinkedProvider):
         name: str,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         return cls._make(
             (of,),
@@ -253,6 +274,7 @@ class EventCountProvider(_LinkedProvider):
             name=name,
             version=version,
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def _extra_fields(self) -> set[str]:

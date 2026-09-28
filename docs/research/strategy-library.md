@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 类型 | `strategy` |
-| 状态 | 框架已实现（Phase 5，ADR-0038）；6 个研究策略（含 ADR-0085 新增的 Donchian、z-score、双动量），均为 NOT_VALIDATED；无策略晋升（Promotion 今天拒绝所有策略） |
+| 状态 | 框架已实现（Phase 5，ADR-0038）；6 个研究策略（含 ADR-0085 新增的 Donchian、z-score、双动量）与组合策略 Provider（ADR-0088 决策 2：conditioned / ensemble / negated），均为 NOT_VALIDATED；无策略晋升（Promotion 今天拒绝所有策略） |
 | 首次填充 | Phase 5 |
 
 从知识库与研究中登记的交易策略（StrategySpec）。
@@ -88,11 +88,33 @@
 - 两者的 `lookback` 以**所用信号的 bar 数**计：在 1m bar 上 `{60, 240, 1440}` 即 1 小时 / 4 小时 / 1 天，比文献的月度或周度形成期短几个数量级；
   这是项目声明的实验空间，不是对文献的复现。
 
+### 组合策略（ADR-0088 决策 2，按实现）
+
+`StrategySpec.composition` 非空的策略由 `research/strategies/composite.py::CompositeStrategyProvider`（descriptor `research_composite@0.1.0`）执行。
+它不是新的交易规则，而是对已登记策略的组合；每个组合是独立的 `StrategySpec` 身份，照常计入试验、照常 NOT_VALIDATED。
+
+| 组合 | 执行语义 |
+|---|---|
+| `conditioned`（base, state, state_value） | 每个标的取门控状态在 `t` 可见的最新一条（按 `(event_time, available_time)`）；值等于 `state_value` 时输出 base 的目标，否则为 0。没有可见状态或值为 `None`（未知）→ 0 且 `inputs_used = 0`；状态值不是文本标签 → `StrategyInputError` |
+| `ensemble`（members, `equal_weight_mean`） | 各成员目标的等权平均（没有信息的成员按 0 计入），half-even 量化到 18 位。成员的 `risk_policy`、`applicable_instruments` 必须完全相等（ADR-0069 规则 3 / 4），否则构造即拒绝 |
+| `negated`（base） | base 目标取反；**不是**验证负对照。执行上下文为现货（`InstrumentType.SPOT`）时，取反后出现负目标即 `UnsupportedStrategy`（做空成本未定义，ST-4），不截断为 0 |
+
+- base / 成员由调用方以解析表（`str(ref)` → `ResolvedStrategy(spec, provider)`）显式注入，不访问全局 Registry；解析表的 provider 必须支持该 spec 的哈希。
+- 构造即拒绝（fail closed）：没有 `composition` 的 spec；组合自带 `params` / `param_search_space`（组合没有自己的参数，base 的参数点由 base spec 固定）；
+  引用不在解析表中；自引用或经解析表形成的循环（嵌套组合允许，只要无环）；`signals` 未覆盖被引用策略的全部信号。请求带参数或含组合 `signals` 以外的信号时拒绝。
+- 每个被引用策略各得一个子请求（同标的、同决策时刻、同 `knowledge_cutoff`，只含该策略自己的信号），结果经 `check_answers` 核对。
+  `inputs_used` = 各部分已用观察数之和（`conditioned` 另加门控观察），以可见集合大小为上限（各部分可能共用观察）。
+- 执行上下文 `instrument_type` 必须显式给出，无默认。
+- 被引用策略自身的 `risk_policy` 不在组合内执行：StrategyProvider 只产出风控前目标，组合策略的 `risk_policy` 由管线在下游施加。
+- 测试：`tests/research/strategies/test_composite.py`（未运行）。
+
 ### 回测与验证接线
 
 - 回测：`plugins/backtest/bar.py::BarBacktester`（`hlens_bar_backtest@1.0.0`）——目标在 `t` 决定、在 `interval_start ≥ t` 的第一根 bar 开盘成交；
   成交价 `open·(1 ± slippage_rate)`，手续费 `|q|·fill·fee_rate`；v1 默认无融资。可选执行模型（参与率上限、平方根冲击、逐 bar 步长的空头借券费率 / 现金借款费率，
   参数全部显式、进入 `provider_hash`）与跨 bar 结转（ADR-0054）见 `plugins/backtest/execution.py`。
+  `BarBacktester.run_with_risk`（ADR-0088 决策 3，`plugins/backtest/risk_loop.py`）在模拟中逐决策时刻调用风控，并按已实现权益路径提供
+  `PortfolioState.equity` / `peak_equity`；研究管线今天仍走"先风控、后模拟"（`equity = None`），未接入它（见 risk-library 缺口 R-4）。
 - 验证：`research/strategies/validation.py::PipelineBacktestValidator` 已把试验接到 G0–G4（CODE_COMPLETE / DEBUG_PENDING）；G4 在声明的
   参数网格上重跑（这些重跑**不是**账本试验，过拟合检查用 `max(family_trial_count, len(trials))`）。Profile 数值未冻结，因此没有任何报告是有效判定；
   测试中的 golden 实验（`tests/golden/experiments/tsmom_g0_g4.py`）是合成夹具，不是验证证据。`tsmom_bars` 曾在数据集路径上以
@@ -133,4 +155,4 @@
 | ST-1 | 声明网格的每个点是否自动计入账本 | 今天只有显式登记的假设计入；G4 网格重跑不计入账本。是否把整个声明空间视为一个 family 的试验数需决定（C-T1 的解释），不在本库预设 |
 | ST-2 | 循环 / 数据集路径的风控信号 | 需要规定风控所需 Feature 由谁计算、如何进入 `EvaluationInputs.risk_signals`（ADR-0049 只写"策略 → 风控 → 回测"） |
 | ST-3 | 候选策略（Donchian、z-score、双动量、配对） | 输入可得；有状态出场规则（持仓后的反向突破、止损）在无状态 StrategyProvider 中如何表达、参数空间与出处须逐一规格化 |
-| ST-4 | 现货空头的成本与可实施性 | 借币成本、可借量未建模；是否限定 `long_only` 或引入借币成本模型须决定 |
+| ST-4 | 现货空头的成本与可实施性 | 借币成本、可借量未建模；是否限定 `long_only` 或引入借币成本模型须决定。在此之前，现货上下文中的 `negated` 组合遇到负目标即拒绝 |

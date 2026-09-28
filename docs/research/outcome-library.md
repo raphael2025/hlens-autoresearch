@@ -3,7 +3,7 @@
 | 字段 | 值 |
 |---|---|
 | 类型 | `outcome` |
-| 状态 | Phase 4 框架：2 个标签方法已实现（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED） |
+| 状态 | Phase 4 框架：3 个标签方法已实现（FRAMEWORK_IMPLEMENTED / NOT_VALIDATED） |
 | 首次填充 | Phase 4（[ADR-0037](../adr/0037-outcome-engine-and-minimal-validation-pipeline.md)） |
 
 事件 / 信号之后的标准化结果标签（OutcomeSpec + `OutcomeLabelSpec`）。契约 `core/contracts/outcome.py`，实现 `plugins/outcomes/`，
@@ -14,9 +14,10 @@
 | 字段 | 说明 |
 |---|---|
 | `name@version` | `OutcomeSpec.ref`；冻结的 `OutcomeSpec` 只有 `horizon` 与自由文本 `label_definition` |
-| `method` | `OutcomeLabelSpec.method`：`forward_return` \| `triple_barrier`（只追加的新增模型，以 `outcome` 引用 + `outcome_spec_hash` 绑定一份 `OutcomeSpec`） |
+| `method` | `OutcomeLabelSpec.method`：`forward_return` \| `triple_barrier` \| `vol_scaled_triple_barrier`（ADR-0088 决策 5，契约 2.4.0；只追加的新增模型，以 `outcome` 引用 + `outcome_spec_hash` 绑定一份 `OutcomeSpec`） |
 | `horizon` | 从 `OutcomeSpec` 复制，必须 > 0 |
-| `barriers` | `triple_barrier` 必填：`upper_barrier > 0`，`0 < lower_barrier < 1`；`forward_return` 不得有 |
+| `barriers` | `triple_barrier` 必填：`upper_barrier > 0`，`0 < lower_barrier < 1`；`forward_return` 不得有；`vol_scaled_triple_barrier` 必须为空（屏障改由 `volatility_feature` / `barrier_multiplier` 决定） |
+| `volatility_feature` / `barrier_multiplier` | 只在 `vol_scaled_triple_barrier` 下必填：前者是 `kind=feature` 的引用，后者 `> 0`；其他方法下必须为空 |
 | `alignment` | 入场 = 事件时刻及之后第一根 bar 的开盘；窗口 `[entry, entry + horizon]` 必须由首尾相接的 bar 覆盖 |
 | `available_time` | 标签**可被知道**的时刻 = 所用 bar 的最大 `available_time`；此前任何时刻不得使用该标签 |
 | `provider` | 实现插件 |
@@ -51,7 +52,7 @@
 |---|---|---|---|---|---|
 | 前向收益 | 定义性计算 | `hlens_forward_return@1.0.0` | 1m / 派生 bar 开盘、收盘（可得） | 契约套件、精确值、缺口不填补 | `IMPLEMENTED · NOT_VALIDATED` |
 | 三重屏障 | `RM-TRIPLE-BARRIER-001`（López de Prado 2018，AFML；知识库 `DOCUMENTED`） | `hlens_triple_barrier@1.0.0` | bar OHLC（可得） | 契约套件、同 bar 双触下屏障优先、跳空按开盘 | `IMPLEMENTED · NOT_VALIDATED` |
-| 波动率缩放的屏障宽度 | `RM-TRIPLE-BARRIER-001`（原文以波动率估计 × 倍数设屏障） | 无：本实现的屏障是固定收益比例 | 可得 | 无 | `DOCUMENTED · UNSPECIFIED` |
+| 波动率缩放的屏障宽度 | `RM-TRIPLE-BARRIER-001`（原文以波动率估计 × 倍数设屏障） | `hlens_vol_scaled_triple_barrier@1.0.0`（ADR-0088 决策 5） | bar OHLC + 入场时可见的 `volatility_feature` 值（Provider 外部解析，见下） | 契约套件、精确值、同 bar 双触、跳空、波动率缺失 / ≤0、未来扰动不改过去 | `IMPLEMENTED · NOT_VALIDATED` |
 | Meta-labeling | `RM-META-LABEL-001`（AFML；`DOCUMENTED`） | 无 | 依赖一个初级模型（不存在） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 事件研究（异常收益 / CAR） | `RM-EVENT-STUDY-001`（MacKinlay 1997；`ACADEMIC`） | 无（`research/events/stats.py` 只有频率 / 共现 / 领先滞后统计） | 需要基准模型（未定义） | 无 | `DOCUMENTED · UNSPECIFIED` |
 
@@ -61,6 +62,7 @@
 |---|---|---|---|---|
 | `hlens_forward_return@1.0.0`（`plugins/outcomes/forward_return.py`） | `forward_return` | `value = last.close / first.open − 1`，窗口首根开盘到恰在 `entry + horizon` 结束的那根 bar 的收盘；与方向无关（验证层乘以信号方向） | 窗口不完整或有缺口；入场延迟 ≥ 一根 bar | `IMPLEMENTED · NOT_VALIDATED` |
 | `hlens_triple_barrier@1.0.0`（`plugins/outcomes/triple_barrier.py`） | `triple_barrier` | 上屏障价 `entry·(1 + upper)`，下屏障价 `entry·(1 − lower)`，垂直屏障 `entry + horizon`；按顺序扫描 bar：`low ≤ 下屏障` → `−1`（先检查下屏障，同一根 bar 双触时保守判为下屏障），否则 `high ≥ 上屏障` → `+1`；跳空穿越按开盘价出场；完整窗口未触达 → `0`，在最后收盘出场。`value` 为实际收益，`barrier ∈ {−1, 0, 1}` | 触达前出现缺口；未触达且窗口不完整 | `IMPLEMENTED · NOT_VALIDATED` |
+| `hlens_vol_scaled_triple_barrier@1.0.0`（`plugins/outcomes/vol_scaled_triple_barrier.py`） | `vol_scaled_triple_barrier` | 与 `triple_barrier` 同一套入场 / 垂直屏障 / 扫描 / 双触 / 跳空规则（复用 `triple_barrier.py` 的出场判定），唯一区别：上下屏障价 `entry·(1 ± barrier_multiplier × volatility)`，`volatility` 是入场时刻可见的 `volatility_feature` 值 | 波动率在构造 Provider 时缺失该事件（或显式为 `None`）→ 与价格缺口同一约定，显式 `None`，不视为错误；波动率 ≤ 0，或 `barrier_multiplier × volatility ≥ 1`（下屏障非正）→ `OutcomeInputError`（视为畸形输入，硬性 fail closed，与"缺失"区分对待，见 Provider 模块文档） | `IMPLEMENTED · NOT_VALIDATED` |
 
 共同规则（`plugins/outcomes/_window.py`）：标签值以 50 位精度计算、half-even 量化到 18 位；缺口永不填补；触达只在该 bar 完成后可知，
 因此出场时刻是该 bar 的结束时刻。物化 `research/outcomes/table.py`（`known_as_of(t)` 只返回 `available_time ≤ t` 的标签），
@@ -68,16 +70,29 @@
 
 ### 与文献的区别
 
-- AFML 的三重屏障常以波动率估计乘以倍数设定上 / 下屏障宽度；本项目的 `upper_barrier` / `lower_barrier` 是相对入场价的固定比例，
-  由标签规格声明。若要引入波动率缩放屏障，须以新方法或新规格版本提出（`UNSPECIFIED`），并说明波动率输入只能来自入场时刻已可用的 Feature。
+- AFML 的三重屏障常以波动率估计乘以倍数设定上 / 下屏障宽度；本项目原有 `triple_barrier` 的 `upper_barrier` / `lower_barrier` 是
+  相对入场价的固定比例，由标签规格声明。ADR-0088 决策 5（契约 2.4.0）新增 `vol_scaled_triple_barrier` 方法，屏障改为
+  `entry·(1 ± barrier_multiplier × volatility)`；`volatility_feature: Ref[FEATURE]` 只在契约层声明"用哪个 Feature"，
+  不是数值通道——`OutcomeRequest` 仍是冻结契约，未新增字段携带该 Feature 的实际数值（ADR-0088 只授权契约层，Provider 与其余
+  批次留给后续实现）。`hlens_vol_scaled_triple_barrier` 因此把已解析（PIT 选中、对应到某个事件入场时刻）的波动率值作为构造参数
+  接收，与 `label_specs` 同一生命周期（每个 `OutcomeRequest` 对应一个新 Provider 实例，同 `ForwardReturnOutcome` 在
+  `research/loop/operator_providers.py` 的既有用法）；真正从 `FeatureResult` 取值、按 `entry_time` 做 PIT 选择并组装这份映射，
+  由 `research/outcomes/volatility.py` 的 `select_volatility_for_entry_times` 实现（O-3 已接线，见下）。
 - 同一根 bar 双触时顺序未知：本项目保守判为下屏障；在 1m bar 粒度上无法确定 bar 内顺序，除非引入更细的价格路径（未规格化）。
+  `vol_scaled_triple_barrier` 复用同一判定。
 
 ## 测试证据
 
 `tests/plugins/outcomes/test_outcome_providers.py`（契约套件 × 2、精确值、同 bar 双触、缺口不填补、单点故障变体被杀死）；
+`tests/plugins/outcomes/test_vol_scaled_triple_barrier.py`（契约套件、精确值、与等效固定比例 `triple_barrier` 结果逐条比对、
+同 bar 双触、跳空、波动率缺失 / 显式 `None`、波动率 ≤ 0 与屏障塌缩两种 fail closed、后续事件的波动率扰动不改变更早事件的标签）；
 `tests/contract_suites/outcome.py`（标签可知时刻之后的价格被忽略、事件之前的价格被忽略、缺数据 → `None`、事件顺序无关、只作标签）；
-`tests/test_outcome_contracts.py`（C-L2 拒绝、标签规格形状）；`tests/research/outcomes/test_store.py`。
+`tests/test_outcome_contracts.py`（C-L2 拒绝、标签规格形状）；`tests/test_adr_0088_contract_240.py`（决策 5 的契约层形状、版本边界、
+Schema 只增不改）；`tests/research/outcomes/test_store.py`。
 `research/outcomes/sources.py` 只提供合成 bar；数据集路径的 bar 在 `infrastructure/bars/dataset.py`。没有标签在正式 Research Dataset 上物化过。
+`vol_scaled_triple_barrier` 的波动率数值通道（从 `FeatureResult` 到 Provider 构造参数）由 `research/outcomes/volatility.py`
+（`select_volatility_for_entry_times`）接线：`tests/research/outcomes/test_volatility.py`（PIT 选择不看未来、`volatility_feature`
+引用不一致 / `FeatureResult` 未回答给定请求两种 fail closed、无及时入场 bar 的事件无需查特征即映射为 `None`、端到端标签与手算一致）。
 
 ## 已知失败模式（roadmap Phase 4）
 
@@ -89,5 +104,6 @@
 
 | ID | 缺口 | 说明 |
 |---|---|---|
-| O-1 | `refuse_outcome_input` 没有运行时调用方 | `core/contracts/outcome.py` 的说明称验证流水线在运行时使用它，但当前只在测试中调用；输入 DTO 的 `extra="forbid"` 仍会拒绝 Outcome 载荷 |
-| O-2 | 波动率缩放屏障、meta-labeling、事件研究 CAR | 均为 `DOCUMENTED · UNSPECIFIED`；须作为新标签方法提出规格与批准 |
+| O-1 | ~~`refuse_outcome_input` 没有运行时调用方~~（已接线） | `research/validation/pipeline.py` 在 `run_in_sample`、`run_sealed_oos` 以及每折拟合后的 study 上检查 `SignalStudy.signal_refs`；发现 `OutcomeLabel` / `OutcomeResult` 或带 `label_only: true` 的映射时抛出 `OutcomeUsedAsInput`，在计算 gate 前拒绝，G5 在读取 sealed window 前拒绝。该 guard 只检查显式声明的 `signal_refs`，不检测未声明的隐式泄漏；G1 仍按原规则检查引用种类。输入 DTO 的 `extra="forbid"` 也继续拒绝额外 Outcome 字段 |
+| O-2 | meta-labeling、事件研究 CAR | 均为 `DOCUMENTED · UNSPECIFIED`；须作为新标签方法提出规格与批准。波动率缩放屏障已由 ADR-0088 决策 5 规格化并实现（见上），不再属于本条 |
+| O-3 | ~~`vol_scaled_triple_barrier` 缺少波动率数值通道的接线~~（已接线） | `hlens_vol_scaled_triple_barrier` Provider 把入场时可见的波动率值作为构造参数接收（`plugins/outcomes/vol_scaled_triple_barrier.py` 模块文档）；从某个 `volatility_feature` 引用对应的 `FeatureResult` 按 `entry_time` 做 PIT 选择、组装成这份映射并传给 Provider，现由 `research/outcomes/volatility.py` 的 `select_volatility_for_entry_times` 实现（`FeatureRequest` / `FeatureResult` 均须调用方已回答好；`volatility_feature` 引用不一致或结果未回答给定请求 fail closed；非 `Decimal` 的特征值 fail closed）；测试 `tests/research/outcomes/test_volatility.py`。规格状态仍是 `IMPLEMENTED · NOT_VALIDATED`：本条只解决"有没有接线"，未在正式 Research Dataset 上验证 |

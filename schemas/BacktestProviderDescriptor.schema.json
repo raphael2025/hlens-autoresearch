@@ -3,7 +3,7 @@
   "description": "BacktestProvider 的身份：只能确定性、只能模拟；执行模型为 `next_bar_open`（v1）或\n`next_bar_open_participation`（ADR-0054：剩余量跨 bar 结转）。",
   "properties": {
     "schema_version": {
-      "default": "2.3.0",
+      "default": "2.4.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

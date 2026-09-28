@@ -3,7 +3,7 @@
 跨 Plane DTO、JSON Schema 导出与 Provider 接口（05-plugin.md、02-domain.md §3）；Provider 接口按 ADR-0017 的节奏交付。所有 Schema 带 schema_version。
 
 `registry.py` 的 `CONTRACT_MODELS` 是"所有核心实体都有契约与 Schema 导出"的唯一来源：
-当前 141 个模型导出到 `schemas/` 顶层；`schemas/v1/` 是 v1 只读快照，导出不会写入其中。
+当前 146 个模型导出到 `schemas/` 顶层；`schemas/v1/` 是 v1 只读快照，导出不会写入其中。
 
 `revision.py`（Phase 1 B1，ADR-0023）：双时间、availability / precedence 绑定、append-only revision DAG、
 PIT 输入与 maximal-head 结果形状的 8 个契约（见 02-domain.md §2.2）。只有契约与不变量，不含 PIT 选择算法或存储。
@@ -60,3 +60,10 @@ Provider 接口的交付节奏由 ADR-0017 定下：Phase 0 只冻结职责、�
 >
 > `strategy.py` 的回测契约经 ADR-0054 additive 扩展：执行模型 `next_bar_open_participation`（剩余量跨 bar 结转）、新模型
 > `FillRemainder`、可选 `PriceBar.volume` 与 `BacktestResult.remainders`（缺省时从载荷省略，既有哈希不变；信封仍为 2.0.0）。
+>
+> ADR-0088（契约 2.4.0，additive）：`core/domain/specs.py` 新增 `EventSpec.bar_spec` 与 `StrategySpec.composition`
+> （`ConditionedStrategy` / `EnsembleStrategy` / `NegatedStrategy`，按 `type` 判别）；`strategy.py` 新增
+> `PortfolioState.peak_equity`；`synthetic.py` 新增 `VolatilityClusteringEffect` / `JumpEffect`，`SyntheticMarketSpec.effects`
+> 放宽为按 `kind` 判别的联合；`outcome.py` 新增 `OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER` 及 `OutcomeLabelSpec.volatility_feature` /
+> `barrier_multiplier`；`universe.py` 新增 `UniverseMember.assumption`（ADR-0051 回填假设的政策绑定，常量
+> `LISTING_BACKFILL_ASSUMPTION_ID`）。全部可选、缺省时从载荷省略，旧载荷与内容哈希不变；5 个新模型登记在 `CONTRACT_MODELS` 末尾。

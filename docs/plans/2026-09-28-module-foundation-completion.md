@@ -161,6 +161,38 @@ Raphael 于 2026-09-28 指定 Claude Code 以 PM 身份协调本轮：只有 PM 
 
 其余 8 项（P2 Web hash 校验、P9 Decimal context、P13 mark / admission、P12 精确类型、P14 golden、RevisionCatalog Protocol 代理、mixed-symbol 校验）静态核实与测试一致，部分新分支尚无覆盖。
 
+### 代码补全轮次结果（2026-09-28 收尾，phase `0cfddbf`）
+
+Raphael 于 2026-09-28 授权 PM 全权决策（实盘除外）。PM 编排 Codex 与子代理，完成了以下代码。**全部未运行测试。**
+
+| 范围 | 完成内容 | ADR |
+|---|---|---|
+| P1 E1 / Dataset | 有界快照扫描、Canonical 摘要、v3 有界 Dataset 全链路（生成器、evidence 树、chunk、双表、流式 verify、下游消费者、公开访问器） | 0075 A1、0076、0077 |
+| P1 上市历史 | 假设叠加层第一、二期（`POLICY_TABLE` 待联网核实后填入） | 0051 |
+| 契约 | 2.3.0 → 2.4.0（均 additive） | 0077、0088 |
+| P1 / P2 研究库 | 20 个特征、2 个状态、`bar_close` / `bar_high` / `bar_low` | 0085 |
+| P4 | 波动率缩放三重屏障，以及 PIT 波动率接线 | 0088 |
+| P5 / P8 | 3 个策略、组合策略、回撤风控、峰值权益、流水线接入 `run_with_risk`、门集完整性、报告阈值核验、Outcome 输入拒绝、Failure Registry 查询 | 0085、0086、0088 |
+| P7 | outputs 权威；六类算子纯 lowering（rank / quantile 仍 OPEN）；失败轮次 durable 重试（v6） | 0078、0082、0083 |
+| P9 | GARCH / 跳跃合成效应 | 0088 |
+| P10 | deviation 绑定 P8 声明范围 | 0079 |
+| P13 | 实盘接口预留（关闭） | 0084 |
+| 退役记录 / 插件 | 退役记录存储；插件 Manifest 与 entry-point 发现 | 0086、0087 |
+| Apps | 报告 DTO 版本化（至 2.4.0），Retro Audits 测试 | 0081 |
+| 仍 BLOCKED | P11 ACTIVE / source / metric 权威解析 | 0080 |
+
+### 调试入口清单（下一阶段）
+
+1. 按模块运行 pytest / ruff / mypy。每次只跑一个模块，挂 `systemd-run` 内存上限。
+2. 重钉契约升版带来的断言：2.3.0 / 2.4.0 版本号、`PRE_B3_SCHEMA_SHA256`、`V2_SCHEMA_SHA256_AT_2_2_0`、各「Re-pinned for 2.2.0」的回归哈希；执行 `python -m core.contracts.registry` 重新导出，与手写 schema 做 diff。
+3. 运行 writer 重新生成 fixture：`paper_deviation` 2.0.0、`retro_audit` 1.1.0（AUD-1 M2、CR1-1）。
+4. `uv sync`：使 ADR-0087 的 entry points 生效。Uvicorn 安装（ADR-0063）已在授权范围内。
+5. 钉定新 Catalog 表的 golden 哈希与 ADR-0051 `ASSUMPTION_BINDING` 的哈希。
+6. 在真实 Catalog 创建 `event.*` / `state.*` 表（已授权）。
+7. E1-CAP-1 容量测量（小规模，外推），并确定 DQ-9 参数。
+8. 联网核实 BTCUSDT / ETHUSDT 最早的 1m 归档日与 `exchangeInfo`，作为新版本填入 `POLICY_TABLE`。
+9. 知识库种子的 tags / assets 需具名人工审阅；P14 迁移目标待提供。
+
 ## 阶段目标
 
 1. 清理确认无活动会话的冗余分支/worktree，保留历史 archive ref 与失败证据。

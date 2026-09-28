@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import timedelta
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
@@ -13,7 +14,7 @@ import pytest
 from core.contracts.validation_profile import ProfileStatus, ValidationProfile
 from core.domain.artifact import StrategyArtifact
 from core.domain.base import FrozenMapping, Kind, Ref
-from core.domain.research import GateResult, ValidationReport, Verdict
+from core.domain.research import ExperimentSpec, GateResult, ValidationReport, Verdict
 from core.lifecycle.strategy import LifecycleHistory, LifecycleState, LifecycleTransition
 from infrastructure.registry import (
     ProfileFreezeRegistry,
@@ -33,6 +34,11 @@ from research.promotion import (
 )
 from research.strategies.library import library_entries
 from research.validation.gates import threshold
+from research.validation.verification import (
+    ReportDiscrepancy,
+    ValidationReplayResult,
+    verify_replayed_values,
+)
 from tests.factories import HASH_A, HASH_PROFILE, OTHER_GIT_COMMIT_OID, git_code_revision
 from tests.fake_strategy import SIGNAL_REF, FakeSignStrategy, RequestShiftingStrategy
 from tests.promotion.fixtures import (
@@ -195,6 +201,127 @@ def test_without_a_sealed_oos_pass_nothing_is_promoted() -> None:
     refused = _refusal(replace(evidence, reports=(evidence.reports[0],)))
     assert refused.reason is R.SEALED_OOS_NOT_EVALUATED
     assert refused.reason.value == "sealed_oos_not_evaluated"
+
+
+def test_promotion_requires_a_trusted_replay_provider() -> None:
+    evidence = replace(toy_evidence(), validation_replay_provider=None)
+    refused = _refusal(evidence)
+    assert refused.reason is R.REPORT_VALUE_NOT_RECOMPUTED
+    assert refused.reason.value == "report_value_not_recomputed"
+
+
+def test_replay_values_are_bound_and_compared_for_every_gate() -> None:
+    evidence = toy_evidence()
+    report = evidence.reports[0]
+    profile = evidence.profiles[0]
+    experiment = evidence.experiments[0]
+    provider = evidence.validation_replay_provider
+    assert provider is not None
+    replay = provider.replay(report, profile, experiment)
+    assert verify_replayed_values(report, profile, experiment, replay) == ()
+
+    first = report.gates[0]
+    tampered = first.model_copy(update={"value": first.value + 1.0})
+    changed = replace(replay, gates=(tampered, *replay.gates[1:]))
+    problems = verify_replayed_values(report, profile, experiment, changed)
+    assert problems[0].problem is ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH
+    assert problems[0].gate_id == first.gate_id
+
+    exact_changed = first.model_copy(update={"value_exact": Decimal(str(first.value))})
+    exact_replay = replace(replay, gates=(exact_changed, *replay.gates[1:]))
+    if first.value_exact is None:
+        exact_problems = verify_replayed_values(report, profile, experiment, exact_replay)
+        assert exact_problems[0].problem is ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH
+
+
+def test_promotion_refuses_a_gate_value_that_differs_from_replay() -> None:
+    evidence = toy_evidence()
+    report = evidence.reports[0]
+    provider = evidence.validation_replay_provider
+    assert provider is not None
+    replay = provider.replay(report, evidence.profiles[0], evidence.experiments[0])
+    first = replay.gates[0]
+    changed = replace(
+        replay,
+        gates=(first.model_copy(update={"value": first.value + 1.0}), *replay.gates[1:]),
+    )
+    refused = _refusal(
+        replace(evidence, validation_replay_provider=FixedReplayProvider(changed))
+    )
+    assert refused.reason is R.REPORT_VALUE_NOT_RECOMPUTED
+    assert first.gate_id in refused.detail
+
+
+def test_a_replay_result_bound_to_another_report_is_refused() -> None:
+    evidence = toy_evidence()
+    report = evidence.reports[0]
+    profile = evidence.profiles[0]
+    experiment = evidence.experiments[0]
+    provider = evidence.validation_replay_provider
+    assert provider is not None
+    replay = provider.replay(report, profile, experiment)
+    refused = _refusal(
+        replace(
+            evidence,
+            validation_replay_provider=FixedReplayProvider(
+                replace(replay, report_hash="0" * 64)
+            ),
+        )
+    )
+    assert refused.reason is R.REPORT_VALUE_NOT_RECOMPUTED
+    assert "report_hash" in refused.detail
+
+
+class FixedReplayProvider:
+    """TEST ONLY provider returning a predetermined replay result for refusal-path tests."""
+
+    def __init__(self, result: ValidationReplayResult) -> None:
+        self.result = result
+
+    def replay(
+        self,
+        report: ValidationReport,
+        profile: ValidationProfile,
+        experiment: ExperimentSpec,
+    ) -> ValidationReplayResult:
+        return self.result
+
+
+class RaisingReplayProvider:
+    """TEST ONLY provider representing unavailable trusted replay evidence."""
+
+    def replay(
+        self,
+        report: ValidationReport,
+        profile: ValidationProfile,
+        experiment: ExperimentSpec,
+    ) -> ValidationReplayResult:
+        raise LookupError("no first-run replay evidence")
+
+
+def test_a_provider_without_first_run_evidence_fails_closed() -> None:
+    refused = _refusal(
+        replace(toy_evidence(), validation_replay_provider=RaisingReplayProvider())
+    )
+    assert refused.reason is R.REPORT_VALUE_NOT_RECOMPUTED
+
+
+def test_report_gate_set_refusal_precedes_replay_provider() -> None:
+    evidence = toy_evidence()
+    unknown_stage = toy_report(
+        evidence.spec,
+        evidence.experiments[0],
+        "TEST-ONLY-unknown-stage",
+        ("Gx",),
+    )
+    refused = _refusal(
+        replace(
+            evidence,
+            reports=(*evidence.reports, unknown_stage),
+            validation_replay_provider=RaisingReplayProvider(),
+        )
+    )
+    assert refused.reason is R.REPORT_GATE_SET_INCOMPLETE
 
 
 def test_a_constructed_report_that_lies_about_its_verdict_is_refused() -> None:

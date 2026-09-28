@@ -16,11 +16,14 @@ No verdict of the synthetic run is asserted: it is not validation evidence.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import replace
+from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
+from core.contracts.strategy import ConstrainedPosition, PortfolioState, RiskRequest
 from core.contracts.synthetic import SyntheticMarket
 from core.domain.research import Verdict, derive_verdict
 from plugins.backtest import BarBacktester
@@ -35,6 +38,7 @@ from research.strategies.pipeline import (
 )
 from research.strategies.signals import LOG_RETURN_SIGNAL, bar_signals, realized_vol_signal
 from research.strategies.validation import PipelineBacktestValidator
+from research.strategies.volatility_target import VolatilityTargetRiskProvider
 from tests.research.strategies.test_backtest_validation import _inputs, _market, _setup
 
 VOL_WINDOW = 60  # the window of vol_target_bars@1.0.0's default volatility signal
@@ -120,3 +124,48 @@ def test_without_its_risk_signal_the_variant_is_flat_and_inconclusive(tmp_path: 
     data = next(gate for gate in report.gates if gate.gate_id == "G0.data_available")
     assert (data.verdict, data.metric) == (Verdict.INCONCLUSIVE, "non_flat_targets")
     assert registry.records() == ()
+
+
+# ---------------------------------------------------------------------------------------------
+# PM F-A / ADR-0088 decision 3: the pipeline's risk step now goes through
+# ``BarBacktester.run_with_risk`` (a realized ``PortfolioState.equity`` / ``peak_equity``) instead
+# of running risk ahead of the simulation with ``equity=None``. ``vol_target_bars`` never reads
+# ``PortfolioState`` at all, so its result through the new path must be exactly what the old
+# ``equity=None`` convention computed — checked decision by decision below.
+# ---------------------------------------------------------------------------------------------
+
+
+def _summary(
+    positions: Sequence[ConstrainedPosition],
+) -> list[tuple[str, Decimal, tuple[str, ...]]]:
+    return [(p.instrument, p.constrained_weight, p.binding_rules) for p in positions]
+
+
+def test_vol_target_bars_is_bit_identical_through_run_with_risk(tmp_path: Path) -> None:
+    market = _market(seed=7, planted=True)
+    inputs = _with_risk_signals(market)
+    entry = library_entries()[1]
+    assert entry.risk_policy is not None
+    candidate = entry.candidate()
+    registry = FailureRegistry(tmp_path / "failures.jsonl")
+    result = evaluate_strategy(candidate, inputs, backtester=BarBacktester(), registry=registry)
+
+    assert result.strategy_result is not None
+    assert len(result.risk_results) == len(inputs.decision_times)
+    provider = VolatilityTargetRiskProvider((entry.risk_policy,))
+    ordered_signals = sorted(inputs.risk_signals, key=lambda item: item.available_time)
+    for decision_time, actual in zip(inputs.decision_times, result.risk_results, strict=True):
+        assert actual.decision_time == decision_time
+        upstream = result.strategy_result.at(decision_time)
+        old_style_request = RiskRequest(
+            policy=entry.risk_policy.ref,
+            policy_hash=entry.risk_policy.content_hash(),
+            decision_time=decision_time,
+            knowledge_cutoff=inputs.knowledge_cutoff,
+            targets=upstream,
+            portfolio=PortfolioState(as_of=decision_time),  # equity=None: the pre-fix convention
+            signals=tuple(s for s in ordered_signals if s.available_time <= decision_time),
+        )
+        expected = provider.constrain(old_style_request)
+        assert _summary(actual.positions) == _summary(expected.positions)
+    assert result.backtest is not None and result.backtest.fills, "the fixture must trade"

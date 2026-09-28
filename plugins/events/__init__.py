@@ -1,6 +1,7 @@
 """EventProvider plugins (Phase 3; ADR-0036).
 
 - ``features``: ``FeatureThresholdCrossProvider`` (a feature crosses a level),
+  ``FeatureRelativeThresholdCrossProvider`` (a feature crosses a feature-relative level),
   ``VolatilityBreakoutProvider`` (a volatility feature enters ``value > multiplier * mean``);
 - ``states``: ``StateSwitchProvider`` (the state label changes);
 - ``interactions``: ``EventSequenceProvider`` (A then B within a window) and
@@ -16,7 +17,11 @@ Every parameter lives in the ``EventSpec.trigger`` (canonical JSON) and is bound
 Deterministic, exact ``Decimal``; only ``core`` is imported.
 """
 
-from plugins.events.features import FeatureThresholdCrossProvider, VolatilityBreakoutProvider
+from plugins.events.features import (
+    FeatureRelativeThresholdCrossProvider,
+    FeatureThresholdCrossProvider,
+    VolatilityBreakoutProvider,
+)
 from plugins.events.interactions import EventCoOccurrenceProvider, EventSequenceProvider
 from plugins.events.states import StateSwitchProvider
 from plugins.events.windows import EventAbsenceProvider, EventCountProvider, EventWindowEndProvider
@@ -27,6 +32,7 @@ __all__ = [
     "EventCountProvider",
     "EventSequenceProvider",
     "EventWindowEndProvider",
+    "FeatureRelativeThresholdCrossProvider",
     "FeatureThresholdCrossProvider",
     "StateSwitchProvider",
     "VolatilityBreakoutProvider",

@@ -9,6 +9,10 @@ single state"). No threshold is applied here: acceptance numbers belong to the V
 (P4 / P8). Every conditional variant researched is registered as a ``conditioning`` hypothesis in
 the ``TrialLedger`` so it counts as a trial (Constitution C-T1, roadmap P6 acceptance).
 
+With an explicit positive ``max_state_age``, an optional as-of mode attributes each return to the
+latest state evaluation at or before its start time. Missing history and stale states become the
+unknown cell. Omitting it preserves exact-time alignment.
+
 Wiring to Phase 5 (W1): ``matrix_from_backtest`` takes a P5 ``BacktestResult`` and a P2
 ``StateResult``. ``backtest_returns`` turns the equity curve into per-bar simple returns keyed by
 the **start** of the period they are realized over: consecutive equity points ``(t, e_t)`` and
@@ -42,7 +46,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, replace
-from datetime import datetime
+from datetime import datetime, timedelta
 from decimal import ROUND_HALF_EVEN, Context, Decimal, localcontext
 from itertools import pairwise
 from typing import Final, Literal
@@ -100,6 +104,20 @@ class StateStrategyMatrix:
     backtest_result_hash: str | None = None
     #: ``result_hash`` of the P2 state result (None: a plain time -> label mapping).
     state_result_hash: str | None = None
+    #: Explicit as-of horizon; None preserves exact-time alignment.
+    max_state_age: timedelta | None = None
+    #: State lookup rule; included in the matrix identity when using the additive as-of mode.
+    alignment_mode: Literal["exact", "as_of"] = "exact"
+
+    def __post_init__(self) -> None:
+        if self.alignment_mode not in ("exact", "as_of"):
+            raise ValueError("alignment_mode must be 'exact' or 'as_of'")
+        if self.alignment_mode == "exact" and self.max_state_age is not None:
+            raise ValueError("exact alignment cannot carry max_state_age")
+        if self.alignment_mode == "as_of" and (
+            not isinstance(self.max_state_age, timedelta) or self.max_state_age <= timedelta(0)
+        ):
+            raise ValueError("as_of alignment requires a positive max_state_age")
 
     @property
     def matrix_hash(self) -> str:
@@ -124,6 +142,14 @@ class StateStrategyMatrix:
                 "top_k": self.top_k,
                 "backtest_result_hash": self.backtest_result_hash,
                 "state_result_hash": self.state_result_hash,
+                **(
+                    {
+                        "alignment_mode": self.alignment_mode,
+                        "max_state_age": str(self.max_state_age),
+                    }
+                    if self.alignment_mode == "as_of"
+                    else {}
+                ),
             }
         )
 
@@ -147,6 +173,8 @@ class StateStrategyMatrix:
             f"top-{self.top_k} share inside the best state: {self.top_k_share_in_best_state}",
             "(no thresholds applied — the Validation Profile decides; Constitution C-R2)",
         ]
+        if self.alignment_mode == "as_of":
+            lines.insert(2, f"state alignment: as_of (maximum age {self.max_state_age})")
         return "\n".join(lines)
 
 
@@ -157,22 +185,32 @@ def state_strategy_matrix(
     states: StateResult | Mapping[datetime, str | None],
     *,
     top_k: int = 5,
+    max_state_age: timedelta | None = None,
 ) -> StateStrategyMatrix:
     if top_k < 1:
         raise ValueError("top_k must be positive")
+    if max_state_age is not None and (
+        not isinstance(max_state_age, timedelta) or max_state_age <= timedelta(0)
+    ):
+        raise ValueError("max_state_age must be a positive timedelta, or None for exact alignment")
     known: Mapping[datetime, str | None] = (
         {value.evaluation_time: value.state for value in states.values}
         if isinstance(states, StateResult)
         else states
+    )
+    state_at = (
+        _asof_states(known, sorted(returns), max_state_age)
+        if max_state_age is not None
+        else known
     )
     buckets: dict[str | None, list[Decimal]] = {}
     for at in sorted(returns):
         value = returns[at]
         if not isinstance(value, Decimal) or not value.is_finite():
             raise ValueError(f"the return at {at.isoformat()} must be a finite Decimal")
-        if at not in known:
+        if max_state_age is None and at not in state_at:
             raise ValueError(f"no state was evaluated at {at.isoformat()}")
-        label = known[at]
+        label = state_at[at]
         buckets.setdefault(None if label is None else str(label), []).append(value)
     cells = tuple(
         _cell(label, values)
@@ -198,8 +236,34 @@ def state_strategy_matrix(
         best_state_share=best_share,
         top_k_share_in_best_state=top_share,
         top_k=top_k,
+        max_state_age=max_state_age,
+        alignment_mode="as_of" if max_state_age is not None else "exact",
         state_result_hash=states.result_hash if isinstance(states, StateResult) else None,
     )
+
+
+def _asof_states(
+    states: Mapping[datetime, str | None],
+    return_times: Sequence[datetime],
+    max_state_age: timedelta,
+) -> dict[datetime, str | None]:
+    """Resolve each return to the latest UTC state evaluation at or before its start time."""
+    times = [*states, *return_times]
+    if any(not isinstance(at, datetime) or at.utcoffset() != timedelta(0) for at in times):
+        raise ValueError("as-of state and return times must be UTC datetimes")
+    evaluated = sorted(states)
+    out: dict[datetime, str | None] = {}
+    index = 0
+    latest: datetime | None = None
+    for at in return_times:
+        while index < len(evaluated) and evaluated[index] <= at:
+            latest = evaluated[index]
+            index += 1
+        if latest is None or at - latest > max_state_age:
+            out[at] = None
+        else:
+            out[at] = states[latest]
+    return out
 
 
 def _text(value: Decimal | None) -> str | None:
@@ -232,16 +296,25 @@ def matrix_from_backtest(
     states: StateResult,
     *,
     top_k: int = 5,
+    max_state_age: timedelta | None = None,
 ) -> StateStrategyMatrix:
     """``state_strategy_matrix`` over a P5 backtest's per-bar returns and a P2 state result.
 
-    The return over ``(t, t_next]`` goes to the state evaluated at ``t`` (known at ``t``); every
-    period start must have a state evaluation (otherwise ``ValueError``). The matrix binds both
-    inputs by ``result_hash``.
+    The return over ``(t, t_next]`` goes to the state evaluated at ``t`` (known at ``t``). In
+    exact mode every period start must have a state evaluation (otherwise ``ValueError``). When
+    ``max_state_age`` is provided, each start uses the latest state evaluation at or before it,
+    with stale / absent history assigned to unknown. The matrix binds both inputs by ``result_hash``.
     """
     if not isinstance(states, StateResult):
         raise ValueError("matrix_from_backtest needs a StateResult")
-    matrix = state_strategy_matrix(strategy, state, backtest_returns(backtest), states, top_k=top_k)
+    matrix = state_strategy_matrix(
+        strategy,
+        state,
+        backtest_returns(backtest),
+        states,
+        top_k=top_k,
+        max_state_age=max_state_age,
+    )
     return replace(matrix, backtest_result_hash=backtest.result_hash)
 
 

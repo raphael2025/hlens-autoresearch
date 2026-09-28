@@ -205,9 +205,12 @@ def test_there_is_no_unverified_entry(w: World) -> None:
         "feature_manifest_hash",
         "price_manifest_hash",
         "manifest_cache",
+        # ADR-0077 v3: the builder catalog's streaming verifier (a verifier, never a manifest)
+        "evidence_verifier",
     }
-    cache = parameters["manifest_cache"]
-    assert cache.kind is inspect.Parameter.KEYWORD_ONLY and cache.default is None
+    for name in ("manifest_cache", "evidence_verifier"):
+        option = parameters[name]
+        assert option.kind is inspect.Parameter.KEYWORD_ONLY and option.default is None
     _ingest(w)
     feature, price = _feature(w), _price(w)
 

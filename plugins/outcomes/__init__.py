@@ -2,5 +2,6 @@
 
 from plugins.outcomes.forward_return import ForwardReturnOutcome
 from plugins.outcomes.triple_barrier import TripleBarrierOutcome
+from plugins.outcomes.vol_scaled_triple_barrier import VolScaledTripleBarrierOutcome
 
-__all__ = ["ForwardReturnOutcome", "TripleBarrierOutcome"]
+__all__ = ["ForwardReturnOutcome", "TripleBarrierOutcome", "VolScaledTripleBarrierOutcome"]

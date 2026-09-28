@@ -5,10 +5,19 @@ point) of one library candidate:
 
 1. ``StrategyProvider.target_positions`` over all decision times, checked with
    ``StrategyResult.check_answers``;
-2. if the spec names a ``risk_policy``: ``RiskProvider.constrain`` once per decision time, with only
-   the risk signals visible at that time and the previous constrained weights as portfolio state
-   (``equity=None``: risk runs ahead of the simulation, so path-dependent rules must refuse);
-3. ``BacktestProvider.run`` on the (constrained) targets, checked with ``check_answers``;
+2. if the spec names a ``risk_policy``: the pipeline's only path-dependent risk execution entry is
+   ``BarBacktester.run_with_risk`` (ADR-0088 decision 3; ``plugins.backtest.risk_loop.RiskLoop``).
+   It calls ``RiskProvider.constrain`` once per decision time, with only the risk signals visible
+   at that time, the previous constrained weights, and a ``PortfolioState`` built from the
+   **realized** equity path so far (``equity`` / running ``peak_equity``; never ``None`` once the
+   simulation has started, so path-dependent rules such as ``drawdown_control`` are never forced to
+   fail closed for a missing path). Without a risk policy the strategy's raw targets pass straight
+   through;
+3. ``BacktestProvider.run`` on the (constrained) targets, checked with ``check_answers`` — for a
+   risk policy, ``run_with_risk`` already produced this same result in one pass (its result equals
+   ``run`` on the constrained targets; W-STRAT), so it is reused instead of simulating twice, except
+   when ``CandidateTrialRunner`` delays execution (the constrained targets are then re-simulated at
+   their delayed times);
 4. the ``BacktestValidator`` (``validation.py``): ``PipelineBacktestValidator`` runs the Phase 4
    gates G0 – G3 and the Phase 8 robustness gates G4 (``research/validation``, ADR-0037 /
    ADR-0041). Without a validator the result is ``NOT_VALIDATED``, never a pass;
@@ -36,17 +45,16 @@ from enum import StrEnum
 from pydantic import ValidationError
 
 from core.contracts.feature import ObservationScalar
+from core.contracts.outcome import OutcomeUsedAsInput
 from core.contracts.strategy import (
     BacktestCostModel,
     BacktestProvider,
     BacktestProviderError,
     BacktestRequest,
     BacktestResult,
-    PortfolioState,
     PriceBar,
     RiskProvider,
     RiskProviderError,
-    RiskRequest,
     RiskResult,
     SignalObservation,
     StrategyProvider,
@@ -60,6 +68,7 @@ from core.domain.base import FrozenMapping, Ref
 from core.domain.research import FailureRecord, Verdict
 from core.domain.specs import RiskPolicy, StrategySpec
 from core.errors import ReasonCode
+from plugins.backtest import BarBacktester
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.validation import BacktestValidation, BacktestValidator, TrialRun
 
@@ -145,37 +154,48 @@ class StrategyEvaluation:
         return self.validation.promotion_blocked_reason
 
 
-def _risk_step(
+def _risk_and_backtest_step(
     candidate: StrategyCandidate,
     inputs: EvaluationInputs,
+    backtester: BacktestProvider,
     result: StrategyResult,
-) -> tuple[tuple[RiskResult, ...], tuple[TargetPosition, ...]]:
+) -> tuple[tuple[RiskResult, ...], tuple[TargetPosition, ...], BacktestResult | None]:
+    """``(risk_results, targets, backtest)`` for one strategy result.
+
+    No ``risk_policy``: the strategy's raw targets pass straight through and ``backtest`` is
+    ``None`` (the caller simulates them with a plain ``run``).
+
+    A ``risk_policy``: the pipeline's only path-dependent risk execution entry is
+    ``backtester.run_with_risk`` (ADR-0088 decision 3; ``plugins.backtest.risk_loop.RiskLoop``) —
+    it feeds the risk provider the realized equity path (never ``equity=None``) and, in the same
+    pass, simulates the constrained targets; that ``BacktestResult`` equals ``run`` on the
+    constrained targets (W-STRAT), so it is returned for reuse instead of simulating twice.
+    """
     policy, risk = candidate.risk_policy, candidate.risk
     if policy is None or risk is None:
-        return (), result.positions
-    ordered = sorted(inputs.risk_signals, key=lambda item: item.available_time)
-    weights: dict[str, Decimal] = {}
-    results: list[RiskResult] = []
-    targets: list[TargetPosition] = []
-    for decision_time in inputs.decision_times:
-        upstream = result.at(decision_time)
-        request = RiskRequest(
-            policy=policy.ref,
-            policy_hash=policy.content_hash(),
-            decision_time=decision_time,
-            knowledge_cutoff=inputs.knowledge_cutoff,
-            targets=upstream,
-            portfolio=PortfolioState(as_of=decision_time, current_weights=FrozenMapping(weights)),
-            signals=tuple(item for item in ordered if item.available_time <= decision_time),
+        return (), result.positions, None
+    if not isinstance(backtester, BarBacktester):
+        raise BacktestProviderError(
+            f"{type(backtester).__name__} is not a BarBacktester; a risk policy needs "
+            "plugins.backtest.BarBacktester.run_with_risk as the pipeline's sole path-dependent "
+            "risk execution entry (ADR-0088 decision 3)"
         )
-        answer = risk.constrain(request)
-        answer.check_answers(request, risk.descriptor)
-        results.append(answer)
-        by_name = {item.instrument: item for item in upstream}
-        for position in answer.positions:
-            targets.append(position.as_target(by_name[position.instrument]))
-            weights[position.instrument] = position.constrained_weight
-    return tuple(results), tuple(targets)
+    request = BacktestRequest(
+        cost_model=inputs.cost_model,
+        initial_equity=inputs.initial_equity,
+        bars=inputs.bars,
+        targets=result.positions,
+    )
+    loop_run = backtester.run_with_risk(
+        request,
+        risk=risk,
+        policy=policy.ref,
+        policy_hash=policy.content_hash(),
+        knowledge_cutoff=inputs.knowledge_cutoff,
+        signals=inputs.risk_signals,
+    )
+    loop_run.result.check_answers(loop_run.request, backtester.descriptor)
+    return loop_run.risk_results, loop_run.request.targets, loop_run.result
 
 
 def _failure(
@@ -220,7 +240,20 @@ def _strategy_step(
     )
     sim.strategy_result = candidate.strategy.target_positions(request)
     sim.strategy_result.check_answers(request, candidate.strategy.descriptor)
-    sim.risk_results, sim.targets = _risk_step(candidate, inputs, sim.strategy_result)
+
+
+def _simulate(
+    candidate: StrategyCandidate,
+    inputs: EvaluationInputs,
+    backtester: BacktestProvider,
+    sim: _Simulation,
+) -> None:
+    """``_strategy_step`` plus ``_risk_and_backtest_step`` (see its docstring)."""
+    _strategy_step(candidate, inputs, sim)
+    assert sim.strategy_result is not None
+    sim.risk_results, sim.targets, sim.backtest = _risk_and_backtest_step(
+        candidate, inputs, backtester, sim.strategy_result
+    )
 
 
 def _backtest_step(
@@ -295,9 +328,20 @@ class CandidateTrialRunner:
             params=params,
         )
         sim = _Simulation()
-        _strategy_step(self.candidate, trial, sim)
-        targets = _delayed(sim.targets, trial.bars, delay_bars) if delay_bars else sim.targets
-        backtest = _backtest_step(trial, self.backtester, targets)
+        _simulate(self.candidate, trial, self.backtester, sim)
+        if delay_bars:
+            # execution lag stress: the risk-constrained targets (decided, and risk-constrained,
+            # at their original times against the undelayed realized equity path) are re-simulated
+            # at their delayed times, so ``sim.backtest`` (the undelayed run) cannot be reused.
+            targets = _delayed(sim.targets, trial.bars, delay_bars)
+            backtest = _backtest_step(trial, self.backtester, targets)
+        else:
+            targets = sim.targets
+            backtest = (
+                sim.backtest
+                if sim.backtest is not None
+                else _backtest_step(trial, self.backtester, targets)
+            )
         return TrialRun(
             targets=targets, backtest=backtest, bars=trial.bars, cost_model=trial.cost_model
         )
@@ -315,10 +359,24 @@ def evaluate_strategy(
     subject = candidate.spec.ref
     sim = _Simulation()
     try:
-        _strategy_step(candidate, inputs, sim)
-        backtest = _backtest_step(inputs, backtester, sim.targets)
+        _simulate(candidate, inputs, backtester, sim)
+        backtest = (
+            sim.backtest
+            if sim.backtest is not None
+            else _backtest_step(inputs, backtester, sim.targets)
+        )
     except (StrategyProviderError, RiskProviderError, BacktestProviderError) as exc:
         return _failed(candidate, registry, ReasonCode.RUN_ERRORED, exc, sim.strategy_result)
+    except OutcomeUsedAsInput as exc:
+        return _failed(
+            candidate,
+            registry,
+            ReasonCode.OUTCOME_USED_AS_INPUT,
+            exc,
+            sim.strategy_result,
+            terminal_state="REJECTED",
+            status=EvaluationStatus.REJECTED,
+        )
     except (ValidationError, ValueError) as exc:
         return _failed(candidate, registry, ReasonCode.CONTRACT_VIOLATION, exc, sim.strategy_result)
     strategy_result, risk_results = sim.strategy_result, sim.risk_results
@@ -332,6 +390,16 @@ def evaluate_strategy(
         validation.check_subject(subject)
     except (StrategyProviderError, RiskProviderError, BacktestProviderError) as exc:
         return _failed(candidate, registry, ReasonCode.RUN_ERRORED, exc, strategy_result)
+    except OutcomeUsedAsInput as exc:
+        return _failed(
+            candidate,
+            registry,
+            ReasonCode.OUTCOME_USED_AS_INPUT,
+            exc,
+            strategy_result,
+            terminal_state="REJECTED",
+            status=EvaluationStatus.REJECTED,
+        )
     except (ValidationError, ValueError) as exc:
         return _failed(candidate, registry, ReasonCode.CONTRACT_VIOLATION, exc, strategy_result)
     report = validation.report
@@ -373,10 +441,13 @@ def _failed(
     reason: ReasonCode,
     error: Exception,
     strategy_result: StrategyResult | None,
+    *,
+    terminal_state: str = "FAILED",
+    status: EvaluationStatus = EvaluationStatus.FAILED,
 ) -> StrategyEvaluation:
     record = _failure(
         candidate,
-        "FAILED",
+        terminal_state,
         reason,
         (f"error:{type(error).__name__}",),
         lessons=str(error)[:2000],
@@ -384,7 +455,7 @@ def _failed(
     registry.append(record)
     return StrategyEvaluation(
         candidate.spec.ref,
-        EvaluationStatus.FAILED,
+        status,
         strategy_result,
         failure=record,
     )

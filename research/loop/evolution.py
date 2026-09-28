@@ -24,6 +24,13 @@ The stage declares its trials before running (budget-checked by the scheduler); 
 is not due declares and spends nothing. ``combine`` and ``retire`` are not used by the loop:
 combining two variants of one strategy always clashes on parameters, and retirement applies to
 ACTIVE strategies, which the loop can never reach.
+
+Retry round (ADR-0083 "PM 决定" §1, 2026-09-28): a round that only runs an admitted failed-round
+retry (``research.loop.stages.HypothesisStage._run_retry``) never runs evolution, due or not — it
+declares and spends nothing and registers no offspring, so the retry's own G2 budget check (which
+already accounted for exactly the admitted trials) is never exceeded by an unrelated mutation. The
+hypothesis stage's own artifacts carry the tell: a normal round's ``"hypothesis"`` artifacts never
+have a ``"retry_reevaluations"`` key, only ``_run_retry``'s do (see ``_retry_round`` below).
 """
 
 from __future__ import annotations
@@ -105,6 +112,18 @@ def _rank(result: ValidationOutcome) -> tuple[int, float, int, str]:
     )
 
 
+def _retry_round(ctx: RoundContext) -> bool:
+    """ADR-0083 "PM 决定" §1: whether this round only runs an admitted failed-round retry.
+
+    Only ``HypothesisStage._run_retry`` (``research.loop.stages``) puts a ``retry_reevaluations``
+    key in the round's ``"hypothesis"`` artifacts; a normal round's hypothesis stage never does
+    (its own artifacts are ``registered`` / ``reevaluations`` / ``llm_calls`` only). The hypothesis
+    stage always runs before evolution (``apps.worker.loop.EXTENDED_STAGE_ORDER``), so the key is
+    already there when this is read.
+    """
+    return "retry_reevaluations" in ctx.artifacts.get("hypothesis", {})
+
+
 class EvolutionStage:
     name = "evolution"
 
@@ -113,6 +132,8 @@ class EvolutionStage:
         self._plan_config = plan
 
     def _due(self, ctx: RoundContext) -> bool:
+        if _retry_round(ctx):  # ADR-0083 "PM 决定" §1: a retry round never evolves
+            return False
         every = self._plan_config.every_rounds
         return ctx.round_index > 0 and ctx.round_index % every == 0
 

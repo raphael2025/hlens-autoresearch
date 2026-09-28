@@ -60,6 +60,17 @@ def _union(*specs: EventSpec) -> tuple[tuple[Ref, ...], tuple[Ref, ...]]:
     )
 
 
+def _shared_bar_spec(*specs: EventSpec, bar_spec: Ref | None) -> Ref | None:
+    """Inherit the upstream bar declaration, rejecting mixed or conflicting declarations."""
+    bars = {spec.bar_spec for spec in specs}
+    if len(bars) != 1:
+        raise ValueError("upstream event bar_spec values must agree")
+    inherited = next(iter(bars))
+    if bar_spec is not None and bar_spec != inherited:
+        raise ValueError("bar_spec must match the upstream event bar_spec")
+    return inherited
+
+
 def _gap_seconds(gap: timedelta) -> Decimal:
     return Decimal(gap // _MICROSECOND).scaleb(-6)
 
@@ -95,12 +106,14 @@ class _PairProvider(EventProviderBase):
         name: str,
         version: str,
         observable_lag: timedelta,
+        bar_spec: Ref | None,
     ) -> EventSpec:
         if first.ref == second.ref:
             raise ValueError("the two upstream event definitions must differ")
         if window <= timedelta(0) or window % _MICROSECOND:
             raise ValueError("window must be a positive whole number of microseconds")
         features, states = _union(first, second)
+        inherited_bar_spec = _shared_bar_spec(first, second, bar_spec=bar_spec)
         return EventSpec(
             name=name,
             version=version,
@@ -118,6 +131,7 @@ class _PairProvider(EventProviderBase):
             states=states,
             observable_lag=observable_lag,
             lineage=(first.ref, second.ref),
+            bar_spec=inherited_bar_spec,
         )
 
     def canonical(self, spec: EventSpec) -> EventSpec:
@@ -180,6 +194,7 @@ class EventSequenceProvider(_PairProvider):
         name: str | None = None,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         return cls._build(
             first,
@@ -188,6 +203,7 @@ class EventSequenceProvider(_PairProvider):
             name=name or f"{first.name}_then_{then.name}",
             version=version,
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def events(
@@ -234,6 +250,7 @@ class EventCoOccurrenceProvider(_PairProvider):
         name: str | None = None,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         return cls._build(
             left,
@@ -242,6 +259,7 @@ class EventCoOccurrenceProvider(_PairProvider):
             name=name or f"{left.name}_with_{right.name}",
             version=version,
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def events(

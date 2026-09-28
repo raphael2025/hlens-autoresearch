@@ -56,8 +56,9 @@ from core.domain.base import (
     Ref,
     UtcDatetime,
     content_hash,
+    omit_none,
 )
-from core.domain.specs import OutcomeSpec
+from core.domain.specs import ADR_0088_VERSION, OutcomeSpec
 
 __all__ = [
     "OUTCOME_MODELS",
@@ -118,6 +119,8 @@ class OutcomeMethod(StrEnum):
 
     FORWARD_RETURN = "forward_return"
     TRIPLE_BARRIER = "triple_barrier"
+    #: ADR-0088 决策 5（契约 2.4.0）：屏障按入场时可见的波动率特征值缩放的 triple barrier。
+    VOL_SCALED_TRIPLE_BARRIER = "vol_scaled_triple_barrier"
 
 
 class OutcomeLabelSpec(Contract):
@@ -130,12 +133,26 @@ class OutcomeLabelSpec(Contract):
     屏障与 horizon 是**标签定义参数**，不是验证阈值。
     """
 
+    # 类文档字符串是已发布 Schema 的 `description`，为保持 Schema 除新增内容外逐字节不变，不改写。
+    # ADR-0088 决策 5：`vol_scaled_triple_barrier` 的上下屏障 = entry × (1 ± barrier_multiplier ×
+    # 入场时可见的 `volatility_feature` 值)，垂直屏障 = horizon，同一 bar 同时触碰两个屏障时沿用
+    # triple barrier 的保守判定。`volatility_feature`（kind=feature）与 `barrier_multiplier`（> 0）
+    # 只在该方法下必填，在其他方法下必须为空；该方法下固定屏障 `upper_barrier` / `lower_barrier`
+    # 必须为空（屏障完全由缩放公式决定）。两个新字段为 `None` 时从载荷中省略，既有哈希逐位不变。
+    _FIELDS_SINCE = {
+        "volatility_feature": ADR_0088_VERSION,
+        "barrier_multiplier": ADR_0088_VERSION,
+    }
+    _VALUES_SINCE = {"method": {OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER: ADR_0088_VERSION}}
+
     outcome: Ref
     outcome_spec_hash: ContentHash
     method: OutcomeMethod
     horizon: timedelta
     upper_barrier: FiniteDecimal | None = None
     lower_barrier: FiniteDecimal | None = None
+    volatility_feature: Ref | None = Field(default=None, exclude_if=omit_none)
+    barrier_multiplier: FiniteDecimal | None = Field(default=None, gt=0, exclude_if=omit_none)
 
     @model_validator(mode="after")
     def _shape(self) -> OutcomeLabelSpec:
@@ -144,6 +161,31 @@ class OutcomeLabelSpec(Contract):
         if self.horizon <= timedelta(0):
             raise ValueError("horizon 必须为正")
         barriers = (self.upper_barrier, self.lower_barrier)
+        scaling = (self.volatility_feature, self.barrier_multiplier)
+        if self.method is OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER:
+            if self.volatility_feature is None or self.barrier_multiplier is None:
+                raise ValueError(
+                    "vol_scaled_triple_barrier 必须同时给出 volatility_feature 与 "
+                    "barrier_multiplier（ADR-0088 决策 5）"
+                )
+            if self.volatility_feature.kind is not Kind.FEATURE:
+                raise ValueError(
+                    "volatility_feature 必须是 kind=feature 的引用，收到 "
+                    f"{self.volatility_feature}（ADR-0088 决策 5）"
+                )
+            if self.barrier_multiplier <= 0:
+                raise ValueError("barrier_multiplier 必须 > 0（ADR-0088 决策 5）")
+            if any(item is not None for item in barriers):
+                raise ValueError(
+                    "vol_scaled_triple_barrier 不接受固定屏障 upper_barrier / lower_barrier"
+                    "（ADR-0088 决策 5）"
+                )
+            return self
+        if any(item is not None for item in scaling):
+            raise ValueError(
+                f"{self.method.value} 不接受 volatility_feature / barrier_multiplier"
+                "（ADR-0088 决策 5）"
+            )
         if self.method is OutcomeMethod.FORWARD_RETURN:
             if any(item is not None for item in barriers):
                 raise ValueError("forward_return 不接受屏障参数")
@@ -162,6 +204,8 @@ class OutcomeLabelSpec(Contract):
         *,
         upper_barrier: Decimal | None = None,
         lower_barrier: Decimal | None = None,
+        volatility_feature: Ref | None = None,
+        barrier_multiplier: Decimal | None = None,
     ) -> OutcomeLabelSpec:
         """从一份 `OutcomeSpec` 构造：引用、内容哈希与 horizon 都取自该规格。"""
         return cls(
@@ -171,6 +215,8 @@ class OutcomeLabelSpec(Contract):
             horizon=spec.horizon,
             upper_barrier=upper_barrier,
             lower_barrier=lower_barrier,
+            volatility_feature=volatility_feature,
+            barrier_multiplier=barrier_multiplier,
         )
 
     def matches(self, spec: OutcomeSpec) -> bool:

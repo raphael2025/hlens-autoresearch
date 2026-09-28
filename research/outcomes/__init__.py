@@ -8,14 +8,17 @@ from research.outcomes.store import (
     table_hash,
 )
 from research.outcomes.table import OutcomeTable, materialize
+from research.outcomes.volatility import VolatilityWiringError, select_volatility_for_entry_times
 
 __all__ = [
     "OutcomeTable",
     "OutcomeTableConflict",
     "OutcomeTableCorrupted",
     "OutcomeTableStore",
+    "VolatilityWiringError",
     "bars_from_synthetic",
     "materialize",
     "outcome_events_from_event_result",
+    "select_volatility_for_entry_times",
     "table_hash",
 ]

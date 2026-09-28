@@ -64,6 +64,63 @@ def test_a_return_without_a_state_evaluation_is_refused() -> None:
         state_strategy_matrix(S, ST, {_t(0): Decimal(1)}, {})
 
 
+def test_explicit_max_state_age_uses_latest_prior_evaluation_and_keeps_unknowns() -> None:
+    returns = {
+        _t(-1): Decimal("0.01"),  # no prior state yet
+        _t(1): Decimal("0.02"),
+        _t(2): Decimal("0.03"),  # exact evaluation time is visible
+        _t(4): Decimal("0.04"),  # latest evaluation is explicitly unknown
+        _t(6): Decimal("0.05"),  # last known state is stale
+    }
+    states = {_t(0): "high", _t(2): "low", _t(3): None}
+    matrix = state_strategy_matrix(
+        S, ST, returns, states, max_state_age=timedelta(minutes=2)
+    )
+    cells = {cell.state: cell for cell in matrix.cells}
+    assert cells["high"].count == 1
+    assert cells["low"].count == 1
+    assert cells[None].count == 3
+    assert matrix.max_state_age == timedelta(minutes=2)
+    assert matrix.alignment_mode == "as_of"
+    assert "state alignment: as_of (maximum age 0:02:00)" in matrix.report()
+
+
+def test_asof_matrix_hash_binds_the_explicit_age_but_exact_matrix_identity_is_unchanged() -> None:
+    returns = {_t(0): Decimal("0.01"), _t(1): Decimal("0.02")}
+    states = {_t(0): "high", _t(1): "low"}
+    exact = state_strategy_matrix(S, ST, returns, states)
+    exact_explicit_none = state_strategy_matrix(S, ST, returns, states, max_state_age=None)
+    asof = state_strategy_matrix(S, ST, returns, states, max_state_age=timedelta(minutes=1))
+    assert exact == exact_explicit_none
+    assert exact.alignment_mode == "exact"
+    assert exact.matrix_hash == exact_explicit_none.matrix_hash
+    assert exact.matrix_hash != asof.matrix_hash
+
+
+def test_max_state_age_must_be_a_positive_timedelta() -> None:
+    for invalid in (timedelta(0), timedelta(seconds=-1), 60):
+        with pytest.raises(ValueError, match="max_state_age must be a positive timedelta"):
+            state_strategy_matrix(
+                S,
+                ST,
+                {_t(0): Decimal("0.01")},
+                {_t(0): "high"},
+                max_state_age=invalid,  # type: ignore[arg-type]
+            )
+
+
+def test_asof_state_mapping_requires_utc_datetimes() -> None:
+    naive = datetime(2024, 1, 1)
+    with pytest.raises(ValueError, match="must be UTC datetimes"):
+        state_strategy_matrix(
+            S,
+            ST,
+            {_t(0): Decimal("0.01")},
+            {naive: "high"},
+            max_state_age=timedelta(minutes=1),
+        )
+
+
 def test_every_conditional_attempt_counts_as_a_trial() -> None:
     ledger = TrialLedger()
     trials = register_conditionals(
@@ -153,6 +210,21 @@ def test_matrix_from_backtest_attributes_to_the_state_known_at_t_and_links_input
     again = matrix_from_backtest(S, ST, _buy_and_hold(), states, top_k=1)
     assert again == matrix and again.matrix_hash == matrix.matrix_hash
     assert backtest.result_hash in matrix.report()
+
+
+def test_matrix_from_backtest_passes_explicit_asof_age_and_binds_it() -> None:
+    backtest = _buy_and_hold()
+    states = _state_result({_t(2): "high", _t(4): "low"})
+    matrix = matrix_from_backtest(
+        S, ST, backtest, states, max_state_age=timedelta(minutes=2)
+    )
+    cells = {cell.state: cell for cell in matrix.cells}
+    assert cells[None].count == 1  # the first return starts before any state evaluation
+    assert cells["high"].count == 2
+    assert cells["low"].count == 1
+    assert matrix.max_state_age == timedelta(minutes=2)
+    assert matrix.backtest_result_hash == backtest.result_hash
+    assert matrix.state_result_hash == states.result_hash
 
 
 def test_matrix_from_backtest_refuses_a_period_without_a_state() -> None:

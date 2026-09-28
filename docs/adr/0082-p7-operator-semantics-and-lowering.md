@@ -83,3 +83,37 @@ Claude Code（PM）依 Raphael 2026-09-28 对 PM 的授权（CLAUDE.md §0：PM 
 - [ADR-0030](0030-feature-provider-contract.md)：FeatureSpec / FeatureProvider 可见输入与确定性契约。
 - [ADR-0061](0061-interaction-dsl.md)：独立 Event DSL；不为 P7 `temporal` 提供 bars 映射。
 - [docs/research/constitution.md](../research/constitution.md)：特别是 C-L1、C-L2、C-L3 与 C-P。
+
+## 接受记录（2026-09-28，第三次：ADR-0088 契约 2.4.0 落地）
+
+Claude Code（PM）依 Raphael 2026-09-28 授权，落实待决策清单 §3 的选项 A 与 ADR-0088 决策 1–2。
+
+- **temporal：Accepted。**
+  - 两个输入 EventSpec 的 `bar_spec` 都必须非空且目标身份相同，`time_unit` 必须为 `bar`，否则 `operator_open`。
+  - 语义：第二事件发生在第一事件之后 1..`window` 根 bar 内（左开右闭）。
+  - 输出 EventSpec：`bar_spec` 同输入；`observable_lag` 取第二事件的值；`features` / `states` 为两个输入的去重有序并集；`trigger` 为规范 JSON 声明（definition `p7.temporal.sequence_within_bars@1.0.0`）。
+  - 第一事件的 `observable_lag` 大于第二事件时，无法证明可见性，以 `temporal_visibility_unprovable` 拒绝。
+  - 不复用 ADR-0061 的微秒窗口。
+- **conditioning：Accepted。**
+  - 输出 `StrategySpec(composition=ConditionedStrategy(base, state, state_value))`。
+  - signals = base signals ∪ state；风险政策与适用标的继承自 base。
+  - `state_value` 不在 `StateSpec.state_space` 中时，以 `unknown_state_value` 拒绝。
+  - 状态未知或缺失时空仓；每个 (base, state, state_value) 计一个 trial。
+- **ensemble：Accepted。**
+  - 输出 `StrategySpec(composition=EnsembleStrategy(members, rule="equal_weight_mean"))`。
+  - 成员至少 2 个，按目标身份去重。
+  - 成员的风险政策与适用标的必须完全一致（ADR-0069），否则拒绝。
+  - signals 为各成员信号的去重有序并集。
+- **negation：Accepted。**
+  - 输出 `StrategySpec(composition=NegatedStrategy(base))`。
+  - 目标仓位取反，风险政策不变。
+  - **不**作为验证负对照。
+  - 现货做空成本缺口（ST-4）由 Provider fail closed。
+- **与 ADR-0078 的衔接：**
+  - `conditional_strategy_plan` 的核心规格改为带 `ConditionedStrategy` 的 StrategySpec。
+  - producer 与完整性校验器都要求 conditioning / ensemble / negation 节点的输出带有对应的组合，否则以 `plan_output_composition_mismatch` 拒绝。
+- **仍为 OPEN：** `transformation` 的 `rank` / `quantile`。
+- **授权范围：** 本次接受只授权纯的、不可运行的 lowering。
+  - 不实现、不登记 Provider；
+  - `TypedPlan.runnable` 与 `compile_plan` 的拒绝行为不变。
+- 实现：`d96cdbf`（W-P7，测试未运行）。

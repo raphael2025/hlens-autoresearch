@@ -7,7 +7,7 @@ NOT_VALIDATED.
 frozen by Raphael after calibration (two-step freeze, ADR-0007 / ADR-0037). This harness produces
 the evidence for that decision: for every *candidate* Profile the caller supplies, how often the
 full validation pipeline passes pure noise (false-positive rate), how often it passes markets with
-a planted effect (power per strength / lag), how often it is ``INCONCLUSIVE`` and how often a pass
+a planted effect (power per effect), how often it is ``INCONCLUSIVE`` and how often a pass
 would spend the one-shot sealed OOS. It never chooses, ranks or proposes a Profile, has no default
 Profile, and writes no number into any Profile. Synthetic results never support a real-market
 conclusion (roadmap P9).
@@ -82,7 +82,7 @@ Pieces:
   ``research.validation.instruments``), whose pooled G1 negative controls mix instruments by time
   and whose false-alarm rate on multi-instrument data is otherwise uncalibrated. Each run of each
   caller-declared ``MultiInstrumentArm`` (kind ``all_noise`` / ``all_planted`` / ``mixed``, one
-  ``PlantedEffect | None`` per symbol, nothing defaulted; a kind that disagrees with the effects
+  ``SyntheticEffect | None`` per symbol, nothing defaulted; a kind that disagrees with the effects
   is refused) generates k >= 2 independent markets, one per distinct symbol, whose generator
   seeds are derived from the run seed (``instrument_seed``), and validates them together through
   ``MultiInstrumentGateDetector.detect_instruments`` (``MultiInstrumentValidatorDetector``: the
@@ -128,11 +128,14 @@ from core.contracts.outcome import OutcomeEvent, OutcomePriceBar, OutcomeRequest
 from core.contracts.profile_selection import OosUnsealing
 from core.contracts.strategy import BacktestProvider, TargetPosition
 from core.contracts.synthetic import (
+    JumpEffect,
     PlantedEffect,
     SyntheticBar,
+    SyntheticEffect,
     SyntheticMarket,
     SyntheticMarketProvider,
     SyntheticMarketSpec,
+    VolatilityClusteringEffect,
 )
 from core.contracts.synthetic import market_hash as synthetic_market_hash
 from core.contracts.validation_profile import ValidationProfile
@@ -195,6 +198,7 @@ __all__ = [
     "instrument_seed",
     "main",
     "planted_arm_id",
+    "synthetic_effect_arm_id",
     "run_gate_calibration",
     "run_multi_instrument_calibration",
     "supports_sealed_oos",
@@ -630,13 +634,24 @@ def planted_arm_id(effect: PlantedEffect) -> str:
     return f"planted_lag{effect.lag_minutes}_strength{effect.strength}"
 
 
+def synthetic_effect_arm_id(effect: SyntheticEffect) -> str:
+    """Stable ID for every synthetic effect, retaining the legacy planted-effect spelling."""
+    if isinstance(effect, PlantedEffect):
+        return planted_arm_id(effect)
+    if isinstance(effect, VolatilityClusteringEffect):
+        return f"volatility_clustering_{effect.content_hash()}"
+    if isinstance(effect, JumpEffect):
+        return f"jump_{effect.content_hash()}"
+    raise TypeError(f"unsupported synthetic effect type: {type(effect).__name__}")
+
+
 @dataclass(frozen=True)
 class GateCalibrationSetup:
     """Every input of one calibration run. Nothing has a default: absence must be explicit.
 
     - ``base``: the pure-noise market spec; each arm / seed only changes ``seed`` and ``effects``;
     - ``candidates``: the caller's candidate Profiles (compared, never chosen here);
-    - ``planted``: one arm per effect (strength / lag), each run on every ``planted_seeds`` seed;
+    - ``planted``: one arm per ``SyntheticEffect``, each run on every ``planted_seeds`` seed;
     - ``alpha``: the two-sided level of the reported Clopper-Pearson intervals (a reporting
       parameter, not a Profile number);
     - ``sealed_oos_g5``: the one opt-in switch (module docs, G5 mode). It is ``False`` unless the
@@ -650,7 +665,7 @@ class GateCalibrationSetup:
     detector: GateDetector
     candidates: tuple[ValidationProfile, ...]
     noise_seeds: tuple[int, ...]
-    planted: tuple[PlantedEffect, ...]
+    planted: tuple[SyntheticEffect, ...]
     planted_seeds: tuple[int, ...]
     alpha: Decimal
     sealed_oos_g5: bool = False
@@ -692,17 +707,21 @@ class GateCalibrationSetup:
         for seeds in (self.noise_seeds, self.planted_seeds):
             if len(set(seeds)) != len(seeds):
                 raise ValueError("seeds must be distinct")
-        arms = [planted_arm_id(effect) for effect in self.planted]
-        if any(effect.strength == 0 for effect in self.planted):
+        arms = [synthetic_effect_arm_id(effect) for effect in self.planted]
+        if any(
+            isinstance(effect, PlantedEffect) and effect.strength == 0
+            for effect in self.planted
+        ):
             raise ValueError("a planted effect with strength 0 is noise")
         if len(set(arms)) != len(arms):
-            raise ValueError("planted effects must be distinct")
+            raise ValueError("synthetic effects must have distinct arm ids")
         if not Decimal(0) < self.alpha < Decimal(1):
             raise ValueError("alpha must be in (0, 1)")
 
-    def arms(self) -> tuple[tuple[str, tuple[PlantedEffect, ...], tuple[int, ...]], ...]:
+    def arms(self) -> tuple[tuple[str, tuple[SyntheticEffect, ...], tuple[int, ...]], ...]:
         planted = tuple(
-            (planted_arm_id(effect), (effect,), self.planted_seeds) for effect in self.planted
+            (synthetic_effect_arm_id(effect), (effect,), self.planted_seeds)
+            for effect in self.planted
         )
         return ((NOISE_ARM, (), self.noise_seeds), *planted)
 
@@ -716,7 +735,7 @@ class GateCalibrationSetup:
             "planted_seeds": list(self.planted_seeds),
             "planted_effects": [
                 {
-                    "arm": planted_arm_id(effect),
+                    "arm": synthetic_effect_arm_id(effect),
                     "effect": effect.model_dump(mode="json"),
                     "effect_hash": effect.content_hash(),
                 }
@@ -777,8 +796,8 @@ def instrument_seed(run_seed: int, index: int, symbol: str) -> int:
     return int(digest[:12], 16)
 
 
-def _role(effect: PlantedEffect | None) -> str:
-    return NOISE_ARM if effect is None else planted_arm_id(effect)
+def _role(effect: SyntheticEffect | None) -> str:
+    return NOISE_ARM if effect is None else synthetic_effect_arm_id(effect)
 
 
 @dataclass(frozen=True)
@@ -788,13 +807,13 @@ class MultiInstrumentArm:
     - ``kind``: ``all_noise`` / ``all_planted`` / ``mixed`` (``MULTI_ARM_KINDS``); it must agree
       with ``effects``, so a mislabelled arm is refused rather than reported under the wrong name;
     - ``effects``: one entry per symbol of the setup, in its order: ``None`` for a pure-noise
-      instrument, else the one ``PlantedEffect`` planted into it;
+      instrument, else one ``SyntheticEffect`` planted into it;
     - ``seeds``: the run seeds; each instrument's generator seed is ``instrument_seed``.
     """
 
     name: str
     kind: str
-    effects: tuple[PlantedEffect | None, ...]
+    effects: tuple[SyntheticEffect | None, ...]
     seeds: tuple[int, ...]
 
     def __post_init__(self) -> None:
@@ -804,7 +823,10 @@ class MultiInstrumentArm:
             raise ValueError(f"{self.name}: kind must be one of {MULTI_ARM_KINDS}")
         if not isinstance(self.effects, tuple) or not self.effects:
             raise ValueError(f"{self.name}: effects must declare every instrument")
-        if any(effect is not None and effect.strength == 0 for effect in self.effects):
+        if any(
+            isinstance(effect, PlantedEffect) and effect.strength == 0
+            for effect in self.effects
+        ):
             raise ValueError(f"{self.name}: a planted effect with strength 0 is noise")
         planted = sum(effect is not None for effect in self.effects)
         actual = (
@@ -1267,8 +1289,8 @@ class CandidateEvidence:
     def false_positive_rate(self) -> BinomialRate:
         return self.arm(NOISE_ARM).passed
 
-    def power(self, effect: PlantedEffect) -> BinomialRate:
-        return self.arm(planted_arm_id(effect)).passed
+    def power(self, effect: SyntheticEffect) -> BinomialRate:
+        return self.arm(synthetic_effect_arm_id(effect)).passed
 
     def g5(self, arm: str) -> SealedArmEvidence:
         evidence = self.arm(arm).g5
@@ -1281,9 +1303,9 @@ class CandidateEvidence:
         """G0 – G5 pass rate on noise (G5 mode only)."""
         return self.g5(NOISE_ARM).end_to_end
 
-    def end_to_end_power(self, effect: PlantedEffect) -> BinomialRate:
+    def end_to_end_power(self, effect: SyntheticEffect) -> BinomialRate:
         """G0 – G5 pass rate of a planted arm (G5 mode only)."""
-        return self.g5(planted_arm_id(effect)).end_to_end
+        return self.g5(synthetic_effect_arm_id(effect)).end_to_end
 
     def gate(self, gate_id: str, arm: str) -> GateEvidence:
         return next(g for g in self.gates if g.gate_id == gate_id and g.arm == arm)

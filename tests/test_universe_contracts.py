@@ -1652,7 +1652,7 @@ def test_b2_only_appends_to_the_registry() -> None:
     assert names[: len(PRE_B2_MODEL_NAMES)] == PRE_B2_MODEL_NAMES
     assert names[len(PRE_B2_MODEL_NAMES) : b2_end] == tuple(model.__name__ for model in B2_MODELS)
     assert b2_end == 59
-    assert len(CONTRACT_MODELS) == 141
+    assert len(CONTRACT_MODELS) == 146
 
 
 @pytest.mark.parametrize("name", sorted(FROZEN_SCHEMA_SHA256))
@@ -1685,8 +1685,9 @@ def test_frozen_contract_fields_are_unchanged() -> None:
 
 def test_contract_version_and_kind_are_unchanged() -> None:
     """ADR-0024 §5：不新增 `Kind`；版本策略：`CONTRACT_SCHEMA_VERSION` 保持 2.0.0。"""
-    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0 and ADR-0077 to 2.3.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.3.0"
+    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0 and ADR-0088
+    # to 2.4.0.
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
     assert {kind.value for kind in Kind} == {
         "dataset",
         "representation",

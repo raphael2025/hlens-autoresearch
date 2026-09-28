@@ -35,6 +35,15 @@ the budget is part of the fingerprint. An in-memory dataset loop with a budget n
 passed ``DurableUnsealingLedger`` (or the TEST-ONLY ``ephemeral_unseal_for_tests`` flag; review
 fixes 4, ``research.loop.trials.OosUnsealBudget``). What is read and proven after the claim:
 ``research.loop.dataset_source.SealedDatasetPair``.
+
+v3 evidence manifests (ADR-0077; C1-CONSUMERS, data access only). A ``DatasetRound`` may declare
+``ResearchDatasetEvidenceManifest`` hashes when the ``DatasetCatalog`` carries the builder
+catalog's ``StreamingEvidenceVerifier`` (``evidence_verifier``; without it such a round's ingest
+is refused by the store). The composition is unchanged: a round's source identity is its declared
+manifest content hashes, which the fingerprint and the recorded-ingest check already bind, so a
+state directory's fingerprint and records do not depend on the manifest form. Nothing here resolves
+ACTIVE strategies, source authority or metrics (ADR-0080 BLOCKED), schedules rounds or reaches the
+ADR-0074 operator (synthetic-only).
 """
 
 from __future__ import annotations

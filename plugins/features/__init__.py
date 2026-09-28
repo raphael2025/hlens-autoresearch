@@ -10,6 +10,13 @@
   ``BarHighProvider`` / ``BarLowProvider`` (``bar_close`` / ``bar_high`` / ``bar_low``, no
   parameters): the latest visible bar's close / high / low, exact — added at PM's direction for
   ``donchian_breakout`` / ``zscore_reversion`` to read a price signal from.
+- ``range_volatility``: ``ParkinsonVolatilityProvider`` (FEA-PARKINSON-001),
+  ``GarmanKlassVolatilityProvider`` (FEA-GK-001), ``YangZhangVolatilityProvider`` (FEA-YZ-001),
+  ``JumpVarianceProvider`` (FEA-JUMP-QV-001) — range- and jump-based realized-volatility estimators
+  over bar observations; no parameter has a default value.
+- ``microstructure``: ``TakerFlowImbalanceProvider`` (FEA-TAKER-FLOW-001),
+  ``AmihudIlliquidityProvider`` (MSTX-AMIHUD-001), ``CorwinSchultzSpreadProvider``
+  (FEA-CS-SPREAD-001) — kline-derived microstructure features; no parameter has a default value.
 """
 
 from plugins.features.bars import (
@@ -31,10 +38,22 @@ from plugins.features.indicators import (
     RsiProvider,
     VwapProvider,
 )
+from plugins.features.microstructure import (
+    AmihudIlliquidityProvider,
+    CorwinSchultzSpreadProvider,
+    TakerFlowImbalanceProvider,
+)
+from plugins.features.range_volatility import (
+    GarmanKlassVolatilityProvider,
+    JumpVarianceProvider,
+    ParkinsonVolatilityProvider,
+    YangZhangVolatilityProvider,
+)
 
 __all__ = [
     "BAR_1M_INPUT",
     "AdxProvider",
+    "AmihudIlliquidityProvider",
     "AtrProvider",
     "BarCloseProvider",
     "BarHighProvider",
@@ -44,8 +63,14 @@ __all__ = [
     "BarVolumeSumProvider",
     "BbandsBandwidthProvider",
     "BbandsPercentBProvider",
+    "CorwinSchultzSpreadProvider",
+    "GarmanKlassVolatilityProvider",
+    "JumpVarianceProvider",
     "MacdLineProvider",
     "MacdSignalProvider",
+    "ParkinsonVolatilityProvider",
     "RsiProvider",
+    "TakerFlowImbalanceProvider",
     "VwapProvider",
+    "YangZhangVolatilityProvider",
 ]

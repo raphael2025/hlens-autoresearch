@@ -1,4 +1,4 @@
-"""Verify a ``ValidationReport``'s thresholds against the Profile instance it binds (ADR-0013).
+"""Verify report thresholds, gate sets and trusted replay outputs (ADR-0013 / ADR-0092).
 
 07-validation.md §2.1 / ADR-0013: the contract layer checks only the shape of a ``GateResult``
 (``threshold`` and ``threshold_source`` paired); **whether ``threshold_source`` really names a field
@@ -51,22 +51,31 @@ unaffected — it is still "no discrepancy of any kind" — but
 ``research.promotion`` rejects them under two different reasons, in order
 (``report_threshold_mismatch`` then ``report_gate_set_incomplete``).
 
-**Still not checked (no accepted rule defines it):** whether ``value`` was really computed by
-``metric`` (that is a re-run: ``G0.reproducibility`` / ``retro_audit``).
+**Replay values (ADR-0092).** Promotion supplies the output of its host-selected trusted
+``ValidationReplayProvider`` to ``verify_replayed_values``. The provider must have recomputed the
+complete gate set from the bound experiment and Profile; this pure function checks the replay
+result's report / run / experiment / Profile identities and compares every ``metric``, ``value``
+and ``value_exact``. It rejects missing, extra, duplicate or mismatched gates. It cannot authenticate
+an arbitrary Python Provider: choosing the trusted implementation is the host composition root's
+responsibility. In particular, G5 may only be supplied from evidence captured during the original
+one-shot evaluation; this repository has no production Provider or persisted G5 replay artifact,
+so Promotion fails closed until the host supplies one.
 
-Status: CODE_COMPLETE / DEBUG_PENDING (MOD-VALID, 2026-09-28; ADR-0086 decision 1, 2026-09-28). No
-contract, Schema, Profile number or gate rule changes.
+Status: CODE_COMPLETE / DEBUG_PENDING (MOD-VALID, 2026-09-28; ADR-0086 decision 1 and ADR-0092,
+2026-09-28). No contract, Schema, Profile number or gate rule changes.
 """
 
 from __future__ import annotations
 
+from collections import Counter
 from dataclasses import dataclass
 from decimal import Decimal
 from enum import StrEnum
-from typing import Final
+from typing import Final, Protocol, runtime_checkable
 
 from core.contracts.validation_profile import ValidationProfile
-from core.domain.research import GateResult, ValidationReport, Verdict
+from core.domain.base import Ref
+from core.domain.research import ExperimentSpec, GateResult, ValidationReport, Verdict
 from research.validation.g4 import PROFILE_SOURCED_THRESHOLDS
 from research.validation.gate_set import gate_set_completeness
 from research.validation.gates import (
@@ -81,7 +90,10 @@ __all__ = [
     "GateDiscrepancy",
     "ReportDiscrepancy",
     "ReportVerification",
+    "ValidationReplayProvider",
+    "ValidationReplayResult",
     "verify_report",
+    "verify_replayed_values",
 ]
 
 #: ``param:<name>`` → the ADR-0052 §2 Profile path that replaces that explicit parameter.
@@ -106,6 +118,8 @@ class ReportDiscrepancy(StrEnum):
     GATE_STAGE_MISSING = "gate_stage_missing"
     #: ADR-0086 decision 1: the report carries a gate under a stage its pipeline version never emits.
     GATE_STAGE_UNKNOWN = "gate_stage_unknown"
+    #: ADR-0092: replay output is absent, unbound, incomplete or differs from the report's values.
+    RECOMPUTED_VALUE_MISMATCH = "recomputed_value_mismatch"
 
 
 #: The ADR-0086 decision 1 discrepancies (``research.validation.gate_set``), as opposed to the
@@ -168,6 +182,43 @@ class ReportVerification:
             "ok": self.ok,
             "discrepancies": [item.to_dict() for item in self.discrepancies],
         }
+
+
+@dataclass(frozen=True)
+class ValidationReplayResult:
+    """Complete deterministic gate output bound to one report, run, experiment and Profile.
+
+    The trusted Provider is responsible for computing ``gates`` from fixed replay inputs. The
+    envelope prevents accidentally attaching that output to another evidence bundle; it is not a
+    cryptographic attestation of the Provider.
+    """
+
+    report_id: str
+    report_hash: str
+    run_id: str
+    subject: Ref
+    experiment_ref: Ref
+    experiment_hash: str
+    profile_ref: Ref
+    profile_hash: str
+    gates: tuple[GateResult, ...]
+
+
+@runtime_checkable
+class ValidationReplayProvider(Protocol):
+    """Trusted host service that recomputes all values for one bound validation report.
+
+    Production implementations are selected by the host composition root. They must use the
+    original fixed replay inputs and may supply G5 only from trusted evidence captured during its
+    first one-shot execution; they must never reopen sealed OOS data.
+    """
+
+    def replay(
+        self,
+        report: ValidationReport,
+        profile: ValidationProfile,
+        experiment: ExperimentSpec,
+    ) -> ValidationReplayResult: ...
 
 
 def _direction(metric: str) -> Direction | None:
@@ -301,6 +352,137 @@ def _gate_set_problems(report: ValidationReport) -> list[GateDiscrepancy]:
         for stage in sorted(result.unknown)
     )
     return problems
+
+
+def verify_replayed_values(
+    report: ValidationReport,
+    profile: ValidationProfile,
+    experiment: ExperimentSpec,
+    replay: ValidationReplayResult,
+) -> tuple[GateDiscrepancy, ...]:
+    """Compare a trusted provider's complete replay output with its bound report (ADR-0092).
+
+    This checks value provenance only after Promotion has passed the existing threshold and gate-set
+    checks. The provider's implementation and fixed-input source are trusted host configuration;
+    this function validates its explicit binding and output shape, not its code identity.
+    """
+    if not isinstance(report, ValidationReport):
+        raise TypeError("verify_replayed_values needs a ValidationReport")
+    if not isinstance(profile, ValidationProfile):
+        raise TypeError("verify_replayed_values needs a ValidationProfile")
+    if not isinstance(experiment, ExperimentSpec):
+        raise TypeError("verify_replayed_values needs an ExperimentSpec")
+    if not isinstance(replay, ValidationReplayResult):
+        return (
+            GateDiscrepancy(
+                None,
+                ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH,
+                "trusted replay provider did not return a ValidationReplayResult",
+            ),
+        )
+    if (
+        not isinstance(replay.gates, tuple)
+        or any(not isinstance(gate, GateResult) for gate in replay.gates)
+        or any(
+            not isinstance(ref, Ref)
+            for ref in (replay.subject, replay.experiment_ref, replay.profile_ref)
+        )
+    ):
+        return (
+            GateDiscrepancy(
+                None,
+                ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH,
+                "trusted replay result has malformed bindings or gate output",
+            ),
+        )
+
+    binding_mismatches: list[str] = []
+    expected_bindings = (
+        ("report_id", replay.report_id, report.report_id),
+        ("report_hash", replay.report_hash, report.content_hash()),
+        ("run_id", replay.run_id, report.run_id),
+        ("subject", replay.subject.target_identity(), report.subject.target_identity()),
+        (
+            "experiment_ref",
+            replay.experiment_ref.target_identity(),
+            experiment.ref.target_identity(),
+        ),
+        ("experiment_hash", replay.experiment_hash, report.experiment_hash),
+        ("experiment_content_hash", experiment.experiment_hash, report.experiment_hash),
+        ("profile_ref", replay.profile_ref.target_identity(), profile.ref.target_identity()),
+        ("profile_hash", replay.profile_hash, profile.content_hash()),
+        (
+            "report_profile_ref",
+            report.validation_profile.target_identity(),
+            profile.ref.target_identity(),
+        ),
+        ("report_profile_hash", report.validation_profile_hash, profile.content_hash()),
+    )
+    binding_mismatches.extend(
+        f"{name}={actual!r}, expected {expected!r}"
+        for name, actual, expected in expected_bindings
+        if actual != expected
+    )
+    if binding_mismatches:
+        return (
+            GateDiscrepancy(
+                None,
+                ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH,
+                "replay output binding mismatch: " + "; ".join(binding_mismatches),
+            ),
+        )
+
+    reported = {gate.gate_id: gate for gate in report.gates}
+    replayed_ids = [gate.gate_id for gate in replay.gates]
+    replayed = {gate.gate_id: gate for gate in replay.gates}
+    discrepancies: list[GateDiscrepancy] = []
+    duplicates = sorted(
+        gate_id for gate_id, count in Counter(replayed_ids).items() if count > 1
+    )
+    for gate_id in duplicates:
+        discrepancies.append(
+            GateDiscrepancy(
+                gate_id,
+                ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH,
+                "trusted replay output contains a duplicate gate_id",
+            )
+        )
+    for gate_id in sorted(reported.keys() - replayed.keys()):
+        discrepancies.append(
+            GateDiscrepancy(
+                gate_id,
+                ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH,
+                "trusted replay output is missing this gate",
+            )
+        )
+    for gate_id in sorted(replayed.keys() - reported.keys()):
+        discrepancies.append(
+            GateDiscrepancy(
+                gate_id,
+                ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH,
+                "trusted replay output contains an extra gate",
+            )
+        )
+    for gate_id in sorted(reported.keys() & replayed.keys()):
+        recorded, computed = reported[gate_id], replayed[gate_id]
+        differences = []
+        if recorded.metric != computed.metric:
+            differences.append(f"metric {computed.metric!r} != {recorded.metric!r}")
+        if recorded.value != computed.value:
+            differences.append(f"value {computed.value!r} != {recorded.value!r}")
+        if recorded.value_exact != computed.value_exact:
+            differences.append(
+                f"value_exact {computed.value_exact!r} != {recorded.value_exact!r}"
+            )
+        if differences:
+            discrepancies.append(
+                GateDiscrepancy(
+                    gate_id,
+                    ReportDiscrepancy.RECOMPUTED_VALUE_MISMATCH,
+                    "; ".join(differences),
+                )
+            )
+    return tuple(discrepancies)
 
 
 def verify_report(report: ValidationReport, profile: ValidationProfile) -> ReportVerification:

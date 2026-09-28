@@ -24,3 +24,16 @@
   不归属），再调用 `state_strategy_matrix`；归属规则不变（t 时刻已知的状态）。矩阵记录回测与状态结果的 `result_hash`，
   `matrix_hash` 绑定全部内容。裁决 4 的"窄接口"仍保留；P4 / P8 验证接入仍待调试阶段。跨 Phase 冒烟见
   `tests/research/test_cross_phase_e2e.py`。无契约变化、无阈值。
+
+## 修订 1：非共享网格的 as-of 状态归属（Accepted，2026-09-28）
+
+### 决定
+
+1. 保留原有精确对齐行为。只有调用方显式提供正的 `max_state_age` 时才启用 as-of 模式。
+2. 每个收益区间起点 `t` 归属到 `evaluation_time <= t` 中时间最近的状态评估；不允许使用晚于 `t` 的状态。
+3. 若不存在 `t` 或更早的评估，或 `t - evaluation_time > max_state_age`，归属未知状态 `None`，不拒绝收益、不向后寻找状态。
+4. `max_state_age` 是调用方研究设定，必须显式提供且为正时长；不设默认容忍窗口。矩阵身份须记录 `alignment_mode=as_of` 与该窗口；精确对齐矩阵身份与既有报告保持不变。
+
+### 理由与范围
+
+当策略收益网格与状态评估网格不同，精确映射会拒绝整份矩阵。as-of 模式提供可选的因果归属，同时以显式最大状态年龄限制陈旧状态；超窗后进入既有未知状态单元。只改变 `research/experiments/state_strategy.py` 的分析映射，不修改状态 / 策略契约、收益、成本、验证门、数据切分或指标。

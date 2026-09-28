@@ -9,6 +9,7 @@ from typing import Any
 import pytest
 
 from core.contracts.event import Event, EventInputError, EventProvider, EventResult
+from core.domain.base import Kind, Ref
 from core.domain.specs import EventSpec
 from plugins.events import (
     EventAbsenceProvider,
@@ -106,6 +107,27 @@ def test_window_end_is_dated_at_the_end_of_each_window() -> None:
         assert item.event_time == source.event_time + 2 * MINUTE
         assert item.attributes["window_seconds"] == Decimal(120)
     assert WINDOW_END.observable_lag == 2 * MINUTE
+
+
+def test_window_operators_inherit_bar_spec_and_reject_mismatched_upstreams() -> None:
+    bar = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_1m", version="1.0.0")
+    other_bar = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_5m", version="1.0.0")
+    first = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), bar_spec=bar)
+    second = StateSwitchProvider.spec(REGIME, bar_spec=bar)
+    mismatch = StateSwitchProvider.spec(REGIME, bar_spec=other_bar)
+
+    window_end = EventWindowEndProvider.spec(first, MINUTE, name="window_end")
+    absence = EventAbsenceProvider.spec(first, second, MINUTE, name="absence")
+    count = EventCountProvider.spec(second, 2, MINUTE, name="count")
+    assert window_end.bar_spec == absence.bar_spec == count.bar_spec == bar
+    assert EventWindowEndProvider((window_end,))
+    assert EventAbsenceProvider((absence,))
+    assert EventCountProvider((count,))
+
+    with pytest.raises(ValueError, match="bar_spec values must agree"):
+        EventAbsenceProvider.spec(first, mismatch, MINUTE, name="bad_absence")
+    with pytest.raises(ValueError, match="bar_spec must match"):
+        EventCountProvider.spec(second, 2, MINUTE, name="bad_count", bar_spec=other_bar)
 
 
 def test_absence_is_hand_checked() -> None:
