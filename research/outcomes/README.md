@@ -14,6 +14,22 @@ Outcome 永远只作为标签，不作为输入（Constitution C-L2）。研究�
 契约在 `core/contracts/outcome.py`，Provider 实现在 `plugins/outcomes/`（`ForwardReturnOutcome`、`TripleBarrierOutcome`），
 provider-agnostic suite 在 `tests/contract_suites/outcome.py`。表不提供任何构造 `FeatureObservation` 等输入 DTO 的途径。
 
+## EventResult 转换器的调用边界（W2-P4，2026-09-28）
+
+当前不增加 `outcome_events_from_event_result` 的生产调用点，也不增加 Outcome 表写入流程。该函数保持
+`EventResult → tuple[OutcomeEvent, ...]` 的纯、无副作用转换，作为后续明确的 Event → Outcome 流程可复用的适配器；它保留每个事件的
+`event_id` 与可观测 `event_time`，而标的与价格数据的配对仍由调用方负责。
+
+依据：roadmap Phase 4 定义 Outcome 的输入可来自 Event，但没有规定独立的 EventResult 编排 / 持久化入口；ADR-0037 定义 Provider、
+`materialize(provider, request)` 与验证路径，后续调试批次补充了研究侧本地文件存储，但没有定义独立 EventResult 生产流程或 Iceberg 写入口；ADR-0072 要求 Phase 4 最小验证门可被后续研究流程调用，
+当前 `research/strategies/validation.py` 与 `research/loop/trials.py` 已有该调用，它们为被评估的非零策略目标构造标签事件，并不消费
+`EventResult`。把独立 EventResult 流程接到 `outcome_request_from_dataset` 还需要一个获授权的编排边界，将同标的事件、已证明的价格视图、
+label spec 与 manifest 绑定；仅为让纯转换器出现调用点而创建这个流程，会同时隐式决定 Outcome 的生产与写入流程。模块基础计划因此明确记为
+“无已批准调用接线；现有纯转换函数不新造写路径”。没有新增 ADR：现有决定足以支持保留纯转换器而不创建生产副作用；未来若批准独立 EventResult → Outcome 物化 / 存储流程，
+应先明确其调用方、数据绑定与持久化边界，再决定是否需要 ADR。
+
+回归测试：`tests/research/outcomes/test_sources.py` 覆盖一一映射、事件身份 / 可观测时间保持、规范顺序以及空结果映射为空元组；未运行。
+
 ## 调试批次（2026-09-26）：Outcome 表持久化
 
 > 状态：**CODE_COMPLETE / DEBUG_PENDING**（代码与测试完成，尚待调试 / 复核；无契约 / Schema 变化）。
