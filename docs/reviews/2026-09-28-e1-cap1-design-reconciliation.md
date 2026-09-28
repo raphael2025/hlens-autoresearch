@@ -21,7 +21,7 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 | 项 | 已由仓库代码证明 | 尚未证明 / 需要测量 |
 |---|---|---|
 | Raw positions | 已实现候选（本地提交 `7197973`）：`scan_column_batches` 输入、受固定 SQLite page cache 限制的磁盘排序、定长 int64 rank 文件；`_Survey` / `_UnitFacts` 不再持有 positions tuple。尚未验收 | Arrow 单批、SQLite sort、排序文件写入的峰值 RSS 和实际批大小；持久缓存资源回收 |
-| Canonical committed columns | `arrival_seq`、`knowledge_time`、schema version 存在全单元物化；recover / close 还创建全量比较状态 | 分块严格核验是否覆盖所有重复、缺号、空值、版本和 block 异常；实际 RSS |
+| Canonical committed columns | 本地提交 `b61d609` 改为 `scan_column_batches`；标量摘要保存 count/null/min/max、单一 ready 值 / 冲突标记、最多两个 distinct versions，序号和 close 精确比较写入 disk-backed index | 尚未运行测试；需验证所有重复、缺号、空值、版本与 block 异常均被拒绝，并测量 Arrow batch / SQLite / PyIceberg 的实际 RSS |
 | D1 archive verification | `ParsedArchive.rows` 是整表；normalizer verifier 缓存已解析 archive；关闭缓存只会重解析，不会消除单次整表 parse 峰值 | spool / 有界解析方案能否精确保留整文件拒绝、逐行哈希和跨行语义；RSS |
 | Batch history index | verifier 为 Raw batch 保留 SnapshotInfo 索引并在调用时复制；列表会随历史 batch 数增长 | 在精确保留 batch ID / 顺序 / 重复验证的前提下改为计数或窄窗口后，内存与时间收益 |
 | Result IDs | result API 返回完整 ID tuple；survey / write 路径还有 ID 中间副本 | 各副本与最终公开 tuple 的实际 RSS；低于阈值的可能性 |
@@ -49,7 +49,9 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 - `CanonicalNormalizer._positions` 改为消费 pinned batch reader，借助固定 SQLite page cache 外排位置，再写入定长 int64 rank 文件。`_Survey` / `_UnitFacts` 直接持有惰性 Sequence，不再复制完整 position list / tuple；REST 位置使用 offset membership view。SQLite 与 rank 文件由索引对象拥有，survey 路径和 facts cache 有关闭 / 淘汰清理。
 - 为常数空间检测重复 index，这一切片把“同一 lineage 的历史 index 按快照时间严格递减”作为完整性约束。D2 与 REST writer 当前均按 index 递增顺序提交；旧 verifier 没有拒绝所有乱序但 index 唯一的历史。该切片将拒绝此类外部导入或手工构造的乱序历史，属于有意收窄，需在代码说明中保留此约束。
 
-本次独立源码审阅未发现索引排序、惰性切片或显式清理路径的明显 blocker。尚未运行测试、probe、build、lint、typecheck；位置索引代码未验证。仍有 O(N) 状态：committed-time Arrow 列、`_same_numbers` 的排序 / 期望数组、survey 和公开结果的 revision ID、批次结果与 archive 解析缓存；Arrow 单批、SQLite sort 和 PyIceberg / Iceberg metadata 的完整工作集也未测。E1-CAP-1 仍阻断，32 MiB 门槛没有通过证据。
+2026-09-28 又在 `b61d609` 提交 Canonical committed-row / close 的流式核验：按 pinned scan 分批读取 `arrival_seq`、`knowledge_time` 与 schema version；序号以临时 disk-backed index 排序后与预期值逐项比较，close 的 unit 与 block 两次扫描都显式使用写入时的 `snapshot_id`。ready time 和 schema version 只保留有界摘要。静态复核确认代码路径持有状态有界于 Arrow batch + 固定摘要 / SQLite page cache + 定长索引 I/O；不具备 optional `scan_column_batches` 的 adapter 会 fail closed。全 null seq 现在明确抛出 `CatalogIntegrityError`；超过两个 distinct schema versions 时诊断只报告保留的两个值，但仍 fail closed。尚未运行测试、probe、build、lint、typecheck，代码和资源路径未验收。
+
+仍有 O(N) 状态：survey 与公开结果的 revision ID、可选保留的 committed IDs / rows、每个 microbatch 的 planned rows、D1 archive parse / 缓存，以及其他辅助 batch 集合；完整结果 API 的 tuple 仍是公开 O(N) 输出。Arrow 单批、SQLite sort 和 PyIceberg / Iceberg metadata 的完整工作集也未测。E1-CAP-1 仍阻断，32 MiB 门槛没有通过证据。
 
 ## E1-R 实施和后续验收边界
 
