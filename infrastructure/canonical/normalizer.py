@@ -921,7 +921,7 @@ class CanonicalNormalizer:
     def _positions(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
     ) -> tuple[_PositionIndex, str | None]:
-        """Disk-sorted Raw positions of the unit and its first symbol."""
+        """Disk-sorted Raw positions of a single-symbol unit."""
         column = _position_column(channel)
         reader = pin.catalog.scan_column_batches(
             channel.element.table,
@@ -931,7 +931,6 @@ class CanonicalNormalizer:
         offset = 0 if channel.name == "archive" else 1
         index = _PositionIndex()
         symbol: str | None = None
-        saw_symbol = False
         try:
             try:
                 for record_batch in reader:
@@ -940,11 +939,20 @@ class CanonicalNormalizer:
                         raise CatalogIntegrityError(
                             f"{channel.element.table}: a Raw position is null"
                         )
-                    if record_batch.num_rows and not saw_symbol:
-                        symbol = record_batch.column(
-                            record_batch.schema.get_field_index("symbol")
-                        )[0].as_py()
-                        saw_symbol = True
+                    symbols = record_batch.column(record_batch.schema.get_field_index("symbol"))
+                    for value in symbols:
+                        row_symbol = value.as_py()
+                        if not isinstance(row_symbol, str) or not row_symbol:
+                            raise CatalogIntegrityError(
+                                f"{channel.element.table}: a Raw symbol is null or invalid"
+                            )
+                        if symbol is None:
+                            symbol = row_symbol
+                        elif row_symbol != symbol:
+                            raise CatalogIntegrityError(
+                                f"{channel.element.table}: unit {source_revision_id} contains "
+                                "rows for multiple symbols"
+                            )
                     raw_values = values.to_pylist()
                     for start in range(0, len(raw_values), _POSITION_INSERT_ROWS):
                         index.add_batch(
