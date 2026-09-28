@@ -40,3 +40,45 @@ test("paper deviation 2.0.0 must carry its declared-scope DTO fields", () => {
   const inspected = inspectReportDTO({ ...report, payload: badPayload });
   assert.equal(inspected.status, "invalid");
 });
+
+test("paper deviation 2.0.0 with a well-formed declared_scope (scope_hash nested only) is supported", () => {
+  // Matches the real payload shape from research/router/deviation.py's to_payload():
+  // scope_hash lives only inside declared_scope, never at the payload's top level.
+  const [report] = fixtureEnvelopes("paper_deviation");
+  const payload = { ...report.payload };
+  payload.schema_version = "2.0.0";
+  payload.declared_scope = {
+    scope_schema_version: "1.0.0",
+    validation_profile: "profile@1.0.0",
+    validation_profile_hash: "a".repeat(64),
+    validation_report_hash: "b".repeat(64),
+    venue: "test",
+    symbol: "BTC",
+    timeframe: "1d",
+    research_class: "test",
+    scope_hash: "c".repeat(64),
+  };
+  const inspected = inspectReportDTO({ ...report, payload });
+  assert.equal(inspected.status, "supported");
+});
+
+test("paper deviation 2.0.0 declared_scope missing its nested scope_hash is invalid", () => {
+  const [report] = fixtureEnvelopes("paper_deviation");
+  const payload = { ...report.payload };
+  payload.schema_version = "2.0.0";
+  const declaredScope: Record<string, unknown> = {
+    scope_schema_version: "1.0.0",
+    validation_profile: "profile@1.0.0",
+    validation_profile_hash: "a".repeat(64),
+    validation_report_hash: "b".repeat(64),
+    venue: "test",
+    symbol: "BTC",
+    timeframe: "1d",
+    research_class: "test",
+    scope_hash: "c".repeat(64),
+  };
+  delete declaredScope.scope_hash;
+  payload.declared_scope = declaredScope;
+  const inspected = inspectReportDTO({ ...report, payload });
+  assert.equal(inspected.status, "invalid");
+});
