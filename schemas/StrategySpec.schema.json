@@ -1,11 +1,84 @@
 {
   "$defs": {
+    "ConditionedStrategy": {
+      "additionalProperties": false,
+      "description": "门控组合：状态 `state` 等于 `state_value` 时持有 `base` 的目标仓位，否则空仓。\n\n未知或缺失的状态视为空仓；每个 (base, state, state_value) 计一个 trial（ADR-0088 决策 2）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.4.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "type": {
+          "const": "conditioned",
+          "default": "conditioned",
+          "title": "Type",
+          "type": "string"
+        },
+        "base": {
+          "$ref": "#/$defs/Ref"
+        },
+        "state": {
+          "$ref": "#/$defs/Ref"
+        },
+        "state_value": {
+          "minLength": 1,
+          "title": "State Value",
+          "type": "string"
+        }
+      },
+      "required": [
+        "base",
+        "state",
+        "state_value"
+      ],
+      "title": "ConditionedStrategy",
+      "type": "object"
+    },
+    "EnsembleStrategy": {
+      "additionalProperties": false,
+      "description": "等权组合：各成员目标仓位的等权平均（`rule=\"equal_weight_mean\"`）。\n\n成员至少 2 个、不得重复（按目标身份）；风险政策与适用标的一致由 Registry 核对（ADR-0069）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.4.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "type": {
+          "const": "ensemble",
+          "default": "ensemble",
+          "title": "Type",
+          "type": "string"
+        },
+        "members": {
+          "items": {
+            "$ref": "#/$defs/Ref"
+          },
+          "minItems": 2,
+          "title": "Members",
+          "type": "array"
+        },
+        "rule": {
+          "const": "equal_weight_mean",
+          "default": "equal_weight_mean",
+          "title": "Rule",
+          "type": "string"
+        }
+      },
+      "required": [
+        "members"
+      ],
+      "title": "EnsembleStrategy",
+      "type": "object"
+    },
     "Instrument": {
       "additionalProperties": false,
       "description": "可交易标的。跨 venue 的符号必须规范化映射。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -72,12 +145,38 @@
       "title": "Kind",
       "type": "string"
     },
+    "NegatedStrategy": {
+      "additionalProperties": false,
+      "description": "取反组合：`base` 的目标仓位取反。\n\n**不**作为验证负对照（负对照由验证层定义）；现货下的执行受做空成本缺口（ST-4）限制，\n由 Provider fail closed（ADR-0088 决策 2）。",
+      "properties": {
+        "schema_version": {
+          "default": "2.4.0",
+          "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "type": {
+          "const": "negated",
+          "default": "negated",
+          "title": "Type",
+          "type": "string"
+        },
+        "base": {
+          "$ref": "#/$defs/Ref"
+        }
+      },
+      "required": [
+        "base"
+      ],
+      "title": "NegatedStrategy",
+      "type": "object"
+    },
     "Ref": {
       "additionalProperties": false,
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -109,7 +208,7 @@
   "description": "信号 → 目标仓位的声明式规格。\n\n参数空间必须声明，用于多重检验的尝试次数计算（Constitution C-T1）。",
   "properties": {
     "schema_version": {
-      "default": "2.3.0",
+      "default": "2.4.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"
@@ -212,6 +311,36 @@
       },
       "title": "Applicable Instruments",
       "type": "array"
+    },
+    "composition": {
+      "anyOf": [
+        {
+          "discriminator": {
+            "mapping": {
+              "conditioned": "#/$defs/ConditionedStrategy",
+              "ensemble": "#/$defs/EnsembleStrategy",
+              "negated": "#/$defs/NegatedStrategy"
+            },
+            "propertyName": "type"
+          },
+          "oneOf": [
+            {
+              "$ref": "#/$defs/ConditionedStrategy"
+            },
+            {
+              "$ref": "#/$defs/EnsembleStrategy"
+            },
+            {
+              "$ref": "#/$defs/NegatedStrategy"
+            }
+          ]
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Composition"
     }
   },
   "required": [

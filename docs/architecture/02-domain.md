@@ -1,10 +1,11 @@
 # 02 — Domain Model
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
-> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.3.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.4.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
 > ADR-0018 在其内收紧，不升 major）；2.1.0 是 ADR-0052 §4 的 minor（只加可选字段）；2.2.0 是 ADR-0055 的 minor
 > （知识标签 / 资产检索，只加可选字段）；2.3.0 是 ADR-0077 的 minor（只新增有界 Dataset evidence manifest 模型，
-> 已发布模型不变），已发布版本见 §3.3。
+> 已发布模型不变）；2.4.0 是 ADR-0088 的 minor（组合策略、事件 bar 规格、峰值权益、合成效应、波动率缩放屏障与成员回填假设，
+> 只加可选字段、新取值与新模型，见 §2.11），已发布版本见 §3.3。
 
 ## 1. 统一标识与版本化
 
@@ -173,6 +174,10 @@ classDiagram
 | `EventSpec.states` | `state` | 不接受 | 同上 |
 | `StrategySpec.signals` | `feature`、`state`、`event` | 不接受 | 至少 1 |
 | `StrategySpec.risk_policy` | `risk` | 不接受 | 可选 |
+| `EventSpec.bar_spec`（2.4.0，ADR-0088） | `representation` | 不接受 | 可选 |
+| `StrategySpec.composition` 的 `base` / `members`（2.4.0） | `strategy` | 不接受 | 可选；`ensemble` 至少 2 |
+| `ConditionedStrategy.state`（2.4.0） | `state` | 不接受 | 1，且必须出现在 `signals` 中 |
+| `OutcomeLabelSpec.volatility_feature`（2.4.0） | `feature` | 不接受 | 仅 `vol_scaled_triple_barrier` 必填 |
 
 直接推论：**Outcome 的 `Ref` 与 `zone = outcome` 的 `DatasetRef` 都不得成为 Feature / State /
 Event / Strategy 的直接输入。**
@@ -414,6 +419,31 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 `apps/api` 的 `ReportStore` 要求 `research_loop_round` 文件是合法记录且文件名等于其 `record_hash`。
 跨记录规则（链、累计、计划时刻、预算绑定、护栏重放）不在契约层，仍由 worker 的 `LoopAuditLog` / `ResearchLoop` 负责。
 
+### 2.11 契约 2.4.0 的 additive 扩展（[ADR-0088](../adr/0088-contract-2-4-0-composition-extensions.md)）
+
+只新增（决策 1 ~ 6）：全部新字段可选、缺省为 `None` 并从载荷中省略（`exclude_if`），2.0.0 ~ 2.3.0 载荷的形状与内容哈希逐位不变；
+新字段 / 新取值 / 新模型自 2.4.0 起（`_FIELDS_SINCE` / `_VALUES_SINCE` / `_MODEL_SINCE`，§3.3），旧信封携带即拒绝。
+5 个新模型（`ConditionedStrategy`、`EnsembleStrategy`、`NegatedStrategy`、`VolatilityClusteringEffect`、`JumpEffect`）
+登记在 `CONTRACT_MODELS` 末尾。
+
+| 新增内容 | 位置 | 契约层不变量 |
+|---|---|---|
+| `EventSpec.bar_spec: Ref \| None` | `core/domain/specs.py` | 非空时 `kind=representation`；`None` = 未声明 |
+| `StrategySpec.composition`：按 `type` 判别的 `ConditionedStrategy` / `EnsembleStrategy` / `NegatedStrategy` | `core/domain/specs.py` | 引用 kind（base / members 为 `strategy`，门控为 `state`）；`state_value` 非空；`ensemble` 至少 2 个成员、按目标身份不重复、`rule = equal_weight_mean`；组合不得引用本策略自身（同 name@version）；`conditioned` 的门控状态必须出现在 `signals` 中 |
+| `PortfolioState.peak_equity: PositiveDecimal \| None` | `core/contracts/strategy.py` | 非空时 `equity` 也必须非空且 `peak_equity >= equity` |
+| `VolatilityClusteringEffect`（GARCH(1,1)）/ `JumpEffect`（Poisson 跳跃）；`SyntheticMarketSpec.effects` 放宽为按 `kind` 判别的三者联合 | `core/contracts/synthetic.py` | `omega > 0`、`alpha >= 0`、`beta >= 0`、`alpha + beta < 1`；强度在 (0, 1)、`jump_scale > 0`；缺 `kind` 的旧效应按 `return_autocorrelation` 解析；`PlantedEffect` 不变；2.4.0 之前的 `SyntheticMarketSpec` 信封只接受 `PlantedEffect` |
+| `OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER` + `OutcomeLabelSpec.volatility_feature` / `barrier_multiplier` | `core/contracts/outcome.py` | 两个字段只在该方法下必填（`kind=feature`、multiplier > 0），在其他方法下必须为空；该方法下固定屏障 `upper_barrier` / `lower_barrier` 必须为空 |
+| `UniverseMember.assumption: PolicyBinding \| None`（决策 6，ADR-0051 §3） | `core/contracts/universe.py` | 非空时 `policy_id = LISTING_BACKFILL_ASSUMPTION_ID`（`hlens.listing.observed-state-backfill-assumption`）且 `role = availability`；`None` = 成员区间为观测所得 |
+
+**诚实边界**：被引用策略是否存在、嵌套组合与循环引用、组合成员的风险政策与适用标的是否一致（ADR-0069）、组合策略的
+`signals` 是否覆盖 base / 成员需要的全部信号，都要解析被引用对象，属 Registry；组合的执行语义（门控、等权平均、取反；
+取反**不是**验证负对照）、`peak_equity` 的提供（回测 / 执行层，风控不得自己记忆峰值）、`drawdown_control` 在
+`equity` / `peak_equity` 缺失时 fail closed、P7 `temporal` 要求两个输入的 `bar_spec` 都非空且相同、合成效应的生成
+（跳幅由种子确定性生成）与波动率缩放屏障的计算（入场时可见的波动率特征值；同一 bar 同时触碰两个屏障沿用 triple barrier
+的保守判定）都属后续实现批次，契约层不能证明。`SyntheticMarket.truth` 的类型本批次未放宽（仍为 `PlantedEffect`）。
+`UniverseMember.assumption` 的版本 / 哈希是否等于已登记的 ADR-0051 政策、成员区间是否真由该假设推出、`UniverseBuilt.assumed`
+（infrastructure DTO）均属 ADR-0051 第二期。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -509,13 +539,13 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
-当前 `CONTRACT_SCHEMA_VERSION = 2.3.0`；major 2 内已发布的版本为
-`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0", "2.2.0", "2.3.0")`。模型校验**只接受同 major**（`2.x`），
+当前 `CONTRACT_SCHEMA_VERSION = 2.4.0`；major 2 内已发布的版本为
+`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0")`。模型校验**只接受同 major**（`2.x`），
 其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（141 份） | `schemas/*.schema.json` |
+| 当前 Schema（146 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -530,17 +560,19 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 
 **按记录版本重放（ADR-0052 Implementation note — versioned replay）**：2.0.0 载荷保留自己的信封，读取不改写版本，
 内容哈希逐位不变（`tests/golden/v2_0_0/`）；2.1.0 知识载荷同理（`tests/golden/v2_1_0/`，ADR-0055）。
-**当前版本新建、未显式给出信封的对象取 2.3.0，其内容哈希与 2.2.0（及更早）孪生对象不同**——信封参与哈希，这是 minor 的预期后果，
+**当前版本新建、未显式给出信封的对象取 2.4.0，其内容哈希与 2.3.0（及更早）孪生对象不同**——信封参与哈希，这是 minor 的预期后果，
 不得描述为"哈希不变"；只有保持信封版本时，省略空的新字段才使载荷形状与哈希逐位不变。已持久化的行 / 对象（Phase 1 各表的 `contract_schema_version` 列、
 manifest 的 `schema_version`）按其**提交时记录的版本**重建与比较；一个写入组（Canonical 单元、REST response 及其
 elements、archive revision 及其行、exchangeInfo snapshot、listing 批次、边、manifest）只有一个版本，未发布版本或
 组内混版一律 fail closed；只有无任何已提交成员的新组按当前版本写入。重建经过的深层对象用
 `contract_schema_version_scope(<记录版本>)` 构造（只影响缺省信封，只接受已发布版本，新组不得在其中写入）。
 代码中登记、被持久化数据按内容引用的身份（Phase 1 的 `PolicyBinding` / `SourceBinding` 常量、登记的 universe spec）
-保持其发布时的信封（2.0.0）；由 spec 投影出的 `UniverseSpecBinding` 携带 spec 的信封。同表不同版本（2.0.0 ~ 2.3.0）的行
+保持其发布时的信封（2.0.0）；由 spec 投影出的 `UniverseSpecBinding` 携带 spec 的信封。同表不同版本（2.0.0 ~ 2.4.0）的行
 并存，选择与 precedence 不读信封，从行重建的记录保留行上的版本。Phase 3 物理事件表 `event.events` 同样逐行记录运行的
 `contract_schema_version`，按记录版本重建（一个运行 = 一个写入组）。2.3.0 升版前的盘点（ADR-0077 §6.2.2）：上述
 Phase 1 登记身份与知识种子均已显式钉住信封，重放路径均按记录版本，没有随默认信封漂移的已登记身份。
+2.4.0 升版前的盘点（ADR-0088「实施记录：契约层」）结论相同，并覆盖 ADR-0077 的 v3 dataset 路径（manifest / evidence
+记录按 manifest 记录版本重建，规则绑定按 id / version / hash 比较）。
 
 **新内容的引入版本**（ADR-0052 §4、Codex K3）：`Contract._FIELDS_SINCE`（字段 → 版本；字段"存在"= 出现在载荷中：非 `None`
 且未被其 `exclude_if` 省略）、`_VALUES_SINCE`（已有字段的新取值 → 版本）与 `_MODEL_SINCE`（整个模型 → 版本）；信封早于引入版本即拒绝。
@@ -552,8 +584,12 @@ Phase 1 登记身份与知识种子均已显式钉住信封，重放路径均按
 仓库已审阅的知识种子显式记录 `schema_version`，不随当前版本漂移。
 2.3.0 引入（ADR-0077）：整模型 `ResearchDatasetEvidenceManifest`、`DatasetRuleBinding`、`EvidenceStreamRef`、
 `EvidenceObjectRef`、`DatasetQualityReportRef`、`DatasetChunkProof`（`_MODEL_SINCE`，见 §2.3）；已有模型无新字段或新取值。
+2.4.0 引入（ADR-0088，见 §2.11）：字段 `EventSpec.bar_spec`、`StrategySpec.composition`、`PortfolioState.peak_equity`、
+`OutcomeLabelSpec.volatility_feature` / `barrier_multiplier`、`UniverseMember.assumption`（`None` 时省略出载荷）；取值 `OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER`；
+整模型 `ConditionedStrategy`、`EnsembleStrategy`、`NegatedStrategy`、`VolatilityClusteringEffect`、`JumpEffect`；
+2.0.0 ~ 2.3.0 的 `SyntheticMarketSpec` 信封中出现 `PlantedEffect` 以外的效应同样拒绝。
 
-**"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.4.0` 这样的版本号
+**"同 major 更高 minor 可读取"的准确含义**（ADR-0010 §D-14）：`2.5.0` 这样的版本号
 **可被识别**，但这不是前向兼容承诺——载荷里出现当前实现未知字段仍然 fail closed
 （`extra="forbid"`）。不得声称任意未来 minor 都能读。
 

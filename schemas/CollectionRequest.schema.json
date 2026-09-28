@@ -5,7 +5,7 @@
       "description": "版本化来源绑定：`source_id` + SemVer（标识符格式与 03-data.md §7.3 一致）。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -33,7 +33,7 @@
   "description": "一次有界、可重放的获取请求。\n\n`request_id` 是调用方给出的稳定身份；`symbols` 非空、去重、规范排序；覆盖区间为 UTC 半开区间。",
   "properties": {
     "schema_version": {
-      "default": "2.3.0",
+      "default": "2.4.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

@@ -228,8 +228,9 @@ def wire(instance: Contract) -> dict[str, Any]:
 
 
 def test_the_current_version_is_2_3_0_and_every_earlier_minor_stays_published() -> None:
-    assert ADR_0077_VERSION == "2.3.0" == CONTRACT_SCHEMA_VERSION
-    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == ("2.0.0", "2.1.0", "2.2.0", "2.3.0")
+    assert ADR_0077_VERSION == "2.3.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"  # ADR-0088 raised the current minor
+    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == ("2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0")
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
 
@@ -250,9 +251,9 @@ def test_every_new_model_is_declared_since_2_3_0() -> None:
 
 def test_the_new_models_are_appended_to_the_registry_and_exported() -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 141
+    assert len(names) == 146  # ADR-0088 appended five models after these
     assert names[:135][-1] == "FillRemainder"  # everything before ADR-0077 keeps its place
-    assert CONTRACT_MODELS[135:] == NEW_MODELS
+    assert CONTRACT_MODELS[135:141] == NEW_MODELS
     for model in NEW_MODELS:
         assert model.__name__ in universe.__all__
 
@@ -265,14 +266,14 @@ def test_the_committed_schemas_of_the_new_models_match_the_contracts(tmp_path: P
         )
         exported = json.loads(written[model.__name__].read_text(encoding="utf-8"))
         assert committed == exported, model.__name__
-        assert committed["properties"]["schema_version"]["default"] == "2.3.0"
+        assert committed["properties"]["schema_version"]["default"] == "2.4.0"  # ADR-0088
         assert committed["additionalProperties"] is False
 
 
 @pytest.mark.parametrize("model", NEW_MODELS, ids=lambda m: m.__name__)
 def test_new_objects_carry_the_2_3_0_envelope(model: type[Contract]) -> None:
     instance = valid_instances()[model]
-    assert instance.schema_version == "2.3.0"
+    assert instance.schema_version == "2.4.0"  # the current envelope (ADR-0088)
     assert model.model_validate(wire(instance)) == instance
 
 
@@ -695,7 +696,7 @@ def test_a_persisted_2_2_0_v2_manifest_reads_bit_for_bit_with_its_pinned_hash() 
 
 def test_a_v2_manifest_built_now_is_a_2_3_0_object_and_its_twins_keep_their_envelopes() -> None:
     current = manifest()
-    assert current.schema_version == "2.3.0"
+    assert current.schema_version == "2.4.0"  # the current envelope (ADR-0088)
     for old in ("2.0.0", "2.1.0", "2.2.0"):
         twin = at_version(current, old)
         assert twin.schema_version == old
@@ -708,7 +709,7 @@ def test_a_v2_manifest_built_now_is_a_2_3_0_object_and_its_twins_keep_their_enve
 def test_v2_and_v3_manifests_are_read_side_by_side_and_never_confused() -> None:
     old = ResearchDatasetManifest.model_validate_json(V2_MANIFEST_AT_2_2_0)
     new = v3()
-    assert (old.schema_version, new.schema_version) == ("2.2.0", "2.3.0")
+    assert (old.schema_version, new.schema_version) == ("2.2.0", "2.4.0")
     with pytest.raises(ValidationError):
         ResearchDatasetEvidenceManifest.model_validate(json.loads(V2_MANIFEST_AT_2_2_0))
     with pytest.raises(ValidationError):
@@ -719,7 +720,7 @@ def test_v2_and_v3_manifests_are_read_side_by_side_and_never_confused() -> None:
             json.loads(V2_MANIFEST_AT_2_2_0.replace('"schema_version":"2.2.0",', ""))
         )
     assert rebuilt_old.content_hash() == V2_MANIFEST_AT_2_2_0_HASH
-    with contract_schema_version_scope("2.3.0"):
+    with contract_schema_version_scope(new.schema_version):
         rebuilt_new = ResearchDatasetEvidenceManifest.model_validate(wire(new))
     assert rebuilt_new.content_hash() == new.content_hash()
 

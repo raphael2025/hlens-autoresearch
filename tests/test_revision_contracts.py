@@ -1010,8 +1010,9 @@ def test_reexport_is_byte_identical_for_every_current_schema(tmp_path: Path) -> 
 
 def test_contract_version_and_kind_are_unchanged() -> None:
     """ADR-0023「版本策略」：不改 `CONTRACT_SCHEMA_VERSION`；ADR-0024 §5：`Kind` 不新增取值。"""
-    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0 and ADR-0077 to 2.3.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.3.0"
+    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0 and ADR-0088
+    # to 2.4.0.
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
     assert {kind.value for kind in Kind} == {
         "dataset",
         "representation",

@@ -113,11 +113,13 @@ from core.contracts.strategy import (
     TargetPosition,
 )
 from core.contracts.synthetic import (
+    JumpEffect,
     PlantedEffect,
     SyntheticBar,
     SyntheticMarket,
     SyntheticMarketSpec,
     SyntheticProviderDescriptor,
+    VolatilityClusteringEffect,
 )
 from core.contracts.universe import (
     AvailabilityEvidenceGap,
@@ -161,10 +163,13 @@ from core.domain.research import (
     ValidationReport,
 )
 from core.domain.specs import (
+    ConditionedStrategy,
     DatasetRef,
+    EnsembleStrategy,
     EventSpec,
     FeatureSpec,
     Instrument,
+    NegatedStrategy,
     OutcomeSpec,
     RepresentationSpec,
     RiskPolicy,
@@ -350,6 +355,12 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     DatasetQualityReportRef,
     DatasetChunkProof,
     ResearchDatasetEvidenceManifest,
+    # 组合策略与新合成效应（ADR-0088，契约 2.4.0；additive，只追加）
+    ConditionedStrategy,
+    EnsembleStrategy,
+    NegatedStrategy,
+    VolatilityClusteringEffect,
+    JumpEffect,
 )
 
 

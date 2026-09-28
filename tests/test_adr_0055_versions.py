@@ -67,8 +67,8 @@ def _golden(name: str) -> dict[str, Any]:
 
 def test_adr_0055_published_2_2_0_and_every_earlier_minor_stays_published() -> None:
     assert ADR_0055_VERSION == "2.2.0"
-    assert CONTRACT_SCHEMA_VERSION == "2.3.0"  # ADR-0077 raised the current minor
-    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == ("2.0.0", "2.1.0", "2.2.0", "2.3.0")
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"  # ADR-0088 raised the current minor
+    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == ("2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0")
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
 
@@ -91,7 +91,7 @@ def test_the_committed_schema_declares_the_token_grammar(
     model: str, names: tuple[str, str]
 ) -> None:
     schema = json.loads((REPO / "schemas" / f"{model}.schema.json").read_text(encoding="utf-8"))
-    assert schema["properties"]["schema_version"]["default"] == "2.3.0"  # current (ADR-0077)
+    assert schema["properties"]["schema_version"]["default"] == "2.4.0"  # current (ADR-0088)
     for name in names:
         prop = schema["properties"][name]
         assert prop["type"] == "array" and prop["default"] == [] and prop["uniqueItems"] is True
@@ -212,7 +212,7 @@ def test_a_2_1_0_result_nesting_2_2_0_metadata_is_refused() -> None:
     query = KnowledgeQuery(schema_version="2.1.0")
     tagged = _item(tags=("momentum",))
     built = KnowledgeResult.build(query, PROVIDER, (tagged,))
-    assert built.schema_version == "2.3.0"  # a new result: the current envelope (ADR-0077)
+    assert built.schema_version == "2.4.0"  # a new result: the current envelope (ADR-0088)
     payload = {**built.model_dump(mode="json"), "schema_version": "2.1.0"}
     with pytest.raises(ValidationError, match="tags / assets"):
         KnowledgeResult.model_validate(payload)
@@ -281,7 +281,7 @@ def test_a_tagged_item_and_a_filtered_query_hash_deterministically() -> None:
             model.model_validate_json(json.dumps(reordered)),
         )
         assert {again.content_hash() for again in rebuilt} == {obj.content_hash()}
-        assert dumped["schema_version"] == "2.3.0"  # the current envelope (ADR-0077)
+        assert dumped["schema_version"] == "2.4.0"  # the current envelope (ADR-0088)
     assert item.model_dump(mode="json")["tags"] == ["momentum", "time_series_momentum"]
     assert query.model_dump(mode="json")["assets_any"] == ["btc", "eth"]
     result = KnowledgeResult.build(query, PROVIDER, (item,))

@@ -3,7 +3,7 @@
   "description": "一条 availability 证据缺口记录（ADR-0023 §2）：该 revision 的 `available_time` 已保守取\n`ingest_time`。\n\n证据缺口不是数据集级失败（roadmap Phase 1 验收 #18），但必须随 manifest 绑定：`table` +\n`revision_id` 指明哪个 revision，`quality_report_id` 指向记录该缺口的质量报告，`gap` 说明缺什么\n证据。稳定身份为 `(table, revision_id)`。",
   "properties": {
     "schema_version": {
-      "default": "2.3.0",
+      "default": "2.4.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

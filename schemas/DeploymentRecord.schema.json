@@ -5,7 +5,7 @@
       "description": "生产实现与 golden outputs 的一致性检查（ADR-0005 §5）。\n\n`artifact_id` 是 Artifact manifest 规范化 JSON 的 SHA-256（ADR-0005 §3），\n因此它是 `ContentHash` 而不是不透明 ID（ADR-0015 §D-21.1）。\n`production_code_hash` 沿用既有线字段名，值已是结构化的 `GitCodeRevision`\n（commit + tree），不再是单个字符串（ADR-0015 §D-21.2）。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -53,7 +53,7 @@
       "description": "一份代码的 Git 身份：commit 与 tree 两个对象 ID（ADR-0015 §D-21.2）。\n\nADR-0005 §3 把生产代码身份定义为\"commit + tree hash\"的复合概念，因此它不是一个\n字符串槽位：单独的 commit 说明\"哪次提交\"，tree 说明\"实际内容是什么\"，\n两者分开才能区分\"同一 commit 的不同工作区内容\"。\n\n因为是值对象，相等性比较是**结构化**比较：两处生产代码身份是否一致，比较的是\n`(commit_oid, tree_oid)` 这一对，而不是可能只改了一半的字符串。\n\n**诚实边界**：只约束格式。commit / tree 是否真的存在于某个仓库、工作区是否干净、\ntree 是否真的属于该 commit，都需要访问 Git，属 Runner 与打包器（ADR-0015 运行时延期义务）。",
       "properties": {
         "schema_version": {
-          "default": "2.3.0",
+          "default": "2.4.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -81,7 +81,7 @@
   "description": "生产部署记录：可追溯链的终点（ADR-0005 §4）。",
   "properties": {
     "schema_version": {
-      "default": "2.3.0",
+      "default": "2.4.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"
