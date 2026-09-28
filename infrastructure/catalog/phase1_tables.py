@@ -1,14 +1,16 @@
-"""The fifteen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9, C3+D3B+E2+QG-1+DS-1).
+"""The seventeen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9,
+C3+D3B+E2+QG-1+DS-1+B2).
 
-Single entry point for the production layout: ``PHASE1_TABLES`` (fifteen definitions, frozen
+Single entry point for the production layout: ``PHASE1_TABLES`` (seventeen definitions, frozen
 logical names, ``version = 1.0.0``, ``definition_id`` = table name), ``PHASE1_REGISTRY`` and the
 idempotent ``ensure_phase1_tables``. The first eight are the C3 first slice and are unchanged by
 D3B; the next four are the ADR-0027 REST additions (three REST Raw tables + the independent
 precedence-evidence table); the thirteenth is the ADR-0029 additive exchangeInfo snapshot table
 (E2); the fourteenth is the ADR-0031 additive quality evidence-gap table (QG-1); the fifteenth is
-the ADR-0033 additive Research Dataset selection table (DS-1). Appending never changes an earlier
-definition or its hash. C2 test-only definitions live under ``tests/`` and never enter this
-registry.
+the ADR-0033 additive Research Dataset selection table (DS-1); the sixteenth and seventeenth are
+the ADR-0077 additive v3 evidence manifest table and selection chunk table (B2, §7 / §4.1).
+Appending never changes an earlier definition or its hash. C2 test-only definitions live under
+``tests/`` and never enter this registry.
 
 Every field ID is written out below and equals the ID Iceberg assigns on table creation (top-level
 fields first, then nested fields depth-first); the module refuses to import otherwise. Field docs
@@ -72,9 +74,31 @@ Accepted ADRs and contracts, the producers come in later batches):
   ``research.dataset_manifests.dataset_table`` names as ``DatasetRef`` (ADR-0023 §6); it freezes
   the shape ``infrastructure/dataset/selection.py`` proposed (F3), which now imports it back as
   the single source of truth.
+- **v3 bounded evidence manifest and chunk tables (ADR-0077 §7 / §4.1, B2)**: two additive tables
+  for the v3 manifest form (``ResearchDatasetEvidenceManifest``), independent of the two tables
+  above (whose v2 shape, rows and hashes this batch never touches). Both table names, their
+  schemas, partition specs and definition hashes are frozen by this batch per §6.2.5.
+
+  - ``research.dataset_evidence_manifests`` (unpartitioned): one row per v3 manifest, entirely
+    fixed-size columns — the ``dataset`` / ``point_in_time`` / ``universe_spec`` triples (same
+    shape as ``research.dataset_manifests``), the new ``rule`` triple (``DatasetRuleBinding``),
+    ``data_type``, ``selection_id``, ``row_count`` / ``chunk_rows`` / ``chunk_count``, a
+    fixed-length (always six) ``evidence`` list of one flattened ``EvidenceStreamRef`` group per
+    stream (``stream``, ``record_count``, ``leaf_count``, ``depth``, and the ``EvidenceObjectRef``
+    root flattened to ``root_key`` / ``root_sha256`` / ``root_size``), and ``manifest_json`` (the
+    contract canonical JSON of the full manifest; its SHA-256 is ``manifest_content_hash``,
+    mirroring the v2 ``manifest_json`` column).
+  - ``research.dataset_selection_chunks``: the v2 ``research.dataset_selections`` eight columns
+    unchanged, plus ``chunk_index`` (``DatasetChunkProof.chunk_index``) and ``row_ordinal`` (the
+    global, 0-based, continuous row ordinal in ADR-0077 §2 generation order). Partitioned like
+    ``research.dataset_selections``, ``identity(symbol) + day(event_time)`` (ADR §4.1). This is
+    the table the ``chunk_proofs`` evidence stream's ``DatasetChunkProof`` rows are read back from
+    (ADR §4.2 / §5); it carries no manifest reference of its own — an unreferenced chunk batch is
+    an orphan until a published manifest's ``chunk_proofs`` stream names it (ADR §6.2.1).
 
 This module creates no data and derives no semantics: revision IDs, observation keys, policy
-evidence, parsing, Canonical conversion and PIT selection belong to batches D ~ F.
+evidence, parsing, Canonical conversion, PIT selection and the ADR-0077 evidence / chunk writers
+belong to batches D ~ F / B0a / B0b / B1 / B3 / B4.
 """
 
 from __future__ import annotations
@@ -115,8 +139,10 @@ __all__ = [
     "CANONICAL_BARS_1M",
     "CANONICAL_INSTRUMENT_LISTINGS",
     "CANONICAL_TRADES",
+    "DATASET_EVIDENCE_MANIFESTS",
     "DATASET_MANIFESTS",
     "DATASET_SELECTIONS",
+    "DATASET_SELECTION_CHUNKS",
     "DATA_QUALITY_REPORTS",
     "EXCHANGE_DECIMAL",
     "PHASE1_DEFINITION_VERSION",
@@ -986,9 +1012,110 @@ DATASET_SELECTIONS: Final = _definition(
     _symbol_day_spec(3, 6, "event_time"),
 )
 
-#: The fifteen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027,
+# --------------------------------------------------------------------------- research (ADR-0077 B2)
+
+
+DATASET_EVIDENCE_MANIFESTS: Final = _definition(
+    "research.dataset_evidence_manifests",
+    Schema(
+        _req(1, "manifest_content_hash", _S, "ResearchDatasetEvidenceManifest.content_hash()"),
+        _req(2, "contract_schema_version", _S, "ResearchDatasetEvidenceManifest.schema_version"),
+        _req(3, "dataset_zone", _S, "dataset.zone (research_dataset)"),
+        _req(4, "dataset_table", _S, "dataset.table"),
+        _req(
+            5,
+            "dataset_snapshot_id",
+            _S,
+            "dataset.snapshot_id: snapshot of the last committed chunk (ADR-0077 §1.2)",
+        ),
+        _req(6, "dataset_time_range_start", _T, "dataset.time_range_start"),
+        _req(7, "dataset_time_range_end", _T, "dataset.time_range_end"),
+        _req(8, "point_in_time_name", _S, "point_in_time.name"),
+        _req(9, "point_in_time_version", _S, "point_in_time.version"),
+        _req(10, "point_in_time_hash", _S, "point_in_time.content_hash()"),
+        _opt(11, "simulation_time", _T, "point_in_time.simulation_time"),
+        _opt(12, "simulation_start", _T, "point_in_time.simulation_start"),
+        _opt(13, "simulation_end", _T, "point_in_time.simulation_end"),
+        _req(14, "knowledge_cutoff", _T, "point_in_time.knowledge_cutoff"),
+        _req(15, "universe_spec_name", _S, "universe_spec.name"),
+        _req(16, "universe_spec_version", _S, "universe_spec.version"),
+        _req(17, "universe_spec_hash", _S, "universe_spec.spec_hash"),
+        _req(
+            18,
+            "snapshot_bindings",
+            ListType(
+                29,
+                StructType(
+                    _req(30, "table", _S, "upstream namespace.table"),
+                    _req(31, "snapshot_id", _S, "upstream snapshot_id"),
+                ),
+                element_required=True,
+            ),
+            "point_in_time.snapshot_bindings sorted by table",
+        ),
+        _req(19, "rule_id", _S, "rule.rule_id (DatasetRuleBinding)"),
+        _req(20, "rule_version", _S, "rule.version"),
+        _req(21, "rule_hash", _S, "rule.rule_hash"),
+        _req(22, "data_type", _S, "data_type (explicit, not re-inferred as in v2)"),
+        _req(23, "selection_id", _S, "selection_id: dataset build id (chunk batch id prefix)"),
+        _req(24, "row_count", _L, "row_count"),
+        _req(25, "chunk_rows", _L, "chunk_rows (ADR-0077 §3.6 rule spec parameter; DQ-9 OPEN)"),
+        _req(26, "chunk_count", _L, "chunk_count = ceil(row_count / chunk_rows)"),
+        _req(
+            27,
+            "evidence",
+            ListType(
+                32,
+                StructType(
+                    _req(33, "stream", _S, "EvidenceStreamRef.stream"),
+                    _req(34, "record_count", _L, "EvidenceStreamRef.record_count"),
+                    _req(35, "leaf_count", _L, "EvidenceStreamRef.leaf_count"),
+                    _req(36, "depth", _L, "EvidenceStreamRef.depth"),
+                    _req(37, "root_key", _S, "EvidenceStreamRef.root.key"),
+                    _req(38, "root_sha256", _S, "EvidenceStreamRef.root.sha256"),
+                    _req(39, "root_size", _L, "EvidenceStreamRef.root.size"),
+                ),
+                element_required=True,
+            ),
+            "evidence: exactly six EvidenceStreamRef groups (one per stream), sorted by "
+            "stream name",
+        ),
+        _req(
+            28,
+            "manifest_json",
+            _S,
+            "contract canonical JSON of the full v3 manifest (UTF-8); "
+            "sha256 = manifest_content_hash",
+        ),
+    ),
+)
+
+DATASET_SELECTION_CHUNKS: Final = _definition(
+    "research.dataset_selection_chunks",
+    Schema(
+        _req(1, "selection_id", _S, "dataset build id (= chunk batch id prefix)"),
+        _req(2, "canonical_table", _S, "selected revision's table"),
+        _req(3, "symbol", _S, "Canonical symbol, e.g. BTC-USDT"),
+        _req(4, "observation_key", _S, "RevisionRecord.observation_key"),
+        _req(5, "revision_id", _S, "the selected Canonical revision"),
+        _req(6, "event_time", _T, "its event_time / interval_start (UTC)"),
+        _opt(7, "effective_from", _T, "simulation span start; null = point"),
+        _opt(8, "effective_until", _T, "simulation span end (exclusive)"),
+        _req(9, "chunk_index", _L, "DatasetChunkProof.chunk_index: this row's chunk (0-based)"),
+        _req(
+            10,
+            "row_ordinal",
+            _L,
+            "global row_ordinal (0-based, continuous): ADR-0077 §2 generation order",
+        ),
+    ),
+    _symbol_day_spec(3, 6, "event_time"),
+)
+
+#: The seventeen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027,
 #: then the ADR-0029 exchangeInfo snapshot table (E2), then the ADR-0031 quality evidence-gap
-#: table (QG-1), then the ADR-0033 Research Dataset selection table (DS-1).
+#: table (QG-1), then the ADR-0033 Research Dataset selection table (DS-1), then the ADR-0077 v3
+#: evidence manifest and selection chunk tables (B2).
 PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_AGG_TRADES,
@@ -1005,6 +1132,8 @@ PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_EXCHANGE_INFO,
     QUALITY_EVIDENCE_GAPS,
     DATASET_SELECTIONS,
+    DATASET_EVIDENCE_MANIFESTS,
+    DATASET_SELECTION_CHUNKS,
 )
 PHASE1_REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 

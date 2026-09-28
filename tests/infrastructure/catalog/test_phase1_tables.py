@@ -1,8 +1,12 @@
-"""C3 / D3B / E2 / QG-1 / DS-1 production table definitions: layout, hashes, registry, evolution.
+"""C3 / D3B / E2 / QG-1 / DS-1 / B2 production table definitions: layout, hashes, registry,
+evolution.
 
 The C3 first slice (eight tables) is frozen byte for byte; D3B appends the four ADR-0027 tables,
-E2 the ADR-0029 exchangeInfo snapshot table, QG-1 the ADR-0031 quality evidence-gap table and DS-1
-the ADR-0033 Research Dataset selection table, each leaving every earlier definition untouched.
+E2 the ADR-0029 exchangeInfo snapshot table, QG-1 the ADR-0031 quality evidence-gap table, DS-1
+the ADR-0033 Research Dataset selection table and B2 the two ADR-0077 v3 evidence manifest /
+selection chunk tables, each leaving every earlier definition untouched. B2's own structural,
+physical-shape and "earlier goldens unchanged" coverage lives in ``test_adr_0077_tables`` (its
+module docstring explains why its two tables' own golden hashes are not yet pinned here).
 
 No catalog here (pure definitions); PostgreSQL evidence is in ``test_phase1_tables_postgres``.
 """
@@ -234,7 +238,14 @@ DS_GOLDEN: dict[str, tuple[str, str, str]] = {
         "1e9751688f419cde55f112bef03349f5b7e65edcce30166df6ac4006391cc19e",
     ),
 }
-#: All fifteen tables in registry order, their partitions and goldens.
+#: ADR-0077 addition, appended after the DS-1 table (B2). Golden hashes for these two tables are
+#: not yet pinned here (see ``test_adr_0077_tables``'s module docstring: this batch could not run
+#: Python to compute them); once Codex / the reviewer runs the real test suite, add them to
+#: ``ALL_GOLDEN`` / ``ALL_PARTITIONS`` / ``PHASE1_TABLE_NAMES`` below like every earlier batch did.
+B2_TABLES = ("research.dataset_evidence_manifests", "research.dataset_selection_chunks")
+#: All fifteen goldened tables in registry order, their partitions and goldens (the two B2 tables
+#: are registered in ``PHASE1_TABLES`` — see ``test_adr_0077_tables`` — but deliberately excluded
+#: from this tuple until their goldens are pinned).
 PHASE1_TABLE_NAMES = FROZEN_TABLES + REST_TABLES + E2_TABLES + QG_TABLES + DS_TABLES
 ALL_PARTITIONS = {
     **FROZEN_PARTITIONS,
@@ -299,15 +310,16 @@ def by_table(table: str) -> RegisteredTableDefinition:
 # --------------------------------------------------------------------------- registry
 
 
-def test_registry_holds_the_frozen_eight_then_the_rest_then_the_e2_qg1_and_ds1_tables() -> None:
+def test_registry_holds_the_frozen_eight_then_the_rest_then_the_e2_qg1_ds1_and_b2_tables() -> None:
     tables = tuple(item.table for item in PHASE1_TABLES)
     assert tables[:8] == FROZEN_TABLES  # C3 first slice first, order unchanged
     assert tables[8:12] == REST_TABLES  # ADR-0027 additions appended
     assert tables[12:13] == E2_TABLES  # ADR-0029 addition appended after REST
     assert tables[13:14] == QG_TABLES  # ADR-0031 addition appended after E2
-    assert tables[14:] == DS_TABLES  # ADR-0033 addition appended last
-    assert len(PHASE1_REGISTRY) == 15
-    assert [item.table for item in PHASE1_REGISTRY] == list(PHASE1_TABLE_NAMES)
+    assert tables[14:15] == DS_TABLES  # ADR-0033 addition appended after QG-1
+    assert tables[15:] == B2_TABLES  # ADR-0077 additions appended last (B2)
+    assert len(PHASE1_REGISTRY) == 17
+    assert [item.table for item in PHASE1_REGISTRY] == list(PHASE1_TABLE_NAMES) + list(B2_TABLES)
     for definition in PHASE1_TABLES:
         assert definition.definition_id == definition.table
         assert definition.version == "1.0.0"
