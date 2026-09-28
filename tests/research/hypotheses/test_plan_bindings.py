@@ -7,7 +7,14 @@ import pytest
 from core.domain.base import FrozenMapping, Kind, Ref
 from core.domain.research import ExperimentSpec, Hypothesis, HypothesisOrigin, ReproducibilityTuple
 from core.domain.selection import ProfileSelection, ProfileSelectionKey
-from core.domain.specs import DatasetRef, FeatureSpec, Zone
+from core.domain.specs import (
+    ConditionedStrategy,
+    DatasetRef,
+    FeatureSpec,
+    NegatedStrategy,
+    StrategySpec,
+    Zone,
+)
 from research.hypotheses.plan_bindings import (
     PlanBindingRefused,
     produce_lowered_output_bindings,
@@ -159,13 +166,17 @@ def test_output_producer_rejects_wrong_nominal_output_type() -> None:
         )
 
 
-def test_output_producer_fails_closed_when_plan_output_has_no_core_spec() -> None:
+def test_output_producer_requires_conditioned_strategy_for_conditional_plan() -> None:
+    """ADR-0088 decision 2: a conditional strategy plan's only core spec is a StrategySpec whose
+    composition is ConditionedStrategy; anything else still fails closed."""
+    strategy_ref = Ref(kind=Kind.STRATEGY, name="s", version="1.0.0")
+    state_ref = Ref(kind=Kind.STATE, name="state", version="1.0.0")
     node = PlanNode(
         node_id="conditional",
         operator=PlanOperator.CONDITIONING,
         inputs=(
-            SpecInput(Ref(kind=Kind.STRATEGY, name="s", version="1.0.0"), "d" * 64),
-            SpecInput(Ref(kind=Kind.STATE, name="state", version="1.0.0"), "e" * 64),
+            SpecInput(strategy_ref, "d" * 64),
+            SpecInput(state_ref, "e" * 64),
         ),
         parameters=FrozenMapping({"state_value": "high"}),
     )
@@ -174,12 +185,48 @@ def test_output_producer_fails_closed_when_plan_output_has_no_core_spec() -> Non
         nodes=(node,),
         limits=PlanLimits(max_depth=2, max_nodes=2, max_json_bytes=2048, max_parameters_per_node=2),
     )
-    with pytest.raises(PlanBindingRefused, match="unsupported_plan_output_type"):
+    with pytest.raises(PlanBindingRefused, match="plan_output_type_mismatch"):
         produce_lowered_output_bindings(
             experiment_hash=EXPERIMENT_HASH,
             plan=plan,
             specs_by_node={"conditional": _feature()},
         )
+    plain = StrategySpec(
+        name="plain",
+        version="1.0.0",
+        created_at=NOW,
+        signals=(FEATURE_A, state_ref),
+    )
+    with pytest.raises(PlanBindingRefused, match="plan_output_composition_mismatch"):
+        produce_lowered_output_bindings(
+            experiment_hash=EXPERIMENT_HASH,
+            plan=plan,
+            specs_by_node={"conditional": plain},
+        )
+    negated = plain.model_copy(
+        update={"name": "negated", "composition": NegatedStrategy(base=strategy_ref)}
+    )
+    with pytest.raises(PlanBindingRefused, match="plan_output_composition_mismatch"):
+        produce_lowered_output_bindings(
+            experiment_hash=EXPERIMENT_HASH,
+            plan=plan,
+            specs_by_node={"conditional": negated},
+        )
+    gated = plain.model_copy(
+        update={
+            "name": "gated",
+            "composition": ConditionedStrategy(
+                base=strategy_ref, state=state_ref, state_value="high"
+            ),
+        }
+    )
+    (binding,) = produce_lowered_output_bindings(
+        experiment_hash=EXPERIMENT_HASH,
+        plan=plan,
+        specs_by_node={"conditional": gated},
+    )
+    assert binding.node_id == "conditional"
+    assert binding.spec.content_hash() == gated.content_hash()
 
 
 def test_complete_binding_validator_rejects_output_hash_mismatch() -> None:

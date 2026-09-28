@@ -81,12 +81,19 @@
 Feature / State / Event / Strategy 核心规格类，并与所关联 ExperimentSpec 的直接依赖 ref 和重算 hash 完全相符；同一不可变规格可以被多个实验共同引用。
 
 依 ADR-0078，`TypedPlan.nodes` 是 lowered outputs 全集的权威来源，每个 AST 节点要求且只要求一个输出规格。`produce_lowered_output_bindings(...)` 通过 node ID 映射拒绝缺失 / 多余节点，并检查名义输出类型；
-`validate_complete_experiment_bindings(...)` 再要求每个 ExperimentSpec 恰有一个 plan、每个计划节点恰有一个输出，以及 direct dependency ref/hash 一致。条件策略计划没有现有核心规格表示，producer 拒绝该输出类型。
+`validate_complete_experiment_bindings(...)` 再要求每个 ExperimentSpec 恰有一个 plan、每个计划节点恰有一个输出，以及 direct dependency ref/hash 一致。契约 2.4.0（ADR-0088 决策 2）起，条件策略计划的核心规格是 `composition=ConditionedStrategy` 的 StrategySpec；`conditioning` / `ensemble` / `negation` 节点的 StrategySpec 必须恰好带有对应的 `ConditionedStrategy` / `EnsembleStrategy` / `NegatedStrategy` 组合，否则两个校验器都以 `plan_output_composition_mismatch` 拒绝。
 
 旧 `validate_experiment_bindings(...)` 保留兼容，仍只校验调用方所交 outputs，不能用于声明全集完整。新 API 只提供集合完整性与直接绑定证据，不校验传递依赖闭包或算子语义，不持久化 admission、不注册 trial、不授权执行。六类 operator 仍关闭，`TypedPlan.runnable` 仍恒为 `False`。测试已新增 / 更新但未运行，待统一验收。
 
 ## P7 non-runnable lowering（`typed_plan_lowering.py`，ADR-0082）
 
-`lower_typed_plan(plan, resolution=..., created_at=...)` 只接受与 plan hash 对应的直接引用解析结果，并要求调用方明确给出带时区的 `created_at`。当前只 lower `interaction`：两个 FeatureSpec 按同一 evaluation time 做严格 product，缺失传播为 `None`，不允许 bool / float / 静默舍入；结果是 `FeatureSpec`，目标 Provider key 为 `p7_interaction_product@1.0.0`。该 Provider 本身尚未实现或登记。输出为 node ID 映射，随后交给 `produce_lowered_output_bindings(...)` 做 ADR-0078 全集与类型校验。
+`lower_typed_plan(plan, resolution=..., created_at=...)` 只接受与 plan hash 对应的直接引用解析结果，并要求调用方明确给出带时区的 `created_at`。已接受的 lowering：
 
-`conditioning`、`temporal`、`transformation`、`ensemble`、`negation` 在 ADR-0082 中为 OPEN；混有这些节点的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner、不改变 `compile_plan` 的拒绝行为；`TypedPlan.runnable` 永远为 `False`。
+- `interaction`：两个 FeatureSpec 按同一 evaluation time 做严格 product，缺失传播为 `None`，不允许 bool / float / 静默舍入；结果是 `FeatureSpec`，目标 Provider key 为 `p7_interaction_product@1.0.0`。
+- `transformation`：只限 `standardize` / `difference` / `smooth`，显式 `window`、只向后看（ADR-0082 §4）。
+- `temporal`（ADR-0088 决策 1）：两个输入 EventSpec 的 `bar_spec` 必须都非空且指向同一目标，`time_unit` 必须为 `bar`，否则 `operator_open`；第二事件在第一事件之后 1..`window` 根 bar 内（左开右闭）；结果 EventSpec 的 `bar_spec` 同输入、`observable_lag` 取第二事件的值、`trigger` 为规范 JSON 声明。第一事件的 `observable_lag` 大于第二事件时无法证明可见性，以 `temporal_visibility_unprovable` 拒绝。
+- `conditioning` / `ensemble` / `negation`（ADR-0088 决策 2）：分别产生 `composition` 为 `ConditionedStrategy` / `EnsembleStrategy(rule="equal_weight_mean")` / `NegatedStrategy` 的 StrategySpec。`signals` 为 base / 成员信号（conditioning 再加门控状态）按目标身份去重后的有序并集；风险政策与适用标的继承 base，ensemble 成员二者必须完全一致（ADR-0069），否则拒绝；conditioning 的 `state_value` 不在 StateSpec `state_space` 中时以 `unknown_state_value` 拒绝。取反**不是**验证负对照。
+
+所有 Provider 都尚未实现或登记。输出为 node ID 映射，随后交给 `produce_lowered_output_bindings(...)` 做 ADR-0078 全集、类型与组合校验。
+
+`transformation` 之 `rank` / `quantile` 仍为 OPEN；混有这类节点或任一拒绝条件的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner、不改变 `compile_plan` 的拒绝行为；`TypedPlan.runnable` 永远为 `False`。
