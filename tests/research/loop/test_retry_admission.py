@@ -49,8 +49,14 @@ def _item(hypothesis: Hypothesis, attempt: str) -> RetryManifestItem:
 
 
 def _prepare(
-    hypothesis: Hypothesis, baseline: tuple[int, str], *, failed: str = FAILED
+    hypothesis: Hypothesis,
+    baseline: tuple[int, str],
+    *,
+    failed: str = FAILED,
+    manifest: list[RetryManifestItem] | None = None,
 ) -> dict[str, Any]:
+    """A single-item manifest by default (ADR-0083 PM decision 4: one admission may retry a
+    hypothesis at most once); pass ``manifest`` explicitly for a multi-item request."""
     packet = {"packet_version": "1.0.0", "loop_record": {"record_content_hash": failed}}
     return retry_prepare_payload(
         loop_id=LOOP,
@@ -58,7 +64,7 @@ def _prepare(
         packet_hash=content_hash(packet),
         failed_record_hash=failed,
         reviewer="human-reviewer",
-        manifest=[_item(hypothesis, "retry-1"), _item(hypothesis, "retry-2")],
+        manifest=manifest if manifest is not None else [_item(hypothesis, "retry-1")],
         ledger_baseline=baseline,
     )
 
@@ -74,20 +80,23 @@ def _entries(ledger: TrialLedger) -> tuple[JournalEntry, ...]:
 
 
 def test_the_reducer_recovers_only_the_exact_ledger_prefix(tmp_path: Path) -> None:
+    """A 2-item manifest with two distinct hypotheses (ADR-0083 PM decision 4: one admission may
+    retry a hypothesis at most once, so a multi-item request needs distinct hypotheses)."""
     ledger = TrialLedger(tmp_path / "trial_ledger.jsonl")
-    hypothesis = _hypothesis()
-    assert ledger.register(hypothesis)
+    first, second = _hypothesis(), _hypothesis("h_retry_2")
+    assert ledger.register(first) and ledger.register(second)
     baseline = ledger.journal_head()
     assert baseline is not None
     journal = _journal(tmp_path)
-    prepare = journal.append_prepare(_prepare(hypothesis, baseline))
-    assert ledger.register_reevaluation(hypothesis, "retry-1")
+    manifest = [_item(first, "retry-1"), _item(second, "retry-2")]
+    prepare = journal.append_prepare(_prepare(first, baseline, manifest=manifest))
+    assert ledger.register_reevaluation(first, "retry-1")
 
     partial = reduce_retry_ledger_tail(journal, _entries(ledger), loop_id=LOOP)
     assert len(partial.existing_entries) == 1 and partial.commit is None
     assert [item.attempt for item in partial.missing_items] == ["retry-2"]
 
-    assert ledger.register_reevaluation(hypothesis, "retry-2")
+    assert ledger.register_reevaluation(second, "retry-2")
     complete = reduce_retry_ledger_tail(journal, _entries(ledger), loop_id=LOOP)
     assert not complete.missing_items
     journal.append_commit(
@@ -95,8 +104,8 @@ def test_the_reducer_recovers_only_the_exact_ledger_prefix(tmp_path: Path) -> No
     )
     committed = reduce_retry_ledger_tail(journal, _entries(ledger), loop_id=LOOP)
     assert committed.commit is not None and not committed.missing_items
-    # the failed trial is never removed: registration + both retries all count
-    assert ledger.trials("family_retry") == 3
+    # the failed trial is never removed: both registrations + both retries all count
+    assert ledger.trials("family_retry") == 4
 
 
 def test_a_journal_admits_exactly_one_retry(tmp_path: Path) -> None:
@@ -133,8 +142,12 @@ def test_the_manifest_is_explicit_unique_and_never_takes_a_loop_attempt_key() ->
         manifest_items([_item(hypothesis, "loop_round:loop-retry:3")])
     with pytest.raises(RetryAdmissionError, match="normalized"):
         manifest_items([_item(hypothesis, " retry-1")])
-    # the same hypothesis may be listed twice, under distinct fresh attempts
-    assert len(manifest_items([_item(hypothesis, "a"), _item(hypothesis, "b")])) == 2
+    # ADR-0083 "PM 决定" §4: a hypothesis may not be repeated in one admission's manifest, even
+    # under distinct, otherwise-valid fresh attempt keys
+    with pytest.raises(RetryAdmissionError, match="at most once"):
+        manifest_items([_item(hypothesis, "a"), _item(hypothesis, "b")])
+    other = _hypothesis("h_retry_2")
+    assert len(manifest_items([_item(hypothesis, "a"), _item(other, "b")])) == 2
 
 
 def test_g1_every_item_is_registered_with_exactly_that_content() -> None:

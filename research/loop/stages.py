@@ -839,6 +839,13 @@ class MemoryStage:
     An infrastructure error (the validator's own error, a run error outside the subject's code)
     and a technical failure in ``OOS`` leave the lifecycle unchanged
     (``technical_failures_lifecycle_unchanged``).
+
+    Outcome used as input (ADR-0086 decision 3): the C-L2 guard raises ``OutcomeUsedAsInput``
+    before any gate runs, so the trial's ``ValidationOutcome`` carries no report — but unlike a
+    validator's own technical error, ``ValidationStage._validate`` tags it with
+    ``failure_reason=ReasonCode.OUTCOME_USED_AS_INPUT`` (research.loop.trials), and this stage
+    reads that tag to move the subject ``VALIDATION → REJECTED`` with a FailureRecord citing the
+    same reason — leakage, never a technical failure, and never retried as one.
     """
 
     name = "memory"
@@ -917,14 +924,39 @@ class MemoryStage:
     ) -> None:
         hypothesis = result.outcome.hypothesis
         subject = str(hypothesis.ref)
-        if result.report is None:  # the validator itself errored: a technical failure
+        if result.report is None:
+            evidence = (f"run:{result.outcome.run.run_id}", round_ref)
+            if result.failure_reason is ReasonCode.OUTCOME_USED_AS_INPUT:
+                # ADR-0086 decision 3: C-L2 leakage, not a technical validator failure — REJECTED,
+                # never retried as though the validator itself had errored (class docs).
+                failures.append(
+                    self._record(
+                        FailureRecord(
+                            subject_ref=hypothesis.ref,
+                            terminal_state="REJECTED",
+                            reason_code=ReasonCode.OUTCOME_USED_AS_INPUT,
+                            evidence=evidence,
+                            hypothesis_family_id=hypothesis.family_id,
+                            lessons=None if result.error is None else result.error[:2000],
+                            recorded_at=ctx.as_of,
+                        )
+                    )
+                )
+                ctx.advance(
+                    hypothesis.ref,
+                    LifecycleState.REJECTED,
+                    reason="Outcome used as input (C-L2): rejected as leakage, not retried",
+                    evidence=evidence,
+                )
+                return
+            # the validator itself errored: a technical failure
             failures.append(
                 self._record(
                     FailureRecord(
                         subject_ref=hypothesis.ref,
                         terminal_state="FAILED",
                         reason_code=ReasonCode.RUN_ERRORED,
-                        evidence=(f"run:{result.outcome.run.run_id}", round_ref),
+                        evidence=evidence,
                         hypothesis_family_id=hypothesis.family_id,
                         lessons=None if result.error is None else result.error[:2000],
                         recorded_at=ctx.as_of,

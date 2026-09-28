@@ -152,6 +152,7 @@ from core.contracts.outcome import (
     OutcomePriceBar,
     OutcomeProvider,
     OutcomeRequest,
+    OutcomeUsedAsInput,
 )
 from core.contracts.profile_selection import ExperimentMetadata
 from core.contracts.state import StateResult
@@ -862,7 +863,10 @@ class ExperimentStage:
             repro=repro,
         )
         run_id = f"{ctx.loop_id}:{ctx.round_index}:{hypothesis.name}@{hypothesis.version}"
-        if origin == "retry":  # ADR-0083: a manifest may list one hypothesis more than once
+        if origin == "retry":
+            # ADR-0083 "PM 决定" §4: one manifest never repeats a hypothesis, but the retry's own
+            # run/report identity is still keyed by its attempt (not only round + hypothesis) as
+            # defense in depth, matching a re-evaluation's own attempt-scoped trial index.
             run_id = f"{run_id}#{attempt}"
         inputs: EvaluationInputs | None = None
         trial: TrialRun | None = None
@@ -1161,6 +1165,32 @@ class ValidationStage:
                 candidate.spec.ref, candidate.spec, trial.backtest
             )
             answer.check_subject(candidate.spec.ref)
+        except OutcomeUsedAsInput as exc:
+            # ADR-0086 decision 3: C-L2's Outcome-as-input guard is leakage (LEAKAGE /
+            # OUTCOME_USED_AS_INPUT), not a technical validator failure — the trial is REJECTED,
+            # with that reason on its FailureRecord (MemoryStage._settle), and is never retried as
+            # though the validator itself had errored.
+            error = f"{type(exc).__name__}: {exc}"
+            summary = {
+                **base,
+                "verdict": None,
+                "failure_reason": ReasonCode.OUTCOME_USED_AS_INPUT.value,
+                "error": error[:500],
+            }
+            if self._validates_cells(outcome):
+                summary["conditional_cells"] = self._cells_block(
+                    ctx, outcome, context, setup, labels, None
+                )
+            return ValidationOutcome(
+                ctx.round_index,
+                outcome,
+                None,
+                ReasonCode.OUTCOME_USED_AS_INPUT,
+                None,
+                {"status": "not_run", "reason": "rejected: Outcome used as input (C-L2)"},
+                summary,
+                error,
+            )
         except Exception as exc:  # noqa: BLE001 - a validator error is a FAILED trial, recorded
             error = f"{type(exc).__name__}: {exc}"
             summary = {**base, "verdict": None, "error": error[:500]}

@@ -19,6 +19,7 @@ import pytest
 
 from apps.worker import RoundStatus
 from apps.worker.loop import FORBIDDEN_TARGETS
+from core.contracts.outcome import OutcomeUsedAsInput
 from core.contracts.strategy import (
     BacktestProvider,
     BacktestProviderDescriptor,
@@ -79,12 +80,14 @@ def _flipped(position: TargetPosition) -> TargetPosition:
 
 
 class FaultyBacktester:
-    """TEST ONLY: the real backtester, raising from a given call on (an infrastructure fault)."""
+    """TEST ONLY: the real backtester, raising from a given call on (an infrastructure fault by
+    default; ``fail_with`` swaps in another exception, e.g. ``OutcomeUsedAsInput`` — ADR-0086)."""
 
     def __init__(self, inner: BacktestProvider) -> None:
         self._inner = inner
         self.calls = 0
         self.fail_from_call: int | None = None
+        self.fail_with: BaseException | None = None
 
     @property
     def descriptor(self) -> BacktestProviderDescriptor:
@@ -93,7 +96,7 @@ class FaultyBacktester:
     def run(self, request: BacktestRequest) -> BacktestResult:
         self.calls += 1
         if self.fail_from_call is not None and self.calls >= self.fail_from_call:
-            raise RuntimeError("TEST ONLY: backtest storage unavailable")
+            raise self.fail_with or RuntimeError("TEST ONLY: backtest storage unavailable")
         return self._inner.run(request)
 
 
@@ -249,6 +252,45 @@ def test_a_validator_error_does_not_mark_the_subject_failed(tmp_path: Path) -> N
     assert _memory_summary(record)["technical_failures_lifecycle_unchanged"] == [
         str(hypothesis.ref)
     ]
+
+
+def test_an_outcome_used_as_input_is_rejected_not_marked_failed(tmp_path: Path) -> None:
+    """ADR-0086 decision 3: C-L2's ``OutcomeUsedAsInput`` (leakage) out of the validator's own
+    re-run is REJECTED with ``ReasonCode.OUTCOME_USED_AS_INPUT`` — unlike every other exception
+    the validator can raise (``test_a_validator_error_does_not_mark_the_subject_failed`` above),
+    it is never treated as a technical failure and the subject is never revisited."""
+    loop, memory, _, backtester = _build(tmp_path)
+    backtester.fail_from_call = 2  # the experiment's backtest works, the validator's re-run leaks
+    backtester.fail_with = OutcomeUsedAsInput("TEST ONLY: a study declared an Outcome payload")
+    [record] = loop.run_unattended(1)
+    assert record.status is RoundStatus.COMPLETED
+    hypothesis = _only_trial(memory)
+    [result] = memory.validations
+    assert result.report is None and result.failure_reason is ReasonCode.OUTCOME_USED_AS_INPUT
+    assert result.summary["failure_reason"] == ReasonCode.OUTCOME_USED_AS_INPUT.value
+    [failure] = memory.failures.records()
+    assert (failure.terminal_state, failure.reason_code) == (
+        "REJECTED",
+        ReasonCode.OUTCOME_USED_AS_INPUT,
+    )
+    assert loop.guard.state_of(hypothesis.ref) is LifecycleState.REJECTED
+    moved = record.transitions[-1]
+    assert (moved.from_state, moved.to_state) == (
+        LifecycleState.VALIDATION,
+        LifecycleState.REJECTED,
+    )
+    assert moved.evidence == (f"run:{result.outcome.run.run_id}", ROUND_0)
+    assert moved.approved_by is None
+    # never counted as a technical failure (unlike the sibling test above)
+    assert _memory_summary(record)["technical_failures_lifecycle_unchanged"] == []
+    _assert_no_route_beyond_oos([record])
+    # terminal: never re-evaluated, whatever the next round brings (a technical failure in
+    # VALIDATION would instead leave it eligible for a later look; REJECTED never is)
+    backtester.fail_from_call = None
+    backtester.fail_with = None
+    [later] = loop.run_unattended(1)
+    assert loop.guard.state_of(hypothesis.ref) is LifecycleState.REJECTED
+    assert later.transitions == ()
 
 
 # ------------------------------------------------------------------ the allowed causes (§2 / §3)
