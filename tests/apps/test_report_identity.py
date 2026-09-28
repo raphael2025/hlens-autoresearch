@@ -35,6 +35,7 @@ IDENTIFIED = (
     ReportKind.GATE_CALIBRATION,
     ReportKind.PAPER_DEVIATION,
     ReportKind.DEGRADATION_CHECK,
+    ReportKind.RETRO_AUDIT,
 )
 
 
@@ -177,6 +178,11 @@ HASH_EDITS: dict[str, tuple[ReportKind, str, Callable[[Payload], Payload]]] = {
         ReportKind.DEGRADATION_CHECK,
         "check_hash",
         lambda p: {**p, "degraded": not p["degraded"]},
+    ),
+    "retro-audit": (
+        ReportKind.RETRO_AUDIT,
+        "report_hash",
+        lambda p: {**p, "rules": "edited"},
     ),
 }
 

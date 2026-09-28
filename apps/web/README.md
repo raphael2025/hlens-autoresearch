@@ -188,7 +188,11 @@ Knowledge Search 页面据此新增"标签（全部满足）"与"资产（任一
 
 ## 组件测试（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 
-`npm run test:components`（`npm test` 也会跑）目前覆盖共享组件与原有 14 个页面；新增的 Retro Audits 页面尚未纳入组件测试和 live-smoke 页面注册，待验收阶段同步 fixture 生成器及测试清单。既有范围无新依赖，
+`npm run test:components`（`npm test` 也会跑）覆盖共享组件与全部 10 个 `ReportBrowser` 页面（含 Retro Audits，已并入
+`src/pages/reportPages.test.tsx` 的共用用例表：首帧、加载列表、逐 fixture 详情解析、空、列表错误、详情错误；其视图模型单测
+`src/lib/retroAudit.test.ts` 新增，`fixtures.test-util.ts` 未改）；Dashboard / Research Loop / Lifecycle / Jobs /
+Knowledge Search 另有各自的组件测试。**仍未同步**：`scripts/live-smoke.mjs` 的 14 个已登记页面与视图模型清单尚未加入
+Retro Audits（下文「Live-backend smoke」一节按当前代码描述，即仍是 14 个），此项超出本次改动范围，留待后续同步。既有范围无新依赖，
 `package-lock.json` 未变：
 
 - **运行器** `scripts/test-components.mjs`：Node 不能剥离 JSX，所以用已安装的 esbuild（vite 自带依赖）的 JS API
