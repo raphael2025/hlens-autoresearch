@@ -17,6 +17,15 @@ A single registration (``register``), an all-at-once batch registration (``regis
 a pre-registered re-evaluation (``reevaluate``) each use one journal line, so a family's trial
 count — re-evaluations included — continues across a process restart instead of resetting to zero.
 Omit ``path`` and the ledger is purely in memory, as before.
+
+Write lease (ADR-0073 admission lease, 2026-09-28). ``acquire_write_lease`` hands one caller an
+opaque ``LedgerLease``; while it is held, every mutation entry refuses any write that does not
+present that exact token (``register``, ``register_draft``, ``register_batch`` and
+``register_reevaluation`` never accept one, so they are refused in every thread, the holder's own
+included), and only ``recover_register_batch(..., lease=...)`` writes. Releasing with ``seal=``
+refuses every later mutation of this instance: an interrupted leased transaction leaves the journal
+exactly where a reopened state directory can recover it. The lease serializes this instance only; it
+is not a cross-process lock (the loop state directory's ``state.lock`` is).
 """
 
 from __future__ import annotations
@@ -24,8 +33,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from collections.abc import Iterable, Iterator
-from contextlib import contextmanager
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
@@ -38,11 +46,23 @@ from research.persistence import AppendOnlyJournal, JournalCorrupted, JournalEnt
 if TYPE_CHECKING:
     from research.hypotheses.generator import HypothesisDraft
 
-__all__ = ["LedgerError", "TrialEntry", "TrialLedger"]
+__all__ = ["LedgerError", "LedgerLease", "TrialEntry", "TrialLedger"]
 
 
 class LedgerError(ValueError):
     """A registration would rewrite history."""
+
+
+class LedgerLease:
+    """Opaque write-lease token of one ``TrialLedger`` (``TrialLedger.acquire_write_lease``).
+
+    Compared by identity only: a token is valid exactly while it is the ledger's current lease.
+    """
+
+    __slots__ = ()
+
+    def __repr__(self) -> str:
+        return f"<LedgerLease {id(self):#x}>"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,6 +90,10 @@ class TrialLedger:
         self._log: list[TrialEntry] = []
         self._attempts: set[tuple[str, str, str | None]] = set()
         self._journal: AppendOnlyJournal | None = None
+        #: The held write lease (module docs) and, once a leased transaction was interrupted, why
+        #: this instance refuses every later mutation.
+        self._lease: LedgerLease | None = None
+        self._sealed: str | None = None
         if path is not None:
             journal = AppendOnlyJournal(path)
             for entry in journal.entries:
@@ -99,17 +123,46 @@ class TrialLedger:
         with self._lock:
             return self._journal
 
-    @contextmanager
-    def exclusive(self) -> Iterator[None]:
-        """Hold this ledger's mutation lock across a caller's check-then-append sequence.
+    def acquire_write_lease(self) -> LedgerLease:
+        """Reserve every later write of this instance for the returned token (module docs).
 
-        ADR-0073 admission reads the ledger baseline, writes PREPARE and later appends the one
-        batch event; holding this lock keeps other threads using this instance from appending in
-        between those steps. It serializes threads only; it is not a cross-process lock (the loop
-        state directory's ``state.lock`` is).
+        Refused (``LedgerError``) while another lease is held or after a sealed release. The holder
+        must call ``release_write_lease`` exactly once, also when its transaction fails.
         """
         with self._lock:
-            yield
+            self._check_writer(None, "a write lease")
+            lease = LedgerLease()
+            self._lease = lease
+            return lease
+
+    def release_write_lease(self, lease: LedgerLease, *, seal: str | None = None) -> None:
+        """End ``lease``; with ``seal`` (a reason), refuse every later mutation of this instance.
+
+        Sealing is final for the instance: only reopening the ledger from its journal clears it.
+        """
+        with self._lock:
+            if self._lease is not lease:
+                raise LedgerError("this write lease is not the TrialLedger's current lease")
+            if seal is not None:
+                self._sealed = seal
+            self._lease = None
+
+    def _check_writer(self, lease: LedgerLease | None, what: str) -> None:
+        """Refuse ``what`` unless ``lease`` is exactly the held lease (``None``: none is held)."""
+        if self._sealed is not None:
+            raise LedgerError(
+                f"{what} is refused: this TrialLedger stopped accepting writes ({self._sealed}); "
+                "reopen the loop state directory to recover it"
+            )
+        if lease is not self._lease:
+            raise LedgerError(
+                f"{what} is refused: "
+                + (
+                    "a typed-plan admission holds this TrialLedger's write lease"
+                    if self._lease is not None
+                    else "the write lease it presents is not held"
+                )
+            )
 
     def register(self, hypothesis: Hypothesis) -> bool:
         """Register (pre-register) ``hypothesis``; ``False`` if exactly it was already registered.
@@ -117,12 +170,14 @@ class TrialLedger:
         LLM-originated hypotheses go through ``register_draft`` (a human review is required).
         """
         with self._lock:
+            self._check_writer(None, f"registering {hypothesis.ref}")
             if hypothesis.origin is HypothesisOrigin.LLM:
                 raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
             return self._register(hypothesis)
 
     def register_draft(self, draft: HypothesisDraft) -> bool:
         with self._lock:
+            self._check_writer(None, "registering a reviewed draft")
             if not draft.reviewed:
                 raise LedgerError(f"{draft.hypothesis.ref} has not been reviewed by a human")
             return self._register(draft.hypothesis)
@@ -136,8 +191,15 @@ class TrialLedger:
         in-memory state changes; an append failure therefore leaves this instance unchanged.
 
         LLM-originated hypotheses are refused here: this API accepts hypotheses, not the reviewed
-        ``HypothesisDraft`` evidence required by ``register_draft``.
+        ``HypothesisDraft`` evidence required by ``register_draft``. Refused while a write lease is
+        held (module docs).
         """
+        with self._lock:
+            self._check_writer(None, "a batch registration")
+            return self._register_batch(hypotheses)
+
+    def _register_batch(self, hypotheses: Iterable[Hypothesis]) -> tuple[Hypothesis, ...]:
+        """``register_batch`` once the caller checked the writer under ``self._lock``."""
         with self._lock:
             try:
                 batch = tuple(hypotheses)
@@ -185,6 +247,7 @@ class TrialLedger:
         *,
         baseline_seq: int,
         baseline_hash: str,
+        lease: LedgerLease,
     ) -> JournalEntry:
         """Append or recognize exactly one prepared batch at its recorded journal baseline.
 
@@ -195,11 +258,13 @@ class TrialLedger:
         sequence, previous hash, type, and recomputed entry hash; it is then returned without
         counting the trials again. Any other tail or an in-memory identity reuse is refused.
 
-        The method requires a durable ledger and holds the ledger RLock across inspection and
-        append. It does not repair a corrupt / partial journal or reload a stale journal object;
-        callers must reopen the ledger after process restart so its verified replay is current.
+        The method requires a durable ledger and the held write ``lease`` (module docs), and holds
+        the ledger RLock across inspection and append. It does not repair a corrupt / partial
+        journal or reload a stale journal object; callers must reopen the ledger after process
+        restart so its verified replay is current.
         """
         with self._lock:
+            self._check_writer(lease, "a prepared batch recovery")
             if type(baseline_seq) is not int or baseline_seq < 0:
                 raise LedgerError("baseline_seq must be a non-negative integer")
             if (
@@ -254,7 +319,7 @@ class TrialLedger:
                         "a prepared recovery batch cannot reuse registered identities: "
                         + ", ".join(reused)
                     )
-                registered = self.register_batch(batch)
+                registered = self._register_batch(batch)
                 if len(registered) != len(batch):
                     raise LedgerError("the prepared recovery batch was not wholly registered")
                 return journal.entries[-1]
@@ -330,6 +395,7 @@ class TrialLedger:
         evaluation. ``False`` if exactly this attempt was already registered (not a new trial).
         """
         with self._lock:
+            self._check_writer(None, f"a re-evaluation of {hypothesis.ref}")
             key = (hypothesis.name, hypothesis.version)
             existing = self._registered.get(key)
             if existing is None:

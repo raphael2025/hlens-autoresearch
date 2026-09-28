@@ -25,7 +25,7 @@ from research.hypotheses.generator import (
     from_knowledge,
     from_llm,
 )
-from research.hypotheses.ledger import LedgerError, TrialEntry, TrialLedger
+from research.hypotheses.ledger import LedgerError, LedgerLease, TrialEntry, TrialLedger
 
 __all__ = [
     "BatchGrid",
@@ -36,6 +36,7 @@ __all__ = [
     "KnowledgeSearch",
     "KnowledgeSource",
     "LedgerError",
+    "LedgerLease",
     "LlmDraftRejected",
     "ReviewedOperators",
     "TrialEntry",
