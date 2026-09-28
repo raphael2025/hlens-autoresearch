@@ -6,6 +6,10 @@
   participation cap, square-root impact, per-bar funding); every parameter explicit, none by
   default, bound into the descriptor version and hence ``provider_hash``. With ``carry_over``
   (ADR-0054) the cap's remainder carries to later bars (``next_bar_open_participation``).
+- ``risk_loop``: ``BarBacktester.run_with_risk`` support (ADR-0088 decision 3) — a ``RiskProvider``
+  applied per decision time with ``PortfolioState.equity`` / ``peak_equity`` from the realized
+  equity path (``RealizedEquityPath``, ``realized_portfolio_state``); nothing later than the
+  decision time is read.
 """
 
 from plugins.backtest.bar import (
@@ -22,6 +26,12 @@ from plugins.backtest.execution import (
     FundingCharge,
     UnfilledRemainder,
 )
+from plugins.backtest.risk_loop import (
+    RealizedEquityPath,
+    RiskLoop,
+    RiskLoopRun,
+    realized_portfolio_state,
+)
 
 __all__ = [
     "CARRY_OVER_VERSION",
@@ -33,5 +43,9 @@ __all__ = [
     "ExecutionReport",
     "FillExecution",
     "FundingCharge",
+    "RealizedEquityPath",
+    "RiskLoop",
+    "RiskLoopRun",
     "UnfilledRemainder",
+    "realized_portfolio_state",
 ]

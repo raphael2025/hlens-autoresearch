@@ -43,6 +43,14 @@ instrument reaches its execution bar (``superseded``: the new target is sized ag
 holdings and the old remainder is cancelled), or at the instrument's last bar (``end_of_data``);
 each sized target's ``FillRemainder`` is in ``BacktestResult.remainders``. Remainder bookkeeping is
 exact (a sum that would round is refused), so a filled target's fills sum to its request exactly.
+
+**Risk in the loop** (ADR-0088 decision 3; ``run_with_risk``, see ``plugins.backtest.risk_loop``):
+when step 1 admits a decision time's targets, a ``RiskProvider`` constrains them with a
+``PortfolioState`` built from the realized equity path — ``equity`` = the latest equity point at or
+before the decision time (``initial_equity`` before the first), ``peak_equity`` = the running
+maximum of that path — and the constrained targets are admitted instead. ``run`` and
+``run_with_report`` never call it, so their results are unchanged; the risk run's result equals
+``run`` on the request holding the constrained targets.
 """
 
 from __future__ import annotations
@@ -74,8 +82,11 @@ from core.contracts.strategy import (
     FillRemainder,
     FillRemainderEnd,
     PriceBar,
+    RiskProvider,
+    SignalObservation,
     TargetPosition,
 )
+from core.domain.base import Ref
 from plugins.backtest.execution import (
     ExecutionModel,
     ExecutionReport,
@@ -83,6 +94,7 @@ from plugins.backtest.execution import (
     FundingCharge,
     UnfilledRemainder,
 )
+from plugins.backtest.risk_loop import RiskLoop, RiskLoopRun
 
 __all__ = ["CARRY_OVER_VERSION", "EXECUTION_VERSION", "MONEY_QUANTUM", "BarBacktester"]
 
@@ -253,7 +265,48 @@ class BarBacktester:
         with localcontext(_CONTEXT):
             return self._simulate(request)
 
-    def _simulate(self, request: BacktestRequest) -> tuple[BacktestResult, ExecutionReport]:
+    def run_with_risk(
+        self,
+        request: BacktestRequest,
+        *,
+        risk: RiskProvider,
+        policy: Ref,
+        policy_hash: str,
+        knowledge_cutoff: datetime,
+        signals: Sequence[SignalObservation],
+    ) -> RiskLoopRun:
+        """Simulate ``request`` with ``risk`` applied at each decision time (ADR-0088 decision 3).
+
+        ``request.targets`` are the upstream (pre-risk) targets. When the simulation admits a
+        decision time's targets it builds that time's ``PortfolioState`` from the realized equity
+        path (``equity`` and running ``peak_equity``, nothing later than the decision time; see
+        ``plugins.backtest.risk_loop``), calls ``risk.constrain`` and executes the constrained
+        targets. The result is built against ``RiskLoopRun.request`` (the constrained targets)
+        and equals ``run`` on that request.
+        """
+        if not isinstance(request, BacktestRequest):
+            raise BacktestInputError("run_with_risk needs a BacktestRequest")
+        loop = RiskLoop(
+            initial_equity=request.initial_equity,
+            risk=risk,
+            policy=policy,
+            policy_hash=policy_hash,
+            knowledge_cutoff=knowledge_cutoff,
+            signals=signals,
+        )
+        with localcontext(_CONTEXT):
+            result, report = self._simulate(request, loop)
+        return RiskLoopRun(
+            request=loop.request(request),
+            result=result,
+            report=report,
+            risk_results=loop.risk_results,
+            portfolio_states=loop.portfolio_states,
+        )
+
+    def _simulate(
+        self, request: BacktestRequest, loop: RiskLoop | None = None
+    ) -> tuple[BacktestResult, ExecutionReport]:
         execution = self._execution
         fee_rate = request.cost_model.fee_rate
         slippage = request.cost_model.slippage_rate
@@ -275,6 +328,15 @@ class BarBacktester:
 
         for start, group in _groups(request.bars):
             while admitted < len(targets) and targets[admitted].decision_time <= start:
+                if loop is not None:  # ADR-0088 decision 3: one risk call per decision time
+                    decided = targets[admitted].decision_time
+                    batch_end = admitted
+                    while batch_end < len(targets) and targets[batch_end].decision_time == decided:
+                        batch_end += 1
+                    for target in loop.constrain(decided, targets[admitted:batch_end], curve):
+                        pending[target.instrument] = target
+                    admitted = batch_end
+                    continue
                 target = targets[admitted]
                 pending[target.instrument] = target  # supersedes an unexecuted earlier target
                 admitted += 1
@@ -410,6 +472,9 @@ class BarBacktester:
         for instrument, state in active.items():  # the data end before these remainders fill
             carried.append(state.ended("end_of_data", last_bar[instrument]))
         carried.sort(key=lambda item: (item.decision_time, item.instrument))
+        if loop is not None:  # targets decided after the last bar: constrained, never executed
+            loop.finish(targets[admitted:], curve)
+            request = loop.request(request)
         result = BacktestResult.build(
             request,
             self._descriptor,
