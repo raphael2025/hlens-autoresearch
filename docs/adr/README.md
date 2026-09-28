@@ -79,7 +79,11 @@
 | [0072](0072-validation-phase-sequencing.md) | 最小验证门与稳健性阶段的交付顺序（D-04） | Accepted（2026-09-27；Codex 依 Raphael 全权授权）；Phase 4 先交付最小门，Phase 8 提供稳健性扩展；不改契约或数值 |
 | [0073](0073-phase7-plan-admission-recovery.md) | P7 typed-plan 预登记与崩溃恢复 | Accepted（2026-09-28；Codex 依 Raphael 全权委托）；v4 writer/opener hardening 与同进程 admission lease / durable store write gate 已合入本地 main（`e3ac380`, `f91760b`, `d0ffdae`, `037dc03`, `4e7e7ae`, `60ae712`）；approval/round 串行化、轮间与 close 后拒写、只读 journal view 已独立静态复核；未跑测试 / build / lint / Phase 验收，不启用 operator |
 | [0074](0074-synthetic-loop-operator.md) | 本机有限批次 synthetic Research Loop operator | Accepted（2026-09-28；Codex 依 Raphael 项目全权委托）；operator 专属 v5 identity、strict TOML parser、静态 Provider allowlist、有限轮次 CLI 与逐轮报告已合入本地 main；仅源码静态复核、未测试或验收。当前无冻结 Profile，不能生成合规运行配置 |
-| [0075](0075-bounded-pyiceberg-snapshot-scan.md) | PyIceberg 固定快照的有界扫描路径 | Accepted（2026-09-28；Codex 依 Raphael 项目技术决策委托）；批准仅限 infrastructure pinned-snapshot read path，PyIceberg Catalog / write path 不变；扫描实现待开发，E1-CAP-1 仍阻断 |
+| [0075](0075-bounded-pyiceberg-snapshot-scan.md) | PyIceberg 固定快照的有界扫描路径 | Accepted（2026-09-28；Amendment 1 将 `max_int64` 与未绑定表的 pinned-view 读取纳入同一 bounded scan，格式 / delete 文件 fail closed）；已实现 `5332034`，未测试；E1-CAP-1 仍阻断 |
+| [0076](0076-bounded-canonical-normalization-result.md) | 有界 Canonical 归一化结果接口 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；默认定长摘要，完整 ID 经显式有序 iterator；仅 infrastructure DTO；已实现 `5332034`，未测试 |
+| [0077](0077-bounded-research-dataset-evidence.md) | 有界 Research Dataset 证据：v3 evidence manifest、有序 evidence streams 与定长 chunk commit | DQ-1 = A 由 Raphael 2026-09-28 批准（`core/contracts` 2.3.0 additive，v2 不变）；DQ-2～8、10～12 Codex 决定；DQ-9 待容量证据；待实施（W3-E1DS） |
+| [0078](0078-p7-lowered-output-completeness.md) | P7 lowered outputs 集合权威与完整性 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；`TypedPlan.nodes` 为权威全集；已实现 `79ea546`，未测试；算子仍 fail closed |
+| [0079](0079-paper-deviation-declared-scope.md) | Paper deviation 与 P8 声明范围绑定 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；deviation payload 2.0.0 绑定 P8 ValidationReport 与 Profile 范围，1.0.0 仅作 legacy 读取；已实现 `1974610`，未测试 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
