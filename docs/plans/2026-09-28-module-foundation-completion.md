@@ -16,7 +16,7 @@
 - `phase/1@52f7477` 的所有提交都是 main 祖先，没有独有 patch；已保存至 `refs/archive/2026-09-28/branches/local/phase-1` 后删除分支，并将根 checkout 切回 `main`。根下未跟踪旧计划已移入本地 `.codex/archive/`，跟踪版计划已在主线。Cursor 会话此前确认无独有实现；IDE 进程未强行关闭。
 - `docs/research-spec-completion@82bfe73` 从旧 `20bdd82` 分叉，整树与当前 main 有 124 个路径差异，包含主线后续实现的删除 / 回退。其 `7b9df59` 的 G1 测试与策略收益率修复已核对在 main；其余 README / library 文档以 main 为准。tip 由 archive ref 保存；确认工作区干净、特殊测试与 main 相同后，已关闭闲置 Claude 会话并清理 branch/worktree。
 - 远端只保留 `main`；不得从 archive ref 恢复或整支合并失败的 E1 候选。E1 候选 `c3868dc` 超过 32 MiB 门槛的失败证据继续保留。
-- E1 候选、D3E 审查、C05、gatewt、E1 integration、B52、Codex E1-R 和 Claude research-spec worktree 均已清理，相关恢复点保留在 archive refs。Claude worktree 无未提交内容，唯一测试差异已与 main 核对相同；闲置 Claude 会话已关闭。清理阶段仅保留 root `main`；当前 `phase/1-foundation-completion` 隔离分支正在处理已批准的 E1 Protocol / proxy 接线。
+- E1 候选、D3E 审查、C05、gatewt、E1 integration、B52、Codex E1-R 和 Claude research-spec worktree 均已清理，相关恢复点保留在 archive refs。Claude worktree 无未提交内容，唯一测试差异已与 main 核对相同；闲置 Claude 会话已关闭。清理阶段仅保留 root `main`；上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定；E1-CAP-1 仍阻断，本轮后置。
 
 ## 模块状态总览
 
@@ -24,7 +24,7 @@
 |---|---|---|---|---|---|
 | P0.5 Knowledge Base | CODE_COMPLETE / DEBUG_PENDING：检索、review 写入、过滤、seed loader 已实现 | 无已批准的可编码缺口 | seed tags/assets 需具名人工审阅；黄金哈希留统一验收生成 | 否：人工 / 验收门 | 否 |
 | P1 D0–D4 数据基础链 | CODE_COMPLETE / DEBUG_PENDING：Storage、Catalog、Collector、Parser、Revision、PIT、Normalizer、REST / lineage 均有基础实现 | 本轮不扩 E1 有界状态；其余经审计无已批准代码缺口 | 历史 universe / volume bars 是规格门 | 否 | 可按单模块独立，但当前无任务 |
-| P1 E1 / Dataset | FRAMEWORK：基础读取、selection、manifest、RSS 工具已存在；当前分支另有未提交 E1 改动 | 仍有 E1-CAP-1 / Dataset 有界结果工作，但本轮明确排除 | ADR-0077、容量门、32 MiB 证据；需后续单独处理 | **否：本轮跳过** | 否：本轮不派 |
+| P1 E1 / Dataset | FRAMEWORK：基础读取、selection、manifest、RSS 工具已存在；上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`，未审阅、未测试、不构成正式决定 | 仍有 E1-CAP-1 / Dataset 有界结果工作，但本轮明确排除 | ADR-0077、容量门、32 MiB 证据；需后续单独处理 | **否：本轮跳过** | 否：本轮不派 |
 | P2 State + Web diagnostics | CODE_COMPLETE / DEBUG_PENDING：执行器与 Python / Web diagnostics 字段已接线 | 无已批准的代码缺口；兼容与渲染属于后续调试 | 逐 kind Report DTO schema 需新契约决定 | 否：当前实现随本地修改收敛 | 是，若后续只改 Web |
 | P3 Event | CODE_COMPLETE / DEBUG_PENDING：Provider、DSL、统计、定义及显式建表命令输出已实现 | 无；旧断言留统一调试 | 真正创建 Catalog 表需人工授权 | 否 | 是，单独命令模块 |
 | P4 Outcome | CODE_COMPLETE / DEBUG_PENDING：store/source、转换辅助与验证流已实现 | 无已批准调用接线；现有纯转换函数不新造写路径 | 若增加新写入调用点，需先确认流程 / ADR 边界 | 否 | 否：无任务 |
@@ -97,6 +97,8 @@
 | C2 | P13 execution | 未准入 deployment 必须在调用任何注入 target-position source 之前拒绝 | `apps/execution/service.py` 单模块 | 静态复核通过；未运行测试 |
 | C3 | P14 migration | `GoldenRecord` 持有深度不可变输出快照；比较前验证 baseline 内容哈希；`GoldenDiff.differences` 复制、检查并冻结，防止报告结果被外部映射改写 | `infrastructure/migration/golden.py` 单模块 | Codex / Claude 静态复核未发现阻断项；未运行测试。公开类实例化的其他字段仍由 compare/rollback 的消费路径校验 |
 | C4 | P9 docs | 把 ADR-0042 implementation note 对照现行代码更新为准确事实，保留当前报告证据规模仍仅适于 smoke 的限制 | `docs/adr/0042-synthetic-market-provider.md` | 事实同步已完成，待文档统一提交 |
+| C5 | P9 calibration | false-positive rate / power 点估计使用固定 28 位 `ROUND_HALF_EVEN` context，不受调用方 ambient Decimal context 影响；不改阈值、报告字段或校准含义 | `research/synthetic_lab/calibration.py`、同目录 README | 静态复核完成；测试留后 |
+| C6 | P13 second-line risk | 标记价格整批复制并预先校验，再更新 PositionBook；无效批次不得留下部分 mark 状态 | `apps/execution/risk.py`、同目录 README | 静态复核完成；测试留后 |
 
 ### 暂不实施，留到语义决定或验收窗口
 
@@ -104,7 +106,7 @@
 - P1：E1-R 按对账文档开始基础实现；当前本地 main 增加 committed ID 重建与有界 snapshot match index，但仍未验证。archive parse、完整 result ID tuple、generic history fallback 的 `seen` set 与 builder 的 snapshot-ID set 仍在 E1 容量审计范围；D-LIST / ADR-0051 与新数据范围保留原门禁。
 - P4/P5：不冻结 D-09/Profile 数值，不改变成本、split、threshold 或 outcome 选择语义。
 - P7：六类组合算子、producer、execution lowering、失败修复与重试入口均待单独 ADR。
-- P10/P11/P13/P14：分别等待 deviation scope、ACTIVE/source resolver、ADR-0046 验收措辞、migration target。
+- P10/P11/P14：分别等待 deviation scope、ACTIVE/source resolver、migration target；P13 roadmap 验收措辞已与 ADR-0046 对齐。
 - 所有已有测试文件缺口 / 兼容测试 / fixture 生成 / phase acceptance：集中留到后续验收批次；本阶段不运行。
 
 ## 并行与交付规约
