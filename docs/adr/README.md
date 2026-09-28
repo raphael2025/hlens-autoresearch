@@ -55,7 +55,7 @@
 | [0048](0048-api-and-web-console.md) | API 服务与研究控制台骨架（apps/api、apps/web） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0049](0049-continuous-research-loop.md) | 持续研究循环：调度、预算、生命周期护栏、审计与劣化监控（Phase 11 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0050](0050-loop-audit-record-contract.md) | 持续研究循环审计记录的版本化契约（Phase 11，只追加） | Accepted（2026-09-26；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
-| [0051](0051-listing-history-assumption.md) | 上市历史的"观察状态回填"假设（PIT 叠加层，D-LIST） | Proposed（2026-09-26；Raphael 暂缓） |
+| [0051](0051-listing-history-assumption.md) | 上市历史的"观察状态回填"假设（PIT 叠加层，D-LIST） | Accepted（2026-09-28；Claude PM 依 Raphael 授权接受，原 2026-09-26 暂缓）；分两期实施 |
 | [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准）；已实施于 2.1.0（按记录版本重放、§1 ~ §3 字段与研究侧取值）；CODE_COMPLETE / DEBUG_PENDING |
 | [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准）；已实施 |
 | [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准）；re-declared at 2.1.0（2026-09-26）；CODE_COMPLETE / DEBUG_PENDING |
@@ -90,6 +90,7 @@
 | [0085](0085-research-library-expansion.md) | 研究库扩展批次（非契约）：候选特征、状态、策略与风控政策 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；全部参数显式、无默认值；实施中 |
 | [0086](0086-validation-lifecycle-closure.md) | 验证与生命周期收口：门集完整性、退役记录存储、Outcome 输入错误映射 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；实施中 |
 | [0087](0087-plugin-manifest-discovery.md) | 插件 Manifest 与 entry-point 发现加载 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；实施中 |
+| [0088](0088-contract-2-4-0-composition-extensions.md) | 契约 2.4.0（additive）：组合策略、事件 bar 规格、峰值权益、合成效应、波动率缩放屏障 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；契约层待实施 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

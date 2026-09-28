@@ -2,9 +2,9 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | Proposed (2026-09-26)，起草: Claude Code（Opus）；Raphael 2026-09-26 暂缓（"后面再授权"） |
+| 状态 | **Accepted**（2026-09-28，Claude PM 依 Raphael 2026-09-28 授权接受；原 Proposed 2026-09-26，Raphael 当日暂缓） |
 | 日期 | 2026-09-26 |
-| 决策者 | **Raphael**（研究宪法 C-L1 / C-L4 的前提，红线；Claude / Codex 不得代为接受） |
+| 决策者 | 原定 **Raphael**（研究宪法 C-L1 / C-L4 的前提）。2026-09-28 Raphael 明确授权：开发阶段除实盘交易外，“其他的一切都可以授权”，含本项（记录于 CLAUDE.md §0 与 PROJECT_STATUS §6 D-PM-AUTH），故由 Claude PM 接受 |
 | 起草者 | Claude Code（Opus） |
 | 相关 Phase | Phase 1（F2 标的池 / F3 数据集）；影响一切绑定历史区间的研究 |
 | 影响范围 | 标的池构建（ADR-0024 / ADR-0029 的解释）；一次公共 REST 调用；不改存储、不改契约 |
@@ -110,3 +110,12 @@ Phase 4 验证流水线与报告须能按"是否绑定本假设"（与 ADR-0032 
 - [x] 不修改 Validation Constitution；**但** C-L4 在绑定时不成立，必须由 Raphael 本人权衡
 - [x] 默认保守；只有显式绑定才生效；每个 manifest 可见
 - [ ] 由 Raphael 本人批准（红线）——待定
+
+
+## 接受记录（2026-09-28）
+
+Claude PM 依 Raphael 2026-09-28 的明确授权接受本 ADR，裁决内容按「裁决（提案）」原文不变。实施分两期：
+- 第一期：新增 `infrastructure/universe/listing_assumption.py`，并让 `infrastructure/canonical/listings.py::listing_at` 接受可选假设；
+- 第二期：接入 universe builder / dataset / manifest，在 ADR-0077 infrastructure 批次完成后进行。
+
+默认行为保持保守：不绑定本假设时，结果逐位不变。本记录只授权代码实现。唯一的公共 REST 调用（`exchangeInfo`，无密钥）属于运行操作，在调试阶段执行，也在授权范围内。
