@@ -61,6 +61,7 @@ const PAGES = [
   "StateDiagnostics",
   "EventStatistics",
   "DegradationChecks",
+  "RetroAudits",
   "Lifecycle",
   "Jobs",
   "KnowledgeSearch",
@@ -74,6 +75,7 @@ const LIBS = [
   "loadState",
   "paperDeviation",
   "researchLoop",
+  "retroAudit",
   "routerEligibility",
   "routerStop",
   "stateDiagnostics",
@@ -372,6 +374,7 @@ const REPORT_PAGES = {
   StateDiagnostics: "state_diagnostics",
   EventStatistics: "event_statistics",
   DegradationChecks: "degradation_check",
+  RetroAudits: "retro_audit",
 };
 
 function selectionOf(page) {

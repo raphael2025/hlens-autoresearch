@@ -39,7 +39,7 @@ contract, Constitution, Validation Profile value, validation threshold, or write
 
    | Kind | DTO versions | Baseline / notes |
    |---|---|---|
-   | `validation_report` | 2.0.0, 2.1.0, 2.2.0 | Current contract schema is 2.2.0; legacy 2.0.0 / 2.1.0 remain readable |
+   | `validation_report` | 2.0.0, 2.1.0, 2.2.0, 2.3.0 | Current contract schema is 2.3.0 (ADR-0077 additive minor); legacy 2.0.0 / 2.1.0 / 2.2.0 remain readable |
    | `research_loop_round` | virtual 1.0.0 | Flattened ADR-0050 audit payload |
    | `state_strategy_matrix` | virtual 1.0.0 | Hash remains opaque to API; DTO checks shape |
    | `router_paper_run` | virtual 1.0.0 | Optional evidence fields remain additive |
