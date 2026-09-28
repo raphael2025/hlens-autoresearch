@@ -52,7 +52,7 @@
 | 单仓位上限 / 总敞口上限 | `RSK-GROSS-EXP-001` | `vol_target_bars@1.0.0` 的 `position_cap`、`gross_exposure_cap` | 目标权重 | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 | 杠杆上限 | `RSK-LEVERAGE-001`（名义 / 权益） | `vol_target_bars@1.0.0` 的 `leverage_cap`——**只限制波动率缩放倍数**，不是账户名义杠杆 | 同上 | 同上 | `IMPLEMENTED · NOT_VALIDATED`（语义不同） |
 | 止损 / 追踪止损 | `RSK-STOP-001`（Kaminski & Lo 2014）；反证 `FAIL-STOP-RW-001` | 无 | 需要持仓与入场价路径（风控请求只含目标与可见信号） | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 回撤控制 | `RSK-DD-CONTROL-001`（Grossman & Zhou 1993）；本项目无知识库种子 | `drawdown_control@1.0.0`（ADR-0085；`PortfolioState.peak_equity` 见 ADR-0088 决策 3）；参数 `max_drawdown`、`reduced_fraction` 显式、无默认 | `PortfolioState.equity` 与 `peak_equity`：只有回测的 `BarBacktester.run_with_risk` 按已实现权益路径提供；研究管线的风控步骤在模拟之前运行（`equity = None`），接入管线会全部 fail closed（见缺口 R-4） | `test_drawdown_control.py`、`tests/plugins/backtest/test_risk_loop.py`（未运行） | `IMPLEMENTED · NOT_VALIDATED` |
+| 回撤控制 | `RSK-DD-CONTROL-001`（Grossman & Zhou 1993）；本项目无知识库种子 | `drawdown_control@1.0.0`（ADR-0085；`PortfolioState.peak_equity` 见 ADR-0088 决策 3）；参数 `max_drawdown`、`reduced_fraction` 显式、无默认 | 研究策略管线对带风控政策的候选经 `BarBacktester.run_with_risk` 提供截至决策时刻的已实现 `PortfolioState.equity` 与 `peak_equity`；该路径仅支持 `BarBacktester`，其他 backtester 会拒绝（见缺口 R-4） | `test_drawdown_control.py`、`tests/plugins/backtest/test_risk_loop.py`（未运行） | `IMPLEMENTED · NOT_VALIDATED` |
 | Kelly / 分数 Kelly、AFML 下注规模 | `RSK-KELLY-001`、`RSK-BETSIZE-001`；反证 `FAIL-FULL-KELLY-001` | 无 | 需要边际估计（不存在） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 预期短缺 / CAViaR | `RSK-ES-001`（Acerbi & Tasche 2002）、`RSK-CAVIAR-001`（Engle & Manganelli 2004） | 无（属度量，非仓位规则） | 收益可得 | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 相关 / 集中度 | `RSK-CORR-001`；反证 `FAIL-CORR-SPIKE-001` | 无 | 只有两个标的 | 无 | `DOCUMENTED · UNSPECIFIED` |
@@ -121,4 +121,4 @@
 | R-1 | 风控参数空间是否强制、是否计入试验、是否搜索 | 需要决定：哪些键固定、变体如何取得新版本、风控参数点是否计入 C-T1 的 family 试验数。决定前不强制，以免破坏现有上限测试或暗改语义（**REQUIRES_DECISION**） |
 | R-2 | 研究循环 / 数据集路径的风控信号 | 与 strategy-library 缺口 ST-2 相同：未被已接受 ADR 定义 |
 | R-3 | 同名不同内容的政策 | 覆盖参数后应以新版本发布；Provider 构造时是否拒绝重复 ref 须与 R-1 一并决定 |
-| R-4 | 依赖路径的规则（止损、回撤） | 回撤：ADR-0088 决策 3 已给出 `peak_equity`，回测侧由 `BarBacktester.run_with_risk` 提供；但研究管线（`research/strategies/pipeline.py`）仍在模拟之前逐时刻运行风控、`equity = None`，把 `drawdown_control` 接入管线需要改为调用 `run_with_risk`（尚未授权）。止损仍需入场价路径，未规格化 |
+| R-4 | 依赖路径的规则（止损、回撤） | 回撤：研究策略管线 `evaluate_strategy` 已对带风控政策的候选调用 `BarBacktester.run_with_risk`（`research/strategies/pipeline.py`；接线见 `0cfddbf`），由回测循环在每个决策时刻传入截至该时刻的已实现权益与峰值；非 `BarBacktester` 实现会拒绝该路径。相关定向测试已添加，但本次未运行，且风控政策仍为 NOT_VALIDATED。止损仍需入场价路径，未规格化 |
