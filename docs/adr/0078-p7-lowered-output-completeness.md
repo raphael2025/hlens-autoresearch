@@ -39,3 +39,7 @@ ADR-0068 定义的 typed AST 是闭世界、拓扑排序的节点集合，并为
 ## 接受记录
 
 Codex 依 Raphael 2026-09-28 对本轮所需新 ADR 的明确授权接受本决定。此接受仅冻结 outputs 集合的 producer / 验证边界，不批准任何组合算子语义或运行。
+
+## 修订（2026-09-28，随 ADR-0082 第三次接受记录）
+
+§1 原先规定 `conditional_strategy_plan` 在规格缺失时 fail closed。自契约 2.4.0（ADR-0088）起，它的核心规格为带 `ConditionedStrategy` 组合的 StrategySpec。producer 与完整性校验器要求 conditioning / ensemble / negation 节点的输出带有对应的组合，否则以 `plan_output_composition_mismatch` 拒绝。

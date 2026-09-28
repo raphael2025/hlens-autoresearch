@@ -85,7 +85,7 @@
 | [0078](0078-p7-lowered-output-completeness.md) | P7 lowered outputs 集合权威与完整性 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；`TypedPlan.nodes` 为权威全集；已实现 `79ea546`，未测试；算子仍 fail closed |
 | [0079](0079-paper-deviation-declared-scope.md) | Paper deviation 与 P8 声明范围绑定 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；deviation payload 2.0.0 绑定 P8 ValidationReport 与 Profile 范围，1.0.0 仅作 legacy 读取；已实现 `1974610`，未测试 |
 | [0080](0080-p11-authority-resolution.md) | Phase 11 ACTIVE、真实 source 与 metric 权威解析 | BLOCKED（2026-09-28）：缺权威 lifecycle head、source 身份与 metric 算法定义；不实现伪权威 resolver，loop 保持 synthetic-only |
-| [0082](0082-p7-operator-semantics-and-lowering.md) | P7 六类组合算子的语义与 Provider lowering | Accepted（部分，2026-09-28；Codex 依 Raphael 授权决定）：`interaction` product 语义与 FeatureSpec lowering 已实现 `29763f3`；conditioning / temporal / transformation / ensemble / negation OPEN、fail closed；`runnable` 仍 False |
+| [0082](0082-p7-operator-semantics-and-lowering.md) | P7 六类组合算子的语义与 Provider lowering | Accepted（2026-09-28，三次接受记录）：interaction、transformation（standardize/difference/smooth）、temporal、conditioning、ensemble、negation 已实现纯 lowering；transformation 的 rank/quantile 仍 OPEN；`runnable` 仍 False；未测试 |
 | [0084](0084-live-interface-reservation.md) | 实盘接口预留（默认关闭） | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）：`LiveVenuePort` / `CredentialProvider` 端口与一律拒绝的 `UnconfiguredLiveVenue`；`LIVE_TRADING_ENABLED` 为常量 False；ladder 实盘档位仍拒绝；未测试 |
 | [0085](0085-research-library-expansion.md) | 研究库扩展批次（非契约）：候选特征、状态、策略与风控政策 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；全部参数显式、无默认值；实施中 |
 | [0086](0086-validation-lifecycle-closure.md) | 验证与生命周期收口：门集完整性、退役记录存储、Outcome 输入错误映射 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；实施中 |
