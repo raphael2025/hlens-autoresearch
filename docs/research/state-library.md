@@ -53,8 +53,8 @@
 | 波动率体制（尾随分位分桶） | `MST-HIVOL-001`、`MST-LOVOL-001`、`FEA-VOL-PCTILE-001` | `volatility_regime@1.0.0` | `bar_realized_vol_<n>`（可算） | 契约套件、精确次序统计、窗口约束、夹具端到端 | `IMPLEMENTED · NOT_VALIDATED` |
 | 流动性体制（尾随分位分桶） | `MST-LIQSTRESS-001`（相关：原文按价差 / 深度 / Amihud 操作化，本实现只用成交量） | `liquidity_regime@1.0.0` | `bar_volume_sum_<n>`（可算） | 同上 | `IMPLEMENTED · NOT_VALIDATED` |
 | 趋势 / 震荡（效率比） | `MST-TREND-001`、`MST-RANGE-001`（原文列举均线斜率、通道、ADX 等多种操作化） | `trend_range@1.0.0` | `bar_log_return`（可算） | 契约套件、标签测试、夹具端到端 | `IMPLEMENTED · NOT_VALIDATED` |
-| 波动率压缩 / 扩张 | `MST-SQUEEZE-001`、`MST-EXPANSION-001` | 无（可用 `volatility_regime` 标签 + 事件 `state_switch` 近似，但未登记） | 可算 | 无 | `DOCUMENTED · UNSPECIFIED` |
-| 冲击 / 跳跃 | `MST-SHOCK-001`（`|r| > k·σ` 或跳跃检验，须预注册） | 无 | 可算（`bar_log_return`、`bar_realized_vol_<n>`） | 无 | `DOCUMENTED · UNSPECIFIED` |
+| 波动率压缩 / 扩张 | `MST-SQUEEZE-001`、`MST-EXPANSION-001` | `volatility_squeeze@1.0.0` | `bar_realized_vol_<short>`、`bar_realized_vol_<long>`（可算） | 契约套件、精确带边界、除零、缺失、夹具端到端 | `IMPLEMENTED · NOT_VALIDATED` |
+| 冲击 / 跳跃 | `MST-SHOCK-001`（`|r| > k·σ`，本实现取阈值形式；跳跃检验形式未实现） | `return_shock@1.0.0` | `bar_log_return`、`bar_realized_vol_<n>`（可算） | 契约套件、精确阈值边界、缺失、夹具端到端 | `IMPLEMENTED · NOT_VALIDATED` |
 | 状态转换期 | `MST-TRANSITION-001`（依赖状态概率路径） | 无 | 需要概率型状态模型（不存在） | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 马尔可夫切换 / HMM（训练型） | `SYN-REGIME-001`、`PAP-HAMILTON-1989-001`（Hamilton 1989，*Econometrica*，doi:10.2307/1912559） | 无（合成市场只有带可选自相关的随机游走 `plugins/synthetic/random_walk.py`，没有体制切换生成器） | 可算 | 无 | `DOCUMENTED · UNSPECIFIED` |
 | 风险偏好 on / off | `MST-RISKON-001`、`MST-RISKOFF-001`（跨资产面板） | 无 | 跨资产数据未采集 | 无 | `DOCUMENTED · INPUT_UNAVAILABLE` |
@@ -63,13 +63,16 @@
 ## 条目索引
 
 条目是**模型族**：具体版本（参数、窗口、种子）由研究方在规格中声明；下表不登记任何参数取值。
-`provider` 列是 descriptor 名（实现类在 `plugins/states/regimes.py`）。
+`provider` 列是 descriptor 名（实现类在 `plugins/states/regimes.py`；`volatility_squeeze` / `return_shock`
+在 `plugins/states/volatility_events.py`，ADR-0085）。
 
 | name@version | 摘要 | inputs | method | training_window / seed | provider | 出处 | 状态 |
 |---|---|---|---|---|---|---|---|
 | `volatility_regime@*` | 波动率体制：最新已实现波动率在固定尾随窗口内的经验分位分桶（`low_vol` / `mid_vol` / `high_vol`） | `bar_realized_vol_<n>` | `trailing_quantile_buckets`（`cuts`、`min_history`） | 必须；seed 必填（见下文"训练型与种子"） | `volatility_regime@1.0.0`（`VolatilityRegimeProvider`） | ADR-0035（框架） | UNVERIFIED |
 | `liquidity_regime@*` | 流动性体制：最新成交量合计在固定尾随窗口内的经验分位分桶（`thin` / `normal` / `deep`） | `bar_volume_sum_<n>` | `trailing_quantile_buckets`（`cuts`、`min_history`） | 必须；seed 必填 | `liquidity_regime@1.0.0`（`LiquidityRegimeProvider`） | ADR-0035（框架） | UNVERIFIED |
 | `trend_range@*` | 趋势 / 震荡：最近 `window` 个对数收益的效率比 `\|Σr\| / Σ\|r\|` 与阈值比较（`trend_down` / `range` / `trend_up`） | `bar_log_return` | `efficiency_ratio`（`window`、`threshold`） | 规则型：无 | `trend_range@1.0.0`（`TrendRangeProvider`） | ADR-0035（框架） | UNVERIFIED |
+| `volatility_squeeze@*` | 波动率压缩 / 扩张：短窗 / 长窗已实现波动率比值与显式 `squeeze_below` / `expansion_above` 比较（`squeeze` / `normal` / `expansion`） | `bar_realized_vol_<short>`、`bar_realized_vol_<long>` | `vol_ratio_bands`（`squeeze_below`、`expansion_above`） | 规则型：无 | `volatility_squeeze@1.0.0`（`VolatilitySqueezeProvider`） | ADR-0085 | UNVERIFIED |
+| `return_shock@*` | 冲击 / 平静：`|bar_log_return| > k × bar_realized_vol_<n>` 时为 `shock`，否则 `calm` | `bar_log_return`、`bar_realized_vol_<n>` | `abs_return_vol_multiple`（`k`） | 规则型：无 | `return_shock@1.0.0`（`ReturnShockProvider`） | ADR-0085 | UNVERIFIED |
 | `funding_regime` | 资金费率体制 | 资金费率（**未采集**，ADR-0022 范围） | — | — | 无（declared-unavailable，`plugins.states.DECLARED_UNAVAILABLE`） | roadmap Phase 2 | IDEA（输入不可用） |
 
 ### 决策规则（按实现）
@@ -80,6 +83,13 @@
   不可计算（`None`）：无可见输入、最新值为 `None`、或非 `None` 值少于 `min_history`。
 - **效率比**（`trend_range`）：最近 `window` 个收益 `ER = |Σr| / Σ|r|`；`ER ≥ threshold` 按 `Σr` 的符号为 `trend_up` / `trend_down`，
   否则（含 `Σ|r| = 0`）为 `range`。`window` 与 `threshold ∈ (0, 1]` 必填。收益少于 `window` 个或窗口内有 `None` → `None`。
+- **波动率比值带**（`volatility_squeeze`）：取两个声明 Feature（顺序固定：短窗、长窗）各自的最新可见值，
+  `ratio = short / long`；`ratio < squeeze_below` → `squeeze`，`ratio > expansion_above` → `expansion`，否则
+  （含刚好等于边界）→ `normal`。`squeeze_below`、`expansion_above` 必填且 `0 < squeeze_below < expansion_above`。
+  不可计算：任一 Feature 无可见值或最新值为 `None`，或 `long == 0`（除以零按缺失处理，不抛出）。
+- **收益冲击**（`return_shock`）：取两个声明 Feature（顺序固定：收益、波动率）各自的最新可见值，
+  `|return| > k × vol` → `shock`，否则（含刚好等于阈值）→ `calm`。`k` 必填且为正。不可计算：任一 Feature
+  无可见值或最新值为 `None`。
 - 全部为精确 `Decimal`、确定性；输入必须是规格声明的 Feature，否则 `StateInputError`。
 
 ### 训练型与种子（按实现，不是新规则）
@@ -113,6 +123,8 @@
 ## 测试证据
 
 `tests/plugins/states/test_state_regimes.py`（契约套件 × 3、精确次序统计、历史不足、窗口约束拟合、趋势标签、资金费率不可用）；
+`tests/plugins/states/test_state_volatility_events.py`（契约套件 × 2、精确带 / 阈值边界、除零、缺失、仅用最新可见值、
+规格参数哈希绑定，ADR-0085）；
 `tests/contract_suites/state.py`（含因果扰动、训练窗口、Outcome 拒绝）；`tests/infrastructure/state/test_state_runner.py`
 （未来扰动、偷看的 Provider、缺种子被拒、bar → feature → state → 表）；`tests/research/states/test_state_diagnostics.py`。
 端到端测试使用 Binance 格式夹具 K 线，不是真实行情；没有状态在正式 Research Dataset 上运行过。
@@ -123,5 +135,5 @@
 |---|---|---|
 | S-1 | 训练型（随机）状态模型族 | 见"训练型与种子"中未定义的四项；需要新的模型族规格（及可能的持久化 ADR），不是现有 Provider 的参数变化 |
 | S-2 | 分位模型的 `seed` 无实际作用 | 形式上满足 roadmap；是否改为规则型（无 seed）是新规格版本的选择，需研究方 / Codex 决定，本次不改 |
-| S-3 | 压缩 / 扩张 / 冲击等状态 | 输入可得、未规格化；须按实验预注册定义（`MST-SHOCK-001` 明确要求），不在本库预设 `k`、`τ` |
+| S-3 | 压缩 / 扩张 / 冲击（阈值形式） | 已实现为 `volatility_squeeze@1.0.0` / `return_shock@1.0.0`（ADR-0085），`squeeze_below`、`expansion_above`、`k` 均为规格参数、无默认值，须按实验预注册；`MST-SHOCK-001` 提到的跳跃检验形式仍未实现 |
 | S-4 | 资金费率、风险偏好体制 | 输入不在 ADR-0022 范围；扩大数据范围需另立 ADR |
