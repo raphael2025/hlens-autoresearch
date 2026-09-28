@@ -33,10 +33,10 @@
 | Phase 8 Retro audit | writer、API、Web 页面 | fixture registry 未登记 retro_audit 1.1.0；需要对生成路径静态复核 | 可修复 fixture 声明/登记；不重新生成已提交 fixture，生成器留待验收 |
 | Phase 9 Calibration | 单标的与多标的校准、G5 证据 | 多标的 G5 与新生成器需明确证据范围 | 不选数值、不添加未经 ADR 批准的生成器 |
 | Phase 10 Router | Paper / deviation / evidence / validation | deviation 缺少声明范围；validation 复用 paper 私有 helper | 不改验证门槛或报告哈希；需先确认声明范围语义 |
-| Phase 11 Loop | durable loop、worker journal stale-writer guard、degradation operator | ACTIVE/source resolver 和生产 launcher 没有批准规格 | 不新增常驻服务、source resolver 或写触发 |
+| Phase 11 Loop | durable loop、worker journal stale-writer guard、degradation evidence 与 ADR-0074 synthetic-only 有限批次 CLI | operator 只接受合成路径、由外部 scheduler 启动；没有权威 ACTIVE resolver、可重取 source resolver / metric registry、dataset operator、仓内 scheduler 或 NATS。这些能力需要先定义 authority 与 provenance 语义 | 保持声明性证据边界；不新增常驻服务、source resolver、dataset 输入或写触发 |
 | Phase 12 Evolution | mutate / combine / proposal / replacement | P12-LOOP 明确暂缓 | 保持既有 fail-closed / conflict refusal |
-| Phase 13 Execution | simulated-only execution、audit、emergency stop、replay | roadmap 的二道风控演练及模拟与回测差异报告和 ADR-0046 文字范围不一致 | 先协调 ADR-0046 / roadmap，不引入 live 能力 |
-| Phase 14 Migration | gold-standard、diff、rollback evidence | 无目标系统或真实数据金标准 | 目标选择前不编造迁移实现 |
+| Phase 13 Execution | simulated-only execution、audit、emergency stop、risk replay | roadmap 原文的独立二道风控演练与 ExecutionService / BacktestResult 差异报告超出 ADR-0046；已把验收文字对齐至已有 Kill Switch drill、二道风控拒绝审计 / replay；P10 paper deviation 归 P10 | 维持 ADR-0046 的模拟-only 范围；不扩展其演练或比较 API |
+| Phase 14 Migration | gold-standard、diff、rollback evidence | 无目标系统或真实数据金标准；现有 conformance 调用方只覆盖 Knowledge / EventBus，不是全 suite migration matrix | 目标选择前不编造 target adapter；保持 suite 可重用框架范围 |
 | Apps | Reports API / Web 查询面、多类报告页面 | P8 fixture 与 P2 StateDiagnostics 类型需要同步；未进行浏览器验收 | 只修已批准 schema 的消费类型，不添 API 写触发 |
 
 ## 已批准的实现批次
@@ -58,7 +58,7 @@
 |---|---|---|---|
 | B1 | 校正 ADR-0068 / 0073、ADR index、roadmap、状态页中 Proposed / 已实现 / operator 入口等过时措辞 | 仅事实状态与交叉链接；不得改 ADR 裁决 | Codex 统筹，Wave A 后进行 |
 | B2 | 统一 Git 数字、P8 fixture 版本、P13 验收措辞、Phase 1 表数和 Phase 1 关闭条件的状态叙述 | `PROJECT_STATUS.md`、`PROJECT_MEMORY.md`、被核实的对应文档 | 逐条读源核实后更新 |
-| B3 | 整理 E1-CAP-ARCH 设计包：分离可在现有契约内处理的持有量与需新 ADR 的 metadata / retention 变化；记录失败候选数据的真实范围 | `docs/reviews/`、Proposed ADR 草案 | Codex 主责；不据此直接改 E1 代码 |
+| B3 | 整理 E1-CAP-ARCH 设计包：分离可在现有契约内处理的持有量与需新 ADR 的 metadata / retention 变化；记录失败候选数据的真实范围 | `docs/reviews/`、Proposed ADR 草案 | 首轮对账见 [`2026-09-28-e1-cap1-design-reconciliation.md`](../reviews/2026-09-28-e1-cap1-design-reconciliation.md)。确认了仓库内 O(N)/O(B) 持有项和结果 tuple 接口下界；PyIceberg RSS 贡献未测。32 MiB 完整工作集门槛不变；E1-R 可按单模块拆分研究，E1-API 若需改变必须先起 Proposed ADR，E1-H 需 L/H 分离证据。未改 E1 代码，未运行任何验收工具 |
 
 ### Wave C：额外模块静态审计发现的契约内缺口
 
@@ -66,7 +66,7 @@
 |---|---|---|---|---|
 | C1 | P12 evolution | mutate 搜索空间成员校验改为精确类型和值；combine 对会沿用父代同一 `name@version` 的子代在创建前 fail closed，不猜版本演进规则 | `research/evolution/operators.py` 单模块 | 静态复核通过；未运行测试 |
 | C2 | P13 execution | 未准入 deployment 必须在调用任何注入 target-position source 之前拒绝 | `apps/execution/service.py` 单模块 | 静态复核通过；未运行测试 |
-| C3 | P14 migration | `GoldenRecord` 持有深度不可变输出快照；比较前验证 baseline 内容哈希，拒绝被改写的基线 | `infrastructure/migration/golden.py` 单模块 | 静态复核通过；未运行测试 |
+| C3 | P14 migration | `GoldenRecord` 持有深度不可变输出快照；比较前验证 baseline 内容哈希；`GoldenDiff.differences` 复制、检查并冻结，防止报告结果被外部映射改写 | `infrastructure/migration/golden.py` 单模块 | 静态复核通过；未运行测试 |
 | C4 | P9 docs | 把 ADR-0042 implementation note 对照现行代码更新为准确事实，保留当前报告证据规模仍仅适于 smoke 的限制 | `docs/adr/0042-synthetic-market-provider.md` | 事实同步已完成，待文档统一提交 |
 
 ### 暂不实施，留到语义决定或验收窗口
@@ -86,7 +86,9 @@
 ### 2026-09-28 跨阶段复核结论
 
 - Phase 0.5–6：没有额外发现能在不触发数据人工审阅、运行验收或新架构决定的前提下直接编码的逻辑缺口。P4 converter 虽无生产调用点，但当前没有批准的运行时接点；保留纯函数，不新建写路径。
-- Phase 8–14：除 C1–C3 外，P10 deviation scope、P11 ACTIVE/source resolver/launcher、P13 ADR/roadmap 验收措辞及 P14 migration target 仍需要语义或目标决定；不扩大本批实现。
+- Phase 8–14：P10 deviation scope、P11 权威 ACTIVE/source resolver/dataset operator、P14 migration target 仍需语义或目标决定；P13 roadmap 已按 ADR-0046 修正为现有模拟功能范围，不需扩 ADR-0046。
+- P10 只读审计确认 paper deviation 未绑定 ADR-0043/roadmap 所说的 P8 声明范围；需要先定范围身份与兼容策略，不增门槛。P11 只读审计确认 ADR-0074 synthetic-only 有限批次 CLI 已实现，缺口是未来的数据源真实性与 ACTIVE 权威语义，外部 scheduler 是既定边界。P14 无迁移目标前不写 target adapter，通用 GoldenDiff 不可变性已补到 C3。
+- Phase 1 E1-CAP-1：新增对账文档列明 positions、committed columns、archive parse、batch index 和 result IDs 的仓库代码持有量，以及 metadata / manifest 的未测边界。完整结果 tuple 仍计入 32 MiB 门槛，禁止从 probe 排除；仓库内 bounded 逻辑与 API 改动分开设计。main 尚无容量证据，候选失败数据不外推。
 - 每个开发代理一次只领一个 ID；Codex 复核后才进本地 `main`。Claude 可用最多 6 个子代理并行，但不能跨写同一模块。Cursor 活动的 `phase/1` 与 `docs/research-spec-completion` worktree 仅保留，不调度任务。
 - 交付须含：改动文件、任务 ID/Phase、对应 ADR/ROADMAP 约束、静态复核结果、未解决事项。测试、类型检查、lint、build 和验收状态统一标为“未运行”。
 

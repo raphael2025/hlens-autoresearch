@@ -23,3 +23,7 @@
 
 - 正面：迁移有统一的准入工具。
 - 负面：金标准实验集合本身尚未选定（需 P4 / P8 实验产出后登记）。
+
+## Implementation note（2026-09-28）
+
+通用 GoldenRecord / GoldenDiff / rollback evidence 与 `run_conformance` 调用框架已进入本地 `main`；`GoldenRecord.outputs` 与 `GoldenDiff.differences` 在实例构造时均复制、校验并冻结。现有 P14 conformance 调用方覆盖 Knowledge 与 EventBus suite；ADR 第 2 条列举的 Collector / Storage / Catalog / Feature 等 suite 是可复用检查集合，不表示目前已有目标 Adapter 或全套参数化迁移矩阵。没有具体迁移 target、golden experiment set 和 target ADR，因此当前状态仍为 `FRAMEWORK_IMPLEMENTED / NOT_VALIDATED`，不能声称完成一次真实迁移。

@@ -87,6 +87,23 @@ class GoldenDiff:
     golden_hash: str = ""
     rerun_hash: str = ""
 
+    def __post_init__(self) -> None:
+        if not isinstance(self.differences, Mapping):
+            raise GoldenError("golden differences must be a mapping")
+        frozen: dict[str, tuple[Decimal | None, Decimal | None]] = {}
+        for key, pair in self.differences.items():
+            if not isinstance(key, str) or not key:
+                raise GoldenError("golden difference names must be non-empty strings")
+            if not isinstance(pair, tuple) or len(pair) != 2:
+                raise GoldenError(f"golden difference {key!r} must be a pair")
+            if any(
+                value is not None and (not isinstance(value, Decimal) or not value.is_finite())
+                for value in pair
+            ):
+                raise GoldenError(f"golden difference {key!r} values must be finite Decimals")
+            frozen[key] = pair
+        object.__setattr__(self, "differences", MappingProxyType(frozen))
+
     @property
     def passed(self) -> bool:
         return not self.differences

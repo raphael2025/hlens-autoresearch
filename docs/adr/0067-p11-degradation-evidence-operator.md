@@ -38,3 +38,7 @@ ADR-0049 定义按 Validation Profile 阈值比较近期指标与基线；当前
 ## 结果
 
 实现后可用明确输入和报告 provenance 逻辑；实现标记 `CODE_COMPLETE / DEBUG_PENDING`，后续统一验收。当前实现位于 Codex 协调 worktree，尚未进入本地 `main`。旧劣化报告的身份保持不变。
+
+## 实现状态补记（2026-09-28）
+
+上面的结果段是 ADR 接受时的状态记录。劣化报告 operation、schema 1.1.0 evidence、显式 `research.operations.degradation_cli` 单次调用适配、只读页面及 writer 已进入本地 `main`；仍未统一测试与 Phase 11 验收。CLI 只解析显式输入并调用本 ADR 的 operation，不提供 source resolver、观测聚合、scheduler、daemon、event 发布或 API 写入口。ADR-0074 的 synthetic loop operator 是另一条有限批次 CLI，二者不改变 `apps/worker` 与 `research/loop` 的依赖边界。
