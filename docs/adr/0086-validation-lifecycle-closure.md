@@ -48,3 +48,12 @@ MOD-VALID（2026-09-28）实现了 ADR-0013 的报告 ↔ Profile 阈值核验�
 
 - 正面：验证报告不能再漏门蒙混晋升；退役有了可审计的持久记录；泄漏类失败的原因如实归类。
 - 代价：以前能通过 Promotion 的缺门报告现在会被拒绝。目前没有任何策略晋升过，所以没有实际影响。
+
+## 实施记录（2026-09-28，PM 审阅）
+
+- 决策 1 已实现，入口为 `research/validation/gate_set.py`、`verification.py` 与 Promotion 的 `report_gate_set_incomplete`。PM 接受以下三处实现选择：
+  - **按阶段检查**：检查粒度是阶段前缀（G0–G5），不是具体的门 ID。原因是具体门 ID 会随所绑定的 Profile 变化，例如成本压力档位、各 seed 的对照、基准条目。
+  - **独立 G5 报告**：除样本内报告、样本内加 G5 的报告外，承认第三种形态，即只含 G5 的独立报告，其必需门集为 `{G5}`，这也是现有系统的实际产出。
+  - **流水线版本**：目前只登记代码实际记录的版本 `0.2.0-draft`，新版本在开始被记录时再登记。
+- 决策 2 已实现：`infrastructure/registry/retirement.py`。按依赖方向，底层复用 `infrastructure/event_bus/journal.py`，而不是 `research/persistence/journal.py`。
+- 决策 3：循环一侧由 IMPL-LOOP 实现；`research/strategies/pipeline.py::evaluate_strategy` 一侧由后续提交完成。
