@@ -20,7 +20,7 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 
 | 项 | 已由仓库代码证明 | 尚未证明 / 需要测量 |
 |---|---|---|
-| Raw positions | `normalizer.py` 全单元 `scan_columns(...).to_pylist()`、排序后进入 survey/unit facts；缓存条目数固定不代表单项基数有界 | RSS 峰值与可复用固定窗口 / 外存排序的实际效果 |
+| Raw positions | 已实现候选（本地提交 `7197973`）：`scan_column_batches` 输入、受固定 SQLite page cache 限制的磁盘排序、定长 int64 rank 文件；`_Survey` / `_UnitFacts` 不再持有 positions tuple。尚未验收 | Arrow 单批、SQLite sort、排序文件写入的峰值 RSS 和实际批大小；持久缓存资源回收 |
 | Canonical committed columns | `arrival_seq`、`knowledge_time`、schema version 存在全单元物化；recover / close 还创建全量比较状态 | 分块严格核验是否覆盖所有重复、缺号、空值、版本和 block 异常；实际 RSS |
 | D1 archive verification | `ParsedArchive.rows` 是整表；normalizer verifier 缓存已解析 archive；关闭缓存只会重解析，不会消除单次整表 parse 峰值 | spool / 有界解析方案能否精确保留整文件拒绝、逐行哈希和跨行语义；RSS |
 | Batch history index | verifier 为 Raw batch 保留 SnapshotInfo 索引并在调用时复制；列表会随历史 batch 数增长 | 在精确保留 batch ID / 顺序 / 重复验证的前提下改为计数或窄窗口后，内存与时间收益 |
@@ -42,13 +42,14 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 
 ## 2026-09-28 实施进度：批次历史与流式读取
 
-在现有 E1-R 路径内先落地一个基础切片，已本地提交为 `de3bfdb`，尚未验收：
+在现有 E1-R 路径内先落地基础切片，已本地提交 `de3bfdb`、`7197973`，尚未验收：
 
 - `PyIcebergCatalogAdapter.scan_column_batches` 使用 PyIceberg 的 Arrow batch reader，并在迭代耗尽、读取异常或显式 `close()` 时关闭 reader；`PinnedCatalogView` 将请求固定到显式或绑定 snapshot，底层不支持时拒绝，不退回整表物化。
 - `PersistedRowVerifier` 的 batch-history 缓存改为每个 lineage 的固定摘要；验证时第二遍从缓存的同一 history head 流式读取快照。D2 继续核连续前缀、批大小计划和 touched batch 的 fingerprint；D3E 继续核允许缺口的 index、分批行数和 fingerprint。
+- `CanonicalNormalizer._positions` 改为消费 pinned batch reader，借助固定 SQLite page cache 外排位置，再写入定长 int64 rank 文件。`_Survey` / `_UnitFacts` 直接持有惰性 Sequence，不再复制完整 position list / tuple；REST 位置使用 offset membership view。SQLite 与 rank 文件由索引对象拥有，survey 路径和 facts cache 有关闭 / 淘汰清理。
 - 为常数空间检测重复 index，这一切片把“同一 lineage 的历史 index 按快照时间严格递减”作为完整性约束。D2 与 REST writer 当前均按 index 递增顺序提交；旧 verifier 没有拒绝所有乱序但 index 唯一的历史。该切片将拒绝此类外部导入或手工构造的乱序历史，属于有意收窄，需在代码说明中保留此约束。
 
-本次独立源码审阅未发现其他明确的 D2 / D3E 切片或 offset 回归。尚未运行测试、probe、build、lint、typecheck；代码未验证。E1-CAP-1 仍阻断：位置、已提交列、archive 解析、结果 ID 与 PyIceberg / Iceberg metadata 的完整工作集仍未有界或测量，32 MiB 门槛没有通过证据。
+本次独立源码审阅未发现索引排序、惰性切片或显式清理路径的明显 blocker。尚未运行测试、probe、build、lint、typecheck；位置索引代码未验证。仍有 O(N) 状态：committed-time Arrow 列、`_same_numbers` 的排序 / 期望数组、survey 和公开结果的 revision ID、批次结果与 archive 解析缓存；Arrow 单批、SQLite sort 和 PyIceberg / Iceberg metadata 的完整工作集也未测。E1-CAP-1 仍阻断，32 MiB 门槛没有通过证据。
 
 ## E1-R 实施和后续验收边界
 

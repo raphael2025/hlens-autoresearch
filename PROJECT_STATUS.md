@@ -127,7 +127,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 - 已核实的模块实现先在协调分支收敛，并于 2026-09-27 进入本地 `main`；本轮又将 E1 probe、P0.5 seed schema 固定和 Phase 11 worker journal 并发保护择取到 main。后续模块开发在隔离任务分支进行，验收 / 测试留后；不整支合并互相重叠的 E1 候选。
 - 本轮合入 P2 / P4 接线并核正执行计划；`phase/1` 已无 main 未含提交，但仍由根工作区检出，根内未跟踪资料和 Cursor 会话保留。研究规格 Claude worktree 保留活动内容，不覆盖或删除。E1 PR #10 因与 main 冲突且容量门失败而关闭；`c3868dc` 已存入 `refs/archive/2026-09-28/branches/remote/fix/e1-cap1`，远端和本地候选分支已移除，保留 detached worktree 与归档恢复点。当前核实为 3 个本地分支、3 个 worktree、1 个远端分支。
-- 本地 `main` 含 P7 non-runnable typed-plan parser / 只读直接引用校验器、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝、有限查询保护、E1 主线 RSS probe / 可选分阶段诊断、知识种子版本固定、worker journal stale-writer guard、Catalog / Revision snapshot 环保护、P2 / P4 接线和 E1-R 流式 batch-history 基础切片；当前比 `origin/main` 超前大量本地提交，未推送。归档候选的失败 probe 不代表 main 容量，E1-CAP-1 继续阻断。主线 probe 与诊断模式均未运行；测试 / build / 阶段验收均暂缓。
+- 本地 `main` 含 P7 non-runnable typed-plan parser / 只读直接引用校验器、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝、有限查询保护、E1 主线 RSS probe / 可选分阶段诊断、知识种子版本固定、worker journal stale-writer guard、Catalog / Revision snapshot 环保护、P2 / P4 接线和 E1-R batch-history / streaming scan / 磁盘 positions index 基础切片（`de3bfdb`、`7197973`）；当前比 `origin/main` 超前大量本地提交，未推送。归档候选的失败 probe 不代表 main 容量，E1-CAP-1 继续阻断。主线 probe 与诊断模式均未运行；测试 / build / 阶段验收均暂缓。
 - Cursor 已按 ADR-0069 独立只读复核 P12 `combine`，未发现具体实现遗漏；测试留待统一验收。P11 最小本机 CLI 按 ADR-0067 与 operator 规格实施；无新架构 ADR、测试暂缓统一验收。
 
 ## 6. 当前待决策
@@ -138,9 +138,9 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|---|
 | D-E1-BASE | E1 后续实现以哪条代码线为基线？ | **以当前本地 `main` 为整合基线；已归档的 `fix/e1-cap1` 仅作按路径择取的代码与容量探针参考，不整支合并。** 候选 `history()` 对重复 snapshot ID 的查找顺序与 `main` 的 first-listed 语义不一致；任何移植都要保留 `main` 的历史、固定 snapshot 与拒绝规则 | 已决定（2026-09-27，Codex 依 Raphael 全权授权）；候选失败记录保留，`main` 容量尚未测 |
 | E1-HIST | PyIceberg metadata、Parser / scan 临时状态和 API 返回对象是否计入 E1-CAP-1？ | **计入完整进程工作集**，既有 32 MiB 门槛与验收条件不变；不因对象来自第三方依赖而排除 | 重申既有容量口径，非架构变更；见 `docs/reviews/e1-bounded-history-options.md`；E1 仍阻断 |
-| E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | 依 Raphael 2026-09-28 的项目统筹授权，先按已记录的 E1-R 设计路径补实现基础切片，不改 32 MiB 门槛、冻结契约或权威 metadata 读写 / 历史保留语义；E1-API 若需改变公开结果类型，仍先出 Proposed ADR | E1-R 批次历史 / 流式读取切片已本地提交 `de3bfdb`、未验证；整体容量设计与 E1-CAP-1 仍开放、阻断 |
+| E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | 依 Raphael 2026-09-28 的项目统筹授权，先按已记录的 E1-R 设计路径补实现基础切片，不改 32 MiB 门槛、冻结契约或权威 metadata 读写 / 历史保留语义；E1-API 若需改变公开结果类型，仍先出 Proposed ADR | E1-R batch-history / pinned streaming scan / disk-backed positions 三个基础切片已本地提交 `de3bfdb`、`7197973`，均未验证；整体容量设计与 E1-CAP-1 仍开放、阻断 |
 
-既有 E1-CAP-1 标准不变：完整进程工作集都计入容量测量，且增长须满足已记录的 N / batch-count 上界。已记录的 59.9 / 63.9 MiB 是 `fix/e1-cap1` 候选分支数据，不是当前 `main` 的容量结果；候选探针以 10 ms 间隔采样 `/proc` VmRSS、每个 N 仅运行一次，元数据阶段约解释 20 MiB，其余约 40 MiB 未归因。`main` 自身没有 resume / replay 探针；当前切片仅缩减共享 row-integrity batch-history 索引，并提供后续 normalizer 可用的流式 scan 能力。位置、时间列、revision ID、收尾列、archive parse 与 Iceberg metadata 等增长仍未解决或测量，因此不得外推候选数值或宣称 `main` 通过。
+既有 E1-CAP-1 标准不变：完整进程工作集都计入容量测量，且增长须满足已记录的 N / batch-count 上界。已记录的 59.9 / 63.9 MiB 是 `fix/e1-cap1` 候选分支数据，不是当前 `main` 的容量结果；候选探针以 10 ms 间隔采样 `/proc` VmRSS、每个 N 仅运行一次，元数据阶段约解释 20 MiB，其余约 40 MiB 未归因。`main` 自身没有 resume / replay 探针；当前实现已磁盘化 positions 与 batch-history 索引，但 Arrow batch、committed-time / expected arrays、revision ID / commits、archive parse 与 Iceberg metadata 等增长仍未解决或测量，因此不得外推候选数值或宣称 `main` 通过。
 
 **P11-LOCAL-OPERATOR（Codex 已选择最小本机入口）**
 
