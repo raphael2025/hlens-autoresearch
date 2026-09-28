@@ -180,7 +180,11 @@ class SyntheticMarket(Contract):
     spec_hash: ContentHash
     provider: PluginKey
     bars: tuple[SyntheticBar, ...]
-    truth: tuple[PlantedEffect, ...]
+    #: ADR-0088 PM 决定（契约层遗留项，2026-09-28）：类型放宽为三种效应的判别联合，与
+    #: `SyntheticMarketSpec.effects` 保持一致（additive）；缺 `kind` 的旧载荷仍按
+    #: `return_autocorrelation` 解析，`PlantedEffect` 的载荷与内容哈希不变；新效应只能出现在
+    #: 2.4.0 及之后的信封中（见 `_truth_exists_at_the_envelope_version`）。
+    truth: Annotated[tuple[SyntheticEffect, ...], BeforeValidator(_default_effect_kind)]
     market_hash: ContentHash
 
     @model_validator(mode="after")
@@ -192,12 +196,24 @@ class SyntheticMarket(Contract):
             raise ValueError("market_hash 与内容不符")
         return self
 
+    @model_validator(mode="after")
+    def _truth_exists_at_the_envelope_version(self) -> SyntheticMarket:
+        if not _version_before(self.schema_version, ADR_0088_VERSION):
+            return self
+        for effect in self.truth:
+            if not isinstance(effect, PlantedEffect):
+                raise ValueError(
+                    f"效应 {effect.kind} 自 {ADR_0088_VERSION} 引入，不能出现在 "
+                    f"{self.schema_version} 信封中（ADR-0052 §4）"
+                )
+        return self
+
 
 def market_hash(
     spec_hash: str,
     provider: str,
     bars: tuple[SyntheticBar, ...],
-    truth: tuple[PlantedEffect, ...],
+    truth: tuple[SyntheticEffect, ...],
 ) -> str:
     return content_hash(
         {

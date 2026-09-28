@@ -841,3 +841,40 @@ def test_the_new_schema_content_is_what_adr_0088_declares() -> None:
         schema = load(name)
         assert schema["properties"][field]["default"] is None
         assert field not in schema["required"]
+
+
+# ======================================================================================
+# PM 决定（契约层遗留项，2026-09-28）：SyntheticMarket.truth 放宽为 SyntheticEffect 联合
+# ======================================================================================
+
+
+def test_a_2_3_0_synthetic_market_truth_payload_keeps_its_hash_after_the_truth_widening() -> None:
+    """``SyntheticMarket.truth`` widened from ``tuple[PlantedEffect, ...]`` to
+    ``tuple[SyntheticEffect, ...]`` (additive, PM decision on this ADR's open item 1, done by the
+    synthetic-market generator batch). A ``truth`` payload recorded before the widening (only
+    ``PlantedEffect``, 2.3.0 envelope) must still read back with its exact pre-widening content
+    hash — the pin below is the payload's own canonical-JSON SHA-256, taken independently of any
+    model code (``core.domain.base.content_hash`` of the literal dict)."""
+    from core.contracts.synthetic import SyntheticMarket  # local: this file only appends
+
+    provider = "hlens_synthetic_random_walk@1.0.0"
+    pinned_market_hash = "d9476725b4cd0ad5d959446e57689683d6dc0524a4235a75c8171b382bee2769"
+    payload = (
+        '{"bars":[],"market_hash":"' + pinned_market_hash + '","provider":"' + provider + '",'
+        '"schema_version":"2.3.0","spec_hash":"' + HASH + '","truth":[{"kind":'
+        '"return_autocorrelation","lag_minutes":1,"schema_version":"2.3.0","strength":"0.2"}]}'
+    )
+    pinned = "7fa86c197e226ec1e2ddb0518e69df8de03cbe5c6604b3284d5d01ddccb97d94"
+    assert content_hash(json.loads(payload)) == pinned  # the pin is the payload's own hash
+    for read in (
+        SyntheticMarket.model_validate_json(payload),
+        SyntheticMarket.model_validate(json.loads(payload)),
+    ):
+        assert read.schema_version == "2.3.0"  # the recorded envelope is never rewritten
+        assert isinstance(read.truth[0], PlantedEffect)
+        semantic = read.model_dump(mode="json", exclude=read._non_semantic_fields())
+        assert canonical_json(semantic) == payload  # no ADR-0088 key appears
+        assert read.content_hash() == pinned
+    with contract_schema_version_scope("2.3.0"):  # a replay of the recorded object
+        without_envelope = {k: v for k, v in json.loads(payload).items() if k != "schema_version"}
+        assert SyntheticMarket.model_validate(without_envelope).content_hash() == pinned
