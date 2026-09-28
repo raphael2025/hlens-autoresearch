@@ -26,10 +26,17 @@ included), and only ``recover_register_batch(..., lease=...)`` writes. Releasing
 refuses every later mutation of this instance: an interrupted leased transaction leaves the journal
 exactly where a reopened state directory can recover it. The lease serializes this instance only; it
 is not a cross-process lock (the loop state directory's ``state.lock`` is).
+
+Read-only journal view (ADR-0073 admission lease review, 2026-09-28). The backing
+``AppendOnlyJournal`` is never handed out: its ``append`` would bypass the write lease, the seal and
+the replayed in-memory state. Cross-file checks read ``durable``, ``journal_head()`` (sequence and
+chain head) or ``journal_snapshot()`` (a ``LedgerJournalSnapshot``: detached copies of the verified
+entries, taken under the ledger lock) instead.
 """
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -41,12 +48,12 @@ from typing import TYPE_CHECKING
 
 from core.domain.base import SHA256_PATTERN, canonical_json
 from core.domain.research import Hypothesis, HypothesisOrigin
-from research.persistence import AppendOnlyJournal, JournalCorrupted, JournalEntry
+from research.persistence import GENESIS_HASH, AppendOnlyJournal, JournalCorrupted, JournalEntry
 
 if TYPE_CHECKING:
     from research.hypotheses.generator import HypothesisDraft
 
-__all__ = ["LedgerError", "LedgerLease", "TrialEntry", "TrialLedger"]
+__all__ = ["LedgerError", "LedgerJournalSnapshot", "LedgerLease", "TrialEntry", "TrialLedger"]
 
 
 class LedgerError(ValueError):
@@ -63,6 +70,30 @@ class LedgerLease:
 
     def __repr__(self) -> str:
         return f"<LedgerLease {id(self):#x}>"
+
+
+@dataclass(frozen=True, slots=True)
+class LedgerJournalSnapshot:
+    """A durable ``TrialLedger``'s verified journal at one instant (``journal_snapshot``).
+
+    Read-only and detached: ``entries`` are copies (payloads included), so nothing done to them
+    reaches the ledger, and there is no way to append through it.
+    """
+
+    path: Path
+    entries: tuple[JournalEntry, ...]
+
+    @property
+    def head_hash(self) -> str:
+        """The chain's tip at the snapshot: ``GENESIS_HASH`` for an empty journal."""
+        return self.entries[-1].hash if self.entries else GENESIS_HASH
+
+
+def _detached(entry: JournalEntry) -> JournalEntry:
+    """A copy of ``entry`` sharing no mutable payload with the journal's own record."""
+    return JournalEntry(
+        entry.seq, entry.type, copy.deepcopy(entry.payload), entry.prev_hash, entry.hash
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,10 +149,31 @@ class TrialLedger:
             raise JournalCorrupted(f"{path}: inconsistent ledger line: {exc}") from exc
 
     @property
-    def journal(self) -> AppendOnlyJournal | None:
-        """The backing journal (``None``: in memory); read-only use, for cross-file checks."""
+    def durable(self) -> bool:
+        """Whether a journal backs this ledger (module docs, **Read-only journal view**)."""
         with self._lock:
-            return self._journal
+            return self._journal is not None
+
+    def journal_head(self) -> tuple[int, str] | None:
+        """``(entry count, chain head)`` of the backing journal; ``None``: in memory."""
+        with self._lock:
+            journal = self._journal
+            if journal is None:
+                return None
+            return len(journal.entries), journal.head_hash
+
+    def journal_snapshot(self) -> LedgerJournalSnapshot | None:
+        """Detached read-only copy of the backing journal's verified entries; ``None``: in memory.
+
+        Taken under the ledger lock, so it never interleaves with a registration's append.
+        """
+        with self._lock:
+            journal = self._journal
+            if journal is None:
+                return None
+            return LedgerJournalSnapshot(
+                journal.path, tuple(_detached(entry) for entry in journal.entries)
+            )
 
     def acquire_write_lease(self) -> LedgerLease:
         """Reserve every later write of this instance for the returned token (module docs).
@@ -322,7 +374,7 @@ class TrialLedger:
                 registered = self._register_batch(batch)
                 if len(registered) != len(batch):
                     raise LedgerError("the prepared recovery batch was not wholly registered")
-                return journal.entries[-1]
+                return _detached(journal.entries[-1])
 
             if len(entries) != baseline_seq + 1:
                 raise LedgerError(
@@ -356,7 +408,7 @@ class TrialLedger:
                 for hypothesis in batch
             ):
                 raise LedgerError("the replayed TrialLedger state differs from its matching event")
-            return entry
+            return _detached(entry)
 
     def _replay_batch(self, path: Path, payload: object) -> None:
         """Replay one strictly shaped batch record; any duplicate or invalid member is corruption."""

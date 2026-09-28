@@ -31,10 +31,20 @@ durable state directory binds a ``ReviewObserver`` to the queue (``ReviewQueue.o
 once the approval is journaled (``after_approval``: the state directory writes a between-rounds
 checkpoint line and moves its external anchor), so no human approval exists that no checkpoint
 names.
+
+Review writes are serialized with the state (ADR-0073 admission lease review, 2026-09-28). With an
+observer, every journaled review write runs inside ``observer.review_scope()``: an approval holds it
+across ``before_approval`` → journal line → in-memory admission → ``after_approval``, and an
+enqueue or take across ``before_review_write`` → journal line → in-memory update. A durable state
+holds its admission gate there, so no typed-plan admission lease, round checkpoint or anchor move
+can start between an approval's journal line and its between-rounds checkpoint, and an enqueue /
+take is refused (before anything is written) while an admission lease is active or after an
+interrupted one.
 """
 
 from __future__ import annotations
 
+from contextlib import AbstractContextManager
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Final, Protocol
@@ -85,7 +95,16 @@ class ReviewApproval:
 
 
 class ReviewObserver(Protocol):
-    """Told about every human approval of a queue it observes (a durable state directory)."""
+    """Told about every human approval of a queue it observes (a durable state directory), and
+    asked before every other journaled review write (module docs)."""
+
+    def review_scope(self) -> AbstractContextManager[object]:
+        """Held across one whole review write (module docs); entered before any check of it."""
+        ...
+
+    def before_review_write(self, what: str) -> None:
+        """Called before an enqueue / take is journaled; raising refuses it (nothing is written)."""
+        ...
 
     def before_approval(self, key: str) -> None:
         """Called before the approval is journaled; raising refuses it (nothing is written)."""
@@ -145,9 +164,17 @@ class ReviewQueue:
     def enqueue(self, draft: HypothesisDraft) -> bool:
         if draft.reviewed:
             raise ValueError("the loop only enqueues unreviewed drafts")
+        if self._observer is None:
+            return self._enqueue(draft)
+        with self._observer.review_scope():
+            return self._enqueue(draft)
+
+    def _enqueue(self, draft: HypothesisDraft) -> bool:
         key = self._key(draft)
         if key in self._drafts:
             return False
+        if self._observer is not None:
+            self._observer.before_review_write(f"enqueueing {key} for review")
         if self._journal is not None:
             self._journal.append(
                 REVIEW_ENQUEUED,
@@ -166,6 +193,16 @@ class ReviewQueue:
         ``research_loop:`` automation identity); it is recorded with the draft and call hashes.
         """
         identity = self._human(reviewer)
+        observer = self._observer
+        if observer is None:
+            return self._approve(key, identity)
+        # One scope from the checks to the checkpoint (module docs): nothing the observer
+        # coordinates can interleave between the approval line and its checkpoint.
+        with observer.review_scope():
+            return self._approve(key, identity)
+
+    def _approve(self, key: str, identity: str) -> HypothesisDraft:
+        """``approve`` (inside the observer's ``review_scope`` when there is one)."""
         draft = self._drafts[key]
         if draft.reviewed:
             raise ValueError(f"{key} was already approved by {self._reviewers[key]!r}")
@@ -228,9 +265,18 @@ class ReviewQueue:
         )
 
     def mark_taken(self, draft: HypothesisDraft) -> None:
+        if self._observer is None:
+            self._mark_taken(draft)
+            return
+        with self._observer.review_scope():
+            self._mark_taken(draft)
+
+    def _mark_taken(self, draft: HypothesisDraft) -> None:
         key = self._key(draft)
         if key in self._taken:
             return
+        if self._observer is not None:
+            self._observer.before_review_write(f"marking {key} taken")
         if self._journal is not None:
             self._journal.append(REVIEW_TAKEN, {"key": key})
         self._taken.add(key)

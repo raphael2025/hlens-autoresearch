@@ -151,6 +151,19 @@ cleanly. The lease does not cover the sealed-OOS, lineage or failure stores: not
 ``prepare`` / ``complete`` may run inside the scope, and a write to them during it leaves an
 admission the reopening refuses rather than recovers.
 
+**One admission gate** (ADR-0073 admission lease review, 2026-09-28). Every in-process write this
+state coordinates runs with the same re-entrant gate held, and each checks the lease / poison
+before writing anything: acquiring a lease; a round start and, as one span, a finished round's
+checkpoint → audit record → after-record anchor move (``round_scope``, which the composition hands
+to ``ResearchLoop``); a human approval from ``before_approval`` through its review line, its
+in-memory admission and its between-rounds checkpoint / anchor move; a review enqueue or take
+(``review_scope`` / ``before_review_write``); and each ``prepare`` / ``complete``. So a lease cannot
+start between an approval's line and its checkpoint, nor between a round's checkpoint and its audit
+record (it would see the checkpointed round still open). A lease is bound to the thread that
+entered its scope and claimed exclusively per call; ``complete`` is claimed once before its first
+write (``PlanAdmissionLease``). Lock order is always gate → TrialLedger lock; the ledger never calls
+back into the gate. The TrialLedger's journal is read only through its snapshot / head API.
+
 The LLM provider is external: its own state (e.g. a scripted provider's position) is not loop
 state and is the caller's to resume.
 """
@@ -167,7 +180,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
-from threading import RLock
+from threading import Lock, RLock, get_ident
 from typing import Any, Final, Protocol
 
 from apps.worker.loop import (
@@ -190,7 +203,7 @@ from core.domain.research import (
 from core.domain.specs import StrategySpec
 from core.errors import LifecycleViolation, ReasonCode
 from research.evolution import LineageGraph
-from research.hypotheses import LedgerError, LedgerLease, TrialLedger
+from research.hypotheses import LedgerError, LedgerJournalSnapshot, LedgerLease, TrialLedger
 from research.hypotheses.typed_plan_audit import (
     CommittedAdmission,
     PlanAdmissionCorrupted,
@@ -381,27 +394,47 @@ def _admission_file_sizes(root: Path) -> tuple[int, ...]:
 # ------------------------------------------------------------------------------------ positions
 
 
-def _journals(
-    memory: ResearchMemory, admission: PlanAdmissionJournal | None = None
+def _other_journals(
+    memory: ResearchMemory, admission: PlanAdmissionJournal | None
 ) -> dict[str, AppendOnlyJournal | PlanAdmissionJournal]:
-    ledger, reviews = memory.ledger.journal, memory.reviews.journal
+    """Every positioned journal but the TrialLedger's (which is only read through its snapshot /
+    head API: the ledger never hands out its writable journal)."""
+    reviews = memory.reviews.journal
     graph, oos = memory.lineage_graph, memory.oos_ledger
     if (
-        ledger is None
+        not memory.ledger.durable
         or reviews is None
         or graph is None
         or graph.journal is None
         or not isinstance(oos, DurableUnsealingLedger)
     ):
         raise ValueError("a durable loop state needs journal-backed memory throughout")
-    journals = {
-        "trial_ledger": ledger,
+    journals: dict[str, AppendOnlyJournal | PlanAdmissionJournal] = {
         "sealed_oos": oos.journal,
         "lineage": graph.journal,
         "reviews": reviews,
     }
     if admission is not None:
         journals["plan_admission"] = admission
+    return journals
+
+
+def _ledger_snapshot(memory: ResearchMemory) -> LedgerJournalSnapshot:
+    snapshot = memory.ledger.journal_snapshot()
+    if snapshot is None:
+        raise ValueError("a durable loop state needs journal-backed memory throughout")
+    return snapshot
+
+
+def _journals(
+    memory: ResearchMemory, admission: PlanAdmissionJournal | None = None
+) -> dict[str, AppendOnlyJournal | PlanAdmissionJournal | LedgerJournalSnapshot]:
+    """Every positioned journal, read-only use: the TrialLedger as a detached snapshot."""
+    others = _other_journals(memory, admission)
+    journals: dict[str, AppendOnlyJournal | PlanAdmissionJournal | LedgerJournalSnapshot] = {
+        "trial_ledger": _ledger_snapshot(memory)
+    }
+    journals.update(others)
     return journals
 
 
@@ -413,10 +446,17 @@ def heads(
     memory: ResearchMemory, admission: PlanAdmissionJournal | None = None
 ) -> dict[str, Any]:
     """The position of every file of the state directory but the audit and the memory journal."""
-    out: dict[str, Any] = {
-        name: {"seq": len(journal.entries), "hash": journal.head_hash}
-        for name, journal in _journals(memory, admission).items()
-    }
+    others = _other_journals(memory, admission)
+    ledger = memory.ledger.journal_head()
+    if ledger is None:
+        raise ValueError("a durable loop state needs journal-backed memory throughout")
+    out: dict[str, Any] = {"trial_ledger": {"seq": ledger[0], "hash": ledger[1]}}
+    out.update(
+        {
+            name: {"seq": len(journal.entries), "hash": journal.head_hash}
+            for name, journal in others.items()
+        }
+    )
     hashes = _failure_hashes(memory.failures.records())
     out["failures"] = {"count": len(hashes), "digest": content_hash(hashes)}
     return out
@@ -601,7 +641,11 @@ def _delta(memory: ResearchMemory, marks: _Marks) -> Any:
 
 
 def _approval_lines(memory: ResearchMemory) -> int:
-    return sum(1 for entry in _journals(memory)["reviews"].entries if entry.type == REVIEW_APPROVED)
+    return sum(
+        1
+        for entry in _other_journals(memory, None)["reviews"].entries
+        if entry.type == REVIEW_APPROVED
+    )
 
 
 class MemoryCheckpoint:
@@ -686,7 +730,7 @@ class MemoryCheckpoint:
         """Checkpoint the human approval just journaled (the review journal's last line)."""
         with self.admission_gate.lock:
             self.require_settled("between-rounds checkpoint")
-            line = _journals(self._memory)["reviews"].entries[-1]
+            line = _other_journals(self._memory, None)["reviews"].entries[-1]
             if line.type != REVIEW_APPROVED or line.payload.get("key") != approval.key:
                 raise LoopStateInconsistent("the review journal's last line is not this approval")
             self._journal.append(
@@ -708,7 +752,11 @@ class MemoryCheckpoint:
 
     def plan_admission(self, committed: CommittedAdmission, *, lease: object) -> JournalEntry:
         """Checkpoint one committed admission while its round remains open; v4 / v5 only, and only
-        under the state's active admission ``lease``."""
+        under the state's active admission ``lease`` (with the admission gate held)."""
+        with self.admission_gate.lock:
+            return self._plan_admission(committed, lease)
+
+    def _plan_admission(self, committed: CommittedAdmission, lease: object) -> JournalEntry:
         self.admission_gate.require_owner("plan admission checkpoint", lease)
         if self._admission is None:
             raise LoopStateInconsistent("typed-plan admission requires a v4 or v5 state")
@@ -716,7 +764,7 @@ class MemoryCheckpoint:
             raise LoopStateLocked("plan admission checkpoint requires the held loop state lock")
         round_identity = committed.prepare.round
         transaction_id = committed.prepare.transaction_id
-        if self._memory.ledger.journal is None:
+        if not self._memory.ledger.durable:
             raise LoopStateInconsistent("typed-plan admission requires a durable TrialLedger")
         if committed not in self._admission.committed or transaction_id in self._checkpointed:
             raise LoopStateInconsistent(
@@ -935,13 +983,7 @@ class DurableState:
             lease._active = False
             reason: str | None = None
             if lease._committed is None:
-                # Any byte appended to the plan journal, TrialLedger or memory journal (a partial
-                # line included) is part of this unfinished transaction; unreadable sizes count too.
-                try:
-                    wrote = _admission_file_sizes(self.root) != lease._sizes
-                except BaseException:
-                    wrote = True
-                if wrote:
+                if self._admission_bytes_written(lease):
                     reason = (
                         "a typed-plan admission lease ended "
                         + ("by an exception or interrupt" if failed else "without complete()")
@@ -956,6 +998,14 @@ class DurableState:
                 f"{reason}; this state refuses every later write: close the loop and reopen its "
                 "state directory to recover the admission (ADR-0073 §4)"
             )
+
+    def _admission_bytes_written(self, lease: PlanAdmissionLease) -> bool:
+        """Whether any byte was appended to the plan journal, TrialLedger or memory journal since
+        ``lease`` began (a partial line included); unreadable sizes count as written."""
+        try:
+            return _admission_file_sizes(self.root) != lease._sizes
+        except BaseException:
+            return True
 
     def _prepare_admission(
         self,
@@ -994,6 +1044,7 @@ class DurableState:
                 f"typed-plan admission is disabled in state version {self.state_version}"
             )
         self.checkpoint.admission_gate.require_owner("typed-plan PREPARE", lease)
+        lease._require_usable("typed-plan PREPARE")
         if self.lock is None or not self.lock.held:
             raise LoopStateLocked("typed-plan PREPARE requires the held loop state lock")
         if not isinstance(round, RoundStartedIdentity):
@@ -1023,11 +1074,11 @@ class DurableState:
                 "reopening"
             )
         ledger = self.memory.ledger
-        journal = ledger.journal
-        if journal is None:
+        position = ledger.journal_head()
+        if position is None:
             raise LoopStateInconsistent("typed-plan admission requires a durable TrialLedger")
         # The lease's TrialLedger write lease refuses every other writer from here to COMMIT, so
-        # the baseline read below is the one the batch event follows.
+        # the baseline read above is the one the batch event follows.
         if isinstance(hypotheses, Sequence):
             known = {(item.name, item.version) for item in ledger.hypotheses}
             reused = sorted(
@@ -1056,43 +1107,51 @@ class DurableState:
             outputs=outputs,
             experiment_specs=experiment_specs,
             hypotheses=hypotheses,
-            ledger_baseline_seq=len(journal.entries),
-            ledger_baseline_hash=journal.head_hash,
+            ledger_baseline_seq=position[0],
+            ledger_baseline_hash=position[1],
         )
 
     def _finish_admission(
         self, lease: PlanAdmissionLease, transaction_id: str
     ) -> CommittedAdmission:
-        """Ledger event → COMMIT → admission checkpoint under ``lease``, without the anchor.
+        """Ledger event → COMMIT → admission checkpoint under ``lease``, without the anchor; the
+        admission gate is held throughout (module docs).
 
         Raises ``LoopStateInconsistent`` / ``LoopStateLocked`` for the state, ``LedgerError`` /
         ``PlanAdmissionError`` when the ledger no longer matches the PREPARE.
         """
-        admission = self._plan_admission
-        if self.state_version not in {STATE_VERSION, OPERATOR_STATE_VERSION} or admission is None:
-            raise LoopStateInconsistent(
-                f"typed-plan admission is disabled in state version {self.state_version}"
+        with self.checkpoint.admission_gate.lock:
+            admission = self._plan_admission
+            if (
+                self.state_version not in {STATE_VERSION, OPERATOR_STATE_VERSION}
+                or admission is None
+            ):
+                raise LoopStateInconsistent(
+                    f"typed-plan admission is disabled in state version {self.state_version}"
+                )
+            self.checkpoint.admission_gate.require_owner("typed-plan COMMIT", lease)
+            lease._require_usable("typed-plan COMMIT")
+            if self.lock is None or not self.lock.held:
+                raise LoopStateLocked("typed-plan admission requires the held loop state lock")
+            prepared = admission.pending
+            if prepared is None or prepared.transaction_id != transaction_id:
+                raise LoopStateInconsistent("no matching pending plan PREPARE exists")
+            current = _round_started_identity(
+                self.audit, prepared.round.loop_id, prepared.round.round_index
             )
-        self.checkpoint.admission_gate.require_owner("typed-plan COMMIT", lease)
-        if self.lock is None or not self.lock.held:
-            raise LoopStateLocked("typed-plan admission requires the held loop state lock")
-        prepared = admission.pending
-        if prepared is None or prepared.transaction_id != transaction_id:
-            raise LoopStateInconsistent("no matching pending plan PREPARE exists")
-        current = _round_started_identity(
-            self.audit, prepared.round.loop_id, prepared.round.round_index
-        )
-        if current != prepared.round:
-            raise LoopStateInconsistent("plan PREPARE does not match the unique open round start")
-        event = self.memory.ledger.recover_register_batch(
-            prepared.hypotheses,
-            baseline_seq=prepared.ledger_baseline_seq,
-            baseline_hash=prepared.ledger_baseline_hash,
-            lease=lease._ledger_lease,
-        )
-        committed = admission.commit(transaction_id, event)
-        self.checkpoint.plan_admission(committed, lease=lease)
-        return committed
+            if current != prepared.round:
+                raise LoopStateInconsistent(
+                    "plan PREPARE does not match the unique open round start"
+                )
+            event = self.memory.ledger.recover_register_batch(
+                prepared.hypotheses,
+                baseline_seq=prepared.ledger_baseline_seq,
+                baseline_hash=prepared.ledger_baseline_hash,
+                lease=lease._ledger_lease,
+            )
+            committed = admission.commit(transaction_id, event)
+            self.checkpoint.plan_admission(committed, lease=lease)
+            return committed
 
     def head(self) -> StateHead:
         """The directory's current head (after the last recorded round or between-rounds line)."""
@@ -1111,6 +1170,33 @@ class DurableState:
             memory_seq=len(entries),
             heads=_line_heads(entries[-1]),
         )
+
+    # -- round and review writes, serialized with the admission gate (module docs) --------------
+
+    @contextmanager
+    def round_scope(self) -> Iterator[None]:
+        """``ResearchLoop(round_scope=...)``: hold the admission gate across a round start and
+        across a finished round's checkpoint → audit record → after-record anchor move.
+
+        Refused on entry (nothing written) while a typed-plan admission lease is active
+        (``LoopStateLocked``), after an interrupted one, or while an admission is unfinished
+        (``LoopStateInconsistent``). Holding the gate means no lease can start between a round's
+        checkpoint and its audit record (it would see the checkpointed round still open).
+        """
+        with self.checkpoint.admission_gate.lock:
+            self.checkpoint.require_settled("a loop round start or record")
+            yield
+
+    @contextmanager
+    def review_scope(self) -> Iterator[None]:
+        """``ReviewObserver.review_scope``: the admission gate, held across one review write."""
+        with self.checkpoint.admission_gate.lock:
+            yield
+
+    def before_review_write(self, what: str) -> None:
+        """Refuse an enqueue / take while an admission lease is active or after an interrupted
+        one (called inside ``review_scope``, before anything is written)."""
+        self.checkpoint.admission_gate.require_open(what)
 
     # -- ReviewObserver: human approvals between rounds (module docs) --------------------------
 
@@ -1166,6 +1252,15 @@ class PlanAdmissionLease:
 
     Only the state creates it; it is valid only inside its ``with`` scope and admits exactly one
     plan: ``prepare`` once, then ``complete`` once.
+
+    Concurrency: the lease is bound to the thread that entered its scope; ``prepare`` and
+    ``complete`` from any other thread are refused (``LoopStateLocked``) before anything is read
+    or written. Each call also claims the lease exclusively (a re-entrant call while one runs is
+    refused) and runs with the state's admission gate held. ``complete`` is claimed once, before
+    its first write: a second call — also after the first one failed — is refused, so the
+    batch event → COMMIT → checkpoint → anchor steps never run twice or concurrently for one
+    lease. A ``prepare`` that fails after writing any admission byte makes the lease unusable;
+    leaving the scope then poisons the state (module docs) and reopening recovers it.
     """
 
     def __init__(
@@ -1174,13 +1269,37 @@ class PlanAdmissionLease:
         self._state = state
         self._ledger_lease = ledger_lease
         self._sizes = sizes
+        self._thread = get_ident()
+        self._claim = Lock()
         self._active = True
+        self._broken: str | None = None
+        self._complete_claimed = False
         self._prepared: PreparedAdmission | None = None
         self._committed: CommittedAdmission | None = None
 
-    def _require_active(self, what: str) -> None:
+    def _require_usable(self, what: str) -> None:
+        """Refuse ``what`` from another thread, after the scope ended or once the lease broke."""
+        if get_ident() != self._thread:
+            raise LoopStateLocked(
+                f"{what}: this typed-plan admission lease belongs to another thread"
+            )
         if not self._active:
             raise LoopStateLocked(f"{what}: this typed-plan admission lease has ended")
+        if self._broken is not None:
+            raise LoopStateInconsistent(f"{what}: this typed-plan admission lease {self._broken}")
+
+    @contextmanager
+    def _claimed(self, what: str) -> Iterator[None]:
+        """Exclusive use of this lease, with the state's admission gate held."""
+        self._require_usable(what)
+        if not self._claim.acquire(blocking=False):
+            raise LoopStateLocked(f"{what}: this typed-plan admission lease is already in use")
+        try:
+            with self._state.checkpoint.admission_gate.lock:
+                self._require_usable(what)
+                yield
+        finally:
+            self._claim.release()
 
     def prepare(
         self,
@@ -1197,38 +1316,45 @@ class PlanAdmissionLease:
     ) -> PreparedAdmission:
         """Persist this lease's PREPARE (see ``DurableState._prepare_admission`` for the
         refusals); a lease admits one plan."""
-        self._require_active("typed-plan PREPARE")
-        if self._prepared is not None:
-            raise PlanAdmissionError("this admission lease already wrote its PREPARE (one plan)")
-        prepared = self._state._prepare_admission(
-            self,
-            round=round,
-            plan=plan,
-            compiler=compiler,
-            operators=operators,
-            providers=providers,
-            inputs=inputs,
-            outputs=outputs,
-            experiment_specs=experiment_specs,
-            hypotheses=hypotheses,
-        )
-        self._prepared = prepared
-        return prepared
+        with self._claimed("typed-plan PREPARE"):
+            if self._prepared is not None:
+                raise PlanAdmissionError(
+                    "this admission lease already wrote its PREPARE (one plan)"
+                )
+            try:
+                prepared = self._state._prepare_admission(
+                    self,
+                    round=round,
+                    plan=plan,
+                    compiler=compiler,
+                    operators=operators,
+                    providers=providers,
+                    inputs=inputs,
+                    outputs=outputs,
+                    experiment_specs=experiment_specs,
+                    hypotheses=hypotheses,
+                )
+            except BaseException:
+                if self._state._admission_bytes_written(self):
+                    self._broken = "failed after writing part of its PREPARE"
+                raise
+            self._prepared = prepared
+            return prepared
 
     def complete(self) -> CommittedAdmission:
         """Append the PREPARE's batch event, COMMIT and admission checkpoint, then move the anchor.
 
         Never compiles, invokes Providers or runs experiments.
         """
-        self._require_active("typed-plan COMMIT")
-        if self._prepared is None or self._committed is not None:
-            raise LoopStateInconsistent(
-                "complete() needs this lease's PREPARE and completes it once"
-            )
-        committed = self._state._finish_admission(self, self._prepared.transaction_id)
-        self._state._publish_anchor(None, self)
-        self._committed = committed
-        return committed
+        with self._claimed("typed-plan COMMIT"):
+            if self._prepared is None or self._complete_claimed:
+                raise LoopStateInconsistent("complete() needs this lease's PREPARE and runs once")
+            # Claimed before the first write: a failed or repeated complete() never re-runs it.
+            self._complete_claimed = True
+            committed = self._state._finish_admission(self, self._prepared.transaction_id)
+            self._state._publish_anchor(None, self)
+            self._committed = committed
+            return committed
 
 
 def _refuse(message: str) -> LoopStateInconsistent:
@@ -1884,7 +2010,7 @@ def _check_admission_checkpoints(
 
 def _verify_committed_ledger(state: DurableState, committed: CommittedAdmission) -> JournalEntry:
     """Verify a historical COMMIT against the one exact TrialLedger batch event."""
-    journal = state.memory.ledger.journal
+    journal = state.memory.ledger.journal_snapshot()
     if journal is None:
         raise _refuse("typed-plan admission has no durable TrialLedger")
     prepare = committed.prepare

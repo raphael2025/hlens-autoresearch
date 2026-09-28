@@ -61,7 +61,11 @@ like an audit write failure; a checkpoint written for a round the audit never re
 interrupted round for the composition to refuse on reopening. An optional ``after_record``
 callable is called with each round's record right **after** the audit recorded it (the research
 composition moves its external anchor there); if it raises, the round stays recorded and the loop
-stops (fail closed).
+stops (fail closed). An optional ``round_scope`` factory returns a context manager the loop holds
+around ``begin_round`` and, as one span, around ``checkpoint`` → audit record → ``after_record``
+(the research composition holds its admission gate there, so nothing it coordinates starts between
+a round's checkpoint and its audit record); entering it may refuse, which stops the loop like a
+failed checkpoint.
 
 **Budget binding** (ADR-0049 implementation note, durable review fixes, 2026-09-26). A loop that
 continues an audit refuses any record made under another ``LoopBudget`` (``budget_hash``): the
@@ -107,6 +111,7 @@ is decided by the research loop that files the FailureRecord.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping, Sequence
+from contextlib import AbstractContextManager, ExitStack, nullcontext
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -1027,6 +1032,7 @@ class ResearchLoop:
         compute_tolerance_seconds: Decimal | int | str | None = None,
         checkpoint: Callable[[LoopRecord], None] | None = None,
         after_record: Callable[[LoopRecord], None] | None = None,
+        round_scope: Callable[[], AbstractContextManager[object]] | None = None,
     ) -> None:
         """``audit``: a ``LoopAuditLog`` (``LoopAuditLog(path)`` for a durable one); when it
         already holds rounds the loop continues it (see module docs). ``clock``: the stage timer
@@ -1036,7 +1042,9 @@ class ResearchLoop:
         round's record before the audit records it (see module docs); ``None``: nothing.
         ``after_record``: called with every round's record right after the audit recorded it
         (e.g. to move an external anchor); if it raises, the round stays recorded and the loop
-        stops (fail closed); ``None``: nothing."""
+        stops (fail closed); ``None``: nothing. ``round_scope``: held around ``begin_round`` and
+        around checkpoint → audit record → ``after_record`` (see module docs); ``None``:
+        nothing."""
         check_stage_order([stage.name for stage in stages])
         if epoch.tzinfo is None or epoch.utcoffset() != timedelta(0):
             raise ValueError("epoch must be a UTC datetime")
@@ -1054,6 +1062,9 @@ class ResearchLoop:
         self._clock: Clock = clock or monotonic_clock
         self._checkpoint = checkpoint
         self._after_record = after_record
+        self._round_scope: Callable[[], AbstractContextManager[object]] = (
+            round_scope if round_scope is not None else nullcontext
+        )
         self._tolerance = (
             None
             if compute_tolerance_seconds is None
@@ -1234,30 +1245,35 @@ class ResearchLoop:
         if round_index != len(self._audit.records):
             raise ValueError(f"round {round_index} is out of order")
         self._check_can_run()
-        try:
-            self._audit.begin_round(self._loop_id, round_index)
-            record, timings = self._run_round(round_index)
-            if self._checkpoint is not None:
-                self._checkpoint(record)  # the composition's state, before the audit names it
-            self._audit.append(record)
-            self._recovery_required = _experiment_recovery_reason(record)
-        except Exception as exc:
-            # the round may have spent budget and moved subjects without a durable record
-            self._stopped = f"round {round_index} could not be recorded ({_error(exc)})"
-            raise
-        self._total = record.total_usage
-        if record.status in HALTING:
-            self._halted = record.status
-        if self._after_record is not None:
+        # ``held`` keeps the round scope from the checkpoint through the audit record and the
+        # after-record hook as one span, and releases it on every exit.
+        with ExitStack() as held:
             try:
-                self._after_record(record)
+                with self._round_scope():
+                    self._audit.begin_round(self._loop_id, round_index)
+                record, timings = self._run_round(round_index)
+                held.enter_context(self._round_scope())
+                if self._checkpoint is not None:
+                    self._checkpoint(record)  # the composition's state, before the audit names it
+                self._audit.append(record)
+                self._recovery_required = _experiment_recovery_reason(record)
             except Exception as exc:
-                # the round is recorded; whatever the hook keeps (an anchor) is now behind it
-                self._stopped = (
-                    f"round {round_index} was recorded, but the after-record hook failed "
-                    f"({_error(exc)}); the loop does not continue until a human reviews it"
-                )
+                # the round may have spent budget and moved subjects without a durable record
+                self._stopped = f"round {round_index} could not be recorded ({_error(exc)})"
                 raise
+            self._total = record.total_usage
+            if record.status in HALTING:
+                self._halted = record.status
+            if self._after_record is not None:
+                try:
+                    self._after_record(record)
+                except Exception as exc:
+                    # the round is recorded; whatever the hook keeps (an anchor) is now behind it
+                    self._stopped = (
+                        f"round {round_index} was recorded, but the after-record hook failed "
+                        f"({_error(exc)}); the loop does not continue until a human reviews it"
+                    )
+                    raise
         try:
             self._bus.publish(round_message(self._loop_id, record))
         except Exception as exc:

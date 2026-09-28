@@ -14,7 +14,7 @@ from typing import Any, cast
 
 from core.domain.base import canonical_json, content_hash
 from research.loop.durable import BETWEEN_ROUNDS, ROUND_MEMORY, DurableState
-from research.persistence.journal import GENESIS_HASH, AppendOnlyJournal, JournalEntry
+from research.persistence.journal import GENESIS_HASH, JournalEntry
 
 __all__ = [
     "FailedRoundReviewPacket",
@@ -110,10 +110,11 @@ def failed_round_review_packet(
 
     checkpoint = round_entries[record.round_index]
     checkpoint_payload = checkpoint.payload
-    ledger_journal = state.memory.ledger.journal
-    if ledger_journal is None or not isinstance(ledger_journal, AppendOnlyJournal):
+    # Read-only detached snapshot of the verified TrialLedger journal (never its writable journal).
+    ledger_snapshot = state.memory.ledger.journal_snapshot()
+    if ledger_snapshot is None:
         raise FailedRoundReviewRefused("the TrialLedger has no verified append-only journal")
-    ledger_entries = ledger_journal.entries
+    ledger_entries = ledger_snapshot.entries
 
     current_seq, current_hash = _ledger_position(checkpoint_payload, "failed-round checkpoint")
     previous_seq = 0
