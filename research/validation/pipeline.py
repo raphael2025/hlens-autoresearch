@@ -52,6 +52,16 @@ negative-control threshold (see G1 above); the base gate ``G1.shuffle_control`` 
 ``..._timing_p_value_min_over_seeds[>=]``). More seeds can only add ways to fail: the option never
 loosens the controls, and there is no default seed list. The G2 null model stays single-seed
 (``seed + 2``).
+
+Outcome never an input at run time (Constitution C-L2; MOD-VALID O-1, 2026-09-28): ``run_in_sample``
+and ``run_sealed_oos`` first pass the study's declared inputs (``SignalStudy.signal_refs``) — and,
+for a ``FittableStudy``, every fold's fitted study's inputs — through the contract's runtime guard
+``core.contracts.outcome.refuse_outcome_input``. An Outcome payload (an ``OutcomeLabel`` /
+``OutcomeResult`` or a mapping carrying their ``label_only`` discriminator) there raises
+``OutcomeUsedAsInput`` (a ``ValueError``) before any gate is computed and — for G5 — before the
+sealed window is touched: fail closed, never a gate verdict. A study whose inputs are refs (every
+existing caller) is unaffected and its gates are byte-identical. ``G1.outcome_not_input`` still
+checks the ref kinds (an Outcome ``Ref`` is a FAIL gate, as before).
 """
 
 from __future__ import annotations
@@ -63,7 +73,7 @@ from datetime import datetime
 from decimal import Decimal
 
 from core.contracts.cost_model import CostModelSpec
-from core.contracts.outcome import OutcomeLabel, OutcomeLabelSpec
+from core.contracts.outcome import OutcomeLabel, OutcomeLabelSpec, refuse_outcome_input
 from core.contracts.profile_selection import ExperimentMetadata
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import Ref
@@ -194,6 +204,12 @@ class SealedOosInput:
     outcomes: OutcomeTable
     study: SignalStudy
     evaluation: SealedEvaluation | None = None
+
+
+def _refuse_outcome_inputs(study: SignalStudy, where: str) -> None:
+    """C-L2 at run time (module docs): an Outcome payload among the study's declared inputs is
+    refused with ``OutcomeUsedAsInput`` (the contract's own guard, unchanged semantics)."""
+    refuse_outcome_input(tuple(study.signal_refs), f"{where}.study.signal_refs")
 
 
 def _span(label: OutcomeLabel) -> LabeledSpan:
@@ -586,6 +602,7 @@ def _evaluation(inp: InSampleInput, labels: Sequence[OutcomeLabel]) -> _Evaluati
         if isinstance(study, FittableStudy):
             train = [by_key[key] for key in fold.train]
             study = study.fit(tuple(label.event_key for label in train), _values(train))
+            _refuse_outcome_inputs(study, "fitted")
         answer = study.sides(test, blind_labels(len(test)))
         if len(answer) != len(test) or any(side not in (-1, 0, 1) for side in answer):
             raise ValueError("a study must return one side in {-1, 0, 1} per event")
@@ -596,7 +613,10 @@ def _evaluation(inp: InSampleInput, labels: Sequence[OutcomeLabel]) -> _Evaluati
 
 
 def run_in_sample(inp: InSampleInput) -> tuple[GateResult, ...]:
-    """G0 → G1 → G2 → G3; stops after the first stage with a ``FAIL``."""
+    """G0 → G1 → G2 → G3; stops after the first stage with a ``FAIL``.
+
+    An Outcome payload among the study's inputs raises ``OutcomeUsedAsInput`` first (C-L2)."""
+    _refuse_outcome_inputs(inp.study, "InSampleInput")
     labels = _computable(inp.outcomes.labels)
     gates: list[GateResult] = []
 
@@ -619,7 +639,11 @@ def run_in_sample(inp: InSampleInput) -> tuple[GateResult, ...]:
 
 
 def run_sealed_oos(inp: SealedOosInput) -> tuple[GateResult, ...]:
-    """G5 on the sealed window; requires the family's recorded unsealing."""
+    """G5 on the sealed window; requires the family's recorded unsealing.
+
+    An Outcome payload among the study's inputs raises ``OutcomeUsedAsInput`` before the sealed
+    window is read (C-L2): no sealed sample leaves the vault for a leaking study."""
+    _refuse_outcome_inputs(inp.study, "SealedOosInput")
     ctx, profile = inp.context, inp.context.profile
     family = ctx.metadata.hypothesis_family_id
     unsealed = inp.vault.is_unsealed(family)
