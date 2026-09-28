@@ -56,7 +56,11 @@ from infrastructure.plugins.builtin.features import (
 )
 from infrastructure.plugins.builtin.knowledge import HLENS_KNOWLEDGE_LOCAL
 from infrastructure.plugins.builtin.llm import HLENS_LLM_SCRIPTED
-from infrastructure.plugins.builtin.outcomes import HLENS_FORWARD_RETURN, HLENS_TRIPLE_BARRIER
+from infrastructure.plugins.builtin.outcomes import (
+    HLENS_FORWARD_RETURN,
+    HLENS_TRIPLE_BARRIER,
+    HLENS_VOL_SCALED_TRIPLE_BARRIER,
+)
 from infrastructure.plugins.builtin.states import (
     LIQUIDITY_REGIME,
     RETURN_SHOCK,
@@ -94,6 +98,7 @@ __all__ = [
     "HLENS_LLM_SCRIPTED",
     "HLENS_SYNTHETIC_RANDOM_WALK",
     "HLENS_TRIPLE_BARRIER",
+    "HLENS_VOL_SCALED_TRIPLE_BARRIER",
     "JUMP_VARIANCE",
     "LIQUIDITY_REGIME",
     "MACD_LINE",
@@ -149,6 +154,7 @@ BUILTIN_MANIFESTS: tuple[PluginManifest, ...] = (
     EVENT_COUNT,
     HLENS_FORWARD_RETURN,
     HLENS_TRIPLE_BARRIER,
+    HLENS_VOL_SCALED_TRIPLE_BARRIER,
     HLENS_BAR_BACKTEST,
     HLENS_SYNTHETIC_RANDOM_WALK,
     HLENS_LLM_SCRIPTED,
