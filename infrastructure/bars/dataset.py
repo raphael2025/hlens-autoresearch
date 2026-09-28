@@ -50,6 +50,25 @@ bars in ``DatasetPriceBars`` for the caller's reproducibility record.
 ``VerifiedManifestCache``: step 1 then reuses a proof of the same manifest by the same builder only
 while every snapshot the proof read is unchanged (``infrastructure.bars.verified``). Steps 2 - 6
 always run.
+
+**v3 evidence manifests (ADR-0077; C1-CONSUMERS).** ``evidence_verifier`` (default ``None``: the
+path above, unchanged; a v3 hash is then refused by the store with ``ManifestFormError``) is the
+``StreamingEvidenceVerifier`` of the builder's own catalog. Step 1 becomes ``load_verified_any``
+(``ManifestStore.load_any``, cache-aware): a v2 hash continues exactly as above; a v3 hash was
+proven by the streaming verifier (its bounded re-derivation already re-selected every key under the
+spec and matched the chunk table, ADR-0077 §6), so steps 3 - 4 do **not** re-select and hold no
+whole-dataset tuple: the dataset's rows are read chunk by chunk in lockstep with the ``lineage`` /
+``evidence_gaps`` streams, and each chunk's revisions are read from ``canonical.bars_1m`` at the
+spec's bound snapshot (``infrastructure.feature.dataset.iter_dataset_chunks`` /
+``dataset_chunk_observations``: every row's key, event time, symbol, lineage and gap must be the
+manifest's). The manifest must also record ``data_type == klines_1m``. Steps 2, 5 and 6 are the
+same code; the bars equal the v2 path's for the same world (only the manifest hash differs). What
+the v3 path holds beyond one chunk is its answer (the requested bars) and the covered symbol names.
+``adapter`` must be the catalog the manifest was proven on.
+
+``feature_observations_from_dataset`` gives a v3 manifest's own bar observations of one symbol (the
+same chunk walk): what a dataset-backed research loop feeds ``feature_request_from_dataset`` with,
+instead of re-selecting the window.
 """
 
 from __future__ import annotations
@@ -65,16 +84,31 @@ from pyiceberg.expressions import EqualTo
 
 from core.contracts.feature import FeatureObservation
 from core.contracts.outcome import OutcomeEvent, OutcomeLabelSpec, OutcomePriceBar, OutcomeRequest
-from core.contracts.revision import PointInTimeStatus
+from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
 from core.contracts.strategy import PriceBar
-from core.contracts.universe import ResearchDatasetManifest, SelectedRevisionLineage
-from infrastructure.bars.verified import VerifiedManifestCache, load_verified_manifest
+from core.contracts.universe import (
+    ResearchDatasetEvidenceManifest,
+    ResearchDatasetManifest,
+    SelectedRevisionLineage,
+)
+from core.domain.specs import DatasetRef
+from infrastructure.bars.verified import (
+    VerifiedManifestCache,
+    load_verified_any,
+    load_verified_manifest,
+)
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.dataset.builder import DatasetBuilder, selection_id_of
 from infrastructure.dataset.selection import SELECTION_SCHEMA
-from infrastructure.feature.dataset import DatasetBindingError
+from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
+from infrastructure.feature.dataset import (
+    AnyDatasetManifest,
+    DatasetBindingError,
+    dataset_chunk_observations,
+    iter_dataset_chunks,
+)
 from infrastructure.feature.observations import bar_observations
 from infrastructure.pit.selector import PitSelector
 from infrastructure.revision.store import RevisionCatalog
@@ -83,6 +117,7 @@ __all__ = [
     "DatasetBarsError",
     "DatasetPriceBars",
     "backtest_bars_from_dataset",
+    "feature_observations_from_dataset",
     "outcome_request_from_dataset",
 ]
 
@@ -136,9 +171,12 @@ def outcome_request_from_dataset(
     start: datetime | None = None,
     end: datetime | None = None,
     manifest_cache: VerifiedManifestCache | None = None,
+    evidence_verifier: StreamingEvidenceVerifier | None = None,
 ) -> OutcomeRequest:
     """An ``OutcomeRequest`` for ``symbol`` (Canonical symbol, e.g. ``BTC-USDT``) whose bars are
-    the manifest's proven dataset bars in ``[start, end)`` (default: the dataset window)."""
+    the manifest's proven dataset bars in ``[start, end)`` (default: the dataset window).
+
+    ``evidence_verifier``: module docs (v3); ``None`` is the v2 path, unchanged."""
     manifest, cutoff, proven = _proven_bars(
         adapter,
         storage,
@@ -149,6 +187,7 @@ def outcome_request_from_dataset(
         start,
         end,
         manifest_cache,
+        evidence_verifier,
     )
     bars = tuple(
         OutcomePriceBar(
@@ -182,9 +221,12 @@ def backtest_bars_from_dataset(
     start: datetime | None = None,
     end: datetime | None = None,
     manifest_cache: VerifiedManifestCache | None = None,
+    evidence_verifier: StreamingEvidenceVerifier | None = None,
 ) -> DatasetPriceBars:
     """``PriceBar``s (instrument = Canonical symbol) of ``symbols`` (default: every symbol with
-    dataset rows) proven against the manifest, in ``[start, end)``."""
+    dataset rows) proven against the manifest, in ``[start, end)``.
+
+    ``evidence_verifier``: module docs (v3); ``None`` is the v2 path, unchanged."""
     manifest, cutoff, proven = _proven_bars(
         adapter,
         storage,
@@ -195,6 +237,7 @@ def backtest_bars_from_dataset(
         start,
         end,
         manifest_cache,
+        evidence_verifier,
     )
     bars = tuple(
         PriceBar(
@@ -229,26 +272,23 @@ def _proven_bars(
     start: datetime | None,
     end: datetime | None,
     manifest_cache: VerifiedManifestCache | None,
-) -> tuple[ResearchDatasetManifest, datetime, dict[str, tuple[_ProvenBar, ...]]]:
-    manifest = load_verified_manifest(builder, manifest_content_hash, manifest_cache)  # step 1
-    spec = manifest.point_in_time
-    if spec.simulation_time is None:  # step 2
-        raise DatasetBarsError(
-            "outcome / backtest bars come from a point-simulation dataset (one PIT view)"
+    evidence_verifier: StreamingEvidenceVerifier | None = None,
+) -> tuple[AnyDatasetManifest, datetime, dict[str, tuple[_ProvenBar, ...]]]:
+    manifest: AnyDatasetManifest
+    if evidence_verifier is None:
+        manifest = load_verified_manifest(builder, manifest_content_hash, manifest_cache)  # step 1
+    else:
+        manifest = load_verified_any(
+            builder, manifest_content_hash, manifest_cache, evidence_verifier
         )
-    cutoff = spec.simulation_time if price_cutoff is None else price_cutoff
-    if cutoff.utcoffset() is None:
-        raise DatasetBarsError("price_cutoff must be timezone-aware UTC")
-    if cutoff > spec.simulation_time:
-        raise DatasetBarsError(
-            f"price_cutoff {cutoff.isoformat()} is after the dataset's PIT view "
-            f"{spec.simulation_time.isoformat()}"
-        )
-    dataset = manifest.dataset
-    low = dataset.time_range_start if start is None else start
-    high = dataset.time_range_end if end is None else end
-    if not dataset.time_range_start <= low < high <= dataset.time_range_end:
-        raise DatasetBarsError("the requested window must be a non-empty part of the dataset's")
+        if isinstance(manifest, ResearchDatasetEvidenceManifest):
+            spec, dataset = manifest.point_in_time, manifest.dataset
+            cutoff, low, high = _bounds(spec, dataset, price_cutoff, start, end)  # steps 2, 6
+            if manifest.data_type != _DATA_TYPE:
+                raise DatasetBarsError(f"a {manifest.data_type} dataset has no {_DATA_TYPE} bars")
+            bars = _evidence_bars(adapter, manifest, evidence_verifier, symbols, cutoff, low, high)
+            return manifest, cutoff, bars
+    cutoff, low, high = _bounds(manifest.point_in_time, manifest.dataset, price_cutoff, start, end)
 
     rows = _dataset_rows(adapter, manifest)  # step 3
     covered = sorted({found[0]["symbol"] for found in rows.values()})
@@ -276,6 +316,109 @@ def _proven_bars(
             )
         proven[symbol] = tuple(bars)
     return manifest, cutoff, proven
+
+
+def _bounds(
+    spec: PointInTimeSpec,
+    dataset: DatasetRef,
+    price_cutoff: datetime | None,
+    start: datetime | None,
+    end: datetime | None,
+) -> tuple[datetime, datetime, datetime]:
+    """Steps 2 and 6: a point spec, the cutoff (not after its view) and the requested window."""
+    if spec.simulation_time is None:  # step 2
+        raise DatasetBarsError(
+            "outcome / backtest bars come from a point-simulation dataset (one PIT view)"
+        )
+    cutoff = spec.simulation_time if price_cutoff is None else price_cutoff
+    if cutoff.utcoffset() is None:
+        raise DatasetBarsError("price_cutoff must be timezone-aware UTC")
+    if cutoff > spec.simulation_time:
+        raise DatasetBarsError(
+            f"price_cutoff {cutoff.isoformat()} is after the dataset's PIT view "
+            f"{spec.simulation_time.isoformat()}"
+        )
+    low = dataset.time_range_start if start is None else start
+    high = dataset.time_range_end if end is None else end
+    if not dataset.time_range_start <= low < high <= dataset.time_range_end:
+        raise DatasetBarsError("the requested window must be a non-empty part of the dataset's")
+    return cutoff, low, high
+
+
+def _evidence_bars(
+    adapter: RevisionCatalog,
+    manifest: ResearchDatasetEvidenceManifest,
+    evidence_verifier: StreamingEvidenceVerifier,
+    symbols: tuple[str, ...] | None,
+    cutoff: datetime,
+    low: datetime,
+    high: datetime,
+) -> dict[str, tuple[_ProvenBar, ...]]:
+    """Steps 3 - 6 over a verified v3 manifest (module docs, v3): one chunk walk, no
+    re-selection. Held: one chunk, the covered symbol names and the requested bars."""
+    wanted = None if symbols is None else frozenset(symbols)
+    if wanted is not None and not wanted:
+        raise DatasetBarsError("no symbol requested")
+    covered: set[str] = set()
+    found: dict[str, list[_ProvenBar]] = {}
+    with iter_dataset_chunks(adapter, manifest, evidence_verifier) as chunks:  # step 3
+        for chunk in chunks:
+            covered.update(item.row["symbol"] for item in chunk)
+            for item, observation in dataset_chunk_observations(adapter, manifest, chunk, wanted):
+                symbol = item.row["symbol"]
+                bar = _mapped(symbol, observation)  # steps 4 - 5 (proven by the chunk walk)
+                if low <= bar.interval_start < high:
+                    found.setdefault(symbol, []).append(bar)
+    names = sorted(covered) if wanted is None else sorted(wanted)
+    missing = [symbol for symbol in names if symbol not in covered]
+    if missing:
+        raise DatasetBarsError(f"the dataset has no {_DATA_TYPE} rows of {missing}")
+    proven: dict[str, tuple[_ProvenBar, ...]] = {}
+    for symbol in names:
+        bars = sorted(found.get(symbol, ()), key=lambda bar: bar.interval_start)
+        for earlier, later in pairwise(bars):
+            if later.interval_start < earlier.interval_end:
+                raise CatalogIntegrityError(f"the dataset's {symbol} bars overlap at {later}")
+        late = [bar for bar in bars if bar.available_time > cutoff]  # step 6
+        if late:
+            raise DatasetBarsError(
+                f"{len(late)} {symbol} bar(s) of the window become available after price_cutoff "
+                f"{cutoff.isoformat()} (first {late[0].interval_start.isoformat()} at "
+                f"{late[0].available_time.isoformat()})"
+            )
+        proven[symbol] = tuple(bars)
+    return proven
+
+
+def feature_observations_from_dataset(
+    adapter: RevisionCatalog,
+    *,
+    builder: DatasetBuilder,
+    manifest_content_hash: str,
+    symbol: str,
+    evidence_verifier: StreamingEvidenceVerifier,
+    manifest_cache: VerifiedManifestCache | None = None,
+) -> tuple[FeatureObservation, ...]:
+    """A verified **v3** manifest's own bar observations of ``symbol`` (Canonical), in revision
+    order as ``bar_observations`` gives them: exactly what ``feature_request_from_dataset``
+    proves against (module docs, v3). A v2 manifest is refused (its observations come from a PIT
+    selection under its spec)."""
+    manifest = load_verified_any(builder, manifest_content_hash, manifest_cache, evidence_verifier)
+    if not isinstance(manifest, ResearchDatasetEvidenceManifest):
+        raise DatasetBindingError(
+            f"manifest {manifest_content_hash} is not a v3 evidence manifest (a v2 manifest's "
+            "observations come from its PIT selection)"
+        )
+    if manifest.data_type != _DATA_TYPE:
+        raise DatasetBarsError(f"a {manifest.data_type} dataset has no {_DATA_TYPE} bars")
+    wanted = frozenset((symbol,))
+    out: list[FeatureObservation] = []
+    with iter_dataset_chunks(adapter, manifest, evidence_verifier) as chunks:
+        for chunk in chunks:
+            for _, observation in dataset_chunk_observations(adapter, manifest, chunk, wanted):
+                out.append(observation)
+    out.sort(key=lambda item: item.lineage.canonical_revision_id)
+    return tuple(out)
 
 
 def _dataset_rows(
@@ -358,6 +501,12 @@ def _bar(
     head = rows[revision][0]
     if (head["observation_key"], head["event_time"]) != (item.observation_key, item.event_time):
         raise CatalogIntegrityError(f"revision {revision}: key / event time differ from its row")
+    return _mapped(symbol, item)
+
+
+def _mapped(symbol: str, item: FeatureObservation) -> _ProvenBar:
+    """One proven bar observation as a ``_ProvenBar`` (step 5)."""
+    revision = item.lineage.canonical_revision_id
     if item.values.get("symbol") != symbol or item.event_end_time is None:
         raise CatalogIntegrityError(f"revision {revision}: not a {symbol} bar")
     prices: dict[str, Decimal] = {}
