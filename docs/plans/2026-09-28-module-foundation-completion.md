@@ -16,7 +16,7 @@
 - `phase/1@52f7477` 的所有提交都是 main 祖先，没有独有 patch；已保存至 `refs/archive/2026-09-28/branches/local/phase-1` 后删除分支，并将根 checkout 切回 `main`。根下未跟踪旧计划已移入本地 `.codex/archive/`，跟踪版计划已在主线。Cursor 会话此前确认无独有实现；IDE 进程未强行关闭。
 - `docs/research-spec-completion@82bfe73` 从旧 `20bdd82` 分叉，整树与当前 main 有 124 个路径差异，包含主线后续实现的删除 / 回退。其 `7b9df59` 的 G1 测试与策略收益率修复已核对在 main；其余 README / library 文档以 main 为准。tip 由 archive ref 保存；确认工作区干净、特殊测试与 main 相同后，已关闭闲置 Claude 会话并清理 branch/worktree。
 - 远端只保留 `main`；不得从 archive ref 恢复或整支合并失败的 E1 候选。E1 候选 `c3868dc` 超过 32 MiB 门槛的失败证据继续保留。
-- E1 候选、D3E 审查、C05、gatewt、E1 integration、B52、Codex E1-R 和 Claude research-spec worktree 均已清理，相关恢复点保留在 archive refs。Claude worktree 无未提交内容，唯一测试差异已与 main 核对相同；闲置 Claude 会话已关闭。当前只保留 root `main` worktree。
+- E1 候选、D3E 审查、C05、gatewt、E1 integration、B52、Codex E1-R 和 Claude research-spec worktree 均已清理，相关恢复点保留在 archive refs。Claude worktree 无未提交内容，唯一测试差异已与 main 核对相同；闲置 Claude 会话已关闭。清理阶段仅保留 root `main`；当前 `phase/1-foundation-completion` 隔离分支正在处理已批准的 E1 Protocol / proxy 接线。
 
 ## 模块状态总览
 
@@ -85,10 +85,10 @@
 
 ### 2026-09-28 跨阶段复核结论
 
-- Phase 0.5–6：没有额外发现能在不触发数据人工审阅、运行验收或新架构决定的前提下直接编码的逻辑缺口。P4 converter 虽无生产调用点，但当前没有批准的运行时接点；保留纯函数，不新建写路径。
+- Phase 0.5–7：独立审计没有发现额外可在不触发人工审阅、运行验收或新架构决定的前提下直接编码的逻辑缺口。P4 converter 虽无生产调用点，但当前没有批准的运行时接点；保留纯函数，不新建写路径。P1 当前只修 infrastructure Protocol / 测试代理接线；真正有界的 PyIceberg scan 仍需要 Proposed ADR 与明确实现路径。
 - Phase 8–14：P10 deviation scope、P11 权威 ACTIVE/source resolver/dataset operator、P14 migration target 仍需语义或目标决定；P13 roadmap 已按 ADR-0046 修正为现有模拟功能范围，不需扩 ADR-0046。
 - P10 只读审计确认 paper deviation 未绑定 ADR-0043/roadmap 所说的 P8 声明范围；需要先定范围身份与兼容策略，不增门槛。P11 只读审计确认 ADR-0074 synthetic-only 有限批次 CLI 已实现，缺口是未来的数据源真实性与 ACTIVE 权威语义，外部 scheduler 是既定边界。P13 roadmap 已对齐 ADR-0046。P14 无迁移目标前不写 target adapter；通用 GoldenRecord / GoldenDiff 不可变性已补到 C3，Claude 只读复核无阻断项。
-- Phase 1 E1-CAP-1：对账文档列明 positions、committed columns、archive parse、batch index 和 result IDs 的代码持有量，以及 metadata / manifest 的未测边界。已加入 committed ID 重建与 Verifier 磁盘快照计数；`snapshots_of_batches` 公开 dict/list 接口保持不变。批次读取 API 的 PyIceberg planner、并发 task 和 delete 状态未证明有界；本机默认 tempfile 路径是 tmpfs。完整结果 tuple 仍计入 32 MiB 门槛；archive parse、generic history fallback 与 builder caller-held set 仍有未解决增长项。main 尚无容量证据，候选失败数据不外推。
+- Phase 1 E1-CAP-1：对账文档列明 positions、committed columns、archive parse、batch index 和 result IDs 的代码持有量，以及 metadata / manifest 的未测边界。已加入 committed ID 重建与 Verifier 磁盘快照计数；`snapshots_of_batches` 公开 dict/list 接口保持不变。当前开发分支已将 `scan_column_batches` 加入 infrastructure `RevisionCatalog` Protocol，并给 revision `ProxyCatalog` 与 manifest-cache `_Recording` 代理补了转发 / head-read 记录；静态复核中、未运行检查。normalizer 的旧测试仍引用已删除的 `_same_numbers`。批次读取 API 的 PyIceberg planner、并发 task 和 delete 状态未证明有界；本机默认 tempfile 路径是 tmpfs。完整结果 tuple 仍计入 32 MiB 门槛；archive parse、generic history fallback 与 builder caller-held set 仍有未解决增长项。main 尚无容量证据，候选失败数据不外推。
 - 每个开发代理一次只领一个 ID；Codex 复核后才进本地 `main`。Claude 可用最多 6 个子代理并行，但不能跨写同一模块。Cursor 此前确认 `phase/1` 没有独有实现；相关分支和 worktree 已归档清理。
 - 交付须含：改动文件、任务 ID/Phase、对应 ADR/ROADMAP 约束、静态复核结果、未解决事项。测试、类型检查、lint、build 和验收状态统一标为“未运行”。
 
