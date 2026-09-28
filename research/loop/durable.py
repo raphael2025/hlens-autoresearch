@@ -1193,8 +1193,8 @@ def _open_locked(
                 raise _refuse(
                     f"a v{state_version} state directory is missing its required plan admission journal"
                 )
-            admission = PlanAdmissionJournal(
-                admission_path, loop_id=loop_id, state_version=state_version
+            admission = _plan_journal(
+                admission_path, loop_id=loop_id, state_version=state_version, create=False
             )
         else:
             # A v4 directory is created plan journal header first, memory header second. A crash
@@ -1216,7 +1216,7 @@ def _open_locked(
             raise _behind(root, 0, 0, anchored)
         if state_version in {STATE_VERSION, OPERATOR_STATE_VERSION}:
             loop_id = expected["loop_id"]
-            admission = PlanAdmissionJournal(
+            admission = _plan_journal(
                 admission_path,
                 loop_id=loop_id,
                 create=True,
@@ -1315,12 +1315,18 @@ def _open_locked(
     return state
 
 
-def _plan_journal(path: Path, loop_id: str, *, create: bool) -> PlanAdmissionJournal:
-    """Open the v4 plan admission journal; a reducer refusal is a state refusal."""
+def _plan_journal(
+    path: Path, loop_id: str, *, create: bool, state_version: int = STATE_VERSION
+) -> PlanAdmissionJournal:
+    """Open the v4 / v5 plan admission journal; a reducer refusal is a state refusal."""
     try:
-        return PlanAdmissionJournal(path, loop_id=loop_id, create=create)
+        return PlanAdmissionJournal(
+            path, loop_id=loop_id, create=create, state_version=state_version
+        )
     except (PlanAdmissionCorrupted, PlanAdmissionError) as exc:
-        raise _refuse(f"{path} does not replay as this loop's v4 plan admission journal: {exc}") from exc
+        raise _refuse(
+            f"{path} does not replay as this loop's v{state_version} plan admission journal: {exc}"
+        ) from exc
 
 
 def _replay_guard(memory: ResearchMemory, audit: LoopAuditLog, loop_id: str) -> None:
