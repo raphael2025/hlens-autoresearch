@@ -31,6 +31,14 @@ known, exactly one maximal head is available, the latest visible observation is 
 untied, and the chain re-derived from the visible observations ends at that head. Otherwise it is
 ``unconstructible`` with a stable reason — before the first local observation it is always
 ``no_visible_listing`` (the historical-availability evidence gap, ADR-0029 "open obligations").
+
+``listing_at`` optionally takes ``pit``: a ``PointInTimeSpec`` that may bind the ADR-0051 listing
+backfill assumption (``infrastructure.universe.listing_assumption``, D-LIST). When it is bound (and
+only then) a read that would otherwise be ``no_visible_listing`` because ``simulation_time``
+precedes the episode's first local observation may instead be answered from the assumption, under
+its own applicability conditions (never for a second episode, never a suspended / delisted
+inference, only the one venue symbol its policy table names). Omitting ``pit`` (the default) leaves
+every result exactly as before this assumption existed.
 """
 
 from __future__ import annotations
@@ -47,7 +55,7 @@ from core.contracts.catalog import (
     SnapshotInfo,
     TableNotFound,
 )
-from core.contracts.revision import PrecedenceEvidence, RevisionRecord
+from core.contracts.revision import PointInTimeSpec, PrecedenceEvidence, RevisionRecord
 from core.contracts.storage import StorageAdapter
 from core.contracts.universe import (
     ListingHistory,
@@ -68,6 +76,7 @@ from infrastructure.revision.exchange_info_store import (
 )
 from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.universe import listing_assumption as backfill
 
 __all__ = [
     "FINDING_HISTORY_DIVERGED",
@@ -165,6 +174,11 @@ class ListingPointInTime:
     #: report that records it; writing that report is not this read's business).
     evidence_gap: str | None = None
     detail: str = ""
+    #: Set only when this read's ``constructible`` came from the ADR-0051 backfill assumption
+    #: (D-LIST) rather than a genuinely available revision (``listing`` is still the real,
+    #: unmodified first revision; only the read's decision to treat it as available moved).
+    assumed: bool = False
+    assumption: backfill.AssumedListingInterval | None = None
 
     def require_constructible(self) -> ListingRevision:
         """The selected revision, or ``ListingUnconstructible`` (universe build fails closed)."""
@@ -271,9 +285,19 @@ class ListingDeriver:
         return self._prove(listing_head, raw_head)[0]
 
     def listing_at(
-        self, venue_symbol: str, simulation_time: datetime, knowledge_cutoff: datetime
+        self,
+        venue_symbol: str,
+        simulation_time: datetime,
+        knowledge_cutoff: datetime,
+        *,
+        pit: PointInTimeSpec | None = None,
     ) -> ListingPointInTime:
-        """What a universe build may use for ``venue_symbol`` at the two cutoffs (fail closed)."""
+        """What a universe build may use for ``venue_symbol`` at the two cutoffs (fail closed).
+
+        ``pit``, when given, may bind the ADR-0051 listing backfill assumption (D-LIST); omitting
+        it (the default) is byte-for-byte the read this method gave before that assumption
+        existed.
+        """
         for label, value in (
             ("simulation_time", simulation_time),
             ("knowledge_cutoff", knowledge_cutoff),
@@ -286,9 +310,17 @@ class ListingDeriver:
                 raise ListingDeriveError(f"{label} must be timezone-aware UTC")
         if venue_symbol not in lr.FIRST_SLICE_ASSETS:
             raise ListingDeriveError(f"{venue_symbol!r} is not a first-slice venue symbol")
+        backfill_bound = False if pit is None else backfill.assumption_bound(pit)
         listing_head, raw_head = self._heads()
         state, raw = self._prove(listing_head, raw_head)
-        return _select(venue_symbol, simulation_time, knowledge_cutoff, state, raw)
+        return _select(
+            venue_symbol,
+            simulation_time,
+            knowledge_cutoff,
+            state,
+            raw,
+            backfill_bound=backfill_bound,
+        )
 
     # ------------------------------------------------------------------ prove
 
@@ -530,6 +562,8 @@ def _select(
     knowledge_cutoff: datetime,
     state: ListingsVerified,
     raw: ProvenSnapshotTable,
+    *,
+    backfill_bound: bool = False,
 ) -> ListingPointInTime:
     def refuse(reason: str, detail: str) -> ListingPointInTime:
         return ListingPointInTime(
@@ -579,6 +613,16 @@ def _select(
         record for record in records if record.availability.times.available_time <= simulation_time
     ]
     if not candidates:
+        assumed = _assumed_first_candidate(
+            venue_symbol,
+            simulation_time,
+            knowledge_cutoff,
+            known_rows,
+            raw,
+            bound=backfill_bound,
+        )
+        if assumed is not None:
+            return assumed
         return refuse(
             UnconstructibleReason.NO_VISIBLE_LISTING,
             "no listing revision is available: simulation_time precedes the first local "
@@ -640,4 +684,88 @@ def _select(
             source_revision_id=row["lineage_source_revision_id"],
         ),
         evidence_gap=row["availability_evidence_gap"],
+    )
+
+
+def _assumed_first_candidate(
+    venue_symbol: str,
+    simulation_time: datetime,
+    knowledge_cutoff: datetime,
+    known_rows: Sequence[Mapping[str, Any]],
+    raw: ProvenSnapshotTable,
+    *,
+    bound: bool,
+) -> ListingPointInTime | None:
+    """The ADR-0051 backfill assumption's answer, or ``None`` when it does not apply (D-LIST).
+
+    Only reached when no revision is genuinely available at ``simulation_time`` (``_select``'s
+    ``candidates`` was empty). Fails closed to ``None`` (the caller keeps refusing
+    ``no_visible_listing``) unless every condition of ``listing_assumption.assumption_applies``
+    holds for the episode's one, real, unmodified first revision.
+    """
+    if not bound:
+        return None
+    floor = backfill.backfill_floor_for(venue_symbol)
+    if floor is None:
+        return None
+    # The committed first revision of this episode (supersedes == ()), if exactly one is visible
+    # under the knowledge cutoff. Never observed, or a diverged / duplicated first revision, both
+    # leave this list not-a-singleton and the assumption refuses.
+    first_rows = [row for row in known_rows if not row["supersedes"]]
+    if len(first_rows) != 1:
+        return None
+    [first_row] = first_rows
+    # Re-derive the chain from every knowledge-visible raw observation (no simulation_time gate,
+    # unlike the later "visible" chain check): the committed first row must be exactly what an
+    # honest re-derivation still gives as this episode's first revision (no competing head, not
+    # listing_history_diverged).
+    knowledge_visible = [
+        observation
+        for observation in lr.observations_from_rows(raw.rows)[venue_symbol]
+        if observation.raw_knowledge_time <= knowledge_cutoff
+    ]
+    chain = lr.derive_chain(venue_symbol, knowledge_visible)
+    chain_first_id = chain.revisions[0].revision_id if chain.revisions else None
+    first_observed_from = first_row["episode_tradable_from"]
+    if not backfill.assumption_applies(
+        backfill_floor=floor,
+        simulation_time=simulation_time,
+        first_observed_from=first_observed_from,
+        first_status=first_row["status"],
+        chain_first_revision_id=chain_first_id,
+        committed_first_revision_id=first_row["revision_id"],
+    ):
+        return None
+    interval = backfill.assumed_interval(
+        venue_symbol=venue_symbol,
+        backfill_floor=floor,
+        first_observed_from=first_observed_from,
+        stored_available_time=first_row["available_time"],
+    )
+    listing = lr.listing_revision_from_row(first_row)
+    return ListingPointInTime(
+        venue_symbol=venue_symbol,
+        simulation_time=simulation_time,
+        knowledge_cutoff=knowledge_cutoff,
+        constructible=True,
+        reason=None,
+        listing=listing,
+        tradable=True,
+        lineage=SelectedRevisionLineage(
+            canonical_table=LISTINGS_TABLE,
+            canonical_revision_id=first_row["revision_id"],
+            raw_table=first_row["lineage_raw_table"],
+            raw_revision_id=first_row["lineage_raw_revision_id"],
+            source_table=first_row["lineage_source_table"],
+            source_revision_id=first_row["lineage_source_revision_id"],
+        ),
+        evidence_gap=first_row["availability_evidence_gap"],
+        assumed=True,
+        assumption=interval,
+        detail=(
+            f"{backfill.ASSUMPTION_ID}@{backfill.ASSUMPTION_VERSION}: assumed listed member from "
+            f"{interval.backfill_floor.isoformat()} (backfill_floor) to "
+            f"{interval.first_observed_from.isoformat()} (first observed TRADING); not an "
+            "exchange-declared listing date"
+        ),
     )
