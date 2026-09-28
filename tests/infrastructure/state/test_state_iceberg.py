@@ -14,7 +14,6 @@ from pyiceberg.transforms import DayTransform
 
 from core.contracts.catalog import CommitRequest, TableNotFound, UnknownTableDefinition
 from core.contracts.state import StateResult
-from core.domain.base import Ref
 from infrastructure.catalog.iceberg_adapter import PyIcebergCatalogAdapter
 from infrastructure.state.iceberg import (
     StateTable,
@@ -25,16 +24,24 @@ from infrastructure.state.iceberg import (
     state_rows,
     state_rows_batch,
 )
+from infrastructure.state.runner import run_state, state_request
+from infrastructure.state.table import STATE_TABLE_SCHEMA
 from infrastructure.state.table_definition import (
     PHASE2_REGISTRY,
     PHASE2_TABLES,
     STATE_STATES,
     ensure_state_tables,
 )
-from infrastructure.state.table import STATE_TABLE_SCHEMA
-from infrastructure.state.runner import run_state, state_request
 from plugins.states import VolatilityRegimeProvider
-from tests.fake_states import TEST_CUTS, TEST_MIN_HISTORY, TEST_SEED, TEST_WINDOW, VOL_FEATURE, at, level_inputs
+from tests.fake_states import (
+    TEST_CUTS,
+    TEST_MIN_HISTORY,
+    TEST_SEED,
+    TEST_WINDOW,
+    VOL_FEATURE,
+    at,
+    level_inputs,
+)
 from tests.infrastructure.catalog.catalog_support import SqliteCatalogHarness
 
 
@@ -88,10 +95,10 @@ def env(tmp_path: Path) -> Iterator[Env]:
 
 def test_definition_retains_logical_columns_and_declares_daily_partition() -> None:
     assert PHASE2_TABLES == (STATE_STATES,)
-    assert tuple(field.name for field in STATE_STATES.arrow_schema[:9]) == tuple(
+    assert tuple(field.name for field in tuple(STATE_STATES.arrow_schema)[:9]) == tuple(
         field.name for field in STATE_TABLE_SCHEMA
     )
-    assert tuple(field.name for field in STATE_STATES.arrow_schema[9:]) == (
+    assert tuple(field.name for field in tuple(STATE_STATES.arrow_schema)[9:]) == (
         "provider_hash",
         "evaluation_index",
         "evaluation_count",
@@ -125,16 +132,14 @@ def test_ensure_and_run_round_trip_are_idempotent_and_snapshot_pinned(env: Env) 
 
     written = env.table.write(spec, request, result, descriptor)
     replay = env.table.write(spec, request, result, descriptor)
-    loaded = env.table.read(
-        result.result_hash, expected_spec=spec, snapshot_id=written.snapshot_id
-    )
+    loaded = env.table.read(result.result_hash, expected_spec=spec, snapshot_id=written.snapshot_id)
     assert written.snapshot_id == replay.snapshot_id == env.head()
     assert not written.replayed and replay.replayed
     assert loaded is not None and loaded.result == result
     assert loaded.snapshot_id == written.snapshot_id
-    assert env.adapter.get_snapshot(STATE_STATES.table, written.snapshot_id).batch_id == state_batch_id(
-        result.result_hash
-    )
+    assert env.adapter.get_snapshot(
+        STATE_STATES.table, written.snapshot_id
+    ).batch_id == state_batch_id(result.result_hash)
 
 
 def test_writer_refuses_a_missing_table(tmp_path: Path) -> None:
@@ -192,10 +197,13 @@ def test_read_rejects_tampered_expected_identity_columns(
 def test_read_rejects_a_mismatched_expected_spec(env: Env, identity_change: str) -> None:
     spec, request, result, descriptor = _answer()
     env.table.write(spec, request, result, descriptor)
-    wrong_spec = (
-        spec.model_copy(update={"ref": Ref.parse("state:other@1.0.0")})
-        if identity_change == "ref"
-        else spec.model_copy(update={"method": f"{spec.method}-changed"})
+    wrong_spec = VolatilityRegimeProvider.spec(
+        VOL_FEATURE,
+        cuts=TEST_CUTS,
+        min_history=TEST_MIN_HISTORY + int(identity_change == "spec_hash"),
+        training_window=TEST_WINDOW,
+        seed=TEST_SEED,
+        name=f"{spec.name}_other" if identity_change == "ref" else spec.name,
     )
 
     with pytest.raises(StateTableCorrupted, match="expected StateSpec"):
@@ -212,8 +220,7 @@ def test_empty_state_result_is_refused_by_the_published_contract() -> None:
 
 def test_run_projection_refuses_mixed_value_schema_versions() -> None:
     spec, request, result, descriptor = _answer()
-    changed = result.model_copy(
-        update={"values": (result.values[0].model_copy(update={"schema_version": "99.0.0"}), *result.values[1:])}
-    )
+    earlier_version_value = result.values[0].model_copy(update={"schema_version": "2.3.0"})
+    changed = StateResult.build(request, descriptor, (earlier_version_value, *result.values[1:]))
     with pytest.raises(StateTableError, match="mixes schema versions"):
         state_rows_batch(changed, spec, request, descriptor)
