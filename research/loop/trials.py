@@ -571,6 +571,9 @@ def _registered_this_round(ctx: RoundContext) -> tuple[tuple[Hypothesis, str, st
     ]
     found += [(h, "reevaluation", attempt) for h, attempt in stage.get("reevaluations", ())]
     found += [
+        (h, "retry", attempt) for h, attempt in stage.get("retry_reevaluations", ())
+    ]
+    found += [
         (h, "evolution", None) for h in ctx.artifacts.get("evolution", {}).get("registered", ())
     ]
     return tuple(found)

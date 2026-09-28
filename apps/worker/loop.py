@@ -599,6 +599,17 @@ class LoopStage(Protocol):
     def run(self, ctx: RoundContext) -> StageResult: ...
 
 
+class DurableRetryReceipt(Protocol):
+    """Research-side receipt shape; the worker intentionally does not import research modules."""
+
+    retry_id: str
+    failed_record_hash: str
+    commit_seq: int
+    commit_hash: str
+    checkpoint_seq: int
+    checkpoint_hash: str
+
+
 @dataclass(frozen=True, slots=True)
 class StageRecord:
     name: str
@@ -1160,6 +1171,45 @@ class ResearchLoop:
     def recovery_required(self) -> str | None:
         """Human-review reason when an experiment batch failed after possible partial effects."""
         return self._recovery_required
+
+    def _authorize_durable_retry(self, receipt: DurableRetryReceipt) -> None:
+        """Clear ADR-0070 fail-stop only for one matching durable v6 admission receipt.
+
+        The worker accepts an opaque research-side proof and never imports the research plane.
+        This method only changes the in-memory run gate; it does not submit or execute a job.
+        """
+        if self._recovery_required is None:
+            raise LoopHalted("this loop has no failed experiment round awaiting review")
+        if self._stopped is not None or self._halted is not None or self._audit.open_round is not None:
+            raise LoopHalted("a stopped, halted, or interrupted loop cannot admit a retry")
+        records = self._audit.records
+        if not records or _experiment_recovery_reason(records[-1]) is None:
+            raise LoopHalted("the audit head is not the failed experiment round")
+        fields = (
+            "retry_id",
+            "failed_record_hash",
+            "commit_seq",
+            "commit_hash",
+            "checkpoint_seq",
+            "checkpoint_hash",
+        )
+        if any(not hasattr(receipt, name) for name in fields):
+            raise LoopHalted("retry activation needs a durable admission receipt")
+        if (
+            not isinstance(receipt.retry_id, str)
+            or not receipt.retry_id
+            or receipt.failed_record_hash != records[-1].record_hash
+            or type(receipt.commit_seq) is not int
+            or receipt.commit_seq < 1
+            or not isinstance(receipt.commit_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", receipt.commit_hash) is None
+            or type(receipt.checkpoint_seq) is not int
+            or receipt.checkpoint_seq < 2
+            or not isinstance(receipt.checkpoint_hash, str)
+            or re.fullmatch(r"[0-9a-f]{64}", receipt.checkpoint_hash) is None
+        ):
+            raise LoopHalted("retry receipt does not match the failed audit head")
+        self._recovery_required = None
 
     @property
     def metrics(self) -> tuple[RoundMetrics, ...]:

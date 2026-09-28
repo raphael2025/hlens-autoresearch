@@ -118,10 +118,13 @@ from research.hypotheses import HypothesisBatch, KnowledgeSource
 from research.loop.durable import (
     LOOP_STATE_OPENED,
     OPERATOR_STATE_VERSION,
+    RETRY_STATE_VERSION,
     STATE_VERSION,
     DurableState,
     FileAnchor,
     LoopStateInconsistent,
+    RetryAdmissionReceipt,
+    RetryManifestItem,
     StateAnchor,
     StateLock,
     open_state,
@@ -452,8 +455,33 @@ class DurableLoop:
     state_dir: Path
     bus: EventBusAdapter
     owned_bus: FileEventBus | None = None
+    durable_state: DurableState | None = None
     #: The state directory's single-writer lock (``research.loop.durable.StateLock``).
     state_lock: StateLock | None = None
+
+    def retry_failed_round(
+        self,
+        *,
+        packet: object,
+        reviewer: str,
+        manifest: Sequence[RetryManifestItem],
+    ) -> RetryAdmissionReceipt:
+        """Persist an explicit retry admission and unlock the next round without running it."""
+        state = self.durable_state
+        if state is None:
+            raise LoopStateInconsistent("retry admission requires a durable v6 loop")
+        receipt = state.retry_failed_round(packet=packet, reviewer=reviewer, manifest=manifest)
+        self.loop._authorize_durable_retry(receipt)
+        return receipt
+
+    def resume_failed_round_retry(self) -> RetryAdmissionReceipt:
+        """Explicitly activate a completed retry admission after reopening its v6 state."""
+        state = self.durable_state
+        if state is None:
+            raise LoopStateInconsistent("retry resume requires a durable v6 loop")
+        receipt = state.retry_receipt()
+        self.loop._authorize_durable_retry(receipt)
+        return receipt
 
     def close(self) -> None:
         """Release the composition's own bus and the directory lock (idempotent; a caller's bus
@@ -527,6 +555,7 @@ def open_synthetic_loop(
     anchor: StateAnchor | Path | None = None,
     bus_anchor: Path | None = None,
     operator_identity: str | None = None,
+    enable_failed_round_retry: bool = False,
 ) -> DurableLoop:
     """Compose the loop over ``state_dir`` (created when missing), restoring every stateful part.
 
@@ -586,7 +615,11 @@ def open_synthetic_loop(
         provider=provider,
         provider_for=None if wiring.evolution is None else wiring.evolution.provider_for,
         anchor=FileAnchor(anchor) if isinstance(anchor, str | PathLike) else anchor,
-        state_version=(STATE_VERSION if operator_identity is None else OPERATOR_STATE_VERSION),
+        state_version=(
+            RETRY_STATE_VERSION
+            if enable_failed_round_retry
+            else (STATE_VERSION if operator_identity is None else OPERATOR_STATE_VERSION)
+        ),
     )
     return compose_durable(
         config,
@@ -636,7 +669,7 @@ def compose_durable(
             raise LoopStateInconsistent(
                 "v5 operator state requires the same canonical operator_identity at composition"
             )
-    elif operator_identity is not None:
+    elif operator_identity is not None and state.state_version != RETRY_STATE_VERSION:
         raise LoopStateInconsistent("operator_identity cannot compose a v3 or v4 state directory")
     _check_llm_content_mode(state, llm)
     if bus is not None:
@@ -644,7 +677,12 @@ def compose_durable(
         check_round_bus(bus, config.loop_id, state.audit.records, durable=durable)
         loop = compose_loop(config, ingest, bus, state.memory, llm, state)
         return DurableLoop(
-            loop=loop, memory=state.memory, state_dir=state.root, bus=bus, state_lock=state.lock
+            loop=loop,
+            memory=state.memory,
+            state_dir=state.root,
+            bus=bus,
+            durable_state=state,
+            state_lock=state.lock,
         )
     owned = FileEventBus(state.root / BUS_DIR, anchor=bus_anchor)
     try:
@@ -660,6 +698,7 @@ def compose_durable(
         state_dir=state.root,
         bus=owned,
         owned_bus=owned,
+        durable_state=state,
         state_lock=state.lock,
     )
 

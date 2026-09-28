@@ -529,10 +529,25 @@ class HypothesisStage:
         return fresh, self._memory.reviews.reviewed_untaken(), again, self._batch_pending()
 
     def estimate(self, ctx: RoundContext) -> StageUsage:
-        return self._usage(*self._plan(ctx))
+        fresh, drafts, again, batch = self._plan(ctx)
+        retry_reevaluations = self._retry_reevaluations()
+        retry_keys = {(hypothesis.name, hypothesis.version) for hypothesis, _ in retry_reevaluations}
+        again = tuple(
+            hypothesis for hypothesis in again
+            if (hypothesis.name, hypothesis.version) not in retry_keys
+        )
+        return self._usage(fresh, drafts, again, batch) + StageUsage(
+            trials=len(retry_reevaluations)
+        )
 
     def run(self, ctx: RoundContext) -> StageResult:
         fresh, drafts, again, batch = self._plan(ctx)
+        retry_reevaluations = self._retry_reevaluations()
+        retry_keys = {(hypothesis.name, hypothesis.version) for hypothesis, _ in retry_reevaluations}
+        again = tuple(
+            hypothesis for hypothesis in again
+            if (hypothesis.name, hypothesis.version) not in retry_keys
+        )
         batch_summary: dict[str, Any] = {}
         batched = batch
         pre_registered: tuple[Hypothesis, ...] = ()
@@ -639,6 +654,14 @@ class HypothesisStage:
             "hypothesis_hashes": [h.content_hash() for h in registered],
             "reevaluations": [str(h.ref) for h in again],
             "reevaluation_attempt": attempt if again else None,
+            "retry_reevaluations": [
+                {
+                    "hypothesis": str(hypothesis.ref),
+                    "hypothesis_hash": hypothesis.content_hash(),
+                    "attempt": retry_attempt,
+                }
+                for hypothesis, retry_attempt in retry_reevaluations
+            ],
             "family_trials": self._memory.ledger.trials(self._family),
             "llm": llm_summary,
             "pending_reviews": list(self._memory.reviews.pending),
@@ -648,13 +671,31 @@ class HypothesisStage:
             summary["knowledge_search"] = {**search.summary(), "registered": from_search}
         return StageResult(
             summary,
-            self._usage(fresh, drafts, again, batch),
+            self._usage(fresh, drafts, again, batch)
+            + StageUsage(trials=len(retry_reevaluations)),
             {
                 "registered": tuple(registered),
                 "reevaluations": tuple((h, attempt) for h in again),
+                "retry_reevaluations": retry_reevaluations,
                 "llm_calls": llm_calls,
             },
         )
+
+    def _retry_reevaluations(self) -> tuple[tuple[Hypothesis, str], ...]:
+        selected: list[tuple[Hypothesis, str]] = []
+        for key, attempt in self._memory.retry_attempts.items():
+            hypothesis = next(
+                (
+                    item
+                    for item in self._memory.ledger.hypotheses
+                    if (item.name, item.version) == key
+                ),
+                None,
+            )
+            if hypothesis is None or not self._memory.ledger.is_registered(hypothesis, attempt):
+                raise ValueError("a retry attempt is missing its durable TrialLedger registration")
+            selected.append((hypothesis, attempt))
+        return tuple(selected)
 
     def _usage(
         self,

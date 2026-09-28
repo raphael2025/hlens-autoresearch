@@ -48,12 +48,15 @@ _PREPARE_KEYS = frozenset(
 )
 _COMMIT_KEYS = frozenset(
     {
+        "state_version",
+        "loop_id",
         "retry_id",
         "prepare_seq",
         "prepare_hash",
         "ledger_entries",
         "ledger_head_seq",
         "ledger_head_hash",
+        "memory_checkpoint_seq",
     }
 )
 
@@ -96,6 +99,9 @@ class RetryJournal:
     """Hash-chain journal restricted to ADR-0083 PREPARE and COMMIT events."""
 
     def __init__(self, path: Path, *, loop_id: str, create: bool = False) -> None:
+        if create:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.touch(exist_ok=True)
         self._journal = AppendOnlyJournal(path)
         self.loop_id = loop_id
         if not self._journal.entries and create:
@@ -151,6 +157,7 @@ def reduce_retry_ledger_tail(
     *,
     loop_id: str,
     state_version: int,
+    checkpointed: bool = False,
 ) -> RetryRecovery | None:
     """Validate the exact contiguous ``reevaluate`` prefix named by PREPARE.
 
@@ -183,17 +190,23 @@ def reduce_retry_ledger_tail(
     for entry in ledger_entries[:baseline_seq]:
         if entry.type == "reevaluate" and entry.payload.get("attempt") in proposed_attempts:
             raise RetryAdmissionError("a retry attempt key was already used in the TrialLedger")
-    if len(suffix) > len(items):
+    if len(suffix) > len(items) and not checkpointed:
         raise RetryAdmissionError("TrialLedger contains entries beyond the retry manifest")
-    for item, entry in zip(items, suffix, strict=False):
+    retry_prefix = suffix[: len(items)]
+    for item, entry in zip(items, retry_prefix, strict=False):
         if not _ledger_entry_matches(entry, item):
             raise RetryAdmissionError("TrialLedger retry prefix differs from PREPARE manifest")
     commit = entries[1] if len(entries) == 2 else None
     if commit is not None:
-        if len(suffix) != len(items):
+        if len(retry_prefix) != len(items) or (not checkpointed and len(suffix) != len(items)):
             raise RetryAdmissionError("retry COMMIT exists before every manifest entry")
-        _validate_committed_ledger(commit.payload, suffix)
-        return RetryRecovery(str(raw["retry_id"]), items, tuple(suffix), (), prepare, commit)
+        committed_entries = retry_prefix
+        _validate_committed_ledger(commit.payload, committed_entries)
+        return RetryRecovery(
+            str(raw["retry_id"]), items, tuple(committed_entries), (), prepare, commit
+        )
+    if checkpointed:
+        raise RetryAdmissionError("a retry checkpoint exists without retry COMMIT")
     return RetryRecovery(
         str(raw["retry_id"]),
         items,
@@ -270,10 +283,13 @@ def _validate_commit(payload: Mapping[str, Any], prepare: JournalEntry) -> None:
     if set(payload) != _COMMIT_KEYS:
         raise RetryAdmissionError("retry_commit has unknown or missing fields")
     if (
-        not isinstance(payload["retry_id"], str)
+        type(payload["state_version"]) is not int
+        or payload["state_version"] != 6
+        or payload["loop_id"] != prepare.payload["loop_id"]
+        or not isinstance(payload["retry_id"], str)
         or payload["retry_id"] != prepare.payload["retry_id"]
     ):
-        raise RetryAdmissionError("retry_commit names another retry_id")
+        raise RetryAdmissionError("retry_commit has another state version, loop_id, or retry_id")
     if (
         type(payload["prepare_seq"]) is not int
         or payload["prepare_seq"] != prepare.seq
@@ -305,6 +321,11 @@ def _validate_commit(payload: Mapping[str, Any], prepare: JournalEntry) -> None:
         or _HASH.fullmatch(payload["ledger_head_hash"]) is None
     ):
         raise RetryAdmissionError("retry_commit has an invalid final ledger hash")
+    if (
+        type(payload["memory_checkpoint_seq"]) is not int
+        or payload["memory_checkpoint_seq"] < 2
+    ):
+        raise RetryAdmissionError("retry_commit has an invalid memory checkpoint sequence")
 
 
 def _ledger_entry_matches(entry: JournalEntry, item: RetryManifestItem) -> bool:

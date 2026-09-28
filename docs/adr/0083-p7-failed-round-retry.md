@@ -15,7 +15,7 @@
 
 批准一个**显式、人工发起、不开启调度**的 retry admission。协议只接受一份当前打开 durable state 上重建的 ADR-0071 packet、非空人工 reviewer 声明和人工给出的有序 retry manifest。manifest 每项是已登记 hypothesis 的精确 `name@version`、其当前内容 hash、以及全新的 attempt key。packet 不推断失败 trial 与 hypothesis 的映射；调用者必须逐项明确选择。相同 hypothesis 可多次列出，但 attempt key 全局不得在本 ledger 中复用，manifest 内不得重复。
 
-重试使用新的 **durable state version 6**。v6 header / memory journal 的新增 retry event 使用严格固定字段；v3/v4/v5 的 header、checkpoint、anchor 与 reducer 分支保持原样。v6 必须有 ADR-0073 plan-admission journal（仍沿用 v4 语义）以及 retry journal；两者均由 `loop_id` 和状态版本绑定。retry journal 是独立 hash-chain，事件只有 `retry_prepare` 与 `retry_commit`。PREPARE 保存完整 canonical packet payload/hash、失败 `record_hash`、reviewer、manifest、ledger baseline `(seq, hash)` 和 retry id。COMMIT 绑定 PREPARE seq/hash、每个新 `reevaluate` ledger entry 的 seq/hash、最终 ledger head 与 memory checkpoint seq/hash。memory checkpoint 的 `retry_admission` 行记录 retry id、COMMIT 位置和完整 file heads；外部 anchor 仅在 checkpoint fsync 后推进，head 中包含 retry journal 位置。审阅者身份是调用者声明，不是认证凭据。
+重试使用新的 **durable state version 6**。v6 header / memory journal 的新增 retry event 使用严格固定字段；v3/v4/v5 的 header、checkpoint、anchor 与 reducer 分支保持原样。v6 必须有 ADR-0073 plan-admission journal（仍沿用 v4 语义）以及 retry journal；两者均由 `loop_id` 和状态版本绑定。retry journal 是独立 hash-chain，事件只有 `retry_prepare` 与 `retry_commit`。PREPARE 保存完整 canonical packet payload/hash、失败 `record_hash`、reviewer、manifest、ledger baseline `(seq, hash)` 和 retry id。COMMIT 绑定 PREPARE seq/hash、每个新 `reevaluate` ledger entry 的 seq/hash、最终 ledger head 与 memory checkpoint 的 seq。memory checkpoint 的 `retry_admission` 行记录 retry id、COMMIT 位置和完整 file heads；该 checkpoint 自身的 hash 由后续 external anchor 绑定。外部 anchor 仅在 checkpoint fsync 后推进，head 中包含 retry journal 位置。审阅者身份是调用者声明，不是认证凭据。
 
 ## 写入顺序与崩溃恢复
 
@@ -40,3 +40,9 @@ Review packet 繼續是只讀觀測；只有 v6 的專用 admission 才能解除
 
 - [ADR-0049](0049-continuous-research-loop.md)、[ADR-0070](0070-p7-partial-experiment-fail-stop.md)、[ADR-0071](0071-p7-failed-round-review-packet.md)、[ADR-0073](0073-phase7-plan-admission-recovery.md)、[ADR-0074](0074-p7-bounded-operator.md)
 - `research/loop/durable.py`、`research/loop/recovery_review.py`、`apps/worker/loop.py`、`research/hypotheses/ledger.py`
+
+## Amendment 1 — checkpoint hash binding
+
+状态：**Accepted**（Codex 依 Raphael 2026-09-28 授权决定）
+
+原决定要求 retry COMMIT 同时绑定 `retry_admission` memory checkpoint 的 seq/hash，而该 checkpoint 又必须绑定 COMMIT 的 seq/hash。两者的 hash 互相依赖，无法按单向 append-only 写入顺序构造。现改为 COMMIT 绑定预期 checkpoint seq；checkpoint 绑定精确 COMMIT seq/hash 和完整 journal heads；checkpoint hash 再由外部 anchor 的 state head 绑定。PREPARE → ledger suffix → COMMIT → checkpoint → anchor 顺序及其余约束不变。

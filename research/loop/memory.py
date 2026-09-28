@@ -372,6 +372,8 @@ class ResearchMemory:
     markets: list[SyntheticMarket] = field(default_factory=list)
     market_specs: list[SyntheticMarketSpec] = field(default_factory=list)
     research_data: list[ResearchPiece] = field(default_factory=list)
+    #: v6 retry attempts pre-registered between rounds and consumed by the next hypothesis stage.
+    retry_attempts: dict[tuple[str, str], str] = field(default_factory=dict)
     #: The durable lineage journal (``None``: in memory only); ``add_lineage`` feeds both.
     lineage_graph: LineageGraph | None = None
 
