@@ -20,24 +20,53 @@
 
 ## 模块状态总览
 
-| 范围 | 当前基础 | 代码 / 内容缺口 | 处理方式 |
+| Phase / 模块 | 代码是否已齐 | 仍缺的实现（仅代码） | 是否需新 ADR / 人工门 | 本轮是否动手 | 可并行？ |
+|---|---|---|---|---|---|
+| P0.5 Knowledge Base | CODE_COMPLETE / DEBUG_PENDING：检索、review 写入、过滤、seed loader 已实现 | 无已批准的可编码缺口 | seed tags/assets 需具名人工审阅；黄金哈希留统一验收生成 | 否：人工 / 验收门 | 否 |
+| P1 D0–D4 数据基础链 | CODE_COMPLETE / DEBUG_PENDING：Storage、Catalog、Collector、Parser、Revision、PIT、Normalizer、REST / lineage 均有基础实现 | 本轮不扩 E1 有界状态；其余经审计无已批准代码缺口 | 历史 universe / volume bars 是规格门 | 否 | 可按单模块独立，但当前无任务 |
+| P1 E1 / Dataset | FRAMEWORK：基础读取、selection、manifest、RSS 工具已存在；当前分支另有未提交 E1 改动 | 仍有 E1-CAP-1 / Dataset 有界结果工作，但本轮明确排除 | ADR-0077、容量门、32 MiB 证据；需后续单独处理 | **否：本轮跳过** | 否：本轮不派 |
+| P2 State + Web diagnostics | CODE_COMPLETE / DEBUG_PENDING：执行器与 Python / Web diagnostics 字段已接线 | 无已批准的代码缺口；兼容与渲染属于后续调试 | 逐 kind Report DTO schema 需新契约决定 | 否：当前实现随本地修改收敛 | 是，若后续只改 Web |
+| P3 Event | CODE_COMPLETE / DEBUG_PENDING：Provider、DSL、统计、定义及显式建表命令输出已实现 | 无；旧断言留统一调试 | 真正创建 Catalog 表需人工授权 | 否 | 是，单独命令模块 |
+| P4 Outcome | CODE_COMPLETE / DEBUG_PENDING：store/source、转换辅助与验证流已实现 | 无已批准调用接线；现有纯转换函数不新造写路径 | 若增加新写入调用点，需先确认流程 / ADR 边界 | 否 | 否：无任务 |
+| P5 Strategy / Validation | CODE_COMPLETE / DEBUG_PENDING：策略、回测、验证、Promotion、FailureRegistry 已实现 | 无已批准实现缺口 | Profile 数值与验证门冻结 | 否 | 是，模块间可分开调试 |
+| P6 Matrix | CODE_COMPLETE / DEBUG_PENDING：矩阵运行与报告接线已实现 | 无已批准实现缺口 | 无 | 否 | 是，模块独立 |
+| P7 Discovery | FRAMEWORK / DEBUG_PENDING：non-runnable parser、resolver、durable v4/v5、有限 operator 与纯 binding validator 已有 | 预期 lowered outputs 全集完整性尚无权威来源，故不补 producer / lowering | 新 ADR / 输出权威；六类算子保持关闭 | **否：本轮跳过** | 否：需先定语义 |
+| P8 Retro audit | CODE_COMPLETE / DEBUG_PENDING：writer、API、Web 页面、fixture-writer registry 已有 | 无本轮可编码项；fixture ID / hash 更新属于后续生成与验收 | 不代替人工知识标签审阅 | 否 | 是，若后续只改 app |
+| P9 Calibration | CODE_COMPLETE / DEBUG_PENDING：单 / 多标的校准与 G5 证据已实现；固定 Decimal context 已补 | 无已批准实现缺口 | 不选新生成器或数值 | 否：当前代码随本地修改收敛 | 是，限 synthetic_lab |
+| P10 Router | FRAMEWORK：Paper、deviation、evidence、validation 已有 | deviation 尚未绑定声明范围；具体需先定义范围身份与兼容规则，当前不能安全写成代码缺口 | **需 ADR / 语义决定，本轮跳过** | 否 | 否：跨 Router 语义 |
+| P11 Loop | FRAMEWORK / CODE_COMPLETE（已批准 synthetic-only operator）：durable loop、stale-writer guard、degradation evidence、有限 CLI 已有 | 无当前批准的代码项；权威 ACTIVE/source resolver、dataset operator、仓内 scheduler 未获准 | 需权威来源 / provenance 决定；外部 scheduler 既定 | **否：本轮跳过** | 否 |
+| P12 Evolution | CODE_COMPLETE / DEBUG_PENDING：operators、proposal、replacement 与冲突拒绝已有；精确类型校验已补 | P12-LOOP 是明确暂缓项，不是遗漏代码 | 自动 proposal 需未来 ADR | 否：当前修改收敛 | 是，单独 research/evolution |
+| P13 Execution | CODE_COMPLETE / DEBUG_PENDING：模拟执行、审计、kill switch、风险 replay 已有；准入前拒绝与原子 mark 已补 | 无已批准实现缺口 | 仅 simulated；实盘需单独授权 | 否：当前修改收敛 | 是，限 apps/execution |
+| P14 Migration | FRAMEWORK / CODE_COMPLETE：golden、diff、rollback evidence 与不可变快照已有 | 无目标系统时不写 target adapter；现有 conformance 覆盖不等于迁移目标 | 目标系统与 golden data 需人工提供 | **否：本轮跳过** | 否：等待目标 |
+| Apps / shared APIs | CODE_COMPLETE / DEBUG_PENDING：Reports API、只读 Web 查询面、多类页面已实现 | 无已批准基础接线缺口；P2 / P8 消费字段已同步 | report kind 版本化 DTO 需契约门；不增加写触发 | 否 | 是：后续可按单 app 页面并行 |
+
+本表按现有模块计划、Wave A/C 交付记录与当前工作区代码盘点；“CODE_COMPLETE / DEBUG_PENDING”只表示批准范围内基础逻辑已存在，不代表测试或阶段验收通过。P1 E1 / Dataset 明确留到后续，不作为本轮代码缺口继续深挖。
+
+### 后续模块调试顺序建议
+
+1. P0.5 Knowledge Base：先核基础读取 / 检索，再由具名人员处理 seed tags/assets；人工审阅不并入代码测试。
+2. P1 D0–D4：按 Storage / Catalog → Collector / Parser → Revision / PIT / Normalizer → D3 REST / lineage → D4 Quality 的数据依赖顺序逐层调试。E1-CAP-1 / Dataset 容量与 ADR-0077 路径单列，待本轮之后决策。
+3. P2 → P3 → P4：State → Event → Outcome，先验证各 Provider 输出，再验证 Outcome 转换与最小验证接线。
+4. P5 → P6：先单策略 / backtest / validation / Promotion，再跑状态 × 策略矩阵。
+5. P7 → P8 → P9：Discovery 保持 non-runnable 边界，再核审计报告，最后校准证据。
+6. P10 → P11 → P12 → P13：Router → Loop → Evolution → 模拟 Execution；P11 维持 synthetic-only / 外部调度，P13 不连实盘。
+7. P14 与 Apps：提供迁移目标后验证 conformance / rollback；各 Apps 页面随其数据模块调试，最后做跨模块只读查询回归。
+
+以上只是下一阶段建议顺序，不代表任何 Phase 已验收；每个模块调试结束后单独记录结果与剩余门槛。
+
+### 本轮跳过的决定 / 人工门
+
+| ID | 模块 | 待定问题 / 人工动作 | 本轮处理 |
 |---|---|---|---|
-| Phase 0.5 知识库 | 检索、审阅写入、标签 / 资产过滤、种子加载 | 部分种子没有黄金哈希或具名审阅；不得由代理代填人工标签 | 代码不新增模拟审阅；黄金哈希留给统一验收运行，标签 / 资产由具名审阅者决定 |
-| Phase 1 数据 | Storage、Catalog、Collector、Parser、Revision、PIT、Normalizer、RSS probe | E1-CAP-1 未证明；500k 失败候选超 32 MiB；archive parse、返回对象和 metadata 的上界未验证；成交量 bar / 历史 universe 另有规格门 | 在已记录 E1-R 路线内补有界状态；不移植失败候选、不改契约、不宣称通过 |
-| Phase 2 State | Provider、执行器、诊断载荷 1.1.0；Wave A3 已补 Web optional `source_result_hash` 消费字段 | 1.0.0 / 1.1.0 渲染与兼容仍待统一验收 | 不重复实现；留给统一验收 |
-| Phase 3 Event | Provider、DSL、统计、Event 表定义和显式创建命令；Wave A2 已补 `name@version` 与完整定义哈希输出 | 既有命令输出断言留待统一验收；不连 Catalog、不创建真实表 | 不重复实现；留给统一验收 |
-| Phase 4 Outcome | Provider、Outcome store/source、EventResult 转换辅助函数、验证流程 | 转换辅助函数当前无调用方；Outcome/Profile 端到端行为留待统一验收 | 保持纯转换边界，先由协调者检查其调用接点，不创造新的写入路径 |
-| Phase 5 Strategy | TSMOM / cross-sectional、backtest、validation、Promotion、FailureRegistry | 当前主要缺验收覆盖；没有可独立批准的批量 ValidationReport 作业 | 不改 Profile / 风控门；测试留待验收批次 |
-| Phase 6 Matrix | 状态×策略矩阵、逐单元验证、报告接线 | 运行 / 报告幂等性以测试和统一验收证明 | 本轮不改已具备实现；验收批次补覆盖 |
-| Phase 7 Discovery | non-runnable parser / resolver、TrialLedger、durable v4/v5、lease / write gate、ADR-0074 operator；Wave A1 已增加纯绑定校验器 | 当前校验不能证明预期 outputs 全集完整；六算子 producer / lowering 仍未批准 | 不重复实现绑定器；保持 non-runnable，等待输出全集权威与后续 ADR |
-| Phase 8 Retro audit | writer、API、Web 页面；Wave A4 已注册 fixture writer | 已提交 `retro_audit` fixture 仍为 1.0.0，fixture ID / 黄金哈希需在统一验收窗口同步 | 不造新 fixture；验收窗口再生成并更新登记 |
-| Phase 9 Calibration | 单标的与多标的校准、G5 证据 | 多标的 G5 与新生成器需明确证据范围 | 不选数值、不添加未经 ADR 批准的生成器 |
-| Phase 10 Router | Paper / deviation / evidence / validation | deviation 缺少声明范围；validation 复用 paper 私有 helper | 不改验证门槛或报告哈希；需先确认声明范围语义 |
-| Phase 11 Loop | durable loop、worker journal stale-writer guard、degradation evidence 与 ADR-0074 synthetic-only 有限批次 CLI | operator 只接受合成路径、由外部 scheduler 启动；没有权威 ACTIVE resolver、可重取 source resolver / metric registry、dataset operator、仓内 scheduler 或 NATS。这些能力需要先定义 authority 与 provenance 语义 | 保持声明性证据边界；不新增常驻服务、source resolver、dataset 输入或写触发 |
-| Phase 12 Evolution | mutate / combine / proposal / replacement | P12-LOOP 明确暂缓 | 保持既有 fail-closed / conflict refusal |
-| Phase 13 Execution | simulated-only execution、audit、emergency stop、risk replay | roadmap 原文的独立二道风控演练与 ExecutionService / BacktestResult 差异报告超出 ADR-0046；已把验收文字对齐至已有 Kill Switch drill、二道风控拒绝审计 / replay；P10 paper deviation 归 P10 | 维持 ADR-0046 的模拟-only 范围；不扩展其演练或比较 API |
-| Phase 14 Migration | gold-standard、diff、rollback evidence | 无目标系统或真实数据金标准；现有 conformance 调用方只覆盖 Knowledge / EventBus，不是全 suite migration matrix | 目标选择前不编造 target adapter；保持 suite 可重用框架范围 |
-| Apps | Reports API / Web 查询面、多类报告页面 | P8 fixture 与 P2 StateDiagnostics 类型需要同步；未进行浏览器验收 | 只修已批准 schema 的消费类型，不添 API 写触发 |
+| DP-P1-E1 | P1 E1 / Dataset | ADR-0077 与 E1-CAP-1 的后续实现和容量证据 | 本轮跳过；ADR 保持 Proposed，不继续扩写或实施 |
+| DP-P0.5-REVIEW | P0.5 Knowledge Base | 由具名审阅者确认 seed tags/assets；验收窗口生成黄金哈希 | 本轮不代审、不生成 |
+| DP-P3-CATALOG | P3 Event | 是否授权在真实 Catalog 创建 Event 表 | 本轮不创建 |
+| DP-P7-OUTPUTS | P7 Discovery | lowered outputs 完整集合的权威来源与后续 producer/lowering 边界 | 本轮不实现 producer 或启用算子 |
+| DP-P10-SCOPE | P10 Router | deviation 报告如何绑定声明范围身份及兼容版本 | 本轮不猜语义、不改阈值 |
+| DP-P11-AUTHORITY | P11 Loop | ACTIVE、真实 source 与 metric 的权威来源 / provenance | 本轮不加 resolver、dataset operator 或仓内调度 |
+| DP-APP-REPORT-DTO | Apps | 是否为各 report kind 建立版本化 payload DTO 契约 | 本轮不收窄现有 API payload |
+| DP-P14-TARGET | P14 Migration | 迁移目标、目标环境与具名 golden data | 未提供目标前不写 adapter |
+| HUMAN-PROFILE | P4/P5/P9 | D-09 / Profile 数值与验证阈值 | 保持冻结，不在代码中填默认值 |
 
 ## 已批准的实现批次
 
@@ -49,7 +78,7 @@
 |---|---|---|---|---|
 | A1 | P7 hypothesis composition | 按 ADR-0073 §1 实现 pure binding validator：每个 ExperimentSpec 精确绑定一个批次 Hypothesis；Hypothesis 恰被一个 ExperimentSpec 引用；已提交的每个 lowered output 精确匹配其 ExperimentSpec 的直接依赖 ref/hash；重复、缺失关联、额外关联与错 hash fail closed。不得接入 PREPARE、TrialLedger、Runner 或改变 `runnable=False` | `research/hypotheses/plan_bindings.py`、同目录 README；不改 `core/` | 源码复核无直接绕过路径；缺权威预期输出清单，暂不能证明 outputs 集合完整 |
 | A2 | P3 event operations | 在默认无副作用、`--apply` 只操作 `event.events` 的现有命令输出中加入 TableDefinition 的 `name@version` 与完整定义内容哈希；绑定或表范围不符时 fail closed | `infrastructure/event/create_event_tables.py` | 源码复核完成；既有命令测试仍期待旧输出，留待验收窗口同步；未运行 |
-| A3 | P2 Web diagnostics | Web `StateDiagnosticsPayload` 增加可空/可省略的 `source_result_hash` 消费字段，与 Python 1.1.0 输出对应，同时保留 1.0.0 旧 payload 可读 | `apps/web/src/lib/stateDiagnostics.ts` | 源码复核完成；未做类型检查 |
+| A3 | P2 Web diagnostics | Web `StateDiagnosticsPayload` 增加可空/可省略的 `source_result_hash` 消费字段，与 Python 1.1.0 输出对应，同时保留 1.0.0 旧 payload 可读 | `apps/web/src/lib/stateDiagnostics.ts` | 静态复核补充：非空 `source_result_hash` 同步要求 64 位小写 SHA-256；测试与类型检查未运行 |
 | A4 | P8 report fixtures | 将现有 `retro_audit` writer/报告种类加入 console fixture writer registry；不生成 fixture 文件、不改 report schema | `tests/research/reports/test_console_fixture_writers.py`、`apps/web/fixtures/README.md` | 源码复核完成；旧 1.0.0 JSON / fixture ID 登记留待验收同步 |
 
 ### Wave B：代码 / 文档状态对账
