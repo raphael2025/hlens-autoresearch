@@ -367,6 +367,23 @@ class _CommittedPlan:
     count: int
 
 
+@dataclass(slots=True)
+class _CommittedTimes:
+    """Bounded scan summary for one unit's persisted integer/time/version columns."""
+
+    seqs: _PositionIndex
+    seq_count: int
+    seq_null: bool
+    low: int | None
+    high: int | None
+    ready: datetime | None
+    ready_multiple_or_null: bool
+    versions: tuple[object, ...]
+
+    def close(self) -> None:
+        self.seqs.close()
+
+
 @dataclass(frozen=True, slots=True)
 class CanonicalUnitNormalized:
     """Result of normalizing one unit."""
@@ -678,33 +695,39 @@ class CanonicalNormalizer:
             self._prove_source(pin, channel, source_revision_id)
         self._check_positions(pin, channel, source_revision_id, positions, symbol)
         plan, ordered = self._committed_plan(pin, channel, source_revision_id)
-        seqs, readies, versions = self._committed_times(pin, channel, source_revision_id)
-        facts = _UnitFacts(positions, None, None, None)
-        if not positions:
-            if len(seqs) or plan is not None:
-                raise CatalogIntegrityError(
-                    f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
-                    "has no Raw element revision"
-                )
-        elif plan is None:
-            if len(seqs):
-                raise CatalogIntegrityError(
-                    f"{table}: unit {source_revision_id} has committed rows but no committed batch"
-                )
-        else:
-            base, ready, version = self._recover(
-                channel, source_revision_id, seqs, readies, versions
-            )
-            _check_plan(channel, source_revision_id, plan, ordered, len(positions))
-            covered = min(plan.count * plan.chunk, len(positions))
-            if not _same_numbers(seqs, _OffsetSequence(positions[:covered], base)):
-                raise CatalogIntegrityError(
-                    f"{table}: the committed rows of unit {source_revision_id} are not exactly "
-                    "the rows of its committed batches (rows deleted or added)"
-                )
-            facts = _UnitFacts(positions, plan, base, ready, version)
-        self._check_rest_unit(pin, channel, source_revision_id, positions)
-        return facts
+        committed = self._committed_times(pin, channel, source_revision_id)
+        try:
+            facts = _UnitFacts(positions, None, None, None)
+            if not positions:
+                if committed.seq_count or plan is not None:
+                    raise CatalogIntegrityError(
+                        f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
+                        "has no Raw element revision"
+                    )
+            elif plan is None:
+                if committed.seq_count:
+                    raise CatalogIntegrityError(
+                        f"{table}: unit {source_revision_id} has committed rows but no committed batch"
+                    )
+            else:
+                base, ready, version = self._recover(channel, source_revision_id, committed)
+                _check_plan(channel, source_revision_id, plan, ordered, len(positions))
+                covered = min(plan.count * plan.chunk, len(positions))
+                if not _same_index_numbers(
+                    committed.seqs,
+                    committed.seq_count,
+                    committed.seq_null,
+                    _OffsetSequence(positions[:covered], base),
+                ):
+                    raise CatalogIntegrityError(
+                        f"{table}: the committed rows of unit {source_revision_id} are not exactly "
+                        "the rows of its committed batches (rows deleted or added)"
+                    )
+                facts = _UnitFacts(positions, plan, base, ready, version)
+            self._check_rest_unit(pin, channel, source_revision_id, positions)
+            return facts
+        finally:
+            committed.close()
 
     # ------------------------------------------------------------------ pin
 
@@ -793,7 +816,6 @@ class CanonicalNormalizer:
         positions: _PositionIndex,
         symbol: str | None,
     ) -> _Survey:
-        table = channel.canonical.table
         floor: datetime | None = None
         for low, high in _proof_windows(positions, self._microbatch):
             raw = self._raw_window(pin, channel, source_revision_id, low, high)
@@ -805,21 +827,54 @@ class CanonicalNormalizer:
             self._prove_source(pin, channel, source_revision_id)
         self._check_positions(pin, channel, source_revision_id, positions, symbol)
         plan, ordered = self._committed_plan(pin, channel, source_revision_id)
-        seqs, readies, versions = self._committed_times(pin, channel, source_revision_id)
+        committed = self._committed_times(pin, channel, source_revision_id)
+        try:
+            return self._survey_with_committed_times(
+                pin,
+                channel,
+                source_revision_id,
+                keep_rows=keep_rows,
+                positions=positions,
+                symbol=symbol,
+                floor=floor,
+                unit_rows=unit_rows,
+                plan=plan,
+                ordered=ordered,
+                committed=committed,
+            )
+        finally:
+            committed.close()
+
+    def _survey_with_committed_times(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        *,
+        keep_rows: bool,
+        positions: _PositionIndex,
+        symbol: str | None,
+        floor: datetime | None,
+        unit_rows: int,
+        plan: _CommittedPlan | None,
+        ordered: Sequence[SnapshotInfo],
+        committed: _CommittedTimes,
+    ) -> _Survey:
+        table = channel.canonical.table
         if unit_rows == 0:
-            if len(seqs) or plan is not None:
+            if committed.seq_count or plan is not None:
                 raise CatalogIntegrityError(
                     f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
                     "has no Raw element revision"
                 )
             return _Survey(0, None, None, None, None, (), (), positions)
         if plan is None:
-            if len(seqs):
+            if committed.seq_count:
                 raise CatalogIntegrityError(
                     f"{table}: unit {source_revision_id} has committed rows but no committed batch"
                 )
             return _Survey(unit_rows, floor, None, None, None, (), (), positions)
-        base, ready, version = self._recover(channel, source_revision_id, seqs, readies, versions)
+        base, ready, version = self._recover(channel, source_revision_id, committed)
         _check_plan(channel, source_revision_id, plan, ordered, unit_rows)
         # Newest first, i.e. highest index first: each batch's snapshot is streamed from the
         # pinned history as it is proven; per batch only its (output) ids / rows are kept.
@@ -845,7 +900,12 @@ class CanonicalNormalizer:
             ids.append([row["revision_id"] for row in planned])
             if keep_rows:
                 kept.append(planned)
-        if not _same_numbers(seqs, _OffsetSequence(positions[:covered], base)):
+        if not _same_index_numbers(
+            committed.seqs,
+            committed.seq_count,
+            committed.seq_null,
+            _OffsetSequence(positions[:covered], base),
+        ):
             raise CatalogIntegrityError(
                 f"{table}: the committed rows of unit {source_revision_id} are not exactly the "
                 "rows of its committed batches (rows deleted or added)"
@@ -1125,40 +1185,102 @@ class CanonicalNormalizer:
 
     def _committed_times(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
-    ) -> tuple[pa.Array, pa.Array, pa.Array]:
-        """``arrival_seq``, ``knowledge_time`` and ``contract_schema_version`` of every committed
-        row of the unit (Arrow)."""
-        found = pin.catalog.scan_columns(
-            channel.canonical.table,
-            columns=("arrival_seq", "knowledge_time", "contract_schema_version"),
-            row_filter=self._unit_filter(channel, source_revision_id),
-        )
-        return (
-            found.column("arrival_seq"),
-            found.column("knowledge_time"),
-            found.column("contract_schema_version"),
-        )
+    ) -> _CommittedTimes:
+        """Stream committed unit facts; retain only scalar summaries and a disk-sorted seq index."""
+        index = _PositionIndex()
+        reader: Any | None = None
+        count = 0
+        seq_null = False
+        low: int | None = None
+        high: int | None = None
+        ready: datetime | None = None
+        ready_multiple_or_null = False
+        versions: list[object] = []
+        try:
+            reader = pin.catalog.scan_column_batches(
+                channel.canonical.table,
+                columns=("arrival_seq", "knowledge_time", "contract_schema_version"),
+                row_filter=self._unit_filter(channel, source_revision_id),
+            )
+            for record_batch in reader:
+                seq_values = record_batch.column(
+                    record_batch.schema.get_field_index("arrival_seq")
+                )
+                ready_values = record_batch.column(
+                    record_batch.schema.get_field_index("knowledge_time")
+                )
+                version_values = record_batch.column(
+                    record_batch.schema.get_field_index("contract_schema_version")
+                )
+                count += record_batch.num_rows
+                seq_null = seq_null or bool(seq_values.null_count)
+                raw_seqs = seq_values.to_pylist()
+                non_null_seqs = [value for value in raw_seqs if value is not None]
+                if non_null_seqs:
+                    batch_low, batch_high = min(non_null_seqs), max(non_null_seqs)
+                    low = batch_low if low is None else min(low, batch_low)
+                    high = batch_high if high is None else max(high, batch_high)
+                    for start in range(0, len(non_null_seqs), _POSITION_INSERT_ROWS):
+                        index.add_batch(non_null_seqs[start : start + _POSITION_INSERT_ROWS])
+                for value in ready_values.to_pylist():
+                    if value is None:
+                        ready_multiple_or_null = True
+                    elif ready is None:
+                        ready = value
+                    elif value != ready:
+                        ready_multiple_or_null = True
+                for value in version_values.to_pylist():
+                    if value not in versions and len(versions) < 2:
+                        versions.append(value)
+            close = getattr(reader, "close", None)
+            if close is not None:
+                close()
+            index.finalize()
+            return _CommittedTimes(
+                index,
+                count,
+                seq_null,
+                low,
+                high,
+                ready,
+                ready_multiple_or_null,
+                tuple(versions),
+            )
+        except BaseException:
+            close = getattr(reader, "close", None)
+            if close is not None:
+                try:
+                    close()
+                except Exception:
+                    pass
+            index.close()
+            raise
 
     def _recover(
         self,
         channel: rules.RawChannel,
         source_revision_id: str,
-        seqs: pa.Array,
-        readies: pa.Array,
-        versions: pa.Array,
+        committed: _CommittedTimes,
     ) -> tuple[int, datetime, str]:
         """Block base, ready time and contract version of a unit with committed batches: from its
         rows, never read (the version: ADR-0052 versioned replay, V1)."""
         table = channel.canonical.table
-        if not len(seqs):
+        if committed.seq_count == 0:
             raise CatalogIntegrityError(
                 f"{table}: unit {source_revision_id} has committed batches but their rows are gone"
             )
-        bounds = pc.min_max(seqs).as_py()
-        low, high = bounds["min"], bounds["max"]
+        low, high = committed.low, committed.high
+        if low is None or high is None:
+            raise CatalogIntegrityError(
+                f"{table}: the committed rows of unit {source_revision_id} are not exactly "
+                "the rows of its committed batches (rows deleted or added)"
+            )
         base = (low // rules.ARRIVAL_SEQ_STRIDE) * rules.ARRIVAL_SEQ_STRIDE
-        distinct = pc.unique(readies).to_pylist()
-        if high >= base + rules.ARRIVAL_SEQ_STRIDE or len(distinct) != 1 or distinct[0] is None:
+        if (
+            high >= base + rules.ARRIVAL_SEQ_STRIDE
+            or committed.ready_multiple_or_null
+            or committed.ready is None
+        ):
             raise CatalogIntegrityError(
                 f"{table}: the committed rows of one unit disagree on their block base or "
                 "knowledge_time"
@@ -1168,9 +1290,9 @@ class CanonicalNormalizer:
         except rules.CanonicalRuleViolation as exc:
             raise CatalogIntegrityError(f"{table}: {exc}") from None
         version = contract_version.recorded_version(
-            pc.unique(versions).to_pylist(), what=f"{table}: unit {source_revision_id}"
+            committed.versions, what=f"{table}: unit {source_revision_id}"
         )
-        return checked, distinct[0], version
+        return checked, committed.ready, version
 
     def _planned(
         self,
@@ -1393,24 +1515,32 @@ class CanonicalNormalizer:
         """The unit's rows are exactly ``base + position`` of its Raw rows; nothing else is in
         the block."""
         table = channel.canonical.table
-        seqs = self._adapter.scan_columns(
-            table,
-            columns=("arrival_seq",),
-            row_filter=self._unit_filter(channel, source_revision_id),
-            snapshot_id=snapshot_id,
-        ).column("arrival_seq")
-        block = self._adapter.scan_columns(
-            table,
-            columns=("arrival_seq",),
-            row_filter=_from("arrival_seq", base, base + rules.ARRIVAL_SEQ_STRIDE),
-            snapshot_id=snapshot_id,
-        ).column("arrival_seq")
         expected = _OffsetSequence(positions, base)
-        if not _same_numbers(seqs, expected) or not _same_numbers(block, expected):
-            raise CatalogIntegrityError(
-                f"{table}: unit {source_revision_id} does not read back as exactly its "
-                f"{len(positions)} numbers of block {base}"
+        seqs, seq_count, seq_null = _scan_integer_index(
+            self._adapter,
+            table,
+            self._unit_filter(channel, source_revision_id),
+            snapshot_id,
+        )
+        try:
+            block, block_count, block_null = _scan_integer_index(
+                self._adapter,
+                table,
+                _from("arrival_seq", base, base + rules.ARRIVAL_SEQ_STRIDE),
+                snapshot_id,
             )
+            try:
+                if not _same_index_numbers(seqs, seq_count, seq_null, expected) or not (
+                    _same_index_numbers(block, block_count, block_null, expected)
+                ):
+                    raise CatalogIntegrityError(
+                        f"{table}: unit {source_revision_id} does not read back as exactly its "
+                        f"{len(positions)} numbers of block {base}"
+                    )
+            finally:
+                block.close()
+        finally:
+            seqs.close()
 
     # ------------------------------------------------------------------ catalog helpers
 
@@ -1665,18 +1795,54 @@ def _batches_holding(
     return found
 
 
-def _same_numbers(values: pa.Array, expected: Sequence[int]) -> bool:
-    """``values`` is exactly the ascending, distinct ``expected``, each once (any order)."""
-    if len(values) != len(expected):
+def _scan_integer_index(
+    catalog: Any,
+    table: str,
+    row_filter: BooleanExpression,
+    snapshot_id: str | None,
+) -> tuple[_PositionIndex, int, bool]:
+    """Stream one arrival_seq column into a disk-sorted index at the requested snapshot."""
+    index = _PositionIndex()
+    reader: Any | None = None
+    count = 0
+    has_null = False
+    try:
+        reader = catalog.scan_column_batches(
+            table,
+            columns=("arrival_seq",),
+            row_filter=row_filter,
+            snapshot_id=snapshot_id,
+        )
+        for record_batch in reader:
+            values = record_batch.column(record_batch.schema.get_field_index("arrival_seq"))
+            count += record_batch.num_rows
+            has_null = has_null or bool(values.null_count)
+            non_null = [value for value in values.to_pylist() if value is not None]
+            for start in range(0, len(non_null), _POSITION_INSERT_ROWS):
+                index.add_batch(non_null[start : start + _POSITION_INSERT_ROWS])
+        close = getattr(reader, "close", None)
+        if close is not None:
+            close()
+        index.finalize()
+        return index, count, has_null
+    except BaseException:
+        close = getattr(reader, "close", None)
+        if close is not None:
+            try:
+                close()
+            except Exception:
+                pass
+        index.close()
+        raise
+
+
+def _same_index_numbers(
+    values: _PositionIndex, count: int, has_null: bool, expected: Sequence[int]
+) -> bool:
+    """The streamed values are exactly the ascending, distinct expected values, each once."""
+    if has_null or count != len(expected) or len(values) != count:
         return False
-    if not expected:
-        return True
-    if values.null_count:
-        return False
-    ordered = pc.take(values, pc.sort_indices(values))
-    if isinstance(ordered, pa.ChunkedArray):
-        ordered = ordered.combine_chunks()
-    return bool(ordered.equals(pa.array(expected, type=ordered.type)))
+    return all(actual == wanted for actual, wanted in zip(values, expected, strict=True))
 
 
 def _exact(
