@@ -24,7 +24,7 @@ Research Agent 的一切产出都是**数据**（Hypothesis / ExperimentSpec）�
 
 ## 3. 多 Agent 并行开发约定
 
-- 每个 Agent 任务应限定在单一模块/插件内；跨模块改动需要协调者（人类）批准。
+- 每个 Agent 任务应限定在单一模块/插件内；跨模块改动需要协调者批准（自 2026-09-28 起为 Claude Code PM，见 CLAUDE.md §0）。
 - 修改 `core/` 的任务不得与其他任务并行。
 - 每次提交说明：所属 Phase、触及的契约（若有）、测试结果、关联 ADR。
 
