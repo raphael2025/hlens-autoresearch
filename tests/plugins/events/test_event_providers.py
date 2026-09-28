@@ -15,6 +15,7 @@ from core.contracts.event import (
     EventResult,
     UnsupportedEvent,
 )
+from core.domain.base import Kind, Ref
 from core.domain.specs import EventSpec
 from plugins.events import (
     EventCoOccurrenceProvider,
@@ -217,6 +218,37 @@ def test_every_parameter_is_bound_by_the_spec_hash() -> None:
     assert len(hashes) == 9
     assert SEQUENCE.lineage == (CROSS_UP.ref, SWITCH.ref)
     assert SEQUENCE.features == (X,) and SEQUENCE.states == (REGIME,)
+
+
+def test_bar_spec_is_explicit_and_survives_provider_canonicalization() -> None:
+    bar = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_1m", version="1.0.0")
+    cross = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), bar_spec=bar)
+    breakout = VolatilityBreakoutProvider.spec(X, 2, Decimal("1.5"), bar_spec=bar)
+    switch = StateSwitchProvider.spec(REGIME, bar_spec=bar)
+
+    assert cross.bar_spec == breakout.bar_spec == switch.bar_spec == bar
+    FeatureThresholdCrossProvider((cross,))
+    VolatilityBreakoutProvider((breakout,))
+    StateSwitchProvider((switch,))
+    assert FeatureThresholdCrossProvider.spec(X, Decimal("4.5")).bar_spec is None
+
+
+def test_pair_interactions_inherit_matching_bar_spec_and_reject_conflicts() -> None:
+    bar = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_1m", version="1.0.0")
+    other_bar = Ref(kind=Kind.REPRESENTATION, name="canonical_bar_5m", version="1.0.0")
+    first = FeatureThresholdCrossProvider.spec(X, Decimal("4.5"), bar_spec=bar)
+    matching = StateSwitchProvider.spec(REGIME, bar_spec=bar)
+    different = StateSwitchProvider.spec(REGIME, bar_spec=other_bar)
+
+    sequence = EventSequenceProvider.spec(first, matching, MINUTE)
+    co_occurrence = EventCoOccurrenceProvider.spec(first, matching, MINUTE)
+    assert sequence.bar_spec == co_occurrence.bar_spec == bar
+    assert EventSequenceProvider.spec(first, matching, MINUTE, bar_spec=bar).bar_spec == bar
+
+    with pytest.raises(ValueError, match="bar_spec values must agree"):
+        EventSequenceProvider.spec(first, different, MINUTE)
+    with pytest.raises(ValueError, match="bar_spec must match"):
+        EventCoOccurrenceProvider.spec(first, matching, MINUTE, bar_spec=other_bar)
 
 
 def test_a_spec_the_provider_would_not_build_is_refused() -> None:

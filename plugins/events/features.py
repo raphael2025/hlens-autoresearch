@@ -75,6 +75,7 @@ class FeatureThresholdCrossProvider(EventProviderBase):
         name: str | None = None,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         if feature.kind is not Kind.FEATURE:
             raise ValueError(f"{feature} is not a feature reference")
@@ -91,6 +92,7 @@ class FeatureThresholdCrossProvider(EventProviderBase):
             ),
             features=(feature,),
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def canonical(self, spec: EventSpec) -> EventSpec:
@@ -105,6 +107,7 @@ class FeatureThresholdCrossProvider(EventProviderBase):
             name=spec.name,
             version=spec.version,
             observable_lag=spec.observable_lag,
+            bar_spec=spec.bar_spec,
         )
 
     def events(
@@ -164,6 +167,7 @@ class VolatilityBreakoutProvider(EventProviderBase):
         name: str | None = None,
         version: str = "1.0.0",
         observable_lag: timedelta = timedelta(0),
+        bar_spec: Ref | None = None,
     ) -> EventSpec:
         if feature.kind is not Kind.FEATURE:
             raise ValueError(f"{feature} is not a feature reference")
@@ -179,6 +183,7 @@ class VolatilityBreakoutProvider(EventProviderBase):
             ),
             features=(feature,),
             observable_lag=observable_lag,
+            bar_spec=bar_spec,
         )
 
     def canonical(self, spec: EventSpec) -> EventSpec:
@@ -190,6 +195,7 @@ class VolatilityBreakoutProvider(EventProviderBase):
             name=spec.name,
             version=spec.version,
             observable_lag=spec.observable_lag,
+            bar_spec=spec.bar_spec,
         )
 
     def events(
