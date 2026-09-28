@@ -48,10 +48,10 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - Current Phase：Phase 1（Market Representation）**已开启**——Codex 依 Raphael 持续授权于 2026-09-24 开启（S0）
 - Current Subphase：D3E 已验收（`docs/reviews/2026-09-27-d3e-acceptance.md`），D4 已关闭；E1-CAP-1 容量上界是当前阻断。主线已含适配版 RSS probe，尚未运行；候选实现的 59.9 / 63.9 MiB 失败结果不代表 main。P0.5 四条新增种子已固定为 schema 2.1.0；Phase 11 worker journal 已加入 POSIX single-writer guard。测试、build、probe 与阶段验收暂缓，细节见 `PROJECT_STATUS.md` 与完成计划 §10.35
-- Current Objective：继续按 Raphael 的顺序补齐模块基础逻辑，再统一调试 / 验收。P7 当前下一步是补 producer 接入前的跨 prepare→complete admission lease，再实现 ADR-0074 严格 TOML parser、静态 Provider allowlist 与有限轮数 CLI 基础；同时 Phase 1 的 E1-CAP-1 仍是项目验收阻断。
+- Current Objective：继续按 Raphael 的顺序补齐模块基础逻辑，再统一调试 / 验收。P7 的跨 prepare→complete admission lease、durable store 写 gate、round/approval 串行化、close 后拒写与只读 journal view 已进入本地 main，静态复核通过但未验收。下一步实现 ADR-0074 严格 TOML parser、静态 Provider allowlist 与有限轮数 CLI 基础；同时 Phase 1 的 E1-CAP-1 仍是项目验收阻断。
 - D3E（含 R1 / R2 / R3）已于 2026-09-27 由 Codex 验收（`docs/reviews/2026-09-27-d3e-acceptance.md`）；D4 已关闭，Phase 1 当前阻断为 E1-CAP-1 的内存有界性修复与独立复核；E2 起仍按状态文档的开放顺序推进
 - Current Blocker：E1-CAP-1 容量上界仍未证明。`fix/e1-cap1` 候选 probe 可重复运行，但每个 N 只记录一次且不代表 main；main 的 positions、时间列、返回 ids、收尾列和 archive cache 仍需分阶段测量。D3E-R3 跨日错误已由 `69f0bf0` 修复并随 D3E 验收。C2 的专用 catalog / test database、最小权限 role 与本机忽略凭据已创建并验收
-- Next Milestone：先完成 P7 admission lease 与 ADR-0074 parser / allowlist / CLI 基础，不制造可运行 Profile 配置；并行保留 E1-CAP-1 为 Phase 1 阻断。随后按模块继续补基础逻辑，测试和统一验收仍按 Raphael 安排暂缓。
+- Next Milestone：完成 ADR-0074 parser / allowlist / CLI 基础，不制造可运行 Profile 配置；并行保留 E1-CAP-1 为 Phase 1 阻断。随后按模块继续补基础逻辑，测试和统一验收仍按 Raphael 安排暂缓。
 - 全阶段代码完成批次（2026-09-26，Claude）：分支 `claude/2026-09-26-code-completion-337e38` → `wip/all-code-completion`，B1～B54 为 CODE_COMPLETE / DEBUG_PENDING（非验收；B44～B54 为审计后续，B53 为集成会话按 Codex 复核的修复）；逐批证据见 `docs/plans/2026-09-26-all-code-completion-plan.md` §10
 
 ## 5. Active Decisions
@@ -178,7 +178,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Constitution `1.0.0 / Approved`；ADR-0001 ~ 0020 全部 Accepted
 - 已实现但未完成 Phase 验收：Canonical、PIT / dataset / representation、Feature、State / Event、Outcome / Validation、Strategy / Backtest、Runner、Control Plane 与 Phase 2～14 模块（B1～B67）；本地 StorageAdapter、PyIceberg Catalog、生产表定义、D0～D3E 数据路径也已实现。Phase 1 E1-CAP-1 仍阻断，真实运行、人工知识审阅和各 Phase 验收仍独立待办。
 - Phase 1：A2 / A2r、A3a / A3b、B1～C3、D0～D2 与 D3A～D3E 已由 Codex 复核通过；D3D `61dd9bf` 首轮退回 → D3D-R1 `c06b9fa` PASS；D3E `21e31f5` → D3E-R1 `52f7477` → D3E-R2 `c326434` → D3E-R3 `7e9e084` 已由 Codex 于 2026-09-27 验收；E1-CAP-1 是当前容量阻断
-- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；远端恢复点是 `origin/main@44fe9a2`；本次状态同步后本地 `main` 比远端超前 102 个提交、未推送，远端仅保留 `main`。E1 PR #10 因容量门失败且与 main 冲突而关闭；候选 tip `c3868dc` 保存在本地 archive ref，detached worktree 保留。研究规格分支 tip `82bfe73` 已存入 `refs/archive/2026-09-28/branches/claude/docs-research-spec-completion`，其中两条独有 G1 测试随 tip 保留；worktree 暂保留。根 `phase/1` 的 Cursor 工作区与未跟踪资料也保留。当前 3 个本地分支、9 个 worktree；本轮两个 P7 工作分支先存到 `refs/archive/2026-09-28/branches/codex/` 再删除，远端仅 `main`。E1 主线 probe 与诊断均未运行；测试、build 和统一验收继续暂缓。
+- Git 恢复点：Phase 0 基线仍为 tag `phase-0-complete`；远端恢复点是 `origin/main@44fe9a2`；本次状态同步后本地 `main` 比远端超前 107 个提交、未推送，远端仅保留 `main`。E1 PR #10 因容量门失败且与 main 冲突而关闭；候选 tip `c3868dc` 保存在本地 archive ref，detached worktree 保留。研究规格分支 tip `82bfe73` 已存入 `refs/archive/2026-09-28/branches/claude/docs-research-spec-completion`，其中两条独有 G1 测试随 tip 保留；worktree 暂保留。根 `phase/1` 的 Cursor 工作区与未跟踪资料也保留。当前 3 个本地分支、9 个 worktree；本轮 P7 工作分支已存到 `refs/archive/2026-09-28/branches/codex/p7-admission-lease` 后删除，远端仅 `main`。E1 主线 probe 与诊断均未运行；测试、build 和统一验收继续暂缓。
 - P7 已合入 TrialLedger 单事件批量预登记与同实例线程锁（`d205bc4`, `0632367`）：单 journal event append 成功后再更新内存，批次冲突预先拒绝，旧单项 journal 可重放。锁保证仅适用于经同一 ledger API 的线程；不构成跨 journal typed-plan admission 事务。`git diff --check` 通过；未运行测试 / build / lint，仍待后续验收。
 - Claude CLI 配额已恢复，本轮已用于 ADR-0073 只读复核与 durable 修复；全部改动经 Codex 复核后进入本地 main。
 - ADR-0073 已接受（`835f405`）：执行 admission 的持久顺序为 PREPARE → 单个 TrialLedger batch event → COMMIT → memory admission checkpoint → external anchor；恢复只允许按完整匹配日志追加缺失登记 / commit / checkpoint，不运行 provider 或实验。要求 admission 属于唯一且已持久开始的当前 round；事务恢复后未记录的 started round 仍拒绝续跑，FAILED experiment round 仍按 ADR-0070 要求人工审查。新增 v4 state 才能启用 plan admission；v3 按旧形状继续但拒绝 typed-plan admission，不自动迁移。六类 operator 仍不可运行。
