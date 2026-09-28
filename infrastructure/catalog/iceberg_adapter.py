@@ -16,7 +16,11 @@ metadata:
 - ``evolve_partition_spec`` (C3, infrastructure-only, not part of the core Protocol) moves a
   table from a registered source definition to a registered partition-spec-only target in one
   PyIceberg transaction (new default spec + ``hlens.definition.*`` binding properties, one
-  metadata commit). Data files are never rewritten; old files keep their old spec.
+  metadata commit). Data files are never rewritten; old files keep their old spec;
+- ``scan_column_batches`` (ADR-0075) does not use PyIceberg's high-level scan planner: it pins
+  one snapshot and streams its manifests, entries and data files one at a time through the
+  "bounded snapshot scan" helper section below, the only place that depends on private
+  PyIceberg read symbols (reviewed against PyIceberg 0.12.0).
 
 Runtime construction goes through ``open_postgres_catalog_adapter`` (PostgreSQL only). Tests may
 inject any PyIceberg ``Catalog`` (for example a temporary SQLite ``SqlCatalog``) through the
@@ -26,17 +30,20 @@ inject any PyIceberg ``Catalog`` (for example a temporary SQLite ``SqlCatalog``)
 from __future__ import annotations
 
 import re
-from collections.abc import Callable, Iterable, Iterator, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import TracebackType
-from typing import Final, Self
+from typing import Any, Final, Self
 from urllib.parse import urlparse
 
 import pyarrow as pa  # type: ignore[import-untyped]
+import pyarrow.dataset as ds  # type: ignore[import-untyped]
+import pyiceberg
 from pydantic import ValidationError
+from pyiceberg.avro.file import AvroFile
 from pyiceberg.catalog import Catalog
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.exceptions import (
@@ -45,10 +52,42 @@ from pyiceberg.exceptions import (
     TableAlreadyExistsError,
 )
 from pyiceberg.expressions import AlwaysTrue, BooleanExpression
+from pyiceberg.expressions.visitors import (
+    ResidualEvaluator,
+    bind,
+    translate_column_names,
+)
+from pyiceberg.io import FileIO
+from pyiceberg.io.pyarrow import (
+    ArrowScan,
+    _get_column_projection_values,
+    _to_requested_schema,
+    expression_to_pyarrow,
+    pyarrow_to_schema,
+    schema_to_pyarrow,
+)
+from pyiceberg.manifest import (
+    DEFAULT_READ_VERSION,
+    MANIFEST_ENTRY_SCHEMAS,
+    DataFile,
+    DataFileContent,
+    FileFormat,
+    ManifestContent,
+    ManifestEntry,
+    ManifestEntryStatus,
+    ManifestFile,
+    _inherit_from_manifest,
+    read_manifest_list,
+)
+from pyiceberg.partitioning import PartitionSpec
+from pyiceberg.schema import Schema, prune_columns
+from pyiceberg.table import ManifestGroupPlanner
 from pyiceberg.table import Table as IcebergTable
 from pyiceberg.table.metadata import TableMetadata
+from pyiceberg.table.name_mapping import NameMapping
 from pyiceberg.table.snapshots import Snapshot, ancestors_of
 from pyiceberg.table.update.spec import UpdateSpec
+from pyiceberg.typedef import KeyDefaultDict, TableVersion
 
 from core.contracts.catalog import (
     BatchConflict,
@@ -108,6 +147,19 @@ _ALWAYS_TRUE: Final[BooleanExpression] = AlwaysTrue()
 #: Top-level packages whose exceptions mean "the catalog database failed". They are matched by
 #: module name so project code does not import these transitive-only packages (03-data.md §6.1).
 _BACKEND_PACKAGES: Final = frozenset({"sqlalchemy", "psycopg2"})
+#: ADR-0075: the PyIceberg release the bounded snapshot scan helper was reviewed against
+#: (``uv.lock``). Any other version fails closed until the helper is reviewed again.
+_REVIEWED_PYICEBERG_VERSION: Final = "0.12.0"
+#: ADR-0075 §3: the only Iceberg format version the bounded snapshot scan reads.
+_SCAN_FORMAT_VERSION: Final = 2
+#: Maximum rows per record batch of the bounded scan (Arrow's default would be 131 072).
+_SCAN_BATCH_ROWS: Final = 65_536
+#: Record batches Arrow may read ahead inside the one open data file.
+_SCAN_BATCH_READAHEAD: Final = 1
+#: Fragments Arrow may read ahead; each scanner of the bounded scan has exactly one.
+_SCAN_FRAGMENT_READAHEAD: Final = 1
+#: Buffered-stream size for Parquet column reads, used instead of pre-buffering the file.
+_SCAN_READ_BUFFER_BYTES: Final = 1024 * 1024
 
 
 class CatalogUnavailable(CatalogError):
@@ -200,11 +252,56 @@ def _reduce_max_int64(
     return largest
 
 
-class _ClosingRecordBatchIterator(Iterator[pa.RecordBatch]):
-    """Close a PyArrow batch reader on exhaustion, read failure, or explicit close."""
+# ---------------------------------------------------------------------- bounded snapshot scan
+#
+# ADR-0075. Every use of private or semi-public PyIceberg read symbols is confined to this
+# section, reviewed against PyIceberg 0.12.0; ``_open_snapshot_batches`` refuses any other
+# version. What the high-level ``DataScan.to_arrow_batch_reader`` path holds and this does not:
+#
+# - ``Snapshot.manifests`` lists every manifest (and fills the process-wide manifest cache);
+#   here the manifest list is iterated item by item with ``read_manifest_list``;
+# - ``ManifestFile.fetch_manifest_entry`` returns a list per manifest, ``plan_files`` keeps every
+#   data entry, every ``FileScanTask`` and a ``DeleteFileIndex``; here entries of one manifest are
+#   streamed one at a time and matched data files are read one at a time, in the order the planner
+#   would have produced them (manifest-list order, then entry order);
+# - ``ArrowScan.to_record_batches`` maps tasks over a thread pool, lists each task's batches and
+#   opens Parquet with ``pre_buffer``; here one data file is decoded at a time, with an explicit
+#   batch size and readahead, no pre-buffering and a bounded buffered stream.
+#
+# Kept semantics: the snapshot is resolved once, as ``TableScan.snapshot`` does; the projection is
+# ``DataScan.projection`` (field IDs; the snapshot's schema when a snapshot id is given);
+# manifest / partition / metrics evaluators come from the same ``ManifestGroupPlanner`` builders;
+# the row filter is bound by ``ArrowScan``; per-file decoding repeats ``_task_to_record_batches``
+# for a task without deletes (field-ID or name-mapping file schema, identity partition values for
+# missing columns, filter push-down, ns -> us timestamp rule, ``_to_requested_schema`` with the
+# same flags); and batches pass through the same ``RecordBatchReader.from_batches(...).cast``.
+#
+# Rejected (``CatalogIntegrityError``) before any row batch: format versions other than 2,
+# delete manifests, live delete files (position / equality), unknown content (PyIceberg's enum
+# decoding raises), and live Avro data files (PyIceberg 0.12.0 Arrow reader does not support
+# Avro). Parquet and ORC retain their PyIceberg-supported decoding paths. All manifests of the
+# snapshot and all their live entries are checked first, independently of the row filter.
+#
+# Memory: the manifest list's bytes and one manifest's bytes are held while being iterated
+# (PyIceberg's ``AvroFile`` reads a whole Avro file before decoding it), plus one data file's
+# scanner state (Parquet row groups / ORC stripes can exceed one output batch; the batch size
+# bounds output rows, not bytes in a row group / stripe). No Python collection grows with the
+# number of manifests or data files.
 
-    def __init__(self, reader: pa.RecordBatchReader) -> None:
+
+class _SnapshotBatchStream(Iterator[pa.RecordBatch]):
+    """Record batches of one pinned snapshot; releases the reader and open file on every exit.
+
+    Exhaustion, a read failure and an explicit ``close`` (stopping early) all close the Arrow
+    reader and the generator behind it, which closes the one data file that may be open.
+    ``close`` is idempotent; a closed stream yields nothing more.
+    """
+
+    def __init__(
+        self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch, None, None]
+    ) -> None:
         self._reader = reader
+        self._source = source
         self._closed = False
 
     def __iter__(self) -> Self:
@@ -222,15 +319,298 @@ class _ClosingRecordBatchIterator(Iterator[pa.RecordBatch]):
             try:
                 self.close()
             except BaseException:
-                # Preserve the read failure while still attempting to release the reader.
+                # Preserve the read failure while still attempting to release the resources.
                 pass
             raise
 
     def close(self) -> None:
-        """Release the underlying reader, including when iteration stops early."""
+        """Release the reader and the open data file, including when iteration stops early."""
         if not self._closed:
             self._closed = True
-            self._reader.close()
+            try:
+                self._reader.close()
+            finally:
+                self._source.close()
+
+
+@dataclass(frozen=True)
+class _ScanPlan:
+    """Evaluators built exactly as ``ManifestGroupPlanner.plan_files`` builds them.
+
+    Keyed by partition spec id, so bounded by the table's partition specs, not its files.
+    """
+
+    manifest_evaluators: KeyDefaultDict[int, Callable[[ManifestFile], bool]]
+    partition_evaluators: KeyDefaultDict[int, Callable[[DataFile], bool]]
+    metrics_evaluator: Callable[[DataFile], bool]
+    residual_evaluators: KeyDefaultDict[int, Callable[[DataFile], ResidualEvaluator]]
+
+
+@dataclass(frozen=True)
+class _FileRead:
+    """The per-scan arguments ``ArrowScan`` passes to ``_task_to_record_batches``, resolved once."""
+
+    io: FileIO
+    bound_row_filter: BooleanExpression
+    projected_schema: Schema
+    table_schema: Schema
+    projected_field_ids: set[int]
+    case_sensitive: bool
+    name_mapping: NameMapping | None
+    specs: dict[int, PartitionSpec]
+    format_version: TableVersion
+    downcast_ns_timestamp_to_us: bool
+
+
+def _open_snapshot_batches(
+    name: str,
+    iceberg: IcebergTable,
+    *,
+    columns: tuple[str, ...],
+    row_filter: BooleanExpression,
+    snapshot_id: int | None,
+) -> _SnapshotBatchStream:
+    """Stream ``columns`` of one snapshot of ``iceberg`` as bounded Arrow record batches.
+
+    ``snapshot_id`` must be a snapshot of the loaded metadata; ``None`` pins the current
+    snapshot of that metadata and projects the current schema, as ``Table.scan`` does. The
+    snapshot is fixed here. The PyIceberg and format versions, every manifest of the snapshot and
+    every live entry are checked, and all planning evaluators run, before this returns; row
+    batches are then produced lazily, one data file at a time.
+    """
+    if pyiceberg.__version__ != _REVIEWED_PYICEBERG_VERSION:
+        raise CatalogIntegrityError(
+            f"bounded scan of {name} was reviewed for PyIceberg {_REVIEWED_PYICEBERG_VERSION}, "
+            f"not {pyiceberg.__version__}"
+        )
+    if iceberg.metadata.format_version != _SCAN_FORMAT_VERSION:
+        raise CatalogIntegrityError(
+            f"bounded scan of {name} supports Iceberg format version {_SCAN_FORMAT_VERSION} only"
+        )
+    scan = iceberg.scan(row_filter=row_filter, selected_fields=columns, snapshot_id=snapshot_id)
+    metadata = scan.table_metadata
+    projected_schema = scan.projection()
+    snapshot = scan.snapshot()
+    planner = ManifestGroupPlanner(
+        table_metadata=metadata,
+        io=scan.io,
+        row_filter=scan.row_filter,
+        case_sensitive=scan.case_sensitive,
+        options=scan.options,
+    )
+    plan = _ScanPlan(
+        manifest_evaluators=KeyDefaultDict(planner._build_manifest_evaluator),
+        partition_evaluators=KeyDefaultDict(planner._build_partition_evaluator),
+        metrics_evaluator=planner._build_metrics_evaluator(),
+        residual_evaluators=KeyDefaultDict(planner._build_residual_evaluator),
+    )
+    if snapshot is not None:
+        _preflight_snapshot(name, scan.io, snapshot, plan)
+    target_schema = schema_to_pyarrow(projected_schema)
+    arrow_scan = ArrowScan(
+        metadata, scan.io, projected_schema, scan.row_filter, scan.case_sensitive
+    )
+    downcast = arrow_scan._downcast_ns_timestamp_to_us
+    read = _FileRead(
+        io=scan.io,
+        bound_row_filter=arrow_scan._bound_row_filter,
+        projected_schema=projected_schema,
+        table_schema=metadata.schema(),
+        projected_field_ids=arrow_scan._projected_field_ids,
+        case_sensitive=scan.case_sensitive,
+        name_mapping=metadata.name_mapping(),
+        specs=metadata.specs(),
+        format_version=metadata.format_version,
+        # As in _task_to_record_batches: unset means "downcast" for format versions <= 2.
+        downcast_ns_timestamp_to_us=(
+            downcast if downcast is not None else metadata.format_version <= 2
+        ),
+    )
+    source = _snapshot_batches(name, snapshot, plan, read)
+    reader = pa.RecordBatchReader.from_batches(target_schema, source).cast(target_schema)
+    return _SnapshotBatchStream(reader, source)
+
+
+def _manifest_files(name: str, io: FileIO, snapshot: Snapshot) -> Iterator[ManifestFile]:
+    """Read one manifest-list entry at a time and map malformed content to integrity failure."""
+    try:
+        yield from read_manifest_list(io.new_input(snapshot.manifest_list))
+    except ValueError as exc:
+        raise CatalogIntegrityError(
+            f"snapshot of {name} has an invalid manifest-list content value"
+        ) from exc
+
+
+def _live_entries(name: str, io: FileIO, manifest: ManifestFile) -> Iterator[ManifestEntry]:
+    """``ManifestFile.fetch_manifest_entry(io, discard_deleted=True)``, one entry at a time."""
+    try:
+        with AvroFile[ManifestEntry](
+            io.new_input(manifest.manifest_path),
+            MANIFEST_ENTRY_SCHEMAS[DEFAULT_READ_VERSION],
+            read_types={-1: ManifestEntry, 2: DataFile},
+            read_enums={0: ManifestEntryStatus, 101: FileFormat, 134: DataFileContent},
+        ) as reader:
+            for entry in reader:
+                if entry.status != ManifestEntryStatus.DELETED:
+                    yield _inherit_from_manifest(entry, manifest)
+    except ValueError as exc:
+        raise CatalogIntegrityError(
+            f"snapshot of {name} has an invalid manifest entry content value"
+        ) from exc
+
+
+def _check_manifest(name: str, manifest: ManifestFile) -> None:
+    if manifest.content != ManifestContent.DATA:
+        raise CatalogIntegrityError(
+            f"snapshot of {name} has a {manifest.content!r} manifest; "
+            "the bounded scan does not support delete manifests"
+        )
+
+
+def _check_entry(name: str, data_file: DataFile) -> None:
+    if data_file.content != DataFileContent.DATA:
+        raise CatalogIntegrityError(
+            f"snapshot of {name} has a live {data_file.content!r} file; "
+            "the bounded scan does not support delete files"
+        )
+    if data_file.file_format == FileFormat.AVRO:
+        raise CatalogIntegrityError(
+            f"snapshot of {name} has a live Avro data file; "
+            "the locked PyIceberg Arrow reader does not support Avro"
+        )
+    if data_file.file_format not in (FileFormat.PARQUET, FileFormat.ORC):
+        raise CatalogIntegrityError(
+            f"snapshot of {name} has a live data file with unsupported format "
+            f"{data_file.file_format!r}"
+        )
+
+
+def _entry_matches(plan: _ScanPlan, data_file: DataFile, spec_id: int) -> bool:
+    """``_open_manifest``'s entry predicate: partition evaluator, then metrics evaluator."""
+    return plan.partition_evaluators[spec_id](data_file) and plan.metrics_evaluator(data_file)
+
+
+def _preflight_snapshot(name: str, io: FileIO, snapshot: Snapshot, plan: _ScanPlan) -> None:
+    """Check every manifest and live entry, and run all planning evaluators, before any row.
+
+    Content checks ignore the row filter: a delete manifest or live delete file anywhere in the
+    snapshot rejects the scan. The evaluators run on the same manifests and entries, in the same
+    order and with the same short-circuiting as ``DataScan.plan_files`` (including the residual it
+    computes per matched data file), so a planning failure also surfaces before any row.
+    """
+    for manifest in _manifest_files(name, io, snapshot):
+        _check_manifest(name, manifest)
+        selected = plan.manifest_evaluators[manifest.partition_spec_id](manifest)
+        for entry in _live_entries(name, io, manifest):
+            data_file = entry.data_file
+            _check_entry(name, data_file)
+            if selected and _entry_matches(plan, data_file, manifest.partition_spec_id):
+                plan.residual_evaluators[data_file.spec_id](data_file).residual_for(
+                    data_file.partition
+                )
+
+
+def _snapshot_batches(
+    name: str, snapshot: Snapshot | None, plan: _ScanPlan, read: _FileRead
+) -> Generator[pa.RecordBatch, None, None]:
+    """Second pass: the matched data files of ``snapshot``, read one at a time, in plan order.
+
+    Manifest and data files are immutable, so this sees what the preflight checked; the content
+    checks are repeated so that a changed file still fails closed instead of being skipped.
+    """
+    if snapshot is None:
+        return
+    for manifest in _manifest_files(name, read.io, snapshot):
+        _check_manifest(name, manifest)
+        if not plan.manifest_evaluators[manifest.partition_spec_id](manifest):
+            continue
+        for entry in _live_entries(name, read.io, manifest):
+            data_file = entry.data_file
+            _check_entry(name, data_file)
+            if _entry_matches(plan, data_file, manifest.partition_spec_id):
+                yield from _data_file_batches(read, data_file)
+
+
+def _data_file_batches(read: _FileRead, data_file: DataFile) -> Iterator[pa.RecordBatch]:
+    """``_task_to_record_batches`` for one Parquet data file without deletes, with bounded I/O.
+
+    Same file schema resolution, projection, partition-value filling, filter translation and
+    requested-schema conversion as the locked version; only the Parquet read options differ (no
+    pre-buffering, a bounded buffered stream, explicit batch size and readahead). The file is
+    closed when its batches are exhausted, a read fails, or the generator is closed.
+    """
+    if data_file.file_format == FileFormat.PARQUET:
+        arrow_format: ds.FileFormat = ds.ParquetFileFormat(
+            pre_buffer=False, use_buffered_stream=True, buffer_size=_SCAN_READ_BUFFER_BYTES
+        )
+    elif data_file.file_format == FileFormat.ORC:
+        # Arrow's ORC reader has no pre_buffer / buffer_size options; retain its native scanner
+        # and the explicit batch/readahead limits configured below.
+        arrow_format = ds.OrcFileFormat()
+    else:
+        raise CatalogIntegrityError(
+            f"snapshot has unsupported data format {data_file.file_format!r}"
+        )
+    with read.io.new_input(data_file.file_path).open() as fin:
+        fragment = arrow_format.make_fragment(fin)
+        physical_schema = fragment.physical_schema
+        file_schema = pyarrow_to_schema(
+            physical_schema,
+            read.name_mapping,
+            downcast_ns_timestamp_to_us=read.downcast_ns_timestamp_to_us,
+            format_version=read.format_version,
+        )
+        # Column projection rules: https://iceberg.apache.org/spec/#column-projection
+        projected_missing_fields: dict[int, Any] = _get_column_projection_values(
+            data_file,
+            read.projected_schema,
+            read.table_schema,
+            read.specs.get(data_file.spec_id),
+            file_schema.field_ids,
+        )
+        pyarrow_filter = None
+        if read.bound_row_filter is not AlwaysTrue():
+            translated_row_filter = translate_column_names(
+                read.bound_row_filter,
+                file_schema,
+                case_sensitive=read.case_sensitive,
+                projected_field_values=projected_missing_fields,
+            )
+            bound_file_filter = bind(
+                file_schema, translated_row_filter, case_sensitive=read.case_sensitive
+            )
+            pyarrow_filter = expression_to_pyarrow(bound_file_filter, file_schema)
+        file_project_schema = prune_columns(
+            file_schema, read.projected_field_ids, select_full_types=False
+        )
+        scanner = ds.Scanner.from_fragment(
+            fragment=fragment,
+            schema=physical_schema,
+            filter=pyarrow_filter,
+            columns=[column.name for column in file_project_schema.columns],
+            batch_size=_SCAN_BATCH_ROWS,
+            batch_readahead=_SCAN_BATCH_READAHEAD,
+            fragment_readahead=_SCAN_FRAGMENT_READAHEAD,
+        )
+        batches = scanner.to_batches()
+        try:
+            for batch in batches:
+                if batch.num_rows == 0:
+                    continue
+                yield _to_requested_schema(
+                    read.projected_schema,
+                    file_project_schema,
+                    batch,
+                    downcast_ns_timestamp_to_us=read.downcast_ns_timestamp_to_us,
+                    projected_missing_fields=projected_missing_fields,
+                    allow_timestamp_tz_mismatch=True,
+                )
+        finally:
+            # A caller can close the outer snapshot stream between batches. Release a lazy
+            # scanner iterator first, while the fragment's input stream is still open.
+            close = getattr(batches, "close", None)
+            if callable(close):
+                close()
 
 
 def _revalidated[M: (TableDefinition, CommitRequest)](model: type[M], value: object) -> M:
@@ -512,12 +892,21 @@ class PyIcebergCatalogAdapter:
         row_filter: BooleanExpression = _ALWAYS_TRUE,
         snapshot_id: str | None = None,
     ) -> Iterator[pa.RecordBatch]:
-        """Stream selected columns as bounded Arrow record batches.
+        """Stream selected columns of one fixed snapshot as bounded Arrow record batches.
 
         This infrastructure-only read verifies the persisted table definition before scanning.
         When ``snapshot_id`` is supplied, the scan is pinned to that exact snapshot and fails
-        with ``SnapshotNotFound`` if the table has no matching snapshot. Call ``close`` on the
-        returned iterator when stopping before exhaustion so its reader is released promptly.
+        with ``SnapshotNotFound`` if the table has no matching snapshot; otherwise it is pinned
+        to the current snapshot of the metadata loaded by this call.
+
+        ADR-0075: PyIceberg's high-level planner is not used. Before this returns, every manifest
+        of the snapshot and every live entry are checked (independently of ``row_filter``):
+        a table that is not format version 2, a delete manifest, a live delete file or an Avro
+        data file (unsupported by the locked PyIceberg Arrow reader) is ``CatalogIntegrityError``
+        and no row is produced. Parquet and ORC batches are read one data file at a time, with the
+        same projection, filter, partition-value and timestamp semantics as ``scan_columns``.
+        Call ``close`` on the returned iterator when stopping before exhaustion so its reader and
+        open data file are released promptly.
         """
         name = validate_table_name(table)
         if isinstance(columns, str) or not columns:
@@ -525,9 +914,8 @@ class PyIcebergCatalogAdapter:
         with _backend("scan_column_batches"):
             iceberg = self._require(name)
             self._verified(name, iceberg)
-            if snapshot_id is None:
-                scan = iceberg.scan(row_filter=row_filter, selected_fields=tuple(columns))
-            else:
+            pinned_id: int | None = None
+            if snapshot_id is not None:
                 pinned = (
                     iceberg.metadata.snapshot_by_id(int(snapshot_id))
                     if isinstance(snapshot_id, str) and _SNAPSHOT_ID_RE.fullmatch(snapshot_id)
@@ -535,12 +923,14 @@ class PyIcebergCatalogAdapter:
                 )
                 if pinned is None:
                     raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
-                scan = iceberg.scan(
-                    row_filter=row_filter,
-                    selected_fields=tuple(columns),
-                    snapshot_id=pinned.snapshot_id,
-                )
-            return _ClosingRecordBatchIterator(scan.to_arrow_batch_reader())
+                pinned_id = pinned.snapshot_id
+            return _open_snapshot_batches(
+                name,
+                iceberg,
+                columns=tuple(columns),
+                row_filter=row_filter,
+                snapshot_id=pinned_id,
+            )
 
     def max_int64(
         self,
@@ -552,11 +942,11 @@ class PyIcebergCatalogAdapter:
     ) -> int | None:
         """The largest value of the ``int64`` ``column``, reduced over a streaming batch reader.
 
-        Unlike ``scan_columns`` this never builds one ``pyarrow.Table`` over the scanned history:
-        PyIceberg's ``to_arrow_batch_reader`` yields bounded record batches and only the running
-        maximum (one Python int) survives a batch. Memory therefore stays bounded as the table
-        grows; the I/O cost still grows with the number of matching data files, because every one
-        of them is opened and its projected column read.
+        Unlike ``scan_columns`` this never builds one ``pyarrow.Table`` over the scanned history;
+        the reduction itself retains only the running maximum (one Python int) between batches.
+        It uses the ADR-0075 fixed-snapshot scan path, so it does not invoke PyIceberg's
+        high-level manifest / task planner. The I/O cost still grows with the number of matching
+        data files, because every one is opened and its projected column read.
 
         Every value is validated while it streams (fail closed, no unbounded bookkeeping): the
         column must be a non-nullable ``int64`` projection with no nulls, and ``check`` — the
@@ -568,10 +958,7 @@ class PyIcebergCatalogAdapter:
         if check is not None and not callable(check):
             raise BatchRejected("max_int64 check must be callable")
         with _backend("max_int64"):
-            iceberg = self._require(name)
-            self._verified(name, iceberg)
-            scan = iceberg.scan(row_filter=row_filter, selected_fields=(column,))
-            reader = scan.to_arrow_batch_reader()
+            reader = self.scan_column_batches(name, columns=(column,), row_filter=row_filter)
             try:
                 return _reduce_max_int64(reader, name=name, column=column, check=check)
             finally:

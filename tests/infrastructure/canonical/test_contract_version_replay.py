@@ -175,7 +175,7 @@ def test_a_partial_unit_is_completed_at_its_recorded_version(
     calls = _later_writer(monkeypatch)
     clock = StepClock(start=K_NORM)
     out = c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
-    assert [commit.replayed for commit in out.commits] == [True, False, False]
+    assert out.batch_count == 3 and out.replayed_batch_count == 1
     assert len(h.rows(c.TRADES)) == 5
     assert _versions(h) == {CONTRACT_SCHEMA_VERSION}  # completed at the recorded version
     assert calls == [] and clock.calls == 0
@@ -293,7 +293,7 @@ def test_an_earlier_partial_unit_is_completed_at_its_version_after_the_bump(
     assert _versions(h) == {old}
     clock = StepClock(start=K_NORM + timedelta(hours=1))
     out = c.normalizer(h, clock=clock).normalize_unit(c.ARCHIVE_AGGS.table, archive)
-    assert [commit.replayed for commit in out.commits] == [True, False, False]
+    assert out.batch_count == 3 and out.replayed_batch_count == 1
     assert clock.calls == 0 and len(h.rows(c.TRADES)) == 5
     assert _versions(h) == {old}  # never a mixed unit
 

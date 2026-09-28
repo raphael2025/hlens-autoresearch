@@ -97,6 +97,19 @@ def test_maximum_spans_every_committed_data_file(adapter: PyIcebergCatalogAdapte
     assert adapter.max_int64(REDUCE.table, "seq") == 9
 
 
+def test_bounded_scan_can_be_closed_after_the_first_batch(
+    adapter: PyIcebergCatalogAdapter,
+) -> None:
+    _commit(adapter, _batch([1, 2, 3]), "early-close")
+    batches = adapter.scan_column_batches(REDUCE.table, columns=("seq",))
+
+    first = next(batches)
+    assert first.num_rows == 3
+    batches.close()  # type: ignore[attr-defined]
+    with pytest.raises(StopIteration):
+        next(batches)
+
+
 def test_the_reduction_streams_and_never_materialises_one_table(
     adapter: PyIcebergCatalogAdapter, monkeypatch: pytest.MonkeyPatch
 ) -> None:

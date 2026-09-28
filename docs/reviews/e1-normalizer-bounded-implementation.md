@@ -97,3 +97,7 @@ exit=0
 （第一次运行 `uv run` 时，在本 worktree 内创建了被 Git 忽略的 `.venv`，并从本机缓存离线安装 50 个包，没有修改系统环境。）
 
 **未运行**：pytest（单元、PostgreSQL）、容量探针。
+
+## 2026-09-28 后续开发状态
+
+后续 E1-API 审计发现完整 `revision_ids` tuple 的结构占用与 32 MiB 门槛冲突；ADR-0076 已接受。当前开发分支将默认结果改为固定大小计数 / replay 摘要，并由 `iter_revision_ids()` 显式重证、按 Raw position 有序流式返回。此变化不改 `rules.NORMALIZER_SPEC`、revision identity 或持久化 batch 格式。容量 / DNET 工具与 Canonical 测试已改读摘要或显式 ID stream；本历史记录中“revision IDs / commits tuple 仍存在”描述的是本记录产生时的旧基线，不再是当前工作树状态。测试与容量 probe 均未运行。

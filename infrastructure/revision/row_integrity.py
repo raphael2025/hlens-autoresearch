@@ -53,6 +53,7 @@ import os
 import sqlite3
 import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol, runtime_checkable
@@ -68,7 +69,7 @@ from pyiceberg.expressions import (
     LessThan,
 )
 
-from core.contracts.catalog import SnapshotInfo, TableNotFound
+from core.contracts.catalog import BatchRejected, SnapshotInfo, TableNotFound
 from core.contracts.collector import (
     CollectedObject,
     CollectionRequest,
@@ -228,6 +229,32 @@ _BATCH_INDEX_CACHE: Final = 8
 _ARCHIVE_CACHE: Final = 2
 #: Widest ``arrival_seq`` range one holder scan covers (G3-S).
 _HOLDER_SPAN: Final = 1 << 17
+
+
+@contextmanager
+def _scan_rows(
+    catalog: Any,
+    table: str,
+    *,
+    columns: Sequence[str],
+    row_filter: BooleanExpression,
+    snapshot_id: str | None = None,
+) -> Iterator[Iterator[Mapping[str, Any]]]:
+    """Yield row mappings from bounded catalog batches and always close the reader."""
+    reader = catalog.scan_column_batches(
+        table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+    )
+
+    def rows() -> Iterator[Mapping[str, Any]]:
+        for record_batch in reader:
+            yield from record_batch.to_pylist()
+
+    try:
+        yield rows()
+    finally:
+        close = getattr(reader, "close", None)
+        if callable(close):
+            close()
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -407,6 +434,7 @@ class _BatchSnapshotLookup:
         first = None if payload is None else SnapshotInfo.model_validate(json.loads(payload))
         return count, first
 
+
 def _history(adapter: RevisionCatalog, table: str) -> Iterable[SnapshotInfo]:
     info = adapter.load_table(table)
     if info is None:
@@ -541,6 +569,7 @@ def history_from(
 
     A catalog with a ``SnapshotHistory.history`` walk is walked with it (one metadata load);
     any other ``RevisionCatalog`` keeps the ``get_snapshot`` parent walk, one snapshot per call.
+    Its cycle detector uses Brent's algorithm with O(1) auxiliary memory.
     """
     if snapshot_id is None:
         return
@@ -548,14 +577,27 @@ def history_from(
         yield from adapter.history(table, snapshot_id)
         return
     snapshot: SnapshotInfo | None = adapter.get_snapshot(table, snapshot_id)
-    seen: set[str] = set()
+    # Brent's cycle detector keeps one ancestry id and two counters instead of retaining
+    # every visited id. ``power`` is the current checkpoint interval; ``distance`` counts
+    # snapshots since that checkpoint. The parent walk remains a single catalog lookup per
+    # link, in newest-first order.
+    checkpoint_id: str | None = None
+    power = 1
+    distance = 0
     while snapshot is not None:
-        if snapshot.snapshot_id in seen:
+        if checkpoint_id is None:
+            checkpoint_id = snapshot.snapshot_id
+        else:
+            distance += 1
+        if snapshot.snapshot_id == checkpoint_id and distance > 0:
             raise CatalogIntegrityError(
                 f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
             )
-        seen.add(snapshot.snapshot_id)
         yield snapshot
+        if distance == power:
+            checkpoint_id = snapshot.snapshot_id
+            power *= 2
+            distance = 0
         parent = snapshot.parent_snapshot_id
         snapshot = None if parent is None else adapter.get_snapshot(table, parent)
 
@@ -1274,10 +1316,33 @@ class PersistedRowVerifier:
         *,
         limit: int | None = None,
     ) -> list[Mapping[str, Any]]:
+        """Materialize this bounded result without invoking the high-level scan planner."""
+        if limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
+        ):
+            raise BatchRejected("scan limit must be a positive int or None")
         columns = tuple(field.name for field in definition.arrow_schema)
-        rows: list[Mapping[str, Any]] = self._adapter.scan_columns(
-            definition.table, columns=columns, row_filter=row_filter, limit=limit
-        ).to_pylist()
+        rows: list[Mapping[str, Any]] = []
+        reader = self._adapter.scan_column_batches(
+            definition.table,
+            columns=columns,
+            row_filter=row_filter,
+        )
+        try:
+            for record_batch in reader:
+                remaining = None if limit is None else limit - len(rows)
+                bounded_batch = (
+                    record_batch
+                    if remaining is None or record_batch.num_rows <= remaining
+                    else record_batch.slice(0, remaining)
+                )
+                rows.extend(bounded_batch.to_pylist())
+                if limit is not None and len(rows) >= limit:
+                    break
+        finally:
+            close = getattr(reader, "close", None)
+            if callable(close):
+                close()
         return rows
 
     def _holders(self, table: str, seqs: Sequence[int]) -> dict[int, list[str]]:
@@ -1291,16 +1356,23 @@ class PersistedRowVerifier:
             end = start + 1
             while end < len(ordered) and ordered[end] - first < _HOLDER_SPAN:
                 end += 1
-            found = self._adapter.scan_columns(
+            with _scan_rows(
+                self._adapter,
                 table,
                 columns=("revision_id", "arrival_seq"),
                 row_filter=And(
                     _at_least("arrival_seq", first), _below("arrival_seq", ordered[end - 1] + 1)
                 ),
-            ).to_pylist()
-            for item in found:
-                if item["arrival_seq"] in wanted:
-                    holders.setdefault(item["arrival_seq"], []).append(item["revision_id"])
+            ) as found:
+                for item in found:
+                    seq = item["arrival_seq"]
+                    if seq not in wanted:
+                        continue
+                    revisions = holders.setdefault(seq, [])
+                    # Two records prove a non-unique holder; retaining more corrupt duplicates
+                    # cannot change the caller's fail-closed decision.
+                    if len(revisions) < 2:
+                        revisions.append(item["revision_id"])
             start = end
         return holders
 

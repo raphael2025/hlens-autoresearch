@@ -825,7 +825,7 @@ def run_probe(
                 )
             )
             stages["normalize"] = measurement.as_dict() | {
-                "canonical_rows": len(normalized.revision_ids),
+                "canonical_rows": normalized.revision_count,
             }
 
             selection, measurement = _measure(lambda: _pit_select_one_hour(adapter, storage))
@@ -863,7 +863,7 @@ def run_probe(
                     lambda: _normalize_rest(adapter, storage, stored)
                 )
                 stages["normalize_rest"] = measurement.as_dict() | {
-                    "canonical_rows": len(normalized_rest.revision_ids),
+                    "canonical_rows": normalized_rest.revision_count,
                 }
 
                 reconciled, measurement = _measure(lambda: _reconcile_channels(adapter, storage))
@@ -908,7 +908,7 @@ def run_probe(
                     lambda: _normalize_klines(adapter, storage, ingested_klines.archive_revision_id)
                 )
                 stages["normalize_klines"] = measurement.as_dict() | {
-                    "canonical_rows": len(normalized_klines.revision_ids),
+                    "canonical_rows": normalized_klines.revision_count,
                 }
 
                 result, measurement = _measure(lambda: _run_bar_log_return(adapter, storage))

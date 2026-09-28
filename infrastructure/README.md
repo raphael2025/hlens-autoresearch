@@ -118,7 +118,7 @@ PyIceberg 0.12 写入 `day` / `month` / `year` / `hour` / `bucket` 分区需要�
 
 ## Binance 归档 parser（D1）
 
-- 入口：`infrastructure.parser.parse_archive(request, storage)`（经 `StorageAdapter.open_read` 读取后按字节重算 SHA-256 / 长度，解析的正是被哈希的字节）与 `parse_archive_bytes(request, data)`；`ArchiveParseRequest.for_collected_object(collected, data_type=…, archive_revision_id=…)` 由 D0 `CollectedObject` 机械构造。
+- 入口：`infrastructure.parser.parse_archive(request, storage)`（从 `StorageAdapter.open_read` 以固定块复制到可寻址临时文件，同步重算 SHA-256 / 长度，校验通过后解析的正是该 spool）与 `parse_archive_bytes(request, data)`；后者保留调用方已物化的 bytes 接口。临时文件使用系统默认临时目录，可能位于 tmpfs；spool I/O 错误转为可重试的 `StorageError`。这减少 Python 全量输入副本，不构成完整进程工作集的硬内存上界。`ArchiveParseRequest.for_collected_object(collected, data_type=…, archive_revision_id=…)` 由 D0 `CollectedObject` 机械构造。
 - 版本登记：`PARSER_BINDING` = `PolicyBinding(role=parser, binance.spot.archive.parser, 1.0.0, policy_hash)`；`policy_hash` 是 `PARSER_SPEC`（单位规则、覆盖零容差、列布局、字段文法、CSV / ZIP 规则、资源上限）规范 JSON 的 SHA-256，golden 值在 `tests/infrastructure/parser/test_binance_archive_parser.py`。任何规则或上限变化 = 新 parser 版本。
 - 支持范围：`BTCUSDT` / `ETHUSDT` × `agg_trades` / `klines_1m` × 一个 UTC 整日；超出范围的请求抛 `UnsupportedArchiveRequest`（调用方错误，不是质量事件）。
 - 时间单位只由数据类型 + 覆盖日决定：早于 `2025-01-01T00:00:00Z` 毫秒，自该日起微秒；aggTrades 时间与 kline 开盘时间必须在 `[coverage_start, coverage_end)` 内（零容差）；kline 开盘对齐整分钟，收盘 = 开盘 + 1 分钟 − 1 tick。
@@ -221,13 +221,13 @@ batch id：archive 为 `<revision_id>.archive.<base>`（重试换 base 即换 id
 
 - 本批只写 Raw；**不**做 Canonical、不做通用 PIT 查询、不建质量 taxonomy、不持久化质量报告与 manifest。
 - 每表单 writer（ADR-0023 §7）；并发只由父 snapshot 乐观冲突 + 有界重试兜底。
-- `PyIcebergCatalogAdapter.scan_columns` / `max_int64` 都是 infrastructure-only 的有界读取，**不在** `core` 的
+- `PyIcebergCatalogAdapter.scan_columns` / `max_int64` 都是 infrastructure-only 的读取，**不在** `core` 的
   `CatalogAdapter` Protocol 里（通用读取接口由批次 F 的首个消费者定义）。
-- 序号 anchor 的读取是**流式归约**，不是整表物化：`max_int64` 用 PyIceberg 的 `to_arrow_batch_reader`
-  逐个有界 record batch 折叠出最大值，跨 batch 只保留一个 Python int，因此归档历史再长也不会被拼成一个
-  `pa.Table`（旧实现走 `scan_columns(...).to_arrow()`，会整列物化；回归测试见下）。
+- 序号 anchor 的读取是**流式归约**，不是整表物化：`max_int64` 复用 ADR-0075 固定快照的
+  `scan_column_batches`，逐个 record batch 折叠出最大值，跨 batch 只保留一个 Python int；bounded scanner
+  不使用高层 manifest / task planner，也不会将归档历史拼成一个 `pa.Table`。
   **仍然存在的成本**：每次分配都要打开全部匹配的数据文件并读取该投影列，所以 I/O 随归档文件数线性增长；
-  真正收窄（清单级 min/max 剪枝或独立 anchor）仍是 E/F 的工作。
+  仍须计量 Avro manifest bytes、Iceberg metadata 与 Arrow row group / ORC stripe；完整 E1-CAP-1 尚未通过。
 - 行级契约构造是每行一次 Pydantic 校验：正确但不便宜；大体量 BTC 日归档的吞吐 / 内存基线仍是批量 backfill 前的前置工作。
 
 ## REST 纯规则（D3B）

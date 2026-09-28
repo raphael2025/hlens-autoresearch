@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import timedelta
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -29,6 +30,7 @@ from infrastructure.revision import (
     identity,
 )
 from infrastructure.revision.availability import AvailabilitySubject, rule_for
+from infrastructure.revision.row_integrity import _spooled_snapshots_of_batches
 from tests.infrastructure.catalog.catalog_support import ScanSpy
 from tests.infrastructure.parser import parser_support as ps
 from tests.infrastructure.revision import revision_support as rs
@@ -56,6 +58,27 @@ def test_first_ingest_writes_archive_then_rows(harness: StoreHarness) -> None:
     assert not result.replayed
     assert not result.has_competing_heads
     assert result.maximal_heads == (result.archive_revision_id,)
+
+
+def test_batch_snapshot_lookup_spools_counts_and_closes(harness: StoreHarness) -> None:
+    item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=3))
+    result = _ingested(harness.store().ingest(item.collected, item.context))
+    commit = result.row_commits[0]
+
+    with _spooled_snapshots_of_batches(
+        harness.adapter, AGG_TABLE, (commit.batch_id, "missing-batch")
+    ) as lookup:
+        spool_path = lookup._path
+        count, snapshot = lookup.one(commit.batch_id)
+        assert count == 1 and snapshot is not None
+        assert snapshot.snapshot_id == commit.snapshot_id
+        assert lookup.one("missing-batch") == (0, None)
+        assert Path(spool_path).exists()
+
+    assert lookup._closed
+    assert not Path(spool_path).exists()
+    with pytest.raises(RuntimeError, match="closed"):
+        lookup.one(commit.batch_id)
 
 
 def test_archive_row_carries_the_contract_and_the_object(harness: StoreHarness) -> None:

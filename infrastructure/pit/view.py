@@ -22,10 +22,12 @@ import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, BooleanExpression
 
 from core.contracts.catalog import (
+    BatchRejected,
     CommitRequest,
     CommitResult,
     SnapshotInfo,
     TableInfo,
+    TableNotFound,
 )
 from infrastructure.revision.row_integrity import history_from
 from infrastructure.revision.store import RevisionCatalog
@@ -97,7 +99,7 @@ class PinnedCatalogView:
         columns: Sequence[str],
         row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
         snapshot_id: str | None = None,
-    ) -> Any:
+    ) -> Iterator[pa.RecordBatch]:
         """Stream selected columns at an explicit or bound snapshot.
 
         This optional capability is delegated only when the underlying adapter implements it.
@@ -108,6 +110,8 @@ class PinnedCatalogView:
         scan_batches = getattr(self._adapter, "scan_column_batches", None)
         if not callable(scan_batches):
             raise PinnedViewError("the underlying catalog does not support streaming column scans")
+        if isinstance(columns, str) or not columns:
+            raise BatchRejected("scan_column_batches needs at least one column")
 
         if snapshot_id is not None:
             # Explicit historical snapshots take precedence over the view's binding.
@@ -117,8 +121,12 @@ class PinnedCatalogView:
 
         bound = self._bindings.get(table)
         if bound is None:
-            # Preserve scan_columns' unbound-table semantics without materializing a table.
-            return scan_batches(table, columns=columns, row_filter=AlwaysFalse())
+            # Unbound means the pinned view has no rows for this table. Loading metadata only
+            # preserves the adapter's unknown-table failure without preflighting every manifest
+            # on a moving, unbound current head.
+            if self._adapter.load_table(table) is None:
+                raise TableNotFound(f"table {table} does not exist")
+            return iter(())
         return scan_batches(table, columns=columns, row_filter=row_filter, snapshot_id=bound)
 
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
