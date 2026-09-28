@@ -343,6 +343,12 @@ class DatasetBuilder:
         self._origin = market_data_base_url
         self._table = dataset_table
 
+    @property
+    def adapter(self) -> RevisionCatalog:
+        """The catalog this builder builds, materializes and verifies against (public; C1-CONSUMERS
+        follow-up: previously read only through the private ``_adapter`` attribute)."""
+        return self._adapter
+
     # ------------------------------------------------------------------ entry points
 
     def build(
@@ -957,7 +963,7 @@ def _row_order(row: Mapping[str, Any]) -> tuple[str, str, datetime, str]:
 
 
 # =========================================================================================
-# v3: bounded evidence datasets (ADR-0077; ``hlens.dataset.pit-selection@2.0.0``)
+# v3: bounded evidence datasets (ADR-0077; ``hlens.dataset.pit-selection@2.1.0``)
 # =========================================================================================
 #
 # Everything above is the v2 (legacy, materializing) path and is left exactly as it was. The v3
@@ -980,7 +986,7 @@ def _row_order(row: Mapping[str, Any]) -> tuple[str, str, datetime, str]:
 # one chunk of rows (``chunk_rows``), one leaf and a ``depth x fanout`` index stack per stream,
 # one cached report id and the adjacent-item comparison state.
 
-DATASET_EVIDENCE_RULE_VERSION: Final = "2.0.0"
+DATASET_EVIDENCE_RULE_VERSION: Final = "2.1.0"  # F-C, 2026-09-28: EVIDENCE_PROJECTION text fix
 #: The evidence streams the generator derives; ``chunk_proofs`` come from the chunk commits.
 _DERIVED_STREAMS: Final = tuple(
     stream for stream in EvidenceStream if stream is not EvidenceStream.CHUNK_PROOFS
@@ -1059,7 +1065,7 @@ def _rule_hash(chunk_rows: int, limits: EvidenceTreeLimits) -> str:
 
 @dataclass(frozen=True, slots=True)
 class DatasetEvidenceRule:
-    """``hlens.dataset.pit-selection@2.0.0`` with its four resource parameters (ADR-0077 §3.6).
+    """``hlens.dataset.pit-selection@2.1.0`` with its four resource parameters (ADR-0077 §3.6).
 
     The parameters are part of the rule spec and so of ``rule_hash``: another value is another
     rule. No value is chosen here (DQ-9 OPEN): build one with ``dataset_evidence_rule``.

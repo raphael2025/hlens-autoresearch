@@ -48,12 +48,12 @@ commits just after it returns. What such a late head move could change (a forged
 new evidence or gap row) is judged by the next load, never retroactively by one already served.
 
 **Limits**: process-local and unbounded (one entry per distinct builder x manifest; the caller
-drops the cache to free it); the builder's catalog is read through its private ``_adapter``
-attribute — a builder without it is never cached (plain verified loads, counted as
-``uncacheable``); the unpinned-head list mirrors ``DatasetBuilder.verify_manifest`` from outside
-Phase 1 (guarded by the test above; a public ``DatasetBuilder`` accessor for both is a follow-up
-for Codex review); a catalog whose head is moved away and back to the same snapshot **during** one
-verified load (a rollback, which no project writer performs) would not be noticed.
+drops the cache to free it); the builder's catalog is read through its public ``adapter``
+property (C1-CONSUMERS follow-up, resolved) — a builder without one is never cached (plain
+verified loads, counted as ``uncacheable``); the unpinned-head list mirrors
+``DatasetBuilder.verify_manifest`` from outside Phase 1 (guarded by the test above); a catalog
+whose head is moved away and back to the same snapshot **during** one verified load (a rollback,
+which no project writer performs) would not be noticed.
 
 **v3 evidence manifests (ADR-0077 §8.2; C1-CONSUMERS).** ``load_verified_any(builder, hash, cache,
 evidence_verifier)`` loads either form (``infrastructure.feature.dataset.load_any_manifest``);
@@ -372,8 +372,7 @@ def _catalog_of(builder: DatasetBuilder) -> RevisionCatalog | None:
     """The builder's own catalog (the one its verifier reads), or None: never cached."""
     if not isinstance(builder, DatasetBuilder):
         return None
-    catalog: RevisionCatalog | None = getattr(builder, "_adapter", None)
-    return catalog
+    return builder.adapter
 
 
 def _dataset_table_of(catalog: RevisionCatalog, manifest_content_hash: str) -> str | None:

@@ -36,8 +36,8 @@ manifests load and verify and describe the same market data.
    ``lineage``) is one the feature view saw; the price view's evidence gaps are a subset of the
    feature view's and the quality report ids are equal.
 
-The pair hash binds the two manifest hashes under this rule's own hash (``PAIR_RULE_HASH``), so a
-change of rule is a change of pair.
+The pair hash binds the two manifest hashes under the hash of the rule that paired them
+(``PAIR_RULE_HASH`` v2, ``PAIR_RULE_V3_HASH`` v3), so a change of rule is a change of pair.
 
 **Limits** (not provable from ``ResearchDatasetManifest`` fields alone):
 
@@ -58,10 +58,13 @@ every snapshot it read is unchanged); steps 2 - 9 always run.
 
 **v3 evidence manifests (ADR-0077; C1-CONSUMERS).** ``evidence_verifier`` (default ``None``: the
 v2 path above, unchanged) lets step 1 load either form (``load_verified_any``). Two v2 manifests
-are paired exactly as above. Two v3 manifests are paired by the **same rule** (same
-``PAIR_RULE_HASH``, same pair hash formula over the two v3 content hashes, which bind the v3
-dataset rule), steps 2 - 7 on the manifest fields (plus: equal recorded ``data_type``), and steps 8
-- 9 by ordered merges of the evidence streams instead of whole-manifest sets:
+are paired exactly as above, under ``PAIR_RULE_HASH``, unchanged. Two v3 manifests are paired by
+their **own rule** (``PAIR_RULE_V3_HASH``: step 1 loads through ``load_any`` / ``load_verified_any``
+and the ``StreamingEvidenceVerifier``'s own re-derivation, not ``load_manifest``, so it is a
+distinct rule text and hash from ``PAIR_RULE_HASH``, same pair hash formula (``pair_hash_of``) over
+the two v3 content hashes, which bind the v3 dataset rule), steps 2 - 7 on the manifest fields
+(plus: equal recorded ``data_type``), and steps 8 - 9 by ordered merges of the evidence streams
+instead of whole-manifest sets:
 
 - **instruments** — the feature ``members`` stream is grouped by episode (it is ordered by
   ``(episode key, effective_from)``, ADR-0077 §2): one episode's spans at a time decide whole /
@@ -125,6 +128,8 @@ from infrastructure.pit.assumption import assumption_bound
 __all__ = [
     "PAIR_RULE",
     "PAIR_RULE_HASH",
+    "PAIR_RULE_V3",
+    "PAIR_RULE_V3_HASH",
     "ManifestPair",
     "ManifestPairError",
     "pair_hash_of",
@@ -152,6 +157,39 @@ PAIR_RULE: Final[dict[str, Any]] = {
 }
 PAIR_RULE_HASH: Final = hashlib.sha256(canonical_json(PAIR_RULE).encode("utf-8")).hexdigest()
 
+#: v3 (ADR-0077; C1-CONSUMERS): a distinct rule from ``PAIR_RULE`` — step 1 loads through
+#: ``load_any`` / ``load_verified_any`` and the ``StreamingEvidenceVerifier``'s own re-derivation
+#: (never ``load_manifest``), and steps 8 - 9 are ordered merges of the evidence streams (module
+#: docs) instead of whole-manifest sets. v2 pairing (``PAIR_RULE`` / ``PAIR_RULE_HASH``) is
+#: unchanged by this: two v2 manifests are never bound under ``PAIR_RULE_V3_HASH``.
+PAIR_RULE_V3_ID: Final = "hlens.dataset.manifest-pair-v3"
+PAIR_RULE_V3_VERSION: Final = "1.0.0"
+PAIR_RULE_V3: Final[dict[str, Any]] = {
+    "rule": PAIR_RULE_V3_ID,
+    "version": PAIR_RULE_V3_VERSION,
+    "adr": "ADR-0077 implementation note (C1-CONSUMERS v3 manifest pairing, 2026-09-28)",
+    "load": "both manifests through load_any (load_verified_any) over the builder's own catalog, "
+    "proven by the StreamingEvidenceVerifier's own re-derivation (verify_evidence_manifest)",
+    "shape": "feature = interval simulation [start, end); price = point simulation",
+    "time": "price.simulation_time == feature.simulation_end",
+    "knowledge": "equal knowledge_cutoff",
+    "snapshots": "equal snapshot_bindings",
+    "policies": "same ADR-0032 assumption choice; equal availability, precedence, parser and "
+    "point-in-time bindings",
+    "dataset": "equal universe spec binding, dataset table and data window; equal recorded "
+    "data_type",
+    "instruments": "the feature members stream grouped by episode (ordered by (episode key, "
+    "effective_from)): whole / partial decided per episode, the whole episodes merged against the "
+    "price members stream (one entry per episode, same order), same listing revision at end; "
+    "exclusions streams merged as distinct episode keys",
+    "lineage": "listing prefixes of both lineage streams (by revision id) merged, price subset of "
+    "feature; listing prefixes of both evidence_gaps streams merged the same way; data lineage and "
+    "data gaps merged by dataset row key group (venue symbol, UTC day, observation key), every "
+    "price key group a feature key group with the same lineage and gap; equal Canonical table "
+    "sets; equal quality_reports streams (report id and partition)",
+}
+PAIR_RULE_V3_HASH: Final = hashlib.sha256(canonical_json(PAIR_RULE_V3).encode("utf-8")).hexdigest()
+
 
 class ManifestPairError(DatasetBarsError):
     """The two manifests do not describe the same market data of one chain (fail closed)."""
@@ -159,15 +197,28 @@ class ManifestPairError(DatasetBarsError):
 
 @dataclass(frozen=True, slots=True)
 class ManifestPair:
-    """The verified pairing of one chain's feature (interval) and price (point) manifests."""
+    """The verified pairing of one chain's feature (interval) and price (point) manifests.
+
+    ``pair_hash`` binds under either pairing rule's hash (``PAIR_RULE_HASH`` v2,
+    ``PAIR_RULE_V3_HASH`` v3): the record itself does not carry which rule paired it, so both are
+    accepted here (``pair_manifests`` is what proves the pairing; this only re-checks the binding).
+    """
 
     feature_manifest_hash: str
     price_manifest_hash: str
     pair_hash: str
 
     def __post_init__(self) -> None:
-        if self.pair_hash != pair_hash_of(self.feature_manifest_hash, self.price_manifest_hash):
-            raise ManifestPairError("pair_hash does not bind these two manifest hashes")
+        bound = (
+            pair_hash_of(self.feature_manifest_hash, self.price_manifest_hash),
+            pair_hash_of(
+                self.feature_manifest_hash, self.price_manifest_hash, rule_hash=PAIR_RULE_V3_HASH
+            ),
+        )
+        if self.pair_hash not in bound:
+            raise ManifestPairError(
+                "pair_hash does not bind these two manifest hashes under either pairing rule"
+            )
 
 
 def pair_manifests(
@@ -201,7 +252,9 @@ def pair_manifests(
         return ManifestPair(
             feature_manifest_hash=f_any.content_hash(),
             price_manifest_hash=p_any.content_hash(),
-            pair_hash=pair_hash_of(f_any.content_hash(), p_any.content_hash()),
+            pair_hash=pair_hash_of(
+                f_any.content_hash(), p_any.content_hash(), rule_hash=PAIR_RULE_V3_HASH
+            ),
         )
     return ManifestPair(
         feature_manifest_hash=feature.content_hash(),
@@ -210,16 +263,19 @@ def pair_manifests(
     )
 
 
-def pair_hash_of(feature_manifest_hash: str, price_manifest_hash: str) -> str:
-    """The pair hash binding these two manifest hashes under ``PAIR_RULE_HASH``.
+def pair_hash_of(
+    feature_manifest_hash: str, price_manifest_hash: str, *, rule_hash: str = PAIR_RULE_HASH
+) -> str:
+    """The pair hash binding these two manifest hashes under ``rule_hash``.
 
-    Public so a consumer holding only a ``ManifestPair`` record (no builder, e.g. the research
-    validator) can re-check that its ``pair_hash`` binds its two manifest hashes; that re-check
-    is not a re-proof of the pairing itself (only ``pair_manifests`` proves it).
+    ``rule_hash`` defaults to ``PAIR_RULE_HASH`` (v2, unchanged); pass ``PAIR_RULE_V3_HASH`` for a
+    v3 (evidence) pair. Public so a consumer holding only a ``ManifestPair`` record (no builder,
+    e.g. the research validator) can re-check that its ``pair_hash`` binds its two manifest hashes;
+    that re-check is not a re-proof of the pairing itself (only ``pair_manifests`` proves it).
     """
     return content_hash(
         {
-            "rule": PAIR_RULE_HASH,
+            "rule": rule_hash,
             "feature_manifest": feature_manifest_hash,
             "price_manifest": price_manifest_hash,
         }

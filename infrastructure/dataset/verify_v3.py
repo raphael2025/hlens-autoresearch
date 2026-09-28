@@ -7,7 +7,7 @@ what a bounded build of its own inputs produces, and never holds a collection th
 rows, the keys, the window or the universe:
 
 1. **identity** (§6.1): the manifest re-validates to itself; its rule is the verifier's rule
-   (``hlens.dataset.pit-selection@2.0.0`` with these parameters: DQ-9 is OPEN, so there is no
+   (``hlens.dataset.pit-selection@2.1.0`` with these parameters: DQ-9 is OPEN, so there is no
    registry of parameter values, only the rule the verifier was configured with); its universe is
    a registered spec with this binding; its data type is known; its dataset table is the chunk
    table; its ``selection_id`` is recomputed from its own inputs;
@@ -202,6 +202,16 @@ class StreamingEvidenceVerifier:
         self._episodes: ListingEpisodes = (
             PinnedListingEpisodes(adapter) if listing_episodes is None else listing_episodes
         )
+
+    @property
+    def adapter(self) -> RevisionCatalog:
+        """The catalog this verifier proves v3 manifests of (public; C1-CONSUMERS follow-up)."""
+        return self._adapter
+
+    @property
+    def builder(self) -> DatasetEvidenceBuilder:
+        """The v3 evidence reader this verifier re-derives builds with (public; same follow-up)."""
+        return self._builder
 
     def store(self) -> DatasetEvidenceManifestStore:
         """The v3 manifest store whose manifests this verifier proves (persist and load)."""

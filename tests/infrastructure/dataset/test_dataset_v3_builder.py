@@ -549,4 +549,4 @@ def test_v3_is_additive_to_the_v2_api(storage: LocalFileStorageAdapter) -> None:
     )
     v3 = builder(storage).selection_id(request)
     assert v2.startswith("hlens.dataset.pit-selection@1.0.0.")
-    assert v3.startswith("hlens.dataset.pit-selection@2.0.0.")
+    assert v3.startswith("hlens.dataset.pit-selection@2.1.0.")

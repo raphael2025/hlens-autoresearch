@@ -1,9 +1,10 @@
 """``pair_manifests`` over v3 evidence manifests (ADR-0077; C1-CONSUMERS).
 
-Two v3 manifests pair under the same rule as two v2 ones (same ``PAIR_RULE_HASH`` and pair-hash
-formula), steps 8 - 9 proven by ordered merges over their evidence streams; a v2 / v3 mix is
-refused; a v2 pair with an evidence verifier is exactly the v2 pair. Every refusal checked here is
-also the v2 path's for the same world. Same SQLite ``World``; real v3 builds (``v3_support``).
+Two v3 manifests pair under their own rule (``PAIR_RULE_V3_HASH``, same ``pair_hash_of`` formula,
+a distinct rule text and hash from the v2 ``PAIR_RULE_HASH``), steps 8 - 9 proven by ordered merges
+over their evidence streams; a v2 / v3 mix is refused; a v2 pair with an evidence verifier is
+exactly the v2 pair (still under ``PAIR_RULE_HASH``). Every refusal checked here is also the v2
+path's for the same world. Same SQLite ``World``; real v3 builds (``v3_support``).
 """
 
 from __future__ import annotations
@@ -16,7 +17,12 @@ from typing import Any
 import pytest
 
 from core.contracts.revision import PointInTimeSpec
-from infrastructure.bars.pair import ManifestPairError, pair_hash_of, pair_manifests
+from infrastructure.bars.pair import (
+    PAIR_RULE_V3_HASH,
+    ManifestPairError,
+    pair_hash_of,
+    pair_manifests,
+)
 from infrastructure.bars.verified import VerifiedManifestCache
 from infrastructure.dataset.builder import DatasetBuilt, DatasetBuildSummary
 from infrastructure.feature.dataset import DatasetBindingError
@@ -78,17 +84,18 @@ def _chain(w: World, **kwargs: Any) -> _Chain:
 # positive
 
 
-def test_a_matching_v3_pair_is_bound_by_the_same_rule(w: World) -> None:
+def test_a_matching_v3_pair_is_bound_by_its_own_rule(w: World) -> None:
     chain = _chain(w)
     feature, price = chain.v3_hashes
     pair = chain.pair(feature, price)
     assert (pair.feature_manifest_hash, pair.price_manifest_hash) == (feature, price)
-    assert pair.pair_hash == pair_hash_of(feature, price)
+    assert pair.pair_hash == pair_hash_of(feature, price, rule_hash=PAIR_RULE_V3_HASH)
     assert chain.pair(feature, price) == pair  # deterministic
     assert chain.pair(feature, price, manifest_cache=VerifiedManifestCache()) == pair
     # the v2 pair of the same world is its own pair (other manifest hashes), still valid
     v2_pair = pair_manifests(w.builder(), *chain.v2_hashes)
     assert v2_pair.pair_hash != pair.pair_hash
+    assert v2_pair.pair_hash == pair_hash_of(*chain.v2_hashes)  # the v2 rule, unchanged
 
 
 def test_a_v2_pair_with_an_evidence_verifier_is_exactly_the_v2_pair(w: World) -> None:

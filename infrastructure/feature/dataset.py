@@ -175,7 +175,7 @@ def load_any_manifest(
     if not isinstance(builder, DatasetBuilder):
         raise DatasetBindingError("a DatasetBuilder is needed to verify the manifest")
     catalog = evidence_catalog(evidence_verifier)
-    if getattr(builder, "_adapter", None) is not catalog:
+    if builder.adapter is not catalog:
         raise DatasetBindingError(
             "the evidence verifier proves manifests of another catalog than the builder's"
         )
@@ -490,13 +490,13 @@ _END: Final = object()
 
 
 def _verifier_parts(evidence_verifier: object) -> tuple[RevisionCatalog, DatasetEvidenceBuilder]:
-    """The verifier's catalog and evidence reader (private attributes: module docs)."""
+    """The verifier's catalog and evidence reader (public ``adapter`` / ``builder`` properties)."""
     if not isinstance(evidence_verifier, StreamingEvidenceVerifier):
         raise DatasetBindingError(
             "a StreamingEvidenceVerifier is needed to verify a v3 evidence manifest"
         )
-    catalog: RevisionCatalog | None = getattr(evidence_verifier, "_adapter", None)
-    reader = getattr(evidence_verifier, "_builder", None)
+    catalog: RevisionCatalog | None = evidence_verifier.adapter
+    reader = evidence_verifier.builder
     if catalog is None or not isinstance(reader, DatasetEvidenceBuilder):
         raise DatasetBindingError("the evidence verifier has no catalog or evidence reader")
     return catalog, reader

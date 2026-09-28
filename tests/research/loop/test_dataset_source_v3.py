@@ -21,7 +21,7 @@ from typing import Any
 import pytest
 
 from apps.worker.loop import LifecycleGuard, RoundContext, StageResult
-from infrastructure.bars.pair import ManifestPairError, pair_hash_of
+from infrastructure.bars.pair import PAIR_RULE_V3_HASH, ManifestPairError, pair_hash_of
 from infrastructure.bars.verified import VerifiedManifestCache
 from infrastructure.dataset.manifests import ManifestFormError
 from infrastructure.feature.dataset import load_any_manifest
@@ -123,7 +123,9 @@ def test_a_v3_round_reads_the_data_of_the_v2_round(w: World) -> None:
         feature,
         price,
     )
-    assert got.summary["manifest_pair_hash"] == pair_hash_of(feature, price)
+    assert got.summary["manifest_pair_hash"] == pair_hash_of(
+        feature, price, rule_hash=PAIR_RULE_V3_HASH
+    )
     ours, theirs = _segment(got), _segment(v2)
     assert ours.prices.bars == theirs.prices.bars and len(ours.prices.bars) == v.BARS
     assert ours.observations == theirs.observations

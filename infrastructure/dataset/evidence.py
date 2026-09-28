@@ -6,10 +6,11 @@ committed by the root of a Merkle-style tree of immutable objects, and the root'
 ``EvidenceObjectRef`` enters the manifest's content hash. This module is the one writer and the
 one reader of that format (``hlens.dataset.evidence-jsonl@1.0.0``).
 
-**Record projection (§6.2.3, DQ-7 = a).** One record is one line::
+**Record projection (§6.2.3, DQ-7 = a; ``EVIDENCE_PROJECTION``).** One record is one line::
 
-    canonical_json(model_dump(mode="json") with every "schema_version" key removed, at any
-    depth) + "\\n"
+    canonical_json(model_dump(mode="json") without any "schema_version" key equal to the
+    record's own top-level version, at any depth; a nested "schema_version" pinning a
+    different published contract version is kept) + "\\n"
 
 UTF-8, no BOM, LF only (``canonical_json`` escapes control characters, so a record never contains
 a raw LF). The field set is the record model's full field set (``None`` fields included), keys
@@ -22,17 +23,19 @@ projection lossless (parse back in scope, same Python dump) and the reader prove
 unique projection of the record it parses to (re-project, byte-equal), so the root hash is a
 function of the record sequence alone.
 
-**Nested envelopes of another version (ADR-0088 PM decision, ADR-0051 second phase).** "Every
-``schema_version`` removed" is exact for every record whose nested contracts all carry the
-record's own envelope -- the only records this projection could ever prove lossless before, so
-their bytes are unchanged. A nested contract that keeps **another** published envelope (a
+**Nested envelopes of another version (ADR-0088 PM decision, ADR-0051 second phase; projection
+text corrected 2026-09-28, F-C).** A nested contract that keeps **another** published envelope (a
 registered identity pinned at its publication version, e.g. the 2.0.0 ``PolicyBinding`` of
 ``UniverseMember.assumption``) keeps its ``schema_version`` key in the bytes; the top-level
 envelope and every nested one equal to it are still removed. So the line of such a record is still
 the unique projection of one record (a nested key equal to the record's own version, an
 unpublished version, or a top-level key all fail the reader's re-projection check), and it
-rebuilds bit-identically at the manifest's recorded version. Before this, such a record was
-refused by the writer's lossless proof, so no stored line and no rule hash changes.
+rebuilds bit-identically at the manifest's recorded version. Before the W-DL2 fix (phase 2,
+``bbcfd3a``) such a record was refused by the writer's lossless proof, so no previously stored line
+changed. ``EVIDENCE_PROJECTION`` itself still read "every schema_version removed, at any depth"
+after that fix — inexact for the records it newly admits; this correction fixes the text and bumps
+``DATASET_EVIDENCE_RULE_VERSION`` with it (no real v3 manifest was ever persisted under the old
+text, so the change has no replay cost).
 
 **Objects (§3).** A *leaf* holds a contiguous run of records under a header line
 ``{"first_ordinal", "format", "node": "leaf", "record_count", "stream"}``; an *index* holds at most
@@ -121,12 +124,15 @@ __all__ = [
 ]
 
 #: The unique serialization projection of a record line (ADR-0077 §6.2.3); part of the rule spec.
-#: Deliberately unchanged by the nested-envelope extension (see the module docstring): the text
-#: enters every v3 rule hash, and the extension only admits records the writer used to refuse.
+#: Corrected (PM decision, 2026-09-28, F-C) to describe the nested-envelope extension precisely
+#: (module docstring): a nested 'schema_version' pinning a *different* published contract version
+#: is kept, not stripped. The text enters every v3 rule hash (``DATASET_EVIDENCE_RULE_VERSION``
+#: bumped with it); no real v3 manifest was ever persisted under the old text, so no replay cost.
 EVIDENCE_PROJECTION: Final = (
-    "canonical_json(model_dump(mode='json') without any 'schema_version' key at any depth) + LF; "
-    "UTF-8, no BOM; full field set, None included; rebuilt inside "
-    "contract_schema_version_scope(<manifest schema_version>)"
+    "canonical_json(model_dump(mode='json') without any 'schema_version' key equal to the "
+    "record's own top-level version, at any depth; a nested 'schema_version' pinning a different "
+    "published contract version is kept) + LF; UTF-8, no BOM; full field set, None included; "
+    "rebuilt inside contract_schema_version_scope(<manifest schema_version>)"
 )
 #: Format constants of ``hlens.dataset.evidence-jsonl@1.0.0`` (not DQ-9 resource parameters).
 EVIDENCE_HEADER_MAX_BYTES: Final = 512
