@@ -19,29 +19,19 @@ real bounded generators to the first two (the third is ``PinnedQualityEvidence``
   ``PitBoundedRecord`` stream into one ``PitKeyGroup`` per observation key (``pit_key_groups``).
   Observation keys must be strictly increasing (a duplicate or reordered key fails closed); the
   lineage / gap ``iter_bounded`` attaches only to a revision's first selection inside its key is
-  carried to every later selection of that revision in the key.
+  carried to every later selection of that revision in the key. Each record already carries its
+  key's ``owner_event_time`` (the chain-earliest event, the slice-ownership witness
+  ``PitKeyGroup.owner_event_time`` needs) and, when selected, the revision's own proven row time
+  column (``event_time`` / ``interval_start``): ``pit_key_groups`` reads both straight off the
+  stream, with no second read of the Canonical rows.
 
 Neither adapter decides anything the builder re-proves: order, uniqueness, ownership, lineage and
 report bindings are all checked again, fail closed, by ``DatasetEvidenceBuilder``.
 
 **Held state.** One sorted-run batch (``capacity`` / ``row_batch_rows`` items) while spilling, the
 run references of one stream (one per batch, as B-PIT's own spill), at most ``merge_fanout`` open
-run readers, and one observation key's evaluations, revision times and carried lineage (the
-per-key bound the task and ADR-0077 §2 "dedupe inside the key group" allow). Nothing spans keys,
-symbols or the window.
-
-**OPEN (B-PIT, reported, not changed here).** ``PitBoundedRecord`` carries neither the selected
-revision's time column (``event_time`` / ``interval_start``) nor the key's chain-earliest event
-(the slice-ownership witness ``PitKeyGroup.owner_event_time``). Until it does,
-``PitSelectorKeySource`` re-reads the slice's key closure through the selector's own
-``_canonical_rows`` at the same pinned snapshot (the rows ``iter_bounded`` itself evaluates) and
-spills ``(observation_key, revision_id, time)`` into sorted runs: the owner is the minimum time of
-the key's rows (exactly the ``earliest`` ``_key_closure`` filters ownership on), a selected
-revision's time is its row's. The two streams must name the same keys in the same order, and every
-selected revision must have a row, or the slice fails closed. The re-read costs one more scan of
-the slice's closure (no second proof: ``_verify_canonical`` is not repeated). Once B-PIT adds the
-two fields to ``PitBoundedRecord``, ``_revision_times`` is deleted and ``pit_key_groups`` reads them
-from the records.
+run readers, and one observation key's evaluations and carried lineage (the per-key bound the task
+and ADR-0077 §2 "dedupe inside the key group" allow). Nothing spans keys, symbols or the window.
 """
 
 from __future__ import annotations
@@ -55,7 +45,6 @@ from typing import Any, Final
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
 from core.contracts.universe import SelectedRevisionLineage, UniverseExclusion, UniverseMember
-from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.dataset.builder import (
     DatasetEvidenceRequest,
@@ -266,69 +255,10 @@ class OrderedUniverseSource:
 # =========================================================================================
 
 
-def _time_column(data_type: str) -> str:
-    return "event_time" if data_type == "agg_trades" else "interval_start"
-
-
-def _revision_time_order(row: Mapping[str, Any]) -> tuple[str, str]:
-    return (row["observation_key"], row["revision_id"])
-
-
 def _check_utc(value: object, what: str) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() != _ZERO:
         raise CatalogIntegrityError(f"{what} is not a timezone-aware UTC datetime")
     return value
-
-
-class _RevisionTimes:
-    """``(observation_key, revision_id, time)`` rows by key then revision, taken one key at a time.
-
-    Holds one key's revision times. Every key read must be taken in key order (a key read but
-    never evaluated, or evaluated but never read, fails closed); a repeated or unordered row fails
-    closed too.
-    """
-
-    def __init__(self, rows: Iterator[Mapping[str, Any]]) -> None:
-        self._rows = rows
-        self._last: tuple[str, str] | None = None
-        self._pending = self._next()
-
-    def _next(self) -> tuple[str, str, datetime] | None:
-        row = next(self._rows, None)
-        if row is None:
-            return None
-        key, revision = row.get("observation_key"), row.get("revision_id")
-        if not isinstance(key, str) or not key or not isinstance(revision, str) or not revision:
-            raise CatalogIntegrityError(f"a Canonical revision time row is malformed: {row!r}")
-        at = _check_utc(row.get("event_time"), f"the time of Canonical revision {revision}")
-        if self._last is not None and (key, revision) <= self._last:
-            raise CatalogIntegrityError(
-                f"Canonical revision {revision} of {key} is read twice or out of order"
-            )
-        self._last = (key, revision)
-        return key, revision, at
-
-    def take(self, key: str) -> dict[str, datetime]:
-        if self._pending is not None and self._pending[0] < key:
-            raise CatalogIntegrityError(
-                f"observation keys are out of order or unevaluated: {self._pending[0]} was read "
-                f"for the slice but the PIT stream is already at {key}"
-            )
-        found: dict[str, datetime] = {}
-        while self._pending is not None and self._pending[0] == key:
-            found[self._pending[1]] = self._pending[2]
-            self._pending = self._next()
-        if not found:
-            raise CatalogIntegrityError(
-                f"observation key {key} is evaluated without a Canonical row in the slice's read"
-            )
-        return found
-
-    def close(self) -> None:
-        if self._pending is not None:
-            raise CatalogIntegrityError(
-                f"observation key {self._pending[0]} was read for the slice but never evaluated"
-            )
 
 
 def _next_record(records: Iterator[object]) -> PitBoundedRecord | None:
@@ -374,10 +304,7 @@ def _carry(
 
 
 def _evaluations(
-    key: str,
-    held: Iterable[PitBoundedRecord],
-    times: Mapping[str, datetime],
-    knowledge_cutoff: datetime,
+    key: str, held: Iterable[PitBoundedRecord], knowledge_cutoff: datetime
 ) -> tuple[PitKeyEvaluation, ...]:
     carried: dict[str, tuple[SelectedRevisionLineage, str | None]] = {}
     evaluations: list[PitKeyEvaluation] = []
@@ -393,16 +320,19 @@ def _evaluations(
             if not revision:
                 raise CatalogIntegrityError(f"key {key}: a selection names no revision")
             lineage, gap = _carry(record, key, revision, carried)
-            at = times.get(revision)
-            if at is None:
+            if record.event_time is None:
                 raise CatalogIntegrityError(
-                    f"selected revision {revision} of {key} has no Canonical row in the slice's "
-                    "read"
+                    f"selected revision {revision} of {key} has no event_time"
                 )
+            at = _check_utc(record.event_time, f"revision {revision} of {key} event_time")
             selected = PitSelectedRevision(
                 revision_id=revision, event_time=at, lineage=lineage, evidence_gap=gap
             )
-        elif record.lineage is not None or record.evidence_gap is not None:
+        elif (
+            record.event_time is not None
+            or record.lineage is not None
+            or record.evidence_gap is not None
+        ):
             raise CatalogIntegrityError(
                 f"key {key}: a {selection.status.value} evaluation carries lineage"
             )
@@ -417,20 +347,17 @@ def _evaluations(
 
 
 def pit_key_groups(
-    records: Iterable[PitBoundedRecord],
-    revision_times: Iterable[Mapping[str, Any]],
-    *,
-    knowledge_cutoff: datetime,
+    records: Iterable[PitBoundedRecord], *, knowledge_cutoff: datetime
 ) -> Iterator[PitKeyGroup]:
     """Fold ``iter_bounded``'s records into one ``PitKeyGroup`` per observation key.
 
     ``records``: key then instant order; one key's records are adjacent and keys strictly
-    increase (a duplicate, split or reordered key fails closed). ``revision_times``: the slice's
-    ``{"observation_key", "revision_id", "event_time"}`` rows by ``(key, revision)``, the same keys
-    as ``records``. A group's ``owner_event_time`` is the earliest time of its key's rows; each
-    selected revision's ``event_time`` is its row's time. Holds one key's records and times.
+    increase (a duplicate, split or reordered key fails closed). Every record already carries its
+    key's ``owner_event_time`` (the chain-earliest event) and, when selected, the revision's own
+    proven row time (``PitBoundedRecord.event_time``) -- both attached by
+    ``PitSelector.iter_bounded`` -- so no second read of the Canonical rows is needed here. Every
+    record of one key must agree on ``owner_event_time``. Holds one key's records.
     """
-    times = _RevisionTimes(iter(revision_times))
     source: Iterator[object] = iter(records)
     pending = _next_record(source)
     previous: str | None = None
@@ -442,68 +369,22 @@ def pit_key_groups(
                 f"{previous})"
             )
         held: list[PitBoundedRecord] = []
+        owner: datetime | None = None
         while pending is not None and pending.observation_key == key:
+            this_owner = _check_utc(pending.owner_event_time, f"key {key} owner_event_time")
+            if owner is None:
+                owner = this_owner
+            elif this_owner != owner:
+                raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
             held.append(pending)
             pending = _next_record(source)
-        key_times = times.take(key)
+        assert owner is not None  # the inner while loop above ran at least once
         yield PitKeyGroup(
             observation_key=key,
-            owner_event_time=min(key_times.values()),
-            evaluations=_evaluations(key, held, key_times, knowledge_cutoff),
+            owner_event_time=owner,
+            evaluations=_evaluations(key, held, knowledge_cutoff),
         )
         previous = key
-    times.close()
-
-
-@contextmanager
-def _revision_times(
-    selector: PitSelector,
-    storage: StorageAdapter,
-    params: PitRunParams,
-    pit: PointInTimeSpec,
-    data_type: str,
-    venue_symbol: str,
-    start: datetime,
-    end: datetime,
-) -> Iterator[Iterator[Mapping[str, Any]]]:
-    """The slice's owned keys' revision times by ``(key, revision)`` (see the module's OPEN).
-
-    The same key-closure read ``iter_bounded`` evaluates (same selector, same pinned snapshot,
-    ``touching=False``), reduced to three columns and spilled into sorted runs; the read list is
-    released before the merge streams, as in ``iter_bounded``.
-    """
-    canonical = rules.CANONICAL_TABLES[data_type]
-    instrument = rules.SYMBOLS[venue_symbol]
-    column = _time_column(data_type)
-    view = selector._pinned(pit)
-    rows = selector._canonical_rows(
-        view, canonical.table, data_type, instrument.symbol, start, end, False
-    )
-    refs = list(
-        spill_sorted_runs(
-            (
-                {
-                    "observation_key": row["observation_key"],
-                    "revision_id": row["revision_id"],
-                    "event_time": row[column],
-                }
-                for row in rows
-            ),
-            key=_revision_time_order,
-            capacity=params.row_batch_rows,
-            storage=storage,
-            limits=params.limits,
-        )
-    )
-    del rows
-    with merge_sorted_runs(
-        storage,
-        refs,
-        key=_revision_time_order,
-        merge_fanout=params.merge_fanout,
-        limits=params.limits,
-    ) as merged:
-        yield merged
 
 
 def _close(iterator: object) -> None:
@@ -515,8 +396,11 @@ def _close(iterator: object) -> None:
 class PitSelectorKeySource:
     """``PitKeySource`` over ``PitSelector.iter_bounded`` (owned keys only, ``touching=False``).
 
-    ``params`` are B-PIT's explicit run sizes (DQ-9 OPEN); the revision-time runs use its
-    ``row_batch_rows``, ``merge_fanout`` and ``limits``. ``storage`` receives those runs.
+    ``params`` are B-PIT's explicit run sizes (DQ-9 OPEN), passed straight through to
+    ``iter_bounded``. ``storage`` is accepted for symmetry with ``OrderedUniverseSource`` (this
+    adapter does no sorted-run spilling of its own: ``iter_bounded``'s own runs already carry
+    everything a key group needs, ``owner_event_time`` and each selected revision's ``event_time``
+    included).
     """
 
     def __init__(
@@ -558,19 +442,7 @@ class PitSelectorKeySource:
             )
             # The inner generator holds the merge readers: close it on any exit, not at GC.
             stack.callback(_close, records)
-            times = stack.enter_context(
-                _revision_times(
-                    self._selector,
-                    self._storage,
-                    self._params,
-                    pit,
-                    data_type,
-                    venue_symbol,
-                    start,
-                    end,
-                )
-            )
-            groups = pit_key_groups(records, times, knowledge_cutoff=pit.knowledge_cutoff)
+            groups = pit_key_groups(records, knowledge_cutoff=pit.knowledge_cutoff)
             stack.callback(_close, groups)
             yield groups
 

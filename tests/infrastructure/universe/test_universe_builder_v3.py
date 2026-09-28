@@ -24,6 +24,8 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import timedelta
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -259,3 +261,43 @@ def test_instants_v3_never_calls_whole_table_scan_columns(
     instants = ub._instants_v3(view, pit)
     assert instants[0] == L1
     assert len(instants) >= 3  # L1, the halt at L2, the resume at L3 are all change points
+
+
+def test_instants_v3_closes_its_batch_readers_on_normal_completion(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """B-FIX: ``_fold_exchange_info_changes`` / ``_fold_listing_changes`` used to close their
+    ``scan_column_batches`` reader only on an exception (``except BaseException: ...close();
+    raise``), never after an ordinary, fully-exhausted loop -- leaking the reader on every
+    successful call. Both folds must close their reader exactly once on that ordinary path too
+    (a ``try/finally``, not a bare ``except``).
+    """
+    pit = w.spec(interval=(L1, SIM))
+    view = PinnedCatalogView(w.h.adapter, pit.snapshot_bindings)
+    closed: list[str] = []
+
+    class _FakeReader:
+        """One empty batch, then exhausted; records whether ``close`` was ever called."""
+
+        def __init__(self, table: str) -> None:
+            self._table = table
+            self._batches = iter([SimpleNamespace(to_pylist=lambda: [])])
+
+        def __iter__(self) -> "_FakeReader":
+            return self
+
+        def __next__(self) -> SimpleNamespace:
+            return next(self._batches)
+
+        def close(self) -> None:
+            closed.append(self._table)
+
+    def fake_scan_column_batches(
+        self: PinnedCatalogView, table: str, **kwargs: Any
+    ) -> _FakeReader:
+        return _FakeReader(table)
+
+    monkeypatch.setattr(PinnedCatalogView, "scan_column_batches", fake_scan_column_batches)
+    ub._instants_v3(view, pit)
+    assert closed.count(ub.EXCHANGE_INFO_TABLE) == 1
+    assert closed.count(ub.LISTINGS_TABLE) == 1

@@ -1,12 +1,18 @@
-"""The v3 dataset builder over its real upstreams (ADR-0077 §2 / §6.1; B-ADAPT).
+"""The v3 dataset builder over its real upstreams (ADR-0077 §2 / §6.1; B-ADAPT / B-FIX).
 
 ``infrastructure.dataset.sources`` adapts B-UNIV's ``UniverseSpanCursor`` and B-PIT's
 ``PitSelector.iter_bounded`` to the builder's ordered Protocols. End to end, over the v2 fixture
 world (real stores, normalizer, reconciler, listing derivation and reports), the v3 build selects
-exactly what v2's ``DatasetBuilder.select`` selects. The chunk / manifest stores are still the
-in-memory B3 / B4 stand-ins of ``dataset_support``; evidence objects and sorted runs go to the
-world's real object store. Every run / rule size is an arbitrary small value (DQ-9 OPEN), chosen
-so that every stream spills into several runs and merges in more than one pass.
+exactly what v2's ``DatasetBuilder.select`` selects, and is proven by a real
+``build -> persist -> load_any -> verify`` round trip: the real ``IcebergChunkWriter`` (B3) commits
+chunks to ``research.dataset_selection_chunks`` and the real ``DatasetEvidenceManifestStore`` /
+``StreamingEvidenceVerifier`` (B4 / B-VERIFY) persist and re-verify the manifest against
+``research.dataset_evidence_manifests``; evidence objects and sorted runs go to the world's real
+object store. The pure universe-reordering / fail-closed tests further below still build over
+``dataset_support``'s in-memory ``FakeChunkWriter`` / ``FakeManifests`` stand-ins, since they drive
+the builder's own validation over synthetic sources, not the real chunk / manifest tables. Every
+run / rule size is an arbitrary small value (DQ-9 OPEN), chosen so that every stream spills into
+several runs and merges in more than one pass.
 """
 
 from __future__ import annotations
@@ -30,7 +36,10 @@ from core.contracts.universe import (
 )
 from core.domain.base import Contract
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
-from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
+from infrastructure.catalog.phase1_tables import (
+    CANONICAL_INSTRUMENT_LISTINGS,
+    DATASET_SELECTION_CHUNKS,
+)
 from infrastructure.dataset.builder import (
     DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
@@ -39,6 +48,8 @@ from infrastructure.dataset.builder import (
     PinnedQualityEvidence,
     dataset_evidence_rule,
 )
+from infrastructure.dataset.chunks import IcebergChunkWriter
+from infrastructure.dataset.manifests import ManifestStore
 from infrastructure.dataset.sources import (
     OrderedUniverseSource,
     PitSelectorKeySource,
@@ -46,6 +57,7 @@ from infrastructure.dataset.sources import (
     dataset_evidence_sources,
     pit_key_groups,
 )
+from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import EvidenceGap, PitBoundedRecord, PitRunParams, PitSelector
 from infrastructure.storage import LocalFileStorageAdapter
@@ -122,19 +134,54 @@ def _row_content(row: Any) -> tuple[Any, ...]:
     )
 
 
-def _v3_build(w: World, spec: PointInTimeSpec) -> tuple[DatasetEvidenceBuilder, Any, Any]:
+def _sources_factory(w: World) -> Any:
+    """A ``DatasetEvidenceSourcesFactory``: the real upstreams, freshly built per request (as
+    ``StreamingEvidenceVerifier`` needs for its own re-derivation pass)."""
+
+    def factory(request: DatasetEvidenceRequest) -> DatasetEvidenceSources:
+        return dataset_evidence_sources(
+            w.h.adapter,
+            w.h.storage,
+            request,
+            market_data_base_url=ds.ORIGIN,
+            pit_params=PIT_PARAMS,
+            universe_params=UNIVERSE_PARAMS,
+        )
+
+    return factory
+
+
+def _chunk_rows(w: World, selection_id: str) -> list[dict[str, Any]]:
+    """The selection's committed chunk rows, from the real ``DATASET_SELECTION_CHUNKS`` table."""
+    prefix_rows = [
+        row for row in w.h.rows(DATASET_SELECTION_CHUNKS) if row["selection_id"] == selection_id
+    ]
+    return sorted(prefix_rows, key=lambda row: row["row_ordinal"])
+
+
+def _v3_build(
+    w: World, spec: PointInTimeSpec
+) -> tuple[DatasetEvidenceBuilder, Any, IcebergChunkWriter]:
+    """Build over the real B-UNIV / B-PIT upstreams, and the real B3 chunk table / B4 manifest
+    table + B-VERIFY streaming verifier: ``build`` (which itself persists and verifies) followed
+    by an explicit ``load_any`` -- re-verifying -- through the dispatching v2/v3 ``ManifestStore``
+    (ADR-0077 §8.2), exactly as a real caller would round-trip a v3 manifest.
+    """
     request = _request(spec)
     b = _builder(w.h.storage, w.h.adapter)
-    sources = dataset_evidence_sources(
-        w.h.adapter,
-        w.h.storage,
-        request,
-        market_data_base_url=ds.ORIGIN,
-        pit_params=PIT_PARAMS,
-        universe_params=UNIVERSE_PARAMS,
+    sources_factory = _sources_factory(w)
+    chunks = IcebergChunkWriter(w.h.adapter, DATASET_SELECTION_CHUNKS)
+    verifier = StreamingEvidenceVerifier(
+        w.h.adapter, builder=b, chunks=chunks, sources=sources_factory
     )
-    chunks = ds.FakeChunkWriter()
-    summary = b.build(request, sources=sources, chunks=chunks, manifests=ds.FakeManifests())
+    manifests = verifier.store()
+
+    summary = b.build(
+        request, sources=sources_factory(request), chunks=chunks, manifests=manifests
+    )
+
+    both = ManifestStore(w.h.adapter, w.builder(), evidence_verifier=verifier)
+    assert both.load_any(summary.manifest_hash) == summary.manifest
     return b, summary, chunks
 
 
@@ -161,15 +208,15 @@ def _interval_world(w: World) -> PointInTimeSpec:
 def test_v3_build_over_the_real_upstreams_selects_what_v2_selects(w: World, world: Any) -> None:
     spec = world(w)
     v2 = w.builder().select(FIRST_SLICE_UNIVERSE, spec, "agg_trades", START, END)
-    b, summary, chunks = _v3_build(w, spec)
+    b, summary, _chunks = _v3_build(w, spec)
     manifest = summary.manifest
 
     # Members and exclusions: v2's, in the ADR-0077 §2 order.
     assert _stream(b, manifest, MEMBERS) == sorted(v2.universe.members, key=_entry_order)
     assert _stream(b, manifest, EXCLUSIONS) == sorted(v2.universe.exclusions, key=_entry_order)
 
-    # Rows: the same rows (v3 adds contiguous ordinals).
-    rows = chunks.rows(summary.selection_id)
+    # Rows: the same rows (v3 adds contiguous ordinals), read back from the real chunk table.
+    rows = _chunk_rows(w, summary.selection_id)
     assert summary.row_count == len(rows) == len(v2.rows) > 0
     assert sorted(map(_row_content, rows)) == sorted(map(_row_content, v2.rows))
     assert [row["row_ordinal"] for row in rows] == list(range(len(rows)))
@@ -430,6 +477,10 @@ def test_universe_run_params_are_required_and_checked() -> None:
 T0, T1, T2 = utc(2023, 11, 14, 22, 1), utc(2023, 11, 14, 22, 2), utc(2023, 11, 14, 22, 3)
 H0, H1 = utc(2023, 12, 1), utc(2023, 12, 2)
 
+#: Sentinel: "not given" for ``_record``'s ``event_time`` (distinct from an explicit ``None``,
+#: which forces a malformed record that carries no event_time at all).
+_UNSET: Any = object()
+
 
 def _record(
     key: str,
@@ -437,9 +488,19 @@ def _record(
     revision: str | None = None,
     *,
     at: datetime = SIM,
+    owner: datetime = T0,
+    event_time: Any = _UNSET,
     lineage: bool = False,
     gap: str | None = None,
 ) -> PitBoundedRecord:
+    """A ``PitBoundedRecord`` fixture matching what ``PitSelector.iter_bounded`` itself attaches.
+
+    ``owner`` is the key's ``owner_event_time`` (the real generator repeats the same value across
+    every record of one key: pass the same ``owner`` for records built as one key's group).
+    ``event_time`` defaults to ``at`` for a ``SELECTED`` record (the real generator always
+    attaches one) and to ``None`` otherwise; pass it explicitly -- ``None`` included -- to build a
+    malformed record.
+    """
     heads: tuple[str, ...] = ()
     if status is PointInTimeStatus.SELECTED:
         assert revision is not None
@@ -452,6 +513,11 @@ def _record(
     evidence_gap: EvidenceGap | None = None
     if gap is not None and revision is not None:
         evidence_gap = EvidenceGap(ds.V3_TRADES, revision, gap)
+    resolved_event_time: datetime | None
+    if event_time is _UNSET:
+        resolved_event_time = at if status is PointInTimeStatus.SELECTED else None
+    else:
+        resolved_event_time = cast(Any, event_time)
     return PitBoundedRecord(
         observation_key=key,
         selection=PointInTimeSelection(
@@ -464,28 +530,26 @@ def _record(
         ),
         lineage=attached,
         evidence_gap=evidence_gap,
+        owner_event_time=owner,
+        event_time=resolved_event_time,
     )
 
 
-def _time(key: str, revision: str, at: datetime) -> dict[str, Any]:
-    return {"observation_key": key, "revision_id": revision, "event_time": at}
-
-
 SELECTED = PointInTimeStatus.SELECTED
+ABSENT = PointInTimeStatus.ABSENT
 
 
 def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
     records = [
-        _record("k1", SELECTED, "r2", at=H0, lineage=True, gap=ds.GAP_TEXT),
-        _record("k1", PointInTimeStatus.ABSENT, at=H0.replace(hour=6)),
-        _record("k1", SELECTED, "r2", at=H0.replace(hour=12)),  # lineage attached once only
-        _record("k2", SELECTED, "r3", at=H0, lineage=True),
+        _record("k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT),
+        _record("k1", ABSENT, at=H0.replace(hour=6), owner=T0),
+        _record("k1", SELECTED, "r2", at=H0.replace(hour=12), owner=T0, event_time=T1),
+        _record("k2", SELECTED, "r3", at=H0, owner=T2, event_time=T2, lineage=True),
     ]
-    times = [_time("k1", "r1", T0), _time("k1", "r2", T1), _time("k2", "r3", T2)]
-    groups = list(pit_key_groups(records, times, knowledge_cutoff=SIM))
+    groups = list(pit_key_groups(records, knowledge_cutoff=SIM))
     assert [(g.observation_key, g.owner_event_time) for g in groups] == [("k1", T0), ("k2", T2)]
     first = list(groups[0].evaluations)
-    assert [e.status for e in first] == [SELECTED, PointInTimeStatus.ABSENT, SELECTED]
+    assert [e.status for e in first] == [SELECTED, ABSENT, SELECTED]
     assert first[0].selected == first[2].selected
     assert first[2].selected is not None
     assert first[2].selected.event_time == T1  # the selected revision's time, not the owner's
@@ -501,57 +565,62 @@ def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
     ],
 )
 def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) -> None:
-    records = [_record(key, SELECTED, f"r-{key}", lineage=True) for key in keys]
-    times = [_time(key, f"r-{key}", T0) for key in sorted(set(keys))]
+    records = [_record(key, SELECTED, f"r-{key}", owner=T0, lineage=True) for key in keys]
     with pytest.raises(CatalogIntegrityError, match=match):
-        list(pit_key_groups(records, times, knowledge_cutoff=SIM))
+        list(pit_key_groups(records, knowledge_cutoff=SIM))
 
 
 @pytest.mark.parametrize(
-    ("records", "times", "match"),
+    ("records", "match"),
     [
-        ([_record("k1", SELECTED, "r1")], [_time("k1", "r1", T0)], "has no lineage"),
+        # No lineage attached anywhere for the selected revision.
+        ([_record("k1", SELECTED, "r1", owner=T0)], "has no lineage"),
+        # The generator always attaches an event_time to a SELECTED record; a malformed stream
+        # that omits it must fail closed instead of silently losing the row's time.
         (
-            [_record("k1", SELECTED, "r1", lineage=True)],
-            [_time("k1", "r0", T0)],
-            "no Canonical row",
+            [_record("k1", SELECTED, "r1", owner=T0, lineage=True, event_time=None)],
+            "has no event_time",
         ),
-        ([_record("k1", SELECTED, "r1", lineage=True)], [], "without a Canonical row"),
+        # Every record of one key must agree on owner_event_time (it is repeated, not carried).
         (
-            [_record("k2", SELECTED, "r2", lineage=True)],
-            [_time("k1", "r1", T0), _time("k2", "r2", T0)],
-            "out of order or unevaluated",
+            [
+                _record("k1", SELECTED, "r1", owner=T0, lineage=True, event_time=T0),
+                _record("k1", ABSENT, owner=T1),
+            ],
+            "disagree on owner_event_time",
         ),
+        # owner_event_time / event_time must both be UTC-aware.
         (
-            [_record("k1", SELECTED, "r1", lineage=True)],
-            [_time("k1", "r1", T0), _time("k2", "r2", T0)],
-            "never evaluated",
-        ),
-        (
-            [_record("k1", SELECTED, "r1", lineage=True)],
-            [_time("k1", "r1", T0), _time("k1", "r1", T0)],
-            "read twice",
-        ),
-        (
-            [_record("k1", SELECTED, "r1", lineage=True)],
-            [_time("k1", "r1", T0.replace(tzinfo=None))],
+            [_record("k1", SELECTED, "r1", owner=T0.replace(tzinfo=None), lineage=True)],
             "UTC",
         ),
         (
-            [_record("k1", PointInTimeStatus.ABSENT, "r1", lineage=True)],
-            [_time("k1", "r1", T0)],
+            [
+                _record(
+                    "k1", SELECTED, "r1", owner=T0, lineage=True, event_time=T0.replace(tzinfo=None)
+                )
+            ],
+            "UTC",
+        ),
+        # A non-SELECTED record must carry neither lineage, a gap, nor an event_time.
+        (
+            [_record("k1", ABSENT, "r1", owner=T0, lineage=True)],
+            "carries lineage",
+        ),
+        (
+            [_record("k1", ABSENT, "r1", owner=T0, event_time=T0)],
             "carries lineage",
         ),
     ],
 )
 def test_malformed_pit_streams_fail_closed(
-    records: list[PitBoundedRecord], times: list[dict[str, Any]], match: str
+    records: list[PitBoundedRecord], match: str
 ) -> None:
     with pytest.raises(CatalogIntegrityError, match=match):
-        list(pit_key_groups(records, times, knowledge_cutoff=SIM))
+        list(pit_key_groups(records, knowledge_cutoff=SIM))
 
 
 def test_a_selection_at_another_cutoff_fails_closed() -> None:
-    records = [_record("k1", SELECTED, "r1", lineage=True)]
+    records = [_record("k1", SELECTED, "r1", owner=T0, lineage=True)]
     with pytest.raises(CatalogIntegrityError, match="another knowledge cutoff"):
-        list(pit_key_groups(records, [_time("k1", "r1", T0)], knowledge_cutoff=H1))
+        list(pit_key_groups(records, knowledge_cutoff=H1))

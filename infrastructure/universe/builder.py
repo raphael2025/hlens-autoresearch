@@ -408,9 +408,8 @@ def _fold_exchange_info_changes(
             for row in record_batch.to_pylist():
                 if row["knowledge_time"] <= cutoff:
                     changes.add(row["retrieved_at"])
-    except BaseException:
+    finally:
         _close_reader(reader)
-        raise
 
 
 def _fold_listing_changes(
@@ -430,9 +429,8 @@ def _fold_listing_changes(
                         changes.add(interval["tradable_from"])
                         if interval["tradable_until"] is not None:
                             changes.add(interval["tradable_until"])
-    except BaseException:
+    finally:
         _close_reader(reader)
-        raise
 
 
 def _timeline_stream(

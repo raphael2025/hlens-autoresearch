@@ -244,12 +244,24 @@ class PitBoundedRecord:
     stream and keeping the non-``None`` ones reconstructs the same ``revision -> lineage / gap``
     mapping :attr:`PitSelection.lineage` / :attr:`PitSelection.evidence_gaps` hold for a key,
     without this generator ever retaining it for more than one key at a time.
+
+    ``owner_event_time`` is the earliest event of the key's whole revision chain (as read by the
+    key closure, :func:`_key_closure`'s ``earliest``): identical on every record of one key, it is
+    the slice-ownership witness a caller folding this stream into one group per key
+    (``PitKeyGroup.owner_event_time``) needs without a second read of the Canonical rows.
+    ``event_time`` is the selected revision's own proven row time column (``event_time`` /
+    ``interval_start``, exactly v2's row time): set whenever ``selection.status`` is
+    ``SELECTED`` (on every such record, not just the first for a revision — unlike ``lineage`` /
+    ``evidence_gap`` it is not "carried"; it is cheap to re-attach from the key's already-held
+    rows), and ``None`` on every ABSENT / CONFLICT record.
     """
 
     observation_key: str
     selection: PointInTimeSelection
     lineage: SelectedRevisionLineage | None
     evidence_gap: EvidenceGap | None
+    owner_event_time: datetime
+    event_time: datetime | None
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -963,6 +975,9 @@ def _pit_bounded_stream(
                 records = tuple(
                     revision_record_from_row(key_rows[revision]) for revision in sorted(key_rows)
                 )
+                # The key's whole read closure (key_rows) — not just the window's own instants —
+                # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
+                owner_at = min(row[column] for row in key_rows.values())
 
                 while pending_edge_key is not None and pending_edge_key < row_key:
                     pending_edge_key, next_group = next(edge_iter, (None, None))
@@ -985,10 +1000,12 @@ def _pit_bounded_stream(
                 for selection in _evaluate(row_key, records, key_edges, spec, available):
                     lineage_out: SelectedRevisionLineage | None = None
                     gap_out: EvidenceGap | None = None
+                    event_at: datetime | None = None
                     if selection.status is PointInTimeStatus.SELECTED:
                         revision = selection.selected_revision_id
                         if revision is None:  # pragma: no cover - the contract forbids it
                             raise CatalogIntegrityError("a selected result without a revision")
+                        event_at = key_rows[revision][column]
                         if revision not in seen_revisions:
                             seen_revisions.add(revision)
                             source_row = key_rows[revision]
@@ -1013,6 +1030,8 @@ def _pit_bounded_stream(
                         selection=selection,
                         lineage=lineage_out,
                         evidence_gap=gap_out,
+                        owner_event_time=owner_at,
+                        event_time=event_at,
                     )
                 # key_rows / records / key_edges / buffer go out of scope here, before the next
                 # observation_key's group is even read off merged_rows.
@@ -1027,4 +1046,14 @@ def _pit_bounded_stream(
                     "Canonical rows in this window"
                 )
 
-    yield _generate()
+    # ``_generate`` holds the two ``merge_sorted_runs`` contexts (each up to ``merge_fanout``
+    # open run readers) and, mid-key, one ``KeyHistoryBuffer.rows()`` context: closed explicitly
+    # here on every exit of the caller's ``with`` block -- full iteration, an early ``break``, or
+    # an exception -- rather than left to whenever the generator object is garbage collected.
+    # ``.close()`` throws ``GeneratorExit`` in at the generator's current (or not yet started)
+    # suspension point, which the ``with`` statements above unwind exactly as any other exit.
+    generated = _generate()
+    try:
+        yield generated
+    finally:
+        generated.close()

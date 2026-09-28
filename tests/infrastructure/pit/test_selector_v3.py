@@ -12,6 +12,8 @@ not just the trivial single-run path.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from datetime import datetime
 from typing import Any
 
 import pytest
@@ -161,6 +163,42 @@ def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buf
 
 
 # =========================================================================================
+# owner_event_time / event_time (B-FIX: PitBoundedRecord carries them directly)
+# =========================================================================================
+
+
+def test_iter_bounded_records_carry_owner_and_selected_event_times(h: RestHarness) -> None:
+    """Every record's ``owner_event_time`` is its key's chain-earliest proven row time (the same
+    ``earliest`` value ``_key_closure`` filters ownership on); a ``SELECTED`` record's
+    ``event_time`` is exactly its selected revision's own proven row time (v2's row time column);
+    every other record carries no ``event_time``."""
+    _chain(h, count=4)
+    spec = _spec(h, cutoff=FAR)
+    rows = {row["revision_id"]: row for row in h.rows(c.TRADES)}
+    owners: dict[str, datetime] = {}
+    for row in rows.values():
+        key = row["observation_key"]
+        owners[key] = min(owners.get(key, row["event_time"]), row["event_time"])
+
+    records = _bounded(h, spec)
+    assert records  # sanity: the chained keys did produce records
+    for record in records:
+        assert record.owner_event_time == owners[record.observation_key]
+        if record.selection.status is PointInTimeStatus.SELECTED:
+            revision = record.selection.selected_revision_id
+            assert revision is not None
+            assert record.event_time == rows[revision]["event_time"]
+        else:
+            assert record.event_time is None
+    # Every record of one key agrees with the others on owner_event_time (asserted per-record
+    # above against the same precomputed value; restated here key by key for clarity).
+    by_key: dict[str, set[datetime]] = {}
+    for record in records:
+        by_key.setdefault(record.observation_key, set()).add(record.owner_event_time)
+    assert all(len(values) == 1 for values in by_key.values())
+
+
+# =========================================================================================
 # fail closed (shares select()'s validation, called unchanged)
 # =========================================================================================
 
@@ -191,6 +229,64 @@ def test_iter_bounded_an_unbound_evidence_table_still_yields_only_conflicts(
     records = _bounded(h, spec)
     assert all(r.selection.status is PointInTimeStatus.CONFLICT for r in records)
     assert all(r.lineage is None for r in records)
+
+
+# =========================================================================================
+# explicit close of the internal generator and its merge readers (B-FIX)
+# =========================================================================================
+
+
+def test_iter_bounded_closes_its_generator_on_an_early_context_exit(h: RestHarness) -> None:
+    """The context manager used to leave the inner generator (and the merge readers it holds
+    open, up to ``merge_fanout`` per stream) to whenever it happened to be garbage collected: the
+    ``with`` block's own exit never explicitly closed it. Consuming only part of the stream and
+    then leaving the ``with`` block must now close it immediately -- proven here by the fact that
+    the still-referenced generator object raises ``StopIteration`` on the next ``next()``, rather
+    than producing another record."""
+    _chain(h, count=4)  # several keys: more than one record is available past the first
+    spec = _spec(h, cutoff=FAR)
+    selector = PitSelector(h.adapter, h.storage)
+    with selector.iter_bounded(
+        spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS
+    ) as records:
+        first = next(records)
+        assert isinstance(first, PitBoundedRecord)
+        # Stop here, well short of exhaustion: __exit__ must still close it.
+    with pytest.raises(StopIteration):
+        next(records)
+
+
+def test_iter_bounded_closes_cleanly_after_full_iteration(h: RestHarness) -> None:
+    """The normal (fully-exhausted) path must still close without error: closing an already-
+    exhausted generator is a documented no-op, exercised here so a regression that makes the
+    explicit close raise on the common path is caught."""
+    _chain(h, count=2)
+    spec = _spec(h, cutoff=FAR)
+    selector = PitSelector(h.adapter, h.storage)
+    with selector.iter_bounded(
+        spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS
+    ) as records:
+        drained = list(records)
+    assert drained  # sanity: something was actually produced and consumed
+
+
+def test_iter_bounded_closes_its_generator_when_the_context_body_raises(h: RestHarness) -> None:
+    """An exception inside the ``with`` block must close the generator too, not just a clean
+    early exit (``@contextmanager``'s ``finally`` covers both)."""
+    _chain(h, count=4)
+    spec = _spec(h, cutoff=FAR)
+    selector = PitSelector(h.adapter, h.storage)
+    captured: Iterator[PitBoundedRecord] | None = None
+    with pytest.raises(RuntimeError, match="boom"):
+        with selector.iter_bounded(
+            spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS
+        ) as records:
+            captured = records
+            next(records)
+            raise RuntimeError("boom")
+    assert captured is not None
+    with pytest.raises(StopIteration):
+        next(captured)
 
 
 # =========================================================================================
