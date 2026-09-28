@@ -49,9 +49,11 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 - `CanonicalNormalizer._positions` 改为消费 pinned batch reader，借助固定 SQLite page cache 外排位置，再写入定长 int64 rank 文件。`_Survey` / `_UnitFacts` 直接持有惰性 Sequence，不再复制完整 position list / tuple；REST 位置使用 offset membership view。SQLite 与 rank 文件由索引对象拥有，survey 路径和 facts cache 有关闭 / 淘汰清理。
 - 为常数空间检测重复 index，这一切片把“同一 lineage 的历史 index 按快照时间严格递减”作为完整性约束。D2 与 REST writer 当前均按 index 递增顺序提交；旧 verifier 没有拒绝所有乱序但 index 唯一的历史。该切片将拒绝此类外部导入或手工构造的乱序历史，属于有意收窄，需在代码说明中保留此约束。
 
-2026-09-28 又在 `b61d609` 提交 Canonical committed-row / close 的流式核验：按 pinned scan 分批读取 `arrival_seq`、`knowledge_time` 与 schema version；序号以临时 disk-backed index 排序后与预期值逐项比较，close 的 unit 与 block 两次扫描都显式使用写入时的 `snapshot_id`。ready time 和 schema version 只保留有界摘要。静态复核确认代码路径持有状态有界于 Arrow batch + 固定摘要 / SQLite page cache + 定长索引 I/O；不具备 optional `scan_column_batches` 的 adapter 会 fail closed。全 null seq 现在明确抛出 `CatalogIntegrityError`；超过两个 distinct schema versions 时诊断只报告保留的两个值，但仍 fail closed。尚未运行测试、probe、build、lint、typecheck，代码和资源路径未验收。
+2026-09-28 又在 `b61d609` 提交 Canonical committed-row / close 的批次核验：按 pinned scan 批次读取 `arrival_seq`、`knowledge_time` 与 schema version；序号以临时 index 排序后与预期值逐项比较，close 的 unit 与 block 两次扫描都显式使用写入时的 `snapshot_id`。ready time 和 schema version 只保留摘要。**批次 API 不代表完整扫描内存有界**：对锁定的 PyIceberg 0.12.0 源码复核发现 planner 会构造完整 manifest entry、delete index 与 `FileScanTask` 集合；Arrow 路径还会汇总 delete arrays 并在 task 中物化批次列表。`scan_column_batches` 也尚未纳入 `RevisionCatalog` protocol，现有测试代理缺少委托；相关测试仍有对已删除 `_same_numbers` 的引用。当前不能声称扫描对行数 / 历史有硬上界。默认 tempfile 位置在本机 `/tmp`，该挂载是 tmpfs，文件 spill 仍可能计入主机/cgroup 内存。全 null seq 明确抛出 `CatalogIntegrityError`；超过两个 distinct schema versions 时诊断只报告保留的两个值，但仍 fail closed。上述均未运行测试、probe、build、lint、typecheck，代码和资源路径未验收。
 
-仍有 O(N) 状态：survey 与公开结果的 revision ID、可选保留的 committed IDs / rows、每个 microbatch 的 planned rows、D1 archive parse / 缓存，以及其他辅助 batch 集合；完整结果 API 的 tuple 仍是公开 O(N) 输出。Arrow 单批、SQLite sort 和 PyIceberg / Iceberg metadata 的完整工作集也未测。E1-CAP-1 仍阻断，32 MiB 门槛没有通过证据。
+随后本地整合分支增加 `64b021a`、`1d8f231`、`62bfc9d`、`3997e0b`：在 `normalize_unit` 结果路径从同一 pin 重建已提交 revision IDs，避免在 survey 中再保留第二份 ID tuple；Verifier / REST 单 batch 路径以 SQLite 保存请求 batch 的精确匹配数和首个最新 snapshot，并保持公开 `snapshots_of_batches` dict/list API。重建仍要返回 O(N) ID list / tuple，spool 仍需遍历整段 history；新 helper 不改变 PyIceberg planner/delete/task 工作集。公开 API 兼容性经独立静态复核后恢复。仅 `git diff --check` 与源码审阅；未运行测试或容量探针。
+
+仍有 O(N) 状态：公开结果 revision ID list / tuple、可选保留的 committed rows、每个 microbatch 的 planned rows、D1 archive parse / 缓存，以及调用方批次集合。普通 catalog fallback 的 history cycle detector 持有 O(H) `seen` set；builder 对同一 selection 历史会构造 snapshot-ID set。Arrow 单批、SQLite sort、tmpfs 文件、planner/delete state 和 PyIceberg / Iceberg metadata 的完整工作集均未测或未证明有界。E1-CAP-1 仍阻断，32 MiB 门槛没有通过证据。
 
 ## E1-R 实施和后续验收边界
 
@@ -64,3 +66,10 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 - `CanonicalUnitNormalized` 的 API 输出不能从容量统计中静默剔除。若改接口，应同时列出仓库内调用点、兼容期与显式 ID 消费方式，并形成 ADR 再实现。
 
 正式容量验收继续遵循 E1 review：当前代码线、M=256、N=10k/100k/500k、隔离子进程和重复运行；每个阶段增长不超过 32 MiB；记录 baseline、采样间隔、L/H、Catalog 调用与返回对象；同时用递归结构测试证明长期容器基数边界。该设计文档本身不是实现、测量或验收记录。
+
+### 2026-09-28 PyIceberg scan / spool 复核补充
+
+- 锁定版本为 PyIceberg 0.12.0。源码路径通过 `Snapshot.manifests()`、完整 manifest entry 列表、delete index、完整 task list，最后由 ArrowScan 汇总 delete 内容并将 task 结果批次列表化；降低 Arrow batch 或 worker 数不能构成全路径固定内存上限。
+- 暂无只改配置即可满足硬上界的方案。真正有界实现需逐 manifest / entry 遍历、限制在途 tasks，并对 positional-delete state 做可 spill 的逐批查询；还需保持 partition/schema/sequence/filter/delete 语义。现有 PyIceberg 私有 API 不足以直接组合出该保证，维护 fork 或替换 planner/delete 路径前需 Proposed ADR。
+- 本机默认 tempfile 落在 tmpfs。统一容量测量必须把临时文件所在 filesystem 纳入说明，并记录完整 cgroup memory 与进程 RSS；不得将 tmpfs 文件称为 RAM 外 spill。
+- 适配器侧 `scan_column_batches` 缺少 infrastructure `RevisionCatalog` 协议声明，现有 `ProxyCatalog` 测试 helper 不转发该方法；`test_normalizer.py` 仍调用已删除 `_same_numbers`。测试变更和接口兼容修复留在统一验收前的 E1-R follow-up；当前未运行测试。

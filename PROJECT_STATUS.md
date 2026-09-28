@@ -8,10 +8,10 @@
 | 项 | 值 |
 |---|---|
 | 项目版本 | 0.0.0 |
-| 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24，分支 `phase/1`） |
-| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。Wave A1–A4 已以 `0651e6a` 本地提交：P7 新增纯 Experiment/Hypothesis/output 绑定校验（不能证明预期 output 全集完整）；P3 命令输出 table binding/hash；P2 Web 消费 diagnostics 1.1.0 optional source hash；P8 fixture writer 注册 retro_audit。Wave C1–C3 已以 `1ad56a0` 本地提交：P12 精确类型搜索空间校验和 combine ref 冲突前置拒绝；P13 在调用 target source 前检查 deployment 准入；P14 冻结 GoldenRecord 输出并核对基线哈希。续审又将 `GoldenDiff.differences` 改为校验后的不可变快照，未测试。ADR-0042 implementation note 已更新现状。上述改动仅源码静态复核和 `git diff --check`；没有运行测试、build、lint、typecheck、probe 或验收。P3 现有测试断言和 P8 旧 1.0.0 fixture / ID 登记需在验收同步窗口更新。P7 durable v4 admission 已完成写入 / 恢复加固，并已补齐跨 PREPARE→COMMIT 的 lease、durable store 写 gate、round/approval 串行化、close 后拒写与只读 journal view；operator 专属 v5 持久身份基础已实现。ADR-0074 TOML parser、静态 Provider allowlist、有限轮次 CLI、路径与锚点预检及逐轮报告已合入本地 main；只做两轮源码静态复核，未测试、未验收。六类组合算子不可执行；没有冻结 Profile，不能生成合规运行配置。E1-CAP-1 阻断；D3E 已接受、D4 已关闭，其余 Phase 未验收 |
+| 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24） |
+| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。Wave A1–A4 已以 `0651e6a` 本地提交；Wave C1–C3 已以 `1ad56a0` 本地提交。P7 durable v4/v5、ADR-0074 operator 与相关模块基础逻辑已进入本地 main，详细限制见模块计划。新增 E1-R 本地提交 `64b021a`、`1d8f231`、`62bfc9d`、`3997e0b`：重建 committed revision IDs、磁盘索引快照匹配计数并保留已导出的 dict/list API；仅静态审阅与 `git diff --check`，没有运行测试、build、lint、typecheck、probe 或验收。E1-CAP-1 仍阻断；批次读取全路径内存未证明有界，archive parse、完整返回 ID tuple、Iceberg metadata 与部分调用方持有集合仍有容量上界问题。D3E 已接受、D4 已关闭，其余 Phase 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 124 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。当前 3 个本地分支 / 3 个 worktree；根 `phase/1` Cursor 工作区和研究规格 Claude worktree 因活动会话保留，独有 G1 测试已迁入主线并未运行。E1 / D3E 证据提交已有 archive ref，对应 detached worktree 已清理；其他无活动且无独有内容的 detached worktree 已移除。Wave A1–A4 与 C1–C3 已进入本地主线，代码提交与 Phase 验收分开记录，限制和待补验收产物见模块计划。全模块复核确认项目非空骨架；TrialLedger 批量持久化、durable v4 admission 与完整进程内写 gate、operator 专属 v5 身份基础及 ADR-0074 operator 已进入本地主线，均未完成 Phase 验收。ADR-0073、0074 已接受；六类 P7 算子仍 fail closed。E1 主线 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟。模块收敛计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) |
+| 总体状态 | 🔄 本状态提交后本地 `main` 比 `origin/main@44fe9a2` 超前 130 个提交，未推送；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。清理后为 2 个本地分支 / 2 个 worktree：root `main` 与待确认 Claude 会话结束的研究规格 worktree；根 `phase/1` 已存 archive ref 后删除，root checkout 已切回 main。E1 / D3E 证据保留 archive refs。Wave A1–A4、C1–C3 和本轮 E1-R 已进入本地主线，代码实现与 Phase 验收分开；限制见模块计划。项目非空骨架；P7 durable v4/v5 与 ADR-0074 operator 已实现但未验收，六类 P7 算子仍 fail closed。E1 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟。模块收敛计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-28 |
 
@@ -45,7 +45,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；四条 2026-09-26 种子已显式固定 `schema_version: 2.1.0`。种子标签 / 资产仍需具名人工审阅；新增种子的黄金哈希覆盖尚未补齐。**Phase 0.5 未验收** |
-| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；main 上的 RSS probe 与 opt-in 分阶段诊断均未运行。诊断模式只报告 Catalog 调用次数、manifest / file task 规划数量、Python 分配归因与返回对象可达大小估计，不能作为 RSS 或 E1 证据。归档候选 `a75278e` 的 500k `resume` / `replay` 增长分别为 59.9 / 63.9 MiB，只说明候选在该合成工作负载下超过 32 MiB，不能代表 main 或生产。E1-CAP-1 仍阻断；2026-09-28 对账确认仓库内 positions 和 committed-time / close 数组已有磁盘索引与批次流式实现，但尚未验证；archive parse、batch index、完整 result ID tuple 的增长仍需处理或测量；PyIceberg metadata / manifest 的 RSS 归因未测。完整 tuple 计入门槛；保持 32 MiB 与严格证明语义。修复路线和 API / history 分界见 [E1-CAP-1 对账](docs/reviews/2026-09-28-e1-cap1-design-reconciliation.md)。Phase 1 未验收 |
+| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；main 上 RSS probe 与诊断均未运行。候选 `a75278e` 的 500k 增长 59.9 / 63.9 MiB 不代表 main。E1-R 增加 committed ID 重建与 Verifier 磁盘快照计数，并保持公开 dict/list API；提交 `64b021a`、`1d8f231`、`62bfc9d`、`3997e0b` 未验证。新的静态审查还确认 PyIceberg 0.12.0 的批次读取接口没有全 scan 内存上界；默认 tempfile 在本机落入 tmpfs。`RevisionCatalog` / 测试代理尚未声明批次扫描能力，现有测试仍引用已删除的 `_same_numbers`。archive parse、完整 result ID tuple、generic history fallback 的 `seen` set、builder caller-held snapshot ID set 与 metadata/manifest 增长均未解决。完整 tuple 计入 32 MiB；E1-CAP-1 阻断，Phase 1 未验收。路线见 [E1-CAP-1 对账](docs/reviews/2026-09-28-e1-cap1-design-reconciliation.md) |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断载荷 1.1.0 记录来源 `StateResult.result_hash`（裸序列为 null），旧 1.0.0 报告可原样读回并复原 id；来源哈希只是报告声明、不认证 Registry 存在性；Web fixture 已按新载荷重生成；测试、类型检查与阶段验收未运行 |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；`EventResult → OutcomeEvent` 纯转换已在 main，以 event id / 可观测时间构造 Outcome 标签输入；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；未跑测试，Phase 4 未验收 |
@@ -126,8 +126,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ### Codex 当前工作
 
 - 已核实的模块实现先在协调分支收敛，并于 2026-09-27 进入本地 `main`；本轮又将 E1 probe、P0.5 seed schema 固定和 Phase 11 worker journal 并发保护择取到 main。后续模块开发在隔离任务分支进行，验收 / 测试留后；不整支合并互相重叠的 E1 候选。
-- 本轮合入 P2 / P4 接线并核正执行计划；`phase/1` 已无 main 未含提交，但仍由根工作区检出，根内未跟踪资料和 Cursor 会话保留。研究规格 Claude worktree 保留活动内容，不覆盖或删除。E1 PR #10 因与 main 冲突且容量门失败而关闭；`c3868dc` 已存入 `refs/archive/2026-09-28/branches/remote/fix/e1-cap1`，远端和本地候选分支已移除，保留 detached worktree 与归档恢复点。当前核实为 3 个本地分支、3 个 worktree、1 个远端分支。
-- 本地 `main` 含 P7 non-runnable typed-plan parser / 只读直接引用校验器、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝、有限查询保护、E1 主线 RSS probe / 可选分阶段诊断、知识种子版本固定、worker journal stale-writer guard、Catalog / Revision snapshot 环保护、P2 / P4 接线和 E1-R batch-history / streaming scan / 磁盘 positions 与 committed-row 校验基础切片（`de3bfdb`、`7197973`、`b61d609`）；当前比 `origin/main` 超前 124 个本地提交，未推送。归档候选的失败 probe 不代表 main 容量，E1-CAP-1 继续阻断。主线 probe 与诊断模式均未运行；测试 / build / 阶段验收均暂缓。
+- 本轮合并前已核实 `phase/1` 没有 main 未含提交；tip 已保存在 `refs/archive/2026-09-28/branches/local/phase-1`，本地分支已删除且 root checkout 回到 `main`。旧未跟踪计划保存在本地归档目录，Claude 研究规格 worktree 因尚未确认会话结束而保留。E1 PR #10 失败证据仍在 archive ref；远端仅保留 `main`。
+- 本地 `main` 含 P7 non-runnable typed-plan parser / 只读直接引用校验器、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝、有限查询保护、E1 主线 RSS probe / 可选分阶段诊断、知识种子版本固定、worker journal stale-writer guard、Catalog / Revision snapshot 环保护、P2 / P4 接线和 E1-R batch-history / batch reads / 磁盘 positions 与 committed-row 校验基础切片，以及 committed ID 重建与有界 snapshot match index（`64b021a`、`1d8f231`、`62bfc9d`、`3997e0b`）；本状态提交后比 `origin/main` 超前 130 个提交，未推送。批接口不证明 PyIceberg 扫描整体有界；默认 tempfile 在本机进入 tmpfs。归档候选失败 probe 不代表 main 容量，E1-CAP-1 继续阻断。主线 probe 与诊断模式、测试 / build / 阶段验收均暂缓。
 - Cursor 已按 ADR-0069 独立只读复核 P12 `combine`，未发现具体实现遗漏；测试留待统一验收。P11 最小本机 CLI 按 ADR-0067 与 operator 规格实施；无新架构 ADR、测试暂缓统一验收。
 
 ## 6. 当前待决策
@@ -138,7 +138,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|---|
 | D-E1-BASE | E1 后续实现以哪条代码线为基线？ | **以当前本地 `main` 为整合基线；已归档的 `fix/e1-cap1` 仅作按路径择取的代码与容量探针参考，不整支合并。** 候选 `history()` 对重复 snapshot ID 的查找顺序与 `main` 的 first-listed 语义不一致；任何移植都要保留 `main` 的历史、固定 snapshot 与拒绝规则 | 已决定（2026-09-27，Codex 依 Raphael 全权授权）；候选失败记录保留，`main` 容量尚未测 |
 | E1-HIST | PyIceberg metadata、Parser / scan 临时状态和 API 返回对象是否计入 E1-CAP-1？ | **计入完整进程工作集**，既有 32 MiB 门槛与验收条件不变；不因对象来自第三方依赖而排除 | 重申既有容量口径，非架构变更；见 `docs/reviews/e1-bounded-history-options.md`；E1 仍阻断 |
-| E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | 依 Raphael 2026-09-28 的项目统筹授权，先按已记录的 E1-R 设计路径补实现基础切片，不改 32 MiB 门槛、冻结契约或权威 metadata 读写 / 历史保留语义；E1-API 若需改变公开结果类型，仍先出 Proposed ADR | E1-R batch-history / pinned streaming scan / disk-backed positions 与 committed-row / close 校验基础切片已本地提交 `de3bfdb`、`7197973`、`b61d609`，均未验证；整体容量设计与 E1-CAP-1 仍开放、阻断 |
+| E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | 依 Raphael 2026-09-28 的项目统筹授权，先按已记录的 E1-R 设计路径补实现基础切片，不改 32 MiB 门槛、冻结契约或权威 metadata 读写 / 历史保留语义；E1-API 若需改变公开结果类型，仍先出 Proposed ADR | E1-R 已有 batch-history / pinned streaming scan / disk-backed positions / committed-row 校验、committed ID 重建与有界 snapshot match index；新提交 `64b021a`、`1d8f231`、`62bfc9d` 均未验证。archive parse、完整 result tuple 与调用方增长项仍待处理或测量；整体容量设计与 E1-CAP-1 仍开放、阻断 |
 
 既有 E1-CAP-1 标准不变：完整进程工作集都计入容量测量，且增长须满足已记录的 N / batch-count 上界。已记录的 59.9 / 63.9 MiB 是 `fix/e1-cap1` 候选分支数据，不是当前 `main` 的容量结果；候选探针以 10 ms 间隔采样 `/proc` VmRSS、每个 N 仅运行一次，元数据阶段约解释 20 MiB，其余约 40 MiB 未归因。`main` 自身没有 resume / replay 探针；当前实现已磁盘化 positions 与 batch-history 索引，并将 committed-time 和 close 的 arrival_seq 精确比较改为批次扫描 + 磁盘索引，尚未验证。Arrow 单批、archive parse、完整结果 ID / commits 与 Iceberg metadata 等增长仍未解决或测量，因此不得外推候选数值或宣称 `main` 通过。
 
@@ -292,17 +292,12 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-27 | 接受并实现 ADR-0071：P7 failed round 只读复核摘要 | Claude / Cursor / Codex 子代理独立只读审查；纯内存投影 audit、checkpoint 与 ledger journal；Ruff / format / mypy 通过，未跑测试 / build，不代表 Phase 验收 |
-| 2026-09-27 | 主线状态文档同步与冗余协调分支归档 | 更新状态 / 记忆 / 计划；branch/worktree 清理至 11 / 17；只改本地引用，不推送远端 |
-| 2026-09-28 | 合入 P2 / P4 基础接线并收敛 PR #10 | main 领先远端 75 个提交；E1 失败 PR 关闭并归档，远端仅留 main；P2 / P4 未运行测试 |
-| 2026-09-28 | 全阶段差额复核并修订路线图状态 | 项目不是空骨架；对齐 E2 / P13 范围；P7 算子与 Worker 组合启动器仍是主要基础逻辑缺口，未运行测试 |
-| 2026-09-28 | P6 网格归属与 Git 恢复状态同步 | 明确共享网格的精确归属；研究规格分支 tip / 独有测试存入 archive ref；当时 main ahead 79，未推送 |
-| 2026-09-28 | P7 TrialLedger 批次预登记单事件持久化与线程同步 | 合入 `d205bc4` / `0632367`；单 journal 事件全批预登记、同实例线程访问加锁；仅 `git diff --check` 通过，测试 / build / lint / 验收未运行；不解决跨 journal typed-plan admission 恢复 |
-| 2026-09-28 | ADR-0073 durable v4 恢复已实现并合入本地 main | PlanAdmissionJournal、TrialLedger exact recovery、v3/v4 opener、round-start identity、checkpoint / anchor coordinator 已实现；只做 `git diff --check` 与源码复核。未运行测试 / build / lint，未验收；算子仍不可运行 |
-| 2026-09-28 | 接受 ADR-0074：本机有限批次 synthetic operator | 仅合成数据、静态 Provider allowlist、严格 TOML、有限轮数、外部 scheduler、只读报告；先完成 v4，再做 operator-only v5。Profile 尚未冻结，当前不能生成合规运行配置；未实施、未验收 |
-| 2026-09-28 | 加固 ADR-0073 durable v4 并并入 operator v5 identity 基础 | `e3ac380` / `f91760b` 加固 PREPARE、checkpoint、anchor、线程锁、恢复与 lifecycle guard；`30a5dec` / `0288ff2` 加入 v5 identity 并保留 v4 错误契约。lease 与完整写 gate 随后在下列记录实现；v5 parser / allowlist / CLI 未实现 |
-| 2026-09-28 | ADR-0073 admission lease 与 durable 写入边界加固 | `d0ffdae`、`037dc03`、`4e7e7ae`、`60ae712` 合入本地 main；覆盖 prepare→complete lease、所有 checkpointed store 写 gate、round/approval 原子区、round 间写拒绝、state lock close 和只读 journal view。Codex 子代理独立复审未发现阻断项；`git diff --check` 通过。测试 / build / lint / 类型检查 / probe / Phase 验收均未运行；跨文件崩溃在 checkpoint 与 audit record 间仍按既有规则 fail closed |
-| 2026-09-28 | 实现并合入 ADR-0074 有限批次 synthetic operator | `0d4862a`：严格 TOML 编译、静态 Provider allowlist、有限轮次 CLI、state / anchor 预检与逐轮报告；两轮源码复核无阻断项，仅运行 `git diff --cached --check`，未测试 / 验收。功能分支以 archive ref 保留后清理；本地 `main` 未推送 |
+| 2026-09-28 | P7 TrialLedger 批次预登记单事件持久化与线程同步 | `d205bc4` / `0632367`；仅 `git diff --check`，测试 / 验收未运行 |
+| 2026-09-28 | ADR-0073 durable v4 与 ADR-0074 operator 基础完成 | 持久 admission、写入 gate、v5 identity 与有限批次 operator 已实现；未测试 / 验收，Profile 未冻结、算子 fail closed |
+| 2026-09-28 | 实现并合入 ADR-0074 有限批次 synthetic operator | `0d4862a`；仅源码复核与差异检查，未测试 / 验收；功能分支归档清理 |
+| 2026-09-28 | 分支收敛并校正模块基础逻辑计划 | `phase/1` 已归档删除；项目仍非空骨架；统一验收暂缓 |
+| 2026-09-28 | 收敛 E1-R ID 与 snapshot history 持有量 | `64b021a`、`1d8f231`、`62bfc9d`；公开 dict/list API 保持兼容；未运行测试或容量探针，E1-CAP-1 仍阻断 |
+| 2026-09-28 | 收敛 E1-R ID 与 snapshot history 持有量 | `64b021a`、`1d8f231`、`62bfc9d`、`3997e0b`：重建 committed IDs、Verifier 磁盘快照计数、保留公开 dict/list API；仅静态复核和 `git diff --check`，未运行测试或容量探针；PyIceberg scan 有界性未证明，E1-CAP-1 仍阻断 |
 
 ## 10. 下一阶段进入条件
 
@@ -326,7 +321,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 118 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。3 个本地分支、3 个 worktree；根 `phase/1` 的 Cursor 工作区和 Claude 研究规格工作区仍保留，独有测试另有 archive ref。清理与后续基础逻辑批次见 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md)。
+1. 本状态提交后，本地 `main` 比 `origin/main@44fe9a2` 超前 130 个提交、尚未推送。远端仅保留 `main`；E1 PR #10 已关闭并归档。清理后 2 个本地分支 / 2 个 worktree；`phase/1` 已归档删除，Claude 研究规格 worktree 保留至确认会话结束。模块基础逻辑计划见 [此处](docs/plans/2026-09-28-module-foundation-completion.md)。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
 
@@ -334,7 +329,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > Claude 下一步可以执行什么？
 
-1. A1–A4 已提交为 `0651e6a`，C1–C3 已提交为 `1ad56a0`；继续按 [模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) 做后续有批准范围的模块任务。清理后只剩根 `phase/1` Cursor 工作区与研究规格 Claude 工作区；均确认有活动会话，暂保留。E1 失败证据在 archive ref，候选 worktree 已移除；主线 RSS probe 尚未运行，失败候选不代表 main 容量。
+1. A1–A4 已提交为 `0651e6a`，C1–C3 已提交为 `1ad56a0`；E1-R 当前完成基础内存切片，未完成容量验收。按模块计划继续审计剩余实现缺口。根 checkout 已回到 main；仅 Claude 研究规格 worktree 因会话状态未确认而保留。E1 失败证据仍在 archive ref；main RSS probe 尚未运行。
 2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery、v5 operator identity 与 ADR-0074 有限批次 operator 已进入本地 main，均尚待统一验收。继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
 3. P7 算子继续 fail closed；逐项语义、Provider lowering、审计持久化与 TrialLedger 原子关系未获独立 ADR 前不得启用。P12 循环内替换继续按 P12-LOOP 暂缓。
 4. 不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
