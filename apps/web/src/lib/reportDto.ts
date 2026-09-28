@@ -45,7 +45,7 @@ export function inspectReportDTO(report: ReportEnvelope): ReportDTOView {
   if (
     report.kind === "paper_deviation" &&
     version === "2.0.0" &&
-    !["declared_scope", "scope_hash", "summary", "marks"].every((field) => field in payload)
+    !["declared_scope", "summary", "marks"].every((field) => field in payload)
   ) {
     return { status: "invalid", version, reason: "2.0.0 requires scope-bound report fields" };
   }

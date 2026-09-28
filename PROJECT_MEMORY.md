@@ -14,6 +14,7 @@
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
 - 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启；D3E 已于 2026-09-27 独立验收、D4 已关闭；E1-CAP-1 是当前阻断。`fix/e1-cap1@a75278e` 候选探针报告 500k resume / replay 跨规模增长 59.9 / 63.9 MiB（超过 32 MiB），但该代码线与探针未合入 `main`；main 的 resume / replay 尚未测量，不能继承候选数值。上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定；E1-CAP-1 仍阻断，本轮后置
 - 当前开发顺序：先整合模块基础逻辑，再统一验收。P7 已有 non-runnable typed plan、只读绑定校验器、durable v4 admission / TrialLedger 写入协调与 ADR-0074 本机有限批次 operator 基础；六类组合算子仍全部 fail closed。producer lowering 与完整预期 output 集合证明仍未完成。Phase 1 的 E1 主线 RSS probe 有 opt-in 分阶段诊断模式；默认测量不启动 tracer，诊断模式不具备 E1 证据资格。主线 probe / 诊断 / 测试 / build 均未运行。
+- 决策权（2026-09-28 起）：Raphael 明确授权 Claude Code 以 PM 身份直接决定工程 / 架构 / 模块语义（记录于 PROJECT_STATUS §6 D-PM-AUTH）；不可逆或对外操作（实盘、密钥、删数据、push / 合并 main、安装软件）仍先告知 Raphael
 
 ## 2. Current Architecture
 
