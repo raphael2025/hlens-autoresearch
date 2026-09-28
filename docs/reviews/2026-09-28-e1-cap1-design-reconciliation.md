@@ -42,7 +42,7 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 
 ## 2026-09-28 实施进度：批次历史与流式读取
 
-在现有 E1-R 路径内先落地一个基础切片，尚未提交或验收：
+在现有 E1-R 路径内先落地一个基础切片，已本地提交为 `de3bfdb`，尚未验收：
 
 - `PyIcebergCatalogAdapter.scan_column_batches` 使用 PyIceberg 的 Arrow batch reader，并在迭代耗尽、读取异常或显式 `close()` 时关闭 reader；`PinnedCatalogView` 将请求固定到显式或绑定 snapshot，底层不支持时拒绝，不退回整表物化。
 - `PersistedRowVerifier` 的 batch-history 缓存改为每个 lineage 的固定摘要；验证时第二遍从缓存的同一 history head 流式读取快照。D2 继续核连续前缀、批大小计划和 touched batch 的 fingerprint；D3E 继续核允许缺口的 index、分批行数和 fingerprint。
