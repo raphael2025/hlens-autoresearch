@@ -62,9 +62,10 @@ re-selecting** and without any whole-dataset tuple:
 - step 6 keeps the spans of the requested symbols' rows only.
 
 The v3 path holds one chunk plus what the request itself carries (its observations and, for an
-interval spec, their rows' spans). Derived bars (``feature_request_from_derived_bars``) stay v2-only
-(a v3 hash is refused by the store). The verifier's catalog and evidence reader are read through
-its public ``adapter`` and ``builder`` properties; it must prove manifests of its own catalog.
+interval spec, their rows' spans). Derived bars are re-derived one UTC-day slice at a time from
+the verified v3 observations; a v3 call requires the verifier. The verifier's catalog and evidence
+reader are read through its public ``adapter`` and ``builder`` properties; it must prove manifests
+of its own catalog.
 """
 
 from __future__ import annotations
@@ -72,13 +73,13 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Final
 
 from pyiceberg.expressions import And, EqualTo, In
 
 from core.contracts.feature import FeatureObservation, FeatureRequest
-from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
+from core.contracts.revision import PointInTimeSelection, PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
 from core.contracts.universe import (
     AvailabilityEvidenceGap,
@@ -247,10 +248,28 @@ def feature_request_from_derived_bars(
     observations: Sequence[FeatureObservation],
     feature: FeatureSpec,
     evaluation_times: Sequence[datetime],
+    evidence_verifier: StreamingEvidenceVerifier | None = None,
 ) -> FeatureRequest:
     """A request for ``feature`` over ``minutes`` derived bars proven to be exactly
-    ``resample_bars`` of the manifest's own dataset selection (F4-R2)."""
-    manifest = _bound_manifest(builder, manifest_content_hash, pit_spec, observations)
+    ``resample_bars`` of the manifest's own dataset selection (F4-R2).
+
+    ``evidence_verifier``: module docs (v3); ``None`` is the v2 path, unchanged."""
+    if evidence_verifier is None:
+        manifest = _bound_manifest(builder, manifest_content_hash, pit_spec, observations)
+    else:
+        loaded = load_any_manifest(builder, manifest_content_hash, evidence_verifier)
+        if isinstance(loaded, ResearchDatasetEvidenceManifest):
+            return _evidence_derived_feature_request(
+                adapter,
+                loaded,
+                evidence_verifier,
+                pit_spec=pit_spec,
+                minutes=minutes,
+                observations=observations,
+                feature=feature,
+                evaluation_times=evaluation_times,
+            )
+        manifest = _checked_binding(loaded, pit_spec, observations)
     if manifest.point_in_time.simulation_time is None:
         raise DatasetBindingError("derived bars come from a point-simulation dataset (E4)")
     rows = _dataset_rows(adapter, manifest)
@@ -844,3 +863,131 @@ def _evidence_feature_request(
     if interval:
         _check_membership(request, feature, spans)
     return request
+
+
+def _evidence_derived_feature_request(
+    adapter: RevisionCatalog,
+    manifest: ResearchDatasetEvidenceManifest,
+    evidence_verifier: StreamingEvidenceVerifier,
+    *,
+    pit_spec: PointInTimeSpec,
+    minutes: int,
+    observations: Sequence[FeatureObservation],
+    feature: FeatureSpec,
+    evaluation_times: Sequence[datetime],
+) -> FeatureRequest:
+    """Re-derive v3 observations in one verified UTC-day slice at a time (ADR-0077)."""
+    _checked_binding(manifest, pit_spec, observations)
+    if manifest.data_type != _DATA_TYPE:
+        raise DatasetBindingError(f"a {manifest.data_type} dataset has no {_DATA_TYPE} bars")
+    if manifest.point_in_time.simulation_time is None:
+        raise DatasetBindingError("derived bars come from a point-simulation dataset (E4)")
+    given: dict[str, list[FeatureObservation]] = {}
+    for item in observations:
+        symbol = item.values.get("symbol")
+        if not isinstance(symbol, str):
+            raise DatasetBindingError(f"observation {item.observation_key} names no symbol")
+        given.setdefault(symbol, []).append(item)
+
+    proven: dict[str, list[FeatureObservation]] = {}
+    wanted = frozenset(given)
+    slice_key: tuple[str, datetime] | None = None
+    slice_observations: list[FeatureObservation] = []
+
+    def finish_slice() -> None:
+        if slice_key is None or not slice_observations:
+            return
+        symbol, day = slice_key
+        start = max(manifest.dataset.time_range_start, day)
+        end = min(manifest.dataset.time_range_end, day + timedelta(days=1))
+        if start >= end:
+            raise CatalogIntegrityError("a v3 dataset observation is outside its declared window")
+        selection = _derived_slice_selection(manifest.point_in_time, slice_observations)
+        try:
+            bars = resample_bars(selection, minutes, start, end)
+        except ResampleError as exc:
+            raise DatasetBindingError(
+                f"the dataset's {symbol} bars cannot be resampled: {exc}"
+            ) from exc
+        proven.setdefault(symbol, []).extend(
+            derived_bar_observations(bars, selection, manifest.point_in_time)
+        )
+
+    with iter_dataset_chunks(adapter, manifest, evidence_verifier) as chunks:
+        for chunk in chunks:
+            for entry, observation in dataset_chunk_observations(
+                adapter, manifest, chunk, wanted
+            ):
+                event_day = observation.event_time.replace(
+                    hour=0, minute=0, second=0, microsecond=0
+                )
+                current = (entry.row["symbol"], event_day)
+                if slice_key != current:
+                    if slice_key is not None and current < slice_key:
+                        raise CatalogIntegrityError(
+                            "v3 dataset rows are not ordered by symbol and UTC-day slice"
+                        )
+                    finish_slice()
+                    slice_key = current
+                    slice_observations = []
+                slice_observations.append(observation)
+    finish_slice()
+
+    for symbol, items in sorted(given.items()):
+        _require_exact(symbol, items, proven.get(symbol, ()), f"{minutes}-minute derived bars")
+    return pit_feature_request(
+        pit_spec=manifest.point_in_time,
+        observations=observations,
+        feature=feature,
+        evaluation_times=evaluation_times,
+        manifest_content_hash=manifest.content_hash(),
+    )
+
+
+def _derived_slice_selection(
+    spec: PointInTimeSpec, observations: Sequence[FeatureObservation]
+) -> PitSelection:
+    """A bounded point selection synthesized only from a verified v3 UTC-day slice."""
+    simulation_time = spec.simulation_time
+    knowledge_cutoff = spec.knowledge_cutoff
+    if simulation_time is None or knowledge_cutoff is None:
+        raise DatasetBindingError("derived bars require a point-simulation dataset (E4)")
+    selections: list[PointInTimeSelection] = []
+    selected_rows: dict[str, Mapping[str, Any]] = {}
+    lineage: list[SelectedRevisionLineage] = []
+    for observation in observations:
+        revision = observation.lineage.canonical_revision_id
+        if revision in selected_rows:
+            raise CatalogIntegrityError(f"Canonical revision {revision} occurs twice in a slice")
+        selections.append(
+            PointInTimeSelection(
+                observation_key=observation.observation_key,
+                simulation_time=simulation_time,
+                knowledge_cutoff=knowledge_cutoff,
+                status=PointInTimeStatus.SELECTED,
+                selected_revision_id=revision,
+                maximal_heads=(revision,),
+            )
+        )
+        selected_rows[revision] = {
+            "revision_id": revision,
+            "observation_key": observation.observation_key,
+            "interval_start": observation.event_time,
+            "interval_end": observation.event_end_time,
+            "symbol": observation.values["symbol"],
+            "available_time": observation.available_time,
+            "knowledge_time": observation.knowledge_time,
+            **{name: observation.values[name] for name in BAR_VALUE_COLUMNS},
+        }
+        lineage.append(observation.lineage)
+    return PitSelection(
+        canonical_table=rules.CANONICAL_TABLES[_DATA_TYPE].table,
+        selections=tuple(selections),
+        lineage=tuple(lineage),
+        evidence_gaps=(),
+        conflicts=(),
+        records={},
+        edges={},
+        evidence_bound=True,
+        selected_rows=selected_rows,
+    )

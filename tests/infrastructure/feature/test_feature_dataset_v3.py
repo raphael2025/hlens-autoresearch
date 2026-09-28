@@ -26,7 +26,8 @@ from infrastructure.feature.dataset import (
     feature_request_from_dataset,
     feature_request_from_derived_bars,
 )
-from infrastructure.feature.observations import bar_observations
+from infrastructure.feature.observations import bar_observations, derived_bar_observations
+from infrastructure.canonical.resample import resample_bars
 from infrastructure.feature.runner import run_feature
 from infrastructure.pit.selector import PitSelector
 from plugins.features import BarVolumeSumProvider
@@ -59,6 +60,14 @@ class _Datasets:
             self.spec, "klines_1m", SYMBOL, *v.DAY_WINDOW
         )
         return bar_observations(selection, self.spec)
+
+    def derived_observations(self, minutes: int) -> tuple[FeatureObservation, ...]:
+        selection = PitSelector(self.w.h.adapter, self.w.h.storage).select(
+            self.spec, "klines_1m", SYMBOL, *v.DAY_WINDOW
+        )
+        return derived_bar_observations(
+            resample_bars(selection, minutes, *v.DAY_WINDOW), selection, self.spec
+        )
 
     def request(
         self,
@@ -164,7 +173,7 @@ def test_a_v3_interval_evaluation_outside_the_members_span_is_refused(w: World) 
 
 
 # ---------------------------------------------------------------------------------------------
-# v2 unchanged; v3 needs its verifier; derived bars stay v2-only
+# v2 unchanged; v3 needs its verifier; derived bars are re-derived per UTC-day slice
 
 
 def test_a_v2_hash_with_an_evidence_verifier_is_exactly_the_v2_path(w: World) -> None:
@@ -180,7 +189,58 @@ def test_a_v3_hash_without_an_evidence_verifier_is_refused(w: World) -> None:
         data.request((ds.SIM + LAG,), v3=True, evidence_verifier=None)
 
 
-def test_derived_bars_over_a_v3_manifest_are_refused(w: World) -> None:
+def test_a_v3_derived_request_is_the_v2_request_but_for_the_manifest_hash(w: World) -> None:
+    data = _datasets(w)
+    derived = data.derived_observations(1)
+    times = (ds.SIM + LAG,)
+    ours = feature_request_from_derived_bars(
+        w.h.adapter,
+        w.h.storage,
+        builder=w.builder(),
+        manifest_content_hash=data.v3_hash,
+        pit_spec=data.spec,
+        minutes=1,
+        observations=derived,
+        feature=FEATURE,
+        evaluation_times=times,
+        evidence_verifier=data.machinery.verifier,
+    )
+    theirs = feature_request_from_derived_bars(
+        w.h.adapter,
+        w.h.storage,
+        builder=w.builder(),
+        manifest_content_hash=data.v2_hash,
+        pit_spec=data.spec,
+        minutes=1,
+        observations=derived,
+        feature=FEATURE,
+        evaluation_times=times,
+    )
+    _same_but_the_hash(ours, theirs, data.v3_hash)
+
+
+def test_a_v2_derived_hash_with_an_evidence_verifier_is_exactly_the_v2_path(w: World) -> None:
+    data = _datasets(w)
+    observations = data.derived_observations(1)
+    args = {
+        "adapter": w.h.adapter,
+        "storage": w.h.storage,
+        "builder": w.builder(),
+        "manifest_content_hash": data.v2_hash,
+        "pit_spec": data.spec,
+        "minutes": 1,
+        "observations": observations,
+        "feature": FEATURE,
+        "evaluation_times": (ds.SIM + LAG,),
+    }
+    with_verifier = feature_request_from_derived_bars(
+        **args, evidence_verifier=data.machinery.verifier
+    )
+    without_verifier = feature_request_from_derived_bars(**args)
+    assert with_verifier == without_verifier
+
+
+def test_a_v3_derived_hash_without_an_evidence_verifier_is_refused(w: World) -> None:
     data = _datasets(w)
     with pytest.raises(ManifestFormError):
         feature_request_from_derived_bars(
@@ -189,8 +249,26 @@ def test_derived_bars_over_a_v3_manifest_are_refused(w: World) -> None:
             builder=w.builder(),
             manifest_content_hash=data.v3_hash,
             pit_spec=data.spec,
-            minutes=5,
-            observations=data.observations(),
+            minutes=1,
+            observations=data.derived_observations(1),
             feature=FEATURE,
             evaluation_times=(ds.SIM + LAG,),
+        )
+
+
+def test_v3_derived_observations_missing_a_bar_are_refused(w: World) -> None:
+    data = _datasets(w)
+    observations = data.derived_observations(1)
+    with pytest.raises(DatasetBindingError, match="not exactly"):
+        feature_request_from_derived_bars(
+            w.h.adapter,
+            w.h.storage,
+            builder=w.builder(),
+            manifest_content_hash=data.v3_hash,
+            pit_spec=data.spec,
+            minutes=1,
+            observations=observations[:-1],
+            feature=FEATURE,
+            evaluation_times=(ds.SIM + LAG,),
+            evidence_verifier=data.machinery.verifier,
         )
