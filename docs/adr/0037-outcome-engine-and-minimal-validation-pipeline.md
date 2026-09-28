@@ -139,6 +139,24 @@ pair.feature_manifest_hash`，报告视图记录 `pair_hash`。该接线属后�
 （匹配通过；上游 snapshot 不同、标的集合不同、ADR-0032 选择不同、价格视图早于 / 晚于区间终点、知识截止不同、角色互换、伪造 /
 未持久化 manifest、非 builder 验证者均拒绝）。没有新增契约或 ADR。状态：FRAMEWORK_IMPLEMENTED / NOT_VALIDATED。
 
+## Implementation note (research-side manifest-pair binding, 2026-09-28)
+
+The research-side wiring described above as belonging to a later batch is now present in
+`research/strategies/validation.py`. `ValidatorSetup.manifest_pair` accepts an optional
+`ManifestPair`; callers provide the manifest hashes of the feature requests that feed signals
+through `feature_manifest_hashes`. On the dataset path, `G0.manifest_binding` checks that the pair
+hash recomputes under either the v2 pairing rule or the v3 evidence rule, that the pair's feature
+hash matches every supplied feature-request hash, and that its price hash matches
+`dataset_bars.manifest_content_hash`. A pair without dataset bars, feature hashes without a pair,
+or any other binding mismatch fails the gate. The report's `price_binding` view records the pair's
+feature hash, price hash, pair hash, and supplied feature hashes.
+
+This wiring does not change the decision or add a contract. The validator does not hold a catalog
+handle and does not re-prove the source manifests or the `ManifestPair`; it checks the supplied
+pair's hash and its relationship to the dataset wrapper and caller-supplied feature hashes. The
+existing synthetic path remains unverified and does not add a binding gate. No checks were run for
+this documentation synchronization.
+
 ## Implementation note (PostgreSQL variants, 2026-09-26)
 
 补上述缺口列表中"尚无 PostgreSQL 变体测试"（`docs/reviews/2026-09-25-framework-debug-backlog.md` C 节）：
