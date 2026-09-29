@@ -22,6 +22,7 @@ import pyarrow as pa
 import pytest
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder
 from infrastructure.pit.selector import (
@@ -119,6 +120,36 @@ def test_iter_bounded_matches_select_selections_lineage_and_gaps(h: RestHarness)
         item.canonical_revision_id: item for item in legacy.lineage
     }
     assert _gaps_by_revision(records) == {gap.revision_id: gap for gap in legacy.evidence_gaps}
+
+
+def test_pit_edge_groups_are_lazy_and_unmatched_keys_fail_closed(h: RestHarness) -> None:
+    """Sorted merge holds a future edge iterator, and refuses edges with no row key."""
+    _chain(h)
+    spec = _spec(h, cutoff=K_E)
+    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    evidence = next(item for group in legacy.edges.values() for item in group)
+    raw = {"evidence": evidence.model_dump(mode="json")}
+    consumed: list[object] = []
+
+    def future_group() -> Iterator[dict[str, Any]]:
+        consumed.append(raw)
+        yield raw
+
+    # No edge for this row: the next sorted group's contents stay untouched.
+    assert selector_module._pit_take_key_edges("a", "b", future_group()) == ()
+    assert consumed == []
+
+    # At the matching row key, consume and validate the whole group in deterministic order.
+    assert selector_module._pit_take_key_edges("b", "b", iter((raw,))) == (evidence,)
+
+    # A mapped group that sorts before the current row proves that a row key was missed.
+    with pytest.raises(CatalogIntegrityError, match="no corresponding Canonical rows"):
+        selector_module._pit_take_key_edges("c", "b", future_group())
+    assert consumed == []
+
+    # An edge group left after the last row is rejected, even though it was not materialized.
+    with pytest.raises(CatalogIntegrityError, match="no corresponding Canonical rows"):
+        selector_module._pit_assert_no_unmatched_edge_groups("z", iter(()))
 
 
 def test_pit_evaluation_yields_high_cardinality_timeline_incrementally(

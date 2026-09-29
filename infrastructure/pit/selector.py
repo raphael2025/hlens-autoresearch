@@ -1132,6 +1132,35 @@ def _pit_edge_group_key(row: Mapping[str, Any]) -> str:
     return cast(str, row["observation_key"])
 
 
+def _pit_take_key_edges(
+    row_key: str,
+    edge_key: str | None,
+    edge_group: Iterator[Mapping[str, Any]] | None,
+) -> tuple[PrecedenceEvidence, ...]:
+    """Consume only a matching edge group, preserving sorted-key fail-closed behavior."""
+    if edge_key is not None and edge_key < row_key:
+        raise CatalogIntegrityError(
+            "a mapped edge references an observation_key with no corresponding "
+            "Canonical rows in this window"
+        )
+    if edge_key != row_key:
+        return ()
+    if edge_group is None:  # pragma: no cover - groupby always supplies a matching iterator
+        raise CatalogIntegrityError("a mapped edge group is missing its sorted rows")
+    return tuple(PrecedenceEvidence.model_validate(item["evidence"]) for item in edge_group)
+
+
+def _pit_assert_no_unmatched_edge_groups(
+    edge_key: str | None,
+    edge_iter: Iterator[tuple[str, Iterator[Mapping[str, Any]]]],
+) -> None:
+    if edge_key is not None or next(edge_iter, None) is not None:
+        raise CatalogIntegrityError(
+            "a mapped edge references an observation_key with no corresponding "
+            "Canonical rows in this window"
+        )
+
+
 @contextmanager
 def _root_rows(
     storage: StorageAdapter, root: RunRef | None
@@ -1497,7 +1526,6 @@ def _pit_bounded_stream(
         ):
             edge_iter = iter(itertools.groupby(merged_edges, key=_pit_edge_group_key))
             pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
-            pending_edge_items = list(pending_edge_group) if pending_edge_group is not None else []
 
             for row_key, row_group in itertools.groupby(merged_rows, key=_pit_row_group_key):
                 buffer = KeyHistoryBuffer(
@@ -1518,20 +1546,15 @@ def _pit_bounded_stream(
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
                 owner_at = min(row[column] for row in key_rows.values())
 
-                if pending_edge_key is not None and pending_edge_key < row_key:
-                    raise CatalogIntegrityError(
-                        "a mapped edge references an observation_key with no corresponding "
-                        "Canonical rows in this window"
-                    )
+                key_edges = _pit_take_key_edges(
+                    row_key,
+                    pending_edge_key,
+                    pending_edge_group,
+                )
                 if pending_edge_key == row_key:
-                    key_edges = tuple(
-                        PrecedenceEvidence.model_validate(item["evidence"])
-                        for item in pending_edge_items
-                    )
-                    pending_edge_key, next_group = next(edge_iter, (None, None))
-                    pending_edge_items = list(next_group) if next_group is not None else []
-                else:
-                    key_edges = ()
+                    # Keep only the next group's iterator. Materializing it here overlaps the
+                    # current key's graph evidence with the next key's raw edge rows.
+                    pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
 
                 available = _EffectiveAvailabilityView(key_rows, bound=bound_assumption)
 
@@ -1590,11 +1613,7 @@ def _pit_bounded_stream(
             # only ever adds an edge once both Raw endpoints resolved among that key's rows); an
             # edges group that never matched a row_key would mean the two runs disagree with
             # what by_key / edges actually held, which the spill/merge path must never do.
-            if pending_edge_key is not None or next(edge_iter, None) is not None:
-                raise CatalogIntegrityError(
-                    "a mapped edge references an observation_key with no corresponding "
-                    "Canonical rows in this window"
-                )
+            _pit_assert_no_unmatched_edge_groups(pending_edge_key, edge_iter)
 
     # ``_generate`` holds one root reader per run set and, mid-key, one
     # ``KeyHistoryBuffer.rows()`` context: closed explicitly here on every exit of the caller's
