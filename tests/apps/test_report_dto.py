@@ -125,7 +125,8 @@ def test_a_version_outside_the_registration_is_opaque_and_never_raises() -> None
 def test_a_known_version_missing_a_required_field_is_malformed(kind: ReportKind) -> None:
     spec = REPORT_DTOS[kind]
     payload = {field: "x" for field in spec.required if field != spec.required[-1]}
-    payload["schema_version"] = spec.baseline
+    if spec.has_payload_schema_version:
+        payload["schema_version"] = spec.baseline
     with pytest.raises(ReportMalformed, match=f"lacks required field {spec.required[-1]}"):
         decode_report_payload(kind, payload, path=Path("<test>"))
 
