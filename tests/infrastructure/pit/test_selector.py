@@ -370,13 +370,14 @@ class _RawScans(ProxyCatalog):
         class ObservedReader:
             def __init__(self) -> None:
                 self._closed = False
+                self._rows_read = 0
 
             def __iter__(self) -> ObservedReader:
                 return self
 
             def __next__(self) -> Any:
                 batch = next(reader)
-                owner.widths.append((len(columns), batch.num_rows))
+                self._rows_read += batch.num_rows
                 return batch
 
             def close(self) -> None:
@@ -384,9 +385,12 @@ class _RawScans(ProxyCatalog):
                     return
                 self._closed = True
                 close = getattr(reader, "close", None)
-                if callable(close):
-                    close()
-                owner.closed_readers += 1
+                try:
+                    if callable(close):
+                        close()
+                finally:
+                    owner.widths.append((len(columns), self._rows_read))
+                    owner.closed_readers += 1
 
         return ObservedReader()  # type: ignore[return-value]
 
