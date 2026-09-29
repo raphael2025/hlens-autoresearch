@@ -132,6 +132,12 @@ The independent read-only matrix review confirmed the current recorded status: #
 
 E1-CAP-1 is **NOT ACCEPTED**: no current-line complete-process measurement proves the 32 MiB limit across the required N/M matrix and repeated runs. Existing local stream tests and small synthetic smoke results are insufficient; old over-limit measurements on another candidate cannot be projected onto this checkout. The PIT window/per-key state, bounded Quality reporter/Dataset integration, and complete current-checkout evidence remain outstanding.
 
+### D1 Parser source audit
+
+A focused read-only lifecycle audit found that the current default `parse_archive()` still retains every 65,536-row Arrow `RecordBatch` in `_ColumnBuffer._batches` and then returns a complete `pa.Table` through `ParsedArchive.rows`; D2 writes the full table in microbatches, and the verifier may cache a full `ParsedArchive`. `parse_archive_bytes()` additionally receives the complete compressed input bytes from its caller. Existing archive/member/line size limits are integrity bounds, not a 32 MiB process working-set bound.
+
+The clean `codex/e1-history-integration@b40601a` candidate contains a private IPC batch-spool path and D2/verifier consumption, but still uses default `TemporaryFile` locations, retains a full `row_commits` tuple, and has not proved whether scratch is backed by tmpfs or disk. It is not current-root evidence and does not pass E1-CAP-1. Any follow-up must preserve the public complete-result API and D1 length/SHA, ZIP EOF/CRC, row rejection/line-number, timestamp-unit/coverage, and cross-row checks; D2 must not consume partial output before full archive validation. A private bounded reader/spool path may be implemented under existing infrastructure scope, but scratch ownership/cleanup, caller-held verifier rows, commits, and actual full-process memory remain separate bounds to close. No parser tests or capacity probe were run in this audit.
+
 ### Phase 0.5–6 status review
 
 A separate static review found no newly accepted phase. Phase 0.5 remains partial pending named human seed-tag/asset review and missing seed golden hashes. Phase 2 lacks real Research Dataset validation and CLI/catalog/type evidence; Phase 3 lacks the deferred Iceberg Event and production Catalog evidence; Phase 4 still lacks calibrated, frozen Profile evidence; Phase 5's long run remains incomplete with deferred hash gates; Phase 6 lacks a real integrated P2 × P5 × P4 experiment and its C-R2/trial-count evidence. Historical focused test counts do not close these phases.
