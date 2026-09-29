@@ -599,6 +599,24 @@ def _assert_acyclic_run(
             active = remaining.finish()
 
 
+def _assert_single_key_claims(storage: StorageAdapter, root: RunRef | None) -> None:
+    """Reject a revision ID claimed by more than one observation key in a pinned partition."""
+    if root is None:
+        return
+    with iter_run(storage, root) as claims:
+        for revision_id, group in itertools.groupby(claims, key=lambda row: row["revision_id"]):
+            first_key: str | None = None
+            for claim in group:
+                key = claim["observation_key"]
+                if first_key is None:
+                    first_key = key
+                elif key != first_key:
+                    raise CatalogIntegrityError(
+                        f"cross-channel revision graph is invalid: revision_id {revision_id!r} "
+                        f"跨 observation_key 归属冲突：同时被 {[first_key, key]} 认领"
+                    )
+
+
 def evidence_from_row(row: Mapping[str, Any]) -> PrecedenceEvidence:
     """The complete ``PrecedenceEvidence`` (both ends explicit) of one evidence-table row."""
     return PrecedenceEvidence(
@@ -2057,6 +2075,13 @@ class ChannelReconciler:
                     merge_fanout=params.merge_fanout,
                     limits=params.limits,
                 ) as archive_parents,
+                RunSetBuilder(
+                    self._storage,
+                    key=lambda row: (row["revision_id"], row["observation_key"]),
+                    capacity=params.row_capacity,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as revision_claims,
             ):
                 try:
                     self._verify_edge_provenance_bounded(
@@ -2184,12 +2209,25 @@ class ChannelReconciler:
                                                 {},
                                             )
                                             try:
-                                                revision_record_from_row(row)
+                                                record = revision_record_from_row(row)
                                             except ValueError as exc:
                                                 raise CatalogIntegrityError(
                                                     f"{revision.table}: row {row['revision_id']} "
                                                     f"is not a lawful revision ({exc})"
                                                 ) from None
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": record.revision_id,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                            )
+                                            revision_claims.extend(
+                                                {
+                                                    "revision_id": older,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                                for older in record.supersedes
+                                            )
                                             rest_revisions.add(
                                                 {
                                                     "revision_id": revision.revision_id,
@@ -2245,12 +2283,25 @@ class ChannelReconciler:
                                                 units,
                                             )
                                             try:
-                                                revision_record_from_row(row)
+                                                record = revision_record_from_row(row)
                                             except ValueError as exc:
                                                 raise CatalogIntegrityError(
                                                     f"{revision.table}: row {row['revision_id']} "
                                                     f"is not a lawful revision ({exc})"
                                                 ) from None
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": record.revision_id,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                            )
+                                            revision_claims.extend(
+                                                {
+                                                    "revision_id": older,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                                for older in record.supersedes
+                                            )
                                             archive_revisions.add(
                                                 {
                                                     "revision_id": revision.revision_id,
@@ -2460,6 +2511,24 @@ class ChannelReconciler:
                                             edge = self._existing_edges(
                                                 (current_edge,), {edge_id: comparison}
                                             )[edge_id]
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": edge.evidence.revision_id,
+                                                    "observation_key": (
+                                                        edge.evidence.observation_key
+                                                    ),
+                                                }
+                                            )
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": (
+                                                        edge.evidence.superseded_revision_id
+                                                    ),
+                                                    "observation_key": (
+                                                        edge.evidence.observation_key
+                                                    ),
+                                                }
+                                            )
                                             graph_evidence.add(dict(current_edge))
                                             output.add(edge.row())
                                             previous_edge_id = edge_id
@@ -2484,6 +2553,8 @@ class ChannelReconciler:
                                 raise CatalogIntegrityError(
                                     "a staged row references a key absent from the pinned REST day"
                                 )
+                    revision_claims_root = revision_claims.finish()
+                    _assert_single_key_claims(self._storage, revision_claims_root)
                     archive_parent_root = archive_parents.finish()
                     if archive_parent_root is not None:
                         with (
