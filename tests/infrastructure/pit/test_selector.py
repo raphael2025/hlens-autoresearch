@@ -355,6 +355,26 @@ class _RawScans(ProxyCatalog):
             self.columns.append(tuple(kwargs["columns"]))
         return result
 
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Any:
+        reader = self.inner.scan_column_batches(table, **kwargs)
+        if table != c.ARCHIVE_AGGS.table:
+            return reader
+
+        def tracked() -> Any:
+            row_count = 0
+            try:
+                for batch in reader:
+                    row_count += batch.num_rows
+                    yield batch
+            finally:
+                self.widths.append((len(kwargs["columns"]), row_count))
+                self.columns.append(tuple(kwargs["columns"]))
+                close = getattr(reader, "close", None)
+                if callable(close):
+                    close()
+
+        return tracked()
+
 
 def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> None:
     items = ss.agg_items(7, ms_step=ss.MINUTE_MS)

@@ -790,21 +790,55 @@ def _evaluate(
     spec: PointInTimeSpec,
     available: Mapping[str, datetime],
 ) -> list[PointInTimeSelection]:
+    return list(
+        _iter_evaluate_at_instants(
+            key, _evaluation_instants(records, spec, available), records, edges, spec, available
+        )
+    )
+
+
+def _evaluation_instants(
+    records: Sequence[RevisionRecord],
+    spec: PointInTimeSpec,
+    available: Mapping[str, datetime],
+) -> Iterator[datetime]:
+    """Yield the exact v2 evaluation instants in their canonical order.
+
+    Kept separate from evaluation so the bounded path can supply instants from a sorted run
+    without first constructing the interval-sized ``changes`` set and ``instants`` list.
+    """
     cutoff = spec.knowledge_cutoff
     if spec.simulation_time is not None:
-        instants = [spec.simulation_time]
-    else:
-        start, end = spec.simulation_start, spec.simulation_end
-        if start is None or end is None:  # pragma: no cover - the contract forbids it
-            raise PitSpecError("the spec has neither a simulation time nor an interval")
-        changes = {
-            available[item.revision_id]
-            for item in records
-            if item.availability.times.knowledge_time <= cutoff
-            and start < available[item.revision_id] < end
-        }
-        instants = [start, *sorted(changes)]
-    results: list[PointInTimeSelection] = []
+        yield spec.simulation_time
+        return
+    start, end = spec.simulation_start, spec.simulation_end
+    if start is None or end is None:  # pragma: no cover - the contract forbids it
+        raise PitSpecError("the spec has neither a simulation time nor an interval")
+    changes = {
+        available[item.revision_id]
+        for item in records
+        if item.availability.times.knowledge_time <= cutoff
+        and start < available[item.revision_id] < end
+    }
+    yield start
+    yield from sorted(changes)
+
+
+def _iter_evaluate_at_instants(
+    key: str,
+    instants: Iterator[datetime],
+    records: Sequence[RevisionRecord],
+    edges: Sequence[PrecedenceEvidence],
+    spec: PointInTimeSpec,
+    available: Mapping[str, datetime],
+) -> Iterator[PointInTimeSelection]:
+    """Evaluate ordered instants while retaining only the previous result.
+
+    The v2 wrapper still returns its historical list. The bounded selector uses this iterator,
+    allowing it to eventually source interval changes directly from a sorted run and expose
+    results one at a time without an internal ``results`` list.
+    """
+    cutoff = spec.knowledge_cutoff
     previous: tuple[PointInTimeStatus, tuple[str, ...]] | None = None
     for at in instants:
         heads = _heads(records, edges, at, cutoff, available)
@@ -818,17 +852,14 @@ def _evaluate(
         if previous == (status, heads):
             continue
         previous = (status, heads)
-        results.append(
-            PointInTimeSelection(
-                observation_key=key,
-                simulation_time=at,
-                knowledge_cutoff=cutoff,
-                status=status,
-                selected_revision_id=heads[0] if status is PointInTimeStatus.SELECTED else None,
-                maximal_heads=heads,
-            )
+        yield PointInTimeSelection(
+            observation_key=key,
+            simulation_time=at,
+            knowledge_cutoff=cutoff,
+            status=status,
+            selected_revision_id=heads[0] if status is PointInTimeStatus.SELECTED else None,
+            maximal_heads=heads,
         )
-    return results
 
 
 # ============================================================================================
@@ -1186,9 +1217,7 @@ def _pit_bounded_stream(
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
                 owner_at = min(row[column] for row in key_rows.values())
 
-                key_days = sorted(
-                    {row[column].astimezone(UTC).date() for row in key_rows.values()}
-                )
+                key_days = sorted({row[column].astimezone(UTC).date() for row in key_rows.values()})
                 mapped = selector._mapped_edges(
                     view,
                     spec,
@@ -1228,7 +1257,14 @@ def _pit_bounded_stream(
                 }
 
                 seen_revisions: set[str] = set()
-                for selection in _evaluate(row_key, records, key_edges, spec, available):
+                for selection in _iter_evaluate_at_instants(
+                    row_key,
+                    _evaluation_instants(records, spec, available),
+                    records,
+                    key_edges,
+                    spec,
+                    available,
+                ):
                     lineage_out: SelectedRevisionLineage | None = None
                     gap_out: EvidenceGap | None = None
                     event_at: datetime | None = None
