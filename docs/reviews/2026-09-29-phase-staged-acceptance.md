@@ -31,6 +31,29 @@ This does not approve the manifest schema, reporter integration, Dataset binding
 
 ADR-0093 amendment remains **BLOCKED / under revision**. The independent architecture review still requires: exact JSON escaping and event-ID domain input; a bounded ADR-0031 QGAP completeness seal; a byte-bounded Iceberg path for row groups and nested Raw `symbols` / listing `tradable_intervals`; and a precise ordering/join rule for listing revision-prefix verification. Do not implement report schema/reporter/Dataset wiring against the current draft.
 
+### W3 Universe streaming port
+
+The previously approved W3 Universe streaming implementation was ported to the current coordination base in isolated commit `faf630cb9f19d5214e5a132136f4e7c9f1230975` (`codex/e1-w3-universe-integration`), parent `7b4cc9c`. The 10-file change adds the shared Universe run-parameter type, bounded `RunSetBuilder` refs, Universe streaming, Dataset cursor wiring, and affected tests. It does not change contracts or touch the root checkout. Independent review **APPROVED this port only**; this is not E1-CAP-1 or Phase 1 acceptance.
+
+```text
+uv run pytest -q tests/infrastructure/pit/test_bounded_runs.py tests/infrastructure/universe/test_universe_builder_v3.py tests/infrastructure/universe/test_universe_listing_assumption.py tests/infrastructure/dataset/test_dataset_v3_sources.py tests/infrastructure/dataset/test_dataset_v3_builder.py tests/infrastructure/redteam/test_rt_listing_assumption_universe.py -k 'not test_v3_build_over_the_real_upstreams_selects_what_v2_selects and not test_owner_and_event_times_are_the_canonical_rows_times and not test_pit_keys_out_of_order_fail_the_real_build_closed'
+87 passed, 4 deselected in 37.40s
+
+uv run ruff check infrastructure/dataset/sources.py infrastructure/pit/runs.py infrastructure/universe/builder.py infrastructure/universe/run_params.py
+All checks passed!
+
+uv run ruff format --check infrastructure/dataset/sources.py infrastructure/pit/runs.py infrastructure/universe/builder.py infrastructure/universe/run_params.py
+4 files already formatted
+
+uv run mypy --follow-imports=silent infrastructure/dataset/sources.py infrastructure/pit/runs.py infrastructure/universe/builder.py infrastructure/universe/run_params.py
+Success: no issues found in 4 source files
+
+git diff --check 7b4cc9ce79583050eebd55ab9320be003b059900...HEAD
+exit 0, no output
+```
+
+The four deselected Dataset source failures were reproduced on clean base `7b4cc9c` in the unchanged PIT selector (`orphan mapped edge`); the failed nodes were not rerun after the baseline reproduction. They remain deferred under the two-round rule. Default transitive mypy reports 19 errors in 8 unmodified dependency files; only the four touched production files passed with `--follow-imports=silent`. Ruff, format, and diff checks passed.
+
 ## Phase 0.5 and Phase 2–9
 
 All current-checkout reruns below are focused evidence, not phase acceptance:

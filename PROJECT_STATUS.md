@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24） |
-| 当前子阶段 | Quality report stream substrate 已在隔离分支实现并经独立复验（`4e2db16`），仅批准通用 stream 层；未整合。ADR-0093 仍 BLOCKED：JSONL escaping/event-ID domain、ADR-0031 QGAP 有界 seal、Iceberg row-group/嵌套值字节界与 listing revision-prefix 顺序需定稿。E1-CAP-1 未运行；PIT graph/conflict heads、Quality reporter/Dataset 接线仍未闭合；Phase 1 未验收。阶段测试详见 [2026-09-29 staged acceptance](docs/reviews/2026-09-29-phase-staged-acceptance.md)。 |
+| 当前子阶段 | Quality report stream substrate 已在隔离分支实现并经独立复验（`4e2db16`），仅批准通用 stream 层；W3 Universe streaming 移植候选 `codex/e1-w3-universe-integration@faf630c` 已独立复核 APPROVE，尚未整合。ADR-0093 基础决定为 Accepted；其实现细则 amendment / 集成仍 BLOCKED：JSONL escaping/event-ID domain、ADR-0031 QGAP 有界 seal、Iceberg row-group/嵌套值字节界与 listing revision-prefix 顺序需定稿。E1-CAP-1 未运行；PIT graph/conflict heads、Quality reporter/Dataset 接线仍未闭合；Phase 1 未验收。阶段测试详见 [2026-09-29 staged acceptance](docs/reviews/2026-09-29-phase-staged-acceptance.md)。 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | `main@e584187` 比 `origin/main@f84339a` 超前 2 个提交；当前协调 checkout `codex/w1-stabilization@bb94554` 有 145 个 dirty entries。当前有 15 个本地分支与 15 个 worktree；未推送或合入 `main`。三条阶段验收线均未批准任何新 Phase；报告见 [staged acceptance review](docs/reviews/2026-09-29-phase-staged-acceptance.md)。W1 deferred failures 仍是发布门。 |
+| 总体状态 | `main@e584187` 比 `origin/main@f84339a` 超前 2 个提交；当前协调 checkout 为 `codex/w1-stabilization`，145 个既有 dirty entries。当前有 16 个本地分支与 16 个 worktree；未推送或合入 `main`。三条阶段验收线均未批准任何新 Phase；报告见 [staged acceptance review](docs/reviews/2026-09-29-phase-staged-acceptance.md)。W1 deferred failures 仍是发布门。 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-29 |
 
@@ -326,7 +326,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-29 | Phase 1 Canonical/Parser/D2 与 Dataset v3 阶段验收 | 根候选 Canonical/Parser/D2 定向套件 `332 passed`；scratch 注入移植到隔离 E1 候选 `codex/e1-canonical-scratch-integration@6ac10ff`，独立 review 与 Canonical/settings 定向测试 `137 passed`，reader 清理失败路径已修复。Dataset v3 调用链复验 `180 passed in 647.62s`；审查仍见 bars/feature whole-output 持有及 evidence 发布到 manifest 持久化之间缺少故障注入。Parser 完整 Arrow Table/ParsedArchive、PIT/Universe O(N)、生产 Catalog 路径及完整进程容量仍未闭合，E1-CAP-1 未通过。 |
 | 2026-09-29 | W3 Universe 有界流实现与独立验收 | 候选 `codex/e1-canonical-scratch-integration@7442bf66f14afdf5667ea1fc2a87de3f62eb2b0f` 将 Universe 变化时间事件、lineage/gap 投影接入有界 RunSet；reviewer APPROVE。定向测试合计 `118 passed`，Ruff、format、mypy 4 source files、diff-check 通过。只证明该切片；候选未整合、未做 E1-CAP-1，Phase 1 仍未验收。 |
 | 2026-09-29 | E1-PIT-RUNSET-REFS 切片 | 候选 `972c6c7` 把 PIT row/edge run-ref 全量列表改为分层 RunSet root；`6a80b67` 补充对 compaction 与双 root reader 的直接 fanout/关闭测试。独立复核 APPROVE，PIT/Dataset source `41 passed`，Ruff、format、mypy、diff-check 通过。单 key 历史 / graph 与完整 conflict heads 仍未有界。 |
-| 2026-09-29 | 阶段验收 Wave QA-2/3 与 Quality stream 修复 | P0.5/P2/P7/P8/P9 定向 suites 均通过，Phase 10–14 定向测试有通过项，Web 为 110/111 tests 且 1 项失败；所有阶段仍 NOT ACCEPTED，详见 [验收报告](docs/reviews/2026-09-29-phase-staged-acceptance.md)。Quality stream serializer 修复 `4e2db16` 获准仅限通用 substrate；ADR-0093 仍 BLOCKED，E1-CAP-1 未运行。 |
+| 2026-09-29 | 阶段验收 Wave QA-2/3 与有界流复验 | P0.5/P2–14 的阶段验收均 NOT ACCEPTED；Phase 8 Web 为 110/111 tests 且 1 项失败。Quality stream serializer `4e2db16` 获准仅限通用 substrate；W3 移植 `faf630c` 独立 APPROVE，定向 `87 passed, 4 deselected`，四项在干净基线上复现的 PIT failures 按两轮规则延期。ADR-0093 基础决定 Accepted，但实现细则 amendment / 集成仍 BLOCKED；E1-CAP-1 未运行。详见 [验收报告](docs/reviews/2026-09-29-phase-staged-acceptance.md)。 |
 
 ## 10. 下一阶段进入条件
 
