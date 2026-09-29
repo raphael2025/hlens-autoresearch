@@ -922,11 +922,10 @@ class ChannelReconciler:
         head = pinned.evidence_snapshot
         own_keys_root = self._day_keys_run(data_type, symbol, day, pinned.rest_snapshot, params)
         if own_keys_root is None:
-            if pinned.evidence_rows:
-                raise CatalogIntegrityError("evidence exists for a partition with no REST keys")
             return
 
         column = _TIME_COLUMNS[data_type]
+        rest_definition = _REST_TABLES[data_type]
         with RunSetBuilder(
             self._storage,
             key=lambda row: row["day"],
@@ -934,8 +933,37 @@ class ChannelReconciler:
             merge_fanout=params.merge_fanout,
             limits=params.limits,
         ) as owner_day_builder:
-            for row in pinned.rest_rows:
-                owner_day_builder.add({"day": _utc_day(row[column])})
+            with iter_run(self._storage, own_keys_root) as own_key_rows:
+                pending: list[str] = []
+                for key_row in own_key_rows:
+                    pending.append(key_row["observation_key"])
+                    if len(pending) == _KEY_CHUNK:
+                        owner_day_builder.extend(
+                            {"day": _utc_day(row[column])}
+                            for row in self._scan_batch_rows(
+                                rest_definition,
+                                _all(
+                                    _equals("symbol", symbol),
+                                    _member("observation_key", pending),
+                                ),
+                                pinned.rest_snapshot,
+                                columns=(column,),
+                            )
+                        )
+                        pending.clear()
+                if pending:
+                    owner_day_builder.extend(
+                        {"day": _utc_day(row[column])}
+                        for row in self._scan_batch_rows(
+                            rest_definition,
+                            _all(
+                                _equals("symbol", symbol),
+                                _member("observation_key", pending),
+                            ),
+                            pinned.rest_snapshot,
+                            columns=(column,),
+                        )
+                    )
             owner_day_root = owner_day_builder.finish()
         if owner_day_root is None:
             raise CatalogIntegrityError("a partition with REST keys has no REST owner day")
@@ -994,7 +1022,27 @@ class ChannelReconciler:
             merge_fanout=params.merge_fanout,
             limits=params.limits,
         ) as current_builder:
-            current_builder.extend(pinned.evidence_rows)
+            with iter_run(self._storage, own_keys_root) as own_key_rows:
+                pending: list[str] = []
+                for key_row in own_key_rows:
+                    pending.append(key_row["observation_key"])
+                    if len(pending) == _KEY_CHUNK:
+                        current_builder.extend(
+                            self._scan_batch_rows(
+                                BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+                                _member("observation_key", pending),
+                                head,
+                            )
+                        )
+                        pending.clear()
+                if pending:
+                    current_builder.extend(
+                        self._scan_batch_rows(
+                            BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+                            _member("observation_key", pending),
+                            head,
+                        )
+                    )
             current_root = current_builder.finish()
 
         with ExitStack() as stack:
