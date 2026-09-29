@@ -175,6 +175,47 @@ def test_interrupted_run_is_persisted_as_error_and_not_capacity_fail(
     assert output["e1_cap1_evidence"] is False
 
 
+def test_dataset_child_failure_preserves_original_error_in_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_probe_environment(monkeypatch)
+    monkeypatch.setattr(
+        probe,
+        "_run_child",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            probe.ProbeError("original setup child failure", {"stage": "setup"})
+        ),
+    )
+    json_out = tmp_path / "dataset-child-error.json"
+    exit_code = probe.main(
+        [
+            "--dataset-v3",
+            "--dataset-chunk-rows=1",
+            "--dataset-leaf-max-records=1",
+            "--dataset-leaf-max-bytes=64",
+            "--dataset-fanout=2",
+            "--rows",
+            "1",
+            "2",
+            "3",
+            "--base",
+            str(tmp_path),
+            "--json-out",
+            str(json_out),
+        ]
+    )
+    assert exit_code == 4
+    persisted = json.loads(json_out.read_text())
+    output = json.loads(capsys.readouterr().out)
+    for report in (persisted, output):
+        assert report["status"] == "error"
+        assert report["capacity_verdict"] == "ERROR"
+        assert report["error"]["type"] == "ProbeError"
+        assert report["error"]["message"] == "original setup child failure"
+        assert report["error"]["stage"] == "setup"
+        assert report["dataset_v3_measurement"]["status"] == "failed"
+
+
 def test_initialization_interruption_is_persisted_as_json(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

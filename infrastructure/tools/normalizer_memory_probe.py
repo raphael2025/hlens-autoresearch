@@ -1534,6 +1534,29 @@ def run_probe(
         "probe_matches_head": code_line["probe_source"]["matches_head"] is True,
         "staged_diagnostics_disabled": not staged_diagnostics,
     }
+    dataset_measurement: dict[str, Any] = (
+        {"status": "not_requested"}
+        if dataset_v3_config is None
+        else {
+            "status": "requested",
+            "stage": DATASET_V3_STAGE,
+            "rule_parameters": dict(dataset_v3_config),
+            "day_window": {
+                "start": DATASET_V3_DAY_START.isoformat(),
+                "end_exclusive": DATASET_V3_DAY_END.isoformat(),
+            },
+            "source_run_parameters": {
+                "leaf_max_records": DATASET_V3_SOURCE_RUN_RECORDS,
+                "leaf_max_bytes": DATASET_V3_SOURCE_RUN_BYTES,
+                "fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+                "pit_row_batch_rows": config["microbatch"],
+                "pit_edge_batch_rows": config["microbatch"],
+                "pit_key_history_buffer": config["microbatch"],
+                "universe_capacity": DATASET_V3_SOURCE_RUN_RECORDS,
+                "universe_merge_fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+            },
+        }
+    )
     document: dict[str, Any] = {
         "probe": PROBE,
         "measures": "the checkout's own production code; see code_line.matches_main",
@@ -1543,29 +1566,6 @@ def run_probe(
             "repeats": repeats,
             **config,
             "stages": list(STAGES),
-            "dataset_v3_measurement": (
-                {"status": "not_requested"}
-                if dataset_v3_config is None
-                else {
-                    "status": "requested",
-                    "stage": DATASET_V3_STAGE,
-                    "rule_parameters": dict(dataset_v3_config),
-                    "day_window": {
-                        "start": DATASET_V3_DAY_START.isoformat(),
-                        "end_exclusive": DATASET_V3_DAY_END.isoformat(),
-                    },
-                    "source_run_parameters": {
-                        "leaf_max_records": DATASET_V3_SOURCE_RUN_RECORDS,
-                        "leaf_max_bytes": DATASET_V3_SOURCE_RUN_BYTES,
-                        "fanout": DATASET_V3_SOURCE_RUN_FANOUT,
-                        "pit_row_batch_rows": config["microbatch"],
-                        "pit_edge_batch_rows": config["microbatch"],
-                        "pit_key_history_buffer": config["microbatch"],
-                        "universe_capacity": DATASET_V3_SOURCE_RUN_RECORDS,
-                        "universe_merge_fanout": DATASET_V3_SOURCE_RUN_FANOUT,
-                    },
-                }
-            ),
             "sample_interval_seconds": interval,
             "settle_seconds": _SETTLE_SECONDS,
             "hold_seconds": _HOLD_SECONDS,
@@ -1582,6 +1582,7 @@ def run_probe(
         "code_line": code_line,
         "environment": _environment(base, runtime),
         "protocol_conformance": conformance,
+        "dataset_v3_measurement": dataset_measurement,
         "results": [],
         "setups": [],
         "cleanup_warnings": [],
