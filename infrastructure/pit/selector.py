@@ -66,6 +66,7 @@ from infrastructure.catalog.phase1_tables import BINANCE_SPOT_PRECEDENCE_EVIDENC
 from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.pit.assumption import (
     AssumptionSpecError,
+    _EffectiveAvailabilityView,
     assumption_bound,
     effective_available_times,
 )
@@ -1459,11 +1460,7 @@ def _pit_bounded_stream(
                 else:
                     key_edges = ()
 
-                moved = effective_available_times(list(key_rows.values()), bound=bound_assumption)
-                available = {
-                    revision: moved[revision][1] if revision in moved else row["available_time"]
-                    for revision, row in key_rows.items()
-                }
+                available = _EffectiveAvailabilityView(key_rows, bound=bound_assumption)
 
                 seen_revisions: set[str] = set()
                 for selection in _evaluate(
@@ -1484,8 +1481,9 @@ def _pit_bounded_stream(
                         if revision not in seen_revisions:
                             seen_revisions.add(revision)
                             source_row = key_rows[revision]
-                            if revision in moved:
-                                source_row = dict(source_row, available_time=moved[revision][1])
+                            effective_time = available[revision]
+                            if effective_time < source_row["available_time"]:
+                                source_row = dict(source_row, available_time=effective_time)
                             lineage_out = SelectedRevisionLineage(
                                 canonical_table=canonical.table,
                                 canonical_revision_id=revision,
