@@ -90,10 +90,10 @@ def _validation_edits() -> dict[str, Callable[[Payload], Payload]]:
         return {**payload, "note": "added"}
 
     def missing(payload: Payload) -> Payload:
-        return {key: value for key, value in payload.items() if key != "gates"}
+        return {key: value for key, value in payload.items() if key != "run_id"}
 
     def not_a_report(payload: Payload) -> Payload:
-        return {"verdict": "PASS"}
+        return {key: payload[key] for key in ("schema_version", "gates", "verdict")}
 
     return {"verdict": verdict, "extra": extra, "missing": missing, "not-a-report": not_a_report}
 
@@ -216,7 +216,10 @@ def test_an_edited_state_diagnostics_report_is_refused(tmp_path: Path) -> None:
 
 @pytest.mark.parametrize(
     ("kind", "field"),
-    [(ReportKind.ROUTER_PAPER_RUN, "decisions"), (ReportKind.ROUTER_STOP, "reason")],
+    [
+        (ReportKind.ROUTER_PAPER_RUN, "router_spec_hash"),
+        (ReportKind.ROUTER_STOP, "detail"),
+    ],
 )
 def test_a_router_record_without_a_bound_field_is_refused(
     tmp_path: Path, kind: ReportKind, field: str
@@ -236,16 +239,22 @@ def test_a_router_decision_that_is_not_an_object_is_refused(tmp_path: Path) -> N
 def test_a_self_hashed_payload_that_is_not_canonical_json_is_refused(tmp_path: Path) -> None:
     directory = tmp_path / ReportKind.EVENT_STATISTICS.value
     directory.mkdir(parents=True)
-    (directory / "nan.json").write_text('{"x": NaN, "report_hash": "nan"}', encoding="utf-8")
+    payload = '{"schema_version":"1.0.0","statistics":[NaN],"report_hash":"nan"}'
+    (directory / "nan.json").write_text(payload, encoding="utf-8")
     _refused(tmp_path, ReportKind.EVENT_STATISTICS, "nan", "not canonical JSON")
 
 
 def test_a_consistent_self_hashed_report_is_served(tmp_path: Path) -> None:
     """The identity rule, not the fixture, is what is checked: a consistent payload is served."""
-    body = {"kind": "event_statistics", "n": 1}
+    body = {
+        "kind": "event_statistics",
+        "schema_version": "1.0.0",
+        "statistics": [{"n": 1}],
+    }
     report_hash = content_hash(body)
     _write(tmp_path, ReportKind.EVENT_STATISTICS, report_hash, {**body, "report_hash": report_hash})
-    assert ReportStore(tmp_path).get(ReportKind.EVENT_STATISTICS, report_hash).payload["n"] == 1
+    served = ReportStore(tmp_path).get(ReportKind.EVENT_STATISTICS, report_hash)
+    assert served.payload["statistics"] == [{"n": 1}]
 
 
 # --- error bodies never carry a server path (2026-09-26) -----------------------------------

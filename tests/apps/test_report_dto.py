@@ -38,13 +38,13 @@ def _write(root: Path, kind: ReportKind, report_id: str, payload: Payload) -> No
 def test_every_report_kind_has_a_dto_registration() -> None:
     """No ``ReportKind`` is servable without an explicit ADR-0081 registration (fail closed)."""
     assert set(REPORT_DTOS) == set(ReportKind)
+    assert all(spec.required for spec in REPORT_DTOS.values())
 
 
 @pytest.mark.parametrize("kind", list(ReportKind))
 def test_the_baseline_version_is_itself_supported(kind: ReportKind) -> None:
     spec = REPORT_DTOS[kind]
     assert spec.baseline in spec.supported_versions
-    assert spec.required  # every kind requires at least one field
 
 
 # --- version resolution -----------------------------------------------------------------------
@@ -54,12 +54,32 @@ def test_a_kind_without_schema_version_resolves_to_the_virtual_baseline() -> Non
     """A historic payload with no ``schema_version`` key uses the registered baseline (ADR-0081
     §1), and that inferred version is never injected back into the payload."""
     spec = REPORT_DTOS[ReportKind.ROUTER_PAPER_RUN]
-    payload = {field: "x" for field in spec.required}
+    payload: dict[str, Any] = {field: "x" for field in spec.required}
     payload["decisions"] = []  # required field, but a list (not a string placeholder)
     dto = decode_report_payload(ReportKind.ROUTER_PAPER_RUN, payload)
     assert dto.supported is True
     assert dto.schema_version == spec.baseline
     assert "schema_version" not in dto.payload
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [ReportKind.RESEARCH_LOOP_ROUND, ReportKind.ROUTER_PAPER_RUN, ReportKind.ROUTER_STOP],
+)
+def test_virtual_version_kinds_forbid_a_payload_schema_version(kind: ReportKind) -> None:
+    spec = REPORT_DTOS[kind]
+    assert spec.has_payload_schema_version is False
+    payload: Payload = {field: "x" for field in spec.required}
+    if kind is ReportKind.ROUTER_PAPER_RUN:
+        payload["decisions"] = []
+
+    dto = decode_report_payload(kind, payload)
+    assert dto.supported is True
+    assert dto.schema_version == spec.baseline
+    assert "schema_version" not in dto.payload
+
+    with pytest.raises(ReportMalformed, match="does not carry schema_version"):
+        decode_report_payload(kind, {**payload, "schema_version": spec.baseline})
 
 
 def test_an_explicit_known_version_is_used_as_is() -> None:
@@ -73,7 +93,9 @@ def test_an_explicit_known_version_is_used_as_is() -> None:
 
 
 def test_schema_version_must_be_a_string() -> None:
-    payload = {field: "x" for field in REPORT_DTOS[ReportKind.EVENT_STATISTICS].required}
+    payload: dict[str, Any] = {
+        field: "x" for field in REPORT_DTOS[ReportKind.EVENT_STATISTICS].required
+    }
     payload["schema_version"] = 1
     with pytest.raises(ReportMalformed, match="schema_version must be a string"):
         decode_report_payload(ReportKind.EVENT_STATISTICS, payload, path=Path("<test>"))
@@ -89,11 +111,12 @@ def test_a_version_outside_the_registration_is_opaque_and_never_raises() -> None
     assert dto.payload == payload
 
 
-@pytest.mark.parametrize("kind", list(ReportKind))
+@pytest.mark.parametrize("kind", [kind for kind, spec in REPORT_DTOS.items() if spec.required])
 def test_a_known_version_missing_a_required_field_is_malformed(kind: ReportKind) -> None:
     spec = REPORT_DTOS[kind]
     payload = {field: "x" for field in spec.required if field != spec.required[-1]}
-    payload["schema_version"] = spec.baseline
+    if spec.has_payload_schema_version:
+        payload["schema_version"] = spec.baseline
     with pytest.raises(ReportMalformed, match=f"lacks required field {spec.required[-1]}"):
         decode_report_payload(kind, payload, path=Path("<test>"))
 
@@ -243,17 +266,17 @@ def test_validation_report_2_3_0_legacy_payload_remains_supported(tmp_path: Path
 
 
 def test_a_dto_failure_is_422_before_any_identity_check_runs(tmp_path: Path) -> None:
-    """A payload with a bogus ``report_hash`` (would also fail the identity check) but a known
-    version missing a required field is refused for the DTO reason, not an identity reason."""
-    payload = {"schema_version": "1.0.0", "report_hash": "not-a-real-hash"}  # no "statistics"
-    _write(tmp_path, ReportKind.EVENT_STATISTICS, "not-a-real-hash", payload)
-    with pytest.raises(ReportMalformed, match="lacks required field statistics"):
-        ReportStore(tmp_path).get(ReportKind.EVENT_STATISTICS, "not-a-real-hash")
+    """A DTO-owned required field is checked before the kind's identity hash rule."""
+    report_id = "not-a-real-hash"
+    payload = {"schema_version": "1.1.0", "kind": "state_diagnostics"}  # no state_space
+    _write(tmp_path, ReportKind.STATE_DIAGNOSTICS, report_id, payload)
+    with pytest.raises(ReportMalformed, match="lacks required field state_space"):
+        ReportStore(tmp_path).get(ReportKind.STATE_DIAGNOSTICS, report_id)
     response = TestClient(create_app(reports_root=tmp_path)).get(
-        "/reports/event_statistics/not-a-real-hash"
+        f"/reports/state_diagnostics/{report_id}"
     )
     assert response.status_code == 422
-    assert "lacks required field statistics" in response.json()["detail"]
+    assert "lacks required field state_space" in response.json()["detail"]
 
 
 def test_an_unsupported_version_is_served_opaquely_without_the_identity_check(

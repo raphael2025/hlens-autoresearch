@@ -15,6 +15,17 @@ test("all current and retained legacy report fixtures resolve to a supported DTO
   }
 });
 
+test("virtual-version report kinds reject an in-payload schema_version", () => {
+  for (const kind of ["research_loop_round", "router_paper_run", "router_stop"] as const) {
+    const [report] = fixtureEnvelopes(kind);
+    const inspected = inspectReportDTO({
+      ...report,
+      payload: { ...report.payload, schema_version: "1.0.0" },
+    });
+    assert.equal(inspected.status, "invalid", kind);
+  }
+});
+
 test("validation_report 2.4.0 (ADR-0088's bumped default Contract envelope) is supported with the 2.3.0 shape", () => {
   // validation_report is the one ReportKind whose payload is a direct Contract.model_dump(); every
   // other kind's schema_version is an independent, domain-specific number unrelated to
