@@ -176,9 +176,7 @@ def _v3_build(
     )
     manifests = verifier.store()
 
-    summary = b.build(
-        request, sources=sources_factory(request), chunks=chunks, manifests=manifests
-    )
+    summary = b.build(request, sources=sources_factory(request), chunks=chunks, manifests=manifests)
 
     both = ManifestStore(w.h.adapter, w.builder(), evidence_verifier=verifier)
     assert both.load_any(summary.manifest_hash) == summary.manifest
@@ -244,7 +242,7 @@ def test_v3_build_over_the_real_upstreams_selects_what_v2_selects(w: World, worl
 
 def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> None:
     spec = _interval_world(w)  # three listing revisions over two symbols
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec)
+    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS)
     with cursor.listing_lineage() as raw_lineage, cursor.evidence_gaps() as raw_gaps:
         generated, generated_gaps = list(raw_lineage), list(raw_gaps)
     source = OrderedUniverseSource(cursor, storage=w.h.storage, params=UNIVERSE_PARAMS)
@@ -320,7 +318,7 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
     request = _request(spec)
     sources = DatasetEvidenceSources(
         universe=OrderedUniverseSource(
-            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec),
+            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS),
             storage=w.h.storage,
             params=UNIVERSE_PARAMS,
         ),
@@ -541,7 +539,9 @@ ABSENT = PointInTimeStatus.ABSENT
 
 def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
     records = [
-        _record("k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT),
+        _record(
+            "k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT
+        ),
         _record("k1", ABSENT, at=H0.replace(hour=6), owner=T0),
         _record("k1", SELECTED, "r2", at=H0.replace(hour=12), owner=T0, event_time=T1),
         _record("k2", SELECTED, "r3", at=H0, owner=T2, event_time=T2, lineage=True),
@@ -613,9 +613,7 @@ def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) ->
         ),
     ],
 )
-def test_malformed_pit_streams_fail_closed(
-    records: list[PitBoundedRecord], match: str
-) -> None:
+def test_malformed_pit_streams_fail_closed(records: list[PitBoundedRecord], match: str) -> None:
     with pytest.raises(CatalogIntegrityError, match=match):
         list(pit_key_groups(records, knowledge_cutoff=SIM))
 
