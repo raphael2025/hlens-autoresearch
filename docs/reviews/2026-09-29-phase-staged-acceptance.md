@@ -386,3 +386,30 @@ exit 0; no output
 The test exercises the external-sorted claim helper directly rather than routing a malformed row through `iter_verified_edges`. Independent review traced the lawful D3E producers and persisted-row verifiers: REST and Archive IDs are re-derived from key-bound identities, their lawful supersedes are empty in this path, and precedence evidence is re-derived from same-key channel comparison. A conflicting cross-key fixture cannot pass those verifiers, so the absence of an end-to-end malformed-row fixture is not an acceptance blocker for this bounded D3E slice. The static audit confirmed all four production claim sources are wired into the day-scoped RunSet before output is returned.
 
 Review verdict: **ACCEPT, narrowly scoped to the current D3E pinned-day path**. This is not generic cross-partition `RevisionGraph` coverage, E1-CAP-1, or Phase 1 acceptance. Remaining E1 gates include bounded PIT key/head and per-key graph state, byte/RSS evidence, DQ-9 capacity basis, and the complete-process 32 MiB probe. The earlier unresolved `ChannelEdge` object-equality test remains deferred and is not passed by this slice.
+
+### PIT maximal-head traversal — `bf26921` independent review
+
+Commit `bf26921ad172d780a5222ace2e8f61d556a052dd` adds `maximal_heads_from_runs` and routes the bounded selector's head traversal through it. The helper stages candidates and edges in fixed-capacity sorted RunSets, then computes transitive reachability through dangling and unavailable nodes before subtracting reached candidates. The legacy `select()` path and materialized `_heads` behavior remain unchanged.
+
+Developer test evidence:
+
+```text
+uv run --offline pytest -q --tb=short tests/infrastructure/pit/test_precedence_runs.py::test_maximal_heads_spills_and_walks_dangling_multi_hop_nodes
+1 passed in 2.85s
+
+uv run --offline pytest -q --tb=short tests/infrastructure/pit/test_precedence_runs.py::test_iter_bounded_routes_heads_through_external_traversal
+first run: 1 failed in 1.49s (fixture cutoff preceded its revisions; traversal was not reached)
+same node after correcting cutoff to K_E: 1 passed in 1.42s
+```
+
+The wiring node was not rerun after its corrected pass. Independent review ran:
+
+```text
+uv run --offline pytest -q --tb=short tests/infrastructure/pit/test_precedence_runs.py::test_maximal_heads_spills_and_walks_dangling_multi_hop_nodes
+.                                                                        [100%]
+1 passed in 2.83s
+```
+
+Developer static results: Ruff `All checks passed!`; format check `3 files already formatted`; mypy `Success: no issues found in 2 source files`; `git diff --check` and `py_compile` exited 0. The helper test covers a 32-hop dangling chain, duplicate candidates/edges, bounded buffers, and parity with the existing `maximal_heads` implementation.
+
+Review verdict: **ACCEPT, limited to external reachability traversal**. The overall PIT path still materializes per-key `key_rows`, `records`, `key_edges`, `available`, `known`, and `known_edges`; returned heads and timeline output also grow with input. A separate performance audit found the helper rescans the full edge RunSet at each frontier depth, yielding `O(D·E)` reads and `O(N²)` on a long dangling/unavailable chain. The 32-hop test has no depth scaling or I/O-count evidence. Keep this as an isolated traversal slice; do not integrate or describe it as a mature history-scale bounded implementation until an indexed external adjacency/state design or measured, explicit history-scale budget resolves the risk. No deferred PIT node was run. This is not E1-CAP-1 or Phase 1 acceptance.
