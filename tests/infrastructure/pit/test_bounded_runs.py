@@ -8,12 +8,15 @@ overflow spill. No PIT selection logic is involved here (see ``test_selector_v3.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterator, Mapping
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
+from core.contracts.storage import StorageAdapter
 from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunIntegrityError,
@@ -62,7 +65,7 @@ def _rows(n: int, *, key: str = "k") -> list[dict[str, object]]:
     return [_row(i, key) for i in range(n)]
 
 
-def _collect(storage: LocalFileStorageAdapter, ref: RunRef) -> list[dict[str, object]]:
+def _collect(storage: LocalFileStorageAdapter, ref: RunRef) -> list[Mapping[str, Any]]:
     with iter_run(storage, ref) as rows:
         return list(rows)
 
@@ -185,7 +188,7 @@ def test_a_record_count_claim_that_does_not_match_the_root_is_refused(tmp_path: 
 # =============================================================================================
 
 
-def _key(row: dict[str, object]) -> tuple[object, object]:
+def _key(row: Mapping[str, Any]) -> tuple[object, object]:
     return (row["observation_key"], row["revision_id"])
 
 
@@ -200,9 +203,7 @@ def test_spill_bounds_batch_size_and_merge_reconstructs_global_order(tmp_path: P
     assert len(refs) == 3  # ceil(12 / 5)
     for ref in refs:
         assert ref.record_count <= 5
-    with merge_sorted_runs(
-        storage, refs, key=_key, merge_fanout=2, limits=_GENEROUS
-    ) as merged:
+    with merge_sorted_runs(storage, refs, key=_key, merge_fanout=2, limits=_GENEROUS) as merged:
         got = list(merged)
     assert got == sorted(rows, key=_key)
 
@@ -210,9 +211,7 @@ def test_spill_bounds_batch_size_and_merge_reconstructs_global_order(tmp_path: P
 def test_merge_with_more_runs_than_fanout_does_a_multi_pass_reduction(tmp_path: Path) -> None:
     storage = _storage(tmp_path)
     rows = _rows(20)
-    refs = list(
-        spill_sorted_runs(rows, key=_key, capacity=1, storage=storage, limits=_GENEROUS)
-    )
+    refs = list(spill_sorted_runs(rows, key=_key, capacity=1, storage=storage, limits=_GENEROUS))
     assert len(refs) == 20  # one row per run: forces several reduction passes at fanout=3
     with merge_sorted_runs(storage, refs, key=_key, merge_fanout=3, limits=_TIGHT) as merged:
         got = list(merged)
@@ -225,6 +224,7 @@ def test_merge_consumes_a_lazy_run_stream_with_bounded_multilevel_folding(
     """Input refs are consumed incrementally; fanout=2 forces several persisted merge levels."""
     storage = _storage(tmp_path)
     rows = [_row(i) for i in range(65)]
+
     class ObservedStorage:
         def __init__(self) -> None:
             self.merge_reads = 0
@@ -238,7 +238,7 @@ def test_merge_consumes_a_lazy_run_stream_with_bounded_multilevel_folding(
 
     observed = ObservedStorage()
 
-    def refs():
+    def refs() -> Iterator[RunRef]:
         for i, row in enumerate(reversed(rows)):
             if i == 2:
                 # The first fanout group has already been merged before the third source ref is
@@ -248,7 +248,11 @@ def test_merge_consumes_a_lazy_run_stream_with_bounded_multilevel_folding(
             yield write_sorted_run(storage, [row], _TIGHT)
 
     with merge_sorted_runs(
-        observed, refs(), key=_key, merge_fanout=2, limits=_TIGHT  # type: ignore[arg-type]
+        cast(StorageAdapter, observed),
+        refs(),
+        key=_key,
+        merge_fanout=2,
+        limits=_TIGHT,
     ) as merged:
         got = list(merged)
     assert got == sorted(rows, key=_key)
@@ -269,9 +273,7 @@ def test_multilevel_merge_iterator_closes_after_early_consumer_exit(tmp_path: Pa
 def test_run_set_builder_returns_one_root_from_unordered_rows(tmp_path: Path) -> None:
     storage = _storage(tmp_path)
     rows = [_row(i, key=key) for key in ("d", "a", "c", "b") for i in range(7)]
-    with RunSetBuilder(
-        storage, key=_key, capacity=2, merge_fanout=2, limits=_TIGHT
-    ) as builder:
+    with RunSetBuilder(storage, key=_key, capacity=2, merge_fanout=2, limits=_TIGHT) as builder:
         builder.extend(reversed(rows))
         root = builder.finish()
         assert root is not None
@@ -281,9 +283,7 @@ def test_run_set_builder_returns_one_root_from_unordered_rows(tmp_path: Path) ->
 
 def test_run_set_builder_empty_input_has_no_root(tmp_path: Path) -> None:
     storage = _storage(tmp_path)
-    with RunSetBuilder(
-        storage, key=_key, capacity=2, merge_fanout=2, limits=_TIGHT
-    ) as builder:
+    with RunSetBuilder(storage, key=_key, capacity=2, merge_fanout=2, limits=_TIGHT) as builder:
         assert builder.finish() is None
 
 

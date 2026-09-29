@@ -67,7 +67,7 @@ from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.settings import local_file_uri_to_path
-from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.storage import LocalFileStorageAdapter as LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseBuilder
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.catalog.catalog_support import (
@@ -79,11 +79,15 @@ from tests.infrastructure.collector.rest_support import FakeTime, RestVenue
 from tests.infrastructure.revision import exchange_info_support as xs
 from tests.infrastructure.revision import rest_store_support as ss
 from tests.infrastructure.revision.rest_store_support import (
-    DAY,
+    DAY as DAY,
+)
+from tests.infrastructure.revision.rest_store_support import (
     SYMBOL,
     RestHarness,
     StepClock,
-    utc,
+)
+from tests.infrastructure.revision.rest_store_support import (
+    utc as utc,
 )
 
 ORIGIN: Final = xs.ORIGIN

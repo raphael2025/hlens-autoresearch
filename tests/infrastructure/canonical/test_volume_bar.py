@@ -84,7 +84,7 @@ def test_volume_bars_use_explicit_base_volume_and_cross_utc_days() -> None:
             _Batch(
                 [
                     _trade(11, "0.2", "101.00", second, available_time=last_available),
-                    _trade(12, "0.9", "99.00", third),
+                    _trade(12, "0.05", "99.00", third),
                 ]
             ),
         ]
@@ -114,7 +114,9 @@ def test_volume_bars_use_explicit_base_volume_and_cross_utc_days() -> None:
 
 def test_volume_bar_rule_spec_is_fixed_and_incomplete_tail_is_not_emitted() -> None:
     at = datetime(2024, 2, 1, tzinfo=UTC)
-    catalog = _Catalog([_Batch([_trade(1, "0.6", "1", at), _trade(2, "0.3", "2", at + timedelta(seconds=1))])])
+    catalog = _Catalog(
+        [_Batch([_trade(1, "0.6", "1", at), _trade(2, "0.3", "2", at + timedelta(seconds=1))])]
+    )
 
     bars = volume_bars(
         catalog,
@@ -140,7 +142,7 @@ def test_threshold_must_be_a_positive_finite_decimal(threshold: Any) -> None:
             snapshot_id=SNAPSHOT,
             symbol=SYMBOL,
             base_volume_threshold=threshold,
-        )  # type: ignore[arg-type]
+        )
     assert catalog.arguments == {}
 
 

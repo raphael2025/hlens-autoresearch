@@ -10,6 +10,7 @@ from __future__ import annotations
 import dataclasses
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any, TypedDict, cast
 
 import pytest
 
@@ -26,9 +27,14 @@ from research.router import (
     validate_scope_bound_payload,
 )
 from research.router.deviation import RETURN_QUANTUM
-from tests.research.router.test_paper import A, BARS, STRATEGIES, ZERO, _run
-from tests.strategy_fixtures import T0, make_bars
 from tests.factories import validation_profile
+from tests.research.router.test_paper import BARS, STRATEGIES, ZERO, A, _run
+from tests.strategy_fixtures import T0, make_bars
+
+
+class ScopeKwargs(TypedDict):
+    validation_profile: ValidationProfile
+    validation_report: ValidationReport
 
 
 def reference_request(initial: str = "1000") -> BacktestRequest:
@@ -48,9 +54,7 @@ def reference(initial: str = "1000") -> BacktestResult:
 def scope_evidence() -> tuple[ValidationProfile, ValidationReport]:
     profile = validation_profile(
         name="p10_deviation_scope",
-        scope=ProfileScope(
-            venue="testvenue", symbol="BTC", timeframe="1m", research_class="swing"
-        ),
+        scope=ProfileScope(venue="testvenue", symbol="BTC", timeframe="1m", research_class="swing"),
     )
     report = ValidationReport(
         report_id="rep-vol-router",
@@ -73,7 +77,7 @@ def scope_evidence() -> tuple[ValidationProfile, ValidationReport]:
     return profile, report
 
 
-def scope_kwargs() -> dict[str, object]:
+def scope_kwargs() -> ScopeKwargs:
     profile, report = scope_evidence()
     return {"validation_profile": profile, "validation_report": report}
 
@@ -153,7 +157,7 @@ def test_summary_statistics() -> None:
 def test_the_report_is_deterministic_and_content_hashed() -> None:
     report, again = deviation(), deviation()
     assert report == again and report.deviation_hash == again.deviation_hash
-    payload = report.to_payload()
+    payload = cast(dict[str, Any], report.to_payload())
     body = {key: value for key, value in payload.items() if key != "deviation_hash"}
     assert payload["deviation_hash"] == report.deviation_hash == content_hash(body)
     assert payload["kind"] == "paper_deviation"
@@ -265,9 +269,7 @@ def test_scope_binding_is_required_and_fail_closed() -> None:
         )
     other_profile = validation_profile(
         name="other_scope",
-        scope=ProfileScope(
-            venue="testvenue", symbol="ETH", timeframe="1m", research_class="swing"
-        ),
+        scope=ProfileScope(venue="testvenue", symbol="ETH", timeframe="1m", research_class="swing"),
     )
     with pytest.raises(DeviationError, match="does not bind"):
         paper_deviation(
@@ -282,7 +284,10 @@ def test_scope_binding_is_required_and_fail_closed() -> None:
     )
     with pytest.raises(DeviationError, match="exactly match"):
         paper_deviation(
-            _run(), reference(), validation_profile=changed_profile, validation_report=changed_report
+            _run(),
+            reference(),
+            validation_profile=changed_profile,
+            validation_report=changed_report,
         )
     no_g5 = report.model_copy(
         update={
@@ -324,7 +329,11 @@ def test_scope_payload_validation_rejects_legacy_and_tampering() -> None:
     legacy = {**payload, "schema_version": "1.0.0"}
     with pytest.raises(DeviationError, match="schema 2.0.0"):
         validate_scope_bound_payload(legacy, **scope)
-    changed_scope = {**payload, "declared_scope": {**payload["declared_scope"], "symbol": "ETH"}}
+    declared_scope = cast(dict[str, Any], payload["declared_scope"])
+    changed_scope = {
+        **payload,
+        "declared_scope": {**declared_scope, "symbol": "ETH"},
+    }
     with pytest.raises(DeviationError, match="scope hash"):
         validate_scope_bound_payload(changed_scope, **scope)
     changed_symbol = {**payload, "instruments": ["ETH"]}

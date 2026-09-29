@@ -371,7 +371,10 @@ REPLAY_CASES: list[tuple[str, Callable[[RetirementRecord], dict[str, Any]], str]
     ),
     (
         "record does not validate",
-        lambda r: _reidentified(r, record={**r.model_dump(mode="json"), "retirement_reason": ""}),
+        lambda r: {
+            **_reidentified(r),
+            "record": {**r.model_dump(mode="json"), "retirement_reason": ""},
+        },
         "does not validate",
     ),
 ]

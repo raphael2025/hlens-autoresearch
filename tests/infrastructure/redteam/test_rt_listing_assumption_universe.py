@@ -12,7 +12,7 @@ missing table entry.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -64,7 +64,9 @@ def refused_everywhere(w: World, spec: PointInTimeSpec) -> UniverseUnconstructib
     """v2 ``build`` and v3 ``cursor`` both fail closed; the v2 error is returned."""
     with pytest.raises(UniverseUnconstructible) as caught:
         w.universe().build(FIRST_SLICE_UNIVERSE, spec)
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=RUN_PARAMS)
+    cursor = w.universe().cursor(
+        FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, cast(Any, RUN_PARAMS))
+    )
     with pytest.raises(UniverseUnconstructible), cursor.members() as members:
         list(members)
     return caught.value
@@ -115,7 +117,9 @@ def test_a_suspension_is_never_bridged_by_the_assumption(w: World) -> None:
     spans = {symbol: (a.effective_from, a.effective_until) for symbol, a in built.assumed.items()}
     assert spans == {"BTCUSDT": (FLOOR, L1), "ETHUSDT": (FLOOR, L1)}
     with (
-        w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=RUN_PARAMS).members() as members
+        w.universe()
+        .cursor(FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, cast(Any, RUN_PARAMS)))
+        .members() as members
     ):
         assert set(members) == set(built.members)
 

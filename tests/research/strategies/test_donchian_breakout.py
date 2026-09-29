@@ -164,9 +164,7 @@ def test_a_missing_observation_is_not_filled_in() -> None:
 def test_future_signals_do_not_move_past_positions() -> None:
     cut = HAND_DECISIONS[1]
     base = _run(_request(HAND_SIGNALS, HAND_DECISIONS))
-    changed = tuple(
-        _perturb(item) if item.available_time > cut else item for item in HAND_SIGNALS
-    )
+    changed = tuple(_perturb(item) if item.available_time > cut else item for item in HAND_SIGNALS)
     truncated = tuple(item for item in HAND_SIGNALS if item.available_time <= cut)
     for signals in (changed, truncated):
         other = _run(_request(signals, HAND_DECISIONS))
@@ -200,7 +198,7 @@ def test_the_provider_refuses_points_and_specs_outside_the_space() -> None:
     provider = DonchianBreakoutProvider((SPEC,))
     for params in ({"exit_window": 11}, {"window": 20}, {"entry_window": True}):
         with pytest.raises(UnsupportedStrategy):
-            provider.target_positions(_request(HAND_SIGNALS, HAND_DECISIONS, params=params))
+            provider.target_positions(_request(HAND_SIGNALS, HAND_DECISIONS, params=dict(params)))
     wider = FrozenMapping({"entry_window": (5, 20, 55), "exit_window": (10, 20)})
     widened = SPEC.model_copy(update={"param_search_space": wider})
     with pytest.raises(ValueError, match="declared space"):

@@ -9,7 +9,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pyiceberg.expressions import EqualTo
@@ -457,7 +457,7 @@ def test_failed_normalizer_rebind_keeps_old_state_and_retry_closes_it(
 
     monkeypatch.setattr(selector_module, "CanonicalNormalizer", RecordingNormalizer)
     original_view = selector._pinned(spec)
-    original_normalizer = selector._normalizer
+    original_normalizer = cast(Any, selector._normalizer)
     assert original_normalizer is RecordingNormalizer.instances[0]
 
     RecordingNormalizer.fail_next = True
@@ -466,13 +466,13 @@ def test_failed_normalizer_rebind_keeps_old_state_and_retry_closes_it(
 
     assert selector._bound == tuple(sorted(spec.snapshot_bindings.items()))
     assert selector._view is original_view
-    assert selector._normalizer is original_normalizer
+    assert cast(Any, selector._normalizer) is original_normalizer
     assert not original_normalizer.closed
 
     rebound_view = selector._pinned(next_spec)
     assert selector._bound == tuple(sorted(next_spec.snapshot_bindings.items()))
     assert selector._view is rebound_view and rebound_view is not original_view
-    assert selector._normalizer is RecordingNormalizer.instances[1]
+    assert cast(Any, selector._normalizer) is RecordingNormalizer.instances[1]
     assert original_normalizer.closed
 
 

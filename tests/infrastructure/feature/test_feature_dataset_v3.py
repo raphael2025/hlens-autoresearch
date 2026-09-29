@@ -20,6 +20,7 @@ import pytest
 
 from core.contracts.feature import FeatureObservation, FeatureRequest
 from core.contracts.revision import PointInTimeSpec
+from infrastructure.canonical.resample import resample_bars
 from infrastructure.dataset.manifests import ManifestFormError
 from infrastructure.feature.dataset import (
     DatasetBindingError,
@@ -27,7 +28,6 @@ from infrastructure.feature.dataset import (
     feature_request_from_derived_bars,
 )
 from infrastructure.feature.observations import bar_observations, derived_bar_observations
-from infrastructure.canonical.resample import resample_bars
 from infrastructure.feature.runner import run_feature
 from infrastructure.pit.selector import PitSelector
 from plugins.features import BarVolumeSumProvider
@@ -224,21 +224,23 @@ def test_a_v3_derived_request_is_the_v2_request_but_for_the_manifest_hash(w: Wor
 def test_a_v2_derived_hash_with_an_evidence_verifier_is_exactly_the_v2_path(w: World) -> None:
     data = _datasets(w)
     observations = data.derived_observations(1)
-    args = {
-        "adapter": w.h.adapter,
-        "storage": w.h.storage,
-        "builder": w.builder(),
-        "manifest_content_hash": data.v2_hash,
-        "pit_spec": data.spec,
-        "minutes": 1,
-        "observations": observations,
-        "feature": FEATURE,
-        "evaluation_times": (ds.SIM + LAG,),
-    }
-    with_verifier = feature_request_from_derived_bars(
-        **args, evidence_verifier=data.machinery.verifier
-    )
-    without_verifier = feature_request_from_derived_bars(**args)
+
+    def request(*, evidence_verifier: Any = None) -> FeatureRequest:
+        return feature_request_from_derived_bars(
+            w.h.adapter,
+            w.h.storage,
+            builder=w.builder(),
+            manifest_content_hash=data.v2_hash,
+            pit_spec=data.spec,
+            minutes=1,
+            observations=observations,
+            feature=FEATURE,
+            evaluation_times=(ds.SIM + LAG,),
+            evidence_verifier=evidence_verifier,
+        )
+
+    with_verifier = request(evidence_verifier=data.machinery.verifier)
+    without_verifier = request()
     assert with_verifier == without_verifier
 
 

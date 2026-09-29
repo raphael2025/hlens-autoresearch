@@ -9,6 +9,8 @@ withheld-only declaration holds no data; the membership check of the validated i
 
 from __future__ import annotations
 
+from collections.abc import Iterable, Iterator
+from contextlib import contextmanager
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from types import SimpleNamespace
@@ -24,6 +26,7 @@ from core.contracts.universe import (
 )
 from core.domain.specs import InstrumentType
 from research.loop import DatasetRound, OosUnsealBudget
+from research.loop import dataset_source as dataset_source_module
 from research.loop.dataset_compose import dataset_loop_fingerprint
 from research.loop.dataset_source import SealedDatasetPair, WithheldSealedWindow, _require_member
 from research.loop.segment import SealedDataRefused
@@ -148,11 +151,26 @@ def _degraded(symbol: str, venue: str = "binance") -> DegradedEpisodeKey:
     )
 
 
-def test_the_validated_instrument_must_be_a_member_by_its_episode() -> None:
+def test_the_validated_instrument_must_be_a_member_by_its_episode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Review fixes 4: membership of the validated instrument, matched by venue, type and
     Canonical symbol of a degraded episode key; anything else refuses (fail closed)."""
     btc, eth = _member(_degraded("BTC-USDT")), _member(_degraded("ETH-USDT"))
-    _require_member(cast(Any, SimpleNamespace(members=(eth, btc))), "BTC-USDT", "sealed pair")
+
+    @contextmanager
+    def member_stream(_catalog: Any, manifest: Any) -> Iterator[Iterable[Any]]:
+        yield manifest.members
+
+    monkeypatch.setattr(cast(Any, dataset_source_module), "_members", member_stream)
+    catalog = cast(Any, object())
+
+    def require(members: tuple[Any, ...]) -> None:
+        _require_member(
+            catalog, cast(Any, SimpleNamespace(members=members)), "BTC-USDT", "sealed pair"
+        )
+
+    require((eth, btc))
     stable = _member(
         StableEpisodeKey(
             basis=EpisodeIdentityBasis.STABLE_PRODUCT_ID,
@@ -164,4 +182,4 @@ def test_the_validated_instrument_must_be_a_member_by_its_episode() -> None:
     other_venue = _member(_degraded("BTC-USDT", venue="elsewhere"))
     for members in ((eth,), (), (stable,), (other_venue,)):
         with pytest.raises(SealedDataRefused, match="BTC-USDT is not a member of the sealed pair"):
-            _require_member(cast(Any, SimpleNamespace(members=members)), "BTC-USDT", "sealed pair")
+            require(members)

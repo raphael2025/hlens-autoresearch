@@ -183,7 +183,7 @@ def test_the_provider_refuses_points_and_specs_outside_the_space() -> None:
     signals = _returns("BTCUSDT", _flat("0.001")) + _returns("ETHUSDT", _flat("0.002"))
     for params in ({"lookback": 120}, {"top_n": 1}, {"lookback": True}):
         with pytest.raises(UnsupportedStrategy):
-            provider.target_positions(_request(signals, (AT_60,), params=params))
+            provider.target_positions(_request(signals, (AT_60,), params=dict(params)))
     wider = FrozenMapping({"lookback": (10, 60, 240, 1440)})
     with pytest.raises(ValueError, match="declared space"):
         DualMomentumProvider((SPEC.model_copy(update={"param_search_space": wider}),))
@@ -196,6 +196,4 @@ def test_foreign_signals_are_refused() -> None:
     vol = tuple(item for item in everything if item.signal != LOG_RETURN_SIGNAL)
     assert vol and all(item.signal == realized_vol_signal(5) for item in vol)
     with pytest.raises(StrategyInputError):
-        DualMomentumProvider((SPEC,)).target_positions(
-            _request(WAVE_SIGNALS + vol, WAVE_DECISIONS)
-        )
+        DualMomentumProvider((SPEC,)).target_positions(_request(WAVE_SIGNALS + vol, WAVE_DECISIONS))

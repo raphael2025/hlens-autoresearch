@@ -41,7 +41,7 @@ from infrastructure.dataset.builder import (
     selection_id_for,
 )
 from infrastructure.dataset.evidence import EvidenceRecordTooLarge
-from infrastructure.pit.runs import RunRef
+from infrastructure.pit.runs import RunRef, RunSetBuilder
 from infrastructure.pit.selector import PitConflictError
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
@@ -70,6 +70,7 @@ def storage(evidence_store: LocalFileStorageAdapter) -> LocalFileStorageAdapter:
 
 def builder(
     storage: LocalFileStorageAdapter,
+    *,
     heads: dict[str, str | None] | None = None,
     **params: int,
 ) -> DatasetEvidenceBuilder:
@@ -88,7 +89,7 @@ def build(
     manifests: ds.FakeManifests | None = None,
     **params: int,
 ) -> Any:
-    return builder(storage, **params).build(
+    return builder(storage, heads=None, **params).build(
         ds.v3_request() if request is None else request,
         sources=ds.v3_sources(universe, pit, quality),
         chunks=ds.FakeChunkWriter() if chunks is None else chunks,
@@ -297,10 +298,9 @@ def test_many_member_spans_spill_to_a_bounded_replayable_run(
     request = ds.v3_request(ds.v3_pit(interval=(start, end)))
     chunks = ds.FakeChunkWriter()
 
-    real_builder = dataset_builder_module.RunSetBuilder
     max_refs = 0
 
-    class TrackingRunSetBuilder(real_builder):
+    class TrackingRunSetBuilder(RunSetBuilder):
         def add(self, row: Any) -> None:
             nonlocal max_refs
             super().add(row)
@@ -315,7 +315,7 @@ def test_many_member_spans_spill_to_a_bounded_replayable_run(
             span_roots.append(result)
         return result
 
-    monkeypatch.setattr(dataset_builder_module, "RunSetBuilder", TrackingRunSetBuilder)
+    monkeypatch.setattr(cast(Any, dataset_builder_module), "RunSetBuilder", TrackingRunSetBuilder)
     monkeypatch.setattr(dataset_builder_module._MemberSpans, "take", tracking_take)
     result = build(
         storage,
@@ -613,7 +613,7 @@ def test_rule_parameters_are_required_and_part_of_the_identity(
     for name in PARAMS:
         other = dataset_evidence_rule(**{**PARAMS, name: PARAMS[name] + 1})
         assert other.rule_hash != rule.rule_hash
-        assert builder(storage, **{name: PARAMS[name] + 1}).selection_id(
+        assert builder(storage, heads=None, **{name: PARAMS[name] + 1}).selection_id(
             ds.v3_request()
         ) != builder(storage).selection_id(ds.v3_request())
     for bad in ({"chunk_rows": 0}, {"fanout": 1}, {"leaf_max_bytes": 0}, {"chunk_rows": True}):

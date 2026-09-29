@@ -25,7 +25,7 @@ import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pydantic import ValidationError
@@ -185,7 +185,7 @@ def market(**overrides: Any) -> SyntheticMarketSpec:
 
 
 EPISODE = StableEpisodeKey(
-    basis="stable_product_id",
+    basis=cast(Any, "stable_product_id"),
     venue="binance",
     instrument_type=InstrumentType.SPOT,
     venue_product_id="BTCUSDT",
@@ -545,7 +545,7 @@ def test_an_ensemble_has_at_least_two_distinct_members() -> None:
         ensemble(MOMENTUM, old_twin)
     assert ensemble().rule == "equal_weight_mean"
     with pytest.raises(ValidationError):
-        EnsembleStrategy(members=(MOMENTUM, REVERSAL), rule="median")
+        EnsembleStrategy(members=(MOMENTUM, REVERSAL), rule=cast(Any, "median"))
 
 
 def test_a_composition_cannot_reference_its_own_strategy() -> None:

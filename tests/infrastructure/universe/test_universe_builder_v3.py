@@ -26,7 +26,7 @@ from datetime import datetime, timedelta
 from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -39,7 +39,7 @@ from core.contracts.universe import (
 from infrastructure.canonical.listings import ListingDeriver, UnconstructibleReason
 from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
 from infrastructure.dataset.sources import UniverseRunParams
-from infrastructure.pit.runs import RunLimits
+from infrastructure.pit.runs import RunLimits, RunSetBuilder, iter_run
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.universe import builder as ub
 from infrastructure.universe.builder import (
@@ -93,7 +93,7 @@ def _gaps(cursor: UniverseSpanCursor) -> tuple[tuple[str, str], ...]:
 
 
 def _cursor(w: World, spec: Any, pit: Any) -> UniverseSpanCursor:
-    return w.universe().cursor(spec, pit, run_params=RUN_PARAMS)
+    return w.universe().cursor(spec, pit, run_params=cast(Any, cast(Any, RUN_PARAMS)))
 
 
 # ============================================================================ parity with v2
@@ -251,9 +251,8 @@ def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
     ids = [f"revision-{index:04d}" for index in range(unique_count)]
     event_sources_closed: list[bool] = []
     stores: list[ub._FirstSeenStore] = []
-    store_type = ub._FirstSeenStore
 
-    class TrackingStore(store_type):
+    class TrackingStore(ub._FirstSeenStore):
         def __init__(self) -> None:
             super().__init__()
             stores.append(self)
@@ -369,7 +368,7 @@ def test_instants_v3_never_calls_whole_table_scan_columns(
 
     monkeypatch.setattr(PinnedCatalogView, "scan_columns", forbidden)
 
-    instants = ub._instants_v3(view, pit, w.h.storage, RUN_PARAMS)
+    instants = ub._instants_v3(view, pit, w.h.storage, cast(Any, RUN_PARAMS))
     with instants.open() as values:
         materialized = tuple(values)
     assert materialized[0] == L1
@@ -421,7 +420,7 @@ def test_instants_v3_closes_its_batch_readers_on_normal_completion(
         return _FakeReader(table)
 
     monkeypatch.setattr(PinnedCatalogView, "scan_column_batches", fake_scan_column_batches)
-    ub._instants_v3(view, pit, w.h.storage, RUN_PARAMS)
+    ub._instants_v3(view, pit, w.h.storage, cast(Any, RUN_PARAMS))
     assert closed.count(ub.EXCHANGE_INFO_TABLE) == 1
     assert closed.count(ub.LISTINGS_TABLE) == 1
 
@@ -460,8 +459,11 @@ def test_instants_v3_sorts_batches_filters_cutoff_and_treats_end_as_right_open(
 
     class _Reader:
         def __init__(self, table: str) -> None:
-            self._batches = iter(
-                [SimpleNamespace(to_pylist=lambda rows=rows: rows) for rows in batches[table]]
+            self._batches: Iterator[Any] = iter(
+                [
+                    SimpleNamespace(to_pylist=lambda rows=rows: rows)
+                    for rows in cast(list[list[dict[str, Any]]], batches[table])
+                ]
             )
             self.closed = 0
             readers.append(self)
@@ -470,7 +472,7 @@ def test_instants_v3_sorts_batches_filters_cutoff_and_treats_end_as_right_open(
             return self
 
         def __next__(self) -> SimpleNamespace:
-            return next(self._batches)
+            return cast(SimpleNamespace, next(self._batches))
 
         def close(self) -> None:
             self.closed += 1
@@ -561,14 +563,13 @@ def test_instants_v3_discards_large_pre_window_history_before_run_staging(
     monkeypatch.setattr(PinnedCatalogView, "scan_column_batches", scan)
 
     added: list[datetime] = []
-    original_builder = ub.RunSetBuilder
 
-    class _TrackingBuilder(original_builder):
+    class _TrackingBuilder(RunSetBuilder):
         def add(self, row: Any) -> None:
             added.append(row["instant"])
             super().add(row)
 
-    monkeypatch.setattr(ub, "RunSetBuilder", _TrackingBuilder)
+    monkeypatch.setattr(cast(Any, ub), "RunSetBuilder", _TrackingBuilder)
     replay = ub._instants_v3(
         PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
     )
@@ -617,7 +618,7 @@ def test_instants_v3_replay_closes_the_run_reader_early(
         ),
     )
     closed_runs: list[bool] = []
-    original_iter_run = ub.iter_run
+    original_iter_run = iter_run
 
     @contextmanager
     def tracked_iter_run(storage: Any, root: Any) -> Iterator[Iterator[Any]]:
@@ -627,7 +628,7 @@ def test_instants_v3_replay_closes_the_run_reader_early(
             finally:
                 closed_runs.append(True)
 
-    monkeypatch.setattr(ub, "iter_run", tracked_iter_run)
+    monkeypatch.setattr(cast(Any, ub), "iter_run", tracked_iter_run)
     replay = ub._instants_v3(
         PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
     )
@@ -711,14 +712,13 @@ def test_instants_v3_run_buffer_never_exceeds_explicit_capacity(
         ),
     )
     capacities: list[int] = []
-    original_builder = ub.RunSetBuilder
 
-    class _TrackingBuilder(original_builder):
+    class _TrackingBuilder(RunSetBuilder):
         def _flush(self) -> None:
             capacities.append(len(self._rows))
             super()._flush()
 
-    monkeypatch.setattr(ub, "RunSetBuilder", _TrackingBuilder)
+    monkeypatch.setattr(cast(Any, ub), "RunSetBuilder", _TrackingBuilder)
     params = UniverseRunParams(
         capacity=3,
         merge_fanout=2,

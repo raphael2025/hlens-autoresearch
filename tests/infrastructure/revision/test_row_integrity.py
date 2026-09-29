@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import tempfile
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -14,6 +15,7 @@ from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_AGG_TRADES
 from infrastructure.revision import row_integrity
 from infrastructure.revision.row_integrity import PersistedRowVerifier
+from infrastructure.revision.store import ArchiveIngested
 from tests.infrastructure.parser import parser_support as ps
 from tests.infrastructure.revision import revision_support as rs
 from tests.infrastructure.revision.revision_support import StoreHarness
@@ -66,7 +68,7 @@ def test_spooled_batch_lookup_counts_matches_and_keeps_newest_snapshot(
         _snapshot("s1", None, "wanted"),
     ]
     adapter = _SnapshotHistoryAdapter(snapshots)
-    original_mkstemp = row_integrity.tempfile.mkstemp
+    original_mkstemp = tempfile.mkstemp
     created_paths: list[Path] = []
 
     def tracked_mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
@@ -75,10 +77,10 @@ def test_spooled_batch_lookup_counts_matches_and_keeps_newest_snapshot(
         created_paths.append(Path(name))
         return fd, name
 
-    monkeypatch.setattr(row_integrity.tempfile, "mkstemp", tracked_mkstemp)
+    monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
 
     with row_integrity._spooled_snapshots_of_batches(
-        adapter, "raw.test", ("wanted", "wanted", "missing")
+        cast(Any, adapter), "raw.test", ("wanted", "wanted", "missing")
     ) as lookup:
         assert len(created_paths) == 1
         assert created_paths[0].exists()
@@ -102,7 +104,7 @@ def test_spooled_batch_lookup_closes_and_unlinks_when_history_raises(
         _snapshot("s0", None, "other"),
     ]
     adapter = _SnapshotHistoryAdapter(snapshots, fail_after=1)
-    original_mkstemp = row_integrity.tempfile.mkstemp
+    original_mkstemp = tempfile.mkstemp
     created_paths: list[Path] = []
 
     def tracked_mkstemp(*args: Any, **kwargs: Any) -> tuple[int, str]:
@@ -111,10 +113,10 @@ def test_spooled_batch_lookup_closes_and_unlinks_when_history_raises(
         created_paths.append(Path(name))
         return fd, name
 
-    monkeypatch.setattr(row_integrity.tempfile, "mkstemp", tracked_mkstemp)
+    monkeypatch.setattr(tempfile, "mkstemp", tracked_mkstemp)
 
     with pytest.raises(RuntimeError, match="injected history failure"):
-        row_integrity._spooled_snapshots_of_batches(adapter, "raw.test", ("wanted",))
+        row_integrity._spooled_snapshots_of_batches(cast(Any, adapter), "raw.test", ("wanted",))
 
     assert len(created_paths) == 1
     assert not created_paths[0].exists()
@@ -210,6 +212,7 @@ def test_archive_row_count_closes_its_strict_parse_spool(
 ) -> None:
     item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=3))
     result = harness.store().ingest(item.collected, item.context)
+    assert isinstance(result, ArchiveIngested)
     verifier = PersistedRowVerifier(harness.adapter, harness.storage, cache_archives=True)
     original_reparse = verifier._reparse
     opened: list[Any] = []

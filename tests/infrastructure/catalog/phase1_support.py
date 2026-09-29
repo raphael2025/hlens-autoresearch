@@ -1,5 +1,5 @@
-"""Test-only rows and evolution targets for the fifteen Phase 1 production tables
-(C3/D3B/E2/QG-1/DS-1).
+"""Test-only rows and evolution targets for the Phase 1 production tables
+(C3/D3B/E2/QG-1/DS-1/B2).
 
 Rows are built from **validated contract objects** (``RevisionRecord``, ``ListingRevision``,
 ``ResearchDatasetManifest``, ``CollectedObject`` …) so the tests show that the physical columns
@@ -63,7 +63,9 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_INSTRUMENT_LISTINGS,
     CANONICAL_TRADES,
     DATA_QUALITY_REPORTS,
+    DATASET_EVIDENCE_MANIFESTS,
     DATASET_MANIFESTS,
+    DATASET_SELECTION_CHUNKS,
     DATASET_SELECTIONS,
     QUALITY_EVIDENCE_GAPS,
 )
@@ -977,6 +979,58 @@ def dataset_selection_row(
     }
 
 
+def dataset_selection_chunk_row(
+    tag: str = "a", *, symbol: str = "BTCUSDT", start: datetime = T0
+) -> dict[str, Any]:
+    """One ``research.dataset_selection_chunks`` row (ADR-0077 B2)."""
+    return {
+        "selection_id": f"selection-{tag}",
+        "canonical_table": CANONICAL_TRADES.table,
+        "symbol": symbol,
+        "observation_key": f"binance:spot:{symbol}:aggtrade:{len(tag)}",
+        "revision_id": f"canonical-trade-{tag}",
+        "event_time": start,
+        "effective_from": None,
+        "effective_until": None,
+        "chunk_index": 0,
+        "row_ordinal": 0,
+    }
+
+
+def dataset_evidence_manifest_row(tag: str = "a", *, start: datetime = T0) -> dict[str, Any]:
+    """One minimal ``research.dataset_evidence_manifests`` physical row (ADR-0077 B2)."""
+    return {
+        "manifest_content_hash": sha(f"dataset-evidence-{tag}"),
+        "contract_schema_version": CONTRACT_SCHEMA_VERSION,
+        "dataset_zone": "research_dataset",
+        "dataset_table": "research.dataset_selection_chunks",
+        "dataset_snapshot_id": f"snapshot-{tag}",
+        "dataset_time_range_start": start,
+        "dataset_time_range_end": start + timedelta(days=1),
+        "point_in_time_name": "point-in-time",
+        "point_in_time_version": "1.0.0",
+        "point_in_time_hash": sha("point-in-time"),
+        "simulation_time": None,
+        "simulation_start": None,
+        "simulation_end": None,
+        "knowledge_cutoff": start + timedelta(days=2),
+        "universe_spec_name": "first-slice",
+        "universe_spec_version": "1.0.0",
+        "universe_spec_hash": sha("first-slice"),
+        "snapshot_bindings": [],
+        "rule_id": "dataset.first-slice",
+        "rule_version": "1.0.0",
+        "rule_hash": sha("dataset.first-slice"),
+        "data_type": "binance.spot.aggTrades",
+        "selection_id": f"selection-{tag}",
+        "row_count": 1,
+        "chunk_rows": 1,
+        "chunk_count": 1,
+        "evidence": [],
+        "manifest_json": "{}",
+    }
+
+
 #: One minimal valid row builder per production table (keyed by table name).
 ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     BINANCE_SPOT_ARCHIVES.table: archive_row,
@@ -994,10 +1048,12 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     BINANCE_SPOT_EXCHANGE_INFO.table: exchange_info_row,
     QUALITY_EVIDENCE_GAPS.table: quality_evidence_gap_row,
     DATASET_SELECTIONS.table: dataset_selection_row,
+    DATASET_EVIDENCE_MANIFESTS.table: dataset_evidence_manifest_row,
+    DATASET_SELECTION_CHUNKS.table: dataset_selection_chunk_row,
 }
 assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
 assert (
-    CONTRACT_SCHEMA_VERSION == "2.2.0"
+    CONTRACT_SCHEMA_VERSION == "2.4.0"
 )  # ADR-0052 §4 / ADR-0055 (rows carry their recorded version)
 
 

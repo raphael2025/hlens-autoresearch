@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -117,7 +117,9 @@ def test_binding_changes_nothing_once_every_symbol_is_observed(w: World, table: 
         with_binding = universe.build(FIRST_SLICE_UNIVERSE, bound(w, **kwargs))
         _same_universe(plain, with_binding)
         assert all(m.assumption is None for m in plain.members)
-        cursor = universe.cursor(FIRST_SLICE_UNIVERSE, bound(w, **kwargs), run_params=RUN_PARAMS)
+        cursor = universe.cursor(
+            FIRST_SLICE_UNIVERSE, bound(w, **kwargs), run_params=cast(Any, cast(Any, RUN_PARAMS))
+        )
         assert set(_members(cursor)) == set(plain.members)
         assert _assumed(cursor) == ()
 
@@ -131,7 +133,11 @@ def test_an_unbound_spec_still_refuses_before_the_first_observation(w: World, ta
             w.universe().build(FIRST_SLICE_UNIVERSE, spec)
         assert caught.value.reason == UnconstructibleReason.NO_VISIBLE_LISTING
         with pytest.raises(UniverseUnconstructible):
-            _members(w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=RUN_PARAMS))
+            _members(
+                w.universe().cursor(
+                    FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, cast(Any, RUN_PARAMS))
+                )
+            )
 
 
 # ============================================================================ bound: assumed
@@ -194,7 +200,9 @@ def test_the_v3_cursor_gives_exactly_the_v2_answer(w: World, table: None) -> Non
     w.listed(ds.TRADING, L1)
     spec = bound(w, interval=(FLOOR, SIM))
     built = w.universe().build(FIRST_SLICE_UNIVERSE, spec)
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=RUN_PARAMS)
+    cursor = w.universe().cursor(
+        FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, cast(Any, RUN_PARAMS))
+    )
     members = _members(cursor)
     assert set(members) == set(built.members)
     assert [m.content_hash() for m in sorted(members, key=_key)] == [
@@ -265,7 +273,9 @@ def test_the_policy_named_with_another_hash_or_version_is_refused_eagerly(
         with pytest.raises(UniverseSpecError, match=backfill.ASSUMPTION_ID):
             w.universe().build(FIRST_SLICE_UNIVERSE, spec)
         with pytest.raises(UniverseSpecError, match=backfill.ASSUMPTION_ID):
-            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=RUN_PARAMS)
+            w.universe().cursor(
+                FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, cast(Any, RUN_PARAMS))
+            )
 
 
 def test_before_the_floor_the_bound_build_still_fails_closed(w: World, table: None) -> None:
@@ -276,7 +286,11 @@ def test_before_the_floor_the_bound_build_still_fails_closed(w: World, table: No
             w.universe().build(FIRST_SLICE_UNIVERSE, spec)
         assert caught.value.reason == UnconstructibleReason.NO_VISIBLE_LISTING
         with pytest.raises(UniverseUnconstructible):
-            _members(w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=RUN_PARAMS))
+            _members(
+                w.universe().cursor(
+                    FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, cast(Any, RUN_PARAMS))
+                )
+            )
 
 
 def test_the_real_empty_policy_table_never_assumes(w: World) -> None:

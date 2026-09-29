@@ -201,8 +201,9 @@ def test_iter_bounded_deduplicates_lineage_across_repeated_selections_of_one_rev
         if r.selection.status is PointInTimeStatus.SELECTED
     ]
     assert len(selected_revisions) >= 1
-    lineage_hits = [r for r in records if r.lineage is not None]
-    assert len(lineage_hits) == len({item.lineage.canonical_revision_id for item in lineage_hits})
+    assert len([r for r in records if r.lineage is not None]) == len(
+        {r.lineage.canonical_revision_id for r in records if r.lineage is not None}
+    )
 
 
 def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buffer(

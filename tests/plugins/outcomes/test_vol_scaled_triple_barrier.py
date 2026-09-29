@@ -101,7 +101,8 @@ def test_vol_scaled_value_matches_the_fixed_fraction_equivalent() -> None:
     """`barrier_multiplier * volatility == 0.0015` must reproduce the same result as the plain
     `triple_barrier` fixture with fixed `upper_barrier == lower_barrier == 0.0015`, since the
     scanning logic and prices are identical."""
-    from tests.plugins.outcomes.test_outcome_providers import BARRIER, TripleBarrierOutcome
+    from plugins.outcomes import TripleBarrierOutcome
+    from tests.plugins.outcomes.test_outcome_providers import BARRIER
 
     fixed_request = OutcomeRequest(
         label_spec=BARRIER,
@@ -232,7 +233,7 @@ def test_a_later_events_volatility_does_not_change_an_earlier_label() -> None:
     early, late = EVENTS[0], EVENTS[1]
     request = _request(events=(early, late))
     base = _provider().compute(request).labels
-    perturbed_volatility = dict(VOLATILITY_BY_EVENT)
+    perturbed_volatility: dict[str, Decimal | None] = dict(VOLATILITY_BY_EVENT)
     perturbed_volatility[late.event_key] = VOLATILITY * 5
     perturbed = _provider(volatility=perturbed_volatility).compute(request).labels
     by_key_base = {label.event_key: label for label in base}

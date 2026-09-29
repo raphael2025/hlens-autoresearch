@@ -59,7 +59,7 @@ from infrastructure.dataset.sources import (
     pit_key_groups,
 )
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
-from infrastructure.pit.runs import RunLimits
+from infrastructure.pit.runs import RunLimits, RunSetBuilder, iter_run
 from infrastructure.pit.selector import EvidenceGap, PitBoundedRecord, PitRunParams, PitSelector
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
@@ -244,7 +244,7 @@ def test_v3_build_over_the_real_upstreams_selects_what_v2_selects(w: World, worl
 
 def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> None:
     spec = _interval_world(w)  # three listing revisions over two symbols
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS)
+    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, UNIVERSE_PARAMS))
     with cursor.listing_lineage() as raw_lineage, cursor.evidence_gaps() as raw_gaps:
         generated, generated_gaps = list(raw_lineage), list(raw_gaps)
     source = OrderedUniverseSource(cursor, storage=w.h.storage, params=UNIVERSE_PARAMS)
@@ -322,7 +322,7 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
     request = _request(spec)
     sources = DatasetEvidenceSources(
         universe=OrderedUniverseSource(
-            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS),
+            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=cast(Any, UNIVERSE_PARAMS)),
             storage=w.h.storage,
             params=UNIVERSE_PARAMS,
         ),
@@ -464,13 +464,12 @@ def test_universe_reordering_compacts_run_refs_and_closes_root_reader_early(
         gaps=(),
         spans=(),
     )
-    real_builder = source_module.RunSetBuilder
-    real_iter_run = source_module.iter_run
+    real_iter_run = iter_run
     max_refs = 0
     readers_closed: list[bool] = []
     root_depths: list[int] = []
 
-    class TrackingRunSetBuilder(real_builder):
+    class TrackingRunSetBuilder(RunSetBuilder):
         def add(self, row: Any) -> None:
             nonlocal max_refs
             super().add(row)
@@ -485,8 +484,8 @@ def test_universe_reordering_compacts_run_refs_and_closes_root_reader_early(
             finally:
                 readers_closed.append(True)
 
-    monkeypatch.setattr(source_module, "RunSetBuilder", TrackingRunSetBuilder)
-    monkeypatch.setattr(source_module, "iter_run", tracking_iter_run)
+    monkeypatch.setattr(cast(Any, source_module), "RunSetBuilder", TrackingRunSetBuilder)
+    monkeypatch.setattr(cast(Any, source_module), "iter_run", tracking_iter_run)
     ordered = OrderedUniverseSource(universe, storage=evidence_store, params=UNIVERSE_PARAMS)
     with ordered.listing_lineage() as rows:
         assert next(rows).canonical_revision_id == "revision-0000"

@@ -150,9 +150,7 @@ def test_an_explicit_none_resets_to_flat_and_restarts_the_run() -> None:
 def test_future_signals_do_not_move_past_positions() -> None:
     cut = HAND_DECISIONS[1]
     base = _run(_request(HAND_SIGNALS, HAND_DECISIONS))
-    changed = tuple(
-        _perturb(item) if item.available_time > cut else item for item in HAND_SIGNALS
-    )
+    changed = tuple(_perturb(item) if item.available_time > cut else item for item in HAND_SIGNALS)
     truncated = tuple(item for item in HAND_SIGNALS if item.available_time <= cut)
     for signals in (changed, truncated):
         other = _run(_request(signals, HAND_DECISIONS))
@@ -189,7 +187,7 @@ def test_the_provider_refuses_points_and_specs_outside_the_space() -> None:
     provider = ZScoreReversionProvider((SPEC,))
     for params in ({"entry_z": 3}, {"exit_z": 1}, {"lookback": 20}, {"window": True}):
         with pytest.raises(UnsupportedStrategy):
-            provider.target_positions(_request(HAND_SIGNALS, HAND_DECISIONS, params=params))
+            provider.target_positions(_request(HAND_SIGNALS, HAND_DECISIONS, params=dict(params)))
     wider = FrozenMapping({"window": (5, 20, 60, 240), "entry_z": (1, 2), "exit_z": (0,)})
     with pytest.raises(ValueError, match="declared space"):
         ZScoreReversionProvider((SPEC.model_copy(update={"param_search_space": wider}),))

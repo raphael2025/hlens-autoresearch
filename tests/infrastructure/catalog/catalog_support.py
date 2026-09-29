@@ -169,6 +169,29 @@ class _Harness:
         if self.warehouse.exists():
             raise AssertionError("cleanup left the test warehouse behind")
 
+    def cleanup_owned_tables(self, identifiers: tuple[tuple[str, ...], ...]) -> None:
+        """Drop only explicitly owned tables; never sweep unrelated test catalog data."""
+        try:
+            catalog = self.sql_catalog()
+            dropped_namespaces: set[tuple[str, ...]] = set()
+            for identifier in identifiers:
+                namespace = identifier[:-1]
+                if namespace not in catalog.list_namespaces():
+                    continue
+                if identifier in catalog.list_tables(namespace):
+                    catalog.drop_table(identifier)
+                    dropped_namespaces.add(namespace)
+            for namespace in dropped_namespaces:
+                if namespace in catalog.list_namespaces() and not catalog.list_tables(namespace):
+                    catalog.drop_namespace(namespace)
+        finally:
+            for opened in self._opened:
+                opened.close()
+            self._opened.clear()
+        shutil.rmtree(self.warehouse, ignore_errors=True)
+        if self.warehouse.exists():
+            raise AssertionError("cleanup left the test warehouse behind")
+
 
 @dataclass
 class SqliteCatalogHarness(_Harness):
@@ -250,9 +273,7 @@ class ScanSpy:
                 batches.append(batch)
             return pa.RecordBatchReader.from_batches(reader.schema, batches)
 
-        def scan_column_batches(
-            adapter: PyIcebergCatalogAdapter, *args: Any, **kwargs: Any
-        ) -> Any:
+        def scan_column_batches(adapter: PyIcebergCatalogAdapter, *args: Any, **kwargs: Any) -> Any:
             spy.readers += 1
             batches = real_scan_batches(adapter, *args, **kwargs)
 

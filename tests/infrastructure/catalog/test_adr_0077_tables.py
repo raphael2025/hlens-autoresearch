@@ -283,6 +283,9 @@ def test_manifest_table_snapshot_bindings_struct_matches_v2_shape() -> None:
     v2_elem = DATASET_MANIFESTS.schema.find_type("snapshot_bindings")
     v3_elem = DATASET_EVIDENCE_MANIFESTS.schema.find_type("snapshot_bindings")
     assert isinstance(v2_elem, ListType) and isinstance(v3_elem, ListType)
+    assert isinstance(v2_elem.element_type, StructType) and isinstance(
+        v3_elem.element_type, StructType
+    )
     v2_names = [f.name for f in v2_elem.element_type.fields]
     v3_names = [f.name for f in v3_elem.element_type.fields]
     assert v2_names == v3_names == ["table", "snapshot_id"]
@@ -408,6 +411,8 @@ def test_b2_layout_hash_is_stable_within_this_process() -> None:
     leaking into the hashed document)."""
     for definition in (DATASET_EVIDENCE_MANIFESTS, DATASET_SELECTION_CHUNKS):
         text = "\n".join(layout_lines(definition.schema))
-        assert sha256_text(text) == sha256_text(text) == hashlib.sha256(
-            text.encode("utf-8")
-        ).hexdigest()
+        assert (
+            sha256_text(text)
+            == sha256_text(text)
+            == hashlib.sha256(text.encode("utf-8")).hexdigest()
+        )

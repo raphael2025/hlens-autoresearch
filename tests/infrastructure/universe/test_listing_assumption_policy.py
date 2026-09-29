@@ -11,6 +11,7 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from core.contracts.revision import PointInTimeSpec, PolicyBinding, PolicyRole
+from core.domain.base import FrozenMapping
 from infrastructure.universe import listing_assumption as backfill
 
 FLOOR: datetime = datetime(2017, 8, 17, tzinfo=UTC)
@@ -35,7 +36,7 @@ def _spec(*extra_availability: PolicyBinding) -> PointInTimeSpec:
         version="1.0.0",
         simulation_time=FIRST_OBSERVED,
         knowledge_cutoff=FIRST_OBSERVED + timedelta(days=1),
-        snapshot_bindings={"canonical.instrument_listings": "1"},
+        snapshot_bindings=FrozenMapping({"canonical.instrument_listings": "1"}),
         point_in_time_binding=pit_binding,
         availability_bindings=(base, *extra_availability),
         precedence_bindings=(precedence,),

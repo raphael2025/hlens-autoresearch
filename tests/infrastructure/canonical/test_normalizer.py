@@ -7,7 +7,7 @@ reconciler. Expected values are written down from ADR-0028 by hand, not from the
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -1184,7 +1184,7 @@ def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarne
 
 
 def _unbounded_check_rest_unit(
-    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: list[int]
+    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: Sequence[int]
 ) -> None:
     """The pre-G2-R3a ``_check_rest_unit`` verbatim: full rows of every history row per key."""
     table = channel.element.table
