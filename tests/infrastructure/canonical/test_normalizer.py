@@ -1065,6 +1065,36 @@ def test_a_restricted_verification_returns_the_windows_it_proves(h: RestHarness)
     assert n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={c.STRIDE + 1}) == ()
 
 
+def test_restricted_verification_reuses_builtin_set_without_mutating_it(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _ = _seven(h)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    requested = {3, 7}
+    before = set(requested)
+    seen: list[Any] = []
+    original = n._verify_batches
+
+    def observe(pin: Any, channel: Any, source_revision_id: str, seqs: Any) -> Any:
+        seen.append(seqs)
+        return original(pin, channel, source_revision_id, seqs)
+
+    monkeypatch.setattr(n, "_verify_batches", observe)
+    result = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs=requested)
+
+    assert seen == [requested]
+    assert seen[0] is requested
+    assert requested == before
+    assert [row["arrival_seq"] for row in result] == [3, 4, 7]
+
+    iterable_result = n.verify_unit(
+        c.ARCHIVE_AGGS.table, archive, arrival_seqs=(seq for seq in (3, 7))
+    )
+    assert type(seen[1]) is frozenset
+    assert seen[1] == before
+    assert [row["arrival_seq"] for row in iterable_result] == [3, 4, 7]
+
+
 def test_a_restricted_verification_still_checks_the_whole_unit(h: RestHarness) -> None:
     archive, rows = _seven(h)
     # Delete a committed row of the last batch; a reader of the first batch must still refuse.

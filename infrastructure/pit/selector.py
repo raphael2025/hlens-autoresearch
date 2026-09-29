@@ -486,7 +486,10 @@ class PitSelector:
             unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
             units.setdefault(unit, set()).add(row["arrival_seq"])
         proven: dict[str, Mapping[str, Any]] = {}
-        for (raw_table, source), seqs in sorted(units.items()):
+        for raw_table, source in sorted(units):
+            # Transfer this unit's set to the read-only normalizer call. Sorting keys alone avoids
+            # retaining all already-consumed sequence sets in the sorted item list.
+            seqs = units.pop((raw_table, source))
             # Only the committed batches holding what was read are proven and kept (G3-S2);
             # the unit-wide facts are still checked by verify_unit.
             for row in normalizer.verify_unit(raw_table, source, arrival_seqs=seqs):

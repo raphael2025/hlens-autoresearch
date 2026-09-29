@@ -52,7 +52,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
@@ -721,14 +721,21 @@ class CanonicalNormalizer:
             finally:
                 if survey.positions is not None:
                     survey.positions.close()
-        return self._verify_batches(pin, channel, source_revision_id, frozenset(arrival_seqs))
+        # A caller may transfer a built-in set's ownership for this read-only proof path. Do not
+        # copy it: selector consumes its per-unit set before calling us, and verification only
+        # iterates these values. General iterables retain the historical frozen snapshot.
+        if type(arrival_seqs) in (set, frozenset):
+            seqs = cast(Collection[int], arrival_seqs)
+        else:
+            seqs = frozenset(arrival_seqs)
+        return self._verify_batches(pin, channel, source_revision_id, seqs)
 
     def _verify_batches(
         self,
         pin: _Pin,
         channel: rules.RawChannel,
         source_revision_id: str,
-        seqs: frozenset[int],
+        seqs: Collection[int],
     ) -> tuple[Mapping[str, Any], ...]:
         """The committed batches holding ``seqs``, proven, over the unit-wide facts (G3-S2)."""
         facts = self._unit_facts(pin, channel, source_revision_id)
