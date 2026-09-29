@@ -70,7 +70,6 @@ from infrastructure.pit.assumption import (
     effective_available_times,
 )
 from infrastructure.pit.runs import (
-    KeyHistoryBuffer,
     RunLimits,
     RunRef,
     RunSetBuilder,
@@ -208,9 +207,8 @@ class PitRunParams:
       content-addressed sorted run (:func:`infrastructure.pit.runs.spill_sorted_runs`);
     - ``merge_fanout``: how many sorted runs :func:`infrastructure.pit.runs.merge_sorted_runs`
       reads from at once when reconstructing key order;
-    - ``key_history_buffer``: how many of one observation key's own rows
-      :class:`infrastructure.pit.runs.KeyHistoryBuffer` holds before spilling the rest of that
-      key's (unusually long) chain into its own run;
+    - ``key_history_buffer``: the input capacity used while building one observation key's
+      content-addressed history run;
     - ``limits``: the leaf / index shape (:class:`infrastructure.pit.runs.RunLimits`) used for
       every run this call writes, including the intermediate runs a large merge produces.
     """
@@ -1197,18 +1195,25 @@ def _pit_bounded_stream(
         with iter_run(storage, row_root) as merged_rows:
             last_identity: tuple[str, str] | None = None
             for row_key, row_group in itertools.groupby(merged_rows, key=_pit_row_group_key):
-                buffer = KeyHistoryBuffer(
-                    storage=storage, buffer_limit=params.key_history_buffer, limits=limits
-                )
-                for row in row_group:
-                    identity = (row["observation_key"], row["revision_id"])
-                    if identity == last_identity:
-                        raise CatalogIntegrityError(
-                            f"Canonical revision {identity[1]} is read twice"
-                        )
-                    last_identity = identity
-                    buffer.add(row)
-                with buffer.rows() as key_row_iter:
+                with RunSetBuilder(
+                    storage,
+                    key=lambda item: item["revision_id"],
+                    capacity=params.key_history_buffer,
+                    merge_fanout=params.merge_fanout,
+                    limits=limits,
+                ) as key_builder:
+                    for row in row_group:
+                        identity = (row["observation_key"], row["revision_id"])
+                        if identity == last_identity:
+                            raise CatalogIntegrityError(
+                                f"Canonical revision {identity[1]} is read twice"
+                            )
+                        last_identity = identity
+                        key_builder.add(row)
+                    key_root = key_builder.finish()
+                if key_root is None:  # groupby yielded at least one row
+                    raise CatalogIntegrityError("a grouped Canonical key unexpectedly became empty")
+                with iter_run(storage, key_root) as key_row_iter:
                     key_rows = {row["revision_id"]: row for row in key_row_iter}
                 records = tuple(
                     revision_record_from_row(key_rows[revision]) for revision in sorted(key_rows)
@@ -1304,7 +1309,7 @@ def _pit_bounded_stream(
                 # observation_key's group is even read off merged_rows.
 
     # ``_generate`` holds the merged row-root reader and, while processing one key, the
-    # KeyHistoryBuffer / edge-root readers. They are closed explicitly on every exit of the
+    # key / edge-root readers. They are closed explicitly on every exit of the
     # caller's ``with`` block -- full iteration, an early ``break``, or an exception -- rather
     # than left to whenever the generator object is garbage collected.
     # ``.close()`` throws ``GeneratorExit`` in at the generator's current (or not yet started)
