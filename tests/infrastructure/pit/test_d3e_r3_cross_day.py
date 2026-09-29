@@ -29,7 +29,8 @@ from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from infrastructure.canonical import rules
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_PRECEDENCE_EVIDENCE
-from infrastructure.pit.selector import PIT_BINDING, PitSelector
+from infrastructure.pit.runs import RunLimits
+from infrastructure.pit.selector import PIT_BINDING, PitRunParams, PitSelector
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
 from infrastructure.revision.channel_reconcile import ChannelReconciler
@@ -456,6 +457,45 @@ def test_a_pit_selector_maps_each_three_day_edge_once(h: RestHarness) -> None:
         )
         == out
     )
+
+
+def test_iter_bounded_maps_three_day_spanning_edges_once(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The bounded path joins three day partitions per key without window edge staging."""
+    _cross_three_days(h)
+    _reconcile_days(h, (DAY_1, DAY_2, DAY))
+    spec = _spec(h, cutoff=FAR)
+    start, end = utc(2023, 11, 14), utc(2023, 11, 17)
+    selector = PitSelector(h.adapter, h.storage)
+    legacy = selector.select(spec, "agg_trades", SYMBOL, start, end)
+    mapped_for_spanning: list[Any] = []
+    original = PitSelector._mapped_edges
+
+    def capture_key_edges(self: PitSelector, *args: Any, **kwargs: Any) -> dict[str, list[Any]]:
+        mapped = original(self, *args, **kwargs)
+        if kwargs.get("only_key") == SPANNING:
+            mapped_for_spanning.extend(mapped.get(SPANNING, ()))
+        return mapped
+
+    monkeypatch.setattr(PitSelector, "_mapped_edges", capture_key_edges)
+    params = PitRunParams(
+        row_batch_rows=1,
+        edge_batch_rows=1,
+        merge_fanout=2,
+        key_history_buffer=1,
+        limits=RunLimits(leaf_max_records=1, leaf_max_bytes=1 << 16, fanout=2),
+    )
+    with selector.iter_bounded(spec, "agg_trades", SYMBOL, start, end, params=params) as records:
+        actual = [record.selection for record in records]
+
+    assert sorted(actual, key=lambda item: (item.observation_key, item.simulation_time)) == sorted(
+        legacy.selections, key=lambda item: (item.observation_key, item.simulation_time)
+    )
+    mapped_raw = _raw_edge_ids(mapped_for_spanning)
+    expected_raw = {edge_id for edge_id, _, _ in _spanning_edge_triples(h)}
+    assert len(mapped_raw) == len(set(mapped_raw)) == 3
+    assert set(mapped_raw) == expected_raw
 
 
 def _doctor(edge: ChannelEdge, change: str) -> ChannelEdge:
