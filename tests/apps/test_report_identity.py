@@ -63,32 +63,21 @@ def _refused(root: Path, kind: ReportKind, report_id: str, reason: str) -> None:
     assert str(root) not in response.text and "/" + kind.value + "/" not in response.text
 
 
-def _dto_ready_report(kind: ReportKind, report_id: str, payload: Payload) -> tuple[str, Payload]:
-    """Add the DTO-required hash and matching id to state-diagnostics fixture payloads."""
-    if kind is not ReportKind.STATE_DIAGNOSTICS:
-        return report_id, payload
-    body = {key: value for key, value in payload.items() if key != "diagnostics_hash"}
-    diagnostics_hash = content_hash(body)
-    return diagnostics_hash, {**body, "diagnostics_hash": diagnostics_hash}
-
-
 @pytest.mark.parametrize("kind", IDENTIFIED)
 def test_writer_reports_in_the_registered_dto_shape_are_served(
     tmp_path: Path, kind: ReportKind
 ) -> None:
     good = fixture(kind)
-    report_id, payload = _dto_ready_report(kind, good.id, good.payload)
-    _write(tmp_path, kind, report_id, payload)
-    assert ReportStore(tmp_path).get(kind, report_id).payload == payload
+    _write(tmp_path, kind, good.id, good.payload)
+    assert ReportStore(tmp_path).get(kind, good.id).payload == good.payload
     listing = TestClient(create_app(reports_root=tmp_path)).get(f"/reports/{kind.value}").json()
-    assert [item["id"] for item in listing["reports"]] == [report_id] and listing["invalid"] == []
+    assert [item["id"] for item in listing["reports"]] == [good.id] and listing["invalid"] == []
 
 
 @pytest.mark.parametrize("kind", IDENTIFIED)
 def test_a_real_report_under_another_name_is_refused(tmp_path: Path, kind: ReportKind) -> None:
     good = fixture(kind)
-    _, payload = _dto_ready_report(kind, good.id, good.payload)
-    _write(tmp_path, kind, "renamed", payload)
+    _write(tmp_path, kind, "renamed", good.payload)
     _refused(tmp_path, kind, "renamed", "the file name is not the report's")
 
 
@@ -222,12 +211,9 @@ def test_an_edit_with_a_recomputed_hash_keeps_failing_on_the_name(
 
 def test_an_edited_state_diagnostics_report_is_refused(tmp_path: Path) -> None:
     good = fixture(ReportKind.STATE_DIAGNOSTICS)
-    report_id, payload = _dto_ready_report(
-        ReportKind.STATE_DIAGNOSTICS, good.id, good.payload
-    )
-    edited = {**payload, "counts": {"a": 4, "b": 3}}
-    _write(tmp_path, ReportKind.STATE_DIAGNOSTICS, report_id, edited)
-    _refused(tmp_path, ReportKind.STATE_DIAGNOSTICS, report_id, "diagnostics_hash")
+    edited = {**good.payload, "counts": {"a": 4, "b": 3}}
+    _write(tmp_path, ReportKind.STATE_DIAGNOSTICS, good.id, edited)
+    _refused(tmp_path, ReportKind.STATE_DIAGNOSTICS, good.id, "diagnostics_hash")
 
 
 @pytest.mark.parametrize(
