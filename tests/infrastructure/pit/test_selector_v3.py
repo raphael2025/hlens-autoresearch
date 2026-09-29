@@ -22,7 +22,6 @@ import pyarrow as pa
 import pytest
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
-from infrastructure.pit import runs as runs_module
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder
 from infrastructure.pit.selector import (
@@ -31,6 +30,7 @@ from infrastructure.pit.selector import (
     PitSelector,
     PitSpecError,
 )
+from infrastructure.streaming import runs as runs_module
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.pit.test_selector import (
     _WRONG,

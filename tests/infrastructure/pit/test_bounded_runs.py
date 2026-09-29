@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-from infrastructure.pit import runs as runs_module
 from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunIntegrityError,
@@ -33,6 +32,7 @@ from infrastructure.pit.runs import (
     write_sorted_run,
 )
 from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.streaming import runs as runs_module
 
 _GENEROUS = RunLimits(leaf_max_records=1000, leaf_max_bytes=1 << 20, fanout=4)
 #: leaf_max_records=1 / fanout=2 force one leaf per row and a multi-level index tree; the byte
