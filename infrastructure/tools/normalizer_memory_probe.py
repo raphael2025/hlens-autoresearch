@@ -38,9 +38,11 @@ is excluded from the per-stage growth verdict. Then, in order, each in a new chi
 - ``verify_archive`` — strict archive verification only: ``PersistedRowVerifier`` over a
   ``PinnedCatalogView`` of the heads with ``cache_archives=True`` (exactly how main's normalizer
   builds it), ``archive_row_count`` then every Raw line proven in windows of ``M`` lines via
-  ``verify_archive_elements``. Main has no archive spool: its verifier caches the strict D1
-  re-parse of the archive in memory, and that is what this stage measures. It is the verifier's
-  path, not the normalizer's whole proving pass (that is inside ``replay``);
+  ``verify_archive_elements``. The verifier strictly reparses the D1 object into a
+  ``SpooledArchive`` and closes that spool after each verification; its optional cache retains
+  only verified archive-row metadata, not the parsed archive table. This stage measures the
+  parser's in-memory spool portion and archive verification path, not the normalizer's whole
+  proving pass (that is inside ``replay``);
 - ``write_crash`` — ``normalize_unit`` writing the unit through a catalog proxy that raises right
   after its ``crash_after``-th Canonical commit (half the plan): the write path, then an
   interrupted write;
