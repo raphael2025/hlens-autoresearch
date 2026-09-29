@@ -1,7 +1,7 @@
 # Worker runtime composition — decision packet (2026-09-29)
 
-**Status: `ARCHITECTURE_DECISION_REQUIRED`.** This packet defines the remaining W2 gap; it does not
-change ADR-0044 / ADR-0049 or add a production entrypoint.
+**Status: DECIDED — ADR-0093 Accepted (2026-09-29).** The explicit trusted runtime factory was
+selected. This decision does not change ADR-0044 / ADR-0049.
 
 ## Confirmed state
 
@@ -15,7 +15,7 @@ change ADR-0044 / ADR-0049 or add a production entrypoint.
   command cannot safely decide which jobs to register or whether to run generic jobs versus a
   research loop without making that choice explicit.
 
-## Decision needed
+## Decision recorded
 
 Choose the production composition boundary for the Worker process:
 
@@ -29,7 +29,10 @@ Choose the production composition boundary for the Worker process:
 3. **Defer the executable:** keep the test-only cross-process harness as evidence, record W2 partial,
    and leave production Worker launch for a later architecture batch.
 
-## Proposed verification if option 1 is accepted
+ADR-0093 fixes the remaining runtime defaults: one job per poll, one-second idle wait, signal-driven
+stop after an active job reaches the existing result/ack boundary, and supervisor-managed restart.
+
+## Verification
 
 - Launch the production command as a subprocess with an explicit test runtime factory and a
   file-backed bus/results journal.
@@ -45,5 +48,7 @@ stage policy needs to change for this bounded W2 task.
 
 ## Current disposition
 
-W2 Worker production startup remains open. This is independent of E1-CAP-1 and does not stop the
-other Phase 1 integration and validation work.
+The production host and focused subprocess tests are implemented on the isolated integration branch;
+the selected host/job suites report `28 passed`, with Ruff and focused mypy clean. W2 remains open
+pending broader API/Worker integration and PostgreSQL + Iceberg joint restart evidence. This is
+independent of E1-CAP-1 and does not stop the other Phase 1 integration and validation work.

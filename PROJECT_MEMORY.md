@@ -16,6 +16,7 @@
 - 当前开发顺序：先整合模块基础逻辑，再统一验收。P7 已有 non-runnable typed plan、只读绑定校验器、durable v4 admission / TrialLedger 写入协调与 ADR-0074 本机有限批次 operator 基础；六类组合算子仍全部 fail closed。producer lowering 与完整预期 output 集合证明仍未完成。Phase 1 的 E1 主线 RSS probe 有 opt-in 分阶段诊断模式；默认测量不启动 tracer，诊断模式不具备 E1 证据资格。主线 probe / 诊断 / 测试 / build 均未运行。
 - 决策权（2026-09-28 起）：Raphael 明确授权 Claude Code 以 PM 身份直接决定工程 / 架构 / 模块语义（记录于 PROJECT_STATUS §6 D-PM-AUTH）；不可逆或对外操作（实盘、密钥、删数据、push / 合并 main、安装软件）仍先告知 Raphael
 - ADR-0091（2026-09-28）：四类 Registry 的完整性审计必须只读且按既有格式诚实报告证据强度；Failure Registry 不提供历史防篡改证明。
+- ADR-0093（2026-09-29）：生产 Worker 由部署方显式受信 Runtime Factory 组合；host 单任务轮询，信号在当前任务结果/ack 后停止，重启交给 supervisor。
 - 2026-09-28 底层代码补全轮次完成：契约升至 2.4.0（ADR-0077 / 0088，additive）；ADR-0076～0088 均 Accepted 并实现（ADR-0080 权威解析仍 BLOCKED）；全部代码未经测试，下一步为统一调试
 
 ## 2. Current Architecture
