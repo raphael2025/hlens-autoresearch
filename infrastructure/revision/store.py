@@ -77,9 +77,13 @@ from infrastructure.parser import (
     ArchiveRejection,
     ParsedArchive,
     ParseOutcome,
-    parse_archive,
 )
-from infrastructure.parser.binance_archive import PARSER_BINDING, ParserQualityEvent
+from infrastructure.parser.binance_archive import (
+    PARSER_BINDING,
+    ParserQualityEvent,
+    SpooledArchive,
+    parse_archive_spooled,
+)
 from infrastructure.revision import identity
 from infrastructure.revision.availability import (
     AVAILABILITY_BINDING,
@@ -348,8 +352,13 @@ class RawRevisionStore:
         request = ArchiveParseRequest.for_collected_object(
             collected, data_type=context.data_type, archive_revision_id=revision_id
         )
-        outcome = parse_archive(request, self._storage)
-        return self._persist(collected, context, outcome, observation_key, revision_id)
+        outcome = parse_archive_spooled(request, self._storage)
+        if isinstance(outcome, ArchiveRejection):
+            return self._persist(collected, context, outcome, observation_key, revision_id)
+        try:
+            return self._persist(collected, context, outcome, observation_key, revision_id)
+        finally:
+            outcome.close()
 
     def ingest_parsed(
         self, collected: CollectedObject, context: ArchiveContext, outcome: ParseOutcome
@@ -375,7 +384,7 @@ class RawRevisionStore:
         self,
         collected: CollectedObject,
         context: ArchiveContext,
-        outcome: ParseOutcome,
+        outcome: ParseOutcome | SpooledArchive,
         observation_key: str,
         revision_id: str,
     ) -> IngestOutcome:
@@ -383,8 +392,10 @@ class RawRevisionStore:
             if outcome.archive_revision_id != revision_id:
                 raise RevisionStoreError("the rejection belongs to another archive revision")
             return ArchiveRejected(rejection=outcome)
-        if not isinstance(outcome, ParsedArchive):
-            raise RevisionStoreError("outcome must be a ParsedArchive or an ArchiveRejection")
+        if not isinstance(outcome, (ParsedArchive, SpooledArchive)):
+            raise RevisionStoreError(
+                "outcome must be a ParsedArchive, SpooledArchive, or an ArchiveRejection"
+            )
         self._check_parsed(collected, context, outcome, revision_id)
 
         stored = self._stored_archive_row(revision_id)
@@ -439,7 +450,7 @@ class RawRevisionStore:
         self,
         collected: CollectedObject,
         context: ArchiveContext,
-        parsed: ParsedArchive,
+        parsed: ParsedArchive | SpooledArchive,
         revision_id: str,
     ) -> None:
         """The parse must be the strict D1 result *of this object*, by this parser version."""
@@ -590,7 +601,7 @@ class RawRevisionStore:
 
     def _append_rows(
         self,
-        parsed: ParsedArchive,
+        parsed: ParsedArchive | SpooledArchive,
         context: ArchiveContext,
         revision_id: str,
         base: int,
@@ -600,11 +611,17 @@ class RawRevisionStore:
         definition = _ROW_DEFINITIONS[context.data_type]
         subject = _ROW_SUBJECTS[context.data_type]
         source_identity = identity.row_source_identity(revision_id)
+        chunks: Iterable[pa.Table]
+        if isinstance(parsed, ParsedArchive):
+            chunks = (
+                parsed.rows.slice(offset, self._microbatch_rows)
+                for offset in range(0, parsed.row_count, self._microbatch_rows)
+            )
+        else:
+            chunks = self._spooled_microbatches(parsed)
         commits: list[BatchCommit] = []
         revisions = 0
-        total = parsed.row_count
-        for index, offset in enumerate(range(0, total, self._microbatch_rows)):
-            chunk = parsed.rows.slice(offset, self._microbatch_rows)
+        for index, chunk in enumerate(chunks):
             records = _row_records(
                 chunk,
                 data_type=context.data_type,
@@ -631,9 +648,31 @@ class RawRevisionStore:
                 )
             )
             revisions += len(records)
-        if revisions != total:
+        if revisions != parsed.row_count:
             raise RevisionStoreConflict("row revisions do not account for the parsed rows")
         return tuple(commits), revisions
+
+    def _spooled_microbatches(self, parsed: SpooledArchive) -> Iterator[pa.Table]:
+        """Assemble bounded write batches from the parser's fixed-size record batches."""
+        pending: list[pa.RecordBatch] = []
+        pending_rows = 0
+        with parsed.open_cursor() as cursor:
+            for source_batch in cursor:
+                offset = 0
+                while offset < source_batch.num_rows:
+                    take = min(
+                        source_batch.num_rows - offset,
+                        self._microbatch_rows - pending_rows,
+                    )
+                    pending.append(source_batch.slice(offset, take))
+                    pending_rows += take
+                    offset += take
+                    if pending_rows == self._microbatch_rows:
+                        yield pa.Table.from_batches(pending)
+                        pending.clear()
+                        pending_rows = 0
+        if pending_rows:
+            yield pa.Table.from_batches(pending)
 
     def _commit_rows(
         self,
