@@ -283,6 +283,322 @@ def revision_record_from_row(row: Mapping[str, Any]) -> RevisionRecord:
     )
 
 
+def _validate_channel_graph_runs(
+    storage: StorageAdapter,
+    archive_root: RunRef | None,
+    rest_root: RunRef | None,
+    evidence_root: RunRef | None,
+    *,
+    observation_key: str,
+    params: VerifiedEdgeRunParams,
+) -> None:
+    """Validate one key's graph with fixed buffers and externally sorted indexes.
+
+    ``RevisionGraph`` is the compatibility contract and remains the authority for materialized
+    callers. This internal equivalent exploits the verified-edge path's one-key grouping so
+    cross-key claims are checked at the boundary and graph indexes can be sorted/merged on disk.
+    Kahn cycle elimination uses one bounded external pass per graph depth; a cycle error's node
+    list is the contract's diagnostic output and may itself be large.
+    """
+    with (
+        RunSetBuilder(
+            storage,
+            key=lambda row: row["value"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as revision_ids,
+        RunSetBuilder(
+            storage,
+            key=lambda row: row["arrival_seq"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as arrivals,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["source_id"], row["payload_hash"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as payloads,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["newer"], row["older"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as required_evidence,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["newer"], row["older"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as graph_edges,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["newer"], row["older"], row["knowledge_time"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as evidence_rows,
+    ):
+        for expected_channel, root in (
+            (Channel.ARCHIVE, archive_root),
+            (Channel.REST, rest_root),
+        ):
+            if root is None:
+                continue
+            with iter_run(storage, root) as rows:
+                for item in rows:
+                    row = item["row"]
+                    try:
+                        record = revision_record_from_row(row)
+                    except ValueError as exc:
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: {exc}"
+                        ) from None
+                    if record.observation_key != observation_key:
+                        raise CatalogIntegrityError(
+                            "a graph member is assigned to another observation_key"
+                        )
+                    if not isinstance(record, RevisionRecord):
+                        raise ArrivalSeqRangeViolation("a graph member is not a RevisionRecord")
+                    if _channel_of(record) is not expected_channel:
+                        raise ArrivalSeqRangeViolation(
+                            f"revision {record.revision_id} is not a {expected_channel.value} "
+                            "revision"
+                        )
+                    arrival_seq = check_arrival_seq(expected_channel, record.arrival_seq)
+                    revision_ids.add(
+                        {"value": record.revision_id, "revision_id": record.revision_id}
+                    )
+                    arrivals.add({"arrival_seq": arrival_seq, "revision_id": record.revision_id})
+                    payloads.add(
+                        {
+                            "source_id": record.source_id,
+                            "payload_hash": record.payload_hash,
+                            "revision_id": record.revision_id,
+                        }
+                    )
+                    for older in record.supersedes:
+                        required_evidence.add(
+                            {
+                                "newer": record.revision_id,
+                                "older": older,
+                                "knowledge_time": record.availability.times.knowledge_time,
+                            }
+                        )
+                        graph_edges.add({"newer": record.revision_id, "older": older})
+
+        if evidence_root is not None:
+            with iter_run(storage, evidence_root) as rows:
+                for row in rows:
+                    try:
+                        evidence = evidence_from_row(row)
+                    except ValueError as exc:
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: {exc}"
+                        ) from None
+                    if evidence.observation_key != observation_key:
+                        raise CatalogIntegrityError(
+                            "precedence evidence belongs to another observation_key"
+                        )
+                    edge = {
+                        "newer": evidence.revision_id,
+                        "older": evidence.superseded_revision_id,
+                        "knowledge_time": evidence.knowledge_time,
+                    }
+                    evidence_rows.add(edge)
+                    graph_edges.add({"newer": edge["newer"], "older": edge["older"]})
+
+        revision_ids_root = revision_ids.finish()
+        arrivals_root = arrivals.finish()
+        payloads_root = payloads.finish()
+        required_root = required_evidence.finish()
+        graph_edges_root = graph_edges.finish()
+        evidence_rows_root = evidence_rows.finish()
+
+    def check_adjacent_duplicate(
+        root: RunRef | None,
+        *,
+        value_key: Callable[[Mapping[str, Any]], Any],
+        error: Callable[[Mapping[str, Any], Mapping[str, Any]], Exception],
+    ) -> None:
+        if root is None:
+            return
+        with iter_run(storage, root) as rows:
+            previous: Mapping[str, Any] | None = None
+            for row in rows:
+                if previous is not None and value_key(previous) == value_key(row):
+                    raise error(previous, row)
+                previous = row
+
+    check_adjacent_duplicate(
+        revision_ids_root,
+        value_key=lambda row: row["value"],
+        error=lambda _previous, row: CatalogIntegrityError(
+            f"cross-channel revision graph is invalid: revision_id 重复：{row['value']!r}"
+        ),
+    )
+    check_adjacent_duplicate(
+        arrivals_root,
+        value_key=lambda row: row["arrival_seq"],
+        error=lambda previous, row: ArrivalSeqRangeViolation(
+            f"arrival_seq {row['arrival_seq']} collides: {previous['revision_id']} and "
+            f"{row['revision_id']}"
+        ),
+    )
+    check_adjacent_duplicate(
+        payloads_root,
+        value_key=lambda row: (row["source_id"], row["payload_hash"]),
+        error=lambda _previous, row: CatalogIntegrityError(
+            "cross-channel revision graph is invalid: 重复 payload（同一 observation_key 下 "
+            "source_id + payload_hash 相同）："
+            f"{row['revision_id']!r} 不得成为新 revision"
+        ),
+    )
+
+    if required_root is not None:
+        if evidence_rows_root is None:
+            with iter_run(storage, required_root) as required:
+                first = next(required, None)
+            if first is not None:
+                raise CatalogIntegrityError(
+                    f"cross-channel revision graph is invalid: supersedes 边 "
+                    f"{first['newer']!r} → {first['older']!r} 缺少不晚于该 revision "
+                    "knowledge_time 的 precedence 证据"
+                )
+        else:
+            with (
+                iter_run(storage, required_root) as required,
+                iter_run(storage, evidence_rows_root) as evidence_row_iter,
+            ):
+                evidence_groups = iter(
+                    itertools.groupby(
+                        evidence_row_iter, key=lambda row: (row["newer"], row["older"])
+                    )
+                )
+                current_evidence = next(evidence_groups, None)
+                for requirement in required:
+                    pair = (requirement["newer"], requirement["older"])
+                    while current_evidence is not None and current_evidence[0] < pair:
+                        current_evidence = next(evidence_groups, None)
+                    if current_evidence is None or current_evidence[0] != pair:
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: supersedes 边 "
+                            f"{pair[0]!r} → {pair[1]!r} 缺少不晚于该 revision "
+                            "knowledge_time 的 precedence 证据"
+                        )
+                    first_evidence = next(current_evidence[1], None)
+                    if (
+                        first_evidence is None
+                        or first_evidence["knowledge_time"] > requirement["knowledge_time"]
+                    ):
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: supersedes 边 "
+                            f"{pair[0]!r} → {pair[1]!r} 缺少不晚于该 revision "
+                            "knowledge_time 的 precedence 证据"
+                        )
+                    current_evidence = next(evidence_groups, None)
+
+    _assert_acyclic_run(storage, graph_edges_root, params)
+
+
+def _assert_acyclic_run(
+    storage: StorageAdapter, root: RunRef | None, params: VerifiedEdgeRunParams
+) -> None:
+    """Bounded-memory equivalent of ``_cyclic_nodes`` using external Kahn passes."""
+    active = root
+    while active is not None:
+        with (
+            RunSetBuilder(
+                storage,
+                key=lambda row: row["node"],
+                capacity=params.row_capacity,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as degrees,
+            RunSetBuilder(
+                storage,
+                key=lambda row: row["node"],
+                capacity=params.row_capacity,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as ready,
+        ):
+            with iter_run(storage, active) as edges:
+                previous_pair: tuple[str, str] | None = None
+                for edge in edges:
+                    pair = (edge["newer"], edge["older"])
+                    if pair == previous_pair:
+                        continue
+                    degrees.add({"node": pair[0], "increment": 0})
+                    degrees.add({"node": pair[1], "increment": 1})
+                    previous_pair = pair
+            degree_root = degrees.finish()
+            ready_count = 0
+            if degree_root is not None:
+                with iter_run(storage, degree_root) as nodes:
+                    for node, group in itertools.groupby(nodes, key=lambda row: row["node"]):
+                        degree = sum(item["increment"] for item in group)
+                        if degree == 0:
+                            ready.add({"node": node})
+                            ready_count += 1
+            ready_root = ready.finish()
+
+        if ready_count == 0:
+            with (
+                RunSetBuilder(
+                    storage,
+                    key=lambda row: row["node"],
+                    capacity=params.row_capacity,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as cycle_nodes,
+                iter_run(storage, active) as edges,
+            ):
+                for edge in edges:
+                    cycle_nodes.add({"node": edge["newer"]})
+                    cycle_nodes.add({"node": edge["older"]})
+                cycle_root = cycle_nodes.finish()
+            rendered: list[str] = []
+            if cycle_root is not None:
+                with iter_run(storage, cycle_root) as nodes:
+                    previous: str | None = None
+                    for row in nodes:
+                        node = row["node"]
+                        if node != previous:
+                            rendered.append(repr(node))
+                            previous = node
+            raise CatalogIntegrityError(
+                "cross-channel revision graph is invalid: supersedes 图不得成环：涉及 "
+                f"[{', '.join(rendered)}]"
+            )
+
+        if ready_root is None:  # pragma: no cover - ready_count and root are coupled
+            return
+        with (
+            iter_run(storage, active) as edges,
+            iter_run(storage, ready_root) as ready_nodes,
+            RunSetBuilder(
+                storage,
+                key=lambda row: (row["newer"], row["older"]),
+                capacity=params.row_capacity,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as remaining,
+        ):
+            next_ready = next(ready_nodes, None)
+            for edge in edges:
+                while next_ready is not None and next_ready["node"] < edge["newer"]:
+                    next_ready = next(ready_nodes, None)
+                if next_ready is None or next_ready["node"] != edge["newer"]:
+                    remaining.add(edge)
+            active = remaining.finish()
+
+
 def evidence_from_row(row: Mapping[str, Any]) -> PrecedenceEvidence:
     """The complete ``PrecedenceEvidence`` (both ends explicit) of one evidence-table row."""
     return PrecedenceEvidence(
@@ -1832,7 +2148,6 @@ class ChannelReconciler:
                             evidence_group = next(evidence_groups, None)
                             for key_row in keys:
                                 observation_key = key_row["observation_key"]
-                                rest_records: list[RevisionRecord] = []
                                 rest_revision_root: RunRef | None = None
                                 with RunSetBuilder(
                                     self._storage,
@@ -1868,6 +2183,13 @@ class ChannelReconciler:
                                                 pinned.rest_snapshot,
                                                 {},
                                             )
+                                            try:
+                                                revision_record_from_row(row)
+                                            except ValueError as exc:
+                                                raise CatalogIntegrityError(
+                                                    f"{revision.table}: row {row['revision_id']} "
+                                                    f"is not a lawful revision ({exc})"
+                                                ) from None
                                             rest_revisions.add(
                                                 {
                                                     "revision_id": revision.revision_id,
@@ -1876,17 +2198,9 @@ class ChannelReconciler:
                                                     "time_unit": revision.time_unit,
                                                 }
                                             )
-                                            try:
-                                                rest_records.append(revision_record_from_row(row))
-                                            except ValueError as exc:
-                                                raise CatalogIntegrityError(
-                                                    f"{revision.table}: row {row['revision_id']} "
-                                                    f"is not a lawful revision ({exc})"
-                                                ) from None
                                     rest_revision_root = rest_revisions.finish()
                                 rest_group = next(rest_groups, None)
 
-                                archive_records: list[RevisionRecord] = []
                                 archive_revision_root: RunRef | None = None
                                 if archive_group is not None and archive_group[0] < observation_key:
                                     raise CatalogIntegrityError(
@@ -1930,6 +2244,13 @@ class ChannelReconciler:
                                                 pinned.archive_snapshot,
                                                 units,
                                             )
+                                            try:
+                                                revision_record_from_row(row)
+                                            except ValueError as exc:
+                                                raise CatalogIntegrityError(
+                                                    f"{revision.table}: row {row['revision_id']} "
+                                                    f"is not a lawful revision ({exc})"
+                                                ) from None
                                             archive_revisions.add(
                                                 {
                                                     "revision_id": revision.revision_id,
@@ -1938,15 +2259,6 @@ class ChannelReconciler:
                                                     "time_unit": revision.time_unit,
                                                 }
                                             )
-                                            try:
-                                                archive_records.append(
-                                                    revision_record_from_row(row)
-                                                )
-                                            except ValueError as exc:
-                                                raise CatalogIntegrityError(
-                                                    f"{revision.table}: row {row['revision_id']} "
-                                                    f"is not a lawful revision ({exc})"
-                                                ) from None
                                         archive_group = next(archive_groups, None)
                                     archive_revision_root = archive_revisions.finish()
 
@@ -1962,9 +2274,6 @@ class ChannelReconciler:
                                     evidence_group is not None
                                     and evidence_group[0] == observation_key
                                 )
-
-                                rest_records.sort(key=lambda item: item.revision_id)
-                                archive_records.sort(key=lambda item: item.revision_id)
 
                                 def channel_revision_from_run_row(
                                     item: Mapping[str, Any], snapshot_id: str | None
@@ -2057,98 +2366,116 @@ class ChannelReconciler:
                                                         )
                                     equal_root = equal_pairs.finish()
 
-                                graph_evidence: list[PrecedenceEvidence] = []
-                                with ExitStack() as stack:
-                                    expected_pairs = (
-                                        iter(())
-                                        if equal_root is None
-                                        else stack.enter_context(
-                                            iter_run(self._storage, equal_root)
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda row: (
+                                        row["revision_id"],
+                                        row["superseded_revision_id"],
+                                        row["knowledge_time"],
+                                    ),
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as graph_evidence:
+                                    with ExitStack() as stack:
+                                        expected_pairs = (
+                                            iter(())
+                                            if equal_root is None
+                                            else stack.enter_context(
+                                                iter_run(self._storage, equal_root)
+                                            )
                                         )
-                                    )
-                                    current_edge_rows: Iterator[Mapping[str, Any]] = iter(())
-                                    if (
-                                        evidence_group is not None
-                                        and evidence_group[0] == observation_key
-                                    ):
-                                        current_edge_rows = evidence_group[1]
-                                    expected_pair = next(expected_pairs, None)
-                                    current_edge = next(current_edge_rows, None)
-                                    previous_edge_id: str | None = None
-                                    while current_edge is not None:
-                                        edge_id = current_edge["edge_id"]
-                                        while (
-                                            expected_pair is not None
-                                            and expected_pair["edge_id"] < edge_id
-                                        ):
-                                            expected_pair = next(expected_pairs, None)
+                                        current_edge_rows: Iterator[Mapping[str, Any]] = iter(())
                                         if (
-                                            expected_pair is None
-                                            or expected_pair["edge_id"] != edge_id
+                                            evidence_group is not None
+                                            and evidence_group[0] == observation_key
                                         ):
-                                            raise CatalogIntegrityError(
-                                                f"evidence edge {edge_id} does not describe an "
-                                                "equal archive / REST pair of the pinned snapshots"
-                                            )
-                                        if edge_id == previous_edge_id:
-                                            raise CatalogIntegrityError(
-                                                f"evidence edge {edge_id} is committed twice"
-                                            )
-                                        archive_revision_id = expected_pair["archive_revision_id"]
-                                        rest_revision_id = expected_pair["rest_revision_id"]
-                                        if (
-                                            current_edge["revision_id"] != archive_revision_id
-                                            or current_edge["superseded_revision_id"]
-                                            != rest_revision_id
-                                        ):
-                                            raise CatalogIntegrityError(
-                                                f"evidence edge {edge_id} does not match its "
-                                                "archive / REST revision ids"
-                                            )
-                                        found_archive_revision = find_channel_revision(
-                                            archive_revision_root,
-                                            archive_revision_id,
-                                            pinned.archive_snapshot,
-                                        )
-                                        found_rest_revision = find_channel_revision(
-                                            rest_revision_root,
-                                            rest_revision_id,
-                                            pinned.rest_snapshot,
-                                        )
-                                        if (
-                                            found_archive_revision is None
-                                            or found_rest_revision is None
-                                        ):
-                                            raise CatalogIntegrityError(
-                                                f"evidence edge {edge_id} references a missing "
-                                                "source revision"
-                                            )
-                                        comparison = compare_channels(
-                                            found_archive_revision, found_rest_revision
-                                        )
-                                        if (
-                                            comparison.outcome is not ComparisonOutcome.EQUAL
-                                            or _edge_id(comparison) != edge_id
-                                        ):
-                                            raise CatalogIntegrityError(
-                                                f"evidence edge {edge_id} does not describe an "
-                                                "equal archive / REST pair of the pinned snapshots"
-                                            )
-                                        edge = self._existing_edges(
-                                            (current_edge,), {edge_id: comparison}
-                                        )[edge_id]
-                                        graph_evidence.append(edge.evidence)
-                                        output.add(edge.row())
-                                        previous_edge_id = edge_id
+                                            current_edge_rows = evidence_group[1]
                                         expected_pair = next(expected_pairs, None)
                                         current_edge = next(current_edge_rows, None)
-                                if has_current_edges:
-                                    evidence_group = next(evidence_groups, None)
-                                assemble_channel_graph(
-                                    archive_records,
-                                    rest_records,
-                                    graph_evidence,
-                                )
+                                        previous_edge_id: str | None = None
+                                        while current_edge is not None:
+                                            edge_id = current_edge["edge_id"]
+                                            while (
+                                                expected_pair is not None
+                                                and expected_pair["edge_id"] < edge_id
+                                            ):
+                                                expected_pair = next(expected_pairs, None)
+                                            if (
+                                                expected_pair is None
+                                                or expected_pair["edge_id"] != edge_id
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} does not describe an "
+                                                    "equal archive / REST pair of the pinned "
+                                                    "snapshots"
+                                                )
+                                            if edge_id == previous_edge_id:
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} is committed twice"
+                                                )
+                                            archive_revision_id = expected_pair[
+                                                "archive_revision_id"
+                                            ]
+                                            rest_revision_id = expected_pair["rest_revision_id"]
+                                            if (
+                                                current_edge["revision_id"] != archive_revision_id
+                                                or current_edge["superseded_revision_id"]
+                                                != rest_revision_id
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} does not match its "
+                                                    "archive / REST revision ids"
+                                                )
+                                            found_archive_revision = find_channel_revision(
+                                                archive_revision_root,
+                                                archive_revision_id,
+                                                pinned.archive_snapshot,
+                                            )
+                                            found_rest_revision = find_channel_revision(
+                                                rest_revision_root,
+                                                rest_revision_id,
+                                                pinned.rest_snapshot,
+                                            )
+                                            if (
+                                                found_archive_revision is None
+                                                or found_rest_revision is None
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} references a missing "
+                                                    "source revision"
+                                                )
+                                            comparison = compare_channels(
+                                                found_archive_revision, found_rest_revision
+                                            )
+                                            if (
+                                                comparison.outcome is not ComparisonOutcome.EQUAL
+                                                or _edge_id(comparison) != edge_id
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} does not describe an "
+                                                    "equal archive / REST pair of the pinned "
+                                                    "snapshots"
+                                                )
+                                            edge = self._existing_edges(
+                                                (current_edge,), {edge_id: comparison}
+                                            )[edge_id]
+                                            graph_evidence.add(dict(current_edge))
+                                            output.add(edge.row())
+                                            previous_edge_id = edge_id
+                                            expected_pair = next(expected_pairs, None)
+                                            current_edge = next(current_edge_rows, None)
+                                    if has_current_edges:
+                                        evidence_group = next(evidence_groups, None)
+                                    graph_evidence_root = graph_evidence.finish()
+                                    _validate_channel_graph_runs(
+                                        self._storage,
+                                        archive_revision_root,
+                                        rest_revision_root,
+                                        graph_evidence_root,
+                                        observation_key=observation_key,
+                                        params=params,
+                                    )
                             if (
                                 rest_group is not None
                                 or archive_group is not None
