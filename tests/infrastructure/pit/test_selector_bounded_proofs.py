@@ -11,7 +11,7 @@ from core.contracts.storage import StageRequest
 from infrastructure.canonical.normalizer import CanonicalNormalizer
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.runs import RunLimits, RunSetBuilder
-from infrastructure.pit.selector import PitRunParams, PitSelector
+from infrastructure.pit.selector import PitRunParams, PitSelector, _root_rows
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.pit.test_selector import END, K_A, K_E, START, _spec
 from tests.infrastructure.revision import rest_store_support as ss
@@ -129,7 +129,7 @@ def _observe_proof_builders(monkeypatch: pytest.MonkeyPatch) -> list[_ObservedPr
     return observed
 
 
-def _multi_batch_chain(h: RestHarness, *, count: int = 5) -> None:
+def _multi_batch_chain(h: RestHarness, *, count: int = 5) -> tuple[str, str]:
     items = ss.agg_items(count)
     archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(items), knowledge=K_A)
     [response] = c.ingest_rest(h, "agg_trades", items, knowledge=K_A)
@@ -137,6 +137,7 @@ def _multi_batch_chain(h: RestHarness, *, count: int = 5) -> None:
         normalizer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
         normalizer.normalize_unit(c.REST_AGGS.table, response)
     h.reconciler(clock=StepClock(start=K_E)).reconcile("agg_trades", SYMBOL, ss.DAY)
+    return archive, response
 
 
 def test_bounded_proofs_spill_and_close_readers_with_revision_order(
@@ -167,6 +168,98 @@ def test_bounded_proofs_spill_and_close_readers_with_revision_order(
         and builder.counting_storage.closed_readers == builder.counting_storage.open_readers
         for builder in observed
     )
+
+
+def test_bounded_proofs_validate_batches_while_reverse_snapshot_stream_is_open(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _ = _multi_batch_chain(h, count=9)
+    normalizer = c.normalizer(h, clock=StepClock(start=K_E), microbatch_rows=2)
+    verified = normalizer.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    staged: list[tuple[int, int]] = []
+    original_snapshots = CanonicalNormalizer._plan_snapshots
+    original_check = CanonicalNormalizer._check_committed_window
+    requested_streams: list[list[int]] = []
+    active: list[bool] = []
+
+    def observed_snapshots(
+        self: CanonicalNormalizer, *args: Any, **kwargs: Any
+    ) -> Iterator[tuple[int, Any]]:
+        indices: list[int] = []
+        requested_streams.append(indices)
+        active.append(True)
+        try:
+            for index, snapshot in original_snapshots(self, *args, **kwargs):
+                indices.append(index)
+                yield index, snapshot
+        finally:
+            active[-1] = False
+
+    def check_before_stream_is_exhausted(
+        self: CanonicalNormalizer, *args: Any, **kwargs: Any
+    ) -> None:
+        assert any(active), "batch validation must consume snapshots incrementally"
+        original_check(self, *args, **kwargs)
+
+    monkeypatch.setattr(CanonicalNormalizer, "_plan_snapshots", observed_snapshots)
+    monkeypatch.setattr(
+        CanonicalNormalizer, "_check_committed_window", check_before_stream_is_exhausted
+    )
+
+    normalizer._stage_verified_unit(
+        c.ARCHIVE_AGGS.table,
+        archive,
+        arrival_seqs={row["arrival_seq"] for row in verified},
+        sink=lambda _row, batch_index, row_ordinal: staged.append((batch_index, row_ordinal)),
+    )
+
+    assert requested_streams
+    bounded_streams = [indices for indices in requested_streams if len(indices) > 1]
+    assert bounded_streams
+    assert all(indices == sorted(indices, reverse=True) for indices in bounded_streams)
+    assert [batch_index for batch_index, _ in staged] == sorted(
+        (batch_index for batch_index, _ in staged), reverse=True
+    )
+    assert not any(active)
+
+
+def test_duplicate_revision_ids_keep_legacy_ascending_batch_last_write_wins(
+    h: RestHarness,
+) -> None:
+    # Bounded verification executes batches newest-first; the sort key must restore the legacy
+    # unit / ascending-batch / row order before the selector applies dict last-write-wins.
+    emitted = (
+        (0, 2, 0, "newest batch"),
+        (0, 1, 0, "middle batch"),
+        (0, 0, 0, "oldest batch"),
+        (1, 0, 0, "later unit"),
+    )
+    with RunSetBuilder(
+        h.storage,
+        key=selector_module._proof_row_sort_key,
+        capacity=1,
+        merge_fanout=_PARAMS.merge_fanout,
+        limits=_PARAMS.limits,
+    ) as builder:
+        for unit_order, batch_index, row_ordinal, marker in emitted:
+            builder.add(
+                {
+                    "revision_id": "duplicate-revision",
+                    "unit_order": unit_order,
+                    "batch_index": batch_index,
+                    "planned_row_ordinal": row_ordinal,
+                    "proof_row": {"marker": marker},
+                }
+            )
+        root = builder.finish()
+
+    with _root_rows(h.storage, root) as ordered:
+        proof_rows = list(ordered)
+    proofs: dict[str, Mapping[str, Any]] = {}
+    for proof in proof_rows:
+        proofs[proof["revision_id"]] = proof["proof_row"]
+
+    assert proofs["duplicate-revision"]["marker"] == "later unit"
 
 
 def test_late_unit_failure_leaves_proof_builder_unfinished_and_unobservable(

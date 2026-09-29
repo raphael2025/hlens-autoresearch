@@ -736,7 +736,7 @@ class CanonicalNormalizer:
         source_revision_id: str,
         *,
         arrival_seqs: Collection[int],
-        sink: Callable[[Mapping[str, Any]], None],
+        sink: Callable[[Mapping[str, Any], int, int], None],
     ) -> None:
         """Prove a bounded selector's requested unit rows directly into private staging.
 
@@ -754,8 +754,9 @@ class CanonicalNormalizer:
             channel,
             source_revision_id,
             seqs,
-            sink=sink,
+            sink=None,
             use_batch_cache=False,
+            ordered_sink=sink,
         )
 
     def _verify_batches(
@@ -784,8 +785,9 @@ class CanonicalNormalizer:
         source_revision_id: str,
         seqs: Collection[int],
         *,
-        sink: Callable[[Mapping[str, Any]], None],
+        sink: Callable[[Mapping[str, Any]], None] | None,
         use_batch_cache: bool,
+        ordered_sink: Callable[[Mapping[str, Any], int, int], None] | None = None,
     ) -> None:
         """Private sink form shared by the tuple API and bounded selector staging."""
         facts = self._unit_facts(pin, channel, source_revision_id)
@@ -805,6 +807,56 @@ class CanonicalNormalizer:
                 rows = self._batches.get((channel.element.table, source_revision_id, index))
                 if rows is not None:
                     cached[index] = rows
+
+            def emit(index: int, rows: Sequence[Mapping[str, Any]]) -> None:
+                for row_ordinal, row in enumerate(rows):
+                    if ordered_sink is None:
+                        assert sink is not None
+                        sink(row)
+                    else:
+                        ordered_sink(row, index, row_ordinal)
+
+            if ordered_sink is not None:
+                # Bounded selector staging follows the already-validated reverse snapshot stream.
+                # Do not collect one SnapshotInfo per requested batch. Explicit scalar checks
+                # make the expected descending order and complete requested set visible here.
+                requested = wanted if not cached else wanted - cached.keys()
+                remaining = len(requested)
+                previous_index = plan.count
+                for index, snapshot in self._plan_snapshots(
+                    pin, channel, source_revision_id, plan, requested
+                ):
+                    if index not in requested or index >= previous_index:
+                        raise CatalogIntegrityError(
+                            f"{channel.canonical.table}: requested batch snapshots are out of order"
+                        )
+                    previous_index = index
+                    remaining -= 1
+                    low, high, end = _batch_window(facts.positions, plan.chunk, index)
+                    raw = self._raw_window(
+                        pin,
+                        channel,
+                        source_revision_id,
+                        low,
+                        high,
+                        expected_rows=end - index * plan.chunk,
+                    )
+                    self._prove(pin, channel, raw)
+                    planned = self._planned(channel, raw, base, ready, facts.version)
+                    check_batch_snapshot(
+                        channel.canonical,
+                        unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
+                        snapshot,
+                        planned,
+                    )
+                    self._check_committed_window(pin, channel, base, low, high, planned)
+                    emit(index, planned)
+                if remaining != 0:
+                    raise CatalogIntegrityError(
+                        f"{channel.canonical.table}: requested batch snapshot is missing"
+                    )
+                return
+
             snapshots = dict(
                 self._plan_snapshots(pin, channel, source_revision_id, plan, wanted - cached.keys())
             )
@@ -812,8 +864,7 @@ class CanonicalNormalizer:
                 key = (channel.element.table, source_revision_id, index)
                 proven = cached.get(index)
                 if proven is not None:
-                    for row in proven:
-                        sink(row)
+                    emit(index, proven)
                     continue
                 low, high, end = _batch_window(facts.positions, plan.chunk, index)
                 raw = self._raw_window(
@@ -833,8 +884,7 @@ class CanonicalNormalizer:
                     planned,
                 )
                 self._check_committed_window(pin, channel, base, low, high, planned)
-                for row in planned:
-                    sink(row)
+                emit(index, planned)
                 if self._frozen and use_batch_cache:
                     while len(self._batches) >= _BATCH_CACHE:
                         self._batches.pop(next(iter(self._batches)))

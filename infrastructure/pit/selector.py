@@ -548,7 +548,6 @@ class PitSelector:
             unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
             units.setdefault(unit, set()).add(row["arrival_seq"])
 
-        proof_order = 0
         with RunSetBuilder(
             self._storage,
             key=_proof_row_sort_key,
@@ -556,19 +555,25 @@ class PitSelector:
             merge_fanout=params.merge_fanout,
             limits=params.limits,
         ) as proofs_builder:
-            for raw_table, source in sorted(units):
+            for unit_order, (raw_table, source) in enumerate(sorted(units)):
                 seqs = units.pop((raw_table, source))
 
-                def stage_proof(row: Mapping[str, Any]) -> None:
-                    nonlocal proof_order
+                def stage_proof(
+                    row: Mapping[str, Any],
+                    batch_index: int,
+                    planned_row_ordinal: int,
+                    *,
+                    _unit_order: int = unit_order,
+                ) -> None:
                     proofs_builder.add(
                         {
                             "revision_id": row["revision_id"],
-                            "proof_order": proof_order,
+                            "unit_order": _unit_order,
+                            "batch_index": batch_index,
+                            "planned_row_ordinal": planned_row_ordinal,
                             "proof_row": row,
                         }
                     )
-                    proof_order += 1
 
                 normalizer._stage_verified_unit(
                     raw_table,
@@ -1123,9 +1128,14 @@ def _pit_row_group_key(row: Mapping[str, Any]) -> str:
     return cast(str, row["observation_key"])
 
 
-def _proof_row_sort_key(row: Mapping[str, Any]) -> tuple[str, int]:
-    """Canonical proof rows in revision order, preserving the old dict overwrite order."""
-    return cast(str, row["revision_id"]), cast(int, row["proof_order"])
+def _proof_row_sort_key(row: Mapping[str, Any]) -> tuple[str, int, int, int]:
+    """Canonical proof rows in legacy unit/batch/row order within each revision ID."""
+    return (
+        cast(str, row["revision_id"]),
+        cast(int, row["unit_order"]),
+        cast(int, row["batch_index"]),
+        cast(int, row["planned_row_ordinal"]),
+    )
 
 
 def _proof_row_group_key(row: Mapping[str, Any]) -> str:
