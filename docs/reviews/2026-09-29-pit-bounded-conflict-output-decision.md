@@ -34,3 +34,36 @@ Dataset builder 根据 count fail closed。
 
 - ADR-0077 §6.1.2–6.1.4、§6.2.5。
 - 2026-09-29 对 `codex/pit-edge-validation@9d27767` 的只读代码审计；未改代码、未运行测试。
+
+## DECISION PACKET — 单 key 图的外存索引
+
+**状态：ARCHITECTURE_DECISION_REQUIRED**
+
+**ID：D-E1-PIT-GRAPH-INDEX**
+
+**Phase：1 — Market Representation / E1-CAP-1**
+
+**QUESTION:** `iter_bounded()` 应使用什么受控的外存可变索引，才能删除单 key 图校验与 reachability 的 O(N) Python 状态，并保持可接受的长链 I/O？
+
+**WHY_IT_MATTERS:** ADR-0077 已接受的 content-addressed sorted runs 是不可变对象，适合顺序扫描、排序与归并；但 Kahn cycle check 需要逐边递减 indegree，PIT heads 需要跨中间不可用节点判断候选后代。只用不可变 run 反复重算在长链上会产生 O(V²) 外存 I/O；SQLite 或其它可变索引尚未获准成为该路径的临时存储原语。保留当前 `RevisionGraph` 则继续持有记录、边、集合和 head tuple，无法满足有界目标。
+
+**OPTIONS:**
+
+A. 继续只用 immutable sorted runs。内存边界清晰，复用 ADR-0077 对象格式；长链 Kahn peel / reachability 最坏 O(V²) I/O，不适合大 key，不能据此通过完整验收。
+
+B. 在调用方显式提供的 Canonical scratch 目录建立 invocation-scoped mutable spill index（例如 SQLite），关闭 mmap、限制 page cache、将排序临时数据放盘。索引表用唯一键校验 revision / arrival / payload / ownership，匹配声明边与及时证据，并以索引边表和 Kahn 队列生成拓扑序；每个 cutoff 在该序上单次传播 candidate reachability，再将有序 heads 流写入 ADR-0077 sorted run。预计图构建 O((V+E) log V)，每个 evaluation O(V+E) 加 head 输出；磁盘状态 O(V+E)，内存边界须由显式 cache 与 run 参数共同证明。进程异常退出会留下 scratch orphan；不能默默清理，需明确定义登记、恢复与维护策略。
+
+C. 为 infrastructure 增加正式 spill-index / mutable scratch provider 接口及实现，不把 SQLite 文件布局固定在 selector 内。边界最清晰、可替换性好；需新增 provider 生命周期、限额、崩溃恢复及测试契约，改动面高于 B。
+
+**RECOMMENDATION:** 选择 C 的接口边界，以 B 作为首个本地实现；在实现前明确 scratch 字节预算、SQLite cache 上限、文件所有权标记、异常关闭和进程中断后 orphan 的保留 / 显式清理规则。不得使用未指定的系统临时目录；不得把 O(V²) 的 run-only 原型当作 500k 容量方案。
+
+**IMPACT:** 只影响 `infrastructure/pit/` 与 caller-provided scratch 生命周期，不改变核心契约、v2 replay、ADR-0094 冲突 heads 格式或 DQ-9 数值。外存字节与 complete-process 工作集仍需单独测量；任何局部实现均不等于 E1-CAP-1 通过。
+
+**BLOCKS:** 单 key graph / reachability bounded implementation and its long-chain acceptance evidence. Does not block independent Phase 1 modules.
+
+**DEFAULT_IF_UNDECIDED:** 保持当前 fail-closed `RevisionGraph` 路径及其 O(N) 分配；不使用临时 SQLite、run-only quadratic prototype 或未经批准的 scratch 清理策略，不宣称 PIT bounded graph 完成。
+
+### 本次独立复用验证
+
+- 命令：`systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run pytest tests/infrastructure/pit/test_bounded_runs.py`
+- 结果：`22 passed in 0.79s`。这只验证 ADR-0077 sorted-run primitives；不验证单 key graph、ADR-0094 冲突流接线或 E1-CAP-1。

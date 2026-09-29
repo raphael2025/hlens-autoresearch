@@ -141,7 +141,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **E1-Q-STREAM（ARCHITECTURE_DECISION_REQUIRED）**：Quality `existing_only` 的 report `events` 当前是无界单行 `List<Struct>`，冻结行格式不能逐事件流式重放。推荐新增版本化的内容寻址事件流协议，保留旧 inline 报告只读兼容；还需决定失败验证时是否允许留下无引用 orphan。决策包：[Quality bounded replay](docs/reviews/2026-09-29-quality-existing-only-bounded-replay-decision.md)。该项不阻塞其它 Phase 1 模块。
 
-**E1-PIT 单 key graph（实现中）**：ADR-0094 已决定 PIT v3 conflict heads 使用完整 content-addressed sorted run（含数量），v2 tuple / replay 不变。当前 selector 仍保留 O(N) `RevisionRecord`、edge graph 与 reachability 状态；替换图校验和 heads 计算、回归与 32 MiB 测量未完成，不能关闭 E1-CAP-1。决策记录：[PIT conflict output](docs/reviews/2026-09-29-pit-bounded-conflict-output-decision.md)。
+**E1-PIT 单 key graph（ARCHITECTURE_DECISION_REQUIRED）**：ADR-0094 已决定 PIT v3 conflict heads 使用完整 content-addressed sorted run（含数量），v2 tuple / replay 不变。当前 selector 仍保留 O(N) `RevisionRecord`、edge graph 与 reachability 状态；只用 ADR-0077 immutable runs 的 Kahn / reachability 最坏为长链 O(V²) 外存 I/O，而 mutable spill index 的 scratch 原语、资源限额与 crash-orphan 生命周期尚未决定。图校验 / heads 替换、回归与 32 MiB 测量未完成，不能关闭 E1-CAP-1。决策包：[PIT conflict output / D-E1-PIT-GRAPH-INDEX](docs/reviews/2026-09-29-pit-bounded-conflict-output-decision.md)。
 
 **代码补全轮次暴露的待 Raphael 决定（2026-09-28，PM 汇总；不决定时相应代码保持 fail closed）**
 
