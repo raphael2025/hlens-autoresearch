@@ -7,13 +7,12 @@ reconciler. Expected values are written down from ADR-0028 by hand, not from the
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, In
 
@@ -635,7 +634,9 @@ def test_recovery_follows_the_committed_plan_whatever_the_configuration(
     verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
         c.ARCHIVE_AGGS.table, archive
     )
-    assert [row["revision_id"] for row in verified] == list(n.iter_revision_ids(out))
+    assert [row["revision_id"] for row in verified] == list(
+        c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)
+    )
 
 
 @pytest.mark.parametrize("delete", ["all", "one"])
@@ -781,7 +782,8 @@ def test_an_empty_rest_page_is_a_unit_without_rows(h: RestHarness) -> None:
         c.REST_AGGS.table, stored.pages[0].response_revision_id
     )
     assert out.revision_count == out.batch_count == out.replayed_batch_count == 0
-    assert tuple(c.normalizer(h).iter_revision_ids(out)) == () and h.rows(c.TRADES) == []
+    assert tuple(c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)) == ()
+    assert h.rows(c.TRADES) == []
 
 
 # =========================================================================================
@@ -824,7 +826,10 @@ def test_a_head_moved_mid_read_does_not_move_the_call(h: RestHarness) -> None:
     out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy).normalize_unit(
         c.ARCHIVE_AGGS.table, archive
     )
-    assert proxy.reads >= 2 and len(tuple(c.normalizer(h).iter_revision_ids(out))) == 1
+    assert (
+        proxy.reads >= 2
+        and len(tuple(c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out))) == 1
+    )
 
 
 # =========================================================================================
@@ -874,7 +879,9 @@ def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None
     # the D2 batch are bounded by D2's microbatch, not by this unit).
     assert sum(1 for table, rows in wide if table == c.ARCHIVE_AGGS.table and rows <= 2) >= 8
     rows = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
-    assert [row["revision_id"] for row in rows] == list(c.normalizer(h).iter_revision_ids(out))
+    assert [row["revision_id"] for row in rows] == list(
+        c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)
+    )
     assert [row["arrival_seq"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
 
 
@@ -888,7 +895,11 @@ def test_windows_and_one_window_normalize_identically(h: RestHarness) -> None:
     r = large.normalize_unit(c.REST_AGGS.table, response)
     rows = {row["revision_id"]: row for row in h.rows(c.TRADES)}
     for out in (a, r):
-        assert out.revision_count == len(tuple(c.normalizer(h).iter_revision_ids(out))) == 5
+        assert (
+            out.revision_count
+            == len(tuple(c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)))
+            == 5
+        )
     # Same market content per key, lineage and block differ only (ADR-0028 §1).
     by_key: dict[str, set[str]] = {}
     for row in rows.values():
@@ -923,10 +934,14 @@ def test_another_writer_mid_proof_restarts_the_unit_without_double_writes(h: Res
 
 
 def test_proof_windows_never_split_a_position_and_cover_all() -> None:
-    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [(1, 2), (3, 4), (5, 5)]
-    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1)]
+    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [
+        (1, 2, 3),
+        (3, 4, 2),
+        (5, 5, 1),
+    ]
+    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1, 3)]
     assert list(nz._proof_windows([], 2)) == []
-    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40)]
+    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40, 3)]
 
 
 @pytest.mark.parametrize(
@@ -947,9 +962,12 @@ def test_same_index_numbers(values: list[int | None], expected: list[int], ok: b
     try:
         index.add_batch(value for value in values if value is not None)
         index.finalize()
-        assert nz._same_index_numbers(
-            index, len(values), any(value is None for value in values), expected
-        ) is ok
+        assert (
+            nz._same_index_numbers(
+                index, len(values), any(value is None for value in values), expected
+            )
+            is ok
+        )
     finally:
         index.close()
 
@@ -996,9 +1014,9 @@ def test_a_rest_unit_lacking_positions_another_page_delivered_is_normalized(
     assert out.arrival_seq_base is not None
     assert row["arrival_seq"] == out.arrival_seq_base + 3 and row["venue_trade_id"] == "103"
     assert n.normalize_unit(c.REST_AGGS.table, b.response_revision_id).replayed
-    assert [
-        r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)
-    ] == [revision_id]
+    assert [r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)] == [
+        revision_id
+    ]
 
 
 def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> None:
@@ -1118,7 +1136,7 @@ def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarne
 
 
 def _unbounded_check_rest_unit(
-    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: list[int]
+    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: Sequence[int]
 ) -> None:
     """The pre-G2-R3a ``_check_rest_unit`` verbatim: full rows of every history row per key."""
     table = channel.element.table

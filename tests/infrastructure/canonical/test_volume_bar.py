@@ -97,8 +97,8 @@ def test_volume_bars_use_explicit_base_volume_and_cross_utc_days() -> None:
         base_volume_threshold=Decimal("0.3"),
     )
 
-    assert len(bars) == 1
-    [bar] = bars
+    assert len(bars) == 2
+    bar, next_bar = bars
     assert (bar.open, bar.high, bar.low, bar.close) == tuple(
         Decimal(value) for value in ("100.00", "101.00", "100.00", "101.00")
     )
@@ -106,6 +106,15 @@ def test_volume_bars_use_explicit_base_volume_and_cross_utc_days() -> None:
     assert bar.trade_count == 2
     assert bar.event_time == second
     assert bar.available_time == last_available
+    assert (next_bar.sequence, next_bar.volume, next_bar.trade_count) == (1, Decimal("0.9"), 1)
+    assert (next_bar.open, next_bar.high, next_bar.low, next_bar.close) == (
+        Decimal("99.00"),
+        Decimal("99.00"),
+        Decimal("99.00"),
+        Decimal("99.00"),
+    )
+    assert next_bar.event_time == third
+    assert next_bar.available_time == third + timedelta(seconds=1)
     assert catalog.arguments["table"] == CANONICAL_TRADES.table
     assert catalog.arguments["snapshot_id"] == SNAPSHOT
     assert catalog.arguments["row_filter"].__class__.__name__ == "EqualTo"
@@ -114,7 +123,9 @@ def test_volume_bars_use_explicit_base_volume_and_cross_utc_days() -> None:
 
 def test_volume_bar_rule_spec_is_fixed_and_incomplete_tail_is_not_emitted() -> None:
     at = datetime(2024, 2, 1, tzinfo=UTC)
-    catalog = _Catalog([_Batch([_trade(1, "0.6", "1", at), _trade(2, "0.3", "2", at + timedelta(seconds=1))])])
+    catalog = _Catalog(
+        [_Batch([_trade(1, "0.6", "1", at), _trade(2, "0.3", "2", at + timedelta(seconds=1))])]
+    )
 
     bars = volume_bars(
         catalog,
@@ -140,7 +151,7 @@ def test_threshold_must_be_a_positive_finite_decimal(threshold: Any) -> None:
             snapshot_id=SNAPSHOT,
             symbol=SYMBOL,
             base_volume_threshold=threshold,
-        )  # type: ignore[arg-type]
+        )
     assert catalog.arguments == {}
 
 

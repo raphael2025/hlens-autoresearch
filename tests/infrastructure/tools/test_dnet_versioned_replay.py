@@ -37,7 +37,7 @@ from tests.infrastructure.tools.test_dnet_capability_run import (
 )
 
 #: Every published version older than the current one (ADR-0052 2.1.0, ADR-0055 2.2.0 bumps).
-PRIOR = ("2.0.0", "2.1.0")
+PRIOR = ("2.0.0", "2.1.0", "2.2.0", "2.3.0")
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ def test_dnet_data_committed_earlier_replays_unchanged_now(
     monkeypatch: pytest.MonkeyPatch,
     old: str,
 ) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
     adapter, storage = world
     monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
     monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)

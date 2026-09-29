@@ -73,9 +73,7 @@ def test_explicit_max_state_age_uses_latest_prior_evaluation_and_keeps_unknowns(
         _t(6): Decimal("0.05"),  # last known state is stale
     }
     states = {_t(0): "high", _t(2): "low", _t(3): None}
-    matrix = state_strategy_matrix(
-        S, ST, returns, states, max_state_age=timedelta(minutes=2)
-    )
+    matrix = state_strategy_matrix(S, ST, returns, states, max_state_age=timedelta(minutes=2))
     cells = {cell.state: cell for cell in matrix.cells}
     assert cells["high"].count == 1
     assert cells["low"].count == 1
@@ -215,9 +213,7 @@ def test_matrix_from_backtest_attributes_to_the_state_known_at_t_and_links_input
 def test_matrix_from_backtest_passes_explicit_asof_age_and_binds_it() -> None:
     backtest = _buy_and_hold()
     states = _state_result({_t(2): "high", _t(4): "low"})
-    matrix = matrix_from_backtest(
-        S, ST, backtest, states, max_state_age=timedelta(minutes=2)
-    )
+    matrix = matrix_from_backtest(S, ST, backtest, states, max_state_age=timedelta(minutes=2))
     cells = {cell.state: cell for cell in matrix.cells}
     assert cells[None].count == 1  # the first return starts before any state evaluation
     assert cells["high"].count == 2

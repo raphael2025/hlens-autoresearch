@@ -465,14 +465,17 @@ def _lower_conditioning(
             created_at=created_at,
             signals=_union_refs((base.signals, (state.ref,))),
             params=FrozenMapping(
-                {
-                    "definition": _CONDITIONING_DEFINITION,
-                    "operator": "conditioned",
-                    "provider": "p7_conditioning_state_gate@1.0.0",
-                    "semantic_version": _SEMANTIC_VERSION,
-                    "unmatched_state": "flat",
-                    "unknown_state": "flat",
-                }
+                cast(
+                    dict[str, str | int | float],
+                    {
+                        "definition": _CONDITIONING_DEFINITION,
+                        "operator": "conditioned",
+                        "provider": "p7_conditioning_state_gate@1.0.0",
+                        "semantic_version": _SEMANTIC_VERSION,
+                        "unmatched_state": "flat",
+                        "unknown_state": "flat",
+                    },
+                )
             ),
             risk_policy=base.risk_policy,
             applicable_instruments=base.applicable_instruments,
@@ -560,18 +563,21 @@ def _lower_negation(
             created_at=created_at,
             signals=base.signals,
             params=FrozenMapping(
-                {
-                    "definition": _NEGATION_DEFINITION,
-                    "operator": "negated",
-                    "provider": "p7_negation_target_position@1.0.0",
-                    "semantic_version": _SEMANTIC_VERSION,
-                    "negates": "target_position",
-                    "cost_basis": "negated_trades",
-                    # Negative controls are defined by the validation layer, never by this spec.
-                    "validation_negative_control": False,
-                    # Spot short-cost gap (ST-4): the future Provider must fail closed.
-                    "short_exposure": "provider_fail_closed_without_short_cost_model",
-                }
+                cast(
+                    dict[str, str | int | float],
+                    {
+                        "definition": _NEGATION_DEFINITION,
+                        "operator": "negated",
+                        "provider": "p7_negation_target_position@1.0.0",
+                        "semantic_version": _SEMANTIC_VERSION,
+                        "negates": "target_position",
+                        "cost_basis": "negated_trades",
+                        # Negative controls are defined by the validation layer, never by this spec.
+                        "validation_negative_control": False,
+                        # Spot short-cost gap (ST-4): the future Provider must fail closed.
+                        "short_exposure": "provider_fail_closed_without_short_cost_model",
+                    },
+                )
             ),
             risk_policy=base.risk_policy,
             applicable_instruments=base.applicable_instruments,

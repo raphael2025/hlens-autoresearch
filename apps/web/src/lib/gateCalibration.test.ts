@@ -22,7 +22,7 @@ const fixtures = fixtureEnvelopes("gate_calibration");
 const [fixture] = fixtures;
 
 test("every committed fixture (2.2.0 and legacy 2.1.0 / 2.0.0) parses with every candidate", () => {
-  assert.equal(fixtures.length, 3);
+  assert.equal(fixtures.length, 4);
   for (const envelope of fixtures) {
     const payload = asCalibrationPayload(envelope.payload);
     assert.ok(payload !== null, envelope.id);

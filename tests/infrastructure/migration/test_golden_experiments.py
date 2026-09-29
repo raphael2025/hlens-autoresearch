@@ -9,6 +9,7 @@ deliberately regenerate it (new hash here, with the ADR's reason). No production
 
 from __future__ import annotations
 
+import importlib
 import os
 import subprocess
 import sys
@@ -17,10 +18,12 @@ from pathlib import Path
 
 import pytest
 
+from core.domain.base import contract_schema_version_scope
 from infrastructure.migration import compare_golden, load_golden
 from infrastructure.migration.golden import GoldenRecord
 from infrastructure.migration.rollback import RollbackVerdict, rollback_evidence
 from tests.golden.experiments import tsmom_g0_g4 as experiment
+from tests.research.synthetic_lab import gate_fixtures as gate_fixtures
 
 REPO = Path(__file__).resolve().parents[3]
 #: The committed record (``<hash>.json`` in ``tests/golden/experiments/``). Changing it is a
@@ -35,10 +38,12 @@ REPO = Path(__file__).resolve().parents[3]
 #: still reproduced bit-exactly when the run builds every contract object at 2.0.0.
 #: Regenerated for contract 2.2.0 (ADR-0055, 2026-09-26; was ``fe69500f…2d6032ac``): again the one
 #: changed output is ``backtest.result_hash`` (the 2.2.0 envelope); every gate value, threshold and
-#: verdict is unchanged, and the old record is still reproduced bit-exactly when the run builds
-#: every contract object at 2.1.0 (verified: the rerun test passes inside
-#: ``contract_schema_version_scope("2.1.0")`` against the old record).
-GOLDEN_HASH = "b81a3feb854e3adbb02ecbf41d07e465625f8660a0551c88bf2e5e60dbde7a15"
+#: verdict is unchanged. This remains the legacy record and is replayed below at 2.2.0.
+LEGACY_GOLDEN_HASH = "b81a3feb854e3adbb02ecbf41d07e465625f8660a0551c88bf2e5e60dbde7a15"
+#: Regenerated for contract 2.4.0 (ADR-0088, 2026-09-28): only ``backtest.result_hash`` changes
+#: from the 2.2.0 record because the default envelope is part of request/result identity; all
+#: gate values, thresholds, verdict, and other outputs remain unchanged.
+GOLDEN_HASH = "1f93cf9b373b9a33ecfbd8b50feefd2dcaba53accab897c883366fe800295613"
 ZERO = Decimal(0)
 
 
@@ -56,7 +61,9 @@ def test_the_committed_record_is_the_one_golden_experiment_of_its_directory(
     golden: GoldenRecord,
 ) -> None:
     assert golden.name == experiment.NAME
-    assert sorted(p.name for p in experiment.DIRECTORY.glob("*.json")) == [f"{GOLDEN_HASH}.json"]
+    assert sorted(p.name for p in experiment.DIRECTORY.glob("*.json")) == sorted(
+        [f"{LEGACY_GOLDEN_HASH}.json", f"{GOLDEN_HASH}.json"]
+    )
     # it really covers a backtest and every stage of G0 - G4
     stages = {key.split(".")[1] for key in golden.outputs if key.startswith("gate.")}
     assert stages == {"G0", "G1", "G2", "G3", "G4"}
@@ -75,6 +82,27 @@ def test_a_rerun_reproduces_the_golden_experiment_bit_exactly(
     # a rollback rerun that reproduces it is RESTORED evidence (rollback.py)
     evidence = rollback_evidence("golden-self-check", golden, diff, diff)
     assert evidence.verdict is RollbackVerdict.RESTORED
+
+
+def test_the_previous_contract_golden_still_replays_at_its_recorded_version() -> None:
+    """ADR-0088 keeps the old 2.2.0 record readable and bit-exact at its own envelope."""
+    legacy = load_golden(experiment.DIRECTORY, LEGACY_GOLDEN_HASH)
+    fixtures = gate_fixtures
+    try:
+        # The test-only gate fixture module builds several contracts at import time; reload it
+        # inside the version scope so every nested object, not just newly constructed objects,
+        # carries the recorded 2.2.0 envelope.
+        with contract_schema_version_scope("2.2.0"):
+            importlib.reload(fixtures)
+            importlib.reload(experiment)
+            replay = experiment.run()
+    finally:
+        # Later tests must continue using the current 2.4.0 fixtures.
+        importlib.reload(fixtures)
+        importlib.reload(experiment)
+    diff = compare_golden(legacy, lambda: replay, ZERO)
+    assert diff.passed and diff.bit_identical and diff.differences == {}
+    assert diff.rerun_hash == diff.golden_hash == legacy.outputs_hash
 
 
 def test_a_perturbed_pipeline_rerun_is_reported_as_a_diff(golden: GoldenRecord) -> None:

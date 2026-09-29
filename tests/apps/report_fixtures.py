@@ -92,9 +92,7 @@ LEGACY_ADR_0081: Final[dict[ReportKind, tuple[str, ...]]] = {
         "183c62b9c2949b54793b1f164ddb4ba66325bb50d7d04173065cc230d771c160",
         "a168f4f764b698ec9c7f46035a2d62f4b857d8d543855b732dabb65ac9d456a1",
     ),
-    ReportKind.RETRO_AUDIT: (
-        "05545674ea02dcb48a07e70ed591999a38c02cf6785623d2aa784076d38249e2",
-    ),
+    ReportKind.RETRO_AUDIT: ("05545674ea02dcb48a07e70ed591999a38c02cf6785623d2aa784076d38249e2",),
 }
 
 #: Every legacy generation, by the contract version whose code wrote it.

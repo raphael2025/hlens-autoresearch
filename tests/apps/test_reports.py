@@ -64,7 +64,7 @@ def test_store_lists_and_gets_well_formed_reports(tmp_path: Path) -> None:
     assert all(env.kind is ReportKind.STATE_STRATEGY_MATRIX for env in listed)
 
     got = store.get(ReportKind.STATE_STRATEGY_MATRIX, "r1")
-    assert got.payload == {"verdict": "PASS"}
+    assert got.payload == _matrix_payload(verdict="PASS")
     assert got.content_hash == store.get(ReportKind.STATE_STRATEGY_MATRIX, "r1").content_hash
 
 

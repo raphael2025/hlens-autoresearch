@@ -302,19 +302,19 @@ def _proven_bars(
     lineage = set(manifest.lineage)
     proven: dict[str, tuple[_ProvenBar, ...]] = {}
     for symbol in wanted:  # steps 4-6
-        bars = [
+        symbol_bars = [
             bar
             for bar in _reselected(adapter, storage, manifest, symbol, rows, lineage)
             if low <= bar.interval_start < high
         ]
-        late = [bar for bar in bars if bar.available_time > cutoff]
+        late = [bar for bar in symbol_bars if bar.available_time > cutoff]
         if late:
             raise DatasetBarsError(
                 f"{len(late)} {symbol} bar(s) of the window become available after price_cutoff "
                 f"{cutoff.isoformat()} (first {late[0].interval_start.isoformat()} at "
                 f"{late[0].available_time.isoformat()})"
             )
-        proven[symbol] = tuple(bars)
+        proven[symbol] = tuple(symbol_bars)
     return manifest, cutoff, proven
 
 

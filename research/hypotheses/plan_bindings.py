@@ -14,6 +14,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
+from pydantic import BaseModel
+
 from core.domain.base import Ref, VersionedSpec
 from core.domain.research import ExperimentSpec, Hypothesis
 from core.domain.specs import (
@@ -70,9 +72,10 @@ class LoweredOutputBinding:
     node_id: str | None = None
 
     def __post_init__(self) -> None:
-        if not isinstance(self.experiment_hash, str) or _HASH_PATTERN.fullmatch(
-            self.experiment_hash
-        ) is None:
+        if (
+            not isinstance(self.experiment_hash, str)
+            or _HASH_PATTERN.fullmatch(self.experiment_hash) is None
+        ):
             raise ValueError("experiment_hash must be a canonical lowercase SHA-256")
         if type(self.spec) not in _LOWERED_SPEC_TYPES:
             raise TypeError("lowered output must be an exact Feature/State/Event/StrategySpec")
@@ -93,20 +96,20 @@ class ExperimentHypothesisBinding:
     outputs: tuple[VersionedSpec, ...]
 
 
-def _copy_validated[T](value: T, expected: type[T], where: str) -> T:
+def _copy_validated[T: BaseModel](value: T, expected: type[T], where: str) -> T:
     """Rebuild from canonical JSON so validation does not trust a caller's mutable internals."""
     if type(value) is not expected:
         raise PlanBindingRefused(
             "wrong_type", where, f"expected exactly {expected.__name__}, got {type(value).__name__}"
         )
     try:
-        payload = value.model_dump(mode="json")  # type: ignore[attr-defined]
-        rebuilt = expected.model_validate(payload)  # type: ignore[attr-defined]
+        payload = value.model_dump(mode="json")
+        rebuilt = expected.model_validate(payload)
     except Exception as exc:
         raise PlanBindingRefused(
             "invalid_contract", where, f"contract reconstruction failed ({type(exc).__name__})"
         ) from exc
-    if rebuilt.model_dump(mode="json") != payload:  # type: ignore[attr-defined]
+    if rebuilt.model_dump(mode="json") != payload:
         raise PlanBindingRefused("noncanonical_contract", where, "payload did not round-trip")
     return rebuilt
 
@@ -298,9 +301,9 @@ def validate_experiment_bindings(
 
     verified_hypotheses: dict[str, Hypothesis] = {}
     hypothesis_hashes: dict[str, str] = {}
-    for index, item in enumerate(hypotheses):
+    for index, raw_hypothesis in enumerate(hypotheses):
         where = f"hypotheses[{index}]"
-        hypothesis = _copy_validated(item, Hypothesis, where)
+        hypothesis = _copy_validated(raw_hypothesis, Hypothesis, where)
         ref = hypothesis.ref
         key = _identity(ref)
         if key in verified_hypotheses:
@@ -312,9 +315,9 @@ def validate_experiment_bindings(
     experiment_hashes: set[str] = set()
     experiment_hypotheses: dict[str, str] = {}
     hypothesis_use_count: dict[str, int] = dict.fromkeys(verified_hypotheses, 0)
-    for index, item in enumerate(experiment_specs):
+    for index, raw_experiment in enumerate(experiment_specs):
         where = f"experiment_specs[{index}]"
-        experiment = _copy_validated(item, ExperimentSpec, where)
+        experiment = _copy_validated(raw_experiment, ExperimentSpec, where)
         experiment_hash = experiment.experiment_hash
         if experiment_hash in experiment_hashes:
             raise PlanBindingRefused("duplicate_experiment", where, "repeated ExperimentSpec hash")
@@ -322,8 +325,8 @@ def validate_experiment_bindings(
 
         hypothesis_ref = experiment.repro.hypothesis_ref
         hypothesis_key = _identity(hypothesis_ref)
-        hypothesis = verified_hypotheses.get(hypothesis_key)
-        if hypothesis is None:
+        bound_hypothesis = verified_hypotheses.get(hypothesis_key)
+        if bound_hypothesis is None:
             raise PlanBindingRefused(
                 "unknown_hypothesis", where, f"{hypothesis_key} is not in the supplied batch"
             )
@@ -355,33 +358,34 @@ def validate_experiment_bindings(
     }
     seen_outputs: set[tuple[str, str]] = set()
     experiment_by_hash = {item.experiment_hash: item for item in verified_experiments}
-    for index, item in enumerate(lowered_outputs):
+    for index, output_binding in enumerate(lowered_outputs):
         where = f"lowered_outputs[{index}]"
-        if not isinstance(item, LoweredOutputBinding):
+        if not isinstance(output_binding, LoweredOutputBinding):
             raise PlanBindingRefused(
                 "wrong_type", where, "must be a LoweredOutputBinding with experiment association"
             )
-        experiment = experiment_by_hash.get(item.experiment_hash)
-        if experiment is None:
+        bound_experiment = experiment_by_hash.get(output_binding.experiment_hash)
+        if bound_experiment is None:
             raise PlanBindingRefused(
                 "extra_output_experiment",
                 where,
-                f"{item.experiment_hash} is not one of the supplied ExperimentSpecs",
+                f"{output_binding.experiment_hash} is not one of the supplied ExperimentSpecs",
             )
-        output = _canonical_spec(item.spec, where)
+        output = _canonical_spec(output_binding.spec, where)
         output_ref = output.ref
         output_key = _identity(output_ref)
-        output_identity = (item.experiment_hash, output_key)
+        output_identity = (output_binding.experiment_hash, output_key)
         if output_identity in seen_outputs:
             raise PlanBindingRefused("duplicate_output", where, f"repeated {output_key}")
         seen_outputs.add(output_identity)
 
-        dependency_hash = experiment.repro.dependency_hashes.get(output_key)
+        dependency_hash = bound_experiment.repro.dependency_hashes.get(output_key)
         if dependency_hash is None:
             raise PlanBindingRefused(
                 "output_not_direct_dependency",
                 where,
-                f"{output_key} is absent from {item.experiment_hash}'s direct dependencies",
+                f"{output_key} is absent from "
+                f"{output_binding.experiment_hash}'s direct dependencies",
             )
         output_hash = output.content_hash()
         if dependency_hash != output_hash:
@@ -390,7 +394,7 @@ def validate_experiment_bindings(
                 where,
                 f"dependency hash for {output_key} differs from its recomputed content hash",
             )
-        outputs_by_experiment[item.experiment_hash].append(output)
+        outputs_by_experiment[output_binding.experiment_hash].append(output)
 
     return tuple(
         ExperimentHypothesisBinding(
@@ -432,8 +436,7 @@ def validate_complete_experiment_bindings(
             "invalid_plan_map", "plans_by_experiment", "must be an experiment-to-plan mapping"
         )
     if any(
-        not isinstance(experiment_hash, str)
-        or _HASH_PATTERN.fullmatch(experiment_hash) is None
+        not isinstance(experiment_hash, str) or _HASH_PATTERN.fullmatch(experiment_hash) is None
         for experiment_hash in plans_by_experiment
     ):
         raise PlanBindingRefused(

@@ -16,7 +16,7 @@ Writes are refused.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import Any
+from typing import cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, BooleanExpression
@@ -115,8 +115,11 @@ class PinnedCatalogView:
 
         if snapshot_id is not None:
             # Explicit historical snapshots take precedence over the view's binding.
-            return scan_batches(
-                table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+            return cast(
+                Iterator[pa.RecordBatch],
+                scan_batches(
+                    table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+                ),
             )
 
         bound = self._bindings.get(table)
@@ -127,7 +130,10 @@ class PinnedCatalogView:
             if self._adapter.load_table(table) is None:
                 raise TableNotFound(f"table {table} does not exist")
             return iter(())
-        return scan_batches(table, columns=columns, row_filter=row_filter, snapshot_id=bound)
+        return cast(
+            Iterator[pa.RecordBatch],
+            scan_batches(table, columns=columns, row_filter=row_filter, snapshot_id=bound),
+        )
 
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         raise PinnedViewError("a pinned catalog view is read-only")

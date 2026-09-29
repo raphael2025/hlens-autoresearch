@@ -457,6 +457,8 @@ def test_every_openapi_operation_answers_its_declared_schema_over_real_http(live
     assert served.status_code == 200 and served.json() == OPENAPI  # committed == live
 
     assert full.call("GET", "/health", 200)["status"] == "ok"
+    assert full.call("GET", "/healthz", 200)["status"] == "ok"
+    assert full.call("GET", "/readyz", 200)["status"] == "ready"
     assert full.call("GET", "/contracts", 200)
     assert full.call("GET", "/lifecycle/transitions", 200)
 

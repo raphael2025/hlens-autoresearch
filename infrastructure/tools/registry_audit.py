@@ -14,6 +14,7 @@ import sys
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
+
 from pydantic import ValidationError
 
 from core.domain.research import FailureRecord
@@ -100,9 +101,7 @@ def _parser() -> argparse.ArgumentParser:
 def audit_registries(args: argparse.Namespace) -> dict[str, Any]:
     """Return an independent result for each explicitly named registry."""
     results: dict[str, dict[str, object]] = {
-        "strategy": _audit_one(
-            audit_strategy, args.strategy_root, anchor=args.strategy_anchor
-        ),
+        "strategy": _audit_one(audit_strategy, args.strategy_root, anchor=args.strategy_anchor),
         "profile_freeze": _audit_one(
             audit_profile_freeze,
             args.profile_freeze_root,

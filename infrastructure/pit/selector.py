@@ -35,12 +35,12 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
@@ -849,7 +849,7 @@ def _pit_row_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def _pit_row_group_key(row: Mapping[str, Any]) -> str:
-    return row["observation_key"]
+    return cast(str, row["observation_key"])
 
 
 def _flatten_edges(
@@ -871,7 +871,7 @@ def _pit_edge_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
 
 
 def _pit_edge_group_key(row: Mapping[str, Any]) -> str:
-    return row["observation_key"]
+    return cast(str, row["observation_key"])
 
 
 @contextmanager
@@ -941,7 +941,7 @@ def _pit_bounded_stream(
     )
     del by_key, edges, verified, rows
 
-    def _generate() -> Iterator[PitBoundedRecord]:
+    def _generate() -> Generator[PitBoundedRecord]:
         with (
             merge_sorted_runs(
                 storage,
@@ -960,9 +960,7 @@ def _pit_bounded_stream(
         ):
             edge_iter = iter(itertools.groupby(merged_edges, key=_pit_edge_group_key))
             pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
-            pending_edge_items = (
-                list(pending_edge_group) if pending_edge_group is not None else []
-            )
+            pending_edge_items = list(pending_edge_group) if pending_edge_group is not None else []
 
             for row_key, row_group in itertools.groupby(merged_rows, key=_pit_row_group_key):
                 buffer = KeyHistoryBuffer(
@@ -979,14 +977,18 @@ def _pit_bounded_stream(
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
                 owner_at = min(row[column] for row in key_rows.values())
 
-                while pending_edge_key is not None and pending_edge_key < row_key:
-                    pending_edge_key, next_group = next(edge_iter, (None, None))
-                    pending_edge_items = list(next_group) if next_group is not None else []
+                if pending_edge_key is not None and pending_edge_key < row_key:
+                    raise CatalogIntegrityError(
+                        "a mapped edge references an observation_key with no corresponding "
+                        "Canonical rows in this window"
+                    )
                 if pending_edge_key == row_key:
                     key_edges = tuple(
                         PrecedenceEvidence.model_validate(item["evidence"])
                         for item in pending_edge_items
                     )
+                    pending_edge_key, next_group = next(edge_iter, (None, None))
+                    pending_edge_items = list(next_group) if next_group is not None else []
                 else:
                     key_edges = ()
 

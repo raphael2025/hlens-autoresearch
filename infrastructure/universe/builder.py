@@ -40,7 +40,7 @@ gets exactly the answers it got before this assumption existed.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -588,7 +588,7 @@ def _events_v3(
     origin: str,
     spec: UniverseSelectionSpec,
     pit: PointInTimeSpec,
-) -> Iterator[_SpanEvent]:
+) -> Generator[_SpanEvent]:
     """The bounded walk behind every :class:`UniverseSpanCursor` view (ADR-0077 §6.1.1).
 
     One ``PinnedCatalogView`` + one ``ListingDeriver`` for the whole walk, released on
@@ -687,7 +687,7 @@ def _assumed_membership_of(event: _SpanEvent) -> AssumedMembership | None:
 
 @contextmanager
 def _project[T](
-    events: Iterator[_SpanEvent], extract: Callable[[_SpanEvent], T | None]
+    events: Generator[_SpanEvent], extract: Callable[[_SpanEvent], T | None]
 ) -> Iterator[Iterator[T]]:
     """Wrap the shared walk as one explicitly-closed, filtered view (ADR-0077 §5's
     ``ContextManager[Iterator[record]]`` shape). ``events.close()`` always runs on ``__exit__``
@@ -749,7 +749,7 @@ class UniverseSpanCursor:
         self._spec = spec
         self._pit = pit
 
-    def _events(self) -> Iterator[_SpanEvent]:
+    def _events(self) -> Generator[_SpanEvent]:
         return _events_v3(self._adapter, self._storage, self._origin, self._spec, self._pit)
 
     def members(self) -> AbstractContextManager[Iterator[UniverseMember]]:

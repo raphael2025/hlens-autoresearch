@@ -3,7 +3,7 @@ positions, insufficient history, missing values, no look-ahead, explicit paramet
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -55,7 +55,7 @@ def _request(
     decisions: Sequence[datetime],
     *,
     instruments: tuple[str, ...] = ("BTCUSDT",),
-    params: dict[str, int] | None = None,
+    params: Mapping[str, int | bool] | None = None,
     spec: StrategySpec = SPEC,
 ) -> StrategyRequest:
     return StrategyRequest(
@@ -164,9 +164,7 @@ def test_a_missing_observation_is_not_filled_in() -> None:
 def test_future_signals_do_not_move_past_positions() -> None:
     cut = HAND_DECISIONS[1]
     base = _run(_request(HAND_SIGNALS, HAND_DECISIONS))
-    changed = tuple(
-        _perturb(item) if item.available_time > cut else item for item in HAND_SIGNALS
-    )
+    changed = tuple(_perturb(item) if item.available_time > cut else item for item in HAND_SIGNALS)
     truncated = tuple(item for item in HAND_SIGNALS if item.available_time <= cut)
     for signals in (changed, truncated):
         other = _run(_request(signals, HAND_DECISIONS))

@@ -26,7 +26,7 @@ function payloadOf(payload: Record<string, unknown>) {
 }
 
 test("every committed fixture (current and legacy 2.1.0 / 2.0.0) parses to the same cells", () => {
-  assert.equal(fixtures.length, 3);
+  assert.equal(fixtures.length, 4);
   assert.ok(fixtures.some((envelope) => envelope.id === LEGACY_ID));
   assert.ok(fixtures.some((envelope) => envelope.id === LEGACY_2_1_0_ID));
   const matrices = fixtures.map((envelope) => payloadOf(envelope.payload));

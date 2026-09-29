@@ -77,7 +77,8 @@ def configure_logging(
         setattr(handler, _HANDLER_MARKER, True)
         target.addHandler(handler)
     elif stream is not None:
-        handler.setStream(stream)
+        if isinstance(handler, logging.StreamHandler):
+            handler.setStream(stream)
 
     handler.setLevel(level)
     handler.setFormatter(JSONFormatter())

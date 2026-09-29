@@ -644,7 +644,7 @@ class ChannelReconciler:
             if callable(history):
                 yield from history(EVIDENCE_TABLE, head)
                 return
-            snapshot_id = head
+            snapshot_id: str | None = head
             seen: set[str] = set()
             while snapshot_id is not None:
                 if snapshot_id in seen:

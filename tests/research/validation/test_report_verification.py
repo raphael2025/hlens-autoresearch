@@ -322,7 +322,8 @@ def test_threshold_and_gate_set_discrepancies_are_reported_separately() -> None:
     mismatched = GateResult(
         gate_id="G2.breakeven_cost_multiple",
         metric="breakeven_cost_multiple[>=]",
-        value=20.0,  # >= the recorded (wrong) threshold: self-consistent, PASS, no VERDICT_INCONSISTENT
+        value=20.0,  # >= the recorded (wrong) threshold: self-consistent, PASS,
+        # no VERDICT_INCONSISTENT
         threshold=1.5 * 10,  # the Profile's actual value is 1.5 (fixtures.TEST_ONLY_PROFILE)
         threshold_source="cost_stress.min_breakeven_cost_multiple",
         verdict=Verdict.PASS,

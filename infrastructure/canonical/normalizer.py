@@ -52,9 +52,8 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from typing import Any, Final, overload
 
-import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
     And,
     BooleanExpression,
@@ -223,6 +222,12 @@ class _PositionIndex(Sequence[int]):
     def __len__(self) -> int:
         return self._size
 
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
+
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
             start, stop, step = rank.indices(self._size)
@@ -236,7 +241,7 @@ class _PositionIndex(Sequence[int]):
         value = os.pread(self._fd, _POSITION_INT.size, rank * _POSITION_INT.size)
         if len(value) != _POSITION_INT.size:
             raise OSError("position rank file ended unexpectedly")
-        return _POSITION_INT.unpack(value)[0]
+        return int(_POSITION_INT.unpack(value)[0])
 
     def __iter__(self) -> Iterator[int]:
         yield from self._iter_ranks(range(self._size))
@@ -295,6 +300,12 @@ class _PositionSlice(Sequence[int]):
     def __len__(self) -> int:
         return len(self._ranks)
 
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
+
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
             start, stop, step = rank.indices(len(self))
@@ -318,6 +329,12 @@ class _OffsetSequence(Sequence[int]):
 
     def __len__(self) -> int:
         return len(self._values)
+
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
 
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
@@ -576,7 +593,8 @@ class CanonicalNormalizer:
                 except BatchConflict as exc:
                     if survey.plan is None:
                         # A rival allocated first (its own block and clock reading) and committed
-                        # this batch id: start over and adopt its plan — the clock is never read again.
+                        # this batch id: start over and adopt its plan — the clock is never read
+                        # again.
                         last_error = exc
                         continue
                     # Our plan was recovered from committed batches, which every writer recovers
@@ -611,10 +629,17 @@ class CanonicalNormalizer:
         """
         if type(result) is not CanonicalUnitNormalized:
             raise CanonicalNormalizeError("result must be a CanonicalUnitNormalized")
-        if any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 0
-            for value in (result.revision_count, result.batch_count, result.replayed_batch_count)
-        ) or result.replayed_batch_count > result.batch_count:
+        if (
+            any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in (
+                    result.revision_count,
+                    result.batch_count,
+                    result.replayed_batch_count,
+                )
+            )
+            or result.replayed_batch_count > result.batch_count
+        ):
             raise CanonicalNormalizeError("result summary counts are invalid")
         channel = self._channel(result.raw_table, result.source_revision_id)
         if result.canonical_table != channel.canonical.table:
@@ -632,9 +657,7 @@ class CanonicalNormalizer:
         survey = self._survey(pin, channel, result.source_revision_id, keep_rows=False)
         try:
             if result.revision_count > 0 and survey.plan is not None:
-                _require_complete(
-                    channel, result.source_revision_id, survey.plan, survey.unit_rows
-                )
+                _require_complete(channel, result.source_revision_id, survey.plan, survey.unit_rows)
             summary_mismatch = survey.unit_rows != result.revision_count
             if result.revision_count == 0:
                 summary_mismatch = summary_mismatch or any(
@@ -678,9 +701,7 @@ class CanonicalNormalizer:
                     high,
                     expected_rows=end - index * survey.plan.chunk,
                 )
-                planned = self._planned(
-                    channel, raw, survey.base, survey.ready, survey.version
-                )
+                planned = self._planned(channel, raw, survey.base, survey.ready, survey.version)
                 yield from (row["revision_id"] for row in planned)
         finally:
             if survey.positions is not None:
@@ -831,13 +852,15 @@ class CanonicalNormalizer:
             if not positions:
                 if committed.seq_count or plan is not None:
                     raise CatalogIntegrityError(
-                        f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
+                        f"{table} holds Canonical rows or batches of unit {source_revision_id} "
+                        "that "
                         "has no Raw element revision"
                     )
             elif plan is None:
                 if committed.seq_count:
                     raise CatalogIntegrityError(
-                        f"{table}: unit {source_revision_id} has committed rows but no committed batch"
+                        f"{table}: unit {source_revision_id} has committed rows but no committed "
+                        "batch"
                     )
             else:
                 base, ready, version = self._recover(channel, source_revision_id, committed)
@@ -929,8 +952,12 @@ class CanonicalNormalizer:
         positions, symbol = self._positions(pin, channel, source_revision_id)
         try:
             return self._survey_with_positions(
-                pin, channel, source_revision_id, keep_rows=keep_rows,
-                positions=positions, symbol=symbol,
+                pin,
+                channel,
+                source_revision_id,
+                keep_rows=keep_rows,
+                positions=positions,
+                symbol=symbol,
             )
         except BaseException:
             positions.close()
@@ -994,7 +1021,7 @@ class CanonicalNormalizer:
         floor: datetime | None,
         unit_rows: int,
         plan: _CommittedPlan | None,
-        ordered: Sequence[SnapshotInfo],
+        ordered: bool,
         committed: _CommittedTimes,
     ) -> _Survey:
         table = channel.canonical.table
@@ -1372,9 +1399,7 @@ class CanonicalNormalizer:
                 row_filter=self._unit_filter(channel, source_revision_id),
             )
             for record_batch in reader:
-                seq_values = record_batch.column(
-                    record_batch.schema.get_field_index("arrival_seq")
-                )
+                seq_values = record_batch.column(record_batch.schema.get_field_index("arrival_seq"))
                 ready_values = record_batch.column(
                     record_batch.schema.get_field_index("knowledge_time")
                 )
@@ -1496,9 +1521,7 @@ class CanonicalNormalizer:
         """The window's slice of the block holds exactly the planned rows, each once."""
         _exact(
             channel,
-            self._scan_block(
-                pin.catalog, channel, base + low, base + high, None, len(planned)
-            ),
+            self._scan_block(pin.catalog, channel, base + low, base + high, None, len(planned)),
             planned,
             committed=True,
         )

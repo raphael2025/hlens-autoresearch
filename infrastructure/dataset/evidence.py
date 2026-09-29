@@ -72,7 +72,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -626,9 +626,7 @@ class _Walk:
     #: (record count, record bytes) of the previous leaf: its closing must be canonical.
     previous_leaf: tuple[int, int] | None = None
 
-    def index(
-        self, ref: _Child, level: int, *, rightmost: bool, root: bool
-    ) -> Iterator[Contract]:
+    def index(self, ref: _Child, level: int, *, rightmost: bool, root: bool) -> Iterator[Contract]:
         lines = _read_object(self.storage, ref, self.limits.index_object_max_bytes)
         _parse_header(lines[0], self.stream, _INDEX, ref, level)
         what = f"{self.stream.value} index {ref.key}"
@@ -688,7 +686,7 @@ def _walk(
     ref: EvidenceStreamRef,
     limits: EvidenceTreeLimits,
     schema_version: str,
-) -> Iterator[Contract]:
+) -> Generator[Contract]:
     if ref.format != DATASET_EVIDENCE_FORMAT:
         raise EvidenceIntegrityError(f"{ref.stream.value} stream is not {DATASET_EVIDENCE_FORMAT}")
     if ref.depth != canonical_depth(ref.leaf_count, limits.fanout):

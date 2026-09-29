@@ -70,7 +70,7 @@ of its own catalog.
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Generator, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -631,7 +631,7 @@ def _walk_chunks(
     canonical: str,
     lineage: _Peek,
     gaps: _Peek,
-) -> Iterator[tuple[DatasetRowEvidence, ...]]:
+) -> Generator[tuple[DatasetRowEvidence, ...]]:
     while isinstance(head := lineage.peek(), SelectedRevisionLineage) and (
         head.canonical_table == _LISTINGS
     ):
@@ -915,9 +915,7 @@ def _evidence_derived_feature_request(
 
     with iter_dataset_chunks(adapter, manifest, evidence_verifier) as chunks:
         for chunk in chunks:
-            for entry, observation in dataset_chunk_observations(
-                adapter, manifest, chunk, wanted
-            ):
+            for entry, observation in dataset_chunk_observations(adapter, manifest, chunk, wanted):
                 event_day = observation.event_time.replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )

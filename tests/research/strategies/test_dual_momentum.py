@@ -4,7 +4,7 @@ explicit parameter points."""
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -65,7 +65,7 @@ def _request(
     signals: Sequence[SignalObservation],
     decisions: Sequence[datetime],
     *,
-    params: dict[str, int] | None = None,
+    params: Mapping[str, int | bool] | None = None,
     spec: StrategySpec = SPEC,
 ) -> StrategyRequest:
     return StrategyRequest(
@@ -196,6 +196,4 @@ def test_foreign_signals_are_refused() -> None:
     vol = tuple(item for item in everything if item.signal != LOG_RETURN_SIGNAL)
     assert vol and all(item.signal == realized_vol_signal(5) for item in vol)
     with pytest.raises(StrategyInputError):
-        DualMomentumProvider((SPEC,)).target_positions(
-            _request(WAVE_SIGNALS + vol, WAVE_DECISIONS)
-        )
+        DualMomentumProvider((SPEC,)).target_positions(_request(WAVE_SIGNALS + vol, WAVE_DECISIONS))

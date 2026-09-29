@@ -9,9 +9,9 @@ withheld-only declaration holds no data; the membership check of the validated i
 
 from __future__ import annotations
 
+from contextlib import nullcontext
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
-from types import SimpleNamespace
 from typing import Any, cast
 
 import pytest
@@ -24,6 +24,7 @@ from core.contracts.universe import (
 )
 from core.domain.specs import InstrumentType
 from research.loop import DatasetRound, OosUnsealBudget
+from research.loop import dataset_source as dataset_source_module
 from research.loop.dataset_compose import dataset_loop_fingerprint
 from research.loop.dataset_source import SealedDatasetPair, WithheldSealedWindow, _require_member
 from research.loop.segment import SealedDataRefused
@@ -148,11 +149,22 @@ def _degraded(symbol: str, venue: str = "binance") -> DegradedEpisodeKey:
     )
 
 
-def test_the_validated_instrument_must_be_a_member_by_its_episode() -> None:
+def test_the_validated_instrument_must_be_a_member_by_its_episode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Review fixes 4: membership of the validated instrument, matched by venue, type and
     Canonical symbol of a degraded episode key; anything else refuses (fail closed)."""
     btc, eth = _member(_degraded("BTC-USDT")), _member(_degraded("ETH-USDT"))
-    _require_member(cast(Any, SimpleNamespace(members=(eth, btc))), "BTC-USDT", "sealed pair")
+
+    def check(members: tuple[UniverseMember, ...]) -> None:
+        monkeypatch.setattr(
+            dataset_source_module,
+            "_members",
+            lambda _catalog, _manifest: nullcontext(members),
+        )
+        _require_member(cast(Any, None), cast(Any, None), "BTC-USDT", "sealed pair")
+
+    check((eth, btc))
     stable = _member(
         StableEpisodeKey(
             basis=EpisodeIdentityBasis.STABLE_PRODUCT_ID,
@@ -164,4 +176,4 @@ def test_the_validated_instrument_must_be_a_member_by_its_episode() -> None:
     other_venue = _member(_degraded("BTC-USDT", venue="elsewhere"))
     for members in ((eth,), (), (stable,), (other_venue,)):
         with pytest.raises(SealedDataRefused, match="BTC-USDT is not a member of the sealed pair"):
-            _require_member(cast(Any, SimpleNamespace(members=members)), "BTC-USDT", "sealed pair")
+            check(members)

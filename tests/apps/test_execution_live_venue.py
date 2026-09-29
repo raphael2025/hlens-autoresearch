@@ -20,7 +20,6 @@ import pytest
 
 from apps.execution import (
     LIVE_TRADING_ENABLED,
-    CredentialProvider,
     ExecutionLadder,
     ExecutionStage,
     FillRecord,
@@ -42,8 +41,8 @@ REPO = Path(__file__).resolve().parents[2]
 LIVE_VENUE_FILE = REPO / "apps" / "execution" / "live_venue.py"
 
 T0 = datetime(2026, 9, 28, tzinfo=UTC)
-SUBJECT = Ref(kind=Kind.STRATEGY, name="btc-momentum", version="1.0.0")
-OTHER_SUBJECT = Ref(kind=Kind.STRATEGY, name="someone-else", version="1.0.0")
+SUBJECT = Ref(kind=Kind.STRATEGY, name="btc_momentum", version="1.0.0")
+OTHER_SUBJECT = Ref(kind=Kind.STRATEGY, name="someone_else", version="1.0.0")
 BTC = Instrument(
     venue="sim", symbol="BTCUSDT", instrument_type=InstrumentType.SPOT, base="BTC", quote="USDT"
 )

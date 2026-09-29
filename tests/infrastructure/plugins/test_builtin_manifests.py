@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
@@ -129,13 +130,13 @@ X = Ref(kind=Kind.FEATURE, name="x", version="1.0.0")
 VOLUME_X = Ref(kind=Kind.FEATURE, name="volume_x", version="1.0.0")
 
 
-def _quantile_spec(provider_cls: type, feature: Ref) -> object:
+def _quantile_spec(provider_cls: Any, feature: Ref) -> Any:
     return provider_cls.spec(
         feature, cuts=["0.33", "0.66"], min_history=5, training_window=timedelta(hours=1), seed=1
     )
 
 
-def _outcome_label_spec(method: OutcomeMethod, **barriers: Decimal) -> OutcomeLabelSpec:
+def _outcome_label_spec(method: OutcomeMethod, **barriers: Any) -> OutcomeLabelSpec:
     outcome_spec = OutcomeSpec(
         name="test_outcome", version="1.0.0", horizon=timedelta(hours=1), label_definition="test"
     )
@@ -247,7 +248,7 @@ def _build_cases() -> list[tuple[object, PluginManifest, str]]:
                 (
                     _outcome_label_spec(
                         OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER,
-                        volatility_feature=X,
+                        volatility_feature=cast(Any, X),
                         barrier_multiplier=Decimal("2"),
                     ),
                 ),

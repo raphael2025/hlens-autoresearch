@@ -11,7 +11,7 @@
 
 ## 背景与决定
 
-[ADR-0070](0070-p7-partial-experiment-fail-stop.md) 在 experiment stage 失败后 fail-stop；[ADR-0071](0071-p7-failed-round-review-packet.md) 只提供只读 packet，不授予恢复权；[ADR-0073](0073-phase7-plan-admission-recovery.md) 的 v4 PREPARE / TrialLedger / COMMIT / checkpoint / anchor 事务只用于 typed-plan；[ADR-0074](0074-p7-bounded-operator.md) 的 v5 绑定 operator identity。重试必须成为新 attempt，旧失败证据及其 ledger 记录永久保留。
+[ADR-0070](0070-p7-partial-experiment-fail-stop.md) 在 experiment stage 失败后 fail-stop；[ADR-0071](0071-p7-failed-round-review-packet.md) 只提供只读 packet，不授予恢复权；[ADR-0073](0073-phase7-plan-admission-recovery.md) 的 v4 PREPARE / TrialLedger / COMMIT / checkpoint / anchor 事务只用于 typed-plan；[ADR-0074](0074-synthetic-loop-operator.md) 的 v5 绑定 operator identity。重试必须成为新 attempt，旧失败证据及其 ledger 记录永久保留。
 
 批准一个**显式、人工发起、不开启调度**的 retry admission。协议只接受一份当前打开 durable state 上重建的 ADR-0071 packet、非空人工 reviewer 声明和人工给出的有序 retry manifest。manifest 每项是已登记 hypothesis 的精确 `name@version`、其当前内容 hash、以及全新的 attempt key。packet 不推断失败 trial 与 hypothesis 的映射；调用者必须逐项明确选择。相同 hypothesis 可多次列出，但 attempt key 全局不得在本 ledger 中复用，manifest 内不得重复。
 
@@ -38,7 +38,7 @@ Review packet 繼續是只讀觀測；只有 v6 的專用 admission 才能解除
 
 ## 參考
 
-- [ADR-0049](0049-continuous-research-loop.md)、[ADR-0070](0070-p7-partial-experiment-fail-stop.md)、[ADR-0071](0071-p7-failed-round-review-packet.md)、[ADR-0073](0073-phase7-plan-admission-recovery.md)、[ADR-0074](0074-p7-bounded-operator.md)
+- [ADR-0049](0049-continuous-research-loop.md)、[ADR-0070](0070-p7-partial-experiment-fail-stop.md)、[ADR-0071](0071-p7-failed-round-review-packet.md)、[ADR-0073](0073-phase7-plan-admission-recovery.md)、[ADR-0074](0074-synthetic-loop-operator.md)
 - `research/loop/durable.py`、`research/loop/recovery_review.py`、`apps/worker/loop.py`、`research/hypotheses/ledger.py`
 
 ## Amendment 1 — checkpoint hash binding

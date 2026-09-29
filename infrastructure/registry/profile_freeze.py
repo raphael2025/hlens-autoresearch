@@ -100,6 +100,7 @@ __all__ = [
     "FreezeConflict",
     "ProfileFreeze",
     "ProfileFreezeRegistry",
+    "RegistryCorrupted",
     "verify_integrity_snapshot",
 ]
 
@@ -595,13 +596,8 @@ def verify_integrity_snapshot(root: Path, *, anchor: Path) -> dict[str, object]:
             or not isinstance(new_head, str)
         ):
             raise RegistryCorrupted(f"anchor record {entry.seq} is invalid")
-        if (
-            new_length > len(journal)
-            or journal.entry(new_length - 1).hash != new_head
-        ):
-            raise RegistryCorrupted(
-                f"anchor record {entry.seq} does not match its journal prefix"
-            )
+        if new_length > len(journal) or journal.entry(new_length - 1).hash != new_head:
+            raise RegistryCorrupted(f"anchor record {entry.seq} does not match its journal prefix")
         length, head = new_length, new_head
     if length != len(journal) or (length and journal.entry(length - 1).hash != head):
         raise RegistryCorrupted("the freeze registry anchor does not match the journal tip")

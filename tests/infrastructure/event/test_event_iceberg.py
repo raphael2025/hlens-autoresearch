@@ -141,8 +141,9 @@ def test_definition_is_the_logical_table_plus_the_run_block() -> None:
     assert EVENT_EVENTS.fingerprint_rule.rule_id == "hlens.pyarrow-batch-sha256@1.0.0"
 
 
-def test_phase1_registry_is_untouched() -> None:
-    assert EVENT_EVENTS not in PHASE1_TABLES and len(PHASE1_TABLES) == 15
+def test_phase1_registry_stays_separate_from_phase3_event_table() -> None:
+    # ADR-0077 additively extended the frozen Phase 1 registry from 15 to 17 tables.
+    assert EVENT_EVENTS not in PHASE1_TABLES and len(PHASE1_TABLES) == 17
     with pytest.raises(UnknownTableDefinition):
         PHASE1_REGISTRY.resolve(EVENT_EVENTS.binding)
     assert PHASE3_TABLES == (EVENT_EVENTS,)

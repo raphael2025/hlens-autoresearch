@@ -13,6 +13,7 @@ missing candidate, is what suppressed it.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from apps.worker import RoundStatus
 from apps.worker.loop import LifecycleGuard, RoundContext, StageUsage
@@ -21,7 +22,7 @@ from research.loop.evolution import EvolutionStage
 from tests.research.loop import loop_fixtures as fx
 
 
-def _ctx(guard: LifecycleGuard, artifacts: dict[str, object]) -> RoundContext:
+def _ctx(guard: LifecycleGuard, artifacts: dict[str, Any]) -> RoundContext:
     return RoundContext(
         loop_id="synthetic_loop",
         round_index=1,
@@ -60,7 +61,9 @@ def test_a_retry_round_skips_evolution_and_registers_no_offspring(tmp_path: Path
 
     # The same round index, the same memory, but a normal (non-retry) hypothesis-stage artifact
     # shape: every_rounds=1 makes this due, and the parent above is still eligible.
-    normal_ctx = _ctx(guard, {"hypothesis": {"registered": (), "reevaluations": (), "llm_calls": {}}})
+    normal_ctx = _ctx(
+        guard, {"hypothesis": {"registered": (), "reevaluations": (), "llm_calls": {}}}
+    )
     assert stage.estimate(normal_ctx).trials == 1
     result = stage.run(normal_ctx)
     assert result.summary["due"] is True

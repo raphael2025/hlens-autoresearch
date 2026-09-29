@@ -198,9 +198,7 @@ def test_each_view_is_independent_and_closable_early(w: World) -> None:
     assert len(_lineage(cursor)) == 4  # BTC: 3 revisions + ETH: 1 unchanged revision
 
 
-def test_close_releases_the_deriver_exactly_once(
-    w: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_close_releases_the_deriver_exactly_once(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     w.listed(ds.TRADING, L1)
     w.listed(BTC_HALT, L2)
     cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))
@@ -225,9 +223,11 @@ def test_close_releases_the_deriver_exactly_once(
 
     closes.clear()
     with pytest.raises(UniverseUnconstructible):
-        with w.universe().cursor(
-            FIRST_SLICE_UNIVERSE, w.spec(at=L1 - timedelta(days=1))
-        ).members() as members:
+        with (
+            w.universe()
+            .cursor(FIRST_SLICE_UNIVERSE, w.spec(at=L1 - timedelta(days=1)))
+            .members() as members
+        ):
             list(members)
     assert len(closes) == 1
 
@@ -272,6 +272,7 @@ def test_instants_v3_closes_its_batch_readers_on_normal_completion(
     successful call. Both folds must close their reader exactly once on that ordinary path too
     (a ``try/finally``, not a bare ``except``).
     """
+    w.listed()
     pit = w.spec(interval=(L1, SIM))
     view = PinnedCatalogView(w.h.adapter, pit.snapshot_bindings)
     closed: list[str] = []
@@ -283,7 +284,7 @@ def test_instants_v3_closes_its_batch_readers_on_normal_completion(
             self._table = table
             self._batches = iter([SimpleNamespace(to_pylist=lambda: [])])
 
-        def __iter__(self) -> "_FakeReader":
+        def __iter__(self) -> _FakeReader:
             return self
 
         def __next__(self) -> SimpleNamespace:
@@ -292,9 +293,7 @@ def test_instants_v3_closes_its_batch_readers_on_normal_completion(
         def close(self) -> None:
             closed.append(self._table)
 
-    def fake_scan_column_batches(
-        self: PinnedCatalogView, table: str, **kwargs: Any
-    ) -> _FakeReader:
+    def fake_scan_column_batches(self: PinnedCatalogView, table: str, **kwargs: Any) -> _FakeReader:
         return _FakeReader(table)
 
     monkeypatch.setattr(PinnedCatalogView, "scan_column_batches", fake_scan_column_batches)

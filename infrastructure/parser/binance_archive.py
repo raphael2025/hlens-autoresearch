@@ -578,9 +578,7 @@ def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> Pars
             ) from exc
         with handle:
             with tempfile.TemporaryFile(mode="w+b") as spool:
-                byte_count, digest = _spool_bounded(
-                    handle, spool, request.object_ref.size + 1
-                )
+                byte_count, digest = _spool_bounded(handle, spool, request.object_ref.size + 1)
                 if byte_count != request.object_ref.size:
                     raise _Reject(
                         RejectionCode.OBJECT_INTEGRITY_MISMATCH,

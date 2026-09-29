@@ -240,9 +240,7 @@ class StreamingEvidenceVerifier:
                 stored,
                 listing=_ListingClaims(limits, manifest.point_in_time, self._episodes, reopen),
                 reports=_ReportClaims(limits, reopen),
-                chunks=_ChunkComparer(
-                    self._adapter, manifest, stored[EvidenceStream.CHUNK_PROOFS]
-                ),
+                chunks=_ChunkComparer(self._adapter, manifest, stored[EvidenceStream.CHUNK_PROOFS]),
             )
             derived = self._builder.select(
                 request, sources=self._sources(request), sink=sink, manifested=manifested
@@ -300,8 +298,7 @@ class StreamingEvidenceVerifier:
         )
         if self._builder.selection_id(request) != manifest.selection_id:
             raise CatalogIntegrityError(
-                f"manifest selection {manifest.selection_id} is not the selection of its own "
-                "inputs"
+                f"manifest selection {manifest.selection_id} is not the selection of its own inputs"
             )
         return request
 
