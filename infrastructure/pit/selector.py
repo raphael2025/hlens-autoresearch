@@ -852,6 +852,128 @@ def _evaluate(
     return results
 
 
+class _AvailabilityView(Mapping[str, datetime]):
+    """Effective availability lookup without a second per-revision dictionary."""
+
+    def __init__(self, rows: Mapping[str, Mapping[str, Any]], *, assumption_is_bound: bool) -> None:
+        self._rows = rows
+        self._assumption_is_bound = assumption_is_bound
+
+    def __getitem__(self, revision_id: str) -> datetime:
+        row = self._rows[revision_id]
+        adjusted = effective_available_times((row,), bound=self._assumption_is_bound)
+        if revision_id in adjusted:
+            return adjusted[revision_id][1]
+        return cast(datetime, row["available_time"])
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+
+def _instant_run_key(row: Mapping[str, Any]) -> datetime:
+    return cast(datetime, row["instant"])
+
+
+@contextmanager
+def _bounded_evaluation_instants(
+    storage: StorageAdapter,
+    *,
+    start: datetime,
+    changes: Iterator[datetime] | None,
+    params: PitRunParams,
+) -> Iterator[Iterator[datetime]]:
+    """Yield the start instant and sorted unique changes without a window-sized set/list."""
+    if changes is None:
+        yield iter((start,))
+        return
+
+    with RunSetBuilder(
+        storage,
+        key=_instant_run_key,
+        capacity=params.row_batch_rows,
+        merge_fanout=params.merge_fanout,
+        limits=params.limits,
+    ) as builder:
+        for instant in changes:
+            if instant > start:
+                builder.add({"instant": instant})
+        root = builder.finish()
+
+    def _generate() -> Generator[datetime]:
+        yield start
+        if root is None:
+            return
+        previous = start
+        with iter_run(storage, root) as ordered:
+            for row in ordered:
+                instant = cast(datetime, row["instant"])
+                if instant != previous:
+                    yield instant
+                    previous = instant
+
+    generated = _generate()
+    try:
+        yield generated
+    finally:
+        generated.close()
+
+
+def _evaluate_bounded(
+    key: str,
+    records: Sequence[RevisionRecord],
+    edges: Sequence[PrecedenceEvidence],
+    spec: PointInTimeSpec,
+    available: Mapping[str, datetime],
+    *,
+    storage: StorageAdapter,
+    params: PitRunParams,
+) -> Generator[PointInTimeSelection]:
+    """Stream v3 evaluation results and externally sort interval instants."""
+    changes: Iterator[datetime] | None = None
+    if spec.simulation_time is not None:
+        start = spec.simulation_time
+    else:
+        interval_start, end = spec.simulation_start, spec.simulation_end
+        if interval_start is None or end is None:  # pragma: no cover - the contract forbids it
+            raise PitSpecError("the spec has neither a simulation time nor an interval")
+        start = interval_start
+        cutoff = spec.knowledge_cutoff
+        changes = iter(
+            available[item.revision_id]
+            for item in records
+            if item.availability.times.knowledge_time <= cutoff
+            and start < available[item.revision_id] < end
+        )
+
+    previous: tuple[PointInTimeStatus, tuple[str, ...]] | None = None
+    with _bounded_evaluation_instants(
+        storage, start=start, changes=changes, params=params
+    ) as instants:
+        for at in instants:
+            heads = _heads(records, edges, at, spec.knowledge_cutoff, available)
+            status = (
+                PointInTimeStatus.ABSENT
+                if not heads
+                else PointInTimeStatus.SELECTED
+                if len(heads) == 1
+                else PointInTimeStatus.CONFLICT
+            )
+            if previous == (status, heads):
+                continue
+            previous = (status, heads)
+            yield PointInTimeSelection(
+                observation_key=key,
+                simulation_time=at,
+                knowledge_cutoff=spec.knowledge_cutoff,
+                status=status,
+                selected_revision_id=heads[0] if status is PointInTimeStatus.SELECTED else None,
+                maximal_heads=heads,
+            )
+
+
 # ============================================================================================
 # v3 fixed-working-set generator (ADR-0077 §6.1.2 / §6.1.3): sort-then-merge implementation of
 # PitSelector.iter_bounded. Reuses the same private read / proof / edge-mapping helpers as
@@ -989,6 +1111,7 @@ def _pit_bounded_stream(
                 records = tuple(
                     revision_record_from_row(key_rows[revision]) for revision in sorted(key_rows)
                 )
+                available = _AvailabilityView(key_rows, assumption_is_bound=bound_assumption)
                 # The key's whole read closure (key_rows) — not just the window's own instants —
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
                 owner_at = min(row[column] for row in key_rows.values())
@@ -1008,49 +1131,53 @@ def _pit_bounded_stream(
                 else:
                     key_edges = ()
 
-                moved = effective_available_times(list(key_rows.values()), bound=bound_assumption)
-                available = {
-                    revision: moved[revision][1] if revision in moved else row["available_time"]
-                    for revision, row in key_rows.items()
-                }
-
                 seen_revisions: set[str] = set()
-                for selection in _evaluate(row_key, records, key_edges, spec, available):
-                    lineage_out: SelectedRevisionLineage | None = None
-                    gap_out: EvidenceGap | None = None
-                    event_at: datetime | None = None
-                    if selection.status is PointInTimeStatus.SELECTED:
-                        revision = selection.selected_revision_id
-                        if revision is None:  # pragma: no cover - the contract forbids it
-                            raise CatalogIntegrityError("a selected result without a revision")
-                        event_at = key_rows[revision][column]
-                        if revision not in seen_revisions:
-                            seen_revisions.add(revision)
-                            source_row = key_rows[revision]
-                            if revision in moved:
-                                source_row = dict(source_row, available_time=moved[revision][1])
-                            lineage_out = SelectedRevisionLineage(
-                                canonical_table=canonical.table,
-                                canonical_revision_id=revision,
-                                raw_table=source_row["lineage_raw_table"],
-                                raw_revision_id=source_row["lineage_raw_revision_id"],
-                                source_table=source_row["lineage_source_table"],
-                                source_revision_id=source_row["lineage_source_revision_id"],
-                            )
-                            if source_row["availability_evidence_gap"] is not None:
-                                gap_out = EvidenceGap(
-                                    canonical.table,
-                                    revision,
-                                    source_row["availability_evidence_gap"],
+                evaluations = _evaluate_bounded(
+                    row_key,
+                    records,
+                    key_edges,
+                    spec,
+                    available,
+                    storage=storage,
+                    params=params,
+                )
+                try:
+                    for selection in evaluations:
+                        lineage_out: SelectedRevisionLineage | None = None
+                        gap_out: EvidenceGap | None = None
+                        event_at: datetime | None = None
+                        if selection.status is PointInTimeStatus.SELECTED:
+                            revision = selection.selected_revision_id
+                            if revision is None:  # pragma: no cover - the contract forbids it
+                                raise CatalogIntegrityError("a selected result without a revision")
+                            event_at = key_rows[revision][column]
+                            if revision not in seen_revisions:
+                                seen_revisions.add(revision)
+                                source_row = key_rows[revision]
+                                lineage_out = SelectedRevisionLineage(
+                                    canonical_table=canonical.table,
+                                    canonical_revision_id=revision,
+                                    raw_table=source_row["lineage_raw_table"],
+                                    raw_revision_id=source_row["lineage_raw_revision_id"],
+                                    source_table=source_row["lineage_source_table"],
+                                    source_revision_id=source_row["lineage_source_revision_id"],
                                 )
-                    yield PitBoundedRecord(
-                        observation_key=row_key,
-                        selection=selection,
-                        lineage=lineage_out,
-                        evidence_gap=gap_out,
-                        owner_event_time=owner_at,
-                        event_time=event_at,
-                    )
+                                if source_row["availability_evidence_gap"] is not None:
+                                    gap_out = EvidenceGap(
+                                        canonical.table,
+                                        revision,
+                                        source_row["availability_evidence_gap"],
+                                    )
+                        yield PitBoundedRecord(
+                            observation_key=row_key,
+                            selection=selection,
+                            lineage=lineage_out,
+                            evidence_gap=gap_out,
+                            owner_event_time=owner_at,
+                            event_time=event_at,
+                        )
+                finally:
+                    evaluations.close()
                 # key_rows / records / key_edges / buffer go out of scope here, before the next
                 # observation_key's group is even read off merged_rows.
 

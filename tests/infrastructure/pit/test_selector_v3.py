@@ -22,12 +22,14 @@ import pytest
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from infrastructure.pit import runs as runs_module
 from infrastructure.pit import selector as selector_module
+from infrastructure.pit.assumption import ASSUMPTION_LATENCY
 from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder
 from infrastructure.pit.selector import (
     PitBoundedRecord,
     PitRunParams,
     PitSelector,
     PitSpecError,
+    _bounded_evaluation_instants,
 )
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.pit.test_selector import (
@@ -39,6 +41,9 @@ from tests.infrastructure.pit.test_selector import (
     N_A,
     N_R,
     START,
+    TRADE_AT,
+    WITH_ASSUMPTION,
+    _archive_only,
     _chain,
     _spec,
 )
@@ -134,6 +139,81 @@ def test_iter_bounded_empty_row_and_edge_roots_match_empty_selection(h: RestHarn
         spec, "agg_trades", SYMBOL, FAR, later, params=TINY_PARAMS
     ) as records:
         assert list(records) == []
+
+
+def test_iter_bounded_availability_view_preserves_bound_archive_assumption(
+    h: RestHarness,
+) -> None:
+    _archive_only(h)
+    [stored_row] = h.rows(c.TRADES)
+    spec = _spec(
+        h,
+        cutoff=FAR,
+        at=TRADE_AT + ASSUMPTION_LATENCY,
+        availability_bindings=WITH_ASSUMPTION,
+    )
+    records = _bounded(h, spec)
+
+    [record] = records
+    assert record.selection.status is PointInTimeStatus.SELECTED
+    assert record.selection.selected_revision_id == stored_row["revision_id"]
+    assert record.evidence_gap is not None
+    assert h.rows(c.TRADES)[0]["available_time"] == stored_row["available_time"]
+
+
+def test_large_single_key_evaluation_instants_use_bounded_sorted_runs(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    params = PitRunParams(
+        row_batch_rows=3,
+        edge_batch_rows=3,
+        merge_fanout=2,
+        key_history_buffer=1,
+        limits=RunLimits(leaf_max_records=2, leaf_max_bytes=4096, fanout=2),
+    )
+    changes = [START + timedelta(seconds=index) for index in range(96)]
+    changes *= 2
+    changes.reverse()
+    expected = [START, *sorted(instant for instant in set(changes) if instant > START)]
+    builders = _capture_run_set_builders(monkeypatch)
+
+    active_merge_readers = 0
+    max_merge_readers = 0
+    original_iter_run = runs_module.iter_run
+
+    @contextmanager
+    def count_merge_readers(storage: Any, ref: RunRef) -> Iterator[Any]:
+        nonlocal active_merge_readers, max_merge_readers
+        with original_iter_run(storage, ref) as records:
+            active_merge_readers += 1
+            max_merge_readers = max(max_merge_readers, active_merge_readers)
+            try:
+                yield records
+            finally:
+                active_merge_readers -= 1
+
+    monkeypatch.setattr(runs_module, "iter_run", count_merge_readers)
+    opened_run_readers: list[Any] = []
+    original_open_read = h.storage.open_read
+
+    def track_run_read(ref: Any) -> Any:
+        handle = original_open_read(ref)
+        if ref.key.startswith("research/pit-sorted-run/"):
+            opened_run_readers.append(handle)
+        return handle
+
+    monkeypatch.setattr(h.storage, "open_read", track_run_read)
+    with _bounded_evaluation_instants(
+        h.storage, start=START, changes=iter(changes), params=params
+    ) as instants:
+        assert list(instants) == expected
+
+    assert len(builders) == 1
+    assert builders[0].root_ref is not None and builders[0].root_ref.depth > 1
+    assert 1 < max_merge_readers <= params.merge_fanout
+    assert active_merge_readers == 0
+    assert opened_run_readers
+    assert all(handle.closed for handle in opened_run_readers)
 
 
 def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
