@@ -161,7 +161,9 @@ def test_run_backed_evaluation_instants_are_deterministic_at_half_open_boundarie
     aligned with the legacy selector, and repeated reads have identical order/content."""
     _chain(h)
     spec = _spec(h, cutoff=N_R, interval=(N_A, N_R))
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     first = _bounded(h, spec)
     second = _bounded(h, spec)
     assert first == second
@@ -313,7 +315,9 @@ def test_iter_bounded_rejects_a_trailing_orphan_edge(
 ) -> None:
     """An edge key ordered after all Canonical keys must fail the final stream check."""
     _chain(h)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     _replace_mapped_edge_key(selector, monkeypatch, "~orphan")
     with pytest.raises(CatalogIntegrityError, match="mapped edge references"):
         with selector.iter_bounded(
@@ -332,7 +336,9 @@ def test_iter_bounded_rejects_all_orphan_edges_before_the_first_key(
 ) -> None:
     """An all-orphan edge prefix cannot be skipped while advancing to the first row key."""
     _chain(h)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     _replace_mapped_edge_key(selector, monkeypatch, "!orphan")
     with pytest.raises(CatalogIntegrityError, match="mapped edge references"):
         with selector.iter_bounded(

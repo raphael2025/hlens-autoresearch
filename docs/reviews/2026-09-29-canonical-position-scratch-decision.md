@@ -217,3 +217,28 @@ this change is not merged to `main`.
 - Reviewer / integration: second independent review approved; do not claim E1 passed. The isolated
   branch is not merged to `main`.
 - Unresolved: measure the E1 memory matrix; report disk usage as O(N), with no quota claim.
+
+## Candidate integration follow-up (2026-09-29)
+
+The accepted wiring was integrated into the independent W1 candidate alongside the bounded PIT,
+Universe, and Dataset slices. This follow-up is integration evidence only; it does not change the
+decision above or close E1-CAP-1.
+
+- Settings + canonical tests: `148 passed in 45.49s`.
+- A broader integration run reported `14 failed, 325 passed in 672.52s`. Thirteen failures were
+  test-definition/call-site defects introduced by the integration (undefined parameter, omitted
+  deterministic clock, stale proof-window shape, and missing explicit scratch arguments); after
+  fixing those call sites, the 13 exact nodes passed (`13 passed in 13.86s`).
+- `test_a_v2_round_with_an_evidence_verifier_is_exactly_the_v2_round` still reports differing
+  `manifest_pair_hash` and `research_data_hash` after two attempts. Per the project rule it is
+  deferred in this batch; root cause is unconfirmed and it is not counted as passing.
+- Focused scratch/rebind regressions: `3 passed in 0.91s`. The independent reviewer’s P2 on failed
+  normalizer rebind state retention was fixed; follow-up review found no P1/P2/P3. A symlink-loop
+  scratch path is also normalized and covered.
+- Ruff check and format check passed for the 19 touched Python files; scoped mypy passed for
+  `infrastructure/settings.py`. AST audit covered 132 relevant constructor call sites and found no
+  missing explicit scratch path. `git diff --check` passed before the final documentation update.
+
+The candidate still has O(N) PIT graph/history state and Quality `existing_only` report-event
+materialization; scratch/spool bytes have no quota and full-process RSS has not been measured.
+E1-CAP-1 remains open and Phase 1 is not accepted.

@@ -319,14 +319,19 @@ class PitSelector:
     def _pinned(self, spec: PointInTimeSpec) -> PinnedCatalogView:
         bound = tuple(sorted(spec.snapshot_bindings.items()))
         if bound != self._bound or self._view is None:
-            self._bound = bound
-            self._view = PinnedCatalogView(self._adapter, spec.snapshot_bindings)
-            self._normalizer = CanonicalNormalizer(
-                self._view,
+            view = PinnedCatalogView(self._adapter, spec.snapshot_bindings)
+            normalizer = CanonicalNormalizer(
+                view,
                 self._storage,
                 scratch_directory=self._canonical_scratch_directory,
             )
+            old_normalizer = self._normalizer
+            self._bound = bound
+            self._view = view
+            self._normalizer = normalizer
             self._edges = {}
+            if old_normalizer is not None:
+                old_normalizer.close()
         return self._view
 
     def select(

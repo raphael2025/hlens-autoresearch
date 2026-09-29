@@ -134,7 +134,7 @@ def _prepare_scratch_directory(directory: Path) -> Path:
         finally:
             probe.unlink(missing_ok=True)
         return root
-    except OSError as exc:
+    except (OSError, RuntimeError) as exc:
         raise CanonicalNormalizeError(
             f"canonical scratch directory is not usable: {directory}"
         ) from exc

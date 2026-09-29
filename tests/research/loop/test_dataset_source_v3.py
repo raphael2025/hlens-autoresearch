@@ -179,9 +179,7 @@ def test_v2_manifest_reselection_passes_the_builder_scratch_path(
     monkeypatch.setattr(dataset_source, "PitSelector", RecordingPitSelector)
     monkeypatch.setattr(dataset_source, "bar_observations", lambda *_args: ())
     feature = ResearchDatasetManifest.model_construct(point_in_time=object())
-    observations = dataset_source._dataset_observations(
-        catalog, feature, BTC, *v.DAY_WINDOW
-    )
+    observations = dataset_source._dataset_observations(catalog, feature, BTC, *v.DAY_WINDOW)
 
     assert observations == ()
     assert seen == [catalog.builder.canonical_scratch_directory]

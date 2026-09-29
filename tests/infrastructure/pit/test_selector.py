@@ -16,7 +16,7 @@ from pyiceberg.expressions import EqualTo
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus, PolicyBinding, PolicyRole
 from infrastructure.canonical import rules
-from infrastructure.canonical.normalizer import CanonicalUnitIncomplete
+from infrastructure.canonical.normalizer import CanonicalNormalizeError, CanonicalUnitIncomplete
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.assumption import ASSUMPTION_BINDING, ASSUMPTION_LATENCY
@@ -426,6 +426,54 @@ def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> Non
     later = _spec(h, cutoff=K_A)
     shared.select(later, "agg_trades", SYMBOL, *slices[0])
     assert shared._bound == tuple(sorted(later.snapshot_bindings.items()))
+
+
+def test_failed_normalizer_rebind_keeps_old_state_and_retry_closes_it(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=FAR)
+    bindings = dict(spec.snapshot_bindings)
+    table = next(iter(bindings))
+    bindings[table] = "new-bound-snapshot"
+    next_spec = spec.model_copy(update={"snapshot_bindings": bindings})
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
+
+    class RecordingNormalizer:
+        instances: list[RecordingNormalizer] = []
+        fail_next = False
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            if self.fail_next:
+                type(self).fail_next = False
+                raise CanonicalNormalizeError("scratch unavailable")
+            self.closed = False
+            self.instances.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(selector_module, "CanonicalNormalizer", RecordingNormalizer)
+    original_view = selector._pinned(spec)
+    original_normalizer = selector._normalizer
+    assert original_normalizer is RecordingNormalizer.instances[0]
+
+    RecordingNormalizer.fail_next = True
+    with pytest.raises(CanonicalNormalizeError, match="scratch unavailable"):
+        selector._pinned(next_spec)
+
+    assert selector._bound == tuple(sorted(spec.snapshot_bindings.items()))
+    assert selector._view is original_view
+    assert selector._normalizer is original_normalizer
+    assert not original_normalizer.closed
+
+    rebound_view = selector._pinned(next_spec)
+    assert selector._bound == tuple(sorted(next_spec.snapshot_bindings.items()))
+    assert selector._view is rebound_view and rebound_view is not original_view
+    assert selector._normalizer is RecordingNormalizer.instances[1]
+    assert original_normalizer.closed
 
 
 # =========================================================================================

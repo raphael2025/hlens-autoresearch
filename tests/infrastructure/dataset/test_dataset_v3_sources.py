@@ -327,7 +327,13 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
             params=UNIVERSE_PARAMS,
         ),
         pit=PitSelectorKeySource(
-            _KeysReversed(w.h.adapter, w.h.storage), storage=w.h.storage, params=PIT_PARAMS
+            _KeysReversed(
+                w.h.adapter,
+                w.h.storage,
+                canonical_scratch_directory=w.h.canonical_scratch_directory,
+            ),
+            storage=w.h.storage,
+            params=PIT_PARAMS,
         ),
         quality=PinnedQualityEvidence(
             w.h.adapter,
