@@ -20,7 +20,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -541,20 +541,54 @@ ABSENT = PointInTimeStatus.ABSENT
 
 def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
     records = [
-        _record("k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT),
+        _record(
+            "k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT
+        ),
         _record("k1", ABSENT, at=H0.replace(hour=6), owner=T0),
         _record("k1", SELECTED, "r2", at=H0.replace(hour=12), owner=T0, event_time=T1),
         _record("k2", SELECTED, "r3", at=H0, owner=T2, event_time=T2, lineage=True),
     ]
-    groups = list(pit_key_groups(records, knowledge_cutoff=SIM))
+    groups = []
+    evaluations_by_key = {}
+    for group in pit_key_groups(records, knowledge_cutoff=SIM):
+        groups.append(group)
+        evaluations_by_key[group.observation_key] = list(group.evaluations)
     assert [(g.observation_key, g.owner_event_time) for g in groups] == [("k1", T0), ("k2", T2)]
-    first = list(groups[0].evaluations)
+    first = evaluations_by_key["k1"]
     assert [e.status for e in first] == [SELECTED, ABSENT, SELECTED]
     assert first[0].selected == first[2].selected
     assert first[2].selected is not None
     assert first[2].selected.event_time == T1  # the selected revision's time, not the owner's
     assert first[2].selected.lineage == ds.trade_lineage("r2")
     assert first[2].selected.evidence_gap == ds.GAP_TEXT
+
+
+def test_one_large_key_streams_evaluations_without_materializing_the_group() -> None:
+    count = 10_000
+    consumed = 0
+
+    def records() -> Iterator[PitBoundedRecord]:
+        nonlocal consumed
+        for minute in range(count):
+            consumed += 1
+            yield _record(
+                "large-key",
+                ABSENT,
+                at=SIM + timedelta(minutes=minute),
+                owner=T0,
+            )
+
+    groups = pit_key_groups(records(), knowledge_cutoff=SIM)
+    group = next(groups)
+    assert group.observation_key == "large-key"
+    assert consumed == 1
+
+    evaluations = iter(group.evaluations)
+    first = next(evaluations)
+    assert first.status is ABSENT
+    assert consumed == 2  # only one-record lookahead, not all 10,000 evaluations
+    assert sum(1 for _ in evaluations) == count - 1
+    assert consumed == count
 
 
 @pytest.mark.parametrize(
@@ -567,7 +601,8 @@ def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
 def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) -> None:
     records = [_record(key, SELECTED, f"r-{key}", owner=T0, lineage=True) for key in keys]
     with pytest.raises(CatalogIntegrityError, match=match):
-        list(pit_key_groups(records, knowledge_cutoff=SIM))
+        for group in pit_key_groups(records, knowledge_cutoff=SIM):
+            list(group.evaluations)
 
 
 @pytest.mark.parametrize(
@@ -613,14 +648,14 @@ def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) ->
         ),
     ],
 )
-def test_malformed_pit_streams_fail_closed(
-    records: list[PitBoundedRecord], match: str
-) -> None:
+def test_malformed_pit_streams_fail_closed(records: list[PitBoundedRecord], match: str) -> None:
     with pytest.raises(CatalogIntegrityError, match=match):
-        list(pit_key_groups(records, knowledge_cutoff=SIM))
+        for group in pit_key_groups(records, knowledge_cutoff=SIM):
+            list(group.evaluations)
 
 
 def test_a_selection_at_another_cutoff_fails_closed() -> None:
     records = [_record("k1", SELECTED, "r1", owner=T0, lineage=True)]
     with pytest.raises(CatalogIntegrityError, match="another knowledge cutoff"):
-        list(pit_key_groups(records, knowledge_cutoff=H1))
+        for group in pit_key_groups(records, knowledge_cutoff=H1):
+            list(group.evaluations)

@@ -305,9 +305,8 @@ def _carry(
 
 def _evaluations(
     key: str, held: Iterable[PitBoundedRecord], knowledge_cutoff: datetime
-) -> tuple[PitKeyEvaluation, ...]:
+) -> Iterator[PitKeyEvaluation]:
     carried: dict[str, tuple[SelectedRevisionLineage, str | None]] = {}
-    evaluations: list[PitKeyEvaluation] = []
     for record in held:
         selection = record.selection
         if selection.observation_key != key:
@@ -336,14 +335,11 @@ def _evaluations(
             raise CatalogIntegrityError(
                 f"key {key}: a {selection.status.value} evaluation carries lineage"
             )
-        evaluations.append(
-            PitKeyEvaluation(
-                simulation_time=selection.simulation_time,
-                status=selection.status,
-                selected=selected,
-            )
+        yield PitKeyEvaluation(
+            simulation_time=selection.simulation_time,
+            status=selection.status,
+            selected=selected,
         )
-    return tuple(evaluations)
 
 
 def pit_key_groups(
@@ -356,33 +352,43 @@ def pit_key_groups(
     key's ``owner_event_time`` (the chain-earliest event) and, when selected, the revision's own
     proven row time (``PitBoundedRecord.event_time``) -- both attached by
     ``PitSelector.iter_bounded`` -- so no second read of the Canonical rows is needed here. Every
-    record of one key must agree on ``owner_event_time``. Holds one key's records.
+    record of one key must agree on ``owner_event_time``. Evaluations are consumed lazily while
+    the consumer processes each key.
     """
     source: Iterator[object] = iter(records)
     pending = _next_record(source)
     previous: str | None = None
+    evaluations_complete = True
     while pending is not None:
+        if not evaluations_complete:
+            raise CatalogIntegrityError(
+                "a PIT key's evaluations must be consumed before requesting the next key"
+            )
         key = pending.observation_key
         if previous is not None and key <= previous:
             raise CatalogIntegrityError(
                 f"observation key {key} is duplicated or out of order in the PIT stream (after "
                 f"{previous})"
             )
-        held: list[PitBoundedRecord] = []
-        owner: datetime | None = None
-        while pending is not None and pending.observation_key == key:
-            this_owner = _check_utc(pending.owner_event_time, f"key {key} owner_event_time")
-            if owner is None:
-                owner = this_owner
-            elif this_owner != owner:
-                raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
-            held.append(pending)
-            pending = _next_record(source)
-        assert owner is not None  # the inner while loop above ran at least once
+        first = pending
+        owner = _check_utc(first.owner_event_time, f"key {key} owner_event_time")
+        evaluations_complete = False
+
+        def key_records(key: str = key, owner: datetime = owner) -> Iterator[PitBoundedRecord]:
+            nonlocal evaluations_complete, pending
+            while pending is not None and pending.observation_key == key:
+                this_owner = _check_utc(pending.owner_event_time, f"key {key} owner_event_time")
+                if this_owner != owner:
+                    raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
+                current = pending
+                pending = _next_record(source)
+                yield current
+            evaluations_complete = True
+
         yield PitKeyGroup(
             observation_key=key,
             owner_event_time=owner,
-            evaluations=_evaluations(key, held, knowledge_cutoff),
+            evaluations=_evaluations(key, key_records(), knowledge_cutoff),
         )
         previous = key
 
