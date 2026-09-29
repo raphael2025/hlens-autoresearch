@@ -319,6 +319,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-29 | W10 Web 独立验收切片 | Web production build / components `120 passed`；library `110 passed, 1 failed`，retro-audit fixture 节点两轮失败后延期。依赖修复候选 audit 为 0，集成分支 clean install/build 通过；fixture-backed SSR test 由页面实际使用的五个图表 option builder 渲染五张 SVG（`1/1`），独立 review 无 P1/P2，页面接线已验证；浏览器 Canvas / resize / 视觉与交互仍待验。 |
 | 2026-09-29 | PIT bounded-run 集成切片 | 按依赖顺序集成 orphan-edge guard、bounded selector runs、逐个 yield 与 per-key run-ref compaction、单 key intermediate-state 切片；候选分支三个 PIT 测试文件 `84 passed in 52.78s`。独立审查无契约变化；O(N) RevisionRecord / edge graph / maximal-heads 状态仍存，故不是单 key bounded acceptance 或 E1-CAP-1 证据。 |
 | 2026-09-29 | Canonical scratch ownership 接入 | 接受的 D-E1-SCRATCH Option A 已在隔离候选分支贯通 Settings、normalizer、PIT、Dataset、Quality、tools 与测试；Settings + Canonical 测试 `148 passed`，PIT/Dataset 接线修复后 13 个失败节点复验通过。`test_a_v2_round_with_an_evidence_verifier_is_exactly_the_v2_round` 两轮出现 manifest/research hash 不一致，按两轮规则延期，根因未确认；E1-CAP-1 仍无容量证据。 |
+| 2026-09-29 | P1 row-integrity SQLite spool cleanup coverage | 在 `tests/infrastructure/revision/test_row_integrity.py` 新增两个独立回归：重复 batch 命中计数与 newest snapshot 选择、正常 close/unlink；以及历史遍历异常时关闭并删除 SQLite spool。`2 passed in 0.02s`，Ruff passed，未改生产代码；不改变 D3E/E1 验收状态。另核验 ADR-0081 `paper_deviation` / `retro_audit` 当前 fixture 与真实 writer 字节一致：`2 passed, 1 warning`；W10 Web 两轮延期的 `retroAudit.test.ts` 节点未重跑。 |
 
 ## 10. 下一阶段进入条件
 
