@@ -106,3 +106,32 @@ Web checks: `npm test` exited 1 (`110 passed, 1 failed`); `retroAudit.test.ts` e
 ## Overall acceptance
 
 No phase was accepted by this wave. Deferred two-round failures remain failed release gates and were not retried. Phase 1 remains blocked by unresolved PIT graph/conflict-head and bounded Quality integration work plus the unrun 32 MiB E1-CAP-1 measurement. Profile values remain unfrozen. These results must not be presented as a percentage-based acceptance claim.
+
+## Current-checkout acceptance refresh (2026-09-29)
+
+This independent refresh used the root checkout `codex/w1-stabilization@8180b073faeb80e5865a41d97b336ce70a536eb6`, which had 145 dirty entries. Reviewers made no changes. It did not run a full-repository suite or the E1-CAP-1 capacity probe, and it did not retry any node already deferred after two failures.
+
+### Phase 7–14 focused verification
+
+The following current-checkout focused groups ran successfully. These results do not close their phases:
+
+| Coverage | Result |
+|---|---|
+| P7 durable ledger, plan binding/lowering, retry admission | `81 passed in 85.57s` |
+| P11 loop, durable recovery, API and cross-process worker | `170 passed, 1 warning in 6.74s` |
+| P10 router/paper deviation/API reports, excluding the deferred malformed loop-round cases | `120 passed, 7 deselected, 1 warning in 2.58s` |
+| P12 evolution/promotion and P13 execution/risk/audit | `250 passed in 10.72s` |
+| P8 G4, retro-audit, cross-asset/impact and API/report, excluding the deferred malformed loop-round cases | `166 passed, 7 deselected, 1 warning in 4.48s` |
+| P14 golden and versioned migration replay | `10 passed in 18.77s` |
+
+Selected Ruff checks reported `All checks passed!`; `git diff --check` exited 0 with no output. P7–P14 remain **NOT ACCEPTED**: Profile, source-authority, complete validation/smoke, failure-drill, migration/rollback, and deployment gates remain open as applicable. In particular, P11 still lacks an authoritative ACTIVE head/source/metric definition; P13 remains simulation-only with LIVE disabled; P14 lacks the target deployment migration matrix and rollback evidence. The exact reviewer command log is preserved in the task record; no run above is a full phase acceptance.
+
+### Phase 1 acceptance matrix refresh
+
+The independent read-only matrix review confirmed the current recorded status: #1–#12 and #17 have historical batch-level pass evidence; #13 and #14 have their D3E/D4 gate decisions recorded. #15, #18, #19 and #20 remain partial against the current dirty checkout; #16 and #21 remain not accepted. `PROJECT_STATUS.md` §10's parenthetical identifies a completed subset and does not relax the requirement that all #1–#21 pass. The full Phase 1 remains **NOT ACCEPTED**.
+
+E1-CAP-1 is **NOT ACCEPTED**: no current-line complete-process measurement proves the 32 MiB limit across the required N/M matrix and repeated runs. Existing local stream tests and small synthetic smoke results are insufficient; old over-limit measurements on another candidate cannot be projected onto this checkout. The PIT window/per-key state, bounded Quality reporter/Dataset integration, and complete current-checkout evidence remain outstanding.
+
+### Phase 0.5–6 status review
+
+A separate static review found no newly accepted phase. Phase 0.5 remains partial pending named human seed-tag/asset review and missing seed golden hashes. Phase 2 lacks real Research Dataset validation and CLI/catalog/type evidence; Phase 3 lacks the deferred Iceberg Event and production Catalog evidence; Phase 4 still lacks calibrated, frozen Profile evidence; Phase 5's long run remains incomplete with deferred hash gates; Phase 6 lacks a real integrated P2 × P5 × P4 experiment and its C-R2/trial-count evidence. Historical focused test counts do not close these phases.
