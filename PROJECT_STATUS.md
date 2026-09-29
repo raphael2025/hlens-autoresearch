@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24） |
-| 当前子阶段 | W1 PostgreSQL-enabled 全量：`7 failed, 8814 passed, 1 skipped, 72 deselected, 5 warnings`；两轮延期节点不计通过，仍属发布门。隔离候选 `codex/w1-independent-integration@885cdf5` 包含 E1 spool、W5 seed guard、W1 文档、P7 修复、Web fixture inventory 和依赖安全更新。W6：State `44 passed`；Event/Outcome `203 passed, 1 failed`，失败为 15-vs-17 registry count，历史轮次无法核实，未重跑。W7：P7 精确文案节点修复后通过，P8 selected slice `148 passed`。W10：Web build / components `120 passed`；library `110 passed, 1 failed`，retro-audit 节点两轮失败后延期；依赖修复已在集成候选 clean install/build 与 audit 复核通过，ECharts 视觉复核待做。E1+W5 定向组合回归 `178 passed`、独立 review 无 P1/P2。E1-CAP-1 仍未通过；PIT 单 key、Quality report event list、Profile、红队与发布证据未闭合。Phase 1 未验收。 |
+| 当前子阶段 | W1 PostgreSQL-enabled 全量：`7 failed, 8814 passed, 1 skipped, 72 deselected, 5 warnings`；两轮延期节点不计通过，仍属发布门。隔离候选分支 `codex/w1-independent-integration` 包含 E1 spool、W5 seed guard、W1 文档、P7 修复、Web fixture inventory 和依赖安全更新。W6：State `44 passed`；Event/Outcome `203 passed, 1 failed`，失败为 15-vs-17 registry count，历史轮次无法核实，未重跑。W7：P7 精确文案节点修复后通过，P8 selected slice `148 passed`。W10：Web build / components `120 passed`；library `110 passed, 1 failed`，retro-audit 节点两轮失败后延期；依赖修复已在集成候选 clean install/build 与 audit 复核通过，ECharts 视觉复核待做。W2：API runtime `25 passed`，stdout JSON logging 接入并禁用 access log；Worker 当前无独立进程入口。E1+W5 定向组合回归 `178 passed`、独立 review 无 P1/P2。E1-CAP-1 仍未通过；PIT 单 key、Quality report event list、Profile、红队与发布证据未闭合。Phase 1 未验收。 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 长期分支 `main` 未改动；隔离集成候选 `codex/w1-independent-integration@885cdf5` 未推送或合入 main。W1 全量含两轮延期发布门。W6 / W7 / W10 有并行模块级进展如上，但不构成 Phase 验收；E1-CAP-1 仍阻断 Phase 1。W8–W12 多数工作包及 Profile、红队、最终集成证据仍待推进。 |
+| 总体状态 | 长期分支 `main` 未改动；隔离集成候选 `codex/w1-independent-integration` 未推送或合入 main。W1 全量含两轮延期发布门。W6 / W7 / W10 有并行模块级进展如上，但不构成 Phase 验收；E1-CAP-1 仍阻断 Phase 1。W8–W12 多数工作包及 Profile、红队、最终集成证据仍待推进。 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-29 |
 
@@ -312,18 +312,11 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-28 | 研究库与模块补全 | ADR-0085 特征 20 个 / 状态 2 个 / 策略 3 个 + 组合策略 / 回撤风控；ADR-0086 门集与退役存储；ADR-0087 插件发现；ADR-0084 实盘接口预留（关闭） |
-| 2026-09-28 | Phase 1 foundation 集成并清理分支 | 23 个冗余本地分支与远端 phase 分支已删除；所有旧 tip 已归档；本地 / 远端仅留 `main` |
-| 2026-09-28 | 全仓测试基线与 State 回归 | State 定向测试 27 passed；全仓 `pytest -rs` 为 8,531 passed / 188 failed / 138 skipped / 5 warnings（63:03），失败正按模块修复；E1-CAP-1 仍阻断 Phase 1 |
-| 2026-09-28 | W1 分区修复与静态检查复验 | API/报告 261 passed；revision 562 passed / 20 skipped；canonical normalizer 75 passed；PIT/dataset 分区 103 passed，5 个失败后定向复验通过；PIT proof-scan 专项 2 passed、volume-bar 10 passed；State 27、docs consistency 7、payload immutability 201、live API smoke 1 passed；研究循环/假设批次多组定向回归通过。策略/验证长跑中断，当前哈希单测通过；严格 mypy `Success: no issues found in 731 source files`。全仓 pytest 复跑未完成 |
-| 2026-09-29 | W1 全仓验收与并行收口（无 PostgreSQL） | `pytest -rs`: 8,723 passed / 15 failed / 138 skipped / 5 warnings (1:20:39)；一次 `--lf` 后 14 仍失败、1 转通过。作为历史批次保留。 |
-| 2026-09-29 | W2 本机 API 与 worker 生命周期验收 | 安装锁定的可选 `api-server` extra 后，真实 Uvicorn loopback HTTP 与 SIGTERM/SIGINT graceful shutdown、worker 跨进程恢复 `30 passed, 0 skipped`；修复 wrapper 信号重放后的退出码及测试 harness 的 stdout drain。DB / Registry / Admission 恢复仍待验。E1-CAP-1 仍阻断 Phase 1 |
-| 2026-09-29 | W10 Web 独立验收切片 | Web production build 通过；组件测试 120 passed；library suite 110 passed，retro-audit fixture 节点在两轮中失败并延期。四个 fixture inventory 断言同步新增 committed fixtures，独立审查确认旧版本断言仍在。依赖安全修复 `5070d17` 已择取至隔离集成分支 `885cdf5`，来源分支 `npm audit` 为 0；候选分支 clean install/build/audit 已通过，ECharts 视觉验证仍待完成。细节见 W10 review。 |
-| 2026-09-29 | W6 State/Event/Outcome 与 W2 API runtime 专项 | State 44 passed；Event/Outcome selected slice 203 passed / 1 registry-count assertion failure (prior rounds unclassified); logging helper 1 passed; real Uvicorn exact node 2 passed after installing declared extra. Temporary SQLite only; W6 and combined PostgreSQL/Iceberg recovery remain open. |
-| 2026-09-29 | W7 P8 report/promotion slice | Retro-audit, report verification, promotion refusal, and console fixture writer tests `148 passed, 1 warning`; deferred W1 hash/malformed nodes were excluded. No Profile values or operator execution enabled. |
-| 2026-09-29 | W2 Registry / Admission / Catalog 恢复切片 | Registry、Profile Freeze、Retirement、Admission、SQLite Catalog、State、Event `181 passed`；新增 SQLite Catalog / warehouse 关闭重开和幂等恢复 `1 passed`。PostgreSQL URI 未配置，完整 API+worker+Postgres+Iceberg 重启仍待验；无延期 W1 用例重跑 |
-| 2026-09-29 | W5 Knowledge Base 独立验收切片 | 检索、审阅路径 `103 passed`；精确 `schema_version == 2.1.0` 守卫随隔离集成候选回归通过。具名人工 tags/assets 审阅及 4 条后增 seed golden 仍未完成；golden 修复项尚未通过验收，单独排期，不阻塞 W2 / E1 其他工作。 |
-| 2026-09-29 | W1 PostgreSQL-enabled 全量收尾与两轮延期 | 全量 `7 failed / 8,814 passed / 1 skipped / 72 deselected / 5 warnings`（8,822 项执行）；focused database retry `3 failed / 40 passed`。catalog frozen-layout 与 revision table-binding 节点达到两轮失败并延期；catalog metadata-only 节点的全量失败轮次因七个 node IDs 未保留而无法核实，后续因测试 URI 未配置而 skip，既不算 pass 也不算 fail。console/evidence targeted `52 passed, 1 warning`。按规则不重跑已延期节点，继续独立工作。E1 archive spool 与 W5 精确 schema 守卫在隔离集成分支经 178 项定向回归；Canonical scratch、Dataset spans/run refs 与 Universe 窗口修复仍为隔离候选；PIT 单 key graph、Quality event stream 仍处于实现/决策边界。E1-CAP-1 仍阻断 Phase 1。 |
+| 2026-09-29 | W1 PostgreSQL-enabled 全量收尾与两轮延期 | 全量 `7 failed / 8,814 passed / 1 skipped / 72 deselected / 5 warnings`（8,822 项执行）；focused database retry `3 failed / 40 passed`。catalog frozen-layout 与 revision table-binding 节点达到两轮失败并延期；catalog metadata-only 节点轮次无法核实，后续因测试 URI 未配置而 skip。console/evidence targeted `52 passed, 1 warning`。延期项不重跑，继续独立工作；E1-CAP-1 仍阻断 Phase 1。 |
+| 2026-09-29 | W5 Knowledge Base 独立验收切片 | 检索、审阅路径 `103 passed`；精确 `schema_version == 2.1.0` 守卫随隔离集成候选回归通过。具名人工 tags/assets 审阅及 4 条后增 seed golden 仍未完成；单独排期，不阻塞其他工作。 |
+| 2026-09-29 | W2 本机 API、Worker 与存储恢复 | Uvicorn loopback、allowlist JSON 日志、敏感 query 不落日志、SIGTERM/SIGINT 优雅停止：API runtime `25 passed`；Worker 跨进程恢复 `30 passed, 0 skipped`。Registry/Admission/Catalog/State/Event 切片 `181 passed`，SQLite Catalog/warehouse 重开 `1 passed`。Worker 无独立进程入口；State/Event 专项重开及 PostgreSQL + Iceberg 联合恢复仍待验。 |
+| 2026-09-29 | W6/W7 独立验收 | State `44 passed`；Event/Outcome `203 passed, 1 failed`（registry count 15-vs-17，历史轮次未知，未重跑）。P7 一处文案断言修复后精确节点通过；P8 selected slice `148 passed`。无 Phase 验收，Profile 未冻结，Provider/Runner 仍关闭。 |
+| 2026-09-29 | W10 Web 独立验收切片 | Web production build / components `120 passed`；library `110 passed, 1 failed`，retro-audit fixture 节点两轮失败后延期。依赖修复候选 audit 为 0，集成分支 clean install/build 通过；ECharts 6 独立复核未发现 API 不兼容；手写 options 的 SSR smoke 产出五个 SVG（非页面接线证据），浏览器视觉与交互仍待验。 |
 
 ## 10. 下一阶段进入条件
 

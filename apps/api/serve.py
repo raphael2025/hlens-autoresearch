@@ -116,8 +116,13 @@ def _successful_signal_replay(handler: Any) -> Iterator[None]:
 def run(app: Any, *, port: int, host: str = LOOPBACK) -> None:
     """Serve ``app`` with Uvicorn until SIGINT / SIGTERM (blocking)."""
     options = server_options(port, host)  # refuse a non-loopback bind before importing anything
+    from infrastructure.observability.logging import configure_logging
+
     uvicorn = _uvicorn()
-    server = uvicorn.Server(uvicorn.Config(app, **options))
+    configure_logging()
+    server = uvicorn.Server(
+        uvicorn.Config(app, **options, access_log=False, log_config=None)
+    )
     with _successful_signal_replay(server.handle_exit):
         server.run()
 
