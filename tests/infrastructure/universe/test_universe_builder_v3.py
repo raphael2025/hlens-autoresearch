@@ -241,6 +241,81 @@ def test_close_releases_the_deriver_exactly_once(w: World, monkeypatch: pytest.M
     assert len(closes) == 1
 
 
+def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w.listed(ds.TRADING, L1)
+    cursor = _cursor(w, FIRST_SLICE_UNIVERSE, w.spec())
+    unique_count = 128
+    ids = [f"revision-{index:04d}" for index in range(unique_count)]
+    event_sources_closed: list[bool] = []
+    stores: list[ub._FirstSeenStore] = []
+    store_type = ub._FirstSeenStore
+
+    class TrackingStore(store_type):
+        def __init__(self) -> None:
+            super().__init__()
+            stores.append(self)
+
+    def events() -> Iterator[ub._SpanEvent]:
+        try:
+            for revision_id in (*ids, *reversed(ids)):
+                lineage = ds.listing_lineage(revision_id)
+                yield ub._SpanEvent(
+                    venue_symbol="BTCUSDT",
+                    member=None,
+                    exclusion=None,
+                    listing_revision_id=revision_id,
+                    lineage=lineage,
+                    gap=ds.GAP_TEXT,
+                )
+        finally:
+            event_sources_closed.append(True)
+
+    monkeypatch.setattr(ub, "_FirstSeenStore", TrackingStore)
+    monkeypatch.setattr(cursor, "_events", events)
+
+    with cursor.listing_lineage() as lineage:
+        assert [item.canonical_revision_id for item in lineage] == ids
+    first_store = stores[-1]
+    assert first_store.count == unique_count
+    assert first_store.CACHE_KIB == 1024
+    assert first_store.closed and not first_store.path.exists()
+
+    with cursor.evidence_gaps() as gaps:
+        assert list(gaps) == [(revision_id, ds.GAP_TEXT) for revision_id in ids]
+    second_store = stores[-1]
+    assert second_store.count == unique_count
+    assert second_store.closed and not second_store.path.exists()
+
+    with cursor.listing_lineage() as lineage:
+        assert next(lineage).canonical_revision_id == ids[0]
+    early_store = stores[-1]
+    assert early_store.closed and not early_store.path.exists()
+
+    def failing_events() -> Iterator[ub._SpanEvent]:
+        try:
+            yield ub._SpanEvent(
+                venue_symbol="BTCUSDT",
+                member=None,
+                exclusion=None,
+                listing_revision_id=ids[0],
+                lineage=ds.listing_lineage(ids[0]),
+                gap=ds.GAP_TEXT,
+            )
+            raise RuntimeError("event source failed")
+        finally:
+            event_sources_closed.append(True)
+
+    monkeypatch.setattr(cursor, "_events", failing_events)
+    with pytest.raises(RuntimeError, match="event source failed"):
+        with cursor.evidence_gaps() as gaps:
+            list(gaps)
+    failed_store = stores[-1]
+    assert failed_store.closed and not failed_store.path.exists()
+    assert len(event_sources_closed) == 4
+
+
 # ============================================================================ no whole-table read
 
 
@@ -324,7 +399,7 @@ def test_instants_v3_closes_its_batch_readers_on_normal_completion(
     assert closed.count(ub.LISTINGS_TABLE) == 1
 
 
-def test_instants_v3_sorts_batches_filters_cutoff_and_deduplicates_sources(
+def test_instants_v3_sorts_batches_filters_cutoff_and_treats_end_as_right_open(
     w: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The two pinned source scans may be unordered; event time is externally sorted once."""
@@ -340,6 +415,7 @@ def test_instants_v3_sorts_batches_filters_cutoff_and_deduplicates_sources(
                 {"retrieved_at": t1, "knowledge_time": too_late},
                 {"retrieved_at": t2, "knowledge_time": cutoff},
                 {"retrieved_at": L1, "knowledge_time": cutoff},
+                {"retrieved_at": SIM, "knowledge_time": cutoff},
             ],
         ],
         ub.LISTINGS_TABLE: [
@@ -381,7 +457,9 @@ def test_instants_v3_sorts_batches_filters_cutoff_and_deduplicates_sources(
         PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
     )
     with replay.open() as instants:
-        assert tuple(instants) == (L1, t2, t3)
+        result = tuple(instants)
+    assert result == (L1, t2, t3)
+    assert SIM not in result  # Interval end is right-open, even when a source reports it.
     assert len(readers) == 2
     assert all(reader.closed == 1 for reader in readers)
 

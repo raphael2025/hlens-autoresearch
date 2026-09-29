@@ -40,11 +40,15 @@ gets exactly the answers it got before this assumption existed.
 
 from __future__ import annotations
 
+import json
+import sqlite3
+import tempfile
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from typing import Final, Protocol
+from pathlib import Path
+from typing import Any, Final, Protocol
 
 from core.contracts.revision import PointInTimeSpec, PolicyBinding
 from core.contracts.storage import StorageAdapter
@@ -187,6 +191,72 @@ class _InstantReplay:
                 yield points
             finally:
                 points.close()
+
+
+class _FirstSeenStore:
+    """Exact disk-backed first-occurrence set for lineage and gap projection.
+
+    The SQLite page cache is capped at 1 MiB; cardinality grows in an owned temporary database,
+    not a Python set. The temporary directory may reside on tmpfs, so its byte growth remains an
+    E1 capacity risk and is not represented as an E1-CAP-1 pass. Callers must close this owner.
+    """
+
+    CACHE_KIB: Final = 1024
+
+    def __init__(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory(prefix="hlens-universe-seen-")
+        self.path = Path(self._temporary.name) / "first-seen.sqlite3"
+        try:
+            self._connection = sqlite3.connect(self.path)
+            self._connection.execute("PRAGMA journal_mode=OFF")
+            self._connection.execute("PRAGMA synchronous=OFF")
+            self._connection.execute("PRAGMA temp_store=FILE")
+            self._connection.execute(f"PRAGMA cache_size=-{self.CACHE_KIB}")
+            self._connection.execute(
+                "CREATE TABLE seen (ordinal INTEGER PRIMARY KEY, key TEXT NOT NULL UNIQUE, "
+                "payload TEXT NOT NULL)"
+            )
+        except BaseException:
+            connection = getattr(self, "_connection", None)
+            try:
+                if connection is not None:
+                    connection.close()
+            finally:
+                self._temporary.cleanup()
+            raise
+        self._ordinal = 0
+        self.count = 0
+        self.closed = False
+
+    def add(self, key: str, payload: Mapping[str, Any]) -> None:
+        self._ordinal += 1
+        inserted = self._connection.execute(
+            "INSERT OR IGNORE INTO seen (ordinal, key, payload) VALUES (?, ?, ?)",
+            (self._ordinal, key, json.dumps(payload, sort_keys=True, separators=(",", ":"))),
+        )
+        if inserted.rowcount == 1:
+            self.count += 1
+        inserted.close()
+
+    def commit(self) -> None:
+        self._connection.commit()
+
+    def payloads(self) -> Iterator[str]:
+        rows = self._connection.execute("SELECT payload FROM seen ORDER BY ordinal")
+        try:
+            for (payload,) in rows:
+                yield payload
+        finally:
+            rows.close()
+
+    def close(self) -> None:
+        if self.closed:
+            return
+        try:
+            self._connection.close()
+        finally:
+            self._temporary.cleanup()
+            self.closed = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -637,10 +707,10 @@ class _SpanEvent:
     """One finalized v3 span, already projected for each of :class:`UniverseSpanCursor`'s views.
 
     Exactly one of ``member`` / ``exclusion`` is set (mirrors the v2 ``if span.point.tradable``
-    branch). ``lineage`` / ``gap`` are set only the first time this walk sees
-    ``listing_revision_id`` for this symbol (the same revision can recur non-adjacently, e.g. a
-    halt/resume returning to it); later spans citing it carry ``None`` for both. ``assumed`` is
-    set only for a member span that exists under the ADR-0051 assumption.
+    branch). ``lineage`` / ``gap`` are copied from each span's selected listing. The dedicated
+    cursor views de-duplicate these by revision through a disk-backed first-occurrence store,
+    keeping resident Python state independent of unique revision count. ``assumed`` is set only
+    for a member span that exists under the ADR-0051 assumption.
     """
 
     venue_symbol: str
@@ -669,17 +739,15 @@ def _events_v3(
     walked in full, one span at a time, before the next. No ``timelines``, ``members``,
     ``exclusions`` or ``member_spans`` collection spans more than the current symbol. One bounded
     sorted event run is built from the pinned snapshots and replayed through a fresh closeable
-    reader per symbol. **Residual ADR-0077 blocker:** ``seen`` retains every distinct listing
-    revision touched by the current symbol, so its memory still grows with unique revision count;
-    this change bounds event sorting only and does not claim the whole B-UNIV path has fixed
-    working memory. Bounded lineage de-duplication requires a separate implementation slice.
+    reader per symbol. Lineage/gap first-occurrence uniqueness is handled by a separate bounded
+    SQLite store in the corresponding cursor view; its temporary-disk growth remains an E1
+    capacity risk.
     """
     view = PinnedCatalogView(adapter, pit.snapshot_bindings)
     deriver = ListingDeriver(view, storage, market_data_base_url=origin)
     try:
         instants = _instants_v3(view, pit, storage, run_params)
         for venue_symbol in spec.symbols:
-            seen: set[str] = set()
             assumed_seen = False
             with instants.open() as instant_iterator:
                 points = _timeline_stream(deriver, venue_symbol, instant_iterator, pit)
@@ -714,19 +782,13 @@ def _events_v3(
                             effective_from=span.start,
                             effective_until=span.end,
                         )
-                    lineage: SelectedRevisionLineage | None = None
-                    gap: str | None = None
-                    if revision not in seen:
-                        seen.add(revision)
-                        lineage = span.point.lineage
-                        gap = span.point.evidence_gap
                     yield _SpanEvent(
                         venue_symbol=venue_symbol,
                         member=member,
                         exclusion=exclusion,
                         listing_revision_id=revision,
-                        lineage=lineage,
-                        gap=gap,
+                        lineage=span.point.lineage,
+                        gap=span.point.evidence_gap,
                         assumed=membership,
                     )
     finally:
@@ -782,6 +844,43 @@ def _project[T](
         yield items()
     finally:
         events.close()
+
+
+@contextmanager
+def _first_seen_project[T](
+    events: Iterator[_SpanEvent],
+    extract: Callable[[_SpanEvent], T | None],
+    *,
+    key: Callable[[T], str],
+    encode: Callable[[T], Mapping[str, Any]],
+    decode: Callable[[Mapping[str, Any]], T],
+) -> Iterator[Iterator[T]]:
+    """Preserve first-seen order and exact uniqueness without a revision-sized Python set."""
+    store = _FirstSeenStore()
+    payloads: Iterator[str] | None = None
+    items: Iterator[T] | None = None
+    try:
+        for event in events:
+            value = extract(event)
+            if value is not None:
+                store.add(key(value), encode(value))
+        store.commit()
+        payloads = store.payloads()
+        items = (decode(json.loads(payload)) for payload in payloads)
+        yield items
+    finally:
+        try:
+            if items is not None:
+                items.close()
+        finally:
+            try:
+                if payloads is not None:
+                    payloads.close()
+            finally:
+                try:
+                    events.close()
+                finally:
+                    store.close()
 
 
 class UniverseSpanCursor:
@@ -866,14 +965,20 @@ class UniverseSpanCursor:
 
     def listing_lineage(self) -> AbstractContextManager[Iterator[SelectedRevisionLineage]]:
         """One entry per distinct ``(venue_symbol, listing_revision_id)`` touched by the walk,
-        first occurrence only: the same revision selected again later by the same symbol's
-        timeline (e.g. a halt/resume returning to it) is not repeated. A revision cannot in fact
-        belong to two symbols (ADR-0024 episode scoping; ``ListingHistory`` enforces one
-        ``observation_key`` per ``revision_id``), so this per-symbol de-duplication is also the
-        walk's full de-duplication -- no cross-symbol working set is needed. The dataset's other
-        lineage hops (raw / source) are B1's responsibility, not this cursor's.
+        first occurrence only, retaining generation order. Exact membership is stored in an
+        explicitly closed, bounded-cache SQLite scratch database; a repeated revision (e.g. a
+        halt/resume selecting it again) does not create another output row. A revision cannot in
+        fact belong to two symbols (ADR-0024 episode scoping; ``ListingHistory`` enforces one
+        ``observation_key`` per ``revision_id``). The dataset's other lineage hops (raw / source)
+        are B1's responsibility, not this cursor's.
         """
-        return _project(self._events(), _lineage_of)
+        return _first_seen_project(
+            self._events(),
+            _lineage_of,
+            key=lambda item: item.canonical_revision_id,
+            encode=lambda item: item.model_dump(mode="json"),
+            decode=SelectedRevisionLineage.model_validate,
+        )
 
     def member_spans(
         self,
@@ -891,7 +996,13 @@ class UniverseSpanCursor:
         ADR-0077 §6.1 item 1 ("...逐项产生成员 / 排除 / lineage / gap") and by B1's
         ``evidence_gaps`` evidence stream, so it is provided alongside the other three.
         """
-        return _project(self._events(), _gap_of)
+        return _first_seen_project(
+            self._events(),
+            _gap_of,
+            key=lambda item: item[0],
+            encode=lambda item: {"revision_id": item[0], "gap": item[1]},
+            decode=lambda row: (row["revision_id"], row["gap"]),
+        )
 
     def assumed(self) -> AbstractContextManager[Iterator[AssumedMembership]]:
         """The v3 form of ``UniverseBuilt.assumed`` (ADR-0051 §3): each member span that exists

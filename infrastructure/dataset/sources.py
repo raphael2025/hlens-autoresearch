@@ -12,9 +12,10 @@ real bounded generators to the first two (the third is ``PinnedQualityEvidence``
   only while every symbol keeps one episode and every episode key sorts like its symbol (not
   provable for every registered spec: a stable-id key sorts before any degraded one, a rename
   opens a new episode). All four are therefore re-sorted through the content-addressed sorted
-  runs of ``infrastructure.pit.runs`` (``spill_sorted_runs`` + ``merge_sorted_runs``, every size
-  explicit). ``member_spans`` is passed through: its generation order (symbol, then start) *is*
-  the builder's required order, and the builder proves it.
+  runs of ``infrastructure.pit.runs`` (``RunSetBuilder``, every size explicit); run refs are
+  folded online into one root instead of retained in a list. ``member_spans`` is passed through:
+  its generation order (symbol, then start) *is* the builder's required order, and the builder
+  proves it.
 - ``PitSelectorKeySource`` wraps B-PIT's ``PitSelector.iter_bounded`` and folds its per-instant
   ``PitBoundedRecord`` stream into one ``PitKeyGroup`` per observation key (``pit_key_groups``).
   Observation keys must be strictly increasing (a duplicate or reordered key fails closed); the
@@ -56,7 +57,7 @@ from infrastructure.dataset.builder import (
     PitSelectedRevision,
     UniverseEvidenceSource,
 )
-from infrastructure.pit.runs import RunLimits, merge_sorted_runs, spill_sorted_runs
+from infrastructure.pit.runs import RunLimits, RunSetBuilder, iter_run
 from infrastructure.pit.selector import PitBoundedRecord, PitRunParams, PitSelector
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.universe.builder import UniverseBuilder
@@ -160,24 +161,27 @@ def _reordered[T](
     storage: StorageAdapter,
     params: UniverseRunParams,
 ) -> Iterator[Iterator[T]]:
-    """One upstream view, drained into sorted runs (upstream closed first), merged back in order.
+    """Drain one upstream view into an online compacted root, then stream it in order.
 
     Sorting is by the encoded ``order`` only; ties keep an arbitrary order, and duplicates reach
-    the builder, which rejects them (adjacent comparison), exactly as it would have unsorted.
+    the builder, which rejects them (adjacent comparison), exactly as it would have unsorted. The
+    source closes before the run is read, and the accumulator retains only its fanout-bounded
+    levels rather than one reference per capacity batch.
     """
     with source() as items:
-        refs = list(
-            spill_sorted_runs(
-                (encode(item) for item in items),
-                key=_run_order,
-                capacity=params.capacity,
-                storage=storage,
-                limits=params.limits,
-            )
-        )
-    with merge_sorted_runs(
-        storage, refs, key=_run_order, merge_fanout=params.merge_fanout, limits=params.limits
-    ) as merged:
+        with RunSetBuilder(
+            storage,
+            key=_run_order,
+            capacity=params.capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as runs:
+            runs.extend(encode(item) for item in items)
+            root = runs.finish()
+    if root is None:
+        yield iter(())
+        return
+    with iter_run(storage, root) as merged:
         decoded = (decode(row["record"]) for row in merged)
         try:
             yield decoded
