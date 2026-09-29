@@ -473,7 +473,11 @@ class PitSelector:
         return _key_closure(read, column, start, end, touching=touching)
 
     def _verify_canonical(
-        self, view: PinnedCatalogView, rows: Sequence[Mapping[str, Any]]
+        self,
+        view: PinnedCatalogView,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        revision_ids_sorted: bool = False,
     ) -> list[Mapping[str, Any]]:
         """Every row read must be exactly a row its unit re-normalizes to at these snapshots."""
         normalizer = self._normalizer or CanonicalNormalizer(view, self._storage)
@@ -494,13 +498,25 @@ class PitSelector:
                     f"Canonical revision {row['revision_id']} is not what its unit normalizes to "
                     "at the bound snapshots"
                 )
-        seen: set[str] = set()
-        for row in rows:
-            if row["revision_id"] in seen:
-                raise CatalogIntegrityError(
-                    f"Canonical revision {row['revision_id']} is read twice"
-                )
-            seen.add(row["revision_id"])
+        if revision_ids_sorted:
+            previous: str | None = None
+            for row in rows:
+                revision_id = row["revision_id"]
+                if revision_id == previous:
+                    raise CatalogIntegrityError(f"Canonical revision {revision_id} is read twice")
+                if previous is not None and revision_id < previous:
+                    raise CatalogIntegrityError(
+                        "Canonical rows supplied for sorted revision-id verification are not sorted"
+                    )
+                previous = revision_id
+        else:
+            seen: set[str] = set()
+            for row in rows:
+                if row["revision_id"] in seen:
+                    raise CatalogIntegrityError(
+                        f"Canonical revision {row['revision_id']} is read twice"
+                    )
+                seen.add(row["revision_id"])
         return list(rows)
 
     def _mapped_edges(
@@ -1496,7 +1512,7 @@ def _pit_bounded_stream(
                 # _verify_canonical contract accepts a sequence for one observation key; this
                 # is the remaining per-key working set, never a whole-window collection.
                 key_rows = list(key_group)
-                verified_key = selector._verify_canonical(view, key_rows)
+                verified_key = selector._verify_canonical(view, key_rows, revision_ids_sorted=True)
                 by_key = {observation_key: verified_key}
                 with _root_rows(storage, day_root) as day_rows:
                     edge_days = (

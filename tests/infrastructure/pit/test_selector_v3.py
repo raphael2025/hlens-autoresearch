@@ -152,6 +152,27 @@ def test_pit_edge_groups_are_lazy_and_unmatched_keys_fail_closed(h: RestHarness)
         selector_module._pit_assert_no_unmatched_edge_groups("z", iter(()))
 
 
+def test_bounded_canonical_proof_rejects_adjacent_duplicate_revision_ids(
+    h: RestHarness,
+) -> None:
+    """The sorted bounded path detects duplicates without a revision-sized seen set."""
+    _chain(h)
+    spec = _spec(h, cutoff=K_E)
+    selector = PitSelector(h.adapter, h.storage)
+    view = selector._pinned(spec)
+    [row] = h.rows(c.TRADES)[:1]
+
+    with pytest.raises(
+        CatalogIntegrityError,
+        match=f"Canonical revision {row['revision_id']} is read twice",
+    ):
+        selector._verify_canonical(
+            view,
+            (row, row),
+            revision_ids_sorted=True,
+        )
+
+
 def test_pit_evaluation_yields_high_cardinality_timeline_incrementally(
     h: RestHarness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
