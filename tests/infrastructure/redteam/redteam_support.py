@@ -249,7 +249,12 @@ def report(
     listing: bool = True,
 ) -> list[str]:
     """``World.report`` with an explicit report clock (for data known after the default one)."""
-    reporter = QualityReporter(w.h.adapter, w.h.storage, clock=StepClock(start=at))
+    reporter = QualityReporter(
+        w.h.adapter,
+        w.h.storage,
+        canonical_scratch_directory=w.h.canonical_scratch_directory,
+        clock=StepClock(start=at),
+    )
     ids = [reporter.report(data_type, symbol, day).report_id for symbol in symbols for day in days]
     if listing:
         listing_reporter = ListingQualityReporter(

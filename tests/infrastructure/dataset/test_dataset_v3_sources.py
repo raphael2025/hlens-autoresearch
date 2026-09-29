@@ -143,6 +143,7 @@ def _sources_factory(w: World) -> Any:
             w.h.adapter,
             w.h.storage,
             request,
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
@@ -176,9 +177,7 @@ def _v3_build(
     )
     manifests = verifier.store()
 
-    summary = b.build(
-        request, sources=sources_factory(request), chunks=chunks, manifests=manifests
-    )
+    summary = b.build(request, sources=sources_factory(request), chunks=chunks, manifests=manifests)
 
     both = ManifestStore(w.h.adapter, w.builder(), evidence_verifier=verifier)
     assert both.load_any(summary.manifest_hash) == summary.manifest
@@ -259,7 +258,9 @@ def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> 
 
 def test_owner_and_event_times_are_the_canonical_rows_times(w: World) -> None:
     spec = _point_world(w)
-    selector = PitSelector(w.h.adapter, w.h.storage)
+    selector = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    )
     source = PitSelectorKeySource(selector, storage=w.h.storage, params=PIT_PARAMS)
     with source.keys(spec, "agg_trades", "BTCUSDT", SLICE_22, END) as groups:
         got = [(g.observation_key, g.owner_event_time, tuple(g.evaluations)) for g in groups]
@@ -328,7 +329,12 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
             _KeysReversed(w.h.adapter, w.h.storage), storage=w.h.storage, params=PIT_PARAMS
         ),
         quality=PinnedQualityEvidence(
-            w.h.adapter, w.h.storage, spec, "agg_trades", market_data_base_url=ds.ORIGIN
+            w.h.adapter,
+            w.h.storage,
+            spec,
+            "agg_trades",
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
+            market_data_base_url=ds.ORIGIN,
         ),
     )
     chunks = ds.FakeChunkWriter()
@@ -541,7 +547,9 @@ ABSENT = PointInTimeStatus.ABSENT
 
 def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
     records = [
-        _record("k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT),
+        _record(
+            "k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT
+        ),
         _record("k1", ABSENT, at=H0.replace(hour=6), owner=T0),
         _record("k1", SELECTED, "r2", at=H0.replace(hour=12), owner=T0, event_time=T1),
         _record("k2", SELECTED, "r3", at=H0, owner=T2, event_time=T2, lineage=True),
@@ -613,9 +621,7 @@ def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) ->
         ),
     ],
 )
-def test_malformed_pit_streams_fail_closed(
-    records: list[PitBoundedRecord], match: str
-) -> None:
+def test_malformed_pit_streams_fail_closed(records: list[PitBoundedRecord], match: str) -> None:
     with pytest.raises(CatalogIntegrityError, match=match):
         list(pit_key_groups(records, knowledge_cutoff=SIM))
 

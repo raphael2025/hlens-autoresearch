@@ -195,6 +195,7 @@ JSON 输出里带 `notes` 字段，写明它绕过了 D0 / D3D 真实采集、�
 | 字段 | 用途 |
 |---|---|
 | `warehouse_uri` / `staging_uri` | 本地 `file://` 绝对路径（`LocalFileStorageAdapter`）；两者必须同文件系统、不得相同路径；默认 `data/warehouse` 与其下 `staging/` |
+| `canonical_scratch_uri` | Canonical position index 的持久本地 scratch 根，默认仓库 `data/scratch`，可由 `HLENS_CANONICAL_SCRATCH_URI` 覆盖；必须是绝对本地 `file://` URI，且不能与 warehouse / staging 重叠。生产 composition root 显式注入其 `Path`；每个 index 在根下创建私有目录并在关闭 / 失败时清理。磁盘占用为 O(N)，不承诺配额；进程默认临时目录不作 fallback |
 | `catalog_uri` | PostgreSQL DSN（`SecretStr`，只接受 `postgresql` / `postgresql+<driver>`）；`open_postgres_catalog_adapter` 的唯一入口 |
 | `catalog_name` | PyIceberg catalog 名 |
 | `http_connect_timeout_seconds` / `http_read_timeout_seconds` / `http_max_retries` / `http_user_agent` | D0 / D3D 的 HTTP 客户端参数 |

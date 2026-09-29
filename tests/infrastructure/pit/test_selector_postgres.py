@@ -27,11 +27,15 @@ def pg(tmp_path: Path) -> Iterator[RestHarness]:
 def test_bound_snapshots_decide_on_postgres(pg: RestHarness) -> None:
     _chain(pg, reconcile=False)
     old = _spec(pg, cutoff=FAR)
-    selector = PitSelector(pg.adapter, pg.storage)
+    selector = PitSelector(
+        pg.adapter, pg.storage, canonical_scratch_directory=pg.tmp_path / "canonical-scratch"
+    )
     first = selector.select(old, "agg_trades", SYMBOL, START, END)
     assert first.conflicts == (KEY,)
     pg.reconciler(clock=StepClock(start=K_E)).reconcile("agg_trades", SYMBOL, ss.DAY)
-    restarted = PitSelector(pg.reopen(), pg.storage)  # a fresh process
+    restarted = PitSelector(
+        pg.reopen(), pg.storage, canonical_scratch_directory=pg.tmp_path / "canonical-scratch"
+    )  # a fresh process
     assert restarted.select(old, "agg_trades", SYMBOL, START, END) == first
     new = restarted.select(_spec(pg, cutoff=FAR), "agg_trades", SYMBOL, START, END)
     [selection] = new.selections

@@ -78,6 +78,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from decimal import Decimal
 from itertools import pairwise
+from pathlib import Path
 from typing import Any, Final
 
 from pyiceberg.expressions import EqualTo
@@ -304,7 +305,15 @@ def _proven_bars(
     for symbol in wanted:  # steps 4-6
         bars = [
             bar
-            for bar in _reselected(adapter, storage, manifest, symbol, rows, lineage)
+            for bar in _reselected(
+                adapter,
+                storage,
+                manifest,
+                symbol,
+                rows,
+                lineage,
+                canonical_scratch_directory=builder.canonical_scratch_directory,
+            )
             if low <= bar.interval_start < high
         ]
         late = [bar for bar in bars if bar.available_time > cutoff]
@@ -459,6 +468,8 @@ def _reselected(
     symbol: str,
     rows: Mapping[str, list[Mapping[str, Any]]],
     lineage: set[SelectedRevisionLineage],
+    *,
+    canonical_scratch_directory: Path,
 ) -> list[_ProvenBar]:
     """``symbol``'s bars re-selected under the manifest's spec: exactly its dataset rows."""
     venue = _VENUE_SYMBOL.get(symbol)
@@ -466,9 +477,9 @@ def _reselected(
         raise CatalogIntegrityError(f"dataset rows of an unknown symbol {symbol!r}")
     dataset = manifest.dataset
     spec = manifest.point_in_time
-    selection = PitSelector(adapter, storage).select(
-        spec, _DATA_TYPE, venue, dataset.time_range_start, dataset.time_range_end
-    )
+    selection = PitSelector(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    ).select(spec, _DATA_TYPE, venue, dataset.time_range_start, dataset.time_range_end)
     selection.require_no_conflict()
     selected = {
         item.selected_revision_id

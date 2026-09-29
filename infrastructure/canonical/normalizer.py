@@ -52,9 +52,9 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
-import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
     And,
     BooleanExpression,
@@ -116,6 +116,28 @@ _BATCH_CACHE: Final = 2
 _POSITION_DB_CACHE_KIB: Final = 1024
 _POSITION_INSERT_ROWS: Final = 2048
 _POSITION_INT: Final = struct.Struct(">q")
+
+
+def _prepare_scratch_directory(directory: Path) -> Path:
+    """Create and prove the configured persistent scratch root writable before catalog access."""
+    if not isinstance(directory, Path) or not directory.is_absolute():
+        raise CanonicalNormalizeError("canonical scratch directory must be an absolute Path")
+    try:
+        root = directory.resolve(strict=False)
+        root.mkdir(parents=True, exist_ok=True)
+        if not root.is_dir():
+            raise OSError("path is not a directory")
+        probe = root / f".hlens-scratch-check-{os.getpid()}-{os.urandom(8).hex()}"
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.close(fd)
+        finally:
+            probe.unlink(missing_ok=True)
+        return root
+    except OSError as exc:
+        raise CanonicalNormalizeError(
+            f"canonical scratch directory is not usable: {directory}"
+        ) from exc
 
 
 @contextmanager
@@ -181,16 +203,28 @@ class CanonicalUnitIncomplete(CanonicalNormalizeError, CatalogIntegrityError):
 class _PositionIndex(Sequence[int]):
     """A sorted, disk-backed position sequence with bounded in-memory SQLite state."""
 
-    def __init__(self) -> None:
-        self._temporary = tempfile.TemporaryDirectory(prefix="hlens-positions-")
+    def __init__(self, scratch_directory: Path) -> None:
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="hlens-positions-", dir=str(scratch_directory)
+        )
         self._database_path = os.path.join(self._temporary.name, "positions.sqlite3")
         self._rank_path = os.path.join(self._temporary.name, "ranks.bin")
-        self._connection = sqlite3.connect(self._database_path)
-        self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
-        self._connection.execute("PRAGMA temp_store = FILE")
-        self._connection.execute("PRAGMA journal_mode = OFF")
-        self._connection.execute("PRAGMA synchronous = OFF")
-        self._connection.execute("CREATE TABLE positions (position INTEGER NOT NULL)")
+        try:
+            self._connection = sqlite3.connect(self._database_path)
+            self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
+            self._connection.execute("PRAGMA temp_store = FILE")
+            self._connection.execute("PRAGMA journal_mode = OFF")
+            self._connection.execute("PRAGMA synchronous = OFF")
+            self._connection.execute("CREATE TABLE positions (position INTEGER NOT NULL)")
+            # Keep ORDER BY inside the explicitly placed database. Without this index SQLite may
+            # put the sorter's temp B-tree in its process-default temp directory.
+            self._connection.execute("CREATE INDEX positions_position ON positions(position)")
+        except BaseException:
+            connection = getattr(self, "_connection", None)
+            if connection is not None:
+                connection.close()
+            self._temporary.cleanup()
+            raise
         self._size = 0
         self._fd: int | None = None
         self._closed = False
@@ -499,6 +533,7 @@ class CanonicalNormalizer:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        scratch_directory: Path,
         clock: Callable[[], datetime] | None = None,
         microbatch_rows: int = DEFAULT_MICROBATCH_ROWS,
     ) -> None:
@@ -510,6 +545,7 @@ class CanonicalNormalizer:
             )
         self._adapter = adapter
         self._storage = storage
+        self._scratch_directory = _prepare_scratch_directory(scratch_directory)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = microbatch_rows
         #: On a ``PinnedCatalogView`` nothing can change under the normalizer (it cannot write
@@ -576,7 +612,8 @@ class CanonicalNormalizer:
                 except BatchConflict as exc:
                     if survey.plan is None:
                         # A rival allocated first (its own block and clock reading) and committed
-                        # this batch id: start over and adopt its plan — the clock is never read again.
+                        # this batch id: start over and adopt its plan — the clock is never read
+                        # again.
                         last_error = exc
                         continue
                     # Our plan was recovered from committed batches, which every writer recovers
@@ -611,10 +648,17 @@ class CanonicalNormalizer:
         """
         if type(result) is not CanonicalUnitNormalized:
             raise CanonicalNormalizeError("result must be a CanonicalUnitNormalized")
-        if any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 0
-            for value in (result.revision_count, result.batch_count, result.replayed_batch_count)
-        ) or result.replayed_batch_count > result.batch_count:
+        if (
+            any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in (
+                    result.revision_count,
+                    result.batch_count,
+                    result.replayed_batch_count,
+                )
+            )
+            or result.replayed_batch_count > result.batch_count
+        ):
             raise CanonicalNormalizeError("result summary counts are invalid")
         channel = self._channel(result.raw_table, result.source_revision_id)
         if result.canonical_table != channel.canonical.table:
@@ -632,9 +676,7 @@ class CanonicalNormalizer:
         survey = self._survey(pin, channel, result.source_revision_id, keep_rows=False)
         try:
             if result.revision_count > 0 and survey.plan is not None:
-                _require_complete(
-                    channel, result.source_revision_id, survey.plan, survey.unit_rows
-                )
+                _require_complete(channel, result.source_revision_id, survey.plan, survey.unit_rows)
             summary_mismatch = survey.unit_rows != result.revision_count
             if result.revision_count == 0:
                 summary_mismatch = summary_mismatch or any(
@@ -678,9 +720,7 @@ class CanonicalNormalizer:
                     high,
                     expected_rows=end - index * survey.plan.chunk,
                 )
-                planned = self._planned(
-                    channel, raw, survey.base, survey.ready, survey.version
-                )
+                planned = self._planned(channel, raw, survey.base, survey.ready, survey.version)
                 yield from (row["revision_id"] for row in planned)
         finally:
             if survey.positions is not None:
@@ -831,13 +871,15 @@ class CanonicalNormalizer:
             if not positions:
                 if committed.seq_count or plan is not None:
                     raise CatalogIntegrityError(
-                        f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
+                        f"{table} holds Canonical rows or batches of unit "
+                        f"{source_revision_id} that "
                         "has no Raw element revision"
                     )
             elif plan is None:
                 if committed.seq_count:
                     raise CatalogIntegrityError(
-                        f"{table}: unit {source_revision_id} has committed rows but no committed batch"
+                        f"{table}: unit {source_revision_id} has committed rows but no "
+                        "committed batch"
                     )
             else:
                 base, ready, version = self._recover(channel, source_revision_id, committed)
@@ -929,8 +971,12 @@ class CanonicalNormalizer:
         positions, symbol = self._positions(pin, channel, source_revision_id)
         try:
             return self._survey_with_positions(
-                pin, channel, source_revision_id, keep_rows=keep_rows,
-                positions=positions, symbol=symbol,
+                pin,
+                channel,
+                source_revision_id,
+                keep_rows=keep_rows,
+                positions=positions,
+                symbol=symbol,
             )
         except BaseException:
             positions.close()
@@ -1075,7 +1121,7 @@ class CanonicalNormalizer:
             row_filter=_equals(channel.lineage_column, source_revision_id),
         )
         offset = 0 if channel.name == "archive" else 1
-        index = _PositionIndex()
+        index = _PositionIndex(self._scratch_directory)
         symbol: str | None = None
         try:
             try:
@@ -1356,7 +1402,7 @@ class CanonicalNormalizer:
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
     ) -> _CommittedTimes:
         """Stream committed unit facts; retain only scalar summaries and a disk-sorted seq index."""
-        index = _PositionIndex()
+        index = _PositionIndex(self._scratch_directory)
         reader: Any | None = None
         count = 0
         seq_null = False
@@ -1372,9 +1418,7 @@ class CanonicalNormalizer:
                 row_filter=self._unit_filter(channel, source_revision_id),
             )
             for record_batch in reader:
-                seq_values = record_batch.column(
-                    record_batch.schema.get_field_index("arrival_seq")
-                )
+                seq_values = record_batch.column(record_batch.schema.get_field_index("arrival_seq"))
                 ready_values = record_batch.column(
                     record_batch.schema.get_field_index("knowledge_time")
                 )
@@ -1496,9 +1540,7 @@ class CanonicalNormalizer:
         """The window's slice of the block holds exactly the planned rows, each once."""
         _exact(
             channel,
-            self._scan_block(
-                pin.catalog, channel, base + low, base + high, None, len(planned)
-            ),
+            self._scan_block(pin.catalog, channel, base + low, base + high, None, len(planned)),
             planned,
             committed=True,
         )
@@ -1691,6 +1733,7 @@ class CanonicalNormalizer:
             table,
             self._unit_filter(channel, source_revision_id),
             snapshot_id,
+            scratch_directory=self._scratch_directory,
         )
         try:
             block, block_count, block_null = _scan_integer_index(
@@ -1698,6 +1741,7 @@ class CanonicalNormalizer:
                 table,
                 _from("arrival_seq", base, base + rules.ARRIVAL_SEQ_STRIDE),
                 snapshot_id,
+                scratch_directory=self._scratch_directory,
             )
             try:
                 if not _same_index_numbers(seqs, seq_count, seq_null, expected) or not (
@@ -1981,9 +2025,11 @@ def _scan_integer_index(
     table: str,
     row_filter: BooleanExpression,
     snapshot_id: str | None,
+    *,
+    scratch_directory: Path,
 ) -> tuple[_PositionIndex, int, bool]:
     """Stream one arrival_seq column into a disk-sorted index at the requested snapshot."""
-    index = _PositionIndex()
+    index = _PositionIndex(scratch_directory)
     reader: Any | None = None
     count = 0
     has_null = False

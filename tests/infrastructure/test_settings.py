@@ -16,6 +16,7 @@ VALID_CATALOG = "postgresql://hlens:fake-password@127.0.0.1:5432/hlens_catalog"
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_WAREHOUSE = (REPO_ROOT / "data" / "warehouse").resolve().as_uri()
 DEFAULT_STAGING = (REPO_ROOT / "data" / "warehouse" / "staging").resolve().as_uri()
+DEFAULT_CANONICAL_SCRATCH = (REPO_ROOT / "data" / "scratch").resolve().as_uri()
 _THIS_FILE = Path(__file__).resolve()
 
 
@@ -36,6 +37,8 @@ def test_defaults_with_only_catalog_dsn(monkeypatch: pytest.MonkeyPatch) -> None
     settings = _settings(monkeypatch, HLENS_CATALOG_URI=VALID_CATALOG)
     assert settings.warehouse_uri == DEFAULT_WAREHOUSE
     assert settings.staging_uri == DEFAULT_STAGING
+    assert settings.canonical_scratch_uri == DEFAULT_CANONICAL_SCRATCH
+    assert settings.canonical_scratch_path == REPO_ROOT / "data" / "scratch"
     assert settings.catalog_name == "hlens"
     assert settings.http_connect_timeout_seconds == 10
     assert settings.http_read_timeout_seconds == 60
@@ -61,6 +64,7 @@ def test_exact_uppercase_environment_overrides(
         HLENS_CATALOG_URI="postgresql+psycopg2://u:p@localhost:5432/db",
         HLENS_WAREHOUSE_URI=warehouse.as_uri(),
         HLENS_STAGING_URI=staging.as_uri(),
+        HLENS_CANONICAL_SCRATCH_URI=(tmp_path / "scratch").as_uri(),
         HLENS_CATALOG_NAME="  research  ",
         HLENS_HTTP_CONNECT_TIMEOUT_SECONDS="3.5",
         HLENS_HTTP_READ_TIMEOUT_SECONDS="12",
@@ -71,6 +75,7 @@ def test_exact_uppercase_environment_overrides(
     )
     assert settings.warehouse_uri == warehouse.as_uri()
     assert settings.staging_uri == staging.as_uri()
+    assert settings.canonical_scratch_path == (tmp_path / "scratch").resolve()
     assert settings.catalog_name == "research"
     assert settings.http_connect_timeout_seconds == 3.5
     assert settings.http_read_timeout_seconds == 12
@@ -162,6 +167,74 @@ def test_staging_uri_rejects_unsafe_forms(
             HLENS_CATALOG_URI=VALID_CATALOG,
             HLENS_WAREHOUSE_URI=warehouse,
             HLENS_STAGING_URI=uri,
+        )
+
+
+@pytest.mark.parametrize(
+    "uri",
+    [
+        "file:///mnt",
+        "file:///mnt/scratch",
+        "https://example.test/scratch",
+        "file:relative/scratch",
+        "file:///tmp/scratch?x=1",
+        "file:///tmp/scratch#frag",
+        "file://remotehost/tmp/scratch",
+    ],
+)
+def test_canonical_scratch_uri_rejects_unsafe_forms(
+    monkeypatch: pytest.MonkeyPatch,
+    uri: str,
+) -> None:
+    with pytest.raises(ValidationError):
+        _settings(
+            monkeypatch,
+            HLENS_CATALOG_URI=VALID_CATALOG,
+            HLENS_CANONICAL_SCRATCH_URI=uri,
+        )
+
+
+@pytest.mark.parametrize("overlap", ["same", "nested", "parent"])
+def test_canonical_scratch_uri_rejects_warehouse_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    overlap: str,
+) -> None:
+    warehouse = (tmp_path / "warehouse").resolve()
+    scratch = {
+        "same": warehouse,
+        "nested": warehouse / "scratch",
+        "parent": tmp_path,
+    }[overlap]
+    with pytest.raises(ValidationError, match="must not overlap warehouse_uri"):
+        _settings(
+            monkeypatch,
+            HLENS_CATALOG_URI=VALID_CATALOG,
+            HLENS_WAREHOUSE_URI=warehouse.as_uri(),
+            HLENS_CANONICAL_SCRATCH_URI=scratch.as_uri(),
+        )
+
+
+@pytest.mark.parametrize("overlap", ["same", "nested", "parent"])
+def test_canonical_scratch_uri_rejects_staging_overlap(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    overlap: str,
+) -> None:
+    warehouse = (tmp_path / "warehouse").resolve()
+    staging = (tmp_path / "staging").resolve()
+    scratch = {
+        "same": staging,
+        "nested": staging / "scratch",
+        "parent": tmp_path,
+    }[overlap]
+    with pytest.raises(ValidationError, match="must not overlap"):
+        _settings(
+            monkeypatch,
+            HLENS_CATALOG_URI=VALID_CATALOG,
+            HLENS_WAREHOUSE_URI=warehouse.as_uri(),
+            HLENS_STAGING_URI=staging.as_uri(),
+            HLENS_CANONICAL_SCRATCH_URI=scratch.as_uri(),
         )
 
 

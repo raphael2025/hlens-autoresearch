@@ -45,7 +45,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；四条 2026-09-26 种子已显式固定 `schema_version: 2.1.0`。种子标签 / 资产仍需具名人工审阅；新增种子的黄金哈希覆盖尚未补齐。**Phase 0.5 未验收** |
-| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；RSS probe 与诊断均未运行。候选 `a75278e` 的 500k 增长 59.9 / 63.9 MiB 不代表 main。E1-R 增加 committed ID 重建与 Verifier 磁盘快照匹配计数，并保持公开 dict/list API；提交 `64b021a`、`1d8f231`、`62bfc9d`、`3997e0b` 未验证。`34b95c3` 补入 `RevisionCatalog.scan_column_batches` Protocol 和 revision / manifest-cache 测试代理转发。当前开发分支补上 unit 全行 symbol 一致性拒绝；均未运行检查。另有测试仍引用已删除的 `_same_numbers`。ADR-0075 批准 adapter 固定快照流式扫描，尚未实现；PyIceberg metadata、archive parse、完整 result ID tuple、generic history fallback 的 `seen` set、builder caller-held snapshot ID set 与 metadata/manifest 增长仍未解决。默认 tempfile 在本机落入 tmpfs。完整 tuple 计入 32 MiB；上一轮未提交的 E1 余项已归档到 `wip/e1-cap-archive@ece150e`，未审阅、未测试、不构成正式决定，本轮后置。E1-CAP-1 阻断，Phase 1 未验收。路线见 [E1-CAP-1 对账](docs/reviews/2026-09-28-e1-cap1-design-reconciliation.md) |
+| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；E1-CAP-1 的 32 MiB 完整进程工作集门仍阻断。PM 2026-09-29 接受 D-E1-SCRATCH Option A：Settings 默认 `data/scratch`、环境变量覆盖，显式注入 normalizer / PIT / dataset / quality / tools，私有 index 目录关闭时清理；实现已通过二次独立复核，已在隔离分支提交，待协调整合。scratch 磁盘使用 O(N)，无配额保证；RSS 门与 E1 验收仍开放。PyIceberg metadata、archive parse 与完整结果对象等增长项仍需单独测量。路线见 [E1-CAP-1 对账](docs/reviews/2026-09-28-e1-cap1-design-reconciliation.md) |
 | 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断载荷 1.1.0 记录来源 `StateResult.result_hash`（裸序列为 null），旧 1.0.0 报告可原样读回并复原 id；来源哈希只是报告声明、不认证 Registry 存在性；Web fixture 已按新载荷重生成；测试、类型检查与阶段验收未运行 |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；`EventResult → OutcomeEvent` 纯转换已在 main，以 event id / 可观测时间构造 Outcome 标签输入；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；未跑测试，Phase 4 未验收 |
@@ -156,6 +156,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | D-E1-BASE | E1 后续实现以哪条代码线为基线？ | **以当前本地 `main` 为整合基线；已归档的 `fix/e1-cap1` 仅作按路径择取的代码与容量探针参考，不整支合并。** 候选 `history()` 对重复 snapshot ID 的查找顺序与 `main` 的 first-listed 语义不一致；任何移植都要保留 `main` 的历史、固定 snapshot 与拒绝规则 | 已决定（2026-09-27，Codex 依 Raphael 全权授权）；候选失败记录保留，`main` 容量尚未测 |
 | E1-HIST | PyIceberg metadata、Parser / scan 临时状态和 API 返回对象是否计入 E1-CAP-1？ | **计入完整进程工作集**，既有 32 MiB 门槛与验收条件不变；不因对象来自第三方依赖而排除 | 重申既有容量口径，非架构变更；见 `docs/reviews/e1-bounded-history-options.md`；E1 仍阻断 |
 | E1-CAP-ARCH | 在当前 PyIceberg 路径和已调查假设下，是否已有符合既定容量门与历史语义的实现方案？ | 依 Raphael 2026-09-28 的项目统筹授权，先按已记录的 E1-R 设计路径补实现基础切片，不改 32 MiB 门槛、冻结契约或权威 metadata 读写 / 历史保留语义；E1-API 若需改变公开结果类型，仍先出 Proposed ADR | E1-R 已有 batch-history / pinned streaming scan / disk-backed positions / committed-row 校验、committed ID 重建与有界 snapshot match index；新提交 `64b021a`、`1d8f231`、`62bfc9d` 均未验证。archive parse、完整 result tuple 与调用方增长项仍待处理或测量；整体容量设计与 E1-CAP-1 仍开放、阻断 |
+| D-E1-SCRATCH | Canonical position index 临时磁盘文件的配置与生命周期由谁负责？ | PM 接受 Option A：由 `Settings` / runtime composition root 持有 scratch URI，并显式注入 `Path`；不得改 StorageAdapter 契约 | 实现已通过二次独立复核并在隔离分支提交，待协调整合；仅关闭 scratch 路径所有权缺口，O(N) 磁盘无配额承诺，32 MiB RSS 门与 E1-CAP-1 仍阻断。见 [scratch decision packet](docs/reviews/2026-09-29-canonical-position-scratch-decision.md) |
 
 既有 E1-CAP-1 标准不变：完整进程工作集都计入容量测量，且增长须满足已记录的 N / batch-count 上界。已记录的 59.9 / 63.9 MiB 是 `fix/e1-cap1` 候选分支数据，不是当前 `main` 的容量结果；候选探针以 10 ms 间隔采样 `/proc` VmRSS、每个 N 仅运行一次，元数据阶段约解释 20 MiB，其余约 40 MiB 未归因。`main` 自身没有 resume / replay 探针；当前实现已磁盘化 positions 与 batch-history 索引，并将 committed-time 和 close 的 arrival_seq 精确比较改为批次扫描 + 磁盘索引，尚未验证。Arrow 单批、archive parse、完整结果 ID / commits 与 Iceberg metadata 等增长仍未解决或测量，因此不得外推候选数值或宣称 `main` 通过。
 
@@ -309,11 +310,11 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-28 | 契约 2.3.0 → 2.4.0（ADR-0077 / 0088，均 additive） | v3 有界 Dataset 证据；组合策略、事件 bar 规格、峰值权益、合成效应、波动率屏障、成员假设绑定；已钉哈希与版本断言需调试阶段重钉 |
 | 2026-09-28 | ADR-0077 有界 Dataset 全链路实现 | universe / PIT 生成器、evidence 树、chunk 提交、v2/v3 双表、流式 verify、下游消费者；E1-CAP-1 容量仍未测 |
 | 2026-09-28 | 研究库与模块补全 | ADR-0085 特征 20 个 / 状态 2 个 / 策略 3 个 + 组合策略 / 回撤风控；ADR-0086 门集与退役存储；ADR-0087 插件发现；ADR-0084 实盘接口预留（关闭） |
 | 2026-09-28 | Raphael 授权 PM 全权决策（实盘除外）；PR #11 并入 main | CLAUDE.md §0 已记录；`main@67fd2ca` 含 phase 至 `14cccb7` |
 | 2026-09-28 | 接受 ADR-0091，明确登记处审计只读语义与 Failure Registry 证据边界 | OPS-1 扩展为只读校验 API + 结构化 CLI；不改持久化格式 |
+| 2026-09-29 | 接受 D-E1-SCRATCH Option A | Settings 拥有显式 scratch 根并注入 Canonical / PIT / tools；实现完成，独立复核待做；E1-CAP-1 继续阻断 |
 
 ## 10. 下一阶段进入条件
 

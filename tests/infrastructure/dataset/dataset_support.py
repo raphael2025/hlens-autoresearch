@@ -186,7 +186,12 @@ class World:
         listing: bool = True,
     ) -> list[str]:
         ids = []
-        reporter = QualityReporter(self.h.adapter, self.h.storage, clock=StepClock(start=K_Q))
+        reporter = QualityReporter(
+            self.h.adapter,
+            self.h.storage,
+            canonical_scratch_directory=self.h.canonical_scratch_directory,
+            clock=StepClock(start=K_Q),
+        )
         for symbol in symbols:
             for day in days:
                 ids.append(reporter.report(data_type, symbol, day).report_id)
@@ -249,6 +254,7 @@ class World:
         return DatasetBuilder(
             self.h.adapter,
             self.h.storage,
+            canonical_scratch_directory=self.h.canonical_scratch_directory,
             market_data_base_url=ORIGIN,
             dataset_table=DATASET_SELECTIONS,
         )
@@ -489,9 +495,7 @@ def v3_episode(symbol: str) -> DegradedEpisodeKey:
     )
 
 
-def v3_member(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseMember:
+def v3_member(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseMember:
     return UniverseMember(
         episode=v3_episode(symbol),
         listing_revision_id=revision,
@@ -500,9 +504,7 @@ def v3_member(
     )
 
 
-def v3_exclusion(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseExclusion:
+def v3_exclusion(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseExclusion:
     return UniverseExclusion(
         episode=v3_episode(symbol),
         listing_revision_id=revision,
