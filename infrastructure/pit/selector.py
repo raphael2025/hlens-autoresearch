@@ -522,6 +522,105 @@ class PitSelector:
                 seen.add(row["revision_id"])
         return list(rows)
 
+    def _verify_canonical_bounded(
+        self,
+        view: PinnedCatalogView,
+        rows: Sequence[Mapping[str, Any]],
+        *,
+        params: PitRunParams,
+    ) -> list[Mapping[str, Any]]:
+        """Verify one revision-sorted key while spilling normalizer proofs by revision id.
+
+        ``CanonicalNormalizer.verify_unit`` remains the compatibility tuple API. The bounded
+        path sends each fully checked proof batch to an unfinalized content-addressed run instead
+        of retaining the returned tuple and a second ``proven`` dict at the same time. The run is
+        finalized only after every requested unit/batch has been proven; it is replayed by an
+        ordered merge with the already revision-sorted Canonical rows. Duplicate proof IDs use
+        their greatest insertion ordinal, reproducing ``proven[id] = row``'s last-write-wins
+        behavior. Extra proofs are ignored, and every expected field is still compared.
+
+        This only removes the proof tuple/map overlap. ``rows`` and per-unit arrival sequence
+        sets remain current-key state; complete graph/head and byte/RSS bounds are separate gates.
+        """
+        normalizer = self._normalizer or CanonicalNormalizer(view, self._storage)
+        units: dict[tuple[str, str], set[int]] = {}
+        for row in rows:
+            unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
+            units.setdefault(unit, set()).add(row["arrival_seq"])
+
+        proof_order = 0
+        with RunSetBuilder(
+            self._storage,
+            key=_proof_row_sort_key,
+            capacity=params.row_batch_rows,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as proofs_builder:
+            for raw_table, source in sorted(units):
+                seqs = units.pop((raw_table, source))
+
+                def stage_proof(row: Mapping[str, Any]) -> None:
+                    nonlocal proof_order
+                    proofs_builder.add(
+                        {
+                            "revision_id": row["revision_id"],
+                            "proof_order": proof_order,
+                            "proof_row": row,
+                        }
+                    )
+                    proof_order += 1
+
+                normalizer._stage_verified_unit(
+                    raw_table,
+                    source,
+                    arrival_seqs=seqs,
+                    sink=stage_proof,
+                )
+
+            # A later unit/batch exception exits the context above without reaching finish(),
+            # releasing buffers/ref metadata while leaving only ADR-0077 §9 content-addressed
+            # orphan objects. No reader or caller can observe a staged proof prefix.
+            proof_root = proofs_builder.finish()
+
+        with _root_rows(self._storage, proof_root) as proof_rows:
+            grouped_proofs = itertools.groupby(proof_rows, key=_proof_row_group_key)
+            current = next(grouped_proofs, None)
+            for row in rows:
+                revision_id = row["revision_id"]
+                while current is not None and current[0] < revision_id:
+                    # Proof rows not represented in the requested Canonical closure were ignored
+                    # by the legacy dict lookup as well.
+                    current = next(grouped_proofs, None)
+                expected: Mapping[str, Any] | None = None
+                if current is not None and current[0] == revision_id:
+                    # Consume every proof with this id but retain only the final row, matching
+                    # the previous dict's deterministic last-write-wins assignment.
+                    for proof in current[1]:
+                        candidate = proof["proof_row"]
+                        if not isinstance(candidate, Mapping):
+                            raise CatalogIntegrityError(
+                                f"Canonical revision {revision_id} has an invalid proof row"
+                            )
+                        expected = candidate
+                    current = next(grouped_proofs, None)
+                if expected is None or any(row[name] != value for name, value in expected.items()):
+                    raise CatalogIntegrityError(
+                        f"Canonical revision {revision_id} is not what its unit normalizes to "
+                        "at the bound snapshots"
+                    )
+
+        previous: str | None = None
+        for row in rows:
+            revision_id = row["revision_id"]
+            if revision_id == previous:
+                raise CatalogIntegrityError(f"Canonical revision {revision_id} is read twice")
+            if previous is not None and revision_id < previous:
+                raise CatalogIntegrityError(
+                    "Canonical rows supplied for sorted revision-id verification are not sorted"
+                )
+            previous = revision_id
+        return list(rows)
+
     def _mapped_edges(
         self,
         view: PinnedCatalogView,
@@ -1024,6 +1123,15 @@ def _pit_row_group_key(row: Mapping[str, Any]) -> str:
     return cast(str, row["observation_key"])
 
 
+def _proof_row_sort_key(row: Mapping[str, Any]) -> tuple[str, int]:
+    """Canonical proof rows in revision order, preserving the old dict overwrite order."""
+    return cast(str, row["revision_id"]), cast(int, row["proof_order"])
+
+
+def _proof_row_group_key(row: Mapping[str, Any]) -> str:
+    return cast(str, row["revision_id"])
+
+
 def _flatten_edges(
     edges: Mapping[str, Sequence[PrecedenceEvidence]],
 ) -> Iterator[dict[str, Any]]:
@@ -1515,7 +1623,11 @@ def _pit_bounded_stream(
                 # _verify_canonical contract accepts a sequence for one observation key; this
                 # is the remaining per-key working set, never a whole-window collection.
                 key_rows = list(key_group)
-                verified_key = selector._verify_canonical(view, key_rows, revision_ids_sorted=True)
+                verified_key = selector._verify_canonical_bounded(
+                    view,
+                    key_rows,
+                    params=params,
+                )
                 by_key = {observation_key: verified_key}
                 with _root_rows(storage, day_root) as day_rows:
                     edge_days = (

@@ -730,6 +730,34 @@ class CanonicalNormalizer:
             seqs = frozenset(arrival_seqs)
         return self._verify_batches(pin, channel, source_revision_id, seqs)
 
+    def _stage_verified_unit(
+        self,
+        raw_table: str,
+        source_revision_id: str,
+        *,
+        arrival_seqs: Collection[int],
+        sink: Callable[[Mapping[str, Any]], None],
+    ) -> None:
+        """Prove a bounded selector's requested unit rows directly into private staging.
+
+        The sink is an unfinalized, caller-owned staging writer, not a consumer. A later batch or
+        unit may still fail, so callers must not finalize or expose its contents until the whole
+        selector proof has succeeded. The public ``verify_unit`` tuple contract is unchanged.
+        Proof-batch cache reads/writes are disabled here so a cached tuple cannot overlap the
+        bounded run with an additional O(batch) retained proof collection.
+        """
+        channel = self._channel(raw_table, source_revision_id)
+        pin = self._pin(channel, source_revision_id)
+        seqs = arrival_seqs
+        self._verify_batches_to(
+            pin,
+            channel,
+            source_revision_id,
+            seqs,
+            sink=sink,
+            use_batch_cache=False,
+        )
+
     def _verify_batches(
         self,
         pin: _Pin,
@@ -738,10 +766,32 @@ class CanonicalNormalizer:
         seqs: Collection[int],
     ) -> tuple[Mapping[str, Any], ...]:
         """The committed batches holding ``seqs``, proven, over the unit-wide facts (G3-S2)."""
+        kept: list[Mapping[str, Any]] = []
+        self._verify_batches_to(
+            pin,
+            channel,
+            source_revision_id,
+            seqs,
+            sink=kept.append,
+            use_batch_cache=True,
+        )
+        return tuple(kept)
+
+    def _verify_batches_to(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        seqs: Collection[int],
+        *,
+        sink: Callable[[Mapping[str, Any]], None],
+        use_batch_cache: bool,
+    ) -> None:
+        """Private sink form shared by the tuple API and bounded selector staging."""
         facts = self._unit_facts(pin, channel, source_revision_id)
         try:
             if facts.plan is None or facts.base is None or facts.ready is None:
-                return ()
+                return
             assert facts.version is not None
             plan, base, ready = facts.plan, facts.base, facts.ready
             _require_complete(channel, source_revision_id, plan, len(facts.positions))
@@ -751,19 +801,19 @@ class CanonicalNormalizer:
                 if index < plan.count
             }
             cached: dict[int, tuple[Mapping[str, Any], ...]] = {}
-            for index in wanted if self._frozen else ():
+            for index in wanted if self._frozen and use_batch_cache else ():
                 rows = self._batches.get((channel.element.table, source_revision_id, index))
                 if rows is not None:
                     cached[index] = rows
             snapshots = dict(
                 self._plan_snapshots(pin, channel, source_revision_id, plan, wanted - cached.keys())
             )
-            kept: list[Mapping[str, Any]] = []
             for index in sorted(wanted):
                 key = (channel.element.table, source_revision_id, index)
                 proven = cached.get(index)
                 if proven is not None:
-                    kept.extend(proven)
+                    for row in proven:
+                        sink(row)
                     continue
                 low, high, end = _batch_window(facts.positions, plan.chunk, index)
                 raw = self._raw_window(
@@ -783,12 +833,12 @@ class CanonicalNormalizer:
                     planned,
                 )
                 self._check_committed_window(pin, channel, base, low, high, planned)
-                kept.extend(planned)
-                if self._frozen:
+                for row in planned:
+                    sink(row)
+                if self._frozen and use_batch_cache:
                     while len(self._batches) >= _BATCH_CACHE:
                         self._batches.pop(next(iter(self._batches)))
                     self._batches[key] = tuple(planned)
-            return tuple(kept)
         finally:
             if not self._frozen:
                 facts.positions.close()
