@@ -54,6 +54,25 @@ exit 0, no output
 
 The four deselected Dataset source failures were reproduced on clean base `7b4cc9c` in the unchanged PIT selector (`orphan mapped edge`); the failed nodes were not rerun after the baseline reproduction. They remain deferred under the two-round rule. Default transitive mypy reports 19 errors in 8 unmodified dependency files; only the four touched production files passed with `--follow-imports=silent`. Ruff, format, and diff checks passed.
 
+### PIT row/edge run-reference port
+
+The same isolated branch then ported the approved E1-PIT-RUNSET-REFS slice as commit `b849aac1a0c54ac94b17707a356d4bff6ccd75db` (parent `faf630c`). Row and edge spill references now compact into bounded RunSet roots. Consumption keeps at most two root readers open and closes them on normal exit, early exit, and failure. The two-file diff is limited to `infrastructure/pit/selector.py` and `tests/infrastructure/pit/test_selector_v3.py`; it does not change `_heads`, `maximal_heads`, or conflict output.
+
+Focused PIT selector + Dataset source run: `36 passed, 5 deselected in 23.75s`.
+Independent reviewer command and result:
+
+```text
+systemd-run --user --scope --quiet -p MemoryMax=3G -p MemorySwapMax=0 uv run pytest -q tests/infrastructure/pit/test_selector_v3.py -k 'empty_row_and_edge_roots or run_set_roots_compact or run_set_failure_releases_builders or closes_its_generator_on_an_early_context_exit'
+5 passed, 15 deselected in 5.85s
+
+Ruff check: All checks passed!
+Ruff format: 2 files already formatted
+mypy --follow-imports=silent infrastructure/pit/selector.py: Success: no issues found in 1 source file
+git diff --check: exit 0, no output
+```
+
+Independent review **APPROVED the row/edge run-ref slice only**. Five cases remain deferred: four known Dataset source/orphan-edge nodes and one multi-key history case whose legacy v2 lineage-count assertion was `5` expected / `4` actual after its second failed round. Default mypy reports 14 errors in unmodified dependency files. Per-window materialization, single-key graph/history, and conflict-head state remain open; this port does not pass E1-CAP-1 or Phase 1.
+
 ## Phase 0.5 and Phase 2–9
 
 All current-checkout reruns below are focused evidence, not phase acceptance:
