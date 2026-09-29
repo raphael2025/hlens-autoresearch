@@ -781,15 +781,27 @@ class RawRevisionStore:
                     if snapshot.batch_id == batch_id:
                         return snapshot.snapshot_id
             else:
-                seen: set[str] = set()
+                # Brent's cycle detector keeps a single checkpoint id and two counters instead
+                # of retaining every visited snapshot id. Keep this as a newest-first, one-fetch-
+                # per-parent walk; callers that find the requested batch still return at once.
+                checkpoint_id: str | None = None
+                power = 1
+                distance = 0
                 while snapshot is not None:
-                    if snapshot.snapshot_id in seen:
+                    if checkpoint_id is None:
+                        checkpoint_id = snapshot.snapshot_id
+                    else:
+                        distance += 1
+                    if snapshot.snapshot_id == checkpoint_id and distance > 0:
                         raise CatalogIntegrityError(
                             f"{table} has a cycle in snapshot ancestry at {snapshot.snapshot_id}"
                         )
-                    seen.add(snapshot.snapshot_id)
                     if snapshot.batch_id == batch_id:
                         return snapshot.snapshot_id
+                    if distance == power:
+                        checkpoint_id = snapshot.snapshot_id
+                        power *= 2
+                        distance = 0
                     parent = snapshot.parent_snapshot_id
                     snapshot = (
                         None if parent is None else self._adapter.get_snapshot(table, parent)

@@ -10,7 +10,8 @@ from __future__ import annotations
 import hashlib
 from datetime import timedelta
 from pathlib import Path
-from typing import Any
+from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -38,6 +39,31 @@ from tests.infrastructure.revision.revision_support import StoreHarness
 
 AGG_TABLE = ROW_TABLES["agg_trades"]
 KLINE_TABLE = ROW_TABLES["klines_1m"]
+
+
+class _ParentWalkAdapter:
+    """Minimal catalog without the optional ``history`` capability."""
+
+    def __init__(self, snapshots: dict[str, Any], head: str | None) -> None:
+        self.snapshots = snapshots
+        self.head = head
+        self.lookups: list[str] = []
+
+    def load_table(self, table: str) -> Any:
+        snapshot = None if self.head is None else self.snapshots[self.head]
+        return SimpleNamespace(current_snapshot=snapshot)
+
+    def get_snapshot(self, table: str, snapshot_id: str) -> Any:
+        self.lookups.append(snapshot_id)
+        return self.snapshots.get(snapshot_id)
+
+
+def _parent_walk_store(
+    snapshots: dict[str, Any], head: str | None
+) -> tuple[RawRevisionStore, _ParentWalkAdapter]:
+    adapter = _ParentWalkAdapter(snapshots, head)
+    store = RawRevisionStore(cast(Any, adapter), cast(Any, None))
+    return store, adapter
 
 
 def _ingested(outcome: Any) -> ArchiveIngested:
@@ -79,6 +105,143 @@ def test_batch_snapshot_lookup_spools_counts_and_closes(harness: StoreHarness) -
     assert not Path(spool_path).exists()
     with pytest.raises(RuntimeError, match="closed"):
         lookup.one(commit.batch_id)
+
+
+def test_snapshot_of_batch_parent_walk_finds_nearest_match_without_history() -> None:
+    snapshots = {
+        "s3": SimpleNamespace(
+            snapshot_id="s3", parent_snapshot_id="s2", batch_id="newer"
+        ),
+        "s2": SimpleNamespace(
+            snapshot_id="s2", parent_snapshot_id="s1", batch_id="wanted"
+        ),
+        "s1": SimpleNamespace(snapshot_id="s1", parent_snapshot_id=None, batch_id="older"),
+    }
+    store, adapter = _parent_walk_store(snapshots, "s3")
+
+    assert store._snapshot_of_batch("raw.test", "wanted") == "s2"
+    # The fallback walks newest first and stops on the first matching ancestor.
+    assert adapter.lookups == ["s2"]
+
+
+def test_snapshot_of_batch_parent_walk_handles_empty_and_single_node_history() -> None:
+    store, adapter = _parent_walk_store({}, None)
+    with pytest.raises(CatalogIntegrityError, match="no snapshot that committed it"):
+        store._snapshot_of_batch("raw.test", "missing")
+    assert adapter.lookups == []
+
+    single = {
+        "s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id=None, batch_id="wanted")
+    }
+    store, adapter = _parent_walk_store(single, "s0")
+    assert store._snapshot_of_batch("raw.test", "wanted") == "s0"
+    assert adapter.lookups == []
+
+    store, adapter = _parent_walk_store(single, "s0")
+    with pytest.raises(CatalogIntegrityError, match="no snapshot that committed it"):
+        store._snapshot_of_batch("raw.test", "missing")
+    assert adapter.lookups == []
+
+
+def test_snapshot_of_batch_parent_walk_finds_oldest_ancestor() -> None:
+    snapshots = {
+        f"s{index}": SimpleNamespace(
+            snapshot_id=f"s{index}",
+            parent_snapshot_id=f"s{index - 1}" if index else None,
+            batch_id=f"b{index}",
+        )
+        for index in range(5)
+    }
+    store, adapter = _parent_walk_store(snapshots, "s4")
+
+    assert store._snapshot_of_batch("raw.test", "b0") == "s0"
+    assert adapter.lookups == ["s3", "s2", "s1", "s0"]
+
+
+def test_snapshot_of_batch_parent_walk_rejects_cycles_and_missing_batches() -> None:
+    cycle = {
+        "s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id="s1", batch_id="b0"),
+        "s1": SimpleNamespace(snapshot_id="s1", parent_snapshot_id="s2", batch_id="b1"),
+        "s2": SimpleNamespace(snapshot_id="s2", parent_snapshot_id="s1", batch_id="b2"),
+    }
+    store, _ = _parent_walk_store(cycle, "s0")
+    # Like the previous walk, a requested batch found before reaching a repeated node returns.
+    assert store._snapshot_of_batch("raw.test", "b2") == "s2"
+
+    store, _ = _parent_walk_store(cycle, "s0")
+    with pytest.raises(CatalogIntegrityError, match="cycle in snapshot ancestry"):
+        store._snapshot_of_batch("raw.test", "missing")
+
+    self_loop = {
+        "s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id="s0", batch_id="b0")
+    }
+    store, _ = _parent_walk_store(self_loop, "s0")
+    with pytest.raises(CatalogIntegrityError, match="cycle in snapshot ancestry"):
+        store._snapshot_of_batch("raw.test", "missing")
+
+    # A two-node prefix enters a three-node cycle: μ=2, λ=3.
+    mu_lambda = {
+        "s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id="s1", batch_id="b0"),
+        "s1": SimpleNamespace(snapshot_id="s1", parent_snapshot_id="s2", batch_id="b1"),
+        "s2": SimpleNamespace(snapshot_id="s2", parent_snapshot_id="s3", batch_id="b2"),
+        "s3": SimpleNamespace(snapshot_id="s3", parent_snapshot_id="s4", batch_id="b3"),
+        "s4": SimpleNamespace(snapshot_id="s4", parent_snapshot_id="s2", batch_id="b4"),
+    }
+    store, _ = _parent_walk_store(mu_lambda, "s0")
+    with pytest.raises(CatalogIntegrityError, match="cycle in snapshot ancestry"):
+        store._snapshot_of_batch("raw.test", "missing")
+
+    linear = {
+        f"s{index}": SimpleNamespace(
+            snapshot_id=f"s{index}",
+            parent_snapshot_id=f"s{index - 1}" if index else None,
+            batch_id=f"b{index}",
+        )
+        for index in range(2048)
+    }
+    store, adapter = _parent_walk_store(linear, "s2047")
+    with pytest.raises(CatalogIntegrityError, match="no snapshot that committed it"):
+        store._snapshot_of_batch("raw.test", "missing")
+    assert adapter.lookups == [f"s{index}" for index in range(2046, -1, -1)]
+
+
+def test_snapshot_of_batch_brent_boundary_lengths_do_not_form_false_cycles() -> None:
+    # Check lengths on and immediately around Brent's power-of-two checkpoint expansion points.
+    checkpoint_lengths = (
+        1,
+        2,
+        3,
+        4,
+        5,
+        7,
+        8,
+        9,
+        15,
+        16,
+        17,
+        31,
+        32,
+        33,
+        63,
+        64,
+        65,
+        127,
+        128,
+        129,
+    )
+    for length in checkpoint_lengths:
+        snapshots = {
+            f"s{index}": SimpleNamespace(
+                snapshot_id=f"s{index}",
+                parent_snapshot_id=f"s{index - 1}" if index else None,
+                batch_id=f"b{index}",
+            )
+            for index in range(length)
+        }
+        store, _ = _parent_walk_store(snapshots, f"s{length - 1}")
+
+        with pytest.raises(CatalogIntegrityError, match="no snapshot that committed it"):
+            store._snapshot_of_batch("raw.test", "missing")
 
 
 def test_archive_row_carries_the_contract_and_the_object(harness: StoreHarness) -> None:
