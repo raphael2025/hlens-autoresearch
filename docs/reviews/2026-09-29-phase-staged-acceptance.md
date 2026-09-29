@@ -140,13 +140,16 @@ The clean `codex/e1-history-integration@b40601a` candidate contains a private IP
 
 ### PIT window-closure staging candidate
 
-The isolated candidate `codex/e1-cap-pit-window-stream@1715d398fa9d26b3af391e8efcefb0ce06d925c5` (parent `3a7ff8c`) stages wanted keys, closure rows/chains, event days, and final row/edge outputs in external RunSets. It processes canonical proof and edge mapping one observation key at a time; a follow-up change also removed completed-chain callbacks from an `ExitStack` so disjoint chain count does not grow retained contexts. This candidate is not integrated into the root checkout. Independent review **BLOCKED this slice** because `iter_bounded` omitted the legacy scalar validation for UTC, non-empty, forward time windows; the developer is restoring equivalent checks without materializing a date list.
+The isolated candidate `codex/e1-cap-pit-window-stream@78120b3149faf666c372f6ee08a5552a604f026f` (parent `1715d39`; original base `3a7ff8c`) stages wanted keys, closure rows/chains, event days, and final row/edge outputs in external RunSets. It processes canonical proof and edge mapping one observation key at a time; a follow-up change removed completed-chain callbacks from an `ExitStack` so disjoint chain count does not grow retained contexts. The first independent review found missing legacy time-window validation; commit `78120b3` restores the same UTC, non-empty, forward-window checks without materializing a date list. The corrected candidate is not integrated into the root checkout and is awaiting incremental independent review.
 
 Developer verification on the candidate:
 
 ```text
 uv run pytest -q tests/infrastructure/pit/test_selector_v3.py -k 'not test_canonical_key_closure_is_spilled_and_matches_v2_rows and not test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buffer'
-23 passed, 2 deselected in 27.04s
+27 passed, 2 deselected in 28.14s
+
+Invalid-window parity and no-day-list checks:
+4 passed in 2.96s
 
 3-day spanning-edge parity node with the same two explicit exclusions:
 1 passed in 10.45s
