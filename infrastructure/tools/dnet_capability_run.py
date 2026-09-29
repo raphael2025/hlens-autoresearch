@@ -280,9 +280,15 @@ def _ingest(adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, 
 
 
 def _normalize(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, state: Any
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    state: Any,
+    *,
+    canonical_scratch_directory: Path,
 ) -> Any:
-    normalizer = CanonicalNormalizer(adapter, storage)
+    normalizer = CanonicalNormalizer(
+        adapter, storage, scratch_directory=canonical_scratch_directory
+    )
     units = []
     for unit in state["units"]:
         if "archive_revision_id" not in unit:
@@ -306,9 +312,15 @@ def _normalize(
 
 
 def _report(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, days: list[date]
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    days: list[date],
+    *,
+    canonical_scratch_directory: Path,
 ) -> Any:
-    reporter = QualityReporter(adapter, storage)
+    reporter = QualityReporter(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    )
     reports = []
     for symbol in SYMBOLS:
         for day in days:
@@ -359,11 +371,17 @@ def _pit_spec(
 
 
 def _pit(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, days: list[date]
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    days: list[date],
+    *,
+    canonical_scratch_directory: Path,
 ) -> Any:
     heads = _heads(adapter, exclude=(DATASET_SELECTIONS.table,))
     cutoff = datetime.now(UTC)
-    selector = PitSelector(adapter, storage)
+    selector = PitSelector(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    )
     out = []
     for symbol in SYMBOLS:
         for day in days:
@@ -394,6 +412,8 @@ def _f2(
     adapter: PyIcebergCatalogAdapter,
     storage: LocalFileStorageAdapter,
     days: list[date],
+    *,
+    canonical_scratch_directory: Path,
 ) -> Any:
     """Read-only dataset selection at the current heads; records where it stops (no network)."""
     heads = _heads(adapter, exclude=(DATASET_SELECTIONS.table,))
@@ -421,6 +441,7 @@ def _f2(
     builder = DatasetBuilder(
         adapter,
         storage,
+        canonical_scratch_directory=canonical_scratch_directory,
         market_data_base_url=market_data_base_url,
         dataset_table=DATASET_SELECTIONS,
     )
@@ -462,11 +483,30 @@ def _run(args: argparse.Namespace) -> _StepOutcome:
             before = _heads(adapter)
             steps: dict[str, Callable[[], Any]] = {
                 "ingest": lambda: _ingest(adapter, storage, prior_result),
-                "normalize": lambda: _normalize(adapter, storage, prior_result),
-                "report": lambda: _report(adapter, storage, days),
-                "pit": lambda: _pit(adapter, storage, days),
+                "normalize": lambda: _normalize(
+                    adapter,
+                    storage,
+                    prior_result,
+                    canonical_scratch_directory=settings.canonical_scratch_path,
+                ),
+                "report": lambda: _report(
+                    adapter,
+                    storage,
+                    days,
+                    canonical_scratch_directory=settings.canonical_scratch_path,
+                ),
+                "pit": lambda: _pit(
+                    adapter,
+                    storage,
+                    days,
+                    canonical_scratch_directory=settings.canonical_scratch_path,
+                ),
                 "f2": lambda: _f2(
-                    str(settings.binance_market_data_base_url), adapter, storage, days
+                    str(settings.binance_market_data_base_url),
+                    adapter,
+                    storage,
+                    days,
+                    canonical_scratch_directory=settings.canonical_scratch_path,
                 ),
             }
             result = steps[args.step]()

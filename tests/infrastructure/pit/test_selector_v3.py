@@ -59,7 +59,9 @@ TINY_PARAMS = PitRunParams(
 
 
 def _bounded(h: RestHarness, spec: PointInTimeSpec, **kwargs: Any) -> list[PitBoundedRecord]:
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with selector.iter_bounded(
         spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS, **kwargs
     ) as records:
@@ -125,7 +127,9 @@ def _replace_mapped_edge_key(
 def test_iter_bounded_matches_select_selections_lineage_and_gaps(h: RestHarness) -> None:
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     records = _bounded(h, spec)
 
     got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
@@ -141,7 +145,9 @@ def test_iter_bounded_matches_select_across_the_four_cutoffs(h: RestHarness) -> 
     _chain(h)
     for cutoff in (N_A, N_R, K_E, K_A):
         spec = _spec(h, cutoff=cutoff)
-        legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+        legacy = PitSelector(
+            h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+        ).select(spec, "agg_trades", SYMBOL, START, END)
         records = _bounded(h, spec)
         got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
         expected = sorted(legacy.selections, key=lambda s: (s.observation_key, s.simulation_time))
@@ -169,7 +175,9 @@ def test_iter_bounded_reports_a_conflict_inline_like_select_reports_it_out_of_ba
 ) -> None:
     _chain(h)  # reconciled: N_R is a genuine competing-heads instant (ADR-0028 §4)
     spec = _spec(h, cutoff=N_R)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     assert legacy.conflicts  # sanity: v2 does see a conflict at this cutoff
     records = _bounded(h, spec)
     conflicted = [r for r in records if r.selection.status is PointInTimeStatus.CONFLICT]
@@ -209,7 +217,9 @@ def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buf
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, other_response)
 
     spec = _spec(h, cutoff=FAR)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     records = _bounded(h, spec)
     assert _lineage_by_revision(records) == {
         item.canonical_revision_id: item for item in legacy.lineage
@@ -261,7 +271,9 @@ def test_iter_bounded_records_carry_owner_and_selected_event_times(h: RestHarnes
 def test_iter_bounded_wrong_bindings_are_refused(h: RestHarness) -> None:
     _chain(h)
     spec = _spec(h, cutoff=FAR, parser_bindings=(_WRONG,))
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with pytest.raises(PitSpecError, match="parser_bindings"):
         with selector.iter_bounded(spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS):
             pass
@@ -270,7 +282,9 @@ def test_iter_bounded_wrong_bindings_are_refused(h: RestHarness) -> None:
 def test_iter_bounded_an_unbound_canonical_table_is_refused(h: RestHarness) -> None:
     _chain(h)
     spec = _spec(h, cutoff=FAR, skip=(c.TRADES.table,))
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with pytest.raises(PitSpecError, match="does not bind canonical.trades"):
         with selector.iter_bounded(spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS):
             pass
@@ -346,7 +360,9 @@ def test_iter_bounded_closes_its_generator_on_an_early_context_exit(h: RestHarne
     than producing another record."""
     _chain(h, count=4)  # several keys: more than one record is available past the first
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with selector.iter_bounded(
         spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS
     ) as records:
@@ -363,7 +379,9 @@ def test_iter_bounded_closes_cleanly_after_full_iteration(h: RestHarness) -> Non
     explicit close raise on the common path is caught."""
     _chain(h, count=2)
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with selector.iter_bounded(
         spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS
     ) as records:
@@ -376,7 +394,9 @@ def test_iter_bounded_closes_its_generator_when_the_context_body_raises(h: RestH
     early exit (``@contextmanager``'s ``finally`` covers both)."""
     _chain(h, count=4)
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     captured: Iterator[PitBoundedRecord] | None = None
     with pytest.raises(RuntimeError, match="boom"):
         with selector.iter_bounded(

@@ -56,15 +56,19 @@ class _Datasets:
         self.v3_hash = self.machinery.build(spec).manifest_hash
 
     def observations(self) -> tuple[FeatureObservation, ...]:
-        selection = PitSelector(self.w.h.adapter, self.w.h.storage).select(
-            self.spec, "klines_1m", SYMBOL, *v.DAY_WINDOW
-        )
+        selection = PitSelector(
+            self.w.h.adapter,
+            self.w.h.storage,
+            canonical_scratch_directory=self.w.h.canonical_scratch_directory,
+        ).select(self.spec, "klines_1m", SYMBOL, *v.DAY_WINDOW)
         return bar_observations(selection, self.spec)
 
     def derived_observations(self, minutes: int) -> tuple[FeatureObservation, ...]:
-        selection = PitSelector(self.w.h.adapter, self.w.h.storage).select(
-            self.spec, "klines_1m", SYMBOL, *v.DAY_WINDOW
-        )
+        selection = PitSelector(
+            self.w.h.adapter,
+            self.w.h.storage,
+            canonical_scratch_directory=self.w.h.canonical_scratch_directory,
+        ).select(self.spec, "klines_1m", SYMBOL, *v.DAY_WINDOW)
         return derived_bar_observations(
             resample_bars(selection, minutes, *v.DAY_WINDOW), selection, self.spec
         )
@@ -133,9 +137,7 @@ def test_a_v3_interval_request_keeps_the_effective_times_and_membership(w: World
 
 
 @pytest.mark.parametrize("change", sorted(ALTERED))
-def test_observations_that_are_not_the_v3_datasets_rows_are_refused(
-    w: World, change: str
-) -> None:
+def test_observations_that_are_not_the_v3_datasets_rows_are_refused(w: World, change: str) -> None:
     data = _datasets(w)
     altered = ALTERED[change](data.observations())
     for on_v3 in (False, True):

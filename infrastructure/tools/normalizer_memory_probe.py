@@ -7,14 +7,16 @@
 This is an **operator diagnostic**, not a test: nothing imports it from ``tests/`` and it imports
 nothing from ``tests/``. It never runs by itself and it changes no production code or data: every
 catalog and warehouse it writes is a throwaway SQLite catalog + local ``file://`` warehouse under
-``--base``, deleted afterwards.
+``--base``, deleted afterwards. Each child obtains its Canonical position-index scratch Path from
+``Settings`` configured with ``HLENS_CANONICAL_SCRATCH_URI`` under the temporary run directory.
 
 Which code line it measures
 ===========================
 
 It imports the unmodified production modules of the checkout it is started from (every child runs
 with that checkout as its working directory and reports the path of the normalizer module it
-imported; a path outside the checkout aborts the run). The output records ``git HEAD``, the local ``main`` ref, and
+imported; a path outside the checkout aborts the run). The output records ``git HEAD``, the local
+``main`` ref, and
 whether ``core/``, ``infrastructure/`` (except this file), ``plugins/``, ``pyproject.toml`` or
 ``uv.lock`` differ from ``main`` or are dirty. Only when they do not is ``code_line.matches_main``
 true; otherwise the result is labelled as **not** a main measurement.
@@ -83,7 +85,8 @@ Optional staged allocation diagnostics
 ``--staged-diagnostics`` instruments the probe child to count public CatalogAdapter calls,
 manifest-list entries, live manifest entries and data-file reads visited by the bounded snapshot
 scanner, plus any remaining high-level planner calls and planned tasks. Manifest and entry counts
-include both scanner passes; early termination can make the second pass partial. It also reports retained
+include both scanner passes; early termination can make the second pass partial. It also reports
+retained
 ``tracemalloc`` deltas by source path and a reachable-Python-size estimate for the held result.
 Scanner counters count yielded entries / started reads, not bytes; manifest-list bytes are not
 counted separately.
@@ -157,6 +160,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Final
 
+from pydantic import SecretStr
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThanOrEqual
 
@@ -173,12 +177,13 @@ from infrastructure.collector.binance_archive import ARCHIVE_SOURCE, COLLECTOR_I
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
 from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
+from infrastructure.settings import Settings
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.tools.capacity_probe import (
-    DATA_TYPE,
-    SYMBOL,
     _KNOWLEDGE_INGEST,
     _KNOWLEDGE_NORMALIZE,
+    DATA_TYPE,
+    SYMBOL,
     _agg_trade_lines,
     _publish_archive,
 )
@@ -244,6 +249,17 @@ class ProbeError(Exception):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.details = details or {}
+
+
+def _canonical_scratch_directory() -> Path:
+    try:
+        settings = Settings(  # type: ignore[call-arg]
+            catalog_uri=SecretStr("postgresql://probe@localhost/probe"),
+            _env_file=None,
+        )
+        return settings.canonical_scratch_path
+    except Exception as exc:  # noqa: BLE001 - malformed child configuration fails closed
+        raise ProbeError("child Settings must provide a valid canonical scratch directory") from exc
 
 
 class _ProbeCrash(Exception):
@@ -331,8 +347,9 @@ class _CountingAdapter:
 @contextmanager
 def _count_scan_work(diagnostics: _StageDiagnostics) -> Iterator[None]:
     """Count actual bounded-scanner work and any remaining high-level planner work."""
-    from infrastructure.catalog import iceberg_adapter
     from pyiceberg.table import ManifestGroupPlanner
+
+    from infrastructure.catalog import iceberg_adapter
 
     original_manifests = iceberg_adapter._manifest_files
     original_entries = iceberg_adapter._live_entries
@@ -373,16 +390,16 @@ def _count_scan_work(diagnostics: _StageDiagnostics) -> Iterator[None]:
             diagnostics.high_level_file_scan_tasks_planned += len(tasks)
         return tasks
 
-    setattr(iceberg_adapter, "_manifest_files", counted_manifests)
-    setattr(iceberg_adapter, "_live_entries", counted_entries)
-    setattr(iceberg_adapter, "_data_file_batches", counted_data_files)
+    iceberg_adapter._manifest_files = counted_manifests
+    iceberg_adapter._live_entries = counted_entries
+    iceberg_adapter._data_file_batches = counted_data_files
     ManifestGroupPlanner.plan_files = counted_plan_files  # type: ignore[method-assign]
     try:
         yield
     finally:
-        setattr(iceberg_adapter, "_manifest_files", original_manifests)
-        setattr(iceberg_adapter, "_live_entries", original_entries)
-        setattr(iceberg_adapter, "_data_file_batches", original_data_files)
+        iceberg_adapter._manifest_files = original_manifests
+        iceberg_adapter._live_entries = original_entries
+        iceberg_adapter._data_file_batches = original_data_files
         ManifestGroupPlanner.plan_files = original_plan_files  # type: ignore[method-assign]
 
 
@@ -559,9 +576,7 @@ def _crash_after(rows: int, microbatch: int) -> int:
     return max(1, -(-rows // microbatch) // 2)
 
 
-def _first_scanned_value(
-    adapter: Any, table: str, column: str, row_filter: Any
-) -> Any | None:
+def _first_scanned_value(adapter: Any, table: str, column: str, row_filter: Any) -> Any | None:
     """Read one projected value through the bounded interface and close on the first batch."""
     reader = adapter.scan_column_batches(table, columns=(column,), row_filter=row_filter)
     try:
@@ -619,7 +634,9 @@ def _stage(
                 verifier.verify_archive_elements(BINANCE_SPOT_AGG_TRADES, DATA_TYPE, SYMBOL, window)
                 proven += len(window)
             if lines != rows or proven != rows:
-                raise ProbeError(f"verify_archive proved {proven} of {lines} lines, expected {rows}")
+                raise ProbeError(
+                    f"verify_archive proved {proven} of {lines} lines, expected {rows}"
+                )
             return {"lines": lines, "rows_proven": proven}, verifier
 
         return verify
@@ -630,7 +647,13 @@ def _stage(
             raise ProbeError("write_crash needs a plan of at least two batches (N > M)")
         clock = _Clock(_KNOWLEDGE_NORMALIZE)
         proxy = _CrashAfter(adapter, crash_after)
-        writer = CanonicalNormalizer(proxy, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            proxy,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
 
         def write_crash() -> tuple[dict[str, Any], object]:
             try:
@@ -651,7 +674,13 @@ def _stage(
 
     if stage in ("resume", "replay"):
         clock = _Clock(_KNOWLEDGE_NORMALIZE + timedelta(hours=1))
-        writer = CanonicalNormalizer(adapter, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
         crash_after = _crash_after(rows, microbatch)
 
         def normalize() -> tuple[dict[str, Any], object]:
@@ -711,7 +740,10 @@ def _stage(
             raise ProbeError(f"no committed row inside batch {batch_id}")
         row = found_row
         reader = CanonicalNormalizer(
-            PinnedCatalogView(adapter, _heads(adapter)), storage, microbatch_rows=microbatch
+            PinnedCatalogView(adapter, _heads(adapter)),
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            microbatch_rows=microbatch,
         )
 
         def read_batch() -> tuple[dict[str, Any], object]:
@@ -771,9 +803,7 @@ def _child_stage(
             before = tracemalloc.take_snapshot()
         _emit("start")
         started = time.perf_counter()
-        counter_scope = (
-            _count_scan_work(diagnostics) if staged_diagnostics else nullcontext()
-        )
+        counter_scope = _count_scan_work(diagnostics) if staged_diagnostics else nullcontext()
         with counter_scope:
             facts, held = body()
         wall = time.perf_counter() - started
@@ -795,9 +825,7 @@ def _child_stage(
                 data_file_reads_started=diagnostics.data_file_reads_started,
                 high_level_plan_calls=diagnostics.high_level_plan_calls,
                 high_level_manifests_considered=diagnostics.high_level_manifests_considered,
-                high_level_file_scan_tasks_planned=(
-                    diagnostics.high_level_file_scan_tasks_planned
-                ),
+                high_level_file_scan_tasks_planned=(diagnostics.high_level_file_scan_tasks_planned),
                 tracemalloc_retained_deltas=_allocation_deltas(before, after),
                 held_result={
                     "type": f"{type(held).__module__}.{type(held).__qualname__}",
@@ -868,6 +896,7 @@ def _run_child(
     env = {name: value for name, value in os.environ.items() if name not in RUNTIMES["controlled"]}
     env.update(RUNTIMES[runtime])
     env["TMPDIR"] = str(temp_dir.resolve())
+    env["HLENS_CANONICAL_SCRATCH_URI"] = (temp_dir / "canonical-scratch").resolve().as_uri()
     started = time.monotonic()
     process = subprocess.Popen(
         [sys.executable, "-m", PROBE, *args],
@@ -1214,9 +1243,7 @@ def _child_args(
     return args
 
 
-def _write_samples(
-    handle: Any, rows: int, repeat: int, stage: str, run: _ChildRun
-) -> None:
+def _write_samples(handle: Any, rows: int, repeat: int, stage: str, run: _ChildRun) -> None:
     if handle is None:
         return
     origin = run.samples[0][0] if run.samples else 0.0
@@ -1226,9 +1253,7 @@ def _write_samples(
                 "rows": rows,
                 "repeat": repeat,
                 "stage": stage,
-                "events": [
-                    {**event, "t": round(event["t"] - origin, 4)} for event in run.events
-                ],
+                "events": [{**event, "t": round(event["t"] - origin, 4)} for event in run.events],
                 "samples": [[round(t - origin, 4), kb] for t, kb in run.samples],
             }
         )
@@ -1391,15 +1416,12 @@ def run_probe(
     document["verdicts"] = verdicts
     document["capacity_verdict"] = "PASS" if numeric_pass else "FAIL"
     document["e1_cap1_evidence"] = evidence
-    document["note"] = (
-        "RSS growth only. "
-        + (
-            "Evidence-grade configuration; E1-CAP-1 closure still needs the structural "
-            "assertions, targeted tests and independent review of the E1 review."
-            if evidence
-            else "Diagnostic only: the configuration or code line is not the E1-CAP-1 protocol "
-            "on main (see protocol_conformance); not E1-CAP-1 evidence either way."
-        )
+    document["note"] = "RSS growth only. " + (
+        "Evidence-grade configuration; E1-CAP-1 closure still needs the structural "
+        "assertions, targeted tests and independent review of the E1 review."
+        if evidence
+        else "Diagnostic only: the configuration or code line is not the E1-CAP-1 protocol "
+        "on main (see protocol_conformance); not E1-CAP-1 evidence either way."
     )
     return document
 

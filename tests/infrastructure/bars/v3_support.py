@@ -106,6 +106,7 @@ def v3(w: World, adapter: RevisionCatalog | None = None) -> V3:
             catalog,
             storage,
             request,
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
@@ -124,6 +125,7 @@ def builder_over(w: World, adapter: RevisionCatalog) -> DatasetBuilder:
     return DatasetBuilder(
         adapter,
         w.h.storage,
+        canonical_scratch_directory=w.h.canonical_scratch_directory,
         market_data_base_url=ds.ORIGIN,
         dataset_table=DATASET_SELECTIONS,
     )

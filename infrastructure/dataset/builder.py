@@ -51,6 +51,7 @@ from collections.abc import Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Final, Protocol
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -335,12 +336,14 @@ class DatasetBuilder:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        canonical_scratch_directory: Path,
         market_data_base_url: str,
         dataset_table: RegisteredTableDefinition,
     ) -> None:
         _check_dataset_table(dataset_table)
         self._adapter = adapter
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         self._origin = market_data_base_url
         self._table = dataset_table
 
@@ -349,6 +352,11 @@ class DatasetBuilder:
         """The catalog this builder builds, materializes and verifies against (public; C1-CONSUMERS
         follow-up: previously read only through the private ``_adapter`` attribute)."""
         return self._adapter
+
+    @property
+    def canonical_scratch_directory(self) -> Path:
+        """Configured scratch root forwarded to Canonical verification during reselection."""
+        return self._canonical_scratch_directory
 
     # ------------------------------------------------------------------ entry points
 
@@ -474,7 +482,11 @@ class DatasetBuilder:
             self._adapter, self._storage, market_data_base_url=self._origin
         ).build(universe, pit)
         column = _time_column(data_type)
-        selector = PitSelector(self._adapter, self._storage)
+        selector = PitSelector(
+            self._adapter,
+            self._storage,
+            canonical_scratch_directory=self._canonical_scratch_directory,
+        )
         rows: list[dict[str, Any]] = []
         lineage: dict[str, SelectedRevisionLineage] = {}
         gaps: dict[str, str] = {}
@@ -670,7 +682,11 @@ class DatasetBuilder:
         report row; each bound gap must be recorded, with the same text, by the report cited.
         """
         view = PinnedCatalogView(self._adapter, pit.snapshot_bindings)
-        reporter = QualityReporter(view, self._storage)
+        reporter = QualityReporter(
+            view,
+            self._storage,
+            canonical_scratch_directory=self._canonical_scratch_directory,
+        )
         report_ids: set[str] = set()
         bound: list[AvailabilityEvidenceGap] = []
         by_partition: dict[tuple[str, date], list[str]] = {}
@@ -1282,13 +1298,19 @@ class PinnedQualityEvidence:
         pit: PointInTimeSpec,
         data_type: str,
         *,
+        canonical_scratch_directory: Path,
         market_data_base_url: str,
     ) -> None:
         self._view = PinnedCatalogView(adapter, pit.snapshot_bindings)
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         self._data_type = data_type
         self._origin = market_data_base_url
-        self._reporter = QualityReporter(self._view, storage)
+        self._reporter = QualityReporter(
+            self._view,
+            storage,
+            canonical_scratch_directory=canonical_scratch_directory,
+        )
         self._gaps_of: str | None = None
         self._gaps: dict[tuple[str, str], str] = {}
 

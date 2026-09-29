@@ -141,7 +141,9 @@ def _backtest_bars(w: World, built: DatasetBuilt, **kwargs: Any) -> DatasetPrice
 def test_dataset_bars_keep_their_own_times_and_decimal_prices(w: World) -> None:
     built = _dataset(w, assumed=False)
     spec = built.manifest.point_in_time
-    selection = PitSelector(w.h.adapter, w.h.storage).select(spec, "klines_1m", SYMBOL, *DAY_WINDOW)
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, *DAY_WINDOW)
     rows = selection.selected_rows.values()
     stored = {row["interval_start"]: row["available_time"] for row in rows}
     request = _outcome_request(w, built)
@@ -275,7 +277,9 @@ def _without_volume(bars: DatasetPriceBars) -> tuple[PriceBar, ...]:
 def test_backtest_bars_carry_the_selected_revisions_decimal_volume(w: World) -> None:
     built = _dataset(w)
     spec = built.manifest.point_in_time
-    selection = PitSelector(w.h.adapter, w.h.storage).select(spec, "klines_1m", SYMBOL, *DAY_WINDOW)
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, *DAY_WINDOW)
     stored = {row["interval_start"]: row["volume"] for row in selection.selected_rows.values()}
     bars = _backtest_bars(w, built)
     assert len(bars.bars) == BARS

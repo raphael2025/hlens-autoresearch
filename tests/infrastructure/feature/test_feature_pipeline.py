@@ -90,9 +90,9 @@ def _archive_then_rest(h: RestHarness, *, rest_base: int = 200, rest_volume: int
 
 
 def _observations(h: RestHarness, spec: PointInTimeSpec) -> tuple[FeatureObservation, ...]:
-    selection = PitSelector(h.adapter, h.storage).select(
-        spec, "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, DAY_START, DAY_END)
     return bar_observations(selection, spec)
 
 
@@ -195,7 +195,9 @@ def test_visible_sets_are_the_pit_selection_at_t_minus_lag(h: RestHarness) -> No
         evaluation_times=times,
         manifest_content_hash=MANIFEST,
     )
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     tables = set()
     for at in times:
         point = _spec(h, cutoff=FAR, at=at - LAG)
@@ -222,9 +224,9 @@ def test_derived_bars_feed_features_with_lineage(h: RestHarness) -> None:
         c.ARCHIVE_KLINES.table, archive
     )
     spec = _spec(h, cutoff=FAR)  # point selection at FAR (E4 needs one)
-    selection = PitSelector(h.adapter, h.storage).select(
-        spec, "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, DAY_START, DAY_END)
     bars = resample_bars(selection, 5, DAY_START, DAY_END)
     assert [bar.complete for bar in bars] == [True, True, False]
     observations = derived_bar_observations(bars, selection, spec)
@@ -272,18 +274,18 @@ def test_evaluation_times_outside_the_pit_view_are_refused(h: RestHarness) -> No
             manifest_content_hash=MANIFEST,
         )
     with pytest.raises(FeatureInputBuildError, match="another knowledge_cutoff"):
-        selection = PitSelector(h.adapter, h.storage).select(
-            interval, "klines_1m", SYMBOL, DAY_START, DAY_END
-        )
+        selection = PitSelector(
+            h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+        ).select(interval, "klines_1m", SYMBOL, DAY_START, DAY_END)
         bar_observations(selection, _spec(h, cutoff=utc(2029, 1, 1), interval=(S0, S1)))
 
 
 def test_conflicts_and_other_tables_are_refused(h: RestHarness) -> None:
     _archive_then_rest(h)
     spec = _spec(h, cutoff=FAR, interval=(S0, S1))
-    selection = PitSelector(h.adapter, h.storage).select(
-        spec, "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, DAY_START, DAY_END)
     conflicted = PitSelection(**{**_fields(selection), "conflicts": ("some-key",)})
     with pytest.raises(FeatureInputBuildError, match="competing heads"):
         bar_observations(conflicted, spec)
