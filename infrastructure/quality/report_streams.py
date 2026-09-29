@@ -34,9 +34,19 @@ _KEY_PREFIX: Final = "quality/report-evidence/v1/"
 _KEY_RE: Final = re.compile(r"^quality/report-evidence/v1/([0-9a-f]{64})\.jsonl$")
 _HEADER_MAX_BYTES: Final = 512
 _REF_MAX_BYTES: Final = 512
+_KEY_INDEX_ENTRY_BUDGET_BYTES: Final = 16
 _LEAF: Final = "leaf"
 _INDEX: Final = "index"
 _STREAMS: Final = frozenset({"events", "event_revisions", "evidence_gaps"})
+_STRING_ESCAPES: Final = {
+    '"': b'\\"',
+    "\\": b"\\\\",
+    "\b": b"\\b",
+    "\f": b"\\f",
+    "\n": b"\\n",
+    "\r": b"\\r",
+    "\t": b"\\t",
+}
 
 
 class QualityReportStreamError(Exception):
@@ -111,6 +121,135 @@ def _line(document: Mapping[str, Any]) -> bytes:
         raise QualityReportStreamError(f"record is not canonical-JSON serializable: {exc}") from exc
 
 
+class _CappedJSON:
+    """Canonical JSON encoder with capped output and a byte-budgeted temporary key index."""
+
+    def __init__(self, maximum: int) -> None:
+        self.maximum = maximum
+        self.output = bytearray()
+
+    def _write(self, value: bytes) -> None:
+        if len(value) > self.maximum - len(self.output):
+            raise QualityReportStreamTooLarge(
+                f"record exceeds leaf_max_bytes={self.maximum + 1} while encoding"
+            )
+        self.output.extend(value)
+
+    @staticmethod
+    def _escaped(char: str) -> bytes:
+        codepoint = ord(char)
+        escaped = _STRING_ESCAPES.get(char)
+        if escaped is not None:
+            return escaped
+        if codepoint < 0x20:
+            return f"\\u{codepoint:04x}".encode("ascii")
+        try:
+            return char.encode("utf-8")
+        except UnicodeEncodeError as exc:
+            raise QualityReportStreamError("record contains an unpaired Unicode surrogate") from exc
+
+    @classmethod
+    def _string_size(cls, value: str, maximum: int) -> int:
+        size = 2  # quotes
+        for char in value:
+            size += len(cls._escaped(char))
+            if size > maximum:
+                return size
+        return size
+
+    def _string(self, value: str) -> None:
+        self._write(b'"')
+        for char in value:
+            self._write(self._escaped(char))
+        self._write(b'"')
+
+    def encode(self, value: Any) -> None:
+        if value is None:
+            self._write(b"null")
+        elif value is True:
+            self._write(b"true")
+        elif value is False:
+            self._write(b"false")
+        elif isinstance(value, str):
+            self._string(value)
+        elif isinstance(value, int):
+            # Three binary bits per output decimal digit is a conservative allocation guard.
+            # Converting anything above this bound to decimal could allocate beyond our cap.
+            if value.bit_length() > self.maximum * 3:
+                raise QualityReportStreamTooLarge(
+                    f"integer exceeds leaf_max_bytes={self.maximum + 1} while encoding"
+                )
+            self._write(str(value).encode("ascii"))
+        elif isinstance(value, float):
+            try:
+                encoded = json.dumps(value, separators=(",", ":"), allow_nan=False).encode("ascii")
+            except (TypeError, ValueError) as exc:
+                raise QualityReportStreamError(f"invalid JSON number: {exc}") from exc
+            self._write(encoded)
+        elif isinstance(value, Mapping):
+            self._mapping(value)
+        elif isinstance(value, list | tuple):
+            self._sequence(value)
+        else:
+            raise QualityReportStreamError(f"unsupported JSON value type: {type(value).__name__}")
+
+    def _mapping(self, value: Mapping[Any, Any]) -> None:
+        self._write(b"{")
+        keys: list[str] = []
+        reserve = 1  # closing brace
+        try:
+            for key in value:
+                if not isinstance(key, str):
+                    raise QualityReportStreamError("a stream record must have string keys")
+                encoded_size = self._string_size(key, self.maximum - len(self.output) - reserve)
+                reserve += encoded_size + 1 + _KEY_INDEX_ENTRY_BUDGET_BYTES
+                if keys:
+                    reserve += 1
+                if reserve > self.maximum - len(self.output):
+                    raise QualityReportStreamTooLarge(
+                        f"record exceeds leaf_max_bytes={self.maximum + 1} while indexing keys"
+                    )
+                keys.append(key)
+        except QualityReportStreamError:
+            raise
+        except Exception as exc:
+            raise QualityReportStreamError(f"mapping keys cannot be read: {exc}") from exc
+        keys.sort()
+        if any(left == right for left, right in zip(keys, keys[1:], strict=False)):
+            raise QualityReportStreamError("a stream mapping yielded a duplicate key")
+        for index, key in enumerate(keys):
+            if index:
+                self._write(b",")
+            self._string(key)
+            self._write(b":")
+            try:
+                item = value[key]
+            except Exception as exc:
+                raise QualityReportStreamError(f"mapping value for {key!r} cannot be read") from exc
+            self.encode(item)
+        self._write(b"}")
+
+    def _sequence(self, value: list[Any] | tuple[Any, ...]) -> None:
+        self._write(b"[")
+        for index, item in enumerate(value):
+            if index:
+                self._write(b",")
+            self.encode(item)
+        self._write(b"]")
+
+
+def _record_line(record: Mapping[str, Any], maximum: int) -> bytes:
+    encoder = _CappedJSON(maximum - 1)  # reserve one byte for LF
+    try:
+        encoder.encode(record)
+    except QualityReportStreamError:
+        raise
+    except (RecursionError, TypeError, ValueError) as exc:
+        raise QualityReportStreamError(f"record is not canonical-JSON serializable: {exc}") from exc
+    encoder._write(b"\n")
+    return bytes(encoder.output)
+
+
 class QualityReportStreamWriter:
     """Append fixed-size mapping records and publish an ordered bounded tree on ``finish``."""
 
@@ -135,51 +274,75 @@ class QualityReportStreamWriter:
         self._leaf_count = 0
         self._levels: list[list[_Child]] = []
         self._finished = False
+        self._failed = False
 
     def append(self, record: Mapping[str, Any]) -> None:
+        if self._failed:
+            raise QualityReportStreamError("writer is failed; call close() to release buffers")
         if self._finished:
             raise QualityReportStreamError("writer is already finished")
-        if not isinstance(record, Mapping) or any(not isinstance(key, str) for key in record):
-            raise QualityReportStreamError("a stream record must be a string-keyed JSON object")
-        line = _line(record)
-        if len(line) > self._limits.leaf_max_bytes:
-            raise QualityReportStreamTooLarge(
-                f"record line of {len(line)} bytes exceeds leaf_max_bytes="
-                f"{self._limits.leaf_max_bytes}"
-            )
-        if self._leaf and (
-            len(self._leaf) >= self._limits.leaf_max_records
-            or self._leaf_bytes + len(line) > self._limits.leaf_max_bytes
-        ):
-            self._flush_leaf()
-        if not self._leaf:
-            self._leaf_first = self._count
-        self._leaf.append(line)
-        self._leaf_bytes += len(line)
-        self._count += 1
+        try:
+            if not isinstance(record, Mapping):
+                raise QualityReportStreamError("a stream record must be a JSON object mapping")
+            line = _record_line(record, self._limits.leaf_max_bytes)
+            if self._leaf and (
+                len(self._leaf) >= self._limits.leaf_max_records
+                or self._leaf_bytes + len(line) > self._limits.leaf_max_bytes
+            ):
+                self._flush_leaf()
+            if not self._leaf:
+                self._leaf_first = self._count
+            self._leaf.append(line)
+            self._leaf_bytes += len(line)
+            self._count += 1
+        except BaseException:
+            self._fail()
+            raise
 
     def finish(self) -> QualityReportStreamRef:
+        if self._failed:
+            raise QualityReportStreamError("writer failed before finish; no root was published")
         if self._finished:
             raise QualityReportStreamError("writer is already finished")
-        if self._leaf:
-            self._flush_leaf()
-        root = self._finish_root()
+        try:
+            if self._leaf:
+                self._flush_leaf()
+            root = self._finish_root()
+            self._finished = True
+            depth = 1
+            capacity = self._limits.fanout
+            while capacity < self._leaf_count:
+                capacity *= self._limits.fanout
+                depth += 1
+            return QualityReportStreamRef(
+                self._stream,
+                QUALITY_REPORT_STREAM_FORMAT,
+                self._count,
+                self._leaf_count,
+                depth,
+                root.key,
+                root.sha256,
+                root.size,
+            )
+        except BaseException:
+            self._fail()
+            raise
+
+    @property
+    def failed(self) -> bool:
+        return self._failed
+
+    def close(self) -> None:
+        """Discard buffered records and make the writer terminal; published leaves are orphans."""
+        if not self._finished or self._failed:
+            self._fail()
+
+    def _fail(self) -> None:
+        self._failed = True
         self._finished = True
-        depth = 1
-        capacity = self._limits.fanout
-        while capacity < self._leaf_count:
-            capacity *= self._limits.fanout
-            depth += 1
-        return QualityReportStreamRef(
-            self._stream,
-            QUALITY_REPORT_STREAM_FORMAT,
-            self._count,
-            self._leaf_count,
-            depth,
-            root.key,
-            root.sha256,
-            root.size,
-        )
+        self._leaf.clear()
+        self._leaf_bytes = 0
+        self._levels.clear()
 
     def _flush_leaf(self) -> None:
         header = {
