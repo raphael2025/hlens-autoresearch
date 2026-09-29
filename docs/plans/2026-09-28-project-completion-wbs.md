@@ -56,7 +56,7 @@ Dataset 与实验须绑定快照、政策、来源和规则版本。研究闭环
 | W7 | Phase 7–8 自动研究与 Validation | W1、W6 | Admission / crash recovery / 完整试验产出关系 / G4 与 G5 red-team、负路径、Profile 与验证重放通过；所有未批准算子继续 fail closed | 框架代码已聚合，未全量测试；无冻结 Profile |
 | W8 | Phase 9–12 合成、路由、循环、演化 | W1、W7 | 合成校准可复现；真实 source / metric 权威有决定或明确保持 synthetic-only；循环恢复、失败停机、生命周期审计通过 | ADR-0080 BLOCKED；synthetic-only 边界必须维持 |
 | W9 | Phase 13–14 执行与迁移 | W1、W6–W8 | Simulated-only execution drills、审计 replay、kill-switch、migration matrix 与 rollback evidence 通过；LIVE 仍不可用 | 实现待验收；实盘永久不属于本工作包 |
-| W10 | 应用和运维运行时 | W1、W2 | API / worker / web build 与 smoke、配置验证、健康检查、日志、shutdown/restart；部署操作与当前阶段文档一致 | 无 CI；Node 依赖缺失状态需确认；Uvicorn 是可选依赖 |
+| W10 | 应用和运维运行时 | W1、W2 | API / worker / web build 与 smoke、配置验证、健康检查、日志、shutdown/restart；部署操作与当前阶段文档一致 | Web 独立切片：`npm run build` 通过，组件测试 120 passed；library suite 110 passed / 1 failed，retro-audit fixture 精确节点两轮失败后按规则延期，未通过；四个新增 fixture inventory 断言已同步并由独立审查确认未削弱覆盖。`npm audit` 报 2 moderate / 1 high advisory，兼容升级方案审查中。API / worker 的 Uvicorn 与跨进程恢复证据见 W2；JSON logging helper 尚未接入运行时，PostgreSQL + Iceberg 联合重启仍缺。详见 [W10 Web validation](../reviews/2026-09-29-w10-web-validation.md)。 |
 | W11 | 安全与架构红队 | W1、W2、W4、W7–W10 | 独立检查边界、PIT 泄漏、篡改、重复写、恢复、资源界限、权限与 live拒绝；每项攻击有回归证据 | 部分历史红队，需跨阶段复核 |
 | W12 | 发布门与最终交接 | W2–W11 | clean build、适用集成 / 回归、静态检查、恢复 / 部署、文档与风险清单全通过；主线干净、tag / 发布说明反映真实状态 | 未开始；不因分支收敛或局部测试完成而关闭 |
 
