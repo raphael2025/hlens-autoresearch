@@ -979,14 +979,18 @@ def _pit_bounded_stream(
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
                 owner_at = min(row[column] for row in key_rows.values())
 
-                while pending_edge_key is not None and pending_edge_key < row_key:
-                    pending_edge_key, next_group = next(edge_iter, (None, None))
-                    pending_edge_items = list(next_group) if next_group is not None else []
+                if pending_edge_key is not None and pending_edge_key < row_key:
+                    raise CatalogIntegrityError(
+                        "a mapped edge references an observation_key with no corresponding "
+                        "Canonical rows in this window"
+                    )
                 if pending_edge_key == row_key:
                     key_edges = tuple(
                         PrecedenceEvidence.model_validate(item["evidence"])
                         for item in pending_edge_items
                     )
+                    pending_edge_key, next_group = next(edge_iter, (None, None))
+                    pending_edge_items = list(next_group) if next_group is not None else []
                 else:
                     key_edges = ()
 

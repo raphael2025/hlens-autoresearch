@@ -18,7 +18,8 @@ from typing import Any
 
 import pytest
 
-from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
+from core.contracts.revision import PointInTimeSpec, PointInTimeStatus, PrecedenceEvidence
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import (
     PitBoundedRecord,
@@ -76,6 +77,23 @@ def _gaps_by_revision(records: list[PitBoundedRecord]) -> dict[str, Any]:
     return {
         r.evidence_gap.revision_id: r.evidence_gap for r in records if r.evidence_gap is not None
     }
+
+
+def _replace_mapped_edge_key(
+    selector: PitSelector,
+    monkeypatch: pytest.MonkeyPatch,
+    observation_key: str,
+) -> None:
+    """Move the genuine mapped edge to a key with no corresponding Canonical rows."""
+    original = selector._mapped_edges
+
+    def orphaned_edges(*args: Any, **kwargs: Any) -> dict[str, list[PrecedenceEvidence]]:
+        edges = original(*args, **kwargs)
+        assert len(edges) == 1
+        [edge] = next(iter(edges.values()))
+        return {observation_key: [edge]}
+
+    monkeypatch.setattr(selector, "_mapped_edges", orphaned_edges)
 
 
 # =========================================================================================
@@ -229,6 +247,52 @@ def test_iter_bounded_an_unbound_evidence_table_still_yields_only_conflicts(
     records = _bounded(h, spec)
     assert all(r.selection.status is PointInTimeStatus.CONFLICT for r in records)
     assert all(r.lineage is None for r in records)
+
+
+def test_iter_bounded_accepts_a_matching_edge_on_the_last_key(h: RestHarness) -> None:
+    """A valid edge matching the final Canonical key is consumed before stream closure."""
+    _chain(h)
+    records = _bounded(h, _spec(h, cutoff=FAR))
+    assert len(records) == 1
+    assert records[0].selection.status is PointInTimeStatus.SELECTED
+
+
+def test_iter_bounded_rejects_a_trailing_orphan_edge(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An edge key ordered after all Canonical keys must fail the final stream check."""
+    _chain(h)
+    selector = PitSelector(h.adapter, h.storage)
+    _replace_mapped_edge_key(selector, monkeypatch, "~orphan")
+    with pytest.raises(CatalogIntegrityError, match="mapped edge references"):
+        with selector.iter_bounded(
+            _spec(h, cutoff=FAR),
+            "agg_trades",
+            SYMBOL,
+            START,
+            END,
+            params=TINY_PARAMS,
+        ) as records:
+            list(records)
+
+
+def test_iter_bounded_rejects_all_orphan_edges_before_the_first_key(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An all-orphan edge prefix cannot be skipped while advancing to the first row key."""
+    _chain(h)
+    selector = PitSelector(h.adapter, h.storage)
+    _replace_mapped_edge_key(selector, monkeypatch, "!orphan")
+    with pytest.raises(CatalogIntegrityError, match="mapped edge references"):
+        with selector.iter_bounded(
+            _spec(h, cutoff=FAR),
+            "agg_trades",
+            SYMBOL,
+            START,
+            END,
+            params=TINY_PARAMS,
+        ) as records:
+            list(records)
 
 
 # =========================================================================================
