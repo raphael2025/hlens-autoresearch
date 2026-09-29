@@ -134,7 +134,7 @@ v2 manifest 的内容哈希是**整份规范 JSON 的 SHA-256**：要得到它�
 2. `PitSelector` 改为固定工作集生成器：canonical scan 的任意文件顺序先经固定容量排序 run，再按 `(symbol, observation_key, revision_id)` 有序归并；处理完一个 key 即释放该 key 的内存状态。单个 key 的历史长度也不设为隐式上界，超过固定 record buffer 的内容必须通过同一 content-addressed bounded-run 格式继续分段读取；不能把“一个 key / 一个 slice”当成容量上界。
 3. 排序 run 与大型单 key 历史 run 使用与 evidence tree 相同的固定字节对象写入规则：每个对象先在固定上界内组装并计算 hash，再经现有 `StorageAdapter.stage(expected_sha256=…)` 发布；多路归并的 fan-out 有上限，层次索引不在进程中收集全部 run refs。运行失败产生的对象是不可被 manifest 引用的 orphan；写路径不得删除。
 4. 生成顺序、跨 slice key 所有权、selection、lineage、缺口与质量证据都必须在相邻有序流上归并验证。v3 路径禁止 O(N) 的 `seen_keys`、`by_key`、`records_by_key`、`selected_rows`、`timelines`、`member_spans`、报告 ID 集合或同等映射；v2 replay 可以保留原实现并明确不属于有界路径。
-5. quality reporter 的 `existing_only` 重导出也必须可逐行读取 / 比较，或证明其单个 `(symbol, day)` 输出有契约内的固定上界；否则 v3 verifier 不能声称完整工作集有界。不得以当前样例较小作为证明。
+5. Quality reporter 的 `existing_only` 重导出必须逐行读取 / 比较，或证明其单个报告输出有契约内的固定上界；否则 v3 verifier 不能声称完整工作集有界。当前 `DATA_QUALITY_REPORTS.events` / legacy `evidence_gaps` 为无 maxItems 的单行嵌套列表，无法通过外层 batch scan 有界读取。其已接受的 additive v3 设计见 [ADR-0093](0093-bounded-quality-report-evidence.md)：fixed-size report manifest + events / event revisions / gaps content-addressed streams，v1/v2 保持只读兼容。ADR-0093 未实施前，本项仍未满足。不得以当前样例较小作为证明。
 
 排序 run 是可寻址的数据对象，不是隐式 OS 临时文件。运行路径不得调用系统默认临时目录，也不得假定 tempfile 位于物理磁盘；run 的固定对象上界、索引层数、对象数量和 orphan 义务都计入 E1-CAP-1 资源说明。若实际 StorageAdapter 无法在不聚合所有 run refs 的情况下提供有序多路归并，必须停止并提出新的 Decision Packet，不得回退成 slice 级全量 materialization。
 

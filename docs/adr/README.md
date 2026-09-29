@@ -93,6 +93,7 @@
 | [0088](0088-contract-2-4-0-composition-extensions.md) | 契约 2.4.0（additive）：组合策略、事件 bar 规格、峰值权益、合成效应、波动率缩放屏障 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；契约层待实施 |
 | [0091](0091-read-only-registry-integrity-audit.md) | 四类登记处的只读完整性审计与证据边界 | Accepted（2026-09-28；本轮 PM）；只读 API 与 CLI 待实施 |
 | [0092](0092-trusted-validation-replay-for-promotion.md) | Promotion 的可信验证重放 Provider | Accepted（2026-09-28；Claude Code PM 依 Raphael 授权）；无内建 trusted Provider 时 Promotion 失败关闭，G5 不得二次开封 |
+| [0093](0093-bounded-quality-report-evidence.md) | 有界、版本化质量报告证据流 | Accepted（2026-09-29；新报告使用固定大小 manifest 与内容寻址 streams，v1/v2 保持只读兼容；实现 / E1 验收待完成） |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
