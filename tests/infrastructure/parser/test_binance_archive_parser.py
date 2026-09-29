@@ -5,11 +5,13 @@ from __future__ import annotations
 import ast
 import hashlib
 import inspect
+import io
 import zipfile
-from dataclasses import fields
+from dataclasses import fields, replace
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
+import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from core.contracts.revision import PolicyRole
@@ -25,11 +27,17 @@ from infrastructure.parser import (
     RejectionCode,
     TimeUnit,
     UnsupportedArchiveRequest,
+    parse_archive,
     parse_archive_bytes,
     time_unit_for,
 )
 from infrastructure.parser import binance_archive as parser_mod
-from infrastructure.parser.binance_archive import member_filename
+from infrastructure.parser.binance_archive import member_filename, parse_archive_spooled
+from infrastructure.revision.row_integrity import (
+    PersistedRowVerifier,
+    VerifiedArchive,
+    _archive_rows_at,
+)
 from tests.infrastructure.parser.parser_support import (
     MS_DAY,
     US_DAY,
@@ -44,6 +52,7 @@ from tests.infrastructure.parser.parser_support import (
     make_case,
     make_zip,
     object_key,
+    patch_member,
     start_ticks,
 )
 
@@ -612,7 +621,139 @@ def test_parsing_twice_yields_equal_results_and_no_shared_state() -> None:
     assert first == second
     assert first.row_count == 70_000
     assert first.rows.column("archive_line_number").to_pylist() == list(range(1, 70_001))
-    assert first.rows.column("agg_trade_id").num_chunks == 1
+    assert first.rows.column("agg_trade_id").num_chunks == 2
+
+
+class _MemoryArchiveStorage:
+    def __init__(self, expected_ref: object, data: bytes) -> None:
+        self.expected_ref = expected_ref
+        self.data = data
+
+    def open_read(self, ref: object) -> io.BytesIO:
+        assert ref == self.expected_ref
+        return io.BytesIO(self.data)
+
+
+def test_spooled_parser_matches_the_public_table_result_and_cursor_is_owned(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(parser_mod, "_CHUNK_ROWS", 2)
+    case = csv_case(AGG, US_DAY, csv_bytes(agg_rows(US_DAY, 3)))
+    parsed = parse_archive_bytes(case.request, case.data)
+    assert isinstance(parsed, ParsedArchive)
+
+    temp_files: list[io.BufferedRandom] = []
+    make_temp = parser_mod.tempfile.TemporaryFile
+
+    def tracked_temp_file(*args: object, **kwargs: object) -> io.BufferedRandom:
+        handle = make_temp(*args, **kwargs)
+        temp_files.append(handle)
+        return handle
+
+    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)
+    spooled = parse_archive_spooled(
+        case.request, _MemoryArchiveStorage(case.request.object_ref, case.data)
+    )
+    assert isinstance(spooled, parser_mod.SpooledArchive)
+    assert spooled.row_count == parsed.row_count == 3
+    assert [row["archive_line_number"] for row in _archive_rows_at(spooled, [1, 3, 3])] == [
+        1,
+        3,
+        3,
+    ]
+
+    cursor = spooled.open_cursor()
+    first_batch = next(cursor)
+    assert first_batch.num_rows == 2
+    cursor.close()  # early close releases the reader but leaves the owned spool replayable
+    with spooled.open_cursor() as replay:
+        batches = list(replay)
+    replayed = pa.Table.from_batches(batches, schema=parsed.rows.schema)
+    assert replayed.equals(parsed.rows)
+    assert len(temp_files) == 2
+    assert not temp_files[0].closed  # parsed batches remain owned by the result
+    assert temp_files[1].closed  # compressed input spool is scoped to parse_archive_spooled
+    spooled.close()
+    assert all(handle.closed for handle in temp_files)
+
+
+def test_spooled_parser_rejects_late_csv_failure_and_cleans_provisional_batches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = agg_rows(US_DAY, 3)
+    last = rows[-1].split(",")
+    last[-2] = "no"
+    rows[-1] = ",".join(last)
+    case = csv_case(AGG, US_DAY, csv_bytes(rows))
+    temp_files: list[io.BufferedRandom] = []
+    make_temp = parser_mod.tempfile.TemporaryFile
+
+    def tracked_temp_file(*args: object, **kwargs: object) -> io.BufferedRandom:
+        handle = make_temp(*args, **kwargs)
+        temp_files.append(handle)
+        return handle
+
+    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)
+    outcome = parse_archive_spooled(
+        case.request, _MemoryArchiveStorage(case.request.object_ref, case.data)
+    )
+    assert isinstance(outcome, ArchiveRejection)
+    assert outcome.code is RejectionCode.INVALID_BOOLEAN
+    assert len(temp_files) == 2
+    assert all(handle.closed for handle in temp_files)
+
+
+def test_spooled_parser_rejects_bad_crc_after_flushing_and_cleans_spool(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(parser_mod, "_CHUNK_ROWS", 2)
+    data = archive_for(AGG, "BTCUSDT", US_DAY, csv_bytes(agg_rows(US_DAY, 3)))
+    damaged = patch_member(data, crc=0)
+    case = make_case(AGG, US_DAY, damaged)
+    temp_files: list[io.BufferedRandom] = []
+    make_temp = parser_mod.tempfile.TemporaryFile
+
+    def tracked_temp_file(*args: object, **kwargs: object) -> io.BufferedRandom:
+        handle = make_temp(*args, **kwargs)
+        temp_files.append(handle)
+        return handle
+
+    monkeypatch.setattr(parser_mod.tempfile, "TemporaryFile", tracked_temp_file)
+    outcome = parse_archive_spooled(
+        case.request, _MemoryArchiveStorage(case.request.object_ref, case.data)
+    )
+    assert isinstance(outcome, ArchiveRejection)
+    assert outcome.code is RejectionCode.ZIP_MEMBER_CORRUPT
+    assert all(handle.closed for handle in temp_files)
+
+
+def test_public_parse_archive_keeps_the_complete_table_api() -> None:
+    case = csv_case(KLINES, US_DAY, csv_bytes(kline_rows(US_DAY, 2)))
+    parsed = parse_archive(case.request, _MemoryArchiveStorage(case.request.object_ref, case.data))
+    assert isinstance(parsed, ParsedArchive)
+    assert parsed.rows.num_rows == 2
+
+
+def test_verifier_retains_at_most_one_archive_spool_and_closes_evictions() -> None:
+    case = csv_case(AGG, US_DAY, csv_bytes(agg_rows(US_DAY, 2)))
+    storage = _MemoryArchiveStorage(case.request.object_ref, case.data)
+    first = parse_archive_spooled(case.request, storage)
+    second = parse_archive_spooled(
+        replace(case.request, archive_revision_id="archive-rev-2"), storage
+    )
+    assert isinstance(first, parser_mod.SpooledArchive)
+    assert isinstance(second, parser_mod.SpooledArchive)
+    verifier = PersistedRowVerifier(object(), object(), cache_archives=True)
+    first_item = VerifiedArchive("archive-rev-1", first.time_unit, {}, first)
+    second_item = VerifiedArchive("archive-rev-2", second.time_unit, {}, second)
+
+    verifier._cache_archive((AGG, "BTCUSDT", "archive-rev-1"), first_item)
+    verifier._cache_archive((AGG, "BTCUSDT", "archive-rev-2"), second_item)
+    assert len(verifier._archives) == 1
+    assert first._spool.closed
+    assert not second._spool.closed
+    verifier.close()
+    assert second._spool.closed
 
 
 def test_parsed_archive_equality_is_by_value() -> None:
