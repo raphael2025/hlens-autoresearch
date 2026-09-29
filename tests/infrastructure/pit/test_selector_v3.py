@@ -161,6 +161,24 @@ def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
                 active_readers -= 1
 
     monkeypatch.setattr(runs_module, "iter_run", count_merge_readers)
+    active_root_readers = 0
+    max_active_root_readers = 0
+    opened_roots: list[RunRef] = []
+    original_selector_iter_run = selector_module.iter_run
+
+    @contextmanager
+    def count_selector_root_readers(storage: Any, ref: RunRef) -> Iterator[Any]:
+        nonlocal active_root_readers, max_active_root_readers
+        with original_selector_iter_run(storage, ref) as records:
+            opened_roots.append(ref)
+            active_root_readers += 1
+            max_active_root_readers = max(max_active_root_readers, active_root_readers)
+            try:
+                yield records
+            finally:
+                active_root_readers -= 1
+
+    monkeypatch.setattr(selector_module, "iter_run", count_selector_root_readers)
     records = _bounded(h, spec)
 
     got = sorted(
@@ -177,6 +195,9 @@ def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
     assert builders[1].root_ref is not None
     assert 1 < max_active_readers <= TINY_PARAMS.merge_fanout
     assert active_readers == 0
+    assert opened_roots == [builders[0].root_ref, builders[1].root_ref]
+    assert max_active_root_readers == 2 <= TINY_PARAMS.merge_fanout
+    assert active_root_readers == 0
 
 
 @pytest.mark.parametrize("failure", ["write", "read"])
