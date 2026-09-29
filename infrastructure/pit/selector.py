@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-from collections.abc import Callable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
@@ -77,7 +77,11 @@ from infrastructure.pit.runs import (
 )
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
-from infrastructure.revision.channel_reconcile import ChannelReconciler, revision_record_from_row
+from infrastructure.revision.channel_reconcile import (
+    ChannelReconciler,
+    evidence_from_row,
+    revision_record_from_row,
+)
 from infrastructure.revision.precedence import maximal_heads
 from infrastructure.revision.store import RevisionCatalog
 
@@ -499,8 +503,8 @@ class PitSelector:
         spec: PointInTimeSpec,
         data_type: str,
         symbol: str,
-        days: Sequence[date],
-        by_key: Mapping[str, Sequence[Mapping[str, Any]]],
+        days: Iterable[date],
+        by_key: Mapping[str, Iterable[Mapping[str, Any]]],
         *,
         cache_verified_edges: bool = True,
     ) -> dict[str, list[PrecedenceEvidence]]:
@@ -598,11 +602,14 @@ class PitSelector:
           duplicate rejection retain the v2 semantics.
 
         **Current read boundary**: this path uses fixed Arrow batches and sorted runs for the
-        candidate-key and Canonical-row scans. The current single-key evaluation still
-        reconstructs `key_rows`, `RevisionRecord` / edge tuples and availability mappings before
-        calling the existing graph semantics. Those structures can grow with one key's history,
-        so they remain an ADR-0077 acceptance blocker. ADR-0077 §10 also requires a separate
-        byte-level E1-CAP-1 measurement; no capacity pass is implied here.
+        candidate-key and Canonical-row scans. A key's source-row lookup, ownership minimum,
+        day traversal, availability changes and availability lookup are run-backed; none keeps a
+        second row dictionary, day set, change set, or availability map. The current graph
+        authority still requires a `RevisionRecord` tuple and mapped-edge tuple, and
+        `RevisionGraph` / `maximal_heads` build their own O(N) graph state. A conflict can also
+        require the complete `maximal_heads` output tuple (see the separate decision packet).
+        Those graph/output allocations remain ADR-0077 acceptance blockers. ADR-0077 §10 also
+        requires a separate byte-level E1-CAP-1 measurement; no capacity pass is implied here.
 
         A conflict is reported inline (``selection.status is PointInTimeStatus.CONFLICT``) on the
         record itself, in place of ``select``'s separately collected ``conflicts`` tuple; a caller
@@ -877,16 +884,205 @@ def _pit_row_group_key(row: Mapping[str, Any]) -> str:
     return row["observation_key"]
 
 
-def _flatten_edges(
-    edges: Mapping[str, Sequence[PrecedenceEvidence]],
-) -> Iterator[dict[str, Any]]:
-    """One run-row per mapped edge: ``{"observation_key", "evidence"}`` (``evidence`` is the
-    edge's JSON-safe ``model_dump``; :class:`PrecedenceEvidence` is not itself a plain
-    ``Mapping``, so it cannot be spilled directly through :mod:`infrastructure.pit.runs`'s row
-    codec)."""
-    for key, items in edges.items():
-        for item in items:
-            yield {"observation_key": key, "evidence": item.model_dump(mode="json")}
+class _RunBackedRows:
+    """A re-readable single-key view whose rows stay in the sorted-run store.
+
+    Returning a tuple here used to duplicate the complete key history just to map Raw endpoints.
+    Each iteration now opens one bounded run reader and closes it deterministically.
+    """
+
+    def __init__(self, storage: StorageAdapter, root: RunRef) -> None:
+        self._storage = storage
+        self._root = root
+
+    def __len__(self) -> int:
+        return self._root.record_count
+
+    def __iter__(self) -> Iterator[Mapping[str, Any]]:
+        with iter_run(self._storage, self._root) as rows:
+            yield from rows
+
+    def find(self, revision_id: str) -> Mapping[str, Any] | None:
+        for row in self:
+            if row["revision_id"] == revision_id:
+                return row
+        return None
+
+
+def _bounded_mapped_edge_run(
+    selector: PitSelector,
+    view: PinnedCatalogView,
+    spec: PointInTimeSpec,
+    data_type: str,
+    symbol: str,
+    key: str,
+    days: Iterable[date],
+    rows: _RunBackedRows,
+    *,
+    params: PitRunParams,
+) -> RunRef | None:
+    """Verify, deduplicate and map one key's Raw edges without an O(E) Python map/list."""
+    evidence_snapshot = spec.snapshot_bindings.get(BINANCE_SPOT_PRECEDENCE_EVIDENCE.table)
+    if evidence_snapshot is None:
+        return None
+    storage = selector._storage
+    limits = params.limits
+    reconciler = ChannelReconciler(view, storage)
+
+    with RunSetBuilder(
+        storage,
+        key=lambda item: item["edge_id"],
+        capacity=params.edge_batch_rows,
+        merge_fanout=params.merge_fanout,
+        limits=limits,
+    ) as raw_builder:
+        for day in days:
+            for edge in reconciler.verified_edges(data_type, symbol, day):
+                raw_builder.add(edge.row())
+        raw_root = raw_builder.finish()
+    if raw_root is None:
+        return None
+
+    def endpoint(table: str, revision: str) -> list[Mapping[str, Any]]:
+        found: list[Mapping[str, Any]] = []
+        for row in rows:
+            if row["lineage_raw_table"] == table and row["lineage_raw_revision_id"] == revision:
+                found.append(row)
+                if len(found) > 1:
+                    break
+        return found
+
+    mapped_root: RunRef | None
+    with RunSetBuilder(
+        storage,
+        key=_pit_edge_sort_key,
+        capacity=params.edge_batch_rows,
+        merge_fanout=params.merge_fanout,
+        limits=limits,
+    ) as mapped_builder:
+        with iter_run(storage, raw_root) as raw_rows:
+            for edge_id, same_id in itertools.groupby(raw_rows, key=lambda item: item["edge_id"]):
+                first: Mapping[str, Any] | None = None
+                inconsistent = False
+                for item in same_id:
+                    if first is None:
+                        first = item
+                    elif item != first:
+                        inconsistent = True
+                if first is None:  # pragma: no cover - groupby always yields at least one item
+                    raise CatalogIntegrityError("a grouped Raw edge unexpectedly became empty")
+                if inconsistent:
+                    raise CatalogIntegrityError(
+                        f"Raw edge {edge_id} is verified with different content on "
+                        "different days at the bound snapshots"
+                    )
+                if first["observation_key"] != key:
+                    continue
+                archive = endpoint(first["revision_table"], first["revision_id"])
+                rest = endpoint(first["superseded_table"], first["superseded_revision_id"])
+                if len(archive) > 1 or len(rest) > 1:
+                    duplicate = (
+                        first["revision_id"]
+                        if len(archive) > 1
+                        else first["superseded_revision_id"]
+                    )
+                    count = len(archive) if len(archive) > 1 else len(rest)
+                    raise CatalogIntegrityError(
+                        f"Raw revision {duplicate} has {count} Canonical images"
+                    )
+                if not archive or not rest:
+                    continue
+                mapped = rules.map_channel_edge(
+                    evidence_from_row(first),
+                    edge_id,
+                    evidence_snapshot,
+                    revision_record_from_row(archive[0]),
+                    revision_record_from_row(rest[0]),
+                )
+                mapped_builder.add(
+                    {"observation_key": key, "evidence": mapped.model_dump(mode="json")}
+                )
+        mapped_root = mapped_builder.finish()
+    return mapped_root
+
+
+class _RunBackedAvailability(Mapping[str, datetime]):
+    """Resolve one revision's effective time by rereading its key run, with O(1) state."""
+
+    def __init__(self, rows: _RunBackedRows, *, bound: bool) -> None:
+        self._rows = rows
+        self._bound = bound
+
+    def __getitem__(self, revision_id: str) -> datetime:
+        row = self._rows.find(revision_id)
+        if row is None:
+            raise KeyError(revision_id)
+        moved = effective_available_times((row,), bound=self._bound).get(revision_id)
+        return moved[1] if moved is not None else row["available_time"]
+
+    def __iter__(self) -> Iterator[str]:
+        for row in self._rows:
+            yield row["revision_id"]
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+
+@contextmanager
+def _bounded_evaluation_instants(
+    storage: StorageAdapter,
+    rows: _RunBackedRows,
+    records: Sequence[RevisionRecord],
+    spec: PointInTimeSpec,
+    *,
+    bound: bool,
+    params: PitRunParams,
+) -> Iterator[Iterator[datetime]]:
+    """Externally sort known revisions' availability changes, retaining only one instant.
+
+    Legacy ``_evaluation_instants`` builds an interval-sized set and sorted list. The bounded
+    path writes the exact same eligible instants to a sorted run and coalesces adjacent duplicate
+    timestamps during readback.
+    """
+    if spec.simulation_time is not None:
+        yield iter((spec.simulation_time,))
+        return
+    start, end = spec.simulation_start, spec.simulation_end
+    if start is None or end is None:  # pragma: no cover - contract rejects this shape
+        raise PitSpecError("the spec has neither a simulation time nor an interval")
+
+    def changes() -> Iterator[Mapping[str, Any]]:
+        for row, record in zip(rows, records, strict=True):
+            if record.availability.times.knowledge_time > spec.knowledge_cutoff:
+                continue
+            moved = effective_available_times((row,), bound=bound).get(row["revision_id"])
+            available_at = moved[1] if moved is not None else row["available_time"]
+            if start < available_at < end:
+                yield {"available_time": available_at, "revision_id": row["revision_id"]}
+
+    with RunSetBuilder(
+        storage,
+        key=lambda row: (row["available_time"], row["revision_id"]),
+        capacity=params.row_batch_rows,
+        merge_fanout=params.merge_fanout,
+        limits=params.limits,
+    ) as builder:
+        builder.extend(changes())
+        root = builder.finish()
+
+    def instants() -> Iterator[datetime]:
+        yield start
+        if root is None:
+            return
+        previous: datetime | None = None
+        with iter_run(storage, root) as changes_run:
+            for item in changes_run:
+                at = item["available_time"]
+                if at != previous:
+                    yield at
+                    previous = at
+
+    yield instants()
 
 
 def _pit_edge_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
@@ -1214,75 +1410,84 @@ def _pit_bounded_stream(
                 if key_root is None:  # groupby yielded at least one row
                     raise CatalogIntegrityError("a grouped Canonical key unexpectedly became empty")
                 with iter_run(storage, key_root) as key_row_iter:
-                    key_rows = {row["revision_id"]: row for row in key_row_iter}
-                records = tuple(
-                    revision_record_from_row(key_rows[revision]) for revision in sorted(key_rows)
-                )
-                # The key's whole read closure (key_rows) — not just the window's own instants —
-                # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
-                owner_at = min(row[column] for row in key_rows.values())
+                    records = tuple(revision_record_from_row(row) for row in key_row_iter)
+                key_rows = _RunBackedRows(storage, key_root)
+                # The key's whole read closure — not just the window's own instants — so this
+                # is exactly the ``earliest`` value _key_closure filtered ownership on. Keep
+                # only its scalar minimum instead of a second revision_id -> row dictionary.
+                owner_at = min(row[column] for row in key_rows)
 
-                key_days = sorted({row[column].astimezone(UTC).date() for row in key_rows.values()})
-                mapped = selector._mapped_edges(
+                first_day = min(row[column].astimezone(UTC).date() for row in key_rows)
+                last_day = max(row[column].astimezone(UTC).date() for row in key_rows)
+
+                def days_between(low: date = first_day, high: date = last_day) -> Iterator[date]:
+                    day = low
+                    while day <= high:
+                        yield day
+                        day += _DAY
+
+                edge_root = _bounded_mapped_edge_run(
+                    selector,
                     view,
                     spec,
                     data_type,
                     symbol,
-                    key_days,
-                    {row_key: tuple(key_rows.values())},
-                    cache_verified_edges=False,
+                    row_key,
+                    days_between(),
+                    key_rows,
+                    params=params,
                 )
-                if any(mapped_key != row_key for mapped_key in mapped):
-                    raise CatalogIntegrityError(
-                        "a mapped edge references an observation_key with no corresponding "
-                        "Canonical rows in this window"
-                    )
-                with RunSetBuilder(
-                    storage,
-                    key=_pit_edge_sort_key,
-                    capacity=params.edge_batch_rows,
-                    merge_fanout=params.merge_fanout,
-                    limits=limits,
-                ) as edge_builder:
-                    edge_builder.extend(_flatten_edges(mapped))
-                    edge_root = edge_builder.finish()
+                key_edges: tuple[PrecedenceEvidence, ...]
                 if edge_root is None:
                     key_edges = ()
                 else:
                     with iter_run(storage, edge_root) as merged_edges:
-                        key_edges = tuple(
-                            PrecedenceEvidence.model_validate(item["evidence"])
-                            for item in merged_edges
-                        )
+                        parsed_edges: list[PrecedenceEvidence] = []
+                        for item in merged_edges:
+                            if item["observation_key"] != row_key:
+                                raise CatalogIntegrityError(
+                                    "a mapped edge references an observation_key with no "
+                                    "corresponding Canonical rows in this window"
+                                )
+                            parsed_edges.append(PrecedenceEvidence.model_validate(item["evidence"]))
+                        key_edges = tuple(parsed_edges)
 
-                moved = effective_available_times(list(key_rows.values()), bound=bound_assumption)
-                available = {
-                    revision: moved[revision][1] if revision in moved else row["available_time"]
-                    for revision, row in key_rows.items()
-                }
+                available = _RunBackedAvailability(key_rows, bound=bound_assumption)
 
-                seen_revisions: set[str] = set()
-                for selection in _iter_evaluate_at_instants(
-                    row_key,
-                    _evaluation_instants(records, spec, available),
+                with _bounded_evaluation_instants(
+                    storage,
+                    key_rows,
                     records,
-                    key_edges,
                     spec,
-                    available,
-                ):
-                    lineage_out: SelectedRevisionLineage | None = None
-                    gap_out: EvidenceGap | None = None
-                    event_at: datetime | None = None
-                    if selection.status is PointInTimeStatus.SELECTED:
-                        revision = selection.selected_revision_id
-                        if revision is None:  # pragma: no cover - the contract forbids it
-                            raise CatalogIntegrityError("a selected result without a revision")
-                        event_at = key_rows[revision][column]
-                        if revision not in seen_revisions:
-                            seen_revisions.add(revision)
-                            source_row = key_rows[revision]
-                            if revision in moved:
-                                source_row = dict(source_row, available_time=moved[revision][1])
+                    bound=bound_assumption,
+                    params=params,
+                ) as instants:
+                    for selection in _iter_evaluate_at_instants(
+                        row_key, instants, records, key_edges, spec, available
+                    ):
+                        lineage_out: SelectedRevisionLineage | None = None
+                        gap_out: EvidenceGap | None = None
+                        event_at: datetime | None = None
+                        if selection.status is PointInTimeStatus.SELECTED:
+                            revision = selection.selected_revision_id
+                            if revision is None:  # pragma: no cover - the contract forbids it
+                                raise CatalogIntegrityError("a selected result without a revision")
+                            source_row = key_rows.find(revision)
+                            if source_row is None:
+                                raise CatalogIntegrityError(
+                                    f"selected Canonical revision {revision} is absent from "
+                                    "its key run"
+                                )
+                            # Eligible candidates only grow as simulation time advances. Once a
+                            # revision stops being the unique head, it cannot become a head again;
+                            # identical adjacent selections were already merged by the iterator.
+                            # Therefore one scalar status replaces the O(N) seen_revisions set.
+                            event_at = source_row[column]
+                            moved = effective_available_times(
+                                (source_row,), bound=bound_assumption
+                            ).get(revision)
+                            if moved is not None:
+                                source_row = dict(source_row, available_time=moved[1])
                             lineage_out = SelectedRevisionLineage(
                                 canonical_table=canonical.table,
                                 canonical_revision_id=revision,
@@ -1297,15 +1502,16 @@ def _pit_bounded_stream(
                                     revision,
                                     source_row["availability_evidence_gap"],
                                 )
-                    yield PitBoundedRecord(
-                        observation_key=row_key,
-                        selection=selection,
-                        lineage=lineage_out,
-                        evidence_gap=gap_out,
-                        owner_event_time=owner_at,
-                        event_time=event_at,
-                    )
-                # key_rows / records / key_edges / buffer go out of scope here, before the next
+                        yield PitBoundedRecord(
+                            observation_key=row_key,
+                            selection=selection,
+                            lineage=lineage_out,
+                            evidence_gap=gap_out,
+                            owner_event_time=owner_at,
+                            event_time=event_at,
+                        )
+                # records / key_edges remain the current graph semantics' materialized inputs;
+                # row and availability maps are run-backed and go out of scope before the next
                 # observation_key's group is even read off merged_rows.
 
     # ``_generate`` holds the merged row-root reader and, while processing one key, the

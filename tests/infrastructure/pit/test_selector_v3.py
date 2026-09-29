@@ -18,9 +18,10 @@ from typing import Any
 
 import pytest
 
-from core.contracts.revision import PointInTimeSpec, PointInTimeStatus, PrecedenceEvidence
+from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
-from infrastructure.pit.runs import RunLimits
+from infrastructure.pit import selector as selector_module
+from infrastructure.pit.runs import RunLimits, RunSetBuilder, iter_run
 from infrastructure.pit.selector import (
     PitBoundedRecord,
     PitRunParams,
@@ -29,6 +30,7 @@ from infrastructure.pit.selector import (
 )
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.pit.test_selector import (
+    _WRONG,
     END,
     K_A,
     K_E,
@@ -38,10 +40,9 @@ from tests.infrastructure.pit.test_selector import (
     START,
     _chain,
     _spec,
-    _WRONG,
 )
 from tests.infrastructure.revision import rest_store_support as ss
-from tests.infrastructure.revision.rest_store_support import RestHarness, SYMBOL, StepClock, utc
+from tests.infrastructure.revision.rest_store_support import SYMBOL, RestHarness, StepClock, utc
 
 FAR = utc(2030, 1, 1)
 
@@ -84,16 +85,36 @@ def _replace_mapped_edge_key(
     monkeypatch: pytest.MonkeyPatch,
     observation_key: str,
 ) -> None:
-    """Move the genuine mapped edge to a key with no corresponding Canonical rows."""
-    original = selector._mapped_edges
+    """Move the genuine mapped run edge to a key with no corresponding Canonical rows."""
+    original = selector_module._bounded_mapped_edge_run
 
-    def orphaned_edges(*args: Any, **kwargs: Any) -> dict[str, list[PrecedenceEvidence]]:
-        edges = original(*args, **kwargs)
-        assert len(edges) == 1
-        [edge] = next(iter(edges.values()))
-        return {observation_key: [edge]}
+    def orphaned_edge_run(
+        current: PitSelector,
+        view: Any,
+        spec: PointInTimeSpec,
+        data_type: str,
+        symbol: str,
+        key: str,
+        days: Any,
+        rows: Any,
+        *,
+        params: PitRunParams,
+    ) -> Any:
+        root = original(current, view, spec, data_type, symbol, key, days, rows, params=params)
+        assert root is not None
+        with RunSetBuilder(
+            current._storage,
+            key=selector_module._pit_edge_sort_key,
+            capacity=params.edge_batch_rows,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as builder:
+            with iter_run(current._storage, root) as edges:
+                for item in edges:
+                    builder.add({"observation_key": observation_key, "evidence": item["evidence"]})
+            return builder.finish()
 
-    monkeypatch.setattr(selector, "_mapped_edges", orphaned_edges)
+    monkeypatch.setattr(selector_module, "_bounded_mapped_edge_run", orphaned_edge_run)
 
 
 # =========================================================================================
@@ -123,10 +144,24 @@ def test_iter_bounded_matches_select_across_the_four_cutoffs(h: RestHarness) -> 
         legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
         records = _bounded(h, spec)
         got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
-        expected = sorted(
-            legacy.selections, key=lambda s: (s.observation_key, s.simulation_time)
-        )
+        expected = sorted(legacy.selections, key=lambda s: (s.observation_key, s.simulation_time))
         assert got == expected, cutoff
+
+
+def test_run_backed_evaluation_instants_are_deterministic_at_half_open_boundaries(
+    h: RestHarness,
+) -> None:
+    """The external change run keeps the interval's inclusive start and exclusive end exactly
+    aligned with the legacy selector, and repeated reads have identical order/content."""
+    _chain(h)
+    spec = _spec(h, cutoff=N_R, interval=(N_A, N_R))
+    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    first = _bounded(h, spec)
+    second = _bounded(h, spec)
+    assert first == second
+    assert tuple(_selections(first)) == legacy.selections
+    assert all(item.simulation_time < N_R for item in _selections(first))
+    assert _selections(first)[0].simulation_time == N_A
 
 
 def test_iter_bounded_reports_a_conflict_inline_like_select_reports_it_out_of_band(
