@@ -842,9 +842,7 @@ class RawRevisionStore:
                         power *= 2
                         distance = 0
                     parent = snapshot.parent_snapshot_id
-                    snapshot = (
-                        None if parent is None else self._adapter.get_snapshot(table, parent)
-                    )
+                    snapshot = None if parent is None else self._adapter.get_snapshot(table, parent)
         raise CatalogIntegrityError(
             f"{table} has a row of batch {batch_id} but no snapshot that committed it"
         )

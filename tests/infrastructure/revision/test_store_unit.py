@@ -207,12 +207,8 @@ def test_batch_snapshot_lookup_spools_counts_and_closes(harness: StoreHarness) -
 
 def test_snapshot_of_batch_parent_walk_finds_nearest_match_without_history() -> None:
     snapshots = {
-        "s3": SimpleNamespace(
-            snapshot_id="s3", parent_snapshot_id="s2", batch_id="newer"
-        ),
-        "s2": SimpleNamespace(
-            snapshot_id="s2", parent_snapshot_id="s1", batch_id="wanted"
-        ),
+        "s3": SimpleNamespace(snapshot_id="s3", parent_snapshot_id="s2", batch_id="newer"),
+        "s2": SimpleNamespace(snapshot_id="s2", parent_snapshot_id="s1", batch_id="wanted"),
         "s1": SimpleNamespace(snapshot_id="s1", parent_snapshot_id=None, batch_id="older"),
     }
     store, adapter = _parent_walk_store(snapshots, "s3")
@@ -228,9 +224,7 @@ def test_snapshot_of_batch_parent_walk_handles_empty_and_single_node_history() -
         store._snapshot_of_batch("raw.test", "missing")
     assert adapter.lookups == []
 
-    single = {
-        "s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id=None, batch_id="wanted")
-    }
+    single = {"s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id=None, batch_id="wanted")}
     store, adapter = _parent_walk_store(single, "s0")
     assert store._snapshot_of_batch("raw.test", "wanted") == "s0"
     assert adapter.lookups == []
@@ -270,9 +264,7 @@ def test_snapshot_of_batch_parent_walk_rejects_cycles_and_missing_batches() -> N
     with pytest.raises(CatalogIntegrityError, match="cycle in snapshot ancestry"):
         store._snapshot_of_batch("raw.test", "missing")
 
-    self_loop = {
-        "s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id="s0", batch_id="b0")
-    }
+    self_loop = {"s0": SimpleNamespace(snapshot_id="s0", parent_snapshot_id="s0", batch_id="b0")}
     store, _ = _parent_walk_store(self_loop, "s0")
     with pytest.raises(CatalogIntegrityError, match="cycle in snapshot ancestry"):
         store._snapshot_of_batch("raw.test", "missing")
