@@ -68,6 +68,23 @@ def test_an_invalid_port_is_refused(port: object) -> None:
         server_options(port)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_startup_signal_is_routed_to_uvicorn_and_previous_handler_is_restored(
+    signum: signal.Signals,
+) -> None:
+    received: list[int] = []
+
+    def server_handler(signal_number: int, _frame: object) -> None:
+        received.append(signal_number)
+
+    previous = signal.getsignal(signum)
+    with serve._successful_signal_replay(server_handler):
+        signal.raise_signal(signum)
+
+    assert received == [signum]
+    assert signal.getsignal(signum) == previous
+
+
 def test_the_command_line_has_no_host_worker_or_reload_option() -> None:
     options = {o for action in serve.parser()._actions for o in action.option_strings}
     assert options == {
@@ -163,7 +180,18 @@ class _Server:
 
     def stop(self, sig: signal.Signals) -> tuple[int, str]:
         self.process.send_signal(sig)
-        _, rest = self.process.communicate(timeout=START_TIMEOUT)
+        try:
+            self.process.wait(timeout=START_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+            if self.process.stdout is not None:
+                self.process.stdout.read()
+            raise
+        # _start() already consumed startup lines from this pipe. After a direct readline(),
+        # Popen.communicate() may return ``None`` for stdout instead of the shutdown tail.
+        # Drain the stream itself after process exit so the graceful-shutdown assertions see it.
+        rest = self.process.stdout.read() if self.process.stdout is not None else ""
         return self.process.returncode, "".join(self.log) + rest
 
 
