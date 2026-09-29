@@ -257,6 +257,15 @@ writer / reader、chunk commit、streaming verifier、`ManifestStore` 双表分�
 
 **后续 PIT RunSet 复核记录（2026-09-29）**：候选 `972c6c7980352ea546ff65a1914f18cf7e6a1733` 将 `PitSelector.iter_bounded()` 的 row/edge run-ref 列表改为层次化 root；test-only follow-up `6a80b67030105420fe8f33306f59e14757e6ebc2` 直接计数 compaction 与两个 root readers。独立 reviewer APPROVE；PIT selector + Dataset v3 source `41 passed`，Ruff、format、mypy 和 diff-check 通过。单 key 的 rows/edges/availability/graph 物化及 `maximal_heads` 无界 tuple 仍未解决，不能据此声称 PIT 或 E1 有界。
 
+### Implementation decision: verified Channel edge stream (2026-09-29; PM D-PM-AUTH)
+
+为消除 `ChannelReconciler.verified_edges()` 的整日 `_Plan` staging，采用以下 infrastructure-only 实现细节，不改 ADR-0027 / 冻结契约或 public `CatalogAdapter`：
+
+1. 新增显式关闭的 bounded edge cursor，调用方必须注入固定 row / edge capacity、merge fanout 与 run limits；`verified_edges()` 保持兼容 tuple materializer。revision 层只依赖中立的内部 RunSet protocol / primitive，不依赖 `infrastructure.pit`。
+2. 输入行、逐 key provenance、跨 key duplicate / missing、evidence batch sibling 与 fingerprint、图校验及 pinned heads 稳定性必须在同一固定 snapshot 语义下完整复核。输出先写入私有、有序、内容寻址 final run；所有 day checks 成功后才可向调用方开放 cursor，禁止先 yield 后才发现整日校验失败。
+3. final stream 顺序稳定且重复边按现行内容一致性规则拒绝；调用方自然耗尽、异常或提前关闭时显式关闭所有 run readers。失败对象可成为 ADR-0077 §9 所述不可引用 orphan，不执行写路径删除。
+4. 此切片只消除按整日行数 / key 数 / edge 数累积的 staging。当前 per-key graph/evidence 工作集、D1 `ParsedArchive` 完整重解析与单个对象 / Arrow batch 字节仍单独受容量审计；实现与测试不能宣称 E1-CAP-1 或 32 MiB 门通过。
+
 ### Raphael Decision Packet（DQ-1）——已决定：A（Raphael，2026-09-28）
 
 - **问题：** 是否批准新增契约 2.3.0 的有界 Dataset manifest 模型，并修改其必要的 `core/contracts/`、版本登记及冻结契约文档？
