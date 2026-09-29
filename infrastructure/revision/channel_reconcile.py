@@ -39,6 +39,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import itertools
+from bisect import bisect_left
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -1926,44 +1927,149 @@ class ChannelReconciler:
                                         f"evidence key {evidence_group[0]} is absent from "
                                         "REST day keys"
                                     )
-                                current_edges = (
-                                    []
-                                    if evidence_group is None
-                                    or evidence_group[0] != observation_key
-                                    else list(evidence_group[1])
+                                has_current_edges = (
+                                    evidence_group is not None
+                                    and evidence_group[0] == observation_key
                                 )
-                                if current_edges:
-                                    evidence_group = next(evidence_groups, None)
 
                                 rest_revisions.sort(key=lambda item: item.revision_id)
                                 archive_revisions.sort(key=lambda item: item.revision_id)
                                 rest_records.sort(key=lambda item: item.revision_id)
                                 archive_records.sort(key=lambda item: item.revision_id)
-                                equal: dict[str, ChannelComparison] = {}
-                                for archive_revision in archive_revisions:
-                                    for rest in rest_revisions:
-                                        comparison = compare_channels(archive_revision, rest)
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda row: row["edge_id"],
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as equal_pairs:
+                                    for archive_revision in archive_revisions:
+                                        for rest in rest_revisions:
+                                            comparison = compare_channels(archive_revision, rest)
+                                            if (
+                                                comparison.outcome
+                                                is ComparisonOutcome.INTEGRITY_VIOLATION
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    "stored revisions contradict themselves; "
+                                                    f"no edge is written: {observation_key} "
+                                                    f"{archive_revision.revision_id} / "
+                                                    f"{rest.revision_id}: "
+                                                    f"{'; '.join(comparison.reasons)}"
+                                                )
+                                            if comparison.outcome is ComparisonOutcome.EQUAL:
+                                                equal_pairs.add(
+                                                    {
+                                                        "edge_id": _edge_id(comparison),
+                                                        "archive_revision_id": (
+                                                            archive_revision.revision_id
+                                                        ),
+                                                        "rest_revision_id": rest.revision_id,
+                                                    }
+                                                )
+                                    equal_root = equal_pairs.finish()
+
+                                graph_evidence: list[PrecedenceEvidence] = []
+                                with ExitStack() as stack:
+                                    expected_pairs = (
+                                        iter(())
+                                        if equal_root is None
+                                        else stack.enter_context(
+                                            iter_run(self._storage, equal_root)
+                                        )
+                                    )
+                                    current_edge_rows: Iterator[Mapping[str, Any]] = iter(())
+                                    if (
+                                        evidence_group is not None
+                                        and evidence_group[0] == observation_key
+                                    ):
+                                        current_edge_rows = evidence_group[1]
+                                    expected_pair = next(expected_pairs, None)
+                                    current_edge = next(current_edge_rows, None)
+                                    previous_edge_id: str | None = None
+                                    while current_edge is not None:
+                                        edge_id = current_edge["edge_id"]
+                                        while (
+                                            expected_pair is not None
+                                            and expected_pair["edge_id"] < edge_id
+                                        ):
+                                            expected_pair = next(expected_pairs, None)
                                         if (
-                                            comparison.outcome
-                                            is ComparisonOutcome.INTEGRITY_VIOLATION
+                                            expected_pair is None
+                                            or expected_pair["edge_id"] != edge_id
                                         ):
                                             raise CatalogIntegrityError(
-                                                f"stored revisions contradict themselves; no edge "
-                                                f"is written: {observation_key} "
-                                                f"{archive_revision.revision_id} / "
-                                                f"{rest.revision_id}: "
-                                                f"{'; '.join(comparison.reasons)}"
+                                                f"evidence edge {edge_id} does not describe an "
+                                                "equal archive / REST pair of the pinned snapshots"
                                             )
-                                        if comparison.outcome is ComparisonOutcome.EQUAL:
-                                            equal[_edge_id(comparison)] = comparison
-                                existing = self._existing_edges(current_edges, equal)
+                                        if edge_id == previous_edge_id:
+                                            raise CatalogIntegrityError(
+                                                f"evidence edge {edge_id} is committed twice"
+                                            )
+                                        archive_revision_id = expected_pair["archive_revision_id"]
+                                        rest_revision_id = expected_pair["rest_revision_id"]
+                                        if (
+                                            current_edge["revision_id"] != archive_revision_id
+                                            or current_edge["superseded_revision_id"]
+                                            != rest_revision_id
+                                        ):
+                                            raise CatalogIntegrityError(
+                                                f"evidence edge {edge_id} does not match its "
+                                                "archive / REST revision ids"
+                                            )
+                                        archive_index = bisect_left(
+                                            archive_revisions,
+                                            archive_revision_id,
+                                            key=lambda item: item.revision_id,
+                                        )
+                                        rest_index = bisect_left(
+                                            rest_revisions,
+                                            rest_revision_id,
+                                            key=lambda item: item.revision_id,
+                                        )
+                                        if archive_index >= len(
+                                            archive_revisions
+                                        ) or rest_index >= len(rest_revisions):
+                                            raise CatalogIntegrityError(
+                                                f"evidence edge {edge_id} references a missing "
+                                                "source revision"
+                                            )
+                                        archive_revision = archive_revisions[archive_index]
+                                        rest_revision = rest_revisions[rest_index]
+                                        if (
+                                            archive_revision.revision_id != archive_revision_id
+                                            or rest_revision.revision_id != rest_revision_id
+                                        ):
+                                            raise CatalogIntegrityError(
+                                                f"evidence edge {edge_id} references a missing "
+                                                "source revision"
+                                            )
+                                        comparison = compare_channels(
+                                            archive_revision, rest_revision
+                                        )
+                                        if (
+                                            comparison.outcome is not ComparisonOutcome.EQUAL
+                                            or _edge_id(comparison) != edge_id
+                                        ):
+                                            raise CatalogIntegrityError(
+                                                f"evidence edge {edge_id} does not describe an "
+                                                "equal archive / REST pair of the pinned snapshots"
+                                            )
+                                        edge = self._existing_edges(
+                                            (current_edge,), {edge_id: comparison}
+                                        )[edge_id]
+                                        graph_evidence.append(edge.evidence)
+                                        output.add(edge.row())
+                                        previous_edge_id = edge_id
+                                        expected_pair = next(expected_pairs, None)
+                                        current_edge = next(current_edge_rows, None)
+                                if has_current_edges:
+                                    evidence_group = next(evidence_groups, None)
                                 assemble_channel_graph(
                                     archive_records,
                                     rest_records,
-                                    tuple(edge.evidence for edge in existing.values()),
+                                    graph_evidence,
                                 )
-                                for edge_id in sorted(existing):
-                                    output.add(existing[edge_id].row())
                             if (
                                 rest_group is not None
                                 or archive_group is not None
