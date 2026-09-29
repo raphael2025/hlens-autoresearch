@@ -9,9 +9,9 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24） |
-| 当前子阶段 | W1 PostgreSQL-enabled 全量回归已结束：`7 failed, 8814 passed, 1 skipped, 72 deselected, 5 warnings`（1:27:36）。原 14 项兼容性失败与 loop-round malformed 用例已按两轮规则延期，不计通过，仍为发布门。数据库模块一次定向复测为 `3 failed, 40 passed`：catalog 冻结表布局与 revision 表绑定两项复现，按两轮规则延期；catalog metadata-only 检查为首次失败，留待后续最多一次精确节点复测。修复后的 console fixture + synthetic evidence 回归 `52 passed, 1 warning`。所有延期项从当前实现批次移出但不从发布门移除；继续推进独立的 W2/W3/W5 工作。Parser/D2/verifier 最新为 `codex/e1-history-bounds@27b8b54`；PIT `9d27767`、Universe `7aa5457`/`bf72bd5`/`f4e8771`、Canonical `991b126` 均已隔离提交并完成范围内定向检查 / 独立审查，待安全整合。单 key PIT 图、Quality report event list、E1 全进程 32 MiB 容量仍未闭合。Phase 1 未验收；Profile 数值未冻结，P13 仍为模拟执行。 |
+| 当前子阶段 | W1 PostgreSQL-enabled 全量回归已结束：`7 failed, 8814 passed, 1 skipped, 72 deselected, 5 warnings`（1:27:36；8,822 项执行，另有 72 项 deselected）。原 14 项兼容性失败、loop-round malformed、catalog 冻结表布局和 revision 表绑定按两轮规则延期，不计通过，仍为发布门。数据库 focused retry 为 `3 failed, 40 passed`；catalog metadata-only 检查虽在 focused retry 失败，但全量七个失败 node IDs 未保留，轮数无法核实；之后因 `HLENS_TEST_CATALOG_URI` 未配置而 skip 的精确尝试既不计通过也不计失败。修复后的 console fixture + synthetic evidence 回归 `52 passed, 1 warning`。所有两轮延期项从当前实现批次移出但不从发布门移除；继续推进独立 W2/W3/W5 工作。Parser/D2/verifier 与 W5 seed-version guard 已择取到隔离集成分支 `codex/w1-independent-integration@d432399`，联合定向回归 `178 passed`、独立 review 无 P1/P2。PIT `34700f2`、Universe `7aa5457`/`bf72bd5`/`f4e8771`、Canonical `991b126` 仍为待整合候选。单 key PIT 图、Quality report event list、E1 全进程 32 MiB 容量仍未闭合。Phase 1 未验收；Profile 数值未冻结，P13 仍为模拟执行。 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 长期分支仍为 `main`；本地协调分支为 `codex/w1-stabilization`，另有 5 个隔离任务 worktree；本轮未推送或合入 `main`。`main@e584187` 比 `origin/main` 超前 2 个提交。W1 PostgreSQL-enabled 全量结果为 7 failed / 8814 passed / 1 skipped / 72 deselected；原 14 项、loop-round malformed、catalog 冻结表布局和 revision 表绑定按两轮规则延期，不计通过、仍属发布门。最新 console/evidence 定向检查 52 passed。其他模块范围内检查结果与隔离分支状态详见 W1 review。Phase 1 仍未验收：E1-CAP-1 容量门未通过。代码整合与局部通过不等于全项目验收。 |
+| 总体状态 | 长期分支仍为 `main`；本地协调分支为 `codex/w1-stabilization`，另有多个隔离任务 worktree；本轮未推送或合入 `main`。`main@e584187` 比 `origin/main` 超前 2 个提交。W1 PostgreSQL-enabled 全量为 7 failed / 8,814 passed / 1 skipped / 72 deselected；两轮延期节点不计通过、仍属发布门。catalog metadata-only 节点轮数待核实；后续无测试 catalog 的尝试为 skip。Parser/D2/verifier 与 W5 schema guard 候选在隔离集成分支 `d432399` 通过 178 项定向回归，独立 review 无 P1/P2。其他模块状态详见 W1 review。Phase 1 仍未验收：E1-CAP-1 容量门未通过。代码整合与局部通过不等于全项目验收。 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-29 |
 
@@ -319,8 +319,8 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-29 | W1 全仓验收与并行收口（无 PostgreSQL） | `pytest -rs`: 8,723 passed / 15 failed / 138 skipped / 5 warnings (1:20:39)；一次 `--lf` 后 14 仍失败、1 转通过。作为历史批次保留。 |
 | 2026-09-29 | W2 本机 API 与 worker 生命周期验收 | 安装锁定的可选 `api-server` extra 后，真实 Uvicorn loopback HTTP 与 SIGTERM/SIGINT graceful shutdown、worker 跨进程恢复 `30 passed, 0 skipped`；修复 wrapper 信号重放后的退出码及测试 harness 的 stdout drain。DB / Registry / Admission 恢复仍待验。E1-CAP-1 仍阻断 Phase 1 |
 | 2026-09-29 | W2 Registry / Admission / Catalog 恢复切片 | Registry、Profile Freeze、Retirement、Admission、SQLite Catalog、State、Event `181 passed`；新增 SQLite Catalog / warehouse 关闭重开和幂等恢复 `1 passed`。PostgreSQL URI 未配置，完整 API+worker+Postgres+Iceberg 重启仍待验；无延期 W1 用例重跑 |
-| 2026-09-29 | W5 Knowledge Base 独立验收切片 | 检索、审阅路径 `103 passed`。具名人工种子 tags/assets 审阅及 4 条后增 seed golden 仍未完成；新增 golden 测试连续两轮 Ruff 导入排序失败后撤回并延期，原始种子与历史 golden 未改；不阻塞 W2 / E1 其他工作 |
-| 2026-09-29 | W1 PostgreSQL-enabled 全量收尾与两轮延期 | 全量 `7 failed / 8814 passed / 1 skipped / 72 deselected / 5 warnings`；focused database retry `3 failed / 40 passed`。catalog frozen-layout 与 revision table-binding 节点达到两轮失败并延期；另一个 catalog metadata-only 节点仅失败一轮，最多留一次精确节点复测。console/evidence targeted `52 passed, 1 warning`。按规则不再重跑已延期节点，继续独立工作。Canonical scratch、Dataset spans/run refs 与 Universe 窗口修复已有隔离提交及独立审查；PIT 单 key graph、Quality event stream 仍分别处于实现/决策边界。E1-CAP-1 仍阻断 Phase 1。 |
+| 2026-09-29 | W5 Knowledge Base 独立验收切片 | 检索、审阅路径 `103 passed`；精确 `schema_version == 2.1.0` 守卫随隔离集成候选回归通过。具名人工 tags/assets 审阅及 4 条后增 seed golden 仍未完成；golden 修复项尚未通过验收，单独排期，不阻塞 W2 / E1 其他工作。 |
+| 2026-09-29 | W1 PostgreSQL-enabled 全量收尾与两轮延期 | 全量 `7 failed / 8,814 passed / 1 skipped / 72 deselected / 5 warnings`（8,822 项执行）；focused database retry `3 failed / 40 passed`。catalog frozen-layout 与 revision table-binding 节点达到两轮失败并延期；catalog metadata-only 节点的全量失败轮次因七个 node IDs 未保留而无法核实，后续因测试 URI 未配置而 skip，既不算 pass 也不算 fail。console/evidence targeted `52 passed, 1 warning`。按规则不重跑已延期节点，继续独立工作。E1 archive spool 与 W5 精确 schema 守卫在隔离集成分支经 178 项定向回归；Canonical scratch、Dataset spans/run refs 与 Universe 窗口修复仍为隔离候选；PIT 单 key graph、Quality event stream 仍处于实现/决策边界。E1-CAP-1 仍阻断 Phase 1。 |
 
 ## 10. 下一阶段进入条件
 
@@ -347,7 +347,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 1. 当前分支与 worktree 数量见 §1：`main` 仍是长期分支，W1 协调分支和 5 个隔离任务 worktree 正在收口；本轮没有推送或合入 `main`。Phase 1 仍受 E1-CAP-1 阻断，未验收。模块计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md)。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
 3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。独立模块测试继续推进；Phase 1 全量验收仍未完成，E1 容量门未关闭，未打 tag。
-4. 已提交改动的合并不等于全量验证。W1 PostgreSQL-enabled 全量已结束；14 个兼容性 / 固定哈希失败、loop-round malformed、catalog frozen-layout 与 revision table-binding 节点按两轮规则延期，不计通过且仍属发布门。catalog metadata-only 节点仅失败一轮，最多安排一次精确节点复测。按模块继续推进独立工作，再回到剩余发布门；随后完成 E1-CAP-1 容量测量与 ADR-0051 下界核实。详见 [W1 验收与延期项](docs/reviews/2026-09-29-w1-validation-and-deferrals.md)。
+4. 已提交改动的合并不等于全量验证。W1 PostgreSQL-enabled 全量已结束；14 个兼容性 / 固定哈希失败、loop-round malformed、catalog frozen-layout 与 revision table-binding 节点按两轮规则延期，不计通过且仍属发布门。catalog metadata-only 节点的全量失败轮次待核实；后续无数据库 catalog 的精确尝试为 skip。按模块继续推进独立工作，再回到待分类失败门；随后完成 E1-CAP-1 容量测量与 ADR-0051 下界核实。详见 [W1 验收与延期项](docs/reviews/2026-09-29-w1-validation-and-deferrals.md)。
 
 ## 12. 给 Claude Code 的下一步
 
@@ -356,7 +356,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 1. E1-R 基础切片与 E1-CAP-1 的容量验收状态分开记录；32 MiB 完整工作集门槛不变。归档中的设计提案仍不构成 Accepted ADR，禁止把任何子问题改进表述为 E1-CAP-1 通过。
 2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery、v5 operator identity 与 ADR-0074 有限批次 operator 已整合到 main，均尚待统一验收。继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
 3. P7 六类算子的纯 lowering 已实现（ADR-0078 / 0082 / 0088；rank / quantile 仍 OPEN），`TypedPlan.runnable` 仍为 False——启用运行须在调试通过后另行决定。
-4. ADR-0089 已增加 `expected_spec` 读取身份校验；`tests/infrastructure/state` 27 项通过。最新 PostgreSQL-enabled 全仓结果为 8,814 passed / 7 failed / 1 skipped / 72 deselected；已达到两轮的节点登记为延期且不计通过，具体见 W1 review。数据库模块其余首次失败用例仅在独立批次做一次精确节点复测。不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
+4. ADR-0089 已增加 `expected_spec` 读取身份校验；`tests/infrastructure/state` 27 项通过。最新 PostgreSQL-enabled 全仓结果为 8,814 passed / 7 failed / 1 skipped / 72 deselected；达到两轮的节点延期且不计通过。catalog metadata-only 节点的失败轮次待核实，后续无 PostgreSQL test catalog 的尝试为 skip；其余全量失败尚待恢复 node IDs 分类。具体见 W1 review。不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
 
 ### 10.29 协调分支快进到本地 main（2026-09-27）
 

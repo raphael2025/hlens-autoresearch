@@ -41,7 +41,7 @@ batch. This does not change the original 14-case deferral list above.
 
 ### PostgreSQL-enabled full-suite run and focused retries
 
-The 8,822-item PostgreSQL-enabled run used the existing dedicated test catalog, with the original
+The PostgreSQL-enabled run executed 8,822 items and deselected another 72; it used the existing dedicated test catalog, with the original
 14 deferred cases deselected. It completed with **7 failed, 8,814 passed, 1 skipped, 72 deselected,
 5 warnings in 5,256.10s (1:27:36)**. The available run summary does not preserve all seven node IDs;
 this record only names failures confirmed by the focused run below and the separately deferred
@@ -58,10 +58,13 @@ rule:
 - `tests/infrastructure/revision/test_rest_store_postgres.py::test_all_fifteen_phase1_tables_exist_with_their_bindings`
 
 The same focused retry also exposed
-`tests/infrastructure/catalog/test_phase1_tables_postgres.py::test_catalog_database_holds_only_iceberg_metadata`,
-which was not identified as a failure in the broad-run summary. Its failure is recorded as a first
-round only; it gets at most one exact-node retry in a later batch. Do not rerun the two deferred
-nodes, or either entire module, in this batch.
+`tests/infrastructure/catalog/test_phase1_tables_postgres.py::test_catalog_database_holds_only_iceberg_metadata`.
+The broad-run summary does not preserve the seven failing node IDs, so its result there and its
+failure-round count cannot be confirmed. A later exact-node attempt in the current shell environment
+was skipped because `HLENS_TEST_CATALOG_URI` was not set; a skip is neither a pass nor a failure.
+Do not rerun the two already deferred nodes or either entire module. Revisit this node only when the
+dedicated PostgreSQL test catalog is available and the prior run's failure-node evidence has been
+reconciled.
 
 The post-fix console fixture and synthetic evidence regression completed separately with
 **52 passed, 1 warning in 24.32s**. PostgreSQL failures and all earlier deferred cases remain
