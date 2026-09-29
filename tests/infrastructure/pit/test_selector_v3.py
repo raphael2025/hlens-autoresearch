@@ -1,10 +1,10 @@
-"""v3 fixed-working-set PIT generator (ADR-0077 §6.1.2 / §6.1.3; ``PitSelector.iter_bounded``).
+"""v3 sorted-run PIT generator (ADR-0077 §6.1.2 / §6.1.3; ``PitSelector.iter_bounded``).
 
 Reuses the real Raw / Canonical harness and helpers from ``test_selector.py`` (``_spec``,
 ``_chain``, the four-cutoff fixture data) so every case is checked against the *same* real
 normalizer / reconciler data v2's ``select()`` uses — the point is that ``iter_bounded`` answers
-identically to ``select()``, just through the bounded sort/merge/evaluate pipeline
-(``infrastructure/pit/runs.py``) instead of ``select()``'s whole-window dicts. Deliberately tiny
+identically to ``select()``, just through the sorted-run pipeline (``infrastructure/pit/runs.py``)
+instead of ``select()``'s whole-window dicts. Deliberately tiny
 ``PitRunParams`` (batches / merge fanout / key-history buffer of 1-2) are used throughout so every
 test exercises spilling, multi-run merging and (where applicable) ``KeyHistoryBuffer`` overflow,
 not just the trivial single-run path.
@@ -150,7 +150,9 @@ def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buf
     fifth, single-revision REST-only key exercising ordinary (non-spilling) grouping."""
     _chain(h, count=4)
     [other_item] = ss.agg_items(1, first_id=900)
-    [other_response] = c.ingest_rest(h, "agg_trades", [other_item], knowledge=K_R)
+    [other_response] = c.ingest_rest(
+        h, "agg_trades", [other_item], knowledge=K_R, request_id="req-rest-lone-key"
+    )
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, other_response)
 
     spec = _spec(h, cutoff=FAR)

@@ -73,8 +73,8 @@ from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunLimits,
     RunRef,
-    merge_sorted_runs,
-    spill_sorted_runs,
+    RunSetBuilder,
+    iter_run,
 )
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
@@ -503,6 +503,8 @@ class PitSelector:
         symbol: str,
         days: Sequence[date],
         by_key: Mapping[str, Sequence[Mapping[str, Any]]],
+        *,
+        cache_verified_edges: bool = True,
     ) -> dict[str, list[PrecedenceEvidence]]:
         evidence_snapshot = spec.snapshot_bindings.get(BINANCE_SPOT_PRECEDENCE_EVIDENCE.table)
         if evidence_snapshot is None:
@@ -519,10 +521,12 @@ class PitSelector:
         # and every copy of it must be the same verified edge (anything else fails closed).
         unique: dict[str, ChannelEdge] = {}
         for day in days:
-            verified = self._edges.get((data_type, symbol, day))
+            edge_cache_key = (data_type, symbol, day)
+            verified = self._edges.get(edge_cache_key) if cache_verified_edges else None
             if verified is None:
                 verified = tuple(reconciler.verified_edges(data_type, symbol, day))
-                self._edges[(data_type, symbol, day)] = verified
+                if cache_verified_edges:
+                    self._edges[edge_cache_key] = verified
             for edge in verified:
                 seen = unique.setdefault(edge.edge_id, edge)
                 if seen != edge or seen.row() != edge.row():
@@ -577,7 +581,7 @@ class PitSelector:
         params: PitRunParams,
         touching: bool = False,
     ) -> AbstractContextManager[Iterator[PitBoundedRecord]]:
-        """v3 fixed-working-set entry point (ADR-0077 §6.1.2 / §6.1.3).
+        """v3 sorted-run selection entry point (ADR-0077 §6.1.2 / §6.1.3).
 
         Same bindings, pinned/proven reads, edge mapping, dual-cutoff candidate rule and
         competing-heads rule as :meth:`select` (this method calls the same private helpers, does
@@ -588,27 +592,19 @@ class PitSelector:
           ``observation_key`` and every mapped edge into a second such dict, then accumulates
           ``lineage`` / ``evidence_gaps`` / ``selected_rows`` / ``conflicts`` across *every* key
           before returning one :class:`PitSelection` holding it all;
-        - ``iter_bounded`` instead spills the verified rows, respectively the mapped edges, into
-          content-addressed sorted runs (:func:`infrastructure.pit.runs.spill_sorted_runs`,
-          ``(observation_key, revision_id)`` order) as soon as they are known, frees the two
-          dicts, and only then reconstructs key order via a bounded multi-way merge
-          (:func:`infrastructure.pit.runs.merge_sorted_runs`). One key's rows are gathered (via
-          :class:`infrastructure.pit.runs.KeyHistoryBuffer`, which itself spills to a run if that
-          one key's own history exceeds ``params.key_history_buffer``), evaluated exactly as
-          ``select`` would (:func:`_evaluate` / :func:`_heads`, unchanged), yielded as ordered
-          :class:`PitBoundedRecord`, and released — the next key's key/records/lookup state does
-          not coexist with this one's, and nothing about the *whole window's* result set is ever
-          held in memory at once, addressing ADR-0077 §6.1.4's ban on ``by_key`` /
-          ``records_by_key`` / ``selected_rows`` persisting for a whole ``select`` call.
+        - ``iter_bounded`` verifies fixed-size row batches, spills rows into content-addressed
+          sorted runs, and consumes their root through fanout-bounded multi-pass merging. It
+          processes one key at a time and separately spills / merges that key's mapped edges;
+          it does not construct the whole-window ``by_key`` or ``edges`` mappings or retain a
+          list of every run reference. Key ownership, availability, maximal-head selection and
+          duplicate rejection retain the v2 semantics.
 
-        **Honest boundary**: the read + proof + edge-mapping step (``_canonical_rows`` /
-        ``_verify_canonical`` / ``_mapped_edges``, all reused unchanged) is itself bounded by the
-        pre-existing ADR-0075 / ADR-0076 scan bounds, i.e. by the size of *this one window*, not
-        by the number of windows a caller iterates. Freeing the resulting ``by_key`` / ``edges``
-        dicts (``del``, below) before entering the merge-and-evaluate loop keeps that window-sized
-        peak from persisting into — or accumulating across — the streaming phase; it does not
-        make the read step itself independent of window size (that remains §6.1.1's scope, the
-        ``UniverseBuilder`` / caller-side windowing, not this method's).
+        **Current read boundary**: this path uses fixed Arrow batches and sorted runs for the
+        candidate-key and Canonical-row scans. The current single-key evaluation still
+        reconstructs `key_rows`, `RevisionRecord` / edge tuples and availability mappings before
+        calling the existing graph semantics. Those structures can grow with one key's history,
+        so they remain an ADR-0077 acceptance blocker. ADR-0077 §10 also requires a separate
+        byte-level E1-CAP-1 measurement; no capacity pass is implied here.
 
         A conflict is reported inline (``selection.status is PointInTimeStatus.CONFLICT``) on the
         record itself, in place of ``select``'s separately collected ``conflicts`` tuple; a caller
@@ -870,8 +866,219 @@ def _pit_edge_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
     return (row["observation_key"], canonical_json(row["evidence"]))
 
 
-def _pit_edge_group_key(row: Mapping[str, Any]) -> str:
-    return row["observation_key"]
+def _iter_bounded_canonical_rows(
+    view: PinnedCatalogView,
+    *,
+    table: str,
+    data_type: str,
+    canonical_symbol: str,
+    start: datetime,
+    end: datetime,
+    touching: bool,
+    storage: StorageAdapter,
+    params: PitRunParams,
+) -> Iterator[Mapping[str, Any]]:
+    """Stream owned Canonical rows via bounded candidate, closure and row runs.
+
+    Candidate observation keys and each key's time-ordered closure are externally sorted; no
+    whole-window key set or row list is built. Closure grows by querying disjoint time shells,
+    then connected chains that touch the requested window are projected into one globally sorted
+    ``(observation_key, revision_id)`` run. Run roots, rather than one ref per spill, cross each
+    helper boundary.
+    """
+    column = _time_column(data_type)
+    definition = rules.CANONICAL_TABLES[data_type]
+    limits = params.limits
+
+    def scan_rows(
+        columns: Sequence[str], row_filter: BooleanExpression
+    ) -> Iterator[Mapping[str, Any]]:
+        reader = view.scan_column_batches(table, columns=columns, row_filter=row_filter)
+        try:
+            for batch in reader:
+                yield from batch.to_pylist()
+        finally:
+            close = getattr(reader, "close", None)
+            if callable(close):
+                close()
+
+    candidate_filter = And(
+        _equals("symbol", canonical_symbol),
+        And(_at_least(column, start), _below(column, end)),
+    )
+    with RunSetBuilder(
+        storage,
+        key=lambda row: row["observation_key"],
+        capacity=params.row_batch_rows,
+        merge_fanout=params.merge_fanout,
+        limits=limits,
+    ) as candidate_builder:
+        for row in scan_rows(("observation_key",), candidate_filter):
+            candidate_builder.add({"observation_key": row["observation_key"]})
+        candidate_root = candidate_builder.finish()
+    if candidate_root is None:
+        return
+
+    def key_rows(key: str, low: datetime, high: datetime) -> Iterator[Mapping[str, Any]]:
+        filt = And(
+            _equals("symbol", canonical_symbol),
+            And(
+                EqualTo("observation_key", key),
+                And(_at_least(column, low), _below(column, high)),
+            ),
+        )
+        yield from scan_rows(tuple(field.name for field in definition.arrow_schema), filt)
+
+    def build_interval(key: str, low: datetime, high: datetime) -> RunRef | None:
+        with RunSetBuilder(
+            storage,
+            key=lambda row: (row[column], row["revision_id"]),
+            capacity=params.row_batch_rows,
+            merge_fanout=params.merge_fanout,
+            limits=limits,
+        ) as builder:
+            builder.extend(key_rows(key, low, high))
+            return builder.finish()
+
+    def merge_shells(
+        key: str,
+        previous: RunRef,
+        low: datetime,
+        high: datetime,
+        old_low: datetime,
+        old_high: datetime,
+    ) -> RunRef:
+        with RunSetBuilder(
+            storage,
+            key=lambda row: (row[column], row["revision_id"]),
+            capacity=params.row_batch_rows,
+            merge_fanout=params.merge_fanout,
+            limits=limits,
+        ) as builder:
+            with iter_run(storage, previous) as old_rows:
+                builder.extend(old_rows)
+            if low < old_low:
+                builder.extend(key_rows(key, low, old_low))
+            if old_high < high:
+                builder.extend(key_rows(key, old_high, high))
+            result = builder.finish()
+        if result is None:  # previous is non-empty; this is a storage integrity failure.
+            raise CatalogIntegrityError("a Canonical key closure unexpectedly became empty")
+        return result
+
+    def touched_bounds(root: RunRef, low: datetime, high: datetime) -> tuple[datetime, datetime]:
+        widened_low, widened_high = low, high
+        chain_first: datetime | None = None
+        chain_last: datetime | None = None
+        chain_touches = False
+
+        def close_chain() -> None:
+            nonlocal widened_low, widened_high, chain_first, chain_last, chain_touches
+            if chain_first is not None and chain_last is not None and chain_touches:
+                widened_low = min(widened_low, chain_first - _KEY_REACH)
+                widened_high = max(widened_high, chain_last + _KEY_REACH)
+            chain_first = chain_last = None
+            chain_touches = False
+
+        with iter_run(storage, root) as records:
+            for row in records:
+                at = row[column]
+                if chain_last is not None and at - chain_last > _KEY_REACH:
+                    close_chain()
+                if chain_first is None:
+                    chain_first = at
+                chain_last = at
+                chain_touches = chain_touches or start <= at < end
+            close_chain()
+        return widened_low, widened_high
+
+    def iter_kept_chains(root: RunRef, key: str) -> Iterator[Mapping[str, Any]]:
+        chain_builder: RunSetBuilder | None = None
+        chain_first: datetime | None = None
+        chain_last: datetime | None = None
+        chain_touches = False
+
+        def release_chain() -> Iterator[Mapping[str, Any]]:
+            nonlocal chain_builder, chain_first, chain_last, chain_touches
+            if chain_builder is None:
+                return
+            chain_root = chain_builder.finish()
+            keep = chain_touches and (
+                touching or (chain_first is not None and start <= chain_first < end)
+            )
+            chain_builder = None
+            chain_first = chain_last = None
+            chain_touches = False
+            if keep and chain_root is not None:
+                with iter_run(storage, chain_root) as chain_rows:
+                    yield from chain_rows
+
+        try:
+            with iter_run(storage, root) as records:
+                for row in records:
+                    at = row[column]
+                    if chain_last is not None and at - chain_last > _KEY_REACH:
+                        yield from release_chain()
+                    if chain_builder is None:
+                        chain_builder = RunSetBuilder(
+                            storage,
+                            key=lambda item: (item[column], item["revision_id"]),
+                            capacity=params.row_batch_rows,
+                            merge_fanout=params.merge_fanout,
+                            limits=limits,
+                        )
+                        chain_first = at
+                    chain_builder.add(row)
+                    chain_last = at
+                    chain_touches = chain_touches or start <= at < end
+                yield from release_chain()
+        finally:
+            if chain_builder is not None:
+                chain_builder.close()
+
+    row_builder = RunSetBuilder(
+        storage,
+        key=_pit_row_sort_key,
+        capacity=params.row_batch_rows,
+        merge_fanout=params.merge_fanout,
+        limits=limits,
+    )
+    try:
+        with iter_run(storage, candidate_root) as candidates:
+            last_key: str | None = None
+            for candidate in candidates:
+                key = candidate["observation_key"]
+                if not isinstance(key, str) or not key:
+                    raise CatalogIntegrityError("a Canonical observation_key is not a string")
+                if key == last_key:
+                    continue
+                last_key = key
+                low, high = start - _KEY_REACH, end + _KEY_REACH
+                root = build_interval(key, low, high)
+                if root is None:
+                    raise CatalogIntegrityError(
+                        f"a selected Canonical observation_key {key} has no revisions"
+                    )
+                for _ in range(_CLOSURE_STEPS):
+                    next_low, next_high = touched_bounds(root, low, high)
+                    if (next_low, next_high) == (low, high):
+                        break
+                    root = merge_shells(key, root, next_low, next_high, low, high)
+                    low, high = next_low, next_high
+                else:
+                    raise CatalogIntegrityError(
+                        f"key revisions around {start.isoformat()} chain beyond "
+                        f"{_CLOSURE_STEPS} closure steps"
+                    )
+                row_builder.extend(iter_kept_chains(root, key))
+        final_root = row_builder.finish()
+        if final_root is not None:
+            with iter_run(storage, final_root) as result_rows:
+                yield from result_rows
+    finally:
+        # The builder itself owns no open reader; this drops bounded in-memory tail/ref state if
+        # the output consumer closes before all candidate keys have been processed.
+        row_builder.close()
 
 
 @contextmanager
@@ -895,80 +1102,80 @@ def _pit_bounded_stream(
     instrument = rules.SYMBOLS.get(symbol)
     if instrument is None:
         raise PitSpecError(f"{symbol!r} is not a first-slice venue symbol")
-    days = _days(start, end)
+    # Validate the window without retaining one ``date`` per calendar day. The bounded path
+    # discovers only days carrying rows for the current key as it streams the sorted run.
+    for label, value in (("start", start), ("end", end)):
+        if (
+            not isinstance(value, datetime)
+            or value.tzinfo is None
+            or value.utcoffset() != timedelta(0)
+        ):
+            raise PitSpecError(f"{label} must be a UTC datetime")
+    if not start < end:
+        raise PitSpecError("the window must not be empty")
     if canonical.table not in spec.snapshot_bindings:
         raise PitSpecError(f"the spec does not bind {canonical.table}")
     view = selector._pinned(spec)
 
-    rows = selector._canonical_rows(
-        view, canonical.table, data_type, instrument.symbol, start, end, touching
-    )
-    verified = selector._verify_canonical(view, rows)
+    def _verified_in_batches() -> Iterator[Mapping[str, Any]]:
+        """Verify bounded batches so the v3 path never builds a window-sized verified list."""
+        batch: list[Mapping[str, Any]] = []
+        source = _iter_bounded_canonical_rows(
+            view,
+            table=canonical.table,
+            data_type=data_type,
+            canonical_symbol=instrument.symbol,
+            start=start,
+            end=end,
+            touching=touching,
+            storage=selector._storage,
+            params=params,
+        )
+        try:
+            for row in source:
+                batch.append(row)
+                if len(batch) == params.row_batch_rows:
+                    yield from selector._verify_canonical(view, batch)
+                    batch.clear()
+            if batch:
+                yield from selector._verify_canonical(view, batch)
+        finally:
+            source.close()
+
     try:
         bound_assumption = assumption_bound(spec)
     except AssumptionSpecError as exc:
         raise PitSpecError(str(exc)) from None
 
-    # Transient, window-sized grouping (same bound as select()'s by_key): unavoidable because
-    # _mapped_edges (reused unchanged) needs every key's rows to resolve each Raw edge's
-    # Canonical endpoints. Freed (``del``, below) before the bounded merge-and-evaluate phase.
-    by_key: dict[str, list[Mapping[str, Any]]] = {}
-    for row in verified:
-        by_key.setdefault(row["observation_key"], []).append(row)
     column = _time_column(data_type)
-    edge_days = sorted(set(days) | {row[column].astimezone(UTC).date() for row in verified})
-    edges = selector._mapped_edges(view, spec, data_type, symbol, edge_days, by_key)
-
     storage = selector._storage
     limits = params.limits
-    row_refs: list[RunRef] = list(
-        spill_sorted_runs(
-            verified,
-            key=_pit_row_sort_key,
-            capacity=params.row_batch_rows,
-            storage=storage,
-            limits=limits,
-        )
-    )
-    edge_refs: list[RunRef] = list(
-        spill_sorted_runs(
-            _flatten_edges(edges),
-            key=_pit_edge_sort_key,
-            capacity=params.edge_batch_rows,
-            storage=storage,
-            limits=limits,
-        )
-    )
-    del by_key, edges, verified, rows
 
     def _generate() -> Iterator[PitBoundedRecord]:
-        with (
-            merge_sorted_runs(
-                storage,
-                row_refs,
-                key=_pit_row_sort_key,
-                merge_fanout=params.merge_fanout,
-                limits=limits,
-            ) as merged_rows,
-            merge_sorted_runs(
-                storage,
-                edge_refs,
-                key=_pit_edge_sort_key,
-                merge_fanout=params.merge_fanout,
-                limits=limits,
-            ) as merged_edges,
-        ):
-            edge_iter = iter(itertools.groupby(merged_edges, key=_pit_edge_group_key))
-            pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
-            pending_edge_items = (
-                list(pending_edge_group) if pending_edge_group is not None else []
-            )
-
+        with RunSetBuilder(
+            storage,
+            key=_pit_row_sort_key,
+            capacity=params.row_batch_rows,
+            merge_fanout=params.merge_fanout,
+            limits=limits,
+        ) as row_builder:
+            row_builder.extend(_verified_in_batches())
+            row_root = row_builder.finish()
+        if row_root is None:
+            return
+        with iter_run(storage, row_root) as merged_rows:
+            last_identity: tuple[str, str] | None = None
             for row_key, row_group in itertools.groupby(merged_rows, key=_pit_row_group_key):
                 buffer = KeyHistoryBuffer(
                     storage=storage, buffer_limit=params.key_history_buffer, limits=limits
                 )
                 for row in row_group:
+                    identity = (row["observation_key"], row["revision_id"])
+                    if identity == last_identity:
+                        raise CatalogIntegrityError(
+                            f"Canonical revision {identity[1]} is read twice"
+                        )
+                    last_identity = identity
                     buffer.add(row)
                 with buffer.rows() as key_row_iter:
                     key_rows = {row["revision_id"]: row for row in key_row_iter}
@@ -979,16 +1186,40 @@ def _pit_bounded_stream(
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
                 owner_at = min(row[column] for row in key_rows.values())
 
-                while pending_edge_key is not None and pending_edge_key < row_key:
-                    pending_edge_key, next_group = next(edge_iter, (None, None))
-                    pending_edge_items = list(next_group) if next_group is not None else []
-                if pending_edge_key == row_key:
-                    key_edges = tuple(
-                        PrecedenceEvidence.model_validate(item["evidence"])
-                        for item in pending_edge_items
+                key_days = sorted(
+                    {row[column].astimezone(UTC).date() for row in key_rows.values()}
+                )
+                mapped = selector._mapped_edges(
+                    view,
+                    spec,
+                    data_type,
+                    symbol,
+                    key_days,
+                    {row_key: tuple(key_rows.values())},
+                    cache_verified_edges=False,
+                )
+                if any(mapped_key != row_key for mapped_key in mapped):
+                    raise CatalogIntegrityError(
+                        "a mapped edge references an observation_key with no corresponding "
+                        "Canonical rows in this window"
                     )
-                else:
+                with RunSetBuilder(
+                    storage,
+                    key=_pit_edge_sort_key,
+                    capacity=params.edge_batch_rows,
+                    merge_fanout=params.merge_fanout,
+                    limits=limits,
+                ) as edge_builder:
+                    edge_builder.extend(_flatten_edges(mapped))
+                    edge_root = edge_builder.finish()
+                if edge_root is None:
                     key_edges = ()
+                else:
+                    with iter_run(storage, edge_root) as merged_edges:
+                        key_edges = tuple(
+                            PrecedenceEvidence.model_validate(item["evidence"])
+                            for item in merged_edges
+                        )
 
                 moved = effective_available_times(list(key_rows.values()), bound=bound_assumption)
                 available = {
@@ -1036,20 +1267,10 @@ def _pit_bounded_stream(
                 # key_rows / records / key_edges / buffer go out of scope here, before the next
                 # observation_key's group is even read off merged_rows.
 
-            # Every mapped edge's observation_key must be one _mapped_edges found rows for (it
-            # only ever adds an edge once both Raw endpoints resolved among that key's rows); an
-            # edges group that never matched a row_key would mean the two runs disagree with
-            # what by_key / edges actually held, which the spill/merge path must never do.
-            if pending_edge_key is not None or next(edge_iter, None) is not None:
-                raise CatalogIntegrityError(
-                    "a mapped edge references an observation_key with no corresponding "
-                    "Canonical rows in this window"
-                )
-
-    # ``_generate`` holds the two ``merge_sorted_runs`` contexts (each up to ``merge_fanout``
-    # open run readers) and, mid-key, one ``KeyHistoryBuffer.rows()`` context: closed explicitly
-    # here on every exit of the caller's ``with`` block -- full iteration, an early ``break``, or
-    # an exception -- rather than left to whenever the generator object is garbage collected.
+    # ``_generate`` holds the merged row-root reader and, while processing one key, the
+    # KeyHistoryBuffer / edge-root readers. They are closed explicitly on every exit of the
+    # caller's ``with`` block -- full iteration, an early ``break``, or an exception -- rather
+    # than left to whenever the generator object is garbage collected.
     # ``.close()`` throws ``GeneratorExit`` in at the generator's current (or not yet started)
     # suspension point, which the ``with`` statements above unwind exactly as any other exit.
     generated = _generate()
