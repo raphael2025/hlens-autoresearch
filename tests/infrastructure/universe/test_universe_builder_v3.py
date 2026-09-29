@@ -22,7 +22,8 @@ Mirrors ``tests/infrastructure/dataset/test_universe.py``'s scenarios but drives
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -488,6 +489,96 @@ def test_instants_v3_sorts_batches_filters_cutoff_and_treats_end_as_right_open(
     assert SIM not in result  # Interval end is right-open, even when a source reports it.
     assert len(readers) == 2
     assert all(reader.closed == 1 for reader in readers)
+
+
+def test_instants_v3_discards_large_pre_window_history_before_run_staging(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-window source history must not become sorter records or change the window output."""
+    w.listed(ds.TRADING, L1)
+    t1, t2, t3 = (L1 + timedelta(minutes=i) for i in (1, 2, 3))
+    cutoff = SIM
+    pit = w.spec(interval=(L1, SIM), cutoff=cutoff)
+    history_size = 4096
+
+    def batches(rows: Iterator[dict[str, Any]]) -> Iterator[SimpleNamespace]:
+        while batch := list(islice(rows, 128)):
+            yield SimpleNamespace(to_pylist=lambda batch=batch: batch)
+
+    def exchange_rows() -> Iterator[dict[str, Any]]:
+        for minute in range(history_size, 0, -1):
+            yield {
+                "retrieved_at": L1 - timedelta(minutes=minute),
+                "knowledge_time": cutoff,
+            }
+        yield {"retrieved_at": t2, "knowledge_time": cutoff}
+        yield {"retrieved_at": SIM, "knowledge_time": cutoff}  # right-open end
+        yield {"retrieved_at": t1, "knowledge_time": cutoff + timedelta(microseconds=1)}
+        yield {"retrieved_at": t1, "knowledge_time": cutoff}
+
+    def listing_rows() -> Iterator[dict[str, Any]]:
+        for minute in range(history_size, 0, -1):
+            yield {
+                "available_time": L1 - timedelta(minutes=minute),
+                "knowledge_time": cutoff,
+                "tradable_intervals": [],
+            }
+        # Interval boundaries are independent change events and must be window-filtered too.
+        yield {
+            "available_time": L1 - timedelta(minutes=1),
+            "knowledge_time": cutoff,
+            "tradable_intervals": [{"tradable_from": t2, "tradable_until": t3}],
+        }
+        # A late-known interval remains invisible even though its times are in-window.
+        yield {
+            "available_time": t1,
+            "knowledge_time": cutoff + timedelta(microseconds=1),
+            "tradable_intervals": [{"tradable_from": t1, "tradable_until": t2}],
+        }
+
+    class _Reader:
+        def __init__(self, rows: Iterator[dict[str, Any]]) -> None:
+            self._batches = iter(batches(rows))
+            self.closed = False
+
+        def __iter__(self) -> _Reader:
+            return self
+
+        def __next__(self) -> SimpleNamespace:
+            return next(self._batches)
+
+        def close(self) -> None:
+            self.closed = True
+
+    readers: list[_Reader] = []
+
+    def scan(self: PinnedCatalogView, table: str, **kwargs: Any) -> _Reader:
+        rows = exchange_rows() if table == ub.EXCHANGE_INFO_TABLE else listing_rows()
+        reader = _Reader(rows)
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(PinnedCatalogView, "scan_column_batches", scan)
+
+    added: list[datetime] = []
+    original_builder = ub.RunSetBuilder
+
+    class _TrackingBuilder(original_builder):
+        def add(self, row: Any) -> None:
+            added.append(row["instant"])
+            super().add(row)
+
+    monkeypatch.setattr(ub, "RunSetBuilder", _TrackingBuilder)
+    replay = ub._instants_v3(
+        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
+    )
+    with replay.open() as instants:
+        result = tuple(instants)
+
+    assert result == (L1, t1, t2, t3)
+    assert added == [t2, t1, t2, t3]
+    assert len(added) == 4  # independent of the 8,192 visible pre-window rows
+    assert all(reader.closed for reader in readers)
 
 
 def test_instants_v3_replay_closes_the_run_reader_early(

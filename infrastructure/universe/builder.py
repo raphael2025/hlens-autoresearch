@@ -590,13 +590,17 @@ def _instants_v3(
         merge_fanout=run_params.merge_fanout,
         limits=run_params.limits,
     )
-    events = _change_events(view, pit.knowledge_cutoff)
+    events = _change_events(view, pit.knowledge_cutoff, start, end)
     try:
         with builder:
             for instant in events:
                 instant = instant.astimezone(UTC)
-                if start < instant < end:
-                    builder.add({"instant": instant})
+                # `_change_events` already applies the half-open simulation window while each
+                # bounded source batch is resident. Keep this guard as a fail-closed invariant
+                # at the run boundary (including timezone normalization).
+                if not start < instant < end:
+                    continue
+                builder.add({"instant": instant})
             root = builder.finish()
     finally:
         events.close()
@@ -609,8 +613,20 @@ def _close_reader(reader: object) -> None:
         close()
 
 
-def _change_events(view: PinnedCatalogView, cutoff: datetime) -> Iterator[datetime]:
-    """Yield visible timestamp events from bounded batches; close each snapshot reader always."""
+def _change_events(
+    view: PinnedCatalogView, cutoff: datetime, start: datetime, end: datetime
+) -> Iterator[datetime]:
+    """Yield in-window, cutoff-visible events from bounded batches.
+
+    Filter each timestamp before it leaves its source row/batch. A long history before the
+    simulation window therefore never becomes event objects for the sorter, while the selected
+    listing at ``start`` is still derived independently by ``ListingDeriver``. The interval is
+    right-open, matching :class:`PointInTimeSpec` and the legacy ``_instants`` path.
+    """
+
+    def in_window(instant: datetime) -> bool:
+        return start < instant < end
+
     reader = view.scan_column_batches(
         EXCHANGE_INFO_TABLE, columns=("retrieved_at", "knowledge_time")
     )
@@ -618,7 +634,9 @@ def _change_events(view: PinnedCatalogView, cutoff: datetime) -> Iterator[dateti
         for record_batch in reader:
             for row in record_batch.to_pylist():
                 if row["knowledge_time"] <= cutoff:
-                    yield row["retrieved_at"]
+                    instant = row["retrieved_at"]
+                    if in_window(instant):
+                        yield instant
     finally:
         _close_reader(reader)
     reader = view.scan_column_batches(
@@ -628,11 +646,16 @@ def _change_events(view: PinnedCatalogView, cutoff: datetime) -> Iterator[dateti
         for record_batch in reader:
             for row in record_batch.to_pylist():
                 if row["knowledge_time"] <= cutoff:
-                    yield row["available_time"]
+                    instant = row["available_time"]
+                    if in_window(instant):
+                        yield instant
                     for interval in row["tradable_intervals"]:
-                        yield interval["tradable_from"]
-                        if interval["tradable_until"] is not None:
-                            yield interval["tradable_until"]
+                        instant = interval["tradable_from"]
+                        if in_window(instant):
+                            yield instant
+                        instant = interval["tradable_until"]
+                        if instant is not None and in_window(instant):
+                            yield instant
     finally:
         _close_reader(reader)
 
