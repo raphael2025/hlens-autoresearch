@@ -805,7 +805,7 @@ def _validate_window(start: datetime, end: datetime) -> None:
 
 
 def _heads(
-    records: Sequence[RevisionRecord],
+    records: Iterable[RevisionRecord],
     edges: Sequence[PrecedenceEvidence],
     at: datetime,
     cutoff: datetime,
@@ -878,7 +878,7 @@ def _heads(
 
 def _evaluate(
     key: str,
-    records: Sequence[RevisionRecord],
+    records: Iterable[RevisionRecord],
     edges: Sequence[PrecedenceEvidence],
     spec: PointInTimeSpec,
     available: Mapping[str, datetime],
@@ -887,7 +887,7 @@ def _evaluate(
     run_params: PitRunParams | None = None,
     head_fn: Callable[
         [
-            Sequence[RevisionRecord],
+            Iterable[RevisionRecord],
             Sequence[PrecedenceEvidence],
             datetime,
             datetime,
@@ -960,7 +960,7 @@ def _evaluate(
 @contextmanager
 def _availability_change_times(
     storage: StorageAdapter,
-    records: Sequence[RevisionRecord],
+    records: Iterable[RevisionRecord],
     available: Mapping[str, datetime],
     *,
     cutoff: datetime,
@@ -1142,6 +1142,26 @@ def _root_rows(
     else:
         with iter_run(storage, root) as records:
             yield records
+
+
+class _RevisionRecordView(Iterable[RevisionRecord]):
+    """Rebuild revision DTOs from one key's existing sorted row map without a second tuple.
+
+    The mapping's insertion order is the ``revision_id`` order supplied by the PIT row run. The
+    view is intentionally re-iterable and uncached: it removes the duplicate O(H) DTO tuple, while
+    each evaluation pass reconstructs DTOs from the rows. This is an internal bounded-path
+    working-set tradeoff; it does not bound ``key_rows`` or ``RevisionGraph``'s own validation
+    tuple.
+    """
+
+    __slots__ = ("_rows",)
+
+    def __init__(self, rows: Mapping[str, Mapping[str, Any]]) -> None:
+        self._rows = rows
+
+    def __iter__(self) -> Iterator[RevisionRecord]:
+        for row in self._rows.values():
+            yield revision_record_from_row(row)
 
 
 @contextmanager
@@ -1491,9 +1511,9 @@ def _pit_bounded_stream(
                     buffer.add(row)
                 with buffer.rows() as key_row_iter:
                     key_rows = {row["revision_id"]: row for row in key_row_iter}
-                records = tuple(
-                    revision_record_from_row(key_rows[revision]) for revision in sorted(key_rows)
-                )
+                # The row run already inserted this key in revision_id order. Rebuild DTOs on
+                # demand instead of retaining a second full per-key tuple beside key_rows.
+                records = _RevisionRecordView(key_rows)
                 # The key's whole read closure (key_rows) — not just the window's own instants —
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
                 owner_at = min(row[column] for row in key_rows.values())
