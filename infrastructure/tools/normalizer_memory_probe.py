@@ -1104,9 +1104,10 @@ def _run_child(
     )
     samples: list[tuple[float, int]] = []
     state: dict[str, Any] = {"guard": None, "timed_out": False}
+    stop_sampler = threading.Event()
 
     def sample() -> None:
-        while process.poll() is None:
+        while not stop_sampler.is_set() and process.poll() is None:
             now = time.monotonic()
             rss = _status_kb("VmRSS", process.pid)
             if rss is not None:
@@ -1117,15 +1118,18 @@ def _run_child(
             if now - started > timeout and not state["timed_out"]:
                 state["timed_out"] = True
                 process.kill()
-            time.sleep(interval)
+            if stop_sampler.wait(interval):
+                break
 
     sampler = threading.Thread(target=sample, daemon=True)
     try:
         sampler.start()
         stdout, stderr = process.communicate()
+        stop_sampler.set()
         sampler.join()
     except BaseException:
         # SIGINT/SIGTERM and KeyboardInterrupt must not orphan the active measurement child.
+        stop_sampler.set()
         try:
             if process.poll() is None:
                 process.kill()
@@ -1792,6 +1796,42 @@ def _exit_status(document: dict[str, Any]) -> int:
     return 0 if document["e1_cap1_evidence"] else 3
 
 
+def _interrupted_document(
+    exc: ProbeInterrupted | KeyboardInterrupt,
+    dataset_v3_config: Mapping[str, int] | None,
+) -> dict[str, Any]:
+    """Fallback report for an interruption before ``run_probe`` can create its report."""
+    signum = exc.signum if isinstance(exc, ProbeInterrupted) else signal.SIGINT
+    try:
+        signal_name = signal.Signals(signum).name
+    except ValueError:
+        signal_name = str(signum)
+    document: dict[str, Any] = {
+        "probe": PROBE,
+        "status": "interrupted",
+        "error": {
+            "type": "ProbeInterrupted",
+            "message": str(exc) or f"probe interrupted by {signal_name}",
+            "signal_number": signum,
+            "signal_name": signal_name,
+            "partial_stage_results": 0,
+            "partial_dataset_results": 0,
+        },
+        "capacity_verdict": "ERROR",
+        "e1_cap1_evidence": False,
+        "results": [],
+        "setups": [],
+        "cleanup_warnings": [],
+    }
+    if dataset_v3_config is not None:
+        document["dataset_v3_measurement"] = {
+            "status": "interrupted",
+            "stage": DATASET_V3_STAGE,
+            "rule_parameters": dict(dataset_v3_config),
+        }
+    return document
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog=f"python -m {PROBE}",
@@ -1898,26 +1938,29 @@ def main(argv: list[str] | None = None) -> int:
                 "`systemd-run --user --scope -p MemoryMax=... -p MemorySwapMax=0` "
                 "or pass --allow-uncapped"
             )
-    kind = _filesystem(args.base)
-    if kind in _REFUSED_FILESYSTEMS:
-        parser.error(f"{args.base} is on {kind}: a warehouse there is memory")
-    args.base.mkdir(parents=True, exist_ok=True)
-    config = {"microbatch": args.microbatch, "d2_batch": args.d2_batch}
-    with _parent_interrupt_handlers():
-        document = run_probe(
-            sorted(args.rows),
-            config,
-            base=args.base,
-            repeats=args.repeats,
-            runtime=args.runtime,
-            interval=args.interval,
-            child_timeout=args.child_timeout,
-            child_rss_limit_mib=args.child_rss_limit_mib,
-            samples_out=args.samples_out,
-            keep_workdirs=args.keep_workdirs,
-            staged_diagnostics=args.staged_diagnostics,
-            dataset_v3_config=dataset_v3_config,
-        )
+    try:
+        with _parent_interrupt_handlers():
+            kind = _filesystem(args.base)
+            if kind in _REFUSED_FILESYSTEMS:
+                parser.error(f"{args.base} is on {kind}: a warehouse there is memory")
+            args.base.mkdir(parents=True, exist_ok=True)
+            config = {"microbatch": args.microbatch, "d2_batch": args.d2_batch}
+            document = run_probe(
+                sorted(args.rows),
+                config,
+                base=args.base,
+                repeats=args.repeats,
+                runtime=args.runtime,
+                interval=args.interval,
+                child_timeout=args.child_timeout,
+                child_rss_limit_mib=args.child_rss_limit_mib,
+                samples_out=args.samples_out,
+                keep_workdirs=args.keep_workdirs,
+                staged_diagnostics=args.staged_diagnostics,
+                dataset_v3_config=dataset_v3_config,
+            )
+    except (ProbeInterrupted, KeyboardInterrupt) as exc:
+        document = _interrupted_document(exc, dataset_v3_config)
     text = json.dumps(document, indent=2, default=str)
     if args.json_out is not None:
         args.json_out.write_text(text + "\n", encoding="utf-8")

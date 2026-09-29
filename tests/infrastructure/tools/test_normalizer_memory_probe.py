@@ -2,6 +2,8 @@ import json
 import shutil
 import signal
 import subprocess
+import threading
+import time
 from datetime import UTC, timedelta
 from pathlib import Path
 from typing import Any
@@ -173,9 +175,41 @@ def test_interrupted_run_is_persisted_as_error_and_not_capacity_fail(
     assert output["e1_cap1_evidence"] is False
 
 
+def test_initialization_interruption_is_persisted_as_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    _stub_probe_environment(monkeypatch)
+    monkeypatch.setattr(
+        probe,
+        "_environment",
+        lambda *_args: (_ for _ in ()).throw(probe.ProbeInterrupted(signal.SIGTERM)),
+    )
+    json_out = tmp_path / "initialization-interrupted.json"
+    exit_code = probe.main(
+        ["--rows", "1", "2", "3", "--base", str(tmp_path), "--json-out", str(json_out)]
+    )
+    assert exit_code == 128 + signal.SIGTERM
+    persisted = json.loads(json_out.read_text())
+    assert persisted["status"] == "interrupted"
+    assert persisted["capacity_verdict"] == "ERROR"
+    assert persisted["error"]["signal_name"] == "SIGTERM"
+    output = json.loads(capsys.readouterr().out)
+    assert output["status"] == "interrupted"
+
+
 def test_interruption_kills_and_reaps_active_child(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    sampler_waiting = threading.Event()
+    event_wait = threading.Event.wait
+
+    def observe_sampler_wait(event: threading.Event, timeout: float | None = None) -> bool:
+        if timeout == 2:
+            sampler_waiting.set()
+        return event_wait(event, timeout)
+
+    monkeypatch.setattr(threading.Event, "wait", observe_sampler_wait)
+
     class FakeProcess:
         pid = 987654321
 
@@ -194,20 +228,23 @@ def test_interruption_kills_and_reaps_active_child(
         def communicate(self) -> tuple[str, str]:
             self.communicate_calls += 1
             if self.communicate_calls == 1:
+                assert sampler_waiting.wait(1), "sampler did not enter its interruptible wait"
                 raise probe.ProbeInterrupted(signal.SIGINT)
             return "", ""
 
     process = FakeProcess()
     monkeypatch.setattr(subprocess, "Popen", lambda *_args, **_kwargs: process)
+    started = time.monotonic()
     with pytest.raises(probe.ProbeInterrupted):
         probe._run_child(
             [],
             temp_dir=tmp_path,
             runtime="controlled",
-            interval=0.001,
+            interval=2,
             timeout=1,
             rss_limit_kb=10_000,
         )
+    assert time.monotonic() - started < 1
     assert process.kill_called
     assert process.communicate_calls == 2
 
