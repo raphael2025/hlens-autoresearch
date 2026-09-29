@@ -1239,13 +1239,12 @@ class PageElement:
 
 @dataclass(frozen=True, slots=True)
 class VerifiedArchive:
-    """A proven archive revision: what an element row may inherit from it."""
+    """Lightweight proven archive metadata: what an element row may inherit from it."""
 
     revision_id: str
     time_unit: TimeUnit
     row: Mapping[str, Any]
-    #: The strict D1 re-parse of the published archive object (D3E-R3): what the rows must be.
-    parsed: SpooledArchive
+    row_count: int
 
 
 class PersistedRowVerifier:
@@ -1272,30 +1271,24 @@ class PersistedRowVerifier:
         self._batch_index: dict[
             tuple[str, str | None, tuple[str, ...]], _IndexedBatchHistory
         ] = {}
-        #: Only for a verifier over a pinned, read-only view (one normalizer call, G3-S): the
-        #: archive rows, their objects and parses cannot change under it, so each archive is
-        #: proven and parsed once for all the windows of its unit.
+        #: Only for a verifier over a pinned, read-only view (one normalizer call, G3-S): archive
+        #: identity metadata is memoized. Parsed archive spools are always call-local and closed.
         self._cache_archives = cache_archives
         self._archives: dict[tuple[str, str, str], VerifiedArchive] = {}
 
     def close(self) -> None:
-        """Close cached parsed-archive spools owned by this verifier."""
-        for item in self._archives.values():
-            item.parsed.close()
+        """Clear cached archive metadata; parsed-archive spools are never retained here."""
         self._archives.clear()
 
-    def _cache_archive(
-        self, key: tuple[str, str, str], item: VerifiedArchive
-    ) -> None:
+    def _cache_archive(self, key: tuple[str, str, str], item: VerifiedArchive) -> None:
         current = self._archives.get(key)
         if current is item:
             return
         if current is not None:
-            current.parsed.close()
             del self._archives[key]
         while len(self._archives) >= _ARCHIVE_CACHE:
             oldest = next(iter(self._archives))
-            self._archives.pop(oldest).parsed.close()
+            self._archives.pop(oldest)
         self._archives[key] = item
 
     def __del__(self) -> None:
@@ -1868,7 +1861,17 @@ class PersistedRowVerifier:
         for row in rows:
             by_archive.setdefault(row["archive_revision_id"], []).append(row)
         for archive_id, members in sorted(by_archive.items()):
-            self._verify_archive_rows(definition, data_type, lineage[archive_id], members)
+            archive = lineage[archive_id]
+            collected = self._lawful_archive_row(archive.row)
+            parsed = self._reparse(collected, data_type, archive_id)
+            try:
+                if parsed.row_count != archive.row_count:
+                    raise CatalogIntegrityError(
+                        f"archive revision {archive_id} changed row count during verification"
+                    )
+                self._verify_archive_rows(definition, data_type, archive, parsed, members)
+            finally:
+                parsed.close()
         self._check_sole_holders(
             table, {row["arrival_seq"]: row["revision_id"] for row in rows}, "row"
         )
@@ -1878,7 +1881,7 @@ class PersistedRowVerifier:
     def archive_row_count(self, data_type: str, symbol: str, archive_id: str) -> int:
         """Lines of the verified, strictly re-parsed object of one archive revision."""
         verified = self._verified_archives(data_type, symbol, [archive_id])
-        return verified[archive_id].parsed.row_count
+        return verified[archive_id].row_count
 
     def _verified_archives(
         self, data_type: str, symbol: str, archive_ids: Sequence[str]
@@ -1891,6 +1894,19 @@ class PersistedRowVerifier:
             if (data_type, symbol, archive_id) in self._archives
         }
         if len(cached) == len(requested):
+            # A metadata cache cannot stand in for the old retained parser spools when ordering
+            # failures: revalidate every strict parse before any caller checks member rows.
+            for archive_id in requested:
+                item = cached[archive_id]
+                collected = self._lawful_archive_row(item.row)
+                parsed = self._reparse(collected, data_type, archive_id)
+                try:
+                    if parsed.row_count != item.row_count:
+                        raise CatalogIntegrityError(
+                            f"archive revision {archive_id} changed row count during verification"
+                        )
+                finally:
+                    parsed.close()
             return cached
         table = BINANCE_SPOT_ARCHIVES.table
         found: dict[str, list[Mapping[str, Any]]] = {}
@@ -1934,12 +1950,19 @@ class PersistedRowVerifier:
                 )
             row = rows[0]
             collected = self._lawful_archive_row(row)
-            verified[archive_id] = VerifiedArchive(
-                revision_id=archive_id,
-                time_unit=time_unit_for(data_type, row["coverage_start"]),
-                row=row,
-                parsed=self._reparse(collected, data_type, archive_id),
-            )
+            # Preserve error precedence: every strict parser failure precedes the archive
+            # holder / snapshot checks below. Close each parse immediately; member-row checks
+            # perform a second serial parse after those historical checks have succeeded.
+            parsed = self._reparse(collected, data_type, archive_id)
+            try:
+                verified[archive_id] = VerifiedArchive(
+                    revision_id=archive_id,
+                    time_unit=time_unit_for(data_type, row["coverage_start"]),
+                    row=row,
+                    row_count=parsed.row_count,
+                )
+            finally:
+                parsed.close()
         by_base: dict[int, str] = {}
         for item in verified.values():
             base = item.row["arrival_seq"]
@@ -1954,8 +1977,8 @@ class PersistedRowVerifier:
             for batch_id, row in batches.items():
                 snapshot = _one_snapshot(table, batch_id, snapshots.one(batch_id))
                 check_batch_snapshot(BINANCE_SPOT_ARCHIVES, batch_id, snapshot, [row])
-        # Multi-archive lookups stay scoped to this call rather than retaining a set of spools;
-        # a later request reparses those archives. The one-item cache favors normalizer windows.
+        # The cache stores only lineage metadata. The parsed rows are never retained across
+        # archives or verifier calls; member checks reopen one strict parser spool at a time.
         if self._cache_archives and len(verified) == 1:
             for archive_id, item in verified.items():
                 self._cache_archive((data_type, symbol, archive_id), item)
@@ -2076,6 +2099,7 @@ class PersistedRowVerifier:
         definition: RegisteredTableDefinition,
         data_type: str,
         archive: VerifiedArchive,
+        parsed: SpooledArchive,
         rows: Sequence[Mapping[str, Any]],
     ) -> None:
         """Rebuild each row with the D2 builder from its natives and the archive revision."""
@@ -2092,12 +2116,12 @@ class PersistedRowVerifier:
             if (
                 not isinstance(line, int)
                 or isinstance(line, bool)
-                or not 1 <= line <= archive.parsed.row_count
+                or not 1 <= line <= parsed.row_count
             ):
                 outside = row
                 break
             lines.append(line)
-        truths = _archive_rows_at(archive.parsed, lines)
+        truths = _archive_rows_at(parsed, lines)
         for row, line, truth in zip(ordered, lines, truths, strict=False):
             # D3E-R3: the parser columns must be exactly what the object holds at that line.
             wrong = sorted(name for name in schema.names if row[name] != truth[name])
@@ -2110,7 +2134,7 @@ class PersistedRowVerifier:
             raise CatalogIntegrityError(
                 f"{table}: row {outside['revision_id']} (line "
                 f"{outside['archive_line_number']!r}) is not a line of the "
-                f"{archive.parsed.row_count}-line object of archive revision "
+                f"{parsed.row_count}-line object of archive revision "
                 f"{archive.revision_id}"
             )
         for row in ordered:

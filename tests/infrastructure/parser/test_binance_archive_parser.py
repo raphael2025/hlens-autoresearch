@@ -7,7 +7,7 @@ import hashlib
 import inspect
 import io
 import zipfile
-from dataclasses import fields, replace
+from dataclasses import fields
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
@@ -734,26 +734,17 @@ def test_public_parse_archive_keeps_the_complete_table_api() -> None:
     assert parsed.rows.num_rows == 2
 
 
-def test_verifier_retains_at_most_one_archive_spool_and_closes_evictions() -> None:
-    case = csv_case(AGG, US_DAY, csv_bytes(agg_rows(US_DAY, 2)))
-    storage = _MemoryArchiveStorage(case.request.object_ref, case.data)
-    first = parse_archive_spooled(case.request, storage)
-    second = parse_archive_spooled(
-        replace(case.request, archive_revision_id="archive-rev-2"), storage
-    )
-    assert isinstance(first, parser_mod.SpooledArchive)
-    assert isinstance(second, parser_mod.SpooledArchive)
+def test_verifier_retains_at_most_one_archive_metadata_entry() -> None:
     verifier = PersistedRowVerifier(object(), object(), cache_archives=True)
-    first_item = VerifiedArchive("archive-rev-1", first.time_unit, {}, first)
-    second_item = VerifiedArchive("archive-rev-2", second.time_unit, {}, second)
+    first_item = VerifiedArchive("archive-rev-1", TimeUnit.MICROSECOND, {}, 2)
+    second_item = VerifiedArchive("archive-rev-2", TimeUnit.MICROSECOND, {}, 2)
 
     verifier._cache_archive((AGG, "BTCUSDT", "archive-rev-1"), first_item)
     verifier._cache_archive((AGG, "BTCUSDT", "archive-rev-2"), second_item)
     assert len(verifier._archives) == 1
-    assert first._spool.closed
-    assert not second._spool.closed
+    assert verifier._archives[(AGG, "BTCUSDT", "archive-rev-2")] is second_item
     verifier.close()
-    assert second._spool.closed
+    assert verifier._archives == {}
 
 
 def test_parsed_archive_equality_is_by_value() -> None:
