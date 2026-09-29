@@ -69,6 +69,7 @@ from infrastructure.pit.assumption import (
     assumption_bound,
     effective_available_times,
 )
+from infrastructure.pit.precedence_runs import maximal_heads_from_runs
 from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunLimits,
@@ -807,6 +808,9 @@ def _heads(
     at: datetime,
     cutoff: datetime,
     available: Mapping[str, datetime],
+    *,
+    run_storage: StorageAdapter | None = None,
+    run_params: PitRunParams | None = None,
 ) -> tuple[str, ...]:
     known = [item for item in records if item.availability.times.knowledge_time <= cutoff]
     known_edges = [item for item in edges if item.knowledge_time <= cutoff]
@@ -817,6 +821,19 @@ def _heads(
     candidates = [item for item in known if available[item.revision_id] <= at]
     if not candidates:
         return ()
+    if run_storage is not None and run_params is not None:
+        traversed_edges = itertools.chain(
+            ((record.revision_id, older) for record in candidates for older in record.supersedes),
+            ((item.revision_id, item.superseded_revision_id) for item in known_edges),
+        )
+        return maximal_heads_from_runs(
+            run_storage,
+            (record.revision_id for record in candidates),
+            traversed_edges,
+            capacity=run_params.edge_batch_rows,
+            merge_fanout=run_params.merge_fanout,
+            limits=run_params.limits,
+        )
     # ``maximal_heads`` walks every known edge from every candidate, through any known (even
     # not-yet-available) revision: the heads are the candidates no candidate reaches.
     return tuple(sorted(maximal_heads(candidates, known_edges)))
@@ -828,6 +845,17 @@ def _evaluate(
     edges: Sequence[PrecedenceEvidence],
     spec: PointInTimeSpec,
     available: Mapping[str, datetime],
+    *,
+    head_fn: Callable[
+        [
+            Sequence[RevisionRecord],
+            Sequence[PrecedenceEvidence],
+            datetime,
+            datetime,
+            Mapping[str, datetime],
+        ],
+        tuple[str, ...],
+    ] = _heads,
 ) -> Iterator[PointInTimeSelection]:
     cutoff = spec.knowledge_cutoff
     if spec.simulation_time is not None:
@@ -849,7 +877,7 @@ def _evaluate(
         instants = itertools.chain((start,), unique_changes)
     previous: tuple[PointInTimeStatus, tuple[str, ...]] | None = None
     for at in instants:
-        heads = _heads(records, edges, at, cutoff, available)
+        heads = head_fn(records, edges, at, cutoff, available)
         status = (
             PointInTimeStatus.ABSENT
             if not heads
@@ -1398,7 +1426,22 @@ def _pit_bounded_stream(
                 }
 
                 seen_revisions: set[str] = set()
-                for selection in _evaluate(row_key, records, key_edges, spec, available):
+                for selection in _evaluate(
+                    row_key,
+                    records,
+                    key_edges,
+                    spec,
+                    available,
+                    head_fn=lambda key_records, key_edges, at, cutoff, key_available: _heads(
+                        key_records,
+                        key_edges,
+                        at,
+                        cutoff,
+                        key_available,
+                        run_storage=storage,
+                        run_params=params,
+                    ),
+                ):
                     lineage_out: SelectedRevisionLineage | None = None
                     gap_out: EvidenceGap | None = None
                     event_at: datetime | None = None
