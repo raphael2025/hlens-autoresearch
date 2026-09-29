@@ -48,3 +48,30 @@ rerun or have its assertion weakened/replaced under the same node.
 The two separate staging/failure nodes in the candidate file passed `2 passed in 8.05s`; the
 four-cutoff selector parity node passed `1 passed in 3.94s`; two public Normalizer restricted-proof
 nodes passed `2 passed in 1.49s`. These are separate nodes and are not changed by this deferral.
+
+## Accidental third invocation (2026-09-30)
+
+After the node was deferred, a module-wide `-s` measurement command accidentally included its
+orphaned test function after the helper had been removed from the candidate. This violated the
+no-rerun instruction; the command was stopped after this one invocation and will not be run again.
+
+Command:
+
+```text
+uv run pytest -s -q tests/infrastructure/pit/test_selector_bounded_proofs.py
+```
+
+Relevant raw output:
+
+```text
+PROOF_RUN_MEASUREMENTS [{'proof_records': 4, 'root_records': 4, 'root_leaves': 4, 'root_depth': 2, 'max_buffered_rows': 1, 'max_pending_refs': 2, 'max_ref_levels': 3, 'staged_objects': 21, 'staged_bytes': 29674, 'reader_opens': 14, 'reader_closes': 14, 'lookup_calls': 14}, {'proof_records': 4, 'root_records': 4, 'root_leaves': 4, 'root_depth': 2, 'max_buffered_rows': 1, 'max_pending_refs': 2, 'max_ref_levels': 3, 'staged_objects': 21, 'staged_bytes': 29674, 'reader_opens': 14, 'reader_closes': 14, 'lookup_calls': 14}, {'proof_records': 4, 'root_records': 4, 'root_leaves': 4, 'root_depth': 2, 'max_buffered_rows': 1, 'max_pending_refs': 2, 'max_ref_levels': 3, 'staged_objects': 21, 'staged_bytes': 29716, 'reader_opens': 14, 'reader_closes': 14, 'lookup_calls': 14}, {'proof_records': 4, 'root_records': 4, 'root_leaves': 4, 'root_depth': 2, 'max_buffered_rows': 1, 'max_pending_refs': 2, 'max_ref_levels': 3, 'staged_objects': 21, 'staged_bytes': 29716, 'reader_opens': 14, 'reader_closes': 14, 'lookup_calls': 14}, {'proof_records': 2, 'root_records': 2, 'root_leaves': 2, 'root_depth': 1, 'max_buffered_rows': 1, 'max_pending_refs': 1, 'max_ref_levels': 2, 'staged_objects': 7, 'staged_bytes': 9752, 'reader_opens': 4, 'reader_closes': 4, 'lookup_calls': 4}]
+.F.
+______ test_bounded_proofs_spill_long_single_key_without_proof_collection ______
+>       _many_revisions_of_one_key(h)
+E       NameError: name '_many_revisions_of_one_key' is not defined
+1 failed, 2 passed in 8.36s
+```
+
+No follow-up run of this node or the module is allowed. The two intended candidate nodes passed in
+this invocation; the NameError is solely the already-deferred function left in that temporary
+test snapshot. Candidate no longer contains the long-key node.
