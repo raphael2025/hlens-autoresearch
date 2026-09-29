@@ -187,24 +187,6 @@ from infrastructure.catalog.phase1_tables import (
     DATASET_SELECTION_CHUNKS,
 )
 from infrastructure.collector.binance_archive import ARCHIVE_SOURCE, COLLECTOR_ID, COLLECTOR_VERSION
-from infrastructure.pit.view import PinnedCatalogView
-from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
-from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
-from infrastructure.storage import LocalFileStorageAdapter
-from infrastructure.tools.capacity_probe import (
-    _KNOWLEDGE_INGEST,
-    _KNOWLEDGE_NORMALIZE,
-    DATA_TYPE,
-    DAY as PROBE_DAY,
-    OTHER_SYMBOL,
-    REST_BASE,
-    SYMBOL,
-    _dataset_pit_spec,
-    _prepare_dataset_quality,
-    _prepare_listings,
-    _agg_trade_lines,
-    _publish_archive,
-)
 from infrastructure.dataset.builder import (
     DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
@@ -215,6 +197,25 @@ from infrastructure.dataset.sources import UniverseRunParams, dataset_evidence_s
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PitRunParams
+from infrastructure.pit.view import PinnedCatalogView
+from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
+from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
+from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.tools.capacity_probe import (
+    _KNOWLEDGE_INGEST,
+    _KNOWLEDGE_NORMALIZE,
+    DATA_TYPE,
+    REST_BASE,
+    SYMBOL,
+    _agg_trade_lines,
+    _dataset_pit_spec,
+    _prepare_dataset_quality,
+    _prepare_listings,
+    _publish_archive,
+)
+from infrastructure.tools.capacity_probe import (
+    DAY as PROBE_DAY,
+)
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 
 __all__ = ["GROWTH_LIMIT_MIB", "main", "run_probe"]
@@ -1732,7 +1733,8 @@ def main(argv: list[str] | None = None) -> int:
         help="allow N above the guard without a cgroup memory limit on this process",
     )
     parser.add_argument(
-        "--stage", choices=("setup", "dataset_setup", *STAGES, DATASET_V3_STAGE),
+        "--stage",
+        choices=("setup", "dataset_setup", *STAGES, DATASET_V3_STAGE),
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--workdir", type=Path, help=argparse.SUPPRESS)
@@ -1754,9 +1756,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.stage is not None:
         return _child_main(args)
-    supplied_dataset_values = {
-        key: getattr(args, f"dataset_{key}") for key in DATASET_V3_RULE_KEYS
-    }
+    supplied_dataset_values = {key: getattr(args, f"dataset_{key}") for key in DATASET_V3_RULE_KEYS}
     provided = {key: value for key, value in supplied_dataset_values.items() if value is not None}
     if args.dataset_v3:
         if len(provided) != len(DATASET_V3_RULE_KEYS):
