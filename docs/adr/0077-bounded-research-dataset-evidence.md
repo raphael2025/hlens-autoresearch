@@ -255,6 +255,8 @@ writer / reader、chunk commit、streaming verifier、`ManifestStore` 双表分�
 
 **实施 / 独立复核记录（2026-09-29）**：隔离候选提交 `7442bf66f14afdf5667ea1fc2a87de3f62eb2b0f` 完成以上接线。不同 agent 对精确提交独立复核为 APPROVE。开发 focused suite 为 `82 passed in 80.41s`；复核测试覆盖合计 `118 passed`，含核心 RunSet/Universe/Dataset/red-team、bars/feature/G5 调用链和旧 Dataset universe consumer。Ruff、format、mypy（4 个生产文件）与 `git diff --check` 通过，候选工作树干净。此结果仅证明本实现切片，不证明完整 32 MiB 工作集容量；E1-CAP-1、DQ-9 数值和 Phase 1 仍开放。
 
+**后续 PIT RunSet 复核记录（2026-09-29）**：候选 `972c6c7980352ea546ff65a1914f18cf7e6a1733` 将 `PitSelector.iter_bounded()` 的 row/edge run-ref 列表改为层次化 root；test-only follow-up `6a80b67030105420fe8f33306f59e14757e6ebc2` 直接计数 compaction 与两个 root readers。独立 reviewer APPROVE；PIT selector + Dataset v3 source `41 passed`，Ruff、format、mypy 和 diff-check 通过。单 key 的 rows/edges/availability/graph 物化及 `maximal_heads` 无界 tuple 仍未解决，不能据此声称 PIT 或 E1 有界。
+
 ### Raphael Decision Packet（DQ-1）——已决定：A（Raphael，2026-09-28）
 
 - **问题：** 是否批准新增契约 2.3.0 的有界 Dataset manifest 模型，并修改其必要的 `core/contracts/`、版本登记及冻结契约文档？
