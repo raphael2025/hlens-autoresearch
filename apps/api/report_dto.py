@@ -34,6 +34,7 @@ class ReportDTO:
     baseline: str
     supported_versions: frozenset[str]
     required: tuple[str, ...]
+    has_payload_schema_version: bool = True
 
 
 # Some long-lived payloads predate an in-payload schema_version. Their DTO version is virtual:
@@ -45,22 +46,24 @@ REPORT_DTOS: Final[dict[ReportKind, ReportDTO]] = {
         ("schema_version", "gates", "verdict"),
     ),
     ReportKind.RESEARCH_LOOP_ROUND: ReportDTO(
-        "1.0.0", frozenset({"1.0.0"}), ("round_index", "loop_id", "stages")
+        "1.0.0", frozenset({"1.0.0"}), ("round_index", "loop_id", "stages"), False
     ),
     ReportKind.STATE_STRATEGY_MATRIX: ReportDTO(
         "1.0.0", frozenset({"1.0.0"}), ("matrix_hash", "cells", "strategy", "state")
     ),
     ReportKind.ROUTER_PAPER_RUN: ReportDTO(
-        "1.0.0", frozenset({"1.0.0"}), ("run_hash", "router", "decisions", "charges")
+        "1.0.0", frozenset({"1.0.0"}), ("run_hash", "router", "decisions", "charges"), False
     ),
     ReportKind.GATE_CALIBRATION: ReportDTO(
         "1.0.0", frozenset({"1.0.0"}), ("schema_version", "report_hash", "candidates")
     ),
     ReportKind.ROUTER_STOP: ReportDTO(
-        "1.0.0", frozenset({"1.0.0"}), ("stop_hash", "router", "reason")
+        "1.0.0", frozenset({"1.0.0"}), ("stop_hash", "router", "reason"), False
     ),
     ReportKind.STATE_DIAGNOSTICS: ReportDTO(
-        "1.1.0", frozenset({"1.0.0", "1.1.0"}), ("schema_version", "diagnostics_hash", "state_space")
+        "1.1.0",
+        frozenset({"1.0.0", "1.1.0"}),
+        ("schema_version", "kind", "state_space"),
     ),
     ReportKind.EVENT_STATISTICS: ReportDTO(
         "1.0.0", frozenset({"1.0.0"}), ("schema_version", "report_hash", "statistics")
@@ -81,22 +84,34 @@ def decode_report_payload(
     kind: ReportKind, payload: dict[str, Any], *, path: Path | str = "<report>"
 ) -> ReportPayloadDTO:
     """Resolve a known DTO version and check its required fields; preserve unknown versions."""
+    source_path = Path(path)
     spec = REPORT_DTOS[kind]
+    if not spec.has_payload_schema_version and "schema_version" in payload:
+        reason = (
+            "research_loop_round payload does not carry schema_version (LoopRoundRecord contract)"
+            if kind is ReportKind.RESEARCH_LOOP_ROUND
+            else f"{kind.value} payload does not carry schema_version"
+        )
+        raise ReportMalformed(source_path, reason)
     raw_version = payload.get("schema_version")
     version = spec.baseline if "schema_version" not in payload else raw_version
     if not isinstance(version, str):
-        raise ReportMalformed(path, "schema_version must be a string")
+        raise ReportMalformed(source_path, "schema_version must be a string")
     if version not in spec.supported_versions:
         return ReportPayloadDTO(kind, version, payload, supported=False)
     if any(field not in payload for field in spec.required):
         missing = next(field for field in spec.required if field not in payload)
-        raise ReportMalformed(path, f"{kind.value} {version} payload lacks required field {missing}")
+        raise ReportMalformed(
+            source_path, f"{kind.value} {version} payload lacks required field {missing}"
+        )
     if kind is ReportKind.PAPER_DEVIATION:
         if payload.get("kind") != kind.value:
-            raise ReportMalformed(path, "paper_deviation kind does not match report kind")
+            raise ReportMalformed(source_path, "paper_deviation kind does not match report kind")
         if version == "2.0.0":
             if not all(field in payload for field in ("declared_scope", "summary", "marks")):
-                raise ReportMalformed(path, "paper_deviation 2.0.0 payload lacks scope-bound DTO fields")
+                raise ReportMalformed(
+                    source_path, "paper_deviation 2.0.0 payload lacks scope-bound DTO fields"
+                )
             scope = payload["declared_scope"]
             scope_fields = (
                 "validation_profile",
@@ -118,8 +133,11 @@ def decode_report_payload(
                     if isinstance(scope.get(field), str)
                 )
             ):
-                raise ReportMalformed(path, "paper_deviation 2.0.0 declared_scope is invalid")
+                raise ReportMalformed(source_path, "paper_deviation 2.0.0 declared_scope is invalid")
             scope_body = {key: value for key, value in scope.items() if key != "scope_hash"}
             if scope.get("scope_hash") != content_hash(scope_body):
-                raise ReportMalformed(path, "paper_deviation 2.0.0 scope_hash does not match declared_scope")
+                raise ReportMalformed(
+                    source_path,
+                    "paper_deviation 2.0.0 scope_hash does not match declared_scope",
+                )
     return ReportPayloadDTO(kind, version, payload, supported=True)

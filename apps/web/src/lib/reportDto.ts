@@ -16,7 +16,7 @@ const RULES: Record<ReportKind, Rule> = {
   router_paper_run: { baseline: "1.0.0", versions: ["1.0.0"], required: ["run_hash", "router", "decisions", "charges"] },
   gate_calibration: { baseline: "1.0.0", versions: ["1.0.0"], required: ["schema_version", "report_hash", "candidates"] },
   router_stop: { baseline: "1.0.0", versions: ["1.0.0"], required: ["stop_hash", "router", "reason"] },
-  state_diagnostics: { baseline: "1.1.0", versions: ["1.0.0", "1.1.0"], required: ["schema_version", "diagnostics_hash", "state_space"] },
+  state_diagnostics: { baseline: "1.1.0", versions: ["1.0.0", "1.1.0"], required: ["schema_version", "kind", "state_space"] },
   event_statistics: { baseline: "1.0.0", versions: ["1.0.0"], required: ["schema_version", "report_hash", "statistics"] },
   paper_deviation: { baseline: "2.0.0", versions: ["1.0.0", "2.0.0"], required: ["kind", "deviation_hash"] },
   degradation_check: { baseline: "1.1.0", versions: ["1.0.0", "1.1.0"], required: ["schema_version", "check_hash", "metrics"] },

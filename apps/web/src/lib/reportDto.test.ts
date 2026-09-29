@@ -15,6 +15,22 @@ test("all current and retained legacy report fixtures resolve to a supported DTO
   }
 });
 
+test("state_diagnostics matches its writer payload shape and required DTO fields", () => {
+  const [report] = fixtureEnvelopes("state_diagnostics");
+  assert.equal("diagnostics_hash" in report.payload, false);
+  assert.deepEqual(inspectReportDTO(report), { status: "supported", version: "1.1.0" });
+
+  for (const field of ["schema_version", "kind", "state_space"] as const) {
+    const payload = { ...report.payload };
+    delete payload[field];
+    assert.deepEqual(inspectReportDTO({ ...report, payload }), {
+      status: "invalid",
+      version: "1.1.0",
+      reason: `missing ${field}`,
+    });
+  }
+});
+
 test("validation_report 2.4.0 (ADR-0088's bumped default Contract envelope) is supported with the 2.3.0 shape", () => {
   // validation_report is the one ReportKind whose payload is a direct Contract.model_dump(); every
   // other kind's schema_version is an independent, domain-specific number unrelated to

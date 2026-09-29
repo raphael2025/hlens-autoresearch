@@ -21,6 +21,7 @@ from apps.api import create_app
 from apps.api.report_dto import REPORT_DTOS, decode_report_payload
 from apps.api.store import ReportKind, ReportMalformed, ReportStore
 from core.domain.base import content_hash
+from tests.apps.report_fixtures import fixture
 from tests.factories import validation_report
 
 Payload = dict[str, Any]
@@ -60,6 +61,37 @@ def test_a_kind_without_schema_version_resolves_to_the_virtual_baseline() -> Non
     assert dto.supported is True
     assert dto.schema_version == spec.baseline
     assert "schema_version" not in dto.payload
+
+
+@pytest.mark.parametrize(
+    "kind",
+    [ReportKind.RESEARCH_LOOP_ROUND, ReportKind.ROUTER_PAPER_RUN, ReportKind.ROUTER_STOP],
+)
+def test_virtual_version_kinds_forbid_a_payload_schema_version(kind: ReportKind) -> None:
+    spec = REPORT_DTOS[kind]
+    assert spec.has_payload_schema_version is False
+    payload = {field: "x" for field in spec.required}
+    if kind is ReportKind.ROUTER_PAPER_RUN:
+        payload["decisions"] = []
+
+    dto = decode_report_payload(kind, payload)
+    assert dto.supported is True
+    assert dto.schema_version == spec.baseline
+    assert "schema_version" not in dto.payload
+
+    with pytest.raises(ReportMalformed, match="does not carry schema_version"):
+        decode_report_payload(kind, {**payload, "schema_version": spec.baseline})
+
+
+def test_state_diagnostics_dto_matches_the_writer_payload_and_identity() -> None:
+    payload = fixture(ReportKind.STATE_DIAGNOSTICS).payload
+    spec = REPORT_DTOS[ReportKind.STATE_DIAGNOSTICS]
+
+    assert spec.required == ("schema_version", "kind", "state_space")
+    assert "diagnostics_hash" not in payload
+    dto = decode_report_payload(ReportKind.STATE_DIAGNOSTICS, payload)
+    assert dto.supported is True
+    assert dto.schema_version == payload["schema_version"]
 
 
 def test_an_explicit_known_version_is_used_as_is() -> None:
