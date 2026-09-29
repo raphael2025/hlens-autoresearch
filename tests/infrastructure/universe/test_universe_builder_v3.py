@@ -48,7 +48,7 @@ from infrastructure.universe.builder import (
     UniverseUnconstructible,
 )
 from tests.infrastructure.dataset import dataset_support as ds
-from tests.infrastructure.dataset.dataset_support import L1, L2, L3, SIM, World
+from tests.infrastructure.dataset.dataset_support import L1, L2, L3, ORIGIN, SIM, World
 
 LISTINGS = CANONICAL_INSTRUMENT_LISTINGS.table
 RUN_PARAMS = UniverseRunParams(
@@ -314,6 +314,32 @@ def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
     failed_store = stores[-1]
     assert failed_store.closed and not failed_store.path.exists()
     assert len(event_sources_closed) == 4
+
+
+def test_repeated_selection_of_one_listing_revision_keeps_its_gap(w: World) -> None:
+    """A listing revision's availability gap is stored in its immutable RevisionRecord.
+
+    Repeated exchange-info snapshots can produce multiple timeline evaluation points while
+    selecting the same canonical listing revision. The PIT deriver reads that revision's one
+    canonical row each time, so its gap cannot change from absent to present (or vice versa).
+    """
+    w.listed(ds.TRADING, L1)
+    w.listed(ds.TRADING, L2)  # unchanged status: no new canonical listing revision
+    pit = w.spec(interval=(L1, SIM))
+    view = PinnedCatalogView(w.h.adapter, pit.snapshot_bindings)
+    deriver = ListingDeriver(view, w.h.storage, market_data_base_url=ORIGIN)
+    try:
+        first = deriver.listing_at("BTCUSDT", L1, pit.knowledge_cutoff, pit=pit)
+        repeated = deriver.listing_at("BTCUSDT", L2, pit.knowledge_cutoff, pit=pit)
+    finally:
+        deriver.close()
+
+    assert first.listing is not None and repeated.listing is not None
+    assert first.listing.revision.revision_id == repeated.listing.revision.revision_id
+    assert first.evidence_gap is not None
+    assert first.evidence_gap == repeated.evidence_gap
+    assert first.evidence_gap == first.listing.revision.availability.evidence_gap
+    assert repeated.evidence_gap == repeated.listing.revision.availability.evidence_gap
 
 
 # ============================================================================ no whole-table read
