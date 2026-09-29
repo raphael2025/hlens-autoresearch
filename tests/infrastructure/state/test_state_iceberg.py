@@ -142,6 +142,35 @@ def test_ensure_and_run_round_trip_are_idempotent_and_snapshot_pinned(env: Env) 
     ).batch_id == state_batch_id(result.result_hash)
 
 
+def test_state_result_survives_catalog_and_warehouse_reopen(env: Env) -> None:
+    """A fresh adapter over the same SQLite catalog and file warehouse sees the run."""
+    spec, request, result, descriptor = _answer()
+    written = env.table.write(spec, request, result, descriptor)
+    original_snapshot = written.snapshot_id
+
+    # The harness reuses its catalog name, SQLite database, and warehouse URI. This is an
+    # adapter/catalog reconnect in the same process, not a process-kill recovery test.
+    env.adapter.close()
+    reopened = env.harness.open_adapter()
+    env.adapter = reopened
+    env.table = StateTable(reopened)
+
+    ensured = ensure_state_tables(reopened)
+    assert len(ensured) == 1 and not ensured[0].created
+    loaded = env.table.read(result.result_hash, expected_spec=spec)
+    assert loaded is not None
+    assert loaded.snapshot_id == original_snapshot
+    assert loaded.result == result
+
+    replay = env.table.write(spec, request, result, descriptor)
+    assert replay.replayed
+    assert replay.snapshot_id == original_snapshot
+
+    # Recomputing from the same immutable request/provider reproduces the persisted identity.
+    rerun = run_state(VolatilityRegimeProvider((spec,)), spec, request)
+    assert rerun == result
+
+
 def test_writer_refuses_a_missing_table(tmp_path: Path) -> None:
     harness = SqliteCatalogHarness(tmp_path, registry=PHASE2_REGISTRY)
     try:
