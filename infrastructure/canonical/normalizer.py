@@ -797,11 +797,10 @@ class CanonicalNormalizer:
             assert facts.version is not None
             plan, base, ready = facts.plan, facts.base, facts.ready
             _require_complete(channel, source_revision_id, plan, len(facts.positions))
-            wanted = {
-                index
-                for index in _batches_holding(facts.positions, plan.chunk, base, seqs)
-                if index < plan.count
-            }
+            # The pinned position index covers the complete Raw unit, and _require_complete
+            # proves plan.count == ceil(unit_rows / chunk). Every rank returned by
+            # _batches_holding therefore maps to an existing batch; reuse its set directly.
+            wanted = _batches_holding(facts.positions, plan.chunk, base, seqs)
             cached: dict[int, tuple[Mapping[str, Any], ...]] = {}
             for index in wanted if self._frozen and use_batch_cache else ():
                 rows = self._batches.get((channel.element.table, source_revision_id, index))
