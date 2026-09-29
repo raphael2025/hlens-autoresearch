@@ -552,6 +552,18 @@ def _lower_negation(
     sources = _resolve_inputs(node, direct, specs, expected_types=StrategySpec)
     (base,) = cast(list[StrategySpec], sources)  # Exact class checked by `_resolve_inputs`.
     identity = _spec_identity(_NEGATION_DEFINITION, node, sources, created_at)
+    params: dict[str, str | int | float] = {
+        "definition": _NEGATION_DEFINITION,
+        "operator": "negated",
+        "provider": "p7_negation_target_position@1.0.0",
+        "semantic_version": _SEMANTIC_VERSION,
+        "negates": "target_position",
+        "cost_basis": "negated_trades",
+        # Negative controls are defined by the validation layer, never by this spec.
+        "validation_negative_control": False,
+        # Spot short-cost gap (ST-4): the future Provider must fail closed.
+        "short_exposure": "provider_fail_closed_without_short_cost_model",
+    }
     return _build_output(
         node,
         lambda: StrategySpec(
@@ -559,20 +571,7 @@ def _lower_negation(
             version=_SEMANTIC_VERSION,
             created_at=created_at,
             signals=base.signals,
-            params=FrozenMapping(
-                {
-                    "definition": _NEGATION_DEFINITION,
-                    "operator": "negated",
-                    "provider": "p7_negation_target_position@1.0.0",
-                    "semantic_version": _SEMANTIC_VERSION,
-                    "negates": "target_position",
-                    "cost_basis": "negated_trades",
-                    # Negative controls are defined by the validation layer, never by this spec.
-                    "validation_negative_control": False,
-                    # Spot short-cost gap (ST-4): the future Provider must fail closed.
-                    "short_exposure": "provider_fail_closed_without_short_cost_model",
-                }
-            ),
+            params=FrozenMapping(params),
             risk_policy=base.risk_policy,
             applicable_instruments=base.applicable_instruments,
             composition=NegatedStrategy(base=base.ref),

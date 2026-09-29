@@ -14,12 +14,12 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
-from core.domain.base import FrozenMapping, SHA256_PATTERN, canonical_json, content_hash
+from core.domain.base import SHA256_PATTERN, FrozenMapping, canonical_json, content_hash
 from core.domain.research import Hypothesis, HypothesisOrigin
 from research.hypotheses.typed_plan import PlanLimits, PlanRejected, TypedPlan, parse_plan_json
-from research.persistence import AppendOnlyJournal, JournalCorrupted, JournalEntry
+from research.persistence import AppendOnlyJournal, JournalEntry
 
 __all__ = [
     "PLAN_ADMISSION_FORMAT_VERSION",
@@ -96,7 +96,7 @@ def _json_object(value: object, what: str) -> dict[str, Any]:
     if not _is_json_value(copied):
         raise ValueError(f"{what} must contain only canonical JSON values without floats")
     try:
-        return json.loads(canonical_json(copied))
+        return cast(dict[str, Any], json.loads(canonical_json(copied)))
     except (TypeError, ValueError) as exc:
         raise ValueError(f"{what} is not canonical JSON data: {exc}") from exc
 

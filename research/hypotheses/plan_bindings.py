@@ -14,7 +14,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Final
 
-from core.domain.base import Ref, VersionedSpec
+from core.domain.base import Contract, Ref, VersionedSpec
 from core.domain.research import ExperimentSpec, Hypothesis
 from core.domain.specs import (
     ConditionedStrategy,
@@ -93,20 +93,20 @@ class ExperimentHypothesisBinding:
     outputs: tuple[VersionedSpec, ...]
 
 
-def _copy_validated[T](value: T, expected: type[T], where: str) -> T:
+def _copy_validated[T: Contract](value: T, expected: type[T], where: str) -> T:
     """Rebuild from canonical JSON so validation does not trust a caller's mutable internals."""
     if type(value) is not expected:
         raise PlanBindingRefused(
             "wrong_type", where, f"expected exactly {expected.__name__}, got {type(value).__name__}"
         )
     try:
-        payload = value.model_dump(mode="json")  # type: ignore[attr-defined]
-        rebuilt = expected.model_validate(payload)  # type: ignore[attr-defined]
+        payload = value.model_dump(mode="json")
+        rebuilt = expected.model_validate(payload)
     except Exception as exc:
         raise PlanBindingRefused(
             "invalid_contract", where, f"contract reconstruction failed ({type(exc).__name__})"
         ) from exc
-    if rebuilt.model_dump(mode="json") != payload:  # type: ignore[attr-defined]
+    if rebuilt.model_dump(mode="json") != payload:
         raise PlanBindingRefused("noncanonical_contract", where, "payload did not round-trip")
     return rebuilt
 
@@ -298,36 +298,36 @@ def validate_experiment_bindings(
 
     verified_hypotheses: dict[str, Hypothesis] = {}
     hypothesis_hashes: dict[str, str] = {}
-    for index, item in enumerate(hypotheses):
+    for index, hypothesis_item in enumerate(hypotheses):
         where = f"hypotheses[{index}]"
-        hypothesis = _copy_validated(item, Hypothesis, where)
-        ref = hypothesis.ref
+        verified_hypothesis = _copy_validated(hypothesis_item, Hypothesis, where)
+        ref = verified_hypothesis.ref
         key = _identity(ref)
         if key in verified_hypotheses:
             raise PlanBindingRefused("duplicate_hypothesis", where, f"repeated {key}")
-        verified_hypotheses[key] = hypothesis
-        hypothesis_hashes[key] = hypothesis.content_hash()
+        verified_hypotheses[key] = verified_hypothesis
+        hypothesis_hashes[key] = verified_hypothesis.content_hash()
 
     verified_experiments: list[ExperimentSpec] = []
     experiment_hashes: set[str] = set()
     experiment_hypotheses: dict[str, str] = {}
     hypothesis_use_count: dict[str, int] = dict.fromkeys(verified_hypotheses, 0)
-    for index, item in enumerate(experiment_specs):
+    for index, experiment_item in enumerate(experiment_specs):
         where = f"experiment_specs[{index}]"
-        experiment = _copy_validated(item, ExperimentSpec, where)
-        experiment_hash = experiment.experiment_hash
+        verified_experiment = _copy_validated(experiment_item, ExperimentSpec, where)
+        experiment_hash = verified_experiment.experiment_hash
         if experiment_hash in experiment_hashes:
             raise PlanBindingRefused("duplicate_experiment", where, "repeated ExperimentSpec hash")
         experiment_hashes.add(experiment_hash)
 
-        hypothesis_ref = experiment.repro.hypothesis_ref
+        hypothesis_ref = verified_experiment.repro.hypothesis_ref
         hypothesis_key = _identity(hypothesis_ref)
-        hypothesis = verified_hypotheses.get(hypothesis_key)
-        if hypothesis is None:
+        matched_hypothesis = verified_hypotheses.get(hypothesis_key)
+        if matched_hypothesis is None:
             raise PlanBindingRefused(
                 "unknown_hypothesis", where, f"{hypothesis_key} is not in the supplied batch"
             )
-        dependency_hash = experiment.repro.dependency_hashes.get(hypothesis_key)
+        dependency_hash = verified_experiment.repro.dependency_hashes.get(hypothesis_key)
         expected_hash = hypothesis_hashes[hypothesis_key]
         if dependency_hash != expected_hash:
             raise PlanBindingRefused(
@@ -337,7 +337,7 @@ def validate_experiment_bindings(
             )
         hypothesis_use_count[hypothesis_key] += 1
         experiment_hypotheses[experiment_hash] = hypothesis_key
-        verified_experiments.append(experiment)
+        verified_experiments.append(verified_experiment)
 
     repeated = sorted(key for key, count in hypothesis_use_count.items() if count > 1)
     if repeated:
@@ -355,42 +355,42 @@ def validate_experiment_bindings(
     }
     seen_outputs: set[tuple[str, str]] = set()
     experiment_by_hash = {item.experiment_hash: item for item in verified_experiments}
-    for index, item in enumerate(lowered_outputs):
+    for index, output_item in enumerate(lowered_outputs):
         where = f"lowered_outputs[{index}]"
-        if not isinstance(item, LoweredOutputBinding):
+        if not isinstance(output_item, LoweredOutputBinding):
             raise PlanBindingRefused(
                 "wrong_type", where, "must be a LoweredOutputBinding with experiment association"
             )
-        experiment = experiment_by_hash.get(item.experiment_hash)
-        if experiment is None:
+        output_experiment = experiment_by_hash.get(output_item.experiment_hash)
+        if output_experiment is None:
             raise PlanBindingRefused(
                 "extra_output_experiment",
                 where,
-                f"{item.experiment_hash} is not one of the supplied ExperimentSpecs",
+                f"{output_item.experiment_hash} is not one of the supplied ExperimentSpecs",
             )
-        output = _canonical_spec(item.spec, where)
-        output_ref = output.ref
+        canonical_output = _canonical_spec(output_item.spec, where)
+        output_ref = canonical_output.ref
         output_key = _identity(output_ref)
-        output_identity = (item.experiment_hash, output_key)
+        output_identity = (output_item.experiment_hash, output_key)
         if output_identity in seen_outputs:
             raise PlanBindingRefused("duplicate_output", where, f"repeated {output_key}")
         seen_outputs.add(output_identity)
 
-        dependency_hash = experiment.repro.dependency_hashes.get(output_key)
+        dependency_hash = output_experiment.repro.dependency_hashes.get(output_key)
         if dependency_hash is None:
             raise PlanBindingRefused(
                 "output_not_direct_dependency",
                 where,
-                f"{output_key} is absent from {item.experiment_hash}'s direct dependencies",
+                f"{output_key} is absent from {output_item.experiment_hash}'s direct dependencies",
             )
-        output_hash = output.content_hash()
+        output_hash = canonical_output.content_hash()
         if dependency_hash != output_hash:
             raise PlanBindingRefused(
                 "output_hash_mismatch",
                 where,
                 f"dependency hash for {output_key} differs from its recomputed content hash",
             )
-        outputs_by_experiment[item.experiment_hash].append(output)
+        outputs_by_experiment[output_item.experiment_hash].append(canonical_output)
 
     return tuple(
         ExperimentHypothesisBinding(

@@ -247,7 +247,7 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from threading import Condition, Lock, RLock, get_ident
-from typing import Any, Final, Protocol, TypeVar
+from typing import Any, Final, Protocol, TypeVar, cast
 
 from apps.worker.loop import (
     ROUND_RECORDED,
@@ -272,6 +272,7 @@ from core.domain.specs import StrategySpec
 from core.errors import LifecycleViolation, ReasonCode
 from research.evolution import LineageGraph
 from research.hypotheses import LedgerError, LedgerLease, TrialLedger
+from research.hypotheses.typed_plan import TypedPlan
 from research.hypotheses.typed_plan_audit import (
     CommittedAdmission,
     PlanAdmissionCorrupted,
@@ -281,7 +282,6 @@ from research.hypotheses.typed_plan_audit import (
     PreparedAdmission,
     RoundStartedIdentity,
 )
-from research.hypotheses.typed_plan import TypedPlan
 from research.loop.memory import REVIEW_APPROVED, ResearchMemory, ReviewApproval, ReviewQueue
 from research.loop.retry_admission import (
     RETRY_DIR,
@@ -822,14 +822,14 @@ def _checkpointed_heads(
     """
     last = entries[-1]
     if last.type != LOOP_STATE_OPENED:
-        return _json(dict(last.payload["heads"]))
+        return cast(dict[str, Any], _json(dict(last.payload["heads"])))
     out: dict[str, Any] = {name: {"seq": 0, "hash": GENESIS_HASH} for name, _ in _JOURNALS}
     if admission is not None:
         out["plan_admission"] = {"seq": 1, "hash": admission.entries[0].hash}
     out["failures"] = {"count": 0, "digest": content_hash([])}
     if retry is not None:
         out["retry_admission"] = []
-    return _json(out)
+    return cast(dict[str, Any], _json(out))
 
 
 def _failed_experiment_round(audit: LoopAuditLog) -> int | None:
