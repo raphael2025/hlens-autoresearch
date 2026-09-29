@@ -1462,7 +1462,11 @@ def _pit_bounded_stream(
 
                 available = _EffectiveAvailabilityView(key_rows, bound=bound_assumption)
 
-                seen_revisions: set[str] = set()
+                # At a fixed knowledge cutoff the graph is fixed and candidates only accrue as
+                # simulation time advances. A revision can be the sole head only in one
+                # contiguous interval: once another head appears or supersedes it, a later
+                # candidate cannot make it sole again. _evaluate yields only result changes, so
+                # each selected revision receives lineage once without a key-sized seen set.
                 for selection in _evaluate(
                     row_key,
                     records,
@@ -1478,26 +1482,24 @@ def _pit_bounded_stream(
                         if revision is None:  # pragma: no cover - the contract forbids it
                             raise CatalogIntegrityError("a selected result without a revision")
                         event_at = key_rows[revision][column]
-                        if revision not in seen_revisions:
-                            seen_revisions.add(revision)
-                            source_row = key_rows[revision]
-                            effective_time = available[revision]
-                            if effective_time < source_row["available_time"]:
-                                source_row = dict(source_row, available_time=effective_time)
-                            lineage_out = SelectedRevisionLineage(
-                                canonical_table=canonical.table,
-                                canonical_revision_id=revision,
-                                raw_table=source_row["lineage_raw_table"],
-                                raw_revision_id=source_row["lineage_raw_revision_id"],
-                                source_table=source_row["lineage_source_table"],
-                                source_revision_id=source_row["lineage_source_revision_id"],
+                        source_row = key_rows[revision]
+                        effective_time = available[revision]
+                        if effective_time < source_row["available_time"]:
+                            source_row = dict(source_row, available_time=effective_time)
+                        lineage_out = SelectedRevisionLineage(
+                            canonical_table=canonical.table,
+                            canonical_revision_id=revision,
+                            raw_table=source_row["lineage_raw_table"],
+                            raw_revision_id=source_row["lineage_raw_revision_id"],
+                            source_table=source_row["lineage_source_table"],
+                            source_revision_id=source_row["lineage_source_revision_id"],
+                        )
+                        if source_row["availability_evidence_gap"] is not None:
+                            gap_out = EvidenceGap(
+                                canonical.table,
+                                revision,
+                                source_row["availability_evidence_gap"],
                             )
-                            if source_row["availability_evidence_gap"] is not None:
-                                gap_out = EvidenceGap(
-                                    canonical.table,
-                                    revision,
-                                    source_row["availability_evidence_gap"],
-                                )
                     yield PitBoundedRecord(
                         observation_key=row_key,
                         selection=selection,
