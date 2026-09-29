@@ -366,7 +366,16 @@ def test_iter_bounded_spills_many_observation_keys_without_window_collections(
     }
     # The final row and edge runs cover the full result, but every builder's Python row buffer
     # stays at its configured capacity and all completed reference hierarchies are released.
-    final_rows, final_edges = builders[-2:]
+    final_rows = next(
+        builder
+        for builder in builders
+        if builder.root_ref is not None and builder.root_ref.record_count == key_count * 2
+    )
+    final_edges = next(
+        builder
+        for builder in builders
+        if builder.root_ref is not None and builder.root_ref.record_count == key_count
+    )
     assert final_rows.root_ref is not None
     assert final_rows.root_ref.record_count == key_count * 2
     assert final_edges.root_ref is not None
