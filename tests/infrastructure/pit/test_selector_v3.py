@@ -13,13 +13,16 @@ not just the trivial single-run path.
 from __future__ import annotations
 
 from collections.abc import Iterator
-from datetime import datetime
+from contextlib import contextmanager
+from datetime import datetime, timedelta
 from typing import Any
 
 import pytest
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
-from infrastructure.pit.runs import RunLimits
+from infrastructure.pit import runs as runs_module
+from infrastructure.pit import selector as selector_module
+from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder
 from infrastructure.pit.selector import (
     PitBoundedRecord,
     PitRunParams,
@@ -80,6 +83,24 @@ def _gaps_by_revision(records: list[PitBoundedRecord]) -> dict[str, Any]:
     }
 
 
+def _capture_run_set_builders(monkeypatch: pytest.MonkeyPatch) -> list[RunSetBuilder]:
+    instances: list[RunSetBuilder] = []
+    original = selector_module.RunSetBuilder
+
+    class CapturingRunSetBuilder(original):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            self.root_ref: RunRef | None = None
+            instances.append(self)
+
+        def finish(self) -> RunRef | None:
+            self.root_ref = super().finish()
+            return self.root_ref
+
+    monkeypatch.setattr(selector_module, "RunSetBuilder", CapturingRunSetBuilder)
+    return instances
+
+
 # =========================================================================================
 # equivalence with v2 select()
 # =========================================================================================
@@ -100,6 +121,102 @@ def test_iter_bounded_matches_select_selections_lineage_and_gaps(h: RestHarness)
         item.canonical_revision_id: item for item in legacy.lineage
     }
     assert _gaps_by_revision(records) == {gap.revision_id: gap for gap in legacy.evidence_gaps}
+
+
+def test_iter_bounded_empty_row_and_edge_roots_match_empty_selection(h: RestHarness) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=FAR)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
+    later = FAR + timedelta(days=2)
+    with selector.iter_bounded(
+        spec, "agg_trades", SYMBOL, FAR, later, params=TINY_PARAMS
+    ) as records:
+        assert list(records) == []
+
+
+def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _chain(h, count=4)
+    spec = _spec(h, cutoff=FAR)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
+    builders = _capture_run_set_builders(monkeypatch)
+    active_readers = 0
+    max_active_readers = 0
+    original_iter_run = runs_module.iter_run
+
+    @contextmanager
+    def count_merge_readers(storage: Any, ref: RunRef) -> Iterator[Any]:
+        nonlocal active_readers, max_active_readers
+        with original_iter_run(storage, ref) as records:
+            active_readers += 1
+            max_active_readers = max(max_active_readers, active_readers)
+            try:
+                yield records
+            finally:
+                active_readers -= 1
+
+    monkeypatch.setattr(runs_module, "iter_run", count_merge_readers)
+    records = _bounded(h, spec)
+
+    got = sorted(
+        _selections(records), key=lambda item: (item.observation_key, item.simulation_time)
+    )
+    expected = sorted(
+        legacy.selections, key=lambda item: (item.observation_key, item.simulation_time)
+    )
+    assert got == expected
+    assert len(builders) == 2
+    assert all(builder._finished for builder in builders)
+    assert all(not builder._refs._levels for builder in builders)
+    assert builders[0].root_ref is not None and builders[0].root_ref.depth > 1
+    assert builders[1].root_ref is not None
+    assert 1 < max_active_readers <= TINY_PARAMS.merge_fanout
+    assert active_readers == 0
+
+
+@pytest.mark.parametrize("failure", ["write", "read"])
+def test_iter_bounded_run_set_failure_releases_builders(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch, failure: str
+) -> None:
+    _chain(h, count=3)
+    spec = _spec(h, cutoff=FAR)
+    builders = _capture_run_set_builders(monkeypatch)
+    if failure == "write":
+        original_stage = h.storage.stage
+
+        def fail_stage(request: Any, content: Any) -> Any:
+            if request.key.startswith("research/pit-sorted-run/"):
+                raise OSError("injected PIT run write failure")
+            return original_stage(request, content)
+
+        monkeypatch.setattr(h.storage, "stage", fail_stage)
+        error = "injected PIT run write failure"
+    else:
+        original_open_read = h.storage.open_read
+
+        def fail_run_read(ref: Any) -> Any:
+            if ref.key.startswith("research/pit-sorted-run/"):
+                raise OSError("injected PIT run read failure")
+            return original_open_read(ref)
+
+        monkeypatch.setattr(h.storage, "open_read", fail_run_read)
+        error = "injected PIT run read failure"
+
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
+    with pytest.raises(OSError, match=error):
+        with selector.iter_bounded(spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS):
+            pytest.fail("run-set construction should fail before yielding")
+
+    assert len(builders) == 2
+    assert all(builder._closed for builder in builders)
+    assert all(not builder._rows and not builder._refs._levels for builder in builders)
 
 
 def test_iter_bounded_matches_select_across_the_four_cutoffs(h: RestHarness) -> None:
@@ -253,7 +370,9 @@ def test_iter_bounded_an_unbound_evidence_table_still_yields_only_conflicts(
 # =========================================================================================
 
 
-def test_iter_bounded_closes_its_generator_on_an_early_context_exit(h: RestHarness) -> None:
+def test_iter_bounded_closes_its_generator_on_an_early_context_exit(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
     """The context manager used to leave the inner generator (and the merge readers it holds
     open, up to ``merge_fanout`` per stream) to whenever it happened to be garbage collected: the
     ``with`` block's own exit never explicitly closed it. Consuming only part of the stream and
@@ -262,6 +381,16 @@ def test_iter_bounded_closes_its_generator_on_an_early_context_exit(h: RestHarne
     than producing another record."""
     _chain(h, count=4)  # several keys: more than one record is available past the first
     spec = _spec(h, cutoff=FAR)
+    opened_run_readers: list[Any] = []
+    original_open_read = h.storage.open_read
+
+    def track_run_read(ref: Any) -> Any:
+        handle = original_open_read(ref)
+        if ref.key.startswith("research/pit-sorted-run/"):
+            opened_run_readers.append(handle)
+        return handle
+
+    monkeypatch.setattr(h.storage, "open_read", track_run_read)
     selector = PitSelector(
         h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
     )
@@ -273,6 +402,8 @@ def test_iter_bounded_closes_its_generator_on_an_early_context_exit(h: RestHarne
         # Stop here, well short of exhaustion: __exit__ must still close it.
     with pytest.raises(StopIteration):
         next(records)
+    assert opened_run_readers
+    assert all(handle.closed for handle in opened_run_readers)
 
 
 def test_iter_bounded_closes_cleanly_after_full_iteration(h: RestHarness) -> None:

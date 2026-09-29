@@ -36,7 +36,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 from collections.abc import Callable, Generator, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
@@ -74,8 +74,8 @@ from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunLimits,
     RunRef,
-    merge_sorted_runs,
-    spill_sorted_runs,
+    RunSetBuilder,
+    iter_run,
 )
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
@@ -604,11 +604,12 @@ class PitSelector:
           ``observation_key`` and every mapped edge into a second such dict, then accumulates
           ``lineage`` / ``evidence_gaps`` / ``selected_rows`` / ``conflicts`` across *every* key
           before returning one :class:`PitSelection` holding it all;
-        - ``iter_bounded`` instead spills the verified rows, respectively the mapped edges, into
-          content-addressed sorted runs (:func:`infrastructure.pit.runs.spill_sorted_runs`,
-          ``(observation_key, revision_id)`` order) as soon as they are known, frees the two
-          dicts, and only then reconstructs key order via a bounded multi-way merge
-          (:func:`infrastructure.pit.runs.merge_sorted_runs`). One key's rows are gathered (via
+        - ``iter_bounded`` instead streams the verified rows, respectively mapped edges, through
+          :class:`infrastructure.pit.runs.RunSetBuilder` into content-addressed sorted runs
+          (``(observation_key, revision_id)`` order). Each completed batch is folded into a
+          fanout-bounded hierarchy, leaving one root per stream rather than a list of all run
+          references. It frees the two dicts, then reads those roots in key order with one
+          explicitly closed reader per stream. One key's rows are gathered (via
           :class:`infrastructure.pit.runs.KeyHistoryBuffer`, which itself spills to a run if that
           one key's own history exceeds ``params.key_history_buffer``), evaluated exactly as
           ``select`` would (:func:`_evaluate` / :func:`_heads`, unchanged), yielded as ordered
@@ -937,42 +938,41 @@ def _pit_bounded_stream(
 
     storage = selector._storage
     limits = params.limits
-    row_refs: list[RunRef] = list(
-        spill_sorted_runs(
-            verified,
+    with (
+        RunSetBuilder(
+            storage,
             key=_pit_row_sort_key,
             capacity=params.row_batch_rows,
-            storage=storage,
+            merge_fanout=params.merge_fanout,
             limits=limits,
-        )
-    )
-    edge_refs: list[RunRef] = list(
-        spill_sorted_runs(
-            _flatten_edges(edges),
+        ) as row_run_set,
+        RunSetBuilder(
+            storage,
             key=_pit_edge_sort_key,
             capacity=params.edge_batch_rows,
-            storage=storage,
+            merge_fanout=params.merge_fanout,
             limits=limits,
-        )
-    )
+        ) as edge_run_set,
+    ):
+        row_run_set.extend(verified)
+        edge_run_set.extend(_flatten_edges(edges))
+        row_root = row_run_set.finish()
+        edge_root = edge_run_set.finish()
     del by_key, edges, verified, rows
+
+    @contextmanager
+    def _root_rows(root: RunRef | None) -> Iterator[Iterator[Mapping[str, Any]]]:
+        if root is None:
+            with nullcontext(iter(())) as empty:
+                yield empty
+        else:
+            with iter_run(storage, root) as records:
+                yield records
 
     def _generate() -> Generator[PitBoundedRecord]:
         with (
-            merge_sorted_runs(
-                storage,
-                row_refs,
-                key=_pit_row_sort_key,
-                merge_fanout=params.merge_fanout,
-                limits=limits,
-            ) as merged_rows,
-            merge_sorted_runs(
-                storage,
-                edge_refs,
-                key=_pit_edge_sort_key,
-                merge_fanout=params.merge_fanout,
-                limits=limits,
-            ) as merged_edges,
+            _root_rows(row_root) as merged_rows,
+            _root_rows(edge_root) as merged_edges,
         ):
             edge_iter = iter(itertools.groupby(merged_edges, key=_pit_edge_group_key))
             pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
@@ -1064,10 +1064,10 @@ def _pit_bounded_stream(
                     "Canonical rows in this window"
                 )
 
-    # ``_generate`` holds the two ``merge_sorted_runs`` contexts (each up to ``merge_fanout``
-    # open run readers) and, mid-key, one ``KeyHistoryBuffer.rows()`` context: closed explicitly
-    # here on every exit of the caller's ``with`` block -- full iteration, an early ``break``, or
-    # an exception -- rather than left to whenever the generator object is garbage collected.
+    # ``_generate`` holds one root reader per run set and, mid-key, one
+    # ``KeyHistoryBuffer.rows()`` context: closed explicitly here on every exit of the caller's
+    # ``with`` block -- full iteration, an early ``break``, or an exception -- rather than left
+    # to whenever the generator object is garbage collected.
     # ``.close()`` throws ``GeneratorExit`` in at the generator's current (or not yet started)
     # suspension point, which the ``with`` statements above unwind exactly as any other exit.
     generated = _generate()
