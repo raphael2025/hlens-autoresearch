@@ -358,3 +358,31 @@ uv run --offline pytest -q --tb=short tests/infrastructure/revision/test_channel
 The dedicated test streams 16 REST rows for one key with capacity 2 and forbids fallback to `_plan`; source review found no ordering / comparison defect. It does not directly assert flush count, RunSet root record/leaf counts, maximum buffered rows, or long-history Archive/REST fan-in. The excluded high-fan-in node remains unresolved at the `ChannelEdge` object-equality level; its prior retry only proved ID/order and serialized-row parity.
 
 Review verdict: **INCOMPLETE**. `rest_records`, `archive_records`, `graph_evidence`, and the full `assemble_channel_graph` / `RevisionGraph` state are still O(H). A single row may also contain unbounded nested evidence. This commit does not prove physical byte bounds or complete-process 32 MiB memory. No deferred module or PIT node was run.
+
+### E1 cross-key revision claim check — `644ad19` independent review
+
+Commit `644ad19121945f6e385940a0b892f9b2a6f582e8` adds a day-scoped RunSet claim pass to the bounded verified-edge path. It records REST and Archive revision IDs, `supersedes` endpoints, and both endpoints of each verified precedence-evidence edge; it externally sorts by `(revision_id, observation_key)` and rejects a second key before exposing the staged output root. The conflict diagnostic retains only the first two sorted keys.
+
+The new helper regression was executed twice by the developer. The final version covers three distinct keys claiming one ID and stable first-two-key reporting:
+
+```text
+uv run --offline pytest -q --tb=short tests/infrastructure/revision/test_channel_reconcile_cross_key_claims.py::test_cross_key_revision_claim_is_rejected_after_sorted_spill
+1 passed in 0.16s
+
+uv run --offline pytest -q --tb=short tests/infrastructure/revision/test_channel_reconcile_cross_key_claims.py::test_cross_key_revision_claim_is_rejected_after_sorted_spill
+1 passed in 0.14s
+```
+
+Independent review did not rerun that two-pass node. It ran:
+
+```text
+uv run --offline ruff check infrastructure/revision/channel_reconcile.py tests/infrastructure/revision/test_channel_reconcile_cross_key_claims.py
+All checks passed!
+
+git diff --check HEAD^..HEAD
+exit 0; no output
+```
+
+The test exercises the external-sorted claim helper directly rather than routing a malformed row through `iter_verified_edges`. Independent review traced the lawful D3E producers and persisted-row verifiers: REST and Archive IDs are re-derived from key-bound identities, their lawful supersedes are empty in this path, and precedence evidence is re-derived from same-key channel comparison. A conflicting cross-key fixture cannot pass those verifiers, so the absence of an end-to-end malformed-row fixture is not an acceptance blocker for this bounded D3E slice. The static audit confirmed all four production claim sources are wired into the day-scoped RunSet before output is returned.
+
+Review verdict: **ACCEPT, narrowly scoped to the current D3E pinned-day path**. This is not generic cross-partition `RevisionGraph` coverage, E1-CAP-1, or Phase 1 acceptance. Remaining E1 gates include bounded PIT key/head and per-key graph state, byte/RSS evidence, DQ-9 capacity basis, and the complete-process 32 MiB probe. The earlier unresolved `ChannelEdge` object-equality test remains deferred and is not passed by this slice.
