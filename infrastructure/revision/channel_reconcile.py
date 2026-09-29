@@ -39,7 +39,6 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import itertools
-from bisect import bisect_left
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
@@ -1833,91 +1832,123 @@ class ChannelReconciler:
                             evidence_group = next(evidence_groups, None)
                             for key_row in keys:
                                 observation_key = key_row["observation_key"]
-                                rest_revisions: list[ChannelRevision] = []
                                 rest_records: list[RevisionRecord] = []
-                                if rest_group is None or rest_group[0] != observation_key:
-                                    raise CatalogIntegrityError(
-                                        f"REST key {observation_key} has no staged history rows"
-                                    )
-                                response_groups = itertools.groupby(
-                                    rest_group[1], key=lambda row: row["response_revision_id"]
-                                )
-                                for _, response_group in response_groups:
-                                    response_rows: list[Mapping[str, Any]] = []
-                                    for response_row in response_group:
-                                        if len(response_rows) == MAX_ELEMENT_MICROBATCH_ROWS:
-                                            raise CatalogIntegrityError(
-                                                "REST response group exceeds its fixed page "
-                                                f"limit {MAX_ELEMENT_MICROBATCH_ROWS}"
-                                            )
-                                        response_rows.append(response_row)
-                                    self._verifier.verify_rest_elements(
-                                        rest_def, data_type, response_rows
-                                    )
-                                    for row in response_rows:
-                                        revision = self._channel_revision(
-                                            Channel.REST,
-                                            data_type,
-                                            row,
-                                            pinned.rest_snapshot,
-                                            {},
+                                rest_revision_root: RunRef | None = None
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda item: item["revision_id"],
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as rest_revisions:
+                                    if rest_group is None or rest_group[0] != observation_key:
+                                        raise CatalogIntegrityError(
+                                            f"REST key {observation_key} has no staged history rows"
                                         )
-                                        rest_revisions.append(revision)
-                                        try:
-                                            rest_records.append(revision_record_from_row(row))
-                                        except ValueError as exc:
-                                            raise CatalogIntegrityError(
-                                                f"{revision.table}: row {row['revision_id']} "
-                                                f"is not a lawful revision ({exc})"
-                                            ) from None
+                                    response_groups = itertools.groupby(
+                                        rest_group[1], key=lambda row: row["response_revision_id"]
+                                    )
+                                    for _, response_group in response_groups:
+                                        response_rows: list[Mapping[str, Any]] = []
+                                        for response_row in response_group:
+                                            if len(response_rows) == MAX_ELEMENT_MICROBATCH_ROWS:
+                                                raise CatalogIntegrityError(
+                                                    "REST response group exceeds its fixed page "
+                                                    f"limit {MAX_ELEMENT_MICROBATCH_ROWS}"
+                                                )
+                                            response_rows.append(response_row)
+                                        self._verifier.verify_rest_elements(
+                                            rest_def, data_type, response_rows
+                                        )
+                                        for row in response_rows:
+                                            revision = self._channel_revision(
+                                                Channel.REST,
+                                                data_type,
+                                                row,
+                                                pinned.rest_snapshot,
+                                                {},
+                                            )
+                                            rest_revisions.add(
+                                                {
+                                                    "revision_id": revision.revision_id,
+                                                    "row": dict(row),
+                                                    "channel": Channel.REST.value,
+                                                    "time_unit": revision.time_unit,
+                                                }
+                                            )
+                                            try:
+                                                rest_records.append(revision_record_from_row(row))
+                                            except ValueError as exc:
+                                                raise CatalogIntegrityError(
+                                                    f"{revision.table}: row {row['revision_id']} "
+                                                    f"is not a lawful revision ({exc})"
+                                                ) from None
+                                    rest_revision_root = rest_revisions.finish()
                                 rest_group = next(rest_groups, None)
 
-                                archive_revisions: list[ChannelRevision] = []
                                 archive_records: list[RevisionRecord] = []
+                                archive_revision_root: RunRef | None = None
                                 if archive_group is not None and archive_group[0] < observation_key:
                                     raise CatalogIntegrityError(
                                         f"archive key {archive_group[0]} is absent from "
                                         "REST day keys"
                                     )
-                                if (
-                                    archive_group is not None
-                                    and archive_group[0] == observation_key
-                                ):
-                                    previous_revision_id: str | None = None
-                                    for row in archive_group[1]:
-                                        if row["revision_id"] == previous_revision_id:
-                                            raise CatalogIntegrityError(
-                                                f"archive revision {row['revision_id']} is "
-                                                "committed twice"
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda item: item["revision_id"],
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as archive_revisions:
+                                    if (
+                                        archive_group is not None
+                                        and archive_group[0] == observation_key
+                                    ):
+                                        previous_revision_id: str | None = None
+                                        for row in archive_group[1]:
+                                            if row["revision_id"] == previous_revision_id:
+                                                raise CatalogIntegrityError(
+                                                    f"archive revision {row['revision_id']} is "
+                                                    "committed twice"
+                                                )
+                                            previous_revision_id = row["revision_id"]
+                                            verified = self._verifier.verify_archive_elements(
+                                                archive_def, data_type, symbol, (row,)
                                             )
-                                        previous_revision_id = row["revision_id"]
-                                        verified = self._verifier.verify_archive_elements(
-                                            archive_def, data_type, symbol, (row,)
-                                        )
-                                        archive = verified[row["archive_revision_id"]]
-                                        archive_parents.add(
-                                            {
-                                                "archive_revision_id": archive.revision_id,
-                                                "arrival_seq": archive.row["arrival_seq"],
-                                            }
-                                        )
-                                        units = {archive.revision_id: archive.time_unit.value}
-                                        revision = self._channel_revision(
-                                            Channel.ARCHIVE,
-                                            data_type,
-                                            row,
-                                            pinned.archive_snapshot,
-                                            units,
-                                        )
-                                        archive_revisions.append(revision)
-                                        try:
-                                            archive_records.append(revision_record_from_row(row))
-                                        except ValueError as exc:
-                                            raise CatalogIntegrityError(
-                                                f"{revision.table}: row {row['revision_id']} "
-                                                f"is not a lawful revision ({exc})"
-                                            ) from None
-                                    archive_group = next(archive_groups, None)
+                                            archive = verified[row["archive_revision_id"]]
+                                            archive_parents.add(
+                                                {
+                                                    "archive_revision_id": archive.revision_id,
+                                                    "arrival_seq": archive.row["arrival_seq"],
+                                                }
+                                            )
+                                            units = {archive.revision_id: archive.time_unit.value}
+                                            revision = self._channel_revision(
+                                                Channel.ARCHIVE,
+                                                data_type,
+                                                row,
+                                                pinned.archive_snapshot,
+                                                units,
+                                            )
+                                            archive_revisions.add(
+                                                {
+                                                    "revision_id": revision.revision_id,
+                                                    "row": dict(row),
+                                                    "channel": Channel.ARCHIVE.value,
+                                                    "time_unit": revision.time_unit,
+                                                }
+                                            )
+                                            try:
+                                                archive_records.append(
+                                                    revision_record_from_row(row)
+                                                )
+                                            except ValueError as exc:
+                                                raise CatalogIntegrityError(
+                                                    f"{revision.table}: row {row['revision_id']} "
+                                                    f"is not a lawful revision ({exc})"
+                                                ) from None
+                                        archive_group = next(archive_groups, None)
+                                    archive_revision_root = archive_revisions.finish()
 
                                 if (
                                     evidence_group is not None
@@ -1932,10 +1963,40 @@ class ChannelReconciler:
                                     and evidence_group[0] == observation_key
                                 )
 
-                                rest_revisions.sort(key=lambda item: item.revision_id)
-                                archive_revisions.sort(key=lambda item: item.revision_id)
                                 rest_records.sort(key=lambda item: item.revision_id)
                                 archive_records.sort(key=lambda item: item.revision_id)
+
+                                def channel_revision_from_run_row(
+                                    item: Mapping[str, Any], snapshot_id: str | None
+                                ) -> ChannelRevision:
+                                    channel = Channel(item["channel"])
+                                    row = item["row"]
+                                    units = (
+                                        {row["archive_revision_id"]: item["time_unit"]}
+                                        if channel is Channel.ARCHIVE
+                                        else {}
+                                    )
+                                    return self._channel_revision(
+                                        channel, data_type, row, snapshot_id, units
+                                    )
+
+                                def find_channel_revision(
+                                    root: RunRef | None,
+                                    revision_id: str,
+                                    snapshot_id: str | None,
+                                ) -> ChannelRevision | None:
+                                    if root is None:
+                                        return None
+                                    with iter_run(self._storage, root) as revision_rows:
+                                        for revision_row in revision_rows:
+                                            if revision_row["revision_id"] == revision_id:
+                                                return channel_revision_from_run_row(
+                                                    revision_row, snapshot_id
+                                                )
+                                            if revision_row["revision_id"] > revision_id:
+                                                break
+                                    return None
+
                                 with RunSetBuilder(
                                     self._storage,
                                     key=lambda row: row["edge_id"],
@@ -1943,30 +2004,57 @@ class ChannelReconciler:
                                     merge_fanout=params.merge_fanout,
                                     limits=params.limits,
                                 ) as equal_pairs:
-                                    for archive_revision in archive_revisions:
-                                        for rest in rest_revisions:
-                                            comparison = compare_channels(archive_revision, rest)
-                                            if (
-                                                comparison.outcome
-                                                is ComparisonOutcome.INTEGRITY_VIOLATION
-                                            ):
-                                                raise CatalogIntegrityError(
-                                                    "stored revisions contradict themselves; "
-                                                    f"no edge is written: {observation_key} "
-                                                    f"{archive_revision.revision_id} / "
-                                                    f"{rest.revision_id}: "
-                                                    f"{'; '.join(comparison.reasons)}"
-                                                )
-                                            if comparison.outcome is ComparisonOutcome.EQUAL:
-                                                equal_pairs.add(
-                                                    {
-                                                        "edge_id": _edge_id(comparison),
-                                                        "archive_revision_id": (
-                                                            archive_revision.revision_id
-                                                        ),
-                                                        "rest_revision_id": rest.revision_id,
-                                                    }
-                                                )
+                                    with ExitStack() as pair_stack:
+                                        archive_revision_rows = (
+                                            iter(())
+                                            if archive_revision_root is None
+                                            else pair_stack.enter_context(
+                                                iter_run(self._storage, archive_revision_root)
+                                            )
+                                        )
+                                        for archive_row in archive_revision_rows:
+                                            archive_revision = channel_revision_from_run_row(
+                                                archive_row, pinned.archive_snapshot
+                                            )
+                                            if rest_revision_root is None:
+                                                continue
+                                            with iter_run(
+                                                self._storage, rest_revision_root
+                                            ) as rest_revision_rows:
+                                                for rest_row in rest_revision_rows:
+                                                    rest = channel_revision_from_run_row(
+                                                        rest_row, pinned.rest_snapshot
+                                                    )
+                                                    comparison = compare_channels(
+                                                        archive_revision, rest
+                                                    )
+                                                    if (
+                                                        comparison.outcome
+                                                        is ComparisonOutcome.INTEGRITY_VIOLATION
+                                                    ):
+                                                        raise CatalogIntegrityError(
+                                                            "stored revisions contradict "
+                                                            "themselves; no edge is written: "
+                                                            f"{observation_key} "
+                                                            f"{archive_revision.revision_id} / "
+                                                            f"{rest.revision_id}: "
+                                                            f"{'; '.join(comparison.reasons)}"
+                                                        )
+                                                    if (
+                                                        comparison.outcome
+                                                        is ComparisonOutcome.EQUAL
+                                                    ):
+                                                        equal_pairs.add(
+                                                            {
+                                                                "edge_id": _edge_id(comparison),
+                                                                "archive_revision_id": (
+                                                                    archive_revision.revision_id
+                                                                ),
+                                                                "rest_revision_id": (
+                                                                    rest.revision_id
+                                                                ),
+                                                            }
+                                                        )
                                     equal_root = equal_pairs.finish()
 
                                 graph_evidence: list[PrecedenceEvidence] = []
@@ -2017,35 +2105,26 @@ class ChannelReconciler:
                                                 f"evidence edge {edge_id} does not match its "
                                                 "archive / REST revision ids"
                                             )
-                                        archive_index = bisect_left(
-                                            archive_revisions,
+                                        found_archive_revision = find_channel_revision(
+                                            archive_revision_root,
                                             archive_revision_id,
-                                            key=lambda item: item.revision_id,
+                                            pinned.archive_snapshot,
                                         )
-                                        rest_index = bisect_left(
-                                            rest_revisions,
+                                        found_rest_revision = find_channel_revision(
+                                            rest_revision_root,
                                             rest_revision_id,
-                                            key=lambda item: item.revision_id,
+                                            pinned.rest_snapshot,
                                         )
-                                        if archive_index >= len(
-                                            archive_revisions
-                                        ) or rest_index >= len(rest_revisions):
-                                            raise CatalogIntegrityError(
-                                                f"evidence edge {edge_id} references a missing "
-                                                "source revision"
-                                            )
-                                        archive_revision = archive_revisions[archive_index]
-                                        rest_revision = rest_revisions[rest_index]
                                         if (
-                                            archive_revision.revision_id != archive_revision_id
-                                            or rest_revision.revision_id != rest_revision_id
+                                            found_archive_revision is None
+                                            or found_rest_revision is None
                                         ):
                                             raise CatalogIntegrityError(
                                                 f"evidence edge {edge_id} references a missing "
                                                 "source revision"
                                             )
                                         comparison = compare_channels(
-                                            archive_revision, rest_revision
+                                            found_archive_revision, found_rest_revision
                                         )
                                         if (
                                             comparison.outcome is not ComparisonOutcome.EQUAL
@@ -2099,9 +2178,9 @@ class ChannelReconciler:
                                 previous_archive_id = archive_id
                             archive_arrival_root = arrivals.finish()
                         if archive_arrival_root is not None:
-                            with iter_run(self._storage, archive_arrival_root) as arrivals:
+                            with iter_run(self._storage, archive_arrival_root) as arrival_rows:
                                 previous_arrival_seq: int | None = None
-                                for arrival in arrivals:
+                                for arrival in arrival_rows:
                                     value = arrival["arrival_seq"]
                                     if value == previous_arrival_seq:
                                         raise CatalogIntegrityError(
