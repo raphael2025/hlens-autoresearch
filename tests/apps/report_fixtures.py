@@ -5,10 +5,11 @@ README.md``; pinned by ``tests/research/reports/test_console_fixture_writers.py`
 well-formed report of its kind named by its own identity. Tests under ``tests/apps`` (which must
 not import ``research/``) read them to get valid payloads to serve or to tamper with.
 
-Each kind has one **current** fixture (contract 2.2.0). Kinds whose report changed with a contract
+Each kind has one **current** fixture (contract 2.4.0). Kinds whose report changed with a contract
 bump also keep **legacy readable** fixtures: the files committed before 2.1.0 (``LEGACY_2_0_0``,
-three kinds) and before 2.2.0 (``LEGACY_2_1_0``, ADR-0055, six kinds), kept so the API and the
-console keep proving they read reports written by the earlier code. A kind may also have named
+three kinds), before 2.2.0 (``LEGACY_2_1_0``, ADR-0055, six kinds), and before 2.4.0
+(``LEGACY_2_2_0``, ADR-0088, six kinds), kept so the API and console prove they read earlier
+reports. A kind may also have named
 **variant** fixtures (``VARIANTS``): further current reports of a distinct state the console must
 show, e.g. an insufficient-evidence degradation check.
 """
@@ -65,17 +66,49 @@ LEGACY_2_1_0: Final[dict[ReportKind, str]] = {
     ),
     ReportKind.ROUTER_STOP: "64c340616747be0377f0b48e4d4baeecbf1f72d41547bc7961fe24b2478ed4d9",
     ReportKind.PAPER_DEVIATION: (
-        "a168f4f764b698ec9c7f46035a2d62f4b857d8d543855b732dabb65ac9d456a1"
+        "45d3d4383bfd73fff69b46f2231029b008cd1a0805dc93521e8f96448ffc3c30"
+    ),
+}
+
+#: The legacy readable 2.2.0 fixture ids retained when ADR-0088 advanced the current contract.
+LEGACY_2_2_0: Final[dict[ReportKind, str]] = {
+    ReportKind.VALIDATION_REPORT: (
+        "b0896bbe070ce8cb929052108d67dafb91a1db3527791fc531cd0d80194e9cfa"
+    ),
+    ReportKind.STATE_STRATEGY_MATRIX: (
+        "2e201246181bcfa53dd859cfff9a866ac54354c6db62678803d9685edab7ad93"
+    ),
+    ReportKind.ROUTER_PAPER_RUN: "6c1231639a4312f4a6c7cccba16d92b519f7ad4caa9d6b22e56c94ba74291c25",
+    ReportKind.GATE_CALIBRATION: "8499223e39d1c260e76e2cb18b6af4c227914b140ffcf6089771accd3b16b535",
+    ReportKind.ROUTER_STOP: "bff151b450dd125758410b9ed78e352030d36a27cc58a95f5d2ed8216b630382",
+    ReportKind.PAPER_DEVIATION: "b9c4246c6492f47b8da5c289765009973ba3bff15b2fcfb7ddf3ca630602c442",
+}
+
+# ADR-0081 requires both original descriptive 1.0.0 paper-deviation reports to remain readable.
+# The generation registry pins one report per contract generation; these ids retain both
+# original descriptive 1.0.0 reports alongside those generation pins.
+LEGACY_ADR_0081: Final[dict[ReportKind, tuple[str, ...]]] = {
+    ReportKind.PAPER_DEVIATION: (
+        "183c62b9c2949b54793b1f164ddb4ba66325bb50d7d04173065cc230d771c160",
+        "a168f4f764b698ec9c7f46035a2d62f4b857d8d543855b732dabb65ac9d456a1",
+    ),
+    ReportKind.RETRO_AUDIT: (
+        "05545674ea02dcb48a07e70ed591999a38c02cf6785623d2aa784076d38249e2",
     ),
 }
 
 #: Every legacy generation, by the contract version whose code wrote it.
-LEGACY: Final[dict[str, dict[ReportKind, str]]] = {"2.0.0": LEGACY_2_0_0, "2.1.0": LEGACY_2_1_0}
+LEGACY: Final[dict[str, dict[ReportKind, str]]] = {
+    "2.0.0": LEGACY_2_0_0,
+    "2.1.0": LEGACY_2_1_0,
+    "2.2.0": LEGACY_2_2_0,
+}
 
 
 def legacy_ids(kind: ReportKind) -> set[str]:
     """The ids of every legacy readable fixture of ``kind`` (any generation)."""
-    return {ids[kind] for ids in LEGACY.values() if kind in ids}
+    generation_ids = {ids[kind] for ids in LEGACY.values() if kind in ids}
+    return generation_ids | set(LEGACY_ADR_0081.get(kind, ()))
 
 
 @dataclass(frozen=True, slots=True)
@@ -94,7 +127,7 @@ def fixtures(kind: ReportKind) -> list[Fixture]:
 
 
 def fixture(kind: ReportKind) -> Fixture:
-    """The one current (2.2.0) committed fixture of ``kind`` (a fresh copy of its payload); not a
+    """The one current (2.4.0) committed fixture of ``kind`` (a fresh copy of its payload); not a
     legacy or variant one."""
     pinned = {*legacy_ids(kind), *VARIANTS.get(kind, {}).values()}
     (current,) = [item for item in fixtures(kind) if item.id not in pinned]
