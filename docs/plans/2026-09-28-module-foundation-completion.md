@@ -141,7 +141,7 @@ Raphael 于 2026-09-28 指定 Claude Code 以 PM 身份协调本轮：只有 PM 
 | W2-P4 | P4 Outcome | 按 roadmap 判定 converter 调用接线 | Codex | research/outcomes、research/experiments | 改 outcome 语义 / 阈值 | 接线或书面依据 | ✅ `317e6c8`：无需生产调用点，依据写入 README |
 | W3-P7OPS | P7 Discovery | ADR-0082：六类算子语义与 lowering | Codex | research/hypotheses | 设 runnable、接 Runner | 逐算子 ADR + lowering | 🟡 `29763f3`：interaction 完成；其余五项 OPEN（D-P7-OPS） |
 | W3-E1DS | P1 Dataset | 实施 ADR-0077（2.3.0 additive 契约模型 + 有界 Dataset API；v2 只读兼容） | Codex | core/contracts（仅新增）、infrastructure/dataset、catalog 新表 | 改动既有 v2 模型字段 / 哈希；与其他任务并行 | 实现 + 测试更新 | ⏳ 待当前任务全部结束后单独串行（涉及 core/） |
-| W4-P7RETRY | P7 Discovery | ADR-0083：失败轮次审阅后的显式重试入口 | Codex | research/loop（不含 dataset_*）、apps/worker/loop.py | 删除 / 隐藏失败记录、重置 trial 计数、自动重试 | ADR + 入口 + 测试更新 | 🔄 |
+| W4-P7RETRY | P7 Discovery | ADR-0083：失败轮次审阅后的显式重试入口 | Codex | research/loop（不含 dataset_*）、apps/worker/loop.py | 删除 / 隐藏失败记录、重置 trial 计数、自动重试 | v6 durable admission / crash recovery；显式 worker receipt gate；retry-only round skips evolution；预算、manifest、reviewer、attempt 与旧版本拒绝路径有针对性测试 | ✅ 本分支定向回归与 v6 operator fail-closed regression 通过 |
 | W3-P11D | P11 Loop | dataset operator + 在 ADR-0077 新 API 上再试一次权威解析（仅一次） | Codex | 待 W3-E1DS 完成后签发 | — | — | ⏳ 排队 |
 | HUMAN | P14 / P0.5 | 迁移目标与 golden data；seed tags/assets 具名审阅 | Raphael / 具名审阅者 | — | 不代写、不猜 | — | ⏸ 需人工输入 |
 | AUD-2 | 跨模块 | ADR 0001–0074 实施一致性审计 | sonnet ×3（含 4 个子审计） | 只读 | — | 逐 ADR 覆盖 | ✅ GAP: NONE；需决定项汇入 STATUS §6 |
