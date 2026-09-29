@@ -1,24 +1,46 @@
 """Research prototype: disk-backed validation of one PIT cutoff graph.
 
-The validator is not dispatched by ``iter_bounded``. Its graph invariants pass focused checks, but
-the current external Kahn pass rescans edge runs by depth; do not enable it on history-scale input
-until the key-addressable adjacency/state index is implemented and measured.
+The validator is not dispatched by ``iter_bounded``. Record and evidence invariants use sorted
+runs; cycle validation bulk-builds a key-addressable adjacency tree and uses external COW state
+plus content-addressed linked DFS frames. This avoids depth-wide edge rescans, but tree page I/O,
+COW orphan growth, adapter byte limits, and complete-process RSS still require measurement.
 """
 
 from __future__ import annotations
 
+import hashlib
 import itertools
+import json
 from collections.abc import Callable, Iterable, Mapping
+from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
 
 from core.contracts.revision import PrecedenceEvidence, RevisionRecord
-from core.contracts.storage import StorageAdapter
+from core.contracts.storage import ObjectRef, StageRequest, StorageAdapter
+from core.domain.base import canonical_json
 from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder, iter_run
+from infrastructure.streaming.content_key_tree import (
+    ContentKeyTree,
+    ContentKeyTreeError,
+    KeyTreeParams,
+    _fits_json_bytes,
+    _reject_duplicate_json_keys,
+)
+
+_DFS_FRAME_FORMAT = "hlens.pit.graph-dfs-frame@1.0.0"
+_DFS_FRAME_PREFIX = "research/pit-graph-dfs/v1/"
 
 
 class PITGraphInvariantError(ValueError):
     """A bounded PIT graph violated an invariant enforced by ``RevisionGraph``."""
+
+
+@dataclass(frozen=True, slots=True)
+class _DFSFrame:
+    node: str
+    after: str | None
+    parent: ObjectRef | None
 
 
 def validate_pit_graph_runs(
@@ -31,11 +53,12 @@ def validate_pit_graph_runs(
     merge_fanout: int,
     limits: RunLimits,
 ) -> None:
-    """Check the ``RevisionGraph`` invariants for rows known at ``cutoff`` using sorted runs.
+    """Check the ``RevisionGraph`` invariants for rows known at ``cutoff`` using disk indexes.
 
-    The input iterables are streamed once into bounded indexes. Run roots are folded online, so
-    this validator does not allocate per-graph ID, payload, claim, edge, or degree maps. A cycle
-    diagnostic retains only a fixed sample and count; the graph rejection remains fail closed.
+    The input iterables are streamed into bounded sorted runs. Run roots are folded online, so
+    this validator does not allocate per-graph ID, payload, claim, edge, or degree maps. Cycle
+    checking uses key-range seeks and retains only the current DFS frame in Python memory; the
+    existing complete conflict-head output is outside this validator.
     """
     with (
         RunSetBuilder(
@@ -249,99 +272,156 @@ def _assert_acyclic(
     merge_fanout: int,
     limits: RunLimits,
 ) -> None:
-    active = root
-    while active is not None:
-        with (
-            RunSetBuilder(
-                storage,
-                key=lambda row: row["node"],
-                capacity=capacity,
-                merge_fanout=merge_fanout,
-                limits=limits,
-            ) as degree_rows,
-            RunSetBuilder(
-                storage,
-                key=lambda row: row["node"],
-                capacity=capacity,
-                merge_fanout=merge_fanout,
-                limits=limits,
-            ) as ready_rows,
-        ):
-            with iter_run(storage, active) as edges:
-                for edge in edges:
-                    degree_rows.add({"node": edge["newer"], "increment": 0})
-                    degree_rows.add({"node": edge["older"], "increment": 1})
-            degree_root = degree_rows.finish()
-            ready_count = 0
-            if degree_root is not None:
-                with iter_run(storage, degree_root) as nodes:
-                    for node, group in itertools.groupby(nodes, key=lambda row: row["node"]):
-                        if sum(item["increment"] for item in group) == 0:
-                            ready_rows.add({"node": node})
-                            ready_count += 1
-            ready_root = ready_rows.finish()
+    if root is None:
+        return
+    key_params = KeyTreeParams(
+        page_max_bytes=limits.leaf_max_bytes,
+        leaf_max_records=min(capacity, limits.leaf_max_records),
+        fanout=limits.fanout,
+    )
 
-        if ready_count == 0:
-            node_count, sample = _cycle_nodes(storage, active, capacity, merge_fanout, limits)
-            raise PITGraphInvariantError(
-                f"supersedes 图不得成环：涉及 {sample}（共 {node_count} 个剩余节点）"
-            )
-        if ready_root is None:  # pragma: no cover - ready_count and root are coupled
-            return
-        with (
-            iter_run(storage, active) as edges,
-            iter_run(storage, ready_root) as ready,
-            RunSetBuilder(
-                storage,
-                key=lambda row: (row["newer"], row["older"]),
-                capacity=capacity,
-                merge_fanout=merge_fanout,
-                limits=limits,
-            ) as remaining,
-        ):
-            next_ready = next(ready, None)
-            previous_pair: tuple[str, str] | None = None
-            for edge in edges:
-                pair = (edge["newer"], edge["older"])
-                if pair == previous_pair:
-                    continue
-                previous_pair = pair
-                while next_ready is not None and next_ready["node"] < pair[0]:
-                    next_ready = next(ready, None)
-                if next_ready is None or next_ready["node"] != pair[0]:
-                    remaining.add(edge)
-            active = remaining.finish()
-
-
-def _cycle_nodes(
-    storage: StorageAdapter,
-    root: RunRef,
-    capacity: int,
-    merge_fanout: int,
-    limits: RunLimits,
-) -> tuple[int, tuple[str, ...]]:
-    with RunSetBuilder(
-        storage,
-        key=lambda row: row["node"],
-        capacity=capacity,
-        merge_fanout=merge_fanout,
-        limits=limits,
-    ) as nodes:
+    def unique_adjacency_rows() -> Iterable[tuple[tuple[str, str], str]]:
         with iter_run(storage, root) as edges:
-            for edge in edges:
-                nodes.add({"node": edge["newer"]})
-                nodes.add({"node": edge["older"]})
-        node_root = nodes.finish()
-    sample: list[str] = []
-    count = 0
-    if node_root is not None:
-        with iter_run(storage, node_root) as rows:
-            previous: str | None = None
-            for row in rows:
-                node = row["node"]
-                if node != previous:
-                    count += 1
-                    if len(sample) < 8:
-                        sample.append(repr(node))
-                    previous = node
-    return count, tuple(sample)
+            for (newer, older), _duplicates in itertools.groupby(
+                edges, key=lambda row: (row["newer"], row["older"])
+            ):
+                yield (newer, older), "1"
+
+    adjacency = ContentKeyTree.build(storage, unique_adjacency_rows(), params=key_params)
+    if adjacency.root_ref is None:
+        return
+    states = ContentKeyTree(storage, key_params)
+    stack_top: ObjectRef | None = None
+
+    # One adjacency scan seeds each source vertex. Vertices reachable only as older endpoints
+    # are still visited by DFS, including dangling revisions that have no record of their own.
+    edge_rows = adjacency.iter_from()
+    try:
+        for newer, _source_edges in itertools.groupby(edge_rows, key=lambda item: item[0][0]):
+            if states.get((newer,)) is not None:
+                continue
+            states = states.put((newer,), "g")
+            stack_top = _write_dfs_frame(
+                storage,
+                _DFSFrame(node=newer, after=None, parent=None),
+                page_max_bytes=key_params.page_max_bytes,
+            )
+
+            while stack_top is not None:
+                frame = _read_dfs_frame(
+                    storage, stack_top, page_max_bytes=key_params.page_max_bytes
+                )
+                seek = (frame.node,) if frame.after is None else (frame.node, frame.after)
+                following = adjacency.successor(seek, inclusive=frame.after is None)
+                if following is None or following[0][0] != frame.node:
+                    states = states.put((frame.node,), "b")
+                    stack_top = frame.parent
+                    continue
+
+                older = following[0][1]
+                # Checkpoint the parent cursor in one immutable stack frame before descent. The
+                # former top is now an orphan; the new frame links to the same parent frame.
+                advanced = _write_dfs_frame(
+                    storage,
+                    _DFSFrame(node=frame.node, after=older, parent=frame.parent),
+                    page_max_bytes=key_params.page_max_bytes,
+                )
+                color = states.get((older,))
+                if color == "g":
+                    raise PITGraphInvariantError(
+                        f"supersedes 图不得成环：回边 {frame.node!r} → {older!r}"
+                    )
+                if color == "b":
+                    stack_top = advanced
+                    continue
+                if color is not None:
+                    raise PITGraphInvariantError("图校验状态页包含未知节点颜色")
+                states = states.put((older,), "g")
+                stack_top = _write_dfs_frame(
+                    storage,
+                    _DFSFrame(node=older, after=None, parent=advanced),
+                    page_max_bytes=key_params.page_max_bytes,
+                )
+    finally:
+        edge_rows.close()
+
+
+def _write_dfs_frame(
+    storage: StorageAdapter, frame: _DFSFrame, *, page_max_bytes: int
+) -> ObjectRef:
+    parent = (
+        None
+        if frame.parent is None
+        else {
+            "key": frame.parent.key,
+            "sha256": frame.parent.sha256,
+            "size": frame.parent.size,
+        }
+    )
+    page = {
+        "format": _DFS_FRAME_FORMAT,
+        "node": frame.node,
+        "after": frame.after,
+        "parent": parent,
+    }
+    if not _fits_json_bytes(page, page_max_bytes):
+        raise ContentKeyTreeError("DFS frame exceeds page_max_bytes")
+    body = canonical_json(page).encode("utf-8")
+    digest = hashlib.sha256(body).hexdigest()
+    key = f"{_DFS_FRAME_PREFIX}{digest}.json"
+    staged = storage.stage(
+        StageRequest(key=key, expected_sha256=digest, expected_size=len(body)), [body]
+    )
+    return storage.publish(staged).ref
+
+
+def _read_dfs_frame(storage: StorageAdapter, ref: ObjectRef, *, page_max_bytes: int) -> _DFSFrame:
+    looked_up = storage.lookup(ref.key)
+    if looked_up != ref:
+        raise PITGraphInvariantError("DFS frame is missing or differs from its reference")
+    with storage.open_read(looked_up) as handle:
+        body = handle.read(page_max_bytes + 1)
+    if (
+        len(body) > page_max_bytes
+        or len(body) != ref.size
+        or hashlib.sha256(body).hexdigest() != ref.sha256
+    ):
+        raise PITGraphInvariantError("DFS frame fails its byte, hash, or size check")
+    try:
+        page = json.loads(body, object_pairs_hook=_reject_duplicate_json_keys)
+    except (UnicodeDecodeError, json.JSONDecodeError, ContentKeyTreeError) as exc:
+        raise PITGraphInvariantError("DFS frame is not valid JSON") from exc
+    if not isinstance(page, dict) or set(page) != {"format", "node", "after", "parent"}:
+        raise PITGraphInvariantError("DFS frame fields are not exact")
+    node = page["node"]
+    after = page["after"]
+    parent_data = page["parent"]
+    if (
+        page["format"] != _DFS_FRAME_FORMAT
+        or not isinstance(node, str)
+        or not node
+        or (after is not None and (not isinstance(after, str) or not after))
+    ):
+        raise PITGraphInvariantError("DFS frame field values are invalid")
+    parent: ObjectRef | None
+    if parent_data is None:
+        parent = None
+    elif isinstance(parent_data, dict) and set(parent_data) == {"key", "sha256", "size"}:
+        key, sha256, size = parent_data["key"], parent_data["sha256"], parent_data["size"]
+        if (
+            not isinstance(key, str)
+            or not isinstance(sha256, str)
+            or not isinstance(size, int)
+            or isinstance(size, bool)
+            or size <= 0
+        ):
+            raise PITGraphInvariantError("DFS frame parent reference is invalid")
+        parent_ref = storage.lookup(key)
+        if parent_ref is None or (parent_ref.sha256, parent_ref.size) != (sha256, size):
+            raise PITGraphInvariantError(
+                "DFS frame parent object is missing or differs from its ref"
+            )
+        parent = parent_ref
+    else:
+        raise PITGraphInvariantError("DFS frame parent fields are invalid")
+    return _DFSFrame(node=node, after=after, parent=parent)
