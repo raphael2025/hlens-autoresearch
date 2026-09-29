@@ -35,7 +35,7 @@ def test_repository_seed_payloads_explicitly_carry_schema_version() -> None:
         assert isinstance(payload, list), path.name
         for index, item in enumerate(payload):
             assert isinstance(item, dict), f"{path.name}[{index}]"
-            assert isinstance(item.get("schema_version"), str), f"{path.name}[{index}]"
+            assert item.get("schema_version") == "2.1.0", f"{path.name}[{index}]"
 
 
 def test_retrieval_by_library_and_terms() -> None:
