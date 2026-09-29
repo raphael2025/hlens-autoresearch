@@ -6,7 +6,7 @@ values written down from ADR-0023 §5 / ADR-0028 §4 by hand.
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
@@ -343,10 +343,12 @@ def test_r3_a_recommitted_earlier_edge_cannot_change_a_selection(h: RestHarness)
 
 @dataclass
 class _RawScans(ProxyCatalog):
-    """Counts full-width reads of the archive element table (proof windows)."""
+    """Counts actual batch reads of the archive element table (proof windows)."""
 
     widths: list[tuple[int, int]] = field(default_factory=list)
     columns: list[tuple[str, ...]] = field(default_factory=list)
+    batch_requests: int = 0
+    closed_readers: int = 0
 
     def scan_columns(self, table: str, **kwargs: Any) -> Any:
         result = self.inner.scan_columns(table, **kwargs)
@@ -354,6 +356,39 @@ class _RawScans(ProxyCatalog):
             self.widths.append((len(kwargs["columns"]), result.num_rows))
             self.columns.append(tuple(kwargs["columns"]))
         return result
+
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Iterator[Any]:
+        reader = self.inner.scan_column_batches(table, **kwargs)
+        if table != c.ARCHIVE_AGGS.table:
+            return reader
+
+        columns = tuple(kwargs["columns"])
+        self.columns.append(columns)
+        self.batch_requests += 1
+        owner = self
+
+        class ObservedReader:
+            def __init__(self) -> None:
+                self._closed = False
+
+            def __iter__(self) -> ObservedReader:
+                return self
+
+            def __next__(self) -> Any:
+                batch = next(reader)
+                owner.widths.append((len(columns), batch.num_rows))
+                return batch
+
+            def close(self) -> None:
+                if self._closed:
+                    return
+                self._closed = True
+                close = getattr(reader, "close", None)
+                if callable(close):
+                    close()
+                owner.closed_readers += 1
+
+        return ObservedReader()  # type: ignore[return-value]
 
 
 def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> None:
@@ -370,6 +405,7 @@ def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> Non
     assert sorted(row["arrival_seq"] for row in out.selected_rows.values()) == [3, 4]
     # One Raw proof window of the second batch (positions 3-4) — not the unit's four windows.
     assert [rows for width, rows in log.widths if width > 3 and rows <= 2] == [2]
+    assert log.closed_readers == log.batch_requests
     whole = PitSelector(h.adapter, h.storage).select(
         _spec(h, cutoff=FAR), "agg_trades", SYMBOL, START, END
     )
@@ -396,6 +432,7 @@ def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> Non
         assert dict(out.selected_rows) == dict(fresh.selected_rows)
     # The unit's positions (a narrow read) were read once for both slices.
     assert log.columns.count(("archive_line_number", "symbol")) == 1
+    assert log.closed_readers == log.batch_requests
     # A new spec (other bindings) starts over.
     later = _spec(h, cutoff=K_A)
     shared.select(later, "agg_trades", SYMBOL, *slices[0])
