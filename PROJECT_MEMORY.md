@@ -117,6 +117,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   test database、最小权限 role 与本机忽略凭据，并覆盖 D0 / D1 对 Binance 官方公共归档、`.CHECKSUM` 与本机忽略小样本 smoke 的有限网络访问；D2 可使用这些已授权资源但不得新建或修改数据库 / role；不覆盖系统软件安装、PostgreSQL 系统配置、其他数据库 / role、账户 / 交易接口、原则或阈值变化、实盘、资金或风险预算
 
 - ADR-0077 implementation decision (2026-09-29): Universe v3 passes caller-supplied `UniverseRunParams` end-to-end and uses content-addressed hierarchical run-reference sets for bounded sorting/merge; no implicit capacity or OS temp directory. DQ-9 values and E1-CAP-1 remain open.
+- ADR-0094 (2026-09-30): PIT v3 conflict heads are fully preserved in a bounded content-addressed evidence stream with a fixed-size root/count result; v2 tuple and contract 2.3/2.4 replay remain unchanged. E1-CAP-1 remains open.
 
 ## 6. Active Constraints
 
