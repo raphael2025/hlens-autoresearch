@@ -320,6 +320,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-29 | PIT bounded-run 集成切片 | 按依赖顺序集成 orphan-edge guard、bounded selector runs、逐个 yield 与 per-key run-ref compaction、单 key intermediate-state 切片；候选分支三个 PIT 测试文件 `84 passed in 52.78s`。独立审查无契约变化；O(N) RevisionRecord / edge graph / maximal-heads 状态仍存，故不是单 key bounded acceptance 或 E1-CAP-1 证据。 |
 | 2026-09-29 | Canonical scratch ownership 接入 | 接受的 D-E1-SCRATCH Option A 已在隔离候选分支贯通 Settings、normalizer、PIT、Dataset、Quality、tools 与测试；Settings + Canonical 测试 `148 passed`，PIT/Dataset 接线修复后 13 个失败节点复验通过。`test_a_v2_round_with_an_evidence_verifier_is_exactly_the_v2_round` 两轮出现 manifest/research hash 不一致，按两轮规则延期，根因未确认；E1-CAP-1 仍无容量证据。 |
 | 2026-09-29 | P1 row-integrity SQLite spool cleanup coverage | 在 `tests/infrastructure/revision/test_row_integrity.py` 新增两个独立回归：重复 batch 命中计数与 newest snapshot 选择、正常 close/unlink；以及历史遍历异常时关闭并删除 SQLite spool。`2 passed in 0.02s`，Ruff passed，未改生产代码；不改变 D3E/E1 验收状态。另核验 ADR-0081 `paper_deviation` / `retro_audit` 当前 fixture 与真实 writer 字节一致：`2 passed, 1 warning`；W10 Web 两轮延期的 `retroAudit.test.ts` 节点未重跑。 |
+| 2026-09-29 | W2 Worker 组合边界决策包 | 只读审计确认 test-only subprocess harness 不等于生产 Worker 入口；ADR-0044/0049 没有定义生产 handler registry、composition root 与停止语义。已记录三种边界选项与建议验证，不改代码或现有 ADR；Worker 入口暂记 `ARCHITECTURE_DECISION_REQUIRED`，其他工作流继续。 |
 
 ## 10. 下一阶段进入条件
 
