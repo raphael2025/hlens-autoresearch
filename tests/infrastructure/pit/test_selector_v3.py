@@ -15,6 +15,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -117,6 +118,44 @@ def test_iter_bounded_matches_select_selections_lineage_and_gaps(h: RestHarness)
         item.canonical_revision_id: item for item in legacy.lineage
     }
     assert _gaps_by_revision(records) == {gap.revision_id: gap for gap in legacy.evidence_gaps}
+
+
+def test_pit_evaluation_yields_high_cardinality_timeline_incrementally(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The v3 per-key timeline is streamed; it is not accumulated as an O(changes) list."""
+    _chain(h, count=1)  # _spec binds only snapshots present in the harness.
+    count = 1_000
+    spec = _spec(h, cutoff=FAR, interval=(START, END))
+    at = [START + timedelta(seconds=index + 1) for index in range(count)]
+    records = [
+        SimpleNamespace(
+            revision_id=f"revision-{index:04d}",
+            availability=SimpleNamespace(
+                times=SimpleNamespace(knowledge_time=START - timedelta(seconds=1))
+            ),
+        )
+        for index in range(count)
+    ]
+    available = {record.revision_id: when for record, when in zip(records, at, strict=True)}
+    calls = 0
+
+    def alternating_heads(*_args: Any) -> tuple[str, ...]:
+        nonlocal calls
+        calls += 1
+        return ("revision-a", "revision-b") if calls % 2 else ()
+
+    monkeypatch.setattr(selector_module, "_heads", alternating_heads)
+    selections = selector_module._evaluate("key", records, (), spec, available)  # type: ignore[arg-type]
+
+    assert calls == 0
+    first = next(selections)
+    assert first.simulation_time == START
+    assert calls == 1
+    remainder = list(selections)
+    assert len(remainder) == count
+    assert calls == count + 1
+    assert remainder[-1].simulation_time == at[-1]
 
 
 def test_iter_bounded_empty_row_and_edge_roots_yield_no_records(h: RestHarness) -> None:

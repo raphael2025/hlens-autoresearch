@@ -794,22 +794,25 @@ def _evaluate(
     edges: Sequence[PrecedenceEvidence],
     spec: PointInTimeSpec,
     available: Mapping[str, datetime],
-) -> list[PointInTimeSelection]:
+) -> Iterator[PointInTimeSelection]:
     cutoff = spec.knowledge_cutoff
     if spec.simulation_time is not None:
-        instants = [spec.simulation_time]
+        instants: Iterator[datetime] = iter((spec.simulation_time,))
     else:
         start, end = spec.simulation_start, spec.simulation_end
         if start is None or end is None:  # pragma: no cover - the contract forbids it
             raise PitSpecError("the spec has neither a simulation time nor an interval")
-        changes = {
+        # The ordered timeline is needed to preserve PIT semantics, but the extra set of the
+        # same timestamps and a second result list are not. Sorting one generator keeps the
+        # unavoidable time ordering in one collection; results are yielded immediately below.
+        sorted_changes = sorted(
             available[item.revision_id]
             for item in records
             if item.availability.times.knowledge_time <= cutoff
             and start < available[item.revision_id] < end
-        }
-        instants = [start, *sorted(changes)]
-    results: list[PointInTimeSelection] = []
+        )
+        unique_changes = (at for at, _ in itertools.groupby(sorted_changes))
+        instants = itertools.chain((start,), unique_changes)
     previous: tuple[PointInTimeStatus, tuple[str, ...]] | None = None
     for at in instants:
         heads = _heads(records, edges, at, cutoff, available)
@@ -823,17 +826,14 @@ def _evaluate(
         if previous == (status, heads):
             continue
         previous = (status, heads)
-        results.append(
-            PointInTimeSelection(
-                observation_key=key,
-                simulation_time=at,
-                knowledge_cutoff=cutoff,
-                status=status,
-                selected_revision_id=heads[0] if status is PointInTimeStatus.SELECTED else None,
-                maximal_heads=heads,
-            )
+        yield PointInTimeSelection(
+            observation_key=key,
+            simulation_time=at,
+            knowledge_cutoff=cutoff,
+            status=status,
+            selected_revision_id=heads[0] if status is PointInTimeStatus.SELECTED else None,
+            maximal_heads=heads,
         )
-    return results
 
 
 # ============================================================================================
