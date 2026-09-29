@@ -11,9 +11,9 @@ real bounded generators to the first two (the third is ``PinnedQualityEvidence``
   must be by ``(episode.observation_key(), effective_from)``, which coincides with generation order
   only while every symbol keeps one episode and every episode key sorts like its symbol (not
   provable for every registered spec: a stable-id key sorts before any degraded one, a rename
-  opens a new episode). All four are therefore re-sorted through the content-addressed sorted
-  runs of ``infrastructure.pit.runs`` (``spill_sorted_runs`` + ``merge_sorted_runs``, every size
-  explicit). ``member_spans`` is passed through: its generation order (symbol, then start) *is*
+  opens a new episode). All four are therefore re-sorted through content-addressed sorted runs
+  using an online hierarchical run set (every size explicit, with no all-runs ref list).
+  ``member_spans`` is passed through: its generation order (symbol, then start) *is*
   the builder's required order, and the builder proves it.
 - ``PitSelectorKeySource`` wraps B-PIT's ``PitSelector.iter_bounded`` and folds its per-instant
   ``PitBoundedRecord`` stream into one ``PitKeyGroup`` per observation key (``pit_key_groups``).
@@ -38,7 +38,6 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, Final
@@ -57,10 +56,11 @@ from infrastructure.dataset.builder import (
     PitSelectedRevision,
     UniverseEvidenceSource,
 )
-from infrastructure.pit.runs import RunLimits, merge_sorted_runs, spill_sorted_runs
+from infrastructure.pit.runs import RunSetBuilder, iter_run
 from infrastructure.pit.selector import PitBoundedRecord, PitRunParams, PitSelector
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.universe.builder import UniverseBuilder
+from infrastructure.universe.run_params import UniverseRunParams
 
 __all__ = [
     "OrderedUniverseSource",
@@ -78,30 +78,6 @@ _NO_SPAN: Final = datetime.min.replace(tzinfo=UTC)
 # =========================================================================================
 # universe: B-UNIV's cursor in the ADR-0077 §2 orders
 # =========================================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class UniverseRunParams:
-    """The sorted-run sizes of ``OrderedUniverseSource`` (DQ-9 OPEN: no defaults).
-
-    - ``capacity``: items of one stream held before they are sorted and spilled as one run;
-    - ``merge_fanout``: run readers open at once while merging (more runs merge in passes);
-    - ``limits``: the leaf / index shape of every run written.
-    """
-
-    capacity: int
-    merge_fanout: int
-    limits: RunLimits
-
-    def __post_init__(self) -> None:
-        for name, value, minimum in (
-            ("capacity", self.capacity, 1),
-            ("merge_fanout", self.merge_fanout, 2),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-                raise DatasetSpecError(f"{name} must be an integer >= {minimum}, got {value!r}")
-        if not isinstance(self.limits, RunLimits):
-            raise DatasetSpecError("limits must be RunLimits")
 
 
 #: A run row: ``{"order": [...sort values], "record": <JSON-safe record>}``.
@@ -161,24 +137,28 @@ def _reordered[T](
     storage: StorageAdapter,
     params: UniverseRunParams,
 ) -> Iterator[Iterator[T]]:
-    """One upstream view, drained into sorted runs (upstream closed first), merged back in order.
+    """One upstream view, drained into a hierarchical sorted run set, then streamed in order.
 
-    Sorting is by the encoded ``order`` only; ties keep an arbitrary order, and duplicates reach
-    the builder, which rejects them (adjacent comparison), exactly as it would have unsorted.
+    Run references are compacted online with finite merge fanout. Sorting is by the encoded
+    ``order`` only; ties keep an arbitrary order, and duplicates reach the builder, which rejects
+    them (adjacent comparison), exactly as it would have unsorted.
     """
+    run_set = RunSetBuilder(
+        storage,
+        key=_run_order,
+        capacity=params.capacity,
+        merge_fanout=params.merge_fanout,
+        limits=params.limits,
+    )
     with source() as items:
-        refs = list(
-            spill_sorted_runs(
-                (encode(item) for item in items),
-                key=_run_order,
-                capacity=params.capacity,
-                storage=storage,
-                limits=params.limits,
-            )
-        )
-    with merge_sorted_runs(
-        storage, refs, key=_run_order, merge_fanout=params.merge_fanout, limits=params.limits
-    ) as merged:
+        with run_set:
+            for item in items:
+                run_set.add(encode(item))
+            root = run_set.finish()
+    if root is None:
+        yield iter(())
+        return
+    with iter_run(storage, root) as merged:
         decoded = (decode(row["record"]) for row in merged)
         try:
             yield decoded
@@ -465,14 +445,15 @@ def dataset_evidence_sources(
 ) -> DatasetEvidenceSources:
     """The real upstreams of ``request`` for ``DatasetEvidenceBuilder.select`` / ``build``.
 
-    Universe: ``UniverseBuilder.cursor(request.universe, request.pit)`` in ADR-0077 §2 order;
+    Universe: ``UniverseBuilder.cursor(request.universe, request.pit,
+    run_params=universe_params)`` in ADR-0077 §2 order;
     PIT: ``PitSelector.iter_bounded`` grouped by key; quality: ``PinnedQualityEvidence`` at the
     PIT spec's bound snapshots. Every run size is the caller's (no defaults).
     """
     if not isinstance(request, DatasetEvidenceRequest):
         raise DatasetSpecError("request must be a DatasetEvidenceRequest")
     cursor = UniverseBuilder(adapter, storage, market_data_base_url=market_data_base_url).cursor(
-        request.universe, request.pit
+        request.universe, request.pit, run_params=universe_params
     )
     return DatasetEvidenceSources(
         universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),

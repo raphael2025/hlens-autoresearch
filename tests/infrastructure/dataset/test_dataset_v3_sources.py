@@ -44,7 +44,6 @@ from infrastructure.dataset.builder import (
     DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
     DatasetEvidenceSources,
-    DatasetSpecError,
     PinnedQualityEvidence,
     dataset_evidence_rule,
 )
@@ -243,7 +242,7 @@ def test_v3_build_over_the_real_upstreams_selects_what_v2_selects(w: World, worl
 
 def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> None:
     spec = _interval_world(w)  # three listing revisions over two symbols
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec)
+    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS)
     with cursor.listing_lineage() as raw_lineage, cursor.evidence_gaps() as raw_gaps:
         generated, generated_gaps = list(raw_lineage), list(raw_gaps)
     source = OrderedUniverseSource(cursor, storage=w.h.storage, params=UNIVERSE_PARAMS)
@@ -321,7 +320,7 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
     request = _request(spec)
     sources = DatasetEvidenceSources(
         universe=OrderedUniverseSource(
-            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec),
+            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS),
             storage=w.h.storage,
             params=UNIVERSE_PARAMS,
         ),
@@ -479,7 +478,7 @@ def test_universe_run_params_are_required_and_checked() -> None:
             "limits": RUN_LIMITS,
             **bad,
         }
-        with pytest.raises(DatasetSpecError):
+        with pytest.raises(ValueError):
             UniverseRunParams(**fields)
 
 
