@@ -297,9 +297,7 @@ class _SnapshotBatchStream(Iterator[pa.RecordBatch]):
     ``close`` is idempotent; a closed stream yields nothing more.
     """
 
-    def __init__(
-        self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch, None, None]
-    ) -> None:
+    def __init__(self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch]) -> None:
         self._reader = reader
         self._source = source
         self._closed = False
@@ -512,7 +510,7 @@ def _preflight_snapshot(name: str, io: FileIO, snapshot: Snapshot, plan: _ScanPl
 
 def _snapshot_batches(
     name: str, snapshot: Snapshot | None, plan: _ScanPlan, read: _FileRead
-) -> Generator[pa.RecordBatch, None, None]:
+) -> Generator[pa.RecordBatch]:
     """Second pass: the matched data files of ``snapshot``, read one at a time, in plan order.
 
     Manifest and data files are immutable, so this sees what the preflight checked; the content
@@ -891,7 +889,7 @@ class PyIcebergCatalogAdapter:
         columns: Sequence[str],
         row_filter: BooleanExpression = _ALWAYS_TRUE,
         snapshot_id: str | None = None,
-    ) -> Iterator[pa.RecordBatch]:
+    ) -> _SnapshotBatchStream:
         """Stream selected columns of one fixed snapshot as bounded Arrow record batches.
 
         This infrastructure-only read verifies the persisted table definition before scanning.
@@ -1227,8 +1225,7 @@ class PyIcebergCatalogAdapter:
                 raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
             if (
                 snapshot.summary is not None
-                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID)
-                == request.batch_id
+                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID) == request.batch_id
             ):
                 if first_match is None:
                     first_match = snapshot

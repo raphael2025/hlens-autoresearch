@@ -54,6 +54,13 @@ is excluded from the per-stage growth verdict. Then, in order, each in a new chi
   committed in the Canonical history, and a row read from the table inside that batch's range;
 - ``metadata`` — only ``load_table`` + a ``history_from`` walk of the three tables, repeated for at
   least 0.3 s: the Iceberg snapshot-metadata term (one snapshot per commit) every read also pays.
+- ``dataset_v3_build`` — a separate dataset-ready SQLite/Iceberg fixture, then the production
+  ADR-0077 ``DatasetEvidenceBuilder.build`` path including chunk commits and streaming manifest
+  verification. Its complete fixed-size ``DatasetBuildSummary`` stays held through RSS sampling.
+  The setup child (archive ingest, Canonical normalization, listings and quality reports) is
+  excluded from this stage's RSS delta. Its run parameters follow the generous existing bounded-run
+  test shape and are explicitly diagnostic-only; DQ-9 remains open, so this stage can never qualify
+  the run as E1-CAP-1 evidence.
 
 Each stage's result is checked (rows proven, crash point, commits already committed / replayed,
 the proven batch holds the row) and a wrong fixture state fails the run closed. Every stage's API
@@ -106,10 +113,12 @@ measurements fail closed. Per-``N`` min / median / max and least-squares slopes 
 per ``M``-row batch, on the per-``N`` medians and maxima) are reported for attribution.
 
 The result is labelled E1-CAP-1 evidence (``e1_cap1_evidence``) only when ``M = 256``, the sizes
-include 10k / 100k / 500k, there are at least 3 repeats, and ``code_line.matches_main``. Any other
-run is a diagnostic only. Even an evidence-grade PASS is only the RSS part of the E1 closure
-criteria (``docs/reviews/2026-09-27-e1-review.md``): structural cardinality assertions, targeted
-tests and independent review are separate.
+include 10k / 100k / 500k, there are at least 3 repeats, ``code_line.matches_main``, and all
+production parameters are decided. The current v3 Dataset stage uses E1-M and generous bounded-run
+test parameters for diagnostics while ADR-0077 DQ-9 is open, so current runs are diagnostic only.
+Even an evidence-grade PASS is only the RSS part of the E1 closure criteria
+(``docs/reviews/2026-09-27-e1-review.md``): structural cardinality assertions, targeted tests and
+independent review are separate.
 
 Exit status: 0 = evidence-grade PASS; 1 = some stage exceeds the limit; 3 = all stages within the
 limit but not evidence-grade; 4 = the probe failed (partial JSON, ``status = "error"``); 2 = usage.
@@ -160,7 +169,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from pydantic import SecretStr
 from pyiceberg.catalog.sql import SqlCatalog
@@ -174,26 +183,51 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
     CANONICAL_TRADES,
+    DATASET_SELECTION_CHUNKS,
 )
 from infrastructure.collector.binance_archive import ARCHIVE_SOURCE, COLLECTOR_ID, COLLECTOR_VERSION
+from infrastructure.dataset.builder import (
+    DatasetEvidenceBuilder,
+    DatasetEvidenceRequest,
+    dataset_evidence_rule,
+)
+from infrastructure.dataset.chunks import IcebergChunkWriter
+from infrastructure.dataset.manifests import DatasetEvidenceManifestStore
+from infrastructure.dataset.sources import UniverseRunParams, dataset_evidence_sources
+from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
+from infrastructure.pit.runs import RunLimits
+from infrastructure.pit.selector import PitRunParams
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
 from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
 from infrastructure.settings import Settings
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.tools.capacity_probe import (
+    _DAY_START,
     _KNOWLEDGE_INGEST,
     _KNOWLEDGE_NORMALIZE,
     DATA_TYPE,
     SYMBOL,
     _agg_trade_lines,
+    _dataset_pit_spec,
+    _prepare_dataset_quality,
+    _prepare_listings,
     _publish_archive,
 )
+from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 
 __all__ = ["GROWTH_LIMIT_MIB", "main", "run_probe"]
 
 PROBE: Final = "infrastructure.tools.normalizer_memory_probe"
-STAGES: Final = ("verify_archive", "write_crash", "resume", "replay", "read_batch", "metadata")
+STAGES: Final = (
+    "verify_archive",
+    "write_crash",
+    "resume",
+    "replay",
+    "read_batch",
+    "metadata",
+    "dataset_v3_build",
+)
 RUNTIMES: Final[dict[str, dict[str, str]]] = {
     "controlled": {
         "ARROW_DEFAULT_MEMORY_POOL": "system",
@@ -243,6 +277,39 @@ _DEPENDENCIES: Final = (
     "sqlalchemy",
     "httpx",
 )
+
+# ADR-0077 DQ-9 is intentionally still OPEN. These diagnostic values use the existing E1 M=256
+# protocol and the generous run shape from tests/infrastructure/pit/test_bounded_runs.py. They
+# avoid pathological run/commit counts at 500k but are not a production rule and
+# cannot produce E1-CAP-1 evidence.
+_DATASET_V3_DIAGNOSTIC_CAPACITY: Final = PROTOCOL_MICROBATCH
+_DATASET_V3_DIAGNOSTIC_FANOUT: Final = 4
+_DATASET_V3_DIAGNOSTIC_LEAF_RECORDS: Final = 1_000
+_DATASET_V3_DIAGNOSTIC_LEAF_BYTES: Final = 1 << 20
+_DATASET_V3_DIAGNOSTIC_RULE: Final = {
+    "chunk_rows": _DATASET_V3_DIAGNOSTIC_CAPACITY,
+    "leaf_max_records": _DATASET_V3_DIAGNOSTIC_LEAF_RECORDS,
+    "leaf_max_bytes": _DATASET_V3_DIAGNOSTIC_LEAF_BYTES,
+    "fanout": _DATASET_V3_DIAGNOSTIC_FANOUT,
+}
+_DATASET_V3_DIAGNOSTIC_PIT: Final = {
+    "row_batch_rows": PROTOCOL_MICROBATCH,
+    "edge_batch_rows": PROTOCOL_MICROBATCH,
+    "merge_fanout": _DATASET_V3_DIAGNOSTIC_FANOUT,
+    "key_history_buffer": PROTOCOL_MICROBATCH,
+    "leaf_max_records": _DATASET_V3_DIAGNOSTIC_LEAF_RECORDS,
+    "leaf_max_bytes": _DATASET_V3_DIAGNOSTIC_LEAF_BYTES,
+    "fanout": _DATASET_V3_DIAGNOSTIC_FANOUT,
+}
+_DATASET_V3_DIAGNOSTIC_UNIVERSE: Final = {
+    "capacity": PROTOCOL_MICROBATCH,
+    "merge_fanout": _DATASET_V3_DIAGNOSTIC_FANOUT,
+    "leaf_max_records": _DATASET_V3_DIAGNOSTIC_LEAF_RECORDS,
+    "leaf_max_bytes": _DATASET_V3_DIAGNOSTIC_LEAF_BYTES,
+    "fanout": _DATASET_V3_DIAGNOSTIC_FANOUT,
+}
+# No probe result can satisfy E1 evidence while these are diagnostic-only and ADR-0077 DQ-9 is open.
+_DATASET_V3_DQ9_ACCEPTED: Final = False
 
 
 class ProbeError(Exception):
@@ -356,7 +423,8 @@ def _count_scan_work(diagnostics: _StageDiagnostics) -> Iterator[None]:
     original_manifests = iceberg_adapter._manifest_files
     original_entries = iceberg_adapter._live_entries
     original_data_files = iceberg_adapter._data_file_batches
-    original_plan_files = ManifestGroupPlanner.plan_files
+    manifest_group_planner_class = cast(Any, ManifestGroupPlanner)
+    original_plan_files = manifest_group_planner_class.plan_files
 
     def counted_manifests(*args: Any, **kwargs: Any) -> Iterator[Any]:
         for manifest in original_manifests(*args, **kwargs):
@@ -395,14 +463,14 @@ def _count_scan_work(diagnostics: _StageDiagnostics) -> Iterator[None]:
     iceberg_adapter._manifest_files = counted_manifests
     iceberg_adapter._live_entries = counted_entries
     iceberg_adapter._data_file_batches = counted_data_files
-    ManifestGroupPlanner.plan_files = counted_plan_files  # type: ignore[method-assign]
+    manifest_group_planner_class.plan_files = counted_plan_files
     try:
         yield
     finally:
         iceberg_adapter._manifest_files = original_manifests
         iceberg_adapter._live_entries = original_entries
         iceberg_adapter._data_file_batches = original_data_files
-        ManifestGroupPlanner.plan_files = original_plan_files  # type: ignore[method-assign]
+        manifest_group_planner_class.plan_files = original_plan_files
 
 
 def _allocation_category(filename: str) -> str:
@@ -535,6 +603,29 @@ def _setup(workdir: Path, rows: int, d2_batch: int) -> dict[str, Any]:
         if not isinstance(outcome, ArchiveIngested):
             raise ProbeError(f"the synthetic archive was not ingested: {outcome!r}")
         return {"unit": outcome.archive_revision_id}
+
+
+def _setup_dataset_v3(workdir: Path, rows: int, microbatch: int, d2_batch: int) -> dict[str, Any]:
+    """Prepare a separate complete, dataset-ready world; setup RSS is not a stage verdict."""
+    setup = _setup(workdir, rows, d2_batch)
+    unit = setup["unit"]
+    scratch = _canonical_scratch_directory()
+    with _opened(workdir) as (adapter, storage):
+        with CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=scratch,
+            clock=_Clock(_KNOWLEDGE_NORMALIZE),
+            microbatch_rows=microbatch,
+        ) as normalizer:
+            normalized = normalizer.normalize_unit(_RAW, unit)
+        if normalized.revision_count != rows:
+            raise ProbeError(
+                f"v3 setup normalized {normalized.revision_count} of {rows} archive rows"
+            )
+        _prepare_listings(adapter, storage)
+        _prepare_dataset_quality(adapter, storage, canonical_scratch_directory=scratch)
+    return {"unit": unit, "canonical_rows": normalized.revision_count}
 
 
 def _unit_prefix(unit: str) -> str:
@@ -777,6 +868,84 @@ def _stage(
 
         return walk
 
+    if stage == "dataset_v3_build":
+        scratch = _canonical_scratch_directory()
+        pit = _dataset_pit_spec(adapter)
+        request = DatasetEvidenceRequest(
+            universe=FIRST_SLICE_UNIVERSE,
+            pit=pit,
+            data_type=DATA_TYPE,
+            # The synthetic archive spreads all N rows across this UTC day. Cover the complete
+            # fixture so the Dataset stage's selected row count scales with the reported N.
+            start=_DAY_START,
+            end=_DAY_START + timedelta(days=1),
+        )
+        rule = dataset_evidence_rule(**_DATASET_V3_DIAGNOSTIC_RULE)
+        builder = DatasetEvidenceBuilder(adapter, storage, rule=rule)
+        chunks = IcebergChunkWriter(adapter, DATASET_SELECTION_CHUNKS)
+        pit_run = PitRunParams(
+            row_batch_rows=_DATASET_V3_DIAGNOSTIC_PIT["row_batch_rows"],
+            edge_batch_rows=_DATASET_V3_DIAGNOSTIC_PIT["edge_batch_rows"],
+            merge_fanout=_DATASET_V3_DIAGNOSTIC_PIT["merge_fanout"],
+            key_history_buffer=_DATASET_V3_DIAGNOSTIC_PIT["key_history_buffer"],
+            limits=RunLimits(
+                leaf_max_records=_DATASET_V3_DIAGNOSTIC_PIT["leaf_max_records"],
+                leaf_max_bytes=_DATASET_V3_DIAGNOSTIC_PIT["leaf_max_bytes"],
+                fanout=_DATASET_V3_DIAGNOSTIC_PIT["fanout"],
+            ),
+        )
+        universe_run = UniverseRunParams(
+            capacity=_DATASET_V3_DIAGNOSTIC_UNIVERSE["capacity"],
+            merge_fanout=_DATASET_V3_DIAGNOSTIC_UNIVERSE["merge_fanout"],
+            limits=RunLimits(
+                leaf_max_records=_DATASET_V3_DIAGNOSTIC_UNIVERSE["leaf_max_records"],
+                leaf_max_bytes=_DATASET_V3_DIAGNOSTIC_UNIVERSE["leaf_max_bytes"],
+                fanout=_DATASET_V3_DIAGNOSTIC_UNIVERSE["fanout"],
+            ),
+        )
+
+        def source_factory(dataset_request: DatasetEvidenceRequest) -> Any:
+            return dataset_evidence_sources(
+                adapter,
+                storage,
+                dataset_request,
+                canonical_scratch_directory=scratch,
+                market_data_base_url="https://market-data.capacity-probe.invalid",
+                pit_params=pit_run,
+                universe_params=universe_run,
+            )
+
+        verifier = StreamingEvidenceVerifier(
+            adapter, builder=builder, chunks=chunks, sources=source_factory
+        )
+        manifests = DatasetEvidenceManifestStore(adapter, verifier)
+
+        def build_v3() -> tuple[dict[str, Any], object]:
+            summary = builder.build(
+                request,
+                sources=source_factory(request),
+                chunks=chunks,
+                manifests=manifests,
+            )
+            if summary.row_count != rows or summary.chunk_count < 1:
+                raise ProbeError(
+                    f"v3 Dataset build selected {summary.row_count} of {rows} synthetic rows"
+                )
+            if summary.manifest.dataset.snapshot_id != summary.dataset.snapshot_id:
+                raise ProbeError("v3 Dataset summary and manifest bind different snapshots")
+            return {
+                "row_count": summary.row_count,
+                "expected_row_count": rows,
+                "chunk_count": summary.chunk_count,
+                "replayed_chunk_count": summary.replayed_chunk_count,
+                "manifest_hash": summary.manifest_hash,
+                "replayed": summary.replayed,
+                "diagnostic_only": True,
+                "dq9_parameters": _DATASET_V3_DIAGNOSTIC_RULE,
+            }, summary
+
+        return build_v3
+
     raise ProbeError(f"unknown stage {stage!r}")
 
 
@@ -794,7 +963,9 @@ def _child_stage(
         adapter = (
             _CountingAdapter(inner_adapter, diagnostics) if staged_diagnostics else inner_adapter
         )
-        body = _stage(stage, adapter, storage, unit, rows, microbatch)
+        body = _stage(
+            stage, cast(PyIcebergCatalogAdapter, adapter), storage, unit, rows, microbatch
+        )
         gc.collect()
         _emit("ready", vmhwm_kb=_status_kb("VmHWM"), vmrss_kb=_status_kb("VmRSS"))
         time.sleep(_SETTLE_SECONDS)
@@ -812,6 +983,7 @@ def _child_stage(
         time.sleep(_HOLD_SECONDS)  # ``held`` is still referenced: its residency is sampled
         _emit(
             "end",
+            stage=stage,
             stage_seconds=round(wall, 3),
             hold_seconds=_HOLD_SECONDS,
             vmhwm_kb=_status_kb("VmHWM"),
@@ -851,6 +1023,11 @@ def _child_main(args: argparse.Namespace) -> int:
     try:
         if args.stage == "setup":
             _emit("setup", **_setup(args.workdir, args.unit_rows, args.d2_batch))
+        elif args.stage == "dataset_v3_setup":
+            _emit(
+                "dataset_setup",
+                **_setup_dataset_v3(args.workdir, args.unit_rows, args.microbatch, args.d2_batch),
+            )
         else:
             _child_stage(
                 args.stage,
@@ -1293,6 +1470,7 @@ def run_probe(
         "repeats_at_least_3": repeats >= PROTOCOL_MIN_REPEATS,
         "code_line_matches_main": code_line["matches_main"] is True,
         "staged_diagnostics_disabled": not staged_diagnostics,
+        "dataset_v3_dq9_parameters_accepted": _DATASET_V3_DQ9_ACCEPTED,
     }
     document: dict[str, Any] = {
         "probe": PROBE,
@@ -1313,6 +1491,12 @@ def run_probe(
             "child_timeout_seconds": child_timeout,
             "child_rss_limit_mib": child_rss_limit_mib,
             "fixture": "infrastructure.tools.capacity_probe synthetic aggTrades archive",
+            "dataset_v3": {
+                "stage": "diagnostic-only; DQ-9 remains OPEN",
+                "rule_parameters": _DATASET_V3_DIAGNOSTIC_RULE,
+                "pit_parameters": _DATASET_V3_DIAGNOSTIC_PIT,
+                "universe_parameters": _DATASET_V3_DIAGNOSTIC_UNIVERSE,
+            },
             "staged_diagnostics": staged_diagnostics,
             "measured_at": datetime.now(UTC).isoformat(timespec="seconds"),
         },
@@ -1361,17 +1545,51 @@ def run_probe(
                             ),
                         }
                     )
+                    dataset_workdir = workdir / "dataset-v3"
+                    dataset_workdir.mkdir()
+                    dataset_setup = _run_child(
+                        _child_args(
+                            "dataset_v3_setup",
+                            dataset_workdir,
+                            rows,
+                            config,
+                            None,
+                            staged_diagnostics=False,
+                        ),
+                        temp_dir=dataset_workdir,
+                        runtime=runtime,
+                        interval=interval,
+                        timeout=child_timeout,
+                        rss_limit_kb=rss_limit_kb,
+                    )
+                    if "dataset_setup" not in dataset_setup.by_event:
+                        raise ProbeError(f"v3 Dataset setup child for N={rows} reported no unit")
+                    dataset_unit = dataset_setup.by_event["dataset_setup"]["unit"]
+                    document["setups"].append(
+                        {
+                            "rows": rows,
+                            "repeat": repeat,
+                            "stage": "dataset_v3_setup",
+                            "unit": dataset_unit,
+                            "wall_seconds": dataset_setup.wall_seconds,
+                            "max_sampled_rss_mib": round(
+                                max((kb for _, kb in dataset_setup.samples), default=0) / 1024, 1
+                            ),
+                        }
+                    )
                     for stage in STAGES:
+                        stage_workdir = dataset_workdir if stage == "dataset_v3_build" else workdir
+                        stage_unit = dataset_unit if stage == "dataset_v3_build" else unit
                         run = _run_child(
                             _child_args(
                                 stage,
-                                workdir,
+                                stage_workdir,
                                 rows,
                                 config,
-                                unit,
+                                stage_unit,
                                 staged_diagnostics=staged_diagnostics,
                             ),
-                            temp_dir=workdir,
+                            temp_dir=stage_workdir,
                             runtime=runtime,
                             interval=interval,
                             timeout=child_timeout,
@@ -1482,7 +1700,9 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow N above the guard without a cgroup memory limit on this process",
     )
-    parser.add_argument("--stage", choices=("setup", *STAGES), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--stage", choices=("setup", "dataset_v3_setup", *STAGES), help=argparse.SUPPRESS
+    )
     parser.add_argument("--workdir", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--unit", help=argparse.SUPPRESS)
     parser.add_argument("--unit-rows", type=int, help=argparse.SUPPRESS)
