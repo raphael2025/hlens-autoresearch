@@ -876,6 +876,20 @@ class KeyHistoryBuffer:
         """Whether any rows were spilled to a run (the key's history exceeded ``buffer_limit``)."""
         return self._has_spilled
 
+    @property
+    def _finalized_run(self) -> RunRef | None:
+        """The reusable spilled run after :meth:`rows` finalizes the history."""
+        if not self._finished:
+            raise RunWriteError("key history must be finalized before its run is read")
+        return self._root
+
+    @property
+    def _finalized_run(self) -> RunRef | None:
+        """The reusable spilled run after :meth:`rows` finalizes the history."""
+        if not self._finished:
+            raise RunWriteError("key history must be finalized before its run is read")
+        return self._root
+
     def _finish(self) -> RunRef | None:
         if self._finished:
             return self._root

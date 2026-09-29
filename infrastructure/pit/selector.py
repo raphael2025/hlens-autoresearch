@@ -67,6 +67,7 @@ from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
 from infrastructure.pit.assumption import (
     AssumptionSpecError,
     _EffectiveAvailabilityView,
+    _moved_time,
     assumption_bound,
     effective_available_times,
 )
@@ -89,6 +90,8 @@ from infrastructure.revision.channel_reconcile import (
 )
 from infrastructure.revision.precedence import maximal_heads
 from infrastructure.revision.store import RevisionCatalog
+from infrastructure.streaming.content_key_tree import ContentKeyTree, KeyTreeParams
+from infrastructure.streaming.runs import _read_run_record_at_ordinal
 
 __all__ = [
     "PIT_BINDING",
@@ -1160,8 +1163,123 @@ class _RevisionRecordView(Iterable[RevisionRecord]):
         self._rows = rows
 
     def __iter__(self) -> Iterator[RevisionRecord]:
-        for row in self._rows.values():
+        for row in _iter_key_rows(self._rows):
             yield revision_record_from_row(row)
+
+
+def _iter_key_rows(
+    rows: Mapping[str, Mapping[str, Any]],
+) -> Iterator[Mapping[str, Any]]:
+    if isinstance(rows, _RunBackedKeyRows):
+        yield from rows.iter_rows()
+    else:
+        yield from rows.values()
+
+
+def _index_entry(ordinal: int, available: datetime) -> str:
+    return f"{ordinal}\t{available.isoformat()}"
+
+
+def _index_entry_parts(value: str) -> tuple[int, datetime]:
+    ordinal_text, separator, available_text = value.partition("\t")
+    if not separator:
+        raise CatalogIntegrityError("a PIT key-row index entry is malformed")
+    try:
+        ordinal = int(ordinal_text)
+        available = datetime.fromisoformat(available_text)
+    except ValueError as exc:
+        raise CatalogIntegrityError("a PIT key-row index entry is malformed") from exc
+    if ordinal < 0 or available.tzinfo is None or available.utcoffset() != timedelta(0):
+        raise CatalogIntegrityError("a PIT key-row index entry is invalid")
+    return ordinal, available
+
+
+class _RunBackedKeyRows(Mapping[str, Mapping[str, Any]]):
+    """Per-key row mapping backed by a spilled row run and a small revision→ordinal tree."""
+
+    __slots__ = ("_storage", "_run", "_index", "_max_object_bytes")
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        run: RunRef,
+        index: ContentKeyTree,
+        *,
+        max_object_bytes: int,
+    ) -> None:
+        self._storage = storage
+        self._run = run
+        self._index = index
+        self._max_object_bytes = max_object_bytes
+
+    def __getitem__(self, revision_id: str) -> Mapping[str, Any]:
+        value = self._index.get((revision_id,))
+        if value is None:
+            raise KeyError(revision_id)
+        ordinal, _ = _index_entry_parts(value)
+        row = _read_run_record_at_ordinal(
+            self._storage,
+            self._run,
+            ordinal,
+            max_object_bytes=self._max_object_bytes,
+        )
+        if row.get("revision_id") != revision_id:
+            raise CatalogIntegrityError("PIT key-row index points to a different revision")
+        return row
+
+    def __iter__(self) -> Iterator[str]:
+        with iter_run(self._storage, self._run) as rows:
+            for row in rows:
+                yield cast(str, row["revision_id"])
+
+    def __len__(self) -> int:
+        return self._run.record_count
+
+    def iter_rows(self) -> Iterator[Mapping[str, Any]]:
+        with iter_run(self._storage, self._run) as rows:
+            yield from rows
+
+
+class _IndexedAvailabilityView(Mapping[str, datetime]):
+    """Read ordered availability lookups from a revision→ordinal/time key tree."""
+
+    __slots__ = ("_index", "_cursor", "_last_key")
+
+    def __init__(self, index: ContentKeyTree) -> None:
+        self._index = index
+        self._cursor: Iterator[tuple[tuple[str, ...], str]] | None = None
+        self._last_key: str | None = None
+
+    def __getitem__(self, revision_id: str) -> datetime:
+        if self._cursor is None or (self._last_key is not None and revision_id <= self._last_key):
+            self.close()
+            self._cursor = self._index.iter_from((revision_id,))
+        assert self._cursor is not None
+        for key, value in self._cursor:
+            if key[0] == revision_id:
+                self._last_key = revision_id
+                return _index_entry_parts(value)[1]
+            if key[0] > revision_id:
+                break
+        self._last_key = revision_id
+        raise KeyError(revision_id)
+
+    def __iter__(self) -> Iterator[str]:
+        for key, _ in self._index.iter_from():
+            yield key[0]
+
+    def __len__(self) -> int:
+        root = self._index.root_ref
+        return 0 if root is None else root.count
+
+    def close(self) -> None:
+        cursor = self._cursor
+        self._cursor = None
+        self._last_key = None
+        if cursor is not None:
+            close = getattr(cursor, "close", None)
+            if close is not None:
+                close()
 
 
 @contextmanager
@@ -1509,14 +1627,55 @@ def _pit_bounded_stream(
                 )
                 for row in row_group:
                     buffer.add(row)
+                owner_at: datetime | None = None
                 with buffer.rows() as key_row_iter:
-                    key_rows = {row["revision_id"]: row for row in key_row_iter}
+                    if buffer.spilled:
+
+                        def key_index_entries() -> Iterator[tuple[tuple[str, ...], str]]:
+                            nonlocal owner_at
+                            for ordinal, row in enumerate(key_row_iter):
+                                event_at = row[column]
+                                owner_at = event_at if owner_at is None else min(owner_at, event_at)
+                                moved_time = _moved_time(row, bound=bound_assumption)
+                                effective_time = (
+                                    row["available_time"] if moved_time is None else moved_time[1]
+                                )
+                                yield (
+                                    (cast(str, row["revision_id"]),),
+                                    _index_entry(ordinal, effective_time),
+                                )
+
+                        key_index = ContentKeyTree.build(
+                            storage,
+                            key_index_entries(),
+                            params=KeyTreeParams(
+                                page_max_bytes=params.limits.leaf_max_bytes,
+                                leaf_max_records=params.row_batch_rows,
+                                fanout=params.merge_fanout,
+                            ),
+                        )
+                        key_run = buffer._finalized_run
+                        if (
+                            key_run is None
+                        ):  # pragma: no cover - spilled histories always have a run
+                            raise CatalogIntegrityError("a spilled key history has no sorted run")
+                        key_rows: Mapping[str, Mapping[str, Any]] = _RunBackedKeyRows(
+                            storage,
+                            key_run,
+                            key_index,
+                            max_object_bytes=params.limits.leaf_max_bytes,
+                        )
+                        available: Mapping[str, datetime] = _IndexedAvailabilityView(key_index)
+                    else:
+                        key_rows = {row["revision_id"]: row for row in key_row_iter}
+                        available = _EffectiveAvailabilityView(key_rows, bound=bound_assumption)
                 # The row run already inserted this key in revision_id order. Rebuild DTOs on
                 # demand instead of retaining a second full per-key tuple beside key_rows.
                 records = _RevisionRecordView(key_rows)
                 # The key's whole read closure (key_rows) — not just the window's own instants —
                 # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
-                owner_at = min(row[column] for row in key_rows.values())
+                if owner_at is None:
+                    owner_at = min(row[column] for row in _iter_key_rows(key_rows))
 
                 if pending_edge_key is not None and pending_edge_key < row_key:
                     raise CatalogIntegrityError(
@@ -1533,56 +1692,58 @@ def _pit_bounded_stream(
                 else:
                     key_edges = ()
 
-                available = _EffectiveAvailabilityView(key_rows, bound=bound_assumption)
-
                 # At a fixed knowledge cutoff the graph is fixed and candidates only accrue as
                 # simulation time advances. A revision can be the sole head only in one
                 # contiguous interval: once another head appears or supersedes it, a later
                 # candidate cannot make it sole again. _evaluate yields only result changes, so
                 # each selected revision receives lineage once without a key-sized seen set.
-                for selection in _evaluate(
-                    row_key,
-                    records,
-                    key_edges,
-                    spec,
-                    available,
-                    run_storage=storage,
-                    run_params=params,
-                ):
-                    lineage_out: SelectedRevisionLineage | None = None
-                    gap_out: EvidenceGap | None = None
-                    event_at: datetime | None = None
-                    if selection.status is PointInTimeStatus.SELECTED:
-                        revision = selection.selected_revision_id
-                        if revision is None:  # pragma: no cover - the contract forbids it
-                            raise CatalogIntegrityError("a selected result without a revision")
-                        event_at = key_rows[revision][column]
-                        source_row = key_rows[revision]
-                        effective_time = available[revision]
-                        if effective_time < source_row["available_time"]:
-                            source_row = dict(source_row, available_time=effective_time)
-                        lineage_out = SelectedRevisionLineage(
-                            canonical_table=canonical.table,
-                            canonical_revision_id=revision,
-                            raw_table=source_row["lineage_raw_table"],
-                            raw_revision_id=source_row["lineage_raw_revision_id"],
-                            source_table=source_row["lineage_source_table"],
-                            source_revision_id=source_row["lineage_source_revision_id"],
-                        )
-                        if source_row["availability_evidence_gap"] is not None:
-                            gap_out = EvidenceGap(
-                                canonical.table,
-                                revision,
-                                source_row["availability_evidence_gap"],
+                try:
+                    for selection in _evaluate(
+                        row_key,
+                        records,
+                        key_edges,
+                        spec,
+                        available,
+                        run_storage=storage,
+                        run_params=params,
+                    ):
+                        lineage_out: SelectedRevisionLineage | None = None
+                        gap_out: EvidenceGap | None = None
+                        event_at: datetime | None = None
+                        if selection.status is PointInTimeStatus.SELECTED:
+                            revision = selection.selected_revision_id
+                            if revision is None:  # pragma: no cover - the contract forbids it
+                                raise CatalogIntegrityError("a selected result without a revision")
+                            event_at = key_rows[revision][column]
+                            source_row = key_rows[revision]
+                            effective_time = available[revision]
+                            if effective_time < source_row["available_time"]:
+                                source_row = dict(source_row, available_time=effective_time)
+                            lineage_out = SelectedRevisionLineage(
+                                canonical_table=canonical.table,
+                                canonical_revision_id=revision,
+                                raw_table=source_row["lineage_raw_table"],
+                                raw_revision_id=source_row["lineage_raw_revision_id"],
+                                source_table=source_row["lineage_source_table"],
+                                source_revision_id=source_row["lineage_source_revision_id"],
                             )
-                    yield PitBoundedRecord(
-                        observation_key=row_key,
-                        selection=selection,
-                        lineage=lineage_out,
-                        evidence_gap=gap_out,
-                        owner_event_time=owner_at,
-                        event_time=event_at,
-                    )
+                            if source_row["availability_evidence_gap"] is not None:
+                                gap_out = EvidenceGap(
+                                    canonical.table,
+                                    revision,
+                                    source_row["availability_evidence_gap"],
+                                )
+                        yield PitBoundedRecord(
+                            observation_key=row_key,
+                            selection=selection,
+                            lineage=lineage_out,
+                            evidence_gap=gap_out,
+                            owner_event_time=owner_at,
+                            event_time=event_at,
+                        )
+                finally:
+                    if isinstance(available, _IndexedAvailabilityView):
+                        available.close()
                 # key_rows / records / key_edges / buffer go out of scope here, before the next
                 # observation_key's group is even read off merged_rows.
 
