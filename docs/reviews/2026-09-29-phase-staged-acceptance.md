@@ -138,6 +138,32 @@ A focused read-only lifecycle audit found that the current default `parse_archiv
 
 The clean `codex/e1-history-integration@b40601a` candidate contains a private IPC batch-spool path and D2/verifier consumption, but still uses default `TemporaryFile` locations, retains a full `row_commits` tuple, and has not proved whether scratch is backed by tmpfs or disk. It is not current-root evidence and does not pass E1-CAP-1. Any follow-up must preserve the public complete-result API and D1 length/SHA, ZIP EOF/CRC, row rejection/line-number, timestamp-unit/coverage, and cross-row checks; D2 must not consume partial output before full archive validation. A private bounded reader/spool path may be implemented under existing infrastructure scope, but scratch ownership/cleanup, caller-held verifier rows, commits, and actual full-process memory remain separate bounds to close. No parser tests or capacity probe were run in this audit.
 
+### PIT window-closure staging candidate
+
+The isolated candidate `codex/e1-cap-pit-window-stream@1715d398fa9d26b3af391e8efcefb0ce06d925c5` (parent `3a7ff8c`) stages wanted keys, closure rows/chains, event days, and final row/edge outputs in external RunSets. It processes canonical proof and edge mapping one observation key at a time; a follow-up change also removed completed-chain callbacks from an `ExitStack` so disjoint chain count does not grow retained contexts. This candidate is not integrated into the root checkout; independent review is in progress.
+
+Developer verification on the candidate:
+
+```text
+uv run pytest -q tests/infrastructure/pit/test_selector_v3.py -k 'not test_canonical_key_closure_is_spilled_and_matches_v2_rows and not test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buffer'
+23 passed, 2 deselected in 27.04s
+
+3-day spanning-edge parity node with the same two explicit exclusions:
+1 passed in 10.45s
+
+32-disjoint-chain writer-bound node:
+1 passed in 2.05s
+
+Ruff check / format: passed
+mypy --follow-imports=silent infrastructure/pit/selector.py:
+Success: no issues found in 1 source file
+git diff --check: exit 0, no output
+```
+
+The two excluded nodes remain deferred: the newly introduced closure comparison node failed twice and was not rerun; the pre-existing multi-key lineage node (`4` actual vs `5` expected) was accidentally included once in a combined run (`1 failed, 4 passed in 9.46s`) and was then excluded from all later commands. It must not be counted as passing. Full test-file mypy reported 20 test-side/missing-stub errors; production selector mypy passed.
+
+This slice does not close single-key history/graph/maximal-head materialization, `ChannelReconciler._plan`'s full-day tuple, Arrow batch or Iceberg row-group/stripe byte bounds, or complete-process memory. It is not E1-CAP-1 or Phase 1 acceptance evidence.
+
 ### Phase 0.5–6 status review
 
 A separate static review found no newly accepted phase. Phase 0.5 remains partial pending named human seed-tag/asset review and missing seed golden hashes. Phase 2 lacks real Research Dataset validation and CLI/catalog/type evidence; Phase 3 lacks the deferred Iceberg Event and production Catalog evidence; Phase 4 still lacks calibrated, frozen Profile evidence; Phase 5's long run remains incomplete with deferred hash gates; Phase 6 lacks a real integrated P2 × P5 × P4 experiment and its C-R2/trial-count evidence. Historical focused test counts do not close these phases.
