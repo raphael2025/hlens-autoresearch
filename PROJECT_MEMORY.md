@@ -116,6 +116,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
   test database、最小权限 role 与本机忽略凭据，并覆盖 D0 / D1 对 Binance 官方公共归档、`.CHECKSUM` 与本机忽略小样本 smoke 的有限网络访问；D2 可使用这些已授权资源但不得新建或修改数据库 / role；不覆盖系统软件安装、PostgreSQL 系统配置、其他数据库 / role、账户 / 交易接口、原则或阈值变化、实盘、资金或风险预算
 
+- ADR-0077 implementation decision (2026-09-29): Universe v3 passes caller-supplied `UniverseRunParams` end-to-end and uses content-addressed hierarchical run-reference sets for bounded sorting/merge; no implicit capacity or OS temp directory. DQ-9 values and E1-CAP-1 remain open.
+
 ## 6. Active Constraints
 
 - 硬性规则全文见 `CLAUDE.md` §3（H1–H14），摘要如下：

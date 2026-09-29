@@ -139,6 +139,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **D-E1-CANONICAL-SCRATCH（已由 PM 决定，2026-09-29）**：Canonical 位置索引使用 `Settings.canonical_scratch_uri`，默认仓库拥有的 `data/scratch`，通过 `HLENS_CANONICAL_SCRATCH_URI` 可覆盖；运行时显式注入，不回退到 `tempfile` / `TMPDIR`。Settings/composition root 是路径 owner；不改 `StorageAdapter`，spill 磁盘用量不宣称固定上界。提交 `codex/canonical-position-bounds@991b126` 已通过独立 review，尚未整合；branch-local 集成测试失败不列为项目延期。32 MiB E1 容量门仍开放。
 
+**E1-UNIVERSE-RUNSET（实现决策已接受，2026-09-29）**：按 ADR-0077 §6.1.1 / §10，将现有 `UniverseRunParams` 显式从 `dataset_evidence_sources()` 传至 `UniverseBuilder.cursor()`；扩展 `infrastructure/pit/runs.py` 以层次化 content-addressed run-ref set 和多轮有限 fanout 归并，供时间事件、lineage/gap 排序与相邻去重使用。不设容量默认值、不加 OS 临时目录或 Universe scratch 配置；v2 与 cutoff/首次 lineage 语义不变。DQ-9 数值与 E1-CAP-1 仍开放，W3-UNIVERSE-STREAM 按此范围继续实现。
+
 **E1-Q-STREAM（ARCHITECTURE_DECISION_REQUIRED）**：Quality `existing_only` 的 report `events` 当前是无界单行 `List<Struct>`，冻结行格式不能逐事件流式重放。推荐新增版本化的内容寻址事件流协议，保留旧 inline 报告只读兼容；还需决定失败验证时是否允许留下无引用 orphan。决策包：[Quality bounded replay](docs/reviews/2026-09-29-quality-existing-only-bounded-replay-decision.md)。该项不阻塞其它 Phase 1 模块。
 
 **E1-PIT-CONFLICT（ARCHITECTURE_DECISION_REQUIRED）**：PIT v3 bounded 路径的 `maximal_heads` 完整 tuple 在单次 evaluation 存在 O(N) 结果风险。推荐将完整 head 列表写入 bounded evidence stream，v2 tuple 路径不变；需确认新结果形态及报告绑定。决策包：[PIT conflict output](docs/reviews/2026-09-29-pit-bounded-conflict-output-decision.md)。单 key 内部无界图仍按 ADR-0077 继续修复，不等待该输出决策。

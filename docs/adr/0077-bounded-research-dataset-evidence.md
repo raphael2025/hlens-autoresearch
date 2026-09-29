@@ -242,6 +242,17 @@ writer / reader、chunk commit、streaming verifier、`ManifestStore` 双表分�
 行为不变。infrastructure 实施前仍须完成 §6.1 / §6.2 所列上游生成器、partial replay、序列化投影和消费者可见性协议的
 静态设计（§6.2.2 的 2.3.0 登记身份盘点已在契约层完成，见实施记录）；DQ-9 保持 OPEN。
 
+### 实施决策：Universe 有界上游接线（2026-09-29，Codex）
+
+依据本 ADR §6.1.1 与 §10，采用 content-addressed run-set 方案收口 v3 Universe 上游；这是已接受协议的实现细化，不改变契约、DQ-9 数值或 v2 行为：
+
+1. `dataset_evidence_sources()` 显式把既有 `UniverseRunParams` 传入 `UniverseBuilder.cursor()`；DQ-9 参数仍由调用方提供，不新增默认值。
+2. 扩展 `infrastructure/pit/runs.py`，提供内容寻址、层次化 run-reference set 与多轮有界归并。Universe 变化事件、lineage 和 gap 归并只保留当前容量批、最多 `merge_fanout` 个 run 及树层缓冲；不得收集全部 run refs。
+3. `_instants_v3()` 将 cutoff 可见的 exchange-info / listing boundary 流写入有界 sorted runs，按时间归并并相邻去重后供各 symbol 重放；不构造全窗口 `changes` set / tuple。
+4. `_events_v3()` 不保留全量 revision `seen` set。事件为 lineage / gap 附加确定性首次次序，经 revision 排序后相邻归并只输出首次项；相同 revision 的冲突内容 fail closed。
+5. 所有 run 通过现有 `StorageAdapter` 内容寻址对象路径发布，不使用 `tempfile` / `TMPDIR`，不新增 Universe scratch 配置。对象失败语义沿用 §9：允许留下不可引用 orphan，不在写路径删除。
+6. 改动范围包含 `infrastructure/universe/builder.py`、`infrastructure/dataset/sources.py`、`infrastructure/pit/runs.py` 与相关测试；保持 cutoff、排序、首次 lineage、重复拒绝和关闭语义。DQ-9 数值与 E1-CAP-1 仍须后续测量和验收。
+
 ### Raphael Decision Packet（DQ-1）——已决定：A（Raphael，2026-09-28）
 
 - **问题：** 是否批准新增契约 2.3.0 的有界 Dataset manifest 模型，并修改其必要的 `core/contracts/`、版本登记及冻结契约文档？
