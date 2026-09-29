@@ -81,7 +81,7 @@ _NO_SPAN: Final = datetime.min.replace(tzinfo=UTC)
 
 @dataclass(frozen=True, slots=True)
 class UniverseRunParams:
-    """The sorted-run sizes of ``OrderedUniverseSource`` (DQ-9 OPEN: no defaults).
+    """The sorted-run sizes of B-UNIV and ``OrderedUniverseSource`` (DQ-9 OPEN: no defaults).
 
     - ``capacity``: items of one stream held before they are sorted and spilled as one run;
     - ``merge_fanout``: run readers open at once while merging (more runs merge in passes);
@@ -463,20 +463,19 @@ def dataset_evidence_sources(
 ) -> DatasetEvidenceSources:
     """The real upstreams of ``request`` for ``DatasetEvidenceBuilder.select`` / ``build``.
 
-    Universe: ``UniverseBuilder.cursor(request.universe, request.pit)`` in ADR-0077 §2 order;
+    Universe: ``UniverseBuilder.cursor(request.universe, request.pit,
+    run_params=universe_params)`` in ADR-0077 §2 order;
     PIT: ``PitSelector.iter_bounded`` grouped by key; quality: ``PinnedQualityEvidence`` at the
     PIT spec's bound snapshots. Every run size is the caller's (no defaults).
     """
     if not isinstance(request, DatasetEvidenceRequest):
         raise DatasetSpecError("request must be a DatasetEvidenceRequest")
     cursor = UniverseBuilder(adapter, storage, market_data_base_url=market_data_base_url).cursor(
-        request.universe, request.pit
+        request.universe, request.pit, run_params=universe_params
     )
     return DatasetEvidenceSources(
         universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),
-        pit=PitSelectorKeySource(
-            PitSelector(adapter, storage), storage=storage, params=pit_params
-        ),
+        pit=PitSelectorKeySource(PitSelector(adapter, storage), storage=storage, params=pit_params),
         quality=PinnedQualityEvidence(
             adapter,
             storage,
