@@ -454,6 +454,7 @@ def test_universe_reordering_compacts_run_refs_and_closes_root_reader_early(
     real_iter_run = source_module.iter_run
     max_refs = 0
     readers_closed: list[bool] = []
+    root_depths: list[int] = []
 
     class TrackingRunSetBuilder(real_builder):
         def add(self, row: Any) -> None:
@@ -463,6 +464,7 @@ def test_universe_reordering_compacts_run_refs_and_closes_root_reader_early(
 
     @contextmanager
     def tracking_iter_run(storage: Any, root: Any) -> Iterator[Iterator[Any]]:
+        root_depths.append(root.depth)
         with real_iter_run(storage, root) as rows:
             try:
                 yield rows
@@ -479,6 +481,7 @@ def test_universe_reordering_compacts_run_refs_and_closes_root_reader_early(
     assert universe.open_now == 0
     assert max_refs <= count.bit_length() + 1
     assert max_refs < count
+    assert root_depths and max(root_depths) > 1
     assert readers_closed == [True]
 
 
