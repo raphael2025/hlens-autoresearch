@@ -342,3 +342,19 @@ uv run --offline pytest -q --tb=short -vv tests/infrastructure/revision/test_cha
 ```
 
 This confirms the tested IDs/order, serialized row values, and one-row/one-comparison observer bounds. It does **not** explain the original object-level equality mismatch; that remains under independent QA review. The passing retry is not evidence of `ChannelEdge` object equality. No other deferred tests were run. This regression adds useful per-key edge fan-in evidence but does not close the remaining O(H) revision/record/graph state or the E1-CAP-1 32 MiB gate.
+
+### E1 per-key revision staging — `fe3cd7c` independent review
+
+Commit `fe3cd7cc9d07cd277807e81073c6bb2106a4a1f8` stages one key's REST/archive `ChannelRevision` inputs in revision-ID-sorted RunSets and reads the runs for pairwise D3E comparison. Independent review used a clean detached worktree at that exact SHA; no files were changed.
+
+```bash
+uv run --offline pytest -q --tb=short tests/infrastructure/revision/test_channel_reconcile_key_run_spill.py
+# 1 passed in 21.05s
+
+uv run --offline pytest -q --tb=short tests/infrastructure/revision/test_channel_reconcile_bounded_stream.py -k 'not test_single_key_edge_fan_in_is_merged_one_edge_at_a_time'
+# 2 passed, 1 deselected in 8.12s
+```
+
+The dedicated test streams 16 REST rows for one key with capacity 2 and forbids fallback to `_plan`; source review found no ordering / comparison defect. It does not directly assert flush count, RunSet root record/leaf counts, maximum buffered rows, or long-history Archive/REST fan-in. The excluded high-fan-in node remains unresolved at the `ChannelEdge` object-equality level; its prior retry only proved ID/order and serialized-row parity.
+
+Review verdict: **INCOMPLETE**. `rest_records`, `archive_records`, `graph_evidence`, and the full `assemble_channel_graph` / `RevisionGraph` state are still O(H). A single row may also contain unbounded nested evidence. This commit does not prove physical byte bounds or complete-process 32 MiB memory. No deferred module or PIT node was run.
