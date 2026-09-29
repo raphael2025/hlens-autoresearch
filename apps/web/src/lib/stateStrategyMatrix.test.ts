@@ -12,9 +12,8 @@ import {
   totalSamples,
 } from "./stateStrategyMatrix.ts";
 
-// apps/web/fixtures/state_strategy_matrix/: the current report (built at contract 2.2.0) and the
-// legacy readable 2.1.0 and 2.0.0 ones — the same matrix, whose bound backtest / state result
-// hashes differ.
+// apps/web/fixtures/state_strategy_matrix/: current 2.5.0, retained 2.4.0 / 2.2.0, and legacy
+// readable 2.1.0 / 2.0.0 reports — the same matrix, whose bound hashes differ.
 const fixtures = fixtureEnvelopes("state_strategy_matrix");
 const LEGACY_ID = "5940a5de3bde080ff156d564ce582d73d1db85623fea163b53ba925030fec21c";
 const LEGACY_2_1_0_ID = "89f28e4a5d44e45a02ac3bf6d81716dd179b939cc8985edb94950aea5107b11a";
@@ -25,8 +24,8 @@ function payloadOf(payload: Record<string, unknown>) {
   return matrix;
 }
 
-test("every committed fixture (current and legacy 2.1.0 / 2.0.0) parses to the same cells", () => {
-  assert.equal(fixtures.length, 3);
+test("every committed fixture (current and retained history) parses to the same cells", () => {
+  assert.equal(fixtures.length, 5);
   assert.ok(fixtures.some((envelope) => envelope.id === LEGACY_ID));
   assert.ok(fixtures.some((envelope) => envelope.id === LEGACY_2_1_0_ID));
   const matrices = fixtures.map((envelope) => payloadOf(envelope.payload));

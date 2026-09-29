@@ -237,9 +237,12 @@ def round_trips(instance: Contract) -> None:
 # ======================================================================================
 
 
-def test_the_current_version_is_2_4_0_and_every_earlier_minor_stays_published() -> None:
-    assert ADR_0088_VERSION == "2.4.0" == CONTRACT_SCHEMA_VERSION
-    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == ("2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0")
+def test_2_4_0_and_every_earlier_minor_stay_published() -> None:
+    assert ADR_0088_VERSION == "2.4.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
+    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
+        "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"
+    )
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
 
@@ -293,15 +296,19 @@ def test_the_new_optional_fields_default_to_none_and_are_omitted_from_the_payloa
 
 def test_the_new_models_are_appended_to_the_registry() -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 146
+    assert len(names) == 148
     assert names[:141][-1] == "ResearchDatasetEvidenceManifest"  # earlier models keep their place
-    assert CONTRACT_MODELS[141:] == NEW_MODELS
+    assert CONTRACT_MODELS[141:146] == NEW_MODELS
+    assert tuple(model.__name__ for model in CONTRACT_MODELS[146:]) == (
+        "PitConflictHeadEvidence",
+        "PitConflictEvidenceResult",
+    )
 
 
 @pytest.mark.parametrize("model", NEW_MODELS, ids=lambda m: m.__name__)
-def test_new_objects_carry_the_2_4_0_envelope_and_round_trip(model: type[Contract]) -> None:
+def test_new_objects_carry_the_current_2_5_0_envelope_and_round_trip(model: type[Contract]) -> None:
     instance = valid_instances()[model]
-    assert instance.schema_version == "2.4.0"
+    assert instance.schema_version == "2.5.0"
     round_trips(instance)
 
 
@@ -451,7 +458,7 @@ def test_an_old_effect_without_a_kind_still_reads_as_return_autocorrelation() ->
         assert read.content_hash() == GOLDEN_AT_2_3_0[-1][2]
 
 
-def test_2_3_0_objects_can_sit_inside_2_4_0_objects() -> None:
+def test_2_3_0_objects_can_sit_inside_current_2_5_0_objects() -> None:
     with contract_schema_version_scope("2.3.0"):
         old_ref = Ref(kind=Kind.STRATEGY, name="momentum", version="1.0.0")
         old_effect = PlantedEffect(lag_minutes=1, strength=Decimal("0.2"))
@@ -459,7 +466,7 @@ def test_2_3_0_objects_can_sit_inside_2_4_0_objects() -> None:
     assert isinstance(spec.composition, NegatedStrategy)
     assert spec.composition.base.schema_version == "2.3.0"
     built = market(effects=(old_effect, garch()))
-    assert built.effects[0].schema_version == "2.3.0" and built.schema_version == "2.4.0"
+    assert built.effects[0].schema_version == "2.3.0" and built.schema_version == "2.5.0"
     round_trips(spec)
     round_trips(built)
 
@@ -724,7 +731,7 @@ def test_a_2_0_0_policy_binding_can_sit_inside_a_2_4_0_member() -> None:
     # the ADR-0051 binding constant is a Phase 1 registered identity pinned at 2.0.0 (V3)
     pinned = binding(schema_version="2.0.0")
     assumed = member(assumption=pinned)
-    assert assumed.schema_version == "2.4.0"
+    assert assumed.schema_version == "2.5.0"
     assert assumed.assumption is not None and assumed.assumption.schema_version == "2.0.0"
     round_trips(assumed)
 
@@ -742,7 +749,7 @@ def test_the_committed_schemas_of_the_new_models_match_the_contracts(tmp_path: P
         )
         exported = json.loads(written[model.__name__].read_text(encoding="utf-8"))
         assert committed == exported, model.__name__
-        assert committed["properties"]["schema_version"]["default"] == "2.4.0"
+        assert committed["properties"]["schema_version"]["default"] == "2.5.0"
         assert committed["additionalProperties"] is False
 
 

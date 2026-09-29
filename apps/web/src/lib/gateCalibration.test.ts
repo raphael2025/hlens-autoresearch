@@ -16,13 +16,13 @@ import {
 } from "./gateCalibration.ts";
 import { NOISE_G5, PLANTED_G5_WITH_ERRORS } from "./gateCalibrationG5.test-util.ts";
 
-// The current (contract 2.2.0) report and the legacy readable 2.1.0 and 2.0.0 ones
+// The current 2.5.0 report, retained 2.4.0 report and legacy readable 2.1.0 / 2.0.0 reports
 // (apps/web/fixtures/README.md).
 const fixtures = fixtureEnvelopes("gate_calibration");
 const [fixture] = fixtures;
 
-test("every committed fixture (2.2.0 and legacy 2.1.0 / 2.0.0) parses with every candidate", () => {
-  assert.equal(fixtures.length, 3);
+test("every committed fixture (2.5.0 and retained history) parses with every candidate", () => {
+  assert.equal(fixtures.length, 5);
   for (const envelope of fixtures) {
     const payload = asCalibrationPayload(envelope.payload);
     assert.ok(payload !== null, envelope.id);

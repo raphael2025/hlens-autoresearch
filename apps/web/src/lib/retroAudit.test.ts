@@ -18,7 +18,7 @@ function payloadOf(payload: Record<string, unknown>) {
 }
 
 test("the real fixture parses: report-only, no findings, named by its report_hash", () => {
-  assert.equal(fixtures.length, 1);
+  assert.equal(fixtures.length, 2);
   const report = payloadOf(fixture.payload);
   assert.equal(report.report_hash, fixture.id);
   assert.equal(report.kind, "retro_audit");

@@ -101,7 +101,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 - ✅ 框架整合：B1～B67 与 ADR-0052 / 0055 等代码已分批整合；PR #6 合并模块代码 / 内容收口批次（基线 `4875e92`），PR #7 将合并后项目状态同步至 `f58e8ec`（docs-only）。代码仍是 `CODE_COMPLETE / DEBUG_PENDING`，没有把全量门禁或主线合并当作 Phase 验收。
 - 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 的 500k resume / replay 增长为 59.9 / 63.9 MiB，超过 32 MiB。已重申既有容量口径：完整进程工作集均计入（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）；history 与 normalizer 候选尚未达到或证明门槛，Phase 1 仍未验收。
-- 🔨 ADR-0094（`3b3efb2`）已决定以完整 PIT conflict-head evidence stream 取代 v3 冲突 tuple；开发与三路验收在隔离分支推进。此决定不关闭 E1-CAP-1。
+- 🔨 ADR-0094（`3b3efb2`）已决定以完整 PIT conflict-head evidence stream 取代 v3 冲突 tuple；实现候选与三路窄范围验收已推进。补齐 contract 2.5.0 的 current-version tests / DTO / Web fixture 后，合同回归 `1308 passed, 5 deselected`、catalog/report 集成 `172 passed`、Web `120 passed`、Web production build 与 Ruff / diff check 通过。5 个 deselected 是已记录的历史 schema pin / fixture 节点；未运行 E1-CAP-1，Phase 1 仍因完整 32 MiB 工作集容量证据不足而阻断。
 - 🧩 Phase 4 Event→Outcome 基础接线：`EventResult` 到 `OutcomeEvent` 的纯转换已实现并公开导出，以 `event_id` / `event_time` 保留事件身份与可观测时刻；Codex 复核待做，测试与阶段验收未运行。
 - ✅ 模块收口批次：Phase 0.5 因子 / 特征 / Event 草稿、Event 字段说明、Loop / Router / API README 与 Phase 3 Event 表操作命令均已通过 PR #6 合并到 `main`（`4875e92`）；不构成阶段验收。
 - ✅ 模块差额整合：P6 矩阵报告接线与错误归因、P8 显式输入的回溯审计 writer / 只读 API / Web 页面、P11 精确 Decimal 阈值读取及研究库规格已快进到本地 `main`（`669704c`）；静态检查 / Web build 有通过记录，未跑测试、未做 Phase 验收。
@@ -126,7 +126,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ### Codex 当前工作
 
 - W1 全仓基线修复：API/报告 261 passed、PIT/dataset 分区 103 passed 后另将 5 个失败用例逐项复验通过、revision 562 passed / 20 skipped、canonical normalizer 75 passed、State 27 passed、docs consistency 7 passed、payload immutability 201 passed、研究循环/假设批次多组定向回归通过；live API smoke 1 passed。策略/验证目录的长跑在 87 passed、1 failed 后因单个慢用例中断；当前哈希断言单测通过，但完整回归未重跑。旧 PIT proof-scan hook 已切换到真实的 `scan_column_batches` 路径，两项专项通过；volume-bar 规则测试现 10 passed。严格 mypy 现 731 个源文件全绿。全仓 pytest 与最终 Ruff / 格式复核尚未完成。详细事实见 [WBS W1](docs/plans/2026-09-28-project-completion-wbs.md)。
-- 本轮源码修复、测试修复和生成 fixture 仍在当前工作树，需完成差异审阅、剩余回归和文档校正后再形成提交；整合与静态检查不代表 Phase 验收通过。E1-CAP-1 仍阻断 Phase 1。
+- ADR-0094 的实现、2.5.0 版本配套和历史 fixture 保留目前分别在隔离候选中；本轮版本配套差异已完成窄范围回归与独立分工检查，提交后仍须整合复核。整合与定向门禁不代表 Phase 验收通过，E1-CAP-1 仍阻断 Phase 1。
 
 ## 6. 当前待决策
 
@@ -142,7 +142,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **E1-Q-STREAM（ARCHITECTURE_DECISION_REQUIRED）**：Quality `existing_only` 的 report `events` 当前是无界单行 `List<Struct>`，冻结行格式不能逐事件流式重放。推荐新增版本化的内容寻址事件流协议，保留旧 inline 报告只读兼容；还需决定失败验证时是否允许留下无引用 orphan。决策包：[Quality bounded replay](docs/reviews/2026-09-29-quality-existing-only-bounded-replay-decision.md)。该项不阻塞其它 Phase 1 模块。
 
-**E1-PIT-CONFLICT / ADR-0094（已决定，2026-09-30）**：契约 2.5.0 的 PIT v3 将完整 maximal heads 写入有界 evidence stream，固定大小结果携带 root/count；v2 tuple 与 2.3/2.4 manifest 回放不变。实现 / 验收进行中，E1-CAP-1 仍开放。决策：[ADR-0094](docs/adr/0094-bounded-pit-conflict-head-evidence.md)。
+**E1-PIT-CONFLICT / ADR-0094（已决定，2026-09-30）**：契约 2.5.0 的 PIT v3 将完整 maximal heads 写入有界 evidence stream，固定大小结果携带 root/count；v2 tuple 与 2.3/2.4 manifest 回放不变。实现切片与 PIT / Dataset 窄验收通过；contract-version follow-up 保留 2.4 历史 fixtures 并新增 2.5 当前 fixtures，相关版本、API DTO、Web test / build 门禁通过。剩余的 E1 单 key O(N) / 完整工作集 32 MiB 测量未解决，Phase 1 仍未验收。决策与分范围记录：[ADR-0094](docs/adr/0094-bounded-pit-conflict-head-evidence.md)、[ADR-0094 implementation review](docs/reviews/2026-09-30-adr-0094-implementation.md)、[contract 2.5.0 follow-up](docs/reviews/2026-09-30-adr-0094-contract-250-followup.md)。
 
 **E1-UNIVERSE-RUNSET（实现决策已接受，2026-09-29；实现候选已独立复核）**：按 ADR-0077 §6.1.1 / §10，`codex/e1-canonical-scratch-integration@6a80b67030105420fe8f33306f59e14757e6ebc2` 已显式传递无默认值的 `UniverseRunParams`，以层次化 content-addressed run-ref set 有界归并时间事件与 lineage/gap 投影；后续 `972c6c7` 将 PIT row/edge run refs 也改为层次化 root，`6a80b67` 补充两个 root reader 的直接 fanout 测试。独立 reviewer 对两个提交切片均 APPROVE；Universe/Dataset/bars/feature/G5 定向测试 `118 passed`，PIT/Dataset source `41 passed`，Ruff/format/mypy/diff-check 通过。代码仍在隔离候选，尚未整合；不改变 DQ-9 数值、v2 或 cutoff/首次 lineage 语义，也未运行 E1-CAP-1。单 key PIT O(N) 与 conflict heads 输出、DQ-9 和完整进程 32 MiB 容量门仍开放。决策边界见 ADR-0077「实施决策：Universe 有界上游接线」。
 

@@ -26,22 +26,22 @@ test("virtual-version report kinds reject an in-payload schema_version", () => {
   }
 });
 
-test("validation_report 2.4.0 (ADR-0088's bumped default Contract envelope) is supported with the 2.3.0 shape", () => {
+test("validation_report 2.5.0 (ADR-0094's bumped default Contract envelope) is supported with the 2.3.0 shape", () => {
   // validation_report is the one ReportKind whose payload is a direct Contract.model_dump(); every
   // other kind's schema_version is an independent, domain-specific number unrelated to
-  // core.domain.base.CONTRACT_SCHEMA_VERSION (see apps/api/report_dto.py). ADR-0088 (composed
-  // strategies, event bar spec, peak equity, synthetic effects, volatility-scaling barrier) does
-  // not touch ValidationReport's own fields, so 2.4.0 has the same required fields as 2.3.0 --
+  // core.domain.base.CONTRACT_SCHEMA_VERSION (see apps/api/report_dto.py). ADR-0094 adds PIT
+  // conflict evidence without changing ValidationReport's own fields, so 2.5.0 has the same
+  // required fields as 2.3.0 --
   // built inline (schema_version bumped on the committed fixture), not a new fixture file.
+  const [report] = fixtureEnvelopes("validation_report");
+  const bumped = { ...report, payload: { ...report.payload, schema_version: "2.5.0" } };
+  assert.deepEqual(inspectReportDTO(bumped), { status: "supported", version: "2.5.0" });
+});
+
+test("validation_report 2.4.0 remains supported after registering 2.5.0", () => {
   const [report] = fixtureEnvelopes("validation_report");
   const bumped = { ...report, payload: { ...report.payload, schema_version: "2.4.0" } };
   assert.deepEqual(inspectReportDTO(bumped), { status: "supported", version: "2.4.0" });
-});
-
-test("validation_report 2.3.0 legacy payloads remain supported after registering 2.4.0", () => {
-  const [report] = fixtureEnvelopes("validation_report");
-  const bumped = { ...report, payload: { ...report.payload, schema_version: "2.3.0" } };
-  assert.deepEqual(inspectReportDTO(bumped), { status: "supported", version: "2.3.0" });
 });
 
 test("unknown schema versions are preserved as raw read-only data", () => {
