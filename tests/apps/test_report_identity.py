@@ -240,12 +240,45 @@ def test_a_self_hashed_payload_that_is_not_canonical_json_is_refused(tmp_path: P
     _refused(tmp_path, ReportKind.EVENT_STATISTICS, "nan", "not canonical JSON")
 
 
+@pytest.mark.parametrize(
+    ("kind", "missing_field", "identity_field"),
+    [
+        (ReportKind.EVENT_STATISTICS, "schema_version", "report_hash"),
+        (ReportKind.EVENT_STATISTICS, "statistics", "report_hash"),
+        (ReportKind.GATE_CALIBRATION, "schema_version", "report_hash"),
+        (ReportKind.GATE_CALIBRATION, "candidates", "report_hash"),
+        (ReportKind.DEGRADATION_CHECK, "schema_version", "check_hash"),
+        (ReportKind.DEGRADATION_CHECK, "metrics", "check_hash"),
+        (ReportKind.RETRO_AUDIT, "schema_version", "report_hash"),
+        (ReportKind.RETRO_AUDIT, "kind", "report_hash"),
+    ],
+)
+def test_a_self_hashed_known_dto_missing_a_required_field_is_refused(
+    tmp_path: Path, kind: ReportKind, missing_field: str, identity_field: str
+) -> None:
+    """A self-consistent identity does not make a known-version DTO shape valid."""
+    valid = fixture(kind).payload
+    body = {
+        key: value
+        for key, value in valid.items()
+        if key not in {identity_field, missing_field}
+    }
+    identity = content_hash(body)
+    _write(tmp_path, kind, identity, {**body, identity_field: identity})
+    _refused(tmp_path, kind, identity, f"lacks required field {missing_field}")
+
+
 def test_a_consistent_self_hashed_report_is_served(tmp_path: Path) -> None:
     """The identity rule, not the fixture, is what is checked: a consistent payload is served."""
-    body = {"kind": "event_statistics", "n": 1}
+    body = {
+        "kind": "event_statistics",
+        "schema_version": "1.0.0",
+        "statistics": [{"n": 1}],
+    }
     report_hash = content_hash(body)
     _write(tmp_path, ReportKind.EVENT_STATISTICS, report_hash, {**body, "report_hash": report_hash})
-    assert ReportStore(tmp_path).get(ReportKind.EVENT_STATISTICS, report_hash).payload["n"] == 1
+    served = ReportStore(tmp_path).get(ReportKind.EVENT_STATISTICS, report_hash)
+    assert served.payload["statistics"] == [{"n": 1}]
 
 
 # --- error bodies never carry a server path (2026-09-26) -----------------------------------
