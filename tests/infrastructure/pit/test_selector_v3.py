@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
 
@@ -307,6 +307,47 @@ def test_iter_bounded_empty_row_and_edge_roots_yield_no_records(h: RestHarness) 
         spec, "agg_trades", SYMBOL, FAR, later, params=TINY_PARAMS
     ) as records:
         assert list(records) == []
+
+
+@pytest.mark.parametrize(
+    ("start", "end", "match"),
+    [
+        (END, END, "must not be empty"),
+        (END, START, "must not be empty"),
+        (
+            START.astimezone(timezone(timedelta(hours=3))),
+            END,
+            "start must be a UTC datetime",
+        ),
+    ],
+    ids=("empty", "reversed", "non-utc"),
+)
+def test_iter_bounded_rejects_invalid_windows_like_select(
+    h: RestHarness, start: datetime, end: datetime, match: str
+) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=FAR)
+    selector = PitSelector(h.adapter, h.storage)
+
+    with pytest.raises(PitSpecError, match=match):
+        selector.select(spec, "agg_trades", SYMBOL, start, end)
+    with pytest.raises(PitSpecError, match=match):
+        with selector.iter_bounded(spec, "agg_trades", SYMBOL, start, end, params=TINY_PARAMS):
+            pytest.fail("invalid windows must be rejected before iteration")
+
+
+def test_iter_bounded_validates_without_enumerating_window_days(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=FAR)
+
+    def no_day_list(*_args: Any, **_kwargs: Any) -> list[Any]:
+        pytest.fail("iter_bounded must not enumerate the window's UTC day list")
+
+    monkeypatch.setattr(selector_module, "_days", no_day_list)
+    records = _bounded(h, spec)
+    assert records
 
 
 def test_iter_bounded_spills_many_observation_keys_without_window_collections(

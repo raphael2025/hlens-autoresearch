@@ -762,6 +762,17 @@ def _time_column(data_type: str) -> str:
 
 def _days(start: datetime, end: datetime) -> list[date]:
     """The UTC days the window ``[start, end)`` touches (any UTC instants, G3-S2)."""
+    _validate_window(start, end)
+    days: list[date] = []
+    day = start.astimezone(UTC).date()
+    while datetime.combine(day, time(), tzinfo=UTC) < end:
+        days.append(day)
+        day += _DAY
+    return days
+
+
+def _validate_window(start: datetime, end: datetime) -> None:
+    """Validate UTC half-open window bounds without enumerating the window's UTC days."""
     for label, value in (("start", start), ("end", end)):
         if (
             not isinstance(value, datetime)
@@ -771,12 +782,6 @@ def _days(start: datetime, end: datetime) -> list[date]:
             raise PitSpecError(f"{label} must be a UTC datetime")
     if not start < end:
         raise PitSpecError("the window must not be empty")
-    days: list[date] = []
-    day = start.astimezone(UTC).date()
-    while datetime.combine(day, time(), tzinfo=UTC) < end:
-        days.append(day)
-        day += _DAY
-    return days
 
 
 def _heads(
@@ -1153,6 +1158,7 @@ def _pit_bounded_stream(
     instrument = rules.SYMBOLS.get(symbol)
     if instrument is None:
         raise PitSpecError(f"{symbol!r} is not a first-slice venue symbol")
+    _validate_window(start, end)
     if canonical.table not in spec.snapshot_bindings:
         raise PitSpecError(f"the spec does not bind {canonical.table}")
     view = selector._pinned(spec)
