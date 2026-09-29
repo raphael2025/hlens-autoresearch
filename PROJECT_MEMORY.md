@@ -45,7 +45,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - 新颖性主要来自确定性的组合 / 条件化 / 时序算子，并且每次组合都计入尝试次数
 - 路线图：`docs/research/roadmap.md`
-- Raphael 于 2026-09-27 确认开发顺序：先收敛分支并整合已有实现，形成完整的骨架、框架与模块代码，再按模块逐步调试和打磨；已明确授权 Codex 统筹 Claude / Cursor 与子代理、决定实现细节，并把已实现框架整合到本地 `main`。当前优先清理安全冗余分支，再继续补齐各模块基础逻辑；测试与统一验收暂缓。代码整合不等于 Phase 已验收，验证状态必须单独记录。
+- Raphael 于 2026-09-27 确认开发顺序：先收敛分支并整合已有实现，再按模块逐步调试和打磨；代码整合不等于 Phase 已验收，验证状态必须单独记录。2026-09-28 本轮授权将项目收敛为仅保留 `main` 长期分支；隔离实现可使用临时分支，整合后删除并将必要恢复点保存到 archive ref。
 
 ## 4. Current Phase
 
@@ -63,7 +63,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0002：架构基线（原则 P1–P17、四个 Plane、默认技术栈）
 - ADR-0003（D-06）：Python 3.13 + uv，与系统 Python 隔离
 - ADR-0004（D-07）：本地 Git 仓库；不改全局配置；一次性提交身份（第 3 条"远程待定"被 ADR-0025 取代）
-- ADR-0025：远程 = 私有 GitHub `raphael2025/hlens-autoresearch`；正式分支由 Codex 复核后推送；Claude 只快进推送 `wip/*` 与独立 `phase1/*` 工作分支（D-PUSH）；PR 流程已使用（截至 2026-09-27 已合并 PR #1～#9），CI 尚未配置
+- ADR-0025：远程 = 私有 GitHub `raphael2025/hlens-autoresearch`；PR 流程已使用（截至 2026-09-27 已合并 PR #1～#9），CI 尚未配置。当前长期分支策略由 2026-09-28 主会话授权调整为仅保留 `main`；详见 `CLAUDE.md` §10。
 - ADR-0005（D-03）：研究 / 生产边界 = Artifact + Registry + Promotion + Equivalence Gate；Promotion 链（Registry / Promotion 服务 / Equivalence Gate）已实施（B28，失败关闭，今天拒绝所有策略）；Profile 是否冻结以 ADR-0062 的冻结登记为准（B56）；评估 G2 的报告须含 Profile 所要求的 ADR-0060 市场基准 / 反向对照报告项（B51 / B59，路由证据模式同，B58）；P10 证据模式只证明研究层报告条件、不要求冻结登记，生产资格仍只由 Promotion / Control Plane 决定（ADR-0043 B62）；Q-1 / Q-2 / Q-3 / Q-7 开放
 - ADR-0006（D-05）：生命周期 v2（C-1：OOS → PAPER → PRODUCTION_CANDIDATE → ACTIVE；C-2：ACTIVE 带
   `execution_mode` SIMULATED|LIVE，不设 LIVE 状态）；RETIRED 进退役记录，REJECTED / FAILED 进 Failure Registry；Q-4 ~ Q-6 开放
@@ -109,12 +109,14 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - ADR-0070（2026-09-27，Codex 依 Raphael 本轮授权）：若最后一条已记录 round 的 `experiment` stage 为 FAILED，loop 设置可由 audit 重建的 `recovery_required`，同一 audit 不再自动续跑；LoopRecord / hash / checkpoint 字节不变。先防止重复 attempt，outcome 自动恢复与人工修复工具另待后续实现。
 - ADR-0071（2026-09-27，Codex 依 Raphael 项目与架构决策授权）：为 ADR-0070 failed experiment round 提供 research/loop 内部纯内存只读复核摘要；按 round index 将审计记录、round checkpoint 与 ledger journal 区间做 hash-bound 配对，明确列出未持久化的 trial outcomes、失败序号、traceback、audit envelope hash 与外部 Provider 状态缺口。不得开目录、写 journal、改生命周期或恢复；已实现，静态检查通过，未测试、未验收。
 - ADR-0068（2026-09-27，Codex 依 Raphael 本轮授权）：接受闭世界 typed operator plan 机制与拒绝边界；仅准许生成 `non-runnable` typed AST / validation result。conditioning / interaction / temporal / transformation / ensemble / negation 仍全部禁跑；plan 审计持久化及与 TrialLedger 的原子关系须在首个 operator 启用前另行决定和实现，当前 typed plan 不注册 trial、不调用 Runner。
-- 2026-09-26 由 Claude 依授权接受并实施：ADR-0056 事件表、ADR-0057 事件 subject（2.1.0）、ADR-0058 知识库写入、ADR-0059 G4 跨资产 × 横截面、ADR-0060 C-T4 市场基准（报告项）、ADR-0061 交互 DSL；ADR-0055（知识标签 / 资产检索：`tags_all` AND、`assets_any` OR 逐字精确，契约 2.2.0；资产是研究范围标识，不是上市 / 行情证据）**Accepted**（Codex，2026-09-26，基于组合代码 `c08c589` 与其全量门禁），实现 CODE_COMPLETE / DEBUG_PENDING；ADR / 代码接受不等于 Phase 0.5 验收——种子尚无具名人工审阅的标签 / 资产（只有分类提案，不得当作已审阅数据）；ADR-0051（D-LIST）Proposed、Raphael 暂缓；ADR-0063（本机只读 API 的 ASGI 运行时 = Uvicorn，仅 127.0.0.1、单 worker，可选依赖；公网 / 认证未决）Codex 2026-09-27 Accepted，B65 已实施（`apps/api/serve.py`）；Uvicorn 尚未安装到任何环境，真实运行待 Raphael 授权（H12）；ADR-0064（数据集路径 G4 容量的 `bar_volume` 须与已执行 `PriceBar.volume` 精确相等，否则 INCONCLUSIVE `bar_volume_source_mismatch`；合成路径不变）Codex 2026-09-27 Accepted，B66 已实施；ADR-0065（数据集路径 G4 容量遇正结转余量即 INCONCLUSIVE `carry_over_unfilled`，不记跨标的合计）Codex 2026-09-27 Accepted，B67 已实施；D-STATE-INC（ADR-0035 状态执行器增量评估）Codex 2026-09-27 **暂缓**：保留逐时刻可见前缀路径（结构性因果保证），需真实性能基线 + 不暴露未来数据的逐步协议才重评，不代表无性能问题；ADR-0062（Profile 冻结登记：追加式、必需目录外锚点，绑定 Profile ref + 哈希与校准报告，具名批准人只是声明、不认证身份、不是生产控制面；Promotion 无有效登记即 `profile_not_frozen`）Codex 决定并于 2026-09-27 **Accepted**，B56 已实施（CODE_COMPLETE / DEBUG_PENDING）；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收
+- 2026-09-26 由 Claude 依授权接受并实施：ADR-0056 事件表、ADR-0057 事件 subject（2.1.0）、ADR-0058 知识库写入、ADR-0059 G4 跨资产 × 横截面、ADR-0060 C-T4 市场基准（报告项）、ADR-0061 交互 DSL；ADR-0055（知识标签 / 资产检索：`tags_all` AND、`assets_any` OR 逐字精确，契约 2.2.0；资产是研究范围标识，不是上市 / 行情证据）**Accepted**（Codex，2026-09-26，基于组合代码 `c08c589` 与其全量门禁），实现 CODE_COMPLETE / DEBUG_PENDING；ADR / 代码接受不等于 Phase 0.5 验收——种子尚无具名人工审阅的标签 / 资产（只有分类提案，不得当作已审阅数据）；ADR-0051（D-LIST）于 2026-09-28 按项目授权 Accepted，策略仍假设性且政策表待归档下界核实；ADR-0063（本机只读 API 的 ASGI 运行时 = Uvicorn，仅 127.0.0.1、单 worker，可选依赖；公网 / 认证未决）Codex 2026-09-27 Accepted，B65 已实施（`apps/api/serve.py`）；截至 2026-09-26 的记录称 Uvicorn 未安装、真实运行待 H12 授权；该历史状态已由 2026-09-28 开发授权及 2026-09-29 安装和 `30 passed` 复验取代（见 `PROJECT_STATUS.md` / ADR-0063）。ADR-0064（数据集路径 G4 容量的 `bar_volume` 须与已执行 `PriceBar.volume` 精确相等，否则 INCONCLUSIVE `bar_volume_source_mismatch`；合成路径不变）Codex 2026-09-27 Accepted，B66 已实施；ADR-0065（数据集路径 G4 容量遇正结转未成交余量时失败关闭，`carry_over_unfilled`）Codex 2026-09-27 Accepted，B67 已实施；D-STATE-INC（ADR-0035 状态执行器增量评估）Codex 2026-09-27 **暂缓**：保留逐时刻可见前缀路径，需真实性能基线 + 不暴露未来数据的逐步协议才重评；ADR-0062（Profile 冻结登记：追加式、必需目录外锚点；Promotion 无有效登记即 `profile_not_frozen`）Codex 2026-09-27 **Accepted**；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收
 - ADR-0072（2026-09-27，Codex 依 Raphael 全权授权）：D-04 选择 Phase 4 提供最小验证门和封存 OOS 能力、Phase 8 交付稳健性扩展；不改验证契约或数值，不豁免最小门或人工生命周期审批。
 - D-30（2026-09-27）：由 ADR-0041 记录现有 G0 Outcome / spec 绑定与 G1 `embargo >= OutcomeLabelSpec.horizon` 强制门；单 Outcome 执行下决议关闭，多 Outcome 需修订语义。
 - Raphael 授权（2026-09-24）："授权所有"，Codex 全权接管决策 / 开发 / 测试 / 文档 / Git；Codex 解释为覆盖原则零变化的
   Constitution 1.0.0 发布与 Phase 0 收口（closure、`main` fast-forward、轻量 tag），并覆盖 C2 创建专用 PostgreSQL catalog /
   test database、最小权限 role 与本机忽略凭据，并覆盖 D0 / D1 对 Binance 官方公共归档、`.CHECKSUM` 与本机忽略小样本 smoke 的有限网络访问；D2 可使用这些已授权资源但不得新建或修改数据库 / role；不覆盖系统软件安装、PostgreSQL 系统配置、其他数据库 / role、账户 / 交易接口、原则或阈值变化、实盘、资金或风险预算
+
+- ADR-0077 implementation decision (2026-09-29): Universe v3 passes caller-supplied `UniverseRunParams` end-to-end and uses content-addressed hierarchical run-reference sets for bounded sorting/merge; no implicit capacity or OS temp directory. DQ-9 values and E1-CAP-1 remain open.
 
 ## 6. Active Constraints
 
@@ -126,7 +128,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 环境变更（安装、系统配置、Docker、数据库、全局 Git 配置）需 Raphael 授权
 - 不修改旧项目与外部数据
 - Claude 不替 Raphael 做架构决策；Codex 在 Raphael 委托边界内作正式决定并记录（CLAUDE.md §0）
-- Git：main 为稳定基线，实现工作走 `phase/*` 分支；合并进 main 需 Raphael 批准（或其已记录的授权）；正式分支由 Codex 复核后推送；Claude 只快进推送 WIP / 独立工作分支
+- Git：`main` 是唯一长期保留的本地与远端分支；必要时使用临时隔离分支，完成后整合并删除。分支清理不删除失败实验或生命周期记录；archive refs 可保留代码恢复点。
 - 实盘、资金、风险预算始终需要 Raphael 亲自批准
 
 ## 7. Current Known Risks
@@ -194,4 +196,6 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 - 2026-09-28 E1-CAP-1 源码对账：positions、Canonical committed columns、ParsedArchive 整表、batch indexes 与完整 `revision_ids` 返回 tuple 存在随 N / batch 增长持有项；metadata / manifest 的 RSS 占比仍未测。完整工作集 32 MiB 门槛不变，绝不从 probe 排除 API 结果。当前 main 未运行 E1 probe；设计拆分为仓库有界状态、必要时的结果 API ADR、L/H 隔离容量测量，详见 `docs/reviews/2026-09-28-e1-cap1-design-reconciliation.md`。
 - 2026-09-28 本地整合恢复点：E1-R 代码与状态文档快进到本地 `main`；该线比 `origin/main@44fe9a2` 超前 132 个提交、未推送。`phase/1` tip 留在 `refs/archive/2026-09-28/branches/local/phase-1` 后删除；Codex E1-R 分支 tip 留有 archive refs，代码已整合。**当时**仅 1 个本地分支 / 1 个 worktree，即 root main；Claude 研究规格分支已归档清理。旧根未跟踪计划保存在 `/home/raphael/.local/share/hlens-autoresearch/archive/2026-09-28/phase1-root-untracked/`。E1-R 新增 committed ID 重建和 Verifier snapshot 计数；`scan_column_batches` 的 PyIceberg 0.12.0 全路径内存界未证明，默认 temp 位于 tmpfs，E1-CAP-1 继续阻断。测试、probe、build、lint、typecheck 与验收未运行。
 - 2026-09-28 当前开发恢复点：分支 `phase/1-foundation-completion`，commit `34b95c3`，相对本地整合 main 增加 E1 infrastructure Protocol / 内部代理接线；单独的测试辅助代理通过转发保留 head-read 记录语义。`git diff --check` 通过；测试、类型检查、lint、build、probe 和验收均未运行。后续路线由 ADR-0075 限定。
+- 2026-09-29 W3-UNIVERSE-STREAM 已在隔离分支 `codex/e1-canonical-scratch-integration@7442bf66f14afdf5667ea1fc2a87de3f62eb2b0f` 实现并经不同 agent 独立 APPROVE。RunSet 树化 refs 和最多 fanout readers；Universe event / lineage / gap 外排、相邻去重、冲突 fail-closed。开发 suite `82 passed`，独立复核总计 `118 passed`；Ruff、format、mypy 4 files、diff-check 全通过。候选仍未整合，未运行 E1-CAP-1；DQ-9、PIT 单 key、Quality report events、完整工作集问题仍开。
 - ADR-0075（2026-09-28，Codex 依 Raphael 项目技术决策委托）：批准仅在 infrastructure adapter 实现固定 snapshot 的流式读取，PyIceberg Catalog / 写入权威与 core 契约不变；delete files fail closed。该决定只针对 scan planner / task / delete 集合，不关闭 E1-CAP-1；metadata、archive parse、结果 ID 和其它工作集仍待实现或证明。
+- 2026-09-28 分支收敛恢复点：Phase 1 foundation 与 State ADR-0089 实现已并入 main；本地 / 远端只保留 main，root worktree 一个。旧本地分支 tip、旧远端 phase tip 和 State worktree tip 均保存在 `refs/archive/2026-09-28/` 下。`f84339a` 增加读回时可选的 State identity 核验；Phase 1 的 E1-CAP-1 阻断仍在。
