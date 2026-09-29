@@ -466,14 +466,18 @@ def spill_sorted_runs(
 # ==========================================================================================
 
 
-def _read_object(storage: StorageAdapter, ref: RunObjectRef) -> tuple[dict[str, Any], list[str]]:
+def _read_object(
+    storage: StorageAdapter, ref: RunObjectRef, *, max_object_bytes: int | None = None
+) -> tuple[dict[str, Any], list[str]]:
     looked_up = storage.lookup(ref.key)
     if looked_up is None:
         raise RunIntegrityError(f"run object {ref.key} is not published")
     if looked_up.sha256 != ref.sha256 or looked_up.size != ref.size:
         raise RunIntegrityError(f"run object {ref.key} does not match its reference")
     with storage.open_read(looked_up) as handle:
-        body = handle.read()
+        body = handle.read() if max_object_bytes is None else handle.read(max_object_bytes + 1)
+    if max_object_bytes is not None and len(body) > max_object_bytes:
+        raise RunIntegrityError(f"run object {ref.key} exceeds its configured byte bound")
     digest = hashlib.sha256(body).hexdigest()
     if digest != ref.sha256 or len(body) != ref.size:
         raise RunIntegrityError(f"run object {ref.key} content does not match its hash")
@@ -490,6 +494,154 @@ def _read_object(storage: StorageAdapter, ref: RunObjectRef) -> tuple[dict[str, 
     if not isinstance(header, dict) or header.get("format") != RUN_OBJECT_FORMAT:
         raise RunIntegrityError(f"run object {ref.key} has an unrecognized header")
     return header, lines[1:]
+
+
+def _read_run_record_at_ordinal(
+    storage: StorageAdapter,
+    ref: RunRef,
+    ordinal: int,
+    *,
+    max_object_bytes: int,
+) -> Mapping[str, Any]:
+    """Read one record by zero-based stream ordinal without materializing preceding rows.
+
+    Run index pages already carry ordinal ranges, so this reader traverses only the root-to-leaf
+    path containing ``ordinal`` and bounds every object read explicitly. The run format is
+    unchanged; the caller supplies the same object-size limit used when writing the run.
+    """
+    if isinstance(ordinal, bool) or not isinstance(ordinal, int) or ordinal < 0:
+        raise RunWriteError("ordinal must be a non-negative integer")
+    if (
+        isinstance(max_object_bytes, bool)
+        or not isinstance(max_object_bytes, int)
+        or max_object_bytes <= 0
+    ):
+        raise RunWriteError("max_object_bytes must be a positive integer")
+    if (
+        isinstance(ref.record_count, bool)
+        or not isinstance(ref.record_count, int)
+        or ref.record_count < 0
+        or isinstance(ref.depth, bool)
+        or not isinstance(ref.depth, int)
+        or ref.depth <= 0
+    ):
+        raise RunIntegrityError("run reference has invalid record_count or depth")
+    if ordinal >= ref.record_count:
+        raise IndexError(ordinal)
+    node_ref = ref.root
+    expected_start = 0
+    expected_count = ref.record_count
+    expected_level: int | None = ref.depth - 1
+    if (
+        not isinstance(ref.root.key, str)
+        or not isinstance(ref.root.sha256, str)
+        or _SHA256_HEX_RE.fullmatch(ref.root.sha256) is None
+        or ref.root.key != run_object_key(ref.root.sha256)
+        or isinstance(ref.root.size, bool)
+        or not isinstance(ref.root.size, int)
+        or ref.root.size <= 0
+    ):
+        raise RunIntegrityError("run reference has an invalid root object descriptor")
+
+    while True:
+        header, lines = _read_object(storage, node_ref, max_object_bytes=max_object_bytes)
+        first_ordinal = header.get("first_ordinal")
+        if (
+            isinstance(first_ordinal, bool)
+            or not isinstance(first_ordinal, int)
+            or first_ordinal != expected_start
+        ):
+            raise RunIntegrityError(f"run object {node_ref.key} has an invalid ordinal range")
+        node = header.get("node")
+        if node == "leaf":
+            if set(header) != {"format", "node", "first_ordinal", "record_count"}:
+                raise RunIntegrityError(f"run object {node_ref.key} has invalid leaf fields")
+            if expected_level is not None:
+                raise RunIntegrityError(f"run object {node_ref.key} is a leaf above root depth")
+            leaf_count = header.get("record_count")
+            if (
+                isinstance(leaf_count, bool)
+                or not isinstance(leaf_count, int)
+                or leaf_count != len(lines)
+                or len(lines) != expected_count
+            ):
+                raise RunIntegrityError(f"run object {node_ref.key} has an invalid leaf count")
+            payloads: list[dict[str, Any]] = []
+            for line in lines:
+                try:
+                    payload = json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise RunIntegrityError(
+                        f"run object {node_ref.key} has an unparsable record"
+                    ) from exc
+                if not isinstance(payload, dict):
+                    raise RunIntegrityError(f"run object {node_ref.key} has a non-object record")
+                payloads.append(payload)
+            return _decode_row(payloads[ordinal - expected_start])
+
+        if node != "index":
+            raise RunIntegrityError(f"run object {node_ref.key} has an unrecognized node type")
+        level = header.get("level")
+        index_count = header.get("record_count")
+        if (
+            set(header) != {"format", "node", "level", "first_ordinal", "record_count"}
+            or isinstance(index_count, bool)
+            or not isinstance(index_count, int)
+            or not isinstance(level, int)
+            or isinstance(level, bool)
+            or level < 0
+            or expected_level != level
+            or index_count != expected_count
+        ):
+            raise RunIntegrityError(f"run object {node_ref.key} has an invalid index header")
+
+        children: list[tuple[RunObjectRef, int, int]] = []
+        next_child_start = expected_start
+        for line in lines:
+            try:
+                child = json.loads(line)
+                if not isinstance(child, dict) or set(child) != {
+                    "key",
+                    "sha256",
+                    "size",
+                    "first_ordinal",
+                    "record_count",
+                }:
+                    raise ValueError("child reference fields are not exact")
+                child_ref = RunObjectRef(
+                    key=child["key"], sha256=child["sha256"], size=child["size"]
+                )
+                child_start = child["first_ordinal"]
+                child_count = child["record_count"]
+            except (KeyError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                raise RunIntegrityError(
+                    f"run object {node_ref.key} has a malformed child reference"
+                ) from exc
+            if (
+                not isinstance(child_ref.key, str)
+                or not isinstance(child_ref.sha256, str)
+                or _SHA256_HEX_RE.fullmatch(child_ref.sha256) is None
+                or child_ref.key != run_object_key(child_ref.sha256)
+                or isinstance(child_ref.size, bool)
+                or not isinstance(child_ref.size, int)
+                or child_ref.size <= 0
+                or isinstance(child_start, bool)
+                or not isinstance(child_start, int)
+                or child_start != next_child_start
+                or isinstance(child_count, bool)
+                or not isinstance(child_count, int)
+                or child_count <= 0
+            ):
+                raise RunIntegrityError(f"run object {node_ref.key} has an invalid child range")
+            children.append((child_ref, child_start, child_count))
+            next_child_start += child_count
+        if next_child_start != expected_start + expected_count or not children:
+            raise RunIntegrityError(f"run object {node_ref.key} child ranges do not cover the page")
+        matches = [child for child in children if child[1] <= ordinal < child[1] + child[2]]
+        if len(matches) != 1:
+            raise RunIntegrityError(f"run object {node_ref.key} does not uniquely contain ordinal")
+        node_ref, expected_start, expected_count = matches[0]
+        expected_level = level - 1 if level > 0 else None
 
 
 def _rows_of(
