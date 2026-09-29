@@ -63,11 +63,22 @@ def _refused(root: Path, kind: ReportKind, report_id: str, reason: str) -> None:
     assert str(root) not in response.text and "/" + kind.value + "/" not in response.text
 
 
+def _dto_ready_payload(kind: ReportKind, payload: Payload) -> Payload:
+    """Add the DTO-required hash to legacy state-diagnostics fixture payloads."""
+    if kind is not ReportKind.STATE_DIAGNOSTICS:
+        return payload
+    body = {key: value for key, value in payload.items() if key != "diagnostics_hash"}
+    return {**body, "diagnostics_hash": content_hash(body)}
+
+
 @pytest.mark.parametrize("kind", IDENTIFIED)
-def test_the_real_writers_files_are_served(tmp_path: Path, kind: ReportKind) -> None:
+def test_writer_reports_in_the_registered_dto_shape_are_served(
+    tmp_path: Path, kind: ReportKind
+) -> None:
     good = fixture(kind)
-    _write(tmp_path, kind, good.id, good.payload)
-    assert ReportStore(tmp_path).get(kind, good.id).payload == good.payload
+    payload = _dto_ready_payload(kind, good.payload)
+    _write(tmp_path, kind, good.id, payload)
+    assert ReportStore(tmp_path).get(kind, good.id).payload == payload
     listing = TestClient(create_app(reports_root=tmp_path)).get(f"/reports/{kind.value}").json()
     assert [item["id"] for item in listing["reports"]] == [good.id] and listing["invalid"] == []
 
@@ -75,7 +86,8 @@ def test_the_real_writers_files_are_served(tmp_path: Path, kind: ReportKind) -> 
 @pytest.mark.parametrize("kind", IDENTIFIED)
 def test_a_real_report_under_another_name_is_refused(tmp_path: Path, kind: ReportKind) -> None:
     good = fixture(kind)
-    _write(tmp_path, kind, "renamed", good.payload)
+    payload = _dto_ready_payload(kind, good.payload)
+    _write(tmp_path, kind, "renamed", payload)
     _refused(tmp_path, kind, "renamed", "the file name is not the report's")
 
 
@@ -90,10 +102,10 @@ def _validation_edits() -> dict[str, Callable[[Payload], Payload]]:
         return {**payload, "note": "added"}
 
     def missing(payload: Payload) -> Payload:
-        return {key: value for key, value in payload.items() if key != "gates"}
+        return {key: value for key, value in payload.items() if key != "run_id"}
 
     def not_a_report(payload: Payload) -> Payload:
-        return {"verdict": "PASS"}
+        return {key: payload[key] for key in ("schema_version", "gates", "verdict")}
 
     return {"verdict": verdict, "extra": extra, "missing": missing, "not-a-report": not_a_report}
 
@@ -209,14 +221,18 @@ def test_an_edit_with_a_recomputed_hash_keeps_failing_on_the_name(
 
 def test_an_edited_state_diagnostics_report_is_refused(tmp_path: Path) -> None:
     good = fixture(ReportKind.STATE_DIAGNOSTICS)
-    edited = {**good.payload, "counts": {"a": 4, "b": 3}}
+    payload = _dto_ready_payload(ReportKind.STATE_DIAGNOSTICS, good.payload)
+    edited = {**payload, "counts": {"a": 4, "b": 3}}
     _write(tmp_path, ReportKind.STATE_DIAGNOSTICS, good.id, edited)
     _refused(tmp_path, ReportKind.STATE_DIAGNOSTICS, good.id, "diagnostics_hash")
 
 
 @pytest.mark.parametrize(
     ("kind", "field"),
-    [(ReportKind.ROUTER_PAPER_RUN, "decisions"), (ReportKind.ROUTER_STOP, "reason")],
+    [
+        (ReportKind.ROUTER_PAPER_RUN, "router_spec_hash"),
+        (ReportKind.ROUTER_STOP, "detail"),
+    ],
 )
 def test_a_router_record_without_a_bound_field_is_refused(
     tmp_path: Path, kind: ReportKind, field: str
@@ -236,7 +252,10 @@ def test_a_router_decision_that_is_not_an_object_is_refused(tmp_path: Path) -> N
 def test_a_self_hashed_payload_that_is_not_canonical_json_is_refused(tmp_path: Path) -> None:
     directory = tmp_path / ReportKind.EVENT_STATISTICS.value
     directory.mkdir(parents=True)
-    (directory / "nan.json").write_text('{"x": NaN, "report_hash": "nan"}', encoding="utf-8")
+    payload = (
+        '{"schema_version":"1.0.0","statistics":[NaN],"report_hash":"nan"}'
+    )
+    (directory / "nan.json").write_text(payload, encoding="utf-8")
     _refused(tmp_path, ReportKind.EVENT_STATISTICS, "nan", "not canonical JSON")
 
 
