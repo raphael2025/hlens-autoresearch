@@ -11,7 +11,7 @@
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24） |
 | 当前子阶段 | Quality report stream substrate 已在隔离分支实现并经独立复验（`4e2db16`），仅批准通用 stream 层；未整合。ADR-0093 仍 BLOCKED：JSONL escaping/event-ID domain、ADR-0031 QGAP 有界 seal、Iceberg row-group/嵌套值字节界与 listing revision-prefix 顺序需定稿。E1-CAP-1 未运行；PIT graph/conflict heads、Quality reporter/Dataset 接线仍未闭合；Phase 1 未验收。阶段测试详见 [2026-09-29 staged acceptance](docs/reviews/2026-09-29-phase-staged-acceptance.md)。 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | `main@e584187` 比 `origin/main@f84339a` 超前 2 个提交；当前协调 checkout `codex/w1-stabilization@a0b8806` 有 145 个 dirty entries。当前有 15 个本地分支与 15 个 worktree；未推送或合入 `main`。三条阶段验收线均未批准任何新 Phase；报告见 [staged acceptance review](docs/reviews/2026-09-29-phase-staged-acceptance.md)。W1 deferred failures 仍是发布门。 |
+| 总体状态 | `main@e584187` 比 `origin/main@f84339a` 超前 2 个提交；当前协调 checkout `codex/w1-stabilization@bb94554` 有 145 个 dirty entries。当前有 15 个本地分支与 15 个 worktree；未推送或合入 `main`。三条阶段验收线均未批准任何新 Phase；报告见 [staged acceptance review](docs/reviews/2026-09-29-phase-staged-acceptance.md)。W1 deferred failures 仍是发布门。 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
 | 最后更新时间 | 2026-09-29 |
 
