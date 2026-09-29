@@ -170,3 +170,175 @@ This slice does not close single-key history/graph/maximal-head materialization,
 ### Phase 0.5–6 status review
 
 A separate static review found no newly accepted phase. Phase 0.5 remains partial pending named human seed-tag/asset review and missing seed golden hashes. Phase 2 lacks real Research Dataset validation and CLI/catalog/type evidence; Phase 3 lacks the deferred Iceberg Event and production Catalog evidence; Phase 4 still lacks calibrated, frozen Profile evidence; Phase 5's long run remains incomplete with deferred hash gates; Phase 6 lacks a real integrated P2 × P5 × P4 experiment and its C-R2/trial-count evidence. Historical focused test counts do not close these phases.
+
+### Current dirty-tree focused reruns (2026-09-29)
+
+Independent acceptance roles reran focused suites against `codex/w1-stabilization@7a4f67d6a1c37c31e8416ba3070f4fbddce98129`; the checkout had 145 pre-existing dirty paths before and after testing. No files were changed by the reviewers. These results are current regression evidence for that dirty tree, not a clean commit or Phase acceptance. `HLENS_TEST_CATALOG_URI` was unset, so PostgreSQL-backed paths were not run.
+
+| Phase | Focused result | Remaining acceptance gate |
+|---|---|---|
+| 0.5 | `80 passed` | Named human review of seed tags/assets and complete golden hashes remain open. |
+| 2 | `139 passed` | Real Research Dataset validation, CLI/catalog, typing, and phase evidence remain open. |
+| 3 | `233 passed`; `tests/infrastructure/event/test_event_iceberg.py` excluded | Iceberg Event and production Catalog evidence remain open. |
+| 4 | `327 passed, 1 deselected` | Calibrated and frozen Validation Profile remains open. |
+| 5 | `432 passed, 2 deselected` | Both report-hash nodes remain deferred / NOT PASSED; no frozen Profile or promotion evidence. |
+| 6 | `29 passed` | No real P2 × P5 × P4 experiment, trial-count evidence, or C-R2 result. |
+| 7 | `123 passed` | Six operators remain fail-closed; end-to-end producer/admission binding and usable frozen Profile remain open. The complete-output API itself has focused test evidence in this result. |
+| 8 | Python `100 passed, 7 deselected`; Web components `120 passed`; Web library `110 passed, 1 failed` | `retroAudit.test.ts` fixture-count assertion failed for the second round and is deferred / NOT PASSED; report fixtures, smoke registration, and full validation remain open. |
+| 9 | `191 passed, 3 deselected` | Calibration evidence and Profile values remain open; deselected calibration/hash nodes are not passed. |
+| 10 | `106 passed, 7 deselected` | Full Router acceptance remains open; malformed loop-round cases remain deferred / NOT PASSED. |
+| 11 | `195 passed` | Authoritative ACTIVE/source/metric definitions, frozen Profile, and PostgreSQL recovery remain open. |
+| 12 | `256 passed` | Human replacement-proposal workflow remains open. Automatic G5 descendant evaluation is intentionally deferred by the accepted project decision and is not a current implementation gate. |
+| 13 | `81 passed` | Kill Switch drill and second-line risk rejection audit/replay remain open. No live venue or credential path was exercised. |
+| 14 | `36 passed` | No concrete migration target, complete matrix, rollback, or deployment evidence. |
+
+The reviewers excluded all previously deferred nodes. Deselects are not passing results. Exact command transcripts for P0.5–P14 are preserved below. They were recovered from the original execution record; no tests were rerun for this documentation update. The new Web library failure is added to the W1 deferral ledger. No phase changed to ACCEPT.
+
+### Independent report consistency review
+
+A read-only Phase 7–14 review confirmed every phase remains **INCOMPLETE** and found no basis to change a phase to ACCEPT. It identified that older `PROJECT_STATUS.md` implementation-batch notes said tests had not run; those notes are now labeled as historical and the current focused results are shown alongside them. P8's current component run included the retro-audit page (`120 passed`); fixture-generator and live-smoke registration remain open, while the Web library fixture-count node is deferred / NOT PASSED. P7's open binding item is the end-to-end producer/admission relationship, not the complete-output API in isolation. P12's G5 descendant loop evaluation is intentionally deferred by decision; the human replacement-proposal workflow remains an acceptance concern.
+
+### Exact current-snapshot command record — Phase 0.5–6
+
+Commands below are copied from the original reviewer execution record for `codex/w1-stabilization@7a4f67d6a1c37c31e8416ba3070f4fbddce98129`; each exited `0`. This snapshot had 145 dirty paths before and after the test run. The recorded passes and deselections do not accept any phase.
+
+**Phase 0.5**
+
+```bash
+uv run pytest -q tests/contract_suites/knowledge.py tests/plugins/knowledge tests/research/hypotheses/test_knowledge_source.py tests/research/loop/test_loop_knowledge_source.py
+```
+
+Result: `80 passed in 7.99s`.
+
+**Phase 2**
+
+```bash
+uv run pytest -q tests/contract_suites/state.py tests/test_state_contract_suite.py tests/plugins/states tests/research/states tests/infrastructure/state
+```
+
+Result: `139 passed in 1.23s`.
+
+**Phase 3**
+
+```bash
+uv run pytest -q tests/plugins/events tests/infrastructure/event --ignore=tests/infrastructure/event/test_event_iceberg.py
+```
+
+Result: `233 passed in 1.68s`. `test_event_iceberg.py` was excluded; this is not evidence that it passed.
+
+**Phase 4**
+
+```bash
+uv run pytest -q tests/plugins/outcomes tests/research/outcomes tests/research/validation --deselect=tests/research/validation/test_robustness.py::test_no_or_zero_remainders_leave_the_capacity_check_unchanged
+```
+
+Result: `327 passed, 1 deselected in 15.31s`. The deselected node remains deferred / NOT PASSED.
+
+**Phase 5**
+
+```bash
+uv run pytest -q tests/research/strategies tests/promotion --deselect=tests/research/strategies/test_market_benchmark.py::test_without_the_opt_in_every_report_is_byte_identical --deselect=tests/research/strategies/test_multi_instrument_validation.py::test_the_single_instrument_path_is_byte_identical
+```
+
+Result: `432 passed, 2 deselected in 456.69s (0:07:36)`. Both hash nodes remain deferred / NOT PASSED.
+
+**Phase 6**
+
+```bash
+uv run pytest -q tests/research/experiments/test_matrix_conditionals.py tests/research/experiments/test_trial_conditionals.py tests/research/experiments/test_state_strategy.py
+```
+
+Result: `29 passed in 0.17s`.
+
+### Exact current-snapshot command record — Phase 7–14
+
+The commands below are copied from the reviewer record for `codex/w1-stabilization@7a4f67d6a1c37c31e8416ba3070f4fbddce98129`. They were not rerun to create this record. Asynchronous session captures preserved pytest summaries but not the wrapper exit code; unavailable exit codes are not inferred. The P8 Web library command returned exit 1; P8 components and P13 returned exit 0.
+
+**P7**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short tests/research/hypotheses/test_batch.py tests/research/hypotheses/test_durable_ledger.py tests/research/hypotheses/test_plan_bindings.py tests/research/hypotheses/test_typed_plan_lowering.py tests/research/hypotheses/test_strict_llm_drafts.py tests/research/loop/test_loop_llm_rejection.py tests/research/loop/test_loop_retry_admission.py tests/research/loop/test_retry_admission.py
+```
+
+**P8 Python**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short -k 'not ill_formed_or_tampered_loop_round' tests/research/validation/test_g4_check_isolation.py tests/research/validation/test_g4_review_fixes.py tests/research/validation/test_cross_asset_cross_sectional.py tests/research/validation/test_impact_exact_comparison.py tests/research/validation/test_retro_audit.py tests/apps/test_reports.py
+```
+
+**P8 Web library and components**
+
+```bash
+npm run test:lib
+npm run test:components
+```
+
+**P9**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short -k 'not test_g5_mode_off_keeps_every_pre_g5_report_hash and not test_mode_off_keeps_every_single_instrument_report_hash and not test_mode_on_is_deterministic_and_pinned' tests/plugins/synthetic/test_random_walk.py tests/research/synthetic_lab/test_calibration.py tests/research/synthetic_lab/test_gate_calibration.py tests/research/synthetic_lab/test_gate_calibration_g5.py tests/research/synthetic_lab/test_gate_calibration_multi.py tests/research/synthetic_lab/test_evidence_setups.py
+```
+
+**P10**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short -k 'not ill_formed_or_tampered_loop_round' tests/research/router/test_router.py tests/research/router/test_router_completion.py tests/research/router/test_router_eligibility.py tests/research/router/test_router_validation.py tests/research/reports/test_deviation_writer.py tests/apps/test_reports.py
+```
+
+**P11**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short tests/research/loop/test_loop_durable.py tests/research/loop/test_loop_cross_process.py tests/research/loop/test_loop_e2e.py tests/apps/test_research_loop.py tests/apps/test_research_loop_durable.py tests/apps/test_research_loop_retry.py tests/apps/test_worker_jobs.py tests/apps/test_worker_jobs_cross_process.py
+```
+
+**P12**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short tests/research/evolution tests/promotion
+```
+
+**P13**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short tests/apps/test_execution.py tests/apps/test_execution_durable_audit.py tests/apps/test_execution_live_venue.py tests/apps/test_execution_marks_required.py tests/apps/test_execution_risk_replay.py tests/apps/test_execution_strategy_source.py
+```
+
+**P14**
+
+```bash
+systemd-run --user --scope --quiet -p MemoryMax=6G -p MemorySwapMax=0 uv run --offline --no-sync pytest -q --tb=short tests/infrastructure/migration/test_golden_experiments.py tests/infrastructure/migration/test_golden_persistence.py tests/infrastructure/migration/test_migration.py
+```
+
+Captured results: P7 `123 passed in 107.06s`; P8 Python `100 passed, 7 deselected, 1 warning in 4.11s`; P8 Web library `110 passed, 1 failed` (second failure of the same fixture-count assertion; deferred / NOT PASSED); P8 components `120 passed`; P9 `191 passed, 3 deselected, 1 warning in 95.03s`; P10 `106 passed, 7 deselected, 1 warning in 2.83s`; P11 `195 passed in 286.13s`; P12 `256 passed in 7.99s`; P13 `81 passed in 0.35s`; P14 `36 passed in 6.15s`. Deselects are not passes; deferred nodes were not rerun.
+
+### E1 input-stream candidate review — 2026-09-29
+
+Independent review of `9178f5d8ecd31b0cf64a6a508bfc047becc405ae` used a detached, read-only worktree. The change from `feb4068` removes the per-key `equal` mapping and `current_edges = list(...)`; equal-pair IDs spill through a sorted RunSet and committed evidence rows are merged one at a time. Static review found checks for duplicate committed edges, unmatched extra edges, source revision binding, and re-derived comparison / edge identity. Non-empty end-to-end selection/lineage/gap parity was exercised indirectly by the PIT v3 suite. No dedicated duplicate/extra-edge counterexample test was added.
+
+Exact independent review commands and results:
+
+```bash
+uv run --offline pytest -q --tb=short tests/infrastructure/revision/test_channel_reconcile_bounded_stream.py
+# 2 passed in 8.17s
+
+uv run --offline pytest -q --tb=short tests/infrastructure/pit/test_selector_v3.py -k 'not test_canonical_key_closure_is_spilled_and_matches_v2_rows and not test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buffer'
+# 27 passed, 2 deselected in 72.26s
+```
+
+Review verdict: **INCOMPLETE**. `rest_revisions`, `rest_records`, `archive_revisions`, `archive_records`, and `graph_evidence` still grow with one observation key's history/edges. The change reduces several O(H) holds but does not make one-key working state bounded; no full-process RSS/byte measurement or 32 MiB evidence exists. The deferred `tests/infrastructure/revision/test_channel_reconcile.py` module and two excluded PIT nodes were not run. E1-CAP-1 and Phase 1 remain open.
+
+### E1 high-fan-in regression follow-up — 2026-09-29
+
+Commit `8d02548e9149d845c9f37820c30e717752e32119` adds only a test to the bounded-stream module; it changes no production source. It creates four archive and four REST revisions for one observation key, expects four committed edges, compares sorted edge IDs and complete persisted `row()` values, and observes that each `_existing_edges` call receives one row and one comparison.
+
+The exact test node was run twice:
+
+```bash
+uv run --offline pytest -q --tb=short tests/infrastructure/revision/test_channel_reconcile_bounded_stream.py::test_single_key_edge_fan_in_is_merged_one_edge_at_a_time
+# first run: 1 failed in 3.18s; the original full ChannelEdge object equality failed at index 0
+
+uv run --offline pytest -q --tb=short -vv tests/infrastructure/revision/test_channel_reconcile_bounded_stream.py::test_single_key_edge_fan_in_is_merged_one_edge_at_a_time
+# after changing the assertion to IDs/order + persisted-row equality: 1 passed in 2.90s
+```
+
+This confirms the tested IDs/order, serialized row values, and one-row/one-comparison observer bounds. It does **not** explain the original object-level equality mismatch; that remains under independent QA review. The passing retry is not evidence of `ChannelEdge` object equality. No other deferred tests were run. This regression adds useful per-key edge fan-in evidence but does not close the remaining O(H) revision/record/graph state or the E1-CAP-1 32 MiB gate.
