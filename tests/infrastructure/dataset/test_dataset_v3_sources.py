@@ -40,6 +40,7 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_INSTRUMENT_LISTINGS,
     DATASET_SELECTION_CHUNKS,
 )
+from infrastructure.dataset import sources as source_module
 from infrastructure.dataset.builder import (
     DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
@@ -434,6 +435,51 @@ def test_duplicates_still_reach_the_builder_and_fail_closed(
             chunks=ds.FakeChunkWriter(),
             manifests=ds.FakeManifests(),
         )
+
+
+def test_universe_reordering_compacts_run_refs_and_closes_root_reader_early(
+    evidence_store: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    count = 256
+    universe = ds.FakeUniverse(
+        members_=(),
+        exclusions_=(),
+        lineage=tuple(
+            ds.listing_lineage(f"revision-{index:04d}") for index in reversed(range(count))
+        ),
+        gaps=(),
+        spans=(),
+    )
+    real_builder = source_module.RunSetBuilder
+    real_iter_run = source_module.iter_run
+    max_refs = 0
+    readers_closed: list[bool] = []
+
+    class TrackingRunSetBuilder(real_builder):
+        def add(self, row: Any) -> None:
+            nonlocal max_refs
+            super().add(row)
+            max_refs = max(max_refs, sum(map(len, self._refs._levels)))
+
+    @contextmanager
+    def tracking_iter_run(storage: Any, root: Any) -> Iterator[Iterator[Any]]:
+        with real_iter_run(storage, root) as rows:
+            try:
+                yield rows
+            finally:
+                readers_closed.append(True)
+
+    monkeypatch.setattr(source_module, "RunSetBuilder", TrackingRunSetBuilder)
+    monkeypatch.setattr(source_module, "iter_run", tracking_iter_run)
+    ordered = OrderedUniverseSource(universe, storage=evidence_store, params=UNIVERSE_PARAMS)
+    with ordered.listing_lineage() as rows:
+        assert next(rows).canonical_revision_id == "revision-0000"
+
+    assert universe.opened == 1
+    assert universe.open_now == 0
+    assert max_refs <= count.bit_length() + 1
+    assert max_refs < count
+    assert readers_closed == [True]
 
 
 def test_malformed_universe_items_fail_closed(evidence_store: LocalFileStorageAdapter) -> None:
