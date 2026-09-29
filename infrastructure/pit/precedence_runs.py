@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import heapq
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 
 from core.contracts.storage import StorageAdapter
 from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder, iter_run
@@ -26,71 +26,107 @@ def maximal_heads_from_runs(
     Working memory is limited to the caller's run buffers and merge fanout. The returned tuple is
     the existing complete heads output contract and can itself grow with the number of heads.
     """
+    root = _maximal_heads_root(
+        storage, candidates, edges, capacity=capacity, merge_fanout=merge_fanout, limits=limits
+    )
+    return () if root is None else _read_ids(storage, root)
+
+
+def maximal_head_summary_from_runs(
+    storage: StorageAdapter,
+    candidates: Iterable[str],
+    edges: Iterable[tuple[str, str]],
+    *,
+    capacity: int,
+    merge_fanout: int,
+    limits: RunLimits,
+    emit: Callable[[int, int, str], None],
+) -> tuple[int, str | None]:
+    """Emit every ordered head and retain only its count and sole ID, if there is one.
+
+    The content-addressed result run is traversed twice: once to count, then to emit records
+    that bind that count. No head IDs are accumulated in Python memory.
+    """
+    root = _maximal_heads_root(
+        storage, candidates, edges, capacity=capacity, merge_fanout=merge_fanout, limits=limits
+    )
+    if root is None:
+        return 0, None
+    count = 0
+    sole: str | None = None
+    with iter_run(storage, root) as rows:
+        for row in rows:
+            if count == 0:
+                sole = row["id"]
+            count += 1
+    if count < 2:
+        return count, sole
+    first: str | None = None
+    ordinal = 0
+    with iter_run(storage, root) as rows:
+        for row in rows:
+            revision_id = row["id"]
+            if ordinal == 0:
+                first = revision_id
+            emit(count, ordinal, revision_id)
+            ordinal += 1
+    if ordinal != count:
+        raise RuntimeError("maximal-head run changed between count and emission passes")
+    return count, first if count == 1 else None
+
+
+def _maximal_heads_root(
+    storage: StorageAdapter,
+    candidates: Iterable[str],
+    edges: Iterable[tuple[str, str]],
+    *,
+    capacity: int,
+    merge_fanout: int,
+    limits: RunLimits,
+) -> RunRef | None:
     candidates_root = _build_ids(
         storage, candidates, capacity=capacity, merge_fanout=merge_fanout, limits=limits
     )
     if candidates_root is None:
-        return ()
+        return None
     edges_root = _build_edges(
         storage, edges, capacity=capacity, merge_fanout=merge_fanout, limits=limits
     )
     if edges_root is None:
-        return _read_ids(storage, candidates_root)
+        return candidates_root
 
     expanded_root = candidates_root
     frontier_root = candidates_root
     reached_root: RunRef | None = None
     while frontier_root is not None:
         descendants_root = _expand_frontier(
-            storage,
-            frontier_root,
-            edges_root,
-            capacity=capacity,
-            merge_fanout=merge_fanout,
-            limits=limits,
+            storage, frontier_root, edges_root, capacity=capacity,
+            merge_fanout=merge_fanout, limits=limits,
         )
         if descendants_root is None:
             break
         reached_root = _merge_id_sets(
-            storage,
-            reached_root,
-            descendants_root,
-            capacity=capacity,
-            merge_fanout=merge_fanout,
-            limits=limits,
+            storage, reached_root, descendants_root, capacity=capacity,
+            merge_fanout=merge_fanout, limits=limits,
         )
         next_frontier = _subtract_id_sets(
-            storage,
-            descendants_root,
-            expanded_root,
-            capacity=capacity,
-            merge_fanout=merge_fanout,
-            limits=limits,
+            storage, descendants_root, expanded_root, capacity=capacity,
+            merge_fanout=merge_fanout, limits=limits,
         )
         if next_frontier is None:
             break
         next_expanded_root = _merge_id_sets(
-            storage,
-            expanded_root,
-            next_frontier,
-            capacity=capacity,
-            merge_fanout=merge_fanout,
-            limits=limits,
+            storage, expanded_root, next_frontier, capacity=capacity,
+            merge_fanout=merge_fanout, limits=limits,
         )
         if next_expanded_root is None:  # pragma: no cover - both inputs are nonempty roots
             raise RuntimeError("cannot merge non-empty expanded and frontier runs")
         expanded_root = next_expanded_root
         frontier_root = next_frontier
-
-    heads_root = _subtract_id_sets(
-        storage,
-        candidates_root,
-        reached_root,
-        capacity=capacity,
-        merge_fanout=merge_fanout,
-        limits=limits,
+    return _subtract_id_sets(
+        storage, candidates_root, reached_root, capacity=capacity,
+        merge_fanout=merge_fanout, limits=limits,
     )
-    return () if heads_root is None else _read_ids(storage, heads_root)
 
 
 def _build_ids(

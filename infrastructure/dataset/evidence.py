@@ -1,7 +1,8 @@
 """Content-addressed ordered evidence streams of a v3 Research Dataset (ADR-0077 §2 / §3 / §5).
 
 A ``ResearchDatasetEvidenceManifest`` does not inline its members, exclusions, lineage, evidence
-gaps, quality reports or chunk proofs: each of the six streams is an ordered sequence of records
+gaps, quality reports or chunk proofs: 2.3/2.4 manifests have six streams, while 2.5+ manifests
+also have the ``pit_conflicts`` stream; each stream is an ordered sequence of records
 committed by the root of a Merkle-style tree of immutable objects, and the root's
 ``EvidenceObjectRef`` enters the manifest's content hash. This module is the one writer and the
 one reader of that format (``hlens.dataset.evidence-jsonl@1.0.0``).
@@ -72,7 +73,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterator, Mapping
+from collections.abc import Generator, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from types import MappingProxyType
@@ -89,6 +90,8 @@ from core.contracts.universe import (
     EvidenceObjectRef,
     EvidenceStream,
     EvidenceStreamRef,
+    PitConflictEvidenceResult,
+    PitConflictHeadEvidence,
     ResearchDatasetEvidenceManifest,
     SelectedRevisionLineage,
     UniverseExclusion,
@@ -120,6 +123,7 @@ __all__ = [
     "evidence_record_from_bytes",
     "iter_evidence",
     "iter_evidence_stream",
+    "iter_pit_conflict_heads",
     "publish_evidence_object",
 ]
 
@@ -147,6 +151,7 @@ EVIDENCE_RECORD_TYPES: Final[Mapping[EvidenceStream, type[Contract]]] = MappingP
         EvidenceStream.EVIDENCE_GAPS: AvailabilityEvidenceGap,
         EvidenceStream.QUALITY_REPORTS: DatasetQualityReportRef,
         EvidenceStream.CHUNK_PROOFS: DatasetChunkProof,
+        EvidenceStream.PIT_CONFLICTS: PitConflictHeadEvidence,
     }
 )
 
@@ -688,7 +693,7 @@ def _walk(
     ref: EvidenceStreamRef,
     limits: EvidenceTreeLimits,
     schema_version: str,
-) -> Iterator[Contract]:
+) -> Generator[Contract]:
     if ref.format != DATASET_EVIDENCE_FORMAT:
         raise EvidenceIntegrityError(f"{ref.stream.value} stream is not {DATASET_EVIDENCE_FORMAT}")
     if ref.depth != canonical_depth(ref.leaf_count, limits.fanout):
@@ -756,3 +761,71 @@ def iter_evidence(
     ref = manifest.evidence_for(EvidenceStream(stream))
     with iter_evidence_stream(storage, ref, limits=limits, schema_version=version) as records:
         yield records
+
+
+@contextmanager
+def iter_pit_conflict_heads(
+    storage: StorageAdapter,
+    result: PitConflictEvidenceResult,
+    *,
+    limits: EvidenceTreeLimits,
+) -> Iterator[Iterator[PitConflictHeadEvidence]]:
+    """Replay and semantically verify one complete conflict evaluation in bounded order.
+
+    Traversing the iterator to exhaustion checks the root tree, result identity, count, contiguous
+    ordinals, and strictly increasing canonical revision IDs. Callers that stop early get normal
+    closable-reader semantics but have not proven completeness.
+    """
+    if not isinstance(result, PitConflictEvidenceResult):
+        raise EvidenceIntegrityError("result must be a PitConflictEvidenceResult")
+    if result.schema_version not in PUBLISHED_CONTRACT_SCHEMA_VERSIONS:
+        raise EvidenceIntegrityError("PIT conflict result has an unpublished contract version")
+    with iter_evidence_stream(
+        storage,
+        result.evidence,
+        limits=limits,
+        schema_version=result.schema_version,
+    ) as records:
+        def verified() -> Generator[PitConflictHeadEvidence]:
+            ordinal = 0
+            previous_revision: str | None = None
+            for record in records:
+                if type(record) is not PitConflictHeadEvidence:
+                    raise EvidenceIntegrityError("PIT conflict stream contains a different record")
+                identity = (
+                    record.rule_id,
+                    record.rule_version,
+                    record.rule_hash,
+                    record.observation_key,
+                    record.simulation_time,
+                    record.knowledge_cutoff,
+                    record.head_count,
+                )
+                expected = (
+                    result.rule_id,
+                    result.rule_version,
+                    result.rule_hash,
+                    result.observation_key,
+                    result.simulation_time,
+                    result.knowledge_cutoff,
+                    result.head_count,
+                )
+                if identity != expected or record.ordinal != ordinal:
+                    raise EvidenceIntegrityError(
+                        f"PIT conflict record {ordinal} disagrees with result identity/order"
+                    )
+                if previous_revision is not None and record.revision_id <= previous_revision:
+                    raise EvidenceIntegrityError("PIT conflict revision IDs are not increasing")
+                previous_revision = record.revision_id
+                ordinal += 1
+                yield record
+            if ordinal != result.head_count:
+                raise EvidenceIntegrityError(
+                    f"PIT conflict stream has {ordinal} heads, expected {result.head_count}"
+                )
+
+        iterator = verified()
+        try:
+            yield iterator
+        finally:
+            iterator.close()

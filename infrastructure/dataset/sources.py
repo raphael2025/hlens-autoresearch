@@ -43,7 +43,12 @@ from typing import Any, Final
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
-from core.contracts.universe import SelectedRevisionLineage, UniverseExclusion, UniverseMember
+from core.contracts.universe import (
+    PitConflictHeadEvidence,
+    SelectedRevisionLineage,
+    UniverseExclusion,
+    UniverseMember,
+)
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.dataset.builder import (
     DatasetEvidenceRequest,
@@ -321,13 +326,16 @@ def _evaluations(
                 simulation_time=selection.simulation_time,
                 status=selection.status,
                 selected=selected,
+                head_count=selection.head_count,
             )
         )
     return tuple(evaluations)
 
 
 def pit_key_groups(
-    records: Iterable[PitBoundedRecord], *, knowledge_cutoff: datetime
+    records: Iterable[PitBoundedRecord],
+    *,
+    knowledge_cutoff: datetime,
 ) -> Iterator[PitKeyGroup]:
     """Fold ``iter_bounded``'s records into one ``PitKeyGroup`` per observation key.
 
@@ -357,6 +365,10 @@ def pit_key_groups(
             elif this_owner != owner:
                 raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
             held.append(pending)
+            # The dataset is fail-closed at the first conflict evaluation. Stop pulling the PIT
+            # cursor now so its completed evidence root names exactly that evaluation.
+            if pending.selection.status is PointInTimeStatus.CONFLICT:
+                break
             pending = _next_record(source)
         assert owner is not None  # the inner while loop above ran at least once
         yield PitKeyGroup(
@@ -401,8 +413,12 @@ class PitSelectorKeySource:
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Callable[[PitConflictHeadEvidence], None] | None = None,
     ) -> AbstractContextManager[Iterator[PitKeyGroup]]:
-        return self._keys(pit, data_type, venue_symbol, start, end)
+        return self._keys(
+            pit, data_type, venue_symbol, start, end, conflict_sink=conflict_sink
+        )
 
     @contextmanager
     def _keys(
@@ -412,12 +428,21 @@ class PitSelectorKeySource:
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Callable[[PitConflictHeadEvidence], None] | None,
     ) -> Iterator[Iterator[PitKeyGroup]]:
         with ExitStack() as stack:
             # iter_bounded first: it checks the spec, data type and symbol before anything reads.
             records = stack.enter_context(
                 self._selector.iter_bounded(
-                    pit, data_type, venue_symbol, start, end, params=self._params, touching=False
+                    pit,
+                    data_type,
+                    venue_symbol,
+                    start,
+                    end,
+                    params=self._params,
+                    touching=False,
+                    conflict_sink=conflict_sink,
                 )
             )
             # The inner generator holds the merge readers: close it on any exit, not at GC.

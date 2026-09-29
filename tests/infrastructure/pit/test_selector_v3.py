@@ -74,6 +74,17 @@ def _selections(records: list[PitBoundedRecord]) -> list[Any]:
     return [r.selection for r in records]
 
 
+def _selection_signature(selection: Any) -> tuple[Any, ...]:
+    return (
+        selection.observation_key,
+        selection.simulation_time,
+        selection.knowledge_cutoff,
+        selection.status,
+        selection.selected_revision_id,
+        getattr(selection, "head_count", len(getattr(selection, "maximal_heads", ()))),
+    )
+
+
 def _lineage_by_revision(records: list[PitBoundedRecord]) -> dict[str, Any]:
     return {r.lineage.canonical_revision_id: r.lineage for r in records if r.lineage is not None}
 
@@ -115,7 +126,9 @@ def test_iter_bounded_matches_select_selections_lineage_and_gaps(h: RestHarness)
 
     got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
     expected = sorted(legacy.selections, key=lambda s: (s.observation_key, s.simulation_time))
-    assert got == expected
+    assert [_selection_signature(item) for item in got] == [
+        _selection_signature(item) for item in expected
+    ]
     assert _lineage_by_revision(records) == {
         item.canonical_revision_id: item for item in legacy.lineage
     }
@@ -199,7 +212,9 @@ def test_pit_evaluation_yields_high_cardinality_timeline_incrementally(
         return ("revision-a", "revision-b") if calls % 2 else ()
 
     monkeypatch.setattr(selector_module, "_heads", alternating_heads)
-    selections = selector_module._evaluate("key", records, (), spec, available)  # type: ignore[arg-type]
+    selections = selector_module._evaluate(
+        "key", records, (), spec, available, head_fn=alternating_heads  # type: ignore[arg-type]
+    )
 
     assert calls == 0
     first = next(selections)
@@ -486,7 +501,9 @@ def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
     expected = sorted(
         legacy.selections, key=lambda item: (item.observation_key, item.simulation_time)
     )
-    assert got == expected
+    assert [_selection_signature(item) for item in got] == [
+        _selection_signature(item) for item in expected
+    ]
     assert len(builders) > 2  # target, closure, per-chain, per-key, and output runs
     assert all(builder._finished for builder in builders)
     assert all(not builder._refs._levels for builder in builders)
@@ -544,7 +561,9 @@ def test_iter_bounded_matches_select_across_the_four_cutoffs(h: RestHarness) -> 
         records = _bounded(h, spec)
         got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
         expected = sorted(legacy.selections, key=lambda s: (s.observation_key, s.simulation_time))
-        assert got == expected, cutoff
+        assert [_selection_signature(item) for item in got] == [
+            _selection_signature(item) for item in expected
+        ], cutoff
 
 
 def test_iter_bounded_reports_a_conflict_inline_like_select_reports_it_out_of_band(
@@ -665,6 +684,82 @@ def test_iter_bounded_an_unbound_evidence_table_still_yields_only_conflicts(
     records = _bounded(h, spec)
     assert all(r.selection.status is PointInTimeStatus.CONFLICT for r in records)
     assert all(r.lineage is None for r in records)
+
+
+def test_iter_bounded_spills_and_emits_every_conflict_head_without_a_tuple(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real bounded selector evaluation retains only the summary while its heads exceed fanout."""
+    _chain(h)
+    spec = _spec(h, cutoff=FAR, skip=(c.EVIDENCE.table,))
+    selector = PitSelector(h.adapter, h.storage)
+    view = selector._pinned(spec)
+    actual_row_root, day_root = selector_module._pit_canonical_row_roots(
+        selector,
+        view,
+        selector_module.rules.CANONICAL_TABLES["agg_trades"].table,
+        "agg_trades",
+        selector_module.rules.SYMBOLS[SYMBOL].symbol,
+        START,
+        END,
+        params=TINY_PARAMS,
+        touching=False,
+    )
+    assert actual_row_root is not None and day_root is not None
+    with selector_module._root_rows(h.storage, actual_row_root) as actual_rows:
+        template_rows = list(actual_rows)
+    assert len(template_rows) == 2  # archive + REST revisions, with no bound precedence edge
+    synthetic_rows = [dict(row) for row in template_rows]
+    for index in range(3):
+        clone = dict(template_rows[0])
+        clone["revision_id"] = f"synthetic-conflict-{index}"
+        clone["supersedes"] = []
+        clone["arrival_seq"] = template_rows[0]["arrival_seq"] + index + 1
+        clone["payload_hash"] = f"{index + 1:064x}"
+        synthetic_rows.append(clone)
+
+    replacement = RunSetBuilder(
+        h.storage,
+        key=selector_module._pit_row_sort_key,
+        capacity=1,
+        merge_fanout=2,
+        limits=TINY_PARAMS.limits,
+    )
+    with replacement:
+        replacement.extend(synthetic_rows)
+        replacement_root = replacement.finish()
+    assert replacement_root is not None and replacement_root.record_count == 5
+    monkeypatch.setattr(
+        selector_module,
+        "_pit_canonical_row_roots",
+        lambda *_args, **_kwargs: (replacement_root, day_root),
+    )
+    monkeypatch.setattr(
+        PitSelector,
+        "_verify_canonical_bounded",
+        lambda _self, _view, rows, **_kwargs: rows,
+    )
+
+    emitted = []
+    with selector.iter_bounded(
+        spec,
+        "agg_trades",
+        SYMBOL,
+        START,
+        END,
+        params=TINY_PARAMS,
+        conflict_sink=emitted.append,
+    ) as records:
+        [record] = list(records)
+
+    assert record.selection.status is PointInTimeStatus.CONFLICT
+    assert record.selection.head_count == 5
+    assert not hasattr(record.selection, "maximal_heads")
+    assert [item.ordinal for item in emitted] == list(range(5))
+    assert all(item.head_count == 5 for item in emitted)
+    assert [item.revision_id for item in emitted] == sorted(
+        item.revision_id for item in emitted
+    )
 
 
 # =========================================================================================

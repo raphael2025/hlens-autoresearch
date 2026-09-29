@@ -90,10 +90,11 @@ policy / parser 绑定；universe 以 `UniverseSpecBinding` 绑定，listing 历
 `ResearchDatasetEvidenceManifest` 与 v2 `ResearchDatasetManifest` 并存，v2 模型、Schema、哈希与已持久化 v2 manifest 逐位不变、
 只读兼容。ADR-0023 §6 "manifest 绑定成员 / 排除清单、lineage、质量报告与证据缺口"的义务在 v3 中由**内容哈希承诺**满足：
 manifest 只含固定大小字段（自身 `DatasetRef`、完整 `PointInTimeSpec`、universe 绑定、dataset 规则绑定、`data_type`、
-`selection_id`、行数与定长 chunk 参数），六条内容寻址、有序的 evidence stream（members / exclusions / lineage /
+`selection_id`、行数与定长 chunk 参数），2.3/2.4 manifest 为六条、2.5+ manifest 为七条内容寻址有序 evidence stream（members / exclusions / lineage /
 evidence_gaps / quality_reports / chunk_proofs）以根对象 `key + sha256 + size` 引用，经 manifest 内容哈希承诺整条流的
-顺序、计数与内容；对象键只由内容 SHA-256 决定（`research/dataset-evidence/v1/<sha256>.jsonl`），不含实现生成的 URI。
-契约同样只证明结构；对象读取、逐项核对与 streaming verifier 属 `infrastructure/dataset/`（ADR-0077 §5 / §6，待实施）。
+顺序、计数与内容；2.5.0+ 增加 `pit_conflicts` 第七流（成功 manifest 必须为空，失败结果可引用已完成的冲突证据树）。对象键只由内容
+SHA-256 决定（`research/dataset-evidence/v1/<sha256>.jsonl`），不含实现生成的 URI。契约同样只证明结构；对象读取、逐项核对与
+streaming verifier 属 `infrastructure/dataset/`（ADR-0077 §5 / §6，实现在 `infrastructure/dataset/`）。
 
 ## 4. 时间语义（冻结；2026-09-24 按 ADR-0023 修订）
 
@@ -227,7 +228,7 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 | `raw.binance_spot_exchange_info` | 每次成功 `GET /api/v3/exchangeInfo` 快照的 Raw source revision：请求身份、响应字节对象引用、HTTP 元数据、`serverTime` 与请求 symbol 的原生字段（ADR-0029 §1） | 不分区 |
 | `quality.availability_evidence_gaps` | 质量报告引用的 `AvailabilityEvidenceGap` 逐条记录（`quality_report_id` + `table` + `revision_id` + `gap`，另带所在批次序号 `batch_index`），按时段分批只追加写入、逐批按行核对；报告行是唯一引用（ADR-0031） | identity `subject_symbol` + `day(subject_start)` |
 | `research.dataset_selections` | `DatasetBuilder` 一次构建物化的行：每个 key 选中的 Canonical revision 指针（`canonical_table` + `revision_id`，不复制 payload）及其生效的 simulation 区间（`effective_from` / `effective_until`；皆空 = point simulation），一批一个 `selection_id`；是 `research.dataset_manifests` 绑定的 `DatasetRef` 表（ADR-0033） | identity `symbol` + `day(event_time)` |
-| `research.dataset_evidence_manifests` | ADR-0077 v3 `ResearchDatasetEvidenceManifest`：固定长度身份、规则、计数、六条 evidence stream 摘要及规范 JSON | 不分区 |
+| `research.dataset_evidence_manifests` | ADR-0077 / ADR-0094 v3 `ResearchDatasetEvidenceManifest`：固定长度身份、规则、计数、按契约版本为六条或七条 evidence stream 摘要及规范 JSON | 不分区 |
 | `research.dataset_selection_chunks` | ADR-0077 v3 selection 行；保留 `research.dataset_selections` 的 8 列，并增加 `chunk_index` 与全局连续 `row_ordinal` | identity `symbol` + `day(event_time)` |
 
 - **归档字节**以不可变对象存于 warehouse（经 `StorageAdapter`：staging → checksum 校验 → 同文件系统原子发布），
@@ -309,11 +310,11 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 - 一份**无冲突**的 Research Dataset（每个 key 至多一个选中 revision），以及 `research.dataset_manifests` 中的一条 manifest；
 - manifest 记录全部输入绑定、选中 revision 的 lineage（Canonical `revision_id` → Raw revision → Raw source revision；首切片即归档 revision）、
   universe 成员清单与排除原因清单、引用的质量报告，以及该 Research Dataset 自身的 `DatasetRef`（含其 `snapshot_id`）。
-- ADR-0077 的有界 v3 形态（契约 2.3.0，additive）：上述清单不内联，而是写成六条有序 evidence stream，由
+- ADR-0077 / ADR-0094 的有界 v3 形态：上述清单不内联，2.3/2.4 为六条、2.5.0+ 为七条有序 evidence stream，由
   `ResearchDatasetEvidenceManifest` 以根对象引用承诺；数据集行按定长 chunk 提交，每个 chunk 的 batch id 为
   `<selection_id>.chunk-<十位零填充序号>`，其提交证明（snapshot、首行 ordinal、行数、batch 指纹）进入 `chunk_proofs` 流，
   `DatasetRef.snapshot_id` 为最后一个 chunk 的 snapshot。空选择仍被拒绝。v3 的写入 / 读取 / 校验路径与消费者可见性规则
-  由 infrastructure 批次按 ADR-0077 §4 ~ §6.2 实施；在此之前现有构建仍产生 v2 manifest。
+  `pit_conflicts` 在成功 manifest 中为空；competing head 会先写完整 maximal-head 证据，再 fail closed 并返回固定大小根引用。v3 写入 / 读取 / 校验按 ADR-0077 §4 ~ §6.2 与 ADR-0094 实施，v2 路径保持原样。
 
 **fail closed**（不产生可进入实验的数据集）：任一 competing head（观察或 listing）；请求绑定的 policy / parser / universe spec 无法解析到
 已登记且带证据的版本，或 `supersedes` 边引用的 precedence 证据缺失；所需时间范围内缺少 universe listing 历史；manifest 任一绑定项缺失。

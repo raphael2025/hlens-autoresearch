@@ -31,6 +31,7 @@ from core.contracts.universe import (
     EvidenceStream,
     EvidenceStreamRef,
     ExclusionReason,
+    PitConflictHeadEvidence,
     ResearchDatasetEvidenceManifest,
     SelectedRevisionLineage,
     UniverseExclusion,
@@ -561,7 +562,14 @@ def point_key(
     return PitKeyGroup(
         observation_key=key,
         owner_event_time=event if owner is None else owner,
-        evaluations=(PitKeyEvaluation(simulation_time=SIM, status=status, selected=chosen),),
+        evaluations=(
+            PitKeyEvaluation(
+                simulation_time=SIM,
+                status=status,
+                selected=chosen,
+                head_count=2 if status is PointInTimeStatus.CONFLICT else int(chosen is not None),
+            ),
+        ),
     )
 
 
@@ -623,10 +631,32 @@ class FakePit:
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Any = None,
     ) -> Iterator[Iterator[PitKeyGroup]]:
         self.open_now += 1
         try:
-            yield iter(self.groups.get((venue_symbol, start), ()))
+            groups = self.groups.get((venue_symbol, start), ())
+            if conflict_sink is not None:
+                for group in groups:
+                    for evaluation in group.evaluations:
+                        if evaluation.status is PointInTimeStatus.CONFLICT:
+                            count = evaluation.head_count or 2
+                            for ordinal in range(count):
+                                conflict_sink(
+                                    PitConflictHeadEvidence(
+                                        rule_id=PIT_BINDING.policy_id,
+                                        rule_version=PIT_BINDING.version,
+                                        rule_hash=PIT_BINDING.policy_hash,
+                                        observation_key=group.observation_key,
+                                        simulation_time=evaluation.simulation_time,
+                                        knowledge_cutoff=pit.knowledge_cutoff,
+                                        head_count=count,
+                                        ordinal=ordinal,
+                                        revision_id=f"test-head-{ordinal}",
+                                    )
+                                )
+            yield iter(groups)
         finally:
             self.open_now -= 1
 

@@ -1,11 +1,11 @@
 # 02 — Domain Model
 
 > 本文件定义**冻结的领域契约**。实现位于 `core/domain/`、`core/contracts/` 与 `core/compat/`。修改需 ADR。
-> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.4.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
+> 当前契约版本：`CONTRACT_SCHEMA_VERSION = 2.5.0`。2.0.0 由 ADR-0008 + ADR-0009 共同定义（ADR-0011 ~ 0016 与
 > ADR-0018 在其内收紧，不升 major）；2.1.0 是 ADR-0052 §4 的 minor（只加可选字段）；2.2.0 是 ADR-0055 的 minor
 > （知识标签 / 资产检索，只加可选字段）；2.3.0 是 ADR-0077 的 minor（只新增有界 Dataset evidence manifest 模型，
 > 已发布模型不变）；2.4.0 是 ADR-0088 的 minor（组合策略、事件 bar 规格、峰值权益、合成效应、波动率缩放屏障与成员回填假设，
-> 只加可选字段、新取值与新模型，见 §2.11），已发布版本见 §3.3。
+> 只加可选字段、新取值与新模型，见 §2.11）；2.5.0 是 ADR-0094 的 minor（PIT 冲突 maximal-head evidence stream，见 §2.12），已发布版本见 §3.3。
 
 ## 1. 统一标识与版本化
 
@@ -264,7 +264,7 @@ ADR-0024 验收矩阵 #1、#5 ~ #7、#9、#14 ~ #16 的查询 / 选择结果与 
 
 | 模型 | 作用 | 契约层不变量 |
 |---|---|---|
-| `ResearchDatasetEvidenceManifest` | 有界 Research Dataset 审计清单：只含固定大小字段，成员 / 排除 / lineage / 证据缺口 / 质量报告 / chunk 证明经内容寻址的有序 evidence stream 承诺 | `dataset` / `point_in_time` / `universe_spec` 规则同 v2（`research_dataset`、表不在上游、上游含 listing 与质量表）；`rule`、`data_type`（小写标识符）、`selection_id`（可作 chunk batch id 前缀，≤ 239 字符）全部必填；`row_count ≥ 1`（空选择拒绝），`chunk_count = ceil(row_count / chunk_rows)`；`evidence` 六种 stream 恰好各一项、按名规范排序；`chunk_proofs` 记录数 = `chunk_count`，`lineage` 与 `quality_reports` 非空 |
+| `ResearchDatasetEvidenceManifest` | 有界 Research Dataset 审计清单：只含固定大小字段，成员 / 排除 / lineage / 证据缺口 / 质量报告 / chunk 证明经内容寻址的有序 evidence stream 承诺 | `dataset` / `point_in_time` / `universe_spec` 规则同 v2（`research_dataset`、表不在上游、上游含 listing 与质量表）；`rule`、`data_type`（小写标识符）、`selection_id`（可作 chunk batch id 前缀，≤ 239 字符）全部必填；`row_count ≥ 1`（空选择拒绝），`chunk_count = ceil(row_count / chunk_rows)`；2.3/2.4 信封恰含旧六种 stream，2.5+ 恰含七种（成功构建时 `pit_conflicts` 必须为空），按名规范排序；`chunk_proofs` 记录数 = `chunk_count`，`lineage` 与 `quality_reports` 非空 |
 | `DatasetRuleBinding` | dataset 规则绑定 `rule_id + SemVer + rule_hash` | 规则 spec 的排序 / chunk / leaf / fan-out 参数随 `rule_hash` 进入 manifest 身份 |
 | `EvidenceStreamRef` | 一条 stream 的根承诺：`stream`、`format`（`hlens.dataset.evidence-jsonl@1.0.0`）、`record_count`、`leaf_count`、`depth`、`root` | 空流无叶、非空流至少一叶、叶数 ≤ 记录数；`depth ≥ 1`，叶数 ≤ 1 时 `depth = 1` |
 | `EvidenceObjectRef` | 叶 / 索引对象的内容身份 `key + sha256 + size` | 不含 `uri`；`key` 必须等于 `research/dataset-evidence/v1/<sha256>.jsonl`；`size ≥ 1` |
@@ -444,6 +444,12 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 `UniverseMember.assumption` 的版本 / 哈希是否等于已登记的 ADR-0051 政策、成员区间是否真由该假设推出、`UniverseBuilt.assumed`
 （infrastructure DTO）均属 ADR-0051 第二期。
 
+### 2.12 契约 2.5.0 的有界 PIT 冲突证据（[ADR-0094](../adr/0094-bounded-pit-conflict-head-evidence.md)）
+
+新增 `EvidenceStream.PIT_CONFLICTS` 与 `PitConflictHeadEvidence`、`PitConflictEvidenceResult`。冲突记录按 PIT 规则身份、observation key、simulation time 与 revision ID 规范排序，逐 evaluation 带 head 总数与连续 ordinal；失败结果只携带固定大小身份和完整 evaluation 的 stream 根 / 记录数。显式 reader 在耗尽时复核同组身份、连续序号、revision ID 顺序与根计数。v3 bounded 路径不建立 `PointInTimeSelection.maximal_heads` tuple；既有 v2 tuple 契约保持不变。
+
+2.3.0 / 2.4.0 manifest 仍是原六条 stream，2.5.0+ manifest 固定七条；成功构建的 `pit_conflicts` 必须为空。冲突时先完成可重放证据树再 fail closed，不提交 Dataset manifest。该增量不证明 PIT 单 key 记录 / 边 / availability 数据的内存有界性，也不代表 E1-CAP-1 / Phase 1 验收完成。
+
 ## 3. 契约规则
 
 1. 契约以 **Pydantic 模型**为源，导出 **JSON Schema**；API 通过 **OpenAPI** 暴露。
@@ -539,13 +545,13 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 
 ### 3.3 契约版本与旧 major 的读取（ADR-0008 §6、ADR-0009 §7）
 
-当前 `CONTRACT_SCHEMA_VERSION = 2.4.0`；major 2 内已发布的版本为
-`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0")`。模型校验**只接受同 major**（`2.x`），
+当前 `CONTRACT_SCHEMA_VERSION = 2.5.0`；major 2 内已发布的版本为
+`PUBLISHED_CONTRACT_SCHEMA_VERSIONS = ("2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0")`。模型校验**只接受同 major**（`2.x`），
 其他 major 一律拒绝。历史 major 的载荷走 `core/compat/` 的**只读**入口：
 
 | 资产 | 位置 |
 |---|---|
-| 当前 Schema（146 份） | `schemas/*.schema.json` |
+| 当前 Schema（148 份） | `schemas/*.schema.json` |
 | v1 Schema 快照（35 份，只读） | `schemas/v1/` |
 | v1 固定载荷与旧哈希向量 | `tests/vectors/v1/` |
 | v1 可执行只读入口 | `core/compat/v1.py`（`read_v1`） |
@@ -560,7 +566,7 @@ v1 只读入口在计算哈希前会先过**顶层 shape gate**（ADR-0010 §D-1
 
 **按记录版本重放（ADR-0052 Implementation note — versioned replay）**：2.0.0 载荷保留自己的信封，读取不改写版本，
 内容哈希逐位不变（`tests/golden/v2_0_0/`）；2.1.0 知识载荷同理（`tests/golden/v2_1_0/`，ADR-0055）。
-**当前版本新建、未显式给出信封的对象取 2.4.0，其内容哈希与 2.3.0（及更早）孪生对象不同**——信封参与哈希，这是 minor 的预期后果，
+**当前版本新建、未显式给出信封的对象取 2.5.0，其内容哈希与 2.4.0（及更早）孪生对象不同**——信封参与哈希，这是 minor 的预期后果，
 不得描述为"哈希不变"；只有保持信封版本时，省略空的新字段才使载荷形状与哈希逐位不变。已持久化的行 / 对象（Phase 1 各表的 `contract_schema_version` 列、
 manifest 的 `schema_version`）按其**提交时记录的版本**重建与比较；一个写入组（Canonical 单元、REST response 及其
 elements、archive revision 及其行、exchangeInfo snapshot、listing 批次、边、manifest）只有一个版本，未发布版本或

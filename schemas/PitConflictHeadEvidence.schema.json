@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "description": "One lossless head in a v3 PIT conflict evaluation (ADR-0094).",
+  "properties": {
+    "schema_version": {
+      "default": "2.5.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "rule_id": {
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "rule_version": {
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Rule Version",
+      "type": "string"
+    },
+    "rule_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Rule Hash",
+      "type": "string"
+    },
+    "observation_key": {
+      "minLength": 1,
+      "title": "Observation Key",
+      "type": "string"
+    },
+    "simulation_time": {
+      "format": "date-time",
+      "title": "Simulation Time",
+      "type": "string"
+    },
+    "knowledge_cutoff": {
+      "format": "date-time",
+      "title": "Knowledge Cutoff",
+      "type": "string"
+    },
+    "head_count": {
+      "minimum": 2,
+      "title": "Head Count",
+      "type": "integer"
+    },
+    "ordinal": {
+      "minimum": 0,
+      "title": "Ordinal",
+      "type": "integer"
+    },
+    "revision_id": {
+      "minLength": 1,
+      "title": "Revision Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule_id",
+    "rule_version",
+    "rule_hash",
+    "observation_key",
+    "simulation_time",
+    "knowledge_cutoff",
+    "head_count",
+    "ordinal",
+    "revision_id"
+  ],
+  "title": "PitConflictHeadEvidence",
+  "type": "object"
+}

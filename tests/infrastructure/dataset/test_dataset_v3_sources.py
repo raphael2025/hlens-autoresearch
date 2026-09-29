@@ -25,7 +25,7 @@ from typing import Any, cast
 
 import pytest
 
-from core.contracts.revision import PointInTimeSelection, PointInTimeSpec, PointInTimeStatus
+from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.universe import (
     AvailabilityEvidenceGap,
     DatasetQualityReportRef,
@@ -58,7 +58,13 @@ from infrastructure.dataset.sources import (
 )
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.pit.runs import RunLimits
-from infrastructure.pit.selector import EvidenceGap, PitBoundedRecord, PitRunParams, PitSelector
+from infrastructure.pit.selector import (
+    EvidenceGap,
+    PitBoundedRecord,
+    PitBoundedSelection,
+    PitRunParams,
+    PitSelector,
+)
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 from infrastructure.universe.run_params import UniverseRunParams as SharedUniverseRunParams
@@ -291,8 +297,11 @@ class _KeysReversed(PitSelector):
         *,
         params: PitRunParams,
         touching: bool = False,
+        conflict_sink: Any = None,
     ) -> Any:
-        return self._reversed(spec, data_type, symbol, start, end, params, touching)
+        return self._reversed(
+            spec, data_type, symbol, start, end, params, touching, conflict_sink
+        )
 
     @contextmanager
     def _reversed(
@@ -304,9 +313,17 @@ class _KeysReversed(PitSelector):
         end: datetime,
         params: PitRunParams,
         touching: bool,
+        conflict_sink: Any,
     ) -> Iterator[Iterator[PitBoundedRecord]]:
         with super().iter_bounded(
-            spec, data_type, symbol, start, end, params=params, touching=touching
+            spec,
+            data_type,
+            symbol,
+            start,
+            end,
+            params=params,
+            touching=touching,
+            conflict_sink=conflict_sink,
         ) as records:
             held = list(records)
         keys = sorted({record.observation_key for record in held}, reverse=True)
@@ -519,13 +536,13 @@ def _record(
         resolved_event_time = cast(Any, event_time)
     return PitBoundedRecord(
         observation_key=key,
-        selection=PointInTimeSelection(
+        selection=PitBoundedSelection(
             observation_key=key,
             simulation_time=at,
             knowledge_cutoff=SIM,
             status=status,
             selected_revision_id=revision if status is PointInTimeStatus.SELECTED else None,
-            maximal_heads=heads,
+            head_count=len(heads),
         ),
         lineage=attached,
         evidence_gap=evidence_gap,

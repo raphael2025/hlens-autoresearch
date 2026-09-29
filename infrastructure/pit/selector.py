@@ -57,7 +57,7 @@ from core.contracts.revision import (
     RevisionRecord,
 )
 from core.contracts.storage import StorageAdapter
-from core.contracts.universe import SelectedRevisionLineage
+from core.contracts.universe import PitConflictHeadEvidence, SelectedRevisionLineage
 from core.domain.base import canonical_json
 from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import CanonicalNormalizer
@@ -71,7 +71,10 @@ from infrastructure.pit.assumption import (
     effective_available_times,
 )
 from infrastructure.pit.graph_runs import PITGraphInvariantError, validate_pit_graph_runs
-from infrastructure.pit.precedence_runs import maximal_heads_from_runs
+from infrastructure.pit.precedence_runs import (
+    maximal_head_summary_from_runs,
+    maximal_heads_from_runs,
+)
 from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunLimits,
@@ -96,6 +99,7 @@ __all__ = [
     "REQUIRED_BINDINGS",
     "EvidenceGap",
     "PitBoundedRecord",
+    "PitBoundedSelection",
     "PitConflictError",
     "PitRunParams",
     "PitSelection",
@@ -204,6 +208,10 @@ class PitSelection:
 class PitConflictError(Exception):
     """A dataset cannot be built: competing maximal heads (ADR-0023 §5.4)."""
 
+    def __init__(self, message: str, *, result: object | None = None) -> None:
+        super().__init__(message)
+        self.result = result
+
 
 @dataclass(frozen=True, slots=True)
 class PitRunParams:
@@ -265,11 +273,23 @@ class PitBoundedRecord:
     """
 
     observation_key: str
-    selection: PointInTimeSelection
+    selection: PitBoundedSelection
     lineage: SelectedRevisionLineage | None
     evidence_gap: EvidenceGap | None
     owner_event_time: datetime
     event_time: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class PitBoundedSelection:
+    """Fixed-size v3 PIT evaluation summary; complete conflict heads live in evidence stream."""
+
+    observation_key: str
+    simulation_time: datetime
+    knowledge_cutoff: datetime
+    status: PointInTimeStatus
+    selected_revision_id: str | None
+    head_count: int
 
 
 def _equals(column: str, value: object) -> BooleanExpression:
@@ -731,6 +751,7 @@ class PitSelector:
         *,
         params: PitRunParams,
         touching: bool = False,
+        conflict_sink: Callable[[PitConflictHeadEvidence], None] | None = None,
     ) -> AbstractContextManager[Iterator[PitBoundedRecord]]:
         """v3 fixed-working-set entry point (ADR-0077 §6.1.2 / §6.1.3).
 
@@ -772,7 +793,15 @@ class PitSelector:
         checks each yielded record as it arrives.
         """
         return _pit_bounded_stream(
-            self, spec, data_type, symbol, start, end, params=params, touching=touching
+            self,
+            spec,
+            data_type,
+            symbol,
+            start,
+            end,
+            params=params,
+            touching=touching,
+            conflict_sink=conflict_sink,
         )
 
 
@@ -999,6 +1028,83 @@ def _heads(
     return tuple(sorted(maximal_heads(candidates, known_edges)))
 
 
+def _bounded_head_summary(
+    records: Iterable[RevisionRecord],
+    edges: Sequence[PrecedenceEvidence],
+    at: datetime,
+    cutoff: datetime,
+    available: Mapping[str, datetime],
+    *,
+    run_storage: StorageAdapter,
+    run_params: PitRunParams,
+    observation_key: str,
+    emit: Callable[[PitConflictHeadEvidence], None],
+) -> tuple[int, str | None]:
+    """v3-only external summary; never constructs the legacy ``maximal_heads`` tuple."""
+    try:
+        validate_pit_graph_runs(
+            run_storage,
+            records,
+            edges,
+            cutoff=cutoff,
+            capacity=run_params.edge_batch_rows,
+            merge_fanout=run_params.merge_fanout,
+            limits=run_params.limits,
+        )
+    except PITGraphInvariantError as exc:
+        raise CatalogIntegrityError(f"the Canonical revision graph is invalid: {exc}") from None
+
+    def is_known(record: RevisionRecord) -> bool:
+        return record.availability.times.knowledge_time <= cutoff
+
+    candidates = (
+        record.revision_id
+        for record in records
+        if is_known(record) and available[record.revision_id] <= at
+    )
+    candidate_edges = itertools.chain(
+        (
+            (record.revision_id, older)
+            for record in records
+            if is_known(record) and available[record.revision_id] <= at
+            for older in record.supersedes
+        ),
+        (
+            (item.revision_id, item.superseded_revision_id)
+            for item in edges
+            if item.knowledge_time <= cutoff
+        ),
+    )
+    binding = PIT_BINDING
+
+    def record(head_count: int, ordinal: int, revision_id: str) -> None:
+        emit(
+            PitConflictHeadEvidence(
+                rule_id=binding.policy_id,
+                rule_version=binding.version,
+                rule_hash=binding.policy_hash,
+                observation_key=observation_key,
+                simulation_time=at,
+                knowledge_cutoff=cutoff,
+                head_count=head_count,
+                ordinal=ordinal,
+                revision_id=revision_id,
+            )
+        )
+
+    # Count first because every evidence record carries the complete count. The summary helper
+    # calls its emitter on all ordered heads during its second pass.
+    return maximal_head_summary_from_runs(
+        run_storage,
+        candidates,
+        candidate_edges,
+        capacity=run_params.edge_batch_rows,
+        merge_fanout=run_params.merge_fanout,
+        limits=run_params.limits,
+        emit=record,
+    )
+
+
 def _evaluate(
     key: str,
     records: Iterable[RevisionRecord],
@@ -1078,6 +1184,77 @@ def _evaluate(
     )
     unique_changes = (at for at, _ in itertools.groupby(sorted_changes))
     yield from _results(itertools.chain((start,), unique_changes))
+
+
+def _evaluate_bounded(
+    key: str,
+    records: Iterable[RevisionRecord],
+    edges: Sequence[PrecedenceEvidence],
+    spec: PointInTimeSpec,
+    available: Mapping[str, datetime],
+    *,
+    run_storage: StorageAdapter,
+    run_params: PitRunParams,
+    emit_conflict: Callable[[PitConflictHeadEvidence], None],
+) -> Iterator[PitBoundedSelection]:
+    """v3 evaluation path: stream conflict heads and retain only fixed-size results."""
+    cutoff = spec.knowledge_cutoff
+    previous: tuple[PointInTimeStatus, int, str | None] | None = None
+
+    def result(at: datetime) -> Iterator[PitBoundedSelection]:
+        nonlocal previous
+        head_count, selected = _bounded_head_summary(
+            records,
+            edges,
+            at,
+            cutoff,
+            available,
+            run_storage=run_storage,
+            run_params=run_params,
+            observation_key=key,
+            emit=emit_conflict,
+        )
+        status = (
+            PointInTimeStatus.ABSENT
+            if head_count == 0
+            else PointInTimeStatus.SELECTED
+            if head_count == 1
+            else PointInTimeStatus.CONFLICT
+        )
+        identity = (status, head_count, selected)
+        # Conflict evaluations are all recorded, even when two adjacent instants happen to
+        # have the same heads. Their simulation times are distinct auditable inputs.
+        if status is not PointInTimeStatus.CONFLICT and previous == identity:
+            return
+        previous = identity
+        yield PitBoundedSelection(
+            observation_key=key,
+            simulation_time=at,
+            knowledge_cutoff=cutoff,
+            status=status,
+            selected_revision_id=selected,
+            head_count=head_count,
+        )
+
+    if spec.simulation_time is not None:
+        yield from result(spec.simulation_time)
+        return
+    start, end = spec.simulation_start, spec.simulation_end
+    if start is None or end is None:  # pragma: no cover - the contract forbids it
+        raise PitSpecError("the spec has neither a simulation time nor an interval")
+    with _availability_change_times(
+        run_storage,
+        records,
+        available,
+        cutoff=cutoff,
+        start=start,
+        end=end,
+        params=run_params,
+    ) as changes:
+        unique_changes = (at for at, _ in itertools.groupby(changes))
+        yield from result(start)
+        for at in unique_changes:
+            yield from result(at)
 
 
 @contextmanager
@@ -1574,6 +1751,7 @@ def _pit_bounded_stream(
     *,
     params: PitRunParams,
     touching: bool,
+    conflict_sink: Callable[[PitConflictHeadEvidence], None] | None = None,
 ) -> Iterator[Iterator[PitBoundedRecord]]:
     if not isinstance(spec, PointInTimeSpec):
         raise PitSpecError("spec must be a PointInTimeSpec")
@@ -1704,7 +1882,11 @@ def _pit_bounded_stream(
                 # contiguous interval: once another head appears or supersedes it, a later
                 # candidate cannot make it sole again. _evaluate yields only result changes, so
                 # each selected revision receives lineage once without a key-sized seen set.
-                for selection in _evaluate(
+                def emit_conflict(record: PitConflictHeadEvidence) -> None:
+                    if conflict_sink is not None:
+                        conflict_sink(record)
+
+                for selection in _evaluate_bounded(
                     row_key,
                     records,
                     key_edges,
@@ -1712,6 +1894,7 @@ def _pit_bounded_stream(
                     available,
                     run_storage=storage,
                     run_params=params,
+                    emit_conflict=emit_conflict,
                 ):
                     lineage_out: SelectedRevisionLineage | None = None
                     gap_out: EvidenceGap | None = None

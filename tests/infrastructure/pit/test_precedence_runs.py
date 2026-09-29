@@ -105,4 +105,24 @@ def test_iter_bounded_keeps_parity_without_unmeasured_external_traversal(
         actual = [item.selection for item in actual_records]
 
     assert calls == 0
-    assert actual == list(expected.selections)
+    assert [
+        (
+            item.observation_key,
+            item.simulation_time,
+            item.knowledge_cutoff,
+            item.status,
+            item.selected_revision_id,
+            item.head_count,
+        )
+        for item in actual
+    ] == [
+        (
+            item.observation_key,
+            item.simulation_time,
+            item.knowledge_cutoff,
+            item.status,
+            item.selected_revision_id,
+            len(item.maximal_heads),
+        )
+        for item in expected.selections
+    ]

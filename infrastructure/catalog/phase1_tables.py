@@ -83,8 +83,9 @@ Accepted ADRs and contracts, the producers come in later batches):
     fixed-size columns — the ``dataset`` / ``point_in_time`` / ``universe_spec`` triples (same
     shape as ``research.dataset_manifests``), the new ``rule`` triple (``DatasetRuleBinding``),
     ``data_type``, ``selection_id``, ``row_count`` / ``chunk_rows`` / ``chunk_count``, a
-    fixed-length (always six) ``evidence`` list of one flattened ``EvidenceStreamRef`` group per
-    stream (``stream``, ``record_count``, ``leaf_count``, ``depth``, and the ``EvidenceObjectRef``
+    fixed-length ``evidence`` list (six groups for 2.3.0 / 2.4.0 replay; seven for 2.5.0+) of one
+    flattened ``EvidenceStreamRef`` group per stream (``stream``, ``record_count``, ``leaf_count``,
+    ``depth``, and the ``EvidenceObjectRef``
     root flattened to ``root_key`` / ``root_sha256`` / ``root_size``), and ``manifest_json`` (the
     contract canonical JSON of the full manifest; its SHA-256 is ``manifest_content_hash``,
     mirroring the v2 ``manifest_json`` column).
@@ -1077,8 +1078,8 @@ DATASET_EVIDENCE_MANIFESTS: Final = _definition(
                 ),
                 element_required=True,
             ),
-            "evidence: exactly six EvidenceStreamRef groups (one per stream), sorted by "
-            "stream name",
+            "evidence: six EvidenceStreamRef groups for 2.3.0 / 2.4.0 or seven for 2.5.0+, "
+            "one per versioned stream, sorted by stream name",
         ),
         _req(
             28,

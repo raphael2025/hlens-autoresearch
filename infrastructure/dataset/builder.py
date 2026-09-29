@@ -47,11 +47,11 @@ exclusion, lineage entry, report id, evidence gap and the rows the snapshot comm
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Final, Protocol
+from typing import Any, Final, Protocol, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import And, EqualTo
@@ -76,6 +76,7 @@ from core.contracts.universe import (
     DatasetRuleBinding,
     EvidenceStream,
     EvidenceStreamRef,
+    PitConflictHeadEvidence,
     ResearchDatasetEvidenceManifest,
     ResearchDatasetManifest,
     SelectedRevisionLineage,
@@ -85,11 +86,15 @@ from core.contracts.universe import (
     UniverseSpecBinding,
     dataset_chunk_batch_id,
 )
+from core.contracts.universe import (
+    PitConflictEvidenceResult as PitConflictResult,
+)
 from core.domain.base import (
     CONTRACT_SCHEMA_VERSION,
     Contract,
     canonical_json,
     contract_schema_version_scope,
+    parse_semver,
 )
 from core.domain.specs import DatasetRef, Zone
 from infrastructure import contract_version
@@ -170,6 +175,7 @@ __all__ = [
     "PitKeyEvaluation",
     "PitKeyGroup",
     "PitKeySource",
+    "PitConflictResult",
     "PitSelectedRevision",
     "QualityEvidenceSource",
     "UniverseEvidenceSource",
@@ -988,9 +994,16 @@ def _row_order(row: Mapping[str, Any]) -> tuple[str, str, datetime, str]:
 
 DATASET_EVIDENCE_RULE_VERSION: Final = "2.1.0"  # F-C, 2026-09-28: EVIDENCE_PROJECTION text fix
 #: The evidence streams the generator derives; ``chunk_proofs`` come from the chunk commits.
-_DERIVED_STREAMS: Final = tuple(
-    stream for stream in EvidenceStream if stream is not EvidenceStream.CHUNK_PROOFS
-)
+def _derived_streams(schema_version: str) -> tuple[EvidenceStream, ...]:
+    """Streams in one recorded manifest era (ADR-0094 preserves six-stream replay)."""
+    version = parse_semver(schema_version)
+    core = tuple(int(version.group(name)) for name in ("major", "minor", "patch"))
+    return tuple(
+        stream
+        for stream in EvidenceStream
+        if stream is not EvidenceStream.CHUNK_PROOFS
+        and (stream is not EvidenceStream.PIT_CONFLICTS or core >= (2, 5, 0))
+    )
 
 #: A member span of one venue symbol: ``(None, None)`` for a point simulation.
 MemberSpan = tuple[datetime | None, datetime | None]
@@ -1209,6 +1222,7 @@ class PitKeyEvaluation:
     simulation_time: datetime
     status: PointInTimeStatus
     selected: PitSelectedRevision | None
+    head_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1240,6 +1254,8 @@ class PitKeySource(Protocol):
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Callable[[PitConflictHeadEvidence], None] | None = None,
     ) -> AbstractContextManager[Iterator[PitKeyGroup]]: ...
 
 
@@ -1428,6 +1444,7 @@ class DatasetEvidenceBuilder:
         sources: DatasetEvidenceSources,
         sink: DatasetDerivationSink,
         manifested: bool,
+        schema_version: str = CONTRACT_SCHEMA_VERSION,
     ) -> DatasetDerivation:
         """Derive everything but the chunk proofs into ``sink``; nothing is written.
 
@@ -1439,7 +1456,7 @@ class DatasetEvidenceBuilder:
         selection_id = self.selection_id(request)
         _check_unbound_evidence(self._adapter, request.pit, manifested=manifested)
         return _EvidenceDerivation(
-            request, canonical, selection_id, self._rule, sources, sink
+            request, canonical, selection_id, self._rule, sources, sink, schema_version
         ).run()
 
     def build(
@@ -1473,7 +1490,7 @@ class DatasetEvidenceBuilder:
         with scope:
             sink = _EvidenceBuildSink(self._storage, self._rule, selection_id, chunks, version)
             derived = _EvidenceDerivation(
-                request, canonical, selection_id, self._rule, sources, sink
+                request, canonical, selection_id, self._rule, sources, sink, version
             ).run()
             if derived.row_count == 0:
                 raise DatasetEmpty(
@@ -1635,7 +1652,11 @@ def _required(value: datetime | None) -> datetime:
 
 
 def _selected_spans_of(
-    evaluations: Iterable[PitKeyEvaluation], pit: PointInTimeSpec, key: str
+    evaluations: Iterable[PitKeyEvaluation],
+    pit: PointInTimeSpec,
+    key: str,
+    *,
+    on_conflict: Callable[[PitKeyEvaluation], PitConflictResult | None] | None = None,
 ) -> Iterator[tuple[datetime | None, datetime | None, PitSelectedRevision]]:
     """``_selected_spans`` over a once-consumed, time-ordered evaluation stream."""
     point = pit.simulation_time is not None
@@ -1645,9 +1666,13 @@ def _selected_spans_of(
             raise CatalogIntegrityError(f"key {key}: an evaluation is not a PitKeyEvaluation")
         at = _check_utc(evaluation.simulation_time, f"key {key} simulation_time")
         if evaluation.status is PointInTimeStatus.CONFLICT:
+            if evaluation.head_count is not None and evaluation.head_count < 2:
+                raise CatalogIntegrityError(f"key {key}: conflict has fewer than two heads")
+            result = None if on_conflict is None else on_conflict(evaluation)
             raise PitConflictError(
                 f"observation key {key} has competing heads at {at.isoformat()}: the dataset "
-                "build fails closed"
+                "build fails closed",
+                result=result,
             )
         if evaluation.status not in (PointInTimeStatus.SELECTED, PointInTimeStatus.ABSENT) or (
             evaluation.status is PointInTimeStatus.SELECTED
@@ -1893,6 +1918,7 @@ class _EvidenceDerivation:
         rule: DatasetEvidenceRule,
         sources: DatasetEvidenceSources,
         sink: DatasetDerivationSink,
+        schema_version: str,
     ) -> None:
         if not isinstance(sources, DatasetEvidenceSources):
             raise DatasetSpecError("sources must be DatasetEvidenceSources")
@@ -1906,7 +1932,8 @@ class _EvidenceDerivation:
         self._sink = sink
         self._bound = request.pit.snapshot_bindings
         self._point = request.pit.simulation_time is not None
-        self._counts = dict.fromkeys(_DERIVED_STREAMS, 0)
+        self._streams = _derived_streams(schema_version)
+        self._counts: dict[EvidenceStream, int] = dict.fromkeys(self._streams, 0)
         self._rows = 0
         self._last_report: tuple[int, str, str] | None = None
 
@@ -1927,7 +1954,7 @@ class _EvidenceDerivation:
             row_count=self._rows,
             record_counts=tuple(
                 (stream, self._counts[stream])
-                for stream in sorted(_DERIVED_STREAMS, key=lambda item: item.value)
+                for stream in sorted(self._streams, key=lambda item: item.value)
             ),
         )
 
@@ -2030,7 +2057,14 @@ class _EvidenceDerivation:
         request = self.request
         reports = _PartitionReports(self, venue_symbol)
         for low, high in _iter_slices(request.data_type, request.start, request.end):
-            with self._pit.keys(request.pit, request.data_type, venue_symbol, low, high) as groups:
+            with self._pit.keys(
+                request.pit,
+                request.data_type,
+                venue_symbol,
+                low,
+                high,
+                conflict_sink=self._pit_conflict_head,
+            ) as groups:
                 previous: str | None = None
                 for group in groups:
                     self._key(group, venue_symbol, member_spans, low, high, previous, reports)
@@ -2066,7 +2100,13 @@ class _EvidenceDerivation:
         #: key's rows are adjacent, so this set never spans two keys (ADR-0077 §2).
         emitted: set[str] = set()
         rows = _gated_rows(
-            _selected_spans_of(group.evaluations, self.request.pit, key), iter(member_spans)
+            _selected_spans_of(
+                group.evaluations,
+                self.request.pit,
+                key,
+                on_conflict=lambda evaluation: self._finish_pit_conflict(key, evaluation),
+            ),
+            iter(member_spans),
         )
         for (effective_from, effective_until), selected in rows:
             event_time = self._row(venue_symbol, key, selected, effective_from, effective_until)
@@ -2074,6 +2114,22 @@ class _EvidenceDerivation:
             if selected.revision_id not in emitted:
                 emitted.add(selected.revision_id)
                 self._data_lineage(selected, report_id)
+
+    def _pit_conflict_head(self, record: PitConflictHeadEvidence) -> None:
+        if EvidenceStream.PIT_CONFLICTS not in self._counts:
+            raise CatalogIntegrityError(
+                "a PIT conflict cannot be replayed in a manifest version before 2.5.0"
+            )
+        self._sink.evidence(EvidenceStream.PIT_CONFLICTS, record)
+        self._counts[EvidenceStream.PIT_CONFLICTS] += 1
+
+    def _finish_pit_conflict(
+        self, key: str, evaluation: PitKeyEvaluation
+    ) -> PitConflictResult | None:
+        finish = getattr(self._sink, "finish_pit_conflict", None)
+        if not callable(finish):
+            return None
+        return cast(PitConflictResult, finish(key, evaluation, self.request.pit))
 
     def _row(
         self,
@@ -2131,7 +2187,7 @@ class _EvidenceBuildSink:
     ) -> None:
         self._writers = {
             stream: EvidenceTreeWriter(storage, stream, limits=rule.limits, schema_version=version)
-            for stream in EvidenceStream
+            for stream in (*_derived_streams(version), EvidenceStream.CHUNK_PROOFS)
         }
         self._chunk_rows = rule.chunk_rows
         self._selection_id = selection_id
@@ -2158,9 +2214,32 @@ class _EvidenceBuildSink:
             raise DatasetEmpty("no chunk was committed")
         streams = tuple(
             self._writers[stream].finish()
-            for stream in sorted(EvidenceStream, key=lambda item: item.value)
+            for stream in sorted(self._writers, key=lambda item: item.value)
         )
         return streams, self._chunk_count, self._replayed, self._snapshot_id
+
+    def finish_pit_conflict(
+        self, key: str, evaluation: PitKeyEvaluation, pit: PointInTimeSpec
+    ) -> PitConflictResult:
+        writer = self._writers[EvidenceStream.PIT_CONFLICTS]
+        if evaluation.head_count is None or evaluation.head_count < 2:
+            raise CatalogIntegrityError(f"key {key}: conflict result has no complete head count")
+        if writer.record_count != evaluation.head_count:
+            raise CatalogIntegrityError(
+                f"key {key}: wrote {writer.record_count} conflict heads, expected "
+                f"{evaluation.head_count}"
+            )
+        ref = writer.finish()
+        return PitConflictResult(
+            rule_id=PIT_BINDING.policy_id,
+            rule_version=PIT_BINDING.version,
+            rule_hash=PIT_BINDING.policy_hash,
+            observation_key=key,
+            simulation_time=evaluation.simulation_time,
+            knowledge_cutoff=pit.knowledge_cutoff,
+            head_count=evaluation.head_count,
+            evidence=ref,
+        )
 
     def _commit(self) -> None:
         index = self._chunk_count

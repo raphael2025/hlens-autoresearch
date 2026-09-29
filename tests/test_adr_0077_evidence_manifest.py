@@ -188,7 +188,15 @@ def proof(chunk_index: int = 0, **overrides: Any) -> DatasetChunkProof:
     return DatasetChunkProof(**payload)
 
 
-def v3(**overrides: Any) -> ResearchDatasetEvidenceManifest:
+def v3(
+    *, schema_version: str = "2.4.0", **overrides: Any
+) -> ResearchDatasetEvidenceManifest:
+    """Legacy six-stream manifest fixture, explicitly rebuilt at its recorded 2.3/2.4 era."""
+    with contract_schema_version_scope(schema_version):
+        return _v3_payload(**overrides)
+
+
+def _v3_payload(**overrides: Any) -> ResearchDatasetEvidenceManifest:
     payload: dict[str, Any] = {
         "dataset": dataset(table="research.dataset_selection_chunks", snapshot_id="9103"),
         "point_in_time": pit(),
@@ -207,13 +215,16 @@ def v3(**overrides: Any) -> ResearchDatasetEvidenceManifest:
 
 
 def valid_instances() -> dict[type[Contract], Contract]:
+    current_evidence = (*evidence(3), stream_ref(EvidenceStream.PIT_CONFLICTS, 0))
     return {
         DatasetRuleBinding: rule(),
         EvidenceObjectRef: obj(),
         EvidenceStreamRef: stream_ref(EvidenceStream.LINEAGE),
         DatasetQualityReportRef: report(),
         DatasetChunkProof: proof(),
-        ResearchDatasetEvidenceManifest: v3(),
+        ResearchDatasetEvidenceManifest: v3(
+            schema_version="2.5.0", evidence=current_evidence
+        ),
     }
 
 
@@ -227,17 +238,25 @@ def wire(instance: Contract) -> dict[str, Any]:
 # ======================================================================================
 
 
-def test_the_current_version_is_2_3_0_and_every_earlier_minor_stays_published() -> None:
+def test_2_3_shapes_remain_replayable_and_every_minor_stays_published() -> None:
     assert ADR_0077_VERSION == "2.3.0"
-    assert CONTRACT_SCHEMA_VERSION == "2.4.0"  # ADR-0088 raised the current minor
-    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == ("2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0")
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"  # ADR-0094 raised the current minor
+    assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
+        "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"
+    )
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
 
 def test_every_new_model_is_declared_since_2_3_0() -> None:
     for model in NEW_MODELS:
         assert model._MODEL_SINCE == "2.3.0", model.__name__
-        assert not model._FIELDS_SINCE and not model._VALUES_SINCE, model.__name__
+        assert not model._FIELDS_SINCE, model.__name__
+        if model is EvidenceStreamRef:
+            assert dict(model._VALUES_SINCE) == {
+                "stream": {EvidenceStream.PIT_CONFLICTS: "2.5.0"}
+            }
+        else:
+            assert not model._VALUES_SINCE, model.__name__
     # the v2 manifest and its record models are not new content
     for model in (
         ResearchDatasetManifest,
@@ -251,7 +270,7 @@ def test_every_new_model_is_declared_since_2_3_0() -> None:
 
 def test_the_new_models_are_appended_to_the_registry_and_exported() -> None:
     names = tuple(model.__name__ for model in CONTRACT_MODELS)
-    assert len(names) == 146  # ADR-0088 appended five models after these
+    assert len(names) == 148  # ADR-0094 appends two models after ADR-0088
     assert names[:135][-1] == "FillRemainder"  # everything before ADR-0077 keeps its place
     assert CONTRACT_MODELS[135:141] == NEW_MODELS
     for model in NEW_MODELS:
@@ -266,14 +285,14 @@ def test_the_committed_schemas_of_the_new_models_match_the_contracts(tmp_path: P
         )
         exported = json.loads(written[model.__name__].read_text(encoding="utf-8"))
         assert committed == exported, model.__name__
-        assert committed["properties"]["schema_version"]["default"] == "2.4.0"  # ADR-0088
+        assert committed["properties"]["schema_version"]["default"] == "2.5.0"  # ADR-0094
         assert committed["additionalProperties"] is False
 
 
 @pytest.mark.parametrize("model", NEW_MODELS, ids=lambda m: m.__name__)
 def test_new_objects_carry_the_2_3_0_envelope(model: type[Contract]) -> None:
     instance = valid_instances()[model]
-    assert instance.schema_version == "2.4.0"  # the current envelope (ADR-0088)
+    assert instance.schema_version == "2.5.0"  # current envelope, separate from introduction
     assert model.model_validate(wire(instance)) == instance
 
 
@@ -293,8 +312,7 @@ def test_new_content_cannot_be_built_inside_an_older_replay_scope() -> None:
             rule()
         with contract_schema_version_scope(old), pytest.raises(ValidationError, match="2.3.0"):
             proof()
-    with contract_schema_version_scope("2.3.0"):
-        assert v3().schema_version == "2.3.0"  # 2.3.0 is published: its records can be rebuilt
+    assert v3(schema_version="2.3.0").schema_version == "2.3.0"
 
 
 # ======================================================================================
@@ -372,8 +390,11 @@ def test_stream_shape_is_checked(field: dict[str, Any]) -> None:
         stream_ref(EvidenceStream.LINEAGE, **field)
 
 
-def test_the_stream_names_are_the_six_of_the_adr() -> None:
-    assert [stream.value for stream in EvidenceStream] == [
+def test_legacy_stream_names_remain_the_six_of_adr_0077() -> None:
+    legacy_names = [
+        stream.value for stream in EvidenceStream if stream is not EvidenceStream.PIT_CONFLICTS
+    ]
+    assert legacy_names == [
         "members",
         "exclusions",
         "lineage",
@@ -381,6 +402,7 @@ def test_the_stream_names_are_the_six_of_the_adr() -> None:
         "quality_reports",
         "chunk_proofs",
     ]
+    assert EvidenceStream.PIT_CONFLICTS.value == "pit_conflicts"
 
 
 # ======================================================================================
@@ -478,9 +500,11 @@ def test_proof_shape_is_checked(field: dict[str, Any]) -> None:
 def test_a_valid_v3_manifest_is_fixed_size_and_canonically_ordered() -> None:
     built = v3()
     assert [item.stream.value for item in built.evidence] == sorted(
-        stream.value for stream in EvidenceStream
+        stream.value for stream in EvidenceStream if stream is not EvidenceStream.PIT_CONFLICTS
     )
-    shuffled = v3(evidence=tuple(reversed(evidence(3))))
+    shuffled = v3(
+        evidence=tuple(at_version(item, "2.4.0") for item in reversed(evidence(3)))
+    )
     assert shuffled == built
     assert shuffled.content_hash() == built.content_hash()
     assert built.evidence_for(EvidenceStream.CHUNK_PROOFS).record_count == 3
@@ -696,7 +720,7 @@ def test_a_persisted_2_2_0_v2_manifest_reads_bit_for_bit_with_its_pinned_hash() 
 
 def test_a_v2_manifest_built_now_is_a_2_3_0_object_and_its_twins_keep_their_envelopes() -> None:
     current = manifest()
-    assert current.schema_version == "2.4.0"  # the current envelope (ADR-0088)
+    assert current.schema_version == "2.5.0"  # the current envelope (ADR-0094)
     for old in ("2.0.0", "2.1.0", "2.2.0"):
         twin = at_version(current, old)
         assert twin.schema_version == old

@@ -119,9 +119,6 @@ _CHUNK_COLUMNS: Final = tuple(field.name for field in DATASET_SELECTION_CHUNKS.a
 _VENUE_SYMBOL: Final[Mapping[str, str]] = {
     instrument.symbol: venue_symbol for venue_symbol, instrument in rules.SYMBOLS.items()
 }
-_DERIVED_STREAMS: Final = tuple(
-    stream for stream in EvidenceStream if stream is not EvidenceStream.CHUNK_PROOFS
-)
 _LISTING_REPORT_KEY: Final = (0, "", "")
 _END: Final = object()
 
@@ -228,8 +225,10 @@ class StreamingEvidenceVerifier:
         limits = self._builder.rule.limits
         with contract_schema_version_scope(version), ExitStack() as stack:
             stored = {
-                stream: stack.enter_context(self._builder.iter_evidence(manifest, stream))
-                for stream in EvidenceStream
+                ref.stream: stack.enter_context(
+                    self._builder.iter_evidence(manifest, ref.stream)
+                )
+                for ref in manifest.evidence
             }
 
             def reopen(stream: EvidenceStream) -> AbstractContextManager[Iterator[Contract]]:
@@ -245,7 +244,11 @@ class StreamingEvidenceVerifier:
                 ),
             )
             derived = self._builder.select(
-                request, sources=self._sources(request), sink=sink, manifested=manifested
+                request,
+                sources=self._sources(request),
+                sink=sink,
+                manifested=manifested,
+                schema_version=manifest.schema_version,
             )
             sink.finish(derived)
         self._no_extra_rows(manifest)
@@ -357,7 +360,12 @@ class _ComparingSink:
         self._listing = listing
         self._reports = reports
         self._chunks = chunks
-        self._ordinals = dict.fromkeys(_DERIVED_STREAMS, 0)
+        self._streams = tuple(
+            ref.stream
+            for ref in manifest.evidence
+            if ref.stream is not EvidenceStream.CHUNK_PROOFS
+        )
+        self._ordinals = dict.fromkeys(self._streams, 0)
         self._last_row: Mapping[str, Any] | None = None
 
     def evidence(self, stream: EvidenceStream, record: Contract) -> None:
@@ -388,14 +396,14 @@ class _ComparingSink:
 
     def finish(self, derived: DatasetDerivation) -> None:
         """Both sides ran out together; counts agree with the manifest; claims resolved."""
-        for stream in _DERIVED_STREAMS:
+        for stream in self._streams:
             if next(self._stored[stream], _END) is not _END:
                 raise CatalogIntegrityError(
                     f"{stream.value}: the manifest commits more than the "
                     f"{self._ordinals[stream]} records its inputs derive"
                 )
         counts = dict(derived.record_counts)
-        for stream in _DERIVED_STREAMS:
+        for stream in self._streams:
             committed = self._manifest.evidence_for(stream).record_count
             if counts.get(stream) != committed or self._ordinals[stream] != committed:
                 raise CatalogIntegrityError(

@@ -39,7 +39,7 @@ from infrastructure.dataset.builder import (
     dataset_evidence_rule,
     selection_id_for,
 )
-from infrastructure.dataset.evidence import EvidenceRecordTooLarge
+from infrastructure.dataset.evidence import EvidenceRecordTooLarge, iter_pit_conflict_heads
 from infrastructure.pit.selector import PitConflictError
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
@@ -51,7 +51,8 @@ LINEAGE = EvidenceStream.LINEAGE
 GAPS = EvidenceStream.EVIDENCE_GAPS
 REPORTS = EvidenceStream.QUALITY_REPORTS
 PROOFS = EvidenceStream.CHUNK_PROOFS
-DERIVED = (EXCLUSIONS, GAPS, LINEAGE, MEMBERS, REPORTS)
+PIT_CONFLICTS = EvidenceStream.PIT_CONFLICTS
+DERIVED = (EXCLUSIONS, GAPS, LINEAGE, MEMBERS, REPORTS, PIT_CONFLICTS)
 #: Arbitrary small parameters (not a DQ-9 choice).
 PARAMS: dict[str, int] = {
     "chunk_rows": 2,
@@ -135,6 +136,7 @@ def test_build_commits_chunks_evidence_and_a_fixed_size_manifest(
         GAPS: 2,
         REPORTS: 2,
         PROOFS: 2,
+        PIT_CONFLICTS: 0,
     }
 
     rows = chunks.rows(summary.selection_id)
@@ -270,8 +272,14 @@ def test_competing_heads_fail_closed(storage: LocalFileStorageAdapter) -> None:
             )
         }
     )
-    with pytest.raises(PitConflictError):
+    with pytest.raises(PitConflictError) as caught:
         build(storage, universe, pit, quality)
+    result = caught.value.result
+    assert result is not None and result.observation_key == "k2" and result.head_count == 2
+    with iter_pit_conflict_heads(storage, result, limits=builder(storage).rule.limits) as heads:
+        records = list(heads)
+    assert [record.revision_id for record in records] == ["test-head-0", "test-head-1"]
+    assert [record.ordinal for record in records] == [0, 1]
     assert universe.open_now == 0 and pit.open_now == 0
 
 
@@ -302,7 +310,9 @@ def test_a_conflict_outside_every_member_span_still_fails_closed(
                 t1 + timedelta(hours=1), PointInTimeStatus.SELECTED, ds.selected("r2")
             ),
             # Reached only after the member spans are exhausted: must still be read.
-            PitKeyEvaluation(t1 + timedelta(hours=2), PointInTimeStatus.CONFLICT, None),
+            PitKeyEvaluation(
+                t1 + timedelta(hours=2), PointInTimeStatus.CONFLICT, None, head_count=2
+            ),
         ),
     )
     pit = ds.FakePit(groups={("BTCUSDT", ds.V3_SLICE_22): (late,)})

@@ -373,8 +373,9 @@ def evidence_manifest_batch_id(content_hash: str) -> str:
 def evidence_manifest_row(manifest: ResearchDatasetEvidenceManifest) -> dict[str, Any]:
     """The frozen row of one v3 manifest, normalised through the table's Arrow schema.
 
-    Every column is fixed-size (§7): the ``evidence`` list always has the six stream groups, in
-    the manifest's canonical (stream name) order.
+    Every column is fixed-size (§7): the ``evidence`` list has six stream groups for recorded
+    2.3.0 / 2.4.0 manifests and seven for 2.5.0+, in canonical stream-name order. The row schema's
+    list element shape remains unchanged, so legacy flattened rows retain their exact values.
     """
     if not isinstance(manifest, ResearchDatasetEvidenceManifest):
         raise TypeError("manifest must be a ResearchDatasetEvidenceManifest")

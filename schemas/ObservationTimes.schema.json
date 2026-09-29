@@ -3,7 +3,7 @@
   "description": "一个 revision 的两轴时间（ADR-0023 §1），全部 UTC，naive 时间拒绝。\n\n六个 ADR 字段：`event_time`、`source_time`、`available_time`、`ingest_time`、\n`knowledge_time`、`declared_latency`。区间型数据（例如 1m bar）按 ADR §1「同时记录区间起止」\n另给 `event_end_time`，即半开区间 `[event_time, event_end_time)` 的结束端；瞬时事件不填。\n\n局部不变量：\n\n- `declared_latency >= 0`（只作用于历史轴的保守计算，不代替任何知识轴时间）；\n- `knowledge_time >= ingest_time`；\n- `available_time` 不早于观察本身可被观察的时刻（瞬时事件取 `event_time`，\n  区间取 `event_end_time`），也不早于已给出的 `source_time`；\n- `source_time` 没有就为空，不得伪造。\n\n`available_time` **可以早于** `ingest_time`（历史 backfill），但那需要证据——\n见 `AvailabilityDecision`。\n`declared_latency` 如何进入 `available_time` 由 availability policy 计算，本模型不重算。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"
