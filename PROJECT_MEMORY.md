@@ -13,7 +13,8 @@
 - Phase 1 数据范围：Binance 公共 spot `BTCUSDT` / `ETHUSDT`，归档 aggTrades + 1m klines（ADR-0022）；
   正式研究标的与周期（D-09 提案为 BTCUSDT 1H）仍待 Phase 4
 - 当前阶段：Phase 0 已完成（tag `phase-0-complete`）；Phase 1 已开启；D3E 已于 2026-09-27 独立验收、D4 已关闭；E1-CAP-1 是当前阻断。`fix/e1-cap1@a75278e` 候选探针报告 500k resume / replay 跨规模增长 59.9 / 63.9 MiB（超过 32 MiB），但该代码线与探针未合入 `main`；main 的 resume / replay 尚未测量，不能继承候选数值。上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定；E1-CAP-1 仍阻断，本轮后置
-- 当前开发顺序：先整合模块基础逻辑，再统一验收。P7 已有 non-runnable typed plan、只读绑定校验器、durable v4 admission / TrialLedger 写入协调与 ADR-0074 本机有限批次 operator 基础；六类组合算子仍全部 fail closed。producer lowering 与完整预期 output 集合证明仍未完成。Phase 1 的 E1 主线 RSS probe 有 opt-in 分阶段诊断模式；默认测量不启动 tracer，诊断模式不具备 E1 证据资格。主线 probe / 诊断 / 测试 / build 均未运行。
+- 当前开发顺序：先整合模块基础逻辑，再统一验收。P7 已有 non-runnable typed plan、只读绑定校验器、durable v4 admission / TrialLedger 写入协调与 ADR-0074 本机有限批次 operator 基础；六类组合算子仍全部 fail closed。producer lowering 与完整预期 output 集合证明仍未完成。Phase 1 的 E1 主线 RSS probe 有 opt-in 分阶段诊断模式；默认测量不启动 tracer，诊断模式不具备 E1 证据资格。主线代码线仍未运行正式 probe。
+- 2026-09-29 隔离候选 `codex/w1-independent-integration`：production Worker 在 PostgreSQL-backed Iceberg 下通过 result-fsync-before-ack 崩溃重启子标准；测试清理只触及显式拥有的表。`mypy tests`（404 files）与 `mypy apps infrastructure plugins research`（299 files）通过；改动测试切片最终为 969 passed / 1 deselected（3 个首轮失败节点修复后精确复跑通过）。v3 Dataset capacity probe 已扩展为完整 UTC 日并断言 selected row count 等于 N；目前仅有 200 行 smoke 通过。先前 1k/5k/10k 探针使用旧的一小时窗口且 10k 阶段超时，不能作为完整 Dataset 容量证据；DQ-9 与 E1-CAP-1 仍开放。候选尚未合入 main。
 - 决策权（2026-09-28 起）：Raphael 明确授权 Claude Code 以 PM 身份直接决定工程 / 架构 / 模块语义（记录于 PROJECT_STATUS §6 D-PM-AUTH）；不可逆或对外操作（实盘、密钥、删数据、push / 合并 main、安装软件）仍先告知 Raphael
 - ADR-0091（2026-09-28）：四类 Registry 的完整性审计必须只读且按既有格式诚实报告证据强度；Failure Registry 不提供历史防篡改证明。
 - ADR-0093（2026-09-29）：生产 Worker 由部署方显式受信 Runtime Factory 组合；host 单任务轮询，信号在当前任务结果/ack 后停止，重启交给 supervisor。
@@ -23,9 +24,7 @@
 ## 2. Current Architecture
 
 - 工程基线：Python 3.13 + uv；契约用 Pydantic 写在 `core/`，JSON Schema 导出到 `schemas/` 并随仓库提交
-- 契约版本 `CONTRACT_SCHEMA_VERSION = 2.0.0`：随 Phase 0 收口 fast-forward 合并进 `main` 并打 tag，
-  **视为已发布**（D-25）——此后任何破坏性契约变化都必须升 major 并走 ADR；尚无 v2 数据登记。
-  ADR-0052 §4 起为 **2.1.0**（minor）；ADR-0055 起为 **2.2.0**（minor，知识标签 / 资产；已合入 `main`）：持久化对象按记录版本重放，新增字段以 `_FIELDS_SINCE` 等声明引入版本（ADR-0052 / 0054 / 0057 / 0055）；当前版本新建对象的信封与哈希随 minor 变化，属预期
+- 契约版本从 Phase 0 已发布的 `2.0.0`（D-25）向前兼容演进：ADR-0052 §4 为 **2.1.0**、ADR-0055 为 **2.2.0**、ADR-0077 DQ-1 为 **2.3.0**、ADR-0088 为当前 **2.4.0**；破坏性变化仍须升 major 并走 ADR。持久化对象按记录版本重放，新增字段以 `_FIELDS_SINCE` 等声明引入版本，当前版本新建对象的信封与哈希随 minor 变化属预期
 - 模型只接受同 major；`1.x` 走 `core/compat/v1.py` 只读入口（`schemas/v1/` 35 份快照 + `tests/vectors/v1/`）；
   v1 与 v2 的 `content_hash` / `experiment_hash` 不可比较；读取 v1 不赋予任何 v2 登记 / 晋升资格
 - current Schema 135 份（契约 2.2.0；`a5836b2` 及以前为 2.1.0），与 `CONTRACT_MODELS` 一一对应；研究 Provider Protocol 0 个（ADR-0017 的决定，不是遗漏）；
