@@ -218,6 +218,7 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 | `canonical.bars_1m` | Canonical 1m bar revision，绑定 Raw lineage | identity `symbol` + `day(interval_start)` |
 | `canonical.instrument_listings` | listing episode revision（ADR-0024 §1 / §2） | 不分区 |
 | `quality.data_quality_reports` | 质量报告与质量事件 | 不分区 |
+| `quality.data_quality_report_manifests` | ADR-0093 bounded quality report 固定大小摘要与三条事件、修订引用、证据缺口流根；旧 report 表继续只读兼容 | 不分区 |
 | `research.dataset_manifests` | `ResearchDatasetManifest` 记录 | 不分区 |
 | `raw.binance_spot_rest_responses` | 一个 REST 响应页的 Raw source payload revision：规范页身份、响应字节对象引用、HTTP 元数据、页面解码摘要、revision 与两轴时间字段；空页、被 decoder 拒绝的完整页也是 revision（ADR-0027 §2） | 不分区 |
 | `raw.binance_spot_rest_agg_trades` | 从 REST 响应页解码的 aggTrade 元素 revision，绑定首个交付它的响应 revision | identity `symbol` + `day(event_time)` |
