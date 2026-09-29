@@ -71,6 +71,7 @@ __all__ = [
     "RunLimits",
     "RunObjectRef",
     "RunRef",
+    "RunSetBuilder",
     "RunWriteError",
     "iter_run",
     "merge_sorted_runs",
@@ -134,6 +135,133 @@ class RunLimits:
             raise RunWriteError(f"leaf_max_bytes must be greater than {_HEADER_RESERVE_BYTES}")
         if self.fanout < 2:
             raise RunWriteError("fanout must be at least 2")
+
+
+class _RunRefAccumulator:
+    """Online fanout-bounded compaction of sorted run refs into one sorted root."""
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        *,
+        key: Callable[[Mapping[str, Any]], Any],
+        merge_fanout: int,
+        limits: RunLimits,
+    ) -> None:
+        if isinstance(merge_fanout, bool) or not isinstance(merge_fanout, int) or merge_fanout < 2:
+            raise RunWriteError("merge_fanout must be at least 2")
+        self._storage = storage
+        self._key = key
+        self._merge_fanout = merge_fanout
+        self._limits = limits
+        self._levels: list[list[RunRef]] = []
+
+    def _merge(self, group: Sequence[RunRef]) -> RunRef:
+        if not 2 <= len(group) <= self._merge_fanout:
+            raise RunWriteError("a run merge group must be within the configured fanout")
+        with ExitStack() as stack:
+            iterators = [stack.enter_context(iter_run(self._storage, ref)) for ref in group]
+            return write_sorted_run(
+                self._storage, heapq.merge(*iterators, key=self._key), self._limits
+            )
+
+    def add(self, ref: RunRef) -> None:
+        self._add(ref, 0)
+
+    def _add(self, ref: RunRef, level: int) -> None:
+        while len(self._levels) <= level:
+            self._levels.append([])
+        bucket = self._levels[level]
+        bucket.append(ref)
+        if len(bucket) == self._merge_fanout:
+            group = list(bucket)
+            bucket.clear()
+            self._add(self._merge(group), level + 1)
+
+    def finish(self) -> RunRef | None:
+        while True:
+            nonempty = [i for i, bucket in enumerate(self._levels) if bucket]
+            count = sum(len(self._levels[i]) for i in nonempty)
+            if count == 0:
+                return None
+            if count == 1:
+                root = self._levels[nonempty[0]][0]
+                self._levels.clear()
+                return root
+            level = nonempty[0]
+            group = list(self._levels[level])
+            self._levels[level].clear()
+            carried = group[0] if len(group) == 1 else self._merge(group)
+            self._add(carried, level + 1)
+
+
+class RunSetBuilder:
+    """Build one globally sorted run using a fixed row buffer and hierarchical run refs.
+
+    Completed capacity-sized batches are sorted and immediately folded into a fanout-bounded
+    hierarchy. Intermediate objects are content-addressed and intentionally remain orphaned if a
+    later operation fails; this helper never deletes published data (ADR-0077 §9).
+    """
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        *,
+        key: Callable[[Mapping[str, Any]], Any],
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+    ) -> None:
+        if isinstance(capacity, bool) or not isinstance(capacity, int) or capacity <= 0:
+            raise RunWriteError("capacity must be a positive integer")
+        self._storage = storage
+        self._key = key
+        self._capacity = capacity
+        self._limits = limits
+        self._refs = _RunRefAccumulator(storage, key=key, merge_fanout=merge_fanout, limits=limits)
+        self._rows: list[Mapping[str, Any]] = []
+        self._finished = False
+        self._closed = False
+
+    def __enter__(self) -> RunSetBuilder:
+        if self._closed or self._finished:
+            raise RunWriteError("a finished or closed run set cannot be reopened")
+        return self
+
+    def __exit__(self, *exc_info: object) -> None:
+        if exc_info[0] is not None or not self._finished:
+            self.close()
+
+    def close(self) -> None:
+        """Release in-memory buffers; published run objects remain content-addressed orphans."""
+        self._rows.clear()
+        self._refs._levels.clear()
+        self._closed = True
+
+    def add(self, row: Mapping[str, Any]) -> None:
+        if self._finished or self._closed:
+            raise RunWriteError("cannot add to a finished or closed run set")
+        self._rows.append(row)
+        if len(self._rows) >= self._capacity:
+            self._flush()
+
+    def extend(self, rows: Iterable[Mapping[str, Any]]) -> None:
+        for row in rows:
+            self.add(row)
+
+    def _flush(self) -> None:
+        if not self._rows:
+            return
+        self._rows.sort(key=self._key)
+        self._refs.add(write_sorted_run(self._storage, self._rows, self._limits))
+        self._rows.clear()
+
+    def finish(self) -> RunRef | None:
+        if self._finished or self._closed:
+            raise RunWriteError("run set finish may only be called once before close")
+        self._flush()
+        self._finished = True
+        return self._refs.finish()
 
 
 def run_object_key(sha256: str) -> str:
@@ -522,7 +650,7 @@ def merge_sorted_runs(
     key: Callable[[Mapping[str, Any]], Any],
     merge_fanout: int,
     limits: RunLimits,
-) -> "_MergeContext":
+) -> _MergeContext:
     """A bounded k-way merge of ``refs`` into one ordered stream (ADR-0077 §6.1.2 / §6.1.3).
 
     At most ``merge_fanout`` run readers are ever open at once. When ``len(refs) >

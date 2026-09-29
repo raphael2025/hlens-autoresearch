@@ -60,6 +60,7 @@ from infrastructure.dataset.builder import (
     PitSelectedRevision,
 )
 from infrastructure.dataset.evidence import publish_evidence_object
+from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PIT_BINDING
 from infrastructure.quality.listing_report import ListingQualityReporter
 from infrastructure.quality.reporter import QualityReporter
@@ -69,6 +70,7 @@ from infrastructure.revision.store import RevisionCatalog
 from infrastructure.settings import local_file_uri_to_path
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseBuilder
+from infrastructure.universe.run_params import UniverseRunParams
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.catalog.catalog_support import (
     PostgresCatalogHarness,
@@ -88,6 +90,11 @@ from tests.infrastructure.revision.rest_store_support import (
 
 ORIGIN: Final = xs.ORIGIN
 REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
+UNIVERSE_RUN_PARAMS: Final = UniverseRunParams(
+    capacity=2,
+    merge_fanout=3,
+    limits=RunLimits(leaf_max_records=8, leaf_max_bytes=4096, fanout=3),
+)
 
 #: Listing observations (exchangeInfo retrieved_at) before the market data of 2023-11-14.
 L1: Final = utc(2023, 11, 10)
@@ -489,9 +496,7 @@ def v3_episode(symbol: str) -> DegradedEpisodeKey:
     )
 
 
-def v3_member(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseMember:
+def v3_member(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseMember:
     return UniverseMember(
         episode=v3_episode(symbol),
         listing_revision_id=revision,
@@ -500,9 +505,7 @@ def v3_member(
     )
 
 
-def v3_exclusion(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseExclusion:
+def v3_exclusion(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseExclusion:
     return UniverseExclusion(
         episode=v3_episode(symbol),
         listing_revision_id=revision,

@@ -44,7 +44,6 @@ from infrastructure.dataset.builder import (
     DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
     DatasetEvidenceSources,
-    DatasetSpecError,
     PinnedQualityEvidence,
     dataset_evidence_rule,
 )
@@ -62,6 +61,7 @@ from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import EvidenceGap, PitBoundedRecord, PitRunParams, PitSelector
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
+from infrastructure.universe.run_params import UniverseRunParams as SharedUniverseRunParams
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.dataset import dataset_support as ds
 from tests.infrastructure.dataset.dataset_support import END, L1, SIM, START, World
@@ -176,9 +176,7 @@ def _v3_build(
     )
     manifests = verifier.store()
 
-    summary = b.build(
-        request, sources=sources_factory(request), chunks=chunks, manifests=manifests
-    )
+    summary = b.build(request, sources=sources_factory(request), chunks=chunks, manifests=manifests)
 
     both = ManifestStore(w.h.adapter, w.builder(), evidence_verifier=verifier)
     assert both.load_any(summary.manifest_hash) == summary.manifest
@@ -244,7 +242,7 @@ def test_v3_build_over_the_real_upstreams_selects_what_v2_selects(w: World, worl
 
 def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> None:
     spec = _interval_world(w)  # three listing revisions over two symbols
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec)
+    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS)
     with cursor.listing_lineage() as raw_lineage, cursor.evidence_gaps() as raw_gaps:
         generated, generated_gaps = list(raw_lineage), list(raw_gaps)
     source = OrderedUniverseSource(cursor, storage=w.h.storage, params=UNIVERSE_PARAMS)
@@ -320,7 +318,7 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
     request = _request(spec)
     sources = DatasetEvidenceSources(
         universe=OrderedUniverseSource(
-            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec),
+            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=UNIVERSE_PARAMS),
             storage=w.h.storage,
             params=UNIVERSE_PARAMS,
         ),
@@ -452,6 +450,7 @@ def test_malformed_universe_items_fail_closed(evidence_store: LocalFileStorageAd
 
 
 def test_universe_run_params_are_required_and_checked() -> None:
+    assert UniverseRunParams is SharedUniverseRunParams
     parameters = inspect.signature(UniverseRunParams).parameters.values()
     assert {item.name for item in parameters} == {"capacity", "merge_fanout", "limits"}
     assert all(item.default is inspect.Parameter.empty for item in parameters)
@@ -467,7 +466,7 @@ def test_universe_run_params_are_required_and_checked() -> None:
             "limits": RUN_LIMITS,
             **bad,
         }
-        with pytest.raises(DatasetSpecError):
+        with pytest.raises(ValueError):
             UniverseRunParams(**fields)
 
 
@@ -541,7 +540,9 @@ ABSENT = PointInTimeStatus.ABSENT
 
 def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
     records = [
-        _record("k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT),
+        _record(
+            "k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT
+        ),
         _record("k1", ABSENT, at=H0.replace(hour=6), owner=T0),
         _record("k1", SELECTED, "r2", at=H0.replace(hour=12), owner=T0, event_time=T1),
         _record("k2", SELECTED, "r3", at=H0, owner=T2, event_time=T2, lineage=True),
@@ -613,9 +614,7 @@ def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) ->
         ),
     ],
 )
-def test_malformed_pit_streams_fail_closed(
-    records: list[PitBoundedRecord], match: str
-) -> None:
+def test_malformed_pit_streams_fail_closed(records: list[PitBoundedRecord], match: str) -> None:
     with pytest.raises(CatalogIntegrityError, match=match):
         list(pit_key_groups(records, knowledge_cutoff=SIM))
 

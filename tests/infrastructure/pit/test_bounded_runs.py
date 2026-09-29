@@ -8,18 +8,23 @@ overflow spill. No PIT selection logic is involved here (see ``test_selector_v3.
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
+from typing import Any
 
 import pytest
 
+from infrastructure.pit import runs as runs_module
 from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunIntegrityError,
     RunLimits,
     RunObjectRef,
     RunRef,
+    RunSetBuilder,
     RunWriteError,
     iter_run,
     merge_sorted_runs,
@@ -43,7 +48,7 @@ def _storage(tmp_path: Path) -> LocalFileStorageAdapter:
     return LocalFileStorageAdapter(warehouse.as_uri(), staging.as_uri())
 
 
-def _row(i: int, key: str = "k") -> dict[str, object]:
+def _row(i: int, key: str = "k") -> dict[str, Any]:
     return {
         "observation_key": key,
         "revision_id": f"{key}-{i:04d}",
@@ -57,11 +62,11 @@ def _row(i: int, key: str = "k") -> dict[str, object]:
     }
 
 
-def _rows(n: int, *, key: str = "k") -> list[dict[str, object]]:
+def _rows(n: int, *, key: str = "k") -> list[dict[str, Any]]:
     return [_row(i, key) for i in range(n)]
 
 
-def _collect(storage: LocalFileStorageAdapter, ref: RunRef) -> list[dict[str, object]]:
+def _collect(storage: LocalFileStorageAdapter, ref: RunRef) -> list[Mapping[str, Any]]:
     with iter_run(storage, ref) as rows:
         return list(rows)
 
@@ -184,7 +189,7 @@ def test_a_record_count_claim_that_does_not_match_the_root_is_refused(tmp_path: 
 # =============================================================================================
 
 
-def _key(row: dict[str, object]) -> tuple[object, object]:
+def _key(row: Mapping[str, Any]) -> tuple[object, object]:
     return (row["observation_key"], row["revision_id"])
 
 
@@ -199,9 +204,7 @@ def test_spill_bounds_batch_size_and_merge_reconstructs_global_order(tmp_path: P
     assert len(refs) == 3  # ceil(12 / 5)
     for ref in refs:
         assert ref.record_count <= 5
-    with merge_sorted_runs(
-        storage, refs, key=_key, merge_fanout=2, limits=_GENEROUS
-    ) as merged:
+    with merge_sorted_runs(storage, refs, key=_key, merge_fanout=2, limits=_GENEROUS) as merged:
         got = list(merged)
     assert got == sorted(rows, key=_key)
 
@@ -209,13 +212,91 @@ def test_spill_bounds_batch_size_and_merge_reconstructs_global_order(tmp_path: P
 def test_merge_with_more_runs_than_fanout_does_a_multi_pass_reduction(tmp_path: Path) -> None:
     storage = _storage(tmp_path)
     rows = _rows(20)
-    refs = list(
-        spill_sorted_runs(rows, key=_key, capacity=1, storage=storage, limits=_GENEROUS)
-    )
+    refs = list(spill_sorted_runs(rows, key=_key, capacity=1, storage=storage, limits=_GENEROUS))
     assert len(refs) == 20  # one row per run: forces several reduction passes at fanout=3
     with merge_sorted_runs(storage, refs, key=_key, merge_fanout=3, limits=_TIGHT) as merged:
         got = list(merged)
     assert got == sorted(rows, key=_key)
+
+
+def test_run_set_builder_keeps_refs_hierarchical_and_readers_within_fanout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _storage(tmp_path)
+    fanout = 3
+    builder = RunSetBuilder(storage, key=_key, capacity=1, merge_fanout=fanout, limits=_TIGHT)
+    pending_counts: list[int] = []
+    rows = [_row(i) for i in range(100)]
+
+    active_iterators = 0
+    maximum_iterators = 0
+    original_iter_run = runs_module.iter_run
+
+    @contextmanager
+    def counted_iter_run(run_storage: Any, ref: RunRef) -> Iterator[Iterator[Mapping[str, Any]]]:
+        nonlocal active_iterators, maximum_iterators
+        active_iterators += 1
+        maximum_iterators = max(maximum_iterators, active_iterators)
+        try:
+            with original_iter_run(run_storage, ref) as records:
+                yield records
+        finally:
+            active_iterators -= 1
+
+    monkeypatch.setattr(runs_module, "iter_run", counted_iter_run)
+    for row in rows:
+        builder.add(row)
+        pending_counts.append(sum(len(level) for level in builder._refs._levels))
+
+    # At 100 one-row batches, retaining one RunRef per batch would mean 100 refs. The online
+    # accumulator instead retains only a fanout-bounded number at each logarithmic tree level.
+    assert max(pending_counts) < len(rows)
+    assert len(builder._refs._levels) <= 1 + len(rows).bit_length()
+
+    root = builder.finish()
+    assert root is not None
+    assert root.record_count == len(rows)
+    assert root.depth > 1
+    with iter_run(storage, root) as merged:
+        assert list(merged) == sorted(rows, key=_key)
+    assert maximum_iterators == fanout
+
+
+def test_run_set_builder_releases_buffers_after_storage_write_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _storage(tmp_path)
+    builder = RunSetBuilder(storage, key=_key, capacity=1, merge_fanout=2, limits=_GENEROUS)
+
+    def fail_stage(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("injected stage failure")
+
+    monkeypatch.setattr(storage, "stage", fail_stage)
+    with pytest.raises(OSError, match="injected stage failure"):
+        with builder:
+            builder.add(_row(0))
+    assert builder._closed
+    assert not builder._rows
+    assert all(not level for level in builder._refs._levels)
+
+
+def test_run_set_builder_releases_refs_after_storage_read_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _storage(tmp_path)
+    builder = RunSetBuilder(storage, key=_key, capacity=1, merge_fanout=2, limits=_GENEROUS)
+    builder.add(_row(0))  # creates the first sorted run before injecting a merge-read failure
+
+    def fail_read(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("injected read failure")
+
+    monkeypatch.setattr(storage, "open_read", fail_read)
+    with pytest.raises(OSError, match="injected read failure"):
+        with builder:
+            builder.add(_row(1))  # second ref triggers the fanout=2 merge
+    assert builder._closed
+    assert not builder._rows
+    assert all(not level for level in builder._refs._levels)
 
 
 def test_merge_of_no_runs_yields_nothing(tmp_path: Path) -> None:
