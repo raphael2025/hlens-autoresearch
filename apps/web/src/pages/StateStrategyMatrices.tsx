@@ -5,9 +5,9 @@ import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 import {
   asMatrixPayload,
+  heatmapChartOption,
   heatmapGrid,
   matrixLabel,
-  METRICS,
   stateLabel,
   totalSamples,
 } from "../lib/stateStrategyMatrix";
@@ -27,44 +27,7 @@ function MatrixDetail({ envelope }: { envelope: ReportEnvelope }) {
   useEffect(() => {
     if (chartRef.current === null || matrix === null || matrix.cells.length === 0) return;
     const chart = echarts.init(chartRef.current);
-    const categories = matrix.cells.map((cell) => stateLabel(cell.state));
-    const data: [number, number, number | null][] = [];
-    METRICS.forEach((_metric, row) => {
-      grid.normalized[row].forEach((value, col) => {
-        data.push([col, row, value]);
-      });
-    });
-    chart.setOption({
-      tooltip: {
-        position: "top",
-        formatter: (params: { value: [number, number, number | null] }) => {
-          const [col, row] = params.value;
-          const raw = grid.raw[row][col];
-          return `${categories[col]} · ${METRICS[row].label}: ${raw ?? "—"}`;
-        },
-      },
-      grid: { left: 90, right: 24, top: 16, bottom: 48 },
-      xAxis: { type: "category", data: categories, splitArea: { show: true } },
-      yAxis: { type: "category", data: METRICS.map((m) => m.label), splitArea: { show: true } },
-      visualMap: {
-        min: 0,
-        max: 1,
-        calculable: false,
-        orient: "horizontal",
-        left: "center",
-        bottom: 0,
-        text: ["high (row-relative)", "low"],
-        inRange: { color: ["#f0f4ff", "#1d4ed8"] },
-      },
-      series: [
-        {
-          type: "heatmap",
-          data,
-          label: { show: false },
-          emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "rgba(0,0,0,0.3)" } },
-        },
-      ],
-    });
+    chart.setOption(heatmapChartOption(matrix, grid));
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
     return () => {

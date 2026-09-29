@@ -316,7 +316,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-29 | W5 Knowledge Base 独立验收切片 | 检索、审阅路径 `103 passed`；精确 `schema_version == 2.1.0` 守卫随隔离集成候选回归通过。具名人工 tags/assets 审阅及 4 条后增 seed golden 仍未完成；单独排期，不阻塞其他工作。 |
 | 2026-09-29 | W2 本机 API、Worker 与存储恢复 | Uvicorn loopback、allowlist JSON 日志、敏感 query 不落日志、SIGTERM/SIGINT 优雅停止：API runtime `25 passed`；Worker 跨进程恢复 `30 passed, 0 skipped`。Registry/Admission/Catalog/State/Event 切片 `181 passed`，SQLite Catalog/warehouse 重开 `1 passed`。State reopen `28 passed`、Event Iceberg 文件排除 registry 未分类节点后 `29 passed, 1 deselected`；均只验证同进程 SQLite adapter reconnect。Worker 无独立进程入口；PostgreSQL + Iceberg 联合恢复仍待验。 |
 | 2026-09-29 | W6/W7 独立验收 | State `44 passed`；Event/Outcome `203 passed, 1 failed`（registry count 15-vs-17，历史轮次未知，未重跑）。P7 一处文案断言修复后精确节点通过；P8 selected slice `148 passed`。无 Phase 验收，Profile 未冻结，Provider/Runner 仍关闭。 |
-| 2026-09-29 | W10 Web 独立验收切片 | Web production build / components `120 passed`；library `110 passed, 1 failed`，retro-audit fixture 节点两轮失败后延期。依赖修复候选 audit 为 0，集成分支 clean install/build 通过；ECharts 6 独立复核未发现 API 不兼容；手写 options 的 SSR smoke 产出五个 SVG（非页面接线证据），浏览器视觉与交互仍待验。 |
+| 2026-09-29 | W10 Web 独立验收切片 | Web production build / components `120 passed`；library `110 passed, 1 failed`，retro-audit fixture 节点两轮失败后延期。依赖修复候选 audit 为 0，集成分支 clean install/build 通过；fixture-backed SSR test 由页面实际使用的五个图表 option builder 渲染五张 SVG（`1/1`），独立 review 无 P1/P2，页面接线已验证；浏览器 Canvas / resize / 视觉与交互仍待验。 |
 
 ## 10. 下一阶段进入条件
 
