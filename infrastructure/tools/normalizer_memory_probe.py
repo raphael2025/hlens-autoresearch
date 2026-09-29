@@ -17,8 +17,10 @@ with that checkout as its working directory and reports the path of the normaliz
 imported; a path outside the checkout aborts the run). The output records ``git HEAD``, the local
 ``main`` ref, and whether ``core/``, ``infrastructure/`` (except this file), ``plugins/``,
 ``pyproject.toml`` or
-``uv.lock`` differ from ``main`` or are dirty. Only when they do not is ``code_line.matches_main``
-true; otherwise the result is labelled as **not** a main measurement.
+``uv.lock`` differ from ``main`` or are dirty. The probe's own SHA-256 and clean/dirty state
+relative to ``HEAD`` are recorded separately, and an uncommitted probe cannot satisfy
+``e1_cap1_evidence``. Only when the compared production paths match ``main`` is
+``code_line.matches_main`` true.
 
 The earlier candidate numbers (``resume`` 59.9 MiB / ``replay`` 63.9 MiB cross-scale growth at
 500k) came from the candidate probe on ``fix/e1-cap1@a75278e`` — a different normalizer (spooled
@@ -157,6 +159,7 @@ import math
 import os
 import platform
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -171,7 +174,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Final, cast
+from typing import Any, Final, NoReturn, cast
 
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThanOrEqual
@@ -293,6 +296,40 @@ class ProbeError(Exception):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.details = details or {}
+
+
+class ProbeInterrupted(Exception):
+    """A parent-process interruption that must never be reported as an RSS verdict."""
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = str(signum)
+        super().__init__(f"probe interrupted by {name}")
+
+
+@contextmanager
+def _parent_interrupt_handlers() -> Iterator[None]:
+    """Turn parent SIGINT/SIGTERM into catchable interruptions while children are active."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous: dict[int, Any] = {}
+
+    def interrupt(signum: int, _frame: Any) -> NoReturn:
+        raise ProbeInterrupted(signum)
+
+    signals = (signal.SIGINT, signal.SIGTERM)
+    try:
+        for signum in signals:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, interrupt)
+        yield
+    finally:
+        for previous_signum, handler in previous.items():
+            signal.signal(previous_signum, handler)
 
 
 class _ProbeCrash(Exception):
@@ -1083,9 +1120,27 @@ def _run_child(
             time.sleep(interval)
 
     sampler = threading.Thread(target=sample, daemon=True)
-    sampler.start()
-    stdout, stderr = process.communicate()
-    sampler.join()
+    try:
+        sampler.start()
+        stdout, stderr = process.communicate()
+        sampler.join()
+    except BaseException:
+        # SIGINT/SIGTERM and KeyboardInterrupt must not orphan the active measurement child.
+        try:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
+            pass
+        try:
+            process.communicate()
+        except BaseException:
+            try:
+                process.wait()
+            except BaseException:
+                pass
+        if sampler.ident is not None:
+            sampler.join()
+        raise
     events: list[dict[str, Any]] = []
     for line in stdout.splitlines():
         if line.startswith(_EVENT_PREFIX):
@@ -1301,6 +1356,19 @@ def _git(*args: str) -> str | None:
     return done.stdout.strip() if done.returncode == 0 else None
 
 
+def _probe_identity(sha256: str | None, status: str | None) -> dict[str, Any]:
+    """Describe this probe source and whether the working file differs from ``HEAD``."""
+    relative_to_head = (
+        "unknown" if sha256 is None or status is None else ("dirty" if status else "clean")
+    )
+    return {
+        "path": _SELF,
+        "sha256": sha256,
+        "relative_to_head": relative_to_head,
+        "matches_head": relative_to_head == "clean",
+    }
+
+
 def _code_line() -> dict[str, Any]:
     """Whether the imported production code is the local ``main`` code line (this file aside)."""
     pathspec = ["--", *_CODE_PATHS, f":(exclude){_SELF}"]
@@ -1308,8 +1376,10 @@ def _code_line() -> dict[str, Any]:
     main_ref = _git("rev-parse", "--verify", "--quiet", "refs/heads/main")
     diff = None if main_ref is None else _git("diff", "--name-only", main_ref, *pathspec)
     dirty = _git("status", "--porcelain", "--untracked-files=all", *pathspec)
+    probe_dirty = _git("status", "--porcelain", "--untracked-files=all", "--", _SELF)
     differing = None if diff is None else [line for line in diff.splitlines() if line]
     dirty_lines = None if dirty is None else [line for line in dirty.splitlines() if line]
+    probe = _probe_identity(_file_sha256(_ROOT / _SELF), probe_dirty)
     return {
         "root": str(_ROOT),
         "head": head,
@@ -1323,6 +1393,7 @@ def _code_line() -> dict[str, Any]:
         ),
         "compared_paths": list(_CODE_PATHS),
         "excluded": _SELF,
+        "probe_source": probe,
         "differs_from_main": differing,
         "dirty": dirty_lines,
         "matches_main": differing == [] and dirty_lines == [],
@@ -1456,6 +1527,7 @@ def run_probe(
         "sizes_include_10k_100k_500k": set(PROTOCOL_SIZES) <= set(sizes),
         "repeats_at_least_3": repeats >= PROTOCOL_MIN_REPEATS,
         "code_line_matches_main": code_line["matches_main"] is True,
+        "probe_matches_head": code_line["probe_source"]["matches_head"] is True,
         "staged_diagnostics_disabled": not staged_diagnostics,
     }
     document: dict[str, Any] = {
@@ -1508,6 +1580,7 @@ def run_probe(
         "protocol_conformance": conformance,
         "results": [],
         "setups": [],
+        "cleanup_warnings": [],
     }
     results: list[dict[str, Any]] = document["results"]
     rss_limit_kb = child_rss_limit_mib * 1024
@@ -1628,7 +1701,18 @@ def run_probe(
                         print(json.dumps(progress), file=sys.stderr, flush=True)
                 finally:
                     if not keep_workdirs:
-                        shutil.rmtree(workdir, ignore_errors=True)
+                        try:
+                            shutil.rmtree(workdir)
+                        except (ProbeInterrupted, KeyboardInterrupt):
+                            raise
+                        except Exception as cleanup_exc:  # noqa: BLE001 - report failed cleanup
+                            document["cleanup_warnings"].append(
+                                {
+                                    "workdir": str(workdir),
+                                    "type": type(cleanup_exc).__name__,
+                                    "message": str(cleanup_exc),
+                                }
+                            )
         verdicts = {
             stage: _stage_verdict(
                 [r for r in results if r["stage"] == stage], sizes, repeats, config["microbatch"]
@@ -1643,6 +1727,26 @@ def run_probe(
             document["dataset_v3_measurement"]["verdict"] = (
                 "PASS" if document["dataset_v3_verdict"]["pass"] else "FAIL"
             )
+    except (ProbeInterrupted, KeyboardInterrupt) as exc:
+        signum = exc.signum if isinstance(exc, ProbeInterrupted) else signal.SIGINT
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = str(signum)
+        document["status"] = "interrupted"
+        document["error"] = {
+            "type": "ProbeInterrupted",
+            "message": str(exc) or f"probe interrupted by {signal_name}",
+            "signal_number": signum,
+            "signal_name": signal_name,
+            "partial_stage_results": len(results),
+            "partial_dataset_results": len(document.get("dataset_v3_results", [])),
+        }
+        document["capacity_verdict"] = "ERROR"
+        document["e1_cap1_evidence"] = False
+        if dataset_v3_config is not None:
+            document["dataset_v3_measurement"]["status"] = "interrupted"
+        return document
     except Exception as exc:  # noqa: BLE001 - any failure is reported, never a verdict
         details = exc.details if isinstance(exc, ProbeError) else {}
         document["status"] = "error"
@@ -1677,6 +1781,8 @@ def run_probe(
 
 
 def _exit_status(document: dict[str, Any]) -> int:
+    if document["status"] == "interrupted":
+        return 128 + int(document.get("error", {}).get("signal_number", signal.SIGINT))
     if document["status"] != "complete":
         return 4
     if document["capacity_verdict"] != "PASS" or (
@@ -1797,20 +1903,21 @@ def main(argv: list[str] | None = None) -> int:
         parser.error(f"{args.base} is on {kind}: a warehouse there is memory")
     args.base.mkdir(parents=True, exist_ok=True)
     config = {"microbatch": args.microbatch, "d2_batch": args.d2_batch}
-    document = run_probe(
-        sorted(args.rows),
-        config,
-        base=args.base,
-        repeats=args.repeats,
-        runtime=args.runtime,
-        interval=args.interval,
-        child_timeout=args.child_timeout,
-        child_rss_limit_mib=args.child_rss_limit_mib,
-        samples_out=args.samples_out,
-        keep_workdirs=args.keep_workdirs,
-        staged_diagnostics=args.staged_diagnostics,
-        dataset_v3_config=dataset_v3_config,
-    )
+    with _parent_interrupt_handlers():
+        document = run_probe(
+            sorted(args.rows),
+            config,
+            base=args.base,
+            repeats=args.repeats,
+            runtime=args.runtime,
+            interval=args.interval,
+            child_timeout=args.child_timeout,
+            child_rss_limit_mib=args.child_rss_limit_mib,
+            samples_out=args.samples_out,
+            keep_workdirs=args.keep_workdirs,
+            staged_diagnostics=args.staged_diagnostics,
+            dataset_v3_config=dataset_v3_config,
+        )
     text = json.dumps(document, indent=2, default=str)
     if args.json_out is not None:
         args.json_out.write_text(text + "\n", encoding="utf-8")
