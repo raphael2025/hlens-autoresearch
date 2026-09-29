@@ -179,8 +179,9 @@ def manifest_items(value: object) -> tuple[RetryManifestItem, ...]:
         hypothesis_key = (item.name, item.version)
         if hypothesis_key in hypotheses:
             raise RetryAdmissionError(
-                f"retry manifest repeats {item.name}@{item.version}: one admission may retry a "
-                "hypothesis at most once (ADR-0083 PM decision 4)"
+                f"retry manifest repeats {item.name}@{item.version}: "
+                "hypothesis keys must be unique; "
+                "one admission may retry each hypothesis at most once (ADR-0083 PM decision 4)"
             )
         hypotheses.add(hypothesis_key)
         attempt = item.attempt
