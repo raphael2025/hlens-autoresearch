@@ -49,7 +49,9 @@ def _bars_dataset(w: World) -> DatasetBuilt:
 def _run(w: World, built: DatasetBuilt, manifest_hash: str, **spec: Any) -> FeatureResult:
     """Observations selected under the manifest's spec (or ``spec`` overrides), then F4."""
     pit = built.manifest.point_in_time.model_copy(update=spec)
-    selection = PitSelector(w.h.adapter, w.h.storage).select(pit, "klines_1m", SYMBOL, *DAY_WINDOW)
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(pit, "klines_1m", SYMBOL, *DAY_WINDOW)
     request = feature_request_from_dataset(
         w.h.adapter,
         w.h.storage,

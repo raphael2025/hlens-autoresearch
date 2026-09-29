@@ -35,6 +35,7 @@ import hashlib
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -281,12 +282,16 @@ class QualityReporter:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        canonical_scratch_directory: Path,
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._adapter = adapter
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         self._clock = clock or (lambda: datetime.now(UTC))
-        self._selector = PitSelector(adapter, storage)
+        self._selector = PitSelector(
+            adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+        )
 
     def report(
         self, data_type: str, symbol: str, day: date, *, existing_only: bool = False
@@ -392,7 +397,11 @@ class QualityReporter:
         partition = _Partition()
         gaps = _GapWriter(self._adapter, report_id, symbol, day, verify=verify)
         # One selector for every slice: it proves each unit and day once under these bindings.
-        self._selector = PitSelector(self._adapter, self._storage)
+        self._selector = PitSelector(
+            self._adapter,
+            self._storage,
+            canonical_scratch_directory=self._canonical_scratch_directory,
+        )
         canonical = rules.CANONICAL_TABLES[data_type].table
         start = datetime.combine(day, time(), tzinfo=UTC)
         step = _SLICES[data_type]

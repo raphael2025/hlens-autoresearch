@@ -17,6 +17,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _REPO_ROOT = Path(__file__).resolve().parents[1]
 _DEFAULT_WAREHOUSE_PATH = _REPO_ROOT / "data" / "warehouse"
+_DEFAULT_CANONICAL_SCRATCH_PATH = _REPO_ROOT / "data" / "scratch"
 _MNT_ROOT = Path("/mnt")
 
 
@@ -32,6 +33,18 @@ def default_staging_uri(data: dict[str, Any]) -> str:
         field_name="warehouse_uri",
     )
     return (warehouse_path / "staging").as_uri()
+
+
+def default_canonical_scratch_uri() -> str:
+    """Absolute file URI of repository-owned, persistent canonical scratch storage."""
+    return _DEFAULT_CANONICAL_SCRATCH_PATH.resolve().as_uri()
+
+
+def _reject_storage_path_overlap(scratch: Path, warehouse: Path, staging: Path) -> None:
+    for name, path in (("warehouse_uri", warehouse), ("staging_uri", staging)):
+        if scratch == path or scratch in path.parents or path in scratch.parents:
+            msg = f"canonical_scratch_uri must not overlap {name}"
+            raise ValueError(msg)
 
 
 def filesystem_device_id(path: Path) -> int:
@@ -105,6 +118,7 @@ class Settings(BaseSettings):
 
     warehouse_uri: str = Field(default_factory=default_warehouse_uri)
     staging_uri: str = Field(default_factory=default_staging_uri)
+    canonical_scratch_uri: str = Field(default_factory=default_canonical_scratch_uri)
     catalog_uri: SecretStr
     catalog_name: str = "hlens"
     http_connect_timeout_seconds: float = Field(default=10, gt=0)
@@ -161,6 +175,12 @@ class Settings(BaseSettings):
         local_file_uri_to_path(value, field_name="staging_uri")
         return value
 
+    @field_validator("canonical_scratch_uri", mode="after")
+    @classmethod
+    def _validate_canonical_scratch_uri(cls, value: str) -> str:
+        local_file_uri_to_path(value, field_name="canonical_scratch_uri")
+        return value
+
     @model_validator(mode="after")
     def _same_filesystem(self) -> Self:
         warehouse_path = local_file_uri_to_path(
@@ -171,7 +191,19 @@ class Settings(BaseSettings):
             self.staging_uri,
             field_name="staging_uri",
         )
+        scratch_path = local_file_uri_to_path(
+            self.canonical_scratch_uri,
+            field_name="canonical_scratch_uri",
+        )
         if filesystem_device_id(warehouse_path) != filesystem_device_id(staging_path):
             msg = "staging_uri and warehouse_uri must be on the same filesystem"
             raise ValueError(msg)
+        _reject_storage_path_overlap(scratch_path, warehouse_path, staging_path)
         return self
+
+    @property
+    def canonical_scratch_path(self) -> Path:
+        return local_file_uri_to_path(
+            self.canonical_scratch_uri,
+            field_name="canonical_scratch_uri",
+        )

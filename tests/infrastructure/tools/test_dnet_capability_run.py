@@ -110,6 +110,7 @@ def _ok_record(*, step: str, days: list[str], result: Any) -> dict[str, Any]:
 def test_every_step_runs_offline_and_stops_at_the_universe(
     world: tuple[PyIcebergCatalogAdapter, LocalFileStorageAdapter],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     adapter, storage = world
     monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
@@ -130,17 +131,32 @@ def test_every_step_runs_offline_and_stops_at_the_universe(
     assert not any(u["replayed"] for u in ingested["units"])
     assert all(u["maximal_heads"] == 1 for u in ingested["units"])
 
-    normalized = tool._normalize(adapter, storage, ingested)
+    normalized = tool._normalize(
+        adapter,
+        storage,
+        ingested,
+        canonical_scratch_directory=tmp_path / "canonical-scratch",
+    )
     assert [u["canonical_revisions"] for u in normalized["units"]] == [BARS, BARS]
 
-    reports = tool._report(adapter, storage, [DAY])["reports"]
+    reports = tool._report(
+        adapter,
+        storage,
+        [DAY],
+        canonical_scratch_directory=tmp_path / "canonical-scratch",
+    )["reports"]
     assert len(reports) == 2
     for report in reports:
         assert report["event_counts"]["bar_1m_gap"] == 1  # minutes 30 .. 1439 are missing
         assert "competing_heads" not in report["event_counts"]
         assert report["event_counts"]["evidence_gaps"] == 1
 
-    selections = tool._pit(adapter, storage, [DAY])["selections"]
+    selections = tool._pit(
+        adapter,
+        storage,
+        [DAY],
+        canonical_scratch_directory=tmp_path / "canonical-scratch",
+    )["selections"]
     by_bound = {(s["symbol"], s["adr_0032_bound"]): s for s in selections}
     for symbol in ("BTCUSDT", "ETHUSDT"):
         # Conservative (D-HIST): nothing is visible at the end of a day ingested later.
@@ -150,7 +166,13 @@ def test_every_step_runs_offline_and_stops_at_the_universe(
         assert by_bound[(symbol, True)]["assumed_revisions"] == BARS
         assert by_bound[(symbol, True)]["conflicts"] == 0
 
-    stopped = tool._f2("https://market-data.test", adapter, storage, [DAY])
+    stopped = tool._f2(
+        "https://market-data.test",
+        adapter,
+        storage,
+        [DAY],
+        canonical_scratch_directory=tmp_path / "canonical-scratch",
+    )
     assert stopped["outcome"] == "stopped"
     assert stopped["error_type"].endswith("UniverseSpecError")
     assert "canonical.instrument_listings" in stopped["tables_without_snapshot"]
@@ -160,7 +182,15 @@ def test_every_step_runs_offline_and_stops_at_the_universe(
     # Rerun = replay (08-deployment.md §6.2): nothing new is committed.
     again = tool._ingest(adapter, storage, collected)
     assert all(u["replayed"] for u in again["units"])
-    assert all(r["reused"] for r in tool._report(adapter, storage, [DAY])["reports"])
+    assert all(
+        r["reused"]
+        for r in tool._report(
+            adapter,
+            storage,
+            [DAY],
+            canonical_scratch_directory=tmp_path / "canonical-scratch",
+        )["reports"]
+    )
 
 
 def test_days_must_be_consecutive(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -254,6 +284,7 @@ def test_record_contains_code_revision_and_snapshot_heads(
 def test_f2_performs_no_network_call(
     world: tuple[PyIcebergCatalogAdapter, LocalFileStorageAdapter],
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     adapter, storage = world
     monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
@@ -264,8 +295,18 @@ def test_f2_performs_no_network_call(
         settings, storage, [DAY], http_transport=httpx.MockTransport(site.handler)
     )
     ingested = tool._ingest(adapter, storage, collected)
-    tool._normalize(adapter, storage, ingested)
-    tool._report(adapter, storage, [DAY])
+    tool._normalize(
+        adapter,
+        storage,
+        ingested,
+        canonical_scratch_directory=tmp_path / "canonical-scratch",
+    )
+    tool._report(
+        adapter,
+        storage,
+        [DAY],
+        canonical_scratch_directory=tmp_path / "canonical-scratch",
+    )
     archive_requests = len(site.requests)
 
     requests: list[object] = []
@@ -281,7 +322,13 @@ def test_f2_performs_no_network_call(
     monkeypatch.setattr(httpx.Client, "send", _reject_send)
     monkeypatch.setattr(httpx.HTTPTransport, "handle_request", _reject_handle)
 
-    stopped = tool._f2("https://market-data.test", adapter, storage, [DAY])
+    stopped = tool._f2(
+        "https://market-data.test",
+        adapter,
+        storage,
+        [DAY],
+        canonical_scratch_directory=tmp_path / "canonical-scratch",
+    )
     assert requests == []
     assert len(site.requests) == archive_requests  # f2 added none
     assert stopped["outcome"] == "stopped"

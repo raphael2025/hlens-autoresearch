@@ -52,6 +52,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final, overload
 
 from pyiceberg.expressions import (
@@ -117,6 +118,28 @@ _POSITION_INSERT_ROWS: Final = 2048
 _POSITION_INT: Final = struct.Struct(">q")
 
 
+def _prepare_scratch_directory(directory: Path) -> Path:
+    """Create and prove the configured persistent scratch root writable before catalog access."""
+    if not isinstance(directory, Path) or not directory.is_absolute():
+        raise CanonicalNormalizeError("canonical scratch directory must be an absolute Path")
+    try:
+        root = directory.resolve(strict=False)
+        root.mkdir(parents=True, exist_ok=True)
+        if not root.is_dir():
+            raise OSError("path is not a directory")
+        probe = root / f".hlens-scratch-check-{os.getpid()}-{os.urandom(8).hex()}"
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.close(fd)
+        finally:
+            probe.unlink(missing_ok=True)
+        return root
+    except OSError as exc:
+        raise CanonicalNormalizeError(
+            f"canonical scratch directory is not usable: {directory}"
+        ) from exc
+
+
 @contextmanager
 def _scan_rows(
     catalog: Any,
@@ -180,16 +203,28 @@ class CanonicalUnitIncomplete(CanonicalNormalizeError, CatalogIntegrityError):
 class _PositionIndex(Sequence[int]):
     """A sorted, disk-backed position sequence with bounded in-memory SQLite state."""
 
-    def __init__(self) -> None:
-        self._temporary = tempfile.TemporaryDirectory(prefix="hlens-positions-")
+    def __init__(self, scratch_directory: Path) -> None:
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="hlens-positions-", dir=str(scratch_directory)
+        )
         self._database_path = os.path.join(self._temporary.name, "positions.sqlite3")
         self._rank_path = os.path.join(self._temporary.name, "ranks.bin")
-        self._connection = sqlite3.connect(self._database_path)
-        self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
-        self._connection.execute("PRAGMA temp_store = FILE")
-        self._connection.execute("PRAGMA journal_mode = OFF")
-        self._connection.execute("PRAGMA synchronous = OFF")
-        self._connection.execute("CREATE TABLE positions (position INTEGER NOT NULL)")
+        try:
+            self._connection = sqlite3.connect(self._database_path)
+            self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
+            self._connection.execute("PRAGMA temp_store = FILE")
+            self._connection.execute("PRAGMA journal_mode = OFF")
+            self._connection.execute("PRAGMA synchronous = OFF")
+            self._connection.execute("CREATE TABLE positions (position INTEGER NOT NULL)")
+            # Keep ORDER BY inside the explicitly placed database. Without this index SQLite may
+            # put the sorter's temp B-tree in its process-default temp directory.
+            self._connection.execute("CREATE INDEX positions_position ON positions(position)")
+        except BaseException:
+            connection = getattr(self, "_connection", None)
+            if connection is not None:
+                connection.close()
+            self._temporary.cleanup()
+            raise
         self._size = 0
         self._fd: int | None = None
         self._closed = False
@@ -516,6 +551,7 @@ class CanonicalNormalizer:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        scratch_directory: Path,
         clock: Callable[[], datetime] | None = None,
         microbatch_rows: int = DEFAULT_MICROBATCH_ROWS,
     ) -> None:
@@ -527,6 +563,7 @@ class CanonicalNormalizer:
             )
         self._adapter = adapter
         self._storage = storage
+        self._scratch_directory = _prepare_scratch_directory(scratch_directory)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = microbatch_rows
         #: On a ``PinnedCatalogView`` nothing can change under the normalizer (it cannot write
@@ -1102,7 +1139,7 @@ class CanonicalNormalizer:
             row_filter=_equals(channel.lineage_column, source_revision_id),
         )
         offset = 0 if channel.name == "archive" else 1
-        index = _PositionIndex()
+        index = _PositionIndex(self._scratch_directory)
         symbol: str | None = None
         try:
             try:
@@ -1383,7 +1420,7 @@ class CanonicalNormalizer:
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
     ) -> _CommittedTimes:
         """Stream committed unit facts; retain only scalar summaries and a disk-sorted seq index."""
-        index = _PositionIndex()
+        index = _PositionIndex(self._scratch_directory)
         reader: Any | None = None
         count = 0
         seq_null = False
@@ -1714,6 +1751,7 @@ class CanonicalNormalizer:
             table,
             self._unit_filter(channel, source_revision_id),
             snapshot_id,
+            scratch_directory=self._scratch_directory,
         )
         try:
             block, block_count, block_null = _scan_integer_index(
@@ -1721,6 +1759,7 @@ class CanonicalNormalizer:
                 table,
                 _from("arrival_seq", base, base + rules.ARRIVAL_SEQ_STRIDE),
                 snapshot_id,
+                scratch_directory=self._scratch_directory,
             )
             try:
                 if not _same_index_numbers(seqs, seq_count, seq_null, expected) or not (
@@ -2004,9 +2043,11 @@ def _scan_integer_index(
     table: str,
     row_filter: BooleanExpression,
     snapshot_id: str | None,
+    *,
+    scratch_directory: Path,
 ) -> tuple[_PositionIndex, int, bool]:
     """Stream one arrival_seq column into a disk-sorted index at the requested snapshot."""
-    index = _PositionIndex()
+    index = _PositionIndex(scratch_directory)
     reader: Any | None = None
     count = 0
     has_null = False

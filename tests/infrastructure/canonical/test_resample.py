@@ -52,9 +52,9 @@ def _selection(h: RestHarness, items: list[list[Any]], **spec: Any) -> Any:
         c.ARCHIVE_KLINES.table, archive
     )
     bars_spec = _spec(h, cutoff=FAR, **spec)
-    return PitSelector(h.adapter, h.storage).select(
-        bars_spec, "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    return PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(bars_spec, "klines_1m", SYMBOL, DAY_START, DAY_END)
 
 
 def test_a_complete_five_minute_bar_aggregates_exactly(h: RestHarness) -> None:
@@ -109,9 +109,9 @@ def test_resampling_is_bit_identical_across_runs_and_catalogs(h: RestHarness) ->
 
 
 def _selection_again(h: RestHarness) -> Any:
-    return PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    return PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "klines_1m", SYMBOL, DAY_START, DAY_END)
 
 
 def test_the_window_bounds_which_minutes_count(h: RestHarness) -> None:
@@ -136,9 +136,9 @@ def test_an_interval_selection_is_refused(h: RestHarness) -> None:
         c.ARCHIVE_KLINES.table, archive
     )
     spec = _spec(h, cutoff=FAR, interval=(utc(2023, 11, 15), utc(2023, 12, 31)))
-    selection = PitSelector(h.adapter, h.storage).select(
-        spec, "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, DAY_START, DAY_END)
     with pytest.raises(ResampleError, match="interval selection"):
         resample_bars(selection, 5, DAY_START, DAY_END)
 
@@ -157,9 +157,9 @@ def test_conflicts_and_trade_selections_are_refused(h: RestHarness) -> None:
     c.normalizer(h, clock=StepClock(start=utc(2023, 12, 7))).normalize_unit(
         c.REST_KLINES.table, response
     )
-    selection = PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "klines_1m", SYMBOL, DAY_START, DAY_END)
     assert selection.conflicts
     with pytest.raises(ResampleError, match="competing heads"):
         resample_bars(selection, 5, DAY_START, DAY_END)
@@ -178,9 +178,9 @@ def test_a_bar_is_never_available_before_its_interval_ends(h: RestHarness) -> No
     c.normalizer(h, clock=StepClock(start=utc(2023, 12, 6))).normalize_unit(
         c.REST_KLINES.table, response
     )
-    selection = PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "klines_1m", SYMBOL, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "klines_1m", SYMBOL, DAY_START, DAY_END)
     [bar] = resample_bars(selection, 5, DAY_START, DAY_END)
     assert max(row["available_time"] for row in h.rows(c.BARS)) < bar.interval_end
     assert bar.available_time == bar.interval_end == utc(2023, 11, 14, 22, 20)

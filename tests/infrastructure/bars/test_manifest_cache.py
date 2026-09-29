@@ -415,6 +415,7 @@ def _recorded_load(w: World, manifest_hash: str) -> set[str]:
     builder = DatasetBuilder(
         recording,
         w.h.storage,
+        canonical_scratch_directory=w.h.canonical_scratch_directory,
         market_data_base_url=ds.ORIGIN,
         dataset_table=DATASET_SELECTIONS,
     )

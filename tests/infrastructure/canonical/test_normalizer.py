@@ -11,6 +11,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
 import pytest
@@ -24,6 +25,7 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
     CanonicalNormalizeConflict,
     CanonicalNormalizeError,
+    CanonicalNormalizer,
     CanonicalUnitIncomplete,
     unit_batch_id,
 )
@@ -957,8 +959,12 @@ def test_proof_windows_never_split_a_position_and_cover_all() -> None:
         ([None, 2, 3], [1, 2, 3], False),
     ],
 )
-def test_same_index_numbers(values: list[int | None], expected: list[int], ok: bool) -> None:
-    index = nz._PositionIndex()
+def test_same_index_numbers(
+    values: list[int | None], expected: list[int], ok: bool, tmp_path: Path
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    index = nz._PositionIndex(scratch)
     try:
         index.add_batch(value for value in values if value is not None)
         index.finalize()
@@ -970,6 +976,39 @@ def test_same_index_numbers(values: list[int | None], expected: list[int], ok: b
         )
     finally:
         index.close()
+
+
+def test_position_index_keeps_database_and_ordered_read_under_explicit_scratch(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    index = nz._PositionIndex(scratch)
+    child = Path(index._temporary.name)
+    try:
+        index.add_batch((9, 2, 5, 1))
+        plan = index._connection.execute(
+            "EXPLAIN QUERY PLAN SELECT position FROM positions ORDER BY position"
+        ).fetchone()
+        assert child.parent == scratch
+        assert sorted(path.name for path in child.iterdir()) == ["positions.sqlite3"]
+        assert plan is not None and "USING COVERING INDEX positions_position" in plan[3]
+        index.finalize()
+        assert sorted(path.name for path in child.iterdir()) == [
+            "positions.sqlite3",
+            "ranks.bin",
+        ]
+        assert list(index) == [1, 2, 5, 9]
+    finally:
+        index.close()
+    assert list(scratch.iterdir()) == []
+
+
+def test_normalizer_refuses_unusable_scratch_before_any_catalog_access(tmp_path: Path) -> None:
+    not_a_directory = tmp_path / "scratch-file"
+    not_a_directory.write_text("occupied", encoding="utf-8")
+    with pytest.raises(CanonicalNormalizeError, match="scratch directory is not usable"):
+        CanonicalNormalizer(object(), object(), scratch_directory=not_a_directory)  # type: ignore[arg-type]
 
 
 def test_batch_windows_are_rank_slices_of_the_positions() -> None:

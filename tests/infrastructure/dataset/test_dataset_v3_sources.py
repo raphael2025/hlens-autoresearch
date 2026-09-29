@@ -143,6 +143,7 @@ def _sources_factory(w: World) -> Any:
             w.h.adapter,
             w.h.storage,
             request,
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
@@ -257,7 +258,9 @@ def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> 
 
 def test_owner_and_event_times_are_the_canonical_rows_times(w: World) -> None:
     spec = _point_world(w)
-    selector = PitSelector(w.h.adapter, w.h.storage)
+    selector = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    )
     source = PitSelectorKeySource(selector, storage=w.h.storage, params=PIT_PARAMS)
     with source.keys(spec, "agg_trades", "BTCUSDT", SLICE_22, END) as groups:
         got = [(g.observation_key, g.owner_event_time, tuple(g.evaluations)) for g in groups]
@@ -323,10 +326,21 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
             params=UNIVERSE_PARAMS,
         ),
         pit=PitSelectorKeySource(
-            _KeysReversed(w.h.adapter, w.h.storage), storage=w.h.storage, params=PIT_PARAMS
+            _KeysReversed(
+                w.h.adapter,
+                w.h.storage,
+                canonical_scratch_directory=w.h.canonical_scratch_directory,
+            ),
+            storage=w.h.storage,
+            params=PIT_PARAMS,
         ),
         quality=PinnedQualityEvidence(
-            w.h.adapter, w.h.storage, spec, "agg_trades", market_data_base_url=ds.ORIGIN
+            w.h.adapter,
+            w.h.storage,
+            spec,
+            "agg_trades",
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
+            market_data_base_url=ds.ORIGIN,
         ),
     )
     chunks = ds.FakeChunkWriter()

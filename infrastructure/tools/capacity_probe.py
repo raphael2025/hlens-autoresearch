@@ -417,8 +417,14 @@ def _normalize(
     unit_revision_id: str,
     *,
     knowledge_clock: Callable[[], datetime],
+    canonical_scratch_directory: Path,
 ) -> CanonicalUnitNormalized:
-    normalizer = CanonicalNormalizer(adapter, storage, clock=knowledge_clock)
+    normalizer = CanonicalNormalizer(
+        adapter,
+        storage,
+        scratch_directory=canonical_scratch_directory,
+        clock=knowledge_clock,
+    )
     return normalizer.normalize_unit(source_table, unit_revision_id)
 
 
@@ -464,16 +470,29 @@ def _pit_spec(
 
 
 def _pit_select_one_hour(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
 ) -> PitSelection:
     spec = _pit_spec(adapter)
-    return PitSelector(adapter, storage).select(spec, DATA_TYPE, SYMBOL, _SELECT_START, _SELECT_END)
+    return PitSelector(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    ).select(spec, DATA_TYPE, SYMBOL, _SELECT_START, _SELECT_END)
 
 
 def _quality_report(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
 ) -> QualityReported:
-    reporter = QualityReporter(adapter, storage, clock=lambda: _KNOWLEDGE_REPORT)
+    reporter = QualityReporter(
+        adapter,
+        storage,
+        canonical_scratch_directory=canonical_scratch_directory,
+        clock=lambda: _KNOWLEDGE_REPORT,
+    )
     return reporter.report(DATA_TYPE, SYMBOL, DAY)
 
 
@@ -562,7 +581,11 @@ def _ingest_rest_tail(
 
 
 def _normalize_rest(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, stored: RestCollectionStored
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    stored: RestCollectionStored,
+    *,
+    canonical_scratch_directory: Path,
 ) -> CanonicalUnitNormalized:
     if len(stored.pages) != 1:
         raise RuntimeError(f"expected exactly one REST page, got {len(stored.pages)}")
@@ -573,6 +596,7 @@ def _normalize_rest(
         BINANCE_SPOT_REST_AGG_TRADES.table,
         page.response_revision_id,
         knowledge_clock=lambda: _KNOWLEDGE_REST_NORMALIZE,
+        canonical_scratch_directory=canonical_scratch_directory,
     )
 
 
@@ -638,19 +662,28 @@ def _prepare_listings(adapter: PyIcebergCatalogAdapter, storage: LocalFileStorag
 
 
 def _prepare_dataset_quality(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
 ) -> None:
     """Commit the BTCUSDT / ETHUSDT day reports and the listing report F3 must find already there.
 
     Fixture setup, not a measured stage: F3 (ADR-0031 / ADR-0023 §6) only ever *re-derives* a
     report at the dataset's bound snapshots (``existing_only``), it never writes one.
     """
-    QualityReporter(adapter, storage, clock=lambda: _KNOWLEDGE_QUALITY_BTC).report(
-        DATA_TYPE, SYMBOL, DAY
-    )
-    QualityReporter(adapter, storage, clock=lambda: _KNOWLEDGE_QUALITY_ETH).report(
-        DATA_TYPE, OTHER_SYMBOL, DAY
-    )
+    QualityReporter(
+        adapter,
+        storage,
+        canonical_scratch_directory=canonical_scratch_directory,
+        clock=lambda: _KNOWLEDGE_QUALITY_BTC,
+    ).report(DATA_TYPE, SYMBOL, DAY)
+    QualityReporter(
+        adapter,
+        storage,
+        canonical_scratch_directory=canonical_scratch_directory,
+        clock=lambda: _KNOWLEDGE_QUALITY_ETH,
+    ).report(DATA_TYPE, OTHER_SYMBOL, DAY)
     ListingQualityReporter(
         adapter, storage, market_data_base_url=REST_BASE, clock=lambda: _KNOWLEDGE_QUALITY_LISTING
     ).report()
@@ -685,10 +718,18 @@ def _build_universe(
 
 
 def _build_dataset(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, pit: PointInTimeSpec
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    pit: PointInTimeSpec,
+    *,
+    canonical_scratch_directory: Path,
 ) -> DatasetBuilt:
     builder = DatasetBuilder(
-        adapter, storage, market_data_base_url=REST_BASE, dataset_table=DATASET_SELECTIONS
+        adapter,
+        storage,
+        canonical_scratch_directory=canonical_scratch_directory,
+        market_data_base_url=REST_BASE,
+        dataset_table=DATASET_SELECTIONS,
     )
     return builder.build(FIRST_SLICE_UNIVERSE, pit, DATA_TYPE, _SELECT_START, _SELECT_END)
 
@@ -718,7 +759,11 @@ def _ingest_klines_archive(
 
 
 def _normalize_klines(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, archive_revision_id: str
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    archive_revision_id: str,
+    *,
+    canonical_scratch_directory: Path,
 ) -> CanonicalUnitNormalized:
     return _normalize(
         adapter,
@@ -726,18 +771,22 @@ def _normalize_klines(
         BINANCE_SPOT_KLINES_1M.table,
         archive_revision_id,
         knowledge_clock=lambda: _KNOWLEDGE_KLINES_NORMALIZE,
+        canonical_scratch_directory=canonical_scratch_directory,
     )
 
 
 def _run_bar_log_return(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
 ) -> FeatureResult:
     pit = _pit_spec(
         adapter, raw_table=BINANCE_SPOT_KLINES_1M.table, canonical_table=CANONICAL_BARS_1M.table
     )
-    selection = PitSelector(adapter, storage).select(
-        pit, KLINES_DATA_TYPE, SYMBOL, _DAY_START, _DAY_START + timedelta(days=1)
-    )
+    selection = PitSelector(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    ).select(pit, KLINES_DATA_TYPE, SYMBOL, _DAY_START, _DAY_START + timedelta(days=1))
     selection.require_no_conflict()
     observations = bar_observations(selection, pit)
     spec = BarLogReturnProvider.spec()
@@ -799,6 +848,7 @@ def run_probe(
     notes = list(_NOTES)
     with tempfile.TemporaryDirectory(prefix="hlens-capacity-probe-") as raw_tmp:
         with _harness(Path(raw_tmp)) as (adapter, storage):
+            canonical_scratch_directory = Path(raw_tmp) / "canonical-scratch"
             collected = _publish_archive(storage, _agg_trade_lines(rows))
 
             ingested, measurement = _measure(
@@ -822,13 +872,18 @@ def run_probe(
                     BINANCE_SPOT_AGG_TRADES.table,
                     ingested.archive_revision_id,
                     knowledge_clock=lambda: _KNOWLEDGE_NORMALIZE,
+                    canonical_scratch_directory=canonical_scratch_directory,
                 )
             )
             stages["normalize"] = measurement.as_dict() | {
                 "canonical_rows": normalized.revision_count,
             }
 
-            selection, measurement = _measure(lambda: _pit_select_one_hour(adapter, storage))
+            selection, measurement = _measure(
+                lambda: _pit_select_one_hour(
+                    adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+                )
+            )
             selected = sum(
                 1 for item in selection.selections if item.status is PointInTimeStatus.SELECTED
             )
@@ -839,7 +894,11 @@ def run_probe(
                 "keys_selected": selected,
             }
 
-            report, measurement = _measure(lambda: _quality_report(adapter, storage))
+            report, measurement = _measure(
+                lambda: _quality_report(
+                    adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+                )
+            )
             stages["quality_report_day"] = measurement.as_dict() | {
                 "event_count": len(report.row["events"]),
                 "reused": report.reused,
@@ -860,7 +919,12 @@ def run_probe(
                 }
 
                 normalized_rest, measurement = _measure(
-                    lambda: _normalize_rest(adapter, storage, stored)
+                    lambda: _normalize_rest(
+                        adapter,
+                        storage,
+                        stored,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )
                 )
                 stages["normalize_rest"] = measurement.as_dict() | {
                     "canonical_rows": normalized_rest.revision_count,
@@ -876,7 +940,9 @@ def run_probe(
 
             if dataset:
                 _prepare_listings(adapter, storage)  # fixture setup, not measured
-                _prepare_dataset_quality(adapter, storage)  # fixture setup, not measured
+                _prepare_dataset_quality(
+                    adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+                )  # fixture setup, not measured
                 pit = _dataset_pit_spec(adapter)
 
                 built_universe, measurement = _measure(
@@ -887,7 +953,14 @@ def run_probe(
                     "exclusion_count": len(built_universe.exclusions),
                 }
 
-                built_dataset, measurement = _measure(lambda: _build_dataset(adapter, storage, pit))
+                built_dataset, measurement = _measure(
+                    lambda: _build_dataset(
+                        adapter,
+                        storage,
+                        pit,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )
+                )
                 stages["dataset_build"] = measurement.as_dict() | {
                     "row_count": len(built_dataset.selection.rows),
                     "manifest_content_hash": built_dataset.manifest.content_hash(),
@@ -905,13 +978,24 @@ def run_probe(
                 }
 
                 normalized_klines, measurement = _measure(
-                    lambda: _normalize_klines(adapter, storage, ingested_klines.archive_revision_id)
+                    lambda: _normalize_klines(
+                        adapter,
+                        storage,
+                        ingested_klines.archive_revision_id,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )
                 )
                 stages["normalize_klines"] = measurement.as_dict() | {
                     "canonical_rows": normalized_klines.revision_count,
                 }
 
-                result, measurement = _measure(lambda: _run_bar_log_return(adapter, storage))
+                result, measurement = _measure(
+                    lambda: _run_bar_log_return(
+                        adapter,
+                        storage,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )
+                )
                 stages["feature_bar_log_return"] = measurement.as_dict() | {
                     "evaluation_count": len(result.values),
                     "non_null_count": sum(1 for item in result.values if item.value is not None),

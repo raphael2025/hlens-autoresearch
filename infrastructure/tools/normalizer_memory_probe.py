@@ -7,7 +7,8 @@
 This is an **operator diagnostic**, not a test: tests import only its pure validation helpers and
 never run a capacity experiment. It changes no production code or data: every
 catalog and warehouse it writes is a throwaway SQLite catalog + local ``file://`` warehouse under
-``--base``, deleted afterwards.
+``--base``, deleted afterwards. Each child obtains its Canonical position-index scratch Path from
+``Settings`` configured with ``HLENS_CANONICAL_SCRATCH_URI`` under the temporary run directory.
 
 Which code line it measures
 ===========================
@@ -176,6 +177,7 @@ from importlib import metadata
 from pathlib import Path
 from typing import Any, Final, NoReturn, cast
 
+from pydantic import SecretStr
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThanOrEqual
 
@@ -203,6 +205,7 @@ from infrastructure.pit.selector import PitRunParams
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
 from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
+from infrastructure.settings import Settings
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.tools.capacity_probe import (
     _KNOWLEDGE_INGEST,
@@ -330,6 +333,17 @@ def _parent_interrupt_handlers() -> Iterator[None]:
     finally:
         for previous_signum, handler in previous.items():
             signal.signal(previous_signum, handler)
+
+
+def _canonical_scratch_directory() -> Path:
+    try:
+        settings = Settings(  # type: ignore[call-arg]
+            catalog_uri=SecretStr("postgresql://probe@localhost/probe"),
+            _env_file=None,
+        )
+        return settings.canonical_scratch_path
+    except Exception as exc:  # noqa: BLE001 - malformed child configuration fails closed
+        raise ProbeError("child Settings must provide a valid canonical scratch directory") from exc
 
 
 class _ProbeCrash(Exception):
@@ -841,7 +855,13 @@ def _stage(
             raise ProbeError("write_crash needs a plan of at least two batches (N > M)")
         clock = _Clock(_KNOWLEDGE_NORMALIZE)
         proxy = _CrashAfter(adapter, crash_after)
-        writer = CanonicalNormalizer(proxy, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            proxy,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
 
         def write_crash() -> tuple[dict[str, Any], object]:
             try:
@@ -862,7 +882,13 @@ def _stage(
 
     if stage in ("resume", "replay"):
         clock = _Clock(_KNOWLEDGE_NORMALIZE + timedelta(hours=1))
-        writer = CanonicalNormalizer(adapter, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
         crash_after = _crash_after(rows, microbatch)
 
         def normalize() -> tuple[dict[str, Any], object]:
@@ -922,7 +948,10 @@ def _stage(
             raise ProbeError(f"no committed row inside batch {batch_id}")
         row = found_row
         reader = CanonicalNormalizer(
-            PinnedCatalogView(adapter, _heads(adapter)), storage, microbatch_rows=microbatch
+            PinnedCatalogView(adapter, _heads(adapter)),
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            microbatch_rows=microbatch,
         )
 
         def read_batch() -> tuple[dict[str, Any], object]:
@@ -1093,6 +1122,7 @@ def _run_child(
     env = {name: value for name, value in os.environ.items() if name not in RUNTIMES["controlled"]}
     env.update(RUNTIMES[runtime])
     env["TMPDIR"] = str(temp_dir.resolve())
+    env["HLENS_CANONICAL_SCRATCH_URI"] = (temp_dir / "canonical-scratch").resolve().as_uri()
     started = time.monotonic()
     process = subprocess.Popen(
         [sys.executable, "-m", PROBE, *args],
