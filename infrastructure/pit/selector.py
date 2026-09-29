@@ -69,6 +69,7 @@ from infrastructure.pit.assumption import (
     assumption_bound,
     effective_available_times,
 )
+from infrastructure.pit.graph_runs import PITGraphInvariantError, validate_pit_graph_runs
 from infrastructure.pit.precedence_runs import maximal_heads_from_runs
 from infrastructure.pit.runs import (
     KeyHistoryBuffer,
@@ -811,7 +812,55 @@ def _heads(
     *,
     run_storage: StorageAdapter | None = None,
     run_params: PitRunParams | None = None,
+    graph_validated: bool = False,
 ) -> tuple[str, ...]:
+    # Isolated research hook only. `_pit_bounded_stream` deliberately does not pass these
+    # parameters while the external edge/depth scan complexity is unmeasured and unresolved.
+    if run_storage is not None and run_params is not None:
+        if not graph_validated:
+            try:
+                validate_pit_graph_runs(
+                    run_storage,
+                    records,
+                    edges,
+                    cutoff=cutoff,
+                    capacity=run_params.edge_batch_rows,
+                    merge_fanout=run_params.merge_fanout,
+                    limits=run_params.limits,
+                )
+            except PITGraphInvariantError as exc:
+                raise CatalogIntegrityError(
+                    f"the Canonical revision graph is invalid: {exc}"
+                ) from None
+
+        def is_known(record: RevisionRecord) -> bool:
+            return record.availability.times.knowledge_time <= cutoff
+
+        bounded_candidates = (
+            item for item in records if is_known(item) and available[item.revision_id] <= at
+        )
+        candidate_edges = itertools.chain(
+            (
+                (record.revision_id, older)
+                for record in records
+                if is_known(record) and available[record.revision_id] <= at
+                for older in record.supersedes
+            ),
+            (
+                (item.revision_id, item.superseded_revision_id)
+                for item in edges
+                if item.knowledge_time <= cutoff
+            ),
+        )
+        return maximal_heads_from_runs(
+            run_storage,
+            (record.revision_id for record in bounded_candidates),
+            candidate_edges,
+            capacity=run_params.edge_batch_rows,
+            merge_fanout=run_params.merge_fanout,
+            limits=run_params.limits,
+        )
+
     known = [item for item in records if item.availability.times.knowledge_time <= cutoff]
     known_edges = [item for item in edges if item.knowledge_time <= cutoff]
     try:
@@ -821,19 +870,6 @@ def _heads(
     candidates = [item for item in known if available[item.revision_id] <= at]
     if not candidates:
         return ()
-    if run_storage is not None and run_params is not None:
-        traversed_edges = itertools.chain(
-            ((record.revision_id, older) for record in candidates for older in record.supersedes),
-            ((item.revision_id, item.superseded_revision_id) for item in known_edges),
-        )
-        return maximal_heads_from_runs(
-            run_storage,
-            (record.revision_id for record in candidates),
-            traversed_edges,
-            capacity=run_params.edge_batch_rows,
-            merge_fanout=run_params.merge_fanout,
-            limits=run_params.limits,
-        )
     # ``maximal_heads`` walks every known edge from every candidate, through any known (even
     # not-yet-available) revision: the heads are the candidates no candidate reaches.
     return tuple(sorted(maximal_heads(candidates, known_edges)))
@@ -1432,15 +1468,6 @@ def _pit_bounded_stream(
                     key_edges,
                     spec,
                     available,
-                    head_fn=lambda key_records, key_edges, at, cutoff, key_available: _heads(
-                        key_records,
-                        key_edges,
-                        at,
-                        cutoff,
-                        key_available,
-                        run_storage=storage,
-                        run_params=params,
-                    ),
                 ):
                     lineage_out: SelectedRevisionLineage | None = None
                     gap_out: EvidenceGap | None = None

@@ -76,7 +76,7 @@ def test_maximal_heads_spills_and_walks_dangling_multi_hop_nodes(
         assert maximum_pending <= capacity
 
 
-def test_iter_bounded_routes_heads_through_external_traversal(
+def test_iter_bounded_keeps_parity_without_unmeasured_external_traversal(
     h: RestHarness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _chain(h)
@@ -104,5 +104,5 @@ def test_iter_bounded_routes_heads_through_external_traversal(
     ) as actual_records:
         actual = [item.selection for item in actual_records]
 
-    assert calls > 0
+    assert calls == 0
     assert actual == list(expected.selections)
