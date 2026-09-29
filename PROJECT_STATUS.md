@@ -141,7 +141,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **E1-Q-STREAM（ARCHITECTURE_DECISION_REQUIRED）**：Quality `existing_only` 的 report `events` 当前是无界单行 `List<Struct>`，冻结行格式不能逐事件流式重放。推荐新增版本化的内容寻址事件流协议，保留旧 inline 报告只读兼容；还需决定失败验证时是否允许留下无引用 orphan。决策包：[Quality bounded replay](docs/reviews/2026-09-29-quality-existing-only-bounded-replay-decision.md)。该项不阻塞其它 Phase 1 模块。
 
-**E1-PIT-CONFLICT（ARCHITECTURE_DECISION_REQUIRED）**：PIT v3 bounded 路径的 `maximal_heads` 完整 tuple 在单次 evaluation 存在 O(N) 结果风险。推荐将完整 head 列表写入 bounded evidence stream，v2 tuple 路径不变；需确认新结果形态及报告绑定。决策包：[PIT conflict output](docs/reviews/2026-09-29-pit-bounded-conflict-output-decision.md)。单 key 内部无界图仍按 ADR-0077 继续修复，不等待该输出决策。
+**E1-PIT 单 key graph（实现中）**：ADR-0094 已决定 PIT v3 conflict heads 使用完整 content-addressed sorted run（含数量），v2 tuple / replay 不变。当前 selector 仍保留 O(N) `RevisionRecord`、edge graph 与 reachability 状态；替换图校验和 heads 计算、回归与 32 MiB 测量未完成，不能关闭 E1-CAP-1。决策记录：[PIT conflict output](docs/reviews/2026-09-29-pit-bounded-conflict-output-decision.md)。
 
 **代码补全轮次暴露的待 Raphael 决定（2026-09-28，PM 汇总；不决定时相应代码保持 fail closed）**
 
@@ -321,6 +321,7 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 | 2026-09-29 | Canonical scratch ownership 接入 | 接受的 D-E1-SCRATCH Option A 已在隔离候选分支贯通 Settings、normalizer、PIT、Dataset、Quality、tools 与测试；Settings + Canonical 测试 `148 passed`，PIT/Dataset 接线修复后 13 个失败节点复验通过。`test_a_v2_round_with_an_evidence_verifier_is_exactly_the_v2_round` 两轮出现 manifest/research hash 不一致，按两轮规则延期，根因未确认；E1-CAP-1 仍无容量证据。 |
 | 2026-09-29 | P1 row-integrity SQLite spool cleanup coverage | 在 `tests/infrastructure/revision/test_row_integrity.py` 新增两个独立回归：重复 batch 命中计数与 newest snapshot 选择、正常 close/unlink；以及历史遍历异常时关闭并删除 SQLite spool。`2 passed in 0.02s`，Ruff passed，未改生产代码；不改变 D3E/E1 验收状态。另核验 ADR-0081 `paper_deviation` / `retro_audit` 当前 fixture 与真实 writer 字节一致：`2 passed, 1 warning`；W10 Web 两轮延期的 `retroAudit.test.ts` 节点未重跑。 |
 | 2026-09-29 | W2 Worker 组合边界与 host | ADR-0093 Accepted：采用部署方受信 runtime factory，单进程、每次处理一个任务、空闲等待 1 秒，信号在当前任务结果/ack 后停止；重启交给 supervisor。Worker host / subprocess 定向回归 `28 passed`，Ruff、format、3-file mypy 及 docs consistency 通过；PostgreSQL + Iceberg 联合重启仍未关闭。 |
+| 2026-09-29 | E1 PIT conflict 输出形状 | ADR-0094 Accepted：保留 v2 tuple / replay；v3 conflict heads 全量写入有序、内容寻址 run，selection 仅保存 run 引用与数量。单 key O(N) 图状态和 E1 容量门仍开放。 |
 
 ## 10. 下一阶段进入条件
 

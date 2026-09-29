@@ -17,6 +17,7 @@
 - 决策权（2026-09-28 起）：Raphael 明确授权 Claude Code 以 PM 身份直接决定工程 / 架构 / 模块语义（记录于 PROJECT_STATUS §6 D-PM-AUTH）；不可逆或对外操作（实盘、密钥、删数据、push / 合并 main、安装软件）仍先告知 Raphael
 - ADR-0091（2026-09-28）：四类 Registry 的完整性审计必须只读且按既有格式诚实报告证据强度；Failure Registry 不提供历史防篡改证明。
 - ADR-0093（2026-09-29）：生产 Worker 由部署方显式受信 Runtime Factory 组合；host 单任务轮询，信号在当前任务结果/ack 后停止，重启交给 supervisor。
+- ADR-0094（2026-09-29）：PIT bounded v3 以 content-addressed sorted run 表达完整 conflict heads；v2 tuple 与 replay 不变，E1 容量门仍需单独通过。
 - 2026-09-28 底层代码补全轮次完成：契约升至 2.4.0（ADR-0077 / 0088，additive）；ADR-0076～0088 均 Accepted 并实现（ADR-0080 权威解析仍 BLOCKED）；全部代码未经测试，下一步为统一调试
 
 ## 2. Current Architecture
