@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import timedelta
+from importlib import import_module
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -19,7 +20,13 @@ from core.contracts.catalog import CommitOutcome
 from core.contracts.collector import SourceBinding
 from infrastructure.catalog import CatalogIntegrityError
 from infrastructure.parser import parse_archive
-from infrastructure.parser.binance_archive import PARSER_BINDING, ArchiveParseRequest
+from infrastructure.parser.binance_archive import (
+    PARSER_BINDING,
+    ArchiveParseRequest,
+    ArchiveRejection,
+    SpooledArchive,
+    parse_archive_spooled,
+)
 from infrastructure.revision import (
     ARCHIVE_TABLE,
     ROW_TABLES,
@@ -84,6 +91,97 @@ def test_first_ingest_writes_archive_then_rows(harness: StoreHarness) -> None:
     assert not result.replayed
     assert not result.has_competing_heads
     assert result.maximal_heads == (result.archive_revision_id,)
+
+
+@pytest.mark.parametrize(
+    ("row_count", "expected_batch_rows"),
+    [(1, [1]), (2, [2]), (3, [2, 1]), (4, [2, 2]), (5, [2, 2, 1])],
+)
+def test_spooled_ingest_obeys_microbatch_boundaries(
+    harness: StoreHarness, row_count: int, expected_batch_rows: list[int]
+) -> None:
+    item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=row_count))
+
+    result = _ingested(harness.store(microbatch_rows=2).ingest(item.collected, item.context))
+
+    assert [commit.row_count for commit in result.row_commits] == expected_batch_rows
+    assert harness.total_rows(AGG_TABLE) == row_count
+
+
+def test_spooled_ingest_rows_match_legacy_parsed_table_path(
+    harness: StoreHarness, tmp_path: Any
+) -> None:
+    item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=5))
+    spooled_result = _ingested(
+        harness.store(microbatch_rows=2).ingest(item.collected, item.context)
+    )
+    spooled_rows = _logical(harness.rows(AGG_TABLE, _ROW_COLUMNS))
+
+    with rs.store_harness(tmp_path / "legacy-table-ingest") as legacy:
+        legacy_item = rs.archive(
+            legacy.storage,
+            rows=ps.agg_rows(ps.US_DAY, count=5),
+            retrieved_at=item.collected.retrieved_at,
+        )
+        legacy_request = ArchiveParseRequest.for_collected_object(
+            legacy_item.collected,
+            data_type=legacy_item.context.data_type,
+            archive_revision_id=legacy.store().archive_revision_id(
+                legacy_item.collected, legacy_item.context
+            ),
+        )
+        legacy_parsed = parse_archive(legacy_request, legacy.storage)
+        assert not isinstance(legacy_parsed, ArchiveRejection)
+        legacy.store(microbatch_rows=2).ingest_parsed(
+            legacy_item.collected, legacy_item.context, legacy_parsed
+        )
+        legacy_rows = _logical(legacy.rows(AGG_TABLE, _ROW_COLUMNS))
+
+    assert [commit.row_count for commit in spooled_result.row_commits] == [2, 2, 1]
+    assert spooled_rows == legacy_rows
+
+
+def test_late_parser_rejection_writes_no_archive_or_rows(
+    harness: StoreHarness, monkeypatch: Any
+) -> None:
+    parser_module = import_module("infrastructure.parser.binance_archive")
+    monkeypatch.setattr(parser_module, "_CHUNK_ROWS", 2)
+    rows = ps.agg_rows(ps.US_DAY, count=3)
+    rows[-1] = "not,a,valid,aggTrade,row"
+    item = rs.archive(harness.storage, rows=rows)
+
+    outcome = harness.store(microbatch_rows=1).ingest(item.collected, item.context)
+
+    assert isinstance(outcome, ArchiveRejected)
+    assert harness.total_rows(ARCHIVE_TABLE) == 0
+    assert harness.total_rows(AGG_TABLE) == 0
+
+
+def test_spooled_archive_closes_when_row_commit_aborts(
+    harness: StoreHarness, monkeypatch: Any
+) -> None:
+    store_module = import_module("infrastructure.revision.store")
+    original_parse = parse_archive_spooled
+    parsed_spools: list[SpooledArchive] = []
+
+    def capture_spool(request: ArchiveParseRequest, storage: Any) -> Any:
+        outcome = original_parse(request, storage)
+        if isinstance(outcome, SpooledArchive):
+            parsed_spools.append(outcome)
+        return outcome
+
+    monkeypatch.setattr(store_module, "parse_archive_spooled", capture_spool)
+    item = rs.archive(harness.storage, rows=ps.agg_rows(ps.US_DAY, count=4))
+    crashing = _CrashAfter(harness.adapter, commits=2)  # archive + first row batch
+    store = RawRevisionStore(crashing, harness.storage, clock=harness.clock, microbatch_rows=2)
+
+    with pytest.raises(_Crash):
+        store.ingest(item.collected, item.context)
+
+    assert len(parsed_spools) == 1
+    assert parsed_spools[0]._spool.closed
+    assert harness.total_rows(ARCHIVE_TABLE) == 1
+    assert harness.total_rows(AGG_TABLE) == 2
 
 
 def test_batch_snapshot_lookup_spools_counts_and_closes(harness: StoreHarness) -> None:

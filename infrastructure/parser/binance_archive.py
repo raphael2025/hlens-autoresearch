@@ -29,7 +29,7 @@ import struct
 import tempfile
 import zipfile
 import zlib
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
@@ -57,6 +57,7 @@ __all__ = [
     "PARSER_VERSION",
     "ParseOutcome",
     "ParsedArchive",
+    "SpooledArchive",
     "ParserQualityEvent",
     "RejectionCode",
     "SUPPORTED_DATA_TYPES",
@@ -66,6 +67,7 @@ __all__ = [
     "archive_filename",
     "member_filename",
     "parse_archive",
+    "parse_archive_spooled",
     "parse_archive_bytes",
     "time_unit_for",
 ]
@@ -533,7 +535,206 @@ class ParsedArchive:
         return int(self.rows.num_rows)
 
 
+class ArchiveBatchCursor:
+    """Closeable sequential reader over a successfully validated archive's Arrow batches."""
+
+    def __init__(
+        self, owner: SpooledArchive, spool: _ArrowBatchSpool, reader: pa.ipc.RecordBatchFileReader
+    ) -> None:
+        self._owner = owner
+        self._spool = spool
+        self._reader: pa.ipc.RecordBatchFileReader | None = reader
+        self._closed = False
+        self._next_batch = 0
+
+    def __iter__(self) -> ArchiveBatchCursor:
+        return self
+
+    def __next__(self) -> pa.RecordBatch:
+        if self._closed:
+            raise StopIteration
+        reader = self._reader
+        assert reader is not None
+        if self._next_batch >= reader.num_record_batches:
+            self.close()
+            raise StopIteration
+        try:
+            batch = reader.get_batch(self._next_batch)
+            self._next_batch += 1
+            return batch
+        except BaseException:
+            self.close()
+            raise
+
+    def read_batch(self, index: int) -> pa.RecordBatch:
+        """Read one indexed parser batch without visiting earlier batches."""
+        if self._closed:
+            raise ValueError("archive batch cursor is closed")
+        if not isinstance(index, int) or isinstance(index, bool):
+            raise ValueError("batch index must be an integer")
+        reader = self._reader
+        assert reader is not None
+        if not 0 <= index < reader.num_record_batches:
+            raise IndexError(index)
+        try:
+            return reader.get_batch(index)
+        except BaseException:
+            self.close()
+            raise
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        reader = self._reader
+        self._reader = None
+        try:
+            close = getattr(reader, "close", None)
+            if close is not None:
+                close()
+        finally:
+            self._spool._cursor_closed(self)
+
+    def __enter__(self) -> ArchiveBatchCursor:
+        if self._closed:
+            raise ValueError("archive batch cursor is closed")
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class SpooledArchive:
+    """Validated archive metadata plus an owned, replayable Arrow-batch spool.
+
+    The spool is provisional while parsing; it is returned only after object identity,
+    ZIP EOF / CRC, CSV syntax, and all row invariants succeed. It is a bounded-memory
+    representation, not a claim that the configured temporary filesystem is disk-backed or that
+    total RSS is bounded.
+    """
+
+    def __init__(
+        self,
+        *,
+        parser: PolicyBinding,
+        archive_revision_id: str,
+        data_type: str,
+        symbol: str,
+        coverage_start: datetime,
+        coverage_end: datetime,
+        object_ref: ObjectRef,
+        member_name: str,
+        time_unit: TimeUnit,
+        row_count: int,
+        spool: _ArrowBatchSpool,
+        batch_rows: int,
+    ) -> None:
+        self.parser = parser
+        self.archive_revision_id = archive_revision_id
+        self.data_type = data_type
+        self.symbol = symbol
+        self.coverage_start = coverage_start
+        self.coverage_end = coverage_end
+        self.object_ref = object_ref
+        self.member_name = member_name
+        self.time_unit = time_unit
+        self.row_count = row_count
+        self.batch_rows = batch_rows
+        self._spool = spool
+
+    def open_cursor(self) -> ArchiveBatchCursor:
+        return self._spool.open_cursor(self)
+
+    def close(self) -> None:
+        self._spool.close()
+
+    def __enter__(self) -> SpooledArchive:
+        if self._spool.closed:
+            raise ValueError("spooled archive is closed")
+        return self
+
+    def __exit__(self, *_: object) -> None:
+        self.close()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+
+class _ArrowBatchSpool:
+    """Write and replay fixed-row RecordBatches without retaining all parsed batches in memory."""
+
+    def __init__(self, schema: pa.Schema) -> None:
+        self._file = tempfile.TemporaryFile(mode="w+b")
+        try:
+            self._writer = pa.ipc.new_file(self._file, schema)
+        except BaseException:
+            self._file.close()
+            raise
+        self._active_cursor: ArchiveBatchCursor | None = None
+        self._closed = False
+        self._sealed = False
+
+    @property
+    def closed(self) -> bool:
+        return self._closed
+
+    def write_batch(self, batch: pa.RecordBatch) -> None:
+        if self._closed or self._sealed:
+            raise ValueError("archive batch spool is not writable")
+        self._writer.write_batch(batch)
+
+    def seal(self) -> None:
+        if self._closed:
+            raise ValueError("archive batch spool is closed")
+        if self._sealed:
+            return
+        self._writer.close()
+        self._file.flush()
+        self._file.seek(0)
+        self._sealed = True
+
+    def open_cursor(self, owner: SpooledArchive) -> ArchiveBatchCursor:
+        if self._closed or not self._sealed:
+            raise ValueError("archive batch spool is not readable")
+        if self._active_cursor is not None:
+            raise RuntimeError("archive batch spool already has an open cursor")
+        self._file.seek(0)
+        reader = pa.ipc.open_file(self._file)
+        cursor = ArchiveBatchCursor(owner, self, reader)
+        self._active_cursor = cursor
+        return cursor
+
+    def _cursor_closed(self, cursor: ArchiveBatchCursor) -> None:
+        if self._active_cursor is cursor:
+            self._active_cursor = None
+
+    def close(self) -> None:
+        if self._closed:
+            return
+        cursor = self._active_cursor
+        try:
+            if cursor is not None:
+                cursor.close()
+        finally:
+            try:
+                if not self._sealed:
+                    self._writer.close()
+            finally:
+                self._closed = True
+                self._file.close()
+
+
 type ParseOutcome = ParsedArchive | ArchiveRejection
+type SpooledParseOutcome = SpooledArchive | ArchiveRejection
 
 
 class _Reject(Exception):
@@ -564,11 +765,72 @@ def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> Pars
     抛出，不是质量事件；对象与 ``ObjectRef`` 不一致（``IntegrityViolation``）作为
     ``object_integrity_mismatch`` 拒绝。
     """
+    outcome = _parse_storage(request, storage, batch_sink=None)
+    if isinstance(outcome, ArchiveRejection):
+        return outcome
+    rows, member_name, _row_count = outcome
+    assert rows is not None
+    return _success(request, member_name, rows)
+
+
+def parse_archive_spooled(
+    request: ArchiveParseRequest, storage: StorageAdapter
+) -> SpooledParseOutcome:
+    """Strictly parse to owned Arrow-batch spool; expose it only after all checks succeed.
+
+    Unlike :func:`parse_archive`, this avoids retaining every parsed row as Arrow batches in the
+    process. The existing all-rows API remains unchanged for callers that require a ``Table``.
+    """
+    schema = AGG_TRADES_ROW_SCHEMA if request.data_type == "agg_trades" else KLINES_1M_ROW_SCHEMA
+    try:
+        spool = _ArrowBatchSpool(schema)
+    except OSError as exc:
+        raise StorageError(
+            f"archive parser input or temporary spool I/O failed ({type(exc).__name__})"
+        ) from exc
+    try:
+        outcome = _parse_storage(request, storage, batch_sink=spool.write_batch)
+        if isinstance(outcome, ArchiveRejection):
+            spool.close()
+            return outcome
+        rows, member_name, row_count = outcome
+        if rows is not None:
+            raise AssertionError("spooled parsing unexpectedly materialized a complete Table")
+        spool.seal()
+        return SpooledArchive(
+            parser=PARSER_BINDING,
+            archive_revision_id=request.archive_revision_id,
+            data_type=request.data_type,
+            symbol=request.symbol,
+            coverage_start=request.coverage_start,
+            coverage_end=request.coverage_end,
+            object_ref=request.object_ref,
+            member_name=member_name,
+            time_unit=request.time_unit,
+            row_count=row_count,
+            spool=spool,
+            batch_rows=_CHUNK_ROWS,
+        )
+    except OSError as exc:
+        spool.close()
+        raise StorageError(
+            f"archive parser input or temporary spool I/O failed ({type(exc).__name__})"
+        ) from exc
+    except BaseException:
+        spool.close()
+        raise
+
+
+def _parse_storage(
+    request: ArchiveParseRequest,
+    storage: StorageAdapter,
+    *,
+    batch_sink: Callable[[pa.RecordBatch], None] | None,
+) -> tuple[pa.Table | None, str, int] | ArchiveRejection:
     try:
         _check_request_identity(request)
-        # ZIP needs random access. Avoid keeping a second full Python ``bytes`` object alongside
-        # the complete ParsedArchive table: copy the verified stream into a seekable temporary
-        # file in fixed-size reads. The configured temporary filesystem may still be memory-backed.
+        # ZIP needs random access. Copy and verify the compressed object in fixed-size reads.
+        # The configured temporary filesystem may still be memory-backed.
         try:
             handle = storage.open_read(request.object_ref)
         except IntegrityViolation as exc:
@@ -577,9 +839,9 @@ def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> Pars
                 f"storage refused the object: {type(exc).__name__}",
             ) from exc
         with handle:
-            with tempfile.TemporaryFile(mode="w+b") as spool:
+            with tempfile.TemporaryFile(mode="w+b") as input_spool:
                 byte_count, digest = _spool_bounded(
-                    handle, spool, request.object_ref.size + 1
+                    handle, input_spool, request.object_ref.size + 1
                 )
                 if byte_count != request.object_ref.size:
                     raise _Reject(
@@ -591,11 +853,11 @@ def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> Pars
                         RejectionCode.OBJECT_INTEGRITY_MISMATCH,
                         "SHA-256 != ObjectRef.sha256",
                     )
-                # Do not expose parsed rows until object identity and the complete member have
-                # passed validation, including ZIP CRC and all row invariants.
-                spool.seek(0)
-                rows, member_name = _parse_zip(
-                    cast(IO[bytes], _RetryableSpoolReader(spool)), request
+                input_spool.seek(0)
+                return _parse_zip(
+                    cast(IO[bytes], _RetryableSpoolReader(input_spool)),
+                    request,
+                    batch_sink=batch_sink,
                 )
     except _Reject as reject:
         return _rejection(request, reject)
@@ -603,7 +865,6 @@ def parse_archive(request: ArchiveParseRequest, storage: StorageAdapter) -> Pars
         raise StorageError(
             f"archive parser input or temporary spool I/O failed ({type(exc).__name__})"
         ) from exc
-    return _success(request, member_name, rows)
 
 
 def parse_archive_bytes(request: ArchiveParseRequest, data: bytes) -> ParseOutcome:
@@ -619,7 +880,7 @@ def parse_archive_bytes(request: ArchiveParseRequest, data: bytes) -> ParseOutco
             raise _Reject(RejectionCode.OBJECT_INTEGRITY_MISMATCH, "SHA-256 != ObjectRef.sha256")
         # This convenience entry point receives a complete bytes object from its caller;
         # the storage entry point uses a temporary seekable spool to avoid another full copy.
-        rows, member_name = _parse_zip(io.BytesIO(data), request)
+        rows, member_name, _row_count = _parse_zip(io.BytesIO(data), request)
     except _Reject as reject:
         return _rejection(request, reject)
     return _success(request, member_name, rows)
@@ -720,7 +981,12 @@ def _spool_bounded(source: IO[bytes], destination: IO[bytes], limit: int) -> tup
 # --------------------------------------------------------------------------- ZIP container
 
 
-def _parse_zip(handle: IO[bytes], request: ArchiveParseRequest) -> tuple[pa.Table, str]:
+def _parse_zip(
+    handle: IO[bytes],
+    request: ArchiveParseRequest,
+    *,
+    batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+) -> tuple[pa.Table | None, str, int]:
     expected_member = member_filename(request.data_type, request.symbol, request.coverage_day)
     handle.seek(0, io.SEEK_END)
     total = handle.tell()
@@ -744,14 +1010,13 @@ def _parse_zip(handle: IO[bytes], request: ArchiveParseRequest) -> tuple[pa.Tabl
                 RejectionCode.ZIP_MEMBER_CORRUPT, f"cannot open member: {type(exc).__name__}"
             ) from exc
         with member:
-            parser = (
-                _AggTradesParser(request)
-                if request.data_type == "agg_trades"
-                else _KlinesParser(request)
-            )
+            if request.data_type == "agg_trades":
+                parser = _AggTradesParser(request, batch_sink=batch_sink)
+            else:
+                parser = _KlinesParser(request, batch_sink=batch_sink)
             for line_number, text in _csv_lines(member, size=info.file_size, crc=info.CRC):
                 parser.feed(line_number, text)
-            return parser.finish(), expected_member
+            return parser.finish(), expected_member, parser.rows
 
 
 def _check_container_layout(handle: IO[bytes], total: int) -> int:
@@ -1022,8 +1287,11 @@ def _parse_bool(text: str, line: int, column: str) -> bool:
 class _ColumnBuffer:
     """按列缓冲，每 ``_CHUNK_ROWS`` 行转换为 Arrow 数组以限制 Python 对象峰值。"""
 
-    def __init__(self, schema: pa.Schema) -> None:
+    def __init__(
+        self, schema: pa.Schema, *, batch_sink: Callable[[pa.RecordBatch], None] | None = None
+    ) -> None:
         self._schema = schema
+        self._batch_sink = batch_sink
         self._pending: list[list[Any]] = [[] for _ in schema]
         self._batches: list[pa.RecordBatch] = []
 
@@ -1040,11 +1308,17 @@ class _ColumnBuffer:
             pa.array(values, type=schema_field.type)
             for values, schema_field in zip(self._pending, self._schema, strict=True)
         ]
-        self._batches.append(pa.RecordBatch.from_arrays(arrays, schema=self._schema))
+        batch = pa.RecordBatch.from_arrays(arrays, schema=self._schema)
+        if self._batch_sink is None:
+            self._batches.append(batch)
+        else:
+            self._batch_sink(batch)
         self._pending = [[] for _ in self._schema]
 
-    def table(self) -> pa.Table:
+    def table(self) -> pa.Table | None:
         self._flush()
+        if self._batch_sink is not None:
+            return None
         # Keep the bounded RecordBatch chunks: combine_chunks would allocate a second full
         # column set while the batches are still live, even though ParsedArchive must return a
         # complete Table. Consumers that truly need contiguous arrays can combine explicitly.
@@ -1055,13 +1329,18 @@ class _RowParser:
     columns: tuple[tuple[str, str], ...]
     schema: pa.Schema
 
-    def __init__(self, request: ArchiveParseRequest) -> None:
+    def __init__(
+        self,
+        request: ArchiveParseRequest,
+        *,
+        batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+    ) -> None:
         unit = request.time_unit
         self.unit = unit
         self.start_ticks = _epoch_ticks(request.coverage_start, unit)
         self.end_ticks = _epoch_ticks(request.coverage_end, unit)
         self.minute_ticks = 60 * unit.ticks_per_second
-        self.buffer = _ColumnBuffer(self.schema)
+        self.buffer = _ColumnBuffer(self.schema, batch_sink=batch_sink)
         self.rows = 0
 
     def fields(self, line: int, text: str) -> list[str]:
@@ -1086,7 +1365,7 @@ class _RowParser:
     def feed(self, line: int, text: str) -> None:
         raise NotImplementedError
 
-    def finish(self) -> pa.Table:
+    def finish(self) -> pa.Table | None:
         if self.rows == 0:
             raise _Reject(RejectionCode.NO_ROWS, "archive contains no data rows")
         return self.buffer.table()
@@ -1096,8 +1375,13 @@ class _AggTradesParser(_RowParser):
     columns = _AGG_TRADES_COLUMNS
     schema = AGG_TRADES_ROW_SCHEMA
 
-    def __init__(self, request: ArchiveParseRequest) -> None:
-        super().__init__(request)
+    def __init__(
+        self,
+        request: ArchiveParseRequest,
+        *,
+        batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+    ) -> None:
+        super().__init__(request, batch_sink=batch_sink)
         self.previous: tuple[int, int, int] | None = None  # (agg id, timestamp, last trade id)
 
     def feed(self, line: int, text: str) -> None:
@@ -1181,8 +1465,13 @@ class _KlinesParser(_RowParser):
     columns = _KLINES_COLUMNS
     schema = KLINES_1M_ROW_SCHEMA
 
-    def __init__(self, request: ArchiveParseRequest) -> None:
-        super().__init__(request)
+    def __init__(
+        self,
+        request: ArchiveParseRequest,
+        *,
+        batch_sink: Callable[[pa.RecordBatch], None] | None = None,
+    ) -> None:
+        super().__init__(request, batch_sink=batch_sink)
         self.previous_open: int | None = None
 
     def feed(self, line: int, text: str) -> None:
