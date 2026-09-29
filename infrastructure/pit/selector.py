@@ -883,6 +883,8 @@ def _evaluate(
     spec: PointInTimeSpec,
     available: Mapping[str, datetime],
     *,
+    run_storage: StorageAdapter | None = None,
+    run_params: PitRunParams | None = None,
     head_fn: Callable[
         [
             Sequence[RevisionRecord],
@@ -895,44 +897,95 @@ def _evaluate(
     ] = _heads,
 ) -> Iterator[PointInTimeSelection]:
     cutoff = spec.knowledge_cutoff
+
+    def _results(instants: Iterable[datetime]) -> Iterator[PointInTimeSelection]:
+        previous: tuple[PointInTimeStatus, tuple[str, ...]] | None = None
+        for at in instants:
+            heads = head_fn(records, edges, at, cutoff, available)
+            status = (
+                PointInTimeStatus.ABSENT
+                if not heads
+                else PointInTimeStatus.SELECTED
+                if len(heads) == 1
+                else PointInTimeStatus.CONFLICT
+            )
+            if previous == (status, heads):
+                continue
+            previous = (status, heads)
+            yield PointInTimeSelection(
+                observation_key=key,
+                simulation_time=at,
+                knowledge_cutoff=cutoff,
+                status=status,
+                selected_revision_id=heads[0] if status is PointInTimeStatus.SELECTED else None,
+                maximal_heads=heads,
+            )
+
     if spec.simulation_time is not None:
-        instants: Iterator[datetime] = iter((spec.simulation_time,))
-    else:
-        start, end = spec.simulation_start, spec.simulation_end
-        if start is None or end is None:  # pragma: no cover - the contract forbids it
-            raise PitSpecError("the spec has neither a simulation time nor an interval")
-        # The ordered timeline is needed to preserve PIT semantics, but the extra set of the
-        # same timestamps and a second result list are not. Sorting one generator keeps the
-        # unavoidable time ordering in one collection; results are yielded immediately below.
-        sorted_changes = sorted(
-            available[item.revision_id]
-            for item in records
-            if item.availability.times.knowledge_time <= cutoff
-            and start < available[item.revision_id] < end
-        )
-        unique_changes = (at for at, _ in itertools.groupby(sorted_changes))
-        instants = itertools.chain((start,), unique_changes)
-    previous: tuple[PointInTimeStatus, tuple[str, ...]] | None = None
-    for at in instants:
-        heads = head_fn(records, edges, at, cutoff, available)
-        status = (
-            PointInTimeStatus.ABSENT
-            if not heads
-            else PointInTimeStatus.SELECTED
-            if len(heads) == 1
-            else PointInTimeStatus.CONFLICT
-        )
-        if previous == (status, heads):
-            continue
-        previous = (status, heads)
-        yield PointInTimeSelection(
-            observation_key=key,
-            simulation_time=at,
-            knowledge_cutoff=cutoff,
-            status=status,
-            selected_revision_id=heads[0] if status is PointInTimeStatus.SELECTED else None,
-            maximal_heads=heads,
-        )
+        yield from _results((spec.simulation_time,))
+        return
+
+    start, end = spec.simulation_start, spec.simulation_end
+    if start is None or end is None:  # pragma: no cover - the contract forbids it
+        raise PitSpecError("the spec has neither a simulation time nor an interval")
+
+    if (run_storage is None) != (run_params is None):
+        raise ValueError("bounded availability timeline requires both storage and run parameters")
+    if run_storage is not None and run_params is not None:
+        with _availability_change_times(
+            run_storage,
+            records,
+            available,
+            cutoff=cutoff,
+            start=start,
+            end=end,
+            params=run_params,
+        ) as changes:
+            unique_changes = (at for at, _ in itertools.groupby(changes))
+            yield from _results(itertools.chain((start,), unique_changes))
+        return
+
+    # Legacy select() retains its established materialized behavior. The bounded path above
+    # externally sorts this timeline before exposing its first evaluation result.
+    sorted_changes = sorted(
+        available[item.revision_id]
+        for item in records
+        if item.availability.times.knowledge_time <= cutoff
+        and start < available[item.revision_id] < end
+    )
+    unique_changes = (at for at, _ in itertools.groupby(sorted_changes))
+    yield from _results(itertools.chain((start,), unique_changes))
+
+
+@contextmanager
+def _availability_change_times(
+    storage: StorageAdapter,
+    records: Sequence[RevisionRecord],
+    available: Mapping[str, datetime],
+    *,
+    cutoff: datetime,
+    start: datetime,
+    end: datetime,
+    params: PitRunParams,
+) -> Iterator[Iterator[datetime]]:
+    """Externally sort one key's eligible availability times using caller-sized runs."""
+    with RunSetBuilder(
+        storage,
+        key=lambda row: row["time"],
+        capacity=params.row_batch_rows,
+        merge_fanout=params.merge_fanout,
+        limits=params.limits,
+    ) as changes:
+        for record in records:
+            if record.availability.times.knowledge_time > cutoff:
+                continue
+            at = available[record.revision_id]
+            if start < at < end:
+                changes.add({"time": at})
+        root = changes.finish()
+
+    with _root_rows(storage, root) as rows:
+        yield (cast(datetime, row["time"]) for row in rows)
 
 
 # ============================================================================================
@@ -1473,6 +1526,8 @@ def _pit_bounded_stream(
                     key_edges,
                     spec,
                     available,
+                    run_storage=storage,
+                    run_params=params,
                 ):
                     lineage_out: SelectedRevisionLineage | None = None
                     gap_out: EvidenceGap | None = None
