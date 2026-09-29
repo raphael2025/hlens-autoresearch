@@ -35,13 +35,13 @@ from __future__ import annotations
 
 import hashlib
 import itertools
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pyarrow.compute as pc  # type: ignore[import-untyped]
@@ -898,11 +898,11 @@ def _iter_evaluate_at_instants(
 
 def _pit_row_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
     """Run order for verified rows: ``(observation_key, revision_id)`` (ADR-0077 §6.1.2)."""
-    return (row["observation_key"], row["revision_id"])
+    return (cast(str, row["observation_key"]), cast(str, row["revision_id"]))
 
 
 def _pit_row_group_key(row: Mapping[str, Any]) -> str:
-    return row["observation_key"]
+    return cast(str, row["observation_key"])
 
 
 class _RunBackedRows:
@@ -1169,7 +1169,7 @@ def _iter_bounded_canonical_rows(
         filt = And(
             _equals("symbol", canonical_symbol),
             And(
-                EqualTo("observation_key", key),
+                _equals("observation_key", key),
                 And(_at_least(column, low), _below(column, high)),
             ),
         )
@@ -1386,7 +1386,9 @@ def _pit_bounded_stream(
             if batch:
                 yield from selector._verify_canonical(view, batch)
         finally:
-            source.close()
+            close = getattr(source, "close", None)
+            if callable(close):
+                close()
 
     try:
         bound_assumption = assumption_bound(spec)
@@ -1397,7 +1399,7 @@ def _pit_bounded_stream(
     storage = selector._storage
     limits = params.limits
 
-    def _generate() -> Iterator[PitBoundedRecord]:
+    def _generate() -> Generator[PitBoundedRecord]:
         with RunSetBuilder(
             storage,
             key=_pit_row_sort_key,
@@ -1541,7 +1543,7 @@ def _pit_bounded_stream(
     # than left to whenever the generator object is garbage collected.
     # ``.close()`` throws ``GeneratorExit`` in at the generator's current (or not yet started)
     # suspension point, which the ``with`` statements above unwind exactly as any other exit.
-    generated = _generate()
+    generated: Generator[PitBoundedRecord] = _generate()
     try:
         yield generated
     finally:

@@ -1011,12 +1011,15 @@ def _parse_zip(
             ) from exc
         with member:
             if request.data_type == "agg_trades":
-                parser = _AggTradesParser(request, batch_sink=batch_sink)
+                trades_parser = _AggTradesParser(request, batch_sink=batch_sink)
+                for line_number, text in _csv_lines(member, size=info.file_size, crc=info.CRC):
+                    trades_parser.feed(line_number, text)
+                return trades_parser.finish(), expected_member, trades_parser.rows
             else:
-                parser = _KlinesParser(request, batch_sink=batch_sink)
-            for line_number, text in _csv_lines(member, size=info.file_size, crc=info.CRC):
-                parser.feed(line_number, text)
-            return parser.finish(), expected_member, parser.rows
+                klines_parser = _KlinesParser(request, batch_sink=batch_sink)
+                for line_number, text in _csv_lines(member, size=info.file_size, crc=info.CRC):
+                    klines_parser.feed(line_number, text)
+                return klines_parser.finish(), expected_member, klines_parser.rows
 
 
 def _check_container_layout(handle: IO[bytes], total: int) -> int:

@@ -658,7 +658,9 @@ def iter_dataset_chunks(
         try:
             yield chunks
         finally:
-            chunks.close()
+            close = getattr(chunks, "close", None)
+            if callable(close):
+                close()
 
 
 def _walk_chunks(

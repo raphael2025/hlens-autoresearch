@@ -156,9 +156,14 @@ class _Span:
 class _RunParams(Protocol):
     """Structural view of dataset.sources.UniverseRunParams (avoids a module cycle)."""
 
-    capacity: int
-    merge_fanout: int
-    limits: RunLimits
+    @property
+    def capacity(self) -> int: ...
+
+    @property
+    def merge_fanout(self) -> int: ...
+
+    @property
+    def limits(self) -> RunLimits: ...
 
 
 class _InstantReplay:
@@ -190,7 +195,7 @@ class _InstantReplay:
             try:
                 yield points
             finally:
-                points.close()
+                _close_reader(points)
 
 
 class _FirstSeenStore:
@@ -603,7 +608,7 @@ def _instants_v3(
                 builder.add({"instant": instant})
             root = builder.finish()
     finally:
-        events.close()
+        _close_reader(events)
     return _InstantReplay(storage, start=start, root=root)
 
 
@@ -866,7 +871,7 @@ def _project[T](
     try:
         yield items()
     finally:
-        events.close()
+        _close_reader(events)
 
 
 @contextmanager
@@ -894,14 +899,14 @@ def _first_seen_project[T](
     finally:
         try:
             if items is not None:
-                items.close()
+                _close_reader(items)
         finally:
             try:
                 if payloads is not None:
-                    payloads.close()
+                    _close_reader(payloads)
             finally:
                 try:
-                    events.close()
+                    _close_reader(events)
                 finally:
                     store.close()
 

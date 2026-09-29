@@ -53,7 +53,7 @@ import hashlib
 import heapq
 import json
 import re
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
@@ -221,14 +221,12 @@ class RunSetBuilder:
         self._key = key
         self._capacity = capacity
         self._limits = limits
-        self._refs = _RunRefAccumulator(
-            storage, key=key, merge_fanout=merge_fanout, limits=limits
-        )
+        self._refs = _RunRefAccumulator(storage, key=key, merge_fanout=merge_fanout, limits=limits)
         self._rows: list[Mapping[str, Any]] = []
         self._finished = False
         self._closed = False
 
-    def __enter__(self) -> "RunSetBuilder":
+    def __enter__(self) -> RunSetBuilder:
         if self._closed or self._finished:
             raise RunWriteError("a finished or closed run set cannot be reopened")
         return self
@@ -633,7 +631,7 @@ def iter_run(storage: StorageAdapter, ref: RunRef) -> Iterator[Iterator[Mapping[
     before (or, for a tail truncation, immediately after) it would otherwise go unnoticed.
     """
 
-    def _generate() -> Iterator[Mapping[str, Any]]:
+    def _generate() -> Generator[Mapping[str, Any]]:
         next_ordinal = [0]
         expected_root_level = ref.depth - 1
         count = 0
@@ -661,7 +659,7 @@ def merge_sorted_runs(
     key: Callable[[Mapping[str, Any]], Any],
     merge_fanout: int,
     limits: RunLimits,
-) -> "_MergeContext":
+) -> _MergeContext:
     """A bounded k-way merge of ``refs`` into one ordered stream (ADR-0077 §6.1.2 / §6.1.3).
 
     At most ``merge_fanout`` run readers are open at once. Input refs are consumed incrementally
@@ -702,9 +700,7 @@ class _MergeContext:
             self._limits,
         )
         refs = self._refs
-        accumulator = _RunRefAccumulator(
-            storage, key=key, merge_fanout=merge_fanout, limits=limits
-        )
+        accumulator = _RunRefAccumulator(storage, key=key, merge_fanout=merge_fanout, limits=limits)
         try:
             for ref in refs:
                 accumulator.add(ref)

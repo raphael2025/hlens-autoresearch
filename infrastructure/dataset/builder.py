@@ -2023,7 +2023,7 @@ class _EvidenceDerivation:
         )
         self._bound = request.pit.snapshot_bindings
         self._point = request.pit.simulation_time is not None
-        self._counts = dict.fromkeys(_DERIVED_STREAMS, 0)
+        self._counts: dict[EvidenceStream, int] = dict.fromkeys(_DERIVED_STREAMS, 0)
         self._rows = 0
         self._last_report: tuple[int, str, str] | None = None
 

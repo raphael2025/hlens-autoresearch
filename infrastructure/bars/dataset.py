@@ -287,12 +287,14 @@ def _proven_bars(
             cutoff, low, high = _bounds(spec, dataset, price_cutoff, start, end)  # steps 2, 6
             if manifest.data_type != _DATA_TYPE:
                 raise DatasetBarsError(f"a {manifest.data_type} dataset has no {_DATA_TYPE} bars")
-            bars = _evidence_bars(adapter, manifest, evidence_verifier, symbols, cutoff, low, high)
-            return manifest, cutoff, bars
+            evidence_bars = _evidence_bars(
+                adapter, manifest, evidence_verifier, symbols, cutoff, low, high
+            )
+            return manifest, cutoff, evidence_bars
     cutoff, low, high = _bounds(manifest.point_in_time, manifest.dataset, price_cutoff, start, end)
 
     rows = _dataset_rows(adapter, manifest)  # step 3
-    covered = sorted({found[0]["symbol"] for found in rows.values()})
+    covered = sorted({revision_rows[0]["symbol"] for revision_rows in rows.values()})
     wanted = covered if symbols is None else sorted(set(symbols))
     if not wanted:
         raise DatasetBarsError("no symbol requested")
@@ -303,7 +305,7 @@ def _proven_bars(
     lineage = set(manifest.lineage)
     proven: dict[str, tuple[_ProvenBar, ...]] = {}
     for symbol in wanted:  # steps 4-6
-        bars = [
+        selected_bars = [
             bar
             for bar in _reselected(
                 adapter,
@@ -316,14 +318,14 @@ def _proven_bars(
             )
             if low <= bar.interval_start < high
         ]
-        late = [bar for bar in bars if bar.available_time > cutoff]
+        late = [bar for bar in selected_bars if bar.available_time > cutoff]
         if late:
             raise DatasetBarsError(
                 f"{len(late)} {symbol} bar(s) of the window become available after price_cutoff "
                 f"{cutoff.isoformat()} (first {late[0].interval_start.isoformat()} at "
                 f"{late[0].available_time.isoformat()})"
             )
-        proven[symbol] = tuple(bars)
+        proven[symbol] = tuple(selected_bars)
     return manifest, cutoff, proven
 
 
