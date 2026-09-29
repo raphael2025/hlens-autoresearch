@@ -56,31 +56,33 @@ function MatrixDetail({ envelope }: { envelope: ReportEnvelope }) {
           （无绑定的 P5 backtest / P2 state result 哈希 — 一个不带溯源的原始收益 x 状态矩阵）
         </p>
       )}
-      <div ref={chartRef} style={{ width: "100%", height: 220, margin: "16px 0" }} />
-      <table>
-        <thead>
-          <tr>
-            <th>state</th>
-            <th>count</th>
-            <th>total</th>
-            <th>mean</th>
-            <th>hit_rate</th>
-            <th>top_returns</th>
-          </tr>
-        </thead>
-        <tbody>
-          {matrix.cells.map((cell) => (
-            <tr key={stateLabel(cell.state)}>
-              <td>{stateLabel(cell.state)}</td>
-              <td>{cell.count}</td>
-              <td>{cell.total}</td>
-              <td>{cell.mean ?? "—"}</td>
-              <td>{cell.hit_rate ?? "—"}</td>
-              <td>{cell.top_returns.join(", ") || "—"}</td>
+      <div ref={chartRef} style={{ width: "100%", height: 240, margin: "16px 0" }} />
+      <div style={{ overflowX: "auto" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>state</th>
+              <th>count</th>
+              <th>total</th>
+              <th>mean</th>
+              <th>hit_rate</th>
+              <th>top_returns</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {matrix.cells.map((cell) => (
+              <tr key={stateLabel(cell.state)}>
+                <td>{stateLabel(cell.state)}</td>
+                <td>{cell.count}</td>
+                <td>{cell.total}</td>
+                <td>{cell.mean ?? "—"}</td>
+                <td>{cell.hit_rate ?? "—"}</td>
+                <td>{cell.top_returns.join(", ") || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

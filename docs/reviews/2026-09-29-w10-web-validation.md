@@ -19,3 +19,28 @@ The Web application was checked in an isolated integration worktree based on the
 ## Acceptance boundary
 
 The integrated candidate clean install completed with **0 vulnerabilities**; production build and component tests passed (`120 passed`) and `npm audit` reported **0 vulnerabilities**. The fixture-backed SSR test closes the page-to-option verification gap, but W10 remains open: the Web library suite retains one deferred release gate, and browser visual and interaction review remain open. API/worker runtime evidence is tracked separately under W2. No Phase 1, W6, or W10 acceptance is claimed from this slice.
+
+## Browser Canvas and resize follow-up
+
+An actual browser smoke used the already-installed Chrome for Testing 153.0.8010.12 in headless
+mode, the Vite app, and the local API serving committed report fixtures. A zero-dependency Chrome
+DevTools Protocol driver clicked each page tab and first report, then inspected the real Canvas
+elements at 1280px and 700px viewport widths:
+
+- Research Loop: 3 canvases, each resized from 1100×200 to 652×200.
+- State × Strategy Matrix: one chart (three renderer canvas layers), resized from 816×240 to
+  652×240; report list stacked above the detail at 700px.
+- Router Paper Runs: 2 charts, each resized from 816×280 to 652×280; report list stacked at 700px.
+- Paper Deviation: 1 chart, resized from 776×280 to 652×280; report list stacked at 700px.
+
+The run reported no JavaScript exceptions and no failed HTTP responses. Desktop and narrow-view
+screenshots were visually inspected from `/tmp/hlens-w10-shots` (temporary artifacts, not committed).
+The inspection found and this candidate fixes: report list/detail squeezing on narrow viewports,
+matrix and Research Loop table overflow, the matrix heatmap legend colliding with category labels,
+and Research Loop axis/legend label overlap. The existing chart click/selection path and browser
+resize listeners were exercised; this was not a full manual review of every Web page or interaction.
+
+Post-fix verification: `npm run build` passed; the four affected chart helper tests passed
+(`25 passed`); `npm run test:components` passed (`120 passed`). The exact deferred
+`apps/web/src/lib/retroAudit.test.ts` node was not rerun. W10 remains open pending that deferred
+release gate and broader application acceptance; this browser slice alone does not close W10.

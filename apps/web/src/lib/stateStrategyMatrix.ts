@@ -123,7 +123,7 @@ export function heatmapChartOption(
         return `${label} · ${metric.label}: ${raw ?? "—"}`;
       },
     },
-    grid: { left: 90, right: 24, top: 16, bottom: 48 },
+    grid: { left: 90, right: 24, top: 16, bottom: 72 },
     xAxis: { type: "category" as const, data: categories, splitArea: { show: true } },
     yAxis: { type: "category" as const, data: METRICS.map((m) => m.label), splitArea: { show: true } },
     visualMap: {
