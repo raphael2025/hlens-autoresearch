@@ -690,33 +690,55 @@ class KeyHistoryBuffer:
     :func:`iter_run`.
     """
 
-    def __init__(self, *, storage: StorageAdapter, buffer_limit: int, limits: RunLimits) -> None:
-        if buffer_limit <= 0:
-            raise RunWriteError("buffer_limit must be positive")
+    def __init__(
+        self,
+        *,
+        storage: StorageAdapter,
+        buffer_limit: int,
+        merge_fanout: int,
+        key: Callable[[Mapping[str, Any]], Any],
+        limits: RunLimits,
+    ) -> None:
+        if isinstance(buffer_limit, bool) or not isinstance(buffer_limit, int) or buffer_limit <= 0:
+            raise RunWriteError("buffer_limit must be a positive integer")
         self._storage = storage
         self._buffer_limit = buffer_limit
         self._limits = limits
+        self._refs = _RunRefAccumulator(storage, key=key, merge_fanout=merge_fanout, limits=limits)
         self._tail: list[Mapping[str, Any]] = []
-        self._spilled: list[RunRef] = []
+        self._has_spilled = False
+        self._finished = False
+        self._root: RunRef | None = None
 
     def add(self, row: Mapping[str, Any]) -> None:
+        if self._finished:
+            raise RunWriteError("cannot add to a finalized key history")
         self._tail.append(row)
         if len(self._tail) >= self._buffer_limit:
-            self._spilled.append(write_sorted_run(self._storage, self._tail, self._limits))
+            self._refs.add(write_sorted_run(self._storage, self._tail, self._limits))
             self._tail = []
+            self._has_spilled = True
 
     @property
     def spilled(self) -> bool:
         """Whether any rows were spilled to a run (the key's history exceeded ``buffer_limit``)."""
-        return bool(self._spilled)
+        return self._has_spilled
+
+    def _finish(self) -> RunRef | None:
+        if self._finished:
+            return self._root
+        if self._has_spilled and self._tail:
+            self._refs.add(write_sorted_run(self._storage, self._tail, self._limits))
+            self._tail = []
+        self._root = self._refs.finish()
+        self._finished = True
+        return self._root
 
     @contextmanager
     def rows(self) -> Iterator[Iterator[Mapping[str, Any]]]:
-        with ExitStack() as stack:
-
-            def _generate() -> Iterator[Mapping[str, Any]]:
-                for ref in self._spilled:
-                    yield from stack.enter_context(iter_run(self._storage, ref))
-                yield from self._tail
-
-            yield _generate()
+        root = self._finish()
+        if root is None:
+            yield iter(self._tail)
+            return
+        with iter_run(self._storage, root) as rows:
+            yield rows

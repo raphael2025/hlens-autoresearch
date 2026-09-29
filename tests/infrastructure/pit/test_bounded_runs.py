@@ -323,7 +323,9 @@ def test_key_history_buffer_spills_past_its_limit_and_reassembles_in_order(
     tmp_path: Path,
 ) -> None:
     storage = _storage(tmp_path)
-    buffer = KeyHistoryBuffer(storage=storage, buffer_limit=3, limits=_GENEROUS)
+    buffer = KeyHistoryBuffer(
+        storage=storage, buffer_limit=3, merge_fanout=2, key=_key, limits=_GENEROUS
+    )
     rows = _rows(10)
     for row in rows:
         buffer.add(row)
@@ -334,7 +336,9 @@ def test_key_history_buffer_spills_past_its_limit_and_reassembles_in_order(
 
 def test_key_history_buffer_under_its_limit_never_spills(tmp_path: Path) -> None:
     storage = _storage(tmp_path)
-    buffer = KeyHistoryBuffer(storage=storage, buffer_limit=100, limits=_GENEROUS)
+    buffer = KeyHistoryBuffer(
+        storage=storage, buffer_limit=100, merge_fanout=2, key=_key, limits=_GENEROUS
+    )
     rows = _rows(4)
     for row in rows:
         buffer.add(row)
@@ -346,4 +350,6 @@ def test_key_history_buffer_under_its_limit_never_spills(tmp_path: Path) -> None
 def test_key_history_buffer_rejects_a_non_positive_limit(tmp_path: Path) -> None:
     storage = _storage(tmp_path)
     with pytest.raises(RunWriteError, match="buffer_limit"):
-        KeyHistoryBuffer(storage=storage, buffer_limit=0, limits=_GENEROUS)
+        KeyHistoryBuffer(
+            storage=storage, buffer_limit=0, merge_fanout=2, key=_key, limits=_GENEROUS
+        )

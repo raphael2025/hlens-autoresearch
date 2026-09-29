@@ -1427,7 +1427,11 @@ def _pit_bounded_stream(
 
             for row_key, row_group in itertools.groupby(merged_rows, key=_pit_row_group_key):
                 buffer = KeyHistoryBuffer(
-                    storage=storage, buffer_limit=params.key_history_buffer, limits=limits
+                    storage=storage,
+                    buffer_limit=params.key_history_buffer,
+                    merge_fanout=params.merge_fanout,
+                    key=_pit_row_sort_key,
+                    limits=limits,
                 )
                 for row in row_group:
                     buffer.add(row)
