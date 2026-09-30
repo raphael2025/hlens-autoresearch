@@ -22,10 +22,14 @@ interval ``(first.event_time, first.event_time + window_bars * bar_duration]``.
   time never changes retroactively. No partner -> no event (``missing = no_event``).
 - ADR-0061's microsecond ``seq`` window is not reused; ``time_unit`` is bars of ``bar_spec`` only.
 
-Known limit: the lowered trigger binds the upstream refs but not their spec hashes, so
-``infrastructure.event.upstream.verify_interaction`` (which requires ``<name>_hash`` bindings)
-refuses these specs; the hash binding is enforced here, against the caller's upstream table (which
-the P7 compiler builds from the hash-verified direct-reference resolution).
+**Upstream hash binding** (ADR-0100 revision 1 §4). A spec lowered from a plan of format "1.3.0"
+carries ``first_event_hash`` / ``second_event_hash`` in its trigger (both or neither); each must
+equal the supplied upstream spec's ``content_hash()``, otherwise the spec is refused. That is the
+``<name>`` / ``<name>_hash`` pair ``infrastructure.event.upstream.verify_interaction`` reads, so the
+runner accepts these specs. A spec lowered from an older plan format binds only the upstream refs;
+the runner refuses it (fail closed) and the Provider enforces the binding only against the
+caller's upstream table (which the P7 compiler builds from the hash-verified direct-reference
+resolution).
 """
 
 from __future__ import annotations
@@ -55,6 +59,16 @@ _FIXED: Final[dict[str, str]] = {
     "missing": "no_event",
 }
 _VARIABLE: Final = frozenset({"first_event", "second_event", "bar_spec", "window_bars"})
+#: Optional upstream hash binding (plan format "1.3.0", ADR-0100 revision 1 §4): both or neither.
+_HASH_BINDING: Final[dict[str, str]] = {
+    "first_event_hash": "first_event",
+    "second_event_hash": "second_event",
+}
+
+
+def _hash_bound(params: Mapping[str, Any]) -> bool:
+    """Whether the trigger binds the upstream spec hashes (plan format "1.3.0" lowering)."""
+    return all(field in params for field in _HASH_BINDING)
 
 
 class P7TemporalSequenceProvider(EventProviderBase):
@@ -95,7 +109,8 @@ class P7TemporalSequenceProvider(EventProviderBase):
     def canonical(self, spec: EventSpec) -> EventSpec:
         params = self.params(spec)
         fixed = {key: params.get(key) for key in _FIXED}
-        if fixed != _FIXED or set(params) != set(_FIXED) | _VARIABLE:
+        base = set(_FIXED) | _VARIABLE
+        if fixed != _FIXED or set(params) not in (base, base | set(_HASH_BINDING)):
             raise ValueError("the trigger is not a lowered p7 temporal declaration")
         window = params["window_bars"]
         if isinstance(window, bool) or not isinstance(window, int) or window < 1:
@@ -120,6 +135,13 @@ class P7TemporalSequenceProvider(EventProviderBase):
         for upstream in (first, second):
             if upstream.bar_spec is None or str(upstream.bar_spec) != str(bar_spec):
                 raise ValueError(f"{upstream.ref} does not declare bar_spec {bar_spec}")
+        if _hash_bound(params):
+            for field, upstream in (("first_event_hash", first), ("second_event_hash", second)):
+                bound = params[field]
+                if not isinstance(bound, str) or bound != upstream.content_hash():
+                    raise ValueError(
+                        f"{field} does not bind the supplied upstream spec {upstream.ref}"
+                    )
         if spec.observable_lag != second.observable_lag:
             raise ValueError("observable_lag must equal the second event's")
         if first.observable_lag > second.observable_lag:

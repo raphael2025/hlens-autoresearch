@@ -118,6 +118,10 @@ _NEGATION_DEFINITION: Final = "p7.negation.target_position@1.0.0"
 #: (pending-decisions §3 option A). Any other unit has no accepted semantics and stays OPEN;
 #: ADR-0061's microsecond seq window is not reused as a substitute.
 _TEMPORAL_TIME_UNIT: Final = "bar"
+#: ADR-0100 revision 1: plan formats whose ``temporal`` lowering follows the revised semantics
+#: (upstream hash binding in the trigger, ``observable_lag = 0``). Older formats ("1.1.0" /
+#: "1.2.0") keep their original lowering byte for byte; an old plan's meaning never changes.
+_TEMPORAL_REVISION_1_FORMATS: Final = frozenset({"1.3.0"})
 
 
 class OperatorLoweringRefused(PlanRefused):
@@ -533,11 +537,18 @@ def _lower_temporal(
     direct: dict[tuple[str, int], VersionedSpec],
     specs: dict[str, VersionedSpec],
     created_at: datetime,
+    *,
+    plan_format: str,
 ) -> EventSpec:
     """``second`` occurs 1..``window`` bars after ``first`` (left-open, right-closed).
 
     Both EventSpecs must declare the same non-empty ``bar_spec`` (ADR-0088 decision 1). The output
     event time is the second event's time and it is visible when the second event is visible.
+
+    In plan format "1.3.0" (ADR-0100 revision 1 §4) the trigger also binds each upstream spec's
+    ``content_hash()`` as ``first_event_hash`` / ``second_event_hash`` (the ``<name>`` /
+    ``<name>_hash`` pair ``infrastructure.event.upstream.verify_interaction`` reads). Older plan
+    formats keep their original, hash-free trigger.
     """
     time_unit = node.parameters["time_unit"]
     if time_unit != _TEMPORAL_TIME_UNIT:
@@ -592,23 +603,27 @@ def _lower_temporal(
 
     bar_spec = first.bar_spec
     identity = _spec_identity(_TEMPORAL_DEFINITION, node, sources, created_at)
-    trigger = canonical_json(
-        {
-            "definition": _TEMPORAL_DEFINITION,
-            "operator": "temporal_sequence",
-            "provider": "p7_temporal_sequence@1.0.0",
-            "semantic_version": _SEMANTIC_VERSION,
-            "first_event": str(first.ref),
-            "second_event": str(second.ref),
-            "bar_spec": str(bar_spec),
-            "window_bars": window,
-            # The second event lies in (first, first + window bars]: 1..window bars after it.
-            "interval": "left_open_right_closed",
-            "event_time": "second_event_time",
-            "visibility": "second_event_observable_time",
-            "missing": "no_event",
-        }
-    )
+    declaration: dict[str, object] = {
+        "definition": _TEMPORAL_DEFINITION,
+        "operator": "temporal_sequence",
+        "provider": "p7_temporal_sequence@1.0.0",
+        "semantic_version": _SEMANTIC_VERSION,
+        "first_event": str(first.ref),
+        "second_event": str(second.ref),
+        "bar_spec": str(bar_spec),
+        "window_bars": window,
+        # The second event lies in (first, first + window bars]: 1..window bars after it.
+        "interval": "left_open_right_closed",
+        "event_time": "second_event_time",
+        "visibility": "second_event_observable_time",
+        "missing": "no_event",
+    }
+    revised = plan_format in _TEMPORAL_REVISION_1_FORMATS
+    if revised:
+        # ADR-0100 revision 1 §4: bind the exact upstream specs (ADR-0036 §5 `<name>_hash`).
+        declaration["first_event_hash"] = first.content_hash()
+        declaration["second_event_hash"] = second.content_hash()
+    trigger = canonical_json(declaration)
     return _build_output(
         node,
         lambda: EventSpec(
@@ -787,8 +802,8 @@ _LOWERERS: Final[
     ]
 ] = {
     PlanOperator.INTERACTION: _lower_interaction,
-    # TRANSFORMATION is dispatched in `lower_typed_plan`: it also needs the plan format version.
-    PlanOperator.TEMPORAL: _lower_temporal,
+    # TRANSFORMATION and TEMPORAL are dispatched in `lower_typed_plan`: they also need the plan
+    # format version (ADR-0099 decision 4, ADR-0100 revision 1).
     PlanOperator.CONDITIONING: _lower_conditioning,
     PlanOperator.ENSEMBLE: _lower_ensemble,
     PlanOperator.NEGATION: _lower_negation,
@@ -868,6 +883,12 @@ def lower_typed_plan(
                 created_at,
                 plan_format=plan.schema_version,
                 universes=universe_by_hash,
+            )
+            continue
+        if node.operator is PlanOperator.TEMPORAL:
+            # ADR-0100 revision 1: the temporal lowering depends on the plan's format version.
+            specs[node.node_id] = _lower_temporal(
+                node, direct, specs, created_at, plan_format=plan.schema_version
             )
             continue
         lowerer = _LOWERERS.get(node.operator)
