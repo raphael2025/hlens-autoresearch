@@ -16,7 +16,7 @@ from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from decimal import Decimal
-from typing import Any, Final
+from typing import Any, Final, cast
 
 from core.contracts.storage import StageRequest, StorageAdapter
 from core.domain.base import canonical_json
@@ -773,7 +773,7 @@ def iter_run(
 
 def merge_sorted_runs(
     storage: StorageAdapter,
-    refs: Sequence[RunRef],
+    refs: Iterable[RunRef],
     *,
     key: Callable[[Mapping[str, Any]], Any],
     merge_fanout: int,
@@ -781,17 +781,15 @@ def merge_sorted_runs(
 ) -> _MergeContext:
     """A bounded k-way merge of ``refs`` into one ordered stream (ADR-0077 §6.1.2 / §6.1.3).
 
-    At most ``merge_fanout`` run readers are ever open at once. When ``len(refs) >
-    merge_fanout``, groups of ``merge_fanout`` runs are first reduced, pass by pass, into
-    intermediate persisted runs (the reduction's own leaf/index shape is governed by ``limits``)
-    until at most ``merge_fanout`` remain; only then is the final streaming merge produced. The
-    process never holds every input ``RunRef`` open at the same time, and the number of refs
-    resident between passes is bounded by ``ceil(len(refs) / merge_fanout)`` at each level, not by
-    the total row count.
+    At most ``merge_fanout`` run readers are ever open at once. The input refs may be a one-shot,
+    lazy iterable: up to ``merge_fanout`` refs are retained directly, and any further refs are
+    folded online into a content-addressed run with the same fan-out. Only the fixed-size ref
+    prefix or the accumulator's hierarchical fan-out buckets remain resident; the input iterable
+    is never materialized. The final reader is opened only after reduction completes.
     """
-    if merge_fanout < 2:
+    if isinstance(merge_fanout, bool) or not isinstance(merge_fanout, int) or merge_fanout < 2:
         raise RunWriteError("merge_fanout must be at least 2")
-    return _MergeContext(storage, list(refs), key=key, merge_fanout=merge_fanout, limits=limits)
+    return _MergeContext(storage, refs, key=key, merge_fanout=merge_fanout, limits=limits)
 
 
 class _MergeContext:
@@ -800,7 +798,7 @@ class _MergeContext:
     def __init__(
         self,
         storage: StorageAdapter,
-        refs: list[RunRef],
+        refs: Iterable[RunRef],
         *,
         key: Callable[[Mapping[str, Any]], Any],
         merge_fanout: int,
@@ -812,6 +810,7 @@ class _MergeContext:
         self._merge_fanout = merge_fanout
         self._limits = limits
         self._stack: ExitStack | None = None
+        self._merge_iterator: Iterator[Mapping[str, Any]] | None = None
 
     def __enter__(self) -> Iterator[Mapping[str, Any]]:
         storage, key, merge_fanout, limits = (
@@ -820,28 +819,115 @@ class _MergeContext:
             self._merge_fanout,
             self._limits,
         )
-        current = self._refs
-        while len(current) > merge_fanout:
-            next_level: list[RunRef] = []
-            for start in range(0, len(current), merge_fanout):
-                group = current[start : start + merge_fanout]
-                if len(group) == 1:
-                    next_level.append(group[0])
-                    continue
-                with ExitStack() as pass_stack:
-                    iterators = [pass_stack.enter_context(iter_run(storage, ref)) for ref in group]
-                    merged = heapq.merge(*iterators, key=key)
-                    next_level.append(write_sorted_run(storage, merged, limits))
-            current = next_level
+        source = iter(self._refs)
+        missing = object()
+        prefix: list[RunRef] = []
+        for _ in range(merge_fanout):
+            ref = next(source, missing)
+            if ref is missing:
+                break
+            prefix.append(cast(RunRef, ref))
+
+        if len(prefix) < merge_fanout:
+            stack = ExitStack()
+            self._stack = stack
+            iterators = [stack.enter_context(iter_run(storage, ref)) for ref in prefix]
+            self._merge_iterator = heapq.merge(*iterators, key=key)
+            return self._merge_iterator
+
+        # Read one item before asking a lazy source for ref fanout+1. If it is exhausted, keep
+        # these readers as the final merge (the legacy no-reduction case); otherwise close them
+        # and fold the prefix plus the extra refs through the online accumulator.
+        initial_stack = ExitStack()
+        initial_iterators: list[Iterator[Mapping[str, Any]]] = []
+        initial_merge: Iterator[Mapping[str, Any]] | None = None
+        try:
+            initial_iterators = [
+                initial_stack.enter_context(iter_run(storage, ref)) for ref in prefix
+            ]
+            initial_merge = heapq.merge(*initial_iterators, key=key)
+            first = next(initial_merge, missing)
+            extra = next(source, missing)
+        except BaseException:
+            if initial_merge is not None:
+                close = getattr(initial_merge, "close", None)
+                if callable(close):
+                    close()
+            for iterator in initial_iterators:
+                close = getattr(iterator, "close", None)
+                if callable(close):
+                    close()
+            initial_stack.close()
+            raise
+
+        if extra is missing:
+            self._stack = initial_stack
+            if first is missing:
+                self._merge_iterator = initial_merge
+                return iter(())
+            prefetched = _PrefetchedIterator(cast(Mapping[str, Any], first), initial_merge)
+            self._merge_iterator = prefetched
+            return prefetched
+
+        close = getattr(initial_merge, "close", None)
+        if callable(close):
+            close()
+        for iterator in initial_iterators:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+        initial_stack.close()
+
+        accumulator = _RunRefAccumulator(storage, key=key, merge_fanout=merge_fanout, limits=limits)
+        for ref in prefix:
+            accumulator.add(ref)
+        accumulator.add(cast(RunRef, extra))
+        for ref in source:
+            accumulator.add(ref)
+        root = accumulator.finish()
+        current = [] if root is None else [root]
         stack = ExitStack()
         self._stack = stack
         iterators = [stack.enter_context(iter_run(storage, ref)) for ref in current]
-        return heapq.merge(*iterators, key=key)
+        self._merge_iterator = heapq.merge(*iterators, key=key)
+        return self._merge_iterator
 
     def __exit__(self, *exc_info: object) -> None:
-        if self._stack is not None:
-            self._stack.close()
-            self._stack = None
+        iterator, self._merge_iterator = self._merge_iterator, None
+        try:
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+        finally:
+            stack, self._stack = self._stack, None
+            if stack is not None:
+                stack.close()
+
+
+class _PrefetchedIterator(Iterator[Mapping[str, Any]]):
+    """A one-record prefix whose explicit close also closes the underlying merge."""
+
+    def __init__(self, first: Mapping[str, Any], rest: Iterator[Mapping[str, Any]]) -> None:
+        self._first: Mapping[str, Any] | None = first
+        self._rest: Iterator[Mapping[str, Any]] | None = rest
+
+    def __iter__(self) -> _PrefetchedIterator:
+        return self
+
+    def __next__(self) -> Mapping[str, Any]:
+        if self._first is not None:
+            first, self._first = self._first, None
+            return first
+        if self._rest is None:
+            raise StopIteration
+        return next(self._rest)
+
+    def close(self) -> None:
+        self._first = None
+        rest, self._rest = self._rest, None
+        close = getattr(rest, "close", None)
+        if callable(close):
+            close()
 
 
 # ==========================================================================================
