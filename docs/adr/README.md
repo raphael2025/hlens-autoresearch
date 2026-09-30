@@ -99,6 +99,7 @@
 | [0093](0093-bounded-quality-report-evidence.md) | 有界、版本化质量报告证据流 | Accepted（2026-09-29；新报告使用固定大小 manifest 与内容寻址 streams，v1/v2 保持只读兼容；实现 / E1 验收待完成） |
 | [0094](0094-bounded-pit-conflict-head-evidence.md) | 有界 PIT 冲突 heads 证据流 | Accepted（2026-09-30；契约 2.5.0 新增完整可重放冲突流，v2 与 2.3/2.4 manifest 保持兼容） |
 | [0095](0095-worker-runtime-host.md) | Explicit trusted Worker runtime factory | Accepted（2026-09-29；原隔离分支编号 ADR-0093，收敛时重编号）；生产 host 每次单任务轮询，停止信号在当前结果 / ack 后退出 |
+| [0096](0096-idempotent-ledger-read-results.md) | TrialLedger 精确重复登记的只读幂等确认 | Accepted（2026-09-30）；完全相同的登记 / 同一 attempt 可只读返回，不绕过 LLM 审阅，所有新写入仍受 admission gate 管控 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，

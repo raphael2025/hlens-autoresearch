@@ -182,6 +182,12 @@ gate while holding its own lock. No store hands out its writable journal, and ne
 ``MemoryCheckpoint``: positions and entries are read through ``journal_head()`` /
 ``journal_snapshot()`` (detached, read-only; the checkpoint also has ``header()``).
 
+ADR-0096 permits an exact TrialLedger registration duplicate to return ``False`` before the write
+gate, and an exact identity/content/attempt duplicate from ``register_reevaluation`` to do the
+same. These are read-only acknowledgements: they append no journal record and do not change trial
+counts. The LLM-origin check still precedes duplicate recognition. Changed content and every new
+attempt remain writes and are refused whenever the gate would refuse a write.
+
 Store writes are round writes (review fix 2, 2026-09-28): the trial ledger, sealed-OOS, lineage and
 failure stores, and the review queue's enqueue / take, are refused before they write unless the
 audit has its open round (``LoopStateInconsistent``) — between rounds the opener accepts no line of
