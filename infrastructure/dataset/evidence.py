@@ -631,9 +631,7 @@ class _Walk:
     #: (record count, record bytes) of the previous leaf: its closing must be canonical.
     previous_leaf: tuple[int, int] | None = None
 
-    def index(
-        self, ref: _Child, level: int, *, rightmost: bool, root: bool
-    ) -> Iterator[Contract]:
+    def index(self, ref: _Child, level: int, *, rightmost: bool, root: bool) -> Iterator[Contract]:
         lines = _read_object(self.storage, ref, self.limits.index_object_max_bytes)
         _parse_header(lines[0], self.stream, _INDEX, ref, level)
         what = f"{self.stream.value} index {ref.key}"
@@ -736,7 +734,9 @@ def iter_evidence_stream(
     try:
         yield records
     finally:
-        records.close()
+        close = getattr(records, "close", None)
+        if callable(close):
+            close()
 
 
 @contextmanager

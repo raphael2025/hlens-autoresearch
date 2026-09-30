@@ -41,13 +41,13 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Final
+from typing import Final, cast
 
 from core.domain.base import (
     CONTRACT_SCHEMA_MAJOR,
-    FrozenMapping,
     NAME_PATTERN,
     REF_KEY_PATTERN,
+    FrozenMapping,
     parse_semver,
 )
 
@@ -309,10 +309,10 @@ class PluginManifest:
         if not isinstance(deterministic, bool):
             raise PluginManifestError("deterministic must be a bool")
         return cls(
-            name=data["name"],
+            name=cast(str, data["name"]),
             kind=kind,
-            version=data["version"],
-            contract_version=data["contract_version"],
+            version=cast(str, data["version"]),
+            contract_version=cast(str, data["contract_version"]),
             deterministic=deterministic,
             params_schema=FrozenMapping(params_schema),
             inputs=tuple(inputs),
@@ -328,8 +328,10 @@ class PluginManifest:
 
 
 def _string_sequence(value: object, field_name: str) -> tuple[str, ...]:
-    if not isinstance(value, Sequence) or isinstance(value, str) or not all(
-        isinstance(item, str) for item in value
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, str)
+        or not all(isinstance(item, str) for item in value)
     ):
         raise PluginManifestError(f"{field_name} must be an array of strings")
     return tuple(value)

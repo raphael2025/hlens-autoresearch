@@ -6,9 +6,11 @@ import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 import {
   asRouterPayload,
+  equityChartOption,
   equitySeries,
   runLabel,
   shortTime,
+  weightsChartOption,
   weightSeries,
   type RouterPayload,
 } from "../lib/routerPaperRun";
@@ -22,32 +24,7 @@ function WeightsTimelineChart({ payload }: { payload: RouterPayload }) {
   useEffect(() => {
     if (chartRef.current === null || payload.decisions.length === 0) return;
     const chart = echarts.init(chartRef.current);
-    chart.setOption({
-      tooltip: { trigger: "axis" },
-      legend: { top: 0 },
-      grid: { left: 56, right: 56, top: 40, bottom: 48 },
-      xAxis: { type: "category", data: series.categories, name: "decision time" },
-      yAxis: [
-        { type: "value", name: "weight" },
-        { type: "value", name: "turnover" },
-      ],
-      series: [
-        ...series.weights.map((weight) => ({
-          name: weight.key,
-          type: "line" as const,
-          stack: "weights",
-          areaStyle: {},
-          data: weight.data,
-        })),
-        {
-          name: "turnover (switch)",
-          type: "bar" as const,
-          yAxisIndex: 1,
-          data: series.turnover,
-          itemStyle: { color: "#c2410c", opacity: 0.5 },
-        },
-      ],
-    });
+    chart.setOption(weightsChartOption(series));
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
     return () => {
@@ -66,27 +43,7 @@ function EquityChart({ payload }: { payload: RouterPayload }) {
   useEffect(() => {
     if (chartRef.current === null || payload.gross_equity_curve.length === 0) return;
     const chart = echarts.init(chartRef.current);
-    chart.setOption({
-      tooltip: { trigger: "axis" },
-      legend: { top: 0 },
-      grid: { left: 64, right: 24, top: 40, bottom: 48 },
-      xAxis: { type: "category", data: series.categories, name: "time" },
-      yAxis: { type: "value", name: "equity", scale: true },
-      series: [
-        {
-          name: "gross (before switching cost)",
-          type: "line",
-          data: series.gross,
-          itemStyle: { color: "#64748b" },
-        },
-        {
-          name: "net (after switching cost)",
-          type: "line",
-          data: series.net,
-          itemStyle: { color: "#1d4ed8" },
-        },
-      ],
-    });
+    chart.setOption(equityChartOption(series));
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
     return () => {

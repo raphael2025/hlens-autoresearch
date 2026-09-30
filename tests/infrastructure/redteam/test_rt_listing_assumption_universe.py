@@ -12,7 +12,7 @@ missing table entry.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -22,6 +22,8 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.listings import UnconstructibleReason
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import DATASET_MANIFESTS, DATASET_SELECTIONS
+from infrastructure.dataset.sources import UniverseRunParams
+from infrastructure.pit.runs import RunLimits
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.universe import listing_assumption as backfill
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseUnconstructible
@@ -30,6 +32,11 @@ from tests.infrastructure.dataset.dataset_support import END, L1, L2, L3, SIM, S
 from tests.infrastructure.revision.rest_store_support import utc
 
 FLOOR = utc(2023, 11, 1)
+RUN_PARAMS = UniverseRunParams(
+    capacity=1,
+    merge_fanout=2,
+    limits=RunLimits(leaf_max_records=1, leaf_max_bytes=4096, fanout=2),
+)
 TABLE = {"BTCUSDT": FLOOR, "ETHUSDT": FLOOR}
 ETH_NEVER_LISTED: dict[str, str | None] = {"BTCUSDT": "TRADING", "ETHUSDT": None}
 ETH_ONLY_HALTED: dict[str, str | None] = {"BTCUSDT": "TRADING", "ETHUSDT": "HALT"}

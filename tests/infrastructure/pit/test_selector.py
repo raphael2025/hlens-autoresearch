@@ -9,14 +9,14 @@ from __future__ import annotations
 from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import pytest
 from pyiceberg.expressions import EqualTo
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus, PolicyBinding, PolicyRole
 from infrastructure.canonical import rules
-from infrastructure.canonical.normalizer import CanonicalUnitIncomplete
+from infrastructure.canonical.normalizer import CanonicalNormalizeError, CanonicalUnitIncomplete
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.assumption import ASSUMPTION_BINDING, ASSUMPTION_LATENCY
@@ -102,7 +102,9 @@ def _chain(h: RestHarness, *, reconcile: bool = True, count: int = 1) -> tuple[s
 
 
 def _select(h: RestHarness, spec: PointInTimeSpec) -> Any:
-    return PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    return PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
 
 
 def _canonical(h: RestHarness, channel_table: str) -> dict[str, Any]:
@@ -284,7 +286,9 @@ def test_an_unbound_canonical_table_and_a_bad_window_are_refused(h: RestHarness)
     _chain(h)
     with pytest.raises(PitSpecError, match="does not bind canonical.trades"):
         _select(h, _spec(h, cutoff=FAR, skip=(c.TRADES.table,)))
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with pytest.raises(PitSpecError, match="UTC datetime"):
         selector.select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, START.replace(tzinfo=None), END)
     with pytest.raises(PitSpecError, match="must not be empty"):
@@ -403,14 +407,16 @@ def test_a_narrow_window_proves_only_the_batches_it_reads(h: RestHarness) -> Non
     )
     first = utc(2023, 11, 14, 22, 14)  # ss.T0: the unit's first trade
     log = _RawScans(h.adapter)
-    out = PitSelector(log, h.storage).select(
-        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, first + 2 * MINUTE, first + 4 * MINUTE
-    )
+    out = PitSelector(
+        log, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, first + 2 * MINUTE, first + 4 * MINUTE)
     assert sorted(row["arrival_seq"] for row in out.selected_rows.values()) == [3, 4]
     # One Raw proof window of the second batch (positions 3-4) — not the unit's four windows.
     assert [rows for width, rows in log.widths if width > 3 and rows <= 2] == [2]
     assert log.closed_readers == log.batch_requests
-    whole = PitSelector(h.adapter, h.storage).select(
+    whole = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(
         _spec(h, cutoff=FAR), "agg_trades", SYMBOL, START, END
     )
     assert {r: whole.selected_rows[r] for r in out.selected_rows} == dict(out.selected_rows)
@@ -428,10 +434,12 @@ def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> Non
     slices = [(first, first + 3 * MINUTE), (first + 3 * MINUTE, first + 7 * MINUTE)]
     spec = _spec(h, cutoff=FAR)
     log = _RawScans(h.adapter)
-    shared = PitSelector(log, h.storage)
+    shared = PitSelector(log, h.storage, canonical_scratch_directory=h.canonical_scratch_directory)
     for start, end in slices:
         out = shared.select(spec, "agg_trades", SYMBOL, start, end)
-        fresh = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, start, end)
+        fresh = PitSelector(
+            h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+        ).select(spec, "agg_trades", SYMBOL, start, end)
         assert out.selections == fresh.selections
         assert dict(out.selected_rows) == dict(fresh.selected_rows)
     # The unit's positions (a narrow read) were read once for both slices.
@@ -441,6 +449,54 @@ def test_one_selector_proves_each_unit_once_across_slices(h: RestHarness) -> Non
     later = _spec(h, cutoff=K_A)
     shared.select(later, "agg_trades", SYMBOL, *slices[0])
     assert shared._bound == tuple(sorted(later.snapshot_bindings.items()))
+
+
+def test_failed_normalizer_rebind_keeps_old_state_and_retry_closes_it(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=FAR)
+    bindings = dict(spec.snapshot_bindings)
+    table = next(iter(bindings))
+    bindings[table] = "new-bound-snapshot"
+    next_spec = spec.model_copy(update={"snapshot_bindings": bindings})
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
+
+    class RecordingNormalizer:
+        instances: list[RecordingNormalizer] = []
+        fail_next = False
+
+        def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+            if self.fail_next:
+                type(self).fail_next = False
+                raise CanonicalNormalizeError("scratch unavailable")
+            self.closed = False
+            self.instances.append(self)
+
+        def close(self) -> None:
+            self.closed = True
+
+    monkeypatch.setattr(selector_module, "CanonicalNormalizer", RecordingNormalizer)
+    original_view = selector._pinned(spec)
+    original_normalizer = cast(Any, selector._normalizer)
+    assert original_normalizer is RecordingNormalizer.instances[0]
+
+    RecordingNormalizer.fail_next = True
+    with pytest.raises(CanonicalNormalizeError, match="scratch unavailable"):
+        selector._pinned(next_spec)
+
+    assert selector._bound == tuple(sorted(spec.snapshot_bindings.items()))
+    assert selector._view is original_view
+    assert cast(Any, selector._normalizer) is original_normalizer
+    assert not original_normalizer.closed
+
+    rebound_view = selector._pinned(next_spec)
+    assert selector._bound == tuple(sorted(next_spec.snapshot_bindings.items()))
+    assert selector._view is rebound_view and rebound_view is not original_view
+    assert cast(Any, selector._normalizer) is RecordingNormalizer.instances[1]
+    assert original_normalizer.closed
 
 
 # =========================================================================================
@@ -475,7 +531,9 @@ def test_a_window_never_sees_one_side_of_a_conflict(
     """Review G-1 / H-1: a straddling key is evaluated with all its revisions, by the one window
     holding its earliest event; a touching reader sees it in every window it touches."""
     key = _straddle(h)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     spec = _spec(h, cutoff=FAR)
     out = selector.select(spec, "agg_trades", SYMBOL, *window)
     assert (key in out.conflicts) is owned and (key in out.records) is owned
@@ -489,7 +547,9 @@ def test_adjacent_windows_never_select_a_key_twice(h: RestHarness) -> None:
     """Review H-1: with only the archive copy known, the key is selected by one hour only."""
     key = _straddle(h)
     spec = _spec(h, cutoff=N_A)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     hours = [
         (utc(2023, 11, 14, 21), utc(2023, 11, 14, 22)),
         (utc(2023, 11, 14, 22), utc(2023, 11, 14, 23)),
@@ -511,9 +571,12 @@ def test_adjacent_windows_never_select_a_key_twice(h: RestHarness) -> None:
 
 def test_the_day_report_keeps_a_conflict_whose_revisions_straddle_slices(h: RestHarness) -> None:
     key = _straddle(h)
-    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=utc(2023, 12, 20))).report(
-        "agg_trades", SYMBOL, ss.DAY
-    )
+    out = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=utc(2023, 12, 20)),
+    ).report("agg_trades", SYMBOL, ss.DAY)
     competing = [e for e in out.row["events"] if e["event_type"] == "competing_heads"]
     assert [e["observation_key"] for e in competing] == [key]
     # Each revision's gap is listed once, although both slices evaluated the key.
@@ -647,7 +710,9 @@ def test_a_bar_becomes_available_at_its_close_plus_latency(h: RestHarness) -> No
     [bar] = h.rows(c.BARS)
     spec = _spec(h, cutoff=FAR, at=bar["interval_end"] + ASSUMPTION_LATENCY)
     spec = spec.model_copy(update={"availability_bindings": WITH_ASSUMPTION})
-    out = PitSelector(h.adapter, h.storage).select(spec, "klines_1m", SYMBOL, START, END)
+    out = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, START, END)
     [selection] = out.selections
     assert selection.status is PointInTimeStatus.SELECTED
     assert out.assumed[bar["revision_id"]][1] == bar["interval_end"] + ASSUMPTION_LATENCY

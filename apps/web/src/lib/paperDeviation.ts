@@ -4,6 +4,7 @@
 // summary statistics. Decimals as exact text (`null` where not computable, never 0), times as
 // ISO-8601 UTC. Descriptive only — no threshold, no verdict. Hand-typed since /reports/{kind} has
 // no per-kind OpenAPI schema. Pure: tested by paperDeviation.test.ts with `node --test`.
+import type { EChartsOption } from "echarts";
 
 export type DeviationMarkPayload = {
   time: string;
@@ -170,6 +171,32 @@ export function chartSeries(report: PaperDeviationPayload): ChartSeries {
     paper: report.marks.map((mark) => number(mark.paper_equity)),
     reference: report.marks.map((mark) => number(mark.reference_equity)),
     difference: report.marks.map((mark) => number(mark.equity_difference)),
+  };
+}
+
+/** ECharts option used by the Paper Deviation page's mark-by-mark chart. */
+export function deviationChartOption(report: PaperDeviationPayload): EChartsOption {
+  const series = chartSeries(report);
+  return {
+    tooltip: { trigger: "axis" as const },
+    legend: { top: 0 },
+    grid: { left: 64, right: 64, top: 40, bottom: 48 },
+    xAxis: { type: "category" as const, data: series.times, name: "time" },
+    yAxis: [
+      { type: "value" as const, name: "equity", scale: true },
+      { type: "value" as const, name: "paper − reference" },
+    ],
+    series: [
+      { name: "paper (router, net)", type: "line" as const, data: series.paper, itemStyle: { color: "#1d4ed8" } },
+      { name: "reference", type: "line" as const, data: series.reference, itemStyle: { color: "#64748b" } },
+      {
+        name: "difference",
+        type: "bar" as const,
+        yAxisIndex: 1,
+        data: series.difference,
+        itemStyle: { color: "#c2410c", opacity: 0.5 },
+      },
+    ],
   };
 }
 

@@ -1,0 +1,41 @@
+.report-browser {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+}
+
+.report-browser__list {
+  flex: 0 0 var(--report-list-width, 240px);
+  min-width: var(--report-list-width, 240px);
+}
+
+.report-browser__list button {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  text-align: left;
+  white-space: normal;
+}
+
+.report-browser__detail {
+  flex: 1;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+@media (max-width: 800px) {
+  .report-browser {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 16px;
+  }
+
+  .report-browser__list {
+    min-width: 0;
+    max-height: 240px;
+    overflow: auto;
+  }
+
+  .report-browser__detail {
+    width: 100%;
+  }
+}

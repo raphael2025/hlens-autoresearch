@@ -581,6 +581,11 @@ def _emit(event: str, **facts: Any) -> None:
     print(_EVENT_PREFIX + json.dumps({"event": event, "t": time.monotonic(), **facts}), flush=True)
 
 
+def _canonical_scratch_directory() -> Path:
+    """Keep probe position indexes under its per-child disk-backed TMPDIR."""
+    return Path(tempfile.gettempdir()) / "hlens-canonical-scratch"
+
+
 # ============================================================================================
 # child: fixture setup and measured stages
 # ============================================================================================
@@ -748,6 +753,7 @@ def _stage(
                     adapter,
                     storage,
                     req,
+                    canonical_scratch_directory=_canonical_scratch_directory(),
                     market_data_base_url=REST_BASE,
                     pit_params=pit_params,
                     universe_params=universe_params,
@@ -841,7 +847,13 @@ def _stage(
             raise ProbeError("write_crash needs a plan of at least two batches (N > M)")
         clock = _Clock(_KNOWLEDGE_NORMALIZE)
         proxy = _CrashAfter(adapter, crash_after)
-        writer = CanonicalNormalizer(proxy, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            proxy,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
 
         def write_crash() -> tuple[dict[str, Any], object]:
             try:
@@ -862,7 +874,13 @@ def _stage(
 
     if stage in ("resume", "replay"):
         clock = _Clock(_KNOWLEDGE_NORMALIZE + timedelta(hours=1))
-        writer = CanonicalNormalizer(adapter, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
         crash_after = _crash_after(rows, microbatch)
 
         def normalize() -> tuple[dict[str, Any], object]:
@@ -922,7 +940,10 @@ def _stage(
             raise ProbeError(f"no committed row inside batch {batch_id}")
         row = found_row
         reader = CanonicalNormalizer(
-            PinnedCatalogView(adapter, _heads(adapter)), storage, microbatch_rows=microbatch
+            PinnedCatalogView(adapter, _heads(adapter)),
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            microbatch_rows=microbatch,
         )
 
         def read_batch() -> tuple[dict[str, Any], object]:

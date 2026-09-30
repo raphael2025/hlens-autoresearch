@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import timedelta
 from decimal import Decimal
+from typing import Any
 
 import pytest
 
@@ -129,17 +130,31 @@ X = Ref(kind=Kind.FEATURE, name="x", version="1.0.0")
 VOLUME_X = Ref(kind=Kind.FEATURE, name="volume_x", version="1.0.0")
 
 
-def _quantile_spec(provider_cls: type, feature: Ref) -> object:
+def _quantile_spec(provider_cls: Any, feature: Ref) -> Any:
     return provider_cls.spec(
         feature, cuts=["0.33", "0.66"], min_history=5, training_window=timedelta(hours=1), seed=1
     )
 
 
-def _outcome_label_spec(method: OutcomeMethod, **barriers: Decimal) -> OutcomeLabelSpec:
+def _outcome_label_spec(
+    method: OutcomeMethod,
+    *,
+    upper_barrier: Decimal | None = None,
+    lower_barrier: Decimal | None = None,
+    volatility_feature: Ref | None = None,
+    barrier_multiplier: Decimal | None = None,
+) -> OutcomeLabelSpec:
     outcome_spec = OutcomeSpec(
         name="test_outcome", version="1.0.0", horizon=timedelta(hours=1), label_definition="test"
     )
-    return OutcomeLabelSpec.bind(outcome_spec, method, **barriers)
+    return OutcomeLabelSpec.bind(
+        outcome_spec,
+        method,
+        upper_barrier=upper_barrier,
+        lower_barrier=lower_barrier,
+        volatility_feature=volatility_feature,
+        barrier_multiplier=barrier_multiplier,
+    )
 
 
 # ---------------------------------------------------------------- one descriptor per provider

@@ -22,6 +22,8 @@ ADR-0077 要求 Dataset v3 / PIT v3 的完整工作集有界，并以可重放�
 
 v3 的冲突结果只保留固定大小的 PIT evaluation 身份、head 数、stream 根引用与记录数。构建器必须将本次冲突的所有 heads 排入 stream 后才返回 fail-closed 的冲突结果；不得选取 head，不得只保留前 N 个，也不得继续产出该冲突 key 的数据集行。根引用采用固定大小的 `EvidenceStreamRef`，可由显式 reader 完整重放和核验。旧 v2 仍返回既有 `PointInTimeSelection.maximal_heads` tuple。
 
+PIT infrastructure 的 sorted-run 实现必须使用调用方显式提供的 ADR-0077 `RunLimits` 与 merge fan-out；每条 run 记录只含一个 revision ID。reader 按序读取全部 heads，并校验对象 key、hash、大小、结构和记录数；不得截断、采样或因冲突数量拒绝记录。部分 run 写入后失败时，已发布对象保持不可引用的 orphan，不自动删除；清理只能走显式 maintenance。
+
 Dataset v3 的 2.5.0 manifest 增加第七个 `pit_conflicts` stream ref。成功构建的数据集该流必须为空；verifier 必须重放并确认该流为空。冲突时 Dataset 构建失败，不提交 dataset manifest；冲突结果携带已完成的 stream root/count 供诊断读取，写出的不可变对象按 ADR-0077 的 orphan 规则保留。失败构建不把部分 dataset manifest 当作提交点。
 
 版本规则：

@@ -13,6 +13,7 @@ before.
 from __future__ import annotations
 
 import json
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
@@ -101,9 +102,14 @@ def _without_timings(value: Any) -> Any:
 
 
 def _reads(adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter) -> Any:
-    reports = tool._report(adapter, storage, [DAY])["reports"]
-    selections = tool._pit(adapter, storage, [DAY])["selections"]
-    stopped = tool._f2("https://market-data.test", adapter, storage, [DAY])
+    scratch = Path(tempfile.gettempdir())
+    reports = tool._report(adapter, storage, [DAY], canonical_scratch_directory=scratch)["reports"]
+    selections = tool._pit(adapter, storage, [DAY], canonical_scratch_directory=scratch)[
+        "selections"
+    ]
+    stopped = tool._f2(
+        "https://market-data.test", adapter, storage, [DAY], canonical_scratch_directory=scratch
+    )
     answers = json.loads(json.dumps([reports, selections, stopped], default=str, sort_keys=True))
     return _without_timings(answers)
 
@@ -114,7 +120,7 @@ def test_dnet_data_committed_earlier_replays_unchanged_now(
     monkeypatch: pytest.MonkeyPatch,
     old: str,
 ) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
     adapter, storage = world
     monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
     monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)
@@ -127,9 +133,14 @@ def test_dnet_data_committed_earlier_replays_unchanged_now(
             )
         )
         ingested = _round_trip(tool._ingest(adapter, storage, collected))
-        normalized = tool._normalize(adapter, storage, ingested)
+        scratch = Path(tempfile.gettempdir())
+        normalized = tool._normalize(
+            adapter, storage, ingested, canonical_scratch_directory=scratch
+        )
         assert [u["canonical_revisions"] for u in normalized["units"]] == [BARS, BARS]
-        written = tool._report(adapter, storage, [DAY])["reports"]
+        written = tool._report(adapter, storage, [DAY], canonical_scratch_directory=scratch)[
+            "reports"
+        ]
         assert not any(report["reused"] for report in written)
         first_reads = _reads(adapter, storage)  # the reports now exist: every read reuses
     assert _versions(adapter) == {old}
@@ -140,10 +151,17 @@ def test_dnet_data_committed_earlier_replays_unchanged_now(
     adapter = PyIcebergCatalogAdapter(adapter._catalog, PHASE1_REGISTRY)  # noqa: SLF001
     again = tool._ingest(adapter, storage, collected)
     assert all(unit["replayed"] for unit in again["units"])
-    renormalized = tool._normalize(adapter, storage, _round_trip(again))
+    renormalized = tool._normalize(
+        adapter, storage, _round_trip(again), canonical_scratch_directory=scratch
+    )
     assert [u["canonical_revisions"] for u in renormalized["units"]] == [BARS, BARS]
     assert _reads(adapter, storage) == first_reads
-    assert all(report["reused"] for report in tool._report(adapter, storage, [DAY])["reports"])
+    assert all(
+        report["reused"]
+        for report in tool._report(adapter, storage, [DAY], canonical_scratch_directory=scratch)[
+            "reports"
+        ]
+    )
     assert _state(adapter) == committed  # no snapshot, no row, no version changed
     assert _versions(adapter) == {old}
     assert len(site.requests) == requests  # nothing downloaded again

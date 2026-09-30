@@ -513,7 +513,7 @@ def _instants_v3(
         merge_fanout=run_params.merge_fanout,
         limits=run_params.limits,
     )
-    events = _change_events(view, pit.knowledge_cutoff)
+    events = _change_events(view, pit.knowledge_cutoff, start, end)
     try:
         with run_set:
             for instant in events:
@@ -551,8 +551,14 @@ def _close_reader(reader: object) -> None:
         close()
 
 
-def _change_events(view: PinnedCatalogView, cutoff: datetime) -> Generator[datetime]:
-    """Yield cutoff-visible change timestamps from bounded batches, closing each reader."""
+def _change_events(
+    view: PinnedCatalogView, cutoff: datetime, start: datetime, end: datetime
+) -> Generator[datetime]:
+    """Yield only in-window, cutoff-visible events from bounded batches."""
+
+    def in_window(instant: datetime) -> bool:
+        return start < instant < end
+
     reader = view.scan_column_batches(
         EXCHANGE_INFO_TABLE, columns=("retrieved_at", "knowledge_time")
     )
@@ -560,7 +566,9 @@ def _change_events(view: PinnedCatalogView, cutoff: datetime) -> Generator[datet
         for record_batch in reader:
             for row in record_batch.to_pylist():
                 if row["knowledge_time"] <= cutoff:
-                    yield row["retrieved_at"]
+                    instant = row["retrieved_at"]
+                    if in_window(instant):
+                        yield instant
     finally:
         _close_reader(reader)
 
@@ -571,11 +579,16 @@ def _change_events(view: PinnedCatalogView, cutoff: datetime) -> Generator[datet
         for record_batch in reader:
             for row in record_batch.to_pylist():
                 if row["knowledge_time"] <= cutoff:
-                    yield row["available_time"]
+                    instant = row["available_time"]
+                    if in_window(instant):
+                        yield instant
                     for interval in row["tradable_intervals"]:
-                        yield interval["tradable_from"]
-                        if interval["tradable_until"] is not None:
-                            yield interval["tradable_until"]
+                        instant = interval["tradable_from"]
+                        if in_window(instant):
+                            yield instant
+                        instant = interval["tradable_until"]
+                        if instant is not None and in_window(instant):
+                            yield instant
     finally:
         _close_reader(reader)
 

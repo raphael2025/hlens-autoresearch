@@ -113,6 +113,7 @@ def _reporter(
     return QualityReporterV3(
         h.adapter,
         h.storage if evidence_storage is None else evidence_storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
         scratch_storage=scratch,
         clock=clock,
         identity_rule_hashes=_identity_hashes(),

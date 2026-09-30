@@ -412,9 +412,9 @@ def run_chain(w: ds.World, report_root: Path, registry_path: Path) -> Chain:
 
     # ---- F4: features over the interval manifest's proven BTC bars ----
     spec = interval.manifest.point_in_time
-    selection = PitSelector(w.h.adapter, w.h.storage).select(
-        spec, "klines_1m", BTC, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", BTC, DAY_START, DAY_END)
     observations = bar_observations(selection, spec)
     # The P6 matrix keys returns by equity-point time (= bar interval_end), so every step is
     # evaluated on the bar-close grid. Under ADR-0032 a bar is visible 5 s after its close, so

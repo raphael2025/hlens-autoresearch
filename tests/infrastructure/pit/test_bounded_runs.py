@@ -13,10 +13,11 @@ from contextlib import contextmanager
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
+from core.contracts.storage import StorageAdapter
 from infrastructure.pit.runs import (
     KeyHistoryBuffer,
     RunIntegrityError,
@@ -297,6 +298,74 @@ def test_run_set_builder_releases_refs_after_storage_read_failure(
     assert builder._closed
     assert not builder._rows
     assert all(not level for level in builder._refs._levels)
+
+def test_merge_consumes_a_lazy_run_stream_with_bounded_multilevel_folding(
+    tmp_path: Path,
+) -> None:
+    """Input refs are consumed incrementally; fanout=2 forces several persisted merge levels."""
+    storage = _storage(tmp_path)
+    rows = [_row(i) for i in range(65)]
+
+    class ObservedStorage:
+        def __init__(self) -> None:
+            self.merge_reads = 0
+
+        def __getattr__(self, name: str) -> object:
+            return getattr(storage, name)
+
+        def open_read(self, ref: object) -> object:
+            self.merge_reads += 1
+            return storage.open_read(ref)  # type: ignore[arg-type]
+
+    observed = ObservedStorage()
+
+    def refs() -> Iterator[RunRef]:
+        for i, row in enumerate(reversed(rows)):
+            if i == 2:
+                # The first fanout group has already been merged before the third source ref is
+                # requested. A collector that first materializes the entire iterable fails this
+                # interleaving assertion and retains O(number of refs).
+                assert observed.merge_reads > 0
+            yield write_sorted_run(storage, [row], _TIGHT)
+
+    with merge_sorted_runs(
+        cast(StorageAdapter, observed),
+        refs(),
+        key=_key,
+        merge_fanout=2,
+        limits=_TIGHT,
+    ) as merged:
+        got = list(merged)
+    assert got == sorted(rows, key=_key)
+    assert observed.merge_reads > 0
+
+
+def test_multilevel_merge_iterator_closes_after_early_consumer_exit(tmp_path: Path) -> None:
+    storage = _storage(tmp_path)
+    rows = [_row(i) for i in range(17)]
+    refs = (write_sorted_run(storage, [row], _TIGHT) for row in reversed(rows))
+    with merge_sorted_runs(storage, refs, key=_key, merge_fanout=2, limits=_TIGHT) as merged:
+        iterator = iter(merged)
+        assert next(iterator) == rows[0]
+    with pytest.raises(StopIteration):
+        next(iterator)
+
+
+def test_run_set_builder_returns_one_root_from_unordered_rows(tmp_path: Path) -> None:
+    storage = _storage(tmp_path)
+    rows = [_row(i, key=key) for key in ("d", "a", "c", "b") for i in range(7)]
+    with RunSetBuilder(storage, key=_key, capacity=2, merge_fanout=2, limits=_TIGHT) as builder:
+        builder.extend(reversed(rows))
+        root = builder.finish()
+        assert root is not None
+        with iter_run(storage, root) as ordered:
+            assert list(ordered) == sorted(rows, key=_key)
+
+
+def test_run_set_builder_empty_input_has_no_root(tmp_path: Path) -> None:
+    storage = _storage(tmp_path)
+    with RunSetBuilder(storage, key=_key, capacity=2, merge_fanout=2, limits=_TIGHT) as builder:
+        assert builder.finish() is None
 
 
 def test_merge_of_no_runs_yields_nothing(tmp_path: Path) -> None:

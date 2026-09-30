@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +27,8 @@ from core.contracts.universe import UniverseMember
 from infrastructure.canonical import rules
 from infrastructure.canonical.listings import UnconstructibleReason
 from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
+from infrastructure.dataset.sources import UniverseRunParams
+from infrastructure.pit.runs import RunLimits
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.universe import listing_assumption as backfill
 from infrastructure.universe.builder import (
@@ -43,6 +45,11 @@ from tests.infrastructure.revision.rest_store_support import utc
 
 #: An arbitrary UTC day boundary before the first local observation (L1): not a real floor.
 FLOOR = utc(2023, 11, 1)
+RUN_PARAMS = UniverseRunParams(
+    capacity=1,
+    merge_fanout=2,
+    limits=RunLimits(leaf_max_records=1, leaf_max_bytes=4096, fanout=2),
+)
 TABLE = {"BTCUSDT": FLOOR, "ETHUSDT": FLOOR}
 
 

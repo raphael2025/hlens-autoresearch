@@ -47,10 +47,11 @@ exclusion, lineage entry, report id, evidence gap and the rows the snapshot comm
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Final, Protocol, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -127,6 +128,7 @@ from infrastructure.pit.selector import PIT_BINDING, PitConflictError, PitSelect
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.quality.listing_report import ListingQualityReporter
 from infrastructure.quality.reporter import QualityReporter, evidence_gaps_of
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 from infrastructure.revision.availability import AVAILABILITY_BINDING as ARCHIVE_AVAILABILITY
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
@@ -340,12 +342,14 @@ class DatasetBuilder:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        canonical_scratch_directory: Path,
         market_data_base_url: str,
         dataset_table: RegisteredTableDefinition,
     ) -> None:
         _check_dataset_table(dataset_table)
         self._adapter = adapter
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         self._origin = market_data_base_url
         self._table = dataset_table
 
@@ -354,6 +358,11 @@ class DatasetBuilder:
         """The catalog this builder builds, materializes and verifies against (public; C1-CONSUMERS
         follow-up: previously read only through the private ``_adapter`` attribute)."""
         return self._adapter
+
+    @property
+    def canonical_scratch_directory(self) -> Path:
+        """Configured scratch root forwarded to Canonical verification during reselection."""
+        return self._canonical_scratch_directory
 
     # ------------------------------------------------------------------ entry points
 
@@ -479,7 +488,11 @@ class DatasetBuilder:
             self._adapter, self._storage, market_data_base_url=self._origin
         ).build(universe, pit)
         column = _time_column(data_type)
-        selector = PitSelector(self._adapter, self._storage)
+        selector = PitSelector(
+            self._adapter,
+            self._storage,
+            canonical_scratch_directory=self._canonical_scratch_directory,
+        )
         rows: list[dict[str, Any]] = []
         lineage: dict[str, SelectedRevisionLineage] = {}
         gaps: dict[str, str] = {}
@@ -675,7 +688,11 @@ class DatasetBuilder:
         report row; each bound gap must be recorded, with the same text, by the report cited.
         """
         view = PinnedCatalogView(self._adapter, pit.snapshot_bindings)
-        reporter = QualityReporter(view, self._storage)
+        reporter = QualityReporter(
+            view,
+            self._storage,
+            canonical_scratch_directory=self._canonical_scratch_directory,
+        )
         report_ids: set[str] = set()
         bound: list[AvailabilityEvidenceGap] = []
         by_partition: dict[tuple[str, date], list[str]] = {}
@@ -1300,13 +1317,19 @@ class PinnedQualityEvidence:
         pit: PointInTimeSpec,
         data_type: str,
         *,
+        canonical_scratch_directory: Path,
         market_data_base_url: str,
     ) -> None:
         self._view = PinnedCatalogView(adapter, pit.snapshot_bindings)
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         self._data_type = data_type
         self._origin = market_data_base_url
-        self._reporter = QualityReporter(self._view, storage)
+        self._reporter = QualityReporter(
+            self._view,
+            storage,
+            canonical_scratch_directory=canonical_scratch_directory,
+        )
         self._gaps_of: str | None = None
         self._gaps: dict[tuple[str, str], str] = {}
 
@@ -1459,7 +1482,14 @@ class DatasetEvidenceBuilder:
         selection_id = self.selection_id(request)
         _check_unbound_evidence(self._adapter, request.pit, manifested=manifested)
         return _EvidenceDerivation(
-            request, canonical, selection_id, self._rule, sources, sink, schema_version
+            request,
+            canonical,
+            selection_id,
+            self._rule,
+            sources,
+            sink,
+            schema_version,
+            self._storage,
         ).run()
 
     def build(
@@ -1493,7 +1523,14 @@ class DatasetEvidenceBuilder:
         with scope:
             sink = _EvidenceBuildSink(self._storage, self._rule, selection_id, chunks, version)
             derived = _EvidenceDerivation(
-                request, canonical, selection_id, self._rule, sources, sink, version
+                request,
+                canonical,
+                selection_id,
+                self._rule,
+                sources,
+                sink,
+                version,
+                self._storage,
             ).run()
             if derived.row_count == 0:
                 raise DatasetEmpty(
@@ -1703,7 +1740,7 @@ def _selected_spans_of(
 
 def _checked_member_spans(
     spans: Iterator[MemberSpan], pit: PointInTimeSpec, venue_symbol: str
-) -> Iterator[MemberSpan]:
+) -> Generator[MemberSpan]:
     """The member spans, proven ordered, disjoint and inside the simulation (or the one point)."""
     point = pit.simulation_time is not None
     previous: MemberSpan | None = None
@@ -1727,22 +1764,77 @@ def _checked_member_spans(
         yield span
 
 
-class _MemberSpans:
-    """The cursor's member spans, taken one venue symbol at a time (symbols ascending).
+@dataclass(frozen=True, slots=True)
+class _MemberSpanRun:
+    """One symbol's replayable member spans, kept in a bounded content-addressed run."""
 
-    Holds the spans of **one** symbol: bounded by that symbol's membership changes inside the
-    simulation window (the bound B-UNIV declares for its change instants), never by rows or keys.
-    The whole-universe ``member_spans`` mapping of v2 is never built; reopening the cursor per
-    observation key instead would re-walk the universe once per key.
-    """
+    storage: StorageAdapter
+    root: RunRef | None
+    pit: PointInTimeSpec
+    venue_symbol: str
+
+    @property
+    def empty(self) -> bool:
+        return self.root is None
+
+    @contextmanager
+    def open(self) -> Iterator[Iterator[MemberSpan]]:
+        if self.root is None:
+            yield iter(())
+            return
+        with iter_run(self.storage, self.root) as records:
+            spans = _member_spans_from_run(records, self.venue_symbol)
+            checked = _checked_member_spans(spans, self.pit, self.venue_symbol)
+            try:
+                yield checked
+            finally:
+                close = getattr(checked, "close", None)
+                if callable(close):
+                    close()
+                spans.close()
+
+
+def _member_spans_from_run(
+    records: Iterator[Mapping[str, Any]], venue_symbol: str
+) -> Generator[MemberSpan]:
+    expected_ordinal = 0
+    for row in records:
+        order = row.get("order")
+        record = row.get("record")
+        if (
+            not isinstance(order, list)
+            or len(order) != 1
+            or type(order[0]) is not int
+            or order[0] != expected_ordinal
+            or not isinstance(record, Mapping)
+            or set(record) != {"effective_from", "effective_until"}
+        ):
+            raise CatalogIntegrityError(
+                f"member spans of {venue_symbol} have a malformed run record"
+            )
+        expected_ordinal += 1
+        yield record["effective_from"], record["effective_until"]
+
+
+class _MemberSpans:
+    """Consume the span cursor once, persisting each symbol to one bounded replayable run."""
 
     def __init__(
         self,
         spans: Iterator[tuple[str, datetime | None, datetime | None]],
         pit: PointInTimeSpec,
+        storage: StorageAdapter,
+        *,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
     ) -> None:
         self._spans = spans
         self._pit = pit
+        self._storage = storage
+        self._capacity = capacity
+        self._merge_fanout = merge_fanout
+        self._limits = limits
         self._pending = self._next()
 
     def _next(self) -> tuple[str, datetime | None, datetime | None] | None:
@@ -1753,16 +1845,37 @@ class _MemberSpans:
             raise CatalogIntegrityError(f"a member span is malformed: {item!r}")
         return item
 
-    def take(self, venue_symbol: str) -> tuple[MemberSpan, ...]:
-        mine: list[MemberSpan] = []
-        while self._pending is not None and self._pending[0] == venue_symbol:
-            mine.append((self._pending[1], self._pending[2]))
-            self._pending = self._next()
-        if self._pending is not None and self._pending[0] < venue_symbol:
-            raise CatalogIntegrityError(
-                f"member spans of {self._pending[0]} are out of symbol order or not in the spec"
-            )
-        return tuple(_checked_member_spans(iter(mine), self._pit, venue_symbol))
+    def take(self, venue_symbol: str) -> _MemberSpanRun:
+        ordinal = 0
+
+        def mine() -> Iterator[MemberSpan]:
+            nonlocal ordinal
+            while self._pending is not None and self._pending[0] == venue_symbol:
+                item = self._pending
+                self._pending = self._next()
+                ordinal += 1
+                yield item[1], item[2]
+
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: row["order"][0],
+            capacity=self._capacity,
+            merge_fanout=self._merge_fanout,
+            limits=self._limits,
+        ) as runs:
+            for span in _checked_member_spans(mine(), self._pit, venue_symbol):
+                runs.add(
+                    {
+                        "order": [ordinal - 1],
+                        "record": {"effective_from": span[0], "effective_until": span[1]},
+                    }
+                )
+            if self._pending is not None and self._pending[0] < venue_symbol:
+                raise CatalogIntegrityError(
+                    f"member spans of {self._pending[0]} are out of symbol order or not in the spec"
+                )
+            root = runs.finish()
+        return _MemberSpanRun(self._storage, root, self._pit, venue_symbol)
 
     def close(self) -> None:
         if self._pending is not None:
@@ -1774,7 +1887,7 @@ class _MemberSpans:
 def _gated_rows(
     selected: Iterator[tuple[datetime | None, datetime | None, PitSelectedRevision]],
     members: Iterator[MemberSpan],
-) -> Iterator[tuple[tuple[datetime | None, datetime | None], PitSelectedRevision]]:
+) -> Generator[tuple[tuple[datetime | None, datetime | None], PitSelectedRevision]]:
     """Every (selected span x member span) intersection, by start: a merge of two sorted,
     disjoint families. Yields exactly what v2's nested loop (each selected span, each member
     span) yields, in the same order, holding one item of each side.
@@ -1922,6 +2035,7 @@ class _EvidenceDerivation:
         sources: DatasetEvidenceSources,
         sink: DatasetDerivationSink,
         schema_version: str,
+        storage: StorageAdapter,
     ) -> None:
         if not isinstance(sources, DatasetEvidenceSources):
             raise DatasetSpecError("sources must be DatasetEvidenceSources")
@@ -1933,6 +2047,12 @@ class _EvidenceDerivation:
         self._universe = sources.universe
         self._pit = sources.pit
         self._sink = sink
+        self._storage = storage
+        self._span_run_limits = RunLimits(
+            leaf_max_records=rule.limits.leaf_max_records,
+            leaf_max_bytes=max(513, rule.limits.leaf_object_max_bytes),
+            fanout=rule.limits.fanout,
+        )
         self._bound = request.pit.snapshot_bindings
         self._point = request.pit.simulation_time is not None
         self._streams = _derived_streams(schema_version)
@@ -1948,7 +2068,14 @@ class _EvidenceDerivation:
         self._entries()
         self._listing_lineage(listing)
         with self._universe.member_spans() as spans:
-            members = _MemberSpans(spans, self.request.pit)
+            members = _MemberSpans(
+                spans,
+                self.request.pit,
+                self._storage,
+                capacity=self._chunk_rows,
+                merge_fanout=self._span_run_limits.fanout,
+                limits=self._span_run_limits,
+            )
             for venue_symbol in self.request.universe.symbols:
                 self._symbol(venue_symbol, members.take(venue_symbol))
             members.close()
@@ -2054,8 +2181,8 @@ class _EvidenceDerivation:
 
     # ------------------------------------------------------------------ data
 
-    def _symbol(self, venue_symbol: str, member_spans: tuple[MemberSpan, ...]) -> None:
-        if not member_spans:
+    def _symbol(self, venue_symbol: str, member_spans: _MemberSpanRun) -> None:
+        if member_spans.empty:
             return  # not a member at any time: no rows and no partition reports (as v2)
         request = self.request
         reports = _PartitionReports(self, venue_symbol)
@@ -2078,7 +2205,7 @@ class _EvidenceDerivation:
         self,
         group: PitKeyGroup,
         venue_symbol: str,
-        member_spans: tuple[MemberSpan, ...],
+        member_spans: _MemberSpanRun,
         low: datetime,
         high: datetime,
         previous: str | None,
@@ -2108,21 +2235,30 @@ class _EvidenceDerivation:
         # occurrences are adjacent in output. This scalar covers repeated evaluation/span
         # intersections without retaining O(H_key) revision IDs.
         last_lineage_revision: str | None = None
-        rows = _gated_rows(
-            _selected_spans_of(
-                group.evaluations,
-                self.request.pit,
-                key,
-                on_conflict=lambda evaluation: self._finish_pit_conflict(key, evaluation),
-            ),
-            iter(member_spans),
-        )
-        for (effective_from, effective_until), selected in rows:
-            event_time = self._row(venue_symbol, key, selected, effective_from, effective_until)
-            report_id = reports.cover(event_time.astimezone(UTC).date())
-            if selected.revision_id != last_lineage_revision:
-                self._data_lineage(selected, report_id)
-                last_lineage_revision = selected.revision_id
+        with member_spans.open() as replayed_members:
+            rows = _gated_rows(
+                _selected_spans_of(
+                    group.evaluations,
+                    self.request.pit,
+                    key,
+                    on_conflict=lambda evaluation: self._finish_pit_conflict(key, evaluation),
+                ),
+                replayed_members,
+            )
+            try:
+                for (effective_from, effective_until), selected in rows:
+                    event_time = self._row(
+                        venue_symbol, key, selected, effective_from, effective_until
+                    )
+                    report_id = reports.cover(event_time.astimezone(UTC).date())
+                    if selected.revision_id != last_lineage_revision:
+                        self._data_lineage(selected, report_id)
+                        last_lineage_revision = selected.revision_id
+                # Verify the complete replay even if selected history ended before the last span.
+                for _ in replayed_members:
+                    pass
+            finally:
+                rows.close()
 
     def _pit_conflict_head(self, record: PitConflictHeadEvidence) -> None:
         if EvidenceStream.PIT_CONFLICTS not in self._counts:

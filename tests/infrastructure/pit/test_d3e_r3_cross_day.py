@@ -342,9 +342,9 @@ def test_a_pit_selector_select_over_fixed_cross_midnight_snapshots(h: RestHarnes
     assert len(spanning_raw) == 2  # one equal pair per UTC day
 
     window_start, window_end = utc(2023, 11, 14), utc(2023, 11, 15)
-    first = PitSelector(h.adapter, h.storage).select(
-        pinned, "agg_trades", SYMBOL, window_start, window_end
-    )
+    first = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(pinned, "agg_trades", SYMBOL, window_start, window_end)
     assert first.evidence_bound is True
     by_key = {s.observation_key: s for s in first.selections}
     assert set(by_key) >= {ONLY_0, SPANNING}  # DAY_1-owned ONLY_1 is outside this window
@@ -383,15 +383,15 @@ def test_a_pit_selector_select_over_fixed_cross_midnight_snapshots(h: RestHarnes
     assert h.head(c.EVIDENCE.table) != evidence_head
     assert h.head(c.TRADES.table) != trades_head
 
-    again = PitSelector(h.adapter, h.storage).select(
-        pinned, "agg_trades", SYMBOL, window_start, window_end
-    )
+    again = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(pinned, "agg_trades", SYMBOL, window_start, window_end)
     assert again == first
 
     # A fresh binding sees the appended equal pair as SELECTED and keeps the spanning conflict.
-    fresh = PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, window_start, window_end
-    )
+    fresh = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, window_start, window_end)
     fresh_by = {s.observation_key: s for s in fresh.selections}
     later_key = f"binance:spot:agg_trade:{SYMBOL}:200"
     assert fresh_by[later_key].status is PointInTimeStatus.SELECTED
@@ -404,7 +404,9 @@ def test_a_pit_selector_day1_window_does_not_reown_the_spanning_key(h: RestHarne
     _cross_midnight_two_days(h)
     _reconcile_days(h, (DAY_1, DAY), clocks=(K_E, K_E2))
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     day0 = selector.select(spec, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15))
     day1 = selector.select(spec, "agg_trades", SYMBOL, utc(2023, 11, 15), utc(2023, 11, 16))
     assert SPANNING in {s.observation_key for s in day0.selections}
@@ -428,9 +430,9 @@ def test_a_pit_selector_must_not_duplicate_cross_day_mapped_edges(h: RestHarness
     """
     _cross_midnight_two_days(h)
     _reconcile_days(h, (DAY, DAY_1), clocks=(K_E, K_E2))
-    out = PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15)
-    )
+    out = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15))
     mapped_raw = _raw_edge_ids(out.edges[SPANNING])
     assert len(mapped_raw) == len(set(mapped_raw)) == 2
 
@@ -442,9 +444,9 @@ def test_a_pit_selector_maps_each_three_day_edge_once(h: RestHarness) -> None:
     spanning = {edge_id for edge_id, _, _ in _spanning_edge_triples(h)}
     assert len(spanning) == 3
     spec = _spec(h, cutoff=FAR)
-    out = PitSelector(h.adapter, h.storage).select(
-        spec, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17)
-    )
+    out = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17))
     for key, edges in out.edges.items():
         mapped = _raw_edge_ids(edges)
         assert len(mapped) == len(set(mapped)), key
@@ -452,9 +454,9 @@ def test_a_pit_selector_maps_each_three_day_edge_once(h: RestHarness) -> None:
     assert len(mapped_spanning) == 3 and set(mapped_spanning) == spanning
     # Deterministic: a fresh selector at the same manifest answers bitwise the same.
     assert (
-        PitSelector(h.adapter, h.storage).select(
-            spec, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17)
-        )
+        PitSelector(
+            h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+        ).select(spec, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17))
         == out
     )
 
@@ -467,7 +469,9 @@ def test_iter_bounded_maps_three_day_spanning_edges_once(
     _reconcile_days(h, (DAY_1, DAY_2, DAY))
     spec = _spec(h, cutoff=FAR)
     start, end = utc(2023, 11, 14), utc(2023, 11, 17)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     legacy = selector.select(spec, "agg_trades", SYMBOL, start, end)
     mapped_for_spanning: list[Any] = []
     original = PitSelector._mapped_edges
@@ -544,7 +548,9 @@ def test_a_pit_selector_fails_closed_on_inconsistent_duplicate_edge_id(
     _reconcile_days(h, (DAY, DAY_1), clocks=(K_E, K_E2))
     spec = _spec(h, cutoff=FAR)
     window = (utc(2023, 11, 14), utc(2023, 11, 15))
-    assert PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, *window)
+    assert PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, *window)
 
     genuine = ChannelReconciler.verified_edges
 
@@ -561,7 +567,9 @@ def test_a_pit_selector_fails_closed_on_inconsistent_duplicate_edge_id(
 
     monkeypatch.setattr(ChannelReconciler, "verified_edges", doctored)
     with pytest.raises(CatalogIntegrityError, match="different content"):
-        PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, *window)
+        PitSelector(
+            h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+        ).select(spec, "agg_trades", SYMBOL, *window)
 
 
 # =========================================================================================
@@ -605,9 +613,9 @@ def test_b_three_day_key_interleaved_reconcile_converges(
 
     # Public PitSelector over a window that owns the key and reaches all three event days
     # (a single UTC-day window cannot pull the third day past ``_KEY_REACH``).
-    out = PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17)
-    )
+    out = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 17))
     [selection] = [s for s in out.selections if s.observation_key == SPANNING]
     assert selection.status is PointInTimeStatus.CONFLICT
     assert set(selection.maximal_heads) == _archive_canonical_ids(h, SPANNING)
@@ -658,9 +666,9 @@ def test_c_owner_appends_another_rest_key_without_breaking_old_batch(h: RestHarn
     evidence_at_pin = pinned.snapshot_bindings[c.EVIDENCE.table]
     rest_at_pin = pinned.snapshot_bindings[c.REST_AGGS.table]
     assert evidence_at_pin and rest_at_pin
-    before = PitSelector(h.adapter, h.storage).select(
-        pinned, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15)
-    )
+    before = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(pinned, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15))
 
     # DAY_1 reuses spanning edges, commits its own single-day key.
     second = h.reconciler(clock=StepClock(start=K_E2)).reconcile("agg_trades", SYMBOL, DAY_1)
@@ -720,15 +728,15 @@ def test_c_owner_appends_another_rest_key_without_breaking_old_batch(h: RestHarn
 
     # Old PointInTimeSpec bindings are bitwise stable despite the append.
     assert (
-        PitSelector(h.adapter, h.storage).select(
-            pinned, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15)
-        )
+        PitSelector(
+            h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+        ).select(pinned, "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15))
         == before
     )
     # Fresh bindings additionally select the appended key via its new edge.
-    fresh = PitSelector(h.adapter, h.storage).select(
-        _spec(h, cutoff=FAR), "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15)
-    )
+    fresh = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(_spec(h, cutoff=FAR), "agg_trades", SYMBOL, utc(2023, 11, 14), utc(2023, 11, 15))
     [later_sel] = [s for s in fresh.selections if s.observation_key == LATER_KEY]
     assert later_sel.status is PointInTimeStatus.SELECTED
     assert later_sel.selected_revision_id in _archive_canonical_ids(h, LATER_KEY)

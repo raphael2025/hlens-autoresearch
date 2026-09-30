@@ -163,9 +163,10 @@ record (it would see the checkpointed round still open). A lease is bound to the
 entered its scope and claimed exclusively per call; ``complete`` is claimed once before its first
 write (``PlanAdmissionLease``).
 
-Every durable store the checkpoints position enters the same gate before it writes (review fix,
-2026-09-28): ``open_state`` binds the TrialLedger, the sealed-OOS unsealing ledger, the lineage graph
-and the failure registry to it (``bind_write_gate``; ``research.persistence.gate``), and the review
+Every durable store whose position the checkpoint records enters the same gate before it writes
+(review fix, 2026-09-28): ``open_state`` binds the TrialLedger, the sealed-OOS unsealing ledger,
+the lineage graph and the failure registry to it (``bind_write_gate``;
+``research.persistence.gate``), and the review
 queue already writes inside ``review_scope``. So no store write — through
 ``state.memory.ledger.register`` / ``register_batch`` / ``register_reevaluation`` from any thread,
 ``oos_ledger.record`` / ``mark_evaluated``, ``lineage_graph.add`` or ``failures.append`` — can run
@@ -247,7 +248,7 @@ from dataclasses import dataclass, field, fields
 from datetime import datetime
 from pathlib import Path
 from threading import Condition, Lock, RLock, get_ident
-from typing import Any, Final, Protocol, TypeVar
+from typing import Any, Final, Protocol, cast
 
 from apps.worker.loop import (
     ROUND_RECORDED,
@@ -272,6 +273,7 @@ from core.domain.specs import StrategySpec
 from core.errors import LifecycleViolation, ReasonCode
 from research.evolution import LineageGraph
 from research.hypotheses import LedgerError, LedgerLease, TrialLedger
+from research.hypotheses.typed_plan import TypedPlan
 from research.hypotheses.typed_plan_audit import (
     CommittedAdmission,
     PlanAdmissionCorrupted,
@@ -281,7 +283,6 @@ from research.hypotheses.typed_plan_audit import (
     PreparedAdmission,
     RoundStartedIdentity,
 )
-from research.hypotheses.typed_plan import TypedPlan
 from research.loop.memory import REVIEW_APPROVED, ResearchMemory, ReviewApproval, ReviewQueue
 from research.loop.retry_admission import (
     RETRY_DIR,
@@ -373,8 +374,6 @@ OPERATOR_STATE_VERSION: Final = 5
 _ADMISSION_VERSIONS: Final = frozenset({STATE_VERSION, OPERATOR_STATE_VERSION, RETRY_STATE_VERSION})
 _PLAN_FORMAT: Final = {STATE_VERSION: 4, OPERATOR_STATE_VERSION: 5, RETRY_STATE_VERSION: 4}
 _OPERATOR_IDENTITY_PATTERN: Final = re.compile(r"^[0-9a-f]{64}$")
-_T = TypeVar("_T")
-
 #: Fingerprint fields that are budgets (a change is a human decision: a new directory).
 _BUDGET_FIELDS: Final = {
     "budget": "the loop budget (LoopBudget)",
@@ -393,8 +392,15 @@ _ROUND_KEYS: Final = frozenset({"round_index", "record_hash", "heads", "delta"})
 _BETWEEN_KEYS: Final = frozenset({"rounds", "audit_head", "heads", "action"})
 _ADMISSION_KEYS: Final = frozenset(
     {
-        "round", "transaction_id", "prepare_seq", "prepare_hash", "commit_seq",
-        "commit_hash", "ledger_event_seq", "ledger_event_hash", "heads",
+        "round",
+        "transaction_id",
+        "prepare_seq",
+        "prepare_hash",
+        "commit_seq",
+        "commit_hash",
+        "ledger_event_seq",
+        "ledger_event_hash",
+        "heads",
     }
 )
 #: The fields of a v6 ``retry_admission`` memory line (``MemoryCheckpoint.retry_admission``).
@@ -703,7 +709,7 @@ class _AdmissionGate:
 
 
 def _admission_file_sizes(root: Path) -> tuple[int, ...]:
-    """On-disk sizes of the files an admission appends to (``-1``: missing); partial writes count."""
+    """On-disk admission file sizes (``-1``: missing); partial writes count."""
     sizes: list[int] = []
     for name in (PLAN_ADMISSION_FILE, LEDGER_FILE, MEMORY_FILE):
         try:
@@ -748,7 +754,7 @@ def _stores(memory: ResearchMemory) -> tuple[LineageGraph, DurableUnsealingLedge
     return graph, oos
 
 
-def _durable(value: _T | None) -> _T:
+def _durable[T](value: T | None) -> T:
     """A store's journal view or position; ``None`` (an in-memory store) is refused."""
     if value is None:
         raise ValueError("a durable loop state needs journal-backed memory throughout")
@@ -822,14 +828,14 @@ def _checkpointed_heads(
     """
     last = entries[-1]
     if last.type != LOOP_STATE_OPENED:
-        return _json(dict(last.payload["heads"]))
+        return cast(dict[str, Any], _json(dict(last.payload["heads"])))
     out: dict[str, Any] = {name: {"seq": 0, "hash": GENESIS_HASH} for name, _ in _JOURNALS}
     if admission is not None:
         out["plan_admission"] = {"seq": 1, "hash": admission.entries[0].hash}
     out["failures"] = {"count": 0, "digest": content_hash([])}
     if retry is not None:
         out["retry_admission"] = []
-    return _json(out)
+    return cast(dict[str, Any], _json(out))
 
 
 def _failed_experiment_round(audit: LoopAuditLog) -> int | None:
@@ -995,11 +1001,7 @@ def _delta(memory: ResearchMemory, marks: _Marks) -> Any:
 
 
 def _approval_lines(memory: ResearchMemory) -> int:
-    return sum(
-        1
-        for entry in _review_snapshot(memory).entries
-        if entry.type == REVIEW_APPROVED
-    )
+    return sum(1 for entry in _review_snapshot(memory).entries if entry.type == REVIEW_APPROVED)
 
 
 class MemoryCheckpoint:
@@ -1152,9 +1154,11 @@ class MemoryCheckpoint:
         with self.admission_gate.hold(f"round {record.round_index} checkpoint"):
             self.require_settled(f"round {record.round_index} checkpoint")
             # a direct call too: only the open round, once (reopening refuses anything else)
-            if self.admission_gate.open_round() != record.round_index or sum(
-                1 for entry in self._journal.entries if entry.type == ROUND_MEMORY
-            ) != record.round_index:
+            if (
+                self.admission_gate.open_round() != record.round_index
+                or sum(1 for entry in self._journal.entries if entry.type == ROUND_MEMORY)
+                != record.round_index
+            ):
                 raise LoopStateInconsistent(
                     f"round {record.round_index} checkpoint is refused: it is not the audit's "
                     "open round, or that round is already checkpointed"
@@ -1710,9 +1714,7 @@ class DurableState:
     @contextmanager
     def _admission_lease(self) -> Iterator[PlanAdmissionLease]:
         """``plan_admission`` (also used by the opener's exact recovery)."""
-        if self.state_version not in _ADMISSION_VERSIONS or (
-            self._plan_admission is None
-        ):
+        if self.state_version not in _ADMISSION_VERSIONS or (self._plan_admission is None):
             raise LoopStateInconsistent(
                 f"typed-plan admission is disabled in state version {self.state_version}"
             )
@@ -1889,10 +1891,7 @@ class DurableState:
         """
         with self.checkpoint.admission_gate.hold("typed-plan COMMIT"):
             admission = self._plan_admission
-            if (
-                self.state_version not in _ADMISSION_VERSIONS
-                or admission is None
-            ):
+            if self.state_version not in _ADMISSION_VERSIONS or admission is None:
                 raise LoopStateInconsistent(
                     f"typed-plan admission is disabled in state version {self.state_version}"
                 )
@@ -2209,7 +2208,14 @@ def open_state(
         # recovery decision and every append below share one serialized state view.
         anchored = None if anchor is None else anchor.load()
         state = _open_locked(
-            root, fingerprint, strategies, provider, provider_for, anchor, anchored, state_version,
+            root,
+            fingerprint,
+            strategies,
+            provider,
+            provider_for,
+            anchor,
+            anchored,
+            state_version,
             lock,
         )
     except BaseException:
@@ -2314,7 +2320,8 @@ def _open_locked(
         if entries:
             if not admission_path.exists():
                 raise _refuse(
-                    f"a v{state_version} state directory is missing its required plan admission journal"
+                    f"a v{state_version} state directory is missing its required "
+                    "plan admission journal"
                 )
             admission = _plan_journal(
                 admission_path,
@@ -2336,8 +2343,7 @@ def _open_locked(
     if not entries:
         _require_empty(audit, memory, retry=retry)
         if anchored is not None and (
-            state_version in _ADMISSION_VERSIONS
-            or anchored.memory_seq > 1
+            state_version in _ADMISSION_VERSIONS or anchored.memory_seq > 1
         ):
             raise _behind(root, 0, 0, anchored)
         if state_version in _ADMISSION_VERSIONS:
@@ -2350,8 +2356,15 @@ def _open_locked(
             )
         journal.append(LOOP_STATE_OPENED, {"state_version": state_version, "fingerprint": expected})
         state = DurableState(
-            root, memory, audit, MemoryCheckpoint(journal, memory, admission, state_lock, retry),
-            anchor, admission, state_version, state_lock, retry,
+            root,
+            memory,
+            audit,
+            MemoryCheckpoint(journal, memory, admission, state_lock, retry),
+            anchor,
+            admission,
+            state_version,
+            state_lock,
+            retry,
         )
         _bind_store_gates(state)
         _check_anchor(state, anchored)
@@ -2410,8 +2423,15 @@ def _open_locked(
         raise _refuse(f"a checkpoint of {journal.path} names unreadable positions: {exc}") from exc
     _check_ledgers(memory, audit.records)
     state = DurableState(
-        root, memory, audit, MemoryCheckpoint(journal, memory, admission, state_lock, retry),
-        anchor, admission, state_version, state_lock, retry,
+        root,
+        memory,
+        audit,
+        MemoryCheckpoint(journal, memory, admission, state_lock, retry),
+        anchor,
+        admission,
+        state_version,
+        state_lock,
+        retry,
     )
     _bind_store_gates(state)
     if admission is not None:
@@ -2445,7 +2465,9 @@ def _open_locked(
         except (LedgerError, PlanAdmissionError) as exc:
             raise _refuse(f"typed-plan admission recovery refused: {exc}") from exc
         except (KeyError, LookupError, TypeError) as exc:
-            raise _refuse(f"a checkpoint of {journal.path} names unreadable positions: {exc}") from exc
+            raise _refuse(
+                f"a checkpoint of {journal.path} names unreadable positions: {exc}"
+            ) from exc
         _check_anchor(state, anchored)
         if publish:
             state.publish_anchor()
@@ -2453,7 +2475,8 @@ def _open_locked(
         # follows the durable loop rule (and ADR-0070) and remains stopped for human review.
         if audit.open_round is not None:
             raise _refuse(
-                f"round {audit.open_round} was started but never recorded after admission recovery; "
+                f"round {audit.open_round} was interrupted: it started but was never recorded "
+                "after admission recovery; "
                 "the loop does not resume or rerun it"
             )
         if recovering and retry_tail is None:
@@ -2844,7 +2867,9 @@ def _check_admission_checkpoints(
             or (plan_position.get("seq"), plan_position.get("hash"))
             != (committed.seq, committed.entry_hash)
         ):
-            raise _refuse("a plan admission checkpoint does not cover its exact ledger / COMMIT heads")
+            raise _refuse(
+                "a plan admission checkpoint does not cover its exact ledger / COMMIT heads"
+            )
         named.add(transaction_id)
     if len(named) > len(committed_by_id):
         raise _refuse("a plan admission checkpoint names an unknown COMMIT")
@@ -3006,9 +3031,7 @@ def _retry_baseline(journal: RetryJournal) -> dict[str, Any]:
     return {"seq": prepare["ledger_baseline_seq"], "hash": prepare["ledger_baseline_hash"]}
 
 
-def _retry_rows(
-    memory: ResearchMemory, items: Sequence[RetryManifestItem]
-) -> list[dict[str, str]]:
+def _retry_rows(memory: ResearchMemory, items: Sequence[RetryManifestItem]) -> list[dict[str, str]]:
     """The ``retry_reevaluations`` rows the hypothesis stage records for ``items``."""
     hypotheses = resolve_manifest(memory.ledger.hypotheses, items)
     return retry_summary_rows(zip(hypotheses, (item.attempt for item in items), strict=True))
@@ -3220,7 +3243,11 @@ def _check_positions(
     whose already written ``reevaluate`` lines are the only TrialLedger tail accepted for it.
     """
     pending = None if admission is None else admission.pending
-    committed_ids = set() if admission is None else {item.prepare.transaction_id for item in admission.committed}
+    committed_ids = (
+        set()
+        if admission is None
+        else {item.prepare.transaction_id for item in admission.committed}
+    )
     checkpointed_ids = {
         mark.payload["transaction_id"] for _, mark in marks if mark.type == PLAN_ADMISSION
     }
@@ -3268,8 +3295,12 @@ def _check_positions(
                 )
         extra = entries[previous:]
         permitted = allow_recovery and (
-            (name == "plan_admission" and admission is not None and len(uncheckpointed_commits) + (pending is not None) == 1
-             and len(extra) == (2 if uncheckpointed_commits else 1))
+            (
+                name == "plan_admission"
+                and admission is not None
+                and len(uncheckpointed_commits) + (pending is not None) == 1
+                and len(extra) == (2 if uncheckpointed_commits else 1)
+            )
             or (
                 name == "trial_ledger"
                 and (pending is not None or len(uncheckpointed_commits) == 1)
@@ -3294,8 +3325,10 @@ def _check_positions(
                 f"{name} holds {len(extra)} line(s) no checkpoint accounts for: the audit or the "
                 "memory checkpoint is behind it (truncated), or a round was interrupted"
             )
-        if name == "trial_ledger" and admission is not None and (
-            pending is not None or uncheckpointed_commits
+        if (
+            name == "trial_ledger"
+            and admission is not None
+            and (pending is not None or uncheckpointed_commits)
         ):
             prepared = (
                 pending
@@ -3310,7 +3343,9 @@ def _check_positions(
                 previous,
                 entries[previous - 1].hash if previous else GENESIS_HASH,
             ):
-                raise _refuse("uncheckpointed admission does not start at the last checkpointed ledger head")
+                raise _refuse(
+                    "uncheckpointed admission does not start at the last checkpointed ledger head"
+                )
     hashes = _failure_hashes(memory.failures.records())
     previous = 0
     for label, mark in marks:
@@ -3364,8 +3399,10 @@ def _check_retry_positions(
         if mark.type == RETRY_ADMISSION:
             failed = mark.payload["failed_record_hash"]
             journal = retry.get(failed)
-            if journal is None or journal.commit is None or any(
-                item["failed_record_hash"] == failed for item in previous
+            if (
+                journal is None
+                or journal.commit is None
+                or any(item["failed_record_hash"] == failed for item in previous)
             ):
                 raise _refuse(f"{label} names no new committed retry journal")
             expected = sorted(

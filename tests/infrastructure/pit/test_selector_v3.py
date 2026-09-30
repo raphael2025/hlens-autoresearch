@@ -1,10 +1,10 @@
-"""v3 fixed-working-set PIT generator (ADR-0077 §6.1.2 / §6.1.3; ``PitSelector.iter_bounded``).
+"""v3 sorted-run PIT generator (ADR-0077 §6.1.2 / §6.1.3; ``PitSelector.iter_bounded``).
 
 Reuses the real Raw / Canonical harness and helpers from ``test_selector.py`` (``_spec``,
 ``_chain``, the four-cutoff fixture data) so every case is checked against the *same* real
 normalizer / reconciler data v2's ``select()`` uses — the point is that ``iter_bounded`` answers
-identically to ``select()``, just through the bounded sort/merge/evaluate pipeline
-(``infrastructure/pit/runs.py``) instead of ``select()``'s whole-window dicts. Deliberately tiny
+identically to ``select()``, just through the sorted-run pipeline (``infrastructure/pit/runs.py``)
+instead of ``select()``'s whole-window dicts. Deliberately tiny
 ``PitRunParams`` (batches / merge fanout / key-history buffer of 1-2) are used throughout so every
 test exercises spilling, multi-run merging and (where applicable) ``KeyHistoryBuffer`` overflow,
 not just the trivial single-run path.
@@ -25,7 +25,7 @@ import pytest
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit import selector as selector_module
-from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder
+from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 from infrastructure.pit.selector import (
     PitBoundedRecord,
     PitRunParams,
@@ -64,7 +64,9 @@ TINY_PARAMS = PitRunParams(
 
 
 def _bounded(h: RestHarness, spec: PointInTimeSpec, **kwargs: Any) -> list[PitBoundedRecord]:
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with selector.iter_bounded(
         spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS, **kwargs
     ) as records:
@@ -113,6 +115,42 @@ def _capture_run_set_builders(monkeypatch: pytest.MonkeyPatch) -> list[RunSetBui
     monkeypatch.setattr(selector_module, "RunSetBuilder", CapturingRunSetBuilder)
     return instances
 
+def _replace_mapped_edge_key(
+    selector: PitSelector,
+    monkeypatch: pytest.MonkeyPatch,
+    observation_key: str,
+) -> None:
+    """Move the genuine mapped run edge to a key with no corresponding Canonical rows."""
+    original = selector_module._bounded_mapped_edge_run
+
+    def orphaned_edge_run(
+        current: PitSelector,
+        view: Any,
+        spec: PointInTimeSpec,
+        data_type: str,
+        symbol: str,
+        key: str,
+        days: Any,
+        rows: Any,
+        *,
+        params: PitRunParams,
+    ) -> Any:
+        root = original(current, view, spec, data_type, symbol, key, days, rows, params=params)
+        assert root is not None
+        with RunSetBuilder(
+            current._storage,
+            key=selector_module._pit_edge_sort_key,
+            capacity=params.edge_batch_rows,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as builder:
+            with iter_run(current._storage, root) as edges:
+                for item in edges:
+                    builder.add({"observation_key": observation_key, "evidence": item["evidence"]})
+            return builder.finish()
+
+    monkeypatch.setattr(selector_module, "_bounded_mapped_edge_run", orphaned_edge_run)
+
 
 # =========================================================================================
 # equivalence with v2 select()
@@ -122,7 +160,9 @@ def _capture_run_set_builders(monkeypatch: pytest.MonkeyPatch) -> list[RunSetBui
 def test_iter_bounded_matches_select_selections_lineage_and_gaps(h: RestHarness) -> None:
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     records = _bounded(h, spec)
 
     got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
@@ -140,7 +180,9 @@ def test_pit_edge_groups_are_lazy_and_unmatched_keys_fail_closed(h: RestHarness)
     """Sorted merge holds a future edge iterator, and refuses edges with no row key."""
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     evidence = next(item for group in legacy.edges.values() for item in group)
     raw = {"evidence": evidence.model_dump(mode="json")}
     consumed: list[object] = []
@@ -184,7 +226,9 @@ def test_pit_edge_group_spools_large_key_replayably_and_closes_readers(
 ) -> None:
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     evidence = next(item for group in legacy.edges.values() for item in group)
     distinct = [
         evidence.model_copy(
@@ -256,7 +300,9 @@ def test_pit_edge_group_spool_failure_clears_writer_state(
 ) -> None:
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     evidence = next(item for group in legacy.edges.values() for item in group)
     raw = {
         "observation_key": evidence.observation_key,
@@ -289,7 +335,9 @@ def test_pit_key_row_run_replays_and_supports_bounded_random_lookups(
 ) -> None:
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     view = selector._pinned(spec)
     source_root, _ = selector_module._pit_canonical_row_roots(
         selector,
@@ -409,7 +457,9 @@ def test_single_key_history_over_run_capacity_proof_and_legacy_parity(
             normalizer.normalize_unit(c.REST_AGGS.table, response)
 
     spec = _spec(h, cutoff=K_E, skip=(c.EVIDENCE.table,))
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     bounded = _bounded(h, spec)
     got = sorted(
         _selections(bounded), key=lambda item: (item.observation_key, item.simulation_time)
@@ -432,7 +482,9 @@ def test_bounded_canonical_proof_rejects_adjacent_duplicate_revision_ids(
     """The sorted bounded path detects duplicates without a revision-sized seen set."""
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     view = selector._pinned(spec)
     [row] = h.rows(c.TRADES)[:1]
 
@@ -496,7 +548,9 @@ def test_canonical_key_closure_is_spilled_and_matches_v2_rows(h: RestHarness) ->
     """The bounded v3 read path sorts closure rows in content-addressed runs, not window lists."""
     _chain(h, count=8)
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     view = selector._pinned(spec)
     table = selector_module.rules.CANONICAL_TABLES["agg_trades"].table
     canonical_symbol = selector_module.rules.SYMBOLS[SYMBOL].symbol
@@ -583,7 +637,9 @@ def test_closure_writer_count_stays_constant_across_disjoint_chains(
                 active -= 1
 
     monkeypatch.setattr(selector_module, "RunSetBuilder", TrackingRunSetBuilder)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     row_root, day_root = selector_module._pit_canonical_row_roots(
         selector,
         BatchView(),  # type: ignore[arg-type]
@@ -634,7 +690,9 @@ def test_closure_scan_reader_closes_after_iterator_failure() -> None:
 def test_iter_bounded_empty_row_and_edge_roots_yield_no_records(h: RestHarness) -> None:
     _chain(h)
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     later = FAR + timedelta(days=2)
     with selector.iter_bounded(
         spec, "agg_trades", SYMBOL, FAR, later, params=TINY_PARAMS
@@ -660,7 +718,9 @@ def test_iter_bounded_rejects_invalid_windows_like_select(
 ) -> None:
     _chain(h)
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
 
     with pytest.raises(PitSpecError, match=match):
         selector.select(spec, "agg_trades", SYMBOL, start, end)
@@ -722,7 +782,9 @@ def test_iter_bounded_run_set_roots_compact_many_batches_and_preserve_parity(
 ) -> None:
     _chain(h, count=4)
     spec = _spec(h, cutoff=FAR)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     builders = _capture_run_set_builders(monkeypatch)
 
     active_merge_readers = 0
@@ -809,7 +871,9 @@ def test_iter_bounded_run_set_failure_releases_builders(
         monkeypatch.setattr(h.storage, "open_read", fail_run_read)
         error = "injected PIT run read failure"
 
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with pytest.raises(OSError, match=error):
         with selector.iter_bounded(spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS):
             pytest.fail("run-set construction should fail before yielding")
@@ -823,7 +887,9 @@ def test_iter_bounded_matches_select_across_the_four_cutoffs(h: RestHarness) -> 
     _chain(h)
     for cutoff in (N_A, N_R, K_E, K_A):
         spec = _spec(h, cutoff=cutoff)
-        legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+        legacy = PitSelector(
+            h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+        ).select(spec, "agg_trades", SYMBOL, START, END)
         records = _bounded(h, spec)
         got = sorted(_selections(records), key=lambda s: (s.observation_key, s.simulation_time))
         expected = sorted(legacy.selections, key=lambda s: (s.observation_key, s.simulation_time))
@@ -832,12 +898,32 @@ def test_iter_bounded_matches_select_across_the_four_cutoffs(h: RestHarness) -> 
         ], cutoff
 
 
+def test_run_backed_evaluation_instants_are_deterministic_at_half_open_boundaries(
+    h: RestHarness,
+) -> None:
+    """The external change run keeps the interval's inclusive start and exclusive end exactly
+    aligned with the legacy selector, and repeated reads have identical order/content."""
+    _chain(h)
+    spec = _spec(h, cutoff=N_R, interval=(N_A, N_R))
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
+    first = _bounded(h, spec)
+    second = _bounded(h, spec)
+    assert first == second
+    assert tuple(_selections(first)) == legacy.selections
+    assert all(item.simulation_time < N_R for item in _selections(first))
+    assert _selections(first)[0].simulation_time == N_A
+
+
 def test_iter_bounded_reports_a_conflict_inline_like_select_reports_it_out_of_band(
     h: RestHarness,
 ) -> None:
     _chain(h)  # reconciled: N_R is a genuine competing-heads instant (ADR-0028 §4)
     spec = _spec(h, cutoff=N_R)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     assert legacy.conflicts  # sanity: v2 does see a conflict at this cutoff
     records = _bounded(h, spec)
     conflicted = [r for r in records if r.selection.status is PointInTimeStatus.CONFLICT]
@@ -859,8 +945,9 @@ def test_iter_bounded_deduplicates_lineage_across_repeated_selections_of_one_rev
         if r.selection.status is PointInTimeStatus.SELECTED
     ]
     assert len(selected_revisions) >= 1
-    lineage_hits = [r for r in records if r.lineage is not None]
-    assert len(lineage_hits) == len({item.lineage.canonical_revision_id for item in lineage_hits})
+    assert len([r for r in records if r.lineage is not None]) == len(
+        {r.lineage.canonical_revision_id for r in records if r.lineage is not None}
+    )
 
 
 def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buffer(
@@ -871,11 +958,15 @@ def test_iter_bounded_handles_several_keys_and_a_key_history_longer_than_the_buf
     fifth, single-revision REST-only key exercising ordinary (non-spilling) grouping."""
     _chain(h, count=4)
     [other_item] = ss.agg_items(1, first_id=900)
-    [other_response] = c.ingest_rest(h, "agg_trades", [other_item], knowledge=K_R)
+    [other_response] = c.ingest_rest(
+        h, "agg_trades", [other_item], knowledge=K_R, request_id="req-rest-lone-key"
+    )
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, other_response)
 
     spec = _spec(h, cutoff=FAR)
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     records = _bounded(h, spec)
     assert _lineage_by_revision(records) == {
         item.canonical_revision_id: item for item in legacy.lineage
@@ -927,7 +1018,9 @@ def test_iter_bounded_records_carry_owner_and_selected_event_times(h: RestHarnes
 def test_iter_bounded_wrong_bindings_are_refused(h: RestHarness) -> None:
     _chain(h)
     spec = _spec(h, cutoff=FAR, parser_bindings=(_WRONG,))
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with pytest.raises(PitSpecError, match="parser_bindings"):
         with selector.iter_bounded(spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS):
             pass
@@ -936,7 +1029,9 @@ def test_iter_bounded_wrong_bindings_are_refused(h: RestHarness) -> None:
 def test_iter_bounded_an_unbound_canonical_table_is_refused(h: RestHarness) -> None:
     _chain(h)
     spec = _spec(h, cutoff=FAR, skip=(c.TRADES.table,))
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with pytest.raises(PitSpecError, match="does not bind canonical.trades"):
         with selector.iter_bounded(spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS):
             pass
@@ -958,7 +1053,9 @@ def test_iter_bounded_spills_and_emits_every_conflict_head_without_a_tuple(
     """A real bounded selector evaluation retains only the summary while its heads exceed fanout."""
     _chain(h)
     spec = _spec(h, cutoff=FAR, skip=(c.EVIDENCE.table,))
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     view = selector._pinned(spec)
     actual_row_root, day_root = selector_module._pit_canonical_row_roots(
         selector,
@@ -1026,6 +1123,56 @@ def test_iter_bounded_spills_and_emits_every_conflict_head_without_a_tuple(
     assert [item.revision_id for item in emitted] == sorted(item.revision_id for item in emitted)
 
 
+def test_iter_bounded_accepts_a_matching_edge_on_the_last_key(h: RestHarness) -> None:
+    """A valid edge matching the final Canonical key is consumed before stream closure."""
+    _chain(h)
+    records = _bounded(h, _spec(h, cutoff=FAR))
+    assert len(records) == 1
+    assert records[0].selection.status is PointInTimeStatus.SELECTED
+
+
+def test_iter_bounded_rejects_a_trailing_orphan_edge(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An edge key ordered after all Canonical keys must fail the final stream check."""
+    _chain(h)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
+    _replace_mapped_edge_key(selector, monkeypatch, "~orphan")
+    with pytest.raises(CatalogIntegrityError, match="mapped edge references"):
+        with selector.iter_bounded(
+            _spec(h, cutoff=FAR),
+            "agg_trades",
+            SYMBOL,
+            START,
+            END,
+            params=TINY_PARAMS,
+        ) as records:
+            list(records)
+
+
+def test_iter_bounded_rejects_all_orphan_edges_before_the_first_key(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An all-orphan edge prefix cannot be skipped while advancing to the first row key."""
+    _chain(h)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
+    _replace_mapped_edge_key(selector, monkeypatch, "!orphan")
+    with pytest.raises(CatalogIntegrityError, match="mapped edge references"):
+        with selector.iter_bounded(
+            _spec(h, cutoff=FAR),
+            "agg_trades",
+            SYMBOL,
+            START,
+            END,
+            params=TINY_PARAMS,
+        ) as records:
+            list(records)
+
+
 # =========================================================================================
 # explicit close of the internal generator and its merge readers (B-FIX)
 # =========================================================================================
@@ -1052,7 +1199,9 @@ def test_iter_bounded_closes_its_generator_on_an_early_context_exit(
         return handle
 
     monkeypatch.setattr(h.storage, "open_read", track_run_read)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with selector.iter_bounded(
         spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS
     ) as records:
@@ -1071,7 +1220,9 @@ def test_iter_bounded_closes_cleanly_after_full_iteration(h: RestHarness) -> Non
     explicit close raise on the common path is caught."""
     _chain(h, count=2)
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with selector.iter_bounded(
         spec, "agg_trades", SYMBOL, START, END, params=TINY_PARAMS
     ) as records:
@@ -1084,7 +1235,9 @@ def test_iter_bounded_closes_its_generator_when_the_context_body_raises(h: RestH
     early exit (``@contextmanager``'s ``finally`` covers both)."""
     _chain(h, count=4)
     spec = _spec(h, cutoff=FAR)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     captured: Iterator[PitBoundedRecord] | None = None
     with pytest.raises(RuntimeError, match="boom"):
         with selector.iter_bounded(

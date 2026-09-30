@@ -111,7 +111,11 @@ def normalizer(
     if microbatch_rows is not None:
         kwargs["microbatch_rows"] = microbatch_rows
     return CanonicalNormalizer(
-        h.adapter if adapter is None else adapter, h.storage, clock=clock, **kwargs
+        h.adapter if adapter is None else adapter,
+        h.storage,
+        scratch_directory=h.canonical_scratch_directory,
+        clock=clock,
+        **kwargs,
     )
 
 

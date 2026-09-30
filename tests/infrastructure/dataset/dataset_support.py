@@ -69,7 +69,7 @@ from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.settings import local_file_uri_to_path
-from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.storage import LocalFileStorageAdapter as LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseBuilder
 from infrastructure.universe.run_params import UniverseRunParams
 from tests.infrastructure.canonical import canonical_support as c
@@ -82,11 +82,15 @@ from tests.infrastructure.collector.rest_support import FakeTime, RestVenue
 from tests.infrastructure.revision import exchange_info_support as xs
 from tests.infrastructure.revision import rest_store_support as ss
 from tests.infrastructure.revision.rest_store_support import (
-    DAY,
+    DAY as DAY,
+)
+from tests.infrastructure.revision.rest_store_support import (
     SYMBOL,
     RestHarness,
     StepClock,
-    utc,
+)
+from tests.infrastructure.revision.rest_store_support import (
+    utc as utc,
 )
 
 ORIGIN: Final = xs.ORIGIN
@@ -194,7 +198,12 @@ class World:
         listing: bool = True,
     ) -> list[str]:
         ids = []
-        reporter = QualityReporter(self.h.adapter, self.h.storage, clock=StepClock(start=K_Q))
+        reporter = QualityReporter(
+            self.h.adapter,
+            self.h.storage,
+            canonical_scratch_directory=self.h.canonical_scratch_directory,
+            clock=StepClock(start=K_Q),
+        )
         for symbol in symbols:
             for day in days:
                 ids.append(reporter.report(data_type, symbol, day).report_id)
@@ -257,6 +266,7 @@ class World:
         return DatasetBuilder(
             self.h.adapter,
             self.h.storage,
+            canonical_scratch_directory=self.h.canonical_scratch_directory,
             market_data_base_url=ORIGIN,
             dataset_table=DATASET_SELECTIONS,
         )

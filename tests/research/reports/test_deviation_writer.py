@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -61,7 +62,7 @@ def test_only_a_paper_deviation_is_written(tmp_path: Path) -> None:
 def test_api_rejects_a_scope_hash_mismatch_even_when_outer_hash_is_recomputed(
     tmp_path: Path,
 ) -> None:
-    payload = deviation().to_payload()
+    payload = cast(dict[str, Any], deviation().to_payload())
     payload["declared_scope"]["symbol"] = "ETH"
     payload["deviation_hash"] = content_hash(
         {key: value for key, value in payload.items() if key != "deviation_hash"}

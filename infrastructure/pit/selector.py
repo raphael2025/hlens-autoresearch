@@ -40,6 +40,7 @@ from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from typing import Any, Final, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -321,9 +322,16 @@ def _check_bindings(spec: PointInTimeSpec) -> None:
 class PitSelector:
     """Deterministic PIT selection at a spec's bound snapshots; never writes."""
 
-    def __init__(self, adapter: RevisionCatalog, storage: StorageAdapter) -> None:
+    def __init__(
+        self,
+        adapter: RevisionCatalog,
+        storage: StorageAdapter,
+        *,
+        canonical_scratch_directory: Path,
+    ) -> None:
         self._adapter = adapter
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         #: The last spec's bound snapshots, their view and immutable-view normalizer, and the
         #: verified Raw edges per (data type, symbol, day): bound snapshots never change, so a
         #: caller selecting many slices under one spec proves each unit and day once (G3-S3).
@@ -335,10 +343,19 @@ class PitSelector:
     def _pinned(self, spec: PointInTimeSpec) -> PinnedCatalogView:
         bound = tuple(sorted(spec.snapshot_bindings.items()))
         if bound != self._bound or self._view is None:
+            view = PinnedCatalogView(self._adapter, spec.snapshot_bindings)
+            normalizer = CanonicalNormalizer(
+                view,
+                self._storage,
+                scratch_directory=self._canonical_scratch_directory,
+            )
+            old_normalizer = self._normalizer
             self._bound = bound
-            self._view = PinnedCatalogView(self._adapter, spec.snapshot_bindings)
-            self._normalizer = CanonicalNormalizer(self._view, self._storage)
+            self._view = view
+            self._normalizer = normalizer
             self._edges = {}
+            if old_normalizer is not None:
+                old_normalizer.close()
         return self._view
 
     def select(
@@ -498,7 +515,11 @@ class PitSelector:
         revision_ids_sorted: bool = False,
     ) -> list[Mapping[str, Any]]:
         """Every row read must be exactly a row its unit re-normalizes to at these snapshots."""
-        normalizer = self._normalizer or CanonicalNormalizer(view, self._storage)
+        normalizer = self._normalizer or CanonicalNormalizer(
+            view,
+            self._storage,
+            scratch_directory=self._canonical_scratch_directory,
+        )
         units: dict[tuple[str, str], set[int]] = {}
         for row in rows:
             unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
@@ -553,7 +574,11 @@ class PitSelector:
         Duplicate proof IDs use their greatest unit/batch/row ordinal, reproducing the legacy
         last-write-wins map. Extra proof rows are ignored and every expected field is compared.
         """
-        normalizer = self._normalizer or CanonicalNormalizer(view, self._storage)
+        normalizer = self._normalizer or CanonicalNormalizer(
+            view,
+            self._storage,
+            scratch_directory=self._canonical_scratch_directory,
+        )
         with RunSetBuilder(
             self._storage,
             key=_proof_request_sort_key,

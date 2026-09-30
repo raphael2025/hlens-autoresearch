@@ -144,7 +144,15 @@ export function withUnit(value: unknown, unit: string): string {
   return typeof value === "number" && Number.isFinite(value) ? `${value} ${unit}` : "—";
 }
 
-type AxisOption = { type: "value"; name: string; position: "left" | "right"; alignTicks: boolean };
+type AxisOption = {
+  type: "value";
+  name: string;
+  position: "left" | "right";
+  alignTicks: boolean;
+  nameLocation?: "middle";
+  nameRotate?: number;
+  nameGap?: number;
+};
 type SeriesOption = { name: string; type: "bar" | "line"; yAxisIndex: 0 | 1; data: (number | null)[] };
 
 // No `title` component (not registered in src/lib/echarts.ts): the page captions each chart with
@@ -152,7 +160,7 @@ type SeriesOption = { name: string; type: "bar" | "line"; yAxisIndex: 0 | 1; dat
 export type UsageChartOption = {
   legend: { top: number; right: number };
   tooltip: { trigger: "axis"; valueFormatter: (value: unknown) => string };
-  xAxis: { type: "category"; data: string[]; name: string };
+  xAxis: { type: "category"; data: string[]; name: string; nameLocation: "middle"; nameGap: number };
   yAxis: [AxisOption, AxisOption];
   series: [SeriesOption, SeriesOption];
   grid: { left: number; right: number; top: number; bottom: number };
@@ -167,10 +175,18 @@ export function usageChartOption(labels: readonly string[], series: UsageSeries)
   return {
     legend: { top: 0, right: 0 },
     tooltip: { trigger: "axis", valueFormatter: (value) => withUnit(value, series.unit) },
-    xAxis: { type: "category", data: [...labels], name: "round" },
+    xAxis: { type: "category", data: [...labels], name: "round", nameLocation: "middle", nameGap: 24 },
     yAxis: [
       { type: "value", name: `per round (${series.unit})`, position: "left", alignTicks: true },
-      { type: "value", name: `cumulative (${series.unit})`, position: "right", alignTicks: true },
+      {
+        type: "value",
+        name: `cumulative (${series.unit})`,
+        position: "right",
+        alignTicks: true,
+        nameLocation: "middle",
+        nameRotate: 90,
+        nameGap: 36,
+      },
     ],
     series: [
       { name: "round usage", type: "bar", yAxisIndex: 0, data: series.round },

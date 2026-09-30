@@ -1,12 +1,13 @@
 // The list + detail layout every report page shares: GET /reports/{kind} (with its invalid files
 // shown as a warning) on the left, GET /reports/{kind}/{id} of the selected report on the right,
 // each with explicit loading / empty / error states (src/components/States.tsx).
-import { useContext, useState, type ReactNode } from "react";
+import { useContext, useState, type CSSProperties, type ReactNode } from "react";
 import { getReport, listReports, type ReportEnvelope, type ReportKind } from "../api";
 import { InitialSelectionContext } from "../lib/initialSelection";
 import { inspectReportDTO } from "../lib/reportDto";
 import { useApi } from "../lib/useApi";
 import { AsyncView, InvalidReports } from "./States";
+import "./ReportBrowser.css";
 
 export function ReportBrowser({
   kind,
@@ -36,8 +37,8 @@ export function ReportBrowser({
   return (
     <>
       {listing.status === "ok" && <InvalidReports invalid={listing.data.invalid} />}
-      <div style={{ display: "flex", gap: 24 }}>
-        <div style={{ minWidth: listWidth }}>
+      <div className="report-browser" style={{ "--report-list-width": `${listWidth}px` } as CSSProperties}>
+        <div className="report-browser__list">
           <AsyncView
             state={listing}
             what="报告列表"
@@ -61,7 +62,7 @@ export function ReportBrowser({
             )}
           </AsyncView>
         </div>
-        <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="report-browser__detail">
           <AsyncView state={detail} what="报告详情" idle={<p>{prompt}</p>}>
             {(report) => {
               const dto = inspectReportDTO(report);

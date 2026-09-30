@@ -180,9 +180,9 @@ def test_phase1_first_slice_archive_to_representation(w: ds.World) -> None:
 
     # ---- step 6: E4 resample 5-minute bars from the selection, and an F4 feature run
     # through run_feature (a stable result_hash across re-runs; no value beyond its eval time) ----
-    selection = PitSelector(w.h.adapter, w.h.storage).select(
-        spec, "klines_1m", BTC, DAY_START, DAY_END
-    )
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", BTC, DAY_START, DAY_END)
     selection.require_no_conflict()
     bars5 = resample_bars(selection, 5, DAY_START, DAY_END)
     assert [bar.complete for bar in bars5] == [True, True, False]  # the 22:15 bucket is a gap
@@ -239,9 +239,9 @@ def test_phase1_first_slice_archive_to_representation(w: ds.World) -> None:
     assert result_second == result_first and result_second.result_hash == result_first.result_hash
 
     w.h.reopen()
-    selection_again = PitSelector(w.h.adapter, w.h.storage).select(
-        spec, "klines_1m", BTC, DAY_START, DAY_END
-    )
+    selection_again = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", BTC, DAY_START, DAY_END)
     bars5_again = resample_bars(selection_again, 5, DAY_START, DAY_END)
     observations_again = derived_bar_observations(bars5_again, selection_again, spec)
     request_again = dataset_request(observations_again)
@@ -271,7 +271,9 @@ def test_pit_selection_with_and_without_the_archive_assumption(w: ds.World) -> N
         c.ARCHIVE_AGGS.table, archive_revision
     )
     trade_at = ss.utc(2023, 11, 14, 22, 14)  # ss.T0
-    selector = PitSelector(w.h.adapter, w.h.storage)
+    selector = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    )
 
     conservative = w.spec(at=trade_at + timedelta(hours=1))
     conservative_out = selector.select(conservative, "agg_trades", BTC, ds.START, ds.END)

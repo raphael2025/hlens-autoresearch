@@ -66,7 +66,9 @@ def _dataset(w: World, *, assumed: bool = False, **spec_fields: Any) -> DatasetB
 
 
 def _observations(w: World, spec: PointInTimeSpec) -> tuple[FeatureObservation, ...]:
-    selection = PitSelector(w.h.adapter, w.h.storage).select(spec, "klines_1m", SYMBOL, *DAY_WINDOW)
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, *DAY_WINDOW)
     return bar_observations(selection, spec)
 
 

@@ -92,7 +92,9 @@ def test_bounded_selector_assumption_matches_legacy_selected_revision(h: RestHar
         at=TRADE_AT + ASSUMPTION_LATENCY,
         availability_bindings=WITH_ASSUMPTION,
     )
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
     bounded = _bounded(h, spec)
 
     assert [item.selection for item in bounded] == list(legacy.selections)

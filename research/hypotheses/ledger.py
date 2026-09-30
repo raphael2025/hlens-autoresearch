@@ -369,7 +369,7 @@ class TrialLedger:
                 if head != baseline_hash:
                     raise LedgerError("the TrialLedger does not match the prepared baseline hash")
                 reused = [
-                    hypothesis.ref
+                    str(hypothesis.ref)
                     for hypothesis in batch
                     if (hypothesis.name, hypothesis.version) in self._registered
                 ]

@@ -106,7 +106,9 @@ def _picture(selection: PitSelection) -> Any:
 
 def _select(w: ds.World, spec: PointInTimeSpec, data_type: str, symbol: str) -> PitSelection:
     start, end = (fs.DAY_START, fs.DAY_END) if data_type == "klines_1m" else (ds.START, ds.END)
-    return PitSelector(w.h.adapter, w.h.storage).select(spec, data_type, symbol, start, end)
+    return PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, data_type, symbol, start, end)
 
 
 def _replay_every_step(w: ds.World) -> None:

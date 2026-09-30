@@ -39,6 +39,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
@@ -750,6 +751,7 @@ def dataset_evidence_sources(
     storage: StorageAdapter,
     request: DatasetEvidenceRequest,
     *,
+    canonical_scratch_directory: Path,
     market_data_base_url: str,
     pit_params: PitRunParams,
     universe_params: UniverseRunParams,
@@ -768,12 +770,21 @@ def dataset_evidence_sources(
     )
     return DatasetEvidenceSources(
         universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),
-        pit=PitSelectorKeySource(PitSelector(adapter, storage), storage=storage, params=pit_params),
+        pit=PitSelectorKeySource(
+            PitSelector(
+                adapter,
+                storage,
+                canonical_scratch_directory=canonical_scratch_directory,
+            ),
+            storage=storage,
+            params=pit_params,
+        ),
         quality=PinnedQualityEvidence(
             adapter,
             storage,
             request.pit,
             request.data_type,
+            canonical_scratch_directory=canonical_scratch_directory,
             market_data_base_url=market_data_base_url,
         ),
     )

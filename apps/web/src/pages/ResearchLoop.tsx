@@ -56,49 +56,51 @@ function UsageCharts({ rows }: { rows: RoundRow[] }) {
 
 function RoundsTable({ rows }: { rows: RoundRow[] }) {
   return (
-    <table>
-      <thead>
-        <tr>
-          <th>loop / round</th>
-          <th>as_of</th>
-          <th>status</th>
-          <th>stages run / skipped</th>
-          <th>problem stages</th>
-          <th>round usage</th>
-          <th>total usage</th>
-          <th>overrun</th>
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row) => (
-          <tr key={row.id}>
-            <td title={row.id}>
-              {row.loopId} #{row.roundIndex ?? "?"}
-            </td>
-            <td>{row.asOf}</td>
-            <td style={row.status !== "COMPLETED" ? { color: "crimson", fontWeight: 600 } : undefined}>
-              {row.status}
-            </td>
-            <td>
-              {row.stagesRun} / {row.stagesSkipped}
-            </td>
-            <td>
-              {row.problems.length === 0
-                ? "—"
-                : row.problems.map((p) => (
-                    <div key={p.name}>
-                      {p.name}: {p.status}
-                      {p.error !== null && <code> {p.error}</code>}
-                    </div>
-                  ))}
-            </td>
-            <td>{formatUsage(row.roundUsage)}</td>
-            <td>{formatUsage(row.totalUsage)}</td>
-            <td>{row.overrunStage ?? "—"}</td>
+    <div style={{ overflowX: "auto" }}>
+      <table>
+        <thead>
+          <tr>
+            <th>loop / round</th>
+            <th>as_of</th>
+            <th>status</th>
+            <th>stages run / skipped</th>
+            <th>problem stages</th>
+            <th>round usage</th>
+            <th>total usage</th>
+            <th>overrun</th>
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row) => (
+            <tr key={row.id}>
+              <td title={row.id}>
+                {row.loopId} #{row.roundIndex ?? "?"}
+              </td>
+              <td>{row.asOf}</td>
+              <td style={row.status !== "COMPLETED" ? { color: "crimson", fontWeight: 600 } : undefined}>
+                {row.status}
+              </td>
+              <td>
+                {row.stagesRun} / {row.stagesSkipped}
+              </td>
+              <td>
+                {row.problems.length === 0
+                  ? "—"
+                  : row.problems.map((p) => (
+                      <div key={p.name}>
+                        {p.name}: {p.status}
+                        {p.error !== null && <code> {p.error}</code>}
+                      </div>
+                    ))}
+              </td>
+              <td>{formatUsage(row.roundUsage)}</td>
+              <td>{formatUsage(row.totalUsage)}</td>
+              <td>{row.overrunStage ?? "—"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 

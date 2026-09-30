@@ -27,6 +27,7 @@ from core.contracts.universe import (
 )
 from core.domain.base import Contract
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.dataset import builder as dataset_builder_module
 from infrastructure.dataset.builder import (
     DATASET_RULE_VERSION,
     DatasetBuilder,
@@ -44,6 +45,7 @@ from infrastructure.dataset.builder import (
     selection_id_for,
 )
 from infrastructure.dataset.evidence import EvidenceRecordTooLarge, iter_pit_conflict_heads
+from infrastructure.pit.runs import RunRef, RunSetBuilder
 from infrastructure.pit.selector import PitConflictError
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
@@ -74,6 +76,7 @@ def storage(evidence_store: LocalFileStorageAdapter) -> LocalFileStorageAdapter:
 
 def builder(
     storage: LocalFileStorageAdapter,
+    *,
     heads: dict[str, str | None] | None = None,
     **params: int,
 ) -> DatasetEvidenceBuilder:
@@ -366,6 +369,94 @@ def test_key_lineage_deduplication_has_no_history_sized_container() -> None:
     assert not any(isinstance(node, history_sized_nodes) for node in ast.walk(tree))
     assert "last_lineage_revision" in source
     assert "emitted: set" not in source
+
+
+def test_many_member_spans_spill_to_a_bounded_replayable_run(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A long single-symbol span stream is replayed from a compacted root per PIT key."""
+    span_count = 257
+    start = ds.utc(2023, 11, 14, 22)
+    end = start + timedelta(seconds=2 * span_count)
+    spans = tuple(
+        (
+            "BTCUSDT",
+            start + timedelta(seconds=2 * index),
+            start + timedelta(seconds=2 * index + 1),
+        )
+        for index in range(span_count)
+    )
+    members = tuple(
+        ds.v3_member(
+            "BTCUSDT",
+            f"listing-{index:04d}",
+            (span[1], span[2]),
+        )
+        for index, span in enumerate(spans)
+    )
+    universe = ds.FakeUniverse(
+        members_=members,
+        exclusions_=(),
+        lineage=tuple(ds.listing_lineage(f"listing-{index:04d}") for index in range(span_count)),
+        gaps=(),
+        spans=spans,
+    )
+    groups = tuple(
+        PitKeyGroup(
+            observation_key=f"key-{index}",
+            owner_event_time=ds.V3_EVENT,
+            evaluations=(
+                PitKeyEvaluation(start, PointInTimeStatus.SELECTED, ds.selected(f"trade-{index}")),
+            ),
+        )
+        for index in range(2)
+    )
+    pit = ds.FakePit(groups={("BTCUSDT", ds.V3_SLICE_22): groups})
+    request = ds.v3_request(ds.v3_pit(interval=(start, end)))
+    chunks = ds.FakeChunkWriter()
+
+    max_refs = 0
+
+    class TrackingRunSetBuilder(RunSetBuilder):
+        def add(self, row: Any) -> None:
+            nonlocal max_refs
+            super().add(row)
+            max_refs = max(max_refs, sum(map(len, self._refs._levels)))
+
+    span_roots: list[Any] = []
+    real_take = dataset_builder_module._MemberSpans.take
+
+    def tracking_take(self: Any, venue_symbol: str) -> Any:
+        result = real_take(self, venue_symbol)
+        if venue_symbol == "BTCUSDT":
+            span_roots.append(result)
+        return result
+
+    monkeypatch.setattr(cast(Any, dataset_builder_module), "RunSetBuilder", TrackingRunSetBuilder)
+    monkeypatch.setattr(dataset_builder_module._MemberSpans, "take", tracking_take)
+    result = build(
+        storage,
+        universe,
+        pit,
+        ds.FakeQuality(),
+        request=request,
+        chunks=chunks,
+    )
+
+    actual = [
+        (row["observation_key"], row["effective_from"], row["effective_until"])
+        for row in chunks.rows(result.selection_id)
+    ]
+    expected = [(f"key-{key_index}", span[1], span[2]) for key_index in range(2) for span in spans]
+    assert actual == expected
+    assert len(actual) == 2 * span_count
+    assert len(span_roots) == 1
+    assert isinstance(span_roots[0].root, RunRef)
+    assert span_roots[0].root.record_count == span_count
+    assert not hasattr(span_roots[0], "spans")
+    assert max_refs < span_count
+    assert max_refs <= 2 * (span_count.bit_length() + 1)
+    assert universe.open_now == 0 and pit.open_now == 0
 
 
 # ------------------------------------------------------------------ fail closed

@@ -17,6 +17,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
+from pathlib import Path
 from itertools import groupby, zip_longest
 from typing import Any, Final
 
@@ -272,6 +273,7 @@ class QualityReporterV3:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        canonical_scratch_directory: Path,
         scratch_storage: StorageAdapter,
         clock: Callable[[], datetime],
         identity_rule_hashes: Mapping[str, str],
@@ -349,7 +351,11 @@ class QualityReporterV3:
             max_manifest_record_bytes=max_manifest_record_bytes,
         )
         self._run_storage = _RunStorage(storage, scratch_storage)
-        self._selector = PitSelector(adapter, self._run_storage)
+        self._selector = PitSelector(
+            adapter,
+            self._run_storage,
+            canonical_scratch_directory=canonical_scratch_directory,
+        )
 
     def report(
         self, data_type: str, symbol: str, day: date, *, existing_only: bool = False

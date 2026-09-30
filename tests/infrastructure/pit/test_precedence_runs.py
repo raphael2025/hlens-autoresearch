@@ -81,7 +81,9 @@ def test_iter_bounded_keeps_parity_without_unmeasured_external_traversal(
 ) -> None:
     _chain(h)
     spec = _spec(h, cutoff=K_E)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     expected = selector.select(spec, "agg_trades", SYMBOL, START, END)
     calls = 0
     original = selector_module.maximal_heads_from_runs

@@ -41,7 +41,7 @@ batch. This does not change the original 14-case deferral list above.
 
 ### PostgreSQL-enabled full-suite run and focused retries
 
-The 8,822-item PostgreSQL-enabled run used the existing dedicated test catalog, with the original
+The PostgreSQL-enabled run executed 8,822 items and deselected another 72; it used the existing dedicated test catalog, with the original
 14 deferred cases deselected. It completed with **7 failed, 8,814 passed, 1 skipped, 72 deselected,
 5 warnings in 5,256.10s (1:27:36)**. The available run summary does not preserve all seven node IDs;
 this record only names failures confirmed by the focused run below and the separately deferred
@@ -58,10 +58,13 @@ rule:
 - `tests/infrastructure/revision/test_rest_store_postgres.py::test_all_fifteen_phase1_tables_exist_with_their_bindings`
 
 The same focused retry also exposed
-`tests/infrastructure/catalog/test_phase1_tables_postgres.py::test_catalog_database_holds_only_iceberg_metadata`,
-which was not identified as a failure in the broad-run summary. Its failure is recorded as a first
-round only; it gets at most one exact-node retry in a later batch. Do not rerun the two deferred
-nodes, or either entire module, in this batch.
+`tests/infrastructure/catalog/test_phase1_tables_postgres.py::test_catalog_database_holds_only_iceberg_metadata`.
+The broad-run summary does not preserve the seven failing node IDs, so its result there and its
+failure-round count cannot be confirmed. A later exact-node attempt in the current shell environment
+was skipped because `HLENS_TEST_CATALOG_URI` was not set; a skip is neither a pass nor a failure.
+Do not rerun the two already deferred nodes or either entire module. Revisit this node only when the
+dedicated PostgreSQL test catalog is available and the prior run's failure-node evidence has been
+reconciled.
 
 The post-fix console fixture and synthetic evidence regression completed separately with
 **52 passed, 1 warning in 24.32s**. PostgreSQL failures and all earlier deferred cases remain
@@ -93,3 +96,13 @@ The read-only review found the ADR-0077 Dataset flow present but identified rema
 - `codex/dataset-universe-bounds@7aa5457` filters pre-window Universe events before they enter the bounded sorter; the targeted v3 module passed (`18 passed`) and an independent read-only review approved the boundary, cutoff and cleanup behavior. This does not bound source scan time or full process memory.
 - `codex/dataset-universe-bounds@f4e8771` stores Dataset member spans behind `RunSetBuilder` root refs instead of a per-symbol list; focused Dataset v3 tests passed (`47 passed in 32.08s`), Ruff / format / diff-check passed, and independent review found no P1/P2. Scoped mypy still reports one existing Literal-key error at `builder.py:2040`; the change adds no new mypy error. A non-blocking coverage gap is that the member-span regression does not directly assert root depth and early-close cleanup on that exact path.
 - `codex/canonical-position-bounds@991b126` implements PM decision D-E1-CANONICAL-SCRATCH: `Settings.canonical_scratch_uri` defaults to repository-owned `data/scratch`, is overridable with `HLENS_CANONICAL_SCRATCH_URI`, and is injected through normalizer / PIT / Dataset / Quality / tools without `tempfile` / `TMPDIR` fallback. An independent review first found the research-loop v2 manifest caller missing the path (P2); the fix and selector-spy regression test were added, and a second review approved the full diff. Focused run: `127 passed, 9 deselected`; the nine branch-local `main@e584187` test defects were retried once (`9 failed, 3 passed`) and are not project-level release deferrals because the coordinating branch contains their test fixes. New v2 scratch-call test: `1 passed`; production Ruff, targeted Ruff, `mypy infrastructure/settings.py`, 731-file AST callsite audit, and `git diff --check` passed. Broad mypy still reports 23 pre-existing issues. Disk scratch remains O(N); no E1 capacity claim.
+
+## PIT bounded-run integration candidate — 2026-09-29
+
+The five PIT commits from `codex/pit-edge-validation` were cherry-picked in dependency order onto `codex/w1-independent-integration` as `0476eaa`, `0b8e3c3`, `74e1ae7`, `62b8982`, and `97f741b`. This imports the shared `RunSetBuilder` API needed by subsequent Universe/Dataset work without pulling unrelated branch changes. The focused integration-candidate run of `tests/infrastructure/pit/test_bounded_runs.py`, `tests/infrastructure/pit/test_selector.py`, and `tests/infrastructure/pit/test_selector_v3.py` passed: **84 passed in 52.78s**.
+
+An independent readiness audit found no frozen/domain contract changes and approved integration as an incremental code slice. The half-open availability regression had separately passed on source-branch HEAD (`1 passed in 1.92s`); the full PIT suite was not rerun there. Residual memory remains O(N): per-key `RevisionRecord` and mapped-edge tuples plus `RevisionGraph` / `maximal_heads` structures; conflict output and run-ref levels also remain potentially O(N) / depth-dependent. The audit notes possible repeated-search cost. Thus this does not establish bounded single-key history, ADR-0077 acceptance, or E1-CAP-1's 32 MiB complete-process limit. Next, port only the Universe/Dataset commits after their shared PIT foundation; do not replay duplicate commit `0270e69` or blindly apply their selector edits.
+
+The dependent Universe/Dataset commits were then ported in order: `2a112fa`, `63fbcdc`, `bf72bd5`, `7aa5457`, and `f4e8771`, recorded on the candidate as `52124e9`, `3778a8d`, `a60ef87`, `2afc033`, and `652de29`. The duplicate PIT foundation `0270e69` and already-present W5 seed guard commits were not replayed. On the integration candidate, Universe v3, Dataset v3 builder, and Dataset v3 source tests passed together: **65 passed in 44.71s**. Ruff check passed, Ruff format reported `6 files already formatted`, and `git diff --check` passed.
+
+The source-branch reviews found no P1/P2 issue for Universe and Dataset. These results are focused integration evidence, not full E1 capacity evidence. Dataset SQLite scratch bytes still grow with unique revision count and may use tmpfs; PIT retains O(N) single-key graph/history state. Dataset member-span root depth and early-close cleanup are not directly asserted by its regression test. Scoped mypy retains the pre-existing Literal-key error at `infrastructure/dataset/builder.py:2040`. E1-CAP-1 remains open.

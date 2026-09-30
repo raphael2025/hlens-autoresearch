@@ -10,11 +10,13 @@ import zipfile
 from dataclasses import fields
 from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Any, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from core.contracts.revision import PolicyRole
+from core.contracts.storage import StorageAdapter
 from core.domain.base import canonical_json
 from infrastructure.parser import (
     AGG_TRADES_ROW_SCHEMA,

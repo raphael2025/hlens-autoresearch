@@ -43,6 +43,7 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_INSTRUMENT_LISTINGS,
     DATASET_SELECTION_CHUNKS,
 )
+from infrastructure.dataset import sources as source_module
 from infrastructure.dataset.builder import (
     DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
@@ -72,6 +73,7 @@ from infrastructure.pit.selector import (
     PitRunParams,
     PitSelector,
 )
+from infrastructure.pit.runs import RunSetBuilder, iter_run
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 from infrastructure.universe.run_params import UniverseRunParams as SharedUniverseRunParams
@@ -156,6 +158,7 @@ def _sources_factory(w: World) -> Any:
             w.h.adapter,
             w.h.storage,
             request,
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
             market_data_base_url=ds.ORIGIN,
             pit_params=PIT_PARAMS,
             universe_params=UNIVERSE_PARAMS,
@@ -270,7 +273,9 @@ def test_listing_lineage_and_gaps_of_the_real_cursor_are_reordered(w: World) -> 
 
 def test_owner_and_event_times_are_the_canonical_rows_times(w: World) -> None:
     spec = _point_world(w)
-    selector = PitSelector(w.h.adapter, w.h.storage)
+    selector = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    )
     source = PitSelectorKeySource(selector, storage=w.h.storage, params=PIT_PARAMS)
     with source.keys(spec, "agg_trades", "BTCUSDT", SLICE_22, END) as groups:
         got = [(g.observation_key, g.owner_event_time, tuple(g.evaluations)) for g in groups]
@@ -345,10 +350,21 @@ def test_pit_keys_out_of_order_fail_the_real_build_closed(w: World) -> None:
             params=UNIVERSE_PARAMS,
         ),
         pit=PitSelectorKeySource(
-            _KeysReversed(w.h.adapter, w.h.storage), storage=w.h.storage, params=PIT_PARAMS
+            _KeysReversed(
+                w.h.adapter,
+                w.h.storage,
+                canonical_scratch_directory=w.h.canonical_scratch_directory,
+            ),
+            storage=w.h.storage,
+            params=PIT_PARAMS,
         ),
         quality=PinnedQualityEvidence(
-            w.h.adapter, w.h.storage, spec, "agg_trades", market_data_base_url=ds.ORIGIN
+            w.h.adapter,
+            w.h.storage,
+            spec,
+            "agg_trades",
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
+            market_data_base_url=ds.ORIGIN,
         ),
     )
     chunks = ds.FakeChunkWriter()
@@ -456,6 +472,53 @@ def test_duplicates_still_reach_the_builder_and_fail_closed(
             chunks=ds.FakeChunkWriter(),
             manifests=ds.FakeManifests(),
         )
+
+
+def test_universe_reordering_compacts_run_refs_and_closes_root_reader_early(
+    evidence_store: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    count = 256
+    universe = ds.FakeUniverse(
+        members_=(),
+        exclusions_=(),
+        lineage=tuple(
+            ds.listing_lineage(f"revision-{index:04d}") for index in reversed(range(count))
+        ),
+        gaps=(),
+        spans=(),
+    )
+    real_iter_run = iter_run
+    max_refs = 0
+    readers_closed: list[bool] = []
+    root_depths: list[int] = []
+
+    class TrackingRunSetBuilder(RunSetBuilder):
+        def add(self, row: Any) -> None:
+            nonlocal max_refs
+            super().add(row)
+            max_refs = max(max_refs, sum(map(len, self._refs._levels)))
+
+    @contextmanager
+    def tracking_iter_run(storage: Any, root: Any) -> Iterator[Iterator[Any]]:
+        root_depths.append(root.depth)
+        with real_iter_run(storage, root) as rows:
+            try:
+                yield rows
+            finally:
+                readers_closed.append(True)
+
+    monkeypatch.setattr(cast(Any, source_module), "RunSetBuilder", TrackingRunSetBuilder)
+    monkeypatch.setattr(cast(Any, source_module), "iter_run", tracking_iter_run)
+    ordered = OrderedUniverseSource(universe, storage=evidence_store, params=UNIVERSE_PARAMS)
+    with ordered.listing_lineage() as rows:
+        assert next(rows).canonical_revision_id == "revision-0000"
+
+    assert universe.opened == 1
+    assert universe.open_now == 0
+    assert max_refs <= count.bit_length() + 1
+    assert max_refs < count
+    assert root_depths and max(root_depths) > 1
+    assert readers_closed == [True]
 
 
 def test_malformed_universe_items_fail_closed(evidence_store: LocalFileStorageAdapter) -> None:

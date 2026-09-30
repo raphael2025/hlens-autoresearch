@@ -61,7 +61,9 @@ def test_a_bar_partition_report_lists_gaps_inputs_and_evidence_gaps(h: RestHarne
     _ingest(h, "klines_1m", items)
     clock = StepClock(start=K_Q)
 
-    out = QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    out = QualityReporter(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory, clock=clock
+    ).report("klines_1m", SYMBOL, DAY)
 
     assert clock.calls == 1 and not out.reused
     [row] = h.rows(REPORTS)
@@ -110,9 +112,12 @@ def test_gaps_live_in_their_own_table_in_bounded_batches(
 ) -> None:
     monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
     _ingest(h, "klines_1m", ss.kline_items(3))
-    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    out = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     assert out.row["evidence_gaps"] == []
     gaps = q.evidence_gaps_of(h.adapter, out.report_id)
     assert len(gaps) == 6  # 3 archive + 3 REST bar revisions, all without publication evidence
@@ -129,13 +134,19 @@ def test_gaps_live_in_their_own_table_in_bounded_batches(
 
 def test_a_reused_report_verifies_its_gaps_without_writing(h: RestHarness) -> None:
     _ingest(h, "klines_1m", ss.kline_items(2))
-    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    first = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     heads = (h.head(GAPS.table), h.head(REPORTS.table))
-    again = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    again = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     assert again.reused and again.row == first.row
     assert (h.head(GAPS.table), h.head(REPORTS.table)) == heads
 
@@ -143,9 +154,12 @@ def test_a_reused_report_verifies_its_gaps_without_writing(h: RestHarness) -> No
 @pytest.mark.parametrize("tamper", ["delete", "extra"])
 def test_a_reused_report_with_tampered_gaps_fails_closed(h: RestHarness, tamper: str) -> None:
     _ingest(h, "klines_1m", ss.kline_items(2))
-    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    first = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     [gap, *_] = q.evidence_gaps_of(h.adapter, first.report_id)
     if tamper == "delete":
         h.delete_rows(GAPS, EqualTo("revision_id", gap["revision_id"]))  # type: ignore[call-arg, arg-type]
@@ -156,7 +170,12 @@ def test_a_reused_report_with_tampered_gaps_fails_closed(h: RestHarness, tamper:
     clock = StepClock(start=K_Q)
     # A deleted row leaves every batch snapshot intact: the rows themselves are compared.
     with pytest.raises(CatalogIntegrityError, match="gap row"):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("klines_1m", SYMBOL, DAY)
     assert clock.calls == 0 and h.head(GAPS.table) == heads_before
 
 
@@ -179,15 +198,23 @@ def _replace_row(h: RestHarness, old: dict[str, Any], new: dict[str, Any]) -> No
 def test_a_reused_report_with_an_altered_gap_row_fails_closed(h: RestHarness) -> None:
     """Review QG-R1 #2: same row count, one gap text changed."""
     _ingest(h, "klines_1m", ss.kline_items(2))
-    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    first = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     stored = _stored_gaps(h, first.report_id)
     _replace_row(h, stored[0], dict(stored[0], gap=stored[0]["gap"] + " (altered)"))
     assert len(_stored_gaps(h, first.report_id)) == len(stored)
     clock = StepClock(start=K_Q)
     with pytest.raises(CatalogIntegrityError, match="other gap rows in batch"):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("klines_1m", SYMBOL, DAY)
     assert clock.calls == 0
 
 
@@ -197,9 +224,12 @@ def test_a_reused_report_with_a_row_moved_to_another_batch_fails_closed(
     """Review QG-R1 #2: the report's rows are the same multiset, one row in the wrong batch."""
     monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
     _ingest(h, "klines_1m", ss.kline_items(3))
-    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    first = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     stored = _stored_gaps(h, first.report_id)
     [moved, *_] = [row for row in stored if row["batch_index"] == 0]
     _replace_row(h, moved, dict(moved, batch_index=1))
@@ -209,7 +239,12 @@ def test_a_reused_report_with_a_row_moved_to_another_batch_fails_closed(
     )
     clock = StepClock(start=K_Q)
     with pytest.raises(CatalogIntegrityError, match=r"other gap rows in batch .*\.gaps\.00000000"):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("klines_1m", SYMBOL, DAY)
     assert clock.calls == 0
 
 
@@ -222,9 +257,12 @@ def test_a_gap_batch_appearing_mid_run_fails_closed(
     monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
     _ingest(h, "klines_1m", ss.kline_items(3))
     if reuse:
-        QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-            "klines_1m", SYMBOL, DAY
-        )
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=StepClock(start=K_Q),
+        ).report("klines_1m", SYMBOL, DAY)
     reports_before = h.rows(REPORTS)
     check = q._GapWriter._check_rows
     forged: list[str] = []
@@ -241,7 +279,12 @@ def test_a_gap_batch_appearing_mid_run_fails_closed(
     monkeypatch.setattr(q._GapWriter, "_check_rows", check_then_forge)
     clock = StepClock(start=K_Q)
     with pytest.raises(CatalogIntegrityError, match=r"in batch indices 0\.\.7"):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("klines_1m", SYMBOL, DAY)
     assert forged and clock.calls == 0 and h.rows(REPORTS) == reports_before
 
 
@@ -254,9 +297,12 @@ def test_gap_verification_reads_at_most_one_batch_per_scan(
     monkeypatch.setattr(q, "_GAP_BATCH_ROWS", 2)
     _ingest(h, "klines_1m", ss.kline_items(3))
     if reuse:
-        QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-            "klines_1m", SYMBOL, DAY
-        )
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=StepClock(start=K_Q),
+        ).report("klines_1m", SYMBOL, DAY)
     scan = h.adapter.scan_columns
     scans: list[tuple[tuple[str, ...], int]] = []
 
@@ -267,9 +313,12 @@ def test_gap_verification_reads_at_most_one_batch_per_scan(
         return found
 
     monkeypatch.setattr(h.adapter, "scan_columns", spy)
-    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    out = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     assert out.reused is reuse
     wide = [rows for columns, rows in scans if columns != ("batch_index",)]
     narrow = [rows for columns, rows in scans if columns == ("batch_index",)]
@@ -295,9 +344,12 @@ def test_a_gap_batch_losing_a_commit_race_is_retried(
         return commit(request, table)
 
     monkeypatch.setattr(h.adapter, "commit_batch", racing)
-    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    out = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     batches = [f"{out.report_id}.gaps.{i:08d}" for i in range(3)]
     assert gap_commits == [batches[0], batches[1], *batches]
     assert _gap_batches(h, out.report_id) == [(batch_id, 2) for batch_id in batches]
@@ -315,9 +367,12 @@ def test_competing_heads_and_trade_id_jumps_are_reported(h: RestHarness) -> None
     )  # fmt: skip
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, later)
 
-    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "agg_trades", SYMBOL, DAY
-    )
+    out = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("agg_trades", SYMBOL, DAY)
 
     [competing] = _events(out.row, "competing_heads")
     assert competing["observation_key"] == f"binance:spot:agg_trade:{SYMBOL}:101"
@@ -336,9 +391,12 @@ def test_trade_id_jumps_at_the_boundary(h: RestHarness, next_id: int, absent: in
         request_id="req-next",
     )  # fmt: skip
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_AGGS.table, later)
-    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "agg_trades", SYMBOL, DAY
-    )
+    out = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("agg_trades", SYMBOL, DAY)
     jumps = [e["detail"] for e in _events(out.row, "agg_trade_id_discontinuity")]
     if absent is None:
         assert jumps == []
@@ -354,7 +412,12 @@ def test_a_trade_day_is_proven_hour_by_hour_into_one_report(h: RestHarness) -> N
     archive = c.ingest_archive(h, "agg_trades", ss.archive_agg_lines(early + late), knowledge=K_A)
     c.normalizer(h, clock=StepClock(start=N_A)).normalize_unit(c.ARCHIVE_AGGS.table, archive)
     selected: list[tuple[datetime, datetime]] = []
-    reporter = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q))
+    reporter = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    )
     select = reporter._select
 
     def spy(data_type: str, symbol: str, start: datetime, end: datetime, bindings: Any) -> Any:
@@ -378,11 +441,16 @@ def test_a_trade_day_is_proven_hour_by_hour_into_one_report(h: RestHarness) -> N
 
 def test_a_replay_reuses_the_report_and_new_data_makes_a_new_one(h: RestHarness) -> None:
     _ingest(h, "klines_1m", ss.kline_items(1))
-    first = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q)).report(
-        "klines_1m", SYMBOL, DAY
-    )
+    first = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    ).report("klines_1m", SYMBOL, DAY)
     later = StepClock(start=K_Q + timedelta(days=3))
-    again = QualityReporter(h.adapter, h.storage, clock=later).report("klines_1m", SYMBOL, DAY)
+    again = QualityReporter(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory, clock=later
+    ).report("klines_1m", SYMBOL, DAY)
     assert again.reused and later.calls == 0 and again.row == first.row
     assert len(h.rows(REPORTS)) == 1
     [response] = c.ingest_rest(
@@ -390,7 +458,9 @@ def test_a_replay_reuses_the_report_and_new_data_makes_a_new_one(h: RestHarness)
         request_id="req-k2",
     )  # fmt: skip
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_KLINES.table, response)
-    newer = QualityReporter(h.adapter, h.storage, clock=later).report("klines_1m", SYMBOL, DAY)
+    newer = QualityReporter(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory, clock=later
+    ).report("klines_1m", SYMBOL, DAY)
     assert newer.report_id != first.report_id and len(h.rows(REPORTS)) == 2
 
 
@@ -403,10 +473,17 @@ def test_a_raw_unit_not_yet_normalized_gets_no_report(h: RestHarness) -> None:
     )  # fmt: skip
     clock = StepClock(start=K_Q)
     with pytest.raises(q.RawNotDerived, match="1 Raw revision"):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("klines_1m", SYMBOL, DAY)
     assert clock.calls == 0 and h.rows(REPORTS) == [] and h.rows(QUALITY_EVIDENCE_GAPS) == []
     c.normalizer(h, clock=StepClock(start=N_R)).normalize_unit(c.REST_KLINES.table, response)
-    out = QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+    out = QualityReporter(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory, clock=clock
+    ).report("klines_1m", SYMBOL, DAY)
     assert not out.reused and len(h.rows(REPORTS)) == 1
 
 
@@ -419,16 +496,24 @@ def test_an_unprovable_partition_gets_no_report(h: RestHarness) -> None:
     )
     clock = StepClock(start=K_Q)
     with pytest.raises(CatalogIntegrityError):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("klines_1m", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("klines_1m", SYMBOL, DAY)
     assert clock.calls == 0 and h.rows(REPORTS) == []
 
 
 def test_a_clock_before_what_it_describes_is_refused(h: RestHarness) -> None:
     _ingest(h, "klines_1m", ss.kline_items(1))
     with pytest.raises(QualityReportError, match="precedes"):
-        QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_A)).report(
-            "klines_1m", SYMBOL, DAY
-        )
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=StepClock(start=K_A),
+        ).report("klines_1m", SYMBOL, DAY)
     assert h.rows(REPORTS) == []
 
 
@@ -437,11 +522,19 @@ def test_a_clock_before_a_precedence_edge_it_relies_on_is_refused(h: RestHarness
     _chain(h)
     clock = StepClock(start=utc(2023, 12, 8))
     with pytest.raises(QualityReportError, match="precedence edge"):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("agg_trades", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("agg_trades", SYMBOL, DAY)
     assert h.rows(REPORTS) == []
-    out = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_E)).report(
-        "agg_trades", SYMBOL, DAY
-    )
+    out = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_E),
+    ).report("agg_trades", SYMBOL, DAY)
     assert out.row["knowledge_time"] == K_E
 
 
@@ -450,7 +543,12 @@ def test_a_committed_report_before_what_it_describes_is_never_reused(h: RestHarn
     forger) is refused on the reuse path too, not only when a fresh report is written."""
     _chain(h)
     early = utc(2023, 12, 1)
-    reporter = QualityReporter(h.adapter, h.storage, clock=StepClock(start=early))
+    reporter = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=early),
+    )
     bindings = reporter._pinned_heads(q._INPUT_TABLES["agg_trades"])
     report_id = q.quality_report_id(c.TRADES.table, SYMBOL, DAY, bindings)
     partition = reporter._survey("agg_trades", SYMBOL, DAY, bindings, report_id, verify=False)
@@ -458,7 +556,12 @@ def test_a_committed_report_before_what_it_describes_is_never_reused(h: RestHarn
     reporter._commit(report_id, reporter._row(body, early))
     clock = StepClock(start=K_Q)
     with pytest.raises(CatalogIntegrityError, match="knowledge_time before a revision"):
-        QualityReporter(h.adapter, h.storage, clock=clock).report("agg_trades", SYMBOL, DAY)
+        QualityReporter(
+            h.adapter,
+            h.storage,
+            canonical_scratch_directory=h.canonical_scratch_directory,
+            clock=clock,
+        ).report("agg_trades", SYMBOL, DAY)
     assert clock.calls == 0
 
 
@@ -499,7 +602,12 @@ def test_bar_invariants_are_checked_without_thresholds() -> None:
 
 
 def test_unknown_scopes_are_refused(h: RestHarness) -> None:
-    reporter = QualityReporter(h.adapter, h.storage, clock=StepClock(start=K_Q))
+    reporter = QualityReporter(
+        h.adapter,
+        h.storage,
+        canonical_scratch_directory=h.canonical_scratch_directory,
+        clock=StepClock(start=K_Q),
+    )
     with pytest.raises(QualityReportError, match="data_type"):
         reporter.report("trades", SYMBOL, DAY)
     with pytest.raises(QualityReportError, match="venue symbol"):

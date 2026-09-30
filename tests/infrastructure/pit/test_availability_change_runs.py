@@ -178,8 +178,12 @@ def test_bounded_interval_selected_conflict_matches_legacy(h: RestHarness) -> No
     start = available_times[0] - timedelta(microseconds=1)
     end = available_times[1] + timedelta(microseconds=1)
     spec = _spec(h, cutoff=FAR, interval=(start, end))
-    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
-    with PitSelector(h.adapter, h.storage).iter_bounded(
+    legacy = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, START, END)
+    with PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).iter_bounded(
         spec,
         "agg_trades",
         SYMBOL,

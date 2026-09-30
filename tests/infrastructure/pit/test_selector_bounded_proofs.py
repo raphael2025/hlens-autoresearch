@@ -147,7 +147,9 @@ def test_bounded_proofs_spill_and_close_readers_with_revision_order(
 ) -> None:
     _multi_batch_chain(h)
     observed = _observe_proof_builders(monkeypatch)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with selector.iter_bounded(
         _spec(h, cutoff=K_E), "agg_trades", SYMBOL, START, END, params=_PARAMS
     ) as records:
@@ -320,7 +322,9 @@ def test_late_unit_failure_leaves_proof_builder_unfinished_and_unobservable(
         original(self, *args, **kwargs)
 
     monkeypatch.setattr(CanonicalNormalizer, "_check_committed_window", fail_second_unit)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     with pytest.raises(RuntimeError, match="late requested unit failure"):
         with selector.iter_bounded(
             _spec(h, cutoff=K_E), "agg_trades", SYMBOL, START, END, params=_PARAMS
