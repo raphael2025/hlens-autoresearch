@@ -462,7 +462,9 @@ def main(
         ValueError,
     ) as exc:
         code = getattr(exc, "code", None)  # an AuthorityRefused names its refusal code
-        detail = type(exc).__name__ if not isinstance(code, str) else f"{type(exc).__name__}: {code}"
+        detail = type(exc).__name__
+        if isinstance(code, str):
+            detail = f"{detail}: {code}"
         print(f"P11 degradation CLI refused at {stage} ({detail})", file=sys.stderr)
         return 1
 

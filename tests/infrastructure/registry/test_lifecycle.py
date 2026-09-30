@@ -1,4 +1,5 @@
-"""ADR-0098 §1: the file-backed, append-only Lifecycle Registry (`infrastructure.registry.lifecycle`).
+"""ADR-0098 §1: the file-backed, append-only Lifecycle Registry
+(`infrastructure.registry.lifecycle`).
 
 Every subject here is a TEST ONLY `Ref`; nothing is really promoted or ACTIVE — the registry only
 persists and replays the legal transitions it is given.
