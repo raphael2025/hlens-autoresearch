@@ -247,7 +247,19 @@ def test_stream_fingerprint_rejects_duplicate_schema_field_names(
             )
         ]
     )
-    for schema in (duplicate_top, duplicate_nested):
+    duplicate_deeply_nested = pa.schema(
+        [
+            pa.field(
+                "items",
+                pa.large_list(
+                    pa.large_list(
+                        pa.struct([pa.field("child", pa.int64()), pa.field("child", pa.int64())])
+                    )
+                ),
+            )
+        ]
+    )
+    for schema in (duplicate_top, duplicate_nested, duplicate_deeply_nested):
         with pytest.raises(BatchRejected, match="duplicate field names"):
             fingerprint_run(
                 storage,

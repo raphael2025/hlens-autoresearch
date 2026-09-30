@@ -291,13 +291,13 @@ def _validate_unique_field_names(schema: pa.Schema) -> None:
         if len(names) != len(set(names)):
             raise BatchRejected(f"stream fingerprint schema has duplicate field names at {path}")
         for field in fields:
-            data_type = field.type
-            if pat.is_struct(data_type):
-                unique(data_type, f"{path}.{field.name}")
-            elif pat.is_large_list(data_type) or pat.is_list(data_type):
-                child = data_type.value_field
-                if pat.is_struct(child.type):
-                    unique(child.type, f"{path}.{field.name}[]")
+            visit_type(field.type, f"{path}.{field.name}")
+
+    def visit_type(data_type: pa.DataType, path: str) -> None:
+        if pat.is_struct(data_type):
+            unique(data_type, path)
+        elif pat.is_large_list(data_type) or pat.is_list(data_type):
+            visit_type(data_type.value_field.type, f"{path}[]")
 
     unique(schema, "root")
 
