@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Generator, Iterable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any, Final
@@ -148,7 +148,7 @@ class ListingPrefixIndex:
 
     def iter_rows(
         self, root: _NodeRef | None | object = _CURRENT_ROOT
-    ) -> Iterator[Mapping[str, Any]]:
+    ) -> Generator[Mapping[str, Any]]:
         """Read one exact prefix in key order, validating every node and leaf entry."""
         selected = self._root if root is _CURRENT_ROOT else root
         if selected is None:
@@ -212,47 +212,63 @@ class ListingPrefixIndex:
         return self._write_internal(left_children), self._write_internal(right_children)
 
     def _split_internal(self, children: list[_NodeRef]) -> tuple[list[_NodeRef], list[_NodeRef]]:
-        candidates: list[tuple[int, int, list[_NodeRef], list[_NodeRef]]] = []
+        best: tuple[int, int, int] | None = None
+        prefix_sizes = [0]
+        for child in children:
+            ref_document = self._ref_json(child)
+            prefix_sizes.append(prefix_sizes[-1] + self._encoded_item_size(ref_document))
+        empty_size = self._encoded_size(self._internal_doc([]))
         for split_at in range(1, len(children)):
-            left, right = children[:split_at], children[split_at:]
+            left_count, right_count = split_at, len(children) - split_at
             if (
-                len(left) <= self._fanout
-                and len(right) <= self._fanout
-                and self._fits_internal(left)
-                and self._fits_internal(right)
+                left_count <= self._fanout
+                and right_count <= self._fanout
+                and self._collection_range_size(empty_size, prefix_sizes, 0, split_at)
+                <= self._max_node_bytes
+                and self._collection_range_size(empty_size, prefix_sizes, split_at, len(children))
+                <= self._max_node_bytes
             ):
-                left_size = self._encoded_size(self._internal_doc(left))
-                right_size = self._encoded_size(self._internal_doc(right))
-                candidates.append(
-                    (max(left_size, right_size), abs(len(left) - len(right)), left, right)
+                left_size = self._collection_range_size(empty_size, prefix_sizes, 0, split_at)
+                right_size = self._collection_range_size(
+                    empty_size, prefix_sizes, split_at, len(children)
                 )
-        if not candidates:
+                score = (max(left_size, right_size), abs(left_count - right_count), split_at)
+                if best is None or score < best:
+                    best = score
+        if best is None:
             raise ListingPrefixIndexError("no byte- and fanout-valid internal split exists")
-        _, _, left, right = min(candidates, key=lambda candidate: candidate[:2])
-        return left, right
+        return children[: best[2]], children[best[2] :]
 
     def _split_leaf_if_needed(
         self, entries: list[Mapping[str, Any]]
     ) -> tuple[_NodeRef, _NodeRef | None]:
         if len(entries) <= self._leaf_max_records and self._fits_leaf(entries):
             return self._write_leaf(entries), None
-        candidates: list[tuple[int, int, list[Mapping[str, Any]], list[Mapping[str, Any]]]] = []
+        best: tuple[int, int, int] | None = None
+        prefix_sizes = [0]
+        for entry in entries:
+            prefix_sizes.append(prefix_sizes[-1] + self._encoded_item_size(entry))
+        empty_size = self._encoded_size(self._leaf_doc([]))
         for split_at in range(1, len(entries)):
-            left, right = entries[:split_at], entries[split_at:]
+            left_count, right_count = split_at, len(entries) - split_at
             if (
-                len(left) <= self._leaf_max_records
-                and len(right) <= self._leaf_max_records
-                and self._fits_leaf(left)
-                and self._fits_leaf(right)
+                left_count <= self._leaf_max_records
+                and right_count <= self._leaf_max_records
+                and self._collection_range_size(empty_size, prefix_sizes, 0, split_at)
+                <= self._max_node_bytes
+                and self._collection_range_size(empty_size, prefix_sizes, split_at, len(entries))
+                <= self._max_node_bytes
             ):
-                left_size = self._encoded_size(self._leaf_doc(left))
-                right_size = self._encoded_size(self._leaf_doc(right))
-                candidates.append(
-                    (max(left_size, right_size), abs(len(left) - len(right)), left, right)
+                left_size = self._collection_range_size(empty_size, prefix_sizes, 0, split_at)
+                right_size = self._collection_range_size(
+                    empty_size, prefix_sizes, split_at, len(entries)
                 )
-        if not candidates:
+                score = (max(left_size, right_size), abs(left_count - right_count), split_at)
+                if best is None or score < best:
+                    best = score
+        if best is None:
             raise ListingPrefixIndexError("no byte- and record-valid leaf split exists")
-        _, _, left, right = min(candidates, key=lambda candidate: candidate[:2])
+        left, right = entries[: best[2]], entries[best[2] :]
         return self._write_leaf(left), self._write_leaf(right)
 
     def _fits_leaf(self, entries: list[Mapping[str, Any]]) -> bool:
@@ -441,6 +457,20 @@ class ListingPrefixIndex:
             return self._max_node_bytes + 1
         return len(canonical_json(document).encode("utf-8"))
 
+    def _encoded_item_size(self, item: Mapping[str, Any]) -> int:
+        try:
+            ExchangeInfoRowVerifier._check_bounded_row(item, self._max_node_bytes)
+        except Exception as exc:
+            raise ListingPrefixIndexError("split item exceeds max_node_bytes") from exc
+        return len(canonical_json(item).encode("utf-8"))
+
+    @staticmethod
+    def _collection_range_size(
+        empty_document_bytes: int, prefix_sizes: list[int], start: int, end: int
+    ) -> int:
+        count = end - start
+        return empty_document_bytes + prefix_sizes[end] - prefix_sizes[start] + max(0, count - 1)
+
 
 def build_listing_prefix_index(
     raw_rows: RunRef,
@@ -500,7 +530,14 @@ def build_listing_prefix_index(
         merge_fanout=root_refs_merge_fanout,
         limits=root_refs_limits,
     )
-    with ordered, roots, iter_run(storage, raw_rows) as raw_reader:
+    snapshot_ids = RunSetBuilder(
+        storage,
+        key=lambda row: row["snapshot_id"],
+        capacity=raw_sort_capacity,
+        merge_fanout=raw_sort_merge_fanout,
+        limits=raw_sort_limits,
+    )
+    with ordered, snapshot_ids, iter_run(storage, raw_rows) as raw_reader:
         for item in raw_reader:
             try:
                 ExchangeInfoRowVerifier._check_bounded_row(item, raw_max_record_bytes)
@@ -513,15 +550,16 @@ def build_listing_prefix_index(
         if ordered_ref is None:
             raise ListingPrefixIndexError("Raw proof run is empty")
         with iter_run(storage, ordered_ref) as ordered_reader:
-            return _build_index_in_ordinal_order(index, ordered_reader, roots)
+            return _build_index_in_ordinal_order(index, ordered_reader, roots, snapshot_ids)
 
 
 def _build_index_in_ordinal_order(
     index: ListingPrefixIndex,
     ordered_reader: Iterable[Mapping[str, Any]],
     roots: RunSetBuilder,
+    snapshot_ids: RunSetBuilder,
 ) -> tuple[ListingPrefixIndex, RunRef]:
-    with roots:
+    with roots, snapshot_ids:
         expected_ordinal = 0
         for item in ordered_reader:
             ordinal = item["snapshot_ordinal"]
@@ -529,13 +567,17 @@ def _build_index_in_ordinal_order(
                 raise ListingPrefixIndexError(
                     "Raw proof snapshot ordinals are missing or reordered"
                 )
+            snapshot_id = item.get("snapshot_id")
+            if not isinstance(snapshot_id, str) or not snapshot_id:
+                raise ListingPrefixIndexError("Raw proof row has an invalid snapshot id")
+            snapshot_ids.add({"snapshot_id": snapshot_id, "snapshot_ordinal": ordinal})
             row = item["row"]
             requested = row["requested_symbols"]
             present = {entry["symbol"]: entry for entry in row["symbols"]}
             for symbol in requested:
                 entry = present.get(symbol)
                 observation = {
-                    "snapshot_id": item["snapshot_id"],
+                    "snapshot_id": snapshot_id,
                     "snapshot_ordinal": ordinal,
                     "venue_symbol": symbol,
                     "snapshot_revision_id": row["revision_id"],
@@ -551,7 +593,7 @@ def _build_index_in_ordinal_order(
             roots.add(
                 {
                     "snapshot_ordinal": ordinal,
-                    "snapshot_id": item["snapshot_id"],
+                    "snapshot_id": snapshot_id,
                     "root": None if root is None else index._ref_json(root),
                     "observation_count": index.stats.observation_count,
                 }
@@ -562,4 +604,14 @@ def _build_index_in_ordinal_order(
         result = roots.finish()
         if result is None:
             raise ListingPrefixIndexError("a non-empty Raw proof run has no prefix roots")
+        snapshot_id_run = snapshot_ids.finish()
+        if snapshot_id_run is None:
+            raise ListingPrefixIndexError("Raw proof run has no snapshot identifiers")
+        with iter_run(index._storage, snapshot_id_run) as reader:
+            previous_id: str | None = None
+            for item in reader:
+                current_id = item["snapshot_id"]
+                if current_id == previous_id:
+                    raise ListingPrefixIndexError("Raw proof repeats a snapshot id")
+                previous_id = current_id
         return index, result
