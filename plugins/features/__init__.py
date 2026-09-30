@@ -17,6 +17,10 @@
 - ``microstructure``: ``TakerFlowImbalanceProvider`` (FEA-TAKER-FLOW-001),
   ``AmihudIlliquidityProvider`` (MSTX-AMIHUD-001), ``CorwinSchultzSpreadProvider``
   (FEA-CS-SPREAD-001) — kline-derived microstructure features; no parameter has a default value.
+- ``p7_operators``: the P7 operator Providers (ADR-0100 item 1) — ``P7StandardizeProvider``,
+  ``P7DifferenceProvider``, ``P7SmoothSmaProvider``, ``P7RankTsProvider``,
+  ``P7QuantileTsProvider``, ``P7InteractionProductProvider``; features over other features, served
+  only for the exact lowered ``FeatureSpec`` and an explicit upstream table.
 """
 
 from plugins.features.bars import (
@@ -43,6 +47,15 @@ from plugins.features.microstructure import (
     CorwinSchultzSpreadProvider,
     TakerFlowImbalanceProvider,
 )
+from plugins.features.p7_operators import (
+    P7DifferenceProvider,
+    P7InteractionProductProvider,
+    P7QuantileTsProvider,
+    P7RankTsProvider,
+    P7SmoothSmaProvider,
+    P7StandardizeProvider,
+    UpstreamFeature,
+)
 from plugins.features.range_volatility import (
     GarmanKlassVolatilityProvider,
     JumpVarianceProvider,
@@ -68,9 +81,16 @@ __all__ = [
     "JumpVarianceProvider",
     "MacdLineProvider",
     "MacdSignalProvider",
+    "P7DifferenceProvider",
+    "P7InteractionProductProvider",
+    "P7QuantileTsProvider",
+    "P7RankTsProvider",
+    "P7SmoothSmaProvider",
+    "P7StandardizeProvider",
     "ParkinsonVolatilityProvider",
     "RsiProvider",
     "TakerFlowImbalanceProvider",
+    "UpstreamFeature",
     "VwapProvider",
     "YangZhangVolatilityProvider",
 ]

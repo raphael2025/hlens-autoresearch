@@ -50,6 +50,12 @@ jump_qv = "infrastructure.plugins.builtin.features:JUMP_VARIANCE"
 taker_flow = "infrastructure.plugins.builtin.features:TAKER_FLOW_IMBALANCE"
 amihud_illiq = "infrastructure.plugins.builtin.features:AMIHUD_ILLIQUIDITY"
 cs_spread = "infrastructure.plugins.builtin.features:CORWIN_SCHULTZ_SPREAD"
+p7_transformation_standardize = "infrastructure.plugins.builtin.features:P7_TRANSFORMATION_STANDARDIZE"
+p7_transformation_difference = "infrastructure.plugins.builtin.features:P7_TRANSFORMATION_DIFFERENCE"
+p7_transformation_smooth = "infrastructure.plugins.builtin.features:P7_TRANSFORMATION_SMOOTH"
+p7_transformation_rank = "infrastructure.plugins.builtin.features:P7_TRANSFORMATION_RANK"
+p7_transformation_quantile = "infrastructure.plugins.builtin.features:P7_TRANSFORMATION_QUANTILE"
+p7_interaction_product = "infrastructure.plugins.builtin.features:P7_INTERACTION_PRODUCT"
 
 [project.entry-points."hlens.plugins.state"]
 volatility_regime = "infrastructure.plugins.builtin.states:VOLATILITY_REGIME"
@@ -68,6 +74,7 @@ event_co_occurrence = "infrastructure.plugins.builtin.events:EVENT_CO_OCCURRENCE
 event_window_end = "infrastructure.plugins.builtin.events:EVENT_WINDOW_END"
 event_absence = "infrastructure.plugins.builtin.events:EVENT_ABSENCE"
 event_count = "infrastructure.plugins.builtin.events:EVENT_COUNT"
+p7_temporal_sequence = "infrastructure.plugins.builtin.events:P7_TEMPORAL_SEQUENCE"
 
 [project.entry-points."hlens.plugins.outcome"]
 hlens_forward_return = "infrastructure.plugins.builtin.outcomes:HLENS_FORWARD_RETURN"
