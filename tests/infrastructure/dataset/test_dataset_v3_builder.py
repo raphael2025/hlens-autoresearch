@@ -7,8 +7,10 @@ written to a real ``LocalFileStorageAdapter``. Limits are arbitrary small values
 
 from __future__ import annotations
 
+import ast
 import inspect
-from datetime import timedelta
+import textwrap
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any, cast
 
@@ -33,9 +35,11 @@ from infrastructure.dataset.builder import (
     DatasetEvidenceRule,
     DatasetQualityError,
     DatasetSpecError,
+    PitConflictResult,
     PitKeyEvaluation,
     PitKeyGroup,
     PitSelectedRevision,
+    _EvidenceDerivation,
     dataset_evidence_rule,
     selection_id_for,
 )
@@ -44,6 +48,7 @@ from infrastructure.pit.selector import PitConflictError
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 from tests.infrastructure.dataset import dataset_support as ds
+from tests.infrastructure.revision.rest_store_support import DAY, utc
 
 MEMBERS = EvidenceStream.MEMBERS
 EXCLUSIONS = EvidenceStream.EXCLUSIONS
@@ -87,7 +92,7 @@ def build(
     manifests: ds.FakeManifests | None = None,
     **params: int,
 ) -> Any:
-    return builder(storage, **params).build(
+    return builder(storage, heads=None, **params).build(
         ds.v3_request() if request is None else request,
         sources=ds.v3_sources(universe, pit, quality),
         chunks=ds.FakeChunkWriter() if chunks is None else chunks,
@@ -152,7 +157,7 @@ def test_build_commits_chunks_evidence_and_a_fixed_size_manifest(
         ds.listing_lineage("listing-eth"),
         *(ds.trade_lineage(revision) for revision in ("r1", "r2", "r3")),
     ]
-    day_report = ds.partition_report("BTCUSDT", ds.DAY)
+    day_report = ds.partition_report("BTCUSDT", DAY)
     gaps = cast(list[AvailabilityEvidenceGap], stream(b, manifest, GAPS))
     assert [(g.table, g.revision_id, g.quality_report_id, g.gap) for g in gaps] == [
         (ds.V3_LISTINGS, "listing-eth", ds.V3_LISTING_REPORT, ds.GAP_TEXT),
@@ -198,8 +203,8 @@ def test_select_derives_exactly_what_build_commits(storage: LocalFileStorageAdap
 def test_interval_rows_are_selected_spans_gated_by_member_spans(
     storage: LocalFileStorageAdapter,
 ) -> None:
-    t0, t2 = ds.utc(2023, 12, 1), ds.utc(2023, 12, 3)
-    t1, half = ds.utc(2023, 12, 2), t0 + timedelta(hours=12)
+    t0, t2 = utc(2023, 12, 1), utc(2023, 12, 3)
+    t1, half = utc(2023, 12, 2), t0 + timedelta(hours=12)
     universe = ds.FakeUniverse(
         members_=(ds.v3_member("BTCUSDT", "listing-btc", (t0, t1)),),
         exclusions_=(
@@ -253,6 +258,116 @@ def test_interval_rows_are_selected_spans_gated_by_member_spans(
     ]
 
 
+def test_many_monotone_selected_revisions_keep_key_deduplication_constant_size(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    start = datetime(2023, 12, 1, tzinfo=UTC)
+    hours = tuple(start + timedelta(hours=index) for index in range(10))
+    # Repeated equal evaluations stand in for stable selector output. The production bounded
+    # selector coalesces them; these cases exercise the Dataset consumer across disjoint members.
+    revisions = (
+        "trade-00",
+        "trade-00",
+        "trade-01",
+        "trade-01",
+        "trade-01",
+        "trade-02",
+        "trade-02",
+        "trade-03",
+        "trade-03",
+    )
+    group = PitKeyGroup(
+        observation_key="one-key-with-long-history",
+        owner_event_time=ds.V3_EVENT,
+        evaluations=tuple(
+            PitKeyEvaluation(
+                hours[index],
+                PointInTimeStatus.SELECTED,
+                ds.selected(
+                    revision,
+                    gap=ds.GAP_TEXT if revision in ("trade-01", "trade-03") else None,
+                ),
+            )
+            for index, revision in enumerate(revisions)
+        ),
+    )
+    universe = ds.FakeUniverse(
+        members_=(
+            ds.v3_member("BTCUSDT", "listing-btc", (hours[0], hours[4])),
+            ds.v3_member(
+                "BTCUSDT",
+                "listing-btc",
+                (hours[4] + timedelta(minutes=30), hours[9]),
+            ),
+        ),
+        exclusions_=(ds.v3_exclusion("ETHUSDT", "listing-eth", (hours[0], hours[9])),),
+        lineage=(ds.listing_lineage("listing-btc"), ds.listing_lineage("listing-eth")),
+        gaps=(),
+        spans=(
+            ("BTCUSDT", hours[0], hours[4]),
+            ("BTCUSDT", hours[4] + timedelta(minutes=30), hours[9]),
+        ),
+    )
+    pit = ds.FakePit(groups={("BTCUSDT", ds.V3_SLICE_22): (group,)})
+    report_id = ds.partition_report("BTCUSDT", ds.V3_EVENT.date())
+    quality = ds.FakeQuality(
+        gaps={
+            (report_id, ds.V3_TRADES, revision): ds.GAP_TEXT
+            for revision in ("trade-01", "trade-03")
+        }
+    )
+    request = ds.v3_request(ds.v3_pit(interval=(hours[0], hours[9])))
+    chunks, manifests = ds.FakeChunkWriter(), ds.FakeManifests()
+    b = builder(storage, leaf_max_records=2)
+    summary = b.build(
+        request,
+        sources=ds.v3_sources(universe, pit, quality),
+        chunks=chunks,
+        manifests=manifests,
+    )
+
+    rows = chunks.rows(summary.selection_id)
+    assert len(revisions) > b.rule.limits.leaf_max_records
+    assert [row["revision_id"] for row in rows] == [
+        "trade-00",
+        "trade-00",
+        "trade-01",
+        "trade-01",
+        "trade-01",
+        "trade-02",
+        "trade-02",
+        "trade-03",
+        "trade-03",
+    ]
+    trade_lineage = [
+        item.canonical_revision_id
+        for item in cast(list[SelectedRevisionLineage], stream(b, summary.manifest, LINEAGE))
+        if item.canonical_table == ds.V3_TRADES
+    ]
+    assert trade_lineage == ["trade-00", "trade-01", "trade-02", "trade-03"]
+    gaps = cast(list[AvailabilityEvidenceGap], stream(b, summary.manifest, GAPS))
+    assert [(item.revision_id, item.gap) for item in gaps] == [
+        ("trade-01", ds.GAP_TEXT),
+        ("trade-03", ds.GAP_TEXT),
+    ]
+
+
+def test_key_lineage_deduplication_has_no_history_sized_container() -> None:
+    source = textwrap.dedent(inspect.getsource(_EvidenceDerivation._key))
+    tree = ast.parse(source)
+    history_sized_nodes = (
+        ast.Dict,
+        ast.Set,
+        ast.DictComp,
+        ast.SetComp,
+        ast.ListComp,
+        ast.GeneratorExp,
+    )
+    assert not any(isinstance(node, history_sized_nodes) for node in ast.walk(tree))
+    assert "last_lineage_revision" in source
+    assert "emitted: set" not in source
+
+
 # ------------------------------------------------------------------ fail closed
 
 
@@ -274,7 +389,7 @@ def test_competing_heads_fail_closed(storage: LocalFileStorageAdapter) -> None:
     )
     with pytest.raises(PitConflictError) as caught:
         build(storage, universe, pit, quality)
-    result = caught.value.result
+    result = cast(PitConflictResult | None, caught.value.result)
     assert result is not None and result.observation_key == "k2" and result.head_count == 2
     with iter_pit_conflict_heads(storage, result, limits=builder(storage).rule.limits) as heads:
         records = list(heads)
@@ -286,7 +401,7 @@ def test_competing_heads_fail_closed(storage: LocalFileStorageAdapter) -> None:
 def test_a_conflict_outside_every_member_span_still_fails_closed(
     storage: LocalFileStorageAdapter,
 ) -> None:
-    t0, t1, t2 = ds.utc(2023, 12, 1), ds.utc(2023, 12, 2), ds.utc(2023, 12, 3)
+    t0, t1, t2 = utc(2023, 12, 1), utc(2023, 12, 2), utc(2023, 12, 3)
     universe = ds.FakeUniverse(
         members_=(ds.v3_member("BTCUSDT", "listing-btc", (t0, t1)),),
         exclusions_=(
@@ -334,7 +449,7 @@ def test_a_duplicate_or_unordered_key_in_a_slice_fails_closed(
 
 def test_a_key_not_owned_by_its_slice_fails_closed(storage: LocalFileStorageAdapter) -> None:
     universe, _, quality = ds.point_scenario()
-    stray = ds.point_key("k1", "r1", owner=ds.utc(2023, 11, 14, 21, 30))
+    stray = ds.point_key("k1", "r1", owner=utc(2023, 11, 14, 21, 30))
     pit = ds.FakePit(groups={("BTCUSDT", ds.V3_SLICE_22): (stray,)})
     with pytest.raises(CatalogIntegrityError, match="not owned by the slice"):
         build(storage, universe, pit, quality)
@@ -364,7 +479,7 @@ def test_lineage_citing_an_unbound_table_fails_closed(storage: LocalFileStorageA
 
 def test_an_unrecorded_evidence_gap_fails_closed(storage: LocalFileStorageAdapter) -> None:
     _, _, quality = ds.point_scenario()
-    day_report = ds.partition_report("BTCUSDT", ds.DAY)
+    day_report = ds.partition_report("BTCUSDT", DAY)
     for gaps in (
         {key: gap for key, gap in quality.gaps.items() if key[0] != day_report},
         {**quality.gaps, (ds.V3_LISTING_REPORT, ds.V3_LISTINGS, "listing-eth"): "other text"},
@@ -388,8 +503,8 @@ def test_an_episode_both_member_and_excluded_fails_closed(
 def test_overlapping_member_spans_of_one_episode_fail_closed(
     storage: LocalFileStorageAdapter,
 ) -> None:
-    t0, t2 = ds.utc(2023, 12, 1), ds.utc(2023, 12, 3)
-    t1 = ds.utc(2023, 12, 2)
+    t0, t2 = utc(2023, 12, 1), utc(2023, 12, 3)
+    t1 = utc(2023, 12, 2)
     universe, pit, quality = ds.point_scenario()
     universe.members_ = (
         ds.v3_member("BTCUSDT", "listing-btc", (t0, t1 + timedelta(hours=1))),
@@ -449,7 +564,7 @@ def test_event_days_outside_the_window_must_arrive_in_order(
     )
     assert report_ids(b, summary.manifest) == [
         ds.V3_LISTING_REPORT,
-        ds.partition_report("BTCUSDT", ds.DAY),
+        ds.partition_report("BTCUSDT", DAY),
         ds.partition_report("BTCUSDT", later.date()),
     ]
     earlier = ds.V3_EVENT - timedelta(days=1)
@@ -532,7 +647,7 @@ def test_rule_parameters_are_required_and_part_of_the_identity(
     for name in PARAMS:
         other = dataset_evidence_rule(**{**PARAMS, name: PARAMS[name] + 1})
         assert other.rule_hash != rule.rule_hash
-        assert builder(storage, **{name: PARAMS[name] + 1}).selection_id(
+        assert builder(storage, heads=None, **{name: PARAMS[name] + 1}).selection_id(
             ds.v3_request()
         ) != builder(storage).selection_id(ds.v3_request())
     for bad in ({"chunk_rows": 0}, {"fanout": 1}, {"leaf_max_bytes": 0}, {"chunk_rows": True}):

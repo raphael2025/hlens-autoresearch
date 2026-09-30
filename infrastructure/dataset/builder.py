@@ -993,6 +993,8 @@ def _row_order(row: Mapping[str, Any]) -> tuple[str, str, datetime, str]:
 # one cached report id and the adjacent-item comparison state.
 
 DATASET_EVIDENCE_RULE_VERSION: Final = "2.1.0"  # F-C, 2026-09-28: EVIDENCE_PROJECTION text fix
+
+
 #: The evidence streams the generator derives; ``chunk_proofs`` come from the chunk commits.
 def _derived_streams(schema_version: str) -> tuple[EvidenceStream, ...]:
     """Streams in one recorded manifest era (ADR-0094 preserves six-stream replay)."""
@@ -1004,6 +1006,7 @@ def _derived_streams(schema_version: str) -> tuple[EvidenceStream, ...]:
         if stream is not EvidenceStream.CHUNK_PROOFS
         and (stream is not EvidenceStream.PIT_CONFLICTS or core >= (2, 5, 0))
     )
+
 
 #: A member span of one venue symbol: ``(None, None)`` for a point simulation.
 MemberSpan = tuple[datetime | None, datetime | None]
@@ -2096,9 +2099,15 @@ class _EvidenceDerivation:
                 f"observation key {key} is not owned by the slice [{low.isoformat()}, "
                 f"{high.isoformat()}) (its chain starts at {owner.isoformat()})"
             )
-        #: Revisions of this key already given lineage: a revision belongs to one key and one
-        #: key's rows are adjacent, so this set never spans two keys (ADR-0077 §2).
-        emitted: set[str] = set()
+        # PIT's bounded selector evaluates one fixed graph while candidates only accrue. A
+        # selected revision therefore remains the sole head until a newly available descendant
+        # replaces it; it cannot become the sole head again, and a conflict terminates the key.
+        # `_evaluate_bounded` emits only selection changes. `_selected_spans_of` preserves that
+        # order, and `_gated_rows` only intersects it with ordered disjoint member spans. One
+        # selected revision may thus produce several rows when a member span is split, but those
+        # occurrences are adjacent in output. This scalar covers repeated evaluation/span
+        # intersections without retaining O(H_key) revision IDs.
+        last_lineage_revision: str | None = None
         rows = _gated_rows(
             _selected_spans_of(
                 group.evaluations,
@@ -2111,9 +2120,9 @@ class _EvidenceDerivation:
         for (effective_from, effective_until), selected in rows:
             event_time = self._row(venue_symbol, key, selected, effective_from, effective_until)
             report_id = reports.cover(event_time.astimezone(UTC).date())
-            if selected.revision_id not in emitted:
-                emitted.add(selected.revision_id)
+            if selected.revision_id != last_lineage_revision:
                 self._data_lineage(selected, report_id)
+                last_lineage_revision = selected.revision_id
 
     def _pit_conflict_head(self, record: PitConflictHeadEvidence) -> None:
         if EvidenceStream.PIT_CONFLICTS not in self._counts:
