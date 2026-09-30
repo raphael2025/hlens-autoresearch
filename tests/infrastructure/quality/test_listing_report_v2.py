@@ -12,7 +12,13 @@ import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
 from core.contracts.catalog import CommitRequest
-from core.contracts.storage import ObjectRef, PublishResult, StagedObject, StageRequest
+from core.contracts.storage import (
+    ObjectRef,
+    PublishResult,
+    StagedObject,
+    StageRequest,
+    StorageAdapter,
+)
 from infrastructure.canonical import listing_rules as lr
 from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
@@ -141,7 +147,9 @@ def _ref(name: str, manifest_ref: Mapping[str, Any]) -> QualityReportStreamRef:
 
 
 class _CountingStorage:
-    def __init__(self, inner: Any, *, missing_key: str | None = None, tamper: bool = False) -> None:
+    def __init__(
+        self, inner: StorageAdapter, *, missing_key: str | None = None, tamper: bool = False
+    ) -> None:
         self.inner = inner
         self.stages = 0
         self.publishes = 0
