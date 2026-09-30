@@ -42,9 +42,8 @@ from infrastructure.quality.report_streams import (
     iter_quality_report_stream,
 )
 from infrastructure.quality.report_v3 import _INPUT_TABLES as _CANONICAL_V3_INPUTS
+from infrastructure.quality.scratch import local_storage_roots_overlap
 from infrastructure.revision.store import RevisionCatalog
-from infrastructure.settings import local_file_uri_to_path
-from infrastructure.storage.local import LocalFileStorageAdapter
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = ["BoundedQualityEvidence", "BoundedQualityEvidenceFactory", "BoundedQualitySourceParams"]
@@ -110,43 +109,13 @@ class _DatasetQualityReader(Protocol):
     ) -> BoundedQualityEvidence: ...
 
 
-def _local_adapters(storage: StorageAdapter) -> tuple[LocalFileStorageAdapter, ...]:
-    found: list[LocalFileStorageAdapter] = []
-    pending: list[object] = [storage]
-    seen: set[int] = set()
-    while pending:
-        current = pending.pop()
-        if id(current) in seen:
-            continue
-        seen.add(id(current))
-        if isinstance(current, LocalFileStorageAdapter):
-            found.append(current)
-        else:
-            inner = getattr(current, "inner", None)
-            if inner is not None:
-                pending.append(inner)
-    return tuple(found)
-
-
 def _ensure_isolated(evidence: StorageAdapter, scratch: StorageAdapter) -> None:
     if evidence is scratch:
         raise DatasetQualityError("Quality gap scratch must use a distinct storage adapter")
-    left = _local_adapters(evidence)
-    right = _local_adapters(scratch)
-    for a in left:
-        for b in right:
-            roots_a = (
-                local_file_uri_to_path(a.warehouse_uri, field_name="warehouse_uri").resolve(),
-                local_file_uri_to_path(a.staging_uri, field_name="staging_uri").resolve(),
-            )
-            roots_b = (
-                local_file_uri_to_path(b.warehouse_uri, field_name="warehouse_uri").resolve(),
-                local_file_uri_to_path(b.staging_uri, field_name="staging_uri").resolve(),
-            )
-            if any(x == y or x in y.parents or y in x.parents for x in roots_a for y in roots_b):
-                raise DatasetQualityError(
-                    "Quality gap join scratch roots must not overlap evidence storage roots"
-                )
+    if local_storage_roots_overlap(evidence, scratch):
+        raise DatasetQualityError(
+            "Quality gap join scratch roots must not overlap evidence storage roots"
+        )
 
 
 _reject_local_storage_aliases = _ensure_isolated

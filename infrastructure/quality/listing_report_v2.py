@@ -41,6 +41,7 @@ from infrastructure.quality.report_streams import (
     QualityReportStreamWriter,
     iter_quality_report_stream,
 )
+from infrastructure.quality.scratch import local_storage_roots_overlap
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
@@ -421,6 +422,8 @@ class ListingHistoryQualityReporterV2:
             raise ValueError(
                 "scratch_storage must be a distinct adapter; caller must isolate its namespace"
             )
+        if local_storage_roots_overlap(storage, scratch_storage):
+            raise ValueError("scratch_storage roots must not overlap evidence storage roots")
         if not callable(clock):
             raise ValueError("clock must be callable")
         self._adapter = adapter

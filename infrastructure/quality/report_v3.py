@@ -71,6 +71,7 @@ from infrastructure.quality.report_streams import (
     iter_quality_report_stream,
 )
 from infrastructure.quality.reporter import RawNotDerived
+from infrastructure.quality.scratch import local_storage_roots_overlap
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.rest_identity import PAGE_LIMIT
 from infrastructure.revision.row_integrity import ACCEPTED, PersistedRowVerifier, history_from
@@ -340,6 +341,8 @@ class QualityReporterV3:
                 "scratch_storage must be a distinct adapter; caller must ensure its namespace "
                 "is isolated from evidence storage"
             )
+        if local_storage_roots_overlap(storage, scratch_storage):
+            raise ValueError("scratch_storage roots must not overlap evidence storage roots")
         if not callable(clock):
             raise ValueError("clock must be callable")
         self._adapter = adapter
