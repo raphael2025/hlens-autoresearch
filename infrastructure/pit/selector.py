@@ -76,7 +76,6 @@ from infrastructure.pit.precedence_runs import (
     maximal_heads_from_runs,
 )
 from infrastructure.pit.runs import (
-    KeyHistoryBuffer,
     RunLimits,
     RunRef,
     RunSetBuilder,
@@ -92,6 +91,7 @@ from infrastructure.revision.channel_reconcile import (
 )
 from infrastructure.revision.precedence import maximal_heads
 from infrastructure.revision.store import RevisionCatalog
+from infrastructure.streaming.runs import _read_run_record_at_ordinal
 
 __all__ = [
     "PIT_BINDING",
@@ -224,9 +224,7 @@ class PitRunParams:
       content-addressed sorted run (:func:`infrastructure.pit.runs.spill_sorted_runs`);
     - ``merge_fanout``: how many sorted runs :func:`infrastructure.pit.runs.merge_sorted_runs`
       reads from at once when reconstructing key order;
-    - ``key_history_buffer``: how many of one observation key's own rows
-      :class:`infrastructure.pit.runs.KeyHistoryBuffer` holds before spilling the rest of that
-      key's (unusually long) chain into its own run;
+    - ``key_history_buffer``: fixed write capacity for one key's revision-sorted lookup run;
     - ``limits``: the leaf / index shape (:class:`infrastructure.pit.runs.RunLimits`) used for
       every run this call writes, including the intermediate runs a large merge produces.
     """
@@ -545,28 +543,35 @@ class PitSelector:
     def _verify_canonical_bounded(
         self,
         view: PinnedCatalogView,
-        rows: list[Mapping[str, Any]],
+        rows_root: RunRef,
         *,
         params: PitRunParams,
-    ) -> list[Mapping[str, Any]]:
-        """Verify one revision-sorted key while spilling normalizer proofs by revision id.
+    ) -> RunRef:
+        """Verify one revision-sorted key with bounded request and proof streams.
 
-        ``CanonicalNormalizer.verify_unit`` remains the compatibility tuple API. The bounded
-        path sends each fully checked proof batch to an unfinalized content-addressed run instead
-        of retaining the returned tuple and a second ``proven`` dict at the same time. The run is
-        finalized only after every requested unit/batch has been proven; it is replayed by an
-        ordered merge with the already revision-sorted Canonical rows. Duplicate proof IDs use
-        their greatest insertion ordinal, reproducing ``proven[id] = row``'s last-write-wins
-        behavior. Extra proofs are ignored, and every expected field is still compared.
-
-        This only removes the proof tuple/map overlap. ``rows`` and per-unit arrival sequence
-        sets remain current-key state; complete graph/head and byte/RSS bounds are separate gates.
+        Request rows, normalizer proof rows, and Canonical rows remain sorted RunSets throughout.
+        Duplicate proof IDs use their greatest unit/batch/row ordinal, reproducing the legacy
+        last-write-wins map. Extra proof rows are ignored and every expected field is compared.
         """
         normalizer = self._normalizer or CanonicalNormalizer(view, self._storage)
-        units: dict[tuple[str, str], set[int]] = {}
-        for row in rows:
-            unit = (row["lineage_raw_table"], row["lineage_source_revision_id"])
-            units.setdefault(unit, set()).add(row["arrival_seq"])
+        with RunSetBuilder(
+            self._storage,
+            key=_proof_request_sort_key,
+            capacity=params.row_batch_rows,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as request_builder:
+            with _root_rows(self._storage, rows_root) as rows:
+                for row in rows:
+                    request_builder.add(
+                        {
+                            "lineage_raw_table": row["lineage_raw_table"],
+                            "lineage_source_revision_id": row["lineage_source_revision_id"],
+                            "arrival_seq": row["arrival_seq"],
+                            "revision_id": row["revision_id"],
+                        }
+                    )
+            request_root = request_builder.finish()
 
         with RunSetBuilder(
             self._storage,
@@ -575,42 +580,51 @@ class PitSelector:
             merge_fanout=params.merge_fanout,
             limits=params.limits,
         ) as proofs_builder:
-            for unit_order, (raw_table, source) in enumerate(sorted(units)):
-                seqs = units.pop((raw_table, source))
+            if request_root is not None:
+                with _root_rows(self._storage, request_root) as requests:
+                    unit_groups = itertools.groupby(requests, key=_proof_request_unit)
+                    for unit_order, (unit, unit_rows) in enumerate(unit_groups):
+                        raw_table, source = unit
 
-                def stage_proof(
-                    row: Mapping[str, Any],
-                    batch_index: int,
-                    planned_row_ordinal: int,
-                    *,
-                    _unit_order: int = unit_order,
-                ) -> None:
-                    proofs_builder.add(
-                        {
-                            "revision_id": row["revision_id"],
-                            "unit_order": _unit_order,
-                            "batch_index": batch_index,
-                            "planned_row_ordinal": planned_row_ordinal,
-                            "proof_row": row,
-                        }
-                    )
+                        def stage_proof(
+                            row: Mapping[str, Any],
+                            batch_index: int,
+                            planned_row_ordinal: int,
+                            *,
+                            _unit_order: int = unit_order,
+                        ) -> None:
+                            proofs_builder.add(
+                                {
+                                    "revision_id": row["revision_id"],
+                                    "unit_order": _unit_order,
+                                    "batch_index": batch_index,
+                                    "planned_row_ordinal": planned_row_ordinal,
+                                    "proof_row": row,
+                                }
+                            )
 
-                normalizer._stage_verified_unit(
-                    raw_table,
-                    source,
-                    arrival_seqs=seqs,
-                    sink=stage_proof,
-                )
+                        normalizer._stage_verified_unit(
+                            raw_table,
+                            source,
+                            arrival_seqs=_proof_request_arrivals(unit_rows),
+                            sink=stage_proof,
+                            request_capacity=params.row_batch_rows,
+                            merge_fanout=params.merge_fanout,
+                            run_limits=params.limits,
+                        )
 
             # A later unit/batch exception exits the context above without reaching finish(),
             # releasing buffers/ref metadata while leaving only ADR-0077 §9 content-addressed
             # orphan objects. No reader or caller can observe a staged proof prefix.
             proof_root = proofs_builder.finish()
 
-        with _root_rows(self._storage, proof_root) as proof_rows:
+        with (
+            _root_rows(self._storage, proof_root) as proof_rows,
+            _root_rows(self._storage, rows_root) as canonical_rows,
+        ):
             grouped_proofs = itertools.groupby(proof_rows, key=_proof_row_group_key)
             current = next(grouped_proofs, None)
-            for row in rows:
+            for row in canonical_rows:
                 revision_id = row["revision_id"]
                 while current is not None and current[0] < revision_id:
                     # Proof rows not represented in the requested Canonical closure were ignored
@@ -635,16 +649,17 @@ class PitSelector:
                     )
 
         previous: str | None = None
-        for row in rows:
-            revision_id = row["revision_id"]
-            if revision_id == previous:
-                raise CatalogIntegrityError(f"Canonical revision {revision_id} is read twice")
-            if previous is not None and revision_id < previous:
-                raise CatalogIntegrityError(
-                    "Canonical rows supplied for sorted revision-id verification are not sorted"
-                )
-            previous = revision_id
-        return rows
+        with _root_rows(self._storage, rows_root) as rows:
+            for row in rows:
+                revision_id = cast(str, row["revision_id"])
+                if revision_id == previous:
+                    raise CatalogIntegrityError(f"Canonical revision {revision_id} is read twice")
+                if previous is not None and revision_id < previous:
+                    raise CatalogIntegrityError(
+                        "Canonical rows supplied for sorted revision-id verification are not sorted"
+                    )
+                previous = revision_id
+        return rows_root
 
     def _mapped_edges(
         self,
@@ -765,21 +780,20 @@ class PitSelector:
           ``lineage`` / ``evidence_gaps`` / ``selected_rows`` / ``conflicts`` across *every* key
           before returning one :class:`PitSelection` holding it all;
         - ``iter_bounded`` spills wanted keys, each closure scan, and selected key chains through
-          :class:`infrastructure.pit.runs.RunSetBuilder`; only the current key and chain writer
-          are live. It then verifies each key and maps matching edges into final sorted runs.
+          :class:`infrastructure.pit.runs.RunSetBuilder`; only the current key's bounded run
+          writers are live. It then verifies each key and maps matching edges into final runs.
           Each completed batch is folded into a fanout-bounded hierarchy, leaving one root per
           stream rather than a list of all run references. It reads those roots in key order
-          with explicitly closed readers per stream. One key's rows are gathered (via
-          :class:`infrastructure.pit.runs.KeyHistoryBuffer`, which itself spills to a run if that
-          one key's own history exceeds ``params.key_history_buffer``), evaluated exactly as
-          ``select`` would (:func:`_evaluate` / :func:`_heads`, unchanged), yielded as ordered
-          :class:`PitBoundedRecord`, and released — the next key's key/records/lookup state does
-          not coexist with this one's, and nothing about the *whole window's* result set is ever
+          with explicitly closed readers per stream. One key's rows stay in sorted RunSets and
+          use bounded ordinal / endpoint lookups while the existing v3 evaluator replays them;
+          output is yielded as ordered :class:`PitBoundedRecord`, and the next key's key,
+          records, and lookup state do not coexist with this one's. Nothing about the *whole
+          window's* result set is ever
           held in memory at once, addressing ADR-0077 §6.1.4's ban on ``by_key`` /
           ``records_by_key`` / ``selected_rows`` persisting for a whole ``select`` call.
 
-        **Honest boundary**: canonical proof holds one observation key's rows, and evaluation
-        retains that key's graph/history/head result under the existing output contract.
+        **Honest boundary**: per-key rows/proofs are externally staged; evaluation work remains
+        proportional to that key's graph/history under the existing output contract.
         ``ChannelReconciler.verified_edges()`` still returns a tuple produced from a full-day
         ``_plan``; edge working memory is therefore bounded by one day partition, not by a fixed
         byte or row cap. The sorted staging itself no longer grows with the number of window
@@ -1305,6 +1319,14 @@ def _pit_row_group_key(row: Mapping[str, Any]) -> str:
     return cast(str, row["observation_key"])
 
 
+def _pit_endpoint_sort_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
+    return (
+        cast(str, row["lineage_raw_table"]),
+        cast(str, row["lineage_raw_revision_id"]),
+        cast(str, row["revision_id"]),
+    )
+
+
 def _proof_row_sort_key(row: Mapping[str, Any]) -> tuple[str, int, int, int]:
     """Canonical proof rows in legacy unit/batch/row order within each revision ID."""
     return (
@@ -1313,6 +1335,32 @@ def _proof_row_sort_key(row: Mapping[str, Any]) -> tuple[str, int, int, int]:
         cast(int, row["batch_index"]),
         cast(int, row["planned_row_ordinal"]),
     )
+
+
+def _proof_request_sort_key(row: Mapping[str, Any]) -> tuple[str, str, int, str]:
+    """Canonical proof requests by source unit, arrival sequence, then revision ID."""
+    return (
+        cast(str, row["lineage_raw_table"]),
+        cast(str, row["lineage_source_revision_id"]),
+        cast(int, row["arrival_seq"]),
+        cast(str, row["revision_id"]),
+    )
+
+
+def _proof_request_unit(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (
+        cast(str, row["lineage_raw_table"]),
+        cast(str, row["lineage_source_revision_id"]),
+    )
+
+
+def _proof_request_arrivals(rows: Iterable[Mapping[str, Any]]) -> Iterator[int]:
+    previous: int | None = None
+    for request in rows:
+        seq = cast(int, request["arrival_seq"])
+        if seq != previous:
+            yield seq
+            previous = seq
 
 
 def _proof_row_group_key(row: Mapping[str, Any]) -> str:
@@ -1339,7 +1387,7 @@ def _mapped_edge_run_stream(
     data_type: str,
     symbol: str,
     days: Iterable[date],
-    by_key: Mapping[str, Sequence[Mapping[str, Any]]],
+    key_rows: _PitKeyRows,
     *,
     observation_key: str,
     params: PitRunParams,
@@ -1387,7 +1435,6 @@ def _mapped_edge_run_stream(
             def mapped() -> Iterator[dict[str, Any]]:
                 previous_id: str | None = None
                 previous_row: Mapping[str, Any] | None = None
-                rows = by_key.get(observation_key, ())
                 for row in raw_rows:
                     edge_id = cast(str, row["edge_id"])
                     if edge_id == previous_id:
@@ -1404,18 +1451,7 @@ def _mapped_edge_run_stream(
                         (row["revision_table"], raw.revision_id),
                         (row["superseded_table"], raw.superseded_revision_id),
                     ):
-                        found: Mapping[str, Any] | None = None
-                        for canonical_row in rows:
-                            if (
-                                canonical_row["lineage_raw_table"] == table
-                                and canonical_row["lineage_raw_revision_id"] == revision
-                            ):
-                                if found is not None:
-                                    raise CatalogIntegrityError(
-                                        f"Raw revision {revision} has multiple Canonical images"
-                                    )
-                                found = canonical_row
-                        endpoints.append(found)
+                        endpoints.append(_pit_unique_raw_endpoint(key_rows, table, revision))
                     if endpoints[0] is None or endpoints[1] is None:
                         continue
                     evidence = rules.map_channel_edge(
@@ -1525,24 +1561,122 @@ def _root_rows(
             yield records
 
 
-class _RevisionRecordView(Iterable[RevisionRecord]):
-    """Rebuild revision DTOs from one key's existing sorted row map without a second tuple.
+class _PitKeyRows(Mapping[str, Mapping[str, Any]]):
+    """One key's revision-sorted rows with bounded point and endpoint lookup."""
 
-    The mapping's insertion order is the ``revision_id`` order supplied by the PIT row run. The
-    view is intentionally re-iterable and uncached: it removes the duplicate O(H) DTO tuple, while
-    each evaluation pass reconstructs DTOs from the rows. This is an internal bounded-path
-    working-set tradeoff; it does not bound ``key_rows`` or ``RevisionGraph``'s own validation
-    tuple.
+    __slots__ = ("_storage", "_revision_root", "_endpoint_root", "_max_object_bytes")
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        revision_root: RunRef | None,
+        *,
+        endpoint_root: RunRef | None = None,
+        limits: RunLimits,
+    ) -> None:
+        self._storage = storage
+        self._revision_root = revision_root
+        self._endpoint_root = endpoint_root
+        # Run leaf bodies use leaf_max_bytes; index bodies contain at most fanout fixed-size refs.
+        self._max_object_bytes = max(limits.leaf_max_bytes, limits.fanout * 512 + 256)
+
+    @contextmanager
+    def rows(self) -> Iterator[Iterator[Mapping[str, Any]]]:
+        with _root_rows(self._storage, self._revision_root) as rows:
+            yield rows
+
+    def _at(self, root: RunRef, ordinal: int) -> Mapping[str, Any]:
+        return _read_run_record_at_ordinal(
+            self._storage,
+            root,
+            ordinal,
+            max_object_bytes=self._max_object_bytes,
+        )
+
+    def __getitem__(self, revision_id: str) -> Mapping[str, Any]:
+        root = self._revision_root
+        if root is None:
+            raise KeyError(revision_id)
+        low, high = 0, root.record_count
+        while low < high:
+            middle = (low + high) // 2
+            candidate = cast(str, self._at(root, middle)["revision_id"])
+            if candidate < revision_id:
+                low = middle + 1
+            else:
+                high = middle
+        if low == root.record_count:
+            raise KeyError(revision_id)
+        row = self._at(root, low)
+        if row["revision_id"] != revision_id:
+            raise KeyError(revision_id)
+        return row
+
+    def __iter__(self) -> Iterator[str]:
+        with self.rows() as rows:
+            for row in rows:
+                yield cast(str, row["revision_id"])
+
+    def __len__(self) -> int:
+        return 0 if self._revision_root is None else self._revision_root.record_count
+
+    def raw_endpoint_rows(
+        self, raw_table: str, raw_revision_id: str
+    ) -> Iterator[Mapping[str, Any]]:
+        root = self._endpoint_root
+        if root is None:
+            return
+        target = (raw_table, raw_revision_id)
+        low, high = 0, root.record_count
+        while low < high:
+            middle = (low + high) // 2
+            candidate = self._at(root, middle)
+            key = (
+                cast(str, candidate["lineage_raw_table"]),
+                cast(str, candidate["lineage_raw_revision_id"]),
+            )
+            if key < target:
+                low = middle + 1
+            else:
+                high = middle
+        while low < root.record_count:
+            row = self._at(root, low)
+            key = (
+                cast(str, row["lineage_raw_table"]),
+                cast(str, row["lineage_raw_revision_id"]),
+            )
+            if key != target:
+                return
+            yield row
+            low += 1
+
+
+def _pit_unique_raw_endpoint(
+    key_rows: _PitKeyRows, raw_table: str, revision_id: str
+) -> Mapping[str, Any] | None:
+    matches = key_rows.raw_endpoint_rows(raw_table, revision_id)
+    found = next(matches, None)
+    if found is not None and next(matches, None) is not None:
+        raise CatalogIntegrityError(f"Raw revision {revision_id} has multiple Canonical images")
+    return found
+
+
+class _RevisionRecordView(Iterable[RevisionRecord]):
+    """Rebuild revision DTOs from one key's sorted run without a second tuple.
+
+    Each traversal owns and closes a reader. The view is intentionally re-iterable and uncached:
+    each evaluation pass reconstructs DTOs directly from the content-addressed key run.
     """
 
     __slots__ = ("_rows",)
 
-    def __init__(self, rows: Mapping[str, Mapping[str, Any]]) -> None:
+    def __init__(self, rows: _PitKeyRows) -> None:
         self._rows = rows
 
     def __iter__(self) -> Iterator[RevisionRecord]:
-        for row in self._rows.values():
-            yield revision_record_from_row(row)
+        with self._rows.rows() as rows:
+            for row in rows:
+                yield revision_record_from_row(row)
 
 
 @contextmanager
@@ -1845,16 +1979,44 @@ def _pit_bounded_stream(
             for observation_key, key_group in itertools.groupby(
                 sorted_rows, key=_pit_row_group_key
             ):
-                # Canonical proof and edge endpoint resolution are key-local. The legacy
-                # _verify_canonical contract accepts a sequence for one observation key; this
-                # is the remaining per-key working set, never a whole-window collection.
-                key_rows = list(key_group)
-                verified_key = selector._verify_canonical_bounded(
-                    view,
-                    key_rows,
-                    params=params,
+                with (
+                    RunSetBuilder(
+                        storage,
+                        key=_pit_row_sort_key,
+                        capacity=params.row_batch_rows,
+                        merge_fanout=params.merge_fanout,
+                        limits=limits,
+                    ) as revision_builder,
+                    RunSetBuilder(
+                        storage,
+                        key=_pit_endpoint_sort_key,
+                        capacity=params.row_batch_rows,
+                        merge_fanout=params.merge_fanout,
+                        limits=limits,
+                    ) as endpoint_builder,
+                ):
+                    for row in key_group:
+                        revision_builder.add(row)
+                        endpoint_builder.add(row)
+                    revision_root = revision_builder.finish()
+                    endpoint_root = endpoint_builder.finish()
+                key_rows = _PitKeyRows(
+                    storage,
+                    revision_root,
+                    endpoint_root=endpoint_root,
+                    limits=limits,
                 )
-                by_key = {observation_key: verified_key}
+                verified_key_root = (
+                    None
+                    if revision_root is None
+                    else selector._verify_canonical_bounded(
+                        view,
+                        revision_root,
+                        params=params,
+                    )
+                )
+                with _root_rows(storage, verified_key_root) as verified_rows:
+                    row_run_set.extend(verified_rows)
                 with _root_rows(storage, day_root) as day_rows:
                     edge_days = (
                         date.fromisoformat(cast(str, day_row["day"])) for day_row in day_rows
@@ -1866,12 +2028,11 @@ def _pit_bounded_stream(
                         data_type,
                         symbol,
                         edge_days,
-                        by_key,
+                        key_rows,
                         observation_key=observation_key,
                         params=params,
                         limits=limits,
                     ) as mapped_edges:
-                        row_run_set.extend(verified_key)
                         edge_run_set.extend(mapped_edges)
         row_root = row_run_set.finish()
         edge_root = edge_run_set.finish()
@@ -1885,23 +2046,26 @@ def _pit_bounded_stream(
             pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
 
             for row_key, row_group in itertools.groupby(merged_rows, key=_pit_row_group_key):
-                buffer = KeyHistoryBuffer(
-                    storage=storage,
-                    buffer_limit=params.key_history_buffer,
-                    merge_fanout=params.merge_fanout,
+                with RunSetBuilder(
+                    storage,
                     key=_pit_row_sort_key,
+                    capacity=params.key_history_buffer,
+                    merge_fanout=params.merge_fanout,
                     limits=limits,
-                )
-                for row in row_group:
-                    buffer.add(row)
-                with buffer.rows() as key_row_iter:
-                    key_rows = {row["revision_id"]: row for row in key_row_iter}
-                # The row run already inserted this key in revision_id order. Rebuild DTOs on
-                # demand instead of retaining a second full per-key tuple beside key_rows.
+                ) as key_row_builder:
+                    key_row_builder.extend(row_group)
+                    key_root = key_row_builder.finish()
+                key_rows = _PitKeyRows(storage, key_root, limits=limits)
                 records = _RevisionRecordView(key_rows)
-                # The key's whole read closure (key_rows) — not just the window's own instants —
-                # so this is exactly the ``earliest`` value _key_closure filtered ownership on.
-                owner_at = min(row[column] for row in key_rows.values())
+                # The key's whole read closure determines ownership, not only this window's
+                # instants. Compute the same minimum with one bounded pass over its run.
+                owner_at: datetime | None = None
+                with key_rows.rows() as key_row_iter:
+                    for row in key_row_iter:
+                        at = cast(datetime, row[column])
+                        owner_at = at if owner_at is None else min(owner_at, at)
+                if owner_at is None:  # pragma: no cover - a grouped row run is non-empty
+                    raise CatalogIntegrityError("a Canonical key has no rows")
 
                 key_edges = _pit_take_key_edges(
                     row_key,
@@ -1970,8 +2134,7 @@ def _pit_bounded_stream(
                         owner_event_time=owner_at,
                         event_time=event_at,
                     )
-                # key_rows / records / key_edges / buffer go out of scope here, before the next
-                # observation_key's group is even read off merged_rows.
+                # key_rows / records / key_edges go out of scope here before the next key group.
 
             # Every mapped edge's observation_key must be one _mapped_edges found rows for (it
             # only ever adds an edge once both Raw endpoints resolved among that key's rows); an
@@ -1979,8 +2142,8 @@ def _pit_bounded_stream(
             # what by_key / edges actually held, which the spill/merge path must never do.
             _pit_assert_no_unmatched_edge_groups(pending_edge_key, edge_iter)
 
-    # ``_generate`` holds one root reader per run set and, mid-key, one
-    # ``KeyHistoryBuffer.rows()`` context: closed explicitly here on every exit of the caller's
+    # ``_generate`` holds one root reader per run set and, mid-key, one key-row run reader:
+    # closed explicitly here on every exit of the caller's
     # ``with`` block -- full iteration, an early ``break``, or an exception -- rather than left
     # to whenever the generator object is garbage collected.
     # ``.close()`` throws ``GeneratorExit`` in at the generator's current (or not yet started)

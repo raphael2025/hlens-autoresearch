@@ -9,8 +9,14 @@ from typing import Any, cast
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
-from infrastructure.pit.runs import RunLimits
-from infrastructure.pit.selector import PitRunParams, _evaluate, _RevisionRecordView
+from infrastructure.pit.runs import RunLimits, RunSetBuilder
+from infrastructure.pit.selector import (
+    PitRunParams,
+    _evaluate,
+    _pit_row_sort_key,
+    _PitKeyRows,
+    _RevisionRecordView,
+)
 from infrastructure.revision.channel_reconcile import revision_record_from_row
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.pit.test_selector import FAR, _chain
@@ -49,12 +55,27 @@ def test_record_view_reiterates_and_multitime_selector_matches_materialized_reco
         available[revision_id] = at
 
     sorted_rows = {revision_id: rows[revision_id] for revision_id in sorted(rows)}
-    view = _RevisionRecordView(sorted_rows)
+    limits = RunLimits(leaf_max_records=8, leaf_max_bytes=1 << 16, fanout=2)
+    with RunSetBuilder(
+        h.storage,
+        key=_pit_row_sort_key,
+        capacity=8,
+        merge_fanout=2,
+        limits=limits,
+    ) as builder:
+        builder.extend(sorted_rows.values())
+        root = builder.finish()
+    key_rows = _PitKeyRows(h.storage, root, limits=limits)
+    view = _RevisionRecordView(key_rows)
     expected_records = tuple(revision_record_from_row(row) for row in sorted_rows.values())
-    assert view._rows is sorted_rows
+    assert view._rows is key_rows
     assert not hasattr(view, "__dict__")
     assert tuple(view) == expected_records
     assert tuple(view) == expected_records
+    for revision_id in reversed(tuple(sorted_rows)):
+        expected_row = dict(sorted_rows[revision_id])
+        expected_row["supersedes"] = list(expected_row["supersedes"])
+        assert key_rows[revision_id] == expected_row
 
     spec = cast(
         PointInTimeSpec,

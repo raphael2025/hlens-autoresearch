@@ -8,10 +8,12 @@ from typing import Any
 import pytest
 
 from core.contracts.storage import StageRequest
+from infrastructure.canonical import normalizer as normalizer_module
 from infrastructure.canonical.normalizer import CanonicalNormalizer
 from infrastructure.pit import selector as selector_module
 from infrastructure.pit.runs import RunLimits, RunSetBuilder
 from infrastructure.pit.selector import PitRunParams, PitSelector, _root_rows
+from infrastructure.streaming import runs as streaming_runs
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.pit.test_selector import END, K_A, K_E, START, _spec
 from tests.infrastructure.revision import rest_store_support as ss
@@ -177,7 +179,7 @@ def test_bounded_proofs_validate_batches_while_reverse_snapshot_stream_is_open(
     normalizer = c.normalizer(h, clock=StepClock(start=K_E), microbatch_rows=2)
     verified = normalizer.verify_unit(c.ARCHIVE_AGGS.table, archive)
     staged: list[tuple[int, int]] = []
-    original_snapshots = CanonicalNormalizer._plan_snapshots
+    original_snapshots = CanonicalNormalizer._plan_snapshots_for_run
     original_check = CanonicalNormalizer._check_committed_window
     requested_streams: list[list[int]] = []
     active: list[bool] = []
@@ -201,7 +203,7 @@ def test_bounded_proofs_validate_batches_while_reverse_snapshot_stream_is_open(
         assert any(active), "batch validation must consume snapshots incrementally"
         original_check(self, *args, **kwargs)
 
-    monkeypatch.setattr(CanonicalNormalizer, "_plan_snapshots", observed_snapshots)
+    monkeypatch.setattr(CanonicalNormalizer, "_plan_snapshots_for_run", observed_snapshots)
     monkeypatch.setattr(
         CanonicalNormalizer, "_check_committed_window", check_before_stream_is_exhausted
     )
@@ -209,8 +211,11 @@ def test_bounded_proofs_validate_batches_while_reverse_snapshot_stream_is_open(
     normalizer._stage_verified_unit(
         c.ARCHIVE_AGGS.table,
         archive,
-        arrival_seqs={row["arrival_seq"] for row in verified},
+        arrival_seqs=iter(sorted({row["arrival_seq"] for row in verified})),
         sink=lambda _row, batch_index, row_ordinal: staged.append((batch_index, row_ordinal)),
+        request_capacity=_PARAMS.row_batch_rows,
+        merge_fanout=_PARAMS.merge_fanout,
+        run_limits=_PARAMS.limits,
     )
 
     assert requested_streams
@@ -221,6 +226,43 @@ def test_bounded_proofs_validate_batches_while_reverse_snapshot_stream_is_open(
         (batch_index for batch_index, _ in staged), reverse=True
     )
     assert not any(active)
+
+
+def test_bounded_batch_request_run_write_failure_clears_writer_state(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _ = _multi_batch_chain(h, count=5)
+    normalizer = c.normalizer(h, clock=StepClock(start=K_E), microbatch_rows=2)
+    verified = normalizer.verify_unit(c.ARCHIVE_AGGS.table, archive)
+    original_builder = normalizer_module.RunSetBuilder
+    created: list[Any] = []
+
+    class CapturingBuilder(original_builder):
+        def __init__(self, *args: Any, **kwargs: Any) -> None:
+            super().__init__(*args, **kwargs)
+            created.append(self)
+
+    def fail_write(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise OSError("simulated wanted-batch run failure")
+
+    monkeypatch.setattr(normalizer_module, "RunSetBuilder", CapturingBuilder)
+    monkeypatch.setattr(streaming_runs, "write_sorted_run", fail_write)
+    with pytest.raises(OSError, match="simulated wanted-batch run failure"):
+        normalizer._stage_verified_unit(
+            c.ARCHIVE_AGGS.table,
+            archive,
+            arrival_seqs=iter((min(row["arrival_seq"] for row in verified),)),
+            sink=lambda *_args: None,
+            request_capacity=1,
+            merge_fanout=_PARAMS.merge_fanout,
+            run_limits=_PARAMS.limits,
+        )
+
+    [builder] = created
+    assert builder._closed
+    assert builder._rows == []
+    assert builder._refs._levels == []
 
 
 def test_duplicate_revision_ids_keep_legacy_ascending_batch_last_write_wins(

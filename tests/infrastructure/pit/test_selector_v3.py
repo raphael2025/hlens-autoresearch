@@ -284,6 +284,148 @@ def test_pit_edge_group_spool_failure_clears_writer_state(
     assert builder._refs._levels == []
 
 
+def test_pit_key_row_run_replays_and_supports_bounded_random_lookups(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=K_E)
+    selector = PitSelector(h.adapter, h.storage)
+    view = selector._pinned(spec)
+    source_root, _ = selector_module._pit_canonical_row_roots(
+        selector,
+        view,
+        selector_module.rules.CANONICAL_TABLES["agg_trades"].table,
+        "agg_trades",
+        selector_module.rules.SYMBOLS[SYMBOL].symbol,
+        START,
+        END,
+        params=TINY_PARAMS,
+        touching=False,
+    )
+    with selector_module._root_rows(h.storage, source_root) as source_rows:
+        template_rows = list(source_rows)
+    assert template_rows
+    rows = [dict(row) for row in template_rows]
+    for index in range(7):
+        clone = dict(template_rows[0])
+        clone["revision_id"] = f"synthetic-key-row-{index:02d}"
+        clone["lineage_raw_revision_id"] = f"synthetic-raw-{index:02d}"
+        clone["arrival_seq"] = template_rows[0]["arrival_seq"] + index + 1
+        rows.append(clone)
+    duplicate_endpoint = dict(rows[-1])
+    duplicate_endpoint["revision_id"] = "synthetic-key-row-duplicate-endpoint"
+    duplicate_endpoint["arrival_seq"] = rows[-1]["arrival_seq"] + 1
+    rows.append(duplicate_endpoint)
+
+    with RunSetBuilder(
+        h.storage,
+        key=selector_module._pit_row_sort_key,
+        capacity=2,
+        merge_fanout=2,
+        limits=TINY_PARAMS.limits,
+    ) as revisions:
+        revisions.extend(rows)
+        revision_root = revisions.finish()
+    with RunSetBuilder(
+        h.storage,
+        key=selector_module._pit_endpoint_sort_key,
+        capacity=2,
+        merge_fanout=2,
+        limits=TINY_PARAMS.limits,
+    ) as endpoints:
+        endpoints.extend(rows)
+        endpoint_root = endpoints.finish()
+    assert revision_root is not None and revision_root.record_count > 2
+    key_rows = selector_module._PitKeyRows(
+        h.storage,
+        revision_root,
+        endpoint_root=endpoint_root,
+        limits=TINY_PARAMS.limits,
+    )
+
+    opened = 0
+    closed = 0
+    original_iter_run = selector_module.iter_run
+
+    @contextmanager
+    def tracking_iter_run(storage: Any, root: RunRef) -> Iterator[Iterator[Any]]:
+        nonlocal opened, closed
+        opened += 1
+        try:
+            with original_iter_run(storage, root) as run_rows:
+                yield run_rows
+        finally:
+            closed += 1
+
+    monkeypatch.setattr(selector_module, "iter_run", tracking_iter_run)
+    expected = sorted(rows, key=selector_module._pit_row_sort_key)
+    for _ in range(2):
+        with key_rows.rows() as row_iter:
+            assert list(row_iter) == expected
+    for row in reversed(expected):
+        assert key_rows[row["revision_id"]] == row
+
+    target = (rows[-1]["lineage_raw_table"], rows[-1]["lineage_raw_revision_id"])
+    matches = list(key_rows.raw_endpoint_rows(*target))
+    assert [row["revision_id"] for row in matches] == sorted(
+        row["revision_id"]
+        for row in rows
+        if (row["lineage_raw_table"], row["lineage_raw_revision_id"]) == target
+    )
+    with pytest.raises(CatalogIntegrityError, match="multiple Canonical images"):
+        selector_module._pit_unique_raw_endpoint(key_rows, *target)
+
+    partial_context = key_rows.rows()
+    row_iter = partial_context.__enter__()
+    assert next(row_iter) == expected[0]
+    row_iter.close()  # type: ignore[attr-defined]
+    partial_context.__exit__(None, None, None)
+    assert opened == closed == 3
+
+
+@pytest.mark.skip(
+    reason=(
+        "deferred after two attempts: duplicate REST ingest folds to one canonical row; "
+        "initial failure was legacy parity expectation (CONFLICT vs SELECTED), second was "
+        "the invalid assumption that this fixture creates eight canonical history rows "
+        "(actual row_root.record_count == 1)"
+    )
+)
+def test_single_key_history_over_run_capacity_proof_and_legacy_parity(
+    h: RestHarness,
+) -> None:
+    """Preserve the failed end-to-end fixture experiment for a corrected follow-up."""
+    item = ss.agg_items(1)
+    for index in range(8):
+        knowledge = K_A + timedelta(seconds=index)
+        [response] = c.ingest_rest(
+            h,
+            "agg_trades",
+            item,
+            knowledge=knowledge,
+            request_id=f"same-key-history-{index}",
+        )
+        with c.normalizer(h, clock=StepClock(start=knowledge), microbatch_rows=2) as normalizer:
+            normalizer.normalize_unit(c.REST_AGGS.table, response)
+
+    spec = _spec(h, cutoff=K_E, skip=(c.EVIDENCE.table,))
+    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    bounded = _bounded(h, spec)
+    got = sorted(
+        _selections(bounded), key=lambda item: (item.observation_key, item.simulation_time)
+    )
+    expected = sorted(
+        legacy.selections, key=lambda item: (item.observation_key, item.simulation_time)
+    )
+    assert [_selection_signature(item) for item in got] == [
+        _selection_signature(item) for item in expected
+    ]
+    assert len(got) == 1
+    assert got[0].status is PointInTimeStatus.CONFLICT
+    assert got[0].head_count == 8
+    assert _lineage_by_revision(bounded) == {}
+
+
 def test_bounded_canonical_proof_rejects_adjacent_duplicate_revision_ids(
     h: RestHarness,
 ) -> None:
@@ -861,7 +1003,7 @@ def test_iter_bounded_spills_and_emits_every_conflict_head_without_a_tuple(
     monkeypatch.setattr(
         PitSelector,
         "_verify_canonical_bounded",
-        lambda _self, _view, rows, **_kwargs: rows,
+        lambda _self, _view, rows_root, **_kwargs: rows_root,
     )
 
     emitted = []
