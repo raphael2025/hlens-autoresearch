@@ -71,7 +71,7 @@
 
 **只校验直接引用，不是执行授权。** 结果的 `transitive_closure_verified`、`execution_authorized`、`runnable` 恒为 `False`：不校验传递依赖闭包，
 不登记或查询算子实现，不 lower / 编译 / 执行计划，不改变 `TypedPlan.runnable`，不写报告或 journal，不触碰 `TrialLedger`；
-`compile_plan` 仍拒绝所有计划。本模块不从包 `research.hypotheses` 导出，也不接入循环。未运行测试，CODE_COMPLETE / DEBUG_PENDING。
+（`compile_plan` 默认仍拒绝所有计划；显式开启时以本结果作为 lowering 证据，见文末 ADR-0100 一节。）本模块不从包 `research.hypotheses` 导出，也不接入循环。未运行测试，CODE_COMPLETE / DEBUG_PENDING。
 
 ## Experiment / Hypothesis binding evidence（`plan_bindings.py`，Phase 7，ADR-0073 §1）
 
@@ -95,6 +95,34 @@ Feature / State / Event / Strategy 核心规格类，并与所关联 ExperimentS
 - `temporal`（ADR-0088 决策 1）：两个输入 EventSpec 的 `bar_spec` 必须都非空且指向同一目标，`time_unit` 必须为 `bar`，否则 `operator_open`；第二事件在第一事件之后 1..`window` 根 bar 内（左开右闭）；结果 EventSpec 的 `bar_spec` 同输入、`observable_lag` 取第二事件的值、`trigger` 为规范 JSON 声明。第一事件的 `observable_lag` 大于第二事件时无法证明可见性，以 `temporal_visibility_unprovable` 拒绝。
 - `conditioning` / `ensemble` / `negation`（ADR-0088 决策 2）：分别产生 `composition` 为 `ConditionedStrategy` / `EnsembleStrategy(rule="equal_weight_mean")` / `NegatedStrategy` 的 StrategySpec。`signals` 为 base / 成员信号（conditioning 再加门控状态）按目标身份去重后的有序并集；风险政策与适用标的继承 base，ensemble 成员二者必须完全一致（ADR-0069），否则拒绝；conditioning 的 `state_value` 不在 StateSpec `state_space` 中时以 `unknown_state_value` 拒绝。取反**不是**验证负对照。
 
-所有 Provider 都尚未实现或登记。输出为 node ID 映射，随后交给 `produce_lowered_output_bindings(...)` 做 ADR-0078 全集、类型与组合校验。
+每个 lowered definition 的执行 Provider 见下节（ADR-0100 第 1 项）。输出为 node ID 映射，随后交给 `produce_lowered_output_bindings(...)` 做 ADR-0078 全集、类型与组合校验。
 
-`typed_plan.py` 的 `PLAN_FORMAT_VERSION` 为 `1.3.0`；`1.1.0` 计划照常解析（不接受 `buckets`），`1.2.0` 计划照常解析（不认识 `rank_cs` / `quantile_cs`，不接受 `universe` / `universe_hash`），`TypedPlan.schema_version` 保留计划自身的版本，因此旧计划的 payload / 内容哈希不变，`1.1.0` 计划中的 `rank` / `quantile` 节点仍按旧语义 `operator_open`（ADR-0099 决策 4）。`1.3.0` 中时间序列 transform 的语法与 `1.2.0` 完全相同（`window` 改为按 transform 必填，不接受 universe 参数）。横截面执行 Provider 见 `plugins/features/p7_cross_sectional.py`（`P7RankCsProvider` / `P7QuantileCsProvider`，未登记进任何 allowlist）。混有 OPEN 节点或任一拒绝条件的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner、不改变 `compile_plan` 的拒绝行为；`TypedPlan.runnable` 永远为 `False`。
+`typed_plan.py` 的 `PLAN_FORMAT_VERSION` 为 `1.3.0`；`1.1.0` 计划照常解析（不接受 `buckets`），`1.2.0` 计划照常解析（不认识 `rank_cs` / `quantile_cs`，不接受 `universe` / `universe_hash`），`TypedPlan.schema_version` 保留计划自身的版本，因此旧计划的 payload / 内容哈希不变，`1.1.0` 计划中的 `rank` / `quantile` 节点仍按旧语义 `operator_open`（ADR-0099 决策 4）。`1.3.0` 中时间序列 transform 的语法与 `1.2.0` 完全相同（`window` 改为按 transform 必填，不接受 universe 参数）。横截面执行 Provider 见 `plugins/features/p7_cross_sectional.py`（`P7RankCsProvider` / `P7QuantileCsProvider`；其请求 / 结果类型不同于单序列 `FeatureProvider`，尚未进入编译 allowlist）。混有 OPEN 节点或任一拒绝条件的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner；`TypedPlan.runnable` 永远为 `False`（它在计划 payload 中，保持旧计划哈希不变），运行就绪见下节 `CompiledPlan`。
+
+## P7 算子执行与编译（ADR-0100 第 1 项，默认关闭）
+
+**执行 Provider**（每个只服务 lowering 产出的精确规格；Provider key 等于规格 params / trigger 中声明的 `provider`）：
+
+| definition | Provider（`name@version`） | 位置 |
+|---|---|---|
+| `p7.transformation.standardize@1.0.0` | `P7StandardizeProvider`（`p7_transformation_standardize@1.0.0`） | `plugins/features/p7_operators.py` |
+| `p7.transformation.difference@1.0.0` | `P7DifferenceProvider`（`p7_transformation_difference@1.0.0`） | 同上 |
+| `p7.transformation.smooth_sma@1.0.0` | `P7SmoothSmaProvider`（`p7_transformation_smooth@1.0.0`） | 同上 |
+| `p7.transformation.rank_ts@1.0.0` | `P7RankTsProvider`（`p7_transformation_rank@1.0.0`） | 同上 |
+| `p7.transformation.quantile_ts@1.0.0` | `P7QuantileTsProvider`（`p7_transformation_quantile@1.0.0`） | 同上 |
+| `p7.interaction.product@1.0.0` | `P7InteractionProductProvider`（`p7_interaction_product@1.0.0`） | 同上 |
+| `p7.temporal.sequence_within_bars@1.0.0` | `P7TemporalSequenceProvider`（`p7_temporal_sequence@1.0.0`） | `plugins/events/p7_temporal.py` |
+| `p7.conditioning.state_gate@1.0.0` | `P7ConditionedStrategyProvider`（`p7_conditioning_state_gate@1.0.0`） | `research/strategies/p7_compositions.py` |
+| `p7.ensemble.equal_weight_mean@1.0.0` | `P7EnsembleStrategyProvider`（`p7_ensemble_equal_weight_mean@1.0.0`） | 同上 |
+| `p7.negation.target_position@1.0.0` | `P7NegatedStrategyProvider`（`p7_negation_target_position@1.0.0`） | 同上 |
+
+- feature 算子的输入是其他 feature：调用方显式给出 `UpstreamFeature(spec, provider)` 表；Provider 在评估时刻 `t` 的可见集合上自行切出上游子请求（`available_time + lag <= tau`）并逐个 `check_answers`。transformation 的 `window` 按可见 bar 计数：取末尾连续 `window` 根（`difference` 为 `window + 1`），上游在每根 bar 的 `tau_i`（该 bar 及之前各 bar 的最晚 `available_time`）求值；不连续、历史不足、任一上游缺值或统计量无定义（`standardize` 离散度为 0）→ `None`，不填补。`standardize` 用窗口内总体标准差（与 `zscore_reversion` 相同），`difference` 为 `x_t − x_{t−window}`（精确），`smooth` 为 SMA，`rank` / `quantile` 按 ADR-0099 公式精确计算；`product` 在同一评估时刻相乘、精确，不能精确表示即拒绝。除法 / 开方用固定 50 位有效数字、half-even。
+- `temporal` 需要调用方显式给出 bar 时长（`str(bar_spec)` → `timedelta`，不从名称猜测）和两个上游 EventSpec；窗口为 `(first, first + window_bars × bar]`，输出事件时间 = 第二事件的 `event_time + observable_lag`（契约的可观测时间规则）。lowered trigger 只绑定上游 ref、不绑定其哈希，因此 `infrastructure.event.upstream.verify_interaction` 会拒绝这类规格；哈希绑定由 Provider 按调用方的上游表执行。
+- 组合策略复用 `research.strategies.composite.CompositeStrategyProvider` 的语义（门控：状态等于 `state_value` 时持 base 目标，其他 / 未知 / 缺失为空仓；ensemble：成员目标等权平均；negation：目标取反，现货下的空头目标 fail closed，ST-4）；子类只改描述符身份并精确接受 lowering 的声明式 params。
+- feature / event Provider 登记了静态 manifest 与 entry point（`infrastructure/plugins/builtin/{features,events}.py`，ADR-0087）；strategy Provider 属研究代码，按惯例不登记 manifest。
+
+**编译**（`typed_plan_compiler.py`；`typed_plan.compile_plan` 转调）：`compile_plan(plan, resolution=..., created_at=..., allowlist=..., switch=...)` 仅当 `switch=P7ExecutionSwitch(enabled=True)`（默认 `False`；`from_config` 读 `p7_operator_execution`，只有布尔 `True` 开启）**且**每个节点 lowering 出的 definition 在调用方显式传入的 allowlist（definition → `OperatorImplementation`，默认审阅表 `P7_OPERATOR_ALLOWLIST`）中有算子、输出类型与 Provider key 都一致的实现时，返回 `runnable=True` 的 `CompiledPlan`；否则抛带代码的 `PlanCompileRefused`（`execution_disabled`、`no_allowlist`、`missing_lowering_evidence`、`provider_not_registered`、`operator_mismatch`、`output_kind_mismatch`、`provider_identity_mismatch`…），lowering 本身的拒绝原样抛出。`compile_plan(plan)` 不带参数时与之前一样拒绝。`TypedPlan.runnable`、计划 payload 与哈希、trial 计数和 admission 规则都不变；运行就绪只体现在 `CompiledPlan.runnable`。`CompiledPlan.build_providers(...)` 按计划顺序实例化各节点 Provider（外部输入的 Provider、bar 时长、`instrument_type` 必须显式给出），`compiler_evidence` / `operator_evidence` / `provider_evidence` 给出 ADR-0073 PREPARE 所需的 evidence（实现身份含定义模块源码的 SHA-256）。
+
+**循环接入**：`research/loop/p7_plan.py` 的 `p7_strategy_candidates(compiled, providers, switch=..., hypothesis_family_id=...)` 把根节点为组合策略的已编译计划变成普通 `StrategyCandidate`，调用方追加到既有的 `LoopWiring.strategies`；同一开关未开启、计划不可运行、根不是策略或根 Provider 不服务根规格时拒绝。循环没有新增阶段、字段或 trial 规则。
+
+状态：CODE_COMPLETE / DEBUG_PENDING；未运行测试 / lint / 类型检查。

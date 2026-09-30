@@ -1,9 +1,12 @@
-"""Closed-world, non-runnable Phase 7 operator plan data (ADR-0068).
+"""Closed-world Phase 7 operator plan data (ADR-0068) and its compile entry point.
 
-This module parses and type-checks plan structure only. It deliberately has no operator
-implementations, registry integration, persistence, or path into the research loop. A valid
-``TypedPlan`` is always non-runnable until a separately approved operator implementation and
-the remaining execution / audit protocol exist.
+This module parses and type-checks plan structure. ``TypedPlan`` itself stays plan *data*: its
+``runnable`` is always ``False`` and is part of the payload, so the content hash of every "1.1.0" /
+"1.2.0" plan is unchanged. Execution readiness is decided by ``compile_plan`` (ADR-0100 item 1),
+which delegates to ``research.hypotheses.typed_plan_compiler``: it compiles against an explicit
+Provider allowlist and returns a ``CompiledPlan`` whose ``runnable`` is ``True`` only when the
+caller explicitly enabled execution (``P7ExecutionSwitch``, default OFF) and every node's lowered
+definition has an allowlisted Provider; otherwise it refuses with a precise ``PlanRefused``.
 """
 
 from __future__ import annotations
@@ -13,7 +16,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Any, Final
+from typing import TYPE_CHECKING, Any, Final
 
 from core.contracts.revision import SNAPSHOT_TABLE_PATTERN
 from core.domain.base import (
@@ -24,6 +27,16 @@ from core.domain.base import (
     Ref,
     content_hash,
 )
+
+if TYPE_CHECKING:
+    from datetime import datetime
+
+    from research.hypotheses.typed_plan_compiler import (
+        CompiledPlan,
+        OperatorImplementation,
+        P7ExecutionSwitch,
+    )
+    from research.hypotheses.typed_plan_resolver import DirectReferenceResolution
 
 __all__ = [
     "CROSS_SECTIONAL_TRANSFORMS",
@@ -670,11 +683,28 @@ def parse_plan_json(raw: str, *, limits: PlanLimits) -> TypedPlan:
     return TypedPlan(root, tuple(nodes), limits, schema_version)
 
 
-def compile_plan(plan: TypedPlan) -> None:
-    """Fail closed: no executable implementation allowlist or lowering is registered."""
+def compile_plan(
+    plan: TypedPlan,
+    *,
+    resolution: DirectReferenceResolution | None = None,
+    created_at: datetime | None = None,
+    allowlist: Mapping[str, OperatorImplementation] | None = None,
+    switch: P7ExecutionSwitch | None = None,
+) -> CompiledPlan:
+    """Compile ``plan`` against an explicit Provider allowlist, or refuse (ADR-0100 item 1).
+
+    Default OFF: without ``switch=P7ExecutionSwitch(enabled=True)`` every plan is refused
+    (``execution_disabled``), exactly as before this ADR. With the switch on, ``resolution`` (the
+    plan's hash-verified direct references), an explicit timezone-aware ``created_at`` and an
+    explicit ``allowlist`` (e.g. ``typed_plan_compiler.P7_OPERATOR_ALLOWLIST``) are required, and
+    every node's lowered definition must map to an allowlisted Provider. Trial counting and
+    admission rules are unchanged; see ``research.hypotheses.typed_plan_compiler``.
+    """
     if not isinstance(plan, TypedPlan):
         raise TypeError("plan must be a TypedPlan")
-    raise PlanRefused(
-        "no executable operator implementations are registered; all six DSL operators "
-        "remain non-runnable"
+    # Imported here: the compiler imports this module (and the lowering, which imports it too).
+    from research.hypotheses.typed_plan_compiler import compile_lowered_plan
+
+    return compile_lowered_plan(
+        plan, resolution=resolution, created_at=created_at, allowlist=allowlist, switch=switch
     )

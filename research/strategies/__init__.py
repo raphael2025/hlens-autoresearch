@@ -8,6 +8,8 @@
 - ``dual_momentum``: ``DualMomentumProvider`` and ``dual_momentum`` (ADR-0085);
 - ``composite``: ``CompositeStrategyProvider`` for ``StrategySpec.composition`` (conditioned /
   ensemble / negated; ADR-0088 decision 2), with caller-injected ``ResolvedStrategy`` parts;
+- ``p7_compositions``: the P7 execution Providers for the lowered conditioned / ensemble /
+  negated StrategySpecs (ADR-0100 item 1), thin ``CompositeStrategyProvider`` subclasses;
 - ``drawdown_control``: ``DrawdownControlRiskProvider`` and ``drawdown_control`` (ADR-0085;
   ``PortfolioState.peak_equity`` from ADR-0088 decision 3);
 - ``signals``: bar-derived signal observations for exploration;

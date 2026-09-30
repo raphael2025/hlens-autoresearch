@@ -1,5 +1,5 @@
 """Static `PluginManifest` for the built-in `FeatureProvider`s (`plugins/features/bars.py`,
-`indicators.py`, `range_volatility.py`, `microstructure.py`).
+`indicators.py`, `range_volatility.py`, `microstructure.py`, `p7_operators.py`).
 
 Each manifest's `name` / `version` / `deterministic` must equal the corresponding provider class's
 `NAME` / `VERSION` (a class attribute — every instance's `descriptor.name` / `descriptor.version`
@@ -43,6 +43,12 @@ __all__ = [
     "JUMP_VARIANCE",
     "MACD_LINE",
     "MACD_SIGNAL",
+    "P7_INTERACTION_PRODUCT",
+    "P7_TRANSFORMATION_DIFFERENCE",
+    "P7_TRANSFORMATION_QUANTILE",
+    "P7_TRANSFORMATION_RANK",
+    "P7_TRANSFORMATION_SMOOTH",
+    "P7_TRANSFORMATION_STANDARDIZE",
     "PARKINSON_VOLATILITY",
     "RSI",
     "TAKER_FLOW_IMBALANCE",
@@ -376,5 +382,129 @@ CORWIN_SCHULTZ_SPREAD = PluginManifest(
     deterministic=True,
     params_schema=_VOL_WINDOW_SCALE_SCHEMA,
     inputs=(_BAR_1M_INPUT,),
+    outputs=("value:decimal",),
+)
+
+
+# ---------------------------------------------------------------------------------------
+# p7_operators.py (ADR-0100 item 1) — P7 operator Providers. They serve only the exact lowered
+# `FeatureSpec` of their definition (`research.hypotheses.typed_plan_lowering`); every param below
+# is a fixed declaration of that lowering except `window` / `buckets`. `inputs` is empty: the input
+# is another feature named by the spec, supplied with its Provider in an explicit upstream table.
+# ---------------------------------------------------------------------------------------
+
+
+def _p7_transformation_schema(
+    transform: str, *, min_window: int, extra: dict[str, object] | None = None
+) -> dict[str, object]:
+    properties: dict[str, object] = {
+        "operator": {"type": "string", "enum": [transform]},
+        "provider": {"type": "string", "enum": [f"p7_transformation_{transform}@1.0.0"]},
+        "semantic_version": {"type": "string", "enum": ["1.0.0"]},
+        "window": {"type": "integer", "minimum": min_window},
+        "direction": {"type": "string", "enum": ["backward_only"]},
+        "missing": {"type": "string", "enum": ["propagate_none"]},
+        **(extra or {}),
+    }
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": sorted(properties),
+        "additionalProperties": False,
+    }
+
+
+def _p7_transformation(name: str, schema: dict[str, object], output: str) -> PluginManifest:
+    return PluginManifest(
+        name=name,
+        kind=PluginKind.FEATURE,
+        version="1.0.0",
+        contract_version="2.0.0",
+        deterministic=True,
+        params_schema=schema,
+        inputs=(),
+        outputs=(output,),
+    )
+
+
+P7_TRANSFORMATION_STANDARDIZE = _p7_transformation(
+    "p7_transformation_standardize",
+    _p7_transformation_schema(
+        "standardize",
+        min_window=1,
+        extra={"fit_scope": {"type": "string", "enum": ["rolling_training_window"]}},
+    ),
+    "value:decimal",
+)
+
+P7_TRANSFORMATION_DIFFERENCE = _p7_transformation(
+    "p7_transformation_difference",
+    _p7_transformation_schema("difference", min_window=1),
+    "value:decimal",
+)
+
+P7_TRANSFORMATION_SMOOTH = _p7_transformation(
+    "p7_transformation_smooth",
+    _p7_transformation_schema(
+        "smooth",
+        min_window=1,
+        extra={"algorithm": {"type": "string", "enum": ["simple_moving_average"]}},
+    ),
+    "value:decimal",
+)
+
+P7_TRANSFORMATION_RANK = _p7_transformation(
+    "p7_transformation_rank",
+    _p7_transformation_schema(
+        "rank",
+        min_window=2,
+        extra={
+            "ties": {"type": "string", "enum": ["average"]},
+            "scale": {"type": "string", "enum": ["unit_interval"]},
+        },
+    ),
+    "value:decimal",
+)
+
+P7_TRANSFORMATION_QUANTILE = _p7_transformation(
+    "p7_transformation_quantile",
+    _p7_transformation_schema(
+        "quantile",
+        min_window=2,
+        extra={
+            "buckets": {"type": "integer", "minimum": 2},
+            "ties": {"type": "string", "enum": ["average"]},
+        },
+    ),
+    "value:integer",
+)
+
+P7_INTERACTION_PRODUCT = PluginManifest(
+    name="p7_interaction_product",
+    kind=PluginKind.FEATURE,
+    version="1.0.0",
+    contract_version="2.0.0",
+    deterministic=True,
+    params_schema={
+        "type": "object",
+        "properties": {
+            "alignment": {"type": "string", "enum": ["exact_evaluation_time"]},
+            "missing": {"type": "string", "enum": ["propagate_none"]},
+            "numeric_domain": {"type": "string", "enum": ["decimal_or_int_excluding_bool"]},
+            "operator": {"type": "string", "enum": ["product"]},
+            "provider": {"type": "string", "enum": ["p7_interaction_product@1.0.0"]},
+            "semantic_version": {"type": "string", "enum": ["1.0.0"]},
+        },
+        "required": [
+            "alignment",
+            "missing",
+            "numeric_domain",
+            "operator",
+            "provider",
+            "semantic_version",
+        ],
+        "additionalProperties": False,
+    },
+    inputs=(),
     outputs=("value:decimal",),
 )
