@@ -214,6 +214,9 @@ def test_evidence_gaps_empty_stream_has_zero_records_and_round_trips(
         assert list(projected.records) == []
     assert projected.complete
     assert gaps.next_gap_ordinal == 0
+    with pytest.raises(CanonicalPartitionProjectionError, match="one-shot"):
+        with gaps.project_gaps(quality_report_id="report-empty-again", gaps=[]):
+            pytest.fail("evidence-gap projector allowed a second stream")
     ref = writer.finish()
     assert ref.record_count == 0
     with iter_quality_report_stream(
@@ -428,6 +431,10 @@ def test_evidence_gap_projection_round_trips_read_only_records_through_stream_wr
             projected.record_count = 99  # type: ignore[misc]
         with pytest.raises(FrozenInstanceError):
             projected.records = iter(())  # type: ignore[misc]
+        with pytest.raises(FrozenInstanceError):
+            projected.complete = True  # type: ignore[misc]
+        with pytest.raises(FrozenInstanceError):
+            projected._complete_getter = lambda: True  # type: ignore[misc]
         records = list(projected.records)
         with pytest.raises(TypeError):
             records[0]["gap"] = "tampered"  # type: ignore[index]
@@ -469,6 +476,30 @@ def test_evidence_gap_early_close_releases_readers_and_does_not_advance_count(
     assert all(handle.closed for handle in opened)
     assert instance.next_gap_ordinal == 0
     assert projected_gaps is not None and not projected_gaps.complete
+
+
+def test_evidence_gap_projector_rejects_active_reentry_and_is_one_shot(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    instance = gap_projector(storage)
+    source = [("canonical.trades", "rev-a", "gap")]
+    with instance.project_gaps(quality_report_id="report-once", gaps=source) as projected:
+        with pytest.raises(CanonicalPartitionProjectionError, match="reentrant"):
+            with instance.project_gaps(quality_report_id="report-reentrant", gaps=[]):
+                pytest.fail("active evidence-gap projector allowed reentry")
+        assert list(projected.records) == [
+            {
+                "quality_report_id": "report-once",
+                "table": "canonical.trades",
+                "revision_id": "rev-a",
+                "gap": "gap",
+            }
+        ]
+    assert projected.complete
+    assert instance.next_gap_ordinal == 1
+    with pytest.raises(CanonicalPartitionProjectionError, match="one-shot"):
+        with instance.project_gaps(quality_report_id="report-twice", gaps=[]):
+            pytest.fail("completed evidence-gap projector allowed reuse")
 
 
 def test_evidence_gap_exception_close_preserves_original_error_and_count(

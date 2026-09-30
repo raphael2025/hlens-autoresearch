@@ -26,9 +26,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Final
@@ -181,23 +181,18 @@ class ProjectedCanonicalEvent:
     revision_records: Iterator[Mapping[str, Any]]
 
 
-@dataclass(slots=True)
-class _EvidenceGapProjectionCompletion:
-    complete: bool = False
-
-
 @dataclass(frozen=True, slots=True)
 class ProjectedCanonicalEvidenceGaps:
     """One bounded gap iterator with expected count and explicit delivery completion state."""
 
     record_count: int
     records: Iterator[Mapping[str, Any]]
-    _completion: _EvidenceGapProjectionCompletion
+    _complete_getter: Callable[[], bool] = field(repr=False, compare=False)
 
     @property
     def complete(self) -> bool:
         """Whether the entire output iterator was consumed and the context exited normally."""
-        return self._completion.complete
+        return self._complete_getter()
 
 
 def _positive_int(name: str, value: object, *, minimum: int = 0) -> int:
@@ -677,6 +672,8 @@ class CanonicalPartitionV3EvidenceGapProjector:
         self._max_gap_record_bytes = max_gap_record_bytes
         self._next_gap_ordinal = 0
         self._failed = False
+        self._used = False
+        self._active = False
 
     @property
     def next_gap_ordinal(self) -> int:
@@ -690,6 +687,14 @@ class CanonicalPartitionV3EvidenceGapProjector:
         quality_report_id: str,
         gaps: Iterable[tuple[str, str, str]],
     ) -> Iterator[ProjectedCanonicalEvidenceGaps]:
+        if self._active:
+            raise CanonicalPartitionProjectionError(
+                "evidence-gap projector does not allow reentrant streams"
+            )
+        if self._used:
+            raise CanonicalPartitionProjectionError(
+                "evidence-gap projector is one-shot and has already been used"
+            )
         if self._failed:
             raise CanonicalPartitionProjectionError(
                 "evidence-gap projector is failed after an incomplete stream"
@@ -716,6 +721,8 @@ class CanonicalPartitionV3EvidenceGapProjector:
             merge_fanout=self._merge_fanout,
             limits=self._limits,
         )
+        self._used = True
+        self._active = True
         try:
             with builder:
                 for raw_gap in gaps:
@@ -757,6 +764,7 @@ class CanonicalPartitionV3EvidenceGapProjector:
                 exhausted = record_count == 0
                 body_raised = False
                 projection: ProjectedCanonicalEvidenceGaps | None = None
+                complete_state = {"complete": False}
                 try:
 
                     class _CountedGapIterator(Iterator[Mapping[str, Any]]):
@@ -777,7 +785,7 @@ class CanonicalPartitionV3EvidenceGapProjector:
                         projection = ProjectedCanonicalEvidenceGaps(
                             record_count=record_count,
                             records=_CountedGapIterator(),
-                            _completion=_EvidenceGapProjectionCompletion(),
+                            _complete_getter=lambda: complete_state["complete"],
                         )
                         yield projection
                     except BaseException:
@@ -803,9 +811,10 @@ class CanonicalPartitionV3EvidenceGapProjector:
                     else:
                         self._next_gap_ordinal = event_ordinal + record_count
                         assert projection is not None
-                        projection._completion.complete = True
+                        complete_state["complete"] = True
         except BaseException:
             self._failed = True
             raise
         finally:
             builder.close()
+            self._active = False
