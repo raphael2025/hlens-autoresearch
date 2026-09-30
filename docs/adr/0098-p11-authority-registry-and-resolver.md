@@ -68,3 +68,12 @@ ADR-0080 因缺少三类上游权威而阻塞：(1) 可读取的当前生命周�
 - [x] 不修改 Validation Constitution / Profile 数值；metric 与 validation 同源
 - [x] Domain 层仍无具体技术依赖
 - [x] Research / Application Plane 边界不变；不引入 scheduler，不开放 API 写入
+
+## 修订 1（2026-09-30，PM）
+
+实现复核发现两处缺口，PM 决定如下：
+
+1. **运行环境组装**：纯命令行无法获准地构造 DatasetCatalog、决策管线与 BacktestProvider。`degradation_cli` 新增 `--authority-environment MODULE:CALLABLE`。它指向部署方提供的**受信** factory，返回 `AuthorityEnvironment`（或产出它的 context manager），解析规则与 ADR-0095 worker `--factory` 相同：只接受标识符语法，不从消息或数据中选择代码。未提供时维持现状，以 `authority_environment_unavailable` 拒绝。
+2. **回滚检测**：新增可选 `--authority-anchor <path>`，使用 LifecycleRegistry 的外部 anchor 核验 head；`--authority-head latest` 且未提供 anchor 时，evidence 中如实记录 `anchor=absent`（无法检测回滚），不因此拒绝。
+3. LifecycleRegistry 纳入 ADR-0091 只读登记处审计（`infrastructure/tools/registry_audit.py`）。
+4. degradation 基线核对按 `compare_gate` 的记录格式剥除唯一的 `[>=]` / `[<=]` 比较符后缀再比对 metric 名（缺陷修复，`09753e6`；不改变 ADR-0067 规则 5 的语义）。
