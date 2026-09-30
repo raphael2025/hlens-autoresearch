@@ -103,6 +103,7 @@
 | [0096](0096-idempotent-ledger-read-results.md) | TrialLedger 精确重复登记的只读幂等确认 | Accepted（2026-09-30）；完全相同的登记 / 同一 attempt 可只读返回，不绕过 LLM 审阅，所有新写入仍受 admission gate 管控 |
 | [0098](0098-p11-authority-registry-and-resolver.md) | P11 生命周期权威登记处、真实 source 与 metric 解析 | Accepted（2026-09-30；PM）；取代 ADR-0080 的 BLOCKED 部分；实现待验收 |
 | [0099](0099-p7-time-series-rank-quantile.md) | P7 transformation 之 rank / quantile 时间序列语义 | Accepted（2026-09-30；PM）；关闭 ADR-0082 最后 OPEN 项；仅纯 lowering |
+| [0100](0100-complete-remaining-foundation-code.md) | 补完剩余底层代码（Raphael 直接指令） | Accepted（2026-09-30）；P7 执行 Provider、横截面 rank/quantile、P11 指标与默认环境、ADR-0051 政策表、E1 有界化、P12 可选提案；运行开关默认关闭 |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
