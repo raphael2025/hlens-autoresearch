@@ -3,6 +3,10 @@
 The listing catalog yields history newest-first while a Raw prefix-root run is ordered by
 snapshot ordinal. This module externally sorts each side by the Raw snapshot ID and joins them,
 then writes the joined batches in ordinal order for exact historical replay.
+
+This only bounds the helper's own row streams. ``history_from`` may use PyIceberg's
+``SnapshotHistory.history()``, which currently retains the table's full ``metadata.snapshots``
+collection for the iterator lifetime (O(H)); this helper is not an E1-CAP-1 or total-RSS claim.
 """
 
 from __future__ import annotations
@@ -73,18 +77,26 @@ def listing_history_prefix_run(
         limits=limits,
     )
     with history_by_raw_id, roots_by_raw_id, joined_by_ordinal:
-        for snapshot in history_from(catalog, CANONICAL_INSTRUMENT_LISTINGS.table, listing_head):
-            raw_snapshot_id = lr.parse_batch_id(snapshot.batch_id)
-            if raw_snapshot_id is None:
-                raise CatalogIntegrityError(
-                    f"listing snapshot {snapshot.snapshot_id} is not a derivation batch"
-                )
-            row = {
-                "raw_snapshot_id": raw_snapshot_id,
-                "snapshot": snapshot.model_dump(mode="python"),
-            }
-            _check_row(row, max_record_bytes)
-            history_by_raw_id.add(row)
+        history_reader = iter(
+            history_from(catalog, CANONICAL_INSTRUMENT_LISTINGS.table, listing_head)
+        )
+        try:
+            for snapshot in history_reader:
+                raw_snapshot_id = lr.parse_batch_id(snapshot.batch_id)
+                if raw_snapshot_id is None:
+                    raise CatalogIntegrityError(
+                        f"listing snapshot {snapshot.snapshot_id} is not a derivation batch"
+                    )
+                row = {
+                    "raw_snapshot_id": raw_snapshot_id,
+                    "snapshot": snapshot.model_dump(mode="python"),
+                }
+                _check_row(row, max_record_bytes)
+                history_by_raw_id.add(row)
+        finally:
+            close = getattr(history_reader, "close", None)
+            if callable(close):
+                close()
         history_ref = history_by_raw_id.finish()
 
         with iter_run(storage, raw_prefix_roots, max_object_bytes=max_run_object_bytes) as roots:

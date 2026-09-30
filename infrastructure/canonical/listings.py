@@ -64,6 +64,12 @@ from core.contracts.universe import (
 )
 from infrastructure import contract_version
 from infrastructure.canonical import listing_rules as lr
+from infrastructure.canonical.listing_history_runs import listing_history_prefix_run
+from infrastructure.canonical.listing_prefix_index import (
+    ListingPrefixIndex,
+    build_listing_prefix_index,
+)
+from infrastructure.canonical.listing_runs import listing_observations_run
 from infrastructure.canonical.rules import SYMBOLS
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
@@ -76,10 +82,12 @@ from infrastructure.revision.exchange_info_store import (
 )
 from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.streaming.runs import RunLimits, RunRef
 from infrastructure.universe import listing_assumption as backfill
 
 __all__ = [
     "FINDING_HISTORY_DIVERGED",
+    "BoundedListingReplayInputs",
     "LISTINGS_TABLE",
     "ListingDeriveConflict",
     "ListingDeriveError",
@@ -159,6 +167,23 @@ class ListingsDerived:
 
 
 @dataclass(frozen=True, slots=True)
+class BoundedListingReplayInputs:
+    """Immutable scratch references prepared for bounded historical replay.
+
+    These refs are not themselves an acceptance verdict: the verifier must consume the mapped
+    listing-batch run and compare each historical batch before reporting success.
+    """
+
+    raw_snapshot_id: str | None
+    listing_snapshot_id: str | None
+    raw_rows: RunRef | None
+    observations: RunRef | None
+    prefix_index: ListingPrefixIndex | None
+    prefix_roots: RunRef | None
+    listing_batches: RunRef | None
+
+
+@dataclass(frozen=True, slots=True)
 class ListingPointInTime:
     """The point-in-time listing of one venue symbol (``listing`` is set iff constructible)."""
 
@@ -215,6 +240,98 @@ class ListingDeriver:
 
     def close(self) -> None:
         self._verifier.close()
+
+    def bounded_replay_inputs(
+        self,
+        *,
+        scratch_storage: StorageAdapter,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_record_bytes: int,
+        max_run_object_bytes: int,
+        prefix_leaf_max_records: int,
+        prefix_fanout: int,
+        prefix_max_node_bytes: int,
+        prefix_max_record_bytes: int,
+    ) -> BoundedListingReplayInputs:
+        """Prepare bounded Raw, observation and per-snapshot prefix runs at pinned table heads.
+
+        This is a preparation primitive, not a proof of persisted listing batch contents. The
+        exact replay verifier consumes the returned refs and checks each batch fingerprint/row.
+        PyIceberg's history API may retain its complete metadata snapshot list, so this does not
+        claim total-process bounded memory or E1-CAP-1.
+        """
+        listing_head, raw_head = self._heads()
+        raw_rows = self._verifier.verify_table_bounded(
+            raw_head,
+            scratch_storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+        )
+        if raw_rows is None:
+            if listing_head is not None:
+                raise CatalogIntegrityError(
+                    f"{LISTINGS_TABLE} has history but the pinned Raw table is empty"
+                )
+            return BoundedListingReplayInputs(
+                raw_snapshot_id=None,
+                listing_snapshot_id=None,
+                raw_rows=None,
+                observations=None,
+                prefix_index=None,
+                prefix_roots=None,
+                listing_batches=None,
+            )
+        observations = listing_observations_run(
+            raw_rows,
+            storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+        )
+        if observations is None:
+            raise CatalogIntegrityError("a non-empty Raw proof produced no observation run")
+        prefix_index, prefix_roots = build_listing_prefix_index(
+            raw_rows,
+            storage=scratch_storage,
+            raw_sort_capacity=capacity,
+            raw_sort_merge_fanout=merge_fanout,
+            raw_sort_limits=limits,
+            raw_max_record_bytes=max_record_bytes,
+            raw_max_run_object_bytes=max_run_object_bytes,
+            root_refs_capacity=capacity,
+            root_refs_merge_fanout=merge_fanout,
+            root_refs_limits=limits,
+            leaf_max_records=prefix_leaf_max_records,
+            fanout=prefix_fanout,
+            max_node_bytes=prefix_max_node_bytes,
+            max_record_bytes=prefix_max_record_bytes,
+        )
+        listing_batches = listing_history_prefix_run(
+            self._adapter,
+            listing_head,
+            prefix_roots,
+            storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+        )
+        return BoundedListingReplayInputs(
+            raw_snapshot_id=raw_head,
+            listing_snapshot_id=listing_head,
+            raw_rows=raw_rows,
+            observations=observations,
+            prefix_index=prefix_index,
+            prefix_roots=prefix_roots,
+            listing_batches=listing_batches,
+        )
 
     # ------------------------------------------------------------------ entry points
 

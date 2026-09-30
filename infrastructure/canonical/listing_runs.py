@@ -76,6 +76,7 @@ def listing_observations_run(
     merge_fanout: int,
     limits: RunLimits,
     max_record_bytes: int,
+    max_run_object_bytes: int,
 ) -> RunRef | None:
     """Build the sorted observation run from a verified Raw proof run.
 
@@ -91,6 +92,7 @@ def listing_observations_run(
         ("capacity", capacity, 1),
         ("merge_fanout", merge_fanout, 2),
         ("max_record_bytes", max_record_bytes, 1),
+        ("max_run_object_bytes", max_run_object_bytes, 1),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ValueError(f"{name} must be an integer >= {minimum}")
@@ -104,7 +106,7 @@ def listing_observations_run(
         merge_fanout=merge_fanout,
         limits=limits,
     )
-    with builder, iter_run(storage, raw_rows) as source:
+    with builder, iter_run(storage, raw_rows, max_object_bytes=max_run_object_bytes) as source:
         for item in source:
             if not isinstance(item, Mapping):
                 raise CatalogIntegrityError("Raw proof run contains a non-mapping record")

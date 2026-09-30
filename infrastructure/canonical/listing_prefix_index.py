@@ -175,6 +175,13 @@ class ListingPrefixIndex:
                     row[field] = datetime.fromisoformat(row[field])
                 yield row
 
+    def iter_rows_for_root_document(
+        self, root: Mapping[str, Any] | None
+    ) -> Generator[Mapping[str, Any]]:
+        """Read a prefix named by the serialized root value in a prefix-reference run."""
+        selected = None if root is None else self._parse_ref(root)
+        yield from self.iter_rows(selected)
+
     def _insert(
         self, ref: _NodeRef, entry: Mapping[str, Any], *, depth: int
     ) -> tuple[_NodeRef, _NodeRef | None]:
@@ -480,6 +487,7 @@ def build_listing_prefix_index(
     raw_sort_merge_fanout: int,
     raw_sort_limits: RunLimits,
     raw_max_record_bytes: int,
+    raw_max_run_object_bytes: int,
     root_refs_capacity: int,
     root_refs_merge_fanout: int,
     root_refs_limits: RunLimits,
@@ -504,6 +512,7 @@ def build_listing_prefix_index(
         ("raw_sort_capacity", raw_sort_capacity, 1),
         ("raw_sort_merge_fanout", raw_sort_merge_fanout, 2),
         ("raw_max_record_bytes", raw_max_record_bytes, 1),
+        ("raw_max_run_object_bytes", raw_max_run_object_bytes, 1),
     ):
         if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
             raise ListingPrefixIndexError(f"{name} must be an integer >= {minimum}")
@@ -537,7 +546,11 @@ def build_listing_prefix_index(
         merge_fanout=raw_sort_merge_fanout,
         limits=raw_sort_limits,
     )
-    with ordered, snapshot_ids, iter_run(storage, raw_rows) as raw_reader:
+    with (
+        ordered,
+        snapshot_ids,
+        iter_run(storage, raw_rows, max_object_bytes=raw_max_run_object_bytes) as raw_reader,
+    ):
         for item in raw_reader:
             try:
                 ExchangeInfoRowVerifier._check_bounded_row(item, raw_max_record_bytes)
@@ -549,7 +562,9 @@ def build_listing_prefix_index(
         ordered_ref = ordered.finish()
         if ordered_ref is None:
             raise ListingPrefixIndexError("Raw proof run is empty")
-        with iter_run(storage, ordered_ref) as ordered_reader:
+        with iter_run(
+            storage, ordered_ref, max_object_bytes=raw_max_run_object_bytes
+        ) as ordered_reader:
             return _build_index_in_ordinal_order(index, ordered_reader, roots, snapshot_ids)
 
 

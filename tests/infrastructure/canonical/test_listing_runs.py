@@ -60,6 +60,7 @@ def test_listing_observations_run_keeps_snapshot_membership_and_orders_high_card
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
             max_record_bytes=4096,
+            max_run_object_bytes=32768,
         )
         assert root is not None and root.record_count == 18
         with iter_run(scratch, root) as reader:
@@ -100,6 +101,7 @@ def test_listing_observations_run_preserves_missing_symbol_as_unresolved(h: Harn
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=2, leaf_max_bytes=32768, fanout=2),
             max_record_bytes=4096,
+            max_run_object_bytes=32768,
         )
         assert root is not None
         with iter_run(scratch, root) as reader:
@@ -141,6 +143,7 @@ def test_streaming_chain_preserves_all_revision_ids_and_findings(h: Harness) -> 
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
             max_record_bytes=4096,
+            max_run_object_bytes=32768,
         )
         assert observation_root is not None
         with iter_run(scratch, observation_root) as reader:
@@ -232,6 +235,7 @@ def test_streaming_chain_spills_all_same_instant_tie_ids(h: Harness) -> None:
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=2, leaf_max_bytes=32768, fanout=2),
             max_record_bytes=4096,
+            max_run_object_bytes=32768,
         )
         assert observation_root is not None
         seen: list[tuple[str, tuple[str, ...], str]] = []

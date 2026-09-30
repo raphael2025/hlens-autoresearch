@@ -138,3 +138,58 @@ def test_listing_history_join_rejects_missing_raw_snapshot_prefix(h: Harness) ->
             )
     finally:
         scratch.close()
+
+
+def test_deriver_prepares_bounded_replay_inputs_at_pinned_heads(h: Harness) -> None:
+    for index, status in enumerate(("TRADING", "HALT", "TRADING")):
+        h.observe(
+            f"listing-inputs-{index}",
+            {"BTCUSDT": status},
+            T1.replace(microsecond=index),
+        )
+        deriver = h.deriver()
+        try:
+            deriver.derive()
+        finally:
+            deriver.close()
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        assert inputs.raw_snapshot_id == h.head(xs.EXCHANGE_INFO.table)
+        assert inputs.listing_snapshot_id == h.head(LISTINGS.table)
+        raw_count = len(
+            list(
+                history_from(
+                    h.adapter,
+                    xs.EXCHANGE_INFO.table,
+                    h.head(xs.EXCHANGE_INFO.table),
+                )
+            )
+        )
+        assert inputs.raw_rows is not None and inputs.raw_rows.record_count == raw_count
+        assert inputs.observations is not None and inputs.observations.record_count >= raw_count
+        assert inputs.prefix_roots is not None and inputs.prefix_roots.record_count == raw_count
+        assert inputs.listing_batches is not None and inputs.listing_batches.record_count >= 2
+        assert inputs.prefix_index is not None
+        with iter_run(scratch, inputs.listing_batches) as batches:
+            last = None
+            for batch in batches:
+                last = batch
+            assert last is not None
+            prefix = list(inputs.prefix_index.iter_rows_for_root_document(last["root"]))
+        assert sorted({row["snapshot_ordinal"] for row in prefix}) == list(range(raw_count))
+    finally:
+        deriver.close()
+        scratch.close()
