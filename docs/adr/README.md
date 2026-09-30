@@ -84,7 +84,7 @@
 | [0077](0077-bounded-research-dataset-evidence.md) | 有界 Research Dataset 证据：v3 evidence manifest、有序 evidence streams 与定长 chunk commit | Accepted（2026-09-28；DQ-1 = A 由 Raphael 批准，DQ-2～8、10～12 已决定，DQ-9 待容量证据）；契约层（2.3.0 additive）已实现，infrastructure 层实施中；未测试 |
 | [0078](0078-p7-lowered-output-completeness.md) | P7 lowered outputs 集合权威与完整性 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；`TypedPlan.nodes` 为权威全集；已实现 `79ea546`，未测试；算子仍 fail closed |
 | [0079](0079-paper-deviation-declared-scope.md) | Paper deviation 与 P8 声明范围绑定 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；deviation payload 2.0.0 绑定 P8 ValidationReport 与 Profile 范围，1.0.0 仅作 legacy 读取；已实现 `1974610`，未测试 |
-| [0080](0080-p11-authority-resolution.md) | Phase 11 ACTIVE、真实 source 与 metric 权威解析 | BLOCKED（2026-09-28）：缺权威 lifecycle head、source 身份与 metric 算法定义；不实现伪权威 resolver，loop 保持 synthetic-only |
+| [0080](0080-p11-authority-resolution.md) | Phase 11 ACTIVE、真实 source 与 metric 权威解析 | Superseded by ADR-0098（2026-09-30）；原 BLOCKED（2026-09-28）：缺权威 lifecycle head、source 身份与 metric 算法定义；不实现伪权威 resolver，loop 保持 synthetic-only |
 | [0081](0081-versioned-report-payload-dtos.md) | Report payload DTO versions and compatibility | Accepted（2026-09-28）；API DTO registry 支持已知历史载荷版本；未知版本显式标记，不把兼容读取当作 schema 验收 |
 | [0082](0082-p7-operator-semantics-and-lowering.md) | P7 六类组合算子的语义与 Provider lowering | Accepted（2026-09-28，三次接受记录）：interaction、transformation（standardize/difference/smooth）、temporal、conditioning、ensemble、negation 已实现纯 lowering；transformation 的 rank/quantile 仍 OPEN；`runnable` 仍 False；未测试 |
 | [0083](0083-p7-failed-round-retry.md) | P7 failed round 的 durable 人工重试 admission | Accepted；新增 v6 显式人工 retry admission；不启用自动 retry 或 P7 operator，旧版本持久化语义保持不变 |
@@ -101,6 +101,8 @@
 | [0097](0097-pit-bounded-graph-scratch-index.md) | PIT bounded graph validation with an invocation-scoped SQLite scratch index | Accepted（2026-09-30；implementation and capacity evidence remain open） |
 | [0095](0095-worker-runtime-host.md) | Explicit trusted Worker runtime factory | Accepted（2026-09-29；原隔离分支编号 ADR-0093，收敛时重编号）；生产 host 每次单任务轮询，停止信号在当前结果 / ack 后退出 |
 | [0096](0096-idempotent-ledger-read-results.md) | TrialLedger 精确重复登记的只读幂等确认 | Accepted（2026-09-30）；完全相同的登记 / 同一 attempt 可只读返回，不绕过 LLM 审阅，所有新写入仍受 admission gate 管控 |
+| [0098](0098-p11-authority-registry-and-resolver.md) | P11 生命周期权威登记处、真实 source 与 metric 解析 | Accepted（2026-09-30；PM）；取代 ADR-0080 的 BLOCKED 部分；实现待验收 |
+| [0099](0099-p7-time-series-rank-quantile.md) | P7 transformation 之 rank / quantile 时间序列语义 | Accepted（2026-09-30；PM）；关闭 ADR-0082 最后 OPEN 项；仅纯 lowering |
 | [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
