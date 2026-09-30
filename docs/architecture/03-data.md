@@ -322,7 +322,7 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 competing head 不是 universe 排除原因：它使构建 fail closed，不产生 manifest。
 
 F2 / F3 实现要点（`infrastructure/universe/`、`infrastructure/dataset/`）：universe spec 的 symbols 是 venue 原生 symbol；
-早于首次本机观察的 simulation 使构建 fail closed（ADR-0029 §3），不是排除；暂停 = `not_tradable` 排除，历史保留；
+早于首次本机观察的 simulation 使构建 fail closed（ADR-0029 §3），不是排除——除非 PIT 规格显式绑定 ADR-0051 假设（政策 1.1.0），此时仅 `[backfill_floor, 首次观察 tradable_from)` 区间得到带 `assumption` 标记的独立成员区间；暂停 = `not_tradable` 排除，历史保留；
 带 filter 的 spec 在有 PIT 指标输入之前一律拒绝。数据集只收成员区间内的选择；质量报告由数据集构建**要求**而非生成
 （报告须描述恰为绑定的 snapshot，生成于构建时的报告无法被已固定的质量表 snapshot 绑定）。
 

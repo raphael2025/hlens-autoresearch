@@ -21,6 +21,9 @@ Phase 5 研究策略库（[ADR-0038](../../docs/adr/0038-strategy-risk-backtest-
 | `zscore_reversion.py` | `zscore_reversion@1.0.0`（ADR-0085）：单标的 z-score 均值回归，现货 long / flat |
 | `dual_momentum.py` | `dual_momentum@1.0.0`（ADR-0085）：双动量（绝对 + 相对），横截面声明见 `cross_section.py` |
 | `price_signals.py`、`_declared.py` | `bar_close` / `bar_high` / `bar_low` 探索用信号；显式参数点的规格构造与校验 |
+| `composite.py` | `CompositeStrategyProvider`（ADR-0088 决策 2，契约 2.4.0）：服务带 `StrategySpec.composition` 的规格（门控 / 等权平均 / 取反），被引用策略由调用方注入的解析表提供，不查全局注册表；取反不是验证负对照 |
+| `p7_compositions.py` | P7 策略组合执行 Provider（ADR-0082 第三次接受、ADR-0088、ADR-0100 §1）：`P7ConditionedStrategyProvider`、`P7EnsembleStrategyProvider`、`P7NegatedStrategyProvider`，是 `CompositeStrategyProvider` 的薄子类，只服务 P7 lowering 产出的对应 definition；由 `research/hypotheses/typed_plan_compiler.py` 在执行开关开启时装配（默认关闭）；未测试 |
+| `drawdown_control.py` | `risk:drawdown_control@1.0.0`（ADR-0085 `RSK-DD-CONTROL-001`、ADR-0088 决策 3）：按 `PortfolioState.peak_equity` 计算回撤并缩放仓位；权益 / 峰值缺失时 fail closed |
 
 条目索引见 [strategy-library.md](../../docs/research/strategy-library.md) 与 [risk-library.md](../../docs/research/risk-library.md)。
 

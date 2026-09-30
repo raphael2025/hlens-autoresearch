@@ -29,7 +29,7 @@
 | [0021](0021-phase1-local-data-infrastructure.md) | Phase 1 本地数据基础设施（D-01、D-02、D-10） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；核心本地基础设施已实施（C1 `file://` StorageAdapter、C2 PostgreSQL-backed PyIceberg Catalog、C3 生产表；未运行 NATS） |
 | [0022](0022-phase1-market-and-execution-scope.md) | Phase 1 市场与执行边界（D-08） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；归档与范围部分已实施（D0 下载、D1 解析、D2 revision；无交易能力）；REST 补尾待 D3（ADR-0027） |
 | [0023](0023-bitemporal-revision-data.md) | 双时间与修订数据的 point-in-time 语义（D-28） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；Raw revision、Canonical 与 PIT / manifest 的实现候选已进入本地 `main`；Phase 1 尚未整体验收，见 `PROJECT_STATUS.md` |
-| [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；listing / universe 的实现候选已进入本地 `main`；历史上市依据仍受 D-LIST / ADR-0051 暂缓限制，Phase 1 尚未整体验收 |
+| [0024](0024-historical-tradable-universe.md) | 历史可交易 universe（D-31，依赖 0023） | Accepted（2026-09-24，Codex 依 Raphael 授权批准；A2 记录，复核 `6d53cf5` PASS）；listing / universe 的实现候选已进入本地 `main`；PIT 规格可显式绑定 ADR-0051 上市回填假设（政策 1.1.0）；不绑定时仍只使用观察到的上市历史；Phase 1 尚未整体验收 |
 | [0025](0025-private-github-remote-and-reviewed-progress-push.md) | 私有 GitHub 远程与复核后逐进度推送 | Accepted（2026-09-24，Codex 依 Raphael 明确指示批准；A2r 记录）；取代 ADR-0004 第 3 条 |
 | [0026](0026-pyiceberg-core-extra-for-day-partitions.md) | 为按天分区写入加入 PyIceberg 官方 extra `pyiceberg-core`（D-32） | Accepted（2026-09-24，Codex 依 Raphael 授权裁决方案 A；D32 记录）；已实施（Cursor 锁依赖 `e40c285`、Claude C3-R1 转正 xfail，随 C3 验收） |
 | [0027](0027-rest-raw-source-and-element-revisions.md) | REST 补尾的 Raw source / element revision、通道等价 precedence 与三跳 lineage（D-33） | Accepted（2026-09-25，Codex 依 Raphael 授权批准；复核 D3A-R1 `ed526f7` PASS，[审阅记录](../reviews/2026-09-25-d3a-adr-0027-acceptance.md)）；D-33 方案 A 生效；D3B～D3E 已实现并记录验收，Phase 1 仍待整体验收 |
@@ -40,22 +40,23 @@
 | [0032](0032-archive-event-time-availability-assumption.md) | 历史归档的事件时间可用性假设（PIT 叠加层，D-HIST） | Accepted（2026-09-25；Raphael 批准） |
 | [0033](0033-research-dataset-selection-table.md) | 物化 Research Dataset 选择表登记为生产表（DS-1） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0034](0034-knowledge-provider.md) | KnowledgeProvider 契约与本地知识库（Phase 0.5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
-| [0043](0043-dynamic-strategy-router.md) | 动态策略路由框架（Phase 10，仅纸面） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
-| [0044](0044-event-bus-and-worker-jobs.md) | EventBusAdapter 契约、内存总线与 worker 幂等任务（Phase 11 地基） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
-| [0039](0039-state-strategy-research.md) | 状态 × 策略研究框架（Phase 6） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
-| [0040](0040-hypothesis-generation-and-llm.md) | 假设生成、组合算子、预登记账本与 LLMProvider 契约（Phase 7） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
-| [0038](0038-strategy-risk-backtest-providers.md) | Strategy / Risk / Backtest Provider 契约、回测器 v1 与研究策略库（Phase 5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0036](0036-event-provider-contract.md) | EventProvider 契约、事件执行器与首批事件 / 交互算子（Phase 3） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0037](0037-outcome-engine-and-minimal-validation-pipeline.md) | Outcome Engine、成本模型 v1 与最小 Validation Pipeline（Phase 4 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
+| [0038](0038-strategy-risk-backtest-providers.md) | Strategy / Risk / Backtest Provider 契约、回测器 v1 与研究策略库（Phase 5） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0039](0039-state-strategy-research.md) | 状态 × 策略研究框架（Phase 6） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0040](0040-hypothesis-generation-and-llm.md) | 假设生成、组合算子、预登记账本与 LLMProvider 契约（Phase 7） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0041](0041-validation-robustness.md) | G4 稳健性套件、回溯审计、Phase 4 复审修正与策略验证接线（Phase 8 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；D-30 校验点已由 G0 / G1 接线解决；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0042](0042-synthetic-market-provider.md) | SyntheticMarketProvider 契约与随机游走生成器（Phase 9） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0043](0043-dynamic-strategy-router.md) | 动态策略路由框架（Phase 10，仅纸面） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
+| [0044](0044-event-bus-and-worker-jobs.md) | EventBusAdapter 契约、内存总线与 worker 幂等任务（Phase 11 地基） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0045](0045-strategy-evolution.md) | 策略演化算子与谱系（Phase 12） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0046](0046-simulated-execution-service.md) | 独立执行服务（仅模拟）、Kill Switch、二道风控与执行阶梯（Phase 13 框架；无实盘） | Accepted（2026-09-25；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0047](0047-migration-framework.md) | 技术迁移框架——金标准重跑与 Adapter 一致性（Phase 14） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0048](0048-api-and-web-console.md) | API 服务与研究控制台骨架（apps/api、apps/web） | Accepted（2026-09-25；Claude 依 Raphael 授权决定） |
 | [0049](0049-continuous-research-loop.md) | 持续研究循环：调度、预算、生命周期护栏、审计与劣化监控（Phase 11 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
 | [0050](0050-loop-audit-record-contract.md) | 持续研究循环审计记录的版本化契约（Phase 11，只追加） | Accepted（2026-09-26；Claude 依 Raphael 授权决定，红线除外）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
-| [0051](0051-listing-history-assumption.md) | 上市历史的"观察状态回填"假设（PIT 叠加层，D-LIST） | Accepted（2026-09-28；Claude PM 依 Raphael 授权接受，原 2026-09-26 暂缓）；分两期实施 |
+| [0051](0051-listing-history-assumption.md) | 上市历史的"观察状态回填"假设（PIT 叠加层，D-LIST） | Accepted（2026-09-28；Claude PM 依 Raphael 授权接受，原 2026-09-26 暂缓）；两期均已实现；政策 1.1.0（`e4bb050`）已填入 BTCUSDT / ETHUSDT 下界 2017-08-17 |
 | [0052](0052-validation-contract-completion.md) | 验证契约补全：精确小数、Profile 新字段与负对照独立阈值（D-FLOAT、D-PFIELDS、D-CTRL） | Accepted（2026-09-26；Raphael 批准）；已实施于 2.1.0（按记录版本重放、§1 ~ §3 字段与研究侧取值）；CODE_COMPLETE / DEBUG_PENDING |
 | [0053](0053-validation-failed-transition.md) | 增加生命周期转移 VALIDATION → FAILED（D-VFAIL） | Accepted（2026-09-26；Raphael 批准）；已实施 |
 | [0054](0054-partial-fill-carry-over.md) | 回测契约扩展：成交量上限剩余量跨 bar 结转（D-PARTIAL） | Accepted（2026-09-26；Raphael 批准）；re-declared at 2.1.0（2026-09-26）；CODE_COMPLETE / DEBUG_PENDING |
@@ -72,7 +73,7 @@
 | [0065](0065-g4-capacity-carry-over-unfilled.md) | G4 容量检查遇到结转未成交余量时失败关闭（数据集路径，`carry_over_unfilled`） | Accepted（2026-09-27；Codex 决定 B67 方案 A）；已实施（B67），CODE_COMPLETE / DEBUG_PENDING；不是 Phase 4 / 5 验收 |
 | [0066](0066-explicit-event-table-operator.md) | Event 表独立、显式的操作命令；不接入 Phase 1 或自动 provisioning | Accepted（2026-09-27；Codex 依 Raphael 对模块完成与技术决策的明确授权决定）；命令已随 PR #6 合并，定向检查通过；真实 catalog 建表仍须单独授权 |
 | [0067](0067-p11-degradation-evidence-operator.md) | Phase 11 显式劣化检查的 evidence / Profile freeze 绑定 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；实现已进入本地 `main@498250a`、未统一验收，Phase 11 未验收 |
-| [0068](0068-phase7-typed-operator-plans.md) | Phase 7 类型化组合算子计划与执行边界 | Accepted（2026-09-27，Codex 依 Raphael 授权）；仅批准 non-runnable typed-plan 机制，六类 DSL 仍 fail closed，算子语义与 Provider lowering 未批准 |
+| [0068](0068-phase7-typed-operator-plans.md) | Phase 7 类型化组合算子计划与执行边界 | Accepted（2026-09-27，Codex 依 Raphael 授权）；仅批准 non-runnable typed-plan 机制，六类 DSL 仍 fail closed，算子语义与 Provider lowering 未批准；后续由 0082/0088/0099/0100 放开 lowering 与（默认关闭的）执行 |
 | [0069](0069-p12-combine-fail-closed.md) | Phase 12 `combine` 对风险与适用范围冲突失败关闭 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；已实现但未测试，Phase 12 未验收 |
 | [0070](0070-p7-partial-experiment-fail-stop.md) | P7 experiment 批次失败后停止续跑并要求人工审查 | Accepted（2026-09-27；Codex 依 Raphael 本轮授权决定）；LoopRecord 字节不变，已进入本地 `main@498250a`、未统一验收，Phase 7 / 11 未验收 |
 | [0071](0071-p7-failed-round-review-packet.md) | P7 failed experiment round 的只读人工复核摘要 | Accepted（2026-09-27；Codex 依 Raphael 全权授权，经 Claude / Cursor / Codex 只读复核）；仅研究侧内存投影，不改持久格式、API 或 Schema；Ruff / format / mypy 通过，未跑测试 / build |
@@ -82,29 +83,28 @@
 | [0075](0075-bounded-pyiceberg-snapshot-scan.md) | PyIceberg 固定快照的有界扫描路径 | Accepted（2026-09-28；Amendment 1 将 `max_int64` 与未绑定表的 pinned-view 读取纳入同一 bounded scan，格式 / delete 文件 fail closed）；已实现 `5332034`，未测试；E1-CAP-1 仍阻断 |
 | [0076](0076-bounded-canonical-normalization-result.md) | 有界 Canonical 归一化结果接口 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；默认定长摘要，完整 ID 经显式有序 iterator；仅 infrastructure DTO；已实现 `5332034`，未测试 |
 | [0077](0077-bounded-research-dataset-evidence.md) | 有界 Research Dataset 证据：v3 evidence manifest、有序 evidence streams 与定长 chunk commit | Accepted（2026-09-28；DQ-1 = A 由 Raphael 批准，DQ-2～8、10～12 已决定，DQ-9 待容量证据）；契约层（2.3.0 additive）已实现，infrastructure 层实施中；未测试 |
-| [0078](0078-p7-lowered-output-completeness.md) | P7 lowered outputs 集合权威与完整性 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；`TypedPlan.nodes` 为权威全集；已实现 `79ea546`，未测试；算子仍 fail closed |
+| [0078](0078-p7-lowered-output-completeness.md) | P7 lowered outputs 集合权威与完整性 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；`TypedPlan.nodes` 为权威全集；已实现 `79ea546`，未测试；算子仍 fail closed；后续由 0082/0088/0099/0100 放开 lowering 与（默认关闭的）执行 |
 | [0079](0079-paper-deviation-declared-scope.md) | Paper deviation 与 P8 声明范围绑定 | Accepted（2026-09-28；Codex 依 Raphael 授权决定）；deviation payload 2.0.0 绑定 P8 ValidationReport 与 Profile 范围，1.0.0 仅作 legacy 读取；已实现 `1974610`，未测试 |
 | [0080](0080-p11-authority-resolution.md) | Phase 11 ACTIVE、真实 source 与 metric 权威解析 | Superseded by ADR-0098（2026-09-30）；原 BLOCKED（2026-09-28）：缺权威 lifecycle head、source 身份与 metric 算法定义；不实现伪权威 resolver，loop 保持 synthetic-only |
 | [0081](0081-versioned-report-payload-dtos.md) | Report payload DTO versions and compatibility | Accepted（2026-09-28）；API DTO registry 支持已知历史载荷版本；未知版本显式标记，不把兼容读取当作 schema 验收 |
-| [0082](0082-p7-operator-semantics-and-lowering.md) | P7 六类组合算子的语义与 Provider lowering | Accepted（2026-09-28，三次接受记录）：interaction、transformation（standardize/difference/smooth）、temporal、conditioning、ensemble、negation 已实现纯 lowering；transformation 的 rank/quantile 仍 OPEN；`runnable` 仍 False；未测试 |
+| [0082](0082-p7-operator-semantics-and-lowering.md) | P7 六类组合算子的语义与 Provider lowering | Accepted（2026-09-28，三次接受记录）：interaction、transformation（standardize/difference/smooth）、temporal、conditioning、ensemble、negation 已实现纯 lowering；transformation 的 rank/quantile 已由 0099（时间序列）/ 0100（横截面）关闭；执行 Provider 见 0100（默认关闭）；未测试 |
 | [0083](0083-p7-failed-round-retry.md) | P7 failed round 的 durable 人工重试 admission | Accepted；新增 v6 显式人工 retry admission；不启用自动 retry 或 P7 operator，旧版本持久化语义保持不变 |
 | [0084](0084-live-interface-reservation.md) | 实盘接口预留（默认关闭） | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）：`LiveVenuePort` / `CredentialProvider` 端口与一律拒绝的 `UnconfiguredLiveVenue`；`LIVE_TRADING_ENABLED` 为常量 False；ladder 实盘档位仍拒绝；未测试 |
 | [0085](0085-research-library-expansion.md) | 研究库扩展批次（非契约）：候选特征、状态、策略与风控政策 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；全部参数显式、无默认值；实施中 |
 | [0086](0086-validation-lifecycle-closure.md) | 验证与生命周期收口：门集完整性、退役记录存储、Outcome 输入错误映射 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；实施中 |
 | [0087](0087-plugin-manifest-discovery.md) | 插件 Manifest 与 entry-point 发现加载 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；实施中 |
-| [0088](0088-contract-2-4-0-composition-extensions.md) | 契约 2.4.0（additive）：组合策略、事件 bar 规格、峰值权益、合成效应、波动率缩放屏障 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；契约层待实施 |
+| [0088](0088-contract-2-4-0-composition-extensions.md) | 契约 2.4.0（additive）：组合策略、事件 bar 规格、峰值权益、合成效应、波动率缩放屏障 | Accepted（2026-09-28；Claude PM 依 Raphael 授权决定）；已实现（契约 2.4.0，现为 2.5.0） |
 | [0089](0089-state-iceberg-table.md) | State 物理表 `state.states` 与显式存储入口 | Accepted（2026-09-28）；Iceberg store / artifact store / 显式建表入口已实现；State 定向测试 27 passed，全仓回归仍进行 |
 | [0091](0091-read-only-registry-integrity-audit.md) | 四类登记处的只读完整性审计与证据边界 | Accepted（2026-09-28；本轮 PM）；只读 API 与 CLI 待实施 |
 | [0092](0092-trusted-validation-replay-for-promotion.md) | Promotion 的可信验证重放 Provider | Accepted（2026-09-28；Claude Code PM 依 Raphael 授权）；无内建 trusted Provider 时 Promotion 失败关闭，G5 不得二次开封 |
 | [0093](0093-bounded-quality-report-evidence.md) | 有界、版本化质量报告证据流 | Accepted（2026-09-29；新报告使用固定大小 manifest 与内容寻址 streams，v1/v2 保持只读兼容；实现 / E1 验收待完成） |
 | [0094](0094-bounded-pit-conflict-head-evidence.md) | 有界 PIT 冲突 heads 证据流 | Accepted（2026-09-30；契约 2.5.0 新增完整可重放冲突流，v2 与 2.3/2.4 manifest 保持兼容） |
-| [0097](0097-pit-bounded-graph-scratch-index.md) | PIT bounded graph validation with an invocation-scoped SQLite scratch index | Accepted（2026-09-30；implementation and capacity evidence remain open） |
 | [0095](0095-worker-runtime-host.md) | Explicit trusted Worker runtime factory | Accepted（2026-09-29；原隔离分支编号 ADR-0093，收敛时重编号）；生产 host 每次单任务轮询，停止信号在当前结果 / ack 后退出 |
 | [0096](0096-idempotent-ledger-read-results.md) | TrialLedger 精确重复登记的只读幂等确认 | Accepted（2026-09-30）；完全相同的登记 / 同一 attempt 可只读返回，不绕过 LLM 审阅，所有新写入仍受 admission gate 管控 |
+| [0097](0097-pit-bounded-graph-scratch-index.md) | PIT bounded graph validation with an invocation-scoped SQLite scratch index | Accepted（2026-09-30；implementation and capacity evidence remain open） |
 | [0098](0098-p11-authority-registry-and-resolver.md) | P11 生命周期权威登记处、真实 source 与 metric 解析 | Accepted（2026-09-30；PM）；取代 ADR-0080 的 BLOCKED 部分；实现待验收 |
-| [0099](0099-p7-time-series-rank-quantile.md) | P7 transformation 之 rank / quantile 时间序列语义 | Accepted（2026-09-30；PM）；关闭 ADR-0082 最后 OPEN 项；仅纯 lowering |
-| [0100](0100-complete-remaining-foundation-code.md) | 补完剩余底层代码（Raphael 直接指令） | Accepted（2026-09-30）；P7 执行 Provider、横截面 rank/quantile、P11 指标与默认环境、ADR-0051 政策表、E1 有界化、P12 可选提案；运行开关默认关闭 |
-| [0035](0035-state-provider-contract.md) | StateProvider 的 Protocol、DTO、执行器与首批状态（Phase 2 框架） | Accepted（2026-09-25；Claude 依 Raphael 授权决定）；FRAMEWORK_IMPLEMENTED / NOT_VALIDATED |
+| [0099](0099-p7-time-series-rank-quantile.md) | P7 transformation 之 rank / quantile 时间序列语义 | Accepted（2026-09-30；PM）；关闭 ADR-0082 最后 OPEN 项；仅纯 lowering；§5/§6 被 ADR-0100 §1/§2 修订 |
+| [0100](0100-complete-remaining-foundation-code.md) | 补完剩余底层代码（Raphael 直接指令） | Accepted（2026-09-30）；P7 执行 Provider、横截面 rank/quantile、P11 指标与默认环境、ADR-0051 政策表、E1 有界化、P12 可选提案；运行开关默认关闭；修订 1：temporal 滞后 / 发生时刻窗口 / 上游哈希绑定（计划格式 1.3.0） |
 
 > ADR-0011 ~ 0017 是 Phase 0 批次 B3 的 Codex 技术裁决（D-17 ~ D-25）的书面形式，
 > 于 2026-09-24 由 Codex 依 Raphael 的授权全部接受。实现按

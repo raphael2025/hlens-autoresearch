@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Accepted**（2026-09-30；解除 ADR-0080 的 BLOCKED） |
+| 状态 | **Accepted**（2026-09-30；解除 ADR-0080 的 BLOCKED）；正文“P12-LOOP 暂缓”部分由 ADR-0100 §7 修订（循环内可选替换提案，默认关闭） |
 | 日期 | 2026-09-30 |
 | 决策者 | Claude Code（PM，依 Raphael 2026-09-28 正式授权，CLAUDE.md §0） |
 | 起草者 | Claude Code（PM） |

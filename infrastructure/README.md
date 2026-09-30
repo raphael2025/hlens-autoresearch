@@ -279,7 +279,8 @@ listing 推导 `binance.spot.listing-status@1.0.0`、precedence policy `binance.
   全部已提交 batch。迟到快照若移动了已提交的变化点，旧 revision 保留并报告 `listing_history_diverged`，
   其可用之后的读取为 competing heads（fail closed）。
 - `ListingDeriver.listing_at(symbol, simulation_time, knowledge_cutoff)`：universe 构建消费的 PIT 读取；
-  首次本机观察之前一律 `no_visible_listing`（历史可用性证据缺口，ADR-0029 开放义务）。
+  首次本机观察之前一律 `no_visible_listing`（历史可用性证据缺口，ADR-0029 开放义务），除非 PIT 规格显式绑定
+  ADR-0051 假设（政策 1.1.0，`pit=`），此时 `[backfill_floor, 首次观察 tradable_from)` 得到假设答复。
 - **诚实边界**：finding 只在结果中返回，写入 `quality.data_quality_reports` 属质量写入器；未做 ADR-0029 要求的
   只读 smoke（L4 字段与 `serverTime` 单位）——测试只用 mock transport。
 
