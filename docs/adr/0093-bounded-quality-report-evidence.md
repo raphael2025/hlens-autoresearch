@@ -80,10 +80,15 @@ arrival order, or a truncated head list.
    `quality.data_quality_report_manifests` is the report's commit point. No consumer may treat
    stream objects without that row as a report. A failed build may leave immutable orphan objects;
    writers do not delete them.
-2. `existing_only` performs no writes and reads no clock. It re-derives fixed metadata and each
-   expected stream, then compares the expected and stored records in order, checks counts and
-   roots, and requires both streams to end together. Any missing object, extra record, mismatch,
-   duplicate manifest row, or inconsistent root fails closed.
+2. `existing_only` performs no report/evidence output writes and reads no clock. Its bounded
+   derivation may publish content-addressed sort/projection scratch objects, including temporary
+   expected-stream trees used for lockstep comparison, only to a distinct caller-configured
+   scratch `StorageAdapter`; that adapter must not address the report's evidence storage namespace.
+   Such objects are immutable and may remain orphaned because `StorageAdapter` has no delete
+   operation. The derivation compares each expected stream with the committed stream in order,
+   checks counts and roots, and requires both streams to end together. It must not publish any
+   derived stream object to report evidence storage or append a manifest row. Any missing object,
+   extra record, mismatch, duplicate manifest row, or inconsistent root fails closed.
 3. A retry that finds the identical committed manifest is idempotent. A different manifest for
    the same report ID is `CatalogIntegrityError`; no overwrite or repair occurs. Orphan object
    replay is `already_present` when bytes match.
@@ -135,3 +140,14 @@ Codex selected the lossless streaming design because it is the only option that 
 bounded-workset requirement without changing report coverage or weakening fail-closed validation.
 The choice is additive, keeps all persisted legacy identities readable, and places a fixed-size
 manifest row at the commit boundary. Implementation and independent review remain required.
+
+### 2026-09-30 clarification — verification scratch writes
+
+The phrase “performs no writes” in §3.2 means no report-visible writes: no manifest/catalog
+mutation, no writes to report evidence storage, and no clock read. Bounded external sorting,
+projection, and lockstep replay can require immutable content-addressed scratch publication,
+including temporary expected-stream trees. Such writes are permitted only through an explicitly
+supplied scratch adapter isolated from report evidence storage; their possible orphaning is
+accepted. If the caller cannot provide that separate namespace, `existing_only` must fail closed
+before beginning derivation. This clarification preserves the no-change-to-report semantics while
+making the bounded replay implementation operational.
