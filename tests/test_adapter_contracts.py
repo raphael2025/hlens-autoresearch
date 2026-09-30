@@ -165,6 +165,12 @@ ADR_0052_SCHEMA_SHA256 = {
     "ValidationProfile": "d2eb9781c9e84ca6dbb178d04a61e6870bb520a59b1abd4f28977983d2dde733",
     "ValidationReport": "72b741d92ed994b9959757d3b4940f922f82eca2b56a2c44526b290a9f11d851",
 }
+ADR_0088_SCHEMA_SHA256_AT_2_4_0 = {
+    "EventSpec": "151caafa8b41242d69ba5d2336343acb2d5b5782688b357638b88500b89de0ef",
+    "ResearchDatasetManifest": "19fcaf64ba257a66b976e8324df03bfde68227f0f9f1ad5889237e163575c0c6",
+    "StrategySpec": "424efe3fd0351e7be186b05de51dbe4c811c7d4d433a75abc334e62a90f6154d",
+    "UniverseMember": "213dcffc38198da44dc7e0b4b5482965adf40bad6c1c1eaea1855907b14e117e",
+}
 PRE_B3_SCHEMA_SHA256 = {
     "AuthorizationRecord": "c3b234ad9bbc55408bfe4e4d3c52936425d41f9ef37fd93ca6a5cae707421b0d",
     "AvailabilityDecision": "c2c7b023702bb22eba14187274a9dc489a7d29de1b9e5362e1bcad15fad83017",
@@ -1556,6 +1562,12 @@ def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
 def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) -> None:
     committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
     regenerated = export_json_schemas(tmp_path)[name].read_bytes()
+    if name in ADR_0088_SCHEMA_SHA256_AT_2_4_0:
+        # ADR-0088 changed these shapes; ADR-0094 may only advance the envelope default.
+        for schema in (committed, regenerated):
+            digest = hashlib.sha256(as_published_at(schema, "2.4.0")).hexdigest()
+            assert digest == ADR_0088_SCHEMA_SHA256_AT_2_4_0[name]
+        return
     if name in ADR_0055_SCHEMA_SHA256:  # changed by ADR-0055's fields: the 2.2.0 pin
         # ADR-0077: the 2.3.0 bump may change only the envelope default of these schemas.
         for schema in (committed, regenerated):

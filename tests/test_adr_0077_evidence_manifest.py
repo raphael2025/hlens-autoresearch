@@ -12,7 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Any
 
@@ -39,6 +39,7 @@ from core.contracts.universe import (
     EvidenceObjectRef,
     EvidenceStream,
     EvidenceStreamRef,
+    PitConflictEvidenceResult,
     ResearchDatasetEvidenceManifest,
     ResearchDatasetManifest,
     SelectedRevisionLineage,
@@ -85,6 +86,18 @@ V2_SCHEMA_SHA256_AT_2_2_0 = {
     "UniverseExclusion": "ab1f380a49cccafa455d73690c1ab47d43e9193598b9e9bf4bf34860500efd2b",
     "SelectedRevisionLineage": "383bc39f806172b6bd0c1942c7a3084cf7e347b30bae013c1954be25463f371d",
     "AvailabilityEvidenceGap": "fe21e259cdd62555f56a83bf9800accb07f2a3a93defcf95980a9d4af9382718",
+}
+
+# ADR-0088 changed these two v2 schemas after the 2.2.0 pins. Their last published shape before
+# ADR-0094 is pinned separately at 2.4.0; the other v2 schemas remain byte-identical to 2.2.0.
+V2_SCHEMA_SHA256_AT_2_4_0 = {
+    "ResearchDatasetManifest": "19fcaf64ba257a66b976e8324df03bfde68227f0f9f1ad5889237e163575c0c6",
+    "UniverseMember": "213dcffc38198da44dc7e0b4b5482965adf40bad6c1c1eaea1855907b14e117e",
+}
+
+LEGACY_V3_MANIFEST_SHA256 = {
+    "2.3.0": "40899f7552ed35bbb5f505b2ba30c7007c5400190ed65664f947954e291c1da5",
+    "2.4.0": "a2b89b7e5444399748d91e3d51021ec82970bfdc2edd29f39a2216fcf3a9930c",
 }
 
 #: A persisted-shape v2 manifest written at 2.2.0 (canonical JSON, TEST ONLY values) and its
@@ -188,12 +201,32 @@ def proof(chunk_index: int = 0, **overrides: Any) -> DatasetChunkProof:
     return DatasetChunkProof(**payload)
 
 
-def v3(
-    *, schema_version: str = "2.4.0", **overrides: Any
-) -> ResearchDatasetEvidenceManifest:
+def v3(*, schema_version: str = "2.4.0", **overrides: Any) -> ResearchDatasetEvidenceManifest:
     """Legacy six-stream manifest fixture, explicitly rebuilt at its recorded 2.3/2.4 era."""
     with contract_schema_version_scope(schema_version):
         return _v3_payload(**overrides)
+
+
+def v3_at(schema_version: str) -> ResearchDatasetEvidenceManifest:
+    """Build the exact six-stream legacy shape or the current seven-stream shape at its version."""
+    with contract_schema_version_scope(schema_version):
+        refs = evidence(3)
+        if schema_version >= "2.5.0":
+            refs = (*refs, stream_ref(EvidenceStream.PIT_CONFLICTS, 0))
+        return _v3_payload(evidence=refs)
+
+
+def pit_conflict_result() -> PitConflictEvidenceResult:
+    return PitConflictEvidenceResult(
+        rule_id=RULE_ID,
+        rule_version="1.0.0",
+        rule_hash=HASH,
+        observation_key="BTCUSDT:trade:42",
+        simulation_time=datetime(2026, 9, 1, tzinfo=UTC),
+        knowledge_cutoff=datetime(2026, 9, 1, 0, 5, tzinfo=UTC),
+        head_count=2,
+        evidence=stream_ref(EvidenceStream.PIT_CONFLICTS, 2),
+    )
 
 
 def _v3_payload(**overrides: Any) -> ResearchDatasetEvidenceManifest:
@@ -222,9 +255,7 @@ def valid_instances() -> dict[type[Contract], Contract]:
         EvidenceStreamRef: stream_ref(EvidenceStream.LINEAGE),
         DatasetQualityReportRef: report(),
         DatasetChunkProof: proof(),
-        ResearchDatasetEvidenceManifest: v3(
-            schema_version="2.5.0", evidence=current_evidence
-        ),
+        ResearchDatasetEvidenceManifest: v3(schema_version="2.5.0", evidence=current_evidence),
     }
 
 
@@ -242,7 +273,12 @@ def test_2_3_shapes_remain_replayable_and_every_minor_stays_published() -> None:
     assert ADR_0077_VERSION == "2.3.0"
     assert CONTRACT_SCHEMA_VERSION == "2.5.0"  # ADR-0094 raised the current minor
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
-        "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"
+        "2.0.0",
+        "2.1.0",
+        "2.2.0",
+        "2.3.0",
+        "2.4.0",
+        "2.5.0",
     )
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
@@ -252,9 +288,7 @@ def test_every_new_model_is_declared_since_2_3_0() -> None:
         assert model._MODEL_SINCE == "2.3.0", model.__name__
         assert not model._FIELDS_SINCE, model.__name__
         if model is EvidenceStreamRef:
-            assert dict(model._VALUES_SINCE) == {
-                "stream": {EvidenceStream.PIT_CONFLICTS: "2.5.0"}
-            }
+            assert dict(model._VALUES_SINCE) == {"stream": {EvidenceStream.PIT_CONFLICTS: "2.5.0"}}
         else:
             assert not model._VALUES_SINCE, model.__name__
     # the v2 manifest and its record models are not new content
@@ -266,6 +300,12 @@ def test_every_new_model_is_declared_since_2_3_0() -> None:
         AvailabilityEvidenceGap,
     ):
         assert model._MODEL_SINCE is None, model.__name__
+
+
+@pytest.mark.parametrize("old", ["2.3.0", "2.4.0"])
+def test_pit_conflict_enum_value_is_rejected_by_legacy_stream_envelopes(old: str) -> None:
+    with contract_schema_version_scope(old), pytest.raises(ValidationError, match="2.5.0"):
+        stream_ref(EvidenceStream.PIT_CONFLICTS, 0)
 
 
 def test_the_new_models_are_appended_to_the_registry_and_exported() -> None:
@@ -313,6 +353,65 @@ def test_new_content_cannot_be_built_inside_an_older_replay_scope() -> None:
         with contract_schema_version_scope(old), pytest.raises(ValidationError, match="2.3.0"):
             proof()
     assert v3(schema_version="2.3.0").schema_version == "2.3.0"
+    for old in ("2.3.0", "2.4.0"):
+        legacy = v3_at(old)
+        assert len(legacy.evidence) == 6
+        assert EvidenceStream.PIT_CONFLICTS not in {ref.stream for ref in legacy.evidence}
+        with contract_schema_version_scope(old), pytest.raises(ValidationError, match="2.5.0"):
+            pit_conflict_result()
+
+
+@pytest.mark.parametrize(("old", "expected_hash"), LEGACY_V3_MANIFEST_SHA256.items())
+def test_legacy_v3_manifest_goldens_replay_at_their_recorded_version(
+    old: str, expected_hash: str
+) -> None:
+    path = REPO / "tests" / "golden" / f"v{old.replace('.', '_')}" / "dataset_v3_manifest.json"
+    original = path.read_bytes().rstrip(b"\n")
+    assert hashlib.sha256(original).hexdigest() == expected_hash
+
+    replayed = v3(schema_version=old)
+    assert replayed.schema_version == old
+    assert canonical_json(replayed.model_dump(mode="json")).encode("utf-8") == original
+    assert replayed.content_hash() == expected_hash
+    parsed = ResearchDatasetEvidenceManifest.model_validate_json(original)
+    assert parsed.schema_version == old and parsed.content_hash() == expected_hash
+
+
+def test_current_v3_manifest_replays_with_the_seven_stream_2_5_shape() -> None:
+    current = v3_at("2.5.0")
+    assert current.schema_version == CONTRACT_SCHEMA_VERSION == "2.5.0"
+    assert len(current.evidence) == 7
+    assert current.evidence_for(EvidenceStream.PIT_CONFLICTS).record_count == 0
+    canonical = canonical_json(current.model_dump(mode="json"))
+    replayed = ResearchDatasetEvidenceManifest.model_validate_json(canonical)
+    assert replayed.schema_version == "2.5.0"
+    assert len(replayed.evidence) == 7
+    assert canonical_json(replayed.model_dump(mode="json")) == canonical
+    assert replayed.content_hash() == current.content_hash()
+    with contract_schema_version_scope("2.5.0"), pytest.raises(ValidationError, match="2.5.0"):
+        _v3_payload(evidence=evidence(3))
+
+
+@pytest.mark.parametrize("old", ["2.3.0", "2.4.0"])
+def test_legacy_six_stream_manifest_cannot_be_reinterpreted_as_seven_stream(old: str) -> None:
+    legacy = v3_at(old)
+    payload = wire(legacy)
+    payload["evidence"].append(wire(stream_ref(EvidenceStream.PIT_CONFLICTS, 0)))
+    with pytest.raises(ValidationError, match="2.5.0"):
+        ResearchDatasetEvidenceManifest.model_validate(payload)
+
+
+def test_current_pit_conflict_result_replays_without_inlining_heads() -> None:
+    result = pit_conflict_result()
+    assert result.schema_version == "2.5.0"
+    assert result.evidence.stream is EvidenceStream.PIT_CONFLICTS
+    assert result.evidence.record_count == result.head_count
+    payload = json.loads(result.model_dump_json())
+    assert "maximal_heads" not in payload
+    canonical = canonical_json(payload)
+    replayed = PitConflictEvidenceResult.model_validate_json(canonical)
+    assert canonical_json(replayed.model_dump(mode="json")) == canonical
+    assert replayed.content_hash() == result.content_hash()
 
 
 # ======================================================================================
@@ -502,9 +601,7 @@ def test_a_valid_v3_manifest_is_fixed_size_and_canonically_ordered() -> None:
     assert [item.stream.value for item in built.evidence] == sorted(
         stream.value for stream in EvidenceStream if stream is not EvidenceStream.PIT_CONFLICTS
     )
-    shuffled = v3(
-        evidence=tuple(at_version(item, "2.4.0") for item in reversed(evidence(3)))
-    )
+    shuffled = v3(evidence=tuple(at_version(item, "2.4.0") for item in reversed(evidence(3))))
     assert shuffled == built
     assert shuffled.content_hash() == built.content_hash()
     assert built.evidence_for(EvidenceStream.CHUNK_PROOFS).record_count == 3
@@ -699,9 +796,11 @@ def test_the_v2_schemas_change_only_their_envelope_default(name: str, tmp_path: 
     committed = (CURRENT_SCHEMA_DIR / f"{name}.schema.json").read_bytes()
     regenerated = export_json_schemas(tmp_path)[name].read_bytes()
     assert committed == regenerated
+    version = "2.4.0" if name in V2_SCHEMA_SHA256_AT_2_4_0 else "2.2.0"
+    expected = V2_SCHEMA_SHA256_AT_2_4_0.get(name, V2_SCHEMA_SHA256_AT_2_2_0[name])
     for schema in (committed, regenerated):
-        digest = hashlib.sha256(as_published_at(schema, "2.2.0")).hexdigest()
-        assert digest == V2_SCHEMA_SHA256_AT_2_2_0[name]
+        digest = hashlib.sha256(as_published_at(schema, version)).hexdigest()
+        assert digest == expected
 
 
 def test_a_persisted_2_2_0_v2_manifest_reads_bit_for_bit_with_its_pinned_hash() -> None:
@@ -718,10 +817,10 @@ def test_a_persisted_2_2_0_v2_manifest_reads_bit_for_bit_with_its_pinned_hash() 
         assert read.content_hash() == V2_MANIFEST_AT_2_2_0_HASH
 
 
-def test_a_v2_manifest_built_now_is_a_2_3_0_object_and_its_twins_keep_their_envelopes() -> None:
+def test_a_v2_manifest_built_now_is_a_2_5_0_object_and_its_twins_keep_their_envelopes() -> None:
     current = manifest()
     assert current.schema_version == "2.5.0"  # the current envelope (ADR-0094)
-    for old in ("2.0.0", "2.1.0", "2.2.0"):
+    for old in PUBLISHED_CONTRACT_SCHEMA_VERSIONS[:-1]:
         twin = at_version(current, old)
         assert twin.schema_version == old
         assert twin.content_hash() != current.content_hash()  # the envelope is hashed
@@ -732,8 +831,8 @@ def test_a_v2_manifest_built_now_is_a_2_3_0_object_and_its_twins_keep_their_enve
 
 def test_v2_and_v3_manifests_are_read_side_by_side_and_never_confused() -> None:
     old = ResearchDatasetManifest.model_validate_json(V2_MANIFEST_AT_2_2_0)
-    new = v3()
-    assert (old.schema_version, new.schema_version) == ("2.2.0", "2.4.0")
+    new = v3_at("2.5.0")
+    assert (old.schema_version, new.schema_version) == ("2.2.0", "2.5.0")
     with pytest.raises(ValidationError):
         ResearchDatasetEvidenceManifest.model_validate(json.loads(V2_MANIFEST_AT_2_2_0))
     with pytest.raises(ValidationError):
