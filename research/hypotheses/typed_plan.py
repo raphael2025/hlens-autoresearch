@@ -29,8 +29,10 @@ from core.domain.base import (
 )
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from datetime import datetime
 
+    from core.contracts.universe import ResearchDatasetManifest
     from research.hypotheses.typed_plan_compiler import (
         CompiledPlan,
         OperatorImplementation,
@@ -690,6 +692,7 @@ def compile_plan(
     created_at: datetime | None = None,
     allowlist: Mapping[str, OperatorImplementation] | None = None,
     switch: P7ExecutionSwitch | None = None,
+    universes: Iterable[ResearchDatasetManifest] = (),
 ) -> CompiledPlan:
     """Compile ``plan`` against an explicit Provider allowlist, or refuse (ADR-0100 item 1).
 
@@ -697,8 +700,11 @@ def compile_plan(
     (``execution_disabled``), exactly as before this ADR. With the switch on, ``resolution`` (the
     plan's hash-verified direct references), an explicit timezone-aware ``created_at`` and an
     explicit ``allowlist`` (e.g. ``typed_plan_compiler.P7_OPERATOR_ALLOWLIST``) are required, and
-    every node's lowered definition must map to an allowlisted Provider. Trial counting and
-    admission rules are unchanged; see ``research.hypotheses.typed_plan_compiler``.
+    every node's lowered definition must map to an allowlisted Provider. ``universes`` (the
+    caller-supplied pinned universe manifests) are passed to the lowering so cross-sectional nodes
+    can lower; their execution is not supported by the compiled wiring, so such a plan is refused
+    with ``cross_sectional_execution_unsupported``. Trial counting and admission rules are
+    unchanged; see ``research.hypotheses.typed_plan_compiler``.
     """
     if not isinstance(plan, TypedPlan):
         raise TypeError("plan must be a TypedPlan")
@@ -706,5 +712,10 @@ def compile_plan(
     from research.hypotheses.typed_plan_compiler import compile_lowered_plan
 
     return compile_lowered_plan(
-        plan, resolution=resolution, created_at=created_at, allowlist=allowlist, switch=switch
+        plan,
+        resolution=resolution,
+        created_at=created_at,
+        allowlist=allowlist,
+        switch=switch,
+        universes=universes,
     )

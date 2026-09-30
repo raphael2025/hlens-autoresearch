@@ -14,6 +14,14 @@ Otherwise it raises ``PlanCompileRefused`` (a ``PlanRefused``) with a precise co
 ``provider_not_registered``, ``provider_identity_mismatch``, ...). A refusal of the lowering itself
 propagates unchanged as ``OperatorLoweringRefused``. Nothing is partially compiled.
 
+Cross-sectional ``rank_cs`` / ``quantile_cs`` nodes (plan format 1.3.0, ADR-0100 §2) lower when the
+caller passes the pinned universe manifests (``universes=``, handed to the lowering as evidence),
+but they are not compiled: their Providers (``plugins.features.p7_cross_sectional``) take a
+``CrossSectionalRequest`` / return a ``CrossSectionalResult``, which neither
+``CompiledPlan.build_providers`` (single-series ``FeatureRequest`` upstream wiring) nor the Research
+Loop path can drive. Such a plan is refused with ``cross_sectional_execution_unsupported``
+whatever the allowlist holds, never executed through the single-series wiring.
+
 Compilation is pure and deterministic: it re-runs the pure lowering
 (``typed_plan_lowering.lower_typed_plan``) on the caller's hash-verified direct-reference
 resolution and explicit ``created_at``, then checks the allowlist. It does not read a clock, does
@@ -38,7 +46,7 @@ import hashlib
 import inspect
 import json
 import sys
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from types import MappingProxyType
@@ -46,6 +54,7 @@ from typing import Any, Final
 
 from core.contracts.feature import FeatureProvider
 from core.contracts.strategy import StrategyProvider
+from core.contracts.universe import ResearchDatasetManifest
 from core.domain.base import Kind, VersionedSpec, content_hash
 from core.domain.specs import EventSpec, FeatureSpec, InstrumentType, StrategySpec
 from plugins.events.p7_temporal import P7TemporalSequenceProvider
@@ -58,7 +67,13 @@ from plugins.features.p7_operators import (
     P7StandardizeProvider,
     UpstreamFeature,
 )
-from research.hypotheses.typed_plan import NodeInput, PlanOperator, PlanRefused, TypedPlan
+from research.hypotheses.typed_plan import (
+    CROSS_SECTIONAL_TRANSFORMS,
+    NodeInput,
+    PlanOperator,
+    PlanRefused,
+    TypedPlan,
+)
 from research.hypotheses.typed_plan_audit import PlanAdmissionEvidence
 from research.hypotheses.typed_plan_lowering import lower_typed_plan
 from research.hypotheses.typed_plan_resolver import DirectReferenceResolution
@@ -495,8 +510,12 @@ def compile_lowered_plan(
     created_at: datetime | None = None,
     allowlist: Mapping[str, OperatorImplementation] | None = None,
     switch: P7ExecutionSwitch | None = None,
+    universes: Iterable[ResearchDatasetManifest] = (),
 ) -> CompiledPlan:
-    """Compile ``plan`` or refuse with a precise reason (module docstring)."""
+    """Compile ``plan`` or refuse with a precise reason (module docstring).
+
+    ``universes`` are the caller-supplied pinned universe manifests, passed to the lowering.
+    """
     if type(plan) is not TypedPlan:
         raise TypeError("plan must be an exact TypedPlan")
     if switch is None or type(switch) is not P7ExecutionSwitch or switch.enabled is not True:
@@ -513,11 +532,24 @@ def compile_lowered_plan(
             plan.root,
             "compilation needs the plan's DirectReferenceResolution and an explicit created_at",
         )
-    lowered = lower_typed_plan(plan, resolution=resolution, created_at=created_at)
+    lowered = lower_typed_plan(
+        plan, resolution=resolution, created_at=created_at, universes=universes
+    )
     direct = {(item.node_id, item.input_index): item.spec for item in resolution.inputs}
 
     nodes: list[CompiledNode] = []
     for node in plan.nodes:
+        if (
+            node.operator is PlanOperator.TRANSFORMATION
+            and node.parameters.get("transform") in CROSS_SECTIONAL_TRANSFORMS
+        ):
+            raise PlanCompileRefused(
+                "cross_sectional_execution_unsupported",
+                node.node_id,
+                "cross-sectional rank_cs / quantile_cs lower, but their CrossSectionalRequest / "
+                "CrossSectionalResult Providers cannot be driven by the compiled single-series "
+                "wiring or the Research Loop (ADR-0100 §2); not compiled",
+            )
         spec = lowered[node.node_id]
         definition, provider = _declared_identity(spec)
         if not isinstance(definition, str):
