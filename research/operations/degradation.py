@@ -30,7 +30,8 @@ latest-file search, default window, default threshold or float guess is used.
    ``value_exact`` equal to the supplied value (a float-only gate is refused, never converted);
 6. the recent manifest's declared hash equals its recomputed content hash; it binds the same
    subject, Profile ref / hash and window, a method id, and at least one source whose event time
-   lies inside the window and whose observed time is no later than the window end;
+   lies inside the window and whose observed time is no later than the window end (or, on the
+   authority path only, no later than the manifest's explicit ``as_of`` — see below);
 7. metric keys follow the monitor's grammar (``[A-Za-z0-9_.]+``), are unique, and every value is
    a finite ``ExactDecimal`` (``Decimal`` / ``int`` / canonical text; floats and bools refused).
 
@@ -43,11 +44,18 @@ embedded in the report, but the truthfulness of its sources and aggregation is *
 **Authority provenance (ADR-0098 §4, additive).** ``run_degradation_check`` also accepts an
 optional ``authority`` — the ``AuthorityProvenance`` that ``research.operations.authority
 .resolve_degradation_inputs`` produced together with the ``lifecycle`` and ``recent`` inputs. It is
-bound (same subject, replayed history hash, recent manifest hash, Profile, report and window) and
-written as ``evidence.authority``; the two scope texts then describe the authority path
+bound (same subject, replayed history hash, recent manifest hash, Profile, report, window, the
+``BaselineMetricSet`` content hash and the recent manifest's ``as_of``) and written as
+``evidence.authority``; the two scope texts then describe the authority path
 (``AUTHORITY_LIFECYCLE_SCOPE`` / ``AUTHORITY_RECENT_METRICS_SCOPE``). Without it (the explicit
 caller-declared path) nothing changes: no ``authority`` key, the caller-declared scope texts, the
 same evidence mapping and report hash as before.
+
+**Evaluation time (ADR-0098 修订 2 §1).** A window's last bar only becomes available after the
+window ends, so an authority-resolved ``RecentMetricManifest`` carries an explicit ``as_of`` (UTC,
+``>= window.end``): its sources may be observed up to ``as_of`` instead of ``window.end``, and the
+manifest payload gains an ``as_of`` key. A manifest without ``as_of`` (every caller-declared one)
+keeps the ADR-0067 rule and its payload / hash unchanged.
 
 Code completion (2026-09-27, CODE_COMPLETE / DEBUG_PENDING; authority provenance 2026-09-30).
 """
@@ -107,9 +115,11 @@ RECENT_METRICS_SCOPE: Final = (
 #: What the authority-resolved lifecycle binding proves (ADR-0098 §1 / §4).
 AUTHORITY_LIFECYCLE_SCOPE: Final = (
     "the lifecycle history is the ADR-0098 Lifecycle Registry's replay of this subject at the head "
-    "recorded in authority.lifecycle (authority.lifecycle.anchor records whether an external anchor "
-    "was verified; without one a rollback of whole trailing records is not detectable); the "
-    "registry's declared actors are not authenticated"
+    "recorded in authority.lifecycle, truncated to the transitions that occurred at or before "
+    "authority.as_of (ACTIVE since at least the window start, no transition in [window start, "
+    "as_of]); authority.lifecycle.anchor records whether an external anchor was verified (without "
+    "one a rollback of whole trailing records is not detectable); the registry's declared actors "
+    "are not authenticated"
 )
 #: What the authority-resolved recent metrics prove (ADR-0098 §2 / §3 / §4).
 AUTHORITY_RECENT_METRICS_SCOPE: Final = (
@@ -284,6 +294,8 @@ class RecentMetricManifest:
     method_id: str
     sources: tuple[ObservationSource, ...]
     metrics: tuple[tuple[str, Decimal], ...]
+    #: Explicit evaluation time (authority path only, ADR-0098 修订 2 §1); ``None`` otherwise.
+    as_of: datetime | None
 
     def __init__(
         self,
@@ -296,6 +308,7 @@ class RecentMetricManifest:
         method_id: str,
         sources: Iterable[ObservationSource],
         metrics: MetricEntries,
+        as_of: datetime | None = None,
     ) -> None:
         if not isinstance(subject, Ref) or not isinstance(profile_ref, Ref):
             raise DegradationOperationRefused("manifest subject and profile_ref must be Refs")
@@ -303,6 +316,10 @@ class RecentMetricManifest:
             raise DegradationOperationRefused("manifest profile_ref must point to a profile")
         if not isinstance(window, ObservationWindow):
             raise DegradationOperationRefused("manifest window must be an ObservationWindow")
+        evaluated = None if as_of is None else _utc(as_of, "manifest as_of")
+        if evaluated is not None and evaluated < window.end:
+            raise DegradationOperationRefused("manifest as_of must not be before the window end")
+        observed_limit = window.end if evaluated is None else evaluated
         checked = tuple(sources)
         if not checked or not all(isinstance(source, ObservationSource) for source in checked):
             raise DegradationOperationRefused("a manifest needs at least one ObservationSource")
@@ -314,9 +331,10 @@ class RecentMetricManifest:
                 raise DegradationOperationRefused(
                     f"source {source.source_id}'s event time is outside the window"
                 )
-            if source.observed_time > window.end:
+            if source.observed_time > observed_limit:
                 raise DegradationOperationRefused(
-                    f"source {source.source_id} was observed after the window ended"
+                    f"source {source.source_id} was observed after the "
+                    + ("window ended" if evaluated is None else "manifest's as_of")
                 )
         object.__setattr__(self, "subject", subject)
         object.__setattr__(self, "profile_ref", profile_ref)
@@ -328,10 +346,12 @@ class RecentMetricManifest:
         object.__setattr__(self, "method_id", _identifier(method_id, "method_id"))
         object.__setattr__(self, "sources", tuple(sorted(checked, key=lambda s: s.source_id)))
         object.__setattr__(self, "metrics", _metrics(metrics, "recent metrics"))
+        object.__setattr__(self, "as_of", evaluated)
 
     def payload(self) -> dict[str, Any]:
-        """The canonical, JSON-ready manifest payload whose ``content_hash`` is its identity."""
-        return {
+        """The canonical, JSON-ready manifest payload whose ``content_hash`` is its identity
+        (``as_of`` only when set, so a caller-declared manifest's payload is unchanged)."""
+        payload: dict[str, Any] = {
             "format": MANIFEST_FORMAT,
             "subject": str(self.subject),
             "profile_ref": str(self.profile_ref),
@@ -342,6 +362,9 @@ class RecentMetricManifest:
             "sources": [source.payload() for source in self.sources],
             "metrics": {key: exact_decimal_text(value) for key, value in self.metrics},
         }
+        if self.as_of is not None:
+            payload["as_of"] = _utc_text(self.as_of)
+        return payload
 
     def content_hash(self) -> str:
         return content_hash(self.payload())
@@ -394,6 +417,18 @@ class BaselineMetricSet:
             raise DegradationOperationRefused("baseline gate_ids map two metrics to one gate")
         object.__setattr__(self, "metrics", values)
         object.__setattr__(self, "gate_ids", tuple(sorted(sources)))
+
+    def payload(self) -> dict[str, Any]:
+        """The canonical, JSON-ready baseline set (exact values as canonical decimal text)."""
+        return {
+            "validation_report_hash": self.validation_report_hash,
+            "metrics": {key: exact_decimal_text(value) for key, value in self.metrics},
+            "gate_ids": dict(self.gate_ids),
+        }
+
+    def content_hash(self) -> str:
+        """The baseline set's identity (ADR-0098 修订 2 §5: bound by the authority provenance)."""
+        return content_hash(self.payload())
 
 
 @dataclass(frozen=True, slots=True)
@@ -596,6 +631,7 @@ def _check_authority(
     history: LifecycleHistory,
     profile: ValidationProfile,
     report: ValidationReport,
+    baseline: BaselineMetricSet,
     recent: RecentMetricSet,
     window: ObservationWindow,
 ) -> None:
@@ -624,6 +660,14 @@ def _check_authority(
         )
     if (authority.window_start, authority.window_end) != (window.start, window.end):
         raise DegradationOperationRefused("the authority provenance describes another window")
+    if authority.baseline_set_hash != baseline.content_hash():
+        raise DegradationOperationRefused(
+            "the baseline metric set is not the one the authority resolved against"
+        )
+    if recent.manifest.as_of is None or recent.manifest.as_of != authority.as_of:
+        raise DegradationOperationRefused(
+            "the recent manifest's as_of is not the authority provenance's as_of"
+        )
 
 
 def run_degradation_check(
@@ -706,6 +750,7 @@ def run_degradation_check(
             history=history,
             profile=checked_profile,
             report=report,
+            baseline=baseline,
             recent=recent,
             window=window,
         )
