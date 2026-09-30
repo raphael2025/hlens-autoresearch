@@ -407,6 +407,20 @@ class _ByteReader:
         self._offset += 1
         return value
 
+    def peek(self) -> int | None:
+        """The next raw byte (whitespace included) without consuming it; ``None`` at the end."""
+        if self._offset >= len(self._buffer):
+            remaining = self._max_bytes - self._total
+            chunk = self._stream.read(min(self._chunk_size, remaining + 1))
+            if not chunk:
+                return None
+            self._total += len(chunk)
+            if self._total > self._max_bytes:
+                raise BoundedMetadataError("Iceberg metadata exceeds max_metadata_bytes")
+            self._buffer = chunk
+            self._offset = 0
+        return self._buffer[self._offset]
+
     def peek_non_whitespace(self) -> int | None:
         while True:
             if self._offset >= len(self._buffer):
@@ -474,8 +488,10 @@ class _ByteReader:
                 elif char == ord('"'):
                     break
         else:
+            # A scalar ends at the first raw delimiter or whitespace byte: peeking past
+            # whitespace would splice ``12 34`` into ``1234`` instead of failing closed.
             while True:
-                next_char = self.peek_non_whitespace()
+                next_char = self.peek()
                 if next_char is None or next_char in b",]} \t\r\n":
                     break
                 out.append(self.take())
