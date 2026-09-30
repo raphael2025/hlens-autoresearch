@@ -1030,7 +1030,7 @@ def _heads(
 
 def _bounded_head_summary(
     records: Iterable[RevisionRecord],
-    edges: Sequence[PrecedenceEvidence],
+    edges: Iterable[PrecedenceEvidence],
     at: datetime,
     cutoff: datetime,
     available: Mapping[str, datetime],
@@ -1189,7 +1189,7 @@ def _evaluate(
 def _evaluate_bounded(
     key: str,
     records: Iterable[RevisionRecord],
-    edges: Sequence[PrecedenceEvidence],
+    edges: Iterable[PrecedenceEvidence],
     spec: PointInTimeSpec,
     available: Mapping[str, datetime],
     *,
@@ -1446,12 +1446,34 @@ def _pit_edge_group_key(row: Mapping[str, Any]) -> str:
     return cast(str, row["observation_key"])
 
 
+class _PitEdgeEvidenceRun:
+    """Replay one observation key's precedence evidence from a bounded sorted run."""
+
+    def __init__(self, storage: StorageAdapter, root: RunRef | None) -> None:
+        self._storage = storage
+        self._root = root
+
+    def __iter__(self) -> Iterator[PrecedenceEvidence]:
+        if self._root is None:
+            return iter(())
+        return self._iterate()
+
+    def _iterate(self) -> Iterator[PrecedenceEvidence]:
+        assert self._root is not None
+        with iter_run(self._storage, self._root) as rows:
+            for row in rows:
+                yield PrecedenceEvidence.model_validate(row["evidence"])
+
+
 def _pit_take_key_edges(
     row_key: str,
     edge_key: str | None,
     edge_group: Iterator[Mapping[str, Any]] | None,
-) -> tuple[PrecedenceEvidence, ...]:
-    """Consume only a matching edge group, preserving sorted-key fail-closed behavior."""
+    *,
+    storage: StorageAdapter,
+    run_params: PitRunParams,
+) -> Iterable[PrecedenceEvidence]:
+    """Spool only a matching edge group; preserve order and sorted-key fail-closed behavior."""
     if edge_key is not None and edge_key < row_key:
         raise CatalogIntegrityError(
             "a mapped edge references an observation_key with no corresponding "
@@ -1461,7 +1483,23 @@ def _pit_take_key_edges(
         return ()
     if edge_group is None:  # pragma: no cover - groupby always supplies a matching iterator
         raise CatalogIntegrityError("a mapped edge group is missing its sorted rows")
-    return tuple(PrecedenceEvidence.model_validate(item["evidence"]) for item in edge_group)
+    with RunSetBuilder(
+        storage,
+        key=_pit_edge_sort_key,
+        capacity=run_params.edge_batch_rows,
+        merge_fanout=run_params.merge_fanout,
+        limits=run_params.limits,
+    ) as builder:
+        for item in edge_group:
+            evidence = PrecedenceEvidence.model_validate(item["evidence"])
+            builder.add(
+                {
+                    "observation_key": evidence.observation_key,
+                    "evidence": evidence.model_dump(mode="json"),
+                }
+            )
+        root = builder.finish()
+    return _PitEdgeEvidenceRun(storage, root)
 
 
 def _pit_assert_no_unmatched_edge_groups(
@@ -1869,10 +1907,12 @@ def _pit_bounded_stream(
                     row_key,
                     pending_edge_key,
                     pending_edge_group,
+                    storage=storage,
+                    run_params=params,
                 )
                 if pending_edge_key == row_key:
-                    # Keep only the next group's iterator. Materializing it here overlaps the
-                    # current key's graph evidence with the next key's raw edge rows.
+                    # The matching group is sealed before advancing; retain only the next
+                    # group's iterator, not its raw edge rows.
                     pending_edge_key, pending_edge_group = next(edge_iter, (None, None))
 
                 available = _EffectiveAvailabilityView(key_rows, bound=bound_assumption)

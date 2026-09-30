@@ -14,6 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from typing import Any
@@ -149,20 +150,138 @@ def test_pit_edge_groups_are_lazy_and_unmatched_keys_fail_closed(h: RestHarness)
         yield raw
 
     # No edge for this row: the next sorted group's contents stay untouched.
-    assert selector_module._pit_take_key_edges("a", "b", future_group()) == ()
+    assert (
+        list(
+            selector_module._pit_take_key_edges(
+                "a", "b", future_group(), storage=h.storage, run_params=TINY_PARAMS
+            )
+        )
+        == []
+    )
     assert consumed == []
 
     # At the matching row key, consume and validate the whole group in deterministic order.
-    assert selector_module._pit_take_key_edges("b", "b", iter((raw,))) == (evidence,)
+    assert list(
+        selector_module._pit_take_key_edges(
+            "b", "b", iter((raw,)), storage=h.storage, run_params=TINY_PARAMS
+        )
+    ) == [evidence]
 
     # A mapped group that sorts before the current row proves that a row key was missed.
     with pytest.raises(CatalogIntegrityError, match="no corresponding Canonical rows"):
-        selector_module._pit_take_key_edges("c", "b", future_group())
+        selector_module._pit_take_key_edges(
+            "c", "b", future_group(), storage=h.storage, run_params=TINY_PARAMS
+        )
     assert consumed == []
 
     # An edge group left after the last row is rejected, even though it was not materialized.
     with pytest.raises(CatalogIntegrityError, match="no corresponding Canonical rows"):
         selector_module._pit_assert_no_unmatched_edge_groups("z", iter(()))
+
+
+def test_pit_edge_group_spools_large_key_replayably_and_closes_readers(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=K_E)
+    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    evidence = next(item for group in legacy.edges.values() for item in group)
+    distinct = [
+        evidence.model_copy(
+            update={"revision_id": f"new-{i}", "superseded_revision_id": f"old-{i}"}
+        )
+        for i in range(7)
+    ]
+    source = [
+        distinct[4],
+        distinct[0],
+        distinct[6],
+        distinct[2],
+        distinct[1],
+        distinct[5],
+        distinct[3],
+    ]
+    source.extend((distinct[2], distinct[0]))
+    raw = [
+        {"observation_key": item.observation_key, "evidence": item.model_dump(mode="json")}
+        for item in source
+    ]
+    params = replace(TINY_PARAMS, edge_batch_rows=2)
+    opened = 0
+    closed = 0
+    original_iter_run = selector_module.iter_run
+
+    @contextmanager
+    def tracking_iter_run(storage: Any, root: RunRef) -> Iterator[Iterator[Any]]:
+        nonlocal opened, closed
+        opened += 1
+        try:
+            with original_iter_run(storage, root) as rows:
+                yield rows
+        finally:
+            closed += 1
+
+    monkeypatch.setattr(selector_module, "iter_run", tracking_iter_run)
+    edges = selector_module._pit_take_key_edges(
+        evidence.observation_key,
+        evidence.observation_key,
+        iter(raw),
+        storage=h.storage,
+        run_params=params,
+    )
+    expected = sorted(
+        source,
+        key=lambda item: selector_module._pit_edge_sort_key(
+            {"observation_key": item.observation_key, "evidence": item.model_dump(mode="json")}
+        ),
+    )
+
+    first_pass = list(edges)
+    second_pass = list(edges)
+    assert first_pass == expected
+    assert second_pass == expected
+    assert len(first_pass) == len(source)
+    assert first_pass.count(distinct[0]) == 2
+    assert opened == closed == 2
+
+    partial = iter(edges)
+    next(partial)
+    assert opened == 3 and closed == 2
+    partial.close()  # type: ignore[attr-defined]
+    assert opened == closed == 3
+
+
+def test_pit_edge_group_spool_failure_clears_writer_state(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _chain(h)
+    spec = _spec(h, cutoff=K_E)
+    legacy = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, START, END)
+    evidence = next(item for group in legacy.edges.values() for item in group)
+    raw = {
+        "observation_key": evidence.observation_key,
+        "evidence": evidence.model_dump(mode="json"),
+    }
+    builders = _capture_run_set_builders(monkeypatch)
+
+    def fail_write(*args: Any, **kwargs: Any) -> Any:
+        del args, kwargs
+        raise OSError("simulated edge run write failure")
+
+    monkeypatch.setattr(runs_module, "write_sorted_run", fail_write)
+    with pytest.raises(OSError, match="simulated edge run write failure"):
+        selector_module._pit_take_key_edges(
+            evidence.observation_key,
+            evidence.observation_key,
+            iter((raw,)),
+            storage=h.storage,
+            run_params=replace(TINY_PARAMS, edge_batch_rows=1),
+        )
+
+    [builder] = builders
+    assert builder._closed
+    assert builder._rows == []
+    assert builder._refs._levels == []
 
 
 def test_bounded_canonical_proof_rejects_adjacent_duplicate_revision_ids(
@@ -213,7 +332,12 @@ def test_pit_evaluation_yields_high_cardinality_timeline_incrementally(
 
     monkeypatch.setattr(selector_module, "_heads", alternating_heads)
     selections = selector_module._evaluate(
-        "key", records, (), spec, available, head_fn=alternating_heads  # type: ignore[arg-type]
+        "key",
+        records,
+        (),
+        spec,
+        available,
+        head_fn=alternating_heads,  # type: ignore[arg-type]
     )
 
     assert calls == 0
@@ -757,9 +881,7 @@ def test_iter_bounded_spills_and_emits_every_conflict_head_without_a_tuple(
     assert not hasattr(record.selection, "maximal_heads")
     assert [item.ordinal for item in emitted] == list(range(5))
     assert all(item.head_count == 5 for item in emitted)
-    assert [item.revision_id for item in emitted] == sorted(
-        item.revision_id for item in emitted
-    )
+    assert [item.revision_id for item in emitted] == sorted(item.revision_id for item in emitted)
 
 
 # =========================================================================================
