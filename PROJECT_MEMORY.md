@@ -21,7 +21,7 @@
 - ADR-0094（2026-09-30）：PIT v3 完整冲突 heads 使用有界、可重放 evidence stream；v2 tuple 与 2.3/2.4 manifest replay 不变，E1 容量门仍需单独通过。
 - ADR-0095（2026-09-29，原隔离分支编号 ADR-0093）：生产 Worker 由部署方显式受信 Runtime Factory 组合；host 单任务轮询，信号在当前任务结果/ack 后停止，重启交给 supervisor。
 - ADR-0096（2026-09-30）：TrialLedger 完全相同的 hypothesis 登记与同一 reevaluation attempt 可作为只读幂等确认，在 gate 关闭时返回 `False`；不写 journal、不增加 trial。LLM-origin 检查先于 fast path，新内容和新 attempt 仍须通过 gate。
-- ADR-0097（2026-09-30）：PIT bounded graph 使用调用级 SQLite scratch index，复用显式配置的 scratch root；v2 replay 与 ADR-0094 v3 conflict stream 不变。实现、长链 / 重复 cutoff 诊断和完整 E1-CAP-1 容量门仍开放。
+- ADR-0097（2026-09-30）：PIT bounded graph 使用调用级 SQLite scratch index，复用显式配置的 scratch root；v2 replay 与 ADR-0094 v3 conflict stream 不变。显式 scratch 接线已在整合线；reader/index 初始化失败清理修复 `2f98461` 已三方独立批准并合入。SQLite 图索引实现、长链 / 重复 cutoff 诊断和完整 E1-CAP-1 容量门仍开放。
 - 2026-09-28 底层代码补全轮次完成：契约升至 2.4.0（ADR-0077 / 0088，additive）；ADR-0076～0088 均 Accepted 并实现（ADR-0080 权威解析仍 BLOCKED）；全部代码未经测试，下一步为统一调试
 
 ## 2. Current Architecture

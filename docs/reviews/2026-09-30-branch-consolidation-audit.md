@@ -10,7 +10,7 @@ This is a consolidation line, not a release or Phase acceptance. It has not been
 
 The initial audit found 57 local branch refs, 70 worktrees, 15 detached worktrees, and 370 `refs/archive/*` refs. Creating the consolidation branch and worktree brings the audited snapshot to **58 local branch refs and 71 worktrees**. Of these worktrees, 56 are attached to a branch and 15 are detached. The four pre-existing dirty worktrees remain preserved; the consolidation worktree was clean after its merge commit and now contains the follow-up commits above.
 
-After the initial snapshot, four isolated branches were added: `codex/streaming-runs-iterable-fix` was independently approved and integrated by `2fa58c6`; the Dataset consumer candidates `codex/dataset-quality-v3-consumer-seam`, `codex/dataset-quality-legacy-row-bound`, and `codex/dataset-quality-v3-replay-guards` were reviewed in sequence, with only the final candidate integrated. The current repository topology is **62 local branch refs and 74 worktrees**. The appendix below intentionally remains the original 58-ref snapshot at consolidation creation; these later branches are recorded here rather than rewriting that baseline inventory.
+After the initial snapshot, five isolated branches were added: `codex/streaming-runs-iterable-fix` was independently approved and integrated by `2fa58c6`; the Dataset consumer candidates `codex/dataset-quality-v3-consumer-seam`, `codex/dataset-quality-legacy-row-bound`, and `codex/dataset-quality-v3-replay-guards` were reviewed in sequence, with only the final candidate integrated; `codex/canonical-scratch-integration-port` supplied the narrowly approved reader-cleanup commit `2f98461`. The current repository topology is **63 local branch refs and 75 worktrees** (60 branch-attached, 15 detached). The appendix below intentionally remains the original 58-ref snapshot at consolidation creation; these later branches are recorded here rather than rewriting that baseline inventory.
 
 The initial dirty worktrees were:
 
@@ -31,6 +31,7 @@ The 370 archived refs are historical evidence, not active integration inputs. 29
 - `codex/w1-independent-integration@da0071e` was merged once in `4eeea33`. W1 code and module wiring were composed with E1 semantics; overlapping trees were not replayed a second time.
 - The `codex/pit-conflict-current-version-tests@7d733c5` 2.5.0 compatibility patch had no remaining source delta when applied to the E1 candidate: DTO, OpenAPI/Web type, legacy/current fixture and version-test content were already represented in the candidate tree. Its historical acceptance evidence remains in project records, but was not rerun on the consolidation tree.
 - `codex/canonical-position-bounds@991b126` is a separately approved source for explicit canonical scratch ownership. The consolidation merge carries the compatible explicit scratch-path threading through Normalizer, PIT, Dataset, Quality and tools. Its branch is retained for provenance; it was not merged wholesale.
+- `codex/canonical-scratch-integration-port@4397fd2` contributed only the `_positions()` index-init failure cleanup and direct regression test. Three independent reviewers approved it; the new test passed independently in all three review runs. It was cherry-picked as `2f98461`; the branch remains as provenance.
 
 ### Preserved for focused follow-up; not yet integrated
 
@@ -128,7 +129,7 @@ main e584187
 
 ## Next sequence
 
-1. Review and selectively port the root W1 dirty delta and E1's 15-path dirty candidate; keep source worktrees untouched.
-2. Reconcile the three differing paths in the dirty PIT hardening copy and compare approved canonical scratch branch behavior with the merged implementation.
-3. Only after this branch is stable, proceed in order: foundational contracts/framework → foundational bounded code → module implementation → cross-module consumers → regression and independent acceptance.
-4. Run the relevant regression and full-process E1-CAP-1 on this exact consolidation HEAD before reporting any acceptance. Do not infer acceptance from branch-local runs.
+1. Implement ADR-0097's caller-owned SQLite graph scratch index on an isolated branch; preserve current graph invariants, complete ADR-0094 heads stream, v2 replay, explicit path ownership, and orphan-marker rules.
+2. Independently review and test that PIT slice; measure long-chain and repeated-cutoff query cost. Then proceed to Quality rule identity/input-table binding and remaining active bounded-path gaps.
+3. Reconcile the root W1 dirty delta and E1's 15-path dirty candidate file by file; keep source worktrees untouched. The three differing paths in the dirty PIT hardening copy remain a separate comparison.
+4. After the active code slices are integrated, run relevant regressions and full-process E1-CAP-1 on the exact consolidation HEAD. Do not infer acceptance from branch-local runs.
