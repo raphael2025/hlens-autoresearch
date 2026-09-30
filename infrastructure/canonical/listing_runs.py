@@ -45,6 +45,29 @@ def _fixed_detail(message: str) -> Callable[[int], str]:
     return lambda _count: message
 
 
+def _deliver_finding(
+    finding_sink: Callable[[str, str, Any, Iterable[str], Callable[[int], str]], None],
+    code: str,
+    symbol: str,
+    instant: Any,
+    revision_ids: Iterable[str],
+    detail_for_count: Callable[[int], str],
+) -> int:
+    """Require synchronous sinks to consume every evidence ID before returning."""
+    state = {"count": 0, "exhausted": False}
+
+    def guarded_ids() -> Iterator[str]:
+        for revision_id in revision_ids:
+            state["count"] += 1
+            yield revision_id
+        state["exhausted"] = True
+
+    finding_sink(code, symbol, instant, guarded_ids(), detail_for_count)
+    if not state["exhausted"]:
+        raise CatalogIntegrityError("listing finding sink did not consume all revision IDs")
+    return state["count"]
+
+
 def listing_observations_run(
     raw_rows: RunRef | None,
     *,
@@ -214,8 +237,15 @@ def iter_planned_listing_revisions(
                         "order them; the chain stops here (fail closed)"
                     )
 
-                finding_sink(lr.FINDING_OBSERVATION_TIE, venue_symbol, instant, ids, tie_detail)
-                if not tie_state["exhausted"] or tie_state["count"] < 2:
+                consumed = _deliver_finding(
+                    finding_sink,
+                    lr.FINDING_OBSERVATION_TIE,
+                    venue_symbol,
+                    instant,
+                    ids,
+                    tie_detail,
+                )
+                if not tie_state["exhausted"] or tie_state["count"] < 2 or consumed < 2:
                     raise CatalogIntegrityError("listing finding sink did not consume tied IDs")
                 stopped = True
                 break
@@ -235,7 +265,8 @@ def iter_planned_listing_revisions(
                     }[code]
                     + "; no inference, universe fails closed until the next resolved observation"
                 )
-                finding_sink(
+                _deliver_finding(
+                    finding_sink,
                     code,
                     venue_symbol,
                     instant,
@@ -255,7 +286,8 @@ def iter_planned_listing_revisions(
                         f"{venue_symbol} observed {observation.status} at {instant.isoformat()} "
                         "before any TRADING observation: no episode exists yet"
                     )
-                    finding_sink(
+                    _deliver_finding(
+                        finding_sink,
                         lr.FINDING_SUSPENDED_BEFORE_TRADING,
                         venue_symbol,
                         instant,

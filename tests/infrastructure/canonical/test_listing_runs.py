@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -13,6 +14,7 @@ from infrastructure.canonical.listing_runs import (
     iter_planned_listing_revisions,
     listing_observations_run,
 )
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.revision.exchange_info_store import ExchangeInfoRowVerifier
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.streaming.runs import RunLimits, iter_run
@@ -262,3 +264,120 @@ def test_streaming_chain_spills_all_same_instant_tie_ids(h: Harness) -> None:
     finally:
         verifier.close()
         scratch.close()
+
+
+def _observation_row(revision_id: str, at: datetime, status: str) -> dict[str, Any]:
+    return {
+        "venue_symbol": "BTCUSDT",
+        "snapshot_revision_id": revision_id,
+        "requested_at": T1 - timedelta(minutes=1),
+        "retrieved_at": at,
+        "raw_knowledge_time": at,
+        "status": status,
+        "base_asset": "BTC",
+        "quote_asset": "USDT",
+    }
+
+
+def test_streaming_chain_rotation_payload_matches_legacy() -> None:
+    statuses = ("TRADING", "HALT", "TRADING", "UNKNOWN", "TRADING", "HALT")
+    rows = [
+        _observation_row(f"rotation-{index}", T1 + timedelta(seconds=index), status)
+        for index, status in enumerate(statuses)
+    ]
+    observations = [
+        lr.Observation(
+            venue_symbol=row["venue_symbol"],
+            snapshot_revision_id=row["snapshot_revision_id"],
+            requested_at=row["requested_at"],
+            retrieved_at=row["retrieved_at"],
+            raw_knowledge_time=row["raw_knowledge_time"],
+            status=row["status"],
+            base_asset=row["base_asset"],
+            quote_asset=row["quote_asset"],
+        )
+        for row in rows
+    ]
+    expected = lr.derive_chain("BTCUSDT", observations)
+    actual_findings: list[tuple[str, tuple[str, ...], str]] = []
+
+    def collect(
+        code: str,
+        symbol: str,
+        at: datetime,
+        ids: Iterable[str],
+        detail_for_count: Callable[[int], str],
+    ) -> None:
+        revision_ids = tuple(ids)
+        actual_findings.append((code, revision_ids, detail_for_count(len(revision_ids))))
+
+    actual = list(
+        iter_planned_listing_revisions(
+            rows,
+            max_record_bytes=16384,
+            finding_sink=collect,
+        )
+    )
+    assert [
+        lr.listing_columns(plan, arrival_seq=0, knowledge_time=plan.observation.raw_knowledge_time)
+        for plan in actual
+    ] == [
+        lr.listing_columns(plan, arrival_seq=0, knowledge_time=plan.observation.raw_knowledge_time)
+        for plan in expected.revisions
+    ]
+    assert actual_findings == [
+        (finding.code, finding.snapshot_revision_ids, finding.detail)
+        for finding in expected.findings
+    ]
+
+
+def test_streaming_chain_rejects_sink_that_drops_singleton_finding_ids() -> None:
+    row = _observation_row("missing-symbol", T1, "TRADING")
+    row["status"] = None
+
+    def ignore_ids(
+        code: str,
+        symbol: str,
+        at: datetime,
+        ids: Iterable[str],
+        detail_for_count: Callable[[int], str],
+    ) -> None:
+        return None
+
+    with pytest.raises(CatalogIntegrityError, match="did not consume all revision IDs"):
+        list(
+            iter_planned_listing_revisions(
+                [row],
+                max_record_bytes=16384,
+                finding_sink=ignore_ids,
+            )
+        )
+
+
+def test_streaming_chain_emits_later_tie_ids_and_stops_chain() -> None:
+    rows = [
+        _observation_row("start", T1, "TRADING"),
+        _observation_row("tie-a", T1 + timedelta(seconds=1), "HALT"),
+        _observation_row("tie-b", T1 + timedelta(seconds=1), "TRADING"),
+        _observation_row("after-tie", T1 + timedelta(seconds=2), "HALT"),
+    ]
+    findings: list[tuple[str, tuple[str, ...]]] = []
+
+    def collect(
+        code: str,
+        symbol: str,
+        at: datetime,
+        ids: Iterable[str],
+        detail_for_count: Callable[[int], str],
+    ) -> None:
+        findings.append((code, tuple(ids)))
+
+    plans = list(
+        iter_planned_listing_revisions(
+            rows,
+            max_record_bytes=16384,
+            finding_sink=collect,
+        )
+    )
+    assert [plan.observation.snapshot_revision_id for plan in plans] == ["start"]
+    assert findings == [(lr.FINDING_OBSERVATION_TIE, ("tie-a", "tie-b"))]
