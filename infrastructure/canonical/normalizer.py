@@ -1105,10 +1105,12 @@ class CanonicalNormalizer:
                         missing = True
                         wanted = next(rows, None)
                         wanted_index = None if wanted is None else wanted["batch_index"]
-                    if missing:
-                        raise CatalogIntegrityError(
-                            f"{channel.canonical.table}: requested batch snapshot is missing"
-                        )
+                # A request above the walk position is missing even when a later request completes
+                # the run; never drop it silently.
+                if missing:
+                    raise CatalogIntegrityError(
+                        f"{channel.canonical.table}: requested batch snapshot is missing"
+                    )
             yield from spool
         finally:
             spool.close()
