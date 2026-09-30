@@ -1,22 +1,8 @@
-"""ADR-0077 B2: the two additive v3 evidence manifest / selection chunk tables.
+"""ADR-0077 B2 tables retain their append order and frozen definition hashes.
 
-Appended after the frozen fifteen (C3+D3B+E2+QG-1+DS-1, see ``test_phase1_tables``): the sixteenth
-table is ``research.dataset_evidence_manifests`` and the seventeenth is
-``research.dataset_selection_chunks`` (ADR-0077 §7 / §4.1). Both table names, schemas, partition
-specs and field-ID assignments are frozen by this batch (§6.2.5); Codex / Raphael review this
-before the definitions are treated as accepted.
-
-**Golden hash OPEN**: unlike the sibling batches' golden tests, this file does not pin
-``definition_hash`` / layout-sha256 / arrow-schema-sha256 literals for the two new tables. This
-batch ran no Python (the wave's hard constraint — WSL memory cap, see ``b-wave-common.md``), so no
-real SHA-256 could be computed; hand-writing one would be a fabricated value indistinguishable from
-a real regression if wrong. Once Codex / the reviewer actually runs ``uv run pytest`` against this
-module (which self-checks its field-ID assignment against ``assign_fresh_schema_ids`` on import,
-see ``infrastructure/catalog/phase1_tables.py::_definition``) the resulting hashes should be pinned
-into ``tests/infrastructure/catalog/test_phase1_tables.py``'s ``ALL_GOLDEN`` (and the two tables
-added to ``PHASE1_TABLE_NAMES`` there) exactly like every earlier additive batch. This file instead
-proves everything that does not require a pre-known hash: structural shape, doc coverage, physical
-types, partitioning, and that all fifteen earlier tables' *already-pinned* goldens are untouched.
+The two B2 tables follow the fifteen C3/D3B/E2/QG-1/DS-1 tables. The ADR-0093 quality manifest is
+appended after them. All eighteen definitions have pinned schema goldens in
+``test_phase1_tables``; this file verifies B2 placement and hash preservation.
 """
 
 from __future__ import annotations
@@ -56,6 +42,7 @@ from infrastructure.catalog.phase1_tables import (
     PHASE1_TABLE_PROPERTIES,
 )
 from tests.infrastructure.catalog.test_phase1_tables import (
+    B2_GOLDEN,
     DS_GOLDEN,
     E2_GOLDEN,
     GOLDEN,
@@ -88,12 +75,13 @@ EARLIER_GOLDEN = {**GOLDEN, **REST_GOLDEN, **E2_GOLDEN, **QG_GOLDEN, **DS_GOLDEN
 # --------------------------------------------------------------------------- registry placement
 
 
-def test_b2_tables_are_appended_last_without_disturbing_the_earlier_fifteen() -> None:
+def test_b2_tables_keep_their_append_order_before_the_quality_manifest() -> None:
     tables = tuple(item.table for item in PHASE1_TABLES)
-    assert len(tables) == 17
-    assert tables[15:] == B2_TABLES
+    assert len(tables) == 18
+    assert tables[15:17] == B2_TABLES
+    assert tables[17:] == ("quality.data_quality_report_manifests",)
     assert tables[:15] == tuple(EARLIER_GOLDEN)
-    assert len(PHASE1_REGISTRY) == 17
+    assert len(PHASE1_REGISTRY) == 18
     for name in B2_TABLES:
         definition = by_table(name)
         assert definition.definition_id == name
@@ -102,6 +90,7 @@ def test_b2_tables_are_appended_last_without_disturbing_the_earlier_fifteen() ->
         assert dict(definition.properties) == dict(PHASE1_TABLE_PROPERTIES)
         assert PHASE1_REGISTRY.resolve(definition.binding) is definition
         assert _TABLE_NAME_RE.fullmatch(name), name
+        assert definition.definition_hash == B2_GOLDEN[name][0]
 
 
 def test_earlier_fifteen_goldens_are_unchanged_by_b2() -> None:
@@ -283,6 +272,8 @@ def test_manifest_table_snapshot_bindings_struct_matches_v2_shape() -> None:
     v2_elem = DATASET_MANIFESTS.schema.find_type("snapshot_bindings")
     v3_elem = DATASET_EVIDENCE_MANIFESTS.schema.find_type("snapshot_bindings")
     assert isinstance(v2_elem, ListType) and isinstance(v3_elem, ListType)
+    assert isinstance(v2_elem.element_type, StructType)
+    assert isinstance(v3_elem.element_type, StructType)
     v2_names = [f.name for f in v2_elem.element_type.fields]
     v3_names = [f.name for f in v3_elem.element_type.fields]
     assert v2_names == v3_names == ["table", "snapshot_id"]
@@ -408,6 +399,8 @@ def test_b2_layout_hash_is_stable_within_this_process() -> None:
     leaking into the hashed document)."""
     for definition in (DATASET_EVIDENCE_MANIFESTS, DATASET_SELECTION_CHUNKS):
         text = "\n".join(layout_lines(definition.schema))
-        assert sha256_text(text) == sha256_text(text) == hashlib.sha256(
-            text.encode("utf-8")
-        ).hexdigest()
+        assert (
+            sha256_text(text)
+            == sha256_text(text)
+            == hashlib.sha256(text.encode("utf-8")).hexdigest()
+        )

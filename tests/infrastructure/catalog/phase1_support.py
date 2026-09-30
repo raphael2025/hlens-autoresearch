@@ -1,5 +1,5 @@
-"""Test-only rows and evolution targets for the seventeen Phase 1 production tables
-(C3/D3B/E2/QG-1/DS-1).
+"""Test-only rows and evolution targets for the eighteen Phase 1 production tables
+(C3/D3B/E2/QG-1/DS-1/B2/QR-1).
 
 Rows are built from **validated contract objects** (``RevisionRecord``, ``ListingRevision``,
 ``ResearchDatasetManifest``, ``CollectedObject`` …) so the tests show that the physical columns
@@ -62,6 +62,7 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_BARS_1M,
     CANONICAL_INSTRUMENT_LISTINGS,
     CANONICAL_TRADES,
+    DATA_QUALITY_REPORT_MANIFESTS,
     DATA_QUALITY_REPORTS,
     DATASET_EVIDENCE_MANIFESTS,
     DATASET_MANIFESTS,
@@ -963,6 +964,39 @@ def quality_evidence_gap_row(
     }
 
 
+def quality_report_manifest_row(tag: str = "a", **_: Any) -> dict[str, Any]:
+    """One minimal ``quality.data_quality_report_manifests`` row (ADR-0093)."""
+    day = datetime(2024, 12, 31, tzinfo=UTC)
+    stream_ref = {
+        "format_id": "hlens.quality.report-jsonl@1.0.0",
+        "record_count": 1,
+        "leaf_count": 1,
+        "depth": 0,
+        "root_key": f"quality/reports/{tag}/root.jsonl",
+        "root_sha256": sha(f"quality-report-{tag}"),
+        "root_size": 128,
+    }
+    return {
+        "report_id": f"qr-{tag}",
+        "quality_rule_id": "hlens.quality.canonical-partition",
+        "quality_rule_version": "3.0.0",
+        "quality_rule_hash": sha("hlens.quality.canonical-partition@3.0.0"),
+        "subject_table": "canonical.bars_1m",
+        "subject_snapshot_id": "4242",
+        "subject_symbol": "BTCUSDT",
+        "subject_start": day,
+        "subject_end": day + timedelta(days=1),
+        "knowledge_time": day + timedelta(days=601),
+        "snapshot_bindings": [
+            {"table": "canonical.bars_1m", "snapshot_id": "4242"},
+            {"table": "raw.binance_spot_klines_1m", "snapshot_id": "4241"},
+        ],
+        "events": dict(stream_ref),
+        "event_revisions": dict(stream_ref),
+        "evidence_gaps": dict(stream_ref),
+    }
+
+
 def dataset_selection_row(
     tag: str = "a", *, symbol: str = "BTCUSDT", start: datetime = T0
 ) -> dict[str, Any]:
@@ -1040,6 +1074,7 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
     CANONICAL_BARS_1M.table: bar_row,
     CANONICAL_INSTRUMENT_LISTINGS.table: listing_row,
     DATA_QUALITY_REPORTS.table: quality_row,
+    DATA_QUALITY_REPORT_MANIFESTS.table: quality_report_manifest_row,
     DATASET_MANIFESTS.table: manifest_row,
     BINANCE_SPOT_REST_RESPONSES.table: rest_response_row,
     BINANCE_SPOT_REST_AGG_TRADES.table: rest_agg_trade_row,
