@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from dataclasses import FrozenInstanceError
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -423,6 +424,10 @@ def test_evidence_gap_projection_round_trips_read_only_records_through_stream_wr
         gaps=[("canonical.trades", "rev-b", "missing source"), ("raw.trades", "rev-a", "no proof")],
     ) as projected:
         assert projected.record_count == 2
+        with pytest.raises(FrozenInstanceError):
+            projected.record_count = 99  # type: ignore[misc]
+        with pytest.raises(FrozenInstanceError):
+            projected.records = iter(())  # type: ignore[misc]
         records = list(projected.records)
         with pytest.raises(TypeError):
             records[0]["gap"] = "tampered"  # type: ignore[index]

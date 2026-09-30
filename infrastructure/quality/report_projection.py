@@ -182,17 +182,22 @@ class ProjectedCanonicalEvent:
 
 
 @dataclass(slots=True)
+class _EvidenceGapProjectionCompletion:
+    complete: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ProjectedCanonicalEvidenceGaps:
     """One bounded gap iterator with expected count and explicit delivery completion state."""
 
     record_count: int
     records: Iterator[Mapping[str, Any]]
-    _complete: bool = False
+    _completion: _EvidenceGapProjectionCompletion
 
     @property
     def complete(self) -> bool:
         """Whether the entire output iterator was consumed and the context exited normally."""
-        return self._complete
+        return self._completion.complete
 
 
 def _positive_int(name: str, value: object, *, minimum: int = 0) -> int:
@@ -772,6 +777,7 @@ class CanonicalPartitionV3EvidenceGapProjector:
                         projection = ProjectedCanonicalEvidenceGaps(
                             record_count=record_count,
                             records=_CountedGapIterator(),
+                            _completion=_EvidenceGapProjectionCompletion(),
                         )
                         yield projection
                     except BaseException:
@@ -797,7 +803,7 @@ class CanonicalPartitionV3EvidenceGapProjector:
                     else:
                         self._next_gap_ordinal = event_ordinal + record_count
                         assert projection is not None
-                        projection._complete = True
+                        projection._completion.complete = True
         except BaseException:
             self._failed = True
             raise
