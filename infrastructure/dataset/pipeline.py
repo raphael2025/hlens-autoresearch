@@ -28,13 +28,13 @@ from infrastructure.dataset.quality import (
     BoundedQualityEvidenceFactory,
     BoundedQualitySourceParams,
 )
+from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.dataset.sources import (
     UniverseRunParams,
     dataset_evidence_sources,
 )
 from infrastructure.pit.selector import PitRunParams
 from infrastructure.revision.store import RevisionCatalog
-from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 
 
 __all__ = ["DatasetBuildPipeline"]
