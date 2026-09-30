@@ -3,7 +3,7 @@
 跨 Plane DTO、JSON Schema 导出与 Provider 接口（05-plugin.md、02-domain.md §3）；Provider 接口按 ADR-0017 的节奏交付。所有 Schema 带 schema_version。
 
 `registry.py` 的 `CONTRACT_MODELS` 是"所有核心实体都有契约与 Schema 导出"的唯一来源：
-当前 146 个模型导出到 `schemas/` 顶层；`schemas/v1/` 是 v1 只读快照，导出不会写入其中。
+当前 148 个模型导出到 `schemas/` 顶层（契约 `CONTRACT_SCHEMA_VERSION = 2.5.0`）；`schemas/v1/` 是 v1 只读快照，导出不会写入其中。
 
 `revision.py`（Phase 1 B1，ADR-0023）：双时间、availability / precedence 绑定、append-only revision DAG、
 PIT 输入与 maximal-head 结果形状的 8 个契约（见 02-domain.md §2.2）。只有契约与不变量，不含 PIT 选择算法或存储。

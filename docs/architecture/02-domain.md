@@ -440,9 +440,9 @@ provider-agnostic contract suite 在 `tests/contract_suites/event.py`。**诚实
 取反**不是**验证负对照）、`peak_equity` 的提供（回测 / 执行层，风控不得自己记忆峰值）、`drawdown_control` 在
 `equity` / `peak_equity` 缺失时 fail closed、P7 `temporal` 要求两个输入的 `bar_spec` 都非空且相同、合成效应的生成
 （跳幅由种子确定性生成）与波动率缩放屏障的计算（入场时可见的波动率特征值；同一 bar 同时触碰两个屏障沿用 triple barrier
-的保守判定）都属后续实现批次，契约层不能证明。`SyntheticMarket.truth` 的类型本批次未放宽（仍为 `PlantedEffect`）。
+的保守判定）都属后续实现批次，契约层不能证明（其中 P7 `temporal` 的执行 Provider 已由 ADR-0100 实现：`plugins/events/p7_temporal.py`，默认关闭，未测试）。`SyntheticMarket.truth` 的类型本批次未放宽（仍为 `PlantedEffect`）。
 `UniverseMember.assumption` 的版本 / 哈希是否等于已登记的 ADR-0051 政策、成员区间是否真由该假设推出、`UniverseBuilt.assumed`
-（infrastructure DTO）均属 ADR-0051 第二期。
+（infrastructure DTO）均属 ADR-0051 第二期（已实现于 `infrastructure/universe/`、`infrastructure/dataset/`，政策 1.1.0 已填入；未测试）。
 
 ### 2.12 契约 2.5.0 的有界 PIT 冲突证据（[ADR-0094](../adr/0094-bounded-pit-conflict-head-evidence.md)）
 
