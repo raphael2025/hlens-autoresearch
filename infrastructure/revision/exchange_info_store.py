@@ -293,6 +293,7 @@ class ExchangeInfoRowVerifier:
 
     def __init__(self, catalog: RevisionCatalog, storage: StorageAdapter, origin: str) -> None:
         self._catalog = catalog
+        self._storage = storage
         self._reader = snapshot_reader(storage, origin)
         self._proven: dict[str, Mapping[str, Any]] = {}
 
@@ -495,6 +496,16 @@ class ExchangeInfoRowVerifier:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
                 raise ValueError(f"{name} must be an integer >= {minimum}")
+        if scratch_storage is self._storage:
+            raise ValueError("scratch_storage must be a distinct adapter and storage namespace")
+        for attribute in ("warehouse_uri", "staging_uri"):
+            source_uri = getattr(self._storage, attribute, None)
+            scratch_uri = getattr(scratch_storage, attribute, None)
+            if isinstance(source_uri, str) and source_uri == scratch_uri:
+                raise ValueError(
+                    f"scratch_storage {attribute} must differ from evidence storage; "
+                    "namespace isolation remains a caller precondition"
+                )
 
         def pair_key(row: Mapping[str, Any]) -> tuple[str, int]:
             return (row["sort_key"][0], row["sort_key"][1])
@@ -518,6 +529,11 @@ class ExchangeInfoRowVerifier:
                 raise CatalogIntegrityError("Raw snapshot lookup returned a different head")
             history_count = 0
             for snapshot in history_from(self._catalog, EXCHANGE_INFO_TABLE, head):
+                expected_total_rows = head_info.total_rows - history_count
+                if snapshot.total_rows != expected_total_rows:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE} snapshot history has inconsistent total_rows"
+                    )
                 match = (
                     None if snapshot.batch_id is None else _BATCH_RE.fullmatch(snapshot.batch_id)
                 )
@@ -633,9 +649,8 @@ class ExchangeInfoRowVerifier:
 
     @staticmethod
     def _check_bounded_row(row: Mapping[str, Any], maximum: int) -> None:
-        """Conservatively count JSON-safe row bytes in chunks before any full serialization."""
+        """Count canonical JSONL bytes exactly without encoding any whole string or row."""
         size = 0
-        pending: list[Any] = [row]
 
         def add(amount: int) -> None:
             nonlocal size
@@ -643,8 +658,7 @@ class ExchangeInfoRowVerifier:
             if size > maximum:
                 raise CatalogIntegrityError(f"snapshot row exceeds max_record_bytes={maximum}")
 
-        def text_size(value: str) -> None:
-            add(2)
+        def text_body_size(value: str) -> None:
             for offset in range(0, len(value), 128):
                 try:
                     escaped = json.dumps(value[offset : offset + 128], ensure_ascii=False)[1:-1]
@@ -652,28 +666,61 @@ class ExchangeInfoRowVerifier:
                 except UnicodeEncodeError as exc:
                     raise CatalogIntegrityError("snapshot row contains invalid UTF-8 text") from exc
 
-        while pending:
-            value = pending.pop()
+        def visit(value: Any) -> None:
             if isinstance(value, str):
-                text_size(value)
+                add(2)
+                text_body_size(value)
             elif isinstance(value, Mapping):
-                add(2 + max(0, len(value) - 1) + len(value))
-                for key, item in value.items():
-                    if not isinstance(key, str):
-                        raise CatalogIntegrityError("snapshot row has a non-text key")
-                    text_size(key)
-                    pending.append(item)
+                if len(value) > maximum // 3:
+                    raise CatalogIntegrityError(f"snapshot row exceeds max_record_bytes={maximum}")
+                keys = list(value)
+                if any(not isinstance(key, str) for key in keys):
+                    raise CatalogIntegrityError("snapshot row has a non-text key")
+                keys.sort()
+                add(1)
+                for index, key in enumerate(keys):
+                    if index:
+                        add(1)
+                    add(2)
+                    text_body_size(key)
+                    add(1)
+                    try:
+                        item = value[key]
+                    except Exception as exc:
+                        raise CatalogIntegrityError(
+                            "snapshot row mapping changed during sizing"
+                        ) from exc
+                    visit(item)
+                add(1)
             elif isinstance(value, list | tuple):
-                add(2 + max(0, len(value) - 1))
-                pending.extend(value)
-            elif value is None or isinstance(value, bool):
-                add(4 if value is True else 5)
-            elif isinstance(value, int | float):
-                add(len(json.dumps(value, allow_nan=False).encode("ascii")))
-            elif isinstance(value, datetime):
-                text_size(value.isoformat())
-            else:
+                add(2)
+                for index, item in enumerate(value):
+                    if index:
+                        add(1)
+                    visit(item)
+            elif value is None:
+                add(4)
+            elif isinstance(value, bool):
+                add(4 if value else 5)
+            elif isinstance(value, int):
                 add(len(str(value)))
+            elif isinstance(value, float):
+                try:
+                    add(len(json.dumps(value, allow_nan=False).encode("ascii")))
+                except (TypeError, ValueError) as exc:
+                    raise CatalogIntegrityError(
+                        "snapshot row contains an invalid JSON number"
+                    ) from exc
+            elif isinstance(value, datetime):
+                add(2)
+                text_body_size(value.isoformat())
+            else:
+                raise CatalogIntegrityError(
+                    f"snapshot row contains unsupported value {type(value).__name__}"
+                )
+
+        visit(row)
+        add(1)  # JSONL LF
 
     def _scan(self, head: str | None) -> list[Mapping[str, Any]]:
         columns = tuple(field.name for field in BINANCE_SPOT_EXCHANGE_INFO.arrow_schema)

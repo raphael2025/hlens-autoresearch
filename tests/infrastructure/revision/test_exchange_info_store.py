@@ -14,6 +14,7 @@ from typing import Any
 import pytest
 
 from core.contracts.catalog import CommitRequest
+from core.domain.base import canonical_json
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.collector.binance_exchange_info import ExchangeInfoRequest
 from infrastructure.revision.exchange_info_availability import (
@@ -176,7 +177,7 @@ def test_bounded_raw_table_proof_checks_each_snapshot_batch_fingerprint(h: Harne
                 else:
                     yield snapshot
 
-    verifier._catalog = WrongFingerprintCatalog()  # type: ignore[assignment]
+    verifier._catalog = WrongFingerprintCatalog()
     try:
         with pytest.raises(CatalogIntegrityError, match="other content"):
             verifier.verify_table_bounded(
@@ -187,6 +188,139 @@ def test_bounded_raw_table_proof_checks_each_snapshot_batch_fingerprint(h: Harne
                 limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
                 max_record_bytes=4096,
             )
+    finally:
+        verifier.close()
+        scratch.close()
+
+
+def test_bounded_raw_table_proof_rejects_inconsistent_history_metadata(h: Harness) -> None:
+    h.observe("snap-1", TRADING, T1)
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "scratch-warehouse").as_uri(),
+        (h.tmp_path / "scratch-stage").as_uri(),
+    )
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+
+    class WrongHistoryCatalog:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(h.adapter, name)
+
+        def history(self, table: str, snapshot_id: str) -> Any:
+            for snapshot in h.adapter.history(table, snapshot_id):
+                if table == TABLE:
+                    yield snapshot.model_copy(update={"total_rows": snapshot.total_rows + 1})
+                else:
+                    yield snapshot
+
+    verifier._catalog = WrongHistoryCatalog()
+    try:
+        with pytest.raises(CatalogIntegrityError, match="inconsistent total_rows"):
+            verifier.verify_table_bounded(
+                h.head(TABLE),
+                scratch_storage=scratch,
+                capacity=1,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+                max_record_bytes=4096,
+            )
+    finally:
+        verifier.close()
+        scratch.close()
+
+
+def test_bounded_raw_table_proof_closes_catalog_reader_after_iteration_error(h: Harness) -> None:
+    h.observe("snap-1", TRADING, T1)
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "scratch-warehouse").as_uri(),
+        (h.tmp_path / "scratch-stage").as_uri(),
+    )
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+    opened: list[Any] = []
+
+    class FailingReader:
+        def __init__(self, inner: Any) -> None:
+            self.inner = inner
+            self.closed = False
+
+        def __iter__(self) -> Any:
+            iterator = iter(self.inner)
+            yield next(iterator)
+            raise RuntimeError("injected reader failure")
+
+        def close(self) -> None:
+            self.closed = True
+            self.inner.close()
+
+    class FailingCatalog:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(h.adapter, name)
+
+        def scan_column_batches(self, *args: Any, **kwargs: Any) -> Any:
+            reader = FailingReader(h.adapter.scan_column_batches(*args, **kwargs))
+            opened.append(reader)
+            return reader
+
+    verifier._catalog = FailingCatalog()
+    try:
+        with pytest.raises(RuntimeError, match="injected reader failure"):
+            verifier.verify_table_bounded(
+                h.head(TABLE),
+                scratch_storage=scratch,
+                capacity=1,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+                max_record_bytes=4096,
+            )
+        assert len(opened) == 1 and opened[0].closed
+    finally:
+        verifier.close()
+        scratch.close()
+
+
+def test_bounded_raw_row_byte_cap_is_exact_for_unicode_and_escaped_text() -> None:
+    for row in ({"label": "雪"}, {"label": 'quote" line\n slash\\'}):
+        exact = len(canonical_json(row).encode("utf-8")) + 1
+        ExchangeInfoRowVerifier._check_bounded_row(row, exact)
+        with pytest.raises(CatalogIntegrityError, match="max_record_bytes"):
+            ExchangeInfoRowVerifier._check_bounded_row(row, exact - 1)
+
+
+def test_bounded_raw_table_proof_rejects_shared_evidence_storage(h: Harness) -> None:
+    h.observe("snap-1", TRADING, T1)
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+    try:
+        with pytest.raises(ValueError, match="distinct adapter"):
+            verifier.verify_table_bounded(
+                h.head(TABLE),
+                scratch_storage=h.storage,
+                capacity=1,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+                max_record_bytes=4096,
+            )
+    finally:
+        verifier.close()
+
+
+def test_bounded_raw_table_proof_empty_head_has_no_run(h: Harness) -> None:
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "scratch-warehouse").as_uri(),
+        (h.tmp_path / "scratch-stage").as_uri(),
+    )
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+    try:
+        assert (
+            verifier.verify_table_bounded(
+                None,
+                scratch_storage=scratch,
+                capacity=1,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+                max_record_bytes=4096,
+            )
+            is None
+        )
+        assert not list((h.tmp_path / "scratch-warehouse").rglob("*.jsonl"))
     finally:
         verifier.close()
         scratch.close()
