@@ -1477,23 +1477,28 @@ def test_a_lawful_competing_response_still_yields_the_finding(h: RestHarness) ->
 @dataclass
 class _ScanHook(ProxyCatalog):
     """Runs ``hook`` right after each lineage lookup (response scan by ``revision_id``) that
-    follows an element-table scan — i.e. between the element read and the closing head check."""
+    follows an element-table scan — i.e. between the element read and the closing head check.
+
+    E1 bounding: the element read and the lineage lookup both stream through
+    ``scan_column_batches`` (no ``scan_columns`` is left on this path). A streamed reader is
+    pinned to its snapshot when it opens, so a commit made by ``hook`` right after opening is
+    never seen by that read — exactly as after the old whole-table read. The first
+    ``revision_id`` response scan after an element read is the verifier's lineage lookup; the
+    store's own two-row readback of a response precedes the page's element reads."""
 
     hook: Any = None
     lineage_scans: int = 0
     armed: bool = False
 
     def scan_columns(self, table: str, **kwargs: Any) -> Any:
-        result = self.inner.scan_columns(table, **kwargs)
+        raise AssertionError(f"{table}: a REST store / verifier read must stream")
+
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Any:
+        result = self.inner.scan_column_batches(table, **kwargs)
         text = repr(kwargs.get("row_filter"))
         if table == AGGS.table and "observation_key" in text:
             self.armed = True
-        elif (
-            table == RESPONSES.table
-            and self.armed
-            and "revision_id" in text
-            and kwargs.get("limit") is None
-        ):
+        elif table == RESPONSES.table and self.armed and "revision_id" in text:
             self.armed = False
             self.lineage_scans += 1
             if self.hook is not None:
