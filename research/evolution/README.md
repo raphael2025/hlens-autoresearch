@@ -8,7 +8,7 @@ Phase 12 Strategy Evolution（[ADR-0045](../../docs/adr/0045-strategy-evolution.
 | `operators.py` | `mutate`（只在声明的搜索空间内移动参数）、`combine`（参数 / 重叠搜索空间 / risk policy / 适用标的冲突即按 ADR-0069 拒绝）、`require_new_version`（拒绝就地修改 ACTIVE）、`retire`（追加式 `RetirementRecord`） |
 | `lineage.py` | `LineageGraph`：祖先 / 后代 / 缺失祖先；可选持久（哈希链只追加日志） |
 | `proposals.py` | 替换提案：`propose_replacement`、`ReplacementProposal`、`ProposalLedger`（单写者锁、可选外部锚点 `ProposalAnchor`） |
-| `replacement_job.py` | 替换提案作业 `propose_replacements`（循环之外；见下） |
+| `replacement_job.py` | 替换提案作业 `propose_replacements`（默认在循环之外；可选循环内触发见下） |
 
 后代是新版本、从 `IDEA` 重新进入生命周期并重新验证；父代不变。循环中的调度见 `research/loop/evolution.py`。
 
@@ -31,8 +31,14 @@ Phase 12 Strategy Evolution（[ADR-0045](../../docs/adr/0045-strategy-evolution.
 
 ## 替换提案作业（2026-09-26，CODE_COMPLETE / DEBUG_PENDING）
 
-`replacement_job.py`：`propose_replacements(...)`，由调用方显式运行的**研究作业**，不在持续循环内。原因：循环的生命周期护栏最多到 `OOS`
-（`OOS → PAPER` 需人工批准），循环里的后代永远不会是 `PAPER` / `PRODUCTION_CANDIDATE`，没有循环内触发点；循环保持不变（记录与指纹逐字节不变）。
+`replacement_job.py`：`propose_replacements(...)`，由调用方显式运行的**研究作业**，默认不在持续循环内。原因：循环的生命周期护栏最多到 `OOS`
+（`OOS → PAPER` 需人工批准），循环自身永远不会把后代推到 `PAPER` / `PRODUCTION_CANDIDATE`。
+
+**可选循环内触发**（ADR-0100 第 7 项，2026-09-30，默认关闭）：`research/loop/replacement.py` 可在循环轮次内调用同一作业——
+只在显式 `enabled=True` 时、只对人工已推进到 `PAPER` / `PRODUCTION_CANDIDATE` 的候选、只基于独立且预登记、循环从未开封的密封窗口上的证据；
+每次触发先登记为 trial，窗口开封写入循环的开封账本（单次使用，后代不得复用）。本作业为此只新增可选参数 `extra_evidence`
+（默认空，逐字节不变）：附加的溯源引用按序追加在已核验的 `validation_report:<hash>` 之后。提案仍恒为 `PENDING_HUMAN_APPROVAL`，不晋升任何对象。
+详见 `research/loop/README.md`「循环内替换提案触发」。
 
 - 输入全部来自循环之外：`Incumbent(spec, history)`（生产侧声明，`ACTIVE` / `DEGRADED`，否则构造即拒绝）、
   `ReplacementCandidate(spec, history, report_hashes)`（人工 Promotion 路径记录的生命周期 + 支撑它的报告哈希）、报告解析器

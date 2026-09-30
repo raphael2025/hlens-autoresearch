@@ -76,6 +76,14 @@ byte-identical to before), so a directory opened with verification is refused wh
 plain LLM or none — the reviewed drafts it holds would otherwise be taken unverified — and a
 directory opened without it is refused when reopened with it. ``compose_durable`` checks the
 recorded header against its ``llm`` as well (a caller composing an ``open_state`` directly).
+
+Replacement proposal trigger (ADR-0100 item 7, 2026-09-30): ``LoopWiring.replacement_trigger`` is
+``None`` by default, and a ``research.loop.replacement.ReplacementTrigger`` is composed only with
+``enabled=True`` (it then needs an ``EvolutionPlan``: the evolution stage becomes a
+``ReplacementTriggerStage`` under the same stage name). Only an enabled trigger is fingerprinted
+(``replacement_trigger``: its payload, every pre-registered window included), so every other
+fingerprint, record and directory stays byte-identical, and a directory opened with a trigger is
+refused when reopened without it, with other windows, or the other way round.
 """
 
 from __future__ import annotations
@@ -130,6 +138,11 @@ from research.loop.durable import (
 )
 from research.loop.llm_content import ContentVerifiedLLM
 from research.loop.memory import ResearchMemory
+from research.loop.replacement import (
+    ReplacementTrigger,
+    ReplacementTriggerStage,
+    check_independent_of_profile,
+)
 from research.loop.retry_admission import RetryManifestItem
 from research.loop.stages import (
     EvolutionPlan,
@@ -220,6 +233,11 @@ class LoopWiring:
     #: round by the hypothesis stage, the query / result hashes recorded as the origin of the
     #: hypotheses it yields; the provider identity and the query are fingerprinted.
     knowledge_source: KnowledgeSource | None = None
+    #: ``None`` (the default): no in-loop replacement proposal, every record and fingerprint
+    #: byte-identical. A ``ReplacementTrigger`` with ``enabled=True`` (and an ``evolution`` plan):
+    #: the evolution stage also runs the trigger in its due rounds (``research.loop.replacement``);
+    #: fingerprinted. ``enabled=False`` composes and fingerprints nothing (the same as ``None``).
+    replacement_trigger: ReplacementTrigger | None = None
 
 
 class LoopSettings(Protocol):
@@ -379,6 +397,19 @@ def compose_loop(
     evolution: tuple[LoopStage, ...] = (
         () if wiring.evolution is None else (EvolutionStage(memory, wiring.evolution),)
     )
+    trigger = _enabled_trigger(config)
+    if trigger is not None:
+        assert wiring.evolution is not None  # _enabled_trigger refuses a trigger without one
+        evolution = (
+            ReplacementTriggerStage(
+                EvolutionStage(memory, wiring.evolution),
+                memory,
+                trigger,
+                loop_id=config.loop_id,
+                family_id=config.family_id,
+                profile=config.profile,
+            ),
+        )
     stages: tuple[LoopStage, ...] = (
         ingest,
         StateStage(
@@ -755,6 +786,28 @@ def _check_llm_content_mode(state: DurableState, llm: LLMProvider | None) -> Non
         )
 
 
+def _enabled_trigger(config: LoopSettings) -> ReplacementTrigger | None:
+    """The replacement trigger when it is explicitly enabled, else ``None`` (default off).
+
+    Also run by ``settings_fingerprint``, i.e. before a state directory's header is written: an
+    enabled trigger without an ``EvolutionPlan``, or with a window overlapping the Profile's own
+    sealed OOS window, is refused before anything touches the directory."""
+    wiring = config.wiring
+    trigger = wiring.replacement_trigger
+    if trigger is None:
+        return None
+    if not isinstance(trigger, ReplacementTrigger):
+        raise TypeError("replacement_trigger must be a ReplacementTrigger")
+    if not trigger.enabled:
+        return None
+    if wiring.evolution is None:
+        raise ValueError(
+            "the replacement trigger runs in the evolution stage: it needs an EvolutionPlan"
+        )
+    check_independent_of_profile(trigger, config.profile)
+    return trigger
+
+
 def _unseal_payload(budget: OosUnsealBudget | None) -> dict[str, Any] | None:
     """The budget as fingerprinted; the TEST-ONLY ``ephemeral_unseal_for_tests`` flag appears
     only when set (so every durable fingerprint stays as it was)."""
@@ -804,7 +857,8 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
     The opt-in ``ConditionalPlan`` appears only when set (``conditional``: its payload), so every
     fingerprint of a configuration without one stays exactly as it was; so does the opt-in
     ``HypothesisBatch`` (``hypothesis_batch``: its payload) and the opt-in ``KnowledgeSource``
-    (``knowledge_source``: provider identity and query hash)."""
+    (``knowledge_source``: provider identity and query hash), and an enabled
+    ``ReplacementTrigger`` (``replacement_trigger``: its payload, module docs)."""
     wiring = config.wiring
     opt_in: dict[str, Any] = (
         {} if wiring.conditional is None else {"conditional": wiring.conditional.payload()}
@@ -813,6 +867,9 @@ def settings_fingerprint(config: LoopSettings) -> dict[str, Any]:
         opt_in["hypothesis_batch"] = wiring.hypothesis_batch.payload()
     if wiring.knowledge_source is not None:
         opt_in["knowledge_source"] = wiring.knowledge_source.payload()
+    trigger = _enabled_trigger(config)
+    if trigger is not None:  # ADR-0100 item 7: the windows' pre-registration is in the header
+        opt_in["replacement_trigger"] = trigger.payload()
     return {
         "loop_id": config.loop_id,
         "seed": config.seed,

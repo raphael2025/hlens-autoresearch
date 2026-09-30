@@ -40,19 +40,37 @@ Write gate (ADR-0073 admission lease review, 2026-09-28): a loop state directory
 refused before writing while the state does not accept writes. The backing journal is never handed
 out (its ``append`` would bypass the gate and the replayed state): cross-file checks read
 ``journal_head()`` or ``journal_snapshot()``.
+
+Pre-registered replacement windows (ADR-0100 item 7, 2026-09-30; additive, journal format 2): the
+research loop's optional replacement proposal trigger (``research.loop.replacement``) may only
+evaluate on an **independent** sealed window — not the Profile's window above — that was
+**pre-registered** (``RegisteredSealedWindow``: an id, fixed UTC bounds, who registered it and
+when; the registration must not be after the window's first instant, so nobody saw its data when
+it was declared) and that has **never been opened**. Opening one is recorded in the same unsealing
+ledger as a ``replacement_window_opened`` line (``WindowOpening``: window id, registration hash,
+the subject it was opened for, the trial that counts it, the loop and round); a window opens
+**once**, for one subject, and is never reusable — not by the same subject, not by its
+descendants, not by any other subject (``SealedWindowAlreadyOpened``). Openings do **not** count
+against the Profile window's unsealing budget (``count()`` stays the number of family unsealings):
+each replacement window is its own single-use budget. Journal format: format 1 is the ``unseal`` /
+``mark_evaluated`` lines (unchanged bytes); format 2 adds ``replacement_window_opened``, whose
+payload carries ``"format_version": 2``. A format-1 reader refuses the new line type (fail
+closed); a ledger without openings is byte-identical to before.
 """
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+import re
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
 from threading import RLock
-from typing import Protocol
+from typing import Any, Final, Protocol
 
 from core.contracts.profile_selection import OosUnsealing
 from core.contracts.validation_profile import ValidationProfile
+from core.domain.base import content_hash
 from research.persistence import (
     AppendOnlyJournal,
     JournalCorrupted,
@@ -65,10 +83,15 @@ from research.validation.gates import sourced_parameter
 from research.validation.splits import LabeledSpan, midnight_utc
 
 __all__ = [
+    "REPLACEMENT_WINDOW_OPENED",
+    "UNSEALING_LEDGER_FORMAT",
     "DurableUnsealingLedger",
     "InMemoryUnsealingLedger",
     "OosAlreadyUnsealed",
     "OosBudgetExhausted",
+    "RegisteredSealedWindow",
+    "SealedWindowAlreadyOpened",
+    "WindowOpening",
     "SealedOosAlreadyEvaluated",
     "SealedOosLocked",
     "SealedEvaluation",
@@ -94,6 +117,36 @@ class SealedOosAlreadyEvaluated(Exception):
     """The family's single sealed OOS evaluation has already been handed out."""
 
 
+class SealedWindowAlreadyOpened(Exception):
+    """A pre-registered replacement window was opened before (single use; module docs)."""
+
+
+#: Unsealing ledger journal format (module docs, **Pre-registered replacement windows**).
+UNSEALING_LEDGER_FORMAT: Final = 2
+#: The format-2 line type of one replacement window opening.
+REPLACEMENT_WINDOW_OPENED: Final = "replacement_window_opened"
+_WINDOW_ID: Final = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,127}$")
+_OPENING_FIELDS: Final = frozenset(
+    {
+        "format_version",
+        "window_id",
+        "registration_hash",
+        "subject",
+        "subject_hash",
+        "trial",
+        "trial_hash",
+        "loop_id",
+        "round_index",
+    }
+)
+
+
+def _aware(value: datetime, name: str) -> datetime:
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError(f"{name} must be a timezone-aware (UTC) datetime")
+    return value.astimezone(UTC)
+
+
 @dataclass(frozen=True)
 class SealedWindow:
     start: datetime
@@ -110,6 +163,135 @@ class SealedWindow:
 
     def contains(self, span: LabeledSpan) -> bool:
         return self.start <= span.start and span.end <= self.end
+
+
+@dataclass(frozen=True)
+class RegisteredSealedWindow:
+    """An independent sealed evaluation window, pre-registered (module docs).
+
+    ``start`` / ``end`` are fixed UTC instants (``[start, end)``); ``registered_at`` must not be
+    after ``start`` (the window's data did not exist when it was declared); ``registered_by`` is
+    the declaring human. ``registration_hash`` covers the whole registration.
+    """
+
+    window_id: str
+    start: datetime
+    end: datetime
+    registered_by: str
+    registered_at: datetime
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.window_id, str) or _WINDOW_ID.fullmatch(self.window_id) is None:
+            raise ValueError(
+                "window_id must be 1-128 chars of [a-z0-9_.-], starting with a letter or digit"
+            )
+        for name in ("start", "end", "registered_at"):
+            object.__setattr__(self, name, _aware(getattr(self, name), name))
+        if self.end <= self.start:
+            raise ValueError(f"window {self.window_id!r} must end after it starts")
+        if self.registered_at > self.start:
+            raise ValueError(
+                f"window {self.window_id!r} was registered at {self.registered_at.isoformat()}, "
+                f"after it started ({self.start.isoformat()}): a pre-registered window is "
+                "declared before any of its data exists"
+            )
+        if not isinstance(self.registered_by, str) or not self.registered_by.strip():
+            raise ValueError("a registered window needs a non-empty registered_by")
+
+    @property
+    def window(self) -> SealedWindow:
+        return SealedWindow(start=self.start, end=self.end)
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "window_id": self.window_id,
+            "start": self.start.isoformat(),
+            "end": self.end.isoformat(),
+            "registered_by": self.registered_by,
+            "registered_at": self.registered_at.isoformat(),
+        }
+
+    def registration_hash(self) -> str:
+        return content_hash({"kind": "registered_sealed_window", **self.payload()})
+
+    def overlaps(self, start: datetime, end: datetime) -> bool:
+        """``[start, end)`` shares an instant with this window."""
+        return start < self.end and self.start < end
+
+    def same_bounds(self, window: SealedWindow) -> bool:
+        return (window.start, window.end) == (self.start, self.end)
+
+
+@dataclass(frozen=True)
+class WindowOpening:
+    """One opening of a pre-registered replacement window (module docs; the ledger's format-2
+    ``replacement_window_opened`` line). ``opening_hash`` covers the whole payload."""
+
+    window_id: str
+    registration_hash: str
+    subject: str
+    subject_hash: str
+    trial: str
+    trial_hash: str
+    loop_id: str
+    round_index: int
+
+    def __post_init__(self) -> None:
+        for name in (
+            "window_id",
+            "registration_hash",
+            "subject",
+            "subject_hash",
+            "trial",
+            "trial_hash",
+            "loop_id",
+        ):
+            value = getattr(self, name)
+            if not isinstance(value, str) or not value.strip():
+                raise ValueError(f"a window opening needs a non-empty {name}")
+        if (
+            isinstance(self.round_index, bool)
+            or not isinstance(self.round_index, int)
+            or self.round_index < 0
+        ):
+            raise ValueError("round_index must be a non-negative int")
+
+    def payload(self) -> dict[str, Any]:
+        return {
+            "format_version": UNSEALING_LEDGER_FORMAT,
+            "window_id": self.window_id,
+            "registration_hash": self.registration_hash,
+            "subject": self.subject,
+            "subject_hash": self.subject_hash,
+            "trial": self.trial,
+            "trial_hash": self.trial_hash,
+            "loop_id": self.loop_id,
+            "round_index": self.round_index,
+        }
+
+    def opening_hash(self) -> str:
+        return content_hash({"kind": REPLACEMENT_WINDOW_OPENED, **self.payload()})
+
+    @classmethod
+    def from_payload(cls, payload: Mapping[str, Any]) -> WindowOpening:
+        """Rebuild one recorded opening; any other shape or format is refused (``ValueError``)."""
+        if set(payload) != _OPENING_FIELDS:
+            raise ValueError("a window opening has exactly the recorded fields")
+        if payload["format_version"] != UNSEALING_LEDGER_FORMAT:
+            raise ValueError(f"unknown window opening format {payload['format_version']!r}")
+        opening = cls(
+            window_id=payload["window_id"],
+            registration_hash=payload["registration_hash"],
+            subject=payload["subject"],
+            subject_hash=payload["subject_hash"],
+            trial=payload["trial"],
+            trial_hash=payload["trial_hash"],
+            loop_id=payload["loop_id"],
+            round_index=payload["round_index"],
+        )
+        if opening.payload() != dict(payload):
+            raise ValueError("the window opening does not round-trip")
+        return opening
 
 
 class UnsealingLedger(Protocol):
@@ -132,6 +314,7 @@ class InMemoryUnsealingLedger:
     def __init__(self) -> None:
         self._records: dict[str, OosUnsealing] = {}
         self._evaluated: set[str] = set()
+        self._openings: dict[str, WindowOpening] = {}
 
     def get(self, family_id: str) -> OosUnsealing | None:
         return self._records.get(family_id)
@@ -140,6 +323,21 @@ class InMemoryUnsealingLedger:
         if family_id in self._records:
             raise OosAlreadyUnsealed(f"family {family_id!r} has already been unsealed")
         self._records[family_id] = unsealing
+
+    def window_opening(self, window_id: str) -> WindowOpening | None:
+        return self._openings.get(window_id)
+
+    def window_openings(self) -> tuple[WindowOpening, ...]:
+        return tuple(self._openings.values())
+
+    def open_window(self, opening: WindowOpening) -> None:
+        """Record a replacement window's single opening (module docs)."""
+        known = self._openings.get(opening.window_id)
+        if known is not None:
+            raise SealedWindowAlreadyOpened(
+                f"window {opening.window_id!r} was already opened for {known.subject}"
+            )
+        self._openings[opening.window_id] = opening
 
     def count(self) -> int:
         return len(self._records)
@@ -172,6 +370,7 @@ class DurableUnsealingLedger:
         self._gate: WriteGate | None = None
         self._records: dict[str, OosUnsealing] = {}
         self._evaluated: set[str] = set()
+        self._openings: dict[str, WindowOpening] = {}
         for entry in self._journal.entries:
             if entry.type == "unseal":
                 family_id = entry.payload["family_id"]
@@ -192,6 +391,18 @@ class DurableUnsealingLedger:
                         f"{path}: family {family_id!r} was marked evaluated twice"
                     )
                 self._evaluated.add(family_id)
+            elif entry.type == REPLACEMENT_WINDOW_OPENED:  # format 2 (module docs)
+                try:
+                    opening = WindowOpening.from_payload(entry.payload)
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise JournalCorrupted(
+                        f"{path}:{entry.seq} is not a valid replacement window opening: {exc}"
+                    ) from exc
+                if opening.window_id in self._openings:
+                    raise JournalCorrupted(
+                        f"{path}: window {opening.window_id!r} was opened twice in the journal"
+                    )
+                self._openings[opening.window_id] = opening
             else:
                 raise JournalCorrupted(f"{path}: unknown record type {entry.type!r}")
 
@@ -245,6 +456,26 @@ class DurableUnsealingLedger:
 
     def is_evaluated(self, family_id: str) -> bool:
         return family_id in self._evaluated
+
+    def window_opening(self, window_id: str) -> WindowOpening | None:
+        return self._openings.get(window_id)
+
+    def window_openings(self) -> tuple[WindowOpening, ...]:
+        return tuple(self._openings.values())
+
+    def open_window(self, opening: WindowOpening) -> None:
+        """Journal a replacement window's single opening (module docs), inside the write gate."""
+        with (
+            gate_scope(self._gate, f"opening the replacement window {opening.window_id!r}"),
+            self._lock,
+        ):
+            known = self._openings.get(opening.window_id)
+            if known is not None:
+                raise SealedWindowAlreadyOpened(
+                    f"window {opening.window_id!r} was already opened for {known.subject}"
+                )
+            self._journal.append(REPLACEMENT_WINDOW_OPENED, opening.payload())
+            self._openings[opening.window_id] = opening
 
 
 class SealedEvaluation:

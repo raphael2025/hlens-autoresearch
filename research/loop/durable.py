@@ -12,6 +12,7 @@ continues exactly where it stopped:
                        ``between_rounds`` checkpoint per human approval made between rounds
 ``trial_ledger.jsonl`` ``TrialLedger(path)`` — registrations and pre-registered re-evaluations
 ``sealed_oos.jsonl``   ``DurableUnsealingLedger`` — the sealed-OOS unsealings and evaluations
+                       (journal format 2 adds the opt-in replacement windows' openings)
 ``lineage.jsonl``      ``LineageGraph(path=...)`` — every strategy spec the loop evolved from / into
 ``reviews.jsonl``      ``ReviewQueue(path)`` — LLM drafts, human approvals, drafts taken
 ``failures.jsonl``     ``FailureRegistry`` — FailureRecords (append-only, fsync'd, not chained)
@@ -65,7 +66,11 @@ round's record **before** the audit records it. The checkpoint line holds
    with the recorded spec hash; every ``human_review:<who>`` evidence has that human's approval of
    that draft in the review queue, taken; every unsealed / consumed sealed-OOS report has the
    family's unsealing by the same approver, marked evaluated; every failure record hash the audit
-   lists is in the failure registry;
+   lists is in the failure registry; with the opt-in replacement trigger (ADR-0100 item 7,
+   ``research.loop.replacement``), every trigger row's trial is in the trial ledger with its
+   content hash, every row's window opening is the unsealing ledger's opening of that window, and
+   every opening the ledger holds is named by a row of its round's completed ``evolution`` stage
+   (a round whose ``evolution`` stage failed after the opening keeps the window consumed);
 7. after the loop replayed the audit into its guard: every lifecycle subject is a registered
    hypothesis (v4: also checked by ``open_state`` itself, on a pure replay of every audited
    transition through a fresh guard of the loop actor, before any admission recovery write);
@@ -290,6 +295,7 @@ from research.hypotheses.typed_plan_audit import (
     RoundStartedIdentity,
 )
 from research.loop.memory import REVIEW_APPROVED, ResearchMemory, ReviewApproval, ReviewQueue
+from research.loop.replacement import trigger_rows
 from research.loop.retry_admission import (
     RETRY_DIR,
     RETRY_STATE_VERSION,
@@ -320,7 +326,7 @@ from research.persistence import (
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import StrategyCandidate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
-from research.validation.sealed_oos import DurableUnsealingLedger
+from research.validation.sealed_oos import DurableUnsealingLedger, WindowOpening
 
 __all__ = [
     "ANCHOR_HEAD",
@@ -3778,6 +3784,13 @@ def _check_ledgers(memory: ResearchMemory, records: Sequence[LoopRecord]) -> Non
     lineage = {str(spec.ref): spec for spec in memory.lineage}
     approvals = {a.key: a for a in memory.reviews.approvals}
     failures = set(_failure_hashes(memory.failures.records()))
+    oos = memory.oos_ledger
+    openings = (
+        {o.window_id: o for o in oos.window_openings()}
+        if isinstance(oos, DurableUnsealingLedger)
+        else {}
+    )
+    named: set[str] = set()
 
     def registered(ref: str, attempt: str | None, index: int) -> Hypothesis:
         hypothesis = hypotheses.get(ref)
@@ -3808,6 +3821,20 @@ def _check_ledgers(memory: ResearchMemory, records: Sequence[LoopRecord]) -> Non
                 or row["parent"] not in lineage
             ):
                 raise _refuse(f"audit round {index} evolved {row['child']}, not in the lineage")
+        for row in trigger_rows(stage):  # opt-in replacement trigger (ADR-0100 item 7) only
+            trial = registered(row["trial"]["hypothesis"], None, index)
+            if trial.content_hash() != row["trial"]["hypothesis_hash"]:
+                raise _refuse(f"audit round {index} triggered another {row['trial']['hypothesis']}")
+            opening = row.get("window_opening")
+            if opening is None:
+                continue
+            recorded = openings.get(str(opening["window_id"]))
+            if recorded is None or recorded.payload() != opening:
+                raise _refuse(
+                    f"audit round {index} opened the replacement window "
+                    f"{opening['window_id']!r}, but the unsealing ledger does not hold that opening"
+                )
+            named.add(recorded.window_id)
         stage = _summary(record, "experiment")
         for row in [] if stage is None else stage["experiments"]:
             conditional = row.get("conditional")  # opt-in ConditionalPlan rows only
@@ -3854,3 +3881,29 @@ def _check_ledgers(memory: ResearchMemory, records: Sequence[LoopRecord]) -> Non
                         f"audit round {index} registered {subject} on {evidence!r}, but the "
                         "review queue holds no such approval"
                     )
+    _check_window_openings(records, openings, named)
+
+
+def _check_window_openings(
+    records: Sequence[LoopRecord], openings: Mapping[str, WindowOpening], named: set[str]
+) -> None:
+    """Cross-check 6, replacement windows (ADR-0100 item 7): every opening the unsealing ledger
+    holds belongs to a recorded round and is named by a trigger row of that round's completed
+    ``evolution`` stage. The one exception is a round whose ``evolution`` stage did not complete
+    (it failed after the opening was journaled): its summary is lost, the window stays consumed
+    (fail safe: never reusable) and the failed stage is the audit's record of it."""
+    by_round = {record.round_index: record for record in records}
+    for window_id, opening in openings.items():
+        if window_id in named:
+            continue
+        record = by_round.get(opening.round_index)
+        stage = (
+            None
+            if record is None
+            else next((s for s in record.stages if s.name == "evolution"), None)
+        )
+        if stage is None or stage.status is StageStatus.COMPLETED:
+            raise _refuse(
+                f"the unsealing ledger holds an opening of the replacement window {window_id!r} "
+                f"(round {opening.round_index}) that no audit trigger row names"
+            )
