@@ -14,7 +14,9 @@ from core.domain.base import canonical_json
 from infrastructure.quality.report_projection import (
     CANONICAL_PARTITION_V3_RULE_HASH,
     CanonicalPartitionProjectionError,
+    CanonicalPartitionV3EvidenceGapProjector,
     CanonicalPartitionV3Projector,
+    ProjectedCanonicalEvidenceGaps,
 )
 from infrastructure.quality.report_streams import (
     QualityReportStreamLimits,
@@ -51,6 +53,22 @@ def projector(
         limits=limits(),
         max_event_record_bytes=max_event_record_bytes,
         max_revision_record_bytes=max_revision_record_bytes,
+    )
+
+
+def gap_projector(
+    storage: StorageAdapter,
+    *,
+    capacity: int = 3,
+    merge_fanout: int = 2,
+    max_gap_record_bytes: int = 4096,
+) -> CanonicalPartitionV3EvidenceGapProjector:
+    return CanonicalPartitionV3EvidenceGapProjector(
+        storage,
+        capacity=capacity,
+        merge_fanout=merge_fanout,
+        limits=limits(),
+        max_gap_record_bytes=max_gap_record_bytes,
     )
 
 
@@ -180,6 +198,328 @@ def test_projected_records_are_read_only_and_stream_writer_serializes_them(
         revisions = list(records)
     assert events[0]["detail"] == "competing heads"
     assert [record["revision_id"] for record in revisions] == ["rev-a", "rev-b"]
+
+
+def test_evidence_gaps_empty_stream_has_zero_records_and_round_trips(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    gaps = gap_projector(storage)
+    writer = QualityReportStreamWriter(
+        storage, "evidence_gaps", limits=QualityReportStreamLimits(3, 4096, 2)
+    )
+    with gaps.project_gaps(quality_report_id="report-empty", gaps=iter(())) as projected:
+        assert projected.record_count == 0
+        assert not projected.complete
+        assert list(projected.records) == []
+    assert projected.complete
+    assert gaps.next_gap_ordinal == 0
+    ref = writer.finish()
+    assert ref.record_count == 0
+    with iter_quality_report_stream(
+        storage, ref, limits=QualityReportStreamLimits(3, 4096, 2)
+    ) as records:
+        assert list(records) == []
+
+
+def test_evidence_gaps_sort_by_table_then_revision_with_unicode_identity(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    source = [
+        ("canonical.trades", "rev-z", "gap-z"),
+        ("canonical.bars_1m", "rev-é", "accent"),
+        ("canonical.bars_1m", "rev-e\u0301", "combining"),
+        ("canonical.bars_1m", "rev-a", "first"),
+        ("canonical.trades", "rev-a", "trade-first"),
+    ]
+    instance = gap_projector(storage, capacity=2)
+    with instance.project_gaps(quality_report_id="report-unicode", gaps=iter(source)) as projected:
+        assert projected.record_count == len(source)
+        records = list(projected.records)
+    assert records == [
+        {
+            "quality_report_id": "report-unicode",
+            "table": "canonical.bars_1m",
+            "revision_id": "rev-a",
+            "gap": "first",
+        },
+        {
+            "quality_report_id": "report-unicode",
+            "table": "canonical.bars_1m",
+            "revision_id": "rev-e\u0301",
+            "gap": "combining",
+        },
+        {
+            "quality_report_id": "report-unicode",
+            "table": "canonical.bars_1m",
+            "revision_id": "rev-é",
+            "gap": "accent",
+        },
+        {
+            "quality_report_id": "report-unicode",
+            "table": "canonical.trades",
+            "revision_id": "rev-a",
+            "gap": "trade-first",
+        },
+        {
+            "quality_report_id": "report-unicode",
+            "table": "canonical.trades",
+            "revision_id": "rev-z",
+            "gap": "gap-z",
+        },
+    ]
+    assert instance.next_gap_ordinal == len(source)
+
+
+@pytest.mark.parametrize("different_gap", [False, True])
+def test_evidence_gap_duplicate_identity_fails_closed(
+    storage: LocalFileStorageAdapter, different_gap: bool
+) -> None:
+    instance = gap_projector(storage, capacity=1)
+    gaps = [
+        ("canonical.trades", "rev-duplicate", "missing source"),
+        (
+            "canonical.trades",
+            "rev-duplicate",
+            "different reason" if different_gap else "missing source",
+        ),
+    ]
+    with pytest.raises(CanonicalPartitionProjectionError, match="duplicate evidence-gap identity"):
+        with instance.project_gaps(quality_report_id="report-dup", gaps=iter(gaps)):
+            pytest.fail("duplicate gap identity was accepted")
+    assert instance.next_gap_ordinal == 0
+
+
+def test_evidence_gap_record_limit_accepts_exact_line_and_rejects_one_byte_less(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    report_id = "report-é"
+    gap_row = {
+        "quality_report_id": report_id,
+        "table": "canonical.bars_1m",
+        "revision_id": "rev-é",
+        "gap": "missing public source 🕒",
+    }
+    line_size = len(canonical_json(gap_row).encode("utf-8")) + 1
+    with gap_projector(storage, max_gap_record_bytes=line_size).project_gaps(
+        quality_report_id=report_id,
+        gaps=[("canonical.bars_1m", "rev-é", "missing public source 🕒")],
+    ) as projected:
+        assert list(projected.records) == [gap_row]
+    with pytest.raises(CanonicalPartitionProjectionError, match="byte limit"):
+        with gap_projector(storage, max_gap_record_bytes=line_size - 1).project_gaps(
+            quality_report_id=report_id,
+            gaps=[("canonical.bars_1m", "rev-é", "missing public source 🕒")],
+        ):
+            pytest.fail("oversized evidence gap row was accepted")
+
+
+def test_evidence_gap_runset_envelope_limit_is_checked_before_storage_write(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    report_id = "report-envelope"
+    input_gap = ("canonical.trades", "rev-a", "gap")
+    projected_row = {
+        "quality_report_id": report_id,
+        "table": input_gap[0],
+        "revision_id": input_gap[1],
+        "gap": input_gap[2],
+    }
+    scratch_line_size = len(canonical_json({"$obj": projected_row}).encode("utf-8")) + 1
+    actual_stage = storage.stage
+    staged = 0
+
+    def tracked(*args: Any, **kwargs: Any) -> Any:
+        nonlocal staged
+        staged += 1
+        return actual_stage(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "stage", tracked)
+    exact_limits = RunLimits(
+        leaf_max_records=2,
+        leaf_max_bytes=512 + scratch_line_size,
+        fanout=2,
+    )
+    with CanonicalPartitionV3EvidenceGapProjector(
+        storage,
+        capacity=1,
+        merge_fanout=2,
+        limits=exact_limits,
+        max_gap_record_bytes=4096,
+    ).project_gaps(quality_report_id=report_id, gaps=[input_gap]) as projected:
+        assert list(projected.records) == [projected_row]
+    assert staged > 0
+
+    before_reject = staged
+    too_small_limits = RunLimits(
+        leaf_max_records=2,
+        leaf_max_bytes=512 + scratch_line_size - 1,
+        fanout=2,
+    )
+    with pytest.raises(CanonicalPartitionProjectionError, match="byte limit"):
+        with CanonicalPartitionV3EvidenceGapProjector(
+            storage,
+            capacity=1,
+            merge_fanout=2,
+            limits=too_small_limits,
+            max_gap_record_bytes=4096,
+        ).project_gaps(quality_report_id=report_id, gaps=[input_gap]):
+            pytest.fail("oversized scratch envelope was accepted")
+    assert staged == before_reject
+
+
+def test_evidence_gap_high_cardinality_is_ordered_across_multiple_run_levels(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    count = 257
+    source = (
+        ("canonical.trades" if index % 2 else "canonical.bars_1m", f"rev-{index:04d}", "gap")
+        for index in range(count - 1, -1, -1)
+    )
+    instance = gap_projector(storage, capacity=5, merge_fanout=2)
+    with instance.project_gaps(quality_report_id="report-large", gaps=source) as projected:
+        assert projected.record_count == count
+        previous: tuple[str, str] | None = None
+        seen = 0
+        for record in projected.records:
+            key = (record["table"], record["revision_id"])
+            assert previous is None or previous < key
+            previous = key
+            seen += 1
+        assert seen == count
+    assert projected.complete
+    assert instance.next_gap_ordinal == count
+
+
+def test_evidence_gap_oversized_text_is_rejected_before_storage_write(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual_stage = storage.stage
+    staged = 0
+
+    def tracked(*args: Any, **kwargs: Any) -> Any:
+        nonlocal staged
+        staged += 1
+        return actual_stage(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "stage", tracked)
+    with pytest.raises(CanonicalPartitionProjectionError, match="byte limit"):
+        with gap_projector(storage, max_gap_record_bytes=256).project_gaps(
+            quality_report_id="report-large-gap",
+            gaps=[("canonical.trades", "rev-a", "x" * 1_000_000)],
+        ):
+            pytest.fail("oversized gap text was accepted")
+    assert staged == 0
+
+
+def test_evidence_gap_projection_round_trips_read_only_records_through_stream_writer(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    writer = QualityReportStreamWriter(
+        storage, "evidence_gaps", limits=QualityReportStreamLimits(2, 4096, 2)
+    )
+    gaps = gap_projector(storage)
+    with gaps.project_gaps(
+        quality_report_id="report-roundtrip",
+        gaps=[("canonical.trades", "rev-b", "missing source"), ("raw.trades", "rev-a", "no proof")],
+    ) as projected:
+        assert projected.record_count == 2
+        records = list(projected.records)
+        with pytest.raises(TypeError):
+            records[0]["gap"] = "tampered"  # type: ignore[index]
+        for record in records:
+            assert set(record) == {"quality_report_id", "table", "revision_id", "gap"}
+            writer.append(record)
+    ref = writer.finish()
+    with iter_quality_report_stream(
+        storage, ref, limits=QualityReportStreamLimits(2, 4096, 2)
+    ) as decoded_records:
+        round_trip = list(decoded_records)
+    assert round_trip == [dict(record) for record in records_for_gap_stream()]
+
+
+def test_evidence_gap_early_close_releases_readers_and_does_not_advance_count(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual_open = storage.open_read
+    opened: list[Any] = []
+
+    def tracked(ref: Any) -> Any:
+        handle = actual_open(ref)
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(storage, "open_read", tracked)
+    instance = gap_projector(storage, capacity=2)
+    projected_gaps: ProjectedCanonicalEvidenceGaps | None = None
+    with pytest.raises(
+        CanonicalPartitionProjectionError, match="evidence-gap records were not fully consumed"
+    ):
+        with instance.project_gaps(
+            quality_report_id="report-early",
+            gaps=[("canonical.trades", f"rev-{index:03d}", "gap") for index in range(12)],
+        ) as projected:
+            projected_gaps = projected
+            next(projected.records)
+    assert opened
+    assert all(handle.closed for handle in opened)
+    assert instance.next_gap_ordinal == 0
+    assert projected_gaps is not None and not projected_gaps.complete
+
+
+def test_evidence_gap_exception_close_preserves_original_error_and_count(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual_open = storage.open_read
+    opened: list[Any] = []
+
+    def tracked(ref: Any) -> Any:
+        handle = actual_open(ref)
+        opened.append(handle)
+        return handle
+
+    monkeypatch.setattr(storage, "open_read", tracked)
+    instance = gap_projector(storage, capacity=2)
+    with pytest.raises(RuntimeError, match="caller aborted"):
+        with instance.project_gaps(
+            quality_report_id="report-abort",
+            gaps=[("canonical.trades", f"rev-{index:03d}", "gap") for index in range(12)],
+        ) as projected:
+            next(projected.records)
+            raise RuntimeError("caller aborted")
+    assert opened
+    assert all(handle.closed for handle in opened)
+    assert instance.next_gap_ordinal == 0
+
+
+@pytest.mark.parametrize("limit", [0, True])
+def test_evidence_gap_record_limit_requires_positive_integer(
+    storage: LocalFileStorageAdapter, limit: int | bool
+) -> None:
+    with pytest.raises(CanonicalPartitionProjectionError, match="max_gap_record_bytes"):
+        CanonicalPartitionV3EvidenceGapProjector(
+            storage,
+            capacity=2,
+            merge_fanout=2,
+            limits=limits(),
+            max_gap_record_bytes=limit,
+        )
+
+
+def records_for_gap_stream() -> list[dict[str, str]]:
+    return [
+        {
+            "quality_report_id": "report-roundtrip",
+            "table": "canonical.trades",
+            "revision_id": "rev-b",
+            "gap": "missing source",
+        },
+        {
+            "quality_report_id": "report-roundtrip",
+            "table": "raw.trades",
+            "revision_id": "rev-a",
+            "gap": "no proof",
+        },
+    ]
 
 
 def test_event_id_is_stable_for_different_input_orders(storage: LocalFileStorageAdapter) -> None:

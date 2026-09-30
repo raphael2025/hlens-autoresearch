@@ -5,6 +5,10 @@ versions keep their inline event shape and historical report/event hashes. Revis
 externally sorted and deduplicated through bounded content-addressed RunSets; no collection grows
 with the number of IDs.
 
+The evidence-gap projection in this module follows ADR-0031 identity ``(table, revision_id)`` and
+ADR-0093 record order. It is a separate ordered stream projection; legacy ``_GapWriter`` batches
+and their ``batch_index`` bookkeeping are untouched.
+
 The event ID is SHA-256 over the domain tag
 ``hlens.quality.canonical-partition@3.0.0/event-id/v1\\0``, followed by an unsigned 8-byte
 big-endian length and canonical UTF-8 JSON of the v3 rule identity plus every fixed event field,
@@ -40,6 +44,8 @@ __all__ = [
     "CANONICAL_PARTITION_V3_RULE_VERSION",
     "CanonicalPartitionProjectionError",
     "CanonicalPartitionV3Projector",
+    "CanonicalPartitionV3EvidenceGapProjector",
+    "ProjectedCanonicalEvidenceGaps",
     "ProjectedCanonicalEvent",
 ]
 
@@ -69,6 +75,25 @@ CANONICAL_PARTITION_V3_RULE_SPEC: Final[dict[str, Any]] = {
     "as a fixed record in the ordered evidence_gaps stream before the report manifest is "
     "committed; "
     "legacy v1/v2 report rows and hashes remain unchanged (ADR-0031 / ADR-0093)",
+    "evidence_gap_projection": {
+        "fields": ["quality_report_id", "table", "revision_id", "gap"],
+        "order": "lexicographic (table, revision_id) by Unicode code point; exact UTF-8 text is "
+        "preserved without normalization",
+        "identity": ["table", "revision_id"],
+        "duplicate_identity": "fail closed, including when the gap value differs",
+        "subject_binding": (
+            "subject symbol and start are fixed by the report manifest and are not repeated"
+        ),
+        "legacy_batch_index": "excluded from v3 stream records",
+        "record_projection": (
+            "canonical_json(record mapping) encoded as UTF-8 followed by one LF; no BOM"
+        ),
+        "empty_stream": "zero records; the ADR-0093 stream writer owns the empty-root encoding",
+        "max_gap_record_bytes": (
+            "positive caller input; canonical JSONL line includes LF; each scratch row must also "
+            "fit RunLimits.leaf_max_bytes minus the 512-byte header reserve"
+        ),
+    },
     "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of the rule hashes used "
     "(this set, the PIT rule, its required policies) and the bound snapshots>",
     "knowledge_time": "first commit's clock reading, reused by every replay",
@@ -154,6 +179,20 @@ class ProjectedCanonicalEvent:
 
     event_record: Mapping[str, Any]
     revision_records: Iterator[Mapping[str, Any]]
+
+
+@dataclass(slots=True)
+class ProjectedCanonicalEvidenceGaps:
+    """One bounded gap iterator with expected count and explicit delivery completion state."""
+
+    record_count: int
+    records: Iterator[Mapping[str, Any]]
+    _complete: bool = False
+
+    @property
+    def complete(self) -> bool:
+        """Whether the entire output iterator was consumed and the context exited normally."""
+        return self._complete
 
 
 def _positive_int(name: str, value: object, *, minimum: int = 0) -> int:
@@ -546,6 +585,219 @@ class CanonicalPartitionV3Projector:
                     else:
                         self._event_ordinal = event_ordinal + 1
                         self._revision_ordinal = revision_first_ordinal + revision_count
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            builder.close()
+
+
+def _gap_identity(row: Mapping[str, Any]) -> tuple[str, str]:
+    table = row.get("table")
+    revision_id = row.get("revision_id")
+    if not isinstance(table, str) or not isinstance(revision_id, str):
+        raise CanonicalPartitionProjectionError("RunSet contains an invalid evidence-gap identity")
+    return table, revision_id
+
+
+def _count_evidence_gaps(storage: StorageAdapter, run: RunRef | None) -> int:
+    if run is None:
+        return 0
+    count = 0
+    previous: tuple[str, str] | None = None
+    with iter_run(storage, run) as rows:
+        for row in rows:
+            identity = _gap_identity(row)
+            if previous is not None and identity <= previous:
+                if identity == previous:
+                    raise CanonicalPartitionProjectionError(
+                        "duplicate evidence-gap identity (table, revision_id)"
+                    )
+                raise CanonicalPartitionProjectionError("evidence-gap RunSet order is invalid")
+            previous = identity
+            count += 1
+    return count
+
+
+def _evidence_gap_records(
+    rows: Iterator[Mapping[str, Any]], *, quality_report_id: str
+) -> Iterator[Mapping[str, Any]]:
+    for row in rows:
+        record = {
+            "quality_report_id": row.get("quality_report_id"),
+            "table": row.get("table"),
+            "revision_id": row.get("revision_id"),
+            "gap": row.get("gap"),
+        }
+        if record["quality_report_id"] != quality_report_id:
+            raise CanonicalPartitionProjectionError("RunSet evidence-gap report ID mismatch")
+        if any(not isinstance(value, str) for value in record.values()):
+            raise CanonicalPartitionProjectionError("RunSet contains an invalid evidence-gap row")
+        yield MappingProxyType(record)
+
+
+class CanonicalPartitionV3EvidenceGapProjector:
+    """Project all report gaps into a bounded RunSet ordered by stable gap identity.
+
+    Inputs are streamed as ``(table, revision_id, gap)`` triples. The report ID is supplied once
+    and bound into every output record. The RunSet holds the same four fields as the JSONL row;
+    each row is byte-checked against both the explicit stream record limit and the scratch
+    ``RunLimits`` before ``RunSetBuilder.add`` can trigger a storage write. Duplicate
+    ``(table, revision_id)`` identities fail closed, regardless of whether their gap texts agree.
+
+    Empty input yields zero records and no RunSet. The ADR-0093 writer owns the childless empty
+    stream root. ``next_gap_ordinal`` advances only after the caller exhausts the records iterator
+    and exits the context normally. Early close closes the RunSet reader and terminally fails this
+    projector.
+    """
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        *,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_gap_record_bytes: int,
+    ) -> None:
+        _positive_int("capacity", capacity, minimum=1)
+        _positive_int("merge_fanout", merge_fanout, minimum=2)
+        if not isinstance(limits, RunLimits):
+            raise CanonicalPartitionProjectionError("limits must be a RunLimits instance")
+        _positive_int("max_gap_record_bytes", max_gap_record_bytes, minimum=1)
+        self._storage = storage
+        self._capacity = capacity
+        self._merge_fanout = merge_fanout
+        self._limits = limits
+        self._max_gap_record_bytes = max_gap_record_bytes
+        self._next_gap_ordinal = 0
+        self._failed = False
+
+    @property
+    def next_gap_ordinal(self) -> int:
+        """The count of gap records whose complete output has been consumed."""
+        return self._next_gap_ordinal
+
+    @contextmanager
+    def project_gaps(
+        self,
+        *,
+        quality_report_id: str,
+        gaps: Iterable[tuple[str, str, str]],
+    ) -> Iterator[ProjectedCanonicalEvidenceGaps]:
+        if self._failed:
+            raise CanonicalPartitionProjectionError(
+                "evidence-gap projector is failed after an incomplete stream"
+            )
+        report_id_text = _text(
+            "quality_report_id",
+            quality_report_id,
+            maximum_utf8_bytes=self._max_gap_record_bytes,
+        )
+        assert report_id_text is not None
+        if isinstance(gaps, str | bytes) or not isinstance(gaps, Iterable):
+            raise CanonicalPartitionProjectionError("gaps must be an iterable of triples")
+
+        event_ordinal = _positive_int("gap_ordinal", self._next_gap_ordinal)
+        max_input_text_bytes = min(
+            self._max_gap_record_bytes,
+            self._limits.leaf_max_bytes - _RUN_HEADER_RESERVE_BYTES,
+        )
+        max_scratch_line_bytes = self._limits.leaf_max_bytes - _RUN_HEADER_RESERVE_BYTES
+        builder = RunSetBuilder(
+            self._storage,
+            key=lambda row: (row["table"], row["revision_id"]),
+            capacity=self._capacity,
+            merge_fanout=self._merge_fanout,
+            limits=self._limits,
+        )
+        try:
+            with builder:
+                for raw_gap in gaps:
+                    if not isinstance(raw_gap, tuple) or len(raw_gap) != 3:
+                        raise CanonicalPartitionProjectionError(
+                            "each evidence gap must be a (table, revision_id, gap) tuple"
+                        )
+                    table = _text("table", raw_gap[0], maximum_utf8_bytes=max_input_text_bytes)
+                    revision_id = _text(
+                        "revision_id", raw_gap[1], maximum_utf8_bytes=max_input_text_bytes
+                    )
+                    gap = _text("gap", raw_gap[2], maximum_utf8_bytes=max_input_text_bytes)
+                    assert table is not None and revision_id is not None and gap is not None
+                    row = {
+                        "quality_report_id": report_id_text,
+                        "table": table,
+                        "revision_id": revision_id,
+                        "gap": gap,
+                    }
+                    _canonical_json_length(row, maximum=self._max_gap_record_bytes - 1)
+                    # RunSet's row codec wraps mappings as {"$obj": ...}; check that exact
+                    # scratch representation before add can flush and materialize it.
+                    scratch_row = {"$obj": row}
+                    _canonical_json_length(scratch_row, maximum=max_scratch_line_bytes - 1)
+                    builder.add(row)
+                run = builder.finish()
+                record_count = _count_evidence_gaps(self._storage, run)
+                rows_context = iter_run(self._storage, run) if run is not None else None
+                if rows_context is None:
+                    gap_rows: Iterator[Mapping[str, Any]] = iter(())
+                    output_rows: Iterator[Mapping[str, Any]] = iter(())
+                    close_rows = None
+                else:
+                    rows = rows_context.__enter__()
+                    gap_rows = _evidence_gap_records(rows, quality_report_id=report_id_text)
+                    output_rows = gap_rows
+                    close_rows = rows
+                emitted = 0
+                exhausted = record_count == 0
+                body_raised = False
+                projection: ProjectedCanonicalEvidenceGaps | None = None
+                try:
+
+                    class _CountedGapIterator(Iterator[Mapping[str, Any]]):
+                        def __iter__(self) -> _CountedGapIterator:
+                            return self
+
+                        def __next__(self) -> Mapping[str, Any]:
+                            nonlocal emitted, exhausted
+                            try:
+                                record = next(output_rows)
+                            except StopIteration:
+                                exhausted = True
+                                raise
+                            emitted += 1
+                            return record
+
+                    try:
+                        projection = ProjectedCanonicalEvidenceGaps(
+                            record_count=record_count,
+                            records=_CountedGapIterator(),
+                        )
+                        yield projection
+                    except BaseException:
+                        body_raised = True
+                        self._failed = True
+                        raise
+                finally:
+                    close = getattr(gap_rows, "close", None)
+                    if callable(close):
+                        close()
+                    if close_rows is not None:
+                        close = getattr(close_rows, "close", None)
+                        if callable(close):
+                            close()
+                        assert rows_context is not None
+                        rows_context.__exit__(None, None, None)
+                    if not exhausted or emitted != record_count or self._failed:
+                        self._failed = True
+                        if not body_raised:
+                            raise CanonicalPartitionProjectionError(
+                                "evidence-gap records were not fully consumed"
+                            )
+                    else:
+                        self._next_gap_ordinal = event_ordinal + record_count
+                        assert projection is not None
+                        projection._complete = True
         except BaseException:
             self._failed = True
             raise
