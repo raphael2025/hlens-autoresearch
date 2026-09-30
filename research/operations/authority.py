@@ -99,7 +99,9 @@ failed stage), the metric is **missing**, as in validation; a gate without an ex
   Outcome labels are computed by that provider over the window's proven bars of the pinned source
   manifest for the pipeline's own non-flat targets — the evaluation target, never an input
   (C-L2, the validator's own guard). Its trial runner must reproduce the window backtest
-  (``G0.reproducibility``); a failed structural G0 gate is refused. ``validate`` supplies
+  (``G0.reproducibility``); a failed structural gate — G0 bindings / execution, or the G1
+  information-flow gates ``G1.outcome_not_input``, ``G1.label_blind_sides``,
+  ``G1.sealed_oos_excluded`` (also per instrument) — refuses every metric of the re-run. ``validate`` supplies
   G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1 ``shuffle_timing_p_value`` /
   ``shift_timing_p_value`` (base and per-seed gates) and ``..._min_over_seeds`` (scope: all the
   window's computable labels); G2 ``effective_independent_trades``, ``breakeven_cost_multiple``,
@@ -1417,7 +1419,9 @@ _CONTROL_SEED_GATE: Final = re.compile(
     r"^G1\.(?:shuffle|shift)_control\.seed\.(-?(?:0|[1-9][0-9]*))" + _INSTRUMENT_SUFFIX + "$"
 )
 #: Structural gates of the window validation whose ``FAIL`` means the binding does not describe
-#: the window run (a refusal, never evidence about the strategy).
+#: the window run, or the re-run broke an information-flow rule (a refusal of **every** metric of
+#: that re-run, never evidence about the strategy). Matched on the base gate id and on its
+#: per-instrument variants (``<id>.instrument.<name>``).
 _STRUCTURAL_GATES: Final = {
     "G0.backtest_cost_model": EXECUTION_MISMATCH,
     "G0.execution_model": EXECUTION_MISMATCH,
@@ -1426,7 +1430,15 @@ _STRUCTURAL_GATES: Final = {
     "G0.signal_determinism": EXECUTION_MISMATCH,
     "G0.bindings": BASELINE_BINDING_MISMATCH,
     "G0.run_state": BASELINE_BINDING_MISMATCH,
+    # C-L2 / C-S1 information-flow gates: an Outcome among the inputs, sides that move with the
+    # label values, or labels touching the sealed OOS window make the whole re-run unusable
+    "G1.outcome_not_input": EXECUTION_MISMATCH,
+    "G1.label_blind_sides": EXECUTION_MISMATCH,
+    "G1.sealed_oos_excluded": SOURCE_SCOPE_MISMATCH,
 }
+_STRUCTURAL_GATE_ID: Final = re.compile(
+    "^(" + "|".join(re.escape(gate) for gate in _STRUCTURAL_GATES) + ")" + _INSTRUMENT_SUFFIX + "$"
+)
 #: Everything the validator's re-run may raise besides a deliberate refusal handled first.
 _RUN_ERRORS: Final = (
     ValidationError,
@@ -1677,13 +1689,13 @@ def _window_validation_gates(
         validator = PipelineBacktestValidator(setup)
         answer = validator.validate(subject, binding.spec, backtest)
         gates = {gate.gate_id: gate for gate in answer.report.gates}
-        for gate_id, code in _STRUCTURAL_GATES.items():
-            gate = gates.get(gate_id)
-            if gate is not None and gate.verdict is Verdict.FAIL:
+        for gate_id, gate in sorted(gates.items()):
+            match = _STRUCTURAL_GATE_ID.fullmatch(gate_id)
+            if match is not None and gate.verdict is Verdict.FAIL:
                 raise AuthorityRefused(
-                    code,
+                    _STRUCTURAL_GATES[match.group(1)],
                     f"the window validation's {gate_id} failed: the binding does not "
-                    "describe the window run",
+                    "describe the window run (every metric of this re-run is refused)",
                 )
         if robustness:
             diagnostic = validator.robustness_diagnostic(binding.spec, backtest)
