@@ -31,9 +31,18 @@ with ``available_time <= t``.
 orders the visible bars (observations with ``event_end_time``; one symbol; no overlap) by
 ``event_time`` and takes the trailing run of ``window`` bars (``window + 1`` for ``difference``).
 The run must be contiguous (``end == next start``), otherwise the value is ``None``. The upstream
-value "as of bar i" is the upstream feature evaluated at ``tau_i``, the latest ``available_time``
-among the run's bars ``0..i`` (so ``tau_i <= t`` and ``tau`` never decreases). Backward-only: no
-bar after ``t`` and no value computed with data later than ``tau_i`` is ever used.
+value "as of bar i" is the upstream feature evaluated at ``tau_i`` on exactly the visible bars
+whose ``event_time`` is not after bar ``i``'s own ``event_time`` (the run's bars ``0..i`` and every
+earlier bar); ``tau_i`` is the latest ``available_time`` among those bars, in the revision visible
+at ``t`` (so ``tau_i <= t`` and ``tau`` never decreases). A bar after bar ``i`` never participates
+in bar ``i``'s value, even when it became available before ``tau_i`` (out-of-order availability,
+or a late revision of an earlier bar raising ``tau_i``). Every participating bar is used in its
+latest revision visible at ``t``, whose ``available_time`` is ``<= tau_i`` by construction
+(re-checked: a participating bar with ``available_time > tau_i`` makes the value ``None``, fail
+closed, since the visible set at ``t`` would not hold the revision that was visible at ``tau_i``);
+the upstream's own lag applies inside the sub-request as usual.
+Backward-only: no bar after ``t`` and no value computed with data later than ``tau_i`` is ever
+used.
 
 **Missing values propagate.** A ``None`` upstream value anywhere in the window, too little or
 non-contiguous history, or an undefined statistic (zero dispersion for ``standardize``) gives
@@ -153,7 +162,7 @@ def _check_upstream(table: Mapping[str, UpstreamFeature]) -> dict[str, UpstreamF
 
 
 class _Evaluation:
-    """Upstream evaluations at one evaluation time ``t``, cached per (upstream, tau).
+    """Upstream evaluations at one evaluation time ``t``, cached per (upstream, tau, through).
 
     ``visible`` is the visible set at ``t``; every sub-request is cut from it (module docstring).
     """
@@ -163,15 +172,32 @@ class _Evaluation:
     def __init__(self, request: FeatureRequest, visible: Sequence[FeatureObservation]) -> None:
         self._request = request
         self._visible = tuple(visible)
-        self._cache: dict[tuple[str, datetime], FeatureValue] = {}
+        self._cache: dict[tuple[str, datetime, datetime | None], FeatureValue | None] = {}
 
-    def value(self, upstream: UpstreamFeature, tau: datetime) -> FeatureValue:
-        key = (str(upstream.spec.ref), tau)
-        cached = self._cache.get(key)
-        if cached is not None:
-            return cached
+    def value(
+        self, upstream: UpstreamFeature, tau: datetime, through: datetime | None = None
+    ) -> FeatureValue | None:
+        """The upstream value at ``tau``; with ``through``, only on bars not after ``through``.
+
+        ``through`` is a bar's own ``event_time``: observations with a later ``event_time`` never
+        take part. Every observation with ``event_time <= through`` must have
+        ``available_time <= tau``; otherwise the visible set at ``t`` (latest revisions only) does
+        not hold the revision that was visible at ``tau`` and the answer is ``None`` (no
+        well-defined value; the caller propagates it as missing). The upstream's own lag then
+        applies as usual (``available_time + lag <= tau``), exactly as the upstream would apply it.
+        """
+        key = (str(upstream.spec.ref), tau, through)
+        if key in self._cache:
+            return self._cache[key]
         lag = upstream.spec.available_lag
-        visible = tuple(item for item in self._visible if item.available_time + lag <= tau)
+        if through is None:
+            candidates = self._visible
+        else:
+            candidates = tuple(item for item in self._visible if item.event_time <= through)
+            if any(item.available_time > tau for item in candidates):
+                self._cache[key] = None
+                return None
+        visible = tuple(item for item in candidates if item.available_time + lag <= tau)
         sub = FeatureRequest(
             feature=upstream.spec.ref,
             spec_hash=upstream.spec.content_hash(),
@@ -241,18 +267,26 @@ def _bars(visible: Sequence[FeatureObservation]) -> list[_Bar]:
     return bars
 
 
-def _trailing_grid(bars: Sequence[_Bar], count: int) -> list[datetime] | None:
-    """``tau_0 .. tau_{count-1}`` of the contiguous trailing run, or ``None``."""
+def _trailing_grid(bars: Sequence[_Bar], count: int) -> list[tuple[datetime, datetime]] | None:
+    """``(tau_i, through_i)`` for the contiguous trailing run of ``count`` bars, or ``None``.
+
+    ``bars`` are in ``event_time`` order. ``through_i`` is bar ``i``'s own ``event_time``: only
+    bars with ``event_time <= through_i`` (the run's bars ``0..i`` and every earlier bar) take part
+    in bar ``i``'s upstream value. ``tau_i`` is the latest ``available_time`` among exactly those
+    bars, so it never decreases and never exceeds ``t``.
+    """
     if len(bars) < count:
         return None
-    run = bars[len(bars) - count :]
+    first = len(bars) - count
+    run = bars[first:]
     if any(earlier.end != later.start for earlier, later in pairwise(run)):
         return None
-    grid: list[datetime] = []
+    grid: list[tuple[datetime, datetime]] = []
     latest: datetime | None = None
-    for bar in run:
+    for index, bar in enumerate(bars):
         latest = bar.available_time if latest is None else max(latest, bar.available_time)
-        grid.append(latest)
+        if index >= first:
+            grid.append((latest, bar.start))
     return grid
 
 
@@ -390,7 +424,12 @@ class _TransformationProvider(_P7FeatureProvider):
         if grid is None:
             return _answer(at, None, (), visible)
         (upstream,) = inputs
-        used = [evaluation.value(upstream, tau) for tau in grid]
+        used: list[FeatureValue] = []
+        for tau, through in grid:
+            answer = evaluation.value(upstream, tau, through)
+            if answer is None:  # no well-defined value as of that bar: propagate as missing
+                return _answer(at, None, (), visible)
+            used.append(answer)
         series: list[Decimal] = []
         for item in used:
             number = _numeric(item.value, f"{spec.ref} @ {at.isoformat()}")
@@ -518,7 +557,12 @@ class P7InteractionProductProvider(_P7FeatureProvider):
         evaluation: _Evaluation,
         visible: Sequence[FeatureObservation],
     ) -> FeatureValue:
-        used = [evaluation.value(upstream, at) for upstream in inputs]
+        used: list[FeatureValue] = []
+        for upstream in inputs:
+            answer = evaluation.value(upstream, at)
+            if answer is None:  # pragma: no cover - only a bar-bounded evaluation can be None
+                return _answer(at, None, (), visible)
+            used.append(answer)
         left, right = (_numeric(item.value, f"{spec.ref} @ {at.isoformat()}") for item in used)
         if left is None or right is None:
             return _answer(at, None, (), visible)
