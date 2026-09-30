@@ -32,9 +32,9 @@
 | 能力 | 依据 | 实现 | 测试 | 状态 |
 |---|---|---|---|---|
 | 预登记与试验账本（每次登记 / 重评 = 一次试验，失败也计数） | Constitution A1、C-T1；roadmap Phase 7 验收；ADR-0040 §3 | `research/hypotheses/ledger.py`；循环把 family 试验数传给 G3 | `tests/research/hypotheses/test_hypotheses.py`、`test_durable_ledger.py`、`tests/research/loop/test_loop_e2e.py` | `IMPLEMENTED · DEBUG_PENDING` |
-| 组合算子 DSL（产出假设，不产出代码） | 04-research-loop §4；ADR-0040 §2 | `research/hypotheses/dsl.py`（6 个构造器只生成带文字与引用的 Hypothesis；没有可执行 typed plan） | `test_hypotheses.py` | `IMPLEMENTED · DEBUG_PENDING`（规格生成，不代表执行） |
+| 组合算子 DSL（产出假设，不产出代码） | 04-research-loop §4；ADR-0040 §2 | `research/hypotheses/dsl.py`（6 个构造器只生成带文字与引用的 Hypothesis）；可执行路径另见下行 P7 typed plan | `test_hypotheses.py` | `IMPLEMENTED · DEBUG_PENDING`（规格生成，不代表执行） |
 | P6 条件化评估（状态 × 策略单元） | roadmap Phase 6；ADR-0039 | `research/experiments/state_strategy.py`、`research/loop/trials.py`、`research/loop/compose.py`；报告接线已进入本地 main | `tests/research/experiments/`、`tests/research/loop/test_loop_conditional.py` | 计算与报告链 `IMPLEMENTED · DEBUG_PENDING`；Phase 6 未验收 |
-| P7 六类 DSL 算子进入批次运行 | ADR-0040 §2、Accepted ADR-0068 执行边界 | `HypothesisBatch` 仅允许 `parameter_point`；六类 DSL 均在 `NOT_RUNNABLE_KINDS`。Conditioning 的 P6 单元评估不是策略门控 | — | 解析机制已实现；各算子的具体语义与 Provider lowering 尚未批准，继续 fail closed |
+| P7 六类 DSL 算子进入批次运行 | ADR-0040 §2、ADR-0068 执行边界；ADR-0082 / 0088 / 0099 语义；ADR-0100 §1/§2 执行与横截面 | `HypothesisBatch` 仍仅允许 `parameter_point`（六类 DSL 在 `NOT_RUNNABLE_KINDS`）。typed plan 路径：`research/hypotheses/typed_plan_lowering.py` 纯 lowering（六类算子含 rank/quantile 时间序列与横截面）；`typed_plan.compile_plan` → `typed_plan_compiler.CompiledPlan`，仅在 `P7ExecutionSwitch(enabled=True)` 且显式 allowlist 覆盖全部节点时编译；执行 Provider 在 `plugins/features/p7_operators.py`、`p7_cross_sectional.py`、`plugins/events/p7_temporal.py`，循环接线 `research/loop/p7_plan.py`。横截面节点可 lower 但编译时拒绝（`cross_sectional_execution_unsupported`） | `tests/research/hypotheses/test_typed_plan_lowering.py`、`test_typed_plan_cross_sectional.py`、`tests/plugins/features/test_p7_cross_sectional.py`（均未运行） | lowering 与执行 `CODE_COMPLETE · DEBUG_PENDING`；执行开关默认关闭 |
 | 批量网格（算子 × 策略 × 声明点；算子须人工审阅） | ADR-0040 §5 | `research/hypotheses/batch.py`；协调 worktree 有递归冻结参数点与按 outcome 恢复未完成单元的未提交修复 | `tests/research/hypotheses/test_batch.py`、`tests/research/loop/test_loop_batch.py` | 主线 `IMPLEMENTED · DEBUG_PENDING`；修复候选尚未提交、未运行测试 |
 | 知识 / LLM 假设草稿（严格结构，人工审阅后登记，LLM 不判定） | ADR-0040 §1、§4 | `research/hypotheses/generator.py`；只有脚本化 LLM | `test_strict_llm_drafts.py`、`test_knowledge_source.py`、`test_loop_llm_rejection.py` | `IMPLEMENTED · DEBUG_PENDING` |
 | 真实（联网）LLM Provider | ADR-0040 §1 只声明属后续批次，未设计 | — | — | `UNSPECIFIED`（需网络与凭据授权） |
@@ -69,11 +69,11 @@
 | 回测执行模型（参与率、冲击、空头借券 / 现金借款费率）与跨 bar 结转 | ADR-0038 实施说明；ADR-0054（Raphael 批准） | `plugins/backtest/execution.py`、`bar.py` | `tests/plugins/backtest/` | ADR-0054 `ACCEPTED`；实现 `IMPLEMENTED · DEBUG_PENDING` |
 | G4 容量的成交量来源与未成交余量 | ADR-0064、ADR-0065（Codex Accepted） | `research/validation/`、`research/strategies/validation.py` | `test_backtest_validation.py` | ADR `ACCEPTED`；实现 `DEBUG_PENDING` |
 | 生命周期中必须具名人工批准的转移（OOS → PAPER 等） | ADR-0006 | `core/lifecycle/strategy.py` | `tests/test_lifecycle*.py` | 人工批准转移 `ACCEPTED`（Phase 0 关闭复审）；此后新增的 VALIDATION → FAILED（ADR-0053）为 `DEBUG_PENDING` |
-| 循环自动推进的上限（最多到 OOS） | ADR-0049；P12-LOOP | `apps/worker/loop.py`、`research/loop/stages.py` | `tests/research/loop/` | `IMPLEMENTED · DEBUG_PENDING` |
+| 循环自动推进的上限（最多到 OOS） | ADR-0049；P12-LOOP（ADR-0100 §7 修订） | `apps/worker/loop.py`、`research/loop/stages.py` | `tests/research/loop/` | `IMPLEMENTED · DEBUG_PENDING` |
 | 封存样本外的开封（每 family 具名批准） | Constitution C-S1..3 | `research/loop/trials.py`、`sealed_oos.py` | 见上 | `IMPLEMENTED · DEBUG_PENDING` |
 | Profile 冻结登记（Promotion 的权威冻结来源） | ADR-0062 | `infrastructure/registry/profile_freeze.py` | `tests/promotion/test_profile_freeze_registry.py` | ADR `ACCEPTED`；实现 `DEBUG_PENDING`；登记为空 |
 | Promotion 链（Registry、Promotion 服务、Equivalence Gate） | ADR-0005 | `research/promotion/`、`apps/promotion/` | `tests/promotion/` | `IMPLEMENTED · DEBUG_PENDING`（今天拒绝所有策略） |
-| 替换提案（恒待人工批准，循环外的显式作业） | ADR-0045；P12-LOOP | `research/evolution/proposals.py`、`replacement_job.py` | `tests/research/evolution/test_replacement_*.py` | `IMPLEMENTED · DEBUG_PENDING`；循环内触发有意暂缓 |
+| 替换提案（恒待人工批准；循环外显式作业，或循环内可选触发） | ADR-0045；P12-LOOP；ADR-0100 §7 | `research/evolution/proposals.py`、`replacement_job.py`；循环内可选触发 `research/loop/replacement.py`（`LoopWiring.replacement_trigger`，只用独立、预先登记的密封评估窗口） | `tests/research/evolution/test_replacement_*.py` | 循环外作业 `IMPLEMENTED · DEBUG_PENDING`；循环内触发 `CODE_COMPLETE · DEBUG_PENDING`，默认关闭；OOS → PAPER 仍须人工批准 |
 | 纸面路由 | ADR-0043 | `research/router/` | `tests/research/router/` | `IMPLEMENTED · DEBUG_PENDING` |
 
 ## 规格缺口与验收标准（提案，未批准）
@@ -84,7 +84,7 @@ Constitution 原则与已实现能力的同类要求，不设任何数值阈值�
 | ID | 能力 | 为何需要决定 | 验收标准（提案） | 状态 |
 |---|---|---|---|---|
 | AR-1 | 自动产生 Feature 候选（对已实现 Provider 的声明参数做枚举，如窗口 `n`） | Feature 契约没有参数空间字段；生成的 FeatureSpec 是否、如何计入 family 试验数（C-T1）未定义 | 枚举是声明式的（Provider × 预先声明的取值集合），不生成代码；每个生成的规格先登记、再计算；同一输入永远生成同一组规格与哈希；每个生成规格通过 Feature 契约套件（含因果扰动）；试验计数包含全部生成候选（含失败） | `REQUIRES_DECISION` |
-| AR-2 | 交互 / 变换 / 集成 / 否定算子的执行 | DSL 只定义为假设；执行语义（产生新信号还是新策略）与计数方式未定义 | 算子只组合已登记规格；输出可追溯到每个输入的规格哈希；组合不引入新的可见性（输出的可用时间 = 输入中最晚者）；每个组合计入试验数；否定算子作为对照而非新候选 | `REQUIRES_DECISION` |
+| AR-2 | 交互 / 变换 / 集成 / 否定算子的执行 | 已由 ADR-0082 / 0088 / 0099 / 0100 定义语义并实现默认关闭的执行（见 A 节 P7 行）；本行保留为验收标准参照 | 算子只组合已登记规格；输出可追溯到每个输入的规格哈希；组合不引入新的可见性（输出的可用时间 = 输入中最晚者）；每个组合计入试验数；否定算子作为对照而非新候选 | ADR-0100 已决定；`CODE_COMPLETE · DEBUG_PENDING`，默认关闭 |
 | AR-3 | 训练型模型（状态模型或预测模型） | 重估节奏、拟合结果的持久化与哈希、HMM 状态编号对齐、计算成本（D-STATE-INC 已暂缓增量路径）均未定义 | 只见固定尾随窗口内的可见输入；随机性只来自规格 `seed`，同种子逐位复现；Outcome 不作为输入（监督模型的训练标签以 ADR-0041 §6 第 4 项的 `FittableStudy` 为先例：只在清除后的训练折标签上拟合；扩展到新模型族须单独批准）；契约套件因果扰动通过；不做全样本拟合 | `REQUIRES_DECISION` |
 | AR-4 | 超参数搜索器（自适应搜索，而非穷举） | 自适应搜索的每个被评估点都是试验；目前只有穷举声明点 | 搜索空间预先声明；每个被评估点写入账本（含失败）；搜索只用研究窗口，从不接触封存样本外；给定种子可复现；过拟合检查使用完整试验数 | `UNSPECIFIED` |
 | AR-5 | 风控候选搜索与风控参数计数 | ADR-0038 只要求声明 | 见 risk-library 缺口 R-1 | `REQUIRES_DECISION` |
