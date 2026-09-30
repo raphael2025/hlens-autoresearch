@@ -67,6 +67,8 @@ class SQLitePitGraph:
         return self._db
 
     def _open(self) -> None:
+        if self._directory is not None or self._db is not None:
+            raise RuntimeError("SQLite PIT graph is already open")
         self._root.mkdir(parents=True, exist_ok=True)
         if not self._root.is_dir():
             raise OSError("configured PIT scratch path is not a directory")

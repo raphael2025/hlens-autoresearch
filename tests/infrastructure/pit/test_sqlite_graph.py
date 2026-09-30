@@ -59,6 +59,23 @@ def test_sqlite_graph_cleans_owned_directory_after_validation_error(tmp_path: Pa
     assert not owned.exists()
 
 
+def test_sqlite_graph_rejects_nested_enter_without_disturbing_current_owner(
+    tmp_path: Path,
+) -> None:
+    graph = SQLitePitGraph(tmp_path / "scratch", cutoff=T0)
+    with graph:
+        owned = graph.directory
+        connection = graph.database
+        with pytest.raises(RuntimeError, match="already open"):
+            with graph:
+                pytest.fail("nested context must not acquire a second directory")
+        assert graph.directory == owned
+        assert graph.database is connection
+        assert connection.execute("SELECT 1").fetchone() == (1,)
+        assert owned.is_dir()
+    assert not owned.exists()
+
+
 @pytest.mark.parametrize("failure_point", ["open", "write"])
 def test_sqlite_graph_marker_failure_cleans_owned_directory_and_preserves_error(
     tmp_path: Path,
