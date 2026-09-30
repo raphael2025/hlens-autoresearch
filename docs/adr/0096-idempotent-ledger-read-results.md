@@ -36,6 +36,10 @@ The ledger must preserve its existing global lock order (`gate â†’ ledger lock â
 - Update TrialLedger, gate, and durable-loop documentation in the same change.
 - Preserve strict recovery and batch-admission checks from ADR-0073.
 
+## Implementation status
+
+Implemented and reviewed on the isolated consolidation line on 2026-09-30. The ledger suite passed (`12 passed`); the durable/loop focused suite passed (`89 passed`) after correcting a collection-time missing import; a real `DurableState` closed-gate duplicate test passed (`1 passed`). Ruff, formatting, and targeted MyPy checks passed. Independent review: **APPROVE**. Full branch-line regression and Phase acceptance remain open. See [implementation review](../reviews/2026-09-30-adr-0096-ledger-idempotency.md).
+
 ## References
 
 - [ADR-0073: P7 typed-plan pre-registration and crash recovery](0073-phase7-plan-admission-recovery.md)
