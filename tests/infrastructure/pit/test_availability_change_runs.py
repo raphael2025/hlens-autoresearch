@@ -195,7 +195,30 @@ def test_bounded_interval_selected_conflict_matches_legacy(h: RestHarness) -> No
     ) as records:
         bounded = list(records)
 
-    assert [item.selection for item in bounded] == list(legacy.selections)
+    # The bounded v3 DTO intentionally carries only a fixed-size head count; complete conflict
+    # heads live in the separate evidence stream. Compare its full summary to the legacy result
+    # instead of comparing two different DTO types.
+    assert [
+        (
+            item.selection.observation_key,
+            item.selection.simulation_time,
+            item.selection.knowledge_cutoff,
+            item.selection.status,
+            item.selection.selected_revision_id,
+            item.selection.head_count,
+        )
+        for item in bounded
+    ] == [
+        (
+            item.observation_key,
+            item.simulation_time,
+            item.knowledge_cutoff,
+            item.status,
+            item.selected_revision_id,
+            len(item.maximal_heads),
+        )
+        for item in legacy.selections
+    ]
     assert [item.selection.status for item in bounded] == [
         PointInTimeStatus.ABSENT,
         PointInTimeStatus.SELECTED,
