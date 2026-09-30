@@ -72,10 +72,7 @@ from infrastructure.pit.assumption import (
     effective_available_times,
 )
 from infrastructure.pit.graph_runs import PITGraphInvariantError, validate_pit_graph_runs
-from infrastructure.pit.precedence_runs import (
-    maximal_head_summary_from_runs,
-    maximal_heads_from_runs,
-)
+from infrastructure.pit.precedence_runs import maximal_heads_from_runs
 from infrastructure.pit.runs import (
     RunLimits,
     RunRef,
@@ -1066,83 +1063,6 @@ def _heads(
     # ``maximal_heads`` walks every known edge from every candidate, through any known (even
     # not-yet-available) revision: the heads are the candidates no candidate reaches.
     return tuple(sorted(maximal_heads(candidates, known_edges)))
-
-
-def _bounded_head_summary(
-    records: Iterable[RevisionRecord],
-    edges: Iterable[PrecedenceEvidence],
-    at: datetime,
-    cutoff: datetime,
-    available: Mapping[str, datetime],
-    *,
-    run_storage: StorageAdapter,
-    run_params: PitRunParams,
-    observation_key: str,
-    emit: Callable[[PitConflictHeadEvidence], None],
-) -> tuple[int, str | None]:
-    """v3-only external summary; never constructs the legacy ``maximal_heads`` tuple."""
-    try:
-        validate_pit_graph_runs(
-            run_storage,
-            records,
-            edges,
-            cutoff=cutoff,
-            capacity=run_params.edge_batch_rows,
-            merge_fanout=run_params.merge_fanout,
-            limits=run_params.limits,
-        )
-    except PITGraphInvariantError as exc:
-        raise CatalogIntegrityError(f"the Canonical revision graph is invalid: {exc}") from None
-
-    def is_known(record: RevisionRecord) -> bool:
-        return record.availability.times.knowledge_time <= cutoff
-
-    candidates = (
-        record.revision_id
-        for record in records
-        if is_known(record) and available[record.revision_id] <= at
-    )
-    candidate_edges = itertools.chain(
-        (
-            (record.revision_id, older)
-            for record in records
-            if is_known(record) and available[record.revision_id] <= at
-            for older in record.supersedes
-        ),
-        (
-            (item.revision_id, item.superseded_revision_id)
-            for item in edges
-            if item.knowledge_time <= cutoff
-        ),
-    )
-    binding = PIT_BINDING
-
-    def record(head_count: int, ordinal: int, revision_id: str) -> None:
-        emit(
-            PitConflictHeadEvidence(
-                rule_id=binding.policy_id,
-                rule_version=binding.version,
-                rule_hash=binding.policy_hash,
-                observation_key=observation_key,
-                simulation_time=at,
-                knowledge_cutoff=cutoff,
-                head_count=head_count,
-                ordinal=ordinal,
-                revision_id=revision_id,
-            )
-        )
-
-    # Count first because every evidence record carries the complete count. The summary helper
-    # calls its emitter on all ordered heads during its second pass.
-    return maximal_head_summary_from_runs(
-        run_storage,
-        candidates,
-        candidate_edges,
-        capacity=run_params.edge_batch_rows,
-        merge_fanout=run_params.merge_fanout,
-        limits=run_params.limits,
-        emit=record,
-    )
 
 
 def _evaluate(
