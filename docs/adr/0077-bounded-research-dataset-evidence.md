@@ -61,7 +61,7 @@ v2 manifest 的内容哈希是**整份规范 JSON 的 SHA-256**：要得到它�
    - `rule: DatasetRuleBinding`（`rule_id + SemVer + rule_hash`，新 dataset 规则 `hlens.dataset.pit-selection@2.0.0`，其 spec 中写明排序、chunk、leaf、fan-out 参数）；
    - `data_type`（v2 需在验证时穷举推断，v3 显式记录）；`selection_id`；
    - `row_count`、`chunk_rows`、`chunk_count`（`chunk_count = ceil(row_count / chunk_rows)`，末块可短，其余块恰为 `chunk_rows`）；
-   - `evidence: tuple[EvidenceStreamRef, ...]`：**恰好**每种 stream 一项（§2 的六种），按 stream 名排序。
+   - `evidence: tuple[EvidenceStreamRef, ...]`：契约 2.3.0 / 2.4.0 恰好每种 stream 一项（§2 的六种），按 stream 名排序；2.5.0 起按 ADR-0094 增加第七种 `pit_conflicts` stream。
 3. `EvidenceStreamRef`：`stream`（枚举）、`format`（`hlens.dataset.evidence-jsonl@1.0.0`）、`record_count`、`leaf_count`、`depth`、`root`（`EvidenceObjectRef`）。
 4. `EvidenceObjectRef` 只绑定内容身份：`key`、`sha256`、`size`；**不**把实现生成的 `uri` 纳入 manifest 内容哈希。[DQ-8]
 5. 契约层可证明的不变量：`dataset` 形状与 v2 相同规则；`selection_id` 与 `rule` / PIT / universe / `data_type` / 窗口的派生关系（纯函数，可在契约或 infrastructure 校验，实现批次定）；计数一致（`chunk_count`、chunk-proof stream 的 `record_count == chunk_count`、lineage stream 非空等）；stream 集合完整且不重复；`root.key` 与 `root.sha256` 满足 §3 的键规则。与 v2 一样，**契约只证明结构**：对象是否存在、字节是否匹配、内容是否就是输入的派生，属存储 / verifier（§6）。
@@ -69,7 +69,7 @@ v2 manifest 的内容哈希是**整份规范 JSON 的 SHA-256**：要得到它�
 
 ### 2. 内容寻址的有序 JSONL evidence streams
 
-六种 stream，每种一棵独立的承诺树（§3）：
+六种基础 stream（契约 2.3.0 / 2.4.0），每种一棵独立的承诺树（§3）。契约 2.5.0 另含 ADR-0094 新增的 `pit_conflicts` stream；旧版本不得回填该 stream：
 
 | stream | 记录 | 规范顺序（ordinal 递增） | 去重 / 唯一性如何在有界内存中证明 |
 |---|---|---|---|

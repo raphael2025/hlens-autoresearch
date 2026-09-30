@@ -7,10 +7,8 @@ reconciler. Expected values are written down from ADR-0028 by hand, not from the
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
-from dataclasses import dataclass, field, replace
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -125,8 +123,8 @@ def test_iter_revision_ids_early_close_releases_disk_backed_position_index(
     created: list[nz._PositionIndex] = []
     original_init = nz._PositionIndex.__init__
 
-    def track_index(index: nz._PositionIndex) -> None:
-        original_init(index)
+    def track_index(index: nz._PositionIndex, scratch_directory: Path) -> None:
+        original_init(index, scratch_directory)
         created.append(index)
 
     monkeypatch.setattr(nz._PositionIndex, "__init__", track_index)

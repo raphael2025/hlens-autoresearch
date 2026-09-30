@@ -1060,7 +1060,8 @@ class ResearchDatasetEvidenceManifest(Contract):
       batch id 的前缀；
     - `row_count` / `chunk_rows` / `chunk_count`：空选择被拒绝，
       `chunk_count = ceil(row_count / chunk_rows)`；
-    - `evidence`：六种 stream 恰好各一项，按 stream 名规范排序；`chunk_proofs` 的记录数等于
+    - `evidence`：2.3.0 / 2.4.0 恰好包含 ADR-0077 定义的六种 streams；2.5.0+ 按 ADR-0094
+      额外包含 `pit_conflicts`。两种形状均按 stream 名规范排序；`chunk_proofs` 的记录数等于
       `chunk_count`，`lineage` 与 `quality_reports` 非空。
 
     **诚实边界**：契约只证明结构。`selection_id` 与规则 / PIT / universe / `data_type` / 窗口的

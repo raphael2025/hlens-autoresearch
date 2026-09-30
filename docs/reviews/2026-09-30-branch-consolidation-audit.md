@@ -2,13 +2,13 @@
 
 ## Decision and result
 
-The project is now being carried on one isolated integration line, `codex/project-consolidation`, rooted at E1 candidate `2716c7d`. Commit `4eeea33` merges the clean W1/module line `codex/w1-independent-integration@da0071e` and resolves conflicts by retaining the newer E1 contract and composing compatible W1 boundedness work.
+The project is now being carried on one isolated integration line, `codex/project-consolidation`, rooted at E1 candidate `2716c7d`. Commit `4eeea33` merges the clean W1/module line `codex/w1-independent-integration@da0071e` and resolves conflicts by retaining the newer E1 contract and composing compatible W1 boundedness work. Follow-up commits `2d963dc`, `2e69f5a`, `5c016b8`, `d65a17a`, `807c6eb`, and `4d09361` selectively port safe root W1 cases, implement ADR-0096, add real durable-gate coverage, and record the slice acceptance.
 
-This is a consolidation line, not a release or Phase acceptance. It has not been pushed or merged to `main`. No tests or builds were run on the merged tree. The merge index passed `git diff --cached --check`; the implementation reviewer also parsed the 11 touched implementation files as Python syntax, but this is not runtime verification.
+This is a consolidation line, not a release or Phase acceptance. It has not been pushed or merged to `main`. In addition to targeted ADR-0096 verification (ledger `12 passed`, durable/loop `89 passed`, one real closed-gate test `1 passed`), the first Normalizer/PIT/Dataset focused run returned `236 passed, 7 failed, 1 skipped`; five API-seam/parity test nodes were corrected and rerun (`5 passed`). Two shared RunSet merge implementation failures remain under review. No full integration suite or E1-CAP-1 measurement has been run. The merge index passed `git diff --cached --check`; the implementation reviewer also parsed the 11 initially touched implementation files as Python syntax, but that was not runtime verification. Detailed results are in the [foundation integration regression review](2026-09-30-foundation-integration-regression.md).
 
 ## Repository topology
 
-The initial audit found 57 local branch refs, 70 worktrees, 15 detached worktrees, and 370 `refs/archive/*` refs. Creating the consolidation branch and worktree brings the current totals to **58 local branch refs and 71 worktrees**. Of these worktrees, 56 are attached to a branch and 15 are detached. The four pre-existing dirty worktrees remain preserved; the new consolidation worktree is clean after the merge commit.
+The initial audit found 57 local branch refs, 70 worktrees, 15 detached worktrees, and 370 `refs/archive/*` refs. Creating the consolidation branch and worktree brings the audited snapshot to **58 local branch refs and 71 worktrees**. Of these worktrees, 56 are attached to a branch and 15 are detached. The four pre-existing dirty worktrees remain preserved; the consolidation worktree was clean after its merge commit and now contains the follow-up commits above.
 
 The initial dirty worktrees were:
 

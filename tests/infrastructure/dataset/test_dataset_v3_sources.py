@@ -22,6 +22,7 @@ import inspect
 from collections.abc import Iterator
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, cast
 
 import pytest
@@ -62,7 +63,7 @@ from infrastructure.dataset.sources import (
     pit_key_groups,
 )
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
-from infrastructure.pit.runs import RunLimits
+from infrastructure.pit.runs import RunLimits, RunSetBuilder, iter_run
 from infrastructure.pit.runs import iter_run as original_iter_run
 from infrastructure.pit.selector import (
     PIT_BINDING,
@@ -73,7 +74,6 @@ from infrastructure.pit.selector import (
     PitRunParams,
     PitSelector,
 )
-from infrastructure.pit.runs import RunSetBuilder, iter_run
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 from infrastructure.universe.run_params import UniverseRunParams as SharedUniverseRunParams
@@ -920,6 +920,7 @@ def test_first_interval_conflict_does_not_pull_the_next_conflict_instant(
 
 def test_dataset_conflict_seals_only_first_interval_evaluation_and_closes_selector(
     evidence_store: LocalFileStorageAdapter,
+    tmp_path: Path,
 ) -> None:
     start, middle, end = utc(2023, 12, 1), utc(2023, 12, 2), utc(2023, 12, 3)
     spec = ds.v3_pit(interval=(start, end))
@@ -988,7 +989,9 @@ def test_dataset_conflict_seals_only_first_interval_evaluation_and_closes_select
         gaps=(),
         spans=(("BTCUSDT", start, middle),),
     )
-    selector = ConflictSelector(ds.fake_heads(), evidence_store)
+    selector = ConflictSelector(
+        ds.fake_heads(), evidence_store, canonical_scratch_directory=tmp_path / "canonical"
+    )
     source = PitSelectorKeySource(selector, storage=evidence_store, params=PIT_PARAMS)
     builder = _builder(evidence_store)
     with pytest.raises(PitConflictError) as caught:

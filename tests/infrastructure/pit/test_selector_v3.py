@@ -12,7 +12,7 @@ not just the trivial single-run path.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
@@ -115,41 +115,59 @@ def _capture_run_set_builders(monkeypatch: pytest.MonkeyPatch) -> list[RunSetBui
     monkeypatch.setattr(selector_module, "RunSetBuilder", CapturingRunSetBuilder)
     return instances
 
+
 def _replace_mapped_edge_key(
     selector: PitSelector,
     monkeypatch: pytest.MonkeyPatch,
     observation_key: str,
 ) -> None:
     """Move the genuine mapped run edge to a key with no corresponding Canonical rows."""
-    original = selector_module._bounded_mapped_edge_run
+    orphan_key = observation_key
+    original = selector_module._mapped_edge_run_stream
 
+    @contextmanager
     def orphaned_edge_run(
         current: PitSelector,
         view: Any,
         spec: PointInTimeSpec,
         data_type: str,
         symbol: str,
-        key: str,
         days: Any,
-        rows: Any,
+        key_rows: Any,
         *,
+        observation_key: str,
         params: PitRunParams,
-    ) -> Any:
-        root = original(current, view, spec, data_type, symbol, key, days, rows, params=params)
-        assert root is not None
+        limits: RunLimits,
+    ) -> Iterator[Iterator[Mapping[str, Any]]]:
         with RunSetBuilder(
             current._storage,
             key=selector_module._pit_edge_sort_key,
             capacity=params.edge_batch_rows,
             merge_fanout=params.merge_fanout,
-            limits=params.limits,
+            limits=limits,
         ) as builder:
-            with iter_run(current._storage, root) as edges:
+            with original(
+                current,
+                view,
+                spec,
+                data_type,
+                symbol,
+                days,
+                key_rows,
+                observation_key=observation_key,
+                params=params,
+                limits=limits,
+            ) as edges:
                 for item in edges:
-                    builder.add({"observation_key": observation_key, "evidence": item["evidence"]})
-            return builder.finish()
+                    builder.add({"observation_key": orphan_key, "evidence": item["evidence"]})
+            root = builder.finish()
+        if root is None:
+            yield iter(())
+            return
+        with iter_run(current._storage, root) as orphaned:
+            yield orphaned
 
-    monkeypatch.setattr(selector_module, "_bounded_mapped_edge_run", orphaned_edge_run)
+    monkeypatch.setattr(selector_module, "_mapped_edge_run_stream", orphaned_edge_run)
 
 
 # =========================================================================================
@@ -911,7 +929,9 @@ def test_run_backed_evaluation_instants_are_deterministic_at_half_open_boundarie
     first = _bounded(h, spec)
     second = _bounded(h, spec)
     assert first == second
-    assert tuple(_selections(first)) == legacy.selections
+    assert tuple(_selection_signature(item) for item in _selections(first)) == tuple(
+        _selection_signature(item) for item in legacy.selections
+    )
     assert all(item.simulation_time < N_R for item in _selections(first))
     assert _selections(first)[0].simulation_time == N_A
 
