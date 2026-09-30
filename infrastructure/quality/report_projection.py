@@ -21,6 +21,7 @@ the next event cannot conceal an incomplete revision stream.
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -120,9 +121,16 @@ CANONICAL_PARTITION_V3_RULE_SPEC: Final[dict[str, Any]] = {
                 "every sorted unique revision_id",
             ],
         },
-        "resource_parameters": (
-            "Run capacity, merge fanout, and RunLimits are explicit caller inputs; no defaults"
-        ),
+        "resource_parameters": {
+            "run_capacity": "positive caller input; no default",
+            "merge_fanout": "integer >= 2 caller input; no default",
+            "run_limits": "explicit RunLimits caller input; no default",
+            "max_event_record_bytes": "positive caller input; canonical JSONL line includes LF",
+            "max_revision_record_bytes": (
+                "positive caller input; canonical JSONL line includes LF; each row must also fit "
+                "the scratch RunLimits leaf_max_bytes minus its 512-byte header reserve"
+            ),
+        },
     },
 }
 CANONICAL_PARTITION_V3_RULE_HASH: Final = hashlib.sha256(
@@ -130,6 +138,9 @@ CANONICAL_PARTITION_V3_RULE_HASH: Final = hashlib.sha256(
 ).hexdigest()
 
 _EVENT_ID_DOMAIN: Final = b"hlens.quality.canonical-partition@3.0.0/event-id/v1\x00"
+_JSON_CHUNK_CHARS: Final = 1024
+_RUN_HEADER_RESERVE_BYTES: Final = 512
+_EVENT_ID_PLACEHOLDER: Final = "qevt3-" + "0" * 64
 
 
 class CanonicalPartitionProjectionError(ValueError):
@@ -150,16 +161,36 @@ def _positive_int(name: str, value: object, *, minimum: int = 0) -> int:
     return value
 
 
-def _text(name: str, value: object, *, optional: bool = False) -> str | None:
-    if optional and value is None:
-        return None
-    if not isinstance(value, str) or not value.strip():
-        qualifier = " or null" if optional else ""
-        raise CanonicalPartitionProjectionError(f"{name} must be a non-empty string{qualifier}")
+def _utf8_length(value: str, *, maximum: int | None = None, name: str = "text") -> int:
+    total = 0
     try:
-        value.encode("utf-8")
+        for start in range(0, len(value), _JSON_CHUNK_CHARS):
+            total += len(value[start : start + _JSON_CHUNK_CHARS].encode("utf-8"))
+            if maximum is not None and total > maximum:
+                raise CanonicalPartitionProjectionError(
+                    f"{name} exceeds the configured UTF-8 byte limit"
+                )
     except UnicodeEncodeError as exc:
         raise CanonicalPartitionProjectionError(f"{name} must be valid UTF-8 text") from exc
+    return total
+
+
+def _text(
+    name: str,
+    value: object,
+    *,
+    optional: bool = False,
+    maximum_utf8_bytes: int | None = None,
+) -> str | None:
+    if optional and value is None:
+        return None
+    if not isinstance(value, str):
+        qualifier = " or null" if optional else ""
+        raise CanonicalPartitionProjectionError(f"{name} must be a non-empty string{qualifier}")
+    _utf8_length(value, maximum=maximum_utf8_bytes, name=name)
+    if not any(not character.isspace() for character in value):
+        qualifier = " or null" if optional else ""
+        raise CanonicalPartitionProjectionError(f"{name} must be a non-empty string{qualifier}")
     return value
 
 
@@ -179,9 +210,14 @@ def _time(name: str, value: object) -> str | None:
     return value.astimezone(UTC).isoformat()
 
 
-def _validate_revision_id(value: object) -> str:
-    revision_id = _text("revision_id", value)
+def _validate_revision_id(value: object, *, event_ordinal: int, max_record_bytes: int) -> str:
+    revision_id = _text("revision_id", value, maximum_utf8_bytes=max_record_bytes)
     assert revision_id is not None
+    record = {"event_ordinal": event_ordinal, "revision_id": revision_id}
+    if _canonical_json_length(record, maximum=max_record_bytes - 1) + 1 > max_record_bytes:
+        raise CanonicalPartitionProjectionError(
+            "revision record exceeds the configured RunLimits leaf record byte limit"
+        )
     return revision_id
 
 
@@ -210,9 +246,81 @@ def _unique_count(storage: StorageAdapter, run: RunRef | None) -> int:
     return count
 
 
-def _length_prefixed(hasher: Any, value: bytes) -> None:
-    hasher.update(len(value).to_bytes(8, "big", signed=False))
-    hasher.update(value)
+def _canonical_json_chunks(value: Any) -> Iterator[bytes]:
+    """Yield canonical JSON bytes while bounding temporary string encodings."""
+    if isinstance(value, str):
+        yield b'"'
+        for start in range(0, len(value), _JSON_CHUNK_CHARS):
+            chunk = value[start : start + _JSON_CHUNK_CHARS]
+            encoded = json.dumps(chunk, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            try:
+                yield encoded[1:-1].encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise CanonicalPartitionProjectionError(
+                    "canonical JSON text must be valid UTF-8"
+                ) from exc
+        yield b'"'
+        return
+    if value is None:
+        yield b"null"
+        return
+    if value is True:
+        yield b"true"
+        return
+    if value is False:
+        yield b"false"
+        return
+    if isinstance(value, int):
+        yield str(value).encode("ascii")
+        return
+    if isinstance(value, Mapping):
+        yield b"{"
+        for index, key in enumerate(sorted(value)):
+            if not isinstance(key, str):
+                raise CanonicalPartitionProjectionError("canonical JSON mapping keys must be text")
+            if index:
+                yield b","
+            yield from _canonical_json_chunks(key)
+            yield b":"
+            yield from _canonical_json_chunks(value[key])
+        yield b"}"
+        return
+    if isinstance(value, (list, tuple)):
+        yield b"["
+        for index, item in enumerate(value):
+            if index:
+                yield b","
+            yield from _canonical_json_chunks(item)
+        yield b"]"
+        return
+    raise CanonicalPartitionProjectionError(
+        f"unsupported canonical JSON value type: {type(value).__name__}"
+    )
+
+
+def _canonical_json_length(value: Any, *, maximum: int | None = None) -> int:
+    total = 0
+    for chunk in _canonical_json_chunks(value):
+        total += len(chunk)
+        if maximum is not None and total > maximum:
+            raise CanonicalPartitionProjectionError(
+                "canonical JSONL record exceeds its configured byte limit"
+            )
+    return total
+
+
+def _update_length_prefixed_json(hasher: Any, value: Any) -> None:
+    length = _canonical_json_length(value)
+    hasher.update(length.to_bytes(8, "big", signed=False))
+    for chunk in _canonical_json_chunks(value):
+        hasher.update(chunk)
+
+
+def _update_length_prefixed_text(hasher: Any, value: str, *, maximum: int) -> None:
+    length = _utf8_length(value, maximum=maximum, name="revision_id")
+    hasher.update(length.to_bytes(8, "big", signed=False))
+    for start in range(0, len(value), _JSON_CHUNK_CHARS):
+        hasher.update(value[start : start + _JSON_CHUNK_CHARS].encode("utf-8"))
 
 
 def _event_id(
@@ -221,6 +329,7 @@ def _event_id(
     *,
     event_fields: Mapping[str, Any],
     revision_count: int,
+    max_revision_record_bytes: int,
 ) -> str:
     identity = {
         "rule_id": CANONICAL_PARTITION_V3_RULE_ID,
@@ -228,15 +337,14 @@ def _event_id(
         "rule_hash": CANONICAL_PARTITION_V3_RULE_HASH,
         "event_fields": dict(event_fields),
     }
-    encoded_fields = canonical_json(identity).encode("utf-8")
     hasher = hashlib.sha256()
     hasher.update(_EVENT_ID_DOMAIN)
-    _length_prefixed(hasher, encoded_fields)
+    _update_length_prefixed_json(hasher, identity)
     seen = 0
     if run is not None:
         with iter_run(storage, run) as rows:
             for revision_id in _unique_revision_ids(rows):
-                _length_prefixed(hasher, revision_id.encode("utf-8"))
+                _update_length_prefixed_text(hasher, revision_id, maximum=max_revision_record_bytes)
                 seen += 1
     if seen != revision_count:
         raise CanonicalPartitionProjectionError(
@@ -269,15 +377,21 @@ class CanonicalPartitionV3Projector:
         capacity: int,
         merge_fanout: int,
         limits: RunLimits,
+        max_event_record_bytes: int,
+        max_revision_record_bytes: int,
     ) -> None:
         _positive_int("capacity", capacity, minimum=1)
         _positive_int("merge_fanout", merge_fanout, minimum=2)
         if not isinstance(limits, RunLimits):
             raise CanonicalPartitionProjectionError("limits must be a RunLimits instance")
+        _positive_int("max_event_record_bytes", max_event_record_bytes, minimum=1)
+        _positive_int("max_revision_record_bytes", max_revision_record_bytes, minimum=1)
         self._storage = storage
         self._capacity = capacity
         self._merge_fanout = merge_fanout
         self._limits = limits
+        self._max_event_record_bytes = max_event_record_bytes
+        self._max_revision_record_bytes = max_revision_record_bytes
         self._event_ordinal = 0
         self._revision_ordinal = 0
         self._failed = False
@@ -304,12 +418,24 @@ class CanonicalPartitionV3Projector:
     ) -> Iterator[ProjectedCanonicalEvent]:
         if self._failed:
             raise CanonicalPartitionProjectionError("projector is failed after an incomplete event")
-        event_type_text = _text("event_type", event_type)
-        detail_text = _text("detail", detail)
+        event_type_text = _text(
+            "event_type", event_type, maximum_utf8_bytes=self._max_event_record_bytes
+        )
+        detail_text = _text("detail", detail, maximum_utf8_bytes=self._max_event_record_bytes)
         assert event_type_text is not None and detail_text is not None
         event_type = event_type_text
-        table = _text("table", table, optional=True)
-        observation_key = _text("observation_key", observation_key, optional=True)
+        table = _text(
+            "table",
+            table,
+            optional=True,
+            maximum_utf8_bytes=self._max_event_record_bytes,
+        )
+        observation_key = _text(
+            "observation_key",
+            observation_key,
+            optional=True,
+            maximum_utf8_bytes=self._max_event_record_bytes,
+        )
         detail = detail_text
         event_start_text = _time("event_start", event_start)
         event_end_text = _time("event_end", event_end)
@@ -325,10 +451,19 @@ class CanonicalPartitionV3Projector:
             merge_fanout=self._merge_fanout,
             limits=self._limits,
         )
+        max_revision_record_bytes = min(
+            self._max_revision_record_bytes,
+            self._limits.leaf_max_bytes - _RUN_HEADER_RESERVE_BYTES,
+        )
         try:
             with builder:
                 for raw_id in revision_ids:
-                    builder.add(_run_row(_validate_revision_id(raw_id)))
+                    revision_id = _validate_revision_id(
+                        raw_id,
+                        event_ordinal=event_ordinal,
+                        max_record_bytes=max_revision_record_bytes,
+                    )
+                    builder.add(_run_row(revision_id))
                 run = builder.finish()
                 revision_count = _positive_int("revision_count", _unique_count(self._storage, run))
                 event_fields = {
@@ -341,12 +476,17 @@ class CanonicalPartitionV3Projector:
                     "event_end": event_end_text,
                     "detail": detail,
                 }
+                _canonical_json_length(
+                    {"event_id": _EVENT_ID_PLACEHOLDER, **event_fields},
+                    maximum=self._max_event_record_bytes - 1,
+                )
                 event_record = {
                     "event_id": _event_id(
                         self._storage,
                         run,
                         event_fields=event_fields,
                         revision_count=revision_count,
+                        max_revision_record_bytes=max_revision_record_bytes,
                     ),
                     **event_fields,
                 }

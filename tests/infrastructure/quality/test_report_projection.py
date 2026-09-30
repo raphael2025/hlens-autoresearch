@@ -32,10 +32,20 @@ def limits() -> RunLimits:
 
 
 def projector(
-    storage: StorageAdapter, *, capacity: int = 3, merge_fanout: int = 2
+    storage: StorageAdapter,
+    *,
+    capacity: int = 3,
+    merge_fanout: int = 2,
+    max_event_record_bytes: int = 4096,
+    max_revision_record_bytes: int = 4096,
 ) -> CanonicalPartitionV3Projector:
     return CanonicalPartitionV3Projector(
-        storage, capacity=capacity, merge_fanout=merge_fanout, limits=limits()
+        storage,
+        capacity=capacity,
+        merge_fanout=merge_fanout,
+        limits=limits(),
+        max_event_record_bytes=max_event_record_bytes,
+        max_revision_record_bytes=max_revision_record_bytes,
     )
 
 
@@ -178,6 +188,149 @@ def test_digest_uses_the_versioned_domain_and_length_prefixed_fields(
     assert event["event_id"] == f"qevt3-{digest.hexdigest()}"
 
 
+def test_canonical_json_streaming_matches_full_encoder_for_escaped_unicode(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    event = project_one(storage, revision_ids=['rev-"é'], detail='quote " slash \\ newline\n é')
+    fields = {key: value for key, value in event.items() if key != "event_id"}
+    identity = {
+        "rule_id": "hlens.quality.canonical-partition",
+        "rule_version": "3.0.0",
+        "rule_hash": CANONICAL_PARTITION_V3_RULE_HASH,
+        "event_fields": fields,
+    }
+    encoded = canonical_json(identity).encode("utf-8")
+    digest = hashlib.sha256()
+    digest.update(b"hlens.quality.canonical-partition@3.0.0/event-id/v1\x00")
+    digest.update(len(encoded).to_bytes(8, "big"))
+    digest.update(encoded)
+    revision_id = 'rev-"é'
+    revision_bytes = revision_id.encode("utf-8")
+    digest.update(len(revision_bytes).to_bytes(8, "big"))
+    digest.update(revision_bytes)
+    assert event["event_id"] == f"qevt3-{digest.hexdigest()}"
+
+
+def test_event_record_byte_cap_accepts_exact_line_and_rejects_one_byte_less(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    expected = project_one(storage, revision_ids=["rev-a"], detail="é")
+    line_size = len(canonical_json(expected).encode("utf-8")) + 1
+    with projector(storage, max_event_record_bytes=line_size).project_event(
+        event_type="bar_1m_gap",
+        table="canonical.bars_1m",
+        observation_key="binance:spot:bar:BTC-USDT:1m:1700000000000",
+        revision_ids=["rev-a"],
+        event_start=datetime(2023, 11, 14, tzinfo=UTC),
+        event_end=datetime(2023, 11, 14, 0, 1, tzinfo=UTC),
+        detail="é",
+    ) as projected:
+        assert dict(projected.event_record) == expected
+        list(projected.revision_records)
+    with pytest.raises(CanonicalPartitionProjectionError, match="byte limit"):
+        with projector(storage, max_event_record_bytes=line_size - 1).project_event(
+            event_type="bar_1m_gap",
+            table="canonical.bars_1m",
+            observation_key="binance:spot:bar:BTC-USDT:1m:1700000000000",
+            revision_ids=["rev-a"],
+            event_start=datetime(2023, 11, 14, tzinfo=UTC),
+            event_end=datetime(2023, 11, 14, 0, 1, tzinfo=UTC),
+            detail="é",
+        ):
+            pytest.fail("oversized event line was accepted")
+
+
+def test_revision_record_byte_cap_counts_multibyte_utf8_and_rejects_one_byte_less(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    revision_id = "é"
+    line_size = len(canonical_json({"event_ordinal": 0, "revision_id": revision_id}).encode()) + 1
+    with projector(storage, max_revision_record_bytes=line_size).project_event(
+        event_type="competing_heads",
+        table="canonical.trades",
+        observation_key="key",
+        revision_ids=[revision_id],
+        event_start=None,
+        event_end=None,
+        detail="heads",
+    ) as projected:
+        assert list(projected.revision_records) == [
+            {"event_ordinal": 0, "revision_id": revision_id}
+        ]
+    with pytest.raises(CanonicalPartitionProjectionError, match="byte limit"):
+        with projector(storage, max_revision_record_bytes=line_size - 1).project_event(
+            event_type="competing_heads",
+            table="canonical.trades",
+            observation_key="key",
+            revision_ids=[revision_id],
+            event_start=None,
+            event_end=None,
+            detail="heads",
+        ):
+            pytest.fail("oversized revision line was accepted")
+
+
+def test_large_detail_is_rejected_before_storage_writes(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = storage.stage
+    staged = 0
+
+    def tracked(*args: Any, **kwargs: Any) -> Any:
+        nonlocal staged
+        staged += 1
+        return stage(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "stage", tracked)
+    with pytest.raises(CanonicalPartitionProjectionError, match="byte limit"):
+        with projector(storage, max_event_record_bytes=1024).project_event(
+            event_type="bar_1m_gap",
+            table="canonical.bars_1m",
+            observation_key="key",
+            revision_ids=[],
+            event_start=None,
+            event_end=None,
+            detail="d" * 1_000_000,
+        ):
+            pytest.fail("oversized detail was accepted")
+    assert staged == 0
+
+
+def test_oversized_revision_id_is_rejected_before_storage_writes(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stage = storage.stage
+    staged = 0
+
+    def tracked(*args: Any, **kwargs: Any) -> Any:
+        nonlocal staged
+        staged += 1
+        return stage(*args, **kwargs)
+
+    monkeypatch.setattr(storage, "stage", tracked)
+    with pytest.raises(CanonicalPartitionProjectionError, match="byte limit"):
+        with projector(storage, max_revision_record_bytes=64).project_event(
+            event_type="competing_heads",
+            table="canonical.trades",
+            observation_key="key",
+            revision_ids=["é" * 100],
+            event_start=None,
+            event_end=None,
+            detail="heads",
+        ):
+            pytest.fail("oversized revision ID was accepted")
+    assert staged == 0
+
+
+def test_texts_reject_unpaired_surrogates_without_replacement(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    with pytest.raises(CanonicalPartitionProjectionError, match="valid UTF-8"):
+        project_one(storage, revision_ids=[], detail="bad-\ud800-text")
+    with pytest.raises(CanonicalPartitionProjectionError, match="valid UTF-8"):
+        project_one(storage, revision_ids=["bad-\ud800-id"])
+
+
 @pytest.mark.parametrize(
     ("field", "value"),
     [
@@ -280,6 +433,15 @@ def test_required_text_fields_and_ordinal_parameters_are_strict(
                 capacity=capacity,
                 merge_fanout=merge_fanout,
                 limits=limits(),
+                max_event_record_bytes=4096,
+                max_revision_record_bytes=4096,
+            )
+    for event_limit, revision_limit in ((0, 4096), (4096, 0), (True, 4096), (4096, False)):
+        with pytest.raises(CanonicalPartitionProjectionError):
+            projector(
+                storage,
+                max_event_record_bytes=event_limit,
+                max_revision_record_bytes=revision_limit,
             )
 
 
