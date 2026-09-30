@@ -7,6 +7,7 @@ remain on their legacy table and path.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from collections.abc import Collection, Mapping
@@ -33,7 +34,7 @@ from infrastructure.quality.report_streams import (
     QualityReportStreamRef,
 )
 
-__all__ = ["QualityReportManifestStore"]
+__all__ = ["QualityReportManifestStore", "derive_quality_report_id"]
 
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _RULE_ID_RE: Final = re.compile(r"^[a-z][a-z0-9_.-]*$")
@@ -45,7 +46,65 @@ _STREAM_REF_FIELDS: Final = frozenset(
     {"format_id", "record_count", "leaf_count", "depth", "root_key", "root_sha256", "root_size"}
 )
 _STREAM_ROOT_RE: Final = re.compile(r"^quality/report-evidence/v1/(?P<sha256>[0-9a-f]{64})\.jsonl$")
+_REPORT_ID_DOMAIN = b"hlens.quality.report-identity/v1\x00"
 _UTC = UTC
+
+
+def derive_quality_report_id(
+    *,
+    quality_rule_id: str,
+    quality_rule_version: str,
+    quality_rule_hash: str,
+    subject_table: str,
+    subject_snapshot_id: str | None,
+    subject_symbol: str | None,
+    subject_start: datetime | None,
+    subject_end: datetime | None,
+    snapshot_bindings: list[dict[str, str]],
+    max_identity_bytes: int,
+) -> str:
+    """Derive a stable ID from rule hash, subject metadata, and exact pinned inputs.
+
+    This code-owned algorithm is intentionally not an injectable callback. Callers provide only
+    normalized identity data. ``knowledge_time`` and stream roots are commit/output metadata and
+    therefore do not participate in report identity.
+    """
+    identity = {
+        "quality_rule_id": quality_rule_id,
+        "quality_rule_version": quality_rule_version,
+        "quality_rule_hash": quality_rule_hash,
+        "subject": {
+            "table": subject_table,
+            "snapshot_id": subject_snapshot_id,
+            "symbol": subject_symbol,
+            "start": None if subject_start is None else subject_start.isoformat(),
+            "end": None if subject_end is None else subject_end.isoformat(),
+        },
+        "snapshot_bindings": snapshot_bindings,
+    }
+    if (
+        isinstance(max_identity_bytes, bool)
+        or not isinstance(max_identity_bytes, int)
+        or max_identity_bytes < 1
+    ):
+        raise CatalogIntegrityError("max_identity_bytes must be a positive integer")
+    hasher = hashlib.sha256(_REPORT_ID_DOMAIN)
+    _canonical_jsonl_size(
+        identity,
+        maximum=max_identity_bytes,
+        hasher=hasher,
+        terminal_lf=False,
+        limit_name="max_identity_bytes",
+    )
+    digest = hasher.hexdigest()
+    symbol = "none" if subject_symbol is None else subject_symbol
+    report_day = "unscoped" if subject_start is None else subject_start.date().isoformat()
+    report_id = (
+        f"{quality_rule_id}@{quality_rule_version}.{subject_table}.{symbol}.{report_day}.{digest}"
+    )
+    if _BATCH_ID_RE.fullmatch(report_id) is None:
+        raise CatalogIntegrityError("derived report ID exceeds the catalog batch ID format")
+    return report_id
 
 
 def _text(name: str, value: object, *, optional: bool = False) -> str | None:
@@ -68,7 +127,14 @@ def _integer(name: str, value: object, *, minimum: int = 0) -> int:
     return value
 
 
-def _canonical_jsonl_size(value: object, *, maximum: int) -> int:
+def _canonical_jsonl_size(
+    value: object,
+    *,
+    maximum: int,
+    hasher: Any | None = None,
+    terminal_lf: bool = True,
+    limit_name: str = "max_manifest_record_bytes",
+) -> int:
     """Count canonical JSON UTF-8 bytes plus LF without materializing the whole row."""
     size = 0
 
@@ -76,9 +142,9 @@ def _canonical_jsonl_size(value: object, *, maximum: int) -> int:
         nonlocal size
         size += len(data)
         if size > maximum:
-            raise CatalogIntegrityError(
-                "manifest canonical JSONL row exceeds max_manifest_record_bytes"
-            )
+            raise CatalogIntegrityError(f"manifest canonical JSONL row exceeds {limit_name}")
+        if hasher is not None:
+            hasher.update(data)
 
     def add_text(text: str) -> None:
         add(b'"')
@@ -120,7 +186,8 @@ def _canonical_jsonl_size(value: object, *, maximum: int) -> int:
             raise CatalogIntegrityError("manifest row contains a non-canonical JSON value")
 
     visit(value)
-    add(b"\n")
+    if terminal_lf:
+        add(b"\n")
     return size
 
 
@@ -216,9 +283,8 @@ class QualityReportManifestStore:
     """Read and append one canonical v3 manifest per report ID.
 
     ``allowed_snapshot_tables`` is a finite collection supplied by the report rule. Its size is the
-    runtime maximum binding count; ``required_snapshot_tables`` optionally names the subset every
-    manifest must include. Stream limits are explicit and validate the canonical root depth and
-    object shape.
+    runtime maximum binding count; the required subset is an explicit constructor input and may be
+    empty. Stream limits are explicit and validate the canonical root depth and object shape.
     """
 
     def __init__(
@@ -229,9 +295,9 @@ class QualityReportManifestStore:
         quality_rule_version: str,
         quality_rule_hash: str,
         allowed_snapshot_tables: Collection[str],
+        required_snapshot_tables: Collection[str],
         stream_limits: QualityReportStreamLimits,
         max_manifest_record_bytes: int,
-        required_snapshot_tables: Collection[str] = (),
     ) -> None:
         if not isinstance(quality_rule_id, str) or _RULE_ID_RE.fullmatch(quality_rule_id) is None:
             raise CatalogIntegrityError("quality_rule_id is invalid")
@@ -300,9 +366,13 @@ class QualityReportManifestStore:
         if _BATCH_ID_RE.fullmatch(report_id) is None:
             raise CatalogIntegrityError("manifest report_id is not a valid catalog batch id")
         expected_prefix = f"{self._quality_rule_id}@{self._quality_rule_version}."
-        if not report_id.startswith(expected_prefix):
+        if (
+            not report_id.startswith(expected_prefix)
+            or report_id[len(expected_prefix) :].count(".") < 3
+            or _SHA256_RE.fullmatch(report_id.rsplit(".", maxsplit=1)[-1]) is None
+        ):
             raise CatalogIntegrityError(
-                "manifest report_id does not match the configured rule identity"
+                "manifest report_id has an invalid identity prefix or digest"
             )
         return report_id
 
@@ -397,7 +467,6 @@ class QualityReportManifestStore:
             raise CatalogIntegrityError(
                 "manifest subject snapshot and its table binding must be present and equal"
             )
-
         normalized: dict[str, Any] = {
             "report_id": report_id,
             "quality_rule_id": self._quality_rule_id,
@@ -418,6 +487,22 @@ class QualityReportManifestStore:
                 fanout=self._stream_limits.fanout,
             )
         _canonical_jsonl_size(normalized, maximum=self._max_manifest_record_bytes)
+        derived_report_id = derive_quality_report_id(
+            quality_rule_id=self._quality_rule_id,
+            quality_rule_version=self._quality_rule_version,
+            quality_rule_hash=self._quality_rule_hash,
+            subject_table=subject_table,
+            subject_snapshot_id=subject_snapshot_id,
+            subject_symbol=subject_symbol,
+            subject_start=subject_start,
+            subject_end=subject_end,
+            snapshot_bindings=bindings,
+            max_identity_bytes=self._max_manifest_record_bytes,
+        )
+        if report_id != derived_report_id:
+            raise CatalogIntegrityError(
+                "manifest report_id does not match its rule, subject, and snapshot bindings"
+            )
         try:
             arrow_table = pa.Table.from_pylist([normalized], schema=self._schema)
         except (pa.ArrowException, TypeError, ValueError) as exc:
@@ -432,7 +517,13 @@ class QualityReportManifestStore:
         return cast(dict[str, Any], result[0])
 
     def lookup(self, report_id: str) -> dict[str, Any] | None:
-        """Read one manifest by report ID; never writes or reads a clock."""
+        """Read one manifest by report ID; never writes or reads a clock.
+
+        The current ``CatalogAdapter.scan_columns`` contract has row-count but no byte cap. Rows are
+        therefore materialized by the adapter before this store can apply its manifest byte bound.
+        A hostile out-of-band oversized row remains a read-amplification boundary until the adapter
+        exposes bounded projection/decoding.
+        """
         report_id = self._report_id(report_id)
         try:
             table = self._adapter.scan_columns(

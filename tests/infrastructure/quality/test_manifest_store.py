@@ -17,6 +17,7 @@ from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORT_MANIFESTS
 from infrastructure.quality.manifest_store import (
     QualityReportManifestStore,
     _canonical_jsonl_size,
+    derive_quality_report_id,
 )
 from infrastructure.quality.report_streams import (
     QUALITY_REPORT_STREAM_FORMAT,
@@ -56,6 +57,10 @@ def store(
     )
 
 
+def fake_report_id(digest: str) -> str:
+    return f"{RULE_ID}@{RULE_VERSION}.canonical.bars_1m.BTCUSDT.2024-12-31.{digest}"
+
+
 def stream_ref(harness: RestHarness, name: str) -> QualityReportStreamRef:
     writer = QualityReportStreamWriter(harness.storage, name, limits=STREAM_LIMITS)
     return writer.finish()
@@ -64,12 +69,11 @@ def stream_ref(harness: RestHarness, name: str) -> QualityReportStreamRef:
 def manifest_row(
     harness: RestHarness,
     *,
-    report_id: str = "hlens.quality.canonical-partition@3.0.0.canonical.bars_1m.BTCUSDT.2024-12-31",
+    report_id: str | None = None,
     knowledge_time: datetime | None = None,
 ) -> dict[str, Any]:
     day = datetime(2024, 12, 31, tzinfo=UTC)
-    return {
-        "report_id": report_id,
+    row: dict[str, Any] = {
         "quality_rule_id": RULE_ID,
         "quality_rule_version": RULE_VERSION,
         "quality_rule_hash": RULE_HASH,
@@ -87,6 +91,19 @@ def manifest_row(
         "event_revisions": stream_ref(harness, "event_revisions"),
         "evidence_gaps": stream_ref(harness, "evidence_gaps"),
     }
+    row["report_id"] = report_id or derive_quality_report_id(
+        quality_rule_id=RULE_ID,
+        quality_rule_version=RULE_VERSION,
+        quality_rule_hash=RULE_HASH,
+        subject_table=row["subject_table"],
+        subject_snapshot_id=row["subject_snapshot_id"],
+        subject_symbol=row["subject_symbol"],
+        subject_start=row["subject_start"],
+        subject_end=row["subject_end"],
+        snapshot_bindings=row["snapshot_bindings"],
+        max_identity_bytes=MAX_MANIFEST_RECORD_BYTES,
+    )
+    return row
 
 
 def test_commit_readback_and_same_row_idempotency(harness: RestHarness) -> None:
@@ -113,7 +130,7 @@ def test_lookup_existing_only_is_read_only_and_missing_returns_none(
     harness: RestHarness, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     manifest_store = store(harness)
-    assert manifest_store.lookup(f"{RULE_ID}@{RULE_VERSION}.missing") is None
+    assert manifest_store.lookup(fake_report_id("0" * 64)) is None
     row = manifest_row(harness)
     expected = manifest_store.commit(row)
 
@@ -122,16 +139,68 @@ def test_lookup_existing_only_is_read_only_and_missing_returns_none(
 
     monkeypatch.setattr(harness.adapter, "commit_batch", reject_write)
     assert manifest_store.lookup(row["report_id"]) == expected
-    assert manifest_store.lookup(f"{RULE_ID}@{RULE_VERSION}.still-missing") is None
+    assert manifest_store.lookup(fake_report_id("1" * 64)) is None
 
 
 def test_same_report_id_with_different_content_is_integrity_error(harness: RestHarness) -> None:
     manifest_store = store(harness)
     row = manifest_row(harness)
     manifest_store.commit(row)
-    changed = dict(row, subject_symbol="ETHUSDT")
-    with pytest.raises(CatalogIntegrityError, match="different content"):
+    writer = QualityReportStreamWriter(harness.storage, "events", limits=STREAM_LIMITS)
+    writer.append({"changed": True})
+    changed = dict(row, events=writer.finish())
+    with pytest.raises(CatalogIntegrityError, match="already has different content"):
         manifest_store.commit(changed)
+
+
+def test_report_id_binds_rule_hash_subject_and_exact_snapshot_bindings(
+    harness: RestHarness,
+) -> None:
+    row = manifest_row(harness)
+    with pytest.raises(CatalogIntegrityError, match="does not match its rule, subject"):
+        store(harness).commit(dict(row, report_id=fake_report_id("f" * 64)))
+
+    changed_bindings = [dict(binding) for binding in row["snapshot_bindings"]]
+    changed_bindings[1]["snapshot_id"] = "4243"
+    with pytest.raises(CatalogIntegrityError, match="does not match its rule, subject"):
+        store(harness).commit(dict(row, snapshot_bindings=changed_bindings))
+
+    def derived(*, rule_hash: str, symbol: str, bindings: list[dict[str, str]]) -> str:
+        return derive_quality_report_id(
+            quality_rule_id=RULE_ID,
+            quality_rule_version=RULE_VERSION,
+            quality_rule_hash=rule_hash,
+            subject_table=row["subject_table"],
+            subject_snapshot_id=row["subject_snapshot_id"],
+            subject_symbol=symbol,
+            subject_start=row["subject_start"],
+            subject_end=row["subject_end"],
+            snapshot_bindings=bindings,
+            max_identity_bytes=MAX_MANIFEST_RECORD_BYTES,
+        )
+
+    original = derived(rule_hash=RULE_HASH, symbol="BTCUSDT", bindings=row["snapshot_bindings"])
+    assert (
+        derived(rule_hash="b" * 64, symbol="BTCUSDT", bindings=row["snapshot_bindings"]) != original
+    )
+    assert (
+        derived(rule_hash=RULE_HASH, symbol="ETHUSDT", bindings=row["snapshot_bindings"])
+        != original
+    )
+    assert derived(rule_hash=RULE_HASH, symbol="BTCUSDT", bindings=changed_bindings) != original
+    with pytest.raises(CatalogIntegrityError, match="max_identity_bytes"):
+        derive_quality_report_id(
+            quality_rule_id=RULE_ID,
+            quality_rule_version=RULE_VERSION,
+            quality_rule_hash=RULE_HASH,
+            subject_table=row["subject_table"],
+            subject_snapshot_id=row["subject_snapshot_id"],
+            subject_symbol=row["subject_symbol"],
+            subject_start=row["subject_start"],
+            subject_end=row["subject_end"],
+            snapshot_bindings=row["snapshot_bindings"],
+            max_identity_bytes=1,
+        )
 
 
 def test_lookup_rejects_duplicate_manifest_rows(harness: RestHarness) -> None:
@@ -263,7 +332,7 @@ def test_oversized_manifest_text_is_rejected_before_catalog_append(harness: Rest
         (lambda row: row.update(report_id="invalid/id"), "batch id"),
         (
             lambda row: row.update(report_id="other.rule@2.0.0.canonical.bars.BTCUSDT.2024-12-31"),
-            "rule identity",
+            "identity prefix or digest",
         ),
         (lambda row: row.update(subject_table="not-a-table"), "subject_table"),
         (
@@ -345,6 +414,7 @@ def test_constructor_requires_consistent_rule_and_finite_snapshot_allowlists(
             quality_rule_version=RULE_VERSION,
             quality_rule_hash="bad",
             allowed_snapshot_tables=ALLOWED_TABLES,
+            required_snapshot_tables=(),
             stream_limits=STREAM_LIMITS,
             max_manifest_record_bytes=MAX_MANIFEST_RECORD_BYTES,
         )
@@ -355,6 +425,7 @@ def test_constructor_requires_consistent_rule_and_finite_snapshot_allowlists(
             quality_rule_version=RULE_VERSION,
             quality_rule_hash=RULE_HASH,
             allowed_snapshot_tables="canonical.bars_1m",
+            required_snapshot_tables=(),
             stream_limits=STREAM_LIMITS,
             max_manifest_record_bytes=MAX_MANIFEST_RECORD_BYTES,
         )
@@ -376,6 +447,7 @@ def test_constructor_requires_consistent_rule_and_finite_snapshot_allowlists(
             quality_rule_version=RULE_VERSION,
             quality_rule_hash=RULE_HASH,
             allowed_snapshot_tables=ALLOWED_TABLES,
+            required_snapshot_tables=(),
             stream_limits=STREAM_LIMITS,
             max_manifest_record_bytes=0,
         )
