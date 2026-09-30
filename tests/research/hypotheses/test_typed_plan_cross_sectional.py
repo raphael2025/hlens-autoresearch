@@ -120,7 +120,8 @@ def test_cross_sectional_transform_rejects_a_window() -> None:
 @pytest.mark.parametrize("missing", ["universe", "universe_hash"])
 def test_cross_sectional_transform_requires_the_pinned_universe(missing: str) -> None:
     with pytest.raises(PlanRejected, match=missing):
-        _cs_plan("rank_cs", **{missing: None})
+        overrides: dict[str, Any] = {missing: None}
+        _cs_plan("rank_cs", **overrides)
 
 
 @pytest.mark.parametrize(
@@ -137,7 +138,8 @@ def test_cross_sectional_transform_requires_the_pinned_universe(missing: str) ->
 )
 def test_cross_sectional_universe_parameters_are_strict(field: str, value: object) -> None:
     with pytest.raises(PlanRejected, match="universe"):
-        _cs_plan("rank_cs", **{field: value})
+        overrides: dict[str, Any] = {field: value}
+        _cs_plan("rank_cs", **overrides)
 
 
 def test_quantile_cs_requires_buckets_of_at_least_two() -> None:
