@@ -1,8 +1,8 @@
-"""Invocation-owned SQLite scratch index for validating one PIT revision graph.
+"""Invocation-owned SQLite scratch index for validating and traversing one PIT revision graph.
 
-The input is streamed into indexed tables and validation retains no graph-sized Python maps.
-This module validates graph invariants only; selector/head traversal is a separate integration
-slice. Scratch disk and the rest of process RSS remain subject to E1-CAP-1 measurement.
+The input is streamed into indexed tables; graph validation and maximal-head traversal retain no
+graph-sized Python maps. Scratch disk and the rest of process RSS remain subject to E1-CAP-1
+measurement.
 """
 
 from __future__ import annotations

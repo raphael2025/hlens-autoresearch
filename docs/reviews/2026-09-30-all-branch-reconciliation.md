@@ -47,7 +47,7 @@ Of 64 topic refs, 24 tips were already ancestors of integration; 20 had diverged
 
 The dirty root W1 checkout is a separate source of changes; it is not represented by its branch tip or the patch-equivalence counts above. At the audit snapshot it had 146 dirty entries: 145 tracked edits plus one unique golden JSON. Its content differs from the consolidation tree across 130 files, mixing old docs/pins, already integrated code, and a few narrow candidate fixes.
 
-- **BatchGrid bug confirmed:** `research/hypotheses/batch.py` freezes parameter points as `FrozenMapping`, then passes them to `content_hash`, whose JSON encoding cannot serialize that mapping. A minimal reproduction on the integration base returned `TypeError: Object of type FrozenMapping is not JSON serializable`. The fix is limited to hashing the ordinary dict representation (`dict(p)`), with `tests/research/hypotheses/test_batch.py` as the direct regression target. This narrow fix is queued after the active PIT selector slice.
+- **BatchGrid bug confirmed:** `research/hypotheses/batch.py` freezes parameter points as `FrozenMapping`, then passes them to `content_hash`, whose JSON encoding cannot serialize that mapping. A minimal reproduction on the integration base returned `TypeError: Object of type FrozenMapping is not JSON serializable`. The fix is limited to hashing the ordinary dict representation (`dict(p)`), with `tests/research/hypotheses/test_batch.py` as the direct regression target. This is the next narrow implementation slice.
 - **PluginManifest delta rejected as redundant:** current `infrastructure/plugins/manifest.py` already rejects non-string name/version/contract-version inputs as `PluginManifestError`; a direct integer-input check confirmed all three cases. No patch is needed.
 - **Do not copy a set-to-dict “optimization”:** the dirty `row_integrity.py` replaces `set(history.prefixes)` with `dict.fromkeys(...)` for an annotation, while both grow with prefix count and the dict has higher overhead. Keep the current set and, if needed, correct the helper's type to a membership protocol.
 - Other dirty differences include older contract 2.4 pins, formatting/type changes, and code equivalent to later E1 implementations. Do not transplant them as a group.
@@ -59,3 +59,9 @@ The integration base lacked two fixed fixtures: `tests/golden/v2_3_0/dataset_v3_
 ## Decision
 
 No old branch should be merged wholesale. Keep all branches, archived refs, failed experiments, and dirty worktrees intact as provenance. Selectively integrate only a verified, phase-relevant file-level delta. At this audit snapshot, the actionable items are SQLite selector/head integration, fixed historical Dataset v3 replay fixtures/tests, and the BatchGrid hash fix. P7 and Web release gates stay with their own review phases. E1-CAP-1 and Phase 1 remain open.
+
+## Follow-up after the audit snapshot
+
+The SQLite selector/head slice is now integrated as `00594b8` after three independent, limit-scoped ACCEPT reviews. Its direct PIT suite passed `18` tests; the caller suite passed `63`, skipped `4`, and deselected the two previously deferred nodes. See [PIT SQLite selector integration review](2026-09-30-pit-sqlite-selector.md). This does not close ADR-0097, E1-CAP-1, or Phase 1.
+
+Next small deltas remain the confirmed BatchGrid hash fix (`tests/research/hypotheses/test_batch.py`) and selective port/review of the fixed Dataset v3 historical replay fixtures from `codex/e1-replay-25-tests@5b11da0`. Keep both as isolated tasks; do not merge historical branches wholesale. Repeated-cutoff I/O/RSS and long-chain/wide-DAG capacity work remain open.
