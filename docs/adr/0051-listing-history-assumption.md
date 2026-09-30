@@ -132,3 +132,7 @@ Claude PM 依 Raphael 2026-09-28 的明确授权接受本 ADR，裁决内容按�
   - dataset 接受该绑定，manifest 通过其 PIT 规格记录这一政策；`manifest_assumptions()` 供 Phase 4 报告按是否绑定分组；
   - v3 evidence 保留与外层不同的嵌套版本，使 2.0.0 的嵌套绑定能逐位重建。
 - 未绑定本假设时，所有路径逐位不变。测试均未运行。
+
+## 后续修订（2026-09-30）
+
+- 按 ADR-0100 §5，政策 1.1.0（`e4bb050`）已填入下界：BTCUSDT / ETHUSDT 均为 2017-08-17（UTC），来源与核实时间见 `infrastructure/universe/listing_assumption.py` 的 `POLICY_EVIDENCE`。政策 1.0.0（空表）保留，不改变其含义。测试均未运行。

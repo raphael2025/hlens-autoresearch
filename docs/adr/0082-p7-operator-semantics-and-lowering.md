@@ -2,7 +2,7 @@
 
 | 字段 | 值 |
 |---|---|
-| 状态 | **Accepted（interaction；transformation 之 standardize / difference / smooth；conditioning、temporal、transformation 之 rank / quantile、ensemble、negation 仍 OPEN）** |
+| 状态 | **Accepted（六类算子均已接受：interaction；transformation 之 standardize / difference / smooth；conditioning、temporal、ensemble、negation 见第三次接受记录；transformation 之 rank / quantile 由 ADR-0099（时间序列）/ ADR-0100（横截面）关闭）**；下方首次接受时的 OPEN 列表为历史记录 |
 | 日期 | 2026-09-28（transformation 修订：2026-09-28） |
 | 决策者 | **Codex 依 Raphael 2026-09-28 授权决定**（interaction）；**Claude Code（PM）依 Raphael 2026-09-28 对 PM 的授权决定**（transformation 修订，见文末第二份接受记录） |
 | 相关 Phase | Phase 7 — Discovery |
