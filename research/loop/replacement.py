@@ -59,9 +59,13 @@ loop has **never opened**:
   the epoch, every window id and start) and re-checked against the recorded values on every
   reopening;
 - *independent*: no registered window overlaps the Profile's sealed OOS window (refused at
-  composition) or another registered window, and a window the loop's accumulated research data
-  reaches into (``RoundData.research_start`` / ``research_end`` of this round) is refused — the loop
-  has seen it;
+  composition) or another registered window, and a window that **any** data the loop has ingested
+  reaches into is refused — the loop has seen it. "Ingested" is the union over every recorded
+  round and this one: each recorded round's ingest ``data_window`` (dataset path), every generated
+  market's whole bar span (synthetic path, ``memory.markets``, sealed-window and unused bars
+  included), every accumulated research piece, and this round's segment (research span, market,
+  manifests' time ranges). A recorded round whose ingest ran but recorded no data window, or an
+  unbound audit (``bind_recorded_rounds``, done by the composition), is refused (unknown = seen);
 - *evidence on it*: at least one claimed report's Profile has exactly that window as its sealed OOS
   window (``SealedWindow.from_profile``); evidence on the loop's own window or on an unregistered
   window is not independent (refused); evidence on several registered windows is refused (one
@@ -95,7 +99,14 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Final
 
-from apps.worker.loop import RoundContext, StageResult, StageUsage, loop_actor
+from apps.worker.loop import (
+    LoopRecord,
+    RoundContext,
+    StageResult,
+    StageStatus,
+    StageUsage,
+    loop_actor,
+)
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.research import Hypothesis, HypothesisOrigin, ValidationReport
 from core.lifecycle.strategy import LifecycleState
@@ -362,6 +373,7 @@ class ReplacementTriggerStage:
         self._family_id = family_id
         self._actor = loop_actor(loop_id)
         self._cached: tuple[RoundContext, _Plan] | None = None
+        self._rounds: Callable[[], Sequence[LoopRecord]] | None = None
 
     # ------------------------------------------------------------------ planning
 
@@ -455,13 +467,78 @@ class ReplacementTriggerStage:
 
     # ------------------------------------------------------------------ guard
 
-    def _research_span(self, ctx: RoundContext) -> tuple[datetime, datetime] | None:
+    def bind_recorded_rounds(self, rounds: Callable[[], Sequence[LoopRecord]]) -> None:
+        """The loop's recorded rounds (its audit), read by the guard (module docs); once."""
+        if self._rounds is not None:
+            raise ValueError("the recorded rounds are already bound")
+        if not callable(rounds):
+            raise TypeError("rounds must be callable: () -> the loop's recorded rounds")
+        self._rounds = rounds
+
+    def _seen_spans(self, ctx: RoundContext) -> tuple[list[tuple[datetime, datetime]], str | None]:
+        """Every data window the loop has ingested so far — the union over every recorded round
+        and this one (module docs, *independent*); ``(spans, None)`` or ``([], refusal)``."""
+        if self._rounds is None:
+            return [], "the loop's recorded rounds are not bound: the data it has seen is unknown"
+        spans: list[tuple[datetime, datetime]] = []
+
+        def add(start: object, end: object) -> bool:
+            if isinstance(start, datetime) and isinstance(end, datetime):
+                spans.append((start, end))
+                return True
+            return False
+
+        memory = self._memory
+        by_hash: dict[str, tuple[datetime, datetime]] = {}
+        for market in memory.markets:  # every generated market the loop held, whole
+            bars = getattr(market, "bars", ())
+            if bars:
+                span = (bars[0].interval_start, bars[-1].interval_end)
+                by_hash[str(getattr(market, "market_hash", ""))] = span
+                spans.append(span)
+        for piece in memory.research_data:
+            add(piece.bars[0].interval_start, piece.bars[-1].interval_end)
+        for record in self._rounds():
+            stage = next((st for st in record.stages if st.name == "ingest"), None)
+            if stage is None or stage.status in (StageStatus.SKIPPED, StageStatus.REFUSED_BUDGET):
+                continue  # the ingest did not run: it read nothing
+            summary = stage.summary
+            window = None if summary is None else summary.get("data_window")
+            if isinstance(window, Sequence) and not isinstance(window, str) and len(window) == 2:
+                try:
+                    add(datetime.fromisoformat(window[0]), datetime.fromisoformat(window[1]))
+                except (TypeError, ValueError):
+                    return [], f"round {record.round_index}'s recorded data window is unreadable"
+                continue
+            market_hash = None if summary is None else summary.get("market_hash")
+            if isinstance(market_hash, str) and market_hash in by_hash:
+                continue  # that market's whole span is already in the union
+            return [], (
+                f"round {record.round_index}'s ingest recorded no data window: the data the loop "
+                "has seen is unknown"
+            )
         segment = ctx.artifacts.get("ingest", {}).get("segment")
-        start = getattr(segment, "research_start", None)
-        end = getattr(segment, "research_end", None)
-        if isinstance(start, datetime) and isinstance(end, datetime):
-            return start, end
-        return None
+        if segment is None:
+            return [], "the round's research data span is unknown (no ingest segment)"
+        found = add(
+            getattr(segment, "research_start", None), getattr(segment, "research_end", None)
+        )
+        market = getattr(segment, "market", None)
+        bars = getattr(market, "bars", ())
+        if bars:
+            found = add(bars[0].interval_start, bars[-1].interval_end) or found
+        for name in ("price_manifest", "feature_manifest"):
+            dataset = getattr(getattr(segment, name, None), "dataset", None)
+            found = (
+                add(
+                    getattr(dataset, "time_range_start", None),
+                    getattr(dataset, "time_range_end", None),
+                )
+                or found
+            )
+        if not found:
+            return [], "the round's ingested data window is unknown"
+        return spans, None
 
     def _guard(
         self, ctx: RoundContext, item: _Eligible, inputs: ReplacementInputs
@@ -527,17 +604,17 @@ class ReplacementTriggerStage:
                 "trigger opens exactly one",
             )
         window, hashes = next(iter(matched.values()))
-        span = self._research_span(ctx)
-        if span is None:
-            return None, (), "the round's research data span is unknown (no ingest segment)"
-        if window.overlaps(span[0], span[1]):
-            return (
-                None,
-                (),
-                f"the loop's accumulated research data [{span[0].isoformat()}, "
-                f"{span[1].isoformat()}] reaches into window {window.window_id!r}: the loop "
-                "has seen it",
-            )
+        spans, unknown = self._seen_spans(ctx)
+        if unknown is not None:
+            return None, (), unknown
+        for start, end in spans:
+            if window.overlaps(start, end):
+                return (
+                    None,
+                    (),
+                    f"data the loop has ingested [{start.isoformat()}, {end.isoformat()}] "
+                    f"reaches into window {window.window_id!r}: the loop has seen it",
+                )
         return window, tuple(hashes), None
 
     # ------------------------------------------------------------------ stage protocol

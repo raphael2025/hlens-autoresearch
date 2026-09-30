@@ -474,6 +474,9 @@ def compose_loop(
         after_record=None if state is None or state.anchor is None else state.publish_anchor,
         round_scope=None if state is None else state.round_scope,
     )
+    for stage in stages:  # P12 trigger: the guard reads every recorded round's ingest window
+        if isinstance(stage, ReplacementTriggerStage):
+            stage.bind_recorded_rounds(lambda: loop.audit.records)
     memory.reviews.bind_loop_actor(loop.guard.actor)  # the loop can never approve its own drafts
     if state is not None:
         state.verify_guard(loop.guard)
