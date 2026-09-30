@@ -33,6 +33,6 @@ The observed `verify_archive` delta range between 10k and 500k is already at lea
 
 ## Protocol completion and interpretation
 
-The probe exited with status 4 / `capacity_verdict = ERROR` because the next 500k `write_crash` child was deliberately sent SIGTERM after the observed range exceeded the limit. The output JSON is at `/tmp/e1-cap1-5d9dd71.json`; raw RSS samples are at `/tmp/e1-cap1-5d9dd71-samples.jsonl`.
+The probe exited with status 4 / `capacity_verdict = ERROR` because the next 500k `write_crash` child was deliberately sent SIGTERM after the observed range exceeded the limit. Preserved artifacts are [the output JSON](artifacts/e1-cap1-5d9dd71-partial.json) and [the raw RSS samples](artifacts/e1-cap1-5d9dd71-partial-samples.jsonl); the initial local copies were `/tmp/e1-cap1-5d9dd71.json` and `/tmp/e1-cap1-5d9dd71-samples.jsonl`.
 
 This establishes only a **partial diagnostic failure on 5d9dd71**. It is not a release verdict for `main`, and it says nothing about the later PIT lazy-key, archive-spool, row/edge RunSet commits on `codex/e1-phase1-progress`. A new complete protocol run is required on a clean candidate whose compared production paths match `main`; first address the measured archive verification growth and the remaining unbounded per-key PIT structures.
