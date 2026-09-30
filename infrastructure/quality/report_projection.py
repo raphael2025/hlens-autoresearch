@@ -26,6 +26,7 @@ from collections.abc import Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
 from typing import Any, Final
 
 from core.contracts.storage import StorageAdapter
@@ -357,7 +358,7 @@ def _revision_records(
     rows: Iterator[Mapping[str, Any]], *, event_ordinal: int
 ) -> Iterator[Mapping[str, Any]]:
     for revision_id in _unique_revision_ids(rows):
-        yield {"event_ordinal": event_ordinal, "revision_id": revision_id}
+        yield MappingProxyType({"event_ordinal": event_ordinal, "revision_id": revision_id})
 
 
 class CanonicalPartitionV3Projector:
@@ -519,7 +520,7 @@ class CanonicalPartitionV3Projector:
 
                     try:
                         yield ProjectedCanonicalEvent(
-                            event_record=event_record,
+                            event_record=MappingProxyType(event_record),
                             revision_records=_CountedRevisionIterator(),
                         )
                     except BaseException:

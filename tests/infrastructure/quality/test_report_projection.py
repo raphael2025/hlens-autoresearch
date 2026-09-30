@@ -16,6 +16,11 @@ from infrastructure.quality.report_projection import (
     CanonicalPartitionProjectionError,
     CanonicalPartitionV3Projector,
 )
+from infrastructure.quality.report_streams import (
+    QualityReportStreamLimits,
+    QualityReportStreamWriter,
+    iter_quality_report_stream,
+)
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.streaming.runs import RunLimits
 
@@ -134,6 +139,47 @@ def test_revisions_are_sorted_deduplicated_and_bound_to_event_ordinal(
         ]
     assert instance.next_event_ordinal == 2
     assert instance.next_revision_ordinal == 5
+
+
+def test_projected_records_are_read_only_and_stream_writer_serializes_them(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    event_writer = QualityReportStreamWriter(
+        storage, "events", limits=QualityReportStreamLimits(4, 4096, 2)
+    )
+    revision_writer = QualityReportStreamWriter(
+        storage, "event_revisions", limits=QualityReportStreamLimits(4, 4096, 2)
+    )
+    with projector(storage).project_event(
+        event_type="competing_heads",
+        table="canonical.trades",
+        observation_key="key",
+        revision_ids=["rev-b", "rev-a"],
+        event_start=None,
+        event_end=None,
+        detail="competing heads",
+    ) as projected:
+        with pytest.raises(TypeError):
+            projected.event_record["detail"] = "tampered"  # type: ignore[index]
+        event_writer.append(projected.event_record)
+        revisions = list(projected.revision_records)
+        with pytest.raises(TypeError):
+            revisions[0]["revision_id"] = "tampered"  # type: ignore[index]
+        for revision in revisions:
+            revision_writer.append(revision)
+
+    event_ref = event_writer.finish()
+    revision_ref = revision_writer.finish()
+    with iter_quality_report_stream(
+        storage, event_ref, limits=QualityReportStreamLimits(4, 4096, 2)
+    ) as records:
+        events = list(records)
+    with iter_quality_report_stream(
+        storage, revision_ref, limits=QualityReportStreamLimits(4, 4096, 2)
+    ) as records:
+        revisions = list(records)
+    assert events[0]["detail"] == "competing heads"
+    assert [record["revision_id"] for record in revisions] == ["rev-a", "rev-b"]
 
 
 def test_event_id_is_stable_for_different_input_orders(storage: LocalFileStorageAdapter) -> None:
