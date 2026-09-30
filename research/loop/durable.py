@@ -12,7 +12,8 @@ continues exactly where it stopped:
                        ``between_rounds`` checkpoint per human approval made between rounds
 ``trial_ledger.jsonl`` ``TrialLedger(path)`` — registrations and pre-registered re-evaluations
 ``sealed_oos.jsonl``   ``DurableUnsealingLedger`` — the sealed-OOS unsealings and evaluations
-                       (journal format 2 adds the opt-in replacement windows' openings)
+                       (journal format 3: the opt-in replacement windows' openings and
+                       evidence consumptions)
 ``lineage.jsonl``      ``LineageGraph(path=...)`` — every strategy spec the loop evolved from / into
 ``reviews.jsonl``      ``ReviewQueue(path)`` — LLM drafts, human approvals, drafts taken
 ``failures.jsonl``     ``FailureRegistry`` — FailureRecords (append-only, fsync'd, not chained)
@@ -68,9 +69,10 @@ round's record **before** the audit records it. The checkpoint line holds
    family's unsealing by the same approver, marked evaluated; every failure record hash the audit
    lists is in the failure registry; with the opt-in replacement trigger (ADR-0100 item 7,
    ``research.loop.replacement``), every trigger row's trial is in the trial ledger with its
-   content hash, every row's window opening is the unsealing ledger's opening of that window, and
-   every opening the ledger holds is named by a row of its round's completed ``evolution`` stage
-   (a round whose ``evolution`` stage failed after the opening keeps the window consumed);
+   content hash, every row's window opening (and evidence consumption) is the unsealing ledger's
+   opening (consumption) of that window, and every opening and consumption the ledger holds is
+   named by a row of a completed ``evolution`` stage (a round whose ``evolution`` stage failed
+   after the write keeps the window opened / consumed);
 7. after the loop replayed the audit into its guard: every lifecycle subject is a registered
    hypothesis (v4: also checked by ``open_state`` itself, on a pure replay of every audited
    transition through a fresh guard of the loop actor, before any admission recovery write);
@@ -326,7 +328,11 @@ from research.persistence import (
 from research.strategies.failure_registry import FailureRegistry
 from research.strategies.pipeline import StrategyCandidate
 from research.validation.pipeline import CONSUMED_WITHOUT_RESULT
-from research.validation.sealed_oos import DurableUnsealingLedger, WindowOpening
+from research.validation.sealed_oos import (
+    DurableUnsealingLedger,
+    WindowConsumption,
+    WindowOpening,
+)
 
 __all__ = [
     "ANCHOR_HEAD",
@@ -3790,7 +3796,13 @@ def _check_ledgers(memory: ResearchMemory, records: Sequence[LoopRecord]) -> Non
         if isinstance(oos, DurableUnsealingLedger)
         else {}
     )
+    consumptions = (
+        {c.window_id: c for c in oos.window_consumptions()}
+        if isinstance(oos, DurableUnsealingLedger)
+        else {}
+    )
     named: set[str] = set()
+    named_consumed: set[str] = set()
 
     def registered(ref: str, attempt: str | None, index: int) -> Hypothesis:
         hypothesis = hypotheses.get(ref)
@@ -3825,6 +3837,16 @@ def _check_ledgers(memory: ResearchMemory, records: Sequence[LoopRecord]) -> Non
             trial = registered(row["trial"]["hypothesis"], None, index)
             if trial.content_hash() != row["trial"]["hypothesis_hash"]:
                 raise _refuse(f"audit round {index} triggered another {row['trial']['hypothesis']}")
+            consumed = row.get("window_consumption")
+            if consumed is not None:
+                known = consumptions.get(str(consumed["window_id"]))
+                if known is None or known.payload() != consumed or known.round_index != index:
+                    raise _refuse(
+                        f"audit round {index} consumed the replacement window "
+                        f"{consumed['window_id']!r}, but the unsealing ledger does not hold that "
+                        "consumption"
+                    )
+                named_consumed.add(known.window_id)
             opening = row.get("window_opening")
             if opening is None:
                 continue
@@ -3882,6 +3904,34 @@ def _check_ledgers(memory: ResearchMemory, records: Sequence[LoopRecord]) -> Non
                         "review queue holds no such approval"
                     )
     _check_window_openings(records, openings, named)
+    _check_window_consumptions(records, consumptions, named_consumed)
+
+
+def _check_window_consumptions(
+    records: Sequence[LoopRecord],
+    consumptions: Mapping[str, WindowConsumption],
+    named: set[str],
+) -> None:
+    """Cross-check 6, replacement window consumptions (integrity fixes 2026-09-30): every
+    consumption the unsealing ledger holds belongs to a recorded round and is named by a trigger
+    row of that round's completed ``evolution`` stage; the one exception is a round whose
+    ``evolution`` stage did not complete after the consumption was journaled (the window stays
+    consumed, fail safe)."""
+    by_round = {record.round_index: record for record in records}
+    for window_id, consumption in consumptions.items():
+        if window_id in named:
+            continue
+        record = by_round.get(consumption.round_index)
+        stage = (
+            None
+            if record is None
+            else next((s for s in record.stages if s.name == "evolution"), None)
+        )
+        if stage is None or stage.status is StageStatus.COMPLETED:
+            raise _refuse(
+                f"the unsealing ledger holds a consumption of the replacement window "
+                f"{window_id!r} (round {consumption.round_index}) that no audit trigger row names"
+            )
 
 
 def _check_window_openings(

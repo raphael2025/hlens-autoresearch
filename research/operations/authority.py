@@ -94,14 +94,23 @@ failed stage), the metric is **missing**, as in validation; a gate without an ex
   bars with the baseline ``ValidatorSetup``'s own inputs (``WindowValidationBinding``: spec,
   metadata incl. ``family_trial_count``, Outcome label spec + provider = the run's recorded
   ``outcome_ref`` / plugin, validation seed ∈ the run's ``seeds``, ``RobustnessParams``, control
-  seeds, market benchmark, declared execution model, C-R3 scope; each checked against the run and
-  the baseline report's own gates — ``baseline_binding_mismatch`` / ``execution_mismatch``).
+  seeds, market benchmark, declared execution model, C-R3 scope = exactly the pipeline's
+  instruments; each checked against the run and the baseline report's own gates —
+  ``baseline_binding_mismatch`` / ``execution_mismatch``). Inputs the baseline does **not** record
+  (``family_trial_count``, which seed the validator used, a ``param:`` CSCV partition count or
+  impact coefficient, a state labeller) cannot be proven equal, so every ruled definition whose
+  gate depends on one is refused (``baseline_input_unrecorded``): ``G3.*``, ``G4.overfitting``,
+  ``G2.null_model_percentile``, the single-seed G1 controls and every ``G2.*`` gate after them,
+  ``G4.overfitting`` with ``param:cscv_partitions``, ``G4.capacity.*`` with
+  ``param:capacity.impact_coefficient``, ``G4.state.*`` with a state labeller.
   Outcome labels are computed by that provider over the window's proven bars of the pinned source
   manifest for the pipeline's own non-flat targets — the evaluation target, never an input
   (C-L2, the validator's own guard). Its trial runner must reproduce the window backtest
-  (``G0.reproducibility``); a failed structural G0 gate is refused. ``validate`` supplies
-  G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1 ``shuffle_timing_p_value`` /
-  ``shift_timing_p_value`` (base and per-seed gates) and ``..._min_over_seeds`` (scope: all the
+  (``G0.reproducibility``); a failed structural gate — G0 bindings / execution, or the G1
+  information-flow gates ``G1.outcome_not_input``, ``G1.label_blind_sides``,
+  ``G1.sealed_oos_excluded`` (also per instrument) — refuses every metric of the re-run.
+  ``validate`` supplies G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1
+  ``shuffle_timing_p_value`` / ``shift_timing_p_value`` (base and per-seed gates) and ``..._min_over_seeds`` (scope: all the
   window's computable labels); G2 ``effective_independent_trades``, ``breakeven_cost_multiple``,
   ``breakeven_cost_multiple_vs_stress`` @ ``G2.cost_stress.<i>``,
   ``percentile_vs_random_entry_null`` and G3 ``net_mean_hac_p_greater_adjusted`` (scope: the
@@ -129,8 +138,12 @@ proven bars). Its declared identities must equal the baseline run's reproducibil
 (backtest provider descriptor hash in ``plugin_versions``; cost model ref + content hash in
 ``dependency_hashes``; strategy ref + spec hash, risk policy ref + hash, params and every declared
 plugin hash; params compared as canonical JSON, so ``True``, ``1`` and ``1.0`` differ — 修订 2 §4)
-— else ``execution_mismatch``. The provider's result is re-validated and checked with
-``BacktestResult.check_answers``; one window yields one sample.
+— else ``execution_mismatch``. The target source also declares its decision grid (step, warm-up)
+and initial equity (in its identity payload, hence the provenance); they must equal the baseline
+run's recorded values. The frozen reproducibility tuple records none of them, so the resolution is
+refused with ``execution_unrecorded`` until the baseline run records them (a contract change,
+ADR) — an environment value is a caller declaration, not the baseline's. The provider's result is
+re-validated and checked with ``BacktestResult.check_answers``; one window yields one sample.
 
 **Baseline binding (修订 2 §5).** The provenance records the ``BaselineMetricSet`` content hash;
 ``run_degradation_check`` refuses a baseline set whose hash differs.
@@ -158,7 +171,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 from types import MappingProxyType
@@ -235,6 +248,7 @@ from research.validation.gates import (
     GATE_VALUE_QUANTIZATION,
     PARAM_SOURCE_PREFIX,
     PROFILE_FIELD_MISSING,
+    profile_has,
 )
 from research.validation.pipeline import ValidationContext
 from research.validation.returns import PeriodReturns, from_backtest
@@ -246,7 +260,9 @@ __all__ = [
     "ANCHOR_PRESENT",
     "AUTHORITY_FORMAT",
     "BASELINE_BINDING_MISMATCH",
+    "BASELINE_INPUT_UNRECORDED",
     "EVIDENCE_WINDOW_RETURNS",
+    "EXECUTION_UNRECORDED",
     "EVIDENCE_WINDOW_VALIDATION",
     "EXECUTION_MISMATCH",
     "LIFECYCLE_HEAD_UNKNOWN",
@@ -306,7 +322,15 @@ LIFECYCLE_HEAD_UNKNOWN: Final = "lifecycle_head_unknown"
 LIFECYCLE_NOT_ACTIVE: Final = "lifecycle_not_active"
 LIFECYCLE_UNAVAILABLE: Final = "lifecycle_unavailable"
 BASELINE_BINDING_MISMATCH: Final = "baseline_binding_mismatch"
+#: a ruled ``window_validation`` definition depends on a baseline validator input that neither the
+#: baseline report nor its run records, so the binding's value cannot be proven to be the
+#: baseline's (``family_trial_count``, the validation ``seed``, a ``param:`` ``cscv_partitions`` /
+#: ``impact_coefficient``, a caller-supplied state labeller): the definition is refused
+BASELINE_INPUT_UNRECORDED: Final = "baseline_input_unrecorded"
 EXECUTION_MISMATCH: Final = "execution_mismatch"
+#: the window run's decision grid (step, warm-up) or initial equity cannot be verified against the
+#: baseline run, which does not record them (the reproducibility tuple has no such fields)
+EXECUTION_UNRECORDED: Final = "execution_unrecorded"
 METRIC_REFUSED: Final = "metric_refused"
 #: a defined metric whose inputs (the ``WindowValidationBinding``) were not supplied
 METRIC_INPUTS_UNAVAILABLE: Final = "metric_inputs_unavailable"
@@ -1235,6 +1259,11 @@ class TargetSourceIdentity:
     params: Mapping[str, str | int | float | bool]
     plugins: Mapping[str, str]
     instruments: tuple[str, ...]
+    #: the decision grid the pipeline evaluates on (step and warm-up) and the backtest's initial
+    #: equity; each must equal the baseline run's recorded value (``_check_execution``)
+    decision_step: timedelta
+    decision_warmup: timedelta
+    initial_equity: Decimal
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -1244,6 +1273,9 @@ class TargetSourceIdentity:
             "risk_policy_hash": self.risk_policy_hash,
             "params": _json_ready(dict(self.params)),
             "plugins": dict(sorted(self.plugins.items())),
+            "decision_step_microseconds": self.decision_step // timedelta(microseconds=1),
+            "decision_warmup_microseconds": self.decision_warmup // timedelta(microseconds=1),
+            "initial_equity": str(self.initial_equity),
             "instruments": list(self.instruments),
         }
 
@@ -1348,7 +1380,56 @@ def _check_execution(
         or not all(isinstance(item, str) and item for item in instruments)
     ):
         raise AuthorityRefused(EXECUTION_MISMATCH, "the target source's instruments are invalid")
+    _check_execution_grid(identity, equity, run)
     return descriptor, identity
+
+
+def _recorded_execution_grid(run: ExperimentRun) -> tuple[timedelta, timedelta, Decimal] | None:
+    """The baseline run's recorded ``(decision_step, decision_warmup, initial_equity)``, or
+    ``None`` when the run records them nowhere. The frozen ``ReproducibilityTuple`` has no field
+    for any of them (and the baseline report carries no backtest request), so today this is always
+    ``None``: a value taken from the environment is a caller declaration, never the baseline's."""
+    del run
+    return None
+
+
+def _check_execution_grid(
+    identity: TargetSourceIdentity, equity: Decimal, run: ExperimentRun
+) -> None:
+    """The declared decision grid and initial equity must equal the baseline run's recorded
+    values; unrecorded is refused (``execution_unrecorded``), never assumed."""
+    step, warmup = identity.decision_step, identity.decision_warmup
+    declared = identity.initial_equity
+    if (
+        not isinstance(step, timedelta)
+        or step <= timedelta(0)
+        or not isinstance(warmup, timedelta)
+        or warmup < timedelta(0)
+        or not isinstance(declared, Decimal)
+        or not declared.is_finite()
+    ):
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH, "the target source declares no valid decision grid / equity"
+        )
+    if declared != equity or str(declared) != str(equity):
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH,
+            "the target source's initial equity is not the window execution's",
+        )
+    recorded = _recorded_execution_grid(run)
+    if recorded is None:
+        raise AuthorityRefused(
+            EXECUTION_UNRECORDED,
+            "the baseline run records no decision step, decision warm-up or initial equity (the "
+            "reproducibility tuple has no such fields), so the window run's "
+            f"(step {step}, warm-up {warmup}, equity {declared}) cannot be proven to be the "
+            "baseline's",
+        )
+    if (step, warmup, str(declared)) != (recorded[0], recorded[1], str(recorded[2])):
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH,
+            "the decision grid / initial equity is not the one the baseline run recorded",
+        )
 
 
 def _window_returns(
@@ -1417,7 +1498,9 @@ _CONTROL_SEED_GATE: Final = re.compile(
     r"^G1\.(?:shuffle|shift)_control\.seed\.(-?(?:0|[1-9][0-9]*))" + _INSTRUMENT_SUFFIX + "$"
 )
 #: Structural gates of the window validation whose ``FAIL`` means the binding does not describe
-#: the window run (a refusal, never evidence about the strategy).
+#: the window run, or the re-run broke an information-flow rule (a refusal of **every** metric of
+#: that re-run, never evidence about the strategy). Matched on the base gate id and on its
+#: per-instrument variants (``<id>.instrument.<name>``).
 _STRUCTURAL_GATES: Final = {
     "G0.backtest_cost_model": EXECUTION_MISMATCH,
     "G0.execution_model": EXECUTION_MISMATCH,
@@ -1426,7 +1509,15 @@ _STRUCTURAL_GATES: Final = {
     "G0.signal_determinism": EXECUTION_MISMATCH,
     "G0.bindings": BASELINE_BINDING_MISMATCH,
     "G0.run_state": BASELINE_BINDING_MISMATCH,
+    # C-L2 / C-S1 information-flow gates: an Outcome among the inputs, sides that move with the
+    # label values, or labels touching the sealed OOS window make the whole re-run unusable
+    "G1.outcome_not_input": EXECUTION_MISMATCH,
+    "G1.label_blind_sides": EXECUTION_MISMATCH,
+    "G1.sealed_oos_excluded": SOURCE_SCOPE_MISMATCH,
 }
+_STRUCTURAL_GATE_ID: Final = re.compile(
+    "^(" + "|".join(re.escape(gate) for gate in _STRUCTURAL_GATES) + ")" + _INSTRUMENT_SUFFIX + "$"
+)
 #: Everything the validator's re-run may raise besides a deliberate refusal handled first.
 _RUN_ERRORS: Final = (
     ValidationError,
@@ -1457,7 +1548,17 @@ class WindowValidationBinding:
       ``control_seeds`` (checked against the report's per-seed control gates),
       ``market_benchmark`` (required when the report carries ADR-0060 items), ``backtester`` /
       ``execution`` (declared exactly when the report carries ``G0.execution_model``),
-      ``declared_instruments`` (the C-R3 scope, within the pipeline's instruments);
+      ``declared_instruments`` (the C-R3 scope: exactly the pipeline's instruments);
+    - **unrecorded inputs** (integrity fixes 2026-09-30): the baseline report and run record
+      neither ``metadata.family_trial_count``, nor which of the run's ``seeds`` the validator
+      used, nor a ``param:`` ``cscv_partitions`` / ``impact_coefficient`` value, nor the state
+      labeller. A ruled definition whose gate depends on one of them is refused
+      (``baseline_input_unrecorded``, ``_check_unrecorded_inputs``): ``G3.*`` and
+      ``G4.overfitting`` (family trial count; G3 also the seed through the G2 null model),
+      ``G2.null_model_percentile`` (seed), the single-seed ``G1`` controls and — through the G1
+      stage stop — every ``G2.*`` gate when the baseline ran single-seed controls (seed),
+      ``G4.overfitting`` with a ``param:`` CSCV partition count, ``G4.capacity.*`` with a
+      ``param:`` impact coefficient, and ``G4.state.*`` with a state labeller;
     - ``state_labels``: the baseline's causal state labeller over the window (``None``: the C-R2
       gates are the function's own ``state_labels_missing``, i.e. *missing*);
     - ``bar_volume``: ``True`` when the baseline read bar volumes — the window's are the proven
@@ -1519,6 +1620,7 @@ def _check_validation_binding(
     report: ValidationReport,
     run: ExperimentRun,
     identity: TargetSourceIdentity,
+    definitions: Sequence[RuledMetric],
 ) -> None:
     """The binding must describe the baseline validation (class docs); else refused."""
     if not isinstance(binding, WindowValidationBinding):
@@ -1565,6 +1667,16 @@ def _check_validation_binding(
         raise AuthorityRefused(
             EXECUTION_MISMATCH, "the outcome provider is not the one the baseline run recorded"
         )
+    if (
+        meta.constitution_version != repro.constitution_version
+        or meta.constitution_version != report.constitution_version
+        or canonical_json(meta.profile_selection.model_dump(mode="json"))
+        != canonical_json(repro.profile_selection.model_dump(mode="json"))
+    ):
+        raise _binding_mismatch(
+            "the ExperimentMetadata's Constitution version / Profile selection is not the "
+            "baseline run's and report's"
+        )
     seed = binding.seed
     if isinstance(seed, bool) or not isinstance(seed, int) or seed not in repro.seeds:
         raise _binding_mismatch("the validation seed is not one of the baseline run's seeds")
@@ -1575,9 +1687,12 @@ def _check_validation_binding(
         not isinstance(declared, tuple)
         or not declared
         or not all(isinstance(name, str) and name for name in declared)
-        or not set(declared) <= set(identity.instruments)
+        or len(set(declared)) != len(declared)
+        or set(declared) != set(identity.instruments)
     ):
-        raise _binding_mismatch("declared_instruments must be within the pipeline's instruments")
+        raise _binding_mismatch(
+            "declared_instruments must be exactly the pipeline's (baseline) instruments"
+        )
     if not callable(binding.trials) or (
         binding.state_labels is not None and not callable(binding.state_labels)
     ):
@@ -1616,6 +1731,97 @@ def _check_validation_binding(
             name = _MISSING_PARAM_FIELDS.get(gate.metric.split(":", 1)[1])
             if name is not None and getattr(params, name) is not None:
                 raise _binding_mismatch(f"the baseline had no {gate.metric.split(':', 1)[1]}")
+    for path, name in _PROFILE_SOURCED_PARAMS:
+        if profile_has(profile, path) and getattr(params, name) is not None:
+            raise _binding_mismatch(
+                f"the Profile carries {path}; the baseline could not use a param:{name}"
+            )
+    _check_unrecorded_inputs(binding, profile=profile, report=report, definitions=definitions)
+
+
+#: Non-threshold G4 parameters a Profile may carry (then a ``param:`` value is refused by the
+#: validator itself, C-A4) and the ``RobustnessParams`` field that would carry the ``param:``.
+_PROFILE_SOURCED_PARAMS: Final = (
+    ("significance.cscv_partitions", "cscv_partitions"),
+    ("capacity.impact_coefficient", "impact_coefficient"),
+)
+_INSTRUMENT_TAIL: Final = re.compile(r"\.instrument\.[A-Za-z0-9_-]+$")
+
+
+def _unrecorded_dependency(
+    gate_id: str,
+    binding: WindowValidationBinding,
+    profile: ValidationProfile,
+    single_seed: bool,
+) -> str | None:
+    """Why the window value of the baseline gate ``gate_id`` depends on a validator input the
+    baseline does not record (class docs, **unrecorded inputs**), or ``None``."""
+    base = _INSTRUMENT_TAIL.sub("", gate_id)
+    if base.startswith("G3."):
+        return (
+            "G3 uses metadata.family_trial_count (multiple-testing adjustment) and runs only after "
+            "the seeded G2 null model; neither the trial count nor the validation seed is recorded "
+            "by the baseline report or run"
+        )
+    if base == "G4.overfitting":
+        return (
+            "the overfitting check uses metadata.family_trial_count, which the baseline report and "
+            "run do not record"
+        )
+    if base == "G2.null_model_percentile":
+        return (
+            "the null model is drawn with the validation seed, which the baseline does not record"
+        )
+    if single_seed and base in ("G1.shuffle_control", "G1.shift_control"):
+        return (
+            "the baseline ran single-seed negative controls with the validation seed, which it "
+            "does not record"
+        )
+    if single_seed and base.startswith("G2."):
+        return (
+            "G2 runs only when the single-seed G1 controls pass, and those are drawn with the "
+            "validation seed, which the baseline does not record"
+        )
+    params = binding.robustness
+    if base.startswith("G4.overfitting") and (
+        params.cscv_partitions is not None
+        and not profile_has(profile, "significance.cscv_partitions")
+    ):
+        return "param:cscv_partitions is not recorded by the baseline report"
+    if base.startswith("G4.capacity.") and (
+        params.impact_coefficient is not None
+        and not profile_has(profile, "capacity.impact_coefficient")
+    ):
+        return "param:capacity.impact_coefficient is not recorded by the baseline report"
+    if base.startswith("G4.state.") and binding.state_labels is not None:
+        return (
+            "the state labeller is caller code the baseline does not record (no spec hash binds "
+            "it)"
+        )
+    return None
+
+
+def _check_unrecorded_inputs(
+    binding: WindowValidationBinding,
+    *,
+    profile: ValidationProfile,
+    report: ValidationReport,
+    definitions: Sequence[RuledMetric],
+) -> None:
+    """Refuse every ruled ``window_validation`` definition whose gate depends on an input the
+    baseline does not record (class docs); the first one is the refusal."""
+    ids = {gate.gate_id for gate in report.gates}
+    single_seed = not any(_CONTROL_SEED_GATE.fullmatch(item) for item in ids)
+    for item in definitions:
+        if item.definition.evidence != EVIDENCE_WINDOW_VALIDATION:
+            continue
+        reason = _unrecorded_dependency(item.gate_id, binding, profile, single_seed)
+        if reason is not None:
+            raise AuthorityRefused(
+                BASELINE_INPUT_UNRECORDED,
+                f"{item.definition.definition_ref} @ {item.gate_id}: {reason}; the binding's "
+                "value cannot be proven to be the baseline's",
+            )
 
 
 def _window_validation_gates(
@@ -1677,13 +1883,13 @@ def _window_validation_gates(
         validator = PipelineBacktestValidator(setup)
         answer = validator.validate(subject, binding.spec, backtest)
         gates = {gate.gate_id: gate for gate in answer.report.gates}
-        for gate_id, code in _STRUCTURAL_GATES.items():
-            gate = gates.get(gate_id)
-            if gate is not None and gate.verdict is Verdict.FAIL:
+        for gate_id, gate in sorted(gates.items()):
+            match = _STRUCTURAL_GATE_ID.fullmatch(gate_id)
+            if match is not None and gate.verdict is Verdict.FAIL:
                 raise AuthorityRefused(
-                    code,
+                    _STRUCTURAL_GATES[match.group(1)],
                     f"the window validation's {gate_id} failed: the binding does not "
-                    "describe the window run",
+                    "describe the window run (every metric of this re-run is refused)",
                 )
         if robustness:
             diagnostic = validator.robustness_diagnostic(binding.spec, backtest)
@@ -1980,6 +2186,7 @@ def resolve_degradation_inputs(
             report=baseline_report,
             run=baseline_run,
             identity=identity,
+            definitions=definitions,
         )
 
     # 2. the source and the window's proven bars
