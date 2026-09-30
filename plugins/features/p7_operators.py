@@ -171,15 +171,14 @@ class _Evaluation:
         if cached is not None:
             return cached
         lag = upstream.spec.available_lag
+        visible = tuple(item for item in self._visible if item.available_time + lag <= tau)
         sub = FeatureRequest(
             feature=upstream.spec.ref,
             spec_hash=upstream.spec.content_hash(),
             manifest_content_hash=self._request.manifest_content_hash,
             knowledge_cutoff=self._request.knowledge_cutoff,
             evaluation_times=(tau,),
-            observations=tuple(
-                item for item in self._visible if item.available_time + lag <= tau
-            ),
+            observations=visible,
         )
         result = upstream.provider.compute(sub)
         if not isinstance(result, FeatureResult):
@@ -331,7 +330,7 @@ class _P7FeatureProvider:
         if spec is None or spec.content_hash() != request.spec_hash:
             raise UnsupportedFeature(f"{self.NAME} does not serve {request.feature} with this hash")
         inputs = tuple(self._upstream[str(ref)] for ref in spec.inputs)
-        values = []
+        values: list[FeatureValue] = []
         for at in request.evaluation_times:
             visible = request.visible_at(at, spec.available_lag)
             evaluation = _Evaluation(request, visible)
