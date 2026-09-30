@@ -53,7 +53,9 @@ from research.loop.durable import (
     REVIEWS_FILE,
     SEALED_OOS_FILE,
     MemoryCheckpoint,
+    LoopStateLocked,
 )
+from research.loop.trials import ExperimentStage
 from research.loop.memory import REVIEW_APPROVED
 from research.persistence import AppendOnlyJournal, JournalCorrupted
 from research.strategies.failure_registry import FailureRegistry
@@ -124,6 +126,50 @@ def _open(
         llm=_llm(consumed),
         anchor=anchor,
     )
+
+
+def test_exact_registration_duplicate_is_read_only_through_durable_gate(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    durable = _open(tmp_path / "state")
+    state = durable.durable_state
+    assert state is not None
+    ledger = durable.memory.ledger
+    original_trial = ExperimentStage._trial
+    observed: list[Any] = []
+
+    def check_admission_lease(
+        stage: ExperimentStage, ctx: Any, hypothesis: Any, origin: str, attempt: str | None
+    ) -> Any:
+        if not observed:
+            observed.append(hypothesis)
+            before = ledger.journal_head(), ledger.trials(hypothesis.family_id)
+            with state.plan_admission():
+                assert not ledger.register(hypothesis)
+                fresh = hypothesis.model_copy(update={"name": f"{hypothesis.name}_fresh"})
+                with pytest.raises(LoopStateLocked):
+                    ledger.register(fresh)
+            assert (ledger.journal_head(), ledger.trials(hypothesis.family_id)) == before
+        return original_trial(stage, ctx, hypothesis, origin, attempt)
+
+    monkeypatch.setattr(ExperimentStage, "_trial", check_admission_lease)
+    try:
+        durable.loop.run_unattended(1)
+        assert observed
+        hypothesis = observed[0]
+        before_head = ledger.journal_head()
+        before_trials = ledger.trials(hypothesis.family_id)
+        assert not ledger.register(hypothesis)  # between rounds: read-only, no gate entry
+        assert ledger.journal_head() == before_head
+        assert ledger.trials(hypothesis.family_id) == before_trials
+    finally:
+        durable.close()
+
+    # Keep a reference after the real durable state closes: an exact duplicate is still a read,
+    # while a new identity remains refused by the closed state gate.
+    assert not ledger.register(hypothesis)
+    with pytest.raises(LoopStateLocked):
+        ledger.register(hypothesis.model_copy(update={"name": f"{hypothesis.name}_closed"}))
 
 
 @dataclass(frozen=True)
