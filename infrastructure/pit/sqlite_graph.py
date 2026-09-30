@@ -10,7 +10,7 @@ from __future__ import annotations
 import shutil
 import sqlite3
 import uuid
-from collections.abc import Iterable, Iterator
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -139,8 +139,10 @@ class SQLitePitGraph:
                 source_id TEXT NOT NULL,
                 payload_hash TEXT NOT NULL,
                 knowledge_us INTEGER NOT NULL,
+                available_us INTEGER NOT NULL,
                 UNIQUE(observation_key, source_id, payload_hash)
             ) WITHOUT ROWID;
+            CREATE INDEX revisions_by_availability ON revisions(available_us, revision_id);
             CREATE TABLE claims (
                 revision_id TEXT NOT NULL,
                 observation_key TEXT NOT NULL,
@@ -162,6 +164,10 @@ class SQLitePitGraph:
                 WITHOUT ROWID;
             CREATE TABLE dfs (depth INTEGER PRIMARY KEY, revision_id TEXT NOT NULL,
                               after_older TEXT);
+            CREATE TABLE candidates (revision_id TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE frontier (revision_id TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE visited (revision_id TEXT PRIMARY KEY) WITHOUT ROWID;
+            CREATE TABLE eliminated (revision_id TEXT PRIMARY KEY) WITHOUT ROWID;
             """
         )
 
@@ -169,6 +175,7 @@ class SQLitePitGraph:
         self,
         records: Iterable[RevisionRecord],
         evidence: Iterable[PrecedenceEvidence],
+        available: Mapping[str, datetime],
     ) -> None:
         """Stream known rows into indexed tables, then check RevisionGraph invariants."""
         if self._build_started:
@@ -189,6 +196,7 @@ class SQLitePitGraph:
                     know = _us(row.availability.times.knowledge_time)
                     if know > cutoff:
                         continue
+                    available_us = _us(available[row.revision_id])
                     # Keep RevisionGraph's deterministic diagnostic precedence: id, arrival,
                     # then payload. SQLite may otherwise report whichever UNIQUE index wins.
                     if self._exists(
@@ -210,7 +218,7 @@ class SQLitePitGraph:
                         )
                     try:
                         rev.execute(
-                            "INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?)",
+                            "INSERT INTO revisions VALUES (?, ?, ?, ?, ?, ?, ?)",
                             (
                                 row.revision_id,
                                 row.arrival_seq,
@@ -218,6 +226,7 @@ class SQLitePitGraph:
                                 row.source_id,
                                 row.payload_hash,
                                 know,
+                                available_us,
                             ),
                         )
                     except sqlite3.IntegrityError as exc:
@@ -277,6 +286,130 @@ class SQLitePitGraph:
         except BaseException:
             db.rollback()
             raise
+
+    @contextmanager
+    def availability_times(self, start: datetime, end: datetime) -> Iterator[Iterator[datetime]]:
+        """Stream distinct effective instants from the caller-sized availability index."""
+        low, high = _us(start), _us(end)
+        cursor = self.database.cursor()
+        try:
+            cursor.execute(
+                "SELECT DISTINCT available_us FROM revisions "
+                "INDEXED BY revisions_by_availability "
+                "WHERE available_us>? AND available_us<? ORDER BY available_us",
+                (low, high),
+            )
+
+            def times() -> Iterator[datetime]:
+                while (row := cursor.fetchone()) is not None:
+                    yield _EPOCH + timedelta(microseconds=int(row[0]))
+
+            yield times()
+        finally:
+            cursor.close()
+
+    def head_summary(
+        self,
+        at: datetime,
+        *,
+        emit: Callable[[int, int, str], None],
+    ) -> tuple[int, str | None]:
+        """Return the complete maximal-head summary for one instant using indexed reachability."""
+        at_us = _us(at)
+        for table in ("candidates", "frontier", "visited", "eliminated"):
+            self.database.execute(f"DELETE FROM {table}").close()
+        self.database.execute(
+            "INSERT INTO candidates SELECT revision_id FROM revisions "
+            "INDEXED BY revisions_by_availability WHERE available_us<=?",
+            (at_us,),
+        ).close()
+
+        # All candidates seed one shared traversal. Each reachable node is expanded once per
+        # cutoff; graph edges remain available through non-candidate intermediate revisions.
+        with self._cursor() as candidates:
+            candidates.execute("SELECT revision_id FROM candidates")
+            for (candidate,) in candidates:
+                with self._cursor() as adjacent:
+                    adjacent.execute(
+                        "SELECT older FROM edges INDEXED BY sqlite_autoindex_edges_1 "
+                        "WHERE newer=? ORDER BY older",
+                        (candidate,),
+                    )
+                    while (row := adjacent.fetchone()) is not None:
+                        self._enqueue(str(row[0]))
+
+        while (node := self._pop_frontier()) is not None:
+            if self._exists("SELECT 1 FROM candidates WHERE revision_id=?", (node,)):
+                self.database.execute(
+                    "INSERT OR IGNORE INTO eliminated VALUES (?)", (node,)
+                ).close()
+            with self._cursor() as adjacent:
+                adjacent.execute(
+                    "SELECT older FROM edges INDEXED BY sqlite_autoindex_edges_1 "
+                    "WHERE newer=? ORDER BY older",
+                    (node,),
+                )
+                while (row := adjacent.fetchone()) is not None:
+                    self._enqueue(str(row[0]))
+
+        count = self._scalar(
+            "SELECT COUNT(*) FROM candidates AS c WHERE NOT EXISTS "
+            "(SELECT 1 FROM eliminated AS e WHERE e.revision_id=c.revision_id)"
+        )
+        if count == 0:
+            return 0, None
+        first: str | None = None
+        ordinal = 0
+        with self._cursor() as heads:
+            heads.execute(
+                "SELECT c.revision_id FROM candidates AS c "
+                "INDEXED BY sqlite_autoindex_candidates_1 WHERE NOT EXISTS "
+                "(SELECT 1 FROM eliminated AS e WHERE e.revision_id=c.revision_id) "
+                "ORDER BY c.revision_id"
+            )
+            while (row := heads.fetchone()) is not None:
+                revision_id = str(row[0])
+                if ordinal == 0:
+                    first = revision_id
+                if count > 1:
+                    emit(count, ordinal, revision_id)
+                ordinal += 1
+        if ordinal != count:
+            raise PITGraphInvariantError("SQLite maximal-head count changed during emission")
+        return count, first if count == 1 else None
+
+    def _scalar(self, sql: str, parameters: tuple[object, ...] = ()) -> int:
+        with self._cursor() as cursor:
+            cursor.execute(sql, parameters)
+            row = cursor.fetchone()
+        if row is None or type(row[0]) is not int:
+            raise PITGraphInvariantError("SQLite graph scalar query returned no integer")
+        return row[0]
+
+    def availability_for(self, revision_id: str) -> datetime:
+        with self._cursor() as cursor:
+            cursor.execute("SELECT available_us FROM revisions WHERE revision_id=?", (revision_id,))
+            row = cursor.fetchone()
+        if row is None:
+            raise PITGraphInvariantError("selected revision is absent from the SQLite PIT graph")
+        return _EPOCH + timedelta(microseconds=int(row[0]))
+
+    def _enqueue(self, revision_id: str) -> None:
+        with self._cursor() as cursor:
+            cursor.execute("INSERT OR IGNORE INTO visited VALUES (?)", (revision_id,))
+            if cursor.rowcount == 0:
+                return
+            cursor.execute("INSERT OR IGNORE INTO frontier VALUES (?)", (revision_id,))
+
+    def _pop_frontier(self) -> str | None:
+        with self._cursor() as cursor:
+            cursor.execute("SELECT revision_id FROM frontier ORDER BY revision_id LIMIT 1")
+            row = cursor.fetchone()
+            if row is None:
+                return None
+            revision_id = str(row[0])
+            cursor.execute("DELETE FROM frontier WHERE revision_id=?", (revision_id,))
+        return revision_id
 
     def _check_claims(self) -> None:
         sql = (

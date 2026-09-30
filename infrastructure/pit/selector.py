@@ -82,6 +82,7 @@ from infrastructure.pit.runs import (
     RunSetBuilder,
     iter_run,
 )
+from infrastructure.pit.sqlite_graph import SQLitePitGraph
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING, ChannelEdge
 from infrastructure.revision.channel_reconcile import (
@@ -1232,68 +1233,73 @@ def _evaluate_bounded(
     spec: PointInTimeSpec,
     available: Mapping[str, datetime],
     *,
-    run_storage: StorageAdapter,
-    run_params: PitRunParams,
+    scratch_directory: Path,
     emit_conflict: Callable[[PitConflictHeadEvidence], None],
-) -> Iterator[PitBoundedSelection]:
+) -> Generator[tuple[PitBoundedSelection, datetime | None]]:
     """v3 evaluation path: stream conflict heads and retain only fixed-size results."""
     cutoff = spec.knowledge_cutoff
     previous: tuple[PointInTimeStatus, int, str | None] | None = None
 
-    def result(at: datetime) -> Iterator[PitBoundedSelection]:
-        nonlocal previous
-        head_count, selected = _bounded_head_summary(
-            records,
-            edges,
-            at,
-            cutoff,
-            available,
-            run_storage=run_storage,
-            run_params=run_params,
-            observation_key=key,
-            emit=emit_conflict,
-        )
-        status = (
-            PointInTimeStatus.ABSENT
-            if head_count == 0
-            else PointInTimeStatus.SELECTED
-            if head_count == 1
-            else PointInTimeStatus.CONFLICT
-        )
-        identity = (status, head_count, selected)
-        # Conflict evaluations are all recorded, even when two adjacent instants happen to
-        # have the same heads. Their simulation times are distinct auditable inputs.
-        if status is not PointInTimeStatus.CONFLICT and previous == identity:
-            return
-        previous = identity
-        yield PitBoundedSelection(
-            observation_key=key,
-            simulation_time=at,
-            knowledge_cutoff=cutoff,
-            status=status,
-            selected_revision_id=selected,
-            head_count=head_count,
-        )
+    with SQLitePitGraph(scratch_directory, cutoff=cutoff) as graph:
+        try:
+            graph.build(records, edges, available)
+        except PITGraphInvariantError as exc:
+            raise CatalogIntegrityError(f"the Canonical revision graph is invalid: {exc}") from None
 
-    if spec.simulation_time is not None:
-        yield from result(spec.simulation_time)
-        return
-    start, end = spec.simulation_start, spec.simulation_end
-    if start is None or end is None:  # pragma: no cover - the contract forbids it
-        raise PitSpecError("the spec has neither a simulation time nor an interval")
-    with _availability_change_times(
-        run_storage,
-        records,
-        available,
-        cutoff=cutoff,
-        start=start,
-        end=end,
-        params=run_params,
-    ) as changes:
-        unique_changes = (at for at, _ in itertools.groupby(changes))
-        yield from result(start)
-        for at in unique_changes:
-            yield from result(at)
+        def result(at: datetime) -> Iterator[tuple[PitBoundedSelection, datetime | None]]:
+            nonlocal previous
+
+            def emit(count: int, ordinal: int, revision_id: str) -> None:
+                emit_conflict(
+                    PitConflictHeadEvidence(
+                        rule_id=PIT_BINDING.policy_id,
+                        rule_version=PIT_BINDING.version,
+                        rule_hash=PIT_BINDING.policy_hash,
+                        observation_key=key,
+                        simulation_time=at,
+                        knowledge_cutoff=cutoff,
+                        head_count=count,
+                        ordinal=ordinal,
+                        revision_id=revision_id,
+                    )
+                )
+
+            head_count, selected = graph.head_summary(at, emit=emit)
+            status = (
+                PointInTimeStatus.ABSENT
+                if head_count == 0
+                else PointInTimeStatus.SELECTED
+                if head_count == 1
+                else PointInTimeStatus.CONFLICT
+            )
+            identity = (status, head_count, selected)
+            # Conflict evaluations are all recorded, even when two adjacent instants happen to
+            # have the same heads. Their simulation times are distinct auditable inputs.
+            if status is not PointInTimeStatus.CONFLICT and previous == identity:
+                return
+            previous = identity
+            yield (
+                PitBoundedSelection(
+                    observation_key=key,
+                    simulation_time=at,
+                    knowledge_cutoff=cutoff,
+                    status=status,
+                    selected_revision_id=selected,
+                    head_count=head_count,
+                ),
+                None if selected is None else graph.availability_for(selected),
+            )
+
+        if spec.simulation_time is not None:
+            yield from result(spec.simulation_time)
+            return
+        start, end = spec.simulation_start, spec.simulation_end
+        if start is None or end is None:  # pragma: no cover - the contract forbids it
+            raise PitSpecError("the spec has neither a simulation time nor an interval")
+        with graph.availability_times(start, end) as changes:
+            yield from result(start)
+            for at in changes:
+                yield from result(at)
 
 
 @contextmanager
@@ -2115,50 +2121,56 @@ def _pit_bounded_stream(
                     if conflict_sink is not None:
                         conflict_sink(record)
 
-                for selection in _evaluate_bounded(
+                evaluations = _evaluate_bounded(
                     row_key,
                     records,
                     key_edges,
                     spec,
                     available,
-                    run_storage=storage,
-                    run_params=params,
+                    scratch_directory=selector._canonical_scratch_directory,
                     emit_conflict=emit_conflict,
-                ):
-                    lineage_out: SelectedRevisionLineage | None = None
-                    gap_out: EvidenceGap | None = None
-                    event_at: datetime | None = None
-                    if selection.status is PointInTimeStatus.SELECTED:
-                        revision = selection.selected_revision_id
-                        if revision is None:  # pragma: no cover - the contract forbids it
-                            raise CatalogIntegrityError("a selected result without a revision")
-                        event_at = key_rows[revision][column]
-                        source_row = key_rows[revision]
-                        effective_time = available[revision]
-                        if effective_time < source_row["available_time"]:
-                            source_row = dict(source_row, available_time=effective_time)
-                        lineage_out = SelectedRevisionLineage(
-                            canonical_table=canonical.table,
-                            canonical_revision_id=revision,
-                            raw_table=source_row["lineage_raw_table"],
-                            raw_revision_id=source_row["lineage_raw_revision_id"],
-                            source_table=source_row["lineage_source_table"],
-                            source_revision_id=source_row["lineage_source_revision_id"],
-                        )
-                        if source_row["availability_evidence_gap"] is not None:
-                            gap_out = EvidenceGap(
-                                canonical.table,
-                                revision,
-                                source_row["availability_evidence_gap"],
+                )
+                try:
+                    for selection, effective_time in evaluations:
+                        lineage_out: SelectedRevisionLineage | None = None
+                        gap_out: EvidenceGap | None = None
+                        event_at: datetime | None = None
+                        if selection.status is PointInTimeStatus.SELECTED:
+                            revision = selection.selected_revision_id
+                            if revision is None:  # pragma: no cover - the contract forbids it
+                                raise CatalogIntegrityError("a selected result without a revision")
+                            event_at = key_rows[revision][column]
+                            source_row = key_rows[revision]
+                            if effective_time is None:  # pragma: no cover - selected must have time
+                                raise CatalogIntegrityError(
+                                    "a selected bounded revision has no effective availability time"
+                                )
+                            if effective_time < source_row["available_time"]:
+                                source_row = dict(source_row, available_time=effective_time)
+                            lineage_out = SelectedRevisionLineage(
+                                canonical_table=canonical.table,
+                                canonical_revision_id=revision,
+                                raw_table=source_row["lineage_raw_table"],
+                                raw_revision_id=source_row["lineage_raw_revision_id"],
+                                source_table=source_row["lineage_source_table"],
+                                source_revision_id=source_row["lineage_source_revision_id"],
                             )
-                    yield PitBoundedRecord(
-                        observation_key=row_key,
-                        selection=selection,
-                        lineage=lineage_out,
-                        evidence_gap=gap_out,
-                        owner_event_time=owner_at,
-                        event_time=event_at,
-                    )
+                            if source_row["availability_evidence_gap"] is not None:
+                                gap_out = EvidenceGap(
+                                    canonical.table,
+                                    revision,
+                                    source_row["availability_evidence_gap"],
+                                )
+                        yield PitBoundedRecord(
+                            observation_key=row_key,
+                            selection=selection,
+                            lineage=lineage_out,
+                            evidence_gap=gap_out,
+                            owner_event_time=owner_at,
+                            event_time=event_at,
+                        )
+                finally:
+                    evaluations.close()
                 # key_rows / records / key_edges go out of scope here before the next key group.
 
             # Every mapped edge's observation_key must be one _mapped_edges found rows for (it
