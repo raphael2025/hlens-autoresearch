@@ -12,14 +12,18 @@ interval ``(first.event_time, first.event_time + window_bars * bar_duration]``.
 - **Upstream specs are explicit.** The caller supplies the two input ``EventSpec`` values
   (``str(ref)`` -> spec). Their refs must be the spec's ``lineage`` / trigger refs and must name
   two different EventSpecs (ADR-0100 revision 1 §3, ``temporal_same_input``), both must
-  declare the spec's ``bar_spec``, the spec's ``observable_lag`` must equal the second's, and the
-  first's lag must not exceed the second's (the lowering's ``temporal_visibility_unprovable`` rule,
-  re-checked). Upstream events of any other definition or spec hash are refused.
+  declare the spec's ``bar_spec``, and the first's lag must not exceed the second's (the
+  lowering's ``temporal_visibility_unprovable`` rule, re-checked). The spec's ``observable_lag``
+  must be 0 for a hash-bound (plan format "1.3.0") spec (ADR-0100 revision 1 §1) and equal the
+  second's otherwise (older formats, unchanged). Upstream events of any other definition or spec
+  hash are refused.
 - **Event time = observable time** (ADR-0036 §2, enforced by ``EventResult.check_answers``): each
   output event links the second event with the latest first event in its window, and its
-  ``event_time`` is the second event's ``event_time`` plus ``observable_lag``. A first event is
-  always earlier than the second, so it is visible whenever the second is: the table as of any
-  time never changes retroactively. No partner -> no event (``missing = no_event``).
+  ``event_time`` is the second event's ``event_time`` plus the spec's ``observable_lag``. For a
+  hash-bound spec that lag is 0, so the output's ``event_time`` is exactly the second event's
+  observable time (its ``event_time``); an older-format spec keeps adding the second's lag. A first
+  event is always visible no later than the second, so the table as of any time never changes
+  retroactively. No partner -> no event (``missing = no_event``).
 - ADR-0061's microsecond ``seq`` window is not reused; ``time_unit`` is bars of ``bar_spec`` only.
 
 **Upstream hash binding** (ADR-0100 revision 1 §4). A spec lowered from a plan of format "1.3.0"
@@ -142,7 +146,11 @@ class P7TemporalSequenceProvider(EventProviderBase):
                     raise ValueError(
                         f"{field} does not bind the supplied upstream spec {upstream.ref}"
                     )
-        if spec.observable_lag != second.observable_lag:
+        if _hash_bound(params):
+            # ADR-0100 revision 1 §1: the upstream event_time already is the observable time.
+            if spec.observable_lag != timedelta(0):
+                raise ValueError("a hash-bound (plan format 1.3.0) spec has observable_lag 0")
+        elif spec.observable_lag != second.observable_lag:
             raise ValueError("observable_lag must equal the second event's")
         if first.observable_lag > second.observable_lag:
             raise ValueError("temporal_visibility_unprovable: first lag exceeds the second's")
@@ -191,6 +199,7 @@ class P7TemporalSequenceProvider(EventProviderBase):
                 Event.build(
                     event=spec.ref,
                     spec_hash=spec.content_hash(),
+                    # Hash-bound (1.3.0): lag 0, so exactly the second's observable time.
                     event_time=second.event_time + spec.observable_lag,
                     attributes={"gap_seconds": Decimal(gap // _MICROSECOND).scaleb(-6)},
                     upstream=(first, second),

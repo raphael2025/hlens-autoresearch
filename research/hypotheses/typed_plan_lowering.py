@@ -547,8 +547,11 @@ def _lower_temporal(
 
     In plan format "1.3.0" (ADR-0100 revision 1 §4) the trigger also binds each upstream spec's
     ``content_hash()`` as ``first_event_hash`` / ``second_event_hash`` (the ``<name>`` /
-    ``<name>_hash`` pair ``infrastructure.event.upstream.verify_interaction`` reads). Older plan
-    formats keep their original, hash-free trigger.
+    ``<name>_hash`` pair ``infrastructure.event.upstream.verify_interaction`` reads), and the
+    output's ``observable_lag`` is 0 (revision 1 §1): an upstream ``event_time`` already is its
+    observable time, so the combined event is visible exactly at the second event's
+    ``event_time``. Older plan formats keep their original lowering (hash-free trigger,
+    ``observable_lag`` = the second event's).
     """
     time_unit = node.parameters["time_unit"]
     if time_unit != _TEMPORAL_TIME_UNIT:
@@ -633,7 +636,9 @@ def _lower_temporal(
             trigger=trigger,
             features=_union_refs((first.features, second.features)),
             states=_union_refs((first.states, second.states)),
-            observable_lag=second.observable_lag,
+            # ADR-0100 revision 1 §1: from 1.3.0 the upstream event_time already is the second
+            # event's observable time, so the combined event adds no further lag.
+            observable_lag=timedelta(0) if revised else second.observable_lag,
             bar_spec=bar_spec,
             lineage=(first.ref, second.ref),
         ),

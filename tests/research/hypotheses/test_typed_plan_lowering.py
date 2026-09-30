@@ -450,6 +450,8 @@ def test_temporal_1_3_0_trigger_binds_upstream_hashes_accepted_by_runner_check()
 
     output = cast(EventSpec, lower_typed_plan(plan, resolution=resolution, created_at=NOW)["seq"])
 
+    # ADR-0100 revision 1 §1: visible exactly at the second event's (already observable) time.
+    assert output.observable_lag == timedelta(0)
     trigger = json.loads(output.trigger)
     assert trigger["first_event"] == str(EVENT_A.ref)
     assert trigger["first_event_hash"] == EVENT_A.content_hash()
