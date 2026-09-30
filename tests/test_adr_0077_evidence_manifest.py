@@ -87,6 +87,12 @@ V2_SCHEMA_SHA256_AT_2_2_0 = {
     "AvailabilityEvidenceGap": "fe21e259cdd62555f56a83bf9800accb07f2a3a93defcf95980a9d4af9382718",
 }
 
+# Fixed, canonical persisted evidence for the six-stream v3 manifest at its original envelope.
+LEGACY_V3_MANIFEST_SHA256 = {
+    "2.3.0": "40899f7552ed35bbb5f505b2ba30c7007c5400190ed65664f947954e291c1da5",
+    "2.4.0": "a2b89b7e5444399748d91e3d51021ec82970bfdc2edd29f39a2216fcf3a9930c",
+}
+
 #: A persisted-shape v2 manifest written at 2.2.0 (canonical JSON, TEST ONLY values) and its
 #: content hash (SHA-256 of exactly these bytes), pinned before the 2.3.0 bump.
 V2_MANIFEST_AT_2_2_0 = (
@@ -641,6 +647,22 @@ def test_the_v3_hash_is_deterministic_across_rebuilds_and_json_round_trips() -> 
     assert {item.content_hash() for item in again} == {built.content_hash()}
     assert built.content_hash() == content_hash(built.model_dump(mode="json"))
     assert canonical_json(again[1].model_dump(mode="json")) == canonical_json(payload)
+
+
+@pytest.mark.parametrize(("old", "expected_hash"), LEGACY_V3_MANIFEST_SHA256.items())
+def test_legacy_v3_manifest_goldens_replay_at_their_recorded_version(
+    old: str, expected_hash: str
+) -> None:
+    path = REPO / "tests" / "golden" / f"v{old.replace('.', '_')}" / "dataset_v3_manifest.json"
+    original = path.read_bytes().rstrip(b"\n")
+    assert hashlib.sha256(original).hexdigest() == expected_hash
+
+    replayed = v3(schema_version=old)
+    assert replayed.schema_version == old
+    assert canonical_json(replayed.model_dump(mode="json")).encode("utf-8") == original
+    assert replayed.content_hash() == expected_hash
+    parsed = ResearchDatasetEvidenceManifest.model_validate_json(original)
+    assert parsed.schema_version == old and parsed.content_hash() == expected_hash
 
 
 def test_the_v3_hash_commits_every_root_count_and_binding() -> None:
