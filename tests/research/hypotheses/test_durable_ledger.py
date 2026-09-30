@@ -5,15 +5,30 @@
 from __future__ import annotations
 
 import json
+from contextlib import contextmanager
 from pathlib import Path
+from typing import Iterator, cast
 
 import pytest
 
 from core.domain.base import Kind, Ref
+from core.domain.research import HypothesisOrigin, LlmCall
 from research.hypotheses import LedgerError, TrialLedger, negation
+from research.hypotheses.generator import HypothesisDraft
 from research.persistence import AppendOnlyJournal, JournalCorrupted
 
 S = Ref(kind=Kind.STRATEGY, name="tsmom", version="1.0.0")
+
+
+class _ToggleWriteGate:
+    def __init__(self) -> None:
+        self.open = True
+
+    @contextmanager
+    def write_scope(self, what: str, token: object | None = None) -> Iterator[None]:
+        if not self.open:
+            raise LedgerError(f"write gate is closed: {what}")
+        yield
 
 
 def test_the_family_trial_count_continues_across_a_restart(tmp_path: Path) -> None:
@@ -125,3 +140,74 @@ def test_a_re_evaluation_line_without_its_registration_is_refused(tmp_path: Path
     )
     with pytest.raises(JournalCorrupted, match="inconsistent"):
         TrialLedger(path)
+
+
+def test_exact_duplicates_are_read_only_after_the_write_gate_closes(tmp_path: Path) -> None:
+    ledger = TrialLedger(tmp_path / "trials.jsonl")
+    hypothesis = negation("h1", "fam", S, "0.1")
+    assert ledger.register(hypothesis)
+    assert ledger.register_reevaluation(hypothesis, "round-1")
+
+    changed = hypothesis.model_copy(update={"statement": "changed content"})
+    with pytest.raises(LedgerError, match="new version"):
+        ledger.register(changed)
+
+    gate = _ToggleWriteGate()
+    ledger.bind_write_gate(gate)
+    before_head = ledger.journal_head()
+    before_trials = ledger.trials("fam")
+    gate.open = False  # models a closed round / closed durable-state write gate
+
+    assert not ledger.register(hypothesis)
+    assert not ledger.register_reevaluation(hypothesis, " round-1 ")
+    assert ledger.journal_head() == before_head
+    assert ledger.trials("fam") == before_trials == 2
+
+    with pytest.raises(LedgerError, match="write gate is closed"):
+        ledger.register(negation("h2", "fam", S, "0.1"))
+    with pytest.raises(LedgerError, match="write gate is closed"):
+        ledger.register_reevaluation(hypothesis, "round-2")
+    assert ledger.journal_head() == before_head
+    assert ledger.trials("fam") == before_trials
+
+
+def test_exact_duplicates_are_read_only_during_an_active_ledger_lease(tmp_path: Path) -> None:
+    ledger = TrialLedger(tmp_path / "trials.jsonl")
+    hypothesis = negation("h1", "fam", S, "0.1")
+    assert ledger.register(hypothesis)
+    assert ledger.register_reevaluation(hypothesis, "round-1")
+    gate = _ToggleWriteGate()
+    ledger.bind_write_gate(gate)
+    lease = ledger.acquire_write_lease()
+    before_head = ledger.journal_head()
+    before_trials = ledger.trials("fam")
+
+    assert not ledger.register(hypothesis)
+    assert not ledger.register_reevaluation(hypothesis, "round-1")
+    assert ledger.journal_head() == before_head
+    assert ledger.trials("fam") == before_trials == 2
+
+    with pytest.raises(LedgerError, match="write lease"):
+        ledger.register(negation("h2", "fam", S, "0.1"))
+    with pytest.raises(LedgerError, match="write lease"):
+        ledger.register_reevaluation(hypothesis, "round-2")
+    assert ledger.journal_head() == before_head
+    assert ledger.trials("fam") == before_trials
+    ledger.release_write_lease(lease)
+
+
+def test_llm_origin_exact_duplicate_is_still_rejected_by_register(tmp_path: Path) -> None:
+    ledger = TrialLedger(tmp_path / "trials.jsonl")
+    hypothesis = negation("h1", "fam", S, "0.1").model_copy(
+        update={"origin": HypothesisOrigin.LLM}
+    )
+    reviewed = HypothesisDraft(hypothesis, cast(LlmCall, object()), reviewed=True)
+    assert ledger.register_draft(reviewed)
+    before_head = ledger.journal_head()
+    before_trials = ledger.trials("fam")
+
+    with pytest.raises(LedgerError, match="reviewed draft"):
+        ledger.register(hypothesis)
+
+    assert ledger.journal_head() == before_head
+    assert ledger.trials("fam") == before_trials == 1

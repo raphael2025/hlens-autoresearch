@@ -40,8 +40,10 @@ to its admission gate (``bind_write_gate``; ``research.persistence.gate``). Ever
 lock (lock order gate → ledger lock; the ledger never enters the gate while holding its lock), so
 no registration interleaves with the state's checkpoints and none runs while an admission lease is
 active or after an interrupted one; ``recover_register_batch`` presents its ``LedgerLease`` to the
-gate, which admits it only for the active admission lease's thread. Replay, reads and
-``release_write_lease`` do not enter the gate.
+gate, which admits it only for the active admission lease's thread. Under ADR-0096, ``register``
+and ``register_reevaluation`` first perform a ledger-locked, read-only exact-duplicate lookup and
+release that lock before entering the gate; changed content and fresh attempts continue through the
+gated write path. Replay, reads and ``release_write_lease`` do not enter the gate.
 """
 
 from __future__ import annotations
@@ -227,10 +229,15 @@ class TrialLedger:
 
         LLM-originated hypotheses go through ``register_draft`` (a human review is required).
         """
+        if hypothesis.origin is HypothesisOrigin.LLM:
+            raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
+        key = (hypothesis.name, hypothesis.version)
+        with self._lock:
+            existing = self._registered.get(key)
+            if existing is not None and existing.content_hash() == hypothesis.content_hash():
+                return False
         with gate_scope(self._gate, f"registering {hypothesis.ref}"), self._lock:
             self._check_writer(None, f"registering {hypothesis.ref}")
-            if hypothesis.origin is HypothesisOrigin.LLM:
-                raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
             return self._register(hypothesis)
 
     def register_draft(self, draft: HypothesisDraft) -> bool:
@@ -453,6 +460,17 @@ class TrialLedger:
         new version, never a re-evaluation); ``attempt`` is a non-empty key naming this
         evaluation. ``False`` if exactly this attempt was already registered (not a new trial).
         """
+        key = (hypothesis.name, hypothesis.version)
+        label = attempt.strip() if isinstance(attempt, str) else ""
+        if label:
+            with self._lock:
+                existing = self._registered.get(key)
+                if (
+                    existing is not None
+                    and existing.content_hash() == hypothesis.content_hash()
+                    and (*key, label) in self._attempts
+                ):
+                    return False
         with gate_scope(self._gate, f"a re-evaluation of {hypothesis.ref}"), self._lock:
             self._check_writer(None, f"a re-evaluation of {hypothesis.ref}")
             return self._register_reevaluation(hypothesis, attempt)
