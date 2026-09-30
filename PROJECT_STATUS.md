@@ -133,7 +133,9 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **D-DEBUG（历史决定，2026-09-28；已被后续目标取代）**：当时暂缓测试以先补齐各模块基础代码。Raphael 后续要求推进完整工程交付；当前按依赖顺序持续实现、测试、独立复核、集成与运行验证，不得因“代码已写”或单测通过就标为完成。E1-CAP-1、Constitution / Profile 与研究诚信边界仍按现行 ADR 保持。
 
-**D-PM-AUTH（Raphael 2026-09-28 明确授权）**：工程、架构与模块语义决定由 Claude Code（PM）按经验作出并记录到 ADR / 项目状态；除实盘交易操作外，开发阶段事项（含冻结契约变更、环境安装、数据下载、建表、推送 / 合并）均已授权。实盘接口可预留但必须默认关闭，不得启用、连接真实账户或下单。研究诚信规则与不可逆真实数据处置仍按相应硬约束执行。
+**D-PM-AUTH-2026-09-28（历史授权，已被当前目标更新）**：当时工程、架构与模块语义决定授权给 Claude Code PM；实盘、研究诚信与不可逆操作边界继续有效。Raphael 当前 Codex 项目目标已将本范围 PM 重新授权给 Codex Engineering Director，见下项。
+
+**D-PM-AUTH-CURRENT（Raphael 当前目标授权）**：Codex 负责本目标范围内的工程、架构、模块语义、ADR、任务拆分、验收、集成与最终交付；Claude Code、Cursor 和子代理作为执行者。H3/H4/H6、Phase 边界、默认关闭实盘能力及其它安全约束不变。
 
 **D-OPS1 / ADR-0091（Accepted，2026-09-28）**：登记处审计必须严格只读，不得创建目录 / 锁文件或自动修复 anchor；按现有存储格式报告证据强度。Failure Registry 当前无可信 hash chain / anchor，只能结构核验，不宣称可识别合法历史改写。
 
@@ -143,14 +145,11 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 **E1-Q-STREAM（ADR-0093 Accepted；通用树、事件/修订投影与 gap projection 已实现）**：Quality `existing_only` 的 legacy report `events` 是无界单行 `List<Struct>`，不能作为 E1-CAP-1 有界路径。ADR-0093 已决定新增固定大小 report-manifest 表和版本化 content-addressed `events` / `event_revisions` / `evidence_gaps` 流，保留 v1/v2 inline 报告只读兼容，并接受失败后留下无引用 immutable orphan。固定大小 `quality.data_quality_report_manifests` schema、通用 canonical JSONL tree writer/reader、canonical-partition v3 event/revision 与 evidence-gap stream projections、manifest append/read/idempotent replay primitive 与 rule-identity derivation 均已通过窄切片验收；仍未实现 end-to-end evidence-gap completeness、v3 reporter 接线或 Dataset v3 接线。旧决策包状态已由 ADR-0093 取代：[Quality bounded replay](docs/reviews/2026-09-29-quality-existing-only-bounded-replay-decision.md)；实现以 [ADR-0093](docs/adr/0093-bounded-quality-report-evidence.md) 为准。该项不阻塞其它 Phase 1 模块。
 
-**ARCHITECTURE_DECISION_REQUIRED — E1 Quality v3 reporter 上游有界输入（2026-09-30）**
+**E1-Q-REPORTER 输入路径复核（2026-09-30；先前 ARCHITECTURE_DECISION_REQUIRED 已关闭）**
 
-- 冲突/问题：保持现有报表完整性需要 PIT 每日 precedence edges 与 REST 页完整性证明；当前 `ChannelReconciler.verified_edges()` 物化 full-day tuple，`QualityReporter._check_rest_pages()` 物化全部匹配页，`check_rest_page()` 又物化单个 REST 响应的全部 elements。这些输入随数据量增长，v3 reporter 若直接复用就不能声称满足 ADR-0093 / ADR-0077 的有界路径；跳过检查会削弱已接受完整性语义。
-- 涉及文档/契约：ADR-0093 §§2–4、ADR-0077 §6.1.5、`CANONICAL_PARTITION_V3_RULE_SPEC`。不涉及修改 core contracts 或改变旧 v1/v2 路径。
-- 可选方案（附利弊）：A. 为 ChannelReconciler precedence-edge 归并和 REST page body/element 完整性证明新增 additive bounded streaming API，保留全部语义；实现成本较高，涉及 PIT / revision / canonical 的协调改动。B. 引入 edge/page/element 数量上限并超限拒绝；实现较简单，但改变报告覆盖，ADR-0093 明确拒绝以事件数 cap 改变覆盖，需正式 ADR 决定。C. reporter 保持不可用并 fail closed；保留语义但质量 v3 及其 Dataset 接线继续阻塞。
-- 推荐：A；先给两类上游证明流建立显式 capacity / fanout / byte 参数及 closable reader，再重开 reporter。
-- 若不决定的影响：不实现或启用 v3 reporter，不声称 gap 完整性、ADR-0093 end-to-end 或 E1-CAP-1；其它不依赖该路径的 Phase 1 切片可继续。
-- 权限边界：本 Codex 执行代理发现此跨模块决策；当前 `CLAUDE.md` §0 / H11 将架构决策权指定给 Claude Code PM，Codex 仅为执行代理。此项须由具备项目 PM 权限者接受方案或指示下一步。
+- `PitSelector.iter_bounded()` 的 bounded path 经 `_bounded_mapped_edges` 使用 `ChannelReconciler.iter_verified_edges(params=...)` 与 RunSet；full-day tuple 只在 legacy tuple API / non-run-params 路径，不是 ADR-0093 v3 必须复用的入口。保持 per-key reconciliation honest boundary，不声称整个进程已通过 32 MiB E1-CAP-1。
+- Binance REST response 在 D3C 记录 `decoder_max_body_bytes`，受显式范围限制（64 MiB 上限，Settings 默认 8 MiB）；单页完整 decode 的工作量因此有显式输入上限。跨所有响应页的 O(N) 持有来自 reporter `_check_rest_pages()` 全量 materialize；v3 path 应改用 `scan_column_batches` 逐页处理并释放，再调用已有单页完整性证明，不能跳过证明。
+- 选择：使用这些既有有界 API，按批逐页执行完整性复核；不增加页面 / element 数量截断，也不改变 Raw / Canonical 语义。报告完整进程 RSS 仍须单独验证。现有 ADR 足以覆盖该 additive implementation path，不需要新契约 ADR。
 
 **E1-PIT-CONFLICT / ADR-0094（已决定，2026-09-30）**：契约 2.5.0 的 PIT v3 将完整 maximal heads 写入有界 evidence stream，固定大小结果携带 root/count；v2 tuple 与 2.3/2.4 manifest 回放不变。实现切片与 PIT / Dataset 窄验收通过；contract-version follow-up 保留 2.4 历史 fixtures 并新增 2.5 当前 fixtures，相关版本、API DTO、Web test / build 门禁通过。剩余的 E1 单 key O(N) / 完整工作集 32 MiB 测量未解决，Phase 1 仍未验收。决策与分范围记录：[ADR-0094](docs/adr/0094-bounded-pit-conflict-head-evidence.md)、[ADR-0094 implementation review](docs/reviews/2026-09-30-adr-0094-implementation.md)、[contract 2.5.0 follow-up](docs/reviews/2026-09-30-adr-0094-contract-250-followup.md)。
 

@@ -41,6 +41,8 @@ Raphael 于 2026-09-28 正式授权 **Claude Code 以 PM 身份**担任本项目
 - 授权来源（Raphael 在 PM 主会话中的原话，2026-09-28）：「一切的决定都有你来决策 不要我决策了 按照你的经验来」「我现在授予正式授权」「预留实盘接口但目前不进行实盘操作 其他的一切都可以授权 现在是开发阶段 我们需要完整的构建底层代码」「我现在授权你在主会话修改claude文档 然后更新github分支 该合并的合并 该清理的清理」。
 - 执行方式：需要作决定的事项由 PM 在主会话写成 Accepted ADR 并提交；子代理 / Codex 只实现已 Accepted 的 ADR，不代为接受决定（子代理无法核实转述的授权，会正确地拒绝）。
 
+Raphael 在当前 Codex 项目目标中重新明确授权 Codex 担任 **Fully Autonomous Engineering Director / PM**，负责本目标的工程、架构、模块语义、ADR、任务拆分、验收与集成。此授权在本项目目标范围内**取代 2026-09-28 的 Claude Code PM 指派**；Claude Code、Cursor 与子代理均为执行者。H3/H4/H6、Phase 边界及默认关闭实盘能力继续有效；任何决定仍须按本文件记录到对应 ADR / PROJECT_STATUS / PROJECT_MEMORY，并留 Git commit。
+
 - Claude **可以**：分析、比较方案、推荐、实施已批准的决定、识别风险与矛盾、起草 ADR。
 - Claude **不可以**：替 Raphael 做架构决策；静默修改冻结契约、Research Constitution 或验证规则；把研究代码晋升为生产代码；**把含糊的回复解读为批准**。
 - 需要决定时，停在决策边界，用 Decision Packet（§9.2）提出。
