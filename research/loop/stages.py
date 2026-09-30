@@ -82,6 +82,7 @@ from core.errors import LifecycleViolation, ReasonCategory, ReasonCode
 from core.lifecycle.strategy import LifecycleState
 from infrastructure.content import ContentResolver
 from infrastructure.state import run_state, state_inputs, state_request
+from research.experiments.run_inputs import state_labeller_identity
 from research.hypotheses import (
     HypothesisBatch,
     HypothesisDraft,
@@ -246,7 +247,10 @@ class IngestStage:
             "start": spec.start.isoformat(),
             "planted_effects": len(market.truth),
         }
-        return StageResult(summary, self.estimate(ctx), {"segment": segment})
+        # the decision grid the segment's decision times were built with: a new run records it
+        # (research.experiments.run_inputs, ADR-0100 修订 2)
+        grid = (self._step, self._warmup)
+        return StageResult(summary, self.estimate(ctx), {"segment": segment, "decision_grid": grid})
 
 
 class StateStage:
@@ -300,6 +304,14 @@ class StateStage:
             # the manifest hash of every feature request behind the signals (G0.manifest_binding
             # compares them with the round's manifest pair on the dataset path)
             "feature_manifest_hashes": tuple(request.manifest_content_hash for request, _ in pairs),
+            # the identity of the labeller behind ``labels`` (the validator's ``state_of``); a new
+            # run records it (research.experiments.run_inputs, ADR-0100 修订 2)
+            "labeller": state_labeller_identity(
+                state_spec=self._state_spec,
+                state_provider=self._state_provider,
+                feature_spec=self._feature_spec,
+                feature_provider=self._feature_provider,
+            ),
         }
         if not segment.research_bars or segment.research_end is None:
             summary: dict[str, Any] = {
