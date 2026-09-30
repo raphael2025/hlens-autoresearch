@@ -33,6 +33,16 @@ given reports root at a time; the report writer does not provide a cross-process
     yielding one (held open until the report is written);
   - ``main(..., authority_environment=...)`` from an embedding caller.
 
+  The default factory (ADR-0100 item 4) is
+  ``--authority-environment research.operations.authority_environment:default_environment``: it
+  builds the Iceberg catalog, storage and dataset builder from ``infrastructure.settings.Settings``
+  and everything the baseline pins (run, strategy spec, cost model, decision grid, v3 evidence
+  verifier, optional validation binding) from ``HLENS_AUTHORITY_*`` settings, resolves the backtest
+  provider from the plugin registry by the run's recorded identity, and refuses with
+  ``authority_environment_unavailable`` naming every missing setting. The environment's optional
+  ``validation`` binding is passed to the resolver (needed only by metric definitions that re-run
+  the baseline validator on the window).
+
   Without either, the authority mode refuses (``authority_environment_unavailable``) after
   verifying the pinned head, before any report; a factory that cannot be loaded, fails, or does
   not produce an ``AuthorityEnvironment`` is refused with the same code.
@@ -336,6 +346,8 @@ def _factory_environment(spec: str, stack: ExitStack) -> AuthorityEnvironment:
         produced = factory()
         if isinstance(produced, AbstractContextManager):
             produced = stack.enter_context(produced)
+    except AuthorityRefused:  # a deliberate refusal (e.g. a missing setting) keeps its code
+        raise
     except Exception as exc:
         raise AuthorityRefused(
             AUTHORITY_ENVIRONMENT_UNAVAILABLE,
@@ -547,6 +559,7 @@ def main(
                     execution=authority_environment.execution,
                     window=window,
                     as_of=as_of,
+                    validation=authority_environment.validation,
                 )
                 stage = "operation"
                 result = run_degradation_check(
@@ -588,6 +601,10 @@ def main(
         detail = type(exc).__name__
         if isinstance(code, str):
             detail = f"{detail}: {code}"
+        # the default environment factory names the settings it lacks (names, never values)
+        missing = getattr(exc, "missing_settings", ())
+        if isinstance(missing, tuple) and missing:
+            detail = f"{detail}; missing settings: {', '.join(str(name) for name in missing)}"
         print(f"P11 degradation CLI refused at {stage} ({detail})", file=sys.stderr)
         return 1
 
