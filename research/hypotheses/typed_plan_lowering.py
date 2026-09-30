@@ -17,7 +17,10 @@ Accepted operators:
 * ``temporal`` (ADR-0088 decision 1, pending-decisions §3 option A): EventSpec. Both input
   EventSpecs must declare the same non-empty ``bar_spec``; the window counts bars of that spec,
   left-open / right-closed (the second event falls 1..N bars after the first); the result carries
-  the same ``bar_spec`` and becomes visible when the second event becomes visible.
+  the same ``bar_spec`` and becomes visible when the second event becomes visible. The two inputs
+  must be different EventSpecs (``temporal_same_input``). In a plan of format "1.3.0" (ADR-0100
+  revision 1) the trigger also binds both upstream spec hashes (``first_event_hash`` /
+  ``second_event_hash``) and ``observable_lag`` is 0; older formats keep their original lowering.
 * ``conditioning`` / ``ensemble`` / ``negation`` (ADR-0088 decision 2): StrategySpec whose
   ``composition`` is ``ConditionedStrategy`` / ``EnsembleStrategy`` / ``NegatedStrategy``.
 
