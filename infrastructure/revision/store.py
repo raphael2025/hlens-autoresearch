@@ -36,6 +36,7 @@ compare or select revisions.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any, Final, Protocol, Self
@@ -44,6 +45,7 @@ import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import BooleanExpression, EqualTo
 
 from core.contracts.catalog import (
+    BatchRejected,
     CommitConflict,
     CommitOutcome,
     CommitRequest,
@@ -114,6 +116,8 @@ __all__ = [
     "RevisionCatalog",
     "RevisionStoreError",
     "RevisionStoreConflict",
+    "scan_rows",
+    "scanned_rows",
 ]
 
 
@@ -309,6 +313,91 @@ class RevisionCatalog(Protocol):
         row_filter: BooleanExpression = ...,
         check: Callable[[int], None] | None = ...,
     ) -> int | None: ...
+
+
+def _batch_scan_kwargs(
+    columns: Sequence[str], row_filter: BooleanExpression | None, snapshot_id: str | None
+) -> dict[str, Any]:
+    """``scan_column_batches`` keywords; an omitted filter / snapshot keeps the reader's default."""
+    kwargs: dict[str, Any] = {"columns": tuple(columns)}
+    if row_filter is not None:
+        kwargs["row_filter"] = row_filter
+    if snapshot_id is not None:
+        kwargs["snapshot_id"] = snapshot_id
+    return kwargs
+
+
+def _close_reader(reader: object) -> None:
+    close = getattr(reader, "close", None)
+    if callable(close):
+        close()
+
+
+@contextmanager
+def scanned_rows(
+    catalog: Any,
+    table: str,
+    *,
+    columns: Sequence[str],
+    row_filter: BooleanExpression | None = None,
+    snapshot_id: str | None = None,
+) -> Iterator[Iterator[dict[str, Any]]]:
+    """Row mappings of one fixed snapshot, streamed; the reader is always closed (ADR-0075).
+
+    The replacement for ``scan_columns(...).to_pylist()`` wherever the caller can consume rows
+    one at a time: ``scan_columns`` runs PyIceberg's high-level planner, whose manifest / entry /
+    task lists grow with the table's file count (one commit per ingested batch), while
+    ``scan_column_batches`` reads the same projection, filter and snapshot one data file and one
+    Arrow batch at a time. ``snapshot_id`` ``None`` is the snapshot current when the reader
+    opens, exactly as for ``scan_columns``. The reader is opened on entry, so an unknown table
+    or snapshot fails there; leaving the block early releases it.
+    """
+    reader = catalog.scan_column_batches(
+        table, **_batch_scan_kwargs(columns, row_filter, snapshot_id)
+    )
+
+    def rows() -> Iterator[dict[str, Any]]:
+        for record_batch in reader:
+            yield from record_batch.to_pylist()
+
+    try:
+        yield rows()
+    finally:
+        _close_reader(reader)
+
+
+def scan_rows(
+    catalog: Any,
+    table: str,
+    *,
+    columns: Sequence[str],
+    row_filter: BooleanExpression | None = None,
+    snapshot_id: str | None = None,
+    limit: int | None = None,
+) -> list[Mapping[str, Any]]:
+    """At most ``limit`` rows (all when ``None``) of one fixed snapshot, streamed (ADR-0075).
+
+    Same rows, projection and snapshot as ``scan_columns(..., limit=limit).to_pylist()``, but
+    read through ``scan_column_batches`` and stopped as soon as ``limit`` rows are held: no
+    high-level planner and never more than ``limit`` rows converted. ``limit`` is validated as
+    ``scan_columns`` validates it. The reader is always closed.
+    """
+    if limit is not None and (not isinstance(limit, int) or isinstance(limit, bool) or limit < 1):
+        raise BatchRejected("scan limit must be a positive int or None")
+    rows: list[Mapping[str, Any]] = []
+    reader = catalog.scan_column_batches(
+        table, **_batch_scan_kwargs(columns, row_filter, snapshot_id)
+    )
+    try:
+        for record_batch in reader:
+            if limit is not None and record_batch.num_rows > limit - len(rows):
+                record_batch = record_batch.slice(0, limit - len(rows))
+            rows.extend(record_batch.to_pylist())
+            if limit is not None and len(rows) >= limit:
+                break
+    finally:
+        _close_reader(reader)
+    return rows
 
 
 class RawRevisionStore:

@@ -92,7 +92,7 @@ from infrastructure.revision.exchange_info_store import (
     ProvenSnapshotTable,
 )
 from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
-from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.revision.store import BatchCommit, RevisionCatalog, scan_rows, scanned_rows
 from infrastructure.streaming.runs import RunLimits, RunRef
 from infrastructure.universe import listing_assumption as backfill
 
@@ -578,8 +578,9 @@ class ListingDeriver:
         for snapshot in reversed(history):
             largest = self._prove_batch(snapshot, raw, committed, largest)
         if listing_head is not None:
-            final = self._scan_listings(listing_head)
-            if {row["revision_id"] for row in final} != set(committed):  # pragma: no cover
+            # Only the head's revision ids take part in this check, so only they are read.
+            final = self._listing_revision_ids(listing_head)
+            if final != set(committed):  # pragma: no cover
                 raise CatalogIntegrityError(f"{LISTINGS_TABLE}: rows outside its batches")
         chains = _chains(raw.rows)
         derived = {planned.revision_id for chain in chains.values() for planned in chain.revisions}
@@ -708,11 +709,17 @@ class ListingDeriver:
         return base + len(rebuilt) - 1
 
     def _scan_listings(self, snapshot_id: str) -> list[Mapping[str, Any]]:
+        """Every listing row at ``snapshot_id``, streamed (ADR-0075: no high-level planner,
+        whose manifest / entry / task lists grow with the table's file count)."""
         columns = tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema)
-        rows: list[Mapping[str, Any]] = self._adapter.scan_columns(
-            LISTINGS_TABLE, columns=columns, snapshot_id=snapshot_id
-        ).to_pylist()
-        return rows
+        return scan_rows(self._adapter, LISTINGS_TABLE, columns=columns, snapshot_id=snapshot_id)
+
+    def _listing_revision_ids(self, snapshot_id: str) -> set[str]:
+        """The ``revision_id`` of every listing row at ``snapshot_id``, streamed (ADR-0075)."""
+        with scanned_rows(
+            self._adapter, LISTINGS_TABLE, columns=("revision_id",), snapshot_id=snapshot_id
+        ) as rows:
+            return {row["revision_id"] for row in rows}
 
     # ------------------------------------------------------------------ helpers
 

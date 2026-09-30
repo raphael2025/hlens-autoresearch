@@ -43,7 +43,7 @@ from infrastructure.quality.report_streams import (
 )
 from infrastructure.quality.report_v3 import _INPUT_TABLES as _CANONICAL_V3_INPUTS
 from infrastructure.quality.scratch import local_storage_roots_overlap
-from infrastructure.revision.store import RevisionCatalog
+from infrastructure.revision.store import RevisionCatalog, scan_rows
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = ["BoundedQualityEvidence", "BoundedQualityEvidenceFactory", "BoundedQualitySourceParams"]
@@ -355,12 +355,15 @@ class BoundedQualityEvidence:
     def _read_one(
         self, table: str, report_id: str, columns: tuple[str, ...]
     ) -> Mapping[str, Any] | None:
-        rows = self._view.scan_columns(
+        # Streamed at the view's binding (ADR-0075: no high-level planner, whose manifest /
+        # entry / task lists grow with the table's file count); two rows prove a duplicate.
+        rows = scan_rows(
+            self._view,
             table,
             columns=columns,
             row_filter=EqualTo("report_id", report_id),  # type: ignore[call-arg, arg-type]
             limit=2,
-        ).to_pylist()
+        )
         if len(rows) > 1:
             raise DatasetQualityError(f"Quality report {report_id} is committed more than once")
         return None if not rows else rows[0]

@@ -69,6 +69,7 @@ __all__ = [
     "parse_archive",
     "parse_archive_spooled",
     "parse_archive_bytes",
+    "parse_archive_row_count",
     "time_unit_for",
 ]
 
@@ -828,6 +829,35 @@ def parse_archive_spooled(
     except BaseException:
         spool.close()
         raise
+
+
+def _discard_batch(_batch: pa.RecordBatch) -> None:
+    """Batch sink of :func:`parse_archive_row_count`: every batch is built, then dropped."""
+
+
+def parse_archive_row_count(
+    request: ArchiveParseRequest, storage: StorageAdapter
+) -> int | ArchiveRejection:
+    """Strictly parse exactly as :func:`parse_archive_spooled` does, keeping only the row count.
+
+    Same request identity, object integrity, ZIP / member / CSV checks, per-row rules, chunk size
+    and Arrow conversion of every chunk as the spooled parse (so any rule enforced while a chunk
+    becomes a batch is enforced here too); each batch is discarded once built instead of being
+    written to a spool. Accepted: the number of data rows. Rejected: the same
+    ``ArchiveRejection``. Storage and local input spool failures are the same ``StorageError``.
+    """
+    outcome = _parse_storage(
+        request,
+        storage,
+        batch_sink=_discard_batch,
+        chunk_rows=min(_CHUNK_ROWS, _SPOOL_CHUNK_ROWS),
+    )
+    if isinstance(outcome, ArchiveRejection):
+        return outcome
+    rows, _member_name, row_count = outcome
+    if rows is not None:
+        raise AssertionError("counting parse unexpectedly materialized a complete Table")
+    return row_count
 
 
 def _parse_storage(
