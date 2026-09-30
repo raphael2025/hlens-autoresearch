@@ -243,18 +243,18 @@ def pair_manifests(
             p_any, ResearchDatasetManifest
         ):
             _require_pair(f_any, p_any)
+            rule_hash = PAIR_RULE_HASH
         elif isinstance(f_any, ResearchDatasetEvidenceManifest) and isinstance(
             p_any, ResearchDatasetEvidenceManifest
         ):
             _require_evidence_pair(evidence_verifier, f_any, p_any)
+            rule_hash = PAIR_RULE_V3_HASH
         else:
             raise _refuse("a v2 and a v3 (evidence) manifest are never one chain")
         return ManifestPair(
             feature_manifest_hash=f_any.content_hash(),
             price_manifest_hash=p_any.content_hash(),
-            pair_hash=pair_hash_of(
-                f_any.content_hash(), p_any.content_hash(), rule_hash=PAIR_RULE_V3_HASH
-            ),
+            pair_hash=pair_hash_of(f_any.content_hash(), p_any.content_hash(), rule_hash=rule_hash),
         )
     return ManifestPair(
         feature_manifest_hash=feature.content_hash(),

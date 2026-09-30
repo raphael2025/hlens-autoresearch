@@ -76,6 +76,7 @@ from core.contracts.catalog import (
 from core.contracts.storage import StorageAdapter
 from infrastructure import contract_version
 from infrastructure.canonical import rules
+from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.row_integrity import (
@@ -84,9 +85,9 @@ from infrastructure.revision.row_integrity import (
     batch,
     batch_rows,
     check_batch_snapshot,
-    history_from,
 )
 from infrastructure.revision.store import RevisionCatalog
+from infrastructure.streaming.content_key_tree import KeyTreeParams
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = [
@@ -117,6 +118,24 @@ _BATCH_CACHE: Final = 2
 _POSITION_DB_CACHE_KIB: Final = 1024
 _POSITION_INSERT_ROWS: Final = 2048
 _POSITION_INT: Final = struct.Struct(">q")
+# Named E1-CAP-1 parser/index profile for the normalizer's pinned read pass. At N=500,000 and
+# M=256, one Canonical history has about 1,954 batches; 10,000 allows >5x headroom for additional
+# snapshots while still failing closed at a finite bound. The 16 MiB document and 256 KiB item
+# caps are parser resource ceilings, not measured RSS or an E1-CAP-1 pass claim. Callers can
+# inject a separately reviewed profile through ``metadata_limits``.
+_NORMALIZER_METADATA_LIMITS: Final = BoundedMetadataLimits(
+    max_metadata_bytes=16 * 1024 * 1024,
+    max_item_bytes=256 * 1024,
+    max_retained_json_bytes=2 * 1024 * 1024,
+    read_chunk_bytes=16 * 1024,
+    max_small_array_items=512,
+    max_map_items=512,
+    max_snapshots=10_000,
+    run_capacity=64,
+    run_limits=RunLimits(leaf_max_records=32, leaf_max_bytes=1024 * 1024, fanout=8),
+    run_merge_fanout=8,
+    key_tree_params=KeyTreeParams(page_max_bytes=1024 * 1024, leaf_max_records=64, fanout=8),
+)
 
 
 def _prepare_scratch_directory(directory: Path) -> Path:
@@ -553,6 +572,7 @@ class CanonicalNormalizer:
         scratch_directory: Path,
         clock: Callable[[], datetime] | None = None,
         microbatch_rows: int = DEFAULT_MICROBATCH_ROWS,
+        metadata_limits: BoundedMetadataLimits = _NORMALIZER_METADATA_LIMITS,
     ) -> None:
         if not isinstance(microbatch_rows, int) or isinstance(microbatch_rows, bool):
             raise CanonicalNormalizeError("microbatch_rows must be an int")
@@ -560,11 +580,14 @@ class CanonicalNormalizer:
             raise CanonicalNormalizeError(
                 f"microbatch_rows must be between 1 and {MAX_MICROBATCH_ROWS}"
             )
+        if not isinstance(metadata_limits, BoundedMetadataLimits):
+            raise CanonicalNormalizeError("metadata_limits must be BoundedMetadataLimits")
         self._adapter = adapter
         self._storage = storage
         self._scratch_directory = _prepare_scratch_directory(scratch_directory)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = microbatch_rows
+        self._metadata_limits = metadata_limits
         #: On a ``PinnedCatalogView`` nothing can change under the normalizer (it cannot write
         #: there either), so its pins — with their archive caches — and each unit's unit-wide
         #: facts are proven once and reused by every later call (G3-S3: a reader of many time
@@ -1125,6 +1148,48 @@ class CanonicalNormalizer:
         tables = (channel.element.table, channel.source.table, channel.canonical.table)
         if self._frozen and tables in self._pins:
             return self._pins[tables]
+        supports_bounded = getattr(self._adapter, "supports_bounded_metadata", None)
+        bounded_pin = getattr(self._adapter, "pin_bounded_metadata", None)
+        can_pin_bounded = (
+            bool(supports_bounded) if supports_bounded is not None else callable(bounded_pin)
+        )
+        if can_pin_bounded:
+            if not callable(bounded_pin):
+                raise CanonicalNormalizeError("bounded catalog pin capability is incomplete")
+            for _ in range(_ATTEMPTS):
+                first = tuple(
+                    bounded_pin(table, storage=self._storage, limits=self._metadata_limits)
+                    for table in tables
+                )
+                second = tuple(
+                    bounded_pin(table, storage=self._storage, limits=self._metadata_limits)
+                    for table in tables
+                )
+                first_identity = tuple(
+                    (view.metadata_location, view.selected_snapshot_id) for view in first
+                )
+                second_identity = tuple(
+                    (view.metadata_location, view.selected_snapshot_id) for view in second
+                )
+                if first_identity != second_identity:
+                    continue
+                heads = tuple(snapshot for _, snapshot in second_identity)
+                catalog = PinnedCatalogView(
+                    self._adapter,
+                    dict(zip(tables, heads, strict=True)),
+                    bounded_metadata=dict(zip(tables, second, strict=True)),
+                )
+                pin = _Pin(
+                    catalog=catalog,
+                    canonical_head=heads[2],
+                    verifier=PersistedRowVerifier(catalog, self._storage, cache_archives=True),
+                )
+                if self._frozen:
+                    self._pins[tables] = pin
+                return pin
+            raise CanonicalNormalizeConflict(
+                f"{' / '.join(tables)} kept moving: no pinned read of unit {source_revision_id}"
+            )
         for _ in range(_ATTEMPTS):
             heads = tuple(self._head(table) for table in tables)
             if tuple(self._head(table) for table in tables) != heads:
@@ -1572,7 +1637,9 @@ class CanonicalNormalizer:
         table = channel.canonical.table
         prefix = _unit_prefix(source_revision_id)
         widths = (_ROWS_DIGITS, _CHUNK_DIGITS, _INDEX_DIGITS)
-        for snapshot in history_from(self._adapter, table, pin.canonical_head):
+        if pin.canonical_head is None:
+            return
+        for snapshot in pin.catalog.history(table, pin.canonical_head):
             batch_id = snapshot.batch_id
             if batch_id is None or not batch_id.startswith(prefix):
                 continue
