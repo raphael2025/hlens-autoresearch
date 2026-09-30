@@ -1,8 +1,15 @@
 """Bounded, content-addressed JSONL streams for ADR-0093 quality report evidence.
 
 Records are canonical JSON objects, one per LF-terminated UTF-8 line.  A stream is an ordered
-sequence; this layer enforces the byte/record/tree bounds and authenticates storage, while the
-report rule owns record schemas and ordering.  Every resource bound is supplied explicitly.
+sequence; callers supply exact record mappings in their canonical report order. This layer enforces
+the byte/record/tree bounds and authenticates storage, while the report rule owns record schemas,
+ordering, event identity, and digest semantics. This generic substrate defines none of those
+domain projections. Every resource bound is supplied explicitly.
+
+The empty representation is inherited from ADR-0093's explicit use of ADR-0077's fixed
+leaf/fan-out tree: zero records produce zero leaves and one childless level-one index root
+(``record_count=0``, ``leaf_count=0``, ``depth=1``). This lets all three fixed-size manifest
+references have a root even when a report has no events, revisions, or gaps.
 """
 
 from __future__ import annotations

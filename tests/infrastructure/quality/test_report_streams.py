@@ -2,17 +2,20 @@
 
 from __future__ import annotations
 
+import hashlib
+import inspect
 import itertools
 import json
 import tracemalloc
 from collections.abc import Iterator, Mapping
+from dataclasses import replace
 from io import BytesIO
 from pathlib import Path
 from typing import Any, BinaryIO
 
 import pytest
 
-from core.contracts.storage import ObjectRef, StorageAdapter
+from core.contracts.storage import ObjectRef, PublishOutcome, StageRequest, StorageAdapter
 from core.domain.base import canonical_json
 from infrastructure.quality.report_streams import (
     QUALITY_REPORT_STREAM_FORMAT,
@@ -74,6 +77,29 @@ def test_empty_stream_publishes_a_childless_root(storage: LocalFileStorageAdapte
         assert list(records) == []
 
 
+@pytest.mark.parametrize("stream", ["events", "event_revisions", "evidence_gaps"])
+def test_each_adr0093_stream_name_is_supported(
+    storage: LocalFileStorageAdapter, stream: str
+) -> None:
+    writer = QualityReportStreamWriter(storage, stream, limits=params())
+    ref = writer.finish()
+    assert ref.stream == stream
+    with iter_quality_report_stream(storage, ref, limits=params()) as records:
+        assert list(records) == []
+
+
+def test_limits_are_all_explicit_and_positive() -> None:
+    assert all(
+        parameter.default is inspect.Parameter.empty
+        for parameter in inspect.signature(QualityReportStreamLimits).parameters.values()
+    )
+    with pytest.raises(TypeError):
+        QualityReportStreamLimits()  # type: ignore[call-arg]
+    for values in ((0, 1, 2), (1, 0, 2), (1, 1, 1), (True, 1, 2)):
+        with pytest.raises(QualityReportStreamError):
+            QualityReportStreamLimits(*values)
+
+
 def test_record_projection_matches_canonical_json_for_nested_values(
     storage: LocalFileStorageAdapter,
 ) -> None:
@@ -101,6 +127,46 @@ def test_record_over_limit_fails_without_truncation(storage: LocalFileStorageAda
     writer = QualityReportStreamWriter(storage, "events", limits=params(size=20))
     with pytest.raises(QualityReportStreamTooLarge):
         writer.append({"payload": "x" * 30})
+
+
+def test_exact_record_and_leaf_byte_limits_are_inclusive(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    # Empty mappings have no key-index workspace, so their JSONL bytes can exercise the
+    # inclusive byte boundary without a separately budgeted sorting index.
+    values: list[dict[str, Any]] = [{}, {}]
+    line_bytes = [len((canonical_json(value) + "\n").encode("utf-8")) for value in values]
+    writer = QualityReportStreamWriter(
+        storage,
+        "events",
+        limits=QualityReportStreamLimits(
+            leaf_max_records=2, leaf_max_bytes=sum(line_bytes), fanout=2
+        ),
+    )
+    for value in values:
+        writer.append(value)
+    ref = writer.finish()
+    assert (ref.record_count, ref.leaf_count) == (2, 1)
+    with iter_quality_report_stream(
+        storage,
+        ref,
+        limits=QualityReportStreamLimits(
+            leaf_max_records=2, leaf_max_bytes=sum(line_bytes), fanout=2
+        ),
+    ) as records:
+        assert list(records) == values
+
+
+def test_record_that_exceeds_exact_byte_limit_by_one_fails(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    value: dict[str, Any] = {}
+    size = len((canonical_json(value) + "\n").encode("utf-8"))
+    writer = QualityReportStreamWriter(
+        storage, "events", limits=QualityReportStreamLimits(1, size - 1, 2)
+    )
+    with pytest.raises(QualityReportStreamTooLarge):
+        writer.append(value)
 
 
 def test_huge_string_is_rejected_with_bounded_temporary_allocation(
@@ -179,6 +245,104 @@ def test_tampered_root_bytes_fail_closed(
     with iter_quality_report_stream(storage, ref, limits=params()) as records:
         with pytest.raises(QualityReportStreamIntegrityError, match="digest"):
             list(records)
+
+
+def test_missing_child_object_fails_closed(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = write(storage, [{"ordinal": 0}], params(records=1))
+    root = storage.lookup(ref.root_key)
+    assert root is not None
+    with storage.open_read(root) as handle:
+        child_key = json.loads(handle.read().splitlines()[1])["key"]
+    actual_lookup = storage.lookup
+
+    def missing(key: str) -> ObjectRef | None:
+        if key == child_key:
+            return None
+        return actual_lookup(key)
+
+    monkeypatch.setattr(storage, "lookup", missing)
+    with iter_quality_report_stream(storage, ref, limits=params(records=1)) as records:
+        with pytest.raises(QualityReportStreamIntegrityError, match="missing or misidentified"):
+            list(records)
+
+
+def test_lookup_reference_identity_mismatch_fails_before_open_read(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ref = write(storage, [{"ordinal": 0}], params())
+    actual_lookup = storage.lookup
+    opened: list[str] = []
+    actual_open = storage.open_read
+
+    def mismatched(key: str) -> ObjectRef | None:
+        found = actual_lookup(key)
+        if key == ref.root_key and found is not None:
+            return found.model_copy(update={"size": found.size + 1})
+        return found
+
+    def tracked(found: ObjectRef) -> BinaryIO:
+        opened.append(found.key)
+        return actual_open(found)
+
+    monkeypatch.setattr(storage, "lookup", mismatched)
+    monkeypatch.setattr(storage, "open_read", tracked)
+    with pytest.raises(QualityReportStreamIntegrityError, match="missing or misidentified"):
+        with iter_quality_report_stream(storage, ref, limits=params()) as records:
+            list(records)
+    assert opened == []
+
+
+def test_malformed_but_content_addressed_root_fails_closed(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    ref = write(storage, [{"ordinal": 0}], params())
+    malformed = (
+        b'{"first_ordinal":0,"format":"wrong","level":1,"node":"index",'
+        b'"record_count":1,"stream":"events"}\n'
+    )
+    digest = hashlib.sha256(malformed).hexdigest()
+    key = f"quality/report-evidence/v1/{digest}.jsonl"
+    staged = storage.stage(
+        StageRequest(key=key, expected_sha256=digest, expected_size=len(malformed)), [malformed]
+    )
+    root = storage.publish(staged).ref
+    bad_ref = replace(ref, root_key=root.key, root_sha256=root.sha256, root_size=root.size)
+    with pytest.raises(QualityReportStreamIntegrityError, match="identity or level mismatch"):
+        with iter_quality_report_stream(storage, bad_ref, limits=params()) as records:
+            list(records)
+
+
+def test_root_summary_count_mismatch_fails_closed(storage: LocalFileStorageAdapter) -> None:
+    ref = write(storage, [{"ordinal": 0}], params())
+    bad_ref = replace(ref, record_count=2)
+    with pytest.raises(QualityReportStreamIntegrityError, match="parent reference|counts disagree"):
+        with iter_quality_report_stream(storage, bad_ref, limits=params()) as records:
+            list(records)
+
+
+def test_replay_republishes_identical_objects_idempotently(
+    storage: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    actual_publish = storage.publish
+    outcomes: list[PublishOutcome] = []
+
+    def tracked(staged: Any) -> Any:
+        result = actual_publish(staged)
+        outcomes.append(result.outcome)
+        return result
+
+    monkeypatch.setattr(storage, "publish", tracked)
+    values = [{"ordinal": index} for index in range(5)]
+    first = write(storage, values, params(records=2, fanout=2))
+    first_publish_count = len(outcomes)
+    second = write(storage, values, params(records=2, fanout=2))
+    assert second == first
+    assert first_publish_count > 0
+    assert len(outcomes) == first_publish_count * 2
+    assert outcomes[:first_publish_count] == [PublishOutcome.CREATED] * first_publish_count
+    assert outcomes[first_publish_count:] == [PublishOutcome.ALREADY_PRESENT] * first_publish_count
 
 
 def test_early_close_stops_before_later_leaf_reads(
