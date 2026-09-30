@@ -2227,12 +2227,23 @@ class PersistedRowVerifier:
             plans[prefix] = (size, last_size, summary.count, needed)
         checked: dict[str, set[int]] = {prefix: set() for prefix in prefixes}
         observed = {prefix: 0 for prefix in prefixes}
-        for batch_prefix, index, snapshot in self._batch_snapshots(table, found):
-            observed[batch_prefix] += 1
-            plan = plans[batch_prefix]
-            size, last_size, count, needed = plan
-            if index not in needed:
-                continue
+        # E1 bounding: finish the history walk (which keeps the table's whole loaded metadata
+        # referenced) before scanning, so no scan below loads its metadata copy while the walk's
+        # copy is alive. Only the snapshots of batches the touched rows need are kept: at most
+        # one per distinct needed batch, i.e. no more than the caller's own row list.
+        wanted: list[tuple[str, int, SnapshotInfo]] = []
+        walk = self._batch_snapshots(table, found)
+        try:
+            for batch_prefix, index, snapshot in walk:
+                observed[batch_prefix] += 1
+                if index in plans[batch_prefix][3]:
+                    wanted.append((batch_prefix, index, snapshot))
+        finally:
+            close = getattr(walk, "close", None)
+            if callable(close):
+                close()
+        for batch_prefix, index, snapshot in wanted:
+            size, last_size, count, _ = plans[batch_prefix]
             archive_id = prefixes[batch_prefix]
             batch_size = last_size if index == count - 1 else size
             first = index * size + 1
