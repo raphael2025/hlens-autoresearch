@@ -489,9 +489,17 @@ class QualityReporterV3:
                 "evidence_gaps": refs[2],
             }
             try:
-                committed = store.commit(row)
+                committed, reused = store.commit_or_reuse(row)
             except (CommitConflict, BatchConflict):
                 continue
+            if reused:
+                # A concurrent/retried report of this ID won: every stream root is equal (the
+                # store compared all but knowledge_time), so only its knowledge floor is left.
+                if floor is not None and committed["knowledge_time"] < floor:
+                    raise CatalogIntegrityError(
+                        "stored report knowledge_time predates a Canonical revision or edge"
+                    )
+                return QualityReportedV3(report_id, committed, True)
             return QualityReportedV3(report_id, committed, False)
         raise QualityReportV3Error("v3 report lost repeated manifest commit races")
 
