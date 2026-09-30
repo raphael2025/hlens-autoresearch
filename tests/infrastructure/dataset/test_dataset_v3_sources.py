@@ -17,6 +17,7 @@ several runs and merges in more than one pass.
 
 from __future__ import annotations
 
+import dataclasses
 import inspect
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -25,6 +26,7 @@ from typing import Any, cast
 
 import pytest
 
+import infrastructure.dataset.sources as sources_module
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.universe import (
     AvailabilityEvidenceGap,
@@ -60,6 +62,7 @@ from infrastructure.dataset.sources import (
 )
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.pit.runs import RunLimits
+from infrastructure.pit.runs import iter_run as original_iter_run
 from infrastructure.pit.selector import (
     PIT_BINDING,
     EvidenceGap,
@@ -557,7 +560,9 @@ SELECTED = PointInTimeStatus.SELECTED
 ABSENT = PointInTimeStatus.ABSENT
 
 
-def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
+def test_groups_carry_owner_event_times_and_lineage_per_key(
+    evidence_store: LocalFileStorageAdapter,
+) -> None:
     records = [
         _record(
             "k1", SELECTED, "r2", at=H0, owner=T0, event_time=T1, lineage=True, gap=ds.GAP_TEXT
@@ -568,7 +573,9 @@ def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
     ]
     groups = []
     evaluations_by_key = {}
-    for group in pit_key_groups(records, knowledge_cutoff=SIM):
+    for group in pit_key_groups(
+        records, knowledge_cutoff=SIM, storage=evidence_store, params=PIT_PARAMS
+    ):
         groups.append(group)
         evaluations_by_key[group.observation_key] = list(group.evaluations)
     assert [(g.observation_key, g.owner_event_time) for g in groups] == [("k1", T0), ("k2", T2)]
@@ -588,10 +595,14 @@ def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
         (("k1", "k2", "k1"), "out of order"),
     ],
 )
-def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) -> None:
+def test_pit_keys_out_of_order_are_refused(
+    keys: tuple[str, ...], match: str, evidence_store: LocalFileStorageAdapter
+) -> None:
     records = [_record(key, SELECTED, f"r-{key}", owner=T0, lineage=True) for key in keys]
     with pytest.raises(CatalogIntegrityError, match=match):
-        for group in pit_key_groups(records, knowledge_cutoff=SIM):
+        for group in pit_key_groups(
+            records, knowledge_cutoff=SIM, storage=evidence_store, params=PIT_PARAMS
+        ):
             list(group.evaluations)
 
 
@@ -638,20 +649,30 @@ def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) ->
         ),
     ],
 )
-def test_malformed_pit_streams_fail_closed(records: list[PitBoundedRecord], match: str) -> None:
+def test_malformed_pit_streams_fail_closed(
+    records: list[PitBoundedRecord], match: str, evidence_store: LocalFileStorageAdapter
+) -> None:
     with pytest.raises(CatalogIntegrityError, match=match):
-        for group in pit_key_groups(records, knowledge_cutoff=SIM):
+        for group in pit_key_groups(
+            records, knowledge_cutoff=SIM, storage=evidence_store, params=PIT_PARAMS
+        ):
             list(group.evaluations)
 
 
-def test_a_selection_at_another_cutoff_fails_closed() -> None:
+def test_a_selection_at_another_cutoff_fails_closed(
+    evidence_store: LocalFileStorageAdapter,
+) -> None:
     records = [_record("k1", SELECTED, "r1", owner=T0, lineage=True)]
     with pytest.raises(CatalogIntegrityError, match="another knowledge cutoff"):
-        for group in pit_key_groups(records, knowledge_cutoff=H1):
+        for group in pit_key_groups(
+            records, knowledge_cutoff=H1, storage=evidence_store, params=PIT_PARAMS
+        ):
             list(group.evaluations)
 
 
-def test_one_large_key_streams_evaluations_with_only_one_record_lookahead() -> None:
+def test_one_large_key_streams_evaluations_with_only_one_record_lookahead(
+    evidence_store: LocalFileStorageAdapter,
+) -> None:
     count = 10_000
     consumed = 0
 
@@ -661,7 +682,9 @@ def test_one_large_key_streams_evaluations_with_only_one_record_lookahead() -> N
             consumed += 1
             yield _record("large-key", ABSENT, at=SIM + timedelta(minutes=minute), owner=T0)
 
-    groups = pit_key_groups(records(), knowledge_cutoff=SIM)
+    groups = pit_key_groups(
+        records(), knowledge_cutoff=SIM, storage=evidence_store, params=PIT_PARAMS
+    )
     group = next(groups)
     assert group.observation_key == "large-key"
     assert consumed == 1
@@ -669,12 +692,147 @@ def test_one_large_key_streams_evaluations_with_only_one_record_lookahead() -> N
     evaluations = iter(group.evaluations)
     first = next(evaluations)
     assert first.status is ABSENT
-    assert consumed == 1  # yielding an evaluation does not prefetch its successor
+    assert consumed == 1  # an unselected prefix keeps the one-record streaming behavior
     assert sum(1 for _ in evaluations) == count - 1
     assert consumed == count
 
 
-def test_first_interval_conflict_does_not_pull_the_next_conflict_instant() -> None:
+def test_selected_key_history_spills_and_replays_in_original_order(
+    evidence_store: LocalFileStorageAdapter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    params = PitRunParams(
+        row_batch_rows=4,
+        edge_batch_rows=4,
+        merge_fanout=2,
+        key_history_buffer=4,
+        limits=RunLimits(leaf_max_records=4, leaf_max_bytes=1 << 16, fanout=2),
+    )
+    records: list[PitBoundedRecord] = []
+    expected: list[tuple[str, datetime, str | None]] = []
+    first_seen: set[str] = set()
+    gap_by_revision: dict[str, str | None] = {}
+    for index in range(41):
+        revision = "z-revision" if index % 3 else "a-revision"
+        attached = revision not in first_seen
+        first_seen.add(revision)
+        gap = ds.GAP_TEXT if attached and revision == "z-revision" else None
+        if attached:
+            gap_by_revision[revision] = gap
+        at = H0 + timedelta(seconds=index)
+        records.append(
+            _record(
+                "large-selected-key",
+                SELECTED,
+                revision,
+                at=at,
+                owner=T0,
+                event_time=T1,
+                lineage=attached,
+                gap=gap,
+            )
+        )
+        expected.append((revision, at, gap_by_revision[revision]))
+
+    opened = 0
+    closed = 0
+
+    @contextmanager
+    def tracked_iter_run(storage: Any, root: Any) -> Iterator[Iterator[Any]]:
+        nonlocal opened, closed
+        opened += 1
+        try:
+            with original_iter_run(storage, root) as rows:
+                yield rows
+        finally:
+            closed += 1
+
+    monkeypatch.setattr(sources_module, "iter_run", tracked_iter_run)
+    groups = pit_key_groups(records, knowledge_cutoff=SIM, storage=evidence_store, params=params)
+    group = next(groups)
+    evaluations = iter(group.evaluations)
+    first = next(evaluations)
+    assert first.selected is not None
+    assert (first.selected.revision_id, first.simulation_time) == expected[0][:2]
+    assert opened == closed + 1
+    evaluations.close()  # type: ignore[attr-defined]
+    assert opened == closed
+
+    # Re-open a fresh source to prove complete ordering and first-selection carry semantics.
+    groups = pit_key_groups(records, knowledge_cutoff=SIM, storage=evidence_store, params=params)
+    replayed_group = next(groups)
+    replayed = list(replayed_group.evaluations)
+    assert next(groups, None) is None
+    assert len(replayed) == len(expected) > params.key_history_buffer
+    assert [
+        (item.selected.revision_id, item.simulation_time, item.selected.evidence_gap)
+        for item in replayed
+        if item.selected is not None
+    ] == expected
+
+
+@pytest.mark.parametrize(
+    ("missing_first", "conflict_gap"), [(False, False), (True, False), (False, True)]
+)
+def test_late_duplicate_lineage_or_gap_fails_closed_and_closes_readers(
+    evidence_store: LocalFileStorageAdapter,
+    monkeypatch: pytest.MonkeyPatch,
+    missing_first: bool,
+    conflict_gap: bool,
+) -> None:
+    first = _record(
+        "k1",
+        SELECTED,
+        "r1",
+        at=H0,
+        owner=T0,
+        lineage=not missing_first,
+        gap=ds.GAP_TEXT if conflict_gap else None,
+        event_time=T1,
+    )
+    conflicting = ds.trade_lineage("r1").model_copy(update={"raw_revision_id": "raw-conflict"})
+    later = _record(
+        "k1",
+        SELECTED,
+        "r1",
+        at=H1,
+        owner=T0,
+        lineage=True,
+        gap="contradictory gap" if conflict_gap else None,
+        event_time=T1,
+    )
+    later = dataclasses.replace(
+        later, lineage=ds.trade_lineage("r1") if conflict_gap else conflicting
+    )
+    records = [first, later]
+
+    opened = 0
+    closed = 0
+
+    @contextmanager
+    def tracked_iter_run(storage: Any, root: Any) -> Iterator[Iterator[Any]]:
+        nonlocal opened, closed
+        opened += 1
+        try:
+            with original_iter_run(storage, root) as rows:
+                yield rows
+        finally:
+            closed += 1
+
+    monkeypatch.setattr(sources_module, "iter_run", tracked_iter_run)
+    groups = pit_key_groups(
+        records, knowledge_cutoff=SIM, storage=evidence_store, params=PIT_PARAMS
+    )
+    group = next(groups)
+    evaluations = iter(group.evaluations)
+    match = "has no lineage" if missing_first else "carries two lineages"
+    with pytest.raises(CatalogIntegrityError, match=match):
+        next(evaluations)
+    assert opened == closed
+
+
+def test_first_interval_conflict_does_not_pull_the_next_conflict_instant(
+    evidence_store: LocalFileStorageAdapter,
+) -> None:
     pulled: list[datetime] = []
 
     def records() -> Iterator[PitBoundedRecord]:
@@ -682,7 +840,9 @@ def test_first_interval_conflict_does_not_pull_the_next_conflict_instant() -> No
             pulled.append(at)
             yield _record("conflicted-key", PointInTimeStatus.CONFLICT, at=at, owner=T0)
 
-    groups = pit_key_groups(records(), knowledge_cutoff=SIM)
+    groups = pit_key_groups(
+        records(), knowledge_cutoff=SIM, storage=evidence_store, params=PIT_PARAMS
+    )
     group = next(groups)
     evaluations = iter(group.evaluations)
     first = next(evaluations)

@@ -61,7 +61,7 @@ from infrastructure.dataset.builder import (
     UniverseEvidenceSource,
 )
 from infrastructure.pit.runs import RunSetBuilder, iter_run
-from infrastructure.pit.selector import PitBoundedRecord, PitRunParams, PitSelector
+from infrastructure.pit.selector import EvidenceGap, PitBoundedRecord, PitRunParams, PitSelector
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.universe.builder import UniverseBuilder
 from infrastructure.universe.run_params import UniverseRunParams
@@ -257,82 +257,353 @@ def _next_record(records: Iterator[object]) -> PitBoundedRecord | None:
     return record
 
 
-def _carry(
-    record: PitBoundedRecord,
-    key: str,
-    revision: str,
-    carried: dict[str, tuple[SelectedRevisionLineage, str | None]],
-) -> tuple[SelectedRevisionLineage, str | None]:
-    """The lineage / gap of ``revision``: attached here (its first selection) or carried."""
-    lineage, gap = record.lineage, record.evidence_gap
-    if lineage is None:
-        if gap is not None:
-            raise CatalogIntegrityError(f"key {key}: revision {revision} has a gap but no lineage")
-        known = carried.get(revision)
-        if known is None:
-            raise CatalogIntegrityError(f"selected revision {revision} has no lineage")
-        return known
-    if (
-        not isinstance(lineage, SelectedRevisionLineage)
-        or lineage.canonical_revision_id != revision
-    ):
-        raise CatalogIntegrityError(f"selected revision {revision} carries another's lineage")
-    text: str | None = None
-    if gap is not None:
-        if (gap.table, gap.revision_id) != (lineage.canonical_table, revision) or not gap.gap:
-            raise CatalogIntegrityError(f"selected revision {revision} carries another's gap")
-        text = gap.gap
-    attached = (lineage, text)
-    if carried.setdefault(revision, attached) != attached:
-        raise CatalogIntegrityError(f"selected revision {revision} carries two lineages")
-    return attached
+def _next_run_row(rows: Iterator[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    try:
+        return next(rows)
+    except StopIteration:
+        return None
 
 
 def _evaluations(
-    key: str, held: Iterable[PitBoundedRecord], knowledge_cutoff: datetime
+    key: str,
+    held: Iterable[PitBoundedRecord],
+    knowledge_cutoff: datetime,
+    *,
+    storage: StorageAdapter,
+    params: PitRunParams,
 ) -> Iterator[PitKeyEvaluation]:
-    """Validate and convert one key's records without retaining its evaluation history."""
-    carried: dict[str, tuple[SelectedRevisionLineage, str | None]] = {}
-    for record in held:
-        selection = record.selection
-        if selection.observation_key != key:
-            raise CatalogIntegrityError(f"a selection of {selection.observation_key} is in {key}")
-        if selection.knowledge_cutoff != knowledge_cutoff:
-            raise CatalogIntegrityError(f"key {key} is evaluated at another knowledge cutoff")
-        selected: PitSelectedRevision | None = None
-        if selection.status is PointInTimeStatus.SELECTED:
-            revision = selection.selected_revision_id
-            if not revision:
-                raise CatalogIntegrityError(f"key {key}: a selection names no revision")
-            lineage, gap = _carry(record, key, revision, carried)
-            if record.event_time is None:
+    """Stream no-lineage prefixes, then spool selected history for a bounded revision join."""
+    records = iter(held)
+    try:
+        for record in records:
+            selection = record.selection
+            if selection.observation_key != key:
                 raise CatalogIntegrityError(
-                    f"selected revision {revision} of {key} has no event_time"
+                    f"a selection of {selection.observation_key} is in {key}"
                 )
-            at = _check_utc(record.event_time, f"revision {revision} of {key} event_time")
-            selected = PitSelectedRevision(
-                revision_id=revision, event_time=at, lineage=lineage, evidence_gap=gap
+            if selection.knowledge_cutoff != knowledge_cutoff:
+                raise CatalogIntegrityError(f"key {key} is evaluated at another knowledge cutoff")
+            if selection.status is PointInTimeStatus.SELECTED:
+
+                def selected_records(
+                    first: PitBoundedRecord = record,
+                    rest: Iterator[PitBoundedRecord] = records,
+                ) -> Iterator[PitBoundedRecord]:
+                    yield first
+                    yield from rest
+
+                yield from _selected_evaluations(
+                    key,
+                    selected_records(),
+                    knowledge_cutoff,
+                    storage=storage,
+                    params=params,
+                )
+                return
+            if (
+                record.event_time is not None
+                or record.lineage is not None
+                or record.evidence_gap is not None
+            ):
+                raise CatalogIntegrityError(
+                    f"key {key}: a {selection.status.value} evaluation carries lineage"
+                )
+            yield PitKeyEvaluation(
+                simulation_time=selection.simulation_time,
+                status=selection.status,
+                selected=None,
+                head_count=selection.head_count,
             )
-        elif (
-            record.event_time is not None
-            or record.lineage is not None
-            or record.evidence_gap is not None
-        ):
-            raise CatalogIntegrityError(
-                f"key {key}: a {selection.status.value} evaluation carries lineage"
-            )
-        yield PitKeyEvaluation(
-            simulation_time=selection.simulation_time,
-            status=selection.status,
-            selected=selected,
-            head_count=selection.head_count,
+            if selection.status is PointInTimeStatus.CONFLICT:
+                return
+    finally:
+        _close(records)
+
+
+def _selected_evaluations(
+    key: str,
+    held: Iterable[PitBoundedRecord],
+    knowledge_cutoff: datetime,
+    *,
+    storage: StorageAdapter,
+    params: PitRunParams,
+) -> Iterator[PitKeyEvaluation]:
+    """Stage one key into bounded runs, validate lineage by revision, then replay by ordinal.
+
+    Revision IDs are not ordered by simulation time, so an online dictionary lookup would grow
+    with the key history. The two external sorts make both lookup and evaluation-order replay
+    bounded: occurrences are grouped by revision, joined to their unique lineage, and finally
+    written back by input ordinal. No evaluation is exposed until the complete key is validated.
+    """
+
+    evaluation_root = None
+    occurrence_root = None
+    with RunSetBuilder(
+        storage,
+        key=lambda row: row["ordinal"],
+        capacity=params.key_history_buffer,
+        merge_fanout=params.merge_fanout,
+        limits=params.limits,
+    ) as evaluations:
+        with RunSetBuilder(
+            storage,
+            key=lambda row: (row["revision_id"], row["ordinal"]),
+            capacity=params.key_history_buffer,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as occurrences:
+            count = 0
+            for record in held:
+                selection = record.selection
+                if selection.observation_key != key:
+                    raise CatalogIntegrityError(
+                        f"a selection of {selection.observation_key} is in {key}"
+                    )
+                if selection.knowledge_cutoff != knowledge_cutoff:
+                    raise CatalogIntegrityError(
+                        f"key {key} is evaluated at another knowledge cutoff"
+                    )
+                row: dict[str, Any] = {
+                    "ordinal": count,
+                    "simulation_time": selection.simulation_time,
+                    "status": selection.status.value,
+                    "revision_id": selection.selected_revision_id,
+                    "event_time": record.event_time,
+                    "head_count": selection.head_count,
+                }
+                if selection.status is PointInTimeStatus.SELECTED:
+                    revision = selection.selected_revision_id
+                    if not revision:
+                        raise CatalogIntegrityError(f"key {key}: a selection names no revision")
+                    if record.event_time is None:
+                        raise CatalogIntegrityError(
+                            f"selected revision {revision} of {key} has no event_time"
+                        )
+                    _check_utc(record.event_time, f"revision {revision} of {key} event_time")
+                    lineage = record.lineage
+                    gap = record.evidence_gap
+                    if lineage is None:
+                        if gap is not None:
+                            raise CatalogIntegrityError(
+                                f"key {key}: revision {revision} has a gap but no lineage"
+                            )
+                        lineage_value = None
+                    else:
+                        if (
+                            not isinstance(lineage, SelectedRevisionLineage)
+                            or lineage.canonical_revision_id != revision
+                        ):
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} carries another's lineage"
+                            )
+                        if gap is not None and (
+                            not isinstance(gap, EvidenceGap)
+                            or (gap.table, gap.revision_id) != (lineage.canonical_table, revision)
+                            or not gap.gap
+                        ):
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} carries another's gap"
+                            )
+                        lineage_value = lineage.model_dump(mode="json")
+                    occurrences.add(
+                        {
+                            "revision_id": revision,
+                            "ordinal": count,
+                            "lineage": lineage_value,
+                            "gap": None if gap is None else gap.gap,
+                            "event_time": record.event_time,
+                        }
+                    )
+                elif (
+                    record.event_time is not None
+                    or record.lineage is not None
+                    or record.evidence_gap is not None
+                ):
+                    raise CatalogIntegrityError(
+                        f"key {key}: a {selection.status.value} evaluation carries lineage"
+                    )
+                evaluations.add(row)
+                count += 1
+            evaluation_root = evaluations.finish()
+            occurrence_root = occurrences.finish()
+
+    if evaluation_root is None:
+        raise CatalogIntegrityError(f"key {key} has no evaluation")
+
+    lineage_root = None
+    if occurrence_root is not None:
+        with iter_run(storage, occurrence_root) as rows:
+            with RunSetBuilder(
+                storage,
+                key=lambda row: row["revision_id"],
+                capacity=params.key_history_buffer,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as lineages:
+                current_revision: str | None = None
+                current_lineage: Mapping[str, Any] | None = None
+                current_gap: str | None = None
+                for occurrence in rows:
+                    revision = occurrence["revision_id"]
+                    attached = occurrence["lineage"]
+                    gap = occurrence["gap"]
+                    if revision != current_revision:
+                        if current_revision is not None:
+                            if current_lineage is None:
+                                raise CatalogIntegrityError(
+                                    f"selected revision {current_revision} has no lineage"
+                                )
+                            lineages.add(
+                                {
+                                    "revision_id": current_revision,
+                                    "lineage": dict(current_lineage),
+                                    "gap": current_gap,
+                                }
+                            )
+                        current_revision = revision
+                        current_lineage = attached
+                        current_gap = gap
+                        if current_lineage is None:
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} has no lineage"
+                            )
+                    elif attached is not None and (
+                        attached != current_lineage or gap != current_gap
+                    ):
+                        raise CatalogIntegrityError(
+                            f"selected revision {revision} carries two lineages"
+                        )
+                if current_revision is not None:
+                    if current_lineage is None:
+                        raise CatalogIntegrityError(
+                            f"selected revision {current_revision} has no lineage"
+                        )
+                    lineages.add(
+                        {
+                            "revision_id": current_revision,
+                            "lineage": dict(current_lineage),
+                            "gap": current_gap,
+                        }
+                    )
+                lineage_root = lineages.finish()
+
+    selected_root = None
+    if occurrence_root is not None:
+        if lineage_root is None:
+            raise CatalogIntegrityError(f"key {key} has selected evaluations but no lineage")
+        with iter_run(storage, occurrence_root) as occurrences:
+            with iter_run(storage, lineage_root) as lineage_rows:
+                with RunSetBuilder(
+                    storage,
+                    key=lambda row: row["ordinal"],
+                    capacity=params.key_history_buffer,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as selected_builder:
+                    occurrence_row = _next_run_row(occurrences)
+                    lineage_row = _next_run_row(lineage_rows)
+                    while occurrence_row is not None:
+                        revision = occurrence_row["revision_id"]
+                        while lineage_row is not None and lineage_row["revision_id"] < revision:
+                            lineage_row = _next_run_row(lineage_rows)
+                        if lineage_row is None or lineage_row["revision_id"] != revision:
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} has no lineage"
+                            )
+                        selected_builder.add(
+                            {
+                                "ordinal": occurrence_row["ordinal"],
+                                "revision_id": revision,
+                                "event_time": occurrence_row["event_time"],
+                                "lineage": lineage_row["lineage"],
+                                "gap": lineage_row["gap"],
+                            }
+                        )
+                        occurrence_row = _next_run_row(occurrences)
+                    selected_root = selected_builder.finish()
+
+    final_root = None
+    with iter_run(storage, evaluation_root) as evaluations, ExitStack() as stack:
+        selected_rows: Iterator[Mapping[str, Any]] = (
+            iter(())
+            if selected_root is None
+            else stack.enter_context(iter_run(storage, selected_root))
         )
+        with RunSetBuilder(
+            storage,
+            key=lambda row: row["ordinal"],
+            capacity=params.key_history_buffer,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as output:
+            selected_entry = _next_run_row(selected_rows)
+            for eval_row in evaluations:
+                status = PointInTimeStatus(eval_row["status"])
+                picked: Mapping[str, Any] | None = None
+                if status is PointInTimeStatus.SELECTED:
+                    if selected_entry is None or selected_entry["ordinal"] != eval_row["ordinal"]:
+                        raise CatalogIntegrityError(
+                            f"selected revision {eval_row['revision_id']} has no lineage"
+                        )
+                    picked = selected_entry
+                    selected_entry = _next_run_row(selected_rows)
+                if status is not PointInTimeStatus.SELECTED and (
+                    selected_entry is not None and selected_entry["ordinal"] == eval_row["ordinal"]
+                ):
+                    raise CatalogIntegrityError(
+                        f"key {key}: a {status.value} evaluation carries lineage"
+                    )
+                output.add(
+                    {
+                        "ordinal": eval_row["ordinal"],
+                        "simulation_time": eval_row["simulation_time"],
+                        "status": eval_row["status"],
+                        "head_count": eval_row["head_count"],
+                        "selected": None
+                        if picked is None
+                        else {
+                            "revision_id": picked["revision_id"],
+                            "event_time": picked["event_time"],
+                            "lineage": picked["lineage"],
+                            "gap": picked["gap"],
+                        },
+                    }
+                )
+            if selected_entry is not None:
+                raise CatalogIntegrityError(
+                    f"selected revision {selected_entry['revision_id']} has no matching evaluation"
+                )
+            final_root = output.finish()
+
+    if final_root is None:
+        raise CatalogIntegrityError(f"key {key} has no evaluation")
+
+    with iter_run(storage, final_root) as rows:
+        for final_row in rows:
+            selected_payload = final_row["selected"]
+            output_selected: PitSelectedRevision | None = None
+            if selected_payload is not None:
+                lineage = SelectedRevisionLineage.model_validate(selected_payload["lineage"])
+                output_selected = PitSelectedRevision(
+                    revision_id=selected_payload["revision_id"],
+                    event_time=selected_payload["event_time"],
+                    lineage=lineage,
+                    evidence_gap=selected_payload["gap"],
+                )
+            yield PitKeyEvaluation(
+                simulation_time=final_row["simulation_time"],
+                status=PointInTimeStatus(final_row["status"]),
+                selected=output_selected,
+                head_count=final_row["head_count"],
+            )
 
 
 def pit_key_groups(
     records: Iterable[PitBoundedRecord],
     *,
     knowledge_cutoff: datetime,
+    storage: StorageAdapter,
+    params: PitRunParams,
 ) -> Iterator[PitKeyGroup]:
     """Fold PIT records into lazy per-key groups.
 
@@ -376,7 +647,13 @@ def pit_key_groups(
         yield PitKeyGroup(
             observation_key=key,
             owner_event_time=owner,
-            evaluations=_evaluations(key, key_records(), knowledge_cutoff),
+            evaluations=_evaluations(
+                key,
+                key_records(),
+                knowledge_cutoff,
+                storage=storage,
+                params=params,
+            ),
         )
         if not evaluations_complete:
             raise CatalogIntegrityError(
@@ -453,7 +730,12 @@ class PitSelectorKeySource:
             )
             # The inner generator holds the merge readers: close it on any exit, not at GC.
             stack.callback(_close, records)
-            groups = pit_key_groups(records, knowledge_cutoff=pit.knowledge_cutoff)
+            groups = pit_key_groups(
+                records,
+                knowledge_cutoff=pit.knowledge_cutoff,
+                storage=self._storage,
+                params=self._params,
+            )
             stack.callback(_close, groups)
             yield groups
 
