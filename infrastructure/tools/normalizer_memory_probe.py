@@ -187,22 +187,19 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_AGG_TRADES,
     BINANCE_SPOT_ARCHIVES,
     CANONICAL_TRADES,
-    DATASET_SELECTION_CHUNKS,
 )
 from infrastructure.collector.binance_archive import ARCHIVE_SOURCE, COLLECTOR_ID, COLLECTOR_VERSION
 from infrastructure.dataset.builder import (
-    DatasetEvidenceBuilder,
     DatasetEvidenceRequest,
     dataset_evidence_rule,
 )
-from infrastructure.dataset.chunks import IcebergChunkWriter
-from infrastructure.dataset.sources import UniverseRunParams, dataset_evidence_sources
-from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
+from infrastructure.dataset.sources import UniverseRunParams
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PitRunParams
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
 from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
+from infrastructure.settings import local_file_uri_to_path
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.tools.capacity_probe import (
     _KNOWLEDGE_INGEST,
@@ -211,10 +208,13 @@ from infrastructure.tools.capacity_probe import (
     REST_BASE,
     SYMBOL,
     _agg_trade_lines,
+    _dataset_pipeline,
     _dataset_pit_spec,
     _prepare_dataset_quality,
     _prepare_listings,
+    _prepare_rest_fixture,
     _publish_archive,
+    _scratch_storage,
 )
 from infrastructure.tools.capacity_probe import (
     DAY as PROBE_DAY,
@@ -627,11 +627,28 @@ def _validate_dataset_v3_config(config: Mapping[str, int]) -> dict[str, int]:
     return {key: config[key] for key in DATASET_V3_RULE_KEYS}
 
 
-def _prepare_dataset_v3_fixture(workdir: Path) -> dict[str, Any]:
-    """Prepare the full-day Dataset's listing and quality inputs outside the measured child."""
+def _dataset_v3_scratch_root(workdir: Path) -> Path:
+    """Quality reporter / join scratch: a sibling of the evidence warehouse, never inside it."""
+    return workdir / "quality-scratch"
+
+
+def _prepare_dataset_v3_fixture(workdir: Path, rows: int) -> dict[str, Any]:
+    """Prepare the full-day Dataset's REST, listing and quality inputs outside the measured child.
+
+    The v3 canonical partition reports bind both channels' raw snapshots (ADR-0093), so the same
+    REST tail the capacity probe uses is committed, normalized and reconciled first.
+    """
     with _opened(workdir) as (adapter, storage):
+        _prepare_rest_fixture(
+            adapter, storage, rows, canonical_scratch_directory=_canonical_scratch_directory()
+        )
         _prepare_listings(adapter, storage)
-        _prepare_dataset_quality(adapter, storage)
+        _prepare_dataset_quality(
+            adapter,
+            storage,
+            canonical_scratch_directory=_canonical_scratch_directory(),
+            scratch_root=_dataset_v3_scratch_root(workdir),
+        )
         pit = _dataset_pit_spec(adapter)
         return {
             "window_start": DATASET_V3_DAY_START.isoformat(),
@@ -735,8 +752,11 @@ def _stage(
     if stage == DATASET_V3_STAGE:
         if dataset_v3_config is None:
             raise ProbeError("dataset_v3_build requires explicit DQ-9 parameters")
-        rule = dataset_evidence_rule(**_validate_dataset_v3_config(dataset_v3_config))
+        rule_parameters = _validate_dataset_v3_config(dataset_v3_config)
         pit_params, universe_params = _dataset_v3_source_params(microbatch)
+        scratch_root = _dataset_v3_scratch_root(
+            local_file_uri_to_path(storage.warehouse_uri, field_name="warehouse_uri").parent
+        )
 
         def build_dataset() -> tuple[dict[str, Any], object]:
             pit = _dataset_pit_spec(adapter)
@@ -748,29 +768,17 @@ def _stage(
                 end=DATASET_V3_DAY_END,
             )
 
-            def sources_for(req: DatasetEvidenceRequest) -> Any:
-                return dataset_evidence_sources(
+            with _scratch_storage(scratch_root, "dataset-quality-join") as quality_scratch:
+                pipeline = _dataset_pipeline(
                     adapter,
                     storage,
-                    req,
-                    canonical_scratch_directory=_canonical_scratch_directory(),
-                    market_data_base_url=REST_BASE,
+                    rule_parameters=rule_parameters,
                     pit_params=pit_params,
                     universe_params=universe_params,
+                    canonical_scratch_directory=_canonical_scratch_directory(),
+                    quality_scratch=quality_scratch,
                 )
-
-            sources = sources_for(request)
-            chunks = IcebergChunkWriter(adapter, DATASET_SELECTION_CHUNKS)
-            builder = DatasetEvidenceBuilder(adapter, storage, rule=rule)
-            verifier = StreamingEvidenceVerifier(
-                adapter, builder=builder, chunks=chunks, sources=sources_for
-            )
-            summary = builder.build(
-                request,
-                sources=sources,
-                chunks=chunks,
-                manifests=verifier.store(),
-            )
+                summary = pipeline.build(request)
             if summary.row_count != rows:
                 raise ProbeError(
                     f"full-day Dataset selected {summary.row_count} rows, expected {rows}"
@@ -1059,7 +1067,9 @@ def _child_main(args: argparse.Namespace) -> int:
         if args.stage == "setup":
             _emit("setup", **_setup(args.workdir, args.unit_rows, args.d2_batch))
         elif args.stage == "dataset_setup":
-            _emit("dataset_setup", **_prepare_dataset_v3_fixture(args.workdir))
+            _emit(
+                "dataset_setup", **_prepare_dataset_v3_fixture(args.workdir, args.unit_rows)
+            )
         else:
             dataset_v3_config = None
             if args.dataset_v3_config_json is not None:
