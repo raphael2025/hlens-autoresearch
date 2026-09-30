@@ -83,7 +83,7 @@ ADR-0080 因缺少三类上游权威而阻塞：(1) 可读取的当前生命周�
 实现审查发现 §2 的原措辞与 Canonical bar 的可用时间规则（`available_time = max(interval_end, raw.available_time + latency)`）冲突：窗口最后一根 bar 一定晚于 `window_end` 才可用，authority 模式在真实数据上永远以 `source_incomplete` 拒绝。PM 决定：
 
 1. **评估时刻与窗口分离**：新增显式 `as_of`（CLI `--authority-as-of`，UTC），且必须 `as_of ≥ window_end`。source 只使用 `available_time ≤ as_of` 的数据，且只取 `interval_end ≤ window_end` 的 bar，这些 bar 必须恰好铺满 `[window_start, window_end)`。决策管线在回测中仍按每根 bar 自身的 `available_time` 可见（不引入前视）。§2 中“`available_time ≤ window_end`”一句据此改为“`≤ as_of`”。
-2. **生命周期按时间截断**：只重放 `occurred_at ≤ as_of` 的转换；重放终态必须为 ACTIVE，且进入该 ACTIVE 状态的转换 `occurred_at ≤ window_start`，`[window_start, as_of]` 内不得有任何转换，否则 `lifecycle_not_active`。
+2. **生命周期按时间截断**：只重放 `occurred_at ≤ as_of` 的转换；重放终态必须为 ACTIVE，且进入该 ACTIVE 状态的转换 `occurred_at ≤ window_start`，`(window_start, as_of]` 内不得有任何转换（恰好在 `window_start` 进入 ACTIVE 允许），否则 `lifecycle_not_active`。
 3. **标的范围绑定**：决策管线声明的 instruments 必须等于基线 manifest 的 universe 成员集合，也必须等于 source manifest 的 universe 成员集合，否则 `source_scope_mismatch`。
 4. **参数身份按规范 JSON 比较**（`canonical_json` / content hash），不使用 Python 相等（防止 `True == 1 == 1.0`）。
 5. `AuthorityProvenance` 绑定 `BaselineMetricSet` 的内容哈希，`run_degradation_check` 核对该哈希。

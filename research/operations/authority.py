@@ -21,7 +21,7 @@ one the caller pinned; a head not on the chain is ``lifecycle_head_unknown``). T
 replay at that head is **truncated** to the transitions with ``occurred_at <= as_of``
 (``occurred_at`` is non-decreasing, so this is a prefix). The truncated replay must end in
 ACTIVE, the transition into that ACTIVE state must have ``occurred_at <= window.start``, and no
-transition may have ``occurred_at`` in ``[window.start, as_of]`` — else ``lifecycle_not_active``
+transition may have ``occurred_at`` in ``(window.start, as_of]`` — else ``lifecycle_not_active``
 (together these mean the subject entered ACTIVE strictly before the window and stayed there
 through ``as_of``). The truncated history is the ``LifecycleHistory`` handed to the operation
 (its hash is what ``run_degradation_check`` binds), and the head identity plus the truncated
@@ -1032,11 +1032,11 @@ def _resolve_lifecycle(
             f"{subject} entered ACTIVE at {_utc_text(entered.occurred_at)}, after the window "
             f"start {_utc_text(window.start)} ({where})",
         )
-    moved = [t for t in history.transitions if window.start <= t.occurred_at <= as_of]
+    moved = [t for t in history.transitions if window.start < t.occurred_at <= as_of]
     if moved:
         raise AuthorityRefused(
             LIFECYCLE_NOT_ACTIVE,
-            f"{subject} has {len(moved)} lifecycle transition(s) in [window start, as_of] "
+            f"{subject} has {len(moved)} lifecycle transition(s) in (window start, as_of] "
             f"(first at {_utc_text(moved[0].occurred_at)}; {where})",
         )
     return pinned, history, replayed.record_hashes[:kept]
