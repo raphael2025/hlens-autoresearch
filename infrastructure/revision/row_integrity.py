@@ -376,8 +376,7 @@ class _BatchSnapshotLookup:
                 if snapshot.batch_id is None:
                     continue
                 cursor = self._connection.execute(
-                    "UPDATE requested_batches SET match_count = match_count + 1 "
-                    "WHERE batch_id = ?",
+                    "UPDATE requested_batches SET match_count = match_count + 1 WHERE batch_id = ?",
                     (snapshot.batch_id,),
                 )
                 if cursor.rowcount:
@@ -1266,9 +1265,7 @@ class PersistedRowVerifier:
         self._storage_error = storage_error or (lambda exc: exc)
         #: Verified first-delivery collections, most recent last (immutable checkpoints).
         self._collections: dict[tuple[str, str], CommittedCollection] = {}
-        self._batch_index: dict[
-            tuple[str, str | None, tuple[str, ...]], _IndexedBatchHistory
-        ] = {}
+        self._batch_index: dict[tuple[str, str | None, tuple[str, ...]], _IndexedBatchHistory] = {}
         #: Only for a verifier over a pinned, read-only view (one normalizer call, G3-S): archive
         #: identity metadata is memoized. Parsed archive spools are always call-local and closed.
         self._cache_archives = cache_archives
@@ -1425,9 +1422,7 @@ class PersistedRowVerifier:
             start = end
         return holders
 
-    def _indexed(
-        self, table: str, prefixes: Mapping[str, str]
-    ) -> _IndexedBatchHistory:
+    def _indexed(self, table: str, prefixes: Mapping[str, str]) -> _IndexedBatchHistory:
         """Constant-space batch summaries, memoised per immutable head (G3-S)."""
         info = self._adapter.load_table(table)
         snapshot = None if info is None else info.current_snapshot
@@ -2227,7 +2222,7 @@ class PersistedRowVerifier:
                     raise CatalogIntegrityError(
                         f"{table}: row {row['revision_id']} (line {row['archive_line_number']}) "
                         f"is not committed by any batch of archive revision {archive_id}"
-                )
+                    )
                 needed.add(index)
             plans[prefix] = (size, last_size, summary.count, needed)
         checked: dict[str, set[int]] = {prefix: set() for prefix in prefixes}
@@ -2252,9 +2247,7 @@ class PersistedRowVerifier:
                 ),
             )
             current.sort(key=lambda row: (row["archive_line_number"], row["revision_id"]))
-            check_batch_snapshot(
-                definition, _row_batch_id(archive_id, index), snapshot, current
-            )
+            check_batch_snapshot(definition, _row_batch_id(archive_id, index), snapshot, current)
             checked[batch_prefix].add(index)
         for prefix, archive_id in prefixes.items():
             if (
