@@ -12,7 +12,8 @@ continues exactly where it stopped:
                        ``between_rounds`` checkpoint per human approval made between rounds
 ``trial_ledger.jsonl`` ``TrialLedger(path)`` — registrations and pre-registered re-evaluations
 ``sealed_oos.jsonl``   ``DurableUnsealingLedger`` — the sealed-OOS unsealings and evaluations
-                       (journal format 2 adds the opt-in replacement windows' openings)
+                       (journal format 3: the opt-in replacement windows' openings and
+                       evidence consumptions)
 ``lineage.jsonl``      ``LineageGraph(path=...)`` — every strategy spec the loop evolved from / into
 ``reviews.jsonl``      ``ReviewQueue(path)`` — LLM drafts, human approvals, drafts taken
 ``failures.jsonl``     ``FailureRegistry`` — FailureRecords (append-only, fsync'd, not chained)
