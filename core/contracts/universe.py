@@ -1101,9 +1101,7 @@ class ResearchDatasetEvidenceManifest(Contract):
         expects_pit_conflicts = tuple(
             int(version.group(name)) for name in ("major", "minor", "patch")
         ) >= (2, 5, 0)
-        has_pit_conflicts = any(
-            ref.stream is EvidenceStream.PIT_CONFLICTS for ref in self.evidence
-        )
+        has_pit_conflicts = any(ref.stream is EvidenceStream.PIT_CONFLICTS for ref in self.evidence)
         if has_pit_conflicts != expects_pit_conflicts:
             raise ValueError("2.5.0+ manifest 必须含 pit_conflicts；旧版本不得回填该 stream")
         upstream = self.point_in_time.snapshot_bindings

@@ -3,7 +3,7 @@
 **Branch:** `codex/project-consolidation`  
 **Phase:** Phase 1 — Market Representation  
 **Scope:** Normalizer, shared RunSet merge, PIT v3, Dataset v3 source test seams.  
-**Disposition:** Partial; five fixture/compatibility nodes repaired and rechecked, two RunSet implementation defects remain under review. No Phase acceptance.
+**Disposition:** Foundational module slice accepted on the consolidation line; no E1-CAP-1 or Phase acceptance.
 
 ## First integrated baseline
 
@@ -49,6 +49,16 @@ Full mypy over the three affected legacy test files was also attempted and retur
 
 ## Remaining acceptance work
 
-The two shared RunSet merge lifecycle nodes must pass on the integrated source after a boundary-correct implementation. The full six-file regression command must then be rerun. The independent reviewer specifically requires that exactly `merge_fanout` refs preserve the old direct-merge behavior without an intermediate persisted run, while lazy sources with more refs are reduced online and readers close on early exit.
+The shared RunSet defects were fixed in consolidation commit `2fa58c6` and independently approved. The implementation preserves direct merge with no intermediate persistence for exactly `merge_fanout` refs, folds larger lazy iterables online, and closes the prefetched item, merge iterator, and reader stack on early exit.
+
+The focused regression suite was rerun on the consolidation line:
+
+```text
+uv run pytest -q --tb=short tests/infrastructure/canonical/test_normalizer.py tests/infrastructure/pit/test_bounded_runs.py tests/infrastructure/pit/test_selector.py tests/infrastructure/pit/test_selector_v3.py tests/infrastructure/dataset/test_dataset_v3_sources.py tests/infrastructure/dataset/test_dataset_v3_builder.py tests/infrastructure/streaming/test_runs.py
+```
+
+Result: `247 passed, 1 skipped in 237.92s`.
+
+Ruff reported all changed production and test files clean; format check reported `9 files already formatted`; MyPy reported `Success: no issues found in 5 source files`; `git diff --check` passed. The one skip is preserved and is not counted as a pass.
 
 The broader Quality v3 → Dataset v3 consumer seam and full-process E1-CAP-1 ≤32 MiB measurement remain open. These results do not accept E1-CAP-1 or Phase 1.
