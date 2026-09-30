@@ -100,6 +100,7 @@ from infrastructure.revision.channel_precedence import (
 from infrastructure.revision.row_integrity import (
     MAX_ELEMENT_MICROBATCH_ROWS,
     PersistedRowVerifier,
+    VerifiedArchive,
     history_from,
 )
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
@@ -1075,39 +1076,6 @@ class ChannelReconciler:
                 self._day_keys(data_type, symbol, other, pinned.rest_snapshot),
             )
         committed: dict[str, Mapping[str, Any]] = {}
-        committed_builder: RunSetBuilder | None = None
-        current_builder: RunSetBuilder | None = None
-        own_builder: RunSetBuilder | None = None
-        if run_params is not None:
-
-            def provenance_key(row: Mapping[str, Any]) -> tuple[str, str]:
-                return row["observation_key"], row["edge_id"]
-
-            committed_builder = RunSetBuilder(
-                self._storage,
-                key=provenance_key,
-                capacity=run_params.row_capacity,
-                merge_fanout=run_params.merge_fanout,
-                limits=run_params.limits,
-            )
-            current_builder = RunSetBuilder(
-                self._storage,
-                key=provenance_key,
-                capacity=run_params.row_capacity,
-                merge_fanout=run_params.merge_fanout,
-                limits=run_params.limits,
-            )
-            own_builder = RunSetBuilder(
-                self._storage,
-                key=lambda row: row["observation_key"],
-                capacity=run_params.row_capacity,
-                merge_fanout=run_params.merge_fanout,
-                limits=run_params.limits,
-            )
-            for row in pinned.evidence_rows:
-                current_builder.add(row)
-            for row in pinned.rest_rows:
-                own_builder.add({"observation_key": row["observation_key"]})
         history = getattr(self._adapter, "history", None)
 
         def snapshots() -> Iterable[SnapshotInfo]:
@@ -1142,113 +1110,28 @@ class ChannelReconciler:
                 )
             if owner is not None:
                 owner_day, owner_keys = owner
-                if committed_builder is not None and run_params is not None:
-                    added_rows: Iterable[Mapping[str, Any]] = self._edge_batch_rows_bounded(
-                        (data_type, symbol, owner_day),
-                        owner_keys,
-                        snapshot,
-                        parent,
-                        run_params,
-                    )
-                    for row in added_rows:
-                        committed_builder.add(row)
-                else:
-                    added = self._edge_batch_rows(
-                        (data_type, symbol, owner_day), owner_keys, snapshot, parent
-                    )
-                    for edge_id, row in added.items():
-                        if edge_id in committed:
-                            raise CatalogIntegrityError(
-                                f"evidence edge {edge_id} is committed twice"
-                            )
-                        committed[edge_id] = row
-        if committed_builder is None:
-            current = {row["edge_id"]: row for row in pinned.evidence_rows}
-            own = set(keys)
-            for edge_id, row in current.items():
-                if committed.get(edge_id) != row:
-                    raise CatalogIntegrityError(
-                        f"evidence edge {edge_id} is not exactly what an edge batch of this "
-                        "partition committed"
-                    )
-            missing = sorted(
-                edge_id
-                for edge_id, row in committed.items()
-                if row["observation_key"] in own and edge_id not in current
-            )
-            if missing:
-                raise CatalogIntegrityError(f"committed evidence edge {missing[0]} is gone")
-        else:
-            assert current_builder is not None and own_builder is not None
-            committed_root = committed_builder.finish()
-            current_root = current_builder.finish()
-            own_root = own_builder.finish()
-            with ExitStack() as stack:
-                committed_rows = (
-                    iter(())
-                    if committed_root is None
-                    else stack.enter_context(iter_run(self._storage, committed_root))
+                added = self._edge_batch_rows(
+                    (data_type, symbol, owner_day), owner_keys, snapshot, parent
                 )
-                current_rows = (
-                    iter(())
-                    if current_root is None
-                    else stack.enter_context(iter_run(self._storage, current_root))
+                for edge_id, row in added.items():
+                    if edge_id in committed:
+                        raise CatalogIntegrityError(f"evidence edge {edge_id} is committed twice")
+                    committed[edge_id] = row
+        current = {row["edge_id"]: row for row in pinned.evidence_rows}
+        own = set(keys)
+        for edge_id, row in current.items():
+            if committed.get(edge_id) != row:
+                raise CatalogIntegrityError(
+                    f"evidence edge {edge_id} is not exactly what an edge batch of this "
+                    "partition committed"
                 )
-                own_rows = (
-                    iter(())
-                    if own_root is None
-                    else stack.enter_context(iter_run(self._storage, own_root))
-                )
-
-                def owned_committed() -> Iterable[Mapping[str, Any]]:
-                    unique_keys = (
-                        row["observation_key"]
-                        for _, group in itertools.groupby(
-                            own_rows, key=lambda item: item["observation_key"]
-                        )
-                        for row in (next(group),)
-                    )
-                    own_key = next(unique_keys, None)
-                    for row in committed_rows:
-                        key = row["observation_key"]
-                        while own_key is not None and own_key < key:
-                            own_key = next(unique_keys, None)
-                        if own_key == key:
-                            yield row
-
-                committed_for_partition = iter(owned_committed())
-                committed_row = next(committed_for_partition, None)
-                current_row = next(current_rows, None)
-                while committed_row is not None or current_row is not None:
-                    if committed_row is None:
-                        edge_id = "unknown" if current_row is None else current_row["edge_id"]
-                        raise CatalogIntegrityError(
-                            f"evidence edge {edge_id} "
-                            "is not exactly what an "
-                            "edge batch of this partition committed"
-                        )
-                    if current_row is None:
-                        raise CatalogIntegrityError(
-                            f"committed evidence edge {committed_row['edge_id']} is gone"
-                        )
-                    committed_key = (committed_row["observation_key"], committed_row["edge_id"])
-                    current_key = (current_row["observation_key"], current_row["edge_id"])
-                    if committed_key < current_key:
-                        raise CatalogIntegrityError(
-                            f"committed evidence edge {committed_row['edge_id']} is gone"
-                        )
-                    if current_key < committed_key:
-                        raise CatalogIntegrityError(
-                            f"evidence edge {current_row['edge_id']} is not exactly what an "
-                            "edge batch of this partition committed"
-                        )
-                    if committed_row != current_row:
-                        raise CatalogIntegrityError(
-                            f"evidence edge {current_row['edge_id']} is not exactly what an "
-                            "edge batch of this partition committed"
-                        )
-                    committed_row = next(committed_for_partition, None)
-                    current_row = next(current_rows, None)
+        missing = sorted(
+            edge_id
+            for edge_id, row in committed.items()
+            if row["observation_key"] in own and edge_id not in current
+        )
+        if missing:
+            raise CatalogIntegrityError(f"committed evidence edge {missing[0]} is gone")
 
     def _verify_edge_provenance_bounded(
         self,
@@ -1260,8 +1143,36 @@ class ChannelReconciler:
     ) -> None:
         """Prove edge provenance using sorted owner-day, key, current and committed runs."""
         head = pinned.evidence_snapshot
+
+        def snapshots() -> Iterable[SnapshotInfo]:
+            if head is None:
+                return
+            history = getattr(self._adapter, "history", None)
+            if callable(history):
+                yield from history(EVIDENCE_TABLE, head)
+            else:
+                yield from history_from(self._adapter, EVIDENCE_TABLE, head)
+
         own_keys_root = self._day_keys_run(data_type, symbol, day, pinned.rest_snapshot, params)
         if own_keys_root is None:
+            # No REST key: an edge batch of this day can only reproduce as the empty set (the
+            # legacy path proves that by re-reading it with the empty key set). A batch with this
+            # day's prefix that added rows, or does not reproduce empty, fails closed.
+            partition = (data_type, symbol, day)
+            prefix = _edge_batch_prefix(partition)
+            definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+            for snapshot in snapshots():
+                if snapshot.batch_id is None or not snapshot.batch_id.startswith(prefix):
+                    continue
+                empty = pa.Table.from_pylist([], schema=definition.arrow_schema)
+                if (
+                    snapshot.added_rows != 0
+                    or snapshot.batch_id != _edge_batch_id(partition, ())
+                    or snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(empty)
+                ):
+                    raise CatalogIntegrityError(
+                        f"edge batch {snapshot.batch_id} no longer reproduces from its snapshot"
+                    )
             return
 
         column = _TIME_COLUMNS[data_type]
@@ -1310,15 +1221,6 @@ class ChannelReconciler:
 
         def provenance_key(row: Mapping[str, Any]) -> tuple[str, str]:
             return row["observation_key"], row["edge_id"]
-
-        def snapshots() -> Iterable[SnapshotInfo]:
-            if head is None:
-                return
-            history = getattr(self._adapter, "history", None)
-            if callable(history):
-                yield from history(EVIDENCE_TABLE, head)
-            else:
-                yield from history_from(self._adapter, EVIDENCE_TABLE, head)
 
         with RunSetBuilder(
             self._storage,
@@ -2042,6 +1944,57 @@ class ChannelReconciler:
                 first = False
                 previous = value
 
+    def _verified_archive_run_rows(
+        self,
+        archive_def: RegisteredTableDefinition,
+        data_type: str,
+        symbol: str,
+        archive_rows_root: RunRef | None,
+        params: VerifiedEdgeRunParams,
+    ) -> dict[str, VerifiedArchive]:
+        """Prove every staged archive row once, archive by archive, in bounded chunks.
+
+        The staged rows (sorted by observation key) are re-sorted by archive revision in an
+        external run, so one verifier call re-parses one archive object for up to
+        ``row_capacity`` of its rows instead of once per row. Every row passes the same checks
+        the per-row call applied (lineage, line content, times, sole holder, row batch); the
+        result maps each archive revision id to its proven lineage.
+        """
+        verified: dict[str, VerifiedArchive] = {}
+        if archive_rows_root is None:
+            return verified
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: (row["archive_revision_id"], row["revision_id"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as by_archive:
+            with iter_run(self._storage, archive_rows_root) as staged:
+                by_archive.extend(staged)
+            by_archive_root = by_archive.finish()
+        if by_archive_root is None:
+            return verified
+        chunk: list[Mapping[str, Any]] = []
+
+        def flush() -> None:
+            if chunk:
+                verified.update(
+                    self._verifier.verify_archive_elements(archive_def, data_type, symbol, chunk)
+                )
+                chunk.clear()
+
+        with iter_run(self._storage, by_archive_root) as rows:
+            for row in rows:
+                if chunk and (
+                    len(chunk) >= params.row_capacity
+                    or chunk[0]["archive_revision_id"] != row["archive_revision_id"]
+                ):
+                    flush()
+                chunk.append(row)
+            flush()
+        return verified
+
     def _verified_edge_run(
         self,
         data_type: str,
@@ -2134,6 +2087,9 @@ class ChannelReconciler:
                         label="arrival_seq",
                     )
                     if pinned.day_keys is not None:
+                        verified_archives = self._verified_archive_run_rows(
+                            archive_def, data_type, symbol, pinned.archive_rows, params
+                        )
                         with ExitStack() as stack:
                             keys = stack.enter_context(iter_run(self._storage, pinned.day_keys))
                             rest_rows = (
@@ -2264,10 +2220,14 @@ class ChannelReconciler:
                                                     "committed twice"
                                                 )
                                             previous_revision_id = row["revision_id"]
-                                            verified = self._verifier.verify_archive_elements(
-                                                archive_def, data_type, symbol, (row,)
+                                            archive = verified_archives.get(
+                                                row["archive_revision_id"]
                                             )
-                                            archive = verified[row["archive_revision_id"]]
+                                            if archive is None:
+                                                raise CatalogIntegrityError(
+                                                    f"archive row {row['revision_id']} was not "
+                                                    "proven against its archive revision"
+                                                )
                                             archive_parents.add(
                                                 {
                                                     "archive_revision_id": archive.revision_id,
