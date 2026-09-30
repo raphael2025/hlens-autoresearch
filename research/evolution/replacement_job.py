@@ -3,9 +3,15 @@ research job, run by a caller, **outside** the continuous loop.
 
 Why not inside the loop: the loop's lifecycle guard only reaches ``OOS`` (``apps.worker.loop``
 ``AUTOMATABLE_TARGETS``; ``OOS → PAPER`` is a human approval, ADR-0006), so no evolution offspring
-is ever ``PAPER`` / ``PRODUCTION_CANDIDATE`` inside the loop and there is no in-loop trigger for a
-proposal. The loop stays unchanged; its durable lineage (``lineage.jsonl`` in a loop state
-directory) is read here, read-only.
+is ever ``PAPER`` / ``PRODUCTION_CANDIDATE`` inside the loop by the loop's own doing. The loop's
+durable lineage (``lineage.jsonl`` in a loop state directory) is read here, read-only.
+
+Optional in-loop trigger (ADR-0100 item 7, 2026-09-30): ``research.loop.replacement`` may call this
+same job from inside a round — default off, an explicit ``enabled=True`` flag — for candidates a
+human already moved to ``PAPER`` / ``PRODUCTION_CANDIDATE`` on the Promotion path, only on evidence
+evaluated on an independent, pre-registered sealed window the loop never opened, each trigger a
+registered trial. It adds provenance through ``extra_evidence`` and changes nothing here: every
+proposal is still ``PENDING_HUMAN_APPROVAL`` and nothing is promoted.
 
 ``propose_replacements(...)`` takes everything that lives outside the loop from the caller:
 
@@ -191,9 +197,19 @@ def propose_replacements(
     reason: str,
     proposed_by: str,
     proposed_at: datetime,
+    extra_evidence: Sequence[str] = (),
 ) -> ReplacementJobResult:
-    """Propose and record (module docs); refusals are returned, never raised."""
+    """Propose and record (module docs); refusals are returned, never raised.
+
+    ``extra_evidence`` (additive, ADR-0100 item 7): provenance references appended, in order, to
+    every proposal's evidence after the verified ``validation_report:<hash>`` items (the in-loop
+    trigger passes its loop / round / trial / sealed-window references). Empty by default, so a
+    call without it records exactly what it recorded before.
+    """
     _check_template(reason, proposed_by)
+    extra = tuple(extra_evidence)
+    if any(not isinstance(item, str) or not item.strip() for item in extra):
+        raise ValueError("every extra evidence reference must be a non-empty string")
     if not all(isinstance(i, Incumbent) for i in incumbents):
         raise TypeError("every incumbent must be an Incumbent (spec + ACTIVE/DEGRADED history)")
     recorded: list[ReplacementProposal] = []
@@ -227,7 +243,7 @@ def propose_replacements(
                     candidate=candidate.spec,
                     candidate_history=candidate.history,
                     lineage=lineage,
-                    evidence=evidence,
+                    evidence=(*evidence, *extra),
                     reason=reason.format(
                         incumbent=ref,
                         incumbent_state=incumbent.history.current_state.value,
