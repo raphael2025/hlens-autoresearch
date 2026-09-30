@@ -124,6 +124,8 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 - ADR-0077 implementation decision (2026-09-29): Universe v3 passes caller-supplied `UniverseRunParams` end-to-end and uses content-addressed hierarchical run-reference sets for bounded sorting/merge; no implicit capacity or OS temp directory. DQ-9 values and E1-CAP-1 remain open.
 - ADR-0094 (2026-09-30): PIT v3 conflict heads are fully preserved in a bounded content-addressed evidence stream with a fixed-size root/count result; v2 tuple and contract 2.3/2.4 replay remain unchanged. E1-CAP-1 remains open.
+- ADR-0098（2026-09-30，PM）：P11 权威 = append-only `LifecycleRegistry` head 重放 + 钉定 v3 Dataset manifest source + 与 validation 同源的 metric 闭集；取代 ADR-0080 BLOCKED。
+- ADR-0099（2026-09-30，PM）：P7 `rank` / `quantile` 采用时间序列语义（计划格式 1.2.0，仅纯 lowering）；横截面版本需另立 ADR。
 
 ## 6. Active Constraints
 
@@ -180,6 +182,7 @@ Market State → Feature / Event → Knowledge Retrieval → Hypothesis → Comb
 
 ## 9. Last Known Good State
 
+- 2026-09-30 当前恢复点：`main` 合入本轮整合（`codex/project-consolidation` + ADR-0098/0099 实现 + 深度审查修复），**全部未测试**；68 个 codex 分支已核对，独有逻辑已补回。下一步 = Raphael 本地 W1 全仓门禁与逐模块调试。
 - 稳定远程恢复点（2026-09-27）：PR #9 合并后 `origin/main` 为 `44fe9a2`；B1～B67、契约 2.2.0 与 PR #6 的模块收口批次已包含在该恢复点，PR #7～#9 同步状态 / hygiene。B67 `6d887b7` 的全量非 PostgreSQL门禁为 7294 passed、2 个预期 Uvicorn skip、136 deselected；PR #6 的集成定向检查为 11 passed。均不代表 Phase 验收。本轮开发开始时本地 `main@0640460` 比远程恢复点超前 51 个提交；并入 E1 probe、P0.5 seed schema 固定、Phase 11 worker journal stale-writer guard、P7 只读直接引用校验器、E1 opt-in 分阶段诊断、清理一条已归档 E1 设计分支与文档同步后，本次状态提交后本地 `main` 超前 61 个提交，尚未推送。当前整理后有 6 个本地分支、10 个 worktree、7 个远端分支引用。测试、probe 与验收未运行。
 - Phase 1：D3E（含 R1 / R2 / R3）已于 2026-09-27 验收，D4 已关闭；E1-CAP-1 是当前容量阻断。`fix/e1-cap1@a75278e` 的 500k resume / replay 跨规模增长分别为 59.9 / 63.9 MiB，超过 32 MiB；这是候选实现的测量，不是 main 测量。主线适配版 probe 已合入但未运行；main 自身容量仍未知。主线仍有需设计与消除的 O(N) positions、时间列、返回 IDs、收尾列和 archive cache。整合基线选 main，不整支并入候选，详见计划 §10.33–10.35。
 - 恢复资料见 `PROJECT_STATUS.md` 与 `docs/plans/2026-09-26-all-code-completion-plan.md`；Phase 0 基线仍为 tag `phase-0-complete`，Phase 1 D3D-R1 恢复点为 `c06b9fa`。
