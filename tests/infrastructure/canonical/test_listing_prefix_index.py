@@ -293,7 +293,13 @@ def test_prefix_index_rejects_tampered_or_missing_nodes_and_closes_early_reader(
         first = next(reader)
         assert first["snapshot_revision_id"] == "backdated"
         reader.close()
-        assert len(list(index.iter_rows())) == 3
+        ordered = list(index.iter_rows())
+        assert [row["snapshot_revision_id"] for row in ordered] == [
+            "backdated",
+            "tie-a",
+            "tie-b",
+        ]
+        assert len(ordered) == 3
         assert all(row["status"] is None for row in index.iter_rows())
         root = index.root
         assert root is not None
