@@ -15,6 +15,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any, Final
 
+from core.contracts.revision import SNAPSHOT_TABLE_PATTERN
 from core.domain.base import (
     NAME_PATTERN,
     SHA256_PATTERN,
@@ -25,8 +26,11 @@ from core.domain.base import (
 )
 
 __all__ = [
+    "CROSS_SECTIONAL_TRANSFORMS",
     "PLAN_FORMAT_VERSION",
     "SUPPORTED_PLAN_FORMAT_VERSIONS",
+    "UNIVERSE_REFERENCE_PREFIX",
+    "UniverseReference",
     "PlanInput",
     "PlanLimits",
     "PlanNode",
@@ -39,6 +43,7 @@ __all__ = [
     "TypedPlan",
     "compile_plan",
     "parse_plan_json",
+    "parse_universe_reference",
 ]
 
 #: Bumped 1.0.0 -> 1.1.0 (ADR-0082, transformation acceptance): a ``transformation`` node now
@@ -55,12 +60,24 @@ __all__ = [
 #: "1.1.0" plans still parse with their original grammar, keep their original payload and content
 #: hash, and their ``rank`` / ``quantile`` nodes keep their original meaning (``operator_open`` at
 #: lowering time) — an old plan's meaning is never changed retroactively (ADR-0099 decision 4).
-PLAN_FORMAT_VERSION: Final = "1.2.0"
+#:
+#: Bumped 1.2.0 -> 1.3.0 (ADR-0100 §2, cross-sectional rank / quantile): ``transformation``
+#: additionally admits the ``transform`` names ``rank_cs`` / ``quantile_cs``. A cross-sectional
+#: node carries no ``window``; it requires ``universe`` (the pinned universe snapshot, written as
+#: ``research_dataset:<namespace.table>@<snapshot_id>``, i.e. the ``DatasetRef`` of a
+#: ``ResearchDatasetManifest``) and ``universe_hash`` (that manifest's content hash);
+#: ``quantile_cs`` also requires ``buckets`` (integer >= 2). Under 1.3.0 ``window`` is therefore required per
+#: transform (every time-series transform) instead of for every transformation node; time-series
+#: nodes keep exactly their 1.2.0 grammar and meaning. "1.1.0" / "1.2.0" plans still parse with
+#: their original grammar (``rank_cs`` / ``quantile_cs`` are unknown transforms there) and keep
+#: their payload, content hash and meaning.
+PLAN_FORMAT_VERSION: Final = "1.3.0"
 _LEGACY_PLAN_FORMAT_VERSION: Final = "1.1.0"
+_RANK_TS_PLAN_FORMAT_VERSION: Final = "1.2.0"
 #: Every plan format version this parser admits. Each document is parsed with the grammar of the
 #: version it declares, and a ``TypedPlan`` carries that version in its payload and hash.
 SUPPORTED_PLAN_FORMAT_VERSIONS: Final = frozenset(
-    {_LEGACY_PLAN_FORMAT_VERSION, PLAN_FORMAT_VERSION}
+    {_LEGACY_PLAN_FORMAT_VERSION, _RANK_TS_PLAN_FORMAT_VERSION, PLAN_FORMAT_VERSION}
 )
 _NAME = re.compile(NAME_PATTERN)
 _HASH = re.compile(SHA256_PATTERN)
@@ -154,6 +171,45 @@ class NodeInput:
 
 PlanInput = SpecInput | NodeInput
 PlanScalar = str | int | bool
+
+
+@dataclass(frozen=True, slots=True)
+class UniverseReference:
+    """The pinned universe snapshot a cross-sectional node declares (ADR-0100 §2, format 1.3.0).
+
+    ``table`` / ``snapshot_id`` name the ``DatasetRef`` of a ``ResearchDatasetManifest`` (zone
+    ``research_dataset``); ``manifest_hash`` is that manifest's content hash. The parser only checks
+    the syntax; the lowering binds it to a caller-supplied manifest by hash and by dataset identity.
+    """
+
+    table: str
+    snapshot_id: str
+    manifest_hash: str
+
+    def text(self) -> str:
+        return f"{UNIVERSE_REFERENCE_PREFIX}{self.table}@{self.snapshot_id}"
+
+
+def parse_universe_reference(universe: object, universe_hash: object) -> UniverseReference:
+    """Parse the ``universe`` / ``universe_hash`` node parameters; ``ValueError`` when malformed.
+
+    ``universe`` is ``research_dataset:<namespace.table>@<snapshot_id>``: the table matches the
+    Iceberg ``namespace.table`` syntax (which contains no ``@``), so the first ``@`` after the
+    prefix separates it from the non-empty snapshot ID.
+    """
+    if not isinstance(universe, str) or not universe.startswith(UNIVERSE_REFERENCE_PREFIX):
+        raise ValueError(
+            f"universe must be text of the form {UNIVERSE_REFERENCE_PREFIX}<namespace.table>@"
+            "<snapshot_id>"
+        )
+    table, separator, snapshot_id = universe.removeprefix(UNIVERSE_REFERENCE_PREFIX).partition("@")
+    if not separator or _SNAPSHOT_TABLE.fullmatch(table) is None:
+        raise ValueError("universe must name an Iceberg namespace.table followed by @<snapshot_id>")
+    if not snapshot_id or snapshot_id != snapshot_id.strip():
+        raise ValueError("universe snapshot_id must be non-empty without surrounding whitespace")
+    if not isinstance(universe_hash, str) or _HASH.fullmatch(universe_hash) is None:
+        raise ValueError("universe_hash must be a lowercase SHA-256 manifest content hash")
+    return UniverseReference(table=table, snapshot_id=snapshot_id, manifest_hash=universe_hash)
 
 
 @dataclass(frozen=True, slots=True)
@@ -261,11 +317,35 @@ _PARAMETER_KEYS: Final[dict[PlanOperator, frozenset[str]]] = {
 #: Optional node parameters admitted per plan format version, on top of ``_PARAMETER_KEYS``.
 #: ADR-0099: under "1.2.0" a ``transformation`` node may carry ``buckets``; whether it is required
 #: or rejected depends on the ``transform`` name (checked in ``_check_rank_parameters``).
+#: ADR-0100 §2 (format 1.3.0): ``window`` becomes per transform (time-series transforms only), and
+#: ``universe`` / ``universe_hash`` are admitted for the cross-sectional transforms. Which of them a
+#: node must / must not carry depends on ``transform`` (``_check_transform_parameters_1_3``).
 _OPTIONAL_PARAMETER_KEYS: Final[dict[str, dict[PlanOperator, frozenset[str]]]] = {
     _LEGACY_PLAN_FORMAT_VERSION: {},
-    PLAN_FORMAT_VERSION: {PlanOperator.TRANSFORMATION: frozenset({"buckets"})},
+    _RANK_TS_PLAN_FORMAT_VERSION: {PlanOperator.TRANSFORMATION: frozenset({"buckets"})},
+    PLAN_FORMAT_VERSION: {
+        PlanOperator.TRANSFORMATION: frozenset({"window", "buckets", "universe", "universe_hash"})
+    },
+}
+#: Per-version overrides of the required keys in ``_PARAMETER_KEYS`` (ADR-0100 §2): under 1.3.0 a
+#: ``transformation`` node always requires ``transform`` only; everything else is per transform.
+_REQUIRED_PARAMETER_OVERRIDES: Final[dict[str, dict[PlanOperator, frozenset[str]]]] = {
+    PLAN_FORMAT_VERSION: {PlanOperator.TRANSFORMATION: frozenset({"transform"})},
 }
 _TRANSFORMS: Final = frozenset({"standardize", "rank", "quantile", "difference", "smooth"})
+#: ADR-0100 §2: cross-sectional transforms over a pinned universe snapshot (format 1.3.0 only).
+CROSS_SECTIONAL_TRANSFORMS: Final = frozenset({"rank_cs", "quantile_cs"})
+_TRANSFORMS_BY_PLAN_FORMAT: Final[dict[str, frozenset[str]]] = {
+    _LEGACY_PLAN_FORMAT_VERSION: _TRANSFORMS,
+    _RANK_TS_PLAN_FORMAT_VERSION: _TRANSFORMS,
+    PLAN_FORMAT_VERSION: _TRANSFORMS | CROSS_SECTIONAL_TRANSFORMS,
+}
+#: Canonical text of a pinned universe snapshot: ``research_dataset:<namespace.table>@<snapshot>``,
+#: the ``zone`` / ``table`` / ``snapshot_id`` of a ``ResearchDatasetManifest.dataset``.
+UNIVERSE_REFERENCE_PREFIX: Final = "research_dataset:"
+_SNAPSHOT_TABLE = re.compile(SNAPSHOT_TABLE_PATTERN)
+#: Parameters only a cross-sectional transform may carry (format 1.3.0).
+_UNIVERSE_PARAMETERS: Final = frozenset({"universe", "universe_hash"})
 #: ADR-0099: the time-series percentile rank divides by ``window - 1``; quantile is built on it.
 _RANK_BASED_TRANSFORMS: Final = frozenset({"rank", "quantile"})
 _MIN_RANK_WINDOW: Final = 2
@@ -350,7 +430,9 @@ def _check_parameters(
 ) -> FrozenMapping[str, PlanScalar]:
     if not isinstance(value, dict):
         raise PlanRejected(f"node {node_id}.parameters must be a JSON object")
-    required = _PARAMETER_KEYS[operator]
+    required = _REQUIRED_PARAMETER_OVERRIDES.get(schema_version, {}).get(
+        operator, _PARAMETER_KEYS[operator]
+    )
     allowed = required | _OPTIONAL_PARAMETER_KEYS[schema_version].get(operator, frozenset())
     unknown = set(value) - allowed
     missing = required - set(value)
@@ -383,14 +465,64 @@ def _check_parameters(
         _text(params["time_unit"], f"node {node_id}.parameters.time_unit")
     elif operator is PlanOperator.TRANSFORMATION:
         transform = _text(params["transform"], f"node {node_id}.parameters.transform")
-        if transform not in _TRANSFORMS:
+        if transform not in _TRANSFORMS_BY_PLAN_FORMAT[schema_version]:
             raise PlanRejected(f"node {node_id} has unknown transformation {transform!r}")
+        if transform in CROSS_SECTIONAL_TRANSFORMS:
+            # Only reachable under format 1.3.0 (ADR-0100 §2).
+            _check_cross_sectional_parameters(params, transform, node_id)
+            return FrozenMapping(params)
+        if schema_version == PLAN_FORMAT_VERSION:
+            # 1.3.0: a time-series transform keeps its 1.2.0 grammar exactly; ``window`` is
+            # required here instead of via ``_PARAMETER_KEYS`` and the universe is foreign to it.
+            if "window" not in params:
+                raise PlanRejected(f"node {node_id}.parameters is missing field(s): window")
+            foreign = sorted(_UNIVERSE_PARAMETERS & set(params))
+            if foreign:
+                raise PlanRejected(
+                    f"node {node_id}.parameters.{foreign[0]} is only admitted for the "
+                    "cross-sectional transforms rank_cs / quantile_cs"
+                )
         window = params["window"]
         if type(window) is not int or window < 1:
             raise PlanRejected(f"node {node_id}.parameters.window must be a positive integer")
         if schema_version != _LEGACY_PLAN_FORMAT_VERSION:
             _check_rank_parameters(params, transform, window, node_id)
     return FrozenMapping(params)
+
+
+def _check_cross_sectional_parameters(
+    params: Mapping[str, PlanScalar], transform: str, node_id: str
+) -> None:
+    """ADR-0100 §2 (format 1.3.0): pinned universe required, no window, buckets on quantile_cs.
+
+    A cross-sectional value is computed over the universe members at one bar time, so a trailing
+    ``window`` has no meaning and is rejected rather than silently ignored.
+    """
+    if "window" in params:
+        raise PlanRejected(
+            f"node {node_id}.parameters.window is not admitted for the cross-sectional "
+            f"transform {transform!r}"
+        )
+    missing = sorted(_UNIVERSE_PARAMETERS - set(params))
+    if missing:
+        raise PlanRejected(f"node {node_id}.parameters is missing field(s): {', '.join(missing)}")
+    try:
+        parse_universe_reference(params["universe"], params["universe_hash"])
+    except ValueError as exc:
+        raise PlanRejected(f"node {node_id}.parameters: {exc}") from exc
+    if transform == "quantile_cs":
+        if "buckets" not in params:
+            raise PlanRejected(f"node {node_id}.parameters is missing field(s): buckets")
+        buckets = params["buckets"]
+        if type(buckets) is not int or buckets < _MIN_BUCKETS:
+            raise PlanRejected(
+                f"node {node_id}.parameters.buckets must be an integer >= {_MIN_BUCKETS}"
+            )
+    elif "buckets" in params:
+        raise PlanRejected(
+            f"node {node_id}.parameters.buckets is only admitted for transform 'quantile' / "
+            "'quantile_cs'"
+        )
 
 
 def _check_rank_parameters(

@@ -543,14 +543,15 @@ def test_transformation_output_binds_via_adr_0078() -> None:
 # --- time-series rank / quantile (ADR-0099, plan format 1.2.0) --------------------------------
 
 
-def test_plan_format_version_is_1_2_0_and_1_1_0_still_parses() -> None:
-    assert PLAN_FORMAT_VERSION == "1.2.0"
-    assert SUPPORTED_PLAN_FORMAT_VERSIONS == {"1.1.0", "1.2.0"}
-    for version in ("1.1.0", "1.2.0"):
+def test_plan_format_version_is_1_3_0_and_older_formats_still_parse() -> None:
+    # 1.3.0: ADR-0100 §2 cross-sectional rank / quantile (see test_typed_plan_cross_sectional.py).
+    assert PLAN_FORMAT_VERSION == "1.3.0"
+    assert SUPPORTED_PLAN_FORMAT_VERSIONS == {"1.1.0", "1.2.0", "1.3.0"}
+    for version in ("1.1.0", "1.2.0", "1.3.0"):
         plan, _ = _plan("transformation", transform="difference", schema_version=version)
         assert plan.schema_version == version
         assert plan.payload()["schema_version"] == version
-    for unsupported in ("1.0.0", "1.3.0", "2.0.0"):
+    for unsupported in ("1.0.0", "1.4.0", "2.0.0"):
         with pytest.raises(PlanRejected, match="unsupported plan schema_version"):
             _plan("transformation", transform="difference", schema_version=unsupported)
 
