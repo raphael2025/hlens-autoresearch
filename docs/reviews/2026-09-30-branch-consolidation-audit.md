@@ -10,7 +10,7 @@ This is a consolidation line, not a release or Phase acceptance. It has not been
 
 The initial audit found 57 local branch refs, 70 worktrees, 15 detached worktrees, and 370 `refs/archive/*` refs. Creating the consolidation branch and worktree brings the audited snapshot to **58 local branch refs and 71 worktrees**. Of these worktrees, 56 are attached to a branch and 15 are detached. The four pre-existing dirty worktrees remain preserved; the consolidation worktree was clean after its merge commit and now contains the follow-up commits above.
 
-After the initial snapshot, five isolated branches were added: `codex/streaming-runs-iterable-fix` was independently approved and integrated by `2fa58c6`; the Dataset consumer candidates `codex/dataset-quality-v3-consumer-seam`, `codex/dataset-quality-legacy-row-bound`, and `codex/dataset-quality-v3-replay-guards` were reviewed in sequence, with only the final candidate integrated; `codex/canonical-scratch-integration-port` supplied the narrowly approved reader-cleanup commit `2f98461`. The current repository topology is **63 local branch refs and 75 worktrees** (60 branch-attached, 15 detached). The appendix below intentionally remains the original 58-ref snapshot at consolidation creation; these later branches are recorded here rather than rewriting that baseline inventory.
+After the initial snapshot, six isolated branches were added: `codex/streaming-runs-iterable-fix` was independently approved and integrated by `2fa58c6`; the Dataset consumer candidates `codex/dataset-quality-v3-consumer-seam`, `codex/dataset-quality-legacy-row-bound`, and `codex/dataset-quality-v3-replay-guards` were reviewed in sequence, with only the final candidate integrated; `codex/canonical-scratch-integration-port` supplied the narrowly approved reader-cleanup commit `2f98461`; `codex/adr0097-pit-sqlite-graph` supplied the SQLite graph validator foundation integrated as `889b268` after three reviewers approved the corrected candidate. The current repository topology is **64 local branch refs and 76 worktrees** (61 branch-attached, 15 detached). The appendix below intentionally remains the original 58-ref snapshot at consolidation creation; these later branches are recorded here rather than rewriting that baseline inventory.
 
 The initial dirty worktrees were:
 
@@ -32,6 +32,7 @@ The 370 archived refs are historical evidence, not active integration inputs. 29
 - The `codex/pit-conflict-current-version-tests@7d733c5` 2.5.0 compatibility patch had no remaining source delta when applied to the E1 candidate: DTO, OpenAPI/Web type, legacy/current fixture and version-test content were already represented in the candidate tree. Its historical acceptance evidence remains in project records, but was not rerun on the consolidation tree.
 - `codex/canonical-position-bounds@991b126` is a separately approved source for explicit canonical scratch ownership. The consolidation merge carries the compatible explicit scratch-path threading through Normalizer, PIT, Dataset, Quality and tools. Its branch is retained for provenance; it was not merged wholesale.
 - `codex/canonical-scratch-integration-port@4397fd2` contributed only the `_positions()` index-init failure cleanup and direct regression test. Three independent reviewers approved it; the new test passed independently in all three review runs. It was cherry-picked as `2f98461`; the branch remains as provenance.
+- `codex/adr0097-pit-sqlite-graph@cef7b11` supplied the SQLite graph-validator foundation. Initial candidates exposed and fixed marker-write cleanup and nested context-entry defects under independent review; the corrected final candidate received three approvals and was squashed into `889b268`. The module is not yet connected to selector/head traversal, so full ADR-0097 acceptance remains open.
 
 ### Preserved for focused follow-up; not yet integrated
 
@@ -129,7 +130,7 @@ main e584187
 
 ## Next sequence
 
-1. Implement ADR-0097's caller-owned SQLite graph scratch index on an isolated branch; preserve current graph invariants, complete ADR-0094 heads stream, v2 replay, explicit path ownership, and orphan-marker rules.
-2. Independently review and test that PIT slice; measure long-chain and repeated-cutoff query cost. Then proceed to Quality rule identity/input-table binding and remaining active bounded-path gaps.
+1. Connect the accepted SQLite graph validator to `_evaluate_bounded` so each key builds one cutoff-specific graph and reuses it across simulation-time changes. Add indexed reachability/head traversal that emits the complete ADR-0094 stream in canonical order, preserving v2 replay.
+2. Independently test PIT/Dataset selector regressions and measure long-chain, wide-DAG, and repeated-cutoff query cost. Then close Quality rule identity/input-table binding and remaining active bounded-path gaps.
 3. Reconcile the root W1 dirty delta and E1's 15-path dirty candidate file by file; keep source worktrees untouched. The three differing paths in the dirty PIT hardening copy remain a separate comparison.
 4. After the active code slices are integrated, run relevant regressions and full-process E1-CAP-1 on the exact consolidation HEAD. Do not infer acceptance from branch-local runs.
