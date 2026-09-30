@@ -232,6 +232,34 @@ def test_stream_fingerprint_preserves_max_precision_decimal(
     assert actual == PYARROW_BATCH_FINGERPRINT.fingerprint(table)
 
 
+def test_stream_fingerprint_rejects_duplicate_schema_field_names(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    run = _run(storage, _table(), capacity=1)
+    duplicate_top = pa.schema([pa.field("value", pa.int64()), pa.field("value", pa.int64())])
+    duplicate_nested = pa.schema(
+        [
+            pa.field(
+                "items",
+                pa.large_list(
+                    pa.struct([pa.field("child", pa.int64()), pa.field("child", pa.int64())])
+                ),
+            )
+        ]
+    )
+    for schema in (duplicate_top, duplicate_nested):
+        with pytest.raises(BatchRejected, match="duplicate field names"):
+            fingerprint_run(
+                storage,
+                run,
+                schema,
+                max_record_bytes=4096,
+                max_run_object_bytes=4096,
+                row_chunk_capacity=1,
+                max_hash_chunk_bytes=128,
+            )
+
+
 def test_stream_fingerprint_rejects_invalid_utf8_and_required_nulls(
     storage: LocalFileStorageAdapter,
 ) -> None:

@@ -11,7 +11,7 @@ import hashlib
 import json
 import struct
 import sys
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -77,6 +77,7 @@ def fingerprint_run(
         raise BatchRejected(f"{PYARROW_BATCH_FINGERPRINT_RULE_ID} requires a little-endian host")
     if not isinstance(schema, pa.Schema):
         raise BatchRejected("stream fingerprint schema must be a PyArrow schema")
+    _validate_unique_field_names(schema)
     if (
         isinstance(max_record_bytes, bool)
         or not isinstance(max_record_bytes, int)
@@ -282,6 +283,23 @@ def _measure_field(
             for index in range(value_type.num_fields)
         )
     return _FieldStats(count, null_count, data_bytes, child_count, children)
+
+
+def _validate_unique_field_names(schema: pa.Schema) -> None:
+    def unique(fields: Sequence[pa.Field], path: str) -> None:
+        names = [field.name for field in fields]
+        if len(names) != len(set(names)):
+            raise BatchRejected(f"stream fingerprint schema has duplicate field names at {path}")
+        for field in fields:
+            data_type = field.type
+            if pat.is_struct(data_type):
+                unique(data_type, f"{path}.{field.name}")
+            elif pat.is_large_list(data_type) or pat.is_list(data_type):
+                child = data_type.value_field
+                if pat.is_struct(child.type):
+                    unique(child.type, f"{path}.{field.name}[]")
+
+    unique(schema, "root")
 
 
 def _encode_field(
