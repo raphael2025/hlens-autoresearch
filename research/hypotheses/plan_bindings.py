@@ -26,7 +26,6 @@ from core.domain.specs import (
     StrategySpec,
 )
 from research.hypotheses.typed_plan import (
-    PLAN_FORMAT_VERSION,
     PlanNode,
     PlanOperator,
     PlanOutputType,
@@ -127,7 +126,8 @@ def _canonical_plan(plan: TypedPlan, where: str) -> TypedPlan:
         raise PlanBindingRefused("wrong_type", where, "must be an exact TypedPlan")
     try:
         payload = {
-            "schema_version": PLAN_FORMAT_VERSION,
+            # Re-parse with the plan's own format version (ADR-0099 decision 4).
+            "schema_version": plan.schema_version,
             "root": plan.root,
             "nodes": [
                 {
