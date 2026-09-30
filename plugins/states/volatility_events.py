@@ -77,6 +77,9 @@ def _number(item: StateInput) -> Decimal:
 
 
 def _decimal_text(value: str | Decimal) -> Decimal:
+    if isinstance(value, bool):
+        # Decimal(True) is Decimal(1): a boolean must not silently become a threshold.
+        raise ValueError("state parameter must be a decimal, not a boolean")
     try:
         parsed = Decimal(value)
     except (InvalidOperation, ValueError, TypeError):
