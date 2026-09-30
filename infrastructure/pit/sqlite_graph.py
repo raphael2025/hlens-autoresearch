@@ -52,7 +52,14 @@ class SQLitePitGraph:
         return self
 
     def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
-        self.close()
+        if not isinstance(exc, BaseException):
+            self.close()
+            return
+        # A cleanup failure must not mask the primary exception; record it as a note.
+        try:
+            self.close()
+        except Exception as close_error:
+            exc.add_note(f"SQLite PIT graph cleanup also failed: {close_error!r}")
 
     @property
     def directory(self) -> Path:
