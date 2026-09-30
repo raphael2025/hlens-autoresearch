@@ -1142,8 +1142,36 @@ class ChannelReconciler:
     ) -> None:
         """Prove edge provenance using sorted owner-day, key, current and committed runs."""
         head = pinned.evidence_snapshot
+
+        def snapshots() -> Iterable[SnapshotInfo]:
+            if head is None:
+                return
+            history = getattr(self._adapter, "history", None)
+            if callable(history):
+                yield from history(EVIDENCE_TABLE, head)
+            else:
+                yield from history_from(self._adapter, EVIDENCE_TABLE, head)
+
         own_keys_root = self._day_keys_run(data_type, symbol, day, pinned.rest_snapshot, params)
         if own_keys_root is None:
+            # No REST key: an edge batch of this day can only reproduce as the empty set (the
+            # legacy path proves that by re-reading it with the empty key set). A batch with this
+            # day's prefix that added rows, or does not reproduce empty, fails closed.
+            partition = (data_type, symbol, day)
+            prefix = _edge_batch_prefix(partition)
+            definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+            for snapshot in snapshots():
+                if snapshot.batch_id is None or not snapshot.batch_id.startswith(prefix):
+                    continue
+                empty = pa.Table.from_pylist([], schema=definition.arrow_schema)
+                if (
+                    snapshot.added_rows != 0
+                    or snapshot.batch_id != _edge_batch_id(partition, ())
+                    or snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(empty)
+                ):
+                    raise CatalogIntegrityError(
+                        f"edge batch {snapshot.batch_id} no longer reproduces from its snapshot"
+                    )
             return
 
         column = _TIME_COLUMNS[data_type]
@@ -1192,15 +1220,6 @@ class ChannelReconciler:
 
         def provenance_key(row: Mapping[str, Any]) -> tuple[str, str]:
             return row["observation_key"], row["edge_id"]
-
-        def snapshots() -> Iterable[SnapshotInfo]:
-            if head is None:
-                return
-            history = getattr(self._adapter, "history", None)
-            if callable(history):
-                yield from history(EVIDENCE_TABLE, head)
-            else:
-                yield from history_from(self._adapter, EVIDENCE_TABLE, head)
 
         with RunSetBuilder(
             self._storage,
