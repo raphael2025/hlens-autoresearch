@@ -1,5 +1,7 @@
 # E1 Canonical revision ID iterator API audit
 
+> Follow-up status (2026-09-30): the test-helper and assertion defects noted below were repaired in a separate test-only change, accepted in [revision ID iterator test hardening](2026-09-30-e1-revision-ids-test-hardening.md). The original audit result remains tied to candidate `dd3a965`.
+
 **Result: ACCEPT WITH LIMITATIONS for the API boundary only.** This is not an E1-CAP-1 or Phase 1 acceptance.
 
 ## Scope and findings
