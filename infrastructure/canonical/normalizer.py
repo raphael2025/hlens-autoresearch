@@ -52,7 +52,7 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final, cast
+from typing import Any, Final, cast, overload
 
 from pyiceberg.expressions import (
     And,
@@ -223,6 +223,12 @@ class _PositionIndex(Sequence[int]):
     def __len__(self) -> int:
         return self._size
 
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
+
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
             start, stop, step = rank.indices(self._size)
@@ -236,7 +242,7 @@ class _PositionIndex(Sequence[int]):
         value = os.pread(self._fd, _POSITION_INT.size, rank * _POSITION_INT.size)
         if len(value) != _POSITION_INT.size:
             raise OSError("position rank file ended unexpectedly")
-        return _POSITION_INT.unpack(value)[0]
+        return cast(int, _POSITION_INT.unpack(value)[0])
 
     def __iter__(self) -> Iterator[int]:
         yield from self._iter_ranks(range(self._size))
@@ -295,6 +301,12 @@ class _PositionSlice(Sequence[int]):
     def __len__(self) -> int:
         return len(self._ranks)
 
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
+
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
             start, stop, step = rank.indices(len(self))
@@ -318,6 +330,12 @@ class _OffsetSequence(Sequence[int]):
 
     def __len__(self) -> int:
         return len(self._values)
+
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
 
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
@@ -835,10 +853,7 @@ class CanonicalNormalizer:
                             )
                         previous_seq = seq
                         rank = bisect_left(cast(Sequence[int], facts.positions), seq - base)
-                        if (
-                            rank >= len(facts.positions)
-                            or cast(int, facts.positions[rank]) != seq - base
-                        ):
+                        if rank >= len(facts.positions) or facts.positions[rank] != seq - base:
                             continue
                         batch_index = rank // plan.chunk
                         if batch_index != previous_batch:
@@ -1198,7 +1213,7 @@ class CanonicalNormalizer:
         floor: datetime | None,
         unit_rows: int,
         plan: _CommittedPlan | None,
-        ordered: Sequence[SnapshotInfo],
+        ordered: bool,
         committed: _CommittedTimes,
     ) -> _Survey:
         table = channel.canonical.table
