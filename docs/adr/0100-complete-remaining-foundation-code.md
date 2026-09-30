@@ -40,3 +40,12 @@
 - [x] 不修改 Validation Constitution / Profile 数值
 - [x] Domain 层仍无具体技术依赖
 - [x] 实盘保持关闭；新运行能力默认关闭
+
+## 修订 1（2026-09-30）：P7 temporal 语义细化（计划格式 1.3.0 起）
+
+实现审查发现 ADR-0082 第三次接受记录中的 temporal 输出规则与 Event 契约重复计入可观测滞后。上游 `event_time` 本身已是可观测时刻（`event_time = 最晚输入时刻 + observable_lag`）。决定如下：
+
+1. **1.3.0 起**，lowered temporal EventSpec 的 `observable_lag = 0`，可见时刻 = 第二事件的可观测时刻（trigger `visibility` 不变）。1.2.0 计划的 lowering 输出保持原样（不改变其含义）。
+2. 窗口按**发生时刻**度量：两侧都用 `event_time − upstream.observable_lag` 比较，第二事件的发生时刻须落在 `(first, first + N bars]` 内。
+3. 两个输入必须是不同的 EventSpec（ref 不同），否则拒绝。
+4. 1.3.0 temporal trigger 绑定上游哈希：`first_event_hash` / `second_event_hash`，与 `infrastructure/event/upstream.verify_interaction` 的约定一致；1.2.0 的无哈希规格仍由 runner 拒绝（fail closed）。
