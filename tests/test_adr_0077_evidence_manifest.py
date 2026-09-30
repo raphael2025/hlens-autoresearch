@@ -188,9 +188,7 @@ def proof(chunk_index: int = 0, **overrides: Any) -> DatasetChunkProof:
     return DatasetChunkProof(**payload)
 
 
-def v3(
-    *, schema_version: str = "2.4.0", **overrides: Any
-) -> ResearchDatasetEvidenceManifest:
+def v3(*, schema_version: str = "2.4.0", **overrides: Any) -> ResearchDatasetEvidenceManifest:
     """Legacy six-stream manifest fixture, explicitly rebuilt at its recorded 2.3/2.4 era."""
     with contract_schema_version_scope(schema_version):
         return _v3_payload(**overrides)
@@ -216,6 +214,14 @@ def _v3_payload(**overrides: Any) -> ResearchDatasetEvidenceManifest:
 
 def valid_instances() -> dict[type[Contract], Contract]:
     current_evidence = (*evidence(3), stream_ref(EvidenceStream.PIT_CONFLICTS, 0))
+    current_pit = pit().model_copy(
+        update={
+            "snapshot_bindings": {
+                **pit().snapshot_bindings,
+                "quality.data_quality_report_manifests": "9104",
+            }
+        }
+    )
     return {
         DatasetRuleBinding: rule(),
         EvidenceObjectRef: obj(),
@@ -223,7 +229,7 @@ def valid_instances() -> dict[type[Contract], Contract]:
         DatasetQualityReportRef: report(),
         DatasetChunkProof: proof(),
         ResearchDatasetEvidenceManifest: v3(
-            schema_version="2.5.0", evidence=current_evidence
+            schema_version="2.5.0", evidence=current_evidence, point_in_time=current_pit
         ),
     }
 
@@ -242,7 +248,12 @@ def test_2_3_shapes_remain_replayable_and_every_minor_stays_published() -> None:
     assert ADR_0077_VERSION == "2.3.0"
     assert CONTRACT_SCHEMA_VERSION == "2.5.0"  # ADR-0094 raised the current minor
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS == (
-        "2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"
+        "2.0.0",
+        "2.1.0",
+        "2.2.0",
+        "2.3.0",
+        "2.4.0",
+        "2.5.0",
     )
     assert PUBLISHED_CONTRACT_SCHEMA_VERSIONS[-1] == CONTRACT_SCHEMA_VERSION
 
@@ -252,9 +263,7 @@ def test_every_new_model_is_declared_since_2_3_0() -> None:
         assert model._MODEL_SINCE == "2.3.0", model.__name__
         assert not model._FIELDS_SINCE, model.__name__
         if model is EvidenceStreamRef:
-            assert dict(model._VALUES_SINCE) == {
-                "stream": {EvidenceStream.PIT_CONFLICTS: "2.5.0"}
-            }
+            assert dict(model._VALUES_SINCE) == {"stream": {EvidenceStream.PIT_CONFLICTS: "2.5.0"}}
         else:
             assert not model._VALUES_SINCE, model.__name__
     # the v2 manifest and its record models are not new content
@@ -502,9 +511,7 @@ def test_a_valid_v3_manifest_is_fixed_size_and_canonically_ordered() -> None:
     assert [item.stream.value for item in built.evidence] == sorted(
         stream.value for stream in EvidenceStream if stream is not EvidenceStream.PIT_CONFLICTS
     )
-    shuffled = v3(
-        evidence=tuple(at_version(item, "2.4.0") for item in reversed(evidence(3)))
-    )
+    shuffled = v3(evidence=tuple(at_version(item, "2.4.0") for item in reversed(evidence(3))))
     assert shuffled == built
     assert shuffled.content_hash() == built.content_hash()
     assert built.evidence_for(EvidenceStream.CHUNK_PROOFS).record_count == 3

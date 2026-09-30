@@ -329,6 +329,7 @@ V3_BINDINGS: Final[Mapping[str, str]] = {
     "canonical.bars_1m": "1",
     V3_LISTINGS: "1",
     "quality.data_quality_reports": "1",
+    "quality.data_quality_report_manifests": "1",
     "quality.availability_evidence_gaps": "1",
     "raw.binance_spot_exchange_info": "1",
     "raw.binance_spot_agg_trades": "1",

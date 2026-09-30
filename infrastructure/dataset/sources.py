@@ -50,6 +50,7 @@ from core.contracts.universe import (
     UniverseExclusion,
     UniverseMember,
 )
+from core.domain.base import CONTRACT_SCHEMA_VERSION, scoped_contract_schema_version
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.dataset.builder import (
     DatasetEvidenceRequest,
@@ -59,10 +60,13 @@ from infrastructure.dataset.builder import (
     PitKeyEvaluation,
     PitKeyGroup,
     PitSelectedRevision,
+    QualityEvidenceSource,
     UniverseEvidenceSource,
 )
+from infrastructure.dataset.quality import BoundedQualityEvidenceFactory, BoundedQualitySourceParams
 from infrastructure.pit.runs import RunSetBuilder, iter_run
 from infrastructure.pit.selector import EvidenceGap, PitBoundedRecord, PitRunParams, PitSelector
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.universe.builder import UniverseBuilder
 from infrastructure.universe.run_params import UniverseRunParams
@@ -755,19 +759,76 @@ def dataset_evidence_sources(
     market_data_base_url: str,
     pit_params: PitRunParams,
     universe_params: UniverseRunParams,
+    schema_version: str | None = None,
+    quality_factory: BoundedQualityEvidenceFactory | None = None,
+    quality_params: BoundedQualitySourceParams | None = None,
 ) -> DatasetEvidenceSources:
     """The real upstreams of ``request`` for ``DatasetEvidenceBuilder.select`` / ``build``.
 
     Universe: ``UniverseBuilder.cursor(request.universe, request.pit,
     run_params=universe_params)`` in ADR-0077 §2 order;
-    PIT: ``PitSelector.iter_bounded`` grouped by key; quality: ``PinnedQualityEvidence`` at the
-    PIT spec's bound snapshots. Every run size is the caller's (no defaults).
+    PIT: ``PitSelector.iter_bounded`` grouped by key. Schema 2.3/2.4 replay retains the legacy
+    Quality row source; 2.5+ requires an explicit bounded Quality factory, passed a fixed
+    ``PinnedCatalogView``. Every run size is the caller's (no defaults).
     """
     if not isinstance(request, DatasetEvidenceRequest):
         raise DatasetSpecError("request must be a DatasetEvidenceRequest")
     cursor = UniverseBuilder(adapter, storage, market_data_base_url=market_data_base_url).cursor(
         request.universe, request.pit, run_params=universe_params
     )
+    from core.domain.base import parse_semver
+    from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORT_MANIFESTS
+    from infrastructure.dataset.quality import BoundedQualityEvidence
+
+    active_version = schema_version or scoped_contract_schema_version() or CONTRACT_SCHEMA_VERSION
+    version = parse_semver(active_version)
+    quality_v3 = tuple(int(version.group(name)) for name in ("major", "minor", "patch")) >= (
+        2,
+        5,
+        0,
+    )
+    if quality_v3:
+        binding = request.pit.snapshot_bindings.get(DATA_QUALITY_REPORT_MANIFESTS.table)
+        if binding is None:
+            raise DatasetSpecError(
+                f"the PIT spec does not bind {DATA_QUALITY_REPORT_MANIFESTS.table}"
+            )
+        if not callable(quality_factory):
+            raise DatasetSpecError(
+                "schema 2.5+ requires an explicit bounded Quality source factory"
+            )
+        if not isinstance(quality_params, BoundedQualitySourceParams):
+            raise DatasetSpecError(
+                "schema 2.5+ requires explicit Quality stream, run, identity, and legacy-row limits"
+            )
+        view = PinnedCatalogView(adapter, request.pit.snapshot_bindings)
+        quality: QualityEvidenceSource = quality_factory(
+            adapter,
+            storage,
+            request.pit,
+            request.data_type,
+            view=view,
+            canonical_scratch_directory=canonical_scratch_directory,
+            params=quality_params,
+        )
+        if (
+            not isinstance(quality, BoundedQualityEvidence)
+            or quality.view is not view
+            or quality.params != quality_params
+        ):
+            raise DatasetSpecError(
+                "Quality factory must return BoundedQualityEvidence using the supplied pinned view "
+                "and parameters"
+            )
+    else:
+        quality = PinnedQualityEvidence(
+            adapter,
+            storage,
+            request.pit,
+            request.data_type,
+            canonical_scratch_directory=canonical_scratch_directory,
+            market_data_base_url=market_data_base_url,
+        )
     return DatasetEvidenceSources(
         universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),
         pit=PitSelectorKeySource(
@@ -779,12 +840,5 @@ def dataset_evidence_sources(
             storage=storage,
             params=pit_params,
         ),
-        quality=PinnedQualityEvidence(
-            adapter,
-            storage,
-            request.pit,
-            request.data_type,
-            canonical_scratch_directory=canonical_scratch_directory,
-            market_data_base_url=market_data_base_url,
-        ),
+        quality=quality,
     )
