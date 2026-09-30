@@ -280,6 +280,12 @@ class _WithoutV3Table:
             table, columns=columns, limit=limit, snapshot_id=snapshot_id, **kwargs
         )
 
+    def scan_column_batches(self, table: str, **kwargs: Any) -> Any:
+        # E1 bounding: the manifest stores stream their lookups; the table is missing here too.
+        if table == DATASET_EVIDENCE_MANIFESTS.table:
+            raise TableNotFound(f"table {table} does not exist")
+        return self._inner.scan_column_batches(table, **kwargs)
+
 
 def test_a_catalog_without_the_v3_table_reads_v2_unchanged(w: World) -> None:
     _ready(w)
