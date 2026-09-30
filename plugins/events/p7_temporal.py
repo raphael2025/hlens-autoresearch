@@ -3,7 +3,15 @@
 ``P7TemporalSequenceProvider`` (``p7_temporal_sequence@1.0.0``) serves exactly the ``EventSpec``
 values the pure P7 lowering emits for definition ``p7.temporal.sequence_within_bars@1.0.0``: the
 second event occurs 1..``window_bars`` bars after the first, i.e. in the left-open, right-closed
-interval ``(first.event_time, first.event_time + window_bars * bar_duration]``.
+interval ``(first, first + window_bars * bar_duration]``.
+
+- **The window is measured on occurrence times** for a hash-bound (plan format "1.3.0") spec
+  (ADR-0100 revision 1 §2): an upstream ``event_time`` is its observable time (occurrence +
+  ``observable_lag``), so each side's occurrence time is ``event_time - upstream.observable_lag``
+  (its own spec's lag), and the second's occurrence must fall in
+  ``(first_occurrence, first_occurrence + window_bars * bar_duration]``; ``gap_seconds`` is the
+  occurrence gap. A spec of an older plan format keeps comparing the upstream ``event_time``
+  values directly (its meaning is unchanged).
 
 - **Bar duration is explicit.** ``bar_spec`` is a bare ``representation`` Ref; its duration is not
   readable from the contract. The caller supplies ``bar_durations`` (``str(bar_spec)`` ->
@@ -184,17 +192,23 @@ class P7TemporalSequenceProvider(EventProviderBase):
         if spec.bar_spec is None:  # pragma: no cover - refused in ``canonical``
             raise EventInputError(f"{spec.ref} declares no bar_spec")
         span = int(params["window_bars"]) * self._bar_durations[str(spec.bar_spec)]
+        if _hash_bound(params):
+            # ADR-0100 revision 1 §2: occurrence time = event_time - the upstream's own lag.
+            first_lag, second_lag = first_spec.observable_lag, second_spec.observable_lag
+        else:  # older plan format: unchanged, compares the upstream event_time values
+            first_lag = second_lag = timedelta(0)
         out: list[Event] = []
         for second in split["second"]:
+            occurred = second.event_time - second_lag
             candidates = [
                 item
                 for item in split["first"]
-                if item.event_time < second.event_time <= item.event_time + span
+                if item.event_time - first_lag < occurred <= item.event_time - first_lag + span
             ]
             if not candidates:
                 continue
             first = max(candidates, key=lambda item: (item.event_time, item.event_id))
-            gap = second.event_time - first.event_time
+            gap = occurred - (first.event_time - first_lag)
             out.append(
                 Event.build(
                     event=spec.ref,
