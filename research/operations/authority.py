@@ -96,10 +96,15 @@ failed stage), the metric is **missing**, as in validation; a gate without an ex
   ``outcome_ref`` / plugin, validation seed ∈ the run's ``seeds``, ``RobustnessParams``, control
   seeds, market benchmark, declared execution model, C-R3 scope = exactly the pipeline's
   instruments; each checked against the run and the baseline report's own gates —
-  ``baseline_binding_mismatch`` / ``execution_mismatch``). Inputs the baseline does **not** record
-  (``family_trial_count``, which seed the validator used, a ``param:`` CSCV partition count or
-  impact coefficient, a state labeller) cannot be proven equal, so every ruled definition whose
-  gate depends on one is refused (``baseline_input_unrecorded``): ``G3.*``, ``G4.overfitting``,
+  ``baseline_binding_mismatch`` / ``execution_mismatch``). A baseline run with the ADR-0100
+  修订 2 ``hlens.p11.inputs@1.0.0`` record (``research.experiments.run_inputs``: in its hashed
+  ``repro.params``) records ``family_trial_count``, the validation seed, the control seeds, the
+  ``cscv_partitions`` / ``impact_coefficient`` it used and its state labeller identity; each must
+  equal the binding's exactly (canonical JSON; else ``baseline_binding_mismatch``), and then
+  every dependency below is proven. A run **without** the record (every run from before the
+  amendment; never backfilled or inferred — H3 / H6) does **not** record them (nor does its
+  report), so they cannot be proven equal and every ruled definition whose gate depends on one is
+  refused (``baseline_input_unrecorded``): ``G3.*``, ``G4.overfitting``,
   ``G2.null_model_percentile``, the single-seed G1 controls and every ``G2.*`` gate after them,
   ``G4.overfitting`` with ``param:cscv_partitions``, ``G4.capacity.*`` with
   ``param:capacity.impact_coefficient``, ``G4.state.*`` with a state labeller.
@@ -137,12 +142,15 @@ equity and a ``WindowTargetSource`` (the admitted strategy's decision pipeline o
 proven bars). Its declared identities must equal the baseline run's reproducibility tuple
 (backtest provider descriptor hash in ``plugin_versions``; cost model ref + content hash in
 ``dependency_hashes``; strategy ref + spec hash, risk policy ref + hash, params and every declared
-plugin hash; params compared as canonical JSON, so ``True``, ``1`` and ``1.0`` differ — 修订 2 §4)
-— else ``execution_mismatch``. The target source also declares its decision grid (step, warm-up)
-and initial equity (in its identity payload, hence the provenance); they must equal the baseline
-run's recorded values. The frozen reproducibility tuple records none of them, so the resolution is
-refused with ``execution_unrecorded`` until the baseline run records them (a contract change,
-ADR) — an environment value is a caller declaration, not the baseline's. The provider's result is
+plugin hash; params compared as canonical JSON, so ``True``, ``1`` and ``1.0`` differ — 修订 2 §4;
+the baseline's params are its strategy params, without the run inputs record) — else
+``execution_mismatch``. The target source also declares its decision grid (step, warm-up) and
+initial equity (in its identity payload, hence the provenance); they must equal the baseline run's
+recorded values — the ``execution`` block of its ``hlens.p11.inputs@1.0.0`` record (ADR-0100
+修订 2), compared as canonical JSON (``execution_mismatch`` otherwise). A baseline run without a
+valid record (every run from before the amendment; never backfilled or inferred) is refused with
+``execution_unrecorded``: an environment value is a caller declaration, not the baseline's. The
+record is copied into the provenance (``execution.baseline_run_inputs``). The provider's result is
 re-validated and checked with ``BacktestResult.check_answers``; one window yields one sample.
 
 **Baseline binding (修订 2 §5).** The provenance records the ``BaselineMetricSet`` content hash;
@@ -229,6 +237,14 @@ from infrastructure.feature.dataset import (
 from infrastructure.registry.lifecycle import LifecycleHead, LifecycleRegistry, UnknownHead
 from infrastructure.registry.registry import RegistryError
 from plugins.backtest import BarBacktester, ExecutionModel
+from research.experiments.run_inputs import (
+    RUN_INPUTS_KEY,
+    RunInputs,
+    RunInputsError,
+    execution_payload,
+    recorded_run_inputs,
+    strategy_params,
+)
 from research.loop.dataset_source import DatasetCatalog
 from research.operations.degradation import (
     BaselineMetricSet,
@@ -302,7 +318,9 @@ __all__ = [
 ]
 
 #: Identity of the provenance payload (part of the report's hash-bound evidence).
-AUTHORITY_FORMAT: Final = "hlens.p11.authority-provenance@1.1.0"
+#: 1.2.0 (ADR-0100 修订 2): ``execution.baseline_run_inputs`` (the baseline run's
+#: ``hlens.p11.inputs@1.0.0`` record) and ``window_validation.state_labels_identity``.
+AUTHORITY_FORMAT: Final = "hlens.p11.authority-provenance@1.2.0"
 #: ``authority.lifecycle.anchor``: the Lifecycle Registry was verified against an external anchor
 #: (``present``) or opened without one (``absent``: a rollback of whole trailing records cannot be
 #: detected; ADR-0098 修订 1 — recorded, not refused).
@@ -323,13 +341,15 @@ LIFECYCLE_NOT_ACTIVE: Final = "lifecycle_not_active"
 LIFECYCLE_UNAVAILABLE: Final = "lifecycle_unavailable"
 BASELINE_BINDING_MISMATCH: Final = "baseline_binding_mismatch"
 #: a ruled ``window_validation`` definition depends on a baseline validator input that neither the
-#: baseline report nor its run records, so the binding's value cannot be proven to be the
+#: baseline report nor its run records (a run without the ``hlens.p11.inputs@1.0.0`` record of
+#: ADR-0100 修订 2, or with an invalid one), so the binding's value cannot be proven to be the
 #: baseline's (``family_trial_count``, the validation ``seed``, a ``param:`` ``cscv_partitions`` /
 #: ``impact_coefficient``, a caller-supplied state labeller): the definition is refused
 BASELINE_INPUT_UNRECORDED: Final = "baseline_input_unrecorded"
 EXECUTION_MISMATCH: Final = "execution_mismatch"
 #: the window run's decision grid (step, warm-up) or initial equity cannot be verified against the
-#: baseline run, which does not record them (the reproducibility tuple has no such fields)
+#: baseline run, which does not record them (no valid ``hlens.p11.inputs@1.0.0`` record in its
+#: ``repro.params``: a run from before ADR-0100 修订 2 — never backfilled or inferred)
 EXECUTION_UNRECORDED: Final = "execution_unrecorded"
 METRIC_REFUSED: Final = "metric_refused"
 #: a defined metric whose inputs (the ``WindowValidationBinding``) were not supplied
@@ -1358,8 +1378,11 @@ def _check_execution(
     expected_risk_hash = None if risk is None else repro.dependency_hashes.get(str(risk))
     if identity.risk_policy_hash != expected_risk_hash:
         raise AuthorityRefused(EXECUTION_MISMATCH, "the risk policy hash is not the baseline's")
-    try:  # canonical JSON, not Python equality: True == 1 == 1.0 would pass (修订 2 §4)
-        same_params = canonical_json(dict(identity.params)) == canonical_json(dict(repro.params))
+    # canonical JSON, not Python equality: True == 1 == 1.0 would pass (修订 2 §4); the baseline's
+    # strategy params exclude its run inputs record (ADR-0100 修订 2, checked below)
+    baseline_params = strategy_params(repro.params)
+    try:
+        same_params = canonical_json(dict(identity.params)) == canonical_json(baseline_params)
     except (TypeError, ValueError) as exc:
         raise AuthorityRefused(
             EXECUTION_MISMATCH, f"the strategy params are not canonical JSON: {exc}"
@@ -1384,20 +1407,25 @@ def _check_execution(
     return descriptor, identity
 
 
-def _recorded_execution_grid(run: ExperimentRun) -> tuple[timedelta, timedelta, Decimal] | None:
-    """The baseline run's recorded ``(decision_step, decision_warmup, initial_equity)``, or
-    ``None`` when the run records them nowhere. The frozen ``ReproducibilityTuple`` has no field
-    for any of them (and the baseline report carries no backtest request), so today this is always
-    ``None``: a value taken from the environment is a caller declaration, never the baseline's."""
-    del run
-    return None
+def _run_inputs(run: ExperimentRun, code: str) -> RunInputs | None:
+    """The baseline run's ``hlens.p11.inputs@1.0.0`` record (``repro.params[RUN_INPUTS_KEY]``,
+    bound into its ``experiment_hash``; ADR-0100 修订 2), or ``None`` when the run carries none — a
+    run from before the amendment, never backfilled or inferred (H3 / H6). A record that is not
+    exactly a valid canonical payload proves nothing and is refused with ``code``."""
+    try:
+        return recorded_run_inputs(run.repro.params)
+    except RunInputsError as exc:
+        raise AuthorityRefused(
+            code, f"the baseline run's {RUN_INPUTS_KEY} record is not valid ({exc})"
+        ) from exc
 
 
 def _check_execution_grid(
     identity: TargetSourceIdentity, equity: Decimal, run: ExperimentRun
 ) -> None:
     """The declared decision grid and initial equity must equal the baseline run's recorded
-    values; unrecorded is refused (``execution_unrecorded``), never assumed."""
+    values (its ``hlens.p11.inputs@1.0.0`` ``execution`` block, compared as canonical JSON);
+    unrecorded is refused (``execution_unrecorded``), never assumed."""
     step, warmup = identity.decision_step, identity.decision_warmup
     declared = identity.initial_equity
     if (
@@ -1416,19 +1444,27 @@ def _check_execution_grid(
             EXECUTION_MISMATCH,
             "the target source's initial equity is not the window execution's",
         )
-    recorded = _recorded_execution_grid(run)
+    recorded = _run_inputs(run, EXECUTION_UNRECORDED)
     if recorded is None:
         raise AuthorityRefused(
             EXECUTION_UNRECORDED,
-            "the baseline run records no decision step, decision warm-up or initial equity (the "
-            "reproducibility tuple has no such fields), so the window run's "
-            f"(step {step}, warm-up {warmup}, equity {declared}) cannot be proven to be the "
-            "baseline's",
+            f"the baseline run records no decision step, decision warm-up or initial equity (no "
+            f"{RUN_INPUTS_KEY} record: a run from before ADR-0100 修订 2, never backfilled), so "
+            f"the window run's (step {step}, warm-up {warmup}, equity {declared}) cannot be "
+            "proven to be the baseline's",
         )
-    if (step, warmup, str(declared)) != (recorded[0], recorded[1], str(recorded[2])):
+    try:
+        declared_payload = execution_payload(step, warmup, declared)
+    except RunInputsError as exc:
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH, f"the target source's decision grid / equity: {exc}"
+        ) from exc
+    if canonical_json(declared_payload) != canonical_json(recorded.execution_payload()):
         raise AuthorityRefused(
             EXECUTION_MISMATCH,
-            "the decision grid / initial equity is not the one the baseline run recorded",
+            "the decision grid / initial equity is not the one the baseline run recorded "
+            f"(declared {canonical_json(declared_payload)}, recorded "
+            f"{canonical_json(recorded.execution_payload())})",
         )
 
 
@@ -1549,10 +1585,20 @@ class WindowValidationBinding:
       ``market_benchmark`` (required when the report carries ADR-0060 items), ``backtester`` /
       ``execution`` (declared exactly when the report carries ``G0.execution_model``),
       ``declared_instruments`` (the C-R3 scope: exactly the pipeline's instruments);
-    - **unrecorded inputs** (integrity fixes 2026-09-30): the baseline report and run record
-      neither ``metadata.family_trial_count``, nor which of the run's ``seeds`` the validator
-      used, nor a ``param:`` ``cscv_partitions`` / ``impact_coefficient`` value, nor the state
-      labeller. A ruled definition whose gate depends on one of them is refused
+    - **recorded inputs** (ADR-0100 修订 2): a baseline run with a valid ``hlens.p11.inputs@1.0.0``
+      record (``research.experiments.run_inputs``, in its hashed ``repro.params``) records the
+      validator's ``family_trial_count``, validation ``seed``, ``control_seeds``,
+      ``cscv_partitions``, ``impact_coefficient`` and state labeller identity. Each is compared
+      exactly (canonical JSON) with the binding's ``metadata.family_trial_count``, ``seed``,
+      ``control_seeds``, ``robustness.cscv_partitions`` / ``.impact_coefficient`` and — when
+      ``state_labels`` is given — ``state_labels_identity``; any difference is
+      ``baseline_binding_mismatch``, and only when all are equal are the dependencies below
+      proven (no ``baseline_input_unrecorded``);
+    - **unrecorded inputs** (integrity fixes 2026-09-30): a baseline run **without** that record
+      (every run from before the amendment; never backfilled or inferred) records neither
+      ``metadata.family_trial_count``, nor which of the run's ``seeds`` the validator used, nor a
+      ``param:`` ``cscv_partitions`` / ``impact_coefficient`` value, nor the state labeller (nor
+      does the baseline report). A ruled definition whose gate depends on one of them is refused
       (``baseline_input_unrecorded``, ``_check_unrecorded_inputs``): ``G3.*`` and
       ``G4.overfitting`` (family trial count; G3 also the seed through the G2 null model),
       ``G2.null_model_percentile`` (seed), the single-seed ``G1`` controls and — through the G1
@@ -1560,7 +1606,11 @@ class WindowValidationBinding:
       ``G4.overfitting`` with a ``param:`` CSCV partition count, ``G4.capacity.*`` with a
       ``param:`` impact coefficient, and ``G4.state.*`` with a state labeller;
     - ``state_labels``: the baseline's causal state labeller over the window (``None``: the C-R2
-      gates are the function's own ``state_labels_missing``, i.e. *missing*);
+      gates are the function's own ``state_labels_missing``, i.e. *missing*), with
+      ``state_labels_identity`` its declared identity (a JSON object; for the research loop,
+      ``research.experiments.run_inputs.state_labeller_identity``), given exactly with
+      ``state_labels``. Like ``TargetSourceIdentity`` it is caller code bound by its declared
+      identity, not re-derived here;
     - ``bar_volume``: ``True`` when the baseline read bar volumes — the window's are the proven
       bars' own ``volume`` (the source ADR-0064 requires the volumes to equal); ``False``: the
       capacity gates are the function's own ``bar_volume_missing``, i.e. *missing*.
@@ -1580,6 +1630,7 @@ class WindowValidationBinding:
     execution: ExecutionModel | None = None
     control_seeds: tuple[int, ...] | None = None
     market_benchmark: bool = False
+    state_labels_identity: Mapping[str, Any] | None = None
 
     def declared_backtester_hash(self) -> str | None:
         if self.backtester is not None:
@@ -1605,6 +1656,11 @@ class WindowValidationBinding:
             "declared_backtester_hash": self.declared_backtester_hash(),
             "control_seeds": None if self.control_seeds is None else list(self.control_seeds),
             "market_benchmark": self.market_benchmark,
+            "state_labels_identity": (
+                None
+                if self.state_labels_identity is None
+                else _json_ready(dict(self.state_labels_identity))
+            ),
         }
 
 
@@ -1697,6 +1753,16 @@ def _check_validation_binding(
         binding.state_labels is not None and not callable(binding.state_labels)
     ):
         raise _binding_mismatch("trials / state_labels must be factories")
+    labeller = binding.state_labels_identity
+    if labeller is not None:
+        if binding.state_labels is None or not isinstance(labeller, Mapping) or not labeller:
+            raise _binding_mismatch(
+                "state_labels_identity is the JSON object identity of a given state_labels"
+            )
+        try:
+            canonical_json(dict(labeller))
+        except (TypeError, ValueError) as exc:
+            raise _binding_mismatch(f"state_labels_identity is not canonical JSON: {exc}") from exc
     if binding.backtester is not None and binding.execution is not None:
         raise _binding_mismatch("give either backtester or execution, not both")
     # what the baseline report itself shows about its setup
@@ -1736,7 +1802,9 @@ def _check_validation_binding(
             raise _binding_mismatch(
                 f"the Profile carries {path}; the baseline could not use a param:{name}"
             )
-    _check_unrecorded_inputs(binding, profile=profile, report=report, definitions=definitions)
+    _check_unrecorded_inputs(
+        binding, profile=profile, report=report, run=run, definitions=definitions
+    )
 
 
 #: Non-threshold G4 parameters a Profile may carry (then a ``param:`` value is refused by the
@@ -1801,15 +1869,54 @@ def _unrecorded_dependency(
     return None
 
 
+def _check_recorded_inputs(binding: WindowValidationBinding, recorded: RunInputs) -> None:
+    """The binding's validator inputs against the baseline run's record (class docs, **recorded
+    inputs**): each compared as canonical JSON (``True``, ``1`` and ``1.0`` differ); any difference
+    is ``baseline_binding_mismatch``. The state labeller is compared when the binding gives one
+    (without one the C-R2 gates are *missing*, never a value)."""
+    robustness = binding.robustness
+    declared: dict[str, Any] = {
+        "family_trial_count": binding.metadata.family_trial_count,
+        "validation_seed": binding.seed,
+        "control_seeds": None if binding.control_seeds is None else list(binding.control_seeds),
+        "cscv_partitions": robustness.cscv_partitions,
+        "impact_coefficient": robustness.impact_coefficient,
+    }
+    if binding.state_labels is not None:
+        identity = binding.state_labels_identity
+        declared["state_labeller"] = None if identity is None else dict(identity)
+    payload = recorded.validation_payload()
+    differs: list[str] = []
+    for name, value in declared.items():
+        try:
+            same = canonical_json(value) == canonical_json(payload[name])
+        except (TypeError, ValueError):
+            same = False
+        if not same:
+            differs.append(name)
+    if differs:
+        raise _binding_mismatch(
+            f"{sorted(differs)} are not the values the baseline run recorded in {RUN_INPUTS_KEY}"
+        )
+
+
 def _check_unrecorded_inputs(
     binding: WindowValidationBinding,
     *,
     profile: ValidationProfile,
     report: ValidationReport,
+    run: ExperimentRun,
     definitions: Sequence[RuledMetric],
 ) -> None:
-    """Refuse every ruled ``window_validation`` definition whose gate depends on an input the
-    baseline does not record (class docs); the first one is the refusal."""
+    """With the baseline run's ``hlens.p11.inputs@1.0.0`` record, every recorded input must equal
+    the binding's (``_check_recorded_inputs``) and then no dependency is unrecorded. Without it
+    (an old run: never backfilled or inferred), refuse every ruled ``window_validation``
+    definition whose gate depends on an input the baseline does not record (class docs); the
+    first one is the refusal. An invalid record is ``baseline_input_unrecorded`` too."""
+    recorded = _run_inputs(run, BASELINE_INPUT_UNRECORDED)
+    if recorded is not None:
+        _check_recorded_inputs(binding, recorded)
+        return
     ids = {gate.gate_id for gate in report.gates}
     single_seed = not any(_CONTROL_SEED_GATE.fullmatch(item) for item in ids)
     for item in definitions:
@@ -1863,7 +1970,7 @@ def _window_validation_gates(
             manifest_content_hash=prices.manifest_content_hash,
             instrument=instruments[0],
             trials=binding.trials(bars, window),
-            chosen_params=dict(run.repro.params),
+            chosen_params=strategy_params(run.repro.params),
             seed=binding.seed,
             robustness=binding.robustness,
             state_of=None if binding.state_labels is None else binding.state_labels(bars, window),
@@ -2178,6 +2285,8 @@ def resolve_degradation_inputs(
             "the baseline manifest's dataset is not one the baseline run read",
         )
     descriptor, identity = _check_execution(execution, baseline_run)
+    # the record _check_execution has just verified (a run without one is refused there)
+    run_inputs = _run_inputs(baseline_run, EXECUTION_UNRECORDED)
     if validation is not None and needs_validation:
         _check_validation_binding(
             validation,
@@ -2204,7 +2313,7 @@ def resolve_degradation_inputs(
     prices, bars = _window_bars(catalog, manifest_hash, identity.instruments, window, as_of)
 
     # returns through the provider, then 3b. each definition's validation function
-    returns, backtest, execution_payload = _window_returns(
+    returns, backtest, window_payload = _window_returns(
         execution, descriptor, identity, bars, window
     )
     rerun: Callable[[], Mapping[str, GateResult]] | None = None
@@ -2301,7 +2410,8 @@ def resolve_degradation_inputs(
         execution_json=canonical_json(
             {
                 "target_source": identity.payload(),
-                **execution_payload,
+                **window_payload,
+                "baseline_run_inputs": None if run_inputs is None else run_inputs.payload(),
                 "window_validation": (
                     validation.payload()
                     if validation is not None and needs_validation
