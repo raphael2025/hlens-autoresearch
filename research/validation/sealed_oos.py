@@ -445,7 +445,11 @@ def _check_consumption(
 
 
 def _check_budget(count: int, max_unsealings: int) -> None:
-    if isinstance(max_unsealings, bool) or not isinstance(max_unsealings, int) or max_unsealings < 1:
+    if (
+        isinstance(max_unsealings, bool)
+        or not isinstance(max_unsealings, int)
+        or max_unsealings < 1
+    ):
         raise ValueError("max_unsealings must be a positive int")
     if count >= max_unsealings:
         raise OosBudgetExhausted(
