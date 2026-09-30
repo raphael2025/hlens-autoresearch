@@ -234,10 +234,10 @@ httpx 超时语义）、`HLENS_HTTP_MAX_RETRIES`（每页对 5xx / 传输失败 
 - **归档字节**以不可变对象存于 warehouse（经 `StorageAdapter`：staging → checksum 校验 → 同文件系统原子发布），
   由 `raw.binance_spot_archives` 引用；**不存入 PostgreSQL**，也不覆盖：同路径新 checksum = 新对象 + 新 revision。
   maintenance 不得删除任何被归档 revision 引用的对象。
-- 共 17 张 Phase 1 表：前 8 张为 A2 首切片（定义与哈希不因 ADR-0027 / ADR-0029 / ADR-0031 / ADR-0033 / ADR-0077 改变），中 4 张为
+- 共 18 张 Phase 1 表：前 8 张为 A2 首切片（定义与哈希不因 ADR-0027 / ADR-0029 / ADR-0031 / ADR-0033 / ADR-0077 改变），中 4 张为
   ADR-0027 的 REST additive 扩充，第 13 张为 ADR-0029 的 exchangeInfo 快照表（E2），第 14 张为 ADR-0031 的
   质量证据缺口表（QG-1），第 15 张为 ADR-0033 的 Research Dataset 选择表（DS-1）。REST 响应字节同样以不可变对象存于 warehouse（内容寻址 key），由
-  `raw.binance_spot_rest_responses` 引用；第 16、17 张分别为 ADR-0077 的 v3 evidence manifest 表与 selection chunk 表（B2）。
+  `raw.binance_spot_rest_responses` 引用；第 16、17 张分别为 ADR-0077 的 v3 evidence manifest 表与 selection chunk 表（B2），第 18 张为 ADR-0093 的 Quality report manifest 表。
 - Iceberg namespace 是存储命名，不改变契约的 `Zone` 枚举；`quality` 与 manifest 表是审计 / 元数据表，由 manifest 契约引用。
   物化 Research Dataset 表 `research.dataset_selections` 已由 ADR-0033（DS-1）登记（见上表），冻结的是
   `infrastructure/dataset/selection.py` 提出的形状（每行引用一个选中的 Canonical revision 及其生效 simulation
