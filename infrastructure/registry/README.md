@@ -10,6 +10,7 @@ Status: **CODE_COMPLETE / DEBUG_PENDING** (2026-09-26). No contract, Schema or l
 | `golden.py` | The golden payload encoding shared by the packer (`research.promotion`) and the Equivalence Gate (`apps.promotion`) |
 | `profile_freeze.py` | `ProfileFreezeRegistry(root, anchor=...)` (ADR-0062, Proposed; B56): the append-only record that a **named** approver approved freezing one exact Validation Profile (ref + content hash) on one calibration report (original bytes stored write-once, kind / self-hash / `provenance.calibration_report` verified); the external anchor is **mandatory**; Promotion's authoritative freeze source |
 | `retirement.py` | `RetirementRegistry(root, anchor=None)` (ADR-0086 决策 2): the append-only store for `core.domain.research.RetirementRecord` (RETIRED, distinct from Failure Registry's REJECTED / FAILED); same subject (`Ref.target_identity()`) retired twice → `DuplicateRecord`; anchor **optional**; no global singleton — the caller (e.g. `research.evolution.operators.retire`'s caller) opens the registry and calls `register_retirement` explicitly |
+| `lifecycle.py` | `LifecycleRegistry(root, anchor=None)` (ADR-0098 §1): the lifecycle authority — an append-only, hash-chained journal of `core.lifecycle.strategy.LifecycleTransition`s; `append(transition, expected_head=...)` (optimistic concurrency), per-strategy replay, `active_set(head)`, pinned-head reads; anchor **optional**; read-only `verify_integrity_snapshot` |
 
 ## Rules (fail closed)
 
@@ -63,3 +64,22 @@ Tests: `tests/promotion/test_strategy_registry.py`, `tests/promotion/test_profil
   `retirement.py`'s module docstring for the full placement note).
 
 Tests: `tests/infrastructure/registry/test_retirement.py`.
+
+## Lifecycle registry (ADR-0098 §1)
+
+- Separate directory (`lifecycle.jsonl`, `.lock`); anchor **optional** (outside `root`), as for the retirement registry.
+- One record type `lifecycle.transition_recorded` with exact keys (`format_version` 1.0.0, `record_index` = journal
+  `seq`, `prev_record_hash` = journal `prev_hash`, `strategy` = `str(transition.subject)`, `transition` = the
+  `LifecycleTransition`'s own JSON, `transition_hash` = its content hash). A record's hash is its journal entry hash.
+- Same rules on append and replay: the transition must start from the strategy's replayed state (same
+  `Ref.target_identity()`; `IDEA` with no record), pass `validate_transition`, and the strategy's whole history must
+  re-validate as a `LifecycleHistory`. On open any broken rule → `RegistryCorrupted`.
+- `append` takes `expected_head` (a `LifecycleHead(record_count, last_record_hash)`; empty = `(0, GENESIS_HASH)`); any
+  other current head → `HeadMismatch`, nothing written.
+- Reads take an explicit head (`head` = latest, or a pinned one; `head_for_hash` resolves a record hash). A head not on
+  the chain → `UnknownHead`. `lifecycle_of(subject, head)` replays one strategy; `active_set(head)` = every strategy
+  whose replay ends in `ACTIVE` (later `DEGRADED` / `RETIRED` removes it).
+- Writers are explicit calls only; the research loop, the ADR-0074 operator and the API never write it. Backfill means
+  appending the real history record by record. `triggered_by` / `approved_by` are declared names (not authenticated).
+
+Tests: `tests/infrastructure/registry/test_lifecycle.py` (not yet run; DEBUG_PENDING).
