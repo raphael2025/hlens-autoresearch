@@ -19,10 +19,24 @@ given reports root at a time; the report writer does not provide a cross-process
   ``research.operations.authority.resolve_degradation_inputs``; stdout adds ``evidence=authority``.
   The resolver also needs a ``DatasetCatalog`` (a live Iceberg catalog, storage and builder), the
   admitted strategy's decision pipeline, the backtest provider and the baseline run / dataset —
-  none of which has an approved command-line construction. ``main`` therefore takes an optional
-  ``authority_environment`` (``research.operations.authority.AuthorityEnvironment``) from an
-  embedding caller; the plain command line passes none and the authority mode refuses
-  (``authority_environment_unavailable``) after verifying the pinned head, before any report.
+  none of which the command line constructs from flags. They come from exactly one of
+  (ADR-0098 修订 1):
+
+  - ``--authority-environment MODULE:CALLABLE``: a deployment-supplied **trusted** factory,
+    resolved exactly like the ADR-0095 worker ``--factory`` (``apps.worker.serve.load_factory``:
+    identifier syntax only, nothing chosen from messages or data). Called with no arguments, it
+    returns a ``research.operations.authority.AuthorityEnvironment`` or a context manager
+    yielding one (held open until the report is written);
+  - ``main(..., authority_environment=...)`` from an embedding caller.
+
+  Without either, the authority mode refuses (``authority_environment_unavailable``) after
+  verifying the pinned head, before any report; a factory that cannot be loaded, fails, or does
+  not produce an ``AuthorityEnvironment`` is refused with the same code.
+
+  ``--authority-anchor <path>`` (optional, an existing file outside the registry root) opens the
+  Lifecycle Registry with its external anchor, so a rollback of whole trailing records is refused
+  on open. Without it (also with ``--authority-head latest``) the check still runs and the
+  evidence records ``authority.lifecycle.anchor = "absent"``; stdout adds ``anchor=...``.
 
 Mixing the two modes, or giving only part of one, is a usage error. Any refusal writes no report.
 """
@@ -32,12 +46,15 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from collections.abc import Callable
+from contextlib import AbstractContextManager, ExitStack
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Final
+from typing import TYPE_CHECKING, Any, Final, cast
 
 from pydantic import ValidationError
 
+from apps.worker.serve import load_factory
 from core.contracts.validation_profile import ValidationProfile
 from core.domain.base import Ref, exact_decimal, exact_decimal_text
 from core.domain.research import ValidationReport
@@ -67,6 +84,8 @@ AUTHORITY_ENVIRONMENT_UNAVAILABLE: Final = "authority_environment_unavailable"
 LATEST_HEAD: Final = "latest"
 _EXPLICIT_OPTIONS: Final = ("lifecycle", "recent_manifest")
 _AUTHORITY_OPTIONS: Final = ("authority_registry", "authority_head", "dataset_id", "manifest_hash")
+#: Optional authority-mode flags (a usage error in the caller-declared mode).
+_AUTHORITY_OPTIONAL: Final = ("authority_environment", "authority_anchor")
 
 
 class _InputError(ValueError):
@@ -267,6 +286,8 @@ def _mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
     explicit = [getattr(args, name) is not None for name in _EXPLICIT_OPTIONS]
     authority = [getattr(args, name) is not None for name in _AUTHORITY_OPTIONS]
     if all(explicit) and not any(authority):
+        if any(getattr(args, name) is not None for name in _AUTHORITY_OPTIONAL):
+            parser.error("--authority-environment and --authority-anchor need the authority mode")
         return "explicit"
     if all(authority) and not any(explicit):
         return "authority"
@@ -274,6 +295,48 @@ def _mode(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
         "give either --lifecycle and --recent-manifest (caller-declared) or all of "
         "--authority-registry, --authority-head, --dataset-id and --manifest-hash (authority)"
     )
+
+
+def _authority_anchor(anchor: Path | None, root: Path, others: tuple[Path, ...]) -> None:
+    """Refuse a missing anchor (the registry would otherwise start a new one) and one inside
+    the authority registry or another root."""
+    if anchor is None:
+        return
+    if not anchor.is_file():
+        raise _InputError("authority registry anchor file must already exist")
+    resolved = anchor.resolve()
+    for path in (root, *others):
+        if resolved.is_relative_to(path.resolve()):
+            raise _InputError("the authority registry anchor must be outside the other roots")
+
+
+def _factory_environment(spec: str, stack: ExitStack) -> AuthorityEnvironment:
+    """Load and call the trusted ``MODULE:CALLABLE`` factory (ADR-0098 修订 1); its context
+    manager, if it returns one, is entered on ``stack``. Only exception type names are reported."""
+    from research.operations.authority import AuthorityEnvironment, AuthorityRefused
+
+    try:
+        factory = cast(Callable[[], object], load_factory(spec))
+    except Exception as exc:  # bad syntax, import / attribute failure, not callable
+        raise AuthorityRefused(
+            AUTHORITY_ENVIRONMENT_UNAVAILABLE,
+            f"the authority environment factory could not be loaded ({type(exc).__name__})",
+        ) from exc
+    try:
+        produced = factory()
+        if isinstance(produced, AbstractContextManager):
+            produced = stack.enter_context(produced)
+    except Exception as exc:
+        raise AuthorityRefused(
+            AUTHORITY_ENVIRONMENT_UNAVAILABLE,
+            f"the authority environment factory failed ({type(exc).__name__})",
+        ) from exc
+    if not isinstance(produced, AuthorityEnvironment):
+        raise AuthorityRefused(
+            AUTHORITY_ENVIRONMENT_UNAVAILABLE,
+            "the authority environment factory did not produce an AuthorityEnvironment",
+        )
+    return produced
 
 
 def _pinned_head(registry: LifecycleRegistry, value: str) -> LifecycleHead:
@@ -321,6 +384,19 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--manifest-hash", help="authority mode: the v3 dataset manifest content hash"
     )
+    parser.add_argument(
+        "--authority-environment",
+        metavar="MODULE:CALLABLE",
+        help=(
+            "authority mode: trusted deployment factory returning an AuthorityEnvironment or a "
+            "context manager yielding one"
+        ),
+    )
+    parser.add_argument(
+        "--authority-anchor",
+        type=Path,
+        help="authority mode, optional: existing external Lifecycle Registry anchor file",
+    )
     parser.add_argument("--window-start", required=True, help="UTC ISO-8601 start, inclusive")
     parser.add_argument("--window-end", required=True, help="UTC ISO-8601 end, exclusive")
     parser.add_argument("--window-label", required=True, help="stable report label for this window")
@@ -344,13 +420,16 @@ def main(
     """Run one P11 check; report only non-sensitive result identity fields.
 
     ``authority_environment``: for the authority mode only, supplied by an embedding caller
-    (module docs); the command line passes none.
+    (module docs); the plain command line uses ``--authority-environment`` instead, never both.
     """
     parser = _parser()
     args = parser.parse_args(argv)
     mode = _mode(parser, args)
     if mode == "explicit" and authority_environment is not None:
         parser.error("an authority environment is only used by the authority mode")
+    if authority_environment is not None and args.authority_environment is not None:
+        parser.error("give --authority-environment or an embedded environment, not both")
+    anchor_state: str | None = None
     stage = "input"
     try:
         subject = Ref.parse(args.subject)
@@ -390,6 +469,11 @@ def main(
             _existing_lifecycle_registry(
                 args.authority_registry, (args.reports_root, args.freeze_registry)
             )
+            _authority_anchor(
+                args.authority_anchor,
+                args.authority_registry,
+                (args.reports_root, args.freeze_registry),
+            )
             # imported only in this mode: the resolver pulls in the dataset / catalog stack
             from research.operations.authority import (
                 LIFECYCLE_HEAD_UNKNOWN,
@@ -399,19 +483,26 @@ def main(
             )
 
             stage = "authority"
-            with (
-                LifecycleRegistry(args.authority_registry) as registry,
-                ProfileFreezeRegistry(args.freeze_registry, anchor=args.freeze_anchor) as freezes,
-            ):
+            with ExitStack() as stack:
+                registry = stack.enter_context(
+                    LifecycleRegistry(args.authority_registry, anchor=args.authority_anchor)
+                )
+                freezes = stack.enter_context(
+                    ProfileFreezeRegistry(args.freeze_registry, anchor=args.freeze_anchor)
+                )
                 try:
                     head = _pinned_head(registry, args.authority_head)
                 except UnknownHead as exc:
                     raise AuthorityRefused(LIFECYCLE_HEAD_UNKNOWN, str(exc)) from exc
+                if args.authority_environment is not None:
+                    authority_environment = _factory_environment(
+                        args.authority_environment, stack
+                    )
                 if not isinstance(authority_environment, AuthorityEnvironment):
                     raise AuthorityRefused(
                         AUTHORITY_ENVIRONMENT_UNAVAILABLE,
-                        "no approved command-line construction of the dataset catalog, decision "
-                        "pipeline and backtest provider exists",
+                        "no --authority-environment factory or embedded environment supplied the "
+                        "dataset catalog, decision pipeline and backtest provider",
                     )
                 resolution = resolve_degradation_inputs(
                     subject=subject,
@@ -442,11 +533,14 @@ def main(
                 )
                 stage = "report"
                 written = write_degradation_operation(args.reports_root, result)
+                anchor_state = resolution.provenance.lifecycle_anchor
 
         print(f"status={result.check.status}")
         print(f"check_hash={written.id}")
         print(f"report={written.path}")
         print(f"evidence={'caller-declared' if mode == 'explicit' else 'authority'}")
+        if anchor_state is not None:
+            print(f"anchor={anchor_state}")
         return 0
     except (OSError, RegistryError) as exc:
         print(

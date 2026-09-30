@@ -10,7 +10,7 @@ Status: **CODE_COMPLETE / DEBUG_PENDING** (2026-09-26). No contract, Schema or l
 | `golden.py` | The golden payload encoding shared by the packer (`research.promotion`) and the Equivalence Gate (`apps.promotion`) |
 | `profile_freeze.py` | `ProfileFreezeRegistry(root, anchor=...)` (ADR-0062, Proposed; B56): the append-only record that a **named** approver approved freezing one exact Validation Profile (ref + content hash) on one calibration report (original bytes stored write-once, kind / self-hash / `provenance.calibration_report` verified); the external anchor is **mandatory**; Promotion's authoritative freeze source |
 | `retirement.py` | `RetirementRegistry(root, anchor=None)` (ADR-0086 决策 2): the append-only store for `core.domain.research.RetirementRecord` (RETIRED, distinct from Failure Registry's REJECTED / FAILED); same subject (`Ref.target_identity()`) retired twice → `DuplicateRecord`; anchor **optional**; no global singleton — the caller (e.g. `research.evolution.operators.retire`'s caller) opens the registry and calls `register_retirement` explicitly |
-| `lifecycle.py` | `LifecycleRegistry(root, anchor=None)` (ADR-0098 §1): the lifecycle authority — an append-only, hash-chained journal of `core.lifecycle.strategy.LifecycleTransition`s; `append(transition, expected_head=...)` (optimistic concurrency), per-strategy replay, `active_set(head)`, pinned-head reads; anchor **optional**; read-only `verify_integrity_snapshot` |
+| `lifecycle.py` | `LifecycleRegistry(root, anchor=None)` (ADR-0098 §1): the lifecycle authority — an append-only, hash-chained journal of `core.lifecycle.strategy.LifecycleTransition`s; `append(transition, expected_head=...)` (optimistic concurrency), per-strategy replay, `active_set(head)`, pinned-head reads; anchor **optional** (`anchored` reports whether one was verified); read-only `verify_integrity_snapshot`, part of the ADR-0091 audit (`registry_audit --lifecycle-root [--lifecycle-anchor]`) |
 
 ## Rules (fail closed)
 
@@ -79,6 +79,11 @@ Tests: `tests/infrastructure/registry/test_retirement.py`.
 - Reads take an explicit head (`head` = latest, or a pinned one; `head_for_hash` resolves a record hash). A head not on
   the chain → `UnknownHead`. `lifecycle_of(subject, head)` replays one strategy; `active_set(head)` = every strategy
   whose replay ends in `ACTIVE` (later `DEGRADED` / `RETIRED` removes it).
+- `anchored` (property) says whether this instance was opened with a verified external anchor; the P11 authority
+  resolver records it as `evidence.authority.lifecycle.anchor` = `present` / `absent` (ADR-0098 修订 1).
+- Read-only audit: `verify_integrity_snapshot(root, anchor=None)` (no lock, no writes, no anchor recovery;
+  `UNANCHORED` without an anchor) is registered in `infrastructure/tools/registry_audit.py` as the optional
+  `lifecycle` entry (`--lifecycle-root`, `--lifecycle-anchor`; ADR-0091 / ADR-0098 修订 1).
 - Writers are explicit calls only; the research loop, the ADR-0074 operator and the API never write it. Backfill means
   appending the real history record by record. `triggered_by` / `approved_by` are declared names (not authenticated).
 
