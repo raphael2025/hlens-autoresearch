@@ -661,6 +661,9 @@ def _target_source(pinned: _Pinned, instruments: tuple[str, ...]) -> StrategyWin
         params=dict(run.repro.params),
         plugins=dict(pinned.plugins),
         instruments=instruments,
+        decision_step=pinned.decision_step,
+        decision_warmup=pinned.decision_warmup,
+        initial_equity=pinned.initial_equity,
     )
     cost = pinned.cost_model
     return StrategyWindowTargetSource(

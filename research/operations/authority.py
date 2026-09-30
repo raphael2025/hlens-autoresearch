@@ -108,8 +108,8 @@ failed stage), the metric is **missing**, as in validation; a gate without an ex
   (C-L2, the validator's own guard). Its trial runner must reproduce the window backtest
   (``G0.reproducibility``); a failed structural gate — G0 bindings / execution, or the G1
   information-flow gates ``G1.outcome_not_input``, ``G1.label_blind_sides``,
-  ``G1.sealed_oos_excluded`` (also per instrument) — refuses every metric of the re-run. ``validate`` supplies
-  G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1 ``shuffle_timing_p_value`` /
+  ``G1.sealed_oos_excluded`` (also per instrument) — refuses every metric of the re-run.
+  ``validate`` supplies G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1 ``shuffle_timing_p_value`` /
   ``shift_timing_p_value`` (base and per-seed gates) and ``..._min_over_seeds`` (scope: all the
   window's computable labels); G2 ``effective_independent_trades``, ``breakeven_cost_multiple``,
   ``breakeven_cost_multiple_vs_stress`` @ ``G2.cost_stress.<i>``,
@@ -138,8 +138,12 @@ proven bars). Its declared identities must equal the baseline run's reproducibil
 (backtest provider descriptor hash in ``plugin_versions``; cost model ref + content hash in
 ``dependency_hashes``; strategy ref + spec hash, risk policy ref + hash, params and every declared
 plugin hash; params compared as canonical JSON, so ``True``, ``1`` and ``1.0`` differ — 修订 2 §4)
-— else ``execution_mismatch``. The provider's result is re-validated and checked with
-``BacktestResult.check_answers``; one window yields one sample.
+— else ``execution_mismatch``. The target source also declares its decision grid (step, warm-up)
+and initial equity (in its identity payload, hence the provenance); they must equal the baseline
+run's recorded values. The frozen reproducibility tuple records none of them, so the resolution is
+refused with ``execution_unrecorded`` until the baseline run records them (a contract change,
+ADR) — an environment value is a caller declaration, not the baseline's. The provider's result is
+re-validated and checked with ``BacktestResult.check_answers``; one window yields one sample.
 
 **Baseline binding (修订 2 §5).** The provenance records the ``BaselineMetricSet`` content hash;
 ``run_degradation_check`` refuses a baseline set whose hash differs.
@@ -167,7 +171,7 @@ import json
 import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field, fields, replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from itertools import pairwise
 from types import MappingProxyType
@@ -258,6 +262,7 @@ __all__ = [
     "BASELINE_BINDING_MISMATCH",
     "BASELINE_INPUT_UNRECORDED",
     "EVIDENCE_WINDOW_RETURNS",
+    "EXECUTION_UNRECORDED",
     "EVIDENCE_WINDOW_VALIDATION",
     "EXECUTION_MISMATCH",
     "LIFECYCLE_HEAD_UNKNOWN",
@@ -323,6 +328,9 @@ BASELINE_BINDING_MISMATCH: Final = "baseline_binding_mismatch"
 #: ``impact_coefficient``, a caller-supplied state labeller): the definition is refused
 BASELINE_INPUT_UNRECORDED: Final = "baseline_input_unrecorded"
 EXECUTION_MISMATCH: Final = "execution_mismatch"
+#: the window run's decision grid (step, warm-up) or initial equity cannot be verified against the
+#: baseline run, which does not record them (the reproducibility tuple has no such fields)
+EXECUTION_UNRECORDED: Final = "execution_unrecorded"
 METRIC_REFUSED: Final = "metric_refused"
 #: a defined metric whose inputs (the ``WindowValidationBinding``) were not supplied
 METRIC_INPUTS_UNAVAILABLE: Final = "metric_inputs_unavailable"
@@ -1251,6 +1259,11 @@ class TargetSourceIdentity:
     params: Mapping[str, str | int | float | bool]
     plugins: Mapping[str, str]
     instruments: tuple[str, ...]
+    #: the decision grid the pipeline evaluates on (step and warm-up) and the backtest's initial
+    #: equity; each must equal the baseline run's recorded value (``_check_execution``)
+    decision_step: timedelta
+    decision_warmup: timedelta
+    initial_equity: Decimal
 
     def payload(self) -> dict[str, Any]:
         return {
@@ -1260,6 +1273,9 @@ class TargetSourceIdentity:
             "risk_policy_hash": self.risk_policy_hash,
             "params": _json_ready(dict(self.params)),
             "plugins": dict(sorted(self.plugins.items())),
+            "decision_step_microseconds": self.decision_step // timedelta(microseconds=1),
+            "decision_warmup_microseconds": self.decision_warmup // timedelta(microseconds=1),
+            "initial_equity": str(self.initial_equity),
             "instruments": list(self.instruments),
         }
 
@@ -1364,7 +1380,56 @@ def _check_execution(
         or not all(isinstance(item, str) and item for item in instruments)
     ):
         raise AuthorityRefused(EXECUTION_MISMATCH, "the target source's instruments are invalid")
+    _check_execution_grid(identity, equity, run)
     return descriptor, identity
+
+
+def _recorded_execution_grid(run: ExperimentRun) -> tuple[timedelta, timedelta, Decimal] | None:
+    """The baseline run's recorded ``(decision_step, decision_warmup, initial_equity)``, or
+    ``None`` when the run records them nowhere. The frozen ``ReproducibilityTuple`` has no field
+    for any of them (and the baseline report carries no backtest request), so today this is always
+    ``None``: a value taken from the environment is a caller declaration, never the baseline's."""
+    del run
+    return None
+
+
+def _check_execution_grid(
+    identity: TargetSourceIdentity, equity: Decimal, run: ExperimentRun
+) -> None:
+    """The declared decision grid and initial equity must equal the baseline run's recorded
+    values; unrecorded is refused (``execution_unrecorded``), never assumed."""
+    step, warmup = identity.decision_step, identity.decision_warmup
+    declared = identity.initial_equity
+    if (
+        not isinstance(step, timedelta)
+        or step <= timedelta(0)
+        or not isinstance(warmup, timedelta)
+        or warmup < timedelta(0)
+        or not isinstance(declared, Decimal)
+        or not declared.is_finite()
+    ):
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH, "the target source declares no valid decision grid / equity"
+        )
+    if declared != equity or str(declared) != str(equity):
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH,
+            "the target source's initial equity is not the window execution's",
+        )
+    recorded = _recorded_execution_grid(run)
+    if recorded is None:
+        raise AuthorityRefused(
+            EXECUTION_UNRECORDED,
+            "the baseline run records no decision step, decision warm-up or initial equity (the "
+            "reproducibility tuple has no such fields), so the window run's "
+            f"(step {step}, warm-up {warmup}, equity {declared}) cannot be proven to be the "
+            "baseline's",
+        )
+    if (step, warmup, str(declared)) != (recorded[0], recorded[1], str(recorded[2])):
+        raise AuthorityRefused(
+            EXECUTION_MISMATCH,
+            "the decision grid / initial equity is not the one the baseline run recorded",
+        )
 
 
 def _window_returns(
@@ -1704,7 +1769,9 @@ def _unrecorded_dependency(
             "run do not record"
         )
     if base == "G2.null_model_percentile":
-        return "the null model is drawn with the validation seed, which the baseline does not record"
+        return (
+            "the null model is drawn with the validation seed, which the baseline does not record"
+        )
     if single_seed and base in ("G1.shuffle_control", "G1.shift_control"):
         return (
             "the baseline ran single-seed negative controls with the validation seed, which it "
