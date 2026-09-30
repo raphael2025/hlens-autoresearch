@@ -36,7 +36,7 @@ from __future__ import annotations
 import hashlib
 import itertools
 from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, contextmanager, nullcontext
+from contextlib import AbstractContextManager, ExitStack, contextmanager, nullcontext
 from dataclasses import dataclass
 from dataclasses import field as dataclass_field
 from datetime import UTC, date, datetime, time, timedelta
@@ -1330,30 +1330,30 @@ def _flatten_edges(
             yield {"observation_key": key, "evidence": item.model_dump(mode="json")}
 
 
-@contextmanager
-def _mapped_edge_run_stream(
+def _pit_raw_edge_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
+    return (cast(str, row["observation_key"]), cast(str, row["edge_id"]))
+
+
+def _pit_raw_edge_root(
     selector: PitSelector,
     view: PinnedCatalogView,
     spec: PointInTimeSpec,
     data_type: str,
     symbol: str,
-    days: Iterable[date],
-    key_rows: _PitKeyRows,
+    day_root: RunRef | None,
     *,
-    observation_key: str,
     params: PitRunParams,
     limits: RunLimits,
-) -> Iterator[Iterator[dict[str, Any]]]:
-    """Map one key's verified Raw edges through a sorted run, with no edge-sized dict/list.
+) -> RunRef | None:
+    """Every verified Raw edge of the stream's owner days in one ``(key, edge_id)`` sorted run.
 
-    The day reconciler validates before yielding, and this staging additionally folds repeated
-    copies of the same edge across owner days by adjacent ``edge_id`` comparison. The key's
-    canonical rows remain the existing per-key graph boundary.
+    Each ``(data_type, symbol, day)`` partition is verified exactly once per stream (instead of
+    once per observation key); the key loop merge-joins this run by observation key. Copies of
+    one edge from several owner days stay adjacent within their key and are folded (and
+    compared) by :func:`_mapped_edge_run_stream`.
     """
-    evidence_snapshot = spec.snapshot_bindings.get(BINANCE_SPOT_PRECEDENCE_EVIDENCE.table)
-    if evidence_snapshot is None:
-        yield iter(())
-        return
+    if spec.snapshot_bindings.get(BINANCE_SPOT_PRECEDENCE_EVIDENCE.table) is None:
+        return None
     edge_params = VerifiedEdgeRunParams(
         row_capacity=params.edge_batch_rows,
         merge_fanout=params.merge_fanout,
@@ -1362,65 +1362,85 @@ def _mapped_edge_run_stream(
     reconciler = ChannelReconciler(view, selector._storage)
     with RunSetBuilder(
         selector._storage,
-        key=lambda row: row["edge_id"],
+        key=_pit_raw_edge_sort_key,
         capacity=params.edge_batch_rows,
         merge_fanout=params.merge_fanout,
         limits=limits,
     ) as raw_edge_builder:
-        for day in days:
-            with reconciler.iter_verified_edges(
-                data_type, symbol, day, params=edge_params
-            ) as verified:
-                for edge in verified:
-                    if edge.evidence.observation_key == observation_key:
+        with _root_rows(selector._storage, day_root) as day_rows:
+            for day_row in day_rows:
+                day = date.fromisoformat(cast(str, day_row["day"]))
+                with reconciler.iter_verified_edges(
+                    data_type, symbol, day, params=edge_params
+                ) as verified:
+                    for edge in verified:
                         raw_edge_builder.add(edge.row())
-        raw_root = raw_edge_builder.finish()
+        return raw_edge_builder.finish()
 
-    @contextmanager
-    def mapped_rows() -> Iterator[Iterator[dict[str, Any]]]:
-        if raw_root is None:
-            yield iter(())
-            return
-        with _root_rows(selector._storage, raw_root) as raw_rows:
 
-            def mapped() -> Iterator[dict[str, Any]]:
-                previous_id: str | None = None
-                previous_row: Mapping[str, Any] | None = None
-                for row in raw_rows:
-                    edge_id = cast(str, row["edge_id"])
-                    if edge_id == previous_id:
-                        if row != previous_row:
-                            raise CatalogIntegrityError(
-                                f"Raw edge {edge_id} is verified with different content "
-                                "on different days at the bound snapshots"
-                            )
-                        continue
-                    previous_id, previous_row = edge_id, row
-                    raw = evidence_from_row(row)
-                    endpoints: list[Mapping[str, Any] | None] = []
-                    for table, revision in (
-                        (row["revision_table"], raw.revision_id),
-                        (row["superseded_table"], raw.superseded_revision_id),
-                    ):
-                        endpoints.append(_pit_unique_raw_endpoint(key_rows, table, revision))
-                    if endpoints[0] is None or endpoints[1] is None:
-                        continue
-                    evidence = rules.map_channel_edge(
-                        raw,
-                        edge_id,
-                        evidence_snapshot,
-                        revision_record_from_row(endpoints[0]),
-                        revision_record_from_row(endpoints[1]),
+@contextmanager
+def _mapped_edge_run_stream(
+    selector: PitSelector,
+    view: PinnedCatalogView,
+    spec: PointInTimeSpec,
+    data_type: str,
+    symbol: str,
+    raw_edge_rows: Iterable[Mapping[str, Any]],
+    key_rows: _PitKeyRows,
+    *,
+    observation_key: str,
+    params: PitRunParams,
+    limits: RunLimits,
+) -> Iterator[Iterator[dict[str, Any]]]:
+    """Map one key's verified Raw edges, streamed in ``edge_id`` order, with no edge-sized list.
+
+    ``raw_edge_rows`` is this key's group of the stream's verified edge run
+    (:func:`_pit_raw_edge_root`): the day reconciler validated every partition before its rows
+    were staged, and repeated copies of the same edge across owner days are folded here by
+    adjacent ``edge_id`` comparison. The key's canonical rows remain the existing per-key graph
+    boundary.
+    """
+    del selector, view, data_type, symbol, params, limits
+    evidence_snapshot = spec.snapshot_bindings.get(BINANCE_SPOT_PRECEDENCE_EVIDENCE.table)
+    if evidence_snapshot is None:
+        yield iter(())
+        return
+
+    def mapped() -> Iterator[dict[str, Any]]:
+        previous_id: str | None = None
+        previous_row: Mapping[str, Any] | None = None
+        for row in raw_edge_rows:
+            edge_id = cast(str, row["edge_id"])
+            if edge_id == previous_id:
+                if row != previous_row:
+                    raise CatalogIntegrityError(
+                        f"Raw edge {edge_id} is verified with different content "
+                        "on different days at the bound snapshots"
                     )
-                    yield {
-                        "observation_key": observation_key,
-                        "evidence": evidence.model_dump(mode="json"),
-                    }
+                continue
+            previous_id, previous_row = edge_id, row
+            raw = evidence_from_row(row)
+            endpoints: list[Mapping[str, Any] | None] = []
+            for table, revision in (
+                (row["revision_table"], raw.revision_id),
+                (row["superseded_table"], raw.superseded_revision_id),
+            ):
+                endpoints.append(_pit_unique_raw_endpoint(key_rows, table, revision))
+            if endpoints[0] is None or endpoints[1] is None:
+                continue
+            evidence = rules.map_channel_edge(
+                raw,
+                edge_id,
+                evidence_snapshot,
+                revision_record_from_row(endpoints[0]),
+                revision_record_from_row(endpoints[1]),
+            )
+            yield {
+                "observation_key": observation_key,
+                "evidence": evidence.model_dump(mode="json"),
+            }
 
-            yield mapped()
-
-    with mapped_rows() as stream:
-        yield stream
+    yield mapped()
 
 
 def _pit_edge_sort_key(row: Mapping[str, Any]) -> tuple[str, str]:
@@ -1926,7 +1946,12 @@ def _pit_bounded_stream(
             limits=limits,
         ) as edge_run_set,
     ):
-        with _root_rows(storage, canonical_rows_root) as sorted_rows:
+        with (
+            _root_rows(storage, canonical_rows_root) as sorted_rows,
+            ExitStack() as raw_edge_stack,
+        ):
+            raw_edge_groups: Iterator[tuple[str, Iterator[Mapping[str, Any]]]] | None = None
+            pending_raw_group: tuple[str, Iterator[Mapping[str, Any]]] | None = None
             for observation_key, key_group in itertools.groupby(
                 sorted_rows, key=_pit_row_group_key
             ):
@@ -1968,23 +1993,46 @@ def _pit_bounded_stream(
                 )
                 with _root_rows(storage, verified_key_root) as verified_rows:
                     row_run_set.extend(verified_rows)
-                with _root_rows(storage, day_root) as day_rows:
-                    edge_days = (
-                        date.fromisoformat(cast(str, day_row["day"])) for day_row in day_rows
-                    )
-                    with _mapped_edge_run_stream(
+                if raw_edge_groups is None:
+                    raw_edge_root = _pit_raw_edge_root(
                         selector,
                         view,
                         spec,
                         data_type,
                         symbol,
-                        edge_days,
-                        key_rows,
-                        observation_key=observation_key,
+                        day_root,
                         params=params,
                         limits=limits,
-                    ) as mapped_edges:
-                        edge_run_set.extend(mapped_edges)
+                    )
+                    raw_edge_rows = raw_edge_stack.enter_context(
+                        _root_rows(storage, raw_edge_root)
+                    )
+                    raw_edge_groups = iter(
+                        itertools.groupby(raw_edge_rows, key=_pit_edge_group_key)
+                    )
+                    pending_raw_group = next(raw_edge_groups, None)
+                # Both runs are in observation-key order: skip edge groups of keys without
+                # Canonical rows, and hand this key only its own group (lazily consumed).
+                while pending_raw_group is not None and pending_raw_group[0] < observation_key:
+                    pending_raw_group = next(raw_edge_groups, None)
+                key_raw_edges: Iterator[Mapping[str, Any]] = (
+                    pending_raw_group[1]
+                    if pending_raw_group is not None and pending_raw_group[0] == observation_key
+                    else iter(())
+                )
+                with _mapped_edge_run_stream(
+                    selector,
+                    view,
+                    spec,
+                    data_type,
+                    symbol,
+                    key_raw_edges,
+                    key_rows,
+                    observation_key=observation_key,
+                    params=params,
+                    limits=limits,
+                ) as mapped_edges:
+                    edge_run_set.extend(mapped_edges)
         row_root = row_run_set.finish()
         edge_root = edge_run_set.finish()
 
