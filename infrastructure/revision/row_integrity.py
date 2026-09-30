@@ -105,6 +105,7 @@ from infrastructure.parser.binance_archive import (
     ArchiveRejection,
     SpooledArchive,
     TimeUnit,
+    parse_archive_row_count,
     parse_archive_spooled,
     time_unit_for,
 )
@@ -627,6 +628,14 @@ def _one_snapshot(
             f"{table} has rows of batch {batch_id} but {count} snapshots committing it"
         )
     return snapshot
+
+
+def _unparsable(archive_id: str) -> CatalogIntegrityError:
+    """A committed archive revision whose published object the strict D1 parser rejects."""
+    return CatalogIntegrityError(
+        f"archive revision {archive_id} is committed but its object does not parse: "
+        "D2 never writes a revision for a rejected archive"
+    )
 
 
 # =========================================================================================
@@ -1891,18 +1900,16 @@ class PersistedRowVerifier:
         }
         if len(cached) == len(requested):
             # A metadata cache cannot stand in for the old retained parser spools when ordering
-            # failures: revalidate every strict parse before any caller checks member rows.
+            # failures: revalidate every strict parse before any caller checks member rows. Only
+            # the row count of that parse is used here, so it runs the same strict rules and
+            # counts instead of spooling the parsed rows (E1 bounding).
             for archive_id in requested:
                 item = cached[archive_id]
                 collected = self._lawful_archive_row(item.row)
-                parsed = self._reparse(collected, data_type, archive_id)
-                try:
-                    if parsed.row_count != item.row_count:
-                        raise CatalogIntegrityError(
-                            f"archive revision {archive_id} changed row count during verification"
-                        )
-                finally:
-                    parsed.close()
+                if self._reparse_count(collected, data_type, archive_id) != item.row_count:
+                    raise CatalogIntegrityError(
+                        f"archive revision {archive_id} changed row count during verification"
+                    )
             return cached
         table = BINANCE_SPOT_ARCHIVES.table
         found: dict[str, list[Mapping[str, Any]]] = {}
@@ -1984,8 +1991,38 @@ class PersistedRowVerifier:
         self, collected: CollectedObject, data_type: str, archive_id: str
     ) -> SpooledArchive:
         """The strict D1 parse of the published object (D3E-R3): what D2 must have written."""
+        outcome = self._strict_parse(parse_archive_spooled, collected, data_type, archive_id)
+        if isinstance(outcome, ArchiveRejection) or not isinstance(outcome, SpooledArchive):
+            raise _unparsable(archive_id)
+        return outcome
+
+    def _reparse_count(self, collected: CollectedObject, data_type: str, archive_id: str) -> int:
+        """The row count of :meth:`_reparse`'s strict parse, without spooling the parsed rows.
+
+        ``parse_archive_row_count`` applies every rule of the spooled parse (object integrity,
+        container, CSV, per-row and per-chunk Arrow conversion) and discards each batch once
+        built, so a rejection, an integrity mismatch and a storage failure surface exactly as
+        they do from :meth:`_reparse`; only the row count is returned.
+        """
+        outcome = self._strict_parse(parse_archive_row_count, collected, data_type, archive_id)
+        if (
+            isinstance(outcome, ArchiveRejection)
+            or isinstance(outcome, bool)
+            or not isinstance(outcome, int)
+        ):
+            raise _unparsable(archive_id)
+        return outcome
+
+    def _strict_parse[T](
+        self,
+        parse: Callable[[ArchiveParseRequest, StorageAdapter], T],
+        collected: CollectedObject,
+        data_type: str,
+        archive_id: str,
+    ) -> T:
+        """Run one strict D1 parse of the published object, mapping its failures (D3E-R3)."""
         try:
-            outcome = parse_archive_spooled(
+            return parse(
                 ArchiveParseRequest.for_collected_object(
                     collected, data_type=data_type, archive_revision_id=archive_id
                 ),
@@ -2000,12 +2037,6 @@ class PersistedRowVerifier:
             if mapped is exc:
                 raise
             raise mapped from exc
-        if isinstance(outcome, ArchiveRejection) or not isinstance(outcome, SpooledArchive):
-            raise CatalogIntegrityError(
-                f"archive revision {archive_id} is committed but its object does not parse: "
-                "D2 never writes a revision for a rejected archive"
-            )
-        return outcome
 
     def _lawful_archive_row(self, stored: Mapping[str, Any]) -> CollectedObject:
         """Rebuild an archive revision row with the D2 builder from its published object.

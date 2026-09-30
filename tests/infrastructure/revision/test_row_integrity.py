@@ -215,16 +215,28 @@ def test_archive_row_count_closes_its_strict_parse_spool(
     assert isinstance(result, ArchiveIngested)
     verifier = PersistedRowVerifier(harness.adapter, harness.storage, cache_archives=True)
     original_reparse = verifier._reparse
+    original_reparse_count = verifier._reparse_count
     opened: list[Any] = []
+    counted: list[tuple[str, int]] = []
 
     def tracked_reparse(collected: Any, data_type: str, archive_id: str) -> Any:
         parsed = original_reparse(collected, data_type, archive_id)
         opened.append(parsed)
         return parsed
 
+    def tracked_reparse_count(collected: Any, data_type: str, archive_id: str) -> int:
+        count = original_reparse_count(collected, data_type, archive_id)
+        counted.append((archive_id, count))
+        return count
+
     monkeypatch.setattr(verifier, "_reparse", tracked_reparse)
+    monkeypatch.setattr(verifier, "_reparse_count", tracked_reparse_count)
 
     for _ in range(2):
         assert verifier.archive_row_count("agg_trades", "BTCUSDT", result.archive_revision_id) == 3
-    assert len(opened) == 2
+    # E1 bounding: the first (uncached) call strictly parses to a spool and closes it; the
+    # second call, served from the lineage cache, still re-runs the strict parse on every call,
+    # but through the count-only path (same rules, no parsed rows spooled).
+    assert len(opened) == 1
     assert all(spool._spool.closed for spool in opened)
+    assert counted == [(result.archive_revision_id, 3)]
