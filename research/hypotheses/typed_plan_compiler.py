@@ -39,7 +39,7 @@ import inspect
 import json
 import sys
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from types import MappingProxyType
 from typing import Any, Final
@@ -175,6 +175,10 @@ class OperatorImplementation:
             raise ValueError(
                 f"{self.provider_class!r} does not declare provider key {self.provider_key}"
             )
+        if getattr(self.provider_class, "DEFINITION", None) != self.definition:
+            raise ValueError(
+                f"{self.provider_class!r} does not declare definition {self.definition}"
+            )
 
     @property
     def implementation_hash(self) -> str:
@@ -261,9 +265,35 @@ class CompiledNode:
     implementation: OperatorImplementation
 
 
+#: Private seal set only by ``compile_lowered_plan`` on the ``CompiledPlan`` it returns.
+_COMPILE_SEAL: Final = object()
+
+
+def _node_matches(node: CompiledNode, plan_node: object) -> bool:
+    """Re-verify one compiled node against its plan node and its implementation."""
+    implementation = node.implementation
+    if type(implementation) is not OperatorImplementation:
+        return False
+    return (
+        getattr(plan_node, "node_id", None) == node.node_id
+        and getattr(plan_node, "operator", None) is node.operator
+        and implementation.operator is node.operator
+        and implementation.definition == node.definition
+        and type(node.spec) is _SPEC_CLASS_BY_KIND[implementation.output_kind]
+        and _declared_identity(node.spec) == (node.definition, implementation.provider_key)
+        and getattr(implementation.provider_class, "DEFINITION", None) == node.definition
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class CompiledPlan:
-    """A plan compiled against an explicit allowlist with execution explicitly enabled."""
+    """A plan compiled against an explicit allowlist with execution explicitly enabled.
+
+    Only ``compile_lowered_plan`` produces a runnable instance: it seals the value it returns with
+    a private token. An instance constructed (or ``dataclasses.replace``-d) anywhere else carries
+    no seal and is never runnable, and ``runnable`` also re-verifies every node against its plan
+    node and its implementation.
+    """
 
     plan: TypedPlan
     plan_hash: str
@@ -271,16 +301,23 @@ class CompiledPlan:
     execution_enabled: bool
     allowlist_hash: str
     compiler: str = COMPILER_IDENTITY
+    #: Set only by ``compile_lowered_plan`` (not an init field: ``replace`` drops it).
+    _seal: object = field(default=None, init=False, repr=False, compare=False)
 
     @property
     def runnable(self) -> bool:
-        """True only with execution enabled and one implementation for every plan node."""
+        """True only for a compiled (sealed) plan with execution enabled and one verified
+        implementation for every plan node."""
         return (
-            self.execution_enabled is True
+            self._seal is _COMPILE_SEAL
+            and self.execution_enabled is True
+            and self.compiler == COMPILER_IDENTITY
             and self.plan_hash == self.plan.content_hash()
-            and tuple(node.node_id for node in self.nodes)
-            == tuple(node.node_id for node in self.plan.nodes)
-            and all(isinstance(node.implementation, OperatorImplementation) for node in self.nodes)
+            and len(self.nodes) == len(self.plan.nodes)
+            and all(
+                _node_matches(node, plan_node)
+                for node, plan_node in zip(self.nodes, self.plan.nodes, strict=True)
+            )
         )
 
     @property
@@ -543,6 +580,8 @@ def compile_lowered_plan(
         execution_enabled=True,
         allowlist_hash=allowlist_hash,
     )
+    # The only place a CompiledPlan is sealed as produced by the compile path.
+    object.__setattr__(compiled, "_seal", _COMPILE_SEAL)
     if not compiled.runnable:  # pragma: no cover - every branch above refuses first
         raise PlanCompileRefused("not_runnable", plan.root, "compiled plan failed its own check")
     return compiled
