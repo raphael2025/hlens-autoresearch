@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import TracebackType
-from typing import Any, Final, Self
+from typing import TYPE_CHECKING, Any, Final, Self
 from urllib.parse import urlparse
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -116,6 +116,13 @@ from infrastructure.catalog.definitions import (
     require_partition_only_change,
 )
 from infrastructure.settings import Settings
+
+if TYPE_CHECKING:
+    from core.contracts.storage import StorageAdapter
+    from infrastructure.catalog.bounded_metadata import (
+        BoundedIcebergMetadata,
+        BoundedMetadataLimits,
+    )
 
 __all__ = [
     "SUMMARY_BATCH_FINGERPRINT",
@@ -297,9 +304,7 @@ class _SnapshotBatchStream(Iterator[pa.RecordBatch]):
     ``close`` is idempotent; a closed stream yields nothing more.
     """
 
-    def __init__(
-        self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch, None, None]
-    ) -> None:
+    def __init__(self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch]) -> None:
         self._reader = reader
         self._source = source
         self._closed = False
@@ -512,7 +517,7 @@ def _preflight_snapshot(name: str, io: FileIO, snapshot: Snapshot, plan: _ScanPl
 
 def _snapshot_batches(
     name: str, snapshot: Snapshot | None, plan: _ScanPlan, read: _FileRead
-) -> Generator[pa.RecordBatch, None, None]:
+) -> Generator[pa.RecordBatch]:
     """Second pass: the matched data files of ``snapshot``, read one at a time, in plan order.
 
     Manifest and data files are immutable, so this sees what the preflight checked; the content
@@ -790,6 +795,76 @@ class PyIcebergCatalogAdapter:
             if limit is None:
                 ahead = parent_of(parent_of(ahead))
 
+    def pin_bounded_metadata(
+        self,
+        table: str,
+        *,
+        storage: StorageAdapter,
+        limits: BoundedMetadataLimits,
+    ) -> BoundedIcebergMetadata:
+        """Pin and verify one bounded SqlCatalog metadata version (infrastructure only).
+
+        Unlike ``load_table`` this does not retain the full ``TableMetadata.snapshots`` list.
+        The registered table binding/schema/spec/properties are still verified by this adapter
+        against the same metadata pointer returned by the private bounded reader.
+        """
+        from infrastructure.catalog.bounded_metadata import pin_bounded_sql_table
+
+        name = validate_table_name(table)
+        if not isinstance(self._catalog, SqlCatalog):
+            raise CatalogIntegrityError(
+                "bounded metadata pinning requires the configured PyIceberg SqlCatalog"
+            )
+        with _backend("pin_bounded_metadata"):
+            bounded = pin_bounded_sql_table(
+                self._catalog,
+                name,
+                storage=storage,
+                limits=limits,
+            )
+            self._verified(name, bounded.verification_table())
+            return bounded
+
+    def scan_pinned_batches(
+        self,
+        bounded: BoundedIcebergMetadata,
+        *,
+        snapshot_id: str,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = _ALWAYS_TRUE,
+    ) -> _SnapshotBatchStream:
+        """Scan a snapshot from one previously pinned bounded metadata view.
+
+        This private infrastructure path avoids calling ``load_table`` again. It checks the
+        selected snapshot in the external index, constructs and re-verifies a compact ordinary
+        PyIceberg metadata object, then gives the existing fixed-snapshot reader only that one
+        selected Snapshot plus schema/spec/properties. The public scan APIs remain unchanged.
+        """
+        from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
+
+        if not isinstance(bounded, BoundedIcebergMetadata):
+            raise TypeError("bounded must come from this adapter's pin_bounded_metadata")
+        if bounded.catalog is not self._catalog:
+            raise CatalogIntegrityError("bounded metadata belongs to a different catalog instance")
+        name = validate_table_name(bounded.name)
+        if isinstance(columns, str) or not columns:
+            raise BatchRejected("scan_pinned_batches needs a non-empty sequence of column names")
+        compact = bounded.compact_table(snapshot_id)
+        with _backend("scan_pinned_batches"):
+            self._verified(name, compact)
+            # ``TableScan.snapshot`` resolves by ID from the compact metadata. The selected id is
+            # passed explicitly so a caller cannot silently fall back to the table's current head.
+            snapshot = compact.metadata.snapshot_by_id(int(snapshot_id))
+            if snapshot is None:
+                raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
+            return _open_snapshot_batches(
+                name,
+                compact,
+                columns=tuple(columns),
+                row_filter=row_filter,
+                snapshot_id=snapshot.snapshot_id,
+            )
+
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         name = validate_table_name(request.table)
         request = _revalidated(CommitRequest, request)
@@ -891,7 +966,7 @@ class PyIcebergCatalogAdapter:
         columns: Sequence[str],
         row_filter: BooleanExpression = _ALWAYS_TRUE,
         snapshot_id: str | None = None,
-    ) -> Iterator[pa.RecordBatch]:
+    ) -> _SnapshotBatchStream:
         """Stream selected columns of one fixed snapshot as bounded Arrow record batches.
 
         This infrastructure-only read verifies the persisted table definition before scanning.
@@ -1227,8 +1302,7 @@ class PyIcebergCatalogAdapter:
                 raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
             if (
                 snapshot.summary is not None
-                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID)
-                == request.batch_id
+                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID) == request.batch_id
             ):
                 if first_match is None:
                     first_match = snapshot
