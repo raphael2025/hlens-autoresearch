@@ -29,7 +29,8 @@ members, plus the gate observation for ``conditioned``), capped at the size of t
 Construction refuses (fail closed, ``ValueError``): a spec without ``composition``; a composite
 with its own ``params`` / ``param_search_space`` (a composite has no tunable parameter — the base's
 point is fixed by the base spec, so another point is another base spec and another composite; a
-subclass may admit one exact, non-tunable declaration per composition type); a
+subclass may admit one exact, non-tunable declaration per composition type, and then requires
+it: a spec of that type must carry exactly those ``params``, empty ones included); a
 reference missing from the resolution table or resolved to a provider that does not support that
 spec's hash; a self-reference or a reference cycle through the table's composite specs; ``signals``
 that do not cover every referenced strategy's signals; and ensemble members whose ``risk_policy`` or
@@ -137,13 +138,17 @@ class _Composite:
         if composition is None:
             raise ValueError(f"{spec.ref} has no composition; it is not a composite strategy")
         declared = declarations.get(type(composition))
-        if spec.param_search_space or (
-            spec.params and (declared is None or not _same_params(spec.params, declared))
-        ):
+        # Without a declaration for this composition type the spec must carry no params; with
+        # one, its params must equal the declaration exactly (empty params are refused too: the
+        # declaration is part of the served spec's identity, not optional).
+        params_ok = (
+            not spec.params if declared is None else _same_params(spec.params, declared)
+        )
+        if spec.param_search_space or not params_ok:
             raise ValueError(
                 f"{spec.ref}: a composite strategy has no parameters of its own; the referenced "
                 "specs fix their points (only a served declaration, e.g. the P7 lowering's, is "
-                "admitted, exactly)"
+                "admitted, exactly and required when the provider declares one)"
             )
         _check_acyclic(spec, table)
         self.spec = spec

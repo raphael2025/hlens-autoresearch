@@ -33,6 +33,7 @@ from core.domain.specs import (
     StrategySpec,
 )
 from research.strategies.composite import CompositeStrategyProvider, ResolvedStrategy
+from research.strategies.p7_compositions import P7NegatedStrategyProvider
 from tests.contract_suites.strategy import StrategyProviderContract, StrategySubject
 from tests.strategy_fixtures import MINUTE, T0
 
@@ -497,6 +498,20 @@ def test_a_composite_has_no_parameters_of_its_own() -> None:
     )
     with pytest.raises(ValueError, match="no parameters"):
         _provider(spec)
+
+
+def test_a_declared_params_provider_requires_its_declaration() -> None:
+    """A provider that declares params for a composition type refuses empty params too."""
+    with pytest.raises(ValueError, match="no parameters"):
+        P7NegatedStrategyProvider(
+            (NEG,), resolution=TABLE, instrument_type=InstrumentType.PERPETUAL
+        )
+    declared = dict(P7NegatedStrategyProvider.DECLARED_PARAMS[NegatedStrategy])
+    served = NEG.model_copy(update={"params": FrozenMapping(declared)})
+    provider = P7NegatedStrategyProvider(
+        (served,), resolution=TABLE, instrument_type=InstrumentType.PERPETUAL
+    )
+    assert provider.descriptor.supports(served.ref, served.content_hash())
 
 
 def test_a_plain_spec_is_not_served() -> None:
