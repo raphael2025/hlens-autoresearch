@@ -17,8 +17,9 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from pathlib import Path
 from itertools import groupby, zip_longest
+from pathlib import Path
+from types import MappingProxyType
 from typing import Any, Final
 
 from pyiceberg.expressions import AlwaysTrue, And, EqualTo, GreaterThanOrEqual, LessThan
@@ -102,6 +103,34 @@ _RAW_TABLES: Final[Mapping[str, tuple[str, ...]]] = {
     "agg_trades": (BINANCE_SPOT_AGG_TRADES.table, BINANCE_SPOT_REST_AGG_TRADES.table),
     "klines_1m": (BINANCE_SPOT_KLINES_1M.table, BINANCE_SPOT_REST_KLINES_1M.table),
 }
+_REQUIRED_SNAPSHOT_TABLES: Final[Mapping[str, tuple[str, ...]]] = MappingProxyType(
+    {
+        data_type: tuple(
+            table for table in tables if table != BINANCE_SPOT_PRECEDENCE_EVIDENCE.table
+        )
+        for data_type, tables in _INPUT_TABLES.items()
+    }
+)
+
+
+def _identity_rule_hash_registry() -> Mapping[str, str]:
+    hashes = {
+        "quality": CANONICAL_PARTITION_V3_RULE_HASH,
+        "pit": PIT_BINDING.policy_hash,
+    }
+    for binding in (
+        *REQUIRED_BINDINGS["availability_bindings"],
+        *REQUIRED_BINDINGS["precedence_bindings"],
+        *REQUIRED_BINDINGS["parser_bindings"],
+        DELIVERY_CHANNEL_BINDING,
+        rules.PRECEDENCE_MAP_BINDING,
+    ):
+        hashes[f"{binding.policy_id}@{binding.version}"] = binding.policy_hash
+    return MappingProxyType(dict(sorted(hashes.items())))
+
+
+_IDENTITY_RULE_HASHES: Final = _identity_rule_hash_registry()
+_MAX_IDENTITY_RULE_HASHES: Final = len(_IDENTITY_RULE_HASHES)
 
 
 class QualityReportV3Error(Exception):
@@ -276,10 +305,6 @@ class QualityReporterV3:
         canonical_scratch_directory: Path,
         scratch_storage: StorageAdapter,
         clock: Callable[[], datetime],
-        identity_rule_hashes: Mapping[str, str],
-        max_identity_rule_hashes: int,
-        allowed_snapshot_tables: Sequence[str],
-        required_snapshot_tables: Sequence[str],
         pit_params: PitRunParams,
         run_capacity: int,
         merge_fanout: int,
@@ -333,23 +358,26 @@ class QualityReporterV3:
             "input": max_input_record_bytes,
             "manifest": max_manifest_record_bytes,
             "identity": max_identity_bytes,
-            "hashes": max_identity_rule_hashes,
+            "hashes": _MAX_IDENTITY_RULE_HASHES,
             "retries": retries,
             "scratch_record": run_limits.leaf_max_bytes - 512,
         }
-        self._identity_hashes = dict(identity_rule_hashes)
-        self._store = QualityReportManifestStore(
-            adapter,
-            quality_rule_id=CANONICAL_PARTITION_V3_RULE_ID,
-            quality_rule_version=CANONICAL_PARTITION_V3_RULE_VERSION,
-            quality_rule_hash=CANONICAL_PARTITION_V3_RULE_HASH,
-            allowed_snapshot_tables=allowed_snapshot_tables,
-            required_snapshot_tables=required_snapshot_tables,
-            identity_rule_hashes=identity_rule_hashes,
-            max_identity_rule_hashes=max_identity_rule_hashes,
-            stream_limits=stream_limits,
-            max_manifest_record_bytes=max_manifest_record_bytes,
-        )
+        self._identity_hashes = _IDENTITY_RULE_HASHES
+        self._stores = {
+            data_type: QualityReportManifestStore(
+                adapter,
+                quality_rule_id=CANONICAL_PARTITION_V3_RULE_ID,
+                quality_rule_version=CANONICAL_PARTITION_V3_RULE_VERSION,
+                quality_rule_hash=CANONICAL_PARTITION_V3_RULE_HASH,
+                allowed_snapshot_tables=tables,
+                required_snapshot_tables=_REQUIRED_SNAPSHOT_TABLES[data_type],
+                identity_rule_hashes=_IDENTITY_RULE_HASHES,
+                max_identity_rule_hashes=_MAX_IDENTITY_RULE_HASHES,
+                stream_limits=stream_limits,
+                max_manifest_record_bytes=max_manifest_record_bytes,
+            )
+            for data_type, tables in _INPUT_TABLES.items()
+        }
         self._run_storage = _RunStorage(storage, scratch_storage)
         self._selector = PitSelector(
             adapter,
@@ -393,7 +421,8 @@ class QualityReporterV3:
                 snapshot_bindings=binding_rows,
                 max_identity_bytes=self._limits["identity"],
             )
-            existing = self._store.lookup(report_id)
+            store = self._stores[data_type]
+            existing = store.lookup(report_id)
             if existing is None and existing_only:
                 raise QualityReportV3Error(f"no committed v3 quality report {report_id}")
             try:
@@ -460,7 +489,7 @@ class QualityReporterV3:
                 "evidence_gaps": refs[2],
             }
             try:
-                committed = self._store.commit(row)
+                committed = store.commit(row)
             except (CommitConflict, BatchConflict):
                 continue
             return QualityReportedV3(report_id, committed, False)

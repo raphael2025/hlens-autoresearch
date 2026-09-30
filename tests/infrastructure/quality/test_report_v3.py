@@ -94,37 +94,14 @@ def _reporter(
     scratch: LocalFileStorageAdapter,
     clock: StepClock,
     evidence_storage: Any | None = None,
-    data_type: str = "klines_1m",
 ) -> QualityReporterV3:
     run_limits = RunLimits(leaf_max_records=2, leaf_max_bytes=1 << 16, fanout=2)
-    if data_type == "klines_1m":
-        canonical_table = rules.CANONICAL_TABLES["klines_1m"].table
-        raw_tables = (c.ARCHIVE_KLINES.table, c.REST_KLINES.table)
-    else:
-        canonical_table = rules.CANONICAL_TABLES["agg_trades"].table
-        raw_tables = (c.ARCHIVE_AGGS.table, c.REST_AGGS.table)
-    snapshot_tables = (
-        canonical_table,
-        *raw_tables,
-        c.ARCHIVES.table,
-        BINANCE_SPOT_REST_RESPONSES.table,
-        BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
-    )
     return QualityReporterV3(
         h.adapter,
         h.storage if evidence_storage is None else evidence_storage,
         canonical_scratch_directory=h.canonical_scratch_directory,
         scratch_storage=scratch,
         clock=clock,
-        identity_rule_hashes=_identity_hashes(),
-        max_identity_rule_hashes=16,
-        allowed_snapshot_tables=snapshot_tables,
-        required_snapshot_tables=(
-            canonical_table,
-            *raw_tables,
-            c.ARCHIVES.table,
-            BINANCE_SPOT_REST_RESPONSES.table,
-        ),
         pit_params=PitRunParams(
             row_batch_rows=2,
             edge_batch_rows=2,
@@ -144,6 +121,35 @@ def _reporter(
         max_identity_bytes=8192,
         retries=2,
     )
+
+
+def test_reporter_owns_finite_identity_and_snapshot_rule_sets(
+    harness: RestHarness, tmp_path: Path
+) -> None:
+    scratch = LocalFileStorageAdapter(
+        (tmp_path / "scratch-warehouse").as_uri(), (tmp_path / "scratch-stage").as_uri()
+    )
+    reporter = _reporter(harness, scratch, StepClock(start=utc(2023, 12, 20)))
+
+    assert dict(reporter._identity_hashes) == _identity_hashes()
+    assert set(reporter._stores) == {"agg_trades", "klines_1m"}
+    for data_type, raw_tables in (
+        ("agg_trades", (c.ARCHIVE_AGGS.table, c.REST_AGGS.table)),
+        ("klines_1m", (c.ARCHIVE_KLINES.table, c.REST_KLINES.table)),
+    ):
+        canonical_table = rules.CANONICAL_TABLES[data_type].table
+        allowed = {
+            canonical_table,
+            *raw_tables,
+            c.ARCHIVES.table,
+            BINANCE_SPOT_REST_RESPONSES.table,
+            BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
+        }
+        required = allowed - {BINANCE_SPOT_PRECEDENCE_EVIDENCE.table}
+        store = reporter._stores[data_type]
+        assert store._allowed_snapshot_tables == allowed
+        assert store._required_snapshot_tables == required
+        assert dict(store._identity_rule_hashes) == _identity_hashes()
 
 
 class _CountingStorage:
@@ -522,9 +528,7 @@ def test_aggregate_trade_discontinuity_is_projected_without_materializing_all_id
     scratch = LocalFileStorageAdapter(
         (tmp_path / "scratch-warehouse").as_uri(), (tmp_path / "scratch-stage").as_uri()
     )
-    reporter = _reporter(
-        harness, scratch, StepClock(start=utc(2023, 12, 20)), data_type="agg_trades"
-    )
+    reporter = _reporter(harness, scratch, StepClock(start=utc(2023, 12, 20)))
     result = reporter.report("agg_trades", SYMBOL, DAY)
     with iter_quality_report_stream(
         harness.storage,

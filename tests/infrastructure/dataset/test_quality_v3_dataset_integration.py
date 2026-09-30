@@ -19,13 +19,8 @@ from core.contracts.universe import (
 )
 from core.domain.base import Contract
 from core.domain.specs import DatasetRef, Zone
-from infrastructure.canonical import rules
 from infrastructure.catalog.phase1_tables import (
-    BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_EXCHANGE_INFO,
-    BINANCE_SPOT_PRECEDENCE_EVIDENCE,
-    BINANCE_SPOT_REST_AGG_TRADES,
-    BINANCE_SPOT_REST_RESPONSES,
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORT_MANIFESTS,
     DATASET_EVIDENCE_MANIFESTS,
@@ -63,17 +58,10 @@ from infrastructure.quality.report_v3 import QualityReporterV3
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.streaming.runs import RunLimits
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
-from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.dataset import dataset_support as ds
 from tests.infrastructure.dataset.dataset_support import END, START, World
 from tests.infrastructure.quality.test_report_v3 import _identity_hashes
 from tests.infrastructure.revision.rest_store_support import DAY, utc
-
-_CANONICAL = rules.CANONICAL_TABLES["agg_trades"].table
-_RAW_TABLES = (
-    c.ARCHIVE_AGGS.table,
-    BINANCE_SPOT_REST_AGG_TRADES.table,
-)
 
 
 def _canonical_reporter(
@@ -90,21 +78,6 @@ def _canonical_reporter(
         canonical_scratch_directory=canonical_scratch_directory,
         scratch_storage=scratch,
         clock=clock,
-        identity_rule_hashes=_identity_hashes(),
-        max_identity_rule_hashes=16,
-        allowed_snapshot_tables=(
-            _CANONICAL,
-            *_RAW_TABLES,
-            BINANCE_SPOT_ARCHIVES.table,
-            BINANCE_SPOT_REST_RESPONSES.table,
-            BINANCE_SPOT_PRECEDENCE_EVIDENCE.table,
-        ),
-        required_snapshot_tables=(
-            _CANONICAL,
-            *_RAW_TABLES,
-            BINANCE_SPOT_ARCHIVES.table,
-            BINANCE_SPOT_REST_RESPONSES.table,
-        ),
         pit_params=PitRunParams(
             row_batch_rows=2,
             edge_batch_rows=2,
