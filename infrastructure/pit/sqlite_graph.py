@@ -42,8 +42,10 @@ class SQLitePitGraph:
         self._cutoff = cutoff
         self._directory: Path | None = None
         self._token: str | None = None
+        self._directory_created = False
+        self._initializing = False
         self._db: sqlite3.Connection | None = None
-        self._built = False
+        self._build_started = False
 
     def __enter__(self) -> SQLitePitGraph:
         self._open()
@@ -76,15 +78,23 @@ class SQLitePitGraph:
             except FileExistsError:
                 continue
             self._directory, self._token = owned, token
+            self._directory_created = True
+            self._initializing = True
             try:
                 with (owned / _MARKER).open("x", encoding="ascii") as marker:
                     marker.write(f"{_FORMAT}\n{token}\n")
                 self._db = sqlite3.connect(str(owned / _DB), isolation_level=None)
                 self._configure()
                 self._schema()
+                self._initializing = False
                 return
             except BaseException:
-                self.close()
+                # Keep the setup exception primary if closing/removing the just-created
+                # directory also encounters an error.
+                try:
+                    self.close()
+                except BaseException:
+                    pass
                 raise
         raise OSError("cannot allocate a unique PIT graph scratch directory")
 
@@ -134,7 +144,6 @@ class SQLitePitGraph:
                 observation_key TEXT NOT NULL,
                 PRIMARY KEY(revision_id, observation_key)
             ) WITHOUT ROWID;
-            CREATE INDEX claims_by_revision ON claims(revision_id, observation_key);
             CREATE TABLE required_evidence (
                 newer TEXT NOT NULL, older TEXT NOT NULL, knowledge_us INTEGER NOT NULL,
                 PRIMARY KEY(newer, older, knowledge_us)
@@ -143,7 +152,6 @@ class SQLitePitGraph:
                 newer TEXT NOT NULL, older TEXT NOT NULL, knowledge_us INTEGER NOT NULL,
                 PRIMARY KEY(newer, older, knowledge_us)
             ) WITHOUT ROWID;
-            CREATE INDEX evidence_by_edge_time ON evidence(newer, older, knowledge_us);
             CREATE TABLE edges (
                 newer TEXT NOT NULL, older TEXT NOT NULL, PRIMARY KEY(newer, older)
             ) WITHOUT ROWID;
@@ -161,8 +169,9 @@ class SQLitePitGraph:
         evidence: Iterable[PrecedenceEvidence],
     ) -> None:
         """Stream known rows into indexed tables, then check RevisionGraph invariants."""
-        if self._built:
-            raise RuntimeError("SQLite PIT graph can only be built once")
+        if self._build_started:
+            raise RuntimeError("SQLite PIT graph build cannot be retried")
+        self._build_started = True
         cutoff = _us(self._cutoff)
         db = self.database
         db.execute("BEGIN IMMEDIATE").close()
@@ -263,7 +272,6 @@ class SQLitePitGraph:
             self._check_required_evidence()
             self._check_cycles()
             db.commit()
-            self._built = True
         except BaseException:
             db.rollback()
             raise
@@ -271,7 +279,7 @@ class SQLitePitGraph:
     def _check_claims(self) -> None:
         sql = (
             "SELECT revision_id, MIN(observation_key), MAX(observation_key) FROM claims "
-            "INDEXED BY claims_by_revision GROUP BY revision_id "
+            "INDEXED BY sqlite_autoindex_claims_1 GROUP BY revision_id "
             "HAVING MIN(observation_key)<>MAX(observation_key) "
             "ORDER BY revision_id LIMIT 1"
         )
@@ -294,7 +302,7 @@ class SQLitePitGraph:
         sql = (
             "SELECT r.newer, r.older FROM required_evidence AS r "
             "WHERE NOT EXISTS (SELECT 1 FROM evidence AS e "
-            "INDEXED BY evidence_by_edge_time WHERE e.newer=r.newer AND e.older=r.older "
+            "INDEXED BY sqlite_autoindex_evidence_1 WHERE e.newer=r.newer AND e.older=r.older "
             "AND e.knowledge_us<=r.knowledge_us) "
             "ORDER BY r.newer, r.older, r.knowledge_us LIMIT 1"
         )
@@ -393,7 +401,9 @@ class SQLitePitGraph:
         if db is not None:
             db.close()
         directory, token = self._directory, self._token
+        directory_created, initializing = self._directory_created, self._initializing
         self._directory = self._token = None
+        self._directory_created = self._initializing = False
         if directory is None or token is None:
             return
         marker = directory / _MARKER
@@ -401,6 +411,10 @@ class SQLitePitGraph:
             valid = marker.read_text(encoding="ascii") == f"{_FORMAT}\n{token}\n"
         except OSError:
             valid = False
-        if not valid or directory.parent != self._root:
+        if directory.parent != self._root or not directory_created:
+            raise OSError(
+                "PIT graph scratch path is not owned by this invocation; directory retained"
+            )
+        if not valid and not initializing:
             raise OSError("PIT graph scratch ownership marker mismatch; directory retained")
         shutil.rmtree(directory)
