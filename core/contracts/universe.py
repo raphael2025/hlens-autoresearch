@@ -75,6 +75,7 @@ __all__ = [
     "LISTINGS_TABLE",
     "LISTING_BACKFILL_ASSUMPTION_ID",
     "QUALITY_REPORTS_TABLE",
+    "QUALITY_REPORT_MANIFESTS_TABLE",
     "AvailabilityEvidenceGap",
     "DatasetChunkProof",
     "PitConflictHeadEvidence",
@@ -113,6 +114,7 @@ __all__ = [
 LISTINGS_TABLE = "canonical.instrument_listings"
 #: 质量报告表（03-data.md §5、§7.1）；manifest 必须绑定它的 snapshot 并引用所用报告。
 QUALITY_REPORTS_TABLE = "quality.data_quality_reports"
+QUALITY_REPORT_MANIFESTS_TABLE = "quality.data_quality_report_manifests"
 #: ADR-0051（D-LIST）listing 回填假设的 availability 政策标识；`UniverseMember.assumption` 非空时
 #: 必须绑定它（ADR-0088 决策 6，自契约 2.4.0）。
 LISTING_BACKFILL_ASSUMPTION_ID: Final = "hlens.listing.observed-state-backfill-assumption"
@@ -1114,6 +1116,10 @@ class ResearchDatasetEvidenceManifest(Contract):
         for required in (LISTINGS_TABLE, QUALITY_REPORTS_TABLE):
             if required not in upstream:
                 raise ValueError(f"上游 snapshot 绑定必须包含 {required}")
+        if expects_pit_conflicts and QUALITY_REPORT_MANIFESTS_TABLE not in upstream:
+            raise ValueError(
+                f"2.5.0+ manifest 的上游 snapshot 绑定必须包含 {QUALITY_REPORT_MANIFESTS_TABLE}"
+            )
         if self.chunk_count != -(-self.row_count // self.chunk_rows):
             raise ValueError("chunk_count 必须等于 ceil(row_count / chunk_rows)")
         if self.evidence_for(EvidenceStream.CHUNK_PROOFS).record_count != self.chunk_count:

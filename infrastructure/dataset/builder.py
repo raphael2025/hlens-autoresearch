@@ -107,6 +107,7 @@ from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     CANONICAL_INSTRUMENT_LISTINGS,
+    DATA_QUALITY_REPORT_MANIFESTS,
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
     QUALITY_EVIDENCE_GAPS,
@@ -253,6 +254,7 @@ _ATTEMPTS: Final = 8
 _EVIDENCE: Final = BINANCE_SPOT_PRECEDENCE_EVIDENCE.table
 _LISTINGS: Final = CANONICAL_INSTRUMENT_LISTINGS.table
 _QUALITY: Final = DATA_QUALITY_REPORTS.table
+_QUALITY_MANIFESTS: Final = DATA_QUALITY_REPORT_MANIFESTS.table
 _GAPS: Final = QUALITY_EVIDENCE_GAPS.table
 #: Tables bound whenever they had a snapshot when the build ran (not the listing tables: a
 #: missing listing history is the universe's refusal), with the decision that requires it.
@@ -1478,7 +1480,9 @@ class DatasetEvidenceBuilder:
         the unbound-table refusal as in v2). A caller re-deriving a persisted manifest runs this
         inside ``contract_schema_version_scope(<its recorded version>)``.
         """
-        canonical = _check_evidence_request(request, dataset_table=None)
+        canonical = _check_evidence_request(
+            request, dataset_table=None, schema_version=schema_version
+        )
         selection_id = self.selection_id(request)
         _check_unbound_evidence(self._adapter, request.pit, manifested=manifested)
         return _EvidenceDerivation(
@@ -1507,7 +1511,7 @@ class DatasetEvidenceBuilder:
         idempotent. A manifest persisted at an earlier contract version is re-derived at that
         version (ADR-0052 V7); evidence and rows carry no envelope, so their bytes do not move.
         """
-        canonical = _check_evidence_request(request, dataset_table=chunks.table)
+        _check_evidence_request(request, dataset_table=chunks.table)
         selection_id = self.selection_id(request)
         recorded = manifests.recorded_version(selection_id)
         _check_unbound_evidence(self._adapter, request.pit, manifested=recorded is not None)
@@ -1520,6 +1524,9 @@ class DatasetEvidenceBuilder:
                 recorded, what=f"the evidence manifest of {selection_id}"
             )
             scope = contract_schema_version_scope(version)
+        canonical = _check_evidence_request(
+            request, dataset_table=chunks.table, schema_version=version
+        )
         with scope:
             sink = _EvidenceBuildSink(self._storage, self._rule, selection_id, chunks, version)
             derived = _EvidenceDerivation(
@@ -1596,7 +1603,12 @@ def _check_utc(value: object, what: str) -> datetime:
     return value
 
 
-def _check_evidence_request(request: DatasetEvidenceRequest, *, dataset_table: str | None) -> str:
+def _check_evidence_request(
+    request: DatasetEvidenceRequest,
+    *,
+    dataset_table: str | None,
+    schema_version: str | None = None,
+) -> str:
     """The v2 request checks for a v3 request; returns the data type's Canonical table."""
     if not isinstance(request, DatasetEvidenceRequest):
         raise DatasetSpecError("request must be a DatasetEvidenceRequest")
@@ -1630,6 +1642,18 @@ def _check_evidence_request(request: DatasetEvidenceRequest, *, dataset_table: s
     for table in (canonical.table, _QUALITY):
         if table not in bound:
             raise DatasetSpecError(f"the PIT spec does not bind {table}")
+    if schema_version is not None:
+        version = parse_semver(schema_version)
+        if (
+            tuple(int(version.group(name)) for name in ("major", "minor", "patch"))
+            >= (
+                2,
+                5,
+                0,
+            )
+            and _QUALITY_MANIFESTS not in bound
+        ):
+            raise DatasetSpecError(f"the PIT spec does not bind {_QUALITY_MANIFESTS}")
     check_listing_bindings(pit)
     if dataset_table is not None:
         if dataset_table.split(".", 1)[0] != SELECTION_NAMESPACE:
@@ -2061,32 +2085,42 @@ class _EvidenceDerivation:
         self._last_report: tuple[int, str, str] | None = None
 
     def run(self) -> DatasetDerivation:
-        listing = self.quality.listing_report()
-        self.report(
-            DatasetQualityReportRef(report_id=listing, subject=DatasetQualitySubject.LISTING)
-        )
-        self._entries()
-        self._listing_lineage(listing)
-        with self._universe.member_spans() as spans:
-            members = _MemberSpans(
-                spans,
-                self.request.pit,
-                self._storage,
-                capacity=self._chunk_rows,
-                merge_fanout=self._span_run_limits.fanout,
-                limits=self._span_run_limits,
+        try:
+            listing = self.quality.listing_report()
+            self.report(
+                DatasetQualityReportRef(report_id=listing, subject=DatasetQualitySubject.LISTING)
             )
-            for venue_symbol in self.request.universe.symbols:
-                self._symbol(venue_symbol, members.take(venue_symbol))
-            members.close()
-        return DatasetDerivation(
-            selection_id=self._selection_id,
-            row_count=self._rows,
-            record_counts=tuple(
-                (stream, self._counts[stream])
-                for stream in sorted(self._streams, key=lambda item: item.value)
-            ),
-        )
+            self._entries()
+            self._listing_lineage(listing)
+            with self._universe.member_spans() as spans:
+                members = _MemberSpans(
+                    spans,
+                    self.request.pit,
+                    self._storage,
+                    capacity=self._chunk_rows,
+                    merge_fanout=self._span_run_limits.fanout,
+                    limits=self._span_run_limits,
+                )
+                try:
+                    for venue_symbol in self.request.universe.symbols:
+                        self._symbol(venue_symbol, members.take(venue_symbol))
+                finally:
+                    members.close()
+            finish_reports = getattr(self.quality, "finish_reports", None)
+            if callable(finish_reports):
+                finish_reports()
+            return DatasetDerivation(
+                selection_id=self._selection_id,
+                row_count=self._rows,
+                record_counts=tuple(
+                    (stream, self._counts[stream])
+                    for stream in sorted(self._streams, key=lambda item: item.value)
+                ),
+            )
+        finally:
+            close_quality = getattr(self.quality, "close", None)
+            if callable(close_quality):
+                close_quality()
 
     # ------------------------------------------------------------------ emission
 
@@ -2167,7 +2201,13 @@ class _EvidenceDerivation:
                 )
 
     def _gap(self, report_id: str, table: str, revision: str, gap: str) -> None:
-        if self.quality.recorded_gap(report_id, table, revision) != gap:
+        claim_gap = getattr(self.quality, "claim_gap", None)
+        matched = (
+            claim_gap(report_id, table, revision, gap)
+            if callable(claim_gap)
+            else self.quality.recorded_gap(report_id, table, revision) == gap
+        )
+        if matched is False:
             raise DatasetQualityError(
                 f"report {report_id} does not record the evidence gap of {table} revision "
                 f"{revision}"
