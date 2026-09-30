@@ -650,8 +650,9 @@ def _rows_of(
     *,
     expected_level: int | None,
     next_ordinal: list[int],
+    max_object_bytes: int | None = None,
 ) -> Iterator[Mapping[str, Any]]:
-    header, lines = _read_object(storage, objref)
+    header, lines = _read_object(storage, objref, max_object_bytes=max_object_bytes)
     if header.get("first_ordinal") != next_ordinal[0]:
         raise RunIntegrityError(f"run object {objref.key} does not continue the stream in order")
     node = header.get("node")
@@ -712,6 +713,7 @@ def _rows_of(
                 child_ref,
                 expected_level=(level - 1) if level > 0 else None,
                 next_ordinal=next_ordinal,
+                max_object_bytes=max_object_bytes,
             )
             if next_ordinal[0] - before != child_count:
                 raise RunIntegrityError(
@@ -728,20 +730,36 @@ def _rows_of(
 
 
 @contextmanager
-def iter_run(storage: StorageAdapter, ref: RunRef) -> Iterator[Iterator[Mapping[str, Any]]]:
+def iter_run(
+    storage: StorageAdapter,
+    ref: RunRef,
+    *,
+    max_object_bytes: int | None = None,
+) -> Iterator[Iterator[Mapping[str, Any]]]:
     """Read a run back in order, verifying it against ``ref`` from the root down.
 
     Every leaf and index object is fetched, hash-checked and header-checked; ordinal continuity
     is enforced at every level, so truncation, reordering or an inserted/removed object is caught
-    before (or, for a tail truncation, immediately after) it would otherwise go unnoticed.
+    before (or, for a tail truncation, immediately after) it would otherwise go unnoticed. When
+    ``max_object_bytes`` is supplied, each node read is capped before its body is allocated.
     """
 
     def _generate() -> Iterator[Mapping[str, Any]]:
+        if max_object_bytes is not None and (
+            isinstance(max_object_bytes, bool)
+            or not isinstance(max_object_bytes, int)
+            or max_object_bytes <= 0
+        ):
+            raise RunWriteError("max_object_bytes must be a positive integer or None")
         next_ordinal = [0]
         expected_root_level = ref.depth - 1
         count = 0
         for row in _rows_of(
-            storage, ref.root, expected_level=expected_root_level, next_ordinal=next_ordinal
+            storage,
+            ref.root,
+            expected_level=expected_root_level,
+            next_ordinal=next_ordinal,
+            max_object_bytes=max_object_bytes,
         ):
             count += 1
             yield row
