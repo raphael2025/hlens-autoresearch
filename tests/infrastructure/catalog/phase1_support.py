@@ -1053,7 +1053,7 @@ ROW_BUILDERS: Final[dict[str, Callable[..., dict[str, Any]]]] = {
 }
 assert set(ROW_BUILDERS) == {definition.table for definition in PHASE1_TABLES}
 assert (
-    CONTRACT_SCHEMA_VERSION == "2.4.0"
+    CONTRACT_SCHEMA_VERSION == "2.5.0"
 )  # ADR-0088; ADR-0077's 2.3.0 envelope remains a published history version.
 
 

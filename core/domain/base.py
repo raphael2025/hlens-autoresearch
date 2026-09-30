@@ -83,9 +83,9 @@ __all__ = [
 #: 2.4.0（minor，ADR-0088）：`EventSpec.bar_spec`、`StrategySpec.composition`（三种组合模型）、
 #: `PortfolioState.peak_equity`、`UniverseMember.assumption`、两种新合成效应、
 #: `OutcomeMethod.VOL_SCALED_TRIPLE_BARRIER` 及其两个 `OutcomeLabelSpec` 字段；全部可选、缺省时
-#: 从载荷中省略，2.0.0 ~ 2.3.0 载荷保留自己的信封、哈希逐位不变；当前版本新建对象的信封（与哈希）
-#: 为 2.4.0。
-CONTRACT_SCHEMA_VERSION = "2.4.0"
+#: 从载荷中省略，2.0.0 ~ 2.4.0 载荷保留自己的信封、哈希逐位不变；当前版本新建对象的信封（与哈希）
+#: 为 2.4.0。2.5.0（ADR-0094）只为有界 PIT conflict evidence 增加版本化形状，既有载荷按原信封回放。
+CONTRACT_SCHEMA_VERSION = "2.5.0"
 
 #: 当前实现能够作为**模型**校验的 major。其他 major 一律拒绝（旧载荷走 core/compat）。
 CONTRACT_SCHEMA_MAJOR = 2
@@ -98,6 +98,7 @@ PUBLISHED_CONTRACT_SCHEMA_VERSIONS: tuple[str, ...] = (
     "2.2.0",
     "2.3.0",
     "2.4.0",
+    "2.5.0",
 )
 
 # ---------------------------------------------------------------------------------------

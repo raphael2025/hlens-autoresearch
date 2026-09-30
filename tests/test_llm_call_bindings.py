@@ -296,7 +296,7 @@ def test_current_schema_count_grew_to_38(tmp_path: Path) -> None:
     ADR-0077 后 → 141，ADR-0088 后 → 146；
     全量导出与已提交内容逐文件一致。"""
     written = export_json_schemas(tmp_path)
-    assert len(CONTRACT_MODELS) == 146
+    assert len(CONTRACT_MODELS) == 149
     assert len(written) == len(CONTRACT_MODELS)
     committed = {path.name for path in CURRENT_SCHEMA_DIR.glob("*.schema.json")}
     assert committed == {path.name for path in written.values()}

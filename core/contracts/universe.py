@@ -30,6 +30,13 @@ universe 执行器与 Runner（批次 B3 ~ F 及以后）。
 evidence stream 的根对象引用（`EvidenceStreamRef` / `EvidenceObjectRef`）经 manifest 内容哈希
 承诺。流内记录复用 v2 记录模型，另加 `DatasetQualityReportRef` 与 `DatasetChunkProof`。
 对象是否存在、字节是否匹配、流内容是否就是输入的派生，属 infrastructure 的 streaming verifier。
+
+**PIT 冲突 evidence（ADR-0094，自契约 2.5.0，additive）**：
+`ResearchDatasetEvidenceManifest` 在 2.5.0 起承诺第七条 `pit_conflicts` stream；2.3.0 / 2.4.0
+仍严格要求原六条。一个冲突 evaluation 用定长 `PITConflictEvent` 返回规则身份、PIT 时间、观察键、
+head 数及 `PITConflictEvidenceRef`；流内每个 maximal head 由 `PITConflictHeadRecord` 记录。head
+数量没有人为上限，也不内联在 event/ref 中。流的完整顺序、连续 ordinal 与记录内容由 reader / verifier
+核验；契约只检查单条 record/ref/event 的结构和局部计数关系。
 """
 
 from __future__ import annotations
@@ -60,11 +67,13 @@ from core.domain.base import (
     UtcDatetime,
     canonical_json,
     omit_none,
+    parse_semver,
 )
 from core.domain.specs import ADR_0088_VERSION, DatasetRef, Instrument, InstrumentType, Zone
 
 __all__ = [
     "ADR_0077_VERSION",
+    "ADR_0094_VERSION",
     "DATASET_CHUNK_INDEX_MAX",
     "DATASET_EVIDENCE_FORMAT",
     "DATASET_EVIDENCE_KEY_PATTERN",
@@ -90,6 +99,9 @@ __all__ = [
     "ListingRevision",
     "ListingStatus",
     "MetricBasis",
+    "PITConflictEvent",
+    "PITConflictEvidenceRef",
+    "PITConflictHeadRecord",
     "ResearchDatasetEvidenceManifest",
     "ResearchDatasetManifest",
     "SelectedRevisionLineage",
@@ -112,6 +124,7 @@ QUALITY_REPORTS_TABLE = "quality.data_quality_reports"
 #: ADR-0051（D-LIST）listing 回填假设的 availability 政策标识；`UniverseMember.assumption` 非空时
 #: 必须绑定它（ADR-0088 决策 6，自契约 2.4.0）。
 LISTING_BACKFILL_ASSUMPTION_ID: Final = "hlens.listing.observed-state-backfill-assumption"
+ADR_0094_VERSION: Final = "2.5.0"
 
 NonEmptyStr = Annotated[str, Field(min_length=1)]
 SnapshotTable = Annotated[str, Field(pattern=SNAPSHOT_TABLE_PATTERN)]
@@ -855,7 +868,7 @@ class DatasetRuleBinding(Contract):
 
 
 class EvidenceStream(StrEnum):
-    """v3 manifest 承诺的六种有序 evidence stream（ADR-0077 §2）。"""
+    """v3 manifest 承诺的有序 evidence stream（ADR-0077 §2；ADR-0094 §决策）。"""
 
     MEMBERS = "members"
     EXCLUSIONS = "exclusions"
@@ -863,6 +876,7 @@ class EvidenceStream(StrEnum):
     EVIDENCE_GAPS = "evidence_gaps"
     QUALITY_REPORTS = "quality_reports"
     CHUNK_PROOFS = "chunk_proofs"
+    PIT_CONFLICTS = "pit_conflicts"
 
 
 class EvidenceObjectRef(Contract):
@@ -902,6 +916,7 @@ class EvidenceStreamRef(Contract):
     """
 
     _MODEL_SINCE = ADR_0077_VERSION
+    _VALUES_SINCE = {"stream": {EvidenceStream.PIT_CONFLICTS: ADR_0094_VERSION}}
 
     stream: EvidenceStream
     format: Literal["hlens.dataset.evidence-jsonl@1.0.0"]
@@ -918,6 +933,87 @@ class EvidenceStreamRef(Contract):
             raise ValueError("叶对象数不得超过记录数（每个叶至少一条记录）")
         if self.leaf_count <= 1 and self.depth != 1:
             raise ValueError("叶对象数不超过 1 时根索引的 depth 必须为 1")
+        return self
+
+
+class PITConflictEvidenceRef(Contract):
+    """固定大小的 PIT conflict stream 根引用（ADR-0094 决策 2）。
+
+    复用 ADR-0077 根承诺形状，并在这里固定 stream identity。流的内容、序号连续性与根字节由 reader /
+    verifier 核验；本类型不携带、截取或限制 maximal heads。
+    """
+
+    _MODEL_SINCE = ADR_0094_VERSION
+
+    stream: EvidenceStreamRef
+
+    @model_validator(mode="after")
+    def _pit_conflict_stream(self) -> PITConflictEvidenceRef:
+        if self.stream.stream is not EvidenceStream.PIT_CONFLICTS:
+            raise ValueError("PIT conflict 引用必须指向 pit_conflicts stream")
+        return self
+
+
+class PITConflictHeadRecord(Contract):
+    """一个 PIT conflict evaluation 的单条 maximal-head 证据（ADR-0094 决策）。
+
+    一条记录只携带一个 head；`head_count` 与 `ordinal` 允许 reader 检查分组和连续序号，
+    不构成 head 上限。
+    完整有序性、同 evaluation 的完整性与 maximal-head 真实性属于 evidence writer / verifier。
+    """
+
+    _MODEL_SINCE = ADR_0094_VERSION
+
+    rule_id: str = Field(pattern=BINDING_ID_PATTERN)
+    rule_version: str = Field(pattern=SEMVER_PATTERN)
+    rule_hash: ContentHash
+    observation_key: NonEmptyStr
+    simulation_time: UtcDatetime
+    knowledge_cutoff: UtcDatetime
+    head_count: int = Field(strict=True, ge=2)
+    ordinal: int = Field(strict=True, ge=0)
+    revision_id: NonEmptyStr
+
+    @model_validator(mode="after")
+    def _ordinal_is_within_head_count(self) -> PITConflictHeadRecord:
+        if self.ordinal >= self.head_count:
+            raise ValueError("ordinal 必须小于 head_count")
+        return self
+
+    def sort_key(self) -> tuple[str, str, str, str, datetime, str]:
+        """ADR-0094 的 stream 顺序键；ordinal 则在 evaluation 内从零连续递增。"""
+        return (
+            self.rule_id,
+            self.rule_version,
+            self.rule_hash,
+            self.observation_key,
+            self.simulation_time,
+            self.revision_id,
+        )
+
+
+class PITConflictEvent(Contract):
+    """定长 fail-closed PIT 冲突结果：evaluation identity、head 数与根引用（ADR-0094）。
+
+    这个对象不包含 maximal heads；`evidence.stream.record_count` 必须与 `head_count` 一致。旧 v2
+    `PointInTimeSelection` 及其完整 `maximal_heads` tuple 不变。
+    """
+
+    _MODEL_SINCE = ADR_0094_VERSION
+
+    rule_id: str = Field(pattern=BINDING_ID_PATTERN)
+    rule_version: str = Field(pattern=SEMVER_PATTERN)
+    rule_hash: ContentHash
+    observation_key: NonEmptyStr
+    simulation_time: UtcDatetime
+    knowledge_cutoff: UtcDatetime
+    head_count: int = Field(strict=True, ge=2)
+    evidence: PITConflictEvidenceRef
+
+    @model_validator(mode="after")
+    def _evidence_count_matches(self) -> PITConflictEvent:
+        if self.evidence.stream.record_count != self.head_count:
+            raise ValueError("pit_conflicts record_count 必须等于 head_count")
         return self
 
 
@@ -1005,8 +1101,9 @@ class ResearchDatasetEvidenceManifest(Contract):
       batch id 的前缀；
     - `row_count` / `chunk_rows` / `chunk_count`：空选择被拒绝，
       `chunk_count = ceil(row_count / chunk_rows)`；
-    - `evidence`：六种 stream 恰好各一项，按 stream 名规范排序；`chunk_proofs` 的记录数等于
-      `chunk_count`，`lineage` 与 `quality_reports` 非空。
+    - `evidence`：2.3.0 / 2.4.0 envelope 恰好六种 ADR-0077 stream 各一项；2.5.0 及之后再含一项
+      `pit_conflicts`。两种形状均按 stream 名规范排序；`chunk_proofs` 的记录数等于 `chunk_count`，
+      `lineage` 与 `quality_reports` 非空。
 
     **诚实边界**：契约只证明结构。`selection_id` 与规则 / PIT / universe / `data_type` / 窗口的
     派生关系、规则与 universe 是否已登记、对象是否存在且字节匹配、流内容与 chunk 行是否就是输入的
@@ -1025,7 +1122,7 @@ class ResearchDatasetEvidenceManifest(Contract):
     row_count: int = Field(ge=1)
     chunk_rows: int = Field(ge=1)
     chunk_count: int = Field(ge=1)
-    evidence: tuple[EvidenceStreamRef, ...] = Field(min_length=6, max_length=6)
+    evidence: tuple[EvidenceStreamRef, ...] = Field(min_length=6, max_length=7)
 
     @field_validator("evidence")
     @classmethod
@@ -1034,13 +1131,30 @@ class ResearchDatasetEvidenceManifest(Contract):
     ) -> tuple[EvidenceStreamRef, ...]:
         streams = tuple(item.stream.value for item in value)
         _canonical_unique(streams, "evidence 的 stream")
-        missing = sorted({stream.value for stream in EvidenceStream} - set(streams))
-        if missing:
-            raise ValueError(f"evidence 缺少 stream：{missing}")
         return tuple(sorted(value, key=lambda item: item.stream.value))
 
     @model_validator(mode="after")
     def _manifest_invariants(self) -> ResearchDatasetEvidenceManifest:
+        version = parse_semver(self.schema_version)
+        envelope = (
+            int(version.group("major")),
+            int(version.group("minor")),
+            int(version.group("patch")),
+        )
+        uses_pit_conflicts = envelope >= (2, 5, 0)
+        required_streams = {
+            stream
+            for stream in EvidenceStream
+            if uses_pit_conflicts or stream is not EvidenceStream.PIT_CONFLICTS
+        }
+        actual_streams = {item.stream for item in self.evidence}
+        missing = sorted(stream.value for stream in required_streams - actual_streams)
+        unexpected = sorted(stream.value for stream in actual_streams - required_streams)
+        if missing or unexpected:
+            raise ValueError(
+                f"schema_version={self.schema_version} 的 evidence stream 集合不匹配："
+                f"missing={missing}, unexpected={unexpected}"
+            )
         upstream = self.point_in_time.snapshot_bindings
         if self.dataset.zone is not Zone.RESEARCH_DATASET:
             raise ValueError("dataset 必须是 zone=research_dataset 的 DatasetRef")

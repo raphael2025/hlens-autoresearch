@@ -165,6 +165,15 @@ ADR_0052_SCHEMA_SHA256 = {
     "ValidationProfile": "d2eb9781c9e84ca6dbb178d04a61e6870bb520a59b1abd4f28977983d2dde733",
     "ValidationReport": "72b741d92ed994b9959757d3b4940f922f82eca2b56a2c44526b290a9f11d851",
 }
+
+# 2.4.0 introduced fields to these reused contracts. Keep the 2.4.0 schema bytes as the exact
+# baseline for ADR-0094's 2.5.0 envelope-only change; ADR-0088 separately pins their pre-2.4 shapes.
+ADR_0088_SCHEMA_SHA256_AT_2_4_0 = {
+    "EventSpec": "151caafa8b41242d69ba5d2336343acb2d5b5782688b357638b88500b89de0ef",
+    "ResearchDatasetManifest": "19fcaf64ba257a66b976e8324df03bfde68227f0f9f1ad5889237e163575c0c6",
+    "StrategySpec": "424efe3fd0351e7be186b05de51dbe4c811c7d4d433a75abc334e62a90f6154d",
+    "UniverseMember": "213dcffc38198da44dc7e0b4b5482965adf40bad6c1c1eaea1855907b14e117e",
+}
 PRE_B3_SCHEMA_SHA256 = {
     "AuthorizationRecord": "c3b234ad9bbc55408bfe4e4d3c52936425d41f9ef37fd93ca6a5cae707421b0d",
     "AvailabilityDecision": "c2c7b023702bb22eba14187274a9dc489a7d29de1b9e5362e1bcad15fad83017",
@@ -1542,7 +1551,7 @@ def test_b3_only_appends_to_the_registry() -> None:
     b3_end = len(PRE_B3_MODEL_NAMES) + len(B3_MODELS)
     assert names[len(PRE_B3_MODEL_NAMES) : b3_end] == tuple(model.__name__ for model in B3_MODELS)
     assert b3_end == 74
-    assert len(CONTRACT_MODELS) == 146
+    assert len(CONTRACT_MODELS) == 149
 
 
 def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
@@ -1567,6 +1576,12 @@ def test_pre_b3_current_schemas_are_byte_identical(name: str, tmp_path: Path) ->
         for schema in (committed, regenerated):
             digest = hashlib.sha256(as_published_at(schema, "2.1.0")).hexdigest()
             assert digest == ADR_0052_SCHEMA_SHA256[name]
+        return
+    if name in ADR_0088_SCHEMA_SHA256_AT_2_4_0:
+        # ADR-0088 changed these shapes; ADR-0094 may change only the envelope default.
+        for schema in (committed, regenerated):
+            digest = hashlib.sha256(as_published_at(schema, "2.4.0")).hexdigest()
+            assert digest == ADR_0088_SCHEMA_SHA256_AT_2_4_0[name]
         return
     # ADR-0052 §4 / ADR-0055 / ADR-0077: the 2.1.0, 2.2.0 and 2.3.0 bumps may change only the
     # envelope default.
@@ -1594,7 +1609,7 @@ def test_v1_snapshots_and_vectors_are_byte_identical() -> None:
 def test_contract_version_and_reused_patterns_are_unchanged() -> None:
     # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0 and ADR-0088
     # to 2.4.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
     assert revision.SNAPSHOT_TABLE_PATTERN == r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"
     assert revision.BINDING_ID_PATTERN == r"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$"
 

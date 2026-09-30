@@ -259,7 +259,7 @@ def test_semver_pattern_is_ascii_only_and_has_no_leading_zeros() -> None:
     assert "\\d" not in SEMVER_PATTERN
     # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0 and ADR-0088
     # to 2.4.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
 
 
 def test_major_is_read_from_the_validated_regex_group() -> None:

@@ -1,0 +1,70 @@
+{
+  "additionalProperties": false,
+  "description": "一个 PIT conflict evaluation 的单条 maximal-head 证据（ADR-0094 决策）。\n\n一条记录只携带一个 head；`head_count` 与 `ordinal` 允许 reader 检查分组和连续序号，\n不构成 head 上限。\n完整有序性、同 evaluation 的完整性与 maximal-head 真实性属于 evidence writer / verifier。",
+  "properties": {
+    "schema_version": {
+      "default": "2.5.0",
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Schema Version",
+      "type": "string"
+    },
+    "rule_id": {
+      "pattern": "^[a-z][a-z0-9_-]*(?:\\.[a-z][a-z0-9_-]*)*$",
+      "title": "Rule Id",
+      "type": "string"
+    },
+    "rule_version": {
+      "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
+      "title": "Rule Version",
+      "type": "string"
+    },
+    "rule_hash": {
+      "pattern": "^[0-9a-f]{64}$",
+      "title": "Rule Hash",
+      "type": "string"
+    },
+    "observation_key": {
+      "minLength": 1,
+      "title": "Observation Key",
+      "type": "string"
+    },
+    "simulation_time": {
+      "format": "date-time",
+      "title": "Simulation Time",
+      "type": "string"
+    },
+    "knowledge_cutoff": {
+      "format": "date-time",
+      "title": "Knowledge Cutoff",
+      "type": "string"
+    },
+    "head_count": {
+      "minimum": 2,
+      "title": "Head Count",
+      "type": "integer"
+    },
+    "ordinal": {
+      "minimum": 0,
+      "title": "Ordinal",
+      "type": "integer"
+    },
+    "revision_id": {
+      "minLength": 1,
+      "title": "Revision Id",
+      "type": "string"
+    }
+  },
+  "required": [
+    "rule_id",
+    "rule_version",
+    "rule_hash",
+    "observation_key",
+    "simulation_time",
+    "knowledge_cutoff",
+    "head_count",
+    "ordinal",
+    "revision_id"
+  ],
+  "title": "PITConflictHeadRecord",
+  "type": "object"
+}

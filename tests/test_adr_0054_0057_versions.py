@@ -104,7 +104,7 @@ SINCE_2_1_0 = ("2.1.0", CONTRACT_SCHEMA_VERSION)
 
 
 def test_the_content_is_2_1_0_and_the_current_version_is_2_3_0() -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
     assert dict(EventRequest._FIELDS_SINCE) == {"subject": "2.1.0"}
     assert dict(BacktestResult._FIELDS_SINCE)["remainders"] == "2.1.0"
     assert FillRemainder._MODEL_SINCE == "2.1.0"
@@ -144,7 +144,7 @@ def test_the_current_code_builds_the_current_envelope() -> None:
     req, result = _events("BTCUSDT")
     backtester, bt_req, bt_result = _carry()
     for obj in (req, result, backtester.descriptor, bt_req, bt_result):
-        assert obj.schema_version == CONTRACT_SCHEMA_VERSION == "2.4.0"
+        assert obj.schema_version == CONTRACT_SCHEMA_VERSION == "2.5.0"
 
 
 # ======================================================================================
