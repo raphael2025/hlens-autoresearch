@@ -128,7 +128,6 @@ from infrastructure.pit.selector import PIT_BINDING, PitConflictError, PitSelect
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.quality.listing_report import ListingQualityReporter
 from infrastructure.quality.reporter import QualityReporter, evidence_gaps_of
-from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 from infrastructure.revision.availability import AVAILABILITY_BINDING as ARCHIVE_AVAILABILITY
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
@@ -137,6 +136,7 @@ from infrastructure.revision.rest_availability import REST_AVAILABILITY_BINDING
 from infrastructure.revision.rest_precedence import REST_PRECEDENCE_BINDING
 from infrastructure.revision.row_integrity import snapshots_of_batches
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 from infrastructure.universe.builder import (
     REGISTERED_UNIVERSES,
     UniverseBuilder,

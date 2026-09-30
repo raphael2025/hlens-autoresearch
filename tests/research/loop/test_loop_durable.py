@@ -52,11 +52,11 @@ from research.loop.durable import (
     MEMORY_FILE,
     REVIEWS_FILE,
     SEALED_OOS_FILE,
-    MemoryCheckpoint,
     LoopStateLocked,
+    MemoryCheckpoint,
 )
-from research.loop.trials import ExperimentStage
 from research.loop.memory import REVIEW_APPROVED
+from research.loop.trials import ExperimentStage
 from research.persistence import AppendOnlyJournal, JournalCorrupted
 from research.strategies.failure_registry import FailureRegistry
 from research.validation.sealed_oos import (

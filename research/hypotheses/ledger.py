@@ -280,7 +280,8 @@ class TrialLedger:
                     raise LedgerError("a batch contains only Hypothesis values")
                 if hypothesis.origin is HypothesisOrigin.LLM:
                     raise LedgerError(
-                        f"an LLM hypothesis is registered only as a reviewed draft: {hypothesis.ref}"
+                        "an LLM hypothesis is registered only as a reviewed draft: "
+                        f"{hypothesis.ref}"
                     )
                 key = (hypothesis.name, hypothesis.version)
                 if key in keys:
@@ -290,14 +291,14 @@ class TrialLedger:
                 if existing is None:
                     pending.append(hypothesis)
                 elif existing.content_hash() != hypothesis.content_hash():
-                    raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+                    raise LedgerError(
+                        f"{hypothesis.ref} is registered with other content: new version"
+                    )
 
             if not pending:
                 return ()
 
-            payload = {
-                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in pending]
-            }
+            payload = {"hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in pending]}
             if self._journal is not None:
                 # The journal append is the durable commit point. Do not expose partial in-memory
                 # registration if the append fails (including a stale-writer refusal).
@@ -365,9 +366,7 @@ class TrialLedger:
                     raise LedgerError(f"a recovery batch repeats {hypothesis.ref}")
                 keys.add(key)
 
-            payload = {
-                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in batch]
-            }
+            payload = {"hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in batch]}
             payload_json = json.loads(canonical_json(payload))
             entries = journal.entries
 
@@ -425,7 +424,10 @@ class TrialLedger:
             return detached_entry(entry)
 
     def _replay_batch(self, path: Path, payload: object) -> None:
-        """Replay one strictly shaped batch record; any duplicate or invalid member is corruption."""
+        """Replay one strictly shaped batch record.
+
+        Any duplicate or invalid member is corruption.
+        """
         if not isinstance(payload, dict) or set(payload) != {"hypotheses"}:
             raise JournalCorrupted(f"{path}: malformed batch registration payload")
         raw_hypotheses = payload["hypotheses"]
@@ -491,7 +493,8 @@ class TrialLedger:
                 return False
             if self._journal is not None:
                 self._journal.append(
-                    "reevaluate", {"hypothesis": hypothesis.model_dump(mode="json"), "attempt": label}
+                    "reevaluate",
+                    {"hypothesis": hypothesis.model_dump(mode="json"), "attempt": label},
                 )
             self._append(hypothesis, label)
             return True
@@ -502,7 +505,9 @@ class TrialLedger:
             existing = self._registered.get(key)
             if existing is not None:
                 if existing.content_hash() != hypothesis.content_hash():
-                    raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+                    raise LedgerError(
+                        f"{hypothesis.ref} is registered with other content: new version"
+                    )
                 return False
             if self._journal is not None:
                 self._journal.append("register", hypothesis.model_dump(mode="json"))

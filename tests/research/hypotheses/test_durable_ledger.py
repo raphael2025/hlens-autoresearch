@@ -5,9 +5,10 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Iterator, cast
+from typing import cast
 
 import pytest
 
@@ -198,9 +199,7 @@ def test_exact_duplicates_are_read_only_during_an_active_ledger_lease(tmp_path: 
 
 def test_llm_origin_exact_duplicate_is_still_rejected_by_register(tmp_path: Path) -> None:
     ledger = TrialLedger(tmp_path / "trials.jsonl")
-    hypothesis = negation("h1", "fam", S, "0.1").model_copy(
-        update={"origin": HypothesisOrigin.LLM}
-    )
+    hypothesis = negation("h1", "fam", S, "0.1").model_copy(update={"origin": HypothesisOrigin.LLM})
     reviewed = HypothesisDraft(hypothesis, cast(LlmCall, object()), reviewed=True)
     assert ledger.register_draft(reviewed)
     before_head = ledger.journal_head()
