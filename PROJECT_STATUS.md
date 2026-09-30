@@ -9,11 +9,12 @@
 |---|---|
 | 项目版本 | 0.0.0 |
 | 当前 Phase | **Phase 1 — Market Representation：🔄 已开启**（2026-09-24） |
-| 当前子阶段 | **分支收敛后补齐各模块基础逻辑，统一验收暂缓**。Raphael 已将项目决策与 Claude / Cursor 协调权交给 Codex。主线有各 Phase 的契约、Provider、数据流、研究循环、API/Web 和模拟执行框架；项目不是骨架。Wave A1–A4 已以 `0651e6a` 本地提交；Wave C1–C3 已以 `1ad56a0` 本地提交。P7 durable v4/v5、ADR-0074 operator 与相关模块基础逻辑已进入本地 main，详细限制见模块计划。新增 E1-R 本地提交 `64b021a`、`1d8f231`、`62bfc9d`、`3997e0b`：重建 committed revision IDs、Verifier 磁盘索引快照匹配计数并保留已导出的 dict/list API。E1 接口与两个内部代理接线已在 `34b95c3` 完成；Normalizer 同一 unit 的 symbol 一致性检查当前在开发分支。未运行测试、build、lint、typecheck、probe 或验收。ADR-0075 已接受，接下来实现 adapter 内固定快照的流式扫描；其余 PyIceberg metadata、archive parse、完整返回 ID tuple 与调用方持有集合仍未解决，故 E1-CAP-1 继续阻断。上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定；本轮后置。D3E 已接受、D4 已关闭，其余 Phase 未验收。2026-09-28 起，本轮协调由 Claude Code 以 PM 身份承担（Raphael 指令），Codex 仅执行 PM 签发的 Task Packet |
+| 当前子阶段 | **全模块底层逻辑代码补全轮完成，待 Raphael 本地统一验收**（2026-09-30，Claude Code PM）。整合线 `codex/project-consolidation` 已并入工作分支并合入 `main`；ADR-0098（P11 权威解析，取代 ADR-0080 BLOCKED）与 ADR-0099（P7 rank/quantile）已接受并实现；深度审查发现的缺陷已修复。本轮**未运行任何测试、lint、typecheck 或 probe**；E1-CAP-1 仍未证明，Phase 1 未验收 |
 | 上一 Phase | Phase 0 — Research Constitution：✅ 已完成（tag `phase-0-complete`，last known good） |
-| 总体状态 | 🔄 当前工作分支 `phase/1-foundation-completion` 基于本地 `main@7ad128a`；`main@7ad128a` 已推送（`origin/main` 同步）；`phase/1-foundation-completion` 已推送为远端分支，待 Phase 1 调试验收后再并入 `main`；上一轮未提交的 E1 余项已于 2026-09-28 经 Raphael 批准归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定，E1-CAP-1 仍阻断、本轮后置；远端仅保留 `main`。PR #1～#9 已合入；PR #10 已关闭，失败候选及证据保存在 archive ref。清理阶段只留 root worktree；开发阶段现有 1 个隔离分支 / 1 个 worktree。旧分支 tip 保存在 archive refs。Wave A1–A4、C1–C3 和 E1-R 已进入本地主线；`34b95c3` 补齐 E1 infrastructure Protocol / 内部代理接线。ADR-0075 已接受，扫描实现待开发。项目非空骨架；P7 durable v4/v5 与 ADR-0074 operator 已实现但未验收，六类 P7 算子仍 fail closed。E1 probe 未运行、E1-CAP-1 仍阻断；Profile 数值未冻结；P13 仅模拟。模块收敛计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md) |
+| 总体状态 | `main` = 本轮整合结果（CODE_COMPLETE / DEBUG_PENDING）。68 个 codex 分支已逐一核对：独有逻辑已补回，其余为旧快照 / 延后实验 / 纯文档，tip 保留在远端待清理 |
+| W1 / 跨模块证据 | PostgreSQL-enabled 全量历史结果为 `7 failed, 8,814 passed, 1 skipped, 72 deselected, 5 warnings`；两轮延期节点不计通过。W6 State `44 passed`；Event/Outcome `203 passed, 1 failed`（15-vs-17 registry count，历史轮次无法核实）；W7 P7 精确文案节点修复后通过、P8 selected slice `148 passed`；W10 build/components `120 passed`、library `110 passed, 1 failed`（retro-audit 节点两轮延期）。W2 worker host/subprocess 定向回归 `28 passed`，另有 PostgreSQL-backed Iceberg result-before-ack restart 子标准 `1 passed`；W2 整体验收仍开放。详见对应 W1/W6/W10 review 与 WBS。 |
 | 全阶段代码完成批次 | 分支 `claude/2026-09-26-code-completion-337e38` → WIP `wip/all-code-completion` 的 B1～B67（含 P10 证据决定）已整合；`CODE_COMPLETE / DEBUG_PENDING` 只表示该批任务完成，不代表所有规划能力齐备或 Phase 验收。P7 已补直接引用校验、admission journal / TrialLedger 崩溃恢复基础、v5 operator identity 与 ADR-0074 本机有限批次入口；六类算子语义与 Provider lowering 仍未批准。逐批记录见 [完成计划 §10](docs/plans/2026-09-26-all-code-completion-plan.md) |
-| 最后更新时间 | 2026-09-28 |
+| 最后更新时间 | 2026-09-30 |
 
 Phase 0 的全部验收标准已满足：研究宪法已发布为 **`1.0.0 / Approved`**（ADR-0020，原则正文零变化、无数值阈值、只前向适用）；
 领域契约、状态机、三层验证契约、错误分类、Schema 导出与工程基线均已实现并通过两轮关闭复审
@@ -28,8 +29,8 @@ ADR-0022（Binance 公共现货 BTCUSDT / ETHUSDT，无任何交易能力）、A
 ADR-0024（按当时可交易集合构建标的池）。A2 已把它们同步进数据架构文档，并冻结首批表名、分区、数据源版本、依赖清单与设置字段。
 Iceberg Catalog、本地 StorageAdapter、八张生产表定义、D0 Collector、D1 fail-closed parser 与 D2 append-only revision store 已验收。D2 首轮复核发现来源 checksum 真实性与 arrival anchor 全表物化两个缺陷；D2-R1 修复后由 Codex 复现旧提交四项失败、运行真实 PostgreSQL 全量与静态检查并接受。D3A 是 REST Raw / lineage 的 docs-only 架构门：Codex 复核草案后退回八项缺陷，D3A-R1 修正后由 Codex 独立复核接受 ADR-0027。D3B 首轮复核发现极端十进制异常泄漏与伪造 / 过期比较可生成边；D3B-R1 修复后由 Codex 接受。D3C 首轮复核发现 RFC JSON 框架空白被误拒；D3C-R1 修复后由 Codex 以 `python -O` 对抗探针、真实 PostgreSQL 3434 项全量与静态检查接受。D3D 首轮复核发现完整 HTTP client 注入可在 allowlist 后加入凭据并改写到外域账户路径；D3D-R1 删除该入口并关闭环境代理与 Cookie 回放，Codex 独立复现修复、运行真实 PostgreSQL 3587 项全量后接受，D3E 开放。D3E 已把已提交的 REST 采集写成 Raw 响应 / 元素 revision，并实现跨通道比对与证据边；首轮复核后经 R1 / R2 / R3 修复与复核，Codex 于 2026-09-27 接受 D3E；D4 已关闭。Phase 1 尚未整体验收，E1-CAP-1 容量边界仍阻断。
 
-代码仓库已有私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）：PR 工作流已用于 PR #6～#9；GitHub Actions CI 尚未配置。执行者只提交，Codex 复核通过后推送每个进度。
-本次进度推送后，远程 `phase/1` 含 A3a / A3b / B1～C3、D-32、D0～D2、D3A～D3D 及各返修 / 验收门；D3D 修复后的实现恢复点为 `c06b9fa`。
+代码仓库使用私有 GitHub 远程 `raphael2025/hlens-autoresearch`（ADR-0025）；PR #1～#11 的历史保留，GitHub Actions CI 尚未配置。当前长期本地 / 远端分支只有 `main`；必要时可建临时隔离分支，整合后清理。
+此前的远端 `phase/1-foundation-completion` 已于本轮并入 `main` 并删除；旧 tip 与所有本地 feature tip 均已保存在 archive refs。
 
 Raphael 2026-09-24 的“授权所有、全权接管并开发 / 测试 / 决策 / 文档”明确覆盖 C2 所需的 H12 环境变更：
 创建专用 PostgreSQL catalog / test database 与最小权限 role、写入仅本机且被 Git 忽略的凭据文件，并覆盖 D0 / D1 对
@@ -45,8 +46,8 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|
 | 0 | Research Constitution | ✅ 已完成（`main`，tag `phase-0-complete`） |
 | 0.5 | Public Knowledge Base | 🧱 检索、审阅写入与标签 / 资产路径已实现（ADR-0034 / 0055 / 0058）；四条 2026-09-26 种子已显式固定 `schema_version: 2.1.0`。种子标签 / 资产仍需具名人工审阅；新增种子的黄金哈希覆盖尚未补齐。**Phase 0.5 未验收** |
-| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；RSS probe 与诊断均未运行。候选 `a75278e` 的 500k 增长 59.9 / 63.9 MiB 不代表 main。E1-R 增加 committed ID 重建与 Verifier 磁盘快照匹配计数，并保持公开 dict/list API；提交 `64b021a`、`1d8f231`、`62bfc9d`、`3997e0b` 未验证。`34b95c3` 补入 `RevisionCatalog.scan_column_batches` Protocol 和 revision / manifest-cache 测试代理转发。当前开发分支补上 unit 全行 symbol 一致性拒绝；均未运行检查。另有测试仍引用已删除的 `_same_numbers`。ADR-0075 批准 adapter 固定快照流式扫描，尚未实现；PyIceberg metadata、archive parse、完整 result ID tuple、generic history fallback 的 `seen` set、builder caller-held snapshot ID set 与 metadata/manifest 增长仍未解决。默认 tempfile 在本机落入 tmpfs。完整 tuple 计入 32 MiB；上一轮未提交的 E1 余项已归档到 `wip/e1-cap-archive@ece150e`，未审阅、未测试、不构成正式决定，本轮后置。E1-CAP-1 阻断，Phase 1 未验收。路线见 [E1-CAP-1 对账](docs/reviews/2026-09-28-e1-cap1-design-reconciliation.md) |
-| 2 | Market State Engine | 🧱 框架已实现（ADR-0035）；诊断载荷 1.1.0 记录来源 `StateResult.result_hash`（裸序列为 null），旧 1.0.0 报告可原样读回并复原 id；来源哈希只是报告声明、不认证 Registry 存在性；Web fixture 已按新载荷重生成；测试、类型检查与阶段验收未运行 |
+| 1 | Market Representation | 🔄 D3E 已独立验收、D4 已关闭；probe 小规模全日 synthetic smoke 与 4.0 MiB 增长判据通过，但不构成 E1-CAP-1。整合线已有 Quality v3 → Dataset v3 固定快照消费、bounded stream replay、缺绑定拒绝与 2.3/2.4 legacy replay；聚合回归 `135 passed, 3 skipped, 6 deselected`，三名验收角色批准该窄切片。Quality v3 rule-owned identity-hash / snapshot-table 注册已三方验收，相关 suites `58 passed`。PIT 单 key bounded selector/head traversal 已验收；新增长链/宽 DAG/重复 cutoff diagnostics 已三方验收，64 节点 ext4 smoke 仅验证工具与遍历计数，不是容量证据。两轮失败的 3 个节点已延期，不计通过；6 个 schema mismatch 节点与干净基线一致，未改契约 schema。PIT 长链/宽图更大规模成本、完整进程 RSS、真实 PostgreSQL append/replay、PyIceberg metadata、finalization 状态及整体工作集成本仍未证明。E1-CAP-1 继续阻断，Phase 1 未验收。详见 [Dataset Quality v3 consumer review](docs/reviews/2026-09-30-dataset-quality-v3-consumer.md)、[Quality v3 registry review](docs/reviews/2026-09-30-quality-v3-rule-registry.md)、[PIT bounded diagnostics review](docs/reviews/2026-09-30-pit-sqlite-capacity-diagnostics.md) 与 [E1-CAP-1 对账](docs/reviews/2026-09-28-e1-cap1-design-reconciliation.md)。 |
+| 2 | Market State Engine | 🧱 框架与 Iceberg 持久化已实现（ADR-0035 / 0089）；诊断载荷 1.1.0 记录来源 `StateResult.result_hash`（裸序列为 null），旧 1.0.0 报告可原样读回并复原 id；读回可按 `expected_spec` 校验身份；来源哈希只是报告声明、不认证 Registry 存在性；`tests/infrastructure/state` 27 项通过，State CLI / catalog、类型检查与阶段验收未完成 |
 | 3 | Event & Interaction Engine | 🧱 Provider、交互 DSL、统计与物理表定义已实现（ADR-0036 / 0056 / 0061）；独立 Event 表操作命令按 ADR-0066 已通过 PR #6 合并；生产 catalog 尚未建表；Phase 3 未验收 |
 | 4 | Outcome Engine + 最小验证门 | 🧱 框架已实现（ADR-0037）；`EventResult → OutcomeEvent` 纯转换已在 main，以 event id / 可观测时间构造 Outcome 标签输入；Outcome 表持久化、可选多种子负对照、ADR-0052 契约 2.1.0 与研究侧精确取值已在 `main`；ADR-0060 市场基准；Profile 数值 TBD；未跑测试，Phase 4 未验收 |
 | 5 | Strategy Library + 回测 | 🧱 框架已实现（ADR-0038）；横截面动量 `xsmom_bars`（研究层）CODE_COMPLETE / DEBUG_PENDING；ADR-0054 部分成交结转已以 2.1.0 声明；ADR-0005 Promotion 链 CODE_COMPLETE / DEBUG_PENDING（今天所有策略都被拒）；Promotion 的权威冻结来源改为追加式、带目录外锚点的 Profile 冻结登记（ADR-0062 **Accepted** 2026-09-27，Codex；B56，CODE_COMPLETE / DEBUG_PENDING；登记为空、Profile 数值未冻结，不是 Phase 4 / 5 验收）；Promotion 与路由一样要求 Profile 所要求的反向对照报告项（B59）；无策略晋升 |
@@ -100,7 +101,10 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 ## 4. 当前正在做
 
 - ✅ 框架整合：B1～B67 与 ADR-0052 / 0055 等代码已分批整合；PR #6 合并模块代码 / 内容收口批次（基线 `4875e92`），PR #7 将合并后项目状态同步至 `f58e8ec`（docs-only）。代码仍是 `CODE_COMPLETE / DEBUG_PENDING`，没有把全量门禁或主线合并当作 Phase 验收。
-- 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 的 500k resume / replay 增长为 59.9 / 63.9 MiB，超过 32 MiB。已重申既有容量口径：完整进程工作集均计入（含 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象）；history 与 normalizer 候选尚未达到或证明门槛，Phase 1 仍未验收。
+- 🔨 Phase 1 当前阻断：D3E（含 R1 / R2 / R3）已接受，D4 已关闭；E1-CAP-1 仍未证明。完整进程工作集口径不变，计入 PyIceberg metadata、Parser / scan 临时对象、normalizer 状态与 API 返回对象；旧候选及本轮 partial 非 main 诊断均不能替代 main-matching 完整容量证据。Phase 1 仍未验收。
+- 🔨 Phase 1 E1-CAP-1 进展（2026-09-30，尚未合入 main）：干净候选 `codex/e1-phase1-progress@baffcb77a6ca76a19016e2ba2413cebf49958564` 集成 PIT lazy-key / ADR-0094 首个 conflict 终止、D1/D2 archive spool、per-key PIT edge RunSet 三个窄切片；各自经独立验收，综合定向回归 `255 passed, 1 deselected`，Ruff、format、mypy 通过。完整 Phase 1 / CAP-1 仍未接受。对基线 `codex/pit-conflict-v3@5d9dd718` 的部分容量诊断完整跑完 10k、100k 首重复以及 500k `verify_archive`：verify delta 从 44.3 到 93.0 MiB（已观察跨度 48.7 MiB）；因超 32 MiB 后停止剩余阶段/重复，探针返回 ERROR，且候选生产路径不同于 main，故不是 E1-CAP-1 证据。报告：`docs/reviews/2026-09-30-e1-cap1-partial-baseline.md`。剩余 O(H) 单 key Canonical history 及完整 main-matching 32 MiB 测量仍待处理。
+- 🔨 ADR-0094（`3b3efb2`）已决定以完整 PIT conflict-head evidence stream 取代 v3 冲突 tuple；实现候选与三路窄范围验收已推进。补齐 contract 2.5.0 的 current-version tests / DTO / Web fixture 后，合同回归 `1308 passed, 5 deselected`、catalog/report 集成 `172 passed`、Web `120 passed`、Web production build 与 Ruff / diff check 通过。5 个 deselected 是已记录的历史 schema pin / fixture 节点；未运行 E1-CAP-1，Phase 1 仍因完整 32 MiB 工作集容量证据不足而阻断。
+- ✅ ADR-0096 TrialLedger 幂等切片已在整合线落地：精确重复登记 / 同一 attempt 只读返回；LLM-origin 检查仍先行，新写入继续受 gate 控制。Hypothesis ledger 定向套件 `12 passed`；durable/loop 集成套件 `89 passed`；真实 DurableState closed-gate 节点 `1 passed`；Ruff、format、2-file mypy 通过。首次集成收集因 Dataset builder 缺少 `contextmanager` 导入而退出（0 collected），已修复并全量重跑通过。详见 [ADR-0096 ledger idempotency review](docs/reviews/2026-09-30-adr-0096-ledger-idempotency.md)。这是窄切片证据，不构成 Phase 7 或 Phase 1 验收。
 - 🧩 Phase 4 Event→Outcome 基础接线：`EventResult` 到 `OutcomeEvent` 的纯转换已实现并公开导出，以 `event_id` / `event_time` 保留事件身份与可观测时刻；Codex 复核待做，测试与阶段验收未运行。
 - ✅ 模块收口批次：Phase 0.5 因子 / 特征 / Event 草稿、Event 字段说明、Loop / Router / API README 与 Phase 3 Event 表操作命令均已通过 PR #6 合并到 `main`（`4875e92`）；不构成阶段验收。
 - ✅ 模块差额整合：P6 矩阵报告接线与错误归因、P8 显式输入的回溯审计 writer / 只读 API / Web 页面、P11 精确 Decimal 阈值读取及研究库规格已快进到本地 `main`（`669704c`）；静态检查 / Web build 有通过记录，未跑测试、未做 Phase 验收。
@@ -113,39 +117,54 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 ### 我（Raphael）需要做
 
-- 暂无阶段验收需要你现在执行；你已授权先完成模块代码与内容，再统一考虑验收。
-- 真实 catalog 建 Event 表、安装 Uvicorn、给知识条目写具名人工审阅的 tags / assets，仍须按各 ADR / H12 边界另行授权或由具名人审阅。
-- Profile 数值、交易 / 风险预算与实盘能力继续保持冻结 / 禁止状态；不通过代码补默认值或绕过门槛。
+- 暂无需要你处理的 Git 分支决定；本轮授权由 PM 完成整合与清理。
+- 知识条目 tags / assets 仍需具名人工审阅；Profile 数值、交易 / 风险预算与实盘能力保持冻结 / 关闭。
 
 ### Claude Code 需要做
 
-- E1-CAP-1 候选失败记录有效（`fix/e1-cap1@a75278e` 的 500k resume / replay 跨规模增长 59.9 / 63.9 MiB，门槛 32 MiB）；对应 probe 在候选分支可重跑，但不代表 main，且每种规模只运行一次。Codex / Claude / Cursor 已完成 PyIceberg 0.12.0 本机源码只读核验，尚无通过完整容量门的方案。任何候选都不能降低容量门槛；正式容量验收暂缓到后续统一验收。
-- Claude / Cursor 仅领取已划定且不与协调分支冲突的单模块范围；提交需记录 Phase、契约边界、测试状态与 ADR。
-- Raphael 已授权 Codex 将核实后的代码与内容本地整合进 `main` 并清理冗余分支。协调提交 `498250a` 及本轮文档核正 `6f9500a` 均已快进进入本地 `main`，尚未推送远端。活动、脏、唯一补丁及待审阅内容须先保全，再逐项归档或清理。
+- 继续把 E1-CAP-1 当作 Phase 1 阻断项；候选 `fix/e1-cap1@a75278e` 的 59.9 / 63.9 MiB 结果超过 32 MiB，不能外推为 main 的测量或降低容量门槛。
+- State ADR-0089 实现已进入 main，但静态审查发现 `state_ref` / `spec_hash` 的读取身份核验缺口；修复与回归验证完成前不得标为验收。
+- 后续任务均以 `main` 为基线；只有隔离工作确有需要时才创建临时分支，整合后删除。
 
 ### Codex 当前工作
 
-- 已核实的模块实现先在协调分支收敛，并于 2026-09-27 进入本地 `main`；本轮又将 E1 probe、P0.5 seed schema 固定和 Phase 11 worker journal 并发保护择取到 main。后续模块开发在隔离任务分支进行，验收 / 测试留后；不整支合并互相重叠的 E1 候选。
-- `phase/1` 没有 main 未含提交；tip 已保存在 `refs/archive/2026-09-28/branches/local/phase-1` 后删除。Claude 研究规格分支 tip 保存在 `refs/archive/2026-09-28/branches/claude/docs-research-spec-completion`，确认无未提交内容且特殊 G1 测试与 main 完全一致后，已关闭闲置会话并清理分支 / worktree。旧未跟踪计划保存在本机项目归档目录。E1 PR #10 失败证据仍在 archive ref；远端仅保留 `main`。
-- 本地 `main` 含 P7 non-runnable typed-plan parser / 只读直接引用校验器、P11 provenance 页面 / 显式 CLI、P12 冲突拒绝、有限查询保护、E1 主线 RSS probe / 可选分阶段诊断、知识种子版本固定、worker journal stale-writer guard、Catalog / Revision snapshot 环保护、P2 / P4 接线和 E1-R batch-history / batch reads / 磁盘 positions 与 committed-row 校验基础切片，以及 committed ID 重建与有界 snapshot match index（`64b021a`、`1d8f231`、`62bfc9d`、`3997e0b`）；本状态提交后比 `origin/main` 超前 132 个提交，未推送。批接口不证明 PyIceberg 扫描整体有界；默认 tempfile 在本机进入 tmpfs。归档候选失败 probe 不代表 main 容量，E1-CAP-1 继续阻断。主线 probe 与诊断模式、测试 / build / 阶段验收均暂缓。
-- Cursor 已按 ADR-0069 独立只读复核 P12 `combine`，未发现具体实现遗漏；测试留待统一验收。P11 最小本机 CLI 按 ADR-0067 与 operator 规格实施；无新架构 ADR、测试暂缓统一验收。
+- W1 全仓基线修复：API/报告 261 passed、PIT/dataset 分区 103 passed 后另将 5 个失败用例逐项复验通过、revision 562 passed / 20 skipped、canonical normalizer 75 passed、State 27 passed、docs consistency 7 passed、payload immutability 201 passed、研究循环/假设批次多组定向回归通过；live API smoke 1 passed。策略/验证目录的长跑在 87 passed、1 failed 后因单个慢用例中断；当前哈希断言单测通过，但完整回归未重跑。旧 PIT proof-scan hook 已切换到真实的 `scan_column_batches` 路径，两项专项通过；volume-bar 规则测试现 10 passed。严格 mypy 现 731 个源文件全绿。全仓 pytest 与最终 Ruff / 格式复核尚未完成。详细事实见 [WBS W1](docs/plans/2026-09-28-project-completion-wbs.md)。
+- ADR-0094 的实现、2.5.0 版本配套和历史 fixture 保留目前分别在隔离候选中；本轮版本配套差异已完成窄范围回归与独立分工检查，提交后仍须整合复核。整合与定向门禁不代表 Phase 验收通过，E1-CAP-1 仍阻断 Phase 1。
 
 ## 6. 当前待决策
 
-**D-DEBUG（已决定，2026-09-28 Raphael）**：暂不调试；先完成所有模块的底层 / 逻辑 / 基础代码，全部完成后再统一调试。所有模块都在范围内（含 P1 E1/Dataset），但不得在单个模块上死循环。本轮所需的新 ADR 由 Codex 依 CLAUDE.md §0 既有授权决定；需改冻结契约、Constitution、Profile 数值或验证阈值的仍上报 Raphael。进度见模块计划 “PM 任务板”。
+**D-DEBUG（历史决定，2026-09-28；已被后续目标取代）**：当时暂缓测试以先补齐各模块基础代码。Raphael 后续要求推进完整工程交付；当前按依赖顺序持续实现、测试、独立复核、集成与运行验证，不得因“代码已写”或单测通过就标为完成。E1-CAP-1、Constitution / Profile 与研究诚信边界仍按现行 ADR 保持。
 
-**D-PM-AUTH（Raphael 2026-09-28 明确授权）**：本轮起，项目的工程、架构与模块语义决定由 Claude Code（PM）按经验直接决定，不再逐项请示 Raphael，也不再等 Codex 审批；决定须写入 ADR / 本文件并留 commit。PM 仍不自行执行不可逆或对外操作（实盘 / 密钥、删除历史数据、push 或合并 `main`、系统软件安装），如确有必要先告知 Raphael。 **2026-09-28 扩大授权**：除实盘交易操作外，开发阶段一切事项（含冻结契约变更、ADR-0051、环境安装、数据下载、建表、推送 / 合并）均由 PM 决定；实盘接口预留但默认关闭。
+**D-PM-AUTH-2026-09-28（历史授权，已被当前目标更新）**：当时工程、架构与模块语义决定授权给 Claude Code PM；实盘、研究诚信与不可逆操作边界继续有效。Raphael 当前 Codex 项目目标已将本范围 PM 重新授权给 Codex Engineering Director，见下项。
+
+**D-PM-AUTH-CURRENT（Raphael 当前目标授权）**：Codex 负责本目标范围内的工程、架构、模块语义、ADR、任务拆分、验收、集成与最终交付；Claude Code、Cursor 和子代理作为执行者。H3/H4/H6、Phase 边界、默认关闭实盘能力及其它安全约束不变。
 
 **D-OPS1 / ADR-0091（Accepted，2026-09-28）**：登记处审计必须严格只读，不得创建目录 / 锁文件或自动修复 anchor；按现有存储格式报告证据强度。Failure Registry 当前无可信 hash chain / anchor，只能结构核验，不宣称可识别合法历史改写。
 
 **DQ-1 / ADR-0077（已决定，2026-09-28 Raphael 选 A）**：批准在 `core/contracts` 新增 2.3.0 additive 的有界 Dataset evidence manifest 模型，v2 `ResearchDatasetManifest` 字段 / 哈希不变、只读兼容；实施为单独串行的 core 任务（W3-E1DS）。DQ-9 chunk / fanout 参数待容量证据。
 
+**D-E1-CANONICAL-SCRATCH（已由 PM 决定，2026-09-29）**：Canonical 位置索引使用 `Settings.canonical_scratch_uri`，默认仓库拥有的 `data/scratch`，通过 `HLENS_CANONICAL_SCRATCH_URI` 可覆盖；运行时显式注入，不回退到 `tempfile` / `TMPDIR`。Settings/composition root 是路径 owner；不改 `StorageAdapter`，spill 磁盘用量不宣称固定上界。显式 scratch-path 接线已由兼容切片进入当前整合线；原提交 `codex/canonical-position-bounds@991b126` 保留作 provenance，未整支合并。整合线另补 `_positions()` 在索引初始化失败时关闭 reader（`2f98461`，三方独立 APPROVE，新增回归 `1 passed`）。32 MiB E1 容量门仍开放。
+
+**E1-Q-STREAM / REPORTER（ADR-0093 Accepted）**：Quality legacy v1/v2 inline reports 保持只读兼容；bounded canonical-partition@3 reporter 已在 `codex/e1-phase1-progress` 集成候选完成。它以 RunSet 外排证明 Raw→Canonical 覆盖，完整耗尽 bounded PIT selector 并校验 pinned key coverage，逐页验证 REST response，按 events / event_revisions / evidence_gaps 顺序写 streams，最后以 manifest 作为唯一提交点。`existing_only` 不读取 clock、不改 manifest 或 evidence storage；临时 expected trees 写入 caller 提供的 scratch adapter，物理 namespace 隔离是调用方前置条件。验收细节见 [v3 reporter acceptance](docs/reviews/2026-09-30-e1-quality-v3-reporter-acceptance.md)。Dataset v3 manifest binding / stream reader 与端到端 consumer proof、完整进程 32 MiB E1-CAP-1 测量未完成；不得将 reporter 切片验收表述为 E1-CAP-1 或 Phase 1 验收。旧决策包状态已由 ADR-0093 取代：[Quality bounded replay](docs/reviews/2026-09-29-quality-existing-only-bounded-replay-decision.md)。
+
+**E1-Q-REPORTER bounded input implementation decision (2026-09-30)**
+
+Code inspection resolved the apparent upstream blocker without changing accepted contracts. `PitSelector.iter_bounded()` uses the `ChannelReconciler.iter_verified_edges(params=...)` RunSet path; the full-day tuple is limited to the legacy tuple API / non-RunSet path. REST body rows carry D3C `decoder_max_body_bytes`, explicitly bounded to 64 MiB (current Settings default 8 MiB), so one-page decoding has a declared byte bound. The unbounded cross-page accumulation is in legacy `_check_rest_pages()` and can be replaced by `scan_column_batches` with one page validated and released at a time.
+
+**Decision:** build the independent canonical-partition v3 reporter using these bounded APIs, external sorted joins for Raw-to-Canonical completeness, and page-at-a-time REST completeness checks. Preserve all input checks and report semantics; introduce no event/page truncation. Do not claim E1-CAP-1 or a fixed total RSS bound until a full-process measurement passes. No new ADR or contract change is needed for this additive implementation path.
+
+**E1-PIT-CONFLICT / ADR-0094（已决定，2026-09-30）**：契约 2.5.0 的 PIT v3 将完整 maximal heads 写入有界 evidence stream，固定大小结果携带 root/count；v2 tuple 与 2.3/2.4 manifest 回放不变。实现切片与 PIT / Dataset 窄验收通过；contract-version follow-up 保留 2.4 历史 fixtures 并新增 2.5 当前 fixtures，相关版本、API DTO、Web test / build 门禁通过。剩余的 E1 单 key O(N) / 完整工作集 32 MiB 测量未解决，Phase 1 仍未验收。决策与分范围记录：[ADR-0094](docs/adr/0094-bounded-pit-conflict-head-evidence.md)、[ADR-0094 implementation review](docs/reviews/2026-09-30-adr-0094-implementation.md)、[contract 2.5.0 follow-up](docs/reviews/2026-09-30-adr-0094-contract-250-followup.md)。
+
+**E1-UNIVERSE-RUNSET（实现决策已接受，2026-09-29；实现候选已独立复核）**：按 ADR-0077 §6.1.1 / §10，`codex/e1-canonical-scratch-integration@6a80b67030105420fe8f33306f59e14757e6ebc2` 已显式传递无默认值的 `UniverseRunParams`，以层次化 content-addressed run-ref set 有界归并时间事件与 lineage/gap 投影；后续 `972c6c7` 将 PIT row/edge run refs 也改为层次化 root，`6a80b67` 补充两个 root reader 的直接 fanout 测试。独立 reviewer 对两个提交切片均 APPROVE；Universe/Dataset/bars/feature/G5 定向测试 `118 passed`，PIT/Dataset source `41 passed`，Ruff/format/mypy/diff-check 通过。代码仍在隔离候选，尚未整合；不改变 DQ-9 数值、v2 或 cutoff/首次 lineage 语义，也未运行 E1-CAP-1。单 key PIT O(N) 与 conflict heads 输出、DQ-9 和完整进程 32 MiB 容量门仍开放。决策边界见 ADR-0077「实施决策：Universe 有界上游接线」。
+
+**E1-PIT 单 key graph（ADR-0097 Accepted，2026-09-30）**：调用级 SQLite graph validator 基础层已整合（`889b268`），三方 reviewer APPROVE；整合线单测 `11 passed`，Ruff、format、mypy 通过。scratch root 显式配置，mmap 关闭、page cache 设置为 4096 KiB、owner marker 随调用目录创建；normal/error/marker失败/nested-enter 生命周期有直接测试，关键 claims/evidence 查询计划无 TEMP-B-TREE。未接入 production selector；多 cutoff 单次建图、reachability/head stream、长链/宽图性能与完整 RSS 仍待完成。ADR-0094 完整 v3 conflict stream 与 v2 replay 保持不变。该切片不代表 E1-CAP-1 通过，Phase 1 仍未验收。背景见 [PIT conflict output review](docs/reviews/2026-09-29-pit-bounded-conflict-output-decision.md)、[ADR-0097](docs/adr/0097-pit-bounded-graph-scratch-index.md) 与 [SQLite graph validator review](docs/reviews/2026-09-30-pit-sqlite-graph-validator.md)。
+
 **代码补全轮次暴露的待 Raphael 决定（2026-09-28，PM 汇总；不决定时相应代码保持 fail closed）**
 
 | ID | 问题 | 来源 |
 |---|---|---|
-| D-P11-AUTH | Phase 11 非 synthetic loop 的 ACTIVE 权威 head、真实 source 身份与各 metric 精确算法 | ADR-0080 BLOCKED |
-| D-P7-OPS | P7 其余五类算子（conditioning / temporal / transformation / ensemble / negation）的研究语义 | ADR-0082 OPEN |
+| D-P11-AUTH | Phase 11 非 synthetic loop 的 ACTIVE 权威 head、真实 source 身份与各 metric 精确算法 | ✅ 已决定（2026-09-30 PM）：ADR-0098 取代 ADR-0080 BLOCKED；已实现待验收 |
+| D-P7-OPS | P7 其余五类算子（conditioning / temporal / transformation / ensemble / negation）的研究语义 | ✅ 已决定：ADR-0088 接受四类，ADR-0099（2026-09-30）接受时间序列 rank / quantile；横截面版本另议 |
 | D-P11-WINDOW | 滚动持续循环与固定日历 Validation Profile 如何配合（换窗口需新 Profile） | ADR-0049 遗留，AUD-2b |
 | D-CATALOG-TABLES | 是否授权在真实 Catalog 创建 `event.*` / `state.*` 表 | ADR-0035 / 0036 / 0066，H12 |
 
@@ -163,11 +182,11 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 
 现有 ADR-0067 与 operator 规格允许显式一次性调用适配。只实现 `python -m research.operations.degradation_cli`：所有对象、时间窗、冻结登记 / 锚点与报告目录都需显式传入；不接 loop、预算、当前 ACTIVE resolver、自动指标聚合或调度。不新增 ADR、契约或 API 写入口；调用方提供的历史与观测仍是明确标注边界的声明数据。实现待统一验收。
 
-**B65 Uvicorn 安装（待 Raphael 授权；代码已完成）**
+**B65 Uvicorn 安装（已完成）**
 
 | ID | 问题 | 方案 | 状态 |
 |---|---|---|---|
-| D-UVICORN | ADR-0063（Codex 已决定用 Uvicorn 作本机只读 API 运行时）需要把 `uvicorn` 作为可选 `api-server` 依赖写入 `pyproject.toml` / `uv.lock` 并装入项目 `.venv`，这属于安装软件（CLAUDE.md §0 / H12） | Codex 选 A：只用本机缓存的 uvicorn 0.53.0、可选 extra、不触网；仓库改动（依赖声明、锁条目、入口、测试、文档）已完成 | 只剩安装与真实运行待 Raphael 明确授权（H12）；两项真实 Uvicorn 测试目前跳过、未运行 |
+| D-UVICORN | ADR-0063（Codex 已决定用 Uvicorn 作本机只读 API 运行时）需要把 `uvicorn` 作为可选 `api-server` 依赖并装入项目 `.venv` | Codex 选 A：只用本机缓存的 uvicorn 0.53.0、可选 extra、不触网；仓库改动和本机安装已完成 | 2026-09-29 loopback HTTP 与 SIGTERM/SIGINT graceful shutdown `4 passed, 1 warning`；无待授权项 |
 
 **B66 G4 容量成交量来源（ADR-0064 已由 Codex 接受）**
 
@@ -205,7 +224,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 |---|---|---|---|
 | D-E2 | 标的上市 / 下架历史（E2）从哪里来？ | 已取证（`docs/architecture/evidence/binance-spot-listing.md`）：官方唯一无凭据来源是 `exchangeInfo` 的**当前**状态快照，没有上市 / 下架日期、历史、修订时间或稳定产品 ID。已起草 [ADR-0029](docs/adr/0029-listing-history-source.md)（Proposed），建议 A：新增该端点与一张原始表，从本机首次观察开始记录，`tradable_from` 明确标为"本机观察下界"。无论选哪个方案，历史回测期的标的池都仍不可构建（与行情数据同一证据缺口） | ✅ 已决定（2026-09-25，Claude 依 Raphael 授权）：ADR-0029 Accepted，方案 A；E2 开始实施 |
 | D-F4 | 首批特征计算接口（`core/contracts/` 新增 FeatureProvider 契约）的字段与防泄漏方式 | 已起草 [ADR-0030](docs/adr/0030-feature-provider-contract.md)（Proposed）：由执行器在每个时刻只交出"历史可用且在知识截止之前"的输入，再用契约测试做因果扰动；新增模型，不改已发布契约 | ✅ 已决定（2026-09-25，Claude 依 Raphael 授权）：ADR-0030 Accepted，方案 A；F4 开始实施 |
-| D-PUSH | 推送规则冲突：仓库 `CLAUDE.md` §10.8 规定 Claude "只提交、不 push"，而 2026-09-25 的接管指令要求每个批次推到 `wip/phase-1-unreviewed`（此前已推到 `4472282`）。按文件优先级，Claude 自 2026-09-25 新会话起暂停推送、只在本地提交 | A：维持 CLAUDE.md（只本地提交，等 Codex 推送）；B：明确授权继续推送 WIP 引用（只推 `wip/*`，不推正式分支），并据此修订 §10.8 | ✅ 已决定（2026-09-25，Claude 依 Raphael 授权）：只推送到 WIP 备份分支 `wip/phase-1-unreviewed`（快进、不强推），`phase/1` 与 `main` 仍等复核 / 批准 |
+| D-PUSH | 推送规则历史记录：2026-09-25 的接管指令限定 WIP 推送 | 当时方案只推 `wip/phase-1-unreviewed`；后续授权由 2026-09-28 的 `CLAUDE.md` §10 覆盖 | 已被 2026-09-28 main-only 分支策略取代；当前由 PM 推送整合后的 `main` |
 | D-E1n | ADR-0028 实施记录：规范层批次号多了"单元行数"（E1-R1）与"批大小"（E1-R3）两段，保证原始单元变化即拒绝、续跑只按已提交的切分；normalizer 规则哈希随之变化但版本仍记 1.0.0（尚无正式数据） | 确认或要求改法 | ✅ 已确认（2026-09-25，Claude 依 Raphael 授权） |
 | D-F1n | Claude 自行做的次要决定（F1）：① F1 先于 E3 实施（质量报告里的"竞争记录"要用 F1 的已验证图）；② 基础设施层读取接口增加"按快照读"（核心契约不变）；③ 数据集规格里没绑定的表按空表处理（只会让结果变成"不存在 / 冲突 / 拒绝"，不会选错）；④ 新规则标识 `hlens.pit.maximal-head@1.0.0`（连同质量规则与 resample 规则已并入 `03-data.md` §7.3）；⑦（E4）高周期 K 线只作为纯函数派生、不新建表，只接受能整除一天的分钟周期，缺分钟的 K 线标为不完整而不补齐；⑥（E3）质量规则集 `hlens.quality.canonical-partition@1.0.0` 只含事实性检查，不设任何数值阈值——"异常值"需要校准阈值，留待后续规则版本；⑤（F1-R1）ADR-0027 §13 要求"用 REST 数据须绑定证据表"，但从未写入过边的证据表没有快照、根本无法绑定——选择器因此把"未绑定"读作"没有边"（只会让结果变成冲突、不会选错，旧规格可逐位重现），并在结果里记录是否绑定；§13 的绑定要求改由数据集构建（F3）在"证据表有快照时必须绑定"处落实；⑧（G3-S2）时点选择的窗口不再限定为整天的 UTC 零点，可为任意 UTC 区间（证据边仍按整天核对），并且只证明被读到的那些规范层批次（单元级事实仍全部核对），以便成交数据按小时分段构建而不必整天驻留内存；⑨（G3-S3-R1 / R2）同一观察键中按"相邻不超过一天"连成链的全部 revision 一起参与选择（传递闭包，读取范围自动扩大到链的两端），并且只由链上最早那条所在的窗口选中（相邻时段不会重复选同一笔成交）；质量报告则按"触及"读取后去重；报告 ID 纳入 PIT 规则与相关政策的哈希，规则一变即是新报告 | 事后确认（⑤ 涉及对已接受 ADR 的解释，请重点确认） | ✅ 已确认（2026-09-25，Claude 依 Raphael 授权） |
 | D-QGAP | 质量报告把"证据缺口"逐条写进一行报告：1 分钟 K 线每天 1440 条没问题，但成交一天 100～300 万条都有缺口（历史公开时刻无证据，D-HIST），一行报告会达到数 GB，本机内存放不下 | **A（推荐）**：缺口改写进一张独立的只追加表（每条 revision 一行、按时段分批写入），报告行只存引用与计数——语义不变、内存有界，需新增表的 ADR；B：同一原始单元的缺口合并为一条（带条数与范围）——改变"逐条绑定"的含义；C：成交报告按小时出——改变报告粒度与规则版本 | ✅ 已决定（2026-09-25，Claude 依 Raphael 授权）：方案 A——证据缺口改写进独立只追加表（ADR-0031），报告行只存引用与计数 |
@@ -224,7 +243,7 @@ Phase 0 closure commit、`main` fast-forward 合并与轻量 tag；**不**覆盖
 | D-VFAIL | 生命周期状态机只允许 CANDIDATE → FAILED，没有 VALIDATION → FAILED：验证阶段若出现技术故障（不可复现、运行出错），失败记录会进 Failure Registry，但对象的生命周期状态无法标为 FAILED | 已起草 [ADR-0053](docs/adr/0053-validation-failed-transition.md)（Proposed）：增加 VALIDATION → FAILED，只用于不可复现 / 对象自身运行出错，需证据 | ✅ 已决定（2026-09-26，Raphael 同意推荐方案）→ ADR-0053 Accepted；已实施（B23），CODE_COMPLETE / DEBUG_PENDING |
 | D-NET | 本机仓库里没有真实行情数据（只有表结构），真实数据端到端测试只能用"真实格式的小样本"。要跑真正的真实数据，需要运行采集器从币安公共归档下载（公开数据、无密钥） | 授权下载 BTCUSDT / ETHUSDT 各 1～3 天的公共归档（约数万行），只写入本机、不提交仓库 | ✅ 已决定（2026-09-26，Raphael "同意"推荐方案）：下载 BTCUSDT / ETHUSDT 各 1～3 天官方公共归档（无密钥），只写本机、不入仓库；**已执行**（2026-09-26，[能力检查报告](docs/reviews/2026-09-26-dnet-real-data-capability.md)）：K 线 2 天 × 2 标的走通采集→入库→规范化→质量报告→时点选择；建数据集停在标的池（需 `exchangeInfo`，且历史日期按 ADR-0029 仍不可构建），待 Raphael 决定 |
 | D-PARTIAL | 回测器的"部分成交"：冻结的回测契约要求每个目标仓位在它自己的那根 bar 上一次成交完，所以按成交量上限没成交完的部分只能取消并报告，不能顺延到后面的 bar | 已起草 [ADR-0054](docs/adr/0054-partial-fill-carry-over.md)（Proposed）：扩展契约（新执行模型、剩余量字段、可选成交量）；在那之前策略每根 bar 重发目标即可逐步到位 | ✅ 已决定（2026-09-26，Raphael 同意）→ ADR-0054 Accepted；已实施（B23）并于 B41 以 2.1.0 重新声明，CODE_COMPLETE / DEBUG_PENDING |
-| D-LIST | 真实历史数据建不成研究数据集：标的池需要上市历史，只能由一次公开 REST 调用（exchangeInfo，无密钥）取得；且按 ADR-0029 上市历史从本机首次观察（今天）算起，ADR-0032 不覆盖上市记录，所以历史日期仍不可用 | A：授权一次 exchangeInfo 调用 + "上市历史假设"（仿 ADR-0032，须显式绑定、写入清单），已起草 [ADR-0051](docs/adr/0051-listing-history-assumption.md)（Proposed，推荐 A）；B：只调一次 exchangeInfo、只用今天以后的归档 | ⏸ **暂缓（Raphael 2026-09-26："后面再授权"）**；ADR-0051 保持 Proposed；`ARCHITECTURE_DECISION_REQUIRED`（Claude 曾依一般授权"原则接受"，与 Raphael 对此项的明确暂缓冲突，已撤回）；未发起任何网络调用 |
+| D-LIST | 真实历史标的池需显式区分交易所事实与研究假设 | ADR-0051 采用方案 A：对 BTCUSDT / ETHUSDT 显式绑定 observation backfill assumption；假设不能证明真实上市史、排除幸存者偏差或用于横截面结论。政策表仍为空，待核实最早 1m 归档日；一次无密钥 `exchangeInfo` 公共调用已获该 ADR 授权，但尚未执行 | ✅ ADR-0051 于 2026-09-28 接受；实现已进入第二期，网络采集与政策下界核实待执行 |
 | D-DEG-IE | 劣化检查全部指标缺失（证据不足）时，是否在新事件主题上发布？新主题会扩展已接受的 ADR-0049 的事件面 | 维持不发布：结果与报告已标明「证据不足」，绝不显示为健康 | ✅ 已决定（2026-09-26，Codex）：在独立主题 `research_loop.degradation.insufficient_evidence` 发布，ADR-0049 相应修订；已实施（B53，`4e6c220`），CODE_COMPLETE / DEBUG_PENDING |
 | D-DEP | 持续循环的通用机制放在 `apps/worker`，研究阶段放在 `research/loop`，因此 research 依赖 apps/worker（apps 不依赖 research，边界测试不变）——Claude 依授权已接受（ADR-0049），请确认 | 维持 | ✅ 已决定（2026-09-26，Claude 依 Raphael 授权）：维持 ADR-0049 |
 
@@ -307,13 +326,15 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 ## 9. 最近一次变化
 
+> 只保留最近 5 条；更早记录见 Git 历史与 `docs/reviews/`。
+
 | 日期 | 变化 | 影响 |
 |---|---|---|
-| 2026-09-28 | 契约 2.3.0 → 2.4.0（ADR-0077 / 0088，均 additive） | v3 有界 Dataset 证据；组合策略、事件 bar 规格、峰值权益、合成效应、波动率屏障、成员假设绑定；已钉哈希与版本断言需调试阶段重钉 |
-| 2026-09-28 | ADR-0077 有界 Dataset 全链路实现 | universe / PIT 生成器、evidence 树、chunk 提交、v2/v3 双表、流式 verify、下游消费者；E1-CAP-1 容量仍未测 |
-| 2026-09-28 | 研究库与模块补全 | ADR-0085 特征 20 个 / 状态 2 个 / 策略 3 个 + 组合策略 / 回撤风控；ADR-0086 门集与退役存储；ADR-0087 插件发现；ADR-0084 实盘接口预留（关闭） |
-| 2026-09-28 | Raphael 授权 PM 全权决策（实盘除外）；PR #11 并入 main | CLAUDE.md §0 已记录；`main@67fd2ca` 含 phase 至 `14cccb7` |
-| 2026-09-28 | 接受 ADR-0091，明确登记处审计只读语义与 Failure Registry 证据边界 | OPS-1 扩展为只读校验 API + 结构化 CLI；不改持久化格式 |
+| 2026-09-30 | 整合合入 `main` | 工作分支 `claude/modest-bardeen-zbu3vk`（整合线 + 本轮全部改动）经 PR 合入 `main`；未运行测试，等待本地统一验收 |
+| 2026-09-30 | 深度审查与缺陷修复 | 三路审查整合线 + 两路审查本轮新代码。修复：revision / PIT 验证二次方开销（archive / REST / 逐 key × 逐日）、2.3/2.4 Dataset 重建版本、Quality 并发提交复用、scratch 隔离、metadata 解析、worker 停止信号死锁与空闲等待、degradation 基线 metric 后缀 |
+| 2026-09-30 | ADR-0098 / ADR-0099 接受并实现 | P11：LifecycleRegistry + 钉定 v3 Dataset source + 与 validation 同源的 metric 闭集（目前仅 `breakeven_cost_multiple`）+ 受信 environment factory；P7：时间序列 rank / quantile，计划格式 1.2.0 |
+| 2026-09-30 | 分支补回 | 68 个 codex 分支核对；补回 normalizer 有界 metadata 钉定读取、v2 pair 哈希规则、波动率阈值布尔拒绝、契约 2.5.0 回放断言 |
+| 2026-09-30 | PM 接管（Claude Code） | Raphael 指令：子代理快速补完底层逻辑代码，不验收、不测试，深度审查后合并进 `main`，由 Raphael 本地验收 |
 
 ## 10. 下一阶段进入条件
 
@@ -337,22 +358,25 @@ H-3 ~ H-7 · ADR-0005 / 0006 的 Q-1 ~ Q-7 · Git 提交身份的长期做法
 
 > 我现在应该干什么？
 
-1. `main@7ad128a` 与 `phase/1-foundation-completion` 已于 2026-09-28 由 PM 推送到 GitHub（`origin/main` 快进 132 个提交；phase 分支为新建远端分支）；上一轮未提交的 E1 余项已于 2026-09-28 经你批准整体归档到 `wip/e1-cap-archive@ece150e`（archive ref `refs/archive/2026-09-28/branches/local/wip-e1-cap-archive`），未审阅、未测试、不构成正式决定，E1-CAP-1 仍阻断、本轮后置。远端仅保留 `main`；E1 PR #10 已关闭并归档。清理阶段的冗余分支均已归档；当前仅有 1 个开发分支 / 1 个 root worktree。模块基础逻辑计划见 [此处](docs/plans/2026-09-28-module-foundation-completion.md)。
+1. 当前分支与 worktree 数量见 §1：`main` 仍是长期发布分支，当前收敛工作集中在隔离候选 `codex/project-consolidation`；本轮没有推送或合入 `main`。Phase 1 仍受 E1-CAP-1 阻断，未验收。模块计划见 [2026-09-28 模块基础逻辑计划](docs/plans/2026-09-28-module-foundation-completion.md)。
 2. 全代码批次有已记录的门禁结果，但代码整合不等于 Phase 验收；没有任何策略被验证或晋升，Profile 数值未冻结，系统没有下单能力。
-3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。统一测试与 Phase 验收仍暂缓；E1 容量门未关闭，Phase 1 未整体验收、未打 tag。
-4. 底层代码补全已完成（phase `0cfddbf`，全部未测试）。下一步建议开启统一调试：按模块运行 pytest / ruff / mypy，重钉 2.3.0 / 2.4.0 版本断言与 schema / 回归哈希，补跑 fixture 生成；再做 E1-CAP-1 容量测量与 ADR-0051 下界核实（联网）。见模块计划 “PM 任务板” 的调试清单。
+3. ADR-0073 的 v4 durable admission coordinator 与进程内 admission lease / 写入 gate 已进入本地 main，ADR-0074 operator-only v5 identity 及有限批次 operator 已合入 `main@0d4862a`。整合保留 v3/v4 字节与行为，不启用六类算子；没有冻结 Profile 前不得提供可运行配置。独立模块测试继续推进；Phase 1 全量验收仍未完成，E1 容量门未关闭，未打 tag。
+4. 已提交改动的合并不等于全量验证。W1 PostgreSQL-enabled 全量已结束；14 个兼容性 / 固定哈希失败、loop-round malformed、catalog frozen-layout 与 revision table-binding 节点按两轮规则延期，不计通过且仍属发布门。catalog metadata-only 节点的全量失败轮次待核实；后续无数据库 catalog 的精确尝试为 skip。按模块继续推进独立工作，再回到待分类失败门；随后完成 E1-CAP-1 容量测量与 ADR-0051 下界核实。详见 [W1 验收与延期项](docs/reviews/2026-09-29-w1-validation-and-deferrals.md)。
 
 ## 12. 给 Claude Code 的下一步
 
 > Claude 下一步可以执行什么？
 
-1. A1–A4 已提交为 `0651e6a`，C1–C3 已提交为 `1ad56a0`；E1-R 基础切片未完成容量验收。上一轮未提交的 E1 余项（ADR-0075 Amendment 1 草案、ADR-0076/0077 草案及 bounded scan/result 代码）已于 2026-09-28 经 Raphael 批准整体归档到 `wip/e1-cap-archive@ece150e`，未审阅、未测试、不构成正式决定；E1-CAP-1 仍阻断，本轮后置，未经批准前不得继续该扫描实现。E1 失败证据仍在 archive ref；禁止把任何子问题改进表述为 E1-CAP-1 通过。
-2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery、v5 operator identity 与 ADR-0074 有限批次 operator 已进入本地 main，均尚待统一验收。继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
+0. **2026-09-30 本轮结论**：底层逻辑代码补全完毕并合入 `main`，未运行任何测试。下一步由 Raphael 本地执行 W1 全仓门禁（`uv run pytest` / `ruff check` / `ruff format --check` / `mypy`），按失败逐模块调试；重点关注：`8a00450` normalizer 读路径、revision/PIT 验证预处理（`7ecec80` / `86c3c3d` / `a2f4fdd`）、ADR-0098 `authority.py`（无测试）、`test_normalizer_memory_probe.py` 已知与 probe 名称不一致。
+1. E1-R 基础切片与 E1-CAP-1 的容量验收状态分开记录；32 MiB 完整工作集门槛不变。归档中的设计提案仍不构成 Accepted ADR，禁止把任何子问题改进表述为 E1-CAP-1 通过。
+2. P11 显式 degradation CLI 已完成；ADR-0073 durable v4 recovery、v5 operator identity 与 ADR-0074 有限批次 operator 已整合到 main，均尚待统一验收。继续保持 synthetic-only / 外部调度 / 无 API 写触发，并在 Profile 冻结前拒绝运行配置。
 3. P7 六类算子的纯 lowering 已实现（ADR-0078 / 0082 / 0088；rank / quantile 仍 OPEN），`TypedPlan.runnable` 仍为 False——启用运行须在调试通过后另行决定。
-4. 不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
+4. ADR-0089 已增加 `expected_spec` 读取身份校验；`tests/infrastructure/state` 27 项通过。最新 PostgreSQL-enabled 全仓结果为 8,814 passed / 7 failed / 1 skipped / 72 deselected；达到两轮的节点延期且不计通过。catalog metadata-only 节点的失败轮次待核实，后续无 PostgreSQL test catalog 的尝试为 skip；其余全量失败尚待恢复 node IDs 分类。具体见 W1 review。不得实盘、使用交易凭据或下单；不猜 Profile 数值；不把代码整合称为 Phase 验收；不 force push。
 
 ### 10.29 协调分支快进到本地 main（2026-09-27）
 
 - Raphael 明确授权先整合合适分支、清理冗余分支并持续补齐模块；协调分支相对本地 `main@669704c` 为严格快进后代（0 个 main 独有提交、26 个协调分支提交）。在主线工作区干净的前提下，以 `--ff-only` 将其快进到 `main@498250a`，未解决冲突、未改写历史、未推送远端。
 - 整合范围为 40 个文件、+3173 / -215 行，包括 P7 non-runnable typed-plan parser、P11 degradation operator / CLI / provenance 页面、P12 `combine` 冲突拒绝、E1 history / normalizer / proof-scan 候选及其 ADR / 规格 / 复核记录。各模块状态仍是待调试 / 待验收；这次合并不构成任何 Phase 验收。
 - 主线现比 `origin/main` 超前 44 个提交。没有运行测试或 build；沿用已记录的定向静态检查结果。E1-CAP-1 仍未通过 32 MiB 门，Phase 1 仍未验收。分支与 worktree 清理继续逐项审计，活动或含唯一内容的工作区保留。
+| 2026-09-30 | E1 Quality canonical-partition v3 evidence-gap projection | `fdd9753` 经三路独立验收后整合至 `codex/e1-phase1-progress@94c743e`；Quality 定向套件 `101 passed`，Ruff、format、mypy、diff-check 通过。Gap 记录以 `(table, revision_id)` 稳定身份全局排序，重复项失败；输出与 RunSet scratch 两种编码均受显式字节上限约束，projector 单次使用并拒绝重入。此切片不证明 gap 来源完整，也未接 reporter/manifest/Dataset；E1-CAP-1 与 Phase 1 仍未验收，详见 [切片验收报告](docs/reviews/2026-09-30-e1-quality-report-gap-projection-acceptance.md)。 |
+| 2026-09-30 | E1 Quality v3 manifest store / report identity | `d5be275` 经三路独立验收并整合至隔离候选 `codex/e1-phase1-progress@39bf84f`；manifest/report projection Quality 回归 `137 passed`，Ruff、format、4 文件 mypy、diff-check 通过。新增固定大小 manifest append/read/replay 原语，身份摘要覆盖 quality/PIT/policy rule hashes、完整 subject 与精确 bindings，v3 rule spec hash 同步更新。adapter 对库外超大畸形行仍先物化，且 reporter、gap completeness、Dataset、E1-CAP-1、Phase 1 未完成；详见 [切片验收报告](docs/reviews/2026-09-30-e1-quality-manifest-store-acceptance.md)。

@@ -30,12 +30,13 @@ is nothing but such one-row appends (no delete, no foreign batch, no row without
 
 from __future__ import annotations
 
+import json
 import re
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from types import TracebackType
-from typing import Any, Final, Self
+from typing import Any, Final, Self, cast
 
 import httpx
 from pyiceberg.expressions import BooleanExpression, EqualTo
@@ -53,6 +54,7 @@ from core.contracts.revision import RevisionRecord
 from core.contracts.storage import StorageAdapter
 from core.domain.base import canonical_json
 from infrastructure import contract_version
+from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import BINANCE_SPOT_EXCHANGE_INFO
 from infrastructure.collector.binance_exchange_info import (
@@ -71,8 +73,14 @@ from infrastructure.revision.exchange_info_availability import (
     ExchangeInfoAvailabilityViolation,
     decide_exchange_info_availability,
 )
-from infrastructure.revision.row_integrity import batch, batch_rows, check_batch_snapshot
+from infrastructure.revision.row_integrity import (
+    batch,
+    batch_rows,
+    check_batch_snapshot,
+    history_from,
+)
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = [
     "EXCHANGE_INFO_TABLE",
@@ -286,6 +294,7 @@ class ExchangeInfoRowVerifier:
 
     def __init__(self, catalog: RevisionCatalog, storage: StorageAdapter, origin: str) -> None:
         self._catalog = catalog
+        self._storage = storage
         self._reader = snapshot_reader(storage, origin)
         self._proven: dict[str, Mapping[str, Any]] = {}
 
@@ -456,6 +465,356 @@ class ExchangeInfoRowVerifier:
             },
             history=tuple(snapshot.snapshot_id for snapshot in history),
         )
+
+    def verify_table_bounded(
+        self,
+        head: str | None,
+        *,
+        bounded_metadata: BoundedIcebergMetadata | None = None,
+        scratch_storage: StorageAdapter,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_record_bytes: int,
+    ) -> RunRef | None:
+        """Prove the Raw table at ``head`` without retaining rows or a proof cache.
+
+        The returned RunRef is sorted by ``(revision_id, arrival_seq)`` and contains exact rows in
+        ``{"row": ..., "sort_key": [...], "snapshot_id": ..., "snapshot_ordinal": ...}``
+        envelopes. The snapshot identity and ordinal are derived from the actual verified catalog
+        history row paired with its data row, never inferred from arrival order alone. Consume it
+        using ``iter_run`` and close that context. Scratch objects may orphan on failure; callers
+        must provide a namespace distinct from report/evidence storage. The cap is explicit and
+        checked before spooling.
+
+        This reduces Python row/result retention. Catalog snapshot metadata and an individual
+        backend record batch remain implementation-dependent, so this is not an E1-CAP-1 claim.
+        """
+        if bounded_metadata is not None:
+            if bounded_metadata.name != EXCHANGE_INFO_TABLE:
+                raise CatalogIntegrityError("bounded Raw metadata is pinned to another table")
+            pinned_head_id = bounded_metadata.selected_snapshot_id
+            if head != pinned_head_id:
+                raise CatalogIntegrityError("Raw head differs from its selected bounded snapshot")
+        if head is None:
+            return None
+        if not isinstance(limits, RunLimits):
+            raise ValueError("limits must be RunLimits")
+        for name, value, minimum in (
+            ("capacity", capacity, 1),
+            ("merge_fanout", merge_fanout, 2),
+            ("max_record_bytes", max_record_bytes, 1),
+        ):
+            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+                raise ValueError(f"{name} must be an integer >= {minimum}")
+        if scratch_storage is self._storage:
+            raise ValueError("scratch_storage must be a distinct adapter and storage namespace")
+        for attribute in ("warehouse_uri", "staging_uri"):
+            source_uri = getattr(self._storage, attribute, None)
+            scratch_uri = getattr(scratch_storage, attribute, None)
+            if isinstance(source_uri, str) and source_uri == scratch_uri:
+                raise ValueError(
+                    f"scratch_storage {attribute} must differ from evidence storage; "
+                    "namespace isolation remains a caller precondition"
+                )
+
+        def pair_key(row: Mapping[str, Any]) -> tuple[str, int]:
+            return (row["sort_key"][0], row["sort_key"][1])
+
+        def make_run(key: Callable[[Mapping[str, Any]], Any]) -> RunSetBuilder:
+            return RunSetBuilder(
+                scratch_storage,
+                key=key,
+                capacity=capacity,
+                merge_fanout=merge_fanout,
+                limits=limits,
+            )
+
+        row_builder = make_run(pair_key)
+        history_builder = make_run(pair_key)
+        proved_builder = make_run(pair_key)
+        revision_builder = make_run(lambda row: row["revision_id"])
+        arrival_builder = make_run(lambda row: row["arrival_seq"])
+        with row_builder, history_builder, proved_builder, revision_builder, arrival_builder:
+            snapshot_info = getattr(self._catalog, "_snapshot_info", None)
+            if bounded_metadata is not None:
+                if not callable(snapshot_info):
+                    raise CatalogIntegrityError(
+                        "bounded Raw verifier requires the adapter SnapshotInfo converter"
+                    )
+                head_snapshot = bounded_metadata.require_snapshot(head)
+                head_info = snapshot_info(EXCHANGE_INFO_TABLE, head_snapshot)
+                history_snapshots: Iterator[Any] = iter(bounded_metadata.iter_history(head))
+            else:
+                head_info = self._catalog.get_snapshot(EXCHANGE_INFO_TABLE, head)
+                history_snapshots = iter(history_from(self._catalog, EXCHANGE_INFO_TABLE, head))
+            if head_info.snapshot_id != head:
+                raise CatalogIntegrityError("Raw snapshot lookup returned a different head")
+
+            def proven_history() -> Iterator[SnapshotInfo]:
+                try:
+                    for snapshot in history_snapshots:
+                        if bounded_metadata is not None:
+                            assert callable(snapshot_info)
+                            yield snapshot_info(EXCHANGE_INFO_TABLE, snapshot)
+                            continue
+                        try:
+                            actual_snapshot = self._catalog.get_snapshot(
+                                EXCHANGE_INFO_TABLE, snapshot.snapshot_id
+                            )
+                        except Exception as exc:
+                            raise CatalogIntegrityError(
+                                f"{EXCHANGE_INFO_TABLE} history names an unreadable snapshot "
+                                f"{snapshot.snapshot_id}"
+                            ) from exc
+                        if actual_snapshot != snapshot:
+                            raise CatalogIntegrityError(
+                                f"{EXCHANGE_INFO_TABLE} history metadata disagrees with snapshot "
+                                f"{snapshot.snapshot_id}"
+                            )
+                        yield snapshot
+                finally:
+                    close_history = getattr(history_snapshots, "close", None)
+                    if callable(close_history):
+                        close_history()
+
+            history_count = 0
+            for snapshot_info_value in proven_history():
+                expected_total_rows = head_info.total_rows - history_count
+                if snapshot_info_value.total_rows != expected_total_rows:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE} snapshot history has inconsistent total_rows"
+                    )
+                match = (
+                    None
+                    if snapshot_info_value.batch_id is None
+                    else _BATCH_RE.fullmatch(snapshot_info_value.batch_id)
+                )
+                if match is None or snapshot_info_value.added_rows != 1:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE} snapshot "
+                        f"{snapshot_info_value.snapshot_id} is not a "
+                        "one-row snapshot append"
+                    )
+                if int(match.group(2)) != snapshot_info_value.total_rows - 1:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE} snapshot "
+                        f"{snapshot_info_value.snapshot_id} has a batch "
+                        "arrival sequence inconsistent with its append ordinal"
+                    )
+                history_row = {
+                    "sort_key": [match.group(1), int(match.group(2))],
+                    "snapshot": snapshot_info_value.model_dump(mode="python"),
+                }
+                self._check_bounded_row(history_row, max_record_bytes)
+                history_builder.add(history_row)
+                history_count += 1
+            if history_count != head_info.total_rows:
+                raise CatalogIntegrityError(
+                    f"{EXCHANGE_INFO_TABLE} head has {head_info.total_rows} rows but its "
+                    f"one-row history contains {history_count} snapshots"
+                )
+            history_root = history_builder.finish()
+            if history_root is None:
+                raise CatalogIntegrityError("a non-empty Raw snapshot head has empty history")
+
+            columns = tuple(field.name for field in BINANCE_SPOT_EXCHANGE_INFO.arrow_schema)
+            if bounded_metadata is None:
+                reader = self._catalog.scan_column_batches(
+                    EXCHANGE_INFO_TABLE, columns=columns, snapshot_id=head
+                )
+            else:
+                scan_pinned = getattr(self._catalog, "scan_pinned_batches", None)
+                if not callable(scan_pinned):
+                    raise CatalogIntegrityError(
+                        "bounded Raw verifier requires pinned batch scan support"
+                    )
+                reader = scan_pinned(
+                    bounded_metadata,
+                    snapshot_id=head,
+                    columns=columns,
+                )
+            row_count = 0
+            try:
+                for record_batch in reader:
+                    for index in range(record_batch.num_rows):
+                        [row] = record_batch.slice(index, 1).to_pylist()
+                        self._check_bounded_row(row, max_record_bytes)
+                        expected = self.expected_row(row)
+                        if set(row) != set(expected) or any(
+                            row.get(name) != value for name, value in expected.items()
+                        ):
+                            raise CatalogIntegrityError(
+                                f"snapshot revision {row.get('revision_id')} disagrees with its "
+                                "verified checkpoint"
+                            )
+                        revision_id = row.get("revision_id")
+                        arrival_seq = row.get("arrival_seq")
+                        if not isinstance(revision_id, str) or not revision_id:
+                            raise CatalogIntegrityError("a Raw snapshot row has no revision_id")
+                        if (
+                            isinstance(arrival_seq, bool)
+                            or not isinstance(arrival_seq, int)
+                            or arrival_seq < 0
+                        ):
+                            raise CatalogIntegrityError(
+                                "a Raw snapshot row has invalid arrival_seq"
+                            )
+                        sort_key = [revision_id, arrival_seq]
+                        row_builder.add({"row": row, "sort_key": sort_key})
+                        revision_builder.add({"revision_id": revision_id})
+                        arrival_builder.add({"arrival_seq": arrival_seq})
+                        row_count += 1
+            finally:
+                close = getattr(reader, "close", None)
+                if callable(close):
+                    close()
+            if row_count != history_count:
+                raise CatalogIntegrityError(
+                    f"{EXCHANGE_INFO_TABLE} holds {row_count} rows after {history_count} "
+                    "one-row appends"
+                )
+            row_root = row_builder.finish()
+            revision_root = revision_builder.finish()
+            arrival_root = arrival_builder.finish()
+            if row_root is None or revision_root is None or arrival_root is None:
+                raise CatalogIntegrityError("a non-empty Raw table produced an empty run")
+
+            with (
+                iter_run(scratch_storage, history_root) as expected_rows,
+                iter_run(scratch_storage, row_root) as found_rows,
+            ):
+                sentinel = object()
+                expected_item = next(expected_rows, sentinel)
+                found_item = next(found_rows, sentinel)
+                while expected_item is not sentinel and found_item is not sentinel:
+                    expected = cast(Mapping[str, Any], expected_item)
+                    found = cast(Mapping[str, Any], found_item)
+                    if expected["sort_key"] != found["sort_key"]:
+                        raise CatalogIntegrityError(
+                            f"{EXCHANGE_INFO_TABLE}: rows do not match its one-row batch history"
+                        )
+                    snapshot = SnapshotInfo.model_validate(expected["snapshot"])
+                    batch_id = snapshot_batch_id(
+                        found["row"]["revision_id"], found["row"]["arrival_seq"]
+                    )
+                    check_batch_snapshot(
+                        BINANCE_SPOT_EXCHANGE_INFO, batch_id, snapshot, [found["row"]]
+                    )
+                    proved = {
+                        "row": found["row"],
+                        "sort_key": found["sort_key"],
+                        "snapshot_id": snapshot.snapshot_id,
+                        "snapshot_ordinal": snapshot.total_rows - 1,
+                    }
+                    self._check_bounded_row(proved, max_record_bytes)
+                    proved_builder.add(proved)
+                    expected_item = next(expected_rows, sentinel)
+                    found_item = next(found_rows, sentinel)
+                if expected_item is not sentinel or found_item is not sentinel:
+                    raise CatalogIntegrityError(
+                        f"{EXCHANGE_INFO_TABLE}: rows do not match its one-row batch history"
+                    )
+            for root, field in ((revision_root, "revision_id"), (arrival_root, "arrival_seq")):
+                with iter_run(scratch_storage, root) as values:
+                    previous: Any = object()
+                    for item in values:
+                        current = item[field]
+                        if current == previous:
+                            raise CatalogIntegrityError(
+                                f"{EXCHANGE_INFO_TABLE}: {field} {current} occurs more than once"
+                            )
+                        previous = current
+            proved_root = proved_builder.finish()
+            if proved_root is None:
+                raise CatalogIntegrityError("a non-empty Raw table produced an empty proved run")
+            return proved_root
+
+    @staticmethod
+    def _check_bounded_row(row: Mapping[str, Any], maximum: int) -> None:
+        """Count the sorted-run JSONL line bytes exactly without encoding any whole string or row.
+
+        The size is that of ``canonical_json(_encode_row(row)) + LF`` as written by
+        ``infrastructure.streaming.runs``: nested mappings are wrapped as ``{"$obj":{...}}`` and
+        datetimes as ``{"$dt":"<UTC ISO>"}``; the top-level row itself is a plain object.
+        """
+        size = 0
+
+        def add(amount: int) -> None:
+            nonlocal size
+            size += amount
+            if size > maximum:
+                raise CatalogIntegrityError(f"snapshot row exceeds max_record_bytes={maximum}")
+
+        def text_body_size(value: str) -> None:
+            for offset in range(0, len(value), 128):
+                try:
+                    escaped = json.dumps(value[offset : offset + 128], ensure_ascii=False)[1:-1]
+                    add(len(escaped.encode("utf-8")))
+                except UnicodeEncodeError as exc:
+                    raise CatalogIntegrityError("snapshot row contains invalid UTF-8 text") from exc
+
+        def visit(value: Any, top: bool = False) -> None:
+            if isinstance(value, str):
+                add(2)
+                text_body_size(value)
+            elif isinstance(value, Mapping):
+                if not top:
+                    add(8)  # {"$obj":
+                if len(value) > maximum // 3:
+                    raise CatalogIntegrityError(f"snapshot row exceeds max_record_bytes={maximum}")
+                keys = list(value)
+                if any(not isinstance(key, str) for key in keys):
+                    raise CatalogIntegrityError("snapshot row has a non-text key")
+                keys.sort()
+                add(1)
+                for index, key in enumerate(keys):
+                    if index:
+                        add(1)
+                    add(2)
+                    text_body_size(key)
+                    add(1)
+                    try:
+                        item = value[key]
+                    except Exception as exc:
+                        raise CatalogIntegrityError(
+                            "snapshot row mapping changed during sizing"
+                        ) from exc
+                    visit(item)
+                add(1)
+                if not top:
+                    add(1)  # closing } of the $obj wrapper
+            elif isinstance(value, list | tuple):
+                add(2)
+                for index, item in enumerate(value):
+                    if index:
+                        add(1)
+                    visit(item)
+            elif value is None:
+                add(4)
+            elif isinstance(value, bool):
+                add(4 if value else 5)
+            elif isinstance(value, int):
+                add(len(str(value)))
+            elif isinstance(value, float):
+                try:
+                    add(len(json.dumps(value, allow_nan=False).encode("ascii")))
+                except (TypeError, ValueError) as exc:
+                    raise CatalogIntegrityError(
+                        "snapshot row contains an invalid JSON number"
+                    ) from exc
+            elif isinstance(value, datetime):
+                add(7)  # {"$dt":
+                add(2)
+                text_body_size(value.astimezone(UTC).isoformat())
+                add(1)  # }
+            else:
+                raise CatalogIntegrityError(
+                    f"snapshot row contains unsupported value {type(value).__name__}"
+                )
+
+        visit(row, top=True)
+        add(1)  # JSONL LF
 
     def _scan(self, head: str | None) -> list[Mapping[str, Any]]:
         columns = tuple(field.name for field in BINANCE_SPOT_EXCHANGE_INFO.arrow_schema)

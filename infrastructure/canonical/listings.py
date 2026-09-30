@@ -64,7 +64,19 @@ from core.contracts.universe import (
 )
 from infrastructure import contract_version
 from infrastructure.canonical import listing_rules as lr
+from infrastructure.canonical.listing_bounded_verify import (
+    BoundedListingReplayProof,
+    FindingSink,
+    verify_listing_history_bounded,
+)
+from infrastructure.canonical.listing_history_runs import listing_history_prefix_run
+from infrastructure.canonical.listing_prefix_index import (
+    ListingPrefixIndex,
+    build_listing_prefix_index,
+)
+from infrastructure.canonical.listing_runs import listing_observations_run
 from infrastructure.canonical.rules import SYMBOLS
+from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata, BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_EXCHANGE_INFO,
@@ -76,10 +88,12 @@ from infrastructure.revision.exchange_info_store import (
 )
 from infrastructure.revision.row_integrity import batch, check_batch_snapshot, history_from
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.streaming.runs import RunLimits, RunRef
 from infrastructure.universe import listing_assumption as backfill
 
 __all__ = [
     "FINDING_HISTORY_DIVERGED",
+    "BoundedListingReplayInputs",
     "LISTINGS_TABLE",
     "ListingDeriveConflict",
     "ListingDeriveError",
@@ -159,6 +173,25 @@ class ListingsDerived:
 
 
 @dataclass(frozen=True, slots=True)
+class BoundedListingReplayInputs:
+    """Immutable scratch references prepared for bounded historical replay.
+
+    These refs are not themselves an acceptance verdict: the verifier must consume the mapped
+    listing-batch run and compare each historical batch before reporting success.
+    """
+
+    raw_snapshot_id: str | None
+    listing_snapshot_id: str | None
+    raw_metadata: BoundedIcebergMetadata
+    listing_metadata: BoundedIcebergMetadata
+    raw_rows: RunRef | None
+    observations: RunRef | None
+    prefix_index: ListingPrefixIndex | None
+    prefix_roots: RunRef | None
+    listing_batches: RunRef | None
+
+
+@dataclass(frozen=True, slots=True)
 class ListingPointInTime:
     """The point-in-time listing of one venue symbol (``listing`` is set iff constructible)."""
 
@@ -207,6 +240,7 @@ class ListingDeriver:
         clock: Callable[[], datetime] | None = None,
     ) -> None:
         self._adapter = adapter
+        self._storage = storage
         self._clock = clock or (lambda: datetime.now(UTC))
         try:
             self._verifier = ExchangeInfoRowVerifier(adapter, storage, market_data_base_url)
@@ -215,6 +249,207 @@ class ListingDeriver:
 
     def close(self) -> None:
         self._verifier.close()
+
+    def bounded_replay_inputs(
+        self,
+        *,
+        snapshot_ids: Mapping[str, str | None] | None = None,
+        scratch_storage: StorageAdapter,
+        metadata_limits: BoundedMetadataLimits,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_record_bytes: int,
+        max_run_object_bytes: int,
+        prefix_leaf_max_records: int,
+        prefix_fanout: int,
+        prefix_max_node_bytes: int,
+        prefix_max_record_bytes: int,
+    ) -> BoundedListingReplayInputs:
+        """Prepare bounded Raw, observation and per-snapshot prefix runs at pinned table heads.
+
+        This is a preparation primitive, not a proof of persisted listing batch contents. The
+        exact replay verifier consumes the returned refs and checks each batch fingerprint/row.
+        Metadata ancestry is parsed under the explicit ``metadata_limits``. Backend scan planning
+        and total process RSS remain outside this path's guarantee, so this does not claim
+        E1-CAP-1.
+        """
+        pin = getattr(self._adapter, "pin_bounded_metadata", None)
+        if not callable(pin):
+            raise CatalogIntegrityError(
+                "bounded Listing verification requires PyIceberg bounded metadata support"
+            )
+        if snapshot_ids is not None:
+            if set(snapshot_ids) != {LISTINGS_TABLE, _RAW_TABLE}:
+                raise CatalogIntegrityError(
+                    "bounded Listing replay needs exact Listing and Raw snapshot bindings"
+                )
+            pin_at = getattr(self._adapter, "pin_bounded_metadata_at", None)
+            if not callable(pin_at):
+                raise CatalogIntegrityError(
+                    "bounded Listing replay cannot pin caller-supplied PIT snapshot IDs"
+                )
+            listing_metadata = pin_at(
+                LISTINGS_TABLE,
+                snapshot_ids[LISTINGS_TABLE],
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
+            raw_metadata = pin_at(
+                _RAW_TABLE,
+                snapshot_ids[_RAW_TABLE],
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
+        else:
+            listing_metadata = pin(
+                LISTINGS_TABLE,
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
+            raw_metadata = pin(
+                _RAW_TABLE,
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
+        raw_head = _pinned_head(raw_metadata)
+        listing_head = _pinned_head(listing_metadata)
+        raw_rows = self._verifier.verify_table_bounded(
+            raw_head,
+            scratch_storage=scratch_storage,
+            bounded_metadata=raw_metadata,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+        )
+        if raw_rows is None:
+            if listing_head is not None:
+                raise CatalogIntegrityError(
+                    f"{LISTINGS_TABLE} has history but the pinned Raw table is empty"
+                )
+            return BoundedListingReplayInputs(
+                raw_snapshot_id=None,
+                listing_snapshot_id=None,
+                raw_metadata=raw_metadata,
+                listing_metadata=listing_metadata,
+                raw_rows=None,
+                observations=None,
+                prefix_index=None,
+                prefix_roots=None,
+                listing_batches=None,
+            )
+        observations = listing_observations_run(
+            raw_rows,
+            storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+        )
+        if observations is None:
+            raise CatalogIntegrityError("a non-empty Raw proof produced no observation run")
+        prefix_index, prefix_roots = build_listing_prefix_index(
+            raw_rows,
+            storage=scratch_storage,
+            raw_sort_capacity=capacity,
+            raw_sort_merge_fanout=merge_fanout,
+            raw_sort_limits=limits,
+            raw_max_record_bytes=max_record_bytes,
+            raw_max_run_object_bytes=max_run_object_bytes,
+            root_refs_capacity=capacity,
+            root_refs_merge_fanout=merge_fanout,
+            root_refs_limits=limits,
+            leaf_max_records=prefix_leaf_max_records,
+            fanout=prefix_fanout,
+            max_node_bytes=prefix_max_node_bytes,
+            max_record_bytes=prefix_max_record_bytes,
+        )
+        listing_batches = listing_history_prefix_run(
+            self._adapter,
+            listing_head,
+            prefix_roots,
+            bounded_metadata=listing_metadata,
+            storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+        )
+        return BoundedListingReplayInputs(
+            raw_snapshot_id=raw_head,
+            listing_snapshot_id=listing_head,
+            raw_metadata=raw_metadata,
+            listing_metadata=listing_metadata,
+            raw_rows=raw_rows,
+            observations=observations,
+            prefix_index=prefix_index,
+            prefix_roots=prefix_roots,
+            listing_batches=listing_batches,
+        )
+
+    def verify_bounded(
+        self,
+        *,
+        snapshot_ids: Mapping[str, str | None] | None = None,
+        scratch_storage: StorageAdapter,
+        metadata_limits: BoundedMetadataLimits,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_record_bytes: int,
+        max_run_object_bytes: int,
+        prefix_leaf_max_records: int,
+        prefix_fanout: int,
+        prefix_max_node_bytes: int,
+        prefix_max_record_bytes: int,
+        row_chunk_capacity: int,
+        max_hash_chunk_bytes: int,
+        finding_sink: FindingSink,
+    ) -> BoundedListingReplayProof:
+        """Prove persisted Listing batches with bounded row streams and historical Raw prefixes.
+
+        The v1/v2 ``verify`` API and its materialized result are unchanged. This additive path
+        writes only caller-provided scratch storage, does not read the clock, and checks each
+        persisted batch's rows, knowledge-time floor, recorded contract version, and exact C3
+        batch fingerprint. Metadata ancestry uses the explicit bounded pin supplied by this
+        method; backend scan planning and total process RSS remain outside this guarantee.
+        """
+        inputs = self.bounded_replay_inputs(
+            snapshot_ids=snapshot_ids,
+            scratch_storage=scratch_storage,
+            metadata_limits=metadata_limits,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+            prefix_leaf_max_records=prefix_leaf_max_records,
+            prefix_fanout=prefix_fanout,
+            prefix_max_node_bytes=prefix_max_node_bytes,
+            prefix_max_record_bytes=prefix_max_record_bytes,
+        )
+        return verify_listing_history_bounded(
+            self._adapter,
+            inputs,
+            evidence_storage=self._storage,
+            scratch_storage=scratch_storage,
+            capacity=capacity,
+            merge_fanout=merge_fanout,
+            limits=limits,
+            max_record_bytes=max_record_bytes,
+            max_run_object_bytes=max_run_object_bytes,
+            row_chunk_capacity=row_chunk_capacity,
+            max_hash_chunk_bytes=max_hash_chunk_bytes,
+            listing_metadata=inputs.listing_metadata,
+            prefix_leaf_max_records=prefix_leaf_max_records,
+            prefix_fanout=prefix_fanout,
+            prefix_max_node_bytes=prefix_max_node_bytes,
+            prefix_max_record_bytes=prefix_max_record_bytes,
+            finding_sink=finding_sink,
+        )
 
     # ------------------------------------------------------------------ entry points
 
@@ -498,6 +733,14 @@ class ListingDeriver:
 # =========================================================================================
 # pure helpers
 # =========================================================================================
+
+
+def _pinned_head(metadata: BoundedIcebergMetadata) -> str | None:
+    selected = metadata.selected_snapshot_id
+    if selected is None:
+        return None
+    metadata.require_snapshot(selected)
+    return selected
 
 
 def _chains(rows: Sequence[Mapping[str, Any]]) -> dict[str, lr.ListingChain]:

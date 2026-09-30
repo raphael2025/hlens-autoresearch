@@ -1080,8 +1080,8 @@ def _cross_check(values: LoopValues, wiring: WiringValues) -> None:
             f"{profile.ref} stresses {stressed}, the configured cost_model is "
             f"{wiring.cost_model.ref}"
         )
-    for index, entry in enumerate(wiring.strategies):
-        if entry.hypothesis_family_id != values.family_id:
+    for index, strategy_entry in enumerate(wiring.strategies):
+        if strategy_entry.hypothesis_family_id != values.family_id:
             raise OperatorConfigError(
                 f"[loop.wiring] strategies[{index}] hypothesis_family_id is not [loop] family_id"
             )

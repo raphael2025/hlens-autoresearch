@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -14,20 +15,28 @@ from core.errors import ReasonCode
 from infrastructure.event_bus.journal import AppendOnlyJournal
 from infrastructure.registry.profile_freeze import (
     ProfileFreezeRegistry,
-    RegistryCorrupted as FreezeRegistryCorrupted,
+)
+from infrastructure.registry.profile_freeze import (
     verify_integrity_snapshot as audit_profile_freeze,
 )
 from infrastructure.registry.registry import (
     RegistryCorrupted,
+)
+from infrastructure.registry.registry import RegistryCorrupted as FreezeRegistryCorrupted
+from infrastructure.registry.registry import (
     verify_integrity_snapshot as audit_strategy,
 )
 from infrastructure.registry.retirement import (
     RetirementRegistry,
+)
+from infrastructure.registry.retirement import (
     verify_integrity_snapshot as audit_retirement,
 )
 from infrastructure.tools.registry_audit import main
 from research.strategies.failure_registry import (
     FailureRegistryCorrupted,
+)
+from research.strategies.failure_registry import (
     verify_integrity_snapshot as audit_failure,
 )
 from tests.promotion.fixtures import (
@@ -193,9 +202,7 @@ def test_retirement_unanchored_result_discloses_tail_deletion_limit(tmp_path: Pa
 def test_retirement_anchor_ahead_is_rejected_without_repair(tmp_path: Path) -> None:
     paths = _empty_registry_files(tmp_path)
     anchor = tmp_path / "retirement.anchor.jsonl"
-    AppendOnlyJournal(anchor).append(
-        "retirement_registry.head", {"length": 1, "head": "e" * 64}
-    )
+    AppendOnlyJournal(anchor).append("retirement_registry.head", {"length": 1, "head": "e" * 64})
     before = anchor.read_bytes()
     with pytest.raises(RegistryCorrupted, match="does not match"):
         audit_retirement(paths["retirement"], anchor=anchor)
@@ -211,11 +218,11 @@ def test_retirement_business_replay_is_read_only(tmp_path: Path) -> None:
         subject_ref=subject,
         retirement_reason="TEST ONLY audit fixture",
         evidence=("report:test-only",),
-        active_from="2026-01-01T00:00:00Z",
-        active_to="2026-06-01T00:00:00Z",
+        active_from=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+        active_to=datetime.fromisoformat("2026-06-01T00:00:00+00:00"),
         execution_mode=ExecutionMode.SIMULATED,
         lessons="TEST ONLY",
-        recorded_at="2026-09-28T09:00:00Z",
+        recorded_at=datetime.fromisoformat("2026-09-28T09:00:00+00:00"),
     )
     with RetirementRegistry(root) as registry:
         registry.register_retirement(record)
@@ -237,11 +244,11 @@ def test_retirement_journal_ahead_of_anchor_is_not_auto_repaired(tmp_path: Path)
         subject_ref=subject,
         retirement_reason="TEST ONLY crash-window fixture",
         evidence=("report:test-only",),
-        active_from="2026-01-01T00:00:00Z",
-        active_to="2026-06-01T00:00:00Z",
+        active_from=datetime.fromisoformat("2026-01-01T00:00:00+00:00"),
+        active_to=datetime.fromisoformat("2026-06-01T00:00:00+00:00"),
         execution_mode=ExecutionMode.SIMULATED,
         lessons="TEST ONLY",
-        recorded_at="2026-09-28T09:00:00Z",
+        recorded_at=datetime.fromisoformat("2026-09-28T09:00:00+00:00"),
     )
     with RetirementRegistry(root) as registry:
         registry.register_retirement(record)
@@ -280,7 +287,9 @@ def test_failure_audit_rejects_schema_invalid_json(tmp_path: Path) -> None:
         audit_failure(path)
 
 
-def test_cli_returns_independent_structured_results(capsys: pytest.CaptureFixture[str], tmp_path: Path) -> None:
+def test_cli_returns_independent_structured_results(
+    capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
     paths = _empty_registry_files(tmp_path)
     status = main(
         [

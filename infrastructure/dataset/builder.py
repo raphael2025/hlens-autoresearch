@@ -1,7 +1,9 @@
-"""Research Dataset + ``ResearchDatasetManifest`` (Phase 1 F3; ADR-0023 §5 / §6, ADR-0024 §6).
+"""Research Dataset builders (Phase 1 F3; ADR-0023 §5 / §6, ADR-0024 §6, ADR-0077).
 
-``DatasetBuilder.select(universe, pit, data_type, start, end)`` is the read-only, deterministic
-part; ``build`` materializes it and persists the manifest. Under ``hlens.dataset.pit-selection
+``DatasetBuilder.select(universe, pit, data_type, start, end)`` is the legacy v2 read-only,
+deterministic derivation; ``build`` is retained only to replay a selection whose v2 manifest
+already exists. New writes use ``DatasetEvidenceBuilder`` through ``DatasetBuildPipeline`` with
+explicit ADR-0077 resource parameters. Under ``hlens.dataset.pit-selection
 @1.0.0``:
 
 1. **bindings** (fail closed) — every availability / precedence / parser binding of the PIT spec
@@ -47,11 +49,12 @@ exclusion, lineage entry, report id, evidence gap and the rows the snapshot comm
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Iterable, Iterator, Mapping, Sequence
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping, Sequence
+from contextlib import AbstractContextManager, contextmanager, nullcontext
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
-from typing import Any, Final, Protocol
+from pathlib import Path
+from typing import Any, Final, Protocol, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import And, EqualTo
@@ -76,6 +79,7 @@ from core.contracts.universe import (
     DatasetRuleBinding,
     EvidenceStream,
     EvidenceStreamRef,
+    PitConflictHeadEvidence,
     ResearchDatasetEvidenceManifest,
     ResearchDatasetManifest,
     SelectedRevisionLineage,
@@ -85,11 +89,15 @@ from core.contracts.universe import (
     UniverseSpecBinding,
     dataset_chunk_batch_id,
 )
+from core.contracts.universe import (
+    PitConflictEvidenceResult as PitConflictResult,
+)
 from core.domain.base import (
     CONTRACT_SCHEMA_VERSION,
     Contract,
     canonical_json,
     contract_schema_version_scope,
+    parse_semver,
 )
 from core.domain.specs import DatasetRef, Zone
 from infrastructure import contract_version
@@ -101,6 +109,7 @@ from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_PRECEDENCE_EVIDENCE,
     CANONICAL_INSTRUMENT_LISTINGS,
+    DATA_QUALITY_REPORT_MANIFESTS,
     DATA_QUALITY_REPORTS,
     DATASET_MANIFESTS,
     QUALITY_EVIDENCE_GAPS,
@@ -130,6 +139,7 @@ from infrastructure.revision.rest_availability import REST_AVAILABILITY_BINDING
 from infrastructure.revision.rest_precedence import REST_PRECEDENCE_BINDING
 from infrastructure.revision.row_integrity import snapshots_of_batches
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 from infrastructure.universe.builder import (
     REGISTERED_UNIVERSES,
     UniverseBuilder,
@@ -170,6 +180,7 @@ __all__ = [
     "PitKeyEvaluation",
     "PitKeyGroup",
     "PitKeySource",
+    "PitConflictResult",
     "PitSelectedRevision",
     "QualityEvidenceSource",
     "UniverseEvidenceSource",
@@ -245,6 +256,7 @@ _ATTEMPTS: Final = 8
 _EVIDENCE: Final = BINANCE_SPOT_PRECEDENCE_EVIDENCE.table
 _LISTINGS: Final = CANONICAL_INSTRUMENT_LISTINGS.table
 _QUALITY: Final = DATA_QUALITY_REPORTS.table
+_QUALITY_MANIFESTS: Final = DATA_QUALITY_REPORT_MANIFESTS.table
 _GAPS: Final = QUALITY_EVIDENCE_GAPS.table
 #: Tables bound whenever they had a snapshot when the build ran (not the listing tables: a
 #: missing listing history is the universe's refusal), with the decision that requires it.
@@ -334,12 +346,14 @@ class DatasetBuilder:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        canonical_scratch_directory: Path,
         market_data_base_url: str,
         dataset_table: RegisteredTableDefinition,
     ) -> None:
         _check_dataset_table(dataset_table)
         self._adapter = adapter
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         self._origin = market_data_base_url
         self._table = dataset_table
 
@@ -348,6 +362,11 @@ class DatasetBuilder:
         """The catalog this builder builds, materializes and verifies against (public; C1-CONSUMERS
         follow-up: previously read only through the private ``_adapter`` attribute)."""
         return self._adapter
+
+    @property
+    def canonical_scratch_directory(self) -> Path:
+        """Configured scratch root forwarded to Canonical verification during reselection."""
+        return self._canonical_scratch_directory
 
     # ------------------------------------------------------------------ entry points
 
@@ -360,6 +379,10 @@ class DatasetBuilder:
         end: datetime,
     ) -> DatasetBuilt:
         selection = self.select(universe, pit, data_type, start, end)
+        # ADR-0077 DQ-10: the materializing v2 path is retained only to replay a v2
+        # manifest that already exists. In particular, do not commit a v2 selection batch
+        # and then discover that its manifest would be a new v2 write.
+        self._require_existing_v2_manifest(selection.selection_id)
         if not selection.rows:
             raise DatasetEmpty(
                 f"{data_type} [{start.isoformat()}, {end.isoformat()}) selects nothing for the "
@@ -401,6 +424,27 @@ class DatasetBuilder:
         verifier = _JustSelected(self._adapter, self._table, selection)
         persisted = ManifestStore(self._adapter, verifier).persist(manifest)
         return DatasetBuilt(selection, manifest, commit, persisted)
+
+    def _require_existing_v2_manifest(self, selection_id: str) -> None:
+        rows = self._adapter.scan_columns(
+            DATASET_MANIFESTS.table,
+            columns=("manifest_content_hash",),
+            row_filter=EqualTo("selection_id", selection_id),  # type: ignore[call-arg, arg-type]
+        ).to_pylist()
+        if not rows:
+            raise DatasetSpecError(
+                "creating a new v2 Research Dataset is disabled by ADR-0077 DQ-10; "
+                "use DatasetBuildPipeline to create a v3 dataset"
+            )
+        if len(rows) != 1:
+            raise CatalogIntegrityError(
+                f"v2 selection {selection_id} has {len(rows)} persisted manifests"
+            )
+        manifest = self.manifests().load(rows[0]["manifest_content_hash"])
+        if manifest is None or manifest.selection_id != selection_id:
+            raise CatalogIntegrityError(
+                f"v2 manifest row for selection {selection_id} is missing or mismatched"
+            )
 
     def manifests(self) -> ManifestStore:
         """The ``ManifestStore`` whose manifests this builder verifies (persist and load)."""
@@ -473,7 +517,11 @@ class DatasetBuilder:
             self._adapter, self._storage, market_data_base_url=self._origin
         ).build(universe, pit)
         column = _time_column(data_type)
-        selector = PitSelector(self._adapter, self._storage)
+        selector = PitSelector(
+            self._adapter,
+            self._storage,
+            canonical_scratch_directory=self._canonical_scratch_directory,
+        )
         rows: list[dict[str, Any]] = []
         lineage: dict[str, SelectedRevisionLineage] = {}
         gaps: dict[str, str] = {}
@@ -669,7 +717,11 @@ class DatasetBuilder:
         report row; each bound gap must be recorded, with the same text, by the report cited.
         """
         view = PinnedCatalogView(self._adapter, pit.snapshot_bindings)
-        reporter = QualityReporter(view, self._storage)
+        reporter = QualityReporter(
+            view,
+            self._storage,
+            canonical_scratch_directory=self._canonical_scratch_directory,
+        )
         report_ids: set[str] = set()
         bound: list[AvailabilityEvidenceGap] = []
         by_partition: dict[tuple[str, date], list[str]] = {}
@@ -987,10 +1039,20 @@ def _row_order(row: Mapping[str, Any]) -> tuple[str, str, datetime, str]:
 # one cached report id and the adjacent-item comparison state.
 
 DATASET_EVIDENCE_RULE_VERSION: Final = "2.1.0"  # F-C, 2026-09-28: EVIDENCE_PROJECTION text fix
+
+
 #: The evidence streams the generator derives; ``chunk_proofs`` come from the chunk commits.
-_DERIVED_STREAMS: Final = tuple(
-    stream for stream in EvidenceStream if stream is not EvidenceStream.CHUNK_PROOFS
-)
+def _derived_streams(schema_version: str) -> tuple[EvidenceStream, ...]:
+    """Streams in one recorded manifest era (ADR-0094 preserves six-stream replay)."""
+    version = parse_semver(schema_version)
+    core = tuple(int(version.group(name)) for name in ("major", "minor", "patch"))
+    return tuple(
+        stream
+        for stream in EvidenceStream
+        if stream is not EvidenceStream.CHUNK_PROOFS
+        and (stream is not EvidenceStream.PIT_CONFLICTS or core >= (2, 5, 0))
+    )
+
 
 #: A member span of one venue symbol: ``(None, None)`` for a point simulation.
 MemberSpan = tuple[datetime | None, datetime | None]
@@ -1209,6 +1271,7 @@ class PitKeyEvaluation:
     simulation_time: datetime
     status: PointInTimeStatus
     selected: PitSelectedRevision | None
+    head_count: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1240,6 +1303,8 @@ class PitKeySource(Protocol):
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Callable[[PitConflictHeadEvidence], None] | None = None,
     ) -> AbstractContextManager[Iterator[PitKeyGroup]]: ...
 
 
@@ -1281,13 +1346,19 @@ class PinnedQualityEvidence:
         pit: PointInTimeSpec,
         data_type: str,
         *,
+        canonical_scratch_directory: Path,
         market_data_base_url: str,
     ) -> None:
         self._view = PinnedCatalogView(adapter, pit.snapshot_bindings)
         self._storage = storage
+        self._canonical_scratch_directory = canonical_scratch_directory
         self._data_type = data_type
         self._origin = market_data_base_url
-        self._reporter = QualityReporter(self._view, storage)
+        self._reporter = QualityReporter(
+            self._view,
+            storage,
+            canonical_scratch_directory=canonical_scratch_directory,
+        )
         self._gaps_of: str | None = None
         self._gaps: dict[tuple[str, str], str] = {}
 
@@ -1428,6 +1499,7 @@ class DatasetEvidenceBuilder:
         sources: DatasetEvidenceSources,
         sink: DatasetDerivationSink,
         manifested: bool,
+        schema_version: str = CONTRACT_SCHEMA_VERSION,
     ) -> DatasetDerivation:
         """Derive everything but the chunk proofs into ``sink``; nothing is written.
 
@@ -1435,11 +1507,20 @@ class DatasetEvidenceBuilder:
         the unbound-table refusal as in v2). A caller re-deriving a persisted manifest runs this
         inside ``contract_schema_version_scope(<its recorded version>)``.
         """
-        canonical = _check_evidence_request(request, dataset_table=None)
+        canonical = _check_evidence_request(
+            request, dataset_table=None, schema_version=schema_version
+        )
         selection_id = self.selection_id(request)
         _check_unbound_evidence(self._adapter, request.pit, manifested=manifested)
         return _EvidenceDerivation(
-            request, canonical, selection_id, self._rule, sources, sink
+            request,
+            canonical,
+            selection_id,
+            self._rule,
+            sources,
+            sink,
+            schema_version,
+            self._storage,
         ).run()
 
     def build(
@@ -1457,7 +1538,7 @@ class DatasetEvidenceBuilder:
         idempotent. A manifest persisted at an earlier contract version is re-derived at that
         version (ADR-0052 V7); evidence and rows carry no envelope, so their bytes do not move.
         """
-        canonical = _check_evidence_request(request, dataset_table=chunks.table)
+        _check_evidence_request(request, dataset_table=chunks.table)
         selection_id = self.selection_id(request)
         recorded = manifests.recorded_version(selection_id)
         _check_unbound_evidence(self._adapter, request.pit, manifested=recorded is not None)
@@ -1470,10 +1551,20 @@ class DatasetEvidenceBuilder:
                 recorded, what=f"the evidence manifest of {selection_id}"
             )
             scope = contract_schema_version_scope(version)
+        canonical = _check_evidence_request(
+            request, dataset_table=chunks.table, schema_version=version
+        )
         with scope:
             sink = _EvidenceBuildSink(self._storage, self._rule, selection_id, chunks, version)
             derived = _EvidenceDerivation(
-                request, canonical, selection_id, self._rule, sources, sink
+                request,
+                canonical,
+                selection_id,
+                self._rule,
+                sources,
+                sink,
+                version,
+                self._storage,
             ).run()
             if derived.row_count == 0:
                 raise DatasetEmpty(
@@ -1539,7 +1630,12 @@ def _check_utc(value: object, what: str) -> datetime:
     return value
 
 
-def _check_evidence_request(request: DatasetEvidenceRequest, *, dataset_table: str | None) -> str:
+def _check_evidence_request(
+    request: DatasetEvidenceRequest,
+    *,
+    dataset_table: str | None,
+    schema_version: str | None = None,
+) -> str:
     """The v2 request checks for a v3 request; returns the data type's Canonical table."""
     if not isinstance(request, DatasetEvidenceRequest):
         raise DatasetSpecError("request must be a DatasetEvidenceRequest")
@@ -1573,6 +1669,18 @@ def _check_evidence_request(request: DatasetEvidenceRequest, *, dataset_table: s
     for table in (canonical.table, _QUALITY):
         if table not in bound:
             raise DatasetSpecError(f"the PIT spec does not bind {table}")
+    if schema_version is not None:
+        version = parse_semver(schema_version)
+        if (
+            tuple(int(version.group(name)) for name in ("major", "minor", "patch"))
+            >= (
+                2,
+                5,
+                0,
+            )
+            and _QUALITY_MANIFESTS not in bound
+        ):
+            raise DatasetSpecError(f"the PIT spec does not bind {_QUALITY_MANIFESTS}")
     check_listing_bindings(pit)
     if dataset_table is not None:
         if dataset_table.split(".", 1)[0] != SELECTION_NAMESPACE:
@@ -1635,7 +1743,11 @@ def _required(value: datetime | None) -> datetime:
 
 
 def _selected_spans_of(
-    evaluations: Iterable[PitKeyEvaluation], pit: PointInTimeSpec, key: str
+    evaluations: Iterable[PitKeyEvaluation],
+    pit: PointInTimeSpec,
+    key: str,
+    *,
+    on_conflict: Callable[[PitKeyEvaluation], PitConflictResult | None] | None = None,
 ) -> Iterator[tuple[datetime | None, datetime | None, PitSelectedRevision]]:
     """``_selected_spans`` over a once-consumed, time-ordered evaluation stream."""
     point = pit.simulation_time is not None
@@ -1645,9 +1757,13 @@ def _selected_spans_of(
             raise CatalogIntegrityError(f"key {key}: an evaluation is not a PitKeyEvaluation")
         at = _check_utc(evaluation.simulation_time, f"key {key} simulation_time")
         if evaluation.status is PointInTimeStatus.CONFLICT:
+            if evaluation.head_count is not None and evaluation.head_count < 2:
+                raise CatalogIntegrityError(f"key {key}: conflict has fewer than two heads")
+            result = None if on_conflict is None else on_conflict(evaluation)
             raise PitConflictError(
                 f"observation key {key} has competing heads at {at.isoformat()}: the dataset "
-                "build fails closed"
+                "build fails closed",
+                result=result,
             )
         if evaluation.status not in (PointInTimeStatus.SELECTED, PointInTimeStatus.ABSENT) or (
             evaluation.status is PointInTimeStatus.SELECTED
@@ -1675,7 +1791,7 @@ def _selected_spans_of(
 
 def _checked_member_spans(
     spans: Iterator[MemberSpan], pit: PointInTimeSpec, venue_symbol: str
-) -> Iterator[MemberSpan]:
+) -> Generator[MemberSpan]:
     """The member spans, proven ordered, disjoint and inside the simulation (or the one point)."""
     point = pit.simulation_time is not None
     previous: MemberSpan | None = None
@@ -1699,22 +1815,88 @@ def _checked_member_spans(
         yield span
 
 
-class _MemberSpans:
-    """The cursor's member spans, taken one venue symbol at a time (symbols ascending).
+@dataclass(frozen=True, slots=True)
+class _MemberSpanRun:
+    """One symbol's replayable member spans, kept in a bounded content-addressed run."""
 
-    Holds the spans of **one** symbol: bounded by that symbol's membership changes inside the
-    simulation window (the bound B-UNIV declares for its change instants), never by rows or keys.
-    The whole-universe ``member_spans`` mapping of v2 is never built; reopening the cursor per
-    observation key instead would re-walk the universe once per key.
-    """
+    storage: StorageAdapter
+    root: RunRef | None
+    pit: PointInTimeSpec
+    venue_symbol: str
+
+    @property
+    def empty(self) -> bool:
+        return self.root is None
+
+    @contextmanager
+    def open(self) -> Iterator[Iterator[MemberSpan]]:
+        if self.root is None:
+            yield iter(())
+            return
+        with iter_run(self.storage, self.root) as records:
+            spans = _member_spans_from_run(records, self.venue_symbol)
+            checked = _checked_member_spans(spans, self.pit, self.venue_symbol)
+            try:
+                yield checked
+            finally:
+                close = getattr(checked, "close", None)
+                if callable(close):
+                    close()
+                spans.close()
+
+    def load(self, capacity: int) -> tuple[MemberSpan, ...] | None:
+        """Every span, fully replayed and verified once, when there are at most ``capacity``;
+        ``None`` (nothing retained) when the run is longer, so callers reopen it instead."""
+        loaded: list[MemberSpan] = []
+        with self.open() as replayed:
+            for span in replayed:
+                if len(loaded) == capacity:
+                    return None
+                loaded.append(span)
+        return tuple(loaded)
+
+
+def _member_spans_from_run(
+    records: Iterator[Mapping[str, Any]], venue_symbol: str
+) -> Generator[MemberSpan]:
+    expected_ordinal = 0
+    for row in records:
+        order = row.get("order")
+        record = row.get("record")
+        if (
+            not isinstance(order, list)
+            or len(order) != 1
+            or type(order[0]) is not int
+            or order[0] != expected_ordinal
+            or not isinstance(record, Mapping)
+            or set(record) != {"effective_from", "effective_until"}
+        ):
+            raise CatalogIntegrityError(
+                f"member spans of {venue_symbol} have a malformed run record"
+            )
+        expected_ordinal += 1
+        yield record["effective_from"], record["effective_until"]
+
+
+class _MemberSpans:
+    """Consume the span cursor once, persisting each symbol to one bounded replayable run."""
 
     def __init__(
         self,
         spans: Iterator[tuple[str, datetime | None, datetime | None]],
         pit: PointInTimeSpec,
+        storage: StorageAdapter,
+        *,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
     ) -> None:
         self._spans = spans
         self._pit = pit
+        self._storage = storage
+        self._capacity = capacity
+        self._merge_fanout = merge_fanout
+        self._limits = limits
         self._pending = self._next()
 
     def _next(self) -> tuple[str, datetime | None, datetime | None] | None:
@@ -1725,16 +1907,37 @@ class _MemberSpans:
             raise CatalogIntegrityError(f"a member span is malformed: {item!r}")
         return item
 
-    def take(self, venue_symbol: str) -> tuple[MemberSpan, ...]:
-        mine: list[MemberSpan] = []
-        while self._pending is not None and self._pending[0] == venue_symbol:
-            mine.append((self._pending[1], self._pending[2]))
-            self._pending = self._next()
-        if self._pending is not None and self._pending[0] < venue_symbol:
-            raise CatalogIntegrityError(
-                f"member spans of {self._pending[0]} are out of symbol order or not in the spec"
-            )
-        return tuple(_checked_member_spans(iter(mine), self._pit, venue_symbol))
+    def take(self, venue_symbol: str) -> _MemberSpanRun:
+        ordinal = 0
+
+        def mine() -> Iterator[MemberSpan]:
+            nonlocal ordinal
+            while self._pending is not None and self._pending[0] == venue_symbol:
+                item = self._pending
+                self._pending = self._next()
+                ordinal += 1
+                yield item[1], item[2]
+
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: row["order"][0],
+            capacity=self._capacity,
+            merge_fanout=self._merge_fanout,
+            limits=self._limits,
+        ) as runs:
+            for span in _checked_member_spans(mine(), self._pit, venue_symbol):
+                runs.add(
+                    {
+                        "order": [ordinal - 1],
+                        "record": {"effective_from": span[0], "effective_until": span[1]},
+                    }
+                )
+            if self._pending is not None and self._pending[0] < venue_symbol:
+                raise CatalogIntegrityError(
+                    f"member spans of {self._pending[0]} are out of symbol order or not in the spec"
+                )
+            root = runs.finish()
+        return _MemberSpanRun(self._storage, root, self._pit, venue_symbol)
 
     def close(self) -> None:
         if self._pending is not None:
@@ -1746,7 +1949,7 @@ class _MemberSpans:
 def _gated_rows(
     selected: Iterator[tuple[datetime | None, datetime | None, PitSelectedRevision]],
     members: Iterator[MemberSpan],
-) -> Iterator[tuple[tuple[datetime | None, datetime | None], PitSelectedRevision]]:
+) -> Generator[tuple[tuple[datetime | None, datetime | None], PitSelectedRevision]]:
     """Every (selected span x member span) intersection, by start: a merge of two sorted,
     disjoint families. Yields exactly what v2's nested loop (each selected span, each member
     span) yields, in the same order, holding one item of each side.
@@ -1893,6 +2096,8 @@ class _EvidenceDerivation:
         rule: DatasetEvidenceRule,
         sources: DatasetEvidenceSources,
         sink: DatasetDerivationSink,
+        schema_version: str,
+        storage: StorageAdapter,
     ) -> None:
         if not isinstance(sources, DatasetEvidenceSources):
             raise DatasetSpecError("sources must be DatasetEvidenceSources")
@@ -1904,32 +2109,56 @@ class _EvidenceDerivation:
         self._universe = sources.universe
         self._pit = sources.pit
         self._sink = sink
+        self._storage = storage
+        self._span_run_limits = RunLimits(
+            leaf_max_records=rule.limits.leaf_max_records,
+            leaf_max_bytes=max(513, rule.limits.leaf_object_max_bytes),
+            fanout=rule.limits.fanout,
+        )
         self._bound = request.pit.snapshot_bindings
         self._point = request.pit.simulation_time is not None
-        self._counts = dict.fromkeys(_DERIVED_STREAMS, 0)
+        self._streams = _derived_streams(schema_version)
+        self._counts: dict[EvidenceStream, int] = dict.fromkeys(self._streams, 0)
         self._rows = 0
         self._last_report: tuple[int, str, str] | None = None
 
     def run(self) -> DatasetDerivation:
-        listing = self.quality.listing_report()
-        self.report(
-            DatasetQualityReportRef(report_id=listing, subject=DatasetQualitySubject.LISTING)
-        )
-        self._entries()
-        self._listing_lineage(listing)
-        with self._universe.member_spans() as spans:
-            members = _MemberSpans(spans, self.request.pit)
-            for venue_symbol in self.request.universe.symbols:
-                self._symbol(venue_symbol, members.take(venue_symbol))
-            members.close()
-        return DatasetDerivation(
-            selection_id=self._selection_id,
-            row_count=self._rows,
-            record_counts=tuple(
-                (stream, self._counts[stream])
-                for stream in sorted(_DERIVED_STREAMS, key=lambda item: item.value)
-            ),
-        )
+        try:
+            listing = self.quality.listing_report()
+            self.report(
+                DatasetQualityReportRef(report_id=listing, subject=DatasetQualitySubject.LISTING)
+            )
+            self._entries()
+            self._listing_lineage(listing)
+            with self._universe.member_spans() as spans:
+                members = _MemberSpans(
+                    spans,
+                    self.request.pit,
+                    self._storage,
+                    capacity=self._chunk_rows,
+                    merge_fanout=self._span_run_limits.fanout,
+                    limits=self._span_run_limits,
+                )
+                try:
+                    for venue_symbol in self.request.universe.symbols:
+                        self._symbol(venue_symbol, members.take(venue_symbol))
+                finally:
+                    members.close()
+            finish_reports = getattr(self.quality, "finish_reports", None)
+            if callable(finish_reports):
+                finish_reports()
+            return DatasetDerivation(
+                selection_id=self._selection_id,
+                row_count=self._rows,
+                record_counts=tuple(
+                    (stream, self._counts[stream])
+                    for stream in sorted(self._streams, key=lambda item: item.value)
+                ),
+            )
+        finally:
+            close_quality = getattr(self.quality, "close", None)
+            if callable(close_quality):
+                close_quality()
 
     # ------------------------------------------------------------------ emission
 
@@ -2010,7 +2239,13 @@ class _EvidenceDerivation:
                 )
 
     def _gap(self, report_id: str, table: str, revision: str, gap: str) -> None:
-        if self.quality.recorded_gap(report_id, table, revision) != gap:
+        claim_gap = getattr(self.quality, "claim_gap", None)
+        matched = (
+            claim_gap(report_id, table, revision, gap)
+            if callable(claim_gap)
+            else self.quality.recorded_gap(report_id, table, revision) == gap
+        )
+        if matched is False:
             raise DatasetQualityError(
                 f"report {report_id} does not record the evidence gap of {table} revision "
                 f"{revision}"
@@ -2024,16 +2259,30 @@ class _EvidenceDerivation:
 
     # ------------------------------------------------------------------ data
 
-    def _symbol(self, venue_symbol: str, member_spans: tuple[MemberSpan, ...]) -> None:
-        if not member_spans:
+    def _symbol(self, venue_symbol: str, member_spans: _MemberSpanRun) -> None:
+        if member_spans.empty:
             return  # not a member at any time: no rows and no partition reports (as v2)
         request = self.request
         reports = _PartitionReports(self, venue_symbol)
+        # Observation keys are not time-ordered, so every key intersects the spans from the
+        # first one: no forward cursor can be shared between keys. A symbol whose verified spans
+        # fit the capacity its span run was built with (chunk_rows, already an in-memory bound)
+        # is replayed from memory; a longer run is reopened per key as before.
+        cached = member_spans.load(self._chunk_rows)
         for low, high in _iter_slices(request.data_type, request.start, request.end):
-            with self._pit.keys(request.pit, request.data_type, venue_symbol, low, high) as groups:
+            with self._pit.keys(
+                request.pit,
+                request.data_type,
+                venue_symbol,
+                low,
+                high,
+                conflict_sink=self._pit_conflict_head,
+            ) as groups:
                 previous: str | None = None
                 for group in groups:
-                    self._key(group, venue_symbol, member_spans, low, high, previous, reports)
+                    self._key(
+                        group, venue_symbol, member_spans, cached, low, high, previous, reports
+                    )
                     previous = group.observation_key
         reports.close()
 
@@ -2041,7 +2290,8 @@ class _EvidenceDerivation:
         self,
         group: PitKeyGroup,
         venue_symbol: str,
-        member_spans: tuple[MemberSpan, ...],
+        member_spans: _MemberSpanRun,
+        cached: tuple[MemberSpan, ...] | None,
         low: datetime,
         high: datetime,
         previous: str | None,
@@ -2062,18 +2312,58 @@ class _EvidenceDerivation:
                 f"observation key {key} is not owned by the slice [{low.isoformat()}, "
                 f"{high.isoformat()}) (its chain starts at {owner.isoformat()})"
             )
-        #: Revisions of this key already given lineage: a revision belongs to one key and one
-        #: key's rows are adjacent, so this set never spans two keys (ADR-0077 §2).
-        emitted: set[str] = set()
-        rows = _gated_rows(
-            _selected_spans_of(group.evaluations, self.request.pit, key), iter(member_spans)
+        # PIT's bounded selector evaluates one fixed graph while candidates only accrue. A
+        # selected revision therefore remains the sole head until a newly available descendant
+        # replaces it; it cannot become the sole head again, and a conflict terminates the key.
+        # `_evaluate_bounded` emits only selection changes. `_selected_spans_of` preserves that
+        # order, and `_gated_rows` only intersects it with ordered disjoint member spans. One
+        # selected revision may thus produce several rows when a member span is split, but those
+        # occurrences are adjacent in output. This scalar covers repeated evaluation/span
+        # intersections without retaining O(H_key) revision IDs.
+        last_lineage_revision: str | None = None
+        replay: AbstractContextManager[Iterator[MemberSpan]] = (
+            member_spans.open() if cached is None else nullcontext(iter(cached))
         )
-        for (effective_from, effective_until), selected in rows:
-            event_time = self._row(venue_symbol, key, selected, effective_from, effective_until)
-            report_id = reports.cover(event_time.astimezone(UTC).date())
-            if selected.revision_id not in emitted:
-                emitted.add(selected.revision_id)
-                self._data_lineage(selected, report_id)
+        with replay as replayed_members:
+            rows = _gated_rows(
+                _selected_spans_of(
+                    group.evaluations,
+                    self.request.pit,
+                    key,
+                    on_conflict=lambda evaluation: self._finish_pit_conflict(key, evaluation),
+                ),
+                replayed_members,
+            )
+            try:
+                for (effective_from, effective_until), selected in rows:
+                    event_time = self._row(
+                        venue_symbol, key, selected, effective_from, effective_until
+                    )
+                    report_id = reports.cover(event_time.astimezone(UTC).date())
+                    if selected.revision_id != last_lineage_revision:
+                        self._data_lineage(selected, report_id)
+                        last_lineage_revision = selected.revision_id
+                # Verify the complete replay even if selected history ended before the last span.
+                for _ in replayed_members:
+                    pass
+            finally:
+                rows.close()
+
+    def _pit_conflict_head(self, record: PitConflictHeadEvidence) -> None:
+        if EvidenceStream.PIT_CONFLICTS not in self._counts:
+            raise CatalogIntegrityError(
+                "a PIT conflict cannot be replayed in a manifest version before 2.5.0"
+            )
+        self._sink.evidence(EvidenceStream.PIT_CONFLICTS, record)
+        self._counts[EvidenceStream.PIT_CONFLICTS] += 1
+
+    def _finish_pit_conflict(
+        self, key: str, evaluation: PitKeyEvaluation
+    ) -> PitConflictResult | None:
+        finish = getattr(self._sink, "finish_pit_conflict", None)
+        if not callable(finish):
+            return None
+        return cast(PitConflictResult, finish(key, evaluation, self.request.pit))
 
     def _row(
         self,
@@ -2131,7 +2421,7 @@ class _EvidenceBuildSink:
     ) -> None:
         self._writers = {
             stream: EvidenceTreeWriter(storage, stream, limits=rule.limits, schema_version=version)
-            for stream in EvidenceStream
+            for stream in (*_derived_streams(version), EvidenceStream.CHUNK_PROOFS)
         }
         self._chunk_rows = rule.chunk_rows
         self._selection_id = selection_id
@@ -2158,9 +2448,32 @@ class _EvidenceBuildSink:
             raise DatasetEmpty("no chunk was committed")
         streams = tuple(
             self._writers[stream].finish()
-            for stream in sorted(EvidenceStream, key=lambda item: item.value)
+            for stream in sorted(self._writers, key=lambda item: item.value)
         )
         return streams, self._chunk_count, self._replayed, self._snapshot_id
+
+    def finish_pit_conflict(
+        self, key: str, evaluation: PitKeyEvaluation, pit: PointInTimeSpec
+    ) -> PitConflictResult:
+        writer = self._writers[EvidenceStream.PIT_CONFLICTS]
+        if evaluation.head_count is None or evaluation.head_count < 2:
+            raise CatalogIntegrityError(f"key {key}: conflict result has no complete head count")
+        if writer.record_count != evaluation.head_count:
+            raise CatalogIntegrityError(
+                f"key {key}: wrote {writer.record_count} conflict heads, expected "
+                f"{evaluation.head_count}"
+            )
+        ref = writer.finish()
+        return PitConflictResult(
+            rule_id=PIT_BINDING.policy_id,
+            rule_version=PIT_BINDING.version,
+            rule_hash=PIT_BINDING.policy_hash,
+            observation_key=key,
+            simulation_time=evaluation.simulation_time,
+            knowledge_cutoff=pit.knowledge_cutoff,
+            head_count=evaluation.head_count,
+            evidence=ref,
+        )
 
     def _commit(self) -> None:
         index = self._chunk_count

@@ -75,7 +75,9 @@ def _derived(
     minutes: int = MINUTES,
     window: tuple[datetime, datetime] = DAY_WINDOW,
 ) -> tuple[FeatureObservation, ...]:
-    selection = PitSelector(w.h.adapter, w.h.storage).select(spec, "klines_1m", symbol, *window)
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", symbol, *window)
     return derived_bar_observations(resample_bars(selection, minutes, *window), selection, spec)
 
 

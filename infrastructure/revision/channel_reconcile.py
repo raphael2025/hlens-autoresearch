@@ -38,7 +38,9 @@ from __future__ import annotations
 
 import dataclasses
 import hashlib
-from collections.abc import Callable, Iterable, Mapping, Sequence
+import itertools
+from collections.abc import Callable, Iterable, Iterator, Mapping, Sequence
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Final
@@ -95,8 +97,14 @@ from infrastructure.revision.channel_precedence import (
     build_channel_edge,
     compare_channels,
 )
-from infrastructure.revision.row_integrity import PersistedRowVerifier
+from infrastructure.revision.row_integrity import (
+    MAX_ELEMENT_MICROBATCH_ROWS,
+    PersistedRowVerifier,
+    VerifiedArchive,
+    history_from,
+)
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = [
     "DEFAULT_EDGE_MICROBATCH_ROWS",
@@ -110,6 +118,7 @@ __all__ = [
     "ChannelReconciled",
     "ChannelReconciler",
     "ReconciledEdge",
+    "VerifiedEdgeRunParams",
     "assemble_channel_graph",
     "check_arrival_seq",
     "evidence_from_row",
@@ -275,6 +284,340 @@ def revision_record_from_row(row: Mapping[str, Any]) -> RevisionRecord:
     )
 
 
+def _validate_channel_graph_runs(
+    storage: StorageAdapter,
+    archive_root: RunRef | None,
+    rest_root: RunRef | None,
+    evidence_root: RunRef | None,
+    *,
+    observation_key: str,
+    params: VerifiedEdgeRunParams,
+) -> None:
+    """Validate one key's graph with fixed buffers and externally sorted indexes.
+
+    ``RevisionGraph`` is the compatibility contract and remains the authority for materialized
+    callers. This internal equivalent exploits the verified-edge path's one-key grouping so
+    cross-key claims are checked at the boundary and graph indexes can be sorted/merged on disk.
+    Kahn cycle elimination uses one bounded external pass per graph depth; a cycle error's node
+    list is the contract's diagnostic output and may itself be large.
+    """
+    with (
+        RunSetBuilder(
+            storage,
+            key=lambda row: row["value"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as revision_ids,
+        RunSetBuilder(
+            storage,
+            key=lambda row: row["arrival_seq"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as arrivals,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["source_id"], row["payload_hash"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as payloads,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["newer"], row["older"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as required_evidence,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["newer"], row["older"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as graph_edges,
+        RunSetBuilder(
+            storage,
+            key=lambda row: (row["newer"], row["older"], row["knowledge_time"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as evidence_rows,
+    ):
+        for expected_channel, root in (
+            (Channel.ARCHIVE, archive_root),
+            (Channel.REST, rest_root),
+        ):
+            if root is None:
+                continue
+            with iter_run(storage, root) as rows:
+                for item in rows:
+                    row = item["row"]
+                    try:
+                        record = revision_record_from_row(row)
+                    except ValueError as exc:
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: {exc}"
+                        ) from None
+                    if record.observation_key != observation_key:
+                        raise CatalogIntegrityError(
+                            "a graph member is assigned to another observation_key"
+                        )
+                    if not isinstance(record, RevisionRecord):
+                        raise ArrivalSeqRangeViolation("a graph member is not a RevisionRecord")
+                    if _channel_of(record) is not expected_channel:
+                        raise ArrivalSeqRangeViolation(
+                            f"revision {record.revision_id} is not a {expected_channel.value} "
+                            "revision"
+                        )
+                    arrival_seq = check_arrival_seq(expected_channel, record.arrival_seq)
+                    revision_ids.add(
+                        {"value": record.revision_id, "revision_id": record.revision_id}
+                    )
+                    arrivals.add({"arrival_seq": arrival_seq, "revision_id": record.revision_id})
+                    payloads.add(
+                        {
+                            "source_id": record.source_id,
+                            "payload_hash": record.payload_hash,
+                            "revision_id": record.revision_id,
+                        }
+                    )
+                    for older in record.supersedes:
+                        required_evidence.add(
+                            {
+                                "newer": record.revision_id,
+                                "older": older,
+                                "knowledge_time": record.availability.times.knowledge_time,
+                            }
+                        )
+                        graph_edges.add({"newer": record.revision_id, "older": older})
+
+        if evidence_root is not None:
+            with iter_run(storage, evidence_root) as rows:
+                for row in rows:
+                    try:
+                        evidence = evidence_from_row(row)
+                    except ValueError as exc:
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: {exc}"
+                        ) from None
+                    if evidence.observation_key != observation_key:
+                        raise CatalogIntegrityError(
+                            "precedence evidence belongs to another observation_key"
+                        )
+                    edge = {
+                        "newer": evidence.revision_id,
+                        "older": evidence.superseded_revision_id,
+                        "knowledge_time": evidence.knowledge_time,
+                    }
+                    evidence_rows.add(edge)
+                    graph_edges.add({"newer": edge["newer"], "older": edge["older"]})
+
+        revision_ids_root = revision_ids.finish()
+        arrivals_root = arrivals.finish()
+        payloads_root = payloads.finish()
+        required_root = required_evidence.finish()
+        graph_edges_root = graph_edges.finish()
+        evidence_rows_root = evidence_rows.finish()
+
+    def check_adjacent_duplicate(
+        root: RunRef | None,
+        *,
+        value_key: Callable[[Mapping[str, Any]], Any],
+        error: Callable[[Mapping[str, Any], Mapping[str, Any]], Exception],
+    ) -> None:
+        if root is None:
+            return
+        with iter_run(storage, root) as rows:
+            previous: Mapping[str, Any] | None = None
+            for row in rows:
+                if previous is not None and value_key(previous) == value_key(row):
+                    raise error(previous, row)
+                previous = row
+
+    check_adjacent_duplicate(
+        revision_ids_root,
+        value_key=lambda row: row["value"],
+        error=lambda _previous, row: CatalogIntegrityError(
+            f"cross-channel revision graph is invalid: revision_id 重复：{row['value']!r}"
+        ),
+    )
+    check_adjacent_duplicate(
+        arrivals_root,
+        value_key=lambda row: row["arrival_seq"],
+        error=lambda previous, row: ArrivalSeqRangeViolation(
+            f"arrival_seq {row['arrival_seq']} collides: {previous['revision_id']} and "
+            f"{row['revision_id']}"
+        ),
+    )
+    check_adjacent_duplicate(
+        payloads_root,
+        value_key=lambda row: (row["source_id"], row["payload_hash"]),
+        error=lambda _previous, row: CatalogIntegrityError(
+            "cross-channel revision graph is invalid: 重复 payload（同一 observation_key 下 "
+            "source_id + payload_hash 相同）："
+            f"{row['revision_id']!r} 不得成为新 revision"
+        ),
+    )
+
+    if required_root is not None:
+        if evidence_rows_root is None:
+            with iter_run(storage, required_root) as required:
+                first = next(required, None)
+            if first is not None:
+                raise CatalogIntegrityError(
+                    f"cross-channel revision graph is invalid: supersedes 边 "
+                    f"{first['newer']!r} → {first['older']!r} 缺少不晚于该 revision "
+                    "knowledge_time 的 precedence 证据"
+                )
+        else:
+            with (
+                iter_run(storage, required_root) as required,
+                iter_run(storage, evidence_rows_root) as evidence_row_iter,
+            ):
+                evidence_groups = iter(
+                    itertools.groupby(
+                        evidence_row_iter, key=lambda row: (row["newer"], row["older"])
+                    )
+                )
+                current_evidence = next(evidence_groups, None)
+                for requirement in required:
+                    pair = (requirement["newer"], requirement["older"])
+                    while current_evidence is not None and current_evidence[0] < pair:
+                        current_evidence = next(evidence_groups, None)
+                    if current_evidence is None or current_evidence[0] != pair:
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: supersedes 边 "
+                            f"{pair[0]!r} → {pair[1]!r} 缺少不晚于该 revision "
+                            "knowledge_time 的 precedence 证据"
+                        )
+                    first_evidence = next(current_evidence[1], None)
+                    if (
+                        first_evidence is None
+                        or first_evidence["knowledge_time"] > requirement["knowledge_time"]
+                    ):
+                        raise CatalogIntegrityError(
+                            f"cross-channel revision graph is invalid: supersedes 边 "
+                            f"{pair[0]!r} → {pair[1]!r} 缺少不晚于该 revision "
+                            "knowledge_time 的 precedence 证据"
+                        )
+                    current_evidence = next(evidence_groups, None)
+
+    _assert_acyclic_run(storage, graph_edges_root, params)
+
+
+def _assert_acyclic_run(
+    storage: StorageAdapter, root: RunRef | None, params: VerifiedEdgeRunParams
+) -> None:
+    """Bounded-memory equivalent of ``_cyclic_nodes`` using external Kahn passes."""
+    active = root
+    while active is not None:
+        with (
+            RunSetBuilder(
+                storage,
+                key=lambda row: row["node"],
+                capacity=params.row_capacity,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as degrees,
+            RunSetBuilder(
+                storage,
+                key=lambda row: row["node"],
+                capacity=params.row_capacity,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as ready,
+        ):
+            with iter_run(storage, active) as edges:
+                previous_pair: tuple[str, str] | None = None
+                for edge in edges:
+                    pair = (edge["newer"], edge["older"])
+                    if pair == previous_pair:
+                        continue
+                    degrees.add({"node": pair[0], "increment": 0})
+                    degrees.add({"node": pair[1], "increment": 1})
+                    previous_pair = pair
+            degree_root = degrees.finish()
+            ready_count = 0
+            if degree_root is not None:
+                with iter_run(storage, degree_root) as nodes:
+                    for node, group in itertools.groupby(nodes, key=lambda row: row["node"]):
+                        degree = sum(item["increment"] for item in group)
+                        if degree == 0:
+                            ready.add({"node": node})
+                            ready_count += 1
+            ready_root = ready.finish()
+
+        if ready_count == 0:
+            with (
+                RunSetBuilder(
+                    storage,
+                    key=lambda row: row["node"],
+                    capacity=params.row_capacity,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as cycle_nodes,
+                iter_run(storage, active) as edges,
+            ):
+                for edge in edges:
+                    cycle_nodes.add({"node": edge["newer"]})
+                    cycle_nodes.add({"node": edge["older"]})
+                cycle_root = cycle_nodes.finish()
+            rendered: list[str] = []
+            if cycle_root is not None:
+                with iter_run(storage, cycle_root) as nodes:
+                    previous: str | None = None
+                    for row in nodes:
+                        node = row["node"]
+                        if node != previous:
+                            rendered.append(repr(node))
+                            previous = node
+            raise CatalogIntegrityError(
+                "cross-channel revision graph is invalid: supersedes 图不得成环：涉及 "
+                f"[{', '.join(rendered)}]"
+            )
+
+        if ready_root is None:  # pragma: no cover - ready_count and root are coupled
+            return
+        with (
+            iter_run(storage, active) as edges,
+            iter_run(storage, ready_root) as ready_nodes,
+            RunSetBuilder(
+                storage,
+                key=lambda row: (row["newer"], row["older"]),
+                capacity=params.row_capacity,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as remaining,
+        ):
+            next_ready = next(ready_nodes, None)
+            for edge in edges:
+                while next_ready is not None and next_ready["node"] < edge["newer"]:
+                    next_ready = next(ready_nodes, None)
+                if next_ready is None or next_ready["node"] != edge["newer"]:
+                    remaining.add(edge)
+            active = remaining.finish()
+
+
+def _assert_single_key_claims(storage: StorageAdapter, root: RunRef | None) -> None:
+    """Reject a revision ID claimed by more than one observation key in a pinned partition."""
+    if root is None:
+        return
+    with iter_run(storage, root) as claims:
+        for revision_id, group in itertools.groupby(claims, key=lambda row: row["revision_id"]):
+            first_key: str | None = None
+            for claim in group:
+                key = claim["observation_key"]
+                if first_key is None:
+                    first_key = key
+                elif key != first_key:
+                    raise CatalogIntegrityError(
+                        f"cross-channel revision graph is invalid: revision_id {revision_id!r} "
+                        f"跨 observation_key 归属冲突：同时被 {[first_key, key]} 认领"
+                    )
+
+
 def evidence_from_row(row: Mapping[str, Any]) -> PrecedenceEvidence:
     """The complete ``PrecedenceEvidence`` (both ends explicit) of one evidence-table row."""
     return PrecedenceEvidence(
@@ -365,6 +708,21 @@ class _Pinned:
 
 
 @dataclass(frozen=True, slots=True)
+class _PinnedRuns:
+    """Fixed-capacity staged source rows for the verified-edge iterator path."""
+
+    rest_snapshot: str | None
+    responses_snapshot: str | None
+    archive_snapshot: str | None
+    archives_snapshot: str | None
+    evidence_snapshot: str | None
+    day_keys: RunRef | None
+    rest_rows: RunRef | None
+    archive_rows: RunRef | None
+    evidence_rows: RunRef | None
+
+
+@dataclass(frozen=True, slots=True)
 class _Plan:
     partition: tuple[str, str, date]
     pinned: _Pinned
@@ -373,6 +731,25 @@ class _Plan:
     existing: Mapping[str, ChannelEdge]
     missing: tuple[ChannelComparison, ...]
     records: Mapping[str, tuple[tuple[RevisionRecord, ...], tuple[RevisionRecord, ...]]]
+
+
+@dataclass(frozen=True, slots=True)
+class VerifiedEdgeRunParams:
+    """Explicit staging limits for :meth:`ChannelReconciler.iter_verified_edges`.
+
+    The current D3E graph/provenance plan still has upstream working-set boundaries; this type
+    only chooses the fixed-capacity staging and merge shape.
+    """
+
+    row_capacity: int
+    merge_fanout: int
+    limits: RunLimits
+
+    def __post_init__(self) -> None:
+        if isinstance(self.row_capacity, bool) or self.row_capacity <= 0:
+            raise ChannelReconcileError("edge run row_capacity must be positive")
+        if isinstance(self.merge_fanout, bool) or self.merge_fanout < 2:
+            raise ChannelReconcileError("edge run merge_fanout must be at least 2")
 
 
 class ChannelReconciler:
@@ -398,6 +775,7 @@ class ChannelReconciler:
                 f"edge_microbatch_rows must be between 1 and {MAX_EDGE_MICROBATCH_ROWS}"
             )
         self._adapter = adapter
+        self._storage = storage
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = edge_microbatch_rows
         # The REST store's own verifier: one set of provenance rules for both consumers.
@@ -455,6 +833,52 @@ class ChannelReconciler:
         plan = self._plan(data_type, symbol, day)
         return tuple(plan.existing[edge_id] for edge_id in sorted(plan.existing))
 
+    @contextmanager
+    def iter_verified_edges(
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        *,
+        params: VerifiedEdgeRunParams,
+    ) -> Iterator[Iterator[ChannelEdge]]:
+        """Expose a validated day's committed edges as a sorted, closeable stream.
+
+        Source rows and provenance are scanned in fixed key chunks, staged in bounded sorted
+        runs, verified before output is exposed, and replayed in deterministic ``edge_id``
+        order. ``verified_edges`` remains the compatibility tuple API. The graph verifier still
+        materializes one observation key's revision/head state; this method does not claim an
+        end-to-end or complete E1-CAP-1 process bound.
+        """
+        if not isinstance(params, VerifiedEdgeRunParams):
+            raise ChannelReconcileError("params must be VerifiedEdgeRunParams")
+        self._check_partition(data_type, symbol, day)
+        root = self._verified_edge_run(data_type, symbol, day, params)
+
+        @contextmanager
+        def rows() -> Iterator[Iterator[ChannelEdge]]:
+            if root is None:
+                yield iter(())
+                return
+            with iter_run(self._storage, root) as stored_rows:
+
+                def edges() -> Iterator[ChannelEdge]:
+                    for row in stored_rows:
+                        yield ChannelEdge(
+                            edge_id=row["edge_id"],
+                            evidence=evidence_from_row(row),
+                            revision_table=row["revision_table"],
+                            superseded_table=row["superseded_table"],
+                            revision_snapshot_id=row["revision_snapshot_id"],
+                            superseded_snapshot_id=row["superseded_snapshot_id"],
+                            projection_sha256=row["projection_sha256"],
+                        )
+
+                yield edges()
+
+        with rows() as stream:
+            yield stream
+
     def _check_partition(self, data_type: str, symbol: str, day: date) -> None:
         if data_type not in _REST_TABLES:
             raise ChannelReconcileError(f"unsupported data_type {data_type!r}")
@@ -467,7 +891,14 @@ class ChannelReconciler:
 
     # ------------------------------------------------------------------ plan (no writes)
 
-    def _plan(self, data_type: str, symbol: str, day: date) -> _Plan:
+    def _plan(
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        *,
+        edge_run_params: VerifiedEdgeRunParams | None = None,
+    ) -> _Plan:
         pinned = self._pinned_read(data_type, symbol, day)
         archive_by_key: dict[str, list[ChannelRevision]] = {}
         rest_by_key: dict[str, list[ChannelRevision]] = {}
@@ -534,7 +965,7 @@ class ChannelReconciler:
             if comparison.outcome is ComparisonOutcome.EQUAL
         }
         existing = self._existing_edges(pinned.evidence_rows, equal)
-        self._verify_edge_provenance(data_type, symbol, day, pinned)
+        self._verify_edge_provenance(data_type, symbol, day, pinned, run_params=edge_run_params)
         missing = tuple(equal[edge_id] for edge_id in sorted(set(equal) - set(existing)))
         frozen_records = {
             key: (tuple(pair[0]), tuple(pair[1])) for key, pair in sorted(records.items())
@@ -602,7 +1033,13 @@ class ChannelReconciler:
             ) from None
 
     def _verify_edge_provenance(
-        self, data_type: str, symbol: str, day: date, pinned: _Pinned
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        pinned: _Pinned,
+        *,
+        run_params: VerifiedEdgeRunParams | None = None,
     ) -> None:
         """Every committed edge row of the partition is exactly what an edge batch committed.
 
@@ -623,6 +1060,9 @@ class ChannelReconciler:
         are append-only). A batch is always re-read with the key set of the partition that wrote
         it — never a subset — so its complete row set is what gets re-checked.
         """
+        if run_params is not None:
+            self._verify_edge_provenance_bounded(data_type, symbol, day, pinned, run_params)
+            return
         head = pinned.evidence_snapshot
         keys = sorted({row["observation_key"] for row in pinned.rest_rows})
         column = _TIME_COLUMNS[data_type]
@@ -644,7 +1084,7 @@ class ChannelReconciler:
             if callable(history):
                 yield from history(EVIDENCE_TABLE, head)
                 return
-            snapshot_id = head
+            snapshot_id: str | None = head
             seen: set[str] = set()
             while snapshot_id is not None:
                 if snapshot_id in seen:
@@ -678,13 +1118,13 @@ class ChannelReconciler:
                         raise CatalogIntegrityError(f"evidence edge {edge_id} is committed twice")
                     committed[edge_id] = row
         current = {row["edge_id"]: row for row in pinned.evidence_rows}
+        own = set(keys)
         for edge_id, row in current.items():
             if committed.get(edge_id) != row:
                 raise CatalogIntegrityError(
                     f"evidence edge {edge_id} is not exactly what an edge batch of this "
                     "partition committed"
                 )
-        own = set(keys)
         missing = sorted(
             edge_id
             for edge_id, row in committed.items()
@@ -692,6 +1132,222 @@ class ChannelReconciler:
         )
         if missing:
             raise CatalogIntegrityError(f"committed evidence edge {missing[0]} is gone")
+
+    def _verify_edge_provenance_bounded(
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        pinned: _Pinned,
+        params: VerifiedEdgeRunParams,
+    ) -> None:
+        """Prove edge provenance using sorted owner-day, key, current and committed runs."""
+        head = pinned.evidence_snapshot
+
+        def snapshots() -> Iterable[SnapshotInfo]:
+            if head is None:
+                return
+            history = getattr(self._adapter, "history", None)
+            if callable(history):
+                yield from history(EVIDENCE_TABLE, head)
+            else:
+                yield from history_from(self._adapter, EVIDENCE_TABLE, head)
+
+        own_keys_root = self._day_keys_run(data_type, symbol, day, pinned.rest_snapshot, params)
+        if own_keys_root is None:
+            # No REST key: an edge batch of this day can only reproduce as the empty set (the
+            # legacy path proves that by re-reading it with the empty key set). A batch with this
+            # day's prefix that added rows, or does not reproduce empty, fails closed.
+            partition = (data_type, symbol, day)
+            prefix = _edge_batch_prefix(partition)
+            definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+            for snapshot in snapshots():
+                if snapshot.batch_id is None or not snapshot.batch_id.startswith(prefix):
+                    continue
+                empty = pa.Table.from_pylist([], schema=definition.arrow_schema)
+                if (
+                    snapshot.added_rows != 0
+                    or snapshot.batch_id != _edge_batch_id(partition, ())
+                    or snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(empty)
+                ):
+                    raise CatalogIntegrityError(
+                        f"edge batch {snapshot.batch_id} no longer reproduces from its snapshot"
+                    )
+            return
+
+        column = _TIME_COLUMNS[data_type]
+        rest_definition = _REST_TABLES[data_type]
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: row["day"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as owner_day_builder:
+            with iter_run(self._storage, own_keys_root) as own_key_rows:
+                pending: list[str] = []
+                for key_row in own_key_rows:
+                    pending.append(key_row["observation_key"])
+                    if len(pending) == _KEY_CHUNK:
+                        owner_day_builder.extend(
+                            {"day": _utc_day(row[column])}
+                            for row in self._scan_batch_rows(
+                                rest_definition,
+                                _all(
+                                    _equals("symbol", symbol),
+                                    _member("observation_key", pending),
+                                ),
+                                pinned.rest_snapshot,
+                                columns=(column,),
+                            )
+                        )
+                        pending.clear()
+                if pending:
+                    owner_day_builder.extend(
+                        {"day": _utc_day(row[column])}
+                        for row in self._scan_batch_rows(
+                            rest_definition,
+                            _all(
+                                _equals("symbol", symbol),
+                                _member("observation_key", pending),
+                            ),
+                            pinned.rest_snapshot,
+                            columns=(column,),
+                        )
+                    )
+            owner_day_root = owner_day_builder.finish()
+        if owner_day_root is None:
+            raise CatalogIntegrityError("a partition with REST keys has no REST owner day")
+
+        def provenance_key(row: Mapping[str, Any]) -> tuple[str, str]:
+            return row["observation_key"], row["edge_id"]
+
+        with RunSetBuilder(
+            self._storage,
+            key=provenance_key,
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as committed_builder:
+            with iter_run(self._storage, owner_day_root) as owner_day_rows:
+                previous_day: date | None = None
+                for owner_row in owner_day_rows:
+                    owner_day = owner_row["day"]
+                    if owner_day == previous_day:
+                        continue
+                    previous_day = owner_day
+                    owner_keys_root = self._day_keys_run(
+                        data_type, symbol, owner_day, pinned.rest_snapshot, params
+                    )
+                    if owner_keys_root is None:
+                        raise CatalogIntegrityError(
+                            f"REST owner partition {owner_day} has no current keys"
+                        )
+                    prefix = _edge_batch_prefix((data_type, symbol, owner_day))
+                    for snapshot in snapshots():
+                        if snapshot.batch_id is None or not snapshot.batch_id.startswith(prefix):
+                            continue
+                        for row in self._edge_batch_rows_bounded(
+                            (data_type, symbol, owner_day),
+                            owner_keys_root,
+                            snapshot,
+                            snapshot.parent_snapshot_id,
+                            params,
+                        ):
+                            committed_builder.add(row)
+            committed_root = committed_builder.finish()
+
+        with RunSetBuilder(
+            self._storage,
+            key=provenance_key,
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as current_builder:
+            with iter_run(self._storage, own_keys_root) as own_key_rows:
+                current_key_chunk: list[str] = []
+                for key_row in own_key_rows:
+                    current_key_chunk.append(key_row["observation_key"])
+                    if len(current_key_chunk) == _KEY_CHUNK:
+                        current_builder.extend(
+                            self._scan_batch_rows(
+                                BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+                                _member("observation_key", current_key_chunk),
+                                head,
+                            )
+                        )
+                        current_key_chunk.clear()
+                if current_key_chunk:
+                    current_builder.extend(
+                        self._scan_batch_rows(
+                            BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+                            _member("observation_key", current_key_chunk),
+                            head,
+                        )
+                    )
+            current_root = current_builder.finish()
+
+        with ExitStack() as stack:
+            committed_rows = (
+                iter(())
+                if committed_root is None
+                else stack.enter_context(iter_run(self._storage, committed_root))
+            )
+            current_rows = (
+                iter(())
+                if current_root is None
+                else stack.enter_context(iter_run(self._storage, current_root))
+            )
+            own_key_rows = stack.enter_context(iter_run(self._storage, own_keys_root))
+
+            def owned_committed() -> Iterable[Mapping[str, Any]]:
+                unique_keys = (
+                    row["observation_key"]
+                    for _, group in itertools.groupby(
+                        own_key_rows, key=lambda item: item["observation_key"]
+                    )
+                    for row in (next(group),)
+                )
+                own_key = next(unique_keys, None)
+                for row in committed_rows:
+                    row_key = row["observation_key"]
+                    while own_key is not None and own_key < row_key:
+                        own_key = next(unique_keys, None)
+                    if own_key == row_key:
+                        yield row
+
+            expected_rows = iter(owned_committed())
+            expected = next(expected_rows, None)
+            actual = next(current_rows, None)
+            while expected is not None or actual is not None:
+                if expected is None:
+                    actual_id = "unknown" if actual is None else actual["edge_id"]
+                    raise CatalogIntegrityError(
+                        f"evidence edge {actual_id} is not exactly what an edge batch of this "
+                        "partition committed"
+                    )
+                if actual is None:
+                    raise CatalogIntegrityError(
+                        f"committed evidence edge {expected['edge_id']} is gone"
+                    )
+                expected_key = (expected["observation_key"], expected["edge_id"])
+                actual_key = (actual["observation_key"], actual["edge_id"])
+                if expected_key < actual_key:
+                    raise CatalogIntegrityError(
+                        f"committed evidence edge {expected['edge_id']} is gone"
+                    )
+                if actual_key < expected_key:
+                    raise CatalogIntegrityError(
+                        f"evidence edge {actual['edge_id']} is not exactly what an edge batch of "
+                        "this partition committed"
+                    )
+                if expected != actual:
+                    raise CatalogIntegrityError(
+                        f"evidence edge {actual['edge_id']} is not exactly what an edge batch "
+                        "of this partition committed"
+                    )
+                expected = next(expected_rows, None)
+                actual = next(current_rows, None)
 
     def _edge_batch_rows(
         self,
@@ -721,6 +1377,107 @@ class ChannelReconciler:
             )
         return added
 
+    def _edge_batch_rows_bounded(
+        self,
+        partition: tuple[str, str, date],
+        keys_root: RunRef,
+        snapshot: SnapshotInfo,
+        parent: str | None,
+        params: VerifiedEdgeRunParams,
+    ) -> Iterable[Mapping[str, Any]]:
+        """Verify one edge batch through external row/id sorts; yield only after full proof.
+
+        The catalog batch is bounded by the D3E writer's explicit microbatch ceiling. Whole
+        partition snapshots on either side are external sorted runs; their diff retains only one
+        row per reader plus the verified batch (at most ``MAX_EDGE_MICROBATCH_ROWS``) needed by
+        the frozen PyArrow fingerprint rule.
+        """
+        if snapshot.added_rows > MAX_EDGE_MICROBATCH_ROWS:
+            raise CatalogIntegrityError(
+                f"edge batch {snapshot.batch_id} declares {snapshot.added_rows} rows, above the "
+                f"D3E writer limit {MAX_EDGE_MICROBATCH_ROWS}"
+            )
+        after_root = self._rows_at_run(keys_root, snapshot.snapshot_id, params)
+        before_root = None if parent is None else self._rows_at_run(keys_root, parent, params)
+        added_rows: list[Mapping[str, Any]] = []
+
+        @contextmanager
+        def rows_or_empty(root: RunRef | None) -> Iterator[Iterator[Mapping[str, Any]]]:
+            if root is None:
+                yield iter(())
+                return
+            with iter_run(self._storage, root) as rows:
+                yield rows
+
+        after_cm = rows_or_empty(after_root)
+        before_cm = rows_or_empty(before_root)
+        with after_cm as after_iter, before_cm as before_iter:
+            after_row = next(after_iter, None)
+            before_row = next(before_iter, None)
+            while after_row is not None:
+                if before_row is None or after_row["edge_id"] < before_row["edge_id"]:
+                    added_rows.append(after_row)
+                    if len(added_rows) > MAX_EDGE_MICROBATCH_ROWS:
+                        raise CatalogIntegrityError(
+                            f"edge batch {snapshot.batch_id} exceeds the D3E writer limit"
+                        )
+                    after_row = next(after_iter, None)
+                elif before_row["edge_id"] < after_row["edge_id"]:
+                    before_row = next(before_iter, None)
+                else:
+                    after_row = next(after_iter, None)
+                    before_row = next(before_iter, None)
+        definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+        table = pa.Table.from_pylist(
+            [dict(row) for row in added_rows], schema=definition.arrow_schema
+        )
+        added_ids = [row["edge_id"] for row in added_rows]
+        if (
+            len(added_rows) != snapshot.added_rows
+            or snapshot.batch_id != _edge_batch_id(partition, added_ids)
+            or snapshot.batch_fingerprint != definition.fingerprint_rule.fingerprint(table)
+        ):
+            raise CatalogIntegrityError(
+                f"edge batch {snapshot.batch_id} no longer reproduces from its snapshot"
+            )
+        yield from added_rows
+
+    def _rows_at_run(
+        self,
+        keys_root: RunRef,
+        snapshot_id: str,
+        params: VerifiedEdgeRunParams,
+    ) -> RunRef | None:
+        """Read evidence rows for a sorted key run into an edge-id sorted run."""
+        definition = BINANCE_SPOT_PRECEDENCE_EVIDENCE
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: row["edge_id"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as builder:
+            with iter_run(self._storage, keys_root) as key_rows:
+                pending: list[str] = []
+                for key_row in key_rows:
+                    pending.append(key_row["observation_key"])
+                    if len(pending) == _KEY_CHUNK:
+                        for row in self._scan_batch_rows(
+                            definition,
+                            _member("observation_key", pending),
+                            snapshot_id,
+                        ):
+                            builder.add(row)
+                        pending.clear()
+                if pending:
+                    for row in self._scan_batch_rows(
+                        definition,
+                        _member("observation_key", pending),
+                        snapshot_id,
+                    ):
+                        builder.add(row)
+            return builder.finish()
+
     def _day_keys(
         self, data_type: str, symbol: str, day: date, rest_snapshot: str | None
     ) -> list[str]:
@@ -740,6 +1497,59 @@ class ChannelReconciler:
             snapshot_id=rest_snapshot,
         ).to_pylist()
         return sorted({row["observation_key"] for row in rows})
+
+    def _day_keys_run(
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        rest_snapshot: str | None,
+        params: VerifiedEdgeRunParams,
+    ) -> RunRef | None:
+        """Distinct keys of one pinned REST day, externally sorted and duplicate folded."""
+        if rest_snapshot is None:
+            return None
+        start = datetime.combine(day, time(), tzinfo=UTC)
+        column = _TIME_COLUMNS[data_type]
+        definition = _REST_TABLES[data_type]
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: row["observation_key"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as scanned:
+            for row in self._scan_batch_rows(
+                definition,
+                _all(
+                    _equals("symbol", symbol),
+                    _at_least(column, start),
+                    _below(column, start + _DAY),
+                ),
+                rest_snapshot,
+                columns=("observation_key",),
+            ):
+                scanned.add({"observation_key": row["observation_key"]})
+            scanned_root = scanned.finish()
+        if scanned_root is None:
+            return None
+        with (
+            RunSetBuilder(
+                self._storage,
+                key=lambda row: row["observation_key"],
+                capacity=params.row_capacity,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as unique,
+            iter_run(self._storage, scanned_root) as scanned_rows,
+        ):
+            previous: str | None = None
+            for row in scanned_rows:
+                key = row["observation_key"]
+                if key != previous:
+                    unique.add(row)
+                    previous = key
+            return unique.finish()
 
     def _rows_at(self, keys: Sequence[str], snapshot_id: str) -> dict[str, Mapping[str, Any]]:
         columns = tuple(field.name for field in BINANCE_SPOT_PRECEDENCE_EVIDENCE.arrow_schema)
@@ -964,6 +1774,860 @@ class ChannelReconciler:
             f"the tables kept moving: no pinned read was possible after {_ATTEMPTS} attempts"
         )
 
+    def _pinned_read_runs(
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        params: VerifiedEdgeRunParams,
+    ) -> _PinnedRuns:
+        """Pin the five D3E heads and stage relevant source rows in bounded sorted runs."""
+        rest_def, archive_def = _REST_TABLES[data_type], _ARCHIVE_TABLES[data_type]
+        tables = (
+            rest_def.table,
+            BINANCE_SPOT_REST_RESPONSES.table,
+            archive_def.table,
+            BINANCE_SPOT_ARCHIVES.table,
+            EVIDENCE_TABLE,
+        )
+        for _ in range(_ATTEMPTS):
+            heads = tuple(self._head(table) for table in tables)
+            try:
+                day_keys = self._day_keys_run(data_type, symbol, day, heads[0], params)
+                rest_rows = self._rows_for_keys_run(
+                    rest_def,
+                    symbol,
+                    day_keys,
+                    heads[0],
+                    params,
+                    sort_key=lambda row: (
+                        row["observation_key"],
+                        row["response_revision_id"],
+                        row["revision_id"],
+                    ),
+                )
+                archive_rows = self._rows_for_keys_run(
+                    archive_def,
+                    symbol,
+                    day_keys,
+                    heads[2],
+                    params,
+                    sort_key=lambda row: (
+                        row["observation_key"],
+                        row["archive_revision_id"],
+                        row["revision_id"],
+                    ),
+                )
+                evidence_rows = self._rows_for_keys_run(
+                    BINANCE_SPOT_PRECEDENCE_EVIDENCE,
+                    None,
+                    day_keys,
+                    heads[4],
+                    params,
+                    sort_key=lambda row: (row["observation_key"], row["edge_id"]),
+                )
+            except CatalogIntegrityError:
+                if tuple(self._head(table) for table in tables) == heads:
+                    raise
+                continue
+            if tuple(self._head(table) for table in tables) != heads:
+                continue
+            return _PinnedRuns(
+                rest_snapshot=heads[0],
+                responses_snapshot=heads[1],
+                archive_snapshot=heads[2],
+                archives_snapshot=heads[3],
+                evidence_snapshot=heads[4],
+                day_keys=day_keys,
+                rest_rows=rest_rows,
+                archive_rows=archive_rows,
+                evidence_rows=evidence_rows,
+            )
+        raise ChannelReconcileConflict(
+            f"the tables kept moving: no pinned read was possible after {_ATTEMPTS} attempts"
+        )
+
+    def _rows_for_keys_run(
+        self,
+        definition: RegisteredTableDefinition,
+        symbol: str | None,
+        keys_root: RunRef | None,
+        snapshot_id: str | None,
+        params: VerifiedEdgeRunParams,
+        *,
+        sort_key: Callable[[Mapping[str, Any]], Any],
+    ) -> RunRef | None:
+        """Read keys in fixed-size IN chunks and spill projected source batches immediately."""
+        if keys_root is None or snapshot_id is None:
+            return None
+        with RunSetBuilder(
+            self._storage,
+            key=sort_key,
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as builder:
+            with iter_run(self._storage, keys_root) as key_rows:
+                pending: list[str] = []
+
+                def flush() -> None:
+                    if not pending:
+                        return
+                    filters = [_member("observation_key", pending)]
+                    if symbol is not None:
+                        filters.append(_equals("symbol", symbol))
+                    builder.extend(self._scan_batch_rows(definition, _all(*filters), snapshot_id))
+                    pending.clear()
+
+                for key_row in key_rows:
+                    pending.append(key_row["observation_key"])
+                    if len(pending) == _KEY_CHUNK:
+                        flush()
+                flush()
+            return builder.finish()
+
+    def _verify_unique_key_column(
+        self,
+        definition: RegisteredTableDefinition,
+        keys_root: RunRef | None,
+        snapshot_id: str | None,
+        column: str,
+        params: VerifiedEdgeRunParams,
+        *,
+        label: str,
+    ) -> None:
+        """Prove uniqueness across a partition by adjacent values in an external sort."""
+        if keys_root is None or snapshot_id is None:
+            return
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: row["value"],
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as builder:
+            with iter_run(self._storage, keys_root) as key_rows:
+                pending: list[str] = []
+
+                def flush() -> None:
+                    if not pending:
+                        return
+                    filters = [_member("observation_key", pending)]
+                    builder.extend(
+                        {"value": row[column]}
+                        for row in self._scan_batch_rows(
+                            definition,
+                            _all(*filters),
+                            snapshot_id,
+                            columns=(column,),
+                        )
+                    )
+                    pending.clear()
+
+                for key_row in key_rows:
+                    pending.append(key_row["observation_key"])
+                    if len(pending) == _KEY_CHUNK:
+                        flush()
+                flush()
+            root = builder.finish()
+        if root is None:
+            return
+        with iter_run(self._storage, root) as values:
+            previous: object = object()
+            first = True
+            for row in values:
+                value = row["value"]
+                if not first and value == previous:
+                    raise CatalogIntegrityError(
+                        f"{definition.table}: {label} {value!r} is committed more than once"
+                    )
+                first = False
+                previous = value
+
+    def _verified_archive_run_rows(
+        self,
+        archive_def: RegisteredTableDefinition,
+        data_type: str,
+        symbol: str,
+        archive_rows_root: RunRef | None,
+        params: VerifiedEdgeRunParams,
+    ) -> dict[str, VerifiedArchive]:
+        """Prove every staged archive row once, archive by archive, in bounded chunks.
+
+        The staged rows (sorted by observation key) are re-sorted by archive revision in an
+        external run, so one verifier call re-parses one archive object for up to
+        ``row_capacity`` of its rows instead of once per row. Every row passes the same checks
+        the per-row call applied (lineage, line content, times, sole holder, row batch); the
+        result maps each archive revision id to its proven lineage.
+        """
+        verified: dict[str, VerifiedArchive] = {}
+        if archive_rows_root is None:
+            return verified
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: (row["archive_revision_id"], row["revision_id"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as by_archive:
+            with iter_run(self._storage, archive_rows_root) as staged:
+                by_archive.extend(staged)
+            by_archive_root = by_archive.finish()
+        if by_archive_root is None:
+            return verified
+        chunk: list[Mapping[str, Any]] = []
+
+        def flush() -> None:
+            if chunk:
+                verified.update(
+                    self._verifier.verify_archive_elements(archive_def, data_type, symbol, chunk)
+                )
+                chunk.clear()
+
+        with iter_run(self._storage, by_archive_root) as rows:
+            for row in rows:
+                if chunk and (
+                    len(chunk) >= params.row_capacity
+                    or chunk[0]["archive_revision_id"] != row["archive_revision_id"]
+                ):
+                    flush()
+                chunk.append(row)
+            flush()
+        return verified
+
+    def _verified_rest_run_rows(
+        self,
+        rest_def: RegisteredTableDefinition,
+        data_type: str,
+        rest_rows_root: RunRef | None,
+        params: VerifiedEdgeRunParams,
+    ) -> int:
+        """Prove every staged REST row once, response by response, in bounded chunks.
+
+        The staged rows (sorted by observation key) are re-sorted by lineage response in an
+        external run, so one verifier call re-proves one response (its lawful row, holder,
+        batch and full element-batch history) for up to ``row_capacity`` of its element rows
+        instead of once per key that references it. Every row passes the same checks the
+        per-key call applied (identity, lineage, body element, sole holder, element batches).
+        Returns the number of rows proven, which the key loop must consume exactly.
+        """
+        if rest_rows_root is None:
+            return 0
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: (row["response_revision_id"], row["revision_id"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as by_response:
+            with iter_run(self._storage, rest_rows_root) as staged:
+                by_response.extend(staged)
+            by_response_root = by_response.finish()
+        if by_response_root is None:
+            return 0
+        proven = 0
+        chunk: list[Mapping[str, Any]] = []
+
+        def flush() -> None:
+            nonlocal proven
+            if chunk:
+                self._verifier.verify_rest_elements(rest_def, data_type, chunk)
+                proven += len(chunk)
+                chunk.clear()
+
+        with iter_run(self._storage, by_response_root) as rows:
+            for row in rows:
+                if chunk and (
+                    len(chunk) >= params.row_capacity
+                    or chunk[0]["response_revision_id"] != row["response_revision_id"]
+                ):
+                    flush()
+                chunk.append(row)
+            flush()
+        return proven
+
+    def _verified_edge_run(
+        self,
+        data_type: str,
+        symbol: str,
+        day: date,
+        params: VerifiedEdgeRunParams,
+    ) -> RunRef | None:
+        """Validate a pinned partition key by key and seal its committed edges before replay."""
+        rest_def, archive_def = _REST_TABLES[data_type], _ARCHIVE_TABLES[data_type]
+        tables = (
+            rest_def.table,
+            BINANCE_SPOT_REST_RESPONSES.table,
+            archive_def.table,
+            BINANCE_SPOT_ARCHIVES.table,
+            EVIDENCE_TABLE,
+        )
+        for _ in range(_ATTEMPTS):
+            pinned = self._pinned_read_runs(data_type, symbol, day, params)
+            with (
+                RunSetBuilder(
+                    self._storage,
+                    key=lambda row: row["edge_id"],
+                    capacity=params.row_capacity,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as output,
+                RunSetBuilder(
+                    self._storage,
+                    key=lambda row: row["archive_revision_id"],
+                    capacity=params.row_capacity,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as archive_parents,
+                RunSetBuilder(
+                    self._storage,
+                    key=lambda row: (row["revision_id"], row["observation_key"]),
+                    capacity=params.row_capacity,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as revision_claims,
+            ):
+                try:
+                    self._verify_edge_provenance_bounded(
+                        data_type,
+                        symbol,
+                        day,
+                        _Pinned(
+                            rest_snapshot=pinned.rest_snapshot,
+                            responses_snapshot=pinned.responses_snapshot,
+                            archive_snapshot=pinned.archive_snapshot,
+                            archives_snapshot=pinned.archives_snapshot,
+                            evidence_snapshot=pinned.evidence_snapshot,
+                            rest_rows=(),
+                            archive_rows=(),
+                            units={},
+                            evidence_rows=(),
+                        ),
+                        params,
+                    )
+                    self._verify_unique_key_column(
+                        rest_def,
+                        pinned.day_keys,
+                        pinned.rest_snapshot,
+                        "revision_id",
+                        params,
+                        label="revision_id",
+                    )
+                    self._verify_unique_key_column(
+                        rest_def,
+                        pinned.day_keys,
+                        pinned.rest_snapshot,
+                        "arrival_seq",
+                        params,
+                        label="arrival_seq",
+                    )
+                    self._verify_unique_key_column(
+                        archive_def,
+                        pinned.day_keys,
+                        pinned.archive_snapshot,
+                        "revision_id",
+                        params,
+                        label="revision_id",
+                    )
+                    self._verify_unique_key_column(
+                        archive_def,
+                        pinned.day_keys,
+                        pinned.archive_snapshot,
+                        "arrival_seq",
+                        params,
+                        label="arrival_seq",
+                    )
+                    if pinned.day_keys is not None:
+                        verified_archives = self._verified_archive_run_rows(
+                            archive_def, data_type, symbol, pinned.archive_rows, params
+                        )
+                        proven_rest_rows = self._verified_rest_run_rows(
+                            rest_def, data_type, pinned.rest_rows, params
+                        )
+                        consumed_rest_rows = 0
+                        with ExitStack() as stack:
+                            keys = stack.enter_context(iter_run(self._storage, pinned.day_keys))
+                            rest_rows = (
+                                iter(())
+                                if pinned.rest_rows is None
+                                else stack.enter_context(iter_run(self._storage, pinned.rest_rows))
+                            )
+                            archive_rows = (
+                                iter(())
+                                if pinned.archive_rows is None
+                                else stack.enter_context(
+                                    iter_run(self._storage, pinned.archive_rows)
+                                )
+                            )
+                            evidence_rows = (
+                                iter(())
+                                if pinned.evidence_rows is None
+                                else stack.enter_context(
+                                    iter_run(self._storage, pinned.evidence_rows)
+                                )
+                            )
+                            rest_groups = iter(
+                                itertools.groupby(rest_rows, key=lambda row: row["observation_key"])
+                            )
+                            archive_groups = iter(
+                                itertools.groupby(
+                                    archive_rows, key=lambda row: row["observation_key"]
+                                )
+                            )
+                            evidence_groups = iter(
+                                itertools.groupby(
+                                    evidence_rows, key=lambda row: row["observation_key"]
+                                )
+                            )
+                            rest_group = next(rest_groups, None)
+                            archive_group = next(archive_groups, None)
+                            evidence_group = next(evidence_groups, None)
+                            for key_row in keys:
+                                observation_key = key_row["observation_key"]
+                                rest_revision_root: RunRef | None = None
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda item: item["revision_id"],
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as rest_revisions:
+                                    if rest_group is None or rest_group[0] != observation_key:
+                                        raise CatalogIntegrityError(
+                                            f"REST key {observation_key} has no staged history rows"
+                                        )
+                                    response_groups = itertools.groupby(
+                                        rest_group[1], key=lambda row: row["response_revision_id"]
+                                    )
+                                    for _, response_group in response_groups:
+                                        response_rows: list[Mapping[str, Any]] = []
+                                        for response_row in response_group:
+                                            if len(response_rows) == MAX_ELEMENT_MICROBATCH_ROWS:
+                                                raise CatalogIntegrityError(
+                                                    "REST response group exceeds its fixed page "
+                                                    f"limit {MAX_ELEMENT_MICROBATCH_ROWS}"
+                                                )
+                                            response_rows.append(response_row)
+                                        # Proven once per response before the key loop.
+                                        consumed_rest_rows += len(response_rows)
+                                        for row in response_rows:
+                                            revision = self._channel_revision(
+                                                Channel.REST,
+                                                data_type,
+                                                row,
+                                                pinned.rest_snapshot,
+                                                {},
+                                            )
+                                            try:
+                                                record = revision_record_from_row(row)
+                                            except ValueError as exc:
+                                                raise CatalogIntegrityError(
+                                                    f"{revision.table}: row {row['revision_id']} "
+                                                    f"is not a lawful revision ({exc})"
+                                                ) from None
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": record.revision_id,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                            )
+                                            revision_claims.extend(
+                                                {
+                                                    "revision_id": older,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                                for older in record.supersedes
+                                            )
+                                            rest_revisions.add(
+                                                {
+                                                    "revision_id": revision.revision_id,
+                                                    "row": dict(row),
+                                                    "channel": Channel.REST.value,
+                                                    "time_unit": revision.time_unit,
+                                                }
+                                            )
+                                    rest_revision_root = rest_revisions.finish()
+                                rest_group = next(rest_groups, None)
+
+                                archive_revision_root: RunRef | None = None
+                                if archive_group is not None and archive_group[0] < observation_key:
+                                    raise CatalogIntegrityError(
+                                        f"archive key {archive_group[0]} is absent from "
+                                        "REST day keys"
+                                    )
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda item: item["revision_id"],
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as archive_revisions:
+                                    if (
+                                        archive_group is not None
+                                        and archive_group[0] == observation_key
+                                    ):
+                                        previous_revision_id: str | None = None
+                                        for row in archive_group[1]:
+                                            if row["revision_id"] == previous_revision_id:
+                                                raise CatalogIntegrityError(
+                                                    f"archive revision {row['revision_id']} is "
+                                                    "committed twice"
+                                                )
+                                            previous_revision_id = row["revision_id"]
+                                            archive = verified_archives.get(
+                                                row["archive_revision_id"]
+                                            )
+                                            if archive is None:
+                                                raise CatalogIntegrityError(
+                                                    f"archive row {row['revision_id']} was not "
+                                                    "proven against its archive revision"
+                                                )
+                                            archive_parents.add(
+                                                {
+                                                    "archive_revision_id": archive.revision_id,
+                                                    "arrival_seq": archive.row["arrival_seq"],
+                                                }
+                                            )
+                                            units = {archive.revision_id: archive.time_unit.value}
+                                            revision = self._channel_revision(
+                                                Channel.ARCHIVE,
+                                                data_type,
+                                                row,
+                                                pinned.archive_snapshot,
+                                                units,
+                                            )
+                                            try:
+                                                record = revision_record_from_row(row)
+                                            except ValueError as exc:
+                                                raise CatalogIntegrityError(
+                                                    f"{revision.table}: row {row['revision_id']} "
+                                                    f"is not a lawful revision ({exc})"
+                                                ) from None
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": record.revision_id,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                            )
+                                            revision_claims.extend(
+                                                {
+                                                    "revision_id": older,
+                                                    "observation_key": record.observation_key,
+                                                }
+                                                for older in record.supersedes
+                                            )
+                                            archive_revisions.add(
+                                                {
+                                                    "revision_id": revision.revision_id,
+                                                    "row": dict(row),
+                                                    "channel": Channel.ARCHIVE.value,
+                                                    "time_unit": revision.time_unit,
+                                                }
+                                            )
+                                        archive_group = next(archive_groups, None)
+                                    archive_revision_root = archive_revisions.finish()
+
+                                if (
+                                    evidence_group is not None
+                                    and evidence_group[0] < observation_key
+                                ):
+                                    raise CatalogIntegrityError(
+                                        f"evidence key {evidence_group[0]} is absent from "
+                                        "REST day keys"
+                                    )
+                                has_current_edges = (
+                                    evidence_group is not None
+                                    and evidence_group[0] == observation_key
+                                )
+
+                                def channel_revision_from_run_row(
+                                    item: Mapping[str, Any], snapshot_id: str | None
+                                ) -> ChannelRevision:
+                                    channel = Channel(item["channel"])
+                                    row = item["row"]
+                                    units = (
+                                        {row["archive_revision_id"]: item["time_unit"]}
+                                        if channel is Channel.ARCHIVE
+                                        else {}
+                                    )
+                                    return self._channel_revision(
+                                        channel, data_type, row, snapshot_id, units
+                                    )
+
+                                def find_channel_revision(
+                                    root: RunRef | None,
+                                    revision_id: str,
+                                    snapshot_id: str | None,
+                                ) -> ChannelRevision | None:
+                                    if root is None:
+                                        return None
+                                    with iter_run(self._storage, root) as revision_rows:
+                                        for revision_row in revision_rows:
+                                            if revision_row["revision_id"] == revision_id:
+                                                return channel_revision_from_run_row(
+                                                    revision_row, snapshot_id
+                                                )
+                                            if revision_row["revision_id"] > revision_id:
+                                                break
+                                    return None
+
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda row: row["edge_id"],
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as equal_pairs:
+                                    with ExitStack() as pair_stack:
+                                        archive_revision_rows = (
+                                            iter(())
+                                            if archive_revision_root is None
+                                            else pair_stack.enter_context(
+                                                iter_run(self._storage, archive_revision_root)
+                                            )
+                                        )
+                                        for archive_row in archive_revision_rows:
+                                            archive_revision = channel_revision_from_run_row(
+                                                archive_row, pinned.archive_snapshot
+                                            )
+                                            if rest_revision_root is None:
+                                                continue
+                                            with iter_run(
+                                                self._storage, rest_revision_root
+                                            ) as rest_revision_rows:
+                                                for rest_row in rest_revision_rows:
+                                                    rest = channel_revision_from_run_row(
+                                                        rest_row, pinned.rest_snapshot
+                                                    )
+                                                    comparison = compare_channels(
+                                                        archive_revision, rest
+                                                    )
+                                                    if (
+                                                        comparison.outcome
+                                                        is ComparisonOutcome.INTEGRITY_VIOLATION
+                                                    ):
+                                                        raise CatalogIntegrityError(
+                                                            "stored revisions contradict "
+                                                            "themselves; no edge is written: "
+                                                            f"{observation_key} "
+                                                            f"{archive_revision.revision_id} / "
+                                                            f"{rest.revision_id}: "
+                                                            f"{'; '.join(comparison.reasons)}"
+                                                        )
+                                                    if (
+                                                        comparison.outcome
+                                                        is ComparisonOutcome.EQUAL
+                                                    ):
+                                                        equal_pairs.add(
+                                                            {
+                                                                "edge_id": _edge_id(comparison),
+                                                                "archive_revision_id": (
+                                                                    archive_revision.revision_id
+                                                                ),
+                                                                "rest_revision_id": (
+                                                                    rest.revision_id
+                                                                ),
+                                                            }
+                                                        )
+                                    equal_root = equal_pairs.finish()
+
+                                with RunSetBuilder(
+                                    self._storage,
+                                    key=lambda row: (
+                                        row["revision_id"],
+                                        row["superseded_revision_id"],
+                                        row["knowledge_time"],
+                                    ),
+                                    capacity=params.row_capacity,
+                                    merge_fanout=params.merge_fanout,
+                                    limits=params.limits,
+                                ) as graph_evidence:
+                                    with ExitStack() as stack:
+                                        expected_pairs = (
+                                            iter(())
+                                            if equal_root is None
+                                            else stack.enter_context(
+                                                iter_run(self._storage, equal_root)
+                                            )
+                                        )
+                                        current_edge_rows: Iterator[Mapping[str, Any]] = iter(())
+                                        if (
+                                            evidence_group is not None
+                                            and evidence_group[0] == observation_key
+                                        ):
+                                            current_edge_rows = evidence_group[1]
+                                        expected_pair = next(expected_pairs, None)
+                                        current_edge = next(current_edge_rows, None)
+                                        previous_edge_id: str | None = None
+                                        while current_edge is not None:
+                                            edge_id = current_edge["edge_id"]
+                                            while (
+                                                expected_pair is not None
+                                                and expected_pair["edge_id"] < edge_id
+                                            ):
+                                                expected_pair = next(expected_pairs, None)
+                                            if (
+                                                expected_pair is None
+                                                or expected_pair["edge_id"] != edge_id
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} does not describe an "
+                                                    "equal archive / REST pair of the pinned "
+                                                    "snapshots"
+                                                )
+                                            if edge_id == previous_edge_id:
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} is committed twice"
+                                                )
+                                            archive_revision_id = expected_pair[
+                                                "archive_revision_id"
+                                            ]
+                                            rest_revision_id = expected_pair["rest_revision_id"]
+                                            if (
+                                                current_edge["revision_id"] != archive_revision_id
+                                                or current_edge["superseded_revision_id"]
+                                                != rest_revision_id
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} does not match its "
+                                                    "archive / REST revision ids"
+                                                )
+                                            found_archive_revision = find_channel_revision(
+                                                archive_revision_root,
+                                                archive_revision_id,
+                                                pinned.archive_snapshot,
+                                            )
+                                            found_rest_revision = find_channel_revision(
+                                                rest_revision_root,
+                                                rest_revision_id,
+                                                pinned.rest_snapshot,
+                                            )
+                                            if (
+                                                found_archive_revision is None
+                                                or found_rest_revision is None
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} references a missing "
+                                                    "source revision"
+                                                )
+                                            comparison = compare_channels(
+                                                found_archive_revision, found_rest_revision
+                                            )
+                                            if (
+                                                comparison.outcome is not ComparisonOutcome.EQUAL
+                                                or _edge_id(comparison) != edge_id
+                                            ):
+                                                raise CatalogIntegrityError(
+                                                    f"evidence edge {edge_id} does not describe an "
+                                                    "equal archive / REST pair of the pinned "
+                                                    "snapshots"
+                                                )
+                                            edge = self._existing_edges(
+                                                (current_edge,), {edge_id: comparison}
+                                            )[edge_id]
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": edge.evidence.revision_id,
+                                                    "observation_key": (
+                                                        edge.evidence.observation_key
+                                                    ),
+                                                }
+                                            )
+                                            revision_claims.add(
+                                                {
+                                                    "revision_id": (
+                                                        edge.evidence.superseded_revision_id
+                                                    ),
+                                                    "observation_key": (
+                                                        edge.evidence.observation_key
+                                                    ),
+                                                }
+                                            )
+                                            graph_evidence.add(dict(current_edge))
+                                            output.add(edge.row())
+                                            previous_edge_id = edge_id
+                                            expected_pair = next(expected_pairs, None)
+                                            current_edge = next(current_edge_rows, None)
+                                    if has_current_edges:
+                                        evidence_group = next(evidence_groups, None)
+                                    graph_evidence_root = graph_evidence.finish()
+                                    _validate_channel_graph_runs(
+                                        self._storage,
+                                        archive_revision_root,
+                                        rest_revision_root,
+                                        graph_evidence_root,
+                                        observation_key=observation_key,
+                                        params=params,
+                                    )
+                            if (
+                                rest_group is not None
+                                or archive_group is not None
+                                or evidence_group is not None
+                            ):
+                                raise CatalogIntegrityError(
+                                    "a staged row references a key absent from the pinned REST day"
+                                )
+                            if consumed_rest_rows != proven_rest_rows:
+                                raise CatalogIntegrityError(
+                                    f"{consumed_rest_rows} staged REST row(s) were replayed but "
+                                    f"{proven_rest_rows} were proven against their lineage"
+                                )
+                    revision_claims_root = revision_claims.finish()
+                    _assert_single_key_claims(self._storage, revision_claims_root)
+                    archive_parent_root = archive_parents.finish()
+                    if archive_parent_root is not None:
+                        with (
+                            iter_run(self._storage, archive_parent_root) as parent_rows,
+                            RunSetBuilder(
+                                self._storage,
+                                key=lambda row: row["arrival_seq"],
+                                capacity=params.row_capacity,
+                                merge_fanout=params.merge_fanout,
+                                limits=params.limits,
+                            ) as arrivals,
+                        ):
+                            previous_archive_id: str | None = None
+                            for parent_row in parent_rows:
+                                archive_id = parent_row["archive_revision_id"]
+                                if archive_id == previous_archive_id:
+                                    continue
+                                arrivals.add({"arrival_seq": parent_row["arrival_seq"]})
+                                previous_archive_id = archive_id
+                            archive_arrival_root = arrivals.finish()
+                        if archive_arrival_root is not None:
+                            with iter_run(self._storage, archive_arrival_root) as arrival_rows:
+                                previous_arrival_seq: int | None = None
+                                for arrival in arrival_rows:
+                                    value = arrival["arrival_seq"]
+                                    if value == previous_arrival_seq:
+                                        raise CatalogIntegrityError(
+                                            f"archive arrival block {value} is held twice"
+                                        )
+                                    previous_arrival_seq = value
+                except CatalogIntegrityError:
+                    if tuple(self._head(table) for table in tables) != (
+                        pinned.rest_snapshot,
+                        pinned.responses_snapshot,
+                        pinned.archive_snapshot,
+                        pinned.archives_snapshot,
+                        pinned.evidence_snapshot,
+                    ):
+                        continue
+                    raise
+                if tuple(self._head(table) for table in tables) != (
+                    pinned.rest_snapshot,
+                    pinned.responses_snapshot,
+                    pinned.archive_snapshot,
+                    pinned.archives_snapshot,
+                    pinned.evidence_snapshot,
+                ):
+                    continue
+                return output.finish()
+        raise ChannelReconcileConflict(
+            "the tables kept moving: no verified edge stream was possible after "
+            f"{_ATTEMPTS} attempts"
+        )
+
     def _by_keys(
         self, definition: RegisteredTableDefinition, symbol: str, keys: Sequence[str]
     ) -> list[Mapping[str, Any]]:
@@ -988,6 +2652,40 @@ class ChannelReconciler:
             definition.table, columns=columns, row_filter=row_filter
         ).to_pylist()
         return rows
+
+    def _scan_batch_rows(
+        self,
+        definition: RegisteredTableDefinition,
+        row_filter: BooleanExpression,
+        snapshot_id: str | None,
+        *,
+        columns: Sequence[str] | None = None,
+    ) -> Iterable[Mapping[str, Any]]:
+        """Yield projected rows from a fixed snapshot and always release the batch reader."""
+        if snapshot_id is None:
+            return
+        scan_batches = getattr(self._adapter, "scan_column_batches", None)
+        if not callable(scan_batches):
+            raise ChannelReconcileError(
+                "bounded verified-edge streaming requires scan_column_batches"
+            )
+        reader = scan_batches(
+            definition.table,
+            columns=(
+                tuple(field.name for field in definition.arrow_schema)
+                if columns is None
+                else tuple(columns)
+            ),
+            row_filter=row_filter,
+            snapshot_id=snapshot_id,
+        )
+        try:
+            for batch in reader:
+                yield from batch.to_pylist()
+        finally:
+            close = getattr(reader, "close", None)
+            if callable(close):
+                close()
 
     def _head(self, table: str) -> str | None:
         info = self._adapter.load_table(table)

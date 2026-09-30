@@ -1,0 +1,946 @@
+"""Bounded joins map each persisted listing batch to its exact Raw prefix."""
+
+from __future__ import annotations
+
+from collections.abc import Callable, Iterable, Iterator
+from dataclasses import replace
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, cast
+
+import pyarrow as pa  # type: ignore[import-untyped]
+import pytest
+
+from core.contracts.catalog import SnapshotNotFound
+from core.domain.base import canonical_json
+from infrastructure.canonical.listing_bounded_verify import (
+    _preflight_arrow_jsonl_row,
+    _scan_current_rows,
+    verify_listing_history_bounded,
+)
+from infrastructure.canonical.listing_history_runs import listing_history_prefix_run
+from infrastructure.canonical.listing_rules import parse_batch_id
+from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
+from infrastructure.pit.view import PinnedCatalogView, PinnedViewError
+from infrastructure.revision.exchange_info_store import ExchangeInfoRowVerifier
+from infrastructure.revision.row_integrity import history_from
+from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.streaming.content_key_tree import KeyTreeParams
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, _encode_row, iter_run
+from tests.infrastructure.revision import exchange_info_support as xs
+from tests.infrastructure.revision.exchange_info_support import LISTINGS, T1, T2, Harness
+
+
+@pytest.fixture
+def h(tmp_path: Path) -> Iterator[Harness]:
+    with xs.harness(tmp_path) as opened:
+        yield opened
+
+
+def _prefixes(h: Harness, storage: LocalFileStorageAdapter, *, omit: str | None = None) -> RunRef:
+    builder = RunSetBuilder(
+        storage,
+        key=lambda row: row["snapshot_ordinal"],
+        capacity=2,
+        merge_fanout=2,
+        limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+    )
+    with builder:
+        snapshots = list(
+            history_from(h.adapter, xs.EXCHANGE_INFO.table, h.head(xs.EXCHANGE_INFO.table))
+        )
+        for snapshot in reversed(snapshots):
+            if snapshot.snapshot_id != omit:
+                builder.add(
+                    {
+                        "snapshot_ordinal": snapshot.total_rows - 1,
+                        "snapshot_id": snapshot.snapshot_id,
+                        "root": None,
+                        "observation_count": snapshot.total_rows,
+                    }
+                )
+        ref = builder.finish()
+    assert ref is not None
+    return ref
+
+
+def _scratch(h: Harness) -> LocalFileStorageAdapter:
+    return LocalFileStorageAdapter(
+        (h.tmp_path / "listing-join-warehouse").as_uri(),
+        (h.tmp_path / "listing-join-stage").as_uri(),
+    )
+
+
+def _metadata_limits() -> BoundedMetadataLimits:
+    return BoundedMetadataLimits(
+        max_metadata_bytes=16 * 1024 * 1024,
+        max_item_bytes=256 * 1024,
+        max_retained_json_bytes=2 * 1024 * 1024,
+        read_chunk_bytes=16 * 1024,
+        max_small_array_items=512,
+        max_map_items=512,
+        max_snapshots=5000,
+        run_capacity=64,
+        run_limits=RunLimits(leaf_max_records=32, leaf_max_bytes=1024 * 1024, fanout=8),
+        run_merge_fanout=8,
+        key_tree_params=KeyTreeParams(
+            page_max_bytes=1024 * 1024,
+            leaf_max_records=64,
+            fanout=8,
+        ),
+    )
+
+
+def _discard_finding(
+    _code: str,
+    _symbol: str,
+    _instant: Any,
+    revision_ids: Iterable[str],
+    _detail: Callable[[int], str],
+) -> None:
+    for _revision_id in revision_ids:
+        pass
+
+
+def test_listing_history_join_is_ordinal_ordered_and_names_exact_raw_prefixes(
+    h: Harness,
+) -> None:
+    for index, status in enumerate(("TRADING", "HALT", "TRADING")):
+        h.observe(f"listing-history-{index}", {"BTCUSDT": status}, T1.replace(microsecond=index))
+        deriver = h.deriver()
+        try:
+            deriver.derive()
+        finally:
+            deriver.close()
+
+    scratch = _scratch(h)
+    try:
+        roots = _prefixes(h, scratch)
+        joined = listing_history_prefix_run(
+            h.adapter,
+            h.head(LISTINGS.table),
+            roots,
+            storage=scratch,
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+        )
+        assert joined is not None
+        with iter_run(scratch, joined) as reader:
+            rows = list(reader)
+        assert [row["snapshot_ordinal"] for row in rows] == sorted(
+            row["snapshot_ordinal"] for row in rows
+        )
+        assert len(rows) == len(
+            list(history_from(h.adapter, LISTINGS.table, h.head(LISTINGS.table)))
+        )
+        assert len(rows) >= 2
+        assert [parse_batch_id(row["snapshot"]["batch_id"]) for row in rows] == [
+            row["raw_snapshot_id"] for row in rows
+        ]
+        assert [row["observation_count"] for row in rows] == [
+            row["snapshot_ordinal"] + 1 for row in rows
+        ]
+    finally:
+        scratch.close()
+
+
+def test_listing_history_join_allows_many_listing_rows_from_one_raw_snapshot(
+    h: Harness,
+) -> None:
+    h.observe(
+        "listing-history-many-symbols",
+        {"BTCUSDT": "TRADING", "ETHUSDT": "TRADING"},
+        T1,
+    )
+    deriver = h.deriver()
+    try:
+        derived = deriver.derive()
+        assert derived.commit is not None and derived.commit.row_count == 2
+    finally:
+        deriver.close()
+
+    scratch = _scratch(h)
+    try:
+        joined = listing_history_prefix_run(
+            h.adapter,
+            h.head(LISTINGS.table),
+            _prefixes(h, scratch),
+            storage=scratch,
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+        )
+        assert joined is not None
+        with iter_run(scratch, joined) as reader:
+            [row] = list(reader)
+        assert row["snapshot_ordinal"] == 0
+        assert row["snapshot"]["added_rows"] == 2
+        assert row["snapshot"]["total_rows"] == 2
+        assert row["observation_count"] == 1
+    finally:
+        scratch.close()
+
+
+def test_listing_history_join_rejects_missing_raw_snapshot_prefix(h: Harness) -> None:
+    for index, status in enumerate(("TRADING", "HALT")):
+        h.observe(
+            f"listing-history-missing-{index}", {"BTCUSDT": status}, T1.replace(microsecond=index)
+        )
+        deriver = h.deriver()
+        try:
+            deriver.derive()
+        finally:
+            deriver.close()
+    listing_history = list(history_from(h.adapter, LISTINGS.table, h.head(LISTINGS.table)))
+    named = parse_batch_id(listing_history[0].batch_id)
+    assert named is not None
+    raw_history = list(
+        history_from(h.adapter, xs.EXCHANGE_INFO.table, h.head(xs.EXCHANGE_INFO.table))
+    )
+    omitted = next(
+        snapshot.snapshot_id for snapshot in raw_history if snapshot.snapshot_id == named
+    )
+
+    scratch = _scratch(h)
+    try:
+        with pytest.raises(CatalogIntegrityError, match="absent from its pinned history"):
+            listing_history_prefix_run(
+                h.adapter,
+                h.head(LISTINGS.table),
+                _prefixes(h, scratch, omit=omitted),
+                storage=scratch,
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+            )
+    finally:
+        scratch.close()
+
+
+def test_deriver_prepares_bounded_replay_inputs_at_pinned_heads(h: Harness) -> None:
+    for index, status in enumerate(("TRADING", "HALT", "TRADING")):
+        h.observe(
+            f"listing-inputs-{index}",
+            {"BTCUSDT": status},
+            T1.replace(microsecond=index),
+        )
+        deriver = h.deriver()
+        try:
+            deriver.derive()
+        finally:
+            deriver.close()
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        assert inputs.raw_snapshot_id == h.head(xs.EXCHANGE_INFO.table)
+        assert inputs.listing_snapshot_id == h.head(LISTINGS.table)
+        assert inputs.listing_metadata.name == LISTINGS.table
+        assert inputs.raw_metadata.name == xs.EXCHANGE_INFO.table
+        assert (
+            str(inputs.listing_metadata.metadata.current_snapshot_id) == inputs.listing_snapshot_id
+        )
+        assert str(inputs.raw_metadata.metadata.current_snapshot_id) == inputs.raw_snapshot_id
+        assert inputs.listing_metadata.metadata_location
+        assert inputs.raw_metadata.metadata_location
+        raw_count = len(
+            list(
+                history_from(
+                    h.adapter,
+                    xs.EXCHANGE_INFO.table,
+                    h.head(xs.EXCHANGE_INFO.table),
+                )
+            )
+        )
+        assert inputs.raw_rows is not None and inputs.raw_rows.record_count == raw_count
+        assert inputs.observations is not None and inputs.observations.record_count >= raw_count
+        assert inputs.prefix_roots is not None and inputs.prefix_roots.record_count == raw_count
+        assert inputs.listing_batches is not None and inputs.listing_batches.record_count >= 2
+        assert inputs.prefix_index is not None
+        with iter_run(scratch, inputs.listing_batches) as batches:
+            last = None
+            for batch in batches:
+                last = batch
+            assert last is not None
+            prefix = list(inputs.prefix_index.iter_rows_for_root_document(last["root"]))
+        assert sorted({row["snapshot_ordinal"] for row in prefix}) == list(range(raw_count))
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_empty_bounded_tables_still_return_both_pinned_metadata_views(h: Harness) -> None:
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        assert inputs.raw_snapshot_id is None
+        assert inputs.listing_snapshot_id is None
+        assert inputs.raw_metadata.name == xs.EXCHANGE_INFO.table
+        assert inputs.listing_metadata.name == LISTINGS.table
+        assert inputs.raw_metadata.metadata.current_snapshot_id is None
+        assert inputs.listing_metadata.metadata.current_snapshot_id is None
+        assert inputs.raw_rows is None
+        assert inputs.listing_batches is None
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_verify_pins_listing_then_raw_and_uses_no_legacy_metadata_calls(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.observe("listing-pinned-path", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    pin_order: list[str] = []
+    original_pin = h.adapter.pin_bounded_metadata
+
+    def tracked_pin(table: str, **kwargs: Any) -> Any:
+        pin_order.append(table)
+        return original_pin(table, **kwargs)
+
+    def reject_legacy(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("bounded Listing verification called a legacy full metadata API")
+
+    monkeypatch.setattr(h.adapter, "pin_bounded_metadata", tracked_pin)
+    for method_name in ("load_table", "history", "get_snapshot", "scan_column_batches"):
+        monkeypatch.setattr(h.adapter, method_name, reject_legacy)
+
+    try:
+        proof = deriver.verify_bounded(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+            row_chunk_capacity=2,
+            max_hash_chunk_bytes=64,
+            finding_sink=_discard_finding,
+        )
+        assert proof.committed_row_count == 1
+        assert pin_order == [LISTINGS.table, xs.EXCHANGE_INFO.table]
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_pit_replay_uses_exact_historical_listing_and_raw_bindings(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.observe("pit-listing-old", {"BTCUSDT": "TRADING"}, T1)
+    first = h.deriver()
+    try:
+        first.derive()
+    finally:
+        first.close()
+    old_ids = {
+        LISTINGS.table: h.head(LISTINGS.table),
+        xs.EXCHANGE_INFO.table: h.head(xs.EXCHANGE_INFO.table),
+    }
+    assert all(old_ids.values())
+
+    h.observe("pit-listing-new", {"BTCUSDT": "HALT"}, T2)
+    second = h.deriver()
+    try:
+        second.derive()
+    finally:
+        second.close()
+    assert h.head(LISTINGS.table) != old_ids[LISTINGS.table]
+    assert h.head(xs.EXCHANGE_INFO.table) != old_ids[xs.EXCHANGE_INFO.table]
+
+    view = PinnedCatalogView(h.adapter, cast(dict[str, str], old_ids))
+    scratch = _scratch(h)
+    deriver = h.deriver(view)
+
+    bounded_listing = view.pin_bounded_metadata(
+        LISTINGS.table,
+        storage=scratch,
+        limits=_metadata_limits(),
+    )
+    new_listing_id = h.head(LISTINGS.table)
+    assert new_listing_id is not None
+    selected_id_attribute = "selected_snapshot_id"
+    with pytest.raises(AttributeError):
+        setattr(bounded_listing, selected_id_attribute, new_listing_id)
+    with pytest.raises(CatalogIntegrityError, match="differs from the bounded metadata selection"):
+        h.adapter.scan_pinned_batches(
+            bounded_listing,
+            snapshot_id=new_listing_id,
+            columns=tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema),
+        )
+    with pytest.raises(PinnedViewError, match="differs from the PIT binding"):
+        view.scan_pinned_batches(
+            bounded_listing,
+            snapshot_id=new_listing_id,
+            columns=tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema),
+        )
+    with pytest.raises(PinnedViewError, match="differs from the PIT binding"):
+        view.scan_pinned_batches(
+            SimpleNamespace(name=LISTINGS.table, selected_snapshot_id=new_listing_id),
+            snapshot_id=new_listing_id,
+            columns=tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema),
+        )
+
+    def reject_eager(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("bounded PIT replay called an eager/current-head API")
+
+    for name in ("load_table", "get_snapshot", "history", "scan_columns", "scan_column_batches"):
+        monkeypatch.setattr(h.adapter, name, reject_eager)
+    try:
+        proof = deriver.verify_bounded(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+            row_chunk_capacity=2,
+            max_hash_chunk_bytes=64,
+            finding_sink=_discard_finding,
+        )
+        assert proof.raw_snapshot_id == old_ids[xs.EXCHANGE_INFO.table]
+        assert proof.listing_snapshot_id == old_ids[LISTINGS.table]
+        assert proof.committed_row_count == 1
+
+        explicit = h.deriver()
+        try:
+            replay = explicit.bounded_replay_inputs(
+                snapshot_ids=old_ids,
+                scratch_storage=scratch,
+                metadata_limits=_metadata_limits(),
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+                prefix_leaf_max_records=3,
+                prefix_fanout=3,
+                prefix_max_node_bytes=16384,
+                prefix_max_record_bytes=4096,
+            )
+            assert replay.raw_snapshot_id == proof.raw_snapshot_id
+            assert replay.listing_snapshot_id == proof.listing_snapshot_id
+        finally:
+            explicit.close()
+
+        direct = h.deriver()
+        try:
+            direct_proof = direct.verify_bounded(
+                snapshot_ids=old_ids,
+                scratch_storage=scratch,
+                metadata_limits=_metadata_limits(),
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+                prefix_leaf_max_records=3,
+                prefix_fanout=3,
+                prefix_max_node_bytes=16384,
+                prefix_max_record_bytes=4096,
+                row_chunk_capacity=2,
+                max_hash_chunk_bytes=64,
+                finding_sink=_discard_finding,
+            )
+            assert direct_proof.raw_snapshot_id == proof.raw_snapshot_id
+            assert direct_proof.listing_snapshot_id == proof.listing_snapshot_id
+            assert direct_proof.committed_row_count == proof.committed_row_count
+            assert direct_proof.diverged_count == proof.diverged_count
+        finally:
+            direct.close()
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_pit_replay_rejects_missing_or_mismatched_bindings(h: Harness) -> None:
+    h.observe("pit-listing-bindings", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+    old_ids = {
+        LISTINGS.table: h.head(LISTINGS.table),
+        xs.EXCHANGE_INFO.table: h.head(xs.EXCHANGE_INFO.table),
+    }
+    assert all(old_ids.values())
+    scratch = _scratch(h)
+    try:
+        deriver = h.deriver()
+        try:
+            with pytest.raises(SnapshotNotFound):
+                deriver.bounded_replay_inputs(
+                    snapshot_ids={**old_ids, xs.EXCHANGE_INFO.table: "999999999"},
+                    scratch_storage=scratch,
+                    metadata_limits=_metadata_limits(),
+                    capacity=2,
+                    merge_fanout=2,
+                    limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                    max_record_bytes=16384,
+                    max_run_object_bytes=32768,
+                    prefix_leaf_max_records=3,
+                    prefix_fanout=3,
+                    prefix_max_node_bytes=16384,
+                    prefix_max_record_bytes=4096,
+                )
+        finally:
+            deriver.close()
+
+        view = PinnedCatalogView(h.adapter, cast(dict[str, str], old_ids))
+        with pytest.raises(PinnedViewError, match="differs from the PIT binding"):
+            view.pin_bounded_metadata_at(
+                LISTINGS.table,
+                "999999999",
+                storage=scratch,
+                limits=_metadata_limits(),
+            )
+    finally:
+        scratch.close()
+
+
+def test_bounded_replay_keeps_the_captured_heads_after_new_commits(h: Harness) -> None:
+    h.observe("listing-pinned-before", {"BTCUSDT": "TRADING"}, T1)
+    first = h.deriver()
+    try:
+        first.derive()
+    finally:
+        first.close()
+
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        old_raw_head = inputs.raw_snapshot_id
+        old_listing_head = inputs.listing_snapshot_id
+        h.observe("listing-pinned-after", {"BTCUSDT": "HALT"}, T2)
+        second = h.deriver()
+        try:
+            second.derive()
+        finally:
+            second.close()
+        assert old_raw_head != h.head(xs.EXCHANGE_INFO.table)
+        assert old_listing_head != h.head(LISTINGS.table)
+
+        proof = verify_listing_history_bounded(
+            h.adapter,
+            inputs,
+            listing_metadata=inputs.listing_metadata,
+            evidence_storage=h.storage,
+            scratch_storage=scratch,
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            row_chunk_capacity=2,
+            max_hash_chunk_bytes=64,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+            finding_sink=_discard_finding,
+        )
+        assert proof.raw_snapshot_id == old_raw_head
+        assert proof.listing_snapshot_id == old_listing_head
+        assert proof.committed_row_count == 1
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_deriver_replays_rows_and_c3_fingerprints_exactly(h: Harness) -> None:
+    for index, status in enumerate(("TRADING", "HALT", "TRADING")):
+        h.observe(
+            f"listing-proof-{index}",
+            {"BTCUSDT": status},
+            T1.replace(microsecond=index),
+        )
+        deriver = h.deriver()
+        try:
+            deriver.derive()
+        finally:
+            deriver.close()
+    scratch = _scratch(h)
+    seen_findings: list[tuple[str, tuple[str, ...]]] = []
+
+    def consume_finding(
+        code: str,
+        _symbol: str,
+        _instant: object,
+        revision_ids: Iterable[str],
+        _detail: Callable[[int], str],
+    ) -> None:
+        seen_findings.append((code, tuple(revision_ids)))
+
+    deriver = h.deriver()
+    try:
+        proof = deriver.verify_bounded(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+            row_chunk_capacity=2,
+            max_hash_chunk_bytes=64,
+            finding_sink=consume_finding,
+        )
+        assert proof.committed_rows is not None
+        with iter_run(scratch, proof.committed_rows) as reader:
+            rows = list(reader)
+        expected = sorted(h.rows(LISTINGS.table), key=lambda row: row["revision_id"])
+        assert rows == expected
+        assert proof.committed_row_count == len(expected)
+        assert proof.diverged_count == 0
+        assert proof.diverged_revision_ids is None
+        assert proof.revision_index_node_write_count >= len(expected)
+        assert proof.revision_index_node_write_bytes > 0
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_replay_rejects_a_tampered_persisted_batch_fingerprint(h: Harness) -> None:
+    for index, status in enumerate(("TRADING", "HALT")):
+        h.observe(
+            f"listing-fingerprint-{index}",
+            {"BTCUSDT": status},
+            T1.replace(microsecond=index),
+        )
+        deriver = h.deriver()
+        try:
+            deriver.derive()
+        finally:
+            deriver.close()
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        assert inputs.listing_batches is not None
+        corrupt_builder = RunSetBuilder(
+            scratch,
+            key=lambda row: row["snapshot_ordinal"],
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+        )
+        with corrupt_builder, iter_run(scratch, inputs.listing_batches) as batches:
+            for batch in batches:
+                corrupt = dict(batch)
+                snapshot = dict(corrupt["snapshot"])
+                snapshot["batch_fingerprint"] = "0" * 64
+                corrupt["snapshot"] = snapshot
+                corrupt_builder.add(corrupt)
+            corrupt_ref = corrupt_builder.finish()
+        assert corrupt_ref is not None
+        corrupted = replace(inputs, listing_batches=corrupt_ref)
+        with pytest.raises(CatalogIntegrityError, match="different fingerprint"):
+            verify_listing_history_bounded(
+                h.adapter,
+                corrupted,
+                listing_metadata=inputs.listing_metadata,
+                evidence_storage=h.storage,
+                scratch_storage=scratch,
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+                row_chunk_capacity=2,
+                max_hash_chunk_bytes=64,
+                prefix_leaf_max_records=3,
+                prefix_fanout=3,
+                prefix_max_node_bytes=16384,
+                prefix_max_record_bytes=4096,
+                finding_sink=lambda *_args: None,
+            )
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_arrow_row_preflight_matches_existing_jsonl_byte_cap(h: Harness) -> None:
+    h.observe("listing-preflight", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+    [stored] = h.rows(LISTINGS.table)
+    row = dict(stored)
+    row["symbol"] = 'BTC"\\\n☃'
+    row["availability_evidence"] = ["é\\\n", "\u0001"]
+    row["precedence_evidence"] = [
+        {
+            "superseded_revision_id": "previous",
+            "policy_id": "policy",
+            "policy_version": "1.0.0",
+            "policy_hash": "hash",
+            "evidence": ["é\\\n", "\u0001"],
+            "knowledge_time": T1,
+        }
+    ]
+    schema = CANONICAL_INSTRUMENT_LISTINGS.arrow_schema
+    batch = pa.RecordBatch.from_pylist([row], schema=schema)
+    size = _preflight_arrow_jsonl_row(batch, 0, 1_000_000)
+    [round_tripped] = batch.to_pylist()
+    assert size == len(canonical_json(_encode_row(round_tripped)).encode("utf-8")) + 1
+    ExchangeInfoRowVerifier._check_bounded_row(round_tripped, size)
+    with pytest.raises(CatalogIntegrityError, match="max_record_bytes"):
+        _preflight_arrow_jsonl_row(batch, 0, size - 1)
+
+
+def test_oversized_arrow_row_is_rejected_before_to_pylist(h: Harness) -> None:
+    schema = CANONICAL_INSTRUMENT_LISTINGS.arrow_schema
+    arrays = [
+        pa.array(
+            ["x" * 100_000] if field.name == "observation_key" else [None],
+            type=field.type,
+        )
+        for field in schema
+    ]
+    batch = pa.RecordBatch.from_arrays(arrays, schema=schema)
+    conversions = {"count": 0}
+
+    class SliceSpy:
+        def __init__(self, sliced: pa.RecordBatch) -> None:
+            self._sliced = sliced
+
+        def to_pylist(self) -> list[dict[str, Any]]:
+            conversions["count"] += 1
+            return cast(list[dict[str, Any]], self._sliced.to_pylist())
+
+    class BatchSpy:
+        schema = batch.schema
+        num_rows = batch.num_rows
+
+        def column(self, index: int) -> pa.Array:
+            return batch.column(index)
+
+        def slice(self, offset: int, length: int) -> SliceSpy:
+            return SliceSpy(batch.slice(offset, length))
+
+    class Reader:
+        closed = False
+
+        def __iter__(self) -> Iterator[BatchSpy]:
+            yield BatchSpy()
+
+        def close(self) -> None:
+            self.closed = True
+
+    reader = Reader()
+
+    class Catalog:
+        def scan_pinned_batches(
+            self, _metadata: Any, *, columns: tuple[str, ...], snapshot_id: str
+        ) -> Reader:
+            assert columns
+            assert snapshot_id == "pinned"
+            return reader
+
+    class Metadata:
+        name = LISTINGS.table
+        selected_snapshot_id = "pinned"
+
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "preflight-warehouse").as_uri(),
+        (h.tmp_path / "preflight-stage").as_uri(),
+    )
+    try:
+        with pytest.raises(CatalogIntegrityError, match="max_record_bytes=256"):
+            _scan_current_rows(
+                Catalog(),  # type: ignore[arg-type]
+                "pinned",
+                Metadata(),  # type: ignore[arg-type]
+                scratch,
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=4096, fanout=2),
+                max_record_bytes=256,
+                max_run_object_bytes=4096,
+            )
+        assert conversions["count"] == 0
+        assert reader.closed
+    finally:
+        scratch.close()
+
+
+def test_recomputed_c3_fingerprint_does_not_hide_changed_listing_content(h: Harness) -> None:
+    h.observe("listing-replay-tamper", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        assert inputs.listing_batches is not None
+        [changed_row] = h.rows(LISTINGS.table)
+        changed_row = dict(changed_row)
+        changed_row["status_reason"] += " altered"
+        schema = CANONICAL_INSTRUMENT_LISTINGS.arrow_schema
+        changed_batch = pa.Table.from_pylist([changed_row], schema=schema)
+        changed_fingerprint = CANONICAL_INSTRUMENT_LISTINGS.fingerprint_rule.fingerprint(
+            changed_batch
+        )
+        changed_batches = RunSetBuilder(
+            scratch,
+            key=lambda row: row["snapshot_ordinal"],
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+        )
+        with changed_batches, iter_run(scratch, inputs.listing_batches) as batches:
+            for batch in batches:
+                changed = dict(batch)
+                snapshot = dict(changed["snapshot"])
+                snapshot["batch_fingerprint"] = changed_fingerprint
+                changed["snapshot"] = snapshot
+                changed_batches.add(changed)
+            changed_ref = changed_batches.finish()
+        assert changed_ref is not None
+        changed_inputs = replace(inputs, listing_batches=changed_ref)
+
+        class ChangedCatalog:
+            def __getattr__(self, name: str) -> Any:
+                return getattr(h.adapter, name)
+
+            def scan_pinned_batches(
+                self,
+                bounded_metadata: Any,
+                *,
+                columns: tuple[str, ...],
+                snapshot_id: str,
+            ) -> Iterator[pa.RecordBatch]:
+                source = h.adapter.scan_pinned_batches(
+                    bounded_metadata, columns=columns, snapshot_id=snapshot_id
+                )
+                try:
+                    for batch in source:
+                        rows = batch.to_pylist()
+                        rows[0]["status_reason"] += " altered"
+                        yield pa.RecordBatch.from_pylist(rows, schema=batch.schema)
+                finally:
+                    close = getattr(source, "close", None)
+                    if callable(close):
+                        close()
+
+        with pytest.raises(CatalogIntegrityError, match="differs from its replay"):
+            verify_listing_history_bounded(
+                ChangedCatalog(),
+                changed_inputs,
+                listing_metadata=inputs.listing_metadata,
+                evidence_storage=h.storage,
+                scratch_storage=scratch,
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+                row_chunk_capacity=2,
+                max_hash_chunk_bytes=64,
+                prefix_leaf_max_records=3,
+                prefix_fanout=3,
+                prefix_max_node_bytes=16384,
+                prefix_max_record_bytes=4096,
+                finding_sink=lambda *_args: None,
+            )
+    finally:
+        deriver.close()
+        scratch.close()

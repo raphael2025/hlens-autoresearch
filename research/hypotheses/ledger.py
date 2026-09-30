@@ -40,8 +40,10 @@ to its admission gate (``bind_write_gate``; ``research.persistence.gate``). Ever
 lock (lock order gate → ledger lock; the ledger never enters the gate while holding its lock), so
 no registration interleaves with the state's checkpoints and none runs while an admission lease is
 active or after an interrupted one; ``recover_register_batch`` presents its ``LedgerLease`` to the
-gate, which admits it only for the active admission lease's thread. Replay, reads and
-``release_write_lease`` do not enter the gate.
+gate, which admits it only for the active admission lease's thread. Under ADR-0096, ``register``
+and ``register_reevaluation`` first perform a ledger-locked, read-only exact-duplicate lookup and
+release that lock before entering the gate; changed content and fresh attempts continue through the
+gated write path. Replay, reads and ``release_write_lease`` do not enter the gate.
 """
 
 from __future__ import annotations
@@ -227,10 +229,15 @@ class TrialLedger:
 
         LLM-originated hypotheses go through ``register_draft`` (a human review is required).
         """
+        if hypothesis.origin is HypothesisOrigin.LLM:
+            raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
+        key = (hypothesis.name, hypothesis.version)
+        with self._lock:
+            existing = self._registered.get(key)
+            if existing is not None and existing.content_hash() == hypothesis.content_hash():
+                return False
         with gate_scope(self._gate, f"registering {hypothesis.ref}"), self._lock:
             self._check_writer(None, f"registering {hypothesis.ref}")
-            if hypothesis.origin is HypothesisOrigin.LLM:
-                raise LedgerError("an LLM hypothesis is registered only as a reviewed draft")
             return self._register(hypothesis)
 
     def register_draft(self, draft: HypothesisDraft) -> bool:
@@ -273,7 +280,8 @@ class TrialLedger:
                     raise LedgerError("a batch contains only Hypothesis values")
                 if hypothesis.origin is HypothesisOrigin.LLM:
                     raise LedgerError(
-                        f"an LLM hypothesis is registered only as a reviewed draft: {hypothesis.ref}"
+                        "an LLM hypothesis is registered only as a reviewed draft: "
+                        f"{hypothesis.ref}"
                     )
                 key = (hypothesis.name, hypothesis.version)
                 if key in keys:
@@ -283,14 +291,14 @@ class TrialLedger:
                 if existing is None:
                     pending.append(hypothesis)
                 elif existing.content_hash() != hypothesis.content_hash():
-                    raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+                    raise LedgerError(
+                        f"{hypothesis.ref} is registered with other content: new version"
+                    )
 
             if not pending:
                 return ()
 
-            payload = {
-                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in pending]
-            }
+            payload = {"hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in pending]}
             if self._journal is not None:
                 # The journal append is the durable commit point. Do not expose partial in-memory
                 # registration if the append fails (including a stale-writer refusal).
@@ -358,9 +366,7 @@ class TrialLedger:
                     raise LedgerError(f"a recovery batch repeats {hypothesis.ref}")
                 keys.add(key)
 
-            payload = {
-                "hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in batch]
-            }
+            payload = {"hypotheses": [hypothesis.model_dump(mode="json") for hypothesis in batch]}
             payload_json = json.loads(canonical_json(payload))
             entries = journal.entries
 
@@ -369,7 +375,7 @@ class TrialLedger:
                 if head != baseline_hash:
                     raise LedgerError("the TrialLedger does not match the prepared baseline hash")
                 reused = [
-                    hypothesis.ref
+                    str(hypothesis.ref)
                     for hypothesis in batch
                     if (hypothesis.name, hypothesis.version) in self._registered
                 ]
@@ -418,7 +424,10 @@ class TrialLedger:
             return detached_entry(entry)
 
     def _replay_batch(self, path: Path, payload: object) -> None:
-        """Replay one strictly shaped batch record; any duplicate or invalid member is corruption."""
+        """Replay one strictly shaped batch record.
+
+        Any duplicate or invalid member is corruption.
+        """
         if not isinstance(payload, dict) or set(payload) != {"hypotheses"}:
             raise JournalCorrupted(f"{path}: malformed batch registration payload")
         raw_hypotheses = payload["hypotheses"]
@@ -453,6 +462,17 @@ class TrialLedger:
         new version, never a re-evaluation); ``attempt`` is a non-empty key naming this
         evaluation. ``False`` if exactly this attempt was already registered (not a new trial).
         """
+        key = (hypothesis.name, hypothesis.version)
+        label = attempt.strip() if isinstance(attempt, str) else ""
+        if label:
+            with self._lock:
+                existing = self._registered.get(key)
+                if (
+                    existing is not None
+                    and existing.content_hash() == hypothesis.content_hash()
+                    and (*key, label) in self._attempts
+                ):
+                    return False
         with gate_scope(self._gate, f"a re-evaluation of {hypothesis.ref}"), self._lock:
             self._check_writer(None, f"a re-evaluation of {hypothesis.ref}")
             return self._register_reevaluation(hypothesis, attempt)
@@ -473,7 +493,8 @@ class TrialLedger:
                 return False
             if self._journal is not None:
                 self._journal.append(
-                    "reevaluate", {"hypothesis": hypothesis.model_dump(mode="json"), "attempt": label}
+                    "reevaluate",
+                    {"hypothesis": hypothesis.model_dump(mode="json"), "attempt": label},
                 )
             self._append(hypothesis, label)
             return True
@@ -484,7 +505,9 @@ class TrialLedger:
             existing = self._registered.get(key)
             if existing is not None:
                 if existing.content_hash() != hypothesis.content_hash():
-                    raise LedgerError(f"{hypothesis.ref} is registered with other content: new version")
+                    raise LedgerError(
+                        f"{hypothesis.ref} is registered with other content: new version"
+                    )
                 return False
             if self._journal is not None:
                 self._journal.append("register", hypothesis.model_dump(mode="json"))

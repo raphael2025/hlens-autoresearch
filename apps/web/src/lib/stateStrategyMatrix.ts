@@ -3,6 +3,7 @@
 // — hand-typed since /reports/{kind} has no per-kind OpenAPI schema (ReportEnvelope.payload is
 // `dict[str, Any]`). Pure: tested by stateStrategyMatrix.test.ts with `node --test` over
 // apps/web/fixtures (the current report and the legacy readable 2.0.0 one).
+import type { EChartsOption, TooltipComponentFormatterCallbackParams } from "echarts";
 
 export type MatrixCell = {
   state: string | null;
@@ -94,6 +95,56 @@ export function normalizeRow(values: readonly (number | null)[]): (number | null
 export function heatmapGrid(matrix: MatrixPayload): { raw: (number | null)[][]; normalized: (number | null)[][] } {
   const raw = METRICS.map((metric) => matrix.cells.map((cell) => metricValue(cell, metric.key)));
   return { raw, normalized: raw.map(normalizeRow) };
+}
+
+/** ECharts option used by the State × Strategy Matrices page heatmap. */
+export function heatmapChartOption(
+  matrix: MatrixPayload,
+  grid: ReturnType<typeof heatmapGrid>,
+): EChartsOption {
+  const categories = matrix.cells.map((cell) => stateLabel(cell.state));
+  const data: [number, number, number | null][] = [];
+  METRICS.forEach((_metric, row) => {
+    grid.normalized[row].forEach((value, col) => {
+      data.push([col, row, value]);
+    });
+  });
+  return {
+    tooltip: {
+      position: "top",
+      formatter: (params: TooltipComponentFormatterCallbackParams) => {
+        const item = Array.isArray(params) ? params[0] : params;
+        if (!Array.isArray(item?.value) || item.value.length < 3) return "";
+        const [col, row] = item.value as [number, number, number | null];
+        const label = categories[col];
+        const metric = METRICS[row];
+        if (label === undefined || metric === undefined) return "";
+        const raw = grid.raw[row]?.[col];
+        return `${label} · ${metric.label}: ${raw ?? "—"}`;
+      },
+    },
+    grid: { left: 90, right: 24, top: 16, bottom: 72 },
+    xAxis: { type: "category" as const, data: categories, splitArea: { show: true } },
+    yAxis: { type: "category" as const, data: METRICS.map((m) => m.label), splitArea: { show: true } },
+    visualMap: {
+      min: 0,
+      max: 1,
+      calculable: false,
+      orient: "horizontal" as const,
+      left: "center",
+      bottom: 0,
+      text: ["high (row-relative)", "low"],
+      inRange: { color: ["#f0f4ff", "#1d4ed8"] },
+    },
+    series: [
+      {
+        type: "heatmap" as const,
+        data,
+        label: { show: false },
+        emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "rgba(0,0,0,0.3)" } },
+      },
+    ],
+  };
 }
 
 export function totalSamples(matrix: MatrixPayload): number {

@@ -52,9 +52,9 @@ from collections.abc import Callable, Collection, Iterable, Iterator, Mapping, S
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
-from typing import Any, Final
+from pathlib import Path
+from typing import Any, Final, cast, overload
 
-import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import (
     And,
     BooleanExpression,
@@ -76,6 +76,7 @@ from core.contracts.catalog import (
 from core.contracts.storage import StorageAdapter
 from infrastructure import contract_version
 from infrastructure.canonical import rules
+from infrastructure.catalog.bounded_metadata import BoundedMetadataError, BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.row_integrity import (
@@ -84,13 +85,15 @@ from infrastructure.revision.row_integrity import (
     batch,
     batch_rows,
     check_batch_snapshot,
-    history_from,
 )
 from infrastructure.revision.store import RevisionCatalog
+from infrastructure.streaming.content_key_tree import KeyTreeParams
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 
 __all__ = [
     "DEFAULT_MICROBATCH_ROWS",
     "MAX_MICROBATCH_ROWS",
+    "NORMALIZER_METADATA_LIMITS",
     "CanonicalNormalizeConflict",
     "CanonicalNormalizeError",
     "CanonicalNormalizer",
@@ -116,6 +119,48 @@ _BATCH_CACHE: Final = 2
 _POSITION_DB_CACHE_KIB: Final = 1024
 _POSITION_INSERT_ROWS: Final = 2048
 _POSITION_INT: Final = struct.Struct(">q")
+# Named E1-CAP-1 parser/index profile a caller may pass explicitly as ``metadata_limits`` to take
+# the bounded double-pin read pass. It is never applied implicitly: its caps cover a table's whole
+# snapshot array (there is no snapshot expiry), so a default would break normalization once a
+# table's history outgrew it. At N=500,000 and M=256, one Canonical history has about 1,954
+# batches; 10,000 allows >5x headroom for one such unit while still failing closed at a finite
+# bound. The 16 MiB document and 256 KiB item caps are parser resource ceilings, not measured RSS
+# or an E1-CAP-1 pass claim.
+NORMALIZER_METADATA_LIMITS: Final = BoundedMetadataLimits(
+    max_metadata_bytes=16 * 1024 * 1024,
+    max_item_bytes=256 * 1024,
+    max_retained_json_bytes=2 * 1024 * 1024,
+    read_chunk_bytes=16 * 1024,
+    max_small_array_items=512,
+    max_map_items=512,
+    max_snapshots=10_000,
+    run_capacity=64,
+    run_limits=RunLimits(leaf_max_records=32, leaf_max_bytes=1024 * 1024, fanout=8),
+    run_merge_fanout=8,
+    key_tree_params=KeyTreeParams(page_max_bytes=1024 * 1024, leaf_max_records=64, fanout=8),
+)
+
+
+def _prepare_scratch_directory(directory: Path) -> Path:
+    """Create and prove the configured persistent scratch root writable before catalog access."""
+    if not isinstance(directory, Path) or not directory.is_absolute():
+        raise CanonicalNormalizeError("canonical scratch directory must be an absolute Path")
+    try:
+        root = directory.resolve(strict=False)
+        root.mkdir(parents=True, exist_ok=True)
+        if not root.is_dir():
+            raise OSError("path is not a directory")
+        probe = root / f".hlens-scratch-check-{os.getpid()}-{os.urandom(8).hex()}"
+        fd = os.open(probe, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        try:
+            os.close(fd)
+        finally:
+            probe.unlink(missing_ok=True)
+        return root
+    except (OSError, RuntimeError) as exc:
+        raise CanonicalNormalizeError(
+            f"canonical scratch directory is not usable: {directory}"
+        ) from exc
 
 
 @contextmanager
@@ -181,16 +226,26 @@ class CanonicalUnitIncomplete(CanonicalNormalizeError, CatalogIntegrityError):
 class _PositionIndex(Sequence[int]):
     """A sorted, disk-backed position sequence with bounded in-memory SQLite state."""
 
-    def __init__(self) -> None:
-        self._temporary = tempfile.TemporaryDirectory(prefix="hlens-positions-")
+    def __init__(self, scratch_directory: Path) -> None:
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix="hlens-positions-", dir=str(scratch_directory)
+        )
         self._database_path = os.path.join(self._temporary.name, "positions.sqlite3")
         self._rank_path = os.path.join(self._temporary.name, "ranks.bin")
-        self._connection = sqlite3.connect(self._database_path)
-        self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
-        self._connection.execute("PRAGMA temp_store = FILE")
-        self._connection.execute("PRAGMA journal_mode = OFF")
-        self._connection.execute("PRAGMA synchronous = OFF")
-        self._connection.execute("CREATE TABLE positions (position INTEGER NOT NULL)")
+        try:
+            self._connection = sqlite3.connect(self._database_path)
+            self._connection.execute(f"PRAGMA cache_size = -{_POSITION_DB_CACHE_KIB}")
+            self._connection.execute("PRAGMA temp_store = FILE")
+            self._connection.execute("PRAGMA journal_mode = OFF")
+            self._connection.execute("PRAGMA synchronous = OFF")
+            self._connection.execute("CREATE TABLE positions (position INTEGER NOT NULL)")
+            self._connection.execute("CREATE INDEX positions_position ON positions(position)")
+        except BaseException:
+            connection = getattr(self, "_connection", None)
+            if connection is not None:
+                connection.close()
+            self._temporary.cleanup()
+            raise
         self._size = 0
         self._fd: int | None = None
         self._closed = False
@@ -223,6 +278,12 @@ class _PositionIndex(Sequence[int]):
     def __len__(self) -> int:
         return self._size
 
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
+
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
             start, stop, step = rank.indices(self._size)
@@ -236,7 +297,7 @@ class _PositionIndex(Sequence[int]):
         value = os.pread(self._fd, _POSITION_INT.size, rank * _POSITION_INT.size)
         if len(value) != _POSITION_INT.size:
             raise OSError("position rank file ended unexpectedly")
-        return _POSITION_INT.unpack(value)[0]
+        return cast(int, _POSITION_INT.unpack(value)[0])
 
     def __iter__(self) -> Iterator[int]:
         yield from self._iter_ranks(range(self._size))
@@ -295,6 +356,12 @@ class _PositionSlice(Sequence[int]):
     def __len__(self) -> int:
         return len(self._ranks)
 
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
+
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
             start, stop, step = rank.indices(len(self))
@@ -318,6 +385,12 @@ class _OffsetSequence(Sequence[int]):
 
     def __len__(self) -> int:
         return len(self._values)
+
+    @overload
+    def __getitem__(self, rank: int) -> int: ...
+
+    @overload
+    def __getitem__(self, rank: slice) -> Sequence[int]: ...
 
     def __getitem__(self, rank: int | slice) -> int | Sequence[int]:
         if isinstance(rank, slice):
@@ -499,8 +572,10 @@ class CanonicalNormalizer:
         adapter: RevisionCatalog,
         storage: StorageAdapter,
         *,
+        scratch_directory: Path,
         clock: Callable[[], datetime] | None = None,
         microbatch_rows: int = DEFAULT_MICROBATCH_ROWS,
+        metadata_limits: BoundedMetadataLimits | None = None,
     ) -> None:
         if not isinstance(microbatch_rows, int) or isinstance(microbatch_rows, bool):
             raise CanonicalNormalizeError("microbatch_rows must be an int")
@@ -508,10 +583,14 @@ class CanonicalNormalizer:
             raise CanonicalNormalizeError(
                 f"microbatch_rows must be between 1 and {MAX_MICROBATCH_ROWS}"
             )
+        if metadata_limits is not None and not isinstance(metadata_limits, BoundedMetadataLimits):
+            raise CanonicalNormalizeError("metadata_limits must be BoundedMetadataLimits or None")
         self._adapter = adapter
         self._storage = storage
+        self._scratch_directory = _prepare_scratch_directory(scratch_directory)
         self._clock = clock or (lambda: datetime.now(UTC))
         self._microbatch = microbatch_rows
+        self._metadata_limits = metadata_limits
         #: On a ``PinnedCatalogView`` nothing can change under the normalizer (it cannot write
         #: there either), so its pins — with their archive caches — and each unit's unit-wide
         #: facts are proven once and reused by every later call (G3-S3: a reader of many time
@@ -576,7 +655,8 @@ class CanonicalNormalizer:
                 except BatchConflict as exc:
                     if survey.plan is None:
                         # A rival allocated first (its own block and clock reading) and committed
-                        # this batch id: start over and adopt its plan — the clock is never read again.
+                        # this batch id: start over and adopt its plan — the clock is never read
+                        # again.
                         last_error = exc
                         continue
                     # Our plan was recovered from committed batches, which every writer recovers
@@ -611,10 +691,17 @@ class CanonicalNormalizer:
         """
         if type(result) is not CanonicalUnitNormalized:
             raise CanonicalNormalizeError("result must be a CanonicalUnitNormalized")
-        if any(
-            not isinstance(value, int) or isinstance(value, bool) or value < 0
-            for value in (result.revision_count, result.batch_count, result.replayed_batch_count)
-        ) or result.replayed_batch_count > result.batch_count:
+        if (
+            any(
+                not isinstance(value, int) or isinstance(value, bool) or value < 0
+                for value in (
+                    result.revision_count,
+                    result.batch_count,
+                    result.replayed_batch_count,
+                )
+            )
+            or result.replayed_batch_count > result.batch_count
+        ):
             raise CanonicalNormalizeError("result summary counts are invalid")
         channel = self._channel(result.raw_table, result.source_revision_id)
         if result.canonical_table != channel.canonical.table:
@@ -632,9 +719,7 @@ class CanonicalNormalizer:
         survey = self._survey(pin, channel, result.source_revision_id, keep_rows=False)
         try:
             if result.revision_count > 0 and survey.plan is not None:
-                _require_complete(
-                    channel, result.source_revision_id, survey.plan, survey.unit_rows
-                )
+                _require_complete(channel, result.source_revision_id, survey.plan, survey.unit_rows)
             summary_mismatch = survey.unit_rows != result.revision_count
             if result.revision_count == 0:
                 summary_mismatch = summary_mismatch or any(
@@ -678,9 +763,7 @@ class CanonicalNormalizer:
                     high,
                     expected_rows=end - index * survey.plan.chunk,
                 )
-                planned = self._planned(
-                    channel, raw, survey.base, survey.ready, survey.version
-                )
+                planned = self._planned(channel, raw, survey.base, survey.ready, survey.version)
                 yield from (row["revision_id"] for row in planned)
         finally:
             if survey.positions is not None:
@@ -721,42 +804,179 @@ class CanonicalNormalizer:
             finally:
                 if survey.positions is not None:
                     survey.positions.close()
-        return self._verify_batches(pin, channel, source_revision_id, frozenset(arrival_seqs))
+        # A caller may transfer a built-in set's ownership for this read-only proof path. Do not
+        # copy it: selector consumes its per-unit set before calling us, and verification only
+        # iterates these values. General iterables retain the historical frozen snapshot.
+        if type(arrival_seqs) in (set, frozenset):
+            seqs = cast(Collection[int], arrival_seqs)
+        else:
+            seqs = frozenset(arrival_seqs)
+        return self._verify_batches(pin, channel, source_revision_id, seqs)
+
+    def _stage_verified_unit(
+        self,
+        raw_table: str,
+        source_revision_id: str,
+        *,
+        arrival_seqs: Iterable[int],
+        sink: Callable[[Mapping[str, Any], int, int], None],
+        request_capacity: int,
+        merge_fanout: int,
+        run_limits: RunLimits,
+    ) -> None:
+        """Prove a bounded selector's requested unit rows directly into private staging.
+
+        The sink is an unfinalized, caller-owned staging writer, not a consumer. A later batch or
+        unit may still fail, so callers must not finalize or expose its contents until the whole
+        selector proof has succeeded. The public ``verify_unit`` tuple contract is unchanged.
+        Proof-batch cache reads/writes are disabled here so a cached tuple cannot overlap the
+        bounded run with an additional O(batch) retained proof collection.
+        """
+        channel = self._channel(raw_table, source_revision_id)
+        pin = self._pin(channel, source_revision_id)
+        self._verify_batches_to(
+            pin,
+            channel,
+            source_revision_id,
+            arrival_seqs,
+            sink=None,
+            use_batch_cache=False,
+            ordered_sink=sink,
+            request_capacity=request_capacity,
+            merge_fanout=merge_fanout,
+            run_limits=run_limits,
+        )
 
     def _verify_batches(
         self,
         pin: _Pin,
         channel: rules.RawChannel,
         source_revision_id: str,
-        seqs: frozenset[int],
+        seqs: Collection[int],
     ) -> tuple[Mapping[str, Any], ...]:
         """The committed batches holding ``seqs``, proven, over the unit-wide facts (G3-S2)."""
+        kept: list[Mapping[str, Any]] = []
+        self._verify_batches_to(
+            pin,
+            channel,
+            source_revision_id,
+            seqs,
+            sink=kept.append,
+            use_batch_cache=True,
+        )
+        return tuple(kept)
+
+    def _verify_batches_to(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        seqs: Iterable[int],
+        *,
+        sink: Callable[[Mapping[str, Any]], None] | None,
+        use_batch_cache: bool,
+        ordered_sink: Callable[[Mapping[str, Any], int, int], None] | None = None,
+        request_capacity: int | None = None,
+        merge_fanout: int | None = None,
+        run_limits: RunLimits | None = None,
+    ) -> None:
+        """Private sink form shared by the tuple API and bounded selector staging."""
         facts = self._unit_facts(pin, channel, source_revision_id)
         try:
             if facts.plan is None or facts.base is None or facts.ready is None:
-                return ()
+                return
             assert facts.version is not None
             plan, base, ready = facts.plan, facts.base, facts.ready
             _require_complete(channel, source_revision_id, plan, len(facts.positions))
-            wanted = {
-                index
-                for index in _batches_holding(facts.positions, plan.chunk, base, seqs)
-                if index < plan.count
-            }
+            # Public verify_unit keeps its compatibility collection path. PIT's private bounded
+            # path streams revision-sorted requests into an ordered RunSet of unique batch IDs,
+            # replacing the all-history `wanted` set while preserving newest-first proof order.
+            wanted_root: RunRef | None = None
+            if ordered_sink is not None:
+                if request_capacity is None or merge_fanout is None or run_limits is None:
+                    raise CanonicalNormalizeError(
+                        "bounded proof staging requires explicit run bounds"
+                    )
+                previous_batch: int | None = None
+                with RunSetBuilder(
+                    self._storage,
+                    key=lambda row: -cast(int, row["batch_index"]),
+                    capacity=request_capacity,
+                    merge_fanout=merge_fanout,
+                    limits=run_limits,
+                ) as wanted_builder:
+                    previous_seq: int | None = None
+                    for seq in seqs:
+                        if previous_seq is not None and seq < previous_seq:
+                            raise CatalogIntegrityError(
+                                f"{channel.canonical.table}: bounded arrival requests are not "
+                                "sorted"
+                            )
+                        previous_seq = seq
+                        rank = bisect_left(cast(Sequence[int], facts.positions), seq - base)
+                        if rank >= len(facts.positions) or facts.positions[rank] != seq - base:
+                            continue
+                        batch_index = rank // plan.chunk
+                        if batch_index != previous_batch:
+                            wanted_builder.add({"batch_index": batch_index})
+                            previous_batch = batch_index
+                    wanted_root = wanted_builder.finish()
+            else:
+                wanted = _batches_holding(facts.positions, plan.chunk, base, seqs)
             cached: dict[int, tuple[Mapping[str, Any], ...]] = {}
-            for index in wanted if self._frozen else ():
+            for index in (
+                wanted if ordered_sink is None and self._frozen and use_batch_cache else ()
+            ):
                 rows = self._batches.get((channel.element.table, source_revision_id, index))
                 if rows is not None:
                     cached[index] = rows
+
+            def emit(index: int, rows: Sequence[Mapping[str, Any]]) -> None:
+                for row_ordinal, row in enumerate(rows):
+                    if ordered_sink is None:
+                        assert sink is not None
+                        sink(row)
+                    else:
+                        ordered_sink(row, index, row_ordinal)
+
+            if ordered_sink is not None:
+                # Bounded selector staging follows the already-validated reverse snapshot stream.
+                # Do not collect one SnapshotInfo per requested batch. Explicit scalar checks
+                # make the expected descending order and complete requested set visible here.
+                if wanted_root is not None:
+                    for index, snapshot in self._plan_snapshots_for_run(
+                        pin, channel, source_revision_id, plan, wanted_root
+                    ):
+                        low, high, end = _batch_window(facts.positions, plan.chunk, index)
+                        raw = self._raw_window(
+                            pin,
+                            channel,
+                            source_revision_id,
+                            low,
+                            high,
+                            expected_rows=end - index * plan.chunk,
+                        )
+                        self._prove(pin, channel, raw)
+                        planned = self._planned(channel, raw, base, ready, facts.version)
+                        check_batch_snapshot(
+                            channel.canonical,
+                            unit_batch_id(source_revision_id, plan.unit_rows, plan.chunk, index),
+                            snapshot,
+                            planned,
+                        )
+                        self._check_committed_window(pin, channel, base, low, high, planned)
+                        emit(index, planned)
+                return
+
+            assert ordered_sink is None
             snapshots = dict(
                 self._plan_snapshots(pin, channel, source_revision_id, plan, wanted - cached.keys())
             )
-            kept: list[Mapping[str, Any]] = []
             for index in sorted(wanted):
                 key = (channel.element.table, source_revision_id, index)
                 proven = cached.get(index)
                 if proven is not None:
-                    kept.extend(proven)
+                    emit(index, proven)
                     continue
                 low, high, end = _batch_window(facts.positions, plan.chunk, index)
                 raw = self._raw_window(
@@ -776,15 +996,69 @@ class CanonicalNormalizer:
                     planned,
                 )
                 self._check_committed_window(pin, channel, base, low, high, planned)
-                kept.extend(planned)
-                if self._frozen:
+                emit(index, planned)
+                if self._frozen and use_batch_cache:
                     while len(self._batches) >= _BATCH_CACHE:
                         self._batches.pop(next(iter(self._batches)))
                     self._batches[key] = tuple(planned)
-            return tuple(kept)
         finally:
             if not self._frozen:
                 facts.positions.close()
+
+    def _plan_snapshots_for_run(
+        self,
+        pin: _Pin,
+        channel: rules.RawChannel,
+        source_revision_id: str,
+        plan: _CommittedPlan,
+        wanted_root: RunRef,
+    ) -> Iterator[tuple[int, SnapshotInfo]]:
+        """Merge newest-first batch requests with the pinned reverse snapshot history."""
+        changed = (
+            f"{channel.canonical.table}: the batches of unit {source_revision_id} no longer read "
+            "as the plan proven at the pinned head"
+        )
+        with iter_run(self._storage, wanted_root) as rows:
+            wanted = next(rows, None)
+            wanted_index = None if wanted is None else wanted["batch_index"]
+            expected = plan.count - 1
+            missing = False
+            previous_wanted: int | None = None
+            for unit_rows, chunk, index, snapshot in self._unit_batches(
+                pin, channel, source_revision_id
+            ):
+                if (unit_rows, chunk) != (plan.unit_rows, plan.chunk) or index != expected:
+                    raise CatalogIntegrityError(changed)
+                expected -= 1
+                while wanted_index is not None and wanted_index > index:
+                    if previous_wanted is not None and wanted_index >= previous_wanted:
+                        raise CatalogIntegrityError(
+                            f"{channel.canonical.table}: bounded batch requests are not descending"
+                        )
+                    previous_wanted = wanted_index
+                    missing = True
+                    wanted = next(rows, None)
+                    wanted_index = None if wanted is None else wanted["batch_index"]
+                if wanted_index == index:
+                    yield index, snapshot
+                    previous_wanted = index
+                    wanted = next(rows, None)
+                    wanted_index = None if wanted is None else wanted["batch_index"]
+                    if wanted_index is None:
+                        return
+            while wanted_index is not None:
+                if previous_wanted is not None and wanted_index >= previous_wanted:
+                    raise CatalogIntegrityError(
+                        f"{channel.canonical.table}: bounded batch requests are not descending"
+                    )
+                previous_wanted = wanted_index
+                missing = True
+                wanted = next(rows, None)
+                wanted_index = None if wanted is None else wanted["batch_index"]
+            if missing:
+                raise CatalogIntegrityError(
+                    f"{channel.canonical.table}: requested batch snapshot is missing"
+                )
 
     def _unit_facts(
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
@@ -831,13 +1105,15 @@ class CanonicalNormalizer:
             if not positions:
                 if committed.seq_count or plan is not None:
                     raise CatalogIntegrityError(
-                        f"{table} holds Canonical rows or batches of unit {source_revision_id} that "
+                        f"{table} holds Canonical rows or batches of unit {source_revision_id} "
+                        "that "
                         "has no Raw element revision"
                     )
             elif plan is None:
                 if committed.seq_count:
                     raise CatalogIntegrityError(
-                        f"{table}: unit {source_revision_id} has committed rows but no committed batch"
+                        f"{table}: unit {source_revision_id} has committed rows but no committed "
+                        "batch"
                     )
             else:
                 base, ready, version = self._recover(channel, source_revision_id, committed)
@@ -871,10 +1147,60 @@ class CanonicalNormalizer:
         return channel
 
     def _pin(self, channel: rules.RawChannel, source_revision_id: str) -> _Pin:
-        """Heads read twice and equal: at one instant between, all three held them."""
+        """Heads read twice and equal: at one instant between, all three held them.
+
+        Only a caller that explicitly passed ``metadata_limits`` gets the bounded double-pin
+        route; without limits the head-pair pin is used whatever the adapter can do.
+        """
         tables = (channel.element.table, channel.source.table, channel.canonical.table)
         if self._frozen and tables in self._pins:
             return self._pins[tables]
+        limits = self._metadata_limits
+        if limits is not None:
+            supports_bounded = getattr(self._adapter, "supports_bounded_metadata", None)
+            bounded_pin = getattr(self._adapter, "pin_bounded_metadata", None)
+            if not callable(bounded_pin) or (
+                supports_bounded is not None and not bool(supports_bounded)
+            ):
+                raise CanonicalNormalizeError(
+                    "metadata_limits was given but the catalog cannot pin bounded metadata"
+                )
+
+            def pin_one(table: str) -> Any:
+                try:
+                    return bounded_pin(table, storage=self._storage, limits=limits)
+                except BoundedMetadataError as exc:
+                    # The bounded parser names the exceeded limit and the observed value.
+                    raise BoundedMetadataError(f"{table}: {exc}") from exc
+
+            for _ in range(_ATTEMPTS):
+                first = tuple(pin_one(table) for table in tables)
+                second = tuple(pin_one(table) for table in tables)
+                first_identity = tuple(
+                    (view.metadata_location, view.selected_snapshot_id) for view in first
+                )
+                second_identity = tuple(
+                    (view.metadata_location, view.selected_snapshot_id) for view in second
+                )
+                if first_identity != second_identity:
+                    continue
+                heads = tuple(snapshot for _, snapshot in second_identity)
+                catalog = PinnedCatalogView(
+                    self._adapter,
+                    dict(zip(tables, heads, strict=True)),
+                    bounded_metadata=dict(zip(tables, second, strict=True)),
+                )
+                pin = _Pin(
+                    catalog=catalog,
+                    canonical_head=heads[2],
+                    verifier=PersistedRowVerifier(catalog, self._storage, cache_archives=True),
+                )
+                if self._frozen:
+                    self._pins[tables] = pin
+                return pin
+            raise CanonicalNormalizeConflict(
+                f"{' / '.join(tables)} kept moving: no pinned read of unit {source_revision_id}"
+            )
         for _ in range(_ATTEMPTS):
             heads = tuple(self._head(table) for table in tables)
             if tuple(self._head(table) for table in tables) != heads:
@@ -929,8 +1255,12 @@ class CanonicalNormalizer:
         positions, symbol = self._positions(pin, channel, source_revision_id)
         try:
             return self._survey_with_positions(
-                pin, channel, source_revision_id, keep_rows=keep_rows,
-                positions=positions, symbol=symbol,
+                pin,
+                channel,
+                source_revision_id,
+                keep_rows=keep_rows,
+                positions=positions,
+                symbol=symbol,
             )
         except BaseException:
             positions.close()
@@ -994,7 +1324,7 @@ class CanonicalNormalizer:
         floor: datetime | None,
         unit_rows: int,
         plan: _CommittedPlan | None,
-        ordered: Sequence[SnapshotInfo],
+        ordered: bool,
         committed: _CommittedTimes,
     ) -> _Survey:
         table = channel.canonical.table
@@ -1075,9 +1405,13 @@ class CanonicalNormalizer:
             row_filter=_equals(channel.lineage_column, source_revision_id),
         )
         offset = 0 if channel.name == "archive" else 1
-        index = _PositionIndex()
+        index: _PositionIndex | None = None
+        reader_closed = False
         symbol: str | None = None
         try:
+            # Index creation can fail (for example, scratch storage becoming unavailable).
+            # Keep it inside the reader's cleanup boundary so that failure cannot leak a cursor.
+            index = _PositionIndex(self._scratch_directory)
             try:
                 for record_batch in reader:
                     values = record_batch.column(record_batch.schema.get_field_index(column))
@@ -1112,15 +1446,25 @@ class CanonicalNormalizer:
                         close()
                     except Exception:
                         pass
+                reader_closed = True
                 raise
             else:
                 close = getattr(reader, "close", None)
                 if close is not None:
                     close()
+                reader_closed = True
             index.finalize()
             return index, symbol
         except BaseException:
-            index.close()
+            if not reader_closed:
+                close = getattr(reader, "close", None)
+                if close is not None:
+                    try:
+                        close()
+                    except Exception:
+                        pass
+            if index is not None:
+                index.close()
             raise
 
     def _check_positions(
@@ -1304,7 +1648,9 @@ class CanonicalNormalizer:
         table = channel.canonical.table
         prefix = _unit_prefix(source_revision_id)
         widths = (_ROWS_DIGITS, _CHUNK_DIGITS, _INDEX_DIGITS)
-        for snapshot in history_from(self._adapter, table, pin.canonical_head):
+        if pin.canonical_head is None:
+            return
+        for snapshot in pin.catalog.history(table, pin.canonical_head):
             batch_id = snapshot.batch_id
             if batch_id is None or not batch_id.startswith(prefix):
                 continue
@@ -1356,7 +1702,7 @@ class CanonicalNormalizer:
         self, pin: _Pin, channel: rules.RawChannel, source_revision_id: str
     ) -> _CommittedTimes:
         """Stream committed unit facts; retain only scalar summaries and a disk-sorted seq index."""
-        index = _PositionIndex()
+        index = _PositionIndex(self._scratch_directory)
         reader: Any | None = None
         count = 0
         seq_null = False
@@ -1372,9 +1718,7 @@ class CanonicalNormalizer:
                 row_filter=self._unit_filter(channel, source_revision_id),
             )
             for record_batch in reader:
-                seq_values = record_batch.column(
-                    record_batch.schema.get_field_index("arrival_seq")
-                )
+                seq_values = record_batch.column(record_batch.schema.get_field_index("arrival_seq"))
                 ready_values = record_batch.column(
                     record_batch.schema.get_field_index("knowledge_time")
                 )
@@ -1496,9 +1840,7 @@ class CanonicalNormalizer:
         """The window's slice of the block holds exactly the planned rows, each once."""
         _exact(
             channel,
-            self._scan_block(
-                pin.catalog, channel, base + low, base + high, None, len(planned)
-            ),
+            self._scan_block(pin.catalog, channel, base + low, base + high, None, len(planned)),
             planned,
             committed=True,
         )
@@ -1691,6 +2033,7 @@ class CanonicalNormalizer:
             table,
             self._unit_filter(channel, source_revision_id),
             snapshot_id,
+            scratch_directory=self._scratch_directory,
         )
         try:
             block, block_count, block_null = _scan_integer_index(
@@ -1698,6 +2041,7 @@ class CanonicalNormalizer:
                 table,
                 _from("arrival_seq", base, base + rules.ARRIVAL_SEQ_STRIDE),
                 snapshot_id,
+                scratch_directory=self._scratch_directory,
             )
             try:
                 if not _same_index_numbers(seqs, seq_count, seq_null, expected) or not (
@@ -1981,9 +2325,11 @@ def _scan_integer_index(
     table: str,
     row_filter: BooleanExpression,
     snapshot_id: str | None,
+    *,
+    scratch_directory: Path,
 ) -> tuple[_PositionIndex, int, bool]:
     """Stream one arrival_seq column into a disk-sorted index at the requested snapshot."""
-    index = _PositionIndex()
+    index = _PositionIndex(scratch_directory)
     reader: Any | None = None
     count = 0
     has_null = False

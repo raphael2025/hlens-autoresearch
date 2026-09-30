@@ -1,5 +1,12 @@
 # apps/worker
 
+生产进程入口（[ADR-0095](../../docs/adr/0095-worker-runtime-host.md)）：
+`python -m apps.worker.serve --factory package.module:callable`。部署方 factory 必须返回
+context manager，yield 已配置的 `JobRunner` 并在退出时关闭总线等资源。Host 每次只取一个任务，
+空队列等待 1 秒；SIGINT / SIGTERM 停止后续轮询，并等待当前任务完成结果持久化与 ack。重启由
+外部 supervisor 执行。Factory 是受信代码，消息内容不参与 handler 导入或选择；`apps/worker`
+不导入 `research/`。同步 handler 不支持强制取消，supervisor 应设置退出宽限时间。
+
 异步任务执行：采集、计算、实验运行、验证。任务必须幂等可重试。事件总线通过 EventBusAdapter 访问（NATS 引入时机见待决 D-10）。
 
 > 框架已实现（ADR-0044，FRAMEWORK_IMPLEMENTED / NOT_VALIDATED）：`jobs.py` 的 `JobRunner`（内容寻址任务 ID、至少一次消息 + 幂等执行、有界重试、失败记录不丢弃），总线为 `infrastructure/event_bus/InMemoryEventBus`。

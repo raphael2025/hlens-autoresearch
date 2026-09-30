@@ -76,7 +76,7 @@ def configure_logging(
         handler = logging.StreamHandler(stream if stream is not None else sys.stdout)
         setattr(handler, _HANDLER_MARKER, True)
         target.addHandler(handler)
-    elif stream is not None:
+    elif stream is not None and isinstance(handler, logging.StreamHandler):
         handler.setStream(stream)
 
     handler.setLevel(level)

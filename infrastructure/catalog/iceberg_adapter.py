@@ -36,7 +36,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 from types import TracebackType
-from typing import Any, Final, Self
+from typing import TYPE_CHECKING, Any, Final, Self
 from urllib.parse import urlparse
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -51,7 +51,7 @@ from pyiceberg.exceptions import (
     NoSuchTableError,
     TableAlreadyExistsError,
 )
-from pyiceberg.expressions import AlwaysTrue, BooleanExpression
+from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, BooleanExpression
 from pyiceberg.expressions.visitors import (
     ResidualEvaluator,
     bind,
@@ -116,6 +116,13 @@ from infrastructure.catalog.definitions import (
     require_partition_only_change,
 )
 from infrastructure.settings import Settings
+
+if TYPE_CHECKING:
+    from core.contracts.storage import StorageAdapter
+    from infrastructure.catalog.bounded_metadata import (
+        BoundedIcebergMetadata,
+        BoundedMetadataLimits,
+    )
 
 __all__ = [
     "SUMMARY_BATCH_FINGERPRINT",
@@ -297,15 +304,18 @@ class _SnapshotBatchStream(Iterator[pa.RecordBatch]):
     ``close`` is idempotent; a closed stream yields nothing more.
     """
 
-    def __init__(
-        self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch, None, None]
-    ) -> None:
+    def __init__(self, reader: pa.RecordBatchReader, source: Generator[pa.RecordBatch]) -> None:
         self._reader = reader
         self._source = source
         self._closed = False
 
     def __iter__(self) -> Self:
         return self
+
+    @property
+    def schema(self) -> pa.Schema:
+        """Projected schema, including when the selected snapshot has no matching rows."""
+        return self._reader.schema
 
     def __next__(self) -> pa.RecordBatch:
         if self._closed:
@@ -512,7 +522,7 @@ def _preflight_snapshot(name: str, io: FileIO, snapshot: Snapshot, plan: _ScanPl
 
 def _snapshot_batches(
     name: str, snapshot: Snapshot | None, plan: _ScanPlan, read: _FileRead
-) -> Generator[pa.RecordBatch, None, None]:
+) -> Generator[pa.RecordBatch]:
     """Second pass: the matched data files of ``snapshot``, read one at a time, in plan order.
 
     Manifest and data files are immutable, so this sees what the preflight checked; the content
@@ -790,6 +800,230 @@ class PyIcebergCatalogAdapter:
             if limit is None:
                 ahead = parent_of(parent_of(ahead))
 
+    def pin_bounded_metadata(
+        self,
+        table: str,
+        *,
+        storage: StorageAdapter,
+        limits: BoundedMetadataLimits,
+    ) -> BoundedIcebergMetadata:
+        """Pin and verify one bounded SqlCatalog metadata version (infrastructure only).
+
+        Unlike ``load_table`` this does not retain the full ``TableMetadata.snapshots`` list.
+        The registered table binding/schema/spec/properties are still verified by this adapter
+        against the same metadata pointer returned by the private bounded reader.
+        """
+        name = validate_table_name(table)
+        return self._pin_bounded_metadata(name, storage=storage, limits=limits)
+
+    def pin_bounded_metadata_at(
+        self,
+        table: str,
+        snapshot_id: str | None,
+        *,
+        storage: StorageAdapter,
+        limits: BoundedMetadataLimits,
+    ) -> BoundedIcebergMetadata:
+        """Pin bounded metadata and restrict reads to one exact historical snapshot.
+
+        ``None`` is an explicit empty view, distinct from ``pin_bounded_metadata``'s
+        current-head selection.  The requested ID is resolved against the pinned
+        metadata index before this method returns.
+        """
+        from infrastructure.catalog.bounded_metadata import pin_bounded_sql_table
+
+        name = validate_table_name(table)
+        if not isinstance(self._catalog, SqlCatalog):
+            raise CatalogIntegrityError(
+                "bounded metadata pinning requires the configured PyIceberg SqlCatalog"
+            )
+        with _backend("pin_bounded_metadata_at"):
+            bounded = pin_bounded_sql_table(
+                self._catalog,
+                name,
+                storage=storage,
+                limits=limits,
+                selected_snapshot_id=snapshot_id,
+                select_current_head=False,
+            )
+            self._verified(name, bounded.verification_table())
+            return bounded
+
+    def _pin_bounded_metadata(
+        self,
+        name: str,
+        *,
+        storage: StorageAdapter,
+        limits: BoundedMetadataLimits,
+    ) -> BoundedIcebergMetadata:
+        from infrastructure.catalog.bounded_metadata import pin_bounded_sql_table
+
+        if not isinstance(self._catalog, SqlCatalog):
+            raise CatalogIntegrityError(
+                "bounded metadata pinning requires the configured PyIceberg SqlCatalog"
+            )
+        with _backend("pin_bounded_metadata"):
+            bounded = pin_bounded_sql_table(
+                self._catalog,
+                name,
+                storage=storage,
+                limits=limits,
+            )
+            self._verified(name, bounded.verification_table())
+            return bounded
+
+    def scan_pinned_batches(
+        self,
+        bounded: BoundedIcebergMetadata,
+        *,
+        snapshot_id: str,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = _ALWAYS_TRUE,
+    ) -> _SnapshotBatchStream:
+        """Scan a snapshot from one previously pinned bounded metadata view.
+
+        This private infrastructure path avoids calling ``load_table`` again. It checks the
+        selected snapshot in the external index, constructs and re-verifies a compact ordinary
+        PyIceberg metadata object, then gives the existing fixed-snapshot reader only that one
+        selected Snapshot plus schema/spec/properties. The public scan APIs remain unchanged.
+        """
+        from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
+
+        if not isinstance(bounded, BoundedIcebergMetadata):
+            raise TypeError("bounded must come from this adapter's pin_bounded_metadata")
+        if bounded.selected_snapshot_id != snapshot_id:
+            raise CatalogIntegrityError("scan snapshot differs from the bounded metadata selection")
+        return self.scan_bounded_batches(
+            bounded, snapshot_id=snapshot_id, columns=columns, row_filter=row_filter
+        )
+
+    def scan_bounded_batches(
+        self,
+        bounded: BoundedIcebergMetadata,
+        *,
+        snapshot_id: str,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = _ALWAYS_TRUE,
+    ) -> _SnapshotBatchStream:
+        """Scan any exact snapshot indexed by a previously pinned metadata pointer.
+
+        The caller may select a historical ID only from this immutable pointer. The
+        normalizer uses this for explicit history reads while its implicit reads remain bound
+        to ``bounded.selected_snapshot_id`` through :meth:`scan_pinned_batches`.
+        """
+        from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
+
+        if not isinstance(bounded, BoundedIcebergMetadata):
+            raise TypeError("bounded must come from this adapter's bounded metadata pin")
+        if bounded.catalog is not self._catalog:
+            raise CatalogIntegrityError("bounded metadata belongs to a different catalog instance")
+        name = validate_table_name(bounded.name)
+        if isinstance(columns, str) or not columns:
+            raise BatchRejected("scan_bounded_batches needs a non-empty sequence of column names")
+        compact = bounded.compact_table(snapshot_id)
+        with _backend("scan_bounded_batches"):
+            self._verified(name, compact)
+            # ``TableScan.snapshot`` resolves by ID from the compact metadata. The selected id is
+            # passed explicitly so a caller cannot silently fall back to the table's current head.
+            snapshot = compact.metadata.snapshot_by_id(int(snapshot_id))
+            if snapshot is None:
+                raise SnapshotNotFound(f"table {name} has no snapshot {snapshot_id!r}")
+            return _open_snapshot_batches(
+                name,
+                compact,
+                columns=tuple(columns),
+                row_filter=row_filter,
+                snapshot_id=snapshot.snapshot_id,
+            )
+
+    def table_info_from_bounded(self, bounded: BoundedIcebergMetadata) -> TableInfo:
+        """Describe the selected snapshot from a bounded immutable metadata pointer."""
+        from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
+
+        if not isinstance(bounded, BoundedIcebergMetadata):
+            raise TypeError("bounded must come from this adapter's bounded metadata pin")
+        if bounded.catalog is not self._catalog:
+            raise CatalogIntegrityError("bounded metadata belongs to a different catalog instance")
+        name = validate_table_name(bounded.name)
+        iceberg = bounded.verification_table()
+        _, binding = self._verified(name, iceberg)
+        selected = bounded.selected_snapshot_id
+        snapshot = (
+            None
+            if selected is None
+            else self._snapshot_info(name, bounded.require_snapshot(selected))
+        )
+        return TableInfo(definition=binding, current_snapshot=snapshot)
+
+    def scan_bounded_columns(
+        self,
+        bounded: BoundedIcebergMetadata,
+        *,
+        snapshot_id: str | None,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = _ALWAYS_TRUE,
+        limit: int | None = None,
+    ) -> pa.Table:
+        """Materialize columns from one exact bounded metadata pointer.
+
+        ``snapshot_id=None`` is the explicit empty selection used by an unbound pinned view.
+        Its Arrow schema is projected from that pointer's validated table schema without loading
+        the catalog's current metadata pointer.
+        """
+        from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
+
+        if not isinstance(bounded, BoundedIcebergMetadata):
+            raise TypeError("bounded must come from this adapter's bounded metadata pin")
+        if bounded.catalog is not self._catalog:
+            raise CatalogIntegrityError("bounded metadata belongs to a different catalog instance")
+        name = validate_table_name(bounded.name)
+        if isinstance(columns, str) or not columns:
+            raise BatchRejected("scan_columns needs a non-empty sequence of column names")
+        if limit is not None and (
+            not isinstance(limit, int) or isinstance(limit, bool) or limit < 1
+        ):
+            raise BatchRejected("scan limit must be a positive int or None")
+        if snapshot_id is None:
+            if bounded.selected_snapshot_id is not None:
+                raise CatalogIntegrityError(
+                    "empty scan differs from the bounded metadata selection"
+                )
+            with _backend("scan_bounded_columns"):
+                table = bounded.verification_table()
+                self._verified(name, table)
+                empty_scan = table.scan(row_filter=AlwaysFalse(), selected_fields=tuple(columns))
+                return pa.Table.from_batches([], schema=schema_to_pyarrow(empty_scan.projection()))
+
+        reader = self.scan_bounded_batches(
+            bounded,
+            snapshot_id=snapshot_id,
+            columns=columns,
+            row_filter=row_filter,
+        )
+        schema = reader.schema
+        batches: list[pa.RecordBatch] = []
+        remaining = limit
+        try:
+            for record_batch in reader:
+                if remaining is None:
+                    batches.append(record_batch)
+                    continue
+                take = min(record_batch.num_rows, remaining)
+                if take:
+                    batches.append(record_batch.slice(0, take))
+                    remaining -= take
+                if remaining == 0:
+                    break
+        except BaseException:
+            try:
+                reader.close()
+            except BaseException:
+                pass
+            raise
+        else:
+            reader.close()
+        return pa.Table.from_batches(batches, schema=schema)
+
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         name = validate_table_name(request.table)
         request = _revalidated(CommitRequest, request)
@@ -891,7 +1125,7 @@ class PyIcebergCatalogAdapter:
         columns: Sequence[str],
         row_filter: BooleanExpression = _ALWAYS_TRUE,
         snapshot_id: str | None = None,
-    ) -> Iterator[pa.RecordBatch]:
+    ) -> _SnapshotBatchStream:
         """Stream selected columns of one fixed snapshot as bounded Arrow record batches.
 
         This infrastructure-only read verifies the persisted table definition before scanning.
@@ -1227,8 +1461,7 @@ class PyIcebergCatalogAdapter:
                 raise CatalogIntegrityError(f"table {name} has a cycle in snapshot history")
             if (
                 snapshot.summary is not None
-                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID)
-                == request.batch_id
+                and snapshot.summary.additional_properties.get(SUMMARY_BATCH_ID) == request.batch_id
             ):
                 if first_match is None:
                     first_match = snapshot

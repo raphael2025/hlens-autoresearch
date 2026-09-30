@@ -97,7 +97,9 @@ def test_the_key_closure_equals_the_single_in_scan(
         monkeypatch.setattr(selector_module, "_FETCH_ROWS", fetch_rows)
     spec = _spec(h, cutoff=FAR)
     view = PinnedCatalogView(h.adapter, spec.snapshot_bindings)
-    selector = PitSelector(h.adapter, h.storage)
+    selector = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    )
     symbol = rules.SYMBOLS[SYMBOL].symbol
     sizes = []
     for start, end in WINDOWS:
@@ -118,9 +120,13 @@ def test_a_selection_does_not_depend_on_how_the_read_is_fetched(
 ) -> None:
     _many_keys(h)
     spec = _spec(h, cutoff=FAR)
-    whole = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, *WINDOWS[1])
+    whole = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, *WINDOWS[1])
     monkeypatch.setattr(selector_module, "_FETCH_ROWS", 1)
-    hourly = PitSelector(h.adapter, h.storage).select(spec, "agg_trades", SYMBOL, *WINDOWS[1])
+    hourly = PitSelector(
+        h.adapter, h.storage, canonical_scratch_directory=h.canonical_scratch_directory
+    ).select(spec, "agg_trades", SYMBOL, *WINDOWS[1])
     assert hourly == whole
     assert len(whole.records) == 300 and len(whole.conflicts) == 1  # trade 100's two copies
 

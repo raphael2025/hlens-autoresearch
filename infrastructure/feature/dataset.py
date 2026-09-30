@@ -74,6 +74,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 from pyiceberg.expressions import And, EqualTo, In
@@ -222,7 +223,14 @@ def feature_request_from_dataset(
     rows = _dataset_rows(adapter, manifest)
     by_symbol = _by_symbol(manifest, rows, observations, derived=False)
     for symbol, given in sorted(by_symbol.items()):
-        proven = _proven(adapter, storage, manifest, symbol, rows)
+        proven = _proven(
+            adapter,
+            storage,
+            manifest,
+            symbol,
+            rows,
+            canonical_scratch_directory=builder.canonical_scratch_directory,
+        )
         _require_exact(symbol, given, proven, "bars")
 
     request = pit_feature_request(
@@ -275,7 +283,15 @@ def feature_request_from_derived_bars(
     rows = _dataset_rows(adapter, manifest)
     by_symbol = _by_symbol(manifest, rows, observations, derived=True)
     for symbol, given in sorted(by_symbol.items()):
-        proven = _proven_derived(adapter, storage, manifest, symbol, rows, minutes)
+        proven = _proven_derived(
+            adapter,
+            storage,
+            manifest,
+            symbol,
+            rows,
+            minutes,
+            canonical_scratch_directory=builder.canonical_scratch_directory,
+        )
         _require_exact(symbol, given, proven, f"{minutes}-minute derived bars")
 
     return pit_feature_request(
@@ -389,13 +405,17 @@ def _reselect(
     storage: StorageAdapter,
     manifest: ResearchDatasetManifest,
     symbol: str,
+    *,
+    canonical_scratch_directory: Path,
 ) -> PitSelection:
     """``symbol``'s Canonical bars re-selected under the manifest's spec over its window."""
     venue = _VENUE_SYMBOL.get(symbol)
     if venue is None:
         raise CatalogIntegrityError(f"dataset rows of an unknown symbol {symbol!r}")
     dataset = manifest.dataset
-    selection = PitSelector(adapter, storage).select(
+    selection = PitSelector(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    ).select(
         manifest.point_in_time,
         _DATA_TYPE,
         venue,
@@ -416,9 +436,17 @@ def _proven(
     manifest: ResearchDatasetManifest,
     symbol: str,
     rows: Mapping[str, list[Mapping[str, Any]]],
+    *,
+    canonical_scratch_directory: Path,
 ) -> tuple[FeatureObservation, ...]:
     """``bar_observations`` of ``symbol`` re-selected under the manifest spec; dataset rows."""
-    selection = _reselect(adapter, storage, manifest, symbol)
+    selection = _reselect(
+        adapter,
+        storage,
+        manifest,
+        symbol,
+        canonical_scratch_directory=canonical_scratch_directory,
+    )
     retained = _retained(rows, symbol)
     proven = tuple(
         item
@@ -439,11 +467,19 @@ def _proven_derived(
     symbol: str,
     rows: Mapping[str, list[Mapping[str, Any]]],
     minutes: int,
+    *,
+    canonical_scratch_directory: Path,
 ) -> tuple[FeatureObservation, ...]:
     """``derived_bar_observations`` of ``resample_bars`` over ``symbol``'s re-selection, which must
     select exactly the dataset's rows of ``symbol`` (a point spec: a member keeps every selected
     bar of the window)."""
-    selection = _reselect(adapter, storage, manifest, symbol)
+    selection = _reselect(
+        adapter,
+        storage,
+        manifest,
+        symbol,
+        canonical_scratch_directory=canonical_scratch_directory,
+    )
     selected = {
         item.selected_revision_id
         for item in selection.selections
@@ -622,7 +658,9 @@ def iter_dataset_chunks(
         try:
             yield chunks
         finally:
-            chunks.close()
+            close = getattr(chunks, "close", None)
+            if callable(close):
+                close()
 
 
 def _walk_chunks(
@@ -915,9 +953,7 @@ def _evidence_derived_feature_request(
 
     with iter_dataset_chunks(adapter, manifest, evidence_verifier) as chunks:
         for chunk in chunks:
-            for entry, observation in dataset_chunk_observations(
-                adapter, manifest, chunk, wanted
-            ):
+            for entry, observation in dataset_chunk_observations(adapter, manifest, chunk, wanted):
                 event_day = observation.event_time.replace(
                     hour=0, minute=0, second=0, microsecond=0
                 )

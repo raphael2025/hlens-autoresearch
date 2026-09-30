@@ -3,16 +3,15 @@ import { test } from "node:test";
 import { clone, fixtureEnvelopes } from "./fixtures.test-util.ts";
 import { asValidationReportPayload, gateRows, shownNumber, validationLabel } from "./validationReport.ts";
 
-// apps/web/fixtures/validation_report/: the current 2.2.0 report (a float-only gate and an exact
-// gate), the legacy readable 2.1.0 one (the same gates, written before ADR-0055) and the legacy
-// readable 2.0.0 one (float-only; README "Legacy readable fixtures").
+// apps/web/fixtures/validation_report/: current 2.5.0, retained 2.4.0 / 2.2.0, and legacy
+// readable 2.1.0 / 2.0.0 reports (README "Legacy readable fixtures").
 const fixtures = fixtureEnvelopes("validation_report");
 const byVersion = (version: string) => {
   const found = fixtures.find((envelope) => envelope.payload.schema_version === version);
   assert.ok(found !== undefined, `a ${version} validation_report fixture`);
   return found;
 };
-const current = byVersion("2.2.0");
+const current = byVersion("2.5.0");
 const legacy21 = byVersion("2.1.0");
 const legacy = byVersion("2.0.0");
 
@@ -23,7 +22,7 @@ function payloadOf(payload: Record<string, unknown>) {
 }
 
 test("every committed fixture parses: a PASS verdict and their gates", () => {
-  assert.equal(fixtures.length, 3);
+  assert.equal(fixtures.length, 5);
   for (const envelope of fixtures) {
     const report = payloadOf(envelope.payload);
     assert.equal(report.verdict, "PASS");

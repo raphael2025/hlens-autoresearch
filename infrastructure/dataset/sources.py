@@ -11,9 +11,9 @@ real bounded generators to the first two (the third is ``PinnedQualityEvidence``
   must be by ``(episode.observation_key(), effective_from)``, which coincides with generation order
   only while every symbol keeps one episode and every episode key sorts like its symbol (not
   provable for every registered spec: a stable-id key sorts before any degraded one, a rename
-  opens a new episode). All four are therefore re-sorted through the content-addressed sorted
-  runs of ``infrastructure.pit.runs`` (``spill_sorted_runs`` + ``merge_sorted_runs``, every size
-  explicit). ``member_spans`` is passed through: its generation order (symbol, then start) *is*
+  opens a new episode). All four are therefore re-sorted through content-addressed sorted runs
+  using an online hierarchical run set (every size explicit, with no all-runs ref list).
+  ``member_spans`` is passed through: its generation order (symbol, then start) *is*
   the builder's required order, and the builder proves it.
 - ``PitSelectorKeySource`` wraps B-PIT's ``PitSelector.iter_bounded`` and folds its per-instant
   ``PitBoundedRecord`` stream into one ``PitKeyGroup`` per observation key (``pit_key_groups``).
@@ -38,13 +38,19 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, ExitStack, contextmanager
-from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Final
 
 from core.contracts.revision import PointInTimeSpec, PointInTimeStatus
 from core.contracts.storage import StorageAdapter
-from core.contracts.universe import SelectedRevisionLineage, UniverseExclusion, UniverseMember
+from core.contracts.universe import (
+    PitConflictHeadEvidence,
+    SelectedRevisionLineage,
+    UniverseExclusion,
+    UniverseMember,
+)
+from core.domain.base import CONTRACT_SCHEMA_VERSION, scoped_contract_schema_version
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.dataset.builder import (
     DatasetEvidenceRequest,
@@ -54,12 +60,16 @@ from infrastructure.dataset.builder import (
     PitKeyEvaluation,
     PitKeyGroup,
     PitSelectedRevision,
+    QualityEvidenceSource,
     UniverseEvidenceSource,
 )
-from infrastructure.pit.runs import RunLimits, merge_sorted_runs, spill_sorted_runs
-from infrastructure.pit.selector import PitBoundedRecord, PitRunParams, PitSelector
+from infrastructure.dataset.quality import BoundedQualityEvidenceFactory, BoundedQualitySourceParams
+from infrastructure.pit.runs import RunSetBuilder, iter_run
+from infrastructure.pit.selector import EvidenceGap, PitBoundedRecord, PitRunParams, PitSelector
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.universe.builder import UniverseBuilder
+from infrastructure.universe.run_params import UniverseRunParams
 
 __all__ = [
     "OrderedUniverseSource",
@@ -77,30 +87,6 @@ _NO_SPAN: Final = datetime.min.replace(tzinfo=UTC)
 # =========================================================================================
 # universe: B-UNIV's cursor in the ADR-0077 §2 orders
 # =========================================================================================
-
-
-@dataclass(frozen=True, slots=True)
-class UniverseRunParams:
-    """The sorted-run sizes of ``OrderedUniverseSource`` (DQ-9 OPEN: no defaults).
-
-    - ``capacity``: items of one stream held before they are sorted and spilled as one run;
-    - ``merge_fanout``: run readers open at once while merging (more runs merge in passes);
-    - ``limits``: the leaf / index shape of every run written.
-    """
-
-    capacity: int
-    merge_fanout: int
-    limits: RunLimits
-
-    def __post_init__(self) -> None:
-        for name, value, minimum in (
-            ("capacity", self.capacity, 1),
-            ("merge_fanout", self.merge_fanout, 2),
-        ):
-            if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
-                raise DatasetSpecError(f"{name} must be an integer >= {minimum}, got {value!r}")
-        if not isinstance(self.limits, RunLimits):
-            raise DatasetSpecError("limits must be RunLimits")
 
 
 #: A run row: ``{"order": [...sort values], "record": <JSON-safe record>}``.
@@ -160,24 +146,28 @@ def _reordered[T](
     storage: StorageAdapter,
     params: UniverseRunParams,
 ) -> Iterator[Iterator[T]]:
-    """One upstream view, drained into sorted runs (upstream closed first), merged back in order.
+    """One upstream view, drained into a hierarchical sorted run set, then streamed in order.
 
-    Sorting is by the encoded ``order`` only; ties keep an arbitrary order, and duplicates reach
-    the builder, which rejects them (adjacent comparison), exactly as it would have unsorted.
+    Run references are compacted online with finite merge fanout. Sorting is by the encoded
+    ``order`` only; ties keep an arbitrary order, and duplicates reach the builder, which rejects
+    them (adjacent comparison), exactly as it would have unsorted.
     """
+    run_set = RunSetBuilder(
+        storage,
+        key=_run_order,
+        capacity=params.capacity,
+        merge_fanout=params.merge_fanout,
+        limits=params.limits,
+    )
     with source() as items:
-        refs = list(
-            spill_sorted_runs(
-                (encode(item) for item in items),
-                key=_run_order,
-                capacity=params.capacity,
-                storage=storage,
-                limits=params.limits,
-            )
-        )
-    with merge_sorted_runs(
-        storage, refs, key=_run_order, merge_fanout=params.merge_fanout, limits=params.limits
-    ) as merged:
+        with run_set:
+            for item in items:
+                run_set.add(encode(item))
+            root = run_set.finish()
+    if root is None:
+        yield iter(())
+        return
+    with iter_run(storage, root) as merged:
         decoded = (decode(row["record"]) for row in merged)
         try:
             yield decoded
@@ -272,93 +262,362 @@ def _next_record(records: Iterator[object]) -> PitBoundedRecord | None:
     return record
 
 
-def _carry(
-    record: PitBoundedRecord,
-    key: str,
-    revision: str,
-    carried: dict[str, tuple[SelectedRevisionLineage, str | None]],
-) -> tuple[SelectedRevisionLineage, str | None]:
-    """The lineage / gap of ``revision``: attached here (its first selection) or carried."""
-    lineage, gap = record.lineage, record.evidence_gap
-    if lineage is None:
-        if gap is not None:
-            raise CatalogIntegrityError(f"key {key}: revision {revision} has a gap but no lineage")
-        known = carried.get(revision)
-        if known is None:
-            raise CatalogIntegrityError(f"selected revision {revision} has no lineage")
-        return known
-    if (
-        not isinstance(lineage, SelectedRevisionLineage)
-        or lineage.canonical_revision_id != revision
-    ):
-        raise CatalogIntegrityError(f"selected revision {revision} carries another's lineage")
-    text: str | None = None
-    if gap is not None:
-        if (gap.table, gap.revision_id) != (lineage.canonical_table, revision) or not gap.gap:
-            raise CatalogIntegrityError(f"selected revision {revision} carries another's gap")
-        text = gap.gap
-    attached = (lineage, text)
-    if carried.setdefault(revision, attached) != attached:
-        raise CatalogIntegrityError(f"selected revision {revision} carries two lineages")
-    return attached
+def _next_run_row(rows: Iterator[Mapping[str, Any]]) -> Mapping[str, Any] | None:
+    try:
+        return next(rows)
+    except StopIteration:
+        return None
 
 
 def _evaluations(
-    key: str, held: Iterable[PitBoundedRecord], knowledge_cutoff: datetime
-) -> tuple[PitKeyEvaluation, ...]:
-    carried: dict[str, tuple[SelectedRevisionLineage, str | None]] = {}
-    evaluations: list[PitKeyEvaluation] = []
-    for record in held:
-        selection = record.selection
-        if selection.observation_key != key:
-            raise CatalogIntegrityError(f"a selection of {selection.observation_key} is in {key}")
-        if selection.knowledge_cutoff != knowledge_cutoff:
-            raise CatalogIntegrityError(f"key {key} is evaluated at another knowledge cutoff")
-        selected: PitSelectedRevision | None = None
-        if selection.status is PointInTimeStatus.SELECTED:
-            revision = selection.selected_revision_id
-            if not revision:
-                raise CatalogIntegrityError(f"key {key}: a selection names no revision")
-            lineage, gap = _carry(record, key, revision, carried)
-            if record.event_time is None:
+    key: str,
+    held: Iterable[PitBoundedRecord],
+    knowledge_cutoff: datetime,
+    *,
+    storage: StorageAdapter,
+    params: PitRunParams,
+) -> Iterator[PitKeyEvaluation]:
+    """Stream no-lineage prefixes, then spool selected history for a bounded revision join."""
+    records = iter(held)
+    try:
+        for record in records:
+            selection = record.selection
+            if selection.observation_key != key:
                 raise CatalogIntegrityError(
-                    f"selected revision {revision} of {key} has no event_time"
+                    f"a selection of {selection.observation_key} is in {key}"
                 )
-            at = _check_utc(record.event_time, f"revision {revision} of {key} event_time")
-            selected = PitSelectedRevision(
-                revision_id=revision, event_time=at, lineage=lineage, evidence_gap=gap
-            )
-        elif (
-            record.event_time is not None
-            or record.lineage is not None
-            or record.evidence_gap is not None
-        ):
-            raise CatalogIntegrityError(
-                f"key {key}: a {selection.status.value} evaluation carries lineage"
-            )
-        evaluations.append(
-            PitKeyEvaluation(
+            if selection.knowledge_cutoff != knowledge_cutoff:
+                raise CatalogIntegrityError(f"key {key} is evaluated at another knowledge cutoff")
+            if selection.status is PointInTimeStatus.SELECTED:
+
+                def selected_records(
+                    first: PitBoundedRecord = record,
+                    rest: Iterator[PitBoundedRecord] = records,
+                ) -> Iterator[PitBoundedRecord]:
+                    yield first
+                    yield from rest
+
+                yield from _selected_evaluations(
+                    key,
+                    selected_records(),
+                    knowledge_cutoff,
+                    storage=storage,
+                    params=params,
+                )
+                return
+            if (
+                record.event_time is not None
+                or record.lineage is not None
+                or record.evidence_gap is not None
+            ):
+                raise CatalogIntegrityError(
+                    f"key {key}: a {selection.status.value} evaluation carries lineage"
+                )
+            yield PitKeyEvaluation(
                 simulation_time=selection.simulation_time,
                 status=selection.status,
-                selected=selected,
+                selected=None,
+                head_count=selection.head_count,
             )
+            if selection.status is PointInTimeStatus.CONFLICT:
+                return
+    finally:
+        _close(records)
+
+
+def _selected_evaluations(
+    key: str,
+    held: Iterable[PitBoundedRecord],
+    knowledge_cutoff: datetime,
+    *,
+    storage: StorageAdapter,
+    params: PitRunParams,
+) -> Iterator[PitKeyEvaluation]:
+    """Stage one key into bounded runs, validate lineage by revision, then replay by ordinal.
+
+    Revision IDs are not ordered by simulation time, so an online dictionary lookup would grow
+    with the key history. The two external sorts make both lookup and evaluation-order replay
+    bounded: occurrences are grouped by revision, joined to their unique lineage, and finally
+    written back by input ordinal. No evaluation is exposed until the complete key is validated.
+    """
+
+    evaluation_root = None
+    occurrence_root = None
+    with RunSetBuilder(
+        storage,
+        key=lambda row: row["ordinal"],
+        capacity=params.key_history_buffer,
+        merge_fanout=params.merge_fanout,
+        limits=params.limits,
+    ) as evaluations:
+        with RunSetBuilder(
+            storage,
+            key=lambda row: (row["revision_id"], row["ordinal"]),
+            capacity=params.key_history_buffer,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as occurrences:
+            count = 0
+            for record in held:
+                selection = record.selection
+                if selection.observation_key != key:
+                    raise CatalogIntegrityError(
+                        f"a selection of {selection.observation_key} is in {key}"
+                    )
+                if selection.knowledge_cutoff != knowledge_cutoff:
+                    raise CatalogIntegrityError(
+                        f"key {key} is evaluated at another knowledge cutoff"
+                    )
+                row: dict[str, Any] = {
+                    "ordinal": count,
+                    "simulation_time": selection.simulation_time,
+                    "status": selection.status.value,
+                    "revision_id": selection.selected_revision_id,
+                    "event_time": record.event_time,
+                    "head_count": selection.head_count,
+                }
+                if selection.status is PointInTimeStatus.SELECTED:
+                    revision = selection.selected_revision_id
+                    if not revision:
+                        raise CatalogIntegrityError(f"key {key}: a selection names no revision")
+                    if record.event_time is None:
+                        raise CatalogIntegrityError(
+                            f"selected revision {revision} of {key} has no event_time"
+                        )
+                    _check_utc(record.event_time, f"revision {revision} of {key} event_time")
+                    lineage = record.lineage
+                    gap = record.evidence_gap
+                    if lineage is None:
+                        if gap is not None:
+                            raise CatalogIntegrityError(
+                                f"key {key}: revision {revision} has a gap but no lineage"
+                            )
+                        lineage_value = None
+                    else:
+                        if (
+                            not isinstance(lineage, SelectedRevisionLineage)
+                            or lineage.canonical_revision_id != revision
+                        ):
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} carries another's lineage"
+                            )
+                        if gap is not None and (
+                            not isinstance(gap, EvidenceGap)
+                            or (gap.table, gap.revision_id) != (lineage.canonical_table, revision)
+                            or not gap.gap
+                        ):
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} carries another's gap"
+                            )
+                        lineage_value = lineage.model_dump(mode="json")
+                    occurrences.add(
+                        {
+                            "revision_id": revision,
+                            "ordinal": count,
+                            "lineage": lineage_value,
+                            "gap": None if gap is None else gap.gap,
+                            "event_time": record.event_time,
+                        }
+                    )
+                elif (
+                    record.event_time is not None
+                    or record.lineage is not None
+                    or record.evidence_gap is not None
+                ):
+                    raise CatalogIntegrityError(
+                        f"key {key}: a {selection.status.value} evaluation carries lineage"
+                    )
+                evaluations.add(row)
+                count += 1
+            evaluation_root = evaluations.finish()
+            occurrence_root = occurrences.finish()
+
+    if evaluation_root is None:
+        raise CatalogIntegrityError(f"key {key} has no evaluation")
+
+    lineage_root = None
+    if occurrence_root is not None:
+        with iter_run(storage, occurrence_root) as rows:
+            with RunSetBuilder(
+                storage,
+                key=lambda row: row["revision_id"],
+                capacity=params.key_history_buffer,
+                merge_fanout=params.merge_fanout,
+                limits=params.limits,
+            ) as lineages:
+                current_revision: str | None = None
+                current_lineage: Mapping[str, Any] | None = None
+                current_gap: str | None = None
+                for occurrence in rows:
+                    revision = occurrence["revision_id"]
+                    attached = occurrence["lineage"]
+                    gap = occurrence["gap"]
+                    if revision != current_revision:
+                        if current_revision is not None:
+                            if current_lineage is None:
+                                raise CatalogIntegrityError(
+                                    f"selected revision {current_revision} has no lineage"
+                                )
+                            lineages.add(
+                                {
+                                    "revision_id": current_revision,
+                                    "lineage": dict(current_lineage),
+                                    "gap": current_gap,
+                                }
+                            )
+                        current_revision = revision
+                        current_lineage = attached
+                        current_gap = gap
+                        if current_lineage is None:
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} has no lineage"
+                            )
+                    elif attached is not None and (
+                        attached != current_lineage or gap != current_gap
+                    ):
+                        raise CatalogIntegrityError(
+                            f"selected revision {revision} carries two lineages"
+                        )
+                if current_revision is not None:
+                    if current_lineage is None:
+                        raise CatalogIntegrityError(
+                            f"selected revision {current_revision} has no lineage"
+                        )
+                    lineages.add(
+                        {
+                            "revision_id": current_revision,
+                            "lineage": dict(current_lineage),
+                            "gap": current_gap,
+                        }
+                    )
+                lineage_root = lineages.finish()
+
+    selected_root = None
+    if occurrence_root is not None:
+        if lineage_root is None:
+            raise CatalogIntegrityError(f"key {key} has selected evaluations but no lineage")
+        with iter_run(storage, occurrence_root) as occurrences:
+            with iter_run(storage, lineage_root) as lineage_rows:
+                with RunSetBuilder(
+                    storage,
+                    key=lambda row: row["ordinal"],
+                    capacity=params.key_history_buffer,
+                    merge_fanout=params.merge_fanout,
+                    limits=params.limits,
+                ) as selected_builder:
+                    occurrence_row = _next_run_row(occurrences)
+                    lineage_row = _next_run_row(lineage_rows)
+                    while occurrence_row is not None:
+                        revision = occurrence_row["revision_id"]
+                        while lineage_row is not None and lineage_row["revision_id"] < revision:
+                            lineage_row = _next_run_row(lineage_rows)
+                        if lineage_row is None or lineage_row["revision_id"] != revision:
+                            raise CatalogIntegrityError(
+                                f"selected revision {revision} has no lineage"
+                            )
+                        selected_builder.add(
+                            {
+                                "ordinal": occurrence_row["ordinal"],
+                                "revision_id": revision,
+                                "event_time": occurrence_row["event_time"],
+                                "lineage": lineage_row["lineage"],
+                                "gap": lineage_row["gap"],
+                            }
+                        )
+                        occurrence_row = _next_run_row(occurrences)
+                    selected_root = selected_builder.finish()
+
+    final_root = None
+    with iter_run(storage, evaluation_root) as evaluations, ExitStack() as stack:
+        selected_rows: Iterator[Mapping[str, Any]] = (
+            iter(())
+            if selected_root is None
+            else stack.enter_context(iter_run(storage, selected_root))
         )
-    return tuple(evaluations)
+        with RunSetBuilder(
+            storage,
+            key=lambda row: row["ordinal"],
+            capacity=params.key_history_buffer,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as output:
+            selected_entry = _next_run_row(selected_rows)
+            for eval_row in evaluations:
+                status = PointInTimeStatus(eval_row["status"])
+                picked: Mapping[str, Any] | None = None
+                if status is PointInTimeStatus.SELECTED:
+                    if selected_entry is None or selected_entry["ordinal"] != eval_row["ordinal"]:
+                        raise CatalogIntegrityError(
+                            f"selected revision {eval_row['revision_id']} has no lineage"
+                        )
+                    picked = selected_entry
+                    selected_entry = _next_run_row(selected_rows)
+                if status is not PointInTimeStatus.SELECTED and (
+                    selected_entry is not None and selected_entry["ordinal"] == eval_row["ordinal"]
+                ):
+                    raise CatalogIntegrityError(
+                        f"key {key}: a {status.value} evaluation carries lineage"
+                    )
+                output.add(
+                    {
+                        "ordinal": eval_row["ordinal"],
+                        "simulation_time": eval_row["simulation_time"],
+                        "status": eval_row["status"],
+                        "head_count": eval_row["head_count"],
+                        "selected": None
+                        if picked is None
+                        else {
+                            "revision_id": picked["revision_id"],
+                            "event_time": picked["event_time"],
+                            "lineage": picked["lineage"],
+                            "gap": picked["gap"],
+                        },
+                    }
+                )
+            if selected_entry is not None:
+                raise CatalogIntegrityError(
+                    f"selected revision {selected_entry['revision_id']} has no matching evaluation"
+                )
+            final_root = output.finish()
+
+    if final_root is None:
+        raise CatalogIntegrityError(f"key {key} has no evaluation")
+
+    with iter_run(storage, final_root) as rows:
+        for final_row in rows:
+            selected_payload = final_row["selected"]
+            output_selected: PitSelectedRevision | None = None
+            if selected_payload is not None:
+                lineage = SelectedRevisionLineage.model_validate(selected_payload["lineage"])
+                output_selected = PitSelectedRevision(
+                    revision_id=selected_payload["revision_id"],
+                    event_time=selected_payload["event_time"],
+                    lineage=lineage,
+                    evidence_gap=selected_payload["gap"],
+                )
+            yield PitKeyEvaluation(
+                simulation_time=final_row["simulation_time"],
+                status=PointInTimeStatus(final_row["status"]),
+                selected=output_selected,
+                head_count=final_row["head_count"],
+            )
 
 
 def pit_key_groups(
-    records: Iterable[PitBoundedRecord], *, knowledge_cutoff: datetime
+    records: Iterable[PitBoundedRecord],
+    *,
+    knowledge_cutoff: datetime,
+    storage: StorageAdapter,
+    params: PitRunParams,
 ) -> Iterator[PitKeyGroup]:
-    """Fold ``iter_bounded``'s records into one ``PitKeyGroup`` per observation key.
+    """Fold PIT records into lazy per-key groups.
 
-    ``records``: key then instant order; one key's records are adjacent and keys strictly
-    increase (a duplicate, split or reordered key fails closed). Every record already carries its
-    key's ``owner_event_time`` (the chain-earliest event) and, when selected, the revision's own
-    proven row time (``PitBoundedRecord.event_time``) -- both attached by
-    ``PitSelector.iter_bounded`` -- so no second read of the Canonical rows is needed here. Every
-    record of one key must agree on ``owner_event_time``. Holds one key's records.
+    The consumer must exhaust a group's evaluations before requesting the next key. This lets
+    Dataset process a key at a time and, on a conflict, finish its complete evidence stream
+    before the PIT cursor advances. Successful keys use at most one-record lookahead to detect
+    the next key; a conflict is terminal and never pulls another PIT record.
     """
-    source: Iterator[object] = iter(records)
+    source = iter(records)
     pending = _next_record(source)
     previous: str | None = None
     while pending is not None:
@@ -368,23 +627,46 @@ def pit_key_groups(
                 f"observation key {key} is duplicated or out of order in the PIT stream (after "
                 f"{previous})"
             )
-        held: list[PitBoundedRecord] = []
-        owner: datetime | None = None
-        while pending is not None and pending.observation_key == key:
-            this_owner = _check_utc(pending.owner_event_time, f"key {key} owner_event_time")
-            if owner is None:
-                owner = this_owner
-            elif this_owner != owner:
-                raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
-            held.append(pending)
-            pending = _next_record(source)
-        assert owner is not None  # the inner while loop above ran at least once
+        owner = _check_utc(pending.owner_event_time, f"key {key} owner_event_time")
+        evaluations_complete = False
+        conflicted = False
+
+        def key_records(key: str = key, owner: datetime = owner) -> Iterator[PitBoundedRecord]:
+            nonlocal evaluations_complete, pending, conflicted
+            while pending is not None and pending.observation_key == key:
+                current = pending
+                this_owner = _check_utc(current.owner_event_time, f"key {key} owner_event_time")
+                if this_owner != owner:
+                    raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
+                # Suspend before advancing the PIT source. The Dataset consumer sees the complete
+                # conflict evaluation and seals its heads root before another next() can compute
+                # or emit a later evaluation.
+                yield current
+                if current.selection.status is PointInTimeStatus.CONFLICT:
+                    conflicted = True
+                    evaluations_complete = True
+                    return
+                pending = _next_record(source)
+            evaluations_complete = True
+
         yield PitKeyGroup(
             observation_key=key,
             owner_event_time=owner,
-            evaluations=_evaluations(key, held, knowledge_cutoff),
+            evaluations=_evaluations(
+                key,
+                key_records(),
+                knowledge_cutoff,
+                storage=storage,
+                params=params,
+            ),
         )
+        if not evaluations_complete:
+            raise CatalogIntegrityError(
+                "a PIT key's evaluations must be consumed before requesting the next key"
+            )
         previous = key
+        if conflicted:
+            return
 
 
 def _close(iterator: object) -> None:
@@ -421,8 +703,10 @@ class PitSelectorKeySource:
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Callable[[PitConflictHeadEvidence], None] | None = None,
     ) -> AbstractContextManager[Iterator[PitKeyGroup]]:
-        return self._keys(pit, data_type, venue_symbol, start, end)
+        return self._keys(pit, data_type, venue_symbol, start, end, conflict_sink=conflict_sink)
 
     @contextmanager
     def _keys(
@@ -432,17 +716,31 @@ class PitSelectorKeySource:
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Callable[[PitConflictHeadEvidence], None] | None,
     ) -> Iterator[Iterator[PitKeyGroup]]:
         with ExitStack() as stack:
             # iter_bounded first: it checks the spec, data type and symbol before anything reads.
             records = stack.enter_context(
                 self._selector.iter_bounded(
-                    pit, data_type, venue_symbol, start, end, params=self._params, touching=False
+                    pit,
+                    data_type,
+                    venue_symbol,
+                    start,
+                    end,
+                    params=self._params,
+                    touching=False,
+                    conflict_sink=conflict_sink,
                 )
             )
             # The inner generator holds the merge readers: close it on any exit, not at GC.
             stack.callback(_close, records)
-            groups = pit_key_groups(records, knowledge_cutoff=pit.knowledge_cutoff)
+            groups = pit_key_groups(
+                records,
+                knowledge_cutoff=pit.knowledge_cutoff,
+                storage=self._storage,
+                params=self._params,
+            )
             stack.callback(_close, groups)
             yield groups
 
@@ -457,31 +755,90 @@ def dataset_evidence_sources(
     storage: StorageAdapter,
     request: DatasetEvidenceRequest,
     *,
+    canonical_scratch_directory: Path,
     market_data_base_url: str,
     pit_params: PitRunParams,
     universe_params: UniverseRunParams,
+    schema_version: str | None = None,
+    quality_factory: BoundedQualityEvidenceFactory | None = None,
+    quality_params: BoundedQualitySourceParams | None = None,
 ) -> DatasetEvidenceSources:
     """The real upstreams of ``request`` for ``DatasetEvidenceBuilder.select`` / ``build``.
 
-    Universe: ``UniverseBuilder.cursor(request.universe, request.pit)`` in ADR-0077 §2 order;
-    PIT: ``PitSelector.iter_bounded`` grouped by key; quality: ``PinnedQualityEvidence`` at the
-    PIT spec's bound snapshots. Every run size is the caller's (no defaults).
+    Universe: ``UniverseBuilder.cursor(request.universe, request.pit,
+    run_params=universe_params)`` in ADR-0077 §2 order;
+    PIT: ``PitSelector.iter_bounded`` grouped by key. Schema 2.3/2.4 replay retains the legacy
+    Quality row source; 2.5+ requires an explicit bounded Quality factory, passed a fixed
+    ``PinnedCatalogView``. Every run size is the caller's (no defaults).
     """
     if not isinstance(request, DatasetEvidenceRequest):
         raise DatasetSpecError("request must be a DatasetEvidenceRequest")
     cursor = UniverseBuilder(adapter, storage, market_data_base_url=market_data_base_url).cursor(
-        request.universe, request.pit
+        request.universe, request.pit, run_params=universe_params
     )
-    return DatasetEvidenceSources(
-        universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),
-        pit=PitSelectorKeySource(
-            PitSelector(adapter, storage), storage=storage, params=pit_params
-        ),
-        quality=PinnedQualityEvidence(
+    from core.domain.base import parse_semver
+    from infrastructure.catalog.phase1_tables import DATA_QUALITY_REPORT_MANIFESTS
+    from infrastructure.dataset.quality import BoundedQualityEvidence
+
+    active_version = schema_version or scoped_contract_schema_version() or CONTRACT_SCHEMA_VERSION
+    version = parse_semver(active_version)
+    quality_v3 = tuple(int(version.group(name)) for name in ("major", "minor", "patch")) >= (
+        2,
+        5,
+        0,
+    )
+    if quality_v3:
+        binding = request.pit.snapshot_bindings.get(DATA_QUALITY_REPORT_MANIFESTS.table)
+        if binding is None:
+            raise DatasetSpecError(
+                f"the PIT spec does not bind {DATA_QUALITY_REPORT_MANIFESTS.table}"
+            )
+        if not callable(quality_factory):
+            raise DatasetSpecError(
+                "schema 2.5+ requires an explicit bounded Quality source factory"
+            )
+        if not isinstance(quality_params, BoundedQualitySourceParams):
+            raise DatasetSpecError(
+                "schema 2.5+ requires explicit Quality stream, run, identity, and legacy-row limits"
+            )
+        view = PinnedCatalogView(adapter, request.pit.snapshot_bindings)
+        quality: QualityEvidenceSource = quality_factory(
             adapter,
             storage,
             request.pit,
             request.data_type,
+            view=view,
+            canonical_scratch_directory=canonical_scratch_directory,
+            params=quality_params,
+        )
+        if (
+            not isinstance(quality, BoundedQualityEvidence)
+            or quality.view is not view
+            or quality.params != quality_params
+        ):
+            raise DatasetSpecError(
+                "Quality factory must return BoundedQualityEvidence using the supplied pinned view "
+                "and parameters"
+            )
+    else:
+        quality = PinnedQualityEvidence(
+            adapter,
+            storage,
+            request.pit,
+            request.data_type,
+            canonical_scratch_directory=canonical_scratch_directory,
             market_data_base_url=market_data_base_url,
+        )
+    return DatasetEvidenceSources(
+        universe=OrderedUniverseSource(cursor, storage=storage, params=universe_params),
+        pit=PitSelectorKeySource(
+            PitSelector(
+                adapter,
+                storage,
+                canonical_scratch_directory=canonical_scratch_directory,
+            ),
+            storage=storage,
+            params=pit_params,
         ),
+        quality=quality,
     )

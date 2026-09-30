@@ -168,6 +168,11 @@ class RestHarness:
     adapter: PyIcebergCatalogAdapter
     venue: cs.RestVenue
 
+    @property
+    def canonical_scratch_directory(self) -> Path:
+        """Test-only spill root, isolated with this harness's temporary workspace."""
+        return self.tmp_path / "canonical-scratch"
+
     # ---------------------------------------------------------------- collection (D3D)
 
     def collect(

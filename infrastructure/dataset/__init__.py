@@ -13,4 +13,7 @@
   ``research.dataset_selection_chunks``); ``sources`` adapts the bounded universe cursor and PIT
   generator (sorted runs, ADR §2 stream orders); ``verify_v3.StreamingEvidenceVerifier``
   re-derives and merge-compares every stream. All size parameters are explicit (DQ-9 open).
+- ``pipeline.DatasetBuildPipeline`` is the production composition root for v3 construction,
+  verification and manifest loading. It requires caller-supplied rule, PIT / Universe run limits,
+  Quality limits and Canonical scratch configuration; it creates no v2 manifests.
 """

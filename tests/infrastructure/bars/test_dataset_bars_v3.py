@@ -128,9 +128,9 @@ def test_v3_outcome_requests_are_the_v2_requests_but_for_the_manifest_hash(w: Wo
 
 def test_v3_feature_observations_are_the_v2_selections_observations(w: World) -> None:
     machinery, spec, _, summary = _both(w)
-    selection = PitSelector(w.h.adapter, w.h.storage).select(
-        spec, "klines_1m", SYMBOL, *v.DAY_WINDOW
-    )
+    selection = PitSelector(
+        w.h.adapter, w.h.storage, canonical_scratch_directory=w.h.canonical_scratch_directory
+    ).select(spec, "klines_1m", SYMBOL, *v.DAY_WINDOW)
     expected = bar_observations(selection, spec)
     got = feature_observations_from_dataset(
         w.h.adapter,

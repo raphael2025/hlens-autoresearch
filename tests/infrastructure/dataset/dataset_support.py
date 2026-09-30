@@ -31,6 +31,7 @@ from core.contracts.universe import (
     EvidenceStream,
     EvidenceStreamRef,
     ExclusionReason,
+    PitConflictHeadEvidence,
     ResearchDatasetEvidenceManifest,
     SelectedRevisionLineage,
     UniverseExclusion,
@@ -60,6 +61,7 @@ from infrastructure.dataset.builder import (
     PitSelectedRevision,
 )
 from infrastructure.dataset.evidence import publish_evidence_object
+from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import PIT_BINDING
 from infrastructure.quality.listing_report import ListingQualityReporter
 from infrastructure.quality.reporter import QualityReporter
@@ -67,8 +69,9 @@ from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.settings import local_file_uri_to_path
-from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.storage import LocalFileStorageAdapter as LocalFileStorageAdapter
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseBuilder
+from infrastructure.universe.run_params import UniverseRunParams
 from tests.infrastructure.canonical import canonical_support as c
 from tests.infrastructure.catalog.catalog_support import (
     PostgresCatalogHarness,
@@ -79,15 +82,24 @@ from tests.infrastructure.collector.rest_support import FakeTime, RestVenue
 from tests.infrastructure.revision import exchange_info_support as xs
 from tests.infrastructure.revision import rest_store_support as ss
 from tests.infrastructure.revision.rest_store_support import (
-    DAY,
+    DAY as DAY,
+)
+from tests.infrastructure.revision.rest_store_support import (
     SYMBOL,
     RestHarness,
     StepClock,
-    utc,
+)
+from tests.infrastructure.revision.rest_store_support import (
+    utc as utc,
 )
 
 ORIGIN: Final = xs.ORIGIN
 REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
+UNIVERSE_RUN_PARAMS: Final = UniverseRunParams(
+    capacity=2,
+    merge_fanout=3,
+    limits=RunLimits(leaf_max_records=8, leaf_max_bytes=4096, fanout=3),
+)
 
 #: Listing observations (exchangeInfo retrieved_at) before the market data of 2023-11-14.
 L1: Final = utc(2023, 11, 10)
@@ -186,7 +198,12 @@ class World:
         listing: bool = True,
     ) -> list[str]:
         ids = []
-        reporter = QualityReporter(self.h.adapter, self.h.storage, clock=StepClock(start=K_Q))
+        reporter = QualityReporter(
+            self.h.adapter,
+            self.h.storage,
+            canonical_scratch_directory=self.h.canonical_scratch_directory,
+            clock=StepClock(start=K_Q),
+        )
         for symbol in symbols:
             for day in days:
                 ids.append(reporter.report(data_type, symbol, day).report_id)
@@ -249,6 +266,7 @@ class World:
         return DatasetBuilder(
             self.h.adapter,
             self.h.storage,
+            canonical_scratch_directory=self.h.canonical_scratch_directory,
             market_data_base_url=ORIGIN,
             dataset_table=DATASET_SELECTIONS,
         )
@@ -311,6 +329,7 @@ V3_BINDINGS: Final[Mapping[str, str]] = {
     "canonical.bars_1m": "1",
     V3_LISTINGS: "1",
     "quality.data_quality_reports": "1",
+    "quality.data_quality_report_manifests": "1",
     "quality.availability_evidence_gaps": "1",
     "raw.binance_spot_exchange_info": "1",
     "raw.binance_spot_agg_trades": "1",
@@ -489,9 +508,7 @@ def v3_episode(symbol: str) -> DegradedEpisodeKey:
     )
 
 
-def v3_member(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseMember:
+def v3_member(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseMember:
     return UniverseMember(
         episode=v3_episode(symbol),
         listing_revision_id=revision,
@@ -500,9 +517,7 @@ def v3_member(
     )
 
 
-def v3_exclusion(
-    symbol: str, revision: str, span: MemberSpan = (None, None)
-) -> UniverseExclusion:
+def v3_exclusion(symbol: str, revision: str, span: MemberSpan = (None, None)) -> UniverseExclusion:
     return UniverseExclusion(
         episode=v3_episode(symbol),
         listing_revision_id=revision,
@@ -558,7 +573,14 @@ def point_key(
     return PitKeyGroup(
         observation_key=key,
         owner_event_time=event if owner is None else owner,
-        evaluations=(PitKeyEvaluation(simulation_time=SIM, status=status, selected=chosen),),
+        evaluations=(
+            PitKeyEvaluation(
+                simulation_time=SIM,
+                status=status,
+                selected=chosen,
+                head_count=2 if status is PointInTimeStatus.CONFLICT else int(chosen is not None),
+            ),
+        ),
     )
 
 
@@ -620,10 +642,32 @@ class FakePit:
         venue_symbol: str,
         start: datetime,
         end: datetime,
+        *,
+        conflict_sink: Any = None,
     ) -> Iterator[Iterator[PitKeyGroup]]:
         self.open_now += 1
         try:
-            yield iter(self.groups.get((venue_symbol, start), ()))
+            groups = self.groups.get((venue_symbol, start), ())
+            if conflict_sink is not None:
+                for group in groups:
+                    for evaluation in group.evaluations:
+                        if evaluation.status is PointInTimeStatus.CONFLICT:
+                            count = evaluation.head_count or 2
+                            for ordinal in range(count):
+                                conflict_sink(
+                                    PitConflictHeadEvidence(
+                                        rule_id=PIT_BINDING.policy_id,
+                                        rule_version=PIT_BINDING.version,
+                                        rule_hash=PIT_BINDING.policy_hash,
+                                        observation_key=group.observation_key,
+                                        simulation_time=evaluation.simulation_time,
+                                        knowledge_cutoff=pit.knowledge_cutoff,
+                                        head_count=count,
+                                        ordinal=ordinal,
+                                        revision_id=f"test-head-{ordinal}",
+                                    )
+                                )
+            yield iter(groups)
         finally:
             self.open_now -= 1
 

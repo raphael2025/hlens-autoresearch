@@ -14,7 +14,7 @@
       "description": "一次 append 提交请求。batch 数据作为 `commit_batch` 的独立参数传入，不进入 DTO。\n\n- `batch_id`：稳定的幂等身份（例如由 Raw revision 与表名形成），重试时可从 Raw / staging\n  重建同一批；\n- `batch_fingerprint`：调用方按该表的版本化指纹规则算出的 batch 内容指纹；adapter 必须从\n  实际 batch 独立重算并核对，不信任这个声明；\n- `row_count >= 1`：空 batch 不提交（避免\"reader 被消费后写入零行\"被当成成功，ADR-0023 §7）；\n- `expected_parent_snapshot_id` 必须显式给出：`null` 表示期望该表尚无 snapshot。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -67,7 +67,7 @@
       "description": "一个表 snapshot 的中立元数据。\n\n- `parent_snapshot_id` 必须显式给出，`null` 表示该表的首个 snapshot；不得等于自身；\n- `batch_id` 与 `batch_fingerprint` 同时给出或同时为空（非 batch 产生的 snapshot，\n  例如未来的 maintenance）；\n- `added_rows <= total_rows`；\n- `committed_at` 是 catalog 记录的提交时间，只作审计。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -152,7 +152,7 @@
   "description": "`commit_batch` 的结果：请求 + 该 batch 的 snapshot + 结果类别。\n\nsnapshot 必须属于请求的表、携带请求的 `batch_id` 与指纹、`added_rows == row_count`；\n`committed` 时其父 snapshot 必须就是请求期望的父 snapshot。`already_committed` 时 snapshot\n是该 batch **首次**提交产生的那一个，其父 snapshot 可以与本次请求的期望不同。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

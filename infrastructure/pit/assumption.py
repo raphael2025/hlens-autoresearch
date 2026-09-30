@@ -17,7 +17,7 @@ names, an effective ``available_time = min(stored, observable_time + 5 s)``:
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from datetime import datetime, timedelta
 from typing import Any, Final
 
@@ -96,6 +96,44 @@ def _named(row: Mapping[str, Any]) -> bool:
     )
 
 
+def _moved_time(row: Mapping[str, Any], *, bound: bool) -> tuple[datetime, datetime] | None:
+    """Return the stored/effective pair for one moved row, using ADR-0032's exact rule."""
+    if not bound or not _named(row):
+        return None
+    stored = row["available_time"]
+    observable = row.get("interval_end") or row.get("event_time")
+    if observable is None:
+        return None
+    effective = min(stored, observable + ASSUMPTION_LATENCY)
+    return (stored, effective) if effective < stored else None
+
+
+class _EffectiveAvailabilityView(Mapping[str, datetime]):
+    """Read effective availability by revision without copying a key-sized time dictionary.
+
+    ``rows`` is the selector's existing revision-indexed canonical-row mapping. The view keeps
+    one reference to that mapping and computes the ADR-0032 adjustment on lookup; it never owns a
+    second mapping of revision IDs to availability values.
+    """
+
+    __slots__ = ("_rows", "_bound")
+
+    def __init__(self, rows: Mapping[str, Mapping[str, Any]], *, bound: bool) -> None:
+        self._rows = rows
+        self._bound = bound
+
+    def __getitem__(self, revision_id: str) -> datetime:
+        row = self._rows[revision_id]
+        moved = _moved_time(row, bound=self._bound)
+        return row["available_time"] if moved is None else moved[1]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self._rows)
+
+    def __len__(self) -> int:
+        return len(self._rows)
+
+
 def effective_available_times(
     rows: Sequence[Mapping[str, Any]], *, bound: bool
 ) -> dict[str, tuple[datetime, datetime]]:
@@ -104,13 +142,7 @@ def effective_available_times(
         return {}
     moved: dict[str, tuple[datetime, datetime]] = {}
     for row in rows:
-        if not _named(row):
-            continue
-        stored = row["available_time"]
-        observable = row.get("interval_end") or row.get("event_time")
-        if observable is None:
-            continue
-        effective = min(stored, observable + ASSUMPTION_LATENCY)
-        if effective < stored:
-            moved[row["revision_id"]] = (stored, effective)
+        adjustment = _moved_time(row, bound=True)
+        if adjustment is not None:
+            moved[row["revision_id"]] = adjustment
     return moved

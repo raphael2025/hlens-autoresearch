@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from typing import Any, cast
 
 import pytest
 
@@ -106,7 +107,7 @@ def test_normalize_report_hashes_rejects_a_duplicate_ref_given_twice() -> None:
     """``Ref`` and its string form for the same strategy must not silently double up."""
     sha = "a" * 64
     with pytest.raises(RouterError, match="given twice"):
-        normalize_report_hashes({A: sha, str(A): "b" * 64})
+        normalize_report_hashes(cast(Any, {A: sha, str(A): "b" * 64}))
 
 
 def test_normalize_report_hashes_rejects_a_non_mapping() -> None:

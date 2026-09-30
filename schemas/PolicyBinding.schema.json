@@ -16,7 +16,7 @@
   "description": "对一份版本化规则的绑定：`policy_id` + SemVer + 内容哈希（03-data.md §7.3）。\n\n`role` 区分 availability policy、precedence policy、PIT 选择规则与 parser 版本；使用处按字段\n要求确切的 `role`，因此 availability 与 precedence 绑定不能互相冒充。\n\n**诚实边界**：只约束形状。该版本是否已登记、`policy_hash` 是否等于该版本的真实内容、\npolicy 是否带有已审阅的来源证据，属未来 Registry（03-data.md §7.3「标识符冻结 ≠ 数据可信」）。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

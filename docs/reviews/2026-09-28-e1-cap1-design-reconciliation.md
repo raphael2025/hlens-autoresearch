@@ -85,3 +85,11 @@ E1-CAP-1 仍阻断。当前主线没有可复用的 E1-CAP-1 RSS 结果；旧候
 - 初始审计未找到配置级方案。后续 ADR-0075 已接受 adapter 内逐 manifest / entry / file 的 pinned-snapshot 读取；当前实现拒绝 delete manifests/files，因此暂不实现可 spill delete index。该路径仍依赖锁定版 PyIceberg 私有原语，且 Avro manifest bytes 与 row-group / stripe 字节上界未解决；须经后续测试与容量测量，不能称为硬容量界或 E1 通过。
 - 本机默认 tempfile 落在 tmpfs。统一容量测量必须把临时文件所在 filesystem 纳入说明，并记录完整 cgroup memory 与进程 RSS；不得将 tmpfs 文件称为 RAM 外 spill。
 - `scan_column_batches` infrastructure Protocol / 测试代理接线已在 `34b95c3` 完成；ADR-0075 Amendment 1 与 ADR-0076 已接受，当前工作树实现固定快照扫描及摘要 / 显式 ID stream。Normalizer 和 row-integrity 测试代理已切换到批次 API；M3 的 `_same_index_numbers` 调用与旧结果字段断言已更新。变更未运行测试或类型检查。
+
+### 2026-09-30 pinned PyIceberg 0.12.0 source check
+
+Read-only source review against the pinned upstream release confirmed that `TableMetadata.snapshots`, `snapshot_log`, and `metadata_log` are Python lists, and `snapshot_by_id` linearly iterates `snapshots`. The standard SQL Catalog load / commit path remains outside ADR-0075's bounded read adapter and belongs in the complete-process measurement. These source facts establish growing data structures, not their exact RSS multiplier or a root cause for any particular probe result.
+
+- Pinned upstream sources: [PyIceberg 0.12.0 metadata model](https://github.com/apache/iceberg-python/blob/pyiceberg-0.12.0/pyiceberg/table/metadata.py#L1872-L1905), [`snapshot_by_id`](https://github.com/apache/iceberg-python/blob/pyiceberg-0.12.0/pyiceberg/table/metadata.py#L1963-L1968), [SQL Catalog](https://github.com/apache/iceberg-python/blob/pyiceberg-0.12.0/pyiceberg/catalog/sql.py), and the [Iceberg table-metadata specification](https://iceberg.apache.org/spec/#table-metadata).
+- Disposition: keep FULL_PROCESS_WORKSET and the 32 MiB gate unchanged. Do not adopt snapshot expiration, history caps, custom metadata commits, or a replacement catalog/read-write engine without a separate ADR. Measure the current integration line after repository-owned O(N) graph, Dataset, Normalizer, and verifier work is closed; use those measurements before proposing changes to supported history or metadata writes.
+- This is not E1-CAP-1 evidence and does not attribute a memory failure to PyIceberg. Release context: [Apache Iceberg Python 0.12.0 release](https://iceberg.apache.org/blog/apache-iceberg-python-0.12.0-release/).

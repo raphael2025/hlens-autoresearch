@@ -80,6 +80,19 @@ def test_every_cell_is_a_runnable_trial_point_of_what_was_declared() -> None:
     assert batch.payload()["hypotheses"] == [h.content_hash() for h in batch.hypotheses]
 
 
+def test_frozen_parameter_points_keep_canonical_batch_hashing() -> None:
+    grid = _grid(points=({"lookback": 60}, {"lookback": 240, "long_only": True}))
+
+    assert [dict(point) for point in grid.points] == [
+        {"lookback": 60},
+        {"long_only": True, "lookback": 240},
+    ]
+    assert (
+        grid.content_hash()
+        == _grid(points=({"lookback": 60}, {"lookback": 240, "long_only": True})).content_hash()
+    )
+
+
 def test_the_whole_batch_is_preregistered_before_anything_runs() -> None:
     ledger = TrialLedger()
     batch = expand_batch(_grid(), REVIEWED)

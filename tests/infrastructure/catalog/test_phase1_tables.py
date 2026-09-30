@@ -1,12 +1,12 @@
-"""C3 / D3B / E2 / QG-1 / DS-1 / B2 production table definitions: layout, hashes, registry,
+"""C3 / D3B / E2 / QG-1 / DS-1 / B2 / QR-1 production table definitions: layout, hashes, registry,
 evolution.
 
 The C3 first slice (eight tables) is frozen byte for byte; D3B appends the four ADR-0027 tables,
 E2 the ADR-0029 exchangeInfo snapshot table, QG-1 the ADR-0031 quality evidence-gap table, DS-1
-the ADR-0033 Research Dataset selection table and B2 the two ADR-0077 v3 evidence manifest /
-selection chunk tables, each leaving every earlier definition untouched. B2's own structural,
-physical-shape and "earlier goldens unchanged" coverage lives in ``test_adr_0077_tables`` (its
-module docstring explains why its two tables' own golden hashes are not yet pinned here).
+the ADR-0033 Research Dataset selection table, B2 the two ADR-0077 v3 evidence manifest / selection
+chunk tables, and QR-1 the ADR-0093 quality report manifest, each leaving every earlier definition
+untouched. B2's append placement and hash preservation are also covered in
+``test_adr_0077_tables``.
 
 No catalog here (pure definitions); PostgreSQL evidence is in ``test_phase1_tables_postgres``.
 """
@@ -55,6 +55,8 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_REST_KLINES_1M,
     BINANCE_SPOT_REST_RESPONSES,
     CANONICAL_BARS_1M,
+    DATA_QUALITY_REPORT_MANIFESTS,
+    DATA_QUALITY_REPORTS,
     DATASET_SELECTIONS,
     EXCHANGE_DECIMAL,
     PHASE1_TABLE_PROPERTIES,
@@ -238,23 +240,60 @@ DS_GOLDEN: dict[str, tuple[str, str, str]] = {
         "1e9751688f419cde55f112bef03349f5b7e65edcce30166df6ac4006391cc19e",
     ),
 }
-#: ADR-0077 addition, appended after the DS-1 table (B2). Golden hashes for these two tables are
-#: not yet pinned here (see ``test_adr_0077_tables``'s module docstring: this batch could not run
-#: Python to compute them); once Codex / the reviewer runs the real test suite, add them to
-#: ``ALL_GOLDEN`` / ``ALL_PARTITIONS`` / ``PHASE1_TABLE_NAMES`` below like every earlier batch did.
+#: ADR-0077 addition, appended after the DS-1 table (B2).
 B2_TABLES = ("research.dataset_evidence_manifests", "research.dataset_selection_chunks")
-#: All fifteen goldened tables in registry order, their partitions and goldens (the two B2 tables
-#: are registered in ``PHASE1_TABLES`` — see ``test_adr_0077_tables`` — but deliberately excluded
-#: from this tuple until their goldens are pinned).
-PHASE1_TABLE_NAMES = FROZEN_TABLES + REST_TABLES + E2_TABLES + QG_TABLES + DS_TABLES
+B2_PARTITIONS = {
+    "research.dataset_evidence_manifests": [],
+    "research.dataset_selection_chunks": [
+        (1000, "identity", "symbol", "symbol"),
+        (1001, "day", "event_time", "event_time_day"),
+    ],
+}
+#: Golden schema definitions for both ADR-0077 tables, pinned from the actual registry.
+B2_GOLDEN: dict[str, tuple[str, str, str]] = {
+    "research.dataset_evidence_manifests": (
+        "d767892e43dc57fe4f93a5ff5fe31beaf118e7c49e593813600a8adf9e8076b1",
+        "c0be386eb4b64801f4be039405df1d98120dba2335c463644271b137c8fcf263",
+        "349eb90bac266cf37f6326f157198d2337ea5b8ef3b33d5cbacae876dc531edc",
+    ),
+    "research.dataset_selection_chunks": (
+        "1a7d7775508b8c8205e60ceb85bb0a5aa3bd6c6d24c4efb9b5c5f8467151c1fc",
+        "4b3eda181c3ead73b404d4c34861f579546ffbfb124937dd141da71ff4158e89",
+        "9be9ee362bd3ba3ea7099f790e70399bed4c1e2447c4696ea24752295303dc72",
+    ),
+}
+QR_TABLES = ("quality.data_quality_report_manifests",)
+QR_PARTITIONS: dict[str, list[tuple[int, str, str, str]]] = {
+    "quality.data_quality_report_manifests": [],
+}
+QR_GOLDEN: dict[str, tuple[str, str, str]] = {
+    "quality.data_quality_report_manifests": (
+        "c2b055e13a0d939e0fe4629d69b095dde9c68666a5c1d98b2d815f41fe4eee54",
+        "ef04ec5069e8195de86b5674ab521a9af5c26f70d727d05c1f9a8c2e5f3123cc",
+        "04d2adb95eccaf99c8281fad7e4734e5323ef4aec0039ed3252142b3e0306f50",
+    ),
+}
+PHASE1_TABLE_NAMES = (
+    FROZEN_TABLES + REST_TABLES + E2_TABLES + QG_TABLES + DS_TABLES + B2_TABLES + QR_TABLES
+)
 ALL_PARTITIONS = {
     **FROZEN_PARTITIONS,
     **REST_PARTITIONS,
     **E2_PARTITIONS,
     **QG_PARTITIONS,
     **DS_PARTITIONS,
+    **B2_PARTITIONS,
+    **QR_PARTITIONS,
 }
-ALL_GOLDEN = {**GOLDEN, **REST_GOLDEN, **E2_GOLDEN, **QG_GOLDEN, **DS_GOLDEN}
+ALL_GOLDEN = {
+    **GOLDEN,
+    **REST_GOLDEN,
+    **E2_GOLDEN,
+    **QG_GOLDEN,
+    **DS_GOLDEN,
+    **B2_GOLDEN,
+    **QR_GOLDEN,
+}
 
 REVISION_TABLES = FROZEN_TABLES[:6]
 REST_REVISION_TABLES = REST_TABLES[:3]
@@ -317,9 +356,10 @@ def test_registry_holds_the_frozen_eight_then_the_rest_then_the_e2_qg1_ds1_and_b
     assert tables[12:13] == E2_TABLES  # ADR-0029 addition appended after REST
     assert tables[13:14] == QG_TABLES  # ADR-0031 addition appended after E2
     assert tables[14:15] == DS_TABLES  # ADR-0033 addition appended after QG-1
-    assert tables[15:] == B2_TABLES  # ADR-0077 additions appended last (B2)
-    assert len(PHASE1_REGISTRY) == 17
-    assert [item.table for item in PHASE1_REGISTRY] == list(PHASE1_TABLE_NAMES) + list(B2_TABLES)
+    assert tables[15:17] == B2_TABLES  # ADR-0077 additions appended after DS-1
+    assert tables[17:] == QR_TABLES  # ADR-0093 manifest appended after existing tables
+    assert len(PHASE1_REGISTRY) == 18
+    assert [item.table for item in PHASE1_REGISTRY] == list(PHASE1_TABLE_NAMES)
     for definition in PHASE1_TABLES:
         assert definition.definition_id == definition.table
         assert definition.version == "1.0.0"
@@ -439,6 +479,60 @@ def test_quality_evidence_gaps_table_holds_one_gap_per_row_partitioned_by_subjec
         by_table("quality.data_quality_reports").definition_hash
         == GOLDEN["quality.data_quality_reports"][0]
     )
+
+
+def test_quality_report_manifest_is_fixed_size_and_preserves_legacy_report_table() -> None:
+    schema = DATA_QUALITY_REPORT_MANIFESTS.schema
+    assert [field.name for field in schema.fields] == [
+        "report_id",
+        "quality_rule_id",
+        "quality_rule_version",
+        "quality_rule_hash",
+        "subject_table",
+        "subject_snapshot_id",
+        "subject_symbol",
+        "subject_start",
+        "subject_end",
+        "knowledge_time",
+        "snapshot_bindings",
+        "events",
+        "event_revisions",
+        "evidence_gaps",
+    ]
+    legacy = DATA_QUALITY_REPORTS.schema
+    assert [field.name for field in schema.fields[:10]] == [
+        field.name for field in legacy.fields[:10]
+    ]
+    for field in schema.fields[:10]:
+        legacy_field = legacy.find_field(field.name)
+        assert field.required is legacy_field.required
+        assert field.field_type == legacy_field.field_type
+    bindings = schema.find_type("snapshot_bindings")
+    assert isinstance(bindings, ListType) and isinstance(bindings.element_type, StructType)
+    assert [field.name for field in bindings.element_type.fields] == ["table", "snapshot_id"]
+    expected_stream_fields = [
+        "format_id",
+        "record_count",
+        "leaf_count",
+        "depth",
+        "root_key",
+        "root_sha256",
+        "root_size",
+    ]
+    for name in ("events", "event_revisions", "evidence_gaps"):
+        stream = schema.find_type(name)
+        assert isinstance(stream, StructType)
+        assert [field.name for field in stream.fields] == expected_stream_fields
+        assert all(field.required for field in stream.fields)
+    row = ROW_BUILDERS[DATA_QUALITY_REPORT_MANIFESTS.table]("qr")
+    binding_tables = [binding["table"] for binding in row["snapshot_bindings"]]
+    assert binding_tables == sorted(set(binding_tables))
+    assert not {"event_count", "event_revision_count", "evidence_gap_count"} & set(row)
+    for stream_name in ("events", "event_revisions", "evidence_gaps"):
+        assert row[stream_name]["record_count"] == 1
+        assert row[stream_name]["format_id"] == "hlens.quality.report-jsonl@1.0.0"
+    assert DATA_QUALITY_REPORT_MANIFESTS.partition_spec.fields == ()
+    assert DATA_QUALITY_REPORTS.definition_hash == GOLDEN["quality.data_quality_reports"][0]
 
 
 def test_dataset_selections_table_holds_one_pointer_per_selected_revision() -> None:

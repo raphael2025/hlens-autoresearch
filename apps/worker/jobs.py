@@ -183,6 +183,7 @@ class JobRunner:
         self._reruns: dict[str, int] = {}
         #: Why the runner stopped in this process (a durable write failed).
         self._stopped: str | None = None
+        self._last_poll_count = 0
         self._journal = None if results is None else AppendOnlyJournal(results)
         if self._journal is not None:
             replay = _Replay(self._idempotent)
@@ -211,6 +212,12 @@ class JobRunner:
         the results journal; module docs, **``idempotent=``**). Empty in memory."""
         return dict(self._reruns)
 
+    @property
+    def last_poll_count(self) -> int:
+        """Messages delivered by the most recent :meth:`run_pending` call, including duplicates
+        that were only acknowledged; ``0`` means that poll found the queue empty."""
+        return self._last_poll_count
+
     def submit(self, job: JobSpec) -> str:
         self._bus.publish(job.message(self._topic))
         return job.job_id
@@ -221,7 +228,9 @@ class JobRunner:
         restart) is only acknowledged."""
         self._check_can_run()
         ran: list[JobOutcome] = []
+        self._last_poll_count = 0
         for message in self._bus.poll(self._consumer, self._topic, limit):
+            self._last_poll_count += 1
             job_id = message.key
             if job_id not in self._outcomes:  # idempotent: a duplicate delivery runs nothing
                 self._outcomes[job_id] = self._execute(job_id, message)

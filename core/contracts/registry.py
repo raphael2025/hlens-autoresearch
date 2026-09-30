@@ -131,6 +131,8 @@ from core.contracts.universe import (
     EvidenceStreamRef,
     ListingHistory,
     ListingRevision,
+    PitConflictEvidenceResult,
+    PitConflictHeadEvidence,
     ResearchDatasetEvidenceManifest,
     ResearchDatasetManifest,
     SelectedRevisionLineage,
@@ -361,6 +363,9 @@ CONTRACT_MODELS: tuple[type[Contract], ...] = (
     NegatedStrategy,
     VolatilityClusteringEffect,
     JumpEffect,
+    # 有界 PIT 冲突 heads 证据（ADR-0094，契约 2.5.0；additive，只追加）
+    PitConflictHeadEvidence,
+    PitConflictEvidenceResult,
 )
 
 

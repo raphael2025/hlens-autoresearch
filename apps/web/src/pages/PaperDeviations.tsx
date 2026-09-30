@@ -5,7 +5,7 @@ import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 import {
   asPaperDeviationPayload,
-  chartSeries,
+  deviationChartOption,
   decimalText,
   deviationLabel,
   percent,
@@ -27,28 +27,7 @@ function DeviationChart({ report }: { report: PaperDeviationPayload }) {
   useEffect(() => {
     if (chartRef.current === null || report.marks.length === 0) return;
     const chart = echarts.init(chartRef.current);
-    const series = chartSeries(report);
-    chart.setOption({
-      tooltip: { trigger: "axis" },
-      legend: { top: 0 },
-      grid: { left: 64, right: 64, top: 40, bottom: 48 },
-      xAxis: { type: "category", data: series.times, name: "time" },
-      yAxis: [
-        { type: "value", name: "equity", scale: true },
-        { type: "value", name: "paper − reference" },
-      ],
-      series: [
-        { name: "paper (router, net)", type: "line", data: series.paper, itemStyle: { color: "#1d4ed8" } },
-        { name: "reference", type: "line", data: series.reference, itemStyle: { color: "#64748b" } },
-        {
-          name: "difference",
-          type: "bar",
-          yAxisIndex: 1,
-          data: series.difference,
-          itemStyle: { color: "#c2410c", opacity: 0.5 },
-        },
-      ],
-    });
+    chart.setOption(deviationChartOption(report));
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
     return () => {

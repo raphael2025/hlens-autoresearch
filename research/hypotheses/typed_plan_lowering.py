@@ -6,8 +6,10 @@ does not register a Provider, compile a runnable plan, write admission evidence,
 Accepted operators:
 
 * ``interaction`` (ADR-0082 §2): FeatureSpec, exact point-in-time product.
-* ``transformation`` for exactly ``standardize`` / ``difference`` / ``smooth`` (ADR-0082 §4):
-  FeatureSpec, explicit backward-looking window. ``rank`` / ``quantile`` stay ``operator_open``.
+* ``transformation`` for ``standardize`` / ``difference`` / ``smooth`` (ADR-0082 §4) and, in a
+  plan of format "1.2.0", time-series ``rank`` / ``quantile`` (ADR-0099): FeatureSpec, explicit
+  backward-looking window. In a "1.1.0" plan ``rank`` / ``quantile`` stay ``operator_open``;
+  cross-sectional rank / quantile remain out of scope.
 * ``temporal`` (ADR-0088 decision 1, pending-decisions §3 option A): EventSpec. Both input
   EventSpecs must declare the same non-empty ``bar_spec``; the window counts bars of that spec,
   left-open / right-closed (the second event falls 1..N bars after the first); the result carries
@@ -45,7 +47,6 @@ from core.domain.specs import (
     StrategySpec,
 )
 from research.hypotheses.typed_plan import (
-    PLAN_FORMAT_VERSION,
     NodeInput,
     PlanNode,
     PlanOperator,
@@ -61,16 +62,31 @@ __all__ = ["OperatorLoweringRefused", "lower_typed_plan"]
 _SEMANTIC_VERSION: Final = "1.0.0"
 _PRODUCT_DEFINITION: Final = "p7.interaction.product@1.0.0"
 
-#: ADR-0082 (transformation acceptance): only these three ``transform`` names have accepted
-#: business semantics. ``rank`` and ``quantile`` are cross-sectional and stay ``operator_open``.
+#: ADR-0082 (transformation acceptance): these three ``transform`` names have accepted
+#: time-series semantics in every supported plan format version.
 _ACCEPTED_TRANSFORMS: Final = frozenset({"standardize", "difference", "smooth"})
+#: ADR-0099: time-series ``rank`` / ``quantile`` are accepted only in plans of format "1.2.0".
+#: A "1.1.0" plan's ``rank`` / ``quantile`` node keeps its original meaning (``operator_open``);
+#: an old plan's meaning is never changed retroactively (ADR-0099 decision 4).
+_ACCEPTED_TRANSFORMS_BY_PLAN_FORMAT: Final[dict[str, frozenset[str]]] = {
+    "1.1.0": _ACCEPTED_TRANSFORMS,
+    "1.2.0": _ACCEPTED_TRANSFORMS | frozenset({"rank", "quantile"}),
+}
 _TRANSFORMATION_DEFINITIONS: Final[dict[str, str]] = {
     "standardize": "p7.transformation.standardize@1.0.0",
     "difference": "p7.transformation.difference@1.0.0",
     # The algorithm is explicit in the definition identity itself (ADR-0082): simple moving
     # average, not any other smoothing family.
     "smooth": "p7.transformation.smooth_sma@1.0.0",
+    # ADR-0099: the ``_ts`` suffix makes the time-series (not cross-sectional) population explicit
+    # in the definition identity itself.
+    "rank": "p7.transformation.rank_ts@1.0.0",
+    "quantile": "p7.transformation.quantile_ts@1.0.0",
 }
+#: ADR-0099: the percentile rank divides by ``window - 1``; quantile is computed from that rank.
+_RANK_BASED_TRANSFORMS: Final = frozenset({"rank", "quantile"})
+_MIN_RANK_WINDOW: Final = 2
+_MIN_BUCKETS: Final = 2
 
 #: Operator semantic keys of the ADR-0088 lowerings (identity inputs, never Provider code).
 _TEMPORAL_DEFINITION: Final = "p7.temporal.sequence_within_bars@1.0.0"
@@ -282,19 +298,35 @@ def _lower_transformation(
     direct: dict[tuple[str, int], VersionedSpec],
     specs: dict[str, VersionedSpec],
     created_at: datetime,
+    *,
+    plan_format: str,
 ) -> FeatureSpec:
     transform = node.parameters["transform"]
-    if not isinstance(transform, str) or transform not in _ACCEPTED_TRANSFORMS:
+    accepted = _ACCEPTED_TRANSFORMS_BY_PLAN_FORMAT.get(plan_format, frozenset())
+    if not isinstance(transform, str) or transform not in accepted:
         _operator_open(
             node,
-            f"transform {transform!r} remains OPEN (ADR-0082): only standardize / difference / "
-            "smooth have accepted time-series lowering; rank / quantile are cross-sectional",
+            f"transform {transform!r} has no accepted lowering in plan format {plan_format!r}: "
+            "standardize / difference / smooth are accepted (ADR-0082); time-series rank / "
+            "quantile only in plan format 1.2.0 (ADR-0099); cross-sectional semantics stay OPEN",
         )
     window = node.parameters["window"]
     if type(window) is not int or window < 1:  # Defensive: typed_plan.py already enforces this.
         raise OperatorLoweringRefused(
             "invalid_window", node.node_id, node.operator.value, "window must be a positive integer"
         )
+    if transform in _RANK_BASED_TRANSFORMS and window < _MIN_RANK_WINDOW:
+        # Defensive: typed_plan.py enforces this for format 1.2.0. The percentile rank divides by
+        # `window - 1` (ADR-0099 decision 2), so a one-bar window has no defined rank.
+        _refuse(node, "invalid_window", f"{transform} requires window >= {_MIN_RANK_WINDOW}")
+    buckets = node.parameters.get("buckets")
+    if transform == "quantile":
+        if type(buckets) is not int or buckets < _MIN_BUCKETS:  # Defensive: parser enforces.
+            _refuse(
+                node, "invalid_buckets", f"quantile requires integer buckets >= {_MIN_BUCKETS}"
+            )
+    elif buckets is not None:  # Defensive: parser rejects buckets on every other transform.
+        _refuse(node, "invalid_buckets", "buckets is only admitted for transform 'quantile'")
 
     sources = _resolve_inputs(node, direct, specs, expected_types=FeatureSpec)
     (source,) = sources
@@ -322,6 +354,16 @@ def _lower_transformation(
     elif transform == "smooth":
         # The algorithm is explicit (ADR-0082): simple moving average, nothing else.
         params["algorithm"] = "simple_moving_average"
+    elif transform == "rank":
+        # ADR-0099 decision 2: percentile rank of the current bar among the trailing `window`
+        # bars including it, (count_less + 0.5 * (count_equal - 1)) / (window - 1), in [0, 1].
+        params["ties"] = "average"
+        params["scale"] = "unit_interval"
+    elif transform == "quantile":
+        # ADR-0099 decision 3: floor(rank * buckets) clipped to [0, buckets - 1], with `rank` as
+        # in decision 2. `buckets` is explicit; no default bucket count is ever assumed.
+        params["buckets"] = cast(int, buckets)
+        params["ties"] = "average"
 
     output = FeatureSpec(
         name=f"p7_transformation_{identity}",
@@ -552,6 +594,18 @@ def _lower_negation(
     sources = _resolve_inputs(node, direct, specs, expected_types=StrategySpec)
     (base,) = cast(list[StrategySpec], sources)  # Exact class checked by `_resolve_inputs`.
     identity = _spec_identity(_NEGATION_DEFINITION, node, sources, created_at)
+    params: dict[str, str | int | float] = {
+        "definition": _NEGATION_DEFINITION,
+        "operator": "negated",
+        "provider": "p7_negation_target_position@1.0.0",
+        "semantic_version": _SEMANTIC_VERSION,
+        "negates": "target_position",
+        "cost_basis": "negated_trades",
+        # Negative controls are defined by the validation layer, never by this spec.
+        "validation_negative_control": False,
+        # Spot short-cost gap (ST-4): the future Provider must fail closed.
+        "short_exposure": "provider_fail_closed_without_short_cost_model",
+    }
     return _build_output(
         node,
         lambda: StrategySpec(
@@ -559,20 +613,7 @@ def _lower_negation(
             version=_SEMANTIC_VERSION,
             created_at=created_at,
             signals=base.signals,
-            params=FrozenMapping(
-                {
-                    "definition": _NEGATION_DEFINITION,
-                    "operator": "negated",
-                    "provider": "p7_negation_target_position@1.0.0",
-                    "semantic_version": _SEMANTIC_VERSION,
-                    "negates": "target_position",
-                    "cost_basis": "negated_trades",
-                    # Negative controls are defined by the validation layer, never by this spec.
-                    "validation_negative_control": False,
-                    # Spot short-cost gap (ST-4): the future Provider must fail closed.
-                    "short_exposure": "provider_fail_closed_without_short_cost_model",
-                }
-            ),
+            params=FrozenMapping(params),
             risk_policy=base.risk_policy,
             applicable_instruments=base.applicable_instruments,
             composition=NegatedStrategy(base=base.ref),
@@ -591,7 +632,7 @@ _LOWERERS: Final[
     ]
 ] = {
     PlanOperator.INTERACTION: _lower_interaction,
-    PlanOperator.TRANSFORMATION: _lower_transformation,
+    # TRANSFORMATION is dispatched in `lower_typed_plan`: it also needs the plan format version.
     PlanOperator.TEMPORAL: _lower_temporal,
     PlanOperator.CONDITIONING: _lower_conditioning,
     PlanOperator.ENSEMBLE: _lower_ensemble,
@@ -609,8 +650,9 @@ def lower_typed_plan(
 
     ``created_at`` is mandatory because the core spec envelope includes it in content identity;
     no wall clock value is introduced implicitly. Inputs from prior nodes are resolved from the
-    already lowered node map. ``transformation`` with ``rank`` / ``quantile`` is still
-    ``operator_open`` and refuses the whole plan.
+    already lowered node map. In a "1.1.0" plan, ``transformation`` with ``rank`` / ``quantile``
+    is still ``operator_open`` and refuses the whole plan; in a "1.2.0" plan it lowers to the
+    time-series definitions of ADR-0099.
     """
     if type(plan) is not TypedPlan:
         raise TypeError("plan must be an exact TypedPlan")
@@ -618,7 +660,8 @@ def lower_typed_plan(
         canonical = parse_plan_json(
             json.dumps(
                 {
-                    "schema_version": PLAN_FORMAT_VERSION,
+                    # Re-parse with the plan's own format version (ADR-0099 decision 4).
+                    "schema_version": plan.schema_version,
                     "root": plan.root,
                     "nodes": [
                         {
@@ -652,8 +695,15 @@ def lower_typed_plan(
     specs: dict[str, VersionedSpec] = {}
 
     for node in plan.nodes:
+        if node.operator is PlanOperator.TRANSFORMATION:
+            # The accepted transform set depends on the plan's own format version (ADR-0099
+            # decision 4), so this lowerer also receives it.
+            specs[node.node_id] = _lower_transformation(
+                node, direct, specs, created_at, plan_format=plan.schema_version
+            )
+            continue
         lowerer = _LOWERERS.get(node.operator)
-        if lowerer is None:  # Defensive: every closed-world operator has an entry.
+        if lowerer is None:  # Defensive: every other closed-world operator has an entry.
             _operator_open(node, "no accepted lowering for this operator")
         specs[node.node_id] = lowerer(node, direct, specs, created_at)
 

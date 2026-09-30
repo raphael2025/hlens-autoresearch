@@ -7,17 +7,17 @@ reconciler. Expected values are written down from ADR-0028 by hand, not from the
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Mapping
-from dataclasses import dataclass, field
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 from typing import Any
 
-import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
-from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, In
+from pyiceberg.expressions import AlwaysFalse, And, EqualTo, GreaterThanOrEqual, In
 
-from core.contracts.catalog import CommitRequest
+from core.contracts.catalog import CommitRequest, SnapshotNotFound
 from core.contracts.revision import PointInTimeStatus, PrecedenceEvidence
 from core.domain.base import CONTRACT_SCHEMA_VERSION, canonical_json
 from infrastructure.canonical import normalizer as nz
@@ -25,10 +25,13 @@ from infrastructure.canonical import rules
 from infrastructure.canonical.normalizer import (
     CanonicalNormalizeConflict,
     CanonicalNormalizeError,
+    CanonicalNormalizer,
     CanonicalUnitIncomplete,
     unit_batch_id,
 )
+from infrastructure.catalog import iceberg_adapter as iceberg_adapter_module
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
+from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveIngested, RawRevisionStore
 from infrastructure.revision import identity as archive_identity
 from infrastructure.revision.channel_reconcile import evidence_from_row, revision_record_from_row
@@ -100,6 +103,245 @@ def test_the_revision_id_is_exactly_the_documented_digest() -> None:
         "payload_hash": payload,
     }
     assert rules.revision_id(key, source, payload) == f"crev1-{_sha(document)}"
+
+
+def test_iter_revision_ids_rejects_a_tampered_result_revision_count(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 3)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=1)
+    out = n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    tampered = replace(out, revision_count=out.revision_count + 1)
+
+    with pytest.raises(
+        CatalogIntegrityError, match="no longer matches its committed Canonical unit"
+    ):
+        list(n.iter_revision_ids(tampered))
+
+
+def test_iter_revision_ids_early_close_releases_disk_backed_position_index(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _, _ = _pair(h, 3)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM), microbatch_rows=1)
+    created: list[nz._PositionIndex] = []
+    original_init = nz._PositionIndex.__init__
+
+    def track_index(index: nz._PositionIndex, scratch_directory: Path) -> None:
+        original_init(index, scratch_directory)
+        created.append(index)
+
+    monkeypatch.setattr(nz._PositionIndex, "__init__", track_index)
+    out = n.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    created.clear()
+
+    ids = n.iter_revision_ids(out)
+    assert next(ids)
+    assert created and any(not index._closed for index in created)
+    ids.close()
+    assert created and all(index._closed for index in created)
+
+
+def test_normalizer_pin_uses_one_stable_bounded_pointer_and_streams_exact_history(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    normalizer = c.normalizer(
+        h, clock=StepClock(start=K_NORM), metadata_limits=nz.NORMALIZER_METADATA_LIMITS
+    )
+    normalizer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    expected_head = h.head(c.TRADES.table)
+    assert expected_head is not None
+    expected_history = list(h.adapter.history(c.TRADES.table, expected_head))
+    expected_rows = h.adapter.scan_columns(
+        c.ARCHIVE_AGGS.table, columns=("archive_line_number", "symbol")
+    ).to_pylist()
+
+    def reject_eager_load(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("the bounded normalizer pin loaded eager table metadata")
+
+    pinned_pointers: list[tuple[str, str | None]] = []
+    pin_metadata = h.adapter.pin_bounded_metadata
+
+    def capture_pin(table: str, *, storage: Any, limits: Any) -> Any:
+        handle = pin_metadata(table, storage=storage, limits=limits)
+        pinned_pointers.append((handle.metadata_location, handle.selected_snapshot_id))
+        return handle
+
+    monkeypatch.setattr(h.adapter, "pin_bounded_metadata", capture_pin)
+    monkeypatch.setattr(h.adapter._catalog, "load_table", reject_eager_load)
+    pin = normalizer._pin(channel, archive)
+
+    assert pin.canonical_head == expected_head
+    assert list(pin.catalog.history(c.TRADES.table, expected_head)) == expected_history
+    handles = pin.catalog._bounded_metadata
+    assert len(pinned_pointers) == 6
+    assert pinned_pointers[:3] == pinned_pointers[3:]
+    assert set(handles) == {channel.element.table, channel.source.table, channel.canonical.table}
+    assert all(handle.metadata_location for handle in handles.values())
+    assert all(handle.snapshot_count <= handle._limits.max_snapshots for handle in handles.values())
+    assert all(not handle.metadata.snapshots for handle in handles.values())
+
+    batches = pin.catalog.scan_column_batches(
+        channel.element.table, columns=("archive_line_number", "symbol")
+    )
+    try:
+        assert [row for batch in batches for row in batch.to_pylist()] == expected_rows
+    finally:
+        batches.close()
+
+    early = pin.catalog.scan_column_batches(
+        channel.element.table, columns=("archive_line_number", "symbol")
+    )
+    next(early)
+    stream = early
+    assert not stream._closed
+    stream.close()
+    assert stream._closed
+
+
+def test_normalizer_bounded_pin_rejects_a_missing_exact_snapshot(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    bindings = {
+        channel.element.table: "999999999999999999",
+        channel.source.table: h.head(channel.source.table),
+        channel.canonical.table: h.head(channel.canonical.table),
+    }
+    view = PinnedCatalogView(h.adapter, bindings)
+    normalizer = c.normalizer(
+        h,
+        clock=StepClock(start=K_NORM),
+        adapter=view,
+        metadata_limits=nz.NORMALIZER_METADATA_LIMITS,
+    )
+
+    with pytest.raises(SnapshotNotFound):
+        normalizer._pin(channel, archive)
+
+
+def test_bounded_pinned_view_can_be_nested_without_eager_reads(h: RestHarness) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    writer = c.normalizer(h, clock=StepClock(start=K_NORM))
+    writer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    tables = (channel.element.table, channel.source.table, channel.canonical.table)
+    bindings = {table: h.head(table) for table in tables}
+    inner = PinnedCatalogView(h.adapter, bindings)
+    reader = c.normalizer(
+        h,
+        clock=StepClock(start=K_NORM),
+        adapter=inner,
+        metadata_limits=nz.NORMALIZER_METADATA_LIMITS,
+    )
+    expected = list(h.adapter.history(c.TRADES.table, h.head(c.TRADES.table)))
+
+    pin = reader._pin(channel, archive)
+    assert pin.catalog.load_table(channel.element.table) is not None
+    assert list(pin.catalog.history(c.TRADES.table, pin.canonical_head)) == expected
+    batches = pin.catalog.scan_column_batches(
+        channel.element.table, columns=("archive_line_number", "symbol")
+    )
+    try:
+        assert sum(batch.num_rows for batch in batches) == 3
+    finally:
+        batches.close()
+
+
+def test_bounded_scan_columns_keeps_pointer_limit_and_empty_schema_after_metadata_moves(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _, _ = _pair(h, 3)
+    channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
+    normalizer = c.normalizer(
+        h, clock=StepClock(start=K_NORM), metadata_limits=nz.NORMALIZER_METADATA_LIMITS
+    )
+    normalizer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
+    pin = normalizer._pin(channel, archive)
+    columns = ("arrival_seq", "revision_id")
+
+    before_batches = pin.catalog.scan_column_batches(c.TRADES.table, columns=columns)
+    try:
+        expected = [row for batch in before_batches for row in batch.to_pylist()]
+    finally:
+        before_batches.close()
+    assert expected
+
+    empty_inner = PinnedCatalogView(h.adapter, {c.TRADES.table: None})
+    empty_handle = empty_inner.pin_bounded_metadata(
+        c.TRADES.table, storage=h.storage, limits=normalizer._metadata_limits
+    )
+    empty_view = PinnedCatalogView(
+        h.adapter, {c.TRADES.table: None}, bounded_metadata={c.TRADES.table: empty_handle}
+    )
+    empty_expected = h.adapter.scan_columns(
+        c.TRADES.table, columns=columns, row_filter=AlwaysFalse()
+    )
+    empty_bounded = empty_view.scan_columns(c.TRADES.table, columns=columns)
+    assert empty_bounded.num_rows == 0
+    assert empty_bounded.schema == empty_expected.schema
+
+    second_items = ss.agg_items(1, first_id=200, first_ms=ss.T0 + 60_000)
+    second_archive = c.ingest_archive(
+        h,
+        "agg_trades",
+        ss.archive_agg_lines(second_items),
+        knowledge=K_ARCHIVE + timedelta(days=1),
+        request_id="archive-after-pin",
+    )
+    normalizer.normalize_unit(c.ARCHIVE_AGGS.table, second_archive)
+
+    def reject_current_pointer(*_args: object, **_kwargs: object) -> Any:
+        raise AssertionError("bounded scan_columns reloaded the moved catalog pointer")
+
+    monkeypatch.setattr(h.adapter, "scan_columns", reject_current_pointer)
+    bounded_all = pin.catalog.scan_columns(c.TRADES.table, columns=columns)
+    assert bounded_all.to_pylist() == expected
+    bounded_limited = pin.catalog.scan_columns(c.TRADES.table, columns=columns, limit=2)
+    assert bounded_limited.to_pylist() == expected[:2]
+
+    no_rows = pin.catalog.scan_columns(
+        c.TRADES.table, columns=columns, row_filter=EqualTo("arrival_seq", -1)
+    )
+    assert no_rows.num_rows == 0
+    empty_stream = pin.catalog.scan_column_batches(
+        c.TRADES.table, columns=columns, row_filter=EqualTo("arrival_seq", -1)
+    )
+    try:
+        assert no_rows.schema == empty_stream.schema
+        assert list(empty_stream) == []
+    finally:
+        empty_stream.close()
+
+
+def test_bounded_scan_closes_reader_and_source_after_read_error() -> None:
+    closed: list[str] = []
+
+    class BrokenReader:
+        def __init__(self, source: Any) -> None:
+            self.source = source
+
+        def __iter__(self) -> BrokenReader:
+            return self
+
+        def __next__(self) -> Any:
+            next(self.source)
+            raise RuntimeError("scan failed")
+
+        def close(self) -> None:
+            closed.append("reader")
+
+    def source() -> Any:
+        try:
+            yield
+        finally:
+            closed.append("source")
+
+    iterator = source()
+    stream = iceberg_adapter_module._SnapshotBatchStream(BrokenReader(iterator), iterator)
+    with pytest.raises(RuntimeError, match="scan failed"):
+        next(stream)
+    assert stream._closed
+    assert closed == ["reader", "source"]
 
 
 def test_the_trade_payload_is_exactly_the_documented_document() -> None:
@@ -632,9 +874,8 @@ def test_recovery_follows_the_committed_plan_whatever_the_configuration(
     ]
     assert unit_batch_id(archive, 5, 2, 1).endswith(".0000000005.000002.00000001")
     assert len(h.rows(c.TRADES)) == 5
-    verified = c.normalizer(h, clock=StepClock(start=K_NORM)).verify_unit(
-        c.ARCHIVE_AGGS.table, archive
-    )
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    verified = n.verify_unit(c.ARCHIVE_AGGS.table, archive)
     assert [row["revision_id"] for row in verified] == list(n.iter_revision_ids(out))
 
 
@@ -781,7 +1022,8 @@ def test_an_empty_rest_page_is_a_unit_without_rows(h: RestHarness) -> None:
         c.REST_AGGS.table, stored.pages[0].response_revision_id
     )
     assert out.revision_count == out.batch_count == out.replayed_batch_count == 0
-    assert tuple(c.normalizer(h).iter_revision_ids(out)) == () and h.rows(c.TRADES) == []
+    assert tuple(c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)) == ()
+    assert h.rows(c.TRADES) == []
 
 
 # =========================================================================================
@@ -824,7 +1066,10 @@ def test_a_head_moved_mid_read_does_not_move_the_call(h: RestHarness) -> None:
     out = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=proxy).normalize_unit(
         c.ARCHIVE_AGGS.table, archive
     )
-    assert proxy.reads >= 2 and len(tuple(c.normalizer(h).iter_revision_ids(out))) == 1
+    assert (
+        proxy.reads >= 2
+        and len(tuple(c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out))) == 1
+    )
 
 
 # =========================================================================================
@@ -874,7 +1119,9 @@ def test_a_unit_is_proven_and_written_in_bounded_windows(h: RestHarness) -> None
     # the D2 batch are bounded by D2's microbatch, not by this unit).
     assert sum(1 for table, rows in wide if table == c.ARCHIVE_AGGS.table and rows <= 2) >= 8
     rows = sorted(h.rows(c.TRADES), key=lambda row: row["arrival_seq"])
-    assert [row["revision_id"] for row in rows] == list(c.normalizer(h).iter_revision_ids(out))
+    assert [row["revision_id"] for row in rows] == list(
+        c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)
+    )
     assert [row["arrival_seq"] for row in rows] == [1, 2, 3, 4, 5, 6, 7]
 
 
@@ -888,7 +1135,11 @@ def test_windows_and_one_window_normalize_identically(h: RestHarness) -> None:
     r = large.normalize_unit(c.REST_AGGS.table, response)
     rows = {row["revision_id"]: row for row in h.rows(c.TRADES)}
     for out in (a, r):
-        assert out.revision_count == len(tuple(c.normalizer(h).iter_revision_ids(out))) == 5
+        assert (
+            out.revision_count
+            == len(tuple(c.normalizer(h, clock=StepClock(start=K_NORM)).iter_revision_ids(out)))
+            == 5
+        )
     # Same market content per key, lineage and block differ only (ADR-0028 §1).
     by_key: dict[str, set[str]] = {}
     for row in rows.values():
@@ -923,10 +1174,14 @@ def test_another_writer_mid_proof_restarts_the_unit_without_double_writes(h: Res
 
 
 def test_proof_windows_never_split_a_position_and_cover_all() -> None:
-    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [(1, 2), (3, 4), (5, 5)]
-    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1)]
+    assert list(nz._proof_windows([1, 2, 2, 3, 4, 5], 2)) == [
+        (1, 2, 3),
+        (3, 4, 2),
+        (5, 5, 1),
+    ]
+    assert list(nz._proof_windows([1, 1, 1], 2)) == [(1, 1, 3)]
     assert list(nz._proof_windows([], 2)) == []
-    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40)]
+    assert list(nz._proof_windows([3, 9, 40], 25_000)) == [(3, 40, 3)]
 
 
 @pytest.mark.parametrize(
@@ -942,16 +1197,98 @@ def test_proof_windows_never_split_a_position_and_cover_all() -> None:
         ([None, 2, 3], [1, 2, 3], False),
     ],
 )
-def test_same_index_numbers(values: list[int | None], expected: list[int], ok: bool) -> None:
-    index = nz._PositionIndex()
+def test_same_index_numbers(
+    values: list[int | None], expected: list[int], ok: bool, tmp_path: Path
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    index = nz._PositionIndex(scratch)
     try:
         index.add_batch(value for value in values if value is not None)
         index.finalize()
-        assert nz._same_index_numbers(
-            index, len(values), any(value is None for value in values), expected
-        ) is ok
+        assert (
+            nz._same_index_numbers(
+                index, len(values), any(value is None for value in values), expected
+            )
+            is ok
+        )
     finally:
         index.close()
+
+
+def test_position_index_keeps_database_and_ordered_read_under_explicit_scratch(
+    tmp_path: Path,
+) -> None:
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    index = nz._PositionIndex(scratch)
+    child = Path(index._temporary.name)
+    try:
+        index.add_batch((9, 2, 5, 1))
+        plan = index._connection.execute(
+            "EXPLAIN QUERY PLAN SELECT position FROM positions ORDER BY position"
+        ).fetchone()
+        assert child.parent == scratch
+        assert sorted(path.name for path in child.iterdir()) == ["positions.sqlite3"]
+        assert plan is not None and "USING COVERING INDEX positions_position" in plan[3]
+        index.finalize()
+        assert sorted(path.name for path in child.iterdir()) == [
+            "positions.sqlite3",
+            "ranks.bin",
+        ]
+        assert list(index) == [1, 2, 5, 9]
+    finally:
+        index.close()
+    assert list(scratch.iterdir()) == []
+
+
+def test_normalizer_refuses_unusable_scratch_before_any_catalog_access(tmp_path: Path) -> None:
+    not_a_directory = tmp_path / "scratch-file"
+    not_a_directory.write_text("occupied", encoding="utf-8")
+    with pytest.raises(CanonicalNormalizeError, match="scratch directory is not usable"):
+        CanonicalNormalizer(object(), object(), scratch_directory=not_a_directory)  # type: ignore[arg-type]
+
+    first = tmp_path / "loop-a"
+    second = tmp_path / "loop-b"
+    first.symlink_to(second)
+    second.symlink_to(first)
+    with pytest.raises(CanonicalNormalizeError, match="scratch directory is not usable"):
+        CanonicalNormalizer(object(), object(), scratch_directory=first)  # type: ignore[arg-type]
+
+
+def test_positions_closes_reader_when_scratch_index_initialization_fails(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    class Reader:
+        closed = False
+
+        def __iter__(self) -> Any:
+            raise AssertionError("reader must not be consumed if index initialization fails")
+
+        def close(self) -> None:
+            self.closed = True
+
+    reader = Reader()
+
+    class Catalog:
+        def scan_column_batches(self, *_args: Any, **_kwargs: Any) -> Reader:
+            return reader
+
+    def fail_index(_scratch_directory: Path) -> Any:
+        raise OSError("scratch index initialization failed")
+
+    monkeypatch.setattr(nz, "_PositionIndex", fail_index)
+    normalizer = CanonicalNormalizer(
+        object(),
+        object(),
+        scratch_directory=tmp_path / "scratch",  # type: ignore[arg-type]
+    )
+    pin = type("Pin", (), {"catalog": Catalog()})()
+
+    with pytest.raises(OSError, match="scratch index initialization failed"):
+        normalizer._positions(pin, rules.raw_channel_of(c.ARCHIVE_AGGS.table), "unit")  # type: ignore[arg-type]
+
+    assert reader.closed
 
 
 def test_batch_windows_are_rank_slices_of_the_positions() -> None:
@@ -996,9 +1333,9 @@ def test_a_rest_unit_lacking_positions_another_page_delivered_is_normalized(
     assert out.arrival_seq_base is not None
     assert row["arrival_seq"] == out.arrival_seq_base + 3 and row["venue_trade_id"] == "103"
     assert n.normalize_unit(c.REST_AGGS.table, b.response_revision_id).replayed
-    assert [
-        r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)
-    ] == [revision_id]
+    assert [r["revision_id"] for r in n.verify_unit(c.REST_AGGS.table, b.response_revision_id)] == [
+        revision_id
+    ]
 
 
 def test_an_archive_unit_missing_its_last_lines_is_truncated(h: RestHarness) -> None:
@@ -1065,6 +1402,36 @@ def test_a_restricted_verification_returns_the_windows_it_proves(h: RestHarness)
     assert n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs={c.STRIDE + 1}) == ()
 
 
+def test_restricted_verification_reuses_builtin_set_without_mutating_it(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive, _ = _seven(h)
+    n = c.normalizer(h, clock=StepClock(start=K_NORM))
+    requested = {3, 7}
+    before = set(requested)
+    seen: list[Any] = []
+    original = n._verify_batches
+
+    def observe(pin: Any, channel: Any, source_revision_id: str, seqs: Any) -> Any:
+        seen.append(seqs)
+        return original(pin, channel, source_revision_id, seqs)
+
+    monkeypatch.setattr(n, "_verify_batches", observe)
+    result = n.verify_unit(c.ARCHIVE_AGGS.table, archive, arrival_seqs=requested)
+
+    assert seen == [requested]
+    assert seen[0] is requested
+    assert requested == before
+    assert [row["arrival_seq"] for row in result] == [3, 4, 7]
+
+    iterable_result = n.verify_unit(
+        c.ARCHIVE_AGGS.table, archive, arrival_seqs=(seq for seq in (3, 7))
+    )
+    assert type(seen[1]) is frozenset
+    assert seen[1] == before
+    assert [row["arrival_seq"] for row in iterable_result] == [3, 4, 7]
+
+
 def test_a_restricted_verification_still_checks_the_whole_unit(h: RestHarness) -> None:
     archive, rows = _seven(h)
     # Delete a committed row of the last batch; a reader of the first batch must still refuse.
@@ -1118,7 +1485,7 @@ def test_readers_refuse_a_unit_whose_normalization_stopped_half_way(h: RestHarne
 
 
 def _unbounded_check_rest_unit(
-    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: list[int]
+    pin: Any, channel: rules.RawChannel, source_revision_id: str, positions: Sequence[int]
 ) -> None:
     """The pre-G2-R3a ``_check_rest_unit`` verbatim: full rows of every history row per key."""
     table = channel.element.table

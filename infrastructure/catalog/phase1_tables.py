@@ -1,14 +1,15 @@
-"""The seventeen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9,
-C3+D3B+E2+QG-1+DS-1+B2).
+"""The eighteen Phase 1 production Iceberg tables (03-data.md §7.1; roadmap #9,
+C3+D3B+E2+QG-1+DS-1+B2+QR-1).
 
-Single entry point for the production layout: ``PHASE1_TABLES`` (seventeen definitions, frozen
+Single entry point for the production layout: ``PHASE1_TABLES`` (eighteen definitions, frozen
 logical names, ``version = 1.0.0``, ``definition_id`` = table name), ``PHASE1_REGISTRY`` and the
 idempotent ``ensure_phase1_tables``. The first eight are the C3 first slice and are unchanged by
 D3B; the next four are the ADR-0027 REST additions (three REST Raw tables + the independent
 precedence-evidence table); the thirteenth is the ADR-0029 additive exchangeInfo snapshot table
 (E2); the fourteenth is the ADR-0031 additive quality evidence-gap table (QG-1); the fifteenth is
 the ADR-0033 additive Research Dataset selection table (DS-1); the sixteenth and seventeenth are
-the ADR-0077 additive v3 evidence manifest table and selection chunk table (B2, §7 / §4.1).
+the ADR-0077 additive v3 evidence manifest table and selection chunk table (B2, §7 / §4.1); the
+eighteenth is the ADR-0093 quality report manifest (QR-1).
 Appending never changes an earlier definition or its hash. C2 test-only definitions live under
 ``tests/`` and never enter this registry.
 
@@ -83,8 +84,9 @@ Accepted ADRs and contracts, the producers come in later batches):
     fixed-size columns — the ``dataset`` / ``point_in_time`` / ``universe_spec`` triples (same
     shape as ``research.dataset_manifests``), the new ``rule`` triple (``DatasetRuleBinding``),
     ``data_type``, ``selection_id``, ``row_count`` / ``chunk_rows`` / ``chunk_count``, a
-    fixed-length (always six) ``evidence`` list of one flattened ``EvidenceStreamRef`` group per
-    stream (``stream``, ``record_count``, ``leaf_count``, ``depth``, and the ``EvidenceObjectRef``
+    fixed-length ``evidence`` list (six groups for 2.3.0 / 2.4.0 replay; seven for 2.5.0+) of one
+    flattened ``EvidenceStreamRef`` group per stream (``stream``, ``record_count``, ``leaf_count``,
+    ``depth``, and the ``EvidenceObjectRef``
     root flattened to ``root_key`` / ``root_sha256`` / ``root_size``), and ``manifest_json`` (the
     contract canonical JSON of the full manifest; its SHA-256 is ``manifest_content_hash``,
     mirroring the v2 ``manifest_json`` column).
@@ -144,6 +146,7 @@ __all__ = [
     "DATASET_SELECTIONS",
     "DATASET_SELECTION_CHUNKS",
     "DATA_QUALITY_REPORTS",
+    "DATA_QUALITY_REPORT_MANIFESTS",
     "EXCHANGE_DECIMAL",
     "PHASE1_DEFINITION_VERSION",
     "PHASE1_REGISTRY",
@@ -994,6 +997,77 @@ QUALITY_EVIDENCE_GAPS: Final = _definition(
     _symbol_day_spec(5, 6, "subject_start"),
 )
 
+DATA_QUALITY_REPORT_MANIFESTS: Final = _definition(
+    "quality.data_quality_report_manifests",
+    Schema(
+        _req(1, "report_id", _S, "stable report id referenced by quality reports and manifests"),
+        _req(2, "quality_rule_id", _S, "id of the versioned quality rule set that produced it"),
+        _req(3, "quality_rule_version", _S, "SemVer of that rule set"),
+        _req(4, "quality_rule_hash", _S, "SHA-256 hex of that rule set"),
+        _req(5, "subject_table", _S, "namespace.table the report is about"),
+        _opt(6, "subject_snapshot_id", _S, "snapshot of subject_table the report checked"),
+        _opt(7, "subject_symbol", _S, "partition symbol the report covers"),
+        _opt(8, "subject_start", _T, "covered UTC interval start, inclusive"),
+        _opt(9, "subject_end", _T, "covered UTC interval end, exclusive"),
+        _req(10, "knowledge_time", _T, "local time the report became usable"),
+        _req(
+            11,
+            "snapshot_bindings",
+            ListType(
+                15,
+                StructType(
+                    _req(16, "table", _S, "upstream namespace.table"),
+                    _req(17, "snapshot_id", _S, "upstream snapshot_id"),
+                ),
+                element_required=True,
+            ),
+            "pinned source snapshot bindings, sorted by table and bounded by rule inputs",
+        ),
+        _req(
+            12,
+            "events",
+            StructType(
+                _req(18, "format_id", _S, "stream encoding identifier and version"),
+                _req(19, "record_count", _L, "authoritative number of records in this stream"),
+                _req(20, "leaf_count", _L, "number of Merkle leaves"),
+                _req(21, "depth", _L, "Merkle tree depth"),
+                _req(22, "root_key", _S, "content-addressed root object key"),
+                _req(23, "root_sha256", _S, "SHA-256 hex of the root object"),
+                _req(24, "root_size", _L, "root object size in bytes"),
+            ),
+            "events stream reference",
+        ),
+        _req(
+            13,
+            "event_revisions",
+            StructType(
+                _req(25, "format_id", _S, "stream encoding identifier and version"),
+                _req(26, "record_count", _L, "authoritative number of records in this stream"),
+                _req(27, "leaf_count", _L, "number of Merkle leaves"),
+                _req(28, "depth", _L, "Merkle tree depth"),
+                _req(29, "root_key", _S, "content-addressed root object key"),
+                _req(30, "root_sha256", _S, "SHA-256 hex of the root object"),
+                _req(31, "root_size", _L, "root object size in bytes"),
+            ),
+            "event_revisions stream reference",
+        ),
+        _req(
+            14,
+            "evidence_gaps",
+            StructType(
+                _req(32, "format_id", _S, "stream encoding identifier and version"),
+                _req(33, "record_count", _L, "authoritative number of records in this stream"),
+                _req(34, "leaf_count", _L, "number of Merkle leaves"),
+                _req(35, "depth", _L, "Merkle tree depth"),
+                _req(36, "root_key", _S, "content-addressed root object key"),
+                _req(37, "root_sha256", _S, "SHA-256 hex of the root object"),
+                _req(38, "root_size", _L, "root object size in bytes"),
+            ),
+            "evidence_gaps stream reference",
+        ),
+    ),
+)
+
 # --------------------------------------------------------------------------- research (ADR-0033)
 
 
@@ -1077,8 +1151,8 @@ DATASET_EVIDENCE_MANIFESTS: Final = _definition(
                 ),
                 element_required=True,
             ),
-            "evidence: exactly six EvidenceStreamRef groups (one per stream), sorted by "
-            "stream name",
+            "evidence: six EvidenceStreamRef groups for 2.3.0 / 2.4.0 or seven for 2.5.0+, "
+            "one per versioned stream, sorted by stream name",
         ),
         _req(
             28,
@@ -1112,10 +1186,10 @@ DATASET_SELECTION_CHUNKS: Final = _definition(
     _symbol_day_spec(3, 6, "event_time"),
 )
 
-#: The seventeen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027,
+#: The eighteen production tables in 03-data.md §7.1 order: the C3 first slice, then ADR-0027,
 #: then the ADR-0029 exchangeInfo snapshot table (E2), then the ADR-0031 quality evidence-gap
 #: table (QG-1), then the ADR-0033 Research Dataset selection table (DS-1), then the ADR-0077 v3
-#: evidence manifest and selection chunk tables (B2).
+#: evidence manifest and selection chunk tables (B2), then the ADR-0093 quality report manifest.
 PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     BINANCE_SPOT_ARCHIVES,
     BINANCE_SPOT_AGG_TRADES,
@@ -1134,6 +1208,7 @@ PHASE1_TABLES: Final[tuple[RegisteredTableDefinition, ...]] = (
     DATASET_SELECTIONS,
     DATASET_EVIDENCE_MANIFESTS,
     DATASET_SELECTION_CHUNKS,
+    DATA_QUALITY_REPORT_MANIFESTS,
 )
 PHASE1_REGISTRY: Final = TableDefinitionRegistry(PHASE1_TABLES)
 

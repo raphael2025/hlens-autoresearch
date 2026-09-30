@@ -10,7 +10,7 @@ from typing import Any
 import pytest
 
 from apps.worker.degradation import DegradationMonitor
-from core.domain.base import Kind, Ref
+from core.domain.base import FrozenMapping, Kind, Ref
 from core.domain.specs import StrategySpec
 from infrastructure.registry.registry import DuplicateRecord
 from infrastructure.registry.retirement import RetirementRegistry
@@ -27,8 +27,8 @@ def _strategy() -> StrategySpec:
         name=SUBJECT.name,
         version=SUBJECT.version,
         signals=(Ref(kind=Kind.FEATURE, name="return", version="1.0.0"),),
-        params={},
-        param_search_space={},
+        params=FrozenMapping[str, str | int | float | bool]({}),
+        param_search_space=FrozenMapping[str, tuple[str | int | float | bool, ...]]({}),
     )
 
 

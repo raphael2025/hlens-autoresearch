@@ -21,11 +21,13 @@ Mirrors ``tests/infrastructure/dataset/test_universe.py``'s scenarios but drives
 
 from __future__ import annotations
 
+import inspect
 from collections.abc import Iterator
-from datetime import timedelta
+from datetime import datetime, timedelta
+from itertools import islice
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -36,7 +38,9 @@ from core.contracts.universe import (
     UniverseMember,
 )
 from infrastructure.canonical.listings import ListingDeriver, UnconstructibleReason
+from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
+from infrastructure.pit.runs import RunLimits, RunSetBuilder, iter_run
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.universe import builder as ub
 from infrastructure.universe.builder import (
@@ -45,10 +49,16 @@ from infrastructure.universe.builder import (
     UniverseSpecError,
     UniverseUnconstructible,
 )
+from infrastructure.universe.run_params import UniverseRunParams
 from tests.infrastructure.dataset import dataset_support as ds
-from tests.infrastructure.dataset.dataset_support import L1, L2, L3, SIM, World
+from tests.infrastructure.dataset.dataset_support import L1, L2, L3, ORIGIN, SIM, World
 
 LISTINGS = CANONICAL_INSTRUMENT_LISTINGS.table
+RUN_PARAMS = UniverseRunParams(
+    capacity=1,
+    merge_fanout=2,
+    limits=RunLimits(leaf_max_records=1, leaf_max_bytes=4096, fanout=2),
+)
 
 BTC_HALT = {"BTCUSDT": "HALT", "ETHUSDT": "TRADING"}
 
@@ -57,6 +67,17 @@ BTC_HALT = {"BTCUSDT": "HALT", "ETHUSDT": "TRADING"}
 def w(tmp_path: Path) -> Iterator[World]:
     with ds.sqlite_world(tmp_path) as opened:
         yield opened
+
+
+_RUN_PARAMS = UniverseRunParams(
+    capacity=2,
+    merge_fanout=3,
+    limits=RunLimits(leaf_max_records=8, leaf_max_bytes=4096, fanout=3),
+)
+
+
+def _cursor(w: World, spec: Any, pit: Any) -> UniverseSpanCursor:
+    return w.universe().cursor(spec, pit, run_params=_RUN_PARAMS)
 
 
 def _members(cursor: UniverseSpanCursor) -> tuple[UniverseMember, ...]:
@@ -84,6 +105,10 @@ def _gaps(cursor: UniverseSpanCursor) -> tuple[tuple[str, str], ...]:
         return tuple(gaps)
 
 
+def _cursor(w: World, spec: Any, pit: Any) -> UniverseSpanCursor:
+    return w.universe().cursor(spec, pit, run_params=RUN_PARAMS)
+
+
 # ============================================================================ parity with v2
 
 
@@ -91,7 +116,7 @@ def test_members_at_a_point_matches_v2(w: World) -> None:
     w.listed()
     spec, pit = FIRST_SLICE_UNIVERSE, w.spec()
     built = w.universe().build(spec, pit)
-    cursor = w.universe().cursor(spec, pit)
+    cursor = _cursor(w, spec, pit)
 
     assert set(_members(cursor)) == set(built.members)
     assert set(_exclusions(cursor)) == set(built.exclusions) == set()
@@ -111,7 +136,7 @@ def test_halt_and_resume_interval_matches_v2(w: World) -> None:
     w.listed(ds.TRADING, L3)
     spec, pit = FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM))
     built = w.universe().build(spec, pit)
-    cursor = w.universe().cursor(spec, pit)
+    cursor = _cursor(w, spec, pit)
 
     v3_members = _members(cursor)
     assert set(v3_members) == set(built.members)
@@ -143,15 +168,21 @@ def test_the_knowledge_axis_hides_later_derivations_v3(w: World) -> None:
     w.listed(ds.TRADING, L1)
     early_cutoff = w.x.clock.now - timedelta(microseconds=1)
     spec = FIRST_SLICE_UNIVERSE
-    early = _members(w.universe().cursor(spec, w.spec(cutoff=early_cutoff)))
+    early = _members(_cursor(w, spec, w.spec(cutoff=early_cutoff)))
     w.listed(BTC_HALT, L2)
-    again = _members(w.universe().cursor(spec, w.spec(cutoff=early_cutoff)))
+    again = _members(_cursor(w, spec, w.spec(cutoff=early_cutoff)))
     assert set(again) == set(early) and len(early) == 2
-    late = w.universe().cursor(spec, w.spec())
+    late = _cursor(w, spec, w.spec())
     assert [ds.symbol_of(e) for e in _exclusions(late)] == ["BTC-USDT"]
 
 
 # ============================================================================ fail-closed timing
+
+
+def test_cursor_requires_explicit_universe_run_params(w: World) -> None:
+    parameter = inspect.signature(type(w.universe()).cursor).parameters["run_params"]
+    assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+    assert parameter.default is inspect.Parameter.empty
 
 
 def test_unregistered_specs_and_missing_bindings_fail_closed_eagerly(w: World) -> None:
@@ -160,16 +191,16 @@ def test_unregistered_specs_and_missing_bindings_fail_closed_eagerly(w: World) -
     w.listed()
     renamed = FIRST_SLICE_UNIVERSE.model_copy(update={"symbols": ("BTCUSDT",)})
     with pytest.raises(UniverseSpecError, match="not registered"):
-        w.universe().cursor(renamed, w.spec())
+        _cursor(w, renamed, w.spec())
     with pytest.raises(UniverseSpecError, match="listing history is missing"):
-        w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(skip=(LISTINGS,)))
+        _cursor(w, FIRST_SLICE_UNIVERSE, w.spec(skip=(LISTINGS,)))
 
 
 def test_before_the_first_observation_fails_closed_lazily(w: World) -> None:
     """ADR-0024 #6 / ADR-0029 #6: the cursor itself is constructed fine (it is structurally
     valid); only walking a view discovers the unconstructible listing, never today's list."""
     w.listed(ds.TRADING, L2)
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(at=L2 - timedelta(microseconds=1)))
+    cursor = _cursor(w, FIRST_SLICE_UNIVERSE, w.spec(at=L2 - timedelta(microseconds=1)))
     with pytest.raises(UniverseUnconstructible) as caught:
         _members(cursor)
     assert caught.value.reason == UnconstructibleReason.NO_VISIBLE_LISTING
@@ -185,7 +216,7 @@ def test_each_view_is_independent_and_closable_early(w: World) -> None:
     w.listed(ds.TRADING, L1)
     w.listed(BTC_HALT, L2)
     w.listed(ds.TRADING, L3)
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))
+    cursor = _cursor(w, FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))
 
     with cursor.members() as members:
         first = next(members)
@@ -198,12 +229,10 @@ def test_each_view_is_independent_and_closable_early(w: World) -> None:
     assert len(_lineage(cursor)) == 4  # BTC: 3 revisions + ETH: 1 unchanged revision
 
 
-def test_close_releases_the_deriver_exactly_once(
-    w: World, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_close_releases_the_deriver_exactly_once(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
     w.listed(ds.TRADING, L1)
     w.listed(BTC_HALT, L2)
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))
+    cursor = _cursor(w, FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))
 
     closes: list[ListingDeriver] = []
     original = ListingDeriver.close
@@ -225,11 +254,230 @@ def test_close_releases_the_deriver_exactly_once(
 
     closes.clear()
     with pytest.raises(UniverseUnconstructible):
-        with w.universe().cursor(
-            FIRST_SLICE_UNIVERSE, w.spec(at=L1 - timedelta(days=1))
+        with _cursor(
+            w, FIRST_SLICE_UNIVERSE, w.spec(at=L1 - timedelta(days=1))
         ).members() as members:
             list(members)
     assert len(closes) == 1
+
+
+def test_lineage_projection_dedupes_revisions_and_rejects_conflicting_payloads(
+    w: World,
+) -> None:
+    w.listed(ds.TRADING, L1)
+    cursor = _cursor(w, FIRST_SLICE_UNIVERSE, w.spec(at=L1))
+    with cursor.listing_lineage() as lineage:
+        (selected,) = [next(lineage)]
+
+    event = ub._SpanEvent(
+        venue_symbol="BTCUSDT",
+        member=None,
+        exclusion=None,
+        listing_revision_id=selected.canonical_revision_id,
+        lineage=selected,
+        gap=None,
+    )
+
+    def repeated():
+        yield event
+        yield event
+
+    with ub._unique_projection(
+        repeated(),
+        ub._lineage_of,
+        revision_key=lambda item: item.canonical_revision_id,
+        encode=lambda item: item.model_dump(mode="json"),
+        decode=SelectedRevisionLineage.model_validate,
+        storage=w.h.storage,
+        run_params=_RUN_PARAMS,
+    ) as unique:
+        assert list(unique) == [selected]
+
+    conflicting_lineage = selected.model_copy(update={"raw_revision_id": "different-raw-revision"})
+    conflicting_event = ub._SpanEvent(
+        venue_symbol="BTCUSDT",
+        member=None,
+        exclusion=None,
+        listing_revision_id=selected.canonical_revision_id,
+        lineage=conflicting_lineage,
+        gap=None,
+    )
+
+    def conflicting():
+        yield event
+        yield conflicting_event
+
+    with pytest.raises(CatalogIntegrityError, match="conflicting projected evidence"):
+        with ub._unique_projection(
+            conflicting(),
+            ub._lineage_of,
+            revision_key=lambda item: item.canonical_revision_id,
+            encode=lambda item: item.model_dump(mode="json"),
+            decode=SelectedRevisionLineage.model_validate,
+            storage=w.h.storage,
+            run_params=_RUN_PARAMS,
+        ) as unique:
+            list(unique)
+
+    gap_event = ub._SpanEvent(
+        venue_symbol="BTCUSDT",
+        member=None,
+        exclusion=None,
+        listing_revision_id=selected.canonical_revision_id,
+        lineage=selected,
+        gap=None,
+    )
+    gap_conflict = ub._SpanEvent(
+        venue_symbol="BTCUSDT",
+        member=None,
+        exclusion=None,
+        listing_revision_id=selected.canonical_revision_id,
+        lineage=selected,
+        gap="missing-availability-evidence",
+    )
+
+    def conflicting_gaps():
+        yield gap_event
+        yield gap_conflict
+
+    with pytest.raises(CatalogIntegrityError, match="conflicting projected evidence"):
+        with ub._evidence_gap_projection(
+            conflicting_gaps(), storage=w.h.storage, run_params=_RUN_PARAMS
+        ) as gaps:
+            list(gaps)
+
+
+def test_instant_run_read_failure_closes_deriver(w: World, monkeypatch: pytest.MonkeyPatch) -> None:
+    w.listed(ds.TRADING, L1)
+    w.listed(BTC_HALT, L2)
+    cursor = _cursor(w, FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))
+    closes: list[ListingDeriver] = []
+    original_close = ListingDeriver.close
+    original_instants = ub._instants_v3
+
+    def counted_close(self: ListingDeriver) -> None:
+        closes.append(self)
+        original_close(self)
+
+    def fail_replay_read(*args: Any, **kwargs: Any) -> Any:
+        raise OSError("injected instant run read failure")
+
+    def create_root_then_break(
+        view: PinnedCatalogView,
+        pit: Any,
+        storage: Any,
+        run_params: Any,
+    ) -> Any:
+        replay = original_instants(view, pit, storage, run_params)
+        monkeypatch.setattr(storage, "open_read", fail_replay_read)
+        return replay
+
+    monkeypatch.setattr(ListingDeriver, "close", counted_close)
+    monkeypatch.setattr(ub, "_instants_v3", create_root_then_break)
+    with pytest.raises(OSError, match="instant run read failure"):
+        with cursor.members() as members:
+            list(members)
+    assert len(closes) == 1
+
+
+def test_lineage_and_gap_dedup_is_disk_backed_and_closes_on_early_exit(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w.listed(ds.TRADING, L1)
+    cursor = _cursor(w, FIRST_SLICE_UNIVERSE, w.spec())
+    unique_count = 128
+    ids = [f"revision-{index:04d}" for index in range(unique_count)]
+    event_sources_closed: list[bool] = []
+    stores: list[ub._FirstSeenStore] = []
+
+    class TrackingStore(ub._FirstSeenStore):
+        def __init__(self) -> None:
+            super().__init__()
+            stores.append(self)
+
+    def events() -> Iterator[ub._SpanEvent]:
+        try:
+            for revision_id in (*ids, *reversed(ids)):
+                lineage = ds.listing_lineage(revision_id)
+                yield ub._SpanEvent(
+                    venue_symbol="BTCUSDT",
+                    member=None,
+                    exclusion=None,
+                    listing_revision_id=revision_id,
+                    lineage=lineage,
+                    gap=ds.GAP_TEXT,
+                )
+        finally:
+            event_sources_closed.append(True)
+
+    monkeypatch.setattr(ub, "_FirstSeenStore", TrackingStore)
+    monkeypatch.setattr(cursor, "_events", events)
+
+    with cursor.listing_lineage() as lineage:
+        assert [item.canonical_revision_id for item in lineage] == ids
+    first_store = stores[-1]
+    assert first_store.count == unique_count
+    assert first_store.CACHE_KIB == 1024
+    assert first_store.closed and not first_store.path.exists()
+
+    with cursor.evidence_gaps() as gaps:
+        assert list(gaps) == [(revision_id, ds.GAP_TEXT) for revision_id in ids]
+    second_store = stores[-1]
+    assert second_store.count == unique_count
+    assert second_store.closed and not second_store.path.exists()
+
+    with cursor.listing_lineage() as lineage:
+        assert next(lineage).canonical_revision_id == ids[0]
+    early_store = stores[-1]
+    assert early_store.closed and not early_store.path.exists()
+
+    def failing_events() -> Iterator[ub._SpanEvent]:
+        try:
+            yield ub._SpanEvent(
+                venue_symbol="BTCUSDT",
+                member=None,
+                exclusion=None,
+                listing_revision_id=ids[0],
+                lineage=ds.listing_lineage(ids[0]),
+                gap=ds.GAP_TEXT,
+            )
+            raise RuntimeError("event source failed")
+        finally:
+            event_sources_closed.append(True)
+
+    monkeypatch.setattr(cursor, "_events", failing_events)
+    with pytest.raises(RuntimeError, match="event source failed"):
+        with cursor.evidence_gaps() as gaps:
+            list(gaps)
+    failed_store = stores[-1]
+    assert failed_store.closed and not failed_store.path.exists()
+    assert len(event_sources_closed) == 4
+
+
+def test_repeated_selection_of_one_listing_revision_keeps_its_gap(w: World) -> None:
+    """A listing revision's availability gap is stored in its immutable RevisionRecord.
+
+    Repeated exchange-info snapshots can produce multiple timeline evaluation points while
+    selecting the same canonical listing revision. The PIT deriver reads that revision's one
+    canonical row each time, so its gap cannot change from absent to present (or vice versa).
+    """
+    w.listed(ds.TRADING, L1)
+    w.listed(ds.TRADING, L2)  # unchanged status: no new canonical listing revision
+    pit = w.spec(interval=(L1, SIM))
+    view = PinnedCatalogView(w.h.adapter, pit.snapshot_bindings)
+    deriver = ListingDeriver(view, w.h.storage, market_data_base_url=ORIGIN)
+    try:
+        first = deriver.listing_at("BTCUSDT", L1, pit.knowledge_cutoff, pit=pit)
+        repeated = deriver.listing_at("BTCUSDT", L2, pit.knowledge_cutoff, pit=pit)
+    finally:
+        deriver.close()
+
+    assert first.listing is not None and repeated.listing is not None
+    assert first.listing.revision.revision_id == repeated.listing.revision.revision_id
+    assert first.evidence_gap is not None
+    assert first.evidence_gap == repeated.evidence_gap
+    assert first.evidence_gap == first.listing.revision.availability.evidence_gap
+    assert repeated.evidence_gap == repeated.listing.revision.availability.evidence_gap
 
 
 # ============================================================================ no whole-table read
@@ -252,26 +500,26 @@ def test_instants_v3_never_calls_whole_table_scan_columns(
     w.listed(ds.TRADING, L3)
     pit = w.spec(interval=(L1, SIM))
     view = PinnedCatalogView(w.h.adapter, pit.snapshot_bindings)
+    expected = tuple(ub._instants(view, pit))
 
     def forbidden(*args: object, **kwargs: object) -> None:
         raise AssertionError("_instants_v3 must not call the whole-table scan_columns")
 
     monkeypatch.setattr(PinnedCatalogView, "scan_columns", forbidden)
 
-    instants = ub._instants_v3(view, pit)
-    assert instants[0] == L1
-    assert len(instants) >= 3  # L1, the halt at L2, the resume at L3 are all change points
+    replay = ub._instants_v3(view, pit, w.h.storage, _RUN_PARAMS)
+    with replay.open() as instants:
+        values = list(instants)
+    assert tuple(values) == expected
+    assert values[0] == L1
+    assert len(values) >= 3  # L1, the halt at L2, the resume at L3 are all change points
 
 
 def test_instants_v3_closes_its_batch_readers_on_normal_completion(
     w: World, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """B-FIX: ``_fold_exchange_info_changes`` / ``_fold_listing_changes`` used to close their
-    ``scan_column_batches`` reader only on an exception (``except BaseException: ...close();
-    raise``), never after an ordinary, fully-exhausted loop -- leaking the reader on every
-    successful call. Both folds must close their reader exactly once on that ordinary path too
-    (a ``try/finally``, not a bare ``except``).
-    """
+    """Both snapshot readers close once after their ordered event scans are drained."""
+    w.listed(ds.TRADING, L1)
     pit = w.spec(interval=(L1, SIM))
     view = PinnedCatalogView(w.h.adapter, pit.snapshot_bindings)
     closed: list[str] = []
@@ -283,7 +531,7 @@ def test_instants_v3_closes_its_batch_readers_on_normal_completion(
             self._table = table
             self._batches = iter([SimpleNamespace(to_pylist=lambda: [])])
 
-        def __iter__(self) -> "_FakeReader":
+        def __iter__(self) -> _FakeReader:
             return self
 
         def __next__(self) -> SimpleNamespace:
@@ -292,12 +540,338 @@ def test_instants_v3_closes_its_batch_readers_on_normal_completion(
         def close(self) -> None:
             closed.append(self._table)
 
-    def fake_scan_column_batches(
-        self: PinnedCatalogView, table: str, **kwargs: Any
-    ) -> _FakeReader:
+    def fake_scan_column_batches(self: PinnedCatalogView, table: str, **kwargs: Any) -> _FakeReader:
         return _FakeReader(table)
 
     monkeypatch.setattr(PinnedCatalogView, "scan_column_batches", fake_scan_column_batches)
-    ub._instants_v3(view, pit)
+    replay = ub._instants_v3(view, pit, w.h.storage, _RUN_PARAMS)
+    with replay.open() as instants:
+        assert tuple(instants) == (L1,)
     assert closed.count(ub.EXCHANGE_INFO_TABLE) == 1
     assert closed.count(ub.LISTINGS_TABLE) == 1
+
+
+def test_instants_v3_sorts_batches_filters_cutoff_and_treats_end_as_right_open(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The two pinned source scans may be unordered; event time is externally sorted once."""
+    w.listed(ds.TRADING, L1)
+    t1, t2, t3 = (L1 + timedelta(minutes=i) for i in (1, 2, 3))
+    too_late = SIM + timedelta(microseconds=1)
+    cutoff = SIM
+    pit = w.spec(interval=(L1, SIM), cutoff=cutoff)
+    batches = {
+        ub.EXCHANGE_INFO_TABLE: [
+            [{"retrieved_at": t3, "knowledge_time": cutoff}],
+            [
+                {"retrieved_at": t1, "knowledge_time": too_late},
+                {"retrieved_at": t2, "knowledge_time": cutoff},
+                {"retrieved_at": L1, "knowledge_time": cutoff},
+                {"retrieved_at": SIM, "knowledge_time": cutoff},
+            ],
+        ],
+        ub.LISTINGS_TABLE: [
+            [
+                {
+                    "available_time": t2,
+                    "knowledge_time": cutoff,
+                    "tradable_intervals": [{"tradable_from": t2, "tradable_until": t3}],
+                }
+            ],
+            [],
+        ],
+    }
+    readers: list[Any] = []
+
+    class _Reader:
+        def __init__(self, table: str) -> None:
+            self._batches: Iterator[Any] = iter(
+                [
+                    SimpleNamespace(to_pylist=lambda rows=rows: rows)
+                    for rows in cast(list[list[dict[str, Any]]], batches[table])
+                ]
+            )
+            self.closed = 0
+            readers.append(self)
+
+        def __iter__(self) -> _Reader:
+            return self
+
+        def __next__(self) -> SimpleNamespace:
+            return cast(SimpleNamespace, next(self._batches))
+
+        def close(self) -> None:
+            self.closed += 1
+
+    monkeypatch.setattr(
+        PinnedCatalogView,
+        "scan_column_batches",
+        lambda self, table, **kwargs: _Reader(table),
+    )
+    replay = ub._instants_v3(
+        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
+    )
+    with replay.open() as instants:
+        result = tuple(instants)
+    assert result == (L1, t2, t3)
+    assert SIM not in result  # Interval end is right-open, even when a source reports it.
+    assert len(readers) == 2
+    assert all(reader.closed == 1 for reader in readers)
+
+
+def test_instants_v3_discards_large_pre_window_history_before_run_staging(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Pre-window source history must not become sorter records or change the window output."""
+    w.listed(ds.TRADING, L1)
+    t1, t2, t3 = (L1 + timedelta(minutes=i) for i in (1, 2, 3))
+    cutoff = SIM
+    pit = w.spec(interval=(L1, SIM), cutoff=cutoff)
+    history_size = 4096
+
+    def batches(rows: Iterator[dict[str, Any]]) -> Iterator[SimpleNamespace]:
+        while batch := list(islice(rows, 128)):
+            yield SimpleNamespace(to_pylist=lambda batch=batch: batch)
+
+    def exchange_rows() -> Iterator[dict[str, Any]]:
+        for minute in range(history_size, 0, -1):
+            yield {
+                "retrieved_at": L1 - timedelta(minutes=minute),
+                "knowledge_time": cutoff,
+            }
+        yield {"retrieved_at": t2, "knowledge_time": cutoff}
+        yield {"retrieved_at": SIM, "knowledge_time": cutoff}  # right-open end
+        yield {"retrieved_at": t1, "knowledge_time": cutoff + timedelta(microseconds=1)}
+        yield {"retrieved_at": t1, "knowledge_time": cutoff}
+
+    def listing_rows() -> Iterator[dict[str, Any]]:
+        for minute in range(history_size, 0, -1):
+            yield {
+                "available_time": L1 - timedelta(minutes=minute),
+                "knowledge_time": cutoff,
+                "tradable_intervals": [],
+            }
+        # Interval boundaries are independent change events and must be window-filtered too.
+        yield {
+            "available_time": L1 - timedelta(minutes=1),
+            "knowledge_time": cutoff,
+            "tradable_intervals": [{"tradable_from": t2, "tradable_until": t3}],
+        }
+        # A late-known interval remains invisible even though its times are in-window.
+        yield {
+            "available_time": t1,
+            "knowledge_time": cutoff + timedelta(microseconds=1),
+            "tradable_intervals": [{"tradable_from": t1, "tradable_until": t2}],
+        }
+
+    class _Reader:
+        def __init__(self, rows: Iterator[dict[str, Any]]) -> None:
+            self._batches = iter(batches(rows))
+            self.closed = False
+
+        def __iter__(self) -> _Reader:
+            return self
+
+        def __next__(self) -> SimpleNamespace:
+            return next(self._batches)
+
+        def close(self) -> None:
+            self.closed = True
+
+    readers: list[_Reader] = []
+
+    def scan(self: PinnedCatalogView, table: str, **kwargs: Any) -> _Reader:
+        rows = exchange_rows() if table == ub.EXCHANGE_INFO_TABLE else listing_rows()
+        reader = _Reader(rows)
+        readers.append(reader)
+        return reader
+
+    monkeypatch.setattr(PinnedCatalogView, "scan_column_batches", scan)
+
+    added: list[datetime] = []
+
+    class _TrackingBuilder(RunSetBuilder):
+        def add(self, row: Any) -> None:
+            added.append(row["instant"])
+            super().add(row)
+
+    monkeypatch.setattr(cast(Any, ub), "RunSetBuilder", _TrackingBuilder)
+    replay = ub._instants_v3(
+        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
+    )
+    with replay.open() as instants:
+        result = tuple(instants)
+
+    assert result == (L1, t1, t2, t3)
+    assert added == [t2, t1, t2, t3]
+    assert len(added) == 4  # independent of the 8,192 visible pre-window rows
+    assert all(reader.closed for reader in readers)
+
+
+def test_instants_v3_replay_closes_the_run_reader_early(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each symbol's event pass owns a closable run reader even when the consumer stops early."""
+    from contextlib import contextmanager
+
+    w.listed(ds.TRADING, L1)
+    pit = w.spec(interval=(L1, SIM))
+    event_times = [L1 + timedelta(minutes=i) for i in range(1, 5)]
+
+    class _Reader:
+        def __init__(self, rows: list[dict[str, Any]]) -> None:
+            self._batches = iter([SimpleNamespace(to_pylist=lambda: rows)])
+            self.closed = 0
+
+        def __iter__(self) -> _Reader:
+            return self
+
+        def __next__(self) -> SimpleNamespace:
+            return next(self._batches)
+
+        def close(self) -> None:
+            self.closed += 1
+
+    exchange_reader = _Reader(
+        [{"retrieved_at": at, "knowledge_time": SIM} for at in reversed(event_times)]
+    )
+    listing_reader = _Reader([])
+    monkeypatch.setattr(
+        PinnedCatalogView,
+        "scan_column_batches",
+        lambda self, table, **kwargs: (
+            exchange_reader if table == ub.EXCHANGE_INFO_TABLE else listing_reader
+        ),
+    )
+    closed_runs: list[bool] = []
+    original_iter_run = iter_run
+
+    @contextmanager
+    def tracked_iter_run(storage: Any, root: Any) -> Iterator[Iterator[Any]]:
+        with original_iter_run(storage, root) as records:
+            try:
+                yield records
+            finally:
+                closed_runs.append(True)
+
+    monkeypatch.setattr(cast(Any, ub), "iter_run", tracked_iter_run)
+    replay = ub._instants_v3(
+        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
+    )
+    assert exchange_reader.closed == listing_reader.closed == 1
+    with replay.open() as instants:
+        assert next(instants) == L1
+        assert next(instants) == event_times[0]
+    assert closed_runs == [True]
+
+
+def test_instants_v3_closes_the_active_batch_reader_on_error(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    w.listed(ds.TRADING, L1)
+    pit = w.spec(interval=(L1, SIM))
+    closed: list[str] = []
+
+    class _Batch:
+        def to_pylist(self) -> list[dict[str, Any]]:
+            raise RuntimeError("broken batch")
+
+    class _Reader:
+        def __iter__(self) -> _Reader:
+            return self
+
+        def __next__(self) -> _Batch:
+            return _Batch()
+
+        def close(self) -> None:
+            closed.append("exchange")
+
+    monkeypatch.setattr(
+        PinnedCatalogView,
+        "scan_column_batches",
+        lambda self, table, **kwargs: _Reader(),
+    )
+    with pytest.raises(RuntimeError, match="broken batch"):
+        ub._instants_v3(
+            PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, RUN_PARAMS
+        )
+    assert closed == ["exchange"]
+
+
+def test_instants_v3_run_buffer_never_exceeds_explicit_capacity(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A structural bound check: flushes never hold more than the caller's row capacity."""
+    w.listed(ds.TRADING, L1)
+    pit = w.spec(interval=(L1, SIM))
+    event_times = [L1 + timedelta(minutes=i) for i in range(1, 33)]
+    batches = iter(
+        [
+            SimpleNamespace(
+                to_pylist=lambda rows=[{"retrieved_at": at, "knowledge_time": SIM}]: rows
+            )
+            for at in event_times
+        ]
+    )
+
+    class _Reader:
+        def __init__(self, first: Any | None) -> None:
+            self._first = first
+
+        def __iter__(self) -> _Reader:
+            return self
+
+        def __next__(self) -> Any:
+            if self._first is not None:
+                first, self._first = self._first, None
+                return first
+            return next(batches)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        PinnedCatalogView,
+        "scan_column_batches",
+        lambda self, table, **kwargs: (
+            _Reader(None) if table == ub.LISTINGS_TABLE else _Reader(next(batches))
+        ),
+    )
+    capacities: list[int] = []
+
+    class _TrackingBuilder(RunSetBuilder):
+        def _flush(self) -> None:
+            capacities.append(len(self._rows))
+            super()._flush()
+
+    monkeypatch.setattr(cast(Any, ub), "RunSetBuilder", _TrackingBuilder)
+    params = UniverseRunParams(
+        capacity=3,
+        merge_fanout=2,
+        limits=RunLimits(leaf_max_records=2, leaf_max_bytes=4096, fanout=2),
+    )
+    replay = ub._instants_v3(
+        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, params
+    )
+    with replay.open() as instants:
+        result = tuple(instants)
+    assert result == (L1, *event_times)
+    assert capacities and max(capacities) <= params.capacity
+    assert sum(capacities) == len(event_times)
+
+
+def test_point_in_time_instants_remain_a_singleton_without_run_parameters(w: World) -> None:
+    w.listed(ds.TRADING, L1)
+    pit = w.spec(at=SIM)
+    replay = ub._instants_v3(
+        PinnedCatalogView(w.h.adapter, pit.snapshot_bindings), pit, w.h.storage, None
+    )
+    with replay.open() as instants:
+        assert tuple(instants) == (SIM,)
+
+
+
+def test_interval_cursor_requires_explicit_run_parameters(w: World) -> None:
+    w.listed(ds.TRADING, L1)
+    with pytest.raises(UniverseSpecError, match="explicit UniverseRunParams"):
+        w.universe().cursor(FIRST_SLICE_UNIVERSE, w.spec(interval=(L1, SIM)))

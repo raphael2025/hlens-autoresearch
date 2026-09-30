@@ -13,6 +13,7 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -79,6 +80,7 @@ from infrastructure.revision.row_integrity import (
     element_columns,
 )
 from infrastructure.revision.store import _row_batch, _row_batch_id, _row_records, _times_from_row
+from infrastructure.streaming.runs import RunLimits
 from tests.infrastructure.catalog.phase1_support import rest_record
 from tests.infrastructure.collector import rest_support as cs
 from tests.infrastructure.revision import rest_store_support as ss
@@ -1554,6 +1556,44 @@ def _pinned_view(h: RestHarness, evidence_snapshot: str | None = None) -> Pinned
 def _pinned_edges(h: RestHarness, day: Any, evidence_snapshot: str | None = None) -> list[Any]:
     view = _pinned_view(h, evidence_snapshot)
     return list(ChannelReconciler(view, h.storage).verified_edges("agg_trades", SYMBOL, day))
+
+
+@pytest.mark.parametrize("early_close", [False, True], ids=["exhaust", "early_close"])
+def test_verified_edge_run_matches_compatibility_and_closes_reader(
+    h: RestHarness, monkeypatch: pytest.MonkeyPatch, early_close: bool
+) -> None:
+    _cross_midnight(h)
+    h.reconciler(clock=StepClock(start=K_EDGE)).reconcile("agg_trades", SYMBOL, DAY)
+    reconciler = ChannelReconciler(h.adapter, h.storage)
+    expected = reconciler.verified_edges("agg_trades", SYMBOL, DAY)
+    closed: list[bool] = []
+    original = channel_reconcile.iter_run
+
+    @contextmanager
+    def tracked_iter_run(storage: Any, root: Any) -> Iterator[Any]:
+        with original(storage, root) as rows:
+            try:
+                yield rows
+            finally:
+                closed.append(True)
+
+    monkeypatch.setattr(channel_reconcile, "iter_run", tracked_iter_run)
+    params = channel_reconcile.VerifiedEdgeRunParams(
+        row_capacity=2,
+        merge_fanout=2,
+        limits=RunLimits(leaf_max_records=2, leaf_max_bytes=4096, fanout=2),
+    )
+    with reconciler.iter_verified_edges("agg_trades", SYMBOL, DAY, params=params) as stream:
+        if early_close:
+            actual = (next(iter(stream)),)
+        else:
+            actual = tuple(stream)
+
+    assert closed == [True]
+    if early_close:
+        assert actual == (expected[0],)
+    else:
+        assert actual == tuple(sorted(expected, key=lambda edge: edge.edge_id))
 
 
 @pytest.mark.parametrize("first_day", [DAY, NEXT_DAY], ids=["day_first", "next_first"])

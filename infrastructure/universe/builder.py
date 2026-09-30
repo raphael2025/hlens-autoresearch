@@ -40,11 +40,11 @@ gets exactly the answers it got before this assumption existed.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterable, Iterator, Mapping
+from collections.abc import Callable, Generator, Iterable, Iterator, Mapping
 from contextlib import AbstractContextManager, contextmanager
 from dataclasses import dataclass, field
-from datetime import datetime
-from typing import Final
+from datetime import UTC, datetime
+from typing import Any, Final
 
 from core.contracts.revision import PointInTimeSpec, PolicyBinding
 from core.contracts.storage import StorageAdapter
@@ -67,10 +67,12 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_INSTRUMENT_LISTINGS,
 )
 from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
+from infrastructure.pit.runs import RunLimits, RunRef, RunSetBuilder, iter_run
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.universe import listing_assumption as backfill
+from infrastructure.universe.run_params import UniverseRunParams
 
 __all__ = [
     "FIRST_SLICE_UNIVERSE",
@@ -260,14 +262,26 @@ class UniverseBuilder:
             deriver.close()
         return _assemble(spec, pit, timelines)
 
-    def cursor(self, spec: UniverseSelectionSpec, pit: PointInTimeSpec) -> UniverseSpanCursor:
+    def cursor(
+        self,
+        spec: UniverseSelectionSpec,
+        pit: PointInTimeSpec,
+        *,
+        run_params: UniverseRunParams,
+    ) -> UniverseSpanCursor:
         """The v3 entry (ADR-0077 §6.1.1): a cursor of explicitly-closed, ordered iterators over
         one build's members, exclusions, listing lineage, member spans and evidence gaps --
         without materializing :class:`UniverseBuilt`'s full tuples or its ``timelines`` /
         ``member_spans`` working maps. ``build()`` and ``UniverseBuilt`` are unchanged and remain
         the v2 legacy, fully-materialized path; see :class:`UniverseSpanCursor` for the v3 shape.
+        ``run_params`` is mandatory and carries the caller's explicit DQ-9 resource values.
         """
-        return UniverseSpanCursor(self._adapter, self._storage, self._origin, spec, pit)
+        _check_spec(spec)
+        check_listing_bindings(pit)
+        _validate_run_params(run_params)
+        return UniverseSpanCursor(
+            self._adapter, self._storage, self._origin, spec, pit, run_params=run_params
+        )
 
 
 def _instants(view: PinnedCatalogView, pit: PointInTimeSpec) -> list[datetime]:
@@ -442,34 +456,93 @@ def _assemble(
 # entry that produces members, exclusions, listing lineage, member spans and evidence gaps as
 # explicitly-closed, ordered iterators, without ever holding v2's full ``timelines`` dict,
 # ``members`` / ``exclusions`` lists, ``lineage`` / ``gaps`` dicts or ``member_spans`` mapping
-# (ADR-0077 §6.1 item 1 / item 4). Instants are read from bounded ``scan_column_batches``
-# batches instead of ``scan_columns(...).to_pylist()`` on the whole table (ADR-0077 §6.1 item 1);
-# the accepted-instant working set is bounded by the number of distinct listing / exchange-info
-# change events inside the simulation window and before the knowledge cutoff -- not by the size
-# of the underlying tables -- which is the concrete violation this replaces. It is *not* a
-# general external sorted-run merge (that machinery is ``PitSelector``'s, ADR-0077 §6.1 item 2/3
-# / DQ-9); a genuinely unbounded change-event count within one window is out of this slice's
-# scope and would need its own Decision Packet, per ADR-0077 §6.1's closing paragraph.
+# (ADR-0077 §6.1 item 1 / item 4). Every accepted change event is written to a content-addressed
+# bounded run set; only its fixed row buffer and fanout-bounded index levels remain resident. A
+# sorted root is replayed for each symbol and adjacent duplicate timestamps are removed as they
+# stream.
 # ==========================================================================================
 
 
-def _instants_v3(view: PinnedCatalogView, pit: PointInTimeSpec) -> tuple[datetime, ...]:
-    """The same evaluation instants as v2's ``_instants`` (the point, or the interval start plus
-    every possible change), read via bounded ``scan_column_batches`` batches instead of a
-    whole-table ``scan_columns(...).to_pylist()`` (ADR-0077 §6.1 item 1). Each batch is folded
-    into the window-filtered ``changes`` set and discarded; nothing outside the simulation window
-    or after the knowledge cutoff is kept.
-    """
+@dataclass(frozen=True, slots=True)
+class _InstantReplay:
+    storage: StorageAdapter
+    start: datetime
+    root: RunRef | None
+
+    @contextmanager
+    def open(self) -> Iterator[Iterator[datetime]]:
+        """Open one independently closable, sorted, adjacent-deduplicated pass."""
+        if self.root is None:
+            yield iter((self.start,))
+            return
+        with iter_run(self.storage, self.root) as rows:
+
+            def points() -> Generator[datetime]:
+                yield self.start
+                previous: datetime | None = None
+                for row in rows:
+                    instant = row["instant"]
+                    if instant != previous:
+                        yield instant
+                    previous = instant
+
+            iterator = points()
+            try:
+                yield iterator
+            finally:
+                iterator.close()
+
+
+def _instants_v3(
+    view: PinnedCatalogView,
+    pit: PointInTimeSpec,
+    storage: StorageAdapter,
+    run_params: UniverseRunParams,
+) -> _InstantReplay:
+    """Spill cutoff-visible in-window change events to a bounded sorted run-set root."""
     if pit.simulation_time is not None:
-        return (pit.simulation_time,)
+        return _InstantReplay(storage, pit.simulation_time, None)
     start, end = pit.simulation_start, pit.simulation_end
     if start is None or end is None:  # pragma: no cover - the contract forbids it
         raise UniverseSpecError("the PIT spec has neither a simulation time nor an interval")
-    cutoff = pit.knowledge_cutoff
-    changes: set[datetime] = set()
-    _fold_exchange_info_changes(view, cutoff, changes)
-    _fold_listing_changes(view, cutoff, changes)
-    return (start, *sorted(item for item in changes if start < item < end))
+    _validate_run_params(run_params)
+    run_set = RunSetBuilder(
+        storage,
+        key=lambda row: row["instant"],
+        capacity=run_params.capacity,
+        merge_fanout=run_params.merge_fanout,
+        limits=run_params.limits,
+    )
+    events = _change_events(view, pit.knowledge_cutoff, start, end)
+    try:
+        with run_set:
+            for instant in events:
+                instant = instant.astimezone(UTC)
+                if start < instant < end:
+                    run_set.add({"instant": instant})
+            root = run_set.finish()
+    finally:
+        events.close()
+    return _InstantReplay(storage, start, root)
+
+
+def _validate_run_params(params: UniverseRunParams) -> None:
+    if not isinstance(params, UniverseRunParams):
+        raise UniverseSpecError("run_params must be UniverseRunParams")
+    if (
+        isinstance(params.capacity, bool)
+        or not isinstance(params.capacity, int)
+        or params.capacity < 1
+    ):
+        raise UniverseSpecError("run_params.capacity must be an integer >= 1")
+    if (
+        isinstance(params.merge_fanout, bool)
+        or not isinstance(params.merge_fanout, int)
+        or params.merge_fanout < 2
+    ):
+        raise UniverseSpecError("run_params.merge_fanout must be an integer >= 2")
+    if not isinstance(params.limits, RunLimits):
+        raise UniverseSpecError("run_params.limits must be RunLimits")
 
 
 def _close_reader(reader: object) -> None:
@@ -478,10 +551,14 @@ def _close_reader(reader: object) -> None:
         close()
 
 
-def _fold_exchange_info_changes(
-    view: PinnedCatalogView, cutoff: datetime, changes: set[datetime]
-) -> None:
-    """Fold every exchange-info ``retrieved_at`` visible by ``cutoff`` into ``changes``."""
+def _change_events(
+    view: PinnedCatalogView, cutoff: datetime, start: datetime, end: datetime
+) -> Generator[datetime]:
+    """Yield only in-window, cutoff-visible events from bounded batches."""
+
+    def in_window(instant: datetime) -> bool:
+        return start < instant < end
+
     reader = view.scan_column_batches(
         EXCHANGE_INFO_TABLE, columns=("retrieved_at", "knowledge_time")
     )
@@ -489,16 +566,12 @@ def _fold_exchange_info_changes(
         for record_batch in reader:
             for row in record_batch.to_pylist():
                 if row["knowledge_time"] <= cutoff:
-                    changes.add(row["retrieved_at"])
+                    instant = row["retrieved_at"]
+                    if in_window(instant):
+                        yield instant
     finally:
         _close_reader(reader)
 
-
-def _fold_listing_changes(
-    view: PinnedCatalogView, cutoff: datetime, changes: set[datetime]
-) -> None:
-    """Fold every listing ``available_time`` and tradable-interval boundary visible by ``cutoff``
-    into ``changes``."""
     reader = view.scan_column_batches(
         LISTINGS_TABLE, columns=("available_time", "knowledge_time", "tradable_intervals")
     )
@@ -506,11 +579,16 @@ def _fold_listing_changes(
         for record_batch in reader:
             for row in record_batch.to_pylist():
                 if row["knowledge_time"] <= cutoff:
-                    changes.add(row["available_time"])
+                    instant = row["available_time"]
+                    if in_window(instant):
+                        yield instant
                     for interval in row["tradable_intervals"]:
-                        changes.add(interval["tradable_from"])
-                        if interval["tradable_until"] is not None:
-                            changes.add(interval["tradable_until"])
+                        instant = interval["tradable_from"]
+                        if in_window(instant):
+                            yield instant
+                        instant = interval["tradable_until"]
+                        if instant is not None and in_window(instant):
+                            yield instant
     finally:
         _close_reader(reader)
 
@@ -567,17 +645,17 @@ class _SpanEvent:
     """One finalized v3 span, already projected for each of :class:`UniverseSpanCursor`'s views.
 
     Exactly one of ``member`` / ``exclusion`` is set (mirrors the v2 ``if span.point.tradable``
-    branch). ``lineage`` / ``gap`` are set only the first time this walk sees
-    ``listing_revision_id`` for this symbol (the same revision can recur non-adjacently, e.g. a
-    halt/resume returning to it); later spans citing it carry ``None`` for both. ``assumed`` is
-    set only for a member span that exists under the ADR-0051 assumption.
+    branch). ``lineage`` / ``gap`` are candidates for every finalized span. Their projections
+    externally sort and adjacent-dedupe records, failing closed if a revision maps to conflicting
+    evidence.
+    ``assumed`` is set only for a member span that exists under the ADR-0051 assumption.
     """
 
     venue_symbol: str
     member: UniverseMember | None
     exclusion: UniverseExclusion | None
     listing_revision_id: str
-    lineage: SelectedRevisionLineage | None
+    lineage: SelectedRevisionLineage
     gap: str | None
     assumed: AssumedMembership | None = None
 
@@ -588,7 +666,8 @@ def _events_v3(
     origin: str,
     spec: UniverseSelectionSpec,
     pit: PointInTimeSpec,
-) -> Iterator[_SpanEvent]:
+    run_params: UniverseRunParams,
+) -> Generator[_SpanEvent]:
     """The bounded walk behind every :class:`UniverseSpanCursor` view (ADR-0077 §6.1.1).
 
     One ``PinnedCatalogView`` + one ``ListingDeriver`` for the whole walk, released on
@@ -597,62 +676,57 @@ def _events_v3(
     already canonically sorted (``UniverseSelectionSpec._canonical_symbols``); each symbol is
     walked in full, one span at a time, before the next. No ``timelines``, ``members``,
     ``exclusions`` or ``member_spans`` collection spans more than the current symbol: the
-    per-symbol ``seen`` set is bounded by that one symbol's own distinct listing revisions inside
-    the window, not by row count or window length. The window-filtered ``instants`` tuple
-    (:func:`_instants_v3`) is computed once and shared by every symbol's walk -- itself bounded
-    the same way, and unrelated to the ``.to_pylist()`` whole-table read it replaces.
+    per-symbol state contains only the current point/span. The window-filtered event stream is
+    sorted into one content-addressed run-set root and replayed for each symbol. Lineage and gap
+    projections use their own run sets to sort by revision and collapse adjacent duplicates.
     """
     view = PinnedCatalogView(adapter, pit.snapshot_bindings)
     deriver = ListingDeriver(view, storage, market_data_base_url=origin)
     try:
-        instants = _instants_v3(view, pit)
+        instants = _instants_v3(view, pit, storage, run_params)
         for venue_symbol in spec.symbols:
-            seen: set[str] = set()
             assumed_seen = False
-            points = _timeline_stream(deriver, venue_symbol, instants, pit)
-            for span in _spans_stream(points, pit):
-                listing = span.point.listing
-                assert listing is not None and span.point.lineage is not None
-                revision = listing.revision.revision_id
-                episode = listing.episode
-                membership = _assumed_of(venue_symbol, span, pit)
-                if membership is not None:
-                    if assumed_seen:  # pragma: no cover - the assumed window is one span
-                        raise CatalogIntegrityError(f"{venue_symbol} has two assumed member spans")
-                    assumed_seen = True
-                member: UniverseMember | None = None
-                exclusion: UniverseExclusion | None = None
-                if span.point.tradable:
-                    member = UniverseMember(
-                        episode=episode,
+            with instants.open() as instant_stream:
+                points = _timeline_stream(deriver, venue_symbol, instant_stream, pit)
+                for span in _spans_stream(points, pit):
+                    listing = span.point.listing
+                    assert listing is not None and span.point.lineage is not None
+                    revision = listing.revision.revision_id
+                    episode = listing.episode
+                    membership = _assumed_of(venue_symbol, span, pit)
+                    if membership is not None:
+                        if assumed_seen:  # pragma: no cover - the assumed window is one span
+                            raise CatalogIntegrityError(
+                                f"{venue_symbol} has two assumed member spans"
+                            )
+                        assumed_seen = True
+                    member: UniverseMember | None = None
+                    exclusion: UniverseExclusion | None = None
+                    if span.point.tradable:
+                        member = UniverseMember(
+                            episode=episode,
+                            listing_revision_id=revision,
+                            effective_from=span.start,
+                            effective_until=span.end,
+                            assumption=None if membership is None else membership.binding,
+                        )
+                    else:
+                        exclusion = UniverseExclusion(
+                            episode=episode,
+                            listing_revision_id=revision,
+                            reason=ExclusionReason.NOT_TRADABLE,
+                            effective_from=span.start,
+                            effective_until=span.end,
+                        )
+                    yield _SpanEvent(
+                        venue_symbol=venue_symbol,
+                        member=member,
+                        exclusion=exclusion,
                         listing_revision_id=revision,
-                        effective_from=span.start,
-                        effective_until=span.end,
-                        assumption=None if membership is None else membership.binding,
+                        lineage=span.point.lineage,
+                        gap=span.point.evidence_gap,
+                        assumed=membership,
                     )
-                else:
-                    exclusion = UniverseExclusion(
-                        episode=episode,
-                        listing_revision_id=revision,
-                        reason=ExclusionReason.NOT_TRADABLE,
-                        effective_from=span.start,
-                        effective_until=span.end,
-                    )
-                lineage: SelectedRevisionLineage | None = None
-                gap: str | None = None
-                if revision not in seen:
-                    seen.add(revision)
-                    lineage = span.point.lineage
-                    gap = span.point.evidence_gap
-                yield _SpanEvent(
-                    venue_symbol=venue_symbol,
-                    member=member,
-                    exclusion=exclusion,
-                    listing_revision_id=revision,
-                    lineage=lineage,
-                    gap=gap,
-                    assumed=membership,
-                )
     finally:
         deriver.close()
 
@@ -681,13 +755,18 @@ def _gap_of(event: _SpanEvent) -> tuple[str, str] | None:
     return (event.listing_revision_id, event.gap)
 
 
+def _gap_candidate_of(event: _SpanEvent) -> tuple[str, str | None]:
+    """Include gap absence so repeated-revision disagreement is still detected during merge."""
+    return (event.listing_revision_id, event.gap)
+
+
 def _assumed_membership_of(event: _SpanEvent) -> AssumedMembership | None:
     return event.assumed
 
 
 @contextmanager
 def _project[T](
-    events: Iterator[_SpanEvent], extract: Callable[[_SpanEvent], T | None]
+    events: Generator[_SpanEvent], extract: Callable[[_SpanEvent], T | None]
 ) -> Iterator[Iterator[T]]:
     """Wrap the shared walk as one explicitly-closed, filtered view (ADR-0077 §5's
     ``ContextManager[Iterator[record]]`` shape). ``events.close()`` always runs on ``__exit__``
@@ -706,6 +785,106 @@ def _project[T](
         yield items()
     finally:
         events.close()
+
+
+@contextmanager
+def _unique_projection[T](
+    events: Generator[_SpanEvent],
+    extract: Callable[[_SpanEvent], T | None],
+    *,
+    revision_key: Callable[[T], str],
+    encode: Callable[[T], Mapping[str, Any]],
+    decode: Callable[[Mapping[str, Any]], T],
+    storage: StorageAdapter,
+    run_params: UniverseRunParams,
+) -> Iterator[Iterator[T]]:
+    """Sort projection candidates by revision and first ordinal, then collapse adjacent copies.
+
+    Every candidate is content-addressed in a bounded run set. Repeated revisions must carry
+    identical evidence; conflicts fail closed. The first ordinal selects the historical first
+    occurrence deterministically without retaining a revision-sized in-memory index.
+    """
+    run_set = RunSetBuilder(
+        storage,
+        key=lambda row: (row["revision"], row["ordinal"]),
+        capacity=run_params.capacity,
+        merge_fanout=run_params.merge_fanout,
+        limits=run_params.limits,
+    )
+    ordinal = 0
+    try:
+        with run_set:
+            for event in events:
+                value = extract(event)
+                if value is None:
+                    continue
+                run_set.add(
+                    {
+                        "revision": revision_key(value),
+                        "ordinal": ordinal,
+                        "record": dict(encode(value)),
+                    }
+                )
+                ordinal += 1
+            root = run_set.finish()
+        if root is None:
+            yield iter(())
+            return
+        with iter_run(storage, root) as rows:
+
+            def unique() -> Generator[T]:
+                previous_revision: str | None = None
+                previous_record: Mapping[str, Any] | None = None
+                for row in rows:
+                    revision = row["revision"]
+                    record = row["record"]
+                    if revision == previous_revision:
+                        if record != previous_record:
+                            raise CatalogIntegrityError(
+                                f"listing revision {revision} has conflicting projected evidence"
+                            )
+                        continue
+                    previous_revision = revision
+                    previous_record = record
+                    yield decode(record)
+
+            iterator = unique()
+            try:
+                yield iterator
+            finally:
+                iterator.close()
+    finally:
+        events.close()
+
+
+@contextmanager
+def _evidence_gap_projection(
+    events: Generator[_SpanEvent],
+    *,
+    storage: StorageAdapter,
+    run_params: UniverseRunParams,
+) -> Iterator[Iterator[tuple[str, str]]]:
+    """Dedupe both gap-bearing and gap-free revisions, then expose only actual gaps."""
+    with _unique_projection(
+        events,
+        _gap_candidate_of,
+        revision_key=lambda item: item[0],
+        encode=lambda item: {"revision_id": item[0], "gap": item[1]},
+        decode=lambda item: (item["revision_id"], item["gap"]),
+        storage=storage,
+        run_params=run_params,
+    ) as candidates:
+
+        def gaps() -> Generator[tuple[str, str]]:
+            for revision, gap in candidates:
+                if gap is not None:
+                    yield revision, gap
+
+        iterator = gaps()
+        try:
+            yield iterator
+        finally:
+            iterator.close()
 
 
 class UniverseSpanCursor:
@@ -727,7 +906,7 @@ class UniverseSpanCursor:
     signature ``() -> AbstractContextManager[Iterator[T]]`` for its stated ``T``; a caller does
     ``with cursor.members() as members:\\n    for member in members: ...``.
     No method takes the ``spec`` / ``pit`` again -- both are fixed at cursor construction
-    (:meth:`UniverseBuilder.cursor`).
+    (:meth:`UniverseBuilder.cursor`), along with the required explicit ``UniverseRunParams``.
 
     ``build()`` / ``UniverseBuilt`` are unchanged and remain the v2 legacy, fully-materialized
     path; this class does not wrap or call them.
@@ -740,17 +919,27 @@ class UniverseSpanCursor:
         origin: str,
         spec: UniverseSelectionSpec,
         pit: PointInTimeSpec,
+        run_params: UniverseRunParams,
     ) -> None:
         _check_spec(spec)
         check_listing_bindings(pit)
+        _validate_run_params(run_params)
         self._adapter = adapter
         self._storage = storage
         self._origin = origin
         self._spec = spec
         self._pit = pit
+        self._run_params = run_params
 
-    def _events(self) -> Iterator[_SpanEvent]:
-        return _events_v3(self._adapter, self._storage, self._origin, self._spec, self._pit)
+    def _events(self) -> Generator[_SpanEvent]:
+        return _events_v3(
+            self._adapter,
+            self._storage,
+            self._origin,
+            self._spec,
+            self._pit,
+            self._run_params,
+        )
 
     def members(self) -> AbstractContextManager[Iterator[UniverseMember]]:
         """Members in generation order: ``spec.symbols`` (already canonical) ascending, then
@@ -773,14 +962,23 @@ class UniverseSpanCursor:
 
     def listing_lineage(self) -> AbstractContextManager[Iterator[SelectedRevisionLineage]]:
         """One entry per distinct ``(venue_symbol, listing_revision_id)`` touched by the walk,
-        first occurrence only: the same revision selected again later by the same symbol's
-        timeline (e.g. a halt/resume returning to it) is not repeated. A revision cannot in fact
+        using the first generated candidate for each revision: the same revision selected again
+        later by the same symbol's timeline (e.g. a halt/resume returning to it) is not repeated.
+        Results are sorted by revision id. A revision cannot in fact
         belong to two symbols (ADR-0024 episode scoping; ``ListingHistory`` enforces one
         ``observation_key`` per ``revision_id``), so this per-symbol de-duplication is also the
         walk's full de-duplication -- no cross-symbol working set is needed. The dataset's other
         lineage hops (raw / source) are B1's responsibility, not this cursor's.
         """
-        return _project(self._events(), _lineage_of)
+        return _unique_projection(
+            self._events(),
+            _lineage_of,
+            revision_key=lambda item: item.canonical_revision_id,
+            encode=lambda item: item.model_dump(mode="json"),
+            decode=SelectedRevisionLineage.model_validate,
+            storage=self._storage,
+            run_params=self._run_params,
+        )
 
     def member_spans(
         self,
@@ -798,7 +996,11 @@ class UniverseSpanCursor:
         ADR-0077 §6.1 item 1 ("...逐项产生成员 / 排除 / lineage / gap") and by B1's
         ``evidence_gaps`` evidence stream, so it is provided alongside the other three.
         """
-        return _project(self._events(), _gap_of)
+        return _evidence_gap_projection(
+            self._events(),
+            storage=self._storage,
+            run_params=self._run_params,
+        )
 
     def assumed(self) -> AbstractContextManager[Iterator[AssumedMembership]]:
         """The v3 form of ``UniverseBuilt.assumed`` (ADR-0051 §3): each member span that exists

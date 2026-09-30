@@ -77,6 +77,9 @@ def _number(item: StateInput) -> Decimal:
 
 
 def _decimal_text(value: str | Decimal) -> Decimal:
+    if isinstance(value, bool):
+        # Decimal(True) is Decimal(1): a boolean must not silently become a threshold.
+        raise ValueError("state parameter must be a decimal, not a boolean")
     try:
         parsed = Decimal(value)
     except (InvalidOperation, ValueError, TypeError):
@@ -279,8 +282,12 @@ class VolatilitySqueezeProvider(_TwoFeatureStateProviderBase):
         squeeze, normal, expansion = spec.state_space
         with localcontext(_CONTEXT):
             ratio = short_value / long_value
-        below = _decimal_text(params["squeeze_below"])
-        above = _decimal_text(params["expansion_above"])
+        below_text = params["squeeze_below"]
+        above_text = params["expansion_above"]
+        if not isinstance(below_text, str) or not isinstance(above_text, str):
+            raise ValueError("method params must contain canonical decimal strings")
+        below = _decimal_text(below_text)
+        above = _decimal_text(above_text)
         if ratio < below:
             label = squeeze
         elif ratio > above:
@@ -355,7 +362,10 @@ class ReturnShockProvider(_TwoFeatureStateProviderBase):
         if item_a is None or item_a.value is None or item_b is None or item_b.value is None:
             return _none(at)
         calm, shock = spec.state_space
-        multiple = _decimal_text(params["k"])
+        multiple_text = params["k"]
+        if not isinstance(multiple_text, str):
+            raise ValueError("method params must contain a canonical decimal string")
+        multiple = _decimal_text(multiple_text)
         with localcontext(_CONTEXT):
             threshold = multiple * _number(item_b)
             triggered = abs(_number(item_a)) > threshold

@@ -4,8 +4,8 @@
 ``N = 10 000 / 100 000 / 500 000``, 3 repeats, D2 row batch 4 096), run under a memory cap, e.g.
 ``systemd-run --user --scope -p MemoryMax=6G -p MemorySwapMax=0 uv run python -m ...``.
 
-This is an **operator diagnostic**, not a test: nothing imports it from ``tests/`` and it imports
-nothing from ``tests/``. It never runs by itself and it changes no production code or data: every
+This is an **operator diagnostic**, not a test: tests import only its pure validation helpers and
+never run a capacity experiment. It changes no production code or data: every
 catalog and warehouse it writes is a throwaway SQLite catalog + local ``file://`` warehouse under
 ``--base``, deleted afterwards.
 
@@ -14,10 +14,13 @@ Which code line it measures
 
 It imports the unmodified production modules of the checkout it is started from (every child runs
 with that checkout as its working directory and reports the path of the normalizer module it
-imported; a path outside the checkout aborts the run). The output records ``git HEAD``, the local ``main`` ref, and
-whether ``core/``, ``infrastructure/`` (except this file), ``plugins/``, ``pyproject.toml`` or
-``uv.lock`` differ from ``main`` or are dirty. Only when they do not is ``code_line.matches_main``
-true; otherwise the result is labelled as **not** a main measurement.
+imported; a path outside the checkout aborts the run). The output records ``git HEAD``, the local
+``main`` ref, and whether ``core/``, ``infrastructure/`` (except this file), ``plugins/``,
+``pyproject.toml`` or
+``uv.lock`` differ from ``main`` or are dirty. The probe's own SHA-256 and clean/dirty state
+relative to ``HEAD`` are recorded separately, and an uncommitted probe cannot satisfy
+``e1_cap1_evidence``. Only when the compared production paths match ``main`` is
+``code_line.matches_main`` true.
 
 The earlier candidate numbers (``resume`` 59.9 MiB / ``replay`` 63.9 MiB cross-scale growth at
 500k) came from the candidate probe on ``fix/e1-cap1@a75278e`` — a different normalizer (spooled
@@ -51,6 +54,28 @@ is excluded from the per-stage growth verdict. Then, in order, each in a new chi
 - ``metadata`` — only ``load_table`` + a ``history_from`` walk of the three tables, repeated for at
   least 0.3 s: the Iceberg snapshot-metadata term (one snapshot per commit) every read also pays.
 
+Optional ADR-0077 v3 Dataset measurement
+========================================
+
+``--dataset-v3`` adds a separate ``dataset_v3_build`` stage at every requested N and repeat. It
+uses the same N-row synthetic aggTrades archive, prepares the first-slice listing and quality
+reports in an unmeasured fixture child, then measures a v3 ``DatasetEvidenceBuilder.build`` plus
+its streaming manifest verifier over the full UTC day ``[2025-06-01T00:00Z, 2025-06-02T00:00Z)``.
+The four DQ-9 rule parameters are mandatory CLI inputs (``--dataset-chunk-rows``,
+``--dataset-leaf-max-records``, ``--dataset-leaf-max-bytes`` and ``--dataset-fanout``); the probe
+chooses no DQ-9 values. Their exact values, fixed upstream sorted-run bounds, fixture identity,
+full-day window, result IDs/counts, code line and RSS samples are recorded. The v3 stage gets its
+own full-range ``growth_mib`` verdict against the same fixed 32 MiB limit; it does not alter the
+normalizer E1-CAP-1 verdict or mark DQ-9 accepted.
+
+The fixture child (``dataset_v3_setup``) is self-sufficient: without ``--unit`` it ingests the
+synthetic archive itself, then normalizes the unit (a replay when the normalizer stages already
+committed it) and reports ``unit`` and ``canonical_rows``. A ``dataset_v3_build`` child run
+without explicit DQ-9 inputs (a smoke / diagnostic build) uses the probe's fixed
+``_DATASET_V3_DIAGNOSTIC_*`` rule and PIT / Universe run bounds; those are probe choices, never
+DQ-9 decisions (``_DATASET_V3_DQ9_ACCEPTED`` is ``False``). Every build reports
+``expected_row_count``, ``diagnostic_only=True`` and the ``dq9_parameters`` it actually used.
+
 Each stage's result is checked (rows proven, crash point, commits already committed / replayed,
 the proven batch holds the row) and a wrong fixture state fails the run closed. Every stage's API
 result object (e.g. ``CanonicalUnitNormalized``) stays referenced for a
@@ -83,8 +108,9 @@ Optional staged allocation diagnostics
 ``--staged-diagnostics`` instruments the probe child to count public CatalogAdapter calls,
 manifest-list entries, live manifest entries and data-file reads visited by the bounded snapshot
 scanner, plus any remaining high-level planner calls and planned tasks. Manifest and entry counts
-include both scanner passes; early termination can make the second pass partial. It also reports retained
-``tracemalloc`` deltas by source path and a reachable-Python-size estimate for the held result.
+include both scanner passes; early termination can make the second pass partial. It also reports
+retained ``tracemalloc`` deltas by source path and a reachable-Python-size estimate for the held
+result.
 Scanner counters count yielded entries / started reads, not bytes; manifest-list bytes are not
 counted separately.
 This mode changes child memory and timing, so its RSS is diagnostic only and can never satisfy
@@ -141,6 +167,7 @@ import math
 import os
 import platform
 import shutil
+import signal
 import statistics
 import subprocess
 import sys
@@ -155,7 +182,7 @@ from dataclasses import dataclass, field, fields, is_dataclass
 from datetime import UTC, datetime, timedelta
 from importlib import metadata
 from pathlib import Path
-from typing import Any, Final
+from typing import Any, Final, NoReturn, cast
 
 from pyiceberg.catalog.sql import SqlCatalog
 from pyiceberg.expressions import And, EqualTo, GreaterThanOrEqual, LessThanOrEqual
@@ -170,23 +197,68 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_TRADES,
 )
 from infrastructure.collector.binance_archive import ARCHIVE_SOURCE, COLLECTOR_ID, COLLECTOR_VERSION
+from infrastructure.dataset.builder import (
+    DatasetEvidenceRequest,
+    dataset_evidence_rule,
+)
+from infrastructure.dataset.sources import UniverseRunParams
+from infrastructure.pit.runs import RunLimits
+from infrastructure.pit.selector import PitRunParams
 from infrastructure.pit.view import PinnedCatalogView
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
 from infrastructure.revision.row_integrity import PersistedRowVerifier, history_from
+from infrastructure.settings import local_file_uri_to_path
 from infrastructure.storage import LocalFileStorageAdapter
 from infrastructure.tools.capacity_probe import (
-    DATA_TYPE,
-    SYMBOL,
     _KNOWLEDGE_INGEST,
     _KNOWLEDGE_NORMALIZE,
+    DATA_TYPE,
+    REST_BASE,
+    SYMBOL,
     _agg_trade_lines,
+    _dataset_pipeline,
+    _dataset_pit_spec,
+    _prepare_dataset_quality,
+    _prepare_listings,
+    _prepare_rest_fixture,
     _publish_archive,
+    _scratch_storage,
 )
+from infrastructure.tools.capacity_probe import (
+    DAY as PROBE_DAY,
+)
+from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 
 __all__ = ["GROWTH_LIMIT_MIB", "main", "run_probe"]
 
 PROBE: Final = "infrastructure.tools.normalizer_memory_probe"
-STAGES: Final = ("verify_archive", "write_crash", "resume", "replay", "read_batch", "metadata")
+#: The normalizer E1-CAP-1 stages, run at every N and repeat and judged by the capacity verdict.
+NORMALIZER_STAGES: Final = (
+    "verify_archive",
+    "write_crash",
+    "resume",
+    "replay",
+    "read_batch",
+    "metadata",
+)
+DATASET_V3_STAGE: Final = "dataset_v3_build"
+#: Unmeasured fixture child for the v3 Dataset stage (emits the ``dataset_setup`` event).
+DATASET_V3_SETUP_STAGE: Final = "dataset_v3_setup"
+#: Every measured stage a child can run. ``dataset_v3_build`` is its own verdict, never E1-CAP-1.
+STAGES: Final = (*NORMALIZER_STAGES, DATASET_V3_STAGE)
+DATASET_V3_RULE_KEYS: Final = (
+    "chunk_rows",
+    "leaf_max_records",
+    "leaf_max_bytes",
+    "fanout",
+)
+DATASET_V3_DAY_START: Final = datetime(PROBE_DAY.year, PROBE_DAY.month, PROBE_DAY.day, tzinfo=UTC)
+DATASET_V3_DAY_END: Final = DATASET_V3_DAY_START + timedelta(days=1)
+# ADR-0077 leaves these source-run sizes to callers. Keep a separately reported, fixed probe
+# configuration; do not substitute these for the four explicit DQ-9 DatasetRule parameters.
+DATASET_V3_SOURCE_RUN_RECORDS: Final = 256
+DATASET_V3_SOURCE_RUN_BYTES: Final = 4 * 1024 * 1024
+DATASET_V3_SOURCE_RUN_FANOUT: Final = 8
 RUNTIMES: Final[dict[str, dict[str, str]]] = {
     "controlled": {
         "ARROW_DEFAULT_MEMORY_POOL": "system",
@@ -204,6 +276,34 @@ PROTOCOL_MIN_REPEATS: Final = 3
 DEFAULT_SIZES: Final = PROTOCOL_SIZES
 DEFAULT_MICROBATCH: Final = PROTOCOL_MICROBATCH
 DEFAULT_REPEATS: Final = PROTOCOL_MIN_REPEATS
+# Fixed, diagnostic-only v3 Dataset parameters: used when a ``dataset_v3_build`` child is run
+# without explicit DQ-9 inputs (a smoke / diagnostic build). They are probe choices, not DQ-9
+# decisions: ADR-0077 DQ-9 stays OPEN, so a build using them can never be E1-CAP-1 evidence.
+_DATASET_V3_DIAGNOSTIC_MERGE_FANOUT: Final = 4
+_DATASET_V3_DIAGNOSTIC_RULE: Final[dict[str, int]] = {
+    "chunk_rows": PROTOCOL_MICROBATCH,
+    "leaf_max_records": 1_000,
+    "leaf_max_bytes": 1 << 20,
+    "fanout": _DATASET_V3_DIAGNOSTIC_MERGE_FANOUT,
+}
+_DATASET_V3_DIAGNOSTIC_PIT: Final[dict[str, int]] = {
+    "row_batch_rows": PROTOCOL_MICROBATCH,
+    "edge_batch_rows": PROTOCOL_MICROBATCH,
+    "merge_fanout": _DATASET_V3_DIAGNOSTIC_MERGE_FANOUT,
+    "key_history_buffer": PROTOCOL_MICROBATCH,
+    "leaf_max_records": DATASET_V3_SOURCE_RUN_RECORDS,
+    "leaf_max_bytes": DATASET_V3_SOURCE_RUN_BYTES,
+    "fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+}
+_DATASET_V3_DIAGNOSTIC_UNIVERSE: Final[dict[str, int]] = {
+    "capacity": PROTOCOL_MICROBATCH,
+    "merge_fanout": _DATASET_V3_DIAGNOSTIC_MERGE_FANOUT,
+    "leaf_max_records": DATASET_V3_SOURCE_RUN_RECORDS,
+    "leaf_max_bytes": DATASET_V3_SOURCE_RUN_BYTES,
+    "fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+}
+#: No probe value is an accepted DQ-9 decision.
+_DATASET_V3_DQ9_ACCEPTED: Final = False
 #: D2's own row batch: one fixed value for every N (the verifier re-reads the touched ones).
 DEFAULT_D2_BATCH: Final = 4_096
 #: Same guard as ``capacity_probe``: main keeps O(N) state, so above this a cap is required.
@@ -244,6 +344,40 @@ class ProbeError(Exception):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(message)
         self.details = details or {}
+
+
+class ProbeInterrupted(Exception):
+    """A parent-process interruption that must never be reported as an RSS verdict."""
+
+    def __init__(self, signum: int) -> None:
+        self.signum = signum
+        try:
+            name = signal.Signals(signum).name
+        except ValueError:
+            name = str(signum)
+        super().__init__(f"probe interrupted by {name}")
+
+
+@contextmanager
+def _parent_interrupt_handlers() -> Iterator[None]:
+    """Turn parent SIGINT/SIGTERM into catchable interruptions while children are active."""
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+    previous: dict[int, Any] = {}
+
+    def interrupt(signum: int, _frame: Any) -> NoReturn:
+        raise ProbeInterrupted(signum)
+
+    signals = (signal.SIGINT, signal.SIGTERM)
+    try:
+        for signum in signals:
+            previous[signum] = signal.getsignal(signum)
+            signal.signal(signum, interrupt)
+        yield
+    finally:
+        for previous_signum, handler in previous.items():
+            signal.signal(previous_signum, handler)
 
 
 class _ProbeCrash(Exception):
@@ -331,8 +465,9 @@ class _CountingAdapter:
 @contextmanager
 def _count_scan_work(diagnostics: _StageDiagnostics) -> Iterator[None]:
     """Count actual bounded-scanner work and any remaining high-level planner work."""
-    from infrastructure.catalog import iceberg_adapter
     from pyiceberg.table import ManifestGroupPlanner
+
+    from infrastructure.catalog import iceberg_adapter
 
     original_manifests = iceberg_adapter._manifest_files
     original_entries = iceberg_adapter._live_entries
@@ -373,16 +508,16 @@ def _count_scan_work(diagnostics: _StageDiagnostics) -> Iterator[None]:
             diagnostics.high_level_file_scan_tasks_planned += len(tasks)
         return tasks
 
-    setattr(iceberg_adapter, "_manifest_files", counted_manifests)
-    setattr(iceberg_adapter, "_live_entries", counted_entries)
-    setattr(iceberg_adapter, "_data_file_batches", counted_data_files)
-    ManifestGroupPlanner.plan_files = counted_plan_files  # type: ignore[method-assign]
+    iceberg_adapter._manifest_files = counted_manifests
+    iceberg_adapter._live_entries = counted_entries
+    iceberg_adapter._data_file_batches = counted_data_files
+    ManifestGroupPlanner.plan_files = counted_plan_files  # type: ignore[assignment]
     try:
         yield
     finally:
-        setattr(iceberg_adapter, "_manifest_files", original_manifests)
-        setattr(iceberg_adapter, "_live_entries", original_entries)
-        setattr(iceberg_adapter, "_data_file_batches", original_data_files)
+        iceberg_adapter._manifest_files = original_manifests
+        iceberg_adapter._live_entries = original_entries
+        iceberg_adapter._data_file_batches = original_data_files
         ManifestGroupPlanner.plan_files = original_plan_files  # type: ignore[method-assign]
 
 
@@ -494,6 +629,11 @@ def _emit(event: str, **facts: Any) -> None:
     print(_EVENT_PREFIX + json.dumps({"event": event, "t": time.monotonic(), **facts}), flush=True)
 
 
+def _canonical_scratch_directory() -> Path:
+    """Keep probe position indexes under its per-child disk-backed TMPDIR."""
+    return Path(tempfile.gettempdir()) / "hlens-canonical-scratch"
+
+
 # ============================================================================================
 # child: fixture setup and measured stages
 # ============================================================================================
@@ -516,6 +656,128 @@ def _setup(workdir: Path, rows: int, d2_batch: int) -> dict[str, Any]:
         if not isinstance(outcome, ArchiveIngested):
             raise ProbeError(f"the synthetic archive was not ingested: {outcome!r}")
         return {"unit": outcome.archive_revision_id}
+
+
+def _validate_dataset_v3_config(config: Mapping[str, int]) -> dict[str, int]:
+    """Validate explicit DQ-9 inputs without choosing or defaulting any parameter."""
+    if set(config) != set(DATASET_V3_RULE_KEYS):
+        missing = sorted(set(DATASET_V3_RULE_KEYS) - set(config))
+        extra = sorted(set(config) - set(DATASET_V3_RULE_KEYS))
+        raise ValueError(f"Dataset v3 rule parameters incomplete: missing={missing}, extra={extra}")
+    if any(
+        isinstance(config[key], bool) or not isinstance(config[key], int) or config[key] < 1
+        for key in DATASET_V3_RULE_KEYS
+    ):
+        raise ValueError("Dataset v3 DQ-9 parameters must be positive integers")
+    # The factory owns the parameter constraints (including fanout >= 2 and a usable evidence
+    # leaf size). Its values are supplied by the caller and become the measured rule hash.
+    dataset_evidence_rule(**dict(config))
+    return {key: config[key] for key in DATASET_V3_RULE_KEYS}
+
+
+def _dataset_v3_scratch_root(workdir: Path) -> Path:
+    """Quality reporter / join scratch: a sibling of the evidence warehouse, never inside it."""
+    return workdir / "quality-scratch"
+
+
+def _prepare_dataset_v3_fixture(
+    workdir: Path, rows: int, microbatch: int, d2_batch: int, unit: str | None
+) -> dict[str, Any]:
+    """Prepare the full-day Dataset's inputs outside the measured child.
+
+    Without ``unit`` the world is created from scratch (the synthetic archive is ingested first);
+    with it, the normalizer stages' world is reused. Either way the unit is normalized (a replay
+    when the ``resume`` stage already committed it) and must hold exactly ``rows`` Canonical rows.
+    The v3 canonical partition reports bind both channels' raw snapshots (ADR-0093), so the same
+    REST tail the capacity probe uses is committed, normalized and reconciled before the listing
+    and quality inputs.
+    """
+    if unit is None:
+        unit = str(_setup(workdir, rows, d2_batch)["unit"])
+    with _opened(workdir) as (adapter, storage):
+        with CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=_Clock(_KNOWLEDGE_NORMALIZE),
+            microbatch_rows=microbatch,
+        ) as normalizer:
+            normalized = normalizer.normalize_unit(_RAW, unit)
+        if normalized.revision_count != rows:
+            raise ProbeError(
+                f"Dataset v3 setup normalized {normalized.revision_count} of {rows} archive rows"
+            )
+        _prepare_rest_fixture(
+            adapter, storage, rows, canonical_scratch_directory=_canonical_scratch_directory()
+        )
+        _prepare_listings(adapter, storage)
+        _prepare_dataset_quality(
+            adapter,
+            storage,
+            canonical_scratch_directory=_canonical_scratch_directory(),
+            scratch_root=_dataset_v3_scratch_root(workdir),
+        )
+        pit = _dataset_pit_spec(adapter)
+        return {
+            "unit": unit,
+            "canonical_rows": normalized.revision_count,
+            "window_start": DATASET_V3_DAY_START.isoformat(),
+            "window_end_exclusive": DATASET_V3_DAY_END.isoformat(),
+            "data_type": DATA_TYPE,
+            "universe_symbols": sorted(FIRST_SLICE_UNIVERSE.symbols),
+            "pit_spec_hash": pit.content_hash(),
+            "listing_and_quality_inputs_prepared": True,
+        }
+
+
+def _dataset_v3_diagnostic_source_params() -> tuple[PitRunParams, UniverseRunParams]:
+    """The fixed diagnostic PIT / Universe run bounds (never DQ-9 decisions)."""
+    pit = _DATASET_V3_DIAGNOSTIC_PIT
+    universe = _DATASET_V3_DIAGNOSTIC_UNIVERSE
+    return (
+        PitRunParams(
+            row_batch_rows=pit["row_batch_rows"],
+            edge_batch_rows=pit["edge_batch_rows"],
+            merge_fanout=pit["merge_fanout"],
+            key_history_buffer=pit["key_history_buffer"],
+            limits=RunLimits(
+                leaf_max_records=pit["leaf_max_records"],
+                leaf_max_bytes=pit["leaf_max_bytes"],
+                fanout=pit["fanout"],
+            ),
+        ),
+        UniverseRunParams(
+            capacity=universe["capacity"],
+            merge_fanout=universe["merge_fanout"],
+            limits=RunLimits(
+                leaf_max_records=universe["leaf_max_records"],
+                leaf_max_bytes=universe["leaf_max_bytes"],
+                fanout=universe["fanout"],
+            ),
+        ),
+    )
+
+
+def _dataset_v3_source_params(microbatch: int) -> tuple[PitRunParams, UniverseRunParams]:
+    """The upstream source-run bounds are fixed and reported separately from DQ-9."""
+    limits = RunLimits(
+        leaf_max_records=DATASET_V3_SOURCE_RUN_RECORDS,
+        leaf_max_bytes=DATASET_V3_SOURCE_RUN_BYTES,
+        fanout=DATASET_V3_SOURCE_RUN_FANOUT,
+    )
+    pit = PitRunParams(
+        row_batch_rows=microbatch,
+        edge_batch_rows=microbatch,
+        merge_fanout=DATASET_V3_SOURCE_RUN_FANOUT,
+        key_history_buffer=microbatch,
+        limits=limits,
+    )
+    universe = UniverseRunParams(
+        capacity=DATASET_V3_SOURCE_RUN_RECORDS,
+        merge_fanout=DATASET_V3_SOURCE_RUN_FANOUT,
+        limits=limits,
+    )
+    return pit, universe
 
 
 def _unit_prefix(unit: str) -> str:
@@ -559,9 +821,7 @@ def _crash_after(rows: int, microbatch: int) -> int:
     return max(1, -(-rows // microbatch) // 2)
 
 
-def _first_scanned_value(
-    adapter: Any, table: str, column: str, row_filter: Any
-) -> Any | None:
+def _first_scanned_value(adapter: Any, table: str, column: str, row_filter: Any) -> Any | None:
     """Read one projected value through the bounded interface and close on the first batch."""
     reader = adapter.scan_column_batches(table, columns=(column,), row_filter=row_filter)
     try:
@@ -582,9 +842,77 @@ def _stage(
     unit: str,
     rows: int,
     microbatch: int,
+    dataset_v3_config: Mapping[str, int] | None = None,
 ) -> Callable[[], tuple[dict[str, Any], object]]:
     """A closure doing only the measured work; returns (facts, the API result to hold)."""
     batches = -(-rows // microbatch)
+
+    if stage == DATASET_V3_STAGE:
+        if dataset_v3_config is None:
+            # A diagnostic build: the probe's fixed parameters, reported as such, never DQ-9.
+            rule_parameters = dict(_DATASET_V3_DIAGNOSTIC_RULE)
+            pit_params, universe_params = _dataset_v3_diagnostic_source_params()
+        else:
+            rule_parameters = _validate_dataset_v3_config(dataset_v3_config)
+            pit_params, universe_params = _dataset_v3_source_params(microbatch)
+        scratch_root = _dataset_v3_scratch_root(
+            local_file_uri_to_path(storage.warehouse_uri, field_name="warehouse_uri").parent
+        )
+
+        def build_dataset() -> tuple[dict[str, Any], object]:
+            pit = _dataset_pit_spec(adapter)
+            request = DatasetEvidenceRequest(
+                universe=FIRST_SLICE_UNIVERSE,
+                pit=pit,
+                data_type=DATA_TYPE,
+                start=DATASET_V3_DAY_START,
+                end=DATASET_V3_DAY_END,
+            )
+
+            with _scratch_storage(scratch_root, "dataset-quality-join") as quality_scratch:
+                pipeline = _dataset_pipeline(
+                    adapter,
+                    storage,
+                    rule_parameters=rule_parameters,
+                    pit_params=pit_params,
+                    universe_params=universe_params,
+                    canonical_scratch_directory=_canonical_scratch_directory(),
+                    quality_scratch=quality_scratch,
+                )
+                summary = pipeline.build(request)
+            if summary.row_count != rows:
+                raise ProbeError(
+                    f"full-day Dataset selected {summary.row_count} rows, expected {rows}"
+                )
+            return {
+                "window_start": request.start.isoformat(),
+                "window_end_exclusive": request.end.isoformat(),
+                "data_type": request.data_type,
+                "universe_symbols": sorted(request.universe.symbols),
+                "selection_id": summary.selection_id,
+                "manifest_hash": summary.manifest_hash,
+                "dataset_snapshot_id": summary.dataset.snapshot_id,
+                "row_count": summary.row_count,
+                "expected_row_count": rows,
+                "chunk_count": summary.chunk_count,
+                "replayed_chunk_count": summary.replayed_chunk_count,
+                "manifest_replayed": summary.manifest_replayed,
+                "evidence_streams": {
+                    ref.stream.value: {
+                        "record_count": ref.record_count,
+                        "leaf_count": ref.leaf_count,
+                        "depth": ref.depth,
+                        "root_sha256": ref.root.sha256,
+                        "root_size": ref.root.size,
+                    }
+                    for ref in summary.evidence
+                },
+                # DQ-9 stays OPEN: whatever the rule values, this build is diagnostic only.
+                "diagnostic_only": not _DATASET_V3_DQ9_ACCEPTED,
+                "dq9_parameters": dict(rule_parameters),
+            }, summary
+
+        return build_dataset
 
     if stage == "verify_archive":
         view = PinnedCatalogView(adapter, _heads(adapter))
@@ -619,7 +947,9 @@ def _stage(
                 verifier.verify_archive_elements(BINANCE_SPOT_AGG_TRADES, DATA_TYPE, SYMBOL, window)
                 proven += len(window)
             if lines != rows or proven != rows:
-                raise ProbeError(f"verify_archive proved {proven} of {lines} lines, expected {rows}")
+                raise ProbeError(
+                    f"verify_archive proved {proven} of {lines} lines, expected {rows}"
+                )
             return {"lines": lines, "rows_proven": proven}, verifier
 
         return verify
@@ -630,7 +960,13 @@ def _stage(
             raise ProbeError("write_crash needs a plan of at least two batches (N > M)")
         clock = _Clock(_KNOWLEDGE_NORMALIZE)
         proxy = _CrashAfter(adapter, crash_after)
-        writer = CanonicalNormalizer(proxy, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            proxy,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
 
         def write_crash() -> tuple[dict[str, Any], object]:
             try:
@@ -651,7 +987,13 @@ def _stage(
 
     if stage in ("resume", "replay"):
         clock = _Clock(_KNOWLEDGE_NORMALIZE + timedelta(hours=1))
-        writer = CanonicalNormalizer(adapter, storage, clock=clock, microbatch_rows=microbatch)
+        writer = CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=clock,
+            microbatch_rows=microbatch,
+        )
         crash_after = _crash_after(rows, microbatch)
 
         def normalize() -> tuple[dict[str, Any], object]:
@@ -711,7 +1053,10 @@ def _stage(
             raise ProbeError(f"no committed row inside batch {batch_id}")
         row = found_row
         reader = CanonicalNormalizer(
-            PinnedCatalogView(adapter, _heads(adapter)), storage, microbatch_rows=microbatch
+            PinnedCatalogView(adapter, _heads(adapter)),
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            microbatch_rows=microbatch,
         )
 
         def read_batch() -> tuple[dict[str, Any], object]:
@@ -754,13 +1099,22 @@ def _child_stage(
     microbatch: int,
     *,
     staged_diagnostics: bool,
+    dataset_v3_config: Mapping[str, int] | None = None,
 ) -> None:
     with _opened(workdir) as (inner_adapter, storage):
         diagnostics = _StageDiagnostics()
         adapter = (
             _CountingAdapter(inner_adapter, diagnostics) if staged_diagnostics else inner_adapter
         )
-        body = _stage(stage, adapter, storage, unit, rows, microbatch)
+        body = _stage(
+            stage,
+            cast(PyIcebergCatalogAdapter, adapter),
+            storage,
+            unit,
+            rows,
+            microbatch,
+            dataset_v3_config,
+        )
         gc.collect()
         _emit("ready", vmhwm_kb=_status_kb("VmHWM"), vmrss_kb=_status_kb("VmRSS"))
         time.sleep(_SETTLE_SECONDS)
@@ -771,15 +1125,14 @@ def _child_stage(
             before = tracemalloc.take_snapshot()
         _emit("start")
         started = time.perf_counter()
-        counter_scope = (
-            _count_scan_work(diagnostics) if staged_diagnostics else nullcontext()
-        )
+        counter_scope = _count_scan_work(diagnostics) if staged_diagnostics else nullcontext()
         with counter_scope:
             facts, held = body()
         wall = time.perf_counter() - started
         time.sleep(_HOLD_SECONDS)  # ``held`` is still referenced: its residency is sampled
         _emit(
             "end",
+            stage=stage,
             stage_seconds=round(wall, 3),
             hold_seconds=_HOLD_SECONDS,
             vmhwm_kb=_status_kb("VmHWM"),
@@ -795,9 +1148,7 @@ def _child_stage(
                 data_file_reads_started=diagnostics.data_file_reads_started,
                 high_level_plan_calls=diagnostics.high_level_plan_calls,
                 high_level_manifests_considered=diagnostics.high_level_manifests_considered,
-                high_level_file_scan_tasks_planned=(
-                    diagnostics.high_level_file_scan_tasks_planned
-                ),
+                high_level_file_scan_tasks_planned=(diagnostics.high_level_file_scan_tasks_planned),
                 tracemalloc_retained_deltas=_allocation_deltas(before, after),
                 held_result={
                     "type": f"{type(held).__module__}.{type(held).__qualname__}",
@@ -821,7 +1172,20 @@ def _child_main(args: argparse.Namespace) -> int:
     try:
         if args.stage == "setup":
             _emit("setup", **_setup(args.workdir, args.unit_rows, args.d2_batch))
+        elif args.stage == DATASET_V3_SETUP_STAGE:
+            _emit(
+                "dataset_setup",
+                **_prepare_dataset_v3_fixture(
+                    args.workdir, args.unit_rows, args.microbatch, args.d2_batch, args.unit
+                ),
+            )
         else:
+            dataset_v3_config = None
+            if args.dataset_v3_config_json is not None:
+                decoded = json.loads(args.dataset_v3_config_json)
+                if not isinstance(decoded, dict):
+                    raise ProbeError("Dataset v3 config must be a JSON object")
+                dataset_v3_config = _validate_dataset_v3_config(decoded)
             _child_stage(
                 args.stage,
                 args.workdir,
@@ -829,6 +1193,7 @@ def _child_main(args: argparse.Namespace) -> int:
                 args.unit_rows,
                 args.microbatch,
                 staged_diagnostics=args.staged_diagnostics,
+                dataset_v3_config=dataset_v3_config,
             )
     except BaseException as exc:  # noqa: BLE001 - reported to the parent, then re-signalled
         traceback.print_exc(file=sys.stderr)
@@ -879,9 +1244,10 @@ def _run_child(
     )
     samples: list[tuple[float, int]] = []
     state: dict[str, Any] = {"guard": None, "timed_out": False}
+    stop_sampler = threading.Event()
 
     def sample() -> None:
-        while process.poll() is None:
+        while not stop_sampler.is_set() and process.poll() is None:
             now = time.monotonic()
             rss = _status_kb("VmRSS", process.pid)
             if rss is not None:
@@ -892,12 +1258,33 @@ def _run_child(
             if now - started > timeout and not state["timed_out"]:
                 state["timed_out"] = True
                 process.kill()
-            time.sleep(interval)
+            if stop_sampler.wait(interval):
+                break
 
     sampler = threading.Thread(target=sample, daemon=True)
-    sampler.start()
-    stdout, stderr = process.communicate()
-    sampler.join()
+    try:
+        sampler.start()
+        stdout, stderr = process.communicate()
+        stop_sampler.set()
+        sampler.join()
+    except BaseException:
+        # SIGINT/SIGTERM and KeyboardInterrupt must not orphan the active measurement child.
+        stop_sampler.set()
+        try:
+            if process.poll() is None:
+                process.kill()
+        except OSError:
+            pass
+        try:
+            process.communicate()
+        except BaseException:
+            try:
+                process.wait()
+            except BaseException:
+                pass
+        if sampler.ident is not None:
+            sampler.join()
+        raise
     events: list[dict[str, Any]] = []
     for line in stdout.splitlines():
         if line.startswith(_EVENT_PREFIX):
@@ -1113,6 +1500,19 @@ def _git(*args: str) -> str | None:
     return done.stdout.strip() if done.returncode == 0 else None
 
 
+def _probe_identity(sha256: str | None, status: str | None) -> dict[str, Any]:
+    """Describe this probe source and whether the working file differs from ``HEAD``."""
+    relative_to_head = (
+        "unknown" if sha256 is None or status is None else ("dirty" if status else "clean")
+    )
+    return {
+        "path": _SELF,
+        "sha256": sha256,
+        "relative_to_head": relative_to_head,
+        "matches_head": relative_to_head == "clean",
+    }
+
+
 def _code_line() -> dict[str, Any]:
     """Whether the imported production code is the local ``main`` code line (this file aside)."""
     pathspec = ["--", *_CODE_PATHS, f":(exclude){_SELF}"]
@@ -1120,8 +1520,10 @@ def _code_line() -> dict[str, Any]:
     main_ref = _git("rev-parse", "--verify", "--quiet", "refs/heads/main")
     diff = None if main_ref is None else _git("diff", "--name-only", main_ref, *pathspec)
     dirty = _git("status", "--porcelain", "--untracked-files=all", *pathspec)
+    probe_dirty = _git("status", "--porcelain", "--untracked-files=all", "--", _SELF)
     differing = None if diff is None else [line for line in diff.splitlines() if line]
     dirty_lines = None if dirty is None else [line for line in dirty.splitlines() if line]
+    probe = _probe_identity(_file_sha256(_ROOT / _SELF), probe_dirty)
     return {
         "root": str(_ROOT),
         "head": head,
@@ -1135,6 +1537,7 @@ def _code_line() -> dict[str, Any]:
         ),
         "compared_paths": list(_CODE_PATHS),
         "excluded": _SELF,
+        "probe_source": probe,
         "differs_from_main": differing,
         "dirty": dirty_lines,
         "matches_main": differing == [] and dirty_lines == [],
@@ -1197,6 +1600,7 @@ def _child_args(
     unit: str | None,
     *,
     staged_diagnostics: bool,
+    dataset_v3_config: Mapping[str, int] | None = None,
 ) -> list[str]:
     args = [
         "--stage",
@@ -1209,14 +1613,15 @@ def _child_args(
     ]
     if unit is not None:
         args.append(f"--unit={unit}")
-    if staged_diagnostics and stage != "setup":
+    if dataset_v3_config is not None:
+        args.append("--dataset-v3-config-json")
+        args.append(json.dumps(_validate_dataset_v3_config(dataset_v3_config), sort_keys=True))
+    if staged_diagnostics and stage not in ("setup", DATASET_V3_SETUP_STAGE):
         args.append("--stage-diagnostics")
     return args
 
 
-def _write_samples(
-    handle: Any, rows: int, repeat: int, stage: str, run: _ChildRun
-) -> None:
+def _write_samples(handle: Any, rows: int, repeat: int, stage: str, run: _ChildRun) -> None:
     if handle is None:
         return
     origin = run.samples[0][0] if run.samples else 0.0
@@ -1226,9 +1631,7 @@ def _write_samples(
                 "rows": rows,
                 "repeat": repeat,
                 "stage": stage,
-                "events": [
-                    {**event, "t": round(event["t"] - origin, 4)} for event in run.events
-                ],
+                "events": [{**event, "t": round(event["t"] - origin, 4)} for event in run.events],
                 "samples": [[round(t - origin, 4), kb] for t, kb in run.samples],
             }
         )
@@ -1250,6 +1653,7 @@ def run_probe(
     samples_out: Path | None = None,
     keep_workdirs: bool = False,
     staged_diagnostics: bool = False,
+    dataset_v3_config: Mapping[str, int] | None = None,
 ) -> dict[str, Any]:
     """Measure every stage at every N, ``repeats`` times; never raises for a failed child."""
     _validate_sizes(sizes)
@@ -1259,14 +1663,40 @@ def run_probe(
         raise ValueError("the RSS sample interval must be finite and greater than zero")
     if min(config.values()) < 1:
         raise ValueError("microbatch and D2 batch sizes must be positive")
+    if dataset_v3_config is not None:
+        dataset_v3_config = _validate_dataset_v3_config(dataset_v3_config)
     code_line = _code_line()
     conformance = {
         "microbatch_is_256": config["microbatch"] == PROTOCOL_MICROBATCH,
         "sizes_include_10k_100k_500k": set(PROTOCOL_SIZES) <= set(sizes),
         "repeats_at_least_3": repeats >= PROTOCOL_MIN_REPEATS,
         "code_line_matches_main": code_line["matches_main"] is True,
+        "probe_matches_head": code_line["probe_source"]["matches_head"] is True,
         "staged_diagnostics_disabled": not staged_diagnostics,
     }
+    dataset_measurement: dict[str, Any] = (
+        {"status": "not_requested"}
+        if dataset_v3_config is None
+        else {
+            "status": "requested",
+            "stage": DATASET_V3_STAGE,
+            "rule_parameters": dict(dataset_v3_config),
+            "day_window": {
+                "start": DATASET_V3_DAY_START.isoformat(),
+                "end_exclusive": DATASET_V3_DAY_END.isoformat(),
+            },
+            "source_run_parameters": {
+                "leaf_max_records": DATASET_V3_SOURCE_RUN_RECORDS,
+                "leaf_max_bytes": DATASET_V3_SOURCE_RUN_BYTES,
+                "fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+                "pit_row_batch_rows": config["microbatch"],
+                "pit_edge_batch_rows": config["microbatch"],
+                "pit_key_history_buffer": config["microbatch"],
+                "universe_capacity": DATASET_V3_SOURCE_RUN_RECORDS,
+                "universe_merge_fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+            },
+        }
+    )
     document: dict[str, Any] = {
         "probe": PROBE,
         "measures": "the checkout's own production code; see code_line.matches_main",
@@ -1275,7 +1705,8 @@ def run_probe(
             "sizes": list(sizes),
             "repeats": repeats,
             **config,
-            "stages": list(STAGES),
+            "stages": list(NORMALIZER_STAGES)
+            + ([DATASET_V3_STAGE] if dataset_v3_config is not None else []),
             "sample_interval_seconds": interval,
             "settle_seconds": _SETTLE_SECONDS,
             "hold_seconds": _HOLD_SECONDS,
@@ -1292,8 +1723,10 @@ def run_probe(
         "code_line": code_line,
         "environment": _environment(base, runtime),
         "protocol_conformance": conformance,
+        "dataset_v3_measurement": dataset_measurement,
         "results": [],
         "setups": [],
+        "cleanup_warnings": [],
     }
     results: list[dict[str, Any]] = document["results"]
     rss_limit_kb = child_rss_limit_mib * 1024
@@ -1334,7 +1767,7 @@ def run_probe(
                             ),
                         }
                     )
-                    for stage in STAGES:
+                    for stage in NORMALIZER_STAGES:
                         run = _run_child(
                             _child_args(
                                 stage,
@@ -1361,15 +1794,105 @@ def run_probe(
                         results.append(record)
                         progress = {k: v for k, v in record.items() if not k.endswith("_kb")}
                         print(json.dumps(progress), file=sys.stderr, flush=True)
+                    if dataset_v3_config is not None:
+                        fixture = _run_child(
+                            _child_args(
+                                DATASET_V3_SETUP_STAGE,
+                                workdir,
+                                rows,
+                                config,
+                                unit,
+                                staged_diagnostics=False,
+                            ),
+                            temp_dir=workdir,
+                            runtime=runtime,
+                            interval=interval,
+                            timeout=child_timeout,
+                            rss_limit_kb=rss_limit_kb,
+                        )
+                        if "dataset_setup" not in fixture.by_event:
+                            raise ProbeError(
+                                f"Dataset fixture child for N={rows} reported no setup facts"
+                            )
+                        fixture_facts = fixture.by_event["dataset_setup"]
+                        dataset_run = _run_child(
+                            _child_args(
+                                DATASET_V3_STAGE,
+                                workdir,
+                                rows,
+                                config,
+                                unit,
+                                staged_diagnostics=staged_diagnostics,
+                                dataset_v3_config=dataset_v3_config,
+                            ),
+                            temp_dir=workdir,
+                            runtime=runtime,
+                            interval=interval,
+                            timeout=child_timeout,
+                            rss_limit_kb=rss_limit_kb,
+                        )
+                        _write_samples(handle, rows, repeat, DATASET_V3_STAGE, dataset_run)
+                        dataset_record = {
+                            "rows": rows,
+                            "repeat": repeat,
+                            "stage": DATASET_V3_STAGE,
+                            "fixture": fixture_facts,
+                            "rule_parameters": dict(dataset_v3_config),
+                            **_attribute(dataset_run, interval),
+                        }
+                        document.setdefault("dataset_v3_results", []).append(dataset_record)
+                        progress = {
+                            k: v for k, v in dataset_record.items() if not k.endswith("_kb")
+                        }
+                        print(json.dumps(progress), file=sys.stderr, flush=True)
                 finally:
                     if not keep_workdirs:
-                        shutil.rmtree(workdir, ignore_errors=True)
+                        try:
+                            shutil.rmtree(workdir)
+                        except (ProbeInterrupted, KeyboardInterrupt):
+                            raise
+                        except Exception as cleanup_exc:  # noqa: BLE001 - report failed cleanup
+                            document["cleanup_warnings"].append(
+                                {
+                                    "workdir": str(workdir),
+                                    "type": type(cleanup_exc).__name__,
+                                    "message": str(cleanup_exc),
+                                }
+                            )
         verdicts = {
             stage: _stage_verdict(
                 [r for r in results if r["stage"] == stage], sizes, repeats, config["microbatch"]
             )
-            for stage in STAGES
+            for stage in NORMALIZER_STAGES
         }
+        if dataset_v3_config is not None:
+            document["dataset_v3_verdict"] = _stage_verdict(
+                document["dataset_v3_results"], sizes, repeats, config["microbatch"]
+            )
+            document["dataset_v3_measurement"]["status"] = "complete"
+            document["dataset_v3_measurement"]["verdict"] = (
+                "PASS" if document["dataset_v3_verdict"]["pass"] else "FAIL"
+            )
+    except (ProbeInterrupted, KeyboardInterrupt) as exc:
+        signum = exc.signum if isinstance(exc, ProbeInterrupted) else signal.SIGINT
+        try:
+            signal_name = signal.Signals(signum).name
+        except ValueError:
+            signal_name = str(signum)
+        document["status"] = "interrupted"
+        document["error"] = {
+            "type": "ProbeInterrupted",
+            "message": str(exc) or f"probe interrupted by {signal_name}",
+            "signal_number": signum,
+            "signal_name": signal_name,
+            "partial_stage_results": len(results),
+            "partial_dataset_results": len(document.get("dataset_v3_results", [])),
+        }
+        document["capacity_verdict"] = "ERROR"
+        document["e1_cap1_evidence"] = False
+        if dataset_v3_config is not None:
+            document["dataset_v3_measurement"]["status"] = "interrupted"
+        return document
     except Exception as exc:  # noqa: BLE001 - any failure is reported, never a verdict
         details = exc.details if isinstance(exc, ProbeError) else {}
         document["status"] = "error"
@@ -1381,6 +1904,8 @@ def run_probe(
         }
         document["capacity_verdict"] = "ERROR"
         document["e1_cap1_evidence"] = False
+        if dataset_v3_config is not None:
+            document["dataset_v3_measurement"]["status"] = "failed"
         return document
     finally:
         if handle is not None:
@@ -1391,25 +1916,62 @@ def run_probe(
     document["verdicts"] = verdicts
     document["capacity_verdict"] = "PASS" if numeric_pass else "FAIL"
     document["e1_cap1_evidence"] = evidence
-    document["note"] = (
-        "RSS growth only. "
-        + (
-            "Evidence-grade configuration; E1-CAP-1 closure still needs the structural "
-            "assertions, targeted tests and independent review of the E1 review."
-            if evidence
-            else "Diagnostic only: the configuration or code line is not the E1-CAP-1 protocol "
-            "on main (see protocol_conformance); not E1-CAP-1 evidence either way."
-        )
+    document["note"] = "RSS growth only. " + (
+        "Evidence-grade configuration; E1-CAP-1 closure still needs the structural "
+        "assertions, targeted tests and independent review of the E1 review."
+        if evidence
+        else "Diagnostic only: the configuration or code line is not the E1-CAP-1 protocol "
+        "on main (see protocol_conformance); not E1-CAP-1 evidence either way."
     )
     return document
 
 
 def _exit_status(document: dict[str, Any]) -> int:
+    if document["status"] == "interrupted":
+        return 128 + int(document.get("error", {}).get("signal_number", signal.SIGINT))
     if document["status"] != "complete":
         return 4
-    if document["capacity_verdict"] != "PASS":
+    if document["capacity_verdict"] != "PASS" or (
+        "dataset_v3_verdict" in document and document["dataset_v3_verdict"]["pass"] is not True
+    ):
         return 1
     return 0 if document["e1_cap1_evidence"] else 3
+
+
+def _interrupted_document(
+    exc: ProbeInterrupted | KeyboardInterrupt,
+    dataset_v3_config: Mapping[str, int] | None,
+) -> dict[str, Any]:
+    """Fallback report for an interruption before ``run_probe`` can create its report."""
+    signum = exc.signum if isinstance(exc, ProbeInterrupted) else signal.SIGINT
+    try:
+        signal_name = signal.Signals(signum).name
+    except ValueError:
+        signal_name = str(signum)
+    document: dict[str, Any] = {
+        "probe": PROBE,
+        "status": "interrupted",
+        "error": {
+            "type": "ProbeInterrupted",
+            "message": str(exc) or f"probe interrupted by {signal_name}",
+            "signal_number": signum,
+            "signal_name": signal_name,
+            "partial_stage_results": 0,
+            "partial_dataset_results": 0,
+        },
+        "capacity_verdict": "ERROR",
+        "e1_cap1_evidence": False,
+        "results": [],
+        "setups": [],
+        "cleanup_warnings": [],
+    }
+    if dataset_v3_config is not None:
+        document["dataset_v3_measurement"] = {
+            "status": "interrupted",
+            "stage": DATASET_V3_STAGE,
+            "rule_parameters": dict(dataset_v3_config),
+        }
+    return document
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -1458,14 +2020,43 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="allow N above the guard without a cgroup memory limit on this process",
     )
-    parser.add_argument("--stage", choices=("setup", *STAGES), help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--stage",
+        choices=("setup", DATASET_V3_SETUP_STAGE, *STAGES),
+        help=argparse.SUPPRESS,
+    )
     parser.add_argument("--workdir", type=Path, help=argparse.SUPPRESS)
     parser.add_argument("--unit", help=argparse.SUPPRESS)
     parser.add_argument("--unit-rows", type=int, help=argparse.SUPPRESS)
     parser.add_argument("--stage-diagnostics", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--dataset-v3-config-json", help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--dataset-v3",
+        action="store_true",
+        help="also measure ADR-0077 v3 Dataset over a full UTC day (requires all four DQ-9 values)",
+    )
+    for key in DATASET_V3_RULE_KEYS:
+        parser.add_argument(
+            f"--dataset-{key.replace('_', '-')}",
+            type=int,
+            help=f"explicit ADR-0077 Dataset rule input {key}; no DQ-9 defaults are selected",
+        )
     args = parser.parse_args(argv)
     if args.stage is not None:
         return _child_main(args)
+    supplied_dataset_values = {key: getattr(args, f"dataset_{key}") for key in DATASET_V3_RULE_KEYS}
+    provided = {key: value for key, value in supplied_dataset_values.items() if value is not None}
+    if args.dataset_v3:
+        if len(provided) != len(DATASET_V3_RULE_KEYS):
+            parser.error("--dataset-v3 requires all four --dataset-* DQ-9 values explicitly")
+        try:
+            dataset_v3_config = _validate_dataset_v3_config(provided)
+        except ValueError as exc:
+            parser.error(str(exc))
+    else:
+        if provided:
+            parser.error("--dataset-* values require --dataset-v3")
+        dataset_v3_config = None
     try:
         _validate_sizes(args.rows)
     except ValueError as exc:
@@ -1489,24 +2080,29 @@ def main(argv: list[str] | None = None) -> int:
                 "`systemd-run --user --scope -p MemoryMax=... -p MemorySwapMax=0` "
                 "or pass --allow-uncapped"
             )
-    kind = _filesystem(args.base)
-    if kind in _REFUSED_FILESYSTEMS:
-        parser.error(f"{args.base} is on {kind}: a warehouse there is memory")
-    args.base.mkdir(parents=True, exist_ok=True)
-    config = {"microbatch": args.microbatch, "d2_batch": args.d2_batch}
-    document = run_probe(
-        sorted(args.rows),
-        config,
-        base=args.base,
-        repeats=args.repeats,
-        runtime=args.runtime,
-        interval=args.interval,
-        child_timeout=args.child_timeout,
-        child_rss_limit_mib=args.child_rss_limit_mib,
-        samples_out=args.samples_out,
-        keep_workdirs=args.keep_workdirs,
-        staged_diagnostics=args.staged_diagnostics,
-    )
+    try:
+        with _parent_interrupt_handlers():
+            kind = _filesystem(args.base)
+            if kind in _REFUSED_FILESYSTEMS:
+                parser.error(f"{args.base} is on {kind}: a warehouse there is memory")
+            args.base.mkdir(parents=True, exist_ok=True)
+            config = {"microbatch": args.microbatch, "d2_batch": args.d2_batch}
+            document = run_probe(
+                sorted(args.rows),
+                config,
+                base=args.base,
+                repeats=args.repeats,
+                runtime=args.runtime,
+                interval=args.interval,
+                child_timeout=args.child_timeout,
+                child_rss_limit_mib=args.child_rss_limit_mib,
+                samples_out=args.samples_out,
+                keep_workdirs=args.keep_workdirs,
+                staged_diagnostics=args.staged_diagnostics,
+                dataset_v3_config=dataset_v3_config,
+            )
+    except (ProbeInterrupted, KeyboardInterrupt) as exc:
+        document = _interrupted_document(exc, dataset_v3_config)
     text = json.dumps(document, indent=2, default=str)
     if args.json_out is not None:
         args.json_out.write_text(text + "\n", encoding="utf-8")

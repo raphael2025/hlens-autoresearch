@@ -106,12 +106,20 @@ def normalizer(
     clock: Callable[[], datetime],
     adapter: Any = None,
     microbatch_rows: int | None = None,
+    metadata_limits: Any = None,
 ) -> CanonicalNormalizer:
     kwargs: dict[str, Any] = {}
     if microbatch_rows is not None:
         kwargs["microbatch_rows"] = microbatch_rows
+    if metadata_limits is not None:
+        # Opt in to the bounded double-pin read pass (never taken implicitly).
+        kwargs["metadata_limits"] = metadata_limits
     return CanonicalNormalizer(
-        h.adapter if adapter is None else adapter, h.storage, clock=clock, **kwargs
+        h.adapter if adapter is None else adapter,
+        h.storage,
+        scratch_directory=h.canonical_scratch_directory,
+        clock=clock,
+        **kwargs,
     )
 
 

@@ -18,7 +18,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pytest
 
@@ -27,6 +27,8 @@ from core.contracts.universe import UniverseMember
 from infrastructure.canonical import rules
 from infrastructure.canonical.listings import UnconstructibleReason
 from infrastructure.contract_version import PHASE1_PUBLICATION_VERSION
+from infrastructure.dataset.sources import UniverseRunParams
+from infrastructure.pit.runs import RunLimits
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.universe import listing_assumption as backfill
 from infrastructure.universe.builder import (
@@ -43,6 +45,11 @@ from tests.infrastructure.revision.rest_store_support import utc
 
 #: An arbitrary UTC day boundary before the first local observation (L1): not a real floor.
 FLOOR = utc(2023, 11, 1)
+RUN_PARAMS = UniverseRunParams(
+    capacity=1,
+    merge_fanout=2,
+    limits=RunLimits(leaf_max_records=1, leaf_max_bytes=4096, fanout=2),
+)
 TABLE = {"BTCUSDT": FLOOR, "ETHUSDT": FLOOR}
 
 
@@ -110,7 +117,9 @@ def test_binding_changes_nothing_once_every_symbol_is_observed(w: World, table: 
         with_binding = universe.build(FIRST_SLICE_UNIVERSE, bound(w, **kwargs))
         _same_universe(plain, with_binding)
         assert all(m.assumption is None for m in plain.members)
-        cursor = universe.cursor(FIRST_SLICE_UNIVERSE, bound(w, **kwargs))
+        cursor = universe.cursor(
+            FIRST_SLICE_UNIVERSE, bound(w, **kwargs), run_params=ds.UNIVERSE_RUN_PARAMS
+        )
         assert set(_members(cursor)) == set(plain.members)
         assert _assumed(cursor) == ()
 
@@ -124,7 +133,9 @@ def test_an_unbound_spec_still_refuses_before_the_first_observation(w: World, ta
             w.universe().build(FIRST_SLICE_UNIVERSE, spec)
         assert caught.value.reason == UnconstructibleReason.NO_VISIBLE_LISTING
         with pytest.raises(UniverseUnconstructible):
-            _members(w.universe().cursor(FIRST_SLICE_UNIVERSE, spec))
+            _members(
+                w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=ds.UNIVERSE_RUN_PARAMS)
+            )
 
 
 # ============================================================================ bound: assumed
@@ -187,7 +198,7 @@ def test_the_v3_cursor_gives_exactly_the_v2_answer(w: World, table: None) -> Non
     w.listed(ds.TRADING, L1)
     spec = bound(w, interval=(FLOOR, SIM))
     built = w.universe().build(FIRST_SLICE_UNIVERSE, spec)
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec)
+    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=ds.UNIVERSE_RUN_PARAMS)
     members = _members(cursor)
     assert set(members) == set(built.members)
     assert [m.content_hash() for m in sorted(members, key=_key)] == [
@@ -220,7 +231,9 @@ def test_a_point_inside_the_assumed_window(w: World, table: None) -> None:
     ]
     spans = {symbol: (m.effective_from, m.effective_until) for symbol, m in built.assumed.items()}
     assert spans == {"BTCUSDT": (None, None), "ETHUSDT": (None, None)}
-    cursor = w.universe().cursor(FIRST_SLICE_UNIVERSE, bound(w, at=at))
+    cursor = w.universe().cursor(
+        FIRST_SLICE_UNIVERSE, bound(w, at=at), run_params=ds.UNIVERSE_RUN_PARAMS
+    )
     assert set(_members(cursor)) == set(built.members)
 
 
@@ -258,7 +271,7 @@ def test_the_policy_named_with_another_hash_or_version_is_refused_eagerly(
         with pytest.raises(UniverseSpecError, match=backfill.ASSUMPTION_ID):
             w.universe().build(FIRST_SLICE_UNIVERSE, spec)
         with pytest.raises(UniverseSpecError, match=backfill.ASSUMPTION_ID):
-            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec)
+            w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=ds.UNIVERSE_RUN_PARAMS)
 
 
 def test_before_the_floor_the_bound_build_still_fails_closed(w: World, table: None) -> None:
@@ -269,7 +282,9 @@ def test_before_the_floor_the_bound_build_still_fails_closed(w: World, table: No
             w.universe().build(FIRST_SLICE_UNIVERSE, spec)
         assert caught.value.reason == UnconstructibleReason.NO_VISIBLE_LISTING
         with pytest.raises(UniverseUnconstructible):
-            _members(w.universe().cursor(FIRST_SLICE_UNIVERSE, spec))
+            _members(
+                w.universe().cursor(FIRST_SLICE_UNIVERSE, spec, run_params=ds.UNIVERSE_RUN_PARAMS)
+            )
 
 
 def test_the_real_empty_policy_table_never_assumes(w: World) -> None:

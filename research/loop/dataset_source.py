@@ -335,9 +335,11 @@ def _dataset_observations(
             evidence_verifier=verifier,
             manifest_cache=catalog.manifest_cache,
         )
-    selection = PitSelector(catalog.adapter, catalog.storage).select(
-        feature.point_in_time, _DATA_TYPE, _VENUE[symbol], start, end
-    )
+    selection = PitSelector(
+        catalog.adapter,
+        catalog.storage,
+        canonical_scratch_directory=catalog.builder.canonical_scratch_directory,
+    ).select(feature.point_in_time, _DATA_TYPE, _VENUE[symbol], start, end)
     selection.require_no_conflict()
     return bar_observations(selection, feature.point_in_time)
 

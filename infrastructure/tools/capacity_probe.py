@@ -18,8 +18,9 @@ Three optional flags extend the same harness with more of the full chain (G3-C):
   day, ingested through the real D3D collector + D3E ``RestRevisionStore``, normalized (E1), then
   reconciled against the archive channel (D3E-R2 ``ChannelReconciler``, D-33);
 - ``--dataset``: a mock ``exchangeInfo`` snapshot (E2) deriving the BTCUSDT / ETHUSDT listing
-  history, then F2 ``UniverseBuilder`` and F3 ``DatasetBuilder`` building one Research Dataset
-  into ``research.dataset_selections`` (ADR-0033, DS-1) plus its manifest;
+  history, then F2 ``UniverseBuilder`` and the v3 ``DatasetBuildPipeline`` (ADR-0077) building
+  one Research Dataset into ``research.dataset_selection_chunks`` plus its evidence manifest,
+  joined against v3 Quality reports (ADR-0093 / ADR-0094);
 - ``--feature``: a separate synthetic klines archive (added because the base run only ingests
   aggTrades), normalized into ``canonical.bars_1m``, PIT-selected over the whole day, then F4
   ``run_feature`` of the bar log-return provider (``plugins.features.bars.BarLogReturnProvider``).
@@ -39,11 +40,13 @@ modules, so it stays runnable outside pytest and never becomes a load-bearing te
 - ``--rest`` exercises D3E's store and reconciler over exactly one committed REST page: it does
   not measure multi-page chains, retries, or the recovery paths D3E-R1 / D3E-R2 add for a crash
   mid-chain;
-- ``--dataset`` writes fresh BTCUSDT / ETHUSDT day quality reports and a listing report
-  immediately before building the Research Dataset, so ``universe_build`` / ``dataset_build``
-  always see a dataset-ready catalog; it does not measure the cost of an *incremental* rebuild
-  (D-MAN's known limit: a trades Research Dataset is built per UTC hour in production, never a
-  whole day; this tool selects one hour to stay comparable with ``pit_select_1h``);
+- ``--dataset`` writes fresh BTCUSDT / ETHUSDT v3 day quality reports and a v2 listing-history
+  report immediately before building the Research Dataset, so ``universe_build`` /
+  ``dataset_build`` always see a dataset-ready catalog (a v3 partition report binds both
+  channels, so without ``--rest`` the same REST tail is prepared as unmeasured fixture setup);
+  it does not measure the cost of an *incremental* rebuild (D-MAN's known limit: a trades
+  Research Dataset is built per UTC hour in production, never a whole day;
+  this tool selects one hour to stay comparable with ``pit_select_1h``);
 - ``--feature`` ingests its own klines archive (``min(rows, 1440)`` one-minute bars — a UTC day
   has only 1440 distinct minutes) and evaluates ``BarLogReturnProvider`` once, at a single
   far-future evaluation time that sees every bar; it does not measure a realistic evaluation-time
@@ -69,7 +72,7 @@ import time
 import tracemalloc
 import uuid
 import zipfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import UTC, date, datetime, timedelta
@@ -103,22 +106,41 @@ from infrastructure.catalog.phase1_tables import (
     CANONICAL_BARS_1M,
     CANONICAL_INSTRUMENT_LISTINGS,
     CANONICAL_TRADES,
+    DATA_QUALITY_REPORT_MANIFESTS,
     DATA_QUALITY_REPORTS,
-    DATASET_SELECTIONS,
     QUALITY_EVIDENCE_GAPS,
 )
+from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.collector.binance_archive import ARCHIVE_SOURCE, COLLECTOR_ID, COLLECTOR_VERSION
 from infrastructure.collector.binance_exchange_info import (
     BinanceSpotExchangeInfoCollector,
     ExchangeInfoRequest,
 )
 from infrastructure.collector.binance_rest import REST_SOURCE, BinanceSpotRestCollector
-from infrastructure.dataset.builder import DatasetBuilder, DatasetBuilt
+from infrastructure.dataset.builder import (
+    DatasetBuildSummary,
+    DatasetEvidenceRequest,
+    dataset_evidence_rule,
+)
+from infrastructure.dataset.pipeline import DatasetBuildPipeline
+from infrastructure.dataset.quality import BoundedQualityEvidence, BoundedQualitySourceParams
+from infrastructure.dataset.sources import UniverseRunParams
 from infrastructure.feature.observations import bar_observations, pit_feature_request
 from infrastructure.feature.runner import run_feature
 from infrastructure.parser.binance_archive import member_filename
-from infrastructure.pit.selector import PIT_BINDING, REQUIRED_BINDINGS, PitSelection, PitSelector
-from infrastructure.quality.listing_report import ListingQualityReporter
+from infrastructure.pit.selector import (
+    PIT_BINDING,
+    REQUIRED_BINDINGS,
+    PitRunParams,
+    PitSelection,
+    PitSelector,
+)
+from infrastructure.quality.listing_report_v2 import ListingHistoryQualityReporterV2
+from infrastructure.quality.report_streams import QualityReportStreamLimits
+from infrastructure.quality.report_v3 import QualityReporterV3
+from infrastructure.quality.report_v3 import (
+    _IDENTITY_RULE_HASHES as _CANONICAL_V3_IDENTITY_HASHES,
+)
 from infrastructure.quality.reporter import QualityReported, QualityReporter
 from infrastructure.revision import ArchiveContext, ArchiveIngested, RawRevisionStore
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
@@ -129,6 +151,8 @@ from infrastructure.revision.identity import archive_object_key, archive_relativ
 from infrastructure.revision.rest_identity import PAGE_LIMIT
 from infrastructure.revision.rest_store import RestCollectionStored, RestRevisionStore
 from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.streaming.content_key_tree import KeyTreeParams
+from infrastructure.streaming.runs import RunLimits
 from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE, UniverseBuilder, UniverseBuilt
 from plugins.features.bars import BarLogReturnProvider
 
@@ -185,6 +209,57 @@ _FAR: Final = _KNOWLEDGE_KLINES_NORMALIZE + timedelta(days=3650)
 #: The UTC hour selected by the ``pit_select_1h`` / ``dataset_build`` stages.
 _SELECT_START: Final = _DAY_START + timedelta(hours=12)
 _SELECT_END: Final = _SELECT_START + timedelta(hours=1)
+
+# ------------------------------------------------------------------------------------------
+# --dataset: fixed probe bounds for the v3 Quality reporters, the bounded Dataset Quality join
+# and the v3 Dataset rule. They are this probe's own configuration, reported with the stage;
+# they are not DQ-9 selections (ADR-0077 leaves every bound to the caller).
+# ------------------------------------------------------------------------------------------
+_PROBE_RUN_RECORDS: Final = 256
+_PROBE_RUN_BYTES: Final = 4 * 1024 * 1024
+_PROBE_FANOUT: Final = 16
+_PROBE_RUN_LIMITS: Final = RunLimits(
+    leaf_max_records=_PROBE_RUN_RECORDS, leaf_max_bytes=_PROBE_RUN_BYTES, fanout=_PROBE_FANOUT
+)
+_PROBE_PIT_PARAMS: Final = PitRunParams(
+    row_batch_rows=4_096,
+    edge_batch_rows=4_096,
+    merge_fanout=_PROBE_FANOUT,
+    key_history_buffer=4_096,
+    limits=_PROBE_RUN_LIMITS,
+)
+_PROBE_UNIVERSE_PARAMS: Final = UniverseRunParams(
+    capacity=_PROBE_RUN_RECORDS, merge_fanout=_PROBE_FANOUT, limits=_PROBE_RUN_LIMITS
+)
+_QUALITY_STREAM_LIMITS: Final = QualityReportStreamLimits(
+    leaf_max_records=_PROBE_RUN_RECORDS, leaf_max_bytes=1024 * 1024, fanout=_PROBE_FANOUT
+)
+_QUALITY_MAX_RECORD_BYTES: Final = 64 * 1024
+_QUALITY_MAX_REVISION_RECORD_BYTES: Final = 16 * 1024
+_QUALITY_MAX_MANIFEST_RECORD_BYTES: Final = 1024 * 1024
+_QUALITY_MAX_IDENTITY_BYTES: Final = 64 * 1024
+_QUALITY_MAX_RUN_OBJECT_BYTES: Final = 4 * _PROBE_RUN_BYTES
+_QUALITY_RETRIES: Final = 3
+_LISTING_METADATA_LIMITS: Final = BoundedMetadataLimits(
+    max_metadata_bytes=16 * 1024 * 1024,
+    max_item_bytes=256 * 1024,
+    max_retained_json_bytes=2 * 1024 * 1024,
+    read_chunk_bytes=16 * 1024,
+    max_small_array_items=512,
+    max_map_items=512,
+    max_snapshots=5_000,
+    run_capacity=64,
+    run_limits=RunLimits(leaf_max_records=32, leaf_max_bytes=1024 * 1024, fanout=8),
+    run_merge_fanout=8,
+    key_tree_params=KeyTreeParams(page_max_bytes=1024 * 1024, leaf_max_records=64, fanout=8),
+)
+#: The v3 Dataset rule the ``dataset_build`` stage measures (reported with the stage).
+DATASET_RULE_PARAMETERS: Final[Mapping[str, int]] = {
+    "chunk_rows": 4_096,
+    "leaf_max_records": _PROBE_RUN_RECORDS,
+    "leaf_max_bytes": 1024 * 1024,
+    "fanout": _PROBE_FANOUT,
+}
 
 
 # ============================================================================================
@@ -417,8 +492,14 @@ def _normalize(
     unit_revision_id: str,
     *,
     knowledge_clock: Callable[[], datetime],
+    canonical_scratch_directory: Path,
 ) -> CanonicalUnitNormalized:
-    normalizer = CanonicalNormalizer(adapter, storage, clock=knowledge_clock)
+    normalizer = CanonicalNormalizer(
+        adapter,
+        storage,
+        scratch_directory=canonical_scratch_directory,
+        clock=knowledge_clock,
+    )
     return normalizer.normalize_unit(source_table, unit_revision_id)
 
 
@@ -464,16 +545,29 @@ def _pit_spec(
 
 
 def _pit_select_one_hour(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
 ) -> PitSelection:
     spec = _pit_spec(adapter)
-    return PitSelector(adapter, storage).select(spec, DATA_TYPE, SYMBOL, _SELECT_START, _SELECT_END)
+    return PitSelector(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    ).select(spec, DATA_TYPE, SYMBOL, _SELECT_START, _SELECT_END)
 
 
 def _quality_report(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
 ) -> QualityReported:
-    reporter = QualityReporter(adapter, storage, clock=lambda: _KNOWLEDGE_REPORT)
+    reporter = QualityReporter(
+        adapter,
+        storage,
+        canonical_scratch_directory=canonical_scratch_directory,
+        clock=lambda: _KNOWLEDGE_REPORT,
+    )
     return reporter.report(DATA_TYPE, SYMBOL, DAY)
 
 
@@ -562,7 +656,11 @@ def _ingest_rest_tail(
 
 
 def _normalize_rest(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, stored: RestCollectionStored
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    stored: RestCollectionStored,
+    *,
+    canonical_scratch_directory: Path,
 ) -> CanonicalUnitNormalized:
     if len(stored.pages) != 1:
         raise RuntimeError(f"expected exactly one REST page, got {len(stored.pages)}")
@@ -573,6 +671,7 @@ def _normalize_rest(
         BINANCE_SPOT_REST_AGG_TRADES.table,
         page.response_revision_id,
         knowledge_clock=lambda: _KNOWLEDGE_REST_NORMALIZE,
+        canonical_scratch_directory=canonical_scratch_directory,
     )
 
 
@@ -584,7 +683,7 @@ def _reconcile_channels(
 
 
 # ============================================================================================
-# --dataset: mock exchangeInfo listings (E2) + F2 universe + F3 DatasetBuilder (ADR-0033)
+# --dataset: mock exchangeInfo listings (E2) + F2 universe + v3 DatasetBuildPipeline (ADR-0077)
 # ============================================================================================
 
 
@@ -637,32 +736,176 @@ def _prepare_listings(adapter: PyIcebergCatalogAdapter, storage: LocalFileStorag
         deriver.close()
 
 
-def _prepare_dataset_quality(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
-) -> None:
-    """Commit the BTCUSDT / ETHUSDT day reports and the listing report F3 must find already there.
+@contextmanager
+def _scratch_storage(root: Path, name: str) -> Iterator[LocalFileStorageAdapter]:
+    """A distinct local scratch adapter under ``root`` (never inside the evidence warehouse)."""
+    warehouse = root / name / "warehouse"
+    staging = root / name / "staging"
+    warehouse.mkdir(parents=True, exist_ok=True)
+    staging.mkdir(parents=True, exist_ok=True)
+    scratch = LocalFileStorageAdapter(warehouse.as_uri(), staging.as_uri())
+    try:
+        yield scratch
+    finally:
+        scratch.close()
 
-    Fixture setup, not a measured stage: F3 (ADR-0031 / ADR-0023 §6) only ever *re-derives* a
-    report at the dataset's bound snapshots (``existing_only``), it never writes one.
+
+@dataclass(frozen=True, slots=True)
+class _QualityIdentities:
+    """The registered canonical v3 identity hashes the bounded Quality join re-derives ids with."""
+
+    canonical_v3_hashes: Mapping[str, str]
+    max_identity_rule_hashes: int
+    max_identity_bytes: int
+
+
+def _dataset_quality_params(scratch: LocalFileStorageAdapter) -> BoundedQualitySourceParams:
+    """The bounded Dataset Quality join's explicit limits (ADR-0094), with ``scratch`` isolated."""
+    return BoundedQualitySourceParams(
+        scratch_storage=scratch,
+        stream_limits=_QUALITY_STREAM_LIMITS,
+        run_limits=_PROBE_RUN_LIMITS,
+        run_capacity=_PROBE_RUN_RECORDS,
+        merge_fanout=_PROBE_FANOUT,
+        max_run_object_bytes=_QUALITY_MAX_RUN_OBJECT_BYTES,
+        identity_registry=_QualityIdentities(
+            canonical_v3_hashes=_CANONICAL_V3_IDENTITY_HASHES,
+            max_identity_rule_hashes=len(_CANONICAL_V3_IDENTITY_HASHES),
+            max_identity_bytes=_QUALITY_MAX_IDENTITY_BYTES,
+        ),
+    )
+
+
+def _prepare_rest_fixture(
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    rows: int,
+    *,
+    canonical_scratch_directory: Path,
+) -> None:
+    """Commit, normalize and reconcile the same REST tail ``--rest`` measures, unmeasured.
+
+    A v3 canonical partition report requires both channels' raw snapshots (ADR-0093), so a
+    Dataset fixture needs a committed REST snapshot even when the REST stages are not measured.
     """
-    QualityReporter(adapter, storage, clock=lambda: _KNOWLEDGE_QUALITY_BTC).report(
-        DATA_TYPE, SYMBOL, DAY
+    tail_n = min(rows, PAGE_LIMIT)
+    items = _tail_agg_items(rows, tail_n)
+    request = _rest_tail_request(rows, items)
+    _collect_rest_tail(storage, request, items)
+    stored = _ingest_rest_tail(adapter, storage, request)
+    _normalize_rest(
+        adapter, storage, stored, canonical_scratch_directory=canonical_scratch_directory
     )
-    QualityReporter(adapter, storage, clock=lambda: _KNOWLEDGE_QUALITY_ETH).report(
-        DATA_TYPE, OTHER_SYMBOL, DAY
+    _reconcile_channels(adapter, storage)
+
+
+def _canonical_quality_reporter(
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    scratch: LocalFileStorageAdapter,
+    *,
+    knowledge: datetime,
+    canonical_scratch_directory: Path,
+) -> QualityReporterV3:
+    return QualityReporterV3(
+        adapter,
+        storage,
+        canonical_scratch_directory=canonical_scratch_directory,
+        scratch_storage=scratch,
+        clock=lambda: knowledge,
+        pit_params=_PROBE_PIT_PARAMS,
+        run_capacity=_PROBE_RUN_RECORDS,
+        merge_fanout=_PROBE_FANOUT,
+        run_limits=_PROBE_RUN_LIMITS,
+        stream_limits=_QUALITY_STREAM_LIMITS,
+        max_event_record_bytes=_QUALITY_MAX_RECORD_BYTES,
+        max_revision_record_bytes=_QUALITY_MAX_REVISION_RECORD_BYTES,
+        max_gap_record_bytes=_QUALITY_MAX_RECORD_BYTES,
+        max_input_record_bytes=_QUALITY_MAX_RECORD_BYTES,
+        max_manifest_record_bytes=_QUALITY_MAX_MANIFEST_RECORD_BYTES,
+        max_identity_bytes=_QUALITY_MAX_IDENTITY_BYTES,
+        retries=_QUALITY_RETRIES,
     )
-    ListingQualityReporter(
-        adapter, storage, market_data_base_url=REST_BASE, clock=lambda: _KNOWLEDGE_QUALITY_LISTING
-    ).report()
+
+
+def _listing_quality_reporter(
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    scratch: LocalFileStorageAdapter,
+) -> ListingHistoryQualityReporterV2:
+    return ListingHistoryQualityReporterV2(
+        adapter,
+        storage,
+        scratch_storage=scratch,
+        market_data_base_url=REST_BASE,
+        clock=lambda: _KNOWLEDGE_QUALITY_LISTING,
+        metadata_limits=_LISTING_METADATA_LIMITS,
+        capacity=_PROBE_RUN_RECORDS,
+        merge_fanout=_PROBE_FANOUT,
+        run_limits=_PROBE_RUN_LIMITS,
+        stream_limits=_QUALITY_STREAM_LIMITS,
+        max_record_bytes=_QUALITY_MAX_RECORD_BYTES,
+        max_run_object_bytes=_QUALITY_MAX_RUN_OBJECT_BYTES,
+        prefix_leaf_max_records=64,
+        prefix_fanout=_PROBE_FANOUT,
+        prefix_max_node_bytes=1024 * 1024,
+        prefix_max_record_bytes=16 * 1024,
+        row_chunk_capacity=_PROBE_RUN_RECORDS,
+        max_hash_chunk_bytes=64 * 1024,
+        max_event_record_bytes=_QUALITY_MAX_RECORD_BYTES,
+        max_revision_record_bytes=_QUALITY_MAX_REVISION_RECORD_BYTES,
+        max_gap_record_bytes=_QUALITY_MAX_RECORD_BYTES,
+        max_manifest_record_bytes=_QUALITY_MAX_MANIFEST_RECORD_BYTES,
+        max_identity_bytes=_QUALITY_MAX_IDENTITY_BYTES,
+        retries=_QUALITY_RETRIES,
+    )
+
+
+def _prepare_dataset_quality(
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
+    scratch_root: Path,
+) -> None:
+    """Commit the BTCUSDT / ETHUSDT v3 day reports and the v2 listing-history report.
+
+    Fixture setup, not a measured stage: the v3 Dataset (ADR-0077 / ADR-0094) only reads
+    committed report manifests at its bound snapshot; it never writes one. Each reporter gets its
+    own scratch adapter under ``scratch_root``, outside the evidence warehouse.
+    """
+    with (
+        _scratch_storage(scratch_root, "canonical-report") as canonical_scratch,
+        _scratch_storage(scratch_root, "listing-report") as listing_scratch,
+    ):
+        for symbol, knowledge in (
+            (SYMBOL, _KNOWLEDGE_QUALITY_BTC),
+            (OTHER_SYMBOL, _KNOWLEDGE_QUALITY_ETH),
+        ):
+            _canonical_quality_reporter(
+                adapter,
+                storage,
+                canonical_scratch,
+                knowledge=knowledge,
+                canonical_scratch_directory=canonical_scratch_directory,
+            ).report(DATA_TYPE, symbol, DAY)
+        listings = _head(adapter, CANONICAL_INSTRUMENT_LISTINGS.table)
+        raw = _head(adapter, BINANCE_SPOT_EXCHANGE_INFO.table)
+        if listings is None or raw is None:
+            raise RuntimeError("the listing-history report needs committed listing inputs")
+        _listing_quality_reporter(adapter, storage, listing_scratch).report(
+            {CANONICAL_INSTRUMENT_LISTINGS.table: listings, BINANCE_SPOT_EXCHANGE_INFO.table: raw}
+        )
 
 
 def _dataset_pit_spec(adapter: PyIcebergCatalogAdapter) -> PointInTimeSpec:
-    """A PIT spec bound to trades + the listing / quality tables F2 and F3 both require."""
+    """A PIT spec bound to trades + the listing / quality tables F2 and the v3 Dataset require."""
     return _pit_spec(
         adapter,
         extra_bound_tables=(
             BINANCE_SPOT_EXCHANGE_INFO.table,
             CANONICAL_INSTRUMENT_LISTINGS.table,
+            DATA_QUALITY_REPORT_MANIFESTS.table,
             DATA_QUALITY_REPORTS.table,
             QUALITY_EVIDENCE_GAPS.table,
         ),
@@ -676,6 +919,30 @@ def _dataset_pit_spec(adapter: PyIcebergCatalogAdapter) -> PointInTimeSpec:
     )
 
 
+def _dataset_pipeline(
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    rule_parameters: Mapping[str, int],
+    pit_params: PitRunParams,
+    universe_params: UniverseRunParams,
+    canonical_scratch_directory: Path,
+    quality_scratch: LocalFileStorageAdapter,
+) -> DatasetBuildPipeline:
+    """The production v3 Dataset composition root, with the bounded Quality join wired in."""
+    return DatasetBuildPipeline(
+        adapter,
+        storage,
+        rule=dataset_evidence_rule(**dict(rule_parameters)),
+        canonical_scratch_directory=canonical_scratch_directory,
+        market_data_base_url=REST_BASE,
+        pit_params=pit_params,
+        universe_params=universe_params,
+        quality_factory=BoundedQualityEvidence,
+        quality_params=_dataset_quality_params(quality_scratch),
+    )
+
+
 def _build_universe(
     adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, pit: PointInTimeSpec
 ) -> UniverseBuilt:
@@ -685,12 +952,32 @@ def _build_universe(
 
 
 def _build_dataset(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, pit: PointInTimeSpec
-) -> DatasetBuilt:
-    builder = DatasetBuilder(
-        adapter, storage, market_data_base_url=REST_BASE, dataset_table=DATASET_SELECTIONS
-    )
-    return builder.build(FIRST_SLICE_UNIVERSE, pit, DATA_TYPE, _SELECT_START, _SELECT_END)
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    pit: PointInTimeSpec,
+    *,
+    canonical_scratch_directory: Path,
+    scratch_root: Path,
+) -> DatasetBuildSummary:
+    with _scratch_storage(scratch_root, "dataset-quality-join") as quality_scratch:
+        pipeline = _dataset_pipeline(
+            adapter,
+            storage,
+            rule_parameters=DATASET_RULE_PARAMETERS,
+            pit_params=_PROBE_PIT_PARAMS,
+            universe_params=_PROBE_UNIVERSE_PARAMS,
+            canonical_scratch_directory=canonical_scratch_directory,
+            quality_scratch=quality_scratch,
+        )
+        return pipeline.build(
+            DatasetEvidenceRequest(
+                universe=FIRST_SLICE_UNIVERSE,
+                pit=pit,
+                data_type=DATA_TYPE,
+                start=_SELECT_START,
+                end=_SELECT_END,
+            )
+        )
 
 
 # ============================================================================================
@@ -718,7 +1005,11 @@ def _ingest_klines_archive(
 
 
 def _normalize_klines(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter, archive_revision_id: str
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    archive_revision_id: str,
+    *,
+    canonical_scratch_directory: Path,
 ) -> CanonicalUnitNormalized:
     return _normalize(
         adapter,
@@ -726,18 +1017,22 @@ def _normalize_klines(
         BINANCE_SPOT_KLINES_1M.table,
         archive_revision_id,
         knowledge_clock=lambda: _KNOWLEDGE_KLINES_NORMALIZE,
+        canonical_scratch_directory=canonical_scratch_directory,
     )
 
 
 def _run_bar_log_return(
-    adapter: PyIcebergCatalogAdapter, storage: LocalFileStorageAdapter
+    adapter: PyIcebergCatalogAdapter,
+    storage: LocalFileStorageAdapter,
+    *,
+    canonical_scratch_directory: Path,
 ) -> FeatureResult:
     pit = _pit_spec(
         adapter, raw_table=BINANCE_SPOT_KLINES_1M.table, canonical_table=CANONICAL_BARS_1M.table
     )
-    selection = PitSelector(adapter, storage).select(
-        pit, KLINES_DATA_TYPE, SYMBOL, _DAY_START, _DAY_START + timedelta(days=1)
-    )
+    selection = PitSelector(
+        adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+    ).select(pit, KLINES_DATA_TYPE, SYMBOL, _DAY_START, _DAY_START + timedelta(days=1))
     selection.require_no_conflict()
     observations = bar_observations(selection, pit)
     spec = BarLogReturnProvider.spec()
@@ -775,12 +1070,15 @@ _REST_NOTES: Final[tuple[str, ...]] = (
     "are not exercised.",
 )
 _DATASET_NOTES: Final[tuple[str, ...]] = (
-    "listing observation, listing derivation and the BTCUSDT/ETHUSDT/listing quality reports "
-    "are fixture setup, not measured stages (mirrors how the base run's archive publish is not "
-    "measured either); universe_build and dataset_build are each timed on their own, even though "
-    "dataset_build internally repeats a universe build (F3 does not reuse F2's result object).",
+    "listing observation, listing derivation and the BTCUSDT/ETHUSDT v3 / listing v2 quality "
+    "reports (plus the REST tail when --rest is not given) are fixture setup, not measured stages "
+    "(mirrors how the base run's archive publish is not measured either); universe_build and "
+    "dataset_build are each timed on their own, even though dataset_build internally repeats a "
+    "universe build (the v3 Dataset does not reuse F2's result object).",
     "dataset_build selects the same one UTC hour as pit_select_1h, not a whole day: production "
     "builds a trades Research Dataset per UTC hour, never per day (D-MAN, PROJECT_STATUS.md §6).",
+    "dataset_build runs the v3 DatasetBuildPipeline with this probe's fixed rule and run bounds "
+    "(reported as rule_parameters); they are probe configuration, not DQ-9 selections.",
 )
 _FEATURE_NOTES: Final[tuple[str, ...]] = (
     "feature_bar_log_return evaluates BarLogReturnProvider once, at a single far-future "
@@ -799,6 +1097,7 @@ def run_probe(
     notes = list(_NOTES)
     with tempfile.TemporaryDirectory(prefix="hlens-capacity-probe-") as raw_tmp:
         with _harness(Path(raw_tmp)) as (adapter, storage):
+            canonical_scratch_directory = Path(raw_tmp) / "canonical-scratch"
             collected = _publish_archive(storage, _agg_trade_lines(rows))
 
             ingested, measurement = _measure(
@@ -822,13 +1121,18 @@ def run_probe(
                     BINANCE_SPOT_AGG_TRADES.table,
                     ingested.archive_revision_id,
                     knowledge_clock=lambda: _KNOWLEDGE_NORMALIZE,
+                    canonical_scratch_directory=canonical_scratch_directory,
                 )
             )
             stages["normalize"] = measurement.as_dict() | {
                 "canonical_rows": normalized.revision_count,
             }
 
-            selection, measurement = _measure(lambda: _pit_select_one_hour(adapter, storage))
+            selection, measurement = _measure(
+                lambda: _pit_select_one_hour(
+                    adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+                )
+            )
             selected = sum(
                 1 for item in selection.selections if item.status is PointInTimeStatus.SELECTED
             )
@@ -839,7 +1143,11 @@ def run_probe(
                 "keys_selected": selected,
             }
 
-            report, measurement = _measure(lambda: _quality_report(adapter, storage))
+            report, measurement = _measure(
+                lambda: _quality_report(
+                    adapter, storage, canonical_scratch_directory=canonical_scratch_directory
+                )
+            )
             stages["quality_report_day"] = measurement.as_dict() | {
                 "event_count": len(report.row["events"]),
                 "reused": report.reused,
@@ -860,7 +1168,12 @@ def run_probe(
                 }
 
                 normalized_rest, measurement = _measure(
-                    lambda: _normalize_rest(adapter, storage, stored)
+                    lambda: _normalize_rest(
+                        adapter,
+                        storage,
+                        stored,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )
                 )
                 stages["normalize_rest"] = measurement.as_dict() | {
                     "canonical_rows": normalized_rest.revision_count,
@@ -875,8 +1188,21 @@ def run_probe(
                 notes.extend(_REST_NOTES)
 
             if dataset:
+                scratch_root = Path(raw_tmp) / "quality-scratch"
+                if not rest:
+                    _prepare_rest_fixture(
+                        adapter,
+                        storage,
+                        rows,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )  # fixture setup, not measured
                 _prepare_listings(adapter, storage)  # fixture setup, not measured
-                _prepare_dataset_quality(adapter, storage)  # fixture setup, not measured
+                _prepare_dataset_quality(
+                    adapter,
+                    storage,
+                    canonical_scratch_directory=canonical_scratch_directory,
+                    scratch_root=scratch_root,
+                )  # fixture setup, not measured
                 pit = _dataset_pit_spec(adapter)
 
                 built_universe, measurement = _measure(
@@ -887,11 +1213,21 @@ def run_probe(
                     "exclusion_count": len(built_universe.exclusions),
                 }
 
-                built_dataset, measurement = _measure(lambda: _build_dataset(adapter, storage, pit))
+                built_dataset, measurement = _measure(
+                    lambda: _build_dataset(
+                        adapter,
+                        storage,
+                        pit,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                        scratch_root=scratch_root,
+                    )
+                )
                 stages["dataset_build"] = measurement.as_dict() | {
-                    "row_count": len(built_dataset.selection.rows),
-                    "manifest_content_hash": built_dataset.manifest.content_hash(),
+                    "row_count": built_dataset.row_count,
+                    "chunk_count": built_dataset.chunk_count,
+                    "manifest_content_hash": built_dataset.manifest_hash,
                     "replayed": built_dataset.replayed,
+                    "rule_parameters": dict(DATASET_RULE_PARAMETERS),
                 }
                 notes.extend(_DATASET_NOTES)
 
@@ -905,13 +1241,24 @@ def run_probe(
                 }
 
                 normalized_klines, measurement = _measure(
-                    lambda: _normalize_klines(adapter, storage, ingested_klines.archive_revision_id)
+                    lambda: _normalize_klines(
+                        adapter,
+                        storage,
+                        ingested_klines.archive_revision_id,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )
                 )
                 stages["normalize_klines"] = measurement.as_dict() | {
                     "canonical_rows": normalized_klines.revision_count,
                 }
 
-                result, measurement = _measure(lambda: _run_bar_log_return(adapter, storage))
+                result, measurement = _measure(
+                    lambda: _run_bar_log_return(
+                        adapter,
+                        storage,
+                        canonical_scratch_directory=canonical_scratch_directory,
+                    )
+                )
                 stages["feature_bar_log_return"] = measurement.as_dict() | {
                     "evaluation_count": len(result.values),
                     "non_null_count": sum(1 for item in result.values if item.value is not None),
@@ -956,7 +1303,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--dataset",
         action="store_true",
-        help="add a mock exchangeInfo listing snapshot (E2), F2 universe and F3 DatasetBuilder",
+        help="add a mock exchangeInfo listing snapshot (E2), F2 universe and the v3 Dataset",
     )
     parser.add_argument(
         "--feature",

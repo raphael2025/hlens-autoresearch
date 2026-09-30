@@ -21,6 +21,7 @@ from typing import Any
 import pytest
 
 from apps.worker.loop import LifecycleGuard, RoundContext, StageResult
+from core.contracts.universe import ResearchDatasetManifest
 from infrastructure.bars.pair import PAIR_RULE_V3_HASH, ManifestPairError, pair_hash_of
 from infrastructure.bars.verified import VerifiedManifestCache
 from infrastructure.dataset.manifests import ManifestFormError
@@ -153,6 +154,35 @@ def test_a_v3_round_computes_the_v2_rounds_feature_values(w: World) -> None:
     assert our_request.evaluation_times == their_request.evaluation_times
     assert our_result.values == their_result.values
     assert our_signals == their_signals
+
+
+def test_v2_manifest_reselection_passes_the_builder_scratch_path(
+    w: World, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    catalog = _catalog(w)
+    seen: list[Path] = []
+
+    class Selection:
+        def require_no_conflict(self) -> None:
+            pass
+
+    class RecordingPitSelector:
+        def __init__(
+            self, adapter: Any, storage: Any, *, canonical_scratch_directory: Path
+        ) -> None:
+            del adapter, storage
+            seen.append(canonical_scratch_directory)
+
+        def select(self, *_args: Any) -> object:
+            return Selection()
+
+    monkeypatch.setattr(dataset_source, "PitSelector", RecordingPitSelector)
+    monkeypatch.setattr(dataset_source, "bar_observations", lambda *_args: ())
+    feature = ResearchDatasetManifest.model_construct(point_in_time=object())
+    observations = dataset_source._dataset_observations(catalog, feature, BTC, *v.DAY_WINDOW)
+
+    assert observations == ()
+    assert seen == [catalog.builder.canonical_scratch_directory]
 
 
 def test_a_v3_round_with_the_cache_reads_the_same(w: World) -> None:

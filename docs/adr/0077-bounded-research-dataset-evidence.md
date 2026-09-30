@@ -61,7 +61,7 @@ v2 manifest 的内容哈希是**整份规范 JSON 的 SHA-256**：要得到它�
    - `rule: DatasetRuleBinding`（`rule_id + SemVer + rule_hash`，新 dataset 规则 `hlens.dataset.pit-selection@2.0.0`，其 spec 中写明排序、chunk、leaf、fan-out 参数）；
    - `data_type`（v2 需在验证时穷举推断，v3 显式记录）；`selection_id`；
    - `row_count`、`chunk_rows`、`chunk_count`（`chunk_count = ceil(row_count / chunk_rows)`，末块可短，其余块恰为 `chunk_rows`）；
-   - `evidence: tuple[EvidenceStreamRef, ...]`：**恰好**每种 stream 一项（§2 的六种），按 stream 名排序。
+   - `evidence: tuple[EvidenceStreamRef, ...]`：契约 2.3.0 / 2.4.0 恰好每种 stream 一项（§2 的六种），按 stream 名排序；2.5.0 起按 ADR-0094 增加第七种 `pit_conflicts` stream。
 3. `EvidenceStreamRef`：`stream`（枚举）、`format`（`hlens.dataset.evidence-jsonl@1.0.0`）、`record_count`、`leaf_count`、`depth`、`root`（`EvidenceObjectRef`）。
 4. `EvidenceObjectRef` 只绑定内容身份：`key`、`sha256`、`size`；**不**把实现生成的 `uri` 纳入 manifest 内容哈希。[DQ-8]
 5. 契约层可证明的不变量：`dataset` 形状与 v2 相同规则；`selection_id` 与 `rule` / PIT / universe / `data_type` / 窗口的派生关系（纯函数，可在契约或 infrastructure 校验，实现批次定）；计数一致（`chunk_count`、chunk-proof stream 的 `record_count == chunk_count`、lineage stream 非空等）；stream 集合完整且不重复；`root.key` 与 `root.sha256` 满足 §3 的键规则。与 v2 一样，**契约只证明结构**：对象是否存在、字节是否匹配、内容是否就是输入的派生，属存储 / verifier（§6）。
@@ -69,7 +69,7 @@ v2 manifest 的内容哈希是**整份规范 JSON 的 SHA-256**：要得到它�
 
 ### 2. 内容寻址的有序 JSONL evidence streams
 
-六种 stream，每种一棵独立的承诺树（§3）：
+六种基础 stream（契约 2.3.0 / 2.4.0），每种一棵独立的承诺树（§3）。契约 2.5.0 另含 ADR-0094 新增的 `pit_conflicts` stream；旧版本不得回填该 stream：
 
 | stream | 记录 | 规范顺序（ordinal 递增） | 去重 / 唯一性如何在有界内存中证明 |
 |---|---|---|---|
@@ -134,7 +134,7 @@ v2 manifest 的内容哈希是**整份规范 JSON 的 SHA-256**：要得到它�
 2. `PitSelector` 改为固定工作集生成器：canonical scan 的任意文件顺序先经固定容量排序 run，再按 `(symbol, observation_key, revision_id)` 有序归并；处理完一个 key 即释放该 key 的内存状态。单个 key 的历史长度也不设为隐式上界，超过固定 record buffer 的内容必须通过同一 content-addressed bounded-run 格式继续分段读取；不能把“一个 key / 一个 slice”当成容量上界。
 3. 排序 run 与大型单 key 历史 run 使用与 evidence tree 相同的固定字节对象写入规则：每个对象先在固定上界内组装并计算 hash，再经现有 `StorageAdapter.stage(expected_sha256=…)` 发布；多路归并的 fan-out 有上限，层次索引不在进程中收集全部 run refs。运行失败产生的对象是不可被 manifest 引用的 orphan；写路径不得删除。
 4. 生成顺序、跨 slice key 所有权、selection、lineage、缺口与质量证据都必须在相邻有序流上归并验证。v3 路径禁止 O(N) 的 `seen_keys`、`by_key`、`records_by_key`、`selected_rows`、`timelines`、`member_spans`、报告 ID 集合或同等映射；v2 replay 可以保留原实现并明确不属于有界路径。
-5. quality reporter 的 `existing_only` 重导出也必须可逐行读取 / 比较，或证明其单个 `(symbol, day)` 输出有契约内的固定上界；否则 v3 verifier 不能声称完整工作集有界。不得以当前样例较小作为证明。
+5. Quality reporter 的 `existing_only` 重导出必须逐行读取 / 比较，或证明其单个报告输出有契约内的固定上界；否则 v3 verifier 不能声称完整工作集有界。当前 `DATA_QUALITY_REPORTS.events` / legacy `evidence_gaps` 为无 maxItems 的单行嵌套列表，无法通过外层 batch scan 有界读取。其已接受的 additive v3 设计见 [ADR-0093](0093-bounded-quality-report-evidence.md)：fixed-size report manifest + events / event revisions / gaps content-addressed streams，v1/v2 保持只读兼容。ADR-0093 未实施前，本项仍未满足。不得以当前样例较小作为证明。
 
 排序 run 是可寻址的数据对象，不是隐式 OS 临时文件。运行路径不得调用系统默认临时目录，也不得假定 tempfile 位于物理磁盘；run 的固定对象上界、索引层数、对象数量和 orphan 义务都计入 E1-CAP-1 资源说明。若实际 StorageAdapter 无法在不聚合所有 run refs 的情况下提供有序多路归并，必须停止并提出新的 Decision Packet，不得回退成 slice 级全量 materialization。
 
@@ -241,6 +241,30 @@ Raphael 已批准有界 Dataset API 的路线及 v2 manifest 只读兼容要求�
 writer / reader、chunk commit、streaming verifier、`ManifestStore` 双表分派、上游生成器）仍未实施，现有 Dataset 运行
 行为不变。infrastructure 实施前仍须完成 §6.1 / §6.2 所列上游生成器、partial replay、序列化投影和消费者可见性协议的
 静态设计（§6.2.2 的 2.3.0 登记身份盘点已在契约层完成，见实施记录）；DQ-9 保持 OPEN。
+
+### 实施决策：Universe 有界上游接线（2026-09-29，Codex）
+
+依据本 ADR §6.1.1 与 §10，采用 content-addressed run-set 方案收口 v3 Universe 上游；这是已接受协议的实现细化，不改变契约、DQ-9 数值或 v2 行为：
+
+1. `dataset_evidence_sources()` 显式把既有 `UniverseRunParams` 传入 `UniverseBuilder.cursor()`；DQ-9 参数仍由调用方提供，不新增默认值。
+2. 扩展 `infrastructure/pit/runs.py`，提供内容寻址、层次化 run-reference set 与多轮有界归并。Universe 变化事件、lineage 和 gap 归并只保留当前容量批、最多 `merge_fanout` 个 run 及树层缓冲；不得收集全部 run refs。
+3. `_instants_v3()` 将 cutoff 可见的 exchange-info / listing boundary 流写入有界 sorted runs，按时间归并并相邻去重后供各 symbol 重放；不构造全窗口 `changes` set / tuple。
+4. `_events_v3()` 不保留全量 revision `seen` set。事件为 lineage / gap 附加确定性首次次序，经 revision 排序后相邻归并只输出首次项；相同 revision 的冲突内容 fail closed。
+5. 所有 run 通过现有 `StorageAdapter` 内容寻址对象路径发布，不使用 `tempfile` / `TMPDIR`，不新增 Universe scratch 配置。对象失败语义沿用 §9：允许留下不可引用 orphan，不在写路径删除。
+6. 改动范围包含 `infrastructure/universe/builder.py`、`infrastructure/dataset/sources.py`、`infrastructure/pit/runs.py` 与相关测试；保持 cutoff、排序、首次 lineage、重复拒绝和关闭语义。DQ-9 数值与 E1-CAP-1 仍须后续测量和验收。
+
+**实施 / 独立复核记录（2026-09-29）**：隔离候选提交 `7442bf66f14afdf5667ea1fc2a87de3f62eb2b0f` 完成以上接线。不同 agent 对精确提交独立复核为 APPROVE。开发 focused suite 为 `82 passed in 80.41s`；复核测试覆盖合计 `118 passed`，含核心 RunSet/Universe/Dataset/red-team、bars/feature/G5 调用链和旧 Dataset universe consumer。Ruff、format、mypy（4 个生产文件）与 `git diff --check` 通过，候选工作树干净。此结果仅证明本实现切片，不证明完整 32 MiB 工作集容量；E1-CAP-1、DQ-9 数值和 Phase 1 仍开放。
+
+**后续 PIT RunSet 复核记录（2026-09-29）**：候选 `972c6c7980352ea546ff65a1914f18cf7e6a1733` 将 `PitSelector.iter_bounded()` 的 row/edge run-ref 列表改为层次化 root；test-only follow-up `6a80b67030105420fe8f33306f59e14757e6ebc2` 直接计数 compaction 与两个 root readers。独立 reviewer APPROVE；PIT selector + Dataset v3 source `41 passed`，Ruff、format、mypy 和 diff-check 通过。单 key 的 rows/edges/availability/graph 物化及 `maximal_heads` 无界 tuple 仍未解决，不能据此声称 PIT 或 E1 有界。
+
+### Implementation decision: verified Channel edge stream (2026-09-29; PM D-PM-AUTH)
+
+为消除 `ChannelReconciler.verified_edges()` 的整日 `_Plan` staging，采用以下 infrastructure-only 实现细节，不改 ADR-0027 / 冻结契约或 public `CatalogAdapter`：
+
+1. 新增显式关闭的 bounded edge cursor，调用方必须注入固定 row / edge capacity、merge fanout 与 run limits；`verified_edges()` 保持兼容 tuple materializer。revision 层只依赖中立的内部 RunSet protocol / primitive，不依赖 `infrastructure.pit`。
+2. 输入行、逐 key provenance、跨 key duplicate / missing、evidence batch sibling 与 fingerprint、图校验及 pinned heads 稳定性必须在同一固定 snapshot 语义下完整复核。输出先写入私有、有序、内容寻址 final run；所有 day checks 成功后才可向调用方开放 cursor，禁止先 yield 后才发现整日校验失败。
+3. final stream 顺序稳定且重复边按现行内容一致性规则拒绝；调用方自然耗尽、异常或提前关闭时显式关闭所有 run readers。失败对象可成为 ADR-0077 §9 所述不可引用 orphan，不执行写路径删除。
+4. 此切片只消除按整日行数 / key 数 / edge 数累积的 staging。当前 per-key graph/evidence 工作集、D1 `ParsedArchive` 完整重解析与单个对象 / Arrow batch 字节仍单独受容量审计；实现与测试不能宣称 E1-CAP-1 或 32 MiB 门通过。
 
 ### Raphael Decision Packet（DQ-1）——已决定：A（Raphael，2026-09-28）
 

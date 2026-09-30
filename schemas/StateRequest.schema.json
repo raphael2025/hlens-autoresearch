@@ -27,7 +27,7 @@
       "description": "对象引用：`{kind}:{name}@{version}`。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -59,7 +59,7 @@
       "description": "交给 Provider 的一个 Feature 值：`feature` 在 `evaluation_time` 的值（`None` = 不可计算）。\n\n`source_result_hash` 是给出该值的 `FeatureResult.result_hash`（来源绑定）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -110,7 +110,7 @@
   "description": "一次状态识别请求。\n\n- `state` 必须是 `kind=state` 的引用，`spec_hash` 为该 `StateSpec` 的内容哈希；\n- `evaluation_times`：非空、严格升序（因而唯一）；\n- `inputs`：按 `(evaluation_time, feature)` 规范排序；该二元组重复即拒绝（同一 feature 同一时刻\n  只能有一个值）。\n\n同一请求内容 → 同一 `content_hash()`（输入顺序不影响）。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

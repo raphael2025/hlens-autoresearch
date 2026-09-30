@@ -5,7 +5,7 @@
       "description": "某个 Zone 的不可变数据快照引用（03-data.md §3）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -48,7 +48,7 @@
       "description": "v3 manifest 对 dataset 规则的绑定：`rule_id + SemVer + rule_hash`（ADR-0077 §1）。\n\n规则 spec 写明排序、chunk、leaf 与 fan-out 参数，它们随 `rule_hash` 进入 manifest 身份；\n改值即新规则版本。\n\n**诚实边界**：规则是否已登记、`rule_hash` 是否等于真实 spec，属 verifier 与未来 Registry。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -82,7 +82,7 @@
       "description": "一个 evidence 叶 / 索引对象的内容身份：`key + sha256 + size`（ADR-0077 §1.4，DQ-8 = a）。\n\n不含实现生成的 `uri`：同一内容在不同 warehouse 根下身份相同。`key` 只由 `sha256` 决定\n（`research/dataset-evidence/v1/<sha256>.jsonl`）；对象至少含一行 header，因此 `size >= 1`。\n\n**诚实边界**：对象是否存在、字节是否哈希成 `sha256`、长度是否为 `size`，属\n`StorageAdapter.lookup` 与 reader 的逐项核对。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -112,14 +112,15 @@
       "type": "object"
     },
     "EvidenceStream": {
-      "description": "v3 manifest 承诺的六种有序 evidence stream（ADR-0077 §2）。",
+      "description": "v3 manifest 承诺的有序 evidence streams（ADR-0077 §2、ADR-0094）。",
       "enum": [
         "members",
         "exclusions",
         "lineage",
         "evidence_gaps",
         "quality_reports",
-        "chunk_proofs"
+        "chunk_proofs",
+        "pit_conflicts"
       ],
       "title": "EvidenceStream",
       "type": "string"
@@ -129,7 +130,7 @@
       "description": "一条 evidence stream 的根承诺（ADR-0077 §1.3、§3）。\n\n- `record_count`：流内记录数；`leaf_count`：叶对象数；`depth`：根索引所在层（至少 1，\n  单叶或空流也由一个根索引包裹）；\n- 空流（`record_count = 0`）没有叶；非空流至少一个叶，且叶数不超过记录数；\n  叶数不超过 1 时 `depth = 1`；\n- `root`：根索引对象的内容身份，经 manifest 内容哈希承诺整条流的顺序、计数与内容。\n\n**诚实边界**：fan-out 是规则参数，不在本对象内，因此 `depth` 与 `leaf_count` 的精确关系、\n各层 header 与子引用的连续性，由 reader / verifier 自根向下核对。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -177,7 +178,7 @@
       "description": "一次 PIT 查询的全部输入（ADR-0023 §5，03-data.md §7.5）。\n\n- `name` + `version`：本 spec 自身的身份；manifest 以 `name + SemVer + content_hash()`\n  绑定它（批次 B2）；\n- simulation：单点 `simulation_time`，**或** UTC 半开区间\n  `[simulation_start, simulation_end)`，二选一，区间两端必须同时给出且\n  `simulation_start < simulation_end`；\n- `knowledge_cutoff`：本机知识截止，与 simulation 独立（历史 backfill 时通常晚于 simulation）；\n- `snapshot_bindings`：读取的每张 Iceberg 表 `namespace.table → snapshot_id`，至少一项；\n- PIT 选择规则、availability policy、precedence policy、parser 版本的绑定，各自 `role` 确切、\n  同一字段内 `policy_id` 不得重复（同一 policy 两个版本即不确定），按 `policy_id` 规范排序。\n\nuniverse 绑定（ADR-0024）与 manifest 属批次 B2，不在本模型内。**诚实边界**：绑定能否解析到\n已登记且带证据的版本、snapshot 是否存在、所需表是否齐全，属未来执行器与 Registry\n（03-data.md §7.5 fail closed）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -294,7 +295,7 @@
       "description": "对一份版本化规则的绑定：`policy_id` + SemVer + 内容哈希（03-data.md §7.3）。\n\n`role` 区分 availability policy、precedence policy、PIT 选择规则与 parser 版本；使用处按字段\n要求确切的 `role`，因此 availability 与 precedence 绑定不能互相冒充。\n\n**诚实边界**：只约束形状。该版本是否已登记、`policy_hash` 是否等于该版本的真实内容、\npolicy 是否带有已审阅的来源证据，属未来 Registry（03-data.md §7.3「标识符冻结 ≠ 数据可信」）。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -343,7 +344,7 @@
       "description": "manifest 对 `UniverseSelectionSpec` 的专用绑定：`name + SemVer + spec_hash`（ADR-0024 §5 /\n§6）。\n\n不是 `Ref`，不携带 `Kind`；与 `PolicyBinding` 形状不同、不可互换。\n\n**诚实边界**：该版本是否已登记、`spec_hash` 是否等于真实内容，属未来 Registry；持有 spec 本身时\n可用 `binds()` 本地核对。",
       "properties": {
         "schema_version": {
-          "default": "2.4.0",
+          "default": "2.5.0",
           "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
           "title": "Schema Version",
           "type": "string"
@@ -391,7 +392,7 @@
   "description": "有界 Research Dataset 的审计清单（v3 形态；ADR-0077 §1，自契约 2.3.0）。\n\n与 `ResearchDatasetManifest`（v2 形态）并存，不替代、不升级它。全部字段必填且大小固定，\n与选中行数、窗口天数无关：\n\n- `dataset` / `point_in_time` / `universe_spec`：规则同 v2——`dataset` 为 `research_dataset`\n  的 `namespace.table` 且不在上游绑定中，上游必须含 `canonical.instrument_listings` 与\n  `quality.data_quality_reports`；`dataset.snapshot_id` 是最后一个 chunk 的 snapshot；\n- `rule`：dataset 规则绑定；`data_type`：显式记录的数据类型；`selection_id`：可作 chunk\n  batch id 的前缀；\n- `row_count` / `chunk_rows` / `chunk_count`：空选择被拒绝，\n  `chunk_count = ceil(row_count / chunk_rows)`；\n- `evidence`：六种 stream 恰好各一项，按 stream 名规范排序；`chunk_proofs` 的记录数等于\n  `chunk_count`，`lineage` 与 `quality_reports` 非空。\n\n**诚实边界**：契约只证明结构。`selection_id` 与规则 / PIT / universe / `data_type` / 窗口的\n派生关系、规则与 universe 是否已登记、对象是否存在且字节匹配、流内容与 chunk 行是否就是输入的\n派生，属 infrastructure 的 streaming verifier；v2 在模型内完成的跨字段集合检查，在 v3 中由\nverifier 以有序归并完成。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"
@@ -437,7 +438,7 @@
       "items": {
         "$ref": "#/$defs/EvidenceStreamRef"
       },
-      "maxItems": 6,
+      "maxItems": 7,
       "minItems": 6,
       "title": "Evidence",
       "type": "array"

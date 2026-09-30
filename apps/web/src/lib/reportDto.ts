@@ -5,18 +5,42 @@ export type ReportDTOView =
   | { status: "unknown-version"; version: string }
   | { status: "invalid"; version: string; reason: string };
 
-type Rule = { baseline: string; versions: readonly string[]; required: readonly string[] };
+type Rule = {
+  baseline: string;
+  versions: readonly string[];
+  required: readonly string[];
+  hasPayloadSchemaVersion?: boolean;
+};
 
 // Keep in sync with apps/api/report_dto.py and ADR-0081. Missing schema_version means the
 // registered baseline for legacy payloads; never write that inferred value back to the payload.
 const RULES: Record<ReportKind, Rule> = {
-  validation_report: { baseline: "2.4.0", versions: ["2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0"], required: ["schema_version", "gates", "verdict"] },
-  research_loop_round: { baseline: "1.0.0", versions: ["1.0.0"], required: ["round_index", "loop_id", "stages"] },
+  validation_report: { baseline: "2.5.0", versions: ["2.0.0", "2.1.0", "2.2.0", "2.3.0", "2.4.0", "2.5.0"], required: ["schema_version", "gates", "verdict"] },
+  research_loop_round: {
+    baseline: "1.0.0",
+    versions: ["1.0.0"],
+    required: ["round_index", "loop_id", "stages"],
+    hasPayloadSchemaVersion: false,
+  },
   state_strategy_matrix: { baseline: "1.0.0", versions: ["1.0.0"], required: ["matrix_hash", "cells", "strategy", "state"] },
-  router_paper_run: { baseline: "1.0.0", versions: ["1.0.0"], required: ["run_hash", "router", "decisions", "charges"] },
+  router_paper_run: {
+    baseline: "1.0.0",
+    versions: ["1.0.0"],
+    required: ["run_hash", "router", "decisions", "charges"],
+    hasPayloadSchemaVersion: false,
+  },
   gate_calibration: { baseline: "1.0.0", versions: ["1.0.0"], required: ["schema_version", "report_hash", "candidates"] },
-  router_stop: { baseline: "1.0.0", versions: ["1.0.0"], required: ["stop_hash", "router", "reason"] },
-  state_diagnostics: { baseline: "1.1.0", versions: ["1.0.0", "1.1.0"], required: ["schema_version", "diagnostics_hash", "state_space"] },
+  router_stop: {
+    baseline: "1.0.0",
+    versions: ["1.0.0"],
+    required: ["stop_hash", "router", "reason"],
+    hasPayloadSchemaVersion: false,
+  },
+  state_diagnostics: {
+    baseline: "1.1.0",
+    versions: ["1.0.0", "1.1.0"],
+    required: ["schema_version", "kind", "state_space"],
+  },
   event_statistics: { baseline: "1.0.0", versions: ["1.0.0"], required: ["schema_version", "report_hash", "statistics"] },
   paper_deviation: { baseline: "2.0.0", versions: ["1.0.0", "2.0.0"], required: ["kind", "deviation_hash"] },
   degradation_check: { baseline: "1.1.0", versions: ["1.0.0", "1.1.0"], required: ["schema_version", "check_hash", "metrics"] },
@@ -32,6 +56,9 @@ export function inspectReportDTO(report: ReportEnvelope): ReportDTOView {
   if (!isRecord(payload)) return { status: "invalid", version: "?", reason: "payload must be an object" };
   const rule = RULES[report.kind];
   const rawVersion = payload.schema_version;
+  if (rule.hasPayloadSchemaVersion === false && rawVersion !== undefined) {
+    return { status: "invalid", version: "?", reason: "payload must not carry schema_version" };
+  }
   if (rawVersion !== undefined && typeof rawVersion !== "string") {
     return { status: "invalid", version: "?", reason: "schema_version must be a string" };
   }

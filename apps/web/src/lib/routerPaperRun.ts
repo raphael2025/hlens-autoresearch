@@ -3,6 +3,7 @@
 // /reports/{kind} has no per-kind OpenAPI schema (ReportEnvelope.payload is `dict[str, Any]`).
 // The optional `validation_reports` / `eligibility` keys are read by src/lib/routerEligibility.ts.
 // Pure: tested by routerPaperRun.test.ts with `node --test` over apps/web/fixtures.
+import type { EChartsOption } from "echarts";
 
 export type RouterDecision = {
   at: string;
@@ -117,6 +118,61 @@ export function equitySeries(run: RouterPayload): { categories: string[]; gross:
     categories: run.gross_equity_curve.map((point) => shortTime(point.time)),
     gross: run.gross_equity_curve.map((point) => chartNumber(point.equity)),
     net: run.net_equity_curve.map((point) => chartNumber(point.equity)),
+  };
+}
+
+/** ECharts option used by the Router Paper Runs decision-weight / turnover chart. */
+export function weightsChartOption(series: ReturnType<typeof weightSeries>): EChartsOption {
+  return {
+    tooltip: { trigger: "axis" as const },
+    legend: { top: 0 },
+    grid: { left: 56, right: 56, top: 40, bottom: 48 },
+    xAxis: { type: "category" as const, data: series.categories, name: "decision time" },
+    yAxis: [
+      { type: "value" as const, name: "weight" },
+      { type: "value" as const, name: "turnover" },
+    ],
+    series: [
+      ...series.weights.map((weight) => ({
+        name: weight.key,
+        type: "line" as const,
+        stack: "weights",
+        areaStyle: {},
+        data: weight.data,
+      })),
+      {
+        name: "turnover (switch)",
+        type: "bar" as const,
+        yAxisIndex: 1,
+        data: series.turnover,
+        itemStyle: { color: "#c2410c", opacity: 0.5 },
+      },
+    ],
+  };
+}
+
+/** ECharts option used by the Router Paper Runs gross / net equity chart. */
+export function equityChartOption(series: ReturnType<typeof equitySeries>): EChartsOption {
+  return {
+    tooltip: { trigger: "axis" as const },
+    legend: { top: 0 },
+    grid: { left: 64, right: 24, top: 40, bottom: 48 },
+    xAxis: { type: "category" as const, data: series.categories, name: "time" },
+    yAxis: { type: "value" as const, name: "equity", scale: true },
+    series: [
+      {
+        name: "gross (before switching cost)",
+        type: "line" as const,
+        data: series.gross,
+        itemStyle: { color: "#64748b" },
+      },
+      {
+        name: "net (after switching cost)",
+        type: "line" as const,
+        data: series.net,
+        itemStyle: { color: "#1d4ed8" },
+      },
+    ],
   };
 }
 

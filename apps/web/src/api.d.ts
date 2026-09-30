@@ -38,6 +38,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/healthz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Healthz */
+        get: operations["healthz_healthz_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/jobs": {
         parameters: {
             query?: never;
@@ -98,6 +115,26 @@ export interface paths {
         };
         /** Transitions */
         get: operations["transitions_lifecycle_transitions_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/readyz": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Readyz
+         * @description Configured read sources must answer before the API is reported ready.
+         */
+        get: operations["readyz_readyz_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -173,7 +210,7 @@ export interface components {
         };
         /**
          * Health
-         * @description ``GET /health``.
+         * @description Liveness (``/health`` and ``/healthz``) or readiness (``/readyz``) response.
          */
         Health: {
             /** Api Version */
@@ -290,7 +327,7 @@ export interface components {
             name: string;
             /**
              * Schema Version
-             * @default 2.2.0
+             * @default 2.5.0
              */
             schema_version: string;
             /** Source */
@@ -339,7 +376,7 @@ export interface components {
             name_prefix: string;
             /**
              * Schema Version
-             * @default 2.2.0
+             * @default 2.5.0
              */
             schema_version: string;
             /**
@@ -373,7 +410,7 @@ export interface components {
             result_hash: string;
             /**
              * Schema Version
-             * @default 2.2.0
+             * @default 2.5.0
              */
             schema_version: string;
         };
@@ -402,7 +439,7 @@ export interface components {
             name: string;
             /**
              * Schema Version
-             * @default 2.2.0
+             * @default 2.5.0
              */
             schema_version: string;
             /** Version */
@@ -500,6 +537,35 @@ export interface operations {
         };
     };
     health_health_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Health"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    healthz_healthz_get: {
         parameters: {
             query?: never;
             header?: never;
@@ -713,6 +779,44 @@ export interface operations {
             };
             /** @description Internal Server Error */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+        };
+    };
+    readyz_readyz_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["Health"];
+                };
+            };
+            /** @description Internal Server Error */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApiError"];
+                };
+            };
+            /** @description Service Unavailable */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

@@ -5,10 +5,10 @@ The committed files are never hand-written: this module builds the objects from 
 research test fixtures, writes them with the real writers into a temporary report root, and
 requires each committed ``<kind>/`` directory to hold byte-identical files — and nothing else.
 
-Contract-bound reports retain three generations (contract 2.1.0, ADR-0052 §4; contract 2.2.0,
-ADR-0055):
+Contract-bound reports retain the 2.0.0, 2.1.0, 2.2.0, and 2.4.0 generations (ADR-0052 §4,
+ADR-0055, ADR-0088, ADR-0094):
 
-- ``WRITERS`` — the current fixture of every kind; contract-bound reports use 2.2.0, while
+- ``WRITERS`` — the current fixture of every kind; contract-bound reports use 2.5.0, while
   ``retro_audit`` uses its report schema version.
   The ``validation_report`` one carries an exact gate (``value_exact`` / ``threshold_exact``,
   TEST ONLY values) next to the float-only gate, so the console's exact display is exercised.
@@ -22,14 +22,19 @@ ADR-0055):
   ``router_paper_run``, ``gate_calibration``, ``router_stop``, ``paper_deviation``): the current
   builders in a fresh interpreter inside ``contract_schema_version_scope("2.1.0")``, which
   reproduces the files committed before 2.2.0 byte for byte.
+- ``LEGACY_WRITERS["2.2.0"]`` — the **legacy readable** 2.2.0 fixtures of those same six kinds,
+  produced inside ``contract_schema_version_scope("2.2.0")`` and retained as a prior generation.
+- ``LEGACY_WRITERS["2.4.0"]`` — the **legacy readable** 2.4.0 fixtures of those same six kinds,
+  produced inside ``contract_schema_version_scope("2.4.0")`` and retained after ADR-0094.
 - ``VARIANT_WRITERS`` — named further current fixtures of a kind, for a state the console must
   show distinctly (the ``degradation_check`` with every metric missing:
   ``insufficient_evidence``); their ids are pinned in ``tests/apps/report_fixtures.py``
   (``VARIANTS``).
 
 The legacy files stay so the API and the console keep proving they read reports written by the
-earlier code; their ids are pinned in ``tests/apps/report_fixtures.py`` (``LEGACY``). Kinds without
-a legacy file of a generation serialize nothing versioned: the earlier code wrote the same bytes.
+earlier code; their ids are pinned in ``tests/apps/report_fixtures.py`` (``LEGACY`` and the
+ADR-0081 immutable descriptive fixtures). Kinds without a legacy file of a generation serialize
+nothing versioned: the earlier code wrote the same bytes.
 
 Regenerate after a payload change (delete the stale ``<kind>/`` file first; writers are
 append-only)::
@@ -46,7 +51,7 @@ import json
 import subprocess
 import sys
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from decimal import Decimal
 from pathlib import Path
 
@@ -66,9 +71,9 @@ from research.reports import (
     write_gate_calibration_report,
     write_paper_deviation,
     write_research_loop_round,
+    write_retro_audit_report,
     write_router_paper_run,
     write_router_stop,
-    write_retro_audit_report,
     write_state_diagnostics,
     write_state_strategy_matrix,
     write_validation_report,
@@ -78,7 +83,7 @@ from research.router.paper import RouterStop
 from research.states.diagnostics import StateDiagnostics, diagnose
 from research.synthetic_lab.gate_calibration import run_gate_calibration
 from research.validation.retro_audit import RetroAuditReport, retro_audit
-from tests.apps.report_fixtures import LEGACY, VARIANTS
+from tests.apps.report_fixtures import LEGACY, VARIANTS, legacy_ids
 from tests.research.events.test_event_stats import _all_statistics
 from tests.research.reports.test_degradation_writer import write_fixture as write_degradation
 from tests.research.reports.test_degradation_writer import (
@@ -131,7 +136,7 @@ def retro_audit_report() -> RetroAuditReport:
     """An empty, fixed-time audit; it has no subjects and performs no lifecycle transitions."""
     return retro_audit(
         (),
-        audited_at=datetime(2026, 9, 27, tzinfo=timezone.utc),
+        audited_at=datetime(2026, 9, 27, tzinfo=UTC),
         rules="fixture-only; no lifecycle transition",
     )
 
@@ -203,6 +208,8 @@ def _variant_writers() -> list[tuple[str, str, Writer]]:
 #: The legacy readable fixtures, by the contract version whose code wrote them. 2.0.0: the
 #: float-only validation report (no exact gate: 2.0.0 has no ``value_exact``), and the matrix /
 #: calibration builders unchanged. 2.1.0: the current builders of every kind the 2.2.0 bump changed.
+#: 2.2.0: those same builders before the 2.4.0 composition extension. 2.4.0: those builders
+#: before ADR-0094's envelope bump.
 LEGACY_WRITERS: dict[str, dict[str, Writer]] = {
     "2.0.0": {
         "validation_report": lambda root: write_validation_report(root, _validation_report()),
@@ -210,6 +217,28 @@ LEGACY_WRITERS: dict[str, dict[str, Writer]] = {
         "gate_calibration": WRITERS["gate_calibration"],
     },
     "2.1.0": {
+        kind: WRITERS[kind]
+        for kind in (
+            "validation_report",
+            "state_strategy_matrix",
+            "router_paper_run",
+            "gate_calibration",
+            "router_stop",
+            "paper_deviation",
+        )
+    },
+    "2.2.0": {
+        kind: WRITERS[kind]
+        for kind in (
+            "validation_report",
+            "state_strategy_matrix",
+            "router_paper_run",
+            "gate_calibration",
+            "router_stop",
+            "paper_deviation",
+        )
+    },
+    "2.4.0": {
         kind: WRITERS[kind]
         for kind in (
             "validation_report",
@@ -272,7 +301,7 @@ def regenerate(root: Path = FIXTURES_ROOT) -> list[WrittenReport]:
 
 def test_every_report_kind_has_a_generated_fixture() -> None:
     assert set(WRITERS) == {kind.value for kind in ReportKind}
-    assert set(LEGACY) == set(LEGACY_WRITERS) == {"2.0.0", "2.1.0"}
+    assert set(LEGACY) == set(LEGACY_WRITERS) == {"2.0.0", "2.1.0", "2.2.0", "2.4.0"}
     for version, ids in LEGACY.items():
         assert {kind.value for kind in ids} == set(LEGACY_WRITERS[version])
     assert {kind.value: set(named) for kind, named in VARIANTS.items()} == {
@@ -288,7 +317,7 @@ def test_the_committed_fixture_is_what_the_real_writer_produces(tmp_path: Path, 
     assert all(variant.kind == kind and variant.written for variant in variants)
     committed_dir = FIXTURES_ROOT / kind
     committed = sorted(path.name for path in committed_dir.glob("*.json"))
-    legacy = [ids[ReportKind(kind)] for ids in LEGACY.values() if ReportKind(kind) in ids]
+    legacy = sorted(legacy_ids(ReportKind(kind)))
     expected = sorted(
         [
             written.path.name,
@@ -358,9 +387,9 @@ def test_each_generation_carries_its_own_envelopes(
     tmp_path: Path, legacy: dict[str, dict[str, WrittenReport]], kind: str
 ) -> None:
     current = WRITERS[kind](tmp_path).path.read_text(encoding="utf-8")
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
     texts = {
-        "2.2.0": current,
+        "2.5.0": current,
         **{version: legacy[version][kind].path.read_text("utf-8") for version in LEGACY},
     }
     for version, text in texts.items():
@@ -374,7 +403,7 @@ def test_the_current_validation_report_carries_an_exact_gate(
 ) -> None:
     written = WRITERS["validation_report"](tmp_path)
     payload = json.loads(written.path.read_text(encoding="utf-8"))
-    assert payload["schema_version"] == "2.2.0" and payload["verdict"] == "PASS"
+    assert payload["schema_version"] == "2.5.0" and payload["verdict"] == "PASS"
     old_exact = json.loads(legacy["2.1.0"]["validation_report"].path.read_text("utf-8"))
     for report in (payload, old_exact):
         float_gate, exact = report["gates"]

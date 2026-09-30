@@ -10,6 +10,7 @@ import pytest
 from core.contracts.knowledge import KnowledgeProviderError, KnowledgeQuery, KnowledgeResult
 from core.domain.research import KnowledgeStatus
 from plugins.knowledge import LocalKnowledgeProvider
+from plugins.knowledge.local import DEFAULT_ITEMS_DIR
 from tests.contract_suites import knowledge as suite
 
 
@@ -23,6 +24,18 @@ def test_the_seed_base_is_unverified_claims_with_provenance() -> None:
     assert len(items) >= 6
     assert all(item.status is KnowledgeStatus.UNVERIFIED for item in items)
     assert {item.name.split("_")[0] for item in items} >= {"strategy", "factor", "risk", "state"}
+
+
+def test_repository_seed_payloads_explicitly_carry_schema_version() -> None:
+    seed_files = sorted(DEFAULT_ITEMS_DIR.glob("seed-*.json"))
+    assert seed_files
+
+    for path in seed_files:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert isinstance(payload, list), path.name
+        for index, item in enumerate(payload):
+            assert isinstance(item, dict), f"{path.name}[{index}]"
+            assert item.get("schema_version") == "2.1.0", f"{path.name}[{index}]"
 
 
 def test_retrieval_by_library_and_terms() -> None:

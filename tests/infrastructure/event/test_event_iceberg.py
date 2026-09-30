@@ -200,6 +200,41 @@ def test_interaction_rows_keep_their_upstream_lineage(env: Env) -> None:
     assert all(row.upstream_event_ids for row in stored.rows)
 
 
+def test_a_written_run_survives_catalog_adapter_close_and_reopen(tmp_path: Path) -> None:
+    """A fresh SQLite catalog client can recover committed Event metadata and rows (ADR-0056).
+
+    This is local adapter reconnect evidence only; it does not establish PostgreSQL or
+    cross-process crash durability.
+    """
+    harness = SqliteCatalogHarness(tmp_path, registry=PHASE3_REGISTRY)
+    try:
+        first_adapter = harness.open_adapter()
+        ensure_event_tables(first_adapter)
+        result = _sequence()
+        first = EventTable(first_adapter).write(result)
+        assert first.snapshot_id is not None
+        first_adapter.close()
+
+        reopened_adapter = harness.open_adapter()
+        table_info = reopened_adapter.load_table(EVENT_EVENTS.table)
+        assert table_info is not None
+        assert table_info.current_snapshot is not None
+        assert table_info.current_snapshot.snapshot_id == first.snapshot_id
+
+        reopened_table = EventTable(reopened_adapter)
+        recovered = reopened_table.read(result.result_hash)
+        assert recovered is not None
+        assert recovered.snapshot_id == first.snapshot_id
+        assert recovered.rows == event_table(result)
+        assert recovered.result == result
+        assert reopened_table.load(result.result_hash) == result
+
+        replay = reopened_table.write(result)
+        assert replay.replayed and replay.snapshot_id == first.snapshot_id
+    finally:
+        harness.cleanup()
+
+
 def test_rows_carry_the_run_block() -> None:
     result = _cross()
     rows = event_rows(result)

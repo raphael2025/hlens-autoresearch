@@ -1542,7 +1542,7 @@ def test_b3_only_appends_to_the_registry() -> None:
     b3_end = len(PRE_B3_MODEL_NAMES) + len(B3_MODELS)
     assert names[len(PRE_B3_MODEL_NAMES) : b3_end] == tuple(model.__name__ for model in B3_MODELS)
     assert b3_end == 74
-    assert len(CONTRACT_MODELS) == 146
+    assert len(CONTRACT_MODELS) == 148
 
 
 def test_every_b3_model_is_exported_byte_identically(tmp_path: Path) -> None:
@@ -1592,9 +1592,9 @@ def test_v1_snapshots_and_vectors_are_byte_identical() -> None:
 
 
 def test_contract_version_and_reused_patterns_are_unchanged() -> None:
-    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0 and ADR-0088
-    # to 2.4.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
+    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0, ADR-0088
+    # to 2.4.0, and ADR-0094 to 2.5.0.
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
     assert revision.SNAPSHOT_TABLE_PATTERN == r"^[a-z][a-z0-9_]*\.[a-z][a-z0-9_]*$"
     assert revision.BINDING_ID_PATTERN == r"^[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)*$"
 

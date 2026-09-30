@@ -76,11 +76,14 @@ def test_json_formatter_handles_broken_message_formatting() -> None:
 
 def test_configure_logging_writes_json_and_is_idempotent() -> None:
     output = StringIO()
+    replacement = StringIO()
     target = logging.Logger("isolated.ops2.test")
 
     configured = configure_logging(logging.DEBUG, logger=target, stream=output)
     configure_logging(logging.DEBUG, logger=target, stream=output)
     configured.debug("ready")
+    configure_logging(logging.DEBUG, logger=target, stream=replacement)
+    configured.info("replacement stream")
 
     assert configured is target
     assert len(target.handlers) == 1
@@ -89,5 +92,12 @@ def test_configure_logging_writes_json_and_is_idempotent() -> None:
         "level": "DEBUG",
         "logger": "isolated.ops2.test",
         "message": "ready",
+        "exception_type": None,
+    }
+    assert json.loads(replacement.getvalue()) == {
+        "timestamp": json.loads(replacement.getvalue())["timestamp"],
+        "level": "INFO",
+        "logger": "isolated.ops2.test",
+        "message": "replacement stream",
         "exception_type": None,
     }

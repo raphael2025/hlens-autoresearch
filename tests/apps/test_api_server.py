@@ -15,6 +15,7 @@ Two halves:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import select
@@ -26,6 +27,7 @@ import time
 import tomllib
 from collections.abc import Iterator
 from pathlib import Path
+from typing import NoReturn
 
 import httpx
 import pytest
@@ -68,6 +70,23 @@ def test_an_invalid_port_is_refused(port: object) -> None:
         server_options(port)  # type: ignore[arg-type]
 
 
+@pytest.mark.parametrize("signum", [signal.SIGINT, signal.SIGTERM])
+def test_startup_signal_is_routed_to_uvicorn_and_previous_handler_is_restored(
+    signum: signal.Signals,
+) -> None:
+    received: list[int] = []
+
+    def server_handler(signal_number: int, _frame: object) -> None:
+        received.append(signal_number)
+
+    previous = signal.getsignal(signum)
+    with serve._successful_signal_replay(server_handler):
+        signal.raise_signal(signum)
+
+    assert received == [signum]
+    assert signal.getsignal(signum) == previous
+
+
 def test_the_command_line_has_no_host_worker_or_reload_option() -> None:
     options = {o for action in serve.parser()._actions for o in action.option_strings}
     assert options == {
@@ -99,6 +118,13 @@ def _reports(tmp_path: Path) -> Path:
     root = tmp_path / "reports"
     shutil.copytree(FIXTURES, root, ignore=shutil.ignore_patterns("*.md"))
     return root
+
+
+def _fail_startup(process: subprocess.Popen[str], reason: str) -> NoReturn:
+    if process.poll() is None:
+        process.kill()
+    process.communicate()
+    pytest.fail(reason)
 
 
 def test_the_options_wire_the_existing_create_app_settings(tmp_path: Path) -> None:
@@ -163,7 +189,18 @@ class _Server:
 
     def stop(self, sig: signal.Signals) -> tuple[int, str]:
         self.process.send_signal(sig)
-        _, rest = self.process.communicate(timeout=START_TIMEOUT)
+        try:
+            self.process.wait(timeout=START_TIMEOUT)
+        except subprocess.TimeoutExpired:
+            self.process.kill()
+            self.process.wait()
+            if self.process.stdout is not None:
+                self.process.stdout.read()
+            raise
+        # _start() already consumed startup lines from this pipe. After a direct readline(),
+        # Popen.communicate() may return ``None`` for stdout instead of the shutdown tail.
+        # Drain the stream itself after process exit so the graceful-shutdown assertions see it.
+        rest = self.process.stdout.read() if self.process.stdout is not None else ""
         return self.process.returncode, "".join(self.log) + rest
 
 
@@ -196,13 +233,27 @@ def _start(tmp_path: Path) -> _Server:
         if not line:
             break
         log.append(line)
-        match = RUNNING.search(line)
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError as error:
+            _fail_startup(process, f"Uvicorn emitted a non-JSON startup log: {line!r} ({error})")
+        if not isinstance(record, dict) or set(record) != {
+            "timestamp",
+            "level",
+            "logger",
+            "message",
+            "exception_type",
+        }:
+            _fail_startup(process, f"Uvicorn emitted a non-allowlist JSON startup record: {line!r}")
+        message = record["message"]
+        if not isinstance(message, str):
+            _fail_startup(process, f"Uvicorn emitted a non-string startup message: {line!r}")
+        match = RUNNING.search(message)
         if match:
-            assert match["host"] == LOOPBACK, line
+            if match["host"] != LOOPBACK:
+                _fail_startup(process, f"Uvicorn started on a non-loopback address: {line!r}")
             return _Server(process, f"http://{LOOPBACK}:{match['port']}", log)
-    process.kill()
-    process.communicate()
-    pytest.fail("the Uvicorn server did not start:\n" + "".join(log))
+    _fail_startup(process, "the Uvicorn server did not start:\n" + "".join(log))
 
 
 @pytest.fixture
@@ -222,7 +273,7 @@ def test_a_real_uvicorn_serves_on_loopback_and_stops_gracefully(
     server = _start(tmp_path)
     try:
         with httpx.Client(base_url=server.base_url, timeout=10) as client:
-            health = client.get("/health")
+            health = client.get("/health", params={"q": "private-query-sentinel"})
             assert health.status_code == 200 and health.json()["status"] == "ok"
             listing = client.get("/reports/validation_report")
             assert listing.status_code == 200 and listing.json()["reports"]
@@ -240,3 +291,13 @@ def test_a_real_uvicorn_serves_on_loopback_and_stops_gracefully(
     assert code == 0, log
     assert "Shutting down" in log and "Finished server process" in log, log
     assert "0.0.0.0" not in log
+    records = [json.loads(line) for line in log.splitlines() if line.strip()]
+    assert records
+    assert all(
+        set(record) == {"timestamp", "level", "logger", "message", "exception_type"}
+        for record in records
+    )
+    assert any("Shutting down" in record["message"] for record in records)
+    assert any("Finished server process" in record["message"] for record in records)
+    assert not any(record["logger"] == "uvicorn.access" for record in records)
+    assert "private-query-sentinel" not in log

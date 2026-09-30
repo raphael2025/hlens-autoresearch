@@ -169,7 +169,7 @@ class FakeListingEpisodes:
 def episodes_of(universe: ds.FakeUniverse) -> FakeListingEpisodes:
     """Each cited listing revision belongs to the episode citing it (the genuine case)."""
     keys = {
-        entry.listing_revision_id: entry.episode.observation_key()
+        cast(Any, entry).listing_revision_id: cast(Any, entry).episode.observation_key()
         for entry in (*universe.members_, *universe.exclusions_)
     }
     return FakeListingEpisodes(keys)

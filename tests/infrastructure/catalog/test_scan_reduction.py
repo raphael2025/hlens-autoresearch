@@ -105,7 +105,7 @@ def test_bounded_scan_can_be_closed_after_the_first_batch(
 
     first = next(batches)
     assert first.num_rows == 3
-    batches.close()  # type: ignore[attr-defined]
+    batches.close()
     with pytest.raises(StopIteration):
         next(batches)
 

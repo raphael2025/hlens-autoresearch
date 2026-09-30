@@ -3,7 +3,7 @@
   "description": "一个目标在 `next_bar_open_participation` 执行模型下的结转记录（ADR-0054 §3）。\n\n- `requested_quantity`：目标变化量（执行 bar 按执行前权益定量，之后不再重新定量），非零；\n- `filled_quantity`：该目标各笔成交数量之和，与 `requested_quantity` 同号（或为 0），\n  绝对值不超过它；\n- `remaining_quantity = |requested_quantity| − |filled_quantity|`（`>= 0`）；\n- `ended_by`：`filled`（剩余为 0）、`superseded`（同一标的更晚的目标在其执行 bar 取代它）、\n  `end_of_data`（该标的的 bar 用完）；后两者剩余为正；\n- `ended_at`：结束所在 bar 的 `interval_start`（`filled` = 最后一笔成交的 bar；\n  `superseded` = 取代它的目标的执行 bar；`end_of_data` = 该标的最后一根 bar）。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

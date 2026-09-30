@@ -241,7 +241,7 @@ class BatchGrid:
         for what, keys in (
             ("operator", [op.key for op in operators]),
             ("strategy", [str(s.ref) for s in strategies]),
-            ("parameter point", [content_hash(p) for p in points]),
+            ("parameter point", [content_hash(dict(p)) for p in points]),
         ):
             if len(set(keys)) != len(keys):
                 raise BatchRefused(f"the batch declares a {what} twice")

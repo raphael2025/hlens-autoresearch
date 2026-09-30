@@ -3,7 +3,7 @@
   "description": "回测成本模型 v1：按成交名义额收取的费率 + 相对参考价的不利滑点率（均为 `[0, 1)` 小数）。\n\n买入成交价 = `open × (1 + slippage_rate)`，卖出 = `open × (1 − slippage_rate)`；\n费用 = `|quantity| × fill_price × fee_rate`。`ref` 是其 `cost_model:name@version` 引用\n（进入复现元组的 `cost_model_ref`）。",
   "properties": {
     "schema_version": {
-      "default": "2.4.0",
+      "default": "2.5.0",
       "pattern": "^(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)\\.(?:0|[1-9][0-9]*)(?:-(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(?:\\.(?:0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*)?(?:\\+[0-9a-zA-Z-]+(?:\\.[0-9a-zA-Z-]+)*)?$",
       "title": "Schema Version",
       "type": "string"

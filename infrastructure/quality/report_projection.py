@@ -1,0 +1,854 @@
+"""Versioned event and event-revision projection for Quality canonical-partition v3.
+
+This module defines only the canonical-partition v3 event/revision projection. Legacy report
+versions keep their inline event shape and historical report/event hashes. Revision IDs are
+externally sorted and deduplicated through bounded content-addressed RunSets; no collection grows
+with the number of IDs.
+
+The evidence-gap projection in this module follows ADR-0031 identity ``(table, revision_id)`` and
+ADR-0093 record order. It is a separate ordered stream projection; legacy ``_GapWriter`` batches
+and their ``batch_index`` bookkeeping are untouched.
+
+The event ID is SHA-256 over the domain tag
+``hlens.quality.canonical-partition@3.0.0/event-id/v1\\0``, followed by an unsigned 8-byte
+big-endian length and canonical UTF-8 JSON of the v3 rule identity plus every fixed event field,
+then one unsigned 8-byte length and UTF-8 byte sequence for each sorted unique revision ID. The
+fixed JSON includes ``revision_count``; IDs therefore have unambiguous boundaries and the digest
+commits to the complete ordered sequence.
+
+Use :class:`CanonicalPartitionV3Projector` as a context manager per event. The caller writes the
+fixed event mapping and consumes the ordered revision mappings into the ADR-0093 stream writers
+inside that context. Leaving early closes the RunSet reader and makes the projector fail closed;
+the next event cannot conceal an incomplete revision stream.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from collections.abc import Callable, Iterable, Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+from datetime import UTC, datetime, timedelta
+from types import MappingProxyType
+from typing import Any, Final
+
+from core.contracts.storage import StorageAdapter
+from core.domain.base import canonical_json
+from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
+
+__all__ = [
+    "CANONICAL_PARTITION_V3_RULE_HASH",
+    "CANONICAL_PARTITION_V3_RULE_ID",
+    "CANONICAL_PARTITION_V3_RULE_SPEC",
+    "CANONICAL_PARTITION_V3_RULE_VERSION",
+    "CanonicalPartitionProjectionError",
+    "CanonicalPartitionV3Projector",
+    "CanonicalPartitionV3EvidenceGapProjector",
+    "ProjectedCanonicalEvidenceGaps",
+    "ProjectedCanonicalEvent",
+]
+
+CANONICAL_PARTITION_V3_RULE_ID: Final = "hlens.quality.canonical-partition"
+CANONICAL_PARTITION_V3_RULE_VERSION: Final = "3.0.0"
+CANONICAL_PARTITION_V3_RULE_SPEC: Final[dict[str, Any]] = {
+    "rule": CANONICAL_PARTITION_V3_RULE_ID,
+    "version": CANONICAL_PARTITION_V3_RULE_VERSION,
+    "subject": "one Canonical partition: table x venue symbol x UTC day",
+    "inputs": "current heads of the Canonical table, both Raw element tables, their source tables "
+    "and the Raw evidence table, pinned; the report is computed on exactly those snapshots",
+    "proof": "hlens.pit.maximal-head@1.0.0 selector proofs (Canonical re-normalized, edges "
+    "re-derived); an unprovable partition gets no report",
+    "events": {
+        "report_inputs": "the bound snapshots (canonical JSON)",
+        "competing_heads": "key with >1 maximal head, knowledge_cutoff and simulation at the end "
+        "of time; all unique heads are identified by ordered event_revisions records",
+        "bar_1m_gap": "maximal run of minutes of the day without any Canonical bar revision",
+        "agg_trade_id_discontinuity": "jump between consecutive aggregate trade ids of the day",
+        "bar_1m_invariant_violation": "low/high do not bound open/close, low > high, or a taker "
+        "volume exceeds its total",
+        "evidence_gaps": "number of evidence-gap records in the report's evidence_gaps stream "
+        "(ADR-0031)",
+    },
+    "thresholds": "none (outliers need calibrated thresholds: a later rule version)",
+    "evidence_gaps": "every Canonical revision of the partition with an evidence gap is written "
+    "as a fixed record in the ordered evidence_gaps stream before the report manifest is "
+    "committed; "
+    "legacy v1/v2 report rows and hashes remain unchanged (ADR-0031 / ADR-0093)",
+    "evidence_gap_projection": {
+        "fields": ["quality_report_id", "table", "revision_id", "gap"],
+        "order": "lexicographic (table, revision_id) by Unicode code point; exact UTF-8 text is "
+        "preserved without normalization",
+        "identity": ["table", "revision_id"],
+        "duplicate_identity": "fail closed, including when the gap value differs",
+        "subject_binding": (
+            "subject symbol and start are fixed by the report manifest and are not repeated"
+        ),
+        "legacy_batch_index": "excluded from v3 stream records",
+        "record_projection": (
+            "canonical_json(record mapping) encoded as UTF-8 followed by one LF; no BOM"
+        ),
+        "empty_stream": "zero records; the ADR-0093 stream writer owns the empty-root encoding",
+        "max_gap_record_bytes": (
+            "positive caller input; canonical JSONL line includes LF; each scratch row must also "
+            "fit RunLimits.leaf_max_bytes minus the 512-byte header reserve"
+        ),
+    },
+    "report_id": "<rule>@<version>.<table>.<venue symbol>.<day>.<sha256 of rule hashes and "
+    "the exact subject and bound snapshots>",
+    "report_identity": {
+        "algorithm": "SHA-256(domain_separator || canonical_identity_utf8)",
+        "domain_separator": {
+            "ascii_prefix": "hlens.quality.report-identity/v1",
+            "terminal_byte_hex": "00",
+        },
+        "canonical_encoding": (
+            "canonical_json UTF-8 with sorted object keys, compact separators, ensure_ascii=False; "
+            "no terminal LF; helper hashes incrementally without materializing encoded bytes"
+        ),
+        "identity_fields": [
+            "quality_rule_id",
+            "quality_rule_version",
+            "quality_rule_hash",
+            "identity_rule_hashes",
+            "subject.table",
+            "subject.snapshot_id",
+            "subject.symbol",
+            "subject.start",
+            "subject.end",
+            "snapshot_bindings (complete normalized list sorted by table)",
+        ],
+        "identity_rule_hashes": (
+            "finite caller mapping of registered rule labels to lowercase SHA-256; quality is "
+            "required and equals the manifest quality_rule_hash"
+        ),
+        "max_identity_rule_hashes": "positive caller input; no default",
+        "max_identity_bytes": (
+            "positive caller input; bounds canonical identity UTF-8 bytes excluding the domain "
+            "separator; counted and hashed in chunks"
+        ),
+        "output": "<rule>@<version>.<table>.<venue symbol>.<day>.<lowercase SHA-256>",
+        "commit_metadata_excluded": ["knowledge_time", "stream roots"],
+    },
+    "knowledge_time": "first commit's clock reading, reused by every replay",
+    "legacy_compatibility": "v1/v2 inline reports and their report/event hashes remain unchanged",
+    "event_projection": {
+        "format": "hlens.quality.report-jsonl@1.0.0",
+        "event_fields": {
+            "event_id": "qevt3- + lowercase SHA-256 hex",
+            "event_type": "non-empty string",
+            "table": "non-empty string or null",
+            "observation_key": "non-empty string or null",
+            "revision_first_ordinal": "non-negative integer; global zero-based stream ordinal",
+            "revision_count": "non-negative integer; number of unique revision IDs",
+            "event_start": "UTC datetime ISO-8601 with +00:00, or null",
+            "event_end": "UTC datetime ISO-8601 with +00:00, or null",
+            "detail": "non-empty string",
+        },
+        "record_projection": (
+            "canonical_json(record mapping) encoded as UTF-8 followed by one LF; no BOM"
+        ),
+        "revision_records": {
+            "fields": ["event_ordinal", "revision_id"],
+            "order": "event_ordinal ascending, then revision_id ascending by Unicode code point",
+            "revision_id_text": "exact UTF-8 scalar sequence; no Unicode normalization",
+            "duplicates": "one record per unique revision_id within an event",
+        },
+        "event_id": {
+            "algorithm": "SHA-256",
+            "domain_separator": {
+                "ascii_prefix": "hlens.quality.canonical-partition@3.0.0/event-id/v1",
+                "terminal_byte_hex": "00",
+            },
+            "fixed_fields_encoding": (
+                "8-byte unsigned big-endian byte length + canonical_json UTF-8"
+            ),
+            "revision_id_encoding": (
+                "per sorted unique ID: 8-byte unsigned big-endian UTF-8 length, then bytes"
+            ),
+            "identity_fields": [
+                "rule_id",
+                "rule_version",
+                "rule_hash",
+                "event_type",
+                "table",
+                "observation_key",
+                "revision_first_ordinal",
+                "revision_count",
+                "event_start",
+                "event_end",
+                "detail",
+                "every sorted unique revision_id",
+            ],
+        },
+        "resource_parameters": {
+            "run_capacity": "positive caller input; no default",
+            "merge_fanout": "integer >= 2 caller input; no default",
+            "run_limits": "explicit RunLimits caller input; no default",
+            "max_event_record_bytes": "positive caller input; canonical JSONL line includes LF",
+            "max_revision_record_bytes": (
+                "positive caller input; canonical JSONL line includes LF; each row must also fit "
+                "the scratch RunLimits leaf_max_bytes minus its 512-byte header reserve"
+            ),
+        },
+    },
+}
+CANONICAL_PARTITION_V3_RULE_HASH: Final = hashlib.sha256(
+    canonical_json(CANONICAL_PARTITION_V3_RULE_SPEC).encode("utf-8")
+).hexdigest()
+
+_EVENT_ID_DOMAIN: Final = b"hlens.quality.canonical-partition@3.0.0/event-id/v1\x00"
+_JSON_CHUNK_CHARS: Final = 1024
+_RUN_HEADER_RESERVE_BYTES: Final = 512
+_EVENT_ID_PLACEHOLDER: Final = "qevt3-" + "0" * 64
+
+
+class CanonicalPartitionProjectionError(ValueError):
+    """Event inputs or RunSet traversal do not satisfy the v3 projection rule."""
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedCanonicalEvent:
+    """One fixed event record and its ordered fixed-size revision records."""
+
+    event_record: Mapping[str, Any]
+    revision_records: Iterator[Mapping[str, Any]]
+
+
+@dataclass(frozen=True, slots=True)
+class ProjectedCanonicalEvidenceGaps:
+    """One bounded gap iterator with expected count and explicit delivery completion state."""
+
+    record_count: int
+    records: Iterator[Mapping[str, Any]]
+    _complete_getter: Callable[[], bool] = field(repr=False, compare=False)
+
+    @property
+    def complete(self) -> bool:
+        """Whether the entire output iterator was consumed and the context exited normally."""
+        return self._complete_getter()
+
+
+def _positive_int(name: str, value: object, *, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        raise CanonicalPartitionProjectionError(f"{name} must be an integer >= {minimum}")
+    return value
+
+
+def _utf8_length(value: str, *, maximum: int | None = None, name: str = "text") -> int:
+    total = 0
+    try:
+        for start in range(0, len(value), _JSON_CHUNK_CHARS):
+            total += len(value[start : start + _JSON_CHUNK_CHARS].encode("utf-8"))
+            if maximum is not None and total > maximum:
+                raise CanonicalPartitionProjectionError(
+                    f"{name} exceeds the configured UTF-8 byte limit"
+                )
+    except UnicodeEncodeError as exc:
+        raise CanonicalPartitionProjectionError(f"{name} must be valid UTF-8 text") from exc
+    return total
+
+
+def _text(
+    name: str,
+    value: object,
+    *,
+    optional: bool = False,
+    maximum_utf8_bytes: int | None = None,
+) -> str | None:
+    if optional and value is None:
+        return None
+    if not isinstance(value, str):
+        qualifier = " or null" if optional else ""
+        raise CanonicalPartitionProjectionError(f"{name} must be a non-empty string{qualifier}")
+    _utf8_length(value, maximum=maximum_utf8_bytes, name=name)
+    if not any(not character.isspace() for character in value):
+        qualifier = " or null" if optional else ""
+        raise CanonicalPartitionProjectionError(f"{name} must be a non-empty string{qualifier}")
+    return value
+
+
+def _time(name: str, value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, datetime):
+        raise CanonicalPartitionProjectionError(f"{name} must be a datetime or null")
+    try:
+        offset = value.utcoffset()
+    except Exception as exc:
+        raise CanonicalPartitionProjectionError(f"{name} has an invalid UTC offset") from exc
+    if value.tzinfo is None or offset is None:
+        raise CanonicalPartitionProjectionError(f"{name} must be timezone-aware")
+    if offset != timedelta(0):
+        raise CanonicalPartitionProjectionError(f"{name} must have UTC offset +00:00")
+    return value.astimezone(UTC).isoformat()
+
+
+def _validate_revision_id(value: object, *, event_ordinal: int, max_record_bytes: int) -> str:
+    revision_id = _text("revision_id", value, maximum_utf8_bytes=max_record_bytes)
+    assert revision_id is not None
+    record = {"event_ordinal": event_ordinal, "revision_id": revision_id}
+    if _canonical_json_length(record, maximum=max_record_bytes - 1) + 1 > max_record_bytes:
+        raise CanonicalPartitionProjectionError(
+            "revision record exceeds the configured RunLimits leaf record byte limit"
+        )
+    return revision_id
+
+
+def _run_row(revision_id: str) -> Mapping[str, Any]:
+    return {"revision_id": revision_id}
+
+
+def _unique_revision_ids(rows: Iterable[Mapping[str, Any]]) -> Iterator[str]:
+    previous: str | None = None
+    for row in rows:
+        revision_id = row.get("revision_id")
+        if not isinstance(revision_id, str):
+            raise CanonicalPartitionProjectionError("RunSet contains an invalid revision_id")
+        if previous is None or revision_id != previous:
+            yield revision_id
+        previous = revision_id
+
+
+def _unique_count(storage: StorageAdapter, run: RunRef | None) -> int:
+    if run is None:
+        return 0
+    count = 0
+    with iter_run(storage, run) as rows:
+        for _ in _unique_revision_ids(rows):
+            count += 1
+    return count
+
+
+def _canonical_json_chunks(value: Any) -> Iterator[bytes]:
+    """Yield canonical JSON bytes while bounding temporary string encodings."""
+    if isinstance(value, str):
+        yield b'"'
+        for start in range(0, len(value), _JSON_CHUNK_CHARS):
+            chunk = value[start : start + _JSON_CHUNK_CHARS]
+            encoded = json.dumps(chunk, ensure_ascii=False, separators=(",", ":"), allow_nan=False)
+            try:
+                yield encoded[1:-1].encode("utf-8")
+            except UnicodeEncodeError as exc:
+                raise CanonicalPartitionProjectionError(
+                    "canonical JSON text must be valid UTF-8"
+                ) from exc
+        yield b'"'
+        return
+    if value is None:
+        yield b"null"
+        return
+    if value is True:
+        yield b"true"
+        return
+    if value is False:
+        yield b"false"
+        return
+    if isinstance(value, int):
+        yield str(value).encode("ascii")
+        return
+    if isinstance(value, Mapping):
+        yield b"{"
+        for index, key in enumerate(sorted(value)):
+            if not isinstance(key, str):
+                raise CanonicalPartitionProjectionError("canonical JSON mapping keys must be text")
+            if index:
+                yield b","
+            yield from _canonical_json_chunks(key)
+            yield b":"
+            yield from _canonical_json_chunks(value[key])
+        yield b"}"
+        return
+    if isinstance(value, (list, tuple)):
+        yield b"["
+        for index, item in enumerate(value):
+            if index:
+                yield b","
+            yield from _canonical_json_chunks(item)
+        yield b"]"
+        return
+    raise CanonicalPartitionProjectionError(
+        f"unsupported canonical JSON value type: {type(value).__name__}"
+    )
+
+
+def _canonical_json_length(value: Any, *, maximum: int | None = None) -> int:
+    total = 0
+    for chunk in _canonical_json_chunks(value):
+        total += len(chunk)
+        if maximum is not None and total > maximum:
+            raise CanonicalPartitionProjectionError(
+                "canonical JSONL record exceeds its configured byte limit"
+            )
+    return total
+
+
+def _update_length_prefixed_json(hasher: Any, value: Any) -> None:
+    length = _canonical_json_length(value)
+    hasher.update(length.to_bytes(8, "big", signed=False))
+    for chunk in _canonical_json_chunks(value):
+        hasher.update(chunk)
+
+
+def _update_length_prefixed_text(hasher: Any, value: str, *, maximum: int) -> None:
+    length = _utf8_length(value, maximum=maximum, name="revision_id")
+    hasher.update(length.to_bytes(8, "big", signed=False))
+    for start in range(0, len(value), _JSON_CHUNK_CHARS):
+        hasher.update(value[start : start + _JSON_CHUNK_CHARS].encode("utf-8"))
+
+
+def _event_id(
+    storage: StorageAdapter,
+    run: RunRef | None,
+    *,
+    event_fields: Mapping[str, Any],
+    revision_count: int,
+    max_revision_record_bytes: int,
+) -> str:
+    identity = {
+        "rule_id": CANONICAL_PARTITION_V3_RULE_ID,
+        "rule_version": CANONICAL_PARTITION_V3_RULE_VERSION,
+        "rule_hash": CANONICAL_PARTITION_V3_RULE_HASH,
+        "event_fields": dict(event_fields),
+    }
+    hasher = hashlib.sha256()
+    hasher.update(_EVENT_ID_DOMAIN)
+    _update_length_prefixed_json(hasher, identity)
+    seen = 0
+    if run is not None:
+        with iter_run(storage, run) as rows:
+            for revision_id in _unique_revision_ids(rows):
+                _update_length_prefixed_text(hasher, revision_id, maximum=max_revision_record_bytes)
+                seen += 1
+    if seen != revision_count:
+        raise CanonicalPartitionProjectionError(
+            f"RunSet unique revision count changed from {revision_count} to {seen}"
+        )
+    return f"qevt3-{hasher.hexdigest()}"
+
+
+def _revision_records(
+    rows: Iterator[Mapping[str, Any]], *, event_ordinal: int
+) -> Iterator[Mapping[str, Any]]:
+    for revision_id in _unique_revision_ids(rows):
+        yield MappingProxyType({"event_ordinal": event_ordinal, "revision_id": revision_id})
+
+
+class CanonicalPartitionV3Projector:
+    """Assign report-global ordinals and project events with bounded revision-ID sorting.
+
+    ``capacity``, ``merge_fanout``, and ``limits`` are required. Each event's revision IDs are
+    staged as one-field RunSet records, then read in sorted order for unique counting, ID hashing,
+    and output. The projector advances the next global revision ordinal by exactly the unique
+    revision count. If a caller exits an event context before consuming all revision records, the
+    projector becomes unusable so no later event can hide the incomplete ordinal range.
+    """
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        *,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_event_record_bytes: int,
+        max_revision_record_bytes: int,
+    ) -> None:
+        _positive_int("capacity", capacity, minimum=1)
+        _positive_int("merge_fanout", merge_fanout, minimum=2)
+        if not isinstance(limits, RunLimits):
+            raise CanonicalPartitionProjectionError("limits must be a RunLimits instance")
+        _positive_int("max_event_record_bytes", max_event_record_bytes, minimum=1)
+        _positive_int("max_revision_record_bytes", max_revision_record_bytes, minimum=1)
+        self._storage = storage
+        self._capacity = capacity
+        self._merge_fanout = merge_fanout
+        self._limits = limits
+        self._max_event_record_bytes = max_event_record_bytes
+        self._max_revision_record_bytes = max_revision_record_bytes
+        self._event_ordinal = 0
+        self._revision_ordinal = 0
+        self._failed = False
+
+    @property
+    def next_event_ordinal(self) -> int:
+        return self._event_ordinal
+
+    @property
+    def next_revision_ordinal(self) -> int:
+        return self._revision_ordinal
+
+    @contextmanager
+    def project_event(
+        self,
+        *,
+        event_type: str,
+        table: str | None,
+        observation_key: str | None,
+        revision_ids: Iterable[str],
+        event_start: datetime | None,
+        event_end: datetime | None,
+        detail: str,
+    ) -> Iterator[ProjectedCanonicalEvent]:
+        if self._failed:
+            raise CanonicalPartitionProjectionError("projector is failed after an incomplete event")
+        event_type_text = _text(
+            "event_type", event_type, maximum_utf8_bytes=self._max_event_record_bytes
+        )
+        detail_text = _text("detail", detail, maximum_utf8_bytes=self._max_event_record_bytes)
+        assert event_type_text is not None and detail_text is not None
+        event_type = event_type_text
+        table = _text(
+            "table",
+            table,
+            optional=True,
+            maximum_utf8_bytes=self._max_event_record_bytes,
+        )
+        observation_key = _text(
+            "observation_key",
+            observation_key,
+            optional=True,
+            maximum_utf8_bytes=self._max_event_record_bytes,
+        )
+        detail = detail_text
+        event_start_text = _time("event_start", event_start)
+        event_end_text = _time("event_end", event_end)
+        if isinstance(revision_ids, str | bytes) or not isinstance(revision_ids, Iterable):
+            raise CanonicalPartitionProjectionError("revision_ids must be iterable")
+
+        event_ordinal = _positive_int("event_ordinal", self._event_ordinal)
+        revision_first_ordinal = _positive_int("revision_first_ordinal", self._revision_ordinal)
+        builder = RunSetBuilder(
+            self._storage,
+            key=lambda row: row["revision_id"],
+            capacity=self._capacity,
+            merge_fanout=self._merge_fanout,
+            limits=self._limits,
+        )
+        max_revision_record_bytes = min(
+            self._max_revision_record_bytes,
+            self._limits.leaf_max_bytes - _RUN_HEADER_RESERVE_BYTES,
+        )
+        try:
+            with builder:
+                for raw_id in revision_ids:
+                    revision_id = _validate_revision_id(
+                        raw_id,
+                        event_ordinal=event_ordinal,
+                        max_record_bytes=max_revision_record_bytes,
+                    )
+                    builder.add(_run_row(revision_id))
+                run = builder.finish()
+                revision_count = _positive_int("revision_count", _unique_count(self._storage, run))
+                event_fields = {
+                    "event_type": event_type,
+                    "table": table,
+                    "observation_key": observation_key,
+                    "revision_first_ordinal": revision_first_ordinal,
+                    "revision_count": revision_count,
+                    "event_start": event_start_text,
+                    "event_end": event_end_text,
+                    "detail": detail,
+                }
+                _canonical_json_length(
+                    {"event_id": _EVENT_ID_PLACEHOLDER, **event_fields},
+                    maximum=self._max_event_record_bytes - 1,
+                )
+                event_record = {
+                    "event_id": _event_id(
+                        self._storage,
+                        run,
+                        event_fields=event_fields,
+                        revision_count=revision_count,
+                        max_revision_record_bytes=max_revision_record_bytes,
+                    ),
+                    **event_fields,
+                }
+                emitted = 0
+                exhausted = revision_count == 0
+                rows_context = iter_run(self._storage, run) if run is not None else None
+                if rows_context is None:
+                    revision_rows: Iterator[Mapping[str, Any]] = iter(())
+                    close_rows = None
+                else:
+                    rows = rows_context.__enter__()
+                    revision_rows = _revision_records(rows, event_ordinal=event_ordinal)
+                    close_rows = rows
+                body_raised = False
+                try:
+
+                    class _CountedRevisionIterator(Iterator[Mapping[str, Any]]):
+                        def __iter__(self) -> _CountedRevisionIterator:
+                            return self
+
+                        def __next__(self) -> Mapping[str, Any]:
+                            nonlocal emitted, exhausted
+                            try:
+                                record: Mapping[str, Any] = next(revision_rows)
+                            except StopIteration:
+                                exhausted = True
+                                raise
+                            emitted += 1
+                            return record
+
+                    try:
+                        yield ProjectedCanonicalEvent(
+                            event_record=MappingProxyType(event_record),
+                            revision_records=_CountedRevisionIterator(),
+                        )
+                    except BaseException:
+                        body_raised = True
+                        self._failed = True
+                        raise
+                finally:
+                    close = getattr(revision_rows, "close", None)
+                    if callable(close):
+                        close()
+                    if close_rows is not None:
+                        close = getattr(close_rows, "close", None)
+                        if callable(close):
+                            close()
+                        assert rows_context is not None
+                        rows_context.__exit__(None, None, None)
+                    if not exhausted or emitted != revision_count or self._failed:
+                        self._failed = True
+                        if not body_raised:
+                            raise CanonicalPartitionProjectionError(
+                                "revision records were not fully consumed"
+                            )
+                    else:
+                        self._event_ordinal = event_ordinal + 1
+                        self._revision_ordinal = revision_first_ordinal + revision_count
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            builder.close()
+
+
+def _gap_identity(row: Mapping[str, Any]) -> tuple[str, str]:
+    table = row.get("table")
+    revision_id = row.get("revision_id")
+    if not isinstance(table, str) or not isinstance(revision_id, str):
+        raise CanonicalPartitionProjectionError("RunSet contains an invalid evidence-gap identity")
+    return table, revision_id
+
+
+def _count_evidence_gaps(storage: StorageAdapter, run: RunRef | None) -> int:
+    if run is None:
+        return 0
+    count = 0
+    previous: tuple[str, str] | None = None
+    with iter_run(storage, run) as rows:
+        for row in rows:
+            identity = _gap_identity(row)
+            if previous is not None and identity <= previous:
+                if identity == previous:
+                    raise CanonicalPartitionProjectionError(
+                        "duplicate evidence-gap identity (table, revision_id)"
+                    )
+                raise CanonicalPartitionProjectionError("evidence-gap RunSet order is invalid")
+            previous = identity
+            count += 1
+    return count
+
+
+def _evidence_gap_records(
+    rows: Iterator[Mapping[str, Any]], *, quality_report_id: str
+) -> Iterator[Mapping[str, Any]]:
+    for row in rows:
+        record = {
+            "quality_report_id": row.get("quality_report_id"),
+            "table": row.get("table"),
+            "revision_id": row.get("revision_id"),
+            "gap": row.get("gap"),
+        }
+        if record["quality_report_id"] != quality_report_id:
+            raise CanonicalPartitionProjectionError("RunSet evidence-gap report ID mismatch")
+        if any(not isinstance(value, str) for value in record.values()):
+            raise CanonicalPartitionProjectionError("RunSet contains an invalid evidence-gap row")
+        yield MappingProxyType(record)
+
+
+class CanonicalPartitionV3EvidenceGapProjector:
+    """Project all report gaps into a bounded RunSet ordered by stable gap identity.
+
+    Inputs are streamed as ``(table, revision_id, gap)`` triples. The report ID is supplied once
+    and bound into every output record. The RunSet holds the same four fields as the JSONL row;
+    each row is byte-checked against both the explicit stream record limit and the scratch
+    ``RunLimits`` before ``RunSetBuilder.add`` can trigger a storage write. Duplicate
+    ``(table, revision_id)`` identities fail closed, regardless of whether their gap texts agree.
+
+    Empty input yields zero records and no RunSet. The ADR-0093 writer owns the childless empty
+    stream root. ``next_gap_ordinal`` advances only after the caller exhausts the records iterator
+    and exits the context normally. Early close closes the RunSet reader and terminally fails this
+    projector.
+    """
+
+    def __init__(
+        self,
+        storage: StorageAdapter,
+        *,
+        capacity: int,
+        merge_fanout: int,
+        limits: RunLimits,
+        max_gap_record_bytes: int,
+    ) -> None:
+        _positive_int("capacity", capacity, minimum=1)
+        _positive_int("merge_fanout", merge_fanout, minimum=2)
+        if not isinstance(limits, RunLimits):
+            raise CanonicalPartitionProjectionError("limits must be a RunLimits instance")
+        _positive_int("max_gap_record_bytes", max_gap_record_bytes, minimum=1)
+        self._storage = storage
+        self._capacity = capacity
+        self._merge_fanout = merge_fanout
+        self._limits = limits
+        self._max_gap_record_bytes = max_gap_record_bytes
+        self._next_gap_ordinal = 0
+        self._failed = False
+        self._used = False
+        self._active = False
+
+    @property
+    def next_gap_ordinal(self) -> int:
+        """The count of gap records whose complete output has been consumed."""
+        return self._next_gap_ordinal
+
+    @contextmanager
+    def project_gaps(
+        self,
+        *,
+        quality_report_id: str,
+        gaps: Iterable[tuple[str, str, str]],
+    ) -> Iterator[ProjectedCanonicalEvidenceGaps]:
+        if self._active:
+            raise CanonicalPartitionProjectionError(
+                "evidence-gap projector does not allow reentrant streams"
+            )
+        if self._used:
+            raise CanonicalPartitionProjectionError(
+                "evidence-gap projector is one-shot and has already been used"
+            )
+        if self._failed:
+            raise CanonicalPartitionProjectionError(
+                "evidence-gap projector is failed after an incomplete stream"
+            )
+        report_id_text = _text(
+            "quality_report_id",
+            quality_report_id,
+            maximum_utf8_bytes=self._max_gap_record_bytes,
+        )
+        assert report_id_text is not None
+        if isinstance(gaps, str | bytes) or not isinstance(gaps, Iterable):
+            raise CanonicalPartitionProjectionError("gaps must be an iterable of triples")
+
+        event_ordinal = _positive_int("gap_ordinal", self._next_gap_ordinal)
+        max_input_text_bytes = min(
+            self._max_gap_record_bytes,
+            self._limits.leaf_max_bytes - _RUN_HEADER_RESERVE_BYTES,
+        )
+        max_scratch_line_bytes = self._limits.leaf_max_bytes - _RUN_HEADER_RESERVE_BYTES
+        builder = RunSetBuilder(
+            self._storage,
+            key=lambda row: (row["table"], row["revision_id"]),
+            capacity=self._capacity,
+            merge_fanout=self._merge_fanout,
+            limits=self._limits,
+        )
+        self._used = True
+        self._active = True
+        try:
+            with builder:
+                for raw_gap in gaps:
+                    if not isinstance(raw_gap, tuple) or len(raw_gap) != 3:
+                        raise CanonicalPartitionProjectionError(
+                            "each evidence gap must be a (table, revision_id, gap) tuple"
+                        )
+                    table = _text("table", raw_gap[0], maximum_utf8_bytes=max_input_text_bytes)
+                    revision_id = _text(
+                        "revision_id", raw_gap[1], maximum_utf8_bytes=max_input_text_bytes
+                    )
+                    gap = _text("gap", raw_gap[2], maximum_utf8_bytes=max_input_text_bytes)
+                    assert table is not None and revision_id is not None and gap is not None
+                    row = {
+                        "quality_report_id": report_id_text,
+                        "table": table,
+                        "revision_id": revision_id,
+                        "gap": gap,
+                    }
+                    _canonical_json_length(row, maximum=self._max_gap_record_bytes - 1)
+                    # RunSet's row codec wraps mappings as {"$obj": ...}; check that exact
+                    # scratch representation before add can flush and materialize it.
+                    scratch_row = {"$obj": row}
+                    _canonical_json_length(scratch_row, maximum=max_scratch_line_bytes - 1)
+                    builder.add(row)
+                run = builder.finish()
+                record_count = _count_evidence_gaps(self._storage, run)
+                rows_context = iter_run(self._storage, run) if run is not None else None
+                if rows_context is None:
+                    gap_rows: Iterator[Mapping[str, Any]] = iter(())
+                    output_rows: Iterator[Mapping[str, Any]] = iter(())
+                    close_rows = None
+                else:
+                    rows = rows_context.__enter__()
+                    gap_rows = _evidence_gap_records(rows, quality_report_id=report_id_text)
+                    output_rows = gap_rows
+                    close_rows = rows
+                emitted = 0
+                exhausted = record_count == 0
+                body_raised = False
+                projection: ProjectedCanonicalEvidenceGaps | None = None
+                complete_state = {"complete": False}
+                try:
+
+                    class _CountedGapIterator(Iterator[Mapping[str, Any]]):
+                        def __iter__(self) -> _CountedGapIterator:
+                            return self
+
+                        def __next__(self) -> Mapping[str, Any]:
+                            nonlocal emitted, exhausted
+                            try:
+                                record = next(output_rows)
+                            except StopIteration:
+                                exhausted = True
+                                raise
+                            emitted += 1
+                            return record
+
+                    try:
+                        projection = ProjectedCanonicalEvidenceGaps(
+                            record_count=record_count,
+                            records=_CountedGapIterator(),
+                            _complete_getter=lambda: complete_state["complete"],
+                        )
+                        yield projection
+                    except BaseException:
+                        body_raised = True
+                        self._failed = True
+                        raise
+                finally:
+                    close = getattr(gap_rows, "close", None)
+                    if callable(close):
+                        close()
+                    if close_rows is not None:
+                        close = getattr(close_rows, "close", None)
+                        if callable(close):
+                            close()
+                        assert rows_context is not None
+                        rows_context.__exit__(None, None, None)
+                    if not exhausted or emitted != record_count or self._failed:
+                        self._failed = True
+                        if not body_raised:
+                            raise CanonicalPartitionProjectionError(
+                                "evidence-gap records were not fully consumed"
+                            )
+                    else:
+                        self._next_gap_ordinal = event_ordinal + record_count
+                        assert projection is not None
+                        complete_state["complete"] = True
+        except BaseException:
+            self._failed = True
+            raise
+        finally:
+            builder.close()
+            self._active = False

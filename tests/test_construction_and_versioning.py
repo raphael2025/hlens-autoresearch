@@ -257,9 +257,9 @@ def test_semver_pattern_is_ascii_only_and_has_no_leading_zeros() -> None:
     """正则本身必须是唯一来源，且显式禁止 Unicode 数字与前导零。"""
     assert "0-9" in SEMVER_PATTERN, "必须用显式 ASCII 字符类，不能用会匹配 Unicode 的 \\d"
     assert "\\d" not in SEMVER_PATTERN
-    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0 and ADR-0088
-    # to 2.4.0.
-    assert CONTRACT_SCHEMA_VERSION == "2.4.0"
+    # ADR-0052 §4 raised the minor to 2.1.0, ADR-0055 to 2.2.0, ADR-0077 to 2.3.0,
+    # ADR-0088 to 2.4.0 and ADR-0094 to 2.5.0.
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
 
 
 def test_major_is_read_from_the_validated_regex_group() -> None:

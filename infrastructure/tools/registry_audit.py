@@ -1,7 +1,9 @@
-"""Read-only integrity snapshots for the four file-backed registries (ADR-0091).
+"""Read-only integrity snapshots for the file-backed registries (ADR-0091).
 
 Run with ``python -m infrastructure.tools.registry_audit`` and pass every registry path
-explicitly. The command never opens a normal registry instance, creates directories or locks,
+explicitly. The four original registries are required; the ADR-0098 Lifecycle Registry
+(``--lifecycle-root`` / optional ``--lifecycle-anchor``, ADR-0098 修订 1) is audited when its root
+is given and is then part of the overall status. The command never opens a normal registry instance, creates directories or locks,
 or repairs an anchor. Failure Registry output is structural evidence only.
 """
 
@@ -17,6 +19,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from core.domain.research import FailureRecord
+from infrastructure.registry.lifecycle import verify_integrity_snapshot as audit_lifecycle
 from infrastructure.registry.profile_freeze import (
     verify_integrity_snapshot as audit_profile_freeze,
 )
@@ -83,8 +86,9 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="python -m infrastructure.tools.registry_audit",
         description=(
-            "Read-only integrity audit of Strategy, Profile Freeze, Retirement, and Failure "
-            "registries. Every path is explicit; no registry is created or repaired."
+            "Read-only integrity audit of Strategy, Profile Freeze, Retirement, Failure and "
+            "(when given) Lifecycle registries. Every path is explicit; no registry is created "
+            "or repaired."
         ),
     )
     parser.add_argument("--strategy-root", type=Path, required=True)
@@ -94,6 +98,8 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--retirement-root", type=Path, required=True)
     parser.add_argument("--retirement-anchor", type=Path)
     parser.add_argument("--failure-registry", type=Path, required=True)
+    parser.add_argument("--lifecycle-root", type=Path)
+    parser.add_argument("--lifecycle-anchor", type=Path)
     return parser
 
 
@@ -113,12 +119,19 @@ def audit_registries(args: argparse.Namespace) -> dict[str, Any]:
         ),
         "failure": _audit_one(_audit_failure, args.failure_registry),
     }
+    if args.lifecycle_root is not None:
+        results["lifecycle"] = _audit_one(
+            audit_lifecycle, args.lifecycle_root, anchor=args.lifecycle_anchor
+        )
     overall = "FAILED" if any(item["status"] != "OK" for item in results.values()) else "OK"
-    return {"schema_version": "1.0.0", "status": overall, "registries": results}
+    return {"schema_version": "1.1.0", "status": overall, "registries": results}
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    args = _parser().parse_args(argv)
+    parser = _parser()
+    args = parser.parse_args(argv)
+    if args.lifecycle_anchor is not None and args.lifecycle_root is None:
+        parser.error("--lifecycle-anchor needs --lifecycle-root")
     report = audit_registries(args)
     json.dump(report, sys.stdout, ensure_ascii=False, indent=2, sort_keys=True)
     sys.stdout.write("\n")

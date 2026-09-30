@@ -5,9 +5,9 @@ import { ReportBrowser } from "../components/ReportBrowser";
 import { echarts } from "../lib/echarts";
 import {
   asMatrixPayload,
+  heatmapChartOption,
   heatmapGrid,
   matrixLabel,
-  METRICS,
   stateLabel,
   totalSamples,
 } from "../lib/stateStrategyMatrix";
@@ -27,44 +27,7 @@ function MatrixDetail({ envelope }: { envelope: ReportEnvelope }) {
   useEffect(() => {
     if (chartRef.current === null || matrix === null || matrix.cells.length === 0) return;
     const chart = echarts.init(chartRef.current);
-    const categories = matrix.cells.map((cell) => stateLabel(cell.state));
-    const data: [number, number, number | null][] = [];
-    METRICS.forEach((_metric, row) => {
-      grid.normalized[row].forEach((value, col) => {
-        data.push([col, row, value]);
-      });
-    });
-    chart.setOption({
-      tooltip: {
-        position: "top",
-        formatter: (params: { value: [number, number, number | null] }) => {
-          const [col, row] = params.value;
-          const raw = grid.raw[row][col];
-          return `${categories[col]} · ${METRICS[row].label}: ${raw ?? "—"}`;
-        },
-      },
-      grid: { left: 90, right: 24, top: 16, bottom: 48 },
-      xAxis: { type: "category", data: categories, splitArea: { show: true } },
-      yAxis: { type: "category", data: METRICS.map((m) => m.label), splitArea: { show: true } },
-      visualMap: {
-        min: 0,
-        max: 1,
-        calculable: false,
-        orient: "horizontal",
-        left: "center",
-        bottom: 0,
-        text: ["high (row-relative)", "low"],
-        inRange: { color: ["#f0f4ff", "#1d4ed8"] },
-      },
-      series: [
-        {
-          type: "heatmap",
-          data,
-          label: { show: false },
-          emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "rgba(0,0,0,0.3)" } },
-        },
-      ],
-    });
+    chart.setOption(heatmapChartOption(matrix, grid));
     const onResize = () => chart.resize();
     window.addEventListener("resize", onResize);
     return () => {
@@ -93,31 +56,33 @@ function MatrixDetail({ envelope }: { envelope: ReportEnvelope }) {
           （无绑定的 P5 backtest / P2 state result 哈希 — 一个不带溯源的原始收益 x 状态矩阵）
         </p>
       )}
-      <div ref={chartRef} style={{ width: "100%", height: 220, margin: "16px 0" }} />
-      <table>
-        <thead>
-          <tr>
-            <th>state</th>
-            <th>count</th>
-            <th>total</th>
-            <th>mean</th>
-            <th>hit_rate</th>
-            <th>top_returns</th>
-          </tr>
-        </thead>
-        <tbody>
-          {matrix.cells.map((cell) => (
-            <tr key={stateLabel(cell.state)}>
-              <td>{stateLabel(cell.state)}</td>
-              <td>{cell.count}</td>
-              <td>{cell.total}</td>
-              <td>{cell.mean ?? "—"}</td>
-              <td>{cell.hit_rate ?? "—"}</td>
-              <td>{cell.top_returns.join(", ") || "—"}</td>
+      <div ref={chartRef} style={{ width: "100%", height: 240, margin: "16px 0" }} />
+      <div style={{ overflowX: "auto" }}>
+        <table>
+          <thead>
+            <tr>
+              <th>state</th>
+              <th>count</th>
+              <th>total</th>
+              <th>mean</th>
+              <th>hit_rate</th>
+              <th>top_returns</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {matrix.cells.map((cell) => (
+              <tr key={stateLabel(cell.state)}>
+                <td>{stateLabel(cell.state)}</td>
+                <td>{cell.count}</td>
+                <td>{cell.total}</td>
+                <td>{cell.mean ?? "—"}</td>
+                <td>{cell.hit_rate ?? "—"}</td>
+                <td>{cell.top_returns.join(", ") || "—"}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </>
   );
 }

@@ -6,7 +6,9 @@ store it holds — the trial ledger, the sealed-OOS unsealing ledger, the lineag
 queue and the failure registry. A checkpoint reads those positions and then appends its line; an
 admission lease requires them to stay put from its PREPARE to its admission checkpoint. Both only
 hold if no store write can run in between, so a store bound to a state's gate
-(``bind_write_gate``) runs every mutation entry inside ``gate.write_scope(what, token)``:
+(``bind_write_gate``) runs every mutation inside ``gate.write_scope(what, token)``. The sole
+pre-gate exception is the exact TrialLedger duplicate acknowledgement in ADR-0096: it is a
+read-only lookup that appends nothing and changes no trial count:
 
 - the scope is entered **before** the store takes its own lock or touches its journal, so the lock
   order is always gate → store lock → journal lock, and nothing holding a store lock ever enters

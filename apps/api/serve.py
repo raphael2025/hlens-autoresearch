@@ -27,8 +27,11 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import signal
 import sys
-from collections.abc import Sequence
+import threading
+from collections.abc import Iterator, Sequence
+from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
 from typing import Any, Final
@@ -86,11 +89,42 @@ def _uvicorn() -> ModuleType:
         ) from error
 
 
+@contextmanager
+def _successful_signal_replay(handler: Any) -> Iterator[None]:
+    """Route startup signals to Uvicorn and keep its post-shutdown replay in-process.
+
+    Uvicorn restores the handlers it replaced and re-sends captured SIGINT / SIGTERM after its
+    cleanup finishes. Installing the server's handler before ``Server.run`` closes the brief
+    startup window before Uvicorn captures signals. The restored handler receives Uvicorn's replay
+    as a normal call, so shutdown still finishes with a successful process status.
+    """
+    if threading.current_thread() is not threading.main_thread():
+        yield
+        return
+
+    previous: dict[signal.Signals, Any] = {}
+
+    try:
+        for signum in (signal.SIGINT, signal.SIGTERM):
+            previous[signum] = signal.signal(signum, handler)
+        yield
+    finally:
+        for signum, handler in previous.items():
+            signal.signal(signum, handler)
+
+
 def run(app: Any, *, port: int, host: str = LOOPBACK) -> None:
     """Serve ``app`` with Uvicorn until SIGINT / SIGTERM (blocking)."""
     options = server_options(port, host)  # refuse a non-loopback bind before importing anything
+    from infrastructure.observability.logging import configure_logging
+
     uvicorn = _uvicorn()
-    uvicorn.Server(uvicorn.Config(app, **options)).run()
+    configure_logging()
+    server = uvicorn.Server(
+        uvicorn.Config(app, **options, access_log=False, log_config=None)
+    )
+    with _successful_signal_replay(server.handle_exit):
+        server.run()
 
 
 def parser() -> argparse.ArgumentParser:
