@@ -1,5 +1,7 @@
 # 2026-09-29 staged phase acceptance wave
 
+> Historical status note (2026-09-30): the Quality stream section below records the review state before ADR-0093 was accepted. ADR-0093 is now **Accepted**; this note's “BLOCKED / under revision” and “do not implement” statements are superseded by [ADR-0093](../adr/0093-bounded-quality-report-evidence.md). Its implementation gates and compatibility boundaries remain in force.
+
 ## Scope and checkout identity
 
 Three independent acceptance assignments covered Phase 1 Quality stream design, Phase 0.5/2–9, and Phase 10–14. The root checkout used by the phase reviewers was `codex/w1-stabilization@a0b88066bcc858584eb251d8f8a3c1bd66431a6c`; it had 145 dirty entries and reviewers made no changes. No full-repository suite or E1-CAP-1 capacity probe was run in this wave.
