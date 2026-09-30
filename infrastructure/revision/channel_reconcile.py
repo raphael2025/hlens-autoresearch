@@ -1995,6 +1995,57 @@ class ChannelReconciler:
             flush()
         return verified
 
+    def _verified_rest_run_rows(
+        self,
+        rest_def: RegisteredTableDefinition,
+        data_type: str,
+        rest_rows_root: RunRef | None,
+        params: VerifiedEdgeRunParams,
+    ) -> int:
+        """Prove every staged REST row once, response by response, in bounded chunks.
+
+        The staged rows (sorted by observation key) are re-sorted by lineage response in an
+        external run, so one verifier call re-proves one response (its lawful row, holder,
+        batch and full element-batch history) for up to ``row_capacity`` of its element rows
+        instead of once per key that references it. Every row passes the same checks the
+        per-key call applied (identity, lineage, body element, sole holder, element batches).
+        Returns the number of rows proven, which the key loop must consume exactly.
+        """
+        if rest_rows_root is None:
+            return 0
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: (row["response_revision_id"], row["revision_id"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as by_response:
+            with iter_run(self._storage, rest_rows_root) as staged:
+                by_response.extend(staged)
+            by_response_root = by_response.finish()
+        if by_response_root is None:
+            return 0
+        proven = 0
+        chunk: list[Mapping[str, Any]] = []
+
+        def flush() -> None:
+            nonlocal proven
+            if chunk:
+                self._verifier.verify_rest_elements(rest_def, data_type, chunk)
+                proven += len(chunk)
+                chunk.clear()
+
+        with iter_run(self._storage, by_response_root) as rows:
+            for row in rows:
+                if chunk and (
+                    len(chunk) >= params.row_capacity
+                    or chunk[0]["response_revision_id"] != row["response_revision_id"]
+                ):
+                    flush()
+                chunk.append(row)
+            flush()
+        return proven
+
     def _verified_edge_run(
         self,
         data_type: str,
@@ -2090,6 +2141,10 @@ class ChannelReconciler:
                         verified_archives = self._verified_archive_run_rows(
                             archive_def, data_type, symbol, pinned.archive_rows, params
                         )
+                        proven_rest_rows = self._verified_rest_run_rows(
+                            rest_def, data_type, pinned.rest_rows, params
+                        )
+                        consumed_rest_rows = 0
                         with ExitStack() as stack:
                             keys = stack.enter_context(iter_run(self._storage, pinned.day_keys))
                             rest_rows = (
@@ -2153,9 +2208,8 @@ class ChannelReconciler:
                                                     f"limit {MAX_ELEMENT_MICROBATCH_ROWS}"
                                                 )
                                             response_rows.append(response_row)
-                                        self._verifier.verify_rest_elements(
-                                            rest_def, data_type, response_rows
-                                        )
+                                        # Proven once per response before the key loop.
+                                        consumed_rest_rows += len(response_rows)
                                         for row in response_rows:
                                             revision = self._channel_revision(
                                                 Channel.REST,
@@ -2512,6 +2566,11 @@ class ChannelReconciler:
                             ):
                                 raise CatalogIntegrityError(
                                     "a staged row references a key absent from the pinned REST day"
+                                )
+                            if consumed_rest_rows != proven_rest_rows:
+                                raise CatalogIntegrityError(
+                                    f"{consumed_rest_rows} staged REST row(s) were replayed but "
+                                    f"{proven_rest_rows} were proven against their lineage"
                                 )
                     revision_claims_root = revision_claims.finish()
                     _assert_single_key_claims(self._storage, revision_claims_root)
