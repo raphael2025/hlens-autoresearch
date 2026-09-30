@@ -1,8 +1,9 @@
 """Default ``AuthorityEnvironment`` factory for the P11 authority mode (ADR-0100 item 4).
 
-Use it as ``--authority-environment research.operations.authority_environment:default_environment``
-(``degradation_cli``; ADR-0098 修订 1) or embed it as ``with default_environment() as env: ...``.
-``default_environment()`` returns a context manager; entering it builds everything below and
+Use it as ``--authority-environment research.operations.authority_environment:default_environment
+--authority-evidence-verifier MODULE:CALLABLE`` (``degradation_cli``; ADR-0098 修订 1) or embed it
+as ``with default_environment(evidence_verifier="MODULE:CALLABLE") as env: ...``.
+``default_environment(...)`` returns a context manager; entering it builds everything below and
 yields one ``research.operations.authority.AuthorityEnvironment``; leaving it closes the catalog
 adapter and the storage adapter. Nothing here reads a clock, schedules, writes the catalog, the
 lifecycle or a report; the resolver still checks every identity against the baseline run.
@@ -16,10 +17,13 @@ lifecycle or a report; the resolver still checks every identity against the base
 - *v3 evidence verifier* — the resolver reads v3 manifests only through the builder catalog's
   ``StreamingEvidenceVerifier``, which needs the accepted Dataset rule, the PIT / Universe run
   bounds and a Quality evidence factory (``infrastructure.dataset.pipeline``: "every resource limit
-  is supplied by the caller"). None of that is a ``Settings`` field and nothing is guessed:
-  ``HLENS_AUTHORITY_EVIDENCE_VERIFIER`` names a deployment-trusted ``MODULE:CALLABLE`` (resolved
-  like the CLI's own factory, ``apps.worker.serve.load_factory``) called with
-  ``(adapter, storage)`` that must return a ``StreamingEvidenceVerifier`` for that adapter.
+  is supplied by the caller"). None of that is a ``Settings`` field and nothing is guessed: the
+  **explicit** ``evidence_verifier`` argument (the CLI's ``--authority-evidence-verifier``) names
+  a deployment-trusted ``MODULE:CALLABLE`` (resolved like the CLI's own factory,
+  ``apps.worker.serve.load_factory``) called with ``(adapter, storage)`` that must return a
+  ``StreamingEvidenceVerifier`` for that adapter. It is never read from the environment or
+  ``.env`` (integrity fixes 2026-09-30: code chosen by an environment variable is not an explicit
+  deployment decision); without the argument the factory refuses.
 - *What the baseline pins* — ``AuthorityEnvironmentSettings`` (``HLENS_AUTHORITY_*``): the
   baseline ``ExperimentRun`` JSON (``BASELINE_RUN``), the baseline dataset manifest hash
   (``BASELINE_MANIFEST_HASH``; one of the run's ``dataset_snapshots``, checked by the resolver),
@@ -232,7 +236,6 @@ class AuthorityEnvironmentSettings(BaseSettings):
     initial_equity: Decimal | None = None
     decision_step: timedelta | None = None
     decision_warmup: timedelta | None = None
-    evidence_verifier: str | None = None
     validation_metadata: Path | None = None
     validation_seed: int | None = None
     robustness_params: Path | None = None
@@ -278,7 +281,6 @@ def _required(config: AuthorityEnvironmentSettings) -> list[str]:
         "initial_equity",
         "decision_step",
         "decision_warmup",
-        "evidence_verifier",
     ]
     if config.validation_metadata is not None:
         names += ["validation_seed", "robustness_params"]
@@ -536,8 +538,12 @@ def _robustness(path: Path) -> RobustnessParams:
     return RobustnessParams(**values)
 
 
+#: The explicit argument (CLI flag) naming the trusted v3 evidence verifier factory.
+EVIDENCE_VERIFIER_ARGUMENT: Final = "--authority-evidence-verifier"
+
+
 def _evidence_verifier(spec: str, adapter: Any, storage: Any) -> StreamingEvidenceVerifier:
-    setting = _env("evidence_verifier")
+    setting = EVIDENCE_VERIFIER_ARGUMENT
     try:
         factory = cast(Callable[[Any, Any], object], load_factory(spec))
         verifier = factory(adapter, storage)
@@ -583,7 +589,7 @@ def _pinned(config: AuthorityEnvironmentSettings) -> _Pinned:
     _check_label_spec(label_spec, run)
     _check_signal_refs(spec)
     manifest_hash = config.baseline_manifest_hash
-    assert manifest_hash is not None and config.evidence_verifier is not None
+    assert manifest_hash is not None
     equity, step, warmup = config.initial_equity, config.decision_step, config.decision_warmup
     assert equity is not None and step is not None and warmup is not None
     risk_policy: RiskPolicy | None = None
@@ -685,10 +691,9 @@ def _target_source(pinned: _Pinned, instruments: tuple[str, ...]) -> StrategyWin
 
 
 @contextmanager
-def _open() -> Iterator[AuthorityEnvironment]:
+def _open(evidence_verifier: str) -> Iterator[AuthorityEnvironment]:
     settings, config = _load_settings()
     pinned = _pinned(config)  # every file / registry check before anything is connected
-    assert config.evidence_verifier is not None
     with ExitStack() as stack:
         try:
             storage = stack.enter_context(LocalFileStorageAdapter.from_settings(settings))
@@ -708,7 +713,7 @@ def _open() -> Iterator[AuthorityEnvironment]:
             adapter=adapter,
             storage=storage,
             builder=builder,
-            evidence_verifier=_evidence_verifier(config.evidence_verifier, adapter, storage),
+            evidence_verifier=_evidence_verifier(evidence_verifier, adapter, storage),
         )
         instruments = universe_symbols(catalog, pinned.manifest_hash)
         if not instruments:
@@ -728,9 +733,19 @@ def _open() -> Iterator[AuthorityEnvironment]:
         )
 
 
-def default_environment() -> AbstractContextManager[AuthorityEnvironment]:
+def default_environment(
+    *, evidence_verifier: str | None = None
+) -> AbstractContextManager[AuthorityEnvironment]:
     """The default ``AuthorityEnvironment`` (module docs) as a context manager: entering builds it
     (or refuses with ``authority_environment_unavailable``), leaving closes the catalog and the
-    storage adapters. Called with no arguments (``--authority-environment``)."""
-    return _open()
+    storage adapters. ``evidence_verifier`` is the explicit ``MODULE:CALLABLE`` of the trusted v3
+    evidence verifier factory (``--authority-evidence-verifier``); it is required and never read
+    from the environment."""
+    if not isinstance(evidence_verifier, str) or not evidence_verifier:
+        raise AuthorityEnvironmentUnavailable(
+            "the v3 evidence verifier factory must be given explicitly (never from the "
+            "environment)",
+            (EVIDENCE_VERIFIER_ARGUMENT,),
+        )
+    return _open(evidence_verifier)
 
