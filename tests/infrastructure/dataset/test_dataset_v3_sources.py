@@ -20,7 +20,7 @@ from __future__ import annotations
 import inspect
 from collections.abc import Iterator
 from contextlib import contextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import pytest
@@ -30,6 +30,7 @@ from core.contracts.universe import (
     AvailabilityEvidenceGap,
     DatasetQualityReportRef,
     EvidenceStream,
+    PitConflictHeadEvidence,
     SelectedRevisionLineage,
     UniverseExclusion,
     UniverseMember,
@@ -48,6 +49,7 @@ from infrastructure.dataset.builder import (
     dataset_evidence_rule,
 )
 from infrastructure.dataset.chunks import IcebergChunkWriter
+from infrastructure.dataset.evidence import iter_pit_conflict_heads
 from infrastructure.dataset.manifests import ManifestStore
 from infrastructure.dataset.sources import (
     OrderedUniverseSource,
@@ -59,9 +61,11 @@ from infrastructure.dataset.sources import (
 from infrastructure.dataset.verify_v3 import StreamingEvidenceVerifier
 from infrastructure.pit.runs import RunLimits
 from infrastructure.pit.selector import (
+    PIT_BINDING,
     EvidenceGap,
     PitBoundedRecord,
     PitBoundedSelection,
+    PitConflictError,
     PitRunParams,
     PitSelector,
 )
@@ -299,9 +303,7 @@ class _KeysReversed(PitSelector):
         touching: bool = False,
         conflict_sink: Any = None,
     ) -> Any:
-        return self._reversed(
-            spec, data_type, symbol, start, end, params, touching, conflict_sink
-        )
+        return self._reversed(spec, data_type, symbol, start, end, params, touching, conflict_sink)
 
     @contextmanager
     def _reversed(
@@ -564,9 +566,13 @@ def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
         _record("k1", SELECTED, "r2", at=H0.replace(hour=12), owner=T0, event_time=T1),
         _record("k2", SELECTED, "r3", at=H0, owner=T2, event_time=T2, lineage=True),
     ]
-    groups = list(pit_key_groups(records, knowledge_cutoff=SIM))
+    groups = []
+    evaluations_by_key = {}
+    for group in pit_key_groups(records, knowledge_cutoff=SIM):
+        groups.append(group)
+        evaluations_by_key[group.observation_key] = list(group.evaluations)
     assert [(g.observation_key, g.owner_event_time) for g in groups] == [("k1", T0), ("k2", T2)]
-    first = list(groups[0].evaluations)
+    first = evaluations_by_key["k1"]
     assert [e.status for e in first] == [SELECTED, ABSENT, SELECTED]
     assert first[0].selected == first[2].selected
     assert first[2].selected is not None
@@ -585,7 +591,8 @@ def test_groups_carry_owner_event_times_and_lineage_per_key() -> None:
 def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) -> None:
     records = [_record(key, SELECTED, f"r-{key}", owner=T0, lineage=True) for key in keys]
     with pytest.raises(CatalogIntegrityError, match=match):
-        list(pit_key_groups(records, knowledge_cutoff=SIM))
+        for group in pit_key_groups(records, knowledge_cutoff=SIM):
+            list(group.evaluations)
 
 
 @pytest.mark.parametrize(
@@ -633,10 +640,147 @@ def test_pit_keys_out_of_order_are_refused(keys: tuple[str, ...], match: str) ->
 )
 def test_malformed_pit_streams_fail_closed(records: list[PitBoundedRecord], match: str) -> None:
     with pytest.raises(CatalogIntegrityError, match=match):
-        list(pit_key_groups(records, knowledge_cutoff=SIM))
+        for group in pit_key_groups(records, knowledge_cutoff=SIM):
+            list(group.evaluations)
 
 
 def test_a_selection_at_another_cutoff_fails_closed() -> None:
     records = [_record("k1", SELECTED, "r1", owner=T0, lineage=True)]
     with pytest.raises(CatalogIntegrityError, match="another knowledge cutoff"):
-        list(pit_key_groups(records, knowledge_cutoff=H1))
+        for group in pit_key_groups(records, knowledge_cutoff=H1):
+            list(group.evaluations)
+
+
+def test_one_large_key_streams_evaluations_with_only_one_record_lookahead() -> None:
+    count = 10_000
+    consumed = 0
+
+    def records() -> Iterator[PitBoundedRecord]:
+        nonlocal consumed
+        for minute in range(count):
+            consumed += 1
+            yield _record("large-key", ABSENT, at=SIM + timedelta(minutes=minute), owner=T0)
+
+    groups = pit_key_groups(records(), knowledge_cutoff=SIM)
+    group = next(groups)
+    assert group.observation_key == "large-key"
+    assert consumed == 1
+
+    evaluations = iter(group.evaluations)
+    first = next(evaluations)
+    assert first.status is ABSENT
+    assert consumed == 1  # yielding an evaluation does not prefetch its successor
+    assert sum(1 for _ in evaluations) == count - 1
+    assert consumed == count
+
+
+def test_first_interval_conflict_does_not_pull_the_next_conflict_instant() -> None:
+    pulled: list[datetime] = []
+
+    def records() -> Iterator[PitBoundedRecord]:
+        for at in (H0, H1):
+            pulled.append(at)
+            yield _record("conflicted-key", PointInTimeStatus.CONFLICT, at=at, owner=T0)
+
+    groups = pit_key_groups(records(), knowledge_cutoff=SIM)
+    group = next(groups)
+    evaluations = iter(group.evaluations)
+    first = next(evaluations)
+    assert first.status is PointInTimeStatus.CONFLICT
+    assert first.simulation_time == H0
+    assert pulled == [H0]
+
+    # A Dataset conflict is terminal. Closing the group stream must not advance it to H1.
+    groups.close()
+    assert pulled == [H0]
+
+
+def test_dataset_conflict_seals_only_first_interval_evaluation_and_closes_selector(
+    evidence_store: LocalFileStorageAdapter,
+) -> None:
+    start, middle, end = utc(2023, 12, 1), utc(2023, 12, 2), utc(2023, 12, 3)
+    spec = ds.v3_pit(interval=(start, end))
+    emitted: list[datetime] = []
+
+    class ConflictSelector(PitSelector):
+        active = 0
+
+        def iter_bounded(
+            self,
+            pit: PointInTimeSpec,
+            data_type: str,
+            symbol: str,
+            low: datetime,
+            high: datetime,
+            *,
+            params: PitRunParams,
+            touching: bool = False,
+            conflict_sink: Any = None,
+        ) -> Any:
+            @contextmanager
+            def records() -> Iterator[Iterator[PitBoundedRecord]]:
+                self.active += 1
+
+                def values() -> Iterator[PitBoundedRecord]:
+                    if not low <= T0 < high:
+                        return
+                    for at in (start, middle):
+                        heads = ("head-a", "head-b")
+                        assert conflict_sink is not None
+                        for ordinal, revision in enumerate(heads):
+                            conflict_sink(
+                                PitConflictHeadEvidence(
+                                    rule_id=PIT_BINDING.policy_id,
+                                    rule_version=PIT_BINDING.version,
+                                    rule_hash=PIT_BINDING.policy_hash,
+                                    observation_key="conflicted-key",
+                                    simulation_time=at,
+                                    knowledge_cutoff=pit.knowledge_cutoff,
+                                    head_count=len(heads),
+                                    ordinal=ordinal,
+                                    revision_id=revision,
+                                )
+                            )
+                        emitted.append(at)
+                        yield _record("conflicted-key", PointInTimeStatus.CONFLICT, at=at, owner=T0)
+
+                try:
+                    yield values()
+                finally:
+                    self.active -= 1
+
+            return records()
+
+    universe = ds.FakeUniverse(
+        members_=(ds.v3_member("BTCUSDT", "listing-btc", (start, middle)),),
+        exclusions_=(
+            ds.v3_exclusion("BTCUSDT", "listing-btc-halt", (middle, end)),
+            ds.v3_exclusion("ETHUSDT", "listing-eth", (start, end)),
+        ),
+        lineage=(
+            ds.listing_lineage("listing-btc"),
+            ds.listing_lineage("listing-btc-halt"),
+            ds.listing_lineage("listing-eth"),
+        ),
+        gaps=(),
+        spans=(("BTCUSDT", start, middle),),
+    )
+    selector = ConflictSelector(ds.fake_heads(), evidence_store)
+    source = PitSelectorKeySource(selector, storage=evidence_store, params=PIT_PARAMS)
+    builder = _builder(evidence_store)
+    with pytest.raises(PitConflictError) as caught:
+        builder.build(
+            ds.v3_request(pit=spec),
+            sources=DatasetEvidenceSources(universe=universe, pit=source, quality=ds.FakeQuality()),
+            chunks=ds.FakeChunkWriter(),
+            manifests=ds.FakeManifests(),
+        )
+
+    result = caught.value.result
+    assert result is not None and result.simulation_time == start
+    assert emitted == [start]
+    assert selector.active == 0
+    with iter_pit_conflict_heads(evidence_store, result, limits=builder.rule.limits) as heads:
+        records = list(heads)
+    assert [record.revision_id for record in records] == ["head-a", "head-b"]
+    assert [record.ordinal for record in records] == [0, 1]

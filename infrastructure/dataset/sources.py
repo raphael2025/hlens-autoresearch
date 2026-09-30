@@ -290,9 +290,9 @@ def _carry(
 
 def _evaluations(
     key: str, held: Iterable[PitBoundedRecord], knowledge_cutoff: datetime
-) -> tuple[PitKeyEvaluation, ...]:
+) -> Iterator[PitKeyEvaluation]:
+    """Validate and convert one key's records without retaining its evaluation history."""
     carried: dict[str, tuple[SelectedRevisionLineage, str | None]] = {}
-    evaluations: list[PitKeyEvaluation] = []
     for record in held:
         selection = record.selection
         if selection.observation_key != key:
@@ -321,15 +321,12 @@ def _evaluations(
             raise CatalogIntegrityError(
                 f"key {key}: a {selection.status.value} evaluation carries lineage"
             )
-        evaluations.append(
-            PitKeyEvaluation(
-                simulation_time=selection.simulation_time,
-                status=selection.status,
-                selected=selected,
-                head_count=selection.head_count,
-            )
+        yield PitKeyEvaluation(
+            simulation_time=selection.simulation_time,
+            status=selection.status,
+            selected=selected,
+            head_count=selection.head_count,
         )
-    return tuple(evaluations)
 
 
 def pit_key_groups(
@@ -337,16 +334,14 @@ def pit_key_groups(
     *,
     knowledge_cutoff: datetime,
 ) -> Iterator[PitKeyGroup]:
-    """Fold ``iter_bounded``'s records into one ``PitKeyGroup`` per observation key.
+    """Fold PIT records into lazy per-key groups.
 
-    ``records``: key then instant order; one key's records are adjacent and keys strictly
-    increase (a duplicate, split or reordered key fails closed). Every record already carries its
-    key's ``owner_event_time`` (the chain-earliest event) and, when selected, the revision's own
-    proven row time (``PitBoundedRecord.event_time``) -- both attached by
-    ``PitSelector.iter_bounded`` -- so no second read of the Canonical rows is needed here. Every
-    record of one key must agree on ``owner_event_time``. Holds one key's records.
+    The consumer must exhaust a group's evaluations before requesting the next key. This lets
+    Dataset process a key at a time and, on a conflict, finish its complete evidence stream
+    before the PIT cursor advances. Successful keys use at most one-record lookahead to detect
+    the next key; a conflict is terminal and never pulls another PIT record.
     """
-    source: Iterator[object] = iter(records)
+    source = iter(records)
     pending = _next_record(source)
     previous: str | None = None
     while pending is not None:
@@ -356,27 +351,40 @@ def pit_key_groups(
                 f"observation key {key} is duplicated or out of order in the PIT stream (after "
                 f"{previous})"
             )
-        held: list[PitBoundedRecord] = []
-        owner: datetime | None = None
-        while pending is not None and pending.observation_key == key:
-            this_owner = _check_utc(pending.owner_event_time, f"key {key} owner_event_time")
-            if owner is None:
-                owner = this_owner
-            elif this_owner != owner:
-                raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
-            held.append(pending)
-            # The dataset is fail-closed at the first conflict evaluation. Stop pulling the PIT
-            # cursor now so its completed evidence root names exactly that evaluation.
-            if pending.selection.status is PointInTimeStatus.CONFLICT:
-                break
-            pending = _next_record(source)
-        assert owner is not None  # the inner while loop above ran at least once
+        owner = _check_utc(pending.owner_event_time, f"key {key} owner_event_time")
+        evaluations_complete = False
+        conflicted = False
+
+        def key_records(key: str = key, owner: datetime = owner) -> Iterator[PitBoundedRecord]:
+            nonlocal evaluations_complete, pending, conflicted
+            while pending is not None and pending.observation_key == key:
+                current = pending
+                this_owner = _check_utc(current.owner_event_time, f"key {key} owner_event_time")
+                if this_owner != owner:
+                    raise CatalogIntegrityError(f"key {key} records disagree on owner_event_time")
+                # Suspend before advancing the PIT source. The Dataset consumer sees the complete
+                # conflict evaluation and seals its heads root before another next() can compute
+                # or emit a later evaluation.
+                yield current
+                if current.selection.status is PointInTimeStatus.CONFLICT:
+                    conflicted = True
+                    evaluations_complete = True
+                    return
+                pending = _next_record(source)
+            evaluations_complete = True
+
         yield PitKeyGroup(
             observation_key=key,
             owner_event_time=owner,
-            evaluations=_evaluations(key, held, knowledge_cutoff),
+            evaluations=_evaluations(key, key_records(), knowledge_cutoff),
         )
+        if not evaluations_complete:
+            raise CatalogIntegrityError(
+                "a PIT key's evaluations must be consumed before requesting the next key"
+            )
         previous = key
+        if conflicted:
+            return
 
 
 def _close(iterator: object) -> None:
@@ -416,9 +424,7 @@ class PitSelectorKeySource:
         *,
         conflict_sink: Callable[[PitConflictHeadEvidence], None] | None = None,
     ) -> AbstractContextManager[Iterator[PitKeyGroup]]:
-        return self._keys(
-            pit, data_type, venue_symbol, start, end, conflict_sink=conflict_sink
-        )
+        return self._keys(pit, data_type, venue_symbol, start, end, conflict_sink=conflict_sink)
 
     @contextmanager
     def _keys(
