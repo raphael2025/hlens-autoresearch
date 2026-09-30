@@ -380,8 +380,14 @@ def test_a_report_file_that_vanishes_before_its_stat_is_listed_as_invalid(
 ) -> None:
     directory = tmp_path / "state_strategy_matrix"
     directory.mkdir()
-    (directory / "a.json").write_text('{"v": 1}', encoding="utf-8")
-    (directory / "gone.json").write_text('{"v": 2}', encoding="utf-8")
+    matrix = {
+        "strategy": "strategy@1.0.0",
+        "state": "state@1.0.0",
+        "cells": [],
+        "matrix_hash": "fixture-hash",
+    }
+    (directory / "a.json").write_text(json.dumps(matrix), encoding="utf-8")
+    (directory / "gone.json").write_text(json.dumps(matrix), encoding="utf-8")
     real_stat = Path.stat
 
     def stat(self: Path, *args: Any, **kwargs: Any) -> Any:
