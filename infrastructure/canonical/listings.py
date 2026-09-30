@@ -253,6 +253,7 @@ class ListingDeriver:
     def bounded_replay_inputs(
         self,
         *,
+        snapshot_ids: Mapping[str, str | None] | None = None,
         scratch_storage: StorageAdapter,
         metadata_limits: BoundedMetadataLimits,
         capacity: int,
@@ -278,16 +279,39 @@ class ListingDeriver:
             raise CatalogIntegrityError(
                 "bounded Listing verification requires PyIceberg bounded metadata support"
             )
-        listing_metadata = pin(
-            LISTINGS_TABLE,
-            storage=scratch_storage,
-            limits=metadata_limits,
-        )
-        raw_metadata = pin(
-            _RAW_TABLE,
-            storage=scratch_storage,
-            limits=metadata_limits,
-        )
+        if snapshot_ids is not None:
+            if set(snapshot_ids) != {LISTINGS_TABLE, _RAW_TABLE}:
+                raise CatalogIntegrityError(
+                    "bounded Listing replay needs exact Listing and Raw snapshot bindings"
+                )
+            pin_at = getattr(self._adapter, "pin_bounded_metadata_at", None)
+            if not callable(pin_at):
+                raise CatalogIntegrityError(
+                    "bounded Listing replay cannot pin caller-supplied PIT snapshot IDs"
+                )
+            listing_metadata = pin_at(
+                LISTINGS_TABLE,
+                snapshot_ids[LISTINGS_TABLE],
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
+            raw_metadata = pin_at(
+                _RAW_TABLE,
+                snapshot_ids[_RAW_TABLE],
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
+        else:
+            listing_metadata = pin(
+                LISTINGS_TABLE,
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
+            raw_metadata = pin(
+                _RAW_TABLE,
+                storage=scratch_storage,
+                limits=metadata_limits,
+            )
         raw_head = _pinned_head(raw_metadata)
         listing_head = _pinned_head(listing_metadata)
         raw_rows = self._verifier.verify_table_bounded(
@@ -369,6 +393,7 @@ class ListingDeriver:
     def verify_bounded(
         self,
         *,
+        snapshot_ids: Mapping[str, str | None] | None = None,
         scratch_storage: StorageAdapter,
         metadata_limits: BoundedMetadataLimits,
         capacity: int,
@@ -393,6 +418,7 @@ class ListingDeriver:
         method; backend scan planning and total process RSS remain outside this guarantee.
         """
         inputs = self.bounded_replay_inputs(
+            snapshot_ids=snapshot_ids,
             scratch_storage=scratch_storage,
             metadata_limits=metadata_limits,
             capacity=capacity,
@@ -710,13 +736,11 @@ class ListingDeriver:
 
 
 def _pinned_head(metadata: BoundedIcebergMetadata) -> str | None:
-    current = metadata.metadata.current_snapshot_id
-    if current is None:
+    selected = metadata.selected_snapshot_id
+    if selected is None:
         return None
-    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
-        raise CatalogIntegrityError(f"pinned {metadata.name} metadata has an invalid current head")
-    metadata.require_snapshot(str(current))
-    return str(current)
+    metadata.require_snapshot(selected)
+    return selected
 
 
 def _chains(rows: Sequence[Mapping[str, Any]]) -> dict[str, lr.ListingChain]:

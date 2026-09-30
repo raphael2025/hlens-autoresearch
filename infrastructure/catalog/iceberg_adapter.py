@@ -808,9 +808,51 @@ class PyIcebergCatalogAdapter:
         The registered table binding/schema/spec/properties are still verified by this adapter
         against the same metadata pointer returned by the private bounded reader.
         """
+        name = validate_table_name(table)
+        return self._pin_bounded_metadata(name, storage=storage, limits=limits)
+
+    def pin_bounded_metadata_at(
+        self,
+        table: str,
+        snapshot_id: str | None,
+        *,
+        storage: StorageAdapter,
+        limits: BoundedMetadataLimits,
+    ) -> BoundedIcebergMetadata:
+        """Pin bounded metadata and restrict reads to one exact historical snapshot.
+
+        ``None`` is an explicit empty view, distinct from ``pin_bounded_metadata``'s
+        current-head selection.  The requested ID is resolved against the pinned
+        metadata index before this method returns.
+        """
         from infrastructure.catalog.bounded_metadata import pin_bounded_sql_table
 
         name = validate_table_name(table)
+        if not isinstance(self._catalog, SqlCatalog):
+            raise CatalogIntegrityError(
+                "bounded metadata pinning requires the configured PyIceberg SqlCatalog"
+            )
+        with _backend("pin_bounded_metadata_at"):
+            bounded = pin_bounded_sql_table(
+                self._catalog,
+                name,
+                storage=storage,
+                limits=limits,
+                selected_snapshot_id=snapshot_id,
+                select_current_head=False,
+            )
+            self._verified(name, bounded.verification_table())
+            return bounded
+
+    def _pin_bounded_metadata(
+        self,
+        name: str,
+        *,
+        storage: StorageAdapter,
+        limits: BoundedMetadataLimits,
+    ) -> BoundedIcebergMetadata:
+        from infrastructure.catalog.bounded_metadata import pin_bounded_sql_table
+
         if not isinstance(self._catalog, SqlCatalog):
             raise CatalogIntegrityError(
                 "bounded metadata pinning requires the configured PyIceberg SqlCatalog"
@@ -847,6 +889,8 @@ class PyIcebergCatalogAdapter:
         if bounded.catalog is not self._catalog:
             raise CatalogIntegrityError("bounded metadata belongs to a different catalog instance")
         name = validate_table_name(bounded.name)
+        if bounded.selected_snapshot_id != snapshot_id:
+            raise CatalogIntegrityError("scan snapshot differs from the bounded metadata selection")
         if isinstance(columns, str) or not columns:
             raise BatchRejected("scan_pinned_batches needs a non-empty sequence of column names")
         compact = bounded.compact_table(snapshot_id)

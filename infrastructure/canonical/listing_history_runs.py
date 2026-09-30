@@ -60,10 +60,9 @@ def listing_history_prefix_run(
     if bounded_metadata is not None:
         if bounded_metadata.name != CANONICAL_INSTRUMENT_LISTINGS.table:
             raise CatalogIntegrityError("bounded Listing metadata is pinned to another table")
-        current = bounded_metadata.metadata.current_snapshot_id
-        pinned_head = None if current is None else str(current)
+        pinned_head = bounded_metadata.selected_snapshot_id
         if listing_head != pinned_head:
-            raise CatalogIntegrityError("Listing head differs from its pinned metadata pointer")
+            raise CatalogIntegrityError("Listing head differs from its selected bounded snapshot")
 
     history_by_raw_id = RunSetBuilder(
         storage,

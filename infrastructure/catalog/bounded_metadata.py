@@ -151,6 +151,7 @@ class BoundedIcebergMetadata:
         limits: BoundedMetadataLimits,
         file_io: FileIO,
         catalog: SqlCatalog,
+        selected_snapshot_id: str | None,
     ) -> None:
         self.name = name
         self.metadata_location = metadata_location
@@ -161,6 +162,9 @@ class BoundedIcebergMetadata:
         self._limits = limits
         self.file_io = file_io
         self.catalog = catalog
+        # The one snapshot this caller's pinned view is allowed to observe.  The
+        # metadata pointer and external index still contain its complete ancestry.
+        self.selected_snapshot_id = selected_snapshot_id
 
     def snapshot_by_id(self, snapshot_id: int) -> Snapshot | None:
         """Return the first-listed snapshot with this ID, matching PyIceberg's lookup rule."""
@@ -276,6 +280,8 @@ def pin_bounded_sql_table(
     *,
     storage: StorageAdapter,
     limits: BoundedMetadataLimits,
+    selected_snapshot_id: str | None = None,
+    select_current_head: bool = True,
 ) -> BoundedIcebergMetadata:
     """Read one SqlCatalog table row, pin its immutable metadata file, and build bounded indexes."""
     if not isinstance(catalog, SqlCatalog):
@@ -339,7 +345,12 @@ def pin_bounded_sql_table(
         raise CatalogIntegrityError(
             f"table {name} metadata failed PyIceberg model validation"
         ) from exc
-    return BoundedIcebergMetadata(
+    selected = (
+        (None if metadata.current_snapshot_id is None else str(metadata.current_snapshot_id))
+        if select_current_head
+        else selected_snapshot_id
+    )
+    bounded = BoundedIcebergMetadata(
         name=name,
         metadata_location=metadata_location,
         metadata=metadata,
@@ -350,7 +361,11 @@ def pin_bounded_sql_table(
             {**catalog.properties, **metadata.properties}, location=metadata_location
         ),
         catalog=catalog,
+        selected_snapshot_id=selected,
     )
+    if selected is not None:
+        bounded.require_snapshot(selected)
+    return bounded
 
 
 class _ByteReader:

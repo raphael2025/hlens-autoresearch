@@ -16,7 +16,7 @@ Writes are refused.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
-from typing import Any
+from typing import Any, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
 from pyiceberg.expressions import AlwaysFalse, AlwaysTrue, BooleanExpression
@@ -69,6 +69,49 @@ class PinnedCatalogView:
         """
         yield from history_from(self._adapter, table, snapshot_id)
 
+    def pin_bounded_metadata(self, table: str, *, storage: Any, limits: Any) -> Any:
+        """Pin the current immutable metadata pointer, selecting this view's exact binding.
+
+        The selected ID is resolved by the bounded adapter against that pointer's external
+        snapshot index.  An unbound table deliberately selects ``None`` (empty); this bridge
+        never substitutes the metadata file's current head.
+        """
+        pin_at = getattr(self._adapter, "pin_bounded_metadata_at", None)
+        if not callable(pin_at):
+            raise PinnedViewError("the underlying catalog lacks exact bounded snapshot pinning")
+        return pin_at(table, self._bindings.get(table), storage=storage, limits=limits)
+
+    def pin_bounded_metadata_at(
+        self, table: str, snapshot_id: str | None, *, storage: Any, limits: Any
+    ) -> Any:
+        """Explicit internal variant for consumers that pass a PIT binding map directly."""
+        if self._bindings.get(table) != snapshot_id:
+            raise PinnedViewError("requested snapshot differs from the PIT binding")
+        return self.pin_bounded_metadata(table, storage=storage, limits=limits)
+
+    def scan_pinned_batches(
+        self,
+        bounded: Any,
+        *,
+        snapshot_id: str,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
+    ) -> Any:
+        """Stream from a bounded handle only when it matches this view's exact selection."""
+        scan = getattr(self._adapter, "scan_pinned_batches", None)
+        if not callable(scan):
+            raise PinnedViewError("the underlying catalog lacks bounded snapshot scans")
+        if getattr(bounded, "selected_snapshot_id", object()) != snapshot_id:
+            raise PinnedViewError("scan snapshot differs from the PIT binding")
+        return scan(bounded, snapshot_id=snapshot_id, columns=columns, row_filter=row_filter)
+
+    def _snapshot_info(self, table: str, snapshot: Any) -> SnapshotInfo:
+        """Infrastructure bridge used by bounded replay to serialize indexed snapshots."""
+        converter = getattr(self._adapter, "_snapshot_info", None)
+        if not callable(converter):
+            raise PinnedViewError("the underlying catalog lacks bounded SnapshotInfo conversion")
+        return cast(SnapshotInfo, converter(table, snapshot))
+
     def scan_columns(
         self,
         table: str,
@@ -115,8 +158,11 @@ class PinnedCatalogView:
 
         if snapshot_id is not None:
             # Explicit historical snapshots take precedence over the view's binding.
-            return scan_batches(
-                table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+            return cast(
+                Iterator[pa.RecordBatch],
+                scan_batches(
+                    table, columns=columns, row_filter=row_filter, snapshot_id=snapshot_id
+                ),
             )
 
         bound = self._bindings.get(table)
@@ -127,7 +173,10 @@ class PinnedCatalogView:
             if self._adapter.load_table(table) is None:
                 raise TableNotFound(f"table {table} does not exist")
             return iter(())
-        return scan_batches(table, columns=columns, row_filter=row_filter, snapshot_id=bound)
+        return cast(
+            Iterator[pa.RecordBatch],
+            scan_batches(table, columns=columns, row_filter=row_filter, snapshot_id=bound),
+        )
 
     def commit_batch(self, request: CommitRequest, batch: pa.Table) -> CommitResult:
         raise PinnedViewError("a pinned catalog view is read-only")

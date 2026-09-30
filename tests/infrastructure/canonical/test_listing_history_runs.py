@@ -10,6 +10,7 @@ from typing import Any, cast
 import pyarrow as pa  # type: ignore[import-untyped]
 import pytest
 
+from core.contracts.catalog import SnapshotNotFound
 from core.domain.base import canonical_json
 from infrastructure.canonical.listing_bounded_verify import (
     _preflight_arrow_jsonl_row,
@@ -21,6 +22,7 @@ from infrastructure.canonical.listing_rules import parse_batch_id
 from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
+from infrastructure.pit.view import PinnedCatalogView, PinnedViewError
 from infrastructure.revision.exchange_info_store import ExchangeInfoRowVerifier
 from infrastructure.revision.row_integrity import history_from
 from infrastructure.storage import LocalFileStorageAdapter
@@ -328,6 +330,157 @@ def test_bounded_verify_pins_listing_then_raw_and_uses_no_legacy_metadata_calls(
         scratch.close()
 
 
+def test_bounded_pit_replay_uses_exact_historical_listing_and_raw_bindings(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.observe("pit-listing-old", {"BTCUSDT": "TRADING"}, T1)
+    first = h.deriver()
+    try:
+        first.derive()
+    finally:
+        first.close()
+    old_ids = {
+        LISTINGS.table: h.head(LISTINGS.table),
+        xs.EXCHANGE_INFO.table: h.head(xs.EXCHANGE_INFO.table),
+    }
+    assert all(old_ids.values())
+
+    h.observe("pit-listing-new", {"BTCUSDT": "HALT"}, T2)
+    second = h.deriver()
+    try:
+        second.derive()
+    finally:
+        second.close()
+    assert h.head(LISTINGS.table) != old_ids[LISTINGS.table]
+    assert h.head(xs.EXCHANGE_INFO.table) != old_ids[xs.EXCHANGE_INFO.table]
+
+    view = PinnedCatalogView(h.adapter, cast(dict[str, str], old_ids))
+    scratch = _scratch(h)
+    deriver = h.deriver(view)
+
+    def reject_eager(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("bounded PIT replay called an eager/current-head API")
+
+    for name in ("load_table", "get_snapshot", "history", "scan_columns", "scan_column_batches"):
+        monkeypatch.setattr(h.adapter, name, reject_eager)
+    try:
+        proof = deriver.verify_bounded(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+            row_chunk_capacity=2,
+            max_hash_chunk_bytes=64,
+            finding_sink=_discard_finding,
+        )
+        assert proof.raw_snapshot_id == old_ids[xs.EXCHANGE_INFO.table]
+        assert proof.listing_snapshot_id == old_ids[LISTINGS.table]
+        assert proof.committed_row_count == 1
+
+        explicit = h.deriver()
+        try:
+            replay = explicit.bounded_replay_inputs(
+                snapshot_ids=old_ids,
+                scratch_storage=scratch,
+                metadata_limits=_metadata_limits(),
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+                prefix_leaf_max_records=3,
+                prefix_fanout=3,
+                prefix_max_node_bytes=16384,
+                prefix_max_record_bytes=4096,
+            )
+            assert replay.raw_snapshot_id == proof.raw_snapshot_id
+            assert replay.listing_snapshot_id == proof.listing_snapshot_id
+        finally:
+            explicit.close()
+
+        direct = h.deriver()
+        try:
+            direct_proof = direct.verify_bounded(
+                snapshot_ids=old_ids,
+                scratch_storage=scratch,
+                metadata_limits=_metadata_limits(),
+                capacity=2,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                max_record_bytes=16384,
+                max_run_object_bytes=32768,
+                prefix_leaf_max_records=3,
+                prefix_fanout=3,
+                prefix_max_node_bytes=16384,
+                prefix_max_record_bytes=4096,
+                row_chunk_capacity=2,
+                max_hash_chunk_bytes=64,
+                finding_sink=_discard_finding,
+            )
+            assert direct_proof.raw_snapshot_id == proof.raw_snapshot_id
+            assert direct_proof.listing_snapshot_id == proof.listing_snapshot_id
+            assert direct_proof.committed_row_count == proof.committed_row_count
+            assert direct_proof.diverged_count == proof.diverged_count
+        finally:
+            direct.close()
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_pit_replay_rejects_missing_or_mismatched_bindings(h: Harness) -> None:
+    h.observe("pit-listing-bindings", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+    old_ids = {
+        LISTINGS.table: h.head(LISTINGS.table),
+        xs.EXCHANGE_INFO.table: h.head(xs.EXCHANGE_INFO.table),
+    }
+    assert all(old_ids.values())
+    scratch = _scratch(h)
+    try:
+        deriver = h.deriver()
+        try:
+            with pytest.raises(SnapshotNotFound):
+                deriver.bounded_replay_inputs(
+                    snapshot_ids={**old_ids, xs.EXCHANGE_INFO.table: "999999999"},
+                    scratch_storage=scratch,
+                    metadata_limits=_metadata_limits(),
+                    capacity=2,
+                    merge_fanout=2,
+                    limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+                    max_record_bytes=16384,
+                    max_run_object_bytes=32768,
+                    prefix_leaf_max_records=3,
+                    prefix_fanout=3,
+                    prefix_max_node_bytes=16384,
+                    prefix_max_record_bytes=4096,
+                )
+        finally:
+            deriver.close()
+
+        view = PinnedCatalogView(h.adapter, cast(dict[str, str], old_ids))
+        with pytest.raises(PinnedViewError, match="differs from the PIT binding"):
+            view.pin_bounded_metadata_at(
+                LISTINGS.table,
+                "999999999",
+                storage=scratch,
+                limits=_metadata_limits(),
+            )
+    finally:
+        scratch.close()
+
+
 def test_bounded_replay_keeps_the_captured_heads_after_new_commits(h: Harness) -> None:
     h.observe("listing-pinned-before", {"BTCUSDT": "TRADING"}, T1)
     first = h.deriver()
@@ -600,7 +753,7 @@ def test_oversized_arrow_row_is_rejected_before_to_pylist(h: Harness) -> None:
 
     class Metadata:
         name = LISTINGS.table
-        metadata = type("Pointer", (), {"current_snapshot_id": "pinned"})()
+        selected_snapshot_id = "pinned"
 
     scratch = LocalFileStorageAdapter(
         (h.tmp_path / "preflight-warehouse").as_uri(),

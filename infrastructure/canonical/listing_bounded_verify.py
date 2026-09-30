@@ -261,9 +261,8 @@ def _scan_current_rows(
         return None
     if bounded_metadata.name != LISTINGS_TABLE:
         raise CatalogIntegrityError("bounded Listing scan is pinned to another table")
-    pinned_head = bounded_metadata.metadata.current_snapshot_id
-    if snapshot_id != (None if pinned_head is None else str(pinned_head)):
-        raise CatalogIntegrityError("Listing scan head differs from its pinned metadata pointer")
+    if snapshot_id != bounded_metadata.selected_snapshot_id:
+        raise CatalogIntegrityError("Listing scan differs from its selected bounded snapshot")
     columns = tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema)
     scan_pinned = getattr(catalog, "scan_pinned_batches", None)
     if not callable(scan_pinned):

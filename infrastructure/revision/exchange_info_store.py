@@ -493,10 +493,9 @@ class ExchangeInfoRowVerifier:
         if bounded_metadata is not None:
             if bounded_metadata.name != EXCHANGE_INFO_TABLE:
                 raise CatalogIntegrityError("bounded Raw metadata is pinned to another table")
-            pinned_head = bounded_metadata.metadata.current_snapshot_id
-            pinned_head_id = None if pinned_head is None else str(pinned_head)
+            pinned_head_id = bounded_metadata.selected_snapshot_id
             if head != pinned_head_id:
-                raise CatalogIntegrityError("Raw head differs from its pinned metadata pointer")
+                raise CatalogIntegrityError("Raw head differs from its selected bounded snapshot")
         if head is None:
             return None
         if not isinstance(limits, RunLimits):
