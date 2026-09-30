@@ -100,6 +100,7 @@ from infrastructure.revision.channel_precedence import (
 from infrastructure.revision.row_integrity import (
     MAX_ELEMENT_MICROBATCH_ROWS,
     PersistedRowVerifier,
+    VerifiedArchive,
     history_from,
 )
 from infrastructure.revision.store import BatchCommit, RevisionCatalog
@@ -1943,6 +1944,57 @@ class ChannelReconciler:
                 first = False
                 previous = value
 
+    def _verified_archive_run_rows(
+        self,
+        archive_def: RegisteredTableDefinition,
+        data_type: str,
+        symbol: str,
+        archive_rows_root: RunRef | None,
+        params: VerifiedEdgeRunParams,
+    ) -> dict[str, VerifiedArchive]:
+        """Prove every staged archive row once, archive by archive, in bounded chunks.
+
+        The staged rows (sorted by observation key) are re-sorted by archive revision in an
+        external run, so one verifier call re-parses one archive object for up to
+        ``row_capacity`` of its rows instead of once per row. Every row passes the same checks
+        the per-row call applied (lineage, line content, times, sole holder, row batch); the
+        result maps each archive revision id to its proven lineage.
+        """
+        verified: dict[str, VerifiedArchive] = {}
+        if archive_rows_root is None:
+            return verified
+        with RunSetBuilder(
+            self._storage,
+            key=lambda row: (row["archive_revision_id"], row["revision_id"]),
+            capacity=params.row_capacity,
+            merge_fanout=params.merge_fanout,
+            limits=params.limits,
+        ) as by_archive:
+            with iter_run(self._storage, archive_rows_root) as staged:
+                by_archive.extend(staged)
+            by_archive_root = by_archive.finish()
+        if by_archive_root is None:
+            return verified
+        chunk: list[Mapping[str, Any]] = []
+
+        def flush() -> None:
+            if chunk:
+                verified.update(
+                    self._verifier.verify_archive_elements(archive_def, data_type, symbol, chunk)
+                )
+                chunk.clear()
+
+        with iter_run(self._storage, by_archive_root) as rows:
+            for row in rows:
+                if chunk and (
+                    len(chunk) >= params.row_capacity
+                    or chunk[0]["archive_revision_id"] != row["archive_revision_id"]
+                ):
+                    flush()
+                chunk.append(row)
+            flush()
+        return verified
+
     def _verified_edge_run(
         self,
         data_type: str,
@@ -2035,6 +2087,9 @@ class ChannelReconciler:
                         label="arrival_seq",
                     )
                     if pinned.day_keys is not None:
+                        verified_archives = self._verified_archive_run_rows(
+                            archive_def, data_type, symbol, pinned.archive_rows, params
+                        )
                         with ExitStack() as stack:
                             keys = stack.enter_context(iter_run(self._storage, pinned.day_keys))
                             rest_rows = (
@@ -2165,10 +2220,14 @@ class ChannelReconciler:
                                                     "committed twice"
                                                 )
                                             previous_revision_id = row["revision_id"]
-                                            verified = self._verifier.verify_archive_elements(
-                                                archive_def, data_type, symbol, (row,)
+                                            archive = verified_archives.get(
+                                                row["archive_revision_id"]
                                             )
-                                            archive = verified[row["archive_revision_id"]]
+                                            if archive is None:
+                                                raise CatalogIntegrityError(
+                                                    f"archive row {row['revision_id']} was not "
+                                                    "proven against its archive revision"
+                                                )
                                             archive_parents.add(
                                                 {
                                                     "archive_revision_id": archive.revision_id,
