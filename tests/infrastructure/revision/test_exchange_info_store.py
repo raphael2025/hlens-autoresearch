@@ -28,6 +28,8 @@ from infrastructure.revision.exchange_info_store import (
     snapshot_columns,
 )
 from infrastructure.revision.row_integrity import batch
+from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.streaming.runs import RunLimits, iter_run
 from tests.infrastructure.revision import exchange_info_support as xs
 from tests.infrastructure.revision.exchange_info_support import (
     EXCHANGE_INFO,
@@ -97,6 +99,97 @@ def test_a_committed_snapshot_becomes_one_proven_raw_source_revision(h: Harness)
     assert row["server_time_raw"] == 5 and row["http_status"] == 200
     assert row["request_path"] == "/api/v3/exchangeInfo"
     assert _verify(h) == [row]
+
+
+def test_bounded_raw_table_proof_spools_sorted_rows_without_proof_cache(h: Harness) -> None:
+    h.observe("snap-1", TRADING, T1)
+    h.observe("snap-2", {"BTCUSDT": "HALT", "ETHUSDT": "TRADING"}, T2)
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "scratch-warehouse").as_uri(),
+        (h.tmp_path / "scratch-stage").as_uri(),
+    )
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+    try:
+        root = verifier.verify_table_bounded(
+            h.head(TABLE),
+            scratch_storage=scratch,
+            capacity=1,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+            max_record_bytes=4096,
+        )
+        assert root is not None and root.record_count == 2
+        assert verifier._proven == {}
+        with iter_run(scratch, root) as rows:
+            actual = list(rows)
+        assert [item["sort_key"] for item in actual] == sorted(item["sort_key"] for item in actual)
+        assert sorted(item["row"]["arrival_seq"] for item in actual) == [0, 1]
+    finally:
+        verifier.close()
+        scratch.close()
+
+
+def test_bounded_raw_table_proof_rejects_row_over_byte_cap(h: Harness) -> None:
+    h.observe("snap-1", TRADING, T1)
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "scratch-warehouse").as_uri(),
+        (h.tmp_path / "scratch-stage").as_uri(),
+    )
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+    try:
+        with pytest.raises(CatalogIntegrityError, match="max_record_bytes"):
+            verifier.verify_table_bounded(
+                h.head(TABLE),
+                scratch_storage=scratch,
+                capacity=1,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+                max_record_bytes=32,
+            )
+    finally:
+        verifier.close()
+        scratch.close()
+
+
+def test_bounded_raw_table_proof_checks_each_snapshot_batch_fingerprint(h: Harness) -> None:
+    h.observe("snap-1", TRADING, T1)
+    scratch = LocalFileStorageAdapter(
+        (h.tmp_path / "scratch-warehouse").as_uri(),
+        (h.tmp_path / "scratch-stage").as_uri(),
+    )
+    verifier = ExchangeInfoRowVerifier(h.adapter, h.storage, xs.ORIGIN)
+
+    class WrongFingerprintCatalog:
+        def __getattr__(self, name: str) -> Any:
+            return getattr(h.adapter, name)
+
+        def get_snapshot(self, table: str, snapshot_id: str) -> Any:
+            snapshot = h.adapter.get_snapshot(table, snapshot_id)
+            if table == TABLE:
+                return snapshot.model_copy(update={"batch_fingerprint": "0" * 64})
+            return snapshot
+
+        def history(self, table: str, snapshot_id: str) -> Any:
+            for snapshot in h.adapter.history(table, snapshot_id):
+                if table == TABLE:
+                    yield snapshot.model_copy(update={"batch_fingerprint": "0" * 64})
+                else:
+                    yield snapshot
+
+    verifier._catalog = WrongFingerprintCatalog()  # type: ignore[assignment]
+    try:
+        with pytest.raises(CatalogIntegrityError, match="other content"):
+            verifier.verify_table_bounded(
+                h.head(TABLE),
+                scratch_storage=scratch,
+                capacity=1,
+                merge_fanout=2,
+                limits=RunLimits(leaf_max_records=2, leaf_max_bytes=8192, fanout=2),
+                max_record_bytes=4096,
+            )
+    finally:
+        verifier.close()
+        scratch.close()
 
 
 def test_later_snapshots_are_further_revisions_of_the_same_key(h: Harness) -> None:
