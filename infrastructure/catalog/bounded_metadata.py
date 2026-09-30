@@ -164,7 +164,12 @@ class BoundedIcebergMetadata:
         self.catalog = catalog
         # The one snapshot this caller's pinned view is allowed to observe.  The
         # metadata pointer and external index still contain its complete ancestry.
-        self.selected_snapshot_id = selected_snapshot_id
+        self._selected_snapshot_id = selected_snapshot_id
+
+    @property
+    def selected_snapshot_id(self) -> str | None:
+        """The immutable snapshot selection made when this metadata view was pinned."""
+        return self._selected_snapshot_id
 
     def snapshot_by_id(self, snapshot_id: int) -> Snapshot | None:
         """Return the first-listed snapshot with this ID, matching PyIceberg's lookup rule."""

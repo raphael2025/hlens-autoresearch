@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable, Iterable, Iterator
 from dataclasses import replace
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, cast
 
 import pyarrow as pa  # type: ignore[import-untyped]
@@ -357,6 +358,35 @@ def test_bounded_pit_replay_uses_exact_historical_listing_and_raw_bindings(
     view = PinnedCatalogView(h.adapter, cast(dict[str, str], old_ids))
     scratch = _scratch(h)
     deriver = h.deriver(view)
+
+    bounded_listing = view.pin_bounded_metadata(
+        LISTINGS.table,
+        storage=scratch,
+        limits=_metadata_limits(),
+    )
+    new_listing_id = h.head(LISTINGS.table)
+    assert new_listing_id is not None
+    selected_id_attribute = "selected_snapshot_id"
+    with pytest.raises(AttributeError):
+        setattr(bounded_listing, selected_id_attribute, new_listing_id)
+    with pytest.raises(CatalogIntegrityError, match="differs from the bounded metadata selection"):
+        h.adapter.scan_pinned_batches(
+            bounded_listing,
+            snapshot_id=new_listing_id,
+            columns=tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema),
+        )
+    with pytest.raises(PinnedViewError, match="differs from the PIT binding"):
+        view.scan_pinned_batches(
+            bounded_listing,
+            snapshot_id=new_listing_id,
+            columns=tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema),
+        )
+    with pytest.raises(PinnedViewError, match="differs from the PIT binding"):
+        view.scan_pinned_batches(
+            SimpleNamespace(name=LISTINGS.table, selected_snapshot_id=new_listing_id),
+            snapshot_id=new_listing_id,
+            columns=tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema),
+        )
 
     def reject_eager(*_args: Any, **_kwargs: Any) -> Any:
         raise AssertionError("bounded PIT replay called an eager/current-head API")

@@ -101,6 +101,9 @@ class PinnedCatalogView:
         scan = getattr(self._adapter, "scan_pinned_batches", None)
         if not callable(scan):
             raise PinnedViewError("the underlying catalog lacks bounded snapshot scans")
+        table = getattr(bounded, "name", None)
+        if not isinstance(table, str) or self._bindings.get(table) != snapshot_id:
+            raise PinnedViewError("scan snapshot differs from the PIT binding")
         if getattr(bounded, "selected_snapshot_id", object()) != snapshot_id:
             raise PinnedViewError("scan snapshot differs from the PIT binding")
         return scan(bounded, snapshot_id=snapshot_id, columns=columns, row_filter=row_filter)
