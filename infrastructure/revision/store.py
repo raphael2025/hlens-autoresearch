@@ -742,13 +742,43 @@ class RawRevisionStore:
             ARCHIVE_TABLE, "arrival_seq", check=_check_archive_arrival_seq
         )
 
+    def _archive_rows(
+        self,
+        columns: Sequence[str],
+        row_filter: BooleanExpression,
+        *,
+        limit: int | None = None,
+    ) -> list[dict[str, Any]]:
+        """Matching archive-table rows at the current head, streamed (ADR-0075 bounded scan).
+
+        ``scan_columns`` runs PyIceberg's high-level planner, whose manifest / entry / task lists
+        grow with the archive table's file count (one commit per ingested archive); this reads
+        one data file and one Arrow batch at a time and stops at ``limit`` rows. The caller's
+        filter keeps the result itself to one revision or one observation key. The reader is
+        always closed.
+        """
+        rows: list[dict[str, Any]] = []
+        reader = self._adapter.scan_column_batches(
+            ARCHIVE_TABLE, columns=columns, row_filter=row_filter
+        )
+        try:
+            for record_batch in reader:
+                if limit is not None and record_batch.num_rows > limit - len(rows):
+                    record_batch = record_batch.slice(0, limit - len(rows))
+                rows.extend(record_batch.to_pylist())
+                if limit is not None and len(rows) >= limit:
+                    break
+        finally:
+            close = getattr(reader, "close", None)
+            if callable(close):
+                close()
+        return rows
+
     def _stored_archive_row(self, revision_id: str) -> Mapping[str, Any] | None:
-        rows = self._adapter.scan_columns(
-            ARCHIVE_TABLE,
-            columns=_ARCHIVE_LOOKUP_COLUMNS,
-            row_filter=_equals("revision_id", revision_id),
-            limit=2,
-        ).to_pylist()
+        # Two rows are enough to prove a duplicate; no further copy is ever held.
+        rows = self._archive_rows(
+            _ARCHIVE_LOOKUP_COLUMNS, _equals("revision_id", revision_id), limit=2
+        )
         if not rows:
             return None
         if len(rows) > 1:
@@ -760,9 +790,8 @@ class RawRevisionStore:
 
     def _known_facts(self, observation_key: str) -> tuple[RevisionFacts, ...]:
         """Facts of the already committed revisions of ``observation_key`` (never their order)."""
-        rows = self._adapter.scan_columns(
-            ARCHIVE_TABLE,
-            columns=(
+        rows = self._archive_rows(
+            (
                 "observation_key",
                 "revision_id",
                 "source_id",
@@ -770,8 +799,8 @@ class RawRevisionStore:
                 "source_revision_id",
                 "source_revision_time",
             ),
-            row_filter=_equals("observation_key", observation_key),
-        ).to_pylist()
+            _equals("observation_key", observation_key),
+        )
         return tuple(
             RevisionFacts(
                 observation_key=row["observation_key"],
@@ -791,11 +820,9 @@ class RawRevisionStore:
         first (no cycles, no self reference, no cross-key edge, every declared edge backed by
         evidence), so a corrupt graph fails closed instead of yielding a head.
         """
-        rows = self._adapter.scan_columns(
-            ARCHIVE_TABLE,
-            columns=_ARCHIVE_REVISION_COLUMNS,
-            row_filter=_equals("observation_key", observation_key),
-        ).to_pylist()
+        rows = self._archive_rows(
+            _ARCHIVE_REVISION_COLUMNS, _equals("observation_key", observation_key)
+        )
         records = tuple(_record_from_row(row) for row in rows)
         evidence = tuple(item for row in rows for item in _evidence_from_row(row))
         RevisionGraph(revisions=records, precedence_evidence=evidence)
