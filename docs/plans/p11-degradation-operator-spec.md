@@ -173,3 +173,13 @@ Do not modify `core/contracts/`, `core/domain/`, Schema exports, accepted ADRs, 
 ## 9. Implementation state (2026-09-27)
 
 ADR-0067 is Accepted. The explicit operation, report writer, Profile freeze anchor snapshot, hash-bound manifest evidence, and explicit-input local CLI are included in local `main@498250a`. The CLI static checks are recorded in completion plan §10.28; integrated tests / build and Phase 11 acceptance remain deferred. The fast-forward is code consolidation, not Phase acceptance; `origin/main` remains `44fe9a2`.
+
+## 10. ADR-0098 authority mode (2026-09-30)
+
+ADR-0098 (Accepted) supersedes ADR-0080's block and adds a second, mutually exclusive input mode. The caller-declared mode above is unchanged: its evidence has no `authority` key and keeps the caller-declared scope texts.
+
+- **Lifecycle:** `infrastructure/registry/lifecycle.py` `LifecycleRegistry` — append-only hash-chained transitions, `append(..., expected_head=...)`, replay at an explicit head (`latest` is read once and then pinned), ACTIVE set; a head not on the chain is refused.
+- **Resolver:** `research/operations/authority.py` `resolve_degradation_inputs` returns the `LifecycleHistory`, a `RecentMetricSet` (method id `hlens.p11.monitoring-metrics@1.0.0`, one source = the pinned v3 manifest) and an `AuthorityProvenance` (head identity, replayed history and record hashes, source identity and bindings, baseline run / manifest, metric definition ids, backtest / cost / strategy identities, as-of = window end, window). `run_degradation_check(..., authority=...)` binds it and writes `evidence.authority`; the scope texts become `AUTHORITY_LIFECYCLE_SCOPE` / `AUTHORITY_RECENT_METRICS_SCOPE`.
+- **Metrics:** closed registry; only `breakeven_cost_multiple` → `cost_stress_check` gate `G4.cost_stress.breakeven`. Any other ruled metric is `metric_undefined`.
+- **CLI:** `--authority-registry <root> --authority-head <hash>|latest --dataset-id <selection_id> --manifest-hash <sha256>`. The plain command line cannot construct the catalog, decision pipeline or backtest provider, so it refuses with `authority_environment_unavailable`; `main(..., authority_environment=...)` accepts them from an embedding caller.
+- **Open gap:** ADR-0067 rule 5 (`gate.metric == metric key`) cannot match the comparator-suffixed labels `compare_gate` writes (`…[>=]`), so a real validation baseline is refused on both paths until the PM decides the matching rule.
