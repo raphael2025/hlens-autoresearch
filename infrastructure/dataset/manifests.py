@@ -146,7 +146,7 @@ def manifest_assumptions(
     pit = manifest.point_in_time
     try:
         archive = archive_assumption.assumption_bound(pit)
-        listing = listing_assumption.assumption_bound(pit)
+        listing = listing_assumption.bound_binding(pit)
     except (
         archive_assumption.AssumptionSpecError,
         listing_assumption.AssumptionSpecError,
@@ -156,7 +156,7 @@ def manifest_assumptions(
         ) from exc
     return ManifestAssumptions(
         archive_event_time=archive_assumption.ASSUMPTION_BINDING if archive else None,
-        listing_backfill=listing_assumption.ASSUMPTION_BINDING if listing else None,
+        listing_backfill=listing,
     )
 
 

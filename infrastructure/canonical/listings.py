@@ -55,7 +55,12 @@ from core.contracts.catalog import (
     SnapshotInfo,
     TableNotFound,
 )
-from core.contracts.revision import PointInTimeSpec, PrecedenceEvidence, RevisionRecord
+from core.contracts.revision import (
+    PointInTimeSpec,
+    PolicyBinding,
+    PrecedenceEvidence,
+    RevisionRecord,
+)
 from core.contracts.storage import StorageAdapter
 from core.contracts.universe import (
     ListingHistory,
@@ -545,7 +550,7 @@ class ListingDeriver:
                 raise ListingDeriveError(f"{label} must be timezone-aware UTC")
         if venue_symbol not in lr.FIRST_SLICE_ASSETS:
             raise ListingDeriveError(f"{venue_symbol!r} is not a first-slice venue symbol")
-        backfill_bound = False if pit is None else backfill.assumption_bound(pit)
+        backfill_binding = None if pit is None else backfill.bound_binding(pit)
         listing_head, raw_head = self._heads()
         state, raw = self._prove(listing_head, raw_head)
         return _select(
@@ -554,7 +559,7 @@ class ListingDeriver:
             knowledge_cutoff,
             state,
             raw,
-            backfill_bound=backfill_bound,
+            backfill_binding=backfill_binding,
         )
 
     # ------------------------------------------------------------------ prove
@@ -806,7 +811,7 @@ def _select(
     state: ListingsVerified,
     raw: ProvenSnapshotTable,
     *,
-    backfill_bound: bool = False,
+    backfill_binding: PolicyBinding | None = None,
 ) -> ListingPointInTime:
     def refuse(reason: str, detail: str) -> ListingPointInTime:
         return ListingPointInTime(
@@ -862,7 +867,7 @@ def _select(
             knowledge_cutoff,
             known_rows,
             raw,
-            bound=backfill_bound,
+            binding=backfill_binding,
         )
         if assumed is not None:
             return assumed
@@ -937,7 +942,7 @@ def _assumed_first_candidate(
     known_rows: Sequence[Mapping[str, Any]],
     raw: ProvenSnapshotTable,
     *,
-    bound: bool,
+    binding: PolicyBinding | None,
 ) -> ListingPointInTime | None:
     """The ADR-0051 backfill assumption's answer, or ``None`` when it does not apply (D-LIST).
 
@@ -946,9 +951,9 @@ def _assumed_first_candidate(
     ``no_visible_listing``) unless every condition of ``listing_assumption.assumption_applies``
     holds for the episode's one, real, unmodified first revision.
     """
-    if not bound:
+    if binding is None:
         return None
-    floor = backfill.backfill_floor_for(venue_symbol)
+    floor = backfill.backfill_floor_for(venue_symbol, binding)
     if floor is None:
         return None
     # The committed first revision of this episode (supersedes == ()), if exactly one is visible
@@ -984,6 +989,7 @@ def _assumed_first_candidate(
         backfill_floor=floor,
         first_observed_from=first_observed_from,
         stored_available_time=first_row["available_time"],
+        binding=binding,
     )
     listing = lr.listing_revision_from_row(first_row)
     return ListingPointInTime(
@@ -1006,7 +1012,7 @@ def _assumed_first_candidate(
         assumed=True,
         assumption=interval,
         detail=(
-            f"{backfill.ASSUMPTION_ID}@{backfill.ASSUMPTION_VERSION}: assumed listed member from "
+            f"{backfill.ASSUMPTION_ID}@{binding.version}: assumed listed member from "
             f"{interval.backfill_floor.isoformat()} (backfill_floor) to "
             f"{interval.first_observed_from.isoformat()} (first observed TRADING); not an "
             "exchange-declared listing date"

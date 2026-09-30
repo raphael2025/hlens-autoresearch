@@ -371,7 +371,7 @@ def _assumed_of(venue_symbol: str, span: _Span, pit: PointInTimeSpec) -> Assumed
         interval is None
         or listing is None
         or point.tradable is not True
-        or not backfill.assumption_bound(pit)
+        or backfill.bound_binding(pit) != interval.binding
     ):
         raise CatalogIntegrityError(
             f"{venue_symbol}: an assumed listing answer without the bound "
@@ -385,7 +385,7 @@ def _assumed_of(venue_symbol: str, span: _Span, pit: PointInTimeSpec) -> Assumed
         backfill_floor=interval.backfill_floor,
         first_observed_from=interval.first_observed_from,
         effective_available_time=interval.effective_available_time,
-        binding=backfill.ASSUMPTION_BINDING,
+        binding=interval.binding,
     )
 
 
