@@ -1,10 +1,9 @@
-"""ADR-0052 versioned replay over the whole Phase 1 first slice (M2: after the 2.1.0 bump; ADR-0055:
-after the 2.2.0 bump).
+"""ADR-0052 versioned replay over the whole Phase 1 first slice at current contract version 2.5.0.
 
 The first slice (exchangeInfo -> listings; archive + REST aggTrades / klines for two symbols;
 reconciliation edges; Canonical normalization; quality reports; a Research Dataset + manifest) is
 committed by an earlier published code version (``written_at("2.0.0")`` and ``written_at("2.1.0")``,
-one run each), then every write step is re-run and every read repeated by the current 2.2.0 code on
+one run each), then every write step is re-run and every read repeated by the current 2.5.0 code on
 the same catalog:
 
 - nothing is committed: every table head is unchanged, every row reads back as recorded;
@@ -172,7 +171,7 @@ def _replay_every_step(w: ds.World) -> None:
 
 @prior_versions
 def test_an_earlier_first_slice_is_read_and_replayed_unchanged_now(w: ds.World, old: str) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
     with written_at(old):
         _walk(w)
         spec = w.spec()

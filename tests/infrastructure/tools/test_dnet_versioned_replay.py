@@ -1,5 +1,5 @@
-"""D-NET committed data replayed after the 2.1.0 and 2.2.0 bumps (ADR-0052 versioned replay, M2
-gate; ADR-0055): data committed at 2.0.0 and at 2.1.0 are each re-run by the current 2.2.0 code.
+"""D-NET committed data replayed across published contract versions (ADR-0052 versioned replay,
+M2 gate): earlier-version data is re-run by the current 2.5.0 code.
 
 The D-NET capability steps (collect, ingest, normalize, report, pit, f2) run offline — the mock
 archive site of ``test_dnet_capability_run`` and a temporary SQLite catalog; no download, no REST
@@ -20,7 +20,7 @@ from typing import Any
 import httpx
 import pytest
 
-from core.domain.base import CONTRACT_SCHEMA_VERSION
+from core.domain.base import CONTRACT_SCHEMA_VERSION, PUBLISHED_CONTRACT_SCHEMA_VERSIONS
 from infrastructure.catalog import PHASE1_REGISTRY, PyIcebergCatalogAdapter, ensure_phase1_tables
 from infrastructure.catalog.phase1_tables import PHASE1_TABLES
 from infrastructure.settings import Settings
@@ -36,8 +36,8 @@ from tests.infrastructure.tools.test_dnet_capability_run import (
     _Site,
 )
 
-#: Every published version older than the current one (ADR-0052 2.1.0, ADR-0055 2.2.0 bumps).
-PRIOR = ("2.0.0", "2.1.0")
+#: Every published version older than the current one must keep replaying unchanged.
+PRIOR = PUBLISHED_CONTRACT_SCHEMA_VERSIONS[:-1]
 
 
 @pytest.fixture
@@ -114,7 +114,7 @@ def test_dnet_data_committed_earlier_replays_unchanged_now(
     monkeypatch: pytest.MonkeyPatch,
     old: str,
 ) -> None:
-    assert CONTRACT_SCHEMA_VERSION == "2.2.0"
+    assert CONTRACT_SCHEMA_VERSION == "2.5.0"
     adapter, storage = world
     monkeypatch.setenv("HLENS_CATALOG_URI", "postgresql://u:p@127.0.0.1:5432/db")
     monkeypatch.setenv("HLENS_BINANCE_ARCHIVE_BASE_URL", ARCHIVE_BASE)

@@ -448,8 +448,14 @@ def test_new_content_cannot_be_built_inside_an_older_replay_scope() -> None:
             rule()
         with contract_schema_version_scope(old), pytest.raises(ValidationError, match="2.3.0"):
             proof()
-    with contract_schema_version_scope("2.3.0"):
-        assert v3_at("2.3.0").schema_version == "2.3.0"  # its six streams can be rebuilt
+    for old in ("2.3.0", "2.4.0"):
+        with contract_schema_version_scope(old):
+            assert v3_at(old).schema_version == old  # the six-stream shape can be rebuilt
+            with pytest.raises(ValidationError, match="2.5.0"):
+                pit_conflict_event()
+    with contract_schema_version_scope("2.5.0"):
+        assert v3().schema_version == "2.5.0"
+        assert pit_conflict_event().schema_version == "2.5.0"
 
 
 # ======================================================================================

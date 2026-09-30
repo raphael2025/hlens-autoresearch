@@ -89,6 +89,17 @@ def test_old_dataset_manifest_golden_bytes_and_hashes_replay_unchanged() -> None
         assert type(replayed).model_validate_json(original).content_hash() == expected_hash
 
 
+def test_current_2_5_manifest_and_conflict_event_replay_their_canonical_bytes() -> None:
+    manifest = v3_at("2.5.0")
+    event = pit_conflict_event()
+    for model in (manifest, event):
+        canonical = canonical_json(model.model_dump(mode="json"))
+        replayed = type(model).model_validate_json(canonical)
+        assert replayed.schema_version == "2.5.0"
+        assert canonical_json(replayed.model_dump(mode="json")) == canonical
+        assert replayed.content_hash() == model.content_hash()
+
+
 def test_new_enum_value_and_models_are_rejected_by_pre_250_envelopes() -> None:
     conflict_stream = stream_ref(EvidenceStream.PIT_CONFLICTS, record_count=2)
     stream_payload = wire(conflict_stream)
