@@ -92,10 +92,16 @@ class DatasetBuildPipeline:
         return self._manifests
 
     def build(self, request: DatasetEvidenceRequest) -> DatasetBuildSummary:
-        """Derive and commit one v3 Dataset; no v2 manifest is produced by this path."""
+        """Derive and commit one v3 Dataset; no v2 manifest is produced by this path.
+
+        The sources are assembled at the version the build will run in: a rerun of a manifest
+        recorded at an earlier contract version (ADR-0052 V7) gets that version's Quality
+        source, exactly as the verifier re-derives it inside the recorded-version scope.
+        """
+        recorded = self._manifests.recorded_version(self._builder.selection_id(request))
         return self._builder.build(
             request,
-            sources=self._sources(request),
+            sources=self._sources(request, schema_version=recorded),
             chunks=self._chunks,
             manifests=self._manifests,
         )
@@ -110,7 +116,9 @@ class DatasetBuildPipeline:
         """Open one authenticated evidence stream under this pipeline's registered rule."""
         return self._builder.iter_evidence(manifest, stream)
 
-    def _sources(self, request: DatasetEvidenceRequest) -> DatasetEvidenceSources:
+    def _sources(
+        self, request: DatasetEvidenceRequest, *, schema_version: str | None = None
+    ) -> DatasetEvidenceSources:
         return dataset_evidence_sources(
             self._adapter,
             self._storage,
@@ -119,6 +127,7 @@ class DatasetBuildPipeline:
             market_data_base_url=self._market_data_base_url,
             pit_params=self._pit_params,
             universe_params=self._universe_params,
+            schema_version=schema_version,
             quality_factory=self._quality_factory,
             quality_params=self._quality_params,
         )

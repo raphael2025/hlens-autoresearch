@@ -1844,6 +1844,17 @@ class _MemberSpanRun:
                     close()
                 spans.close()
 
+    def load(self, capacity: int) -> tuple[MemberSpan, ...] | None:
+        """Every span, fully replayed and verified once, when there are at most ``capacity``;
+        ``None`` (nothing retained) when the run is longer, so callers reopen it instead."""
+        loaded: list[MemberSpan] = []
+        with self.open() as replayed:
+            for span in replayed:
+                if len(loaded) == capacity:
+                    return None
+                loaded.append(span)
+        return tuple(loaded)
+
 
 def _member_spans_from_run(
     records: Iterator[Mapping[str, Any]], venue_symbol: str
@@ -2253,6 +2264,11 @@ class _EvidenceDerivation:
             return  # not a member at any time: no rows and no partition reports (as v2)
         request = self.request
         reports = _PartitionReports(self, venue_symbol)
+        # Observation keys are not time-ordered, so every key intersects the spans from the
+        # first one: no forward cursor can be shared between keys. A symbol whose verified spans
+        # fit the capacity its span run was built with (chunk_rows, already an in-memory bound)
+        # is replayed from memory; a longer run is reopened per key as before.
+        cached = member_spans.load(self._chunk_rows)
         for low, high in _iter_slices(request.data_type, request.start, request.end):
             with self._pit.keys(
                 request.pit,
@@ -2264,7 +2280,9 @@ class _EvidenceDerivation:
             ) as groups:
                 previous: str | None = None
                 for group in groups:
-                    self._key(group, venue_symbol, member_spans, low, high, previous, reports)
+                    self._key(
+                        group, venue_symbol, member_spans, cached, low, high, previous, reports
+                    )
                     previous = group.observation_key
         reports.close()
 
@@ -2273,6 +2291,7 @@ class _EvidenceDerivation:
         group: PitKeyGroup,
         venue_symbol: str,
         member_spans: _MemberSpanRun,
+        cached: tuple[MemberSpan, ...] | None,
         low: datetime,
         high: datetime,
         previous: str | None,
@@ -2302,7 +2321,10 @@ class _EvidenceDerivation:
         # occurrences are adjacent in output. This scalar covers repeated evaluation/span
         # intersections without retaining O(H_key) revision IDs.
         last_lineage_revision: str | None = None
-        with member_spans.open() as replayed_members:
+        replay: AbstractContextManager[Iterator[MemberSpan]] = (
+            member_spans.open() if cached is None else nullcontext(iter(cached))
+        )
+        with replay as replayed_members:
             rows = _gated_rows(
                 _selected_spans_of(
                     group.evaluations,

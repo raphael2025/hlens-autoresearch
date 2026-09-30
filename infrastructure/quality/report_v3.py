@@ -71,6 +71,7 @@ from infrastructure.quality.report_streams import (
     iter_quality_report_stream,
 )
 from infrastructure.quality.reporter import RawNotDerived
+from infrastructure.quality.scratch import local_storage_roots_overlap
 from infrastructure.revision.channel_precedence import DELIVERY_CHANNEL_BINDING
 from infrastructure.revision.rest_identity import PAGE_LIMIT
 from infrastructure.revision.row_integrity import ACCEPTED, PersistedRowVerifier, history_from
@@ -340,6 +341,8 @@ class QualityReporterV3:
                 "scratch_storage must be a distinct adapter; caller must ensure its namespace "
                 "is isolated from evidence storage"
             )
+        if local_storage_roots_overlap(storage, scratch_storage):
+            raise ValueError("scratch_storage roots must not overlap evidence storage roots")
         if not callable(clock):
             raise ValueError("clock must be callable")
         self._adapter = adapter
@@ -489,9 +492,17 @@ class QualityReporterV3:
                 "evidence_gaps": refs[2],
             }
             try:
-                committed = store.commit(row)
+                committed, reused = store.commit_or_reuse(row)
             except (CommitConflict, BatchConflict):
                 continue
+            if reused:
+                # A concurrent/retried report of this ID won: every stream root is equal (the
+                # store compared all but knowledge_time), so only its knowledge floor is left.
+                if floor is not None and committed["knowledge_time"] < floor:
+                    raise CatalogIntegrityError(
+                        "stored report knowledge_time predates a Canonical revision or edge"
+                    )
+                return QualityReportedV3(report_id, committed, True)
             return QualityReportedV3(report_id, committed, False)
         raise QualityReportV3Error("v3 report lost repeated manifest commit races")
 
@@ -813,27 +824,30 @@ class QualityReporterV3:
                         pit_key = next(pit_keys, None)
                         previous_canonical: str | None = None
                         previous_pit: str | None = None
-                        while canonical_key is not None or pit_key is not None:
-                            if canonical_key is not None:
-                                canonical_value = canonical_key["observation_key"]
-                                if canonical_value == previous_canonical:
-                                    canonical_key = next(canonical_keys, None)
-                                    continue
-                                previous_canonical = canonical_value
-                            else:
-                                canonical_value = None
-                            if pit_key is not None:
-                                pit_value = pit_key["observation_key"]
-                                if pit_value == previous_pit:
-                                    pit_key = next(pit_keys, None)
-                                    continue
-                                previous_pit = pit_value
-                            else:
-                                pit_value = None
+                        while True:
+                            # Skip repeats on both sides before comparing; the markers move only
+                            # after a compared pair, so one side's repeat never hides the other's
+                            # next distinct key.
+                            while (
+                                canonical_key is not None
+                                and canonical_key["observation_key"] == previous_canonical
+                            ):
+                                canonical_key = next(canonical_keys, None)
+                            while (
+                                pit_key is not None and pit_key["observation_key"] == previous_pit
+                            ):
+                                pit_key = next(pit_keys, None)
+                            if canonical_key is None and pit_key is None:
+                                break
+                            canonical_value = (
+                                None if canonical_key is None else canonical_key["observation_key"]
+                            )
+                            pit_value = None if pit_key is None else pit_key["observation_key"]
                             if canonical_value != pit_value:
                                 raise CatalogIntegrityError(
                                     "PIT key coverage differs from the pinned Canonical day rows"
                                 )
+                            previous_canonical, previous_pit = canonical_value, pit_value
                             canonical_key = next(canonical_keys, None)
                             pit_key = next(pit_keys, None)
                 if revision_root is not None:

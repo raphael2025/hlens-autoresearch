@@ -37,6 +37,12 @@ from infrastructure.quality.report_streams import (
 
 __all__ = ["QualityReportManifestStore", "derive_quality_report_id"]
 
+
+def _without_knowledge_time(row: Mapping[str, Any]) -> dict[str, Any]:
+    """A normalized manifest row minus its clock reading (the only non-derived column)."""
+    return {name: value for name, value in row.items() if name != "knowledge_time"}
+
+
 _SHA256_RE: Final = re.compile(r"^[0-9a-f]{64}$")
 _RULE_ID_RE: Final = re.compile(r"^[a-z][a-z0-9_.-]*$")
 _VERSION_RE: Final = re.compile(SEMVER_PATTERN)
@@ -600,15 +606,39 @@ class QualityReportManifestStore:
         the caller can retry with the same report ID. A batch ID reused for other content is an
         integrity violation; no overwrite or repair path exists.
         """
+        committed, _ = self._commit(row, reuse_other_knowledge_time=False)
+        return committed
+
+    def commit_or_reuse(self, row: Mapping[str, Any]) -> tuple[dict[str, Any], bool]:
+        """``commit``, but a committed row of the same report differing only in ``knowledge_time``
+        is returned as reused: ``(row, True)``; ``(row, False)`` when this call wrote it.
+
+        ``knowledge_time`` is the reporter's clock reading, not derived content, so a concurrent or
+        retried report of the same ID legitimately differs there. Everything else (identity,
+        bindings, every stream root) must be equal, else ``CatalogIntegrityError``. A reused row's
+        ``knowledge_time`` is the caller's to check against its knowledge floor, exactly as for a
+        report found before deriving.
+        """
+        return self._commit(row, reuse_other_knowledge_time=True)
+
+    def _commit(
+        self, row: Mapping[str, Any], *, reuse_other_knowledge_time: bool
+    ) -> tuple[dict[str, Any], bool]:
         normalized = self._normalize(row)
         report_id = normalized["report_id"]
+
+        def same(stored: Mapping[str, Any]) -> bool:
+            if not reuse_other_knowledge_time:
+                return stored == normalized
+            return _without_knowledge_time(stored) == _without_knowledge_time(normalized)
+
         existing = self.lookup(report_id)
         if existing is not None:
-            if existing != normalized:
+            if not same(existing):
                 raise CatalogIntegrityError(
                     f"quality report manifest {report_id} already has different content"
                 )
-            return existing
+            return existing, True
 
         batch = pa.Table.from_pylist([normalized], schema=self._schema)
         if not batch.schema.equals(self._schema, check_metadata=False):
@@ -629,6 +659,10 @@ class QualityReportManifestStore:
         try:
             self._adapter.commit_batch(request, batch)
         except BatchConflict as exc:
+            # Another writer committed this report ID first; only its equal content is a replay.
+            concurrent = self.lookup(report_id) if reuse_other_knowledge_time else None
+            if concurrent is not None and same(concurrent):
+                return concurrent, True
             raise CatalogIntegrityError(
                 f"quality report manifest {report_id} batch ID has different content"
             ) from exc
@@ -637,4 +671,4 @@ class QualityReportManifestStore:
             raise CatalogIntegrityError(
                 f"quality report manifest {report_id} reads back differently after commit"
             )
-        return read_back
+        return read_back, False

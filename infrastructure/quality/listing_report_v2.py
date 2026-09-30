@@ -41,6 +41,7 @@ from infrastructure.quality.report_streams import (
     QualityReportStreamWriter,
     iter_quality_report_stream,
 )
+from infrastructure.quality.scratch import local_storage_roots_overlap
 from infrastructure.revision.exchange_info_availability import EXCHANGE_INFO_AVAILABILITY_BINDING
 from infrastructure.revision.store import RevisionCatalog
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, iter_run
@@ -421,6 +422,8 @@ class ListingHistoryQualityReporterV2:
             raise ValueError(
                 "scratch_storage must be a distinct adapter; caller must isolate its namespace"
             )
+        if local_storage_roots_overlap(storage, scratch_storage):
+            raise ValueError("scratch_storage roots must not overlap evidence storage roots")
         if not callable(clock):
             raise ValueError("clock must be callable")
         self._adapter = adapter
@@ -560,11 +563,17 @@ class ListingHistoryQualityReporterV2:
         last: Exception | None = None
         for _ in range(self._limits["retries"]):
             try:
-                committed = self._store.commit(row)
+                committed, reused = self._store.commit_or_reuse(row)
             except CommitConflict as exc:
                 last = exc
                 continue
-            return ListingHistoryQualityReportedV2(report_id, committed, False)
+            if reused and committed["knowledge_time"] < floor:
+                # A concurrent/retried report of this ID won with equal streams (the store
+                # compared all but knowledge_time); its knowledge floor must still hold.
+                raise CatalogIntegrityError(
+                    "stored listing report knowledge_time predates a represented Raw or Listing row"
+                )
+            return ListingHistoryQualityReportedV2(report_id, committed, reused)
         raise ListingHistoryQualityReportError(
             "manifest commit lost repeated catalog races"
         ) from last
