@@ -18,6 +18,7 @@ from infrastructure import contract_version
 from infrastructure.canonical import listing_rules as lr
 from infrastructure.canonical.listing_prefix_index import ListingPrefixIndex
 from infrastructure.canonical.listing_runs import iter_planned_listing_revisions
+from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
 from infrastructure.catalog.fingerprint import PYARROW_BATCH_FINGERPRINT_RULE_ID
 from infrastructure.catalog.fingerprint_stream import fingerprint_run
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
@@ -51,6 +52,7 @@ def verify_listing_history_bounded(
     catalog: StoreCatalog,
     inputs: BoundedListingReplayInputs,
     *,
+    listing_metadata: BoundedIcebergMetadata,
     evidence_storage: StorageAdapter,
     scratch_storage: StorageAdapter,
     capacity: int,
@@ -68,9 +70,10 @@ def verify_listing_history_bounded(
 ) -> BoundedListingReplayProof:
     """Re-derive each historic batch and compare exact rows and frozen C3 fingerprints.
 
-    Catalog ancestry metadata retains its adapter-defined working set; PyIceberg's current
-    ``history`` implementation keeps ``metadata.snapshots`` O(H). Scratch and row streams here
-    are bounded by explicit RunSet and byte limits; this is not an E1-CAP-1 claim.
+    The supplied pinned metadata view bounds ancestry parsing with explicit metadata limits.
+    Scratch and row streams here are bounded by explicit RunSet and byte limits; backend scan
+    planning and total process RSS remain outside this path's guarantee, so this is not an
+    E1-CAP-1 claim.
     """
     for name, value, minimum in (
         ("capacity", capacity, 1),
@@ -90,6 +93,7 @@ def verify_listing_history_bounded(
     current_rows = _scan_current_rows(
         catalog,
         inputs.listing_snapshot_id,
+        listing_metadata,
         scratch_storage,
         capacity=capacity,
         merge_fanout=merge_fanout,
@@ -244,6 +248,7 @@ def verify_listing_history_bounded(
 def _scan_current_rows(
     catalog: StoreCatalog,
     snapshot_id: str | None,
+    bounded_metadata: BoundedIcebergMetadata,
     storage: StorageAdapter,
     *,
     capacity: int,
@@ -254,8 +259,16 @@ def _scan_current_rows(
 ) -> RunRef | None:
     if snapshot_id is None:
         return None
+    if bounded_metadata.name != LISTINGS_TABLE:
+        raise CatalogIntegrityError("bounded Listing scan is pinned to another table")
+    pinned_head = bounded_metadata.metadata.current_snapshot_id
+    if snapshot_id != (None if pinned_head is None else str(pinned_head)):
+        raise CatalogIntegrityError("Listing scan head differs from its pinned metadata pointer")
     columns = tuple(field.name for field in CANONICAL_INSTRUMENT_LISTINGS.arrow_schema)
-    reader = catalog.scan_column_batches(LISTINGS_TABLE, columns=columns, snapshot_id=snapshot_id)
+    scan_pinned = getattr(catalog, "scan_pinned_batches", None)
+    if not callable(scan_pinned):
+        raise CatalogIntegrityError("bounded Listing replay requires pinned batch scan support")
+    reader = scan_pinned(bounded_metadata, columns=columns, snapshot_id=snapshot_id)
     builder = RunSetBuilder(
         storage,
         key=lambda row: row["arrival_seq"],

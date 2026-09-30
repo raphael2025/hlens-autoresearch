@@ -76,6 +76,7 @@ from infrastructure.canonical.listing_prefix_index import (
 )
 from infrastructure.canonical.listing_runs import listing_observations_run
 from infrastructure.canonical.rules import SYMBOLS
+from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata, BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_EXCHANGE_INFO,
@@ -181,6 +182,8 @@ class BoundedListingReplayInputs:
 
     raw_snapshot_id: str | None
     listing_snapshot_id: str | None
+    raw_metadata: BoundedIcebergMetadata
+    listing_metadata: BoundedIcebergMetadata
     raw_rows: RunRef | None
     observations: RunRef | None
     prefix_index: ListingPrefixIndex | None
@@ -251,6 +254,7 @@ class ListingDeriver:
         self,
         *,
         scratch_storage: StorageAdapter,
+        metadata_limits: BoundedMetadataLimits,
         capacity: int,
         merge_fanout: int,
         limits: RunLimits,
@@ -265,13 +269,31 @@ class ListingDeriver:
 
         This is a preparation primitive, not a proof of persisted listing batch contents. The
         exact replay verifier consumes the returned refs and checks each batch fingerprint/row.
-        PyIceberg's history API may retain its complete metadata snapshot list, so this does not
-        claim total-process bounded memory or E1-CAP-1.
+        Metadata ancestry is parsed under the explicit ``metadata_limits``. Backend scan planning
+        and total process RSS remain outside this path's guarantee, so this does not claim
+        E1-CAP-1.
         """
-        listing_head, raw_head = self._heads()
+        pin = getattr(self._adapter, "pin_bounded_metadata", None)
+        if not callable(pin):
+            raise CatalogIntegrityError(
+                "bounded Listing verification requires PyIceberg bounded metadata support"
+            )
+        listing_metadata = pin(
+            LISTINGS_TABLE,
+            storage=scratch_storage,
+            limits=metadata_limits,
+        )
+        raw_metadata = pin(
+            _RAW_TABLE,
+            storage=scratch_storage,
+            limits=metadata_limits,
+        )
+        raw_head = _pinned_head(raw_metadata)
+        listing_head = _pinned_head(listing_metadata)
         raw_rows = self._verifier.verify_table_bounded(
             raw_head,
             scratch_storage=scratch_storage,
+            bounded_metadata=raw_metadata,
             capacity=capacity,
             merge_fanout=merge_fanout,
             limits=limits,
@@ -285,6 +307,8 @@ class ListingDeriver:
             return BoundedListingReplayInputs(
                 raw_snapshot_id=None,
                 listing_snapshot_id=None,
+                raw_metadata=raw_metadata,
+                listing_metadata=listing_metadata,
                 raw_rows=None,
                 observations=None,
                 prefix_index=None,
@@ -322,6 +346,7 @@ class ListingDeriver:
             self._adapter,
             listing_head,
             prefix_roots,
+            bounded_metadata=listing_metadata,
             storage=scratch_storage,
             capacity=capacity,
             merge_fanout=merge_fanout,
@@ -332,6 +357,8 @@ class ListingDeriver:
         return BoundedListingReplayInputs(
             raw_snapshot_id=raw_head,
             listing_snapshot_id=listing_head,
+            raw_metadata=raw_metadata,
+            listing_metadata=listing_metadata,
             raw_rows=raw_rows,
             observations=observations,
             prefix_index=prefix_index,
@@ -343,6 +370,7 @@ class ListingDeriver:
         self,
         *,
         scratch_storage: StorageAdapter,
+        metadata_limits: BoundedMetadataLimits,
         capacity: int,
         merge_fanout: int,
         limits: RunLimits,
@@ -361,10 +389,12 @@ class ListingDeriver:
         The v1/v2 ``verify`` API and its materialized result are unchanged. This additive path
         writes only caller-provided scratch storage, does not read the clock, and checks each
         persisted batch's rows, knowledge-time floor, recorded contract version, and exact C3
-        batch fingerprint. PyIceberg history metadata remains an O(H) process-memory boundary.
+        batch fingerprint. Metadata ancestry uses the explicit bounded pin supplied by this
+        method; backend scan planning and total process RSS remain outside this guarantee.
         """
         inputs = self.bounded_replay_inputs(
             scratch_storage=scratch_storage,
+            metadata_limits=metadata_limits,
             capacity=capacity,
             merge_fanout=merge_fanout,
             limits=limits,
@@ -387,6 +417,7 @@ class ListingDeriver:
             max_run_object_bytes=max_run_object_bytes,
             row_chunk_capacity=row_chunk_capacity,
             max_hash_chunk_bytes=max_hash_chunk_bytes,
+            listing_metadata=inputs.listing_metadata,
             prefix_leaf_max_records=prefix_leaf_max_records,
             prefix_fanout=prefix_fanout,
             prefix_max_node_bytes=prefix_max_node_bytes,
@@ -676,6 +707,16 @@ class ListingDeriver:
 # =========================================================================================
 # pure helpers
 # =========================================================================================
+
+
+def _pinned_head(metadata: BoundedIcebergMetadata) -> str | None:
+    current = metadata.metadata.current_snapshot_id
+    if current is None:
+        return None
+    if isinstance(current, bool) or not isinstance(current, int) or current <= 0:
+        raise CatalogIntegrityError(f"pinned {metadata.name} metadata has an invalid current head")
+    metadata.require_snapshot(str(current))
+    return str(current)
 
 
 def _chains(rows: Sequence[Mapping[str, Any]]) -> dict[str, lr.ListingChain]:

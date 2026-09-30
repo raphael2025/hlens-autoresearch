@@ -18,14 +18,16 @@ from infrastructure.canonical.listing_bounded_verify import (
 )
 from infrastructure.canonical.listing_history_runs import listing_history_prefix_run
 from infrastructure.canonical.listing_rules import parse_batch_id
+from infrastructure.catalog.bounded_metadata import BoundedMetadataLimits
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
 from infrastructure.revision.exchange_info_store import ExchangeInfoRowVerifier
 from infrastructure.revision.row_integrity import history_from
 from infrastructure.storage import LocalFileStorageAdapter
+from infrastructure.streaming.content_key_tree import KeyTreeParams
 from infrastructure.streaming.runs import RunLimits, RunRef, RunSetBuilder, _encode_row, iter_run
 from tests.infrastructure.revision import exchange_info_support as xs
-from tests.infrastructure.revision.exchange_info_support import LISTINGS, T1, Harness
+from tests.infrastructure.revision.exchange_info_support import LISTINGS, T1, T2, Harness
 
 
 @pytest.fixture
@@ -66,6 +68,37 @@ def _scratch(h: Harness) -> LocalFileStorageAdapter:
         (h.tmp_path / "listing-join-warehouse").as_uri(),
         (h.tmp_path / "listing-join-stage").as_uri(),
     )
+
+
+def _metadata_limits() -> BoundedMetadataLimits:
+    return BoundedMetadataLimits(
+        max_metadata_bytes=16 * 1024 * 1024,
+        max_item_bytes=256 * 1024,
+        max_retained_json_bytes=2 * 1024 * 1024,
+        read_chunk_bytes=16 * 1024,
+        max_small_array_items=512,
+        max_map_items=512,
+        max_snapshots=5000,
+        run_capacity=64,
+        run_limits=RunLimits(leaf_max_records=32, leaf_max_bytes=1024 * 1024, fanout=8),
+        run_merge_fanout=8,
+        key_tree_params=KeyTreeParams(
+            page_max_bytes=1024 * 1024,
+            leaf_max_records=64,
+            fanout=8,
+        ),
+    )
+
+
+def _discard_finding(
+    _code: str,
+    _symbol: str,
+    _instant: Any,
+    revision_ids: Iterable[str],
+    _detail: Callable[[int], str],
+) -> None:
+    for _revision_id in revision_ids:
+        pass
 
 
 def test_listing_history_join_is_ordinal_ordered_and_names_exact_raw_prefixes(
@@ -168,6 +201,7 @@ def test_deriver_prepares_bounded_replay_inputs_at_pinned_heads(h: Harness) -> N
     try:
         inputs = deriver.bounded_replay_inputs(
             scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
             capacity=2,
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
@@ -180,6 +214,14 @@ def test_deriver_prepares_bounded_replay_inputs_at_pinned_heads(h: Harness) -> N
         )
         assert inputs.raw_snapshot_id == h.head(xs.EXCHANGE_INFO.table)
         assert inputs.listing_snapshot_id == h.head(LISTINGS.table)
+        assert inputs.listing_metadata.name == LISTINGS.table
+        assert inputs.raw_metadata.name == xs.EXCHANGE_INFO.table
+        assert (
+            str(inputs.listing_metadata.metadata.current_snapshot_id) == inputs.listing_snapshot_id
+        )
+        assert str(inputs.raw_metadata.metadata.current_snapshot_id) == inputs.raw_snapshot_id
+        assert inputs.listing_metadata.metadata_location
+        assert inputs.raw_metadata.metadata_location
         raw_count = len(
             list(
                 history_from(
@@ -201,6 +243,148 @@ def test_deriver_prepares_bounded_replay_inputs_at_pinned_heads(h: Harness) -> N
             assert last is not None
             prefix = list(inputs.prefix_index.iter_rows_for_root_document(last["root"]))
         assert sorted({row["snapshot_ordinal"] for row in prefix}) == list(range(raw_count))
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_empty_bounded_tables_still_return_both_pinned_metadata_views(h: Harness) -> None:
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        assert inputs.raw_snapshot_id is None
+        assert inputs.listing_snapshot_id is None
+        assert inputs.raw_metadata.name == xs.EXCHANGE_INFO.table
+        assert inputs.listing_metadata.name == LISTINGS.table
+        assert inputs.raw_metadata.metadata.current_snapshot_id is None
+        assert inputs.listing_metadata.metadata.current_snapshot_id is None
+        assert inputs.raw_rows is None
+        assert inputs.listing_batches is None
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_verify_pins_listing_then_raw_and_uses_no_legacy_metadata_calls(
+    h: Harness, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    h.observe("listing-pinned-path", {"BTCUSDT": "TRADING"}, T1)
+    deriver = h.deriver()
+    try:
+        deriver.derive()
+    finally:
+        deriver.close()
+
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    pin_order: list[str] = []
+    original_pin = h.adapter.pin_bounded_metadata
+
+    def tracked_pin(table: str, **kwargs: Any) -> Any:
+        pin_order.append(table)
+        return original_pin(table, **kwargs)
+
+    def reject_legacy(*_args: Any, **_kwargs: Any) -> Any:
+        raise AssertionError("bounded Listing verification called a legacy full metadata API")
+
+    monkeypatch.setattr(h.adapter, "pin_bounded_metadata", tracked_pin)
+    for method_name in ("load_table", "history", "get_snapshot", "scan_column_batches"):
+        monkeypatch.setattr(h.adapter, method_name, reject_legacy)
+
+    try:
+        proof = deriver.verify_bounded(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+            row_chunk_capacity=2,
+            max_hash_chunk_bytes=64,
+            finding_sink=_discard_finding,
+        )
+        assert proof.committed_row_count == 1
+        assert pin_order == [LISTINGS.table, xs.EXCHANGE_INFO.table]
+    finally:
+        deriver.close()
+        scratch.close()
+
+
+def test_bounded_replay_keeps_the_captured_heads_after_new_commits(h: Harness) -> None:
+    h.observe("listing-pinned-before", {"BTCUSDT": "TRADING"}, T1)
+    first = h.deriver()
+    try:
+        first.derive()
+    finally:
+        first.close()
+
+    scratch = _scratch(h)
+    deriver = h.deriver()
+    try:
+        inputs = deriver.bounded_replay_inputs(
+            scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+        )
+        old_raw_head = inputs.raw_snapshot_id
+        old_listing_head = inputs.listing_snapshot_id
+        h.observe("listing-pinned-after", {"BTCUSDT": "HALT"}, T2)
+        second = h.deriver()
+        try:
+            second.derive()
+        finally:
+            second.close()
+        assert old_raw_head != h.head(xs.EXCHANGE_INFO.table)
+        assert old_listing_head != h.head(LISTINGS.table)
+
+        proof = verify_listing_history_bounded(
+            h.adapter,
+            inputs,
+            listing_metadata=inputs.listing_metadata,
+            evidence_storage=h.storage,
+            scratch_storage=scratch,
+            capacity=2,
+            merge_fanout=2,
+            limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
+            max_record_bytes=16384,
+            max_run_object_bytes=32768,
+            row_chunk_capacity=2,
+            max_hash_chunk_bytes=64,
+            prefix_leaf_max_records=3,
+            prefix_fanout=3,
+            prefix_max_node_bytes=16384,
+            prefix_max_record_bytes=4096,
+            finding_sink=_discard_finding,
+        )
+        assert proof.raw_snapshot_id == old_raw_head
+        assert proof.listing_snapshot_id == old_listing_head
+        assert proof.committed_row_count == 1
     finally:
         deriver.close()
         scratch.close()
@@ -234,6 +418,7 @@ def test_bounded_deriver_replays_rows_and_c3_fingerprints_exactly(h: Harness) ->
     try:
         proof = deriver.verify_bounded(
             scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
             capacity=2,
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
@@ -279,6 +464,7 @@ def test_bounded_replay_rejects_a_tampered_persisted_batch_fingerprint(h: Harnes
     try:
         inputs = deriver.bounded_replay_inputs(
             scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
             capacity=2,
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
@@ -311,6 +497,7 @@ def test_bounded_replay_rejects_a_tampered_persisted_batch_fingerprint(h: Harnes
             verify_listing_history_bounded(
                 h.adapter,
                 corrupted,
+                listing_metadata=inputs.listing_metadata,
                 evidence_storage=h.storage,
                 scratch_storage=scratch,
                 capacity=2,
@@ -404,12 +591,16 @@ def test_oversized_arrow_row_is_rejected_before_to_pylist(h: Harness) -> None:
     reader = Reader()
 
     class Catalog:
-        def scan_column_batches(
-            self, _table: str, *, columns: tuple[str, ...], snapshot_id: str
+        def scan_pinned_batches(
+            self, _metadata: Any, *, columns: tuple[str, ...], snapshot_id: str
         ) -> Reader:
             assert columns
             assert snapshot_id == "pinned"
             return reader
+
+    class Metadata:
+        name = LISTINGS.table
+        metadata = type("Pointer", (), {"current_snapshot_id": "pinned"})()
 
     scratch = LocalFileStorageAdapter(
         (h.tmp_path / "preflight-warehouse").as_uri(),
@@ -420,6 +611,7 @@ def test_oversized_arrow_row_is_rejected_before_to_pylist(h: Harness) -> None:
             _scan_current_rows(
                 Catalog(),  # type: ignore[arg-type]
                 "pinned",
+                Metadata(),  # type: ignore[arg-type]
                 scratch,
                 capacity=2,
                 merge_fanout=2,
@@ -445,6 +637,7 @@ def test_recomputed_c3_fingerprint_does_not_hide_changed_listing_content(h: Harn
     try:
         inputs = deriver.bounded_replay_inputs(
             scratch_storage=scratch,
+            metadata_limits=_metadata_limits(),
             capacity=2,
             merge_fanout=2,
             limits=RunLimits(leaf_max_records=4, leaf_max_bytes=32768, fanout=2),
@@ -486,15 +679,15 @@ def test_recomputed_c3_fingerprint_does_not_hide_changed_listing_content(h: Harn
             def __getattr__(self, name: str) -> Any:
                 return getattr(h.adapter, name)
 
-            def scan_column_batches(
+            def scan_pinned_batches(
                 self,
-                table: str,
+                bounded_metadata: Any,
                 *,
                 columns: tuple[str, ...],
                 snapshot_id: str,
             ) -> Iterator[pa.RecordBatch]:
-                source = h.adapter.scan_column_batches(
-                    table, columns=columns, snapshot_id=snapshot_id
+                source = h.adapter.scan_pinned_batches(
+                    bounded_metadata, columns=columns, snapshot_id=snapshot_id
                 )
                 try:
                     for batch in source:
@@ -508,8 +701,9 @@ def test_recomputed_c3_fingerprint_does_not_hide_changed_listing_content(h: Harn
 
         with pytest.raises(CatalogIntegrityError, match="differs from its replay"):
             verify_listing_history_bounded(
-                ChangedCatalog(),  # type: ignore[arg-type]
+                ChangedCatalog(),
                 changed_inputs,
+                listing_metadata=inputs.listing_metadata,
                 evidence_storage=h.storage,
                 scratch_storage=scratch,
                 capacity=2,

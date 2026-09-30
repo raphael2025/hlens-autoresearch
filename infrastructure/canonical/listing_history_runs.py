@@ -4,18 +4,20 @@ The listing catalog yields history newest-first while a Raw prefix-root run is o
 snapshot ordinal. This module externally sorts each side by the Raw snapshot ID and joins them,
 then writes the joined batches in ordinal order for exact historical replay.
 
-This only bounds the helper's own row streams. ``history_from`` may use PyIceberg's
-``SnapshotHistory.history()``, which currently retains the table's full ``metadata.snapshots``
-collection for the iterator lifetime (O(H)); this helper is not an E1-CAP-1 or total-RSS claim.
+When a pinned bounded metadata view is supplied, ancestry comes from its capped disk-backed
+history index. The legacy fallback still uses ``history_from``. Backend scan planning and total
+process RSS remain outside this helper's bound, so this is not an E1-CAP-1 claim.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
+from core.contracts.catalog import SnapshotInfo
 from core.contracts.storage import StorageAdapter
 from infrastructure.canonical import listing_rules as lr
+from infrastructure.catalog.bounded_metadata import BoundedIcebergMetadata
 from infrastructure.catalog.iceberg_adapter import CatalogIntegrityError
 from infrastructure.catalog.phase1_tables import CANONICAL_INSTRUMENT_LISTINGS
 from infrastructure.revision.row_integrity import history_from
@@ -30,6 +32,7 @@ def listing_history_prefix_run(
     listing_head: str | None,
     raw_prefix_roots: RunRef,
     *,
+    bounded_metadata: BoundedIcebergMetadata | None = None,
     storage: StorageAdapter,
     capacity: int,
     merge_fanout: int,
@@ -54,6 +57,13 @@ def listing_history_prefix_run(
             raise ValueError(f"{name} must be an integer >= {minimum}")
     if not isinstance(limits, RunLimits):
         raise ValueError("limits must be RunLimits")
+    if bounded_metadata is not None:
+        if bounded_metadata.name != CANONICAL_INSTRUMENT_LISTINGS.table:
+            raise CatalogIntegrityError("bounded Listing metadata is pinned to another table")
+        current = bounded_metadata.metadata.current_snapshot_id
+        pinned_head = None if current is None else str(current)
+        if listing_head != pinned_head:
+            raise CatalogIntegrityError("Listing head differs from its pinned metadata pointer")
 
     history_by_raw_id = RunSetBuilder(
         storage,
@@ -77,9 +87,30 @@ def listing_history_prefix_run(
         limits=limits,
     )
     with history_by_raw_id, roots_by_raw_id, joined_by_ordinal:
-        history_reader = iter(
-            history_from(catalog, CANONICAL_INSTRUMENT_LISTINGS.table, listing_head)
-        )
+        if bounded_metadata is None:
+            history_reader = iter(
+                history_from(catalog, CANONICAL_INSTRUMENT_LISTINGS.table, listing_head)
+            )
+        else:
+            snapshot_info = getattr(catalog, "_snapshot_info", None)
+            if not callable(snapshot_info):
+                raise CatalogIntegrityError(
+                    "bounded Listing join requires the adapter SnapshotInfo converter"
+                )
+            raw_history = (
+                iter(()) if listing_head is None else bounded_metadata.iter_history(listing_head)
+            )
+
+            def pinned_history() -> Iterator[SnapshotInfo]:
+                try:
+                    for item in raw_history:
+                        yield snapshot_info(CANONICAL_INSTRUMENT_LISTINGS.table, item)
+                finally:
+                    close = getattr(raw_history, "close", None)
+                    if callable(close):
+                        close()
+
+            history_reader = iter(pinned_history())
         try:
             for snapshot in history_reader:
                 raw_snapshot_id = lr.parse_batch_id(snapshot.batch_id)
