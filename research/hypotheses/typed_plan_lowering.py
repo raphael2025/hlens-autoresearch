@@ -18,7 +18,9 @@ Accepted operators:
   ``composition`` is ``ConditionedStrategy`` / ``EnsembleStrategy`` / ``NegatedStrategy``.
 
 Every other operator shape refuses the whole plan; no partial node map is ever returned.
-``TypedPlan.runnable`` stays ``False`` and no Provider exists for any emitted spec.
+``TypedPlan.runnable`` stays ``False``. Execution Providers for every emitted definition exist
+since ADR-0100 item 1 (``plugins.features.p7_operators``, ``plugins.events.p7_temporal``,
+``research.strategies.p7_compositions``); only ``typed_plan_compiler`` (default OFF) binds them.
 """
 
 from __future__ import annotations

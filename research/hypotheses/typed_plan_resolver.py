@@ -8,7 +8,9 @@ the content hash claimed in the plan.
 This verifies **direct references only**. It does not verify transitive dependency closure,
 register or consult operator implementations, lower, compile or execute a plan, change
 ``TypedPlan.runnable``, write reports or journals, or touch ``TrialLedger``. A successful result
-is not execution authorization; ``compile_plan`` still refuses every plan.
+is not execution authorization by itself; ``compile_plan`` refuses every plan unless the caller
+explicitly enables P7 execution and supplies an allowlist (ADR-0100 item 1), and then uses this
+resolution as its lowering evidence.
 """
 
 from __future__ import annotations
