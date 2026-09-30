@@ -315,13 +315,12 @@ class QualityReportStreamWriter:
             if self._leaf:
                 self._flush_leaf()
             root = self._finish_root()
-            self._finished = True
             depth = 1
             capacity = self._limits.fanout
             while capacity < self._leaf_count:
                 capacity *= self._limits.fanout
                 depth += 1
-            return QualityReportStreamRef(
+            ref = QualityReportStreamRef(
                 self._stream,
                 QUALITY_REPORT_STREAM_FORMAT,
                 self._count,
@@ -331,6 +330,9 @@ class QualityReportStreamWriter:
                 root.sha256,
                 root.size,
             )
+            self._finished = True
+            self._levels.clear()
+            return ref
         except BaseException:
             self._fail()
             raise
@@ -472,6 +474,16 @@ def iter_quality_report_stream(
     limits: QualityReportStreamLimits,
 ) -> Iterator[Iterator[dict[str, Any]]]:
     """Yield the authenticated records in order; closing the context closes traversal promptly."""
+    if not isinstance(ref, QualityReportStreamRef):
+        raise QualityReportStreamIntegrityError("stream reference has an invalid runtime type")
+    for name, descriptor_value in (
+        ("stream", ref.stream),
+        ("format", ref.format),
+        ("root_key", ref.root_key),
+        ("root_sha256", ref.root_sha256),
+    ):
+        if not isinstance(descriptor_value, str):
+            raise QualityReportStreamIntegrityError(f"{name} must be a string")
     if ref.format != QUALITY_REPORT_STREAM_FORMAT:
         raise QualityReportStreamIntegrityError("stream uses an unsupported format")
     if ref.stream not in _STREAMS:
@@ -481,14 +493,14 @@ def iter_quality_report_stream(
     match = _KEY_RE.fullmatch(ref.root_key)
     if match is None or match.group(1) != ref.root_sha256:
         raise QualityReportStreamIntegrityError("root key is not derived from its SHA-256")
-    for name, value, minimum in (
+    for name, count_value, minimum in (
         ("record_count", ref.record_count, 0),
         ("leaf_count", ref.leaf_count, 0),
         ("depth", ref.depth, 1),
         ("root_size", ref.root_size, 1),
     ):
         try:
-            _positive(name, value, minimum)
+            _positive(name, count_value, minimum)
         except QualityReportStreamError as exc:
             raise QualityReportStreamIntegrityError(str(exc)) from exc
     depth = 1

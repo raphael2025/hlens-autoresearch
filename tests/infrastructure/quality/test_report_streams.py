@@ -88,6 +88,18 @@ def test_each_adr0093_stream_name_is_supported(
         assert list(records) == []
 
 
+def test_successful_finish_releases_the_index_frontier(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    writer = QualityReportStreamWriter(storage, "events", limits=params(records=1, fanout=2))
+    for ordinal in range(5):
+        writer.append({"ordinal": ordinal})
+    assert any(writer._levels)
+    writer.finish()
+    assert writer._levels == []
+    assert writer._leaf == []
+
+
 def test_limits_are_all_explicit_and_positive() -> None:
     assert all(
         parameter.default is inspect.Parameter.empty
@@ -319,6 +331,42 @@ def test_root_summary_count_mismatch_fails_closed(storage: LocalFileStorageAdapt
     bad_ref = replace(ref, record_count=2)
     with pytest.raises(QualityReportStreamIntegrityError, match="parent reference|counts disagree"):
         with iter_quality_report_stream(storage, bad_ref, limits=params()) as records:
+            list(records)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("stream", None),
+        ("stream", []),
+        ("format", None),
+        ("format", []),
+        ("root_key", None),
+        ("root_key", []),
+        ("root_sha256", None),
+        ("root_sha256", []),
+        ("record_count", True),
+        ("leaf_count", 1.5),
+        ("depth", "1"),
+        ("root_size", -1),
+    ],
+)
+def test_malformed_descriptor_fields_raise_integrity_error(
+    storage: LocalFileStorageAdapter, field: str, value: Any
+) -> None:
+    ref = write(storage, [], params())
+    malformed = replace(ref, **{field: value})
+    with pytest.raises(QualityReportStreamIntegrityError):
+        with iter_quality_report_stream(storage, malformed, limits=params()) as records:
+            list(records)
+
+
+def test_wrong_descriptor_runtime_object_raises_integrity_error(
+    storage: LocalFileStorageAdapter,
+) -> None:
+    descriptor: Any = object()
+    with pytest.raises(QualityReportStreamIntegrityError, match="invalid runtime type"):
+        with iter_quality_report_stream(storage, descriptor, limits=params()) as records:
             list(records)
 
 
