@@ -68,6 +68,14 @@ full-day window, result IDs/counts, code line and RSS samples are recorded. The 
 own full-range ``growth_mib`` verdict against the same fixed 32 MiB limit; it does not alter the
 normalizer E1-CAP-1 verdict or mark DQ-9 accepted.
 
+The fixture child (``dataset_v3_setup``) is self-sufficient: without ``--unit`` it ingests the
+synthetic archive itself, then normalizes the unit (a replay when the normalizer stages already
+committed it) and reports ``unit`` and ``canonical_rows``. A ``dataset_v3_build`` child run
+without explicit DQ-9 inputs (a smoke / diagnostic build) uses the probe's fixed
+``_DATASET_V3_DIAGNOSTIC_*`` rule and PIT / Universe run bounds; those are probe choices, never
+DQ-9 decisions (``_DATASET_V3_DQ9_ACCEPTED`` is ``False``). Every build reports
+``expected_row_count``, ``diagnostic_only=True`` and the ``dq9_parameters`` it actually used.
+
 Each stage's result is checked (rows proven, crash point, commits already committed / replayed,
 the proven batch holds the row) and a wrong fixture state fails the run closed. Every stage's API
 result object (e.g. ``CanonicalUnitNormalized``) stays referenced for a
@@ -224,8 +232,20 @@ from infrastructure.universe.builder import FIRST_SLICE_UNIVERSE
 __all__ = ["GROWTH_LIMIT_MIB", "main", "run_probe"]
 
 PROBE: Final = "infrastructure.tools.normalizer_memory_probe"
-STAGES: Final = ("verify_archive", "write_crash", "resume", "replay", "read_batch", "metadata")
+#: The normalizer E1-CAP-1 stages, run at every N and repeat and judged by the capacity verdict.
+NORMALIZER_STAGES: Final = (
+    "verify_archive",
+    "write_crash",
+    "resume",
+    "replay",
+    "read_batch",
+    "metadata",
+)
 DATASET_V3_STAGE: Final = "dataset_v3_build"
+#: Unmeasured fixture child for the v3 Dataset stage (emits the ``dataset_setup`` event).
+DATASET_V3_SETUP_STAGE: Final = "dataset_v3_setup"
+#: Every measured stage a child can run. ``dataset_v3_build`` is its own verdict, never E1-CAP-1.
+STAGES: Final = (*NORMALIZER_STAGES, DATASET_V3_STAGE)
 DATASET_V3_RULE_KEYS: Final = (
     "chunk_rows",
     "leaf_max_records",
@@ -256,6 +276,34 @@ PROTOCOL_MIN_REPEATS: Final = 3
 DEFAULT_SIZES: Final = PROTOCOL_SIZES
 DEFAULT_MICROBATCH: Final = PROTOCOL_MICROBATCH
 DEFAULT_REPEATS: Final = PROTOCOL_MIN_REPEATS
+# Fixed, diagnostic-only v3 Dataset parameters: used when a ``dataset_v3_build`` child is run
+# without explicit DQ-9 inputs (a smoke / diagnostic build). They are probe choices, not DQ-9
+# decisions: ADR-0077 DQ-9 stays OPEN, so a build using them can never be E1-CAP-1 evidence.
+_DATASET_V3_DIAGNOSTIC_MERGE_FANOUT: Final = 4
+_DATASET_V3_DIAGNOSTIC_RULE: Final[dict[str, int]] = {
+    "chunk_rows": PROTOCOL_MICROBATCH,
+    "leaf_max_records": 1_000,
+    "leaf_max_bytes": 1 << 20,
+    "fanout": _DATASET_V3_DIAGNOSTIC_MERGE_FANOUT,
+}
+_DATASET_V3_DIAGNOSTIC_PIT: Final[dict[str, int]] = {
+    "row_batch_rows": PROTOCOL_MICROBATCH,
+    "edge_batch_rows": PROTOCOL_MICROBATCH,
+    "merge_fanout": _DATASET_V3_DIAGNOSTIC_MERGE_FANOUT,
+    "key_history_buffer": PROTOCOL_MICROBATCH,
+    "leaf_max_records": DATASET_V3_SOURCE_RUN_RECORDS,
+    "leaf_max_bytes": DATASET_V3_SOURCE_RUN_BYTES,
+    "fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+}
+_DATASET_V3_DIAGNOSTIC_UNIVERSE: Final[dict[str, int]] = {
+    "capacity": PROTOCOL_MICROBATCH,
+    "merge_fanout": _DATASET_V3_DIAGNOSTIC_MERGE_FANOUT,
+    "leaf_max_records": DATASET_V3_SOURCE_RUN_RECORDS,
+    "leaf_max_bytes": DATASET_V3_SOURCE_RUN_BYTES,
+    "fanout": DATASET_V3_SOURCE_RUN_FANOUT,
+}
+#: No probe value is an accepted DQ-9 decision.
+_DATASET_V3_DQ9_ACCEPTED: Final = False
 #: D2's own row batch: one fixed value for every N (the verifier re-reads the touched ones).
 DEFAULT_D2_BATCH: Final = 4_096
 #: Same guard as ``capacity_probe``: main keeps O(N) state, so above this a cap is required.
@@ -632,13 +680,33 @@ def _dataset_v3_scratch_root(workdir: Path) -> Path:
     return workdir / "quality-scratch"
 
 
-def _prepare_dataset_v3_fixture(workdir: Path, rows: int) -> dict[str, Any]:
-    """Prepare the full-day Dataset's REST, listing and quality inputs outside the measured child.
+def _prepare_dataset_v3_fixture(
+    workdir: Path, rows: int, microbatch: int, d2_batch: int, unit: str | None
+) -> dict[str, Any]:
+    """Prepare the full-day Dataset's inputs outside the measured child.
 
+    Without ``unit`` the world is created from scratch (the synthetic archive is ingested first);
+    with it, the normalizer stages' world is reused. Either way the unit is normalized (a replay
+    when the ``resume`` stage already committed it) and must hold exactly ``rows`` Canonical rows.
     The v3 canonical partition reports bind both channels' raw snapshots (ADR-0093), so the same
-    REST tail the capacity probe uses is committed, normalized and reconciled first.
+    REST tail the capacity probe uses is committed, normalized and reconciled before the listing
+    and quality inputs.
     """
+    if unit is None:
+        unit = str(_setup(workdir, rows, d2_batch)["unit"])
     with _opened(workdir) as (adapter, storage):
+        with CanonicalNormalizer(
+            adapter,
+            storage,
+            scratch_directory=_canonical_scratch_directory(),
+            clock=_Clock(_KNOWLEDGE_NORMALIZE),
+            microbatch_rows=microbatch,
+        ) as normalizer:
+            normalized = normalizer.normalize_unit(_RAW, unit)
+        if normalized.revision_count != rows:
+            raise ProbeError(
+                f"Dataset v3 setup normalized {normalized.revision_count} of {rows} archive rows"
+            )
         _prepare_rest_fixture(
             adapter, storage, rows, canonical_scratch_directory=_canonical_scratch_directory()
         )
@@ -651,6 +719,8 @@ def _prepare_dataset_v3_fixture(workdir: Path, rows: int) -> dict[str, Any]:
         )
         pit = _dataset_pit_spec(adapter)
         return {
+            "unit": unit,
+            "canonical_rows": normalized.revision_count,
             "window_start": DATASET_V3_DAY_START.isoformat(),
             "window_end_exclusive": DATASET_V3_DAY_END.isoformat(),
             "data_type": DATA_TYPE,
@@ -658,6 +728,34 @@ def _prepare_dataset_v3_fixture(workdir: Path, rows: int) -> dict[str, Any]:
             "pit_spec_hash": pit.content_hash(),
             "listing_and_quality_inputs_prepared": True,
         }
+
+
+def _dataset_v3_diagnostic_source_params() -> tuple[PitRunParams, UniverseRunParams]:
+    """The fixed diagnostic PIT / Universe run bounds (never DQ-9 decisions)."""
+    pit = _DATASET_V3_DIAGNOSTIC_PIT
+    universe = _DATASET_V3_DIAGNOSTIC_UNIVERSE
+    return (
+        PitRunParams(
+            row_batch_rows=pit["row_batch_rows"],
+            edge_batch_rows=pit["edge_batch_rows"],
+            merge_fanout=pit["merge_fanout"],
+            key_history_buffer=pit["key_history_buffer"],
+            limits=RunLimits(
+                leaf_max_records=pit["leaf_max_records"],
+                leaf_max_bytes=pit["leaf_max_bytes"],
+                fanout=pit["fanout"],
+            ),
+        ),
+        UniverseRunParams(
+            capacity=universe["capacity"],
+            merge_fanout=universe["merge_fanout"],
+            limits=RunLimits(
+                leaf_max_records=universe["leaf_max_records"],
+                leaf_max_bytes=universe["leaf_max_bytes"],
+                fanout=universe["fanout"],
+            ),
+        ),
+    )
 
 
 def _dataset_v3_source_params(microbatch: int) -> tuple[PitRunParams, UniverseRunParams]:
@@ -751,9 +849,12 @@ def _stage(
 
     if stage == DATASET_V3_STAGE:
         if dataset_v3_config is None:
-            raise ProbeError("dataset_v3_build requires explicit DQ-9 parameters")
-        rule_parameters = _validate_dataset_v3_config(dataset_v3_config)
-        pit_params, universe_params = _dataset_v3_source_params(microbatch)
+            # A diagnostic build: the probe's fixed parameters, reported as such, never DQ-9.
+            rule_parameters = dict(_DATASET_V3_DIAGNOSTIC_RULE)
+            pit_params, universe_params = _dataset_v3_diagnostic_source_params()
+        else:
+            rule_parameters = _validate_dataset_v3_config(dataset_v3_config)
+            pit_params, universe_params = _dataset_v3_source_params(microbatch)
         scratch_root = _dataset_v3_scratch_root(
             local_file_uri_to_path(storage.warehouse_uri, field_name="warehouse_uri").parent
         )
@@ -792,6 +893,7 @@ def _stage(
                 "manifest_hash": summary.manifest_hash,
                 "dataset_snapshot_id": summary.dataset.snapshot_id,
                 "row_count": summary.row_count,
+                "expected_row_count": rows,
                 "chunk_count": summary.chunk_count,
                 "replayed_chunk_count": summary.replayed_chunk_count,
                 "manifest_replayed": summary.manifest_replayed,
@@ -805,6 +907,9 @@ def _stage(
                     }
                     for ref in summary.evidence
                 },
+                # DQ-9 stays OPEN: whatever the rule values, this build is diagnostic only.
+                "diagnostic_only": not _DATASET_V3_DQ9_ACCEPTED,
+                "dq9_parameters": dict(rule_parameters),
             }, summary
 
         return build_dataset
@@ -1027,6 +1132,7 @@ def _child_stage(
         time.sleep(_HOLD_SECONDS)  # ``held`` is still referenced: its residency is sampled
         _emit(
             "end",
+            stage=stage,
             stage_seconds=round(wall, 3),
             hold_seconds=_HOLD_SECONDS,
             vmhwm_kb=_status_kb("VmHWM"),
@@ -1066,9 +1172,12 @@ def _child_main(args: argparse.Namespace) -> int:
     try:
         if args.stage == "setup":
             _emit("setup", **_setup(args.workdir, args.unit_rows, args.d2_batch))
-        elif args.stage == "dataset_setup":
+        elif args.stage == DATASET_V3_SETUP_STAGE:
             _emit(
-                "dataset_setup", **_prepare_dataset_v3_fixture(args.workdir, args.unit_rows)
+                "dataset_setup",
+                **_prepare_dataset_v3_fixture(
+                    args.workdir, args.unit_rows, args.microbatch, args.d2_batch, args.unit
+                ),
             )
         else:
             dataset_v3_config = None
@@ -1507,7 +1616,7 @@ def _child_args(
     if dataset_v3_config is not None:
         args.append("--dataset-v3-config-json")
         args.append(json.dumps(_validate_dataset_v3_config(dataset_v3_config), sort_keys=True))
-    if staged_diagnostics and stage != "setup":
+    if staged_diagnostics and stage not in ("setup", DATASET_V3_SETUP_STAGE):
         args.append("--stage-diagnostics")
     return args
 
@@ -1596,7 +1705,8 @@ def run_probe(
             "sizes": list(sizes),
             "repeats": repeats,
             **config,
-            "stages": list(STAGES),
+            "stages": list(NORMALIZER_STAGES)
+            + ([DATASET_V3_STAGE] if dataset_v3_config is not None else []),
             "sample_interval_seconds": interval,
             "settle_seconds": _SETTLE_SECONDS,
             "hold_seconds": _HOLD_SECONDS,
@@ -1657,7 +1767,7 @@ def run_probe(
                             ),
                         }
                     )
-                    for stage in STAGES:
+                    for stage in NORMALIZER_STAGES:
                         run = _run_child(
                             _child_args(
                                 stage,
@@ -1687,7 +1797,7 @@ def run_probe(
                     if dataset_v3_config is not None:
                         fixture = _run_child(
                             _child_args(
-                                "dataset_setup",
+                                DATASET_V3_SETUP_STAGE,
                                 workdir,
                                 rows,
                                 config,
@@ -1753,7 +1863,7 @@ def run_probe(
             stage: _stage_verdict(
                 [r for r in results if r["stage"] == stage], sizes, repeats, config["microbatch"]
             )
-            for stage in STAGES
+            for stage in NORMALIZER_STAGES
         }
         if dataset_v3_config is not None:
             document["dataset_v3_verdict"] = _stage_verdict(
@@ -1912,7 +2022,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument(
         "--stage",
-        choices=("setup", "dataset_setup", *STAGES, DATASET_V3_STAGE),
+        choices=("setup", DATASET_V3_SETUP_STAGE, *STAGES),
         help=argparse.SUPPRESS,
     )
     parser.add_argument("--workdir", type=Path, help=argparse.SUPPRESS)

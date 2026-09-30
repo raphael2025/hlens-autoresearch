@@ -392,6 +392,14 @@ class _ByteReader:
         self._offset = 0
         self._total = 0
 
+    def _check_total(self) -> None:
+        """Fail closed once the decompressed document passes its cap, naming both values."""
+        if self._total > self._max_bytes:
+            raise BoundedMetadataError(
+                f"Iceberg metadata exceeds max_metadata_bytes "
+                f"(limit {self._max_bytes}, read at least {self._total} bytes)"
+            )
+
     def byte(self) -> int | None:
         if self._offset >= len(self._buffer):
             remaining = self._max_bytes - self._total
@@ -399,8 +407,7 @@ class _ByteReader:
             if not chunk:
                 return None
             self._total += len(chunk)
-            if self._total > self._max_bytes:
-                raise BoundedMetadataError("Iceberg metadata exceeds max_metadata_bytes")
+            self._check_total()
             self._buffer = chunk
             self._offset = 0
         value = self._buffer[self._offset]
@@ -415,8 +422,7 @@ class _ByteReader:
             if not chunk:
                 return None
             self._total += len(chunk)
-            if self._total > self._max_bytes:
-                raise BoundedMetadataError("Iceberg metadata exceeds max_metadata_bytes")
+            self._check_total()
             self._buffer = chunk
             self._offset = 0
         return self._buffer[self._offset]
@@ -429,8 +435,7 @@ class _ByteReader:
                 if not chunk:
                     return None
                 self._total += len(chunk)
-                if self._total > self._max_bytes:
-                    raise BoundedMetadataError("Iceberg metadata exceeds max_metadata_bytes")
+                self._check_total()
                 self._buffer = chunk
                 self._offset = 0
             while self._offset < len(self._buffer) and self._buffer[self._offset] in b" \t\r\n":
@@ -460,7 +465,7 @@ class _ByteReader:
                 char = self.take()
                 out.append(char)
                 if len(out) > max_bytes:
-                    raise BoundedMetadataError("Iceberg metadata item exceeds max_item_bytes")
+                    raise _item_exceeds(max_bytes, len(out))
                 if quoted:
                     if escaped:
                         escaped = False
@@ -480,7 +485,7 @@ class _ByteReader:
                 char = self.take()
                 out.append(char)
                 if len(out) > max_bytes:
-                    raise BoundedMetadataError("Iceberg metadata item exceeds max_item_bytes")
+                    raise _item_exceeds(max_bytes, len(out))
                 if escaped:
                     escaped = False
                 elif char == ord("\\"):
@@ -496,9 +501,9 @@ class _ByteReader:
                     break
                 out.append(self.take())
                 if len(out) > max_bytes:
-                    raise BoundedMetadataError("Iceberg metadata item exceeds max_item_bytes")
+                    raise _item_exceeds(max_bytes, len(out))
         if len(out) > max_bytes:
-            raise BoundedMetadataError("Iceberg metadata item exceeds max_item_bytes")
+            raise _item_exceeds(max_bytes, len(out))
         return bytes(out)
 
     def json_value(self, *, max_bytes: int) -> Any:
@@ -527,7 +532,10 @@ class _ByteReader:
             raw = self.raw_value(max_bytes=self._max_item_bytes)
             value = self._decode(raw)
             if count >= max_items:
-                raise BoundedMetadataError(f"Iceberg metadata array exceeds {cap_name}")
+                raise BoundedMetadataError(
+                    f"Iceberg metadata array exceeds {cap_name} "
+                    f"(limit {max_items}, observed at least {count + 1} items)"
+                )
             callback(value, count, len(raw))
             count += 1
             self.whitespace()
@@ -562,7 +570,10 @@ class _ByteReader:
             raw_value = self.raw_value(max_bytes=self._max_item_bytes)
             value = self._decode(raw_value)
             if count >= max_items:
-                raise BoundedMetadataError("Iceberg metadata map exceeds its configured item cap")
+                raise BoundedMetadataError(
+                    "Iceberg metadata map exceeds its configured item cap "
+                    f"(max_map_items limit {max_items}, observed at least {count + 1} items)"
+                )
             callback(key, value, count, len(key_raw) + len(raw_value))
             count += 1
             self.whitespace()
@@ -582,6 +593,14 @@ class _ByteReader:
     def json_value_with_size(self, *, max_bytes: int) -> tuple[Any, int]:
         raw = self.raw_value(max_bytes=max_bytes)
         return self._decode(raw), len(raw)
+
+
+def _item_exceeds(limit: int, observed: int) -> BoundedMetadataError:
+    """The one-item cap error, naming the configured limit and the bytes seen when it tripped."""
+    return BoundedMetadataError(
+        f"Iceberg metadata item exceeds max_item_bytes "
+        f"(limit {limit}, observed at least {observed} bytes)"
+    )
 
 
 def _unique_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
@@ -604,7 +623,10 @@ def _parse_metadata(
         nonlocal retained_json_bytes
         retained_json_bytes += size
         if retained_json_bytes > limits.max_retained_json_bytes:
-            raise BoundedMetadataError("retained Iceberg metadata exceeds max_retained_json_bytes")
+            raise BoundedMetadataError(
+                "retained Iceberg metadata exceeds max_retained_json_bytes "
+                f"(limit {limits.max_retained_json_bytes}, observed {retained_json_bytes} bytes)"
+            )
 
     reader.whitespace()
     if reader.take() != ord("{"):
@@ -744,7 +766,10 @@ def _build_snapshot_tree(
         tree = ContentKeyTree.build(storage, rows(), params=limits.key_tree_params)
         return tree, run.record_count
     except (ContentKeyTreeError, RunWriteError) as exc:
-        raise BoundedMetadataError("snapshot index failed its configured bounds") from exc
+        raise BoundedMetadataError(
+            f"snapshot index failed its configured bounds ({limits.key_tree_params!r}, "
+            f"{run.record_count} snapshot records): {exc}"
+        ) from exc
 
 
 def _table_identifier(name: str) -> tuple[str, ...]:

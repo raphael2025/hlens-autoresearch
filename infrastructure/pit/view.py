@@ -141,6 +141,40 @@ class PinnedCatalogView:
             raise PinnedViewError("the underlying catalog lacks bounded snapshot scans")
         return scan(bounded, snapshot_id=snapshot_id, columns=columns, row_filter=row_filter)
 
+    def scan_bounded_columns(
+        self,
+        bounded: Any,
+        *,
+        snapshot_id: str | None,
+        columns: Sequence[str],
+        row_filter: BooleanExpression = AlwaysTrue(),  # noqa: B008 - immutable singleton
+        limit: int | None = None,
+    ) -> pa.Table:
+        """Bridge a materializing bounded scan through nested pinned views.
+
+        Accepted only when the handle belongs to this view's exact selected snapshot (an unbound
+        table's handle selects ``None``). ``snapshot_id`` may name any historical snapshot the
+        immutable handle indexes, or ``None`` for the explicit empty selection; the underlying
+        bounded adapter performs that exact lookup and never substitutes a head.
+        """
+        table = getattr(bounded, "name", None)
+        selected = getattr(bounded, "selected_snapshot_id", object())
+        if not isinstance(table, str) or self._bindings.get(table) != selected:
+            raise PinnedViewError("bounded metadata differs from the PIT binding")
+        scan = getattr(self._adapter, "scan_bounded_columns", None)
+        if not callable(scan):
+            raise PinnedViewError("the underlying catalog lacks bounded table scans")
+        return cast(
+            pa.Table,
+            scan(
+                bounded,
+                snapshot_id=snapshot_id,
+                columns=columns,
+                row_filter=row_filter,
+                limit=limit,
+            ),
+        )
+
     def pin_bounded_metadata_at(
         self, table: str, snapshot_id: str | None, *, storage: Any, limits: Any
     ) -> Any:

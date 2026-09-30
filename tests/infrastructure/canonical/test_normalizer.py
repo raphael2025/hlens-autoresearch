@@ -145,7 +145,9 @@ def test_normalizer_pin_uses_one_stable_bounded_pointer_and_streams_exact_histor
 ) -> None:
     archive, _, _ = _pair(h, 3)
     channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
-    normalizer = c.normalizer(h, clock=StepClock(start=K_NORM))
+    normalizer = c.normalizer(
+        h, clock=StepClock(start=K_NORM), metadata_limits=nz.NORMALIZER_METADATA_LIMITS
+    )
     normalizer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
     expected_head = h.head(c.TRADES.table)
     assert expected_head is not None
@@ -206,7 +208,12 @@ def test_normalizer_bounded_pin_rejects_a_missing_exact_snapshot(h: RestHarness)
         channel.canonical.table: h.head(channel.canonical.table),
     }
     view = PinnedCatalogView(h.adapter, bindings)
-    normalizer = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=view)
+    normalizer = c.normalizer(
+        h,
+        clock=StepClock(start=K_NORM),
+        adapter=view,
+        metadata_limits=nz.NORMALIZER_METADATA_LIMITS,
+    )
 
     with pytest.raises(SnapshotNotFound):
         normalizer._pin(channel, archive)
@@ -220,7 +227,12 @@ def test_bounded_pinned_view_can_be_nested_without_eager_reads(h: RestHarness) -
     tables = (channel.element.table, channel.source.table, channel.canonical.table)
     bindings = {table: h.head(table) for table in tables}
     inner = PinnedCatalogView(h.adapter, bindings)
-    reader = c.normalizer(h, clock=StepClock(start=K_NORM), adapter=inner)
+    reader = c.normalizer(
+        h,
+        clock=StepClock(start=K_NORM),
+        adapter=inner,
+        metadata_limits=nz.NORMALIZER_METADATA_LIMITS,
+    )
     expected = list(h.adapter.history(c.TRADES.table, h.head(c.TRADES.table)))
 
     pin = reader._pin(channel, archive)
@@ -240,7 +252,9 @@ def test_bounded_scan_columns_keeps_pointer_limit_and_empty_schema_after_metadat
 ) -> None:
     archive, _, _ = _pair(h, 3)
     channel = rules.raw_channel_of(c.ARCHIVE_AGGS.table)
-    normalizer = c.normalizer(h, clock=StepClock(start=K_NORM))
+    normalizer = c.normalizer(
+        h, clock=StepClock(start=K_NORM), metadata_limits=nz.NORMALIZER_METADATA_LIMITS
+    )
     normalizer.normalize_unit(c.ARCHIVE_AGGS.table, archive)
     pin = normalizer._pin(channel, archive)
     columns = ("arrival_seq", "revision_id")
