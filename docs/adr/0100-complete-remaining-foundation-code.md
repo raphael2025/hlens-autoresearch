@@ -49,3 +49,11 @@
 2. 窗口按**发生时刻**度量：两侧都用 `event_time − upstream.observable_lag` 比较，第二事件的发生时刻须落在 `(first, first + N bars]` 内。
 3. 两个输入必须是不同的 EventSpec（ref 不同），否则拒绝。
 4. 1.3.0 temporal trigger 绑定上游哈希：`first_event_hash` / `second_event_hash`，与 `infrastructure/event/upstream.verify_interaction` 的约定一致；1.2.0 的无哈希规格仍由 runner 拒绝（fail closed）。
+
+## 修订 2（2026-09-30）：基线运行记录 P11 同源重算所需输入
+
+诚信加固后，P11 authority 要求近期指标所用的输入与基线**逐项相等**。但基线运行没有记录其中若干项（决策步长 / 预热期、初始权益、各门所用 seed、族试验计数、CSCV 分区数、冲击系数、状态标注器身份），因此现在一律以 `execution_unrecorded` / `baseline_input_unrecorded` 拒绝。决定：
+
+1. 自本修订起，**新的**实验运行在复现元组中完整记录上述输入。优先使用现有的可扩展字段（如 repro params），不改 `core/`；确需改契约时只做 additive，契约升 minor 版本，并列出本地需要重新生成的 schema。
+2. 记录值进入运行的内容哈希；P11 resolver 优先读取这些记录值做逐项核对。
+3. **旧运行不回填、不推断**：缺记录的基线继续拒绝（H3 / H6）。
