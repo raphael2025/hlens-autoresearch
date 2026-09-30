@@ -109,8 +109,8 @@ failed stage), the metric is **missing**, as in validation; a gate without an ex
   (``G0.reproducibility``); a failed structural gate — G0 bindings / execution, or the G1
   information-flow gates ``G1.outcome_not_input``, ``G1.label_blind_sides``,
   ``G1.sealed_oos_excluded`` (also per instrument) — refuses every metric of the re-run.
-  ``validate`` supplies G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1 ``shuffle_timing_p_value`` /
-  ``shift_timing_p_value`` (base and per-seed gates) and ``..._min_over_seeds`` (scope: all the
+  ``validate`` supplies G0 – G3, ``robustness_diagnostic`` G4. Definitions: G1
+  ``shuffle_timing_p_value`` / ``shift_timing_p_value`` (base and per-seed gates) and ``..._min_over_seeds`` (scope: all the
   window's computable labels); G2 ``effective_independent_trades``, ``breakeven_cost_multiple``,
   ``breakeven_cost_multiple_vs_stress`` @ ``G2.cost_stress.<i>``,
   ``percentile_vs_random_entry_null`` and G3 ``net_mean_hac_p_greater_adjusted`` (scope: the
