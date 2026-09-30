@@ -1075,39 +1075,6 @@ class ChannelReconciler:
                 self._day_keys(data_type, symbol, other, pinned.rest_snapshot),
             )
         committed: dict[str, Mapping[str, Any]] = {}
-        committed_builder: RunSetBuilder | None = None
-        current_builder: RunSetBuilder | None = None
-        own_builder: RunSetBuilder | None = None
-        if run_params is not None:
-
-            def provenance_key(row: Mapping[str, Any]) -> tuple[str, str]:
-                return row["observation_key"], row["edge_id"]
-
-            committed_builder = RunSetBuilder(
-                self._storage,
-                key=provenance_key,
-                capacity=run_params.row_capacity,
-                merge_fanout=run_params.merge_fanout,
-                limits=run_params.limits,
-            )
-            current_builder = RunSetBuilder(
-                self._storage,
-                key=provenance_key,
-                capacity=run_params.row_capacity,
-                merge_fanout=run_params.merge_fanout,
-                limits=run_params.limits,
-            )
-            own_builder = RunSetBuilder(
-                self._storage,
-                key=lambda row: row["observation_key"],
-                capacity=run_params.row_capacity,
-                merge_fanout=run_params.merge_fanout,
-                limits=run_params.limits,
-            )
-            for row in pinned.evidence_rows:
-                current_builder.add(row)
-            for row in pinned.rest_rows:
-                own_builder.add({"observation_key": row["observation_key"]})
         history = getattr(self._adapter, "history", None)
 
         def snapshots() -> Iterable[SnapshotInfo]:
@@ -1142,113 +1109,28 @@ class ChannelReconciler:
                 )
             if owner is not None:
                 owner_day, owner_keys = owner
-                if committed_builder is not None and run_params is not None:
-                    added_rows: Iterable[Mapping[str, Any]] = self._edge_batch_rows_bounded(
-                        (data_type, symbol, owner_day),
-                        owner_keys,
-                        snapshot,
-                        parent,
-                        run_params,
-                    )
-                    for row in added_rows:
-                        committed_builder.add(row)
-                else:
-                    added = self._edge_batch_rows(
-                        (data_type, symbol, owner_day), owner_keys, snapshot, parent
-                    )
-                    for edge_id, row in added.items():
-                        if edge_id in committed:
-                            raise CatalogIntegrityError(
-                                f"evidence edge {edge_id} is committed twice"
-                            )
-                        committed[edge_id] = row
-        if committed_builder is None:
-            current = {row["edge_id"]: row for row in pinned.evidence_rows}
-            own = set(keys)
-            for edge_id, row in current.items():
-                if committed.get(edge_id) != row:
-                    raise CatalogIntegrityError(
-                        f"evidence edge {edge_id} is not exactly what an edge batch of this "
-                        "partition committed"
-                    )
-            missing = sorted(
-                edge_id
-                for edge_id, row in committed.items()
-                if row["observation_key"] in own and edge_id not in current
-            )
-            if missing:
-                raise CatalogIntegrityError(f"committed evidence edge {missing[0]} is gone")
-        else:
-            assert current_builder is not None and own_builder is not None
-            committed_root = committed_builder.finish()
-            current_root = current_builder.finish()
-            own_root = own_builder.finish()
-            with ExitStack() as stack:
-                committed_rows = (
-                    iter(())
-                    if committed_root is None
-                    else stack.enter_context(iter_run(self._storage, committed_root))
+                added = self._edge_batch_rows(
+                    (data_type, symbol, owner_day), owner_keys, snapshot, parent
                 )
-                current_rows = (
-                    iter(())
-                    if current_root is None
-                    else stack.enter_context(iter_run(self._storage, current_root))
+                for edge_id, row in added.items():
+                    if edge_id in committed:
+                        raise CatalogIntegrityError(f"evidence edge {edge_id} is committed twice")
+                    committed[edge_id] = row
+        current = {row["edge_id"]: row for row in pinned.evidence_rows}
+        own = set(keys)
+        for edge_id, row in current.items():
+            if committed.get(edge_id) != row:
+                raise CatalogIntegrityError(
+                    f"evidence edge {edge_id} is not exactly what an edge batch of this "
+                    "partition committed"
                 )
-                own_rows = (
-                    iter(())
-                    if own_root is None
-                    else stack.enter_context(iter_run(self._storage, own_root))
-                )
-
-                def owned_committed() -> Iterable[Mapping[str, Any]]:
-                    unique_keys = (
-                        row["observation_key"]
-                        for _, group in itertools.groupby(
-                            own_rows, key=lambda item: item["observation_key"]
-                        )
-                        for row in (next(group),)
-                    )
-                    own_key = next(unique_keys, None)
-                    for row in committed_rows:
-                        key = row["observation_key"]
-                        while own_key is not None and own_key < key:
-                            own_key = next(unique_keys, None)
-                        if own_key == key:
-                            yield row
-
-                committed_for_partition = iter(owned_committed())
-                committed_row = next(committed_for_partition, None)
-                current_row = next(current_rows, None)
-                while committed_row is not None or current_row is not None:
-                    if committed_row is None:
-                        edge_id = "unknown" if current_row is None else current_row["edge_id"]
-                        raise CatalogIntegrityError(
-                            f"evidence edge {edge_id} "
-                            "is not exactly what an "
-                            "edge batch of this partition committed"
-                        )
-                    if current_row is None:
-                        raise CatalogIntegrityError(
-                            f"committed evidence edge {committed_row['edge_id']} is gone"
-                        )
-                    committed_key = (committed_row["observation_key"], committed_row["edge_id"])
-                    current_key = (current_row["observation_key"], current_row["edge_id"])
-                    if committed_key < current_key:
-                        raise CatalogIntegrityError(
-                            f"committed evidence edge {committed_row['edge_id']} is gone"
-                        )
-                    if current_key < committed_key:
-                        raise CatalogIntegrityError(
-                            f"evidence edge {current_row['edge_id']} is not exactly what an "
-                            "edge batch of this partition committed"
-                        )
-                    if committed_row != current_row:
-                        raise CatalogIntegrityError(
-                            f"evidence edge {current_row['edge_id']} is not exactly what an "
-                            "edge batch of this partition committed"
-                        )
-                    committed_row = next(committed_for_partition, None)
-                    current_row = next(current_rows, None)
+        missing = sorted(
+            edge_id
+            for edge_id, row in committed.items()
+            if row["observation_key"] in own and edge_id not in current
+        )
+        if missing:
+            raise CatalogIntegrityError(f"committed evidence edge {missing[0]} is gone")
 
     def _verify_edge_provenance_bounded(
         self,
