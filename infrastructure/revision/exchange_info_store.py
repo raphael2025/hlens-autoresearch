@@ -732,7 +732,12 @@ class ExchangeInfoRowVerifier:
 
     @staticmethod
     def _check_bounded_row(row: Mapping[str, Any], maximum: int) -> None:
-        """Count canonical JSONL bytes exactly without encoding any whole string or row."""
+        """Count the sorted-run JSONL line bytes exactly without encoding any whole string or row.
+
+        The size is that of ``canonical_json(_encode_row(row)) + LF`` as written by
+        ``infrastructure.streaming.runs``: nested mappings are wrapped as ``{"$obj":{...}}`` and
+        datetimes as ``{"$dt":"<UTC ISO>"}``; the top-level row itself is a plain object.
+        """
         size = 0
 
         def add(amount: int) -> None:
@@ -749,11 +754,13 @@ class ExchangeInfoRowVerifier:
                 except UnicodeEncodeError as exc:
                     raise CatalogIntegrityError("snapshot row contains invalid UTF-8 text") from exc
 
-        def visit(value: Any) -> None:
+        def visit(value: Any, top: bool = False) -> None:
             if isinstance(value, str):
                 add(2)
                 text_body_size(value)
             elif isinstance(value, Mapping):
+                if not top:
+                    add(8)  # {"$obj":
                 if len(value) > maximum // 3:
                     raise CatalogIntegrityError(f"snapshot row exceeds max_record_bytes={maximum}")
                 keys = list(value)
@@ -775,6 +782,8 @@ class ExchangeInfoRowVerifier:
                         ) from exc
                     visit(item)
                 add(1)
+                if not top:
+                    add(1)  # closing } of the $obj wrapper
             elif isinstance(value, list | tuple):
                 add(2)
                 for index, item in enumerate(value):
@@ -795,14 +804,16 @@ class ExchangeInfoRowVerifier:
                         "snapshot row contains an invalid JSON number"
                     ) from exc
             elif isinstance(value, datetime):
+                add(7)  # {"$dt":
                 add(2)
-                text_body_size(value.isoformat())
+                text_body_size(value.astimezone(UTC).isoformat())
+                add(1)  # }
             else:
                 raise CatalogIntegrityError(
                     f"snapshot row contains unsupported value {type(value).__name__}"
                 )
 
-        visit(row)
+        visit(row, top=True)
         add(1)  # JSONL LF
 
     def _scan(self, head: str | None) -> list[Mapping[str, Any]]:
