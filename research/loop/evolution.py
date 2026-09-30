@@ -53,6 +53,7 @@ from research.evolution import (
     mutate,
     require_new_version,
 )
+from research.experiments.run_inputs import strategy_params
 from research.loop.memory import ResearchMemory
 from research.loop.segment import decimal_text
 from research.loop.trials import ValidationOutcome
@@ -166,7 +167,8 @@ class EvolutionStage:
         memory = self._memory
         evolved = {str(record["parent"]) for record in memory.offspring}
         tested = {
-            _point_key(o.candidate.spec.name, dict(o.run.repro.params))
+            # the strategy's parameters, never the run inputs record (ADR-0100 修订 2)
+            _point_key(o.candidate.spec.name, strategy_params(o.run.repro.params))
             for o in memory.trials
             if o.candidate is not None
         }
@@ -203,7 +205,7 @@ class EvolutionStage:
         spec: StrategySpec,
         tested: set[tuple[str, tuple[tuple[str, str], ...]]],
     ) -> _Child | None:
-        point: dict[str, Scalar] = dict(parent.outcome.run.repro.params)
+        point: dict[str, Scalar] = strategy_params(parent.outcome.run.repro.params)
         for param in sorted(spec.param_search_space):
             for value in spec.param_search_space[param]:
                 if _same(value, spec.params.get(param)) or _same(value, point.get(param)):

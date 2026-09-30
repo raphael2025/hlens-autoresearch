@@ -119,6 +119,7 @@ from infrastructure.settings import Settings
 from infrastructure.storage import LocalFileStorageAdapter
 from plugins.backtest import BarBacktester
 from plugins.outcomes import ForwardReturnOutcome, TripleBarrierOutcome
+from research.experiments.run_inputs import strategy_params
 from research.loop.dataset_source import DatasetCatalog
 from research.loop.segment import decision_grid
 from research.operations.authority import (
@@ -664,7 +665,8 @@ def _target_source(pinned: _Pinned, instruments: tuple[str, ...]) -> StrategyWin
         strategy_spec_hash=spec.content_hash(),
         risk_policy_ref=None if policy is None else policy.ref,
         risk_policy_hash=None if policy is None else policy.content_hash(),
-        params=dict(run.repro.params),
+        # the strategy's parameters, never the run inputs record (ADR-0100 修订 2)
+        params=strategy_params(run.repro.params),
         plugins=dict(pinned.plugins),
         instruments=instruments,
         decision_step=pinned.decision_step,
@@ -683,7 +685,7 @@ def _target_source(pinned: _Pinned, instruments: tuple[str, ...]) -> StrategyWin
             slippage_rate=cost.slippage_rate_per_side,
         ),
         initial_equity=pinned.initial_equity,
-        request_params=_request_params(spec, run.repro.params),
+        request_params=_request_params(spec, strategy_params(run.repro.params)),
         decision_step=pinned.decision_step,
         decision_warmup=pinned.decision_warmup,
         label_horizon=pinned.label_spec.horizon,

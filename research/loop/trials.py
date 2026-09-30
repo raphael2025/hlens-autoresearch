@@ -39,6 +39,23 @@ segment without a decision time — and any ``MemoryError`` / ``OSError`` even i
 infrastructure, never attributed to the subject. The proxies keep the providers' descriptors, so
 every recorded hash is unchanged; the validator re-runs the unwrapped candidate.
 
+Run inputs (ADR-0100 修订 2, 2026-09-30; CODE_COMPLETE / DEBUG_PENDING). Every run with a strategy
+records, in its hashed ``repro.params`` under ``research.experiments.run_inputs.RUN_INPUTS_KEY``
+(``hlens.p11.inputs@1.0.0``, canonical JSON text), the inputs the P11 authority needs to prove a
+later re-computation is same-source: the decision grid the ingest built the decision times with
+(its ``decision_grid`` artifact: step, warm-up), the backtest's ``initial_equity``, and the
+validation inputs — ``family_trial_count``, the validation seed, ``VALIDATION_CONTROL_SEEDS``,
+the ``RobustnessParams`` ``cscv_partitions`` / ``impact_coefficient`` and the state stage's
+labeller identity (its ``labeller`` artifact). The family count is only fixed once every trial of
+the round has run and registered its cells, so ``ExperimentStage`` first executes every trial
+(``_execute``: runner, matrix, conditional registration) and only then builds each trial's
+``ExperimentSpec`` / ``ExperimentRun`` / summary and lifecycle move (``_finish``). The experiment
+row's ``params`` stay the strategy's parameters (``strategy_params``); the record is also in the
+row as ``run_inputs``. ``ValidationStage`` reads the record back, fails the stage when any value
+differs from what it would hand the validator (the record would be false), and gives the
+validator exactly the recorded family count, seed and control seeds. Runs of earlier versions
+carry no record and are never backfilled (H3 / H6).
+
 C-T4 market benchmark (ADR-0060 enforced in the loop, 2026-09-26; CODE_COMPLETE / DEBUG_PENDING):
 ``ValidationStage`` builds its ``ValidatorSetup`` with ``market_benchmark=True``, so every trial
 report carries what the bound Profile's ``benchmark.market_benchmark_rule`` /
@@ -171,7 +188,7 @@ from core.contracts.strategy import (
     TargetPosition,
 )
 from core.contracts.validation_profile import ValidationProfile
-from core.domain.base import FrozenMapping, Ref, content_hash
+from core.domain.base import FrozenMapping, Ref, canonical_json, content_hash
 from core.domain.research import (
     ExperimentRun,
     ExperimentSpec,
@@ -194,6 +211,13 @@ from research.experiments import (
     backtest_returns,
     register_trial_conditionals,
     state_strategy_matrix,
+)
+from research.experiments.run_inputs import (
+    RUN_INPUTS_KEY,
+    RunInputs,
+    recorded_run_inputs,
+    strategy_params,
+    with_run_inputs,
 )
 from research.loop.memory import ResearchMemory
 from research.loop.segment import (
@@ -241,6 +265,7 @@ __all__ = [
     "CELL_LIFECYCLE",
     "PER_CELL_VALIDATION",
     "PER_CELL_VALIDATION_RUN",
+    "VALIDATION_CONTROL_SEEDS",
     "ConditionalPlan",
     "ExperimentStage",
     "OosUnsealBudget",
@@ -536,6 +561,33 @@ class ValidationOutcome:
         return next((g.value for g in self.report.gates if g.gate_id == gate_id), None)
 
 
+@dataclass(frozen=True)
+class _ExecutedTrial:
+    """One executed trial before its records are built (``ExperimentStage._execute``)."""
+
+    hypothesis: Hypothesis
+    origin: str
+    attempt: str | None
+    segment: RoundData
+    plugins: Mapping[str, str]
+    seed: int
+    candidate: StrategyCandidate | None
+    params: dict[str, Param]
+    run_id: str
+    inputs: EvaluationInputs | None
+    trial: TrialRun | None
+    matrix: StateStrategyMatrix | None
+    conditional: dict[str, Any] | None
+    error: str | None
+    reason: ReasonCode | None
+    subject_fault: bool
+
+
+#: The multi-seed G1 negative controls of the loop's validator: ``None`` = the single-seed
+#: controls drawn with the validation seed (``ValidatorSetup.control_seeds``); recorded by every
+#: run (module docs, **Run inputs**).
+VALIDATION_CONTROL_SEEDS: Final[tuple[int, ...] | None] = None
+
 #: What the audit carries when an unseal budget runs on a non-durable ledger (TEST ONLY).
 EPHEMERAL_UNSEAL_MARK: Final = "EPHEMERAL_TEST_ONLY: in-memory unsealing ledger, lost on restart"
 
@@ -700,17 +752,25 @@ class ExperimentStage:
         return StageUsage(trials=self._cells() * trials, compute_seconds=self._per_trial * trials)
 
     def run(self, ctx: RoundContext) -> StageResult:
+        executed: list[_ExecutedTrial] = []
         outcomes: list[TrialOutcome] = []
         self._conditional_trials = 0
+        attempted = 0
         try:
             for hypothesis, origin, attempt in _registered_this_round(ctx):
-                outcomes.append(self._trial(ctx, hypothesis, origin, attempt))
+                attempted += 1
+                executed.append(self._execute(ctx, hypothesis, origin, attempt))
+            # every trial of the round has run and registered its cells (module docs, **Run
+            # inputs**): the family trial count the validation stage hands the validator is now
+            # fixed, so each run can record it
+            for item in executed:
+                outcomes.append(self._finish(ctx, item))
         except Exception as exc:
             raise StageFailed(
                 f"{type(exc).__name__}: {exc}",
                 usage=StageUsage(
                     trials=self._conditional_trials,
-                    compute_seconds=self._per_trial * (len(outcomes) + 1),
+                    compute_seconds=self._per_trial * attempted,
                 ),
             ) from exc
         self._memory.trials.extend(outcomes)
@@ -769,6 +829,25 @@ class ExperimentStage:
     def _pre_registered(self, hypothesis: Hypothesis, attempt: str | None) -> bool:
         return self._memory.ledger.is_registered(hypothesis, attempt)
 
+    def _run_inputs(self, ctx: RoundContext, item: _ExecutedTrial) -> RunInputs | None:
+        """What the run records for the P11 same-source re-computation (module docs, **Run
+        inputs**): ``None`` for a trial without a strategy (no execution, no validation)."""
+        if item.candidate is None:
+            return None
+        step, warmup = ctx.artifact("ingest", "decision_grid")
+        robustness = self._c.robustness
+        return RunInputs(
+            decision_step=step,
+            decision_warmup=warmup,
+            initial_equity=self._c.initial_equity,
+            family_trial_count=self._memory.ledger.trials(item.hypothesis.family_id),
+            validation_seed=item.seed,
+            control_seeds=VALIDATION_CONTROL_SEEDS,
+            cscv_partitions=robustness.cscv_partitions,
+            impact_coefficient=robustness.impact_coefficient,
+            state_labeller=ctx.artifact("state", "labeller"),
+        )
+
     def _repro(
         self,
         ctx: RoundContext,
@@ -778,6 +857,7 @@ class ExperimentStage:
         segment: RoundData,
         plugins: Mapping[str, str],
         seed: int,
+        run_inputs: RunInputs | None,
     ) -> ReproducibilityTuple:
         c, profile = self._c, self._c.profile
         spec = None if candidate is None else candidate.spec
@@ -799,6 +879,11 @@ class ExperimentStage:
         last = segment.research_end or ctx.as_of
         boundary = profile.data_split.sealed_oos_boundary.isoformat()
         snapshots = segment.dataset_snapshots(ctx.as_of)
+        run_params: dict[str, str | int | float | bool] = {}
+        if spec is not None:
+            run_params = {**dict(spec.params), **dict(params)}
+        if run_inputs is not None:  # bound into experiment_hash through repro.params
+            run_params = with_run_inputs(run_params, run_inputs)
         return ReproducibilityTuple(
             hypothesis_ref=hypothesis.ref,
             strategy_ref=None if spec is None else spec.ref,
@@ -808,7 +893,7 @@ class ExperimentStage:
             code_commit=c.code_commit,
             plugin_versions=FrozenMapping(all_plugins),
             dependency_hashes=FrozenMapping(dependencies),
-            params=FrozenMapping({} if spec is None else {**dict(spec.params), **dict(params)}),
+            params=FrozenMapping(run_params),
             param_search_space=FrozenMapping({} if spec is None else dict(spec.param_search_space)),
             seeds=(ctx.seed, seed),
             environment_lock=c.environment_lock,
@@ -825,9 +910,10 @@ class ExperimentStage:
             llm_calls=_llm_calls(ctx, hypothesis, self._memory),
         )
 
-    def _trial(
+    def _execute(
         self, ctx: RoundContext, hypothesis: Hypothesis, origin: str, attempt: str | None
-    ) -> TrialOutcome:
+    ) -> _ExecutedTrial:
+        """Runs one trial and registers its cells; its records are built by ``_finish``."""
         segment: RoundData = ctx.artifact("ingest", "segment")
         signals: tuple[SignalObservation, ...] = ctx.artifact("state", "signals")
         states: StateResult = ctx.artifact("state", "result")
@@ -855,13 +941,6 @@ class ExperimentStage:
             except ValueError as exc:
                 error, reason = str(exc), ReasonCode.CONTRACT_VIOLATION
                 candidate = None
-        repro = self._repro(ctx, hypothesis, candidate, params, segment, plugins, seed)
-        experiment = ExperimentSpec(
-            name=f"e_{hypothesis.name}",
-            version=hypothesis.version,
-            created_at=ctx.as_of,
-            repro=repro,
-        )
         run_id = f"{ctx.loop_id}:{ctx.round_index}:{hypothesis.name}@{hypothesis.version}"
         if origin == "retry":
             # ADR-0083 "PM 决定" §4: one manifest never repeats a hypothesis, but the retry's own
@@ -923,6 +1002,40 @@ class ExperimentStage:
             if self._conditional is None or matrix is None
             else self._register_conditionals(hypothesis, attempt, matrix)
         )
+        return _ExecutedTrial(
+            hypothesis=hypothesis,
+            origin=origin,
+            attempt=attempt,
+            segment=segment,
+            plugins=plugins,
+            seed=seed,
+            candidate=candidate,
+            params=params,
+            run_id=run_id,
+            inputs=inputs,
+            trial=trial,
+            matrix=matrix,
+            conditional=conditional,
+            error=error,
+            reason=reason,
+            subject_fault=subject_fault,
+        )
+
+    def _finish(self, ctx: RoundContext, item: _ExecutedTrial) -> TrialOutcome:
+        """The trial's reproducibility records (with its run inputs), summary and lifecycle move;
+        called once every trial of the round has been executed (module docs, **Run inputs**)."""
+        hypothesis, segment, trial, matrix = item.hypothesis, item.segment, item.trial, item.matrix
+        candidate, run_id = item.candidate, item.run_id
+        run_inputs = self._run_inputs(ctx, item)
+        repro = self._repro(
+            ctx, hypothesis, candidate, item.params, segment, item.plugins, item.seed, run_inputs
+        )
+        experiment = ExperimentSpec(
+            name=f"e_{hypothesis.name}",
+            version=hypothesis.version,
+            created_at=ctx.as_of,
+            repro=repro,
+        )
         state = RunState.COMPLETED if trial is not None else RunState.ERRORED
         run = ExperimentRun(
             run_id=run_id,
@@ -932,19 +1045,21 @@ class ExperimentStage:
             started_at=ctx.as_of,
             finished_at=ctx.as_of,
         )
+        error = item.error
         summary: dict[str, Any] = {
             "hypothesis": str(hypothesis.ref),
-            "origin": origin,
+            "origin": item.origin,
             "strategy": None if candidate is None else str(candidate.spec.ref),
             "params": {
                 k: decimal_text(v) if isinstance(v, float) else v
-                for k, v in sorted(repro.params.items())
+                for k, v in sorted(strategy_params(repro.params).items())
             },
+            "run_inputs": None if run_inputs is None else run_inputs.payload(),
             "experiment": str(experiment.ref),
             "experiment_hash": repro.experiment_hash,
             "run_id": run_id,
             "run_state": state.value,
-            "attempt": attempt,
+            "attempt": item.attempt,
             **segment.source_fields(),
             "research_data_hash": segment.data_hash,
             "research_start": _iso(segment.research_start),
@@ -972,24 +1087,25 @@ class ExperimentStage:
                     evidence=(f"experiment:{repro.experiment_hash}", f"run:{run_id}"),
                 )
         if self._conditional is not None:  # the key exists only with a plan (records unchanged)
-            summary["conditional"] = conditional
+            summary["conditional"] = item.conditional
+        inputs = item.inputs
         return TrialOutcome(
             round_index=ctx.round_index,
             hypothesis=hypothesis,
-            origin=origin,
+            origin=item.origin,
             experiment=experiment,
             run=run,
             candidate=candidate,
-            request_params=FrozenMapping(params),
+            request_params=FrozenMapping(item.params),
             inputs=inputs,
             trial=trial,
-            validation_seed=seed,
+            validation_seed=item.seed,
             summary=summary,
             error=error,
-            reason=reason,
-            attempt=attempt,
+            reason=item.reason,
+            attempt=item.attempt,
             knowledge_cutoff=None if inputs is None else inputs.knowledge_cutoff,
-            subject_fault=subject_fault,
+            subject_fault=item.subject_fault,
         )
 
 
@@ -1096,7 +1212,44 @@ class ValidationStage:
 
     # ------------------------------------------------------------------------------------------
 
-    def _context(self, ctx: RoundContext, outcome: TrialOutcome) -> ValidationContext:
+    def _recorded_inputs(self, ctx: RoundContext, outcome: TrialOutcome) -> RunInputs:
+        """The run's recorded validation inputs (module docs, **Run inputs**), checked against
+        what this stage would hand the validator; any difference fails the stage (the record would
+        be false), and the validator is then given exactly the recorded values."""
+        run = outcome.run
+        recorded = recorded_run_inputs(run.repro.params)
+        if recorded is None:
+            raise ValueError(
+                f"run {run.run_id} records no {RUN_INPUTS_KEY} (ADR-0100 修订 2): every run of "
+                "the experiment stage records its validation inputs"
+            )
+        robustness = self._c.robustness
+        used: dict[str, Any] = {
+            "family_trial_count": self._memory.ledger.trials(outcome.hypothesis.family_id),
+            "validation_seed": outcome.validation_seed,
+            "control_seeds": (
+                None if VALIDATION_CONTROL_SEEDS is None else list(VALIDATION_CONTROL_SEEDS)
+            ),
+            "cscv_partitions": robustness.cscv_partitions,
+            "impact_coefficient": robustness.impact_coefficient,
+            "state_labeller": ctx.artifact("state", "labeller"),
+        }
+        payload = recorded.validation_payload()
+        differs = sorted(
+            name
+            for name, value in used.items()
+            if canonical_json(value) != canonical_json(payload[name])
+        )
+        if differs:
+            raise ValueError(
+                f"run {run.run_id}: the validation inputs {differs} are not the ones the run "
+                f"recorded in {RUN_INPUTS_KEY}"
+            )
+        return recorded
+
+    def _context(
+        self, ctx: RoundContext, outcome: TrialOutcome, recorded: RunInputs
+    ) -> ValidationContext:
         hypothesis, c = outcome.hypothesis, self._c
         ledger = self._memory.ledger
         metadata = ExperimentMetadata(
@@ -1107,7 +1260,8 @@ class ValidationStage:
             profile_selection=c.profile_selection,
             hypothesis_family_id=hypothesis.family_id,
             trial_index=ledger.trial_index(hypothesis, outcome.attempt),
-            family_trial_count=ledger.trials(hypothesis.family_id),
+            # the recorded count, checked equal to the ledger's (``_recorded_inputs``)
+            family_trial_count=recorded.family_trial_count,
             declared_research_class=c.declared_research_class,
             llm_calls=outcome.run.repro.llm_calls,
             trace_id=outcome.run.run_id,
@@ -1130,7 +1284,8 @@ class ValidationStage:
         feature_manifests: Sequence[str] = ctx.artifact("state", "feature_manifest_hashes")
         candidate, inputs, trial = outcome.candidate, outcome.inputs, outcome.trial
         assert candidate is not None and inputs is not None and trial is not None
-        context = self._context(ctx, outcome)
+        recorded = self._recorded_inputs(ctx, outcome)
+        context = self._context(ctx, outcome, recorded)
         setup = ValidatorSetup(
             context=context,
             outcome_provider=self._c.outcome_provider,
@@ -1138,11 +1293,14 @@ class ValidationStage:
             instrument=segment.symbol,
             trials=CandidateTrialRunner(candidate, inputs, self._c.backtester),
             chosen_params=dict(outcome.request_params),
-            seed=outcome.validation_seed,
+            # the recorded seed and control seeds (checked equal to the stage's own)
+            seed=recorded.validation_seed,
             robustness=self._c.robustness,
+            # the labeller the run recorded (``state_labeller``: the state stage's identity)
             state_of=lambda t: labels.get(t) or "unknown",
             bar_volume=segment.bar_volume(),
             declared_instruments=(segment.symbol,),
+            control_seeds=recorded.control_seeds,
             # ADR-0060 enforced (C-T4): the Profile's ``benchmark.market_benchmark_rule`` /
             # ``.inverse_control_reported`` are computed (reported-only items); an unregistered
             # rule name is ``G2.market_benchmark`` INCONCLUSIVE, which the verdict carries
