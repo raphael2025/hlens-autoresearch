@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import dataclasses
 import json
 from datetime import UTC, datetime, timedelta
 from typing import cast
@@ -19,7 +20,14 @@ from core.domain.specs import (
     StrategySpec,
 )
 from research.hypotheses.plan_bindings import PlanBindingRefused, produce_lowered_output_bindings
-from research.hypotheses.typed_plan import PlanLimits, PlanRejected, TypedPlan, parse_plan_json
+from research.hypotheses.typed_plan import (
+    PLAN_FORMAT_VERSION,
+    SUPPORTED_PLAN_FORMAT_VERSIONS,
+    PlanLimits,
+    PlanRejected,
+    TypedPlan,
+    parse_plan_json,
+)
 from research.hypotheses.typed_plan_lowering import OperatorLoweringRefused, lower_typed_plan
 from research.hypotheses.typed_plan_resolver import (
     DirectReferenceResolution,
@@ -126,6 +134,8 @@ def _plan(
     transform: str = "difference",
     window: int = 5,
     include_window: bool = True,
+    buckets: object = None,
+    schema_version: str = "1.1.0",
 ) -> tuple[TypedPlan, DirectReferenceResolution]:
     resolver_specs: tuple[VersionedSpec, ...]
     inputs: list[dict[str, object]]
@@ -142,6 +152,8 @@ def _plan(
         parameters = {"transform": transform}
         if include_window:
             parameters["window"] = window
+        if buckets is not None:
+            parameters["buckets"] = buckets
         resolver_specs = (SOURCE_A, SOURCE_B)
     elif operator == "temporal":
         inputs = [
@@ -157,7 +169,7 @@ def _plan(
     else:
         raise ValueError(f"unsupported test operator {operator!r}")
     payload = {
-        "schema_version": "1.1.0",
+        "schema_version": schema_version,
         "root": "combined",
         "nodes": [
             {
@@ -174,7 +186,8 @@ def _plan(
             max_depth=2,
             max_nodes=2,
             max_json_bytes=2048,
-            max_parameters_per_node=2,
+            # transform + window + buckets (quantile, ADR-0099).
+            max_parameters_per_node=3,
         ),
     )
     resolution = resolve_direct_references(plan, resolver=_Resolver(resolver_specs))
@@ -266,8 +279,9 @@ def test_interaction_lowers_to_deterministic_feature_spec() -> None:
 
 
 def test_open_operator_refuses_without_partial_output() -> None:
-    # The first node (interaction) is lowerable; the second (rank) is still OPEN (ADR-0082), so
-    # the whole plan is refused and no partial node map escapes.
+    # The first node (interaction) is lowerable; the second (rank in a "1.1.0" plan) is still OPEN
+    # (ADR-0082; ADR-0099 decision 4 keeps old plans' meaning), so the whole plan is refused and
+    # no partial node map escapes.
     plan, resolution = _multi(
         [
             _node("product", "interaction", [_spec_input(SOURCE_A), _spec_input(SOURCE_B)]),
@@ -486,9 +500,11 @@ def test_transformation_lowering_is_deterministic_and_created_at_sensitive() -> 
     assert first.ref != later.ref
 
 
-def test_transformation_rank_and_quantile_remain_operator_open() -> None:
+def test_transformation_rank_and_quantile_remain_operator_open_in_1_1_0_plans() -> None:
+    """ADR-0099 decision 4: a "1.1.0" plan's rank / quantile node keeps its original meaning."""
     for transform in ("rank", "quantile"):
         plan, resolution = _plan("transformation", transform=transform, window=4)
+        assert plan.schema_version == "1.1.0"
 
         with pytest.raises(OperatorLoweringRefused, match="operator_open") as error:
             lower_typed_plan(plan, resolution=resolution, created_at=NOW)
@@ -515,6 +531,179 @@ def test_transformation_output_binds_via_adr_0078() -> None:
 
     bindings = produce_lowered_output_bindings(
         experiment_hash="b" * 64,
+        plan=plan,
+        specs_by_node=outputs,
+    )
+
+    assert len(bindings) == len(plan.nodes) == 1
+    assert bindings[0].node_id == "combined"
+    assert bindings[0].spec.content_hash() == outputs["combined"].content_hash()
+
+
+# --- time-series rank / quantile (ADR-0099, plan format 1.2.0) --------------------------------
+
+
+def test_plan_format_version_is_1_2_0_and_1_1_0_still_parses() -> None:
+    assert PLAN_FORMAT_VERSION == "1.2.0"
+    assert SUPPORTED_PLAN_FORMAT_VERSIONS == {"1.1.0", "1.2.0"}
+    for version in ("1.1.0", "1.2.0"):
+        plan, _ = _plan("transformation", transform="difference", schema_version=version)
+        assert plan.schema_version == version
+        assert plan.payload()["schema_version"] == version
+    for unsupported in ("1.0.0", "1.3.0", "2.0.0"):
+        with pytest.raises(PlanRejected, match="unsupported plan schema_version"):
+            _plan("transformation", transform="difference", schema_version=unsupported)
+
+
+def test_plan_schema_version_is_part_of_the_content_hash() -> None:
+    """A "1.1.0" plan keeps its own version (and hence its original hash); it is not rewritten."""
+    old, _ = _plan("transformation", transform="difference", window=3, schema_version="1.1.0")
+    new, _ = _plan("transformation", transform="difference", window=3, schema_version="1.2.0")
+
+    assert old.nodes == new.nodes
+    assert old.content_hash() != new.content_hash()
+    assert old.content_hash() == content_hash(old.payload())
+    with pytest.raises(ValueError, match="schema_version"):
+        dataclasses.replace(old, schema_version="1.0.0")
+
+
+def test_transformation_rank_lowers_to_time_series_feature_spec() -> None:
+    plan, resolution = _plan("transformation", transform="rank", window=20, schema_version="1.2.0")
+
+    output = cast(
+        FeatureSpec, lower_typed_plan(plan, resolution=resolution, created_at=NOW)["combined"]
+    )
+
+    assert type(output) is FeatureSpec
+    assert output.definition == "p7.transformation.rank_ts@1.0.0"
+    assert output.inputs == (SOURCE_A.ref,)
+    assert output.lineage == (SOURCE_A.ref,)
+    assert output.available_lag == timedelta(0)
+    assert output.deterministic is True
+    assert output.params == FrozenMapping(
+        {
+            "operator": "rank",
+            "provider": "p7_transformation_rank@1.0.0",
+            "semantic_version": "1.0.0",
+            "window": 20,
+            "direction": "backward_only",
+            "missing": "propagate_none",
+            "ties": "average",
+            "scale": "unit_interval",
+        }
+    )
+    assert plan.runnable is False
+
+
+def test_transformation_quantile_lowers_to_time_series_feature_spec() -> None:
+    plan, resolution = _plan(
+        "transformation", transform="quantile", window=20, buckets=5, schema_version="1.2.0"
+    )
+
+    output = cast(
+        FeatureSpec, lower_typed_plan(plan, resolution=resolution, created_at=NOW)["combined"]
+    )
+
+    assert type(output) is FeatureSpec
+    assert output.definition == "p7.transformation.quantile_ts@1.0.0"
+    assert output.inputs == (SOURCE_A.ref,)
+    assert output.lineage == (SOURCE_A.ref,)
+    assert output.available_lag == timedelta(0)
+    assert output.deterministic is True
+    assert output.params == FrozenMapping(
+        {
+            "operator": "quantile",
+            "provider": "p7_transformation_quantile@1.0.0",
+            "semantic_version": "1.0.0",
+            "window": 20,
+            "direction": "backward_only",
+            "missing": "propagate_none",
+            "buckets": 5,
+            "ties": "average",
+        }
+    )
+    assert plan.runnable is False
+
+
+def test_transformation_quantile_buckets_is_part_of_identity() -> None:
+    four, four_resolution = _plan(
+        "transformation", transform="quantile", window=10, buckets=4, schema_version="1.2.0"
+    )
+    ten, ten_resolution = _plan(
+        "transformation", transform="quantile", window=10, buckets=10, schema_version="1.2.0"
+    )
+
+    out_four = lower_typed_plan(four, resolution=four_resolution, created_at=NOW)["combined"]
+    out_ten = lower_typed_plan(ten, resolution=ten_resolution, created_at=NOW)["combined"]
+
+    assert out_four.ref != out_ten.ref
+    assert out_four.content_hash() != out_ten.content_hash()
+
+
+def test_transformation_accepted_transforms_lower_unchanged_in_1_2_0_plans() -> None:
+    for transform in ("standardize", "difference", "smooth"):
+        plan, resolution = _plan(
+            "transformation", transform=transform, window=7, schema_version="1.2.0"
+        )
+        old_plan, old_resolution = _plan("transformation", transform=transform, window=7)
+
+        output = lower_typed_plan(plan, resolution=resolution, created_at=NOW)["combined"]
+        old = lower_typed_plan(old_plan, resolution=old_resolution, created_at=NOW)["combined"]
+
+        assert type(output) is FeatureSpec
+        assert type(old) is FeatureSpec
+        assert output.definition == old.definition
+        assert output.params == old.params
+
+
+def test_transformation_quantile_requires_buckets() -> None:
+    with pytest.raises(PlanRejected, match="buckets"):
+        _plan("transformation", transform="quantile", window=10, schema_version="1.2.0")
+
+
+@pytest.mark.parametrize("bad_buckets", [1, 0, -3, True, "5"])
+def test_transformation_quantile_buckets_must_be_integer_at_least_two(bad_buckets: object) -> None:
+    with pytest.raises(PlanRejected, match="buckets"):
+        _plan(
+            "transformation",
+            transform="quantile",
+            window=10,
+            buckets=bad_buckets,
+            schema_version="1.2.0",
+        )
+
+
+@pytest.mark.parametrize("transform", ["standardize", "difference", "smooth", "rank"])
+def test_transformation_buckets_is_rejected_on_non_quantile_transforms(transform: str) -> None:
+    with pytest.raises(PlanRejected, match="buckets"):
+        _plan("transformation", transform=transform, window=10, buckets=5, schema_version="1.2.0")
+
+
+def test_transformation_buckets_is_not_admitted_in_1_1_0_plans() -> None:
+    with pytest.raises(PlanRejected, match="unknown field"):
+        _plan("transformation", transform="quantile", window=10, buckets=5)
+
+
+def test_transformation_rank_and_quantile_require_window_of_at_least_two() -> None:
+    with pytest.raises(PlanRejected, match="window"):
+        _plan("transformation", transform="rank", window=1, schema_version="1.2.0")
+    with pytest.raises(PlanRejected, match="window"):
+        _plan("transformation", transform="quantile", window=1, buckets=4, schema_version="1.2.0")
+    # Other transforms keep the plain positive-integer window rule.
+    plan, _ = _plan("transformation", transform="difference", window=1, schema_version="1.2.0")
+    assert plan.nodes[0].parameters["window"] == 1
+    # A "1.1.0" rank node with a one-bar window still parses; it is operator_open at lowering.
+    old, old_resolution = _plan("transformation", transform="rank", window=1)
+    with pytest.raises(OperatorLoweringRefused, match="operator_open"):
+        lower_typed_plan(old, resolution=old_resolution, created_at=NOW)
+
+
+def test_transformation_rank_output_binds_via_adr_0078() -> None:
+    plan, resolution = _plan("transformation", transform="rank", window=5, schema_version="1.2.0")
+    outputs = lower_typed_plan(plan, resolution=resolution, created_at=NOW)
+
+    bindings = produce_lowered_output_bindings(
+        experiment_hash="c" * 64,
         plan=plan,
         specs_by_node=outputs,
     )

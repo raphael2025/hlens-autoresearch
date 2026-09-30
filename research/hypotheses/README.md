@@ -90,10 +90,10 @@ Feature / State / Event / Strategy 核心规格类，并与所关联 ExperimentS
 `lower_typed_plan(plan, resolution=..., created_at=...)` 只接受与 plan hash 对应的直接引用解析结果，并要求调用方明确给出带时区的 `created_at`。已接受的 lowering：
 
 - `interaction`：两个 FeatureSpec 按同一 evaluation time 做严格 product，缺失传播为 `None`，不允许 bool / float / 静默舍入；结果是 `FeatureSpec`，目标 Provider key 为 `p7_interaction_product@1.0.0`。
-- `transformation`：只限 `standardize` / `difference` / `smooth`，显式 `window`、只向后看（ADR-0082 §4）。
+- `transformation`：`standardize` / `difference` / `smooth`，显式 `window`、只向后看（ADR-0082 §4）；计划格式 `1.2.0` 起另接受**时间序列** `rank` / `quantile`（ADR-0099）：`rank` → `p7.transformation.rank_ts@1.0.0`（含当前 bar 的最近 `window` 根 bar 内的百分位秩，∈ [0, 1]，params 另加 `ties=average`、`scale=unit_interval`），`quantile` → `p7.transformation.quantile_ts@1.0.0`（`floor(rank × buckets)` 截断到 `[0, buckets − 1]`，params 另加 `buckets`、`ties=average`）。两者都要求 `window ≥ 2`；新节点参数 `buckets`（整数 ≥ 2）仅 `quantile` 必填，其他 transform 出现即在解析期拒绝。
 - `temporal`（ADR-0088 决策 1）：两个输入 EventSpec 的 `bar_spec` 必须都非空且指向同一目标，`time_unit` 必须为 `bar`，否则 `operator_open`；第二事件在第一事件之后 1..`window` 根 bar 内（左开右闭）；结果 EventSpec 的 `bar_spec` 同输入、`observable_lag` 取第二事件的值、`trigger` 为规范 JSON 声明。第一事件的 `observable_lag` 大于第二事件时无法证明可见性，以 `temporal_visibility_unprovable` 拒绝。
 - `conditioning` / `ensemble` / `negation`（ADR-0088 决策 2）：分别产生 `composition` 为 `ConditionedStrategy` / `EnsembleStrategy(rule="equal_weight_mean")` / `NegatedStrategy` 的 StrategySpec。`signals` 为 base / 成员信号（conditioning 再加门控状态）按目标身份去重后的有序并集；风险政策与适用标的继承 base，ensemble 成员二者必须完全一致（ADR-0069），否则拒绝；conditioning 的 `state_value` 不在 StateSpec `state_space` 中时以 `unknown_state_value` 拒绝。取反**不是**验证负对照。
 
 所有 Provider 都尚未实现或登记。输出为 node ID 映射，随后交给 `produce_lowered_output_bindings(...)` 做 ADR-0078 全集、类型与组合校验。
 
-`transformation` 之 `rank` / `quantile` 仍为 OPEN；混有这类节点或任一拒绝条件的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner、不改变 `compile_plan` 的拒绝行为；`TypedPlan.runnable` 永远为 `False`。
+`typed_plan.py` 的 `PLAN_FORMAT_VERSION` 为 `1.2.0`；`1.1.0` 计划照常解析（不接受 `buckets`），`TypedPlan.schema_version` 保留计划自身的版本，因此旧计划的 payload / 内容哈希不变，其中的 `rank` / `quantile` 节点仍按旧语义 `operator_open`（ADR-0099 决策 4）。横截面 rank / quantile 仍不在范围内。混有 OPEN 节点或任一拒绝条件的计划整体 fail closed，不产生部分 lowering。该函数不写 journal / TrialLedger、不接 Runner、不改变 `compile_plan` 的拒绝行为；`TypedPlan.runnable` 永远为 `False`。

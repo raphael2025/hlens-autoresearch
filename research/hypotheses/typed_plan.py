@@ -26,6 +26,7 @@ from core.domain.base import (
 
 __all__ = [
     "PLAN_FORMAT_VERSION",
+    "SUPPORTED_PLAN_FORMAT_VERSIONS",
     "PlanInput",
     "PlanLimits",
     "PlanNode",
@@ -46,7 +47,21 @@ __all__ = [
 #: operator's grammar changed. No migration is required: no ``TypedPlan.runnable`` was ever True
 #: and no persisted "1.0.0" transformation payload exists (transformation was unconditionally
 #: ``operator_open`` before this ADR amendment).
-PLAN_FORMAT_VERSION: Final = "1.1.0"
+#:
+#: Bumped 1.1.0 -> 1.2.0 (ADR-0099, time-series rank / quantile): a ``transformation`` node may
+#: additionally carry ``buckets`` (integer >= 2). It is required for ``transform == "quantile"``
+#: and rejected for every other transform; under 1.2.0 ``rank`` / ``quantile`` also require
+#: ``window >= 2`` (the percentile rank divides by ``window - 1``). The change is additive:
+#: "1.1.0" plans still parse with their original grammar, keep their original payload and content
+#: hash, and their ``rank`` / ``quantile`` nodes keep their original meaning (``operator_open`` at
+#: lowering time) — an old plan's meaning is never changed retroactively (ADR-0099 decision 4).
+PLAN_FORMAT_VERSION: Final = "1.2.0"
+_LEGACY_PLAN_FORMAT_VERSION: Final = "1.1.0"
+#: Every plan format version this parser admits. Each document is parsed with the grammar of the
+#: version it declares, and a ``TypedPlan`` carries that version in its payload and hash.
+SUPPORTED_PLAN_FORMAT_VERSIONS: Final = frozenset(
+    {_LEGACY_PLAN_FORMAT_VERSION, PLAN_FORMAT_VERSION}
+)
 _NAME = re.compile(NAME_PATTERN)
 _HASH = re.compile(SHA256_PATTERN)
 
@@ -176,6 +191,20 @@ class TypedPlan:
     root: str
     nodes: tuple[PlanNode, ...]
     limits: PlanLimits
+    #: The plan format version the plan was written in (ADR-0099 decision 4). It selects the
+    #: grammar used to parse the plan and the lowering semantics of its nodes, and it is part of
+    #: the payload and content hash, so a "1.1.0" plan keeps its original hash and meaning.
+    schema_version: str = PLAN_FORMAT_VERSION
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.schema_version, str)
+            or self.schema_version not in SUPPORTED_PLAN_FORMAT_VERSIONS
+        ):
+            raise ValueError(
+                "TypedPlan.schema_version must be one of "
+                f"{', '.join(sorted(SUPPORTED_PLAN_FORMAT_VERSIONS))}"
+            )
 
     @property
     def runnable(self) -> bool:
@@ -183,7 +212,7 @@ class TypedPlan:
 
     def payload(self) -> dict[str, Any]:
         return {
-            "schema_version": PLAN_FORMAT_VERSION,
+            "schema_version": self.schema_version,
             "root": self.root,
             "limits": self.limits.payload(),
             "nodes": [node.payload() for node in self.nodes],
@@ -221,14 +250,26 @@ _PARAMETER_KEYS: Final[dict[PlanOperator, frozenset[str]]] = {
     #: C-L3 training window (a rolling fit confined to this trailing window never sees data outside
     #: it, so a bound window is by construction a bound training window). A missing ``window`` is
     #: rejected here at parse time — there is no separate "training window binding" to omit.
-    #: ``rank`` / ``quantile`` remain ``operator_open`` at lowering time and are still required to
-    #: supply a syntactically valid ``window`` even though it is unused; the closed-world grammar
-    #: does not vary by parameter value.
+    #: ADR-0099 (plan format 1.2.0): ``rank`` / ``quantile`` have accepted time-series semantics
+    #: over the same trailing ``window`` (which must then be >= 2); ``quantile`` additionally
+    #: requires ``buckets`` (see ``_OPTIONAL_PARAMETER_KEYS``). In a "1.1.0" plan they remain
+    #: ``operator_open`` at lowering time and still supply a syntactically valid ``window``.
     PlanOperator.TRANSFORMATION: frozenset({"transform", "window"}),
     PlanOperator.ENSEMBLE: frozenset(),
     PlanOperator.NEGATION: frozenset(),
 }
+#: Optional node parameters admitted per plan format version, on top of ``_PARAMETER_KEYS``.
+#: ADR-0099: under "1.2.0" a ``transformation`` node may carry ``buckets``; whether it is required
+#: or rejected depends on the ``transform`` name (checked in ``_check_rank_parameters``).
+_OPTIONAL_PARAMETER_KEYS: Final[dict[str, dict[PlanOperator, frozenset[str]]]] = {
+    _LEGACY_PLAN_FORMAT_VERSION: {},
+    PLAN_FORMAT_VERSION: {PlanOperator.TRANSFORMATION: frozenset({"buckets"})},
+}
 _TRANSFORMS: Final = frozenset({"standardize", "rank", "quantile", "difference", "smooth"})
+#: ADR-0099: the time-series percentile rank divides by ``window - 1``; quantile is built on it.
+_RANK_BASED_TRANSFORMS: Final = frozenset({"rank", "quantile"})
+_MIN_RANK_WINDOW: Final = 2
+_MIN_BUCKETS: Final = 2
 _OUTPUT_KINDS: Final[dict[PlanOutputType, Kind]] = {
     PlanOutputType.EVENT: Kind.EVENT,
     PlanOutputType.FEATURE: Kind.FEATURE,
@@ -301,13 +342,18 @@ def _input_type(item: PlanInput, prior: Mapping[str, PlanNode]) -> Kind | PlanOu
 
 
 def _check_parameters(
-    operator: PlanOperator, value: object, limits: PlanLimits, node_id: str
+    operator: PlanOperator,
+    value: object,
+    limits: PlanLimits,
+    node_id: str,
+    schema_version: str,
 ) -> FrozenMapping[str, PlanScalar]:
     if not isinstance(value, dict):
         raise PlanRejected(f"node {node_id}.parameters must be a JSON object")
-    allowed = _PARAMETER_KEYS[operator]
+    required = _PARAMETER_KEYS[operator]
+    allowed = required | _OPTIONAL_PARAMETER_KEYS[schema_version].get(operator, frozenset())
     unknown = set(value) - allowed
-    missing = allowed - set(value)
+    missing = required - set(value)
     if unknown:
         raise PlanRejected(
             f"node {node_id}.parameters has unknown field(s): {', '.join(sorted(unknown))}"
@@ -342,7 +388,31 @@ def _check_parameters(
         window = params["window"]
         if type(window) is not int or window < 1:
             raise PlanRejected(f"node {node_id}.parameters.window must be a positive integer")
+        if schema_version != _LEGACY_PLAN_FORMAT_VERSION:
+            _check_rank_parameters(params, transform, window, node_id)
     return FrozenMapping(params)
+
+
+def _check_rank_parameters(
+    params: Mapping[str, PlanScalar], transform: str, window: int, node_id: str
+) -> None:
+    """ADR-0099 (format 1.2.0): ``buckets`` only on ``quantile``; rank-based windows >= 2."""
+    if transform == "quantile":
+        if "buckets" not in params:
+            raise PlanRejected(f"node {node_id}.parameters is missing field(s): buckets")
+        buckets = params["buckets"]
+        if type(buckets) is not int or buckets < _MIN_BUCKETS:
+            raise PlanRejected(
+                f"node {node_id}.parameters.buckets must be an integer >= {_MIN_BUCKETS}"
+            )
+    elif "buckets" in params:
+        raise PlanRejected(
+            f"node {node_id}.parameters.buckets is only admitted for transform 'quantile'"
+        )
+    if transform in _RANK_BASED_TRANSFORMS and window < _MIN_RANK_WINDOW:
+        raise PlanRejected(
+            f"node {node_id}.parameters.window must be >= {_MIN_RANK_WINDOW} for {transform!r}"
+        )
 
 
 def _parse_node(
@@ -350,6 +420,7 @@ def _parse_node(
     prior: Mapping[str, PlanNode],
     limits: PlanLimits,
     depths: dict[str, int],
+    schema_version: str,
 ) -> PlanNode:
     data = _object(raw, frozenset({"id", "operator", "inputs", "parameters"}), "node")
     node_id = _text(data["id"], "node.id")
@@ -394,7 +465,7 @@ def _parse_node(
                 f"node {node_id}.inputs[{index}] has type {actual}; expected {expected.value}; "
                 "implicit conversion is not performed"
             )
-    parameters = _check_parameters(operator, data["parameters"], limits, node_id)
+    parameters = _check_parameters(operator, data["parameters"], limits, node_id, schema_version)
     input_depth = max(
         (depths[item.node_id] for item in inputs if isinstance(item, NodeInput)), default=0
     )
@@ -433,8 +504,9 @@ def parse_plan_json(raw: str, *, limits: PlanLimits) -> TypedPlan:
     except (json.JSONDecodeError, RecursionError, ValueError) as exc:
         raise PlanRejected(f"invalid plan JSON: {exc}") from exc
     document = _object(payload, frozenset({"schema_version", "root", "nodes"}), "plan")
-    if document["schema_version"] != PLAN_FORMAT_VERSION:
-        raise PlanRejected(f"unsupported plan schema_version: {document['schema_version']!r}")
+    schema_version = document["schema_version"]
+    if not isinstance(schema_version, str) or schema_version not in SUPPORTED_PLAN_FORMAT_VERSIONS:
+        raise PlanRejected(f"unsupported plan schema_version: {schema_version!r}")
     root = _text(document["root"], "plan.root")
     raw_nodes = document["nodes"]
     if not isinstance(raw_nodes, list) or not raw_nodes:
@@ -445,7 +517,7 @@ def parse_plan_json(raw: str, *, limits: PlanLimits) -> TypedPlan:
     prior: dict[str, PlanNode] = {}
     depths: dict[str, int] = {}
     for raw_node in raw_nodes:
-        node = _parse_node(raw_node, prior, limits, depths)
+        node = _parse_node(raw_node, prior, limits, depths, schema_version)
         prior[node.node_id] = node
         nodes.append(node)
     if root not in prior:
@@ -463,7 +535,7 @@ def parse_plan_json(raw: str, *, limits: PlanLimits) -> TypedPlan:
         )
     if len(reachable) != len(nodes):
         raise PlanRejected("plan contains node(s) unreachable from root")
-    return TypedPlan(root, tuple(nodes), limits)
+    return TypedPlan(root, tuple(nodes), limits, schema_version)
 
 
 def compile_plan(plan: TypedPlan) -> None:
