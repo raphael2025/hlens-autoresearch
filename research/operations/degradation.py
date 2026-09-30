@@ -516,6 +516,20 @@ def _freeze_record(freezes: object, profile: ValidationProfile) -> ProfileFreeze
     return record
 
 
+#: ``research.validation.gates.compare_gate`` records a threshold comparison as
+#: ``<metric>[>=]`` / ``<metric>[<=]``; only these exact comparator suffixes are recognised.
+_COMPARATOR_SUFFIXES: Final = ("[>=]", "[<=]")
+
+
+def _gate_metric_name(recorded: str) -> str:
+    """The degradation metric a gate reports: its recorded name without the one comparator
+    suffix ``compare_gate`` appends (ADR-0067 rule 5 compares the bare metric name)."""
+    for suffix in _COMPARATOR_SUFFIXES:
+        if recorded.endswith(suffix) and len(recorded) > len(suffix):
+            return recorded[: -len(suffix)]
+    return recorded
+
+
 def _baseline_values(
     report: ValidationReport, baseline: BaselineMetricSet, ruled: frozenset[str]
 ) -> tuple[tuple[str, Decimal], ...]:
@@ -534,7 +548,7 @@ def _baseline_values(
                 f"baseline gate {gate_id!r} of {metric!r} matches {len(matches)} gates, not one"
             )
         gate = matches[0]
-        if gate.metric != metric:
+        if _gate_metric_name(gate.metric) != metric:
             raise DegradationOperationRefused(
                 f"gate {gate_id!r} reports {gate.metric!r}, not {metric!r}"
             )
