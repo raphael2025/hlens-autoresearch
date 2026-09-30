@@ -272,6 +272,11 @@ class BoundedQualityEvidence:
         """The exact Dataset PIT view supplied by the source factory."""
         return self._view
 
+    @property
+    def params(self) -> BoundedQualitySourceParams:
+        """The explicit bounds and identities this source actually uses."""
+        return self._params
+
     def listing_report(self) -> str:
         bindings = {
             _LISTINGS: self._pit.snapshot_bindings[_LISTINGS],

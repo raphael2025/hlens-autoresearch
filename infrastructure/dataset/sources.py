@@ -811,9 +811,14 @@ def dataset_evidence_sources(
             canonical_scratch_directory=canonical_scratch_directory,
             params=quality_params,
         )
-        if not isinstance(quality, BoundedQualityEvidence) or quality.view is not view:
+        if (
+            not isinstance(quality, BoundedQualityEvidence)
+            or quality.view is not view
+            or quality.params != quality_params
+        ):
             raise DatasetSpecError(
-                "Quality factory must return BoundedQualityEvidence using the supplied pinned view"
+                "Quality factory must return BoundedQualityEvidence using the supplied pinned view "
+                "and parameters"
             )
     else:
         quality = PinnedQualityEvidence(

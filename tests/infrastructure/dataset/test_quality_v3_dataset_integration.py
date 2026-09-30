@@ -18,6 +18,7 @@ from core.contracts.universe import (
     ResearchDatasetEvidenceManifest,
 )
 from core.domain.base import Contract
+from core.domain.specs import DatasetRef, Zone
 from infrastructure.canonical import rules
 from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_ARCHIVES,
@@ -27,6 +28,7 @@ from infrastructure.catalog.phase1_tables import (
     BINANCE_SPOT_REST_RESPONSES,
     CANONICAL_INSTRUMENT_LISTINGS,
     DATA_QUALITY_REPORT_MANIFESTS,
+    DATASET_EVIDENCE_MANIFESTS,
     DATASET_SELECTION_CHUNKS,
 )
 from infrastructure.dataset.builder import (
@@ -35,10 +37,15 @@ from infrastructure.dataset.builder import (
     DatasetQualityError,
     DatasetSpecError,
     PinnedQualityEvidence,
+    _EvidenceBuildSink,
     dataset_evidence_rule,
 )
 from infrastructure.dataset.chunks import IcebergChunkWriter
-from infrastructure.dataset.manifests import ManifestStore
+from infrastructure.dataset.manifests import (
+    ManifestStore,
+    evidence_manifest_batch_id,
+    evidence_manifest_row,
+)
 from infrastructure.dataset.quality import (
     BoundedQualityEvidence,
     BoundedQualitySourceParams,
@@ -170,6 +177,169 @@ def _quality_params(scratch: StorageAdapter) -> BoundedQualitySourceParams:
             max_identity_bytes=8192,
         ),
     )
+
+
+def test_bounded_quality_requires_the_dataset_manifest_snapshot_binding(
+    w: World,
+) -> None:
+    pit = ds.v3_pit(skip=(DATA_QUALITY_REPORT_MANIFESTS.table,))
+    with pytest.raises(
+        DatasetQualityError, match="does not bind quality.data_quality_report_manifests"
+    ):
+        BoundedQualityEvidence(
+            w.h.adapter,
+            w.h.storage,
+            pit,
+            "agg_trades",
+            view=cast(Any, None),
+            params=cast(Any, None),
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
+        )
+
+
+def test_quality_factory_cannot_substitute_different_source_parameters(
+    w: World, tmp_path: Path
+) -> None:
+    scratch = _scratch(tmp_path, "join")
+    params = _quality_params(scratch)
+    request = ds.v3_request()
+
+    def mismatched_factory(
+        adapter: Any,
+        storage: StorageAdapter,
+        pit: PointInTimeSpec,
+        data_type: str,
+        *,
+        view: PinnedCatalogView,
+        canonical_scratch_directory: Path,
+        params: BoundedQualitySourceParams,
+    ) -> BoundedQualityEvidence:
+        return BoundedQualityEvidence(
+            adapter,
+            storage,
+            pit,
+            data_type,
+            view=view,
+            canonical_scratch_directory=canonical_scratch_directory,
+            params=replace(params, run_capacity=params.run_capacity + 1),
+        )
+
+    try:
+        with pytest.raises(DatasetSpecError, match="supplied pinned view and parameters"):
+            dataset_evidence_sources(
+                w.h.adapter,
+                w.h.storage,
+                request,
+                canonical_scratch_directory=w.h.canonical_scratch_directory,
+                market_data_base_url=ds.ORIGIN,
+                pit_params=PitRunParams(
+                    row_batch_rows=1,
+                    edge_batch_rows=1,
+                    merge_fanout=2,
+                    key_history_buffer=1,
+                    limits=RunLimits(leaf_max_records=1, leaf_max_bytes=65536, fanout=2),
+                ),
+                universe_params=ds.UNIVERSE_RUN_PARAMS,
+                quality_factory=mismatched_factory,
+                quality_params=params,
+            )
+    finally:
+        scratch.close()
+
+
+def test_historical_24_evidence_manifest_replays_through_legacy_quality_source(
+    w: World,
+) -> None:
+    """Seed a historical envelope row, then exercise the normal read/replay verifier path.
+
+    The seed uses the same bounded sink and legacy source as a 2.4-era build, but does not call
+    ``DatasetEvidenceBuilder.build`` inside an old-version write scope. Only the persisted
+    historical manifest row is hand-seeded; ``load_any`` and its verifier are production paths.
+    """
+    from core.domain.base import contract_schema_version_scope
+    from tests.infrastructure.dataset.test_dataset_v3_sources import (
+        PIT_PARAMS,
+        UNIVERSE_PARAMS,
+        _point_world,
+        _request,
+    )
+    from tests.infrastructure.dataset.test_dataset_v3_sources import _builder as dataset_builder
+
+    spec = _point_world(w)
+    request = _request(spec)
+    assert DATA_QUALITY_REPORT_MANIFESTS.table not in request.pit.snapshot_bindings
+    builder = dataset_builder(w.h.storage, w.h.adapter)
+    chunks = IcebergChunkWriter(w.h.adapter, DATASET_SELECTION_CHUNKS)
+    sources = dataset_evidence_sources(
+        w.h.adapter,
+        w.h.storage,
+        request,
+        canonical_scratch_directory=w.h.canonical_scratch_directory,
+        market_data_base_url=ds.ORIGIN,
+        pit_params=PIT_PARAMS,
+        universe_params=UNIVERSE_PARAMS,
+        schema_version="2.4.0",
+    )
+    selection_id = builder.selection_id(request)
+    with contract_schema_version_scope("2.4.0"):
+        sink = _EvidenceBuildSink(w.h.storage, builder.rule, selection_id, chunks, version="2.4.0")
+        derived = builder.select(
+            request,
+            sources=sources,
+            sink=sink,
+            manifested=False,
+            schema_version="2.4.0",
+        )
+        evidence, chunk_count, _replayed_chunks, snapshot_id = sink.finish()
+        chunks.seal(selection_id, chunk_count)
+        historical = ResearchDatasetEvidenceManifest(
+            dataset=DatasetRef(
+                zone=Zone.RESEARCH_DATASET,
+                table=DATASET_SELECTION_CHUNKS.table,
+                snapshot_id=snapshot_id,
+                time_range_start=request.start,
+                time_range_end=request.end,
+            ),
+            point_in_time=request.pit,
+            universe_spec=request.universe.binding(),
+            rule=builder.rule.binding(),
+            data_type=request.data_type,
+            selection_id=derived.selection_id,
+            row_count=derived.row_count,
+            chunk_rows=builder.rule.chunk_rows,
+            chunk_count=chunk_count,
+            evidence=evidence,
+        )
+
+    # This row represents the historic commit; it is not written through a new-write API.
+    w.h.forge_rows(
+        DATASET_EVIDENCE_MANIFESTS,
+        [evidence_manifest_row(historical)],
+        evidence_manifest_batch_id(historical.content_hash()),
+    )
+    quality_source_types: list[type[Any]] = []
+
+    def sources_for(item: DatasetEvidenceRequest) -> Any:
+        result = dataset_evidence_sources(
+            w.h.adapter,
+            w.h.storage,
+            item,
+            canonical_scratch_directory=w.h.canonical_scratch_directory,
+            market_data_base_url=ds.ORIGIN,
+            pit_params=PIT_PARAMS,
+            universe_params=UNIVERSE_PARAMS,
+        )
+        quality_source_types.append(type(result.quality))
+        return result
+
+    verifier = StreamingEvidenceVerifier(
+        w.h.adapter, builder=builder, chunks=chunks, sources=sources_for
+    )
+    loaded = ManifestStore(w.h.adapter, builder, evidence_verifier=verifier).load_any(
+        historical.content_hash()
+    )
+    assert loaded == historical
+    assert quality_source_types == [PinnedQualityEvidence]
 
 
 class _WriteCounter:
